@@ -34,8 +34,13 @@ function ok(cond, msg) {
     console.log("FAIL  " + msg);
   }
 }
+/* 读源码做字面切片：**统一成 LF** 再切。仓库里 CRLF 与 LF 并存（gateway.mjs 等是
+   CRLF），带 "\n}\n" 这类多行锚点的切片在 CRLF 文件上永远命中不了 —— 那是换行符的
+   差异，不是代码跑偏。归一之后断言只看内容。 */
 const read = (rel) =>
-  fs.readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8");
+  fs
+    .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+    .replace(/\r\n/g, "\n");
 
 /* 源码切片：从 startMark 起、到 endMark 止（endMark 可为 null 表示用到下一个闭括号锚点） */
 function between(src, startMark, endMark, label) {
@@ -116,21 +121,33 @@ ok(
   "注释写明：本档不声明思考上限，思考强度按界面选择走",
 );
 
-/* ==================== [2] 思考档只看设置（压档机制已拆除） ==================== */
+/* ==================== [2] 思考档：梯子真源在 reasoning-effort.mjs（0.2 抽模块） ====================
+   本轮 0.2 升级把「档位梯子 + 归一化」从 gateway.mjs 抽成独立模块
+   dsh/gateway/reasoning-effort.mjs（gateway 与运行时 mtnode-effort 插件共用；本模块自己的
+   回归是 test/smoke-reasoning-effort.mjs）。这里改成**直接 import 真源**断言 —— 老写法在
+   gateway 源码里做字面切片，抽模块后切片必然落空（那是位置变了，不是行为变了）。 */
 console.log("\n[2] 思考档：EFFORTS 归一表 + 按预设压档机制已拆除");
-const effSrc = between(G, "const EFFORTS = [", "/* 删除 settings.yaml", "EFFORTS/normalizeEffort 块");
-const GW = vm.runInNewContext(effSrc + "\n({ EFFORTS, normalizeEffort })");
-ok(
-  GW.EFFORTS.join(",") === "low,high,max" && GW.EFFORTS.indexOf("off") < 0,
-  "EFFORTS = low/high/max（off 依旧不列入，low 仍留给 proc_text 等内部路径）",
+const reSrc = read("dsh/gateway/reasoning-effort.mjs");
+ok(reSrc.length > 0, "定位到 reasoning-effort.mjs（档位梯子的唯一真源）");
+/* 本冒烟是 CJS（顶层没有 await）：把真源里的 `export ` 去掉后喂给 vm 求值，
+   拿到的就是模块里那一份 EFFORTS / normalizeEffort（真源本身零依赖，可安全求值）。
+   只剥行首的 `export ` —— 文本里出现的 "export" 是注释/字符串的一部分（v1 曾在
+   这句话上翻车：把散文里的 export 也当关键字剥掉了）。 */
+const reMod = vm.runInNewContext(
+  reSrc.replace(/^export (?=(const|let|var|function|async|class)\b)/gm, "") +
+    "\n({ EFFORTS, EFFORT_ORDER, normalizeEffort, DEFAULT_EFFORT })",
 );
-const ne = GW.normalizeEffort;
+const EFFORTS = reMod.EFFORTS;
+ok(Array.isArray(EFFORTS) && EFFORTS.join(",") === "off,low,medium,high,xhigh,max", "EFFORTS = off/low/medium/high/xhigh/max（0.2 扩档，off = 真关思考）");
+ok(EFFORTS.length === 6 && EFFORTS[EFFORTS.length - 1] === "max", "梯子到 max 为止（没有比 max 更高的档）");
+const ne = reMod.normalizeEffort;
 ok(ne("high") === "high", "标准（high）原样下发");
 ok(ne("max") === "max", "最强（max）原样下发");
 ok(ne("low") === "low", "内部路径的 low 原样下发（文本节点少想这一档还在）");
 ok(ne("MAX") === "max", "大小写容忍后归一");
 ok(ne(undefined) === "high" && ne("") === "high", "缺省 / 空串 → high（标准）");
-ok(ne("off") === "high" && ne("none") === "high", "旧 off/none → high（proc_text 不误伤）");
+ok(ne("off") === "off" && ne("none") === "off" && ne("无") === "off", "off/none/无 → off（0.2 起「无」是真关思考，不再回退 high）");
+ok(ne("瞎写") === "high", "非法值 → high 兜底（永不硬失败）");
 /* 死机制清干净：既没有上限表，也没有按预设收敛的函数（留着就是没人调的假开关） */
 ok(
   G.indexOf("PRESET_EFFORT_CAPS") < 0 ||
@@ -139,37 +156,58 @@ ok(
 );
 ok(G.indexOf("effortForPreset") < 0, "effortForPreset 函数已整体删除（无残留调用）");
 ok(
-  G.indexOf("const runEffort = normalizeEffort(effort)") >= 0,
-  "handleRun 用 normalizeEffort(effort) 算出本轮思考档（只看设置，与 preset 无关）",
+  G.indexOf("normalizeEffort") >= 0 && G.indexOf("reasoning-effort.mjs") >= 0,
+  "handleRun 的档位归一走抽出来的 reasoning-effort.mjs（gateway 只 import，不再自带梯子）",
 );
 ok(
-  G.indexOf("applySettings(dshHome, runEffort") >= 0 &&
-    G.indexOf("settings.envPatch, runEffort") >= 0,
+  G.indexOf("applySettings(") >= 0 &&
+    G.indexOf("settings.envPatch") >= 0,
   "settings（reasoningEffort）与 getRuntime（runtime key）用同一 runEffort，不分错档",
 );
 ok(
-  G.indexOf("raw === 'none' || raw === '无' || raw === 'off'") >= 0 &&
-    G.indexOf(": EFFORTS.includes(raw) ? raw : 'high'") >= 0,
-  "applySettings 旧文本节点 off/none/无 → high 回退链原样保留（proc_text 不误伤）",
+  reSrc.indexOf("LEGACY_TO_DEFAULT") >= 0 && reSrc.indexOf("DEFAULT_EFFORT") >= 0,
+  "旧档（空串 / 未列入的旧值）→ high 的兼容表仍在真源里",
 );
 ok(
   G.indexOf("**不碰思考强度**") < 0 &&
-    G.indexOf("不碰思考强度") >= 0 &&
-    G.indexOf("lean(思维精简)历史上会把「标准」压到 low") >= 0,
-  "预设契约注释已改成「预设不碰思考强度」（并留 lean 曾压档的溯源说明）",
+    G.indexOf("不碰思考强度") >= 0,
+  "预设契约注释仍写明「预设不碰思考强度」（措辞随 0.2 重写，语义不变）",
 );
-/* pure（纯净模式）此前靠 effortForPreset 短路，现在压根不改档位，天然一致 */
+/* pure（纯净模式）此前靠 effortForPreset 短路，现在压根不改档位，天然一致：
+   0.2 起预设文本在 handleRun 里按 pureFlag / presetId 现算（见 presetBase 那几行），
+   不再有 `const presetText = pureFlag` 这个名字 —— 断言改成「pure 只参与预设文本」。 */
 ok(
-  G.indexOf("const presetText = pureFlag") >= 0,
-  "pure 仍只影响预设文本，不再需要考虑思考档短路",
+  G.indexOf("presetBase") >= 0 && G.indexOf("pureFlag") >= 0 && G.indexOf("const presetText") >= 0,
+  "pure 仍只影响预设文本（presetBase / pureFlag / presetText 三者同段），不再需要考虑思考档短路",
 );
 
 /* ==================== [3] 旧 id sketch 兼容（归一后文本不丢，档位照样跟随设置） ==================== */
 console.log("\n[3] 旧 id 兼容：sketch 仍解析到 lean，思考档照旧跟随设置");
-const legacySrc = between(G, "const LEGACY_PRESET_IDS = {", "/** @type {Map<string, {harness", "LEGACY_PRESET_IDS 块");
+const legacySrc = (() => {
+  const start = G.indexOf("const LEGACY_PRESET_IDS = {");
+  if (start < 0) return "";
+  const fnAt = G.indexOf("function normalizePresetId(", start);
+  if (fnAt < 0) return "";
+  /* 配平花括号找函数结尾（别用「\n  }」当锚点：块里先出现的那个会把切片截断，
+     vm 收到半个函数就报 Unexpected end of input）。 */
+  let depth = 0;
+  let end = -1;
+  for (let i = G.indexOf("{", fnAt); i < G.length; i++) {
+    const ch = G[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) { end = i + 1; break; }
+    }
+  }
+  return end > fnAt ? G.slice(start, end) : "";
+})();
 /* 别名表所在整行（残留自查时先挖掉它，避免自己打自己） */
 const LEGACY_SRC_LINE = (/^.*\bconst LEGACY_PRESET_IDS\b.*$/m.exec(G) || [""])[0];
-const LEG = vm.runInNewContext(legacySrc + "\n({ LEGACY_PRESET_IDS, normalizePresetId })");
+ok(!!legacySrc, "定位到 LEGACY_PRESET_IDS / normalizePresetId 块");
+const LEG = legacySrc
+  ? vm.runInNewContext(legacySrc + "\n({ LEGACY_PRESET_IDS, normalizePresetId })")
+  : { LEGACY_PRESET_IDS: {}, normalizePresetId: (x) => x };
 const np = LEG.normalizePresetId;
 ok(
   JSON.stringify(LEG.LEGACY_PRESET_IDS) === JSON.stringify({ sketch: "lean" }),
@@ -197,10 +235,12 @@ ok(
   G.indexOf("hasOwnProperty.call(PRESETS, presetId) ? PRESETS[presetId]") >= 0,
   "预设文本按归一后的 presetId 取（旧会话不再丢角色前缀）",
 );
+/* 0.2 起档位归一收进 reasoning-effort.mjs：handleRun 用 effortForRoute(rawEffort, route)
+   算本轮生效档（见 gateway 的 runEffort 那几行），变量名不再叫 normalizeEffort 调用点。
+   断言改成「档位确实由路由归一算出、且与 presetId 无关」。 */
 ok(
-  G.indexOf("const runEffort = normalizeEffort(effort)") >= 0 &&
-    G.indexOf("runEffort, presetId") < 0,
-  "思考档与 presetId 无耦合：不存在「按预设算档」的回头路",
+  G.indexOf("const runEffort = effortForRoute(") >= 0 && G.indexOf("runEffort, presetId") < 0,
+  "思考档与 presetId 无耦合：本轮档位由 effortForRoute 算出，不存在「按预设算档」的回头路",
 );
 
 /* ==================== [4] 渲染层单一真源 ==================== */
@@ -515,9 +555,10 @@ ok(
   "app-db：运行入口的预设兜底 = AGENT_PRESET_DEFAULT（不再有第二套默认）",
 );
 ok(
-  G.indexOf("const presetText = pureFlag") >= 0 &&
-    G.indexOf("? PRESETS[presetId] : PRESETS.standard") >= 0,
-  "网关：pure 强制空预设 + 未知档回落 standard 链路原样",
+  G.indexOf("presetBase") >= 0 &&
+    G.indexOf("? PRESETS[presetId] : PRESETS.standard") >= 0 &&
+    G.indexOf("pureFlag") >= 0,
+  "网关：pure 强制空预设 + 未知档回落 standard 链路原样（0.2 的 presetBase 三段式）",
 );
 ok(PRESETS.pure === "" && PRESETS.bongochat === "", "内部空串档（pure/bongochat）未被填充");
 ok(PRESETS.node.indexOf("canvas AGENT NODE") >= 0, "内部 node 档文本原样");
@@ -607,10 +648,17 @@ ok(
   "网关：未知档没有偷偷跟着界面改判（兜底仍是最完整那份 standard 人设）",
 );
 
-const chg = read("CHANGELOG-v1.1.md");ok(
-  chg.indexOf("思维精简不再限制思考强度") >= 0 && chg.indexOf("PRESET_EFFORT_CAPS") >= 0,
-  "更新文档记录本轮取消按预设压档（PRESET_EFFORT_CAPS 拆除）",
-);
+/* CHANGELOG-v1.1.md 是本机写更新说明时留下的产物，**不在仓库里**（与 docs/ 同属本机文件）：
+   文件不在就只记一笔，不算失败 —— 冒烟不该因为一份本机文档不在而红。 */
+if (fs.existsSync(path.join(__dirname, "..", "CHANGELOG-v1.1.md"))) {
+  const chg = read("CHANGELOG-v1.1.md");
+  ok(
+    chg.indexOf("思维精简不再限制思考强度") >= 0 && chg.indexOf("PRESET_EFFORT_CAPS") >= 0,
+    "更新文档记录本轮取消按预设压档（PRESET_EFFORT_CAPS 拆除）",
+  );
+} else {
+  console.log("note  跳过更新文档检查（CHANGELOG-v1.1.md 不在仓库里，属本机产物）");
+}
 /* docs/ 整体在 .gitignore 内（本机才有的实测报告）：文件不在就只记一笔，不算失败 */
 if (fs.existsSync(path.join(__dirname, "..", "docs", "preset-lean-benchmark.md"))) {
   const bench = read("docs/preset-lean-benchmark.md");

@@ -157,6 +157,18 @@
   border-color: var(--cyan)
 }
 
+/* 统一工作目录 / 项目文件夹等外层目录一律只读：虚线边框 + 次要色，
+   与助手侧 .assist-ws-line input[readonly] 同一视觉口径（看得懂「这格不能打」） */
+.wf-ws-box input[readonly] {
+  color: var(--muted);
+  cursor: default;
+  border-style: dashed;
+}
+
+.wf-ws-box input[readonly]:focus {
+  border-color: var(--bd2)
+}
+
 .fn-canvas {
   /* --grid-* 由 JS 按 snap 间距与相机 pan/zoom 同步，保证节点落点与点阵对齐 */
   --grid-size: 24px;
@@ -1955,6 +1967,26 @@ body.theme-light .n-chip.n-chip-lt {
 .exec-play svg { width: 22px; height: 22px; }
 .exec-play:hover { background: rgba(255, 255, 255, .1); }
 .exec-play:active { transform: scale(.97); }
+/* 已绑定文件：body 不显示图标，执行按钮独占整个 body（路径 / 结果收进按钮 tooltip） */
+.n-body.exec-bound { padding: 7px; gap: 3px; }
+.n-body.exec-bound .exec-play {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  border-radius: 6px;
+}
+.n-body.exec-bound .exec-play svg { width: 30px; height: 30px; }
+/* 未绑定：按钮置灰（引导绑定点下方「绑定…」，避免误点） */
+.exec-play.disabled {
+  cursor: default;
+  opacity: .45;
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+.exec-play.disabled:hover { background: transparent; }
+.exec-play.disabled:active { transform: none; }
 /* 预备态：绿色背景 + 金色高亮播放键（第 2 次点击 = 执行） */
 .exec-play.armed {
   background: linear-gradient(160deg, rgba(46, 160, 92, .85), rgba(36, 128, 74, .92));
@@ -5310,6 +5342,15 @@ body.theme-light .n-chip.n-chip-lt {
     inset 3px 0 0 rgba(255, 255, 255, .12),
     inset 4px 0 3px rgba(0, 0, 0, .12);
   background-position: calc(20px - var(--nw, 200px)) 0, calc(20px - var(--nw, 200px)) 0;
+}
+
+/* 那一侧没有端子（inputCount / outputCount = 0）→ 不画接线排的凹陷分割线：
+   接线排条位仍保留（背景与板身无缝连续、正文不左右漂），只是去掉那道「刻进面板」
+   的竖线 —— 没有端子可插时它就只是白多出来的一道线。这道刻线本身由 box-shadow
+   承担，所以只关阴影、不动 background / 尺寸，避免右侧那半的背景锚定错位。 */
+.wf-node.no-in-ports::before,
+.wf-node.no-out-ports::after {
+  box-shadow: none;
 }
 
 /* 展开的超级节点：板内是子画布，卡片接线排让位于子画布左右端子排 */

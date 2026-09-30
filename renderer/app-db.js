@@ -1567,26 +1567,27 @@ function traceCloseSay(tr) {
   const last = items && items.length ? items[items.length - 1] : null;
   if (last && last.k === "say" && last.open !== false) last.open = false;
 }
-/* ── 续跑起步前摘掉「上一失败轮」的思考段（本 bug 的直接修复）─────────────
+/* ── 续跑起步前「切开」思考段：上一段收口，新一轮的思考另起一段（一段都不删）──
    续跑轮（keepTrace）按续跑契约不 reset 轨迹：已经写出来的**正文**必须留在轨迹里，
    归档段才能还原「前半 + 续写后半」（见 traceSegmentsOf / dshMsgSegsViewable）。
-   但**思考段不是续写内容**，它是失败那一次尝试的过程记录：续跑轮沿用同一 runKey、
-   同一份轨迹，新思考会并进旧思考段（traceText('think') = 旧 + 新），于是界面上的
-   「思考」框一直挂着上一失败轮的旧思考 —— 用户看到的就是「残留旧的思考内容」，
-   而且它随消息落进 msg.reasoning / msg.segments 后，清空会话再开新一轮照样能翻出来。
-   所以续跑起步前把轨迹里的 think 段整段摘掉（正文 / 工具 / 错误段一字不动），
-   让新一轮的思考从干净的一段开始。判据 = opts.resumeSession（真·续跑起步）：
-   长任务纠错轮那类 keepTrace 不带 resumeSession，不在这里摘。 */
-function traceDropThink(runKey) {
+   思考段同理必须留：它是这一轮**已经发生过**的过程记录，随消息落进
+   msg.reasoning / msg.segments 存档（需求「一轮结束后不要自动隐藏或删除思考」）。
+   旧口径在续跑起步时把 think 段整段摘掉 —— 那是**错误移除**：用户已经看到的思考
+   会从时间线上消失，而且再也归档不回来（正文留着、思考没了的怪状态）。
+   真正的病根是「新思考并进旧段」：续跑轮沿用同一 runKey、同一份轨迹，
+   traceThinkOpenItem 会把新推理并进那条仍开放的旧思考段（traceText('think') = 旧 + 新），
+   界面上看起来就是「思考框挂着上一失败轮的旧思考」。所以这里只做**切开**：
+   把当前开放的思考段收口（open=false → 渲染成一块独立的折叠块），段下标复位，
+   下一段思考自会另起一块 —— 旧思考原样可回看，新思考也不再与它混成一段。
+   判据 = opts.resumeSession（真·续跑起步）：长任务纠错轮那类 keepTrace 不带
+   resumeSession，不在这里切。 */
+function traceSplitThink(runKey) {
   const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
   if (!tr || !Array.isArray(tr.items) || !tr.items.length) return tr || null;
-  tr.items = tr.items.filter((it) => !it || it.k !== "think");
-  /* 段下标 / 流记账一并复位：摘掉思考段后旧下标全失效（不复位会让下一段
-     思考并进一条已经不存在的段，或把收口判到错的那一段上）。 */
-  tr._thinkIdx = -1;
-  tr._toolSeq = Object.create(null);
-  tr._calls = Object.create(null);
-  /* 「正文仍在续写」标记按摘完之后的末段重算：末段仍是那条没收口的 say 就保留
+  /* 只收口、不复位工具记账：callId 去重表与逐流工具计数跨续跑轮继续有效
+     （复位会让续跑轮重复上报的同一次工具调用又落一段）。 */
+  traceCloseThink(tr);
+  /* 「正文仍在续写」标记按末段重算：末段仍是那条没收口的 say 就保留
      （续跑轮的正文接回「前半 + 续写后半」的同一条）；末段已被工具 / 错误 / 思考
      收过口（此时 open 已是 false）自然判 false，续跑轮的正文另起一段。 */
   const last = tr.items.length ? tr.items[tr.items.length - 1] : null;
@@ -1886,12 +1887,12 @@ function dshResumeCollision(msg) {
 /* 本轮配置指纹：原七项（workspace|model|provider|preset|effort|pure|maxTokens）
    + 网关 runtimeKey 的同源成分（见 dsh/gateway/gateway.mjs getRuntime →
    runtimeKey / provHash：apiKey secret、baseUrl、webSearchKey 前缀 ws:、persona
-   hp:、工具集 tl:、envPatch 服务商密钥表）的稳定哈希。缺失字段一律按空串计
+   hp:、工具集 tl:、envPatch 服务商密钥表、officialModels 官方可吃图模型清单）的稳定哈希。缺失字段一律按空串计
    （调用点只传它拿得到的值，如分节快照口径只传配置七项也合法）。
    指纹变了 = 这一次运行与那条会话不是同一套配置跑出来的，续跑会把别的配置的上下文
    灌进本轮，只能整轮重发。
    为什么必须带 runtimeKey 同源成分：网关的 runtime key 由上述全部成分拼成，任一
-   成分漂移（密钥 / 端点 / 联网搜索 Key / 人设 / 工具集 / 服务商密钥表）都会让网关
+   成分漂移（密钥 / 端点 / 联网搜索 Key / 人设 / 工具集 / 服务商密钥表 / 官方模型清单）都会让网关
    另起一台新 runtime；此时若宿主侧签名还判「一致」、点名续跑那条旧会话，即使
    session/resume 握手能把旧日志从盘上恢复为 live，恢复出来的也是**旧配置的上下文**，
    与本轮不符 —— 等价于「假装续上，实则换配置冷起」（老网关/老运行时无握手桥时则
@@ -1920,6 +1921,7 @@ function dshRunSigOf(p) {
       p.persona || "", /* provHash 的 hp:（hostPersona 哈希的原文输入） */
       p.tools || "", /* provHash 的 tl:（工具描述子 JSON，取原文） */
       p.envPatch || "", /* provHash 的 envPatch（服务商密钥表 JSON，取原文） */
+      p.officialModels || "", /* 官方可吃图模型清单 JSON（取原文；名单漂移 = 换 runtime） */
     ].join("|"),
   );
 }
@@ -2076,12 +2078,44 @@ function dshRunRetryable(msg) {
     )
   )
     return false;
+  /* 403「not eligible」= 这家服务商 / 这个套餐没买到这个模型。实测记法：阿里云百炼
+     Token Plan 域名对**所有**模型都回 403 {"type":"AccessDenied.Unpurchased",
+     "message":"Access to model denied. Please make sure you are eligible…"}。
+     等待 5 秒 / 60 秒再原样重发是同一个模型、同一把 Key、同一份套餐 —— 结果一模一样，
+     只会白等 5 分钟、让用户以为程序卡住。判据与 renderer/app-assist.js 的
+     dshAccessDeniedText 同源；真要修得靠换模型 / 换服务商 / 开通套餐，不是重发。 */
+  if (
+    /AccessDenied|Unpurchased|not eligible|not_eligible|ineligible|(^|[^0-9])403([^0-9]|$)/i.test(
+      s,
+    )
+  )
+    return false;
   return true;
 }
 
 /* 与 dshRunOnce 同一口径算出取消句柄键（会话 agent:<id> / 节点 node.id / 助手 assist） */
 function dshRunKeyOf(opts) {
   return String(opts.runKey || (opts.node && opts.node.id) || "default");
+}
+
+/* 本轮活动流（浏览器活动右边栏）的归属会话：**渲染层会话 id**（agentSessions 的 as…）。
+   网关按它给这一轮的浏览器动作 / 命令 / 文件摘要盖章（见 dsh/gateway 的 hostSessionTagOf），
+   面板据此只显示当前会话的活动、切会话即切换。三个来源按优先级：
+     ① opts.hostSessionId（调用方点名）；
+     ② runKey = "agent:<会话id>"（会话聊天 / 计划执行 / 长任务续跑都是这个形状）；
+     ③ 画布智能任务节点绑定的会话（node.agentSessionId）。
+   助手（runKey "assist"）与未绑定节点返回空串＝不带归属，那类条目不算进任何会话的账。 */
+function dshHostSessionIdOf(runKey, opts) {
+  const explicit = String((opts && opts.hostSessionId) || "").trim();
+  if (explicit) return explicit;
+  const key = String(runKey || "");
+  if (key.slice(0, 6) === "agent:") {
+    const sid = key.slice(6).trim();
+    /* 占位空会话（开发页首轮那种 \u0000 开头的假 id）不是真会话，不盖章 */
+    if (sid && sid.charCodeAt(0) !== 0) return sid;
+  }
+  const node = opts && opts.node;
+  return String((node && node.agentSessionId) || "").trim();
 }
 
 /* ── 终止戳：这一轮是不是被「判死」了（重发闸唯一的判据） ──
@@ -2217,6 +2251,125 @@ function dshRunImages(text) {
     return [];
   }
 }
+/* ── 会话 / 助手 / 节点这一轮被服务商拒了模型时，问用户要不要换一个模型重发 ──
+   「not eligible」= 这家服务商 / 这个套餐没买到这个模型（实测阿里云百炼 Token Plan 域名对
+   所有模型都回 403 AccessDenied.Unpurchased）。原样重发是同一模型、同一把 Key、同一份套餐，
+   结果一模一样 —— 所以既不白等 5×（见 dshRunRetryable），也不静默降级到别家（会话选好的
+   模型不能被程序悄悄换掉），而是弹窗请用户拍板：换 = 这一轮就用新模型重发并记住选择。
+   判据与 renderer/app-assist.js 的 dshAccessDeniedText 同源。 */
+function dshRunAccessDenied(msg) {
+  const s = String(msg || "");
+  if (!s.trim()) return false;
+  return /AccessDenied|Unpurchased|not eligible|not_eligible|ineligible|(^|[^0-9])403([^0-9]|$)/i.test(
+    s,
+  );
+}
+/* 本轮实际下发的服务商 / 模型：dshRunOnce 的解析口径（opts.provider 缺省 = DeepSeek
+   官方路由；模型没填时取该路由第一只）。弹窗与切换都必须按这个口径，否则用户看到的是
+   一只「其实没被使用」的模型名。 */
+function dshRunRouteOf(opts) {
+  const provider = String((opts && opts.provider) || "deepseek-official").trim();
+  let model = String((opts && opts.model) || "").trim();
+  if (!model) {
+    let models = [];
+    try {
+      models =
+        typeof agentModelsForRoute === "function"
+          ? agentModelsForRoute(provider) || []
+          : [];
+    } catch (_) {}
+    model = String(models[0] || "");
+  }
+  return { provider: provider || "deepseek-official", model: model };
+}
+/* 候选路由：本轮这条在前，其后其它可用路由（有 API Key 的才算可用）
+   → 默认选项 = 同家换模型，没有则换到下一条可用路由 */
+function dshRunRoutes(cur, extra) {
+  const out = [];
+  const push = (r) => {
+    const rr = String(r || "").trim();
+    if (!rr || out.indexOf(rr) >= 0) return;
+    let ok = null;
+    try {
+      ok =
+        typeof providerForAgentRoute === "function"
+          ? providerForAgentRoute(rr)
+          : null;
+    } catch (_) {}
+    if (ok && String(ok.apiKey || "").trim()) out.push(rr);
+  };
+  const c = String(cur || "").trim();
+  if (c) out.push(c);
+  push(extra);
+  try {
+    if (typeof agentRouteOptions === "function")
+      for (const r of agentRouteOptions()) push(r);
+  } catch (_) {}
+  try {
+    if (typeof preferredAgentProviderRoute === "function")
+      push(preferredAgentProviderRoute());
+  } catch (_) {}
+  try {
+    if (typeof defaultAgentProviderRoute === "function")
+      push(defaultAgentProviderRoute());
+  } catch (_) {}
+  return out;
+}
+/* 返回 {route, model}（用户同意换）或 null（不换 / 没有别的可选） */
+async function dshRunAskSwitchModel(opts, errText) {
+  if (typeof confirmDialog !== "function") return null;
+  const cur = dshRunRouteOf(opts);
+  const nameOf = (r) =>
+    typeof agentProviderNameNow === "function" ? agentProviderNameNow(r) : r;
+  const extra =
+    typeof agentSessionProviderRoute === "function"
+      ? agentSessionProviderRoute(
+          typeof agentSessionState === "function" ? agentSessionState() : null,
+        )
+      : "";
+  const routes = dshRunRoutes(cur.provider, extra);
+  const alts = [];
+  for (const r of routes) {
+    let models = [];
+    try {
+      models =
+        typeof agentModelsForRoute === "function"
+          ? agentModelsForRoute(r) || []
+          : [];
+    } catch (_) {}
+    for (const m of models) {
+      const mm = String(m || "").trim();
+      if (!mm) continue;
+      if (r === cur.provider && mm === cur.model) continue;
+      alts.push({ route: r, model: mm });
+    }
+  }
+  if (!alts.length) return null;
+  const picked = alts[0];
+  const lines = [
+    I18n.t(
+      "模型服务返回 403：该模型/套餐未开通（服务商原话：Access to model denied… not eligible）。",
+    ),
+    "",
+    I18n.t("当前：") + nameOf(cur.provider) + " · " + (cur.model || I18n.t("（未选择）")),
+  ];
+  if (String(errText || "").trim())
+    lines.push(I18n.t("原始报文：") + String(errText).slice(0, 200));
+  lines.push("");
+  lines.push(
+    I18n.t("换一个模型重发这一轮？将改用：") +
+      nameOf(picked.route) +
+      " · " +
+      picked.model,
+  );
+  const ok = await confirmDialog(lines.join("\n"), {
+    title: I18n.t("换模型"),
+    okText: I18n.t("换并重试"),
+    cancelText: I18n.t("不换"),
+  });
+  return ok ? picked : null;
+}
+
 function dshRunTask(input, opts) {
   opts = opts || {};
   const runKey = dshRunKeyOf(opts);
@@ -2275,13 +2428,19 @@ function dshRunTask(input, opts) {
         });
     } catch (_) {}
   };
-  /* resume = {sid, err}：沿用的会话 id + 刚失败的报错（写进续跑指令）；null = 整轮重发 */
-  const attempt = (resume) => {
+  /* resume = {sid, err}：沿用的会话 id + 刚失败的报错（写进续跑指令）；null = 整轮重发；
+     switchTo = {route, model}：这一轮被服务商拒了模型、用户同意换模型 → 换路由整轮重发 */
+  const attempt = (resume, switchTo) => {
     const sid = resume && resume.sid ? String(resume.sid) : "";
     /* 整轮重发从零累计（新会话会把全文重写一遍）；续跑轮沿用已累计的半截正文 */
     if (!sid) carried = "";
-    const nextOpts = sid
+    const nextOpts = switchTo
       ? Object.assign({}, baseOpts, {
+          provider: switchTo.route,
+          model: switchTo.model,
+        })
+      : sid
+        ? Object.assign({}, baseOpts, {
           resumeSession: sid,
           /* 同一个会话的 system 已经落在那份 session 里：再下发只会污染上下文
              （宿主人设一节因此为空；dshRunOnce 识别这一轮走 full 旁路并作废分节快照） */
@@ -2327,7 +2486,30 @@ function dshRunTask(input, opts) {
         if (!go) throw new Error(I18n.t("已手动终止"));
         return attempt(null);
       }
-      if (tries >= DSH_RETRY_MAX || !dshRunRetryable(msg)) throw err;
+      if (tries >= DSH_RETRY_MAX || !dshRunRetryable(msg)) {
+        /* 403「not eligible」不是「本轮又失败一次」，而是这一轮的模型 / 套餐本来就没开通：
+           用户最想要的是「给我换成能用的模型再来」，所以这里弹一次窗问一句，同意就换路由
+           整轮重发（不占 5 次重发预算、不静默降级，用户答不换就照原样报错）。 */
+        if (
+          typeof dshRunAccessDenied === "function" &&
+          dshRunAccessDenied(msg)
+        ) {
+          const sw =
+            typeof dshRunAskSwitchModel === "function"
+              ? await dshRunAskSwitchModel(baseOpts, msg)
+              : null;
+          if (dshStopStamped(runKey, stopBase))
+            throw new Error(I18n.t("已手动终止"));
+          if (sw) {
+            try {
+              toast(I18n.t("已改用：") + sw.route + " · " + sw.model, "ok");
+            } catch (_) {}
+            notifyRetry(baseOpts, msg, 0, 0, null);
+            return attempt(null, sw);
+          }
+        }
+        throw err;
+      }
       tries++;
       const delayMs = dshRetryDelayMs(tries); /* 首错 30s，第 2 次起 60s */
       const brief = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
@@ -2778,6 +2960,36 @@ function dshRunOnce(input, opts) {
           })),
         )
       : "";
+  /* 官方可吃图模型清单（只有 deepseek-official 路由下发，非官方路由一律不传 ->
+     老网关忽略未知字段即行为不变）：网关凭它知道「本轮这条官方路由到底有哪些模型
+     能吃图」，不必自己再猜服务商侧的模型清单。真源与 app-agent.js 的
+      visionModelsForProvider("deepseek-official") 同一判据（input 含 image = 吃图），
+     来源 = 该服务商实际配置 / 下发的官方目录 S.providerCatalog.deepseek；非吃图的
+     也照实带着并标 image:false，让网关看到完整官方清单。目录缺席（懒加载未完成）时
+     整条不下发 = 退回老路径。 */
+  const runOfficialModels = (() => {
+    if (provider !== "deepseek-official") return null;
+    const list =
+      S.providerCatalog && Array.isArray(S.providerCatalog.deepseek)
+        ? S.providerCatalog.deepseek
+        : [];
+    const out = [];
+    for (const m of list) {
+      if (!m || !m.id) continue;
+      out.push({
+        id: String(m.id),
+        name: String(m.name || m.id),
+        image:
+          typeof modelIsVision === "function"
+            ? !!modelIsVision(m)
+            : !!(Array.isArray(m.input) && m.input.includes("image")),
+      });
+    }
+    return out.length ? out : null;
+  })();
+  const runOfficialModelsJson = runOfficialModels
+    ? JSON.stringify(runOfficialModels)
+    : "";
   const runSig = dshRunSigOf({
     workspace,
     model: runModel,
@@ -2799,6 +3011,9 @@ function dshRunOnce(input, opts) {
     persona: runPersona,
     tools: runToolsJson,
     envPatch: runEnvPatch,
+    /* 官方可吃图模型清单也进签名（口径同 envPatch 的服务商密钥表）：清单漂移 =
+       网关换 runtime 冷起，此时握手恢复出来的只是旧配置的上下文，必须判整轮重发。 */
+    officialModels: runOfficialModelsJson,
   });
   /* 本轮下发的 systemPrompt 不是完整一节时（pure 轮整段置空；续跑轮的宿主人设已经落在
      那份 session 里，见 dshRunTask 的 systemPrompt:""），一律作废快照并走全量旁路 ——
@@ -2876,10 +3091,22 @@ function dshRunOnce(input, opts) {
        + 排序）后进 runtime key 的 hx: 指纹并注入 MTNODE_HIDE_TOOLS；空名单不下发
        （= 老网关同一条路径，可见集一字不变）。 */
     hideTools: hideToolsOn.length ? hideToolsOn : undefined,
+    /* 第四个整档标记：浏览器工具（browser_*，仅会话可用）。用户已确认的口径
+       「仅会话；纯净模式与画布节点不注册」：
+         · 画布智能节点（nodeLock）= 没人看着的自动运行 → 整只不注册；
+         · 用户声明「与画布无关」的会话 → 一并按不注册处理（那个开关的意图是省 token /
+           与工程无关，不是「让浏览器自动跑」）；
+         · 长周期任务图里未显式授权的环节 → 由长任务侧另打同一个标记。
+       网关把它注入 spawn env（MTNODE_NO_BROWSER）并写进 runtime key：可见集变了就
+       换一台运行时，与 lean / noCanvas 同一判据。老网关忽略未知字段 = 照旧注册。 */
+    noBrowser: (nodeLock || canvasFreeOn) && !pureOn,
     preset: runPreset,
     effort: runEffort,
     provider,
     mtnodeProviders: piProvs,
+    /* 官方可吃图模型清单（仅 deepseek-official 路由带，见 runOfficialModels）：
+       网关据它判「本轮这条官方路由有哪些模型能吃图」。纯追加 —— 老网关忽略该字段。 */
+    officialModels: runOfficialModels || undefined,
     /* 允许单次运行显式覆盖权限档（如开发节点「问询」强制 read-only 只读回答）；
        未指定时沿用全局预设 / 节点自身设定 */
     permissionPreset:
@@ -2893,6 +3120,13 @@ function dshRunOnce(input, opts) {
        运行时带着原上下文继续，而不是新铸一个空会话。网关判它在本机不可续跑时
        以 RESUME_UNAVAILABLE 报错收轮、绝不静默新铸，由 dshRunTask 退回整轮重发。 */
     resumeSession: String(opts.resumeSession || "").trim() || undefined,
+    /* 活动流（浏览器活动右边栏）的归属会话＝渲染层会话 id：网关拿它给这一轮的
+       浏览器动作 / 命令 / 文件摘要盖章，面板据此「跟随当前会话」过滤
+       （见 dsh/gateway 的 hostSessionTagOf 与 renderer/app-browser.js 的 BA.setSession）。
+       取值：调用方显式给的 opts.hostSessionId > runKey 里的会话（会话聊天 / 计划执行 /
+       长任务续跑都是 runKey = "agent:<会话id>"）> 节点绑定的会话（画布上的智能任务节点）。
+       都没有（助手 / 未绑定节点）＝不带，那类条目不算进任何会话的账上。 */
+    hostSessionId: dshHostSessionIdOf(runKey, opts),
   };
   /* 本轮配置指纹：与网关报回的 session id 一起登记（见 captureRunSession），
      重发闸据此判断「这条会话还是不是这一套配置跑出来的」；runSig 已在分节装配前
@@ -2930,11 +3164,11 @@ function dshRunOnce(input, opts) {
   /* 本轮轨迹开一盏：按步切段的运行轨迹与取消句柄同键，互不串台。
      续跑那一轮（keepTrace）例外：失败轮已经写出来的前半正文必须留在轨迹里，
      续写接在后面，归档段才能还原「前半 + 续写后半」这条完整时间线。
-     续跑起步（opts.resumeSession 非空）额外摘掉轨迹里的**思考**段：
-     思考不是续写内容，留着就会让「思考」框一路挂着上一失败轮的旧思考
-     （见 traceDropThink）。 */
+     续跑起步（opts.resumeSession 非空）额外把轨迹里的**思考**段切开（收口，不删）：
+     已经思考过的内容原样留在时间线上，新一轮的思考另起一段，不与上一段混成一块
+     （见 traceSplitThink —— 旧口径在这里整段摘掉，等于把会话里的思考内容删了）。 */
   if (!opts.keepTrace) traceReset(runKey);
-  else if (opts.resumeSession) traceDropThink(runKey);
+  else if (opts.resumeSession) traceSplitThink(runKey);
   /* 本次运行的唯一实例标识：同 runKey 可能被连续两轮复用（如「立即终止 + 立刻重发」），
      旧一轮的 finish 只能删自己的条目，绝不能误删新一轮的 —— 否则新一轮会被看门狗
      当成「已手动终止」、回复变成（已终止），两轮乱序。 */
@@ -3223,6 +3457,12 @@ function dshRunOnce(input, opts) {
           }
           if (msg.type === "question") {
             ixPush(msg.type, msg.data || {}, runKey, ixSrc);
+          }
+          /* 会话自己的浏览器：确认框（风险域名 / 危险动作）与求助卡（登录墙 / 待验证 /
+             需要补充信息 / 卡住）。两者走同一条 browser 帧，渲染器是下面同一张卡；
+             活动流条目（browser-act）由 app-browser.js 的全局订阅单独收，不在这里处理。 */
+          if (msg.type === "browser") {
+            ixPush("browser-help", msg.data || {}, runKey, ixSrc);
           }
           /* 运行时撤问(提问被中止 / 审批被取消):同步撤卡,别留幽灵卡片 */
           if (msg.type === "ix-drop") {
@@ -4011,6 +4251,184 @@ function ixMarkFirstSend(it) {
   it._ixSent = true;
   return true;
 }
+/* ── 询问窗答案落进会话消息（本 bug 的直接修复）─────────────────────────
+   此前一次询问的回答只经 window.api.dshInteract 作为「工具结果」回到运行时：
+   同一轮内模型确实看得到，但它**从不进会话消息**（agentSessions[].messages），
+   而渲染层每一轮的用户输入都是拿 st.messages 拼出来的（app-assist.js
+   agentSessionSend 的 hist 段）。于是任务一旦中断 / 停止 / 运行时被回收，
+   再次起轮时那份上下文里就没有用户答过什么 —— 用户看到的就是「重新任务后
+   丢失我的全部回答」，模型也只能把已经确认过的问题再问一遍。
+   现在把「问题 → 所选答案」作为一条普通用户消息写进会话：它随 persistAgentSession
+   落盘，也自然参与之后的每一轮 hist 拼装（题 id 去重取最新见 ixAnswerBubbleText 的
+   answer 记录与会话历史段的构造）。 */
+function ixAnswerSessionOf(it) {
+  const runKey = String((it && it.runKey) || "");
+  const sid =
+    runKey.slice(0, 6) === "agent:"
+      ? runKey.slice(6).trim()
+      : typeof activeAgentId === "function"
+        ? String(activeAgentId() || "")
+        : "";
+  const st = sid && typeof agentSessionById === "function" ? agentSessionById(sid) : null;
+  return st && st.id ? st : null;
+}
+/* 卡片上每道题的「题面」与用户最终给出的答案。
+   answers 与 questions 按 id 对齐；手填（custom）优先，与 ixAnswerQuestion 回传口径同源 ——
+   界面气泡、落库正文、之后补进上下文的文字三处必须字字一致，否则用户对不上账。 */
+function ixAnswerPairsOf(it, answers) {
+  const qs = (it && it.data && it.data.questions) || [];
+  const byId = {};
+  for (const a of answers || []) if (a && a.id != null) byId[String(a.id)] = a;
+  const out = [];
+  const seen = {};
+  for (const q of qs) {
+    const id = String((q && q.id) || "");
+    if (id) seen[id] = 1;
+    const a = byId[id] || null;
+    const sel = a && Array.isArray(a.selected) ? a.selected.filter((x) => String(x || "").trim()) : [];
+    out.push({ id: id, q: String((q && q.question) || "").trim(), a: sel.join(" / ") });
+  }
+  /* 卡片里没列出来的题（老网关不带 questions 数组）：按回传顺序补上，答案一个都不丢 */
+  for (const a of answers || []) {
+    const id = String((a && a.id) || "");
+    if (id && seen[id]) continue;
+    const sel = a && Array.isArray(a.selected) ? a.selected.filter((x) => String(x || "").trim()) : [];
+    out.push({ id: id, q: "", a: sel.join(" / ") });
+  }
+  return out;
+}
+function ixAnswerBubbleText(pairs) {
+  const lines = ["【我对上面问题的回答】"];
+  for (const p of pairs || []) {
+    lines.push("· " + (p.q || p.id || "") + " → " + (p.a || I18n.t("（未作答）")));
+  }
+  return lines.join("\n");
+}
+/* 提交成功即落库并上屏；失败 / stale / 未提交一律不落（见 ixAnswerQuestion 的调用点）。 */
+function ixCommitAnswerToSession(it, answers) {
+  const st = ixAnswerSessionOf(it);
+  if (!st) return;
+  const pairs = ixAnswerPairsOf(it, answers);
+  if (!pairs.length) return;
+  const um = {
+    role: "user",
+    content: ixAnswerBubbleText(pairs),
+    at: Date.now(),
+    _src: "ix-answer",
+    _ixQids: pairs.map((p) => p.id).filter(Boolean),
+  };
+  st.messages = Array.isArray(st.messages) ? st.messages : [];
+  st.messages.push(um);
+  if (st.messages.length > 100) st.messages.splice(0, st.messages.length - 100);
+  st.updatedAt = Date.now();
+  try {
+    if (typeof persistAgentSession === "function")
+      Promise.resolve(persistAgentSession()).catch(() => {});
+  } catch (_) {}
+  /* 正在跑的那一轮占着界面：只落库，等本轮收尾自会重绘（此时插进去会打断输出） */
+  try {
+    if (typeof sessionIsRunning === "function" && sessionIsRunning(st)) return;
+    if (typeof agentViewIs === "function" && agentViewIs(st)) {
+      if (typeof renderAgentSession === "function") renderAgentSession();
+    } else if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+  } catch (_) {}
+}
+/* 会话历史段（每轮随输入重发的那一段，见 app-assist.js agentSessionSend 的 hist）：
+   过去只用「m.content」，于是询问窗答案这类没有正文形态的记录进不去。这里统一构造：
+     · 普通用户 / 助手消息按出现顺序保留，同文去重（用户手打重复也照实去重）；
+     · 回答气泡按题 id 去重取最新（同一题重答只留最后一次）；
+     · 整段按字符数封顶，超出从最早的记录开始丢。
+   返回的每一条带 role，调用方自己决定前缀怎么写。 */
+function agentHistoryEntries(st, opts) {
+  opts = opts || {};
+  const src = Array.isArray(st && st.messages) ? st.messages.slice() : [];
+  const skipLast = opts.skipLast !== false;
+  if (skipLast && src.length) src.pop();
+  const seenText = Object.create(null);
+  /* 同一题重答只留最新一次：先算出每个题 id 最后出现在哪条索引上（正文相同与否都算），
+     正文级去重管不到「同一题的两个不同答案气泡」——那正是用户改口后必须只留最新答案的场景。 */
+  const lastQidAt = Object.create(null);
+  for (let i = 0; i < src.length; i++) {
+    const m = src[i];
+    if (!m || m.role !== "user" || String(m._src || "") !== "ix-answer") continue;
+    for (const qid of m._ixQids || []) {
+      const k = String(qid || "");
+      if (k) lastQidAt[k] = i;
+    }
+  }
+  const rows = [];
+  for (let i = 0; i < src.length; i++) {
+    const m = src[i];
+    if (!m || !m.role || typeof m.content !== "string") continue;
+    const txt = m.content.trim();
+    if (!txt) continue;
+    /* 任务书 kick 不进历史段：那份契约（含本次开发需求）每轮随系统提示注入，
+       抄进用户输入只会白烧 token 并盖掉真正要保留的问答记录。 */
+    if (String(m._src || "") === "dev-node") continue;
+    if (m.role === "user" && String(m._src || "") === "ix-answer") {
+      /* 这张卡答过的题里，只要有一题的最新答案不在这条上 → 这条是旧版，整条丢掉 */
+      let stale = false;
+      for (const qid of m._ixQids || []) {
+        const k = String(qid || "");
+        if (k && lastQidAt[k] !== i) {
+          stale = true;
+          break;
+        }
+      }
+      if (stale) continue;
+    }
+    const key = m.role + "\u0000" + txt;
+    if (seenText[key]) continue;
+    seenText[key] = 1;
+    rows.push({ role: m.role, text: txt });
+  }
+  let out = rows;
+  const cap = Math.max(0, Number(opts.maxChars) || 4000);
+  const size = (list) => list.reduce((n, r) => n + r.text.length + 8, 0);
+  while (out.length > 1 && size(out) > cap) out = out.slice(1);
+  return out;
+}
+/* 「用户已确认过的东西」= 询问窗回答气泡 + 用户自己发的消息（不含 AI 回复）。
+   续跑兜底专用（见 app-assist.js agentSessionSend 的续跑轮补段）：只带用户侧确认过的
+   结论，不带助手正文，避免与那份 session 里的历史重复一大段。
+   返回顺序 = 会话语义顺序（气泡与用户消息按 at 排）。 */
+function agentConfirmedHistoryEntries(st, opts) {
+  opts = opts || {};
+  const src = Array.isArray(st && st.messages) ? st.messages.slice() : [];
+  const rows = [];
+  for (const m of src) {
+    if (!m || typeof m.content !== "string") continue;
+    const txt = m.content.trim();
+    if (!txt) continue;
+    const isAnswer = m.role === "user" && String(m._src || "") === "ix-answer";
+    if (m.role !== "user") continue;
+    /* 任务书 kick 不进这一段：那份契约每轮随系统提示注入，重复写只是白烧 token */
+    if (String(m._src || "") === "dev-node") continue;
+    rows.push({ at: Number(m.at) || 0, text: txt, answer: isAnswer, qids: m._ixQids || [] });
+  }
+  /* 回答气泡按题 id 去重取最新；用户消息按原文去重（与 agentHistoryEntries 同源口径） */
+  const latestByQid = Object.create(null);
+  rows.forEach((r, i) => {
+    if (r.answer) for (const q of r.qids) latestByQid[String(q || "")] = i;
+  });
+  const seen = Object.create(null);
+  const kept = [];
+  rows.forEach((r, i) => {
+    if (r.answer && r.qids.length) {
+      const stale = r.qids.every((q) => latestByQid[String(q || "")] !== i);
+      if (stale) return;
+    }
+    if (seen[r.text]) return;
+    seen[r.text] = 1;
+    kept.push(r);
+  });
+  kept.sort((a, b) => (a.at || 0) - (b.at || 0));
+  let out = kept;
+  const cap = Math.max(0, Number(opts.maxChars) || 4000);
+  const size = (list) => list.reduce((n, r) => n + r.text.length + 8, 0);
+  while (out.length > 1 && size(out) > cap) out = out.slice(1);
+  return out;
+}
 function ixAnswerQuestion(it) {
   if (!ixMarkFirstSend(it)) return;
   const card = document.getElementById("ixCard_" + it.data.id);
@@ -4048,6 +4466,9 @@ function ixAnswerQuestion(it) {
       if (res && res.stale)
         return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
       if (res && res.ok === false) throw new Error(res.error);
+      /* 提交成功 = 用户真的答了这一轮：先落进会话消息（进上下文 + 界面留痕），再撤卡。
+         失败 / stale 的路径不走这里 —— 那不是答案，不该被当成「用户已确认」写进上下文。 */
+      ixCommitAnswerToSession(it, answers);
       ixDrop(it.data.id);
     })
     .catch((e) =>
@@ -4057,6 +4478,51 @@ function ixAnswerQuestion(it) {
       ),
     );
 }
+/* 浏览器帧的回执（确认框 / 求助卡共用一个出口）：
+   outcome = allowed-once（放行这一次）| released（用户已处理 / 已交还）| rejected（拒绝 / 撤卡）。
+   answerText 只在求助卡里带（用户选的选项或写的话）。 */
+function ixAnswerBrowser(it, outcome, extra) {
+  if (!ixMarkFirstSend(it)) return;
+  const d = it.data || {};
+  window.api
+    .dshInteract(
+      Object.assign(
+        { kind: "browser", id: d.id, outcome, sessionId: d.sessionId || "" },
+        extra || {},
+      ),
+    )
+    .then((res) => {
+      if (res && res.stale)
+        return ixFinalizeCard(it, I18n.t("这张卡已失效（发起轮已结束）"));
+      if (res && res.ok === false) throw new Error(res.error);
+      ixDrop(d.id);
+      try {
+        if (window.BrowserAct) void window.BrowserAct.reload();
+      } catch (_) {}
+    })
+    .catch((e) =>
+      ixFinalizeCard(it, I18n.t("提交失败：") + ((e && e.message) || String(e))),
+    );
+}
+
+/* 帮助卡里显示的本机截图：优先走已有的内嵌图片转 URL 入口（file:// 直读会被
+   webSecurity 拦掉）；拿不到就退回 file:// 让浏览器自己在允许范围内试一次。 */
+function inlineImgSrcOf(p) {
+  const s = String(p || "");
+  if (!s) return "";
+  try {
+    if (typeof absImgSrc === "function") {
+      const u = absImgSrc(s);
+      if (u) return u;
+    }
+  } catch (_) {}
+  try {
+    return encodeURI("file:///" + s.replace(/\\/g, "/"));
+  } catch (_) {
+    return "";
+  }
+}
+
 function ixAnswerApproval(it, outcome) {
   if (!ixMarkFirstSend(it)) return;
   window.api
@@ -4192,7 +4658,118 @@ function renderIxPanel() {
       s.onclick = () => ixSrcJump(it.src);
       card.appendChild(s);
     }
-    if (it.kind === "approval") {
+    if (it.kind === "browser-help") {
+      const d = it.data || {};
+      const isHelp = d.kind === "help";
+      card.classList.add("ix-browser-help");
+      /* 提醒：这张卡可能在用户没看这一条会话时到达 —— 弹一枚提示让他知道
+         「有张浏览器卡在等他」，点提示直接跳到会话右边栏「浏览器活动」（不抢焦点、
+         不自动切会话：用户可能正在别的会话里打字）。 */
+      try {
+        if (typeof toast === "function")
+          toast(
+            isHelp
+              ? I18n.t("会话在浏览器上需要你帮忙（点「浏览器活动」右边栏查看）")
+              : I18n.t("浏览器操作需要你确认（点「浏览器活动」右边栏查看）"),
+            "warn",
+          );
+      } catch (_) {}
+      const t1 = document.createElement("div");
+      t1.className = "ix-title";
+      t1.textContent =
+        (isHelp ? "🌐 " : "⚠ ") +
+        String(d.title || (isHelp ? I18n.t("浏览器需要你帮忙") : I18n.t("浏览器操作需要你确认")));
+      card.appendChild(t1);
+      if (d.url) {
+        const u = document.createElement("div");
+        u.className = "ix-detail";
+        u.textContent = String(d.url);
+        card.appendChild(u);
+      }
+      const m = document.createElement("div");
+      m.className = "ix-help-msg";
+      m.textContent = String(d.message || "");
+      card.appendChild(m);
+      if (d.note) {
+        const n = document.createElement("div");
+        n.className = "ix-detail";
+        n.textContent = String(d.note);
+        card.appendChild(n);
+      }
+      if (d.screenshotPath) {
+        const wrap = document.createElement("div");
+        wrap.className = "ix-shot";
+        const img = document.createElement("img");
+        img.src = inlineImgSrcOf(d.screenshotPath);
+        img.title = I18n.t("点一下看大图");
+        img.onclick = () => {
+          if (typeof openImgLb === "function") openImgLb(d.screenshotPath);
+        };
+        wrap.appendChild(img);
+        card.appendChild(wrap);
+      }
+      /* 选项类求助（kind:choice）：点了就带着这个答案回执，不必再打字 */
+      const opts = Array.isArray(d.options) ? d.options.filter(Boolean) : [];
+      if (isHelp && d.helpKind === "choice" && opts.length) {
+        const ol = document.createElement("div");
+        ol.className = "ix-opts";
+        for (const o of opts) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "mini";
+          b.textContent = String(o);
+          b.onclick = () => ixAnswerBrowser(it, "released", { answerText: String(o) });
+          ol.appendChild(b);
+        }
+        card.appendChild(ol);
+      }
+      const row = document.createElement("div");
+      row.className = "ix-btns";
+      const tk = document.createElement("button");
+      const takenOver = (() => {
+        try {
+          return !!(window.BrowserAct && window.BrowserAct.takeover);
+        } catch (_) {
+          return false;
+        }
+      })();
+      if (isHelp && (d.helpKind === "login" || d.takeover)) {
+        /* 登录 / 验证码一类：按钮就是「接管」——点下去用户亲自操作浏览器，
+           Agent 的动作被网关拒绝（不是排队），用户交还后再继续。 */
+        tk.className = "mini primary";
+        tk.textContent = takenOver ? I18n.t("我已处理完，交还控制权") : I18n.t("接管浏览器（我来操作）");
+        tk.onclick = async () => {
+          if (!ixMarkFirstSend(it)) return;
+          try {
+            if (window.BrowserAct) await window.BrowserAct.browser("takeover", { on: !takenOver, sessionId: it.data.sessionId || "" });
+          } catch (_) {}
+          ixAnswerBrowser(it, "released", { answerText: takenOver ? I18n.t("用户已交还控制权") : I18n.t("用户已接管浏览器") });
+        };
+      }
+      if (!isHelp) {
+        const allow = document.createElement("button");
+        allow.className = "mini primary";
+        allow.textContent = I18n.t("允许这一次");
+        allow.onclick = () => ixAnswerBrowser(it, "allowed-once");
+        row.appendChild(allow);
+      }
+      if (tk.textContent) row.appendChild(tk);
+      if (isHelp) {
+        const done = document.createElement("button");
+        done.className = "mini";
+        done.textContent = I18n.t("我已处理，继续");
+        done.onclick = () => ixAnswerBrowser(it, "released");
+        row.appendChild(done);
+      }
+      const deny = document.createElement("button");
+      deny.className = "mini danger";
+      deny.textContent = isHelp ? I18n.t("撤销这张卡") : I18n.t("拒绝");
+      deny.onclick = () => ixAnswerBrowser(it, isHelp ? "rejected" : "rejected");
+      row.appendChild(deny);
+      row.appendChild(ixLaterButton(it));
+      row.appendChild(ixAbortButton(it));
+      card.appendChild(row);
+    } else if (it.kind === "approval") {
       const d = it.data;
       /* 沙箱升权（沙箱拒绝了这次访问）单独成卡：标题点明是「沙箱放行」，正文给出
          目标模式与模型写的理由，多一个「本会话后续都放行」出口 —— 需求原话就是
@@ -4823,18 +5400,115 @@ function fillWorkspaceBrowseIcon(btn) {
   btn.title = I18n.t("设置项目目的地文件夹");
 }
 
-/* 弹出系统文件夹窗口，回填输入框（设置项目目的地） */
+/* 弹出系统文件夹窗口，回填输入框（设置项目目的地）。
+   点击与双击都触发：双击在只读框上等于「直接选目录」（见 workspaceReadOnlyGuard）。 */
 function workspaceBrowseButton(inp, onPicked) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "mini btn-sq ws-browse";
   fillWorkspaceBrowseIcon(b);
   b.addEventListener("mousedown", (ev) => ev.stopPropagation());
-  b.onclick = (ev) => {
+  const run = (ev) => {
     ev.stopPropagation();
     pickFolder(inp, onPicked);
   };
+  b.onclick = run;
+  b.ondblclick = run;
   return b;
+}
+
+/* ── 外层工作目录输入一律只读 ──────────────────────────────────────────────
+   为什么：工作目录是「画布项目目录 / 助手工作区 / 功能块项目文件夹」这类**外层**
+   设置，落盘、执行节点、相对路径解析全按它走。手打一个字错（少个斜杠、目录名里
+   混了空格）不会当场报错，而是等到很深的写盘步骤才失败，用户只看到一句「写入失败」。
+   所以这些输入框不接受键入：目录一律经系统文件夹选择器（窗口里可以直接新建）。
+   手里已有路径的场景留一条路：双击 = 直接弹选择器，Ctrl+V = 把剪贴板里的路径落进框
+   （守卫直接赋值并派发 change，不经过原生插入）。 */
+
+/* 只读守卫：拦住一切键盘输入（含拖入文本 / 输入法提交 → beforeinput），
+   Esc / Enter 等无字符按键放行；点框、双击、粘贴各给一句该走哪里的提示。
+   建出来即只读（inp.readOnly = true），且**没有恢复可编辑的入口** —— 外层工作目录
+   不给打错字的机会：没有 unlock()，lockKeys(false) 也只是放开「粘贴 / 双击」两条路。
+   guard.lockKeys(true) 占死这两条路（如助手「仅当前画布」只能跟随画布口径）。
+   guard.browse(fn) 登记「双击 = 直接选目录」；guard.hint(text) 换提示语。 */
+function workspaceReadOnlyGuard(inp) {
+  let browseFn = null;
+  let keysLocked = false;
+  const guard = {
+    lockKeys: () => {},
+    hint: () => {},
+    browse: (fn) => {
+      browseFn = typeof fn === "function" ? fn : null;
+    },
+  };
+  if (!inp) return guard;
+  const baseTitle = I18n.t("工作目录只读：点右侧「选择文件夹」按钮选目录");
+  let hintText = "";
+  let hintShown = "";
+  const hintTitle = () => (hintText ? baseTitle + "（" + hintText + "）" : baseTitle);
+  const showHint = () => {
+    const t = hintTitle();
+    inp.title = t;
+    /* 双击 / 粘贴的提示只在两种行为上各说一次，不反复刷屏 */
+    if (hintShown !== t && typeof toast === "function") {
+      toast(t, "warn");
+      hintShown = t;
+    }
+  };
+  guard.hint = (text) => {
+    hintText = String(text || "");
+    inp.title = hintTitle();
+  };
+  guard.lockKeys = (flag) => {
+    keysLocked = !!flag;
+    /* 只加锁不放开：只读是常驻态，locked(false) 也不得变回可编辑 */
+    if (keysLocked) inp.readOnly = true;
+  };
+  const stopsKey = (ev) => {
+    if (!inp.readOnly && !keysLocked) return false;
+    const k = String((ev && ev.key) || "");
+    /* 无字符按键（Esc / 回车 / 方向键 / Tab / 修饰键）不拦：不产生错路径 */
+    return k.length === 1 || k === "Backspace" || k === "Delete" || k === "Spacebar";
+  };
+  inp.addEventListener("keydown", (ev) => {
+    if (!stopsKey(ev)) return;
+    ev.preventDefault();
+    showHint();
+  });
+  /* 输入法逐字提交绕开 keydown：在 beforeinput 拦（没有该事件的老宿主退回 keydown 口径） */
+  inp.addEventListener("beforeinput", (ev) => {
+    if (!inp.readOnly && !keysLocked) return;
+    const t = String((ev && ev.inputType) || "");
+    if (t.indexOf("delete") === 0) return;
+    ev.preventDefault();
+    showHint();
+  });
+  /* 拖进来的文本同样落不成路径 */
+  inp.addEventListener("drop", (ev) => {
+    if (!inp.readOnly && !keysLocked) return;
+    ev.preventDefault();
+    showHint();
+  });
+  /* 双击：直接弹系统文件夹选择器（省一次「找按钮」）；被 lockKeys 占住时只提示 */
+  inp.addEventListener("dblclick", () => {
+    if (keysLocked) return showHint();
+    if (browseFn) browseFn();
+    else showHint();
+  });
+  /* Ctrl+V：临时解锁一次，粘贴的值落进框后立刻回只读并派发 change
+     （校验 / 落盘仍走各输入原有的 change 逻辑，不在守卫里另写一套） */
+  inp.addEventListener("paste", (ev) => {
+    ev.preventDefault();
+    /* lockKeys = 连粘贴也不给（助手「仅当前画布」只能跟随画布口径） */
+    if (keysLocked) return showHint();
+    const text = String((ev.clipboardData && ev.clipboardData.getData("text")) || "").trim();
+    if (!text) return showHint();
+    inp.value = text;
+    inp.dispatchEvent(new Event("change"));
+  });
+  inp.readOnly = true;
+  inp.title = baseTitle;
+  return guard;
 }
 
 

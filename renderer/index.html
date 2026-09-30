@@ -8,9 +8,10 @@
      #appsDevFrame）src 就是这个主进程登记的标准 / 安全协议（apps-store.js 的 PREVIEW_SCHEME / registerPreviewProtocol）。
      少放行它 = Chromium 在发出 frame 请求之前就拦掉这次导航（协议层根本收不到请求），
      iframe 停在 about:blank、中栏只剩白底 —— 表现就是「预览未显示默认界面」。
-     img-src 里的 mt-agent.com：应用中心的图标（http://mt-agent.com/mtnode/apps/catalog.json 里条目声明的 icon）
-     是云端图，只能靠它显示（renderer/app-apps.js 的 appsIconUrl；加载失败一律回落成首字母占位块）；
-     目录正文仍由主进程 apps-store.js 拉取并缓存，渲染层不直连网络。
+     img-src 里的 mt-agent.com：应用中心的图标是云端图，只能靠它显示（renderer/app-apps.js 的 appsIconUrl；
+     加载失败一律回落成首字母占位块）。图标 URL 由主进程 apps-store.js 按目录**来源**算好：
+     静态目录 = http://mt-agent.com/mtnode/apps/icons/<id>.<ext>，云端接口兜底 = …/mtnode/store-api/api/apps/<id>/icon，
+     两者都在放行的 mt-agent.com（含子域）之下；目录正文仍由主进程拉取并缓存，渲染层不直连网络。
      'unsafe-eval' 暂保留：函数节点的用户 JS 已改到主进程独立线程执行（fn-runtime.js，见 renderer/js-exec.js），渲染层不再 new Function —— 本指令只作兼容余量，不再承载函数节点能力 -->
 <title>MTNode AI编排器</title>
 <link rel="stylesheet" href="style.css">
@@ -22,6 +23,12 @@
 <!-- KaTeX 公式排版样式（vendor/katex/，含 fonts/）：字形位置全靠这份 CSS 定位，
      与 vendor/katex/katex.min.js 成对出现；本文件与 pdf-print.html 必须同步挂载。 -->
 <link rel="stylesheet" href="vendor/katex/katex.min.css">
+<!-- 上架应用浮层（renderer/app-publish.js 的 window.openAppPublish）的样式：
+     窗框尺寸走 .overlay-box.app-publish-box（近全屏 / 最小宽 50vw / 右下角拖拽手柄），
+     其余是「上架」窗自己的字段 / 截图 / 版本 / 配额 / 结果块版式；配色一律用 base.css
+     的主题变量（亮色主题自动跟随）。与 ai-facts.css 同一写法：本文件独立成一份、用 <link>
+     跟在 style.css 之后（晚于 style.css 生效，同优先级时以本文件为准）。 -->
+<link rel="stylesheet" href="css/app-publish.css">
 </head>
 <body>
 
@@ -237,8 +244,11 @@
         <div class="agent-side-search">
           <input id="agentSideFilter" type="text" data-i18n-placeholder="搜索会话…" placeholder="搜索会话…">
         </div>
+        <!-- 会话列表独占左栏：原先那两枚「会话 / 浏览器活动」页签已去掉 ——
+             浏览器活动搬到会话主内容右边栏（见本文件 .agent-pane 末尾的 #baPanel），
+             不被调用或启动时整条不显示，左栏与旧界面一字不差。 -->
         <div class="agent-side-list" id="agentSideList"></div>
-        <div class="agent-side-resize" id="agentSideResize" data-i18n-title="拖拽调整会话列表宽度" title="拖拽调整会话列表宽度"></div>
+        <div class="agent-side-resize" id="agentSideResize" data-i18n-title="拖动分界线调整会话列表宽度（整条边界都可拖，双击复位）" title="拖动分界线调整会话列表宽度（整条边界都可拖，双击复位）"></div>
       </aside>
       <div class="agent-main">
         <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
@@ -264,10 +274,29 @@
               <!-- 会话不再显示「本画布 / 工具库可调用工具」清单 chip：清单每轮重收集，
                    展示它要额外打 IPC（toolsList 读盘）且对用户没有决策价值；
                    工具照常随 run 下发给模型 func call（见 app-db.js → agentUserToolsSnapshot）。 -->
-              <button type="button" class="agent-chip" id="agentPureTrigger" data-i18n-title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token" title="纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token"><span data-i18n="纯净模式">纯净模式</span></button>
-              <!-- 与画布无关（Gate B）：会话级声明，走 app-db.js 的 MTNODE_NO_CANVAS 整档闸 ——
-                   读图 / 改图 / 应用操作三件套整个不注册（每步省约 26K 字符），纯省 token 开关。 -->
-              <button type="button" class="agent-chip" id="agentCanvasFreeTrigger" data-i18n-title="与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它" title="与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它"><span data-i18n="与画布无关">与画布无关</span></button>
+              <!-- 「模式」chip：会话级开关收纳口（与「工具」chip 同款下拉）。
+                   本轮把原来平铺的两枚 chip（纯净模式 / 自动续跑）收进这一只菜单，
+                   输入区只留一枚入口，状态仍逐项回显（chip 摘要 + 菜单行 开/关）。
+                   纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；
+                   自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（默认开）。 -->
+              <!-- 本轮需求：chip 键面**只有「模式」两个字**，不再往里写「纯净模式 · 自动续跑」
+                   摘要（那会把这一枚顶宽，把右边几枚挤出界）。开着的开关只由 chip 变色
+                   （.on）+ tooltip 逐项「（开）/（关）」表达，见 app-assist.js paintAgentModeChip；
+                   下面这枚 span 只作为兼容留位（恒 hidden），不再承载摘要。 -->
+              <button type="button" class="agent-chip agent-chip-mode" id="agentModeTrigger" data-i18n-title="模式" title="模式"><span data-i18n="模式">模式</span><span class="agent-tool-val" id="agentModeTriggerVal" hidden></span></button>
+              <!-- 浏览器活动入口：这一枚只切「会话主内容右边栏」的显隐（renderer/app-browser.js
+                   的 BA.toggle）；面板关着 = 不占宽度、不显示，界面与未接入时一字不差。 -->
+              <button type="button" class="agent-chip" id="agentBrowserChip" data-i18n-title="浏览器活动（会话右边栏）：看它开了哪些网页、跑了哪些命令；跟随当前会话，这条会话没有浏览器时不显示" title="浏览器活动（会话右边栏）：看它开了哪些网页、跑了哪些命令；跟随当前会话，这条会话没有浏览器时不显示"><span data-i18n="浏览器活动">浏览器活动</span></button>
+              <!-- 会话不再有「与画布无关」chip（本次开发需求）：这一档改为**自动判定** ——
+                   发送时由 app-assist.js 的 agentCanvasTurnRelated 读这轮用户消息，判定本轮
+                   与画布无关就自动走 app-db.js 的 MTNODE_NO_CANVAS 整档闸（读图 / 改图 /
+                   应用操作三件套整个不注册，每步省约 26K 字符）；判定拿不准一律按「有关」
+                   处理（宁可多发一次画布工具，也不让模型撞上不存在的工具）。 -->
+              <!-- 长时自治：自动续跑开关已收进上面的「模式」菜单（renderer/app-longrun.js
+                   负责状态与回执的 paintModeChip —— 菜单行与 chip 摘要都由它刷新）。
+                   默认开：一轮正常跑完且目标未达成、还有下一步时自动接着跑；全部完成 /
+                   无事可做 / 你按终止 / 命中安全上限就停。不自动中断、不弹卡 —— 阀值只累
+                   计给你看（用户已确认「自己盯」）。 -->
             </div>
             <div class="agent-composer-card">
               <textarea id="agentInput" class="chat-input" rows="2" data-i18n-placeholder="选择一个工作区开始" placeholder="选择一个工作区开始"></textarea>
@@ -287,9 +316,68 @@
             <div class="agent-menu" id="agentModelMenu" hidden></div>
             <div class="agent-menu" id="agentCmdMenu" hidden></div>
             <div class="agent-menu agent-tools-menu" id="agentToolsMenu" hidden></div>
+            <!-- 「模式」菜单（与「工具」同款 .agent-tools-menu 外观）：只放会话级 toggle，
+                 每行 = 标签 + 说明 + 开/关（构件见 app-assist.js buildAgentModeMenu）。 -->
+            <div class="agent-menu agent-tools-menu" id="agentModeMenu" hidden></div>
           </div>
         </div>
       </div>
+      <!-- 浏览器活动 · 会话主内容的右边栏（第三栏：左栏会话列表 / 中栏对话 / 本栏活动流）。
+           面板自带完整 DOM（原来挂在左栏的同一份搬过来），启动即建但 hidden —— 没被
+           「浏览器活动」调用或会话没启动浏览器时，整条不显示、不占宽度，#agentPane 仍是
+           原来那套两栏网格，旧界面一字不差。活动流只进面板 / 落库，不进模型上下文。 -->
+      <aside class="ba-col" id="baPanel" hidden aria-label="浏览器活动">
+        <div class="ba-resize" id="baResize" data-i18n-title="拖动分界线调整活动栏宽度（整条边界都可拖）" title="拖动分界线调整活动栏宽度（整条边界都可拖）"></div>
+        <div class="ba-head">
+          <b data-i18n="浏览器活动">浏览器活动</b>
+          <button type="button" id="baClose" class="mini btn-sq" data-i18n-title="收起浏览器活动栏" title="收起浏览器活动栏">✕</button>
+        </div>
+        <div class="ba-bar">
+          <button type="button" class="mini" id="baOpen" data-i18n="打开浏览器">打开浏览器</button>
+          <button type="button" class="mini" id="baStop" data-i18n="停止">停止</button>
+          <button type="button" class="mini" id="baTakeover" data-i18n="接管">接管</button>
+          <button type="button" class="mini" id="baPolicy" data-i18n="名单">名单</button>
+          <button type="button" class="mini btn-sq" id="baRefresh" data-i18n-title="刷新" title="刷新">↻</button>
+        </div>
+        <div class="ba-status" id="baStatus"></div>
+        <!-- 实况区：浏览器默认 dock 在这里（帧来自网关 screencast，只走内存不进模型上下文）。
+             「独立窗口」= 真实窗口恢复可见、「收回」= 再 dock 回本栏；
+             浏览器没启动时这枚按钮自己 hidden（形态切换只有真有一只在跑的浏览器才有意义），
+             整条实况区也随面板 hidden / 未启动不显示。 -->
+        <div class="ba-live" id="baLive">
+          <div class="ba-live-head">
+            <span data-i18n="实况">实况</span>
+            <span class="ba-live-mode" id="baLiveMode"></span>
+            <button type="button" class="mini" id="baLiveModeBtn" hidden data-i18n="独立窗口" data-i18n-title="把这个浏览器变成独立窗口；再点一次收回右栏" title="把这个浏览器变成独立窗口；再点一次收回右栏">独立窗口</button>
+            <button type="button" class="mini" id="baLivePause" data-i18n="暂停观察" data-i18n-title="暂停画面更新（重新打开即恢复）" title="暂停画面更新（重新打开即恢复）">暂停观察</button>
+          </div>
+          <div class="ba-live-stage" id="baLiveStage">
+            <canvas id="baLiveCanvas" width="640" height="400" tabindex="0" aria-label="浏览器实况画面"></canvas>
+            <div class="ba-live-mask" id="baLiveMask"><span data-i18n="等待浏览器画面…">等待浏览器画面…</span></div>
+          </div>
+          <div class="ba-live-note" id="baLiveNote"></div>
+        </div>
+        <div class="ba-filter"><input id="baFilter" type="text" data-i18n-placeholder="筛活动…" placeholder="筛活动…"></div>
+        <div class="ba-list" id="baList"></div>
+        <div class="ba-foot">
+          <span id="baCount"></span>
+          <!-- 本次需求：一键「只看浏览器实况」—— 收起下方活动流，**同时停止追踪**
+               （事件照旧收，但不再重画、也不落活动库，见 app-browser.js 的 BA.onEvent），
+               腾出的高度全给上面的实况画面（.ba-col.ba-list-off .ba-live 铺满）。
+               按钮自己留在原处，点回来即恢复列表与追踪；状态落 localStorage（mtnode.baListOn）。
+               不挂 data-i18n* —— 文案随状态变，静态词条只兜住 JS 来不及画的第一帧。 -->
+          <button type="button" class="mini" id="baListOn">只看浏览器</button>
+          <!-- 默认只看**当前会话**的活动（app-browser.js 的 BA.reload 按会话查库）：
+               勾上才查全库 / 显示别的会话的条目。 -->
+          <label class="ba-all" data-i18n-title="含其它会话的活动（勾上＝连其它会话的也一起看；不勾＝只看当前会话）" title="含其它会话的活动（勾上＝连其它会话的也一起看；不勾＝只看当前会话）"><input type="checkbox" id="baAll"> <span data-i18n="含其它会话">含其它会话</span></label>
+          <!-- 「跟随最新」开关（app-browser.js 的 BA.setFollow 全权接管键面与 tooltip）：
+               开着时每次重画都把列表停在最新一条；关掉后重画只保持当前位置，往上翻旧记录
+               不被拽回底部。手动往上翻会自动停跟随，滚回底部自动恢复。
+               不挂 data-i18n* —— 文案随状态变，静态词条只兜住 JS 来不及画的第一帧。 -->
+          <button type="button" class="mini" id="baFollow">停止跟随</button>
+          <button type="button" class="mini danger" id="baClear" data-i18n="清空">清空</button>
+        </div>
+      </aside>
     </div>
     <div class="team-pane" id="teamPane" style="display:none">
       <aside class="team-side">
@@ -333,7 +421,7 @@
     </div>
   </section>
   <aside class="assist-pane" id="assistPane" aria-label="全局 AI 助手">
-    <div class="assist-resize" id="assistResize" data-i18n-title="拖动边框中部调整助手栏宽度" title="拖动边框中部调整助手栏宽度"></div>
+    <div class="assist-resize" id="assistResize" data-i18n-title="拖动分界线调整助手栏宽度（整条边界都可拖）" title="拖动分界线调整助手栏宽度（整条边界都可拖）"></div>
     <div class="assist-head">
       <b data-i18n="全局助手">全局助手</b>
       <span class="assist-sub" data-i18n="可见全局状态 · 危险操作需确认">可见全局状态 · 危险操作需确认</span>
@@ -368,9 +456,9 @@
     <div class="assist-ws-line">
       <span class="assist-ws-label" data-i18n="工作范围">工作范围</span>
       <select id="assistScopeSel" class="assist-scope-sel" data-i18n-title="限制助手可访问的画布范围" title="限制助手可访问的画布范围"></select>
-      <!-- 与画布无关（Gate B 助手侧）：开启后本轮不注册画布三件套，也不取整张画布快照
-           （app_state 只留轻量应用摘要）。开关状态高亮，口径与会话侧同名 chip 一致。 -->
-      <button type="button" id="assistCanvasFreeBtn" class="mini assist-canvasfree-btn" data-i18n="与画布无关" data-i18n-title="与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它" title="与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它">与画布无关</button>
+      <!-- 助手侧「与画布无关」也改为自动判定（本次开发需求，与会话侧同一个判据）：
+           发消息时由 app-assist.js 读这条消息，判定与画布无关就自动不注册画布三件套、
+           也不注入整张画布快照；判不准按「有关」处理。按钮已移除。 -->
     </div>
     <div class="assist-ws-line">
       <span class="assist-ws-label" data-i18n="工作目录">工作目录</span>
@@ -533,8 +621,8 @@
 <script src="app-apps.js"></script>
 <!-- 用户自建应用的新建流程 + 开发页归属（renderer/app-app-flow.js）：库页 / 开发页的
      「＋ 新建应用」（appsCreateDialog → 主进程 apps:create 建目录与 app.json → 同名画布走既有
-     workflow:save → 画布上建开发节点 → 打开并居中）、开发页按应用过滤会话（appSessionsOf）、
-     「打开画布」（openAppCanvas）。紧跟应用中心之后加载：入口按钮由 app-apps.js 按
+     workflow:save → 画布上建开发节点 → **留在应用界面**：不收浮层、不返回画布，开发页切到
+     这条新应用）、开发页按应用过滤会话（appSessionsOf）、「打开画布」（openAppCanvas）。紧跟应用中心之后加载：入口按钮由 app-apps.js 按
      typeof 探测着挂；它内部对 openOverlay / addNode / loadWorkflow / agentSessions 也一律在
      调用期取，与这些模块的加载顺序无关。 -->
 <script src="app-app-flow.js"></script>
@@ -550,6 +638,13 @@
      中心与应用归属之后加载即可 —— 它依赖的 renderAgentSession / createDevSessionForNode /
      persistWf / agentSessionSend 全在调用期取。 -->
 <script src="app-apps-dev.js"></script>
+<!-- 上架应用（renderer/app-publish.js + css/app-publish.css）：开发页顶部菜单条「启动」右边的
+     「上架」按钮 → window.openAppPublish(appId) 开一只 #overlay 浮层（persistent）：
+     AI 起草元信息 → 用户核对编辑 → 截图（拍应用窗口 / 本机选图）→ 勾选声明 → 打包上传到
+     store-saas（POST /api/apps 或 POST /api/apps/<id>/versions，契约见 docs/apps-market.md §七）。
+     紧跟应用开发页之后加载 = 同属应用生态分层；它依赖的 appsMiniBtn / appsRunBtnEl / openOverlay /
+     apiCallTextStream / S / I18n 全在调用期取，桥走 window.api.apps* 与 storeRequest。 -->
+<script src="app-publish.js"></script>
 <!-- 插件报错 → 自动修复（自包含：renderer/app-repair.js + css/repair.css）：全局监听主进程
      推来的插件错误（不等插件对话框打开），用 openOverlay 弹错误报告窗，点「🤖 自动修复」
      新建一条左侧栏可见会话（工作区 = 该插件 INSTALL_DIR、开「与画布无关」档）把日志与
@@ -565,6 +660,11 @@
 <script src="app-assets.js"></script>
 <script src="app-settings.js"></script>
 <script src="app-assist.js"></script>
+<!-- 会话长时自治：自动续跑开关 + 累计状态小字 + 自检判停（renderer/app-longrun.js）。
+     必须排在 app-assist.js 之后：它在调用期取 agentSessionState / agentSessionSend /
+     toast / I18n，并 wrap renderAgentSession 刷新输入区那枚 chip；轮末钩子由
+     app-assist.js 主动调 window.LongRun.afterRound（同一套「谁拥有轮末谁调用」口径）。 -->
+<script src="app-longrun.js"></script>
 <!-- 专家团图标目录（16×16 空心线条 SVG，唯一真源）；早于 app-team.js，归一化要用它 -->
 <script src="app-team-icons.js"></script>
 <!-- 专家团（团队）数据模型与配置存储；早于 app-boot.js，启动时由 boot 做缺省合并 -->
@@ -639,6 +739,12 @@
 <!-- 统一账户客户端模块（自包含；IPC 契约见文件头注释）——放在 boot 之前，
      顶栏 #btnAccount 已在上方 DOM 里，init 直接接管点击 -->
 <script src="app-auth.js"></script>
+<!-- MTNode 中转服务（账号托管，自包含新模块，挂 window.MtRelay）：登录成功 / 充值成功 /
+     打开提供商卡（快照 >24h）/ 手动「刷新」时，经主进程带账号 token 拉 GET /api/relay/me，
+     把服务端下发的地址与模型清单合进 config.providers（source=mtnode-relay）与
+     config.modelKinds；只读卡渲染在 app-settings.js。必须排在 app-auth.js 之后
+     （要用登录态）、app-wallet.js 之前（充值成功要立刻回刷）。 -->
+<script src="app-relay.js"></script>
 <!-- 账户充值（钱包，自包含新模块，挂 window.MtWallet）：账号菜单里的「余额」行与「充值」入口
      （app-auth.js 的 paintMenu 按判空调用，模块缺席则整块不显示），以及充值对话框
      （档位 / 自定义金额 → 服务端下单 → 支付宝付款码 → 轮询入账 → 刷新余额）。
@@ -675,5 +781,20 @@
      它包装 renderSidebar，并在调用期取 openFilePeek（app-fileview.js）与
      createNodesFromDroppedFiles / confirmDialog / toast（app.js）。 -->
 <script src="app-sidebar-files.js"></script>
+<!-- 会话主内容右边栏「浏览器活动」（默认不显示）+ 会话自己的浏览器控制面（打开/停止/接管/域名名单）+
+     活动流落库；自包含（renderer/app-browser.js + css/browser.css）。
+     调用期取 app-db.js 的 agentSessions / toast / I18n，故排在最后。 -->
+<script src="app-browser.js"></script>
+<!-- 会话右栏「运行轨迹」视图（dsh 桌面版口径：View 标签栏 + 轨迹列表 + 工具调用可展开详情）
+     + 轨迹 ↔ 对话双向定位；自包含（renderer/app-trajectory.js + css/dsh-tokens.css 的
+     .dsh-trace-* / .dsh-view-*）。只读渲染 app-agent.js 已有的轨迹段，不新增会话接口；
+     显隐受设置 · 开发者工具（S.config.dsh.developerTools，默认开）约束。
+     排在 app-browser.js 之后：借它的第三栏显隐口径（.agent-pane.ba-open）与入口按钮。 -->
+<script src="app-trajectory.js"></script>
+<!-- CDP 面板：把这台浏览器**自带**的 DevTools 前端（同源直连本机 CDP）内嵌进会话右栏
+     （renderer/app-devtools.js + css/dsh-tokens.css 的 .dsh-cdp-*）。入口是浏览器活动栏
+     工具条上的「DevTools」按钮，受设置 · 开发者工具约束；走既有浏览器桥（action:'devtools'），
+     不新增接口、不落库、不进模型上下文。排在 app-browser.js 之后：借它的 BA.browser 通道。 -->
+<script src="app-devtools.js"></script>
 </body>
 </html>

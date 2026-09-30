@@ -1,0 +1,333 @@
+/* ── dsh 会话令牌（dsh-tokens.css）──────────────────────────────────────────────
+   会话（.assist-pane）与助手（.agent-*）两个窗格共用的语义令牌层。
+
+   为什么要单独一层：这两个窗格历史上直接写 hex / rgba，暗色好看、亮色靠亮色主题分片
+   一条条补，规则一多就漏。这里把「会话与助手的视觉词汇」抽成语义令牌，值一律引用
+   base.css 已定义的主题槽位（--bg / --panel / --bd / --ink / --muted / --cyan /
+   --orange / --green / --red / --yellow / --code / --mono）。因此：
+     · 暗色（默认）= base.css 的 :root 槽位；
+     · 亮色 = 亮色主题块重定义同名槽位，本文件**一行都不用改**。
+   结构口径参考 dsh 桌面版（View 标签栏 / 轨迹列表 / 工具调用可展开详情）与 MTNode
+   现有实现同源：轨迹段模型仍由 renderer/app-db.js 的 runTrace 提供，这里只给皮。
+
+   放置顺序：紧跟 css/dsh.css（style.css 的 @import 表），排在 assist.css 之前 ——
+   令牌先就位，两个窗格的样式再取用；亮色主题分片在其后，槽位重定义照样生效。 */
+
+:root {
+  /* ── 层次（背景三层 + 边框两档）────────────────────────────────────────── */
+  --dsh-pane-bg: var(--bg2);
+  --dsh-pane-head: var(--panel);
+  --dsh-card-bg: var(--panel);
+  --dsh-card-bg-2: var(--panel2);
+  --dsh-bd: var(--bd);
+  --dsh-bd-strong: var(--bd2);
+
+  /* ── 文本 ─────────────────────────────────────────────────────────────── */
+  --dsh-ink: var(--ink);
+  --dsh-ink-dim: var(--muted);
+  --dsh-ink-faint: color-mix(in srgb, var(--muted) 65%, transparent);
+
+  /* ── 语义色（轨迹段 / 工具卡 / 状态点）──────────────────────────────────── */
+  --dsh-accent: var(--cyan);
+  --dsh-accent-soft: color-mix(in srgb, var(--cyan) 14%, transparent);
+  --dsh-say: var(--ink);
+  --dsh-think: var(--muted);
+  --dsh-think-bg: color-mix(in srgb, var(--muted) 10%, transparent);
+  --dsh-tool: var(--orange);
+  --dsh-tool-bg: color-mix(in srgb, var(--orange) 12%, transparent);
+  --dsh-ok: var(--green);
+  --dsh-warn: var(--yellow);
+  --dsh-err: var(--red);
+  --dsh-err-bg: color-mix(in srgb, var(--red) 12%, transparent);
+
+  /* ── 形状与节奏（圆角 / 间距 / 行高，四档各一）─────────────────────────── */
+  --dsh-r-sm: 4px;
+  --dsh-r-md: 6px;
+  --dsh-r-lg: 10px;
+  --dsh-gap-xs: 4px;
+  --dsh-gap-sm: 8px;
+  --dsh-gap-md: 12px;
+  --dsh-gap-lg: 18px;
+  --dsh-line: 1.62;
+  --dsh-mono: var(--mono);
+
+  /* ── View 标签栏 / 轨迹列表（dsh 桌面版口径）──────────────────────────── */
+  --dsh-tabs-h: 30px;
+  --dsh-tab-ink: var(--muted);
+  --dsh-tab-ink-on: var(--ink);
+  --dsh-tab-underline: var(--cyan);
+  --dsh-trace-row-h: 26px;
+  --dsh-trace-rail: color-mix(in srgb, var(--bd2) 70%, transparent);
+}
+
+/* View 标签栏（会话右栏顶部：轨迹 / 浏览器活动 / …）——通用皮，谁挂谁用。 */
+.dsh-view-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: var(--dsh-tabs-h);
+  padding: 0 var(--dsh-gap-sm);
+  border-bottom: 1px solid var(--dsh-bd);
+  background: var(--dsh-pane-head);
+}
+
+.dsh-view-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  background: none;
+  color: var(--dsh-tab-ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dsh-view-tab:hover {
+  color: var(--dsh-tab-ink-on);
+}
+
+.dsh-view-tab.on {
+  color: var(--dsh-tab-ink-on);
+}
+
+/* 选中态只用一条下划线，不抢注意力（dsh 桌面版同款）：容器不加背景块。 */
+.dsh-view-tab.on::after {
+  content: "";
+  position: absolute;
+  inset: auto 8px -1px 8px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--dsh-tab-underline);
+}
+
+.dsh-view-tab .dsh-view-badge {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--dsh-tool-bg);
+  color: var(--dsh-tool);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* 轨迹列表：一行一步（think / say / tool / err），左侧一条竖轨串起来。 */
+.dsh-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--dsh-gap-sm) var(--dsh-gap-sm) var(--dsh-gap-md);
+  overflow-y: auto;
+}
+
+.dsh-trace-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dsh-gap-sm);
+  min-height: var(--dsh-trace-row-h);
+  padding: 4px 6px 4px 18px;
+  border-radius: var(--dsh-r-md);
+  color: var(--dsh-ink);
+  font-size: 12px;
+  line-height: var(--dsh-line);
+  cursor: pointer;
+}
+
+.dsh-trace-row:hover {
+  background: var(--dsh-card-bg-2);
+}
+
+.dsh-trace-row.on {
+  background: var(--dsh-accent-soft);
+}
+
+/* 竖轨与节点圆点：未完成的步骤是空心点，完成的是实心（状态色语义）。 */
+.dsh-trace-row::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 12px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--dsh-trace-rail);
+  background: var(--dsh-pane-bg);
+}
+
+.dsh-trace-row + .dsh-trace-row::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: -6px;
+  width: 1px;
+  height: 18px;
+  background: var(--dsh-trace-rail);
+}
+
+.dsh-trace-row.t-think::before { border-color: var(--dsh-think); }
+.dsh-trace-row.t-say::before { border-color: var(--dsh-accent); background: var(--dsh-accent); }
+.dsh-trace-row.t-tool::before { border-color: var(--dsh-tool); background: var(--dsh-tool); }
+.dsh-trace-row.t-err::before { border-color: var(--dsh-err); background: var(--dsh-err); }
+
+.dsh-trace-kind {
+  flex: 0 0 auto;
+  min-width: 46px;
+  color: var(--dsh-ink-dim);
+  font-size: 11px;
+}
+
+.dsh-trace-row.t-tool .dsh-trace-kind { color: var(--dsh-tool); }
+.dsh-trace-row.t-err .dsh-trace-kind { color: var(--dsh-err); }
+
+.dsh-trace-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 工具调用详情：可展开（dsh 桌面版同款），收起时只留一行标题，展开后是等宽明细。 */
+.dsh-trace-detail {
+  margin-top: var(--dsh-gap-xs);
+}
+
+.dsh-trace-detail > summary {
+  cursor: pointer;
+  color: var(--dsh-tool);
+  font-size: 11px;
+  list-style: none;
+}
+
+.dsh-trace-detail > summary::-webkit-details-marker { display: none; }
+
+.dsh-trace-detail > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform .12s ease;
+}
+
+.dsh-trace-detail[open] > summary::before { content: "▾ "; }
+
+.dsh-trace-detail pre {
+  margin-top: var(--dsh-gap-xs);
+  padding: var(--dsh-gap-sm);
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--dsh-bd);
+  border-radius: var(--dsh-r-sm);
+  background: var(--code);
+  color: var(--dsh-ink);
+  font-family: var(--dsh-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.dsh-trace-detail.err pre {
+  border-color: var(--dsh-err);
+  background: var(--dsh-err-bg);
+}
+
+/* 底部状态条（步数 / 耗时 / 令牌）：灰字小号，只在有数据时出现。 */
+.dsh-trace-foot {
+  display: flex;
+  gap: var(--dsh-gap-md);
+  padding: 6px var(--dsh-gap-md);
+  border-top: 1px solid var(--dsh-bd);
+  color: var(--dsh-ink-dim);
+  font-size: 11px;
+}
+
+.dsh-trace-empty {
+  padding: var(--dsh-gap-lg) var(--dsh-gap-md);
+  color: var(--dsh-ink-dim);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ── 轨迹栏（会话右栏 · 第三栏）────────────────────────────────────────────
+   grid 只有三列：本栏用绝对定位压在同一列（浏览器活动栏）上，与它互斥显示。
+   显示 = 该栏内出现「轨迹」视图；隐藏（更常见）= 旧界面一字不差。 */
+.dsh-trace-col {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--ba-w, 340px);
+  display: flex;
+  flex-direction: column;
+  background: var(--dsh-pane-bg);
+  border-left: 1px solid var(--dsh-bd);
+  z-index: 3;
+}
+
+.dsh-trace-col[hidden] {
+  display: none;
+}
+
+.dsh-trace-col .dsh-trace-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 高亮定位（轨迹 ↔ 对话双向跳转）：闪一下，不改变布局。 */
+@keyframes dsh-flash {
+  0% { background: var(--dsh-accent-soft); }
+  100% { background: transparent; }
+}
+
+.dsh-flash {
+  animation: dsh-flash .9s ease-out 1;
+}
+
+/* ── CDP 面板（renderer/app-devtools.js）────────────────────────────────────
+   内嵌的是这台浏览器自带的 DevTools 前端（同源直连本机 CDP）。它占满右栏那一格，
+   与浏览器活动列表互斥（由 app-devtools.js 切换列表显隐）。 */
+.dsh-cdp {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  background: var(--dsh-pane-bg);
+}
+
+.dsh-cdp[hidden] {
+  display: none;
+}
+
+.dsh-cdp-head {
+  display: flex;
+  align-items: center;
+  gap: var(--dsh-gap-sm);
+  height: var(--dsh-tabs-h);
+  padding: 0 var(--dsh-gap-sm);
+  border-bottom: 1px solid var(--dsh-bd);
+  background: var(--dsh-pane-head);
+  color: var(--dsh-ink);
+  font-size: 12px;
+}
+
+.dsh-cdp-head b {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+
+.dsh-cdp-note {
+  padding: 4px var(--dsh-gap-sm);
+  color: var(--dsh-ink-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.dsh-cdp-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: var(--dsh-card-bg);
+}

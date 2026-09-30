@@ -1,0 +1,58 @@
+/* 风格 03 · 暖读 —— 纸白底 + 暖棕墨 + 大字号衬线。
+   它拒绝的是「深色工具页」那套默认：这是一个放在浏览器里读五分钟也不累的界面，
+   底色是纸（不是米黄渐变），强调色是唯一的松绿，其余靠字号与行距说话。
+   对比度按浅底重算：正文 13:1、次要文字 7.2:1、脚注 5.5:1。 */
+:root {
+  --bg: #faf7f1;
+  --shell: #f4eee3;
+  --ink: #241f19;
+  --ink2: #5a5145;
+  --muted: #625a4c; /* 脚注：压在 #faf7f1 上 ≈ 6.0:1（脚注小字，浅底上要比深底更狠一点） */
+  --accent: #2f6b4a;
+  --accent-dim: #79a48d;
+  --accent-soft: rgba(47, 107, 74, 0.08);
+  --line: #e2dacb;
+  --line2: #cdc2ad;
+  --code-bg: rgba(36, 31, 25, 0.06);
+  --code-block: #f2ebde;
+  --hover: rgba(36, 31, 25, 0.05);
+  --sel: rgba(47, 107, 74, 0.18);
+  --sel-ink: #16201a;
+  --radius: 3px;
+  --radius-sm: 4px;
+  --pill: 999px;
+  --page-w: 940px;
+  --page-pt: 68px;
+  --h1-size: 41px;
+  --h1-weight: 600;
+  --h1-track: -0.012em;
+  --h1-w: 26ch;
+  --font-display: Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC",
+    "STSong", "SimSun", serif;
+  --step-radius: 50%;
+  --step-size: 32px;
+  --step-fs: 14px;
+  --step-weight: 600;
+  --step-font: var(--font-display);
+  --step-border: var(--line2);
+  --step-bg: transparent;
+  --step-ink: var(--accent);
+}
+body { font-size: 15.5px; line-height: 1.75; }
+.page > h1 { font-family: var(--font-display); font-weight: 600; }
+.page > p { color: var(--ink2); max-width: 54ch; }
+.page ol.steps > li:first-child strong:first-child { color: var(--accent); }
+/* 竖线换成「纸上的铅笔痕」：更细、更淡，收在首尾两步之间 */
+.page ol.steps::before { background: var(--line2); opacity: 0.7; }
+.page blockquote {
+  border-top-color: var(--line);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 14.5px;
+}
+.page h2,
+.page h3 { font-family: var(--font-display); }
+/* 浅底上的脚注背景要跟底色一致，否则 sticky 一条会露出色差 */
+.foot { background: var(--bg); }
+.foot svg { color: var(--accent-dim); }
+.chip { border-radius: 999px; }

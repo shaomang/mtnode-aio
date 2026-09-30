@@ -79,9 +79,12 @@ const { registerSensenovaIpc, shutdownSensenovaUiOnly } = require("./sensenova/m
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
-const { registerRollbackIpc } = require("./rollback-store.js");
+const { registerRollbackIpc, gc: rollbackGc } = require("./rollback-store.js");
 const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
+/* 存储占用与清理（设置 · 存储占用与清理）：统计各类冗余占用 + 按类清理，判据是
+   「文件还被不被 MTNode 用着」；回滚对象库那一类复用 rollback-store 的 gc（见 storage-clean.js） */
+const { registerStorageIpc } = require("./storage-clean.js");
 /* 应用宿主（用户自建应用）：根目录 / 云端目录 / 安装·更新·卸载 / 导出 zip / 变更探测 /
    独立窗口（preload-app.js 的 window.appHost），见 apps-store.js */
 const { registerAppsIpc, shutdownApps, setQuitHandler, mirrorAppCanvas } = require("./apps-store.js");
@@ -90,8 +93,13 @@ const { registerLongtaskIpc } = require("./longtask-store.js");
 /* AI 事实库（每张画布一份的极简条例库）：固定文件 <画布文件夹>/团队事实库/AI/ai-facts.json
    的主进程读写 + 落盘守卫，并承接旧长期记忆的一次性迁移（见 ai-facts-store.js） */
 const { registerAiFactsIpc } = require("./ai-facts-store.js");
+/* 「活动流」留痕库（浏览器动作 + shell 命令 + 文件读写摘要；只落个人数据目录，
+   不进模型上下文）。见 activity-store.js 顶部口径。 */
+const activityStore = require("./activity-store.js");
 /* 本机微信 PC 版检测 / 启动：纯主进程、零新依赖，不做注入与本地数据读取 */
 const wechatPc = require("./wechat-pc.js");
+/* 剪贴板里「被复制的图片文件」列表解析（CF_HDROP / FileNameW 的纯函数口径，见该文件顶部） */
+const clipImages = require("./clipboard-images.js");
 let dshAdapter = null;
 function dshConfig() {
   /* 只为取 cfg.dsh 下 6 个标量，原本却把整份 config.json（实测几十 MB，91% 是
@@ -1366,6 +1374,11 @@ ipcMain.handle("net:open-debug", (e, o = {}) => {
    走的就是这一档：把用户给的文件按原样收下，节点上看到的就是原图的真实像素尺寸（单张 4MB 上限同样生效）。 */
 const ASSET_IMAGE_MAX_DIM = 1280;
 const ASSET_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
+/* native 档（原样保存，不缩小不重编码）的硬上限：剪贴板截图 / 复制的图片文件按用户口径
+   原样收下，不再受 4MB 资产口径约束，但仍要一条防呆线 —— 一张 100MB+ 的图不该把内存与
+   画布资产目录撑爆（渲染层另有一条 32MB 的「先提醒再确认」口径，见 app.js 的
+   CLIP_IMAGE_ASK_BYTES：提醒过线，硬上限才拒绝）。 */
+const ASSET_IMAGE_NATIVE_MAX_BYTES = 64 * 1024 * 1024;
 /* 画布包导入沿用同一长边口径（原名保留，调用点不散落） */
 const REF_IMAGE_MAX_DIM = ASSET_IMAGE_MAX_DIM;
 /* 发往 API 的参考图（vision / 图生图 edits）同样上限 1080p */
@@ -1404,17 +1417,22 @@ function shrinkImageBuffer(raw, ext, maxDim) {
   };
 }
 
-/* 单张资产超限的错误正文：带实际大小与口径，渲染层可直接提示用户（不吞成「写入失败」）。 */
-function assetTooLargeError(bytes, shrunk) {
+/* 单张资产超限的错误正文：带实际大小与口径，渲染层可直接提示用户（不吞成「写入失败」）。
+   capBytes 缺省 = 4MB 资产口径；native 档传 ASSET_IMAGE_NATIVE_MAX_BYTES（正文里的上限跟着走）。 */
+function assetTooLargeError(bytes, shrunk, capBytes) {
   const mb = (bytes / (1024 * 1024)).toFixed(1);
+  const cap = Number(capBytes) > 0 ? Number(capBytes) : ASSET_IMAGE_MAX_BYTES;
+  const capMb = Math.max(1, Math.round(cap / (1024 * 1024)));
   return (
     I18n.t("图片过大") +
     "：" +
     mb +
     "MB（" +
     bytes +
-    " 字节），超过单张 4MB 上限" +
-    (shrunk ? "（按长边 " + ASSET_IMAGE_MAX_DIM + "px 压缩后仍超限）" : "（原样复制档同样受该上限约束）") +
+    " 字节），超过单张 " +
+    capMb +
+    "MB 上限" +
+    (shrunk ? "（按长边 " + ASSET_IMAGE_MAX_DIM + "px 压缩后仍超限）" : "（原样保存档同样受该上限约束）") +
     "，已拒绝落盘"
   );
 }
@@ -1455,13 +1473,15 @@ ipcMain.handle("asset:copy", (e, { srcPath, wfId, name, native }) => {
   const srcExt = path.extname(src).toLowerCase().replace(/^\./, "") || "png";
   const raw = fs.readFileSync(src);
   /* native=true：整份字节原样落盘（尺寸 / 像素 / 编码都不动）；缺省按资产落盘口径缩到长边
-     1280px（已达标时字节原样，不重编码、不改写）。两条路都过单张 4MB 上限。 */
+     1280px（已达标时字节原样，不重编码、不改写）。两条路都过单张上限：缺省 4MB 资产口径，
+     native 档放宽到 ASSET_IMAGE_NATIVE_MAX_BYTES（剪贴板图像原样保存用，见该常量处说明）。 */
   const shrunk = !native;
   const { buf, ext } = native
     ? { buf: raw, ext: srcExt }
     : shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
-  if (buf.length > ASSET_IMAGE_MAX_BYTES) {
-    throw new Error(assetTooLargeError(buf.length, shrunk));
+  const cap = native ? ASSET_IMAGE_NATIVE_MAX_BYTES : ASSET_IMAGE_MAX_BYTES;
+  if (buf.length > cap) {
+    throw new Error(assetTooLargeError(buf.length, shrunk, cap));
   }
   const dest = join(
     assetDir(wfId),
@@ -1470,15 +1490,19 @@ ipcMain.handle("asset:copy", (e, { srcPath, wfId, name, native }) => {
   const written = writeAssetBytes(dest, buf);
   return { ok: true, path: dest, bytes: buf.length, written };
 });
-ipcMain.handle("asset:writeBase64", (e, { wfId, name, base64, ext }) => {
+ipcMain.handle("asset:writeBase64", (e, { wfId, name, base64, ext, native }) => {
   const srcExt = String(ext || "png").toLowerCase().replace(/^\./, "");
   /* 容错：渲染层可能送来整条 data URL（FileReader 的形态）。Buffer.from(x,"base64") 对
      data URL 不报错、只静默写出坏字节 —— 先剥前缀，坏图也能在源头堵住。 */
   const raw = Buffer.from(factStripDataUrl(base64), "base64");
-  /* 与 asset:copy 同口径：长边 >1280px 等比缩小（已达标字节原样），单张 >4MB 拒绝并回明确错误。 */
-  const { buf, ext: outExt } = shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
-  if (buf.length > ASSET_IMAGE_MAX_BYTES) {
-    return { ok: false, error: assetTooLargeError(buf.length, true) };
+  /* 缺省与 asset:copy 同口径：长边 >1280px 等比缩小（已达标字节原样），单张 >4MB 拒绝并回明确错误。
+     native=true（剪贴板截图原样保存）：字节原样落盘，上限放宽到 ASSET_IMAGE_NATIVE_MAX_BYTES。 */
+  const { buf, ext: outExt } = native
+    ? { buf: raw, ext: srcExt }
+    : shrinkImageBuffer(raw, srcExt, ASSET_IMAGE_MAX_DIM);
+  const cap = native ? ASSET_IMAGE_NATIVE_MAX_BYTES : ASSET_IMAGE_MAX_BYTES;
+  if (buf.length > cap) {
+    return { ok: false, error: assetTooLargeError(buf.length, !native, cap) };
   }
   const dest = join(
     assetDir(wfId),
@@ -3781,6 +3805,62 @@ ipcMain.handle("clipboard:readImage", () => {
   }
 });
 
+/* 剪贴板里的「图像」两态一次读完（画布 Ctrl+V 询问窗取材口）：
+     · files  = 被复制的图片文件（资源管理器 Ctrl+C 一个 / 多个 png）—— 有本机路径，
+                走 asset:copy(native) 原样收进画布资产，节点标题可用原文件名；
+     · bitmap = 位图截图（Win+Shift+S / 截屏工具）—— 只有内存 PNG base64，**本 IPC 绝不落盘**，
+                渲染层只拿它做询问窗里的预览，用户点「创建」后才由 asset:writeBase64(native) 落盘。
+   两态可以并存（剪贴板工具各写各的格式时），渲染层一次问清「用哪种」。 */
+ipcMain.handle("clipboard:readImages", () => {
+  const out = { ok: true, files: [], bitmap: null };
+  /* ① 被复制的图片文件：CF_HDROP 在 Electron 里以 FileNameW / FileName 暴露，
+        个别来源（PowerShell Set-Clipboard 等）只给 text/uri-list —— 都读一遍，
+        切分 / 过滤 / 去重交给纯函数模块（读不到的格式返回空串，不抛错）。 */
+  let rawList = "";
+  try {
+    const read = (fmt) => {
+      try {
+        return String(clipboard.read(fmt) || "");
+      } catch (_) {
+        return "";
+      }
+    };
+    rawList += "\u0000" + read("FileNameW");
+    rawList += "\u0000" + read("FileName");
+    rawList += "\u0000" + read("text/uri-list");
+    /* FileNameW 的 read() 形态是「原始 UTF-16 字节逐字节当字符」（探针实测：'C\0:\0\\0U\0…'，
+       直接当路径用会得到一串单字符段），**可用的 Unicode 路径只能从 readBuffer 按 ucs2 解**。
+       这里无条件补上：中文 / 空格路径下 ANSI 那份会变成乱码，全靠这一条兜住；
+       乱码与重份由扩展名过滤 + 去重 + 下面的存在性校验一起把关，不会误收。 */
+    try {
+      const buf = clipboard.readBuffer("FileNameW");
+      if (buf && buf.length) rawList += "\u0000" + buf.toString("ucs2");
+    } catch (_) {}
+  } catch (_) {}
+  for (const p of clipImages.clipParseFileList(rawList)) {
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile()) continue;
+      out.files.push({ path: p, name: path.basename(p), size: st.size });
+    } catch (_) {}
+  }
+  /* ② 位图截图：只有 base64 + 像素尺寸（bytes 给渲染层判 32MB 提醒线，不必自己换算） */
+  try {
+    const img = clipboard.readImage();
+    if (img && !img.isEmpty()) {
+      const size = img.getSize() || {};
+      const buf = img.toPNG();
+      out.bitmap = {
+        base64: buf.toString("base64"),
+        bytes: buf.length,
+        width: size.width || 0,
+        height: size.height || 0,
+      };
+    }
+  } catch (_) {}
+  return out;
+});
+
 ipcMain.handle("fact:saveImage", (e, opts) => {
   try {
     const o = opts && typeof opts === "object" ? opts : {};
@@ -4091,6 +4171,9 @@ async function storeRequest(opts) {
        路由缺失，返回 404 not found（短信/密码登录、auth:bind/unbind、
        论坛发帖等所有 POST 全部受影响）。 */
     let url = STORE_BASE + p;
+    /* 超时默认 120s；上架应用（约 32MB base64 的 POST）这类大请求由调用方给更长的 timeoutMs
+       （renderer/app-publish.js 传 600000）—— clamp 到 10s–600s，别让渲染层写个 0 就变成永不超时。 */
+    const timeoutMs = Math.min(600000, Math.max(10000, Number(o.timeoutMs) || 120000));
     let res;
     for (let hop = 0; hop <= 3; hop++) {
       res = await fetch(url, {
@@ -4098,7 +4181,7 @@ async function storeRequest(opts) {
         headers,
         body,
         redirect: "manual",
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const st = res.status;
       if (st !== 301 && st !== 302 && st !== 303 && st !== 307 && st !== 308) break;
@@ -4136,6 +4219,84 @@ async function storeRequest(opts) {
 }
 
 ipcMain.handle("store:request", (e, opts) => storeRequest(opts));
+
+/* ---------------- MTNode 中转服务（账号托管 · 契约见 docs/relay-admin.md） ----------------
+   客户端「设置 · 提供商」里那张只读的「MTNode 中转服务」卡靠这里同步：
+     · 拉取：主进程带着账号登录 token 打 GET /api/relay/me —— 渲染层拿不到 token，
+       也不硬编码中转站地址（地址由服务端下发）；
+     · 凭据：provider.source === "mtnode-relay" 时，config.json 里落的是占位串
+       （渲染层各处「有没有填 Key」的闸门因此照旧通过），真正下发的 Authorization
+       在请求时现取账号 token —— 明文 token 不落 config.json、不回渲染层。
+   渲染层负责把快照合进 config.providers 并持久化（renderer/app-relay.js）。 */
+const RELAY_PROVIDER_SOURCE = "mtnode-relay";
+const RELAY_KEY_PLACEHOLDER = "mtnode-account-token";
+
+/* 快照里的模型形态（text / image）→ 服务商形态判定的覆盖表：
+   渲染层 app-model-kind.js 的 modelKinds 表按「服务商 id → 模型 id → 形态」读，
+   与用户在卡上手工纠正形态用的是同一张表。 */
+function relayModelKindsOf(doc) {
+  const out = {};
+  for (const m of (doc && doc.models) || []) {
+    const id = String((m && m.id) || "").trim();
+    if (!id) continue;
+    out[id] = m.kind === "image" ? "image" : "text";
+  }
+  return out;
+}
+
+ipcMain.handle("relay:me", async () => {
+  const r = await storeRequest({ path: "/api/relay/me" });
+  if (!r || !r.ok) {
+    return {
+      ok: false,
+      status: Number((r && r.status) || 0) || 0,
+      code: String((r && r.code) || ""),
+      error: String(
+        (r && r.error) || I18n.t("中转服务暂时不可用，请稍后重试"),
+      ),
+    };
+  }
+  const doc = (r && r.data) || {};
+  return {
+    ok: true,
+    at: Date.now(),
+    doc: {
+      baseUrl: String(doc.baseUrl || ""),
+      providerName: String(doc.providerName || "") || "MTNode 中转服务",
+      enabled: !!doc.enabled,
+      everRecharged: !!doc.everRecharged,
+      /* 余额一律按「元」（4 位小数）中转：服务端只下发 Yuan 字段，渲染层不接触「分」。 */
+      balanceYuan: Number(doc.balanceYuan) || 0,
+      totalYuan: Number(doc.totalYuan) || 0,
+      reason: String(doc.reason || ""),
+      updatedAt: Number(doc.updatedAt) || Date.now(),
+      models: ((doc.models || []).map((m) => ({
+        id: String((m && m.id) || ""),
+        kind: m && m.kind === "image" ? "image" : "text",
+      }))).filter((m) => m.id),
+      modelKinds: relayModelKindsOf(doc),
+    },
+  };
+});
+
+/* 下发凭据：中转服务用账号登录 token（现取现用），其余服务商用配置里的 API Key */
+function providerAuthKey(provider) {
+  const p = provider || {};
+  if (String(p.source || "") === RELAY_PROVIDER_SOURCE) {
+    const cur = authStore.load();
+    return cur && cur.token ? String(cur.token) : "";
+  }
+  return String(p.apiKey == null ? "" : p.apiKey).trim();
+}
+
+/* 主进程插件宿主（Music3 / H3 等）解析 dsh.run 凭据时也读同一份 config.json：
+   把解析器注入 dsh/mtnode-llm-creds.js，它就不必自己去解 auth-store 的加密凭据；
+   注入不到时那边会跳过中转服务商（宁可说「没有可用服务商」，也不拿占位串去撞 401）。 */
+try {
+  require("./dsh/mtnode-llm-creds.js").setRelayKeyResolver(providerAuthKey);
+} catch (err) {
+  errLog("[relay] 凭据解析器注入失败：" + String((err && err.message) || err));
+}
 
 /* ---------------- 账户与登录（契约见 docs/auth-design.md，接口全部走 storeRequest） ---------------- */
 
@@ -5484,13 +5645,16 @@ function buildRequestSpec(
 ) {
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const auth = {
-    Authorization: "Bearer " + provider.apiKey,
+    /* 中转服务（source=mtnode-relay）在这里换成账号登录 token：配置里只有占位串 */
+    Authorization: "Bearer " + providerAuthKey(provider),
     "Content-Type": "application/json",
   };
   if (kind === "text") {
     const parts = [];
-    const vision = !!provider.vision;
-    if (vision && images && images.length) {
+    /* 带图请求有两条路：节点侧给 images（下面自动拼多模态 parts，由 provider.vision 把关），
+       或调用方已经拼好多模态 messages（应用宿主，见 apps-store.js 的 normContent）——
+       后者在下面的 `chatMessages && chatMessages.length` 分支原样下发，这里不二次改写。 */
+    if (provider.vision && images && images.length) {
       parts.push({ type: "text", text: prompt });
       for (const p of images) {
         const { buf, ext } = shrinkImageForApi(p);
@@ -5789,6 +5953,20 @@ function checkProvider(provider) {
   if (!provider) throw new Error(I18n.t("未配置服务商"));
   if (!String(provider.baseUrl || "").trim())
     throw new Error(I18n.t("未配置接口地址（设置 · API/配置）"));
+  /* 中转服务（账号托管）：配置里只有占位串，真凭据是账号登录 token。
+     余额耗尽（relay.blocked）在这里就给出可执行的错，别等上游回 402。 */
+  if (String(provider.source || "") === RELAY_PROVIDER_SOURCE) {
+    const relay = provider.relay || {};
+    if (relay.blocked === true)
+      throw new Error(
+        I18n.t("MTNode 中转服务余额不足：请充值后在「设置 · 提供商」里点「刷新」"),
+      );
+    if (!providerAuthKey(provider))
+      throw new Error(
+        I18n.t("MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新"),
+      );
+    return;
+  }
   if (!String(provider.apiKey || "").trim())
     throw new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
 }
@@ -5861,7 +6039,12 @@ async function apiCall({
         j.choices[0].message &&
         j.choices[0].message.content;
       if (content == null) throw new Error(I18n.t("响应无文本内容"));
-      return { ok: true, text: String(content) };
+      /* finish_reason 一并回：应用宿主据此把「正文被输出上限截断」与「模型没给 JSON」分开 */
+      return {
+        ok: true,
+        text: String(content),
+        finishReason: String((j.choices[0].finish_reason != null && j.choices[0].finish_reason) || ""),
+      };
     }
     let b64 = null,
       url = null;
@@ -6229,12 +6412,15 @@ function streamTextChat(req, emit) {
         let sse = false;
         let text = "";
         let reasoning = "";
+        /* 结束原因（stop / length …）：应用宿主靠它把「被 max_tokens 截断的正文」与
+           「模型就是不肯给 JSON」分开 —— length 时正文是半截的，解不出来是必然的。 */
+        let finishReason = "";
         let finished = false;
         const finish = (t, r) => {
           if (!finished) {
             finished = true;
             if (wd) wd.stop();
-            resolve({ text: t, reasoning: r });
+            resolve({ text: t, reasoning: r, finishReason: finishReason });
           }
         };
         if (res.statusCode >= 400) {
@@ -6273,6 +6459,7 @@ function streamTextChat(req, emit) {
               j = JSON.parse(data);
             } catch {}
             if (!j || !j.choices || !j.choices[0]) continue;
+            if (j.choices[0].finish_reason) finishReason = String(j.choices[0].finish_reason);
             const d = j.choices[0].delta || {};
             if (d.reasoning_content != null && d.reasoning_content !== "") {
               reasoning += d.reasoning_content;
@@ -6299,6 +6486,8 @@ function streamTextChat(req, emit) {
             j = JSON.parse(buf);
           } catch {}
           const c = extractChatContent(j);
+          if (j && j.choices && j.choices[0] && j.choices[0].finish_reason)
+            finishReason = String(j.choices[0].finish_reason);
           if (c.reasoning) emit("reasoning", { text: c.reasoning });
           finish(c.text || text, c.reasoning || reasoning);
         });
@@ -6327,7 +6516,9 @@ function streamTextChat(req, emit) {
 /* 应用宿主（apps-store.js 的 appHost.textGenStream）模型调用：与下面 api:callStream 同一份内核
    （buildRequestSpec + streamTextChat），差别只在「服务商 / Key / 模型由 apps-store 从本机配置解析、
    应用窗口只能给 prompt / messages / 温度等白名单字段」，事件也推给发起调用那个应用窗口自己。
-   接口不支持 stream（HTTP 4xx）时回退非流式单次请求，口径与节点调用一致。 */
+   接口不支持 stream（HTTP 4xx）时回退非流式单次请求，口径与节点调用一致。
+   返回里多带 finishReason / truncated：应用要能把「正文被输出上限截断」与「模型就是没给 JSON」
+   分开（实测 deepseek-v4 开思考 + max_tokens 1200 时 6 次里 4 次被截断成半截 JSON）。 */
 async function appsAiCallStream(spec, emit) {
   checkProvider(spec.provider);
   const req = buildRequestSpec(
@@ -6349,14 +6540,22 @@ async function appsAiCallStream(spec, emit) {
   /* 三档超时随 spec 下发（渲染层从该服务商配置带过来），缺省 300000 */
   req.timeouts = timeoutTiersOf(spec, spec.provider);
   try {
-    const { text, reasoning } = await streamTextChat(req, emit);
-    emit("done", { text, reasoning });
-    return { ok: true, text, reasoning };
+    const { text, reasoning, finishReason } = await streamTextChat(req, emit);
+    const truncated = finishReason === "length";
+    emit("done", { text, reasoning, finishReason, truncated: truncated });
+    return { ok: true, text, reasoning, finishReason, truncated };
   } catch (err) {
     if (err && err.httpStatus >= 400 && spec.kind === "text") {
       const r = await apiCall(spec);
-      emit("done", { text: r.text || "" });
-      return { ok: true, text: r.text || "" };
+      const finishReason = String((r && r.finishReason) || "");
+      emit("done", { text: r.text || "", finishReason: finishReason, truncated: finishReason === "length" });
+      return {
+        ok: true,
+        text: r.text || "",
+        reasoning: "",
+        finishReason: finishReason,
+        truncated: finishReason === "length",
+      };
     }
     throw err;
   }
@@ -6485,15 +6684,47 @@ ipcMain.handle("api:preview", async (e, spec) => {
 
 ipcMain.handle("dsh:config", () => dshConfig());
 
+/* node 是 dsh 0.2 的硬前提（内核拒绝 Electron 自带的 Node，见 dsh/DESIGN.md「Node 运行时」）：
+   状态里一并回本进程用的哪个 node、托管 Node 装没装，自检 / 诊断才有据可查。 */
 ipcMain.handle("dsh:status", () =>
   dsh()
     .status()
+    .then((st) => {
+      let node = null;
+      try { node = dsh().nodeInfo(); } catch { /* 取不到就只报网关状态 */ }
+      return Object.assign({}, st, node ? { node } : {});
+    })
     .catch((e) => ({ ok: false, error: e.message || String(e) }))
 );
 
+/* 自愈入口：显式安装托管 Node（供设置 / 自检的「修复」按钮调用） */
+ipcMain.handle("dsh:installNode", () =>
+  dsh()
+    .installNode()
+    .catch((e) => ({ ok: false, error: e.message || String(e) }))
+);
+
+/* 中转服务的凭据对智体会话同样适用：DSH 网关拿到的 provider 里
+   source=mtnode-relay 的那份 apiKey 只是占位串，交给网关前换成账号 token
+   （网关把它写进运行时的 MTNODE_KEY_i，渲染层全程看不到真凭据）。 */
+function dshParamsWithRelayKey(params) {
+  if (!params || typeof params !== "object") return params;
+  const isRelay = (x) => x && String(x.source || "") === RELAY_PROVIDER_SOURCE;
+  const out = Object.assign({}, params);
+  if (Array.isArray(out.mtnodeProviders)) {
+    out.mtnodeProviders = out.mtnodeProviders.map((x) =>
+      isRelay(x) ? Object.assign({}, x, { apiKey: providerAuthKey(x) }) : x,
+    );
+  }
+  if (String(out.apiKey || "").trim() === RELAY_KEY_PLACEHOLDER) {
+    out.apiKey = providerAuthKey({ source: RELAY_PROVIDER_SOURCE });
+  }
+  return out;
+}
+
 ipcMain.handle("dsh:run", (event, params) =>
   dsh()
-    .run(params)
+    .run(dshParamsWithRelayKey(params))
     .catch((e) => ({ ok: false, error: e.message || String(e) }))
 );
 
@@ -6524,6 +6755,29 @@ ipcMain.handle("dsh:mcpSetEnabled", (event, { serverName, enabled }) =>
 ipcMain.handle("dsh:cancel", (event, params) => dsh().cancel(params));
 
 ipcMain.handle("dsh:interact", (event, params) => dsh().interact(params));
+
+/* ── 会话自己的浏览器（browser_* 工具面的宿主侧控制）────────────────────────
+   进程与 CDP 都在网关进程里（dsh/gateway/browser-host.mjs）；主进程只透传并
+   兜底成 {ok:false,error}。活动流面板的「打开浏览器 / 停止 / 名单管理 / 接管」
+   全走这一条。事件侧走既有的 dsh:event（type:'browser-act' / 'browser'）。 */
+ipcMain.handle("dsh:browser", (event, params) =>
+  dsh()
+    .browser(params)
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
+);
+
+/* ── 活动流留痕（浏览器动作 / shell 命令 / 文件读写摘要）────────────────────
+   只写本机数据目录，只供界面回看与核对；**不进模型上下文**（用户已确认）。
+   push 由渲染层在收到 dsh 事件时调用（批量），query/clear 供面板使用。 */
+ipcMain.handle("activity:push", (event, rows) =>
+  activityStore.push(rows, DATA()),
+);
+ipcMain.handle("activity:query", (event, params) =>
+  activityStore.query(params, DATA()),
+);
+ipcMain.handle("activity:clear", (event, params) =>
+  activityStore.clear(params, DATA()),
+);
 
 /* 运行中插话 / 暂停（dshSteer / dshPause → 网关 steer / pause）。
    params = { reqId | cancelTag, sessionId?, text?|contentBlocks?(仅插话) }。
@@ -6995,6 +7249,9 @@ app.whenReady().then(() => {
   registerRollbackIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 工具库：跨画布可复用工具包（<数据目录>/tools/*.json 完整工具包落盘） */
   registerToolsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
+  /* 存储占用与清理（设置里的「存储占用与清理」小节）：分类统计 + 按类清理；
+     rollback 那一类复用上一条注册好的 GC（孤儿对象与超期轮次） */
+  registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s), rollbackGc: rollbackGc });
   /* 素材库：独立于画布的文本/图像/音频/视频内容仓库（用户指定根目录，见 assets-store.js） */
   registerAssetsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 长周期任务系统：run checkpoint / 交付目录 / 长期记忆库（见 longtask-store.js） */
@@ -7014,6 +7271,16 @@ app.whenReady().then(() => {
     authState: () => authStore.state(),
     aiCall: (spec) => apiCall(spec),
     aiCallStream: (spec, emit) => appsAiCallStream(spec, emit),
+    /* 应用侧多模态消息里的图像与画布节点共用同一份缩放内核（长边 ≤ 1080 等比缩） */
+    shrinkImage: (buf, ext) => shrinkImageBuffer(buf, ext, API_REF_IMAGE_MAX_DIM),
+    /* 模型目录（与渲染层 S.providerCatalog 同源）：应用侧模型清单据此标「支持识图」 */
+    getProviderCatalog: () => {
+      try {
+        return dsh().providerCatalog();
+      } catch {
+        return null;
+      }
+    },
   });
   /* 应用窗口里的 appHost.quit()：先把该应用收尾关掉，再请主进程走正常退出流程
      （before-quit → shutdownApps 再收一遍，幂等；见 apps-store.js 的 quitFromAppWindow） */

@@ -308,6 +308,8 @@ console.log("\n[3] 真跑：重建后滚到哪儿还停在哪儿");
 }
 
 console.log("\n[4] 按住保护：鼠标还按在可点件上时，条带这一帧一次都不重建（vm 真跑）");
+/* 假钟：TTL 用例把时间往前拨，不真等 1.2 秒 */
+let FAKE_NOW = 1_000_000_000;
 {
   const strip = mkEl("div", "lt-strip");
   const head = mkEl("div", "lt-head");
@@ -323,6 +325,10 @@ console.log("\n[4] 按住保护：鼠标还按在可点件上时，条带这一�
     ltStripHold: { el: null, at: 0 },
     ltRenderWhenFocusLeaves: () => {},
     ltRenderFlushDeferred: () => {},
+    /* 本轮需求：按住保护自带 TTL（鼠标松开那一下落到真浏览器窗口上时不许悬挂）。
+       这里补上模块级常量 + 一盏假钟，把「按下 → 过 TTL」这条路走真。 */
+    LT_STRIP_HOLD_TTL: 1200,
+    Date: { now: () => FAKE_NOW },
   });
   const arm = (el) => vm.runInContext("ltStripHoldArm", sb)(el);
   const now = () => vm.runInContext("ltStripHoldNow()", sb);
@@ -341,6 +347,38 @@ console.log("\n[4] 按住保护：鼠标还按在可点件上时，条带这一�
   arm(btn);
   btn.parentNode.removeChild(btn); /* 那一件被别处换掉了（切画布 / 条带收起） */
   ok(now() === false, "按下那一件已不在文档里 → 自动放行（绝不留成悬挂、把界面长期冻死）");
+
+  /* 本轮需求：鼠标松开那一下**没到达本窗口**（真浏览器窗口抢走前台，pointerup 落到别人
+     身上）时，按住态不许悬挂 —— 悬挂 = 条带再也不重绘 = 用户看到的「按钮都在、点了没反应」。
+     口径：按住态自带 TTL，超过它按「松手丢了」处理（放行 + 兑现被推迟的那次重绘）。 */
+  /* 重新拿回那一件（上面把它摘出文档了）：另起一只挂在条带里的按钮 */
+  const btn2 = mkEl("button", "lt-btn");
+  btn2.tagName = "BUTTON";
+  head.appendChild(btn2);
+  FAKE_NOW = 2_000_000_000;
+  arm(btn2);
+  ok(now() === true, "刚按下：正常冻住（这一次 click 必须落到原来那一件上）");
+  FAKE_NOW += 300;
+  ok(now() === true, "300ms：还在 TTL 内 → 照旧冻着（不是一按就放）");
+  FAKE_NOW += 2000;
+  ok(now() === false, "超过 TTL（1.2s）：松手那一下丢了也放行 —— 条带不会因为一次丢事件长期冻死");
+  ok(
+    vm.runInContext("ltStripHold.el", sb) === null,
+    "放行时按住态被真正清掉（不是每次判据里假装 false）",
+  );
+  ok(
+    /LT_STRIP_HOLD_TTL/.test(LTU) && /Date\.now\(\) - h\.at > LT_STRIP_HOLD_TTL/.test(fnBody(LTU, "ltStripHoldNow")),
+    "TTL 判据写在 ltStripHoldNow 里（唯一的「冻不冻」出入口）",
+  );
+  /* 窗口重新拿到焦点 = 用户回来了：再收一次可能是丢了 mouseup 的按住态，
+     他回来点的第一下要落在活界面上（接线在 ltHoldBind） */
+  const bindFocus = fnSrc(LTU, "ltHoldBind");
+  ok(/addEventListener\("focus"/.test(bindFocus) && /addEventListener\("blur"/.test(bindFocus),
+    "ltHoldBind：失焦与重新获焦都收一次按住态（丢 mouseup 的那种悬挂在这里自愈）");
+  ok(
+    fnSrc(LTU, "ltHoldArm").indexOf("ltHoldTtl") > 0 && fnSrc(LTU, "ltHoldRelease").indexOf("ltHoldTtl") > 0,
+    "右栏「栏内按住」保护同样有 TTL 兜底（同一个病，同一条药）",
+  );
 
   /* 接线：松手时先放栏、再放条带（顺序反了那一次重绘会在栏还占着时落空） */
   const bind = fnSrc(LTU, "ltHoldBind");

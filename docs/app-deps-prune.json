@@ -5,27 +5,32 @@
     "gateway": {
       "label": "dsh 网关（打包进 resources/dsh/gateway）",
       "nodeModules": "dsh/gateway/node_modules",
-      "packages": 540,
-      "totalMB": 226.8,
-      "liveMB": 224.88,
-      "deadMB": 1.92,
+      "packages": 854,
+      "totalMB": 1854.61,
+      "liveMB": 1838.48,
+      "deadMB": 16.13,
       "excludePackages": [
+        "@aws-crypto/sha256-browser",
+        "@aws-crypto/sha256-js",
+        "@aws-crypto/supports-web-crypto",
+        "@aws-crypto/util",
+        "@aws-sdk/util-locate-window",
         "@babel/runtime",
-        "@deepseek-ai/dsh",
-        "@deepseek-ai/dsh-agent-tool-presentation",
-        "@deepseek-ai/dsh-authorization",
-        "@deepseek-ai/dsh-persona",
-        "@deepseek-ai/dsh-schedule",
-        "@deepseek-ai/dsh-terminal",
-        "@deepseek-ai/dsh-terminal-bash",
-        "@deepseek-ai/dsh-time-context",
-        "@deepseek-ai/dsh-tmux-context",
-        "@deepseek-ai/dsh-tool-bash-persistent",
-        "@deepseek-ai/dsh-tool-cordis",
-        "@deepseek-ai/dsh-tool-pwsh-persistent",
+        "@deepseek-ai/cordis-plugin-hmr",
+        "@deepseek-ai/node-addon-landlock-run",
+        "@mistralai/mistralai",
+        "@octokit/openapi-types",
+        "@octokit/types",
+        "@opentelemetry/exporter-logs-otlp-http",
+        "@smithy/is-array-buffer",
+        "@smithy/util-buffer-from",
+        "@smithy/util-utf8",
+        "@tanstack/react-virtual",
         "@tanstack/virtual-core",
-        "@types/ms",
-        "ts-algebra"
+        "tr46",
+        "ts-algebra",
+        "webidl-conversions",
+        "whatwg-url"
       ],
       "groups": [
         {
@@ -33,93 +38,130 @@
           "reason": "可达闭包内零引用",
           "packages": [
             {
-              "name": "@deepseek-ai/dsh-terminal-bash",
-              "mb": 0.27
+              "name": "@mistralai/mistralai",
+              "mb": 9.24
+            },
+            {
+              "name": "@octokit/openapi-types",
+              "mb": 5.09
+            },
+            {
+              "name": "@octokit/types",
+              "mb": 0.31
+            },
+            {
+              "name": "tr46",
+              "mb": 0.26
             },
             {
               "name": "@babel/runtime",
               "mb": 0.24
             },
             {
-              "name": "@deepseek-ai/dsh",
-              "mb": 0.11
-            },
-            {
-              "name": "@deepseek-ai/dsh-schedule",
-              "mb": 0.11
-            },
-            {
               "name": "ts-algebra",
               "mb": 0.1
             },
             {
-              "name": "@deepseek-ai/dsh-authorization",
-              "mb": 0.06
-            },
-            {
-              "name": "@deepseek-ai/dsh-time-context",
+              "name": "whatwg-url",
               "mb": 0.05
             },
             {
-              "name": "@deepseek-ai/dsh-terminal",
+              "name": "@deepseek-ai/cordis-plugin-hmr",
               "mb": 0.04
             },
             {
-              "name": "@deepseek-ai/dsh-tmux-context",
+              "name": "@deepseek-ai/node-addon-landlock-run",
               "mb": 0.03
             },
             {
-              "name": "@deepseek-ai/dsh-tool-bash-persistent",
-              "mb": 0.03
-            },
-            {
-              "name": "@deepseek-ai/dsh-tool-pwsh-persistent",
-              "mb": 0.03
-            },
-            {
-              "name": "@deepseek-ai/dsh-agent-tool-presentation",
-              "mb": 0.01
-            },
-            {
-              "name": "@deepseek-ai/dsh-persona",
+              "name": "webidl-conversions",
               "mb": 0.01
             }
           ],
-          "mb": 1.09
+          "mb": 15.37
         },
         {
           "key": "dsh-web-ui",
           "reason": "dsh 自带的 Web/TUI 前端与客户端运行时：MTNode 用自己的 renderer 界面，网关以 stdio JSON-RPC 无界面启动（profile 永不取 web/headless）",
           "packages": [
             {
-              "name": "@deepseek-ai/dsh-tool-cordis",
-              "mb": 0.43
-            },
-            {
               "name": "@tanstack/virtual-core",
               "mb": 0.39
+            },
+            {
+              "name": "@tanstack/react-virtual",
+              "mb": 0.05
             }
           ],
-          "mb": 0.82
+          "mb": 0.44
         },
         {
-          "key": "types",
-          "reason": "TS 类型声明与编译器：运行时不加载",
+          "key": "cloud-sdk",
+          "reason": "云厂商 SDK / 浏览器垫片：只在未挂载能力或被排除的上游包里出现",
           "packages": [
             {
-              "name": "@types/ms",
-              "mb": 0
+              "name": "@aws-crypto/sha256-js",
+              "mb": 0.12
+            },
+            {
+              "name": "@aws-crypto/sha256-browser",
+              "mb": 0.04
+            },
+            {
+              "name": "@aws-crypto/supports-web-crypto",
+              "mb": 0.03
+            },
+            {
+              "name": "@aws-crypto/util",
+              "mb": 0.03
+            },
+            {
+              "name": "@smithy/util-buffer-from",
+              "mb": 0.02
+            },
+            {
+              "name": "@smithy/util-utf8",
+              "mb": 0.02
+            },
+            {
+              "name": "@aws-sdk/util-locate-window",
+              "mb": 0.01
+            },
+            {
+              "name": "@smithy/is-array-buffer",
+              "mb": 0.01
             }
           ],
-          "mb": 0
+          "mb": 0.28
+        },
+        {
+          "key": "telemetry",
+          "reason": "OTLP 遥测导出：未挂载 dsh-session-telemetry-otel；挂载的 dsh-session-telemetry 只做本地内存计数",
+          "packages": [
+            {
+              "name": "@opentelemetry/exporter-logs-otlp-http",
+              "mb": 0.04
+            }
+          ],
+          "mb": 0.04
         }
       ],
-      "filePruneMB": 94.11,
+      "filePruneMB": 608.44,
       "files": [
         {
+          "bucket": "platform-pkg",
+          "mb": 487.36,
+          "count": 350,
+          "samples": [
+            "@koromix/koffi-linux-arm64/index.js",
+            "@koromix/koffi-linux-arm64/package.json",
+            "@koromix/koffi-linux-arm64/README.md"
+          ]
+        },
+        {
           "bucket": "map",
-          "mb": 33.93,
-          "count": 5730,
+          "mb": 41.48,
+          "count": 4674,
           "samples": [
             "diff/libesm/index.d.ts.map",
             "diff/libesm/types.d.ts.map",
@@ -128,12 +170,12 @@
         },
         {
           "bucket": "types",
-          "mb": 24.9,
-          "count": 9006,
+          "mb": 37.98,
+          "count": 10162,
           "samples": [
-            "@deepseek-ai/dsh-tools/lib/types/code-mode.d.ts",
-            "@deepseek-ai/dsh-tools/lib/types/index.d.ts",
-            "@deepseek-ai/dsh-tools/lib/types/invariant.d.ts"
+            "@deepseek-ai/dsh-sdk-client/lib/types/api.d.ts",
+            "@deepseek-ai/dsh-sdk-client/lib/types/client.d.ts",
+            "@deepseek-ai/dsh-sdk-client/lib/types/dispose.d.ts"
           ]
         },
         {
@@ -151,15 +193,25 @@
           "mb": 10.14,
           "count": 3,
           "samples": [
-            "@koromix/koffi-win32-x64/win32_x64/koffi.lib",
             "node-pty/prebuilds/win32-x64/conpty.pdb",
-            "node-pty/prebuilds/win32-x64/conpty_console_list.pdb"
+            "node-pty/prebuilds/win32-x64/conpty_console_list.pdb",
+            "@koromix/koffi-win32-x64/win32_x64/koffi.lib"
+          ]
+        },
+        {
+          "bucket": "doc-file",
+          "mb": 9.77,
+          "count": 1139,
+          "samples": [
+            "@deepseek-ai/dsh-sdk-client/README.md",
+            "@deepseek-ai/dsh-sdk-client/README.zh.md",
+            "open/readme.md"
           ]
         },
         {
           "bucket": "top-dir",
-          "mb": 6.33,
-          "count": 1085,
+          "mb": 8.33,
+          "count": 1192,
           "samples": [
             "qs/test/empty-keys-cases.js",
             "qs/test/parse.js",
@@ -167,32 +219,23 @@
           ]
         },
         {
-          "bucket": "doc-file",
-          "mb": 5.46,
-          "count": 782,
-          "samples": [
-            "@deepseek-ai/dsh-tools/README.md",
-            "@deepseek-ai/dsh-tools/README.zh.md",
-            "diff/CONTRIBUTING.md"
-          ]
-        },
-        {
           "bucket": "platform-binary",
           "mb": 1.15,
           "count": 18,
           "samples": [
-            "bufferutil/prebuilds/win32-ia32/electron-napi.node",
-            "bufferutil/prebuilds/win32-ia32/node-napi.node",
-            "bufferutil/prebuilds/linux-x64/electron-napi.node"
+            "node-pty/prebuilds/win32-arm64/conpty.node",
+            "node-pty/prebuilds/win32-arm64/conpty_console_list.node",
+            "node-pty/prebuilds/linux-x64/pty.node"
           ]
         },
         {
           "bucket": "suffix",
-          "mb": 0.11,
-          "count": 2,
+          "mb": 0.15,
+          "count": 3,
           "samples": [
             "gaxios/build/esm/tsconfig.tsbuildinfo",
-            "gaxios/build/cjs/tsconfig.cjs.tsbuildinfo"
+            "gaxios/build/cjs/tsconfig.cjs.tsbuildinfo",
+            "cliui/build/tsconfig.tsbuildinfo"
           ]
         },
         {
@@ -206,31 +249,594 @@
           ]
         }
       ],
-      "entryRisks": [],
-      "declaredUnreferenced": [
-        "@deepseek-ai/dsh",
-        "@deepseek-ai/dsh-authorization"
+      "entryRisks": [
+        {
+          "pkg": "@koromix/koffi-linux-arm64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-linux-arm64"
+        },
+        {
+          "pkg": "@koromix/koffi-linux-ia32",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-linux-ia32"
+        },
+        {
+          "pkg": "@koromix/koffi-linux-x64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-linux-x64"
+        },
+        {
+          "pkg": "@koromix/koffi-linux-riscv64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-linux-riscv64"
+        },
+        {
+          "pkg": "@koromix/koffi-freebsd-ia32",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-freebsd-ia32"
+        },
+        {
+          "pkg": "@koromix/koffi-freebsd-x64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-freebsd-x64"
+        },
+        {
+          "pkg": "@koromix/koffi-freebsd-arm64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-freebsd-arm64"
+        },
+        {
+          "pkg": "@koromix/koffi-openbsd-ia32",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-openbsd-ia32"
+        },
+        {
+          "pkg": "@koromix/koffi-openbsd-x64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-openbsd-x64"
+        },
+        {
+          "pkg": "@koromix/koffi-win32-ia32",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-win32-ia32"
+        },
+        {
+          "pkg": "@koromix/koffi-win32-arm64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-win32-arm64"
+        },
+        {
+          "pkg": "@koromix/koffi-darwin-x64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-darwin-x64"
+        },
+        {
+          "pkg": "@koromix/koffi-darwin-arm64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-darwin-arm64"
+        },
+        {
+          "pkg": "@koromix/koffi-linux-loong64",
+          "target": "index.js",
+          "reason": "platform-pkg:@koromix/koffi-linux-loong64"
+        },
+        {
+          "pkg": "@img/sharp-darwin-arm64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-darwin-arm64"
+        },
+        {
+          "pkg": "@img/sharp-darwin-arm64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-darwin-arm64"
+        },
+        {
+          "pkg": "@img/sharp-darwin-x64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-darwin-x64"
+        },
+        {
+          "pkg": "@img/sharp-darwin-x64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-darwin-x64"
+        },
+        {
+          "pkg": "@img/sharp-linux-arm",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linux-arm"
+        },
+        {
+          "pkg": "@img/sharp-linux-arm",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linux-arm"
+        },
+        {
+          "pkg": "@img/sharp-linux-arm64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linux-arm64"
+        },
+        {
+          "pkg": "@img/sharp-linux-arm64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linux-arm64"
+        },
+        {
+          "pkg": "@img/sharp-linux-ppc64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linux-ppc64"
+        },
+        {
+          "pkg": "@img/sharp-linux-ppc64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linux-ppc64"
+        },
+        {
+          "pkg": "@img/sharp-linux-riscv64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linux-riscv64"
+        },
+        {
+          "pkg": "@img/sharp-linux-riscv64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linux-riscv64"
+        },
+        {
+          "pkg": "@img/sharp-linux-s390x",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linux-s390x"
+        },
+        {
+          "pkg": "@img/sharp-linux-s390x",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linux-s390x"
+        },
+        {
+          "pkg": "@img/sharp-linux-x64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linux-x64"
+        },
+        {
+          "pkg": "@img/sharp-linux-x64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linux-x64"
+        },
+        {
+          "pkg": "@img/sharp-linuxmusl-arm64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linuxmusl-arm64"
+        },
+        {
+          "pkg": "@img/sharp-linuxmusl-arm64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linuxmusl-arm64"
+        },
+        {
+          "pkg": "@img/sharp-linuxmusl-x64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-linuxmusl-x64"
+        },
+        {
+          "pkg": "@img/sharp-linuxmusl-x64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-linuxmusl-x64"
+        },
+        {
+          "pkg": "@img/sharp-win32-arm64",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-win32-arm64"
+        },
+        {
+          "pkg": "@img/sharp-win32-arm64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-win32-arm64"
+        },
+        {
+          "pkg": "@img/sharp-win32-arm64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-win32-arm64"
+        },
+        {
+          "pkg": "@img/sharp-win32-ia32",
+          "target": "index.cjs",
+          "reason": "platform-pkg:@img/sharp-win32-ia32"
+        },
+        {
+          "pkg": "@img/sharp-win32-ia32",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-win32-ia32"
+        },
+        {
+          "pkg": "@img/sharp-win32-ia32",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-win32-ia32"
+        },
+        {
+          "pkg": "@img/sharp-freebsd-wasm32",
+          "target": "export/sharp.node.mjs",
+          "reason": "platform-pkg:@img/sharp-freebsd-wasm32"
+        },
+        {
+          "pkg": "@img/sharp-freebsd-wasm32",
+          "target": "export/sharp.node.cjs",
+          "reason": "platform-pkg:@img/sharp-freebsd-wasm32"
+        },
+        {
+          "pkg": "@img/sharp-freebsd-wasm32",
+          "target": "export/package.mjs",
+          "reason": "platform-pkg:@img/sharp-freebsd-wasm32"
+        },
+        {
+          "pkg": "@img/sharp-freebsd-wasm32",
+          "target": "export/package.cjs",
+          "reason": "platform-pkg:@img/sharp-freebsd-wasm32"
+        },
+        {
+          "pkg": "@img/sharp-freebsd-wasm32",
+          "target": "export/versions.mjs",
+          "reason": "platform-pkg:@img/sharp-freebsd-wasm32"
+        },
+        {
+          "pkg": "@img/sharp-freebsd-wasm32",
+          "target": "export/versions.cjs",
+          "reason": "platform-pkg:@img/sharp-freebsd-wasm32"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-x64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-x64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-x64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-x64",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-arm64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-arm64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-arm64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linuxmusl-arm64",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linuxmusl-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-x64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-x64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-x64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-x64",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-s390x",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-s390x"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-s390x",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-s390x"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-s390x",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-s390x"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-s390x",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-s390x"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-riscv64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-riscv64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-riscv64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-riscv64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-riscv64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-riscv64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-riscv64",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-riscv64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-ppc64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-ppc64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-ppc64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-ppc64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-ppc64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-ppc64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-ppc64",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-ppc64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm64",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm"
+        },
+        {
+          "pkg": "@img/sharp-libvips-linux-arm",
+          "target": "lib/libvips-cpp.so.8.18.7",
+          "reason": "platform-pkg:@img/sharp-libvips-linux-arm"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-x64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-x64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-x64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-x64",
+          "target": "lib/libvips-cpp.8.18.7.dylib",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-x64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-arm64",
+          "target": "lib/index.js",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-arm64",
+          "target": "package.json",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-arm64",
+          "target": "versions.json",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-arm64"
+        },
+        {
+          "pkg": "@img/sharp-libvips-darwin-arm64",
+          "target": "lib/libvips-cpp.8.18.7.dylib",
+          "reason": "platform-pkg:@img/sharp-libvips-darwin-arm64"
+        },
+        {
+          "pkg": "@ubjs/node-win32-arm64-msvc",
+          "target": "uniffi-runtime-napi.win32-arm64-msvc.node",
+          "reason": "platform-binary"
+        },
+        {
+          "pkg": "@ubjs/node-darwin-x64",
+          "target": "uniffi-runtime-napi.darwin-x64.node",
+          "reason": "platform-binary"
+        },
+        {
+          "pkg": "@ubjs/node-darwin-arm64",
+          "target": "uniffi-runtime-napi.darwin-arm64.node",
+          "reason": "platform-binary"
+        },
+        {
+          "pkg": "@ubjs/node-linux-x64-musl",
+          "target": "uniffi-runtime-napi.linux-x64-musl.node",
+          "reason": "platform-binary"
+        },
+        {
+          "pkg": "@ubjs/node-linux-x64-gnu",
+          "target": "uniffi-runtime-napi.linux-x64-gnu.node",
+          "reason": "platform-binary"
+        },
+        {
+          "pkg": "@ubjs/node-linux-arm64-musl",
+          "target": "uniffi-runtime-napi.linux-arm64-musl.node",
+          "reason": "platform-binary"
+        },
+        {
+          "pkg": "@ubjs/node-linux-arm64-gnu",
+          "target": "uniffi-runtime-napi.linux-arm64-gnu.node",
+          "reason": "platform-binary"
+        },
+        {
+          "pkg": "node-addon-require-builtin-darwin-arm64",
+          "target": "index.js",
+          "reason": "platform-pkg:node-addon-require-builtin-darwin-arm64"
+        },
+        {
+          "pkg": "node-addon-require-builtin-darwin-x64",
+          "target": "index.js",
+          "reason": "platform-pkg:node-addon-require-builtin-darwin-x64"
+        },
+        {
+          "pkg": "node-addon-require-builtin-linux-arm64-gnu",
+          "target": "index.js",
+          "reason": "platform-pkg:node-addon-require-builtin-linux-arm64-gnu"
+        },
+        {
+          "pkg": "node-addon-require-builtin-linux-x64-gnu",
+          "target": "index.js",
+          "reason": "platform-pkg:node-addon-require-builtin-linux-x64-gnu"
+        },
+        {
+          "pkg": "node-addon-require-builtin-win32-arm64-msvc",
+          "target": "index.js",
+          "reason": "platform-pkg:node-addon-require-builtin-win32-arm64-msvc"
+        },
+        {
+          "pkg": "node-addon-require-builtin-win32-ia32-msvc",
+          "target": "index.js",
+          "reason": "platform-pkg:node-addon-require-builtin-win32-ia32-msvc"
+        }
       ],
+      "declaredUnreferenced": [],
       "guarded": [
         {
-          "name": "@opentelemetry/sdk-trace",
-          "mb": 1.17,
+          "name": "@deepseek-ai/libreoffice-kit-win32-x64",
+          "mb": 182.03,
           "declaredBy": [
-            "@opentelemetry/otlp-transformer"
+            "@deepseek-ai/libreoffice-kit"
           ]
         },
         {
-          "name": "immer",
-          "mb": 0.63,
+          "name": "@deepseek-ai/libreoffice-kit-win32-arm64",
+          "mb": 171.66,
           "declaredBy": [
-            "@deepseek-ai/dsh-client-runtime"
+            "@deepseek-ai/libreoffice-kit"
           ]
         },
         {
-          "name": "zustand",
-          "mb": 0.31,
+          "name": "@deepseek-ai/libreoffice-kit-darwin-x64",
+          "mb": 154.83,
           "declaredBy": [
-            "@deepseek-ai/dsh-client-runtime"
+            "@deepseek-ai/libreoffice-kit"
+          ]
+        },
+        {
+          "name": "@deepseek-ai/libreoffice-kit-darwin-arm64",
+          "mb": 145.47,
+          "declaredBy": [
+            "@deepseek-ai/libreoffice-kit"
+          ]
+        },
+        {
+          "name": "@deepseek-ai/libreoffice-kit-wasm",
+          "mb": 145.3,
+          "declaredBy": [
+            "@deepseek-ai/libreoffice-kit"
+          ]
+        },
+        {
+          "name": "sherpa-onnx-linux-arm64",
+          "mb": 38.44,
+          "declaredBy": [
+            "sherpa-onnx-node"
+          ]
+        },
+        {
+          "name": "sherpa-onnx-darwin-x64",
+          "mb": 35.93,
+          "declaredBy": [
+            "sherpa-onnx-node"
+          ]
+        },
+        {
+          "name": "sherpa-onnx-darwin-arm64",
+          "mb": 32.51,
+          "declaredBy": [
+            "sherpa-onnx-node"
+          ]
+        },
+        {
+          "name": "sherpa-onnx-linux-x64",
+          "mb": 31.83,
+          "declaredBy": [
+            "sherpa-onnx-node"
+          ]
+        },
+        {
+          "name": "sherpa-onnx-win-x64",
+          "mb": 22.37,
+          "declaredBy": [
+            "sherpa-onnx-node"
+          ]
+        },
+        {
+          "name": "sherpa-onnx-win-ia32",
+          "mb": 19.01,
+          "declaredBy": [
+            "sherpa-onnx-node"
+          ]
+        },
+        {
+          "name": "@octokit/openapi-webhooks-types",
+          "mb": 2.58,
+          "declaredBy": [
+            "@octokit/webhooks"
+          ]
+        },
+        {
+          "name": "type-fest",
+          "mb": 0.37,
+          "declaredBy": [
+            "got"
           ]
         },
         {
@@ -238,6 +844,13 @@
           "mb": 0.19,
           "declaredBy": [
             "@modelcontextprotocol/sdk"
+          ]
+        },
+        {
+          "name": "@earendil-works/pi-telemetry",
+          "mb": 0.15,
+          "declaredBy": [
+            "@earendil-works/pi-ai"
           ]
         },
         {
@@ -249,7 +862,7 @@
         },
         {
           "name": "undici-types",
-          "mb": 0.11,
+          "mb": 0.12,
           "declaredBy": [
             "@types/node"
           ]
@@ -261,20 +874,6 @@
             "@aws-sdk/client-bedrock-runtime",
             "@aws-sdk/core",
             "@aws-sdk/middleware-eventstream"
-          ]
-        },
-        {
-          "name": "@tanstack/react-virtual",
-          "mb": 0.05,
-          "declaredBy": [
-            "@deepseek-ai/dsh-client-ui-trajectory"
-          ]
-        },
-        {
-          "name": "use-sync-external-store",
-          "mb": 0.04,
-          "declaredBy": [
-            "@deepseek-ai/dsh-client-ui-renderer"
           ]
         },
         {
@@ -290,9 +889,9 @@
           "name": "@types/mdast",
           "mb": 0.03,
           "declaredBy": [
-            "@deepseek-ai/dsh-client-ui-primitives",
             "mdast-util-from-markdown",
-            "mdast-util-math"
+            "mdast-util-math",
+            "mdast-util-gfm-table"
           ]
         },
         {
@@ -304,10 +903,17 @@
           ]
         },
         {
-          "name": "@types/debug",
+          "name": "@octokit/request-error",
           "mb": 0.01,
           "declaredBy": [
-            "micromark"
+            "@octokit/webhooks"
+          ]
+        },
+        {
+          "name": "@types/http-cache-semantics",
+          "mb": 0.01,
+          "declaredBy": [
+            "cacheable-request"
           ]
         },
         {
@@ -315,6 +921,13 @@
           "mb": 0.01,
           "declaredBy": [
             "micromark-extension-math"
+          ]
+        },
+        {
+          "name": "@types/node-fetch",
+          "mb": 0.01,
+          "declaredBy": [
+            "@browserbasehq/sdk"
           ]
         },
         {
@@ -339,52 +952,56 @@
           "declaredBy": [
             "mdast-util-math"
           ]
+        },
+        {
+          "name": "@types/ms",
+          "mb": 0,
+          "declaredBy": [
+            "@types/debug"
+          ]
         }
       ],
       "soft": [
         {
           "name": "@google/genai",
-          "mb": 13.74,
+          "mb": 10.75,
           "live": true,
           "liveBy": "pkg:dsh/gateway/node_modules/@earendil-works/pi-ai/dist/utils/error-body.js"
         },
         {
           "name": "@mistralai/mistralai",
           "mb": 9.24,
-          "live": true,
-          "liveBy": "pkg:dsh/gateway/node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js"
+          "live": false,
+          "liveBy": ""
         },
         {
           "name": "@anthropic-ai/sdk",
-          "mb": 3.9,
+          "mb": 8.6,
           "live": true,
           "liveBy": "pkg:dsh/gateway/node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js"
         },
         {
           "name": "@aws-sdk/client-bedrock-runtime",
-          "mb": 0.77,
+          "mb": 0.86,
           "live": true,
           "liveBy": "pkg:dsh/gateway/node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.js"
         },
         {
           "name": "@img/sharp-wasm32",
-          "mb": 8.65,
+          "mb": 8.89,
           "live": true,
           "liveBy": "pkg:dsh/gateway/node_modules/sharp/dist/sharp.cjs"
         },
         {
           "name": "@earendil-works/pi-ai",
-          "mb": 4.63,
+          "mb": 5.65,
           "live": true,
           "liveBy": "src:dsh/gateway/gateway.mjs"
         }
       ],
       "live": [
+        "@agentclientprotocol/sdk",
         "@anthropic-ai/sdk",
-        "@aws-crypto/sha256-browser",
-        "@aws-crypto/sha256-js",
-        "@aws-crypto/supports-web-crypto",
-        "@aws-crypto/util",
         "@aws-sdk/client-bedrock-runtime",
         "@aws-sdk/core",
         "@aws-sdk/credential-provider-env",
@@ -401,43 +1018,66 @@
         "@aws-sdk/nested-clients",
         "@aws-sdk/signature-v4-multi-region",
         "@aws-sdk/token-providers",
-        "@aws-sdk/util-locate-window",
         "@aws-sdk/xml-builder",
         "@aws/lambda-invoke-store",
         "@babel/code-frame",
         "@babel/helper-validator-identifier",
+        "@browserbasehq/sdk",
+        "@browserbasehq/stagehand",
         "@cfworker/json-schema",
         "@deepseek-ai/cordis",
         "@deepseek-ai/cordis-plugin-group",
-        "@deepseek-ai/cordis-plugin-hmr",
         "@deepseek-ai/cordis-plugin-include",
         "@deepseek-ai/cordis-plugin-loader",
         "@deepseek-ai/cordis-plugin-timer",
         "@deepseek-ai/cosmokit",
+        "@deepseek-ai/dsh",
+        "@deepseek-ai/dsh-acp",
+        "@deepseek-ai/dsh-acp-app",
         "@deepseek-ai/dsh-agent",
         "@deepseek-ai/dsh-agent-default-model",
         "@deepseek-ai/dsh-agent-instructions",
         "@deepseek-ai/dsh-agent-loop",
+        "@deepseek-ai/dsh-agent-preset",
+        "@deepseek-ai/dsh-agent-preset-registry",
         "@deepseek-ai/dsh-agent-presets",
+        "@deepseek-ai/dsh-agent-tool-presentation",
         "@deepseek-ai/dsh-anonymous-user-id",
+        "@deepseek-ai/dsh-api-account-controller",
         "@deepseek-ai/dsh-api-gateway",
+        "@deepseek-ai/dsh-api-job-controller",
         "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-settings-controller",
+        "@deepseek-ai/dsh-api-terminal-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-api-workspace-files",
         "@deepseek-ai/dsh-app-boot",
         "@deepseek-ai/dsh-atomic-write",
         "@deepseek-ai/dsh-attachment",
         "@deepseek-ai/dsh-attachment-local",
+        "@deepseek-ai/dsh-authorization",
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-bash-local",
         "@deepseek-ai/dsh-bash-sandbox",
         "@deepseek-ai/dsh-brand",
+        "@deepseek-ai/dsh-browser-use",
+        "@deepseek-ai/dsh-chunked-list",
         "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-file-upload",
         "@deepseek-ai/dsh-client-hmr",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-product-analytics",
+        "@deepseek-ai/dsh-client-resources",
         "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-shortcuts",
+        "@deepseek-ai/dsh-client-store",
         "@deepseek-ai/dsh-client-ui-agent-preset",
+        "@deepseek-ai/dsh-client-ui-approval",
         "@deepseek-ai/dsh-client-ui-attachment",
         "@deepseek-ai/dsh-client-ui-brand-official",
+        "@deepseek-ai/dsh-client-ui-chat",
         "@deepseek-ai/dsh-client-ui-commands",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-cordis",
@@ -450,17 +1090,33 @@
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-message-feedback",
         "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-open-in-app",
         "@deepseek-ai/dsh-client-ui-permission-presets",
         "@deepseek-ai/dsh-client-ui-plan",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-client-ui-reference",
         "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-schedule",
+        "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-account",
+        "@deepseek-ai/dsh-client-ui-settings-agent-loop",
         "@deepseek-ai/dsh-client-ui-settings-general",
         "@deepseek-ai/dsh-client-ui-settings-models",
         "@deepseek-ai/dsh-client-ui-settings-plugin-inventory",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-settings-session-log",
+        "@deepseek-ai/dsh-client-ui-settings-shell",
+        "@deepseek-ai/dsh-client-ui-settings-subagent",
+        "@deepseek-ai/dsh-client-ui-settings-web-search",
+        "@deepseek-ai/dsh-client-ui-shortcuts",
         "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-browser",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+        "@deepseek-ai/dsh-client-ui-sidebar-files",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-sidebar-terminal",
         "@deepseek-ai/dsh-client-ui-skill",
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-subagent",
@@ -470,6 +1126,7 @@
         "@deepseek-ai/dsh-client-ui-user-questions",
         "@deepseek-ai/dsh-client-ui-workflow-run",
         "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-web",
         "@deepseek-ai/dsh-cmdline",
         "@deepseek-ai/dsh-code-runtime",
         "@deepseek-ai/dsh-code-runtime-worker-thread",
@@ -479,11 +1136,38 @@
         "@deepseek-ai/dsh-commands",
         "@deepseek-ai/dsh-compaction",
         "@deepseek-ai/dsh-compaction-basic",
+        "@deepseek-ai/dsh-compaction-image-offload",
         "@deepseek-ai/dsh-compaction-tool-result-pruner",
+        "@deepseek-ai/dsh-config-editor",
         "@deepseek-ai/dsh-cordis-client-runner",
         "@deepseek-ai/dsh-cordis-host-runner",
         "@deepseek-ai/dsh-credentials",
         "@deepseek-ai/dsh-credentials-local",
+        "@deepseek-ai/dsh-deepseek-account",
+        "@deepseek-ai/dsh-deepseek-account-platform",
+        "@deepseek-ai/dsh-deepseek-llm-api-extensions",
+        "@deepseek-ai/dsh-deque",
+        "@deepseek-ai/dsh-experimental-agent-team",
+        "@deepseek-ai/dsh-experimental-agent-team-profile",
+        "@deepseek-ai/dsh-experimental-api-speech-to-text",
+        "@deepseek-ai/dsh-experimental-auto-review",
+        "@deepseek-ai/dsh-experimental-browser-use-chrome-devtools-mcp",
+        "@deepseek-ai/dsh-experimental-browser-use-playwright-mcp",
+        "@deepseek-ai/dsh-experimental-browser-use-runtime",
+        "@deepseek-ai/dsh-experimental-browser-use-stagehand-native",
+        "@deepseek-ai/dsh-experimental-client-ui-agent-team",
+        "@deepseek-ai/dsh-experimental-client-ui-voice-input",
+        "@deepseek-ai/dsh-experimental-computer-use-cua-driver-mcp",
+        "@deepseek-ai/dsh-experimental-computer-use-cua-driver-native",
+        "@deepseek-ai/dsh-experimental-inspector",
+        "@deepseek-ai/dsh-experimental-ptc-runtime-python",
+        "@deepseek-ai/dsh-experimental-schedule-bundle",
+        "@deepseek-ai/dsh-experimental-speech-to-text",
+        "@deepseek-ai/dsh-experimental-speech-to-text-sensevoice",
+        "@deepseek-ai/dsh-experimental-tool-agent-team",
+        "@deepseek-ai/dsh-experimental-voice-input-bundle",
+        "@deepseek-ai/dsh-experimental-webworker-packer",
+        "@deepseek-ai/dsh-experimental-webworker-runtime",
         "@deepseek-ai/dsh-file-reference",
         "@deepseek-ai/dsh-file-reference-local",
         "@deepseek-ai/dsh-fs",
@@ -493,29 +1177,48 @@
         "@deepseek-ai/dsh-goal",
         "@deepseek-ai/dsh-goal-round-driver",
         "@deepseek-ai/dsh-headless",
+        "@deepseek-ai/dsh-hmr",
         "@deepseek-ai/dsh-home-paths",
+        "@deepseek-ai/dsh-hook-protocol",
+        "@deepseek-ai/dsh-hooks-claude-code",
+        "@deepseek-ai/dsh-hooks-codex",
         "@deepseek-ai/dsh-host-apiproxy",
         "@deepseek-ai/dsh-host-directory-picker",
         "@deepseek-ai/dsh-host-directory-picker-auto",
         "@deepseek-ai/dsh-host-directory-picker-browse",
         "@deepseek-ai/dsh-host-directory-picker-native",
         "@deepseek-ai/dsh-host-frontend-static",
+        "@deepseek-ai/dsh-host-open-in-app",
         "@deepseek-ai/dsh-host-plugin-inventory",
+        "@deepseek-ai/dsh-host-product-telemetry-otel",
         "@deepseek-ai/dsh-host-webserver",
+        "@deepseek-ai/dsh-http-proxy",
         "@deepseek-ai/dsh-invariants",
         "@deepseek-ai/dsh-jobs",
         "@deepseek-ai/dsh-jobs-local",
         "@deepseek-ai/dsh-launch-environment",
+        "@deepseek-ai/dsh-lazy-require",
         "@deepseek-ai/dsh-llm",
         "@deepseek-ai/dsh-llm-deepseek",
+        "@deepseek-ai/dsh-llm-deepseek-account",
+        "@deepseek-ai/dsh-llm-deepseek-api-key",
         "@deepseek-ai/dsh-llm-pi-ai",
         "@deepseek-ai/dsh-llm-retry",
         "@deepseek-ai/dsh-mcp-client",
+        "@deepseek-ai/dsh-mcp-resources",
         "@deepseek-ai/dsh-message-feedback",
         "@deepseek-ai/dsh-native-command",
+        "@deepseek-ai/dsh-office-to-pdf",
+        "@deepseek-ai/dsh-otel",
         "@deepseek-ai/dsh-output-retention",
+        "@deepseek-ai/dsh-package-manifest",
         "@deepseek-ai/dsh-permission-presets",
+        "@deepseek-ai/dsh-persona",
         "@deepseek-ai/dsh-plan-mode",
+        "@deepseek-ai/dsh-plugin-manager",
+        "@deepseek-ai/dsh-plugin-package-inventory-deepseek",
+        "@deepseek-ai/dsh-ptc-runtime",
+        "@deepseek-ai/dsh-ptc-runtime-node",
         "@deepseek-ai/dsh-pwsh-local",
         "@deepseek-ai/dsh-pwsh-sandbox",
         "@deepseek-ai/dsh-repeat-tool-reminder",
@@ -523,13 +1226,23 @@
         "@deepseek-ai/dsh-sandbox-local",
         "@deepseek-ai/dsh-sandbox-policy",
         "@deepseek-ai/dsh-sandbox-windows-acl",
+        "@deepseek-ai/dsh-schedule",
         "@deepseek-ai/dsh-scope",
+        "@deepseek-ai/dsh-sdk-app",
         "@deepseek-ai/dsh-sdk-client",
         "@deepseek-ai/dsh-sdk-jsonrpc-demo",
         "@deepseek-ai/dsh-sdk-jsonrpc-server",
+        "@deepseek-ai/dsh-sdk-minimal",
         "@deepseek-ai/dsh-sdk-protocol",
         "@deepseek-ai/dsh-session",
         "@deepseek-ai/dsh-session-checkpoint-policy",
+        "@deepseek-ai/dsh-session-format",
+        "@deepseek-ai/dsh-session-format-catalog",
+        "@deepseek-ai/dsh-session-format-v0-to-v1",
+        "@deepseek-ai/dsh-session-format-v1-to-v2",
+        "@deepseek-ai/dsh-session-format-v2-to-v3",
+        "@deepseek-ai/dsh-session-format-v3-to-v4",
+        "@deepseek-ai/dsh-session-log-deepseek",
         "@deepseek-ai/dsh-session-log-export",
         "@deepseek-ai/dsh-session-persistence",
         "@deepseek-ai/dsh-session-persistence-jsonl",
@@ -544,6 +1257,7 @@
         "@deepseek-ai/dsh-session-title",
         "@deepseek-ai/dsh-session-title-first-prompt-llm",
         "@deepseek-ai/dsh-session-title-llm",
+        "@deepseek-ai/dsh-session-turn-outline",
         "@deepseek-ai/dsh-settings",
         "@deepseek-ai/dsh-settings-file",
         "@deepseek-ai/dsh-shell",
@@ -551,6 +1265,7 @@
         "@deepseek-ai/dsh-skill",
         "@deepseek-ai/dsh-skill-badge",
         "@deepseek-ai/dsh-skill-filesystem",
+        "@deepseek-ai/dsh-skill-office",
         "@deepseek-ai/dsh-spill",
         "@deepseek-ai/dsh-spill-local",
         "@deepseek-ai/dsh-spill-policy",
@@ -564,62 +1279,132 @@
         "@deepseek-ai/dsh-subprocess",
         "@deepseek-ai/dsh-subprocess-local",
         "@deepseek-ai/dsh-system-prompt",
+        "@deepseek-ai/dsh-terminal",
+        "@deepseek-ai/dsh-terminal-bash",
+        "@deepseek-ai/dsh-time-context",
         "@deepseek-ai/dsh-timeout",
+        "@deepseek-ai/dsh-tmux-context",
         "@deepseek-ai/dsh-token-meter",
         "@deepseek-ai/dsh-tool-ask-user",
         "@deepseek-ai/dsh-tool-bash",
+        "@deepseek-ai/dsh-tool-bash-persistent",
         "@deepseek-ai/dsh-tool-call-timeout-policy",
+        "@deepseek-ai/dsh-tool-cordis",
         "@deepseek-ai/dsh-tool-fs",
         "@deepseek-ai/dsh-tool-fs-search",
         "@deepseek-ai/dsh-tool-goal",
         "@deepseek-ai/dsh-tool-jobs",
+        "@deepseek-ai/dsh-tool-present",
         "@deepseek-ai/dsh-tool-pwsh",
+        "@deepseek-ai/dsh-tool-pwsh-persistent",
         "@deepseek-ai/dsh-tool-ralph",
         "@deepseek-ai/dsh-tool-skill",
         "@deepseek-ai/dsh-tool-str-replace-editor",
         "@deepseek-ai/dsh-tool-subagent",
         "@deepseek-ai/dsh-tool-subagent-control",
-        "@deepseek-ai/dsh-tool-subagent-report",
         "@deepseek-ai/dsh-tool-todo",
         "@deepseek-ai/dsh-tool-web",
         "@deepseek-ai/dsh-tool-workflow",
+        "@deepseek-ai/dsh-tool-workspace-dependencies",
         "@deepseek-ai/dsh-tools",
         "@deepseek-ai/dsh-typert-loader",
         "@deepseek-ai/dsh-typert-protocol",
         "@deepseek-ai/dsh-typert-registry",
         "@deepseek-ai/dsh-user-approval",
         "@deepseek-ai/dsh-user-questions",
+        "@deepseek-ai/dsh-util-code-language",
+        "@deepseek-ai/dsh-util-crypto",
+        "@deepseek-ai/dsh-util-time",
+        "@deepseek-ai/dsh-util-values",
+        "@deepseek-ai/dsh-util-workspace-path",
         "@deepseek-ai/dsh-web",
         "@deepseek-ai/dsh-web-app",
+        "@deepseek-ai/dsh-web-fetch-http",
         "@deepseek-ai/dsh-web-frontend",
         "@deepseek-ai/dsh-web-search-deepseek",
+        "@deepseek-ai/dsh-webhook",
+        "@deepseek-ai/dsh-webhook-github",
+        "@deepseek-ai/dsh-win32-process",
         "@deepseek-ai/dsh-workflow",
+        "@deepseek-ai/dsh-workflow-ptc",
         "@deepseek-ai/dsh-workflow-worker-thread",
         "@deepseek-ai/dsh-workspace",
-        "@deepseek-ai/node-addon-landlock-run",
+        "@deepseek-ai/dsh-workspace-changes",
+        "@deepseek-ai/libreoffice-kit",
+        "@deepseek-ai/node-addon-system",
+        "@deepseek-ai/node-addon-system-darwin-arm64",
+        "@deepseek-ai/node-addon-system-darwin-x64",
+        "@deepseek-ai/node-addon-system-linux-arm64",
+        "@deepseek-ai/node-addon-system-linux-x64",
         "@deepseek-ai/schemastery",
         "@earendil-works/pi-ai",
         "@emnapi/runtime",
+        "@eslint-community/regexpp",
         "@google/genai",
         "@hono/node-server",
         "@img/colour",
+        "@img/sharp-darwin-arm64",
+        "@img/sharp-darwin-x64",
+        "@img/sharp-freebsd-wasm32",
+        "@img/sharp-libvips-darwin-arm64",
+        "@img/sharp-libvips-darwin-x64",
+        "@img/sharp-libvips-linux-arm",
+        "@img/sharp-libvips-linux-arm64",
+        "@img/sharp-libvips-linux-ppc64",
+        "@img/sharp-libvips-linux-riscv64",
+        "@img/sharp-libvips-linux-s390x",
+        "@img/sharp-libvips-linux-x64",
+        "@img/sharp-libvips-linuxmusl-arm64",
+        "@img/sharp-libvips-linuxmusl-x64",
+        "@img/sharp-linux-arm",
+        "@img/sharp-linux-arm64",
+        "@img/sharp-linux-ppc64",
+        "@img/sharp-linux-riscv64",
+        "@img/sharp-linux-s390x",
+        "@img/sharp-linux-x64",
+        "@img/sharp-linuxmusl-arm64",
+        "@img/sharp-linuxmusl-x64",
         "@img/sharp-wasm32",
+        "@img/sharp-webcontainers-wasm32",
+        "@img/sharp-win32-arm64",
+        "@img/sharp-win32-ia32",
         "@img/sharp-win32-x64",
         "@joplin/turndown-plugin-gfm",
+        "@js-temporal/polyfill",
+        "@keyv/serialize",
+        "@koromix/koffi-darwin-arm64",
+        "@koromix/koffi-darwin-x64",
+        "@koromix/koffi-freebsd-arm64",
+        "@koromix/koffi-freebsd-ia32",
+        "@koromix/koffi-freebsd-x64",
+        "@koromix/koffi-linux-arm64",
+        "@koromix/koffi-linux-ia32",
+        "@koromix/koffi-linux-loong64",
+        "@koromix/koffi-linux-riscv64",
+        "@koromix/koffi-linux-x64",
+        "@koromix/koffi-openbsd-ia32",
+        "@koromix/koffi-openbsd-x64",
+        "@koromix/koffi-win32-arm64",
+        "@koromix/koffi-win32-ia32",
         "@koromix/koffi-win32-x64",
-        "@mistralai/mistralai",
         "@mixmark-io/domino",
+        "@modelcontextprotocol/client",
+        "@modelcontextprotocol/core",
         "@modelcontextprotocol/sdk",
+        "@noble/hashes",
+        "@octokit/webhooks",
+        "@octokit/webhooks-methods",
         "@opentelemetry/api",
         "@opentelemetry/api-logs",
         "@opentelemetry/core",
-        "@opentelemetry/exporter-logs-otlp-http",
         "@opentelemetry/otlp-exporter-base",
         "@opentelemetry/otlp-transformer",
         "@opentelemetry/resources",
         "@opentelemetry/sdk-logs",
         "@opentelemetry/sdk-metrics",
+        "@opentelemetry/sdk-trace",
         "@opentelemetry/semantic-conventions",
+        "@playwright/mcp",
         "@protobufjs/aspromise",
         "@protobufjs/base64",
         "@protobufjs/codegen",
@@ -629,6 +1414,8 @@
         "@protobufjs/path",
         "@protobufjs/pool",
         "@protobufjs/utf8",
+        "@puppeteer/browsers",
+        "@sec-ant/readable-stream",
         "@shikijs/core",
         "@shikijs/engine-javascript",
         "@shikijs/engine-oniguruma",
@@ -637,33 +1424,77 @@
         "@shikijs/themes",
         "@shikijs/types",
         "@shikijs/vscode-textmate",
+        "@sindresorhus/is",
+        "@sindresorhus/merge-streams",
         "@smithy/core",
         "@smithy/credential-provider-imds",
         "@smithy/fetch-http-handler",
-        "@smithy/is-array-buffer",
         "@smithy/node-http-handler",
         "@smithy/signature-v4",
         "@smithy/types",
-        "@smithy/util-buffer-from",
-        "@smithy/util-utf8",
+        "@stablelib/base64",
+        "@swc/helpers",
+        "@trycua/cua-driver",
+        "@trycua/cua-driver-darwin-arm64",
+        "@trycua/cua-driver-darwin-x64",
+        "@trycua/cua-driver-linux-arm64-gnu",
+        "@trycua/cua-driver-linux-x64-gnu",
+        "@trycua/cua-driver-win32-arm64-msvc",
+        "@trycua/cua-driver-win32-x64-msvc",
+        "@types/debug",
         "@types/node",
+        "@ubjs/core",
+        "@ubjs/node",
+        "@ubjs/node-darwin-arm64",
+        "@ubjs/node-darwin-x64",
+        "@ubjs/node-linux-arm64-gnu",
+        "@ubjs/node-linux-arm64-musl",
+        "@ubjs/node-linux-x64-gnu",
+        "@ubjs/node-linux-x64-musl",
+        "@ubjs/node-win32-arm64-msvc",
+        "@ubjs/node-win32-x64-msvc",
         "@ungap/structured-clone",
         "@vscode/ripgrep",
+        "@vscode/ripgrep-darwin-arm64",
+        "@vscode/ripgrep-darwin-x64",
+        "@vscode/ripgrep-linux-arm",
+        "@vscode/ripgrep-linux-arm64",
+        "@vscode/ripgrep-linux-ia32",
+        "@vscode/ripgrep-linux-ppc64",
+        "@vscode/ripgrep-linux-riscv64",
+        "@vscode/ripgrep-linux-s390x",
+        "@vscode/ripgrep-linux-x64",
+        "@vscode/ripgrep-win32-arm64",
+        "@vscode/ripgrep-win32-ia32",
         "@vscode/ripgrep-win32-x64",
+        "@xterm/addon-serialize",
+        "@xterm/headless",
+        "@yarnpkg/parsers",
+        "abort-controller",
         "accepts",
+        "acorn",
         "agent-base",
+        "agentkeepalive",
         "ajv",
         "ajv-formats",
         "anser",
+        "ansi-regex",
+        "ansi-styles",
         "argparse",
+        "asynckit",
         "base64-js",
         "bignumber.js",
         "body-parser",
         "bowser",
+        "brotli",
+        "buffer",
         "buffer-equal-constant-time",
         "bufferutil",
         "bundle-name",
+        "byte-counter",
         "bytes",
+        "cacheable-lookup",
+        "cacheable-request",
         "call-bind-apply-helpers",
         "call-bound",
         "ccount",
@@ -671,9 +1502,15 @@
         "character-entities-html4",
         "character-entities-legacy",
         "chokidar",
+        "chrome-devtools-mcp",
+        "cliui",
+        "clone",
         "clsx",
+        "combined-stream",
         "comma-separated-tokens",
         "commander",
+        "compressible",
+        "compression",
         "content-disposition",
         "content-type",
         "cookie",
@@ -683,76 +1520,109 @@
         "data-uri-to-buffer",
         "debug",
         "decode-named-character-reference",
+        "decompress-response",
         "default-browser",
         "default-browser-id",
         "define-lazy-prop",
+        "delayed-stream",
         "depd",
         "dequal",
+        "destroy",
         "detect-libc",
         "devlop",
+        "dfa",
         "diff",
         "dunder-proto",
         "ecdsa-sig-formatter",
         "ee-first",
+        "emoji-regex",
         "encodeurl",
         "es-define-property",
         "es-errors",
         "es-object-atoms",
+        "es-set-tostringtag",
+        "escalade",
         "escape-html",
         "escape-string-regexp",
         "etag",
+        "event-target-shim",
+        "events",
         "eventsource",
         "eventsource-parser",
+        "execa",
         "express",
         "express-rate-limit",
         "extend",
         "fast-deep-equal",
+        "fast-sha256",
         "fast-uri",
         "fetch-blob",
         "fflate",
+        "figures",
         "finalhandler",
+        "fontkit",
+        "form-data",
+        "form-data-encoder",
+        "formdata-node",
         "formdata-polyfill",
         "forwarded",
         "fresh",
         "function-bind",
         "gaxios",
         "gcp-metadata",
+        "get-caller-file",
+        "get-east-asian-width",
         "get-intrinsic",
         "get-proto",
+        "get-stream",
         "google-auth-library",
         "google-logging-utils",
         "gopd",
+        "got",
         "has-symbols",
+        "has-tostringtag",
         "hasown",
         "hast-util-to-html",
         "hast-util-whitespace",
         "hono",
         "html-void-elements",
+        "http-cache-semantics",
         "http-errors",
         "http-proxy-agent",
+        "http2-wrapper",
         "https-proxy-agent",
+        "human-signals",
+        "humanize-ms",
         "iconv-lite",
+        "ieee754",
+        "immer",
         "inherits",
         "ip-address",
         "ipaddr.js",
         "is-docker",
         "is-in-ssh",
         "is-inside-container",
+        "is-plain-obj",
         "is-promise",
+        "is-stream",
+        "is-unicode-supported",
         "is-wsl",
         "isexe",
         "jose",
         "js-tokens",
         "js-yaml",
+        "jsbi",
         "json-bigint",
         "json-schema-traverse",
         "jwa",
         "jws",
         "katex",
+        "keyv",
         "koffi",
         "long",
         "longest-streak",
         "loose-envify",
+        "lowercase-keys",
         "markdown-table",
         "math-intrinsics",
         "mdast-util-find-and-replace",
@@ -801,25 +1671,39 @@
         "micromark-util-types",
         "mime-db",
         "mime-types",
+        "mimic-response",
+        "modern-tar",
         "ms",
         "negotiator",
         "node-addon-api",
         "node-addon-native-custom-loader",
         "node-addon-require-builtin",
+        "node-addon-require-builtin-darwin-arm64",
+        "node-addon-require-builtin-darwin-x64",
+        "node-addon-require-builtin-linux-arm64-gnu",
+        "node-addon-require-builtin-linux-x64-gnu",
+        "node-addon-require-builtin-win32-arm64-msvc",
+        "node-addon-require-builtin-win32-ia32-msvc",
         "node-addon-require-builtin-win32-x64-msvc",
         "node-domexception",
         "node-fetch",
         "node-gyp-build",
         "node-pty",
+        "normalize-url",
+        "npm-run-path",
         "object-assign",
         "object-inspect",
         "on-finished",
+        "on-headers",
         "once",
         "oniguruma-parser",
         "oniguruma-to-es",
         "open",
         "openai",
+        "p-cancelable",
         "p-retry",
+        "pako",
+        "parse-ms",
         "parseurl",
         "partial-json",
         "path-key",
@@ -827,25 +1711,37 @@
         "picocolors",
         "picomatch",
         "pkce-challenge",
+        "playwright",
+        "playwright-core",
         "powershell-utils",
+        "pretty-ms",
+        "process",
         "property-information",
         "protobufjs",
         "proxy-addr",
+        "proxy-agent-negotiate",
         "qs",
+        "quick-lru",
         "range-parser",
         "raw-body",
         "react",
         "react-dom",
+        "readable-stream",
         "readdirp",
         "regex",
         "regex-recursion",
         "regex-utilities",
         "require-from-string",
+        "resolve-alpn",
+        "resolve.exports",
+        "responselike",
+        "restructure",
         "retry",
         "router",
         "run-applescript",
         "safe-buffer",
         "safer-buffer",
+        "saxes",
         "scheduler",
         "semver",
         "send",
@@ -854,38 +1750,59 @@
         "sharp",
         "shebang-command",
         "shebang-regex",
+        "sherpa-onnx-node",
         "shiki",
         "side-channel",
         "side-channel-list",
         "side-channel-map",
         "side-channel-weakmap",
+        "signal-exit",
         "space-separated-tokens",
+        "standardwebhooks",
         "statuses",
+        "string-width",
+        "string_decoder",
         "stringify-entities",
+        "strip-ansi",
+        "strip-final-newline",
+        "tiny-inflate",
         "toidentifier",
         "trim-lines",
         "tslib",
         "turndown",
         "type-is",
         "typebox",
+        "undici",
+        "unicode-properties",
+        "unicode-trie",
+        "unicorn-magic",
         "unist-util-is",
         "unist-util-position",
         "unist-util-stringify-position",
         "unist-util-visit",
         "unist-util-visit-parents",
         "unpipe",
+        "use-sync-external-store",
         "utf-8-validate",
         "vary",
         "vfile",
         "vfile-message",
         "web-streams-polyfill",
         "which",
+        "which-command",
+        "wrap-ansi",
         "wrappy",
         "ws",
         "wsl-utils",
+        "xmlchars",
+        "y18n",
         "yaml",
+        "yargs",
+        "yargs-parser",
+        "yoctocolors",
         "zod",
         "zod-to-json-schema",
+        "zustand",
         "zwitch"
       ]
     },
@@ -894,57 +1811,11 @@
       "nodeModules": "node_modules",
       "packages": 296,
       "totalMB": 440.95,
-      "liveMB": 440.9,
-      "deadMB": 0.05,
-      "excludePackages": [
-        "@types/http-cache-semantics",
-        "@types/keyv",
-        "@types/ms",
-        "err-code",
-        "promise-retry",
-        "yocto-queue"
-      ],
-      "groups": [
-        {
-          "key": "unreferenced",
-          "reason": "可达闭包内零引用",
-          "packages": [
-            {
-              "name": "err-code",
-              "mb": 0.01
-            },
-            {
-              "name": "promise-retry",
-              "mb": 0.01
-            },
-            {
-              "name": "yocto-queue",
-              "mb": 0.01
-            }
-          ],
-          "mb": 0.03
-        },
-        {
-          "key": "types",
-          "reason": "TS 类型声明与编译器：运行时不加载",
-          "packages": [
-            {
-              "name": "@types/http-cache-semantics",
-              "mb": 0.01
-            },
-            {
-              "name": "@types/keyv",
-              "mb": 0.01
-            },
-            {
-              "name": "@types/ms",
-              "mb": 0
-            }
-          ],
-          "mb": 0.02
-        }
-      ],
-      "filePruneMB": 33.28,
+      "liveMB": 440.95,
+      "deadMB": 0,
+      "excludePackages": [],
+      "groups": [],
+      "filePruneMB": 33.29,
       "files": [
         {
           "bucket": "platform-binary",
@@ -989,7 +1860,7 @@
         {
           "bucket": "doc-file",
           "mb": 0.19,
-          "count": 26,
+          "count": 27,
           "samples": [
             "uiohook-napi/README.md",
             "node-gyp-build/README.md",
@@ -1009,7 +1880,7 @@
         {
           "bucket": "types",
           "mb": 0.1,
-          "count": 50,
+          "count": 51,
           "samples": [
             "uiohook-napi/dist/index.d.ts",
             "uiohook-napi/dist/prebuild-test-noop.d.ts",
@@ -1019,72 +1890,7 @@
       ],
       "entryRisks": [],
       "declaredUnreferenced": [],
-      "guarded": [
-        {
-          "name": "type-fest",
-          "mb": 0.08,
-          "declaredBy": [
-            "serialize-error"
-          ]
-        },
-        {
-          "name": "undici-types",
-          "mb": 0.08,
-          "declaredBy": [
-            "@types/node"
-          ]
-        },
-        {
-          "name": "@types/fs-extra",
-          "mb": 0.03,
-          "declaredBy": [
-            "app-builder-lib",
-            "electron-publish"
-          ]
-        },
-        {
-          "name": "@types/cacheable-request",
-          "mb": 0.01,
-          "declaredBy": [
-            "got"
-          ]
-        },
-        {
-          "name": "@types/debug",
-          "mb": 0.01,
-          "declaredBy": [
-            "builder-util"
-          ]
-        },
-        {
-          "name": "@types/yauzl",
-          "mb": 0.01,
-          "declaredBy": [
-            "extract-zip"
-          ]
-        },
-        {
-          "name": "supports-preserve-symlinks-flag",
-          "mb": 0.01,
-          "declaredBy": [
-            "resolve"
-          ]
-        },
-        {
-          "name": "tiny-typed-emitter",
-          "mb": 0.01,
-          "declaredBy": [
-            "electron-updater"
-          ]
-        },
-        {
-          "name": "@types/responselike",
-          "mb": 0,
-          "declaredBy": [
-            "got"
-          ]
-        }
-      ],
+      "guarded": [],
       "soft": [],
       "shipped": [
         {
@@ -1185,7 +1991,7 @@
         {
           "name": "tiny-typed-emitter",
           "mb": 0.01,
-          "live": false
+          "live": true
         },
         {
           "name": "uiohook-napi",
@@ -1218,7 +2024,15 @@
         "@peculiar/webcrypto",
         "@sindresorhus/is",
         "@szmarczak/http-timer",
+        "@types/cacheable-request",
+        "@types/debug",
+        "@types/fs-extra",
+        "@types/http-cache-semantics",
+        "@types/keyv",
+        "@types/ms",
         "@types/node",
+        "@types/responselike",
+        "@types/yauzl",
         "@xmldom/xmldom",
         "abbrev",
         "agent-base",
@@ -1289,6 +2103,7 @@
         "emoji-regex",
         "end-of-stream",
         "env-paths",
+        "err-code",
         "error-ex",
         "es-define-property",
         "es-errors",
@@ -1410,6 +2225,7 @@
         "proc-log",
         "process-nextick-args",
         "progress",
+        "promise-retry",
         "proper-lockfile",
         "pump",
         "pvtsutils",
@@ -1454,18 +2270,22 @@
         "strip-outer",
         "sumchecker",
         "supports-color",
+        "supports-preserve-symlinks-flag",
         "tar",
         "temp",
         "temp-file",
         "tiny-async-pool",
+        "tiny-typed-emitter",
         "tinyglobby",
         "tmp",
         "tmp-promise",
         "trim-repeated",
         "truncate-utf8-bytes",
         "tslib",
+        "type-fest",
         "uiohook-napi",
         "undici",
+        "undici-types",
         "universalify",
         "unzipper",
         "utf8-byte-length",
@@ -1480,7 +2300,8 @@
         "yallist",
         "yargs",
         "yargs-parser",
-        "yauzl"
+        "yauzl",
+        "yocto-queue"
       ]
     }
   }

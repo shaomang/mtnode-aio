@@ -298,9 +298,35 @@ function modelMatchesPatterns(modelId, patterns) {
   return false;
 }
 
-/* 服务商是否停用：只有显式 disabled === true 才算（缺省 / 老配置一律照旧可用） */
-function providerDisabled(prov) {
+/* 用户手动停用：只有显式 disabled === true 才算（缺省 / 老配置一律照旧可用）。
+   与「不可用」分开：设置页那个「启用」勾选框读的是它，中转服务余额耗尽不能让勾选框自己掉了。 */
+function providerManuallyOff(prov) {
   return !!(prov && prov.disabled === true);
+}
+
+/* MTNode 中转服务（source="mtnode-relay"，见 renderer/app-relay.js）余额耗尽：
+   卡还在（有过充值就永久显示），但**不许被引用** —— 节点 / 会话的模型选择器一律列不到它。
+   判据来自云端快照：relay.blocked（可用余额 ≤ 0 或服务端回空清单）。 */
+function providerRelayBlocked(prov) {
+  return !!(
+    prov &&
+    String(prov.source || "") === "mtnode-relay" &&
+    prov.relay &&
+    prov.relay.blocked === true
+  );
+}
+
+/* 服务商是否不进任何「给用户选模型」的地方：手动停用，或中转服务余额耗尽 */
+function providerDisabled(prov) {
+  return providerManuallyOff(prov) || providerRelayBlocked(prov);
+}
+
+/* 选择器里的状态后缀（"" / 已停用 / 余额不足）：叫法分开，用户才分得清
+   「我自己关掉的」和「钱花完了、充上就能用」。 */
+function providerStateText(prov) {
+  if (providerManuallyOff(prov)) return I18n.t("已停用");
+  if (providerRelayBlocked(prov)) return I18n.t("余额不足");
+  return "";
 }
 
 /* 单个模型 id 是否通过该服务商的白 / 黑名单（先白名单收窄、再黑名单剔除） */

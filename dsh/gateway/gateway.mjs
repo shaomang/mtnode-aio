@@ -24,10 +24,37 @@ import crypto from 'node:crypto'
    档位词汇、路由能力表与回退链的唯一真源,gateway 与运行时 mtnode-effort 插件共用。 */
 import { DEFAULT_EFFORT, effortForRoute, effortKeyOf } from './reasoning-effort.mjs'
 import { normalizeHiddenTools } from './tool-visibility.mjs'
+import { messagesBaseUrl } from './messages-base-url.mjs'
+/* 会话自己的浏览器（用户已确认的底座：系统 Edge/Chrome + CDP 直驱 + 独立用户数据目录）。
+   进程、CDP 连接、驱动串行锁、接管状态与动作留痕全在这一个模块里；网关只做两件事：
+   ① 安全裁决（域名名单 / 危险动作 / 接管期间拒绝）② 把帧与留痕转成宿主事件。
+   零新依赖：CDP 走 Node ≥22 内置 WebSocket（见 browser-host.mjs）。 */
+import * as BrowserHost from './browser-host.mjs'
+import { domainVerdict, dangerOfClick, normalizePolicy, DEFAULT_POLICY, profileDirOf, downloadDirOf, shotsDirOf } from './browser-host.mjs'
 
 const require = createRequire(import.meta.url)
-const RUNTIME_BIN = require.resolve('@deepseek-ai/dsh-sdk-jsonrpc-demo/bin')
+/* dsh 0.2：运行时不再由 sdk-jsonrpc-demo/bin 直起，而是 SDK 客户端按 profile 启
+   `@deepseek-ai/dsh` 的 bin（内置 Node ≥ 22.19），把 cordis.yml 当作 --patch 叠加层
+   应用到内置 sdk profile（base + sdk-app 两层 bundle）之上。这里只保留 cordis.yml
+   的路径常量；bin 的解析交给 SDK 的 installedDshNodeLaunch（同版本校验）。
+   见 dsh/DESIGN.md「运行时组合（0.2 profile + patch）」。 */
 const CORDIS_PATH = path.resolve(import.meta.dirname, 'cordis.yml')
+/* 运行时可执行文件（0.2）：@deepseek-ai/dsh 的 bin（lib/bin.js）。SDK 客户端自己
+   也会解析同一个入口并按版本校验；这里显式传 dshBin 让它只认这一个（避免 SDK 从
+   别的 node_modules 解析到另一份 dsh）。仅用于 status 回执与诊断。 */
+const DSH_PKG_DIR = (() => {
+  try { return path.dirname(require.resolve('@deepseek-ai/dsh/package.json')) } catch { return '' }
+})()
+const RUNTIME_BIN = (() => {
+  if (!DSH_PKG_DIR) return ''
+  try {
+    const manifest = JSON.parse(readFileSync(path.join(DSH_PKG_DIR, 'package.json'), 'utf8'))
+    const bin = typeof manifest.bin === 'object' && manifest.bin ? manifest.bin.dsh : manifest.bin
+    return bin ? path.resolve(DSH_PKG_DIR, bin) : ''
+  } catch {
+    return ''
+  }
+})()
 const GATEWAY_DIR = import.meta.dirname
 const GATEWAY_VERSION = '0.1.0'
 /* 池化上限：仅回收空闲 runtime。有在途 run 的永不踢掉，可短暂超过此数。 */
@@ -738,6 +765,45 @@ function inFlightUnsupported(detail) {
   return { ok: false, reason: 'unsupported', detail: String(detail || '').slice(0, 200) }
 }
 
+/* 只读自检（config/probe 桥 · 见 plugins/session-resume-server.mjs 的 PROBE_METHOD）：
+   按 reqId/runKey 找到那台 live runtime，把它的生效装配（行 id + config）回给调用方。
+   找不到 = 回 no_runtime / unsupported，绝不为探针新起一台运行时。 */
+async function handleConfigProbe(p) {
+  let entry = null
+  const runKey = String(p.runKey == null ? '' : p.runKey).trim()
+  if (runKey) entry = runtimes.get(runKey) || null
+  if (!entry) {
+    const runs = findInFlightRuns(p)
+    for (const run of runs) {
+      const hit = run.runKey ? runtimes.get(run.runKey) : null
+      if (hit) { entry = hit; break }
+    }
+  }
+  if (!entry) {
+    /* 没有在途轮次时回退到最近建立的那台（冒烟探针在 run 收尾后仍要能读配置） */
+    let newest = null
+    for (const [, v] of runtimes) if (!newest || v.order > newest.order) newest = v
+    entry = newest
+  }
+  if (!entry) return { ok: false, reason: 'no_runtime', detail: 'no live runtime in pool (keys=' + [...runtimes.keys()].length + ')' }
+  let harness = null
+  try {
+    harness = await entry.harness
+  } catch (err) {
+    return { ok: false, reason: 'unsupported', detail: String((err && err.message) || err).slice(0, 200) }
+  }
+  const client = harness && harness.client
+  if (!client || typeof client.request !== 'function') {
+    return { ok: false, reason: 'unsupported', detail: 'runtime client cannot request' }
+  }
+  try {
+    const probe = await client.request('config/probe', {}, 10000)
+    return { ok: true, probe }
+  } catch (err) {
+    return { ok: false, reason: 'unsupported', detail: String((err && err.message) || err).slice(0, 200) }
+  }
+}
+
 /* 插话正文:宿主可给 contentBlocks(与 session/prompt 同形),也可只给一句纯文本
    (text / content / input / message 任一)。两种形状都收下,下发时 contentBlocks
    与 text 同时带上 —— 运行时侧 session/steer 取哪种都取得到。没有正文就不是插话。 */
@@ -848,7 +914,7 @@ async function handleInflightRequest(method, p) {
 /* 登记一次运行对 runtime 的占用(同步完成,中间不 await,避免并发 run 抢同一台)。
    sessionId 在登记时就带上:真实轮的 session 由网关铸造(handleRun 的 runSession),
    所以第一帧交互到达前归属判据已经完整,不存在「先放行再补票」的空窗。 */
-function claimRuntime(key, reqId, cancelTag, sessionId) {
+function claimRuntime(key, reqId, cancelTag, sessionId, hostSessionId) {
   if (reqId) {
     /* 上一轮没走正常收尾就被新一轮顶掉:先把它快照下来,别丢分类判据 */
     snapshotPriorSessions(key, keyToReqId.get(key))
@@ -859,6 +925,8 @@ function claimRuntime(key, reqId, cancelTag, sessionId) {
     keyToReqId.set(key, {
       reqId, sessionId: sid,
       sessions: new Set(sid ? [sid] : []),
+      /* 本轮的宿主(渲染层)会话 id:活动流条目的归属翻译靠它(见 hostSessionTagOf) */
+      host: String(hostSessionId || ''),
       /* 本轮预热轮('ok')的 session,起机预热时补记(见 handleRun);仅用于日志分类 */
       warmSession: '',
     })
@@ -877,6 +945,23 @@ function claimRuntime(key, reqId, cancelTag, sessionId) {
 /* 此刻占用这台 runtime 的那一轮(没有 = 这台没有在途 run) */
 function claimOf(key) {
   return keyToReqId.get(key) || null
+}
+
+/* 活动流的归属翻译：dsh 侧的 session id(`session-…`，浏览器 / 工具帧自带) 翻成
+   宿主(渲染层)的会话 id(`as…`，run 参数 hostSessionId)。活动流面板按「当前会话」
+   过滤(renderer/app-browser.js 的 BA.setSession)，而面板手里的会话 id 是渲染层的
+   那一个 —— 没有这层翻译就永远对不上（历史实现里 BA.lastSessionId 从未赋值，
+   于是永远查全库，切会话面板内容纹丝不动）。
+   查不到(非会话轮 / 老宿主不下发 / run 已收尾)就原样返回，条目照旧可查（面板勾
+   「含其它会话」看得到），绝不静默丢条目。 */
+function hostSessionTagOf(dshSid) {
+  const sid = String(dshSid || '')
+  if (!sid) return ''
+  for (const c of keyToReqId.values()) {
+    if (!c || !c.host) continue
+    if (c.sessionId === sid || (c.sessions && c.sessions.has(sid))) return c.host
+  }
+  return ''
 }
 
 /* 本轮在通知流里见到过的 session id 全部记入归属集合:
@@ -999,6 +1084,399 @@ function closeBridge(key) {
 
 function out(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n')
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   会话自己的浏览器（browser_* 工具面的宿主侧）
+   ──────────────────────────────────────────────────────────────────────────
+   设计口径（用户已确认，见任务书与拷问共识）：
+     · 底座＝系统 Edge/Chrome + CDP 直驱 + 独立用户数据目录（全局一份、跨会话保持登录态）；
+     · 进程与 CDP 全在 browser-host.mjs，网关只做安全裁决与事件转发；
+     · 一个浏览器进程、多标签，驱动串行化：同一时刻只让一条会话驱动；
+     · 危险动作（提交 / 支付 / 删除 / 发送 / 发布…）与风险域名首次访问弹确认卡，
+       复用既有提问/审批卡通道（browser 帧），用户拒绝即以失败收场、会话不中断；
+     · 用户可「接管」：接管期间 Agent 的浏览器动作一律被拒（不是排队）；
+     · 浏览器动作留痕（含导航 / 点击 / 输入长度 / 截图路径 / shell 命令）既实时推给
+       渲染层的活动流面板，也落库在宿主侧（activity-store），不进模型上下文。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** 浏览器策略文件（域名白/黑名单 + 危险动作审批开关）：真源在本机数据目录。 */
+function browserPolicyPath() {
+  const home = dshHomeDir()
+  if (!home) return ''
+  return path.join(path.dirname(home), 'browser-policy.json')
+}
+
+const BrowserCtl = {
+  policy: { ...DEFAULT_POLICY },
+  /* 本轮已确认过的风险域名（一次确认，本进程内记住；重启后重新问一次） */
+  confirmedHosts: new Set(),
+  /* 最近一次 browser 帧的发起会话（活动流盖归属章用，见 push()） */
+  lastSessionId: '',
+  loaded: false,
+  load() {
+    if (this.loaded) return this.policy
+    this.loaded = true
+    const file = browserPolicyPath()
+    if (file && existsSync(file)) {
+      try {
+        this.policy = normalizePolicy(JSON.parse(readFileSync(file, 'utf8')))
+        return this.policy
+      } catch { /* 文件坏了就用默认，不让策略文件把人挡在门外 */ }
+    }
+    this.policy = normalizePolicy(DEFAULT_POLICY)
+    try { if (file) writeFileSync(file, JSON.stringify(this.policy, null, 2), 'utf8') } catch {}
+    return this.policy
+  },
+  save(raw) {
+    this.policy = normalizePolicy(raw == null ? this.policy : raw)
+    const file = browserPolicyPath()
+    try { if (file) writeFileSync(file, JSON.stringify(this.policy, null, 2), 'utf8') } catch {}
+    return this.policy
+  },
+  /* 浏览器进程 / 标签 / 驱动锁的只读快照（活动流面板与「手动打开」共用） */
+  status() {
+    return { ...BrowserHost.statusOf(), takeover: BrowserHost.takeoverOf(), policy: this.load(), ok: true }
+  },
+  /* 宿主主动拉起浏览器（用户点「打开浏览器」）：不启动任何任务、不占驱动锁。
+     这是**唯一**会带窗口的一只（用户口径：开发 / 会话过程中不该弹真窗口，
+     只有他亲手点这一下才给一只看得见的）—— 带窗口起完紧接着 parkSessionWindow，
+     默认形态仍是内部界面；想看真窗口就点面板上的「独立窗口」（本次运行内的显式例外）。
+     visible:false（老宿主不传也算）时不带窗口：与浏览器工具默认那条路一致。 */
+  async open(opts) {
+    const dsh = dshHomeDir()
+    const wantVisible = !(opts && opts.visible === false)
+    const r = await BrowserHost.ensureBrowser({ profileDir: profileDirOf(dsh), dshHome: dsh, visible: wantVisible })
+    try { await BrowserHost.setDownloadDir(downloadDirOf(dsh)) } catch {}
+    try { await BrowserHost.parkSessionWindow() } catch {}
+    return { ...r, ...this.status() }
+  },
+  async stop() {
+    await BrowserHost.stopBrowser({})
+    return this.status()
+  },
+  /* 用户接管 / 交还（浏览器窗口工具栏或求助卡触发）：接管期间 Agent 动作一律被拒 */
+  takeover(on, sessionId) {
+    BrowserHost.setTakeover(!!on, sessionId)
+    this.push({ kind: 'takeover', text: on ? '你接管了浏览器（Agent 动作已暂停）' : '你交还了控制权（Agent 可继续）' })
+    return this.status()
+  },
+  /* CDP 面板：这台浏览器自带 DevTools 前端的地址（Console / Network / Sources 全套）。
+     面板把地址塞进内嵌视图即可 —— 前端是同源页面，直接连本机 CDP，我们零依赖、零重写。
+     不申请驱动锁：它只是「看」，且与实况一样绝不落库、不进模型上下文。 */
+  async devtoolsUrl() {
+    return BrowserHost.devtoolsUrl()
+  },
+  /* ── 实况流（会话主内容右边栏的「实况」区）───────────────────────────────
+     用户口径：浏览器默认 dock 在右边栏、可交互；「提出来」= 真实窗口恢复可见，
+     「收回」= 再 dock 回面板。帧只走内存回调 → 宿主事件（type 'browser-frame'），
+     **绝不落库（activityPush 那条路）也绝不进模型上下文**。
+     这几个方法都不申请驱动锁：它们只是「看」和窗口形态，不抢会话的驱动权。 */
+  viewStatus() {
+    return { ok: true, ...BrowserHost.viewStatus() }
+  },
+  async viewStart(params) {
+    /* 只连「已经在跑的」那只浏览器：实况是观察面，绝不因为它自己把浏览器拉起来
+       （用户口径：没被调用 / 没启动 = 整条不显示，也不该顺手启动）。 */
+    const st = BrowserHost.statusOf()
+    if (!st.running) {
+      return { ok: false, error: '浏览器没在跑（先在面板点「打开浏览器」，或让会话调用 browser_launch）', ...BrowserHost.viewStatus() }
+    }
+    const r = await BrowserHost.startViewStream(params || {})
+    /* 开流即停靠：**默认形态就是内部界面**（真实窗口移出可视区，画面只在右栏实况里）。
+       判据必须是「真的搬走了没有」（parked），不能只看 mode —— mode 默认就是 docked，
+       新起的窗口却还摆在屏幕上，只看 mode 会漏搬，用户看到的仍是「面板有画面、屏幕上多一只 Edge」。
+       「独立窗口」是用户在面板上亲手点的例外（viewMode === 'detached'），那时不许把它搬回去 ——
+       否则他刚点开真窗口就被自动收走，等于那个按钮点不动。 */
+    const vs = BrowserHost.viewStatus()
+    if (vs.mode !== 'detached' && (vs.mode !== 'docked' || !vs.parked)) {
+      await BrowserHost.setViewMode('docked')
+    }
+    return { ok: true, ...r }
+  },
+  async viewStop() {
+    return { ok: true, ...(await BrowserHost.stopViewStream()) }
+  },
+  async viewInput(params) {
+    const r = await BrowserHost.viewInput(params || {})
+    return { ok: true, ...r }
+  },
+  async viewMode(mode) {
+    const r = await BrowserHost.setViewMode(mode)
+    return { ok: r.ok !== false, ...r }
+  },
+  push(item) {
+    /* 归属会话：条目自己带的（工具 / 命令 / 文件类摘要，handleRun 按 hostSessionId 盖）
+       优先，否则回落到「最近一次 browser 帧的发起会话」。两者都是 dsh 侧 id 时先翻成
+       宿主会话 id（见 hostSessionTagOf），面板才认得出这条属于哪条会话。
+       显式带了 sessionId 的条目就按它来（哪怕是空串 = 这一轮没有归属会话）——
+       非会话轮（画布节点 / 助手）的行不该被顺手算进某条会话的账上。 */
+    const hasOwn = !!(item && Object.prototype.hasOwnProperty.call(item, 'sessionId'))
+    const raw = hasOwn ? String(item.sessionId || '') : String(this.lastSessionId || '')
+    const data = {
+      at: Number(item && item.at) || Date.now(),
+      kind: String((item && item.kind) || 'browser'),
+      text: String((item && item.text) || '').slice(0, 600),
+      sessionId: hostSessionTagOf(raw) || raw,
+      ...(item && item.path ? { path: String(item.path) } : {}),
+    }
+    try { out({ event: { reqId: '', type: 'browser-act', data } }) } catch { /* stdout 已断 */ }
+  },
+  /* 判定一条浏览器动作该不该先问用户：返回 null = 直接执行 */
+  async gate(op, params) {
+    const pol = this.load()
+    if (BrowserHost.isTakeover()) {
+      const who = BrowserHost.takeoverOf().sessionId
+      return { ask: false, deny: `浏览器此刻由用户接管${who ? '（' + who.slice(0, 12) + '…）' : ''}：Agent 动作一律暂停。请等用户交还控制权（browser_help 或浏览器窗口的「交还」按钮），或先用 browser_help 说明你需要什么。` }
+    }
+    if (op === 'navigate' && params && params.url) {
+      const v = domainVerdict(params.url, pol)
+      if (v.blocked) return { ask: false, deny: `${v.why}。本次导航已拦截；若确实需要访问，请在「浏览器活动」面板里把它从拦截名单移除。` }
+      if (v.confirm && !this.confirmedHosts.has(BrowserHost.hostOf(params.url))) {
+        return {
+          ask: true,
+          askData: {
+            kind: 'confirm',
+            title: '风险站点访问确认',
+            message: `${v.why}\n${String(params.url).slice(0, 200)}`,
+            host: BrowserHost.hostOf(params.url),
+          },
+        }
+      }
+    }
+    if (op === 'click' && pol.approveDangerous) {
+      const d = dangerOfClick(params && params.label, params && params.text)
+      if (d.danger) {
+        return {
+          ask: true,
+          askData: {
+            kind: 'confirm',
+            title: '危险动作确认',
+            message: `${d.why}。即将在页面上执行：${String((params && params.label) || (params && params.selector) || '').slice(0, 120)}`,
+            danger: true,
+            /* 卡片上带一行「当时在哪个页面」：危险动作必须能看清是在哪儿按的 */
+            url: await this.currentUrl(),
+          },
+        }
+      }
+    }
+    return null
+  },
+  /* 问用户一次（浏览器帧通道）：回 'allowed-once' | 'rejected' | 'cancelled' */
+  ask(key, sessionId, askData) {
+    return new Promise((resolve) => {
+      const id = crypto.randomUUID()
+      const claim = claimOf(key)
+      const reqId = claim ? claim.reqId : ''
+      const sock = this.socketFor(key)
+      if (!sock) return resolve('cancelled')
+      const payload = { id, sessionId, ...askData }
+      bridgePending.set(id, {
+        socket: sock,
+        key,
+        kind: 'browser',
+        reqId,
+        sessionId,
+        resolve: (v) => resolve(v || 'cancelled'),
+        reject: () => resolve('cancelled'),
+      })
+      out({ event: { reqId, type: 'browser', data: { ...askData, id, sessionId } } })
+      setTimeout(() => {
+        if (!bridgePending.has(id)) return
+        bridgePending.delete(id)
+        out({ event: { reqId, type: 'ix-drop', data: { id, kind: 'browser', reason: 'aborted' } } })
+        resolve('cancelled')
+      }, 10 * 60 * 1000)
+    })
+  },
+  socketFor(key) {
+    const b = bridgeServers.get(key)
+    if (!b || !b.sockets || !b.sockets.size) return null
+    for (const s of b.sockets) {
+      if (!s.destroyed) return s
+    }
+    return null
+  },
+  /* browser 帧的总入口：返回 {ok, result} 或抛错（由调用处折算成 browser-result） */
+  /* 当前标签页 URL（求助卡 / 确认卡上要显示「卡在哪个页面」）。
+     浏览器没起来 / 页面还没导航 → 回空串：卡片少一行，不影响求助本身。 */
+  async currentUrl() {
+    try {
+      const r = await BrowserHost.evaluateJs({ expression: 'location.href', note: '读当前地址' })
+      return String((r && r.value) || '').slice(0, 400)
+    } catch {
+      return ''
+    }
+  },
+  /* ── 实况视图：右栏面板的帧与「提出来 / 收回」（见 BrowserCtl 顶部的 view* 方法）── */
+  async viewHandle(p) {
+    const patch = p && typeof p === 'object' ? p : {}
+    const method = String(patch.method || 'status')
+    if (method === 'status') return { ok: true, result: this.viewStatus() }
+    if (method === 'start') return { ok: true, result: await this.viewStart(patch.params) }
+    if (method === 'stop') return { ok: true, result: await this.viewStop() }
+    if (method === 'input') return { ok: true, result: await this.viewInput(patch.params) }
+    if (method === 'mode') return { ok: true, result: await this.viewMode(patch.mode) }
+    throw new Error('未知的实况视图方法：' + method)
+  },
+  async handle(key, m) {
+    const op = String(m.op || '')
+    const params = m.params && typeof m.params === 'object' ? m.params : {}
+    const sessionId = String(m.sessionId || '')
+    const dsh = dshHomeDir()
+    /* 记下发起会话：BrowserCtl.push() 给活动流条目盖归属章用（面板默认按会话过滤） */
+    if (sessionId) this.lastSessionId = sessionId
+
+    if (op === 'status') return { ok: true, result: this.status() }
+
+    /* 申请驱动（串行化）：一条会话独占浏览器，避免两个会话抢同一个页面 */
+    if (op !== 'release') {
+      const claim = BrowserHost.claimDriver(sessionId)
+      if (!claim.ok) throw new Error(claim.reason)
+    }
+
+    if (op === 'launch') {
+      /* 会话自动拉起的那只**不带窗口**（visible 缺省 false → headless）：开发 / 会话过程中
+         屏幕上不该弹真窗口，画面与截图全走 CDP（本机实测 screencast 照常出帧）。
+         想看真窗口只有一条路：用户在面板上亲手点「打开浏览器」（见 open()）。 */
+      const r = await BrowserHost.ensureBrowser({ profileDir: profileDirOf(dsh), dshHome: dsh, visible: !!params.visible })
+      await BrowserHost.setDownloadDir(downloadDirOf(dsh)).catch(() => {})
+      /* 会话启用浏览器的默认形态 = **内部界面**：进程照常起（登录态不变），但真实窗口
+         立刻移出可视区 —— 用户口径是「启用时不该另开一个新窗口，画面就来内部的实况区」。
+         不在这里停靠的后果：spawn 出来的窗口戳在屏幕上，只有「渲染层恰好开着右栏去开流」
+         那条路才会搬运它（右栏没开 / 焦点不在该会话时根本不会开流）→ 用户看到多一只 Edge。
+         用户亲手点过「独立窗口」的那一轮例外：mode === 'detached' 时不搬回去（见 viewStart）。 */
+      if (BrowserHost.viewStatus().mode !== 'detached') {
+        try { await BrowserHost.parkSessionWindow() } catch { /* 搬不动：实况侧有 fallback 兜底 */ }
+      }
+      this.push({ kind: 'browser', text: `浏览器就绪（${String(r.exe).includes('msedge') ? 'Edge' : 'Chrome'} · ${r.reused ? '复用已开的窗口' : '新启动'} · 内部界面）` })
+      return { ok: true, result: { ...r, ...this.status() } }
+    }
+    if (op === 'release') {
+      BrowserHost.releaseDriver(sessionId)
+      this.push({ kind: 'browser', text: '会话交还了浏览器驱动' })
+      return { ok: true, result: { ok: true } }
+    }
+
+    /* 除 launch / release 外都要浏览器已经起来（没起就先起，用户口径是「按需自动拉起」）——
+       按需自动拉起同样不带窗口（visible 缺省 false）；用户要真窗口只有「打开浏览器」那一下。 */
+    await BrowserHost.ensureBrowser({ profileDir: profileDirOf(dsh), dshHome: dsh, visible: !!params.visible })
+    await BrowserHost.setDownloadDir(downloadDirOf(dsh)).catch(() => {})
+
+    if (op === 'snapshot') return { ok: true, result: await BrowserHost.snapshot(params) }
+    if (op === 'network') return { ok: true, result: await BrowserHost.network(params) }
+    if (op === 'tabs') return { ok: true, result: await BrowserHost.tabs(params) }
+    if (op === 'wait') return { ok: true, result: await BrowserHost.waitFor(params) }
+    if (op === 'eval') return { ok: true, result: await BrowserHost.evaluateJs(params) }
+    if (op === 'screenshot') {
+      const p = { ...params, dir: shotsDirOf(dsh) }
+      const r = await BrowserHost.screenshot(p)
+      return { ok: true, result: { ...r, note: '读这张图请用 mtnode_vision（绝对路径）' } }
+    }
+    if (op === 'key') return { ok: true, result: await BrowserHost.pressKey(params) }
+    if (op === 'type') return { ok: true, result: await BrowserHost.typeText(params) }
+
+    if (op === 'navigate' || op === 'click' || op === 'submit') {
+      /* 安全闸：域名名单 + 危险动作。拒绝 = 失败回执，会话不中断。 */
+      const g = await this.gate(op, params)
+      if (g && g.deny) throw new Error(g.deny)
+      if (g && g.ask) {
+        const outcome = await this.ask(key, sessionId, g.askData)
+        if (outcome === 'rejected') throw new Error('用户拒绝了这次操作（' + String(g.askData.title || '') + '），请换一条路或先向用户说明。')
+        if (outcome !== 'allowed-once') throw new Error('这次操作的确认已失效（发起轮已结束或用户撤下卡片）。')
+        if (g.askData.host) this.confirmedHosts.add(String(g.askData.host))
+      }
+      if (op === 'navigate') return { ok: true, result: await BrowserHost.navigate(params) }
+      const r = await BrowserHost.click(params)
+      return { ok: true, result: r }
+    }
+
+    if (op === 'help') {
+      /* 浏览器求助卡：登录墙 / 待验证 / 需补充信息 / 卡住 / 危险动作。
+         登录类默认进入「用户接管」，用户交还后本工具以 released 收场。 */
+      const kind = String(params.kind || 'blocked')
+      const askData = {
+        kind: 'help',
+        helpKind: kind,
+        title: kind === 'login' ? '需要你登录 / 处理页面验证'
+          : kind === 'verify' ? '请你验证这个结果'
+            : kind === 'choice' ? '需要你补充信息或做选择'
+              : kind === 'danger' ? '危险动作需要你确认'
+                : '会话卡住了，需要你帮忙',
+        message: String(params.message || ''),
+        options: Array.isArray(params.options) ? params.options.map((x) => String(x).slice(0, 120)).slice(0, 8) : [],
+        screenshotPath: String(params.screenshotPath || ''),
+        note: String(params.note || ''),
+        /* 卡片上要显示「它当时卡在哪个页面」：能取到当前 URL 就带上，取不到留空
+           （渲染层对空串就是少一行，不占位）。 */
+        url: await this.currentUrl().catch(() => ''),
+        takeover: kind === 'login',
+      }
+      this.push({ kind: 'help', text: `${askData.title}：${askData.message.slice(0, 200)}` })
+      /* 登录类求助：接管（他的动作优先，Agent 动作一律被拒），但**形态仍是内部界面**
+         —— 用户口径：接管 / 登录也走右栏实况区，不再为了「看见窗口」把真窗口抬出来
+         （bringToFront 是「又开出一个窗口」的第二条来源）。他亲手点「独立窗口」才是例外。
+         接管期间画面照常出帧，所以登录 / 验证码在实况区里就能操作。 */
+      if (kind === 'login') BrowserHost.setTakeover(true, sessionId)
+      const outcome = await this.ask(key, sessionId, askData)
+      if (kind === 'login') BrowserHost.setTakeover(false, sessionId)
+      const res = {
+        outcome: outcome === 'rejected' ? 'cancelled' : outcome,
+        takeover: kind === 'login',
+        takeoverReleased: kind === 'login',
+        hint: kind === 'login'
+          ? '用户已交还控制权；下一步请用 browser_snapshot 看当前页面状态再继续。'
+          : kind === 'choice'
+            ? '用户的回答在上面的 answer 字段里；若为空说明用户撤下了这张卡。'
+            : '用户已回应；用 browser_snapshot 确认页面现状后继续。',
+      }
+      if (typeof outcome === 'object' && outcome) Object.assign(res, outcome)
+      return { ok: true, result: res }
+    }
+    throw new Error('未知的浏览器操作：' + op)
+  },
+}
+
+/* 浏览器动作留痕 → 宿主事件（活动流面板实时显示 + 宿主落库） */
+BrowserHost.registerActivitySink((item) => BrowserCtl.push(item))
+
+/* 实况帧 → 宿主事件（type 'browser-frame'）。硬约束：不走 push()、不落库、不进模型
+   上下文 —— 帧只在网关 → 宿主 → 渲染层这条内存通路上跑（用户已确认的口径）。 */
+BrowserHost.registerViewSink((f) => {
+  try { out({ event: { reqId: '', type: 'browser-frame', data: f } }) } catch { /* stdout 已断 */ }
+})
+
+/* 工具入参 → 一行活动流摘要（命令 / 路径 / 一小段查询）。凭据纪律：长文本与
+   疑似密钥一律只记长度，不记内容（与浏览器 type 的 secret 口径一致）。 */
+function summarizeToolArgs(args) {
+  let a = args
+  if (typeof a === 'string') {
+    try { a = JSON.parse(a) } catch { a = { raw: a } }
+  }
+  if (!a || typeof a !== 'object') return ''
+  const pick = ['command', 'cmd', 'file_path', 'path', 'filePath', 'pattern', 'url', 'query', 'expr', 'expression', 'text', 'content', 'prompt']
+  for (const k of pick) {
+    const v = a[k]
+    if (typeof v !== 'string' || !v.trim()) continue
+    const one = v.replace(/\s+/g, ' ').trim()
+    const secretish = /password|passwd|secret|token|api[-_]?key|authorization|card|cvv/i.test(k) || /^(sk-|ghp_|Bearer )/.test(one)
+    if (secretish) return `${k}=（敏感，${one.length} 字符，未记录）`
+    return `${k}=${one.length > 120 ? one.slice(0, 120) + '…' : one}`
+  }
+  return ''
+}
+
+/* 工具输出 → 活动流摘要（只留前 300 字符；完整输出仍在会话里，活动流只作核对） */
+function summarizeToolOutput(content, error) {
+  if (error) return '失败：' + String(error).slice(0, 200)
+  if (!Array.isArray(content) || !content.length) return ''
+  const parts = []
+  for (const b of content) {
+    if (b && typeof b.text === 'string' && b.text.trim()) parts.push(b.text.replace(/\s+/g, ' ').trim())
+    else if (b && b.type) parts.push('[' + String(b.type) + ']')
+  }
+  const one = parts.join(' ').slice(0, 300)
+  return one || ''
 }
 
 /* ── rollback: 回合开合与 journal 路由 ─────────────────────────────────────
@@ -1229,17 +1707,12 @@ async function attachImages(home, paths) {
    运行时进程保持存活。 */
 async function warmStartHarness(harness) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-  harness.client.start()
-  const params = {
-    cwd: harness.cwd,
-    provider: harness.provider,
-    model: harness.model,
-    ...(harness.maxTokens === undefined ? {} : { maxTokens: harness.maxTokens }),
-  }
   let lastErr
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      await harness.client.initialize(params)
+      /* 0.2：握手参数（cwd / provider / model / maxTokens）改由构造函数接管，
+         高层 start() 自带「只握手一次 + 失败换新客户端」语义。 */
+      await harness.start()
       return harness
     } catch (err) {
       lastErr = err
@@ -1268,7 +1741,7 @@ function pickRuntimeKey(baseKey, cancelTag) {
   return k
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir, pure, runSession, toolsJson, lean, noCanvas, hideTools) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir, pure, runSession, hostSessionId, toolsJson, lean, noCanvas, hideTools, noBrowser) {
   const home = dshHome || process.env.DSH_HOME || ''
   const effMaxTokens =
     Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
@@ -1284,6 +1757,10 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
      真正的丢弃动作在 canvas-plugin.mjs 的 register()（唯一判定点），这里只下达标记。 */
   const leanOn = !!lean
   const noCanvasOn = !!noCanvas
+  /* 第四个整档标记：浏览器工具（browser_*）只给会话用。画布智能节点 / 用户声明的
+     「与画布无关」会话 / 长任务未授权环节都由宿主打这一位 → 运行时整只不注册
+     browser-plugin.mjs（约 12 个工具的 schema 一步都不发）。 */
+  const noBrowserOn = !!noBrowser
   /* 第三通道 hideTools：宿主按运行算出的「这一轮根本不该存在的工具名」清单（数组或
      逗号串）。归一只认 tool-visibility.mjs 的白名单、去重、字典序排序 —— 同一档会话
      每轮算出的字符串逐字相同，指纹才稳定，提示缓存才不会被打爆。pure 轮画布 / 数据库
@@ -1308,7 +1785,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
        即固定前缀的 tools 段本身 —— 不进 key 就会出现同一台运行时被两种可见集复用，
        既打爆提示缓存又让「精简」变成随机行为，所以必须与 pure: / tl: 同级。
        hx: = 同一件事的第三通道（按名字的隐藏名单，见 hideTools），同一档必得同一台。 */
-    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0') + '|tl:' + tlHash + '|lean:' + (leanOn ? '1' : '0') + '|nc:' + (noCanvasOn ? '1' : '0') + '|hx:' + hxHash,
+    (envPatch ? JSON.stringify(envPatch) : '') + '|ws:' + searchKey.slice(0, 8) + '|hp:' + personaHash + '|pure:' + (pureOn ? '1' : '0') + '|tl:' + tlHash + '|lean:' + (leanOn ? '1' : '0') + '|nc:' + (noCanvasOn ? '1' : '0') + '|nb:' + (noBrowserOn ? '1' : '0') + '|hx:' + hxHash,
     effort,
   )
   const key = pickRuntimeKey(baseKey, cancelTag)
@@ -1316,7 +1793,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   if (existing) {
     existing.order = ++runtimeOrder
     /* 复用也要先占住:一旦返回给 handleRun,中间让出事件循环就会被并发 run 抢走 */
-    claimRuntime(key, reqId, cancelTag, runSession)
+    claimRuntime(key, reqId, cancelTag, runSession, hostSessionId)
     return { harness: existing.harness, key, fresh: false }
   }
   mkdirSync(workspace, { recursive: true })
@@ -1329,7 +1806,11 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   if (searchKey) env.DEEPSEEK_API_KEY = searchKey
   else if (apiKey) env.DEEPSEEK_API_KEY = apiKey
   else delete env.DEEPSEEK_API_KEY
-  if (baseUrl) env.DEEPSEEK_BASE_URL = baseUrl
+  /* dsh 0.2 的 llm-deepseek 把 baseURL 当「Messages 兼容根」，自己拼 /v1/messages；
+     而 MTNode 配置里存的是 OpenAI 兼容根（https://api.deepseek.com）—— 直接下发会打到
+     https://api.deepseek.com/v1/messages（实测 404）。归一规则见 messages-base-url.mjs：
+     只给官方裸根补 /anthropic，其它端点原样透传。 */
+  if (baseUrl) env.DEEPSEEK_BASE_URL = messagesBaseUrl(baseUrl)
   else delete env.DEEPSEEK_BASE_URL
   delete env.DSH_PERMISSION_MODE
   /* BongoChat：人设经环境变量注入运行时插件（dsh-system-prompt 不读 settings.yaml） */
@@ -1353,6 +1834,10 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   else delete env.MTNODE_LEAN_TOOLS
   if (noCanvasOn) env.MTNODE_NO_CANVAS = '1'
   else delete env.MTNODE_NO_CANVAS
+  /* 浏览器工具整档闸（browser-plugin.mjs）：仅会话可用，节点 / 与画布无关 / 长任务
+     未授权环节整只不注册。与 lean / noCanvas 同进 runtime key（nb: 成分）。 */
+  if (noBrowserOn) env.MTNODE_NO_BROWSER = '1'
+  else delete env.MTNODE_NO_BROWSER
   /* 规范名单（已排序去重）：空值必须显式 delete —— env 是从本进程 process.env 拷来的，
      留着上一次的脏值会让「这一轮不裁任何工具」变成「继续裁」。 */
   if (hiddenEnv) env[HIDE_TOOLS_ENV] = hiddenEnv
@@ -1366,7 +1851,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   /* 占用登记:放在本函数第一个 await 之前(同步完成),否则并发 run 会挑中同一台
      runtime —— 那正是「停一个会话把别的会话一起打断」的根因。
      runSession 一并登记:交互桥帧的归属从这一刻起就有判据了。 */
-  const tag = claimRuntime(key, reqId, cancelTag, runSession)
+  const tag = claimRuntime(key, reqId, cancelTag, runSession, hostSessionId)
 
   /* 交互桥:每个运行时独占一个 localhost 端口。bridge + canvas 插件各连一条
      socket,按帧上的 id 把回答写回对应连接。 */
@@ -1437,14 +1922,26 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   try { linkUserPackagesIntoGateway() } catch { /* best-effort */ }
 
   const entry = { order: ++runtimeOrder }
+  /* 宿主托管设置叠加层（applySettings 每次运行前整份重写；不存在 = 不是本机首跑的
+     托管路径，照样能起运行时）。 */
+  const settingsOverlay = home && existsSync(managedSettingsPatchPath(home)) ? managedSettingsPatchPath(home) : ''
   entry.harness = (async () => {
     const harness = new DeepSeekHarness({
-      launch: {
-        command: process.execPath,
-        args: [RUNTIME_BIN, CORDIS_PATH],
-        cwd: workspace,
-        env,
-      },
+      /* 0.2 launcher：profile + patch。cordis.yml 是叠加在内置 sdk profile
+         （@deepseek-ai/dsh-base + @deepseek-ai/dsh-sdk-app 两层）之上的 MTNode 补丁层；
+         bin 由 SDK 解析自己同版本的 @deepseek-ai/dsh（版本不一致会显式报错）。
+         patches 的顺序 = 层序：cordis.yml（MTNode 组合）在前，宿主托管设置叠加层在后
+         （applySettings 每次运行前整份重写，见 writeManagedSettingsPatch），
+         用户自己的补丁在 profile 目录里、由运行时自己最后应用。 */
+      profile: 'sdk',
+      ...(RUNTIME_BIN ? { dshBin: RUNTIME_BIN } : {}),
+      patches: [
+        CORDIS_PATH,
+        ...(settingsOverlay ? [settingsOverlay] : []),
+      ],
+      cwd: workspace,
+      processCwd: workspace,
+      env,
       provider,
       model,
       maxTokens: effMaxTokens,
@@ -1509,7 +2006,7 @@ function onBridgeFrame(key, m, socket) {
     out({ event: { reqId: claim ? claim.reqId : '', type: 'ix-drop', data: { id: m.id, reason: 'dropped' } } })
     return
   }
-  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset') return
+  if (m.t !== 'question' && m.t !== 'approval' && m.t !== 'canvas' && m.t !== 'db' && m.t !== 'facts' && m.t !== 'tool' && m.t !== 'lt' && m.t !== 'asset' && m.t !== 'browser') return
   const claim = claimOf(key)
   /* 归属校验:交互帧一律自带发起轮的 session id(question/approval 来自 bridge-plugin,
      canvas/db 来自 canvas-plugin/db-plugin、facts 来自 ai-facts-plugin(MTNode AI 事实库)、
@@ -1527,6 +2024,14 @@ function onBridgeFrame(key, m, socket) {
   }
   if (!sid || !claim.sessions.has(sid)) {
     rejectBridgeFrame(key, claim, m, socket, sid)
+    return
+  }
+  /* 浏览器帧（browser_* 工具面）：与 canvas / db 同源 —— 同样要过归属门控（上面两道），
+     同样不进 bridgePending（它自己的问答用 BrowserCtl.ask，不占通用交互 id 空间）。
+     区别只在「谁执行」：画布帧转给渲染层执行，浏览器帧由网关进程内的 browser-host
+     直接驱动本机 Edge/Chrome（CDP），并把结果原路回给运行时插件。 */
+  if (m.t === 'browser') {
+    void handleBrowserFrame(key, m, socket)
     return
   }
   bridgePending.set(m.id, { socket, key, kind: m.t, reqId: claim.reqId, sessionId: sid })
@@ -1549,7 +2054,40 @@ function onBridgeFrame(key, m, socket) {
   out({ event: { reqId: claim.reqId, type: m.t === 'tool' ? 'tool-run' : m.t, data } })
 }
 
+/* 浏览器帧的执行：跑在网关进程里（browser-host.mjs），结果/错误原路回插件。
+   任何失败都只折算成这一条工具调用的失败回执（ok:false + error 文本），
+   绝不让浏览器问题把会话跑挂 —— 与画布 / 数据库 / 素材同一口径。 */
+async function handleBrowserFrame(key, m, socket) {
+  const claim = claimOf(key)
+  const reqId = claim ? claim.reqId : ''
+  const reply = (obj) => {
+    try { socket.write(JSON.stringify({ t: 'browser-result', id: m.id, ...obj }) + '\n') } catch { /* 桥已断 */ }
+  }
+  const started = Date.now()
+  try {
+    const r = await BrowserCtl.handle(key, m)
+    reply({ ok: r.ok !== false, result: r.result == null ? { ok: true } : r.result })
+  } catch (e) {
+    const msg = String((e && e.message) || e)
+    reply({ ok: false, error: msg })
+    console.error(`[browser] op=${String(m && m.op)} failed: ${msg}`)
+  } finally {
+    /* 浏览器动作也进活动流（工具层摘要）：与 browser-host 自己的留痕互补 ——
+       一条是「操作了什么」，这条是「这次调用成没成、花了多久」。 */
+    try {
+      BrowserCtl.push({
+        at: started,
+        kind: 'tool',
+        text: `browser_${String(m && m.op || '')}${Date.now() - started > 1200 ? ' · ' + Math.round((Date.now() - started) / 1000) + 's' : ''}`,
+      })
+    } catch {}
+  }
+}
+
 function mapNotification(n, emit, resumeCtx) {
+  /* 活动流条目的归属会话：本轮 run 的宿主(渲染层)会话 id（缺省空串 = 本轮没有归属会话，
+     面板就不会把这条算到某条会话头上）。工具 / 命令 / 文件摘要都按它盖章。 */
+  const actSession = String((resumeCtx && resumeCtx.host) || '')
   if (n.method === 'session.event') {
     const ev = n.params.event
     if (!ev) return
@@ -1582,7 +2120,17 @@ function mapNotification(n, emit, resumeCtx) {
       }
       case 'tool/call': {
         const d = ev.data
-        if (d)
+        if (d) {
+          /* 活动流：命令 / 工具的调用摘要（用户已确认「浏览器动作 + shell 命令 + 文件读写
+             摘要都进活动流」）。这里只记工具名与一小段入参摘要，完整输出由 tool/result
+             再补一条 —— 都只进活动流与宿主落库，**不进模型上下文**。 */
+          const nm = String(d.name ?? d.tool ?? '')
+          if (nm && !/^mtnode_(canvas|app|facts|assets)|^lt_/.test(nm)) {
+            try {
+              const argText = summarizeToolArgs(d.arguments)
+              BrowserCtl.push({ kind: nm.replace(/[^a-z0-9_]/gi, '').slice(0, 24) || 'tool', text: nm + (argText ? ' · ' + argText : ''), sessionId: actSession })
+            } catch { /* 留痕失败绝不影响会话 */ }
+          }
           emit('tool', {
             callId: d.callId ?? '',
             turn: d.turn ?? 0,
@@ -1590,6 +2138,7 @@ function mapNotification(n, emit, resumeCtx) {
             name: d.name ?? d.tool ?? '',
             args: d.arguments ?? null,
           })
+        }
         return
       }
       case 'tool/result': {
@@ -1623,6 +2172,14 @@ function mapNotification(n, emit, resumeCtx) {
           content,
           error: d.error ?? null,
         })
+        /* 活动流：这次调用的结果摘要（成功给前 300 字符，失败给错误文本） */
+        try {
+          const nm = String(d.name ?? d.tool ?? 'tool')
+          const sum = summarizeToolOutput(content, d.error)
+          if (sum && !/^mtnode_(canvas|app|facts|assets)|^lt_/.test(nm)) {
+            BrowserCtl.push({ kind: 'tool-result', text: nm + ' → ' + sum, sessionId: actSession })
+          }
+        } catch { /* 留痕失败绝不影响会话 */ }
         return
       }
       case 'session/title':
@@ -1667,8 +2224,8 @@ async function handleRun(params) {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
     permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback, pure, tools,
-    lean, noCanvas, hideTools,
-    resumeSession,
+    lean, noCanvas, hideTools, noBrowser,
+    resumeSession, hostSessionId, officialModels: officialModelsRaw,
   } = params
   const emitOut = (type, data) => out({ event: { reqId, type, data } })
   /* 本轮在途登记的键(claimRuntime / emit('session') 按它建,finally 按它清);
@@ -1763,6 +2320,10 @@ async function handleRun(params) {
        pure 轮画布 / 数据库等工具插件本就被 cordis 整体禁用，两个标记无意义 → 归零。 */
     const leanFlag = !!lean && !pureFlag
     const noCanvasFlag = !!noCanvas && !pureFlag
+    /* 浏览器工具整档闸（与 getRuntime 的 nb: 同源）：仅会话可用 —— 画布智能节点 /
+       用户声明「与画布无关」的会话 / 长任务未授权环节由宿主打这一位，
+       运行时整只不注册 browser-plugin.mjs（含它的 12 个工具 schema）。 */
+    const noBrowserFlag = !!noBrowser && !pureFlag
     /* 旧 id 归一(sketch → lean):预设文本按现名查表,否则历史会话会静默回落 standard */
     const presetId = normalizePresetId(preset)
     /* 目录同源服务商(如 opencode-go)映射回目录路由名,与 settings 注册一致 ——
@@ -1776,7 +2337,15 @@ async function handleRun(params) {
        能力再夹一次)。 */
     const rawEffort = String(effort ?? '').trim().toLowerCase()
     const runEffort = effortForRoute(rawEffort, route)
-    const settings = applySettings(dshHome, runEffort, mtnodeProviders, permissionPreset, hostPersonaText)
+    const settings = applySettings(
+      dshHome,
+      runEffort,
+      mtnodeProviders,
+      permissionPreset,
+      hostPersonaText,
+      /* 官方模型清单(可选 run 参数):归一后写进 settings.yaml 的 llm-deepseek.models */
+      normalizeOfficialModels(officialModelsRaw),
+    )
     const cordisChanged = applyCordisPreset(permissionPreset)
     /* win32 闪窗 workaround:首次运行时把 sandbox 注入 noop runner */
     const sandboxChanged = applySandboxWorkaround()
@@ -1823,8 +2392,8 @@ async function handleRun(params) {
     const toolsJson = runTools.length ? JSON.stringify(runTools) : ''
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, runEffort,
-      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir, pureFlag, runSession, toolsJson,
-      leanFlag, noCanvasFlag, hideTools,
+      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir, pureFlag, runSession, hostSessionId, toolsJson,
+      leanFlag, noCanvasFlag, hideTools, noBrowserFlag,
     )
     runKey = rt.key
     /* 占用成功 = 本轮的 session 归属已经钉死,第一时间报给宿主。
@@ -2033,7 +2602,7 @@ async function handleRun(params) {
             }
           }
         }
-        mapNotification(n, emit, { resumed, sid: resumeWanted })
+        mapNotification(n, emit, { resumed, sid: resumeWanted, host: hostSessionId })
         if (n.method !== 'session.event' || !n.params || !n.params.event) return
         const ev = n.params.event
         const t = ev.time || Date.now()
@@ -2438,7 +3007,182 @@ function yamlHostPersonaSection(text) {
   )
 }
 
-function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersona) {
+/* ── DeepSeek 官方模型清单(宿主 run 参数 → settings.yaml 的 llm-deepseek.models)──
+   宿主按「官方模型」勾选把清单随 run 参数下发(params.officialModels);这里只做归一
+   (白名单 id 字符 / 去重保序 / 条数上限 / 补已知别名),落盘交给 applySettings。
+   清单为空 = 不写 models 键,适配器用自己的 DEFAULT_MODELS —— 行为与接入前一字不差。
+   写在 llm-deepseek 段是契约内行为:该段本来就由宿主托管(与 reasoningEffort 同段),
+   适配器每次操作重读 settings(catalog 在首次使用时的快照上校验),故不进 runtime key。 */
+const OFFICIAL_MODELS_MAX = 24
+/* id 直接进 YAML 标量:只放行字母数字开头的安全字符(冒号 / 引号 / 空白一律拒),
+   既挡 YAML 注入,也挡适配器 catalog 校验会拒的空 id / 重名。 */
+const OFFICIAL_MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._@/-]{0,63}$/
+const OFFICIAL_MODEL_MODALITIES = ['text', 'image']
+/* 已知官方模型的元数据兜底(真源:dsh-llm-deepseek 的 DEFAULT_MODELS 与 gateway 的
+   providerCatalog):宿主只给 id 字符串时用来补 name / 上下文窗口 / 输入模态。 */
+const OFFICIAL_MODEL_KNOWN = {
+  'deepseek-v4-flash': { name: 'DeepSeek-V4-Flash', contextWindow: 1000000, inputModalities: ['text'] },
+  'deepseek-v4-pro': { name: 'DeepSeek-V4-Pro', contextWindow: 1000000, inputModalities: ['text'] },
+  'deepseek-v4-flash-vision-exp': { name: 'DeepSeek-V4-Flash-Vision-Exp', contextWindow: 1000000, inputModalities: ['text', 'image'] },
+  'deepseek-flash': { name: 'DeepSeek-V4.1-Flash', contextWindow: 1000000, inputModalities: ['text', 'image'] },
+}
+/* 别名组:组内任一 id 在清单里 → 同组其它名字一并写入(元数据同源、模态取并集)。
+   MTNode 下发的名字与适配器目录名(deepseek-flash ⇄ deepseek-v4-flash /
+   -vision-exp)不一致时 catalog 会落空 —— 而 catalog 落空 = 图片输入在凭据与网络
+   之前就被拒,所以别名必须能互相命中。 */
+const OFFICIAL_MODEL_ALIAS_GROUPS = [
+  ['deepseek-v4-flash', 'deepseek-flash', 'deepseek-v4-flash-vision-exp'],
+]
+
+function officialModelAliasesOf(id) {
+  return OFFICIAL_MODEL_ALIAS_GROUPS.find((g) => g.includes(id)) || []
+}
+
+/* 输入模态归一:只留 text / image,去重保序;非法值丢弃(空则由调用方兜底 ["text"]) */
+function officialModelModalities(v) {
+  const raw = Array.isArray(v) ? v : v == null ? [] : [v]
+  const out = []
+  for (const m of raw) {
+    const s = String(m || '').trim().toLowerCase()
+    if (!OFFICIAL_MODEL_MODALITIES.includes(s) || out.includes(s)) continue
+    out.push(s)
+  }
+  return out
+}
+
+/* 宿主清单 → 规范条目(去重保序、上限 OFFICIAL_MODELS_MAX);接受对象或纯 id 字符串 */
+function normalizeOfficialModels(raw) {
+  const out = []
+  const seen = new Set()
+  const push = (e) => {
+    if (out.length >= OFFICIAL_MODELS_MAX || seen.has(e.id)) return
+    seen.add(e.id)
+    out.push(e)
+  }
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const src = typeof item === 'string' ? { id: item } : item && typeof item === 'object' ? item : null
+    if (!src) continue
+    const id = String(src.id ?? '').trim()
+    if (!OFFICIAL_MODEL_ID_RE.test(id)) continue
+    const known = OFFICIAL_MODEL_KNOWN[id] || {}
+    const name = String(src.name ?? '').trim().replace(/\s+/g, ' ').slice(0, 80) || known.name || id
+    const ctx = Number(src.contextWindow)
+    const max = Number(src.maxTokens)
+    const given = officialModelModalities(src.inputModalities ?? src.input ?? src.modalities)
+    push({
+      id,
+      name,
+      contextWindow: Number.isInteger(ctx) && ctx > 0 ? ctx : known.contextWindow || 0,
+      maxTokens: Number.isInteger(max) && max > 0 ? max : known.maxTokens || 0,
+      inputModalities: given.length ? given : [...(known.inputModalities || ['text'])],
+    })
+  }
+  /* 别名映射:在原始条目(保序)之后补同组别名,元数据同源、模态与别名已知能力取并集 */
+  for (const e of [...out]) {
+    for (const alias of officialModelAliasesOf(e.id)) {
+      const known = OFFICIAL_MODEL_KNOWN[alias] || {}
+      const mods = [...e.inputModalities]
+      for (const m of known.inputModalities || []) if (!mods.includes(m)) mods.push(m)
+      push({
+        id: alias,
+        /* 别名优先用已知名字(宿主给的是它自己那条的显示名),未知别名沿用同源名字 */
+        name: known.name || e.name,
+        contextWindow: e.contextWindow || known.contextWindow || 0,
+        maxTokens: e.maxTokens || known.maxTokens || 0,
+        inputModalities: OFFICIAL_MODEL_MODALITIES.filter((m) => mods.includes(m)),
+      })
+    }
+  }
+  return out
+}
+
+/* 规范条目 → 0.2 profile patch 行 llm-deepseek.config.models 的 YAML 片段 */
+function officialModelsYaml(models) {  const lines = ['  models:']
+  for (const m of models) {
+    lines.push('    - id: ' + m.id)
+    lines.push('      name: ' + yamlStr(m.name))
+    if (m.contextWindow > 0) lines.push('      contextWindow: ' + m.contextWindow)
+    if (m.maxTokens > 0) lines.push('      maxTokens: ' + m.maxTokens)
+    lines.push('      inputModalities: [' + m.inputModalities.join(', ') + ']')
+  }
+  return lines.join('\n')
+}
+
+/* ── 宿主托管的设置行 → 0.2 运行时叠加层（--patch）──────────────────────────────
+   0.2 运行时删掉了 settings-file 行：dsh-settings 在 Loader 结算后把
+   <DSH_HOME>/settings.yaml 改名 .imported 并导入 active profile，此后**不再读该文件** ——
+   继续写它等于写进死信（实测目录里只剩 .imported）。
+   0.2 的真源是**补丁层**，但两处都打不到宿主托管的那几行：
+     · <DSH_HOME>/profiles/sdk/cordis.patch.yml（用户补丁层）：打得到顶层行
+       （permission 实测生效），打不到基座 `insert:` 里插进来的行
+       （llm-deepseek / system-prompt / llm-pi-ai —— 实测补丁被忽略）；
+     · 运行时自己的 ctx.settings.update：直接拒绝 —— 实测回
+       「Configuration for "llm-deepseek" is overridden by a home patch or command-line overlay」。
+   能同时打到全部四行的只有**命令行叠加层**（`--patch <file>`，层序在用户补丁层之后）：
+   把托管段写成 <DSH_HOME>/mtnode-settings.patch.yml，随 cordis.yml 之后一起下发
+   （见 DeepSeekHarness 的 patches）。实测四段全部抵达运行时（config/probe 可复核）。 */
+const MANAGED_PATCH_IDS = ['llm-deepseek', 'llm-pi-ai', 'permission', 'system-prompt']
+/* 标量 → YAML：一律单引号（内部单引号翻倍），数字 / 布尔原样，免掉转义坑。 */
+function yamlScalar(v) {
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return yamlStr(v)
+}
+function managedSettingsPatchPath(home) {
+  return path.join(home, 'mtnode-settings.patch.yml')
+}
+
+function writeManagedSettingsPatch(home, rows) {
+  const file = managedSettingsPatchPath(home)
+  /* 整文件重写：本文件**只**装 MTNode 托管段（由 applySettings 每次运行前重写），
+     用户自己的补丁请放 profiles/sdk/cordis.patch.yml —— 两处职责不重叠。 */
+  const header = [
+    '# MTNode 托管设置（服务商目录 / 权限预设 / 官方模型清单 / 宿主人设）',
+    '# 由 dsh/gateway/gateway.mjs 的 applySettings 每次运行前整份重写，作为 --patch 叠加层',
+    '# 下发（层序在 cordis.yml 与 profile 用户层之后 = 最后写入者胜）。请勿手改：',
+    '# 手艺改请写 <DSH_HOME>/profiles/sdk/cordis.patch.yml。',
+  ].join('\n')
+  const body = rows
+    .map((row) => {
+      const lines = ['- id: ' + row.id, '  config:']
+      const walk = (value, indent) => {
+        for (const [k, v] of Object.entries(value)) {
+          if (v === undefined || v === null) continue
+          if (Array.isArray(v)) {
+            lines.push(indent + k + ':')
+            for (const item of v) {
+              if (item && typeof item === 'object') {
+                const entries = Object.entries(item)
+                lines.push(indent + '  - ' + entries[0][0] + ': ' + yamlScalar(entries[0][1]))
+                for (const [ik, iv] of entries.slice(1)) {
+                  if (iv === undefined || iv === null) continue
+                  if (Array.isArray(iv)) {
+                    lines.push(indent + '    ' + ik + ': [' + iv.map(yamlScalar).join(', ') + ']')
+                  } else {
+                    lines.push(indent + '    ' + ik + ': ' + yamlScalar(iv))
+                  }
+                }
+              } else {
+                lines.push(indent + '  - ' + yamlScalar(item))
+              }
+            }
+          } else if (typeof v === 'object') {
+            lines.push(indent + k + ':')
+            walk(v, indent + '  ')
+          } else {
+            lines.push(indent + k + ': ' + yamlScalar(v))
+          }
+        }
+      }
+      walk(row.config, '    ')
+      return lines.join('\n')
+    })
+    .join('\n')
+  mkdirSync(home, { recursive: true })
+  writeFileSync(file, header + '\n' + body + '\n', 'utf8')
+  return file
+}
+
+function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostPersona, officialModels) {
   const home = dshHome || process.env.DSH_HOME || ''
   const list = Array.isArray(mtnodeProviders) ? mtnodeProviders : []
   const envPatch = {}
@@ -2447,52 +3191,72 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
     envPatch['MTNODE_KEY_' + (i + 1)] = String(p.apiKey || '')
   })
   if (!home) return { envPatch, changed: false }
-  /* settings 的 llm-deepseek.reasoningEffort 只保留兜底默认(DEFAULT_EFFORT = high):
+  /* llm-deepseek.reasoningEffort 只保留兜底默认(DEFAULT_EFFORT = high):
      思考档已改经 env MTNODE_EFFORT + 运行时 mtnode-effort 插件逐步下发(见上方
-     EFFORTS 注释段)——档位切换不再写 settings、不再触发热重载与多余 450ms 等待,
+     EFFORTS 注释段)——档位切换不再写设置、不再触发热重载与多余 450ms 等待,
      runtime 隔离由 runtime key(含档位)承担。llm-deepseek 适配器省略 reasoningEffort
      时本身也回退 high,与本默认一致,插件缺席时行为与接入前一字不变。 */
   const eff = DEFAULT_EFFORT
   /* 权限预设:dsh permission-presets 的 defaultPreset,热重载后对新会话生效 */
   const perm = PERMISSION_PRESETS.includes(permissionPreset) ? permissionPreset : 'mtnode-unattended'
   const persona = String(hostPersona || '').trim()
-  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona
+  /* 官方模型清单:归一后按序进指纹 —— 清单变了要重写(热重载),清单没变则一次都不重写。 */
+  const om = (Array.isArray(officialModels) ? officialModels : []).filter((m) => m && OFFICIAL_MODEL_ID_RE.test(String(m.id || '')))
+  const hash = eff + '|' + perm + '|' + JSON.stringify(list) + '|hp:' + persona + '|om:' + JSON.stringify(om)
   if (hash === lastSettingsHash && home === lastSettingsHome) return { envPatch, changed: false }
   try {
-    const provLines = []
+    const providers = {}
     list.forEach((p, i) => {
       if (!String(p.baseUrl || '').trim() || !(p.models || []).length) return
       const cat = catalogIdOf(p)
       const route = cat || 'mtnode_' + (p.route || 'p' + (i + 1))
-      provLines.push('    ' + route + ':')
-      provLines.push('      apiKeyEnv: MTNODE_KEY_' + (i + 1))
-      /* baseURL 无凭据间接层:直接写 URL(非机密),密钥仅经 env 引用 */
-      provLines.push('      baseURL: ' + String(p.baseUrl).trim())
+      const entry = {
+        apiKeyEnv: 'MTNODE_KEY_' + (i + 1),
+        /* baseURL 无凭据间接层:直接写 URL(非机密),密钥仅经 env 引用 */
+        baseURL: String(p.baseUrl).trim(),
+      }
       /* 目录同源路由不写 api:模型级 api 以目录元数据为准(多协议目录如
          opencode-go 同时含 openai-completions 与 anthropic-messages);
          通用路由保留 api 声明(默认 openai-completions) */
-      if (!cat) provLines.push('      api: ' + String(p.api || 'openai-completions'))
-      provLines.push('      models:')
-      for (const m of p.models || []) provLines.push('        - id: ' + m)
+      if (!cat) entry.api = String(p.api || 'openai-completions')
+      entry.models = (p.models || []).map((m) => ({ id: String(m) }))
+      providers[route] = entry
     })
-    mkdirSync(home, { recursive: true })
-    const settingsPath = path.join(home, 'settings.yaml')
-    let rest = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : ''
-    rest = stripYamlSection(rest, 'llm-deepseek')
-    rest = stripYamlSection(rest, 'llm-pi-ai')
-    rest = stripYamlSection(rest, 'permission')
-    rest = stripYamlSection(rest, 'system-prompt')
-    const parts = ['llm-deepseek:\n  reasoningEffort: ' + eff]
-    if (list.length) parts.push('llm-pi-ai:\n  providers:\n' + provLines.join('\n'))
-    parts.push('permission:\n  defaultPreset: ' + perm)
-    if (persona) parts.push(yamlHostPersonaSection(persona))
-    const txt = parts.join('\n') + (rest.trim() ? '\n' + rest.trim() : '') + '\n'
-    writeFileSync(settingsPath, txt, 'utf8')
+    const deepseek = { reasoningEffort: eff }
+    /* 官方模型清单只在非空时写 models 键(空 = 不写,适配器用自身 DEFAULT_MODELS) */
+    if (om.length) {
+      deepseek.models = om.map((m) => {
+        const row = { id: m.id }
+        if (m.name) row.name = m.name
+        if (m.contextWindow > 0) row.contextWindow = m.contextWindow
+        if (m.maxTokens > 0) row.maxTokens = m.maxTokens
+        if (Array.isArray(m.inputModalities) && m.inputModalities.length) row.inputModalities = m.inputModalities
+        return row
+      })
+    }
+    const rows = [
+      { id: 'llm-deepseek', config: deepseek },
+      { id: 'permission', config: { defaultPreset: perm } },
+    ]
+    if (Object.keys(providers).length) rows.push({ id: 'llm-pi-ai', config: { providers } })
+    if (persona) {
+      rows.push({
+        id: 'system-prompt',
+        config: {
+          includeHarnessIdentity: false,
+          includeRuntimeContext: false,
+          personaPrefix: persona,
+        },
+      })
+    }
+    const overlayFile = writeManagedSettingsPatch(home, rows)
     lastSettingsHome = home
     lastSettingsHash = hash
-    return { envPatch, changed: true }
-  } catch {
-    /* 尽力而为:写入失败不阻断任务,保留运行时默认档 */
+    return { envPatch, changed: true, overlayFile }
+  } catch (err) {
+    /* 尽力而为:写入失败不阻断任务,保留运行时默认档。留一行诊断:这条路径静默吞错,
+       「设置没写出来」类问题只能靠这行定位。 */
+    try { process.stderr.write('applySettings: ' + String((err && err.stack) || err) + '\n') } catch { /* ignore */ }
     return { envPatch, changed: false }
   }
 }
@@ -2766,17 +3530,22 @@ function parsePluginRows(text) {
       i += 1
       continue
     }
-    if (/^- id:/.test(line)) {
-      const id = line.replace(/^- id:\s*/, '').trim()
+    /* 0.2 的 cordis.yml 是 profile 补丁层：顶层 `- id:` 是「按 id 覆盖既有行」，
+       新增行缩进在 `- insert:` 段之下。两种都算运行时可切换行，缩进不影响起止判定
+       （start 与 end 用同一份缩进正则，插入行之间不会互相吞并）。 */
+    const idm = line.match(/^(\s*)- id:(.*)$/)
+    if (idm) {
+      const rowStart = new RegExp('^' + idm[1] + '- id:')
+      const id = idm[2].trim()
       const blockLines = [line]
       i += 1
       while (i < lines.length) {
         const nxt = lines[i]
-        if (/^- id:/.test(nxt) || /^#\s*──/.test(nxt.trim())) break
+        if (rowStart.test(nxt) || /^#\s*──/.test(nxt.trim())) break
         if (nxt.trim() === '') {
           let j = i + 1
           while (j < lines.length && lines[j].trim() === '') j += 1
-          if (j >= lines.length || /^- id:/.test(lines[j]) || lines[j].trim().startsWith('#')) break
+          if (j >= lines.length || rowStart.test(lines[j]) || lines[j].trim().startsWith('#')) break
         }
         if (/^\s/.test(nxt) || nxt.trim() === '') {
           blockLines.push(nxt)
@@ -2913,12 +3682,26 @@ function setPluginEnabled(pkg, enabled, id) {
   if (!found) throw new Error('未找到该插件')
 }
 
+/* cordis.yml（0.2 profile 补丁）里插入新行：补丁层里「未在包层出现的 id + name」就是新行，
+   直接追加到文件末尾即可（但必须落在用户插件标记之前 —— 标记之后的行由
+   syncUserPluginsFromHome 当用户行搬到配置目录，会从发行组合里消失）。 */
+function appendInsertBlock(text, lines) {
+  const body = lines.join('\n') + '\n'
+  const markerIdx = text.indexOf(USER_PLUGIN_MARKER)
+  if (markerIdx < 0) return text.endsWith('\n') ? text + body : text + '\n' + body
+  const head = text.slice(0, markerIdx).replace(/\n+$/, '\n')
+  const tail = text.slice(markerIdx)
+  return head + body + tail
+}
+
 function addPluginRow(pkg) {
-  const { shipped, userPart, marker } = readRows()
-  if (userPart.includes(`name: '${pkg}'`)) return
-  const rest = userPart.startsWith(marker) ? userPart.slice(marker.length) : userPart
-  const row = `\n- id: user-plugin-${Date.now().toString(36)}\n  name: '${pkg}'\n`
-  writeFileSync(CORDIS_PATH, shipped + marker + rest + row, 'utf8')
+  const text = readFileSync(CORDIS_PATH, 'utf8')
+  if (text.includes(`name: '${pkg}'`)) return
+  const next = appendInsertBlock(text, [
+    `- id: user-plugin-${Date.now().toString(36)}`,
+    `  name: '${pkg}'`,
+  ])
+  writeFileSync(CORDIS_PATH, next, 'utf8')
   persistUserSection()
 }
 
@@ -3186,13 +3969,21 @@ rl.on('line', (line) => {
           break
         case 'providerCatalog':
           reply({
-            /* DeepSeek 官方：V4.1-Flash（deepseek-flash）原生多模态，能直接吃图；
-               V4-Flash 与 V4-Flash-Vision-Exp 已下线（旧模型名由服务端临时转发到
-               V4.1-Flash，按 Flash 价计费），目录不再列。 */
-            deepseek: [
-              { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text', 'image'] },
-              { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1000000, api: 'openai-completions', baseUrl: 'https://api.deepseek.com', input: ['text'] },
-            ],
+            /* DeepSeek 官方目录与「官方模型」清单(officialModels → 适配器
+               llm-deepseek.models)同源:条目一律由 OFFICIAL_MODEL_KNOWN 生成,
+               不再手写模型名(表内顺序即目录顺序,现行 id 在前)。
+               运行时真下发/落盘的 id 是 deepseek-v4-flash,目录照此列出;能吃图的档
+               照实标 input 含 image —— 目录说能吃图、运行时却按自身表把它判成纯文本
+               (在凭据与网络之前就拒掉图片),正是这条目录必须消灭的分歧。
+               旧别名 deepseek-flash 仍被运行时按别名组接受,故一并列出,不单独手写。 */
+            deepseek: Object.entries(OFFICIAL_MODEL_KNOWN).map(([id, k]) => ({
+              id,
+              name: k.name || id,
+              contextWindow: k.contextWindow || 0,
+              api: 'openai-completions',
+              baseUrl: 'https://api.deepseek.com',
+              input: [...(k.inputModalities || ['text'])],
+            })),
             piai: piAiCatalog(),
           })
           break
@@ -3259,6 +4050,15 @@ rl.on('line', (line) => {
           reply({ ok: true, closed })
           break
         }
+        case 'configProbe': {
+          /* 只读自检：把某台 live runtime 的**生效装配**回给宿主/冒烟（行 id + config）。
+             用途：0.2 把设置真源搬到 profile 补丁层后，「宿主写了文件」不等于「运行时读到了
+             配置」；这枚方法让 test/smoke-settings-profile-patch.js 对着真实运行时核对。
+             { reqId? | runKey? } 定位 runtime；都不给 = 取最近建立的那台。没有 live
+             runtime 回 { ok:false, reason:'no_runtime' }（绝不为此起新进程）。 */
+          reply(await handleConfigProbe(msg.params ?? {}))
+          break
+        }
         case 'steer':
         case 'pause': {
           /* 运行中插话 / 暂停(宿主只在「本轮还在跑」时发):
@@ -3270,6 +4070,44 @@ rl.on('line', (line) => {
              pause 成功后本轮以 done{paused:true} 收尾,且不会有 error(见 pausedRuns)。 */
           const p = msg.params ?? {}
           reply(await handleInflightRequest(msg.method === 'pause' ? 'session/pause' : 'session/steer', p))
+          break
+        }
+        case 'browser': {
+          /* 浏览器宿主面（活动流面板 / 手动打开 / 接管 / 名单管理全走它）：
+             { action: 'status'|'open'|'stop'|'policy'|'takeover', policy?, on?, sessionId? }
+             与 dsh 的 run 无关，任何时刻都能调；失败一律回 error 文本（不抛到 stdio 外）。 */
+          const p = msg.params ?? {}
+          const action = String(p.action || 'status')
+          /* 界面触发的浏览器动作（打开 / 停止 / 接管）属于**用户此刻看着的那条会话**：
+             面板把会话号带上来，活动流条目就盖它的章（不带 / 老宿主不下发时保持旧口径，
+             由 lastSessionId 或空串决定）—— 否则「我点了接管，活动里却没有这条」。 */
+          if (p.sessionId) BrowserCtl.lastSessionId = String(p.sessionId)
+          try {
+            if (action === 'status') reply(BrowserCtl.status())
+            /* 面板的「打开浏览器」= 用户亲手点的那一下：唯一会带窗口的一只（visible 缺省 true）。 */
+            else if (action === 'open') reply(await BrowserCtl.open({ visible: p.visible !== false }))
+            else if (action === 'stop') reply(await BrowserCtl.stop())
+            else if (action === 'policy') {
+              if (p.policy && typeof p.policy === 'object') reply({ ok: true, policy: BrowserCtl.save(p.policy) })
+              else reply({ ok: true, policy: BrowserCtl.load() })
+            } else if (action === 'takeover') reply(BrowserCtl.takeover(!!p.on, p.sessionId))
+            else if (action === 'devtools') {
+              /* CDP 面板：把这台浏览器自带的 DevTools 前端地址交给宿主去开（Console /
+                 Network / Sources 全套）。见 browser-host.mjs 的 devtoolsUrl —— 不自己
+                 重写面板，直接借 Chromium 的 /devtools/ 前端，零依赖。 */
+              reply(await BrowserCtl.devtoolsUrl())
+            }
+            else if (action === 'view') {
+              /* 实况视图（会话右边栏）：{ action:'view', method:'status'|'start'|'stop'|'input'|'mode', ... }
+                 不申请驱动锁（只「看」与摆窗口）；帧走事件总线（type 'browser-frame'），
+                 绝不落库、不进模型上下文。 */
+              const r = await BrowserCtl.viewHandle(p)
+              reply(r.result)
+            }
+            else reply(undefined, '未知的浏览器动作：' + action)
+          } catch (e) {
+            reply(undefined, String((e && e.message) || e))
+          }
           break
         }
         case 'rollbackDrain': {
@@ -3374,6 +4212,24 @@ rl.on('line', (line) => {
                 ...(err ? { error: err } : {}),
               }) + '\n')
             } catch {}
+          } else if (p.kind === 'browser') {
+            /* 浏览器确认框 / 求助卡的回应（browser_* 工具面的问答通道）：
+               outcome = allowed-once | rejected | released（求助类：用户已交还控制权）
+                        | cancelled；answer 只在求助卡里带用户填的文字 / 选项。
+               注意这里**不能**回 {t:'browser-result'} —— 那是工具调用的结果通道；
+               这条交互只是浏览器动作闸门里的一次问答，结果由 BrowserCtl.handle 自己
+               写回同一枚 id 的 browser-result。 */
+            const item = bridgePending.get(p.id)
+            if (!item || typeof item.resolve !== 'function') {
+              reply({ ok: true, stale: true })
+              diag(`interact stale browser id=${String(p.id || '')}`)
+              break
+            }
+            bridgePending.delete(p.id)
+            const outcome = String(p.outcome || p.answer || 'allowed-once')
+            if (p.answerText || p.answer || p.selected) {
+              item.resolve({ outcome: outcome === 'rejected' ? 'cancelled' : outcome, answer: p.answerText || p.answer || '', selected: p.selected || [] })
+            } else item.resolve(outcome)
           } else if (p.kind === 'tool') {
             /* 用户工具节点 func call 结果：渲染层跑完节点图后回传输出值；
                失败（err 非空）→ ok:false + error 文本，运行时工具以失败收场，会话不中断 */
@@ -3414,3 +4270,6 @@ process.stdin.on('end', () => {
 process.on('SIGTERM', () => {
   void closeAllRuntimes().then(() => process.exit(0))
 })
+
+/* 冒烟测试入口：设置下发（0.2 profile 补丁层）写入器 —— 只导出纯函数，不影响 stdio 主循环。 */
+export { applySettings }

@@ -1,0 +1,35 @@
+/* 风格 · 复古印刷（应用脚手架） —— 由 scripts/gen-scaffold-styles.cjs 从
+   templates/app-default/styles/retro.css 的变量表生成，改色请改那一份再跑一次。 */
+:root {
+  --bg: #f7f4ec;
+  --bg-soft: #f1ece0;
+  --bg-sunken: #efe9db;
+  --line: #ddd5c4;
+  --line-2: #b9ad94;
+  --fg: #1a1713;
+  --fg-dim: #4b443a;
+  --muted: #565044;
+  --accent: #c0322b;
+  --accent-hi: #a06b57;
+  --accent-ink: #ffffff;
+  --sel: rgba(192, 50, 43, 0.16);
+  --sel-ink: #1a1713;
+  --radius: 4px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  --step-radius: 2px;
+  --step-border: var(--fg);
+  --step-ink: var(--fg);
+  --font-display: "Rockwell", "Roboto Slab", Georgia, "Songti SC",
+    "Noto Serif CJK SC", "SimSun", serif;
+  --texture: radial-gradient(rgba(26, 23, 19, 0.05) 1px, transparent 1.4px) 0 0 /
+    7px 7px;
+  --texture-op: 0.75;
+}
+
+.app-head {
+  border-bottom: 2px solid var(--fg);
+}
+.intro-note {
+  border-top: 2px solid var(--fg);
+}

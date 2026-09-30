@@ -14,7 +14,7 @@ Two host flavours expose different bridge names (the scaffold detects both, so y
 
 | Host | Bridge | Installed where | Data written where |
 | --- | --- | --- | --- |
-| **App Center** (top bar "Apps"; self-built or downloaded) | `window.appHost` | App install root `<id>\` (changeable on the Library page) | `<data dir>\apps-data\<id>\data.json` (changeable in the window) |
+| **App Center** (top bar "Apps"; self-built or downloaded) | `window.appHost` | App install root `<id>\` (changeable at the top of the Library / Development pages) | `<data dir>\apps-data\<id>\data.json` (changeable in the window) |
 | Plugin window (`kind: "window"` card in the Plugins dialog) | `window.pluginApi` (= `window.forumApi`) | `<data dir>\app-plugins\<id>\runtime\` | `<data dir>\app-plugins\<id>\data.json` |
 
 **Do not confuse this with local backend plugins**: music3 / H3 / TTS / llama cards are **local backend plugins** (they also ship a console window and canvas nodes) — a much bigger thing.
@@ -26,7 +26,43 @@ Two host flavours expose different bridge names (the scaffold detects both, so y
 | App install root `<id>\` | the app's static files (**update / uninstall replaces the whole folder — never write data here**) |
 | `<data dir>\apps-data\<id>\data.json` | the app's own data (the **default data root**, written atomically through the bridge) |
 | `<data dir>\apps-data\<id>\dataDir.json` | that app's data-folder pointer (only exists if the user changed it; changing it does not move data) |
-| `<id>\installed.json` | host-recorded version / entry / source |
+| `<id>\installed.json` | host-recorded version / entry / source / source author |
+
+## The Library and Development pages
+
+The App Center has three pages: **Apps** (cloud catalog), **Library** (installed here, not in development yet) and
+**Development** (apps being built). The two lists never overlap — the line between them is one flag in the app's own `app.json`:
+
+| State | Source of truth | Appears on | How to enter / leave |
+| --- | --- | --- | --- |
+| Downloaded (not in development) | `app.json` has no `dev:true` | Library: Run / Update / 📂 data folder / Build on it / Uninstall | click **Build on it** on that card in the Library |
+| In development | `app.json` has `dev: true` | Development: three-pane workbench + Launch / Publish / Open canvas / Data folder / Uninstall | create with "＋ New app" at the bottom of the left column, or build on it from the Library |
+
+- **Build on it** (二次开发) = register it as "in development", create a **canvas with the same name** and a dev node on it
+  (the app folder itself is not moved at all). You land on the Development page with that app selected.
+  **If a canvas with that name already exists it is refused** and explains why — so nothing gets overwritten.
+  (The Library top bar keeps only the app root folder; the data folder and Build on it live on each card's right-hand buttons.)
+- One-time backfill: apps created with "＋ New app" before this change (no `installed.json` ledger on this machine)
+  are marked `dev:true` automatically, so they never just disappear.
+- **Author** is shown on cards, in details, on Library rows and on the app rows in the Development page's left column:
+  cloud entries use the publishing account, local apps use `app.json`'s `author` (falling back to the signed-in account;
+  nothing is shown when signed out).
+- **The Development page's left column is the app list**: one row per "in development" app (name / author / session count /
+  expand arrow) with that app's own sessions folded underneath (archived sessions are not listed — see the Sessions view).
+  Clicking a row enters that app: the preview and the session pane switch together, and coming back to the Development page
+  re-selects the app you last opened. The search box matches both app names and session titles; "＋ New app" sits at the
+  bottom of the left column (the toolbar above no longer holds an app dropdown). When you switch apps the preview is covered
+  by a black curtain until the new page has loaded, so it no longer flashes white.
+- **A new dev session is the "＋" at the right end of an app row**: one per row; clicking it switches to that app and returns
+  to the first-round state — write what you need in the composer at the bottom and press Enter to create a new dev session
+  **under that app** and start work (the same as clicking "Develop" on that app's dev node and submitting). One per row, so
+  you never have to switch apps first to find the button. The "＋" on the toolbar is the same glyph and is a shortcut for the
+  current app (when space runs out it folds into "More ▾" under the small heading "New dev session").
+- **Checksums are tucked away**: long `sha256` strings are no longer spread across the UI — click the small "ⓘ checksum"
+  button in the details to see the full value and copy it; app id / author uid / entry / download URL / window size live in a
+  collapsed "Developer info ▾" block.
+- The `dev` flag in the app folder is **local state**: it is stripped when exporting a zip (anyone installing that package
+  gets a normal Library entry).
 
 ## Four hard rules
 
@@ -118,4 +154,4 @@ This is the easiest trap: **an app window gets neither the model API nor MTNode'
 ## Next
 
 - Want a plugin with a backend / console / canvas nodes: that is a **local backend plugin** (see the built-in skill `mtnode-plugin-dev`), not an app.
-- Want AI to finish the app: say a sentence in the chat box on App Center → Develop; or hand the requirement to the global assistant ✦ and say "follow the mtnode-app-dev contract and start from templates/app-scaffold".
+- Want AI to finish the app: pick the app in the left column of App Center → Develop and say a sentence in the session pane; or hand the requirement to the global assistant ✦ and say "follow the mtnode-app-dev contract and start from templates/app-scaffold".

@@ -8,13 +8,14 @@
  *
  * 根目录（所有应用都装在它的下一层）：
  *   <root>/<id>/                     id = 文件夹名（app id 合法化见 safeAppId）
- *     app.json                       应用清单（可迁移：id / name / version / entry / description / icon）
+ *     app.json                       应用清单（可迁移：id / name / version / entry / description / icon
+ *                                    + 本机状态：author 作者 / dev 开发中 / forkOf 二次开发来源）
  *     index.html                     入口页（zip 里带；缺失时补一份最小脚手架）
  *     assets/**                      应用自带资产（导出 zip 只带它 + app.json + index.html）
  *     storage/store.json             **该应用自己的本机存储**（appHost.storageGet / storageSet）
  *     <AppName>.mtnodes              该应用的画布（保存画布时写入；导出 zip 与更新安装都不碰它）
  *     <AppName>.zip                  导出的应用包（appHost 目录 = 用户搬家 / 上架用）
- *     installed.json                 本机安装账本（本次装进去的文件清单 / 来源 / sha256，**不导出**）
+ *     installed.json                 本机安装账本（本次装进去的文件清单 / 来源 / sha256 / 来源作者，**不导出**）
  *   <root>/                          .staging/ 为解包中转目录，装完即清
  *
  * 根目录设置（沿用 installDir 口径的键名，**写在本机 config.json，不写应用目录**）：
@@ -24,10 +25,18 @@
  *   路径守卫（与 main.js isInsideAppDir 同口径）：解析结果等于或位于 app.getAppPath() /
  *   exe 同目录之下一律拒绝 —— 那里升级 / 卸载会带走或覆盖用户的应用。
  *
- * 云端目录与缓存：
- *   MTNODE_APPS_URL（默认 http://mt-agent.com/mtnode/apps）+ /catalog.json
- *   → { version, updatedAt, apps: [{ id, title, version, entry, zipUrl, sha256, icon, window, … }] }
- *   拉取成功缓存到 <数据目录>/apps-cache/catalog.json（云端挂了回退缓存，缓存也没有就空列表）。
+ * 云端目录与缓存（**双源**，见 docs/apps-market.md §三 / §6）：
+ *   MTNODE_APPS_URL（默认 http://mt-agent.com/mtnode/apps）+ /catalog.json   ← 首选（静态目录）
+ *   MTNODE_STORE_URL（默认 https://www.mt-agent.com/mtnode/store-api）+ /api/apps/catalog ← 兜底（接口目录）
+ *   → { version, updatedAt, apps: [{ id, title, version, latestVersion, entry, zipUrl, sha256, icon,
+ *       owner, ownerId, forkOf, window, versions: [{ version, parentVersion, zipUrl, sha256, bytes,
+ *       uploader, createdAt, note }], … }] }
+ *   读目录顺序：静态 → 接口 → 本机缓存（<数据目录>/apps-cache/catalog.json）→ 空列表；
+ *   响应带 source（remote / api / cache / empty）与 sourceBase，每条条目带 sourceBase + urls。
+ *   **静态目录为空按「不可用」处理**（不是「云端没有应用」）—— 静态文件被部署链刷空是发生过的事故。
+ *   下载地址与图标按来源解析（zipUrlsOf）：静态 = FEED + <id>.zip / <id>/<版本>.zip / icons/<id>.<ext>；
+ *   接口 = <store>/api/apps/<id>/file?[version=]<版本>&format=raw 与 /api/apps/<id>/icon。
+ *   多版本口径见 docs/apps-market.md §七：versions[] 缺省时按「就这一版」合成一项（老目录也能读）。
  *   下载 zip → sha256 校验（目录声明了才校验）→ 解包到 .staging → 换进应用目录。
  *
  * 同名目录冲突 → **三态**：{ conflict:true, choices:["overwrite","rename","cancel"] }，
@@ -44,7 +53,10 @@
  *
  * IPC（主窗口侧，preload.js 的 api.apps* 转发；本文件只注册通道，方法名见 registerAppsIpc）：
  *   apps:rootGet / rootSet / rootPick · apps:list · apps:create · apps:catalog · apps:install / uninstall
+ *   apps:setMeta（本机状态字段 dev / author / forkOf 的唯一写入口，渲染层不碰文件系统）
  *   apps:exportZip · apps:probeChanges · apps:openWindow / closeWindow / isOpen
+ *   apps:shotWindow · apps:readZipBase64（上架窗用：拍应用自己的窗口 + 现打包读回 base64，
+ *   契约见 docs/apps-market.md §七；渲染层不碰文件系统与网络）
  *   apps:devPreview（开发页预览：iframe url = mtnode-preview://<appId>/<entry> + 内容快照；
  *   该协议在本文件顶层登记为 standard/secure，响应给 HTML 注入页面状态小助手，
  *   供开发页重载预览时存 / 恢复滚动与表单值 —— 只有这一路注入，独立窗口不受影响）
@@ -75,12 +87,36 @@ const WIN_RESERVED = new Set([
   "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ]);
 const FEED = (process.env.MTNODE_APPS_URL || "http://mt-agent.com/mtnode/apps").replace(/\/+$/, "");
+/* 云端接口目录（与 main.js 的 MTNODE_STORE_URL 同值同义）：
+   静态目录是客户端首选入口，但它是一份**服务端落盘的文件** —— 一旦部署链把它刷空、
+   或包/图标没同步，整个应用库就等于断线（「应用库未连入云端」）。
+   所以静态目录为空 / 拉不到时回退到这个接口（同源、同一份 appCatalogEntry 字段口径）。 */
+const STORE_BASE = (
+  process.env.MTNODE_STORE_URL || "https://www.mt-agent.com/mtnode/store-api"
+).replace(/\/+$/, "");
+/* 目录条目的「来源基址」：静态目录 = FEED，接口目录 = STORE_BASE。
+   下载地址与图标都相对它解析（静态 <id>.zip / icons/<id>.<ext>；接口 /api/apps/<id>/file?format=raw、/api/apps/<id>/icon）。 */
+const SOURCE_BASE = Symbol.for("mtnode.apps.sourceBase");
+/* 目录来源标记：渲染层用它区分「云端静态目录 / 云端接口 / 本机缓存」 */
+const SOURCE_KIND = Symbol.for("mtnode.apps.sourceKind");
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 200 * 1024 * 1024;
 const MAX_STORAGE = 2 * 1024 * 1024;
 const STORAGE_KEY_MAX = 200;
 const MAX_PROMPT = 100 * 1024;
 const MAX_MESSAGES = 60;
+/* appHost 多模态（文本 + 图像）上限：单条消息最多 8 张图、单次请求图像原始字节合计 10MB。
+   超限一律回结构化错误码（too_many_images / too_large），不静默丢图。 */
+const MAX_MSG_IMAGES = 8;
+const MAX_MSG_IMAGE_BYTES = 10 * 1024 * 1024;
+const MODEL_AUTO = "auto";
+const IMG_EXT_TYPES = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
 const ENTRY_RE = /\.html?$/i;
 const SUB = {
   manifest: "app.json",
@@ -94,6 +130,116 @@ const SUB = {
 const CANVAS_EXT = ".mtnodes";
 const ZIP_EXT = ".zip";
 const DEFAULT_WINDOW = { width: 1200, height: 820, minWidth: 640, minHeight: 480 };
+
+/* ---------------- 应用设计风格（新建时选 / 开发页换） ----------------
+ *
+ * 一套风格 = 一份「语义变量赋值 + 少量质感覆盖」，落在 templates/app-default/styles/<id>.css；
+ * 结构与排版在 templates/app-default/base.css；页面 DOM 与正文在 index.html（与风格无关）。
+ * 这里做三件事：
+ *   ① APP_STYLES 是**风格清单的唯一真源**（渲染层用 apps:styles 取它，不再各写一份）；
+ *   ② 注入入口页时把 base.css + styles/<id>.css 内联进模板的 <style>（写完仍是单文件）；
+ *   ③ 选中的风格写进 app.json 的 style 字段；没有该字段（老应用 / 云端包）一律按默认风格看待。
+ * 契约与新增风格的步骤见 templates/app-default/STYLES.md。 */
+const APP_STYLE_FALLBACK = "minimal";
+const APP_STYLES = [
+  {
+    id: "minimal",
+    zh: "极简",
+    en: "Minimal",
+    why: "工程笔记本：深墨底、一根竖线，材料只有线、留白与一个紫点",
+    swatch: ["#0a0c12", "#1d2230", "#c792ea"],
+  },
+  {
+    id: "tech",
+    zh: "科技",
+    en: "Tech",
+    why: "石墨底 + 冷青强调 + 等宽标记，编号做成刻度盘",
+    swatch: ["#070b12", "#16232e", "#5ad9e0"],
+  },
+  {
+    id: "warm",
+    zh: "暖读",
+    en: "Warm",
+    why: "纸白底、暖棕墨、大字号衬线，读五分钟也不累",
+    swatch: ["#faf7f1", "#e2dacb", "#2f6b4a"],
+  },
+  {
+    id: "editorial",
+    zh: "编辑",
+    en: "Editorial",
+    why: "杂志内页：超大衬线标题、首字下沉、细横线分栏",
+    swatch: ["#ffffff", "#12100e", "#b32c1f"],
+  },
+  {
+    id: "terminal",
+    zh: "终端",
+    en: "Terminal",
+    why: "磷光绿单色屏：等宽字、扫描线、提示符光标",
+    swatch: ["#05100a", "#1d4530", "#4fe08a"],
+  },
+  {
+    id: "glass",
+    zh: "玻璃拟态",
+    en: "Glass",
+    why: "夜空光斑 + 磨砂面板 + 大圆角，正文坐在有边的玻璃里",
+    swatch: ["#0a0a12", "#5a78ff", "#a9a0ff"],
+  },
+  {
+    id: "retro",
+    zh: "复古印刷",
+    en: "Retro print",
+    why: "棉纸底、粗线条、网点编号，一处红色错版",
+    swatch: ["#f7f4ec", "#1a1713", "#c0322b"],
+  },
+  {
+    /* 「自定义」不是一套预设风格，而是**一条询问入口**：选中它不写死外观，而是让开发会话
+       先问用户「你要什么风格」——用户描述了自己的品味，或让 AI 按应用用途提几套方案，
+       再按答案把这个应用的入口页做出来（详见 renderer/app-app-flow.js 的自定义那一段）。
+       所以它没有 styles/<id>.css、也没有 previews/<id>.png：卡片用占位视觉，
+       入口页生成时落 minimal 那套（页面绝不花），真正的长相由开发会话按答案改写。 */
+    id: "custom",
+    zh: "自定义",
+    en: "Custom",
+    why: "先问你要什么风格：你提要求，或让 AI 按应用用途先提几套方案",
+    swatch: ["#0a0c12", "#5b6cff", "#c792ea"],
+    custom: true,
+  },
+];
+const APP_STYLE_IDS = APP_STYLES.map((s) => s.id);
+/* 7 套预设风格（可注入的模板）：custom 不在其中 —— 它没有模板文件，入口页落默认那套 */
+const APP_PRESET_STYLE_IDS = APP_STYLES.filter((s) => s.custom !== true).map((s) => s.id);
+const APP_CUSTOM_STYLE = "custom";
+const APP_DEFAULT_STYLE = APP_STYLE_FALLBACK;
+/* 风格 id 合法化：认不出一律回落默认（老 app.json / 云端包 / 手改坏了一样能打开） */
+function normAppStyle(v) {
+  const id = String(v == null ? "" : v)
+    .trim()
+    .toLowerCase();
+  return APP_PRESET_STYLE_IDS.indexOf(id) >= 0 ? id : APP_DEFAULT_STYLE;
+}
+/* 写盘 / 回显口径：**多留一个 custom** —— app.json 要记住「用户选的是自定义」，
+   否则开发页与「换风格…」会把它当成极简，问风格的这一轮就再也回不来了。
+   认不出的值仍旧回落默认（与 normAppStyle 同一口径）。 */
+function normStoredAppStyle(v) {
+  const id = String(v == null ? "" : v)
+    .trim()
+    .toLowerCase();
+  if (id === APP_CUSTOM_STYLE) return APP_CUSTOM_STYLE;
+  return normAppStyle(id);
+}
+/* 这套风格是不是「自定义」（要先去问用户风格要求的那一套） */
+function appStyleIsCustom(style) {
+  return String(style == null ? "" : style)
+    .trim()
+    .toLowerCase() === APP_CUSTOM_STYLE;
+}
+function appStyleIds() {
+  return APP_STYLE_IDS.slice();
+}
+/* 可注入模板的预设风格 id（生成入口页 / 预览图只看这一份） */
+function appPresetStyleIds() {
+  return APP_PRESET_STYLE_IDS.slice();
+}
 
 /* ---------------- 应用数据（默认数据根 + 每应用可改的数据文件夹） ----------------
  *
@@ -113,6 +259,8 @@ const DATA_DIR_POINTER = "dataDir.json";
 const MAX_DATA_FILE = 2 * 1024 * 1024;
 /* 关窗前等应用收尾回包的上限（毫秒）：到点直接关，绝不让一个卡住的页面把窗口钉住 */
 const WILL_CLOSE_MS = 1500;
+/* 上架截图当图标上传时的体积上限（与服务端 icons 口径 MAX_PREVIEW = 500KB 对齐） */
+const ICON_SHOT_MAX_BYTES = 500 * 1024;
 /* appHost 允许写的文件名白名单（见 normDataFileName） */
 const DATA_FILE_NAMES = { "data.json": 1, "store.json": 1 };
 const DATA_FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -333,6 +481,10 @@ let t = (s) => String(s == null ? "" : s);
 let authState = () => ({ ok: true, loggedIn: false, user: null, encryption: "plain", warning: "" });
 let aiCall = null;
 let aiCallStream = null;
+/* 图像缩放内核：registerAppsIpc 注入（main.js 的 shrinkImageBuffer），默认原样返回 */
+let shrinkImage = (buf, ext) => ({ buf: buf, ext: ext });
+/* 模型目录（main.js 注入 dsh().providerCatalog）：用来判某个模型是否「支持识图」 */
+let providerCatalog = null;
 
 /* ---------------- 通用小工具 ---------------- */
 
@@ -340,11 +492,37 @@ function mk(p) {
   fs.mkdirSync(p, { recursive: true });
   return p;
 }
+/* 失败回执统一带 reason（给代码看）与 error（给人看）；reason 顺带暴露成 code，
+   应用侧只判 code 即可分支（桥的错误码就是契约，见 preload-app.js 头部）。 */
 function bad(msg, reason) {
-  return { ok: false, reason: String(reason || ""), error: String(msg || "") };
+  const r = String(reason || "");
+  return { ok: false, reason: r, code: r, error: String(msg || "") };
+}
+/* 模型调用异常 → 结构化错误码：断网 / 超时 / HTTP 状态各归一档，应用据此给可操作提示 */
+function callErrCode(err) {
+  const st = Number(err && err.httpStatus);
+  if (Number.isFinite(st) && st >= 400) return "http_" + Math.round(st);
+  const code = String((err && err.code) || "");
+  const msg = String((err && err.message) || "");
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|socket hang up|fetch failed/i.test(code + " " + msg))
+    return "offline";
+  return "";
 }
 function fail(err) {
-  return { ok: false, error: String((err && err.message) || err) };
+  return Object.assign({ ok: false, error: String((err && err.message) || err) }, { code: callErrCode(err) });
+}
+
+/* 应用侧「选图」：系统对话框（只有用户亲自选的那一次生效），回 { ok, path }；取消回 cancelled。
+   只把**路径**给应用，读盘 / 解码 / 缩放一律留在主进程（见 imagePartUrl）。 */
+async function pickImageForApp(parent) {
+  const r = await dialog.showOpenDialog(parent || undefined, {
+    title: t("选择图像"),
+    properties: ["openFile"],
+    filters: [{ name: t("图像"), extensions: ["png", "jpg", "jpeg", "webp", "gif"] }],
+  });
+  if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, code: "cancelled", error: "cancelled" };
+  const p = String(r.filePaths[0]);
+  return { ok: true, path: p, name: path.basename(p) };
 }
 function sha256(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
@@ -577,6 +755,27 @@ function appDirOf(root, id) {
   const dir = path.resolve(path.join(root, sid));
   if (path.dirname(dir) !== path.resolve(root)) return "";
   return dir;
+}
+/* ── 二次开发（fork）来源声明 ────────────────────────────────────────────────
+ * 契约见 docs/apps-market.md §八：应用身份 = **应用 id + 作者 uid**（uid 以账号 id 为准，
+ * 界面显示 username）。同一应用被不同作者二次开发后各自上架成**不同 id** 的条目，
+ * 条目上用 forkOf = { id, ownerId } 指回源应用（id = 源应用 id，ownerId = 源作者 uid）；
+ * owner（username）只为显示，判定一律看 ownerId。
+ * 空 / 非法一律当「没有声明」，绝不因此让条目读不出来。 */
+function normForkOf(v) {
+  if (!isObj(v)) return null;
+  const id = safeAppId(v.id);
+  const ownerId = String(v.ownerId == null ? "" : v.ownerId).trim();
+  const owner = String(v.owner == null ? "" : v.owner).trim();
+  if (!id) return null;
+  return { id: id, ownerId: ownerId, owner: owner };
+}
+/* fork 身份键：源 id + 源作者 uid（同一源应用的不同分支靠它归组；uid 缺失时退回 username，
+   绝不让一条老数据把整个归组算成「同一个源」）。 */
+function forkKeyOf(f) {
+  const x = normForkOf(f);
+  if (!x) return "";
+  return x.id + "|" + (x.ownerId || x.owner || "");
 }
 function manifestPath(dir) {
   return path.join(dir, SUB.manifest);
@@ -817,6 +1016,16 @@ function manifestOf(dir, id) {
     description: String(j.description || ""),
     icon: String(j.icon || ""),
     author: String(j.author || ""),
+    /* 「开发中」标记（本机自建 / 从库里迁移过来的应用）：只由显式写入（新建应用 /
+       二次开发 / 上架后写作者）落下，安装与更新一律继承原值，绝不覆盖。 */
+    dev: j.dev === true,
+    /* 二次开发来源（可选；原创为空）：{ id, ownerId, owner }，见 normForkOf */
+    forkOf: normForkOf(j.forkOf),
+    /* 设计风格（见本文件顶部 APP_STYLES）：缺字段的老应用 / 云端包一律按默认风格看待，
+       写回只发生在部署时给显式风格值的那一条路径上。
+       回显走 normStoredAppStyle —— 「自定义」是一个要留给界面与查询记住的值（见该函数） */
+    style: normStoredAppStyle(j.style),
+    styleSet: String(j.style == null ? "" : j.style).trim() !== "",
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
     createdAt: Number(j.createdAt) || 0,
     updatedAt: Number(j.updatedAt) || 0,
@@ -860,7 +1069,17 @@ function writeManifest(dir, spec, prevManifest) {
     description: pick(spec.description, prev.description, ""),
     icon: pick(spec.icon, prev.icon, ""),
     author: pick(spec.author, prev.author, ""),
+    /* 设计风格只写**显式给过**的那一个（部署 / 云端包没给 = 保留目录里已有的，
+       老应用也绝不因为一次安装被悄悄改风味）；走 normStoredAppStyle 以留住「自定义」 */
+    style: String(spec.style == null ? "" : spec.style).trim()
+      ? normStoredAppStyle(spec.style)
+      : normStoredAppStyle(prev.style),
     tags: tagsSrc.map(String),
+    /* 「开发中」（dev）与「二次开发来源」（forkOf）：**只由显式参数改写，缺省一律继承
+       目录里已有的那份** —— 安装 / 更新 / 换风格绝不能把它们抹掉（dev 抹掉 = 应用突然
+       退回「库」页；forkOf 抹掉 = 分支关系在重新下载后丢失）。 */
+    dev: spec.dev === true ? true : spec.dev === false ? false : prev.dev === true,
+    forkOf: normForkOf(spec.forkOf) || normForkOf(prev.forkOf),
     createdAt: Number(prev.createdAt) || now,
     updatedAt: now,
   };
@@ -879,19 +1098,52 @@ function ensureStructure(dir, man) {
 /* 新应用的默认页（「Hello world」欢迎页）：随包模板 templates/app-default/index.html ——
    一个自包含的 Markdown 欢迎页（页内极小渲染器 + 中/英双块 + 自绘标题栏），
    只讲一件事：在应用中心「开发」页的会话栏里说一句话，这个页面就会变成你要的样子。
-   模板里 {{APP_NAME}} = 应用标题（转义后替换）。模板读不到（老包 / 被裁剪）时退回
+   模板里 {{APP_NAME}} = 应用标题（转义后替换）、{{STYLE}} = 设计风格 id；
+   样式（base.css + styles/<id>.css）在注入时内联进模板的 <style> 位置，
+   所以写进应用目录的入口页仍是单文件、离线可用。模板读不到（老包 / 被裁剪）时退回
    下面那份最简占位页 —— 新建应用绝不能没有入口页。 */
 const DEFAULT_PAGE_TPL = path.join(__dirname, "templates", "app-default", "index.html");
+const BASE_CSS_TPL = path.join(__dirname, "templates", "app-default", "base.css");
+const STYLES_CSS_DIR = path.join(__dirname, "templates", "app-default", "styles");
 function pageEsc(s) {
   return String(s == null ? "" : s).replace(/[<>&"]/g, (c) => {
     return { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c];
   });
 }
+function appStyleCss(style) {
+  const id = normAppStyle(style);
+  const p = path.join(STYLES_CSS_DIR, id + ".css");
+  try {
+    if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
+  } catch (_) {}
+  /* 风格文件缺失（老包 / 被裁剪）：退回默认那一份，保证颜色变量齐全、页面不花 */
+  try {
+    return fs.readFileSync(path.join(STYLES_CSS_DIR, APP_DEFAULT_STYLE + ".css"), "utf8");
+  } catch (_) {
+    return "";
+  }
+}
 function defaultPageHtml(man) {
   const name = String((man && man.name) || (man && man.id) || "应用");
+  /* 生成入口页用预设口径：选了「自定义」的应用先落 minimal 那一套（页面绝不花），
+     真正的长相由开发会话问清风格要求后改写页面 —— 见 APP_STYLES 里 custom 那一条。 */
+  const style = normAppStyle(man && man.style);
   try {
     const tpl = fs.readFileSync(DEFAULT_PAGE_TPL, "utf8");
-    if (tpl.indexOf("{{APP_NAME}}") >= 0) return tpl.split("{{APP_NAME}}").join(pageEsc(name));
+    if (tpl.indexOf("{{APP_NAME}}") >= 0) {
+      let css = "";
+      try {
+        css = fs.readFileSync(BASE_CSS_TPL, "utf8");
+      } catch (_) {}
+      css += "\n\n" + appStyleCss(style);
+      return tpl
+        .split("{{STYLE_CSS}}")
+        .join(css)
+        .split("{{APP_NAME}}")
+        .join(pageEsc(name))
+        .split("{{STYLE}}")
+        .join(style);
+    }
   } catch (_) {}
   return scaffoldHtml(man);
 }
@@ -909,7 +1161,7 @@ function scaffoldHtml(man) {
     "<main>",
     "<h1>" + name.replace(/[<>&]/g, "") + "</h1>",
     "<p>这是应用入口页（index.html）的占位内容。把这里换成你的界面即可。</p>",
-    "<p>宿主能力走 <code>window.appHost</code>：文本生成 <code>textGen / textGenStream</code>、图像生成 <code>imageGen</code>、本机存储 <code>storageGet / storageSet</code>、账号摘要 <code>account()</code>。</p>",
+    "<p>宿主能力走 <code>window.appHost</code>：文本生成 <code>textGen / textGenStream</code>（默认关思考，要思考显式传 <code>thinking</code>；要 JSON 用脚手架 <code>AppHost.json()</code>）、图像生成 <code>imageGen</code>、本机存储 <code>storageGet / storageSet</code>、账号摘要 <code>account()</code>。</p>",
     "</main>",
     "</body>",
     "</html>",
@@ -945,6 +1197,18 @@ function appSummary(root, id) {
     version: man.version,
     entry: man.entry,
     description: man.description,
+    /* 作者：新建 / 上架时写进 app.json 的登录账号名（空 = 没写过，界面按当前登录账号回落） */
+    author: man.author,
+    /* 「开发中」（本机自建 / 从库迁移来的）：库页据此过滤，开发页据此列出 —— 真源只有 app.json */
+    dev: man.dev === true,
+    /* 二次开发来源（可选）：{ id, ownerId, owner } */
+    forkOf: man.forkOf,
+    /* 来源作者（安装账本里那份）：owner = 云端 username，ownerId = 云端 uid */
+    owner: String(led.owner || ""),
+    ownerId: String(led.ownerId || ""),
+    /* 设计风格：清单里的那一个（缺字段 = 默认极简）+ 是否显式写过（换风格对话框据此提示） */
+    style: man.style,
+    styleSet: !!man.styleSet,
     dir: dir,
     index: resolveInside(dir, man.entry) || path.join(dir, SUB.index),
     assets: path.join(dir, SUB.assets),
@@ -959,8 +1223,59 @@ function appSummary(root, id) {
     installedAt: Number(led.installedAt) || 0,
     source: String(led.source || ""),
     sha256: String(led.sha256 || ""),
+    /* 目录里的核心文件（相对路径，≤10 条，已去掉 storage/ 运行期数据）：
+       「二次开发」建开发节点时用它填 devFiles，与「新建应用」同一口径、不靠猜扩展名。 */
+    coreFiles: (() => {
+      try {
+        return walkFiles(dir, "", [])
+          .filter((rel) => rel.indexOf(SUB.storage + "/") !== 0)
+          .slice(0, 10);
+      } catch (_) {
+        return [];
+      }
+    })(),
     broken: !readManifest(dir),
   };
+}
+/* 存量回填（一次性 · 幂等）：本机**没有 installed.json 安装账本**的应用 = 自己新建的
+   （不是从云端下来的），补一个 dev:true —— 否则它们既不在「库」（新口径把它过滤掉）也不在
+   「开发」（新口径只列开发中的），等于凭空消失。已经显式写过 dev（true / false）的一律不动，
+   写完就不再写第二次（每次 list 只做一次 fs.existsSync 判定）。 */
+function devBackfillOnce(root, id) {
+  try {
+    const dir = appDirOf(root, id);
+    if (!dir || !fs.existsSync(dir)) return;
+    if (fs.existsSync(installedPath(dir))) return;
+    const raw = readManifest(dir);
+    if (!raw || typeof raw.dev === "boolean") return;
+    raw.dev = true;
+    writeJson(manifestPath(dir), raw);
+  } catch (_) {}
+}
+/* 应用清单里那几个**本机状态字段**的唯一写入口（渲染层不碰文件系统）：
+   dev（开发中）/ author（作者）/ forkOf（二次开发来源）。省略的键保持原样，绝不整份重写。 */
+function setAppMeta(arg) {
+  const a = isObj(arg) ? arg : {};
+  const id = safeAppId(a.id);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  const { root, configured } = rootPath();
+  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  const dir = appDirOf(root, id);
+  if (!dir || !fs.existsSync(dir))
+    return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: id });
+  const raw = readManifest(dir);
+  if (!raw) return bad(t("应用清单损坏（app.json 读不出来）：先修好它再改这些信息"), "broken_manifest");
+  const patch = {};
+  if (typeof a.dev === "boolean") patch.dev = a.dev;
+  if (a.author !== undefined) patch.author = String(a.author == null ? "" : a.author).trim();
+  if (a.forkOf !== undefined) patch.forkOf = normForkOf(a.forkOf);
+  if (!Object.keys(patch).length) return bad(t("没有要写入的字段"), "no_fields");
+  try {
+    writeJson(manifestPath(dir), Object.assign({}, raw, patch));
+  } catch (err) {
+    return fail(err);
+  }
+  return { ok: true, id: id, patched: Object.keys(patch), app: appSummary(root, id) };
 }
 function listApps() {
   const { root, configured } = rootPath();
@@ -974,6 +1289,7 @@ function listApps() {
       if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
       const id = safeAppId(ent.name);
       if (!id) continue;
+      devBackfillOnce(root, id);
       const s = appSummary(root, id);
       if (s) apps.push(s);
     }
@@ -986,7 +1302,8 @@ function listApps() {
  *
  * 「新建应用」= 用户填「标题 + 文件夹名」→ 本文件建目录与 app.json（ensureStructure 补
  * assets/ storage/ 与缺失的入口页）→ 渲染层用**既有 workflow:save** 建同名画布
- * （画布 id = 文件夹名，画布 json 里写 appId）→ 画布里建一个开发节点 → 打开并居中。
+ * （画布 id = 文件夹名，画布 json 里写 appId）→ 画布里建一个开发节点（画布在后台建好并
+ * 居中）→ **创建后留在应用界面**：应用中心不收浮层、不返回画布，开发页切到这条新应用。
  *
  * 画布落在数据目录（<数据目录>/save/<id>.json，用户数据不落应用目录）；应用目录内那份
  * <AppName>.mtnodes 只是镜像 —— 每次 workflow:save 由主进程按画布上的 appId 顺手同步
@@ -1031,7 +1348,14 @@ function createApp(arg) {
   if (fs.existsSync(dir)) return bad(t("该文件夹名已存在：") + id, "exists");
   try {
     mk(dir);
-    const man = writeManifest(dir, { id: id, name: name, version: "1.0.0" }, null);
+    /* 设计风格随新建一起落下（浮层里选的那一个；没给 = 默认极简）；
+       dev:true = 「自己正在开发的」（库页据此不列它，开发页据此列它）；
+       author = 当前登录账号名（渲染层传进来；未登录就不写，界面按当前登录账号回落）。 */
+    const man = writeManifest(
+      dir,
+      { id: id, name: name, version: "1.0.0", style: a.style, dev: true, author: a.author },
+      null,
+    );
     ensureStructure(dir, man);
     /* 目录里真实存在的核心文件（相对路径，已去掉 storage/ 运行期数据）：
        新建流程用它填开发节点的 devFiles，不靠猜扩展名。 */
@@ -1044,6 +1368,9 @@ function createApp(arg) {
       name: man.name,
       version: man.version,
       entry: man.entry,
+      style: normStoredAppStyle(man.style),
+      dev: man.dev === true,
+      author: man.author,
       dir: dir,
       root: root,
       canvasPath: canvasPathOf(dir, man.name),
@@ -1053,6 +1380,87 @@ function createApp(arg) {
     return fail(err);
   }
 }
+/* ---------------- 设计风格：换风格 + 给界面的清单 / 预览 ----------------
+ *
+ * 「换风格」（开发页 ⋯ 菜单那一项）＝ 按所选风格**重写应用目录的入口页**。
+ * 入口页是当时从模板生成的一份独立文件，模板升级不会自动跟过去，所以这里显式重生成；
+ * 用户后来在入口页里手改过的内容会被覆盖 —— 界面在确认框里已写明（契约见 STYLES.md）。
+ * 只写探明在目录内的入口页，不碰 assets/ storage/、不碰画布镜像、不备份。 */
+function setAppStyle(arg) {
+  const a = isObj(arg) ? arg : {};
+  const id = safeAppId(a.id);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  /* 换风格：认 preset 七套 + 「自定义」（自定义同样落盘，只是入口页仍用 minimal 那套生成，
+     之后由开发会话按用户答的风格要求改写 —— 见 APP_STYLES 里 custom 那一条） */
+  const style = normStoredAppStyle(a.style);
+  if (String(a.style == null ? "" : a.style).trim() && !APP_STYLE_IDS.includes(String(a.style).trim().toLowerCase()))
+    return bad(t("未知的设计风格：") + String(a.style), "bad_style");
+  let dir = "";
+  let root = "";
+  try {
+    root = rootPath().root;
+    dir = appDirOf(root, id);
+  } catch (err) {
+    return fail(err);
+  }
+  if (!dir || !fs.existsSync(dir)) return bad(t("应用目录不存在"), "no_app");
+  const prev = readManifest(dir) || {};
+  const man = writeManifest(dir, { style: style }, prev);
+  const entry = safeEntry(man.entry) || SUB.index;
+  const abs = resolveInside(dir, entry);
+  if (!abs) return bad(t("入口页路径不合法"), "bad_entry");
+  try {
+    fs.writeFileSync(abs, defaultPageHtml(man), "utf8");
+  } catch (err) {
+    return fail(err);
+  }
+  return {
+    ok: true,
+    id: id,
+    style: man.style,
+    styleName: (APP_STYLES.find((s) => s.id === man.style) || {}).zh || man.style,
+    entry: entry,
+    dir: dir,
+    bytes: (dirStatOf(dir) || {}).bytes || 0,
+  };
+}
+
+/* 风格预览图（templates/app-default/previews/<id>.png，随包、由 scripts/app-style-previews.cjs
+   从同一份模板渲染出来）读成 data URL：渲染层浮层直接 <img src> 用，不走额外协议 /
+   不依赖相对路径（浮层是动态 DOM，拿不到模板目录的路径）。缺图回空串，界面回落色板。 */
+function stylePreviewDataUrl(style, capBytes) {
+  const id = normAppStyle(style);
+  const cap = Number(capBytes) > 0 ? Number(capBytes) : 3 * 1024 * 1024;
+  try {
+    const p = path.join(__dirname, "templates", "app-default", "previews", id + ".png");
+    if (!fs.existsSync(p)) return "";
+    const st = fs.statSync(p);
+    if (!st.isFile() || st.size <= 0 || st.size > cap) return "";
+    return "data:image/png;base64," + fs.readFileSync(p).toString("base64");
+  } catch (_) {
+    return "";
+  }
+}
+/* 给渲染层的风格清单（apps:styles）：id / 中英名 / 一句说明 / 色板 / 预览图 + 默认项。
+   预览图按需带上（首次打开浮层才请求，之后渲染层自己缓存）。
+   custom 那条带 custom:true（卡片据此走占位视觉 + 由选择器去问风格要求），
+   它没有 preview 文件，preview 回空串、界面回落色板。 */
+function appStylesPayload(withPreview) {
+  return {
+    ok: true,
+    defaultStyle: APP_DEFAULT_STYLE,
+    customStyle: APP_CUSTOM_STYLE,
+    styles: APP_STYLES.map((s) => {
+      const o = { id: s.id, zh: s.zh, en: s.en, why: s.why, swatch: s.swatch.slice() };
+      if (s.custom === true) o.custom = true;
+      /* custom 没有自己的预览图（它的长相还没定）：**不回 minimal 那张** ——
+         界面按 custom:true 画占位视觉，别给用户看一张与选择无关的首屏 */
+      if (withPreview && s.custom !== true) o.preview = stylePreviewDataUrl(s.id);
+      return o;
+    }),
+  };
+}
+
 /* 应用画布镜像：把画布 json 同步写进 <root>/<id>/<AppName>.mtnodes（数据目录那份是唯一真源，
    这份只供整目录搬走时不丢画布）。appId 认不出应用目录时静默跳过 —— 镜像失败绝不能
    让画布保存报错。落盘口径与数据目录那份一致（同一个 writeJson）。 */
@@ -1126,23 +1534,114 @@ function fetchBuffer(url, onProgress, maxBytes) {
 }
 
 const catalogUrl = () => FEED + "/catalog.json";
+/* 接口目录（静态目录坏了时的兜底；与 appCatalogDoc() 同一份字段） */
+const storeCatalogUrl = () => STORE_BASE + "/api/apps/catalog";
 const catalogCachePath = () => path.join(cacheDir(), "catalog.json");
 
-/* 目录里的下载地址：只允许同源 http/https（云端目录改不了下载源，防投毒） */
-function resolveZipUrl(zipUrl) {
+/* 条目来源基址：解析时按来源挂的（见 parseCatalogDoc 的 base）；老缓存里没有 → 退回静态目录 FEED。 */
+function specBaseOf(spec) {
+  const b =
+    (spec && spec[SOURCE_BASE]) ||
+    (spec && spec.sourceBase) ||
+    ((spec && spec[SOURCE_KIND]) === "api" || (spec && spec.source) === "api" ? STORE_BASE : FEED);
+  return b ? String(b) : FEED;
+}
+/* 允许的目录基址白名单：静态目录 + 云端接口。只做「相对路径挂到哪个基址」，
+   不做投毒放行 —— 绝对地址仍要求 host 与某个允许基址相同（见 resolveZipUrl）。 */
+function allowedBases() {
+  return [FEED, STORE_BASE];
+}
+/* 这一条是不是从云端接口拉的（接口的 zipUrl / icon 是相对接口的写法） */
+function isApiSpec(spec) {
+  return !!(spec && spec[SOURCE_KIND] === "api");
+}
+
+/* 目录里的下载地址：只允许 http/https 且 host 命中允许基址（云端目录改不了下载源，防投毒）。
+   接口目录的相对写法按接口口径解析成 /api/apps/<id>/file?format=raw。 */
+function resolveZipUrl(zipUrl, base) {
   const u = String(zipUrl || "").trim();
   if (!u) return "";
-  if (u.startsWith("/")) return FEED + u;
-  if (!/^https?:\/\//i.test(u)) return FEED + "/" + u.replace(/^\.\//, "");
+  const bases = allowedBases();
+  const b = base && bases.indexOf(base) >= 0 ? base : FEED;
+  if (u.startsWith("/")) return b + u;
+  /* 带「协议://」但不是 http(s) 的（file: / data: / javascript: …）一律拒 ——
+     绝不把它当相对路径拼到目录基址后面。协议名必须是合法 scheme（以字母开头，
+     数字不能当首字符），否则 `127.0.0.1:8443/x.zip` 这种「裸 host:port」会被误判成协议。 */
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.exec(u);
+  if (scheme && !/^https?$/i.test(scheme[1])) return "";
+  if (!/^https?:\/\//i.test(u)) return b + "/" + u.replace(/^\.\//, "");
   try {
-    const feed = new URL(FEED);
     const zip = new URL(u);
     if (zip.protocol !== "http:" && zip.protocol !== "https:") return "";
-    if (zip.hostname.toLowerCase() !== feed.hostname.toLowerCase()) return "";
+    const host = zip.hostname.toLowerCase();
+    let hostOk = false;
+    for (const one of bases) {
+      try {
+        if (new URL(one).hostname.toLowerCase() === host) {
+          hostOk = true;
+          break;
+        }
+      } catch {}
+    }
+    if (!hostOk) return "";
     return zip.toString();
   } catch {
     return "";
   }
+}
+
+/* 一条目录条目的下载地址：多版本目录优先取 versions[] 里对应那一版 ——
+   **接口目录**的 versions[].zipUrl 是静态写法（<id>/<ver>.zip），静态目录里并不存在这个文件，
+   必须换成接口的 /api/apps/<id>/file?version=<ver>&format=raw；静态目录则原样用。 */
+function zipUrlsOf(spec) {
+  const id = String((spec && spec.id) || "");
+  const base = specBaseOf(spec);
+  const api = isApiSpec(spec);
+  const version = String((spec && spec.version) || "");
+  const out = {
+    zip: api
+      ? base + "/api/apps/" + encodeURIComponent(id) + "/file" + (version ? "?version=" + encodeURIComponent(version) + "&format=raw" : "?format=raw")
+      : resolveZipUrl(spec && spec.zipUrl, base),
+    versions: {},
+    icon: "",
+  };
+  for (const v of ((spec && spec.versions) || [])) {
+    if (!v || !v.version) continue;
+    out.versions[v.version] = api
+      ? base + "/api/apps/" + encodeURIComponent(id) + "/file?version=" + encodeURIComponent(v.version) + "&format=raw"
+      : resolveZipUrl(v.zipUrl, base);
+  }
+  const raw = String((spec && spec.icon) || "").trim();
+  if (raw) {
+    if (/^data:image\//i.test(raw)) out.icon = raw;
+    else if (/^https?:\/\//i.test(raw)) out.icon = resolveZipUrl(raw, base);
+    else if (api) {
+      /* 接口目录的 icon 是相对接口的写法（icons/<id>.<ext> / 裸文件名）→ 统一走 /api/apps/<id>/icon。
+         base 已过白名单（只有 FEED / STORE_BASE 会挂上来），不会被目录内容换成别的站。 */
+      const rel = raw.replace(/^\.\//, "");
+      out.icon = rel.indexOf("/") <= 0 || rel.startsWith("icons/")
+        ? base + "/api/apps/" + encodeURIComponent(id) + "/icon"
+        : resolveZipUrl(rel, base);
+    } else out.icon = resolveZipUrl(raw, base);
+  }
+  return out;
+}
+
+/** 给条目挂来源基址（解析 zipUrl / icon 用它），并让渲染层原样拿到同一个基址。
+    同时把按来源算好的可用 URL（urls.zip / urls.versions / urls.icon）挂上 —— 渲染层直接用，
+    不重复推导（接口来源的图标 / 多版本地址与静态布局不是同一套写法）。 */
+function tagSourceBase(spec, base, kind) {
+  if (!spec) return spec;
+  try {
+    Object.defineProperty(spec, SOURCE_BASE, { value: base, enumerable: false, writable: true, configurable: true });
+    Object.defineProperty(spec, SOURCE_KIND, { value: kind, enumerable: false, writable: true, configurable: true });
+  } catch {}
+  spec.sourceBase = base;
+  spec.source = kind;
+  try {
+    spec.urls = zipUrlsOf(spec);
+  } catch {}
+  return spec;
 }
 function loc(v) {
   if (isObj(v)) {
@@ -1153,6 +1652,42 @@ function loc(v) {
   const s = String(v == null ? "" : v).trim();
   return { zh: s, en: s };
 }
+/* ── 多版本目录（docs/apps-market.md §七）──────────────────────────────────
+ * 云端「一个应用收纳多个版本」时，条目带 versions[]（每项 = 一版：版本号 / 父版 / 自己的
+ * zipUrl + sha256 + 字节 / 上传者 / 时间 / 版本说明）。老目录（手写清单 / 缓存 / 开关关闭的
+ * 服务端）没有这个字段 —— 这里统一补成「就一个版本」，渲染层因此只有一条读路径。 */
+function normVersionItem(raw, fallback) {
+  const v = isObj(raw) ? raw : {};
+  const fb = isObj(fallback) ? fallback : {};
+  const version = String(v.version || fb.version || "0.0.0").trim() || "0.0.0";
+  const parent = String(v.parentVersion == null ? "" : v.parentVersion).trim();
+  return {
+    version: version,
+    /* 父版 = 上一版版本号；首版为空。父版自己等于自己（脏数据）按首版处理 */
+    parentVersion: parent === version ? "" : parent,
+    zipUrl: String(v.zipUrl || fb.zipUrl || "").trim(),
+    sha256: String(v.sha256 || fb.sha256 || "").trim().toLowerCase(),
+    bytes: Number(v.bytes) || Number(fb.bytes) || 0,
+    uploader: String(v.uploader || fb.uploader || "").trim(),
+    note: String(v.note || "").trim(),
+    createdAt: Number(v.createdAt) || 0,
+    declarationAt: Number(v.declarationAt) || 0,
+  };
+}
+/* 条目 → versions[]：同版本号只留第一条（脏目录不至于画出两个同名节点） */
+function normVersionsOf(s, single) {
+  const list = Array.isArray(s.versions) ? s.versions : [];
+  const seen = Object.create(null);
+  const out = [];
+  for (const raw of list) {
+    const v = normVersionItem(raw, single);
+    if (seen[v.version]) continue;
+    seen[v.version] = 1;
+    out.push(v);
+  }
+  if (!out.length) out.push(normVersionItem(single, null));
+  return out;
+}
 /* 目录条目归一：认不出的条目（没有合法 id）直接丢，绝不让一条脏数据挡住整份目录 */
 function normSpec(raw) {
   const s = isObj(raw) ? raw : {};
@@ -1160,6 +1695,13 @@ function normSpec(raw) {
   if (!id) return null;
   const title = loc(s.title || s.name);
   const min = String(s.minAppVersion || "").trim();
+  const version = String(s.version || "0.0.0").trim();
+  const single = {
+    version: version,
+    zipUrl: String(s.zipUrl || "").trim(),
+    sha256: String(s.sha256 || "").trim().toLowerCase(),
+    bytes: Number(s.bytes) || 0,
+  };
   return {
     id: id,
     title: title,
@@ -1176,15 +1718,26 @@ function normSpec(raw) {
     sha256: String(s.sha256 || "").trim().toLowerCase(),
     icon: String(s.icon || "").trim(),
     window: isObj(s.window) ? s.window : {},
+    /* 多版本（§七）：latestVersion 缺省 = version；versions[] 缺省 = 就这一版 */
+    owner: String(s.owner || "").trim(),
+    /* 来源作者 uid（接口条目带 ownerUser.id；静态目录只有 username，那就空着）——
+       「更新按钮只在同作者时出现」靠它判，判定口径见 docs/apps-market.md §八。 */
+    ownerId: String(s.ownerId || (isObj(s.ownerUser) && s.ownerUser.id) || "").trim(),
+    /* 二次开发来源（可选）：{ id, ownerId, owner } —— 同一源应用的不同作者分支按它归组 */
+    forkOf: normForkOf(s.forkOf),
+    latestVersion: String(s.latestVersion || version).trim() || version,
+    versions: normVersionsOf(s, single),
   };
 }
-function parseCatalogDoc(doc) {
+function parseCatalogDoc(doc, base, kind) {
   const d = isObj(doc) ? doc : {};
   const list = Array.isArray(d.apps) ? d.apps : Array.isArray(d.list) ? d.list : [];
+  const b = base || FEED;
+  const k = kind || "static";
   const apps = [];
   for (const item of list) {
     const spec = normSpec(item);
-    if (spec) apps.push(spec);
+    if (spec) apps.push(tagSourceBase(spec, b, k));
   }
   return { version: Number(d.version) || 1, updatedAt: String(d.updatedAt || ""), apps: apps };
 }
@@ -1194,25 +1747,78 @@ function attachInstalled(specs) {
   for (const s of listApps().apps) if (s.id) have[s.id] = s;
   return (Array.isArray(specs) ? specs : []).map((spec) => {
     const cur = have[spec.id] || null;
-    return Object.assign({}, spec, {
+    const merged = Object.assign({}, spec, {
       installed: !!cur,
       installedVersion: cur ? cur.version : "",
       installedAt: cur ? cur.installedAt : 0,
       dir: cur ? cur.dir : "",
+      /* 本机那一份的状态（渲染层据此判「开发中」「同作者」「分支已装」）：
+         localDev = 开发中 · localAuthor = 本机 app.json 里的作者 ·
+         localOwner/localOwnerId = 安装账本里的来源作者（username / uid）· localForkOf = 本机声明。 */
+      localDev: !!cur && cur.dev === true,
+      localAuthor: cur ? String(cur.author || "") : "",
+      localOwner: cur ? String(cur.owner || "") : "",
+      localOwnerId: cur ? String(cur.ownerId || "") : "",
+      localForkOf: (cur && cur.forkOf) || null,
       updateAvailable: !!cur && verCmp(spec.version, cur.version) > 0,
     });
+    /* Object.assign 会把 Symbol 与不可枚举的来源标记丢掉 —— 这里重新挂上，
+       让渲染层与安装流程拿到的每一条都带着「来源基址」，不必再回推。 */
+    return tagSourceBase(merged, specBaseOf(spec), isApiSpec(spec) ? "api" : "static");
   });
 }
+function readCatalogCache() {
+  return readJson(catalogCachePath(), null);
+}
+function writeCatalogCache(sourceUrl, doc, base, kind) {
+  try {
+    writeJson(catalogCachePath(), {
+      fetchedAt: Date.now(),
+      sourceUrl: sourceUrl,
+      sourceBase: base,
+      sourceKind: kind,
+      doc: doc,
+    });
+  } catch {}
+}
+function catalogFromCache(c, remoteError) {
+  const doc = (c && c.doc) || {};
+  const parsed = parseCatalogDoc(doc, c && c.sourceBase, c && c.sourceKind);
+  return {
+    ok: true,
+    source: "cache",
+    fetchedAt: Number(c && c.fetchedAt) || 0,
+    sourceUrl: String((c && c.sourceUrl) || catalogUrl()),
+    sourceBase: String((c && c.sourceBase) || FEED),
+    apps: attachInstalled(parsed.apps),
+    appVersion: String(getAppVersion() || ""),
+    remoteError: remoteError,
+  };
+}
+/* 静态目录（首选入口）：拉不到 / 是空目录都算失败 —— 空目录正是「部署链把线上目录刷空」
+   那类事故的样子，必须让调用方回退接口目录，而不是把「一条应用都没有」当结论。 */
 async function fetchRemoteCatalog() {
   const buf = await fetchBuffer(catalogUrl(), null, MAX_CATALOG);
   const doc = JSON.parse(buf.toString("utf8"));
   if (!isObj(doc) || !(Array.isArray(doc.apps) || Array.isArray(doc.list))) throw new Error("bad_catalog");
-  const parsed = parseCatalogDoc(doc);
-  writeJson(catalogCachePath(), { fetchedAt: Date.now(), sourceUrl: catalogUrl(), doc: doc });
+  const parsed = parseCatalogDoc(doc, FEED, "static");
+  if (!parsed.apps.length) throw new Error("empty_catalog（静态目录 0 条）");
+  writeCatalogCache(catalogUrl(), doc, FEED, "static");
   return parsed;
 }
-/* 云端目录：拉不到就回退缓存，缓存也没有就空列表（绝不把「没网」当「目录是错的」抛给渲染层） */
+/* 接口目录（兜底）：服务端 appCatalogDoc() 的同一份字段，永远与库同步。 */
+async function fetchApiCatalog() {
+  const buf = await fetchBuffer(storeCatalogUrl(), null, MAX_CATALOG);
+  const doc = JSON.parse(buf.toString("utf8"));
+  if (!isObj(doc) || !(Array.isArray(doc.apps) || Array.isArray(doc.list))) throw new Error("bad_catalog");
+  const parsed = parseCatalogDoc(doc, STORE_BASE, "api");
+  writeCatalogCache(storeCatalogUrl(), doc, STORE_BASE, "api");
+  return parsed;
+}
+/* 云端目录：静态 → 接口 → 本机缓存 → 空列表。
+   每一层都记进日志（source / remoteError），排查「应用库没连上云端」时一眼能看出断在哪一层。 */
 async function loadCatalog() {
+  const errors = [];
   try {
     const remote = await fetchRemoteCatalog();
     return {
@@ -1220,40 +1826,57 @@ async function loadCatalog() {
       source: "remote",
       fetchedAt: Date.now(),
       sourceUrl: catalogUrl(),
+      sourceBase: FEED,
       apps: attachInstalled(remote.apps),
       appVersion: String(getAppVersion() || ""),
     };
-  } catch (remoteErr) {
-    const remoteError = String((remoteErr && remoteErr.message) || remoteErr);
-    const c = readJson(catalogCachePath(), null);
-    if (c && c.doc) {
-      const parsed = parseCatalogDoc(c.doc);
-      return {
-        ok: true,
-        source: "cache",
-        fetchedAt: Number(c.fetchedAt) || 0,
-        sourceUrl: String(c.sourceUrl || catalogUrl()),
-        apps: attachInstalled(parsed.apps),
-        appVersion: String(getAppVersion() || ""),
-        remoteError: remoteError,
-      };
-    }
-    return {
-      ok: true,
-      source: "empty",
-      fetchedAt: 0,
-      sourceUrl: catalogUrl(),
-      apps: [],
-      appVersion: String(getAppVersion() || ""),
-      remoteError: remoteError,
-    };
+  } catch (err) {
+    errors.push("static: " + ((err && err.message) || err));
   }
+  try {
+    const api = await fetchApiCatalog();
+    const out = {
+      ok: true,
+      source: "api",
+      fetchedAt: Date.now(),
+      sourceUrl: storeCatalogUrl(),
+      sourceBase: STORE_BASE,
+      apps: attachInstalled(api.apps),
+      appVersion: String(getAppVersion() || ""),
+      remoteError: errors.join(" · "),
+    };
+    if (!out.apps.length) throw new Error("empty_catalog（接口目录 0 条）");
+    console.log(
+      "[apps-store] 静态目录不可用（" + errors.join(" · ") + "）→ 已回退云端接口目录：" +
+        storeCatalogUrl() + "（" + out.apps.length + " 个应用）",
+    );
+    return out;
+  } catch (err) {
+    errors.push("api: " + ((err && err.message) || err));
+  }
+  const c = readCatalogCache();
+  if (c && c.doc) {
+    const out = catalogFromCache(c, errors.join(" · "));
+    console.warn("[apps-store] 云端目录拉不到（" + out.remoteError + "）→ 显示本机缓存：" + out.sourceUrl);
+    return out;
+  }
+  console.warn("[apps-store] 云端目录拉不到、本机也没有缓存：" + errors.join(" · "));
+  return {
+    ok: true,
+    source: "empty",
+    fetchedAt: 0,
+    sourceUrl: catalogUrl(),
+    sourceBase: FEED,
+    apps: [],
+    appVersion: String(getAppVersion() || ""),
+    remoteError: errors.join(" · "),
+  };
 }
 /* 找一个目录条目：先缓存、再远端（安装时云端刚更新过也能装上） */
 async function findSpec(id) {
-  const c = readJson(catalogCachePath(), null);
+  const c = readCatalogCache();
   if (c && c.doc) {
-    const hit = parseCatalogDoc(c.doc).apps.find((a) => a.id === id);
+    const hit = parseCatalogDoc(c.doc, c.sourceBase, c.sourceKind).apps.find((a) => a.id === id);
     if (hit) return hit;
   }
   const cat = await loadCatalog();
@@ -1400,6 +2023,7 @@ function installFailHint(code) {
   if (/^ECONN|^ENOTFOUND|^EAI|^EHOST/.test(s)) return "连接应用目录失败（" + s + "）";
   if (/^bad_zip_url/.test(s)) return "云端目录里该应用的下载地址不合法（只允许同源 http/https）";
   if (/^not_in_catalog/.test(s)) return "云端目录里找不到这个应用";
+  if (/^version_not_in_catalog/.test(s)) return "云端目录里找不到这个版本（作者可能已删除该版本）";
   if (/^need_app_update/.test(s)) return "该应用要求的 MTNode 版本高于当前版本";
   if (/^pack_missing_entry/.test(s)) return "安装包解压后缺少入口 HTML（云端包结构不对）";
   if (/zip truncated|unsupported zip method/.test(s)) return "安装包损坏或压缩方式不受支持";
@@ -1449,10 +2073,28 @@ async function installApp(arg) {
   sendProgress({ id: id, phase: "start", percent: 0 });
   try {
     mk(root);
-    const spec = await findSpec(id);
+    let spec = await findSpec(id);
     if (!spec) throw new Error("not_in_catalog");
+    /* 下载地址按**来源**解析（静态目录 = FEED + 相对路径；接口目录 = <store>/api/apps/<id>/file|icon）。
+       必须在选版**之前**算：接口目录的 versions[].zipUrl 是静态写法，静态目录里并不存在那个文件。 */
+    const urls = zipUrlsOf(spec);
+    /* 选版下载（§七）：渲染层点了版本树里的某一版 → 只换 zipUrl / sha256 / version，
+       其余（entry / window / tags…）仍取应用条目；目录里没有那一版就如实报错。 */
+    const wantVersion = String(a.version || "").trim();
+    if (wantVersion) {
+      const hit = (spec.versions || []).find((v) => v.version === wantVersion);
+      if (!hit) throw new Error("version_not_in_catalog");
+      spec = Object.assign({}, spec, {
+        version: hit.version,
+        zipUrl: urls.versions[hit.version] || hit.zipUrl,
+        sha256: hit.sha256,
+        bytes: hit.bytes || spec.bytes,
+      });
+    } else if (urls.zip) {
+      spec = Object.assign({}, spec, { zipUrl: urls.zip });
+    }
     if (!spec.compatible) throw new Error("need_app_update");
-    const zipUrl = resolveZipUrl(spec.zipUrl);
+    const zipUrl = resolveZipUrl(spec.zipUrl, specBaseOf(spec));
     if (!zipUrl) throw new Error("bad_zip_url");
     const exists = fs.existsSync(path.join(root, id));
     let targetId = id;
@@ -1501,6 +2143,10 @@ async function installApp(arg) {
       if (!fs.existsSync(path.join(srcDir, ...entry.split("/")))) throw new Error("pack_missing_entry");
       closeAppWindow(targetId);
       mk(targetDir);
+      /* 覆盖安装 / 更新前先读一把**本机**清单：dev（开发中）与 forkOf（二次开发来源）只存在于
+         本机目录里，云端包与目录都没有 —— 它们必须在 removePayload 抹掉 app.json 之前取到，
+         否则一次更新就会让应用从「开发」页退回「库」页、分支关系也跟着丢。 */
+      const keepMan = readManifest(targetDir) || {};
       removePayload(targetDir);
       /* 包内自带的 app.json（导出时写进去的）当上一份清单：目录条目补它缺的字段，
          目录条目没有的（自绘应用）也留得住 */
@@ -1509,7 +2155,14 @@ async function installApp(arg) {
          storage/store.json 与该应用自己的画布不在其中 —— 下次覆盖 / 更新安装绝不会把它们删掉。 */
       const payload = walkFiles(srcDir, "", []);
       copyDirRecursive(srcDir, targetDir);
-      const man = writeManifest(targetDir, spec, zipMan || readManifest(targetDir));
+      const man = writeManifest(
+        targetDir,
+        Object.assign({}, spec, {
+          dev: keepMan.dev === true,
+          forkOf: keepMan.forkOf || null,
+        }),
+        zipMan || keepMan,
+      );
       ensureStructure(targetDir, man);
       const ledger = payload.slice();
       for (const rel of [SUB.manifest, man.entry]) if (!ledger.includes(rel)) ledger.push(rel);
@@ -1519,6 +2172,10 @@ async function installApp(arg) {
         version: man.version,
         source: zipUrl,
         sha256: sha256(zipBuf),
+        /* 来源作者（「更新按钮只在同作者时出现」与「分支作者」都靠它判）：
+           owner = 云端 username（显示用），ownerId = 云端 uid（判定用，见 docs/apps-market.md §八）。 */
+        owner: String(spec.owner || ""),
+        ownerId: String(spec.ownerId || ""),
         files: ledger,
         installedAt: Date.now(),
       });
@@ -1559,6 +2216,7 @@ async function uninstallApp(id) {
   if (!dir) return bad(t("非法路径"), "bad_id");
   if (!fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
   closeAppWindow(sid);
+  writeModelSelection(sid, MODEL_AUTO); /* 卸载顺手清掉该应用的模型选择（不留孤儿条目） */
   let trashed = false;
   try {
     await shell.trashItem(dir);
@@ -1588,7 +2246,14 @@ function exportZip(id) {
     const entry = safeEntry(man.entry) || SUB.index;
     const entries = [];
     const manAbs = manifestPath(dir);
-    if (fs.existsSync(manAbs)) entries.push({ name: SUB.manifest, data: fs.readFileSync(manAbs) });
+    if (fs.existsSync(manAbs)) {
+      /* 包里那份 app.json **去掉本机的「开发中」标记（dev）**：它是本机状态，跟着包跑出去
+         会让下载者（或自己在另一台机器上）把这个应用当成「正在开发」而不列进「库」。
+         author 与 forkOf（二次开发来源）照常随包走 —— 契约见 docs/apps-market.md §八。 */
+      const packMan = Object.assign({}, readManifest(dir) || {});
+      delete packMan.dev;
+      entries.push({ name: SUB.manifest, data: Buffer.from(JSON.stringify(packMan, null, 2), "utf8") });
+    }
     const entryAbs = resolveInside(dir, entry);
     if (!entryAbs || !fs.existsSync(entryAbs)) return bad(t("应用缺少入口页"), "missing_entry");
     entries.push({ name: entry, data: fs.readFileSync(entryAbs) });
@@ -1615,6 +2280,92 @@ function exportZip(id) {
       sha256: sha256(buf),
       files: entries.length,
       version: man.version,
+    };
+  } catch (err) {
+    return fail(err);
+  }
+}
+
+/* ---------------- 上架辅助：拍应用窗口 + 现打包读回 base64（§七） ----------------
+ *
+ * 上架窗（renderer/app-publish.js）默认要一张「应用窗口截图」，而渲染层拿不到别的窗口的像素 ——
+ * 只能由主进程抓。两者都守同一条纪律：**渲染层不碰文件系统、不自己拼路径**，只拿回执里的绝对路径 /
+ * base64。截图落 <数据目录>/captures/（与 main.js 桌面截图同目录），绝不落应用文件夹。
+ */
+
+/* 拍该应用**自己**的窗口（不是整屏）。窗口没开 / 最小化时如实报错让用户先点「启动」，
+   绝不偷偷把窗口打开或还原 —— 用户没让你动他的窗口。
+   默认截图会被上架窗当**图标**上传（服务端图标上限 500KB，只收 png/jpeg/webp）：整窗原图动辄
+   超过这个数，所以这里按图标口径收一版 —— 先缩到 512 宽出 PNG，仍超 500KB 再转 JPEG(85)。 */
+async function shotAppWindow(id) {
+  const sid = safeAppId(id);
+  if (!sid) return bad(t("应用 id 不合法"), "bad_id");
+  const w = appWins.get(sid);
+  if (!w || w.isDestroyed()) return bad(t("这个应用的窗口还没打开：先点「启动」，再回来拍图"), "not_open");
+  if (w.isMinimized()) return bad(t("应用窗口已最小化：先还原窗口，再回来拍图"), "minimized");
+  try {
+    const img = await w.webContents.capturePage();
+    if (!img || img.isEmpty()) return bad(t("截图为空：应用窗口可能还没画出来，稍等一下再拍"), "empty_shot");
+    const full = img.toPNG();
+    if (!full || !full.length) return bad(t("截图为空：应用窗口可能还没画出来，稍等一下再拍"), "empty_shot");
+    const size = img.getSize ? img.getSize() : { width: 0, height: 0 };
+    /* 版本 ①：原图（够小就用它，最清晰） */
+    let buf = full;
+    let ext = "png";
+    if (buf.length > ICON_SHOT_MAX_BYTES) {
+      /* 版本 ②：缩到 512 宽（等比）的 PNG */
+      let small = null;
+      try {
+        const sw = Math.max(1, Math.min(512, Number(size.width) || 512));
+        small = img.resize({ width: sw, quality: "good" }).toPNG();
+      } catch (_) {
+        small = null;
+      }
+      if (small && small.length) {
+        buf = small;
+      }
+      /* 版本 ③：仍超上限 → JPEG(85)，图标口径允许 jpeg */
+      if (buf.length > ICON_SHOT_MAX_BYTES) {
+        try {
+          const jpg = (small ? img.resize({ width: Math.max(1, Math.min(512, Number(size.width) || 512)), quality: "good" }) : img).toJPEG(85);
+          if (jpg && jpg.length && jpg.length < buf.length) {
+            buf = jpg;
+            ext = "jpg";
+          }
+        } catch (_) {}
+      }
+    }
+    const out = path.join(mk(path.join(String(getDataDir() || ""), "captures")),
+      "app-" + sid + "-" + Date.now().toString(36) + "." + ext);
+    fs.writeFileSync(out, buf);
+    return {
+      ok: true, id: sid, path: out, file: path.basename(out), bytes: buf.length, ext: ext,
+      width: Number(size.width) || 0, height: Number(size.height) || 0,
+      scaled: buf.length !== full.length,
+    };
+  } catch (err) {
+    return bad(t("拍应用窗口失败：") + ((err && err.message) || err), "shot_failed");
+  }
+}
+
+/* 上架用：**现打一份** zip 再读回 base64（与 exportZip 同一份打包实现：只含 app.json +
+   入口页 + assets，不含画布）。现打现读 = 绝不会把上一轮导出的旧包传上去。 */
+function readPackBase64(id) {
+  const r = exportZip(id);
+  if (!r || r.ok === false) return r || bad(t("打包失败"), "pack_failed");
+  try {
+    const buf = fs.readFileSync(r.path);
+    return {
+      ok: true,
+      id: r.id,
+      name: r.name,
+      version: r.version,
+      path: r.path,
+      file: r.file,
+      files: r.files,
+      bytes: buf.length,
+      sha256: sha256(buf),
+      base64: buf.toString("base64"),
     };
   } catch (err) {
     return fail(err);
@@ -1850,7 +2601,7 @@ function openAppWindow(id) {
   const spec = readJson(catalogCachePath(), null);
   let winSpec = DEFAULT_WINDOW;
   try {
-    const cat = spec && spec.doc ? parseCatalogDoc(spec.doc) : null;
+    const cat = spec && spec.doc ? parseCatalogDoc(spec.doc, spec.sourceBase, spec.sourceKind) : null;
     const hit = cat ? cat.apps.find((a) => a.id === sid) : null;
     if (hit && isObj(hit.window)) winSpec = Object.assign({}, DEFAULT_WINDOW, hit.window);
   } catch {}
@@ -2004,55 +2755,291 @@ function modelIdsOf(p) {
     .filter(Boolean)
     .map(String);
 }
+/* 可用文本服务商（按配置里的顺序 = 用户在设置里拖出来的优先级） */
+function usableTextProviders() {
+  const usable = (p) => !!String(p.apiKey || "").trim() && !!String(p.baseUrl || "").trim();
+  return providersFromConfig().filter((p) => String(p.type || "") === "text_openai" && usable(p));
+}
 /* 默认服务商：文本优先 DeepSeek 官方（本机配置里 host 含 deepseek 的那条），否则第一条可用文本；
-   图像优先第一条 image_* 服务商。应用窗口**不能**指定服务商 / Key / 模型 id —— 只能给提示词。 */
+   图像优先第一条 image_* 服务商。应用窗口**不能**指定服务商 / Key —— 只能给提示词与模型 id。 */
 function providerFor(kind) {
   const list = providersFromConfig();
   const usable = (p) => !!String(p.apiKey || "").trim() && !!String(p.baseUrl || "").trim();
   if (kind === "image") return list.filter((p) => /^image_/.test(String(p.type || "")) && usable(p))[0] || null;
-  const texts = list.filter((p) => String(p.type || "") === "text_openai" && usable(p));
+  const texts = usableTextProviders();
   return texts.find((p) => isDeepseekHost(p.baseUrl)) || texts[0] || null;
 }
 function normRole(v) {
   const r = String(v || "").trim().toLowerCase();
   return r === "system" || r === "assistant" || r === "user" ? r : "";
 }
-/* 应用侧消息白名单：role 只认 system/user/assistant，content 只认字符串且有上限 */
-function normMessages(opts) {
+
+/* ---------------- appHost：模型清单与「继承 MTNode 的模型选择」 ----------------
+ *
+ * 应用窗口不能碰服务商与 Key（那是主进程的事），但**可以**在 MTNode 已配置的模型里挑一个：
+ *   hostModels()  列出全部已配置文本模型（按设置里的优先级，跨服务商）+ 首项「跟随默认」；
+ *                每项带 vision（目录 input:image ∩ 服务商 vision 开关，拿不到目录时不误报）；
+ *   hostModel()   当前生效的选择（auto / 具体模型 id）
+ *   hostSetModel()改选择（只认清单里的 id 或 "auto"），**按应用 id 持久化**，关窗重启还记得。
+ * 选择存在 <数据目录>/apps-models.json（宿主侧文件，不是应用数据 —— 应用重写代码 / 清数据都不丢）。
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+const modelsFilePath = () => path.join(String(getDataDir() || ""), "apps-models.json");
+function readModelSelections() {
+  const j = readJson(modelsFilePath(), null);
+  return isObj(j) ? j : {};
+}
+function readModelSelection(id) {
+  const v = readModelSelections()[String(id || "")];
+  return typeof v === "string" ? v.trim() : "";
+}
+function writeModelSelection(id, model) {
+  const aid = String(id || "");
+  if (!aid) return;
+  try {
+    const all = readModelSelections();
+    const next = String(model || "").trim();
+    if (!next || next === MODEL_AUTO) delete all[aid];
+    else all[aid] = next;
+    writeJson(modelsFilePath(), all); /* 原子写（config-providers.js 的 tmp + rename） */
+  } catch (err) {
+    console.warn("[apps-models] 写入失败：" + ((err && err.message) || err));
+  }
+}
+/* 目录里标了「能识图」的模型 id 集合（渲染层 settings 与主窗口同一判据：目录条目 input 含 image）。
+   目录由 main.js 注入（dsh 的 providerCatalog，与渲染层 ensureProviderCatalog 同源）；
+   拿不到目录时返回 null = 未知（此时只认服务商级 vision 开关，不把模型误标成不支持识图）。 */
+function visionCatalogIds() {
+  let cat = null;
+  try {
+    cat = typeof providerCatalog === "function" ? providerCatalog() : null;
+  } catch {
+    cat = null;
+  }
+  if (!isObj(cat)) return null;
+  const ids = new Set();
+  const eat = (arr) => {
+    for (const m of Array.isArray(arr) ? arr : []) {
+      if (isObj(m) && m.id && Array.isArray(m.input) && m.input.includes("image")) ids.add(String(m.id));
+    }
+  };
+  eat(cat.deepseek);
+  for (const p of Array.isArray(cat.piai) ? cat.piai : []) eat(p && p.models);
+  return ids;
+}
+function modelVisionOf(provider, modelId) {
+  if (!provider || provider.vision !== true) return false;
+  const ids = visionCatalogIds();
+  if (!ids) return true; /* 目录缺席：信服务商级开关（与 buildRequestSpec 的下发判据一致） */
+  return ids.has(String(modelId || ""));
+}
+/* MTNode 已配置的全部文本模型（跨服务商，顺序 = 设置里的优先级；同一 id 只留第一个） */
+function listTextModels() {
   const out = [];
+  const seen = new Set();
+  for (const p of usableTextProviders()) {
+    for (const id of modelIdsOf(p)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id: id,
+        label: id,
+        providerId: String(p.id || ""),
+        providerName: String(p.name || p.id || ""),
+        vision: modelVisionOf(p, id),
+      });
+    }
+  }
+  return out;
+}
+/* 本次请求实际下发的模型：具体 id > 该应用存过的选择 > auto（带图挑第一个可用视觉模型） */
+function resolveModelFor(appId, providerDefaultId, modelId, hasImages) {
+  const pick = String(modelId == null ? "" : modelId).trim();
+  const saved = readModelSelection(appId);
+  const want = pick && pick !== MODEL_AUTO ? pick : saved || "";
+  if (!want) {
+    if (!hasImages) return { modelId: providerDefaultId, provider: null, auto: true };
+    const list = listTextModels().filter((m) => m.vision);
+    if (!list.length) return { error: "no_vision" };
+    return { modelId: list[0].id, providerId: list[0].providerId, auto: true };
+  }
+  const hit = listTextModels().find((m) => m.id === want);
+  if (!hit) return { error: "bad_model" };
+  return { modelId: hit.id, providerId: hit.providerId, auto: false };
+}
+/* 可选模型清单（首项 = 跟随 MTNode 默认）：无可用服务商也照常回，由应用决定怎么提示 */
+function hostModelsPayload(e) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const models = listTextModels();
+  const saved = readModelSelection(own.id);
+  const sel = saved && models.some((m) => m.id === saved) ? saved : MODEL_AUTO;
+  const fallback = providerFor("text");
+  return {
+    ok: true,
+    models: [{ id: MODEL_AUTO, label: "", providerId: "", providerName: "", vision: false, auto: true }].concat(models),
+    selected: sel,
+    hasAny: models.length > 0,
+    hasVision: models.some((m) => m.vision),
+    defaultModel: fallback ? modelIdsOf(fallback)[0] || "" : "",
+  };
+}
+function hostModelGet(e) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const models = listTextModels();
+  const saved = readModelSelection(own.id);
+  const fallback = providerFor("text");
+  return {
+    ok: true,
+    selected: saved && models.some((m) => m.id === saved) ? saved : MODEL_AUTO,
+    hasAny: models.length > 0,
+    hasVision: models.some((m) => m.vision),
+    defaultModel: fallback ? modelIdsOf(fallback)[0] || "" : "",
+  };
+}
+function hostModelSet(e, arg) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const want = String((isObj(arg) && arg.model) || "").trim();
+  if (!want) return bad(t("缺少模型 id"), "bad_model");
+  if (want !== MODEL_AUTO && !listTextModels().some((m) => m.id === want))
+    return bad(t("该模型不在 MTNode 已配置的模型清单里"), "bad_model");
+  writeModelSelection(own.id, want);
+  return hostModelGet(e);
+}
+
+/* ---------------- appHost：多模态消息（文本 + 图像） ----------------
+ *
+ * content 白名单：字符串，或 [{type:"text"},{type:"image_url",image_url:{url:<路径|dataURL>}}]。
+ * 图像交给主进程读盘 / 解码 / 缩放（与画布节点同一份 shrinkImage 内核，长边上限 1080），
+ * 页面拿不到任意文件内容 —— 只能通过它自己给的路径或 dataURL 要求「把这张图发给模型」。
+ * 上限：单条消息 8 张、单次请求原始字节合计 10MB；超限 / 非图 / 读不出回结构化错误码。
+ * ─────────────────────────────────────────────────────────────────── */
+
+/* 把 dataURL 变成 {buf, ext}（校验 mime 属于支持的图像类型） */
+function decodeImageDataUrl(s) {
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(String(s || "").trim());
+  if (!m) return { error: "bad_image" };
+  const mime = m[1].toLowerCase();
+  const ext = Object.keys(IMG_EXT_TYPES).find((k) => IMG_EXT_TYPES[k] === mime);
+  if (!ext) return { error: "bad_image" };
+  let buf = null;
+  try {
+    buf = Buffer.from(m[2].replace(/\s+/g, ""), "base64");
+  } catch {}
+  if (!buf || !buf.length) return { error: "bad_image" };
+  return { buf: buf, ext: ext === "jpeg" ? "jpg" : ext };
+}
+/* 一张图 → { url: dataURL, bytes: 原始字节数 }；失败回 { error }（错误码即契约） */
+function imagePartUrl(raw, quota) {
+  const s = String(raw == null ? "" : raw).trim();
+  if (!s) return { error: "bad_image" };
+  let buf = null;
+  let ext = "";
+  if (/^data:/i.test(s)) {
+    const d = decodeImageDataUrl(s);
+    if (d.error) return { error: d.error };
+    buf = d.buf;
+    ext = d.ext;
+  } else {
+    if (!path.isAbsolute(s)) return { error: "bad_image" };
+    ext = String(path.extname(s)).slice(1).toLowerCase();
+    if (!IMG_EXT_TYPES[ext]) return { error: "bad_image" };
+    if (!fs.existsSync(s)) return { error: "bad_image" };
+    try {
+      if (!fs.statSync(s).isFile()) return { error: "bad_image" };
+      buf = fs.readFileSync(s);
+    } catch {
+      return { error: "bad_image" };
+    }
+  }
+  if (!buf || !buf.length) return { error: "bad_image" };
+  quota.bytes += buf.length;
+  if (quota.bytes > MAX_MSG_IMAGE_BYTES) return { error: "too_large" };
+  /* 与画布节点同一份内核：长边 ≤ 1080 等比缩放，无法解码 / 已达标时原样下发 */
+  let out = { buf: buf, ext: ext };
+  try {
+    if (typeof shrinkImage === "function") out = shrinkImage(buf, ext);
+  } catch {}
+  const mime = IMG_EXT_TYPES[String(out.ext || ext).toLowerCase()] || IMG_EXT_TYPES[ext] || "image/png";
+  return { url: "data:" + mime + ";base64," + out.buf.toString("base64"), bytes: buf.length };
+}
+/* 单条消息的 content：字符串原样收；数组按 OpenAI 多模态形状重建（不认识的分片丢弃） */
+function normContent(content, quota) {
+  if (typeof content === "string") return { content: content.slice(0, MAX_PROMPT) };
+  if (!Array.isArray(content)) return { content: "" };
+  const parts = [];
+  let images = 0;
+  for (const part of content) {
+    if (!isObj(part)) continue;
+    if (part.type === "text") {
+      const text = String(part.text == null ? "" : part.text);
+      if (text) parts.push({ type: "text", text: text.slice(0, MAX_PROMPT) });
+      continue;
+    }
+    if (part.type !== "image_url") continue;
+    const src = isObj(part.image_url) ? part.image_url.url : part.image_url;
+    const one = imagePartUrl(src, quota);
+    if (one.error) return { error: one.error };
+    images += 1;
+    if (images > MAX_MSG_IMAGES) return { error: "too_many_images" };
+    parts.push({ type: "image_url", image_url: { url: one.url } });
+  }
+  /* 只留图不留字：补一句空文本，否则部分服务商把空 content 当坏请求 */
+  if (!parts.length) return { content: "" };
+  if (!parts.some((p) => p.type === "text")) parts.unshift({ type: "text", text: "" });
+  return { content: parts, hasImages: images > 0, images: images };
+}
+/* 应用侧消息白名单：role 只认 system/user/assistant；content 认字符串与多模态数组 */
+function buildMessages(opts) {
+  const out = [];
+  const quota = { bytes: 0 };
+  let images = 0;
   const src = Array.isArray(opts.messages) ? opts.messages.slice(0, MAX_MESSAGES) : [];
   for (const m of src) {
     if (!isObj(m)) continue;
     const role = normRole(m.role);
-    const content = typeof m.content === "string" ? m.content : "";
-    if (!role || !content.trim()) continue;
-    out.push({ role: role, content: content.slice(0, MAX_PROMPT) });
+    if (!role) continue;
+    const c = normContent(m.content, quota);
+    if (c.error) return { error: c.error };
+    if (typeof c.content === "string" ? !c.content.trim() : !c.content.length) continue;
+    images += c.images || 0;
+    out.push({ role: role, content: c.content });
   }
-  if (out.length) return out;
+  if (out.length) return { messages: out, hasImages: images > 0, images: images };
   const system = typeof opts.system === "string" ? opts.system.trim() : "";
   const prompt = typeof opts.prompt === "string" ? opts.prompt : "";
   if (system) out.push({ role: "system", content: system.slice(0, MAX_PROMPT) });
   out.push({ role: "user", content: prompt.slice(0, MAX_PROMPT) });
-  return out;
+  return { messages: out, hasImages: false, images: 0 };
+}
+/* 应用侧思考档白名单（appHost.textGenStream / hostText 的 opts.thinking）：
+ *   不传 = off —— 应用通道**默认关思考**。理由不是省 token，而是别把应用要的正文吃掉：
+ *   DeepSeek V4 默认开思考，而 max_tokens（应用自己给的上限）是「思考 + 正文」共用的预算，
+ *   实测同一请求（deepseek-v4-flash · max_tokens 1200 · 要一段 JSON）开思考时 6 次里 4 次
+ *   finish_reason=length —— 正文为空或只出半截 JSON，应用只能报「回复不是可用 JSON」；
+ *   关思考后同一请求 108~116 token 就出完整 JSON（回归见 test/smoke-apps.js）。
+ *   认 off / on（= high）/ low / high / max；其它值回结构化错误码 bad_thinking，不猜也不静默降级。 */
+const APP_THINKING = { off: "off", on: "high", low: "low", high: "high", max: "max" };
+function normThinkingEffort(v) {
+  const s = String(v == null ? "" : v)
+    .trim()
+    .toLowerCase();
+  if (!s) return "off";
+  return APP_THINKING[s] || "";
 }
 function hostSpec(id, kind, opts) {
-  const provider = providerFor(kind);
-  if (!provider) {
-    return {
-      error:
-        kind === "image"
-          ? t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）")
-          : t("未配置可用的文本服务商（请在「设置 · API/配置」中填写）"),
-    };
-  }
-  const model = modelIdsOf(provider)[0] || "";
   const o = isObj(opts) ? opts : {};
   if (kind === "image") {
+    const provider = providerFor("image");
+    if (!provider)
+      return { error: t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), code: "no_provider" };
     return {
       spec: {
         provider: provider,
         kind: "image",
-        model: model,
+        model: modelIdsOf(provider)[0] || "",
         prompt: String(o.prompt || "").slice(0, MAX_PROMPT),
         size: String(o.size || ""),
         quality: String(o.quality || ""),
@@ -2060,29 +3047,96 @@ function hostSpec(id, kind, opts) {
       },
     };
   }
-  const messages = normMessages(o);
+  const built = buildMessages(o);
+  if (built.error) return { error: msgErrorText(built.error), code: built.error };
+  const hasImages = built.hasImages;
+  const fallback = providerFor("text");
+  if (!fallback)
+    return { error: t("未配置可用的文本服务商（请在「设置 · API/配置」中填写）"), code: "no_provider" };
+  const resol = resolveModelFor(id, modelIdsOf(fallback)[0] || "", o.model, hasImages);
+  if (resol.error)
+    return {
+      error: resol.error === "no_vision" ? t(NO_VISION_TEXT) : t(BAD_MODEL_TEXT),
+      code: resol.error,
+    };
+  const provider =
+    (resol.providerId && providersFromConfig().find((p) => String(p.id || "") === String(resol.providerId))) ||
+    fallback;
+  /* 带图必须走在「服务商声明支持视觉」那条路上；否则模型看不见图，等于静默降级 */
+  if (hasImages && provider.vision !== true)
+    return { error: t(NO_VISION_TEXT), code: "no_vision" };
+  /* 思考档：不传 = off（见 normThinkingEffort 头部口径）；非法值当场拒绝 —— 绝不静默按 off 处理，
+     否则应用以为自己开了思考，实际没有，只会更难排查 */
+  const think = normThinkingEffort(o.thinking);
+  if (!think) return { error: t("thinking 只认 off / on / low / high / max"), code: "bad_thinking" };
+  const msgs = built.messages.slice();
+  const lastUser = (() => {
+    for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "user") return msgs[i];
+    return null;
+  })();
+  const promptOf = (m) => {
+    if (!m) return "";
+    if (typeof m.content === "string") return m.content;
+    return m.content
+      .filter((p) => p && p.type === "text")
+      .map((p) => p.text)
+      .join("\n");
+  };
   const temp = Number(o.temperature);
   return {
     spec: {
       provider: provider,
       kind: "text",
-      model: model,
-      prompt: messages.length ? messages[messages.length - 1].content : "",
-      chatMessages: messages,
+      model: resol.modelId,
+      /* vision = 本次是不是带图请求：内核按 provider.vision 决定下发判据，这一位只作旁证与排查用 */
+      vision: hasImages,
+      /* 思考档（off / low / high / max）随 spec 下发，由内核 applyTextThinkingEffort 落成
+         body.thinking / reasoning_effort —— 默认 off，应用显式传 thinking 才开 */
+      effort: think,
+      images: [],
+      prompt: promptOf(lastUser),
+      chatMessages: msgs,
       temperature: Number.isFinite(temp) ? Math.max(0, Math.min(2, temp)) : 0.7,
+      /* 输出上限：应用显式给值才下发（不传 = 不限；不给应用设默认上限 —— 上限会把正文截断，
+         而应用多半只会把它当成「模型不会用 JSON」）。 */
       maxTokens: Number(o.maxTokens) > 0 ? Math.round(Number(o.maxTokens)) : 0,
     },
+  };
+}
+const NO_VISION_TEXT =
+  "本次带图，但当前模型 / 服务商不支持识图：请在该应用的「模型」里选一个带「支持识图」的模型，或在 MTNode「设置 · 模型服务」里配置支持图像的服务商";
+const BAD_MODEL_TEXT = "该模型不在 MTNode 已配置的模型清单里（请在应用的「模型」里重新选择）";
+/* 结构化错误码 → 给人看的一句话（应用侧可只看 code，文案只是兜底） */
+function msgErrorText(code) {
+  if (code === "too_many_images") return t("一条消息里的图片太多（上限 8 张）");
+  if (code === "too_large") return t("图片总大小超出上限（10MB）");
+  return t("图像读不出或格式不支持（支持 png / jpg / webp / gif）");
+}
+/* 主进程调用结果 → 应用侧回执：正文 + 思考量 + **是否被截断**。
+   截断必须让应用看得见：max_tokens 到顶时模型正文是半截的（JSON 当然也解不出来），
+   应用据此能说「回复被截断，请给更大上限」，而不是含糊的「回复不是可用 JSON」。 */
+function textResult(r, model) {
+  const reasoning = String((r && r.reasoning) || "");
+  const finishReason = String((r && r.finishReason) || "");
+  return {
+    ok: true,
+    text: String((r && r.text) || ""),
+    reasoning: reasoning,
+    reasoningChars: reasoning.length,
+    finishReason: finishReason,
+    truncated: !!(r && r.truncated) || finishReason === "length",
+    model: model,
   };
 }
 async function hostText(e, opts) {
   const own = senderAppDir(e);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const built = hostSpec(own.id, "text", opts);
-  if (built.error) return bad(built.error, "no_provider");
+  if (built.error) return bad(built.error, built.code || "no_provider");
   if (typeof aiCall !== "function") return bad(t("模型调用内核不可用"), "no_kernel");
   try {
     const r = await aiCall(built.spec);
-    return { ok: true, text: String((r && r.text) || "") };
+    return textResult(r, built.spec.model || "");
   } catch (err) {
     return fail(err);
   }
@@ -2091,7 +3145,7 @@ async function hostTextStream(e, opts) {
   const own = senderAppDir(e);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const built = hostSpec(own.id, "text", opts);
-  if (built.error) return bad(built.error, "no_provider");
+  if (built.error) return bad(built.error, built.code || "no_provider");
   const wc = e.sender;
   const reqId = String((isObj(opts) && opts.reqId) || "");
   const emit = (type, data) => {
@@ -2099,25 +3153,27 @@ async function hostTextStream(e, opts) {
       if (!wc.isDestroyed()) wc.send("apps:hostStream", Object.assign({ reqId: reqId, type: type }, data || {}));
     } catch {}
   };
+  const model = String((built.spec && built.spec.model) || "");
   if (typeof aiCallStream !== "function") {
     const r = await hostText(e, opts);
-    emit(r.ok ? "done" : "error", r.ok ? { text: r.text } : { error: r.error });
+    emit(r.ok ? "done" : "error", r.ok ? { text: r.text, model: model } : { error: r.error, code: r.code || "" });
     return r;
   }
   try {
     const r = await aiCallStream(built.spec, emit);
-    return { ok: true, text: String((r && r.text) || ""), reasoning: String((r && r.reasoning) || "") };
+    return textResult(r, model);
   } catch (err) {
     const msg = String((err && err.message) || err);
-    emit("error", { error: msg });
-    return { ok: false, error: msg };
+    const code = callErrCode(err);
+    emit("error", { error: msg, code: code });
+    return { ok: false, error: msg, code: code };
   }
 }
 async function hostImage(e, opts) {
   const own = senderAppDir(e);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const built = hostSpec(own.id, "image", opts);
-  if (built.error) return bad(built.error, "no_provider");
+  if (built.error) return bad(built.error, built.code || "no_provider");
   if (!String(built.spec.prompt || "").trim()) return bad(t("缺少提示词"), "no_prompt");
   if (typeof aiCall !== "function") return bad(t("模型调用内核不可用"), "no_kernel");
   try {
@@ -2306,6 +3362,10 @@ function registerAppsIpc(opts) {
   if (typeof opts.authState === "function") authState = opts.authState;
   if (typeof opts.aiCall === "function") aiCall = opts.aiCall;
   if (typeof opts.aiCallStream === "function") aiCallStream = opts.aiCallStream;
+  /* 图像缩放内核（main.js 的 shrinkImageBuffer）：应用侧多模态消息与画布节点同一份口径
+     （长边 ≤ 1080 等比缩），不在这儿另写一套。 */
+  if (typeof opts.shrinkImage === "function") shrinkImage = opts.shrinkImage;
+  if (typeof opts.getProviderCatalog === "function") providerCatalog = opts.getProviderCatalog;
 
   const guard = (fn) => (e, arg) => {
     try {
@@ -2344,12 +3404,31 @@ function registerAppsIpc(opts) {
   });
 
   ipcMain.handle("apps:list", guard(() => listApps()));
-  /* 新建应用：{ name 标题, id 文件夹名 } → 建 <root>/<id>/ + app.json（画布由渲染层
-     紧接着走既有 workflow:save 建，见 createApp 头部注释）。 */
+  /* 新建应用：{ name 标题, id 文件夹名, style 设计风格 } → 建 <root>/<id>/ + app.json
+     （画布由渲染层紧接着走既有 workflow:save 建，见 createApp 头部注释）。 */
   ipcMain.handle("apps:create", guard((e, arg) => createApp(arg)));
+  /* 设计风格：清单（含预览图 data URL）+ 换风格（重写应用目录的入口页） */
+  ipcMain.handle("apps:styles", guard((e, arg) =>
+    appStylesPayload(!isObj(arg) || arg.preview !== false),
+  ));
+  ipcMain.handle("apps:setStyle", guard((e, arg) => setAppStyle(arg)));
+  /* 本机状态字段写入口（渲染层不碰文件系统）：{ id, dev?, author?, forkOf? } ——
+     二次开发（dev:true + 作者）、上架成功后写作者与二次开发来源都走这一条。 */
+  ipcMain.handle("apps:setMeta", guard((e, arg) => setAppMeta(arg)));
   ipcMain.handle("apps:catalog", async (e, arg) => {
     try {
-      return await loadCatalog(arg || {});
+      const cat = await loadCatalog(arg || {});
+      /* 渲染层要能显示图标、版本树也要能显示每一版的下载地址：
+         主进程按**来源**把它们解析成可直接请求的 URL（静态 = FEED + 相对路径；
+         接口 = <store>/api/apps/<id>/file|icon），渲染层不重复推导、也不硬编码域名。 */
+      if (cat && Array.isArray(cat.apps)) {
+        for (const spec of cat.apps) {
+          try {
+            spec.urls = zipUrlsOf(spec);
+          } catch {}
+        }
+      }
+      return cat;
     } catch (err) {
       return fail(err);
     }
@@ -2369,6 +3448,9 @@ function registerAppsIpc(opts) {
     }
   });
   ipcMain.handle("apps:exportZip", guard((e, arg) => exportZip(isObj(arg) ? arg.id : arg)));
+  /* 上架（§七）：拍应用自己的窗口 + 现打包读回 base64（上架窗只拿回执，不碰文件系统） */
+  ipcMain.handle("apps:shotWindow", async (e, arg) => shotAppWindow(isObj(arg) ? arg.id : arg));
+  ipcMain.handle("apps:readZipBase64", guard((e, arg) => readPackBase64(isObj(arg) ? arg.id : arg)));
   ipcMain.handle("apps:probeChanges", guard(() => probeChanges()));
   /* 开发页预览：url（mtnode-preview://）+ 内容快照；协议本身在这里注册（此时已 ready） */
   try {
@@ -2402,6 +3484,21 @@ function registerAppsIpc(opts) {
       return fail(err);
     }
   });
+  /* 模型继承（列清单 / 读选择 / 改选择）：应用窗口不能在已配置清单之外挑模型，
+     服务商与 Key 一律不回传（见 hostModelsPayload 一节）。 */
+  ipcMain.handle("apps:hostModels", guard((e) => hostModelsPayload(e)));
+  ipcMain.handle("apps:hostModel", guard((e) => hostModelGet(e)));
+  ipcMain.handle("apps:hostSetModel", guard((e, arg) => hostModelSet(e, arg)));
+  /* 宿主选图（多模态输入里的「选一张本机图」）：只回路径，读盘 / 缩放留在主进程 */
+  ipcMain.handle("apps:hostPickImage", async (e) => {
+    try {
+      const own = senderAppDir(e);
+      if (!own) return bad(t("不是应用窗口"), "not_app");
+      return await pickImageForApp(BrowserWindow.fromWebContents(e.sender) || getMainWin());
+    } catch (err) {
+      return fail(err);
+    }
+  });
   ipcMain.handle("apps:hostStorageGet", guard((e, arg) => hostStorageGet(e, arg)));
   ipcMain.handle("apps:hostStorageSet", guard((e, arg) => hostStorageSet(e, arg)));
   ipcMain.handle("apps:hostStorageAll", guard((e) => hostStorageAll(e)));
@@ -2429,47 +3526,19 @@ function registerAppsIpc(opts) {
   ipcMain.handle("apps:ackClose", guard((e) => ackAppClose(e)));
   ipcMain.handle("apps:quit", guard((e) => quitFromAppWindow(e)));
 
-  /* ── 应用数据（主窗口 / 应用中心侧）：库页 / 开发页那一行的数据文件夹 ──
-     dataDir 只读写，选目录走 apps:dataDirPick（一定要用户亲自选），不开放任意写通道。 */
-  ipcMain.handle("apps:dataInfo", guard((e, arg) => {
-    const id = safeAppId(isObj(arg) ? arg.id : arg);
-    if (!id) return bad(t("应用 id 不合法"), "bad_id");
-    try {
-      const dir = appDataDirOf(id);
-      const p = readDataDirPointer(id);
-      const root = appDataRoot(id);
-      return {
-        ok: true,
-        id: id,
-        dir: dir,
-        root: root,
-        def: !p,
-        exists: fs.existsSync(dir),
-        files: fs.existsSync(dir) ? walkFiles(dir, "", []).length : 0,
-      };
-    } catch (err) {
-      return fail(err);
-    }
-  }));
-  ipcMain.handle("apps:dataDirPick", async (e, arg) => {
+  /* ── 应用数据（主窗口 / 应用中心侧）：只留「打开数据目录」这一件事 ──
+     数据目录用 app id 管理（默认数据根 <数据目录>/apps-data/<id>/，用户改过则是他选的那个），
+     入口是库 / 开发页每张卡片右侧那颗 📂；路径只由主进程解析，渲染层不拼路径、不写路径。
+     改数据文件夹位置仍只在应用窗口里（preload-app.js 的 appHost.dataDir* → apps:hostDataDir*）。 */
+  ipcMain.handle("apps:dataOpen", async (e, arg) => {
     try {
       const id = safeAppId(isObj(arg) ? arg.id : arg);
       if (!id) return bad(t("应用 id 不合法"), "bad_id");
-      return await pickAppDataDir(id, (isObj(arg) && arg) || {});
+      return await openAppDataDir(id);
     } catch (err) {
       return fail(err);
     }
   });
-  ipcMain.handle("apps:dataDirReset", guard((e, arg) => {
-    const id = safeAppId(isObj(arg) ? arg.id : arg);
-    if (!id) return bad(t("应用 id 不合法"), "bad_id");
-    try {
-      const r = clearDataDirPointer(id);
-      return Object.assign({}, r, { exists: fs.existsSync(r.dir) });
-    } catch (err) {
-      return fail(err);
-    }
-  }));
 }
 
 module.exports = {
@@ -2480,11 +3549,36 @@ module.exports = {
   setRoot,
   listApps,
   createApp,
+  setAppMeta,
+  /* 设计风格：清单真源 + 换风格（渲染层只经 IPC 用，smoke 直接断言这两条真源） */
+  APP_STYLES,
+  APP_STYLE_IDS,
+  APP_DEFAULT_STYLE,
+  APP_CUSTOM_STYLE,
+  normAppStyle,
+  normStoredAppStyle,
+  appStyleIsCustom,
+  appStyleIds,
+  appPresetStyleIds,
+  setAppStyle,
+  appStylesPayload,
+  stylePreviewDataUrl,
+  defaultPageHtml,
   mirrorAppCanvas,
   loadCatalog,
   installApp,
   uninstallApp,
   exportZip,
+  /* 目录双源（静态目录 / 云端接口）：解析与来源判定是纯函数段，冒烟直接真跑 */
+  parseCatalogDoc,
+  resolveZipUrl,
+  zipUrlsOf,
+  specBaseOf,
+  /* 上架（docs/apps-market.md §七）：拍照 + 现打包（纯函数段，冒烟直接真跑） */
+  shotAppWindow,
+  readPackBase64,
+  normVersionItem,
+  normVersionsOf,
   probeChanges,
   devPreview,
   registerPreviewProtocol,
@@ -2516,4 +3610,19 @@ module.exports = {
   zipBuffer,
   unzipBuffer,
   resolveInside,
+  /* 应用侧模型继承与多模态消息（冒烟直接真跑纯函数段：应用窗口不存在时也能钉住契约） */
+  listTextModels,
+  resolveModelFor,
+  readModelSelection,
+  writeModelSelection,
+  buildMessages,
+  imagePartUrl,
+  decodeImageDataUrl,
+  callErrCode,
+  MODEL_AUTO,
+  MAX_MSG_IMAGES,
+  MAX_MSG_IMAGE_BYTES,
+  /* 应用通道的思考档白名单（纯函数，冒烟直接真跑：默认 off、on=high、非法值拒绝） */
+  normThinkingEffort,
+  APP_THINKING,
 };

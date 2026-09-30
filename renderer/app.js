@@ -103,6 +103,13 @@ const S = {
   assistScope: "current",
   assistW: 320, /* 右侧助手栏宽度：最小 320，最大半屏 */
   agentSideW: 280, /* 会话左栏宽度：默认即最小 280，可拖拽加宽（最大半屏） */
+  /* 应用开发界面三栏栏宽（renderer/app-apps.js 的 clampAppsColsW + app-apps-dev.js 的把手）：
+     会话的左 / 中 / 右三栏，把手绝对定位在栏边缘、松手落盘，双击把手复位默认。
+     三栏每栏最小 240px、一律最大半屏；中栏 = 1fr 自动吃剩余，
+     如下只存「左栏」与「右栏」两档（中栏是推算值，不落盘）。
+     整页左导航（.apps-hub-side）是固定 176px，不在这里、也不可拖。 */
+  appsDevSideW: 240,
+  appsDevConvW: 0,
   /* 会话「计划」清单的最小高度：默认即最小（app-plan.js PLAN_LIST_MIN_H），
      清单上方的把手可继续向上拖高（上限按当下窗口与输入区实测），全局偏好、松手落盘 */
   agentPlanH: 120,
@@ -8444,6 +8451,30 @@ function collectRunQueueAll() {
       return [];
     }
   };
+  /* 会话 → 归属开发块：本画布 + 后台画布逐块扫一遍（判定口径与 devRunningSessionsOf 同源，
+     只认 super+dev，db 块不算）。队列行据此在标题旁标出「哪个功能块的哪一条任务」——
+     同一节点并行多条开发任务时才看得清是「多条」，而不是一串同名行。 */
+  const boundDevOfSession = (sid) => {
+    if (!sid) return null;
+    try {
+      if (typeof devSessionIdsOf !== "function") return null;
+      const scan = (ns) => {
+        for (const n of ns || []) {
+          if (!n || n.kind !== "super" || !n.dev || n.db) continue;
+          if (devSessionIdsOf(n).indexOf(sid) >= 0) return n;
+        }
+        return null;
+      };
+      const hit = scan((S.wf && S.wf.nodes) || []);
+      if (hit) return hit;
+      for (const wid of Object.keys(S.wfBag || {})) {
+        const w = S.wfBag[wid];
+        const h2 = scan((w && w.nodes) || []);
+        if (h2) return h2;
+      }
+    } catch (_) {}
+    return null;
+  };
   const repOfSession = (sid) => {
     for (const it of items) {
       const n = it.node;
@@ -8485,6 +8516,18 @@ function collectRunQueueAll() {
     try {
       grp = typeof wsGroupOf === "function" ? wsGroupOf(st.workspace) : "";
     } catch (_) {}
+    const owner = boundDevOfSession(st.id);
+    const ownerText = owner ? owner.title || owner.id || "" : "";
+    /* 同一开发节点并行多条开发任务：只有「多行」还不够 —— 行标题都是同一个模块名
+       （「开发 · 建议对话框」×N），一眼看去仍像一条。把该行归属的功能块名写进状态文案，
+       并在同块 ≥2 条时点明条数，用户才能分辨「哪一条是哪一件任务」、逐条停止 / 跳转。
+       不带「运行中」尾缀：会话段本身就是「处理中」的语义，多一段只是噪声。 */
+    const sibN = owner ? devRunningSessionsOf(owner).length : 0;
+    const stateText = ownerText
+      ? sibN > 1
+        ? ownerText + " · " + sibN + I18n.t(" 条开发任务并行")
+        : ownerText + I18n.t(" · 开发任务")
+      : I18n.t("运行中");
     addItem({
       key: "sess:" + st.id,
       type: "session",
@@ -8492,13 +8535,15 @@ function collectRunQueueAll() {
       title: st.title || I18n.t("新会话"),
       kindCls: "sess",
       kindLabel: I18n.t("会话"),
-      stateText: I18n.t("运行中"),
+      stateText,
       sub: grp || "",
       state: "run",
       wfId: "",
       wfName: "",
       node: null,
       sess: st,
+      /* 归属功能块（有则带上）：悬浮全文与其它入口按需取用 */
+      devNode: owner || null,
     });
   }
   /* ③a 被「⏸暂停」让位的会话：st.running 已经是 false（本轮真的收尾了，只是停在半路），
@@ -8726,6 +8771,15 @@ function runQueueTipOf(it) {
      副标题只放一行摘要，完整内容在这里看 */
   if (it.type === "dev" && it.node) {
     const ui = devRunningUserInputText(it.node);
+    if (ui) bits.push(I18n.t("用户输入") + "：\n" + ui);
+  }
+  /* 开发节点名下并行的多条任务：每一行是独立会话，悬浮写明它归属哪个功能块
+     （同一节点多行时用户才知道这几条是同一个块上的不同任务） */
+  if (it.type === "session" && it.devNode) {
+    bits.push(
+      I18n.t("归属功能块") + "：" + (it.devNode.title || it.devNode.id || ""),
+    );
+    const ui = devRunningUserInputText(it.devNode);
     if (ui) bits.push(I18n.t("用户输入") + "：\n" + ui);
   }
   const hint = runQueueJumpHint(it);
@@ -17895,19 +17949,22 @@ function canvasClipboardKey(ev, key, inField) {
   }
   if (inField && !inCanvasField) return false; /* 会话 / 弹窗 / 设置等输入区：原生复制粘贴 */
   if (key === "v") {
-    /* 节点自己的输入框里：最近复制的是节点才粘贴节点，否则让编辑器粘贴文字 */
-    if (inField && !nodeClipIsFresh) return false;
-    const clip = nodeClipboard || {};
-    if (!((clip.nodes || []).length + (clip.marks || []).length)) {
-      /* 粘贴板空：画布焦点下照旧提示一句，输入框里不打扰 */
-      if (!inField) {
-        ev.preventDefault();
-        toast(I18n.t("粘贴板为空，请先 Ctrl+C 复制节点"), "warn");
-      }
-      return false;
+    /* 节点自己的输入框里：最近复制的是节点才粘贴节点，否则让编辑器粘贴文字。
+       输入框内一律不介入「剪贴板图像」询问 —— 那里的粘贴归原生 / 内嵌图片逻辑
+       （见 app-inline-img.js 与提示词胶囊），本功能只在画布非编辑区发生。 */
+    if (inField) {
+      if (!nodeClipIsFresh) return false;
+      const clip = nodeClipboard || {};
+      if (!((clip.nodes || []).length + (clip.marks || []).length)) return false;
+      ev.preventDefault();
+      pasteNodesFromClipboard();
+      return true;
     }
+    /* 画布焦点：一律消费这次按键，交给 canvasPasteFromClipboard 判定
+       （「剪贴板里有没有图像」要先读一次剪贴板，同步判不出来：
+        有图像 → 询问窗 / 关掉询问时直接建节点；没有 → 粘节点 / 空提示）。 */
     ev.preventDefault();
-    pasteNodesFromClipboard();
+    canvasPasteFromClipboard();
     return true;
   }
   const hasSel = currentSelection().length > 0 || selectedMarks().length > 0;
@@ -18128,6 +18185,371 @@ function pasteNodesFromClipboard() {
     "ok",
   );
   return true;
+}
+/* ════════ 剪贴板图像 → 画布（Ctrl+V 询问窗）════════
+   需求：剪贴板里有图像 / 截图时，在画布上 Ctrl+V 先问一句「要不要用它创建图像节点」，
+   并把图像内容显示出来（缩略图 + 点击开大图灯箱）。共识口径：
+     · 只在画布（焦点不在输入框 / 正文框 / 富文本、且没有文字选区）发生；
+       编辑区里的粘贴一律让位原生粘贴与既有内嵌图片逻辑（app-inline-img.js），本功能不介入；
+     · 取材两态：被复制的图片文件（有本机路径）与位图截图（只有内存 base64，**确认前绝不落盘**）；
+     · 剪贴板同时有「最近复制的画布节点」时，在同一个窗里问用哪种，主按钮 = 用图像创建节点
+       （「以后不再询问」打开后仍优先粘节点、图像只兜底直接建，免得旧截图抢走节点粘贴）；
+     · 选项按情形裁剪：只有「恰好选中 1 个可接收图像的节点」时才出现「载入选中节点」；
+     · 落盘走 native 口径：原样保存（不缩小、不重编码），>32MB 在同一个窗里多一行提示、
+       主按钮变「仍然创建」（硬上限 64MB 在主进程，见 ASSET_IMAGE_NATIVE_MAX_BYTES）；
+     · 取消 = 静默、什么都不做、不写盘；「以后不再询问」写进配置（设置 · 画布粘贴 里可改回来）。 */
+const CLIP_IMAGE_ASK_BYTES = 32 * 1024 * 1024;
+/* 询问开关：缺省（字段没写过）就问；只有显式关掉才免询问 */
+function clipImageAskEnabled() {
+  return !(S.config && S.config.askPasteClipImage === false);
+}
+/* 写开关（询问窗里的勾选与设置里的小节同一处口径）：写配置 + 立即落盘，失败不影响本次行为 */
+function clipImageAskSet(on) {
+  if (!S.config) return false;
+  S.config.askPasteClipImage = !!on;
+  try {
+    if (window.api && window.api.configSave) window.api.configSave(S.config);
+  } catch (_) {}
+  return true;
+}
+function clipboardImageCount(imgs) {
+  return (
+    ((imgs && imgs.files) || []).length + (imgs && imgs.bitmap ? 1 : 0)
+  );
+}
+function clipboardImagesBytes(imgs) {
+  let n = 0;
+  for (const f of (imgs && imgs.files) || []) n += Number(f.size) || 0;
+  if (imgs && imgs.bitmap) n += Number(imgs.bitmap.bytes) || 0;
+  return n;
+}
+/* 预览源：文件用 file:///（真路径，改没改一眼可见），位图用内存 data URL（不落盘） */
+function clipboardImagePreviewSrc(imgs) {
+  const f = (imgs && imgs.files && imgs.files[0]) || null;
+  if (f && f.path) return mediaFileUrlOf(f.path);
+  if (imgs && imgs.bitmap) return "data:image/png;base64," + imgs.bitmap.base64;
+  return "";
+}
+/* 「点击看大图」的目标：文件走既有灯箱的真路径；位图把 data URL 交给灯箱
+   （openImageLightbox 已认得 data: 源，不落盘也能开大图） */
+function clipboardImagePreviewOpen(imgs) {
+  const f = (imgs && imgs.files && imgs.files[0]) || null;
+  if (f && f.path) return { src: f.path, title: f.name || fileName(f.path) };
+  if (imgs && imgs.bitmap)
+    return { src: "data:image/png;base64," + imgs.bitmap.base64, title: I18n.t("剪贴板图像") };
+  return null;
+}
+/* 缩略图下面那行「格式 · 尺寸 · 体积」（多张时补一句共几张） */
+function clipboardImageSizeText(imgs) {
+  const parts = [];
+  const f = (imgs && imgs.files && imgs.files[0]) || null;
+  if (f) {
+    const ext = String(extOf(f.path) || "").replace(/^\./, "").toUpperCase();
+    parts.push(ext || I18n.t("图片文件"));
+    parts.push(humanBytes(f.size));
+  } else if (imgs && imgs.bitmap) {
+    parts.push("PNG");
+    parts.push(humanBytes(imgs.bitmap.bytes));
+  }
+  const total = clipboardImageCount(imgs);
+  if (total > 1) parts.push(I18n.t("共 {n} 张", { n: total }));
+  return parts.join(" · ");
+}
+/* 取剪贴板里的图像（一次读完；桥不可用 / 读失败一律当「没有图像」，绝不因此打断粘贴） */
+async function clipboardImagesOfCanvas() {
+  const api = window.api;
+  const out = { files: [], bitmap: null };
+  if (!api || typeof api.clipboardReadImages !== "function") return out;
+  try {
+    const r = await api.clipboardReadImages();
+    if (!r || !r.ok) return out;
+    if (Array.isArray(r.files)) out.files = r.files.filter((f) => f && f.path);
+    if (r.bitmap && r.bitmap.base64) out.bitmap = r.bitmap;
+  } catch (_) {}
+  return out;
+}
+/* 恰好选中 1 个「可接收图像」的节点：只有这一种情况才在询问窗里给「载入选中节点」这一项
+   （选多了 / 没选 / 只读 / 已继承输入 → 整项不出现，不猜用户想塞哪一颗） */
+function clipboardImageTargetNode() {
+  const sel = currentSelection();
+  if (sel.length !== 1) return null;
+  const n = sel[0];
+  if (!n || n.kind !== "input_image") return null;
+  if (n.ro || inputInherited(n)) return null;
+  return n;
+}
+/* 弹窗开着时不介入粘贴：正在配置 / 输入的用户按 Ctrl+V，不该被画布抢走（旧行为会在弹窗背后悄悄粘节点）。
+   三个宿主：#mtDialog（确认 / 表单框）、#overlay（设置等）、#appDocsDlg（文档阅读器）。 */
+function canvasPasteModalOpen() {
+  const mt = document.getElementById("mtDialog");
+  if (mt && mt.classList.contains("on")) return true;
+  const docs = document.getElementById("appDocsDlg");
+  if (docs && docs.classList.contains("on")) return true;
+  const ov = document.getElementById("overlay");
+  return !!(ov && ov.style && ov.style.display && ov.style.display !== "none");
+}
+/* 询问窗：复用 #mtDialog 的深色确认框宿主（mtDialogForm 支持自定义正文与任意动作按钮）。
+   返回 'image'（用图像创建节点）/ 'load'（载入选中节点）/ 'nodes'（粘贴刚才复制的节点）/ null（取消）。
+   勾选「以后不再询问」并且确实选了「用图像创建节点」时才写配置 —— 勾了又取消不算数。 */
+async function clipImageAskDialog(imgs, info) {
+  const n = clipboardImageCount(imgs);
+  const first = (imgs.files && imgs.files[0]) || null;
+  const totalBytes = clipboardImagesBytes(imgs);
+  const tooBig = totalBytes > CLIP_IMAGE_ASK_BYTES;
+  let noAsk = false;
+  const acts = [{ id: "cancel", label: I18n.t("取消") }];
+  if (info && info.target)
+    acts.push({
+      id: "load",
+      label: I18n.t("载入「{t}」", { t: info.target.title || I18n.t("图像节点") }),
+    });
+  if (info && info.hasNodes)
+    acts.push({ id: "nodes", label: I18n.t("粘贴刚才复制的节点") });
+  acts.push({
+    id: "image",
+    label: tooBig
+      ? I18n.t("仍然创建")
+      : n > 1
+        ? I18n.t("用这 {n} 张图创建节点", { n })
+        : I18n.t("用这张图创建图像节点"),
+    primary: true,
+  });
+  const res = await mtDialogForm({
+    title: I18n.t("剪贴板图像"),
+    msg:
+      n > 1
+        ? I18n.t("剪贴板里检测到 {n} 个图片文件（首个：{name}）", {
+            n,
+            name: first ? first.name : I18n.t("截图"),
+          })
+        : first
+          ? I18n.t("剪贴板里检测到 1 个图片文件：{name}", { name: first.name })
+          : I18n.t("剪贴板里检测到 1 张截图（位图）"),
+    warn: tooBig
+      ? I18n.t("这一批图像约 {size}，超过 32MB 提醒线：原样保存会让画布资产明显变大。", {
+          size: humanBytes(totalBytes),
+        })
+      : "",
+    hint: I18n.t("确认后会原样复制进当前画布资产，并创建「图像输入」节点；点取消什么都不做。"),
+    actions: acts,
+    custom: (host) => {
+      const wrap = document.createElement("div");
+      wrap.className = "mt-clipimg";
+      const pic = clipboardImagePreviewOpen(imgs);
+      if (pic) {
+        const img = document.createElement("img");
+        img.className = "mt-clipimg-pic";
+        img.alt = pic.title || I18n.t("剪贴板图像");
+        img.src = clipboardImagePreviewSrc(imgs);
+        img.title = I18n.t("点击查看大图");
+        img.onclick = () => openImageLightbox(pic.src, pic.title, { above: true });
+        wrap.appendChild(img);
+      }
+      const meta = document.createElement("div");
+      meta.className = "mt-clipimg-meta";
+      meta.textContent = clipboardImageSizeText(imgs);
+      wrap.appendChild(meta);
+      /* 文件的第一张：尺寸要真读一次才有（不猜）；读完时窗还在就补上 */
+      if (first && first.path && window.api && window.api.assetMeta) {
+        Promise.resolve(window.api.assetMeta(first.path)).then(
+          (m) => {
+            if (!m || !m.ok || !(m.width > 0 && m.height > 0)) return;
+            if (!meta.isConnected) return;
+            meta.textContent =
+              clipboardImageSizeText(imgs) + " · " + m.width + "×" + m.height;
+          },
+          () => {},
+        );
+      }
+      const lab = document.createElement("label");
+      lab.className = "mt-clipimg-noask";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.onchange = () => {
+        noAsk = cb.checked;
+      };
+      lab.appendChild(cb);
+      lab.appendChild(
+        document.createTextNode(
+          I18n.t("以后不再询问（可在 设置 · 画布粘贴 里改回来）"),
+        ),
+      );
+      wrap.appendChild(lab);
+      host.appendChild(wrap);
+    },
+  });
+  if (!res) return null; /* 取消 / Esc：静默 */
+  if (noAsk && res.action === "image" && clipImageAskSet(false))
+    toast(I18n.t("已记住：以后画布粘贴图像不再询问（设置 · 画布粘贴 里可改回来）"), "ok");
+  return res.action;
+}
+/* 剪贴板图像 → 画布资产（native 原样保存）。opts.limit > 0 时按「先文件后位图」取前 N 张
+   （载入单个节点只写它真正用到的那张，不留孤儿资产）。返回 {saved, errors}。 */
+async function clipImagesToCanvasAssets(imgs, opts) {
+  const limit = Number(opts && opts.limit) > 0 ? Number(opts.limit) : 0;
+  const picks = [];
+  for (const f of imgs.files || []) picks.push({ file: f });
+  if (imgs.bitmap) picks.push({ bitmap: imgs.bitmap });
+  const use = limit ? picks.slice(0, limit) : picks;
+  const saved = [];
+  const errors = [];
+  for (const it of use) {
+    if (it.file) {
+      try {
+        const c = await copyImageFromPath(it.file.path, "clip", { native: true });
+        saved.push({
+          path: c.path,
+          name: it.file.name || fileName(c.path),
+          /* sourceName 沿用既有口径（去扩展名的源文件名，与拖入图片一致） */
+          stem: imageStem(it.file.path) || imageStem(c.path) || "img",
+          title: dropNodeTitle(it.file.path, false),
+        });
+      } catch (err) {
+        errors.push(String((err && err.message) || err || I18n.t("复制失败")));
+      }
+      continue;
+    }
+    const name = "clipboard-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e4);
+    if (!window.api || typeof window.api.assetWriteBase64 !== "function") {
+      errors.push(I18n.t("剪贴板图像写入失败"));
+      continue;
+    }
+    const r = await Promise.resolve(
+      window.api.assetWriteBase64(S.wf.id, name, it.bitmap.base64, "png", true),
+    ).catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
+    if (r && r.ok && r.path) {
+      invalidateImageMeta(r.path);
+      saved.push({
+        path: r.path,
+        name: name + ".png",
+        stem: name,
+        title: I18n.t("剪贴板图像"),
+      });
+    } else {
+      errors.push(String((r && r.error) || I18n.t("写入失败")));
+    }
+  }
+  return { saved, errors };
+}
+/* 用剪贴板图像创建图像输入节点：落当前视口中心（多张按网格排开，与拖入文件同一口径）、
+   落当前超级节点 / 任务作用域内（makeNode 自带），建好即全部选中。 */
+async function createImageNodesFromClipboard(imgs) {
+  const { saved, errors } = await clipImagesToCanvasAssets(imgs, { limit: 0 });
+  if (!saved.length) {
+    toast(errors[0] || I18n.t("剪贴板图像写入失败"), "err");
+    return [];
+  }
+  const cv = $("#canvas");
+  const vw = cv ? cv.clientWidth : window.innerWidth;
+  const vh = cv ? cv.clientHeight : window.innerHeight;
+  const z = S.cam && S.cam.z > 0 ? S.cam.z : 1;
+  const cx = (vw / 2 - (S.cam ? S.cam.x : 0)) / z;
+  const cy = (vh / 2 - (S.cam ? S.cam.y : 0)) / z;
+  const cols = saved.length <= 1 ? 1 : saved.length <= 4 ? 2 : 3;
+  const rows = Math.ceil(saved.length / cols);
+  const startX = cx - ((cols - 1) * DROP_FILE_STEP_X) / 2;
+  const startY = cy - ((rows - 1) * DROP_FILE_STEP_Y) / 2;
+  pushHistory();
+  const created = [];
+  saved.forEach((s, i) => {
+    const x = startX + (i % cols) * DROP_FILE_STEP_X;
+    const y = startY + Math.floor(i / cols) * DROP_FILE_STEP_Y;
+    const node = makeNode("input_image", x, y);
+    if (!node) return;
+    node.imageAsset = s.path;
+    node.sourceName = s.stem || imageStem(s.path) || "img";
+    node.title = uniqueNodeTitle(s.title || I18n.t("剪贴板图像"));
+    ensureDefaultSavePath(node);
+    S.wf.nodes.push(node);
+    created.push(node.id);
+  });
+  if (!created.length) {
+    toast(I18n.t("创建节点失败"), "err");
+    return [];
+  }
+  clearSelection();
+  S.selSet = new Set(created);
+  S.sel = created[0];
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  let msg = I18n.t("已用剪贴板图像创建 {n} 个图像节点", { n: created.length });
+  if (errors.length)
+    msg += " · " + I18n.t("{n} 张写入失败", { n: errors.length }) + "：" + errors[0];
+  toast(msg, errors.length ? "warn" : "ok");
+  return created;
+}
+/* 把剪贴板图像载入指定节点：批量节点收全部（逐条 entries），普通图像节点只收第一张。
+   只读 / 已继承输入等不可写节点按既有口径挡下（与拖入文件同一组提示）。 */
+async function loadClipboardImagesIntoNode(target, imgs) {
+  if (!target) return false;
+  if (target.ro) {
+    toast(I18n.t("拆分出的只读节点，不可修改"), "warn");
+    return false;
+  }
+  if (inputInherited(target)) {
+    toast(I18n.t("该节点已继承输入，内容只读"), "warn");
+    return false;
+  }
+  const { saved, errors } = await clipImagesToCanvasAssets(imgs, {
+    limit: target.batch ? 0 : 1,
+  });
+  if (!saved.length) {
+    toast(errors[0] || I18n.t("剪贴板图像写入失败"), "err");
+    return false;
+  }
+  pushHistory();
+  if (target.batch) {
+    for (const s of saved)
+      target.entries.push(makeImageBatchEntry(s.path, s.stem, s.title));
+    clearDownstream(target.id);
+    scheduleSave();
+    renderCanvas();
+    toast(
+      I18n.t("已载入 ") + saved.length + I18n.t(" 张图像到批量节点"),
+      "ok",
+    );
+    return true;
+  }
+  const s = saved[0];
+  if (target.imageAsset) invalidateImageMeta(target.imageAsset);
+  target.imageAsset = s.path;
+  target.sourceName = s.stem || imageStem(s.path) || "img";
+  clearDownstream(target.id);
+  scheduleSave();
+  renderCanvas();
+  toast(I18n.t("图像已载入输入节点"), "ok");
+  return true;
+}
+/* 画布 Ctrl+V 的唯一入口（canvasClipboardKey 把非编辑区的粘贴交给它）：
+   剪贴板里有图像 → 询问窗（关掉询问时直接建 / 仍优先粘节点）；没有 → 原来的节点粘贴 / 空提示。 */
+async function canvasPasteFromClipboard() {
+  /* 只在画布视图介入（会话 / 应用等视图里按 Ctrl+V 既不弹询问窗、也不动画布） */
+  if (S.view !== "workflow") return;
+  if (canvasPasteModalOpen()) return;
+  const clip = nodeClipboard || {};
+  const hasNodes = !!((clip.nodes || []).length + (clip.marks || []).length);
+  const imgs = await clipboardImagesOfCanvas();
+  if (!clipboardImageCount(imgs)) {
+    if (hasNodes) pasteNodesFromClipboard();
+    else toast(I18n.t("粘贴板为空，请先 Ctrl+C 复制节点"), "warn");
+    return;
+  }
+  if (!clipImageAskEnabled()) {
+    /* 免询问：节点粘贴板仍优先，剪贴板图像只在「没别的东西可粘」时直接建节点 */
+    if (hasNodes) pasteNodesFromClipboard();
+    else await createImageNodesFromClipboard(imgs);
+    return;
+  }
+  const action = await clipImageAskDialog(imgs, {
+    hasNodes,
+    target: clipboardImageTargetNode(),
+  });
+  if (action === "nodes") pasteNodesFromClipboard();
+  else if (action === "image") await createImageNodesFromClipboard(imgs);
+  else if (action === "load")
+    await loadClipboardImagesIntoNode(clipboardImageTargetNode(), imgs);
+  /* action === null（取消）：静默什么都不做、不写盘 */
 }
 function syncGroupBtns() {
   const bg = $("#btnGroup");
@@ -21316,6 +21738,7 @@ function closeImageLightbox() {
   const el = $("#imgLightbox");
   if (el) {
     el.classList.remove("on");
+    el.classList.remove("img-lb-top");
     const body = el.querySelector("#imgLbBody");
     if (body) {
       body._lbView = null;
@@ -21420,12 +21843,15 @@ function bindImageLightbox(el, body) {
     lbApplyView(body); /* 没手动缩过 → 跟着新窗口尺寸重新适应 */
   });
 }
-function openImageLightbox(path, title) {
+function openImageLightbox(path, title, opts) {
   const p = String(path || "").trim();
   if (!p) {
     toast(I18n.t("文件不存在或无法预览"), "warn");
     return;
   }
+  /* 内存里的图（剪贴板截图预览）走 data URL：还没落盘也能看大图；opts.above 用于
+     从 #mtDialog 询问窗里开灯箱（它的 z-index 比弹窗低，得临时抬一层，见 .img-lb-top） */
+  const isData = /^data:image\//i.test(p);
   let el = $("#imgLightbox");
   if (!el) {
     el = document.createElement("div");
@@ -21492,7 +21918,9 @@ function openImageLightbox(path, title) {
     body.appendChild(g);
   };
   body.appendChild(img);
-  img.src = fileUrlWithBust(p, Date.now());
+  /* 内存图（剪贴板截图预览）直接用 data URL，真文件仍走 file:// + bust */
+  if (isData) img.src = p;
+  else img.src = fileUrlWithBust(p, Date.now());
   if (img.complete) ready();
   const foot = el.querySelector("#imgLbFoot");
   foot.innerHTML = "";
@@ -21522,24 +21950,28 @@ function openImageLightbox(path, title) {
   tool(I18n.t("适应窗口"), "整图适应窗口", () => lbFitView(body));
   tool("1:1", "原始大小", () => lbSetZoom(body, 1, 0, 0, true));
   foot.appendChild(tools);
-  const pathHint = document.createElement("span");
-  pathHint.className = "img-lb-path";
-  pathHint.textContent = p;
-  pathHint.title = p;
-  foot.appendChild(pathHint);
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "mini";
-  saveBtn.textContent = I18n.t("另存为…");
-  saveBtn.onclick = (ev) => {
-    ev.stopPropagation();
-    saveImageAs(p);
-  };
-  foot.appendChild(saveBtn);
+  /* 路径与「另存为…」只对真文件有意义：内存图（data URL）没有路径可显示、也无从另存 */
+  if (!isData) {
+    const pathHint = document.createElement("span");
+    pathHint.className = "img-lb-path";
+    pathHint.textContent = p;
+    pathHint.title = p;
+    foot.appendChild(pathHint);
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "mini";
+    saveBtn.textContent = I18n.t("另存为…");
+    saveBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      saveImageAs(p);
+    };
+    foot.appendChild(saveBtn);
+  }
   const closeBtn = document.createElement("button");
   closeBtn.className = "mini primary";
   closeBtn.textContent = I18n.t("关闭");
   closeBtn.onclick = closeImageLightbox;
   foot.appendChild(closeBtn);
+  el.classList.toggle("img-lb-top", !!(opts && opts.above));
   el.classList.add("on");
   lbApplyView(body);
 }
@@ -30139,9 +30571,11 @@ function renderWfWorkspace() {
   inp.type = "text";
   inp.value = wfWorkspace();
   inp.placeholder = I18n.t("统一目录(留空 = 各节点单独设置)…");
-  inp.addEventListener("change", async () => {
+  /* 画布项目目录**只读**：这里手打错一个字，要等到很深的写盘步骤才报「写入失败」，
+     用户不知道该改哪。目录一律走右侧文件夹选择器（系统窗口里可直接新建）。 */
+  const setWs = async (raw) => {
     if (!S.wf) return;
-    const v = inp.value.trim();
+    const v = String(raw === undefined ? inp.value : raw).trim();
     if (v && !(await pathIsExistingDir(v))) {
       S.wf.workspace = "";
       scheduleSave(true);
@@ -30162,15 +30596,12 @@ function renderWfWorkspace() {
     renderCanvas();
     renderWfWorkspace();
     syncAssistWorkspaceChrome();
-  });
-  const br = workspaceBrowseButton(inp, (p) => {
-    if (!S.wf) return;
-    S.wf.workspace = p;
-    scheduleSave(true);
-    renderCanvas();
-    renderWfWorkspace();
-    syncAssistWorkspaceChrome();
-  });
+  };
+  inp.addEventListener("change", () => setWs());
+  const wsGuard = workspaceReadOnlyGuard(inp);
+  wsGuard.hint(I18n.t("双击直选文件夹，Ctrl+V 粘贴路径"));
+  const br = workspaceBrowseButton(inp, (p) => setWs(p));
+  wsGuard.browse(() => br.click());
   const openBtn = workspaceOpenButton(() => inp.value || wfWorkspace());
   box.appendChild(lab);
   box.appendChild(inp);
@@ -30818,7 +31249,7 @@ function syncDevSessionTitles(node) {
   }
 }
 /* 每次「开发 / 细化」都新建会话运行：上下文干净，工作区 = 项目根 */
-function createDevSessionForNode(node, mode, req) {
+function createDevSessionForNode(node, mode, req, extra) {
   if (!node || node.kind !== "super" || !node.dev) return null;
   /* 该功能块（或就近上层功能块）选定的 Agent 模型：新建绑定会话直接沿用；
      都没选则保持原有默认（DeepSeek 官方路由 + 引擎默认模型） */
@@ -30855,10 +31286,15 @@ function createDevSessionForNode(node, mode, req) {
     updatedAt: Date.now(),
   };
   /* 任务书整份写入会话契约 _devContract（发送时注入系统提示，见 agentSessionSend）：
-     不占用户消息位 —— 会话里只显示用户填写的关键输入（本次开发需求 / 细化范围） */
+     不占用户消息位 —— 会话里只显示用户填写的关键输入（本次开发需求 / 细化范围）。
+     extra = 调用方追加的**整段约束**（开发页那条「自定义风格」路用它把「先问清风格」带进去），
+     接在任务书末尾；不给就是空串，老的调用方逐字不变。 */
+  const extraText =
+    typeof extra === "string" ? extra.trim() : extra == null ? "" : String(extra).trim();
   sess._devContract = devNodeContractText(node, req, {
     noCanvasRead: sess.noCanvasRead === true,
   });
+  if (extraText) sess._devContract += "\n" + extraText;
   const reqText = String(req === undefined || req === null ? "" : req).trim();
   sess.messages.unshift({
     role: "user",
@@ -31337,8 +31773,13 @@ function newWorkflowDialog() {
   wsInp.type = "text";
   wsInp.placeholder = I18n.t("请选择已存在的文件夹…");
   wsInp.style.flex = "1";
+  /* 新建画布的工作目录同样只读：打错目录会让这张画布的一切落盘都失败 */
+  const wsGuard = workspaceReadOnlyGuard(wsInp);
+  wsGuard.hint(I18n.t("双击直选文件夹，Ctrl+V 粘贴路径"));
   wsRow.appendChild(wsInp);
-  wsRow.appendChild(workspaceBrowseButton(wsInp));
+  const wsBr = workspaceBrowseButton(wsInp);
+  wsGuard.browse(() => wsBr.click());
+  wsRow.appendChild(wsBr);
   wsLab.appendChild(wsRow);
   const wsHint = document.createElement("div");
   wsHint.className = "settings-hint";

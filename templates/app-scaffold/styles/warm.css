@@ -1,0 +1,29 @@
+/* 风格 · 暖读（应用脚手架） —— 由 scripts/gen-scaffold-styles.cjs 从
+   templates/app-default/styles/warm.css 的变量表生成，改色请改那一份再跑一次。 */
+:root {
+  --bg: #faf7f1;
+  --bg-soft: #f4eee3;
+  --bg-sunken: #f2ebde;
+  --line: #e2dacb;
+  --line-2: #cdc2ad;
+  --fg: #241f19;
+  --fg-dim: #5a5145;
+  --muted: #625a4c;
+  --accent: #2f6b4a;
+  --accent-hi: #79a48d;
+  --accent-ink: #ffffff;
+  --sel: rgba(47, 107, 74, 0.18);
+  --sel-ink: #16201a;
+  --radius: 4px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  --step-radius: 50%;
+  --step-border: var(--line-2);
+  --step-ink: var(--accent);
+  --font-display: Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC",
+    "STSong", "SimSun", serif;
+}
+
+.intro-h {
+  letter-spacing: -0.012em;
+}

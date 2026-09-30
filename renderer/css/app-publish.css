@@ -1,0 +1,516 @@
+/* renderer/app-publish.js — 「上架应用」浮层（开发页一键上架）的样式
+   ─────────────────────────────────────────────────────────────────────────────
+   尺寸只走 .overlay-box.app-publish-box 这一个类（绝不内联改共享的 .overlay-box：
+   内联残留会让下一个弹窗继承近全屏尺寸，见 AGENTS.md 与 test/smoke-dialog-persistence.js [8]）。
+   类的摘除由 renderer/app-publish.js 自己负责（openOverlay / closeOverlay 只清内联样式）。
+   右下角手柄 .pub-resize 挂在 #ovBody 里的 .pub-root 上：它的定位锚是 .overlay-box 的
+   position:relative（这里给），所以贴在窗框右下角，且关窗时随 #ovBody 一起消失、不留残件。
+   配色一律用 base.css 的主题变量（亮色主题靠变量自动跟随，不另写覆盖段）。 */
+
+/* ── 窗框尺寸（近全屏 · 最小宽 ≥50vw · 高 92vh） ── */
+.overlay-box.app-publish-box {
+  width: min(1400px, 96vw);
+  min-width: 50vw;
+  max-width: 96vw;
+  height: 92vh;
+  max-height: calc(100vh - 60px);
+  position: relative; /* 右下角拖拽手柄的定位锚（也兼容少量绝对定位的角标） */
+  border-top-color: var(--cyan);
+}
+
+/* ── 根容器（#ovBody 里唯一的一层） ── */
+.pub-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* ── 顶部：应用名 + 本机版本 + 线上状态 ── */
+.pub-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-left: 3px solid var(--orange);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+
+.pub-head-who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pub-app-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  max-width: 42ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pub-chip {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.pub-chip-online {
+  margin-left: auto;
+  color: var(--cyan2);
+  border-color: var(--bd2);
+}
+
+.pub-chip-online.pub-new {
+  color: var(--green);
+}
+
+.pub-chip-online.pub-warn {
+  color: var(--yellow);
+}
+
+.pub-chip-online.pub-err {
+  color: var(--red);
+}
+
+/* ── 两栏（左表单 / 右截图与线上信息）；窄屏自动单列 ── */
+.pub-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .pub-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pub-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pub-sec {
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  background: var(--panel2);
+  padding: 8px 10px 10px;
+  min-width: 0;
+}
+
+.pub-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.pub-sec-t {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--orange2);
+  letter-spacing: 0.3px;
+}
+
+.pub-sec-head .pub-sec-t {
+  margin: 0 auto 0 0;
+}
+
+.pub-sec > .pub-sec-t {
+  margin-bottom: 6px;
+}
+
+/* ── 字段 ── */
+.pub-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+
+.pub-labline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pub-lab {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pub-count {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.pub-in {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.pub-ta {
+  resize: vertical;
+  min-height: 72px;
+  font-family: var(--sans);
+  line-height: 1.5;
+}
+
+.pub-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 8px;
+}
+
+@media (max-width: 620px) {
+  .pub-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pub-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.pub-hint.pub-warn,
+.pub-ai-status.pub-warn {
+  color: var(--yellow);
+}
+
+.pub-hint.pub-err,
+.pub-ai-status.pub-err {
+  color: var(--red);
+}
+
+.pub-hint.pub-ok,
+.pub-ai-status.pub-ok {
+  color: var(--green);
+}
+
+.pub-ai-status {
+  margin-top: 2px;
+}
+
+/* ── 图标 ── */
+.pub-icon {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pub-icon-prev {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background:
+    repeating-conic-gradient(#9aa0a8 0% 25%, #d8dde4 0% 50%) 0 0 / 12px 12px;
+}
+
+.pub-icon-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* ── 声明 ── */
+.pub-decl {
+  border-left: 3px solid var(--yellow);
+}
+
+.pub-decl-text {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px dashed var(--bd2);
+  border-radius: 4px;
+  background: var(--code);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pub-decl-ok {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* ── 截图 ── */
+.pub-shot-bar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.pub-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pub-shot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  background: var(--code);
+  overflow: hidden;
+}
+
+.pub-shot-img {
+  width: 100%;
+  height: 78px;
+  object-fit: cover;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--bd);
+}
+
+.pub-shot-cover {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.66);
+  color: var(--cyan2);
+}
+
+.pub-shot-meta {
+  padding: 4px 6px;
+}
+
+.pub-shot-name {
+  font-size: 11px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pub-shot-sub {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.pub-shot-acts {
+  display: flex;
+  gap: 4px;
+  padding: 0 6px 6px;
+}
+
+.pub-shot-acts .mini {
+  padding: 0 6px;
+}
+
+/* ── 线上版本 ── */
+.pub-vers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+.pub-ver {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  background: var(--code);
+  cursor: pointer;
+}
+
+.pub-ver-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pub-ver-no {
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--orange2);
+}
+
+.pub-ver-tag {
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.pub-ver-sub {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.pub-ver-note {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.pub-vers-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/* ── 配额 ── */
+.pub-quota-line {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pub-quota-k {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--ink);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  padding: 2px 6px;
+  background: var(--code);
+}
+
+/* ── 上传成功的结果块 ── */
+.pub-result {
+  border: 1px solid var(--green);
+  border-left: 3px solid var(--green);
+  border-radius: 4px;
+  background: var(--panel2);
+  padding: 8px 10px;
+}
+
+.pub-result[hidden] {
+  display: none !important;
+}
+
+.pub-res-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.pub-res-t {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--green);
+}
+
+.pub-res-head .mini {
+  margin-left: auto;
+}
+
+.pub-res-row {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.pub-res-k {
+  flex: 0 0 7em;
+  color: var(--muted);
+}
+
+.pub-res-v {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  color: var(--ink);
+  word-break: break-all;
+}
+
+/* ── 页脚（#ovFoot 里的状态行 + 取消 / 上传） ── */
+.pub-foot-note {
+  margin-right: auto;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  max-width: 62%;
+  word-break: break-word;
+}
+
+.pub-foot-note.pub-warn {
+  color: var(--yellow);
+}
+
+.pub-foot-note.pub-err {
+  color: var(--red);
+}
+
+.pub-foot-note.pub-ok {
+  color: var(--green);
+}
+
+/* ── 右下角拖拽手柄（定位锚 = .overlay-box 的 position:relative） ── */
+.pub-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  z-index: 5;
+  cursor: nwse-resize;
+  opacity: 0.7;
+  border-radius: 3px;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--muted) 0 1px,
+    transparent 1px 4px
+  );
+}
+
+.pub-resize:hover {
+  opacity: 1;
+}
+
+/* ── 隐藏的 file input（图标 / 从本机选图都用它） ── */
+.pub-hide-file {
+  display: none;
+}

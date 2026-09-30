@@ -5,15 +5,20 @@
 
 随包分发（`build.json` 的 `files` 已含 `templates/**`），仓库内路径 `templates/app-scaffold/`。
 
+**复制时同时把 `templates/app-agents/AGENTS.md` 复制成该应用自己的 `AGENTS.md`**（应用根，与 `index.html` 同级）：
+**默认就建，不要问用户**；目标目录里已经有 `AGENTS.md` 的**不要覆盖**（那是用户自己写的约定）。
+
 ## 文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.html` | 入口：无框窗口骨架、拖动区、降级横幅位、数据文件夹一行、便签示例 |
-| `apphost.js` | **宿主桥探测与优雅降级**：同时认 `window.appHost`（应用中心窗口）与 `window.pluginApi`（插件窗口），统一成 `window.AppHost`：`getData` / `setData` / `dataDirGet` / `dataDirPick` / `dataDirOpen` / `dataDirReset` / `storageGet…` / `accountText` / `on` / `onShown` / `offAll` / `onWillClose` / `close` / `quit` |
+| `index.html` | 入口：无框窗口骨架、拖动区、模型选择位、降级横幅位、数据文件夹一行、便签示例、文字+图像示例 |
+| `apphost.js` | **宿主桥探测与优雅降级**：同时认 `window.appHost`（应用中心窗口）与 `window.pluginApi`（插件窗口），统一成 `window.AppHost`：`getData` / `setData` / `dataDirGet` / `dataDirPick` / `dataDirOpen` / `dataDirReset` / `storageGet…` / `accountText` / `request` / `on` / `onShown` / `offAll` / `onWillClose` / `close` / `quit`，外加**模型四件**：`models()` / `modelGet()` / `modelSet(id)` / `pickImage()`、`text(prompt, {images})` 与**结构化输出** `json(opts)`（关思考 + 剥围栏 + 截断感知 + 重试一次） |
+| `app-model.js` | **模型选择位**：右上「模型」按钮 + 下拉（首项 = 跟随 MTNode 默认、每项标「支持识图」）；`AppModel.errorText(res)` 把宿主的错误码翻成一句人话。两行接入，见文件尾注 |
+| `model.css` | 模型选择位与示例区样式（颜色仍走 `styles/<id>.css` 的语义变量） |
 | `store.js` | **落盘脚手架**：`Store.create({host, file, debounceMs})` → `set(data)` 标脏 + 防抖自动写盘，`load()` 读回，`flush()` 立即写盘；没有宿主时退化为内存态（`store.persisted === false`） |
 | `close.js` | **关窗收尾脚手架**：`AppClose.on(cb)` 登记钩子，宿主关窗前（`apps:willClose`）跑完再关；`visibilitychange` / `pagehide` / `beforeunload` 三处兜底冲刷 |
-| `app.js` | 最小业务示范：便签落盘（脏标记 + 防抖 + 关窗冲刷）、数据文件夹显示 / 更改 / 打开、关闭按钮 |
+| `app.js` | 最小业务示范：便签落盘（脏标记 + 防抖 + 关窗冲刷）、数据文件夹显示 / 更改 / 打开、模型选择位初始化、文字+图像调用、关闭按钮 |
 | `style.css` | 深色主题样式；`.drag` / `.no-drag` 无框窗口拖动约定 |
 | `app.json` | 应用自描述元数据（字段口径对齐云端 `catalog.json` 词条） |
 
@@ -30,12 +35,49 @@
    应用传不了路径）、`dataDirOpen()` 在资源管理器中打开、`dataDirReset()` 回默认位置。换目录**不搬旧数据**，
    原目录内容原样留着；宿主只允许写「默认数据根 + 用户选过的那个文件夹」，别的路径一律拒绝。
 
+## 模型能力：从 MTNode 继承（需求硬线）
+
+- **模型不在应用里配**：应用侧永远拿不到服务商与 API Key —— 只能在 MTNode 已配置的模型清单里挑一个。
+  `AppHost.models()` 列清单（首项是 `{id:"auto"}` = 跟随 MTNode 默认），`AppHost.modelSet(id)` 改选择，
+  宿主按**应用 id 持久化**（关窗重启还记得）。
+- **界面上必须有一个选模型的位置**：`index.html` 的 `#modelBtn` + `#modelMenu`（`app-model.js` 负责填与画）。
+  这是给用户看的入口，别把它删了；应用换皮肤可以挪位置，但**不能没有**。
+- **文字 + 图像一起发**（多模态）：
+  ```js
+  var r = await AppHost.text("图里有什么？", {
+    model: M.model(),                 // 空串 = 跟随 MTNode 默认
+    images: ["C:/pics/a.png"]         // 本机绝对路径，或 data:image/png;base64,…
+  });
+  if (!r.ok) show(AppModel.errorText(r));   // 结构化错误码 → 一句人话
+  else show(r.text);
+  ```
+  图像可以来自 `AppHost.pickImage()`（系统选图框，回 `{ok,path}`；用户取消回 `{ok:false,code:"cancelled"}`，
+  **不是报错**）或页面自己手里的 dataURL。读盘 / 解码 / 缩放（长边 ≤1080）全在宿主做；
+  一条消息最多 8 张图、合计 10MB，超了回 `too_many_images` / `too_large`。
+- **不降级**：没有服务商 / 断网 / 模型不支持识图 / 模型不在清单里，一律回结构化错误码
+  （`no_provider` / `no_vision` / `offline` / `bad_model` / `http_401`…），界面用 `AppModel.errorText()` 明确告知，
+  **不静默换模型、不丢图、不假装成功**。
+- **思考默认关，别拿 `maxTokens` 卡预算**：应用通道不传 `thinking` 就是关思考（要开显式传
+  `off / on(=high) / low / high / max`，非法值回 `bad_thinking`）。要模型给 JSON 时更不要自己设
+  `maxTokens`：它是「思考 + 正文」共用的预算，给小了正文会被截断成半截 JSON，
+  应用只会看到「回复不是可用 JSON」——实测 deepseek-v4 开思考 + `maxTokens: 1200` 时 6 次里 4 次被截断。
+- **要 JSON 用 `AppHost.json()`**（别自己 `text()` + `JSON.parse()`）：
+  ```js
+  var r = await AppHost.json({ system: "You output strict JSON.", prompt: "…" });
+  if (!r.ok) show(r.error);        // code: truncated / not_json / no_provider …
+  else use(r.data);                // 已解析好的对象
+  ```
+  它剥 ``` 围栏、截取首个 `{`/`[` 到末个 `}`/`]`，解析失败自动重试一次（`opts.retries` 可调）；
+  上一次被截断时，重试会自动丢掉 `maxTokens`。返回里带 `finishReason` / `truncated` / `reasoningChars`，
+  想自己判也能判。`AppHost.text()` 同样回这几个字段。
+
 ## 复制后要做的替换
 
 1. `app.json`：`id`（= 目录名 = catalog 词条 id）、`title` / `subtitle` / `icon` / `description`、`version`、`minAppVersion`、`window` 尺寸。
 2. `index.html`：`<title>`、`#appTitle`、`#appSub`、页脚文案、图标字符。
-3. `app.js`：把便签逻辑换成真实实现；`state` 的形状与落盘的 `data.json` 保持一致。
+3. `app.js`：把便签与示例逻辑换成真实实现；`state` 的形状与落盘的 `data.json` 保持一致。
 4. 需要更多宿主能力时，只往 `apphost.js` 的 `cap` 表里加**已探测**的方法，别直接假设接口存在。
+5. 复制 `templates/app-agents/AGENTS.md` 成应用根目录的 `AGENTS.md`（已有就保留，别覆盖）。
 
 ## 契约（照做，别省）
 
@@ -43,8 +85,8 @@
 - **本身不依赖 appHost**：桥缺席（浏览器直接打开 `index.html`、旧版宿主、桥被裁剪）时仍要能启动
   （内存态 + 明确提示），禁止白屏 / 抛异常。
 - 落盘只走 `Store` / `AppHost.*`；**不写应用目录**，不把 token / 密钥写进数据文件。
-- 应用只做前端：**模型 API 与 MTNode 工具不在应用窗口里**。要内建 LLM / 图像 / 语音能力，升级为本地后端插件
-  （见技能 `mtnode-plugin-dev`，主进程用 `dsh/mtnode-llm-creds.js` 复用设置里的模型 Key）。
+- 模型能力只走 `AppHost.text` / `AppHost.models`：**服务商与 Key 留在主进程**，应用侧只能给提示词、图像与模型 id。
+  要内建跟画布同级的本地后端能力，升级为本地后端插件（见技能 `mtnode-plugin-dev`）。
 - 无框窗口必须自带关闭按钮（脚手架已接 `AppHost.close()`）。
 
-完整规范见内置技能 `mtnode-app-dev`（`mtnode-agent-skills/app/app-dev/SKILL.md`）。
+完整规范见内置技能 `mtnode-app-dev`（随包内置，技能名 `mtnode-app-dev`）。

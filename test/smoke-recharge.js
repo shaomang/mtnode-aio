@@ -2,8 +2,8 @@
 /* 账户充值（钱包）回归 —— 零依赖，`node test/smoke-recharge.js`
  *
  * 需求口径见 docs/recharge-design.md。这里把「钱相关」的硬约定钉成回归：
- *   [1] 客户端接线：index.html 脚本顺序 / style.css @import / auth-store 放行 balanceCents / 菜单入口
- *   [2] 充值对话框纪律：persistent + 可最小化、无点外部关闭、轮询有停机保险、金额只走整数分
+ *   [1] 客户端接线：index.html 脚本顺序 / style.css @import / auth-store 放行 balanceYuan / 菜单入口
+ *   [2] 充值对话框纪律：persistent + 可最小化、无点外部关闭、轮询有停机保险、金额一律按元（4 位小数）
  *   [3] 测试期双闸门：客户端 VISIBLE_USERS 与服务端 MTNODE_RECHARGE_USERS 默认都只放 ms2308
  *   [4] i18n 真跑：en locale 下钱包全部文案有译文（拼接式文案会散架，故一律 {占位} 键）
  *   [5] wallet.mjs 真跑三条铁律：先流水后余额（失败回滚）/ 入账幂等 / 金额不符不入账
@@ -33,6 +33,8 @@ function ok(cond, msg) {
     console.log("FAIL  " + msg);
   }
 }
+/** 元金额比较（4 位小数）：浮点相加会有末位噪声，按 1e-4 判等。 */
+const near = (a, b, eps) => Math.abs(Number(a) - Number(b)) <= (eps == null ? 1e-9 : eps);
 /* 源码统一按 \n 处理（仓库是 CRLF，切段与断言不必管行尾差异） */
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
 const has = (rel, needle) => read(rel).includes(needle);
@@ -51,7 +53,7 @@ async function main() {
   const css = read("renderer/css/wallet.css");
   ok(css.includes(".wallet-root") && css.includes(".acct-balance"), "wallet.css 有对话框与菜单余额行的样式");
   ok(/var\(--/.test(css), "wallet.css 走主题变量（跟随深浅色主题）");
-  ok(has("auth-store.js", '"balanceCents"'), "auth-store.js USER_FIELDS 放行 balanceCents（余额能随账号摘要落盘）");
+  ok(has("auth-store.js", '"balanceYuan"'), "auth-store.js USER_FIELDS 放行 balanceYuan（余额能随账号摘要落盘）");
 
   const auth = read("renderer/app-auth.js");
   ok(auth.includes('menuItem(T("账户充值")'), "账号菜单有「账户充值」入口");
@@ -70,9 +72,22 @@ async function main() {
   ok(w.includes("liveGen") && w.includes("isConnected"), "轮询双保险：代次 gen + DOM isConnected（窗被顶掉就停）");
   ok(w.includes("window.api.storeRequest"), "只走主进程 storeRequest（渲染层不碰 token）");
   ok(!/localStorage|sessionStorage/.test(w), "充值模块不自己存凭据 / 令牌");
-  ok(w.includes("amountCents") && !/amountYuan|parseFloat\(/.test(w), "金额只以整数分传递，不用浮点元");
+  ok(w.includes("amountYuan") && w.includes("tiersYuan") && w.includes("balanceYuan") && !w.includes("Cents"),
+    "充值金额一律按元（4 位小数）传递：amountYuan / tiersYuan / balanceYuan，客户端不出现分");
   ok(w.includes("window.MtWallet = {"), "对外只暴露 window.MtWallet 一个入口");
   ok(w.includes("authMe") && w.includes("MTNodeAuth.refresh"), "支付成功后同步账号快照（余额随菜单刷新）");
+
+  /* 账户菜单显示 ¥0 的 bug（点右上账户名余额 0、点充值窗里却正常）：
+     菜单那行余额读的是本机快照 balanceYuan，快照只在登录 / 支付后 / 商店刷新时才更新，
+     菜单自己不拉 —— 充值后点开账户名看到的还是老快照。修法：打开菜单时补一次 authMe()。 */
+  const menuBody = (auth.split("function openAccountMenu()")[1] || "").split("function closeAccountMenu()")[0];
+  ok(/refreshAccountSnapshot\(\);/.test(menuBody), "打开账户菜单时补拉一次账号快照（余额不再停在老快照的 0）");
+  ok(auth.includes("function refreshAccountSnapshot()") &&
+    /typeof a\.authMe !== "function"/.test(auth) &&
+    /acctSnap\.pending/.test(auth),
+    "快照刷新：走 preload 的 authMe（老版本无此桥时跳过）+ 在途去重，快速开关菜单不叠请求");
+  ok(/if \(!r \|\| !r\.ok\) return null;/.test(auth),
+    "authMe 失败时不改快照（余额保留旧值，绝不被清零）");
 
   /* ── [3] 测试期双闸门 ─────────────────────────────────────────── */
   console.log("[3] 测试期双闸门（客户端 + 服务端）");
@@ -112,7 +127,8 @@ async function main() {
   ok(W.RECHARGE_MIN_CENTS === 100 && W.RECHARGE_MAX_CENTS === 100000, "金额上下限：¥1 – ¥1000（100 / 100000 分）");
   ok(JSON.stringify(W.RECHARGE_TIERS_CENTS) === "[1000,3000,5000,10000,50000]", "档位 ¥10/30/50/100/500");
   ok(W.ORDER_TTL_MS === 15 * 60 * 1000, "订单有效期 15 分钟");
-  ok(W.ORDER_STATUSES.length === 7 && W.LEDGER_TYPES.length === 4, "状态机 7 态 / 流水 4 类");
+  ok(W.ORDER_STATUSES.length === 7 && W.LEDGER_TYPES.length === 5 && W.LEDGER_TYPES.includes("relay"),
+    "状态机 7 态 / 流水 5 类（recharge / refund / adjust / mismatch / relay 中转扣费）");
   ok(W.validateAmount(1000) === "" && W.validateAmount(99) !== "" && W.validateAmount(100001) !== "", "validateAmount 卡上下限");
   const ids = new Set();
   for (let i = 0; i < 500; i++) ids.add(W.makeOrderId());
@@ -210,12 +226,12 @@ async function main() {
   const list = wallet.listOrders({ userId: me.id, status: "paid" });
   ok(list && (list.items || list.rows || list.list), "listOrders 返回分页结构");
   const sum = wallet.summarize(me, 5);
-  ok(sum && Number(sum.balanceCents) === me.balanceCents, "summarize 的余额与账户行一致");
+  ok(sum && near(sum.balanceYuan, me.balanceCents / 100), "summarize 的余额（元）与账户行（内部按分）一致");
   const csvText = wallet.csv("orders");
   ok(csvText.charCodeAt(0) === 0xfeff && csvText.includes("\r\n"), "CSV 带 BOM + CRLF（Excel 直开不乱码）");
   const wst = wallet.stats();
   ok(wst.orders === db.rechargeOrders.length && wst.ledger === db.rechargeLedger.length, "stats() 计数与集合实际条数一致");
-  ok(wst.netCents === wst.paidCents - wst.refundedCents, "stats() 净额 = 已收 − 已退（管理台总览口径）");
+  ok(near(wst.netYuan, wst.paidYuan - wst.refundedYuan), "stats() 净额（元）= 已收 − 已退（管理台总览口径）");
   // 注意 o6 已被 markClosed 从 expired 推进到 closed，所以这里断言的是终态分桶
   ok(
     wst.byStatus.paid >= 1 && wst.byStatus.paid_mismatch >= 1 && wst.byStatus.closed >= 1,
@@ -348,7 +364,7 @@ async function main() {
   ok(/"adm_"/.test(srv) || srv.includes('"adm_"'), "管理台令牌独立前缀 adm_，与客户端 Bearer 分开");
   ok(srv.includes("tokenHash") && srv.includes("db.adminSessions"), "管理台会话只存 tokenHash");
   ok(srv.includes("ADMIN_SESSION_MS"), "管理台会话有独立有效期（8 小时）");
-  ok(srv.includes("balanceCents") && srv.includes("publicUser"), "publicUser 下发 balanceCents（客户端余额来源）");
+  ok(srv.includes("balanceYuan") && srv.includes("publicUser"), "publicUser 下发 balanceYuan（客户端余额来源，元）");
   ok(srv.includes("MTNODE_WECHAT_OWNER_MAP") && srv.includes("loginWithOwnerMap"), "微信归属映射（unionid → 老账号）在线归位");
   ok(srv.includes("await ensureIdentityIndex();"), "合并临时号后重建身份索引（否则占位 username 悬挂占名）");
   const ipGates = (srv.match(/RECHARGE_CREATE_IP_HOURLY_MAX|WALLET_REFRESH_IP_HOURLY_MAX|ADMIN_LOGIN_IP_HOURLY_MAX|ADMIN_POLL_IP_HOURLY_MAX/g) || []).length;
@@ -590,8 +606,8 @@ async function main() {
     "轮询每轮先把 timer 句柄清零（否则末尾 !ST.timer 判定会掐断轮询链 → 只查一次，付了钱也不会自动到账）");
   ok(wl.includes("paintCustomRange") && wl.includes('#wlRange') && wl.indexOf("paintCustomRange();") < wl.indexOf("function loadSummary"),
     "金额上下限在配置回来后重画（界面先用兜底值画的，服务端改过限额时输入框 min/max 与提示要跟上）");
-  ok(wl.includes("paintTiers();") && /MIN_CENTS = Number\(r\.data\.minCents\)[\s\S]{0,400}paintTiers\(\);/.test(wl),
-    "档位也按服务端 tiersCents 重画一次");
+  ok(wl.includes("paintTiers();") && /MIN_YUAN = Number\(r\.data\.minYuan\)[\s\S]{0,400}paintTiers\(\);/.test(wl),
+    "档位也按服务端 tiersYuan 重画一次");
 
   /* 回执页：静态、noindex、不参与入账 */
   const pd = read("store-saas/pay-done/index.html");

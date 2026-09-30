@@ -1,0 +1,84 @@
+/* 风格 06 · 玻璃拟态 —— 夜空彩色晕染 + 磨砂面板 + 大圆角。
+   它拒绝的是「黑色底 + 一层白 8% 的假玻璃」：这里的底是两块**大面积**的青紫光斑
+   （真正的背景层，不是装饰角标），面板有自己的边（1px 亮边 + 内高光），
+   正文永远坐在实心感足够的面板里，对比度 13:1 —— 玻璃不等于低对比。 */
+:root {
+  --bg: #0a0a12;
+  --shell: rgba(20, 20, 32, 0.62);
+  --ink: #f2f2f8;
+  --ink2: #c2c3d4;
+  --muted: #9a9cb0; /* 压在面板上 ≈ 5.4:1 */
+  --accent: #a9a0ff;
+  --accent-dim: #7b74c9;
+  --accent-soft: rgba(169, 160, 255, 0.14);
+  --line: rgba(255, 255, 255, 0.1);
+  --line2: rgba(255, 255, 255, 0.22);
+  --code-bg: rgba(255, 255, 255, 0.1);
+  --code-block: rgba(12, 12, 22, 0.55);
+  --hover: rgba(255, 255, 255, 0.09);
+  --sel: rgba(169, 160, 255, 0.3);
+  --sel-ink: #ffffff;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --pill: 999px;
+  --page-w: 980px;
+  --h1-size: 42px;
+  --h1-track: -0.026em;
+  --step-radius: 50%;
+  --step-size: 34px;
+  --step-fs: 13px;
+  --step-border: var(--line2);
+  --step-bg: rgba(255, 255, 255, 0.1);
+  --step-ink: var(--ink);
+  --bar-h: 48px;
+  --texture: radial-gradient(
+      1000px 560px at 16% -12%,
+      rgba(90, 120, 255, 0.5),
+      transparent 62%
+    ),
+    radial-gradient(880px 520px at 92% 10%, rgba(190, 90, 255, 0.42), transparent 60%),
+    radial-gradient(700px 700px at 60% 118%, rgba(40, 200, 220, 0.26), transparent 62%);
+  --texture-op: 1;
+}
+/* 顶栏就是第一块玻璃：半透明 + 模糊，压在光斑上 */
+.bar {
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--line);
+}
+/* 正文区包一块磨砂面板：外发光给的是体积，不是霓虹描边 */
+.page {
+  margin: 34px auto 30px;
+  padding: var(--page-pt, 46px) var(--page-px, 46px) 44px;
+  background: rgba(16, 16, 27, 0.5);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  box-shadow:
+    0 24px 60px -30px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+.page > h1 { letter-spacing: -0.026em; }
+.page ol.steps::before { background: var(--line2); }
+.page ol.steps > li::before { box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.16); }
+.page blockquote { border-top-color: var(--line); }
+.page pre { background: var(--code-block); }
+/* 脚注不是又一块玻璃：它仍是一条细线 + 一行小字 */
+.foot {
+  background: transparent;
+  border-top: 1px solid var(--line);
+  max-width: var(--page-w, 980px);
+}
+.chip {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--line2);
+}
+.x { border-radius: 8px; }
+@media (max-width: 900px) {
+  .page { margin: 22px auto 22px; padding: var(--page-pt, 38px) var(--page-px, 28px) 34px; }
+}
+@media (max-width: 620px) {
+  .page { margin: 14px 12px; padding: 30px 20px 26px; border-radius: 18px; }
+  .foot { padding: 10px 22px 12px; }
+}

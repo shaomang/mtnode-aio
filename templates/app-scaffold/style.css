@@ -1,28 +1,31 @@
-/* style.css — 脚手架默认样式（深色，与新建应用的默认欢迎页 templates/app-default/ 同一套设计语言：
- * 深墨底 #0a0c12 + 工具库紫强调色 + 1px 细线 + 等宽只用在路径 / id 这类数据上）
+/* ============ 应用脚手架 · 共享设计基础（style.css） ============
  *
- * 关键点：
+ * 这一份只画结构与排版（顶栏、上手说明、字段、按钮、列表、数据文件夹、脚注）；
+ * 颜色 / 字体 / 质感全部走下面的语义变量，每一套风格在 styles/<id>.css 里只写变量赋值。
+ *
+ * 与「新建应用默认欢迎页」（templates/app-default/）同一套设计语言与同一份风格清单：
+ *   · 结构在这里，风格在 styles/<id>.css；
+ *   · 入口页 <html> 上有 data-style="<id>"，同一个 id 对应同一个 styles/<id>.css 文件；
+ *   · 复制这套脚手架起手时，把 index.html 里的 {{STYLE}} 换成你选的那套风格的 id
+ *     （见 templates/app-default/STYLES.md 的风格清单）。
+ *
+ * 关键点（改之前先读）：
  * - 窗口默认 transparent + frame:false：整块自己画背景与圆角，别用 body 白底；
- * - 拖动区：给元素加 .drag（-webkit-app-region: drag），里面的按钮加 .no-drag（nodrag），
+ * - 拖动区：给元素加 .drag（-webkit-app-region: drag），里面的按钮加 .no-drag，
  *   否则按钮点不动；
  * - 只写相对尺寸，窗口被夹在 280–1200 × 320–1200 之间；
  * - 文案两份（[data-lang] 的 zh / en），由 app.js 按系统语言选中一份。
  */
 :root {
-  --bg: #0a0c12;
-  --bg-soft: #0e1119;
-  --bg-sunken: #070910;
-  --line: #1d2230;
-  --line-2: #2a3143;
-  --fg: #e9ecf4;
-  --fg-dim: #aab3c7;
-  --muted: #7d879c;
-  --accent: #c792ea;
-  --accent-ink: #100a16;
-  --warn: #f0b34a;
   --sans: system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
     "PingFang SC", "Hiragino Sans GB", sans-serif;
-  --mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas,
+    "Liberation Mono", monospace;
+  --warn: #f0b34a;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
@@ -38,11 +41,14 @@ body {
   font: 13px/1.6 var(--sans);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  accent-color: var(--accent);
+  /* 窄到什么程度都别把长串（路径 / 英文单词）顶出容器；中文按字断行不受影响 */
+  overflow-wrap: break-word;
 }
 
 ::selection {
-  background: rgba(199, 146, 234, 0.26);
-  color: #fff;
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 :focus-visible {
@@ -57,7 +63,7 @@ body {
   height: 100%;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
@@ -132,14 +138,12 @@ html[lang="en"] [data-lang="zh"] {
 .intro {
   padding: 14px 14px 16px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--bg-soft);
 }
 .intro-h {
   margin: 0 0 8px;
-  font-size: 17px;
-  line-height: 1.3;
-  font-weight: 700;
+  font: 700 17px/1.3 var(--font-display, var(--sans));
   letter-spacing: -0.015em;
 }
 .intro-p {
@@ -176,9 +180,9 @@ html[lang="en"] [data-lang="zh"] {
   height: 17px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--line-2);
-  border-radius: 50%;
-  color: var(--muted);
+  border: 1px solid var(--step-border, var(--line-2));
+  border-radius: var(--step-radius, 50%);
+  color: var(--step-ink, var(--muted));
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -220,7 +224,7 @@ html[lang="en"] [data-lang="zh"] {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   color: var(--fg);
   font: inherit;
@@ -249,13 +253,12 @@ html[lang="en"] [data-lang="zh"] {
 .btn {
   padding: 6px 12px;
   border: 1px solid var(--line-2);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--bg-soft);
   color: var(--fg);
   font: inherit;
   cursor: pointer;
-  transition: border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    background 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color 160ms var(--ease), background 160ms var(--ease);
 }
 .btn:hover {
   border-color: var(--accent);
@@ -267,21 +270,20 @@ html[lang="en"] [data-lang="zh"] {
   font-weight: 600;
 }
 .btn.primary:hover {
-  background: #d0a6ff;
-  border-color: #d0a6ff;
+  background: var(--accent-hi, var(--accent));
+  border-color: var(--accent-hi, var(--accent));
 }
 
 .icon-btn {
   width: 26px;
   height: 26px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--fg-dim);
   font: 600 12px/1 var(--sans);
   cursor: pointer;
-  transition: color 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: color 160ms var(--ease), border-color 160ms var(--ease);
 }
 .icon-btn:hover {
   color: var(--fg);
@@ -298,7 +300,7 @@ html[lang="en"] [data-lang="zh"] {
   margin-bottom: 6px;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   word-break: break-word;
 }
 
@@ -309,7 +311,7 @@ html[lang="en"] [data-lang="zh"] {
   gap: 6px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--bg-soft);
 }
 .data-row[data-custom="1"] {
@@ -370,4 +372,29 @@ html[lang="en"] [data-lang="zh"] {
   padding: 8px 12px;
   border-top: 1px solid var(--line);
   font-size: 12px;
+}
+
+/* ── 风格的质感钩子（只在这里开一次口子，风格文件按需覆盖） ──
+   底纹与顶栏 / 外框的玻璃感：风格文件写 --texture / --shell-blur 就能生效，
+   不写就等于没有这一层（默认四套深色风格的观感与原脚手架一致）。 */
+.app::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--texture, none);
+  opacity: var(--texture-op, 1);
+}
+.app-head {
+  position: relative;
+  backdrop-filter: var(--shell-blur, none);
+  -webkit-backdrop-filter: var(--shell-blur, none);
+}
+@media (max-width: 420px) {
+  .app-body {
+    padding: 10px;
+  }
+  .intro {
+    padding: 12px;
+  }
 }

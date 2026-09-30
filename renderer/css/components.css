@@ -557,6 +557,125 @@
   grid-column: 1 / -1;
 }
 
+/* ── MTNode 中转服务（账号托管 · renderer/app-relay.js）────────────────────
+   只有充值过的账号才有这张卡：接入信息与模型清单全部由云端下发，卡上只有只读展示 +
+   启用开关 / 本机优先级。角标两种状态分开着色：已停用（用户自己关的，灰）与
+   余额不足（充值即恢复，警告色）。 */
+.prov-tile.relay .prov-tile-name {
+  font-weight: 600;
+}
+
+.relay-sync-slot {
+  margin-top: 8px;
+}
+
+.relay-sync {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--line, #3a4250);
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.relay-sync b {
+  color: inherit;
+}
+
+.relay-sync.bad,
+.relay-sync.bad b {
+  border-color: #b8873a;
+  color: #d8a552;
+}
+
+.relay-card .relay-badge {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--cyan, #4fd1c5);
+  border-radius: 4px;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  color: var(--cyan, #4fd1c5);
+  white-space: nowrap;
+}
+
+.relay-card .relay-badge.bad {
+  border-color: #b8873a;
+  color: #d8a552;
+}
+
+/* 只读字段：长得就不像能改（code 底，无输入框） */
+.relay-ro {
+  display: block;
+  margin-top: 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--line, #3a4250);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+  user-select: text;
+}
+
+/* 模型清单（只读）：逐行「模型 id + 形态」；余额耗尽整块压暗，但清单照旧列出来 */
+.relay-model-order {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.relay-model-order.off {
+  opacity: 0.55;
+}
+
+.relay-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--line, #3a4250);
+  border-radius: 4px;
+  margin-top: 4px;
+  cursor: default;
+}
+
+.relay-model-row .mo-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+}
+
+.relay-kind {
+  padding: 0 6px;
+  border: 1px solid var(--line, #3a4250);
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 余额 + 「去充值」/「刷新」：余额来自中转接口，不受前端充值白名单限制 */
+.relay-balance {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+
+.relay-balance b {
+  flex: 1;
+  min-width: 0;
+}
+
 /* 服务商配置对话框宿主（#provCfgDlg）：宽身，装得下三列字段 + 模型优先级列表 */
 .mt-dialog-box.prov-cfg-box {
   width: min(780px, 96vw);
@@ -901,7 +1020,12 @@ button.pk-badge.pk-btn:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  align-items: flex-end
+  align-items: flex-end;
+  /* 只报个信，没有可点的东西：整只容器不吃指针事件。它的 z-index 高于四条分栏
+     分界线（.agent-side-resize / .ba-resize / .assist-resize / .apps-dev-resize），
+     一旦吃掉事件，右下角那条分界线在弹提示的那几秒里就按不住了（实测：右栏
+     分界线 75% 以下的位置被 #toastBox 顶掉）。 */
+  pointer-events: none
 }
 
 .toast {

@@ -7,9 +7,11 @@
    节点列表、结构、连线与正文一律由模型按需用 mtnode_canvas_get 现拉（列表 / 结构走
    detail:"minimal" + sections，正文走 ids:[…] + detail:"full"）——「画布多大」与
    「每轮成本」由此解耦：62 个节点的索引不再随系统提示每轮重发。
-   opts.canvasFree = 用户声明本轮与画布无关（Gate B）：连选中 / 焦点也不给，只剩计数与
+   opts.canvasFree = 本轮与画布无关（Gate B）：连选中 / 焦点也不给，只剩计数与
    本画布身份。判据与 noCanvas 整档闸同源：那一档下 get / edit / app 三件套根本没注册，
-   快照再发出去也没有任何工具能消费它。 */
+   快照再发出去也没有任何工具能消费它。本次需求起这一档由**按消息自动判定**给出
+   （agentSessionSend 的 turnCanvasFree / assistSend 的 assistCanvasFree），
+   用户侧不再有能置它的按钮。 */
 async function assistAppSnapshot(opts) {
   const canvasFree = !!(opts && opts.canvasFree);
   const sel = currentSelection().map((n) => ({
@@ -124,6 +126,66 @@ async function assistAppSnapshot(opts) {
     superFocus:
       (typeof currentSuperFocus === "function" ? currentSuperFocus() : S.superFocus) || "",
   });
+}
+
+/* ── 「这轮任务跟画布有关吗」的唯一判据（本次开发需求：撤掉手动的「与画布无关」按钮，
+      改由宿主按这轮用户消息**自动判定**；会话侧与助手侧共用本函数）─────────────
+   · 命中则**不发**画布 / 应用工具说明、也不注入画布快照（app-db.js 的 MTNODE_NO_CANVAS
+     整档闸每步省约 26K 字符），人设同时换成「本轮不碰画布」版 —— 否则模型会照着旧纪律
+     撞不存在的工具、白烧一整步；
+   · **没命中就按「有关」处理**（宁可多带一次画布工具，也不让模型撞空 —— 少发一次
+     画布工具省的是 token，发错一次省的是用户的一整轮）；
+   · 另外两句是保险丝，让「少发一次工具」这件事可纠正：模型自己看得出本轮不相关、
+     也可请用户补一句「改画布上某个节点」再重跑，而不会去撞不存在的工具。
+   hist 给最近几轮用户消息（会话侧传）：这一轮说「继续 / 改一下」而前一轮在讲画布时，
+   接续轮照旧带画布工具 —— 上下文还在画布上，不该因为这一轮没复述关键词就把它抽走。 */
+function agentCanvasTurnRelated(text, hist) {
+  const s = String(text || "").trim();
+  if (!s) return true;
+  /* 用户明说与画布无关：照他说的办（此时即便句中出现「画布」也照此处理） */
+  if (/与画布无关|和画布无关|跟画布无关|别(?:管|动|碰)画布|不(?:用|要|需|需要|必)(?:管|读|看|动|改|碰)?画布|canvas[\s-]?free/i.test(s))
+    return false;
+  const hits = (t) => {
+    const x = String(t || "");
+    if (!x) return false;
+    /* @引用（画布内容引用语法）：写 @标题 的任务一定在图里干活 */
+    if (/@[^\s@]/.test(x)) return true;
+    return (
+      /(画布|节点|连线|端口|端子|超级节点|开发节点|流程壳|批处理|分组|排版|工作流|提示词|智能节点|工具节点|函数节点|数据库副本|素材节点|保存节点|控制节点)/.test(x) ||
+      /(workflow|canvas|\bnodes?\b|wire|port|super\s?node|layout|prompt)/i.test(x)
+    );
+  };
+  if (hits(s)) return true;
+  const back = Array.isArray(hist) ? hist.slice(-4) : [];
+  for (const h of back) if (hits(h)) return true;
+  /* 没命中任何画布相关词、也没声明无关 → 按「有关」处理（照常读画布，绝不误抽） */
+  return true;
+}
+
+/* 会话里最近几轮**用户**消息的正文（不含助手回复）：给 agentCanvasTurnRelated 做接续判据。
+   msgs 传当前消息之前的全部消息（当前这一条已进数组也没关系：本函数只看角色与正文）。 */
+function agentSessionUserHistory(st, msg) {  try {
+    const list = (st && st.messages) || [];
+    const cur = String((msg && msg.content) || "");
+    const out = [];
+    for (let i = list.length - 1; i >= 0 && out.length < 6; i--) {
+      const m = list[i];
+      if (!m || m.role !== "user") continue;
+      const c = String(m.content || "").trim();
+      if (!c || c === cur) continue;
+      out.push(c);
+    }
+    return out.reverse();
+  } catch (_) {
+    return [];
+  }
+}
+
+/* 助手侧的同一判据：判据函数只有一份（agentCanvasTurnRelated），这里只是把「助手
+   没有会话历史」这件事说清楚 —— 助手按这一条消息判，不拿画布会话的历史去补。
+   （分节装配冒烟会抠这一行做夹具短路，保持单语句、不跨行。） */
+function assistCanvasTurnRelated(text) {
+  return agentCanvasTurnRelated(text, null);
 }
 
 function summarizeCanvasEdit(params) {
@@ -530,6 +592,10 @@ function retitleBoundSessionByTopic(st) {
   return true;
 }
 
+/* 助手工作目录输入框的「只读守卫」句柄（app-db.js 的 workspaceReadOnlyGuard）：
+   只建一次，绑定在 #assistWsInput 上，之后由 syncAssistWorkspaceChrome 按锁定状态开关。 */
+let assistWsGuard = null;
+
 function syncAssistWorkspaceChrome() {
   const ws = $("#assistWsInput");
   const br = $("#assistWsBrowse");
@@ -544,7 +610,13 @@ function syncAssistWorkspaceChrome() {
   const withNote = (text) => (note ? text + "\n" + note : text);
   if (ws) {
     if (document.activeElement !== ws || locked) ws.value = shown;
-    ws.readOnly = locked;
+    /* 助手工作目录也是**只读输入**（同顶栏画布目录）：一律走右侧文件夹选择器，
+       手打错目录同样只在很深的读写步骤才报错。
+       守卫建出来就是只读并一直保持；locked（运行中 / 锁定）与「仅当前画布」两种情况下
+       连 Ctrl+V 粘贴也不给，只能跟随画布口径。 */
+    if (!assistWsGuard) assistWsGuard = workspaceReadOnlyGuard(ws);
+    assistWsGuard.lockKeys(locked || assistScopeIsCurrent());
+    assistWsGuard.hint(I18n.t("双击直选文件夹，Ctrl+V 粘贴路径"));
     ws.placeholder = assistScopeIsCurrent()
       ? I18n.t("跟随当前画布：项目根优先，其次画布工作目录")
       : I18n.t("留空 = 画布项目根 / 画布工作目录…");
@@ -560,6 +632,9 @@ function syncAssistWorkspaceChrome() {
   if (br) {
     br.disabled = locked;
     br.hidden = locked;
+    /* 句柄可能还没建（本函数在 ws 分支之前就被调用、或 #assistWsInput 不在场）：
+       没守卫时不去碰它，避免 undefined.browse */
+    if (assistWsGuard) assistWsGuard.browse(() => br.click());
   }
 }
 
@@ -629,42 +704,74 @@ function applyAssistWidth(w, persist) {
   }
 }
 
-function bindAssistResize() {
-  const handle = $("#assistResize");
-  const pane = $("#assistPane");
-  if (!handle || !pane || handle._bound) return;
+/* 分栏之间的竖分界线（.agent-side-resize / .assist-resize / .ba-resize，样式见 css 对应文件）：
+   ① 整条边界都可拖 —— 命中区由 CSS 铺满栏高（top/bottom 0），不是中间那一小段；
+   ② 指针移出这条细线 / 移出窗口才松手也断不了线 —— 按下即 setPointerCapture；
+   ③ 收尾统一走 finish()，pointerup / pointercancel / 捕获丢失三路都回到干净态（光标、选中、
+   监听与 .dragging 一起撤），拖动中只改 CSS 变量 / 样式，松手才落盘一次。 */
+function bindSideDividerDrag(opts) {
+  const handle = $("#" + opts.id);
+  if (!handle || handle._bound) return null;
   handle._bound = true;
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
   let dragging = false;
   let startX = 0;
   let startW = 0;
+  let pid = null;
   const onMove = (ev) => {
     if (!dragging) return;
-    const dx = startX - ev.clientX; /* 向左拖 = 变宽 */
-    applyAssistWidth(startW + dx, false);
+    ev.preventDefault();
+    /* 起始值与增量分开算（startW + dx）：夹取到边界后仍能原路拖回，
+       不会因为「上次被夹住」把后续增量吃掉（体感「拖不动了」）。 */
+    opts.apply(startW + (startX - (Number(ev.clientX) || 0)) * opts.sign, false);
   };
-  const onUp = () => {
+  const finish = () => {
     if (!dragging) return;
     dragging = false;
     handle.classList.remove("dragging");
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
     window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onUp);
-    applyAssistWidth(S.assistW, true);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    try {
+      if (pid != null && handle.hasPointerCapture && handle.hasPointerCapture(pid))
+        handle.releasePointerCapture(pid);
+    } catch (_) {}
+    pid = null;
+    opts.apply(opts.current(), true); /* 松手才落盘一次 */
   };
   handle.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0) return;
     ev.preventDefault();
     ev.stopPropagation();
     dragging = true;
-    startX = ev.clientX;
-    startW = S.assistW || ASSIST_W_MIN;
+    startX = Number(ev.clientX) || 0;
+    startW = opts.current();
     handle.classList.add("dragging");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    try {
+      pid = ev.pointerId;
+      handle.setPointerCapture(pid);
+    } catch (_) {}
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
   });
+  return handle;
+}
+
+function bindAssistResize() {
+  const handle = bindSideDividerDrag({
+    id: "assistResize",
+    /* 向左拖 = 变宽 */
+    sign: 1,
+    current: () => S.assistW || ASSIST_W_MIN,
+    apply: (w, persist) => applyAssistWidth(w, persist),
+  });
+  if (!handle) return;
   window.addEventListener("resize", () => {
     if (S.assistOpen) applyAssistWidth(S.assistW, false);
   });
@@ -690,44 +797,26 @@ function applyAgentSideWidth(w, persist) {
     S.config.agentSideW = S.agentSideW;
     window.api.configSave(S.config).catch(() => {});
   }
+  /* 拖这条分界线时会话列是**居中**的：列的位置会跟着变（宽度不变），
+     轮次竖条要跟着重新贴回滚动条，否则拖动过程中会与滚动条错开一段。 */
+  const list = $("#agentList");
+  if (list) {
+    try {
+      updateHistRail(list);
+    } catch (_) {}
+  }
 }
 
 function bindAgentSideResize() {
-  const handle = $("#agentSideResize");
-  if (!handle || handle._bound) return;
-  handle._bound = true;
-  let dragging = false;
-  let startX = 0;
-  let startW = 0;
-  const onMove = (ev) => {
-    if (!dragging) return;
-    /* 向右拖 = 变宽；拖动过程中只改样式，不落盘 */
-    applyAgentSideWidth(startW + (ev.clientX - startX), false);
-  };
-  const onUp = () => {
-    if (!dragging) return;
-    dragging = false;
-    handle.classList.remove("dragging");
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onUp);
-    applyAgentSideWidth(S.agentSideW, true);
-  };
-  handle.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    dragging = true;
-    startX = ev.clientX;
-    startW = S.agentSideW || AGENT_SIDE_W_MIN;
-    handle.classList.add("dragging");
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+  const handle = bindSideDividerDrag({
+    id: "agentSideResize",
+    /* 向右拖 = 变宽 */
+    sign: -1,
+    current: () => S.agentSideW || AGENT_SIDE_W_MIN,
+    apply: (w, persist) => applyAgentSideWidth(w, persist),
   });
-  /* 双击把手 = 回到默认（最小）宽度 */
+  if (!handle) return;
+  /* 双击分界线 = 回到默认（最小）宽度 */
   handle.addEventListener("dblclick", (ev) => {
     ev.preventDefault();
     applyAgentSideWidth(AGENT_SIDE_W_MIN, true);
@@ -973,18 +1062,10 @@ function updateAssistScopeChrome() {
   }
 }
 
-/* 「与画布无关」开关的回显（Gate B · 助手侧）：开启态高亮 + tooltip 说清代价。
-   标题走 dataset.i18nTitle，切语言时 I18n.apply 会重刷，不会退回旧文案。 */
-function updateAssistCanvasFreeChrome() {
-  const btn = document.getElementById("assistCanvasFreeBtn");
-  if (!btn) return;
-  const on = !!S.assistCanvasFree;
-  btn.classList.toggle("on", on);
-  btn.dataset.i18nTitle = on
-    ? "与画布无关：开启中，点击关闭（助手本轮不注册任何画布与应用工具）"
-    : "与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它";
-  btn.title = I18n.t(btn.dataset.i18nTitle);
-}
+/* 助手侧「与画布无关」按钮已随本次需求移除（改为按消息自动判定，见 agentCanvasTurnRelated）：
+   原来这里那个 updateAssistCanvasFreeChrome()（回显按钮开启态 + tooltip）一并删掉。
+   S.assistCanvasFree / S.config.assistCanvasFree 仍按旧位落盘 —— 老存档读回来不报错，
+   但本轮起不再读它（运行时的判据只有一条：这轮消息跟画布有没有关）。 */
 
 /* 助手栏「预设」下拉的档位清单：吃 app.js 的 AGENT_PRESETS 真源（**表序 = 菜单序，
    第一档就是默认档**），不再由 index.html 写死一份漏档的旧名单（旧清单只有 4 项、
@@ -1028,13 +1109,9 @@ function renderAssistPanel(opts) {
   if (!msgs.length && !S.assistRunning) {
     const empty = document.createElement("div");
     empty.className = "assist-empty";
-        empty.textContent = S.assistCanvasFree
+    empty.textContent = scopeCurrent
       ? I18n.t(
-          "本助手已声明「与画布无关」：本轮不注册任何画布工具，也不读画布，只读写文件 / 联网 / 执行命令。\n要总结或搭建工作流，请先关掉「与画布无关」。",
-        )
-      : scopeCurrent
-      ? I18n.t(
-          "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。",
+          "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。\n（与画布无关的任务我会自动省掉画布工具，不占 token。）",
         )
       : I18n.t(
           "我能看到当前画布、节点与配置，也可参考其他画布列表。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图或删除画布前会请你确认。",
@@ -1123,7 +1200,6 @@ function renderAssistPanel(opts) {
   syncAssistWorkspaceChrome();
   fillAssistScopeControl();
   updateAssistScopeChrome();
-  updateAssistCanvasFreeChrome();
   fillAssistModelControls();
   restoreConvStick(list, stickCap);
   if (typeof requestAnimationFrame === "function") {
@@ -1187,8 +1263,11 @@ async function assistSend(text) {
   updateRunQueuePanel();
 
   /* 与画布无关（Gate B · 助手侧）：本轮不注册画布三件套，也不取整张画布快照。
-     判据在这里定一次，往下（快照 / 分节 / 隐藏名单 / 签名 / run 参数）全用同一个值。 */
-  const assistCanvasFree = !!S.assistCanvasFree;
+     **本次开发需求：不再由用户按按钮声明，改为按这条消息自动判定**（按钮已移除）——
+     判据 = agentCanvasTurnRelated（与会话侧同一个函数）。判不准按「有关」处理，
+     所以助手默认行为与改造前完全一致，只有明确指向画布 / 节点图之外的消息才省这一档。
+     判据在这里定一次，往下（快照 / 分节 / 隐藏名单 / 签名 / 运行参数）全用同一个值。 */
+  const assistCanvasFree = !assistCanvasTurnRelated(t);
   /* 不缩进序列化：这份快照每轮原样重发，缩进（null, 2）纯属白送的空格 token */
   const stateJson = JSON.stringify(
     await assistAppSnapshot({ canvasFree: assistCanvasFree }),
@@ -1234,7 +1313,7 @@ async function assistSend(text) {
     "  · 每个功能块收尾都要用 devFiles 补丁回写本模块的真实核心文件（≤10 条 · 相对 devPath · 最外层项目块不填）——节点「文件」按钮只读这份列表，不回填就永远停在自动兜底甚至空表。\n" +
     "  · 画布含开发节点时，项目根就是 Agent 工作区根（顶层块的 devPath 在建图首轮就写好，之后子块继承）：项目根内的文件（含 AGENTS.md 共识文件）直接读写，**不要为写文件申请任何提权或绕法**；仍写不进时如实请用户把工作目录指向项目根。\n";
   const scopeBlock = assistCanvasFree
-    ? "工作范围：与画布无关 —— 本轮不注册 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app，也不读取任何画布内容。\n工具：只剩文件读写、联网搜索与命令执行（外加识图子代理，视工具许可而定）。\n"
+    ? "工作范围：与画布无关（宿主按这条消息自动判定）—— 本轮不注册 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app，也不读取任何画布内容。\n工具：只剩文件读写、联网搜索与命令执行（外加识图子代理，视工具许可而定）。\n若确实要动画布：按人设那句请用户补一句画布 / 节点再发一次，别去撞不存在的工具。\n"
     : scopeCurrent
     ? "工作范围：仅当前画布「" +
       wfName +
@@ -1252,7 +1331,7 @@ async function assistSend(text) {
      单独成节，便于将来按节 diff。skill_index / db_grounding / tool_policy /
      lang_taste 由 app-db.js 统一追加，此处不重复注入。 */
   const personaHost = assistCanvasFree
-    ? "你是 MTNode AI编排器的全局助手，位于界面右侧栏。本档已声明「与画布无关」：不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令。\n本轮不要承诺任何画布改动，也不要臆造节点或画布现状；确实需要改画布时，请让用户先关掉助手栏的「与画布无关」再重跑。\n"
+    ? "你是 MTNode AI编排器的全局助手，位于界面右侧栏。宿主按这条消息判定**本轮与画布无关**：本轮不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令，也不注入整张画布快照。\n本轮不要承诺任何画布改动，也不要臆造节点或画布现状。若这条任务其实需要动画布：**先别硬做** —— 用一句话说明「这轮按无关档跑、画布工具没在」，请用户在同一句里补上画布 / 节点（例如「改画布上的『文本节点 2』」）再发一次，下一轮就会带上画布工具。\n"
     : "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n";
   const visionMediaRules = assistCanvasFree
     ? /* 无画布档：整段画布 / 节点口径撤掉，只留「回执即事实」这条通用纪律 */
@@ -1270,11 +1349,13 @@ async function assistSend(text) {
     : "  · 排版：用 createMarks 分区（box + around:[节点alias] + label：编辑区 / 说明 / 处理区 / 输出区），并放 control 控制节点（ctrlAction=run，不要建 clear「清空」；控制流不走数据线，须直连每个该一键重跑的节点）；用户要编辑或点 ▶ 的节点放上方（较小 y），处理 / 保存 / 长说明放下方或右侧。完整规范见技能 mtnode-canvas-layout-ux。\n" +
     "  · 用户要求整理排版 / 一键排版时：先 mtnode_canvas_get 读节点与绘制的 x/y/w/h，再自行判断，用 mtnode_canvas_edit（layout:false）的 update / updateMarks 校准位置与尺寸（整洁、可编辑节点靠上、绘制跟着节点走）；禁止调用 layout action，勿增删节点、勿改连线，然后简短确认。\n";
   const principleBlock = assistCanvasFree
-    ? "原则：本轮与画布无关 —— 不读写画布、不承诺任何节点改动，只完成任务本身；不要编造不存在的节点或画布。回答简洁（交流语言见文末语言口味）。\n"
+    ? "原则：本轮与画布无关（宿主按这条消息自动判定）—— 不读写画布、不承诺任何节点改动，只完成任务本身；不要编造不存在的节点或画布。若任务其实要动画布，请按人设那句让用户补一句画布 / 节点再发。回答简洁（交流语言见文末语言口味）。\n"
     : scopeCurrent
     ? "原则：仅操作当前画布；app_state 只给计数与选中 / 焦点，节点列表与正文一律按需 mtnode_canvas_get 现拉，不得凭标题编造节点内容；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n" +
+      "相关性：先自己判断本轮任务是否与画布有关 —— 无关就别读画布（不要调 mtnode_canvas_get），直接完成这一件活；有关再按需现拉。\n" +
       "纪律：长正文一条都不进主上下文 —— 节点之间只写 @标题 引用，禁止把上游节点正文粘贴进 prompt/task（@引用口径见技能 mtnode-canvas-edit-rules）；长文案 / 长说明交给 agent_task 或 input_text 节点落文件，你只报路径；建图时不要贴成品正文当示例，只写一句形态描述。收尾克制：只报改了什么、产物路径、需用户操作的 1–2 处，不复述画布全表。建图—自查—排版这类多轮工作放进子代理上下文，主对话只收最终回执。\n"
     : "原则：可参考其他画布列表；app_state 只给计数与选中 / 焦点，节点列表与正文一律按需 mtnode_canvas_get 现拉，不得凭标题编造节点内容；改节点图、删画布、装/卸 DSH 插件再走确认。回答简洁（交流语言见文末语言口味）。不要编造不存在的节点或画布。\n" +
+      "相关性：先自己判断本轮任务是否与画布有关 —— 无关就别读画布（不要调 mtnode_canvas_get），直接完成这一件活；有关再按需现拉。\n" +
       "纪律：长正文一条都不进主上下文 —— 节点之间只写 @标题 引用，禁止把上游节点正文粘贴进 prompt/task（@引用口径见技能 mtnode-canvas-edit-rules）；长文案 / 长说明交给 agent_task 或 input_text 节点落文件，你只报路径；建图时不要贴成品正文当示例，只写一句形态描述。收尾克制：只报改了什么、产物路径、需用户操作的 1–2 处，不复述画布全表。建图—自查—排版这类多轮工作放进子代理上下文，主对话只收最终回执。\n";
   /* 应用状态 JSON 单独成节：每轮都变的最大头，只有独立出来才谈得上单独 diff。
      快照只给计数与选中 / 焦点、连节点索引都不带，这条纪律跟 app_state 贴在一起，模型
@@ -1287,9 +1368,9 @@ async function assistSend(text) {
   let input = hist ? hist + "\n\n用户(最新)：" + latest : latest;
   const assistMaxTok = dshRunMaxTokens();
   /* 三个可见集通道的助手侧取值：助手没有节点也就不可能接入数据库副本（dbGrounded 恒 false）；
-     noCanvas = 用户勾了「与画布无关」（Gate B 助手侧），与会话侧 st.canvasFree 同一个整档闸。
-     名单与 dshRunOnce 用同一个 dshHiddenToolsFor 算，否则开关一开，分节快照与真实运行
-     签名就长期错开（快照每轮白作废）。 */
+     noCanvas = 本轮被自动判定「与画布无关」（Gate B 助手侧，判据 agentCanvasTurnRelated），
+     与会话侧同一个整档闸。名单与 dshRunOnce 用同一个 dshHiddenToolsFor 算，否则判据一开，
+     分节快照与真实运行签名就长期错开（快照每轮白作废）。 */
   const assistLean = typeof dshLeanToolsOn === "function" ? dshLeanToolsOn() : false;
   const assistHide =
     typeof dshHiddenToolsFor === "function"
@@ -1372,15 +1453,18 @@ async function assistSend(text) {
       },
       onEvent: (type, data) => {
         /* 出错自动重发（dshRunTask 触发 retry）：看 resumed 决定清不清残文 ——
-           · resumed=true（续写）：已显示的部分正文 / 工具列表保留（那是同一轮的内容）；
-             思考槽照旧清掉 —— 思考不是续写内容，续跑起步时轨迹里的旧思考段也已被
-             摘掉（app-db.js traceDropThink），槽里留着它就会在下一次 reasoning 到达前
-             以旧文本显示出来（残留旧思考）。
-           · resumed=false（整轮重发）：正文 / 工具 / 思考槽全清，重发那一轮从零流式。
+           · resumed=true（续写）：已显示的部分正文 / 工具列表 / 用量保留（同一轮的内容）；
+             **思考槽也保留** —— 思考是这一轮已经发生的事情，续跑起步时轨迹里的思考段
+             只被切开收口（app-db.js traceSplitThink）、一段都没删，槽里清掉它就等于
+             把用户刚看过的思考抹掉（本 bug：会话里的思考内容被移除；节点侧一直是保留的）。
+             新一轮的思考会另起一段，不会与旧思考混成一段。
+           · resumed=false（整轮重发）：正文 / 工具 / 用量 / 思考槽全清，从零流式不叠字
+             （轨迹也走了 traceReset，留着槽只是残留旧内容）。
            resumed 由宿主按「这一次实际怎么发」给出（见 app-db.js notifyRetry）。 */
         if (type === "retry") {
-          if (S.thinking) S.thinking.assist = [""];
+          /* resumed=true：整轮内容（正文 / 工具 / 用量 / 思考）一律保留，这里一行都不动 */
           if (data && data.resumed) return;
+          if (S.thinking) S.thinking.assist = [""];
           S.assistPending = "";
           S.assistLiveTools = [];
           const el = document.getElementById("assist-stream");
@@ -1545,6 +1629,24 @@ function canvasWfIdForNode(node) {
   } catch (_) {}
   return currentVisibleWfId();
 }
+/* ── 自检与长时纪律（会话系统提示的行为纪律，唯一一处）────────────────────
+   用户已确认的四条口径（见本功能块的开发任务书与拷问共识）：
+     · 分阶段自检 + 交付前全检；
+     · 发现产出与原目标不符 / 关键结论无证据 → 先自行修复并重跑，修不好才告知用户；
+     · 关键结论必须带证据（来源 URL / 命令输出 / 截图路径），无证据不下断言；
+     · 长任务不空转；跨重启（要数小时 / 要断点续跑）的活，建议用户提升为长周期任务图。
+   浏览器一侧的纪律（接管期间停手、凭据不进对话、危险动作先问）写在 browser_help /
+   browser_type 的工具描述里，此处不重复。 */
+const SELF_CHECK_DISCIPLINE =
+  "\n\n【自检与长时纪律】\n" +
+  "· 自检分两道：每完成一个阶段 / 大步骤做一次阶段自检（这一阶段的产出对不对、证据齐不齐、下一步是什么），交付前做一次全检（对照最初的目标逐条核，漏项与猜测都算不合格）。\n" +
+  "· 用 todo_write 记的清单要随手收口：每完成一条立刻标 completed（不要攒到最后一起标），交付前再写一次整份清单把每条状态写死；**绝不许把没做完的条目留在模糊状态收尾** —— 会话结束时清单里剩下的条目会被标成「未确认」，用户看到的就是一串「?」，等于这份清单白记了。\n" +
+  "· 自检发现输出与原目标不符、或关键结论无证据时：先自己回去修好 / 补证据并重跑那一步，不要把它当定稿往后带，也不要在这种时候先来问用户；修不好（缺权限 / 缺信息 / 被网站拦住）才带着「试过什么、卡在哪、需要什么」来问。\n" +
+  "· 关键结论必须带证据：每条硬断言后面给出可复核的依据（来源 URL / 命令输出摘要 / 截图或文件的绝对路径）。拿不到证据就明说「未验证」或「没查到」，绝不用印象补全。\n" +
+  "· 长任务不空转：不要重复已经做过且没有新信息的事，不要为了显得忙而重跑同一份调研；每一步都要能说出「这一步让哪个结论前进了」。\n" +
+  "· 要数小时才能做完、或需要跨重启接着跑的活：主动建议用户把它提升为「长周期任务图」（图上带阶段与断点），但不要自行替用户改图 —— 等用户确认后再动手。\n" +
+  "· 浏览器工作要留下痕迹：改动前后的页面状态、下载与截图路径、跑过的命令，都写进交付说明里，让用户能自己复核。";
+
 /* 会话列表:全部持久化于 config.agentSessions,活动会话由 agentActiveId 指定 */
 function agentSessions() {
   if (!Array.isArray(S.agentSessions)) S.agentSessions = [];
@@ -1675,11 +1777,14 @@ function agentViewOverrideClear() {
   AGENT_VIEW_BLANK = null;
 }
 /* 覆盖态下的占位空会话：没有消息 / 没有计划 / 没有待办 / 没有队列，一切渲染都是空 */
+/* 占位空会话的 id：非法会话 id，写路径一律点名真实 id，永不落到它身上。
+   另外两处按它认人：agentDraftKeyNow（首轮态那只输入框的草稿归谁）与
+   renderAgentSession 的草稿存取（见下面的「消息栏草稿」段）。 */
+const AGENT_VIEW_BLANK_ID = "\u0000agent-view-blank";
 function agentViewBlankSt() {
   if (AGENT_VIEW_BLANK) return AGENT_VIEW_BLANK;
   AGENT_VIEW_BLANK = {
-    /* 非法会话 id：写路径一律点名真实 id，永不落到它身上 */
-    id: "\u0000agent-view-blank",
+    id: AGENT_VIEW_BLANK_ID,
     title: I18n.t("新会话"),
     workspace: "",
     canvasWfId: "",
@@ -1712,6 +1817,19 @@ function agentViewHas(id) {
 }
 function agentViewIs(st) {
   return !!st && agentViewHas(st.id);
+}
+/* 通知会话主内容右边栏（app-browser.js 的 BrowserAct）：「眼前这条会话」变了。
+   右栏据此换活动范围、并按该会话有没有浏览器决定显不显（用户已确认口径）。
+   唯一挂钩点 = renderAgentSession（左栏点会话 / 新建 / 删除 / 归档 / 开发页覆盖态
+   切换 / 启动恢复都汇到它），取的是**本页显示的会话**（agentViewId），不是
+   S.agentActiveId —— 开发页开着时右栏显示的也是本页那条。
+   调用期取全局 + typeof 守卫：老壳 / 冒烟没有 BrowserAct 时静默跳过，不动画布。 */
+function agentNotifyBrowserSession(id) {
+  try {
+    if (window.BrowserAct && typeof window.BrowserAct.setSession === "function") {
+      window.BrowserAct.setSession(id == null ? agentViewId() : String(id || ""));
+    }
+  } catch (_) {}
 }
 /* 左栏点会话行 = 「我要看这条」：开发页开着时切的是**本页显示的会话**（覆盖值），
    会话页的选中项（S.agentActiveId）一个字都不动；不在覆盖态时就是老行为。 */
@@ -1798,6 +1916,10 @@ async function persistAgentSession() {
     model: s.model || "",
     effort: s.effort || "high",
     pure: !!s.pure,
+    /* 会话「显示思考内容」（本次需求，模式菜单第三枚开关）：默认显示；关掉只影响渲染，
+       思考内容照旧随消息归档（msg.reasoning / segments）。与 pure 同级落盘 ——
+       重启后这条会话的思考块该不该显示，仍由它自己说了算。 */
+    showThink: s.showThink !== false,
     /* 开发绑定会话「不读画布」标记：必须随会话落盘 —— 重启后若丢了这一位，本轮可见集
        就与那份 session 的历史前缀不一致（网关 hx: 指纹变了 → 换 runtime 冷起 → 续跑
        撞 id 只能整轮重发），所以它与 pure 同级持久化。 */
@@ -2085,7 +2207,7 @@ async function deleteAgentSession(id) {
 }
 /* ===================== dsh web composer（模型 / 命令 / 工作区 下拉） ===================== */
 function closeAgentMenus() {
-  ["agentModelMenu", "agentCmdMenu", "agentToolsMenu"].forEach((id) => {
+  ["agentModelMenu", "agentCmdMenu", "agentToolsMenu", "agentModeMenu"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
   });
@@ -2150,28 +2272,15 @@ function renderAgentComposer() {
       wt.title = tip;
     }
   }
-  /* 纯净模式 chip：开启态高亮 + tooltip 切换（说明同按钮标题） */
-  const put = document.getElementById("agentPureTrigger");
-  if (put) {
-    put.classList.toggle("on", !!st.pure);
-    put.dataset.i18nTitle = st.pure
-      ? "纯净模式：开启中，点击关闭"
-      : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token";
-    put.title = I18n.t(put.dataset.i18nTitle);
-  }
-  /* 与画布无关 chip（Gate B）：开启态高亮 + tooltip 说清代价（改画布要先关掉） */
-  const cft = document.getElementById("agentCanvasFreeTrigger");
-  if (cft) {
-    cft.classList.toggle("on", !!st.canvasFree);
-    cft.dataset.i18nTitle = st.canvasFree
-      ? "与画布无关：开启中，点击关闭（本会话不注册任何画布与应用工具）"
-      : "与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它";
-    cft.title = I18n.t(cft.dataset.i18nTitle);
-  }
+  /* 会话级开关（纯净模式 / 自动续跑）已收进「模式」菜单：chip 只留入口 + 摘要，
+     逐项开关态由 paintAgentModeChip 统一回显（见下方 buildAgentModeMenu）。 */
+  /* 「与画布无关」chip 已随本次需求移除（改为按消息自动判定）：这里不再回显它。
+     判据真源 = agentCanvasTurnRelated，下发点见 agentSessionSend 的 turnCanvasFree。 */
   /* 计划已产出且未在运行 → 浮现「▶ 执行计划」 */
   const rp = document.getElementById("agentRunPlanBtn");
   if (rp) rp.hidden = !(st._planDelivered && !st.running);
   paintAgentToolsChip();
+  paintAgentModeChip();
 }
 /* 会话侧「模型提供商」那一格 / 那一页的唯一真源。
    清单 = app-agent.js 的 agentRouteGroupsNow()（DeepSeek 官方 + 已配置的其它文本服务商），
@@ -2653,6 +2762,190 @@ function paintAgentToolsChip() {
   t.title = agentToolPresetStatusText();
   const val = document.getElementById("agentToolsTriggerVal");
   if (val) val.textContent = n ? String(n) : "";
+}
+/* ── 「模式」chip 菜单：会话级开关的收纳口（与「工具」chip 同款下拉） ──
+   本轮需求：原来平铺在输入区的两枚 chip（纯净模式 / 自动续跑=默认续跑）收进这一只菜单，
+   输入区只留一枚「模式」入口；两个开关的语义与持久化口径一字未改：
+   · 纯净模式 = st.pure（会话态，persistAgentSession 落盘，app-db.js 按它做整档闸）；
+   · 自动续跑 = window.LongRun.autoOn(sid)（app-longrun.js 的会话级开关，缺省开）。
+   状态回显（唯一真源）：chip 摘要看着两个开关算，菜单行「开 / 关」按同一份判据画。 */
+function agentModeEntryOf(key) {
+  const st = agentSessionState();
+  if (key === "pure") {
+    return {
+      key: "pure",
+      label: "纯净模式",
+      hint: "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token",
+      on: !!st.pure,
+      /* 开关 tooltip 复用已有整句词条（中英成对），不另造碎片键 */
+      title: st.pure
+        ? "纯净模式：开启中，点击关闭"
+        : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token",
+      toggle: () => {
+        st.pure = !st.pure;
+        persistAgentSession();
+        renderAgentComposer();
+        if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
+      },
+    };
+  }
+  if (key === "think") {
+    /* 「显示思考内容」（本次需求）：会话视图里的思考块显示 / 隐藏。
+       默认显示；关掉只影响渲染 —— 思考内容照旧随消息归档（msg.reasoning /
+       segments，见 agentRoundMsgTail），随时打开就能看回来，一字不删。 */
+    const on = st.showThink !== false;
+    return {
+      key: "think",
+      label: "显示思考内容",
+      hint: "关掉后会话里不再显示模型的思考块（思考内容仍随消息存档，随时可再打开）",
+      on,
+      title: on
+        ? "显示思考内容：开启中，点击隐藏会话里的模型思考块"
+        : "显示思考内容：已关闭，点击重新显示会话里的模型思考块",
+      toggle: () => {
+        /* 现取一次当前态再翻转（同一只 entry 对象被连点两次也不会翻到同一个值） */
+        st.showThink = !(st.showThink !== false);
+        persistAgentSession();
+        renderAgentComposer();
+        /* 显示开关当场生效：会话视图整体重绘一次（历史与 live 的思考块同一判据） */
+        if (typeof renderAgentSession === "function") renderAgentSession();
+      },
+    };
+  }
+  return {
+    key: "auto",
+    label: "自动续跑",
+    hint: "本轮完成且目标未达成、还有下一步时自动接着跑（不打断你，随时可关）",
+    on: agentAutoOnNow(),
+    title: agentAutoOnNow()
+      ? "自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（不打断你，随时可关）"
+      : "自动续跑已关闭：本轮跑完就停，等你下一条消息",
+    toggle: () => {
+      try {
+        if (window.LongRun && typeof window.LongRun.toggleAuto === "function") window.LongRun.toggleAuto();
+      } catch (_) {}
+      renderAgentComposer();
+    },
+  };
+}
+function agentModeEntries() {
+  /* 顺序 = 菜单里的行序（纯净模式 / 自动续跑 → 本轮新增的「显示思考内容」在最下方） */
+  return [
+    agentModeEntryOf("pure"),
+    agentModeEntryOf("auto"),
+    agentModeEntryOf("think"),
+  ];
+}
+/* 按 key 现取（点完开关要拿刷新后的 on / title，不能拿点击瞬间那一份旧快照） */
+function agentModeEntryByKey(key) {
+  return agentModeEntries().filter((e) => e.key === key)[0] || null;
+}
+/* 自动续跑开关态：唯一真源在 app-longrun.js（缺省开）。模块还没挂 / 老页面 = 按开处理。 */
+function agentAutoOnNow() {
+  try {
+    if (window.LongRun && typeof window.LongRun.autoOn === "function") {
+      const s = agentSessionState();
+      return !!window.LongRun.autoOn(s && s.id);
+    }
+  } catch (_) {}
+  return true;
+}
+/* 「工具」菜单里的三态按钮构件，这里借来当开关：亮 = .on（同 .agent-tools-row 观感）。
+   本轮需求：① 键面从「✓ / — 两个字符」换成真开关（滑块 + 槽），整块 44×26 都可点 ——
+   原先的字符按钮只有约 20px 高、字符本身才几个像素，用户反馈「不容易点到 hit box」；
+   ② 键面里不再写任何文字（开关态由滑块位置与配色表达），也就不存在「内容顶宽」问题，
+   开 / 关的可读副本仍在 tooltip 与 chip 摘要上。 */
+function agentModeToggleBtn(entry) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "agent-tools-toggle" + (entry.on ? " on" : "");
+  b.dataset.modeKey = entry.key;
+  b.setAttribute("role", "switch");
+  b.setAttribute("aria-checked", entry.on ? "true" : "false");
+  /* 视觉件：槽（.agent-mode-track）+ 滑块（::after）。不带文字，纯 CSS 画。 */
+  const track = document.createElement("span");
+  track.className = "agent-mode-track";
+  track.setAttribute("aria-hidden", "true");
+  b.appendChild(track);
+  return b;
+}
+function paintAgentModeToggleBtn(entry) {
+  const b = document.querySelector('#agentModeMenu [data-mode-key="' + entry.key + '"]');
+  if (!b) return;
+  b.classList.toggle("on", !!entry.on);
+  /* 键面只留开关本体：清掉任何可能残留在按钮里的文本节点（老版本写过 ✓ / —） */
+  for (const n of Array.from(b.childNodes))
+    if (n.nodeType === 3) b.removeChild(n);
+  b.title = I18n.t(entry.title || entry.hint);
+  /* role=switch 的读屏口径就是 aria-checked 一项，不再重复挂 aria-pressed */
+  b.setAttribute("aria-checked", entry.on ? "true" : "false");
+}
+function buildAgentModeMenu() {
+  const menu = document.getElementById("agentModeMenu");
+  if (!menu) return;
+  menu.innerHTML = "";
+  for (const entry of agentModeEntries()) {
+    const row = document.createElement("div");
+    row.className = "agent-tools-row";
+    const meta = document.createElement("div");
+    meta.className = "agent-tools-meta";
+    const lab = document.createElement("div");
+    lab.className = "agent-tools-lab";
+    lab.textContent = I18n.t(entry.label);
+    meta.appendChild(lab);
+    if (entry.hint) {
+      const small = document.createElement("small");
+      small.textContent = I18n.t(entry.hint);
+      meta.appendChild(small);
+    }
+    row.appendChild(meta);
+    const btn = agentModeToggleBtn(entry);
+    btn.onclick = () => {
+      /* 点完就地重画（不重建菜单）：与「工具」菜单的三态按钮同一手感；
+         重画前按 key 现取一次状态（旧快照的 on 还是点击前那个值）。 */
+      entry.toggle();
+      paintAgentModeToggleBtn(agentModeEntryByKey(entry.key) || entry);
+      paintAgentModeChip();
+    };
+    row.appendChild(btn);
+    menu.appendChild(row);
+  }
+  const status = document.createElement("div");
+  status.className = "agent-tools-status";
+  status.textContent = I18n.t("以上开关都只作用于当前会话，随时可改");
+  menu.appendChild(status);
+}
+/* chip 摘要（数据口径）：已开的开关名，空串 = 全关。仍给 tooltip 与外部读用。
+   注意：这里列的是「开关处于开态」的项（与各项自己的默认值无关）—— 加新开关时
+   不必来这里改口径，逐项标签自动跟上（见 agentModeEntries）。 */
+function agentModeChipSummary() {
+  const on = agentModeEntries()
+    .filter((e) => e.on)
+    .map((e) => I18n.t(e.label));
+  return on.join(" · ");
+}
+/* chip 回显（本轮需求）：chip 键面**只写「模式」两个字**，开了什么不再写进按钮 ——
+   往按钮里塞摘要会把这一枚顶宽，进而把右边几枚挤出界（用户报障）。开着的开关只由
+   两处表达：① chip 变主题蓝（.on）；② tooltip 里逐项「（开）/（关）」。 */
+function paintAgentModeChip() {
+  const t = document.getElementById("agentModeTrigger");
+  if (!t) return;
+  const entries = agentModeEntries();
+  for (const e of entries) paintAgentModeToggleBtn(e);
+  const summary = agentModeChipSummary();
+  t.classList.toggle("on", !!summary);
+  /* 摘要 span 留在 DOM 里兼容外部读，但永不显示（写入 → 直清 + hidden） */
+  const val = document.getElementById("agentModeTriggerVal");
+  if (val) {
+    val.textContent = "";
+    val.hidden = true;
+  }
+  /* tooltip 逐项回显：「显示思考内容」这枚新开关与纯净模式 / 自动续跑用同一份口径，
+     加开关不必再来这里补一行（原来写死 pure + auto，新开关进不了提示）。 */
+  const mark = (e) => I18n.t(e.label) + I18n.t(e.on ? "（开）" : "（关）");
+  /* 动态 title：切语言后由 renderAgentComposer（I18n.applyDom 之后的重绘）重算 */
+  delete t.dataset.i18nTitle;
+  t.title = I18n.t("模式：") + entries.map(mark).join(" / ");
 }
 
 function setView(view) {
@@ -3160,8 +3453,30 @@ function histRailSignature(marks) {
     .join("|");
 }
 
+/* 竖条（.hist-rail）贴滚动条右侧：右边界 = 内容列的右外沿（列本身 + 它的滚动条）。
+   列在 .hist-scroll-wrap 里是**居中定宽**的（.agent-list 等：max-width:820px + margin:0 auto），
+   窗口宽时它离 wrap 右沿还有一大段空白 —— 竖条若只靠 CSS 的 right:0 就会飘到窗口最右，
+   与滚动条隔开整整一段空白。这里按实测 rect 把这段空余（wrap.right − list.right）
+   写成竖条的 right：滚动条就在列的最右那几像素上，所以竖条落点 = 滚动条正右侧，
+   不再悬在窗口右沿；它也不占列宽（消息列宽度与居中位置一字未变）。
+   列被挤到铺满整行（窄窗 / 节点内会话）时空余为 0，退回最右沿 —— 那也正是滚动条旁。
+   纯读数改写一处内联样式，不动任何布局。 */
+function histRailAlign(list, rail) {
+  if (!list || !rail || typeof list.getBoundingClientRect !== "function") return;
+  const wrap = list.parentNode;
+  if (!wrap || typeof wrap.getBoundingClientRect !== "function") return;
+  const gap = Math.max(
+    0,
+    Math.round(wrap.getBoundingClientRect().right - list.getBoundingClientRect().right),
+  );
+  const px = gap + "px";
+  if (rail.style.right !== px) rail.style.right = px;
+}
+
 function positionHistRailMarks(list, rail, marks) {
-  if (!rail || !marks || !marks.length || histRailPositionLocked(list)) return;
+  if (!rail) return;
+  histRailAlign(list, rail);
+  if (!marks || !marks.length || histRailPositionLocked(list)) return;
   const contentH = Math.max(list.scrollHeight, 1);
   const railH = Math.max(rail.clientHeight, 1);
   const btns = rail.querySelectorAll(".hist-rail-mark");
@@ -3281,7 +3596,20 @@ function ensureHistRail(list) {
     list.addEventListener("scroll", onScroll, { passive: true });
     if (typeof ResizeObserver === "function") {
       try {
-        const ro = new ResizeObserver(() => updateHistRail(list));
+        const ro = new ResizeObserver(() => {
+          /* 每帧至多补一次：updateHistRail 会重建 / 重排 .hist-rail 里的标记（改布局），
+             在回调里同步做 = 同帧内又产生一次未派发的尺寸通知，浏览器会抛
+             「ResizeObserver loop completed with undelivered notifications.」
+             （左栏宽 / 开发页三栏一拖就报的就是它）。推到 rAF 后做，回调返回时布局已定。 */
+          list._histRailRoPending = true;
+          if (list._histRailRoRaf) return;
+          list._histRailRoRaf = requestAnimationFrame(() => {
+            list._histRailRoRaf = 0;
+            if (!list._histRailRoPending || !list.isConnected) return;
+            list._histRailRoPending = false;
+            updateHistRail(list);
+          });
+        });
         ro.observe(list);
         ro.observe(rail);
         list._histRailRo = ro;
@@ -3573,6 +3901,30 @@ function dshMsgSegsViewable(m) {
   const rebuilt = body && eTxt ? body + "\n\n" + eTxt : body || eTxt;
   return String(m.content || "") === rebuilt;
 }
+/* ── 「显示思考内容」开关的渲染判据（会话级开关，见下方 agentModeEntryOf("think")）──
+   关掉 = 会话视图里不再渲染模型的思考块（live 与历史同一判据）；**思考内容照旧随消息
+   存档**（msg.reasoning / msg.segments，见 agentRoundMsgTail）—— 关的只是显示，
+   随时打开就能看回来，绝不删数据。
+   判据按「这条消息属于哪条会话」取（nodeId = 会话 id）：团队 / 节点会话 / 长任务 /
+   助手栏那些视图拿到的不是会话 id（或不是这条会话），一律照常显示 ——
+   开关只作用于会话视图本身。 */
+function dshThinkShownFor(nodeId) {
+  const id = String(nodeId || "");
+  if (!id) return true;
+  try {
+    /* 直接读会话表本体（不经 agentSessions()：那会逐会话做计划 / 契约水合，
+       而这条判据在整表重绘里是**每条消息都问一次**的） */
+    const list = S.agentSessions;
+    const st = Array.isArray(list) ? list.find((s) => s && s.id === id) : null;
+    if (st) return st.showThink !== false;
+  } catch (_) {}
+  return true;
+}
+/* 会话对象口径的同一条判据（live 渲染手里就是这条会话，不必再按 id 回查） */
+function agentThinkShown(st) {
+  return !st || st.showThink !== false;
+}
+
 /* 一轮收尾：把运行中「已展开」的思考块状态带到刚落盘的历史消息上。
    live 段的展开键是 segthink:<会话 id>:<轨迹段序>，历史是 segthink:<会话 id>:<消息序>:<段序>，
    两者不同 —— 不搬一次，用户正展开的思考会在重绘后自动缩回（看起来像被藏起来）。
@@ -3598,6 +3950,38 @@ function agentCarryThinkOpenState(st, msg, runKey) {
   });
 }
 
+/* ── 一轮收尾消息的公共尾巴：思考 / 段快照 / 工具清单 ─────────────────────────
+   正常结束、被终止、出错三条收尾路径**共用一份口径**（需求「一轮结束后不要自动隐藏
+   或删除思考」）：think 段拼出的纯思考必须随消息归档（msg.reasoning + msg.segments）。
+   旧口径只有「正常结束」那条挂了这一份尾巴，终止与出错两条各 push 一条只有正文的消息 ——
+   那一轮里已经流式显示过的思考与工具时间线在收尾那一刻被整段丢掉，正是用户报的
+   「会话中的思考内容被错误移除了」。
+   runKey = 该会话这一轮的轨迹键（"agent:<会话id>"）；调用时机：msg.content 已写好。
+   段快照沿用既有落盘口径（agentSegsForDisk 只夹单段字数、段一条不丢；拼不回正文时
+   历史渲染自动退回整段 reasoning，一个字都不丢）。 */
+function agentRoundMsgTail(st, msg, runKey) {
+  if (!msg || !runKey) return msg;
+  const rsnLegacy =
+    (S.thinking && S.thinking[runKey] && S.thinking[runKey][0]) || "";
+  const rsn =
+    typeof traceThinkDisplay === "function"
+      ? traceThinkDisplay(runKey, rsnLegacy)
+      : rsnLegacy;
+  if (String(rsn).trim()) msg.reasoning = rsn;
+  if (st && Array.isArray(st._liveTools) && st._liveTools.length)
+    msg.tools = st._liveTools.slice();
+  try {
+    const segs =
+      typeof agentSegsForDisk === "function"
+        ? agentSegsForDisk(
+            typeof traceSegmentsOf === "function" ? traceSegmentsOf(runKey) : null,
+          )
+        : null;
+    if (segs && segs.length) msg.segments = segs;
+  } catch (_) {}
+  return msg;
+}
+
 /* ==================== 「思考」翻译（右侧小按钮） ====================
    需求：会话里的每一段「思考」旁边给一个小按钮，点了就把这段思考翻译出来给用户看。
    口径（三条，缺一不可）：
@@ -3621,7 +4005,9 @@ function dshThinkTransItem(scopeId, segKey) {
   const store = S.thinkTrans || (S.thinkTrans = {});
   return store[dshThinkTransKey(scopeId, segKey)] || null;
 }
-/* 翻译专用模型：默认路由下优先 flash（无思考 + 快），否则跟随默认模型 */
+/* 翻译专用模型：默认路由下优先 flash（无思考 + 快），否则跟随默认模型。
+   返回 {route, model, prov} —— prov 由 dshTranslateProvider 解析，null = 这家没可用
+   API Key（调用方据此报「未找到可用文本服务商」，与旧实现同一口径）。 */
 function dshTranslateModel() {
   let route = "";
   try {
@@ -3649,15 +4035,18 @@ function dshTranslateModel() {
     models = [];
   }
   const flash = models.find((m) => /flash/i.test(String(m || "")));
-  if (flash) return { route, model: String(flash) };
   let model = "";
-  try {
-    model =
-      typeof preferredAgentModelForRoute === "function"
-        ? String(preferredAgentModelForRoute(route) || "")
-        : "";
-  } catch (_) {}
-  return { route, model: model || String(models[0] || "") };
+  if (flash) model = String(flash);
+  else {
+    try {
+      model =
+        typeof preferredAgentModelForRoute === "function"
+          ? String(preferredAgentModelForRoute(route) || "")
+          : "";
+    } catch (_) {}
+    if (!model) model = String(models[0] || "");
+  }
+  return { route, model, prov: dshTranslateProvider(route) };
 }
 function dshTranslateProvider(route) {
   try {
@@ -3668,6 +4057,100 @@ function dshTranslateProvider(route) {
   } catch (_) {}
   return null;
 }
+/* ── 403「not eligible」：服务商 / 套餐没买到这个模型 ──
+   实测阿里云百炼 Token Plan 域名（token-plan.cn-beijing.maas.aliyuncs.com）对**所有**模型回
+   403 {"type":"AccessDenied.Unpurchased","message":"Access to model denied. Please make
+   sure you are eligible for using the model."}；这条错误重发几次都是同一结果，属于
+   「重发也不会有别的结果」的配置类失败（见 app-db.js 的重发闸注释）。
+   判据 = 报文自身（含网关 / 主进程给正文加的 HTTP 状态前缀），不看是哪个服务商。 */
+function dshAccessDeniedText(s) {
+  const t = String(s || "");
+  return /AccessDenied|Unpurchased|not eligible|not_eligible|ineligible|(^|[^0-9])403([^0-9]|$)/i.test(t);
+}
+/* 按「便宜优先」排出的翻译路由候选（当前路由在前，其后依次其它可用路由） */
+function dshXlateRoutes(route) {
+  const out = [];
+  const push = (r) => {
+    const rr = String(r || "").trim();
+    if (!rr || out.indexOf(rr) >= 0) return;
+    if (typeof providerForAgentRoute !== "function") return;
+    let ok = null;
+    try {
+      ok = providerForAgentRoute(rr);
+    } catch (_) {}
+    if (ok && String(ok.apiKey || "").trim()) out.push(rr);
+  };
+  push(route);
+  try {
+    if (typeof agentRouteOptions === "function")
+      for (const r of agentRouteOptions()) push(r);
+  } catch (_) {}
+  try {
+    if (typeof preferredAgentProviderRoute === "function")
+      push(preferredAgentProviderRoute());
+  } catch (_) {}
+  try {
+    if (typeof defaultAgentProviderRoute === "function")
+      push(defaultAgentProviderRoute());
+  } catch (_) {}
+  return out;
+}
+/* 403 时弹窗问用户是否换一个模型来翻译（不静默降级，也不改用户没答应的配置）。
+   候选 = 每条可用路由的模型清单，当前这条的那个模型不重复列出；返回 {route, model} 或 null。 */
+async function dshXlateAskSwitchModel(failedRoute, failedModel, errText) {
+  if (typeof confirmDialog !== "function") return null;
+  const routes = dshXlateRoutes(failedRoute);
+  const cur = String(failedRoute || "").trim();
+  const nameOf = (r) =>
+    typeof agentProviderNameNow === "function" ? agentProviderNameNow(r) : r;
+  const alts = [];
+  for (const r of routes) {
+    let models = [];
+    try {
+      models =
+        typeof agentModelsForRoute === "function"
+          ? agentModelsForRoute(r) || []
+          : [];
+    } catch (_) {}
+    for (const m of models) {
+      const mm = String(m || "").trim();
+      if (!mm) continue;
+      if (r === cur && mm === String(failedModel || "").trim()) continue;
+      alts.push({ route: r, model: mm });
+    }
+  }
+  if (!alts.length) return null;
+  const picked = alts[0]; /* 当前路由在前 = 默认同家换个模型，无则换到下一家 */
+  const lines = [
+    I18n.t("模型服务返回 403：该模型/套餐未开通（服务商原话：Access to model denied… not eligible）。"),
+    "",
+    I18n.t("当前：") + nameOf(cur) + " · " + String(failedModel || I18n.t("（未选择）")),
+  ];
+  if (String(errText || "").trim()) lines.push(I18n.t("原始报文：") + String(errText).slice(0, 200));
+  lines.push("");
+  lines.push(
+    I18n.t("换一个模型来翻译？将改用：") + nameOf(picked.route) + " · " + picked.model,
+  );
+  const ok = await confirmDialog(lines.join("\n"), {
+    title: I18n.t("换模型"),
+    okText: I18n.t("换并重试"),
+    cancelText: I18n.t("不换"),
+  });
+  return ok ? picked : null;
+}
+/* 采纳选中的替代模型（spec 与候选链共用一份解析口径：agent 路由是全局函数 + 可选覆盖） */
+function dshXlatePick(route, model) {
+  const r = String(route || "").trim();
+  return {
+    route: r,
+    model: String(model || "").trim(),
+    prov:
+      typeof providerForAgentRoute === "function"
+        ? providerForAgentRoute(r)
+        : null,
+  };
+}
+
 /* 翻译候选链：同一条思考按「便宜优先」逐档重试。
    实测（DeepSeek 官方 deepseek-v4-flash / v4-pro · thinking disabled）会**原样复述英文原文**
    或只输出「以下是对这段思考的翻译：」这类元话术 —— 旧实现把这种返回也当成功缓存，
@@ -3835,23 +4318,22 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
     dshThinkTranslatePaint(det, scopeId, segKey);
     return;
   }
-  const pick = dshTranslateModel();
-  const prov = dshTranslateProvider(pick.route);
-  if (!prov) {
+  const first = dshTranslateModel();
+  if (!first.prov) {
     toast(
       I18n.t("未找到可用文本服务商（请在设置 · API/配置中配置并填写 API Key）"),
       "err",
     );
     return;
   }
-  if (!pick.model) {
+  if (!first.model) {
     toast(I18n.t("未找到可用模型（请在设置中选择该服务商的模型）"), "err");
     return;
   }
   const it = {
     status: "pending",
     text: "",
-    model: pick.model,
+    model: first.model,
     sig: sig,
   };
   store[key] = it;
@@ -3864,14 +4346,16 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
   /* 译文上限：随原文放宽（源文本 12000 字，译文可能更长），避免被服务端默认
      max_tokens 截在半句 —— 截断的译文本不完整，却会被当成成功。 */
   const maxTok = Math.min(16384, Math.max(4096, Math.ceil(body.length / 2) + 1024));
-  const cands = dshTranslateCandidates(pick.route, pick.model);
+  let pick = first;
+  let cands = dshTranslateCandidates(pick.route, pick.model);
+  let asked = false; /* 403 只问一次：用户答「不换」或换完再 403 就落 error，不再追问 */
   let lastErr = null;
   let lastOut = "";
   for (let i = 0; i < cands.length; i++) {
     if (store[key] !== it) return; /* 期间被替换（切会话 / 重跑）*/
     const c = cands[i];
     const spec = {
-      provider: prov,
+      provider: pick.prov,
       kind: "text",
       model: c.model,
       temperature: c.strict ? 0 : 0.2,
@@ -3910,14 +4394,40 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
         it.text = out;
         it.ts = Date.now();
         it.model =
-          String(c.model || "") + (i > 0 ? "（第 " + (i + 1) + " 次尝试）" : "");
+          String(c.model || "") +
+          (i > 0 ? "（第 " + (i + 1) + " 次尝试）" : "");
       }
       break;
     } catch (e) {
       lastErr = e;
-      /* 用户主动取消 / 请求被中止：不再往下试，直接落 error */
       const em = String((e && e.message) || e || "");
+      /* 用户主动取消 / 请求被中止：不再往下试，直接落 error */
       if (/abort|cancel|取消|已终止/i.test(em)) break;
+      /* 403「not eligible」= 这家服务商 / 这个套餐没买到该模型（实测阿里云百炼 Token
+         Plan 域名对所有模型都回它）。同一家的其它档与更强档必然同结果 → 不再白试，
+         弹窗问用户是否换一个模型（不改用户没答应的配置，也不静默降级）。 */
+      if (dshAccessDeniedText(em)) {
+        lastErr = e;
+        if (!asked) {
+          asked = true;
+          const sw = await dshXlateAskSwitchModel(pick.route, c.model, em);
+          if (store[key] !== it) return;
+          if (sw) {
+            const np = dshXlatePick(sw.route, sw.model);
+            if (np.prov) {
+              pick = np;
+              it.model = np.model;
+              cands = dshTranslateCandidates(np.route, np.model);
+              i = -1; /* 换家后从候选链第 1 档重来 */
+              continue;
+            }
+            lastErr = new Error(
+              I18n.t("换模型失败：该服务商没有可用的 API Key"),
+            );
+          }
+        }
+        break;
+      }
     }
   }
   if (store[key] === it && it.status !== "done") {
@@ -3989,9 +4499,11 @@ function dshSegToolAt(pool, seg) {
   }
   return -1;
 }
-function dshHistSegEl(seg, pool, nodeId, idx, n) {
+function dshHistSegEl(seg, pool, nodeId, idx, n, showThink) {
   if (!seg || !seg.k) return null;
   if (seg.k === "think") {
+    /* 会话「显示思考内容」关掉时整块不渲染（数据仍在 msg.reasoning / segments 里） */
+    if (showThink === false) return null;
     const txt = String(seg.text || "");
     if (!txt.trim()) return null;
     const det = document.createElement("details");
@@ -4053,6 +4565,9 @@ function dshHistSegEl(seg, pool, nodeId, idx, n) {
 function agentLiveSegsEl(row, st, live, items) {
   const tools = Array.isArray(st._liveTools) ? st._liveTools : [];
   const nodeId = live ? live.id : st.id;
+  /* 会话「显示思考内容」开关：live 行与历史消息同一判据（关掉 = 思考段整块不渲染，
+     数据照旧随本轮轨迹落进消息存档，见 agentRoundMsgTail）。 */
+  const showThink = agentThinkShown(st);
   /* 正在增长的思考段未必是尾段：agent 每步「思考 → 工具」，思考段后面还会挂
      tool 段，所以按 tracePush 打的 open 标记认它，而不是认 items 末尾。 */
   const anyOpenThink = items.some((x) => x && x.k === "think" && x.open === true);
@@ -4074,6 +4589,9 @@ function agentLiveSegsEl(row, st, live, items) {
     const streaming =
       seg.k === "think" ? seg.open === true || (isLast && !anyOpenThink) : isLast;
     if (seg.k === "think") {
+      /* 「显示思考内容」关掉：这一块不渲染（数据仍在轨迹与消息存档里，
+         再打开开关即整表重绘看回来） */
+      if (!showThink) continue;
       const txt = String(seg.text || "");
       if (!txt) continue;
       const det = document.createElement("details");
@@ -4193,6 +4711,9 @@ function updateAgentLiveThink(st) {
   if (_liveSegThinkRAF) return;
   _liveSegThinkRAF = requestAnimationFrame(() => {
     _liveSegThinkRAF = 0;
+    /* 「显示思考内容」关掉：会话里没有思考块可刷（若照旧往下走，每来一块思考都会
+       因为找不到 #agent-think 而整表重绘一次 —— 白烧一次整表重绘） */
+    if (!agentThinkShown(st)) return;
     const items = agentChatSegItems(st);
     if (!items) {
       updateAgentThinkEl(st, null);
@@ -4578,6 +5099,9 @@ function dshMsgBlock(m, nodeId, idx, opts) {
   if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
   /* 有分段轨迹（且正文拼接与 content 一致）就按段渲染，否则走旧渲染 */
   const segsView = dshMsgSegsViewable(m);
+  /* 会话「显示思考内容」开关：按这条消息属于哪条会话取判据（见 dshThinkShownFor）；
+     关掉时思考块整块不渲染（数据仍在 m.reasoning / m.segments 里，打开即可看回） */
+  const showThink = dshThinkShownFor(nodeId);
   const head = document.createElement("div");
   head.className = "dsh-msg-head";
   const role = document.createElement("span");
@@ -4606,6 +5130,7 @@ function dshMsgBlock(m, nodeId, idx, opts) {
   if (
     m.role === "assistant" &&
     !segsView &&
+    showThink &&
     m.reasoning &&
     String(m.reasoning).trim()
   ) {
@@ -4672,7 +5197,7 @@ function dshMsgBlock(m, nodeId, idx, opts) {
       if (at >= 0) pool.splice(at, 1);
     }
     for (let n = from; n < m.segments.length; n++) {
-      const el = dshHistSegEl(m.segments[n], pool, nodeId, idx, n);
+      const el = dshHistSegEl(m.segments[n], pool, nodeId, idx, n, showThink);
       if (el) body.appendChild(el);
     }
     /* 时间线上没配到段、剩下的工具（重发 / 老数据等边角）挂消息**最前面**，
@@ -4973,8 +5498,75 @@ function dshClipboardWrite(txt) {
     return Promise.resolve(window.api.clipboardWriteText(txt));
   return Promise.reject(new Error("no clipboard"));
 }
+/* ═══════════ 消息栏草稿的「视图键」（本轮需求:未输入完毕发送的内容切窗口不许丢） ═══════════
+   同一只输入框（#agentInput）在三种上下文里装的是三份不同的草稿，按视图键存取：
+     · 会话页的当前会话          → 键 = 会话 id（沿用 session._draft，随会话落盘）
+     · 应用开发页显示的那条会话  → 键 = 该会话 id（显示覆盖不改归属，与上一条同源）
+     · 应用开发页首轮态（还没有会话）→ 键 = "\u0000dev-first:<appId>"：
+       那只占位空会话不在会话表里、每次整页重绘都被换掉，草稿挂不到对象上 ——
+       交给 app-apps-dev.js 按应用存（config.appsDevDrafts，落盘口径与 appsDevLastApp 同源）。
+   键里带上 appId 的理由：切应用时框里的字要先退回**上一个**应用、再填新应用的；
+   键跟着变，存与取才各有其主（否则 A 的半截需求会跟着跑到 B 名下）。
+   历史 bug（本轮需求本体）：草稿只在「切换会话那一刻」从 DOM 抄一次，且只认会话表里的
+   对象 —— 开发页首轮态那只框不属于任何会话，一次整页重绘 / 自动选会话 / 关页回收
+   （appsDevViewClear → renderAgentSession）就把用户写了一半的开发需求整段丢掉。 */
+const AGENT_DEV_FIRST_KEY = "\u0000dev-first:";
+function agentDraftKeyNow() {
+  if (agentViewOverrideOn()) {
+    const id = agentViewId();
+    if (id) return id;
+    let appId = "";
+    try {
+      if (typeof appsDevDraftAppId === "function")
+        appId = String(appsDevDraftAppId() || "");
+    } catch (_) {
+      appId = "";
+    }
+    return AGENT_DEV_FIRST_KEY + appId;
+  }
+  return String(activeAgentId() || "");
+}
+/* 把某个视图键下的草稿写回它自己的家（真会话 = session._draft；首轮态 = 应用草稿槽） */
+function agentDraftStash(key, value) {
+  const k = String(key == null ? "" : key);
+  const v = String(value == null ? "" : value);
+  if (k.indexOf(AGENT_DEV_FIRST_KEY) === 0) {
+    try {
+      if (typeof appsDevDraftSave === "function")
+        appsDevDraftSave(k.slice(AGENT_DEV_FIRST_KEY.length), v);
+    } catch (_) {}
+    return;
+  }
+  const s = k ? agentSessions().find((x) => x && x.id === k) : null;
+  if (s) s._draft = v;
+}
+/* 取某个视图键下的草稿（首轮态走应用草稿槽；真会话走它自己的 _draft） */
+function agentDraftLoad(key, st) {
+  const k = String(key == null ? "" : key);
+  if (k.indexOf(AGENT_DEV_FIRST_KEY) === 0) {
+    try {
+      if (typeof appsDevDraftLoad === "function")
+        return String(appsDevDraftLoad(k.slice(AGENT_DEV_FIRST_KEY.length)) || "");
+    } catch (_) {}
+    return "";
+  }
+  const s = k ? agentSessions().find((x) => x && x.id === k) : null;
+  if (s) return String(s._draft || "");
+  return String((st && st._draft) || "");
+}
+/* 输入即记（与长任务草稿表 ltDraftBind 同一纪律：不靠失焦、不靠重绘那一刻）。
+   挂钩点 = app-boot.js 里 #agentInput 的 input 监听；这样任何一次整页重绘 / 自动选会话
+   都能拿到最新那半截字，而不是等下一次「切换会话」才从 DOM 里抄。 */
+function agentDraftTick() {
+  const inp = document.getElementById("agentInput");
+  if (!inp) return;
+  agentDraftStash(agentDraftKeyNow(), inp.value);
+}
 function renderAgentSession(opts) {
   const st = agentSessionState();
+  /* 右边栏（浏览器活动）跟着当前会话走：这一帧渲染的是哪条会话，那栏就显示哪条会话的
+     活动；本会话没有浏览器就整条收起（见 app-browser.js 的 BA.setSession）。 */
+  agentNotifyBrowserSession();
   const list = $("#agentList");
   if (!list) return;
   /* 切换会话 = 新的阅读上下文：清掉上一个会话遗留的「用户已上翻」状态，
@@ -5094,7 +5686,8 @@ function renderAgentSession(opts) {
           think._progToggle = false;
         });
       else think._progToggle = false;
-      row.appendChild(think);
+      /* 「显示思考内容」关掉时这一块不挂进 DOM（思考数据仍在，打开开关即重绘看回） */
+      if (agentThinkShown(st)) row.appendChild(think);
       updateAgentThinkEl(st, live);
       const tools = document.createElement("div");
       tools.className = "dsh-tools";
@@ -5136,16 +5729,18 @@ function renderAgentSession(opts) {
   const chatEnterSend = !S.config.dsh || S.config.dsh.chatEnter !== "newline";
   const inp = $("#agentInput");
   if (inp) {
-    /* 消息栏草稿按会话隔离:切换会话时保存上一个会话的输入,载入当前会话的草稿 */
+    /* 消息栏草稿按视图隔离（agentDraftKeyNow）：视图换了先把上一只框的字存回它名下，
+       再把新视图的草稿填进来。首轮态（开发页占位空会话）的草稿也在这一条路上存 / 取 ——
+       它不属于任何会话对象，只按应用存（见上面「消息栏草稿的视图键」段）。 */
+    const dkey = agentDraftKeyNow();
+    const prevKey = S._agentInputDraftKey;
+    if (prevKey != null && prevKey !== dkey) agentDraftStash(prevKey, inp.value);
+    if (prevKey !== dkey) {
+      inp.value = agentDraftLoad(dkey, st);
+      S._agentInputDraftKey = dkey;
+    }
     const prevId = S._agentRenderedSessionId;
-    if (prevId && prevId !== st.id) {
-      const prev = agentSessions().find((x) => x.id === prevId);
-      if (prev) prev._draft = inp.value;
-    }
-    if (prevId !== st.id) {
-      inp.value = st._draft || "";
-      S._agentRenderedSessionId = st.id;
-    }
+    if (prevId !== st.id) S._agentRenderedSessionId = st.id;
     inp.placeholder = chatEnterSend
       ? I18n.t("描述任务…（Enter 发送，Shift+Enter 换行；输入 / 呼出技能与命令）")
       : I18n.t("描述任务…（Enter 换行，Ctrl+Enter 发送；输入 / 呼出技能与命令）");
@@ -5437,14 +6032,22 @@ function startSessionTitleEdit(s, nameEl) {
   input.addEventListener("mousedown", (ev) => ev.stopPropagation());
 }
 function renderAgentSessionSidebar() {
-  /* 开发页（renderer/app-apps-dev.js）借用本函数：它的三栏页开着时，这里只渲染该应用
-     自己的会话（宿主给 sessions），并写进开发页左栏容器；活跃行也以宿主的判断为准
-     （首轮态 = 还没有本应用的会话 → 无活跃行）。宿主不在 → 逐字走原来的总会话视图，
-     #agentSideList 的渲染一字未改。 */
+  /* 开发页（renderer/app-apps-dev.js）借用本函数：它的三栏页开着时，这里按宿主给的
+     **应用分组**渲染（第一层是应用行，会话折叠在各自应用下，写进开发页左栏 #appsDevSideList）；
+     宿主不在 → 逐字走原来的总会话视图，#agentSideList 的渲染一字未改。 */
   const host = typeof appsDevSidebarHost === "function" ? appsDevSidebarHost() : null;
+  const hostApps = host && Array.isArray(host.apps) ? host.apps : null;
   const all = agentSessions();
   const active = host ? String(host.active || "") : activeAgentId();
-  const list = host && Array.isArray(host.sessions) ? host.sessions : all;
+  const list =
+    hostApps !== null
+      ? hostApps.reduce(
+          (out, g) => out.concat(Array.isArray(g.sessions) ? g.sessions : []),
+          [],
+        )
+      : host && Array.isArray(host.sessions)
+        ? host.sessions
+        : all;
   const activeSt = list.find((s) => s.id === active);
   /* 只写会话视图自己的容器 #agentSideList。
      历史遗留 bug：以前同时写入画布边栏 #sideTree，会话每次运行 / 每个工具事件
@@ -5460,6 +6063,11 @@ function renderAgentSessionSidebar() {
         : $("#agentSideFilter")
           ? $("#agentSideFilter").value.trim().toLowerCase()
           : "",
+      /* 应用分组宿主（开发页左栏）才有：应用行 + 三个动作回调 */
+      apps: hostApps,
+      onAppSelect: host && typeof host.onAppSelect === "function" ? host.onAppSelect : null,
+      onAppToggle: host && typeof host.onAppToggle === "function" ? host.onAppToggle : null,
+      onAppNew: host && typeof host.onAppNew === "function" ? host.onAppNew : null,
     });
   if (!targets.length) return;
 
@@ -5611,6 +6219,26 @@ function renderAgentSessionSidebar() {
       armed = false;
       dlIdle();
     };
+    /* 浏览器被动标记（本轮需求）：这条会话正动浏览器时挂一枚不抢焦点的小标 ——
+       焦点不在该会话时按「静默处理」（不弹右栏 / 不切界面 / 不提示），
+       用户扫一眼左栏就知道哪条会话在用浏览器。判据与右栏显隐同源：
+       BA.browserSessions（事件盖的章）∪ 网关在跑的驱动者；BA 不在（老壳）就不挂。 */
+    let baEl = null;
+    try {
+      const ba = window.BrowserAct;
+      const hasBa =
+        !!ba &&
+        ((ba.browserSessions && typeof ba.browserSessions.has === "function" && ba.browserSessions.has(s.id)) ||
+          (!!ba.driver && ba.driver === s.id));
+      if (hasBa) {
+        baEl = document.createElement("span");
+        baEl.className = "side-sess-ba";
+        baEl.textContent = I18n.t("浏览器");
+        baEl.title = I18n.t(
+          "这条会话正在用浏览器：画面在会话右边栏的「浏览器活动」里（点输入区那枚按钮即可开回）；你不在看它时它不会弹栏、也不打断你",
+        );
+      }
+    } catch (_) {}
     btns.appendChild(rn);
     btns.appendChild(fk);
     btns.appendChild(ar);
@@ -5628,6 +6256,7 @@ function renderAgentSessionSidebar() {
     row.appendChild(stt);
     row.appendChild(nm);
     if (ltEl) row.appendChild(ltEl);
+    if (baEl) row.appendChild(baEl);
     if (wfEl) row.appendChild(wfEl);
     row.appendChild(tm);
     row.appendChild(btns);
@@ -5641,10 +6270,129 @@ function renderAgentSessionSidebar() {
     return row;
   };
 
+  /* 应用行（开发页左栏专用）：箭头 = 展开收起，行身 = 选中该应用（中栏预览 + 右栏会话一起换，
+     动作由宿主 appsDevSidebarHost 给）。作者与库页 / 开发页同一口径（appsAuthorOf）。
+     行右端的「＋」= 在该应用下开一条新开发会话（本轮需求：入口从开发页顶栏挪到这里，
+     每行一枚，点哪一行就是哪个应用 —— 见 app-apps-dev.js 的 appsDevNewSessionFor）。 */
+  const mkAppRow = (g) => {
+    const row = document.createElement("div");
+    row.className = "side-apps-app" + (g.current ? " active" : "");
+    row.dataset.appId = String(g.id || "");
+    const caret = document.createElement("button");
+    caret.type = "button";
+    caret.className = "side-apps-caret";
+    caret.textContent = g.expanded ? "▾" : "▸";
+    caret.title = g.expanded
+      ? I18n.t("收起该应用的会话")
+      : I18n.t("展开该应用的会话");
+    caret.setAttribute("aria-expanded", g.expanded ? "true" : "false");
+    caret.onclick = (ev) => {
+      ev.stopPropagation();
+      if (typeof g.onToggle === "function") g.onToggle(String(g.id || ""));
+    };
+    const nm = document.createElement("span");
+    nm.className = "side-apps-name";
+    nm.textContent = g.name || g.id || "";
+    nm.title =
+      (g.name || g.id || "") +
+      (g.author ? "\n" + I18n.t("作者：") + g.author : "") +
+      "\n" +
+      I18n.t("点这条 = 进入该应用（中栏预览与右栏会话一起换）");
+    row.appendChild(caret);
+    row.appendChild(nm);
+    if (g.author) {
+      const au = document.createElement("span");
+      au.className = "side-apps-author apps-dev-author";
+      au.textContent = I18n.t("作者 ") + g.author;
+      au.title = I18n.t(
+        "作者：云端条目按发布账号，本机应用按 app.json 的作者（没写过则回落当前登录账号）",
+      );
+      row.appendChild(au);
+    }
+    const ct = document.createElement("span");
+    ct.className = "side-apps-count";
+    ct.textContent = String(Number(g.count) || 0);
+    ct.title = I18n.t("该应用的会话数（不含已归档）");
+    row.appendChild(ct);
+    /* 「＋」新开发会话（本轮需求：从开发页顶栏挪到每条应用行右端）。
+       点它 = 切到该应用并回到首轮态，下一次输入就是这条新会话的第一轮；
+       与点行身（选中该应用）不同，所以 stopPropagation —— 别让行身的 onclick 再拨一次。
+       宿主没给回调（老壳）就不挂这颗按钮，行其余部分一字不变。 */
+    if (typeof g.onNew === "function") {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "side-apps-new";
+      add.textContent = "＋";
+      add.title = I18n.t("新开发会话：在这个应用下开一条新会话（点它后写下需求，回车即新建并开工）");
+      add.setAttribute("aria-label", I18n.t("新开发会话"));
+      add.onclick = (ev) => {
+        ev.stopPropagation();
+        g.onNew(String(g.id || ""));
+      };
+      row.appendChild(add);
+    }
+    row.onclick = () => {
+      if (typeof g.onSelect === "function") g.onSelect(String(g.id || ""));
+    };
+    return row;
+  };
+
+  /* 开发页左栏：**以应用为主体** —— 每个应用一行，它的会话折叠在下面（默认只展开当前应用）。
+     搜索同时搜应用名与会话标题：命中应用名 = 连它的会话一起留着；只命中会话标题 = 只留命中的
+     那几条。已归档的会话不进左栏（会话页另有「已归档」区）。 */
+  const renderAppSide = (tree, groups, f, target) => {
+    const q = String(f || "").trim().toLowerCase();
+    let shown = 0;
+    for (const g of groups) {
+      const name = String(g.name || "");
+      const nameHit =
+        !q || name.toLowerCase().includes(q) || String(g.id || "").toLowerCase().includes(q);
+      const sess = (Array.isArray(g.sessions) ? g.sessions.slice() : []).sort(byNewest);
+      const items =
+        q && !nameHit
+          ? sess.filter((s) => String((s && s.title) || "").toLowerCase().includes(q))
+          : sess;
+      if (q && !nameHit && !items.length) continue;
+      shown++;
+      tree.appendChild(
+        mkAppRow({
+          id: g.id,
+          name: name,
+          author: g.author,
+          count: Number(g.count) || sess.length,
+          current: !!g.current,
+          expanded: !!g.expanded,
+          onSelect: target.onAppSelect,
+          onToggle: target.onAppToggle,
+          onNew: target.onAppNew,
+        }),
+      );
+      if (!g.expanded) continue;
+      for (const s of items) {
+        /* 传原对象(非拷贝)：行内改名写回 s.title，拷贝会丢修改 */
+        const row = mkRow(s, false);
+        row.classList.add("side-apps-sess");
+        tree.appendChild(row);
+      }
+    }
+    if (!shown) {
+      const e = document.createElement("div");
+      e.className = "side-empty";
+      e.textContent = q ? I18n.t("没有匹配的应用或会话") : I18n.t("暂无开发中的应用");
+      tree.appendChild(e);
+    }
+  };
+
   for (const target of targets) {
     const tree = target.el;
     const f = target.filter;
     tree.innerHTML = "";
+    /* 应用分组宿主（开发页左栏）：第一层 = 应用，不是项目目录 —— 与总会话视图
+       「按项目目录分组」是两条并列的渲染路径，谁都不会写到对方容器里。 */
+    if (target.apps) {
+      renderAppSide(tree, target.apps, f, target);
+      continue;
+    }
     if (!list.length) {
       const e = document.createElement("div");
       e.className = "side-empty";
@@ -6285,10 +7033,24 @@ function agentTodoText(x) {
     (x && (x.content || x.title || x.text || x.name || x.label)) || "",
   ).trim();
 }
+/* 「清单未收口」自动补轮的记账（见 app-longrun.js 的 todosUnknownSet / TODO_SYNC_MAX）：
+   _todoSyncUnknownSet = 上一轮补轮时那批未确认条目的内容；_todoSyncTries = 同一批补了几轮。
+   模型这一轮又写了 todo_write 就把这份记账**整个清掉** —— 它已经回应过那批问号了：
+     · 写清状态的条目不再是 unknown，问号自然消失；
+     · 顺手把清单换了一批新条目（新条目本来没执行过，出问号是正常的）→ 旧记账必须作废，
+       否则新条目的问号会被误判成「模型没回应」，自动续跑当场停住（旧记账的误伤）。
+   清记账不影响配额：新一批问号从 0 开始重新计数，与「同一批最多补 TODO_SYNC_MAX 轮」同口径。 */
+function agentTodoSyncAck(st) {
+  if (!st) return;
+  st._todoSyncPending = false;
+  st._todoSyncTries = 0;
+  delete st._todoSyncUnknownSet;
+}
 function agentApplyTodoWrite(st, args) {
   const p = agentTodoArgs(args);
   const list = p && Array.isArray(p.todos) ? p.todos : null;
   if (!list) return false;
+  agentTodoSyncAck(st);
   const hidden = new Set((st.todoHidden || []).map(String));
   st.todos = list
     .filter((x) => agentTodoText(x))
@@ -6432,6 +7194,9 @@ async function agentSessionSend(text, opts) {
   const planExecMsg = !!opts._planExec;
   /* 漏弹自愈轮（app-plan.js planFixDirective）：它自己绝不再触发自愈，防连环重发 */
   const planFixMsg = !!opts._planFix;
+  /* 清单同步轮（app-longrun.js 的 todoSyncDirective）：它只让模型把 todo_write 写对，
+     所以这一轮同样不注入「任务流程」指令（否则模型会以为该重新交一份计划块）。 */
+  const todoSyncMsg = !!opts._todoSync;
   /* 归属会话：opts.sessionId 有值时严格按 id 取 owner。
      取不到 → 直接结束本轮并提示，**绝不回退到当前活动会话**
      （用户切会话后计划续跑挤进别的会话，就是「计划串台」的直接原因）。
@@ -6448,6 +7213,17 @@ async function agentSessionSend(text, opts) {
   } else {
     st = agentSessionState();
   }
+  /* 用户亲口发的一轮 = 新任务：把上一条任务留下的「自动续跑」记账清干净 ——
+     清单同步的按批配额（_todoSyncTries / _todoSyncUnknownSet）与跨批总闸（_todoSyncRounds）
+     都只在一次任务内有效，跨任务累计会把新任务的第一次同步轮直接掐掉
+     （用户会看到「已补 N 轮」而这一轮其实一轮都没补过）。
+     判据与 app-longrun.js 同源：自动续跑轮带 _autoContinue（含 _todoSync），其余都是用户轮。 */
+  if (!opts._autoContinue) {
+    st._todoSyncTries = 0;
+    st._todoSyncRounds = 0;
+    st._todoSyncPending = false;
+    delete st._todoSyncUnknownSet;
+  }
   /* 暂停后点「继续」= 断点续跑轮：opts.resumeSession 点名被暂停那条 dsh 会话。
      与 dshRunTask 内部的重发续跑同口径 —— 那份 session 里上下文 / 人设 / 工具状态都在，
      本轮只发「从中断处接着写」这一句，绝不把整段历史再抄一遍（抄一遍等于让模型从头重写）。 */
@@ -6457,7 +7233,11 @@ async function agentSessionSend(text, opts) {
      这里只读它作为最新用户消息，不再追加第二条 */
   const devContractMsg = !!opts._devContract;
   let t = String(text || "").trim();
-  if (devContractMsg) {
+  if (devContractMsg && !t) {
+    /* 「按契约跑这条会话里的那条关键输入」（agentContractRound 空文本起轮）：只有
+       这种情况才回落首条 _src:"dev-node" 消息。**非空文本 = 用户追问，必须原样发出去** ——
+       改动前这里无条件用首条 kick 覆盖 t，追问轮实际发给模型的永远是第一轮的开发需求，
+       用户补充的说明与拷问轮里手打的追问都发不出去（「回答未进上下文」的另一条路径）。 */
     const first = (st.messages || []).find(
       (m) => m && m.role === "user" && m._src === "dev-node" && String(m.content || "").trim(),
     );
@@ -6474,6 +7254,19 @@ async function agentSessionSend(text, opts) {
   }
   /* 中文输入法行首顿号视为斜杠命令前缀 */
   if (t.charAt(0) === "\u3001") t = "/" + t.slice(1);
+  /* 本轮要不要带画布工具：本次需求起**自动判定**（输入区那枚「与画布无关」chip 已移除），
+     判据 = agentCanvasTurnRelated（这轮用户消息 + 最近几轮用户消息），拿不准按「有关」。
+     · 开发 / 细化绑定会话（st.noCanvasRead）与契约会话自带一套无画布人设，它们走
+       canvasPersona 的 "noRead" 分支，与这一档互不干扰；
+     · st.canvasFree 这一位只留给**特殊入口的显式声明**（如插件修复会话 app-repair.js
+       建会话时置 true，它就是与画布无关）；用户侧已经没有任何按钮能置它了。
+       判据与下发点同源：人设档位 canvasPersona、下发网关的 noCanvas 标记、技能索引
+       档位三处都读这一个值。 */
+  const turnCanvasFree =
+    !!st.canvasFree ||
+    (!devContractMsg &&
+      !st.noCanvasRead &&
+      !agentCanvasTurnRelated(t, agentSessionUserHistory(st, null)));
   let skillWrap = null;
   /* 斜杠命令(参考 dsh commands 注册表:UI 侧直接处理,不发给模型)
      菜单仅展示 compact/plan 与技能；其余命令仍可手敲 */
@@ -6637,19 +7430,20 @@ async function agentSessionSend(text, opts) {
   await persistAgentSession();
   if (agentViewIs(st)) renderAgentSession({ forceStick: true });
   else renderAgentSessionSidebar();
-  /* 已回滚轮次的消息不进上下文（rbActiveMessages 无标记时直接复用原数组，不复制） */
+  /* 已回滚轮次的消息不进上下文（rbActiveMessages 无标记时直接复用原数组，不复制）。
+     构造口径收进 app-db.js 的 agentHistoryEntries：同文去重、回答气泡按题 id 取最新、
+     整段设字符上限 —— 询问窗答案因此能随每一轮的 hist 一起进上下文（它只是一条
+     普通用户消息，见 ixCommitAnswerToSession）。 */
   const rbHistSrc =
     typeof rbActiveMessages === "function" ? rbActiveMessages(st.messages) : st.messages;
-  const hist = rbHistSrc
-    .slice(0, -1)
-    .slice(-20)
-    .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
+  const hist = agentHistoryEntries({ messages: rbHistSrc }, { maxChars: 4000 })
+    .map((r) => (r.role === "user" ? I18n.t("用户：") : I18n.t("助手：")) + r.text)
     .join("\n\n");
   /* 「任务流程」指令：会话里已有未跑完的计划时注入的是「沿用 / 续跑」那段，
      而不是逼模型再规划一份新的（新旧计划互相覆盖 · 已执行项被重跑） */
   let flowText = "";
   try {
-    if (resumeRound) flowText = "";
+    if (resumeRound || todoSyncMsg) flowText = "";
     else if (typeof planFlowInjectText === "function")
       flowText = String(planFlowInjectText(st, opts, planExecMsg) || "");
     else if (
@@ -6676,6 +7470,25 @@ async function agentSessionSend(text, opts) {
       : t;
   let input =
     resumeRound || !hist ? latest : hist + "\n\n用户(最新)：" + latest;
+  /* 续跑轮（暂停后点「继续」/ 出错自动重发点名那条 dsh 会话）：正常能续上时上下文
+     就在那份 session 里，一个字都不必重发。但「拿不到那条会话 / 宿主登记里没有它」
+     时续跑会在运行时撞 RESUME_UNAVAILABLE，宿主随即退化成「用原始 input 整轮重发」——
+     那一轮的 input 若只有一句「从中断处接着写」，用户此前确认过的全部问答就凭空没了
+     （正是「中断 / 停止后再次要求继续任务，看不到之前的回答」的现场）。
+     所以判据不足时把它拼在指令后面：真续上了只是一点冗余，续不上则上下文不丢。 */
+  const sidForRound = String(opts.resumeSession || "").trim();
+  const sidKnown =
+    !!sidForRound &&
+    (typeof dshResumableSession === "function" ? !!dshResumableSession("agent:" + st.id) : false);
+  if (resumeRound && !sidKnown) {
+    const known = agentConfirmedHistoryEntries(st);
+    if (known.length)
+      input +=
+        "\n\n" +
+        I18n.t("【用户已确认的部分（续跑兜底 · 这些答案已生效，不要重复提问）】") +
+        "\n" +
+        known.map((r) => "· " + r.text).join("\n");
+  }
   /* 规划模式：本轮只出计划，不做任何改动（系统提示 + 用户指令双重约束，
      画布 / 应用改动另由宿主在 handleCanvasEvent 中硬性拒绝） */
   const planMode = !!st.planNext;
@@ -6690,12 +7503,12 @@ async function agentSessionSend(text, opts) {
      · "noRead" 开发绑定会话（st.noCanvasRead · Gate A）—— 本轮不注册 mtnode_canvas_get
                 与 mtnode_app；人设要求不读也不改画布，收尾不写回任何节点字段
                 （mtnode_canvas_edit 照常注册但不用于回写）
-     · "none"   用户声明「与画布无关」（st.canvasFree · Gate B）—— 三件套全不注册
+     · "none"   本轮被自动判定「与画布无关」（turnCanvasFree · Gate B）—— 三件套全不注册
    裁掉工具就必须同时裁掉「动手前先 mtnode_canvas_get 看清现状」这句指令和画布类技能名
    （同档位的技能索引也已经裁了），否则模型会去调不存在的工具、白白浪费一整步。 */
   const canvasPersona = pureMode
     ? ""
-    : st.canvasFree
+    : turnCanvasFree
       ? "none"
       : st.noCanvasRead
         ? "noRead"
@@ -6705,8 +7518,8 @@ async function agentSessionSend(text, opts) {
   if (!pureMode) {
     if (canvasPersona === "none") {
       systemPrompt =
-        "你是 MTNode 里的通用会话助手。本会话已声明「与画布无关」：不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令。\n" +
-        "本轮不要承诺任何画布改动，也不要臆造节点或画布现状；确实需要改画布时，请让用户先关掉输入区的「与画布无关」开关再重跑。\n" +
+        "你是 MTNode 里的通用会话助手。宿主按你这条消息判定**本轮与画布无关**，于是本轮不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令。\n" +
+        "本轮不要承诺任何画布改动，也不要臆造节点或画布现状。若这条任务其实需要动画布：**先别硬做** —— 一句话说明「这轮按无关档跑、画布工具没在」，请用户在同一句里补上画布 / 节点（例如「改画布上的『文本节点 2』」）再发一次；下一轮判据命中就会带上画布工具。\n" +
         "内置技能以文末索引为准（本档位不含画布类技能）；工具回执里没有的结果不要声称已完成。\n" +
         "回答简洁（交流语言见文末「语言口味」）。";
     } else if (canvasPersona === "noRead") {
@@ -6725,12 +7538,18 @@ async function agentSessionSend(text, opts) {
           ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
           : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
         "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
+        "任务相关性纪律：本轮先自己判断任务是否与画布有关 —— 无关就别读画布（不要调 mtnode_canvas_get，也不要取画布内容 / 快照），用文件读写、联网、命令把活做完；有关再按下面纪律先读现状；判不准按「有关」处理。\n" +
         "改画布纪律：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
         "引用画布内容纪律：为某个节点写 prompt/task 而要用画布上别的节点的内容时，一律在 prompt/task 里写 @标题（连线源；全局广播须同时满足三条件），不要把那个节点的正文复制粘贴进去；素材节点本身不是 @ 候选，写 @内容条目标题只引那一条、且只有已连线接进本节点的端子可引；@引用的三条件与语法见技能 mtnode-canvas-edit-rules。\n" +
         "要建开发节点、批次 / 文生图链、连线 / 建图、整理排版、接数据库副本或索引 / 沉淀项目关键信息时，先用 skill 工具加载对应内置技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
         "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     }
   }
+  /* 自检与长时纪律（用户已确认：分阶段自检 + 交付前全检；发现错误先自行修复并重跑，
+     修不好才告知；关键结论必须带证据；长任务不空转、跨重启的活建议提升为长周期任务图）。
+     纯行为纪律，只写这一处（提示词单一真源：参数机制在工具描述、操作规范在技能，
+     这里只留「把活做对」的纪律）。 */
+  if (!pureMode) systemPrompt += SELF_CHECK_DISCIPLINE;
   /* 开发 / 细化绑定会话：任务书是会话契约，临时写入系统提示（不占用户消息位，
      会话里只显示用户填写的关键输入；后续追问也持续携带该契约） */
   const devContract = String(st._devContract || "").trim();
@@ -6774,28 +7593,29 @@ async function agentSessionSend(text, opts) {
          dshRunTask 的 baseOpts 原样透传到 dshRunOnce，这一位随每次开轮重新生效，
          轮内不变 → 同一档每步前缀一致。 */
       noCanvasRead: !!st.noCanvasRead,
-      /* Gate B：用户声明「与画布无关」→ 走 MTNODE_NO_CANVAS 整档闸（canvas_get / edit /
-         app 三件套整个不注册，约 26.0K 字符/步）。人设同步换成无画布版（见上方
-         canvasPersona === "none" 分支），两侧判据同源于 st.canvasFree。 */
-      noCanvas: !!st.canvasFree,
+      /* Gate B：本轮被自动判定「与画布无关」→ 走 MTNODE_NO_CANVAS 整档闸（canvas_get /
+         edit / app 三件套整个不注册，约 26.0K 字符/步）。人设同步换成无画布版（见上方
+         canvasPersona === "none" 分支），两侧判据同源于 turnCanvasFree（判据只算一次）。 */
+      noCanvas: turnCanvasFree,
       onEvent: (type, data) => {
         /* 并行会话:仅当本会话正是当前查看的会话时才更新共享视图,避免后台会话
            重绘/滚动打扰用户正在看的其他会话 */
         const mine = agentViewIs(st);
         /* 出错自动重发（dshRunTask 触发 retry）：看 resumed 决定清不清残文 ——
            · resumed=true（续写）：已显示的部分正文 / 工具列表 / 用量保留（同一轮的内容）；
-             思考槽照旧清掉 —— 思考不是续写内容，续跑起步时轨迹里的旧思考段也已被
-             摘掉（app-db.js traceDropThink），槽里留着它就会在下一次 reasoning 到达前
-             以旧文本显示出来（残留旧思考）。
-           · resumed=false（整轮重发）：正文 / 工具 / 用量 / 思考槽全清，从零流式不叠字。
+             **思考也保留** —— 这一轮已经思考过的内容随轨迹留在时间线上（续跑起步只把
+             思考段切开收口，见 app-db.js traceSplitThink，一段都没删），清掉槽 = 把用户
+             刚看过的思考从会话里抹掉（节点侧一直是保留的，两侧口径就此对齐）。
+             新一轮的思考自会另起一段，不会与旧思考混成一段。
+           · resumed=false（整轮重发）：正文 / 工具 / 用量 / 思考槽全清，从零流式不叠字
+             （轨迹同时被 traceReset 清空，槽留着只会是残留旧内容）。
            resumed 由宿主按「这一次实际怎么发」给出（见 app-db.js notifyRetry）。 */
         if (type === "retry") {
-          /* 思考槽两种重发都清：它只装「当前这一次尝试」的思考，不跨尝试累计 */
-          if (S.thinking) delete S.thinking["agent:" + st.id];
           if (data && data.resumed) {
             if (mine) updateAgentLiveThink(st);
             return;
           }
+          if (S.thinking) delete S.thinking["agent:" + st.id];
           st._pending = "";
           st._liveTools = [];
           st._usageLive = null;
@@ -6924,42 +7744,37 @@ async function agentSessionSend(text, opts) {
     if (st._cancelled) {
       st._roundOutcome = "cancelled";
       const body = stripStreamErrors(st._pending);
-      st.messages.push({
-        role: "assistant",
-        content: body || I18n.t("（已终止）"),
-        at: Date.now(),
-      });
+      /* 被终止同样把这一轮的思考 / 段快照 / 工具清单随消息归档（见 agentRoundMsgTail）：
+         旧口径只写一行「（已终止）」，用户已经看到的思考块在收尾那一刻整段消失。 */
+      st.messages.push(
+        agentRoundMsgTail(
+          st,
+          {
+            role: "assistant",
+            content: body || I18n.t("（已终止）"),
+            at: Date.now(),
+          },
+          "agent:" + st.id,
+        ),
+      );
     } else {
       /* 收尾消息：正文 = say 段按 \n\n 连接（err 段以「⚠ 」附尾，与流式口径一致），
          无段可拼时回退 final / 累加文本 /（无输出），保证不丢字；
-         reasoning = 纯 think 段连接（不含 🔧 / ⚠）；segments 限长随消息落盘 */
+         reasoning / segments / tools 走公共尾巴（agentRoundMsgTail） */
       const rk = "agent:" + st.id;
       const traceBody =
         typeof traceSayDisplay === "function"
           ? String(traceSayDisplay(rk, "") || "")
           : "";
-      const msg = {
-        role: "assistant",
-        content: traceBody || final || st._pending || I18n.t("（无输出）"),
-        at: Date.now(),
-      };
-      const rsnLegacy =
-        (S.thinking && S.thinking[rk] && S.thinking[rk][0]) || "";
-      const rsn =
-        typeof traceThinkDisplay === "function"
-          ? traceThinkDisplay(rk, rsnLegacy)
-          : rsnLegacy;
-      if (String(rsn).trim()) msg.reasoning = rsn;
-      if (Array.isArray(st._liveTools) && st._liveTools.length)
-        msg.tools = st._liveTools.slice();
-      try {
-        const segs = agentSegsForDisk(
-          typeof traceSegmentsOf === "function"
-            ? traceSegmentsOf(rk)
-            : null,
-        );
-        if (segs && segs.length) msg.segments = segs;
-      } catch (_) {}
+      const msg = agentRoundMsgTail(
+        st,
+        {
+          role: "assistant",
+          content: traceBody || final || st._pending || I18n.t("（无输出）"),
+          at: Date.now(),
+        },
+        rk,
+      );
       st.messages.push(msg);
       /* 运行中展开的思考块，落到历史消息后要保持展开 —— 否则一轮结束就「自动藏起来」
          （live 与历史用不同的展开键，重绘即缩回）。 */
@@ -7008,18 +7823,34 @@ async function agentSessionSend(text, opts) {
     if (st._cancelled || isCancelishError(errMsg)) {
       st._roundOutcome = "cancelled";
       const body = stripStreamErrors(st._pending);
-      st.messages.push({
-        role: "assistant",
-        content: body || I18n.t("（已终止）"),
-        at: Date.now(),
-      });
+      /* 取消类错误收尾与「被终止」同口径：思考 / 段快照 / 工具清单照旧归档
+         （见 agentRoundMsgTail —— 只写一行正文 = 把这一轮的思考内容丢掉）。 */
+      st.messages.push(
+        agentRoundMsgTail(
+          st,
+          {
+            role: "assistant",
+            content: body || I18n.t("（已终止）"),
+            at: Date.now(),
+          },
+          "agent:" + st.id,
+        ),
+      );
     } else {
       st._roundOutcome = "error";
-      st.messages.push({
-        role: "assistant",
-        content: I18n.t("（错误：") + errMsg + "）",
-        at: Date.now(),
-      });
+      /* 出错收尾同样带上思考尾巴：这一轮的思考不因收尾方式（正常 / 终止 / 出错）
+         而消失（见 agentRoundMsgTail）。 */
+      st.messages.push(
+        agentRoundMsgTail(
+          st,
+          {
+            role: "assistant",
+            content: I18n.t("（错误：") + errMsg + "）",
+            at: Date.now(),
+          },
+          "agent:" + st.id,
+        ),
+      );
       toast(I18n.t("智能会话失败：") + errMsg, "err");
     }
   } finally {
@@ -7138,6 +7969,22 @@ async function agentSessionSend(text, opts) {
             _planFix: true,
           });
         }
+      }
+    } catch (_) {}
+    /* ---------- 长时自治 · 自动续跑（renderer/app-longrun.js） ----------
+       用户已确认的口径：会话内自动续跑，以目标达成为准、自检判停；不自动中断、
+       不弹卡（时间 / 轮数 / 开销只做累计小字），只在命中安全上限时停下告知。
+       续跑不抢用户的下一步：只在「本轮正常结束 + 没有排队消息 + 没被暂停/终止」
+       时才追轮；发的是「自检 + 续跑」指令（先对照目标自查，再决定继续还是收工）。 */
+    try {
+      if (
+        window.LongRun &&
+        typeof window.LongRun.afterRound === "function" &&
+        !hasQueued &&
+        !holdQueue &&
+        !planFixMsg
+      ) {
+        await window.LongRun.afterRound(st, outcome);
       }
     } catch (_) {}
     if (!holdQueue) agentDrainQueue(st);

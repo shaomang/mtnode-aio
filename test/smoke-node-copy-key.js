@@ -13,7 +13,10 @@
  *     Ctrl+C / Ctrl+V 仍归浏览器原生，别抢；
  *   · 焦点在画布之外的输入区（会话 / 弹窗 / 设置…）同样归浏览器；
  *   · Ctrl+V：焦点在节点输入框里时，只有「最近一次复制的是节点」（nodeClipIsFresh）
- *     才粘贴节点，否则让编辑器粘贴文字；粘贴板空时画布焦点下照旧提示一句。
+ *     才粘贴节点，否则让编辑器粘贴文字；
+ *   · Ctrl+V：画布焦点（非编辑区）时一律**消费按键**并交给 canvasPasteFromClipboard ——
+ *     剪贴板里可能有图像（截图 / 复制的图片文件），要先读一次剪贴板才知道该弹询问窗、
+ *     该粘节点，还是提示「粘贴板为空」，同步判定不出来（本轮的剪贴板图像需求）。
  *
  * 口径：与 test/smoke-ref-keyboard.js 同一套路 —— 用 vm 从 renderer/app.js 里按名字抠出
  * **真实函数** 来跑（textSelectionWantsNativeCopy / canvasClipboardKey /
@@ -202,6 +205,7 @@ let selNodes = [];
 let selMarks = [];
 let copiedCalls = 0;
 let pasteCalls = 0;
+let canvasPasteCalls = 0;
 let toasts = [];
 ctx.currentSelection = () => selNodes;
 ctx.selectedMarks = () => selMarks;
@@ -211,6 +215,10 @@ ctx.copyNodesToClipboard = () => {
 };
 ctx.pasteNodesFromClipboard = () => {
   pasteCalls++;
+};
+/* 画布非编辑区的 Ctrl+V 统一走它（异步读剪贴板 → 询问窗 / 粘节点 / 空提示），这里只记调用 */
+ctx.canvasPasteFromClipboard = () => {
+  canvasPasteCalls++;
 };
 ctx.toast = (m) => toasts.push(String(m));
 
@@ -242,6 +250,7 @@ function resetState() {
   selMarks = [];
   copiedCalls = 0;
   pasteCalls = 0;
+  canvasPasteCalls = 0;
   toasts = [];
   selection = noSel();
   API.setClip(null);
@@ -383,12 +392,19 @@ if (API) {
   ok(consumed === false && copiedCalls === 0, "有文字选区时 Ctrl+C 不抢（交给浏览器）");
   ok(API.fresh() === false, "文字复制后节点粘贴板标记复位");
 
-  /* Ctrl+V：粘贴板空 + 画布焦点 → 提示、不消费 */
+  /* Ctrl+V：画布焦点（非编辑区）→ 一律消费按键，交给 canvasPasteFromClipboard
+     （剪贴板里可能有图像，要先读一次剪贴板才知道该弹询问窗还是粘节点） */
   resetState();
   ev = keyEvent(body);
   consumed = API.clipKey(ev, "v", false);
-  ok(consumed === false && pasteCalls === 0, "粘贴板空 + 画布焦点：不粘贴");
-  ok(toasts.length === 1 && toasts[0].indexOf("粘贴板为空") >= 0, "画布焦点下照旧提示「粘贴板为空」");
+  ok(
+    consumed === true && ev.prevented === true && canvasPasteCalls === 1,
+    "画布焦点 + Ctrl+V：消费按键并交给 canvasPasteFromClipboard（异步判定图像 / 节点 / 空）",
+  );
+  ok(
+    pasteCalls === 0 && toasts.length === 0,
+    "判定前不抢着粘节点、也不抢先报「粘贴板为空」（都移到 canvasPasteFromClipboard 里）",
+  );
 
   /* Ctrl+V：节点输入框里 + 最近复制的是节点 → 粘贴节点 */
   resetState();
@@ -398,6 +414,10 @@ if (API) {
   ev = keyEvent(nodeField);
   consumed = API.clipKey(ev, "v", true);
   ok(consumed === true && pasteCalls === 1, "节点输入框里：最近复制的是节点 → 粘贴节点（Ctrl+C 后能接着 Ctrl+V）");
+  ok(
+    canvasPasteCalls === 0,
+    "输入框内不介入剪贴板图像询问（那里的粘贴归原生 / 内嵌图片逻辑）",
+  );
 
   /* Ctrl+V：节点输入框里 + 最近复制的是文字 → 交给编辑器 */
   resetState();
@@ -408,12 +428,15 @@ if (API) {
   consumed = API.clipKey(ev, "v", true);
   ok(consumed === false && pasteCalls === 0, "节点输入框里、最近复制的是文字 → 原生粘贴文字（不抢）");
 
-  /* Ctrl+V：画布焦点 + 有节点粘贴板 → 粘贴节点（不看 fresh） */
+  /* Ctrl+V：画布焦点 + 有节点粘贴板 → 同样交给 canvasPasteFromClipboard（由它按剪贴板定夺） */
   resetState();
   API.setClip({ nodes: [{ id: "n1" }], marks: [] });
   ev = keyEvent(body);
   consumed = API.clipKey(ev, "v", false);
-  ok(consumed === true && pasteCalls === 1, "画布焦点按 Ctrl+V：粘贴节点");
+  ok(
+    consumed === true && canvasPasteCalls === 1,
+    "画布焦点按 Ctrl+V：交给入口（剪贴板里没图像时由它粘贴节点）",
+  );
 }
 
 console.log("── [4] canvasPointerReleaseFocus：画布按下鼠标要把旧的输入焦点 / 残留选区放下");

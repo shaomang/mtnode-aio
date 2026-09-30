@@ -21,6 +21,8 @@
  *       不注册自定义协议、无网络面、随 MTNode 退出关闭
  *   [3] appHost 桥白名单（vm 真跑 preload-app.js）：只暴露白名单那些能力 + close；
  *       无 token / 画布 / 文件系统 / Node 能力
+ *   [3b] appHost 文本通道：默认关思考 / 思考档白名单 / 非法值 bad_thinking / 截断可诊断
+ *       （真调 apps:hostTextStream handler，钉住下发的 spec 与回执形状）
  *   [4] 库页 / 开发页「运行」按钮与入口接线
  *   [5] 打包白名单与脚手架（含三件基础设施 apphost.js / store.js / close.js）
  *   [6] 开发页顶部一行菜单条 + 新建应用默认页
@@ -55,6 +57,7 @@ console.log("smoke-apps：应用运行时独立窗口 + appHost 桥\n");
 
 /* ---------- 假 electron：只提供 apps-store.js / preload-app.js 真正用到的那几样 ---------- */
 const winCalls = [];
+const wcCalls = [];
 function fakeWebContents() {
   const listeners = Object.create(null);
   const wc = {
@@ -68,6 +71,7 @@ function fakeWebContents() {
     },
     isDestroyed: () => false,
   };
+  wcCalls.push(wc);
   return wc;
 }
 class FakeBrowserWindow {
@@ -114,13 +118,20 @@ class FakeBrowserWindow {
 }
 /* 预览协议 handler（apps-store.js 的 registerPreviewProtocol 里注册；[7] 真调它） */
 const protocolMock = { handled: null };
+/* ipcMain.handle 真记下来：appHost 那几个通道要能被**真调**（[3b] 钉思考档与截断回执） */
+const ipcMainMock = {
+  __h: Object.create(null),
+  handle(ev, fn) {
+    this.__h[ev] = fn;
+  },
+};
 const electronMock = {
   app: {
     getAppPath: () => ROOT,
     getPath: (k) => (k === "exe" ? path.join(ROOT, "node_modules", "electron", "dist", "electron.exe") : ROOT),
   },
   BrowserWindow: FakeBrowserWindow,
-  ipcMain: { handle() {} },
+  ipcMain: ipcMainMock,
   protocol: {
     registerSchemesAsPrivileged() {},
     handle(scheme, fn) {
@@ -166,14 +177,23 @@ fs.renameSync = function (a, b) {
 };
 
 const store = require("../apps-store.js");
+/* 模型内核的桩：把「宿主真正下发的 spec」记下来（[3b] 钉 thinking / maxTokens 口径） */
+const aiSpecs = [];
 store.registerAppsIpc({
   getDataDir: () => DATA,
   getMainWin: () => null,
   getAppVersion: () => "9.9.9",
   t: (s) => String(s == null ? "" : s),
   authState: () => ({ loggedIn: true, user: { id: "u1", nickname: "小张", token: "SECRET" }, encryption: "plain" }),
-  aiCall: async () => ({ text: "x" }),
-  aiCallStream: async () => ({ text: "x" }),
+  aiCall: async (spec) => {
+    aiSpecs.push(spec || {});
+    return { text: "x", finishReason: "stop" };
+  },
+  aiCallStream: async (spec) => {
+    aiSpecs.push(spec || {});
+    /* 故意回 finish_reason=length：宿主回执必须把「被输出上限截断」这一位带给应用（[3b] 断言） */
+    return { text: "x", reasoning: "y", finishReason: "length" };
+  },
 });
 const APPS_SRC = read("apps-store.js");
 /* 关窗现在是「先请应用收尾、再关」（apps:willClose → 回包 / WILL_CLOSE_MS 超时）。
@@ -430,8 +450,12 @@ async function main() {
     "dataDirReset",
     "dataRead",
     "dataWrite",
+    "hostModel",
+    "hostModels",
+    "hostSetModel",
     "imageGen",
     "onWillClose",
+    "pickImage",
     "quit",
     "storageAll",
     "storageGet",
@@ -442,6 +466,13 @@ async function main() {
   ok(keys.filter((k) => !ALLOWED.includes(k)).length === 0, "没有白名单外的键：" + keys.filter((k) => !ALLOWED.includes(k)).join(","));
   ok(typeof exposedObj.textGenStream === "function", "文本生成（流式）textGenStream");
   ok(typeof exposedObj.imageGen === "function", "图像生成 imageGen（每次一张）");
+  ok(
+    typeof exposedObj.hostModels === "function" &&
+      typeof exposedObj.hostModel === "function" &&
+      typeof exposedObj.hostSetModel === "function",
+    "模型继承三件：hostModels / hostModel / hostSetModel（模型清单只回 id，不回服务商与 Key）",
+  );
+  ok(typeof exposedObj.pickImage === "function", "选本机图 pickImage（只回路径，读盘在主进程）");
   ok(
     typeof exposedObj.storageGet === "function" &&
       typeof exposedObj.storageSet === "function" &&
@@ -470,6 +501,10 @@ async function main() {
   ok(hostCh.filter((c) => BAD_CH.includes(c)).length === 0, "主进程不注册白名单外的 appHost 通道");
   ok(hostCh.includes("hostTextStream") && hostCh.includes("hostImage") && hostCh.includes("hostStorageGet") && hostCh.includes("hostStorageSet") && hostCh.includes("hostStorageAll") && hostCh.includes("hostStorageRemove") && hostCh.includes("hostAccount"), "主进程恰好注册白名单那 7 个 appHost 通道");
   ok(
+    hostCh.includes("hostModels") && hostCh.includes("hostModel") && hostCh.includes("hostSetModel") && hostCh.includes("hostPickImage"),
+    "主进程注册模型继承与选图那四个通道（模型清单 / 读选择 / 改选择 / 选图）",
+  );
+  ok(
     hostCh.includes("hostDataDirGet") &&
       hostCh.includes("hostDataDirPick") &&
       hostCh.includes("hostDataDirOpen") &&
@@ -482,7 +517,75 @@ async function main() {
   ok(APPS_SRC.indexOf("function migrateLegacyStorage") >= 0 && APPS_SRC.indexOf("storageFile(dir)") >= 0, "老 storage/store.json 只作为迁移源（数据落盘已迁到数据文件夹）");
   ok(APPS_SRC.indexOf("function hostAccount") >= 0 && APPS_SRC.indexOf("st.loggedIn") >= 0 && APPS_SRC.indexOf("st.user || null") >= 0, "账号摘要只回登录态与 user（auth-store 的 state 本来就不带 token）");
   ok(APPS_SRC.indexOf("providerFor(kind)") >= 0 && APPS_SRC.indexOf("providersFromConfig()") >= 0, "服务商 / Key 只在本进程解析，应用侧给不了服务商与模型");
+  ok(APPS_SRC.indexOf("function buildMessages(") >= 0 && APPS_SRC.indexOf("function imagePartUrl(") >= 0, "多模态消息与图像读盘在内核（buildMessages / imagePartUrl）");
+  ok(
+    APPS_SRC.indexOf('"image_url"') >= 0 && APPS_SRC.indexOf("MAX_MSG_IMAGES") >= 0 && APPS_SRC.indexOf("MAX_MSG_IMAGE_BYTES") >= 0,
+    "多模态分片形状与上限（8 张 / 10MB）写在宿主里，不是各应用自己实现",
+  );
+  ok(APPS_SRC.indexOf("no_vision") >= 0 && APPS_SRC.indexOf("no_provider") >= 0 && APPS_SRC.indexOf("bad_model") >= 0, "无模型 / 不支持识图 / 越界模型 id 都有结构化错误码（不降级）");
   ok(read("preload.js").indexOf("appsOpenWindow") >= 0 && read("preload.js").indexOf("'apps:openWindow'") >= 0, "主窗口桥转发 apps:openWindow");
+}
+
+/* ============ [3b] appHost 文本通道：默认关思考 / 思考档白名单 / 截断可诊断 ============
+ * 这一节钉的是 2026-09 的真实故障：应用通道不给思考开关，而 MTNode 走的 deepseek-v4 默认开思考，
+ * 应用自己给的 maxTokens 是「思考 + 正文」共用的预算 → 正文被截断成半截 JSON，应用只能报
+ * 「the model reply was not usable JSON」。修法：应用通道默认 off + 回执带 finishReason / truncated。 */
+{
+  console.log("[3b] appHost 文本通道：默认关思考 + 思考档白名单 + 截断可诊断");
+  /* ① 纯函数真跑：不传 = off；on 归一为 high；非法值回空串（hostSpec 转 bad_thinking，不静默降级） */
+  ok(store.normThinkingEffort(undefined) === "off" && store.normThinkingEffort("") === "off", "不传 thinking = off（应用通道默认关思考）");
+  ok(store.normThinkingEffort("on") === "high" && store.normThinkingEffort("HIGH") === "high", "on / HIGH 归一为 high");
+  ok(store.normThinkingEffort("low") === "low" && store.normThinkingEffort("max") === "max", "low / max 原样透传");
+  ok(store.normThinkingEffort("enable") === "" && store.normThinkingEffort("yes") === "", "非法值回空串（宿主转 bad_thinking，不静默按 off）");
+  ok(
+    APPS_SRC.indexOf('code: "bad_thinking"') >= 0 && APPS_SRC.indexOf("effort: think") >= 0,
+    "hostSpec：思考档落进 spec.effort，非法值回 bad_thinking",
+  );
+  ok(
+    APPS_SRC.indexOf("finishReason") >= 0 && APPS_SRC.indexOf("truncated:") >= 0 && APPS_SRC.indexOf("reasoningChars") >= 0,
+    "应用侧回执带 finishReason / truncated / reasoningChars",
+  );
+  ok(read("main.js").indexOf('finishReason === "length"') >= 0, "内核按 finish_reason=length 判截断（appsAiCallStream）");
+  ok(read("preload-app.js").indexOf("bad_thinking") >= 0 && read("preload-app.js").indexOf("thinking") >= 0, "桥的契约注释写明 thinking 与 bad_thinking");
+
+  /* ② 功能级真跑：真开一个应用窗口，把 apps:hostTextStream 的 handler 拿出来调。
+     模型内核是桩 → 这里钉的是「宿主下发的 spec」与「回执形状」，不联网。 */
+  const cfgT = JSON.parse(fs.readFileSync(path.join(DATA, "config.json"), "utf8"));
+  cfgT.providers = [
+    { id: "p1", name: "甲", type: "text_openai", baseUrl: "https://a.example", apiKey: "k", models: ["m-a"], vision: false },
+  ];
+  origWrite(path.join(DATA, "config.json"), JSON.stringify(cfgT, null, 2), "utf8");
+  const madeApp = store.createApp({ name: "思考档应用", id: "think-app" });
+  ok(madeApp && madeApp.ok, "建出功能级测试用应用 think-app");
+  ok(store.openAppWindow("think-app").ok === true, "开窗（拿到发送方 webContents，senderAppDir 才认得出应用）");
+  const wcT = wcCalls[wcCalls.length - 1];
+  const callText = ipcMainMock.__h["apps:hostTextStream"];
+  ok(typeof callText === "function" && !!wcT, "取出 apps:hostTextStream handler 与发送方 webContents");
+  const evT = { sender: wcT };
+  aiSpecs.length = 0;
+  const rDefault = await callText(evT, { messages: [{ role: "user", content: "hi" }] });
+  ok(aiSpecs.length === 1 && aiSpecs[0].effort === "off", "不传 thinking：下发的 spec.effort = off（思考不再吃正文预算）");
+  ok(aiSpecs[0].maxTokens === 0, "不传 maxTokens：不下发上限（0 = 内核不加 max_tokens）");
+  ok(
+    rDefault && rDefault.ok === true && rDefault.truncated === true && rDefault.finishReason === "length" && rDefault.reasoningChars === 1,
+    "回执把「被截断」交给应用（truncated / finishReason / reasoningChars）",
+  );
+  const rOn = await callText(evT, { messages: [{ role: "user", content: "hi" }], thinking: "on" });
+  ok(rOn.ok === true && aiSpecs[aiSpecs.length - 1].effort === "high", "显式 thinking:on → 下发 high（要思考得自己说）");
+  const rCap = await callText(evT, { messages: [{ role: "user", content: "hi" }], thinking: "off", maxTokens: 1200 });
+  ok(rCap.ok === true && aiSpecs[aiSpecs.length - 1].maxTokens === 1200, "应用显式给 maxTokens 才下发（原样传）");
+  const rBad = await callText(evT, { messages: [{ role: "user", content: "hi" }], thinking: "enable" });
+  ok(rBad.ok === false && rBad.code === "bad_thinking", "非法 thinking → bad_thinking（不静默按 off）");
+  store.closeAppWindow("think-app");
+
+  /* ③ 脚手架：要 JSON 用 AppHost.json()，且不替应用设 maxTokens */
+  const SCAF_HOST = read("templates/app-scaffold/apphost.js");
+  ok(SCAF_HOST.indexOf("async function json(") >= 0 && SCAF_HOST.indexOf("json: json") >= 0, "脚手架提供结构化输出助手 AppHost.json()");
+  ok(SCAF_HOST.indexOf("if (o.thinking != null) body.thinking") >= 0, "脚手架把 thinking 透传给宿主（不在应用侧补默认值）");
+  ok(SCAF_HOST.indexOf("delete use.maxTokens") >= 0, "被截断时重试丢掉 maxTokens（截断的根因就是上限太小）");
+  ok(SCAF_HOST.indexOf("body.maxTokens = 1200") < 0 && SCAF_HOST.indexOf("maxTokens: 1200") < 0, "脚手架不替应用设 maxTokens 默认值");
+  ok(read("templates/app-scaffold/README.md").indexOf("AppHost.json()") >= 0, "脚手架 README 同步 AppHost.json 与「不设上限」纪律");
+  ok(read("mtnode-agent-skills/app/app-dev/SKILL.md").indexOf("AppHost.json") >= 0, "app-dev 技能能力表同步 AppHost.json");
 }
 
 /* ============ [4] 库页 / 开发页「运行」按钮 ============ */
@@ -529,8 +632,20 @@ async function main() {
   );
   const SCAF = read("templates/app-scaffold/index.html");
   ok(
-    SCAF.indexOf("./apphost.js") >= 0 && SCAF.indexOf("./store.js") >= 0 && SCAF.indexOf("./close.js") >= 0 && SCAF.indexOf("./app.js") >= 0,
-    "脚手架入口页按顺序加载四个脚本（探测 → 落盘 → 收尾 → 业务）",
+    SCAF.indexOf("./apphost.js") >= 0 && SCAF.indexOf("./app-model.js") >= 0 && SCAF.indexOf("./store.js") >= 0 && SCAF.indexOf("./close.js") >= 0 && SCAF.indexOf("./app.js") >= 0,
+    "脚手架入口页按顺序加载五个脚本（探测 → 模型位 → 落盘 → 收尾 → 业务）",
+  );
+  ok(
+    SCAF.indexOf('./app-model.js') > SCAF.indexOf('./apphost.js') && SCAF.indexOf('./app-model.js') < SCAF.indexOf('./store.js'),
+    "app-model.js 排在 apphost.js 之后（要用 window.AppHost）",
+  );
+  ok(
+    SCAF.indexOf('id="modelBtn"') >= 0 && SCAF.indexOf('id="modelMenu"') >= 0 && SCAF.indexOf("./model.css") >= 0,
+    "脚手架有模型选择位（#modelBtn + #modelMenu + model.css）—— 需要模型能力的应用界面必须有这一处",
+  );
+  ok(
+    SCAF.indexOf('id="btnPick"') >= 0 && SCAF.indexOf('id="btnAsk"') >= 0,
+    "脚手架有「选图 + 文字/图像一起问」示例（多模态调用有可跑的样子）",
   );
   ok(
     SCAF.indexOf('id="dataRow"') >= 0 && SCAF.indexOf('id="dataDirVal"') >= 0 && SCAF.indexOf('id="btnDataPick"') >= 0,
@@ -540,6 +655,54 @@ async function main() {
   ok(
     SCAFJS.indexOf("Store.create") >= 0 && SCAFJS.indexOf("AC.on(") >= 0 && SCAFJS.indexOf("H.dataDirPick()") >= 0,
     "脚手架 app.js：落盘走 Store、收尾挂 AppClose、数据文件夹可改",
+  );
+  /* 模型选择位 + 多模态：脚手架必须给出可照抄的接法，且错误一律走 AppModel.errorText */
+  const SCAFM = read("templates/app-scaffold/app-model.js");
+  ok(
+    SCAFM.indexOf("H.models") >= 0 && SCAFM.indexOf("H.modelSet") >= 0 && SCAFM.indexOf("H.modelGet") >= 0,
+    "app-model.js 只走 AppHost 统一层的模型三件（不发明接口，也不直连宿主对象）",
+  );
+  ok(
+    SCAFM.indexOf("host.hostModels") < 0 && SCAFM.indexOf("host.hostSetModel") < 0,
+    "app-model.js 不直接戳宿主原始方法（统一层缺席时按 cap 降级）",
+  );
+  ok(
+    SCAFM.indexOf("no_provider") >= 0 && SCAFM.indexOf("no_vision") >= 0 && SCAFM.indexOf("offline") >= 0 && SCAFM.indexOf("cancelled") >= 0,
+    "app-model.js 有错误码字典（no_provider / no_vision / offline / cancelled…）",
+  );
+  ok(
+    SCAFM.indexOf("AppModel") >= 0 && SCAFM.indexOf("errorText") >= 0 && SCAFM.indexOf("window.AppModel = ") >= 0,
+    "app-model.js 暴露 window.AppModel（create / errorText）",
+  );
+  ok(
+    SCAFJS.indexOf("M.init()") >= 0 && SCAFJS.indexOf("pickImage") >= 0 && SCAFJS.indexOf("images:") >= 0,
+    "脚手架 app.js：初始化模型位、选图走宿主、提问带 images（多模态）",
+  );
+  ok(
+    read("templates/app-scaffold/apphost.js").indexOf("hostModels") >= 0 &&
+      read("templates/app-scaffold/apphost.js").indexOf("pickImage") >= 0 &&
+      read("templates/app-scaffold/apphost.js").indexOf("textGenStream") >= 0,
+    "脚手架 apphost.js 探测并包裹模型桥（没有这套接口时 cap 为 false，调用方按能力降级）",
+  );
+  /* 随包 AGENTS.md 模板：默认生成、不询问、五节齐备 */
+  ok(exists("templates/app-agents/AGENTS.md"), "随包应用 AGENTS.md 模板 templates/app-agents/AGENTS.md 在仓库里");
+  const APPAG = read("templates/app-agents/AGENTS.md");
+  ok(
+    APPAG.indexOf("目录约定") >= 0 && APPAG.indexOf("不要修改清单") >= 0 && APPAG.indexOf("能力桥用法") >= 0 && APPAG.indexOf("数据落盘") >= 0 && APPAG.indexOf("设计规范") >= 0,
+    "AGENTS.md 模板五节齐备（目录约定 / 不要修改清单 / 能力桥用法 / 数据落盘 / 设计规范）",
+  );
+  ok(
+    APPAG.indexOf("不要覆盖") >= 0 && APPAG.indexOf("#modelBtn") >= 0 && APPAG.indexOf("绝不降级") >= 0,
+    "AGENTS.md 模板写明：已有不覆盖、模型选择位不能删、无模型时不降级",
+  );
+  const SKILL = read("mtnode-agent-skills/app/app-dev/SKILL.md");
+  ok(
+    SKILL.indexOf("默认就建") >= 0 && SKILL.indexOf("templates/app-agents/AGENTS.md") >= 0,
+    "技能 mtnode-app-dev 写明：AGENTS.md 默认就建、不必询问",
+  );
+  ok(
+    SKILL.indexOf("hostModels") >= 0 && SKILL.indexOf("no_vision") >= 0 && SKILL.indexOf("多模态") >= 0,
+    "技能 mtnode-app-dev 记下模型继承 + 多模态 + 错误码（不再是「应用拿不到模型」）",
   );
 }
 
@@ -691,9 +854,10 @@ async function main() {
   ok(
     I18N.indexOf('"刷新预览": "Reload preview"') >= 0 &&
       I18N.indexOf('"维持状态": "Keep state"') >= 0 &&
-      I18N.indexOf('"＋ 新开发会话": "＋ New dev session"') >= 0 &&
+      I18N.indexOf('"＋": "＋"') >= 0 &&
+      I18N.indexOf('"新开发会话": "New dev session"') >= 0 &&
       I18N.indexOf('"更多": "More"') >= 0,
-    "i18n：菜单条新增 / 补齐的文案都有英文译文",
+    "i18n：菜单条新增 / 补齐的文案都有英文译文（「＋」= 新开发会话）",
   );
 
   /* ④ 应用中心：去掉标题栏 · 整屏盖住顶栏 · 专属蓝（不再品红）· 去掉误导提示 */
@@ -716,20 +880,28 @@ async function main() {
     "css：#appsHub 整屏（fixed inset:0）盖住顶栏，z-index 90 仍低于 #overlay 的 100",
   );
   ok(
-    APPS.indexOf("appsHubSearchRow()") >= 0 &&
+    APPS.indexOf("appsHubTopbar(host);") >= 0 &&
+      APPS.indexOf("function appsHubSearchRow()") >= 0 &&
+      APPS.indexOf("function appsHubTopbar(") >= 0 &&
       APPS.indexOf("document.body.appendChild(host)") >= 0,
-    "搜索框按页插进正文顶部；宿主挂 document.body（才盖得住顶栏）",
+    "应用中心顶部一行（搜索 + 标签 + 返回）挂在壳上：搜索框不再随正文重绘被拆掉；宿主挂 document.body（才盖得住顶栏）",
   );
   ok(
     APPS.indexOf("apps-hub-refresh") < 0 && CSS.indexOf("apps-hub-refresh") < 0,
     "「刷新」按钮已去掉（目录打开本页与每次下载结束都会自动重拉），源码与样式都不留残件",
   );
   ok(
-    APPS.indexOf('querySelector(".apps-hub-close").onclick = () => appsHubClose()') >= 0 &&
+    APPS.indexOf('back.onclick = () => appsHubClose()') >= 0 &&
+      APPS.indexOf('back.className = "mini apps-hub-close"') >= 0 &&
       APPS.indexOf('appsT("返回 MTNode")') >= 0 &&
-      APPS.indexOf('cl.textContent = "✕"') < 0 &&
-      CSS.indexOf(".apps-hub-sidehead") >= 0,
-    "侧栏第一行＝品牌 +「返回 MTNode」（写全名、不再是 ✕），仍接 appsHubClose（Esc 同效）",
+      APPS.indexOf('cl.textContent = "✕"') < 0,
+    "右上角「返回 MTNode」（写全名、不再是 ✕）接 appsHubClose（Esc 同效）",
+  );
+  ok(
+    CSS.indexOf(".apps-hub-topbar {") >= 0 &&
+      CSS.indexOf(".apps-hub-topspace {") >= 0 &&
+      CSS.indexOf(".apps-hub-topspace {") > CSS.indexOf(".apps-hub-topbar {"),
+    "css：顶部一行 + 把返回钮推到最右的弹性占位（右上角）",
   );
   ok(
     APPS.indexOf("#f472b6") < 0 &&
@@ -765,8 +937,9 @@ async function main() {
     "默认页：页内极小 Markdown 渲染器 + 按系统语言选一份（可手动切）",
   );
   ok(
-    TPL.indexOf("-webkit-app-region: drag") >= 0 && TPL.indexOf("appHost") >= 0,
-    "默认页：frame:false 所以自绘拖动标题栏；宿主在时才给关闭按钮",
+    read("templates/app-default/base.css").indexOf("-webkit-app-region: drag") >= 0 &&
+      TPL.indexOf("appHost") >= 0,
+    "默认页：frame:false 所以自绘拖动标题栏（拖动区在 base.css）；宿主在时才给关闭按钮",
   );
   ok(
     TPL.indexOf("会话栏") >= 0 && TPL.indexOf("不用写代码") >= 0,
@@ -786,7 +959,12 @@ async function main() {
   ok(exists("templates/app-scaffold/style.css"), "脚手架 style.css 存在");
   const SCSS = read("templates/app-scaffold/style.css");
   const SCA = read("templates/app-scaffold/index.html");
-  ok(SCSS.indexOf("--accent: #c792ea") >= 0 && SCSS.indexOf("--bg: #0a0c12") >= 0, "脚手架换成与默认页同一套设计语言（深墨底 + 工具库紫）");
+  /* 颜色已搬到 styles/<id>.css（7 套风格各一份），这里只确认默认那套仍是原观感 */
+  ok(
+    read("templates/app-scaffold/styles/minimal.css").indexOf("--accent: #c792ea") >= 0 &&
+      read("templates/app-scaffold/styles/minimal.css").indexOf("--bg: #0a0c12") >= 0,
+    "脚手架默认风格换成与默认页同一套设计语言（深墨底 + 工具库紫）",
+  );
   ok(
     SCA.indexOf('data-lang="en"') >= 0 && SCA.indexOf("会话栏") >= 0 && SCA.indexOf("chat box") >= 0,
     "脚手架带上与默认页同一段上手文案（中 / 英两份）",
@@ -871,15 +1049,23 @@ async function previewSections() {
     DEV.indexOf('if (!DEVD.url) DEVD.url = appsDevUrlOf(DEVD.appId);') >= 0,
     "「刷新预览」不再空转：url 空时先退兜底再重载",
   );
-  const noAppAt = DEV.indexOf('appsDevPreviewStatMsg(appsDevT("还没有可预览的应用：先新建或安装一个应用"));');
-  ok(noAppAt >= 0, "一个应用都没有时中栏给可读提示（同样不是白底）");
+  const noAppAt = DEV.indexOf(
+    'appsDevPreviewStatMsg(\n      appsDevT("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。"),\n    );',
+  );
+  ok(noAppAt >= 0, "一个应用都没有时中栏给可读提示（同样不是白底；并指向「二次开发」）");
+  /* 左栏空态（应用列表由宿主渲染，一个应用都没有时宿主不生效，得自己补一行空态） */
+  ok(
+    DEV.indexOf('e.className = "side-empty";') >= 0 &&
+      DEV.indexOf('appsDevT("本机还没有「开发中」的应用")') >= 0,
+    "一个应用都没有时左栏也给一行空态（不让用户对着一条空列表猜）",
+  );
   ok(
     CSS.indexOf(".apps-dev-framestat {") >= 0 &&
       CSS.indexOf("position: absolute;") >= 0 &&
       CSS.indexOf("background: var(--panel);") >= 0,
     "css：提示层绝对定位盖在 iframe 上（样式只进 css/apps.css）",
   );
-  for (const k of ["还没有可预览的应用：先新建或安装一个应用", "正在读取应用目录…", "预览不可用：", "读不到该应用目录（可能在别处被删了）"])
+  for (const k of ["本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。", "正在读取应用目录…", "预览不可用：", "读不到该应用目录（可能在别处被删了）"])
     ok(I18N.indexOf('"' + k + '"') >= 0, "i18n 中英成对：" + k.slice(0, 12) + "…");
 
   /* ⑥ 主进程 devPreview：app.json 缺 entry / 入口页不在磁盘上 → 一律回落默认入口页 */
@@ -960,6 +1146,22 @@ async function previewSections() {
   ok(root8 === path.join(DATA, "apps-data", "smoke-app"), "默认数据根 = <数据目录>/apps-data/<id>/");
   ok(!store.isInsideAppDir(root8), "默认数据根不在应用目录内（数据纪律）");
   ok(store.appDataDirOf("smoke-app") === root8, "还没有指针时，数据文件夹 = 默认数据根");
+
+  /* ①b 「打开数据目录」真跑（库 / 开发页每张卡片右侧那颗 📂 → apps:dataOpen →
+     apps-store 的 openAppDataDir）：目录不存在要先建出来再交给资源管理器，
+     回的路径就是 appDataDirOf 那一个（不另拼路径）。 */
+  const openDir8 = await store.openAppDataDir("smoke-app");
+  ok(openDir8 && openDir8.ok === true && openDir8.dir === root8, "打开数据目录：回该应用的数据目录路径");
+  ok(fs.existsSync(root8) && fs.statSync(root8).isDirectory(), "打开数据目录：不存在时先建出来（不报错）");
+  /* 空 id 一律拒绝（不猜应用）：主进程 IPC 那一层先 safeAppId 挡住并回 bad_id，
+     直接调函数也会抛「应用 id 不合法」—— 两条路都不许打开一个没指定应用的数据目录。 */
+  let badId8 = null;
+  try {
+    badId8 = await store.openAppDataDir("");
+  } catch (e) {
+    badId8 = { ok: false, error: String((e && e.message) || e) };
+  }
+  ok(badId8 && badId8.ok === false, "打开数据目录：空 id 一律拒绝（不猜应用）");
 
   /* ② 指针：用户亲自选过才写；相对名（根内）与绝对路径（根外）两形态都能读回 */
   let ptr = null;
@@ -1096,23 +1298,37 @@ async function previewSections() {
     "apps-store 导出数据 / 收尾这几件事（冒烟可无窗口真跑）",
   );
 
-  /* ⑨ 渲染层与词条：库页可看 / 可开 / 可改；路径只能由用户亲自选 */
+  /* ⑨ 渲染层与词条：库 / 开发页都能进「数据目录」（每张卡片右侧的 📂），
+     数据目录用 app id 管理、路径只由主进程解析 —— 库里不再单列「应用数据文件夹」那一条 */
   ok(
-    R.indexOf("function appsDataLineEl") >= 0 && R.indexOf("appsDataLineFill") >= 0,
-    "库页：应用数据文件夹那一行（appsDataLineEl）",
+    R.indexOf("async function appsDataOpenNow(id)") >= 0 &&
+      R.indexOf("api.appsDataOpen(appId)") >= 0 &&
+      R.indexOf("appsDataOpenNow(id)") >= 0,
+    "库页每张卡片右侧 📂 打开该应用的数据目录（appsDataOpenNow → apps:dataOpen）",
   );
   ok(
-    R.indexOf("api.appsDataInfo(id)") >= 0 && R.indexOf("api.appsDataDirPick(id)") >= 0 && R.indexOf("api.appsDataDirReset(id)") >= 0,
-    "库页三个动作：读信息 / 让用户选目录 / 恢复默认",
-  );
-  ok(R.indexOf("openWorkspaceFolder(dir)") >= 0, "库页「打开」走系统资源管理器");
-  ok(
-    MAINPRE.indexOf("'apps:dataInfo'") >= 0 && MAINPRE.indexOf("'apps:dataDirPick'") >= 0 && MAINPRE.indexOf("'apps:dataDirReset'") >= 0,
-    "主窗口桥转发 apps:dataInfo / dataDirPick / dataDirReset",
+    R.indexOf("function appsDataLineEl") < 0 &&
+      R.indexOf("appsDataLineFill") < 0 &&
+      R.indexOf("appsDataDirPickNow") < 0,
+    "库页不再单列「应用数据文件夹」那一条（数据目录入口收进卡片按钮）",
   );
   ok(
-    I18N.indexOf('"应用数据文件夹"') >= 0 && I18N.indexOf('"自定义位置"') >= 0 && I18N.indexOf('"还没写过数据"') >= 0,
-    "i18n：数据文件夹那一行的词条",
+    R.indexOf("function appsSecondaryDevBtnEl(") >= 0 &&
+      R.indexOf('appsT("二次开发")') >= 0 &&
+      R.indexOf('btn.dataset.appFork = "1"') >= 0,
+    "库页卡片右侧「二次开发」按钮（原「迁移到开发」，动作不变）",
+  );
+  ok(
+    MAINPRE.indexOf("'apps:dataOpen'") >= 0 &&
+      MAINPRE.indexOf("appsDataOpen: (id)") >= 0 &&
+      APPS_SRC.indexOf('ipcMain.handle("apps:dataOpen"') >= 0,
+    "主窗口桥 + 主进程：apps:dataOpen（app id 进、既有的 appDataDirOf 解析路径）",
+  );
+  ok(
+    I18N.indexOf('"二次开发": "Build on it"') >= 0 &&
+      I18N.indexOf('"打开数据目录": "Open data folder"') >= 0 &&
+      I18N.indexOf('"打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）"') >= 0,
+    "i18n：二次开发 / 数据目录按钮的词条",
   );
   ok(
     I18N.indexOf("它的数据文件夹与其它用户内容一概不动") >= 0,
@@ -1120,7 +1336,1217 @@ async function previewSections() {
   );
 }
 
-/* ---------- 收尾 ---------- */
+/* ============ [9] 栏宽可拖拽（左导航 + 开发页三栏）+ 开发页「启动」 ============ */
+{
+  console.log("[9] 应用中心：边栏宽度可拖拽（有最小 / 最大值）+ 开发页「启动」= 库中运行");
+  const R = read("renderer/app-apps.js");
+  const DEV = read("renderer/app-apps-dev.js");
+  const CSS = read("renderer/css/apps.css");
+  const I18N = read("renderer/i18n.js");
+
+  /* ① 夹取口径一处写死：开发页三栏每栏最小 240px、一律最大半屏；
+     整页左导航（.apps-hub-side）按用户反馈固定 176px、不参与调宽 */
+  ok(
+    R.indexOf("const APPS_DEV_COL_W_MIN = 240") >= 0 &&
+      R.indexOf("APPS_HUB_SIDE_W") < 0 &&
+      R.indexOf("applyAppsHubSideW") < 0,
+    "app-apps.js：只剩三栏最小宽常量 240（左导航固定宽已移除）",
+  );
+  ok(
+    R.indexOf("function clampAppsColsW(kind, w)") >= 0 &&
+      R.indexOf("Math.min(appsColsHalfW(appsColsBoxW()), n)") >= 0,
+    "app-apps.js：clampAppsColsW 同时夹最小与最大（上限 = 容器宽一半）",
+  );
+  ok(
+    R.indexOf("function appsColsHalfW(boxW)") >= 0 &&
+      R.indexOf("return win > 0 ? win : 1200;") >= 0,
+    "app-apps.js：上限按容器宽 50%（容器量不到时退回窗口宽，默认 1200，与 agentSideW / assistW 同口径）",
+  );
+  ok(
+    R.indexOf("--apps-dev-side-w") >= 0 &&
+      R.indexOf("--apps-dev-conv-w") >= 0 &&
+      R.indexOf("--apps-hub-side-w") < 0,
+    "app-apps.js：栏宽只写进开发页三栏的两个 CSS 变量（不再给左导航写变量）",
+  );
+  ok(
+    R.indexOf("S.config.appsDevSideW = S.appsDevSideW") >= 0 &&
+      R.indexOf("S.config.appsDevConvW = S.appsDevConvW") >= 0 &&
+      R.indexOf("window.api.configSave(S.config)") >= 0,
+    "app-apps.js：栏宽写回配置（appsDevSideW / appsDevConvW）",
+  );
+  ok(
+    R.indexOf("function appsBindHubSideResize") < 0 && R.indexOf("apps-hub-resize") < 0,
+    "app-apps.js：不再给左导航挂调宽把手（需求只针对开发页三栏）",
+  );
+  ok(
+    R.indexOf("appsBindHubSideResize(host);") < 0 &&
+      R.indexOf("appsDevBindCols") >= 0,
+    "app-apps.js：整页重绘不再应用左导航宽度（三栏把手由开发页自己补）",
+  );
+
+  /* ② 三栏：两条竖把手贴在栏边缘，拖动只改样式、松手落盘，双击复位默认 */
+  ok(
+    DEV.indexOf("function appsDevColsW()") >= 0 &&
+      DEV.indexOf("function appsDevBindCols()") >= 0 &&
+      DEV.indexOf("appsDevBindCols();") >= 0,
+    "开发页：三栏宽度计算 + 绑定（整页绘制时接线）",
+  );
+  ok(
+    DEV.indexOf("apps-dev-resize apps-dev-resize-side") >= 0 &&
+      DEV.indexOf("apps-dev-resize apps-dev-resize-conv") >= 0 &&
+      DEV.indexOf("appsDevBindColResize(") >= 0,
+    "开发页：两条竖把手各贴一栏边缘（左会话栏右缘 / 右正文栏左缘）",
+  );
+  ok(
+    DEV.indexOf('kind === "side" ? startW + dx : startW - dx') >= 0 &&
+      DEV.indexOf("applyAppsDevCols(w, null, false);") >= 0 &&
+      DEV.indexOf("applyAppsDevCols(null, w, false);") >= 0,
+    "开发页：左把手向右拖变宽、右把手向左拖变宽；拖动中不落盘",
+  );
+  ok(
+    DEV.indexOf("applyAppsDevCols(S.appsDevSideW, S.appsDevConvW, true);") >= 0,
+    "开发页：松手按最终宽度落盘一次",
+  );
+  ok(
+    DEV.indexOf("applyAppsDevCols(240, S.appsDevConvW, true);") >= 0 &&
+      DEV.indexOf("applyAppsDevCols(S.appsDevSideW, 0, true);") >= 0,
+    "开发页：双击把手复位默认（左 240px / 右回等分）",
+  );
+  ok(
+    DEV.indexOf('window.addEventListener("resize"') >= 0 &&
+      DEV.indexOf("appsDevApplyCols(false);") >= 0 &&
+      DEV.indexOf("let appsDevColsWinBound = false;") >= 0,
+    "开发页：窗口变窄 / 变宽按新容器宽重夹一次（监听只绑一份）",
+  );
+  ok(
+    DEV.indexOf("if (avail - conv < MIN) conv = avail - MIN;") >= 0 &&
+      DEV.indexOf("const MIN = 240;") >= 0,
+    "开发页：总宽不溢出（中栏先保 240px，右栏吃剩下的）",
+  );
+  ok(
+    DEV.indexOf("function appsDevClampPair(sideW, convW)") >= 0 &&
+      DEV.indexOf("over = side + MIN + conv + GAP * 2 - total") >= 0,
+    "开发页：容器窄到三栏排不下时按比例收（只改 CSS 变量、不落盘）",
+  );
+  ok(
+    DEV.indexOf("handle.setPointerCapture(pid)") >= 0 &&
+      DEV.indexOf('window.addEventListener("pointercancel", finish)') >= 0,
+    "开发页：拖拽走 pointer capture + pointercancel 收尾（指针移出栏 / 窗口外松手不断线，收尾统一走 finish）",
+  );
+  /* 分界线整条可拖：命中区铺满栏高（top/bottom 0），不再是中间那一小段加宽把手 */
+  ok(
+    DEV.indexOf("整条可拖") >= 0 && DEV.indexOf("apps-dev-resize-conv") >= 0,
+    "开发页：分界线口径写明整条边界可拖（命中区由 CSS 铺满栏高）",
+  );
+
+  /* ②a 右栏正文不许被挤出容器（用户报的「左栏能选会话，右栏正文空白」）：
+     落盘存「用户要的宽度」，写进布局的必须是按当前容器宽贴合后的那一对 ——
+     以前两个 CSS 变量直接写落盘原值，窗口比拖宽时小 / 首次打开按 50% 兜底时，
+     右栏（会话正文）整块落到容器右缘之外：左栏会话看得见、右栏一片空白。
+     这里把 app-apps.js 的 appsDevFitCols 切进 vm 真跑，按 .apps-dev-cols 的 grid 口径
+     （左 | minmax(240px,1fr) | 右 + 2*gap）核「三栏都在容器内、右栏宽 > 0」。 */
+  {
+    const SRC_FIT = (() => {
+      const i = R.indexOf("const APPS_DEV_COL_W_MIN");
+      const j = R.indexOf("function appsColsSave()");
+      return i >= 0 && j > i ? R.slice(i, j) : "";
+    })();
+    ok(
+      SRC_FIT.indexOf("function appsDevFitCols(sideW, convW, boxW)") >= 0,
+      "app-apps.js：切出三栏几何段（appsDevFitCols 是容器宽贴合的单一真源）",
+    );
+    ok(
+      R.indexOf("const fit = appsDevFitCols(S.appsDevSideW, S.appsDevConvW, boxW)") >= 0 &&
+        R.indexOf('setProperty("--apps-dev-conv-w", S.appsDevConvW') < 0 &&
+        R.indexOf('setProperty("--apps-dev-side-w", S.appsDevSideW') < 0,
+      "app-apps.js：CSS 变量写的是贴合后的宽度（不再写落盘原值 —— 那正是右栏被挤出容器的原因）",
+    );
+    let boxW = 0;
+    const sand = {
+      document: {
+        contains: () => false,
+        querySelector: () => (boxW > 0 ? { clientWidth: boxW } : null),
+      },
+      S: { appsDevSideW: 240, appsDevConvW: 240 },
+      window: { innerWidth: 1600 },
+      DEVD: null,
+    };
+    vm.createContext(sand);
+    vm.runInContext(SRC_FIT + "\nthis.__fit = appsDevFitCols;", sand);
+    const fit = sand.__fit;
+    const MIN = 240;
+    const GAP = 8;
+    /* 场景：默认 / 未定过（0）/ 宽窗口拖过 700 / 那份落盘值放到窄容器 / 极窄容器 */
+    const cases = [];
+    for (const box of [1600, 1400, 1180, 1054, 900, 736, 700, 520])
+      for (const [sideW, convW] of [
+        [240, 240],
+        [240, 0],
+        [240, 700],
+        [600, 640],
+      ])
+        cases.push([box, sideW, convW]);
+    let bad = 0;
+    let offscreen = 0;
+    for (const [box, sideW, convW] of cases) {
+      boxW = box;
+      const f = fit(sideW, convW, box);
+      const view = Math.max(MIN, box - f.side - f.conv - GAP * 2);
+      /* 三栏都在容器内（容器真的排不下三栏最小宽时以 CSS 的媒体查询兜底，不算这里） */
+      if (box >= 760 && f.side + view + f.conv + GAP * 2 > box + 0.001) bad++;
+      /* 右栏（会话正文）必须还有可视宽度、且右缘不越过容器右缘 */
+      if (f.conv <= 0 || f.conv > Math.floor(box / 2) + 0.001) offscreen++;
+    }
+    ok(bad === 0, "三栏几何：" + cases.length + " 组宽度组合下三栏总宽都不溢出容器（" + bad + " 例溢出）");
+    ok(
+      offscreen === 0,
+      "三栏几何：右栏正文栏恒有可视宽度且不超过容器一半（" + offscreen + " 例丢栏 / 越界）",
+    );
+    boxW = 900;
+    const narrowed = fit(240, 700, 900);
+    ok(
+      narrowed.conv === 900 - 240 - 240 - GAP * 2 &&
+        narrowed.side === 240 &&
+        narrowed.side + MIN + narrowed.conv + GAP * 2 === 900,
+      "三栏几何：宽窗口拖过 700 之后窗口变窄 → 右栏收到「容器 − 左栏 − 中栏最小宽」而不是整块跑出屏幕（实测 " +
+        narrowed.conv +
+        "px）",
+    );
+    boxW = 1180;
+    ok(
+      fit(240, 0, 1180).conv > 0 && fit(240, 0, 1180).conv <= 590,
+      "三栏几何：栏宽「还没定」（0）时右栏按 240px 起步（不再让 CSS 回退 50% 把右栏顶出容器）",
+    );
+  }
+
+  /* ②b 拖宽不再诱发 ResizeObserver 未派发通知（用户报的渲染错误）：
+     菜单条重排 / 三栏重夹 / 历史导航轨重建一律推到下一帧，不在回调里同步改布局 */
+  ok(
+    DEV.indexOf("DEVD.headRaf = requestAnimationFrame") >= 0 &&
+      DEV.indexOf("appsDevFitHeadDo();") >= 0 &&
+      DEV.indexOf("if (!DEVD.headEl || !DEVD.headEl.isConnected) return;") >= 0,
+    "开发页：菜单条重排推到 rAF（ResizeObserver 回调里不再同步搬 DOM）",
+  );
+  ok(
+    DEV.indexOf("DEVD.colsRaf = requestAnimationFrame") >= 0 &&
+      DEV.indexOf("if (DEVD.colsRaf) return;") >= 0,
+    "开发页：窗口 resize 的三栏重夹一帧只做一次（不在事件里同步量改布局）",
+  );
+  const ASSIST = read("renderer/app-assist.js");
+  ok(
+    ASSIST.indexOf("list._histRailRoRaf = requestAnimationFrame") >= 0 &&
+      ASSIST.indexOf("list._histRailRoPending") >= 0,
+    "app-assist.js：历史导航轨重建推到 rAF（拖栏宽时不再同步重建标记）",
+  );
+
+  /* ③ CSS：三栏用变量 + 把手样式 + 每栏最小宽；左导航固定宽 */
+  const colsCss = CSS.slice(CSS.indexOf(".apps-dev-cols {"), CSS.indexOf(".apps-dev-resize {"));
+  ok(
+    colsCss.indexOf("var(--apps-dev-side-w, 240px)") >= 0 &&
+      colsCss.indexOf("minmax(240px, 1fr)") >= 0 &&
+      colsCss.indexOf("var(--apps-dev-conv-w, 50%)") >= 0,
+    "css：三栏宽度走变量（默认左 240px + 中/右各半），中栏最小宽 240px 写在 minmax 里",
+  );
+  ok(
+    colsCss.indexOf("@media (max-width: 860px)") >= 0 &&
+      colsCss.indexOf("minmax(0, 1fr)") >= 0,
+    "css：窄窗口（三栏最小宽都排不下）中栏放开下限，允许一起收缩不出横向滚动",
+  );
+  ok(
+    CSS.indexOf(".apps-dev-resize {") >= 0 &&
+      CSS.indexOf(".apps-dev-resize.dragging") >= 0 &&
+      CSS.indexOf("cursor: col-resize") >= 0,
+    "css：三栏把手样式（悬停 / 拖动加亮 + col-resize 光标）",
+  );
+  ok(
+    CSS.indexOf(".apps-dev-side,") >= 0 &&
+      CSS.indexOf(".apps-dev-view,") >= 0 &&
+      CSS.indexOf(".apps-dev-conv {") >= 0 &&
+      CSS.indexOf("min-width: 240px;") >= 0,
+    "css：三栏每栏最小宽 240px（窄窗口允许一起收缩，不出横向滚动）",
+  );
+  const hubSideCss = CSS.slice(CSS.indexOf(".apps-hub-side {"), CSS.indexOf(".apps-hub-sidehead {"));
+  ok(
+    hubSideCss.indexOf("width: 176px;") >= 0 &&
+      hubSideCss.indexOf("position: relative") < 0,
+    "css：左导航固定 176px（不再是可拖拽变量宽）",
+  );
+  ok(
+    CSS.indexOf(".apps-hub-resize") < 0,
+    "css：左导航把手样式已删（三栏把手是 .apps-dev-resize）",
+  );
+
+  /* ④ 开发页「启动」= 等同在库中运行（同一入口 appsOpenApp），没有应用就不出现 */
+  ok(
+    DEV.indexOf("function appsDevStartApp()") >= 0 &&
+      DEV.indexOf('if (typeof appsOpenApp === "function") appsOpenApp(id);') >= 0,
+    "开发页「启动」→ appsOpenApp(id)（与库页「运行」同一条链）",
+  );
+  ok(
+    DEV.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
+    "开发页工具栏：用同一按钮口径渲染「启动」（data-app-run + 稳定 id）",
+  );
+  /* 本轮需求：「新开发会话」主入口从这条工具栏挪到开发页左栏每条应用行右端（「＋」，
+     见 app-assist.js 的 mkAppRow + 本文件 [15]）；工具栏这颗改成同一枚「＋」图标
+     （当前应用的快捷入口，都走 appsDevNewRound / appsDevNewSessionFor）。 */
+  ok(
+    DEV.indexOf('appsMiniBtn(appsDevT("＋"), () => appsDevNewRound(), true)') >= 0 &&
+      DEV.indexOf('appsDevT("＋ 新开发会话")') < 0,
+    "开发页工具栏：「新开发会话」= 一枚「＋」图标（旧的全文字按钮已删）",
+  );
+  ok(
+    DEV.indexOf('b.setAttribute("aria-label", appsDevT("新开发会话"))') >= 0 &&
+      DEV.indexOf('"新开发会话",') >= 0,
+    "开发页工具栏：「＋」带 aria-label 与「更多 ▾」小标题「新开发会话」（窄屏收进更多也说清是什么）",
+  );
+  ok(
+    DEV.indexOf('appsMiniBtn(appsDevT("＋"), () => appsDevNewRound(), true)') <
+      DEV.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())'),
+    "开发页：「启动」紧跟「＋」之后（工具栏主行靠前，窄屏也收不进「更多」）",
+  );
+  ok(
+    DEV.indexOf('if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {') >= 0,
+    "开发页：没有可用应用（一个都没建）时「启动」不出现",
+  );
+
+  /* ⑤ 词条：新增文案走 i18n（英文界面不留中文） */
+  ok(
+    I18N.indexOf('"启动": "Launch"') >= 0 &&
+      I18N.indexOf('"拖拽调整栏宽（双击复位这一栏）"') >= 0 &&
+      I18N.indexOf("拖拽调整侧栏宽度（双击复位当前栏）") < 0,
+    "i18n：「启动」与三栏把手 tooltip 有英文译文（左导航把手词条已删）",
+  );
+}
+
+/* ============ [10] 设计风格：7 套模板 + 预览图 + 新建时选 / 开发页换 ============ */
+{
+  console.log("[10] 设计风格：清单 / 模板 / 预览图 / 两处入口");
+  const STORE = read("apps-store.js");
+  const FLOW = read("renderer/app-app-flow.js");
+  const DEV = read("renderer/app-apps-dev.js");
+  const PRELOAD = read("preload.js");
+  const CSS = read("renderer/css/apps.css");
+  const I18N = read("renderer/i18n.js");
+  const APPJS = read("renderer/app.js");
+  const IDS = store.appStyleIds();
+  const PRESET_IDS = store.appPresetStyleIds();
+
+  /* ① 清单真源：7 套预设 + 1 条「自定义」（无模板的询问入口）、默认极简、id 合法化认不出就回落 */
+  ok(IDS.length === 8 && PRESET_IDS.length === 7, "风格清单 = 7 套预设 + 1 条「自定义」（APP_STYLES 是唯一真源）");
+  ok(
+    IDS.join(",") === "minimal,tech,warm,editorial,terminal,glass,retro,custom",
+    "8 条 id 与模板目录一致：极简 / 科技 / 暖读 / 编辑 / 终端 / 玻璃拟态 / 复古印刷 + 自定义",
+  );
+  ok(
+    store.APP_DEFAULT_STYLE === "minimal" &&
+      store.normAppStyle("") === "minimal" &&
+      store.normAppStyle("nope") === "minimal",
+    "默认风格 = 极简；缺字段 / 认不出的 id 一律回落极简（老应用照常打开）",
+  );
+  ok(store.normAppStyle("TECH") === "tech", "风格 id 大小写不敏感");
+  ok(
+    store.normAppStyle("custom") === "minimal" &&
+      store.normStoredAppStyle("custom") === "custom" &&
+      store.appStyleIsCustom("Custom") === true &&
+      store.appStyleIsCustom("tech") === false,
+    "「自定义」不是可注入的模板（生成入口页回落极简），但**存得住**（normStoredAppStyle 留住 custom）",
+  );
+
+  /* ② 每套**预设**风格都有模板 CSS（两份模板各一套）与预览图；
+        「自定义」按设计没有这两样（它的长相由开发会话问出来），所以不在这两组断言里 */
+  let missCss = [];
+  let missPng = [];
+  let smallPng = [];
+  for (const id of PRESET_IDS) {
+    if (!exists("templates/app-default/styles/" + id + ".css")) missCss.push("default/" + id);
+    if (!exists("templates/app-scaffold/styles/" + id + ".css")) missCss.push("scaffold/" + id);
+    const rel = "templates/app-default/previews/" + id + ".png";
+    if (!exists(rel)) missPng.push(id);
+    else {
+      const st = fs.statSync(path.join(ROOT, rel.split("/").join(path.sep)));
+      if (st.size < 20000) smallPng.push(id + "(" + Math.round(st.size / 1024) + "KB)");
+    }
+  }
+  ok(missCss.length === 0, "每套预设风格都有 styles/<id>.css（默认页与脚手架两份）：" + missCss.join(", "));
+  ok(missPng.length === 0, "每套预设风格都有随包预览图 templates/app-default/previews/<id>.png：" + missPng.join(", "));
+  ok(
+    smallPng.length === 0,
+    "预览图不是空白图（每张 > 20KB；实测 " + (PRESET_IDS.length - smallPng.length) + "/" + PRESET_IDS.length + " 张合格）：" + smallPng.join(", "),
+  );
+  ok(
+    !exists("templates/app-default/styles/custom.css") &&
+      !exists("templates/app-default/previews/custom.png"),
+    "「自定义」没有 styles/custom.css 也没有 previews/custom.png（它是一条询问入口，不是一套模板）",
+  );
+  ok(
+    exists("templates/app-default/base.css") &&
+      exists("scripts/app-style-previews.cjs") &&
+      exists("scripts/gen-scaffold-styles.cjs"),
+    "共享设计基础 base.css + 两个生成脚本（预览图渲染 / 脚手架风格同步）在位",
+  );
+
+  /* ③ 注入口径：两个占位符被换掉、样式内联、data-style 落到 <html> 上 */
+  const htmlTech = store.defaultPageHtml({ name: "冒烟风格", style: "tech" });
+  ok(htmlTech.indexOf("{{") < 0, "注入后模板里不留任何 {{…}} 占位符");
+  ok(
+    htmlTech.indexOf('data-style="tech"') >= 0 && htmlTech.indexOf('id="page"') >= 0,
+    "选中的风格写到 <html data-style>，页面结构仍是同一份",
+  );
+  ok(
+    htmlTech.indexOf("--accent: #5ad9e0") >= 0 && htmlTech.indexOf("<style>") >= 0,
+    "styles/tech.css 已内联进 <style>（写进应用目录的入口页仍是单文件自包含）",
+  );
+  ok(
+    store.defaultPageHtml({ name: "冒烟风格" }).indexOf('data-style="minimal"') >= 0,
+    "不指定风格 = 极简（新建应用的出厂外观）",
+  );
+  ok(
+    store.defaultPageHtml({ name: "冒烟风格", style: "nope" }).indexOf('data-style="minimal"') >= 0,
+    "风格 id 认不出时注入默认那一套，不把页面弄花",
+  );
+  const prevUrl = store.stylePreviewDataUrl("glass");
+  ok(
+    prevUrl.indexOf("data:image/png;base64,") === 0 && prevUrl.length > 1000,
+    "预览图读成 data URL 交给渲染层（浮层不拼路径、不依赖额外协议）",
+  );
+  const payload = store.appStylesPayload(true);
+  const customEntry = payload.styles.find((s) => s.id === "custom") || {};
+  ok(
+    payload.ok === true &&
+      payload.styles.length === 8 &&
+      payload.defaultStyle === "minimal" &&
+      payload.customStyle === "custom" &&
+      payload.styles
+        .filter((s) => s.id !== "custom")
+        .every((s) => s.id && s.zh && s.en && s.why && s.swatch.length >= 2) &&
+      customEntry.custom === true,
+    "apps:styles 回 8 条（7 套预设 + 「自定义」，带 custom:true 标记）+ 默认项",
+  );
+  ok(
+    payload.styles
+      .filter((s) => s.id !== "custom")
+      .every((s) => s.preview && s.preview.indexOf("data:image/png;base64,") === 0) &&
+      !customEntry.preview,
+    "7 套预设都带预览图；「自定义」不带（界面按 custom 标记画占位，不冒充别的风格的首屏）",
+  );
+  ok(
+    store.normStoredAppStyle("custom") === "custom" &&
+      store.normStoredAppStyle("TECH") === "tech" &&
+      store.normStoredAppStyle("nope") === "minimal",
+    "「自定义」写进 app.json 后仍读得回来（normStoredAppStyle = 落盘 / 回显口径）",
+  );
+  ok(
+    typeof store.setAppStyle === "function" && STORE.indexOf('ipcMain.handle("apps:setStyle"') >= 0,
+    "app-store 暴露 setAppStyle（换风格 = 按所选风格重写入口页）",
+  );
+
+  /* ④ 两处界面入口：新建浮层里的选择器 + 开发页 ⋯ 菜单里的「换风格…」 */
+  ok(
+    FLOW.indexOf("function appsStyleCards(") >= 0 &&
+      FLOW.indexOf("function appStylesLoad(") >= 0 &&
+      FLOW.indexOf("function appStyleSwapDialog(") >= 0,
+    "app-app-flow.js：风格卡片渲染 + 清单加载 + 换风格对话框（两处入口共用一份卡片）",
+  );
+  ok(
+    FLOW.indexOf("appsCreateDialog") >= 0 &&
+      FLOW.indexOf("appsStyleCards({") >= 0 &&
+      FLOW.indexOf('window.api.appsCreate(nm, aid, String(style || ""), appFlowMeName())') >= 0,
+    "新建应用浮层：选中的风格 + 当前登录账号（作者）随 appsCreate 一起交给主进程",
+  );
+  ok(
+    FLOW.indexOf("window.api.appsSetStyle(id, picked)") >= 0 &&
+      FLOW.indexOf("typeof confirmDialog === \"function\"") >= 0,
+    "换风格：先弹一次确认，确认后才重写入口页（不生成备份，确认框里已写明会覆盖）",
+  );
+  ok(
+    FLOW.indexOf("already") < 0 &&
+      FLOW.indexOf("if (String(picked) === String(curId || \"\"))") >= 0,
+    "选中的就是当前风格 → 不重复写盘，只给一句提示（当前风格按 app.json 原值比对，含「自定义」）",
+  );
+  ok(
+    DEV.indexOf('appsDevT("换风格…")') >= 0 && DEV.indexOf("appStyleSwapDialog(") >= 0,
+    "开发页：⋯ 溢出菜单里有「换风格…」（pri=9，放不下就自然收进面板）",
+  );
+
+  /* ④b 「自定义」那条路：选中 → 问风格 → 约束随会话契约下发（三层各断言一次） */
+  ok(
+    CSS.indexOf(".style-shot-custom") >= 0 && CSS.indexOf(".style-tag-custom") >= 0,
+    "css：自定义卡片的占位视觉 + 角标样式在位（没有预览图也不留空洞）",
+  );
+  ok(
+    FLOW.indexOf("function appStyleEntryIsCustom(") >= 0 &&
+      FLOW.indexOf("function appStyleStoredId(") >= 0 &&
+      FLOW.indexOf("style-shot-custom") >= 0 &&
+      FLOW.indexOf('I18n.t("先问要什么风格")') >= 0,
+    "app-app-flow.js：卡片认得出「自定义」（占位视觉 + 角标），当前风格按 app.json 原值比对",
+  );
+  ok(
+    FLOW.indexOf("function startCustomStyleAsk(") >= 0 &&
+      FLOW.indexOf("window.startCustomStyleAsk = startCustomStyleAsk") >= 0 &&
+      FLOW.indexOf('I18n.t("）用什么风格？你按它的用途提几套方案，或我直接说我的要求")') >= 0,
+    "app-app-flow.js：选中「自定义」后走 startCustomStyleAsk（把提问摆到开发页输入框，不替用户开工）",
+  );
+  const createFn2 = FLOW.slice(
+    FLOW.indexOf("async function appsCreateApp("),
+    FLOW.indexOf("/* ---------- ①b 二次开发"),
+  );
+  ok(
+    createFn2.indexOf('startCustomStyleAsk(res.id, String(res.name || nm), "custom")') >= 0,
+    "新建应用选「自定义」→ 创建完就按这条应用起一问（停在开发页问风格）",
+  );
+  const swapFn = FLOW.slice(
+    FLOW.indexOf("function appStyleSwapDialog("),
+    FLOW.indexOf("/* 在（刚建好的）应用画布上建开发节点"),
+  );
+  ok(
+    swapFn.indexOf('startCustomStyleAsk(id, String(appName || id), "swap")') >= 0 &&
+      swapFn.indexOf("pickedCustom") >= 0 &&
+      swapFn.indexOf('I18n.t("改成「自定义」风格？")') >= 0,
+    "换风格选「自定义」→ 记下选择并回开发页答风格（确认框与说明都换成自定义口径）",
+  );
+  ok(
+    DEV.indexOf("function appsDevAskStyle(") >= 0 &&
+      DEV.indexOf("function appsDevFlushStyleAsk(") >= 0 &&
+      DEV.indexOf("window.appsDevAskStyle = appsDevAskStyle") >= 0 &&
+      DEV.indexOf("window.appsDevFlushStyleAsk = appsDevFlushStyleAsk") >= 0 &&
+      DEV.indexOf("DEVD.askStyleId = want;") >= 0 &&
+      DEV.indexOf("inp.value = text") >= 0 &&
+      DEV.indexOf("String(inp.value || \"\").trim()") >= 0,
+    "开发页：appsDevAskStyle 把提问**排队**（新建时用户还停在库页，输入框不在 DOM 里），画到输入框时 appsDevFlushStyleAsk 落下去；已写了一半的字不被覆盖",
+  );
+  ok(
+    (() => {
+      const fn = DEV.slice(
+        DEV.indexOf("function appsDevRenderConv()"),
+        DEV.indexOf("/* 清掉会话视图搬进右栏的四块面板"),
+      );
+      return fn.indexOf("appsDevFlushStyleAsk()") >= 0;
+    })(),
+    "开发页：每次画完正文都试着把排队的那一问落到输入框（用户走进开发页就会看到）",
+  );
+  ok(
+    FLOW.indexOf('I18n.t("风格选了「自定义」：到开发页说一句要什么风格，AI 就照它做入口页")') >= 0,
+    "开发页此刻没开时：startCustomStyleAsk 补一句 toast 说清去哪儿答（问句本身已排队，不丢）",
+  );
+  ok(
+    DEV.indexOf("function devStyleAskContract(") >= 0 &&
+      DEV.indexOf('if (style !== "custom") return ""') >= 0 &&
+      DEV.indexOf('devStyleAskContract(DEVD.appId)') >= 0 &&
+      DEV.indexOf('createDevSessionForNode(node, "dev", reqText, devStyleAskContract(DEVD.appId))') >= 0,
+    "开发页：只有「自定义」那一轮才附风格约束，且走会话契约（createDevSessionForNode 第 4 参）",
+  );
+  ok(
+    APPJS.indexOf("function createDevSessionForNode(node, mode, req, extra)") >= 0 &&
+      APPJS.indexOf("if (extraText) sess._devContract += " ) >= 0,
+    "app.js：开发会话契约支持追加一段约束（用户消息仍是用户自己那句，不塞约束正文）",
+  );
+  ok(
+    PRELOAD.indexOf("appsStyles:") >= 0 && PRELOAD.indexOf("appsSetStyle:") >= 0,
+    "preload：appsStyles / appsSetStyle 两条桥都在",
+  );
+  ok(
+    CSS.indexOf(".style-grid") >= 0 &&
+      CSS.indexOf(".style-card") >= 0 &&
+      CSS.indexOf(".style-shot-img") >= 0 &&
+      CSS.indexOf(".style-swatch") >= 0,
+    "css：风格卡片（网格 / 选中态 / 缩略图 / 缺图回落色板）齐备",
+  );
+  ok(
+    CSS.indexOf("var(--violet)") < 0,
+    "css：选中色不引用未定义的 --violet，直接用工具库紫 #c792ea",
+  );
+  ok(
+    I18N.indexOf('"设计风格": "Design style"') >= 0 &&
+      I18N.indexOf('"换风格…": "Change style…"') >= 0 &&
+      I18N.indexOf('"预览图就是每种风格真实渲染出来的样子"') >= 0 &&
+      I18N.indexOf('"换风格并重写入口页"') >= 0 &&
+      I18N.indexOf('"先问再定": "Asked first"') >= 0 &&
+      I18N.indexOf('"改成「自定义」风格？": "Switch to “Custom”?"') >= 0 &&
+      I18N.indexOf('"先问要什么风格": "Asks for a style"') >= 0,
+    "i18n：设计风格 / 换风格 / 预览说明 / 「自定义」那一套都有英文译文（风格名本身来自主进程）",
+  );
+
+  /* ⑤ 脚手架与默认页同一套语言：结构在 style.css，风格在 styles/<id>.css */
+  const SCA = read("templates/app-scaffold/index.html");
+  const SCSS = read("templates/app-scaffold/style.css");
+  ok(
+    SCA.indexOf('data-style="{{STYLE}}"') >= 0 &&
+      SCA.indexOf('href="./styles/{{STYLE}}.css"') >= 0,
+    "脚手架入口页也走同一套风格口径（data-style + styles/<id>.css）",
+  );
+  ok(
+    SCSS.indexOf("color: var(--fg)") >= 0 &&
+      SCSS.indexOf("--accent: #c792ea") < 0 &&
+      SCSS.indexOf("--bg: #0a0c12") < 0,
+    "脚手架 style.css 只画结构（颜色一律走变量，具体色值在 styles/<id>.css）",
+  );
+  const scafMin = read("templates/app-scaffold/styles/minimal.css");
+  ok(
+    scafMin.indexOf("--bg: #0a0c12") >= 0 && scafMin.indexOf("--accent: #c792ea") >= 0,
+    "脚手架默认风格仍是原观感：深墨底 #0a0c12 + 工具库紫 #c792ea",
+  );
+  ok(
+    exists("templates/app-default/STYLES.md"),
+    "风格契约文档 templates/app-default/STYLES.md 在位（新增一套风格照它做）",
+  );
+}
+
+/* ============ [11] 新建应用后留在应用界面（原 bug：创建完自动返回画布） ============ */
+{
+  console.log("[11] 新建应用：留在应用界面（不自动返回画布）");
+  const FLOW = read("renderer/app-app-flow.js");
+  const createFn = FLOW.slice(
+    FLOW.indexOf("async function appsCreateApp("),
+    FLOW.indexOf("/* ---------- ② 换风格"),
+  );
+  ok(
+    createFn.length > 0 && createFn.indexOf("appsHubClose") < 0,
+    "appsCreateApp 不再收掉应用中心浮层（创建后不把用户送回画布）",
+  );
+  ok(
+    createFn.indexOf('typeof appsHubIsOpen === "function" && appsHubIsOpen()') >= 0 &&
+      createFn.indexOf("appsDevSelectApp(res.id)") >= 0,
+    "应用中心开着 → 开发页切到这条新应用（只重绘本页，库页 / 开发页都不换页）",
+  );
+  ok(
+    createFn.indexOf('typeof appsHubPaint === "function"') >= 0 &&
+      createFn.indexOf("appsListLoad(true)") >= 0,
+    "创建后强制重拉本机清单 + 开发页模块缺席也有兜底重绘（列表不停在旧内容）",
+  );
+  ok(
+    FLOW.indexOf("async function openAppCanvas(") >= 0 &&
+      FLOW.slice(FLOW.indexOf("async function openAppCanvas(")).indexOf("appsHubClose()") >= 0,
+    "「打开画布」照旧收掉浮层并切视图（看画布 = 用户显式动作，不是创建后自动发生）",
+  );
+}
+
+/* ============ [9] 模型继承 + 多模态消息（真跑纯函数） ============ */
+{
+  console.log("[9] 模型继承与多模态消息（apps-store 真跑）");
+  ok(typeof store.buildMessages === "function" && typeof store.listTextModels === "function" && typeof store.resolveModelFor === "function", "导出模型 / 多模态那组纯函数（冒烟直接真跑，不靠字符串断言）");
+  ok(store.MODEL_AUTO === "auto" && store.MAX_MSG_IMAGES === 8 && store.MAX_MSG_IMAGE_BYTES === 10 * 1024 * 1024, "上限口径：auto 哨兵 + 8 张图 + 10MB");
+
+  /* ① 字符串消息照旧（老应用一行不改） */
+  const b1 = store.buildMessages({ messages: [{ role: "user", content: "你好" }] });
+  ok(b1.messages && b1.messages.length === 1 && b1.messages[0].content === "你好" && b1.hasImages === false, "字符串 content 原样收（向后兼容）");
+
+  /* ② 多模态：文字 + 本机绝对路径；缩小内核缺席时也要能出 dataURL */
+  const png = path.join(TMP, "shot.png");
+  fs.writeFileSync(png, Buffer.from("not-a-real-png"));
+  const b2 = store.buildMessages({
+    messages: [
+      { role: "user", content: [{ type: "text", text: "图里有什么？" }, { type: "image_url", image_url: { url: png } }] },
+    ],
+  });
+  ok(b2.messages && b2.hasImages === true && b2.images === 1, "多模态数组被认出（hasImages / images 计数）");
+  const parts = b2.messages[0].content;
+  ok(Array.isArray(parts) && parts[0].type === "text" && parts[1].type === "image_url", "分片形状 = [{type:text},{type:image_url}]（与 buildRequestSpec 的下发形状一致）");
+  ok(/^data:image\/png;base64,/.test(String(parts[1].image_url.url)), "本机路径在主进程读盘后转成 data URL（页面拿不到文件内容）");
+
+  /* ③ dataURL 入参原样收；非图 mime / 相对路径 / 不存在的文件一律 bad_image */
+  const du = "data:image/png;base64," + Buffer.from("x").toString("base64");
+  const b3 = store.buildMessages({ messages: [{ role: "user", content: [{ type: "text", text: "看" }, { type: "image_url", image_url: du }] }] });
+  ok(b3.hasImages === true && String(b3.messages[0].content[1].image_url.url).indexOf("data:image/png") === 0, "dataURL 入参可用");
+  ok(store.buildMessages({ messages: [{ role: "user", content: [{ type: "image_url", image_url: "data:text/plain;base64,eA==" }] }] }).error === "bad_image", "非图像 mime → bad_image");
+  ok(store.buildMessages({ messages: [{ role: "user", content: [{ type: "image_url", image_url: "a.png" }] }] }).error === "bad_image", "相对路径不被当路径读（bad_image）");
+  ok(store.buildMessages({ messages: [{ role: "user", content: [{ type: "image_url", image_url: path.join(TMP, "nope.png") }] }] }).error === "bad_image", "文件不存在 → bad_image");
+
+  /* ④ 张数 / 体积上限 */
+  const many = [];
+  for (let i = 0; i < 9; i++) many.push({ type: "image_url", image_url: du });
+  ok(store.buildMessages({ messages: [{ role: "user", content: [{ type: "text", text: "x" }].concat(many) }] }).error === "too_many_images", "一条消息超过 8 张图 → too_many_images");
+  const big = "data:image/png;base64," + Buffer.alloc(6 * 1024 * 1024, 1).toString("base64");
+  ok(store.buildMessages({ messages: [{ role: "user", content: [{ type: "text", text: "x" }, { type: "image_url", image_url: big }, { type: "image_url", image_url: big }] }] }).error === "too_large", "图像原始字节合计超过 10MB → too_large");
+
+  /* ⑤ 模型清单来自本机配置（按设置顺序、跨服务商、标 vision），选择按应用 id 持久化 */
+  const cfg = JSON.parse(fs.readFileSync(path.join(DATA, "config.json"), "utf8"));
+  cfg.providers = [
+    { id: "p1", name: "甲", type: "text_openai", baseUrl: "https://a.example", apiKey: "k", models: ["m-a", "m-b"], vision: true },
+    { id: "p2", name: "乙", type: "text_openai", baseUrl: "https://b.example", apiKey: "k", models: ["m-c"], vision: false },
+    { id: "pi", name: "图", type: "image_openai", baseUrl: "https://c.example", apiKey: "k", models: ["img-1"] },
+  ];
+  origWrite(path.join(DATA, "config.json"), JSON.stringify(cfg, null, 2), "utf8");
+  const models = store.listTextModels();
+  ok(models.length === 3 && models[0].id === "m-a" && models[1].id === "m-b" && models[2].id === "m-c", "列全部已配置文本模型，顺序 = 配置里的优先级（跨服务商、去重）");
+  ok(models[0].providerName === "甲" && models[2].providerId === "p2", "每项带来源服务商（应用只看到名字，看不到 Key / baseUrl）");
+  ok(models[0].vision === true && models[2].vision === false, "vision 标记：服务商 vision 开关 ∧ 目录 input:image（目录缺席时信服务商开关）");
+  ok(models.every((m) => m.apiKey === undefined && m.baseUrl === undefined), "清单里没有 apiKey / baseUrl（凭据不出主进程）");
+
+  /* ⑥ 选择持久化：只认清单里的 id，auto 清条目，越界 bad_model */
+  store.writeModelSelection("app-x", "m-b");
+  ok(store.readModelSelection("app-x") === "m-b", "模型选择按应用 id 落盘（<数据目录>/apps-models.json）");
+  ok(written.some((p) => p.indexOf("apps-models.json") >= 0), "写的是宿主侧文件 apps-models.json，不是应用数据");
+  store.writeModelSelection("app-x", "auto");
+  ok(store.readModelSelection("app-x") === "", "选回 auto = 删掉条目（跟随 MTNode 默认）");
+
+  /* ⑦ 解析顺序：显式 id > 存过的选择 > auto（带图挑第一个视觉模型，纯文本用默认） */
+  ok(store.resolveModelFor("app-y", "m-a", "m-c", false).modelId === "m-c", "显式给的清单内 id 优先");
+  store.writeModelSelection("app-y", "m-c");
+  ok(store.resolveModelFor("app-y", "m-a", "", false).modelId === "m-c", "没显式给时用该应用存过的选择");
+  store.writeModelSelection("app-y", "auto");
+  const au = store.resolveModelFor("app-y", "m-a", "", false);
+  ok(au.modelId === "m-a" && au.auto === true, "纯文本 auto = 最高优先级服务商的首个模型");
+  const av = store.resolveModelFor("app-y", "m-a", "", true);
+  ok(av.modelId === "m-a" && av.providerId === "p1", "带图 auto = 第一个可用视觉模型（这里 m-a 是首个视觉模型）");
+  ok(store.resolveModelFor("app-y", "m-a", "no-such-model", false).error === "bad_model", "清单外的模型 id → bad_model（应用改不了别人家的模型）");
+  cfg.providers = [{ id: "p1", name: "甲", type: "text_openai", baseUrl: "https://a.example", apiKey: "k", models: ["m-a"], vision: false }];
+  origWrite(path.join(DATA, "config.json"), JSON.stringify(cfg, null, 2), "utf8");
+  ok(store.resolveModelFor("app-y", "m-a", "", true).error === "no_vision", "带图但没有任何视觉模型 → no_vision（不降级去用看不见图的模型）");
+
+  /* ⑧ 网络类异常归一：断网 / 超时 / HTTP 状态各一档 */
+  ok(store.callErrCode({ code: "ENOTFOUND" }) === "offline" && store.callErrCode({ message: "fetch failed" }) === "offline", "断网 / DNS / 连不上 → offline");
+  ok(store.callErrCode({ httpStatus: 401 }) === "http_401" && store.callErrCode({ httpStatus: 429 }) === "http_429", "HTTP 状态 → http_401 / http_429（限流 / 鉴权可分辨）");
+  ok(store.callErrCode(new Error("boom")) === "", "认不出的错误不硬编码（原样回错误文案）");
+}
+
+/* ============ [12] 作者 · 开发中名单与迁移 · 校验收纳 · 二次开发分支（fork） ============
+ * 本轮需求：应用开发显示作者；sha256 收进小按钮；正在开发的不进「库」但可从「库」迁到「开发」
+ * （同 id 拒绝）；按上架最佳实践巩固（fork 声明 = 应用 id + 作者 uid）。
+ * ①-⑤ 是主进程真跑（真建目录 / 真写 app.json / 真打包解包），⑥ 之后读源码钉住界面与契约。 */
+{
+  console.log("[12] 作者 / 开发中名单 / 迁移 / 校验收纳 / fork 分支");
+  const RENDERER = read("renderer/app-apps.js");
+  const DEV = read("renderer/app-apps-dev.js");
+  const ASSIST = read("renderer/app-assist.js");
+  const FLOW = read("renderer/app-app-flow.js");
+  const PUB = read("renderer/app-publish.js");
+  const PRELOAD = read("preload.js");
+  const CSS = read("renderer/css/apps.css");
+  const I18N = read("renderer/i18n.js");
+  const SERVER = read("store-saas/server.mjs");
+  const MARKET = read("docs/apps-market.md");
+  const STORE_SRC = read("apps-store.js");
+
+  /* ① 新建应用 = 开发中 + 作者（两个字段一起落 app.json） */
+  store.setRoot(path.resolve(APPS_ROOT));
+  const made = store.createApp({ name: "作者冒烟", id: "author-smoke", author: "ms2308" });
+  ok(
+    made.ok === true && made.dev === true && made.author === "ms2308",
+    "createApp：新建应用同时落 dev:true + author（开发中 + 作者）",
+  );
+  const manRaw = JSON.parse(fs.readFileSync(path.join(made.dir, "app.json"), "utf8"));
+  ok(manRaw.dev === true && manRaw.author === "ms2308", "app.json 真写进 dev / author 两个字段");
+  const list1 = store.listApps().apps.find((a) => a.id === "author-smoke");
+  ok(
+    !!list1 &&
+      list1.dev === true &&
+      list1.author === "ms2308" &&
+      Array.isArray(list1.coreFiles) &&
+      list1.coreFiles.length > 0,
+    "listApps 回 dev / author / coreFiles（迁移建开发节点要用核心文件清单）",
+  );
+
+  /* ② setAppMeta：本机状态字段的唯一写入口（渲染层不碰文件系统） */
+  const meta = store.setAppMeta({
+    id: "author-smoke",
+    forkOf: { id: "src-app", ownerId: "u_src", owner: "alice" },
+  });
+  ok(
+    meta.ok === true && meta.app.forkOf && meta.app.forkOf.id === "src-app" && meta.app.forkOf.ownerId === "u_src",
+    "setAppMeta：forkOf 落进 app.json（源 id + 源作者 uid 为准，owner 只为显示）",
+  );
+  ok(store.setAppMeta({ id: "author-smoke", dev: false }).app.dev === false, "setAppMeta：dev 可显式改写");
+  ok(
+    store.setAppMeta({ id: "author-smoke", dev: true, author: "ms2308" }).app.dev === true,
+    "setAppMeta：迁移到开发 = dev:true + 作者",
+  );
+  ok(
+    store.setAppMeta({ id: "no-such-app", dev: true }).code === "missing",
+    "setAppMeta：应用不在本机 → missing（绝不静默建目录）",
+  );
+  ok(
+    store.setAppMeta({ id: "author-smoke", forkOf: { id: "bad id!", ownerId: "u" } }).app.forkOf === null,
+    "setAppMeta：非法 forkOf 一律当没声明（不写脏数据）",
+  );
+
+  /* ③ 整份重写清单的路径（换风格）不能抹掉 dev / forkOf */
+  store.setAppMeta({ id: "author-smoke", forkOf: { id: "src-app", ownerId: "u_src", owner: "alice" } });
+  store.setAppStyle({ id: "author-smoke", style: "tech" });
+  const man2 = JSON.parse(fs.readFileSync(path.join(made.dir, "app.json"), "utf8"));
+  ok(
+    man2.dev === true && man2.forkOf && man2.forkOf.id === "src-app",
+    "writeManifest 缺省继承 dev / forkOf（换风格这类整份重写不抹本机状态）",
+  );
+
+  /* ④ 导出 zip：去掉 dev（本机状态不跟包跑出去），forkOf / author 照常随包 */
+  const zr = store.exportZip("author-smoke");
+  ok(zr.ok === true, "exportZip 真打包（冒烟真跑）");
+  const outDir = path.join(TMP, "zip-out");
+  fs.mkdirSync(outDir, { recursive: true });
+  store.unzipBuffer(fs.readFileSync(zr.path), outDir);
+  const packMan = JSON.parse(fs.readFileSync(path.join(outDir, "app.json"), "utf8"));
+  ok(
+    packMan.dev === undefined && packMan.forkOf && packMan.forkOf.id === "src-app" && packMan.author === "ms2308",
+    "包里 app.json：dev 已去掉，forkOf / author 保留（下载者不会把应用当成「开发中」）",
+  );
+
+  /* ⑤ 存量回填：没有安装账本的应用（自己新建的）补 dev:true；从云端下来的不动 */
+  const legacy = path.join(APPS_ROOT, "legacy-selfmade");
+  fs.mkdirSync(legacy, { recursive: true });
+  origWrite(
+    path.join(legacy, "app.json"),
+    JSON.stringify({ schema: 1, id: "legacy-selfmade", name: "老自建", version: "1.0.0", entry: "index.html" }, null, 2),
+    "utf8",
+  );
+  const dlDir = path.join(APPS_ROOT, "legacy-downloaded");
+  fs.mkdirSync(dlDir, { recursive: true });
+  origWrite(
+    path.join(dlDir, "app.json"),
+    JSON.stringify({ schema: 1, id: "legacy-downloaded", name: "老下载", version: "1.0.0", entry: "index.html" }, null, 2),
+    "utf8",
+  );
+  origWrite(
+    path.join(dlDir, "installed.json"),
+    JSON.stringify({ schema: 1, id: "legacy-downloaded", version: "1.0.0", source: "x.zip", sha256: "", files: [], installedAt: 1 }, null, 2),
+    "utf8",
+  );
+  const list2 = store.listApps().apps;
+  ok((list2.find((a) => a.id === "legacy-selfmade") || {}).dev === true, "存量回填：无安装账本的应用补 dev:true");
+  ok((list2.find((a) => a.id === "legacy-downloaded") || {}).dev === false, "存量回填：有安装账本（云端下来的）一律不动");
+  ok(
+    JSON.parse(fs.readFileSync(path.join(legacy, "app.json"), "utf8")).dev === true,
+    "回填写回 app.json（一次性 · 幂等）",
+  );
+
+  /* ⑥ 目录条目归一 + 账本记来源作者 + 覆盖安装保住 dev/forkOf */
+  const doc = store.parseCatalogDoc(
+    {
+      apps: [
+        {
+          id: "fork-app",
+          title: "分支应用",
+          owner: "alice",
+          ownerId: "u_alice",
+          forkOf: { id: "src-app", ownerId: "u_bob", owner: "bob" },
+          version: "1.1.0",
+        },
+      ],
+    },
+    "http://x",
+    "static",
+  );
+  const spec = doc.apps[0];
+  ok(
+    spec.ownerId === "u_alice" && spec.forkOf && spec.forkOf.id === "src-app" && spec.forkOf.ownerId === "u_bob",
+    "目录条目：来源作者 uid 与 forkOf（源 id + 源作者 uid）都归一到位",
+  );
+  ok(
+    STORE_SRC.indexOf('owner: String(spec.owner || "")') >= 0 &&
+      STORE_SRC.indexOf('ownerId: String(spec.ownerId || "")') >= 0,
+    "安装账本记 owner / ownerId（「同作者才给更新」靠它判）",
+  );
+  ok(
+    STORE_SRC.indexOf("const keepMan = readManifest(targetDir) || {};") >= 0 &&
+      STORE_SRC.indexOf("dev: keepMan.dev === true") >= 0,
+    "覆盖安装 / 更新前先留本机 dev / forkOf（一次更新不会把应用踢回「库」页）",
+  );
+
+  /* ⑦ 界面：作者 / 开发中徽标 / 启动替下载 / 同作者更新 / 分支 / 校验收纳 */
+  ok(
+    RENDERER.indexOf("function appsAuthorOf(") >= 0 &&
+      RENDERER.indexOf("function appsSameAuthor(") >= 0 &&
+      RENDERER.indexOf("function appsBranchKeyOf(") >= 0 &&
+      RENDERER.indexOf("function appsBranchesOf(") >= 0,
+    "app-apps.js：作者 / 同作者 / 分支归组三个判据都在",
+  );
+  ok(
+    RENDERER.indexOf('appsT("开发中"), "dev"') >= 0 && CSS.indexOf(".apps-badge-dev") >= 0,
+    "「应用」页卡片给开发中的应用加「开发中」徽标（含样式）",
+  );
+  ok(
+    RENDERER.indexOf('appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id))') >= 0 &&
+      RENDERER.indexOf('appsMiniBtn(busy ? appsT("下载中…") : appsT("下载"), () => appsDownload(id, ""), true)') >= 0,
+    "已装 = 启动（不再显示下载）；未装 = 下载",
+  );
+  ok(
+    RENDERER.indexOf("spec.updateAvailable && appsSameAuthor(spec)") >= 0,
+    "「更新」按钮只在同作者时出现",
+  );
+  ok(
+    RENDERER.indexOf("function appsBranchBtnEl(") >= 0 &&
+      RENDERER.indexOf('appsMiniBtn(appsT("切换分支") + " ▾"') >= 0 &&
+      RENDERER.indexOf("if (bid === id || b.installed) appsOpenApp(bid);") >= 0,
+    "存在其他作者分支 → 「切换分支 ▾」列出同源条目（已装 = 启动 / 未装 = 下载到它自己的 id）",
+  );
+  ok(
+    RENDERER.indexOf("appsCatalogUpdate(spec)") >= 0 &&
+      RENDERER.indexOf("正在开发中（本机这一份带「开发中」标记）") >= 0 &&
+      RENDERER.indexOf("confirmDialog") >= 0,
+    "开发中的应用点更新要二次确认（写明会覆盖 app.json / 入口页 / assets）",
+  );
+  ok(RENDERER.indexOf('push(appsT("二次开发自"), fo.id') >= 0, "详情显示「二次开发自」（源 id + 原作者账号）");
+  ok(
+    RENDERER.indexOf("function appsHashBtnEl(") >= 0 &&
+      RENDERER.indexOf("function appsHashPopOpen(") >= 0 &&
+      RENDERER.indexOf("function appsDevMetaEl(") >= 0 &&
+      CSS.indexOf(".apps-hashpop") >= 0 &&
+      CSS.indexOf(".apps-devmeta") >= 0,
+    "校验值收进「ⓘ 校验」小按钮 + 开发者信息折叠区（含样式）",
+  );
+  ok(
+    RENDERER.indexOf('appsHashBtnEl("校验 sha256", String(APPS_ST.devExport.sha256 || ""))') >= 0 &&
+      PUB.indexOf('appsHashBtnEl("校验 sha256", shaVal)') >= 0,
+    "导出结果与上架成功回执的 sha256 同样收进小按钮（三处口径一致）",
+  );
+  ok(
+    RENDERER.indexOf('push(appsT("作者"), appsAuthorOf(spec))') >= 0 &&
+      RENDERER.indexOf("const rowAuthor = appsAuthorOf(app);") >= 0,
+    "详情与库页行都显示作者（云端 owner / 本机 app.json.author）",
+  );
+
+  /* ⑧ 库 / 开发两页名单分工 + 二次开发入口（在每张卡片右侧，不再是页顶一行） */
+  ok(
+    RENDERER.indexOf("function appsLibList()") >= 0 &&
+      RENDERER.indexOf("return appsLocalList().filter((a) => !(a && a.dev === true));") >= 0,
+    "库页只列非开发中的应用",
+  );
+  ok(
+    RENDERER.indexOf("function appsMigrateRowEl(") < 0 &&
+      RENDERER.indexOf('appsT("迁移到开发")') < 0 &&
+      RENDERER.indexOf("appsFillLocalActions(acts, app);") >= 0 &&
+      RENDERER.indexOf("acts.appendChild(appsSecondaryDevBtnEl(app));") >= 0,
+    "「二次开发」不再独占页顶一行，改为每张卡片右侧按钮（appsFillLocalActions 里挂）",
+  );
+  ok(
+    DEV.indexOf('appsDevT("数据目录")') >= 0 && DEV.indexOf("appsDataOpenNow(DEVD.appId)") >= 0,
+    "开发页菜单条也能进「数据目录」（当前选中应用）",
+  );
+  ok(RENDERER.indexOf("appsCreateButtonEl") < 0, "库页不再挂「＋新建应用」（只留开发页）");
+  ok(RENDERER.indexOf("开发绑定：已绑定") < 0, "库页去掉「开发绑定」徽标（绑定信息移到开发页）");
+  ok(
+    DEV.indexOf("(a) => a && a.dev === true") >= 0 && DEV.indexOf("const apps = (typeof appsLocalList") >= 0,
+    "开发页只列开发中的应用",
+  );
+  ok(
+    DEV.indexOf('appsDevT("卸载")') >= 0 && DEV.indexOf("appsUninstallApp(app)") >= 0,
+    "开发页补「卸载」（开发中的应用的唯一卸载入口）",
+  );
+  ok(
+    DEV.indexOf("appsAuthorOf(a)") >= 0 &&
+      ASSIST.indexOf('"side-apps-author apps-dev-author"') >= 0,
+    "作者已挪到左栏应用行（顶栏那条菜单条上不再有应用下拉 / 作者）",
+  );
+  ok(
+    DEV.indexOf("apps-dev-appgrp") < 0 &&
+      DEV.indexOf("apps-dev-head-k") < 0 &&
+      DEV.indexOf("apps-select apps-dev-app") < 0,
+    "顶栏应用下拉整组删掉（应用 + 下拉 + 作者；作者与选择都在左栏）",
+  );
+  ok(
+    DEV.indexOf("function appsDevSidebarHost()") >= 0 &&
+      DEV.indexOf("apps: apps,") >= 0 &&
+      DEV.indexOf("onAppSelect:") >= 0 &&
+      DEV.indexOf("onAppToggle:") >= 0,
+    "左栏由「应用分组」宿主渲染（宿主给应用行 + 两个动作回调）",
+  );
+  ok(
+    DEV.indexOf("expanded: appsDevAppExpanded(id)") >= 0 &&
+      DEV.indexOf("Object.prototype.hasOwnProperty.call(DEVD.expanded, id)") >= 0 &&
+      DEV.indexOf("return id === String(DEVD.appId || \"\")") >= 0,
+    "展开态：手动展开收起 + 默认展开当前应用（会话级记忆 DEVD.expanded）",
+  );
+  ok(
+    ASSIST.indexOf("const renderAppSide = (tree, groups, f, target)") >= 0 &&
+      ASSIST.indexOf("if (target.apps) {") >= 0 &&
+      ASSIST.indexOf("const mkAppRow = (g)") >= 0,
+    "app-assist：应用分组分支（应用行 + 会话折叠），总会话视图那条路径没动",
+  );
+  ok(
+    ASSIST.indexOf('row.classList.add("side-apps-sess")') >= 0 &&
+      ASSIST.indexOf("name.toLowerCase().includes(q)") >= 0 &&
+      ASSIST.indexOf("String((s && s.title) || \"\").toLowerCase().includes(q)") >= 0,
+    "左栏搜索同时搜应用名与会话标题；应用下的会话行缩进一层",
+  );
+  ok(
+    CSS.indexOf(".side-apps-app {") >= 0 &&
+      CSS.indexOf(".side-apps-caret {") >= 0 &&
+      CSS.indexOf(".side-apps-new {") >= 0 &&
+      CSS.indexOf(".side-apps-sess {") >= 0,
+    "css：应用行 / 展开箭头 / 「＋」新开发会话 / 会话缩进的样式齐备",
+  );
+  ok(
+    ASSIST.indexOf('add.className = "side-apps-new"') >= 0 &&
+      ASSIST.indexOf('g.onNew(String(g.id || ""))') >= 0,
+    "app-assist：应用行右端「＋」挂宿主回调（点它 = 在该应用下开新开发会话，不让 click 冒到行身）",
+  );
+  ok(
+    DEV.indexOf("function appsDevLastAppId()") >= 0 &&
+      DEV.indexOf("S.config.appsDevLastApp") >= 0 &&
+      DEV.indexOf("let cur = appsDevPickApp(apps);") >= 0,
+    "回开发页自动选上次打开的应用（config.appsDevLastApp），没了退第一个，不留空页",
+  );
+  ok(
+    DEV.indexOf("if (typeof appsCreateAppBtnEl === \"function\") head.appendChild(addSlot(6") < 0 &&
+      DEV.indexOf('sideFoot.className = "apps-dev-sidefoot"') >= 0,
+    "「＋ 新建应用」从顶栏菜单条移到左栏列表底部",
+  );
+  ok(
+    DEV.indexOf("function appsDevCurtainShouldShow(cur)") >= 0 &&
+      DEV.indexOf("const curtainOn = appsDevCurtainShouldShow(cur);") >= 0 &&
+      DEV.indexOf("if (curtainOn) appsDevCurtainShow();") >= 0 &&
+      DEV.indexOf("appsDevCurtainDrop();") >= 0 &&
+      DEV.indexOf("DEVD.curtainTimer = setTimeout(() => appsDevCurtainDrop(), 2500);") >= 0,
+    "预览黑幕：只在切应用时盖（首次进页 / 刷新预览不盖），load 完成撤幕 + 超时兜底",
+  );
+  ok(
+    CSS.indexOf(".apps-dev-curtain {") >= 0 &&
+      CSS.indexOf(".apps-dev-curtain.hide {") >= 0 &&
+      CSS.indexOf("background: #000;") >= 0 &&
+      CSS.indexOf("background: #fff;\n}\n\n.apps-dev-frame") < 0,
+    "css：预览底色改不透明黑 + 黑幕淡出（不再闪白）",
+  );
+  ok(
+    FLOW.indexOf("async function appsMigrateToDev(") >= 0 &&
+      FLOW.indexOf("window.appsMigrateToDev = appsMigrateToDev") >= 0,
+    "app-app-flow：二次开发 = 写 dev + 建同名画布 + 建开发节点（目录原地不动）",
+  );
+  ok(
+    FLOW.indexOf("已经有一张同名画布（") >= 0 && FLOW.indexOf("为避免误覆盖，没有迁移") >= 0,
+    "同 id（同名画布）冲突 → 拒绝迁移并说清原因",
+  );
+  ok(
+    FLOW.indexOf("appFlowMeName()") >= 0 &&
+      FLOW.indexOf('author: String(app.author || "").trim() || me') >= 0,
+    "迁移 / 新建补作者：app.json 没写过才写当前登录账号（未登录不写）",
+  );
+  ok(
+    RENDERER.indexOf('APPS_ST.nav = "dev";') >= 0 && RENDERER.indexOf("appsDevSelectApp(r.id)") >= 0,
+    "迁移成功后自动切到「开发」页并选中该应用",
+  );
+  /* ⑩ 应用画布的工作目录 = 应用目录（原 bug：新建 / 二次开发建出来的画布 workspace 是空的，
+     顶栏「工作目录」显示「未设置」、左栏「文件」页显示「尚未设置工作目录」） */
+  ok(
+    FLOW.indexOf("function appCanvasWf(id, name, dir)") >= 0 &&
+      FLOW.indexOf("workspace: appCanvasWsPath(dir),") >= 0 &&
+      FLOW.indexOf("function appCanvasWsPath(dir)") >= 0,
+    "appCanvasWf：应用画布构造函数里 workspace 是必填字段（= 应用目录，与顶栏同一存储口径）",
+  );
+  ok(
+    FLOW.indexOf("const wf = appCanvasWf(res.id, res.name, res.dir);") >= 0 &&
+      FLOW.indexOf("const wf = appCanvasWf(id, String(app.name || id), app.dir);") >= 0,
+    "「新建应用」与「二次开发」两条建图路径都走 appCanvasWf（都带上应用目录）",
+  );
+  ok(
+    FLOW.indexOf("async function appsCreateApp(") >= 0 &&
+      FLOW.slice(
+        FLOW.indexOf("async function appsCreateApp("),
+        FLOW.indexOf("/* ---------- ①b 二次开发"),
+      ).indexOf('workspace: ""') < 0,
+    "新建应用的画布不再落一个空 workspace 字面量",
+  );
+  ok(
+    FLOW.indexOf('if (appDir && S.wf && !String(S.wf.workspace || "").trim())') >= 0 &&
+      FLOW.indexOf("await window.api.fileIsDir(appDir)") >= 0,
+    "openAppCanvas 补刀老画布：空工作目录 + 应用目录真实存在才补写并落盘（用户填过的不动）",
+  );
+
+  /* ⑨ fork 声明：上架窗 → 请求 → 服务端 → 文档 */
+  ok(
+    PUB.indexOf("function pubForkInit(") >= 0 &&
+      PUB.indexOf("function pubForkField(") >= 0 &&
+      PUB.indexOf('pubT("基于哪个应用二次开发（可选）")') >= 0,
+    "上架窗「基于哪个应用二次开发」（自动带出 + 可改 + 可清空）",
+  );
+  ok(
+    PUB.indexOf("body.forkOf = {") >= 0 &&
+      PUB.indexOf("patch.forkOf = pubStr(fork.id)") >= 0 &&
+      PUB.indexOf("async function pubWriteLocalMeta(") >= 0,
+    "上架：forkOf 随请求下发 + 成功后写回本机 app.json（连同 author）",
+  );
+  ok(
+    PRELOAD.indexOf("appsSetMeta:") >= 0 && PRELOAD.indexOf("author: author || ''") >= 0,
+    "preload：appsSetMeta 桥 + appsCreate 带 author",
+  );
+  ok(
+    SERVER.indexOf("function normalizeForkOf(") >= 0 && SERVER.indexOf("forkOf: appForkOfPublic(a)") >= 0,
+    "服务端：接受·保存·目录输出 forkOf（契约 §八）",
+  );
+  ok(SERVER.indexOf("if (selfId && id === selfId) return null;") >= 0, "服务端：自指 fork 声明一律当没声明");
+  ok(
+    (SERVER.match(/if \(b\.forkOf !== undefined\)/g) || []).length === 2,
+    "追加版本 / PATCH 两条路都支持改 forkOf（null = 清回原创，不带键 = 保持原样）",
+  );
+  ok(
+    MARKET.indexOf("## 八、作者 · 开发中名单 · 二次开发（fork）分支") >= 0 &&
+      MARKET.indexOf("forkOf") >= 0 &&
+      MARKET.indexOf("应用身份 = 应用 id + 作者 uid") >= 0,
+    "docs/apps-market.md 补了 §八（作者 / 开发中名单 / fork 契约）",
+  );
+  ok(
+    I18N.indexOf('"开发中": "In development"') >= 0 &&
+      I18N.indexOf('"作者 ": "Author "') >= 0 &&
+      I18N.indexOf('"基于哪个应用二次开发（可选）"') >= 0,
+    "i18n：开发中 / 作者 / fork 声明都有英文译文",
+  );
+}
+
+/* ============ [13] 应用页搜索框：打字不失焦 + 防抖 + 标签筛选 + 右上角「返回 MTNode」 ============ */
+{
+  console.log("[13] 应用页搜索框（原 bug：输入即失焦）· 防抖 · 标签筛选 · 右上角返回 MTNode");
+  const APPS = read("renderer/app-apps.js");
+  const CSS = read("renderer/css/apps.css");
+  const I18N = read("renderer/i18n.js");
+
+  /* ① 原 bug 的根因：搜索框原先挂在 .apps-hub-body 里，而正文每次重绘 body.innerHTML = ""
+     把它一起拆掉 → 焦点（连同中文输入法组合态）当场丢。现在它是壳（.apps-hub-topbar）
+     的一部分：正文重绘够不着它。 */
+  ok(
+    APPS.indexOf('const bar = hub.querySelector(".apps-hub-topbar")') >= 0 &&
+      APPS.indexOf("top.appendChild(appsHubSearchRow())") >= 0,
+    "搜索框建在 .apps-hub-topbar（壳）的第 1 行里，不在 .apps-hub-body（每次重绘被清空的正文）里",
+  );
+  ok(
+    APPS.indexOf('if (APPS_ST.nav === "apps") appsPaintAppsPage(') >= 0 &&
+      APPS.indexOf("appsHubTopbar();") >= 0 &&
+      APPS.indexOf("body.appendChild(appsHubSearchRow())") < 0 &&
+      (APPS.match(/body\.innerHTML = ""/g) || []).length >= 3,
+    "三个页面都只更新壳上的那一行；正文照旧整块重绘，但不再重建搜索框",
+  );
+  ok(
+    APPS.indexOf("appsHubTopbar(host);") >= 0 &&
+      APPS.indexOf("appsHubTopbar();") >= 0,
+    "壳建好后由 appsHubPaint 每次刷一遍（页名 / 标签条 / 隐藏态），搜索框节点始终是同一个",
+  );
+
+  /* ② 防抖：打字只改 APPS_ST.q，静默满 APPS_SEARCH_DEBOUNCE 才重绘一次 */
+  ok(
+    APPS.indexOf("const APPS_SEARCH_DEBOUNCE = 180;") >= 0 &&
+      APPS.indexOf("let APPS_SEARCH_TIMER = 0;") >= 0,
+    "防抖闸：180ms 常量 + 句柄（页面级状态，不塞进 APPS_ST）",
+  );
+  const inputFn = APPS.slice(
+    APPS.indexOf('search.addEventListener("input"'),
+    APPS.indexOf("row.appendChild(search);"),
+  );
+  ok(
+    inputFn.indexOf("APPS_ST.q = search.value;") >= 0 &&
+      inputFn.indexOf("appsSearchSchedule();") >= 0 &&
+      inputFn.indexOf("appsHubPaint()") < 0,
+    "input 事件只落状态 + 排一次防抖，不当场重绘（每敲一个字重排整页的老写法已去掉）",
+  );
+  const schedFn = APPS.slice(
+    APPS.indexOf("function appsSearchSchedule()"),
+    APPS.indexOf("function appsTagCatalog()"),
+  );
+  ok(
+    schedFn.indexOf("clearTimeout(APPS_SEARCH_TIMER)") >= 0 &&
+      schedFn.indexOf("setTimeout(") >= 0 &&
+      schedFn.indexOf("APPS_SEARCH_DEBOUNCE") >= 0 &&
+      schedFn.indexOf("if (!APPS_HUB_OPEN) return;") >= 0,
+    "连续输入只留最后一次；收页之后到期的防抖不再重绘（不会给已关闭的页面白画一遍）",
+  );
+  ok(
+    APPS.indexOf("function appsSearchFlush()") >= 0 &&
+      /appsSearchFlush\(\);\s*\n\s*appsHubPaint\(\);/.test(APPS) &&
+      /appsSearchFlush\(\);\s*\n\s*if \(host\) host\.hidden = true;/.test(APPS),
+    "显式动作（点标签 / 清除筛选 / 收页）先把待办的防抖落地再画，避免「点了标签列表还是旧样子」",
+  );
+  ok(
+    APPS.slice(APPS.indexOf("function appsHubTopbar(")).indexOf("document.activeElement !== search") >= 0,
+    "重绘回填值时让开正在输入的框（焦点在搜索框里就不动它的 value，光标与组合态不被惊动）",
+  );
+
+  /* ③ 标签筛选：从当前可见条目收集，多选 = OR，与搜索词 = AND */
+  ok(
+    APPS.indexOf("tags: [], /* 标签筛选") >= 0 &&
+      APPS.indexOf("function appsTagCatalog()") >= 0 &&
+      APPS.indexOf("function appsTagToggle(") >= 0 &&
+      APPS.indexOf("function appsTagsClear(") >= 0,
+    "标签状态 + 收集 / 切换 / 清空三个动作齐备",
+  );
+  const filterFn = APPS.slice(
+    APPS.indexOf("function appsFilterSpecs("),
+    APPS.indexOf("function appsFilterLineEl("),
+  );
+  ok(
+    filterFn.indexOf("appsTagsOf(s).some((t) => tags.indexOf(appsTagKey(t)) >= 0)") >= 0 &&
+      filterFn.indexOf(".toLowerCase()") >= 0 &&
+      filterFn.indexOf("appsTagsOf(s).join(\" \")") >= 0,
+    "筛选口径：选中的标签取 OR（任一命中即可），搜索词大小写不敏感、命中字段含标签本身",
+  );
+  const appsPageAf = APPS.slice(
+    APPS.indexOf("async function appsPaintAppsPage("),
+    APPS.indexOf("function appsNoMatchText()"),
+  );
+  ok(
+    appsPageAf.indexOf("appsFilterSpecs(list)") >= 0 &&
+      appsPageAf.indexOf("appsFilterLineEl(list.length, shown.length)") >= 0 &&
+      appsPageAf.indexOf("for (const spec of shown)") >= 0,
+    "应用页走 appsFilterSpecs + 摘要行（命中 n / 共 m）+ 只渲染命中的条目",
+  );
+  ok(
+    APPS.indexOf("function appsNoMatchText()") >= 0 &&
+      APPS.indexOf('appsT("没有带标签 ")') >= 0 &&
+      APPS.indexOf('appsT("没有同时满足「")') >= 0,
+    "空结果分三种情况说人话（词 / 标签 / 两个一起太窄），并给出怎么退回去",
+  );
+  const tagShownFn = APPS.slice(
+    APPS.indexOf("function appsTagShown("),
+    APPS.indexOf("function appsTagLabel("),
+  );
+  ok(
+    APPS.indexOf("const APPS_TAG_MAX = 16;") >= 0 &&
+      tagShownFn.indexOf("for (const k of APPS_ST.tags)") >= 0 &&
+      tagShownFn.indexOf("out.push(hit || { key: k, label: k, n: 0 })") >= 0 &&
+      tagShownFn.indexOf("if (out.length >= APPS_TAG_MAX) break;") >= 0,
+    "标签条限长 16 枚，且已选中的标签一定留在条上（选了就得能取消，不被热度挤掉）",
+  );
+
+  /* ④ 右上角「返回 MTNode」：与搜索框同在第 1 行（nowrap 的 .apps-hub-toprow），
+       用弹性占位推到最右；标签条落第 2 行 —— 出口不再单独占一行 */
+  const topbarFn = APPS.slice(
+    APPS.indexOf("function appsHubTopbar("),
+    APPS.indexOf("/* 整页重绘：先画壳"),
+  );
+  ok(
+    topbarFn.indexOf('top.className = "apps-hub-toprow"') >= 0 &&
+      topbarFn.indexOf('spacer.className = "apps-hub-topspace"') >= 0 &&
+      topbarFn.indexOf('back.className = "mini apps-hub-close"') >= 0 &&
+      topbarFn.indexOf('back.textContent = appsT("返回 MTNode")') >= 0 &&
+      topbarFn.indexOf("back.onclick = () => appsHubClose()") >= 0,
+    "「返回 MTNode」建在第 1 行（弹性占位把搜索框与它分开、把它推到最右），点击仍走 appsHubClose",
+  );
+  ok(
+    topbarFn.indexOf("top.appendChild(appsHubSearchRow())") >= 0 &&
+      topbarFn.indexOf("top.appendChild(appsHubSearchRow())") <
+        topbarFn.indexOf("top.appendChild(spacer)") &&
+      topbarFn.indexOf("top.appendChild(spacer)") < topbarFn.indexOf("top.appendChild(back)") &&
+      topbarFn.indexOf("bar.appendChild(top)") < topbarFn.indexOf("bar.appendChild(appsHubTagRow())"),
+    "第 1 行顺序 = 搜索框 → 弹性占位 → 返回钮，标签条排在第 1 行之后（= 第 2 行）："
+      + "以前标签条 flex:1 1 100% 夹在中间，把返回钮顶到第 3 行独占一行",
+  );
+  ok(
+    APPS.indexOf('class="apps-hub-topbar"') >= 0 &&
+      APPS.indexOf('class="apps-hub-top"') < 0 &&
+      CSS.indexOf(".apps-hub-topbar {") >= 0 &&
+      CSS.indexOf(".apps-hub-toprow {") >= 0 &&
+      CSS.indexOf(".apps-hub-topspace {") >= 0 &&
+      CSS.indexOf(".apps-tagchip.on {") >= 0,
+    "壳里新增 .apps-hub-toprow（第 1 行）；顶部一行 / 弹性占位 / 选中标签态样式齐备",
+  );
+  const toprowCss = CSS.slice(CSS.indexOf(".apps-hub-toprow {"), CSS.indexOf(".apps-hub-headacts {"));
+  ok(
+    toprowCss.indexOf("flex-wrap: nowrap") >= 0 &&
+      CSS.indexOf("flex: 0 1 200px") >= 0 &&
+      CSS.indexOf("min-width: 120px") >= 0 &&
+      CSS.indexOf("width: 100%") >= 0,
+    "第 1 行 nowrap ⇒ 窗口再窄也不把返回钮折到下一行；要挤只挤搜索框"
+      + "（首选 200px = .apps-hub-headacts 的 flex-basis，下限 120px）",
+  );
+  ok(
+    I18N.indexOf('"搜索…": "Search…"') >= 0 &&
+      I18N.indexOf('"标签": "Tags"') >= 0 &&
+      I18N.indexOf('"清除标签": "Clear tags"') >= 0 &&
+      I18N.indexOf('"清除筛选": "Clear filters"') >= 0 &&
+      I18N.indexOf('"筛选：": "Filter: "') >= 0,
+    "i18n：搜索 / 标签 / 清除 / 摘要行的新词条都有英文译文",
+  );
+  ok(
+    (APPS.match(/@media/g) || []).length === 0,
+    "（口径）本页不新增媒体查询：顶部一行用 flex-wrap 自适应窄窗口",
+  );
+}
+
   Module._load = realLoad;
   fs.writeFileSync = origWrite;
   fs.renameSync = origRename;

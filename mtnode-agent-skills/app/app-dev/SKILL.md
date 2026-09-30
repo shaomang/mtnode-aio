@@ -1,7 +1,7 @@
 ---
 name: mtnode-app-dev
 title: MTNode 应用开发
-description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、桌面外壳与运行时能力（模型 API / 工具）的正确接法、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/。
+description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（模型从 MTNode 继承、界面上必须有模型选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
 ---
 
 # MTNode 应用开发
@@ -20,8 +20,12 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 所有结论来自当前仓库真实代码，**唯一真源**：`preload-app.js` + `apps-store.js`（应用中心桥与宿主）、`plugins/preload-window.js`（插件窗口桥）、`build.json`（打包白名单）。与代码冲突时以代码为准，并回来修订本文件。
 
 **脚手架**：`templates/app-scaffold/`（随包分发，`build.json` 的 `files` 已含 `templates/**`）＝ 首次开发某个应用时**复制进它的源码目录**的源，占位符替换即得最小可用应用；
-里面四件套：`apphost.js`（桥探测与降级）、`store.js`（脏标记 + 防抖存盘 + flush）、`close.js`（关窗收尾注册）、`app.js`（业务示范）。
+里面五件套：`apphost.js`（桥探测与降级 + 模型四件 + 多模态 `text()`）、`app-model.js`（右上「模型」选择位）、`model.css`、`store.js`（脏标记 + 防抖存盘 + flush）、`close.js`（关窗收尾注册）、`app.js`（业务示范：便签 + 文字/图像提问）。
 新建应用的**默认欢迎页**在 `templates/app-default/index.html`（`apps-store.js` 的 `defaultPageHtml()` 读它），与脚手架同一套设计语言与同一段上手文案。
+
+**默认随应用生成 AGENTS.md（不必问用户）**：复制脚手架时，把 `templates/app-agents/AGENTS.md` 一并复制成**该应用根目录的 `AGENTS.md`**
+（与 `index.html` 同级），再按该应用的实际情况补全其中的目录约定与「不要修改」清单。目标目录里**已经有 `AGENTS.md` 的不要覆盖**
+（那是用户自己写的共识）；已有 `agent.md` 入口文件同理，别动它。这份文件是下个会话（人写的或 AI 写的）接手时先读的东西。
 
 **界面设计先按 impeccable 规范**：动手写应用界面（默认页 / 脚手架 / 任何窗口页）之前，先加载 `mtnode-agent-skills/app/impeccable/`（`SKILL.md` 入门，`reference/craft-floor.md` 是底线，`reference/operate.md` 讲产品界面）；项目里若已有 `PRODUCT.md` / `DESIGN.md` 就先读它们，改完用该技能的检测器自查一遍。
 
@@ -57,7 +61,7 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 | 账号摘要 | `account()` → `{ok,loggedIn,user,encryption}`（无 token） | `authGetState()` / `authMe()` / `authLoginPassword` / `authChangePassword` / `authLogout` / `onAuthChanged(cb)` |
 | 创意工坊请求 | —（应用中心窗口没有网络面） | `storeRequest({method,path,json,anon})`（主进程持 token） |
 | 选图 / 压图 / 缓存 | — | `pickImage()` / `compressImage()` / `cacheImage(id,base64)` / `readCachedImage(id)` |
-| 模型能力（可选） | `textGenStream(opts, cb)` / `imageGen(opts)`（**服务商与 Key 只留主进程**，应用只能给 prompt / messages / 温度） | —（见第六节的正路） |
+| 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |
 | **生命周期** | `close()`（关自己窗口）· `quit()`（连 MTNode 一起退）· **`onWillClose(cb)`**（关窗前收尾，见第三节） | `close()` · `onShown(cb)` · `onAuthChanged(cb)` |
 
 调用前一律先探测：`typeof host.dataWrite === "function"`，缺就走降级分支。**脚手架的 `window.AppHost` 把两套桥统一成一套名字**
@@ -139,7 +143,11 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
 ```
 <应用 id>/                        zip 根；应用中心的源码目录 / 插件窗口解包后到 runtime/
   index.html                      入口（app.json 的 entry，默认 index.html；宿主只认 .html）
-  apphost.js                      桥探测与优雅降级（脚手架四件套之一；两套桥都认）
+  AGENTS.md                       本应用的开发共识（目录约定 / 不要修改清单 / 能力桥用法 / 数据落盘 / 设计规范）
+                                  —— 从 templates/app-agents/AGENTS.md 复制，**默认就建、不询问**；已有则保留
+  apphost.js                      桥探测与优雅降级（脚手架之一；两套桥都认 + 模型四件 + 多模态 text()）
+  app-model.js                    模型选择位（右上「模型」按钮 + 下拉，模型从 MTNode 继承）
+  model.css                       模型选择位与示例区样式
   store.js                        内容落盘：脏标记 + 防抖自动存盘 + flush()
   close.js                        关窗收尾：AppClose.on(cb) 登记，宿主关窗前跑完
   app.js                          逻辑
@@ -155,6 +163,7 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
   应用安装根目录/<AppName>/                源码目录（升级 / 卸载 = 整目录替换，别往里写数据）
   <数据目录>/apps-data/<id>/data.json      应用数据（默认数据根；dataRead / dataWrite 的落点）
   <数据目录>/apps-data/<id>/dataDir.json   数据文件夹指针（用户改过才有）
+  <数据目录>/apps-models.json              各应用选的模型（宿主侧，按应用 id；卸载时清掉那一项）
 
 插件窗口这套：
   <数据目录>/app-plugins/<id>/             默认 %APPDATA%\pipeline-console\app-plugins\<id>\
@@ -201,26 +210,80 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
 
 ---
 
-## 六、桌面外壳与运行时能力（模型 API / 工具）的正确接法
+## 六、模型能力：从 MTNode 继承（三条硬线）
 
-**事实（别猜）**：窗口里的应用**拿不到模型 API，也拿不到 MTNode 的工具**。
+**事实（别猜，也别再回答「应用桥只有文本、模型看不见图」）**：应用中心窗口（`window.appHost`）**有**模型能力，
+而且是**多模态**的 —— 文字与图像可以一起发给模型（真源：`preload-app.js` + `apps-store.js` 的 `hostTextStream` /
+`hostSpec` / `buildMessages`，以及 `main.js` 的 `buildRequestSpec`）。三条硬线：
 
-- appHost 是白名单桥，只有第二节那些方法；**没有** `chat` / `complete` / `generateText` / `generateImage` 之类的接口。
-- 主窗口渲染层的 `window.api`（`preload.js`）里有 `storeRequest`、`auth*` 等，**应用窗口里不存在** `window.api`。
-- `storeRequest` 只能打到创意工坊服务端（`store-saas/`）的既有路由：账户（`/api/login`、`/api/me`、`/api/auth/*`）、
-  工坊（`/api/templates*`、`/api/skills*`、`/api/tags`）、讨论区（`/api/forum/*`）、钱包（`/api/wallet/*`）、管理端。
-  **服务端没有 LLM 补全路由**，不要按 `/v1/chat/completions` 写代码。
-- 应用窗口里也**跑不了 dsh**（那是主进程 / 智能节点的事），不能 `require`、不能起子进程。
+1. **模型从 MTNode 继承**：应用侧**永远拿不到**服务商与 API Key（那是主进程的事），
+   但可以在 MTNode 已配置的模型清单里挑一个：
+   ```js
+   const list = await appHost.hostModels();          // { ok, models, selected, hasAny, hasVision, defaultModel }
+   // models[0] = { id:"auto" } = 跟随 MTNode 默认；其余每项 { id, label, providerId, providerName, vision }
+   await appHost.hostSetModel("deepseek-flash");     // 只认清单里的 id / "auto"，越界回 { ok:false, code:"bad_model" }
+   ```
+   **选择由宿主按应用 id 持久化**（`<数据目录>/apps-models.json`，原子写）—— 应用重写代码、清自己的数据都不丢。
+2. **应用渲染页里必须有一个选模型的位置**：给用户看的入口，比如顶栏「模型」按钮 / 下拉（脚手架
+   `app-model.js` + `index.html` 的 `#modelBtn` + `#modelMenu` 就是这一位，两行接入）。**没有这一位的应用不算交付完成**：
+   用户没配服务商时唯一的自救路径就是它。这一位在「一个可用模型都没有」时必须**置灰并写清去哪里配**
+   （MTNode 设置 · 模型服务），不能静默。
+3. **无模型 / 断网 / 模型不支持识图 → 明确提示，绝不降级**：一律回**结构化错误码**，界面按码给可操作的一句话：
 
-所以「应用里要模型 / 要生成」只有三条正路：
+   | code | 含义 | 界面该怎么提示 |
+   | --- | --- | --- |
+   | `no_provider` | MTNode 里没有可用文本服务商（没配 Key / 没配 baseUrl） | 去 MTNode「设置 · 模型服务」填好；模型位置灰 |
+   | `no_vision` | 本次带图，但当前模型 / 服务商不支持识图 | 「换一个带『支持识图』的模型」并高亮模型位 |
+   | `bad_model` | 传的模型 id 不在已配置清单里 | 让用户重新选一次 |
+   | `bad_image` / `too_many_images` / `too_large` | 图像读不出 / 一条消息超 8 张 / 合计超 10MB | 换图或减少张数 |
+   | `offline` / `http_401` / `http_429` … | 断网、超时、鉴权、限流、余额 | 提示检查网络 / 服务商配置；**不要**自动换模型重发 |
+   | `cancelled` | 用户在系统选图框里点了取消 | **不是报错**，恢复按钮即可，别弹红字 |
+
+   「降级」= 偷偷换成本地模型 / 丢掉图只用文字 / 假装成功，**一律禁止**。
+
+**多模态怎么发**（`opts.messages[].content` 支持字符串或分片数组；`opts.model` 缺省 = 跟随 MTNode 默认）：
+
+```js
+/* 最省事：脚手架 AppHost.text(prompt, { images, model, system, onDelta }) */
+const r = await AppHost.text("这张图里有什么？用一句话说", {
+  model: M.model(),                       // "" = 跟随 MTNode 默认
+  images: ["C:/pics/a.png", dataUrl],     // 本机绝对路径 或 data:image/png;base64,…
+  onDelta: (t) => (out.textContent += t)  // 可选：流式增量
+});
+if (!r.ok) out.textContent = AppModel.errorText(r);   // 结构化错误码 → 当前语言的一句话
+else out.textContent = r.text;
+
+/* 原生桥写法（不用脚手架） */
+appHost.textGenStream({
+  model: "deepseek-flash",
+  messages: [{ role: "user", content: [
+    { type: "text", text: "这张图里有什么？" },
+    { type: "image_url", image_url: { url: "C:/pics/a.png" } }   // 路径或 dataURL 都行
+  ]}]
+}, (msg) => { if (msg.type === "delta") out.textContent += msg.text; });
+
+/* 要模型给 JSON：用脚手架的 json()（关思考 + 剥围栏 + 截断感知 + 重试一次），别自己 parse */
+const j = await AppHost.json({ system: "You output strict JSON.", prompt: "给出 5 个词：…" });
+if (!j.ok) out.textContent = j.error;          // code: truncated / not_json / no_provider …
+else use(j.data);                              // 已经解析好的对象
+```
+
+- 图像**只能**从这两处来：应用自己手里的 dataURL，或 `appHost.pickImage()`（宿主弹系统选图框，只回 `{ok,path}`，
+  用户取消回 `{ok:false, code:"cancelled"}`）。**读盘 / 解码 / 缩放全在主进程**（与画布节点同一份 `shrinkImageBuffer`，
+  长边 ≤1080），页面拿不到任意文件内容；上限：**一条消息 8 张图、合计 10MB**。
+- `pickImage()` 在**插件窗口那套桥也有**（`plugins/preload-window.js` 的 `forum:pickImage` 转发，返回压缩后的 base64），
+  但那套桥**没有**文本生成 —— 插件窗口要用模型，仍走 `mtnode-plugin-dev` 的正路。
+
+应用窗口**拿不到**的东西（别写这类代码，写了就是 bug）：`window.api`（主窗口的桥）、MTNode 的画布 / 工具 / dsh
+（应用窗口不能 `require`、不能起子进程、不能跑 dsh）。
 
 | 需求 | 正解 |
 | --- | --- |
-| 纯提示词 / 文案工具 | 应用内拼好提示词：`openExternal` 或写入剪贴板让用户丢给全局助手；或把「生成」做成**画布工作流**（`proc_text` / `proc_image` / 智能节点），应用只做前端 |
-| 应用必须有内建 LLM / 图像 / 语音能力 | 升级为**本地后端插件**（见 `mtnode-plugin-dev`）：主进程宿主用 `dsh/mtnode-llm-creds.js` 的 `resolveDshRunAuth(getDataDir())` **复用 MTNode 设置里的模型 Key** 调模型，再由控制台 preload 暴露给界面 |
-| 需要联网能力但服务端还没有 | 先在服务端补路由（`store-saas/server.mjs`），应用再用 `storeRequest` 调；服务端没路由前，应用只能降级提示 |
-
-一句话：**应用 = 前端外壳；模型与工具留在主程序 / 画布一侧**。
+| 应用要有 LLM / 识图能力 | `appHost.textGenStream`（多模态）+ `hostModels()` 选模型；模型与 Key 留在主进程 |
+| 应用要出图 | `appHost.imageGen({ prompt })`（每次一张，回 base64 / dataUrl） |
+| 应用要更重的本地能力（本地模型 / 语音 / 视频 / 自己的后端） | 升级为**本地后端插件**（见 `mtnode-plugin-dev`）：主进程宿主用 `dsh/mtnode-llm-creds.js` 的 `resolveDshRunAuth(getDataDir())` 复用设置里的 Key |
+| 纯提示词工具（不需要真调用模型） | 应用内拼好提示词，交给全局助手 / 画布工作流（`proc_text` / `proc_image` / 智能节点） |
+| 需要联网但创意工坊服务端还没有路由 | 先在 `store-saas/server.mjs` 补路由，应用再用 `storeRequest` 调 |
 
 ---
 
@@ -247,17 +310,30 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
 | `onShown` / `onAuthChanged` 不退订 | 重开窗口重复绑定、回调叠加 | 保存返回的退订函数，收尾钩子里调（脚手架挂进 `AppClose.on`） |
 | 以为窗口就是 `app.json` 里的尺寸 | 实际生效的是云端 catalog 词条（app.json 只是自描述） | 发版时同步 catalog 词条的 `entry` / `version` / `window` |
 | app 目录没进打包白名单 | 打包后目录为空 | `build.json` 的 `files` 里加 `app/**`（或实际目录名）；仓库新增顶层目录必查 |
+| 回答「应用桥只支持文本、模型看不见图」 | 写出的应用白白没有识图能力（桥其实早就支持多模态） | 按第六节：`textGenStream` 的 `messages[].content` 收多模态分片，配 `hostModels()` 选视觉模型 |
+| 应用里没有选模型的位置 | 用户没配服务商时无处自救，只能改代码 | 保留脚手架的 `#modelBtn` + `app-model.js`（模型从 MTNode 继承）；无可用模型时置灰并写明去设置哪里配 |
+| 模型不支持识图 / 没配服务商时偷偷换成别的模型重发 | 用户以为成功了，其实结果来自另一个模型或干脆丢了图 | 回 `no_vision` / `no_provider` 并明确提示；**不降级** |
+| 应用自己读文件当图像输入 | 多一层磁盘权限、路径还会随机器变 | 只给宿主路径或 dataURL，读盘 / 缩放（≤1080）由主进程做；选图走 `pickImage()` |
+| 给 `textGenStream` 设一个偏小的 `maxTokens` | 它是**思考 + 正文共用**的预算：思考一长，正文被截断成半截 JSON，应用只报「回复不是可用 JSON」，用户照着改提示词也没用（实测 deepseek-v4 开思考 + `maxTokens:1200` 时 6 次里 4 次被截断） | 不设（不传 = 不下发上限）；要思考就显式传 `thinking` 并留足预算；回执里 `finishReason==="length"` / `truncated` 就是被截断 |
+| 自己 `text() + JSON.parse()` 解析模型回复 | 围栏 / 前后缀 / 截断都当成「模型不会给 JSON」，报错含糊、还白烧一次调用 | 用脚手架 `AppHost.json(opts)`：剥 ``` 围栏、截取首个 `{`/`[`、解析失败重试一次（上次被截断则重试不带 `maxTokens`），失败回 `truncated` / `not_json` |
+| 以为应用通道默认开思考（或传了 `thinking:"enable"` 这种错值） | 默认其实是**关**；非法值回 `bad_thinking`（不静默降级） | 要思考显式传 `off / on(=high) / low / high / max`；不确定就不传 |
+| 把 `pickImage` 的 `cancelled` 当报错弹红字 | 用户每次取消都看到一条错误 | `code === "cancelled"` 只恢复按钮，不提示 |
+| 忘了默认建 `AGENTS.md`（或反过来覆盖了已有的那份） | 下个会话没有共识、或冲掉用户自己写的约定 | 从 `templates/app-agents/AGENTS.md` 复制过去（**默认就建、不必询问**）；已存在则保留只补 |
 
 ---
 
 ## 八、交付清单
 
-- [ ] 目录：`<id>/index.html` + `apphost.js` + `store.js` + `close.js` + `app.js` + `style.css` + `app.json`（从 `templates/app-scaffold/` 复制后替换占位符）
+- [ ] 目录：`<id>/index.html` + `apphost.js` + `app-model.js` + `model.css` + `store.js` + `close.js` + `app.js` + `style.css` + `app.json`（从 `templates/app-scaffold/` 复制后替换占位符）
+- [ ] **`AGENTS.md` 已默认生成**（从 `templates/app-agents/AGENTS.md` 复制到应用根；已有则不覆盖），并按其「目录约定」放置新文件
 - [ ] 契约：**无 appHost 也能跑**（`window.appHost` / `window.pluginApi` 都缺时降级分支可达：内存态 + 界面明确提示）
 - [ ] 资源全相对路径；静态数据内联；`frame:false` 时自带关闭按钮接 `close()`
 - [ ] **正确关闭**：写盘 + 退订挂进 `AppClose.on(cb)`（宿主 `apps:willClose` 等它跑完，上限 1.5s）
 - [ ] **内容落盘**：数据只走 `store.js` / `dataWrite`（默认数据根 `apps-data/<id>/data.json`），不用 localStorage、不写应用目录
 - [ ] **数据文件夹**：窗口里能显示当前落点、能让用户改（`dataDirGet` / `dataDirPick` / `dataDirOpen`），换目录不搬数据
+- [ ] **模型能力**（需要模型时）：界面上有选模型的位置（`#modelBtn` + `app-model.js`）；模型只从 `hostModels()` 清单里挑；
+      带图走 `AppHost.text(prompt, { images })`（本机路径或 dataURL）；错误码（`no_provider` / `no_vision` / `offline` /
+      `bad_image` / `too_large` / `cancelled`…）都有可操作的界面提示，**没有任何降级路径**
 - [ ] 应用侧不落凭据；账号摘要走 `accountText()` / `account()` / `authGetState()`
 - [ ] 事件 `onShown` / `onAuthChanged` 都退订
 - [ ] `app.json` 字段与云端 catalog 词条一致（`id` / `entry` / `version` / `window`）

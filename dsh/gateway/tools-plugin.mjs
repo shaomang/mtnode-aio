@@ -27,6 +27,7 @@
 import { createConnection } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { toolSchemaPropKey, remapToolCallArgs } from './tool-schema-keys.mjs'
 
 export const name = 'mtnode-tools'
 export const inject = ['tools']
@@ -143,17 +144,24 @@ export function apply(ctx) {
     const inputs = Array.isArray(tool.inputs) ? tool.inputs : []
     const parameters = {}
     const inputKeys = []
-    /* 入参清单（名字 + 可选标记 + 参数说明）：与 schema 的 properties 一一对应 ——
+    const usedKeys = new Set()
+    const aliases = []
+    /* 入参清单（schema 键 + 可选标记 + 参数说明）：与 schema 的 properties 一一对应 ——
+       中文 / 非法端子名不能当 properties 键（上游会拒整轮请求），回落 arg<N>；
        重名参数会被上面的去重跳掉，所以清单按**实际注册的**那些条目收集，不按下标对齐 */
     const inLines = []
     for (let i = 0; i < inputs.length; i++) {
       const p = inputs[i] || {}
-      const key = String(p.name || 'arg' + (i + 1))
+      const orig = String(p.name || 'arg' + (i + 1))
+      if (aliases.some((a) => a.name === orig)) continue
+      const key = toolSchemaPropKey(orig, i, usedKeys)
       if (parameters[key] !== undefined) continue
       parameters[key] = paramSchema(p, i)
       inputKeys.push(key)
+      aliases.push({ schemaKey: key, name: orig })
       const own = typeof p.description === 'string' ? p.description.trim() : ''
-      inLines.push(key + (p.optional === true ? '（可选）' : '') + (own ? '：' + own : ''))
+      const shown = key === orig ? key : key + '（' + orig + '）'
+      inLines.push(shown + (p.optional === true ? '（可选）' : '') + (own ? '：' + own : ''))
     }
     const outputDesc = (Array.isArray(tool.outputs) ? tool.outputs : [])
       .map((o) => {
@@ -203,7 +211,7 @@ export function apply(ctx) {
         const sessionId = exec && exec.agent ? String(exec.agent.id || '') : ''
         return new Promise((resolve, reject) => {
           pending.set(id, { resolve, reject })
-          send({ t: 'tool', id, sessionId, tool: { key: toolKey, toolName: tool.toolName, name: nameHuman }, args: args || {} })
+          send({ t: 'tool', id, sessionId, tool: { key: toolKey, toolName: tool.toolName, name: nameHuman }, args: remapToolCallArgs(args, aliases) })
           const onAbort = () => {
             if (!pending.has(id)) return
             pending.delete(id)

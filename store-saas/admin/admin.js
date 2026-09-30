@@ -8,7 +8,7 @@
  *     回跳被拦、callback 根本到不了服务端（表现＝扫了码但页面毫无反应，轮询到过期）。
  *     兜底：#lnkNewWin 用同一条 authUrl 走顶层新窗口（顶层导航不受 frame-src 约束）。
  *   · 弹窗一律 persistent：只能点「取消 / 确定」或 Esc 关闭，点外部不关（避免填一半被吞）。
- *   · 金额一律「分」整数存储，展示时才转元；不做任何前端算术决策（校验以服务端为准）。
+ *   · 金额一律「元」（服务端下发 4 位小数）展示；界面不做换算与算术决策（校验以服务端为准）。
  */
 (() => {
   "use strict";
@@ -71,7 +71,8 @@
 
   /* ---------- 展示助手 ---------- */
 
-  const money = (cents) => "¥" + (Number(cents || 0) / 100).toFixed(2);
+  /* 金额一律「元」：服务端已按元下发（4 位小数），界面只做格式化，不做任何换算决策。 */
+  const money = (yuan) => "¥" + Number(yuan || 0).toFixed(4);
   const ts = (ms) => {
     if (!ms) return "—";
     const d = new Date(Number(ms));
@@ -88,7 +89,7 @@
     paid_mismatch: "金额不符",
   };
   const stClass = (s) => (s === "paid" ? "st-paid" : s === "pending" ? "st-pending" : ["refunded", "partial_refunded", "paid_mismatch", "expired", "closed"].includes(s) ? "st-bad" : "st-muted");
-  const LEDGER_TEXT = { recharge: "充值入账", refund: "退款", adjust: "人工调账", mismatch: "金额不符" };
+  const LEDGER_TEXT = { recharge: "充值入账", refund: "退款", adjust: "人工调账", mismatch: "金额不符", relay: "中转扣费" };
 
   let toastTimer = 0;
   function toast(msg, kind) {
@@ -204,6 +205,446 @@
     node.appendChild(prev);
     node.appendChild(next);
   }
+
+  /* ==========================================================================
+   * 中转服务（上游 / 模型 / 价目 / 会话测试 / 留痕 / 用量）
+   *   · 配置保存走 POST /api/admin/relay/config，服务端校验 + 落 db.json + 热生效；
+   *   · 界面拿到的上游永远不含 Key 明文（只有 keyFrom / keyTail）；
+   *   · 会话测试发一张 mtr_test_ 短时 Key 打 /relay/v1/*，按真实用量扣当前管理员账号。
+   * ========================================================================== */
+
+  let RL = { config: null, audit: [], usage: [] };
+
+  const KINDS = [["text", "文本"], ["image", "图像"]];
+  const numOr0 = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const priceText = (m) => {
+    const p = (m && m.price) || {};
+    if (m.upstream === "image") return "¥" + numOr0(p.perImageYuan).toFixed(4) + " / 张";
+    return "命中 " + numOr0(p.cacheHit) + " / 未命中 " + numOr0(p.cacheMiss) + " / 出 " + numOr0(p.output) +
+      (numOr0(p.peakMultiplier) > 1 ? "（高峰 ×" + numOr0(p.peakMultiplier) + "）" : "") + " 元·百万";
+  };
+  const upstreamLabel = (id) => {
+    const u = (RL.config && RL.config.upstreams || []).find((x) => x.id === id);
+    return u ? u.name + "（" + u.id + "）" : (id || "（未绑定）");
+  };
+
+  async function loadRelay() {
+    try {
+      const r = await api("GET", "/api/admin/relay?audit=100&usage=100");
+      RL = { config: r.config, audit: r.audit || [], usage: r.usage || [] };
+    } catch (e) {
+      toast((e && e.message) || "加载中转配置失败", "err");
+      return;
+    }
+    paintRelay();
+  }
+
+  function paintRelay() {
+    const c = RL.config || { upstreams: [], models: [] };
+    const unset = c.upstreams.filter((u) => !u.keyFrom);
+    $("rlMeta").textContent =
+      "配置来源 " + (c.source === "db" ? "管理台（db.json）" : "默认 + 环境变量") +
+      " · 上游 " + c.upstreams.length + " 个（" + (unset.length ? unset.length + " 个缺 Key" : "全部已配 Key") + "）" +
+      " · 上架模型 " + c.models.filter((m) => m.enabled !== false).length + " / " + c.models.length +
+      " · 计费单位 元（文本 元/百万 token · 图像 元/张）" +
+      " · 模型端点 " + location.origin + (API ? new URL(API, location.origin).pathname : "") + "/relay/v1";
+
+    renderTable($("tblRelayUp"), [
+      { title: "上游 id", cls: "mono", get: (u) => u.id },
+      { title: "名称", get: (u) => u.name },
+      { title: "通道", get: (u) => ((KINDS.find((k) => k[0] === u.kind) || [])[1] || u.kind) },
+      { title: "Base URL", get: (u) => u.base || "（空：会拒保存）" },
+      { title: "Key", render: (td, u) => {
+        if (!u.keyFrom) { td.appendChild(el("span", "badge bad", "未配")); return; }
+        td.appendChild(el("span", "badge ok", (u.keyFrom === "db" ? "库内" : "env") + " · …" + (u.keyTail || "----")));
+      } },
+      { title: "超时(s)", get: (u) => Math.round(numOr0(u.timeoutMs) / 1000) },
+      { title: "启用", render: (td, u) => td.appendChild(el("span", "badge " + (u.enabled !== false ? "ok" : "bad"), u.enabled !== false ? "启用" : "停用")) },
+      { title: "模型数", get: (u) => (u.models || []).length },
+      { title: "操作", render: (td, u) => {
+        const box = el("div", "actions");
+        const edit = el("button", "btn btn-sm", "编辑");
+        edit.addEventListener("click", () => editUpstream(u));
+        const pull = el("button", "btn btn-sm", "拉取候选");
+        pull.addEventListener("click", () => pullUpstreamModels(u));
+        const del = el("button", "btn btn-sm btn-danger", "删除");
+        del.addEventListener("click", () => {
+          if (!confirm("删除上游 " + u.id + "？绑定它的模型会一起失去上游（保存时会被校验拦住）。")) return;
+          RL.config.upstreams = RL.config.upstreams.filter((x) => x.id !== u.id);
+          paintRelay();
+          toast("已从待保存的配置里删掉 " + u.id + "，点「保存配置并热生效」生效", "warn");
+        });
+        box.appendChild(edit); box.appendChild(pull); box.appendChild(del);
+        td.appendChild(box);
+      } },
+    ], c.upstreams, "还没有上游");
+
+    renderTable($("tblRelayModels"), [
+      { title: "启用", render: (td, m) => {
+        const cb = el("input");
+        cb.type = "checkbox";
+        cb.checked = m.enabled !== false;
+        cb.addEventListener("change", () => { m.enabled = cb.checked; paintRelay(); });
+        td.appendChild(cb);
+      } },
+      { title: "模型 id", cls: "mono", get: (m) => m.id },
+      { title: "通道", get: (m) => ((KINDS.find((k) => k[0] === m.upstream) || [])[1] || m.upstream) },
+      { title: "绑定上游", get: (m) => upstreamLabel(m.upstreamId) },
+      { title: "上游模型名", cls: "mono", get: (m) => m.upstreamModel },
+      { title: "价目", get: (m) => priceText(m) + (m.priceDefault ? "（默认）" : "") },
+      { title: "操作", render: (td, m) => {
+        const box = el("div", "actions");
+        const edit = el("button", "btn btn-sm", "编辑");
+        edit.addEventListener("click", () => editModel(m));
+        const del = el("button", "btn btn-sm btn-danger", "删除");
+        del.addEventListener("click", () => {
+          if (!confirm("删除模型 " + m.id + "？保存后客户端立刻拉不到它。")) return;
+          RL.config.models = RL.config.models.filter((x) => x !== m);
+          paintRelay();
+        });
+        box.appendChild(edit); box.appendChild(del);
+        td.appendChild(box);
+      } },
+    ], c.models, "还没有模型（客户端会拉不到任何模型）");
+
+    renderTable($("tblRelayAudit"), [
+      { title: "时间", get: (r) => ts(r.at) },
+      { title: "管理员", get: (r) => r.username || r.userId },
+      { title: "动作", get: (r) => r.action },
+      { title: "改动", cls: "wrap-cell", get: (r) => (r.changes || []).join("；") || "（无字段级差异）" },
+    ], RL.audit, "还没有改动记录");
+
+    renderTable($("tblRelayUsage"), [
+      { title: "时间", get: (r) => ts(r.at) },
+      { title: "账号", get: (r) => r.username || r.userId },
+      { title: "模型", cls: "mono", get: (r) => r.model },
+      { title: "类型", get: (r) => (r.kind === "image" ? "图像 ×" + (r.images || 1) : "文本") },
+      { title: "入 / 出 tokens", cls: "num", get: (r) => (r.kind === "image" ? "—" : numOr0(r.promptTokens) + " / " + numOr0(r.outputTokens)) },
+      { title: "应扣(元)", cls: "num", get: (r) => numOr0(r.costYuan).toFixed(4) },
+      { title: "实扣(元)", cls: "num", get: (r) => numOr0(r.chargedYuan).toFixed(4) + (numOr0(r.shortfallYuan) ? "（欠 " + numOr0(r.shortfallYuan).toFixed(4) + "）" : "") },
+      { title: "耗时(ms)", cls: "num", get: (r) => numOr0(r.ms) },
+    ], RL.usage, "还没有调用记录");
+
+    const sel = $("rlTestModel");
+    const keep = sel.value;
+    sel.textContent = "";
+    for (const m of c.models.filter((x) => x.enabled !== false)) {
+      const o = el("option", "", m.id + (m.upstream === "image" ? "（图像）" : ""));
+      o.value = m.id;
+      sel.appendChild(o);
+    }
+    if (keep) sel.value = keep;
+    $("rlTestBalance").textContent = RL.balanceText || "";
+  }
+
+  /** 字段编辑器：返回 {row, inputs}，确定时按 inputs 取值。 */
+  function fieldRow(parent, label, value, placeholder, type) {
+    const lab = el("label", "", label);
+    const inp = el("input");
+    inp.type = type || "text";
+    if (value != null) inp.value = value;
+    if (placeholder) inp.placeholder = placeholder;
+    lab.appendChild(inp);
+    parent.appendChild(lab);
+    return inp;
+  }
+
+  function editUpstream(u) {
+    const isNew = !u;
+    const row = u || { id: "", name: "", kind: "text", base: "", timeoutMs: 300000, enabled: true, keyFrom: "" };
+    const body = document.createDocumentFragment();
+    const idInp = fieldRow(body, "上游 id（小写字母 / 数字 / - _ .）", row.id, "deepseek", "text");
+    const nameInp = fieldRow(body, "名称", row.name, "DeepSeek");
+    const kindLab = el("label", "", "通道");
+    const kindSel = el("select");
+    for (const [v, t] of KINDS) {
+      const o = el("option", "", t);
+      o.value = v;
+      kindSel.appendChild(o);
+    }
+    kindSel.value = row.kind;
+    kindLab.appendChild(kindSel);
+    body.appendChild(kindLab);
+    const baseInp = fieldRow(body, "Base URL（不含 /chat/completions）", row.base, "https://api.deepseek.com");
+    const keyInp = fieldRow(body, "API Key" + (row.keyFrom ? "（当前 " + (row.keyFrom === "db" ? "库内" : "env") + " · …" + (row.keyTail || "") + "，留空即不改）" : ""), "", "sk-…");
+    const toInp = fieldRow(body, "超时（毫秒）", String(row.timeoutMs || 300000), "300000", "number");
+    const note = el("div", "hint", "Key 明文不会回传页面：留空 = 保持不变，重填 = 覆盖成新 Key。");
+    body.appendChild(note);
+    openDialog(isNew ? "添加上游" : "编辑上游 " + row.id, [{ kind: "note", text: "" }], null);
+    // openDialog 的字段表只支持简单输入，这里直接把自定义 DOM 换进 dlgBody
+    const dbody = $("dlgBody");
+    dbody.textContent = "";
+    dbody.appendChild(body);
+    dlgOk = async () => {
+      const id = idInp.value.trim().toLowerCase();
+      if (!id) return void toast("上游 id 不能为空", "err");
+      const next = {
+        id: id,
+        name: nameInp.value.trim() || id,
+        kind: kindSel.value,
+        base: baseInp.value.trim(),
+        timeoutMs: Number(toInp.value) || 300000,
+        enabled: row.enabled !== false,
+      };
+      const key = keyInp.value.trim();
+      if (key) next.key = key;
+      const list = RL.config.upstreams;
+      const i = list.findIndex((x) => x.id === row.id);
+      if (isNew) {
+        if (list.some((x) => x.id === id)) return void toast("上游 id 已存在：" + id, "err");
+        list.push(next);
+      } else if (i >= 0) {
+        list[i] = Object.assign({}, list[i], next);
+      }
+      if (key) {
+        const t = next.id;
+        const item = list.find((x) => x.id === t);
+        if (item) item.__newKey = key; // 只在本次编辑里带着明文，保存后由服务端落库
+      }
+      closeDialog();
+      paintRelay();
+      toast("已加入待保存配置，点「保存配置并热生效」生效", "warn");
+    };
+  }
+
+  function editModel(m) {
+    const isNew = !m;
+    const row = m || { id: "", upstream: "text", upstreamId: "", upstreamModel: "", enabled: true, price: {} };
+    const body = document.createDocumentFragment();
+    const idInp = fieldRow(body, "模型 id（客户端看到的名字）", row.id, "deepseek-flash");
+    const kindLab = el("label", "", "通道");
+    const kindSel = el("select");
+    for (const [v, t] of KINDS) {
+      const o = el("option", "", t);
+      o.value = v;
+      kindSel.appendChild(o);
+    }
+    kindSel.value = row.upstream;
+    kindLab.appendChild(kindSel);
+    body.appendChild(kindLab);
+    const upLab = el("label", "", "绑定上游");
+    const upSel = el("select");
+    for (const u of RL.config.upstreams) {
+      const o = el("option", "", u.name + "（" + u.id + " · " + u.kind + "）");
+      o.value = u.id;
+      upSel.appendChild(o);
+    }
+    upSel.value = row.upstreamId || ((RL.config.upstreams[0] || {}).id || "");
+    upLab.appendChild(upSel);
+    body.appendChild(upLab);
+    const upModelInp = fieldRow(body, "上游模型名（原样透传给上游）", row.upstreamModel, "deepseek-flash");
+    const p = row.price || {};
+    const priceBox = el("div", "hint", "");
+    body.appendChild(priceBox);
+    const priceInputs = {};
+    const paintPrice = () => {
+      priceBox.textContent = "";
+      const isImg = kindSel.value === "image";
+      for (const k of Object.keys(priceInputs)) delete priceInputs[k];
+      // 清掉上一次的价格行
+      for (const n of Array.from(priceBox.parentNode.querySelectorAll("label.rl-price"))) n.remove();
+      const mk2 = (label, key, val) => {
+        const lab = el("label", "rl-price", label);
+        const inp = el("input");
+        inp.type = "number";
+        inp.step = "0.0001";
+        inp.value = String(val == null ? 0 : val);
+        lab.appendChild(inp);
+        priceBox.parentNode.insertBefore(lab, priceBox);
+        priceInputs[key] = inp;
+      };
+      if (isImg) {
+        mk2("图像单价（元 / 张）", "perImageYuan", p.perImageYuan);
+        priceBox.textContent = "图像按「张数 × 元/张」计费（每次调用即计费，与尺寸无关）；价目一律按元。";
+      } else {
+        mk2("缓存命中（元 / 百万 tokens）", "cacheHit", p.cacheHit);
+        mk2("缓存未命中（元 / 百万）", "cacheMiss", p.cacheMiss);
+        mk2("输出（元 / 百万）", "output", p.output);
+        mk2("高峰倍率（1 = 不加成）", "peakMultiplier", p.peakMultiplier == null ? 1 : p.peakMultiplier);
+        priceBox.textContent = "文本按上游回的 usage 计费；DeepSeek 高峰时段按倍率加成。";
+      }
+    };
+    kindSel.addEventListener("change", paintPrice);
+    paintPrice();
+    openDialog(isNew ? "添加模型" : "编辑模型 " + row.id, [{ kind: "note", text: "" }], null);
+    const dbody = $("dlgBody");
+    dbody.textContent = "";
+    dbody.appendChild(body);
+    dlgOk = async () => {
+      const id = idInp.value.trim();
+      if (!id) return void toast("模型 id 不能为空", "err");
+      const price = {};
+      for (const k of Object.keys(priceInputs)) price[k] = numOr0(priceInputs[k].value);
+      const next = {
+        id: id,
+        upstream: kindSel.value,
+        upstreamId: upSel.value,
+        upstreamModel: upModelInp.value.trim() || id,
+        enabled: row.enabled !== false,
+        price: price,
+      };
+      const list = RL.config.models;
+      const i = list.findIndex((x) => x.id === row.id);
+      if (isNew) {
+        if (list.some((x) => x.id === id)) return void toast("模型 id 已存在：" + id, "err");
+        list.push(next);
+      } else if (i >= 0) {
+        list[i] = Object.assign({}, list[i], next);
+      }
+      closeDialog();
+      paintRelay();
+      toast("已加入待保存配置，点「保存配置并热生效」生效", "warn");
+    };
+  }
+
+  async function pullUpstreamModels(u) {
+    try {
+      const r = await api("POST", "/api/admin/relay/upstream-models", { upstreamId: u.id });
+      if (!r.items || !r.items.length) return void toast("上游 /models 没回任何模型", "warn");
+      showPullDialog(u, r.items);
+    } catch (e) {
+      toast((e && e.message) || "拉取候选失败", "err");
+    }
+  }
+
+  function showPullDialog(u, items) {
+    const body = el("div", "dlg-body");
+    body.appendChild(el("div", "hint", "上游 " + u.id + " 回 " + items.length + " 个模型；勾选要上架的，导入后再逐个改「上游模型名 / 价目」。"));
+    const boxes = [];
+    for (const it of items) {
+      const lab = el("label", "", (it.added ? "（已在列表）" : "") + it.id);
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.value = it.id;
+      lab.insertBefore(cb, lab.firstChild);
+      body.appendChild(lab);
+      boxes.push(cb);
+    }
+    openDialog("从上游导入模型 · " + u.id, [{ kind: "note", text: "" }], null, "导入勾选项");
+    const d = $("dlgBody");
+    d.textContent = "";
+    d.appendChild(body);
+    dlgOk = async () => {
+      const picked = boxes.filter((b) => b.checked && !/已在列表/.test(b.parentNode.textContent));
+      if (!picked.length) return void toast("没有勾选新的模型", "warn");
+      for (const b of picked) {
+        RL.config.models.push({
+          id: b.value,
+          upstream: u.kind,
+          upstreamId: u.id,
+          upstreamModel: b.value,
+          enabled: false, // 先下架状态进列表：价目还没填，避免带着 0 价上线白送
+          price: u.kind === "image" ? { perImageYuan: 0 } : { cacheHit: 0, cacheMiss: 0, output: 0, peakMultiplier: 1 },
+        });
+      }
+      closeDialog();
+      paintRelay();
+      toast("已导入 " + picked.length + " 个模型（默认「下架」，填好价目再勾启用）", "warn");
+    };
+  }
+
+  function collectRelayDoc() {
+    return {
+      upstreams: RL.config.upstreams.map((u) => {
+        const o = {
+          id: u.id, name: u.name, kind: u.kind, base: u.base, timeoutMs: u.timeoutMs,
+          enabled: u.enabled !== false,
+        };
+        // 只有真正新填的 Key 才回传；界面没拿到过明文，所以留空 = 服务端保持原 Key
+        if (u.__newKey) o.key = u.__newKey;
+        return o;
+      }),
+      models: RL.config.models.map((m) => ({
+        id: m.id, upstream: m.upstream, upstreamId: m.upstreamId, upstreamModel: m.upstreamModel,
+        enabled: m.enabled !== false, price: m.price || {},
+      })),
+      quota: RL.config.quota,
+      peaks: RL.config.peaks,
+    };
+  }
+
+  $("btnRelayReload").addEventListener("click", loadRelay);
+  $("btnRelaySave").addEventListener("click", async () => {
+    const btn = $("btnRelaySave");
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "/api/admin/relay/config", { config: collectRelayDoc() });
+      RL.config = r.config;
+      paintRelay();
+      toast(r.changed ? "已保存并热生效（客户端下次刷新即拿到新列表）" : "配置没有变化", "ok");
+      loadRelay();
+    } catch (e) {
+      toast((e && e.message) || "保存失败", "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $("btnRelayAddUp").addEventListener("click", () => editUpstream(null));
+  $("btnRelayAddModel").addEventListener("click", () => editModel(null));
+
+  /** 会话测试：发一张短时 Key，打 /relay/v1/*，结果与扣费额度都留在页面上。 */
+  $("btnRelayTest").addEventListener("click", async () => {
+    const btn = $("btnRelayTest");
+    const modelId = $("rlTestModel").value;
+    const prompt = $("rlTestPrompt").value.trim() || "只回一句「中转正常」";
+    const stream = $("rlTestStream").checked;
+    if (!modelId) return void toast("先在模型列表里上架一个模型", "err");
+    const m = (RL.config.models || []).find((x) => x.id === modelId) || {};
+    const isImg = m.upstream === "image";
+    btn.disabled = true;
+    $("rlTestOut").textContent = "";
+    $("rlTestStatus").textContent = "正在发测试 Key…";
+    const t0 = Date.now();
+    try {
+      const k = await api("POST", "/api/admin/relay/test-key", {});
+      const base = (API || "") + "/relay/v1";
+      const path = isImg ? "/images/generations" : "/chat/completions";
+      const body = isImg
+        ? { model: modelId, prompt: prompt, size: "1024x1024" }
+        : { model: modelId, stream: stream, messages: [{ role: "user", content: prompt }] };
+      $("rlTestStatus").textContent = "测试 Key 就绪（" + Math.round(k.expiresInSec / 60) + " 分钟有效）· 正在请求 " + modelId + " …";
+      const res = await fetch(base + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + k.token },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      const ms = Date.now() - t0;
+      $("rlTestOut").textContent = text.length > 6000 ? text.slice(0, 6000) + "\n…（已截断）" : text;
+      let usage = null;
+      try {
+        usage = (JSON.parse(text) || {}).usage || null;
+      } catch {
+        const hit = /"usage"\s*:\s*(\{[^}]*\})/.exec(text);
+        if (hit) {
+          try { usage = JSON.parse(hit[1]); } catch { usage = null; }
+        }
+      }
+      $("rlTestStatus").textContent =
+        "HTTP " + res.status + " · " + ms + "ms · 模型 " + modelId + "（" + (isImg ? "图像" : "文本") + "）" +
+        (usage ? " · usage " + JSON.stringify(usage) : "") +
+        " · 按真实用量从管理员账号扣费，可在下面「最近调用明细」里核对实扣";
+      if (res.ok) toast("测试通过：" + modelId, "ok");
+      else toast("测试失败 HTTP " + res.status + "（错误体见下方输出）", "err");
+      // 测试完刷新明细，让「扣了多少」当场可核
+      const r = await api("GET", "/api/admin/relay?audit=100&usage=100");
+      RL.config = r.config;
+      RL.audit = r.audit || [];
+      RL.usage = r.usage || [];
+      const me = RL.usage.filter((x) => x.at >= t0 - 2000);
+      if (me.length) {
+        const charged = me.reduce((s, x) => s + numOr0(x.chargedYuan), 0);
+        $("rlTestStatus").textContent += " · 本次实扣 " + Number(charged.toFixed(4)) + " 元";
+      }
+      paintRelay();
+      $("rlTestBalance").textContent = "管理员账号余额 " + money(k.totalYuan) + "（" + Number(k.totalYuan).toFixed(4) + " 元）";
+    } catch (e) {
+      $("rlTestStatus").textContent = "测试失败：" + ((e && e.message) || e);
+      toast((e && e.message) || "测试失败", "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   /* ---------- 登录 ---------- */
 
@@ -334,6 +775,7 @@
     if (name === "orders") loadOrders(ordersPage);
     if (name === "users") loadUsers(usersPage);
     if (name === "ledger") loadLedger();
+    if (name === "relay") loadRelay();
   }
   for (const b of document.querySelectorAll("#tabs .tab")) {
     b.addEventListener("click", () => switchView(b.dataset.view));
@@ -371,9 +813,9 @@
     }
     const s = OV.stats || {};
     const cards = [
-      ["已收款", money(s.paidCents), "money"],
-      ["已退款", money(s.refundedCents), "money"],
-      ["净入账", money(s.netCents), "money"],
+      ["已收款", money(s.paidYuan), "money"],
+      ["已退款", money(s.refundedYuan), "money"],
+      ["净入账", money(s.netYuan), "money"],
       ["订单总数", String(s.orders || 0), ""],
       ["流水条数", String(s.ledger || 0), ""],
       ["待支付", String((s.byStatus && s.byStatus.pending) || 0), ""],
@@ -396,7 +838,7 @@
       ["微信登录", OV.wechat && OV.wechat.configured ? "已配置" : "未配置（管理页无法扫码登录）"],
       ["微信归属映射", (OV.wechat && OV.wechat.ownerMapEntries) + " 条"],
       ["充值白名单", ((OV.config && OV.config.rechargeUsers) || []).join(", ") || "（空）"],
-      ["充值区间", money(OV.config && OV.config.minCents) + " – " + money(OV.config && OV.config.maxCents)],
+      ["充值区间", money(OV.config && OV.config.minYuan) + " – " + money(OV.config && OV.config.maxYuan)],
     ];
     const hp = $("ovHealth");
     hp.textContent = "";
@@ -439,7 +881,7 @@
     const cols = [
       { title: "订单号", cls: "mono", get: (r) => r.id },
       { title: "账号", get: (r) => (r.nickname || "") + (r.username ? " @" + r.username : "") },
-      { title: "金额", cls: "num", get: (r) => money(r.amountCents) },
+      { title: "金额", cls: "num", get: (r) => money(r.amountYuan) },
       {
         title: "状态",
         render: (td, r) => {
@@ -449,7 +891,7 @@
       },
       { title: "下单时间", get: (r) => ts(r.createdAt) },
       { title: "支付时间", get: (r) => ts(r.paidAt) },
-      { title: "已退", cls: "num", get: (r) => (r.refundedCents ? money(r.refundedCents) : "—") },
+      { title: "已退", cls: "num", get: (r) => (r.refundedYuan ? money(r.refundedYuan) : "—") },
       { title: "交易号", cls: "mono", get: (r) => r.tradeNo || "—" },
       { title: "入账来源", get: (r) => r.source || "—" },
     ];
@@ -513,20 +955,20 @@
       const lines = [
         ["订单号", o.id],
         ["账号", (o.nickname || "") + " @" + (o.username || "") + "（" + o.userId + "）"],
-        ["金额", money(o.amountCents) + "（" + o.amountCents + " 分）"],
+        ["金额", money(o.amountYuan) + "（" + Number(o.amountYuan).toFixed(4) + " 元）"],
         ["状态", (ST_TEXT[o.status] || o.status) + (o.latePaid ? " · 过期后到账" : "")],
         ["渠道", o.channel],
         ["下单 / 过期", ts(o.createdAt) + " → " + ts(o.expiresAt)],
         ["支付时间", ts(o.paidAt)],
-        ["实付", o.paidAmountCents ? money(o.paidAmountCents) : "—"],
-        ["已退", o.refundedCents ? money(o.refundedCents) : "—"],
+        ["实付", o.paidAmountYuan ? money(o.paidAmountYuan) : "—"],
+        ["已退", o.refundedYuan ? money(o.refundedYuan) : "—"],
         ["支付宝交易号", o.tradeNo || "—"],
         ["买家ID", o.buyerId || "—"],
         ["入账来源", o.source || "—"],
         ["下单IP", o.clientIp || "—"],
         ["付款串", o.qrCode || "—"],
       ];
-      const refunds = (o.refunds || []).map((x) => money(x.amountCents) + " · " + ts(x.at) + " · " + (x.operator || "") + " · " + (x.note || "")).join("\n");
+      const refunds = (o.refunds || []).map((x) => money(x.amountYuan) + " · " + ts(x.at) + " · " + (x.operator || "") + " · " + (x.note || "")).join("\n");
       openDialog(
         "订单详情 " + o.id,
         [],
@@ -573,17 +1015,17 @@
   }
 
   function refundDialog(o) {
-    const remain = (o.amountCents || 0) - (o.refundedCents || 0);
+    const remain = Number(((o.amountYuan || 0) - (o.refundedYuan || 0)).toFixed(4));
     openDialog(
       "退款 · " + o.id,
       [
-        { kind: "note", text: "账号：" + (o.username || o.userId) + " · 订单金额 " + money(o.amountCents) + " · 可退 " + money(remain) + " · 退款会同步扣减该账号余额（余额不足会被拒绝）。" },
-        { name: "yuan", label: "退款金额（元）", type: "number", value: (remain / 100).toFixed(2), required: true },
+        { kind: "note", text: "账号：" + (o.username || o.userId) + " · 订单金额 " + money(o.amountYuan) + " · 可退 " + money(remain) + " · 退款会同步扣减该账号余额（余额不足会被拒绝）。" },
+        { name: "yuan", label: "退款金额（元）", type: "number", value: remain.toFixed(4), required: true },
         { name: "note", label: "退款原因（必填，进流水审计）", type: "textarea", placeholder: "例如：用户申请退款 / 误充值", required: true },
       ],
       async (v) => {
-        const cents = Math.round(Number(v.yuan) * 100);
-        if (!Number.isFinite(cents) || cents <= 0) {
+        const yuanAmt = Number(v.yuan);
+        if (!Number.isFinite(yuanAmt) || yuanAmt <= 0) {
           toast("金额无效", "err");
           return true;
         }
@@ -591,14 +1033,14 @@
           toast("必须填写退款原因", "err");
           return true;
         }
-        if (cents > remain) {
+        if (yuanAmt > remain) {
           toast("超过可退金额 " + money(remain), "err");
           return true;
         }
         try {
-          const r = await api("POST", "/api/admin/orders/" + encodeURIComponent(o.id) + "/refund", { amountCents: cents, note: v.note });
+          const r = await api("POST", "/api/admin/orders/" + encodeURIComponent(o.id) + "/refund", { amountYuan: yuanAmt, note: v.note });
           toast(
-            "退款成功：" + money(cents) + "（订单转 " + (ST_TEXT[r.order.status] || r.order.status) + "）" +
+            "退款成功：" + money(yuanAmt) + "（订单转 " + (ST_TEXT[r.order.status] || r.order.status) + "）" +
               (r.fundChange === "N" ? " · 支付宝返回 fund_change=N（可能是重复请求）" : ""),
             "ok",
           );
@@ -640,7 +1082,7 @@
               td.textContent = parts.length ? parts.join(" · ") : "—";
             },
           },
-          { title: "余额", cls: "num", get: (u) => money(u.balanceCents) },
+          { title: "余额", cls: "num", get: (u) => money(u.balanceYuan) },
           {
             title: "身份",
             render: (td, u) => {
@@ -680,13 +1122,13 @@
     openDialog(
       "人工调账 · " + (u.username || u.id),
       [
-        { kind: "note", text: "当前余额 " + money(u.balanceCents) + "。正数 = 赠送 / 补账，负数 = 扣减；扣减不得使余额为负。所有调账都会记入流水并留下操作人。" },
-        { name: "yuan", label: "调账金额（元，可带负号）", type: "number", value: "0.00", required: true },
+        { kind: "note", text: "当前余额 " + money(u.balanceYuan) + "。正数 = 赠送 / 补账，负数 = 扣减；扣减不得使余额为负。所有调账都会记入流水并留下操作人。" },
+        { name: "yuan", label: "调账金额（元，可带负号）", type: "number", value: "0.0000", required: true },
         { name: "note", label: "备注（必填，审计留痕）", type: "textarea", placeholder: "例如：活动赠送 / 线下已收款补账 / 误充退回", required: true },
       ],
       async (v) => {
-        const cents = Math.round(Number(v.yuan) * 100);
-        if (!Number.isFinite(cents) || cents === 0) {
+        const yuanAmt = Number(v.yuan);
+        if (!Number.isFinite(yuanAmt) || yuanAmt === 0) {
           toast("金额无效（不得为 0）", "err");
           return true;
         }
@@ -695,8 +1137,8 @@
           return true;
         }
         try {
-          const r = await api("POST", "/api/admin/users/" + encodeURIComponent(u.id) + "/adjust", { deltaCents: cents, note: v.note });
-          toast("调账成功：新余额 " + money(r.balanceCents), "ok");
+          const r = await api("POST", "/api/admin/users/" + encodeURIComponent(u.id) + "/adjust", { deltaYuan: yuanAmt, note: v.note });
+          toast("调账成功：新余额 " + money(r.balanceYuan), "ok");
           loadUsers(usersPage);
           return false;
         } catch (e) {
@@ -723,11 +1165,11 @@
         title: "变动",
         cls: "num",
         render: (td, e) => {
-          const n = el("span", e.deltaCents >= 0 ? "pos" : "neg", (e.deltaCents >= 0 ? "+" : "") + money(e.deltaCents));
+          const n = el("span", e.deltaYuan >= 0 ? "pos" : "neg", (e.deltaYuan >= 0 ? "+" : "") + money(e.deltaYuan));
           td.appendChild(n);
         },
       },
-      { title: "变动后余额", cls: "num", get: (e) => money(e.balanceAfterCents) },
+      { title: "变动后余额", cls: "num", get: (e) => money(e.balanceAfterYuan) },
       { title: "订单号", cls: "mono", get: (e) => e.orderId || "—" },
       { title: "交易号", cls: "mono", get: (e) => e.tradeNo || "—" },
       { title: "操作人", get: (e) => e.operator || "—" },

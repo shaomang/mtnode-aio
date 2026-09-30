@@ -4,6 +4,11 @@
 @import url("./css/canvas.css");
 @import url("./css/components.css");
 @import url("./css/dsh.css");
+/* dsh 会话令牌层（css/dsh-tokens.css）：会话 / 助手两个窗格共用的语义令牌
+   （--dsh-*），值引用 base.css 的主题槽位 → 暗色与亮色（body.theme-light）
+   自动同源，不再逐条补亮色覆盖。排在 dsh.css 之后、assist.css 之前：
+   令牌先就位，两个窗格再取用。 */
+@import url("./css/dsh-tokens.css");
 @import url("./css/assist.css");
 @import url("./css/theme-light.css");
 @import url("./css/puzzle.css");
@@ -43,3 +48,6 @@
 @import url("./css/apps.css");
 /* 账户充值（钱包）：充值对话框 + 账号菜单余额行（renderer/app-wallet.js） */
 @import url("./css/wallet.css");
+/* 会话自己的浏览器：侧栏「浏览器活动」页 + 活动流 + 浏览器求助/接管卡
+   （renderer/app-browser.js）；亮色覆盖在文件末尾。 */
+@import url("./css/browser.css");

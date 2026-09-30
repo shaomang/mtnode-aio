@@ -299,8 +299,8 @@ const DB_FNS = [
      经 tracePush 推 tool 段，抽真实现时必须一并带上 */
   "traceCloseSay",
   "tracePush",
-  /* 续跑起步前摘掉轨迹里的思考段（本 bug 修复点）：dshRunOnce 在 resume 起步时调它 */
-  "traceDropThink",
+  /* 续跑起步「切开」轨迹里的思考段（本 bug 修复点）：dshRunOnce 在 resume 起步时调它 */
+  "traceSplitThink",
   "traceText",
   "dshRunSigOf",
   "dshResumeDirective",
@@ -418,8 +418,9 @@ rbSandbox.dshRunOnce = (input, opts) => {
   calls.push({ input, opts, runKey });
   /* 逐字复刻 dshRunOnce 与本轮相关的三行真实语义 */
   if (!opts.keepTrace) G("traceReset")(runKey);
-  /* 续跑起步（resumeSession 非空）：摘掉失败轮的思考段 —— 正文留着续写，思考不留 */
-  else if (opts.resumeSession) G("traceDropThink")(runKey);
+  /* 续跑起步（resumeSession 非空）：切开失败轮的思考段（收口，一段都不删）——
+     正文留着续写，已思考过的内容也留着，新一轮思考另起一段 */
+  else if (opts.resumeSession) G("traceSplitThink")(runKey);
   let acc = String(opts.seedText || "");
   const sig = G("dshRunSigOf")({
     workspace: opts.workspace || "",
@@ -740,32 +741,43 @@ reset([
   await awaitable(runTask("node5b"));
   eqNum(G("traceText")("node5b", "say"), "整轮重发的全文", "整轮重发照旧清空失败轮残文（不叠字）");
 
-  /* ===== [5b] 续跑起步摘掉失败轮的思考段（「残留旧的思考内容」的直接回归） =====
-     续跑轮不 reset 轨迹（正文要留），但思考段必须摘 —— 摘要留着，traceText('think')
-     就一直是「旧 + 新」，界面「思考」框挂着上一失败轮的旧思考，随消息落盘后清空会话
-     再开新一轮也能翻出来。 */
-  console.log("\n[5b] 续跑起步摘掉失败轮思考段：思考不残留，正文照旧完整");
-  /* 先钉住纯函数口径（段过滤 + 记账复位；say / tool / err 一字不动） */
-  G("traceReset")("dropThink");
-  G("tracePush")("dropThink", "think", "失败轮的旧思考", { turn: 1, step: 1 });
-  G("tracePush")("dropThink", "tool", "", { turn: 1, step: 1, callId: "c1" });
-  G("tracePush")("dropThink", "say", "失败轮的半截正文", { turn: 1, step: 1 });
-  G("tracePush")("dropThink", "err", "429 Too Many Requests", { turn: 1, step: 1 });
-  const droppedTr = G("traceDropThink")("dropThink");
+  /* ===== [5b] 续跑起步「切开」失败轮的思考段（思考内容不许被移除的回归） =====
+     旧口径在这里把 think 段整段摘掉：用户已经看到的思考从时间线上消失、也再也归档不回来
+     （正文留着、思考没了的怪状态）——「会话中的思考内容被错误移除了」。
+     现在只**切开**：上一段收口（open=false），新一轮的思考另起一段，一段都不删。 */
+  console.log("\n[5b] 续跑起步切开失败轮思考段：思考一段不删，新一轮另起一段");
+  /* 先钉住纯函数口径（收口 + 段数 + 记账；say / tool / err 一字不动） */
+  G("traceReset")("splitThink");
+  G("tracePush")("splitThink", "think", "失败轮的旧思考", { turn: 1, step: 1 });
+  G("tracePush")("splitThink", "tool", "", { turn: 1, step: 1, callId: "c1" });
+  G("tracePush")("splitThink", "say", "失败轮的半截正文", { turn: 1, step: 1 });
+  G("tracePush")("splitThink", "err", "429 Too Many Requests", { turn: 1, step: 1 });
+  const splitTr = G("traceSplitThink")("splitThink");
   eqArr(
-    droppedTr.items.map((it) => it.k),
-    ["tool", "say", "err"],
-    "traceDropThink 只摘 think 段（正文 / 工具 / 错误段一字不动）",
+    splitTr.items.map((it) => it.k),
+    ["think", "tool", "say", "err"],
+    "traceSplitThink 一段都不删（think / 正文 / 工具 / 错误段原样都在）",
   );
-  eqNum(G("traceText")("dropThink", "think"), "", "摘完之后思考轨迹是空的（不残留旧思考）");
-  eqNum(G("traceText")("dropThink", "say"), "失败轮的半截正文", "续跑要保的正文仍在轨迹里");
-  eqNum(droppedTr._thinkIdx, -1, "开放思考段下标一并复位（否则下一段思考并进已不存在的段）");
-  G("tracePush")("dropThink", "think", "续跑轮的新思考", { turn: 2, step: 1 });
-  eqNum(G("traceText")("dropThink", "think"), "续跑轮的新思考", "新思考另起一段，不并进已摘掉的旧段");
-  eqNum(G("traceText")("dropThink", "say"), "失败轮的半截正文", "摘思考不动正文段");
-  /* 长任务纠错轮那类 keepTrace 不带 resumeSession → 不摘（判据在 dshRunOnce） */
-  has(dbSrc, "else if (opts.resumeSession) traceDropThink(runKey);", "dshRunOnce 只在 resume 起步时摘思考段（源码原文）");
-  /* 端到端：真重发闸 + 真实轨迹 —— 续跑轮新思考接在旧思考后面（本 bug 的现场） */
+  eqNum(G("traceText")("splitThink", "think"), "失败轮的旧思考", "旧思考仍留在轨迹里（可回看、可归档）");
+  eqNum(G("traceText")("splitThink", "say"), "失败轮的半截正文", "续跑要保的正文仍在轨迹里");
+  eqNum(splitTr.items[0].open, false, "旧思考段被收口（open=false → 渲染成一块独立折叠块）");
+  eqNum(splitTr._thinkIdx, -1, "开放思考段下标复位（下一段思考另起一块，不并进旧段）");
+  G("tracePush")("splitThink", "think", "续跑轮的新思考", { turn: 2, step: 1 });
+  eqNum(
+    G("traceText")("splitThink", "think"),
+    "失败轮的旧思考\n\n续跑轮的新思考",
+    "两段思考都在，段间空行分隔（新思考不并进旧段）",
+  );
+  eqNum(
+    splitTr.items.filter((it) => it.k === "think").length,
+    2,
+    "思考段 = 2（旧段 + 新段），不是拼成一坨",
+  );
+  eqNum(G("traceText")("splitThink", "say"), "失败轮的半截正文", "切思考不动正文段");
+  /* 长任务纠错轮那类 keepTrace 不带 resumeSession → 不切（判据在 dshRunOnce） */
+  has(dbSrc, "else if (opts.resumeSession) traceSplitThink(runKey);", "dshRunOnce 只在 resume 起步时切思考段（源码原文）");
+  ok(dbSrc.indexOf("traceDropThink") < 0, "全仓不再有「摘掉思考段」的老口径（思考内容不许被删除）");
+  /* 端到端：真重发闸 + 真实轨迹 —— 旧思考与续跑轮的新思考都在（本 bug 的现场） */
   reset([
     { session: "session-thk", think: ["失败轮的旧思考"], text: ["前半"], fail: "429 Too Many Requests" },
     { session: "session-thk", think: ["续跑轮的新思考"], text: ["续写尾段"] },
@@ -775,12 +787,12 @@ reset([
   eqNum(calls[1].opts.keepTrace, true, "续跑轮仍带 keepTrace（正文轨迹要留）");
   eqNum(
     G("traceText")("nodeThk", "think"),
-    "续跑轮的新思考",
-    "端到端：思考轨迹只剩续跑轮的新思考 —— 上一失败轮的旧思考不再挂进「思考」框",
+    "失败轮的旧思考\n\n续跑轮的新思考",
+    "端到端：上一失败轮的旧思考与续跑轮的新思考都在（思考不再被移除）",
   );
   ok(
-    G("traceText")("nodeThk", "think").indexOf("失败轮的旧思考") < 0,
-    "界面取思考的那份文本（traceText('think')）里翻不到旧思考（残留已清）",
+    G("traceText")("nodeThk", "think").indexOf("续跑轮的新思考") > 0,
+    "续跑轮的思考照常进来（切开不等于把新思考也丢了）",
   );
   /* 正文按既有分段口径还原：续跑轮的正文接在同一步则并回同一条 say 段（见 [5]），
      续跑轮先推了一段思考（换段）则正文自然另起一段 —— 两种情况都拼得出整轮正文，

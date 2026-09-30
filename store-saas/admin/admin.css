@@ -228,6 +228,34 @@ td .actions { display: flex; gap: 6px; }
 .hint { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
 .dlg-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
+/* 中转服务页 */
+.rl-out {
+  margin: 10px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.rl-out:empty { display: none; }
+#view-relay label.rl-price { display: inline-grid; gap: 4px; margin: 6px 10px 0 0; color: var(--muted); font-size: 12px; }
+#view-relay label.rl-price input { width: 150px; }
+.dlg-body label.rl-price { display: inline-grid; gap: 4px; margin: 6px 10px 0 0; color: var(--muted); font-size: 12px; }
+.dlg-body label.rl-price input { width: 150px; }
+.dlg-body select {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 /* Toast */
 .toast {
   position: fixed;

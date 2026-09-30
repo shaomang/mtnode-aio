@@ -90,6 +90,32 @@ exports.default = async function afterPack(context) {
   }
   const copied = { dirs: 0, files: 0, bytes: 0 }
 
+  /* 指向目录的符号链接 / junction = 打包的硬红线，必须立刻失败：
+     pnpm 隔离布局（nodeModulesLinker=isolated）把包做成 junction 指向 node_modules/.pnpm，
+     而 fs.readdirSync 的 dirent 对 junction 报 isDirectory()=false —— 老代码会把它当普通文件
+     走 fs.copyFileSync，在 Windows 上直接抛 EPERM/EISDIR，复制中断后 dst 里只剩半棵树
+     （node_modules 与 package.json 都缺），安装包启动时网关立刻 exit 1：
+     `Cannot find package '@deepseek-ai/dsh-sdk-client'`。
+     这里显式报错，把「静默产出坏安装包」变成一眼可见的打包失败；正常布局由
+     dsh/gateway/pnpm-workspace.yaml 的 `nodeLinker: hoisted`（同值也在 .npmrc 里，
+     供 pnpm <11 读）保证 —— npm 式真实目录，顶层与包内部都没有目录链接。
+     指向**文件**的链接不算：copyFileSync 会按真实内容复制，.bin 里的命令壳就是这么进来的。 */
+  const assertNoDirLink = (abs, relPath) => {
+    let st
+    try { st = fs.statSync(abs) } catch (err) {
+      throw new Error(`[after-pack] 链接目标不可达：${relPath}（${err.message}）`)
+    }
+    if (!st.isDirectory()) return
+    throw new Error(
+      `[after-pack] 网关依赖树里出现指向目录的符号链接/junction：${relPath}\n`
+      + `  pnpm 若是隔离布局（isolated），打包会把 resources/dsh/gateway 复制到一半，\n`
+      + `  产出的安装包启动即 "dsh 网关已退出"(Cannot find package …)。\n`
+      + `  修法：dsh/gateway 已固定 nodeLinker: hoisted（pnpm-workspace.yaml，pnpm<11 读 .npmrc），执行\n`
+      + `    cd dsh/gateway && pnpm install\n`
+      + `  重装成 npm 式真实目录后重跑打包。`,
+    )
+  }
+
   // 手动遍历复制：electron-builder 的 cpSync filter 拿不到「整目录被剪」的体积，
   // 自己走一遍才能把「每组省了多少 MB」如实报出来。
   const walk = (from, rel) => {
@@ -98,7 +124,13 @@ exports.default = async function afterPack(context) {
     for (const e of entries) {
       const abs = path.join(from, e.name)
       const relPath = rel ? rel + '/' + e.name : e.name
-      if (e.name === '.cache' || e.name === '.yarn' || e.name === '.git') {
+      if (e.isSymbolicLink()) assertNoDirLink(abs, relPath)
+      /* .pnpm 是 pnpm 自己的虚拟存储（hoisted 布局下也照样生成），运行时根本不可达：
+         hoisted 把每个包落成 node_modules/<pkg> 的真实目录，node_modules 顶层与各包内部
+         都没有任何链接指回 .pnpm（实测 0 条），Node 的解析规则只会向上找 node_modules，
+         永远走不进它。实测把 .pnpm 改名后 `node dsh/smoke-gateway.mjs` 仍然 exit 0。
+         它同时是打包杀手：里面对目录的 junction 上万个，打包既复制不了又白占 ~1.8GB。 */
+      if (e.name === '.cache' || e.name === '.yarn' || e.name === '.git' || e.name === '.pnpm') {
         if (e.isDirectory()) drop('dotdir:' + e.name, dirBytes(abs), false)
         continue
       }

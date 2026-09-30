@@ -15,8 +15,24 @@
  *     只能给 prompt / messages / 温度等白名单字段，不能指定服务商、模型或密钥；
  *   · 应用本体**不依赖这座桥也能跑**：桥缺席时 window.appHost 是 undefined，应用照常启动。
  *
- * 能力（六项）：
- *   textGenStream(opts, cb)       → { ok, text }            文本生成（流式；cb 收 delta/reasoning/done/error）
+ * 能力（八项）：
+ *   textGenStream(opts, cb)       → { ok, text, reasoningChars, finishReason, truncated }
+ *                                  文本生成（流式；cb 收 delta/reasoning/done/error）
+ *     · opts.messages[].content 支持**多模态**：字符串，或 [{type:'text'},{type:'image_url',image_url:{url}}]
+ *       数组；url = 本机绝对路径（主进程读盘并缩放到长边 ≤1080）或 data:image/...;base64,…
+ *       上限：一条消息 8 张图、单次请求原始字节合计 10MB；
+ *       失败回结构化错误码：bad_image / too_many_images / too_large / no_provider / no_vision /
+ *       bad_model / bad_thinking / offline / http_401…（ok:false 时看 code）
+ *     · opts.model = MTNode 已配置的模型 id（见 hostModels()）；省略 / "auto" = 跟随宿主默认
+ *     · opts.thinking = 思考档：省略 = off（**应用通道默认关思考**），认 off / on(=high) / low / high / max。
+ *       别拿 maxTokens 去卡「思考 + 正文」共用的预算：思考会把正文吃光，正文变半截
+ *       （finishReason="length"、truncated=true），应用只好报「回复不是可用 JSON」。
+ *     · opts.maxTokens 省略 = 不下发上限（推荐）；给了才下发
+ *   hostModels()                  → { ok, models, selected, hasAny, hasVision, defaultModel }
+ *                                  列出 MTNode 已配置的全部文本模型 + 首项「跟随默认」；服务商与 Key 不回传
+ *   hostModel() / hostSetModel(id) 读 / 改本应用的模型选择（按应用 id 持久化，关窗重启还记得）
+ *   pickImage()                   → { ok, path, name }      弹系统选图框（用户亲自选的那一次才生效）；
+ *                                  取消回 { ok:false, code:"cancelled" }，**不是错误**
  *   imageGen(opts)                → { ok, base64, dataUrl } 图像生成（每次一张）
  *   storageGet / storageSet / storageAll / storageRemove    本机存储（落该应用数据文件夹的 data.json）
  *   dataDirGet / dataDirPick / dataDirOpen / dataRead / dataWrite
@@ -60,9 +76,10 @@ ipcRenderer.on("apps:willClose", () => {
 });
 
 const appHost = {
-  /* 文本生成（流式）：opts = { prompt, system?, messages?, temperature?, maxTokens? }；
-     cb 依次收 {type:'delta'|'reasoning', text} 与收尾的 {type:'done', text} /
-     {type:'error', error}；done / error 后自动摘掉监听。返回 invoke 的 Promise（{ok, text}）。 */
+  /* 文本生成（流式）：opts = { prompt, system?, messages?, model?, temperature?, maxTokens? }；
+     messages[].content 支持字符串或多模态数组（见文件头）；cb 依次收 {type:'delta'|'reasoning', text}
+     与收尾的 {type:'done', text} / {type:'error', error, code}；done / error 后自动摘掉监听。
+     返回 invoke 的 Promise（{ok, text, model} 或 {ok:false, error, code}）。 */
   textGenStream: (opts, cb) => {
     const reqId = Date.now().toString(36) + Math.random().toString(36).slice(2);
     const onEv = (ev, msg) => {
@@ -80,6 +97,16 @@ const appHost = {
 
   /* 图像生成：opts = { prompt, size?, quality?, background? }（每次只出一张，回 base64 + dataUrl） */
   imageGen: (opts) => ipcRenderer.invoke("apps:hostImage", opts || {}),
+
+  /* 模型继承：列出 MTNode 已配置的全部文本模型（首项 = 跟随默认，每项带 vision 是否支持识图），
+     读当前选择，改当前选择（只认清单里的 id；服务商与 Key 一律不回传）。 */
+  hostModels: () => ipcRenderer.invoke("apps:hostModels"),
+  hostModel: () => ipcRenderer.invoke("apps:hostModel"),
+  hostSetModel: (model) => ipcRenderer.invoke("apps:hostSetModel", { model: model }),
+
+  /* 选一张本机图（系统对话框，用户亲自选的那一次才生效）：只回路径，读盘 / 缩放留在主进程。
+     用户取消 → { ok:false, code:"cancelled" }，调用方不要当报错弹提示。 */
+  pickImage: () => ipcRenderer.invoke("apps:hostPickImage"),
 
   /* 本机存储：每应用一份（只在该应用自己的数据文件夹里读写），键为字符串、
      值任意可结构化克隆的 JSON 值（整份上限 2MB） */

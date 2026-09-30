@@ -1884,6 +1884,10 @@
     "已重做": "Redone",
     "用户：": "User: ",
     "助手：": "Assistant: ",
+    "【我对上面问题的回答】": "[My answers to the questions above]",
+    "（未作答）": "(not answered)",
+    "【用户已确认的部分（续跑兜底 · 这些答案已生效，不要重复提问）】":
+      "[Already confirmed by the user (resume fallback · these answers count — do not ask again)]",
     "子代理": "Sub-agent",
     "组 1": "Group 1",
     "组标题": "Group title",
@@ -2284,6 +2288,7 @@
       "This session only reads and writes the canvas it belongs to; switching to another canvas will not mix them up",
     "（已删除）": " (deleted)",
     "拖拽调整会话列表宽度": "Drag to resize the session list",
+    "拖动分界线调整会话列表宽度（整条边界都可拖，双击复位）": "Drag the divider to resize the session list (the whole border is draggable · double-click to reset)",
     "尚无对话": "No messages yet",
     "已添加节点：": "Added node: ",
     "已移除技能 ": "Removed skill ",
@@ -2854,6 +2859,12 @@
     "保存路径（*.png / *.jpg）…": "Save path (*.png / *.jpg)…",
     "点击选择图像，或直接拖拽图像文件到节点上": "Click to choose an image, or drag image files onto the node",
     "画布已设置统一工作目录,本节点只读继承": "Canvas has a shared working directory; this node inherits it read-only",
+    /* ── 外层工作目录输入一律只读（画布项目目录 / 新建画布 / 助手工作区 / 功能块项目文件夹） ──
+       目录一律经系统文件夹选择器选，避免手打一个字符导致深处才报「写入失败」。 */
+    "工作目录只读：点右侧「选择文件夹」按钮选目录":
+      "Working directory is read-only — use the “Choose folder” button on the right",
+    "双击直选文件夹，Ctrl+V 粘贴路径":
+      "Double-click to pick a folder; Ctrl+V to paste a path",
     "关闭标签（仅从标签条移除，不删除画布）": "Close tab (remove from the tab bar only; does not delete the canvas)",
     "扩展为智能会话(节点与会话内容完全同步)": "Expand to agent session (node and session content stay fully synced)",
     "未配置接口地址（设置 · API/配置）": "No endpoint configured (Settings · API/Config)",
@@ -3019,6 +3030,8 @@
     "这几项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。深度只约束「子代理再派子代理」，不影响你自己发起的一次委派。": "These are written into the dsh composition (cordis.yml) and apply to the next new session; a session already running keeps the previous values. Depth only limits a subagent delegating further — it never blocks a delegation you start yourself.",
     /* 设置 · 智能能力：精简工具负载（工具可见集裁剪，见 docs/codex-agent-benchmark.md） */
     "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）": "Lean tool payload (do not register optional tools such as app control / vision subagent; about 4.7K fewer characters per step; takes effect on the next run)",
+    /* 设置 · 智能能力：开发者工具（会话右栏「运行轨迹」View · renderer/app-trajectory.js） */
+    "开发者工具（会话右栏「运行轨迹」视图：逐步看思考 / 正文 / 工具调用，工具调用可展开详情）": "Developer tools (a Run trajectory view in the session's right column: step through thinking / reply / tool calls, with expandable tool details)",
     "输入消息…（Enter 换行，Ctrl+Enter 发送）": "Enter a message… (Enter newline, Ctrl+Enter send)",
     "以下为模型运行时的思考内容（仅保留在内存中，不写入存档）。": "Thinking content during the model run (kept in memory only; not written to the archive).",
     "由拆分节点生成的只读节点：标题为原批次项名，内容为该项内容": "Read-only node created by a Split node: title is the original batch item name, content is that item",
@@ -3102,9 +3115,134 @@
     "与画布无关": "Canvas-free",
     "与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它": "Canvas-free: this session registers no canvas or app tools (no canvas read / graph edit / app actions), saving tokens; turn it off first when you do need canvas edits",
     "与画布无关：开启中，点击关闭（本会话不注册任何画布与应用工具）": "Canvas-free: ON — click to turn off (this session registers no canvas or app tools)",
+    "自动续跑": "Auto-continue",
+    "自动续跑已关": "Auto-continue off",
+    "自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（不打断你，随时可关）": "Auto-continue: when a round finishes but the goal is not met and there is a next step, the session keeps working on its own (it never interrupts you; turn it off any time)",
+    "自动续跑已关闭：本轮跑完就停，等你下一条消息": "Auto-continue is off: the session stops when this round finishes and waits for your next message",
+    "自动续跑已开启（不再自动追轮）": "Auto-continue is on",
+    "自动续跑已关闭（本轮跑完就停）": "Auto-continue is off (the session stops when this round finishes)",
+    "自动续跑已到安全上限（": "Auto-continue hit its safety cap (",
+    " 轮），已停下；确需继续请再发一句。": " rounds) and stopped; send one more message if you really want it to continue.",
+    /* 会话「显示思考内容」（模式菜单第三枚开关，见 app-assist.js agentModeEntryOf("think")）：
+       关掉只影响渲染，思考内容照旧随消息存档（不删不裁） */
+    "显示思考内容": "Show thinking",
+    "关掉后会话里不再显示模型的思考块（思考内容仍随消息存档，随时可再打开）": "Turn it off to hide the model's thinking blocks in this session (the thinking text is still archived with the message, so you can show it again any time)",
+    "显示思考内容：开启中，点击隐藏会话里的模型思考块": "Show thinking: ON — click to hide the model's thinking blocks in this session",
+    "显示思考内容：已关闭，点击重新显示会话里的模型思考块": "Show thinking: OFF — click to show the model's thinking blocks in this session again",
+    "这活看着要跑很久：可以把它提升为「长周期任务图」，重启后也能接着跑（会话里说一句我就给你搭）。": "This looks like hours of work: it can be promoted to a Long-running task graph that survives a restart (say the word in the chat and I will build it).",
+    /* 「模式」chip 菜单（纯净模式 + 自动续跑 收进一只下拉，见 app-assist.js buildAgentModeMenu） */
+    "模式": "Modes",
+    "以上开关都只作用于当前会话，随时可改": "All of these apply to this session only and can be changed at any time",
+    "模式：": "Modes: ",
+    "（开）": " (on)",
+    "（关）": " (off)",
+    "目标已达成": "goal reached",
+    "清单已跑完": "checklist finished",
+    /* 清单未收口 → 自动补「清单同步」轮（app-longrun.js 的 TODO_SYNC_MAX / todoSyncDirective）；
+       句尾的「 项）」「 轮）」复用表内既有词条，不重复登记 */
+    "清单里有未确认条目：已自动补一轮，让模型标清任务状态": "The checklist has unconfirmed items: one extra round was added so the model marks their status",
+    "清单未收口（已补 ": "checklist not closed out (extra rounds used: ",
+    "清单未收口（模型未确认这 ": "checklist not closed out (model left these unconfirmed: ",
+    /* 收工空转闸（app-longrun.js 的 DONE_STREAK_MAX）：连续几轮都在说完成、清单又没变动 → 停 */
+    "清单未收口（同步已补 ": "checklist not closed out (sync rounds used: ",
+    " 轮，已停）": " rounds — stopped)",
+    "本轮出错，等你处置": "round failed — waiting for you",
+    "已终止": "cancelled",
+    "已关闭自动续跑": "auto-continue off",
+    "已到安全上限 ": "safety cap reached: ",
+    " 轮，已停": " rounds — stopped",
+    "已续 ": "rounds: ",
+    "浏览器活动": "Browser activity",
+    "浏览器活动（会话右边栏）：看它开了哪些网页、跑了哪些命令；跟随当前会话，这条会话没有浏览器时不显示": "Browser activity (session right panel): see which pages it opened and which commands it ran — follows the current chat and stays hidden while that chat has no browser",
+    "收起浏览器活动栏": "Collapse the browser-activity panel",
+    "拖动边框中部调整活动栏宽度": "Drag the middle of the border to resize the activity panel",
+    "拖动分界线调整活动栏宽度（整条边界都可拖）": "Drag the divider to resize the activity panel (the whole border is draggable)",
+    "打开浏览器": "Open browser",
+    "停止": "Stop",
+    "接管": "Take over",
+    "交还": "Hand back",
+    "名单": "Lists",
+    "筛活动…": "Filter activity…",
+    "含其它会话": "Include other chats",
+    "清空": "Clear",
+    "停止跟随": "Stop following",
+    "跟随最新": "Follow latest",
+    "正在跟随最新：有新活动就停在最新一条；点一下停止跟随（往上翻旧记录不被拽回底部）": "Following the latest: every new activity keeps the list at the newest row. Click to stop following (scrolling back through older rows will no longer pull you down).",
+    "已停止跟随：往上翻旧记录不会被拽回底部；点一下恢复跟随最新": "Not following: scrolling back through older rows stays put. Click to follow the latest again.",
+    "还没有活动。会话开始用浏览器后，这里会逐条记下它做了什么、跑了什么命令。": "No activity yet. Once the session starts using the browser, every action and command it runs shows up here.",
+    "本会话还没有活动。它用浏览器、跑命令或改文件后，这里会逐条记下。": "No activity in this chat yet. Once it uses the browser, runs commands or edits files, every step shows up here.",
+    "含其它会话的活动（勾上＝连其它会话的也一起看；不勾＝只看当前会话）": "Include activity from other chats (checked: show theirs too; unchecked: only the current chat)",
+    "活动流已清空": "Activity log cleared",
+    "读活动流失败：": "Failed to read the activity log: ",
+    "浏览器操作失败：": "Browser action failed: ",
+    "当前外壳没有浏览器桥（老版本）": "This shell has no browser bridge (older build)",
+    "浏览器已就绪（默认在右栏实况里；想看真窗口点「独立窗口」）": "Browser ready (it runs in the right panel live view by default — click \"Own window\" if you want the real window)",
+    "没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。": "Could not bring the real window up: operate it in the right panel live view, or click again.",
+    "浏览器已停止": "Browser stopped",
+    "实况": "Live view",
+    "独立窗口": "Own window",
+    "收回": "Dock back",
+    "暂停观察": "Pause live view",
+    "继续观察": "Resume live view",
+    "等待浏览器画面…": "Waiting for the browser picture…",
+    "正在连接浏览器画面…": "Connecting to the browser picture…",
+    "连接中…": "connecting…",
+    "实况中": "live",
+    "未连接": "not connected",
+    "已在独立窗口": "in its own window",
+    /* 无窗口（headless）那只：会话自动拉起的默认形态（开发 / 会话过程中不弹真窗口） */
+    "无窗口运行": "running windowless",
+    "这只是无窗口（后台）浏览器，画面就在这里；想看真窗口请在面板上点「打开浏览器」。":
+      "This browser runs windowless in the background — the picture is right here; to see a real window, click \"Open browser\" in the panel.",
+    "这只是无窗口（后台）浏览器，没有可显示的窗口": "This is a windowless (background) browser: there is no window to show",
+    "已在独立窗口操作；点「收回」回到右栏。": "It is in its own window — operate it there, or click \"Dock back\" to return it to the right panel.",
+    "把这个浏览器变成独立窗口；再点一次收回右栏": "Turn this browser into its own window; click again to dock it back into the right panel",
+    "暂停画面更新（重新打开即恢复）": "Pause the picture (resume by clicking again)",
+    "已切到独立窗口：这只浏览器现在是独立窗口，可直接在里面操作；点「收回」回到右栏。": "Now in its own window: operate the browser directly there, or click \"Dock back\" to return it to the right panel.",
+    "已收回：画面回到会话右边栏。": "Docked back: the picture is in the session's right panel again.",
+    "浏览器": "Browser",
+    "运行中": "running",
+    "未启动": "not started",
+    "驱动中：": "driven by ",
+    "你已接管": "you are driving",
+    "你已接管浏览器（Agent 动作已暂停）": "You took over the browser (agent actions are paused)",
+    "已交还控制权（Agent 可继续）": "Control handed back (the agent can continue)",
+    "你接管了浏览器（Agent 动作已暂停）": "You took over the browser (agent actions paused)",
+    "你交还了控制权（Agent 可继续）": "You handed control back (the agent can continue)",
+    "【用户接管浏览器】我现在亲自操作浏览器（登录 / 验证码 / 付款一类），你的浏览器动作会被拒绝。请先用 browser_help 说明你需要什么，或等我交还后再继续。": "[User took over the browser] I am driving the browser myself now (login / captcha / payment). Your browser actions will be refused — use browser_help to tell me what you need, or wait until I hand control back.",
+    "【用户交还浏览器控制权】你可以继续操作浏览器了；先 browser_snapshot 看一眼当前页面再往下做。": "[User handed browser control back] You may drive the browser again — take a browser_snapshot first, then continue.",
+    "浏览器名单与审批": "Browser lists and approvals",
+    "拦截名单": "Blocked domains",
+    "风险名单（首次访问需确认）": "Risky domains (confirm on first visit)",
+    "拦截名单：这些域名一律拒绝访问（每行一条）。风险名单：首次访问会弹一次确认卡。空行与 # 开头会被忽略。": "Blocked domains: navigation to them is always refused (one per line). Risky domains: a one-time confirmation card is shown on first visit. Empty lines and # comments are ignored.",
+    "危险动作（提交 / 支付 / 删除 / 发送 / 发布…）先弹确认卡": "Ask for a confirmation card before dangerous actions (submit / pay / delete / send / publish …)",
+    "名单已保存（下一次动作即刻生效）": "Lists saved (effective from the next action)",
+    "需要你登录 / 处理页面验证": "You need to log in / handle the page check",
+    "请你验证这个结果": "Please verify this result",
+    "需要你补充信息或做选择": "The session needs information or a decision from you",
+    "危险动作需要你确认": "A dangerous action needs your confirmation",
+    "会话卡住了，需要你帮忙": "The session is stuck and needs your help",
+    "浏览器需要你帮忙": "The browser needs your help",
+    "会话在浏览器上需要你帮忙（点「浏览器活动」右边栏查看）": "The session needs your help in the browser (open the \"Browser activity\" panel on the right)",
+    "浏览器操作需要你确认（点「浏览器活动」右边栏查看）": "A browser action needs your confirmation (open the \"Browser activity\" panel on the right)",
+    "浏览器操作需要你确认": "A browser action needs your confirmation",
+    "允许这一次": "Allow once",
+    "拒绝": "Reject",
+    "接管浏览器（我来操作）": "Take over the browser (I'll do it)",
+    "我已处理完，交还控制权": "I'm done — hand control back",
+    "我已处理，继续": "Done — continue",
+    "撤销这张卡": "Dismiss this card",
+    "这张卡已失效（发起轮已结束）": "This card is stale (its round already ended)",
+    "提交失败：": "Submit failed: ",
+    "点一下看大图": "Click to enlarge",
     "与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它": "Canvas-free: the assistant registers no canvas or app tools and no longer injects the full canvas snapshot, saving tokens; turn it off first when you do need canvas edits",
     "与画布无关：开启中，点击关闭（助手本轮不注册任何画布与应用工具）": "Canvas-free: ON — click to turn off (the assistant registers no canvas or app tools)",
     "本助手已声明「与画布无关」：本轮不注册任何画布工具，也不读画布，只读写文件 / 联网 / 执行命令。\n要总结或搭建工作流，请先关掉「与画布无关」。": "This assistant is declared canvas-free: no canvas tools are registered and the canvas is not read — it only reads/writes files, searches the web and runs commands.\nTurn \"Canvas-free\" off first if you want a canvas summary or a workflow built.",
+    "当前工作范围是本画布。我能查看并修改当前画布节点与配置。\n可以说「总结画布」或「搭一个 xxx 工作流」。\n改节点图前会请你确认；要参考其他画布请把工作范围改为「全局」。\n（与画布无关的任务我会自动省掉画布工具，不占 token。）": "Current scope is this canvas. I can read and edit this canvas's nodes and settings.\nTry \"summarize the canvas\" or \"build an xxx workflow\".\nI ask for confirmation before changing the graph; switch scope to Global to consult other canvases.\n(Tasks unrelated to the canvas automatically drop the canvas tools — no token cost.)",
+    "只看浏览器": "Browser only",
+    "显示活动": "Show activity",
+    "收起下方的追踪活动：活动区整块不显示，同时停止追踪（新活动不再记入活动库），实况画面占满右栏；点一下即可恢复": "Collapse the activity feed below: the feed is hidden and tracking stops (new activity is no longer recorded), letting the live view fill the rail; click again to restore",
+    "活动区已收起、追踪已停止：新活动不再记入活动库；点一下恢复列表与追踪": "Feed collapsed, tracking stopped: new activity is not recorded; click to restore the list and tracking",
     "插件:https://registry.npmmirror.com/-/v1/search?text=xxx\n技能/MCP:https://data.jsdelivr.com/v1/package/gh/用户/仓库@main": "Plugins: https://registry.npmmirror.com/-/v1/search?text=xxx\nSkills/MCP: https://data.jsdelivr.com/v1/package/gh/user/repo@main",
     "MTNode 目录：http://mt-agent.com/mtnode/ext/catalog.json": "MTNode catalog: http://mt-agent.com/mtnode/ext/catalog.json",
     "插件源返回 npm search 格式；技能源每个子目录含 SKILL.md；MCP 源子目录作为服务器(经 npx @modelcontextprotocol/server-<名> 安装)。": "Plugin sources return npm search format; each skill-source subdirectory contains SKILL.md; MCP source subdirectories are servers (installed via npx @modelcontextprotocol/server-<name>).",
@@ -3230,6 +3368,7 @@
     "留空 = 当前画布 / 应用默认目录…": "Leave empty = current canvas / app default directory…",
     "排队等待中…": "Queued…",
     "拖动边框中部调整助手栏宽度": "Drag the mid-border to resize the assistant",
+    "拖动分界线调整助手栏宽度（整条边界都可拖）": "Drag the divider to resize the assistant (the whole border is draggable)",
     "仅图像输入节点可设置 imagePath：": "Only image input nodes accept imagePath: ",
     "载入图像失败：": "Failed to load image: ",
     "⏻ 控制（批量清空 / 执行）": "⏻ Control (batch clear / run)",
@@ -4648,6 +4787,50 @@
     "在资源管理器中打开工作流备份目录":
       "Open the workflow backup folder in the file manager",
     "无法读取：": "Cannot read: ",
+    /* 设置 · 存储占用与清理（storage-clean.js + app-settings.js 的同名小节） */
+    "存储占用与清理": "Storage usage & cleanup",
+    "清理": "Clean",
+    "取消清理": "Cancel",
+    "统计数据目录里各类冗余的占用，并清理「已经没被 MTNode 用着」的文件：画布资产只清没有任何存档 / 备份 / 回收站引用的；正在运行的画布与正在编辑的文件一律跳过。清理默认把文件搬进系统回收站（可在资源管理器「还原」），只有会话记录与回滚对象是永久删除。":
+      "Measure how much space each kind of redundant data takes in the data folder, then clean only the files MTNode no longer uses: canvas assets are cleaned only when no save, backup or trash copy references them; canvases that are running and files being edited are skipped. Cleaning moves files to the system recycle bin (restorable in the file manager) — only session logs and rollback objects are deleted permanently.",
+    "正在统计存储占用…": "Measuring storage usage…",
+    "会话记录保留最近": "Keep session logs from the last",
+    "超过这些天没动过的会话目录才计入「可清理」":
+      "Only session folders untouched for more than this many days count as cleanable",
+    "天（只统计，不自动删）": "days (measured only, never deleted automatically)",
+    "重新统计": "Rescan",
+    "重新扫描各类占用（打开设置时会自动统计一次）":
+      "Scan all categories again (opening Settings already scans once)",
+    "全部清理": "Clean all",
+    "对所有有冗余的分类执行清理（逐类确认一次）":
+      "Clean every category that has redundant data (one confirmation for all)",
+    "打开数据目录": "Open data folder",
+    "在资源管理器中打开当前配置数据目录":
+      "Open the current config data folder in the file manager",
+    "即将清理：": "About to clean: ",
+    " 个文件": " files",
+    "永久删除，不进回收站": "permanently deleted, not sent to the recycle bin",
+    "非永久删除的项会先搬进系统回收站（失败时回退数据目录下的 .storage-clean 清理暂存区）；可在资源管理器里还原。":
+      "Items that are not permanent are moved to the system recycle bin first (falling back to the .storage-clean staging folder in the data folder); restore them from the file manager.",
+    "确认清理": "Clean now",
+    "正在清理：": "Cleaning: ",
+    "清理完成：释放 ": "Cleanup finished: freed ",
+    "处理 ": "processed ",
+    " 项": " items",
+    " 项失败（文件可能被占用）": " item(s) failed (files may be in use)",
+    "已清理冗余文件，释放 ": "Redundant files cleaned, freed ",
+    "统计失败：": "Measurement failed: ",
+    "数据目录：": "Data folder: ",
+    "合计 ": "Total ",
+    " 个文件，其中可清理 ": " files, of which cleanable: ",
+    " 个文件）": " files)",
+    "其中可清理 ": "cleanable ",
+    " 个会话": " sessions",
+    "清理这一类里没被引用的部分": "Clean the unreferenced part of this category",
+    "这一类暂时没有可清理的内容": "Nothing cleanable in this category yet",
+    "还没有统计数据，请先「重新统计」":
+      "No measurement yet — click \"Rescan\" first",
+    "没有可清理的内容": "Nothing to clean",
     "份": " copies",
     "最近更新：": "Latest: ",
     "请选择绝对路径": "Choose an absolute path",
@@ -6249,6 +6432,11 @@
     "自身运行中": "This block itself is running",
     "子节点运行中": "Child nodes are running",
     "绑定会话运行中": "A bound dev / refine session is running",
+    /* 同一开发节点并行多条开发任务：每行写明归属功能块 + 同块在跑条数
+       （行标题都是同一个模块名，不标出来用户看不出是「多条」） */
+    " 条开发任务并行": " dev tasks in parallel",
+    " · 开发任务": " · dev task",
+    "归属功能块": "Owning module block",
     "用户输入": "User input",
     "已停止该功能块的运行任务": "Stopped this module block's running tasks",
     "该功能块已无运行任务": "This module block has no running tasks",
@@ -6361,6 +6549,14 @@
       "Click again to run the file (or double-click to run directly)",
     "点击播放执行 · 双击直接执行": "Click play to run · double-click to run directly",
     "先绑定可执行文件": "Bind an executable first",
+    "执行：": "Run: ",
+    "点击执行（或双击节点直接执行）": "Click to run (or double-click the node to run directly)",
+    "再次点击执行（或双击节点直接执行）":
+      "Click again to run (or double-click the node to run directly)",
+    "正在启动…（按钮可继续点，启动过程不会中断）":
+      "Launching… (the button stays clickable; launching is not interrupted)",
+    "点击执行 · 双击节点也可执行":
+      "Click to run · double-clicking the node runs it too",
     "打开所在位置": "Show in folder",
     "右键节点可更换图标": "Right-click the node to change the icon",
     /* ===== 关系线（UML 风格 · 直线 · 双向箭头 · 线上文字 · 点选节点高亮） ===== */
@@ -6558,6 +6754,23 @@
       "Translate this thinking with the default model (flash preferred · no thinking)",
     "翻译质量校验未通过（模型仍在输出原文）":
       "Translation check failed (the model is still echoing the source)",
+  });
+
+  /* 403「not eligible」（服务商 / 套餐没买到这个模型）时的换模型询问窗：
+     翻译小按钮（app-assist.js）与运行重发闸（app-db.js）共用同一批文案。 */
+  Object.assign(EN, {
+    "换模型": "Switch model",
+    "换并重试": "Switch & retry",
+    "不换": "Keep it",
+    "换一个模型来翻译？将改用：": "Translate with another model? Will use: ",
+    "换一个模型重发这一轮？将改用：": "Retry this turn with another model? Will use: ",
+    "模型服务返回 403：该模型/套餐未开通（服务商原话：Access to model denied… not eligible）。":
+      "The model service returned 403: this model / plan is not provisioned (provider says: Access to model denied… not eligible).",
+    "换模型失败：该服务商没有可用的 API Key":
+      "Model switch failed: that provider has no usable API key",
+    "当前：": "Current: ",
+    "原始报文：": "Raw error: ",
+    "已改用：": "Now using: ",
   });
 
   /* ── Remotion 动效视频（应用插件 remotion） ── */
@@ -9404,6 +9617,29 @@
         "搜索应用…": "Search apps…",
         "返回 MTNode": "Back to MTNode",
         "返回 MTNode 界面（Esc 同效）": "Back to the MTNode interface (Esc works too)",
+        /* 搜索框 + 标签筛选（应用页顶部一行） */
+        "搜索…": "Search…",
+        "标签": "Tags",
+        "只看带这个标签的应用：": "Show only apps with this tag: ",
+        "取消这个标签的筛选：": "Clear this tag filter: ",
+        "另有 ": "Another ",
+        " 个标签（搜索或直接浏览找它）": " tags (find them by searching or browsing)",
+        "清除标签": "Clear tags",
+        "取消全部标签筛选（搜索词保留）":
+          "Clear every tag filter (the search text is kept)",
+        "清除筛选": "Clear filters",
+        "筛选：": "Filter: ",
+        "关键词「": "keyword “",
+        "标签：": "tags: ",
+        " —— 命中 ": " — matched ",
+        " 个应用": " apps",
+        "没有同时满足「": "No app matches both “",
+        "」与标签 ": "” and the tags ",
+        " 的应用：清掉一个条件再试。":
+          ": drop one of the conditions and try again.",
+        "没有带标签 ": "No app carries the tags ",
+        " 的应用：点一下标签取消它。":
+          ": click the tag to clear it.",
         "应用服务未就绪（主进程应用宿主尚未接入）":
           "The apps service is not ready (the main-process app host is not wired yet)",
         /* 云端目录状态 */
@@ -9411,6 +9647,7 @@
         "正在读取本机应用…": "Reading local apps…",
         "目录已更新": "Catalog updated",
         "云端目录已更新（": "Cloud catalog updated (",
+        "云端接口目录（静态目录暂时不可用，已自动切换；": "Cloud API catalog (the static catalog is unavailable right now, switched automatically; ",
         "云端目录暂时拉不到，显示的是本机缓存（":
           "The cloud catalog is unreachable right now — showing the local cache (",
         "云端目录暂时拉不到：显示的是本机缓存":
@@ -9478,6 +9715,72 @@
           "No app downloaded yet: pick one on the Apps page and it will be installed into the app root folder.",
         "去「应用」页看看": "Go to the Apps page",
         "本机还没有已下载的应用": "No app has been downloaded yet",
+        /* 应用设计风格（新建时选 / 开发页换）：清单真源在主进程 apps-store.js 的 APP_STYLES，
+           这里只放界面词条；风格名与预览图随每套风格的模板一起维护（templates/app-default） */
+        "设计风格": "Design style",
+        "决定这个应用入口页的长相；建好之后也能在开发页「⋯ → 换风格…」里换":
+          "Sets how your app's entry page looks; you can change it later from ⋯ → Change style on the Develop page",
+        "预览图就是每种风格真实渲染出来的样子":
+          "Each preview is the real page rendered in that style",
+        "风格预览图": "style preview",
+        "新建应用时的默认风格": "the default style for new apps",
+        "极简": "Minimal",
+        "科技": "Tech",
+        "暖读": "Warm",
+        "编辑": "Editorial",
+        "终端": "Terminal",
+        "玻璃拟态": "Glass",
+        "复古印刷": "Retro print",
+        "换风格…": "Change style…",
+        "换风格": "Change style",
+        "选一种设计风格，按它重写这个应用的入口页：":
+          "Pick a design style; the app's entry page is rewritten in it: ",
+        "入口页会被这份风格模板覆盖：你在应用目录里手改过的页面内容会没了（assets/ 与数据文件夹不受影响）。":
+          "The entry page will be overwritten by this style template: page content you edited inside the app folder is lost (assets/ and the data folder are untouched).",
+        "会用这套风格的模板重写应用目录里的入口页（index.html）。你在里面手改过的页面内容会没了，assets/ 与数据文件夹不受影响。":
+          "The entry page (index.html) inside the app folder will be rewritten with this style template. Page content you edited there is lost; assets/ and the data folder are untouched.",
+        "换成「": "Switch to “",
+        "」风格？": "”?",
+        "换风格并重写入口页": "Change style and rewrite the page",
+        "已经是这个风格了": "This is already the current style",
+        "换风格失败：": "Could not change the style: ",
+        "已换成「": "Style changed to “",
+        "」风格": "”",
+        "未知的设计风格：": "Unknown design style: ",
+        /* 「自定义」那一套（没有预设模板，选中它 = 先去问用户要什么风格）：
+           「自定义」本身的英文在通用词条里已有（"自定义": "Custom"），这里不重复 */
+        "先问再定": "Asked first",
+        "先问要什么风格": "Asks for a style",
+        "选中它：开发会话先问你要什么风格（你提要求，或让 AI 按用途提几套方案），再照答案做这个应用":
+          "Pick it and the dev session asks what style you want (your own brief, or a few proposals derived from the app's purpose), then builds the app to that answer",
+        "选「自定义」= 不套预设长相：建好后开发会话会先问你要什么风格（你直接说要求，或让 AI 按这个应用的用途先提几套方案），再照答案把入口页做出来。":
+          "“Custom” means no preset look: right after creation the dev session asks what style you want (state your own brief, or let the AI propose a few directions from the app's purpose), then builds the entry page to that answer.",
+        "创建后会停在开发页：接着答一句「要什么风格」，AI 就照它做入口页":
+          "After creation you stay on the Develop page: answer the style question there and the AI builds the entry page to it",
+        "选「自定义」不会套任何模板：只记下这个选择，把你带回开发页答一句「要什么风格」（你提要求，或让 AI 按这个应用的用途先提几套方案），再照答案重做入口页。":
+          "“Custom” applies no template: it only records the choice and takes you back to the Develop page to answer one style question (your own brief, or a few AI proposals from the app's purpose); the entry page is rebuilt from that answer.",
+        "改成「自定义」风格？": "Switch to “Custom”?",
+        "记下选择并去答一句": "Record it and go answer",
+        "记下选择，去答「要什么风格」": "Record it, then answer the style question",
+        "会把这个应用的风格记成「自定义」，然后带你回开发页答一句「要什么风格」；这一轮不重写入口页，等风格定下来才按它重做。":
+          "Records this app's style as “Custom” and takes you back to the Develop page to answer one style question; the entry page is not rewritten this round — it is rebuilt once the style is settled.",
+        "已把风格记成「自定义」：在开发页答一句要什么风格，AI 就照它做入口页":
+          "Style recorded as “Custom”: answer the style question on the Develop page and the AI builds the entry page to it",
+        "选的是「自定义」风格：下面那句话可以直接发送，也可以改成你自己的风格要求":
+          "You picked the “Custom” style: send the line below as is, or rewrite it as your own style brief",
+        "选的是「自定义」风格：在下面说一句要什么风格（你已有的输入没被改动）":
+          "You picked the “Custom” style: say what style you want below (your existing input was left untouched)",
+        "风格选了「自定义」：到开发页说一句要什么风格，AI 就照它做入口页":
+          "Style set to “Custom”: go to the Develop page and say what style you want — the AI builds the entry page to it",
+        "先问你：这个应用（": "First, a question: for this app (",
+        "）用什么风格？你按它的用途提几套方案，或我直接说我的要求":
+          ") what style should it use? Propose a few directions from its purpose, or I'll state my own brief",
+        "给「": "Set a style for “",
+        "」定个风格：我的要求是 ": "”: my brief is ",
+        "【自定义风格 · 本轮先问清风格再动代码】这个应用的风格记着「自定义」：它还没有预设长相，所以这一轮**先把风格问清楚**——要么请用户直接说他的风格要求（气质 / 配色 / 字体 / 参考），要么你按这个应用的用途先提出 2–3 套**彼此明显不同**的具体方案让他挑（每套给一个名字 + 一句它长什么样 + 适合什么感觉）；用 ask_user_question 把方案放进 options（推荐项放第一位并在 label 末尾标「（推荐）」），不要只把方案列在正文里。用户选定或给出要求之前，不得改任何代码、也不得开始做页面；风格定下来后再按它改写应用目录里的入口页（index.html），页面结构沿用同一份模板，风格只动视觉。":
+          "[Custom style · settle the style first this round] This app's style is recorded as “Custom”: it has no preset look, so **ask about the style first** this round — either have the user state their own requirements (mood / palette / type / references), or propose 2–3 clearly different, concrete directions derived from the app's purpose (each with a name, one line on how it looks, and what it feels like); put the options into ask_user_question options (recommended one first, label ending with “(recommended)”) instead of listing them in prose. Until the user picks one or gives requirements, change no code and build no pages; once the style is settled, rewrite the app folder's entry page (index.html) accordingly, keeping the same page structure and changing only the visuals.",
+        "应用目录不存在": "The app folder does not exist",
+        "入口页路径不合法": "The entry page path is not allowed",
         /* 打开 / 更新 / 卸载 */
         "在独立窗口里运行这个应用": "Run this app in its own window",
         "为一个应用开独立窗口（位置与「库」页的「运行」相同；应用本体不依赖宿主桥也能跑）":
@@ -9497,19 +9800,10 @@
           "); its data folder, canvases, sessions and every other user file are untouched.",
         "卸载只删该应用自己的子文件夹，画布 / 会话 / 其它用户内容不动":
           "Uninstalling deletes only this app's own sub-folder; canvases, sessions and other user content are untouched",
-        /* 应用数据文件夹（默认 <数据目录>/apps-data/<id>/，可在应用窗口或库页改） */
-        "应用数据文件夹": "App data folder",
+        /* 应用数据目录（默认 <数据目录>/apps-data/<id>/，按应用 id 管理）：
+           库 / 开发页每张卡片的 📂 打开它，改位置在应用窗口里 */
         "数据文件夹": "Data folder",
-        "读取中…": "Loading…",
-        "自定义位置": "Custom location",
         "这个应用的数据文件夹由用户改过；默认位置是 ": "this app's data folder was changed by the user; the default is ",
-        "还没写过数据": "No data written yet",
-        "数据文件夹已改为：": "Data folder changed to: ",
-        "已恢复默认数据文件夹（原目录数据留在原处）：":
-          "Back to the default data folder (files in the old folder stay where they are): ",
-        "恢复默认失败：": "Restoring the default failed: ",
-        "还没设置数据文件夹": "No data folder has been set yet",
-        "读不到数据文件夹：": "Cannot read the data folder: ",
         "应用数据超出上限（2MB）": "App data exceeds the 2MB limit",
         "数据文件名不合法": "Invalid data file name",
         "请选择数据文件夹": "Choose a data folder",
@@ -9581,7 +9875,17 @@
            只允许一行，放不下的项收进「更多 ▾」。 */
         "刷新预览": "Reload preview",
         "维持状态": "Keep state",
-        "＋ 新开发会话": "＋ New dev session",
+        /* 「＋」= 新开发会话（本轮：入口挪到开发页左栏每条应用行右端，工具栏那颗也改成同一枚
+           图标；文案只有这一枚「＋」，含义由 tooltip / aria-label 说清）。 */
+        "＋": "＋",
+        "新开发会话": "New dev session",
+        "新开发会话：在本应用下开一条新会话（下一次输入即新建并开工）":
+          "New dev session: start one under this app (your next input creates it and begins work)",
+        "新开发会话：在这个应用下开一条新会话（点它后写下需求，回车即新建并开工）":
+          "New dev session: start one under this app (click it, write what you need, press Enter to create it and begin)",
+        "启动": "Launch",
+        "拖拽调整栏宽（双击复位这一栏）":
+          "Drag to resize this pane (double-click resets it)",
         "更多": "More",
         "更多（放不下的项在这里）：": "More (the items that did not fit): ",
         "点击在资源管理器中打开": "Click to open it in File Explorer",
@@ -9600,6 +9904,228 @@
       return out;
     })(),
   );
+
+  /* ── 上架应用 · 多版本 · 配额 · 声明（`docs/apps-market.md` §七）──
+     客户端两侧都读这一份：应用中心的版本树 / 下架重发（renderer/app-apps.js）与
+     上架窗（renderer/app-publish.js）。服务端的中文 error 由服务端自己回，不在这里。 */
+  Object.assign(EN, {
+    "上架": "Publish",
+    "上架应用到云端": "Publish this app to the cloud",
+    "把当前应用打成包上传到云端：其他用户能在应用中心看到它、下载使用或二次开发":
+      "Pack the current app and upload it to the cloud: other users can find it in the App Center, download it, use it or build on it",
+    "上架需要先登录": "You need to sign in before publishing",
+    "去登录": "Sign in",
+    "版本": "Version",
+    " 版": " version(s)",
+    " · 最新 v": " · latest v",
+    "最新": "Latest",
+    "本机已装": "Installed here",
+    "根版本（已删）": "Root version (deleted)",
+    "上传者 ": "Uploaded by ",
+    "下载这一版": "Download this version",
+    "云端目录里找不到这个版本（作者可能已删除该版本）":
+      "This version is not in the cloud catalog (the author may have deleted it)",
+    "我上架的": "Published by me",
+    "已下架（仅自己可见）": "Unpublished (only you can see it)",
+    "下架": "Unpublish",
+    "重新发布": "Publish again",
+    "已下架：目录里不再显示，包与版本仍在云端":
+      "Unpublished: it no longer appears in the catalog, but the packages and versions stay in the cloud",
+    "已重新发布，其他用户可再次看到这个应用":
+      "Published again — other users can see this app once more",
+    "下架失败：": "Unpublish failed: ",
+    "重新发布失败：": "Publishing again failed: ",
+    "重新发布：其他用户又能看到并下载这个应用":
+      "Publish again: other users can see and download this app once more",
+    "下架：目录里不再显示，包与版本仍留在云端（可随时重新发布）":
+      "Unpublish: it disappears from the catalog while the packages and versions stay in the cloud (you can publish it again anytime)",
+    /* 上架窗（renderer/app-publish.js） */
+    "元信息": "Metadata",
+    "AI 生成": "Generate with AI",
+    "重新生成": "Generate again",
+    "正在生成…": "Generating…",
+    "标题": "Title",
+    "描述": "Description",
+    "版本号": "Version",
+    "版本说明": "Release note",
+    "标签": "Tags",
+    "图标": "Icon",
+    "截图": "Screenshots",
+    "拍应用窗口": "Capture the app window",
+    "从本机选图": "Choose an image",
+    "封面": "Cover",
+    "删除这张": "Remove this one",
+    "上架声明": "Publishing declaration",
+    "我已阅读并同意，责任由我承担": "I have read and agree; the responsibility is mine",
+    "上传中…": "Uploading…",
+    "上传": "Upload",
+    "取消": "Cancel",
+    "首次上架": "First publish",
+    "追加版本": "Add a version",
+    "本机版本": "Local version",
+    "线上版本": "Cloud version",
+    "还没有可上架的应用：先新建或安装一个应用":
+      "No app to publish yet: create or install one first",
+    "这个应用的窗口还没打开：先点「启动」，再回来拍图":
+      "This app's window is not open yet: click “Launch” first, then capture it",
+    /* ── 作者 · 开发中名单 · 校验值收纳 · 二次开发分支（`docs/apps-market.md` §八，本轮需求）──
+       作者：云端条目取 owner（上架账号），本机取 app.json 的作者，空则回落当前登录账号；
+       校验值：长哈希收进「ⓘ 校验」小按钮；fork：应用身份 = 应用 id + 作者 uid。 */
+    "作者 ": "Author ",
+    "作者：云端条目按发布账号，本机应用按 app.json 的作者（没写过则回落当前登录账号）":
+      "Author: cloud entries use the publishing account; local apps use app.json's author (falling back to the signed-in account)",
+    "来源作者": "Source author",
+    "作者 uid": "Author uid",
+    "未知作者": "Unknown author",
+    "未知": "Unknown",
+    "开发中": "In development",
+    "开发者信息": "Developer info",
+    "安装包校验": "Package checksum",
+    "安装包 sha256": "Package sha256",
+    "点开看完整校验值并可复制": "Click to see the full checksum and copy it",
+    "已复制校验值": "Checksum copied",
+    "复制失败：请手动选中复制": "Copy failed: select the text and copy it manually",
+    "二次开发": "Build on it",
+    "会把该应用登记为「开发中」（库页不再列它），并给它建一张同名画布与开发节点；应用目录不动。":
+      "Registers this app as “in development” (so the Library no longer lists it) and creates a same-named canvas plus a dev node for it; the app folder itself is untouched.",
+    "已进入二次开发：": "Opened for development: ",
+    "二次开发失败：": "Could not open it for development: ",
+    "打开数据目录": "Open data folder",
+    "打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）":
+      "Open this app's data folder (by default created under the MTNode data directory, keyed by app id)",
+    "已打开数据目录：": "Data folder opened: ",
+    "打开数据目录失败：": "Could not open the data folder: ",
+    "先在列表里选一个应用": "Pick an app from the list first",
+    "开发流程模块未就绪（renderer/app-app-flow.js 未加载）":
+      "The app development module is not ready (renderer/app-app-flow.js not loaded)",
+    "库里没有可显示的应用：本机这几个都带着「开发中」标记（在「开发」页）。":
+      "Nothing to show in the Library: every app on this machine is marked “in development” (see the Development page).",
+    "还没有下载任何应用：到「应用」页挑一个下载，它会装进应用根目录；自己写的应用在「开发」页新建。":
+      "No apps downloaded yet: pick one on the Apps page and it installs into the app root folder; apps you write yourself are created on the Development page.",
+    "去「开发」页": "Go to the Development page",
+    "切换分支": "Switch branch",
+    "已装": "Installed",
+    "更新正在开发的应用": "Update an app in development",
+    "仍然更新": "Update anyway",
+    " 正在开发中（本机这一份带「开发中」标记）。更新到 v":
+      " is in development (the local copy carries the “In development” mark). Updating to v",
+    " 会覆盖它的 app.json / 入口页 / assets —— 你在这些文件上的改动会丢；本机存储与该应用自己的画布不动。确定更新吗？":
+      " will overwrite its app.json / entry page / assets — any changes you made to those files are lost; local storage and the app's own canvas stay untouched. Update anyway?",
+    "二次开发自": "Forked from",
+    "基于哪个应用二次开发（可选）": "Builds on which app? (optional)",
+    "（原创：不声明来源）": "(Original: no source declared)",
+    "（已声明）": "(declared) ",
+    "声明后云端条目会记下「二次开发自」这个应用（源 id + 原作者 uid），别人的客户端就能在你的版本与它之间「切换分支」。选「原创」= 不声明，不影响上架；声明也会写进本机 app.json（随包走），以后再上架会自动带回。":
+      "Once declared, the cloud entry records which app this builds on (source id + original author uid), so other clients can switch branches between your version and that one. Choosing “Original” declares nothing and does not block publishing; the declaration is also written into the local app.json (and travels with the package), so later uploads bring it back automatically.",
+    "这个应用已经在开发中（在「开发」页）": "This app is already in development (see the Development page)",
+    "已经有一张同名画布（": "A canvas with the same name already exists (",
+    "）：为避免误覆盖，没有迁移。请先改名或删掉那张画布再试。":
+      "): nothing was moved, to avoid overwriting it. Rename or delete that canvas first.",
+    "已登记为开发中，但画布保存失败：":
+      "Registered as in development, but saving the canvas failed: ",
+    "把某个应用目录设为当前画布顶层开发节点的「项目文件夹」（devPath），该应用就与开发节点绑定：开发 / 细化会话的工作区跟着它走。绑定情况现在只在这一页显示（库页那枚徽标已去掉）。":
+      "Point a top-level dev block's “Project folder” (devPath) at an app folder to bind that app to the dev node: development / refinement sessions then use it as their workspace. Binding status is now shown only on this page (the Library badge is gone).",
+    "当前应用已绑定开发节点：": "The current app is bound to a dev node: ",
+    "当前应用还没绑定开发节点（在它的顶层开发块里把「项目文件夹」指向应用目录即可）":
+      "The current app is not bound to a dev node yet (point its top-level dev block's “Project folder” at the app folder)",
+    "开发中的应用（": "Apps in development (",
+    " 个，只在「开发」页列出）：": ", listed only on the Development page): ",
+    "本机还没有「开发中」的应用：在「库」页点「二次开发」，或在开发页点「＋新建应用」":
+      "No “in development” apps yet: click “Build on it” on the Library page, or “＋ New app” on the Development page",
+    "本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。":
+      "No “in development” apps on this machine yet: click “Build on it” on the Library page, or “＋ New app” at the bottom of the left column.",
+    "搜索应用 / 会话…": "Search apps / sessions…",
+    "暂无开发中的应用": "No apps in development",
+    "没有匹配的应用或会话": "No matching app or session",
+    "展开该应用的会话": "Expand this app's sessions",
+    "收起该应用的会话": "Collapse this app's sessions",
+    "该应用的会话数（不含已归档）": "Sessions of this app (archived not counted)",
+    "点这条 = 进入该应用（中栏预览与右栏会话一起换）":
+      "Click to enter this app (the preview and the session pane switch with it)",
+    "作者：": "Author: ",
+    "这个应用不在本机了": "This app is no longer on this machine",
+    "只删该应用自己的子文件夹；画布、会话与该应用的存储一概不动":
+      "Deletes only this app's own subfolder; canvases, sessions and the app's storage stay untouched",
+  });
+
+  /* ── MTNode 中转服务（账号托管 · renderer/app-relay.js + app-settings.js 的只读卡 +
+        main.js 的 relay:me）──
+        这张卡只有「充过值」的账号才有；接入信息与模型清单由云端下发，卡上可改的只有
+        启用开关与本机优先级。未译即回退中文原文（不报错、不缺字）。 */
+  Object.assign(EN, {
+    "MTNode 中转服务": "MTNode relay service",
+    "账号托管": "Account-managed",
+    "接入信息由 MTNode 账号托管": "Connection details are managed by your MTNode account",
+    "由账号登录态托管（只读）": "Managed by your signed-in account (read-only)",
+    "OpenAI 兼容（由 MTNode 账号下发）":
+      "OpenAI-compatible (delivered by your MTNode account)",
+    "模型清单（云端下发，从上到下为使用优先级）":
+      "Model list (delivered from the cloud; top to bottom is priority)",
+    "账号当前没有可用模型：充值后点「刷新」":
+      "No models available for this account yet: top up, then click “Refresh”",
+    "可用余额 ": "Available balance ",
+    "去充值": "Top up",
+    "打开账户充值（到账后中转清单会自动刷新）":
+      "Open account top-up (the relay model list refreshes automatically once it lands)",
+    /* 「刷新」不在这里重复登记：EN 表里已有一条（见上文），同键两次不同值会被后写的
+       悄悄覆盖（test/smoke-filepeek.js 就钉这一条），中转卡复用它即可。 */
+    "按账号重新拉取中转服务的地址与可用模型":
+      "Re-fetch the relay service address and available models for this account",
+    "刷新中转清单": "Refresh relay list",
+    "按账号重新拉取中转服务的可用模型（登录成功与充值成功后会自动拉）":
+      "Re-fetch the relay models available to this account (also fetched automatically after sign-in and top-up)",
+    "刷新中…": "Refreshing…",
+    "中转清单已刷新": "Relay list refreshed",
+    "刷新失败，请稍后重试": "Refresh failed, please try again later",
+    "中转服务暂时不可用，请稍后重试":
+      "The relay service is temporarily unavailable, please try again later",
+    "上次同步 ": "Last synced ",
+    "刷新失败：": "Refresh failed: ",
+    "余额不足": "Insufficient balance",
+    "余额不足，充值后刷新": "Insufficient balance — top up, then refresh",
+    "MTNode 中转服务余额不足：请充值后在「设置 · 提供商」里点「刷新」":
+      "MTNode relay balance is insufficient: top up, then click “Refresh” under Settings · Providers",
+    "MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新":
+      "The MTNode relay needs a signed-in account: sign in first, then refresh under Settings · Providers",
+    "MTNode 中转服务余额不足：去「设置 · 提供商」充值并点「刷新」，恢复后本节点照原配置运行。":
+      "MTNode relay balance is insufficient: top up under Settings · Providers and click “Refresh”; this node then runs with its original settings again.",
+    "停用后不出现在模型选择器里；刷新中转清单不会自动把它开回来":
+      "Once disabled it no longer appears in model pickers; refreshing the relay list will not re-enable it",
+
+    /* ── 剪贴板图像 → 画布（画布 Ctrl+V 询问窗：renderer/app.js 的 clipImageAskDialog；
+       设置 · 画布粘贴 小节的开关与这一批同源）── */
+    "剪贴板图像": "Clipboard image",
+    "剪贴板里检测到 1 张截图（位图）": "Found 1 screenshot (bitmap) on the clipboard",
+    "剪贴板里检测到 1 个图片文件：{name}": "Found 1 image file on the clipboard: {name}",
+    "剪贴板里检测到 {n} 个图片文件（首个：{name}）":
+      "Found {n} image files on the clipboard (first: {name})",
+    "图片文件": "image file",
+    "共 {n} 张": "{n} in total",
+    "载入「{t}」": "Load into “{t}”",
+    "粘贴刚才复制的节点": "Paste the nodes copied a moment ago",
+    "用这张图创建图像节点": "Create an image node from this image",
+    "用这 {n} 张图创建节点": "Create nodes from these {n} images",
+    "仍然创建": "Create anyway",
+    "这一批图像约 {size}，超过 32MB 提醒线：原样保存会让画布资产明显变大。":
+      "These images total about {size}, past the 32MB heads-up line: saving them as-is makes the canvas assets noticeably larger.",
+    "确认后会原样复制进当前画布资产，并创建「图像输入」节点；点取消什么都不做。":
+      "On confirm they are copied into this canvas' assets as-is and an Image Input node is created; Cancel does nothing at all.",
+    "以后不再询问（可在 设置 · 画布粘贴 里改回来）":
+      "Don't ask again (turn it back on under Settings · Canvas paste)",
+    "已记住：以后画布粘贴图像不再询问（设置 · 画布粘贴 里可改回来）":
+      "Remembered: pasting images on the canvas will no longer ask (turn it back on under Settings · Canvas paste)",
+    "已用剪贴板图像创建 {n} 个图像节点":
+      "Created {n} image node(s) from the clipboard image",
+    "剪贴板图像写入失败": "Failed to save the clipboard image",
+    "{n} 张写入失败": "{n} image(s) failed to save",
+    "画布粘贴": "Canvas paste",
+    "剪贴板里有图像或截图时，在画布上按 Ctrl+V 会先弹一个确认框（显示图像内容），问你要不要用它创建「图像输入」节点。":
+      "When the clipboard holds an image or a screenshot, pressing Ctrl+V on the canvas first opens a confirmation dialog (showing the image) that asks whether to create an Image Input node from it.",
+    "粘贴剪贴板图像时先询问（取消勾选 = 以后不再询问）":
+      "Ask before pasting a clipboard image (uncheck = don't ask again)",
+    "取消勾选后：画布上按 Ctrl+V 若剪贴板里有图像，直接原样收进画布资产并创建图像输入节点（剪贴板里同时有最近复制的节点时仍优先粘贴节点）。":
+      "Once unchecked: pressing Ctrl+V on the canvas with an image on the clipboard saves it into the canvas assets as-is and creates an Image Input node right away (when the clipboard also holds recently copied nodes, pasting those still wins).",
+  });
 
   function listJoin(arr) {
     return (arr || []).join(locale === "en" ? ", " : "、");

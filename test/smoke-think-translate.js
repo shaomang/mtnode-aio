@@ -40,6 +40,7 @@ const read = (rel) => fs.readFileSync(abs(rel), "utf8");
 const ASSIST = read("renderer/app-assist.js");
 const APP = read("renderer/app.js");
 const MAIN = read("main.js");
+const DB = read("renderer/app-db.js");
 const DSS = read("renderer/css/dsh.css");
 const LIGHT = read("renderer/css/theme-light.css");
 const I18N_SRC = read("renderer/i18n.js");
@@ -265,7 +266,7 @@ ok(
 );
 ok(
   ASSIST.indexOf("for (let i = 0; i < cands.length; i++)") > 0 &&
-    ASSIST.indexOf("const cands = dshTranslateCandidates(") > 0,
+    ASSIST.indexOf("dshTranslateCandidates(") > 0,
   "请求改走候选链循环（同模型常规 → 同模型强化 → 更强模型）",
 );
 ok(
@@ -286,6 +287,142 @@ ok(
   ASSIST.indexOf("it.model =") > 0 && ASSIST.indexOf("（第 ") > 0,
   "译文行标注实际生效的模型与第几次尝试（可追溯）",
 );
+
+/* ═══════════════════ [7] 403「not eligible」：弹窗问一句换模型，不静默降级、不白等重发 ═══════════════════
+   现场：阿里云百炼 Token Plan 域名（token-plan.cn-beijing.maas.aliyuncs.com）对**所有**模型回
+   403 {"type":"AccessDenied.Unpurchased","message":"Access to model denied. Please make sure you
+   are eligible for using the model."}。旧行为：翻译逐档白试三轮，会话运行还按「可重发」等 5 秒
+   ×5 原样重发（同一模型 / 同一 Key / 同一套餐，结果一模一样），用户看到的就是一句 403。
+   新口径：判出这类「没开通」的 403 ⇒ 弹窗问用户要不要换一个能用的模型；同意就换路由重来。 */
+section("[7] 403 not eligible：弹窗询问换模型（翻译按钮 + 运行重发闸 ×2 家）");
+ok(
+  ASSIST.indexOf("function dshAccessDeniedText(") > 0 &&
+    ASSIST.indexOf("AccessDenied|Unpurchased|not eligible") > 0,
+  "app-assist.js 有 403 未开通判据（dshAccessDeniedText：AccessDenied / Unpurchased / not eligible）",
+);
+ok(
+  ASSIST.indexOf("async function dshXlateAskSwitchModel(") > 0 &&
+    /typeof confirmDialog !== "function"/.test(ASSIST),
+  "翻译侧 403 询问窗用通用确认框 confirmDialog（app.js，不受 #overlay 弹窗影响）",
+);
+ok(
+  ASSIST.indexOf("const sw = await dshXlateAskSwitchModel(") > 0 &&
+    ASSIST.indexOf("i = -1; /* 换家后从候选链第 1 档重来 */") > 0 &&
+    ASSIST.indexOf("let cands = dshTranslateCandidates(") > 0,
+  "用户同意后换路由 / 换模型、候选链重算并从头重试（不再白试同家的其余档）",
+);
+ok(
+  ASSIST.indexOf("if (!asked)") > 0 && ASSIST.indexOf("asked = true;") > 0,
+  "403 只问一次（答「不换」或换完再 403 就落 error，不连环弹窗）",
+);
+ok(
+  ASSIST.indexOf("换模型失败：该服务商没有可用的 API Key") > 0,
+  "选中的替代路由没有 API Key 时给明确失败文案，不静默吞掉",
+);
+ok(
+  ASSIST.indexOf("function dshTranslateProvider(") > 0 &&
+    ASSIST.indexOf("top: 0,") < 0 &&
+    ASSIST.indexOf("prov: dshTranslateProvider(route)") > 0,
+  "翻译模型解析一次性带回 {route, model, prov}（切换后 provider 跟着换）",
+);
+ok(
+  DB.indexOf("function dshRunAccessDenied(") > 0 &&
+    DB.indexOf("function dshRunAskSwitchModel(") > 0 &&
+    DB.indexOf("function dshRunRoutes(") > 0,
+  "app-db.js 有同源的 403 判据 / 询问窗 / 候选路由（会话 · 助手 · 节点共用一条运行闸）",
+);
+ok(
+  /const attempt = \(resume, switchTo\) =>/.test(DB) &&
+    /const nextOpts = switchTo\s*\n\s*\? Object\.assign\(\{\}, baseOpts, \{\s*\n\s*provider: switchTo\.route/.test(
+      DB,
+    ),
+  "用户同意后按 {provider, model} 整轮重发（attempt(resume, switchTo)）",
+);
+ok(
+  DB.indexOf("if (tries >= DSH_RETRY_MAX || !dshRunRetryable(msg)) {") > 0 &&
+    DB.indexOf("return attempt(null, sw);") > 0,
+  "403 不进 5 次原样重发闸，而是走「问一句 → 换模型重发」",
+);
+ok(
+  /if \(\s*\/AccessDenied\|Unpurchased\|not eligible\|not_eligible\|ineligible\|\(\^\|\[\^0-9\]\)403/.test(
+    DB,
+  ) && DB.indexOf("让用户以为程序卡住") > 0,
+  "dshRunRetryable 把 403「not eligible」判死（注释写明为什么重发没意义）",
+);
+ok(
+  ASSIST.indexOf('I18n.t("当前：")') > 0 &&
+    ASSIST.indexOf('I18n.t("原始报文：")') > 0,
+  "询问窗里说清「当前是哪家 / 哪只模型 + 服务商原话」再问（用户据此判断要不要换）",
+);
+const xlateKeys = [
+  "换模型",
+  "换并重试",
+  "不换",
+  "换一个模型来翻译？将改用：",
+  "换一个模型重发这一轮？将改用：",
+  "模型服务返回 403：该模型/套餐未开通（服务商原话：Access to model denied… not eligible）。",
+  "换模型失败：该服务商没有可用的 API Key",
+  "当前：",
+  "原始报文：",
+  "已改用：",
+];
+for (const k of xlateKeys) {
+  ok(
+    I18N_SRC.indexOf('"' + k + '"') >= 0,
+    "i18n 有 403 换模型词条：" + k.slice(0, 16),
+  );
+}
+I18n.setLocale("en");
+for (const k of xlateKeys) {
+  const en = I18n.t(k);
+  ok(
+    en && en !== k && /^[\x20-\x7e…—]*$/.test(en),
+    "英文界面已译（403 换模型）：" + k.slice(0, 16),
+  );
+}
+I18n.setLocale("zh");
+
+/* 真跑一次重发判据（抽出 app-db.js 的真实 dshRunRetryable，不是静态字符串核对）：
+   403「not eligible」判死，429 与网络类照旧可重发。 */
+{
+  const vm = require("vm");
+  const dbSrc = DB;
+  const grab = (head) => {
+    const i = dbSrc.indexOf(head);
+    if (i < 0) throw new Error("抽不到：" + head);
+    /* 结束锚点必须在函数体内找「return true;」之后（正文注释里也有 } 形状的片段）；
+       行尾按实际文件取（app-db.js 是 CRLF），两种都兜住 */
+    const anchor = dbSrc.indexOf("return true;", i);
+    if (anchor < 0) throw new Error("抽不到函数体：" + head);
+    let j = dbSrc.indexOf("\r\n}\r\n", anchor);
+    if (j < 0) j = dbSrc.indexOf("\n}\n", anchor);
+    if (j < 0) throw new Error("抽不到函数尾：" + head);
+    return dbSrc.slice(i, j + (dbSrc[j] === "\r" ? 5 : 3));
+  };
+  const sandbox = {
+    console,
+    I18n: { t: (s) => String(s) },
+    isCancelishError: (m) => /已手动停止|已请求终止|用户取消了本轮|Request was aborted/i.test(String(m || "")),
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(grab("function dshRunRetryable("), sandbox, {
+    filename: "retryable-extract.js",
+  });
+  const R = (m) => vm.runInContext("dshRunRetryable(" + JSON.stringify(m) + ")", sandbox);
+  ok(
+    R(
+      'HTTP 403：Access to model denied. Please make sure you are eligible for using the model.',
+    ) === false,
+    "重发判据：403 not eligible → 判死（不再白等 5 秒 ×5 原样重发）",
+  );
+  ok(
+    R('{"error":{"type":"AccessDenied.Unpurchased"}}') === false,
+    "重发判据：AccessDenied.Unpurchased → 判死",
+  );
+  ok(R("HTTP 403：Forbidden") === false, "重发判据：任何 403 都不重发");
+  ok(R("429 Too Many Requests") === true, "重发判据：429 照旧可重发（没误伤正主）");
+  ok(R("network error ETIMEDOUT") === true, "重发判据：网络类照旧可重发");
+}
 
 console.log(
   "\n" + (fails ? "✗ " + fails + " 项失败" : "✓ " + checks + " 项全部通过") + "  (smoke-think-translate)",

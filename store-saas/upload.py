@@ -33,6 +33,12 @@ UPLOAD_FILES = (
     "alipay-probe.mjs",
     "qr-encode.mjs",
     "migrate-wechat-owner.mjs",
+    # 中转站（内部测试：DeepSeek 文本/识图 + gpt-image-2.5 图像）：
+    # relay.mjs 被 server.mjs import（漏传即 Cannot find module），relay-key.mjs 是人工发 Key 的脚本，
+    # relay.env.example 给运维抄 env 键名（不含任何凭据）。
+    "relay.mjs",
+    "relay-key.mjs",
+    "relay.env.example",
 )
 # 管理台静态页（独立界面，站点不设入口）：整目录上传，deploy.sh 同时装进
 # /opt/mtnode-store/admin（服务自身 /admin/ 路由）与 /var/www/mtnode/admin（nginx 静态）。
@@ -217,6 +223,12 @@ def main() -> None:
     print("     注意 NOTIFY_URL 必须用 www 域名：apex 会 301，支付宝不跟随重定向 = 丢异步通知")
     print("  5) 自检：curl -s https://www.mt-agent.com/mtnode/store-api/api/pay/alipay/status")
     print("     → configured:true 且 notifyWarning 为空")
+    print("中转站 hint（内部测试 · 键名清单见 /opt/mtnode-store/relay.env.example）:")
+    print("  1) 把上游凭据追加进 /etc/mtnode-store.env（MTNODE_RELAY_DEEPSEEK_KEY / MTNODE_RELAY_IMAGE_KEY）")
+    print("     → systemctl restart mtnode-store；/api/health 的 relay 字段会回 textUpstream / imageUpstream")
+    print("  2) 给内测账号发 Key（= 账号登录 token，明文只打印一次）:")
+    print("     cd /opt/mtnode-store && set -a && . /etc/mtnode-store.env && set +a && node relay-key.mjs --user <用户名>")
+    print("  3) 客户端「提供商」填 Base URL = https://www.mt-agent.com/mtnode/store-api/relay/v1 + 上面那串 Key")
 
 
 if __name__ == "__main__":

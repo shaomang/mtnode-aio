@@ -72,10 +72,10 @@ console.log("\n[1] 策略归一：非法值一律回落默认（深度 1、其�
     "policyFromConfig 兼容顶层 config.subagent",
   );
   ok(policy.policyFromConfig({}).depth === 1, "配置里没有这项 → 默认深度 1");
-  ok(policy.SUBAGENT_IDS.length === 8, "参与策略的 subagent* 行共 8 行");
+  ok(policy.SUBAGENT_IDS.length === 7, "参与策略的 subagent* 行共 7 行（dsh 0.2 起 tool-subagent-report 整包下线）");
 }
 
-console.log("\n[2] 总开关：8 行全关 → 再打开逐字还原（幂等 · 可往返）");
+console.log("\n[2] 总开关：7 行全关 → 再打开逐字还原（幂等 · 可往返）");
 {
   const on = policy.applySubagentPolicy(CORDIS, policy.DEFAULT_POLICY);
   ok(on.changed === false, "出货文件按默认策略应用 = 零字节变化（幂等）");
@@ -85,9 +85,9 @@ console.log("\n[2] 总开关：8 行全关 → 再打开逐字还原（幂等 ·
   ok(off.changed === true, "关掉总开关会真的改写字节");
   let allOff = true;
   for (const id of policy.SUBAGENT_IDS) if (!isOff(off.text, id)) allOff = false;
-  ok(allOff, "8 行 subagent* 全部变成 disabled: true（模型侧连委派工具都看不到）");
+  ok(allOff, "7 行 subagent* 全部变成 disabled: true（模型侧连委派工具都看不到）");
   ok(
-    off.text.split(/^(?=- id: )/m).length === CORDIS.split(/^(?=- id: )/m).length,
+    off.text.split(/^[ \t]*- id: /m).length === CORDIS.split(/^[ \t]*- id: /m).length,
     "行的条数一字不变（没有多出 / 少掉组合行）",
   );
   ok(blockOf(off.text, "session") === blockOf(CORDIS, "session"), "无关行原样保留（session 行）");

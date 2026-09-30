@@ -1,58 +1,25 @@
-# MTNode agent runtime: unattended stdio JSON-RPC deployment over the
-# published @deepseek-ai/dsh-base 0.1.0-rc.6 spine.
-# stdout is reserved for JSON-RPC frames; never add a console logger or terminal UI.
+# MTNode agent runtime — dsh 0.2 profile patch layer.
+#
+# 形态变更（0.2）：本文件不再是「完整运行时组合」，而是叠加在内置 `sdk` profile 之上的
+# 补丁层。sdk profile 由两层 bundle 组成 —— @deepseek-ai/dsh-base（核心脊柱）+
+# @deepseek-ai/dsh-sdk-app（SDK JSON-RPC 服务端）。加载顺序：bundle 层 → 本补丁层 →
+# $DSH_HOME/profiles/sdk/cordis.patch.yml（用户插件层）。
+# 语义（见 docs/user/develop/basic/config、packages/cordis-plugin-loader）：
+#   · `- id: <已存在的行>`        = 覆盖该行的整份 config（**替换而非合并**）
+#   · `- insert: [ ... ]`         = 插入新行（MTNode 自有插件与补丁新增行）
+# 所以：与 base 同名同配置的行一律不写；只写「要改的」与「要加的」。
+# stdout 留给 JSON-RPC 帧；永远不要加 console logger 或终端 UI。
 
-- id: sdk-jsonrpc-server
-  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
-  config:
-    maxTokensAsSuccess: true
+# ── 覆盖 base 行的配置（id 定位） ──────────────────────────────────────────────
 
-# 跨进程真续跑（session/resume 桥）：给 SDK server 装一枚可选 JSON-RPC 方法
-# session/resume —— 网关在续跑轮真实 prompt 前调用它，把盘上旧会话恢复成 live
-# （agents.resume = persistence.prepare 语义）再追加：失败轮进程已不在也能真续跑，
-# 不整轮重发白烧。全新会话从不调用该方法 → 上游 create 路径一字不改（降级保底）；
-# 老运行时没有该方法 = 网关回退旧 create 语义（同进程续跑照常 / 跨进程回落既有
-# collision → RESUME_UNAVAILABLE 转译）。见 dsh/DESIGN.md「断点续跑契约」。
-- id: mtnode-session-resume
-  name: './plugins/session-resume-server.mjs'
-
-# 轮内插话与暂停（session/steer + session/pause 桥）：给 SDK server 装两枚可选 JSON-RPC
-# 方法 —— 网关在用户追加即时纠偏时调 session/steer（与上游 session/prompt 同源的
-# createUserMessage → agent.steer，插进当前轮的 steering 位），在用户按 ■ 暂停时调
-# session/pause（agent.cancel({kind:'user'}, {keepInbox:true})：中止本轮但保留已排队消息）。
-# 会话不在 live 回 {ok:false, reason:'no_live_agent'}，两枚方法一律不抛 —— 网关据此把插话
-# 降级为排队、把暂停回落既有终止路径，绝不因插件而把正在跑的轮次判成失败重发。
-# 老运行时没有这两枚方法 = 网关按 unknown-method 回退，行为与接入前一字不变。
-- id: mtnode-session-steer
-  name: './plugins/session-steer-server.mjs'
-
-- id: timer
-  name: '@deepseek-ai/cordis-plugin-timer'
-
-- id: llm
-  name: '@deepseek-ai/dsh-llm'
-
-- id: session
-  name: '@deepseek-ai/dsh-session'
-
-- id: typert
-  name: '@deepseek-ai/dsh-typert-registry'
-
-- id: typert-loader
-  name: '@deepseek-ai/dsh-typert-loader'
-
-- id: typert-gateway
-  name: '@deepseek-ai/dsh-api-gateway'
-
+# 会话标题：base 默认字面量，这里补上限（与 0.1 代一致，冒烟 [5] 钉住）
 - id: session-title
-  name: '@deepseek-ai/dsh-session-title'
   config:
     fallbackMaxWords: 5
     fallbackMaxBytes: 40
     maxTitleBytes: 80
 
 - id: session-title-llm
-  name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
   config:
     targetWords: 5
     targetCjkCharacters: 10
@@ -60,163 +27,73 @@
     maxOutputTokens: 64
     timeoutMs: 60000
 
-- id: user-questions
-  name: '@deepseek-ai/dsh-user-questions'
-
-# 模型提问工具:模型可在任务中途调用 ask_user_question,经 mtnode-bridge
-# 转发到宿主应用弹窗,等待用户回答后继续。
-- id: tool-ask-user
-  name: '@deepseek-ai/dsh-tool-ask-user'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
-
-# MTNode 交互桥:注册提问 provider 与审批 answerer,经 localhost TCP 转发给
-# gateway(端口由宿主在 spawn 时经 MTNODE_BRIDGE_PORT 注入)。
-# BongoChat 仍需桥接审批（联网搜索放行）；仅禁用画布/提问工具。
-- id: mtnode-bridge
-  name: './bridge-plugin.mjs'
-
-# MTNode 画布工具:模型可在当前工作流中创建/改标题/连线/@引用/自动排版节点。
-- id: mtnode-canvas
-  name: './canvas-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-# MTNode 回滚捕获:在工具 pre/post 观察点采样「改前正文 / 改后指纹」,经同一条桥
-# 单向发 journal 帧给 gateway,由主进程落盘成对象库 + 轮次账本(契约见 dsh/DESIGN.md
-# 「回滚账本与 journal 帧」)。插件自己不写盘;缺 MTNODE_ROLLBACK_DIR 或
-# MTNODE_BRIDGE_PORT 时整体 no-op,行为与未接入时一致。
-- id: mtnode-rollback
-  name: './rollback-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-# MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实
-# （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
-- id: mtnode-db
-  name: './db-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-# MTNode AI 事实库工具:任何 Agent 会话 / 专家 / 节点默认可用 mtnode_facts 索引本画布的
-# AI 事实库（每张画布一份极简条例库,list/query/get/write/delete/pin;宿主按绑定画布放行,
-# 没有绑定画布则回错误文本,会话不中断）。
-- id: mtnode-ai-facts
-  name: './ai-facts-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-# MTNode 长周期任务工具:属于某个长任务运行的节点经 lt_state 读共享状态、写自己
-# 声明的输出键。长期结论的沉淀改走 mtnode_facts（本画布 AI 事实库）;原 lt_memory 已下线
-# （recall / list / write / propose 四个动作一并摘掉）。宿主持有 run,
-# 非长任务轮一律拒绝(同 mtnode_db 口径)。
-- id: mtnode-longtask
-  name: './longtask-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-# MTNode 素材库 / 截图工具:mtnode_assets 让「准备素材」类运行能列出素材库
-# （三视图等人设参考）、读出一条内容的绝对路径（交给 mtnode_vision 或交付端子），
-# 并把 MTNode 窗口当下拍成一张静帧 PNG 落到指定绝对路径。素材库根与交付目录都在
-# 工作区之外（沙箱拒读拒写），所以真源在宿主（渲染层读库 / capturePage 截图），
-# 插件只经同一条桥转发。被「素材库与截图」许可拒掉时整只不注册。
-- id: mtnode-assets
-  name: './assets-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-# MTNode 用户工具节点:把画布中的工具节点 / 库中「随时可调用」的工具注册成
-# 会话可见的函数调用工具(func call)。描述子由宿主在每次 run 前经
-# MTNODE_TOOLS_JSON 注入(指纹进 runtime key,工具集变化即冷起新运行时);
-# 模型发起调用 → 桥帧回宿主执行节点内部图 → 结果回传(失败回错误文本)。
-- id: mtnode-tools
-  name: './tools-plugin.mjs'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-# 按运行裁剪可见工具集：引擎自带工具（目标 / 任务清单 / 子代理 / 后台任务 / 提问）注册在
-# @deepseek-ai 的包里，我们改不到注册，就在 agent 创建窗口用 ctx.tools.restrict({deny})
-# 把它们从可见集摘掉（被摘掉的工具整份 schema 不再进请求）。名单 = spawn 时注入的
-# MTNODE_HIDE_TOOLS（逗号分隔规范名，同时进 runtime key 的 hx: 指纹 → 一台运行时一个
-# 形状，绝不在轮内改可见集）。名单为空 / env 缺席 = 不注册任何监听，行为与未接入时
-# 一字不差。MTNode 自有工具的不注册在 canvas-plugin / db-plugin / assets-plugin 的注册口，判定的名单
-# 真源是 dsh/gateway/tool-visibility.mjs。契约见 dsh/DESIGN.md「按运行裁剪可见工具集」。
-- id: mtnode-tool-visibility
-  name: './plugins/tool-restrict-plugin.mjs'
-  disabled: !!js process.env.MTNODE_PURE === '1'
-
-- id: agent
-  name: '@deepseek-ai/dsh-agent'
-
+# 默认路由：deepseek-official 由 SDK 服务端自挂载，首试即成功。
 - id: agent-default-model
-  name: '@deepseek-ai/dsh-agent-default-model'
   config:
     provider: deepseek-official
     model: deepseek-flash
 
-- id: jobs
-  name: '@deepseek-ai/dsh-jobs-local'
-
-- id: llm-retry
-  name: '@deepseek-ai/dsh-llm-retry'
-
+# 设置（0.2）：base 的 settings 行由 @deepseek-ai/dsh-settings 承担，而它只在 Loader 结算后
+# 把 <DSH_HOME>/settings.yaml **导入** active profile 并改名 .imported —— 之后不再读该文件。
+# 所以宿主托管的四段（llm-deepseek / llm-pi-ai / permission / system-prompt）不再写
+# settings.yaml，而由 gateway 的 applySettings 写成
+# <DSH_HOME>/profiles/sdk/cordis.patch.yml 的 id 定向覆盖行（0.2 profile 补丁层，HMR 监听
+# 热重载）；见 dsh/DESIGN.md「设置下发（0.2）」。本行保持现状只为兼容 0.1 残留文档的导入。
 - id: settings
-  name: '@deepseek-ai/dsh-settings-file'
   config:
     path: !!js dshHomePath('settings.yaml')
 
-- id: credentials
-  name: '@deepseek-ai/dsh-credentials-local'
-
-# 附件存储:智能任务携带图像时,网关把图像写入 DSH_HOME/attachments/v1
-# 的内容寻址对象库,llm-pi-ai 经 attachments.readImage 读取后发给视觉模型。
-- id: attachments
-  name: '@deepseek-ai/dsh-attachment-local'
-
-# pi-ai 多服务商适配器:休眠挂载,供应商/模型目录见设置(MTNode 服务商自动写入)
-- id: llm-pi-ai
-  name: '@deepseek-ai/dsh-llm-pi-ai'
-
+# 会话日志目录（与 0.1 代同名同语义，只是 0.2 的默认根不同）
 - id: session-persistence-jsonl
-  name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config:
     root: !!js dshHomePath('sessions')
 
+# 会话检索库：内存模式、不开盘（MTNode 自己读 jsonl 投影）
 - id: session-query-sqlite
-  name: '@deepseek-ai/dsh-session-query-sqlite'
   config:
     path: ':memory:'
     openAt: never
 
-- id: session-projection
-  name: '@deepseek-ai/dsh-session-projection'
+# 附件存储:智能任务携带图像时,网关把图像写入 DSH_HOME/attachments/v1
+# 的内容寻址对象库,llm-pi-ai 经 attachments.readImage 读取后发给视觉模型。
+- id: attachment-local
+  config:
+    root: !!js dshHomePath('attachments')
 
-- id: subprocess
-  name: '@deepseek-ai/dsh-subprocess-local'
+# pi-ai 多服务商适配器:休眠挂载,供应商/模型目录见设置(MTNode 服务商自动写入)
+- id: llm-pi-ai
+  config:
+    catalogRefresh: false
 
+# 沙箱：win32 上把 runner 换成 noop-runner.cjs（避免受限 token 下每条命令闪 console；
+# 文件写权限仍由进程内 dsh-fs-sandbox 约束）。gateway 的 applySandboxWorkaround 会
+# 在首次运行时按当前 execPath 重写本行。
 - id: sandbox
   name: '@deepseek-ai/dsh-sandbox-local'
   config:
     # win32 console-flash workaround: noop runner (see gateway.mjs applySandboxWorkaround)
-    runnerCommand: ["E:\\dev\\tools\\pipeline-console\\node_modules\\electron\\dist\\electron.exe", "E:\\dev\\tools\\pipeline-console\\dsh\\gateway\\noop-runner.cjs"]
+    runnerCommand: ["C:\\nvm4w\\nodejs\\node.exe", "E:\\dev\\tools\\pipeline-console\\dsh\\gateway\\noop-runner.cjs"]
     runnerFailureSignatures: ['noop-runner:']
 - id: sandbox-policy
-  name: '@deepseek-ai/dsh-sandbox-policy'
   config:
     mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
     workspaceRoot: !!js process.cwd()
 
 - id: bash-sandbox
-  name: '@deepseek-ai/dsh-bash-sandbox'
   disabled: !!js process.platform === 'win32'
   config:
     timeoutMs: 60000
 
 - id: pwsh-sandbox
-  name: '@deepseek-ai/dsh-pwsh-sandbox'
   disabled: !!js process.platform !== 'win32'
 
 # Approval policy per session comes from the permission preset below; the
 # "ask" presets route requests to the mtnode-bridge answerer (host-app UI).
 - id: approval
-  name: '@deepseek-ai/dsh-user-approval'
   config:
     policy: ask
 
 - id: permission
-  name: '@deepseek-ai/dsh-permission-presets'
   config:
     presets:
       read-only:
@@ -247,110 +124,66 @@
         approval: ask
     defaultPreset: mtnode-unattended
 
-- id: shell-env
-  name: '@deepseek-ai/dsh-shell-env'
-
 - id: tool-bash
-  name: '@deepseek-ai/dsh-tool-bash'
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-pwsh
-  name: '@deepseek-ai/dsh-tool-pwsh'
   disabled: !!js process.platform !== 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-jobs
-  name: '@deepseek-ai/dsh-tool-jobs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: fs-observation-policy
-  name: '@deepseek-ai/dsh-fs-observation-policy'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-fs
-  name: '@deepseek-ai/dsh-tool-fs'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-fs-search
-  name: '@deepseek-ai/dsh-tool-fs-search'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     sampleOverCapGlobResults: false
 
 - id: agent-instructions
-  name: '@deepseek-ai/dsh-agent-instructions'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     maxBytes: 65536
 
 - id: skill
-  name: '@deepseek-ai/dsh-skill'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: skill-filesystem
-  name: '@deepseek-ai/dsh-skill-filesystem'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-skill
-  name: '@deepseek-ai/dsh-tool-skill'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
-- id: commands
-  name: '@deepseek-ai/dsh-commands'
-
-- id: command-feedback
-  name: '@deepseek-ai/dsh-command-feedback'
-
-- id: goal
-  name: '@deepseek-ai/dsh-goal'
-
-- id: goal-round-driver
-  name: '@deepseek-ai/dsh-goal-round-driver'
-
-- id: command-goal
-  name: '@deepseek-ai/dsh-command-goal'
-
 - id: plan-mode
-  name: '@deepseek-ai/dsh-plan-mode'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     section: |
           You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it.
 
-- id: token-meter
-  name: '@deepseek-ai/dsh-token-meter'
-
-- id: compaction-basic
-  name: '@deepseek-ai/dsh-compaction-basic'
-
-- id: command-compact
-  name: '@deepseek-ai/dsh-command-compact'
-
 - id: subagent
-  name: '@deepseek-ai/dsh-subagent'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: subagent-spawn-in-process
-  name: '@deepseek-ai/dsh-subagent-spawn-in-process'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     providerName: spawn
 
 - id: subagent-fork-in-process
-  name: '@deepseek-ai/dsh-subagent-fork-in-process'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     providerName: fork
 
 - id: tool-subagent-control
-  name: '@deepseek-ai/dsh-tool-subagent-control'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-subagent-list-agents
-  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
 - id: tool-subagent
-  name: '@deepseek-ai/dsh-tool-subagent'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     provider: spawn
@@ -362,7 +195,6 @@
     maxDepth: 1
 
 - id: tool-subagent-fork
-  name: '@deepseek-ai/dsh-tool-subagent'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     provider: fork
@@ -371,71 +203,41 @@
     # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。
     maxDepth: 1
 
-- id: tool-subagent-report
-  name: '@deepseek-ai/dsh-tool-subagent-report'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-- id: timeout-policy
-  name: '@deepseek-ai/dsh-tool-call-timeout-policy'
-
-- id: spill-local
-  name: '@deepseek-ai/dsh-spill-local'
-
 - id: spill-policy
-  name: '@deepseek-ai/dsh-spill-policy'
   config:
     maxInlineBytes: 12000
 
-- id: session-checkpoint-policy
-  name: '@deepseek-ai/dsh-session-checkpoint-policy'
-
 - id: tool-result-pruner
-  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
   config:
     thresholdChars: 4096
     headChars: 1536
     tailChars: 512
 
 - id: tool-todo
-  name: '@deepseek-ai/dsh-tool-todo'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     allowParallelInProgress: true
 
 - id: tool-goal
-  name: '@deepseek-ai/dsh-tool-goal'
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-- id: tool-str-replace-editor
-  name: '@deepseek-ai/dsh-tool-str-replace-editor'
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-  config:
-    maxOutputChars: 16000
 
 - id: repeat-tool-reminder
-  name: '@deepseek-ai/dsh-repeat-tool-reminder'
   config:
     thresholds: [3, 5, 8]
     argumentsPreviewChars: 500
 
 - id: web
-  name: '@deepseek-ai/dsh-web'
   config:
     searchProvider: deepseek-official
 
 - id: web-search-deepseek
-  name: '@deepseek-ai/dsh-web-search-deepseek'
   config:
     apiKeyEnv: DEEPSEEK_API_KEY
 
 - id: tool-web
-  name: '@deepseek-ai/dsh-tool-web'
   config:
     fetch: false
     searchTimeoutMs: 60000
-
-- id: tools
-  name: '@deepseek-ai/dsh-tools'
 
 # MTNode persona: a general assistant for desktop content/media/file tasks,
 # not a coding agent. The hosting app describes the concrete task per run.
@@ -444,7 +246,6 @@
 # 纯净模式（MTNODE_PURE=1）：harness/runtime 段在源头就不发（pure-prompt 的
 # 段过滤只作兜底），会注入提示/工具的插件行也各自按同一环境变量禁用。
 - id: system-prompt
-  name: '@deepseek-ai/dsh-system-prompt'
   config:
     includeHarnessIdentity: !!js process.env.MTNODE_CHAT_ISOLATE !== '1' && process.env.MTNODE_PURE !== '1'
     includeRuntimeContext: !!js process.env.MTNODE_CHAT_ISOLATE !== '1' && process.env.MTNODE_PURE !== '1'
@@ -507,48 +308,184 @@
       never answer from memory.
 
 - id: agent-loop
-  name: '@deepseek-ai/dsh-agent-loop'
   config:
     agents: []
 
-- id: fs-sandbox
-  name: '@deepseek-ai/dsh-fs-sandbox'
-
 # Key and base URL come from the hosting app's own provider settings, injected
 # as environment; the managed credential file is never used here.
+# 0.2 把「按 apiKey 环境变量的 DeepSeek 适配器」拆成独立包 dsh-llm-deepseek-api-key
+# （旧名 dsh-llm-deepseek 仍在，语义是账号制适配器）。
 - id: llm-deepseek
-  name: '@deepseek-ai/dsh-llm-deepseek'
   config:
     apiKeyEnv: DEEPSEEK_API_KEY
     baseUrlEnv: DEEPSEEK_BASE_URL
     thinking: enabled
 
-# 思考强度按 run 下发（mtnode-effort）：gateway 把每轮生效档（经 reasoning-effort.mjs
-# 按路由能力表归一）经 env MTNODE_EFFORT 注入运行时，本插件在 agent/request waterfall
-# 上把档位提案进模型请求（deepseek-official 按 off/low/high/max；pi-ai 目录/手写路由
-# 经 ctx.llm 解析精确模型能力后夹紧，拿不到能力 = 不下发）。env 缺席 = 插件 no-op。
-- id: mtnode-effort
-  name: './plugins/effort-plugin.mjs'
-
-# 历史思考回放裁剪（mtnode-reasoning-replay-trim）：在 llm/stream 瀑布上把除最后一条
-# assistant 消息外的 reasoning 块换成一枚极短占位块，只改发出去的请求副本 —— 会话日志、
-# UI 回显与耐久推导一律不动。思考模式每步把上一步思考原文重发一遍（实测单会话思考文本
-# 最高 309KB，重思考步每步多带 10–15K token），这里把这笔钱省掉。开关是 gateway 在 spawn
-# 时注入的 env MTNODE_TRIM_REASONING（值 = 生效的最小思考字数；缺席 / 0 / 非法 = 插件整体
-# no-op，行为与未接入时一字不变）。契约见 dsh/DESIGN.md「历史思考回放裁剪契约」。
-- id: mtnode-reasoning-replay-trim
-  name: './plugins/reasoning-replay-trim-plugin.mjs'
-
-# ── user plugins (managed from MTNode settings) ──
-# router-standard（实验性路由预设）：默认不加载；需要时可在设置中挂载，也可完整卸载。
-- id: dsh-router-standard
-  name: './plugins/router-standard/router-bootstrap.mjs'
+# plugin-manager / 会话日志等 0.2 新增行保持关闭：MTNode 的插件管理在渲染层
+# 「扩展能力管理」对话框里，不把运行时插件目录交给模型改。
+- id: plugin-manager
   disabled: true
 
-# BongoChat：用人设环境变量覆盖 system prompt，并裁剪工具为联网搜索
-- id: bongochat-prompt
-  name: './plugins/bongochat-prompt.mjs'
+- id: tool-plugin-manager
+  disabled: true
 
-# 纯净模式：MTNODE_PURE=1 时移除 deployment:persona（会话「纯净模式」按钮开启）
-- id: pure-prompt
-  name: './plugins/pure-prompt.mjs'
+# DeepSeek 官方请求扩展注册表（@deepseek-ai/dsh-deepseek-llm-api-extensions）的两位贡献者：
+# session-log 与 plugin-package-inventory 都会在每条请求前各认领一个顶层字段
+# （dsh_session_log / dsh_plugin_packages），少了对应服务就整条请求 preparation 失败
+# （实测报 “DeepSeek request extension preparation failed”）。MTNode 既不发这两个字段、
+# 也不消费它们，故两行保持关闭 —— 注册表本身仍挂载，请求成形不受影响。
+- id: session-log-deepseek
+  disabled: true
+
+- id: plugin-package-inventory-deepseek
+  disabled: true
+
+# ── 插入 MTNode 自有行 ────────────────────────────────────────────────────────
+
+# 模型提问工具:模型可在任务中途调用 ask_user_question,经 mtnode-bridge
+# 转发到宿主应用弹窗,等待用户回答后继续。BongoChat 隔离时整只关掉。
+# （0.2 的 sdk profile 不再预置该行，故这里显式插入。）
+# 以下为插入行：dsh 0.2 的 profile 补丁用 - insert: 段新增条目（顶层同 id 只能覆盖既有行）。
+- insert:
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+
+    # 精确字符串替换编辑工具（宿主工作区内的文件改写走它，沙箱收紧到 workspace-write）。
+    - id: tool-str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+      config:
+        maxOutputChars: 16000
+
+    # 跨进程真续跑（session/resume 桥）：给 SDK server 装一枚可选 JSON-RPC 方法
+    # session/resume —— 网关在续跑轮真实 prompt 前调用它，把盘上旧会话恢复成 live
+    # （agents.resume = persistence.prepare 语义）再追加：失败轮进程已不在也能真续跑，
+    # 不整轮重发白烧。全新会话从不调用该方法 → 上游 create 路径一字不改（降级保底）；
+    # 老运行时没有该方法 = 网关回退旧 create 语义（同进程续跑照常 / 跨进程回落既有
+    # collision → RESUME_UNAVAILABLE 转译）。见 dsh/DESIGN.md「断点续跑契约」。
+    - id: mtnode-session-resume
+      name: './plugins/session-resume-server.mjs'
+
+    # 轮内插话与暂停（session/steer + session/pause 桥）：给 SDK server 装两枚可选 JSON-RPC
+    # 方法 —— 网关在用户追加即时纠偏时调 session/steer（与上游 session/prompt 同源的
+    # createUserMessage → agent.steer，插进当前轮的 steering 位），在用户按 ■ 暂停时调
+    # session/pause（agent.cancel({kind:'user'}, {keepInbox:true})：中止本轮但保留已排队消息）。
+    # 会话不在 live 回 {ok:false, reason:'no_live_agent'}，两枚方法一律不抛 —— 网关据此把插话
+    # 降级为排队、把暂停回落既有终止路径，绝不因插件而把正在跑的轮次判成失败重发。
+    # 老运行时没有这两枚方法 = 网关按 unknown-method 回退，行为与接入前一字不变。
+    - id: mtnode-session-steer
+      name: './plugins/session-steer-server.mjs'
+
+    # MTNode 交互桥:注册提问 provider 与审批 answerer,经 localhost TCP 转发给
+    # gateway(端口由宿主在 spawn 时经 MTNODE_BRIDGE_PORT 注入)。
+    # BongoChat 仍需桥接审批（联网搜索放行）；仅禁用画布/提问工具。
+    - id: mtnode-bridge
+      name: './bridge-plugin.mjs'
+
+    # MTNode 画布工具:模型可在当前工作流中创建/改标题/连线/@引用/自动排版节点。
+    - id: mtnode-canvas
+      name: './canvas-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 回滚捕获:在工具 pre/post 观察点采样「改前正文 / 改后指纹」,经同一条桥
+    # 单向发 journal 帧给 gateway,由主进程落盘成对象库 + 轮次账本(契约见 dsh/DESIGN.md
+    # 「回滚账本与 journal 帧」)。插件自己不写盘;缺 MTNODE_ROLLBACK_DIR 或
+    # MTNODE_BRIDGE_PORT 时整体 no-op,行为与未接入时一致。
+    - id: mtnode-rollback
+      name: './rollback-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实
+    # （list/query/get/calc，只读、确定性检索，宿主按接入关系放行或拒绝）。
+    - id: mtnode-db
+      name: './db-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode AI 事实库工具:任何 Agent 会话 / 专家 / 节点默认可用 mtnode_facts 索引本画布的
+    # AI 事实库（每张画布一份极简条例库,list/query/get/write/delete/pin;宿主按绑定画布放行,
+    # 没有绑定画布则回错误文本,会话不中断）。
+    - id: mtnode-ai-facts
+      name: './ai-facts-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 长周期任务工具:属于某个长任务运行的节点经 lt_state 读共享状态、写自己
+    # 声明的输出键。长期结论的沉淀改走 mtnode_facts（本画布 AI 事实库）;原 lt_memory 已下线
+    # （recall / list / write / propose 四个动作一并摘掉）。宿主持有 run,
+    # 非长任务轮一律拒绝(同 mtnode_db 口径)。
+    - id: mtnode-longtask
+      name: './longtask-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 素材库 / 截图工具:mtnode_assets 让「准备素材」类运行能列出素材库
+    # （三视图等人设参考）、读出一条内容的绝对路径（交给 mtnode_vision 或交付端子），
+    # 并把 MTNode 窗口当下拍成一张静帧 PNG 落到指定绝对路径。素材库根与交付目录都在
+    # 工作区之外（沙箱拒读拒写），所以真源在宿主（渲染层读库 / capturePage 截图），
+    # 插件只经同一条桥转发。被「素材库与截图」许可拒掉时整只不注册。
+    - id: mtnode-assets
+      name: './assets-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 会话自己的浏览器（browser_* 工具面）：给会话一台常驻的 Edge/Chrome
+    # （独立用户数据目录＝跨会话保持登录态，窗口可见＝用户能实时看它在干什么）。
+    # 进程与 CDP 驱动全在网关侧（browser-host.mjs，零新依赖：Node≥22 内置 WebSocket），
+    # 插件只经同一条桥转发帧。纯净模式（MTNODE_PURE）与画布智能节点 / 长任务未授权的
+    # 环节（MTNODE_NO_BROWSER）整只不注册 —— 会话专属能力，节点侧一律不注册。
+    - id: mtnode-browser
+      name: './browser-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # MTNode 用户工具节点:把画布中的工具节点 / 库中「随时可调用」的工具注册成
+    # 会话可见的函数调用工具(func call)。描述子由宿主在每次 run 前经
+    # MTNODE_TOOLS_JSON 注入(指纹进 runtime key,工具集变化即冷起新运行时);
+    # 模型发起调用 → 桥帧回宿主执行节点内部图 → 结果回传(失败回错误文本)。
+    - id: mtnode-tools
+      name: './tools-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+
+    # 按运行裁剪可见工具集：引擎自带工具（目标 / 任务清单 / 子代理 / 后台任务 / 提问）注册在
+    # @deepseek-ai 的包里，我们改不到注册，就在 agent 创建窗口用 ctx.tools.restrict({deny})
+    # 把它们从可见集摘掉（被摘掉的工具整份 schema 不再进请求）。名单 = spawn 时注入的
+    # MTNODE_HIDE_TOOLS（逗号分隔规范名，同时进 runtime key 的 hx: 指纹 → 一台运行时一个
+    # 形状，绝不在轮内改可见集）。名单为空 / env 缺席 = 不注册任何监听，行为与未接入时
+    # 一字不差。MTNode 自有工具的不注册在 canvas-plugin / db-plugin / assets-plugin 的注册口，判定的名单
+    # 真源是 dsh/gateway/tool-visibility.mjs。契约见 dsh/DESIGN.md「按运行裁剪可见工具集」。
+    - id: mtnode-tool-visibility
+      name: './plugins/tool-restrict-plugin.mjs'
+      disabled: !!js process.env.MTNODE_PURE === '1'
+
+    # 思考强度按 run 下发（mtnode-effort）：gateway 把每轮生效档（经 reasoning-effort.mjs
+    # 按路由能力表归一）经 env MTNODE_EFFORT 注入运行时，本插件在 agent/request waterfall
+    # 上把档位提案进模型请求（deepseek-official 按 off/low/high/max；pi-ai 目录/手写路由
+    # 经 ctx.llm 解析精确模型能力后夹紧，拿不到能力 = 不下发）。env 缺席 = 插件 no-op。
+    - id: mtnode-effort
+      name: './plugins/effort-plugin.mjs'
+
+    # 历史思考回放裁剪（mtnode-reasoning-replay-trim）：在 llm/stream 瀑布上把除最后一条
+    # assistant 消息外的 reasoning 块换成一枚极短占位块，只改发出去的请求副本 —— 会话日志、
+    # UI 回显与耐久推导一律不动。思考模式每步把上一步思考原文重发一遍（实测单会话思考文本
+    # 最高 309KB，重思考步每步多带 10–15K token），这里把这笔钱省掉。开关是 gateway 在 spawn
+    # 时注入的 env MTNODE_TRIM_REASONING（值 = 生效的最小思考字数；缺席 / 0 / 非法 = 插件整体
+    # no-op，行为与未接入时一字不变）。契约见 dsh/DESIGN.md「历史思考回放裁剪契约」。
+    - id: mtnode-reasoning-replay-trim
+      name: './plugins/reasoning-replay-trim-plugin.mjs'
+
+    # router-standard（实验性路由预设）：默认不加载；需要时可在设置中挂载，也可完整卸载。
+    - id: dsh-router-standard
+      name: './plugins/router-standard/router-bootstrap.mjs'
+      disabled: true
+
+    # BongoChat：用人设环境变量覆盖 system prompt，并裁剪工具为联网搜索
+    - id: bongochat-prompt
+      name: './plugins/bongochat-prompt.mjs'
+
+    # 纯净模式：MTNODE_PURE=1 时移除 deployment:persona（会话「纯净模式」按钮开启）
+    - id: pure-prompt
+      name: './plugins/pure-prompt.mjs'
+
+    # 本行以下 = 用户插件段（由 MTNode 设置写回；网关启动时把这段与
+    # $DSH_HOME/cordis-user.yml 同步）。shipped 行一律写在本行**之前**，否则会被
+    # syncUserPluginsFromHome 当作用户行搬到配置目录、从发行组合里消失。
+
+
+# ── user plugins (managed from MTNode settings) ──

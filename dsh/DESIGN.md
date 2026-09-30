@@ -18,18 +18,142 @@
 renderer (app.js, CJS 浏览器侧)
   │  window.api.dsh.*            (preload 白名单桥)
   ▼
-main.js (CJS, Electron 31 / 内置 Node 20)
+main.js (CJS, Electron 39 / 内置 Node 22.22.1)
   │  dsh/main-dsh.js             (主进程适配器,只懂本地协议)
   │  本地协议:换行分隔 JSON over stdio   ← 稳定契约,mtnode 自有
   ▼
 gateway (dsh/gateway/gateway.mjs, ESM, 独立 Node ≥ 22.19)
   │  @deepseek-ai/dsh-sdk-client (DeepSeekHarness)
   ▼
-dsh runtime 子进程 (node dsh-jsonrpc-agent/lib/bin.js dsh/gateway/cordis.yml)
-  │  发布物:@deepseek-ai/dsh-sdk-jsonrpc-demo + cordis.yml 组合
+dsh runtime 子进程 (node @deepseek-ai/dsh/lib/bin.js --profile sdk --patch cordis.yml)
+  │  profile=sdk = @deepseek-ai/dsh-base + @deepseek-ai/dsh-sdk-app 两层 bundle
+  │  cordis.yml = MTNode 的补丁层（覆盖行 + insert 段）
   ▼
 DeepSeek API
 ```
+
+### 运行时组合（0.2 profile + patch）
+
+dsh 0.2 起运行时不再由「一个完整 cordis.yml + sdk-jsonrpc-demo/bin」直起，而是**命名
+profile + 有序补丁层**：
+
+1. CLI 在 `$DSH_HOME/profiles/sdk/` 生成 profile（首次自动从内置模板初始化），
+   `package.json` 的 `dsh.profile.bundles` 列出该 profile 的 bundle 层
+   （SDK 发行物固定为 `@deepseek-ai/dsh-base`（核心脊柱）+ `@deepseek-ai/dsh-sdk-app`
+   （SDK JSON-RPC 服务端，含 `sdk-jsonrpc-server` 行））。
+2. 组合顺序：bundle 层 → `--patch` 传入的补丁层（= 本仓 `dsh/gateway/cordis.yml`）
+   → `$DSH_HOME/profiles/sdk/cordis.patch.yml`（用户层）。
+3. 补丁层两种语义（见上游 `docs/user/develop/basic/config`）：
+   - 顶层 `- id: <已存在的行>`：**整份替换**该行的 `config`（不是合并）；
+   - `- insert: [ ... ]`：新增条目（`insert:` 只能出现一次，段内行缩进 4 空格）。
+   所以 `cordis.yml` 只写「与 base 不同的覆盖行」+「MTNode 自有 / 0.2 新增行」，
+   不再逐行抄一遍骨架。
+
+网关侧对应改动（`gateway.mjs`）：
+
+- `new DeepSeekHarness({ dshBin, profile: 'sdk', patches: [CORDIS_PATH], cwd, processCwd, env })`
+  —— 0.2 的 launcher 是 `dshBin` / `profile` / `patches` / `env` / `cwd`，旧写法
+  `launch: { command, args }` 已不存在；bin 由 `require.resolve('@deepseek-ai/dsh')`
+  解析后显式传入（SDK 的 `dshManifest.version !== clientManifest.version` 会硬报错）。
+- 握手走 `await harness.start()`（高层 API，自带「只握手一次 + 失败换新客户端」）；
+  旧写法 `harness.client.start()` + `harness.client.initialize(params)` 在 0.2 不可用。
+- 低层 JSON-RPC 直呼（`session/resume`、`session/steer`、`session/pause` 三枚桥方法）
+  仍是 `harness.client.request(method, params, timeoutMs)`，语义未变。
+- `parsePluginRows` 兼容缩进行（`insert:` 段）——网关设置页的插件清单据此列出插入行；
+  `applySandboxWorkaround` 仍按文本替换 `- id: sandbox` 段（顶层覆盖行，未缩进）。
+- 内置 UI 行 `session-log-deepseek` / `plugin-package-inventory-deepseek` 显式关闭：
+  两者各在每条请求前认领一个顶层扩展字段，缺服务即整条请求 preparation 失败
+  （实测 `DeepSeek request extension preparation failed`）；MTNode 不發也不消费这两个字段。
+
+### 设置下发（0.2：命令行叠加层）
+
+0.1 代网关把「服务商目录 / 权限预设 / 官方模型清单 / 宿主人设」写进 `<DSH_HOME>/settings.yaml`，
+运行时经 `dsh-settings-file` 读回。0.2 删掉了这个文件型适配器（基座组合里不再有该行）：
+
+- 运行时侧只剩 `@deepseek-ai/dsh-settings`，它在启动时把遗留的 `settings.yaml` **改名成
+  `settings.yaml.imported` 并尝试导入进 profile**；导入后该文件不再被读取，网关继续写它
+  等于写进死信（实测目录里只剩 `settings.yaml.imported`）。
+- 0.2 的真源是**补丁层**，但另外两处都打不到宿主托管的那四行 —— 实测（`config/probe` 桥）：
+  · `profiles/sdk/cordis.patch.yml`（profile 用户补丁层）：打得到顶层行
+    （`permission.defaultPreset` 实测生效），打不到基座 `insert:` 里插进来的行
+    （`llm-deepseek` / `system-prompt` / `llm-pi-ai` 的补丁被静默忽略）；
+  · 运行时自己的 `ctx.settings.update(ns, values)`：直接拒绝，实测回
+    `Configuration for "llm-deepseek" is overridden by a home patch or command-line overlay`
+    （`system-prompt` 另回 `has no volatile fields`）。
+- **落地写法（已实测四段全部抵达运行时）**：网关把托管四段写成
+  `<DSH_HOME>/mtnode-settings.patch.yml`，作为**第二枚 `--patch` 叠加层**随 `cordis.yml`
+  之后下发（见 `getRuntime` 的 `patches`）。命令行叠加层层序在 profile 用户层之后
+  = 最后写入者胜，四行全部打得中；文件由 `applySettings` 每次运行前**整份重写**（只装
+  托管段，用户自己的补丁请写 profile 层那一个文件，两处职责不重叠）。
+- 口径：`llm-deepseek.reasoningEffort` 只写兜底默认 `high`（档位切换走 env `MTNODE_EFFORT`
+  + `mtnode-effort` 插件按模型能力夹紧）；`llm-pi-ai.providers` 的密钥只经 `apiKeyEnv`
+  引用宿主注入的 `MTNODE_KEY_n`，配置文件里不出现密钥值。
+
+### 设置抵达运行时的自检（`config/probe` 桥）
+
+写了文件 ≠ 运行时读到了。`plugins/session-resume-server.mjs` 另装一枚只读 JSON-RPC 方法
+`config/probe`（与 `session/resume` / `session/steer` 同构的原型级补丁）：运行时把
+`ctx.get('configEditor').configuration()` 里宿主关心的行（`llm-deepseek` / `llm-pi-ai` /
+`permission` / `system-prompt` / `mtnode-tool-visibility` / `agent-default-model`）
+按 `{ id, config }` 回给网关。网关侧 `configProbe` 本地方法按 `reqId` / `runKey` 定位那台
+live runtime 转发（池里没有 = `{ ok:false, reason:'no_runtime' }`，不为探针新起进程）。
+回归见 `test/smoke-config-probe.js`（端到端，只跑假 key 的一轮、不跑真模型对话）与
+`test/smoke-settings-profile-patch.js`（写入器形状 + 幂等 + 用户补丁不被碰）。
+
+### Node 运行时（网关必须跑在真 Node 上）
+
+dsh 0.2 的内核在 boot 阶段要用原生插件 `node-addon-require-builtin` 去 hook ESM 内部模块，
+而该插件**只认它编译过的 Electron 版本**。MTNode 是 Electron 39，实测打包版每次 run 都在
+host preparation 阶段硬失败（应用侧表现 = 主进程记「dsh 网关已退出」，运行时立刻消失）：
+
+```
+dsh: fatal uncaught exception: Error: dsh: host preparation failed:
+node-addon-require-builtin unsupported: Unsupported/no-context
+(unsupported Electron runtime fingerprint: Node 22.22.1, V8 14.2.231.22-electron.0
+ (supported Electron versions: 43.0.0, 44.0.0, 45.0.0-alpha.6))
+```
+
+又因为 SDK 客户端把运行时子进程写死成 `command: process.execPath`
+（`@deepseek-ai/dsh-sdk-client` 的 `resolveDshLaunch`），**网关自己必须跑在真 Node 上** ——
+光给运行时换 node 是做不到的（网关是 Electron，运行时就跟着是 Electron）。
+契约落在根目录 `dsh-node.js`（主进程唯一 require 入口，`build.json` 白名单内）：
+
+1. 候选顺序：`MTNODE_NODE_BIN`（显式覆盖 / 内网自备）→ 托管 Node
+   （`<数据目录>/node-runtime/node.exe`）→ PATH → 常见安装位置
+   （Program Files、nvm-windows、fnm、volta、scoop、choco）。
+2. 每条候选都**真跑一次版本探针**（`-p`，带 `ELECTRON_RUN_AS_NODE=1` 以免 Electron 弹窗）：
+   自报 `process.versions.electron` 的一律拒（这正是坏掉的那条路），Node < 22.19 判 `too-old`。
+   命中的 node 版本进 `dsh.log` 的 spawn 行（`[node 24.2.0 · path]`），排障一眼可见。
+3. 一个可用的都找不到 → 回退 Electron 自带 Node（老行为）并**后台自动下载托管 Node**
+   （npmmirror → nodejs.org，零依赖解压、装进数据目录），装好且**没有在途轮**时收掉网关，
+   下一次请求用真 Node 冷起（有在途轮不打断用户）。`MTNODE_NO_NODE_DOWNLOAD=1` 关掉自动下载
+   （内网 / 测试）。
+4. 回退期间真跑起来仍会失败：main-dsh 把网关 `error` 帧里那段 SDK stderr 尾巴换成
+   「本机需要 Node ≥22.19 + 现状 + 下一步」（`translateRuntimeReject`），不让用户直面 V8 指纹；
+   非该错一律原样透传。
+5. 自检与修复入口：`dsh:status` 附带 `node`（bin / source / version / fallback / installed /
+   managed）；`dsh:installNode`（preload `dshInstallNode`）显式安装。
+
+回归见 `test/smoke-dsh-node.js`（候选顺序、探针判据、回退、报错翻译、zip 解压、安装失败路径、
+接线口径）。**不要**把 `process.execPath` 重新写回网关 spawn —— 那等于把这条事故原样搬回来。
+
+### Messages 端点根（0.2：配置里的 OpenAI 兼容根要归一）
+
+dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Messages 兼容的端点根**，
+自己在其后拼 `/v1/messages`（`@deepseek-ai/dsh-llm-deepseek` 的 `messagesApiRoot`，并明说
+`protocol is not configurable; use a Messages-compatible baseURL`）。而 MTNode 服务商配置里存的
+是 **OpenAI 兼容根** `https://api.deepseek.com` —— 0.2 下实测（真 key）：
+
+- `https://api.deepseek.com/v1/messages` → **404**（空体），应用侧表现 = 会话报
+  `DeepSeek Messages request failed (404)`，一轮什么都没干就结束；
+- `https://api.deepseek.com/anthropic/v1/messages` → **200**（`deepseek-chat` 真回复），
+  DeepSeek 的 Messages 面就在 `/anthropic`。
+
+所以网关在下发 `DEEPSEEK_BASE_URL` 前过一道 `dsh/gateway/messages-base-url.mjs` 的
+`messagesBaseUrl()`：**只给官方域（`api.deepseek.com`）的裸根补 `/anthropic`**，其它域、
+已带路径的端点（第三方 `.../v1`、本地 `127.0.0.1` 端点、用户手填的 Messages 根）一律原样透传。
+归一幂等，且不动 runtime key 的指纹成分（key 用的是用户配置原文）。回归见
+`test/smoke-dsh-base-url.js`。
 
 三层各守其界:
 
@@ -41,16 +165,27 @@ DeepSeek API
 
 ### 版本锁定原则
 
-发布物存在代差陷阱:`@deepseek-ai/dsh-sdk-client` 等包的 `latest` dist-tag 停在
-0.0.1-rc.1 代,而 0.1.0-rc.6 代全栈齐套但 tag 未更新。**gateway/package.json 必须把
-dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**,任何升级都要整套
-同升并在 probe 目录验证。
+**`dsh/gateway/package.json` 必须把 dsh 全家族锁死在同一版本（当前 `0.2.0-rc.2`，
+精确版本不加 `^`）**，任何升级都要整套同升并在 probe 目录验证。两条实测口径：
+
+- `@deepseek-ai/cordis*` 是另一条产品线，用各自的稳定号（当前 cordis `4.0.4`、
+  `cordis-plugin-timer` `1.1.6`、`-loader` `1.0.5`、`-include` `1.0.9`、`-group` `1.0.4`，
+  精确版本）。dsh 0.2 全家族通过 `~`/`^` 依赖这一层，不要跟着 dsh 的 rc 号走。
+- **两个包在 0.2 只发到 `0.2.0-rc.1`**（`@deepseek-ai/dsh-experimental-inspector`、
+  `@deepseek-ai/dsh-experimental-computer-use-cua-driver-mcp`），其余家族都在
+  `0.2.0-rc.2`；`@deepseek-ai/dsh-tool-subagent-report` 整包下线（不再发布），
+  相关行从组合里摘掉、`dsh-agent-policy.js` 的 subagent 行表同步减一条。
+- 升级后 `node_modules` 体积实测从 227MB 涨到约 760MB（内核族 233 个 `@deepseek-ai`
+  目录 + 20 个实验包）；`dsh/after-pack.cjs` 会把整棵网关树按
+  `docs/app-deps-prune.json` 的零引用口径剪枝后再进安装包，浏览器内核仍由
+  playwright / `@puppeteer/browsers` 在用户机器上按需下载，不随包发。
 
 ## 运行时托管
 
-- **统一 Node(零安装)**:gateway 与 dsh 运行时都用 `process.execPath +
-  ELECTRON_RUN_AS_NODE=1` 启动 —— Electron 39 内置 Node 22.22.1,满足 dsh
-  `^22.19` 且与应用主程序完全同版本。用户机器无需安装任何运行环境。
+- **统一 Node**:gateway 与 dsh 运行时都用**真 Node（≥22.19）**启动 —— 由 `dsh-node.js`
+  在本机挑一个可用的（托管 Node → PATH → 常见安装位置），都找不到才回退 Electron 自带的
+  Node 并后台自动装托管 Node。**不能**再用 `process.execPath + ELECTRON_RUN_AS_NODE=1`
+  复用 Electron：dsh 0.2 的内核拒绝 Electron 指纹（见上「Node 运行时」）。
 - 网关**随应用启动**(app ready 时 `ensureStarted()`,幂等,不重复起进程);
   崩溃后下一次请求自动重新拉起(自愈)。
 - 运行时按 workspace 池化:同一 workspace 复用同一 runtime 进程;LRU 上限 3,超出时
@@ -68,8 +203,14 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
   经交互桥(见下)弹到宿主 UI。
 - 交互桥:运行时内本地插件经 localhost TCP(端口在 spawn 时经 `MTNODE_BRIDGE_PORT`
   注入)与 gateway 通信,同一端口允许多条连接(提问桥 + 画布工具)。
-  `bridge-plugin.mjs`(只 import node 内置模块)注册 user-questions provider 与
-  审批 answerer;`canvas-plugin.mjs` 注册 `mtnode_canvas_get` /
+  `bridge-plugin.mjs`(只 import node 内置模块)注册 `user-questions/request` 回答者与
+  审批 answerer —— 两者都是普通 Cordis 瀑布监听(`ctx.on(事件, (req, next) => …)`,
+  与 `approval/request` 同形状)。**dsh 0.2 起 `ctx.userQuestions` 没有 `registerProvider`**
+  (0.1 的写法):提问由服务发 Agent 作用域的 `user-questions/request` 瀑布,返回值即
+  `ask()` 的结果(`{answers:[…]}`),无人认领回 `NO_PROVIDER`(「no user-questions
+  answerer accepted the request」→ 工具失败、不弹询问窗)。桥没连上时监听器
+  `return next()` 让位给别的回答者,绝不自己造一个失败的答案。
+  `canvas-plugin.mjs` 注册 `mtnode_canvas_get` /
   `mtnode_canvas_edit`(import `defineTool`,dsh 升级只改 `dsh/`)。帧转发到
   gateway,再由本地协议事件送达 renderer;回答经 `interact` 原路返回。
   `longtask-plugin.mjs` 是长周期任务系统（状态机）的工具面：注册 `lt_state`（读写本轮共享
@@ -137,7 +278,7 @@ dsh 全家族锁死在同一 rc 版本(当前 0.1.0-rc.6,精确版本不加 ^)**
 | method | params | 语义 |
 |---|---|---|
 | `status` | — | `{gateway, node, runtimes, runtimeBin, configPath}` 健康与版本 |
-| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?, resumeSession?, images?}` | 排队一条提示,流式事件直至整轮 idle。`resumeSession`(**断点续跑**,可缺省)= 宿主点名沿用上一轮(崩溃 / 断线 / 超额失败)那次的 dsh session id:网关先按本机会话日志判「盘上有没有这份会话」(第一道闸),续跑轮还会先经 `session/resume` 握手让运行时把旧日志恢复为 live —— 同进程复用 / 跨进程恢复 / `RESUME_UNAVAILABLE` 三态详见「断点续跑契约」;只有**盘上无日志**(状态 C 第 1 条)才"不起 runtime、不消耗任何 token"地只回 `error`(带固定标记 `RESUME_UNAVAILABLE: …`)。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`），工具**仅保留联网搜索**；cordis.yml 用同一标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 插件。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」 |
+| `run` | `{workspace, input, model?, maxTokens?, apiKey?, baseUrl?, webSearchApiKey?, systemPrompt?, hostPersona?, preset?, effort?, provider?, mtnodeProviders?, permissionPreset?, pure?, resumeSession?, images?, hostSessionId?, officialModels?}` | 排队一条提示,流式事件直至整轮 idle。`hostSessionId`(**活动流归属**,可缺省)= 宿主(渲染层)那条会话的 id(`as…`):本轮的浏览器动作 / 命令 / 文件摘要进活动流(`browser-act`)时按它盖章(`BrowserCtl.push` + `hostSessionTagOf`),活动流面板据此只显示当前会话的活动、切会话即切换;非会话轮(助手 / 未绑定节点)不带 = 那些条目不算进任何会话。它只影响留痕归属,不参与归属门控与断点续跑。`resumeSession`(**断点续跑**,可缺省)= 宿主点名沿用上一轮(崩溃 / 断线 / 超额失败)那次的 dsh session id:网关先按本机会话日志判「盘上有没有这份会话」(第一道闸),续跑轮还会先经 `session/resume` 握手让运行时把旧日志恢复为 live —— 同进程复用 / 跨进程恢复 / `RESUME_UNAVAILABLE` 三态详见「断点续跑契约」;只有**盘上无日志**(状态 C 第 1 条)才"不起 runtime、不消耗任何 token"地只回 `error`(带固定标记 `RESUME_UNAVAILABLE: …`)。`webSearchApiKey` 专供联网搜索。`hostPersona` 经环境变量 `MTNODE_HOST_PERSONA` + `MTNODE_CHAT_ISOLATE` 注入运行时（**不是** settings.yaml：`dsh-system-prompt` 不读 settings），由 `bongochat-prompt` 覆盖 `deployment:persona` 并裁剪工具；同时 cordis 在隔离态禁用画布/文件/路由等 MTNode 插件。`pure`（会话「纯净模式」，渲染层按钮开启）= **双清空 + 引擎侧裁剪**：网关强制空预设文本，并要求宿主同轮把 `systemPrompt` 置空（见 `app-assist.js` / `app-db.js` 的 pure 分支）——两段都空时 `sys` 为空，用户消息**原样**下发，不拼 `【系统设定】` 前缀；同时以 `MTNODE_PURE=1` 注入运行时，`pure-prompt` 插件（在 `system-prompt/assemble` 上 `prepend` 站到 waterfall 最外层）清空**全部** system prompt 段与运行时上下文（`suppressRuntimeContext()`），工具**仅保留联网搜索**；cordis.yml 用同一标记门控禁用画布 / 数据库 / 回滚 / 文件 / 命令 / 技能等 MTNode 插件。runtime key 含 pure 标记，纯净 / 非纯净**不共用进程**；fresh runtime 的预热轮（`harness.run('ok')`）与真实消息分属两个 session，不进纯净会话上下文。真实轮的 session id 由**网关铸造**并显式经 `RunOptions.sessionId` 下发（预热轮另铸一个），据此门控交互桥的提问 / 审批归属——见「交互桥的归属契约」。`officialModels`（**官方模型清单**,可缺省）= 宿主按设置勾选的 DeepSeek 官方模型列表（`[{id, name, contextWindow, maxTokens, inputModalities}]`,也接受纯 id 字符串）：网关归一（id 白名单字符 / 去重保序 / 上限 24 条 / 补已知别名映射）后写进 settings.yaml 的 `llm-deepseek.models`,**空清单 = 不写该键**（适配器回落自身 `DEFAULT_MODELS`,行为与接入前一字不变）；该段本就由宿主托管（与 `reasoningEffort` 同段,适配器每次操作重读 settings）,故**不进 runtime key**、不改续跑签名成分 |
 | `cancel` | `{workspace}` | 关闭该 workspace 的全部运行时(在途 run 以错误收束) |
 | `steer` | `{reqId\|cancelTag, sessionId?, text?\|contentBlocks?}` | **轮内插话**:往**正在跑的这一轮**的下一步边界投一句话(运行时侧 `agent.steer`),不重开轮、不等本轮结束。网关按在途表(`reqId → {runKey, cancelTag, sessionId}`)定位那一轮那台 runtime 的 client,同步下发 `session/steer`(10s)。送达 → `{ok:true, reqId, sessionId, steered:true, reqIds}`;没有在途这一轮 / 那台 runtime 已回收 / **老运行时没有该方法** / 下达超时 → `{ok:false, reason:'unsupported', detail}`,宿主据此回落成普通排队消息。详见「运行中插话与暂停契约」 |
 | `pause` | `{reqId\|cancelTag, sessionId?}` | **轮内暂停**:中止当前请求但**保留 live 会话与收件箱**(运行时侧 `agent.cancel({kind:'user'},{keepInbox:true})`,**不关 runtime**),之后可点名 `run.resumeSession` 从中断处接下去。回执与降级口径同 `steer`(`{ok:true, paused:true}` / `{ok:false, reason:'unsupported'}`)。成功后本轮以 `done{paused:true}` 收尾,**该轮不会有 `error` 事件**(否则宿主的失败重发闸会把一次暂停当 429 类失败连重发 5 次) |
@@ -854,6 +995,19 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
   文件系统上。gateway 路径已在 main-dsh.js 按 `app.isPackaged` 区分。
 - 不用 extraResources:electron-builder 对 extraResources 来源同样应用
   .gitignore 剪枝,而 node_modules 必须保持 git 忽略,因此改用 afterPack 手动复制。
+- **依赖布局(打包硬约束 · 2026-09-30 实测事故)**:网关依赖只能用 npm 式**真实目录**布局安装 ——
+  `dsh/gateway/pnpm-workspace.yaml` 固定 `nodeLinker: hoisted`(同值也写在 `dsh/gateway/.npmrc`,
+  供 pnpm < 11 读;**pnpm 11 只认 pnpm-workspace.yaml,`.npmrc` 里的 `node-linker` 会被忽略**)。
+  病根:pnpm 默认 isolated 布局把包做成 junction 指向 `node_modules/.pnpm`,而 afterPack 是手动遍历复制
+  (只搬真实文件)—— `fs.readdirSync` 的 dirent 对 junction 报 `isDirectory()=false`,于是 junction
+  被当普通文件走 `fs.copyFileSync`,在 Windows 上直接抛 EPERM/EISDIR:复制中断后
+  `resources/dsh/gateway` 只剩半棵树(`node_modules`、`package.json`、`plugins/` 全缺),
+  安装包启动时网关立刻 exit 1 —— `Cannot find package '@deepseek-ai/dsh-sdk-client'`
+  (main-dsh.js 侧表现为「dsh 网关已退出(code=1)」)。因此 after-pack 两道保险:
+  ① 顶层 `node_modules/.pnpm` 整目录跳过 —— hoisted 下它运行时不可达(顶层与各包内部都没有任何链接
+  指回 `.pnpm`,Node 只会向上找 `node_modules`),实测把它改名后 `node dsh/smoke-gateway.mjs` 仍 exit 0,
+  它却白占 ~1.8GB;② 遇到「指向目录的符号链接」直接报错中止打包(`assertNoDirLink`),
+  把「静默产出坏安装包」变成一眼可见的打包失败。hoisted 重装命令:`cd dsh/gateway && pnpm install`。
 - **减重(依赖体检)**:`resources/dsh/gateway` 是安装包里最大的一块。剪枝依据是 `docs/` 下**两份名单**,
   都由 `scripts/app-deps-usage.mjs` 生成,`dsh/after-pack.cjs` 经 `scripts/app-deps-rules.cjs` 的
   `loadExcluder()` 合并读取(三处共用同一判定,不各自写死名单),`build.json` 的 `files` 取反只管根树:
@@ -924,8 +1078,9 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
   网关树由 after-pack 手动复制,**不经过** electron-builder 的这套默认排除,故所有
   规则在 `scripts/app-deps-rules.cjs` 里自带一份。
 
-- 无需附带独立 node.exe:Electron 39 内置 Node 22.22.1,gateway/runtime 经
-  `process.execPath + ELECTRON_RUN_AS_NODE=1` 复用同一二进制(见「运行时托管」)。
+- 不附带独立 node.exe,但**托管 Node 按需下载**到数据目录(`<DATA>/node-runtime`,约 30MB,
+  只在「本机找不到任何真 Node」时才发生):dsh 0.2 的内核拒绝 Electron 自带的 Node,见
+  「Node 运行时」一节 —— 该节是这条的唯一真源。
 - `dsh/gateway/package.json` 锁死 dsh 全家族精确版本,升级 = 改这里 + `npm install`
   + 重跑 `dsh/smoke-gateway.mjs` 与 `dsh/smoke-real.mjs`。
 
@@ -943,6 +1098,25 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
   (`ELECTRON_RUN_AS_NODE=1` 下的 electron.exe)再次全链路通过,工具 write+read。
 - 应用冒烟:Electron 39 启动无新 error.log;dsh.log 记录网关随应用自动拉起且保持
   存活;渲染层/主进程语法检查通过。
+
+## 验证记录(0.2.0-rc.2 代 · 两处 0.2 破坏性变更的修复)
+
+2026-09-30 实测(打包产物 `dist/win-unpacked` + 真 key + 真模型),两条链路都是先复现、再修、
+再复验:
+
+1. **Electron 指纹**:打包版网关用 Electron 自带 Node 起运行时,每次 run 都回
+   `host preparation failed: node-addon-require-builtin unsupported … unsupported Electron
+   runtime fingerprint: Node 22.22.1, V8 14.2.231.22-electron.0`(截自 `dsh.log` 的
+   `dsh gateway stderr` 与 error 帧)。换真 Node 后同一产物、同一 DSH_HOME 直接跑通:
+   status 报 `node: v24.2.0`,运行时正常起机 —— 托管 Node 22.22.1(npm 镜像真下载,5.2s)
+   同样跑通,两条路都不再出现指纹错误。
+2. **Messages 端点根**:修复前 error 帧是 `DeepSeek Messages request failed (404)`;
+   修复后 dev 网关 + 真 Node + 真 key 一轮跑完,`done.finalResponse = "你好"`
+   (`deepseek-flash` → 实回 `deepseek-v4-flash`)。同一 key 单独打端点复核:
+   `/v1/messages` 404(空体)、`/anthropic/v1/messages` 200。
+
+回归:`node test/smoke-dsh-node.js`(55 项)、`node test/smoke-dsh-base-url.js`(23 项)、
+`node test/run-all.mjs` 全量口径见本轮交付说明。
 
 ## 已知风险
 

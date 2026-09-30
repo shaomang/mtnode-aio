@@ -1,0 +1,81 @@
+/* 风格 04 · 编辑 —— 杂志内页：白纸、超大衬线标题、首字下沉、细横线。
+   它拒绝的是「欢迎页 = 三张同形卡片」的橱窗排版：这一页只有一栏正文、一条条横线，
+   信息靠字号与栏宽分层；强调色是唯一的信号红（只用在强调词与编号上）。 */
+:root {
+  --bg: #ffffff;
+  --shell: #ffffff;
+  --ink: #12100e;
+  --ink2: #45403a;
+  --muted: #565049; /* 脚注：压在 #ffffff 上 ≈ 7.2:1 */
+  --accent: #b32c1f;
+  --accent-dim: #c98880;
+  --accent-soft: rgba(179, 44, 31, 0.06);
+  --line: #e6e2db;
+  --line2: #12100e;
+  --code-bg: rgba(18, 16, 14, 0.05);
+  --code-block: #f6f4f0;
+  --hover: rgba(18, 16, 14, 0.04);
+  --sel: rgba(179, 44, 31, 0.16);
+  --sel-ink: #12100e;
+  --radius: 0px;
+  --radius-sm: 0px;
+  --pill: 2px;
+  --page-w: 1010px;
+  --page-pt: 62px;
+  --h1-size: 54px;
+  --h1-weight: 700;
+  --h1-track: -0.032em;
+  --h1-w: 20ch;
+  --font-display: Georgia, "Songti SC", "Noto Serif CJK SC", "STSong", "SimSun",
+    serif;
+  --bar-h: 44px;
+  --step-radius: 0px;
+  --step-size: 32px;
+  --step-fs: 15px;
+  --step-font: var(--font-display);
+  --step-border: transparent;
+  --step-bg: transparent;
+  --step-ink: var(--accent);
+}
+body { font-size: 16px; line-height: 1.72; }
+/* 标题上压一条粗横线：这是「一篇文章的开头」，不是一张卡片 */
+.page > h1 {
+  padding-top: 26px;
+  border-top: 2px solid var(--ink);
+  font-family: var(--font-display);
+}
+.page > p { font-family: var(--font-display); font-size: 18px; color: var(--ink2); max-width: 46ch; }
+.page > p:first-of-type::first-letter {
+  float: left;
+  font:
+    700 58px/0.84 var(--font-display);
+  color: var(--accent);
+  margin: 6px 10px 0 0;
+}
+/* 编号：大号衬线数字 + 数字下一条短横线（不是圆点，也不做成徽章） */
+.page ol.steps > li { counter-increment: step; }
+.page ol.steps > li::before { border-bottom: 1px solid var(--accent); }
+.page ol.steps::before { background: var(--line); }
+.page ol.steps > li:first-child > strong:first-child { color: var(--accent); }
+.page blockquote {
+  border-top: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-style: italic;
+  /* 左对齐并收到正文栏宽：右对齐会让中文长句在窄栏里碎成「一轮一 / 轮改」这种断法 */
+  max-width: 46ch;
+}
+.page h2,
+.page h3 { font-family: var(--font-display); }
+.page code,
+.page pre { border-radius: 0; }
+/* 顶栏做成报头：一条细双线压在标题栏下面 */
+.bar { border-bottom: 3px double var(--line); }
+.brand-name { font-family: var(--font-display); font-size: 14px; letter-spacing: 0; }
+.chip { border-radius: 0; border-color: var(--line2); text-transform: uppercase; }
+.foot {
+  background: var(--bg);
+  border-top: 1px solid var(--line2);
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}

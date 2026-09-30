@@ -65,7 +65,8 @@ contextBridge.exposeInMainWorld('api', {
 
   /* native=true：原样复制（不改尺寸 / 不重编码）—— 泛用「文件节点」载入图像时用它保留原图尺寸 */
   assetCopy: (srcPath, wfId, name, native) => ipcRenderer.invoke('asset:copy', { srcPath, wfId, name, native: !!native }),
-  assetWriteBase64: (wfId, name, base64, ext) => ipcRenderer.invoke('asset:writeBase64', { wfId, name, base64, ext }),
+  /* native=true：base64 字节原样落盘（剪贴板截图 / 位图原样保存，上限放宽到 64MB） */
+  assetWriteBase64: (wfId, name, base64, ext, native) => ipcRenderer.invoke('asset:writeBase64', { wfId, name, base64, ext, native: !!native }),
   assetReadDataUrl: (p) => ipcRenderer.invoke('asset:readDataUrl', p),
   assetMeta: (p) => ipcRenderer.invoke('asset:meta', p),
   /* 删工作流资产目录里的图像：只删 <数据目录>/assets/<wfId>/ 下的直属图像文件（主进程按目录白名单
@@ -142,6 +143,9 @@ contextBridge.exposeInMainWorld('api', {
     }),
   rollbackStat: (opts) => ipcRenderer.invoke('rollback:stat', opts || {}),
   rollbackGc: (opts) => ipcRenderer.invoke('rollback:gc', opts || {}),
+  /* 存储占用与清理（设置 · 存储占用与清理）：分类统计 + 按类清理（见 storage-clean.js） */
+  storageScan: (opts) => ipcRenderer.invoke('storage:scan', opts || {}),
+  storageClean: (opts) => ipcRenderer.invoke('storage:clean', opts || {}),
   netListen: (o) => ipcRenderer.invoke('net:listen', o),
   netUnlisten: (o) => ipcRenderer.invoke('net:unlisten', o),
   netSend: (o) => ipcRenderer.invoke('net:send', o),
@@ -218,6 +222,10 @@ contextBridge.exposeInMainWorld('api', {
   clipboardReadText: () => ipcRenderer.invoke('clipboard:readText'),
   /* 事实库插图：剪贴板/截图取图 + 复制进 assets 目录 + 删无引用图片（主进程校验目录白名单） */
   clipboardReadImage: () => ipcRenderer.invoke('clipboard:readImage'),
+  /* 画布 Ctrl+V 的取材口：一次读完剪贴板里的图像两态 ——
+     files:[{path,name,size}]（被复制的图片文件）与 bitmap:{base64,bytes,width,height}
+     （位图截图，只有内存 PNG、本调用绝不落盘）；两态都没有 = 剪贴板里没有图像。 */
+  clipboardReadImages: () => ipcRenderer.invoke('clipboard:readImages'),
   factSaveImage: (opts) => ipcRenderer.invoke('fact:saveImage', opts || {}),
   factDeleteImages: (paths) => ipcRenderer.invoke('fact:deleteImages', { paths: paths || [] }),
   /* 事实库单篇文档的重命名：入参 opts = { file, name? }（file = 该文档 <doc>.md 绝对路径）。
@@ -254,6 +262,9 @@ contextBridge.exposeInMainWorld('api', {
   authBind: (opts) => ipcRenderer.invoke('auth:bind', opts || {}),
   authUnbind: (opts) => ipcRenderer.invoke('auth:unbind', opts || {}),
   authLogout: () => ipcRenderer.invoke('auth:logout'),
+  /* MTNode 中转服务（账号托管）：主进程带着账号 token 拉 /api/relay/me，只回快照。
+     地址与凭据都留在主进程，渲染层不出现中转站 URL，也不接触 token。 */
+  relayMe: () => ipcRenderer.invoke('relay:me'),
   onAuthChanged: (cb) => {
     const handler = (_e, state) => {
       try { cb(state); } catch (_) {}
@@ -646,6 +657,9 @@ contextBridge.exposeInMainWorld('api', {
      暂停（dshPause）之后的收尾则以 done{paused:true} 出现（不会有 error）。 */
   dshConfig: () => ipcRenderer.invoke('dsh:config'),
   dshStatus: () => ipcRenderer.invoke('dsh:status'),
+  /* 自愈：显式安装托管 Node（dsh 0.2 的内核不接受 Electron 自带的 Node，
+     见 dsh/DESIGN.md「Node 运行时」）。返回 { ok, bin, version } 或 { ok:false, error }。 */
+  dshInstallNode: () => ipcRenderer.invoke('dsh:installNode'),
   dshRun: (params, cb) => {
     const reqId = Date.now().toString(36) + Math.random().toString(36).slice(2);
     const onEv = (ev, msg) => {
@@ -679,6 +693,44 @@ contextBridge.exposeInMainWorld('api', {
   setLocale: (locale) => ipcRenderer.invoke('i18n:setLocale', locale),
   dshCancel: (params) => ipcRenderer.invoke('dsh:cancel', params),
   dshInteract: (params) => ipcRenderer.invoke('dsh:interact', params),
+  /* ── 会话自己的浏览器（browser_* 工具面的宿主侧控制，见 dsh/gateway/browser-host.mjs）──
+     进程与 CDP 都在网关进程里，这里只透传控制面：
+       { action:'status'|'open'|'stop'|'policy'|'takeover', policy?, on?, sessionId? }
+     事件侧走 dsh:event：type 'browser' 是确认框 / 求助卡（答完经 dshInteract
+     {kind:'browser', id, outcome, answerText} 回传），type 'browser-act' 是活动流条目
+     （只供界面回看与落库，不进模型上下文）。 */
+  dshBrowser: (params) => ipcRenderer.invoke('dsh:browser', params),
+  /* ── 会话右边栏「实况」区（浏览器默认 dock 在会话主内容右栏，可提出来变独立窗口）──
+     帧通路：网关 → main-dsh.js → main.js（dsh:event）→ 这里 onBrowserFrame。
+     帧只在内存/界面里走：**不落库（activityPush 那条路不经过它）、不进模型上下文**。
+     控制面（start/stop/input/mode）与 dshBrowser 同一条 IPC，method 区分动作。 */
+  dshBrowserViewStart: (params) => ipcRenderer.invoke('dsh:browser', { action: 'view', method: 'start', params: params || {} }),
+  dshBrowserViewStop: () => ipcRenderer.invoke('dsh:browser', { action: 'view', method: 'stop' }),
+  dshBrowserViewInput: (params) => ipcRenderer.invoke('dsh:browser', { action: 'view', method: 'input', params: params || {} }),
+  dshBrowserViewMode: (mode) => ipcRenderer.invoke('dsh:browser', { action: 'view', method: 'mode', mode }),
+  /* 实况帧订阅（reqId 为空的全局通道）：返回退订函数。 */
+  onBrowserFrame: (cb) => {
+    const onEv = (ev, msg) => {
+      if (!msg || msg.type !== 'browser-frame') return;
+      try { cb(msg.data || {}); } catch (e) { console.error('onBrowserFrame cb error:', e); }
+    };
+    ipcRenderer.on('dsh:event', onEv);
+    return () => ipcRenderer.removeListener('dsh:event', onEv);
+  },
+  /* 活动流留痕库（浏览器动作 + shell 命令 + 文件读写摘要；只写本机数据目录） */
+  activityPush: (rows) => ipcRenderer.invoke('activity:push', rows),
+  activityQuery: (params) => ipcRenderer.invoke('activity:query', params),
+  activityClear: (params) => ipcRenderer.invoke('activity:clear', params),
+  /* 活动流事件订阅：reqId 为空的全局通道（与 dshOnIxDrop 同一套路由）。
+     返回退订函数。 */
+  dshOnActivity: (cb) => {
+    const onEv = (ev, msg) => {
+      if (!msg || msg.type !== 'browser-act') return;
+      try { cb(msg.data || {}); } catch (e) { console.error('dshOnActivity cb error:', e); }
+    };
+    ipcRenderer.on('dsh:event', onEv);
+    return () => ipcRenderer.removeListener('dsh:event', onEv);
+  },
   /* 运行中插话 / 暂停（只在「本轮还在跑」时点名那一轮；见 dsh/DESIGN.md）：
      params {reqId | cancelTag, sessionId?, text?|contentBlocks?（仅插话）}
      → {ok:true, reqId, sessionId, steered|paused:true}；送不出去时
@@ -739,16 +791,34 @@ contextBridge.exposeInMainWorld('api', {
   /* 弹系统目录选择框并落 config：回 { ok, path, previous, changed } / { ok:false, canceled:true } */
   appsRootPick: () => ipcRenderer.invoke('apps:rootPick'),
   appsList: () => ipcRenderer.invoke('apps:list'),
-  /* 新建应用：{ name 标题, id 文件夹名 } → 建 <root>/<id>/ + app.json；
-     画布（id = 文件夹名）由渲染层紧接着走既有 wfSave 建（见 renderer/app-app-flow.js）。 */
-  appsCreate: (name, id) => ipcRenderer.invoke('apps:create', { name, id }),
+  /* 新建应用：{ name 标题, id 文件夹名, style 设计风格 id, author 当前登录账号名（可空）} →
+     建 <root>/<id>/ + app.json（dev:true = 开发中、author = 作者）；画布（id = 文件夹名）由渲染层
+     紧接着走既有 wfSave 建（见 renderer/app-app-flow.js）。 */
+  appsCreate: (name, id, style, author) =>
+    ipcRenderer.invoke('apps:create', { name, id, style: style || '', author: author || '' }),
+  /* 本机状态字段写入口（不碰文件系统）：{ id, dev?, author?, forkOf? } ——
+     dev = 开发中（新建 / 二次开发）；author = 作者；forkOf = 二次开发来源 { id, ownerId }。
+     省略的键保持原样；回 { ok, id, patched, app }。 */
+  appsSetMeta: (id, patch) => ipcRenderer.invoke('apps:setMeta', Object.assign({ id }, patch || {})),
+  /* 设计风格（新建时选 / 开发页换）：styles() 回清单（含预览图 data URL）+ 默认项，
+     setStyle 按所选风格重写应用目录的入口页（契约见 templates/app-default/STYLES.md）。
+     不传 preview:false 时带预览图；渲染层只在真开浮层时才要它。 */
+  appsStyles: (opts) => ipcRenderer.invoke('apps:styles', opts || {}),
+  appsSetStyle: (id, style) => ipcRenderer.invoke('apps:setStyle', { id, style }),
   appsCatalog: () => ipcRenderer.invoke('apps:catalog'),
   /* 安装 / 更新：同名目录已存在且没给 mode 时回三态
      { ok:false, conflict:true, choices:['overwrite','rename','cancel'], existing }，由界面弹窗；
-     用户选完再带 mode='overwrite' | 'rename' 调一次（'cancel' 只关窗，不调）。 */
-  appsInstall: (id, mode) => ipcRenderer.invoke('apps:install', { id, mode: mode || '' }),
+     用户选完再带 mode='overwrite' | 'rename' 调一次（'cancel' 只关窗，不调）。
+     version 非空 = 只下那一版（应用中心版本树里点某一版，见 docs/apps-market.md §七）。 */
+  appsInstall: (id, mode, version) =>
+    ipcRenderer.invoke('apps:install', { id, mode: mode || '', version: version || '' }),
   appsUninstall: (id) => ipcRenderer.invoke('apps:uninstall', { id }),
   appsExportZip: (id) => ipcRenderer.invoke('apps:exportZip', { id }),
+  /* 上架窗（renderer/app-publish.js）：拍该应用自己的窗口（回 { ok, path, bytes, width, height }）；
+     再把**现打的一份** zip 读回 base64（回 { ok, base64, sha256, bytes, version, name, path }）。
+     两者都只回回执，渲染层不碰文件系统、不自己拼路径。 */
+  appsShotWindow: (id) => ipcRenderer.invoke('apps:shotWindow', { id }),
+  appsReadZipBase64: (id) => ipcRenderer.invoke('apps:readZipBase64', { id }),
   appsProbeChanges: () => ipcRenderer.invoke('apps:probeChanges'),
   /* 开发页（renderer/app-apps-dev.js）预览：回 { ok, url, entry, dir, files, bytes, mtimeMs }
      —— url = mtnode-preview://<appId>/<entry>（主进程注册的标准协议，同源解析相对资源、
@@ -759,13 +829,12 @@ contextBridge.exposeInMainWorld('api', {
   /* 关掉**发起这次调用**窗口所属的应用（应用窗口里的 appHost.close 走同一通道） */
   appsCloseWindow: () => ipcRenderer.invoke('apps:closeWindow'),
   appsIsOpen: (id) => ipcRenderer.invoke('apps:isOpen', { id }),
-  /* 应用数据文件夹（应用中心库页 / 开发页那一行）：
-     info = 默认数据根或用户选过的那个（回 { ok, id, dir, root, def, exists, files }）；
-     dataDirPick **必须用户亲自选**（弹系统目录框，agent 不能代选）；reset 回到默认数据根。
-     应用窗口内部另有一份：preload-app.js 的 appHost.dataDirGet / dataDirPick / dataRead / dataWrite。 */
-  appsDataInfo: (id) => ipcRenderer.invoke('apps:dataInfo', { id }),
-  appsDataDirPick: (id) => ipcRenderer.invoke('apps:dataDirPick', { id }),
-  appsDataDirReset: (id) => ipcRenderer.invoke('apps:dataDirReset', { id }),
+  /* 应用数据目录（应用中心库页 / 开发页）：打开这个应用的数据文件夹
+     （默认 <数据目录>/apps-data/<id>/，用户改过数据文件夹则是他选的那个）——
+     库 / 开发页每张卡片右侧那颗 📂 走它；回 { ok, dir } 或一句失败。
+     改数据文件夹位置仍只在应用窗口里：preload-app.js 的 appHost.dataDirGet / dataDirPick /
+     dataDirOpen / dataDirReset（主进程 apps:hostDataDir*）。 */
+  appsDataOpen: (id) => ipcRenderer.invoke('apps:dataOpen', { id }),
   /* 安装进度：{ id, phase:'start'|'download'|'extract'|'conflict'|'done'|'error', percent, got?, total?, version?, error? } */
   onAppsProgress: (cb) => {
     const handler = (_e, data) => {

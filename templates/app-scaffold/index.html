@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-style="{{STYLE}}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -9,7 +9,11 @@
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'"
     />
     <title>MTNode 应用脚手架</title>
+    <!-- {{STYLE}} = 设计风格 id（结构在 style.css，风格在 styles/<id>.css）：
+         复制这套脚手架起手时把它换成你选的那一套，见 templates/app-default/STYLES.md -->
     <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./styles/{{STYLE}}.css" />
+    <link rel="stylesheet" href="./model.css" />
   </head>
   <body>
     <!-- 透明无框窗口：整块自己画背景与圆角；拖动区靠 .drag 上的 -webkit-app-region -->
@@ -30,6 +34,12 @@
           </div>
         </div>
         <div class="app-head-actions">
+          <!-- 模型选择位：模型从 MTNode 继承（服务商与 Key 留在主进程）。
+               这是硬要求 —— 需要模型能力的应用，界面上必须有这么一处让用户选模型；
+               没有可用模型时由 app-model.js 置灰并写明去 MTNode 哪里配，不做降级。 -->
+          <button id="modelBtn" class="pick-btn no-drag" type="button" aria-haspopup="true" aria-expanded="false">
+            <span data-lang="zh">模型</span><span data-lang="en">Model</span>
+          </button>
           <button id="langBtn" class="icon-btn no-drag" type="button" title="Switch to English" aria-label="Switch to English">EN</button>
           <button id="btnClose" class="icon-btn no-drag" type="button" title="关闭" aria-label="关闭">
             <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -41,6 +51,11 @@
 
       <!-- 降级横幅：appHost 缺席 / 接口被裁剪时这里必须出现，而不是白屏 -->
       <div id="capBar" class="cap-bar" hidden></div>
+
+      <!-- 模型下拉：内容由 app-model.js 现填（首项 = 跟随 MTNode 默认；每项带「支持识图」标签；
+           一个可用模型都没有时这里写清原因与去哪里配）。蒙层只用来关菜单，不挡别的操作。 -->
+      <div id="modelMask" class="model-mask" hidden></div>
+      <div id="modelMenu" class="model-menu" role="menu" aria-label="模型 / Model" hidden></div>
 
       <main class="app-body">
         <!-- 上手说明：与新建应用的默认欢迎页（templates/app-default/index.html）逐字同一段话。
@@ -81,6 +96,27 @@
         </div>
 
         <ul id="noteList" class="list"></ul>
+
+        <!-- 模型能力示例（文字 + 图像一起问）：模型用的是右上「模型」里选的那个（默认跟随 MTNode）。
+             images 里给的是本机绝对路径或 dataURL，读盘 / 缩放由宿主做；没有可用模型 / 断网 /
+             模型不支持识图时，这里按宿主回的错误码给明确提示，**不做降级**。 -->
+        <section class="ask-row">
+          <div class="ask-head">
+            <span class="data-k" data-lang="zh">模型能力示例</span>
+            <span class="data-k" data-lang="en">Model capability demo</span>
+          </div>
+          <div class="row">
+            <button id="btnPick" class="btn" type="button">
+              <span data-lang="zh">选一张图…</span><span data-lang="en">Pick an image…</span>
+            </button>
+            <button id="btnAsk" class="btn primary" type="button">
+              <span data-lang="zh">文字 + 图像一起问</span><span data-lang="en">Ask with text + image</span>
+            </button>
+            <span id="pickName" class="hint"></span>
+          </div>
+          <input id="askInput" class="field-input" type="text" placeholder="比如：图里有什么？用一句话说" autocomplete="off" />
+          <div id="askOut" class="ask-out" hidden></div>
+        </section>
 
         <!-- 数据文件夹：默认跟着 MTNode 数据目录走（<数据目录>/apps-data/<id>/），
              用户可以在窗口里改成自己的文件夹；改完不搬旧数据，原目录内容原样留着。 -->
@@ -124,6 +160,7 @@
     </div>
 
     <script src="./apphost.js"></script>
+    <script src="./app-model.js"></script>
     <script src="./store.js"></script>
     <script src="./close.js"></script>
     <script src="./app.js"></script>

@@ -18,6 +18,13 @@ const {
   mtnodeAgentSkillIndex,
   getMtnodeAgentSkill,
 } = require('../mtnode-agent-skills-lib.js')
+const {
+  resolveDshNode,
+  resetDshNodeCache,
+  managedNodeStatus,
+  installManagedNode,
+  translateRuntimeReject,
+} = require('../dsh-node.js')
 
 /**
  * 插件安装专用 skill：同步到 dsh-home 供 Agent 调用，但不进入用户技能列表/工坊。
@@ -41,13 +48,11 @@ function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex')
 }
 
-/* 统一 Node:gateway 与 dsh 运行时都用 Electron 自带 Node 启动
-   (process.execPath + ELECTRON_RUN_AS_NODE=1),用户无需安装 Node,
-   版本与应用完全一致(Electron 39 = Node 22.22.1,满足 dsh ^22.19)。 */
-function nodeCommand() {
-  return process.execPath
-}
-
+/* 统一 Node：网关与 dsh 运行时共用一个 node —— SDK 客户端把运行时子进程写死成
+   `command: process.execPath`（@deepseek-ai/dsh-sdk-client 的 resolveDshLaunch），
+   所以**网关自己必须是真 Node**，否则运行时仍以 Electron 指纹起机，被 dsh 0.2 的内核
+   直接拒绝（`unsupported Electron runtime fingerprint`，界面表现为「dsh 网关已退出」）。
+   本机真 Node 的解析与托管安装见 ../dsh-node.js（装在数据目录，不进应用目录）。 */
 /* 打包后 gateway(含 cordis.yml 与 node_modules)经 electron-builder
    extraResources 放在 resources/dsh/gateway —— 普通 Node 子进程无法读取
    asar 内文件,因此 gateway 必须始终落在真实文件系统上。 */
@@ -77,6 +82,73 @@ function createDshAdapter(opts) {
   const PAUSED_REQS_MAX = 512
   const onEvent = opts.onEvent || (() => {})
 
+  /* ── Node 运行时（见文件顶注与 dsh/DESIGN.md「Node 运行时」）─────────────
+     nodeRuntime.info    本进程当前选定的 node（真 Node 或 Electron 回退）
+     nodeRuntime.fallback = 只能拿到 Electron 自带 Node（dsh 0.2 必错）
+     回退时**后台自动装托管 Node**，装好且没有在途轮就把网关收掉 —— 下一次请求用真 Node 冷起。 */
+  const nodeRuntime = { info: null, installing: false, installed: false, error: '' }
+
+  function nodeEnvFor(info, env) {
+    if (info && info.electron) env.ELECTRON_RUN_AS_NODE = '1'
+    else delete env.ELECTRON_RUN_AS_NODE
+    /* 用户环境里的 NODE_OPTIONS 会改掉网关/运行时的启动参数，一律不带 */
+    delete env.NODE_OPTIONS
+    return env
+  }
+
+  function ensureNodeInfo() {
+    const info = resolveDshNode({ dataDir, log })
+    nodeRuntime.info = info
+    if (info.fallback) startManagedNodeInstall()
+    return info
+  }
+
+  function startManagedNodeInstall() {
+    if (nodeRuntime.installing || nodeRuntime.installed) return
+    nodeRuntime.installing = true
+    nodeRuntime.error = ''
+    log('dsh node: 本机没有可用的真 Node，开始后台安装托管 Node（见 dsh-node.js）')
+    installManagedNode({ dataDir, log })
+      .then((r) => {
+        nodeRuntime.installing = false
+        if (!r || !r.ok) {
+          nodeRuntime.error = (r && r.error) || 'unknown'
+          log('dsh node: 托管 Node 安装失败：' + nodeRuntime.error)
+          return
+        }
+        nodeRuntime.installed = true
+        nodeRuntime.info = { bin: r.bin, source: 'managed', version: r.version, electron: false, fallback: false, rejected: [] }
+        resetDshNodeCache()
+        log('dsh node: 托管 Node ' + r.version + ' 已就绪 → ' + r.bin)
+        /* 引擎自愈：没有在途轮就收掉网关，下一次请求用真 Node 冷起（有在途轮则不打断用户） */
+        if (child && activeRuns.size === 0) {
+          log('dsh node: 收掉旧网关，下次请求用真 Node 重启')
+          try { child.kill() } catch {}
+        }
+      })
+      .catch((e) => {
+        nodeRuntime.installing = false
+        nodeRuntime.error = (e && e.message) || String(e)
+        log('dsh node: 托管 Node 安装异常：' + nodeRuntime.error)
+      })
+  }
+
+  /* 网关透传的运行时启动失败：命中原生插件拒绝 Electron 指纹时，换成用户能懂、能修的说明 */
+  function translateEvent(ev) {
+    if (!ev || ev.type !== 'error' || !ev.data || typeof ev.data.message !== 'string') return ev
+    const info = nodeRuntime.info || {}
+    const t = translateRuntimeReject(ev.data.message, {
+      fallback: !!info.fallback,
+      installing: nodeRuntime.installing,
+      installed: nodeRuntime.installed,
+      version: info.version,
+      bin: info.bin,
+      error: nodeRuntime.error,
+    })
+    if (t) ev.data.message = t
+    return ev
+  }
+
   function notePausedReq(reqId, cancelTag) {
     const id = reqId == null ? '' : String(reqId).trim()
     if (!id) return
@@ -102,18 +174,19 @@ function createDshAdapter(opts) {
     }
   }
 
-  function startGateway() {
+  async function startGateway() {
     if (child && !child.killed && child.exitCode === null) return
-    const node = nodeCommand()
+    const nodeInfo = ensureNodeInfo()
+    const node = nodeInfo.bin
     fs.mkdirSync(dshHome, { recursive: true })
-    const env = { ...process.env }
-    env.ELECTRON_RUN_AS_NODE = '1'
+    const env = nodeEnvFor(nodeInfo, { ...process.env })
     env.DSH_HOME = dshHome
     delete env.DSH_SESSION_ID
     delete env.DSH_SESSION_JSONL
     delete env.DSH_WEB_URL
     delete env.DSH_SHELL
-    log('dsh gateway spawn: ' + node + ' ' + GATEWAY_PATH)
+    log('dsh gateway spawn: ' + node + ' ' + GATEWAY_PATH
+      + ' [node ' + (nodeInfo.version || '?') + ' · ' + nodeInfo.source + ']')
     child = spawn(node, [GATEWAY_PATH], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
@@ -126,6 +199,7 @@ function createDshAdapter(opts) {
       let msg
       try { msg = JSON.parse(trimmed) } catch { return }
       if (msg.event) {
+        translateEvent(msg.event)
         if (msg.event && msg.event.type === 'done' && msg.event.reqId) {
           activeRuns.delete(msg.event.reqId)
           pausedReqIds.delete(msg.event.reqId)
@@ -183,7 +257,7 @@ function createDshAdapter(opts) {
     booting = booting || Promise.resolve().then(() => startGateway())
     return booting.then(() => {
       if (!child) {
-        return Promise.reject(new Error('dsh 网关未运行(应用自带 Node 无需安装),稍后重试'))
+        return Promise.reject(new Error('dsh 网关未运行（本机需要 Node ≥22.19，正在自动准备），稍后重试'))
       }
       const id = nextId++
       return new Promise((resolve, reject) => {
@@ -224,6 +298,42 @@ function createDshAdapter(opts) {
   return {
     gatewayPath: GATEWAY_PATH,
     dshHome,
+
+    /* 诊断 / 自检：本进程用的哪个 node、托管 Node 装没装（见 dsh/DESIGN.md「Node 运行时」） */
+    nodeInfo() {
+      const info = nodeRuntime.info || resolveDshNode({ dataDir, log })
+      return {
+        bin: info.bin,
+        source: info.source,
+        version: info.version,
+        electron: !!info.electron,
+        fallback: !!info.fallback,
+        installing: nodeRuntime.installing,
+        installed: nodeRuntime.installed,
+        error: nodeRuntime.error,
+        rejected: info.rejected || [],
+        managed: managedNodeStatus(dataDir),
+      }
+    },
+
+    /* 自愈入口：显式安装托管 Node（装好即清缓存，下次拉起网关生效） */
+    installNode() {
+      nodeRuntime.installing = true
+      return installManagedNode({ dataDir, log }).then((r) => {
+        nodeRuntime.installing = false
+        if (r && r.ok) {
+          nodeRuntime.installed = true
+          resetDshNodeCache()
+        } else {
+          nodeRuntime.error = (r && r.error) || 'unknown'
+        }
+        return r
+      }).catch((e) => {
+        nodeRuntime.installing = false
+        nodeRuntime.error = (e && e.message) || String(e)
+        return { ok: false, error: nodeRuntime.error }
+      })
+    },
 
     /* 随应用启动:幂等,已运行则直接复用(避免重复运行) */
     ensureStarted() {
@@ -342,6 +452,23 @@ function createDshAdapter(opts) {
        params {key?, workspace?, sessionId?, roundId?, peek?} → {entries:[{key,data}]} */
     rollbackDrain(params) {
       return request('rollbackDrain', params, 30000)
+    },
+
+    /* 会话自己的浏览器（browser_* 工具面的宿主侧控制）：
+       { action: 'status' | 'open' | 'stop' | 'policy' | 'takeover' | 'view',
+         policy?, on?, sessionId?, method?: 'status'|'start'|'stop'|'input'|'mode', ... }。
+       进程与 CDP 都在网关进程里（browser-host.mjs），这里只是一条透传：
+       活动流面板的「打开浏览器 / 停止 / 名单管理 / 接管」与右边栏实况
+       （method start/stop/input/mode）全走它。实况帧走事件总线（type 'browser-frame'），
+       不在这里回值。
+       任何异常一律 resolve 成 {ok:false,error} —— 面板拿到失败就显示一行错误，
+       不该在控制台炸出 unhandled rejection（与 steer / pause 同一口径）。 */
+    browser(params) {
+      const p = params && typeof params === 'object' ? params : {}
+      return request('browser', p, 30000).catch((err) => ({
+        ok: false,
+        error: (err && err.message) || String(err),
+      }))
     },
 
     providerCatalog() {

@@ -316,6 +316,11 @@ function applyLocale(locale, persist) {
   if (typeof globalSearchRepaint === "function") globalSearchRepaint();
   /* 输入框内查找条（Ctrl+F · app-find.js）：同一口径，切语言时重绘文案与计数 */
   if (typeof fieldFindRepaint === "function") fieldFindRepaint();
+  /* 浏览器活动右栏（app-browser.js）：跟随最新 / 接管 这些键面文字是 JS 画的，
+     applyDom 碰不到它们 → 切语言后重画一次。 */
+  if (window.BrowserAct && typeof window.BrowserAct.repaintChrome === "function") {
+    window.BrowserAct.repaintChrome();
+  }
   const overlayOpen = $("#overlay") && $("#overlay").style.display === "flex";
   const reopenSettings = overlayKind === "settings" && overlayOpen;
   const reopenTpl = overlayKind === "tplstore" && overlayOpen;
@@ -424,6 +429,11 @@ async function init() {
       preset: AGENT_PRESET_DEFAULT,
       chatEnter: "send",
       permissionPreset: "mtnode-unattended",
+      /* 开发者工具（默认开）：会话右栏的「运行轨迹」View、工具调用可展开详情、以及
+         后续的 Inspect / CDP 面板都在这个开关下；关掉 = 这些入口整体不出现（会话与
+         助手两个窗格回到只有对话的形态）。设置项见 app-settings.js，消费方见
+         renderer/app-trajectory.js 的 devOn()。 */
+      developerTools: true,
       visionInspectAllowed: false,
       assistAutoApprove: false,
       doneSound: true,
@@ -479,6 +489,10 @@ async function init() {
     sess.noCanvasRead = !!sess.noCanvasRead;
     /* 「与画布无关」（Gate B）同样必须载回原值：丢了这一位 = 可见集漂移 → 换 runtime */
     sess.canvasFree = !!sess.canvasFree;
+    /* 会话「显示思考内容」（模式菜单第三枚开关，落盘白名单见 persistAgentSession）：
+       缺省与老存档一律按「显示」—— 只有用户亲口关过（落盘 false）才隐藏思考块，
+       绝不因字段缺席就改行为。 */
+    sess.showThink = sess.showThink !== false;
     /* 「不走普通会话计划这条线」（长任务新建窗的引导建图会话）：重启后仍豁免 ——
        否则再跑一轮就会拿到「任务流程 / 交计划块」指令，交出来的就是普通会话计划了。 */
     sess.noPlanFlow = !!sess.noPlanFlow;
@@ -509,6 +523,12 @@ async function init() {
   S.assistCanvasFree = !!S.config.assistCanvasFree;
   S.assistW = clampAssistW(S.config.assistW || 320);
   S.agentSideW = clampAgentSideW(S.config.agentSideW || AGENT_SIDE_W_MIN);
+  /* 应用开发界面三栏栏宽（开发页会话的左 / 中 / 右）：全局偏好，启动先按当前窗口夹一次
+     （整页左导航固定 176px，不受这里影响） */
+  if (typeof clampAppsColsW === "function") {
+    S.appsDevSideW = clampAppsColsW("side", S.config.appsDevSideW);
+    S.appsDevConvW = clampAppsColsW("conv", S.config.appsDevConvW);
+  }
   /* 会话「计划」清单最小高度：默认即最小，把手可继续向上拖高（全局偏好，启动先夹一次） */
   S.agentPlanH = clampAgentPlanH(S.config.agentPlanH || PLAN_LIST_MIN_H);
   S.assistMessages = Array.isArray(S.config.assistMessages)
@@ -733,30 +753,19 @@ async function init() {
         if (el.hidden) { buildAgentToolsMenu(); openAgentMenu("agentToolsMenu"); }
         else closeAgentMenus();
       };
-    /* 纯净模式：会话级开关（移除 system prompt，模型输入 = 纯粹的用户输入）。
-       状态随会话持久化；仅影响该会话后续轮次，不改其它会话 / 节点 / 助手。 */
-    const puret = $("#agentPureTrigger");
-    if (puret)
-      puret.onclick = () => {
-        const st = agentSessionState();
-        st.pure = !st.pure;
-        persistAgentSession();
-        renderAgentComposer();
-        if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
+    /* 「模式」chip：会话级开关的收纳口（纯净模式 + 自动续跑），与「工具」chip 同款下拉。
+       两枚开关的点击处置仍在各自模块（app-assist.js 的 agentModeEntryOf / app-longrun.js
+       的 toggleAuto），这里只管开合这只菜单。 */
+    const mdt = $("#agentModeTrigger");
+    if (mdt)
+      mdt.onclick = () => {
+        const el = $("#agentModeMenu");
+        if (!el) return;
+        if (el.hidden) { buildAgentModeMenu(); openAgentMenu("agentModeMenu"); }
+        else closeAgentMenus();
       };
-    /* 与画布无关（Gate B）：会话级「本轮不碰画布」声明。与纯净模式不同一档 ——
-       纯净把整段 system prompt 与运行时上下文都撤了；这一档只撤画布工具与画布快照，
-       人设、技能索引、语言口味照常。开关状态随会话持久化（见 persistAgentSession）。
-       代价写在 tooltip 里：开着它就改不了画布，要改图得先关掉再重跑。 */
-    const cft = $("#agentCanvasFreeTrigger");
-    if (cft)
-      cft.onclick = () => {
-        const st = agentSessionState();
-        st.canvasFree = !st.canvasFree;
-        persistAgentSession();
-        renderAgentComposer();
-        if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
-      };
+    /* 会话「与画布无关」chip 已随本次需求移除（改为按消息自动判定，见 app-assist.js 的
+       agentCanvasTurnRelated）：chip 与它上面那段 onclick 都不再存在，这里不留空绑定。 */
     const wt = $("#agentWsTrigger");
     if (wt)
       wt.onclick = () => {
@@ -864,6 +873,11 @@ async function init() {
     if (inp) {
       inp.addEventListener("input", () => {
         slashTick(inp, "agent");
+        /* 输入即记草稿（app-assist.js 的 agentDraftTick）：未发完的字不能只活在 DOM 里 ——
+           任何一次整页重绘 / 自动选会话 / 关页回收都要能按视图键把它找回来。 */
+        try {
+          if (typeof agentDraftTick === "function") agentDraftTick();
+        } catch (_) {}
         paintAgentSendState();
       });
       inp.addEventListener("compositionend", () => slashTick(inp, "agent"));
@@ -946,22 +960,8 @@ async function init() {
         renderAssistPanel();
       };
     }
-    /* 助手「与画布无关」开关（Gate B 助手侧）：切档即落盘并重绘状态；
-       运行中不改判（本轮可见集已经定了，改档下一轮才生效）。 */
-    const cfBtn = $("#assistCanvasFreeBtn");
-    if (cfBtn && !cfBtn._bound) {
-      cfBtn._bound = true;
-      cfBtn.onclick = () => {
-        if (S.assistRunning) {
-          toast(I18n.t("请先终止当前运行"), "warn");
-          return;
-        }
-        S.assistCanvasFree = !S.assistCanvasFree;
-        persistAssistUi();
-        updateAssistCanvasFreeChrome();
-        renderAssistPanel();
-      };
-    }
+    /* 助手「与画布无关」按钮已随本次需求移除（改为按消息自动判定，见 app-assist.js 的
+       agentCanvasTurnRelated）：原来这里那段 cfBtn.onclick（切档 + 落盘 + 重绘）一并删掉。 */
     const wsInput = $("#assistWsInput");
     if (wsInput)
       wsInput.addEventListener("change", () => {

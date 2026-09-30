@@ -4,7 +4,8 @@
  *   ① 应用中心窗口（apps-store.js + preload-app.js）→ window.appHost
  *        close / quit / onWillClose · dataDirGet / dataDirPick / dataDirOpen ·
  *        dataRead / dataWrite · storageGet / Set / All / Remove · account ·
- *        textGenStream / imageGen
+ *        textGenStream（支持文字 + 图像多模态）/ imageGen ·
+ *        hostModels / hostSetModel / pickImage（模型从 MTNode 继承 + 选本机图）
  *   ② 插件窗口（plugins/preload-window.js）→ window.pluginApi（= window.forumApi）
  *        close · dataGet / dataSet · authGetState / authMe · storeRequest ·
  *        onShown / onAuthChanged · pickImage / compressImage / cacheImage …
@@ -23,6 +24,14 @@
  *   request(method, path, json)  服务端请求（只有 ② 有）
  *   on(event, cb) / offAll() 事件订阅与统一退订
  *   close() / quit()         关自己窗口 / 退出 MTNode
+ *
+ * 模型能力（只有 ① 有，且模型从 MTNode 继承 —— 服务商与 API Key 永远留在主进程）：
+ *   models()                 列出可用模型（首项 = 跟随默认；每项带 vision 是否支持识图）
+ *   modelGet() / modelSet(id)  读 / 改本应用的模型选择（宿主按应用 id 持久化）
+ *   pickImage()              弹系统选图框 → { ok, path }；取消 → { ok:false, code:"cancelled" }
+ *   text(prompt, opts)       文本生成（流式；opts.images 可带本机路径 / dataURL → 多模态）
+ *                            失败回 { ok:false, code }：bad_image / too_many_images / too_large /
+ *                            no_provider / no_vision / bad_model / offline / http_4xx…
  */
 (function () {
   "use strict";
@@ -59,6 +68,11 @@
     net: has(host, "storeRequest"),
     image: has(host, "imageGen") || has(host, "pickImage"),
     text: has(host, "textGenStream"),
+    /* 结构化输出助手（本文件 json()）：只要有文本桥就能用，不额外要求宿主新接口 */
+    json: has(host, "textGenStream"),
+    /* 模型继承：三件套齐了才算可用（只列清单不算 —— 不能改选择等于没有「位置」可选） */
+    models: has(host, "hostModels") && has(host, "hostSetModel"),
+    pick: has(host, "pickImage"),
     shown: has(host, "onShown"),
   };
 
@@ -199,6 +213,196 @@
     }
   }
 
+  /* ── 模型（从 MTNode 继承；服务商与 Key 留在主进程，应用只挑 id） ──
+     没有这套接口时：models() 回空清单 + hasAny:false，界面按「无可用模型」置灰提示，
+     绝不假装成功、也不退回某个内置模型。 */
+  async function models() {
+    if (!cap.models) return { ok: false, error: "no_host", models: [], selected: "auto", hasAny: false, hasVision: false };
+    try {
+      return await host.hostModels();
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e), models: [], selected: "auto", hasAny: false, hasVision: false };
+    }
+  }
+  async function modelGet() {
+    if (!cap.models) return { ok: false, error: "no_host", selected: "auto", hasAny: false, hasVision: false };
+    try {
+      return await host.hostModel();
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e), selected: "auto", hasAny: false, hasVision: false };
+    }
+  }
+  async function modelSet(id) {
+    if (!cap.models) return { ok: false, error: "no_host" };
+    try {
+      return await host.hostSetModel(String(id == null ? "" : id));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+  /** 选一张本机图：{ ok, path } / 取消 { ok:false, code:"cancelled" }；只回路径，读盘由宿主做 */
+  async function pickImage() {
+    if (!cap.pick) return { ok: false, code: "no_host", error: "no_host" };
+    try {
+      return await host.pickImage();
+    } catch (e) {
+      return { ok: false, code: "pick_failed", error: String((e && e.message) || e) };
+    }
+  }
+  /** 文本生成（流式）。opts = { system, messages, model, images, temperature, thinking, maxTokens }
+   *  images = 本机绝对路径或 data:image/... 的数组 → 与 prompt 一起下发（多模态，需视觉模型）。
+   *  thinking = 思考档：**不传 = off**（宿主默认关思考），要开就显式给 on / low / high / max。
+   *  maxTokens 能不给就不给：它是「思考 + 正文」共用的预算，给小了正文会被截断（返回里
+   *  finishReason === "length" / truncated === true）。
+   *  返回 { ok, text, reasoningChars, finishReason, truncated, code }；cb(delta) 可选，收流式增量。 */
+  async function text(prompt, opts) {
+    if (!cap.text) return { ok: false, code: "no_host", error: "宿主未提供文本生成能力" };
+    var o = opts && typeof opts === "object" ? opts : {};
+    var body = { prompt: String(prompt == null ? "" : prompt) };
+    if (o.system) body.system = String(o.system);
+    if (o.messages) body.messages = o.messages;
+    if (o.model) body.model = String(o.model);
+    if (o.temperature != null) body.temperature = o.temperature;
+    if (o.maxTokens != null) body.maxTokens = o.maxTokens;
+    /* 思考档原样交给宿主（宿主认 off / on / low / high / max，非法值回 code:"bad_thinking"）；
+       不传就是关——别在这里补默认值，免得把宿主的默认口径抄第二遍 */
+    if (o.thinking != null) body.thinking = String(o.thinking);
+    /* 带图：把 images 拼成 messages 里的多模态分片（prompt 作为同一条 user 消息的文字部分） */
+    var imgs = Array.isArray(o.images) ? o.images.filter(Boolean).slice(0, 8) : [];
+    if (imgs.length) {
+      var parts = [];
+      if (body.prompt) parts.push({ type: "text", text: body.prompt });
+      for (var i = 0; i < imgs.length; i++) parts.push({ type: "image_url", image_url: { url: imgs[i] } });
+      var msgs = Array.isArray(body.messages) ? body.messages.slice() : [];
+      if (body.system) msgs.unshift({ role: "system", content: String(body.system) });
+      msgs.push({ role: "user", content: parts });
+      body.messages = msgs;
+      body.prompt = "";
+      body.system = "";
+    }
+    var cb = typeof o.onDelta === "function" ? o.onDelta : null;
+    try {
+      return await host.textGenStream(body, function (msg) {
+        if (!cb || !msg) return;
+        if (msg.type === "delta" || msg.type === "reasoning") cb(msg.text, msg.type);
+      });
+    } catch (e) {
+      return { ok: false, code: "transport", error: String((e && e.message) || e) };
+    }
+  }
+
+  /* ── 结构化输出助手：要模型给 JSON 时**用它，别自己写 text() + JSON.parse()** ──────
+   *
+   * 为什么必须有：让模型「只回 JSON」是一件会失败的事，而失败有两种，症状却一样 ——
+   *   ① 输出被上限截断（finishReason === "length"）：正文是半截的，JSON 必然解不出来；
+   *      根因常见是「思考 token 把 max_tokens 吃光了」（宿主应用通道默认关思考就是为这个）；
+   *   ② 模型就是带了点散文 / 围栏 / 前后缀。
+   * 调用方只看 r.ok，就会把「被截断」误报成「模型不会给 JSON」，用户照着改提示词也没用。
+   *
+   * 用法（两种写法等价）：
+   *   var r = await AppHost.json({ system: "You output strict JSON.", prompt: "…" });
+   *   var r = await AppHost.json("…", { system: "You output strict JSON." });
+   *   if (!r.ok) show(r.error); else use(r.data);
+   * 它做三件事：① 思考档照传（不传 = 宿主默认关）；② 剥 ``` 围栏 + 截取首个 {/[ 到末个 }/] 再解析；
+   * ③ 解析失败自动重试一次（opts.retries 可调，0 = 不重试）—— 上一次被截断时，重试**丢掉
+   *   maxTokens**（截断的根因就是上限太小，带着重试只会再截一次）。
+   *
+   * 返回 { ok, data, text, code, error, attempts, finishReason, truncated, reasoningChars }
+   *   code：truncated（两次都被截断）/ not_json（两次都解不出）/ 宿主错误码（no_provider / bad_model …）
+   *   —— 宿主没配服务商这种错**不重试**，原样抛给调用方去提示用户。 */
+  function jsonSlice(s) {
+    var t = String(s == null ? "" : s).replace(/```[a-zA-Z0-9_-]*/g, "");
+    var a = t.search(/[{[]/);
+    if (a < 0) return "";
+    var close = t.charAt(a) === "{" ? "}" : "]";
+    var b = t.lastIndexOf(close);
+    return b > a ? t.slice(a, b + 1) : "";
+  }
+  function jsonParseLoose(s) {
+    var slice = jsonSlice(s);
+    if (!slice) return { error: "not_json" };
+    try {
+      return { data: JSON.parse(slice) };
+    } catch (e) {
+      return { error: "not_json" };
+    }
+  }
+  async function json(prompt, opts) {
+    var o =
+      typeof prompt === "string"
+        ? Object.assign({}, opts && typeof opts === "object" ? opts : {}, { prompt: prompt })
+        : prompt && typeof prompt === "object"
+          ? prompt
+          : {};
+    if (!cap.text) return { ok: false, code: "no_host", error: "宿主未提供文本生成能力", attempts: 0 };
+    var retries = Number(o.retries) >= 0 ? Math.min(3, Math.round(Number(o.retries))) : 1;
+    var use = {
+      system: o.system,
+      messages: o.messages,
+      model: o.model,
+      images: o.images,
+      temperature: o.temperature,
+      thinking: o.thinking,
+      maxTokens: o.maxTokens,
+      onDelta: o.onDelta,
+    };
+    var last = {
+      ok: false,
+      code: "not_json",
+      error: "模型回复里没有可用的 JSON",
+      text: "",
+      finishReason: "",
+      truncated: false,
+      reasoningChars: 0,
+      attempts: 0,
+    };
+    for (var i = 0; i <= retries; i++) {
+      /* 上一次是被截断的 → 这一次别带上限（上限就是截断的根因） */
+      if (i > 0 && last.truncated) delete use.maxTokens;
+      var r = await text(o.prompt == null ? "" : o.prompt, use);
+      last.attempts = i + 1;
+      if (!r || r.ok === false) {
+        /* 配置类错误（无服务商 / 模型不在清单 / 非法思考档）重试也没用：原样回报 */
+        return {
+          ok: false,
+          code: (r && r.code) || "text_failed",
+          error: (r && r.error) || "text_failed",
+          text: String((r && r.text) || ""),
+          finishReason: "",
+          truncated: false,
+          reasoningChars: 0,
+          attempts: i + 1,
+        };
+      }
+      var p = jsonParseLoose(r.text);
+      if (!p.error)
+        return {
+          ok: true,
+          data: p.data,
+          text: String(r.text || ""),
+          code: "",
+          error: "",
+          finishReason: String(r.finishReason || ""),
+          truncated: !!r.truncated,
+          reasoningChars: Number(r.reasoningChars) || 0,
+          attempts: i + 1,
+        };
+      last = {
+        ok: false,
+        code: r.truncated ? "truncated" : "not_json",
+        error: r.truncated
+          ? "模型回复被输出上限截断，JSON 不完整（别把 maxTokens 设小，或让应用显式开思考时留足预算）"
+          : "模型回复里没有可用的 JSON",
+        text: String(r.text || ""),
+        finishReason: String(r.finishReason || ""),
+        truncated: !!r.truncated,
+        reasoningChars: Number(r.reasoningChars) || 0,
+        attempts: i + 1,
+      };
+    }
+    return last;
+  }
+
   /** 事件订阅：统一登记，便于一次退订；桥没有这个事件就回 false（不假装成功） */
   function on(event, cb) {
     if (!host || !isFn(host[event])) return false;
@@ -281,6 +485,14 @@
     storageRemove: storageRemove,
     accountText: accountText,
     request: request,
+    /* 模型继承 + 多模态（应用中心窗口那一套；插件窗口没有时 cap 全 false，调用方按能力降级） */
+    models: models,
+    modelGet: modelGet,
+    modelSet: modelSet,
+    pickImage: pickImage,
+    text: text,
+    /* 要模型给 JSON 就用这个：关思考 + 剥围栏 + 截断感知 + 重试一次（见 json() 头部注释） */
+    json: json,
     on: on,
     onShown: onShown,
     offAll: offAll,

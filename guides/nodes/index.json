@@ -33,6 +33,7 @@
     "tool",
     "function",
     "agent_task",
+    "browser",
     "execute",
     "control",
     "ctrl-start",

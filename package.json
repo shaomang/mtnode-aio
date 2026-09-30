@@ -33,7 +33,9 @@
     "deploy:ssl": "python scripts/deploy-ssl.py",
     "store:seed-skills": "node store-saas/seed-skills.mjs",
     "store:release-skills": "node tools/release-skills.mjs",
-    "build:agent-skills-index": "node tools/build-mtnode-agent-skill-index.js"
+    "build:agent-skills-index": "node tools/build-mtnode-agent-skill-index.js",
+    "app:previews": "electron scripts/app-style-previews.cjs",
+    "app:scaffold-styles": "node scripts/gen-scaffold-styles.cjs"
   },
   "author": "New Earth Habitat",
   "license": "MIT",

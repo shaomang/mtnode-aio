@@ -1,7 +1,7 @@
 /* 账户充值（钱包）：余额展示 + 支付宝扫码充值 + 订单/流水查看。
  *
  * 口径（与云端 store-saas 一致，详见 docs/recharge-design.md）：
- *   · 金额一律「分」整数（服务端也是分），只在展示时转元，不做前端算术决策。
+ *   · 金额一律「元」（4 位小数）：服务端只下发 / 只接收元，前端不做分↔元换算，也不做算术决策。
  *   · 入口只对白名单账号显示（测试期 = ms2308）；云端 MTNODE_RECHARGE_USERS 是同一份口径，
  *     两边都放开才算正式上线。服务端另有 403 RECHARGE_NOT_OPEN 兜底，前端藏入口只是体验层。
  *   · 下单成功才展示二维码（服务端先向支付宝预下单、再落本地订单），轮询只查自己的订单。
@@ -13,9 +13,9 @@
   "use strict";
 
   var VISIBLE_USERS = ["ms2308"];
-  var FALLBACK_TIERS = [1000, 3000, 5000, 10000, 50000];
-  var MIN_CENTS = 100;
-  var MAX_CENTS = 100000;
+  var FALLBACK_TIERS = [10, 30, 50, 100, 500];
+  var MIN_YUAN = 1;
+  var MAX_YUAN = 1000;
   var POLL_MS = 2000;
 
   /* 文案一律走 I18n.t；带变量的用 {占位} 键（第二参），不要拼接——英文语序不同会散架。 */
@@ -28,8 +28,9 @@
     if (text != null) n.textContent = String(text);
     return n;
   }
-  function money(c) {
-    return "¥" + (Number(c || 0) / 100).toFixed(2);
+  /* 金额一律「元」（4 位小数）：服务端只下发 / 只接收元，这里不做分↔元换算。 */
+  function money(yuan) {
+    return "¥" + Number(yuan || 0).toFixed(4);
   }
   function visibleFor(u) {
     if (!u) return false;
@@ -37,8 +38,8 @@
     return !!name && VISIBLE_USERS.indexOf(name) >= 0;
   }
   function balanceOf(u) {
-    var n = Number(u && u.balanceCents);
-    return isFinite(n) ? Math.round(n) : 0;
+    var n = Number(u && u.balanceYuan);
+    return isFinite(n) ? n : 0;
   }
   function tsText(ms) {
     if (!ms) return "—";
@@ -65,9 +66,9 @@
 
   var ST = {
     cfg: null,
-    balanceCents: 0,
+    balanceYuan: 0,
     tiers: FALLBACK_TIERS.slice(),
-    pickedCents: 0,
+    pickedYuan: 0,
     order: null,
     orders: [],
     ledger: [],
@@ -128,12 +129,12 @@
       .then(function (r) {
         if (r && r.ok && r.data) {
           ST.cfg = r.data;
-          if (Array.isArray(r.data.tiersCents) && r.data.tiersCents.length) ST.tiers = r.data.tiersCents.slice();
-          if (Number(r.data.minCents)) MIN_CENTS = Number(r.data.minCents);
-          if (Number(r.data.maxCents)) MAX_CENTS = Number(r.data.maxCents);
+          if (Array.isArray(r.data.tiersYuan) && r.data.tiersYuan.length) ST.tiers = r.data.tiersYuan.slice();
+          if (Number(r.data.minYuan)) MIN_YUAN = Number(r.data.minYuan);
+          if (Number(r.data.maxYuan)) MAX_YUAN = Number(r.data.maxYuan);
           /* 界面是在配置回来**之前**用兜底值画的：档位、金额上下限、主按钮文案都要按服务端
-             真值重画一次，否则 env 调过限额（例如验收时把下限降到 1 分）时，输入框的 min/max
-             与「¥1.00 – ¥1000.00」提示还停在兜底值，与实际校验口径不一致。 */
+             真值重画一次，否则 env 调过限额（例如验收时把下限降到 0.01 元）时，输入框的 min/max
+             与「¥1.0000 – ¥1000.0000」提示还停在兜底值，与实际校验口径不一致。 */
           paintTiers();
           paintCustomRange();
         }
@@ -148,12 +149,12 @@
       .then(function (r) {
         if (!r || !r.ok || !r.data) throw r;
         var w = r.data.wallet || {};
-        ST.balanceCents = Number(w.balanceCents || 0);
+        ST.balanceYuan = Number(w.balanceYuan || 0);
         ST.orders = Array.isArray(w.orders) ? w.orders : [];
         ST.ledger = Array.isArray(w.ledger) ? w.ledger : [];
         if (r.data.user) {
           var b = balanceOf(r.data.user);
-          if (b) ST.balanceCents = b;
+          if (b) ST.balanceYuan = b;
         }
         return true;
       })
@@ -176,7 +177,7 @@
   function paintBalance() {
     if (!dialogAlive()) return;
     var v = ST.root.querySelector("#wlBalance");
-    if (v) v.textContent = money(ST.balanceCents);
+    if (v) v.textContent = money(ST.balanceYuan);
   }
 
   function paintTiers() {
@@ -184,21 +185,21 @@
     var box = ST.root.querySelector("#wlTiers");
     if (!box) return;
     box.textContent = "";
-    ST.tiers.forEach(function (cents) {
-      var b = el("button", "wl-tier" + (ST.pickedCents === cents ? " on" : ""), money(cents));
+    ST.tiers.forEach(function (yuan) {
+      var b = el("button", "wl-tier" + (ST.pickedYuan === yuan ? " on" : ""), money(yuan));
       b.type = "button";
       b.onclick = function () {
-        ST.pickedCents = cents;
+        ST.pickedYuan = yuan;
         var inp = ST.root.querySelector("#wlCustom");
         if (inp) inp.value = "";
         paintTiers();
       };
       box.appendChild(b);
     });
-    var custom = el("button", "wl-tier" + (ST.pickedCents === 0 ? " on" : ""), T("自定义"));
+    var custom = el("button", "wl-tier" + (ST.pickedYuan === 0 ? " on" : ""), T("自定义"));
     custom.type = "button";
     custom.onclick = function () {
-      ST.pickedCents = 0;
+      ST.pickedYuan = 0;
       paintTiers();
       var inp = ST.root.querySelector("#wlCustom");
       if (inp) inp.focus();
@@ -211,19 +212,19 @@
     if (!dialogAlive()) return;
     var inp = ST.root.querySelector("#wlCustom");
     if (inp) {
-      inp.min = String(MIN_CENTS / 100);
-      inp.max = String(MAX_CENTS / 100);
+      inp.min = String(MIN_YUAN);
+      inp.max = String(MAX_YUAN);
     }
     var hint = ST.root.querySelector("#wlRange");
-    if (hint) hint.textContent = money(MIN_CENTS) + " – " + money(MAX_CENTS);
+    if (hint) hint.textContent = money(MIN_YUAN) + " – " + money(MAX_YUAN);
   }
 
-  function pickedCents() {
-    if (ST.pickedCents > 0) return ST.pickedCents;
+  function pickedYuan() {
+    if (ST.pickedYuan > 0) return ST.pickedYuan;
     var inp = ST.root && ST.root.querySelector("#wlCustom");
     var v = inp ? Number(inp.value) : 0;
     if (!isFinite(v) || v <= 0) return 0;
-    return Math.round(v * 100);
+    return Math.round(v * 1e4) / 1e4;
   }
 
   function paintQr() {
@@ -240,7 +241,7 @@
     if (o.status === "paid") {
       panel.appendChild(el("div", "wl-qr-ok", "✓ " + T("充值成功")));
       panel.appendChild(
-        el("div", "wl-qr-sub", T("{amount} 已到账", { amount: money(o.paidAmountCents || o.amountCents) })),
+        el("div", "wl-qr-sub", T("{amount} 已到账", { amount: money(o.paidAmountYuan || o.amountYuan) })),
       );
       panel.appendChild(el("div", "wl-qr-sub muted", T("订单号：{id}", { id: o.id })));
       return;
@@ -264,7 +265,7 @@
       go.type = "button";
       go.onclick = function () { openPayUrl(o.payUrl); };
       left.appendChild(go);
-      left.appendChild(el("div", "wl-qr-amount", money(o.amountCents)));
+      left.appendChild(el("div", "wl-qr-amount", money(o.amountYuan)));
       left.appendChild(el("div", "wl-pay-hint muted", T("会在系统浏览器里打开支付宝收银台，可用手机支付宝扫码付款")));
       if (ST.autoOpened !== o.id) {
         // 用户刚点了「充值」，直接把收银台打开（每笔单只自动开一次，重绘不重复弹浏览器）。
@@ -276,7 +277,7 @@
       img.alt = T("支付宝付款码");
       if (o.qrDataUrl) img.src = o.qrDataUrl;
       left.appendChild(img);
-      left.appendChild(el("div", "wl-qr-amount", money(o.amountCents)));
+      left.appendChild(el("div", "wl-qr-amount", money(o.amountYuan)));
     }
     panel.appendChild(left);
 
@@ -369,7 +370,7 @@
       ST.orders.slice(0, 8).forEach(function (o) {
         var tr = el("tr");
         tr.appendChild(el("td", "", tsText(o.createdAt)));
-        tr.appendChild(el("td", "num", money(o.amountCents)));
+        tr.appendChild(el("td", "num", money(o.amountYuan)));
         tr.appendChild(el("td", "st st-" + o.status, ST_TEXT[o.status] || o.status));
         tr.appendChild(el("td", "mono", o.id));
         t.appendChild(tr);
@@ -390,11 +391,11 @@
         tr.appendChild(el("td", "", tsText(e.at)));
         tr.appendChild(el("td", "", TY[e.type] || e.type));
         /* 负数要显示成 -¥4.00 而不是 ¥-4.00：符号在货币符号外面才读得顺 */
-        var dv = Number(e.deltaCents) || 0;
+        var dv = Number(e.deltaYuan) || 0;
         var d = el("td", "num " + (dv >= 0 ? "pos" : "neg"));
         d.textContent = (dv >= 0 ? "+" : "-") + money(Math.abs(dv));
         tr.appendChild(d);
-        tr.appendChild(el("td", "num", money(e.balanceAfterCents)));
+        tr.appendChild(el("td", "num", money(e.balanceAfterYuan)));
         t2.appendChild(tr);
       });
       box.appendChild(t2);
@@ -426,21 +427,21 @@
 
   function createOrder() {
     if (ST.busy) return;
-    var cents = pickedCents();
-    if (!cents) {
+    var yuan = pickedYuan();
+    if (!yuan) {
       setNotice(T("请选择或输入充值金额"), "err");
       return;
     }
-    if (cents < MIN_CENTS || cents > MAX_CENTS) {
+    if (yuan < MIN_YUAN || yuan > MAX_YUAN) {
       setNotice(
-        T("充值金额需在 {min} – {max} 之间", { min: money(MIN_CENTS), max: money(MAX_CENTS) }),
+        T("充值金额需在 {min} – {max} 之间", { min: money(MIN_YUAN), max: money(MAX_YUAN) }),
         "err",
       );
       return;
     }
     setBusy(true);
     setNotice("");
-    api("POST", "/api/wallet/recharge/create", { amountCents: cents })
+    api("POST", "/api/wallet/recharge/create", { amountYuan: yuan })
       .then(function (r) {
         if (!dialogAlive()) return;
         if (!r || !r.ok || !r.data) throw r;
@@ -508,6 +509,11 @@
       paintHistory();
     });
     refreshUser();
+    /* 充值到账 → 中转服务那张只读卡当场出现 / 恢复可用（renderer/app-relay.js）：
+       余额从 0 变正时服务端才开始下发模型清单，这里强制拉一次，不等下次登录。 */
+    try {
+      if (window.MtRelay && window.MtRelay.sync) window.MtRelay.sync({ force: true });
+    } catch (e) {}
   }
 
   function manualRefresh() {
@@ -548,7 +554,7 @@
     liveGen = (liveGen + 1) % 100000;
     ST.gen = liveGen;
     ST.order = null;
-    ST.pickedCents = (ST.tiers[0] || 1000);
+    ST.pickedYuan = (ST.tiers[0] || 10);
 
     openOverlay(T("账户充值"), { persistent: true, min: true });
     var body = document.getElementById("ovBody");
@@ -594,17 +600,17 @@
     var inp = el("input");
     inp.id = "wlCustom";
     inp.type = "number";
-    inp.min = String(MIN_CENTS / 100);
-    inp.max = String(MAX_CENTS / 100);
+    inp.min = String(MIN_YUAN);
+    inp.max = String(MAX_YUAN);
     inp.step = "0.01";
     inp.placeholder = T("自定义金额（元）");
     inp.addEventListener("input", function () {
-      ST.pickedCents = 0;
+      ST.pickedYuan = 0;
       paintTiers();
       setNotice("");
     });
     custom.appendChild(inp);
-    var range = el("span", "wl-hint", money(MIN_CENTS) + " – " + money(MAX_CENTS));
+    var range = el("span", "wl-hint", money(MIN_YUAN) + " – " + money(MAX_YUAN));
     range.id = "wlRange";
     custom.appendChild(range);
     pick.appendChild(custom);
@@ -667,7 +673,7 @@
     open: openWallet,
     refreshUser: refreshUser,
     state: function () {
-      return { balanceCents: ST.balanceCents, config: ST.cfg };
+      return { balanceYuan: ST.balanceYuan, config: ST.cfg };
     },
   };
 })();

@@ -745,6 +745,16 @@ ok(assistSlice.indexOf("await") < 0, "切到的区间无 await（可在同步 vm
 /* 助手侧切片起点之前的那一个真实局部量（Gate B 判据）同样按原句求值；
    assistLean / assistHide 已经在切片区间里，prelude 里再声明一次会撞 id。 */
 const assistPrelude = decls(assistSrc, "app-assist.js", ["const assistCanvasFree = "]);
+/* 上面那句判据调 assistCanvasTurnRelated（撤掉手动「与画布无关」按钮后，助手侧改为
+   按这条消息自动判定）。它本身只是一层包装，真判据 agentCanvasTurnRelated 由
+   smoke-token-budget 真跑；这里直接换成一个读夹具 canvasFree 的假体 —— 判据本身
+   （源文件那句 assistCanvasFree = ...）仍是真的，被测的正是它。 */
+const assistDetectStub = [
+  "const assistCanvasTurnRelated = (text, hist) => {",
+  "  void text; void hist;",
+  "  return !canvasFree;",
+  "};",
+].join("\n");
 const ASSIST_IDS = [
   "persona_host",
   "scope",
@@ -810,6 +820,9 @@ function makeAssistEnv(fixture) {
     stateJson: fx.stateJson,
     hist: "",
     t: "帮我把这三张图连成批处理",
+    /* 自动判定在夹具里按 fx.canvasFree 短路（见 __runAssist 里那层同名包装）：源文件那句
+       判据本身仍是真的，其余分支由 smoke-token-budget 的真跑覆盖。 */
+    canvasFree: !!fx.canvasFree,
     skillWrap: null,
     skillTaskPrompt: () => "",
     dshRunMaxTokens: () => 8192,
@@ -826,6 +839,8 @@ function makeAssistEnv(fixture) {
   }
   vm.runInContext(
     "globalThis.__runAssist = function () {\n" +
+      assistDetectStub +
+      "\n" +
       assistPrelude +
       assistSlice +
       "\nreturn { systemPrompt: systemPrompt, assistSections: assistSections, parts: [" +

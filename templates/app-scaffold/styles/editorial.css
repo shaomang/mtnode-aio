@@ -1,0 +1,32 @@
+/* 风格 · 编辑（应用脚手架） —— 由 scripts/gen-scaffold-styles.cjs 从
+   templates/app-default/styles/editorial.css 的变量表生成，改色请改那一份再跑一次。 */
+:root {
+  --bg: #ffffff;
+  --bg-soft: #ffffff;
+  --bg-sunken: #f6f4f0;
+  --line: #e6e2db;
+  --line-2: #12100e;
+  --fg: #12100e;
+  --fg-dim: #45403a;
+  --muted: #565049;
+  --accent: #b32c1f;
+  --accent-hi: #c98880;
+  --accent-ink: #ffffff;
+  --sel: rgba(179, 44, 31, 0.16);
+  --sel-ink: #12100e;
+  --radius: 4px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  --step-radius: 0px;
+  --step-border: transparent;
+  --step-ink: var(--accent);
+  --font-display: Georgia, "Songti SC", "Noto Serif CJK SC", "STSong", "SimSun",
+    serif;
+}
+
+.app-head {
+  border-bottom: 3px double var(--line-2);
+}
+.intro-h {
+  letter-spacing: -0.03em;
+}

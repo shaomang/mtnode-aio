@@ -1,0 +1,42 @@
+/* 风格 · 科技（应用脚手架） —— 由 scripts/gen-scaffold-styles.cjs 从
+   templates/app-default/styles/tech.css 的变量表生成，改色请改那一份再跑一次。 */
+:root {
+  --bg: #070b12;
+  --bg-soft: #0b1119;
+  --bg-sunken: #0a111a;
+  --line: #16232e;
+  --line-2: #22323f;
+  --fg: #e7f0f7;
+  --fg-dim: #9fb3c4;
+  --muted: #7b8f9f;
+  --accent: #5ad9e0;
+  --accent-hi: #2f8d97;
+  --accent-ink: #100a16;
+  --sel: rgba(90, 217, 224, 0.24);
+  --sel-ink: #f2fbfd;
+  --radius: 4px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  --step-radius: 4px;
+  --step-border: var(--accent);
+  --step-ink: var(--accent);
+  --texture: linear-gradient(
+      to right,
+      rgba(90, 217, 224, 0.08) 1px,
+      transparent 1px
+    )
+    0 0 / 64px 64px,
+    linear-gradient(to bottom, rgba(90, 217, 224, 0.08) 1px, transparent 1px) 0 0 /
+      64px 64px;
+  --texture-op: 1;
+}
+
+.app-titles b,
+.data-v,
+.kv dd {
+  letter-spacing: 0.01em;
+}
+.intro-h {
+  font-family: var(--mono);
+  letter-spacing: -0.005em;
+}

@@ -6,7 +6,7 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.4.0 — Electron 39 桌面端 A
 
 - **主进程入口与 IPC 总线**：根目录 `main.js`、`preload.js`（contextBridge 白名单桥）、`main-exec-launch.js`（执行节点独立进程）。
 - **渲染层（无框架 SVG，不引入前端框架）**：`renderer/`。`app.js` 为画布主体（脚本加载顺序即模块分层）；执行/批处理引擎 `app-nodes.js`；画布/标注/超级节点/主题/i18n `app-canvas.js`；智能体验 `app-agent.js`、`app-assist.js`、`app-plan.js`；数据库 `app-db.js`；开发节点 `app-devnode.js`；配置 `app-settings.js`；生态 `app-plugins.js`、`app-store.js`。样式在 `renderer/css/`。
-- **Agent 网关（DeepSeek Harness 集成）**：`dsh/`。`main-dsh.js` 只在 stdio 走 MTNode 自有的换行分隔 JSON；`dsh/gateway/gateway.mjs` 是**全仓唯一 import dsh 之处**（独立 Node ≥22.19，吸收 dsh 全部 API 变化）；网关工具插件 `dsh/gateway/*-plugin.mjs`；契约文档 `dsh/DESIGN.md`，改动网关前先读它。
+- **Agent 网关（DeepSeek Harness 集成）**：`dsh/`。`main-dsh.js` 只在 stdio 走 MTNode 自有的换行分隔 JSON；`dsh/gateway/gateway.mjs` 是**全仓唯一 import dsh 之处**（独立 Node ≥22.19，吸收 dsh 全部 API 变化）；网关工具插件 `dsh/gateway/*-plugin.mjs`；契约文档 `dsh/DESIGN.md`，改动网关前先读它。网关由根目录 `dsh-node.js` 选定的**真 Node**（≥22.19）拉起 —— dsh 0.2 的内核拒绝 Electron 自带的 Node（`unsupported Electron runtime fingerprint`，应用侧表现 =「dsh 网关已退出」），找不到真 Node 时它会后台把托管 Node 装进数据目录；**别把 `process.execPath` 写回网关 spawn**。
 - **主进程侧数据/持久化**：`db-store.js`（SQLite + FTS5 事实库）、`assets-store.js`（素材库）、`tools-store.js`、`rollback-store.js`、`config-providers.js`（多服务商与模型配置）、`media-gen-global-lock.js`（音视频全局互斥锁）。
 - **打包白名单（必读）**：`build.json` 的 `files` 是 **显式白名单**（不是整仓拷贝）。根目录新增/拆出的主进程模块（如 `*-store.js`、`*-lib.js`）只要会被 `main.js` / 其它已打包文件 `require`，**必须同步写进 `build.json` → `files`**，否则解包运行会出现 `Cannot find module './xxx.js'`（源码目录有文件、打包后 asar 没有）。改 `main.js` 的 `require("./…")` 时顺手核对白名单。
 - **本地后端宿主**：`music3/`、`h3/`、`tts/`、`llama/`、`pet/`；同名 `*-pack/` 为随包脚手架（Python 后端 / ComfyUI 工作流 / Live2D 托盘资源），打包由 `build.json` 的 extraResources 打进安装包。

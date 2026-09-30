@@ -1,0 +1,40 @@
+/* 风格 · 玻璃拟态（应用脚手架） —— 由 scripts/gen-scaffold-styles.cjs 从
+   templates/app-default/styles/glass.css 的变量表生成，改色请改那一份再跑一次。 */
+:root {
+  --bg: #0a0a12;
+  --bg-soft: rgba(20, 20, 32, 0.62);
+  --bg-sunken: rgba(12, 12, 22, 0.55);
+  --line: rgba(255, 255, 255, 0.1);
+  --line-2: rgba(255, 255, 255, 0.22);
+  --fg: #f2f2f8;
+  --fg-dim: #c2c3d4;
+  --muted: #9a9cb0;
+  --accent: #a9a0ff;
+  --accent-hi: #7b74c9;
+  --accent-ink: #100a16;
+  --sel: rgba(169, 160, 255, 0.3);
+  --sel-ink: #ffffff;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+  --step-radius: 50%;
+  --step-border: var(--line-2);
+  --step-ink: var(--fg);
+  --texture: radial-gradient(
+      1000px 560px at 16% -12%,
+      rgba(90, 120, 255, 0.5),
+      transparent 62%
+    ),
+    radial-gradient(880px 520px at 92% 10%, rgba(190, 90, 255, 0.42), transparent 60%),
+    radial-gradient(700px 700px at 60% 118%, rgba(40, 200, 220, 0.26), transparent 62%);
+  --texture-op: 1;
+}
+
+.app {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+.app-head {
+  --shell-blur: blur(14px) saturate(140%);
+  background: rgba(20, 20, 32, 0.55);
+}

@@ -1,0 +1,63 @@
+/* 风格 02 · 科技 —— 石墨底 + 冷青强调 + 等宽标记。
+   它拒绝的是「近黑底 + 霓虹发光边」那套默认科幻页：这里只有一层极淡的工程网格、
+   一枚青色状态点，以及把「编号」做成刻度盘的步骤轴；发光只出现在步骤点与短横线上，
+   正文永远是平的高对比白。 */
+:root {
+  --bg: #070b12;
+  --shell: #0b1119;
+  --ink: #e7f0f7;
+  --ink2: #9fb3c4;
+  --muted: #7b8f9f; /* 压在 #070b12 上 ≈ 5.6:1 */
+  --accent: #5ad9e0;
+  --accent-dim: #2f8d97;
+  --accent-soft: rgba(90, 217, 224, 0.09);
+  --line: #16232e;
+  --line2: #22323f;
+  --code-bg: rgba(90, 217, 224, 0.08);
+  --code-block: #0a111a;
+  --hover: rgba(231, 240, 247, 0.06);
+  --sel: rgba(90, 217, 224, 0.24);
+  --sel-ink: #f2fbfd;
+  --radius: 4px;
+  --radius-sm: 4px;
+  --pill: 6px;
+  --page-w: 1040px;
+  --h1-size: 38px;
+  --h1-track: -0.01em;
+  --step-radius: 4px;
+  --step-size: 30px;
+  --step-border: var(--accent-dim);
+  --step-bg: rgba(90, 217, 224, 0.06);
+  --step-ink: var(--accent);
+  --step-font: var(--mono);
+  --step-fs: 12px;
+  --texture: linear-gradient(
+      to right,
+      rgba(90, 217, 224, 0.08) 1px,
+      transparent 1px
+    )
+    0 0 / 64px 64px,
+    linear-gradient(to bottom, rgba(90, 217, 224, 0.08) 1px, transparent 1px) 0 0 /
+      64px 64px;
+  --texture-op: 1;
+}
+body { font-size: 15px; letter-spacing: 0.005em; }
+/* 标题走等宽：技术标记语言，不是衬线叙事 */
+.page > h1 { font-family: var(--mono); letter-spacing: -0.005em; }
+.page > p { color: var(--ink2); }
+/* 编号 = 刻度盘上的一个刻度：方角 + 青色描边 + 底部一条短尺 */
+.page ol.steps > li::before {
+  box-shadow: inset 0 -1px 0 0 var(--accent-dim);
+}
+.page ol.steps::before { background: linear-gradient(to bottom, var(--accent-dim), var(--line2)); }
+.page blockquote {
+  border-top-color: var(--line2);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+.page h2,
+.page h3 { font-family: var(--sans); letter-spacing: -0.005em; }
+.chip { font-family: var(--mono); letter-spacing: 0.08em; }
+.brand-name { font-family: var(--mono); letter-spacing: 0; font-size: 12.5px; }
+.foot { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.02em; }

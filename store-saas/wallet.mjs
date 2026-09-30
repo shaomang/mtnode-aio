@@ -3,8 +3,11 @@
  * MTNode 创意工坊 — 充值账本（订单 / 流水 / 余额），零依赖。
  *
  * 存储口径（本轮共识）：
- *   · 余额 = 账户行的 `balanceCents`（整数分），经 account-store 落到当前账户后端
+ *   · 余额 = 账户行的 `balanceCents`（整数分，**内部存储口径**）
+ *     ，经 account-store 落到当前账户后端
  *     （生产 = 阿里云 Tablestore 的 mtnode_users 行 data JSON），与账户数据同源。
+ *     **对外（接口 / 管理台 / CLI / 界面）一律按元出**，用本模块的 `yuanOfCents` / `centsOfYuan`
+ *     换算 4 位小数；「分」不出现在任何对外文案与字段名里。
  *   · 订单 `rechargeOrders` 与流水 `rechargeLedger` 存服务端 DATA_DIR/db.json
  *     （沿用 server.mjs 的「临时文件 + rename」原子写），不新建云表。
  *
@@ -54,8 +57,51 @@ export const ORDER_STATUSES = Object.freeze([
   "closed",
 ]);
 
-/** 流水类型：recharge 入账 / refund 退款 / adjust 人工调账 / mismatch 金额不符留痕。 */
-export const LEDGER_TYPES = Object.freeze(["recharge", "refund", "adjust", "mismatch"]);
+/** 流水类型：recharge 入账 / refund 退款 / adjust 人工调账 / mismatch 金额不符留痕 / relay 中转站按用量扣费。 */
+export const LEDGER_TYPES = Object.freeze(["recharge", "refund", "adjust", "mismatch", "relay"]);
+
+/**
+ * 亚分精度（中转站按用量扣费专用）：账户行的 `relaySubCents` 存 0 ~ 0.9999 分的零头。
+ * 余额 `balanceCents` 保持整数分不变（内部存储口径不动）：
+ *   中转扣费 = 整数分部分（写一条 relay 流水 + 扣 balanceCents）+ 不足 1 分的零头（写 relaySubCents）。
+ * 可用总额 = balanceCents + relaySubCents，两者都为 0 才算余额耗尽。
+ *
+ * **对外一律「元」（不再出现「分」）**：本模块只管内部账（分），出接口 / 界面时用
+ * `yuanOfCents()` 换算成 4 位小数的元，入参用 `centsOfYuan()` 换算回分再记账 —— 换算只在这一层，
+ * 别在别处再算一遍。
+ */
+export const SUB_CENTS_STEP = 4; // 小数点后 4 位（1e-4 分 = 1e-6 元）
+
+/** 四舍五入到 4 位小数（元与分的共同精度）。 */
+export function round4(n) {
+  return Math.round(Number(n || 0) * 1e4) / 1e4;
+}
+
+/** 分 → 元（4 位小数）：出接口与界面唯一换算入口。接受 0.5 这种亚分零头。 */
+export function yuanOfCents(cents) {
+  return round4((Number(cents) || 0) / 100);
+}
+
+/** 元 → 分（4 位小数，可含亚分零头）：入参与计价结果写账本前唯一换算入口。 */
+export function centsOfYuan(yuan) {
+  return round4((Number(yuan) || 0) * 100);
+}
+
+export function subCentsOf(user) {
+  const n = Number(user && user.relaySubCents);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  const r = Math.round(n * 1e4) / 1e4;
+  return r >= 1 ? 0.9999 : r;
+}
+
+export function totalCentsOf(user) {
+  return Math.round((balanceOf0(user) + subCentsOf(user)) * 1e4) / 1e4;
+}
+
+function balanceOf0(user) {
+  const n = Number(user && user.balanceCents);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
 
 function now() {
   return Date.now();
@@ -470,6 +516,88 @@ export function createWallet(deps) {
     return { ok: true, user, ledger: entry, balanceCents: after };
   }
 
+  /* ---------- 中转站按用量扣费（亚分精度） ---------- */
+
+  function clampSub(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    const r = Math.round(n * 1e4) / 1e4;
+    return r >= 1 ? 0.9999 : r;
+  }
+
+  /** 只更新亚分零头（整数分不动 → 不需要流水，铁律①只约束 balanceCents）。 */
+  async function writeRelaySub({ user, subCents }) {
+    if (!user || !user.id) return { ok: false, code: "USER_NOT_FOUND", error: "账号不存在" };
+    const sub = clampSub(subCents);
+    const updated = await applyUserPatch(user.id, { relaySubCents: sub });
+    if (!updated) return { ok: false, code: "WRITE_FAILED", error: "亚分余额写库失败" };
+    user.relaySubCents = sub;
+    if (Number.isFinite(Number(updated.balanceCents))) user.balanceCents = Math.round(Number(updated.balanceCents));
+    await saveDb();
+    return { ok: true, subCents: sub };
+  }
+
+  /**
+   * 中转站扣费：入参是本次要扣的**费用（分，可含 4 位小数的亚分）**，例如 0.3 / 1.14 / 21。
+   * 本函数负责「整数分 + 亚分零头」的拆分（调用方不要自己拆）：
+   *   · 整数部分 ≥ 1 → 写一条 relay 流水 + 扣 balanceCents；
+   *   · 整数部分 = 0 → 只改 relaySubCents（不够 1 分不记流水，铁律①只约束 balanceCents）；
+   *   · 两者都不为 0 时一起写（零头随账户行落库，可对账）。
+   * 写库失败回滚流水条目并抛错；扣减不得把 balanceCents 打成负数（调用方先按可用额夹紧）。
+   * @returns {Promise<{ok:boolean, balanceCents?:number, subCents?:number, wholeCents?:number}>}
+   */
+  async function chargeRelayUsage({ user, amountCents, note, meta }) {
+    if (!user || !user.id) return { ok: false, code: "USER_NOT_FOUND", error: "账号不存在" };
+    const amt = round4(amountCents);
+    if (!Number.isFinite(amt) || amt <= 0) return { ok: false, code: "INVALID_AMOUNT", error: "扣费金额必须 > 0" };
+    const text = String(note || "").trim();
+    if (!text) return { ok: false, code: "NOTE_REQUIRED", error: "扣费必须写备注" };
+    if (text.length > 200) return { ok: false, code: "NOTE_TOO_LONG", error: "备注不得超过 200 字" };
+
+    const avail = totalCentsOf(user);
+    const pay = Math.min(amt, avail); // 本次实扣（分，含亚分），按可用额夹紧：不允许出现负余额
+    const rest = round4(avail - pay); // 扣完剩下的可用额（分）
+    const nextBalance = Math.floor(rest + 1e-9); // 剩下的整数分
+    const nextSub = clampSub(round4(rest - nextBalance)); // 剩下的亚分零头（0 ~ 0.9999）
+    const before = balanceOf(user);
+    const whole = Math.max(0, before - nextBalance); // 本次要扣掉的整数分
+    // 整数分不足 1（本次只啃掉不足 1 分的零头）：只改 relaySubCents，不写流水
+    if (whole < 1) {
+      const r = await writeRelaySub({ user, subCents: nextSub });
+      if (!r.ok) return r;
+      return { ok: true, chargedCents: pay, balanceCents: before, subCents: nextSub, wholeCents: 0, skippedLedger: true };
+    }
+    const entry = pushLedger(
+      Object.assign(
+        {
+          userId: user.id,
+          type: "relay",
+          deltaCents: -whole,
+          balanceAfterCents: nextBalance,
+          note: text,
+          source: "relay_usage",
+          subCents: nextSub,
+        },
+        meta && typeof meta === "object" ? meta : {},
+      ),
+    );
+    let updated = null;
+    try {
+      updated = await applyUserPatch(user.id, { balanceCents: nextBalance, relaySubCents: nextSub });
+    } catch (e) {
+      popLedger(entry);
+      throw e;
+    }
+    if (!updated) {
+      popLedger(entry);
+      throw new Error("余额写库失败（account-store 未返回更新后的账户）");
+    }
+    user.balanceCents = nextBalance;
+    user.relaySubCents = nextSub;
+    await saveDb();
+    return { ok: true, ledger: entry, chargedCents: pay, balanceCents: nextBalance, subCents: nextSub, wholeCents: whole };
+  }
+
   /* ---------- 查询 ---------- */
 
   function listOrders({ userId, status, page, pageSize, q } = {}) {
@@ -512,22 +640,29 @@ export function createWallet(deps) {
       .slice(0, n)
       .map(publicOrder);
     const entries = listLedger({ userId: user.id, limit: n }).map(publicLedger);
-    return { balanceCents: balanceOf(user), tiersCents: RECHARGE_TIERS_CENTS.slice(), orders: mine, ledger: entries };
+    // 对外一律「元」（4 位小数）：档位 / 余额 / 订单金额都不再出现「分」
+    return {
+      balanceYuan: yuanOfCents(balanceOf(user)),
+      tiersYuan: RECHARGE_TIERS_CENTS.map(yuanOfCents),
+      orders: mine,
+      ledger: entries,
+    };
   }
 
-  /* ---------- 对外视图（不回传内部字段） ---------- */
+  /* ---------- 对外视图（不回传内部字段） ----------
+     内部记录一律按「分」存，这里统一换算成「元」出接口；字段名带 Yuan，不带任何 Cents。 */
 
   function publicOrder(o) {
     return {
       id: o.id,
-      amountCents: o.amountCents,
+      amountYuan: yuanOfCents(o.amountCents),
       status: o.status,
       channel: o.channel,
       createdAt: o.createdAt,
       expiresAt: o.expiresAt,
       paidAt: o.paidAt || 0,
-      paidAmountCents: o.paidAmountCents || 0,
-      refundedCents: o.refundedCents || 0,
+      paidAmountYuan: yuanOfCents(o.paidAmountCents || 0),
+      refundedYuan: yuanOfCents(o.refundedCents || 0),
       latePaid: !!o.latePaid,
       qrCode: o.qrCode || "",
       qrDataUrl: o.qrDataUrl || "",
@@ -541,8 +676,8 @@ export function createWallet(deps) {
       id: e.id,
       at: e.at,
       type: e.type,
-      deltaCents: e.deltaCents,
-      balanceAfterCents: e.balanceAfterCents,
+      deltaYuan: yuanOfCents(e.deltaCents),
+      balanceAfterYuan: yuanOfCents(e.balanceAfterCents),
       orderId: e.orderId || "",
       note: e.note || "",
     };
@@ -551,6 +686,9 @@ export function createWallet(deps) {
   /** 管理平台视图：带账号信息与退款明细。 */
   function adminOrder(o) {
     const u = (db.users || []).find((x) => x.id === o.userId) || null;
+    const refunds = (o.refunds || []).map((r) =>
+      Object.assign({}, r, { amountYuan: yuanOfCents(r && r.amountCents) }),
+    );
     return Object.assign(publicOrder(o), {
       userId: o.userId,
       username: o.username || (u && u.username) || "",
@@ -558,7 +696,7 @@ export function createWallet(deps) {
       buyerId: o.buyerId || "",
       source: o.source || "",
       clientIp: o.clientIp || "",
-      refunds: (o.refunds || []).slice(),
+      refunds: refunds,
     });
   }
 
@@ -587,8 +725,8 @@ export function createWallet(deps) {
         { title: "账号ID", get: (r) => r.userId },
         { title: "用户名", get: (r) => r.username },
         { title: "类型", get: (r) => r.type },
-        { title: "变动(分)", get: (r) => r.deltaCents },
-        { title: "变动后余额(分)", get: (r) => r.balanceAfterCents },
+        { title: "变动(元)", get: (r) => r.deltaYuan },
+        { title: "变动后余额(元)", get: (r) => r.balanceAfterYuan },
         { title: "订单号", get: (r) => r.orderId },
         { title: "支付宝交易号", get: (r) => r.tradeNo },
         { title: "操作人", get: (r) => r.operator },
@@ -605,11 +743,11 @@ export function createWallet(deps) {
       { title: "账号ID", get: (r) => r.userId },
       { title: "用户名", get: (r) => r.username },
       { title: "昵称", get: (r) => r.nickname },
-      { title: "金额(分)", get: (r) => r.amountCents },
+      { title: "金额(元)", get: (r) => r.amountYuan },
       { title: "状态", get: (r) => r.status },
       { title: "支付时间", get: (r) => (r.paidAt ? new Date(r.paidAt).toISOString() : "") },
-      { title: "实付(分)", get: (r) => r.paidAmountCents },
-      { title: "已退(分)", get: (r) => r.refundedCents },
+      { title: "实付(元)", get: (r) => r.paidAmountYuan },
+      { title: "已退(元)", get: (r) => r.refundedYuan },
       { title: "支付宝交易号", get: (r) => r.tradeNo },
       { title: "入账来源", get: (r) => r.source },
       { title: "过期后入账", get: (r) => (r.latePaid ? "yes" : "") },
@@ -634,9 +772,9 @@ export function createWallet(deps) {
       orders: os.length,
       ledger: ledger().length,
       byStatus,
-      paidCents,
-      refundedCents,
-      netCents: paidCents - refundedCents,
+      paidYuan: yuanOfCents(paidCents),
+      refundedYuan: yuanOfCents(refundedCents),
+      netYuan: yuanOfCents(paidCents - refundedCents),
     };
   }
 
@@ -654,6 +792,8 @@ export function createWallet(deps) {
     canRefund,
     refundOrder,
     adjustBalance,
+    chargeRelayUsage,
+    writeRelaySub,
     listOrders,
     listLedger,
     summarize,
@@ -666,4 +806,4 @@ export function createWallet(deps) {
   };
 }
 
-export default { createWallet, validateAmount, RECHARGE_TIERS_CENTS, RECHARGE_MIN_CENTS, RECHARGE_MAX_CENTS, ORDER_TTL_MS, ORDER_STATUSES, LEDGER_TYPES, RECENT_LIMIT };
+export default { createWallet, validateAmount, RECHARGE_TIERS_CENTS, RECHARGE_MIN_CENTS, RECHARGE_MAX_CENTS, ORDER_TTL_MS, ORDER_STATUSES, LEDGER_TYPES, RECENT_LIMIT, subCentsOf, totalCentsOf, round4, yuanOfCents, centsOfYuan };

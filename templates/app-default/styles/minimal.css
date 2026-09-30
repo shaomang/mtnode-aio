@@ -1,0 +1,25 @@
+/* 风格 01 · 极简（默认）—— 工程笔记本：深墨底 + 一根竖线 + 材料只有线、留白、一个紫点。
+   这是「新建应用」的出厂外观，也是所有其它风格的参照系：不铺底纹、不发光、不用玻璃。
+   真源口径见 DESIGN.md 与 templates/app-default/STYLES.md。 */
+:root {
+  --bg: #0a0c12;
+  --shell: #0e1119;
+  --ink: #e9ecf4;
+  --ink2: #aab3c7;
+  --muted: #7d879c;
+  --accent: #c792ea;
+  --accent-dim: #8a68a8; /* 只当描边 / 箭头：压在深底上还能看见（≈4.5:1） */
+  --accent-soft: rgba(199, 146, 234, 0.08);
+  --line: #1d2230;
+  --line2: #2a3143;
+  --code-bg: rgba(233, 236, 244, 0.07);
+  --code-block: #0e1119;
+  --hover: rgba(233, 236, 244, 0.06);
+  --sel: rgba(199, 146, 234, 0.26);
+  --sel-ink: #ffffff;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --pill: 999px;
+  --page-w: 1020px;
+  --texture: none;
+}

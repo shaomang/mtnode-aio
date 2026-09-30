@@ -1,0 +1,314 @@
+/* ============ 新建应用默认页 · 共享设计基础（base.css） ============
+ *
+ * 这一份只画「结构与排版」：自绘标题栏、H1、正文、三步、引用、脚注、响应式、入场动画。
+ * 颜色 / 字体 / 质感**一个都不写**，全部走下面的语义变量（--bg / --ink / --accent /
+ * --line / --lift …）；每一套风格只带一份「同名词的赋值 + 少量质感覆盖」，见 styles/*.css。
+ *
+ * 契约（改这里之前先读 templates/app-default/STYLES.md）：
+ *   · 页面 DOM 与 <script> 正文在模板 index.html 里，与风格无关，任何风格都逐字相同；
+ *   · 风格文件只允许改「变量值」与下面显式留出的那几个钩子（[data-style] 选择器）；
+ *   · 中文正文仍是页内 Markdown 渲染器画出来的真内容，不改文案。
+ *
+ * 变量分两层：
+ *   1) 结构层（本文件读，风格不写）：--ease / --sans / --mono / --step-size …
+ *   2) 外观层（风格写，本文件读）：bg/ink/accent/line/lift/radius/shell/font-display/…
+ */
+
+* { box-sizing: border-box; }
+
+html {
+  height: 100%;
+  font-size: 16px;
+  overflow-wrap: break-word;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 15px/1.7 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-y: auto;
+  /* 浏览器自己的表面也归这套设计：选区、光标、滚动条 */
+  accent-color: var(--accent);
+  caret-color: var(--accent);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+::selection { background: var(--sel); color: var(--sel-ink); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ── 自绘标题栏（窗口 frame:false：这一条既当标题栏，也是拖动区） ── */
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.bar {
+  position: relative;
+  flex: none;
+  height: var(--bar-h, 46px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--shell);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+.mark { display: block; width: 20px; height: 20px; color: var(--accent); flex: none; }
+
+.brand-name {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+.chip {
+  -webkit-app-region: no-drag;
+  font: 600 12px/1 var(--sans);
+  letter-spacing: 0.06em;
+  color: var(--ink2);
+  background: transparent;
+  border: 1px solid var(--line2);
+  border-radius: var(--pill, 999px);
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: color 160ms var(--ease), border-color 160ms var(--ease), background 160ms var(--ease);
+}
+.chip:hover { color: var(--ink); border-color: var(--accent-dim); background: var(--accent-soft); }
+.chip[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-dim); }
+
+.x {
+  -webkit-app-region: no-drag;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: color 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease);
+}
+.x:hover { color: var(--ink); background: var(--hover); border-color: var(--line2); }
+.x svg { width: 12px; height: 12px; }
+
+/* ── 正文 ── */
+.page {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: var(--page-w, 1020px);
+  margin: 0 auto;
+  padding: var(--page-pt, 60px) var(--page-px, 56px) 44px;
+}
+
+.page > h1 {
+  margin: 0 0 18px;
+  font: var(--h1-weight, 700) var(--h1-size, 40px)/1.18 var(--font-display, var(--sans));
+  letter-spacing: var(--h1-track, -0.022em);
+  text-wrap: balance;
+  max-width: var(--h1-w, 24ch);
+}
+
+.page > p {
+  margin: 0 0 40px;
+  font-size: 17px;
+  line-height: 1.68;
+  color: var(--ink2);
+  max-width: 52ch;
+}
+
+.page strong { color: var(--ink); font-weight: 650; }
+.page code {
+  font: 500 0.92em/1 var(--mono);
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+.page a { color: var(--accent); text-underline-offset: 3px; }
+
+/* 三步：一根竖线 + 圆形编号。序列本身携带信息，所以编号是内容不是装饰。 */
+.page ol.steps {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  display: grid;
+  gap: var(--step-gap, 22px);
+}
+.page ol.steps::before {
+  content: "";
+  position: absolute;
+  left: var(--spine-x, 16px);
+  top: 34px;
+  bottom: 34px;
+  width: 1px;
+  background: var(--line2);
+  transform-origin: top center;
+}
+.page ol.steps > li {
+  position: relative;
+  counter-increment: step;
+  padding-left: var(--step-pad, 54px);
+  min-height: var(--step-size, 34px);
+  max-width: 62ch;
+}
+.page ol.steps > li::before {
+  content: counter(step, decimal);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--step-size, 34px);
+  height: var(--step-size, 34px);
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--step-border, var(--line2));
+  border-radius: var(--step-radius, 50%);
+  background: var(--step-bg, var(--bg));
+  color: var(--step-ink, var(--muted));
+  font: var(--step-weight, 600) var(--step-fs, 13px)/1 var(--step-font, var(--sans));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+/* 每一步就是一句话：加粗的那半句就是它的名字，**不另起一行**做小标题
+   （标题上方压一行小字是 craft-floor 明令禁掉的花样，也免得「：」掉到行首） */
+.page ol.steps > li:first-child { font-size: 17px; line-height: 1.65; color: var(--ink); }
+.page ol.steps > li:first-child > strong:first-child { color: var(--accent); }
+.page ol.steps > li:not(:first-child) { font-size: 15px; color: var(--ink2); }
+
+.page blockquote {
+  margin: 46px 0 0;
+  padding: 18px 0 0;
+  border-top: 1px solid var(--line);
+  color: var(--ink2);
+  font-size: 14px;
+  max-width: 62ch;
+}
+
+.page ul { margin: 0 0 26px; padding-left: 20px; color: var(--ink2); }
+.page h2 {
+  margin: 40px 0 14px;
+  font: var(--h2-weight, 700) 20px/1.3 var(--font-display, var(--sans));
+  letter-spacing: -0.01em;
+}
+.page h3 {
+  margin: 30px 0 10px;
+  font: var(--h2-weight, 700) 16px/1.35 var(--font-display, var(--sans));
+  letter-spacing: -0.005em;
+}
+.page hr { height: 1px; border: 0; background: var(--line); margin: 32px 0; }
+.page pre {
+  margin: 0 0 26px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 8px);
+  background: var(--code-block);
+  font: 400 12.5px/1.7 var(--mono);
+  color: var(--ink2);
+}
+.page pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+/* 脚注：与正文同一根竖轴（同宽同边距），把视线交给下面的会话栏。
+   窗口矮时内容要滚动，所以这条钉在底部，箭头一直指着会话栏那边。 */
+.foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  flex: none;
+  width: 100%;
+  max-width: var(--page-w, 1020px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px var(--page-px, 56px) 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink2);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+}
+.foot svg { width: 12px; height: 12px; color: var(--accent-dim); flex: none; }
+
+/* 某些风格（终端）让它看起来像一条提示行 —— 但仍是同一条脚注，位置与语义不变 */
+[data-style="terminal"] .foot { font-family: var(--mono); letter-spacing: 0.01em; }
+
+/* 底纹 / 质感：所有风格默认「没有第二层」，需要的那一套自己在 styles/*.css 里开 */
+.app::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--texture, none);
+  opacity: var(--texture-op, 1);
+}
+.page,
+.foot,
+.bar { position: relative; z-index: 1; }
+.foot { z-index: 3; }
+
+/* ── 自适应：窗口最小 640×480，开发页预览列约 520px ── */
+@media (max-width: 900px) {
+  .page { --page-pt: 44px; --page-px: 34px; padding-bottom: 34px; }
+  .page > h1 { font-size: calc(var(--h1-size, 40px) * 0.825); }
+  .page > p { font-size: 16px; margin-bottom: 32px; }
+}
+@media (max-width: 620px) {
+  html { font-size: 15px; }
+  .page { --page-pt: 32px; --page-px: 22px; padding-bottom: 26px; }
+  .page > h1 { font-size: calc(var(--h1-size, 40px) * 0.675); max-width: none; }
+  .page > p { font-size: 15px; }
+  .page ol.steps { --step-gap: 18px; --step-pad: 44px; --step-size: 27px; --spine-x: 13px; }
+  .page ol.steps > li:first-child { font-size: 16.5px; }
+  .page blockquote { margin-top: 32px; }
+  .foot { padding: 10px 22px 12px; }
+}
+@media (max-height: 560px) {
+  .page { padding-top: 26px; padding-bottom: 20px; }
+}
+
+/* 一个作者化的入场：竖线画出、三步依次落位。一次到位，不散点开花。 */
+@media (prefers-reduced-motion: no-preference) {
+  .page ol.steps::before { animation: draw 520ms var(--ease) both; }
+  .page ol.steps > li { animation: rise 480ms var(--ease) both; }
+  .page ol.steps > li:nth-child(1) { animation-delay: 90ms; }
+  .page ol.steps > li:nth-child(2) { animation-delay: 160ms; }
+  .page ol.steps > li:nth-child(3) { animation-delay: 230ms; }
+  /* 玻璃拟态 / 复古印刷这类「有面」的风格可以给标题区一次极轻的入位，别的不许加 */
+  .page > h1 { animation: rise 420ms var(--ease) both; }
+}
+.still .page ol.steps::before,
+.still .page ol.steps > li,
+.still .page > h1 { animation: none !important; }
+
+@keyframes draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }

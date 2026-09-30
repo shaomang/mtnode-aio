@@ -86,8 +86,8 @@ Questions such as module trade-offs and technology choices are put to you by the
 - **所属上层 (Parent)**: which layer this block hangs on, decided by the super node it sits in.
 - **元素类型 (Element type)**: module / file / class / interface / enum — this decides the nature of the block.
 - **模型提供商 + 模型 (Model provider + model)**: which provider this block's sessions run on, and which model (Suggest / Develop / Refine all use it). The first cell of the 🧠 dialog is the model provider; once picked, the next cell, model, lists only that provider's models, and switching provider moves the model along with it.
-- **预设档 (Preset)**: 极简模式 (Minimal) / 标准模式 (Standard) / 思维精简 (Lean Thinking) / PTC 模式 (PTC) / 创造模式 (Creative) — this decides the persona and the tool surface.
-- **思考强度 (Thinking effort)**: 轻 (Light) / 标准 (Standard) / 强 (Strong) / 最强 (Max) — what the UI echoes is what is actually sent.
+- **预设档 (Preset)**: 极简模式 (Minimal) / 标准模式 (Standard) / 思维精简 (Lean Thinking) / PTC 模式 (PTC) / 创造模式 (Creative) — this decides the persona and the tool surface. A preset no longer rewrites the thinking level; when none of the three is set, **default = 极简 (Minimal)**, the same default the UI shows.
+- **思考强度 (Thinking effort)**: 无 (Off) / 低 (Low) / 中 (Medium) / 标准 (Standard) / 高 (High) / 最强 (Max) — the 0.2 six-step ladder; what the UI echoes is what is actually sent.
 - **外框颜色 (Frame color)**: taken from the function color card: core runtime / canvas & interaction / AI & agents / data & storage / media & local backends / plugins & ecosystem / build & diagnostics / tests & quality.
 - **状态 (Status)**: pending / in progress / done — marks the block's progress.
 - **核心文件 (Core files)**: this block's list of core files (≤10 entries, relative to the project root; the outermost project block leaves it empty).

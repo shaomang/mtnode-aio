@@ -29,10 +29,11 @@
  */
 "use strict";
 
-/* dsh 组合里参与「子代理」的 8 行。tool/spawn/fork 三个开关决定它们怎么被关掉：
+/* dsh 组合里参与「子代理」的行。tool/spawn/fork 三个开关决定它们怎么被关掉：
    - tool: 真正的委派工具行（带 maxDepth / enableRunInBackground 配置）
    - spawn/fork: 两种提供方行 + 它们的工具行，fork=false 时一起关
-   - 其余（服务行 / 控制工具 / 列子代理 / 回报工具）只跟随「总开关」 */
+   - 其余（服务行 / 控制工具 / 列子代理）只跟随「总开关」
+   dsh 0.2 起 tool-subagent-report 整包下线（npm 不再发布该包），故不再列入。 */
 const SUBAGENT_ROWS = {
   subagent: { tool: false, fork: false },
   "subagent-spawn-in-process": { tool: false, fork: false },
@@ -41,7 +42,6 @@ const SUBAGENT_ROWS = {
   "tool-subagent-list-agents": { tool: false, fork: false },
   "tool-subagent": { tool: true, spawn: true, fork: false },
   "tool-subagent-fork": { tool: true, spawn: false, fork: true },
-  "tool-subagent-report": { tool: false, fork: false },
 };
 
 const SUBAGENT_IDS = Object.keys(SUBAGENT_ROWS);
@@ -120,13 +120,15 @@ function delConfigValue(block, key) {
 function applySubagentPolicy(text, rawPolicy) {
   const src = String(text == null ? "" : text);
   const policy = normalizePolicy(rawPolicy);
-  const first = src.search(/^- id: /m);
+  /* 0.2 的 cordis.yml 是 profile 补丁层：顶层 `- id:` 是 id 覆盖行，插入段里的行缩进
+     4 空格。两者都要认，否则插入段里的委派工具行永远改不到。 */
+  const first = src.search(/^[ \t]*- id: /m);
   if (first < 0) return { text: src, changed: false };
   const head = src.slice(0, first);
-  const blocks = src.slice(first).split(/^(?=- id: )/m);
+  const blocks = src.slice(first).split(/^(?=[ \t]*- id: )/m);
   let changed = false;
   const next = blocks.map((block) => {
-    const idm = block.match(/^- id:\s*(\S+)/);
+    const idm = block.match(/^\s*- id:\s*(\S+)/);
     if (!idm) return block;
     const row = SUBAGENT_ROWS[idm[1]];
     if (!row) return block;
@@ -149,14 +151,14 @@ function applySubagentPolicy(text, rawPolicy) {
   return { text: head + next.join(""), changed };
 }
 
-/** 供设置界面 / 排障用：当前 cordis.yml 里这 8 行是不是都被关着。 */
+/** 供设置界面 / 排障用：当前 cordis.yml 里参与策略的那些行是不是都被关着。 */
 function subagentDisabledInCordis(text) {
   const src = String(text == null ? "" : text);
-  const first = src.search(/^- id: /m);
+  const first = src.search(/^[ \t]*- id: /m);
   if (first < 0) return {};
   const out = {};
-  for (const block of src.slice(first).split(/^(?=- id: )/m)) {
-    const idm = block.match(/^- id:\s*(\S+)/);
+  for (const block of src.slice(first).split(/^(?=[ \t]*- id: )/m)) {
+    const idm = block.match(/^\s*- id:\s*(\S+)/);
     if (!idm || !SUBAGENT_ROWS[idm[1]]) continue;
     out[idm[1]] = /^\s*disabled:\s*true\s*$/m.test(block);
   }

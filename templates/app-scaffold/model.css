@@ -1,0 +1,158 @@
+/* ============ 模型选择位 + 模型能力示例（model.css） ============
+ *
+ * 与 style.css 同一套语义变量（颜色都走 styles/<id>.css），这里只画结构与位置：
+ *   .pick-btn    顶栏那个「模型」按钮（标题跟随当前选择）
+ *   .model-mask  透明蒙层（只在菜单开着时出现，点它关菜单）
+ *   .model-menu  下拉面板（首项 = 跟随 MTNode 默认；每项可带「支持识图」标签与来源服务商）
+ *   .ask-row     图像多模态示例那一段
+ *
+ * 视口很窄时按钮会换成短文案（见文件末尾的 @media）—— 顶栏不能被它撑爆。
+ */
+
+.pick-btn {
+  max-width: 168px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  background: var(--bg-soft);
+  color: var(--fg);
+  font: 600 12px/1.5 var(--sans);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color 160ms var(--ease), color 160ms var(--ease);
+}
+.pick-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.pick-btn:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  border-style: dashed;
+}
+
+/* 蒙层：铺满整窗、透明、只负责「点空白关菜单」。z-index 低于菜单、高于正文。 */
+.model-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  background: transparent;
+}
+
+.model-menu {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  z-index: 9;
+  width: min(320px, calc(100% - 24px));
+  max-height: min(52vh, 420px);
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+.model-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.model-item:hover {
+  border-color: var(--line-2);
+  background: var(--bg-sunken);
+}
+.model-item.is-on {
+  border-color: var(--accent);
+}
+.model-item.is-on::before {
+  content: "✓";
+  color: var(--accent);
+  font-weight: 700;
+}
+.model-item:not(.is-on)::before {
+  content: "";
+  width: 0.6em;
+}
+.model-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-prov,
+.model-tag {
+  flex: none;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.model-prov {
+  color: var(--fg-dim);
+  border: 1px solid var(--line);
+}
+.model-tag {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.model-note {
+  padding: 8px;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.ask-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+.ask-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ask-out {
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-xs);
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+.ask-out[data-kind="warn"] {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+@media (max-width: 420px) {
+  .pick-btn {
+    max-width: 96px;
+  }
+  .model-menu {
+    top: 40px;
+    right: 8px;
+  }
+}

@@ -35,14 +35,74 @@ import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server'
 export const name = 'mtnode-session-resume'
 
 const RESUME_METHOD = 'session/resume'
+/* 只读自检方法：把本运行时的**生效装配**回给网关（仅 id 与 config）。0.2 把设置真源搬到
+   profile 补丁层后，「宿主写了文件」不再等于「运行时读到了配置」——这枚方法让冒烟能对着
+   真实运行时核对（见 test/smoke-settings-profile-patch.js 的 [6] 段）。 */
+const PROBE_METHOD = 'config/probe'
+const PROBE_IDS = ['llm-deepseek', 'llm-pi-ai', 'permission', 'system-prompt', 'mtnode-tool-visibility', 'agent-default-model']
+
+/* 运行时原生设置写入（候选：0.2 把设置落在 profile 补丁层，由 dsh-settings 掌写）。
+   params = { ns, values } / { ns, patch } → ctx.settings.update(ns, values)。 */
+const SET_METHOD = 'session/settings'
+async function applyRuntimeSetting(params) {
+  const ns = String((params && params.ns) || '').trim()
+  const values = (params && (params.values || params.patch)) || {}
+  if (!ns) throw new Error('session/settings: missing ns')
+  const settings = this.ctx && typeof this.ctx.get === 'function' ? this.ctx.get('settings') : undefined
+  if (!settings || typeof settings.update !== 'function') {
+    return { ok: false, reason: 'no_settings_service' }
+  }
+  try {
+    await settings.update(ns, values)
+    return { ok: true, ns }
+  } catch (err) {
+    return { ok: false, reason: String((err && err.message) || err).slice(0, 300) }
+  }
+}
 
 let installed = false
+
+/* 只序列化可 JSON 化的部分：config 里可能夹着函数 / 类实例（插件 config），
+   探针只用于断言，遇到深层或不可序列化值就地降级，绝不抛。 */
+function jsonSafe(value, depth = 0) {
+  if (depth > 8) return '[deep]'
+  if (value === null || typeof value !== 'object') return typeof value === 'function' ? '[function]' : value
+  if (Array.isArray(value)) return value.slice(0, 200).map((v) => jsonSafe(v, depth + 1))
+  const out = {}
+  for (const [k, v] of Object.entries(value)) out[k] = jsonSafe(v, depth + 1)
+  return out
+}
+
+/* 读取**生效行表**（id + 整份 config）——即「bundle 层 + MTNode 补丁层 + 用户补丁层」
+   叠加后的最终装配。真源是配置编辑器（dsh-config-editor）：它的 configuration() 给出
+   每行的 entry 复合配置（inherited 与 override 已合成），entries() 给出当前装配的行。
+   （0.2 的 loader 服务上没有 entries()，别再往那儿找。） */
+function probeConfiguration() {
+  const ctx = this.ctx
+  const editor = (() => {
+    try { return ctx && typeof ctx.get === 'function' ? ctx.get('configEditor') : null } catch { return null }
+  })()
+  if (!editor || typeof editor.configuration !== 'function') {
+    return { cwd: process.cwd(), dshHome: String(process.env.DSH_HOME || ''), entries: [], error: 'configEditor unavailable' }
+  }
+  let rows = []
+  try { rows = editor.configuration() || [] } catch { rows = [] }
+  const entries = []
+  for (const row of rows) {
+    const entry = (row && row.entry) || row || {}
+    const options = (entry && entry.options) || {}
+    if (!PROBE_IDS.includes(options.id)) continue
+    /* 复合配置优先（configuration() 给的是合成后的 config），拿不到再回落到行上的原始 config */
+    let config = row && row.config !== undefined ? row.config : options.config
+    entries.push({ id: options.id, config: jsonSafe(config) })
+  }
+  return { cwd: process.cwd(), dshHome: String(process.env.DSH_HOME || ''), entryCount: rows.length, entries }
+}
 
 /* 把点名会话恢复成这台 runtime 的 live 会话并登记进 server 会话表。
    只有「真恢复失败」才抛错（网关据此 RESUME_UNAVAILABLE 收场）；已在 live 与无日志
    两种不归这里管（前者零开销返回，后者根本不会被调用 —— 网关先判过盘上文件）。 */
-async function resumePersistedSession(params) {
-  const rawSid = params && params.sessionId != null ? String(params.sessionId).trim() : ''
+async function resumePersistedSession(params) {  const rawSid = params && params.sessionId != null ? String(params.sessionId).trim() : ''
   if (!rawSid) throw new Error('session/resume: missing sessionId')
   /* 已在 live：同进程续跑（失败轮那台 runtime 还活着）→ prompt 直接追加，无事可做 */
   if (this.sessions.has(rawSid)) return { sessionId: rawSid, resumed: false }
@@ -91,6 +151,8 @@ function installPatch() {
   const original = proto.handleRequest
   proto.handleRequest = async function handleRequest(method, params) {
     if (method === RESUME_METHOD) return resumePersistedSession.call(this, params || {})
+    if (method === PROBE_METHOD) return probeConfiguration.call(this)
+    if (method === SET_METHOD) return applyRuntimeSetting.call(this, params || {})
     return original.call(this, method, params)
   }
 }

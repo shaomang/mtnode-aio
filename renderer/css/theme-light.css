@@ -469,6 +469,15 @@ body.theme-light .side-sess-btn {
   border-color: var(--cyan);
   color: var(--ink);
 }
+/* 开发页左栏应用行右端的「＋」（新开发会话）：与 .side-sess-btn 同一份浅色口径 */
+body.theme-light .side-apps-new {
+  border-color: var(--bd2);
+  color: var(--muted);
+}
+body.theme-light .side-apps-new:hover {
+  border-color: var(--cyan);
+  color: var(--ink);
+}
 body.theme-light .side-archived {
   border-top: 1px solid var(--bd);
 }
@@ -1002,6 +1011,23 @@ body.theme-light .agent-tools-status {
   border-top-color: var(--bd);
   color: var(--muted);
 }
+/* 「模式」菜单里的开关（槽 + 滑块）：暗色的半透明白槽在白底上几乎看不见，
+   浅色主题换成深一档的灰槽与深灰滑块；开启态沿用绿色语义（与 .on 三态一致）。 */
+body.theme-light .agent-tools-toggle .agent-mode-track {
+  background: rgba(0, 0, 0, .16);
+}
+body.theme-light .agent-tools-toggle:hover .agent-mode-track {
+  background: rgba(0, 0, 0, .26);
+}
+body.theme-light .agent-tools-toggle .agent-mode-track::after {
+  background: #6b7480;
+}
+body.theme-light .agent-tools-toggle.on .agent-mode-track {
+  background: rgba(26, 148, 79, .4);
+}
+body.theme-light .agent-tools-toggle.on .agent-mode-track::after {
+  background: #1a944f;
+}
 
 /* ── 指令 chips ── */
 body.theme-light .agent-chip {
@@ -1028,15 +1054,6 @@ body.theme-light .assist-ctrl {
 }
 body.theme-light .assist-input-row {
   background: rgba(0, 0, 0, .03);
-}
-body.theme-light .assist-resize::after {
-  background: rgba(0, 0, 0, .25);
-}
-/* 「与画布无关」开启态：浅色底上换深一档的紫，保证文字对比度 */
-body.theme-light .assist-canvasfree-btn.on {
-  border-color: #9a4fd0;
-  color: #7a2fb0;
-  background: rgba(154, 79, 208, .12);
 }
 
 /* ── 右键 · 构建工作流：工具单选列表（浅色版） ── */
@@ -1132,4 +1149,16 @@ body.theme-light .dsh-tool-file.m-write {
 body.theme-light .dsh-tool-file.m-dir,
 body.theme-light .dsh-tool-file.fv-more {
   color: var(--muted);
+}
+
+/* ── 各分栏之间的拖拽分界线（整条边界可拖）在浅色底上的常态竖筋 ──
+   暗色那套用的是 rgba(255,255,255,.12)，白底上看不见；这里换成同档深色。
+   必须用 :not(:hover):not(.dragging) 把这条限定在「常态」：本选择器特异性（0,2,1）
+   高于各文件的 .x:hover（0,2,0），不加限定会把 hover / 拖动时那条整条加亮
+   （cyan / 蓝）也压成灰色，白底上就看不出「这条能被拖」。 */
+body.theme-light .agent-side-resize:not(:hover):not(.dragging),
+body.theme-light .assist-resize:not(:hover):not(.dragging),
+body.theme-light .ba-resize:not(:hover):not(.dragging),
+body.theme-light .apps-dev-resize:not(:hover):not(.dragging) {
+  background-image: linear-gradient(180deg, rgba(0, 0, 0, .2), rgba(0, 0, 0, .2));
 }

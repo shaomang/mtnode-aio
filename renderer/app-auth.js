@@ -281,6 +281,14 @@
         notify();
         paintEntry();
         if (menuOpen()) paintMenu();
+        /* 登录态每次刷新都通知一次中转服务模块（renderer/app-relay.js）：
+           换了账号就重拉清单（清单跟着账号走），同一账号只在快照过期时拉，
+           退出登录把那张只读卡收掉。模块缺席（老版本 / 静态页）时静默跳过。 */
+        try {
+          if (window.MtRelay && window.MtRelay.onAuthState) {
+            window.MtRelay.onAuthState(SNAP.signedIn ? SNAP.user : null);
+          }
+        } catch (e) {}
         return state();
       })
       .catch(function () {
@@ -436,7 +444,7 @@
       if (u.id) idLine.title = String(u.id);
       meta.appendChild(idLine);
       /* 余额行：只对充值白名单账号显示（测试期 = ms2308，见 app-wallet.js 的 VISIBLE_USERS）。
-         余额来自账号快照的 balanceCents（云端 publicUser 下发，主进程 auth-store 已放行该字段）；
+         余额来自账号快照的 balanceYuan（云端 publicUser 下发的元，主进程 auth-store 已放行该字段）；
          MtWallet 模块缺席时整块不显示，不影响原有菜单。 */
       if (window.MtWallet && window.MtWallet.visibleFor(u)) {
         var balLine = el("div", "acct-sub acct-balance");
@@ -518,6 +526,39 @@
     menu.appendChild(body);
   }
 
+  /* 打开菜单时把账号快照（余额）拉新一次 —— 菜单自己显示零余额的坑。
+   *
+   * 菜单头部那行「余额」读的是本机 auth-store 里的账号摘要（SNAP.user.balanceYuan），
+   * 快照只在登录 / 绑定 / 商店与充值模块显式调用 authMe 时才更新；菜单自己从不刷新，
+   * 所以充值（或余额在别处变动）之后点开账户名，看到的还是上次落盘的老余额 ——
+   * 典型表现就是菜单显示 ¥0.0000，而充值对话框（走 /api/wallet/summary 现拉）显示正常。
+   *
+   * 这里在每次打开菜单时补一次 authMe()，成功后再取一次登录态快照。先画缓存
+   * （不闪空），新快照回来由 applyUser 的 paintMenu 重画；请求失败保留旧值、
+   * 绝不把余额清零。同一时刻只允许一次在途请求（快速开关菜单不叠请求）。 */
+  var acctSnap = { pending: false };
+
+  function refreshAccountSnapshot() {
+    var a = bridge();
+    if (!a || typeof a.authMe !== "function" || acctSnap.pending) return;
+    acctSnap.pending = true;
+    Promise.resolve()
+      .then(function () {
+        return a.authMe();
+      })
+      .then(function (r) {
+        /* 失败（未登录 / 网络不通）就到此为止：保留旧快照，余额绝不被清零 */
+        if (!r || !r.ok) return null;
+        return refresh();
+      })
+      .then(function () {
+        acctSnap.pending = false;
+      })
+      .catch(function () {
+        acctSnap.pending = false;
+      });
+  }
+
   function openAccountMenu() {
     try {
       if (typeof closeApprovalsPanel === "function") closeApprovalsPanel();
@@ -532,6 +573,8 @@
     if (btn) btn.classList.add("on");
     positionMenu();
     menu.focus();
+    /* 菜单先显示缓存余额，再后台拉一次最新快照（拿到就重画，失败保留旧值） */
+    refreshAccountSnapshot();
   }
 
   function closeAccountMenu() {

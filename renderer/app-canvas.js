@@ -928,10 +928,24 @@ function updateWires(touchIds) {
   renderRelWiresPass(filter);
 }
 
+/* 该侧没有端子 → 不画「接线排」的凹陷分割线（.wf-node::before/::after 那道竖刻线）。
+   那道线本来只为「把端子接口的落位区圈出来」而渲染：一侧一颗端子都没有时，它只是一道
+   白多出来的竖线，把正文挤在中间（见 canvas.css 的 .no-in-ports / .no-out-ports）。
+   端子数会随连 / 断线与增量端子变化，所以和端子位置同在 refreshPorts 里刷新，而不是
+   只在建元素时盖一次章。展开的超级节点板内是子画布、外侧两排本就由 .super-open 关掉，
+   这里不再插手（其内侧端子数恒 ≥1，见 superDynamicPortCount）。 */
+function syncPortSideClasses(el, node) {
+  if (!el || !el.classList || !node) return;
+  const openShell = superIsOpenShell(node);
+  el.classList.toggle("no-in-ports", !openShell && inputCount(node) === 0);
+  el.classList.toggle("no-out-ports", !openShell && outputCount(node) === 0);
+}
+
 function refreshPorts(el, node) {
   const ic = inputCount(node);
   const oc = outputCount(node);
   const openShell = superIsOpenShell(node);
+  syncPortSideClasses(el, node);
   /* 节点尺寸变化（resize 等）时同步 --nw/--nh：接线排背景锚定 */
   if (el && node) {
     const sz =
@@ -1306,13 +1320,18 @@ function promptDevProjectFolder(node) {
   inp.spellcheck = false;
   inp.placeholder = "E:\\dev\\tools\\my-project";
   inp.value = cur;
+  /* 项目文件夹（devPath）**只读**：它是这张画布的项目根，开发 / 细化会话的工作区、
+     核心文件解析都跟着它走；手打错一个字符，整块功能区的读写就全落空。
+     目录一律走右侧「选择文件夹…」（系统窗口里可直接新建）；粘贴路径仍可用。 */
+  const devGuard = workspaceReadOnlyGuard(inp);
+  devGuard.hint(I18n.t("双击直选文件夹，Ctrl+V 粘贴路径"));
   row.appendChild(inp);
   const browse = document.createElement("button");
   browse.type = "button";
   browse.className = "mini";
   browse.textContent = I18n.t("选择文件夹…");
   browse.title = I18n.t("弹出系统文件夹窗口，选中后填入");
-  browse.onclick = async () => {
+  const pickDevFolder = async () => {
     const r = await window.api
       .fileOpenDialog({ title: I18n.t("选择项目文件夹"), directory: true })
       .catch(() => null);
@@ -1321,6 +1340,8 @@ function promptDevProjectFolder(node) {
     inp.value = p;
     inp.focus();
   };
+  browse.onclick = pickDevFolder;
+  devGuard.browse(pickDevFolder);
   row.appendChild(browse);
   body.appendChild(row);
   const foot = $("#ovFoot");
@@ -2182,11 +2203,13 @@ function nsProviderModelFields(ctx, node) {
     for (const p of provs) {
       const o = document.createElement("option");
       o.value = p.id;
-      const off = typeof providerDisabled === "function" && providerDisabled(p);
+      /* 状态后缀分两种叫法（已停用 / 余额不足）：与设置页角标同一口径 */
+      const st =
+        typeof providerStateText === "function" ? providerStateText(p) : "";
       o.textContent =
         p.name +
-        (off
-          ? " · " + I18n.t("已停用")
+        (st
+          ? " · " + st
           : providerKinds(S.config, p).length > 1
             ? " · " + I18n.t(kind === "image" ? "图像模型" : "文本模型")
             : "");
@@ -2205,10 +2228,15 @@ function nsProviderModelFields(ctx, node) {
   });
   ctx.field(I18n.t("服务商（自动读取全局 API 配置）"), provSel);
   if (boundOff && node.providerId === bound.id) {
-    /* 停用 ≠ 删掉：说清它为什么标着「已停用」、怎么恢复 —— 节点本身没被改过 */
+    /* 停用 ≠ 删掉：说清它为什么标着「已停用」、怎么恢复 —— 节点本身没被改过。
+       中转服务是另一种原因（余额不足），恢复动作不同，文案分开写。 */
+    const relayOut =
+      typeof providerRelayBlocked === "function" && providerRelayBlocked(bound);
     ctx.hint(
       I18n.t(
-        "该服务商已被停用：不再出现在别处的模型选择里；设置 · 模型服务里取消「停用该服务商」即可恢复。本节点仍按原配置运行。",
+        relayOut
+          ? "MTNode 中转服务余额不足：去「设置 · 提供商」充值并点「刷新」，恢复后本节点照原配置运行。"
+          : "该服务商已被停用：不再出现在别处的模型选择里；设置 · 模型服务里取消「停用该服务商」即可恢复。本节点仍按原配置运行。",
       ),
     );
   }
@@ -2402,7 +2430,11 @@ function nsAgentFields(ctx, node) {
       const o3 = document.createElement("option");
       o3.value = curProv;
       o3.textContent =
-        (boundOffProv.name || boundOffProv.id) + " · " + I18n.t("已停用");
+        (boundOffProv.name || boundOffProv.id) +
+        " · " +
+        ((typeof providerStateText === "function"
+          ? providerStateText(boundOffProv)
+          : "") || I18n.t("已停用"));
       provSel.appendChild(o3);
     }
   }
@@ -6019,6 +6051,9 @@ function nodeElement(node) {
   /* 展开超级节点：不创建外侧端子，只保留舞台内侧桥接/汇流端子 */
   if (!superIsOpenShell(node)) {
   const ic = inputCount(node);
+  /* 端子数为 0 的那一侧不画接线排分割线：建元素时先按当前端子数盖章，
+     之后端子数变化由 refreshPorts 复算同一份口径 */
+  syncPortSideClasses(el, node);
   /* 函数 / 工具节点：输入 0 = 控制入（固定）+ 各输入参数；输出 0..n-1 = 输出参数 + 末位控制出 */
   const isFnTNode = isFnToolNode(node);
   /* 素材节点：端子 = 素材库内容条目（第 i 入 ↔ 第 i 出）· 无控制端子。
@@ -12696,32 +12731,56 @@ function buildBody(node, body) {
     }
     body.appendChild(prev);
   } else if (node.kind === "execute") {
-    /* 执行节点：自定义图标 + 大播放键（两段式：点击预备 → 再点执行；双击直接执行）。
-       标题已显示在节点头部，body 不再重复显示标题。 */
-    const tRow = document.createElement("div");
-    tRow.className = "exec-title-row";
-    const ic = document.createElement("span");
-    ic.className = "exec-body-icon";
-    ic.innerHTML = execIconSvg(execIconKeyOf(node));
-    ic.title = I18n.t("右键节点可更换图标");
-    tRow.appendChild(ic);
-    body.appendChild(tRow);
+    /* 执行节点 body 两态：
+       ① 已绑定文件（.exec-bound）：body 不显示图标，执行按钮充满整个 body ——
+          文件路径 / 执行结果都收进按钮 tooltip（或按钮下方状态行），点一下即执行；
+       ② 未绑定（.exec-unbound）：留图标 + 绑定引导（路径行与「绑定…」按钮），
+          执行按钮置灰不可点，避免误点。
+       两态都保留两段式预备态（.armed 绿底金键）与运行中脉冲（.running）。
+       标题已显示在节点头部，body 不重复显示标题。 */
+    const bound = !!String(node.execPath || "").trim();
+    const p = String(node.execPath || "").trim();
+    body.classList.add(bound ? "exec-bound" : "exec-unbound");
+    if (!bound) {
+      const tRow = document.createElement("div");
+      tRow.className = "exec-title-row";
+      const ic = document.createElement("span");
+      ic.className = "exec-body-icon";
+      ic.innerHTML = execIconSvg(execIconKeyOf(node));
+      ic.title = I18n.t("右键节点可更换图标");
+      tRow.appendChild(ic);
+      body.appendChild(tRow);
+    }
 
     const play = document.createElement("button");
     play.type = "button";
     play.className =
       "exec-play" +
       (node._armed ? " armed" : "") +
-      (node.running ? " running" : "");
+      (node.running ? " running" : "") +
+      (bound ? "" : " disabled");
     play.innerHTML = node.running
       ? "…"
       : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.2l6.5 4.8-6.5 4.8V3.2z" fill="currentColor"/></svg>';
-    play.title = node._armed
-      ? I18n.t("再次点击执行该文件（或双击直接执行）")
-      : I18n.t("点击预备执行（播放键变为绿色背景 · 金色高亮），再次点击执行该文件；或直接双击执行");
+    const statusTip =
+      node.execStatus || (node.error ? String(node.error) : "");
+    play.title = !bound
+      ? I18n.t("先绑定可执行文件")
+      : (p ? I18n.t("执行：") + p + "\n" : "") +
+        (statusTip ? statusTip + "\n" : "") +
+        (node.running
+          ? I18n.t("正在启动…（按钮可继续点，启动过程不会中断）")
+          : node._armed
+            ? I18n.t("再次点击执行（或双击节点直接执行）")
+            : I18n.t("点击执行（或双击节点直接执行）"));
     play.setAttribute("aria-label", play.title);
+    if (!bound) play.disabled = true;
     play.onclick = (ev) => {
       ev.stopPropagation();
+      if (!bound) {
+        toast(I18n.t("尚未绑定可执行文件：请先右键节点「绑定可执行文件」"), "warn");
+        return;
+      }
       if (node._armed) {
         node._armed = false;
         runExecuteNode(node);
@@ -12732,29 +12791,27 @@ function buildBody(node, body) {
     };
     body.appendChild(play);
 
-    const pRow = document.createElement("div");
-    pRow.className = "exec-path-row";
-    const pathEl = document.createElement("div");
-    const p = String(node.execPath || "").trim();
-    pathEl.className = "exec-path" + (p ? "" : " empty");
-    pathEl.textContent = p
-      ? p
-      : I18n.t("未绑定可执行文件（点「绑定…」或右键）");
-    if (p) pathEl.title = p;
-    pRow.appendChild(pathEl);
-    const bindBtn = document.createElement("button");
-    bindBtn.type = "button";
-    bindBtn.className = "mini";
-    bindBtn.textContent = I18n.t("绑定…");
-    bindBtn.title = I18n.t(
-      "选择要绑定的可执行文件（.exe / .bat / .cmd / .lnk 或任意系统可打开的文件）",
-    );
-    bindBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      pickExecForNode(node);
-    };
-    pRow.appendChild(bindBtn);
-    body.appendChild(pRow);
+    if (!bound) {
+      const pRow = document.createElement("div");
+      pRow.className = "exec-path-row";
+      const pathEl = document.createElement("div");
+      pathEl.className = "exec-path empty";
+      pathEl.textContent = I18n.t("未绑定可执行文件（点「绑定…」或右键）");
+      pRow.appendChild(pathEl);
+      const bindBtn = document.createElement("button");
+      bindBtn.type = "button";
+      bindBtn.className = "mini";
+      bindBtn.textContent = I18n.t("绑定…");
+      bindBtn.title = I18n.t(
+        "选择要绑定的可执行文件（.exe / .bat / .cmd / .lnk 或任意系统可打开的文件）",
+      );
+      bindBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        pickExecForNode(node);
+      };
+      pRow.appendChild(bindBtn);
+      body.appendChild(pRow);
+    }
 
     const st = document.createElement("div");
     st.className =
@@ -12762,8 +12819,8 @@ function buildBody(node, body) {
       (node.running ? " run" : node.error ? " err" : node.execStatus ? " done" : "");
     st.textContent = node.execStatus
       ? node.execStatus
-      : p
-        ? I18n.t("点击播放执行 · 双击直接执行")
+      : bound
+        ? I18n.t("点击执行 · 双击节点也可执行")
         : I18n.t("先绑定可执行文件");
     if (node.error) st.title = node.error;
     body.appendChild(st);

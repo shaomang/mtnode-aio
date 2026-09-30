@@ -1,0 +1,20 @@
+/* 风格 · 极简（默认）（应用脚手架） —— 由 scripts/gen-scaffold-styles.cjs 从
+   templates/app-default/styles/minimal.css 的变量表生成，改色请改那一份再跑一次。 */
+:root {
+  --bg: #0a0c12;
+  --bg-soft: #0e1119;
+  --bg-sunken: #0e1119;
+  --line: #1d2230;
+  --line-2: #2a3143;
+  --fg: #e9ecf4;
+  --fg-dim: #aab3c7;
+  --muted: #7d879c;
+  --accent: #c792ea;
+  --accent-hi: #8a68a8;
+  --accent-ink: #100a16;
+  --sel: rgba(199, 146, 234, 0.26);
+  --sel-ink: #ffffff;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+}

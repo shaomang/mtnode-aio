@@ -49,7 +49,13 @@ function ok(cond, msg) {
   }
 }
 const ROOT = path.join(__dirname, "..");
-const read = (rel) => fs.readFileSync(path.join(ROOT, rel.split("/").join(path.sep)), "utf8");
+/* 读源码做字面断言：**统一成 LF**。仓库里 CRLF 与 LF 并存（gateway.mjs 是 CRLF），
+   带 "\n      " 这类多行字面量的断言在 CRLF 文件上永远命中不了 —— 那是换行符的差异，
+   不是接线跑偏。归一之后 has(...) 只看内容。 */
+const read = (rel) =>
+  fs
+    .readFileSync(path.join(ROOT, rel.split("/").join(path.sep)), "utf8")
+    .replace(/\r\n/g, "\n");
 const show = (v) => JSON.stringify(v);
 const eqNum = (a, b, msg) => ok(a === b, msg + "（得到 " + show(a) + "，期望 " + show(b) + "）");
 const eqArr = (a, b, msg) => ok(show(a) === show(b), msg + "（得到 " + show(a) + "）");

@@ -358,6 +358,11 @@ function ltScrollBind(el, key) {
  * 拖节点 / 拖连线的手势仍走各自原有的路径（拖动本身每帧同步活图，不依赖这次重绘）。
  * 也只在「条带里」生效：画布 / 别的浮层上的按下与条带无关，绝不跟着冻。 */
 let ltStripHold = { el: null, at: 0 };
+/* 按住保护的超时（本轮需求）：鼠标松开的那一下若**没到达本窗口**（真浏览器窗口 / 别的
+   程序把前台抢走，pointerup 落到别人身上），按住态就悬挂起来 —— 条带从此再不重绘，
+   用户看到的正是「按钮都在、点了却没反应 / 状态不再更新」。所以按住态自带一条 TTL：
+   超过它按「松手丢了」处理，放行重绘（正常点击远小于这个值）。 */
+const LT_STRIP_HOLD_TTL = 1200;
 function ltStripOf(el) {
   const s = LT_UI && LT_UI.strip;
   if (!s || !el) return false;
@@ -375,16 +380,23 @@ function ltStripHoldArm(target) {
   ltStripHold = { el: target, at: Date.now() }; /* 原样记下这一件，只为「还按着」这一件事 */
 }
 /* 此刻整条条带要不要冻住：指针还按着当初那一件（还挂在文档里）才算 —— 条带被收起 /
-   切画布 / 那一件已被换掉时自动放行，绝不把界面长期冻死。 */
+   切画布 / 那一件已被换掉时自动放行，绝不把界面长期冻死。
+   超过 TTL（鼠标松开那一下没到达本窗口，见 LT_STRIP_HOLD_TTL）同样自己放行。 */
 function ltStripHoldNow() {
   const h = ltStripHold;
   if (!h || !h.el) return false;
+  const tooLong = h.at > 0 && Date.now() - h.at > LT_STRIP_HOLD_TTL;
   try {
     if (typeof h.el.isConnected === "boolean" && !h.el.isConnected) {
       ltStripHold = { el: null, at: 0 };
       return false;
     }
   } catch (_) {}
+  if (tooLong) {
+    /* 松手丢了：当一次普通松手处理（放行并兑现被推迟的重绘），别把条带长期冻住 */
+    ltStripHoldRelease();
+    return false;
+  }
   return true;
 }
 function ltStripHoldRelease() {
@@ -538,6 +550,7 @@ function ltHoldCtrlEl(el) {
 function ltHoldArm(target) {
   const main = LT_UI && LT_UI.main;
   ltHoldColEl = null;
+  if (typeof clearTimeout === "function" && ltHoldTtl) { try { clearTimeout(ltHoldTtl) } catch (_) {} ltHoldTtl = 0; }
   if (!main || !target || target.nodeType !== 1 || ltHoldCtrlEl(target)) return;
   /* 只记**右栏**（检查器 / 人工任务卡 / 图说明那片可选文字）。左栏是 SVG 状态机图：
      它里面没有可选文字（.lt-graph 是 user-select:none），而「点一下节点」的选中态与高亮
@@ -545,9 +558,19 @@ function ltHoldArm(target) {
      选中高亮晚到松手；而节点拖动本身已按 document 级监听 + 每帧重解析活图设计
      （重绘换帧也安全降级，见 ltDragMove 的 domMiss），不吃这条保护也不会断手势。 */
   const right = ltColOf(main, "lt-right");
-  if (right && right.contains && right.contains(target)) ltHoldColEl = right;
+  if (right && right.contains && right.contains(target)) {
+    ltHoldColEl = right;
+    /* 与条带按住保护同一个病：鼠标松开那一下没到达本窗口（真浏览器窗口抢走前台）时，
+       「右栏还按着」会一直挂着 → 那一栏再不重绘。给一条 TTL 兜底（见 ltStripHold 段）。 */
+    if (typeof setTimeout === "function") {
+      ltHoldTtl = setTimeout(() => { ltHoldTtl = 0; ltHoldRelease(); }, LT_STRIP_HOLD_TTL * 10);
+    }
+  }
 }
+/* 右栏按住态的 TTL 定时器（松手 / 超时都会收掉） */
+let ltHoldTtl = 0;
 function ltHoldRelease() {
+  if (typeof clearTimeout === "function" && ltHoldTtl) { try { clearTimeout(ltHoldTtl) } catch (_) {} ltHoldTtl = 0; }
   if (!ltHoldColEl) return;
   ltHoldColEl = null;
   /* 松手 = 这次交互结束：此前被推迟的重绘立刻兑现（不然要等下一次焦点 / 选区变化） */
@@ -586,6 +609,13 @@ function ltHoldBind() {
   /* 窗口失焦（切到别的程序 / 被原生下拉抢走）：按住态不许留成悬挂，否则这一栏再也不更新 */
   try {
     window.addEventListener("blur", () => {
+      if (typeof ltStripHoldRelease === "function") ltStripHoldRelease();
+      ltHoldRelease();
+    });
+    /* 窗口重新拿到焦点 = 「用户回来了，正在看这一帧界面」：再收一次可能是丢了 mouseup 的
+       按住态（真浏览器窗口把前台抢走的那种，见 ltStripHold 的 TTL 段）——
+       用户回来点的第一下必须落在活界面上，而不是先撞上一块冻住的条带。 */
+    window.addEventListener("focus", () => {
       if (typeof ltStripHoldRelease === "function") ltStripHoldRelease();
       ltHoldRelease();
     });

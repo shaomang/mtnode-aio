@@ -14,6 +14,20 @@ Three points:
 
 The 示例 · 智能任务（可运行）(Example · agent task, runnable) item on the canvas is one session entry point: change the task description, hit ▶, and watch it read a file, write a file and return only a path.
 
+### Presets
+
+Five presets are shared by sessions and agent nodes (the default is Minimal; **a preset only
+sets the persona and the tool surface — it does not touch the thinking level**, which is decided
+solely by the Thinking level control in the UI):
+
+| Preset | What it is for |
+| --- | --- |
+| **Minimal (default)** | Least steps, least talk, straight to the result |
+| **Standard** | General purpose: canvas work plus file and content tasks |
+| **Lean Thinking** | Work that needs some reasoning: keep the structure, drop restating and prose |
+| **PTC** | Multi-step sequencing: break work into checkable next actions |
+| **Creative** | Open-ended writing and divergence: room for longer output |
+
 ## Where sessions come from
 
 ### Four entries

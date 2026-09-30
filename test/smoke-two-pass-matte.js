@@ -240,6 +240,10 @@ const FNS = [
   "bgRmActive",
   "alphaBgPromptSuffix",
   "withImageParamsPrompt",
+  /* withImageParamsPrompt → maskPromptSuffix → maskActive（app.js 的局部重绘注入段）：
+     这条依赖是蒙版能力上线时才加的，抽取表要跟上，否则沙箱里报 xxx is not defined */
+  "maskPromptSuffix",
+  "maskActive",
   "stripMatteBlocks",
   "matteBlock",
   "bgRmPromptSuffix",
@@ -272,6 +276,8 @@ const CONSTS = [
   "IMG_BACKGROUND_VALUES",
   "ALPHA_BG_BLOCK_HEAD",
   "ALPHA_BG_BLOCK_TAIL",
+  "MASK_BLOCK_HEAD",
+  "MASK_BLOCK_TAIL",
 ];
 function fnBody(src, name) {
   const pats = [
@@ -356,7 +362,7 @@ const mctx = {
 };
 vm.createContext(mctx);
 vm.runInContext(
-  ["GPT_IMAGE_SIZES", "GPT_IMAGE_QUALITIES", "GPT_IMAGE_BACKGROUNDS", "API_MATTE_REF_MAX_DIM", "API_REF_IMAGE_MAX_DIM", "API_MATTE_REF_NATIVE_MAX_BYTES"]
+  ["GPT_IMAGE_SIZES", "GPT_IMAGE_QUALITIES", "GPT_IMAGE_BACKGROUNDS", "API_MATTE_REF_MAX_DIM", "API_REF_IMAGE_MAX_DIM", "API_MATTE_REF_NATIVE_MAX_BYTES", "RELAY_PROVIDER_SOURCE", "gptMaskDimCache"]
     .map((n) => fnBody(mainSrc, n))
     .join("\n") +
     "\n" +
@@ -366,8 +372,13 @@ vm.runInContext(
       "apiMaskPathOf",
       "gptImageSizeOk",
       "apiSentImageDims",
+      "apiSentImageDimsMask",
+      "gptImageLegalDims",
       "apiMaskSizeFor",
       "gptImageSizeForDims",
+      /* buildRequestSpec 的 Authorization 走主进程的 providerAuthKey（中转服务在这里换成
+         账号 token）；本用例的服务商都不是中转来源，抽真函数进来即可（authStore 分支走不到）。 */
+      "providerAuthKey",
       "buildRequestSpec",
     ]
       .map((n) => fnBody(mainSrc, n))

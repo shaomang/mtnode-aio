@@ -2,16 +2,20 @@
 /* renderer/app-apps-dev.js — 应用中心「开发」页：三栏 + 底部输入框
  * ============================================================================
  * 一页三栏（在 #appsHub 的开发者页里渲染，见 app-apps.js 的 appsPaintDevPage）：
- *   左 = 只属于该 appId 的会话列表   中 = iframe 实时预览该应用的静态页
+ *   左 = 「开发中」应用列表（每应用一行：名字 + 作者 + 会话数 + 展开箭头，它的会话折叠在下面）
+ *   中 = iframe 实时预览该应用的静态页
  *   右 = 该会话正文（会话列表里的同一条会话）  下 = 输入框（同一个 composer）
  *
  * 复用既有件，不另造一份：
- *   · 左栏会话行 = app-assist.js 的 renderAgentSessionSidebar()。本文件给它一个「宿主」
- *     （appsDevSidebarHost）：宿主在时它只渲染该应用自己的会话（数据 = app-app-flow.js 的
- *     appSessionsOf），写进 #appsDevSideList；宿主不在时它逐字走原来的总会话视图。
+ *   · 左栏 = app-assist.js 的 renderAgentSessionSidebar()。本文件给它一个「宿主」
+ *     （appsDevSidebarHost）：宿主在时它按宿主给的**应用分组**渲染（应用行 + 该应用里
+ *     未归档的会话行；应用数据 = appsLocalList() 里 dev:true 的那些，会话 = app-app-flow.js
+ *     的 appSessionsOf），写进 #appsDevSideList；宿主不在时它逐字走原来的总会话视图。
+ *     点应用行 = 选中它（appsDevSelectApp：中栏预览与右栏会话一起换），点箭头 = 展开收起。
  *   · 右栏正文 + 底部输入框 = 会话视图自己的 DOM（#agentList / #agentQueue / #agentPlan /
  *     #agentTodo / #agentPaused / .agent-composer）**原样搬过来**，关页 / 重绘时按原顺序还回
- *     .agent-body。搬运而不复制 ⇒ renderAgentSession() / renderAgentSession(),
+ *     .agent-body。#agentList 常被 ensureHistRail() 包在 .hist-scroll-wrap 里（轮次轨的壳），
+ *     搬 / 还必须连壳一起走 —— 见 appsDevMoveTarget。
  *     buildAgentModelMenu()（提供商 / 预设 / 模型 / 思考强度四项）、输入法、斜杠命令、
  *     ⚡插话 / ⏸暂停全部逐字复用，字段也与会话对象同源。
  *   · 右栏看哪条会话 = **本页自己的显示覆盖**（app-assist.js 的 agentViewOverrideSet）：
@@ -24,7 +28,7 @@
  *
  * 首轮输入 = 在该应用的开发节点上点「开发」并提交：
  *   app-boot.js 的 doSend 在「本会话空闲 + 输入框有字」那一刻问一次 appsDevComposerSend()；
- *   开发页开着且处于首轮态（本应用还没有开发会话，或用户点了「＋ 新开发会话」）时由本文件接管：
+ *   开发页开着且处于首轮态（本应用还没有开发会话，或用户点了左栏应用行右端的「＋」）时由本文件接管：
  *   解析该应用的画布与开发节点（wfOfCanvasIdForRun → appsDevNodeOfWf）→ createDevSessionForNode
  *   （devNodeContractText 任务书整份写进 sess._devContract）→ agentSessionSend("", {_devContract:true})。
  *   「先拷问需求」开关的真源是节点上的 node.devGrill（默认 true，界面切换即写回节点并落盘）。
@@ -37,9 +41,17 @@
  * 加载顺序只需在 app-apps.js 之后（index.html 生态层）。
  * ============================================================================ */
 
+/* 中栏实时刷新的防抖门槛（毫秒）：快照比对仍是 1.2s 一拍（appsDevStartTimer），
+   但「变了」之后要等改动停下来这么久才真重载 —— 见 appsDevCheckPreview 的注释。 */
+const LIVE_SETTLE_MS = 400;
+
 const DEVD = {
   appId: "", /* 当前开发的应用 id */
-  listEl: null, /* 左栏会话列表容器（renderAgentSessionSidebar 的宿主） */
+  listEl: null, /* 左栏应用 / 会话列表容器（renderAgentSessionSidebar 的宿主） */
+  expanded: null, /* 左栏应用行的展开态（会话级记忆：{ appId: boolean }；没记过 = 当前应用展开） */
+  lastApp: "", /* 最近一次画过预览的应用 id（只为「切应用盖黑幕」记账，见 appsDevCurtain） */
+  curtainEl: null, /* 预览黑幕（只在切应用时出现） */
+  curtainTimer: 0, /* 黑幕超时兜底（加载事件没来也得撤幕） */
   convEl: null, /* 右栏（搬运来的会话正文落这里） */
   composerEl: null, /* 底部输入框行 */
   frame: null, /* 预览 iframe */
@@ -57,13 +69,25 @@ const DEVD = {
   moreOff: null, /* 面板开着时的全局监听摘除函数 */
   headRO: null, /* 菜单条宽度监听 */
   headW: 0, /* 上次排版的宽度（同宽不重排，防抖动） */
+  headRaf: 0, /* 待执行的菜单条重排（ResizeObserver 回调里只登记一帧，见 appsDevStartHeadWatch） */
   turnEl: null, /* 右栏头部：当前轮次说明 */
+  colsEl: null, /* 三栏容器（.apps-dev-cols）：宽度变量与把手的宿主 */
+  colsRaf: 0, /* 待执行的三栏重夹（窗口 resize 只登记一帧） */
   warnEl: null, /* 顶部警告条 */
   grillEl: null, /* 「先拷问需求」复选框 */
   filter: "", /* 左栏搜索词 */
   draft: true, /* 首轮态：下一次输入 = 「开发」提交 */
   sessionId: "", /* 非首轮时：右栏展示的会话 id */
   url: "", /* 预览 url（mtnode-preview://…） */
+  /* ── 中栏预览「实时看到开发过程」（本轮需求）─────────────────────────────
+     开发会话**跑着的时候**也持续比对应用目录的内容快照，改了就跟手刷新 —— 用户口径是
+     「应当实时在该预览窗中看到开发过程」（旧口径只在会话跑完那个边沿刷一次，
+     开发过程中中栏一动不动）。防抖：改动**停下来** LIVE_SETTLE_MS 才重载，
+     免得把 Agent 正写一半的页画出来、也免得你正点着的时候反复刷。
+     重载前抓 / 后写滚动与表单值那套（PREVIEW_AGENT）一字不动，只在重载时机前加了门槛。 */
+  LIVE_RELOAD: true,
+  liveChangedAt: 0, /* 最近一次快照「变了」的时刻（0 = 这一段时间没变过） */
+  checkBusy: false, /* 一次快照比对 / 重载还在飞：tick 每 1.2s 一发，别叠着来 */
   snap: null, /* 最近一次内容快照 { files, bytes, mtimeMs } */
   keepState: true, /* 「维持状态」开关 */
   pendingState: null, /* 重载前抓到的页面状态 */
@@ -74,6 +98,11 @@ const DEVD = {
   wf: null, /* 该应用的画布对象（wfOfCanvasIdForRun 解析） */
   node: null, /* 该应用的开发节点 */
   nodeFor: "", /* 上面两项是给哪个 appId 解析的 */
+  /* 「自定义」风格那一步（见 appsDevAskStyle）：待问的 appId 与那句可直接发送的提问。
+     新建应用时用户还停在「库」页（开发页没开、输入框不在），所以先把这一问**记在这里**，
+     等开发页真的画出来（appsDevRenderConv）再落到输入框上 —— 不然这一问会无声丢掉。 */
+  askStyleId: "",
+  askStyleText: "",
   seq: 0,
 };
 
@@ -84,6 +113,17 @@ function appsDevT(s) {
 }
 function appsDevToast(msg, kind) {
   if (typeof toast === "function") toast(msg, kind || "ok");
+}
+/* 「启动」= 等同在库中运行：给当前应用开独立窗口。
+   走库页同一入口 appsOpenApp（→ 主进程 apps:openWindow → BrowserWindow + preload-app.js
+   跑它自己的 index.html），成功静默、失败弹同一条「打开失败：」toast。 */
+function appsDevStartApp() {
+  const id = String(DEVD.appId || "").trim();
+  if (!id) {
+    appsDevToast(appsDevT("先新建或安装一个应用，再启动"), "warn");
+    return;
+  }
+  if (typeof appsOpenApp === "function") appsOpenApp(id);
 }
 function appsDevHubOpen() {
   try {
@@ -98,15 +138,66 @@ function appsDevPageOpen() {
   if (!appsDevHubOpen()) return false;
   return String(APPS_ST && APPS_ST.nav) === "dev";
 }
-/* app-assist.js 的 renderAgentSessionSidebar 的宿主：在开发页里只渲染该应用的会话，
-   写进开发页左栏；首轮态没有活跃行（active = ""）。宿主不在 → 它走原路。 */
+/* 「开发中」的应用（本机列表顺序 = 安装时间新→旧，左栏照原样用；只列 dev:true 的，
+   与库页相反 —— 开发中的应用不从库页进，入口就是这一列 + 顶栏那条菜单）。 */
+function appsDevApps() {
+  const all = typeof appsLocalList === "function" ? appsLocalList() : [];
+  return all.filter((a) => a && a.dev === true);
+}
+/* 左栏应用行的展开态：没记过 = 当前应用默认展开，其余收起（点箭头才写这张表，会话级记忆） */
+function appsDevAppExpanded(appId) {
+  const id = String(appId || "");
+  if (!DEVD.expanded) DEVD.expanded = {};
+  if (Object.prototype.hasOwnProperty.call(DEVD.expanded, id))
+    return !!DEVD.expanded[id];
+  return id === String(DEVD.appId || "");
+}
+function appsDevAppToggle(appId) {
+  const id = String(appId || "");
+  if (!id) return;
+  if (!DEVD.expanded) DEVD.expanded = {};
+  DEVD.expanded[id] = !appsDevAppExpanded(id);
+  try {
+    if (typeof renderAgentSessionSidebar === "function")
+      renderAgentSessionSidebar();
+  } catch (_) {}
+}
+/* app-assist.js 的 renderAgentSessionSidebar 的宿主：开发页开着时给它**应用分组**
+   （只列「开发中」的应用，每个应用带它自己未归档的会话），写进开发页左栏；
+   点应用行 = appsDevSelectApp，点箭头 = appsDevAppToggle，
+   点行右端的「＋」= appsDevNewSessionFor（在该应用下开一条新开发会话）。
+   宿主不在 → 它走原路，总会话视图一字不动。首轮态没有活跃会话行（active = ""）。 */
 function appsDevSidebarHost() {
   if (!appsDevPageOpen()) return null;
+  const cur = String(DEVD.appId || "");
+  const apps = appsDevApps().map((a) => {
+    const id = String(a.id || "");
+    const sessions =
+      typeof appSessionsOf === "function"
+        ? appSessionsOf(id).filter((s) => s && !s.archived)
+        : [];
+    const author =
+      typeof appsAuthorOf === "function"
+        ? String(appsAuthorOf(a) || "").trim()
+        : "";
+    return {
+      id: id,
+      name: String(a.name || id || ""),
+      author: author,
+      sessions: sessions,
+      count: sessions.length,
+      current: id === cur,
+      expanded: appsDevAppExpanded(id),
+    };
+  });
   return {
     listEl: DEVD.listEl,
-    sessions: typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId) : [],
+    apps: apps,
     filter: DEVD.filter,
     active: DEVD.draft ? "" : String(DEVD.sessionId || ""),
+    onAppSelect: (id) => appsDevSelectApp(id),
+    onAppToggle: (id) => appsDevAppToggle(id),
+    onAppNew: (id) => appsDevNewSessionFor(id),
   };
 }
 
@@ -126,6 +217,31 @@ function appsDevAgentBodyEl() {
 function appsDevComposerEl() {
   return document.querySelector(".agent-composer");
 }
+/* 要搬的节点：正常就是 id 那个节点本身；但 #agentList 会被会话视图的 ensureHistRail()
+   （app-assist.js：轮次轨的滚动壳）包进一只 .hist-scroll-wrap —— **那只壳才是 .agent-body
+   的直接子节点**，#agentList 已经不是了。
+   为什么必须上溯一层（用户报障「应用开发页右栏只有一份清单，没有会话内容」）：
+   appsDevMount 的搬运循环只遍历「搬运前 .agent-body 的直接子节点」（saved，归还顺序也靠它），
+   于是身在壳里的 #agentList 一个都没被搬进开发页右栏 —— 右栏只剩 #agentPlan / #agentTodo
+   这几块清单面板（它们是直接子节点，正常搬走）；而只搬 #agentList、把空壳留在 .agent-body
+   也不行：归还时按 saved 放回的是那只**空壳**，消息区就永远回不到会话视图（应用中心浮层只是
+   hidden，那个节点从此谁也够不着，见 app-apps.js 的 appsHubClose）。
+   搬壳 = 壳连同里面的 #agentList 与 .hist-rail 一起走，它天然在 saved 里，归还路径与其它
+   节点一字不差（对象、事件监听、脚本加载顺序都不变）。 */
+function appsDevMoveTarget(id, body) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const p = el.parentNode;
+  if (
+    p &&
+    p !== body &&
+    p.classList &&
+    p.classList.contains("hist-scroll-wrap") &&
+    p.parentNode === body
+  )
+    return p;
+  return el;
+}
 /* 把会话视图的正文与输入区搬进开发页（右栏 + 底部）。记录原始子节点顺序，归还时照原样
    appendChild 回去 —— 顺序、对象、事件监听全不变。 */
 function appsDevMount() {
@@ -138,7 +254,7 @@ function appsDevMount() {
   const saved = Array.from(body.children);
   const move = new Set();
   for (const id of DEVD_MOVE_IDS) {
-    const el = document.getElementById(id);
+    const el = appsDevMoveTarget(id, body);
     if (el) move.add(el);
   }
   move.add(composer);
@@ -159,6 +275,17 @@ function appsDevUnmount() {
       m.body.appendChild(el);
     } catch (_) {}
   }
+  /* 兜底：消息区（#agentList）无论如何都要回到会话视图。它若因为「壳没在 saved 里」
+     （页外被包 / 记档早于包装 / 别处搬动过它）没随上面那轮 appendChild 回来，就点名把它
+     接回 .agent-body 里的那只壳（没有壳就直接接回 body）—— 消息区回不来就是「右侧框
+     没有完整会话内容」，比顺序略有出入严重得多。 */
+  try {
+    const list = document.getElementById("agentList");
+    if (list && !m.body.contains(list)) {
+      const wrap = m.body.querySelector(".hist-scroll-wrap");
+      (wrap || m.body).appendChild(list);
+    }
+  } catch (_) {}
 }
 
 /* ── 右栏看哪条会话：本页的显示覆盖（绝不写会话页的 S.agentActiveId） ── */
@@ -183,6 +310,48 @@ function appsDevViewBind() {
   } catch (_) {}
   return st;
 }
+/* 兜底：本页没有在显示的会话（首轮态 / 那条会话已被删或被截断 / 会话表重排）时，
+   只要这个应用名下**还有会话**，就自动把右栏落到最新那条上 —— 开发页绝不停在「左右两栏
+   都空着」的中间态。
+   为什么必须有这一步：appsDevViewBind() 在「本页这条会话已不在」时会主动把本页清回首轮态
+   （防右栏留下别条会话的计划 / 清单），而**只有 appsDevSyncAfterPaint（首次绘制那一次）**
+   会再选一条回来。页面已经画好之后才发生的丢失（用户在会话页删掉这条 / 会话表被截断 /
+   在别处把最近一条挪走）就没有第二次自动选中：左栏变「暂无会话」、右栏 `is-draft` 把正文
+   藏起来只剩一句引导，看起来就是「右侧什么都不显示」。
+   本函数把「还有会话就必须显示一条」这条不变式补上：只在「当前没有会话」这一个条件下动作，
+   选中后自己重绘一次右栏（含标题条），不动会话页的选中项（仍走显示覆盖）。
+   返回 true = 这次补上了一条。 */
+function appsDevEnsureCurrentSession() {
+  if (!appsDevPageOpen()) return false;
+  /* 首轮态 + 框里还有没发出去的字 = 用户正在写本次开发需求：绝不把右栏换成别的会话。
+     那一下会按新会话的草稿重写输入框（renderAgentSession 的草稿回填），用户写了一半的
+     首轮需求当场从眼前消失 —— 本轮需求：未输入完毕发送的内容必须留住。
+     这一条同时挡住那只 1.2s 的轮询（appsDevTick 每次都先调本函数）：点「＋」开始写第一轮
+     时，应用下已有会话也不会被自动选走。框清空 / 发出去之后这条闸自动放开。 */
+  if (DEVD.draft && appsDevDraftPending()) return false;
+  if (!DEVD.draft && DEVD.sessionId) {
+    /* 已经指着一条会话：它还在（agentSessionById）就什么都不做；已不在才往下补 */
+    try {
+      if (typeof agentSessionById === "function" && agentSessionById(DEVD.sessionId))
+        return false;
+    } catch (_) {
+      return false;
+    }
+  }
+  const list =
+    typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId) : [];
+  if (!list.length) return false; /* 这个应用真没有会话：保持首轮态（引导 + 空正文） */
+  const sess = list[0];
+  DEVD.draft = false;
+  DEVD.sessionId = sess.id;
+  DEVD.msgCount = Array.isArray(sess.messages) ? sess.messages.length : 0;
+  try {
+    if (typeof persistAgentSession === "function") persistAgentSession();
+  } catch (_) {}
+  appsDevRenderConv();
+  return true;
+}
+
 /* 撤掉显示覆盖（关页 / 切页 / 整页重绘前）：本页不再显示任何会话，会话视图（马上要还回
    .agent-body 的那份 DOM）按会话页自己的选中项重绘一次 —— 这段时间里会话页一字未动。 */
 function appsDevViewClear() {
@@ -216,6 +385,12 @@ function appsDevPageUnmount() {
   /* 借走的 DOM 已还回，撤掉本页的显示覆盖 → 会话页按它自己的选中项重绘 */
   appsDevViewClear();
   appsDevHeadTeardown();
+  if (DEVD.colsRaf) {
+    try {
+      cancelAnimationFrame(DEVD.colsRaf);
+    } catch (_) {}
+  }
+  DEVD.colsRaf = 0;
   DEVD.listEl = null;
   DEVD.convEl = null;
   DEVD.composerEl = null;
@@ -227,9 +402,18 @@ function appsDevPageUnmount() {
   DEVD.statEl = null;
   DEVD.urlEl = null;
   DEVD.turnEl = null;
+  DEVD.colsEl = null;
   DEVD.warnEl = null;
   DEVD.grillEl = null;
   DEVD.pendingState = null;
+  /* 黑幕随容器一起被丢弃，引用必须清干净（否则下一次切应用会去操作一个已摘掉的节点） */
+  if (DEVD.curtainTimer) {
+    try {
+      clearTimeout(DEVD.curtainTimer);
+    } catch (_) {}
+  }
+  DEVD.curtainTimer = 0;
+  DEVD.curtainEl = null;
   DEVD.seq++;
 }
 
@@ -267,6 +451,170 @@ async function appsDevEnsureNode(force) {
 function appsDevGrillOn() {
   const n = DEVD.node;
   return !n || n.devGrill !== false;
+}
+
+/* ── 上次打开的应用（config.appsDevLastApp：回开发页时自动选它） ── */
+
+/* 落盘口径与三栏宽度同源（app-apps.js 的 appsColsSave → window.api.configSave(S.config)）：
+   只存一个应用 id，不新增文件、不写画布。 */
+function appsDevLastAppSave(appId) {
+  const id = String(appId || "").trim();
+  if (!id) return;
+  try {
+    if (typeof S !== "object" || !S) return;
+    if (!S.config) S.config = {};
+    if (String(S.config.appsDevLastApp || "") === id) return;
+    S.config.appsDevLastApp = id;
+    window.api.configSave(S.config).catch(() => {});
+  } catch (_) {}
+}
+/* 上次打开过、且**现在仍在本机开发中名单里**的那个应用；没有就空（调用方再退到第一个）。 */
+function appsDevLastAppId() {
+  try {
+    const id = String((S.config && S.config.appsDevLastApp) || "").trim();
+    if (!id) return "";
+    return appsDevApps().some((a) => String(a.id || "") === id) ? id : "";
+  } catch (_) {
+    return "";
+  }
+}
+/* 进开发页时选哪个应用（appsDevPagePaint 只调这一处）：
+   本页当前选中的 > 上次打开过的（仍在本机开发中名单里才算）> 名单第一个。
+   都不给 = 本机没有「开发中」的应用（页面走空态提示），**不会**出现「没选中应用」的空页。 */
+function appsDevPickApp(apps) {
+  const ids = (Array.isArray(apps) ? apps : []).map((a) => String((a && a.id) || ""));
+  let cur = String(DEVD.appId || "");
+  if (!ids.includes(cur)) cur = appsDevLastAppId();
+  if (!ids.includes(cur)) cur = ids.length ? ids[0] : "";
+  return cur;
+}
+
+/* ── 首轮态输入框的草稿（config.appsDevDrafts[appId]） ─────────────────────
+   首轮态那只输入框装的是「下一次开发需求」，而它显示的占位空会话（app-assist.js 的
+   agentViewBlankSt）不在会话表里、每次整页重绘都被换掉 —— 草稿挂不到任何会话对象上。
+   本轮需求：未输入完毕发送的消息框内容必须留住，切窗口 / 切页 / 自动选会话都不许丢。
+   所以按应用单独存一份（app-assist.js 的 agentDraftKeyNow 用 "\u0000dev-first:<appId>"
+   当视图键，存 / 取都落到这里），落盘口径与 appsDevLastAppSave 同源
+   （S.config + window.api.configSave：不新增文件、不写画布）。
+   按应用存而不是一只共用的槽：切应用时框里的字要先退回**上一个**应用，回来还在。 */
+/* 落盘防抖：输入即记每敲一键来一次，但整份 config 的写盘不便宜（历史包袱见 main.js 的
+   config 缓存段），所以攒到停手 1.5s 再落一次 —— 内存里那一刻就已经是最新，重绘 /
+   切窗口 / 切页读的都是内存那份，落盘只为「重启还在」。 */
+const DEVD_DRAFT_SAVE_MS = 1500;
+let devdDraftTimer = 0; /* 防抖：输入即记会每敲一键来一次，落盘攒到停顿后再做 */
+function appsDevDraftAppId() {
+  return String(DEVD.appId || "");
+}
+function appsDevDraftAll(create) {
+  try {
+    if (typeof S !== "object" || !S) return null;
+    if (!S.config) {
+      if (!create) return null;
+      S.config = {};
+    }
+    const cur = S.config.appsDevDrafts;
+    if (cur && typeof cur === "object") return cur;
+    if (!create) return null;
+    S.config.appsDevDrafts = {};
+    return S.config.appsDevDrafts;
+  } catch (_) {
+    return null;
+  }
+}
+function appsDevDraftLoad(appId) {
+  const id = String(appId || "");
+  if (!id) return "";
+  const all = appsDevDraftAll(false);
+  return all && typeof all[id] === "string" ? all[id] : "";
+}
+/* 存：内存里立刻改（重绘 / 切窗口那一下马上读得到），落盘防抖（敲键不写盘） */
+function appsDevDraftSave(appId, text) {
+  const id = String(appId || "");
+  if (!id) return;
+  const t = String(text == null ? "" : text);
+  const all = appsDevDraftAll(false);
+  const cur = all && typeof all[id] === "string" ? all[id] : "";
+  if (cur === t) return; /* 没变（含「本来就没有 + 存空」）→ 不建表、不落盘 */
+  const box = all || appsDevDraftAll(true);
+  if (!box) return;
+  if (t) box[id] = t;
+  else delete box[id]; /* 发出去 / 用户自己清空 = 不留痕（下次点「＋」不该冒出旧字） */
+  if (devdDraftTimer) return;
+  devdDraftTimer = setTimeout(() => {
+    devdDraftTimer = 0;
+    try {
+      if (window.api && typeof window.api.configSave === "function")
+        window.api.configSave(S.config).catch(() => {});
+    } catch (_) {}
+  }, DEVD_DRAFT_SAVE_MS);
+}
+/* 清（立刻落盘）：首轮需求已经交出去，这条草稿就没有存在的理由了 */
+function appsDevDraftClear(appId) {
+  const id = String(appId || "");
+  if (!id) return;
+  const all = appsDevDraftAll(false);
+  if (!all || typeof all[id] !== "string") return;
+  delete all[id];
+  if (devdDraftTimer) {
+    try {
+      clearTimeout(devdDraftTimer);
+    } catch (_) {}
+    devdDraftTimer = 0;
+  }
+  try {
+    if (window.api && typeof window.api.configSave === "function")
+      window.api.configSave(S.config).catch(() => {});
+  } catch (_) {}
+}
+/* 首轮态此刻有没有「还没发出去的字」：输入框里的现值优先，其次看已存的草稿
+   （页面刚画出来、输入框还没回填时的那一瞬也算有）。 */
+function appsDevDraftPending() {
+  try {
+    const inp = document.getElementById("agentInput");
+    if (inp && String(inp.value || "").trim()) return true;
+  } catch (_) {}
+  return !!String(appsDevDraftLoad(DEVD.appId) || "").trim();
+}
+
+/* ── 预览黑幕：只在「切应用」时盖一层黑，新页加载完成前不闪白 ── */
+
+/* 这次绘制要不要盖黑幕：最近一次画过预览的应用（DEVD.lastApp）跟这次选中的不一样 = 在切应用。
+   首次进开发页 lastApp 还是空 → 不盖；同一个应用重绘（刷新预览 / 会话变化）→ 不盖。 */
+function appsDevCurtainShouldShow(cur) {
+  return !!cur && !!DEVD.lastApp && DEVD.lastApp !== cur;
+}
+
+/* 盖幕。只在换应用时调（首次进开发页不盖）：预览 iframe 重建 + 白底那一下会被这层
+   不透明黑盖住，加载完淡出。 */
+function appsDevCurtainShow() {
+  const wrap = DEVD.frameWrap;
+  if (!wrap) return;
+  appsDevCurtainDrop();
+  const el = document.createElement("div");
+  el.className = "apps-dev-curtain";
+  el.setAttribute("aria-hidden", "true");
+  wrap.appendChild(el);
+  DEVD.curtainEl = el;
+  /* 兜底：load 事件没来（拿不到目录 / 页面卡住）也得撤幕，否则预览永远是黑的 */
+  DEVD.curtainTimer = setTimeout(() => appsDevCurtainDrop(), 2500);
+}
+/* 撤幕（淡出后摘掉）。幂等：没幕时什么都不做。 */
+function appsDevCurtainDrop() {
+  if (DEVD.curtainTimer) {
+    try {
+      clearTimeout(DEVD.curtainTimer);
+    } catch (_) {}
+    DEVD.curtainTimer = 0;
+  }
+  const el = DEVD.curtainEl;
+  DEVD.curtainEl = null;
+  if (!el) return;
+  el.classList.add("hide");
+  setTimeout(() => {
+    try {
+      el.remove();
+    } catch (_) {}
+  }, 300);
 }
 
 /* ── 预览（iframe + 内容快照 + 维持状态） ── */
@@ -403,7 +751,11 @@ async function appsDevReloadPreview() {
     DEVD.pendingState = await appsDevFrameStateSave(700);
   }
   const sep = DEVD.url.indexOf("?") >= 0 ? "&" : "?";
-  frame.setAttribute("src", DEVD.url + sep + "_r=" + Date.now());
+  /* 缓存戳 = 时间 + 单调序号：同一毫秒里连刷两次（实时刷新 + 用户点「刷新预览」）
+     也要能各刷一版 —— 只发同一个 url 的话浏览器把「src 没变」当无事发生，
+     点了没反应（真机上是「刷新预览」这种密度才会碰到，但一样得挡住）。 */
+  DEVD.reloadSeq = (Number(DEVD.reloadSeq) || 0) + 1;
+  frame.setAttribute("src", DEVD.url + sep + "_r=" + Date.now() + "-" + DEVD.reloadSeq);
   appsDevPreviewStatMsg("");
 }
 function appsDevPaintPreviewStat(kind) {
@@ -435,13 +787,31 @@ function appsDevPaintUrl() {
     appsDevT("静态预览：应用目录里的入口页（相对资源同源加载；不注入 window.appHost）") +
     (info.entry ? "\n" + appsDevT("入口页：") + info.entry : "");
 }
-/* 内容快照比对：有变（或 force）才重载预览 */
+/* 内容快照比对：有变（或 force）才重载预览。
+   force 有两条来路，语义不同（都是显式动作，不受防抖门槛限制）：
+     · true  = 会话跑完那个边沿 / 工具栏「刷新预览」：**无条件**刷一次；
+     · false = 开发会话跑着的时候的实时轮询（本轮需求）+ 收尾那一路。 */
 async function appsDevCheckPreview(force) {
   if (!appsDevPageOpen()) return;
+  /* 本页一个应用都没有（「＋新建应用」还没点 / 开发中的应用被全卸载了）：中栏那句提示由
+     绘制阶段给出，这里不要再去问预览 —— 否则会把「读不到该应用目录」这种误导话盖上去。 */
+  if (!String(DEVD.appId || "").trim()) return;
+  /* 单飞：tick 每 1.2s 一发，而一次重载要等页面状态回信（最多 700ms）——
+     不挡的话会叠成两次 setAttribute("src")，白白多刷一版。 */
+  if (DEVD.checkBusy) return;
+  DEVD.checkBusy = true;
+  try {
+    await appsDevCheckPreviewInner(force);
+  } finally {
+    DEVD.checkBusy = false;
+  }
+}
+async function appsDevCheckPreviewInner(force) {
   const r = await appsDevPreviewInfo();
   if (!appsDevPageOpen() || !r) return;
   if (r.ok === false) {
     DEVD.snap = null;
+    DEVD.liveChangedAt = 0;
     appsDevPaintPreviewStat("error");
     /* 轮询里发现预览不可用：中栏盖回可读提示（拿不到目录 / 入口页，别只留白底） */
     appsDevPreviewStatMsg(
@@ -464,7 +834,214 @@ async function appsDevCheckPreview(force) {
     entry: r.entry,
   };
   appsDevPaintPreviewStat(changed || force ? "changed" : "same");
-  if (changed || force) await appsDevReloadPreview();
+  /* force 是显式动作（跑完的边沿 / 工具栏「刷新预览」）：无条件刷，也不看防抖门槛。
+     注意它必须排在 changed 判断**之前** —— 显式刷新时内容往往已经跟上一版一样了。 */
+  if (force) {
+    DEVD.liveChangedAt = 0;
+    await appsDevReloadPreview();
+    return;
+  }
+  if (!DEVD.LIVE_RELOAD) return;
+  /* 防抖（本轮需求）：**从第一次看到改动那一刻起算** liveChangedAt，等这一版改动停下来
+     （LIVE_SETTLE_MS 内再没有新改动）才重载。所以在写的一版会不断把计时推后，
+     写完后的下一拍（没变 + 计时已过）才真刷 —— 既不会把写一半的页画出来，
+     也不会在用户正点着的时候反复刷。比对仍是 1.2s 一拍（appsDevStartTimer）。 */
+  if (changed) {
+    if (!DEVD.liveChangedAt) DEVD.liveChangedAt = Date.now();
+    return;
+  }
+  if (DEVD.liveChangedAt && Date.now() - DEVD.liveChangedAt >= LIVE_SETTLE_MS) {
+    DEVD.liveChangedAt = 0;
+    await appsDevReloadPreview();
+    return;
+  }
+  DEVD.liveChangedAt = 0; /* 这一版没再动过（或计时还没到）：清掉计时等下一次改动 */
+}
+
+/* 窗口 resize 监听只绑一次（跨重绘 / 跨开关页都只一份）：回调里先判本页是否开着 */
+let appsDevColsWinBound = false;
+
+/* ── 三栏宽度：可拖拽（左会话栏 | 中预览 | 右正文），默认 = 左 240px + 中/右各半 ──
+   需求：开发界面里会话的左 / 中 / 右三栏允许互相调整宽度，并设合理的最小 / 最大值。
+   实现：把手绝对定位在栏边缘（左会话栏右缘一条、右正文栏左缘一条），
+   与 #agentSideResize / #assistResize 同款 pointer 口径；拖动只改 CSS 变量不落盘，
+   松手写回配置（S.config.appsDevSideW / appsDevConvW），双击把手复位默认。
+   夹取口径不在本文件：每栏最小 240px、最大半屏、总宽不溢出 —— 见 app-apps.js 的
+   clampAppsColsW（一处写死，只服务这三栏；整页左导航固定 176px、不可拖）。
+   默认的「中 / 右各占一半」是**算出来的**：左栏按夹取后的值，中栏先按等分推算。 */
+
+/* 按当前容器实测三栏宽度：{ side, view, conv }（view 只在拖拽里当基准，不落盘）
+   总宽不溢出：side + view + conv + 2*gap <= cols.clientWidth。
+   中栏（预览）先保 MIN，右栏吃剩下的；连 MIN 都不够时右栏归零，退化成「左 | 中」。 */
+function appsDevColsW() {
+  const cols = DEVD.colsEl;
+  const total = Math.max(0, cols ? cols.clientWidth : 0);
+  const GAP = 8; /* .apps-dev-cols 的 gap */
+  const MIN = 240; /* 每栏最小宽（与 app-apps.js 的 APPS_DEV_COL_W_MIN 同一口径） */
+  const side = Math.max(MIN, Number(S.appsDevSideW) > 0 ? S.appsDevSideW : MIN);
+  const avail = total - side - GAP * 2;
+  let conv = Number(S.appsDevConvW) > 0 ? S.appsDevConvW : 0;
+  if (conv <= 0) conv = avail > 0 ? Math.floor(avail / 2) : MIN;
+  /* 中栏先保 MIN，右栏吃剩下的；连 MIN 都不够时右栏归零（退化成「左 | 中」） */
+  if (avail - conv < MIN) conv = avail - MIN;
+  if (conv < 0) conv = 0;
+  if (conv > avail) conv = Math.max(0, avail);
+  const view = Math.max(0, avail - conv);
+  return { side: side, view: view, conv: Math.max(0, conv) };
+}
+/* 容器窄到三栏排不下时按比例收（先削右栏、再削左栏，各留 0 下限）：
+   只把这个结果写进 CSS 变量，不改 S.appsDevXxxW，所以窗口变宽后原值自动回来，
+   也不会把「被挤过的窄值」落盘。 */
+function appsDevClampPair(sideW, convW) {
+  const cols = DEVD.colsEl;
+  const total = Math.max(0, cols ? cols.clientWidth : 0);
+  const GAP = 8;
+  const MIN = 240;
+  let side = Math.max(MIN, Number(sideW) > 0 ? Number(sideW) : MIN);
+  let conv = Math.max(0, Number(convW) > 0 ? Number(convW) : 0);
+  let over = side + MIN + conv + GAP * 2 - total;
+  if (over > 0) {
+    const cutConv = Math.min(over, conv);
+    conv -= cutConv;
+    over -= cutConv;
+    if (over > 0) side = Math.max(0, side - over);
+  }
+  return { side: side, conv: conv };
+}
+/* 容器实测值 → 真正写进 CSS 变量的一对宽（side 先按半屏夹、再按总宽收一次） */
+function appsDevSyncCols() {
+  const w = appsDevColsW();
+  const side = typeof clampAppsColsW === "function" ? clampAppsColsW("side", w.side) : w.side;
+  const conv = typeof clampAppsColsW === "function" ? clampAppsColsW("conv", w.conv) : w.conv;
+  return appsDevClampPair(side, conv);
+}
+/* 三栏宽度应用：本函数只负责「按容器等分推算出期望的一对宽」（0 = 还没定 → 中/右等分），
+   真正的收尾（每栏 240 … 半容器、三栏都在容器内，写进 CSS 变量的也是那一对贴合值）
+   在 app-apps.js 的 applyAppsDevCols → appsDevFitCols，一处写死两份 UI 共用 ——
+   右栏正文被挤出容器就是这么修的，别再往 CSS 变量里写这里的中间值。 */
+function appsDevApplyCols(persist) {
+  /* 容器还没量到宽（首帧还没布局 / 页已隐藏）：什么都不写，留给布局定下来的那次 */
+  if (!DEVD.colsEl || !DEVD.colsEl.clientWidth) return;
+  const w = appsDevSyncCols();
+  if (typeof applyAppsDevCols !== "function") return;
+  applyAppsDevCols(w.side, w.conv, persist);
+}
+
+/* 一条竖分界线的 pointer 绑定（首次绑定落 _bound，重绘后把手是新节点、但同一 id 只绑一次）
+   拖动语义：
+   · 左分界线（kind = "side"，贴左会话栏右缘）：向右拖 = 左栏变宽（中栏吃剩下的）
+   · 右分界线（kind = "conv"，贴右正文栏左缘）：向左拖 = 右栏变宽（中栏吃剩下的）
+   · 中栏（预览）不落盘、宽度 = 容器宽 − 左右两栏 − gap，所以「拖两边 = 调中间」；
+     每栏最小 240px、最大半屏、总宽不溢出，都在 app-apps.js 的 clampAppsColsW /
+     appsDevColsW 里夹，本函数只管把指针增量换算成「想拖到多少」。
+   · 起始值与增量分开记（startW + dx），拖动中夹取后仍能原路拖回，不会因为
+     被夹到边界就把后续增量吃掉（「拖不动了」）。
+   · 分界线整条可拖：命中区由 css/apps.css 的 .apps-dev-resize 铺满栏高（top/bottom 0），
+     不再是中间那一小段加宽把手。 */
+function appsDevBindColResize(handle, kind) {
+  if (!handle || handle._bound) return;
+  handle._bound = true;
+  handle.title = appsDevT("拖拽调整栏宽（双击复位这一栏）");
+  handle.setAttribute("data-i18n-title", "拖拽调整栏宽（双击复位这一栏）");
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-orientation", "vertical");
+  let dragging = false;
+  let startX = 0;
+  let startW = 0;
+  let pid = null;
+  const startOf = () => (kind === "side" ? S.appsDevSideW : S.appsDevConvW);
+  const onMove = (ev) => {
+    if (!dragging) return;
+    ev.preventDefault();
+    const dx = (Number(ev.clientX) || 0) - startX;
+    /* 左分界线贴在左栏右缘 = 向右拖变宽；右分界线贴在右栏左缘 = 向左拖变宽 */
+    const w = kind === "side" ? startW + dx : startW - dx;
+    if (kind === "side") applyAppsDevCols(w, null, false);
+    else applyAppsDevCols(null, w, false);
+    handle.classList.add("dragging");
+  };
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    try {
+      if (pid != null && handle.hasPointerCapture && handle.hasPointerCapture(pid))
+        handle.releasePointerCapture(pid);
+    } catch (_) {}
+    pid = null;
+    /* 松手才写一次配置（拖动中只改 CSS 变量，不落盘） */
+    applyAppsDevCols(S.appsDevSideW, S.appsDevConvW, true);
+  };
+  handle.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    dragging = true;
+    startX = Number(ev.clientX) || 0;
+    /* 拖之前先按下限起步：右栏「还没定过」（0 = 中/右等分）时首次拖动从 240px 起算 */
+    startW = Math.max(240, Number(startOf()) > 0 ? Number(startOf()) : 240);
+    handle.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    try {
+      pid = ev.pointerId;
+      handle.setPointerCapture(pid);
+    } catch (_) {}
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  });
+  /* 双击把手 = 回到默认（左 240px + 中 / 右各半） */
+  handle.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (kind === "side") applyAppsDevCols(240, S.appsDevConvW, true);
+    else applyAppsDevCols(S.appsDevSideW, 0, true);
+  });
+}
+/* 窗口变窄 / 变宽：按新容器宽重夹一次（拖动中的值也收回界内），不落盘。
+   重夹推到下一帧且一帧只做一次：resize 事件一串一串地来，同步重夹等于一边改布局
+   一边量布局（也会喂出 ResizeObserver 的未派发通知）。 */
+function appsDevBindColsWindow() {
+  if (appsDevColsWinBound) return;
+  appsDevColsWinBound = true;
+  window.addEventListener("resize", () => {
+    if (!appsDevPageOpen()) return;
+    if (DEVD.colsRaf) return;
+    DEVD.colsRaf = requestAnimationFrame(() => {
+      DEVD.colsRaf = 0;
+      if (!appsDevPageOpen()) return;
+      appsDevApplyCols(false);
+    });
+  });
+}
+/* 绑定（幂等：每次整页重绘后都调一次，把手不在就就地补建） */
+function appsDevBindCols() {
+  if (!appsDevPageOpen()) return;
+  const cols = document.querySelector(".apps-dev-cols");
+  DEVD.colsEl = cols;
+  if (!cols) return;
+  appsDevBindColsWindow();
+  const side = cols.querySelector(".apps-dev-side");
+  const conv = cols.querySelector(".apps-dev-conv");
+  if (side && !side.querySelector(".apps-dev-resize-side")) {
+    const h = document.createElement("div");
+    h.className = "apps-dev-resize apps-dev-resize-side";
+    side.appendChild(h);
+  }
+  if (conv && !conv.querySelector(".apps-dev-resize-conv")) {
+    const h = document.createElement("div");
+    h.className = "apps-dev-resize apps-dev-resize-conv";
+    conv.appendChild(h);
+  }
+  if (side) appsDevBindColResize(side.querySelector(".apps-dev-resize-side"), "side");
+  if (conv) appsDevBindColResize(conv.querySelector(".apps-dev-resize-conv"), "conv");
+  appsDevApplyCols(false);
 }
 
 /* ── 每轮结束检测（不挂钩子：看会话在跑 → 跑完的边沿 + 消息条数增长两路判定） ── */
@@ -478,6 +1055,10 @@ function appsDevSessionRunning(s) {
 }
 function appsDevTick() {
   if (!appsDevPageOpen()) return;
+  /* 先补一次「本页没有在显示的会话」：本页这条会话在页面活着的时候被删 / 被截断时，
+     appsDevViewBind 会把本页清回首轮态，而首次绘制那次自动选中不会再重跑 —— 补上它，
+     右栏才不会停在「仅有引导、正文全空」的状态（见 appsDevEnsureCurrentSession）。 */
+  appsDevEnsureCurrentSession();
   const list = typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId) : [];
   const running = list.some(appsDevSessionRunning);
   const st = DEVD.sessionId
@@ -491,11 +1072,15 @@ function appsDevTick() {
   DEVD.msgCount = cnt;
   if (running) {
     DEVD.busy = true;
+    /* 会话跑着的时候也**继续看预览**（本轮需求）：开发过程中改一版就该在中栏看到一版 ——
+       旧口径在这里直接 return，所以「跑完才刷一次」，开发过程里中栏一动不动。
+       真重载由 appsDevCheckPreview 的防抖门槛把关（改动停下来才刷）。 */
+    if (DEVD.LIVE_RELOAD) appsDevCheckPreview(false).catch(() => {});
     return;
   }
   if (DEVD.busy || grew) {
     DEVD.busy = false;
-    appsDevCheckPreview(false).catch(() => {});
+    appsDevCheckPreview(true).catch(() => {});
   }
 }
 function appsDevStartTimer() {
@@ -551,6 +1136,12 @@ function appsDevRenderConv() {
   try {
     if (typeof paintAgentSendState === "function") paintAgentSendState();
   } catch (_) {}
+  /* 正文 / 输入框刚画好：把排队中的「自定义风格」提问落下去（见 appsDevFlushStyleAsk）。
+     不在这个文件里另开一处渲染路径，就挂在「每次画完正文」这一处 —— 新建应用时用户还停在
+     库页（此刻输入框不在 DOM 里），等他走进开发页这一问自然落到输入框上。 */
+  try {
+    appsDevFlushStyleAsk();
+  } catch (_) {}
 }
 /* 清掉会话视图搬进右栏的四块面板（首轮态 / 换应用 / 还没有本应用会话时调）：
    只隐藏并清空显示，不落盘、不动会话数据 —— 回看别的会话时它们照常按自己的数据重绘。 */
@@ -566,7 +1157,7 @@ function appsDevClearConvPanels() {
 /* ── 首轮：等同在开发节点上点「开发」并提交 ── */
 
 /* app-boot.js 的 doSend 在「空闲 + 有文本」时问一次：返回 true = 这一发由开发页接管。
-   只在首轮态（还没有本应用的开发会话 / 用户点了「＋ 新开发会话」）接管。 */
+   只在首轮态（还没有本应用的开发会话 / 用户点了左栏应用行右端的「＋」）接管。 */
 function appsDevComposerSend(raw) {
   if (!appsDevPageOpen() || !DEVD.draft) return false;
   const text = String(raw == null ? "" : raw).trim();
@@ -574,6 +1165,29 @@ function appsDevComposerSend(raw) {
   appsDevStartDevSession(text).catch(() => {});
   return true;
 }
+/* ── 「自定义」风格：这一轮的开发需求里附一段风格约束 ──
+ *
+ * 只在**这个应用的风格还记着「自定义」**时生效（app.json 的 style，见 apps-store.js）：
+ * 说明它还没有预设长相、这一轮必须先问清用户要什么风格再动代码，并把落点指清楚
+ * （入口页 + 需要时沿用同一份模板的视觉变量），也允许 Agent 按应用用途先提几套方案
+ * 让用户挑（题面进 ask_user_question 的 options，理由写 description）。
+ *
+ * 形态：**加进会话契约**（createDevSessionForNode 的第 4 个参数，随系统提示注入），
+ * 不塞进用户消息 —— 会话里显示的仍旧只是用户自己写的那句话（与首轮口径一致）。
+ * 不是自定义风格就回空串，调用方原样不追加（非自定义应用零变化）。 */
+function devStyleAskContract(appId) {
+  const id = String(appId || "").trim();
+  const app =
+    id && typeof appsLocalById === "function" ? appsLocalById(id) : null;
+  const style = String((app && app.style) || "")
+    .trim()
+    .toLowerCase();
+  if (style !== "custom") return "";
+  return appsDevT(
+    "【自定义风格 · 本轮先问清风格再动代码】这个应用的风格记着「自定义」：它还没有预设长相，所以这一轮**先把风格问清楚**——要么请用户直接说他的风格要求（气质 / 配色 / 字体 / 参考），要么你按这个应用的用途先提出 2–3 套**彼此明显不同**的具体方案让他挑（每套给一个名字 + 一句它长什么样 + 适合什么感觉）；用 ask_user_question 把方案放进 options（推荐项放第一位并在 label 末尾标「（推荐）」），不要只把方案列在正文里。用户选定或给出要求之前，不得改任何代码、也不得开始做页面；风格定下来后再按它改写应用目录里的入口页（index.html），页面结构沿用同一份模板，风格只动视觉。",
+  );
+}
+
 async function appsDevStartDevSession(text) {
   const reqText = String(text == null ? "" : text).trim();
   if (!DEVD.appId || !reqText) return false;
@@ -591,7 +1205,7 @@ async function appsDevStartDevSession(text) {
     return true;
   }
   if (typeof createDevSessionForNode !== "function") return true;
-  const sess = createDevSessionForNode(node, "dev", reqText);
+  const sess = createDevSessionForNode(node, "dev", reqText, devStyleAskContract(DEVD.appId));
   if (!sess) return true;
   if (node.devStatus !== "done") node.devStatus = "wip";
   /* 该应用的画布落盘：createDevSessionForNode 把会话 id 写进了节点
@@ -607,6 +1221,9 @@ async function appsDevStartDevSession(text) {
   DEVD.sessionId = sess.id;
   DEVD.msgCount = 0;
   DEVD.busy = true;
+  /* 这条首轮需求已经交出（写进会话并开跑）→ 草稿槽立刻清掉：留着它下次点「＋」
+     会把上一轮的需求又摆回输入框（那是重复提交，不是保留草稿）。 */
+  appsDevDraftClear(DEVD.appId);
   try {
     await persistAgentSession();
   } catch (_) {}
@@ -637,8 +1254,16 @@ async function appsDevStartDevSession(text) {
   }
   return true;
 }
-/* 「＋ 新开发会话」：回到首轮态（下一次输入新建一条绑定会话） */
-function appsDevNewRound() {
+/* 「新开发会话」：回到首轮态 —— 下一次输入就在本应用下新建一条绑定会话。
+   两个入口都走这一处：左栏应用行右端的「＋」（本轮需求，每行一个）与工具栏那颗「＋」。
+   给了 appId 且不是当前应用 → 先按正常的换应用路径切过去（整页重绘，中栏预览与右栏一起换），
+   否则会出现「左栏指着 A、右栏却在 A 下建会话」的分家状态。 */
+function appsDevNewRound(appId) {
+  const id = String(appId || "").trim();
+  if (id && id !== String(DEVD.appId || "") && typeof appsDevSelectApp === "function") {
+    appsDevSelectApp(id); /* 换应用：draft=true / 清 sessionId，随后整页重绘 */
+    return;
+  }
   DEVD.draft = true;
   DEVD.sessionId = "";
   DEVD.msgCount = 0;
@@ -646,6 +1271,61 @@ function appsDevNewRound() {
   const inp = document.getElementById("agentInput");
   if (inp) inp.focus();
 }
+/* 左栏应用行右端「＋」的动作（宿主 appsDevSidebarHost 把它交给 app-assist.js 的行渲染）。
+   与上面同一处实现，不写第二份分支。 */
+function appsDevNewSessionFor(appId) {
+  appsDevNewRound(appId);
+}
+
+/* ── 「自定义」风格那一步：把提问落到开发页的输入框上 ──
+ *
+ * 触发点有两处（见 app-app-flow.js 的 startCustomStyleAsk）：
+ *   ① 新建应用时选了「自定义」→ 建完停在开发页，直接问风格；
+ *   ② 开发页 ⋯「换风格…」选了「自定义」→ 记下选择后同样回到这里。
+ * 这里只做「把问题摆到用户面前」：填一句可直接发送的提问 + 一条提示，**不自动发送**。
+ * 用户点发送 = 正常走首轮开发会话（appsDevStartDevSession 会给它加上「先问清风格」的约束）。
+ * 输入框里已有用户自己写的字时不覆盖，只给提示（那是他的草稿，不能被我们冲掉）。
+ *
+ * 时序：新建应用时用户多半还停在「库」页（开发页的输入框根本不在 DOM 里），所以这一问
+ * 先记进 DEVD.askStyleId / askStyleText（排队），等本页画到输入框时由 appsDevRenderConv
+ * 落下去（appsDevFlushStyleAsk）—— 不然这一问会无声丢掉。
+ * 返回 true = 此刻已经落到输入框上；false = 排着队（开发页画出来时再落）。 */
+function appsDevAskStyle(appId, promptText) {
+  const want = String(appId || "").trim();
+  const text = String(promptText || "").trim();
+  if (!want || !text) return false;
+  DEVD.askStyleId = want;
+  DEVD.askStyleText = text;
+  return appsDevFlushStyleAsk();
+}
+/* 把排队中的「自定义风格」提问落到输入框上（开发页每次画完正文时调一次）。
+   已落过就把队清掉；用户已在写别的字时不覆盖，但同样清队 —— 别在他打字时反复弹提示。 */
+function appsDevFlushStyleAsk() {
+  const want = String(DEVD.askStyleId || "");
+  if (!want) return false;
+  if (!appsDevPageOpen() || String(DEVD.appId || "") !== want) return false;
+  const inp = document.getElementById("agentInput");
+  if (!inp) return false;
+  const text = String(DEVD.askStyleText || "").trim();
+  DEVD.askStyleId = "";
+  DEVD.askStyleText = "";
+  if (!text) return false;
+  if (String(inp.value || "").trim()) {
+    appsDevToast(appsDevT("选的是「自定义」风格：在下面说一句要什么风格（你已有的输入没被改动）"));
+    return false;
+  }
+  inp.value = text;
+  appsDevToast(
+    appsDevT("选的是「自定义」风格：下面那句话可以直接发送，也可以改成你自己的风格要求"),
+  );
+  try {
+    inp.focus();
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+  } catch (_) {}
+  return true;
+}
+window.appsDevAskStyle = appsDevAskStyle;
+window.appsDevFlushStyleAsk = appsDevFlushStyleAsk;
 
 /* ── 顶部：应用选择 / 开关 / 警告条 ── */
 
@@ -727,6 +1407,12 @@ function appsDevHeadTeardown() {
     } catch (_) {}
   }
   DEVD.headRO = null;
+  if (DEVD.headRaf) {
+    try {
+      cancelAnimationFrame(DEVD.headRaf);
+    } catch (_) {}
+  }
+  DEVD.headRaf = 0;
   DEVD.headEl = null;
   DEVD.headSlots = [];
   DEVD.moreBtnEl = null;
@@ -734,7 +1420,11 @@ function appsDevHeadTeardown() {
   DEVD.headW = 0;
 }
 
-/* 菜单条宽度监听：同宽不重排（重排会改布局，防抖一次） */
+/* 菜单条宽度监听：同宽不重排（重排会改布局，防抖一次）。
+   **重排一律推到下一帧**：appsDevFitHead 会搬 DOM（改布局），在 ResizeObserver 回调里
+   同步搬 = 同一帧内又产生一次未派发的尺寸通知，浏览器就抛
+   「ResizeObserver loop completed with undelivered notifications.」（index.html:0）。
+   推到 rAF 之后重排，回调返回时布局已定，不再自激成环。 */
 function appsDevStartHeadWatch(head) {
   if (!head) return;
   if (DEVD.headRO) {
@@ -748,7 +1438,13 @@ function appsDevStartHeadWatch(head) {
     const w = DEVD.headEl ? DEVD.headEl.clientWidth : 0;
     if (w === DEVD.headW) return;
     DEVD.headW = w;
-    appsDevFitHead();
+    if (DEVD.headRaf) return;
+    DEVD.headRaf = requestAnimationFrame(() => {
+      DEVD.headRaf = 0;
+      /* 这一帧里页面可能已经切走 / 整页重绘过：对不上就丢 */
+      if (!DEVD.headEl || !DEVD.headEl.isConnected) return;
+      appsDevFitHead();
+    });
   });
   try {
     ro.observe(head);
@@ -798,8 +1494,14 @@ function appsDevMoreToggle(open) {
 
 /* 排版：只允许一行。先把所有项放回主行量出**真实宽度**，再按优先级「前缀留主行、
    后缀收进更多」一次算清 —— 不靠反复读 scrollWidth 试（布局没落定时那会读晚一帧，
-   结果是尾巴被 overflow:hidden 裁掉，而裁掉的恰好是最右的「更多」）。 */
+   结果是尾巴被 overflow:hidden 裁掉，而裁掉的恰好是最右的「更多」）。
+   失败一律吞掉：它由 ResizeObserver 回调（rAF 后）驱动，抛出去会被报成界面错误。 */
 function appsDevFitHead() {
+  try {
+    appsDevFitHeadDo();
+  } catch (_) {}
+}
+function appsDevFitHeadDo() {
   const head = DEVD.headEl;
   const pop = DEVD.morePopEl;
   const btn = DEVD.moreBtnEl;
@@ -845,10 +1547,12 @@ function appsDevPagePaint(body, seq) {
   /* 整页重绘前先归还借走的会话 DOM（三栏容器马上要被重建；上一轮的容器可能已从
      DOM 上摘掉，所以这里不能只依赖 appsHubPaint 的卸载钩子） */
   appsDevUnmount();
-  const apps = typeof appsLocalList === "function" ? appsLocalList() : [];
-  const ids = apps.map((a) => String(a.id || ""));
-  let cur = String(DEVD.appId || "");
-  if (!ids.includes(cur)) cur = ids.length ? ids[0] : "";
+  const apps = (typeof appsLocalList === "function" ? appsLocalList() : []).filter(
+    (a) => a && a.dev === true,
+  );
+  /* 进开发页时选哪个应用：appsDevPickApp（本页当前选中的 > 上次打开过的 > 名单第一个）。
+     这样从别处回开发页不会出现「没选中应用」的空页。 */
+  let cur = appsDevPickApp(apps);
   const switched = cur !== String(DEVD.appId || "");
   if (switched) {
     /* 换应用 = 新的一页上下文：会话归属 / 预览 / 快照全部重来 */
@@ -857,11 +1561,20 @@ function appsDevPagePaint(body, seq) {
     DEVD.sessionId = "";
     DEVD.msgCount = 0;
     DEVD.snap = null;
+    DEVD.liveChangedAt = 0;
     DEVD.url = "";
     DEVD.wf = null;
     DEVD.node = null;
     DEVD.nodeFor = "";
   }
+  if (cur) {
+    DEVD.appId = cur;
+    appsDevLastAppSave(cur);
+  }
+  /* 黑幕只在「换应用」时盖：最近一次画过预览的应用（DEVD.lastApp）跟这次选中的不一样
+     = 用户在切应用（首次进开发页 lastApp 还是空 → 不盖）。 */
+  const curtainOn = appsDevCurtainShouldShow(cur);
+  DEVD.lastApp = cur;
   DEVD.seq++;
   const mySeq = DEVD.seq;
 
@@ -870,8 +1583,13 @@ function appsDevPagePaint(body, seq) {
 
   /* 顶部菜单条：**只允许一行**（.apps-dev-head 是 nowrap）。宽了主行多放，窄了自动把
      优先级最低的几项搬进「更多 ▾」——功能一个不少，只是位置随宽度变：
-     应用选择 / ＋新开发会话 / 打开画布 / 刷新预览 / 应用根目录 / ＋新建应用 /
-     先拷问需求 / 维持状态 / 预览状态 全在这一条上（appsDevFitHead 负责搬运）。 */
+     ＋新开发会话 / 启动 / 打开画布 / 卸载 / 刷新预览 / 应用根目录 / 数据目录 /
+     换风格 / 先拷问需求 / 维持状态 / 预览状态 全在这一条上（appsDevFitHead 负责搬运）。
+     本轮需求：「新开发会话」的主入口移到**左栏每个应用行右端的「＋」**（点哪一行就在
+     哪个应用下新建会话）；这一条工具栏里那颗也改成同一枚「＋」图标 —— 当前应用的快捷
+     入口，含义与左栏那枚一样（都走 appsDevNewRound），放不下时收进「更多 ▾」里带「新开发会话」小标题。
+     本轮需求：原来的「应用 + 下拉 + 作者」整组已删 —— 选应用改到左栏（点应用行），
+     作者也跟去左栏那条应用行；省下的横向空间由 appsDevFitHead 自动把其余项搬回主行。 */
   const head = document.createElement("div");
   head.className = "apps-dev-head";
   DEVD.headEl = head;
@@ -887,49 +1605,123 @@ function appsDevPagePaint(body, seq) {
     DEVD.headSlots.push(s);
     return s;
   };
-  const appsSelect = document.createElement("select");
-  appsSelect.className = "apps-select apps-dev-app";
-  for (const app of apps) {
-    const o = document.createElement("option");
-    o.value = String(app.id || "");
-    o.textContent = String(app.name || app.id || "");
-    appsSelect.appendChild(o);
-  }
-  appsSelect.value = cur;
-  appsSelect.onchange = () => appsDevSelectApp(appsSelect.value);
-  const appGrp = document.createElement("span");
-  appGrp.className = "apps-dev-appgrp";
-  const kApp = document.createElement("span");
-  kApp.className = "apps-dev-head-k";
-  kApp.textContent = appsDevT("应用");
-  appGrp.appendChild(kApp);
-  appGrp.appendChild(appsSelect);
-  head.appendChild(addSlot(0, appGrp));
   head.appendChild(
     addSlot(
       1,
-      appsMiniBtn(appsDevT("＋ 新开发会话"), () => appsDevNewRound(), true),
+      (() => {
+        const b = appsMiniBtn(appsDevT("＋"), () => appsDevNewRound(), true);
+        b.title = appsDevT("新开发会话：在本应用下开一条新会话（下一次输入即新建并开工）");
+        b.setAttribute("aria-label", appsDevT("新开发会话"));
+        return b;
+      })(),
+      "新开发会话",
     ),
   );
+  /* 「启动」= 等同在库中运行：给当前应用开独立窗口（appsOpenApp → apps:openWindow）。
+     丢掉应用的开发节点时会话仍可跑，但没有可启动的应用时这颗按钮不出现（需求：没有应用就不给点）。 */
+  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
+    head.appendChild(
+      addSlot(
+        2,
+        appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp()),
+      ),
+    );
+    /* 「上架」= 打开发布浮层（renderer/app-publish.js 的 window.openAppPublish）：
+       pri 2.5 = 紧挨「启动」右边；一行放不下时从 pri 最大的开始往「更多 ▾」收，
+       「启动」（pri 2）比它先留在主行。未加载该模块（旧版本）时点击给可读提示，
+       不在按钮层面藏功能 —— 用户看得见这条路，才知道能上架。 */
+    head.appendChild(
+      addSlot(
+        2.5,
+        appsMiniBtn(appsDevT("上架"), () => {
+          if (typeof window.openAppPublish !== "function") {
+            appsDevToast(
+              appsDevT("上架模块未就绪（renderer/app-publish.js 未加载）"),
+              "err",
+            );
+            return;
+          }
+          window.openAppPublish(DEVD.appId);
+        }),
+      ),
+    );
+  }
   head.appendChild(
     addSlot(
-      2,
+      3,
       appsMiniBtn(appsDevT("打开画布"), () => {
         if (DEVD.appId && typeof openAppCanvas === "function")
           openAppCanvas(DEVD.appId);
       }),
     ),
   );
+  /* 「卸载」：开发中的应用不再列在「库」页，卸载入口在这里补齐（确认框由库页同一份实现给出：
+     只删该应用自己的子文件夹，画布 / 会话 / 其它用户内容一概不动）。取的是**最新的**本机摘要，
+     不用顶上那一份可能过期的列表。 */
   head.appendChild(
     addSlot(
-      3,
+      3.5,
+      (() => {
+        const un = appsMiniBtn(appsDevT("卸载"), () => {
+          const app =
+            typeof appsLocalById === "function" ? appsLocalById(DEVD.appId) : null;
+          if (!app) {
+            appsDevToast(appsDevT("这个应用不在本机了"), "warn");
+            return;
+          }
+          if (typeof appsUninstallApp === "function") appsUninstallApp(app);
+        });
+        un.classList.add("danger");
+        un.title = appsDevT("只删该应用自己的子文件夹；画布、会话与该应用的存储一概不动");
+        if (!DEVD.appId || !apps.some((a) => String(a.id || "") === DEVD.appId))
+          un.disabled = true;
+        return un;
+      })(),
+      "卸载",
+    ),
+  );
+  head.appendChild(
+    addSlot(
+      4,
       appsMiniBtn(appsDevT("刷新预览"), () =>
         appsDevCheckPreview(true).catch(() => {}),
       ),
     ),
   );
-  head.appendChild(addSlot(4, appsDevRootItem(), "应用根目录"));
-  if (typeof appsCreateAppBtnEl === "function") head.appendChild(addSlot(5, appsCreateAppBtnEl()));
+  head.appendChild(addSlot(5, appsDevRootItem(), "应用根目录"));
+  /* 「数据目录」：打开**当前这个应用**的数据文件夹（默认 <数据目录>/apps-data/<id>/，
+     用户改过数据文件夹则是他选的那个）—— 与库页每张卡片右侧那颗 📂 同一个动作
+     （renderer/app-apps.js 的 appsDataOpenNow，路径只由主进程解析）。pri=5.5 = 紧挨
+     应用根目录；没有选中的本机应用时不给点。 */
+  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
+    const dirBtn = appsMiniBtn(appsDevT("数据目录"), () => {
+      if (typeof appsDataOpenNow === "function") appsDataOpenNow(DEVD.appId);
+    });
+    dirBtn.title = appsDevT("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
+    head.appendChild(addSlot(5.5, dirBtn, "数据目录"));
+  }
+  /* 「＋ 新建应用」本轮从这条菜单条移到左栏列表底部（左栏现在以应用为主体，
+     建应用就该在建应用的地方）。这里不再占菜单条的宽度。 */
+  /* 「换风格…」：按所选设计风格重写这个应用的入口页（renderer/app-app-flow.js 的
+     appStyleSwapDialog）。pri=9 = 比几个开关还不占主行，放不下就自然收进「更多 ▾」——
+     需求口径就是把它放这一条菜单里，所以它不抢主行宽度。选中应用才有得换。 */
+  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
+    head.appendChild(
+      addSlot(
+        9,
+        appsMiniBtn(appsDevT("换风格…"), () => {
+          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId) : null;
+          if (typeof appStyleSwapDialog === "function")
+            appStyleSwapDialog(
+              DEVD.appId,
+              String((app && app.name) || DEVD.appId || ""),
+              String((app && app.style) || ""),
+            );
+        }),
+        "换风格",
+      ),
+    );
+  }
   const mkSwitch = (label, checked, onchange, title) => {
     const lab = document.createElement("label");
     lab.className = "apps-dev-sw";
@@ -964,7 +1756,7 @@ function appsDevPagePaint(body, seq) {
     "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识后才动手（真源是开发节点上的 devGrill）",
   );
   DEVD.grillEl = grill.cb;
-  head.appendChild(addSlot(6, grill.lab));
+  head.appendChild(addSlot(7, grill.lab));
   const keep = mkSwitch(
     "维持状态",
     DEVD.keepState,
@@ -973,7 +1765,7 @@ function appsDevPagePaint(body, seq) {
     },
     "重载预览前先存下预览页的滚动位置与表单内容，加载后写回",
   );
-  head.appendChild(addSlot(7, keep.lab));
+  head.appendChild(addSlot(8, keep.lab));
   const stat = document.createElement("span");
   stat.className = "apps-dev-stat";
   DEVD.statEl = stat;
@@ -1019,13 +1811,14 @@ function appsDevPagePaint(body, seq) {
   /* 三栏 */
   const cols = document.createElement("div");
   cols.className = "apps-dev-cols";
+  DEVD.colsEl = cols;
 
   const side = document.createElement("section");
   side.className = "apps-dev-col apps-dev-side";
   const sideHead = document.createElement("div");
   sideHead.className = "apps-dev-colhead";
   const sideK = document.createElement("span");
-  sideK.textContent = appsDevT("会话");
+  sideK.textContent = appsDevT("应用");
   const q = document.createElement("input");
   /* type=text：走 base.css 的全局输入样式（深色底 / 1px 边框 / 4px 6px 内边距）。
      以前是 type=search —— 全局输入样式表不含 search，它吃浏览器默认样式把整条标题条
@@ -1033,7 +1826,8 @@ function appsDevPagePaint(body, seq) {
      --apps-dev-colhead-h）。 */
   q.type = "text";
   q.className = "apps-dev-q";
-  q.placeholder = appsDevT("搜索会话…");
+  /* 搜索：同时搜应用名与会话标题（app-assist.js 的应用分组渲染按这个口径过滤） */
+  q.placeholder = appsDevT("搜索应用 / 会话…");
   q.value = DEVD.filter || "";
   q.oninput = () => {
     DEVD.filter = q.value;
@@ -1049,6 +1843,12 @@ function appsDevPagePaint(body, seq) {
   sideList.className = "agent-side-list";
   sideList.id = "appsDevSideList";
   side.appendChild(sideList);
+  /* 左栏底部：本机还没有「开发中」的应用时，这条列表就是唯一的入口 —— 把「＋ 新建应用」
+     钉在列表底部（本轮需求：它从顶栏菜单条移到这里）。列表滚动区独立，这行不跟着滚。 */
+  const sideFoot = document.createElement("div");
+  sideFoot.className = "apps-dev-sidefoot";
+  if (typeof appsCreateAppBtnEl === "function") sideFoot.appendChild(appsCreateAppBtnEl());
+  if (sideFoot.childNodes.length) side.appendChild(sideFoot);
   /* 行自己的 onclick（app-assist.js）会设活动会话并重绘：这里在捕获段先把宿主态对齐，
      （点行内按钮不算选会话） */
   sideList.addEventListener(
@@ -1060,6 +1860,22 @@ function appsDevPagePaint(body, seq) {
       const row = t.closest(".side-sess");
       const sid = row && row.dataset ? row.dataset.sid : "";
       if (!sid) return;
+      /* 点的是**别的应用**下的会话（左栏现在把所有开发中应用的会话都折叠在自己的应用行下）：
+         先切到那个应用（整页重绘，预览与右栏一起换），再把这条会话拨回来显示 ——
+         否则中栏预览还停在上一个应用，右栏却已经是另一条会话的内容。 */
+      const st0 =
+        typeof agentSessionById === "function" ? agentSessionById(sid) : null;
+      const sidApp = st0 ? String(st0.appId || "") : "";
+      if (sidApp && sidApp !== String(DEVD.appId || "")) {
+        if (typeof appsDevSelectApp === "function") appsDevSelectApp(sidApp);
+        DEVD.draft = false;
+        DEVD.sessionId = sid;
+        DEVD.msgCount =
+          st0 && Array.isArray(st0.messages) ? st0.messages.length : 0;
+        appsDevRenderConv();
+        appsDevEnsureCurrentSession();
+        return;
+      }
       DEVD.draft = false;
       DEVD.sessionId = sid;
       if (typeof agentSessionById === "function") {
@@ -1072,6 +1888,9 @@ function appsDevPagePaint(body, seq) {
          只调 appsDevApplyTurn()：它同时把活动会话拨到刚点中的这条，右栏的计划 / 任务清单
          才跟着换过来，不会留着上一条会话的清单。 */
       appsDevRenderConv();
+      /* 点中的这条若已不在（列表是上一帧画的、会话刚被删）：不能把本页留在
+         「非首轮态却画不出东西」——立即补回本应用最新一条（没有才回落到首轮态） */
+      appsDevEnsureCurrentSession();
     },
     true,
   );
@@ -1105,6 +1924,8 @@ function appsDevPagePaint(body, seq) {
   if (DEVD.url) frame.setAttribute("src", DEVD.url);
   DEVD.frame = frame;
   frame.addEventListener("load", () => {
+    /* 新页加载完成 = 撤掉切应用时盖的那层黑幕（没盖时是幂等空操作） */
+    appsDevCurtainDrop();
     const pending = DEVD.pendingState;
     DEVD.pendingState = null;
     if (!pending || !frame.contentWindow) return;
@@ -1116,6 +1937,9 @@ function appsDevPagePaint(body, seq) {
     } catch (_) {}
   });
   frameWrap.appendChild(frame);
+  /* 切应用（换 iframe 上下文）时才盖黑幕：首帧 src 已挂好，幕盖在这层上，加载完淡出。
+     日常「刷新预览」（同一个应用重设 src）不盖 —— 那一下用户已经看着旧页面。 */
+  if (curtainOn) appsDevCurtainShow();
   view.appendChild(frameWrap);
   cols.appendChild(view);
 
@@ -1149,14 +1973,24 @@ function appsDevPagePaint(body, seq) {
   body.appendChild(wrap);
   DEVD.listEl = sideList;
   appsDevMount();
+  /* 三栏宽度 + 两条拖拽把手（默认左 240px + 中/右各半，宽度按全局偏好沿用） */
+  appsDevBindCols();
   /* 首帧就绑好显示覆盖、并按本页这条会话画一次：预览 info / 开发节点都是异步的，
      不先画一次的话，这段空窗期里右栏（刚搬过来的那几个面板）还留着上一个上下文的
      内容 —— 首帧残留（用户看到的「刚点开开发页，右栏里是别人的计划」）。 */
   appsDevRenderConv();
 
   if (!cur) {
+    /* 左栏：应用分组由宿主渲染，但一个「开发中」的应用都没有时宿主不生效（appId 为空），
+       这一列会空着 —— 直接给一行空态，别让用户看着一条空列表猜。 */
+    const e = document.createElement("div");
+    e.className = "side-empty";
+    e.textContent = appsDevT("本机还没有「开发中」的应用");
+    sideList.appendChild(e);
     appsDevPaintPreviewStat("error");
-    appsDevPreviewStatMsg(appsDevT("还没有可预览的应用：先新建或安装一个应用"));
+    appsDevPreviewStatMsg(
+      appsDevT("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。"),
+    );
     return;
   }
   appsDevSyncAfterPaint(mySeq, seq).catch(() => {});
@@ -1201,8 +2035,10 @@ async function appsDevSyncAfterPaint(mySeq, seq) {
       DEVD.frame.setAttribute("src", DEVD.url);
     appsDevRefreshHead().catch(() => {});
   }
-  /* 首次进入（或换了应用）：右栏落到该应用最近一条会话；没有就是首轮态 */
-  if (DEVD.draft && !DEVD.sessionId) {
+  /* 首次进入（或换了应用）：右栏落到该应用最近一条会话；没有就是首轮态。
+     框里还有没发出去的首轮草稿时不自动选 —— 那是用户正在写的开发需求，
+     换成会话就会把它从眼前顶掉（与 appsDevEnsureCurrentSession 同一道闸）。 */
+  if (DEVD.draft && !DEVD.sessionId && !appsDevDraftPending()) {
     const sess =
       typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId)[0] : null;
     if (sess) {
@@ -1215,17 +2051,31 @@ async function appsDevSyncAfterPaint(mySeq, seq) {
       } catch (_) {}
     }
   }
-  if (!alive()) return;
+  if (!alive()) {
+    /* 这次绘制已被后来的绘制顶掉（会话表 / 预览都还在来）：右栏此刻可能还停在首轮态，
+       但那次被顶掉的自动选中不会再跑 —— 补一次，别让右栏停在空白态。 */
+    appsDevEnsureCurrentSession();
+    return;
+  }
   appsDevRenderConv();
+  /* 首次进入时选的那条在这期间又没了（会话表同步晚到 / 被别处删）：再兜一次底 */
+  appsDevEnsureCurrentSession();
 }
 
-/* 顶部下拉换应用：整页重绘（列 / 容器全部重建，会话归属与预览跟着换） */
+/* 换应用（左栏点应用行 / 迁移成功后自动切过来）：整页重绘（列 / 容器全部重建，
+   会话归属与预览跟着换）。选中的这个应用在左栏一定展开 —— 用户点它就是要看它的会话。 */
 function appsDevSelectApp(appId) {
-  DEVD.appId = String(appId || "").trim();
+  const id = String(appId || "").trim();
+  DEVD.appId = id;
+  if (id) {
+    if (!DEVD.expanded) DEVD.expanded = {};
+    DEVD.expanded[id] = true;
+  }
   DEVD.draft = true;
   DEVD.sessionId = "";
   DEVD.msgCount = 0;
   DEVD.snap = null;
+  DEVD.liveChangedAt = 0;
   DEVD.url = "";
   DEVD.filter = "";
   DEVD.wf = null;
@@ -1239,3 +2089,5 @@ window.appsDevSidebarHost = appsDevSidebarHost;
 window.appsDevComposerSend = appsDevComposerSend;
 window.appsDevPagePaint = appsDevPagePaint;
 window.appsDevPageUnmount = appsDevPageUnmount;
+/* 左栏应用行「＋」/ 工具栏「＋」两个入口共用（app-assist.js 经宿主 onAppNew 取） */
+window.appsDevNewSessionFor = appsDevNewSessionFor;

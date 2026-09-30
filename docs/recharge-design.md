@@ -12,6 +12,7 @@
 | 可见性 | **测试期只对 `ms2308` 显示**（客户端 `VISIBLE_USERS` + 服务端 `MTNODE_RECHARGE_USERS` 双闸门），完全测试通过后才真正上线 |
 | 支付通道 | 支付宝**当面付**（扫码预下单 `alipay.trade.precreate`），服务端自绘二维码 SVG（零依赖） |
 | 余额 | `users.balanceCents`（整数分），经 account-store 落生产 Tablestore |
+| 菜单余额取数 | 顶栏账户菜单那行余额走**本机账号快照**（`auth-store` 的 `user.balanceYuan`，由 `/api/me` 下发）；打开菜单时补一次 `authMe()` 拉新快照后再重画 —— 不补这一步，充值（或余额在别处变动）之后点开菜单会一直显示落盘时的老值（典型表现：菜单 ¥0.0000，而充值窗走 `/api/wallet/summary` 现拉显示正常）。拉取失败保留旧值，绝不清零 |
 | 管理台 | **独立界面**：`https://mt-agent.com/mtnode/admin/`，站点**不设任何入口**，只有 `ms2308` 微信扫码能登录 |
 | 归属 Bug | 同一人的微信 unionid 曾被分到不同 uid（临时号 + 老号并存）→ 归位到老号 `ms2308`，并以该 uid 作为 admin（见 §八） |
 
@@ -23,7 +24,7 @@
 客户端（Electron 渲染层）
   renderer/app-wallet.js      充值对话框：档位/自定义金额 → 下单 → 付款码 → 轮询入账 → 刷新余额
   renderer/css/wallet.css     样式（跟随应用主题变量）
-  renderer/app-auth.js        账号菜单里的「余额」行与「账户充值」入口（按判空挂载）
+  renderer/app-auth.js        账号菜单里的「余额」行与「账户充值」入口（按判空挂载）；打开菜单时补拉一次账号快照（余额不显示老值）
   auth-store.js               USER_FIELDS += balanceCents（账号摘要落盘白名单）
         │ window.api.storeRequest（主进程统一带 Bearer，渲染层不碰 token）
         ▼

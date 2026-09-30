@@ -1,10 +1,12 @@
 /* renderer/app-apps.js — 应用中心（顶栏「应用」）的整屏浮层页 + 本机应用库 + 开发者面板
    ─────────────────────────────────────────────────────────────────────────────
    #appsHub 挂在 document.body 上 · position:fixed inset:0：**连顶栏（菜单栏）一起盖住**，
-   整屏交给应用开发（顶栏与应用开发无关）；出口只有侧栏第一行的「返回 MTNode」与 Esc
+   整屏交给应用开发（顶栏与应用开发无关）；出口是正文顶部第 1 行最右的「返回 MTNode」与 Esc
    （Esc 由 app-apps.js 监听）。z-index 90 < #overlay 的 100，所以后打开的对话框（设置 /
    插件 / 工坊 / 确认框）一定压在本页之上，本页永不顶掉别人。
-   **没有标题栏**：页名在左侧导航里（选中态即页名），顶部只有「品牌 + 返回 MTNode」一行。
+   **没有标题栏**：页名在左侧导航里（选中态即页名），正文顶部只有两行：第 1 行 =「搜索框 +
+   右上角返回 MTNode」（.apps-hub-toprow，nowrap —— 出口钉在第 1 行最右，不单占一行），
+   第 2 行 = 标签筛选 —— 那一块是壳的一部分（不随正文重绘重建，搜索框才不会失焦）。
    配色一律用 base.css 的主题变量（亮色主题靠变量自动跟随），只有按钮专属蓝写在 layout.css。 */
 
 /* display:flex 会盖掉浏览器默认的 [hidden]，必须自己压回去（同 .btn-account[hidden]） */
@@ -24,6 +26,8 @@
 /* ── 左导航（应用 / 库 / 开发） ── */
 .apps-hub-side {
   flex: none;
+  /* 固定宽：本栏是整页导航，不参与「边栏之间调宽」（那条需求只针对开发页的会话三栏，
+     把手在 .apps-dev-cols 上，见下方 .apps-dev-resize） */
   width: 176px;
   min-height: 0;
   display: flex;
@@ -34,8 +38,8 @@
   border-right: 2px solid var(--bd);
 }
 
-/* 侧栏第一行＝品牌 + 「返回 MTNode」（去掉标题栏后，这是本页唯一的常驻退出钮，
-   按钮写全名而不是一个 ✕，所以字号压到 10.5px 才放得下 176px 侧栏） */
+/* 侧栏第一行＝「应用」品牌（本页唯一的常驻退出钮不在这里：它在正文顶部第 1 行最右的
+   「返回 MTNode」，按钮写全名而不是一个 ✕，见下方 .apps-hub-toprow） */
 .apps-hub-sidehead {
   display: flex;
   align-items: center;
@@ -99,21 +103,129 @@
   flex-direction: column;
 }
 
-/* ── 正文顶部的搜索条（只有应用页出现搜索框；「刷新」按钮已去掉，手动重拉没必要：
-      目录在本页打开与每次下载结束时都会自动重拉；剩搜索一个零件，不再独占一行） ── */
-.apps-hub-headacts {
+/* ── 正文顶部（两行）：第 1 行＝搜索框 + 右上角「返回 MTNode」，第 2 行＝标签筛选 ──
+   这一块是**壳**（不是正文）的一部分：正文每次重绘整块换掉，而搜索框必须活下来 ——
+   以前它挂在 .apps-hub-body 里，重绘一拆就把焦点连同中文输入法组合态一起丢了。
+   现在它只建一次（appsHubTopbar），列方向排在正文之上、不随正文滚动。
+   两行是本次「出口别单占一行」的解法：以前 DOM 顺序是「搜索 → 标签条 → 占位 → 返回钮」，
+   标签条 flex:1 1 100% 先折行，返回钮就被顶到**第 3 行独占一行**（顶区 3 行、第 1 行
+   右侧一片空白）；现在返回钮与搜索框同在第 1 行，标签条落第 2 行。 */
+.apps-hub-topbar {
   flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 12px 14px 0;
+  font-size: 11.5px;
+}
+
+/* 第 1 行本体：[搜索框][弹性占位][返回钮]。**nowrap**：窗口再窄也不把返回钮折到下一行，
+   要挤只挤搜索框（200px → 下限 120px）——出口永远在右上角同一个位置上。 */
+.apps-hub-toprow {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+/* 正文顶部的搜索条（只有应用页出现搜索框；「刷新」按钮已去掉，手动重拉没必要：
+   目录在本页打开与每次下载结束时都会自动重拉） */
+.apps-hub-headacts {
+  flex: 0 1 200px;
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
 }
 
+/* 首选 200px（= .apps-hub-headacts 的 flex-basis），挤不下才缩；下限 120px ——
+   再窄就让它溢出，而不是把「返回 MTNode」挪出右上角。 */
 .apps-hub-search {
-  width: 200px;
+  width: 100%;
+  min-width: 120px;
   font-size: 11.5px;
 }
 
+/* 把「返回 MTNode」推到第 1 行最右（右上角）：它在 .apps-hub-toprow 内、正文之上，
+   窗口多宽都贴着右上角，不必让用户去左栏找出口 */
+.apps-hub-topspace {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ── 标签筛选条（一行胶囊；选中的标签一眼可辨，可多选 = OR） ──
+   flex:1 1 100% ⇒ 它自己折成整行，于是第 2 行只放标签、第 1 行只放搜索框与「返回 MTNode」 */
+.apps-hub-tags {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+}
+
+.apps-hub-tags[hidden] {
+  display: none !important;
+}
+
+.apps-hub-tags-lead {
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+
+.apps-hub-tags-more {
+  color: var(--muted);
+  opacity: .85;
+  font-size: 10.5px;
+}
+
+.apps-tagchip {
+  padding: 2px 9px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.7;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+  background: var(--panel2);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.apps-tagchip:hover {
+  border-color: #6db4ff;
+  color: #9ecdff;
+}
+
+.apps-tagchip.on {
+  border-color: #6db4ff;
+  background: rgba(109, 180, 255, .16);
+  color: #9ecdff;
+}
+
+.apps-tagchip-clear {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+/* 筛选摘要一行（有筛选时才出现）：文字 + 「清除筛选」 */
+.apps-filterline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.apps-filterline-clear {
+  flex: none;
+}
+
+/* 出口钮：flex:none ⇒ 在第 1 行里从不被压缩、也不折行（要挤只挤搜索框） */
 .apps-hub-close {
   flex: none;
   white-space: nowrap;
@@ -186,6 +298,222 @@
 .apps-badge-bad {
   color: var(--red);
   border-color: var(--red);
+}
+
+/* 「我上架的」：作者自己的条目（docs/apps-market.md §七）在自己的列表里一眼可辨
+   （紫色沿用工具库 / 本文件其它作者态标记的 #c792ea） */
+.apps-badge-own {
+  color: #c792ea;
+  border-color: #c792ea;
+}
+
+/* 「开发中」（本轮新增）：本机这一份带 app.json 的 dev:true —— 它不出现在「库」页，
+   在「应用」页必须一眼看得出来，否则用户会以为应用丢了（青色沿用素材库那一档） */
+.apps-badge-dev {
+  color: var(--cyan2);
+  border-color: var(--cyan2);
+}
+
+/* ── 作者行 + 开发者信息折叠区 + 校验值小按钮 + 分支菜单（本轮新增） ──
+   口径：作者是给人看的（云端条目 = 上架账号，本机 = app.json 的作者）；
+   校验值这类长哈希对普通用户没有意义 → 收进「ⓘ」小按钮，点开才看全文、可复制。 */
+.apps-tile-author {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin: 1px 0 2px;
+}
+
+.apps-devmeta {
+  margin-top: 8px;
+  border-top: 1px dashed var(--bd2);
+  padding-top: 6px;
+}
+
+.apps-devmeta > summary {
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--muted);
+  list-style: none;
+}
+
+.apps-devmeta > summary::-webkit-details-marker {
+  display: none;
+}
+
+.apps-devmeta > summary::before {
+  content: "▸ ";
+}
+
+.apps-devmeta[open] > summary::before {
+  content: "▾ ";
+}
+
+.apps-devmeta[open] > summary {
+  margin-bottom: 4px;
+}
+
+.apps-hashbtn {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* 校验值小窗：全文 + 复制 + 关闭（persistent：只有「关闭」与 Esc 收它）；
+   固定定位 = 从「应用」页与应用详情的上架窗里都能用同一份实现 */
+.apps-hashpop {
+  position: fixed;
+  z-index: 30;
+}
+
+.apps-hashpop-box {
+  width: min(92%, 620px);
+}
+
+.apps-hashpop-t {
+  padding: 9px 12px;
+  border-bottom: 2px solid var(--bd);
+  font-size: 12px;
+  color: #9ecdff;
+}
+
+.apps-hashpop-v {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--panel2);
+  border: 0;
+  border-bottom: 2px solid var(--bd);
+  color: var(--ink);
+  font: 11.5px/1.6 ui-monospace, Menlo, Consolas, monospace;
+  resize: vertical;
+}
+
+/* 「切换分支 ▾」浮层：同源的其他作者条目（作者 · 版本 · 是否已装）。
+   走瞬时菜单口径（点外部 / Esc 收掉）—— 里面只有一个按钮，没有待保存的输入。 */
+.apps-branchpop {
+  position: fixed;
+  z-index: 30;
+  min-width: 320px;
+  max-width: min(92%, 560px);
+  max-height: 60%;
+  overflow: auto;
+  padding: 6px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 2px solid var(--bd2);
+  border-radius: 8px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .6);
+}
+
+.apps-branchrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.apps-branchrow.is-cur {
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+
+.apps-branchwho {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.apps-branchmeta {
+  flex: 1 1 auto;
+  color: var(--muted);
+}
+
+/* 开发页左栏应用行上的作者（本轮从顶栏挪过来；行内位置/宽度由 .side-apps-author 定） */
+.apps-dev-author {
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ── 版本树（多版本：一个应用收纳多个版本，docs/apps-market.md §七） ──
+   缩进 + 连接符表达父子（父版已被作者删除的行给「根版本（已删）」占位，见 appsVersionRows），
+   每行右侧是「下载这一版」——点它就只下那一版，不改动别的东西。 */
+.apps-vers {
+  margin-top: 8px;
+  padding: 6px 0 2px;
+  border-top: 1px dashed var(--bd2);
+}
+
+.apps-vers-head {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.apps-vers-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  padding: 2px 0;
+  font-size: 10.5px;
+  border-left: 2px solid transparent;
+}
+
+.apps-vers-row.is-cur {
+  border-left-color: var(--green);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+
+.apps-vers-row.is-gone {
+  opacity: .6;
+}
+
+.apps-vers-branch {
+  flex: none;
+  color: var(--bd2);
+  font-family: var(--mono);
+}
+
+.apps-vers-ver {
+  flex: none;
+  min-width: 96px;
+  font-family: var(--mono);
+  color: var(--ink);
+}
+
+.apps-vers-row.is-gone .apps-vers-ver {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.apps-vers-meta {
+  flex: none;
+  color: var(--muted);
+}
+
+.apps-vers-note {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.apps-vers-tags {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.apps-vers-dl {
+  flex: none;
+  margin-left: auto;
 }
 
 .apps-prog {
@@ -420,15 +748,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* 那一行右侧的动作组（数据文件夹那一条：打开 / 更改… / 恢复默认 + 状态徽标） */
-.apps-rootline-acts {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
 }
 
 .apps-rows {
@@ -741,7 +1060,11 @@ body.theme-light .apps-dev-more-pop {
   display: none !important;
 }
 
-/* 三栏：左固定宽，中（预览）与右（正文）各占一半，都能收缩。
+/* 三栏：左（会话）· 中（预览）· 右（正文），三栏之间都可以调宽。
+   两个变量由 renderer/app-apps.js 的 applyAppsDevCols 写入（默认左 240px + 中 / 右各占一半，
+   见 app-apps-dev.js 的 appsDevColsW）：每栏最小 240px、最大半屏，总宽不得溢出容器。
+   中栏的 240px 写在 minmax 里（「拖两边 = 调中间」的那一栏也有明确下限）；
+   窗口比三栏总最小宽还窄时由下面的媒体查询退回 minmax(0,1fr)，允许一起收缩、不出横向滚动。
    --apps-dev-colhead-h = 三条列标题条的**统一高度**（左「会话」/ 中「预览」/ 右会话名）：
    高度只在这里写一处，其余两条腿禁止各自长高（历史 bug：左栏搜索框用的是浏览器默认的
    type=search 样式，把整条标题条撑高，三栏标题就再也等不了高）。 */
@@ -750,11 +1073,63 @@ body.theme-light .apps-dev-more-pop {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns:
+    var(--apps-dev-side-w, 240px)
+    minmax(240px, 1fr)
+    var(--apps-dev-conv-w, 50%);
   gap: 8px;
 }
 
+/* 窄窗口（三栏连最小宽都排不下）：中栏放开下限，三栏一起收缩，不出横向滚动 */
+@media (max-width: 860px) {
+  .apps-dev-cols {
+    grid-template-columns:
+      var(--apps-dev-side-w, 240px)
+      minmax(0, 1fr)
+      var(--apps-dev-conv-w, 50%);
+  }
+}
+
+/* 三栏之间的拖拽分界线（绝对定位在栏边缘，铺满栏高，不占 grid 空间；与 #agentSideResize 同观感）。
+   整条边界都可拖（取消了原中间那段 64px 加宽把手）；常态就有一根可见的 1px 竖筋
+   （opacity .55），hover / 拖动整条加亮加粗，用户一眼看得见能拖。 */
+.apps-dev-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 7;
+  cursor: col-resize;
+  /* 触屏 / 触控笔：这条线上不做手势滚动，指针事件一路给到拖拽逻辑 */
+  touch-action: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .12));
+  background-position: 50% 0;
+  background-size: 1px 100%;
+  background-repeat: no-repeat;
+  opacity: .55;
+  transition: opacity .12s, background-size .12s, background-image .12s;
+}
+
+.apps-dev-resize:hover,
+.apps-dev-resize.dragging {
+  opacity: 1;
+  background-size: 2px 100%;
+  background-image: linear-gradient(180deg, transparent, #6db4ff 8%, #6db4ff 92%, transparent);
+}
+
+/* 左把手贴在左会话栏右缘、右把手贴在右正文栏左缘。
+   整根都落在本栏的内边缘一层（0..9px）里，不从栏框里探出去 —— 三栏各自 overflow:hidden
+   （防内容外溢），探出去的部分会被裁掉、只剩半根筋。 */
+.apps-dev-resize-side {
+  right: 0;
+}
+
+.apps-dev-resize-conv {
+  left: 0;
+}
+
 .apps-dev-col {
+  position: relative; /* 把手的定位父级 */
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -763,6 +1138,15 @@ body.theme-light .apps-dev-more-pop {
   border: 2px solid var(--bd);
   border-radius: 8px;
   background: var(--panel);
+}
+
+/* 每栏最小宽（需求口径：三栏同一套 240px + 最大半屏，夹取在 clampAppsColsW）。
+   用 min-width 而不是给 grid 写死 minmax(240px, …)：窗口比三栏总宽还窄时允许继续收缩，
+   不出横向滚动、不溢出容器。 */
+.apps-dev-side,
+.apps-dev-view,
+.apps-dev-conv {
+  min-width: 240px;
 }
 
 /* 列标题条：固定高度 + 内容一律垂直居中 → 三栏天然等高（见上面 --apps-dev-colhead-h） */
@@ -812,12 +1196,127 @@ body.theme-light .apps-dev-more-pop {
   min-height: 0;
 }
 
-/* 预览：iframe 占满中栏；底下白底（应用页多半是浅色） */
+/* 左栏的应用行（应用分组宿主渲染，见 renderer/app-assist.js 的 renderAgentSessionSidebar）：
+   一行 = 展开箭头 + 应用名 + 作者 + 会话数，当前应用高亮；它底下的会话行沿用 .side-sess
+   原样式、只缩进一层表达归属（本轮需求：左栏以应用为主体，会话折叠在各自应用下）。 */
+.side-apps-app {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ebedf2;
+}
+
+.side-apps-app:hover {
+  background: rgba(255, 255, 255, .06);
+}
+
+.side-apps-app.active {
+  background: rgba(86, 134, 254, .16);
+}
+
+.side-apps-caret {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #81858c;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.side-apps-caret:hover {
+  color: #ebedf2;
+}
+
+.side-apps-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-apps-author {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: #81858c;
+}
+
+.side-apps-count {
+  flex: none;
+  font-size: 10px;
+  font-weight: 400;
+  color: #81858c;
+}
+
+/* 应用行右端的「＋」= 在该应用下开一条新开发会话（本轮需求：从开发页顶栏挪到这里，
+   每行一枚）。小方形按钮，行里排在会话数之后；形态与 .side-sess-btn 同源（细边框、
+   常态灰、悬停提亮），只是把文案换成一枚「＋」——不抢应用名，也不随行高变胖。 */
+.side-apps-new {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 6px;
+  background: transparent;
+  color: #81858c;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.side-apps-new:hover {
+  border-color: rgb(86, 134, 254);
+  color: #ebedf2;
+}
+
+/* 应用底下的会话行：缩进一层（层级只靠留白，不另画竖线） */
+.side-apps-sess {
+  padding-left: 22px;
+}
+
+/* 左栏底部那一行「＋ 新建应用」（本轮从顶栏菜单条移到列表底部，不随列表滚动） */
+.apps-dev-sidefoot {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 2px solid var(--bd);
+}
+
+.apps-dev-sidefoot > .mini {
+  flex: 1 1 auto;
+}
+
+/* 预览：iframe 占满中栏；底色 = 不透明黑。
+   本轮需求：以前是白底，切应用时 iframe 重建会先闪一下白，很刺眼；现在底色是黑，
+   切应用时再盖一层黑幕（.apps-dev-curtain）盖住新页没画出来的那一小段时间。 */
 .apps-dev-framewrap {
   position: relative;
   flex: 1;
   min-height: 0;
-  background: #fff;
+  background: #000;
 }
 
 .apps-dev-frame {
@@ -825,7 +1324,24 @@ body.theme-light .apps-dev-more-pop {
   width: 100%;
   height: 100%;
   border: 0;
-  background: #fff;
+  background: #000;
+}
+
+/* 切应用的过渡黑幕（renderer/app-apps-dev.js 的 appsDevCurtainShow / appsDevCurtainDrop）：
+   只在换应用时出现（首次进开发页不盖、日常「刷新预览」不盖），新页 load 完成就淡出摘掉，
+   另有 2.5s 超时兜底。不吃指针事件（幕在上面时用户仍能点预览 / 点重试）。 */
+.apps-dev-curtain {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: #000;
+  opacity: 1;
+  transition: opacity .28s ease;
+  pointer-events: none;
+}
+
+.apps-dev-curtain.hide {
+  opacity: 0;
 }
 
 /* 中栏兜底提示层（renderer/app-apps-dev.js 的 appsDevPreviewStatMsg）：
@@ -852,9 +1368,16 @@ body.theme-light .apps-dev-more-pop {
   word-break: break-word;
 }
 
-/* 右栏：会话正文（#agentList / 队列 / 计划 / 待办都是搬进来的原节点） */
+/* 右栏：会话正文（消息壳 / #agentList / 队列 / 计划 / 待办都是搬进来的原节点）。
+   消息区是**唯一填充项**（与 base.css 的 ① 逐字同一条不变式）：#agentList 会被会话视图的
+   ensureHistRail() 包进 .hist-scroll-wrap.is-flex-fill，那时它的父级是 .apps-dev-conv 而
+   不是 .agent-body —— base.css 的 `.agent-body > .hist-scroll-wrap.is-flex-fill` 够不到它，
+   只剩 dsh.css 的 flex:1 1 auto（basis = 整段会话的内容高）：右栏装不下时按 shrink×basis
+   分摊，消息区被砍到只剩一条，而清单面板（flex 下限）与输入区照旧 —— 看起来就是
+   「右栏没有完整会话内容」。两条选择器都给上：壳在的时候是前者，还没包壳时是后者。 */
+.apps-dev-conv > .hist-scroll-wrap.is-flex-fill,
 .apps-dev-conv > .agent-list {
-  flex: 1;
+  flex: 1 1 0px;
   min-height: 0;
 }
 
@@ -868,6 +1391,9 @@ body.theme-light .apps-dev-more-pop {
   text-align: center;
 }
 
+/* 首轮态要藏的不只是四块面板：#agentList 常被包在 .hist-scroll-wrap 里（见上一条），
+   壳也得一起藏 —— 只写 > .agent-list 的话，正文会从壳里露出来（首轮态本该只剩引导）。 */
+.apps-dev-conv.is-draft > .hist-scroll-wrap,
 .apps-dev-conv.is-draft > .agent-list,
 .apps-dev-conv.is-draft > #agentPaused,
 .apps-dev-conv.is-draft > #agentQueue,
@@ -906,4 +1432,161 @@ body.theme-light .apps-dev-more-pop {
 
 .apps-sec-more > .apps-sec {
   margin-top: 10px;
+}
+
+/* ── 设计风格卡片（renderer/app-app-flow.js 的 appsStyleCards）──────────────
+   两处入口共用：新建应用浮层、开发页 ⋯ 菜单的「换风格…」。
+   每张卡 = 该风格**真实渲染出来的首屏预览图**（缺图回落色板）+ 风格名 + 一句说明；
+   卡片本身跟随主题变量（它是 MTNode 的界面），预览图里是应用自己的配色 —— 两者不混。 */
+.style-field {\n  /* 选中态用「工具库紫」（与顶栏 .btn-tools 同一个值）：它只承担「这是当前选择」这一个语义 */
+  margin-top: 14px;
+}
+.style-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.style-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+.style-hint,
+.style-note,
+.style-swap-lead {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.style-note {
+  margin-top: 8px;
+}
+.style-warn {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-left: 3px solid #c792ea;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.style-host {
+  min-height: 60px;
+}
+.style-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 10px;
+}
+.style-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 6px 8px;
+  background: var(--panel);
+  border: 2px solid var(--bd);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 140ms ease, transform 140ms ease;
+}
+.style-card:hover {
+  border-color: var(--bd2);
+}
+.style-card.on {
+  border-color: #c792ea;
+  box-shadow: 0 0 0 1px #c792ea inset;
+}
+.style-radio {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.style-shot {
+  display: block;
+  aspect-ratio: 1200 / 820;
+  overflow: hidden;
+  border-radius: 5px;
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+}
+.style-shot-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+}
+/* 没有预览图时用色板顶上（老包 / 图被裁掉），不留空洞 */
+.style-swatch {
+  display: flex;
+  height: 100%;
+}
+.style-swatch i {
+  flex: 1 1 0;
+}
+.style-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 2px;
+}
+.style-name {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+.style-tag {
+  padding: 1px 5px;
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.style-tag-cur {
+  border-color: #c792ea;
+  color: #c792ea;
+}
+/* 「自定义」是清单里唯一没有预览图的一条（它的长相还没定）：占位方块 + 一句「先问再定」，
+   不回落别的风格的首屏图 —— 那张图与用户的选择无关，会误导。 */
+.style-shot-custom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 100%;
+  color: var(--muted);
+  background: repeating-linear-gradient(
+    135deg,
+    var(--bg2) 0 8px,
+    var(--panel) 8px 16px
+  );
+}
+.style-shot-custom i {
+  font-size: 22px;
+  font-style: normal;
+  line-height: 1;
+  color: #c792ea;
+}
+.style-shot-custom b {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+/* 「自定义」的角标与说明句（选中它会发生什么，写在卡片上，点之前就知道） */
+.style-tag-custom {
+  border-color: #c792ea;
+  color: #c792ea;
+}
+.style-note-custom {
+  color: var(--ink2);
+}
+.style-why {
+  flex: 1 1 100%;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
 }

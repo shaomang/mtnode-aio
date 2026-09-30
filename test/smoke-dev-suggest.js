@@ -1079,6 +1079,24 @@ const MODEL_JSON =
         v4b.items.filter((it) => it.id === "s-d2").length === 1,
       "两条会话各自成行（id 一一对应，可单独停止 / 跳转）",
     );
+    /* ③a-2 光有「多行」还不够：同一节点的多条任务标题都是同一个模块名，行里要写清
+       「归属哪个功能块 + 同块几条在跑」，用户才看得出这是同一节点上的多件任务 */
+    ok(
+      v4b.items.every(
+        (it) => it.stateText.indexOf("建议对话框") >= 0 && it.stateText.indexOf("2 条开发任务并行") >= 0,
+      ),
+      "并行任务行标出归属功能块 + 同块在跑条数（「建议对话框 · 2 条开发任务并行」）",
+    );
+    /* ③a-3 独立会话（不归任何开发块）不受影响：状态文案保持「运行中」 */
+    const s4b2 = rqLoad();
+    s4b2.__sessions = [{ id: "s-free", title: "自由会话", running: true }];
+    const v4b2 = rqView(s4b2);
+    ok(
+      v4b2.items.length === 1 &&
+        v4b2.items[0].id === "s-free" &&
+        v4b2.items[0].stateText === "运行中",
+      "不归开发块的独立会话：状态文案仍是「运行中」（不加归属前缀）",
+    );
 
     /* ③b 开发节点自身也在跑（self）+ 同一节点 2 条会话 → 开发块行保留（自身运行中）
        且会话仍各占一行：开发块行只为会话而存在时才让位。

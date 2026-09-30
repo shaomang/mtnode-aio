@@ -47,6 +47,8 @@ function ok(cond, msg) {
 }
 const read = (rel) =>
   fs.readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8");
+/* 项目根：下面 [7] 之后的断言要用（网关源码在各自的块里读，见 GW / ROOT 用法） */
+const ROOT = path.join(__dirname, "..");
 
 /* 源码切片：从 startMark 起、到 endMark 止 */
 function between(src, startMark, endMark, label) {
@@ -528,7 +530,9 @@ runToolNode = async (node, quiet, opts) => {
   await A("return window.__answers[0].result == null && String(window.__answers[0].error).indexOf('工具包不可用') >= 0;", "库包损坏/为空 → 错误文本回执（会话不中断）", (v) => v === true);
 
   /* —— 网关侧：normRunTools 收口 → env.MTNODE_TOOLS_JSON（指纹分池基础） —— */
-  const GW = read("dsh/gateway/gateway.mjs");
+  /* 跨行字面量断言前把行尾归一成 LF：源码行尾随检出方式变（本机 CRLF / 仓库 LF），
+     不归一会让「源码一字不差」这类断言在两种检出上都可能假红。 */
+  const GW = read("dsh/gateway/gateway.mjs").replace(/\r\n/g, "\n");
   const SRC_NORM = between(GW, "const MAX_RUN_TOOLS = 24", "function stripYamlSection(text, key) {", "gateway.mjs normRunTools");
   const GW_CTX = vm.createContext({ console });
   vm.runInContext(SRC_NORM, GW_CTX);
@@ -560,7 +564,38 @@ runToolNode = async (node, quiet, opts) => {
   const PLUG = read("dsh/gateway/tools-plugin.mjs");
   ok(PLUG.indexOf("process.env.MTNODE_TOOLS_JSON") >= 0 && PLUG.indexOf("JSON.parse(raw)") >= 0, "tools-plugin.mjs：spawn 时读 env.MTNODE_TOOLS_JSON 注册函数调用工具");
   ok(/\/\^\[A-Za-z0-9_\]\[A-Za-z0-9_\.-\]\{0,63\}\$\/\.test\(x\.toolName\)/.test(PLUG), "tools-plugin.mjs：只收合法 ASCII toolName 描述子");
+  ok(PLUG.indexOf("tool-schema-keys.mjs") >= 0 && PLUG.indexOf("toolSchemaPropKey") >= 0 && PLUG.indexOf("remapToolCallArgs") >= 0, "tools-plugin.mjs：入参 schema 键走 ASCII 清洗（中文端子名不得进 properties）");
   ok(PLUG.indexOf("t: 'tool'") >= 0 && PLUG.indexOf("'tool-result'") >= 0 && PLUG.indexOf("sessionId") >= 0, "tools-plugin.mjs：桥帧协议 t:'tool' → tool-result 回执（带 sessionId 归属）");
+
+  /* 中文端子名进 schema.properties 会被 Anthropic 兼容上游整轮拒掉（更新后会话全挂） */
+  {
+    const { pathToFileURL } = require("url");
+    const keysMod = await import(pathToFileURL(path.join(ROOT, "dsh/gateway/tool-schema-keys.mjs")).href);
+    const used = new Set();
+    ok(keysMod.toolSchemaPropKey("pdf_path", 0, used) === "pdf_path", "合法 ASCII 端子名原样进 schema");
+    ok(keysMod.toolSchemaPropKey("PDF路径", 0, used) === "arg1", "中文端子名回落 arg1（^[a-zA-Z0-9_.-]{1,64}$）");
+    ok(keysMod.toolSchemaPropKey("输出Markdown路径", 1, used) === "arg2", "第二个中文端子名回落 arg2");
+    ok(keysMod.TOOL_SCHEMA_PROP.test("arg1") && !keysMod.TOOL_SCHEMA_PROP.test("PDF路径"), "正则：arg1 合法、中文不合法");
+    const remapped = keysMod.remapToolCallArgs({ arg1: "D:/a.pdf", arg2: "" }, [
+      { schemaKey: "arg1", name: "PDF路径" },
+      { schemaKey: "arg2", name: "输出Markdown路径" },
+    ]);
+    ok(remapped["PDF路径"] === "D:/a.pdf" && remapped.arg1 === "D:/a.pdf", "模型按 schema 键传参时折回端子原名（宿主仍按中文名取值）");
+    const preset = JSON.parse(read("renderer/preset-tools.json"));
+    const alwaysNames = [];
+    for (const t of preset.tools || []) {
+      if (!t || t.always !== true) continue;
+      for (const p of t.inputs || []) alwaysNames.push(String((p && p.name) || ""));
+    }
+    ok(alwaysNames.some((n) => !keysMod.TOOL_SCHEMA_PROP.test(n)), "内置随时可调用工具确有中文端子名（清洗才有意义）");
+    const presetUsed = new Set();
+    let allSafe = true;
+    alwaysNames.forEach((n, i) => {
+      const k = keysMod.toolSchemaPropKey(n, i, presetUsed);
+      if (!keysMod.TOOL_SCHEMA_PROP.test(k)) allSafe = false;
+    });
+    ok(allSafe, "随时可调用工具的 schema 键清洗后全部合法");
+  }
 
   /* ═══════════ [4b] 会话 UI 不再显示「当前画布 / 工具库可调用工具」清单 ═══════════
    * 展示整条链（chip + 助手行 + 防抖快照缓存 + 变化通知）已拆除；

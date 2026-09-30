@@ -38,6 +38,7 @@
       <button class="tab" data-view="orders">订单</button>
       <button class="tab" data-view="users">用户</button>
       <button class="tab" data-view="ledger">流水</button>
+      <button class="tab" data-view="relay">中转服务</button>
     </nav>
     <div class="who">
       <span id="whoName"></span>
@@ -97,6 +98,7 @@
           <option value="refund">refund 退款</option>
           <option value="adjust">adjust 人工调账</option>
           <option value="mismatch">mismatch 金额不符留痕</option>
+          <option value="relay">relay 中转扣费</option>
         </select>
         <input id="fLedgerUser" type="search" placeholder="账号ID（可留空）">
         <button id="btnLedgerSearch" class="btn">查询</button>
@@ -104,6 +106,58 @@
         <button id="btnCsvLedger" class="btn btn-ghost">导出流水 CSV</button>
       </div>
       <div class="table-wrap"><table id="tblLedger"></table></div>
+    </section>
+
+    <!-- 中转服务：上游 + 模型 + 会话测试（配置保存即热生效，无需重启服务） -->
+    <section id="view-relay" class="view hidden">
+      <div class="toolbar">
+        <span class="hint" id="rlMeta" style="margin:0"></span>
+        <span class="spacer"></span>
+        <button id="btnRelayReload" class="btn btn-ghost">重新读取</button>
+        <button id="btnRelaySave" class="btn btn-primary">保存配置并热生效</button>
+      </div>
+
+      <h2>上游提供商（Base URL / Key / 超时）</h2>
+      <div class="hint">
+        Key 只显示「已配 + 后四位」，明文永不回传页面；留空表示不改，重填即覆盖。
+        来源标 env 的表示走服务器环境变量兜底（在管理台填一次就会转成库里的 Key）。
+      </div>
+      <div class="table-wrap"><table id="tblRelayUp"></table></div>
+      <div class="toolbar" style="margin-top:8px">
+        <button id="btnRelayAddUp" class="btn">＋ 添加上游</button>
+      </div>
+
+      <h2>模型列表（上架 / 通道 / 上游模型名 / 价目）</h2>
+      <div class="hint">
+        只有出现在这里的模型客户端才拉得到；取消勾选 = 立即下架。
+        价目：文本 = 元 / 百万 tokens（缓存命中 · 未命中 · 输出，高峰按倍率）；图像 = 元 / 张。
+      </div>
+      <div class="table-wrap"><table id="tblRelayModels"></table></div>
+      <div class="toolbar" style="margin-top:8px">
+        <button id="btnRelayAddModel" class="btn">＋ 添加模型</button>
+        <span class="hint" style="margin:0">「拉取候选」用该上游的地址 + Key 读上游 /models（只读元信息，不消耗 Token）</span>
+      </div>
+
+      <h2>会话测试（走完整中转链路，按真实用量从当前管理员账号扣费）</h2>
+      <div class="panel">
+        <div class="toolbar" style="margin-bottom:8px">
+          <select id="rlTestModel"></select>
+          <label class="hint" style="margin:0"><input type="checkbox" id="rlTestStream"> 流式输出</label>
+          <span class="spacer"></span>
+          <span class="hint" id="rlTestBalance" style="margin:0"></span>
+          <button id="btnRelayTest" class="btn btn-primary">发送测试</button>
+        </div>
+        <textarea id="rlTestPrompt" rows="3" placeholder="输入测试提示词（如：只回一句「中转正常」）"
+          style="width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font:inherit"></textarea>
+        <div class="hint" id="rlTestStatus" style="margin:8px 0 0"></div>
+        <pre id="rlTestOut" class="rl-out"></pre>
+      </div>
+
+      <h2>改动留痕（谁 / 何时 / 改了哪一项）</h2>
+      <div class="table-wrap"><table id="tblRelayAudit"></table></div>
+
+      <h2>最近调用明细（中转站全局）</h2>
+      <div class="table-wrap"><table id="tblRelayUsage"></table></div>
     </section>
   </main>
 </section>

@@ -10,13 +10,18 @@
  * 契约要点（详见 mtnode-app-dev 技能）：
  *  - 只调 window.AppHost 里探测过的能力；
  *  - appHost 缺席时功能退化成内存态，界面明确说「不会保存」，不静默丢数据；
- *  - 应用侧不碰凭据、不自己拼本机路径（落盘一律交宿主）。
+ *  - 应用侧不碰凭据、不自己拼本机路径（落盘一律交宿主）；
+ *  - **模型从 MTNode 继承**：右上「模型」按钮（app-model.js）列出 MTNode 已配置的模型供用户选，
+ *    没有可用模型 / 断网 / 模型不支持识图时按宿主的错误码给明确提示，**不降级**。
  */
 (function () {
   "use strict";
 
   var H = window.AppHost || {
-    cap: { host: false, data: false, dataDir: false, dataDirPick: false, account: false, net: false, close: false, shown: false },
+    cap: {
+      host: false, data: false, dataDir: false, dataDirPick: false, account: false, net: false,
+      text: false, models: false, pick: false, close: false, shown: false,
+    },
     getData: async function () {
       return { ok: false, data: null };
     },
@@ -25,6 +30,21 @@
     },
     accountText: async function () {
       return "未接入宿主";
+    },
+    models: async function () {
+      return { ok: false, error: "no_host", models: [], selected: "auto", hasAny: false };
+    },
+    modelGet: async function () {
+      return { ok: false, error: "no_host", selected: "auto" };
+    },
+    modelSet: async function () {
+      return { ok: false, error: "no_host" };
+    },
+    pickImage: async function () {
+      return { ok: false, code: "no_host" };
+    },
+    text: async function () {
+      return { ok: false, code: "no_host" };
     },
     on: function () {
       return false;
@@ -58,13 +78,24 @@
   /* 语言：只改 <html lang>，显示哪一份由 style.css 的 [data-lang] 规则决定
      （首帧就不会两套文案叠在一起）；没有 JS 时中文那份照常显示。 */
   var lang = /^zh/i.test(navigator.language || "") ? "zh" : "en";
+  /* 模型选择位（app-model.js）：右上那个按钮 + 下拉；HTM 缺席时它自己会置灰并写清原因 */
+  var M = window.AppModel
+    ? window.AppModel.create({
+        host: H,
+        btn: "modelBtn",
+        menu: "modelMenu",
+        backdrop: "modelMask",
+      })
+    : null;
   function paintLang() {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     var btn = $("langBtn");
-    if (!btn) return;
-    btn.textContent = lang === "zh" ? "EN" : "中";
-    btn.title = lang === "zh" ? "Switch to English" : "切换到中文";
-    btn.setAttribute("aria-label", btn.title);
+    if (btn) {
+      btn.textContent = lang === "zh" ? "EN" : "中";
+      btn.title = lang === "zh" ? "Switch to English" : "切换到中文";
+      btn.setAttribute("aria-label", btn.title);
+    }
+    if (M) M.render(); /* 模型按钮 / 下拉的文案随语言重画 */
   }
   var langBtn = $("langBtn");
   if (langBtn)
@@ -83,6 +114,8 @@
       if (!H.cap.data) missing.push("数据读写接口缺失");
       if (!H.cap.account) missing.push("账号接口缺失");
       if (!H.cap.net) missing.push("服务端请求接口缺失");
+      if (!H.cap.text) missing.push("文本生成接口缺失（模型能力不可用）");
+      if (!H.cap.models) missing.push("模型选择接口缺失（不能从 MTNode 继承模型）");
     }
     if (!missing.length) {
       bar.hidden = true;
@@ -159,6 +192,8 @@
 
   async function boot() {
     setCapBar();
+    /* 模型清单：先拉一次（按钮文案与下拉内容都靠它）；失败也照常在界面上写清原因 */
+    if (M) await M.init();
     if (store) {
       var loaded = await store.load();
       if (loaded.ok && loaded.data && Array.isArray(loaded.data.notes)) {
@@ -252,6 +287,66 @@
     hint("已回到默认数据文件夹（原目录内容留在原处）");
   }
 
+  /* ── 模型能力示例：文字 + 图像一起问 ──
+   选图走宿主（AppHost.pickImage，系统对话框，用户亲自选的那一次才生效）；
+   图只给**路径**，读盘 / 缩放由宿主做。问的时候带上当前模型（M.model()，空串 = 跟随默认）。
+   任何失败都按宿主的错误码给一句可操作的提示，不降级、不静默丢图。 */
+  var picked = "";
+
+  function askOut(text, kind) {
+    var el = $("askOut");
+    if (!text) {
+      el.hidden = true;
+      el.textContent = "";
+      el.dataset.kind = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent = text;
+    el.dataset.kind = kind || "";
+  }
+
+  async function pickImage() {
+    askOut("");
+    if (!H.cap.pick) {
+      askOut("本版本宿主没有「选图」接口：模型只能收文字。", "warn");
+      return;
+    }
+    var r = await H.pickImage();
+    if (r && r.code === "cancelled") return; /* 用户主动取消：不当报错 */
+    if (!r || r.ok === false) {
+      askOut("选图失败：" + (M ? M.errorText(r) : (r && r.error) || ""), "warn");
+      return;
+    }
+    picked = String(r.path || "");
+    $("pickName").textContent = picked ? picked.split(/[\\/]/).pop() : "";
+    $("pickName").title = picked;
+  }
+
+  async function askWithImage() {
+    var q = String($("askInput").value || "").trim();
+    if (!q) {
+      askOut("先写一句要问的话（例如：图里有什么？）", "warn");
+      return;
+    }
+    if (!H.cap.text) {
+      askOut("本版本宿主没有文本生成接口：模型能力不可用。", "warn");
+      return;
+    }
+    askOut("正在问模型…");
+    var res = await H.text(q, {
+      model: M ? M.model() : "",
+      images: picked ? [picked] : [],
+    });
+    if (!res || res.ok === false) {
+      /* no_provider / no_vision / bad_image / too_large / offline / http_401… 都从这里出去 */
+      askOut((M ? M.errorText(res) : (res && res.error) || "调用失败"), "warn");
+      if (M && (res.code === "no_vision" || res.code === "bad_model")) M.render(); /* 让用户当场换模型 */
+      return;
+    }
+    askOut(String(res.text || "") + (res.model ? "\n\n— " + res.model : ""));
+  }
+
   $("btnAdd").addEventListener("click", addNote);
   $("btnClear").addEventListener("click", clearNotes);
   $("btnClose").addEventListener("click", function () {
@@ -263,6 +358,11 @@
   $("btnDataDefault").addEventListener("click", resetDataDir);
   $("noteInput").addEventListener("keydown", function (ev) {
     if (ev.key === "Enter") addNote();
+  });
+  $("btnPick").addEventListener("click", pickImage);
+  $("btnAsk").addEventListener("click", askWithImage);
+  $("askInput").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") askWithImage();
   });
 
   boot();

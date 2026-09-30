@@ -23,38 +23,31 @@
   }
 }
 
+/* 助手栏左边缘拖拽分界线：整条边界都可拖（铺满栏高），常态一根 1px 竖筋，
+   悬停 / 拖动整条加亮 —— 与 #agentSideResize 同款观感，方向镜像。 */
 .assist-resize {
   position: absolute;
   left: -4px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 0;
+  bottom: 0;
   width: 8px;
-  height: 56px;
   z-index: 6;
   cursor: col-resize;
-  border-radius: 4px;
-  background: linear-gradient(180deg, transparent, var(--bd2) 18%, var(--bd2) 82%, transparent);
+  /* 触屏 / 触控笔：这条线上不做手势滚动，指针事件一路给到拖拽逻辑 */
+  touch-action: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .12));
+  background-position: 50% 0;
+  background-size: 1px 100%;
+  background-repeat: no-repeat;
   opacity: .55;
-  transition: opacity .12s, background-color .12s, height .12s;
+  transition: opacity .12s, background-size .12s, background-image .12s;
 }
 
 .assist-resize:hover,
 .assist-resize.dragging {
   opacity: 1;
-  height: 72px;
-  background: linear-gradient(180deg, transparent, var(--cyan) 18%, var(--cyan) 82%, transparent);
-}
-
-.assist-resize::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 2px;
-  height: 22px;
-  border-radius: 1px;
-  background: rgba(255, 255, 255, .35);
+  background-size: 2px 100%;
+  background-image: linear-gradient(180deg, transparent, var(--cyan) 8%, var(--cyan) 92%, transparent);
 }
 
 .assist-head {
@@ -180,20 +173,9 @@
   border-color: var(--cyan)
 }
 
-/* 「与画布无关」开关（助手侧）：开启态用紫色描边 + 底色，与会话侧 chip 同一含义。
-   flex:none ⇒ 宽度跟着译文走，工作范围下拉仍占满剩余空间。 */
-.assist-canvasfree-btn {
-  flex: none;
-  white-space: nowrap;
-  font-size: 10.5px;
-  padding: 3px 6px;
-}
-
-.assist-canvasfree-btn.on {
-  border-color: #c792ea;
-  color: #d0a6ff;
-  background: rgba(199, 146, 234, .12);
-}
+/* 助手侧的「与画布无关」按钮已随本次需求移除（改为按消息自动判定，
+   见 app-assist.js 的 agentCanvasTurnRelated）：原来给那枚按钮写的
+   「常态 / .on 开启态」两条规则一并删掉，这里不留死选择器。 */
 
 .assist-live2d {
   flex: none;

@@ -458,6 +458,149 @@ ok(
   "重复 bindAgentPaneWheelScroll 只挂一个 wheel 监听（幂等）",
 );
 
+/* ===================== [7] 快捷跳转竖条贴滚动条 ===================== */
+/* 回归：竖条（.hist-rail）曾以 flex 同伴项排在 .hist-scroll-wrap 最右端，
+   而消息列是居中定宽的（max-width:820px + margin:0 auto）—— 窗口一宽，
+   竖条就被推到整个窗口的右沿，离滚动条隔着一整段空白。
+   正解：竖条脱离文档流，right = wrap.right − list.right（= 滚动条正右侧）。 */
+console.log("\n[7] 快捷跳转竖条：贴滚动条右侧，不再飘到窗口右沿");
+const railCssM = /\.hist-rail\s*\{([^}]*)\}/.exec(dshCss);
+const railCss = railCssM ? railCssM[1] : "";
+ok(!!railCss, "dsh.css 里找得到 .hist-rail 规则");
+ok(
+  /position:\s*absolute/.test(railCss) && !/position:\s*relative/.test(railCss),
+  "竖条脱离文档流（position:absolute）—— 在流里就必然被排到 wrap 最右端",
+);
+ok(!/flex:\s*none/.test(railCss), "竖条不再是 flex 同伴项（去掉 flex:none）");
+ok(/right:\s*0/.test(railCss), "竖条初值贴 wrap 右沿（由 JS 按实测空余再往左移到滚动条旁）");
+ok(
+  /border-right:\s*1px solid var\(--bd\)/.test(railCss),
+  "竖条边框改到右缘（贴滚动条那一侧）",
+);
+ok(
+  /\.hist-scroll-wrap\s*\{[^}]*position:\s*relative/.test(dshCss),
+  ".hist-scroll-wrap 是竖条的定位上下文（position:relative）",
+);
+ok(
+  /function histRailAlign\s*\(/.test(assistSrc) &&
+    /histRailAlign\(list,\s*rail\)/.test(assistSrc),
+  "app-assist.js：histRailAlign(list, rail) 有定义且在排布时被调用",
+);
+ok(
+  /wrap\.getBoundingClientRect\(\)\.right\s*-\s*list\.getBoundingClientRect\(\)\.right/.test(
+    assistSrc,
+  ),
+  "对齐量取实测 rect（wrap.right − list.right），不写死 820 / 50% 之类的魔法数",
+);
+{
+  /* 把真正的 histRailAlign 抠出来跑：纯函数，喂 stub rect 即可验算 */
+  const fnM = /function histRailAlign\([\s\S]*?\r?\n\}\r?\n/.exec(assistSrc);
+  ok(!!fnM, "histRailAlign 可从源码抠出单独执行（真源唯一，测试不抄副本）");
+  if (fnM) {
+    const histRailAlign = new Function("return (" + fnM[0] + ")")();
+    const mkList = (listRight, wrapRight) => ({
+      clientWidth: 810,
+      offsetWidth: 820,
+      parentNode: { getBoundingClientRect: () => ({ right: wrapRight }) },
+      getBoundingClientRect: () => ({ right: listRight }),
+    });
+    const railA = { style: {} };
+    histRailAlign(mkList(1190.7, 1281.3), railA);
+    ok(
+      railA.style.right === "91px",
+      "宽窗：列右侧余量 90.6 → right=91px（旧写法 0，竖条被顶到窗口右沿）",
+    );
+    const railB = { style: {} };
+    histRailAlign(mkList(900, 900), railB);
+    ok(railB.style.right === "0px", "窄窗（列铺满整行）：余量 0 → right=0（最右沿 = 滚动条旁）");
+    const railC = { style: {} };
+    histRailAlign(null, railC);
+    histRailAlign(mkList(100, 50), railC);
+    ok(railC.style.right === "0px", "脏输入 / 负余量夹到 0，不会把竖条推出容器");
+    const railD = { style: { right: "91px" } };
+    histRailAlign(mkList(1190.7, 1281.3), railD);
+    ok(railD.style.right === "91px", "重复对齐结果稳定（每帧重排不累积漂移）");
+  }
+}
+
+/* ============ [8] 右侧「错开位置」：滚动条与竖条 / 栏宽把手互不重叠 ============ */
+/* 用户报的两条：
+   ① 会话里轮次竖条（.hist-rail，18px）压在消息列的竖直滚动条上 → 滚动条选不中；
+   ② 会话列表的竖直滚动条压在「调整栏宽」把手（9px 命中区）下 → 一样选不中。
+   根因同一类：拿着「贴右缘」的绝对定位元素去叠滚动条。而滚动条是**占布局**的那一种
+   （components.css 的 ::-webkit-scrollbar 宽 10px），它钉在元素内边距盒的右缘 ——
+   给容器加 padding-right 只缩内容区，滚动条本身不动（实测验证过，别再走那条路）。
+   正解是给滚动条留出让位：竖条靠 .hist-scroll-wrap 的右内边距，列表靠自己的 width。
+   这里用同一套数算一遍两不重叠 —— 改 CSS 谁把这几条改回去都跑不过。 */
+console.log("\n[8] 右侧错开：滚动条与竖条 / 栏宽把手各走各的道");
+
+/* 全局滚动条宽（两侧都按它算） */
+const componentsCss = read("renderer/css/components.css");
+const globalSb = Number(
+  (/::-webkit-scrollbar\s*\{\s*width:\s*(\d+)px/.exec(componentsCss) || [])[1],
+);
+ok(globalSb === 10, "components.css：全局竖直滚动条宽 10px（下面按它算占位）");
+
+/* ① 轮次竖条：壳的右内边距 ≥ 竖条宽 → 竖条落在与滚动条不重叠的槽里 */
+const wrapCss = (/\.hist-scroll-wrap\s*\{([^}]*)\}/.exec(dshCss) || [])[1] || "";
+const wrapPadM = /padding:\s*0\s+(\d+)px/.exec(wrapCss);
+const railW = Number(
+  (/\.hist-rail\s*\{[^}]*width:\s*(\d+)px/.exec(dshCss) || [])[1],
+);
+ok(!!wrapPadM, ".hist-scroll-wrap 写了左右内边距（右侧那段就是竖条的专用槽）");
+ok(railW === 18, "竖条宽仍是 18px（观感没动，只挪位）");
+ok(
+  wrapPadM && Number(wrapPadM[1]) >= railW,
+  ".hist-scroll-wrap 右内边距 ≥ 竖条宽（否则竖条又会压到消息列的滚动条上）",
+);
+ok(
+  /\.hist-rail\s*\{[^}]*right:\s*0/.test(dshCss),
+  "竖条 right:0 = 壳内边距盒右缘 = 竖条槽右沿（不是叠在滚动条上）",
+);
+ok(
+  /\/\* 竖条（.hist-rail）\s*的定位上下文：它贴滚动条右侧/.test(dshCss),
+  "CSS 注释写明竖条是「贴滚动条右侧」（错开位置），不是「不占列宽」的叠放",
+);
+
+/* ② 会话列表：width 让出的量 ≥ 把手命中区宽（9px），且还留得住滚动条那 10px */
+const sideListCss = (/\.agent-side-list\s*\{([^}]*)\}/.exec(dshCss) || [])[1] || "";
+const sideWideM = /width:\s*calc\(100%\s*-\s*(\d+)px\)/.exec(sideListCss);
+const handleW = Number(
+  (/\.agent-side-resize\s*\{[^}]*width:\s*(\d+)px/.exec(dshCss) || [])[1],
+);
+ok(handleW === 9, "栏宽把手命中区仍是 9px（拖拽手感没动）");
+ok(!!sideWideM, ".agent-side-list 用 width 让出右缘（不是 padding-right —— 那推不动滚动条）");
+const sideGutter = sideWideM ? Number(sideWideM[1]) : 0;
+ok(
+  sideGutter >= handleW + 4,
+  "让位 ≥ 把手 9px + 4px 缝（滚动条与把手之间留可见间隙）",
+);
+{
+  /* 拿真值算一遍：栏宽 280 → 列表 266 → 滚动条 256…266，把手 271…280，中间 5px 缝 */
+  const COL = 280;
+  const listW = COL - sideGutter;
+  const sb = [listW - globalSb, listW];
+  const handle = [COL - handleW, COL];
+  const overlap = Math.max(0, Math.min(sb[1], handle[1]) - Math.max(sb[0], handle[0]));
+  ok(overlap === 0, "栏宽 280px 时：滚动条与把手 0 重叠（修复前整条重叠 9px）");
+  ok(
+    handle[0] - sb[1] >= 4,
+    "两者之间留了 " + (handle[0] - sb[1]) + "px 缝（滚动条那一条整条可点）",
+  );
+}
+{
+  /* 消息列同样算一遍：820 定宽列 + 壳右内边距 18 → 竖条在位图右缘外 62px 处，不压滚动条 */
+  const wrapW = 980, pad = wrapPadM ? Number(wrapPadM[1]) : 0, listW = 820;
+  const listR = wrapW - pad - (wrapW - pad - listW) / 2;
+  const sb = [listR - globalSb, listR];
+  const rail = [wrapW - railW, wrapW];
+  ok(
+    Math.max(0, Math.min(sb[1], rail[1]) - Math.max(sb[0], rail[0])) === 0,
+    "消息列 820px：滚动条（" + sb[0] + "…" + sb[1] + "）与竖条（" + rail[0] + "…" + rail[1] + "）0 重叠",
+  );
+  ok(rail[0] >= sb[1], "竖条左沿在滚动条右沿之外（错开，不是叠放）");
+}
+
 console.log(
   "\n" + (fails ? "FAIL " + fails + " / " + checks : "全部通过 " + checks + " 项"),
 );

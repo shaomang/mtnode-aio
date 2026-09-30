@@ -38,6 +38,23 @@ export const HIDEABLE_TOOLS = Object.freeze([
   /* 长周期任务状态工具（app-longtask.js 造的伪节点之外一律不注册）；
      lt_memory 已下线 —— 长期记忆的沉淀改走 mtnode_facts（AI 事实库）。 */
   'lt_state',
+  /* 会话自己的浏览器（browser-plugin.mjs 的注册口）：整族一起裁才有意义 ——
+     某个入口被拒时剩下的也就干不成活，所以一族一个判据（整族不注册）。
+     纯净模式走 MTNODE_PURE、画布节点 / 长任务未授权环节走 MTNODE_NO_BROWSER，
+     两条整档闸在插件里先判；这里留着是为了让「工具许可被拒」也能落到同一份白名单上。 */
+  'browser_launch',
+  'browser_snapshot',
+  'browser_navigate',
+  'browser_click',
+  'browser_type',
+  'browser_key',
+  'browser_eval',
+  'browser_wait',
+  'browser_screenshot',
+  'browser_tabs',
+  'browser_network',
+  'browser_help',
+  'browser_release',
   /* dsh 引擎自带（agent 作用域 restrict 摘除） */
   'ask_user_question',
   'create_goal',

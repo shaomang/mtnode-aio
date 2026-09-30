@@ -104,6 +104,13 @@
             "zh": "开发一个应用",
             "en": "Build an app"
           }
+        },
+        {
+          "id": "app-publish",
+          "title": {
+            "zh": "上架应用到云端（多版本）",
+            "en": "Publish an app to the cloud (versions)"
+          }
         }
       ]
     },
@@ -126,6 +133,13 @@
           "title": {
             "zh": "智能任务与智能会话",
             "en": "Agent task & session"
+          }
+        },
+        {
+          "id": "agent-browser",
+          "title": {
+            "zh": "会话的浏览器能力",
+            "en": "The session's browser"
           }
         },
         {

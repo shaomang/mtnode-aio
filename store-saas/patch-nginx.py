@@ -22,6 +22,32 @@ STORE = """
 
 """
 
+RELAY = """
+    # === MTNode 中转站（内部测试：DeepSeek 文本/识图 + gpt-image-2.5 图像）===
+    # 与 store-api 同一进程（127.0.0.1:8787），但这一段必须比 /mtnode/store-api/ 更长前缀
+    # 才会被选中（^~ 取最长匹配），且要单独放宽超时并关掉缓冲：
+    #   · 流式 SSE 一旦被缓冲，客户端就看不到逐字输出（表现为「卡住不吐字」）；
+    #   · 图像单张 90-150s、4K 更久，沿用 store-api 的 120s 一定超时；
+    #   · 上游图像接口「客户端断开也计费」，超时掐断等于钱花了没结果。
+    location ^~ /mtnode/store-api/relay/ {
+        client_max_body_size 40m;
+        proxy_pass http://127.0.0.1:8787/relay/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+        add_header X-Accel-Buffering no;
+    }
+
+"""
+
 PLUGINS = """
     # === MTNode 应用插件目录（本地静态，覆盖 OSS 反代） ===
     location ^~ /mtnode/plugins/ {
@@ -108,6 +134,8 @@ if needle not in text:
 insert = ""
 if "location ^~ /mtnode/store-api/" not in text:
     insert += STORE
+if "location ^~ /mtnode/store-api/relay/" not in text:
+    insert += RELAY
 if "location ^~ /mtnode/plugins/" not in text:
     insert += PLUGINS
 if "location ^~ /mtnode/admin/" not in text:
@@ -136,7 +164,7 @@ if "location ^~ /mtnode/ext/" not in text:
 """
 
 if not insert:
-    print("nginx store-api + plugins + admin + apps locations already present")
+    print("nginx store-api + relay + plugins + admin + apps locations already present")
     raise SystemExit(0)
 
 backup = path.with_suffix(".conf.bak-plugins")

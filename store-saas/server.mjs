@@ -23,10 +23,14 @@ import {
   normalizeNotify,
 } from "./alipay-provider.mjs";
 import { qrDataUrl } from "./qr-encode.mjs";
+import { createRelay } from "./relay.mjs";
 import {
   createWallet,
   makeOrderId,
   validateAmount,
+  totalCentsOf,
+  yuanOfCents,
+  centsOfYuan,
   RECHARGE_TIERS_CENTS,
   RECHARGE_MIN_CENTS,
   RECHARGE_MAX_CENTS,
@@ -42,6 +46,12 @@ const FORUM_IMG_DIR = path.join(DATA_DIR, "forum-images");
 // 记录进 db.json 的 apps[]（与 templates / skills 同一套存储口径）。
 const APP_DIR = path.join(DATA_DIR, "apps");
 const APP_ICON_DIR = path.join(DATA_DIR, "app-icons");
+// 应用市场静态目录（客户端唯一入口：<MTNODE_APPS_URL>/catalog.json）：
+// 线上 = nginx 直发的 /var/www/mtnode/apps，本机开发 = DATA_DIR/apps-web。
+// 接口一有应用变更就把 appCatalogDoc() 与 zip / 图标按静态布局落这里（单一真源，见 publishStaticApps）。
+const APPS_WEB_DIR = path.resolve(process.env.MTNODE_APPS_WEB_DIR || "/var/www/mtnode/apps");
+const APPS_WEB_MANIFEST = ".mtnode-apps-static.json";
+const APPS_WEB_ICONS_DIR = "icons";
 const DB_PATH = path.join(DATA_DIR, "db.json");
 // 账户存储抽象层：users / sessions / identities 三个键经 account-store 读写
 // （默认 json 后端仍落 DATA_DIR/db.json，或由 MTNODE_ACCOUNT_STORE 切到 aliyun-tablestore）。
@@ -70,6 +80,15 @@ const MAX_PREVIEW = 500 * 1024;
 // 应用包（zip）：24MB 原始体积 —— base64 后约 32MB，仍在 MAX_BODY（40MB）与
 // nginx client_max_body_size 40m 之内；图标沿用预览图口径（png/jpeg/webp，≤500KB）。
 const MAX_APP_ZIP = 24 * 1024 * 1024;
+// —— 上架与多版本（契约 = docs/apps-market.md §七）——
+// 总开关：默认关。关时旧口径逐字不变（<id>.zip 一版一份 + PATCH 覆盖 + apps[].version），
+// 打开时每版一包落 <id>/<version>.zip，并把最新版同时刷成 <id>.zip 供老客户端 / 静态目录。
+const APP_VERSIONS_ENV = String(process.env.MTNODE_APP_VERSIONS || "").trim().toLowerCase();
+// 账号配额（服务端强制，落盘之前校验）：云端已存包总量 = 名下所有应用所有版本 bytes 之和；
+// 应用条数上限只算「新建」，给已有应用追加版本不计入。
+const MAX_ACCOUNT_APP_BYTES = 50 * 1024 * 1024;
+const MAX_ACCOUNT_APPS = 5;
+const MAX_VERSION_NOTE = 200;
 // 应用 id = 客户端安装目录名（apps-store.js 的 safeAppId 同一口径）：
 // 2-64 位字母/数字/._-，统一小写入库；Windows 保留名不可用。
 const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
@@ -104,6 +123,8 @@ const WECHAT_POLL_INTERVAL = 2; // 客户端轮询间隔（秒）
 // —— 充值（支付宝当面付）与独立管理平台（口径见 docs/recharge-design.md）——
 // 充值白名单：测试期只有名单内账号能下单 / 看钱包（客户端「充值」入口同样只对 ms2308 显示）。
 const RECHARGE_USERS = splitSet(process.env.MTNODE_RECHARGE_USERS, "ms2308");
+/** 中转站对外 Base URL（下发给客户端「提供商」的 Base URL，末尾不带斜杠）。 */
+const RELAY_PUBLIC_BASE = String(process.env.MTNODE_RELAY_PUBLIC_BASE || "https://www.mt-agent.com/mtnode/store-api/relay/v1").replace(/\/+$/, "");
 // 管理平台管理员判据（三条任一命中即可）：
 //   ① isAdmin(u)（= MTNODE_STORE_ADMINS，默认 ms2308）
 //   ② username ∈ MTNODE_ADMIN_USERS（默认 ms2308）
@@ -167,6 +188,8 @@ function emptyDb() {
     skills: [],
     // 应用市场：用户自建 / 云端分发的小应用（zip 落 DATA_DIR/apps）
     apps: [],
+    // 上架声明留痕（契约 §7.3）：每次新建 / 追加版本 / 更新的勾选记录，供事后追溯
+    appDeclarations: [],
     likes: [],
     skillLikes: [],
     forumTopics: [],
@@ -176,6 +199,12 @@ function emptyDb() {
     rechargeLedger: [],
     // 管理平台独立短会话（与账户 sessions 分开，不进 Tablestore）
     adminSessions: [],
+    // 中转站用量明细（自查接口与排查用；对账以 rechargeLedger 的 relay 流水为准）
+    relayUsage: [],
+    // 中转站可热改配置（管理台「中转服务」页保存的那一份；不存在时 relay.mjs 用默认 + env 缺省）
+    relayConfig: null,
+    // 中转配置改动留痕（谁 / 何时 / 改了哪一项）
+    relayAudit: [],
   };
 }
 
@@ -193,6 +222,7 @@ function loadDb() {
     if (!Array.isArray(d.templates)) d.templates = [];
     if (!Array.isArray(d.skills)) d.skills = [];
     if (!Array.isArray(d.apps)) d.apps = [];
+    if (!Array.isArray(d.appDeclarations)) d.appDeclarations = [];
     if (!Array.isArray(d.likes)) d.likes = [];
     if (!Array.isArray(d.skillLikes)) d.skillLikes = [];
     if ("forumMessages" in d) {
@@ -204,6 +234,9 @@ function loadDb() {
     if (!Array.isArray(d.rechargeOrders)) d.rechargeOrders = [];
     if (!Array.isArray(d.rechargeLedger)) d.rechargeLedger = [];
     if (!Array.isArray(d.adminSessions)) d.adminSessions = [];
+    if (!Array.isArray(d.relayUsage)) d.relayUsage = [];
+    if (!Array.isArray(d.relayAudit)) d.relayAudit = [];
+    if (!d.relayConfig || typeof d.relayConfig !== "object") d.relayConfig = null;
     return d;
   } catch {
     return emptyDb();
@@ -383,9 +416,10 @@ function publicUser(u) {
     },
     downloadsReceived: u.downloadsReceived || 0,
     likesReceived: u.likesReceived || 0,
-    // 余额（分）：客户端只对充值白名单账号展示，但字段一律随本人快照下发，
+    // 余额（元，4 位小数）：客户端只对充值白名单账号展示，但字段一律随本人快照下发，
     // 避免「服务端有余额、客户端要再打一次接口」。他人摘要走 publicTemplate/publicSkill，不含此字段。
-    balanceCents: Number.isFinite(Number(u.balanceCents)) ? Math.round(Number(u.balanceCents)) : 0,
+    // 内部存储仍是整数分（balanceCents），只在出接口时换算 —— 对外不出现「分」。
+    balanceYuan: yuanOfCents(Number(u.balanceCents) || 0),
     createdAt: u.createdAt,
     isAdmin: isAdmin(u),
   };
@@ -501,6 +535,40 @@ async function issueSession(u) {
   return token;
 }
 
+/**
+ * 管理台「会话测试」用的临时 Key（mtr_test_ 前缀 / 30 分钟 / 只对该管理员）。
+ * 挂在 adminSessions 里（与账户会话表分开，随 db.json 落盘），authUser 只对 /relay/v1/* 认它。
+ */
+async function issueRelayTestKey(u, opt) {
+  const o = opt || {};
+  const ttl = Math.max(60000, Math.floor(Number(o.ttlMs) || 30 * 60 * 1000));
+  const token = String(o.prefix || "mtr_test_") + crypto.randomBytes(18).toString("hex");
+  const t = now();
+  pruneAdminSessions(t);
+  db.adminSessions.push({
+    tokenHash: hashToken(token),
+    userId: u.id,
+    expiresAt: t + ttl,
+    createdAt: t,
+    relayTest: true,
+  });
+  await saveDb();
+  return { token: token, expiresAt: t + ttl };
+}
+
+/** 中转 Key → 用户：只认 mtr_test_ 前缀的测试票，且只对 /relay/v1/* 生效。 */
+function relayTestUser(req, isRelayPath) {
+  if (!isRelayPath) return null;
+  const h = req.headers.authorization || "";
+  const m = /^Bearer\s+(mtr_test_\S+)$/i.exec(h);
+  if (!m) return null;
+  const th = hashToken(m[1]);
+  const t = now();
+  const sess = adminSessions().find((s) => s.tokenHash === th && s.relayTest === true && s.expiresAt > t);
+  if (!sess) return null;
+  return db.users.find((u) => u.id === sess.userId) || null;
+}
+
 // 滑动续期：任一鉴权请求命中会话就把有效期推到 now + SESSION_MS，实现「登录后持续有效，
 // 除非主动登出」。仅当剩余不足一半才写库，避免每个请求都打一次云库；写库失败只记日志，
 // 内存已续期（本次请求照常放行），下次请求会重试写穿。
@@ -556,6 +624,21 @@ async function applyUserPatch(id, patch) {
  * ========================================================================== */
 
 const wallet = createWallet({ db, saveDb, applyUserPatch });
+
+/* ========================================================================== *
+ * 中转站（内部测试用）：DeepSeek 文本/识图 + gpt-image-2.5 图像，鉴权 = 账号登录 token，
+ * 门禁 = 可用余额 > 0，计费 = 按用量扣（亚分精度，见 relay.mjs 文件头）。逻辑全在 relay.mjs，
+ * 这里只把 /relay/v1/* 转给它，并注入 db / 落盘 / 钱包 / 原样读体（multipart 要原包转发）。
+ * ========================================================================== */
+
+const relay = createRelay({
+  db,
+  saveDb,
+  wallet,
+  readBody,
+  issueSession: issueRelayTestKey,
+  publicBase: RELAY_PUBLIC_BASE,
+});
 
 /** 充值白名单（测试期只放 ms2308）：客户端入口同样只对白名单账号显示。 */
 function rechargeAllowed(u) {
@@ -1154,10 +1237,13 @@ function credentialCount(u) {
   return [!!u.pass, !!u.phone, !!u.wechatUnionId].filter(Boolean).length;
 }
 
-async function authUser(req) {
+async function authUser(req, isRelayPath) {
   const h = req.headers.authorization || "";
   const m = /^Bearer\s+(\S+)/i.exec(h);
   if (!m) return null;
+  // 中转站测试票（mtr_test_，管理台会话测试用）：只对 /relay/v1/* 认，普通接口一律不认。
+  const testUser = relayTestUser(req, isRelayPath);
+  if (testUser) return testUser;
   const th = hashToken(m[1]);
   const t = now();
   const sess = db.sessions.find((s) => s.tokenHash === th && s.expiresAt > t);
@@ -1887,6 +1973,320 @@ function clearAppIcon(id) {
   }
 }
 
+/* ---------- 上架与多版本：开关 / 路径 / 版本记录 / 配额 / 声明（契约 §七） ---------- */
+
+/**
+ * 多版本总开关（`MTNODE_APP_VERSIONS=1|true|yes|on` 打开，默认关）。
+ * 判据集中在这里：路由与目录口径都只问它，别在别处再读一次环境变量。
+ */
+function appVersionsOn() {
+  return (
+    APP_VERSIONS_ENV === "1" ||
+    APP_VERSIONS_ENV === "true" ||
+    APP_VERSIONS_ENV === "yes" ||
+    APP_VERSIONS_ENV === "on"
+  );
+}
+
+/** 多版本包目录 `<APP_DIR>/<id>`（开关打开时一版一包；关时不用）。 */
+function appVersionDir(id) {
+  return path.join(APP_DIR, id);
+}
+
+/** 单版包路径 `<APP_DIR>/<id>.zip`：老口径的唯一落点，也是多版本模式下「最新版」的镜像。 */
+function appZipPath(id) {
+  return path.join(APP_DIR, id + ".zip");
+}
+
+/** 某一版的包路径。版本号已过 normalizeVersion（无 `/` 与 `..`），拼路径是安全的。 */
+function appVersionZipPath(id, version) {
+  return path.join(appVersionDir(id), version + ".zip");
+}
+
+/**
+ * 落盘：开关打开时写 `<id>/<version>.zip`，**并且**把这一版同时刷成 `<id>.zip` 镜像，
+ * 让老客户端与静态目录（`zipUrl = <id>.zip`）的口径一个字都不用改；关时只写镜像。
+ */
+function writeAppZipFiles(id, version, buf) {
+  if (appVersionsOn() && version) {
+    mkdirp(appVersionDir(id));
+    fs.writeFileSync(appVersionZipPath(id, version), buf);
+  }
+  fs.writeFileSync(appZipPath(id), buf);
+}
+
+/** 版本记录数组：老记录（开关关时建的）没有这个字段 → 空数组。 */
+function appVersionRecords(a) {
+  return Array.isArray(a && a.versions) ? a.versions : [];
+}
+
+/** 这条记录到底有没有 `versions` 字段：空数组（版本全被删）≠ 没有字段（老单版记录）。 */
+function appHasVersionField(a) {
+  return !!(a && Array.isArray(a.versions));
+}
+
+/** 最新版版本号：开关打开时以 latestVersion 为准（可为 "" = 版本全被删），老记录退回 version。 */
+function appLatestVersion(a) {
+  if (!a) return "1.0.0";
+  if (typeof a.latestVersion === "string") return a.latestVersion;
+  return String(a.version || "1.0.0");
+}
+
+/** 一条应用占用的云端字节：多版本 = 各版之和，老记录 = 单包 bytes。 */
+function appStoredBytes(a) {
+  const vs = appVersionRecords(a);
+  if (!vs.length) return Number(a && a.bytes) || 0;
+  return vs.reduce((n, v) => n + (Number(v && v.bytes) || 0), 0);
+}
+
+/** 名下所有应用的云端已存包总量（配额口径 = 所有版本 bytes 之和）。 */
+function accountAppBytes(userId) {
+  return (db.apps || [])
+    .filter((a) => a.userId === userId)
+    .reduce((n, a) => n + appStoredBytes(a), 0);
+}
+
+/** 版本号比较：能拆成数字段的按数字比（1.10.0 > 1.9.0），否则退回字符串比较。 */
+function compareVersions(x, y) {
+  const a = String(x == null ? "" : x).split(/[.+-]/);
+  const b = String(y == null ? "" : y).split(/[.+-]/);
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const sa = a[i] == null ? "" : a[i];
+    const sb = b[i] == null ? "" : b[i];
+    if (sa === sb) continue;
+    const na = /^\d+$/.test(sa) ? Number(sa) : null;
+    const nb = /^\d+$/.test(sb) ? Number(sb) : null;
+    if (na != null && nb != null) return na < nb ? -1 : 1;
+    if (na != null) return 1; // 纯数字段优先于非数字段（1.0.1 > 1.0.0-beta）
+    if (nb != null) return -1;
+    return sa < sb ? -1 : 1;
+  }
+  return 0;
+}
+
+function fmtBytes(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + "KB";
+  return (v / 1024 / 1024).toFixed(2) + "MB";
+}
+
+/**
+ * 账号配额（服务端强制，**全部校验通过之后、落盘之前**调用；契约 §7.5）：
+ *   · 云端已存包总量（名下所有应用所有版本 bytes 之和）≤ MAX_ACCOUNT_APP_BYTES
+ *   · 名下应用条数 ≤ MAX_ACCOUNT_APPS（给已有应用追加版本不计入）
+ * addBytes = 本次新增的包字节；replaceBytes = 本次会被覆盖掉的旧包字节（追加版本传 0）；
+ * newApp = 是否新建一条应用记录。返回 null 表示通过，否则返回要发的 {status, body}。
+ */
+function appQuotaError(userId, addBytes, replaceBytes, newApp) {
+  const add = Math.max(0, Math.round(Number(addBytes) || 0));
+  const replace = Math.max(0, Math.round(Number(replaceBytes) || 0));
+  if (newApp) {
+    const used = (db.apps || []).filter((a) => a.userId === userId).length;
+    if (used >= MAX_ACCOUNT_APPS) {
+      return {
+        status: 413,
+        body: {
+          ok: false,
+          code: "QUOTA_APPS",
+          used: used,
+          limit: MAX_ACCOUNT_APPS,
+          error:
+            "应用数量已达上限：" + used + " / " + MAX_ACCOUNT_APPS +
+            " 个。请先删除不再上架的应用（给已有应用追加版本不计入上限）。",
+        },
+      };
+    }
+  }
+  const used = accountAppBytes(userId);
+  if (used - replace + add > MAX_ACCOUNT_APP_BYTES) {
+    return {
+      status: 413,
+      body: {
+        ok: false,
+        code: "QUOTA_BYTES",
+        used: used,
+        limit: MAX_ACCOUNT_APP_BYTES,
+        error:
+          "云端应用包配额已满：已用 " + fmtBytes(used) + " / 上限 " + fmtBytes(MAX_ACCOUNT_APP_BYTES) +
+          "（本次还需 " + fmtBytes(add) + "）。请先删除旧版本或旧应用再上传。",
+      },
+    };
+  }
+  return null;
+}
+
+/** 声明没勾：400 DECLARATION_REQUIRED（三条写路径共用，落盘之前拦住，不留半成品）。 */
+function declarationRequired(res) {
+  return send(res, 400, {
+    ok: false,
+    code: "DECLARATION_REQUIRED",
+    error:
+      "上架 / 更新应用前必须勾选并接受声明（acceptDeclaration:true）：本人保证该应用符合中华人民共和国法律法规，" +
+      "不含违法有害内容，不侵犯他人知识产权；因该应用产生的全部责任由上传者承担。",
+  });
+}
+
+/** 声明留痕：往 db.appDeclarations[] 追加一条（数组不存在时初始化；ip 取 clientIp(req)）。 */
+function recordAppDeclaration(req, user, id, version, action) {
+  if (!Array.isArray(db.appDeclarations)) db.appDeclarations = [];
+  db.appDeclarations.push({
+    at: now(),
+    userId: user.id,
+    username: user.username || "",
+    ip: clientIp(req),
+    id,
+    version: version || "",
+    action,
+  });
+}
+
+/** 一条版本记录（契约 §7.2）：落 apps[].versions[]，也是目录 versions[] 的来源。 */
+function makeAppVersion(o) {
+  return {
+    version: o.version,
+    parentVersion: o.parentVersion || "",
+    bytes: o.buf.length,
+    sha256: o.sha256,
+    entry: o.entry || "index.html",
+    note: String(o.note == null ? "" : o.note).trim().slice(0, MAX_VERSION_NOTE),
+    uploader: o.user.username || "",
+    uploaderId: o.user.id,
+    createdAt: now(),
+    declarationAt: now(),
+  };
+}
+
+/** 包内入口页字段的兜底（目录条目 / 下载响应共用）。 */
+function appEntryOf(a) {
+  return (a && a.entry) || "index.html";
+}
+
+/**
+ * 目录里的 `versions[]`（契约 §7.6）——**始终**给一份，客户端只有一条读路径：
+ *   · 开关打开（记录里有 versions）→ 每版 `<id>/<version>.zip`（deploy.sh 把该目录装进静态目录）
+ *   · 开关关闭 / 老记录 → 用单版字段合成一项，zipUrl 沿用老口径 `<id>.zip`
+ *   · 版本被全删光（versions 存在但为空）→ 空数组（应用此刻没有可分发的包）
+ */
+function appCatalogVersions(a) {
+  const owner = db.users.find((u) => u.id === a.userId);
+  const fallbackUploader = owner ? owner.username || owner.id : a.userId;
+  const recs = appVersionRecords(a);
+  if (!recs.length) {
+    if (appHasVersionField(a)) return [];
+    return [
+      {
+        version: a.version || "1.0.0",
+        zipUrl: a.id + ".zip",
+        sha256: a.sha256 || "",
+        bytes: Number(a.bytes) || 0,
+        parentVersion: "",
+        uploader: fallbackUploader,
+        createdAt: a.createdAt,
+        note: "",
+      },
+    ];
+  }
+  return recs.map((v) => ({
+    version: v.version,
+    zipUrl: a.id + "/" + v.version + ".zip",
+    sha256: v.sha256 || "",
+    bytes: Number(v.bytes) || 0,
+    parentVersion: v.parentVersion || "",
+    uploader: v.uploader || fallbackUploader,
+    createdAt: v.createdAt,
+    note: v.note || "",
+    entry: v.entry || appEntryOf(a),
+  }));
+}
+
+/** `GET /api/apps/:id/versions` 的版本项（契约 §7.4）：含 `current` = 是不是最新版。 */
+function appVersionsPublic(a) {
+  const owner = db.users.find((u) => u.id === a.userId);
+  const fallbackUploader = owner ? owner.username || owner.id : a.userId;
+  const recs = appVersionRecords(a);
+  if (!recs.length) {
+    if (appHasVersionField(a)) return [];
+    return [
+      {
+        version: a.version || "1.0.0",
+        bytes: Number(a.bytes) || 0,
+        sha256: a.sha256 || "",
+        parentVersion: "",
+        uploader: fallbackUploader,
+        createdAt: a.createdAt,
+        note: "",
+        current: true,
+      },
+    ];
+  }
+  const latest = appLatestVersion(a);
+  return recs.map((v) => ({
+    version: v.version,
+    bytes: Number(v.bytes) || 0,
+    sha256: v.sha256 || "",
+    parentVersion: v.parentVersion || "",
+    uploader: v.uploader || fallbackUploader,
+    createdAt: v.createdAt,
+    note: v.note || "",
+    current: v.version === latest,
+  }));
+}
+
+/**
+ * 定位要下发的包：多版本模式命中版本记录时取 `<id>/<version>.zip`（缺省最新版），
+ * 其余情况退回 `<id>.zip` 镜像（关开关的老口径 / 老单版记录）。
+ * wantVersion 为空 = 最新版；指定的版本拿不到「那一版自己的包」时返回 null（调用方回 404）——
+ * 绝不拿别的版本充数，否则会静默下错版本。
+ */
+function locateAppZip(a, wantVersion) {
+  const want = String(wantVersion == null ? "" : wantVersion).trim();
+  const recs = appVersionRecords(a);
+  const target = want || appLatestVersion(a);
+  const rec = recs.find((v) => v.version === target) || null;
+  if (appVersionsOn() && rec) {
+    const vp = appVersionZipPath(a.id, rec.version);
+    if (fs.existsSync(vp)) {
+      return {
+        path: vp,
+        version: rec.version,
+        sha256: rec.sha256 || "",
+        bytes: Number(rec.bytes) || 0,
+        entry: rec.entry || appEntryOf(a),
+        fromVersionDir: true,
+      };
+    }
+    if (want) return null;
+  }
+  // 指定了版本却拿不到「那一版自己的包」：只有「老单版记录（没有 versions）+ 要的就是它自己那版」
+  // 允许退回镜像（契约的合成 versions[] 就是这么声明的），其余一律 404 —— 绝不拿别的版本充数。
+  if (want && appVersionsOn() && (recs.length > 0 || want !== String(a.version || ""))) return null;
+  const mirror = appZipPath(a.id);
+  if (!fs.existsSync(mirror)) return null;
+  return {
+    path: mirror,
+    version: a.version || target,
+    sha256: a.sha256 || "",
+    bytes: Number(a.bytes) || 0,
+    entry: appEntryOf(a),
+    fromVersionDir: false,
+  };
+}
+
+/** 把 `<id>.zip` 镜像刷成当前最新版（删版本后调用）；没有剩余版本就删掉镜像。 */
+function syncAppZipMirror(a) {
+  const recs = appVersionRecords(a);
+  if (!recs.length) {
+    try { fs.unlinkSync(appZipPath(a.id)); } catch {}
+    return;
+  }
+  const rec = recs.find((v) => v.version === appLatestVersion(a)) || null;
+  if (!rec) return;
+  const src = appVersionZipPath(a.id, rec.version);
+  if (!fs.existsSync(src)) return;
+  fs.copyFileSync(src, appZipPath(a.id));
+}
+
 /**
  * 应用条目统一字段口径 —— /api/apps* 与 /mtnode/apps/catalog.json **共用这一份**：
  * id / title / version / desc / icon / zipUrl / sha256 / owner 为主字段，
@@ -1895,6 +2295,36 @@ function clearAppIcon(id) {
  * zipUrl 与 icon 都用**相对本目录**的写法（`<id>.zip` / `icons/<id>.<ext>`），客户端把它们
  * 解析到 http://mt-agent.com/mtnode/apps/ 下（apps-store.js 的 resolveZipUrl / appsIconUrl）。
  */
+/**
+ * 二次开发来源（fork，契约 §八）：应用身份 = **应用 id + 作者 uid**。
+ * 同一应用被不同作者二次开发后各自上架成**不同 id** 的条目（id 全局唯一不变），条目上用
+ * forkOf = { id, ownerId } 指回源应用（id = 源应用 id，ownerId = 源作者 uid，uid 为准；
+ * owner = 源作者 username，只为显示）。
+ *
+ * 写入口径（服务端唯一实现）：
+ *   · 只认 { id, ownerId } 两个字段，id 走 normalizeAppId、ownerId 非空；
+ *   · **不校验源条目是否还在**：作者删了自己的应用不该让别人后续版本永远传不上去 ——
+ *     客户端在源不可见时显示「分支来源已不可见」即可；
+ *   · 自指（id 与被上传的同一个应用）一律当没声明 —— 那没有意义，只会在目录里绕圈。
+ */
+function normalizeForkOf(raw, selfId) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = normalizeAppId(raw.id);
+  const ownerId = String(raw.ownerId || "").trim().slice(0, 64);
+  if (!id || !ownerId) return null;
+  if (selfId && id === selfId) return null;
+  return { id, ownerId };
+}
+/** 对外形态（目录条目 / 接口条目共用）：补上源作者的 username 供界面显示。 */
+function appForkOfPublic(a) {
+  const f = a && a.forkOf;
+  if (!f || typeof f !== "object") return null;
+  const id = String(f.id || "").trim().toLowerCase();
+  const ownerId = String(f.ownerId || "").trim();
+  if (!id || !ownerId) return null;
+  const u = db.users.find((x) => x.id === ownerId);
+  return { id, ownerId, owner: u ? String(u.username || "") : "" };
+}
 function appCatalogEntry(a) {
   const owner = db.users.find((u) => u.id === a.userId);
   const zipUrl = a.id + ".zip";
@@ -1902,6 +2332,10 @@ function appCatalogEntry(a) {
     id: a.id,
     title: a.title,
     version: a.version || "1.0.0",
+    // 多版本字段（契约 §7.6）：**始终**给 latestVersion / versions[]，
+    // 开关关闭时 versions[] 是单版合成项（zipUrl 仍为 <id>.zip），客户端只有一条读路径。
+    latestVersion: appLatestVersion(a),
+    versions: appCatalogVersions(a),
     desc: a.description || "",
     description: a.description || "",
     icon: appIconRel(a.id) || String(a.icon || ""),
@@ -1909,6 +2343,8 @@ function appCatalogEntry(a) {
     url: zipUrl,
     sha256: a.sha256 || "",
     owner: owner ? (owner.username || owner.id) : a.userId,
+    /* 二次开发来源（可选；原创不出现这个字段）：{ id, ownerId, owner } —— 契约 §八 */
+    forkOf: appForkOfPublic(a),
     entry: a.entry || "index.html",
     tags: Array.isArray(a.tags) ? a.tags : [],
     bytes: a.bytes || 0,
@@ -1929,12 +2365,16 @@ function publicApp(a, viewer) {
     hasIcon: !!appIconPath(a.id),
     mine: !!(viewerId && viewerId === a.userId),
     canDelete: !!(viewerId && (viewerId === a.userId || isAdmin(viewer))),
+    // 下架状态只在详情 / 自己列表里露面（公开目录根本不列出这类条目）。
+    unpublished: !!a.unpublished,
+    unpublishedAt: Number(a.unpublishedAt) || 0,
   });
 }
 
 /** 静态目录文档：把这份 JSON 原样写到 /var/www/mtnode/apps/catalog.json 即是线上目录。 */
 function appCatalogDoc() {
   const apps = (db.apps || [])
+    .filter((a) => !a.unpublished) // 已下架的应用不进目录（契约 §7.6）
     .slice()
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     .map(appCatalogEntry);
@@ -1943,6 +2383,226 @@ function appCatalogDoc() {
     updatedAt: new Date(now()).toISOString(),
     feed: "http://mt-agent.com/mtnode/apps",
     apps: apps,
+  };
+}
+
+/* ---------- 静态目录发布（单一真源：接口变更 → 立即落盘） ---------- *
+ * 客户端（apps-store.js）读的是**静态文件** <MTNODE_APPS_URL>/catalog.json，
+ * 而接口（POST / PATCH / 版本 / 下架 / 删除）只改 db.json 与 DATA_DIR。
+ * 两份各自手写必然漂移 —— 曾经就把线上目录刷成 120 字节的 apps:[] 空清单，
+ * 客户端表现为「应用库未连入云端」。所以这里把落盘收成一条路径：
+ *   appCatalogDoc() 原子写 catalog.json（tmp + rename），
+ *   每个条目的 zip 与图标按静态布局（<id>.zip / <id>/<version>.zip / icons/<id>.<ext>）同步，
+ *   上一次发布写下、这一次不再需要的文件按清单清掉（只删清单里记着的，绝不动别人的文件）。
+ * 任何一步失败都只记日志 + 返回错误，绝不回滚业务数据（库与接口仍然可用），
+ * 但会自动把静态目录切到「接口目录」以保证客户端仍能列出应用（见 publishStaticApps）。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 静态目录布局：按当前 db 算出要写的每个文件（相对静态目录）。
+ * 返回值 { doc, entries:[{id,rel,src,bytes}], managed:[相对路径], missing:[{id,reason}] }。
+ * 纯只读计算，不落盘 —— 供发布与自检共用（自检可以只算不写）。
+ */
+function appStaticPlan() {
+  const doc = appCatalogDoc();
+  const entries = [];
+  const managed = [APPS_WEB_MANIFEST, "catalog.json"];
+  const missing = [];
+  for (const e of doc.apps) {
+    const a = (db.apps || []).find((x) => x.id === e.id);
+    if (!a) continue;
+    // 最新版镜像：老客户端 / 单版布局只认 <id>.zip
+    const mirror = appZipPath(a.id);
+    if (fs.existsSync(mirror)) {
+      entries.push({ id: a.id, rel: a.id + ".zip", src: mirror, bytes: fs.statSync(mirror).size });
+      managed.push(a.id + ".zip");
+    }
+    // 多版本：每一版 <id>/<version>.zip（catalog 的 versions[].zipUrl 就是它）
+    for (const v of appVersionRecords(a)) {
+      const rel = a.id + "/" + v.version + ".zip";
+      const src = appVersionZipPath(a.id, v.version);
+      if (fs.existsSync(src)) {
+        entries.push({ id: a.id, rel: rel, src: src, bytes: fs.statSync(src).size });
+        managed.push(rel);
+      } else {
+        missing.push({ id: a.id, reason: "缺少版本包 " + rel });
+      }
+    }
+    // 图标：相对静态目录 icons/<id>.<ext>（appCatalogEntry().icon 的写法）
+    const iconPath = appIconPath(a.id);
+    if (iconPath) {
+      const rel = "icons/" + a.id + "." + path.extname(iconPath).slice(1).toLowerCase();
+      entries.push({ id: a.id, rel: rel, src: iconPath, bytes: fs.statSync(iconPath).size });
+      managed.push(rel);
+    }
+    if (appHasVersionField(a) && !appVersionRecords(a).length) {
+      missing.push({ id: a.id, reason: "版本被删光，当前没有可分发的包" });
+    }
+  }
+  return { doc: doc, entries: entries, managed: managed, missing: missing };
+}
+
+/** 原子写一个文件（同目录 tmp + rename）：读者要么看到旧内容、要么看到新内容，不会读到半截 JSON。 */
+function writeFileAtomicSync(target, data) {
+  mkdirp(path.dirname(target));
+  const tmp = target + ".tmp-" + process.pid + "-" + Date.now().toString(36);
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, target);
+}
+
+function readJsonFileQuiet(p) {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** 删空目录（只删静态目录里那些应用专属的子目录；非空就停手）。 */
+function rmDirQuiet(p) {
+  try { fs.rmdirSync(p); } catch {}
+}
+
+/**
+ * 把接口目录写到静态目录（nginx 直发的那个文件夹）。返回 {ok, dir, apps, files, removed, missing, errors}。
+ * 失败不清库、不回滚业务：调用方据此降级到「客户端走接口目录」。
+ */
+function writeStaticApps() {
+  const t0 = Date.now();
+  const plan = appStaticPlan();
+  mkdirp(APPS_WEB_DIR);
+  mkdirp(path.join(APPS_WEB_DIR, APPS_WEB_ICONS_DIR));
+  for (const e of plan.entries) {
+    if (!e.rel.endsWith(".zip") || e.rel.indexOf("/") < 0) continue;
+    mkdirp(path.join(APPS_WEB_DIR, e.id));
+  }
+  // 1) 内容先落齐：包 / 图标
+  const errors = [];
+  for (const e of plan.entries) {
+    const dst = path.join(APPS_WEB_DIR, ...e.rel.split("/"));
+    try {
+      writeFileAtomicSync(dst, fs.readFileSync(e.src));
+    } catch (err) {
+      errors.push(e.rel + "：" + ((err && err.message) || String(err)));
+    }
+  }
+  // 2) 目录清单最后写：清单里出现的条目，包与图标都已经在盘上
+  try {
+    writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.json"), JSON.stringify(plan.doc, null, 2) + "\n");
+  } catch (err) {
+    errors.push("catalog.json：" + ((err && err.message) || String(err)));
+  }
+  // 3) 清理：上次发布留下的托管文件里，这次不再需要的
+  const want = new Set(plan.managed);
+  const prev = readJsonFileQuiet(path.join(APPS_WEB_DIR, APPS_WEB_MANIFEST));
+  const prevList = prev && Array.isArray(prev.files) ? prev.files : [];
+  const removed = [];
+  for (const rel of prevList) {
+    const r = String(rel || "").replace(/\\/g, "/");
+    if (!r || want.has(r) || r === "catalog.json" || r.indexOf("..") >= 0) continue;
+    const p = path.join(APPS_WEB_DIR, ...r.split("/"));
+    try {
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+        removed.push(r);
+        if (r.indexOf("/") > 0) rmDirQuiet(path.dirname(p));
+      }
+    } catch (err) {
+      errors.push("清理 " + r + "：" + ((err && err.message) || String(err)));
+    }
+  }
+  try {
+    writeFileAtomicSync(
+      path.join(APPS_WEB_DIR, APPS_WEB_MANIFEST),
+      JSON.stringify({ updatedAt: new Date(now()).toISOString(), apps: plan.doc.apps.length, files: plan.managed }, null, 2) + "\n",
+    );
+  } catch (err) {
+    errors.push(APPS_WEB_MANIFEST + "：" + ((err && err.message) || String(err)));
+  }
+  const ok = errors.length === 0;
+  return {
+    ok: ok,
+    dir: APPS_WEB_DIR,
+    apps: plan.doc.apps.length,
+    files: plan.managed.length,
+    removed: removed,
+    missing: plan.missing,
+    errors: errors,
+    ms: Date.now() - t0,
+  };
+}
+
+/** 静态目录发布闸（进程内串行）：返回同上加上 skipped / error。 */
+let staticPublishBusy = false;
+let staticPublishPending = false;
+let staticPublishLast = null;
+let staticPublishFallback = false; // 静态目录写不进去 → 客户端改走接口目录（见 handle 的 /api/apps/catalog）
+function publishStaticApps(reason) {
+  if (staticPublishBusy) {
+    // 前一次还没写完（同一进程内的连续变更）：这次跳过，前一次写的是**这次之前**的库，
+    // 可能漏掉最新一条 —— 标记 pending，写完再看一次。
+    staticPublishPending = true;
+    return { ok: false, skipped: true, reason: reason };
+  }
+  staticPublishBusy = true;
+  let out;
+  try {
+    out = writeStaticApps();
+  } catch (err) {
+    out = { ok: false, dir: APPS_WEB_DIR, apps: 0, files: 0, errors: ["发布抛出异常：" + ((err && err.message) || String(err))], missing: [], removed: [] };
+  }
+  staticPublishBusy = false;
+  staticPublishLast = Object.assign({ reason: reason }, out);
+  if (out.ok) {
+    if (staticPublishFallback) {
+      staticPublishFallback = false;
+      console.log("[mtnode-store] apps static dir: 恢复直发（" + out.dir + "）");
+    }
+    console.log(
+      "[mtnode-store] apps static dir: 已发布 " + out.apps + " 个应用 / " + out.files + " 个文件" +
+        (out.removed && out.removed.length ? " · 清理 " + out.removed.length + " 个旧文件" : "") +
+        (out.missing && out.missing.length ? " · 缺 " + out.missing.length + " 项（" + out.missing.map((m) => m.id).join(",") + "）" : "") +
+        " · " + out.ms + "ms · 触发=" + reason,
+    );
+  } else {
+    staticPublishFallback = true;
+    // 日志必须写清「缺权限 / 路径」这类可执行信息，别只留一句失败。
+    console.warn(
+      "[mtnode-store] apps static dir: 发布失败（" + out.dir + "）→ 客户端改走接口目录 /api/apps/catalog。" +
+        "排查：目录是否存在且本服务可写（chown / chmod），或设 MTNODE_APPS_WEB_DIR 指到可写目录。原因：" +
+        (out.errors || []).join("；"),
+    );
+  }
+  if (staticPublishPending) {
+    staticPublishPending = false;
+    return publishStaticApps(reason + "+补发");
+  }
+  return out;
+}
+
+/** 静态目录体检（供 GET /api/apps/pub 与上线自检）：只看文件在不在、条数对不对，不改任何东西。 */
+function staticAppsStatus() {
+  const plan = appStaticPlan();
+  const checks = [];
+  for (const rel of plan.managed) {
+    if (rel === APPS_WEB_MANIFEST) continue;
+    const p = path.join(APPS_WEB_DIR, ...rel.split("/"));
+    checks.push({ rel: rel, exists: fs.existsSync(p), bytes: fs.existsSync(p) ? fs.statSync(p).size : 0 });
+  }
+  let diskApps = -1;
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(APPS_WEB_DIR, "catalog.json"), "utf8"));
+    diskApps = Array.isArray(d.apps) ? d.apps.length : -1;
+  } catch {}
+  return {
+    ok: !checks.some((c) => !c.exists) && diskApps === plan.doc.apps.length,
+    dir: APPS_WEB_DIR,
+    dbApps: plan.doc.apps.length,
+    diskApps: diskApps,
+    fallback: staticPublishFallback,
+    last: staticPublishLast,
+    missingOnDisk: checks.filter((c) => !c.exists).map((c) => c.rel),
+    checks: checks,
   };
 }
 
@@ -1967,7 +2627,13 @@ async function handle(req, res) {
   const url = new URL(req.url || "/", "http://local");
   const p = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method || "GET";
-  const user = await authUser(req);
+  const user = await authUser(req, p === "/relay/v1" || p.startsWith("/relay/v1/"));
+
+  // 中转站：/relay/v1/* 全权交给 relay.mjs（它自己读请求体 —— multipart 要原包转发）。
+  // 鉴权沿用它上面的账号 token（同一套 Bearer 会话），不另立一套 Key。
+  if (p === "/relay/v1" || p.startsWith("/relay/v1/")) {
+    return relay.handle({ req, res, p, method, user, url, clientIp: clientIp(req) });
+  }
 
   const jsonBody = async () => {
     const raw = await readBody(req);
@@ -1989,6 +2655,8 @@ async function handle(req, res) {
       templates: db.templates.length,
       skills: db.skills.length,
       apps: (db.apps || []).length,
+      // 应用多版本开关（读部署排查用）：关 = 旧口径 <id>.zip 一版一份。
+      appVersions: appVersionsOn(),
       // 充值链路自检：部署后 curl 一眼看出凭据是否就位（不含任何密钥材料）
       recharge: {
         orders: (db.rechargeOrders || []).length,
@@ -1998,6 +2666,22 @@ async function handle(req, res) {
         notifyConfigured: pay.hasNotifyUrl,
         adminWeb: fs.existsSync(path.join(ADMIN_WEB_DIR, "index.html")),
       },
+      // 中转站自检：只回「上游凭据就位与否 + 白名单模型数」，不含任何 Key 材料
+      relay: (() => {
+        const d = relay.describe();
+        const kinds = { text: false, image: false };
+        for (const u of d.upstreams) if (u.configured && kinds[u.kind] === false) kinds[u.kind] = true;
+        return {
+          textUpstream: kinds.text,
+          imageUpstream: kinds.image,
+          upstreams: d.upstreams.map((u) => ({ id: u.id, kind: u.kind, configured: u.configured, keyFrom: u.keyFrom })),
+          models: d.models.length,
+          configSource: d.configSource,
+          usageRecords: d.usageRecords,
+          auditRecords: d.auditRecords,
+          publicBase: RELAY_PUBLIC_BASE,
+        };
+      })(),
     });
   }
 
@@ -2062,6 +2746,43 @@ async function handle(req, res) {
   if (method === "GET" && p === "/api/me") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
     return send(res, 200, { ok: true, user: publicUser(user) });
+  }
+
+  /**
+   * 客户端同步入口：这个账号在中转站能用哪些模型 + 该填的 Base URL。
+   * 客户端「登录成功 / 充值成功 / 提供商页刷新 / 快照过期」各拉一次（见 docs/relay-admin.md）。
+   * 未充值（可用余额 ≤ 0）一律回空清单 —— 与中转站门禁口径一致，不诱导用户白跑。
+   *
+   * everRecharged：**有没有充过值**（账本里存在 recharge 支付入账，或正向 adjust 人工调账）。
+   * 客户端靠它决定「设置 · 提供商」里那张只读的「MTNode 中转服务」卡到底要不要出现：
+   * 充过值就永久显示（余额花光也只置灰、不消失），从没充过就连卡都不建。
+   * 注意与 balanceYuan 的区别：余额可以花光归零，充值史不会。
+   */
+  if (method === "GET" && p === "/api/relay/me") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const models = relay.admin.userModels(user);
+    const totalYuan = yuanOfCents(totalCentsOf(user));
+    const everRecharged = (db.rechargeLedger || []).some(
+      (e) =>
+        e &&
+        /* 只认**这个账号自己**的流水：整账本里有别人的充值不算你有充值 */
+        String(e.userId || "") === String(user.id || "") &&
+        (e.type === "recharge" ||
+          (e.type === "adjust" && Number(e.deltaCents) > 0)),
+    );
+    return send(res, 200, {
+      ok: true,
+      baseUrl: RELAY_PUBLIC_BASE,
+      providerName: "MTNode 中转服务",
+      enabled: models.length > 0,
+      everRecharged,
+      /* 余额一律按「元」（4 位小数）下发；内部仍是整数分 + 亚分零头，客户端不接触分。 */
+      balanceYuan: totalYuan,
+      totalYuan: totalYuan,
+      models: models,
+      reason: models.length ? "" : "账号在中转站的可用余额为 0：充值后即可使用",
+      updatedAt: Date.now(),
+    });
   }
 
   // 修改昵称（登录态）：去控制字符 + 首尾空白，1-32 位（见 docs/auth-design.md）。
@@ -3083,9 +3804,14 @@ async function handle(req, res) {
     const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
     const owner = String(url.searchParams.get("owner") || "").trim().toLowerCase();
     const sort = String(url.searchParams.get("sort") || "new").trim().toLowerCase();
+    // 已下架的应用不进公开列表；只有「按 owner 查自己 + includeUnpublished=1」才看得到（契约 §7.6）。
+    const includeUnpublished = /^(1|true|yes|on)$/i.test(
+      String(url.searchParams.get("includeUnpublished") || "").trim(),
+    );
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
     const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.get("pageSize") || "20", 10) || 20));
     let list = (db.apps || []).slice();
+    if (!(owner && includeUnpublished)) list = list.filter((a) => !a.unpublished);
     // 按 owner 过滤：username 或 userId 都认（上传脚本用 ?owner=<自己> 找自己的应用）
     if (owner) {
       list = list.filter((a) => {
@@ -3117,20 +3843,240 @@ async function handle(req, res) {
 
   // 静态目录口径（与手写清单 store-saas/apps/catalog.json 同一份字段）：
   // 把它原样落成 /var/www/mtnode/apps/catalog.json，即为客户端读的那个线上目录。
+  // 静态目录写不进去时（缺权限 / 路径不存在，见 publishStaticApps 的告警），
+  // 客户端会回退到这里 —— 所以本接口必须始终可用，返回的就是同一份 appCatalogDoc()。
   if (method === "GET" && (p === "/api/apps/catalog" || p === "/api/apps/catalog.json")) {
     return send(res, 200, appCatalogDoc());
+  }
+
+  // 静态目录体检（免登录、只读）：给上线自检与排查用 —— 条数对不对、文件在不在、有没有降级。
+  if (method === "GET" && p === "/api/apps/pub") {
+    return send(res, 200, Object.assign({ ok: true }, staticAppsStatus()));
   }
 
   const appOne = /^\/api\/apps\/([^/]+)$/.exec(p);
   const appFileR = /^\/api\/apps\/([^/]+)\/file$/.exec(p);
   const appIconR = /^\/api\/apps\/([^/]+)\/icon$/.exec(p);
+  const appVersionsR = /^\/api\/apps\/([^/]+)\/versions$/.exec(p);
+  const appVersionOneR = /^\/api\/apps\/([^/]+)\/versions\/([^/]+)$/.exec(p);
+  const appPublishR = /^\/api\/apps\/([^/]+)\/(unpublish|publish)$/.exec(p);
+
+  // 版本树数据（免登录，公开信息）：客户端详情区的「版本」块按它渲染。
+  // 开关关闭时也用单版字段合成一项，客户端只有一条读路径。
+  if (appVersionsR && method === "GET") {
+    const a = (db.apps || []).find((x) => x.id === appVersionsR[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    return send(res, 200, {
+      ok: true,
+      id: a.id,
+      latestVersion: appLatestVersion(a),
+      unpublished: !!a.unpublished,
+      versions: appVersionsPublic(a),
+    });
+  }
+
+  // 追加版本（仅 owner，必须 acceptDeclaration）：一版一包落 <id>/<version>.zip，
+  // 同时把最新版刷成 <id>.zip 镜像（老客户端 / 静态目录口径不变）。
+  if (appVersionsR && method === "POST") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "追加版本需要登录" });
+    const a = (db.apps || []).find((x) => x.id === appVersionsR[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能给自己的应用追加版本" });
+    if (!appVersionsOn()) {
+      // 单版模式下追加版本无处安放（<id>.zip 只有一份）：明确报错，不静默覆盖旧包。
+      return send(res, 409, {
+        ok: false,
+        code: "APP_VERSIONS_DISABLED",
+        error:
+          "服务端未启用应用多版本（需设环境变量 MTNODE_APP_VERSIONS=1）；单版模式请用 PATCH /api/apps/" +
+          a.id + " 覆盖更新",
+      });
+    }
+    const b = await jsonBody();
+    // 声明（契约 §7.3）：没勾选就不落任何盘。
+    if (b.acceptDeclaration !== true) return declarationRequired(res);
+    requireFields(b, ["version"]);
+    let version;
+    try {
+      version = normalizeVersion(b.version, a.latestVersion || a.version || "1.0.0");
+    } catch (e) {
+      return send(res, 400, { ok: false, error: e.message || String(e) });
+    }
+    if (appVersionRecords(a).some((v) => v.version === version)) {
+      return send(res, 409, {
+        ok: false,
+        code: "VERSION_EXISTS",
+        error:
+          "该版本号已存在（v" + version + "）：请换一个版本号，或先用 DELETE /api/apps/" + a.id +
+          "/versions/" + version + " 把旧的那一版下掉",
+      });
+    }
+    let nextTitle = null;
+    if (b.title != null) {
+      nextTitle = String(b.title).trim().slice(0, 80);
+      if (!nextTitle) return send(res, 400, { ok: false, error: "标题不能为空" });
+    }
+    const nextDesc =
+      b.description != null || b.desc != null
+        ? String(b.description != null ? b.description : b.desc).trim().slice(0, 2000)
+        : null;
+    const nextTags = b.tags != null ? parseTags(b.tags) : null;
+    let buf;
+    try {
+      buf = decodeAppZip(b.zipBase64 != null ? b.zipBase64 : b.fileBase64);
+    } catch (e) {
+      return send(res, 400, { ok: false, error: "不是有效的小应用 zip：" + (e.message || e) });
+    }
+    let entry = "";
+    try {
+      entry = detectAppEntry(b.entry, zipEntryNames(buf));
+    } catch (e) {
+      return send(res, 400, { ok: false, error: e.message || String(e) });
+    }
+    if (!entry) {
+      return send(res, 400, { ok: false, error: "包内找不到入口页（顶层需有 index.html，或显式传 entry）" });
+    }
+    let iconBuf = null;
+    let clearIcon = false;
+    if (b.iconBase64 === "") {
+      clearIcon = true;
+    } else if (b.iconBase64) {
+      try {
+        iconBuf = decodePreview(b.iconBase64);
+      } catch (e) {
+        return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
+      }
+    }
+    // 父版本：显式传入优先，否则 = 当前 latestVersion（第一版传空串）。
+    let parentVersion = appLatestVersion(a);
+    if (b.parentVersion != null) {
+      const pv = String(b.parentVersion).trim();
+      if (!pv) {
+        parentVersion = "";
+      } else {
+        try {
+          parentVersion = normalizeVersion(pv, "");
+        } catch (e) {
+          return send(res, 400, { ok: false, error: "parentVersion 无效：" + (e.message || e) });
+        }
+      }
+    }
+    // 配额：全部校验通过之后、落盘之前（契约 §7.5）。
+    const q = appQuotaError(user.id, buf.length, 0, false);
+    if (q) return send(res, q.status, q.body);
+
+    writeAppZipFiles(a.id, version, buf);
+    if (clearIcon) clearAppIcon(a.id);
+    else if (iconBuf) writeAppIcon(a.id, iconBuf);
+    const sha = crypto.createHash("sha256").update(buf).digest("hex");
+    a.versions = appVersionRecords(a).concat([
+      makeAppVersion({
+        version,
+        parentVersion,
+        buf,
+        sha256: sha,
+        entry,
+        note: b.versionNote != null ? b.versionNote : b.note,
+        user,
+      }),
+    ]);
+    a.latestVersion = version;
+    a.version = version; // 老字段 = 最新版版本号（语义不变）
+    a.bytes = buf.length;
+    a.sha256 = sha;
+    a.entry = entry;
+    if (nextTitle != null) a.title = nextTitle;
+    if (nextDesc != null) a.description = nextDesc;
+    if (nextTags != null) a.tags = nextTags;
+    /* 二次开发来源：本次带了这个键就按它改（null / 空对象 = 清掉声明，回到原创）；
+       没带键 = 保持原样（追加一版不该悄悄抹掉上一版声明的来源）。 */
+    if (b.forkOf !== undefined) {
+      const fo = normalizeForkOf(b.forkOf, a.id);
+      if (fo) a.forkOf = fo;
+      else delete a.forkOf;
+    }
+    a.updatedAt = now();
+    recordAppDeclaration(req, user, a.id, version, "version");
+    await saveDb();
+    publishStaticApps("追加版本 " + a.id + "@" + version);
+    return send(res, 200, { ok: true, version, item: publicApp(a, user), catalog: appCatalogEntry(a) });
+  }
+
+  // 删某一版（仅 owner）：包与版本记录一起下掉（不留灰行），配额当场释放。
+  if (appVersionOneR && method === "DELETE") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "删除版本需要登录" });
+    const a = (db.apps || []).find((x) => x.id === appVersionOneR[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能删除自己应用的版本" });
+    if (!appVersionsOn()) {
+      return send(res, 409, {
+        ok: false,
+        code: "APP_VERSIONS_DISABLED",
+        error: "服务端未启用应用多版本（需设环境变量 MTNODE_APP_VERSIONS=1）：单版模式没有可分删的版本记录",
+      });
+    }
+    let want = appVersionOneR[2];
+    try { want = decodeURIComponent(want); } catch {}
+    const recs = appVersionRecords(a).slice();
+    const vi = recs.findIndex((v) => v.version === want);
+    if (vi < 0) {
+      return send(res, 404, { ok: false, code: "VERSION_NOT_FOUND", error: "该版本不存在或已下架：v" + want });
+    }
+    recs.splice(vi, 1);
+    a.versions = recs;
+    try { fs.unlinkSync(appVersionZipPath(a.id, want)); } catch {}
+    if (!recs.length) {
+      // 全删光：应用没有可分发的包了 → 随之下架，镜像也删掉（记录仍在，可重新上架新版本）。
+      a.latestVersion = "";
+      a.unpublished = true;
+      a.unpublishedAt = now();
+      a.bytes = 0;
+      a.sha256 = "";
+      try { fs.unlinkSync(appZipPath(a.id)); } catch {}
+    } else {
+      // 删的是最新版 → latestVersion 指向剩余最高版，并把镜像刷成它。
+      const top = recs.reduce((best, v) => (compareVersions(v.version, best.version) > 0 ? v : best), recs[0]);
+      a.latestVersion = top.version;
+      a.version = top.version;
+      a.bytes = Number(top.bytes) || 0;
+      a.sha256 = top.sha256 || "";
+      if (top.entry) a.entry = top.entry;
+      syncAppZipMirror(a);
+    }
+    a.updatedAt = now();
+    await saveDb();
+    publishStaticApps("删版本 " + a.id + "@" + want);
+    return send(res, 200, { ok: true, id: a.id, latestVersion: a.latestVersion || "", versions: appVersionsPublic(a) });
+  }
+
+  // 下架 / 重新发布（仅 owner）：记录与所有版本的包都保留，只改目录可见性。
+  if (appPublishR && method === "POST") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "下架 / 重新发布需要登录" });
+    const a = (db.apps || []).find((x) => x.id === appPublishR[1]);
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能下架 / 重新发布自己的应用" });
+    const unpublish = appPublishR[2] === "unpublish";
+    a.unpublished = unpublish;
+    a.unpublishedAt = unpublish ? now() : 0;
+    await saveDb();
+    publishStaticApps((unpublish ? "下架 " : "重新发布 ") + a.id);
+    return send(res, 200, { ok: true, id: a.id, unpublished: !!a.unpublished, item: publicApp(a, user) });
+  }
 
   if (appFileR && method === "GET") {
     const a = (db.apps || []).find((x) => x.id === appFileR[1]);
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
-    const fp = path.join(APP_DIR, a.id + ".zip");
-    if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
-    const buf = fs.readFileSync(fp);
+    // 多版本：?version=x.y.z 回指定版本、缺省回 latestVersion；关开关时该参数一律忽略（旧口径不变）。
+    const wantVersion = appVersionsOn() ? String(url.searchParams.get("version") || "").trim() : "";
+    const loc = locateAppZip(a, wantVersion);
+    if (!loc) {
+      return send(res, 404, {
+        ok: false,
+        code: wantVersion ? "VERSION_NOT_FOUND" : "FILE_MISSING",
+        error: wantVersion ? "该版本不存在或已下架：v" + wantVersion : "文件缺失",
+      });
+    }
+    const buf = fs.readFileSync(loc.path);
     const sha = crypto.createHash("sha256").update(buf).digest("hex");
     a.downloads = (a.downloads || 0) + 1;
     const owner = db.users.find((u) => u.id === a.userId);
@@ -3146,11 +4092,11 @@ async function handle(req, res) {
       ok: true,
       id: a.id,
       title: a.title,
-      version: a.version,
-      entry: a.entry || "index.html",
+      version: loc.version,
+      entry: loc.entry,
       bytes: buf.length,
       sha256: sha,
-      zipUrl: a.id + ".zip",
+      zipUrl: loc.fromVersionDir ? a.id + "/" + loc.version + ".zip" : a.id + ".zip",
       base64: buf.toString("base64"),
     });
   }
@@ -3173,6 +4119,8 @@ async function handle(req, res) {
   if (method === "POST" && p === "/api/apps") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "上传应用需要登录" });
     const b = await jsonBody();
+    // 声明（契约 §7.3）：新建必须 acceptDeclaration === true，否则不落任何盘。
+    if (b.acceptDeclaration !== true) return declarationRequired(res);
     requireFields(b, ["id", "title"]);
     const id = normalizeAppId(b.id);
     if (!id) {
@@ -3218,8 +4166,17 @@ async function handle(req, res) {
     } catch (e) {
       return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
     }
-    fs.writeFileSync(path.join(APP_DIR, id + ".zip"), buf);
+    // 配额：全部校验通过之后、落盘之前（契约 §7.5；超限时磁盘与内存都不留半成品）。
+    const quota = appQuotaError(user.id, buf.length, 0, true);
+    if (quota) return send(res, quota.status, quota.body);
+
+    // 二次开发来源（可选，契约 §八）：声明了就记，没声明 = 原创
+    const forkOf = normalizeForkOf(b.forkOf, id);
+
+    // 开关打开时一版一包 + 最新版镜像；关闭时只写 <id>.zip（旧口径逐字不变）。
+    writeAppZipFiles(id, version, buf);
     if (icon) writeAppIcon(id, icon);
+    const sha = crypto.createHash("sha256").update(buf).digest("hex");
     const a = {
       id,
       userId: user.id,
@@ -3230,13 +4187,33 @@ async function handle(req, res) {
       tags: parseTags(b.tags),
       entry,
       bytes: buf.length,
-      sha256: crypto.createHash("sha256").update(buf).digest("hex"),
+      sha256: sha,
       downloads: 0,
       createdAt: now(),
       updatedAt: now(),
     };
+    if (forkOf) a.forkOf = forkOf;
+    if (appVersionsOn()) {
+      // 契约 §7.2：开关打开时才写 versions / latestVersion / unpublished（+ 下架时间）。
+      a.versions = [
+        makeAppVersion({
+          version,
+          parentVersion: "",
+          buf,
+          sha256: sha,
+          entry,
+          note: b.versionNote != null ? b.versionNote : b.note,
+          user,
+        }),
+      ];
+      a.latestVersion = version;
+      a.unpublished = false;
+      a.unpublishedAt = 0;
+    }
     db.apps.push(a);
+    recordAppDeclaration(req, user, id, version, "create");
     await saveDb();
+    publishStaticApps("新建应用 " + id + "@" + version);
     return send(res, 200, { ok: true, item: publicApp(a, user), catalog: appCatalogEntry(a) });
   }
 
@@ -3247,6 +4224,8 @@ async function handle(req, res) {
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能更新自己的应用" });
     const b = await jsonBody();
+    // 声明（契约 §7.3）：更新同样必须 acceptDeclaration === true，没勾选就不落任何盘。
+    if (b.acceptDeclaration !== true) return declarationRequired(res);
     // 先全部校验、再落盘 / 改内存：中途报错时库与磁盘都不留半成品（失败绝不改内存记录）。
     let nextTitle = null;
     if (b.title != null) {
@@ -3288,7 +4267,7 @@ async function handle(req, res) {
         return send(res, 400, { ok: false, error: "包内找不到入口页（顶层需有 index.html，或显式传 entry）" });
       }
     } else if (b.entry != null) {
-      const fp = path.join(APP_DIR, a.id + ".zip");
+      const fp = appZipPath(a.id);
       if (!fs.existsSync(fp)) return send(res, 400, { ok: false, error: "应用包缺失，请重新上传 zip" });
       try {
         nextEntry = detectAppEntry(b.entry, zipEntryNames(fs.readFileSync(fp)));
@@ -3297,18 +4276,75 @@ async function handle(req, res) {
       }
       if (!nextEntry) return send(res, 400, { ok: false, error: "入口页不合法" });
     }
-    const bumped = b.version == null;
+    // 多版本模式下「带 zip 的 PATCH」= 追加一条版本记录（父版 = 追加前的 latestVersion）；
+    // 不带 zip 就只改元信息；关开关时完全是旧口径（覆盖 <id>.zip + 版本字段 +1）。
+    const appendVersion = appVersionsOn() && !!zipBuf;
+    const prevLatest = appLatestVersion(a);
+    // 多版本模式下的「只改元信息」不动版本号：版本由版本记录掌管，若照旧 +1 会让
+    // catalog 里的 version（老字段）与 latestVersion 脱节（例：version=1.0.1 却没有这一版的包）。
+    const bumped = b.version == null && (!appVersionsOn() || !!zipBuf);
     let nextVersion;
     try {
-      nextVersion = normalizeVersion(bumped ? bumpAppVersion(a.version) : b.version, a.version || "1.0.0");
+      if (appVersionsOn() && !zipBuf) {
+        nextVersion = normalizeVersion(a.latestVersion || a.version, a.version || "1.0.0");
+      } else {
+        const bumpBase = appVersionsOn() ? a.latestVersion || a.version || "1.0.0" : a.version;
+        nextVersion = normalizeVersion(bumped ? bumpAppVersion(bumpBase) : b.version, a.version || "1.0.0");
+      }
     } catch (e) {
       return send(res, 400, { ok: false, error: e.message || String(e) });
     }
-
+    if (appendVersion && appVersionRecords(a).some((v) => v.version === nextVersion)) {
+      return send(res, 409, {
+        ok: false,
+        code: "VERSION_EXISTS",
+        error:
+          "该版本号已存在（v" + nextVersion + "）：不传 version 时服务端按 +1 递增，或显式传一个新版本号",
+      });
+    }
+    // 父版本：显式传入优先，否则 = 追加前的 latestVersion（契约 §7.4）。
+    let appendParent = prevLatest;
+    if (appendVersion && b.parentVersion != null) {
+      const pv = String(b.parentVersion).trim();
+      if (!pv) {
+        appendParent = "";
+      } else {
+        try {
+          appendParent = normalizeVersion(pv, "");
+        } catch (e) {
+          return send(res, 400, { ok: false, error: "parentVersion 无效：" + (e.message || e) });
+        }
+      }
+    }
+    // 配额：追加版本是净增（镜像不算第二份），覆盖旧包则先释放被覆盖的那一份（契约 §7.5）。
     if (zipBuf) {
-      fs.writeFileSync(path.join(APP_DIR, a.id + ".zip"), zipBuf);
+      const quota = appQuotaError(user.id, zipBuf.length, appendVersion ? 0 : Number(a.bytes) || 0, false);
+      if (quota) return send(res, quota.status, quota.body);
+    }
+
+    const zipSha = zipBuf ? crypto.createHash("sha256").update(zipBuf).digest("hex") : "";
+    let appendRec = null;
+    if (zipBuf) {
+      if (appendVersion) {
+        writeAppZipFiles(a.id, nextVersion, zipBuf);
+        appendRec = makeAppVersion({
+          version: nextVersion,
+          parentVersion: appendParent,
+          buf: zipBuf,
+          sha256: zipSha,
+          entry: nextEntry != null ? nextEntry : appEntryOf(a),
+          note: b.versionNote != null ? b.versionNote : b.note,
+          user,
+        });
+      } else {
+        fs.writeFileSync(appZipPath(a.id), zipBuf);
+      }
       a.bytes = zipBuf.length;
-      a.sha256 = crypto.createHash("sha256").update(zipBuf).digest("hex");
+      a.sha256 = zipSha;
+    }
+    if (appendRec) {
+      a.versions = appVersionRecords(a).concat([appendRec]);
+      a.latestVersion = nextVersion;
     }
     if (clearIcon) clearAppIcon(a.id);
     else if (iconBuf) writeAppIcon(a.id, iconBuf);
@@ -3318,9 +4354,17 @@ async function handle(req, res) {
     if (nextTags != null) a.tags = nextTags;
     if (nextIcon != null) a.icon = nextIcon;
     if (nextEntry != null) a.entry = nextEntry;
+    /* 二次开发来源（契约 §八）：带了这个键才动它（null = 清回原创），不带就保持原样 */
+    if (b.forkOf !== undefined) {
+      const fo = normalizeForkOf(b.forkOf, a.id);
+      if (fo) a.forkOf = fo;
+      else delete a.forkOf;
+    }
     a.version = nextVersion;
     a.updatedAt = now();
+    recordAppDeclaration(req, user, a.id, nextVersion, appendRec ? "version" : "update");
     await saveDb();
+    publishStaticApps((appendRec ? "追加版本 " : "更新应用 ") + a.id + "@" + nextVersion);
     return send(res, 200, {
       ok: true,
       bumped,
@@ -3342,9 +4386,12 @@ async function handle(req, res) {
       downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (a.downloads || 0)),
     });
     db.apps.splice(idx, 1);
-    try { fs.unlinkSync(path.join(APP_DIR, a.id + ".zip")); } catch {}
+    try { fs.unlinkSync(appZipPath(a.id)); } catch {}
+    // 多版本：整条应用删掉时把它那一整个版本目录也带走（不留孤儿包）。
+    try { fs.rmSync(appVersionDir(a.id), { recursive: true, force: true }); } catch {}
     clearAppIcon(a.id);
     await saveDb();
+    publishStaticApps("删除应用 " + a.id);
     return send(res, 200, { ok: true });
   }
 
@@ -3525,9 +4572,9 @@ async function handle(req, res) {
       // alipay_page = 电脑网站支付（浏览器收银台）· alipay_f2f = 当面付（窗内二维码）。
       // 由 MTNODE_ALIPAY_CHANNEL 决定，客户端据此决定「显示二维码」还是「显示去支付按钮」。
       channel: st.channel === "precreate" ? "alipay_f2f" : "alipay_page",
-      tiersCents: RECHARGE_TIERS_CENTS.slice(),
-      minCents: RECHARGE_MIN_CENTS,
-      maxCents: RECHARGE_MAX_CENTS,
+      tiersYuan: RECHARGE_TIERS_CENTS.map(yuanOfCents),
+      minYuan: yuanOfCents(RECHARGE_MIN_CENTS),
+      maxYuan: yuanOfCents(RECHARGE_MAX_CENTS),
       orderTtlMs: 15 * 60 * 1000,
       payConfigured: st.configured,
       sandbox: st.sandbox,
@@ -3562,16 +4609,17 @@ async function handle(req, res) {
       });
     }
     const b = await jsonBody();
-    const rawAmt = b.amountCents != null ? b.amountCents : Number(b.amountYuan) * 100;
-    const amountCents = Math.round(Number(rawAmt));
+    /* 入参一律「元」（金额以元为单位提交，如 10 / 0.01）；内部换算成整数分记账。
+       兼容老客户端残留的 amountCents（值仍是分），但不对外再提「分」。 */
+    const amountCents = b.amountYuan != null ? Math.round(centsOfYuan(Number(b.amountYuan))) : Math.round(Number(b.amountCents));
     const verr = validateAmount(amountCents);
     if (verr) {
       return send(res, 400, {
         ok: false,
         code: "INVALID_AMOUNT",
         error: verr,
-        minCents: RECHARGE_MIN_CENTS,
-        maxCents: RECHARGE_MAX_CENTS,
+        minYuan: yuanOfCents(RECHARGE_MIN_CENTS),
+        maxYuan: yuanOfCents(RECHARGE_MAX_CENTS),
       });
     }
     const ip = clientIp(req);
@@ -3590,7 +4638,7 @@ async function handle(req, res) {
 
     const outTradeNo = makeOrderId();
     const subject = "MTNode 账户充值";
-    const bodyText = "账号 " + (user.username || user.id) + " 充值 " + (amountCents / 100).toFixed(2) + " 元";
+    const bodyText = "账号 " + (user.username || user.id) + " 充值 " + yuanOfCents(amountCents) + " 元";
     /* 通道二选一（MTNODE_ALIPAY_CHANNEL，默认 page）：
        · page      电脑网站支付：只生成签名跳转 URL，不调接口 → 客户端用系统浏览器打开收银台。
                    线上实测该 APPID 已签约这个产品，而当面付回 ACQ.ACCESS_FORBIDDEN（未签约）。
@@ -3624,7 +4672,7 @@ async function handle(req, res) {
       ? { payUrl: pay.url }
       : { qrCode: pay.qrCode, qrDataUrl: qrDataUrl(pay.qrCode, { title: "支付宝付款码" }) });
     await saveDb();
-    console.log("[recharge] 下单 " + order.id + " " + amountCents + " 分 · " + (usePage ? "page.pay" : "当面付") + " · " + (user.username || user.id));
+    console.log("[recharge] 下单 " + order.id + " " + yuanOfCents(amountCents) + " 元 · " + (usePage ? "page.pay" : "当面付") + " · " + (user.username || user.id));
     return send(res, 200, {
       ok: true,
       order: wallet.publicOrder(order),
@@ -3687,7 +4735,7 @@ async function handle(req, res) {
       tradeStatus: r.tradeStatus || "",
       code: r.code || "",
       order: wallet.publicOrder(order),
-      balanceCents: wallet.balanceOf(user),
+      balanceYuan: yuanOfCents(wallet.balanceOf(user)),
     });
   }
 
@@ -3848,9 +4896,9 @@ async function handle(req, res) {
       alipay: alipayStatus(),
       wechat: { configured: wechatConfigured(), ownerMapEntries: WECHAT_OWNER_MAP.size },
       config: {
-        tiersCents: RECHARGE_TIERS_CENTS.slice(),
-        minCents: RECHARGE_MIN_CENTS,
-        maxCents: RECHARGE_MAX_CENTS,
+        tiersYuan: RECHARGE_TIERS_CENTS.map(yuanOfCents),
+        minYuan: yuanOfCents(RECHARGE_MIN_CENTS),
+        maxYuan: yuanOfCents(RECHARGE_MAX_CENTS),
         rechargeUsers: Array.from(RECHARGE_USERS),
       },
     });
@@ -3923,7 +4971,8 @@ async function handle(req, res) {
     if (!a) return;
     const orderId = decodeURIComponent(adminRefundR[1]);
     const b = await jsonBody();
-    const amountCents = Math.round(Number(b.amountCents));
+    /* 入参一律「元」（如 0.2130）：内部换算成整数分再走退款链路 */
+    const amountCents = Math.round(centsOfYuan(Number(b.amountYuan)));
     const note = String(b.note || "").trim();
     const pre = wallet.canRefund({ orderId, amountCents, user: null });
     // 订单/账号不存在 → 404；余额不足、超可退额、金额非法 → 400（管理页据此分别提示）
@@ -3971,7 +5020,7 @@ async function handle(req, res) {
     });
     if (!r.ok) return send(res, 400, { ok: false, code: r.code, error: r.error });
     console.log(
-      "[admin] 退款 " + orderId + " " + amountCents + " 分 by " + (a.user.username || a.user.id) +
+      "[admin] 退款 " + orderId + " " + yuanOfCents(amountCents) + " 元 by " + (a.user.username || a.user.id) +
         (ar.fundChange === "N" ? "（支付宝返回 fund_change=N，可能是重复请求）" : ""),
     );
     return send(res, 200, {
@@ -3979,7 +5028,7 @@ async function handle(req, res) {
       order: wallet.adminOrder(r.order),
       ledger: wallet.adminLedger(r.ledger),
       fundChange: ar.fundChange,
-      balanceCents: wallet.balanceOf(db.users.find((u) => u.id === r.order.userId) || {}),
+      balanceYuan: yuanOfCents(wallet.balanceOf(db.users.find((u) => u.id === r.order.userId) || {})),
     });
   }
 
@@ -4014,7 +5063,7 @@ async function handle(req, res) {
         phone: u.phone ? maskPhone(u.phone) : "",
         wechatBound: !!u.wechatUnionId,
         hasPassword: !!u.pass,
-        balanceCents: wallet.balanceOf(u),
+        balanceYuan: yuanOfCents(wallet.balanceOf(u)),
         isAdmin: isAdmin(u),
         adminEligible: adminEligible(u),
         createdAt: u.createdAt,
@@ -4033,16 +5082,17 @@ async function handle(req, res) {
     const b = await jsonBody();
     const r = await wallet.adjustBalance({
       user: target,
-      deltaCents: Math.round(Number(b.deltaCents)),
+      /* 入参一律「元」（可负）：内部换算成整数分记账 */
+      deltaCents: Math.round(centsOfYuan(Number(b.deltaYuan))),
       note: String(b.note || ""),
       operator: a.user.username || a.user.id,
     });
     if (!r.ok) return send(res, 400, { ok: false, code: r.code, error: r.error });
     console.log(
-      "[admin] 调账 " + (target.username || target.id) + " " + r.ledger.deltaCents + " 分 by " +
+      "[admin] 调账 " + (target.username || target.id) + " " + yuanOfCents(r.ledger.deltaCents) + " 元 by " +
         (a.user.username || a.user.id) + "：" + r.ledger.note,
     );
-    const out = { ok: true, balanceCents: r.balanceCents, ledger: wallet.adminLedger(r.ledger) };
+    const out = { ok: true, balanceYuan: yuanOfCents(r.balanceCents), ledger: wallet.adminLedger(r.ledger) };
     // 调的是自己 → 顺带回最新账号摘要，客户端 / 管理页立即同步
     if (target.id === a.user.id) out.user = publicUser(target);
     return send(res, 200, out);
@@ -4059,6 +5109,66 @@ async function handle(req, res) {
       })
       .map((e) => wallet.adminLedger(e));
     return send(res, 200, { ok: true, items });
+  }
+
+  /* ==========================================================================
+   * 管理台 · 中转服务（配置上游 / 模型 / 价目 + 会话测试 + 改动留痕）
+   *   逻辑全在 relay.mjs（adminApi），这里只做管理台会话鉴权与 JSON 收发。
+   *   接口一律不回传任何 Key 明文：只给 keyFrom（db / env）+ keyTail（后四位）。
+   * ========================================================================== */
+
+  if (method === "GET" && p === "/api/admin/relay") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    return send(res, 200, {
+      ok: true,
+      config: relay.admin.describe(),
+      audit: relay.admin.audit(Number(url.searchParams.get("audit")) || 100),
+      usage: relay.admin.usage(Number(url.searchParams.get("usage")) || 100),
+    });
+  }
+
+  if (method === "POST" && p === "/api/admin/relay/config") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const b = await jsonBody();
+    const r = await relay.admin.save(b && b.config ? b.config : b, a.user);
+    if (!r.ok) return send(res, 400, { ok: false, code: "RELAY_CONFIG_INVALID", error: (r.errs || []).join("；"), errs: r.errs || [] });
+    console.log("[admin] 保存中转配置 by " + (a.user.username || a.user.id) + "：changed=" + r.changed);
+    return send(res, 200, { ok: true, changed: r.changed, config: r.config });
+  }
+
+  // 从上游 /models 拉候选（只读元信息，不消耗 Token）：填了 Key 就能勾选导入
+  if (method === "POST" && p === "/api/admin/relay/upstream-models") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const b = await jsonBody();
+    const r = await relay.admin.listUpstreamModels(b || {});
+    return send(res, r.ok ? 200 : 400, r);
+  }
+
+  // 会话测试的临时 Key（mtr_test_ / 30 分钟 / 只对该管理员 / 只对 /relay/v1/* 生效）
+  if (method === "POST" && p === "/api/admin/relay/test-key") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const r = await relay.admin.issueTestKey(a.user);
+    if (!r.ok) return send(res, 500, { ok: false, error: r.error || "发 Key 失败" });
+    console.log("[admin] 发中转测试 Key by " + (a.user.username || a.user.id) + "（" + r.expiresInSec + "s）");
+    return send(res, 200, {
+      ok: true,
+      token: r.token,
+      expiresAt: r.expiresAt,
+      expiresInSec: r.expiresInSec,
+      baseUrl: RELAY_PUBLIC_BASE,
+      balanceYuan: yuanOfCents(totalCentsOf(a.user)),
+      totalYuan: yuanOfCents(totalCentsOf(a.user)),
+    });
+  }
+
+  if (method === "GET" && p === "/api/admin/relay/audit") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    return send(res, 200, { ok: true, items: relay.admin.audit(Number(url.searchParams.get("limit")) || 100) });
   }
 
   // CSV 导出（UTF-8 BOM，Excel 双击不乱码）。
@@ -4128,6 +5238,9 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log("[mtnode-store] http://" + HOST + ":" + PORT);
+  // 启动即发一次静态目录：紧接着的每次应用变更也会发（publishStaticApps），
+  // 这条只负责「部署后把线上目录刷成库里的真实状态」——正好补上以前要靠人工跑第②步的缺口。
+  publishStaticApps("启动");
   const acct = accountStore.describe();
   console.log(
     "[mtnode-store] account store: " +
@@ -4176,4 +5289,36 @@ server.listen(PORT, HOST, () => {
       "（静态目录 /mtnode/apps/catalog.json 与 GET /api/apps/catalog 同一份字段；" +
       "zipUrl / icon 相对该目录）",
   );
+  console.log(
+    "[mtnode-store] apps static dir: " + APPS_WEB_DIR +
+      "（每次应用变更自动落盘 catalog.json + <id>.zip / <id>/<version>.zip / icons/<id>.<ext>；" +
+      "写不进去时客户端回退接口目录 /api/apps/catalog，体检 GET /api/apps/pub）",
+  );
+  console.log(
+    "[mtnode-store] apps versions: " +
+      (appVersionsOn()
+        ? "开（每版一包 <id>/<version>.zip，最新版镜像 <id>.zip；配额 " +
+          fmtBytes(MAX_ACCOUNT_APP_BYTES) + " / " + MAX_ACCOUNT_APPS + " 个应用）"
+        : "关（默认：<id>.zip 一版一份 + PATCH 覆盖；设 MTNODE_APP_VERSIONS=1 打开多版本）") +
+      " · 声明留痕=" + (db.appDeclarations || []).length + " 条",
+  );
+  const rd = relay.describe();
+  const upText = rd.upstreams.map((u) =>
+    u.kind + " 上游 " + u.label + "(" + u.base + ")" +
+    (u.configured ? " ✓" + (u.keyFrom ? "[" + u.keyFrom + "]" : "") : " ✗ 缺 Key" + (u.keyEnv ? " / " + u.keyEnv : "")),
+  );
+  console.log(
+    "[mtnode-store] relay 中转站: " +
+      upText.join(" · ") +
+      " · 模型 " + rd.models.length + " 个[" + rd.models.join(",") + "]" +
+      " · 限流 账号 " + rd.quota.accountPerMin + "/分 · 图像 " + rd.quota.imagePerMin + "/分 · IP " + rd.quota.ipPerMin + "/分" +
+      " · 计费单位 元（文本 元/百万 token · 图像 元/张）" +
+      " · 配置来源 " + rd.configSource + (rd.configSource === "db" ? "（管理台可改，保存即热生效）" : "（默认 + env 缺省）") +
+      " · 改动留痕 " + rd.auditRecords + " 条 · 用量明细 " + rd.usageRecords + " 条" +
+      (rd.configFile ? " · 兼容配置文件 " + rd.configFile : ""),
+  );
+  console.log("[mtnode-store] relay 对外 Base URL（下发客户端）: " + RELAY_PUBLIC_BASE);
+  if (rd.upstreams.some((u) => !u.configured)) {
+    console.warn("[mtnode-store] relay 有上游未配 Key：对应模型的 /relay/v1 调用一律回 503 relay_not_configured（不静默假成功）—— 可在管理台「中转服务」里补齐");
+  }
 });

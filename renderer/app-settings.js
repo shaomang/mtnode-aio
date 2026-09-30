@@ -87,6 +87,13 @@ function settingsSaved(ms) {
 function openSettings() {
   reloadConfigProvidersFromDisk().then(() => {
     openSettingsBody();
+    /* 打开设置 = 用户要看提供商了：中转服务快照超过 24h 就顺手拉一次
+       （新旧判定与节流都在 renderer/app-relay.js 的 syncIfStale 里） */
+    if (typeof MtRelay !== "undefined" && MtRelay.syncIfStale) {
+      try {
+        MtRelay.syncIfStale();
+      } catch {}
+    }
   });
 }
 
@@ -178,6 +185,28 @@ function openSettingsBody() {
     );
     provTitleRow.appendChild(provTitleSpan);
     provTitleRow.appendChild(provHint);
+    /* MTNode 中转服务（账号托管）：清单与地址由云端下发（见 renderer/app-relay.js），
+       这里给一个手动「刷新」入口，卡里还有一个。没有这张卡时按钮不出现 ——
+       从没充过值的账号在提供商页里看不到中转服务的任何痕迹。 */
+    const relayRefresh = document.createElement("button");
+    relayRefresh.className = "mini";
+    relayRefresh.textContent = I18n.t("刷新中转清单");
+    relayRefresh.title = I18n.t(
+      "按账号重新拉取中转服务的可用模型（登录成功与充值成功后会自动拉）",
+    );
+    relayRefresh.onclick = () => {
+      if (typeof MtRelay === "undefined") return;
+      relayRefresh.disabled = true;
+      const old = relayRefresh.textContent;
+      relayRefresh.textContent = I18n.t("刷新中…");
+      MtRelay.sync({ force: true }).then((r) => {
+        relayRefresh.disabled = false;
+        relayRefresh.textContent = old;
+        if (r && r.ok) toast(I18n.t("中转清单已刷新"), "ok");
+        else toast((r && r.error) || I18n.t("刷新失败，请稍后重试"), "warn");
+      });
+    };
+    provTitleRow.appendChild(relayRefresh);
     const add = document.createElement("button");
     add.className = "mini";
     add.textContent = I18n.t("＋ 添加服务商");
@@ -201,6 +230,39 @@ function openSettingsBody() {
     };
     paintTopup();
     provSec.appendChild(topupSlot);
+
+    /* 中转服务状态行：卡在（账号有过充值）才出现，一行给出「可用余额 + 上次同步 /
+       失败原因 / 余额不足」——余额与清单都来自云端，这里是它当前能不能用的一句话结论。 */
+    const relaySlot = document.createElement("div");
+    relaySlot.className = "relay-sync-slot";
+    const paintRelay = () => {
+      relaySlot.innerHTML = "";
+      const prov = typeof MtRelay !== "undefined" ? MtRelay.provider() : null;
+      relayRefresh.style.display = prov ? "" : "none";
+      if (!prov) {
+        relaySlot.style.display = "none";
+        return;
+      }
+      const m = MtRelay.meta(prov);
+      relaySlot.style.display = "";
+      const line = document.createElement("div");
+      line.className = "relay-sync" + (m.blocked || m.error ? " bad" : "");
+      const name = document.createElement("b");
+      name.textContent = prov.name || I18n.t("MTNode 中转服务");
+      line.appendChild(name);
+      const bal = document.createElement("span");
+      bal.textContent =
+        " · " + I18n.t("可用余额 ") + MtRelay.money(Number(m.totalYuan) || 0);
+      line.appendChild(bal);
+      const state = document.createElement("span");
+      state.className = "relay-sync-state";
+      state.textContent = " · " + MtRelay.stateText(prov);
+      line.appendChild(state);
+      relaySlot.appendChild(line);
+    };
+    settingsRelayRepaint = paintRelay;
+    paintRelay();
+    provSec.appendChild(relaySlot);
 
     const grid = document.createElement("div");
     grid.className = "prov-tiles";
@@ -638,6 +700,425 @@ function openSettingsBody() {
     refreshBak();
     /* 很少用 → 沉到设置最下方（见函数末尾统一补挂） */
     tailSecs.backup = sec;
+  }
+
+  /* ── 存储占用与清理 ──────────────────────────────────────────────────
+     设置一打开就自动统计（storage:scan，主进程扫，后台跑、结果回来再渲染），
+     按分类列「总占用 + 文件数 + 其中可清理大小」，每行一个「清理」按钮，底部一个「全部清理」。
+     判据是「文件还被不被 MTNode 用着」，规则与落点全部在主进程 storage-clean.js：
+       · 画布资产：没被任何存档 / 备份 / 回收站引用的直属文件（正在跑的画布整个跳过）
+       · 画布备份 / 配置备份：超出保留份数（72 / 30）的旧快照
+       · 缓存：工坊 / 应用 / 讨论区 / 截图目录
+       · 回收站内容、浏览器缓存子目录（保留 Cookie）
+       · 回滚对象库（走 rollback-store 的 GC）、超期会话记录（默认 7 天，可改）
+     删除一律先搬进系统回收站（失败回退数据目录下的清理暂存区）；会话记录与回滚
+     对象是永久删除（回执里注明）。 */
+  let scRefresh = null;
+  let scInputs = null;
+  let scBusy = false;
+  let scBusyText = "";
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("存储占用与清理");
+    sec.appendChild(secTitle);
+
+    const hint = document.createElement("div");
+    hint.className = "n-field";
+    hint.textContent = I18n.t(
+      "统计数据目录里各类冗余的占用，并清理「已经没被 MTNode 用着」的文件：画布资产只清没有任何存档 / 备份 / 回收站引用的；正在运行的画布与正在编辑的文件一律跳过。清理默认把文件搬进系统回收站（可在资源管理器「还原」），只有会话记录与回滚对象是永久删除。",
+    );
+    sec.appendChild(hint);
+
+    const summaryEl = document.createElement("div");
+    summaryEl.className = "n-field";
+    summaryEl.style.fontSize = "12px";
+    summaryEl.style.opacity = "0.9";
+    summaryEl.textContent = I18n.t("正在统计存储占用…");
+    sec.appendChild(summaryEl);
+
+    const listEl = document.createElement("div");
+    listEl.className = "sc-list";
+    sec.appendChild(listEl);
+
+    const sessRow = document.createElement("label");
+    sessRow.className = "n-field";
+    sessRow.style.flexDirection = "row";
+    sessRow.style.alignItems = "center";
+    sessRow.style.gap = "6px";
+    sessRow.appendChild(
+      document.createTextNode(I18n.t("会话记录保留最近")),
+    );
+    const sessDays = document.createElement("input");
+    sessDays.type = "number";
+    sessDays.min = "1";
+    sessDays.max = "365";
+    sessDays.step = "1";
+    sessDays.value = "7";
+    sessDays.style.width = "64px";
+    sessDays.title = I18n.t("超过这些天没动过的会话目录才计入「可清理」");
+    sessRow.appendChild(sessDays);
+    sessRow.appendChild(document.createTextNode(I18n.t("天（只统计，不自动删）")));
+    sec.appendChild(sessRow);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "n-field";
+    btnRow.style.flexDirection = "row";
+    btnRow.style.gap = "8px";
+    btnRow.style.flexWrap = "wrap";
+    const rescanBtn = document.createElement("button");
+    rescanBtn.className = "mini";
+    rescanBtn.textContent = I18n.t("重新统计");
+    rescanBtn.title = I18n.t("重新扫描各类占用（打开设置时会自动统计一次）");
+    const cleanAllBtn = document.createElement("button");
+    cleanAllBtn.className = "mini danger";
+    cleanAllBtn.textContent = I18n.t("全部清理");
+    cleanAllBtn.title = I18n.t("对所有有冗余的分类执行清理（逐类确认一次）");
+    const openDirBtn = document.createElement("button");
+    openDirBtn.className = "mini";
+    openDirBtn.textContent = I18n.t("打开数据目录");
+    openDirBtn.title = I18n.t("在资源管理器中打开当前配置数据目录");
+    btnRow.appendChild(rescanBtn);
+    btnRow.appendChild(cleanAllBtn);
+    btnRow.appendChild(openDirBtn);
+    sec.appendChild(btnRow);
+
+    const statusEl = document.createElement("div");
+    statusEl.className = "n-field";
+    statusEl.style.fontSize = "12px";
+    statusEl.style.opacity = "0.9";
+    statusEl.style.whiteSpace = "pre-wrap";
+    statusEl.textContent = "";
+    sec.appendChild(statusEl);
+
+    /* 正在跑的画布 + 当前打开的画布：交给主进程整个跳过它的资产目录 */
+    const protectedIds = () => {
+      const out = [];
+      try {
+        const add = (v) => {
+          const s = String(v || "").trim();
+          if (s && out.indexOf(s) < 0) out.push(s);
+        };
+        if (typeof S !== "undefined" && S && S.wf && S.wf.id) add(S.wf.id);
+        const visited =
+          S && S.config && Array.isArray(S.config.visitedWorkflows)
+            ? S.config.visitedWorkflows
+            : [];
+        for (const item of visited) {
+          const wf = item && item.id ? item : null;
+          if (!wf) continue;
+          if (!Array.isArray(wf.nodes)) continue;
+          if (wf.nodes.some((n) => n && (n.running || n.pendingRun))) add(wf.id);
+          if (S.pendingRun && S.pendingRun.size && wf.id === (S.wf && S.wf.id))
+            add(wf.id);
+        }
+      } catch {}
+      return out;
+    };
+
+    const scFmtSize = (n) => {
+      const b = Number(n) || 0;
+      if (b < 1024) return b + " B";
+      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+      if (b < 1024 * 1024 * 1024) return (b / 1048576).toFixed(1) + " MB";
+      return (b / 1073741824).toFixed(2) + " GB";
+    };
+
+    /* 待确认的清理请求（渲染层先弹二次确认，再调到主进程） */
+    let scPending = null;
+    const scRows = [];
+    const scPick = (rows) => {
+      scPending = rows;
+      listEl.innerHTML = "";
+      const box = document.createElement("div");
+      box.className = "sc-pick";
+      const head = document.createElement("div");
+      head.className = "sc-pick-head";
+      let total = 0;
+      for (const r of rows) total += r.cat.cleanBytes || 0;
+      head.textContent = I18n.t("即将清理：") + scFmtSize(total);
+      box.appendChild(head);
+      for (const r of rows) {
+        const line = document.createElement("div");
+        line.className = "sc-pick-row";
+        const who = document.createElement("b");
+        who.textContent = r.cat.label;
+        line.appendChild(who);
+        const what = document.createElement("span");
+        what.style.opacity = "0.85";
+        what.textContent =
+          " · " + (r.cat.cleanLabel || I18n.t("清理")) + " " +
+          scFmtSize(r.cat.cleanBytes || 0) +
+          (r.cat.cleanFiles ? "（" + r.cat.cleanFiles + I18n.t(" 个文件") + "）" : "");
+        line.appendChild(what);
+        if (r.cat.permanent) {
+          const warn = document.createElement("span");
+          warn.style.color = "var(--red)";
+          warn.textContent = " · " + I18n.t("永久删除，不进回收站");
+          line.appendChild(warn);
+        }
+        box.appendChild(line);
+      }
+      const where = document.createElement("div");
+      where.className = "sc-pick-note";
+      where.textContent = I18n.t(
+        "非永久删除的项会先搬进系统回收站（失败时回退数据目录下的 .storage-clean 清理暂存区）；可在资源管理器里还原。",
+      );
+      box.appendChild(where);
+      const row = document.createElement("div");
+      row.className = "sc-pick-btns";
+      const okBtn = document.createElement("button");
+      okBtn.className = "mini danger";
+      okBtn.textContent = I18n.t("确认清理");
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "mini";
+      cancelBtn.textContent = I18n.t("取消清理");
+      cancelBtn.onclick = () => {
+        scPending = null;
+        paint();
+      };
+      okBtn.onclick = () => doClean(rows);
+      row.appendChild(okBtn);
+      row.appendChild(cancelBtn);
+      box.appendChild(row);
+      listEl.appendChild(box);
+      okBtn.focus();
+    };
+
+    const doClean = async (rows) => {
+      if (scBusy) return;
+      scPending = null;
+      scBusy = true;
+      let freed = 0;
+      let removed = 0;
+      let failed = 0;
+      const parts = [];
+      for (let i = 0; i < rows.length; i++) {
+        const cat = rows[i].cat;
+        scBusyText =
+          I18n.t("正在清理：") + cat.label + "（" + (i + 1) + "/" + rows.length + "）";
+        paint();
+        try {
+          const r = await window.api.storageClean({
+            id: cat.id,
+            runningWfIds: protectedIds(),
+            sessionDays: Math.max(1, Math.min(365, parseInt(sessDays.value, 10) || 7)),
+          });
+          const one = (r && r.results && r.results[0]) || {};
+          if (r && r.ok === false) {
+            parts.push(cat.label + "：" + (r.error || I18n.t("失败")));
+          } else if (one.ok === false) {
+            parts.push(cat.label + "：" + (one.error || I18n.t("失败")));
+          } else {
+            freed += one.bytesFreed || 0;
+            removed += one.removed || 0;
+            failed += one.failed || 0;
+            if (one.detail) parts.push(cat.label + "：" + one.detail);
+          }
+        } catch (err) {
+          parts.push(cat.label + "：" + ((err && err.message) || String(err)));
+        }
+      }
+      scBusy = false;
+      scBusyText = "";
+      statusEl.textContent =
+        I18n.t("清理完成：释放 ") +
+        scFmtSize(freed) +
+        "，" +
+        I18n.t("处理 ") +
+        removed +
+        I18n.t(" 项") +
+        (failed ? "，" + failed + I18n.t(" 项失败（文件可能被占用）") : "") +
+        (parts.length ? "\n" + parts.join("\n") : "");
+      try {
+        toast(
+          I18n.t("已清理冗余文件，释放 ") + scFmtSize(freed),
+          failed ? "warn" : "ok",
+        );
+      } catch {}
+    };
+
+    const paint = () => {
+      if (scPending) return;
+      const last = scRows.length ? scRows[scRows.length - 1] : null;
+      listEl.innerHTML = "";
+      if (scBusy) {
+        const busy = document.createElement("div");
+        busy.className = "sc-busy";
+        busy.textContent = scBusyText || I18n.t("正在统计存储占用…");
+        listEl.appendChild(busy);
+        return;
+      }
+      if (!last) return;
+      if (last.error) {
+        const err = document.createElement("div");
+        err.className = "sc-empty";
+        err.textContent = I18n.t("统计失败：") + last.error;
+        listEl.appendChild(err);
+        return;
+      }
+      for (const cat of last.scan.cats || []) {
+        const row = document.createElement("div");
+        row.className = "sc-row";
+        const left = document.createElement("div");
+        left.className = "sc-row-main";
+        const name = document.createElement("div");
+        name.className = "sc-row-name";
+        name.textContent = cat.label;
+        left.appendChild(name);
+        const meta = document.createElement("div");
+        meta.className = "sc-row-meta";
+        meta.textContent =
+          scFmtSize(cat.bytes) +
+          " · " +
+          (cat.files || 0) +
+          I18n.t(" 个文件") +
+          (cat.cleanBytes
+            ? " · " + I18n.t("其中可清理 ") + scFmtSize(cat.cleanBytes)
+            : "") +
+          (cat.items && cat.id === "sessions" ? " · " + cat.items + I18n.t(" 个会话") : "");
+        left.appendChild(meta);
+        if (cat.detail || cat.hint) {
+          const note = document.createElement("div");
+          note.className = "sc-row-note";
+          note.textContent = [cat.detail, cat.hint].filter(Boolean).join(" · ");
+          left.appendChild(note);
+        }
+        row.appendChild(left);
+        const b = document.createElement("button");
+        b.className = "mini";
+        b.textContent = cat.cleanLabel || I18n.t("清理");
+        b.disabled = !cat.cleanable;
+        b.title = cat.cleanable
+          ? I18n.t("清理这一类里没被引用的部分") + "（" + scFmtSize(cat.cleanBytes) + "）"
+          : I18n.t("这一类暂时没有可清理的内容");
+        b.onclick = () => scPick([{ cat: cat }]);
+        row.appendChild(b);
+        listEl.appendChild(row);
+      }
+    };
+
+    const scanNow = async () => {
+      if (scBusy) return;
+      scBusy = true;
+      scBusyText = I18n.t("正在统计存储占用…");
+      statusEl.textContent = "";
+      paint();
+      try {
+        const r = await window.api.storageScan({
+          runningWfIds: protectedIds(),
+          sessionDays: Math.max(1, Math.min(365, parseInt(sessDays.value, 10) || 7)),
+        });
+        if (!r || r.ok === false) {
+          scRows.push({ error: (r && r.error) || I18n.t("未知错误") });
+        } else {
+          scRows.push({ scan: r });
+          const t = r.totals || {};
+          summaryEl.textContent =
+            I18n.t("数据目录：") +
+            (r.root || "") +
+            "\n" +
+            I18n.t("合计 ") +
+            scFmtSize(t.bytes) +
+            " / " +
+            (t.files || 0) +
+            I18n.t(" 个文件，其中可清理 ") +
+            scFmtSize(t.cleanBytes) +
+            "（" +
+            (t.cleanFiles || 0) +
+            I18n.t(" 个文件）");
+        }
+      } catch (err) {
+        scRows.push({ error: (err && err.message) || String(err) });
+      }
+      scBusy = false;
+      scBusyText = "";
+      paint();
+    };
+
+    rescanBtn.onclick = () => scanNow();
+    openDirBtn.onclick = async () => {
+      const r = await window.api.dataOpenRoot();
+      if (!r || !r.ok)
+        toast(
+          I18n.t("无法打开目录：") + ((r && r.error) || I18n.t("未知错误")),
+          "err",
+        );
+    };
+    cleanAllBtn.onclick = () => {
+      const last = scRows.length ? scRows[scRows.length - 1] : null;
+      if (!last || !last.scan) {
+        toast(I18n.t("还没有统计数据，请先「重新统计」"), "warn");
+        return;
+      }
+      const rows = (last.scan.cats || [])
+        .filter((c) => c.cleanable)
+        .map((c) => ({ cat: c }));
+      if (!rows.length) {
+        toast(I18n.t("没有可清理的内容"), "ok");
+        return;
+      }
+      scPick(rows);
+    };
+    sessDays.onchange = () => scanNow();
+    /* 窗内自刷新入口：外部（重开设置 / 手动）想重扫时调它 */
+    scRefresh = () => scanNow();
+    scInputs = { sessDays: sessDays };
+    /* 打开设置即自动统计（后台跑，结果回来再渲染） */
+    scanNow();
+  }
+
+
+  /* ── 画布粘贴（剪贴板图像）：画布上 Ctrl+V 时要不要先问一句 ──
+     沿用既有口径：字段缺省（没写过）= 询问；只有显式 false 才免询问。
+     与询问窗里「以后不再询问」同一个开关（都写 S.config.askPasteClipImage + 立即落盘），
+     这里就是它的恢复入口。 */
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec";
+    const secTitle = document.createElement("div");
+    secTitle.className = "settings-sec-title";
+    secTitle.textContent = I18n.t("画布粘贴");
+    sec.appendChild(secTitle);
+
+    const hint = document.createElement("div");
+    hint.className = "n-field";
+    hint.textContent = I18n.t(
+      "剪贴板里有图像或截图时，在画布上按 Ctrl+V 会先弹一个确认框（显示图像内容），问你要不要用它创建「图像输入」节点。",
+    );
+    sec.appendChild(hint);
+
+    const askRow = document.createElement("label");
+    askRow.className = "n-field";
+    askRow.style.flexDirection = "row";
+    askRow.style.alignItems = "center";
+    const askCb = document.createElement("input");
+    askCb.type = "checkbox";
+    askCb.checked = !(S.config && S.config.askPasteClipImage === false);
+    askCb.onchange = () => {
+      S.config.askPasteClipImage = !!askCb.checked;
+      settingsSaved(0);
+    };
+    askRow.appendChild(askCb);
+    askRow.appendChild(
+      document.createTextNode(
+        I18n.t("粘贴剪贴板图像时先询问（取消勾选 = 以后不再询问）"),
+      ),
+    );
+    sec.appendChild(askRow);
+
+    const off = document.createElement("div");
+    off.className = "n-field";
+    off.style.fontSize = "12px";
+    off.style.opacity = "0.9";
+    off.textContent = I18n.t(
+      "取消勾选后：画布上按 Ctrl+V 若剪贴板里有图像，直接原样收进画布资产并创建图像输入节点（剪贴板里同时有最近复制的节点时仍优先粘贴节点）。",
+    );
+    sec.appendChild(off);
+
+    body.appendChild(sec);
   }
 
   /* ── 错误与崩溃日志（自动保存，可导出提交给开发者）── */
@@ -1142,6 +1623,39 @@ function openSettingsBody() {
     );
     sec.appendChild(leanRow);
     dshEls.leanToolPayload = leanCb;
+
+    /* 开发者工具（默认开）：会话右栏的「运行轨迹」View（轨迹列表 + 工具调用可展开详情）
+       与后续的 Inspect / CDP 面板。关掉 = 这些入口整体不出现，两个窗格回到只有对话的
+       形态（不影响已有会话数据与运行）。消费方：renderer/app-trajectory.js 的 devOn()。 */
+    const devRow = document.createElement("label");
+    devRow.className = "n-field";
+    devRow.style.flexDirection = "row";
+    devRow.style.alignItems = "center";
+    const devCb = document.createElement("input");
+    devCb.type = "checkbox";
+    devCb.checked = S.config.dsh.developerTools !== false;
+    /* 即时生效：勾 / 取消立刻写盘，切回会话即可看到入口出现 / 消失 */
+    devCb.onchange = () => {
+      S.config.dsh.developerTools = !!devCb.checked;
+      settingsSaved(0);
+      try {
+        if (window.MTNodeTrajectory && typeof window.MTNodeTrajectory.sync === "function") {
+          window.MTNodeTrajectory.sync();
+        }
+      } catch {
+        /* 面板还没建也不影响设置本身 */
+      }
+    };
+    devRow.appendChild(devCb);
+    devRow.appendChild(
+      document.createTextNode(
+        I18n.t(
+          "开发者工具（会话右栏「运行轨迹」视图：逐步看思考 / 正文 / 工具调用，工具调用可展开详情）",
+        ),
+      ),
+    );
+    sec.appendChild(devRow);
+    dshEls.developerTools = devCb;
     /* 即时生效：开关只影响「下一次运行注册哪些工具」，改完立刻落盘即可 */
     leanCb.onchange = () => {
       S.config.dsh.leanToolPayload = !!leanCb.checked;
@@ -1306,6 +1820,10 @@ function openSettingsBody() {
     leanToolPayload: dshEls.leanToolPayload
       ? !!dshEls.leanToolPayload.checked
       : !!(S.config.dsh && S.config.dsh.leanToolPayload),
+    /* 开发者工具（默认开）：关窗那一刻以勾选框为准；勾选框不在场（老窗）时保留现值 */
+    developerTools: dshEls.developerTools
+      ? !!dshEls.developerTools.checked
+      : (S.config.dsh && S.config.dsh.developerTools) !== false,
     theme: themeSelEl ? themeSelEl.value : (S.config.dsh && S.config.dsh.theme) || "industrial",
   });
 
@@ -1341,6 +1859,7 @@ function openSettingsBody() {
         permissionPreset: "mtnode-unattended",
         doneSound: true,
         askSound: true,
+        developerTools: true,
         theme: "industrial",
       },
       S.config.dsh || {},
@@ -2773,6 +3292,7 @@ async function validateProviderApiKey(prov, btn) {
    可以单独调用（在 Key 输入框里打字就即时收起 / 回来，不必等关窗）。 */
 let settingsProvTilesRepaint = null;
 let settingsTopupRepaint = null;
+let settingsRelayRepaint = null;
 function repaintSettingsProvTiles() {
   if (typeof settingsProvTilesRepaint === "function") {
     try {
@@ -2780,6 +3300,14 @@ function repaintSettingsProvTiles() {
     } catch {}
   }
   repaintSettingsTopup();
+  repaintSettingsRelay();
+}
+function repaintSettingsRelay() {
+  if (typeof settingsRelayRepaint === "function") {
+    try {
+      settingsRelayRepaint();
+    } catch {}
+  }
 }
 function repaintSettingsTopup() {
   if (typeof settingsTopupRepaint === "function") {
@@ -2793,21 +3321,30 @@ function repaintSettingsTopup() {
 function provTile(prov, i) {
   const tile = document.createElement("button");
   tile.type = "button";
-  const off = typeof providerDisabled === "function" && providerDisabled(prov);
-  tile.className = "prov-tile" + (i === 0 ? " pri" : "") + (off ? " off" : "");
+  /* 角标分两种叫法：用户自己关掉的（已停用）/ 中转服务余额耗尽的（余额不足）——
+     两者都不进模型选择器，但用户该做的事完全不同（一个是取消勾选，一个是去充值）。 */
+  const state =
+    typeof providerStateText === "function" ? providerStateText(prov) : "";
+  const relay = typeof MtRelay !== "undefined" && MtRelay.isRelay(prov);
+  tile.className =
+    "prov-tile" +
+    (i === 0 ? " pri" : "") +
+    (state ? " off" : "") +
+    (relay ? " relay" : "");
   tile.title =
     (i === 0 ? I18n.t("当前优先使用") + " · " : "") +
     I18n.t("点击配置该服务商") +
     /* 停用只影响「出现在模型选择器里」，卡片照旧留着、可编辑、可恢复 */
-    (off ? " · " + I18n.t("已停用") : "");
+    (state ? " · " + state : "") +
+    (relay ? " · " + I18n.t("接入信息由 MTNode 账号托管") : "");
   const name = document.createElement("span");
   name.className = "prov-tile-name";
   name.textContent = prov.name || I18n.t("（未命名）");
   tile.appendChild(name);
-  if (off) {
+  if (state) {
     const tag = document.createElement("span");
     tag.className = "prov-tile-off";
-    tag.textContent = I18n.t("已停用");
+    tag.textContent = state;
     tile.appendChild(tag);
   }
   tile.onclick = () => openProviderConfigDialog(prov);
@@ -2842,7 +3379,16 @@ function ensureProvCfgDlg() {
 
 function closeProvCfgDlg() {
   const host = document.getElementById("provCfgDlg");
-  if (host) host.classList.remove("on");
+  if (host) {
+    host.classList.remove("on");
+    /* 中转卡那次订阅（openProviderConfigDialog 里挂的）随关窗退掉 */
+    if (host.__relayOff) {
+      try {
+        host.__relayOff();
+      } catch {}
+      host.__relayOff = null;
+    }
+  }
   /* 收子对话框 = 打字类改动（名称 / Base URL / API Key）的防抖该落地了：
      设置页没有「保存设置」兜底，这里不 flush 就会丢掉最后一次编辑 */
   settingsSaveNow();
@@ -2889,12 +3435,250 @@ function openProviderConfigDialog(prov) {
   paint();
   if (!alive) return;
   host.classList.add("on");
+  /* 中转服务卡：打开时快照过期（>24h）就顺手刷新一次，并把同步结果落回这张卡
+     （订阅 MtRelay 的变更 → 重画；关窗时退订，见 closeProvCfgDlg） */
+  if (typeof MtRelay !== "undefined" && MtRelay.isRelay(prov)) {
+    if (MtRelay.onChange) {
+      host.__relayOff = MtRelay.onChange(() => {
+        if (!alive) return;
+        try {
+          paint();
+        } catch {}
+      });
+    }
+    if (MtRelay.syncIfStale) {
+      try {
+        MtRelay.syncIfStale();
+      } catch {}
+    }
+  } else if (host.__relayOff) {
+    host.__relayOff();
+    host.__relayOff = null;
+  }
   try {
     host.focus();
   } catch {}
 }
 
+/* ── MTNode 中转服务（账号托管）的只读卡 ──────────────────────────────
+   口径（共识 · 见 renderer/app-relay.js 与 docs/relay-admin.md）：
+     · **大部分设置只读** —— 类型 / 形态 / 名称 / Base URL / API Key / 模型清单
+       全部由云端下发或主进程托管，卡上没有一处可编辑接入信息的输入框；
+     · 用户能改的只有「启用开关」与「本机优先级 ↑↓」；
+     · 不提供「✕ 删除」，也不提供「复制为自定义服务商」——这张卡跟着账号走，
+       没充值过的账号根本不会有它（everRecharged=false 时连卡都不建）。 */
+function relayProvCard(prov, i, onChange) {
+  const card = document.createElement("div");
+  card.className = "prov-card relay-card";
+  const rerender = () => {
+    settingsSaved(0);
+    if (typeof onChange === "function") onChange();
+  };
+  const meta = typeof MtRelay !== "undefined" ? MtRelay.meta(prov) : {};
+  const state =
+    typeof providerStateText === "function" ? providerStateText(prov) : "";
+
+  /* 头部：#序号 + 名称 + 角标 + ↑↓（没有「✕ 删除」） */
+  const head = document.createElement("div");
+  head.className = "prov-head";
+  const idx = document.createElement("span");
+  idx.className = "idx";
+  idx.textContent = "#" + (i + 1);
+  idx.title =
+    i === 0
+      ? I18n.t("当前优先使用")
+      : I18n.t("供应商使用优先级（越小越优先）");
+  head.appendChild(idx);
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "prov-name" + (i === 0 ? " pri" : "");
+  nameSpan.textContent = prov.name || I18n.t("MTNode 中转服务");
+  head.appendChild(nameSpan);
+  const badge = document.createElement("span");
+  badge.className = "relay-badge" + (state ? " bad" : "");
+  badge.textContent = state || I18n.t("账号托管");
+  head.appendChild(badge);
+  const move = document.createElement("span");
+  move.className = "prov-move";
+  const swap = (a, b) => {
+    const arr = S.config.providers;
+    const t = arr[a];
+    arr[a] = arr[b];
+    arr[b] = t;
+    rerender();
+  };
+  const up = document.createElement("button");
+  up.type = "button";
+  up.className = "mini";
+  up.textContent = "↑";
+  up.title = I18n.t("提高供应商优先级");
+  up.disabled = i === 0;
+  up.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (i > 0) swap(i - 1, i);
+  };
+  const down = document.createElement("button");
+  down.type = "button";
+  down.className = "mini";
+  down.textContent = "↓";
+  down.title = I18n.t("降低供应商优先级");
+  down.disabled = i >= S.config.providers.length - 1;
+  down.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (i < S.config.providers.length - 1) swap(i + 1, i);
+  };
+  move.appendChild(up);
+  move.appendChild(down);
+  head.appendChild(move);
+  card.appendChild(head);
+
+  /* 只读字段：一律 <code> 展示，不放输入框 —— 改不了的东西别长得像能改 */
+  const gridEl = document.createElement("div");
+  gridEl.className = "prov-grid";
+  const ro = (label, value, wide) => {
+    const f = document.createElement("div");
+    f.className = "pf" + (wide ? " pf-wide" : "");
+    f.appendChild(document.createTextNode(label));
+    const v = document.createElement("code");
+    v.className = "relay-ro";
+    v.textContent = value == null || value === "" ? "—" : String(value);
+    f.appendChild(v);
+    gridEl.appendChild(f);
+  };
+  ro(I18n.t("类型"), I18n.t("OpenAI 兼容（由 MTNode 账号下发）"), true);
+  ro(
+    I18n.t("形态"),
+    I18n.t("文本 + 图像（同一端点混合，按模型区分）"),
+    true,
+  );
+  ro(I18n.t("名称"), prov.name || I18n.t("MTNode 中转服务"));
+  ro(I18n.t("接口地址 Base URL"), prov.baseUrl || "", true);
+  ro(I18n.t("API Key"), I18n.t("由账号登录态托管（只读）"), true);
+
+  /* 模型清单：只读视图，逐行标出形态。余额耗尽时整块置灰，但**清单照旧列出来** ——
+     让用户看得见这张卡正常时能用什么；它们在节点里选不到（见 app-model-kind.js
+     的 providerDisabled / providerRelayBlocked）。 */
+  const modelsField = document.createElement("div");
+  modelsField.className = "pf pf-wide";
+  modelsField.appendChild(
+    document.createTextNode(I18n.t("模型清单（云端下发，从上到下为使用优先级）")),
+  );
+  const orderBox = document.createElement("div");
+  orderBox.className = "model-order relay-model-order" + (meta.blocked ? " off" : "");
+  const ids = (meta.models || []).map(String);
+  if (!ids.length) {
+    const empty = document.createElement("div");
+    empty.className = "settings-hint";
+    empty.style.margin = "0";
+    empty.textContent = I18n.t("账号当前没有可用模型：充值后点「刷新」");
+    orderBox.appendChild(empty);
+  }
+  for (const id of ids) {
+    const row = document.createElement("div");
+    row.className = "model-order-row relay-model-row";
+    const txt = document.createElement("span");
+    txt.className = "mo-name";
+    txt.textContent = id;
+    row.appendChild(txt);
+    const kind = document.createElement("span");
+    kind.className = "relay-kind";
+    const k = (meta.kinds || {})[id];
+    kind.textContent = k === "image" ? I18n.t("图像") : I18n.t("文本");
+    row.appendChild(kind);
+    orderBox.appendChild(row);
+  }
+  modelsField.appendChild(orderBox);
+  gridEl.appendChild(modelsField);
+  card.appendChild(gridEl);
+
+  /* 余额 + 「去充值」+「刷新」：余额不受前端充值白名单限制（中转接口自己回的） */
+  const moneyRow = document.createElement("div");
+  moneyRow.className = "relay-balance";
+  const bal = document.createElement("b");
+  bal.textContent =
+    I18n.t("可用余额 ") +
+    (typeof MtRelay !== "undefined"
+      ? MtRelay.money(Number(meta.totalYuan) || 0)
+      : "—");
+  moneyRow.appendChild(bal);
+  const topupBtn = document.createElement("button");
+  topupBtn.type = "button";
+  topupBtn.className = "mini";
+  topupBtn.textContent = I18n.t("去充值");
+  topupBtn.title = I18n.t("打开账户充值（到账后中转清单会自动刷新）");
+  topupBtn.onclick = (ev) => {
+    ev.preventDefault();
+    if (window.MtWallet && window.MtWallet.open) {
+      closeProvCfgDlg();
+      window.MtWallet.open();
+      return;
+    }
+    toast(I18n.t("充值功能尚未对该账号开放"), "warn");
+  };
+  moneyRow.appendChild(topupBtn);
+  const refreshBtn = document.createElement("button");
+  refreshBtn.type = "button";
+  refreshBtn.className = "mini";
+  refreshBtn.textContent = I18n.t("刷新");
+  refreshBtn.title = I18n.t("按账号重新拉取中转服务的地址与可用模型");
+  refreshBtn.onclick = (ev) => {
+    ev.preventDefault();
+    if (typeof MtRelay === "undefined") return;
+    refreshBtn.disabled = true;
+    const old = refreshBtn.textContent;
+    refreshBtn.textContent = I18n.t("刷新中…");
+    MtRelay.sync({ force: true }).then((r) => {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = old;
+      if (r && r.ok) toast(I18n.t("中转清单已刷新"), "ok");
+      else toast((r && r.error) || I18n.t("刷新失败，请稍后重试"), "warn");
+    });
+  };
+  moneyRow.appendChild(refreshBtn);
+  card.appendChild(moneyRow);
+
+  /* 状态行：上次同步时间 / 余额不足 / 刷新失败原因（三选一，口径见 MtRelay.stateText） */
+  const stateLine = document.createElement("div");
+  stateLine.className =
+    "settings-hint relay-sync" + (meta.blocked || meta.error ? " bad" : "");
+  stateLine.style.margin = "0";
+  stateLine.textContent =
+    typeof MtRelay !== "undefined" ? MtRelay.stateText(prov) : "";
+  card.appendChild(stateLine);
+
+  /* ── 启用开关（可改；手动停用后刷新不会自动恢复） ── */
+  const offRow = document.createElement("label");
+  offRow.className = "pf pf-inline";
+  const offCb = document.createElement("input");
+  offCb.type = "checkbox";
+  offCb.checked =
+    typeof providerManuallyOff === "function" && providerManuallyOff(prov);
+  offCb.onchange = () => {
+    if (offCb.checked) prov.disabled = true;
+    else delete prov.disabled;
+    settingsSaved(0);
+    if (typeof settingsProvTilesRepaint === "function") settingsProvTilesRepaint();
+  };
+  offRow.appendChild(offCb);
+  offRow.appendChild(document.createTextNode(I18n.t("停用该服务商")));
+  card.appendChild(offRow);
+  const offHint = document.createElement("div");
+  offHint.className = "settings-hint pf-wide";
+  offHint.style.margin = "0";
+  offHint.textContent = I18n.t(
+    "停用后不出现在模型选择器里；刷新中转清单不会自动把它开回来",
+  );
+  card.appendChild(offHint);
+  return card;
+}
+
 function provCard(prov, i, onChange) {
+  /* MTNode 中转服务（账号托管）：接入信息与模型清单由云端下发，一处都不许手改，
+     走上面那套只读卡（可改的只有启用开关与本机优先级）。 */
+  if (typeof MtRelay !== "undefined" && MtRelay.isRelay(prov)) {
+    return relayProvCard(prov, i, onChange);
+  }
   const card = document.createElement("div");
   card.className = "prov-card";
   /* 类型改 / 排序 / 删除后就地重建这张卡（配置对话框内 = 重画该服务商），
@@ -3559,7 +4343,7 @@ function provCard(prov, i, onChange) {
   offRow.className = "pf pf-inline";
   const offCb = document.createElement("input");
   offCb.type = "checkbox";
-  offCb.checked = typeof providerDisabled === "function" && providerDisabled(prov);
+  offCb.checked = typeof providerManuallyOff === "function" && providerManuallyOff(prov);
   offCb.onchange = () => {
     if (offCb.checked) prov.disabled = true;
     else delete prov.disabled; /* 取消勾选就删键，老配置里根本没有它 */

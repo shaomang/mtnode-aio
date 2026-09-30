@@ -814,6 +814,12 @@ button.mini.btn-sq.tpl-ico {
   display: flex
 }
 
+/* 从 #mtDialog 询问窗（剪贴板图像）里开的大图预览：弹窗 z-index 2400、灯箱默认 1400，
+   不抬头就会被弹窗整片盖住。只在这一档临时抬上去，关灯箱即撤（closeImageLightbox）。 */
+.img-lightbox.img-lb-top {
+  z-index: 2500;
+}
+
 /* 灯箱基本铺满窗口：上下只留 6px 边距 + 一条头一条脚，剩下的全是图片可用区，
    所以「适应窗口」那一档的图片高度 ≈ 窗口高度（打开就看到整图，不用先滚再缩）。
    宽高上限只用于挡住 4K 以上超大屏把框拉得过宽，正常屏幕永不触顶。 */
@@ -1816,39 +1822,32 @@ button.mini.btn-sq.tpl-ico {
   border-right: 1px solid rgba(255, 255, 255, .06);
 }
 
-/* 会话左栏右边缘拖拽把手（与右侧助手栏同款观感，方向镜像） */
+/* 会话左栏右边缘拖拽分界线（与右侧助手栏同款观感，方向镜像）。
+   整条边界都可拖：把手铺满栏高（top/bottom 0），不再是中间那一小段加宽把手；
+   常态就有一根 1px 竖筋（平时不抢视线），悬停 / 拖动整条加亮 —— 一眼看得出能拖。 */
 .agent-side-resize {
   position: absolute;
   right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 0;
+  bottom: 0;
   width: 9px;
-  height: 56px;
   z-index: 6;
   cursor: col-resize;
-  border-radius: 4px;
-  background: linear-gradient(180deg, transparent, var(--bd2) 18%, var(--bd2) 82%, transparent);
-  opacity: .5;
-  transition: opacity .12s, background-color .12s, height .12s;
+  /* 触屏 / 触控笔：这条线上不做手势滚动，指针事件一路给到拖拽逻辑（否则一按就被系统抢成滚动） */
+  touch-action: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .12));
+  background-position: 50% 0;
+  background-size: 1px 100%;
+  background-repeat: no-repeat;
+  opacity: .55;
+  transition: opacity .12s, background-size .12s, background-image .12s;
 }
 
 .agent-side-resize:hover,
 .agent-side-resize.dragging {
   opacity: 1;
-  height: 72px;
-  background: linear-gradient(180deg, transparent, var(--cyan) 18%, var(--cyan) 82%, transparent);
-}
-
-.agent-side-resize::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 2px;
-  height: 22px;
-  border-radius: 1px;
-  background: rgba(255, 255, 255, .35);
+  background-size: 2px 100%;
+  background-image: linear-gradient(180deg, transparent, var(--cyan) 8%, var(--cyan) 92%, transparent);
 }
 
 .agent-side-head {
@@ -1924,6 +1923,19 @@ button.mini.btn-sq.tpl-ico {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  /* 右缘让出 14px 给「调整栏宽」的把手（.agent-side-resize / #agentSideResize；
+     开发页左栏是 .apps-dev-resize-side，同一套 9px 命中区、同贴栏右缘）。
+     真因（实测，别再按「加右内边距就能把滚动条推走」去改）：列表的竖直滚动条是
+     **占布局**的那一种（components.css 的 ::-webkit-scrollbar 宽 10px），它钉在
+     元素内边距盒的右缘 —— 给列表加 padding-right 只缩内容区，滚动条本身一动不动。
+     于是把手那 9px 命中区与滚动条整条重叠：鼠标按上去命中的是把手，滚动条选不中、
+     悬停高亮也横在滚动条那一条上（用户报的「会话栏和调整宽度 UI 重叠」）。
+     正解是**把列表自己收窄**：width 让出 14px 后，滚动条跟着左移 14px，
+     落在把手左侧 4px 外，各走各的道（会话行因此比修复前窄 14px —— 滚动条是**占布局**
+     的那 10px 加把手那 9px 命中区，两边都要地方，这点让位省不掉，别再把它改回去）。
+     改这条前先跑 node test/smoke-agent-wheel-scroll.js [8]。 */
+  width: calc(100% - 14px);
+  /* 左右内边距相等：栏宽可拖，等分才在任意宽度下都居中对齐 */
   padding: 2px 8px 10px;
   display: flex;
   flex-direction: column;
@@ -2188,6 +2200,23 @@ button.mini.btn-sq.tpl-ico {
   color: rgb(86, 134, 254);
   background: rgba(86, 134, 254, .12);
   border: 1px solid rgba(86, 134, 254, .3);
+  white-space: nowrap;
+  letter-spacing: .2px
+}
+
+/* 浏览器被动标记（app-assist.js 的会话行 + app-browser.js 的 BA.noteBrowserSession）：
+   这条会话正动浏览器时挂一枚**不抢焦点**的小标 —— 用户口径是「焦点不在该会话时静默处理」：
+   不弹右栏、不切界面、不弹提示，只在左栏留一个能扫到的记号。
+   青色（与「浏览器活动」右栏的色系一致），不做动画、不放标题前缀。 */
+.side-sess-ba {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: rgb(96, 214, 232);
+  background: rgba(96, 214, 232, .1);
+  border: 1px solid rgba(96, 214, 232, .28);
   white-space: nowrap;
   letter-spacing: .2px
 }
@@ -2681,31 +2710,58 @@ button.mini.btn-sq.tpl-ico {
   letter-spacing: .2px
 }
 
+/* 输入区上方那排 chips：**恒定一行、且总宽必须落在容器 100% 以内**（本轮需求）。
+   做法：行内不换行、容器横向不留滚动（overflow: hidden），这一排自身吃满容器宽
+   （max-width:100% + 键面左对齐）—— 宽度不够时由可收缩的软 chip（工作区 / 模型回显）
+   收窄并省略，而不是把整排撑出界、把用户要点的键推到视野外。
+   gap 与内边距各收一点，字号 12px，尽量在常用窗宽下不必省略。 */
 .agent-composer-chips {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 5px;
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow: hidden;
   padding: 2px 4px 10px;
 }
 
 .agent-chip {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
-  max-width: 340px;
-  height: 30px;
-  padding: 0 12px;
+  /* 软 chip：有空间按内容宽，没空间先收它（软性 = 允许缩、文字省略） */
+  flex: 0 1 auto;
+  max-width: 240px;
+  height: 28px;
+  padding: 0 8px;
   border: 1px solid rgba(255, 255, 255, .08);
   border-radius: 6px;
   outline: none;
   background: transparent;
   color: rgb(207, 211, 214);
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 12px;
+  line-height: 18px;
   font-weight: 400;
   cursor: pointer;
+  white-space: nowrap;
+}
+
+/* 硬 chip（工具 / 模式 / 技能 / 浏览器活动 / 执行计划）：键面固定、不允许收缩，也不写动态摘要
+   —— 它们一个都不能被挤出界，宽度预算由软 chip 让位来保证（本轮需求）。 */
+.agent-chip.agent-chip-mode,
+#agentToolsTrigger,
+#agentCmdTrigger,
+#agentBrowserChip,
+#agentRunPlanBtn {
+  flex: 0 0 auto;
+  max-width: none;
+}
+
+/* 「模式」chip 只写「模式」：万一还有摘要节点被写进内容，也不给它吃宽度 */
+.agent-chip.agent-chip-mode .agent-tool-val {
+  display: none
 }
 
 .agent-chip:hover {
@@ -3263,6 +3319,62 @@ button.mini.btn-sq.tpl-ico {
   font-weight: 600;
 }
 
+/* 「模式」菜单里的开关（纯净模式 / 自动续跑）—— 本轮需求：换成真开关（槽 + 滑块）。
+   ① hit box：整块按钮 44×26 都可点（原先那枚字符按钮只有约 20px 高、按到的其实是几个
+   像素的 ✓ / —，用户反馈点不中）；② 键面里不放任何文字，开关态只由滑块位置 + 配色表达，
+   所以按钮宽度恒定，不会因为「开了」而变宽、把同一行的说明挤走。 */
+.agent-tools-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.agent-tools-toggle .agent-mode-track {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 36px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .14);
+  transition: background .15s ease;
+}
+
+.agent-tools-toggle .agent-mode-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgb(173, 178, 184);
+  transition: left .15s ease, background .15s ease;
+}
+
+.agent-tools-toggle:hover .agent-mode-track {
+  background: rgba(255, 255, 255, .22);
+}
+
+.agent-tools-toggle.on .agent-mode-track {
+  background: rgba(95, 214, 138, .38);
+}
+
+.agent-tools-toggle.on .agent-mode-track::after {
+  left: 20px;
+  background: #5fd68a;
+}
+
 .agent-tools-status {
   margin-top: 4px;
   padding: 6px 8px 2px;
@@ -3708,11 +3820,23 @@ button.mini.btn-sq.tpl-ico {
   padding: 2px 0
 }
 
+/* 消息头部（角色标签「你 / AI」+「已插话」标 + 复制）：**强制一行**，不许折成两行。
+   窄栏（右栏会话 / 开发页会话）里宁可让「复制」这枚可压的按钮自己收一点，
+   也不把整块换到第二行 —— 一行之下右上角的按钮位置才是稳定的。 */
 .dsh-msg-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap
+  flex-wrap: nowrap;
+  min-width: 0
+}
+
+/* 可压的那一枚（复制）允许收缩而不换行；字号降半档，窄栏里更容易一行放下 */
+.dsh-msg-head .dsh-msg-copy {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 9.5px
 }
 
 .dsh-msg-copy {
@@ -4695,6 +4819,19 @@ button.dsh-xlate-copy:hover {
   align-items: stretch;
   min-height: 0;
   min-width: 0;
+  /* 竖条（.hist-rail）的定位上下文：它贴滚动条右侧 */
+  position: relative;
+  /* 右侧让出竖条（.hist-rail，18px）的专用槽 —— 竖条与滚动条必须各走各的道。
+     原先竖条写 right:0（= wrap 右沿）落在消息列最右 18px 上，而列表的竖直滚动条
+     恰好就贴列的右缘、宽 10px（components.css 的 ::-webkit-scrollbar）：
+     两者重叠 8px，滚动条那一条全被竖条压住，鼠标按上去命中的是竖条 —— 用户报的
+     「滚动条和会话跳转 UI 重叠、选不中滚动条」就是这个。
+     留着这条右内边距后，wrap.right 与 list.right 之间恒有 ≥18px：
+     滚动条（list 右缘）与竖条槽（wrap 右缘，见 .hist-rail）互不重叠；
+     窄窗时余量不足也只是消息列被挤窄一点，不会再把滚动条盖掉。
+     内边距左右对称，消息列仍是居中定宽（max-width:820px + margin:0 auto），
+     列宽与居中位置一字未变。改这条前先跑 node test/smoke-agent-wheel-scroll.js [8]。 */
+  padding: 0 18px;
 }
 
 .hist-scroll-wrap.is-flex-fill {
@@ -4710,11 +4847,24 @@ button.dsh-xlate-copy:hover {
   min-height: 0;
 }
 
+/* 快捷跳转竖条（标记会话轮次）：贴滚动条右侧，不是贴整个窗口右侧。
+   消息列（.agent-list 等）是**居中定宽**的（max-width:820px + margin:0 auto），
+   窗口宽时列两侧各留一大段空 —— 原先竖条是 flex 同伴项，被排到 .hist-scroll-wrap
+   的最右端（= 窗口右沿），离滚动条隔着一整段空白。现在把它从文档流里摘出来：
+   右边界由上面的 .hist-scroll-wrap 定位 —— 壳自带 18px 右内边距（竖条专用槽），
+   wrap.right 与 list.right 之间恒有 ≥18px，所以 right:0 落点 = 竖条槽的右沿，
+   恰好贴在滚动条右侧、与滚动条 0 重叠（用户报的「竖条压住滚动条、选不中」已修）。
+   app-assist.js 的 histRailAlign 仍逐帧按实测 rect 把 right 钉到这段余量上
+   （窄窗余量 < 槽宽时退回 wrap 右沿），竖条不占列宽、消息列宽度与居中位置一字未动。
+   改这条前先跑 node test/smoke-agent-wheel-scroll.js [8]。 */
 .hist-rail {
-  flex: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: auto;
   width: 18px;
-  position: relative;
-  border-left: 1px solid var(--bd);
+  border-right: 1px solid var(--bd);
   background: rgba(0, 0, 0, .18);
   overflow: hidden;
 }
@@ -5223,3 +5373,92 @@ button.dsh-xlate-copy:hover {
   font-weight: 600
 }
 
+
+/* ── 设置 · 存储占用与清理（renderer/app-settings.js 的「存储占用与清理」小节）──
+   分类行：左列名称 / 占用 / 可清理说明，右列一个「清理」按钮；点清理后同一位置变成
+   确认清单（哪几类、各清多少、永久删除项标红），确认才真正调主进程。 */
+.sc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px
+}
+
+.sc-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 6px;
+  border: 1px solid var(--bd);
+  border-radius: 4px
+}
+
+.sc-row-main {
+  min-width: 0;
+  flex: 1
+}
+
+.sc-row-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg)
+}
+
+.sc-row-meta {
+  font-size: 11.5px;
+  color: var(--fg);
+  opacity: .92
+}
+
+.sc-row-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+  word-break: break-all
+}
+
+.sc-row button.mini {
+  flex: none;
+  align-self: center
+}
+
+.sc-busy,
+.sc-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 2px
+}
+
+.sc-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--orange, var(--bd));
+  border-radius: 4px
+}
+
+.sc-pick-head {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--orange2)
+}
+
+.sc-pick-row {
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-all
+}
+
+.sc-pick-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45
+}
+
+.sc-pick-btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px
+}

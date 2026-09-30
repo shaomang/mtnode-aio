@@ -386,8 +386,8 @@ const ELIDED = "[earlier thinking elided]";
     "env MTNODE_LEAN_TOOLS 下达（关时显式 delete，不残留）");
   ok(GATE.indexOf("env.MTNODE_NO_CANVAS = '1'") >= 0 && GATE.indexOf("delete env.MTNODE_NO_CANVAS") >= 0,
     "env MTNODE_NO_CANVAS 下达");
-  ok(GATE.indexOf("toolsJson, lean, noCanvas, hideTools) {") >= 0,
-    "getRuntime 形参以三个可见集通道结尾（位置参数：定义与调用点必须同步扩列）");
+  ok(GATE.indexOf("toolsJson, lean, noCanvas, hideTools, noBrowser) {") >= 0,
+    "getRuntime 形参以四个可见集通道结尾（位置参数：定义与调用点必须同步扩列；noBrowser = browser_* 仅会话可用）");
   ok(GATE.indexOf("leanFlag, noCanvasFlag,") >= 0, "getRuntime 收到本轮两个标记");
   ok(/const LEAN_TOOLS_NOTE\s*=/.test(GATE), "定义 LEAN_TOOLS_NOTE（裁了工具就要告诉模型工具不存在）");
   ok(GATE.indexOf("leanFlag && presetBase ? presetBase + LEAN_TOOLS_NOTE : presetBase") >= 0,
@@ -650,8 +650,12 @@ const ELIDED = "[earlier thinking elided]";
   has(DB_SRC, "noCanvas: noCanvasOn,", "runParams.noCanvas = nodeLock ∪ canvasFreeOn（Gate B 勾选即 1）");
   has(DB_SRC, "hideTools: hideToolsOn.length ? hideToolsOn : undefined,", "空名单不下发（老网关走同一条路径，可见集一字不变）");
   has(ASSIST_SRC, "noCanvasRead: !!st.noCanvasRead,", "会话侧 Gate A 随落盘标记开轮（轮内不变 → 同档每步前缀一致）");
-  has(ASSIST_SRC, "noCanvas: !!st.canvasFree,", "会话侧 Gate B → runParams.noCanvas 为 1");
-  has(ASSIST_SRC, "noCanvas: assistCanvasFree,", "助手栏「与画布无关」同样走整档闸（判据只定一次，往下全用同一个值）");
+  has(ASSIST_SRC, "noCanvas: turnCanvasFree,", "会话侧 Gate B（按消息自动判定）→ runParams.noCanvas 为 1（判据只算一次，人设与下发同源）");
+  has(ASSIST_SRC, "const turnCanvasFree =", "会话侧判定值就是 turnCanvasFree（判据真源 = agentCanvasTurnRelated）");
+  has(ASSIST_SRC, "function agentCanvasTurnRelated(text, hist)", "自动判定函数在位（撤掉手动「与画布无关」按钮后的唯一判据）");
+  has(ASSIST_SRC, "const assistCanvasFree = !assistCanvasTurnRelated(t);", "助手栏同样按这条消息自动判定（同一个判据函数，不再读 S.assistCanvasFree）");
+  has(ASSIST_SRC, "function assistCanvasTurnRelated(text) {", "助手侧判据包装在位（转发给 agentCanvasTurnRelated，助手没有会话历史）");
+  has(ASSIST_SRC, "noCanvas: assistCanvasFree,", "助手栏判据命中即走整档闸（判据只定一次，往下全用同一个值）");
   has(ASSIST_SRC, "await assistAppSnapshot({ canvasFree: assistCanvasFree })", "app_state 的取值与 Gate B 同源（判据不分叉）");
   has(ASSIST_SRC, "app_state: appStateBlock,", "应用状态单独成节（每轮都变的最大头，才谈得上单独 diff）");
   const devSess = grabFunction(APP_SRC, "createDevSessionForNode", "app.js");

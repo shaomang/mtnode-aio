@@ -1,0 +1,341 @@
+/* ==========================================================================
+   browser.css — 会话自己的浏览器（renderer/app-browser.js）
+   · 会话主内容**右边栏**的活动流面板 .ba-col / .ba-*（第三栏：左栏会话列表 /
+     中栏对话 / 本栏活动流）；没被调用时整条 hidden 且不占宽度 —— 旧界面不变
+   · 浏览器确认框 / 求助卡（接管那套）的 .ix-* 附加样式
+   亮色覆盖在文件末尾。
+   ========================================================================== */
+
+/* ── 浏览器活动 · 会话右边栏（第三栏）────────────────────────────────────
+   显隐唯一开关是 .agent-pane.ba-open（app-browser.js 的 BA.setOpen）：
+   关着 = 第三栏宽度 0 + 面板 hidden，与未接入时一字不差。 */
+.agent-pane.ba-open {
+  grid-template-columns: var(--agent-side-w, 280px) minmax(0, 1fr) var(--ba-w, 340px);
+}
+.ba-col {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #1b1b1c;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ba-col[hidden] { display: none; }
+.ba-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+.ba-head b { flex: 1; font-size: 13px; color: #dfe8f7; }
+/* 右栏左边缘拖拽分界线（与 .agent-side-resize 同款观感，方向镜像）。
+   整条边界都可拖：把手铺满栏高（top/bottom 0），取消了原中间那段加宽把手；
+   常态一根 1px 竖筋，悬停 / 拖动整条加亮 —— 一眼看得出能拖。 */
+.ba-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 6;
+  cursor: col-resize;
+  /* 触屏 / 触控笔：这条线上不做手势滚动，指针事件一路给到拖拽逻辑 */
+  touch-action: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .12));
+  background-position: 50% 0;
+  background-size: 1px 100%;
+  background-repeat: no-repeat;
+  opacity: .55;
+  transition: opacity .12s, background-size .12s, background-image .12s;
+}
+.ba-resize:hover,
+.ba-resize.dragging {
+  opacity: 1;
+  background-size: 2px 100%;
+  background-image: linear-gradient(180deg, transparent, var(--cyan) 8%, var(--cyan) 92%, transparent);
+}
+
+/* ── 浏览器活动面板 ───────────────────────────────────────────────────── */
+.ba-bar { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px; }
+.ba-bar .mini { font-size: 11px; padding: 3px 7px; }
+.ba-bar .mini.on { background: rgba(96, 165, 250, 0.25); border-color: rgba(96, 165, 250, 0.6); color: #eaf2ff; }
+.ba-status {
+  font-size: 11px;
+  color: #8fa0bd;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 5px;
+  padding: 4px 6px;
+  margin: 0 8px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.ba-status.on { color: #a8e6b8; border-color: rgba(72, 187, 120, 0.45); }
+.ba-filter { padding: 0 8px; }
+.ba-filter input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 11px;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #dfe8f7;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+}
+.ba-list {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  margin: 0 8px;
+}
+.ba-empty { color: #7f8ea8; font-size: 11.5px; padding: 10px 8px; line-height: 1.7; }
+.ba-row {
+  display: flex;
+  gap: 5px;
+  align-items: baseline;
+  font-size: 11.5px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  border-left: 2px solid transparent;
+  word-break: break-word;
+}
+.ba-row:nth-child(odd) { background: rgba(255, 255, 255, 0.02); }
+.ba-row .ba-t { color: #6f7f99; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.ba-row .ba-k {
+  flex: 0 0 auto;
+  color: #b9c8e2;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+.ba-row .ba-x { flex: 1 1 auto; color: #d5deee; }
+.ba-row.g-browser { border-left-color: rgba(96, 165, 250, 0.7); }
+.ba-row.g-shell { border-left-color: rgba(214, 158, 46, 0.75); }
+.ba-row.g-file { border-left-color: rgba(72, 187, 120, 0.7); }
+.ba-row.g-other { border-left-color: rgba(160, 160, 180, 0.5); }
+.ba-path { width: 100%; }
+.ba-path a { color: #7fb2ff; font-size: 10.5px; text-decoration: none; word-break: break-all; }
+.ba-path a:hover { text-decoration: underline; }
+.ba-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #8fa0bd;
+  padding: 0 8px;
+}
+.ba-foot .ba-all { display: flex; align-items: center; gap: 3px; margin-left: auto; }
+.ba-foot .mini { font-size: 11px; padding: 3px 7px; }
+/* 「跟随最新」开着 = 这个键是亮的（与 .ba-bar / .ba-live-head 的 .mini.on 同款） */
+.ba-foot .mini.on { background: rgba(96, 165, 250, 0.25); border-color: rgba(96, 165, 250, 0.6); color: #eaf2ff; }
+
+/* ── 实况区（浏览器默认 dock 在右边栏；「独立窗口 / 收回」在 .ba-live-head）──────
+   帧只走内存（preload.onBrowserFrame → 画布 drawImage），绝不落库、不进模型上下文。
+   没被调用 / 浏览器没启动时整条随 #baPanel hidden 一起消失，旧界面一字不差。 */
+.ba-live {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px 0;
+}
+.ba-live-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #b9c8e2;
+}
+.ba-live-head > span:first-child { font-weight: 600; color: #dfe8f7; }
+.ba-live-head .ba-live-mode {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  color: #8fa0bd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ba-live-head .mini { font-size: 11px; padding: 3px 7px; }
+.ba-live-head .mini.on { background: rgba(96, 165, 250, 0.25); border-color: rgba(96, 165, 250, 0.6); color: #eaf2ff; }
+.ba-live-stage {
+  position: relative;
+  width: 100%;
+  height: 240px;
+  min-height: 140px;
+  background: #101319;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+  overflow: hidden;
+}
+/* 画布吃指针：点击 / 滚轮直接转发给页面（见 app-browser.js 的 BA.liveInput） */
+.ba-live-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: default;
+  outline: none;
+  touch-action: none;
+}
+.ba-live-stage canvas:focus { box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.55); }
+.ba-live-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: #93a3bd;
+  background: rgba(10, 13, 18, 0.88);
+}
+.ba-live-mask[hidden] { display: none; }
+.ba-live-note {
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: #8fa0bd;
+  min-height: 0;
+}
+.ba-live-note[hidden] { display: none; }
+.ba-live-note.warn { color: #e0b566; }
+
+/* ── 名单编辑（右栏内的轻量浮层，不用 #overlay：它是侧栏级小面板；挂 .ba-col）──
+   挂进 .ba-col 之后就地绝对定位：跟着右边栏面板一起显隐，也不再横跨到中栏上。
+   **必须自己写 [hidden] 规则**：下面这条 display:flex 会盖掉浏览器默认的
+   [hidden]{display:none}（类选择器 > 标签属性选择器），于是 app-browser.js 里
+   box.hidden = true 关不掉这只浮层 —— 名单打开后就再也关不上（✕ 与「保存」都失效）。 */
+.ba-policy-box[hidden] { display: none; }
+.ba-policy-box {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 44px;
+  z-index: 60;
+  background: #171d2b;
+  border: 1px solid rgba(120, 150, 210, 0.45);
+  border-radius: 8px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  max-height: 78vh;
+}
+.ba-policy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: #dbe6f8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ba-policy-body { padding: 10px; overflow: auto; }
+.ba-hint { font-size: 11.5px; color: #93a3bd; line-height: 1.7; margin: 0 0 8px; }
+.ba-p2 { display: flex; flex-direction: column; gap: 8px; }
+.ba-p2 label { flex: 1 1 0; font-size: 11.5px; color: #b9c8e2; display: flex; flex-direction: column; gap: 4px; }
+.ba-p2 textarea {
+  min-height: 130px;
+  font-size: 11px;
+  font-family: Consolas, "Courier New", monospace;
+  background: rgba(0, 0, 0, 0.3);
+  color: #dfe8f7;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  padding: 5px 6px;
+  resize: vertical;
+}
+.ba-check { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: #b9c8e2; margin-top: 10px; }
+.ba-policy-foot {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── 浏览器求助卡 / 确认卡（app-db.js 的 ix 面板内）──────────────────── */
+.ix-card .ix-shot { margin: 6px 0; }
+.ix-card .ix-shot img {
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  cursor: zoom-in;
+}
+.ix-card .ix-help-msg {
+  font-size: 12.5px;
+  color: #e3ebf8;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  margin: 4px 0 6px;
+  padding: 6px 8px;
+  background: rgba(96, 165, 250, 0.1);
+  border-left: 3px solid rgba(96, 165, 250, 0.8);
+  border-radius: 0 5px 5px 0;
+}
+.ix-card.ix-browser-help .ix-title { color: #bfe0ff; }
+
+/* ── 「只看浏览器实况」收起态（本次需求）────────────────────────────────
+   .ba-col.ba-list-off = 用户点了 #baListOn：下方活动区（状态条 / 筛选 / 列表 / 底栏）
+   整块收起，实况画面铺满右栏剩余高度；事件同时停止追踪（不重画、不落库，见
+   app-browser.js 的 BA.setListOn / BA.reload / BA.render / BA.onEvent）。
+   判据与显隐都由 BA.setListOn 一处写（类挂在 #baPanel 上）。 */
+.ba-col.ba-list-off .ba-status,
+.ba-col.ba-list-off .ba-filter,
+.ba-col.ba-list-off .ba-list,
+.ba-col.ba-list-off .ba-foot > :not(#baListOn) {
+  display: none;
+}
+.ba-col.ba-list-off .ba-live {
+  flex: 1 1 0;
+  min-height: 0;
+  padding-bottom: 8px;
+}
+.ba-col.ba-list-off .ba-live-stage {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 200px;
+}
+.ba-col.ba-list-off .ba-foot {
+  flex: none;
+  justify-content: flex-end;
+  padding: 6px 8px;
+}
+
+/* 浏览器在跑（实况区显示着）时把活动列表让一点高度出来：两块都要看得见 */
+.ba-col.ba-live-on .ba-list { min-height: 90px; }
+.ba-col.ba-live-on .ba-live-stage { height: 230px; }
+
+/* ── 亮色主题 ─────────────────────────────────────────────────────────── */
+body.theme-light .ba-col { background: #f7f9fc; border-left-color: rgba(0, 0, 0, 0.1); }
+body.theme-light .ba-head b { color: #1d2a44; }
+body.theme-light .ba-status { color: #66738c; background: rgba(0, 0, 0, 0.03); border-color: rgba(0, 0, 0, 0.08); }
+body.theme-light .ba-status.on { color: #1d7a45; border-color: rgba(29, 122, 69, 0.4); }
+body.theme-light .ba-list { background: #fbfcfe; border-color: rgba(0, 0, 0, 0.1); }
+body.theme-light .ba-row:nth-child(odd) { background: rgba(0, 0, 0, 0.025); }
+body.theme-light .ba-row .ba-t { color: #8592a8; }
+body.theme-light .ba-row .ba-k { color: #41506b; background: rgba(0, 0, 0, 0.06); }
+body.theme-light .ba-row .ba-x { color: #26324a; }
+body.theme-light .ba-filter input { background: #fff; color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
+body.theme-light .ba-foot { color: #66738c; }
+body.theme-light .ba-policy-box { background: #fff; border-color: rgba(56, 132, 255, 0.45); box-shadow: 0 12px 34px rgba(20, 40, 80, 0.22); }
+body.theme-light .ba-policy-head { color: #1d2a44; border-color: rgba(0, 0, 0, 0.08); }
+body.theme-light .ba-hint { color: #5d6b85; }
+body.theme-light .ba-live-head { color: #41506b; }
+body.theme-light .ba-live-head > span:first-child { color: #1d2a44; }
+body.theme-light .ba-live-head .ba-live-mode { color: #66738c; }
+body.theme-light .ba-live-stage { background: #eef2f8; border-color: rgba(0, 0, 0, 0.12); }
+body.theme-light .ba-live-mask { background: rgba(238, 242, 248, 0.92); color: #5d6b85; }
+body.theme-light .ba-live-note { color: #66738c; }
+body.theme-light .ba-live-note.warn { color: #9a6a12; }
+body.theme-light .ba-p2 label, body.theme-light .ba-check { color: #41506b; }
+body.theme-light .ba-p2 textarea { background: #fff; color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
+body.theme-light .ix-card .ix-help-msg { color: #1d2a44; background: rgba(56, 132, 255, 0.1); }
+body.theme-light .ix-card.ix-browser-help .ix-title { color: #14416f; }

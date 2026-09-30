@@ -125,8 +125,8 @@ console.log("\n[2] 协议与网关：asset 帧 → asset-result");
   );
   has(
     GATEWAY,
-    "m.t !== 'lt' && m.t !== 'asset') return",
-    "网关放行 asset 帧（与 canvas / db / tool / lt 同一张白名单）",
+    "m.t !== 'lt' && m.t !== 'asset' && m.t !== 'browser') return",
+    "网关放行 asset 帧（与 canvas / db / tool / lt / browser 同一张白名单）",
   );
   has(
     GATEWAY,

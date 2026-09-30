@@ -1,0 +1,86 @@
+/* 风格 07 · 复古印刷 —— 棉纸底 + 墨黑 + 一色专红，网点与错版感来自「印刷」而不是滤镜。
+   它拒绝的是「棕黄旧纸 + 做旧污渍」那套：底色是干净的棉纸白，材料是粗线条、
+   衬线标题、编号上的网点底，以及一处 2px 的红色错版偏移 —— 只有一处。 */
+:root {
+  --bg: #f7f4ec;
+  --shell: #f1ece0;
+  --ink: #1a1713;
+  --ink2: #4b443a;
+  --muted: #565044; /* 脚注：压在 #f7f4ec 上 ≈ 6.6:1 */
+  --accent: #c0322b;
+  --accent-dim: #a06b57;
+  --accent-soft: rgba(192, 50, 43, 0.07);
+  --line: #ddd5c4;
+  --line2: #b9ad94;
+  --code-bg: rgba(26, 23, 19, 0.06);
+  --code-block: #efe9db;
+  --hover: rgba(26, 23, 19, 0.05);
+  --sel: rgba(192, 50, 43, 0.16);
+  --sel-ink: #1a1713;
+  --radius: 2px;
+  --radius-sm: 3px;
+  --pill: 3px;
+  --page-w: 950px;
+  --page-pt: 64px;
+  --h1-size: 45px;
+  --h1-weight: 700;
+  --h1-track: -0.02em;
+  --h1-w: 22ch;
+  --font-display: "Rockwell", "Roboto Slab", Georgia, "Songti SC",
+    "Noto Serif CJK SC", "SimSun", serif;
+  --step-radius: 2px;
+  --step-size: 34px;
+  --step-fs: 15px;
+  --step-weight: 700;
+  --step-font: var(--font-display);
+  --step-border: var(--ink);
+  --step-bg: rgba(192, 50, 43, 0.12);
+  --step-ink: var(--ink);
+  --bar-h: 48px;
+  --texture: radial-gradient(rgba(26, 23, 19, 0.05) 1px, transparent 1.4px) 0 0 /
+    7px 7px;
+  --texture-op: 0.75;
+}
+body { font-size: 15.5px; line-height: 1.74; }
+.page > h1 { font-family: var(--font-display); }
+/* 唯一的错版：标题左侧一条 4px 专红，压在 1px 墨线上（像套印时红版偏了一点） */
+.page > h1::before {
+  content: "";
+  display: block;
+  width: 76px;
+  height: 4px;
+  margin-bottom: 18px;
+  background: var(--accent);
+  box-shadow: 3px 3px 0 0 var(--line2);
+}
+.page > p { color: var(--ink2); max-width: 50ch; }
+/* 编号：网点底的方章，墨色描边 —— 印刷品的编号是「盖章」，不是徽章 */
+.page ol.steps > li::before {
+  box-shadow: inset 0 0 0 1px rgba(26, 23, 19, 0.08);
+  background-image: radial-gradient(rgba(26, 23, 19, 0.22) 0.8px, transparent 1px);
+  background-size: 4px 4px;
+}
+.page ol.steps::before { background: var(--line2); }
+.page blockquote {
+  border-top: 2px solid var(--ink);
+  padding-top: 14px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+.page h2,
+.page h3 { font-family: var(--font-display); }
+.page hr { background: var(--ink); height: 2px; }
+.bar { border-bottom: 2px solid var(--ink); }
+.brand-name { font-family: var(--font-display); font-size: 14px; letter-spacing: 0; }
+.chip { border-color: var(--ink); color: var(--ink); }
+.chip:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.foot {
+  background: var(--bg);
+  border-top: 2px solid var(--ink);
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.foot svg { color: var(--accent); }
