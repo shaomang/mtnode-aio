@@ -1,4 +1,4 @@
-/* 跨进程真续跑 · session/resume 桥（mtnode-session-resume · 跑在 dsh 运行时进程内）。
+﻿/* 跨进程真续跑 · session/resume 桥（mtnode-session-resume · 跑在 dsh 运行时进程内）。
 
    背景（契约见 dsh/DESIGN.md「断点续跑契约」）：宿主在失败轮后带 resumeSession 点名
    续跑同一个 dsh 会话。续跑只有在「同一台 runtime 进程内命中 live 会话」时才成立
@@ -37,7 +37,7 @@ export const name = 'mtnode-session-resume'
 const RESUME_METHOD = 'session/resume'
 /* 只读自检方法：把本运行时的**生效装配**回给网关（仅 id 与 config）。0.2 把设置真源搬到
    profile 补丁层后，「宿主写了文件」不再等于「运行时读到了配置」——这枚方法让冒烟能对着
-   真实运行时核对（见 test/smoke-settings-profile-patch.js 的 [6] 段）。 */
+   真实运行时核对（见 test/smoke-settings.js 的「已并入：smoke-settings-profile-patch.js」段 [6]）。 */
 const PROBE_METHOD = 'config/probe'
 const PROBE_IDS = ['llm-deepseek', 'llm-pi-ai', 'permission', 'system-prompt', 'mtnode-tool-visibility', 'agent-default-model']
 

@@ -379,6 +379,11 @@ vm.runInContext(
       /* buildRequestSpec 的 Authorization 走主进程的 providerAuthKey（中转服务在这里换成
          账号 token）；本用例的服务商都不是中转来源，抽真函数进来即可（authStore 分支走不到）。 */
       "providerAuthKey",
+      /* 图像请求的接口族判定（spec.kind=image 时不被服务商级 type 拦住，见 main.js）：
+         buildRequestSpec 依赖它，同源抽真实现。applyTextThinkingEffort 是文本分支的依赖
+         （[14] 里要对照「同一张卡跑文本模型仍走 /chat/completions」）。 */
+      "effectiveProviderType",
+      "applyTextThinkingEffort",
       "buildRequestSpec",
     ]
       .map((n) => fnBody(mainSrc, n))
@@ -1369,6 +1374,46 @@ console.log("\n[14] 透明背景（直出 Alpha）与蒙版局部重绘：参数
     "1280x544",
     "没有蒙版时节点自己的 size 照旧（本次修复不波及老行为）",
   );
+}
+
+/* 图像请求按**接口族**分派：spec.kind="image" 的请求不被服务商级 type 拦住 ——
+   同一个 OpenAI 兼容端点常常同时挂文本与图像模型（最典型 = MTNode 中转服务卡，恒为
+   text_openai），以前按 provider.type 分派会直接抛「未知服务商类型：text_openai」，
+   图像处理节点明明选好了图像模型却跑不起来（预览路径尤其明显：它不过运行期的纠偏段）。 */
+console.log("\n[14] 图像请求按接口族分派（text_openai 的混合端点不再抛未知服务商类型）");
+{
+  const mixed = {
+    id: "p-mixed",
+    name: "混合端点",
+    type: "text_openai",
+    baseUrl: "https://api.example.com/v1",
+    apiKey: "k",
+    models: ["qwen3.7-plus", "gpt-image-2.5-vip"],
+  };
+  const call = (p, kind, model, images) =>
+    M("buildRequestSpec")(p, kind, model, "P", null, images || [], "", null, "1280x1280");
+  let gen = null;
+  try {
+    gen = call(mixed, "image", "gpt-image-2.5-vip");
+  } catch (e) {
+    gen = { err: (e && e.message) || String(e) };
+  }
+  eqStr(
+    gen && gen.err ? gen.err : gen.url.endsWith("/images/generations"),
+    true,
+    "text_openai 混挂端点的图像请求照发 /images/generations（不再抛「未知服务商类型」）",
+  );
+  const edit = call(mixed, "image", "gpt-image-2.5-vip", ["C:/assets/a.png"]);
+  eqStr(edit.url.endsWith("/images/edits"), true, "带参考图 → /images/edits（同一条 OpenAI 兼容图像通路）");
+  eqStr(
+    call(mixed, "text", "qwen3.7-plus").url.endsWith("/chat/completions"),
+    true,
+    "同一张卡跑文本模型照旧 /chat/completions（形态按模型分，互不牵连）",
+  );
+  const stab = call({ id: "s", type: "image_stability", baseUrl: "https://x/v2beta", apiKey: "k" }, "image", "sd3.5");
+  eqStr(stab.url.indexOf("/v2beta/stable-image/generate/core") > 0, true, "Stability 专用端点保持自身通路");
+  const mj = call({ id: "m", type: "image_mj", baseUrl: "https://mj.example/api", apiKey: "k" }, "image", "imagine");
+  eqStr(mj.url === "https://mj.example/api", true, "Midjourney 自定义网关保持自身通路");
 }
 
 console.log("\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ 全部 " + checks + " 项通过"));

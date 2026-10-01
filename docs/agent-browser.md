@@ -105,7 +105,7 @@ dsh/gateway/browser-host.mjs     CDP 驱动：进程 / 标签页 / 驱动锁 / �
 **被调用即出现**（`renderer/app-browser.js` 的 `BA.autoOpenForUse`）：会话第一条 browser-act 进来时右栏自己打开，三条刹车都不开 —— 用户本次运行亲手关过（`BA.userClosed`，`setOpen` 显式开合时落）/ 不在会话视图（`#agentPane` display:none）/ 浏览器没在跑（先问一次 `action:'status'`，不吃过期状态）。触发面只认浏览器类活动（`AUTO_OPEN_KINDS`），shell / 文件摘要不替用户弹第三栏。没有这一条，实况流永远不会连（`liveSync` 的第一项就是「面板开着」），浏览器就只能停在眼前的独立窗口里。
 
 **焦点不在该会话时静默处理**（本轮需求）：`BA.viewing(sid)` 走 `app-assist.js` 的 `agentViewHas`（唯一判据）；false 时 `BA.silentConnect()` —— **照常连流但不弹右栏、不切界面、不提示**，只在左栏那条会话行挂一枚被动标记（`app-assist.js` 的 `.side-sess-ba`，由 `BA.noteBrowserSession` 触发、每条会话只重绘一次）。相应地 `liveSync` 把「正在驱动本会话」也算作要连流的条件（`silentStream`）：静默期面板虽收着，流照旧连着 —— 那条流不只是画面，更是「真实窗口让位」本身；掐了它窗口就又留回屏幕上。帧在面板收起时本来就不画（`onFrame` 挡着），所以静默期只花网关那点编码成本。
-**栏本来就开着**（上次没收 / 启动时按 `mtnode.baOpen` 恢复）时不再「弹」，但**必须补一次 `liveSync`**：面板开着 ≠ 流在连（启动那一刻浏览器还没跑，那一拍开流会失败），少了这一条，浏览器后来被会话拉起也没人 dock 它，窗口就一直留在屏幕上。回归：`test/smoke-browser-rail.js`（vm 沙箱里真跑渲染层，十三段，[7] 钉「栏开着补流」、[8]/[9] 钉形态切换、[12] 钉静默处理）。
+**栏本来就开着**（上次没收 / 启动时按 `mtnode.baOpen` 恢复）时不再「弹」，但**必须补一次 `liveSync`**：面板开着 ≠ 流在连（启动那一刻浏览器还没跑，那一拍开流会失败），少了这一条，浏览器后来被会话拉起也没人 dock 它，窗口就一直留在屏幕上。回归：`test/smoke-browser.js` 里的「已并入：smoke-browser-rail.js」段（vm 沙箱里真跑渲染层，十三段，[7] 钉「栏开着补流」、[8]/[9] 钉形态切换、[12] 钉静默处理）。
 
 三层落点与数据流：
 
@@ -162,7 +162,7 @@ app-browser.js     canvas drawImage（只留最新一帧）· 指针/滚轮/键�
 
 ## 10. 验收
 
-- `node test/smoke-browser-rail.js` —— 右栏「被调用即出现 + 焦点不在该会话时静默」的功能回归（vm 沙箱真跑 `renderer/app-browser.js`，十三段）：默认不显示 / 来电即开栏并真开流（viewStart 单飞，一次）/ 用户亲手关过不再弹 / shell 类活动不弹 / 非会话视图不弹 / 浏览器没在跑不弹 / 栏开着补流 / 形态切换与「不落 localStorage」/ **[12] 静默**：不弹右栏、不切界面、照常连流、左栏留一枚被动标记（且只给该会话盖章）。
+- `node test/smoke-browser.js` —— 主用例（209 项）+「已并入：smoke-browser-rail.js」段：右栏「被调用即出现 + 焦点不在该会话时静默」的功能回归（vm 沙箱真跑 `renderer/app-browser.js`，十三段）：默认不显示 / 来电即开栏并真开流（viewStart 单飞，一次）/ 用户亲手关过不再弹 / shell 类活动不弹 / 非会话视图不弹 / 浏览器没在跑不弹 / 栏开着补流 / 形态切换与「不落 localStorage」/ **[12] 静默**：不弹右栏、不切界面、照常连流、左栏留一枚被动标记（且只给该会话盖章）。
 - `node test/smoke-browser.js` —— 209 项：实况流（帧只进内存 / 不落库 / 不自动拉起 / dock-detach 状态机 / **launch 即 parkSessionWindow、登录求助不再 bringToFront**）/ 底座 / 纯函数安全闸 / 网关接线 / 插件工具面 / cordis 挂载 / 活动库真读写 / 渲染层与 i18n（含默认内部界面两条词条 + `.side-sess-ba` 被动标记）/ 打包白名单。
 - MTNODE_BROWSER_SMOKE=1 node test/smoke-browser.js —— 追加真机段：真起浏览器 → 导航 example.com → 快照（标题 / URL / 元素）→ 截图落盘 → 网络留痕 → 关闭。
 - MTNODE_BROWSER_SMOKE=1 MTNODE_BROWSER_VIEW=1 node test/smoke-browser.js —— 真机段再加实况：真出帧（screencast / 帧率受控 / 裸 base64 JPEG）→ iewInput 真点到页面（面板坐标 → 按钮）→ 提出来/收回真搬窗口 → 停流后不再有画面帧。

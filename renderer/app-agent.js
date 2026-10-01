@@ -77,6 +77,104 @@ function preferredAgentModelForRoute(route) {
   return models[0] || "";
 }
 
+/* ═══════════ 「默认模型」（设置 · 智能能力）—— 全应用唯一一份解析 ═══════════
+   用户在设置 · 智能能力里填的「默认模型（智能能力使用）」= S.config.dsh.model（
+   app-settings.js 的 modelSel 写的就是这一格），这里给出「此刻到底用哪一只」与
+   「用不了时该说什么」的唯一口径。工具构建（方案生成 / 开发会话 / 工具运行 / 节点
+   头部 🤖 按钮）一律按它取值，不再各拿 preferredAgentModelForRoute（那条链读的是
+   S.assistModel，与设置里的默认模型可以不一致 —— 这正是「工具用的模型与设置不符」）。
+
+   三条纪律（用户口径）：
+     · 不静默回落：这一格为空、或那只模型在本机任何服务商里都找不到、或它能挂的服务商
+       全被停用 / 没填 Key —— 一律报错并指路「设置 · 智能能力 · 默认模型」，绝不偷偷
+       换成别的模型；
+     · 只在运行期算生效值：不往节点写 aiModel / aiProvider（改设置后所有未自选的节点
+       立刻跟着变，不会留下「新建时补种的那一份旧默认」）；
+     · 路由优先沿用本机默认智能路由（preferredAgentProviderRoute，与长任务面板同源），
+       只有当这只模型压根不属于那条路由时才改成它所属的路由。 */
+
+/* 这只模型能不能挂在这条路由上：路由不在本机 / 该路由清单里没有它 → 不能。 */
+function dshModelFitsRouteNow(route, model) {
+  const m = String(model || "").trim();
+  if (!m) return false;
+  let models = [];
+  try {
+    models =
+      typeof agentModelsForRoute === "function"
+        ? agentModelsForRoute(route) || []
+        : [];
+  } catch (_) {
+    models = [];
+  }
+  if (!models.length) return false;
+  const low = m.toLowerCase();
+  return models.some((x) => {
+    const s = String(x);
+    return s === m || s.toLowerCase() === low || s.endsWith("/" + low) || s.endsWith(low);
+  });
+}
+
+/* 本机此刻「可挂这只模型的智能路由」清单（同一条路由只出一次，顺序 = 候选优先级）：
+   ① 默认智能路由（沿用用户当前那一条，不改它的服务商）；
+   ② 路由反查真源 devRouteOfModel（模型只登记在别家时把服务商一并拨正）；
+   ③ 兜底：本机默认路由。 */
+function dshDefaultModelRoutes(model) {
+  const m = String(model || "").trim();
+  const out = [];
+  const push = (r) => {
+    const s = String(r || "").trim();
+    if (!s || out.indexOf(s) >= 0) return;
+    if (!dshModelFitsRouteNow(s, m)) return;
+    out.push(s);
+  };
+  try {
+    if (typeof preferredAgentProviderRoute === "function")
+      push(preferredAgentProviderRoute());
+  } catch (_) {}
+  try {
+    if (typeof devRouteOfModel === "function") push(devRouteOfModel(m));
+  } catch (_) {}
+  try {
+    if (typeof defaultAgentProviderRoute === "function") push(defaultAgentProviderRoute());
+  } catch (_) {}
+  return out;
+}
+
+/* 解析结果（不抛）：{ ok, route, model, reason } —— reason 只在 ok=false 时有值，
+   是给用户看的一句话（含指路）。凡是「要真的拿默认模型去跑」的入口都走这里。 */
+function dshDefaultModelPick() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const model = String(cfg.model || "").trim();
+  if (!model)
+    return {
+      ok: false,
+      route: "",
+      model: "",
+      reason: I18n.t(
+        "默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
+      ),
+    };
+  const routes = dshDefaultModelRoutes(model);
+  if (!routes.length)
+    return {
+      ok: false,
+      route: "",
+      model: model,
+      reason: I18n.t(
+        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。",
+        { model: model },
+      ),
+    };
+  return { ok: true, route: routes[0], model: model, reason: "" };
+}
+
+/* 同上，ok=false 时抛错（消息里已指路）。需要「拿到就用」的调用点走这个。 */
+function dshDefaultModelRoute() {
+  const pick = dshDefaultModelPick();
+  if (!pick.ok) throw new Error(pick.reason || I18n.t("默认模型不可用"));
+  return { provider: pick.route, model: pick.model };
+}
+
 /** 原 API 模式 providerId → 智能路由（DeepSeek 配置走官方路由，其余走 mtnode_） */
 function agentRouteFromProviderId(providerId) {
   const id = String(providerId || "").trim();
@@ -772,14 +870,8 @@ function sessionFooterTitle(st, m, running) {
         fmtTok(m.reasoningTokens) +
         " tok",
     );
-    if ((m.contextWindow || 0) > 0)
-      rows.push(
-        I18n.t("上下文 ") +
-          fmtTok((m.inputTokens || 0) + (m.outputTokens || 0)) +
-          " / " +
-          fmtTok(m.contextWindow) +
-          " tok",
-      );
+    /* 「上下文 X / Y tok」这行已移除（本次需求）：与 Token 报告重复。报告里的明细
+       （逐轮 + 逐模型）自带 contextWindow，不必在这里再写一份「已用 / 窗口」。 */
     if (m.subagents) rows.push(I18n.t("子代理 ") + m.subagents);
     if (m.jobs) rows.push(I18n.t("后台任务 ") + m.jobs);
   }
@@ -1751,6 +1843,110 @@ function tokBadgeSummary(rep, t, running, owner) {
   if (running) s = I18n.t("运行中 · ") + s;
   return s;
 }
+/* 「入 X · 出 Y」两段带色（本次需求 · 用户口径「token 输入输出用更醒目的绿色和蓝色」）：
+   容器类名取 **.dsh-tok-io**（不是 .dsh-tok）—— .dsh-tok-in / .dsh-tok-out 是**色类**，
+   容器再挂色类会让 `querySelector(".dsh-tok-in")` 先命中容器（取色 / 断言都拿错节点，
+   实测拿到的是「182K · 出」这串拼起来的文本）。
+   **色只上数码，标签「入 / 出」一律中性墨色**（用户报「入和出中的『出』字被错误上色」）：
+   两段传进来的是**完整片段文本**（inTxt = "182K"、outTxt 自带分隔标签「 · 出」），
+   tokIoParts 在「首个数码」处切开成「标签 + 值」——标签走 .dsh-tok-label（inherit 墨色），
+   只有数码值落进 .dsh-tok-in / .dsh-tok-out 色类。切法只用正则，不认死中文，
+   免得哪天标签换成别的字又被一起染上色。
+   （此前 outTxt 把 ioMid「 · 出」拼在数码后面、整段塞进绿色 span，"出" 跟着变绿。）
+   颜色定义只在 css/dsh-tokens.css 一处（这里不另写色值）。
+   拿不到 DOM 时降级成纯文本（本函数只被渲染层调用，降级只为稳妥）。 */
+/* 片段拆成 { label, value }：label = 前导标签（"入" / " · 出" / "Out" …）；
+   首字符就是数码（没有标签）时 label 为空串；整段无标签时 value = 整段，一字不丢。
+   识别口径：value 从**首个数字（或正负号）**起算，标签只吃它前面的部分。 */
+function tokIoParts(txt) {
+  const s = String(txt == null ? "" : txt);
+  const m = /[-+]?\d/.exec(s);
+  if (!m || m.index === 0) return { label: "", value: s };
+  return { label: s.slice(0, m.index), value: s.slice(m.index) };
+}
+/* 追加一段「标签（中性墨色）+ 值（色类）」。真 DOM 路；返回 false = 该环境建不出节点。 */
+function tokIoAppendSeg(el, txt, cls) {
+  if (!el || typeof el.appendChild !== "function") return false;
+  if (
+    typeof document === "undefined" ||
+    !document.createElement ||
+    typeof document.createTextNode !== "function"
+  )
+    return false;
+  const p = tokIoParts(txt);
+  if (p.label) {
+    const lab = document.createElement("span");
+    lab.className = "dsh-tok-label";
+    lab.textContent = p.label;
+    el.appendChild(lab);
+  }
+  const v = document.createElement("span");
+  v.className = cls;
+  v.textContent = p.value;
+  el.appendChild(v);
+  return true;
+}
+function tokInOutNode(inv, outv) {
+  const wrap =
+    typeof document !== "undefined" && document.createElement
+      ? document.createElement("span")
+      : null;
+  /* 无 DOM 的降级路：两段原样串起来（文本口径与真 DOM 路逐字一致，色自然没有）。 */
+  if (!wrap || typeof wrap.appendChild !== "function")
+    return String(inv) + " · " + String(outv);
+  wrap.className = "dsh-tok-io";
+  if (!tokIoAppendSeg(wrap, inv, "dsh-tok-in")) return String(inv) + " · " + String(outv);
+  /* 两段之间的分隔符与旧文案逐字一致（「 · 」）—— 复制报告与冒烟都按旧文案比对。
+     第二段自带标签（ioMid = 「 · 出」）时分隔符就在标签里，不再另插一枚（免得「 · · 出」）；
+     拿不到 ioMid（词条缺失 / 桩环境返回空串）时两段直接相接，与 tokBadgeSummaryEl
+     的降级路 `inTxt + ioMid + outTxt` 文本一致 —— 降级路与真路不许拼出两种文本。 */
+  if (typeof document.createTextNode === "function" && !tokIoParts(outv).label)
+    wrap.appendChild(document.createTextNode(" · "));
+  tokIoAppendSeg(wrap, outv, "dsh-tok-out");
+  return wrap;
+}
+/* 与上面同源的一段纯文本（tooltip / 复制报告里仍然只认字符串）。 */
+function tokInOutText(inv, outv) {
+  return String(inv) + " · " + String(outv);
+}
+/* 带色版的摘要（Token 报告折叠态那一行）：与 tokBadgeSummary **逐项同源、同一顺序** ——
+   「Σ X tok」纯文本 +「入 X · 出 Y」两段带色（输入蓝 / 输出绿，中间按旧文案的「 · 」分隔）
+   + 其余（缓存命中 / 模型数 / 轮数 / 耗时 / 费用）照旧。
+   文本口径与 tokBadgeSummary 逐字一致（差别只在那两段被拆成带色节点）。
+   **标签不染色**（本轮修复）：色只落在两段数码上，「入」与「 · 出」由 .dsh-tok-label 承载。 */
+function tokBadgeSummaryEl(rep, t, running, owner) {
+  const box =
+    typeof document !== "undefined" && document.createElement
+      ? document.createElement("span")
+      : null;
+  /* 旧摘要里「入 …」与「出 …」之间在中文界面是「 · 」（英文界面是「 · out」的形式：
+     I18n.t(" · 出") 本身就带前导分隔符，这里照它的原文取用，不自己拼分隔符）。 */
+  const ioMid = I18n.t(" · 出");
+  const parts = [];
+  if (running) parts.push(I18n.t("运行中"));
+  parts.push("Σ " + fmtTok(t.totalTokens) + " tok");
+  const tail = [];
+  tail.push(I18n.t("缓存命中 ") + Math.round(t.cacheHitPct) + "%");
+  if (t.models > 1) tail.push(t.models + I18n.t(" 模型"));
+  if (t.rounds) tail.push(t.rounds + I18n.t(" 轮"));
+  tail.push("⏱ " + fmtDurLong(t.wallMs || t.spanMs));
+  const cost = tokCostText(owner);
+  if (cost) tail.push(cost);
+  const inTxt = fmtTok(t.billedInput);
+  const outTxt = fmtTok(t.outputTokens);
+  if (!box || typeof box.appendChild !== "function") {
+    parts.push(I18n.t("入") + inTxt + (ioMid || " / ") + outTxt);
+    for (const x of tail) parts.push(x);
+    return parts.join(" · ");
+  }
+  /* 与 tokBadgeSummary 的文本逐字一致：标签「入」与「 · 出」都中性墨色，
+     只有两段数码落进色类（.dsh-tok-in / .dsh-tok-out）。 */
+  box.appendChild(document.createTextNode(parts.join(" · ")));
+  box.appendChild(tokInOutNode(I18n.t("入") + inTxt, (ioMid || " / ") + outTxt));
+  box.appendChild(document.createTextNode(" · " + tail.join(" · ")));
+  return box;
+}
+
 /* 「按轮次」文本段（Badge tooltip 与复制报告共用）：
  * 序号 / 标题（含来源与在途标记）/ 轮步 / 计费输入·输出 / LLM 用时 / 费用 / 性能摘要。
  * 只读展示，合计口径仍在上面的合计段；列全部轮次（不再截断）。 */
@@ -1891,7 +2087,15 @@ function tokBadgeEl(owner) {
   sum.appendChild(chip);
   const sm = document.createElement("span");
   sm.className = "tok-badge-sum";
-  sm.textContent = tokBadgeSummary(r, t, running, owner);
+  /* 本次需求：折叠态那一行里的「入 / 出」两段带色（输入蓝 / 输出绿）——
+     tokBadgeSummaryEl 与 tokBadgeSummary 逐项同源、文本逐字一致，只是这两段成了 span。
+     拿不到元素（无 DOM 的降级路）时它回字符串，这里照样能收。 */
+  const smVal =
+    typeof tokBadgeSummaryEl === "function"
+      ? tokBadgeSummaryEl(r, t, running, owner)
+      : tokBadgeSummary(r, t, running, owner);
+  if (smVal && typeof smVal === "object") sm.appendChild(smVal);
+  else sm.textContent = String(smVal == null ? "" : smVal);
   sum.appendChild(sm);
   const copy = document.createElement("button");
   copy.type = "button";
@@ -1997,7 +2201,11 @@ function tokBadgeEl(owner) {
     for (let i = 0; i < cells.length; i++) {
       const td = document.createElement("td");
       td.textContent = cells[i];
-      if (i === cells.length - 1) td.className = "tok-badge-cost";
+      /* 本次需求 · token 输入蓝 / 输出绿（与轨迹视图、报告摘要同一套配色）：
+         第 1 列「计费输入」= 蓝、第 4 列「输出」= 绿（列序见上面的表头数组）。 */
+      if (i === 0) td.className = "dsh-tok-in";
+      else if (i === 3) td.className = "dsh-tok-out";
+      else if (i === cells.length - 1) td.className = "tok-badge-cost";
       tr.appendChild(td);
     }
     table.appendChild(tr);
@@ -2022,6 +2230,9 @@ function tokBadgeEl(owner) {
   for (let i = 0; i < tds.length; i++) {
     const td = document.createElement("td");
     td.textContent = tds[i];
+    /* 合计行的「计费输入 / 输出」与明细行同一口径（本次需求）：蓝 / 绿 */
+    if (i === 1) td.className = "dsh-tok-in";
+    else if (i === 4) td.className = "dsh-tok-out";
     if (i === tds.length - 1) {
       td.className = "tok-badge-cost";
       /* 「合计计费」旁挂口径说明入口（app-cost.js 的 costHelpEl）：
@@ -2125,7 +2336,10 @@ function tokBadgeEl(owner) {
       for (let c = 0; c < cells.length; c++) {
         const td = document.createElement("td");
         td.textContent = cells[c];
-        if (c === cells.length - 1) td.className = "tok-badge-cost";
+        /* 与合计表同一口径（本次需求）：计费输入 = 蓝、输出 = 绿 */
+        if (c === 0) td.className = "dsh-tok-in";
+        else if (c === 3) td.className = "dsh-tok-out";
+        else if (c === cells.length - 1) td.className = "tok-badge-cost";
         rtr.appendChild(td);
       }
       rtable.appendChild(rtr);

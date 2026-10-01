@@ -347,6 +347,22 @@
     askOut(String(res.text || "") + (res.model ? "\n\n— " + res.model : ""));
   }
 
+  /* ── 底部语音听写（speech.js）：footer 里那一枚话筒 + 「音频转文字」 ──
+     识别用的是本机内置语音（官方本地 SenseVoice，跑在 MTNode 的 dsh 运行时里），
+     与上面那条的别的宿主能力一样：先探能力，缺了就写清原因，不假装能用。
+     结果只展示 + 一键复制，应用要拿去做什么由自己的代码决定（见 window.Speech）。 */
+  var speechBar = null;
+  if (window.Speech && typeof window.Speech.mount === "function") {
+    speechBar = window.Speech.mount($("speechBar"));
+  } else {
+    var sb = $("speechBar");
+    if (sb) sb.textContent = "语音听写模块未加载（speech.js 缺失）";
+  }
+  /* 示例：应用自己也能直接调用（不进 footer 的界面）——
+       AppHost.pickAudio() → AppHost.transcribe({ path }) → { ok, text }
+       AppHost.transcribeWav(base64_16k_mono_pcm16_wav)（应用自己录的音频）
+       AppHost.speechStatus() / AppHost.speechPrepare()（现况与首次下载） */
+
   $("btnAdd").addEventListener("click", addNote);
   $("btnClear").addEventListener("click", clearNotes);
   $("btnClose").addEventListener("click", function () {

@@ -17,6 +17,10 @@
    排在 review.css 之前：审阅侧若有更具体的覆盖，由其后的 review.css 决定。 */
 @import url("./css/inline-img.css");
 @import url("./css/review.css");
+/* 文本节点的 Markdown 编辑器（renderer/app-textedit.js · 节点头部 ✎ 入口）：
+   与「✎ AI 审阅」共用 review.css 的 .rv-* 组件，这里只给近全屏容器与入口按钮。
+   排在 review.css 之后：同优先级时以本文件为准（盒子尺寸要覆盖审阅窗的 92vw/1200px）。 */
+@import url("./css/textedit.css");
 /* 图像生成 · 蒙版局部重绘编辑器（renderer/app-mask.js） */
 @import url("./css/mask.css");
 /* 文件查看面板（会话工具条上的文件名 → 右侧只读预览）；
@@ -29,7 +33,7 @@
 /* 画布左侧边栏「文件」页：Tabs / 目录选择器 / VSCode 式文件树 / 右键菜单
    （renderer/app-sidebar-files.js）；亮色覆盖在文件末尾的 body.theme-light 段。 */
 @import url("./css/sidebar-files.css");
-/* 本地语音转写（Qwen3-ASR）：节点内转写区块 + 安装/状态弹窗（renderer/app-asr.js） */
+/* 本地语音转写（官方本地 SenseVoice）：节点内转写区块 +「语音模型」窗（renderer/app-asr.js） */
 @import url("./css/asr.css");
 /* 全局搜索浮层（Ctrl+F · renderer/app-search.js + css/search.css） */
 @import url("./css/search.css");
@@ -51,3 +55,6 @@
 /* 会话自己的浏览器：侧栏「浏览器活动」页 + 活动流 + 浏览器求助/接管卡
    （renderer/app-browser.js）；亮色覆盖在文件末尾。 */
 @import url("./css/browser.css");
+/* 全局语音输入：状态栏最左那枚话筒（三态循环）+ 跟随光标的转写浮窗 + 右键快捷菜单
+   （renderer/app-voice.js 自包含模块）；只放 .sb-voice / .gv-* 这一块自己的皮。 */
+@import url("./css/voice.css");

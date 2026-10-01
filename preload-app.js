@@ -15,7 +15,7 @@
  *     只能给 prompt / messages / 温度等白名单字段，不能指定服务商、模型或密钥；
  *   · 应用本体**不依赖这座桥也能跑**：桥缺席时 window.appHost 是 undefined，应用照常启动。
  *
- * 能力（八项）：
+ * 能力（九项）：
  *   textGenStream(opts, cb)       → { ok, text, reasoningChars, finishReason, truncated }
  *                                  文本生成（流式；cb 收 delta/reasoning/done/error）
  *     · opts.messages[].content 支持**多模态**：字符串，或 [{type:'text'},{type:'image_url',image_url:{url}}]
@@ -39,6 +39,10 @@
  *                                                           数据文件夹与整份数据落盘（原子写）
  *   account()                     → { ok, loggedIn, user }  当前账号摘要（**无 token**）
  *   close() / quit() / onWillClose(cb)                      关自己窗口 / 退出 MTNode / 关窗前的收尾钩子
+ *
+ *   语音转写那一组（官方本地 SenseVoice，识别跑在 dsh 运行时里）算一项能力「语音转写」：
+ *   pickAudio / transcribe（本机音频或应用自录的 base64 WAV）/ asrStatus / asrPrepare /
+ *   asrMic / onSpeechState。它只回**文本与状态**：读盘、解码、模型下载都在主进程 / 运行时。
  * ↑ 本机存储那一组算一项（「本机存储读写」），数据文件夹那一组算一项（「数据落盘」）；
  *   关自己窗口的 close() 与退出 MTNode 的 quit() 属于窗口自身，不是宿主能力。
  * ─────────────────────────────────────────────────────────────────────── */
@@ -108,6 +112,42 @@ const appHost = {
      用户取消 → { ok:false, code:"cancelled" }，调用方不要当报错弹提示。 */
   pickImage: () => ipcRenderer.invoke("apps:hostPickImage"),
 
+  /* ── 语音转写（官方本地 SenseVoice，识别跑在 dsh 运行时里；需求：该能力要能被应用直接调用）──
+     pickAudio()                  弹系统选音频框 → { ok, path, name }；取消回 { ok:false, code:"cancelled" }
+     transcribe({ path|url, language? }) → { ok, text, audioSeconds, inferenceSeconds }
+                                  只允许转写「应用在本窗口里亲选过的音频」或「本应用数据文件夹里的音频」；
+                                  任意路径一律回 path_denied（不给应用页开文件系统）
+     status()                     → { ok, available, phase, ready, downloading, completedBytes, totalBytes, … }
+     prepare({ providerId?, downloadSource? }) → 同一份状态（首次使用下载权重约 239MB，进度经 onSpeechState/onSpeechProgress 推）
+     mic()                        → { ok, mic:true }：麦克风由**宿主放行**（应用窗口会话的 media 权限），
+                                  采集在应用页里用 getUserMedia + AudioContext 做，再用下面的
+                                  16 kHz 单声道 PCM16 WAV 口径发 transcribeWav()
+     transcribeWav(base64Wav, { language? }) → { ok, text }：应用自己录好的 16k 单声道 PCM16 WAV
+                                  （base64，别带 data: 前缀；传输上限 64MB）
+     onSpeechState(cb)            准备 / 下载状态变化的订阅，返回退订函数 */
+  pickAudio: () => ipcRenderer.invoke("apps:hostPickAudio"),
+  transcribe: (opts) => ipcRenderer.invoke("apps:hostAsrTranscribe", opts || {}),
+  transcribeWav: (base64Wav, opts) =>
+    ipcRenderer.invoke(
+      "apps:hostAsrTranscribe",
+      Object.assign({}, opts || {}, { base64: String(base64Wav || "") }),
+    ),
+  asrStatus: () => ipcRenderer.invoke("apps:hostAsrStatus"),
+  asrPrepare: (opts) => ipcRenderer.invoke("apps:hostAsrPrepare", opts || {}),
+  asrMic: () => ipcRenderer.invoke("apps:hostAsrMic"),
+  onSpeechState: (cb) => {
+    const onEv = (ev, msg) => {
+      if (!msg || msg.type !== "speech-state") return;
+      try {
+        cb(msg.data || {});
+      } catch (err) {
+        console.error("appHost.onSpeechState cb error:", err);
+      }
+    };
+    ipcRenderer.on("dsh:event", onEv);
+    return () => ipcRenderer.removeListener("dsh:event", onEv);
+  },
+
   /* 本机存储：每应用一份（只在该应用自己的数据文件夹里读写），键为字符串、
      值任意可结构化克隆的 JSON 值（整份上限 2MB） */
   storageGet: (key) => ipcRenderer.invoke("apps:hostStorageGet", { key: key }),
@@ -151,3 +191,48 @@ const appHost = {
 };
 
 contextBridge.exposeInMainWorld("appHost", appHost);
+
+/* ── 宿主注入的 footer 语音听写条（需求：应用界面的 footer 也要能用内置 ASR）────────
+ * 为什么由宿主注入、而不是等应用自己写：应用是**用户自己的页面**（下载来的只有一份
+ * index.html，没人会回去改它），所以这条能力必须对任何应用都自动出现。
+ *
+ * 注入方式：往页面主世界插一张 <script src="…/app-speech-ui.js">（渲染层模块，与本仓
+ * 主窗口共用同一份构建产物）。**不能**直接把 appHost 递给它：preload 与页面是两个 JS 世界，
+ * contextBridge 暴露的对象过不了 world 边界。所以那条脚本自己去读 window.appHost（页面
+ * 世界里本来就有），并在挂载失败时等宿主派发的 "mtnode-apphost" 事件兜底。
+ *
+ * 纪律：只在「DOM 就绪且页面世界真的拿到了 appHost」之后才注入；拿不到就什么也不做
+ * （老版宿主 / 非应用窗口下应用照常跑，前端不该因为这条能力起不来）。 */
+function injectDictateBar() {
+  try {
+    const path = require("path");
+    const url = require("url");
+    const file = path.join(__dirname, "renderer", "app-speech-ui.js");
+    const lang = (() => {
+      try {
+        const m = /--mtnode-lang=([A-Za-z-]+)/.exec((process.argv || []).join(" "));
+        return m ? m[1] : "";
+      } catch {
+        return "";
+      }
+    })();
+    if (lang) {
+      try {
+        document.documentElement.setAttribute("lang", lang);
+      } catch {}
+    }
+    const tag = document.createElement("script");
+    tag.src = url.pathToFileURL(file).href;
+    tag.async = false;
+    tag.dataset.mtnode = "dictate";
+    (document.head || document.documentElement).appendChild(tag);
+  } catch (err) {
+    try {
+      console.error("dictate bar inject failed:", err);
+    } catch {}
+  }
+}
+if (typeof document !== "undefined") {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectDictateBar, { once: true });
+  else injectDictateBar();
+}

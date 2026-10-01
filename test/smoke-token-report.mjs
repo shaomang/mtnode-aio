@@ -37,7 +37,17 @@ function fakeEl(tag) {
     get className() { return cls },
     setAttribute(k, v) { this.attrs[k] = String(v) },
     getAttribute(k) { return this.attrs[k] },
-    textContent: "",
+    /* textContent 要**像真 DOM 一样**把子孙的文本拼起来（本次需求）：
+       Token 报告摘要行现在由 createTextNode + span 拼成（那两段 token 要带色），
+       如果这里还只是一个普通字符串属性，appendChild 之后 textContent 恒为空 ——
+       「摘要含总量」这类断言会因**桩不像 DOM** 而假红（真浏览器里一直是好的）。 */
+    get textContent() {
+      if (this._text != null) return this._text;
+      let s = "";
+      for (const c of this.children || []) s += c && c.textContent != null ? String(c.textContent) : "";
+      return s;
+    },
+    set textContent(v) { this._text = String(v == null ? "" : v) },
     title: "",
     tabIndex: -1,
     open: false,
@@ -246,10 +256,83 @@ const rows = table ? table.children.length : 0;
 ok(rows === 1 + 3 + 1, "明细表 = 表头 + 3 个模型 + 合计（实得 " + rows + " 行）");
 const metaRow = findEl(body, (c) => /tok-badge-meta/.test(c.className || ""));
 ok(!!(metaRow && /墙钟/.test(metaRow.textContent || "")), "展开区含时间统计");
+/* 本次需求（token 输入蓝 / 输出绿）：摘要行里的「入 … · 出 …」不再是纯文本，
+   而是两段带色 span（.dsh-tok-in / .dsh-tok-out）—— 所以「Σ 总量」那一项要**递归**找
+   （它仍是 summary 下 .tok-badge-sum 的文本，只是不再是 summary 的直接子节点文本）。
+   同时钉住分色这一条：摘要行里必须真的有两段带色节点。 */
+const summaryEl = badge && badge.children[0];
+/* 色类**精确匹配**：容器挂的是 .dsh-tok-io，只有两段才是 .dsh-tok-in / .dsh-tok-out
+   （容器若也挂色类，这里的 findEl 会先命中容器 —— 真浏览器里取色拿错节点就是这种写法）。 */
+const sumIn = summaryEl && findEl(summaryEl, (c) => String(c.className || "") === "dsh-tok-in");
+const sumOut = summaryEl && findEl(summaryEl, (c) => String(c.className || "") === "dsh-tok-out");
 ok(
-  badge && badge.children[0].children.some((c) => /Σ/.test(c.textContent || "")),
+  !!summaryEl && !!findEl(summaryEl, (c) => /Σ/.test(c.textContent || "")),
   "折叠态一行摘要含总量",
 );
+ok(
+  !!sumIn && !!sumOut && /入/.test(summaryEl.textContent || "") && /出/.test(summaryEl.textContent || ""),
+  "摘要行的「入 / 出」是两段带色节点（.dsh-tok-in / .dsh-tok-out）",
+);
+/* 本轮修复（用户报「token 入和出中的『出』字被错误上色」）：色只在**数码**上，
+   标签「入」与「 · 出」走中性的 .dsh-tok-label，不再跟着绿色走。
+   桩环境的 I18n.t 原样回显（不像真界面那样给出「 · 出」词条），所以这里分两条钉：
+   ① 拿真实的片段文本（" · 出925"）验 tokIoParts 的切法 —— 标签与数码分得开；
+   ② 摘要行里挂色类的节点只含数码，一个「入 / 出」都没有。 */
+{
+  const parts = ctx.tokIoParts(" · 出925");
+  ok(
+    parts.label === " · 出" && parts.value === "925",
+    "片段按数码切成「标签 + 值」：标签「 · 出」不跟数码混在一起（本轮修复）",
+  );
+  ok(
+    ctx.tokIoParts("182K").label === "" && ctx.tokIoParts("182K").value === "182K",
+    "无标签的片段一字不丢（整段当值）",
+  );
+  const colored = summaryEl
+    ? findAll(summaryEl, (c) => /^dsh-tok-(in|out)$/.test(String(c.className || "")))
+    : [];
+  const coloredTxt = colored.map((c) => String(c.textContent || "")).join("|");
+  ok(
+    colored.length === 2 && !/[入出]/.test(coloredTxt),
+    "带色节点只有两段数码、标签「入 / 出」不在色类里（本轮修复）：" + coloredTxt,
+  );
+  const labels = summaryEl
+    ? findAll(summaryEl, (c) => String(c.className || "") === "dsh-tok-label")
+    : [];
+  ok(
+    labels.length === 2 && labels[0].textContent === "入" && labels[1].textContent === " · 出",
+    "「入」与「 · 出」都由中性 .dsh-tok-label 承载（不染色、不落进色类）：" +
+      labels.map((c) => String(c.textContent || "")).join("|"),
+  );
+}
+
+/* 5c. 本轮修复的主战场：真界面的 ioMid 是「 · 出」（桩的 I18n.t 原样回显，给不出这条词条）。
+   这里临时换一个会翻出真词条的 I18n，把**生产形态**的摘要行搭出来，
+   钉住「 · 出」这个标签落进中性的 .dsh-tok-label、绝不在 .dsh-tok-out 里。 */
+{
+  const realT = ctx.I18n.t;
+  ctx.I18n.t = (k) => (k === " · 出" ? " · 出" : realT(k));
+  const stIO = { id: "asIO", tokenReport: { byModel: {} } };
+  const elIO = ctx.tokBadgeSummaryEl(stIO.tokenReport, t, false, stIO);
+  ctx.I18n.t = realT;
+  const ioIn = elIO && findEl(elIO, (c) => String(c.className || "") === "dsh-tok-in");
+  const ioOut = elIO && findEl(elIO, (c) => String(c.className || "") === "dsh-tok-out");
+  const ioLab = elIO ? findAll(elIO, (c) => String(c.className || "") === "dsh-tok-label") : [];
+  ok(
+    !!ioIn && /^[\d.]/.test(String(ioIn.textContent || "")) && /入/.test(elIO.textContent || ""),
+    "生产形态：第一段数码在 .dsh-tok-in（「入」仍是中性文本）：" +
+      (ioIn && ioIn.textContent) + " / " + elIO.textContent,
+  );
+  ok(
+    !!ioOut && /^\d/.test(String(ioOut.textContent || "")) && !/[入出]/.test(String(ioOut.textContent || "")),
+    "生产形态：绿色 .dsh-tok-out 里只有数码、没有「出」字（本轮修复）：" + (ioOut && ioOut.textContent),
+  );
+  ok(
+    ioLab.length === 2 && ioLab[0].textContent === "入" && /出/.test(String(ioLab[1].textContent || "")),
+    "生产形态：标签「入」与「 · 出」都落进中性 .dsh-tok-label（不跟着绿色走）：" +
+      ioLab.map((c) => String(c.textContent || "")).join("|"),
+  );
+}
 ok(badge && badge.dataset.tokOwner === "as1", "Badge 带宿主会话 id（局部刷新用）");
 /* 5b. 展开区底部不再重复余额：余额只在折叠行右端 chip 显示一次 */
 ok(

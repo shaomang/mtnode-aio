@@ -4801,6 +4801,26 @@ function nodeElement(node) {
       importFileToText(node);
     };
     head.appendChild(fr);
+    /* Markdown 编辑器：像 WPS 一样写正文（所见即所得 + 全套 Markdown 工具栏 + 批注 /
+       AI 逐轮修订）。实现自包含在 renderer/app-textedit.js（openTextNodeEditor），
+       本处只给入口按钮；节点板身那个 textarea 原样保留，小改小修不必开大窗。 */
+    const me = document.createElement("button");
+    me.className = "n-play n-md-edit";
+    me.textContent = "✎";
+    me.title = I18n.t(
+      "用 Markdown 编辑器打开本节点正文：所见即所得、可切源码、全套 Markdown 工具栏，支持批注与让 AI 依据批注逐轮修订（保存写回节点正文）",
+    );
+    me.setAttribute("aria-label", I18n.t("编辑正文（Markdown 编辑器）"));
+    me.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof openTextNodeEditor !== "function") {
+        toast(I18n.t("Markdown 编辑器未就绪（app-textedit.js）"), "warn");
+        return;
+      }
+      openTextNodeEditor(node);
+    };
+    head.appendChild(me);
   }
   if (
     (node.kind === "proc_text" ||
@@ -4886,7 +4906,15 @@ function nodeElement(node) {
       };
       head.appendChild(ag);
     }
-    if (node.kind === "proc_text" || node.kind === "agent_task") {
+    /* 思考按钮：文本节点 / 智能任务 / 本地图像节点（sensenova_gen 的 think 模式
+       先出规划文本再出图，思考文本由生成回执接进同一份思考缓冲，见 app-nodes.js 的
+       sensenovaApplyThinkText）。按钮本身只在有思考内容时才显形（CSS .n-think 默认
+       display:none，有内容才加 .show），所以没开 think 的图像节点不会多一颗空按钮。 */
+    if (
+      node.kind === "proc_text" ||
+      node.kind === "agent_task" ||
+      node.kind === "sensenova_gen"
+    ) {
       const hasThink = !!(
         S.thinking &&
         S.thinking[node.id] &&
@@ -9548,6 +9576,9 @@ function toolBuildRecordOf(node) {
     plan: st ? st.plan : "",
     toolName: String((st && st.toolName) || ""),
     builtAt: String((st && st.builtAt) || ""),
+    /* 本次需求（工具构建窗里用户写的那段，app-toolbuild.js 的 toolBuildSetReq 写它）：
+       窗重开时要回填输入框，所以这里同源给一份。 */
+    req: String((st && st.req) || ""),
     log: (st && Array.isArray(st.log) && st.log) || [],
   };
 }
@@ -9764,8 +9795,11 @@ function toolBuildLogLine(e) {
   return (hms ? hms + " " : "") + mark + String((e && e.text) || "");
 }
 
-/* 工具构建对话框：方案展示（文件类型 / 缺口 / 要点 / 参数表 / 实测用例 / 失败风险）
-   +「确认开发」/「取消」+ 实时进度（构建日志增量 · 开发会话片段 · 实测结果）。
+/* 工具构建对话框：本次需求（必填）→ 方案展示（文件类型 / 缺口 / 要点 / 参数表 / 实测用例 /
+   失败风险 / 待用户确认）+「生成方案」/「确认开发」/「取消」+ 实时进度（构建日志增量 ·
+   开发会话片段 · 实测结果）。
+   本次需求是这块地方新增的**必填**输入：用户写下「要这个工具做什么」之后才让 AI 出方案，
+   AI 不再自行读文件内容分析（提示词侧见 app-toolbuild.js 的 toolBuildPlanPrompt）。
    persistent（点外部不关）、可最小化；关闭只走窗内按钮 / ✕ / Esc。 */
 function openToolBuildDialog(node, opts) {
   if (!node) return;
@@ -9819,7 +9853,7 @@ function openToolBuildDialog(node, opts) {
 
   hint(
     I18n.t(
-      "AI 先读一遍这个文件，给出能力缺口与转换方案；确认后才在画布上搭建工具节点并实测。",
+      "先写下你希望这个工具做什么（必填）—— AI 按你的需求出方案，不会去读文件内容自己分析；确认后才在画布上搭建工具节点并用这个文件实测。",
     ),
   );
   metaRow(I18n.t("处理节点："), (node.title || "") + (node.kind ? "（" + node.kind + "）" : ""));
@@ -9830,6 +9864,24 @@ function openToolBuildDialog(node, opts) {
       I18n.t("未知类型"),
   );
   metaRow(I18n.t("文件："), filePath || I18n.t("（无）"));
+
+  /* ── 本次需求（必填 · 用户写的话是方案与开发的第一依据）── */
+  section(I18n.t("本次需求"));
+  const reqArea = document.createElement("textarea");
+  reqArea.className = "tb-req";
+  reqArea.rows = 5;
+  reqArea.spellcheck = false;
+  reqArea.placeholder = I18n.t(
+    "例如：把这个 .xlsx 的每个 sheet 转成一段带表头的 Markdown 文本，数字不要改格式，空单元格留空…",
+  );
+  reqArea.value = String((toolBuildRecordOf(node) || {}).req || "");
+  wrap.appendChild(reqArea);
+  const reqNote = document.createElement("div");
+  reqNote.className = "tb-hint";
+  reqNote.textContent = I18n.t(
+    "这段需求会写进方案提示词与开发任务书（随节点保存）；留空时「生成方案 / 确认开发」按钮不可用。",
+  );
+  wrap.appendChild(reqNote);
 
   /* ── 方案 ── */
   section(I18n.t("方案"));
@@ -9913,11 +9965,33 @@ function openToolBuildDialog(node, opts) {
     }
   }
 
+  /* 本次需求（必填）：取输入框现值并同步到 node.toolBuild.req。 */
+  function reqTextNow() {
+    const t = String((reqArea && reqArea.value) || "").trim();
+    if (typeof toolBuildSetReq === "function") toolBuildSetReq(node, t);
+    return t;
+  }
+  function wantReq() {
+    if (reqTextNow()) return true;
+    toast(I18n.t("请先填写「本次需求」：说清这个工具要做什么"), "warn");
+    if (reqArea && typeof reqArea.focus === "function") {
+      try {
+        reqArea.focus();
+      } catch (_) {}
+    }
+    return false;
+  }
+
   /* 方案生成：一次 noCanvas 纯文本运行（app-toolbuild.js 中段），结果写回 node.toolBuild */
   async function generatePlan() {
     if (ui.busy) return;
     if (!filePath) {
       toast(I18n.t("缺少文件路径"), "err");
+      return;
+    }
+    const reqNow = reqTextNow();
+    if (!reqNow) {
+      wantReq();
       return;
     }
     if (typeof planToolBuildForFile !== "function") {
@@ -9930,7 +10004,7 @@ function openToolBuildDialog(node, opts) {
     planBox.classList.add("tb-plan-loading");
     planBox.textContent = I18n.t("正在生成方案…");
     try {
-      const res = await planToolBuildForFile(filePath, node);
+      const res = await planToolBuildForFile(filePath, node, reqNow);
       const text = String((res && (res.summary || res.text)) || "");
       const plan = res && res.plan ? res.plan : null;
       if (typeof ensureToolBuildState === "function") {
@@ -9977,6 +10051,11 @@ function openToolBuildDialog(node, opts) {
       toast(I18n.t("缺少文件路径"), "err");
       return;
     }
+    const reqNow = reqTextNow();
+    if (!reqNow) {
+      wantReq();
+      return;
+    }
     ui.busy = true;
     setFoot();
     ui.seen = toolBuildRecordOf(node).log.length;
@@ -9986,7 +10065,12 @@ function openToolBuildDialog(node, opts) {
     let res = null;
     try {
       const plan = toolBuildRecordOf(node).plan;
-      res = await T.buildToolForFile(node, filePath, plan && typeof plan === "object" ? plan : {});
+      res = await T.buildToolForFile(
+        node,
+        filePath,
+        plan && typeof plan === "object" ? plan : {},
+        reqNow,
+      );
     } catch (err) {
       res = { ok: false, error: (err && err.message) || String(err || "") };
     }
@@ -10043,10 +10127,14 @@ function openToolBuildDialog(node, opts) {
     setFoot();
   }
 
+  /* 底部按钮的唯一绘制口。留一个引用给需求框的 oninput 用：需求从空变有（或反之）
+     要重画按钮 —— 没需求时「生成方案 / 确认开发」是禁用的。 */
+  let setFootRef = null;
   function setFoot() {
     foot.innerHTML = "";
     const rr = toolBuildRecordOf(node);
     const hasPlan = !toolBuildPlanEmpty(node);
+    const reqFilled = !!String((reqArea && reqArea.value) || "").trim();
     const add = (label, cls, fn, title, enabled) => {
       const b = document.createElement("button");
       b.type = "button";
@@ -10066,7 +10154,7 @@ function openToolBuildDialog(node, opts) {
       I18n.t("重新生成方案"),
       "",
       generatePlan,
-      I18n.t("让 AI 重新读这个文件并给出方案"),
+      I18n.t("按当前「本次需求」重新设计转换方案（需先填好需求）"),
       !ui.busy,
     );
     if (rr.status === "ready" || rr.status === "failed")
@@ -10086,12 +10174,45 @@ function openToolBuildDialog(node, opts) {
     add(I18n.t("取消"), "", () => closeOverlay(), "", !ui.busy);
     if (ui.busy) add(I18n.t("构建中…"), "primary", () => {}, "", false);
     else if (hasPlan)
-      add(I18n.t("确认开发"), "primary", runBuild, I18n.t("按此方案搭建工具节点并实测"), true);
-    else add(I18n.t("生成方案"), "primary", generatePlan, I18n.t("让 AI 读这个文件并给出转换方案"), true);
+      add(
+        I18n.t("确认开发"),
+        "primary",
+        runBuild,
+        I18n.t("按此方案搭建工具节点并实测"),
+        reqFilled,
+      );
+    else
+      add(
+        I18n.t("生成方案"),
+        "primary",
+        generatePlan,
+        I18n.t("按「本次需求」设计转换方案（不读文件内容）"),
+        reqFilled,
+      );
   }
+  setFootRef = setFoot;
+  /* 需求框：改动即时落进 node.toolBuild.req（随节点保存），并重画底部按钮的可用态 */
+  reqArea.oninput = () => {
+    if (typeof toolBuildSetReq === "function") toolBuildSetReq(node, reqArea.value);
+    if (typeof scheduleSave === "function") {
+      try {
+        scheduleSave();
+      } catch (_) {}
+    }
+    if (setFootRef) setFootRef();
+  };
   setFoot();
 
-  if (o.autoPlan && toolBuildPlanEmpty(node)) generatePlan();
+  /* 自动出方案的老入口（o.autoPlan）同样先要需求：没需求就不自动跑，改为把光标放进需求框
+     —— 静默发一次「没需求」的模型调用比不跑更糟。 */
+  if (o.autoPlan && toolBuildPlanEmpty(node)) {
+    if (reqTextNow()) generatePlan();
+    else if (typeof reqArea.focus === "function") {
+      try {
+        reqArea.focus();
+      } catch (_) {}
+    }
+  }
 }
 
 /* 泛用文件节点的 body：一颗「上传文件」按钮 + 一行说明；文件解析不出来时（node.anyFile
@@ -10861,6 +10982,13 @@ function buildBody(node, body) {
     };
     ops.appendChild(b1);
     ops.appendChild(b2);
+    /* 「转录」按钮（renderer/app-asr.js）：点一下展开 / 收起源文件的转写文本区，
+       还没有转写时就地转一次（本机 SenseVoice 模型，与话筒听写同一份）。 */
+    if (typeof asrOpsButton === "function") {
+      try {
+        ops.appendChild(asrOpsButton(node));
+      } catch (e) {}
+    }
     body.appendChild(ops);
 
     const note = document.createElement("div");
@@ -10869,6 +10997,13 @@ function buildBody(node, body) {
       ? I18n.t("视频输入 · 输出该文件的 URL")
       : I18n.t("音频输入 · 输出该文件的 URL");
     body.appendChild(note);
+    /* 转写块（renderer/app-asr.js）：音频 / 视频节点自己的转写文本（可编辑、可重转）。
+       接进文字节点时，文字节点运行前就取这里备好的文字（见 app-nodes.js 的运行前闸门）。 */
+    if (typeof asrAppendNodeBody === "function") {
+      try {
+        asrAppendNodeBody(node, body);
+      } catch (e) {}
+    }
   } else if (node.kind === "input_file") {
     const list = document.createElement("div");
     list.className = "n-bentries db-file-list";
@@ -11308,13 +11443,8 @@ function buildBody(node, body) {
       node.w = Math.max(node.w, procMinNodeW(node.outW));
     }
     body.appendChild(row);
-    /* 本地语音转写（Qwen3-ASR）：节点接了音频就补一块「转写文本（可编辑）+ 热词 +
-       重新转写」（renderer/app-asr.js · asrAppendNodeBody）；没接音频不占版面。 */
-    if (typeof asrAppendNodeBody === "function") {
-      try {
-        asrAppendNodeBody(node, body);
-      } catch (e) {}
-    }
+    /* 本轮起转写归音频 / 视频节点所有（见下面 input_audio / input_video 分支）：
+       文字处理节点不再有转写区块，也不再自己转写，只在运行时取音频节点备好的文字。 */
   } else if (node.kind === "split") {
     const items = splitItems(node);
     const selIdx =

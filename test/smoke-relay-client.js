@@ -6,7 +6,7 @@
  *   [1] 凭据不落盘：provider 只落占位串，真 token 由主进程现取（config.json 里没有凭据）
  *   [2] 只读边界：卡上没有一处可改接入信息的输入框；能改的只有启用开关与本机优先级
  *   [3] 可见性：everRecharged=false ⇒ 连卡都不建；余额耗尽 ⇒ 卡在但置灰且不可被引用
- *   [4] 刷新时机：登录成功 / 充值成功 / 打开卡（>24h）/ 手动「刷新」
+ *   [4] 刷新时机：本地无快照才拉 / 登录后立即拉 / 启动 config 就绪后补拉 / 充值成功 / 手动「刷新」
  *   [5] 位置规则：名下还有别的可用服务商就追加到末尾，一个都没有才置顶
  *   [6] 服务端同步字段：models[].kind = text/image、everRecharged 只认本人流水（含人工调账）
  *   [7] 各处接线：index.html 顺序 / preload 桥 / IPC / DSH 会话参数 / 插件宿主解析器
@@ -79,6 +79,9 @@ function fnBody(rel, name) {
 }
 
 function main() {
+  /* 需要等异步回执的断言登记在这里，收尾（main 末尾 await）统一跑；同步断言照旧原地跑 */
+  const laterChecks = [];
+
   /* ── [1] 凭据不落盘 ───────────────────────────────────────────── */
   console.log("[1] 凭据不落盘（config.json 里只有占位串）");
   ok(
@@ -119,6 +122,129 @@ function main() {
     "拉取只走主进程桥（渲染层拿不到 token，也拼不出任意 URL）",
   );
 
+  /* ── [1b] 打码凭据：设置卡上看得见「用的是哪张 Key」，明文仍不出主进程 ── */
+  console.log("[1b] 打码凭据：前 4 + **** + 后 4，明文不出主进程");
+  const maskBody = fnBody("main.js", "maskSecret");
+  ok(
+    maskBody.includes("slice(0, 4)") &&
+      maskBody.includes('"****"') &&
+      maskBody.includes("slice(-4)") &&
+      maskBody.includes("length <= 7"),
+    "main.js 的 maskSecret：前 4 + **** + 后 4（长度 ≤ 7 整串打码，短凭据不会被拼回原文）",
+  );
+  /* 就地跑一遍这条口径：断言的是行为，不是注释 */
+  const maskSecret = new Function("return function maskSecret(secret) " + maskBody + ";")();
+  ok(
+    maskSecret("0123456789abcdef") === "0123****cdef" &&
+      maskSecret("123") === "***" &&
+      maskSecret("") === "",
+    "maskSecret 实测：16 位 → 0123****cdef；3 位 → ***；空 → 空串",
+  );
+  ok(
+    has("main.js", 'ipcMain.handle("relay:keyInfo"') &&
+      has("preload.js", "relayKeyInfo: () => ipcRenderer.invoke('relay:keyInfo')"),
+    "relay:keyInfo 只走主进程桥（渲染层拿到的永远只有打码串）",
+  );
+  /* 带冒号的 IPC 名 `function x(` 取不到（fnBody 按 `function <name>(` 找，注释里也出现过
+     这串）：这里直接钉源码里那几行，断言的是「回给渲染层的字段里没有明文 token」 */
+  const mainSrc = read("main.js");
+  const keyInfoAt = mainSrc.indexOf('ipcMain.handle("relay:keyInfo"');
+  const keyInfoReturn = keyInfoAt < 0 ? "" : mainSrc.slice(keyInfoAt, keyInfoAt + 1000);
+  ok(
+    keyInfoReturn.includes("maskedKey: maskSecret(token)") &&
+      !/\btoken:\s*token\b/.test(keyInfoReturn) &&
+      keyInfoReturn.includes("keyLength: token.length"),
+    "relay:keyInfo 只回 maskedKey / keyLength / signedIn，绝不回明文 token",
+  );
+  const relayMod = read("renderer/app-relay.js");
+  ok(
+    relayMod.includes("syncKeyInfo") &&
+      relayMod.includes("relayKeyInfo()") &&
+      relayMod.includes("keyMasked: keyView.maskedKey") &&
+      /if \(p\) \{\s*\n\s*p\.relay = Object\.assign\(\{\}, meta\(p\), \{[\s\S]{0,180}keyMasked: key\.maskedKey/.test(relayMod),
+    "app-relay.js：打码串落进 relay 快照（离线也照旧显示），并随快照重建保留",
+  );
+  ok(
+    relayMod.includes("resetKeyView()"),
+    "换账号 / 退出登录把上一份打码凭据抹掉（不把别人的 Key 尾巴留在新账号脸上）",
+  );
+  ok(
+    !/keyMasked[\s\S]{0,80}apiKey\s*=/.test(relayMod),
+    "打码串只进 relay 元数据用于显示，**不回填 provider.apiKey**（配置里永远是占位串）",
+  );
+  /* 「没登录」与「凭据在手却解不开」在界面上必须分开说（readIssue 链路口径） */
+  ok(
+    has("auth-store.js", 'lastReadIssue = "decrypt_failed"') &&
+      has("auth-store.js", 'lastReadIssue = "encryption_unavailable"') &&
+      has("auth-store.js", "readIssue: () => lastReadIssue"),
+    "auth-store 记录最近一次凭据读取失败的原因（decrypt_failed / encryption_unavailable）",
+  );
+  ok(
+    keyInfoReturn.includes('readIssue: String(readIssue || "")') &&
+      has("main.js", "authStore.readIssue()"),
+    "relay:keyInfo 把 readIssue 转给渲染层（只一张原因标签，不含凭据内容）",
+  );
+  ok(
+    has("renderer/app-settings.js", 'meta.keyIssue === "decrypt_failed"') &&
+      has("renderer/app-settings.js", 'meta.keyIssue === "encryption_unavailable"'),
+    "只读卡据此给出「重新登录一次」的动作提示（不是笼统的「未取到凭据」）",
+  );
+
+  /* 行为回归（跑真的 renderer/app-relay.js，window.api 用桩）：
+     字段名在「主进程回包（maskedKey）」与「卡上快照（keyMasked）」之间映射过一次，
+     抄错就会得到空打码串 —— 这条钉住「同步之后卡上真的有打码串」。 */
+  const vm = require("vm");
+  let relayRun = null;
+  const relaySync = (() => {
+    const S = { config: { providers: [], modelKinds: {} } };
+    const win = {};
+    const sandbox = {
+      window: win,
+      S: S,
+      console: { log() {}, warn() {} },
+      I18n: { t: (s) => s },
+      repaintSettingsProvTiles: () => {},
+      renderCanvas: () => {},
+      setTimeout,
+      clearTimeout,
+    };
+    sandbox.window.api = {
+      relayKeyInfo: () =>
+        Promise.resolve({ ok: true, signedIn: true, maskedKey: "5500****4162", keyLength: 48, readIssue: "" }),
+      relayMe: () =>
+        Promise.resolve({
+          ok: true,
+          at: Date.now(),
+          doc: {
+            baseUrl: "https://relay.invalid/v1",
+            providerName: "MTNode 中转服务",
+            enabled: true,
+            everRecharged: true,
+            balanceYuan: 99.5,
+            totalYuan: 99.5,
+            models: [{ id: "deepseek-v4-flash", kind: "text" }],
+          },
+        }),
+    };
+    sandbox.window.window = sandbox.window;
+    vm.createContext(sandbox);
+    vm.runInContext(relayMod, sandbox, { filename: "app-relay.js" });
+    relayRun = sandbox;
+    return sandbox.window.MtRelay.sync({ force: true });
+  })();
+  /* 先记下「还没等到同步回执」时的快照：同步是异步的，断言要等它落地（见 main 收尾） */
+  laterChecks.push(() => {
+    const card0 = relayRun && relayRun.S.config.providers[0];
+    ok(
+      !!card0 &&
+        card0.relay.keyMasked === "5500****4162" &&
+        card0.relay.authKey === true &&
+        card0.apiKey === "mtnode-account-token",
+      "同步一次后：卡上 relay.keyMasked 就是主进程给的那串（apiKey 仍是占位串）",
+    );
+  });
+  void relaySync;
+
   /* ── [2] 只读边界 ───────────────────────────────────────────── */
   console.log("[2] 只读边界：接入信息一处都不许手改");
   const card = fnBody("renderer/app-settings.js", "relayProvCard");
@@ -126,6 +252,11 @@ function main() {
   ok(
     card.includes("由账号登录态托管（只读）") && card.includes("relay-ro"),
     "API Key / Base URL / 名称 / 类型 / 形态 / 清单都以 <code> 只读展示",
+  );
+  ok(
+    card.includes("meta.keyMasked") && card.includes("meta.authKey") &&
+      card.includes("MtRelay.maskKey"),
+    "只读卡「API Key」一行显示打码串（前 4 + **** + 后 4；并标明凭据到没到）",
   );
   ok(
     !card.includes('createElement("input")') ||
@@ -211,15 +342,21 @@ function main() {
   );
 
   /* ── [4] 刷新时机 ───────────────────────────────────────────── */
-  console.log("[4] 刷新时机：登录 / 充值 / 打开卡 / 手动");
+  console.log("[4] 刷新时机：本地无快照才拉 / 登录后立即拉 / config 就绪补拉 / 手动");
   ok(
     has("renderer/app-auth.js", "MtRelay.onAuthState"),
-    "登录态每次刷新都通知中转模块（换账号必重拉、同账号走 24h 新鲜度）",
+    "登录态每次刷新都通知中转模块（换账号必重拉、同账号看本地有没有快照）",
   );
   const onAuth = fnBody("renderer/app-relay.js", "onAuthState");
   ok(
     onAuth.includes("uid === lastUserId") && onAuth.includes("sync({ force: true })"),
-    "换账号强制重拉；同一账号只按 24h 新鲜度决定要不要拉",
+    "换账号强制重拉",
+  );
+  ok(
+    onAuth.includes("dropProvider();\n    return sync({ force: true });") ||
+      onAuth.includes("dropProvider()") &&
+        onAuth.indexOf("dropProvider()") < onAuth.indexOf("sync({ force: true })"),
+    "换账号先把上一个账号的卡作废再重拉（不把别人的模型留在新账号脸上）",
   );
   ok(
     has("renderer/app-wallet.js", "MtRelay.sync({ force: true })"),
@@ -228,16 +365,51 @@ function main() {
   ok(
     has("renderer/app-settings.js", "MtRelay.syncIfStale()") &&
       fnBody("renderer/app-settings.js", "openProviderConfigDialog").includes("syncIfStale"),
-    "打开设置与打开该卡都按快照新旧决定是否自动刷（>24h 才刷）",
+    "打开设置与打开该卡都按「本地有没有快照」决定是否自动拉",
+  );
+  /* 需求口径（本 bug 的根因）：中转 Key = 账号登录 token，长期不变 ⇒ 不做时间新鲜度重拉；
+     新装应用登录后拉不到，是因为登录态比 S.config 先到、那一次同步静默失败且再无重试。 */
+  const syncFn = fnBody("renderer/app-relay.js", "sync");
+  ok(
+    syncFn.includes("if (!cfg())") && syncFn.includes("pendingFlush = true") &&
+      syncFn.includes("config-not-ready"),
+    "config 还没载入（启动竞态）时记一笔待补，不静默丢弃（曾经就是卡建不出来的原因）",
+  );
+  ok(
+    syncFn.includes("hasLocalSnapshot() && !o.force"),
+    "本地已有快照就不拉（快照不设新鲜期：Key 长期不变）",
+  );
+  ok(
+    has("renderer/app-relay.js", "function hasLocalSnapshot()") &&
+      has("renderer/app-relay.js", "function flush()") &&
+      has("renderer/app-boot.js", "MtRelay.flush()"),
+    "config 载入后由 app-boot 补拉一次（flush）",
+  );
+  ok(
+    fnBody("renderer/app-relay.js", "flush").includes("uid !== lastUserId"),
+    "补拉时按「本地快照是否属于本账号」决定强制重拉还是走「有快照就不拉」",
   );
   ok(
     has("renderer/app-relay.js", "var FRESH_MS = 24 * 3600 * 1000"),
-    "快照新鲜期 = 24 小时",
+    "快照新鲜期常量仍保留（只作卡上状态口径，不再决定要不要拉）",
   );
   const syncIfStale = fnBody("renderer/app-relay.js", "syncIfStale");
   ok(
-    syncIfStale.includes("Date.now() - at < FRESH_MS") && syncIfStale.includes("skipped"),
-    "syncIfStale：新鲜就直接跳过，不打扰服务端",
+    syncIfStale.includes("hasLocalSnapshot()") && syncIfStale.includes("skipped"),
+    "syncIfStale：本地有快照直接跳过，不打扰服务端（失败也不做节流，下次还有机会）",
+  );
+  ok(
+    syncIfStale.indexOf("Date.now() - at") < 0 && syncIfStale.indexOf("RETRY_GAP") < 0,
+    "syncIfStale 里不再有「24h 新鲜度」与「失败节流」两个旧判据",
+  );
+  /* 失败可见：本地没卡时「刷新中转清单」必须始终可点（唯一的自救入口） */
+  ok(
+    !read("renderer/app-settings.js").includes('relayRefresh.style.display = prov ? "" : "none"'),
+    "「刷新中转清单」按钮不再因「本地没有中转卡」而隐藏（失败时用户能自己重试）",
+  );
+  ok(
+    has("renderer/app-relay.js", '"未同步（点「刷新中转清单」重试）"'),
+    "卡上没有快照时状态行给出可执行的下一步（而不是空着）",
   );
 
   /* ── [5] 位置规则与本地顺序 ─────────────────────────────────── */
@@ -324,7 +496,14 @@ function main() {
     "余额不足",
     "可用余额 ",
     "上次同步 ",
+    "未同步（点「刷新中转清单」重试）",
+    "该账号还没有充值记录，充值成功后中转清单会自动出现",
     "模型清单（云端下发，从上到下为使用优先级）",
+    "由账号登录态托管（只读）：打码显示，真凭据不下发到界面",
+    "由账号登录态托管（只读）：暂未取到账号凭据，登录后自动带上",
+    "凭据 = 本机登录账号的 token（打码显示，前 4 + **** + 后 4；真凭据只留在主进程）",
+    "还没有取到账号凭据：登录 MTNode 账号后自动带上（打码显示）",
+    "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上",
   ];
   const missing = keys.filter((k) => !i18n.includes('"' + k + '":'));
   ok(missing.length === 0, "中转服务文案全部有英文键" + (missing.length ? "（缺：" + missing.join(" / ") + "）" : ""));
@@ -370,6 +549,17 @@ function main() {
     "渲染层不再读任何 Cents 字段（余额与订单/流水一律元）",
   );
 
+  if (relaySync && typeof relaySync.then === "function") {
+    return relaySync.then(() => {
+      for (const fn of laterChecks) fn();
+      report();
+    });
+  }
+  for (const fn of laterChecks) fn();
+  report();
+}
+
+function report() {
   console.log("");
   if (fails) {
     console.log("✗ " + fails + " / " + checks + " 项失败");

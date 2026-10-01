@@ -204,6 +204,7 @@ function appsDevSidebarHost() {
 /* ── 会话正文 / 输入框：搬运（不复制） ── */
 
 const DEVD_MOVE_IDS = [
+  "agentRound",
   "agentList",
   "agentPaused",
   "agentQueue",
@@ -1143,10 +1144,18 @@ function appsDevRenderConv() {
     appsDevFlushStyleAsk();
   } catch (_) {}
 }
-/* 清掉会话视图搬进右栏的四块面板（首轮态 / 换应用 / 还没有本应用会话时调）：
-   只隐藏并清空显示，不落盘、不动会话数据 —— 回看别的会话时它们照常按自己的数据重绘。 */
+/* 清掉会话视图搬进右栏的底栏件（首轮态 / 换应用 / 还没有本应用会话时调）：
+   只隐藏并清空显示，不落盘、不动会话数据 —— 回看别的会话时它们照常按自己的数据重绘。
+   #agentRound（轮次标签）同样按「只显示右栏这条会话的」处理：首轮态还没有本应用的会话，
+   露一行「第 N 轮」就与「只留一句引导」相冲。 */
 function appsDevClearConvPanels() {
-  for (const id of ["agentPlan", "agentTodo", "agentQueue", "agentPaused"]) {
+  for (const id of [
+    "agentRound",
+    "agentPlan",
+    "agentTodo",
+    "agentQueue",
+    "agentPaused",
+  ]) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.hidden = true;

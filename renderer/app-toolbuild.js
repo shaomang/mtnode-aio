@@ -326,6 +326,8 @@ function ensureToolBuildState(node) {
     st.inputParam = String(legacy.toolBuildInputParam || "");
   if (st.plan === undefined && legacy.toolBuildPlan !== undefined)
     st.plan = legacy.toolBuildPlan;
+  /* 「本次需求」= 用户在工具构建窗里写的「要这个工具做什么」（用户口径：需求为主、
+     AI 不再自行分析文件内容）。老档没有这一个键 → 归一成空串，读写都走 ensureToolBuildState。 */
   if (st.builtAt === undefined && legacy.toolBuiltAt !== undefined)
     st.builtAt = String(legacy.toolBuiltAt || "");
   if (st.log === undefined && Array.isArray(legacy.toolBuildLog))
@@ -340,6 +342,7 @@ function ensureToolBuildState(node) {
   st.filePath = String(st.filePath == null ? "" : st.filePath);
   st.fileType = String(st.fileType == null ? "" : st.fileType);
   if (st.plan === undefined || st.plan === null) st.plan = "";
+  st.req = String(st.req == null ? "" : st.req).trim();
   st.toolLibId = String(st.toolLibId == null ? "" : st.toolLibId);
   st.toolName = String(st.toolName == null ? "" : st.toolName);
   st.inputParam = String(st.inputParam == null ? "" : st.inputParam);
@@ -489,6 +492,123 @@ function toolBuildFileGreen(node, filePath) {
 /* 构建结果 → 工具节点入参类型（text / image）：下半建工具时给 inputParam 选 kind 用。 */
 function toolBuildInputKind(fileType) {
   return String(fileType || "") === "image" ? "image" : "text";
+}
+
+/* ═══════════ 工具构建 · 「本次需求」 + 默认模型路由（本次需求） ═══════════
+ * 一、本次需求（node.toolBuild.req）：用户在工具构建窗里写「要这个工具做什么」，
+ *   是方案设计与开发实现的**第一依据**；工具名 / 参数表仍由 AI 提案（本轮口径）。
+ *   toolBuildReqOf 取它（没写过 → ""，老画布零影响）；toolBuildReqBlockText 与
+ *   toolBuildMetaText 是提示词里那两段（需求块 + 元数据块）的唯一出处，
+ *   prompt 与[fileType] 行都由它们拼，改口径只改这里。
+ *
+ * 二、默认模型路由 toolBuildDefaultRoute：设置 · 智能能力里的「默认模型」
+ *   （S.config.dsh.model）是全应用唯一口径，解析真源在 app.js / app-agent.js 的
+ *   dshDefaultModelRoute（不可用时抛错，消息里带「去 设置 · 智能能力 · 默认模型 重选」）。
+ *   本文件所有「要跑一次模型」的地方（方案生成 / 工具开发会话 / 函数节点 ai spec）
+ *   都走它 —— 此前方案生成读 preferredAgentModelForRoute（那条链读 S.assistModel），
+ *   开发会话继承「当前活动会话」，两处都能与设置里的默认模型不一致。
+ */
+
+/* 「本次需求」原文（没写过 / 空 → ""） */
+function toolBuildReqOf(node) {
+  const st = node && node.toolBuild && typeof node.toolBuild === "object" ? node.toolBuild : null;
+  return st ? String(st.req == null ? "" : st.req).trim() : "";
+}
+
+/* 本次需求 → 写进 node.toolBuild.req（先 ensure，返回该节点） */
+function toolBuildSetReq(node, req) {
+  const st = typeof ensureToolBuildState === "function" ? ensureToolBuildState(node) : null;
+  if (!st) return node || null;
+  st.req = String(req == null ? "" : req).trim();
+  return node;
+}
+
+/* 提示词里的【本次需求】块（为空 → ""，调用方据此判断「还没填」） */
+function toolBuildReqBlockText(req) {
+  const r = String(req == null ? "" : req).trim();
+  if (!r) return "";
+  return [
+    "【本次需求（用户写的 · 第一依据）】",
+    r,
+    "",
+    "以上是用户对这个工具的要求，是本次方案的第一依据：先满足它，再谈转换实现；" +
+      "与文件格式的常见做法冲突时以用户需求为准。",
+    "",
+  ].join("\n");
+}
+
+/* 提示词里的【文件 / 处理节点】背景块（元数据 + 一句「不得从类型推用途」） */
+function toolBuildMetaText(info, consumerNode, stat) {
+  const d = info && typeof info === "object" ? info : {};
+  const consumerKind = consumerNode ? String(consumerNode.kind || "") : "";
+  const consumerTitle = consumerNode ? String(consumerNode.title || "") : "";
+  let accept = null;
+  try {
+    accept =
+      typeof fileConsumerAccept === "function" ? fileConsumerAccept(consumerNode) : null;
+  } catch (_) {
+    accept = null;
+  }
+  const typeLabel =
+    String(d.type || "other") +
+    (d.magicType && d.magicType !== d.type ? "（魔数判为 " + d.magicType + "）" : "") +
+    "（判定来源：" +
+    (d.source === "ext"
+      ? "扩展名"
+      : d.source === "magic"
+        ? "魔数"
+        : d.source === "sniff"
+          ? "文本嗅探"
+          : "未知") +
+    "）";
+  return [
+    "【文件（只有本机判定出来的元数据，不含文件内容）】",
+    "路径：" + String(d.path || ""),
+    "扩展名：" + (d.ext ? "." + d.ext : "（无）"),
+    "判型：" + typeLabel,
+    stat && stat.size ? "体积：" + stat.size + " 字节" : "",
+    "",
+    "【处理节点】",
+    "类型 kind：" + (consumerKind || "（未知）"),
+    "标题：" + (consumerTitle || "（未命名）"),
+    "可接受的文件大类：" + (accept ? accept.join(" / ") : "不设限（未登记）"),
+    "",
+    "约束：这些元数据只是背景。**不得从文件类型 / 扩展名推断用途**，也不得假设你读过文件内容；" +
+      "方案必须落在上面【本次需求】上。需求里没说清的关键点，写进「失败风险」并列入【待用户确认】。",
+    "",
+  ]
+    .filter((x) => x !== "")
+    .join("\n");
+}
+
+/* 方案生成用的默认模型路由：拿到 { provider, model }；不可用 → null（并记一行日志）。
+   dshDefaultModelRoute 抛出的消息里已带指路，原样进日志与界面提示。 */
+function toolBuildDefaultRoute(node) {
+  try {
+    if (typeof dshDefaultModelRoute === "function") {
+      const r = dshDefaultModelRoute();
+      if (r && r.provider && r.model) return { provider: r.provider, model: r.model };
+    }
+    return null;
+  } catch (err) {
+    const msg = (err && err.message) || String(err || "");
+    if (node && typeof toolBuildRunLog === "function")
+      toolBuildRunLog(node, msg, "error");
+    return null;
+  }
+}
+
+/* 默认模型不可用时统一的一句话（构建链与方案窗共用；dshDefaultModelPick 的 reason 优先） */
+function toolBuildModelProblemText() {
+  try {
+    if (typeof dshDefaultModelPick === "function") {
+      const p = dshDefaultModelPick();
+      if (p && p.ok === false && p.reason) return String(p.reason);
+    }
+  } catch (_) {}
+  return I18n.t(
+    "默认模型不可用：请到 设置 · 智能能力 · 默认模型 里重选一只模型。",
+  );
 }
 
 /* 命名空间出口（可选便捷入口；全局函数同时可直接调用） */
@@ -742,33 +862,23 @@ async function toolBuildDetectFileType(filePath) {
 
 /* ---------- 方案 JSON：prompt / 解析 / 归一 / 摘要 ---------- */
 
-function toolBuildPlanPrompt(info, consumerNode, sample, stat) {
-  const consumerKind = consumerNode ? String(consumerNode.kind || "") : "";
-  const consumerTitle = consumerNode ? String(consumerNode.title || "") : "";
-  const accept =
-    typeof fileConsumerAccept === "function" ? fileConsumerAccept(consumerNode) : null;
-  const typeLabel =
-    info.type +
-    (info.magicType && info.magicType !== info.type ? "（魔数判为 " + info.magicType + "）" : "") +
-    "（判定来源：" +
-    (info.source === "ext" ? "扩展名" : info.source === "magic" ? "魔数" : info.source === "sniff" ? "文本嗅探" : "未知") +
-    "）";
+function toolBuildPlanPrompt(info, consumerNode, req, stat) {
+  const reqText = String(req == null ? "" : req).trim();
+  const reqBlock =
+    typeof toolBuildReqBlockText === "function"
+      ? toolBuildReqBlockText(reqText)
+      : reqText
+        ? "【本次需求（用户写的 · 第一依据）】\n" + reqText + "\n"
+        : "";
+  const metaBlock =
+    typeof toolBuildMetaText === "function"
+      ? toolBuildMetaText(info, consumerNode, stat)
+      : "";
   return [
-    "你是 MTNode 画布的工具构建方案设计器。用户把某个文件连到一个处理节点，但该节点不支持这种文件；请判断能力缺口，并设计一个「工具节点」把这种文件转换成该节点能消费的内容。",
+    "你是 MTNode 画布的工具构建方案设计器。用户把某个文件连到一个处理节点，但该节点不支持这种文件；请按**用户写下的本次需求**设计一个「工具节点」，把这种文件转换成该节点能消费的内容。",
     "",
-    "【文件】",
-    "路径：" + info.path,
-    "扩展名：" + (info.ext ? "." + info.ext : "（无）"),
-    "判型：" + typeLabel,
-    stat && stat.size ? "体积：" + stat.size + " 字节" : "",
-    "",
-    "【处理节点】",
-    "类型 kind：" + (consumerKind || "（未知）"),
-    "标题：" + (consumerTitle || "（未命名）"),
-    "可接受的文件大类：" + (accept ? accept.join(" / ") : "不设限（未登记）"),
-    "",
-    sample ? "【文件内容样本（前 " + sample.length + " 字）】\n" + sample : "",
-    "",
+    reqBlock,
+    metaBlock,
     "【输出要求】只输出一个 JSON 对象，不要 markdown 围栏、不要任何解释，字段：",
     "{",
     '  "fileType": "文件类型（如 pdf / image / video / audio / 文本 / 二进制）",',
@@ -778,9 +888,10 @@ function toolBuildPlanPrompt(info, consumerNode, sample, stat) {
     '  "输入参数表": [{"name":"file","kind":"text","desc":"输入文件路径"}],',
     '  "输出参数表": [{"name":"text","kind":"text","desc":"喂给处理节点的内容"}],',
     '  "实测用例": "用上面这个真实文件的路径试跑：输入什么、预期输出什么",',
-    '  "失败风险": "可能失败的环节与规避办法（≤120 字）"',
+    '  "失败风险": "可能失败的环节与规避办法（≤120 字）",',
+    '  "待用户确认": ["需求里没定、需要用户拍板的问题（没有就空数组）"]',
     "}",
-    "约束：输入参数表必须含一个名为 file 的 text 参数（值为文件绝对路径）；输出参数表的 kind 只能是 text 或 image，且要与处理节点能消费的内容一致。",
+    "约束：① 方案的用途 / 行为一律以【本次需求】为准，不得从文件类型推断用途；② 输入参数表必须含一个名为 file 的 text 参数（值为文件绝对路径）；③ 输出参数表的 kind 只能是 text 或 image，且要与处理节点能消费的内容一致。",
   ]
     .filter((x) => x !== "")
     .join("\n");
@@ -1031,16 +1142,16 @@ async function toolBuildAskConfirm(plan, rawText) {
 
 /* ---------- 主入口：AI 检索出方案 ---------- */
 
-/* 跟随用户当前默认的智能路由 / 模型 / 思考强度（取不到就回落官方路由与默认档） */
+/* 方案生成这一次运行的路由 / 模型 / 思考强度：
+     模型 = 设置 · 智能能力里的「默认模型」（S.config.dsh.model，唯一口径，不可用就抛错）；
+     思考强度 / 预设沿用用户当前那两档（取不到回落 high / 默认预设）。 */
 function toolBuildRunRoute() {
-  const route =
-    typeof preferredAgentProviderRoute === "function"
-      ? preferredAgentProviderRoute() || "deepseek-official"
-      : "deepseek-official";
-  const model =
-    typeof preferredAgentModelForRoute === "function"
-      ? preferredAgentModelForRoute(route) || ""
-      : "";
+  const pick =
+    typeof dshDefaultModelRoute === "function" ? dshDefaultModelRoute() : null;
+  if (!pick || !pick.model)
+    throw new Error(toolBuildModelProblemText());
+  const route = String(pick.provider || "deepseek-official");
+  const model = String(pick.model || "");
   const st = typeof S === "object" && S ? S : null;
   let effort = (st && (st.assistEffort || (st.config && st.config.assistEffort))) || "high";
   if (typeof normalizeAgentEffort === "function") {
@@ -1057,8 +1168,11 @@ function toolBuildRunRoute() {
 
 /* 一次 noCanvas 纯文本运行，生成方案；返回 { ok, filePath, fileType, fileInfo,
    plan, summary, raw, text, error }。失败不抛（error 里带原因），供上层提示与重试。 */
-async function planToolBuildForFile(filePath, consumerNode) {
+async function planToolBuildForFile(filePath, consumerNode, req) {
   const path = String(filePath == null ? "" : filePath).trim();
+  const reqText = String(
+    req === undefined || req === null ? toolBuildReqOf(consumerNode) : req,
+  ).trim();
   if (!path) {
     return {
       ok: false,
@@ -1096,9 +1210,25 @@ async function planToolBuildForFile(filePath, consumerNode) {
       stat = null;
     }
   }
-  const sample = await toolBuildTextSample(path, info.type);
-  const prompt = toolBuildPlanPrompt(info, consumerNode, sample, stat);
-  const route = toolBuildRunRoute();
+  /* 不再读文件内容样本（用户口径：不要自行分析）：提示词只给本机判定的元数据 + 用户需求。 */
+  const prompt = toolBuildPlanPrompt(info, consumerNode, reqText, stat);
+  let route = null;
+  try {
+    route = toolBuildRunRoute();
+  } catch (err) {
+    const msg = (err && err.message) || String(err || "");
+    return {
+      ok: false,
+      filePath: path,
+      fileType: info.type,
+      fileInfo: info,
+      plan: null,
+      summary: msg,
+      raw: null,
+      text: "",
+      error: msg,
+    };
+  }
   const baseName = path.split(/[\\/]/).pop() || path;
   let text = "";
   let error = "";
@@ -1284,7 +1414,7 @@ function findToolSpot(w, h) {
 
 /* ② 建「绑定该工具的开发会话」：完全同源 createToolDevSessionForNode 的姿势，
    但把契约换成工具构建任务书，并记住本次文件与实测要求。返回会话对象。 */
-function createToolBuildSessionForNode(node, req, filePath) {
+function createToolBuildSessionForNode(node, req, filePath, route) {
   if (!node || typeof isToolNode !== "function" || !isToolNode(node)) return null;
   if (typeof agentSessions !== "function") return null;
   const cur =
@@ -1296,8 +1426,11 @@ function createToolBuildSessionForNode(node, req, filePath) {
     workspace: typeof dshWorkspaceOf === "function" ? dshWorkspaceOf(node) || "" : "",
     canvasWfId: typeof canvasWfIdForNode === "function" ? canvasWfIdForNode(node) : "",
     preset: (cur && cur.preset) || AGENT_PRESET_DEFAULT || "minimal",
-    provider: (cur && cur.provider) || "deepseek-official",
-    model: (cur && cur.model) || "",
+    /* provider / model 一律用「设置 · 智能能力 · 默认模型」解析出来的那一对
+       （toolBuildDefaultRoute：不可用时构建链已拦下）—— 不再继承「当前活动会话」，
+       否则工具开发用哪只模型取决于用户此刻点着哪个会话。 */
+    provider: String((route && route.provider) || "deepseek-official"),
+    model: String((route && route.model) || ""),
     effort: (cur && cur.effort) || "high",
     messages: [],
     archived: false,
@@ -1318,7 +1451,7 @@ function createToolBuildSessionForNode(node, req, filePath) {
       reqText ||
       I18n.t("按工具构建任务书：用 ") +
         (String(filePath || "").trim() || I18n.t("给定文件")) +
-        I18n.t(" 实测通过这个工具"),
+        I18n.t(" 实测通过这个工具（先按任务书里的问询要求把实现取舍问清）"),
     _src: "dev-node",
     _nid: node.id,
   });
@@ -1332,6 +1465,14 @@ function createToolBuildSessionForNode(node, req, filePath) {
 
 /* 工具构建任务书（写进 session._devContract，每轮随系统提示注入）：
    在 toolDevContractText 之上追加「本文件实测」这一段的硬要求。 */
+/* 工具构建的开发会话开场指令：先完成**一轮**问询（用 ask_user_question 一次问满
+   「怎么实现」的全部取舍），用户答完再搭工具节点与内部子图。
+   与渲染层 / 本模块的其余提示词同一姿势：题面进 question、候选进 options、
+   推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description；
+   环境事实自己用只读工具查，不拿环境问题问用户。 */
+const TOOLBUILD_GRILL_DIRECTIVE =
+  "【工具构建 · 实现问询（第一件事）】你这一轮的任务不是先写代码：请先用 skill 工具加载内置技能 mtnode-grill-me 并遵守它的提问纪律，然后**只就「怎么实现这个转换工具」问满一轮**：把实现上的取舍映射成决策树（例如解析方式 / 是否调用本机外部程序或库 / 输出文本还是图像 / 中间结果放哪 / 失败时返回错误文本还是抛异常 / 参数与端子的命名），用 ask_user_question 把这一轮的全部问题**一次问完**（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；需求本身已由用户在工具构建窗里写定，不要重问需求是什么；环境事实（本机有没有某程序 / 某个库、文件长什么样）自己用只读工具查，不要拿环境问题问用户。\n用户答完、且你用最后一次询问窗得到「确认无歧义」之后，才能开始搭建这个工具节点的内部子图与参数。"
+
 function toolBuildContractText(node, req, filePath, plan) {
   const base =
     typeof toolDevContractText === "function"
@@ -1341,6 +1482,8 @@ function toolBuildContractText(node, req, filePath, plan) {
   const file = String(filePath == null ? "" : filePath).trim();
   const reqText = String(req == null ? "" : req).trim();
   const lines = [base, ""];
+  lines.push(TOOLBUILD_GRILL_DIRECTIVE);
+  lines.push("");
   if (reqText && lines.indexOf(I18n.t("本次开发需求：") + reqText) < 0)
     lines.push(I18n.t("本次开发需求：") + reqText);
   lines.push(I18n.t("【本次工具构建：本文件实测要求】"));
@@ -1366,15 +1509,46 @@ function toolBuildContractText(node, req, filePath, plan) {
   return lines.join("\n");
 }
 
-/* 等一轮会话结束（agentSessionSend 正常本轮结束才返回；忙时入队 → 这里补一轮轮询兜底） */
-async function toolBuildWaitTurnEnd(st) {
+/* 该会话是否还挂着一张没答的询问卡（ask_user_question → 询问窗 / 交互面板）。
+   模型刚问完、卡还在等用户作答时**会话的运行态可能已经收掉**（这一轮就是「问完等你」），
+   只看 sessionIsRunning 会让构建链以为「开发做完了」而拿一个还没搭好的工具去实测 ——
+   所以开发会话的问询轮也算「没结束」。判据走宿主自己的交互列表（S.activeIx.items，
+   runKey = "agent:<会话id>"，与 app-db.js 的 ixPush 同源）。 */
+function toolBuildPendingQuestion(st) {
+  try {
+    const sid = String((st && st.id) || "");
+    if (!sid) return false;
+    const items = (typeof S === "object" && S && S.activeIx && S.activeIx.items) || [];
+    const want = "agent:" + sid;
+    return items.some((x) => x && x.kind === "question" && String(x.runKey || "") === want);
+  } catch (_) {
+    return false;
+  }
+}
+
+/* 等一轮会话结束（agentSessionSend 正常本轮结束才返回；忙时入队 → 这里补一轮轮询兜底）。
+   工具构建版的加严口径：还挂着没答的询问卡就接着等（问询轮 = 这一轮其实还没干完），
+   每 30 秒往节点日志写一行，让工具构建窗里的用户知道「正在等你在询问窗里作答」。 */
+async function toolBuildWaitTurnEnd(st, node) {
   try {
     if (!st || typeof sessionIsRunning !== "function") return;
     const step = 1200;
     let waited = 0;
-    while (sessionIsRunning(st) && waited < TOOLBUILD_DEV_WAIT_MS) {
+    let lastNote = 0;
+    const pending = () =>
+      typeof toolBuildPendingQuestion === "function" && toolBuildPendingQuestion(st);
+    while ((sessionIsRunning(st) || pending()) && waited < TOOLBUILD_DEV_WAIT_MS) {
       await new Promise((r) => setTimeout(r, step));
       waited += step;
+      if (pending() && waited - lastNote >= 30000) {
+        lastNote = waited;
+        if (node && typeof toolBuildRunLog === "function")
+          toolBuildRunLog(
+            node,
+            I18n.t("等待你在询问窗里回答开发会话的实现问题…"),
+            "info",
+          );
+      }
     }
   } catch (_) {}
 }
@@ -1667,7 +1841,7 @@ function toolBuildFindToolNode(st) {
 
 /* ── 主入口：开发工具 → 本文件实测 → 绿灯入工具库 ── */
 
-async function buildToolForFile(consumerNode, filePath, plan) {
+async function buildToolForFile(consumerNode, filePath, plan, req) {
   const file = String(filePath == null ? "" : filePath).trim();
   if (!consumerNode) {
     toast(I18n.t("工具构建缺少处理节点"), "err");
@@ -1684,6 +1858,16 @@ async function buildToolForFile(consumerNode, filePath, plan) {
   const p = plan && typeof plan === "object" ? plan : {};
   const fileType = (typeof fileTypeOf === "function" && fileTypeOf(file)) || p.fileType || "other";
   const baseName = file.split(/[\\/]/).pop() || file;
+
+  /* 默认模型（设置 · 智能能力）：方案生成、开发会话、工具运行三处唯一口径；
+     不可用就当场拦下并指路，绝不偷偷换一只模型（用户口径：不静默回落）。 */
+  const devRoute = toolBuildDefaultRoute(consumerNode);
+  if (!devRoute) return { ok: false, error: toolBuildModelProblemText() };
+  /* 本次需求：窗里带进来的优先，否则读节点上登记过的那一份（重跑构建 / 头部 🔧 重开都不丢） */
+  const reqText = String(
+    req === undefined || req === null ? toolBuildReqOf(consumerNode) : req,
+  ).trim();
+  if (typeof toolBuildSetReq === "function" && reqText) toolBuildSetReq(consumerNode, reqText);
 
   /* ── ① 建工具节点（泛用开发规则：工具节点 = super + tool:true，参数即端子） ── */
   const spot = findToolSpot(NODE_DEFAULTS.tool.w, NODE_DEFAULTS.tool.h);
@@ -1761,7 +1945,7 @@ async function buildToolForFile(consumerNode, filePath, plan) {
   /* ── ② 绑定该工具的开发会话：后台运行（契约注入系统提示，留在画布） ── */
   let sess = null;
   try {
-    sess = createToolBuildSessionForNode(node, "", file);
+    sess = createToolBuildSessionForNode(node, reqText, file, devRoute);
   } catch (err) {
     sess = null;
   }
@@ -1788,7 +1972,7 @@ async function buildToolForFile(consumerNode, filePath, plan) {
       devErr = (err && err.message) || String(err || "");
     }
   } else devErr = I18n.t("会话发送入口未就绪");
-  if (!devErr) await toolBuildWaitTurnEnd(sess);
+  if (!devErr) await toolBuildWaitTurnEnd(sess, node);
   const devText = toolBuildLastAssistantText(sess);
   toolBuildRunLog(
     node,
@@ -1802,7 +1986,7 @@ async function buildToolForFile(consumerNode, filePath, plan) {
   let res = null;
   let round = 0;
   for (round = 1; round <= TOOLBUILD_TEST_ROUNDS_MAX; round++) {
-    await toolBuildWaitTurnEnd(sess);
+    await toolBuildWaitTurnEnd(sess, node);
     res = await toolBuildTestWithFile(node, file);
     toolBuildRunLog(
       node,

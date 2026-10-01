@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 /* 隐藏进程宿主（主进程侧）—— MTNode 在运行期间拉起的外部命令行进程，统一在此启动、登记、回收。
 
    为什么需要它（修复的 Bug）：
@@ -13,7 +13,7 @@
    - 主窗销毁与应用退出两条兜底路径同样 killAll()，不允许有脱离运行的残留进程。
 
    纯 Node、无 Electron 依赖（照 main-exec-launch.js 的路子），spawn / execFile 可注入，
-   便于 test/smoke-fn-runtime.js 直接加载断言。 */
+   便于 test/smoke-fn-array-param.js 的「已并入：smoke-fn-runtime.js」段直接加载断言。 */
 
 const { spawn, execFile } = require("child_process");
 const path = require("path");

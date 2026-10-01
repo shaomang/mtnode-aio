@@ -64,6 +64,10 @@ const I18n = {
 
 /* 测试画布：n1 工具节点 / n2 其内部 proc_text / f1 函数节点 /
    d1 开发节点（父）/ d2 子开发节点（未选 → 继承 d1） */
+/* 默认模型值：用顶层 var（不放在 const state 里）—— vm 的 const 有 TDZ，
+   本桩若在声明前被调用会抛 ReferenceError，而调用点（aiResolvedModelEffective）
+   用 try/catch 兜住 → 现象是「默认模型解析静默失效」，很难查。 */
+var dshModelNow = "";
 const state = {
   nodes: [],
   providers: [
@@ -100,6 +104,27 @@ function preferredAgentProviderRoute() {
 }
 function preferredAgentModelForRoute(route) {
   return (agentModelsForRoute(route) || [])[0] || "";
+}
+/* 设置 · 智能能力里的「默认模型」解析真源（app.js / app-agent.js 的 dshDefaultModelPick /
+   dshDefaultModelRoute）：本测试给一份最小桩，值就取 state.dshModel。 */
+function dshDefaultModelPick() {
+  const m = String(dshModelNow || "").trim();
+  if (!m) return { ok: false, route: "", model: "", reason: "设置 · 智能能力 · 默认模型 还没设" };
+  const routes = [];
+  const push = (r) => {
+    const list = agentModelsForRoute(r) || [];
+    if (r && list.indexOf(m) >= 0 && routes.indexOf(r) < 0) routes.push(r);
+  };
+  push(preferredAgentProviderRoute());
+  push("deepseek-official");
+  if (!routes.length)
+    return { ok: false, route: "", model: m, reason: "默认模型「" + m + "」在本机不可用" };
+  return { ok: true, route: routes[0], model: m, reason: "" };
+}
+function dshDefaultModelRoute() {
+  const p = dshDefaultModelPick();
+  if (!p.ok) throw new Error(p.reason);
+  return { provider: p.route, model: p.model };
 }
 function providerForAgentRoute(route) {
   const r = String(route || "").trim();
@@ -187,6 +212,9 @@ const sandbox = {
   agentModelsForRoute,
   preferredAgentProviderRoute,
   preferredAgentModelForRoute,
+  /* 设置 · 智能能力里的默认模型解析（app.js / app-agent.js 的真源；这里是最小桩） */
+  dshDefaultModelPick,
+  dshDefaultModelRoute,
   providerForAgentRoute,
   agentPresetId,
   agentPresetById,
@@ -303,10 +331,10 @@ const newDev = { id: "d9", kind: "super", dev: true, title: "模块9" };
 Ai.seedDefaults(newTool);
 Ai.seedDefaults(newFn);
 Ai.seedDefaults(newDev);
-ok(newTool.aiProvider === "mtnode_opencode" && newTool.aiModel === "glm-4.6",
-  "新建工具节点补种 = 当前默认路由 / 默认模型（mtnode_opencode · glm-4.6）");
-ok(newFn.aiModel === "glm-4.6" && newFn.aiPreset === "minimal" && newFn.aiEffort === "high",
-  "新建函数节点补种 = 默认模型 + 默认预设(minimal) + 默认思考档(high)");
+ok(newTool.aiProvider === "" && newTool.aiModel === "",
+  "新建工具节点不再补种模型（空 = 跟随设置 · 智能能力里的默认模型，改设置立刻生效）");
+ok(newFn.aiModel === "" && newFn.aiPreset === "minimal" && newFn.aiEffort === "high",
+  "新建函数节点只补种默认预设(minimal) + 默认思考档(high)，模型留空跟随默认");
 ok(!newDev.aiModel && !newDev.aiPreset,
   "新建开发节点不补种（空 = 跟随默认，与既有 devModel 语义一致）");
 
@@ -426,7 +454,15 @@ fn.aiModel = "";
 fn.aiProvider = "";
 fn.aiPreset = "";
 fn.aiEffort = "";
-ok(Ai.runSpecFor(fn) === null, "函数节点未选模型 → runSpecFor 返回 null（mtnode.ai 会明确报错）");
+dshModelNow = "glm-4.6";
+const fnDefault = Ai.runSpecFor(fn);
+ok(
+  !!fnDefault && fnDefault.model === "glm-4.6" && fnDefault.fromDefault === true,
+  "函数节点未选模型 → runSpecFor 用设置里的默认模型（glm-4.6，取自设置 · 智能能力）",
+);
+dshModelNow = "not-exist-model";
+ok(Ai.runSpecFor(fn) === null, "默认模型不可用（清单里没有这只）→ runSpecFor 返回 null（调用点据此报错，不换别的模型）");
+dshModelNow = "glm-4.6";
 /* 挂在功能块里的函数节点：自己没选 → 按就近继承拿功能块的模型，运行即落定 */
 fn.parentSuperId = "d1";
 dev.aiModel = "deepseek-v4-flash";
@@ -435,8 +471,11 @@ const inheritedFn = Ai.runSpecFor(fn);
 ok(!!inheritedFn && inheritedFn.model === "deepseek-v4-flash",
   "函数节点自己没选 → 就近继承所属功能块的模型");
 const dirty = Ai.applyToSelf(fn);
-ok(dirty === true && fn.aiModel === "deepseek-v4-flash" && fn.aiProvider === "deepseek-official",
-  "运行落定：未选的函数节点按生效值补上自身选择（此后改选择即改调用模型）");
+ok(
+  fn.aiModel === "" && fn.aiProvider === "",
+  "运行落定：模型一律不写回节点（空 = 跟随设置里的默认模型，改设置后立刻跟着变）",
+);
+ok(Ai.runSpecFor(fn).model === "deepseek-v4-flash", "运行期的现值仍按就近继承取（功能块的模型）");
 fn.parentSuperId = "";
 fn.aiModel = "glm-4.6";
 fn.aiProvider = "mtnode_opencode";
@@ -464,8 +503,24 @@ ok(String(btn.title).indexOf("AI 调用") >= 0 && String(btn.title).indexOf("生
 const bodyBtn = Ai.bodyButtonEl(tool);
 ok(bodyBtn.className.indexOf("n-ai-call-open") >= 0 && bodyBtn.textContent === "AI 调用",
   "板身入口按钮（与「开发」同排）");
+/* 三格全未选：模型那一格现在回显「设置 · 智能能力里的默认模型」（不再是含糊的 auto 态）——
+   兜底的 auto 态只在默认模型也不可用时出现（下面单独钉一次）。 */
 const autoBtn = Ai.buttonEl(bareTool);
-ok(autoBtn.className.indexOf("auto") >= 0, "三格全未选 → 按钮 auto 态");
+ok(
+  autoBtn.className.indexOf("auto") < 0 &&
+    autoBtn.children.some((c) => c.className === "lbl" && c.textContent.indexOf("glm-4.6") >= 0),
+  "三格全未选 → 按钮回显设置里的默认模型（glm-4.6）",
+);
+{
+  const keep = dshModelNow;
+  dshModelNow = "";
+  const noModelBtn = Ai.buttonEl(bareTool);
+  ok(
+    noModelBtn.className.indexOf("auto") >= 0,
+    "默认模型也不可用 → 才回到 auto 态（不编一只假模型出来）",
+  );
+  dshModelNow = keep;
+}
 const inhBtn = Ai.buttonEl(inner);
 ok(inhBtn.className.indexOf("inherited") >= 0 && String(inhBtn.title).indexOf("继承自") >= 0,
   "继承来的生效值 → 按钮 inherited 态（虚线 + tooltip 点名来源）");

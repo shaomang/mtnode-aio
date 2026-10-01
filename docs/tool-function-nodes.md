@@ -1,4 +1,4 @@
-# 工具节点 / 函数节点 —— 统一数据模型契约（T1 渲染层定义 · 供 T2 引擎直接消费）
+﻿# 工具节点 / 函数节点 —— 统一数据模型契约（T1 渲染层定义 · 供 T2 引擎直接消费）
 
 > 并行任务口径：T1 = 节点类型与数据模型 + 渲染 UI；T2 = 引擎/运行时执行；
 > T5 = 双语文案统一。本文是两类节点的**唯一数据契约**，渲染层（app.js / app-canvas.js）
@@ -397,7 +397,7 @@ output / batchOutputs / error / ranAt / running
 - **未选模型的函数节点**：`mtnode.ai` 返回 `{ ok:false, error:"…还没选定「AI 调用」模型…" }`，
   不静默空跑。
 - **回归网**：`test/smoke-ai-call.js`（本设定的模型 / 继承 / 下发 / 按钮与弹层 / 各层接线）
-  与 `test/smoke-fn-runtime.js` [9]（`mtnode.ai` 真经桥调用）。
+  与 `test/smoke-fn-array-param.js` 的「已并入：smoke-fn-runtime.js」段 [9]（`mtnode.ai` 真经桥调用）。
 
 ## 9. JS 代码编辑器组件契约（`renderer/app-codeedit.js`）与函数「开发」会话字段
 

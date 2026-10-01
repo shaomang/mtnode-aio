@@ -689,6 +689,12 @@ body.theme-light .dsh-tool-chip:hover,
 body.theme-light .dsh-tool[open] .dsh-tool-chip {
   background: rgba(32, 104, 184, .12);
 }
+/* 非 dsh 工具那一档（工具库紫）的悬停底色：亮色下改用浅一档的紫底，
+   否则暗色那支 alpha .24 的紫在浅底上偏脏；文字仍用 dsh.css 提亮后的 #d0a6ff。 */
+body.theme-light .dsh-tool-chip.t-custom:hover,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.t-custom {
+  background: rgba(199, 146, 234, .18);
+}
 body.theme-light .dsh-tool-body pre {
   background: var(--bg2);
 }
@@ -1161,4 +1167,22 @@ body.theme-light .assist-resize:not(:hover):not(.dragging),
 body.theme-light .ba-resize:not(:hover):not(.dragging),
 body.theme-light .apps-dev-resize:not(:hover):not(.dragging) {
   background-image: linear-gradient(180deg, rgba(0, 0, 0, .2), rgba(0, 0, 0, .2));
+}
+
+/* ── base.css 的「原生下拉暗色基线」在亮色主题整段撤销 ──
+   base.css 给所有原生 select 上了不透明暗底 + !important（修暗色下弹出层白底白字），
+   那套在亮色主题下会把下拉拉成深色小方块。这里用亮色主题自己的变量对象撤销：
+   底色 / 字色仍取 --code / --ink（亮色主题下就是浅底深字），弹出的选项列表同理。
+   撤销对象写在 :root[data-theme="light"] 上（app 的 applyTheme 会给 html 打这个属性），
+   与 base.css 那条 :root:not([data-theme="light"]) 正好互补、互不越界。 */
+:root[data-theme="light"] select {
+  background: var(--code) !important;
+  color: var(--ink) !important;
+  color-scheme: light;
+}
+
+:root[data-theme="light"] select option,
+:root[data-theme="light"] select optgroup {
+  background: var(--code);
+  color: var(--ink);
 }

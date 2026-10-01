@@ -251,21 +251,32 @@ const CLAMP_FNS = [
   "agentPlanCurMaxH",
 ];
 
+/* 源码切片一律先归一成 LF：本仓工作区里 CRLF 与 LF 并存（git 的 core.autocrlf=true
+   会把检出 / stash 回来的文件写成 CRLF，而若干文件是 LF 手写进来的），
+   带 "^...$" 与「单独一行 }」这类锚点的切片在 CRLF 文件上永远命中不了 ——
+   那是换行符的差异，不是产品代码跑偏（同一个原因让本测量台在 CRLF 工作区里
+   报「planRectH 的收尾 } 没找到」）。归一之后断言只看内容。 */
+function lf(src) {
+  return String(src == null ? "" : src).replace(/\r\n/g, "\n");
+}
+
 function grabConst(src, name) {
+  const norm = lf(src);
   const re = new RegExp("^const\\s+" + name + "\\s*=[^\\n]*$", "m");
-  const m = re.exec(src);
+  const m = re.exec(norm);
   if (!m) throw new Error("renderer/app-plan.js 里找不到常量 " + name + "（改名了？断言要跟着改）");
   return m[0];
 }
 
 function grabFn(src, name) {
+  const norm = lf(src);
   const re = new RegExp("^function\\s+" + name + "\\s*\\(", "m");
-  const m = re.exec(src);
+  const m = re.exec(norm);
   if (!m) throw new Error("renderer/app-plan.js 里找不到函数 " + name + "（改名了？断言要跟着改）");
   /* 顶层函数一律列 0 书写、以单独一行 } 收尾（本仓渲染层的一致风格） */
-  const rest = src.slice(m.index + m[0].length).split("\n");
+  const rest = norm.slice(m.index + m[0].length).split("\n");
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === "}") return src.slice(m.index).slice(0, m[0].length + rest.slice(0, i + 1).join("\n").length + 1);
+    if (rest[i] === "}") return norm.slice(m.index).slice(0, m[0].length + rest.slice(0, i + 1).join("\n").length + 1);
   }
   throw new Error("函数 " + name + " 的收尾 } 没找到（缩进变了？）");
 }

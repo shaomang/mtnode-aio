@@ -1,12 +1,16 @@
 /* renderer/app-apps.js — 应用中心（顶栏「应用」）的整屏浮层页 + 本机应用库 + 开发者面板
    ─────────────────────────────────────────────────────────────────────────────
-   #appsHub 挂在 document.body 上 · position:fixed inset:0：**连顶栏（菜单栏）一起盖住**，
-   整屏交给应用开发（顶栏与应用开发无关）；出口是正文顶部第 1 行最右的「返回 MTNode」与 Esc
-   （Esc 由 app-apps.js 监听）。z-index 90 < #overlay 的 100，所以后打开的对话框（设置 /
+   #appsHub 挂在 document.body 上 · position:fixed inset:0，但**下沿抬到状态栏上沿**
+   （bottom: var(--apps-hub-foot, 0px)，app-apps.js 实测 footer.statusbar 高度写入）：顶栏（菜单栏）
+   仍被盖住（整屏交给应用开发，与应用无关），画布那条 footer 则留在下面可见可用 ——
+   需求「把画布的 footer 也放进应用界面」，状态栏最左的全局语音话筒 🎤 因此在应用中心也在。
+   出口是正文顶部第 1 行最右的「返回 MTNode」与 Esc（Esc 由 app-apps.js 监听）。z-index 90 < #overlay 的 100，所以后打开的对话框（设置 /
    插件 / 工坊 / 确认框）一定压在本页之上，本页永不顶掉别人。
    **没有标题栏**：页名在左侧导航里（选中态即页名），正文顶部只有两行：第 1 行 =「搜索框 +
    右上角返回 MTNode」（.apps-hub-toprow，nowrap —— 出口钉在第 1 行最右，不单占一行），
-   第 2 行 = 标签筛选 —— 那一块是壳的一部分（不随正文重绘重建，搜索框才不会失焦）。
+   第 2 行 = 标签筛选（圆角长方形标签，不是胶囊）—— 那一块是壳的一部分（不随正文重绘重建，
+   搜索框才不会失焦），且**只在「应用」/「库」两页出现：开发页不显示标签**
+   （见 app-apps.js 的 appsHubTagsHidden）。
    配色一律用 base.css 的主题变量（亮色主题靠变量自动跟随），只有按钮专属蓝写在 layout.css。 */
 
 /* display:flex 会盖掉浏览器默认的 [hidden]，必须自己压回去（同 .btn-account[hidden]） */
@@ -17,6 +21,12 @@
 .apps-hub {
   position: fixed;
   inset: 0;
+  /* 下沿抬到画布状态栏上沿（需求：「把画布的 footer 也放进应用界面」）——
+     整屏浮层不再盖住 footer.statusbar，那条里的全局语音话筒 🎤 在应用中心里照样看得见、
+     点得动（识别结果照旧写进当前 focus 的输入框，开发页的输入框也不例外）。
+     --apps-hub-foot 由 app-apps.js 的 appsHubFootGap() 按状态栏实测高度写进宿主；
+     量不到（没有状态栏 / 高度为 0）就退回 0 = 原样盖满，行为与改动前一致。 */
+  bottom: var(--apps-hub-foot, 0px);
   z-index: 90;
   display: flex;
   min-height: 0;
@@ -156,8 +166,10 @@
   min-width: 0;
 }
 
-/* ── 标签筛选条（一行胶囊；选中的标签一眼可辨，可多选 = OR） ──
-   flex:1 1 100% ⇒ 它自己折成整行，于是第 2 行只放标签、第 1 行只放搜索框与「返回 MTNode」 */
+/* ── 标签筛选条（一行标签；选中的标签一眼可辨，可多选 = OR） ──
+   flex:1 1 100% ⇒ 它自己折成整行，于是第 2 行只放标签、第 1 行只放搜索框与「返回 MTNode」。
+   开发页（APPS_ST.nav === "dev"）不显示这一条（见 app-apps.js 的 appsHubTopbar：
+   那一页整屏交给三栏开发视图，标签筛选只服务于「应用」/「库」两页的列表）。 */
 .apps-hub-tags {
   flex: 1 1 100%;
   display: flex;
@@ -183,12 +195,14 @@
   font-size: 10.5px;
 }
 
+/* 标签本体：**圆角长方形**（border-radius 6px，不是 999px 的胶囊 —— 需求「上方标签用
+   圆角长方形，不要胶囊」）。padding 与 line-height 不动，只把角收回来，尺寸与原来一致。 */
 .apps-tagchip {
   padding: 2px 9px;
   font-size: 10.5px;
   font-weight: 700;
   line-height: 1.7;
-  border-radius: 999px;
+  border-radius: 6px;
   border: 1px solid var(--bd);
   background: var(--panel2);
   color: var(--fg);
@@ -1392,9 +1406,12 @@ body.theme-light .apps-dev-more-pop {
 }
 
 /* 首轮态要藏的不只是四块面板：#agentList 常被包在 .hist-scroll-wrap 里（见上一条），
-   壳也得一起藏 —— 只写 > .agent-list 的话，正文会从壳里露出来（首轮态本该只剩引导）。 */
+   壳也得一起藏 —— 只写 > .agent-list 的话，正文会从壳里露出来（首轮态本该只剩引导）。
+   轮次标签 #agentRound 同理：首轮态还没有本应用的会话，露一行「第 N 轮」与
+   「只留一句引导」相冲（app-apps-dev.js 的 appsDevClearConvPanels 也会清它一次）。 */
 .apps-dev-conv.is-draft > .hist-scroll-wrap,
 .apps-dev-conv.is-draft > .agent-list,
+.apps-dev-conv.is-draft > .agent-round,
 .apps-dev-conv.is-draft > #agentPaused,
 .apps-dev-conv.is-draft > #agentQueue,
 .apps-dev-conv.is-draft > #agentPlan,

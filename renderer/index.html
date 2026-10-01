@@ -253,6 +253,11 @@
       <div class="agent-main">
         <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
         <div class="agent-body">
+          <!-- 轮次标签（本次需求）：会话区顶部一行「第 N 轮 · HH:MM」，用户发出的一轮真正开跑时
+               由 app-assist.js 的 agentRoundMarkNew 落文案与显隐（空会话 / 从未开跑 → 整行不占位）。
+               轮次推进的那一瞬同时清掉上一轮已了结的「计划」与「任务清单」（见 app-assist.js
+               的会话任务清单段），避免上一轮的记录被当成本轮的。 -->
+          <div class="agent-round" id="agentRound" hidden><b></b><i></i></div>
           <div class="agent-list" id="agentList"></div>
           <div class="agent-queue agent-paused" id="agentPaused" hidden></div>
           <div class="agent-queue" id="agentQueue" hidden></div>
@@ -486,6 +491,11 @@
 <footer class="statusbar">
   <!-- 最小化到状态栏的弹窗页签（画布 tab 同款外观；renderer/app.js 的 ovMin* 一套维护） -->
   <div class="ov-minbar" id="ovMinBar" hidden></div>
+  <!-- 全局语音输入（renderer/app-voice.js）：状态栏最左 1 枚话筒，点一下在三态之间循环
+       （关闭 → 持续转录 → 按住 F1 按键转录 → 关闭），识别出的文字实时写进当前 focus 的输入框。
+       占位在 #btnCanvasShot 左侧（CSS 用 order:-2 钉死，即使别的按钮插到前面也不移位）。
+       键面内容（🎤 / ● / F1 / 下载百分比）由模块的 paint() 按状态改写，这里只给初始字。 -->
+  <button type="button" id="btnVoiceGlobal" class="sb-voice" data-i18n-title="语音输入（关闭）：点一下开启持续转录，再点按键转录，再点关闭" title="语音输入（关闭）：点一下开启持续转录，再点按键转录，再点关闭" aria-label="全局语音输入（按住 F1 说话）">🎤</button>
   <button type="button" id="btnCanvasShot" class="sb-cam" data-i18n-title="生成当前画布的高清总览图" title="生成当前画布的高清总览图" aria-label="生成当前画布的高清总览图">
     <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
       <path fill="currentColor" d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 14.2A4.2 4.2 0 1 1 12 8.8a4.2 4.2 0 0 1 0 8.4zm0-1.7a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM4.8 7.3h1.7V6H4.8z"/>
@@ -572,10 +582,17 @@
      放在 app-devnode.js 之后：开发节点沿用它的路由 / 模型 / 预设工具函数；
      按钮与弹层都在调用期取，app-canvas.js 里按 typeof 判定。 -->
 <script src="app-aicall.js"></script>
-<!-- 本地语音转写（Qwen3-ASR）：音频 → 文字 → 注入文字处理节点（renderer/app-asr.js +
-     css/asr.css）。排在 app.js 之后：取用 nodeById / valueForInput / wireSourceMediaType /
-     scheduleSave / renderCanvas / openOverlay；被 app.js（allTextItems / resolveRefs 钩子）、
-     app-canvas.js（节点 body 区块）、app-nodes.js（运行前准备）在调用期按 typeof 取。 -->
+<!-- 本地语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）：任意音频 → 解码 / 重采样到
+     16k 单声道 / **按「断句停顿」逐句切（默认 300ms，设置 · 语音输入里的全局项；每句一次
+     识别、文本每句一行，只在后端 ≈131 秒硬顶处切一刀）** → dsh 语音通道 → 文字（renderer/app-speech.js）。
+     排在 app.js 之后：取用 agentRunWorkspace / assistDisplayWorkspace / S 这些调用期全局；
+     被 app-asr.js（节点级转写）、节点转写区块、状态栏话筒（app-voice.js）与应用窗口的听写共用。 -->
+<script src="app-speech.js"></script>
+<!-- 画布节点级转写（renderer/app-asr.js + css/asr.css）：转写归音频 / 视频节点自己的
+     「转录」按钮与文本区；接进文字处理节点后，文字节点在运行前取（必要时当场替音频节点转）
+     它的文字，不再自己转写。识别走上面 app-speech.js 那条 SenseVoice 通道。被 app.js
+     （allTextItems / resolveRefs 钩子、旧字段清理）、app-canvas.js（音频 / 视频节点 body）、
+     app-nodes.js（运行前闸门）在调用期按 typeof 取。 -->
 <script src="app-asr.js"></script>
 <!-- 音频波形预览器（自包含：window.wavePreviewCreate / wavePreviewSetSource /
      wavePreviewRedraw）。音频节点（音频输入 / 保存音频 / 音乐生成 / 语音合成 /
@@ -771,6 +788,12 @@
 <!-- 团队事实库（左栏专家列表末尾的入口）：路径解析 / 读写 / 建库；
      放在 app-review.js 之后，审阅对话框打开事实库时按调用期取 window.MTNodeFactLib -->
 <script src="app-factlib.js"></script>
+<!-- 文本节点的 Markdown 编辑器（节点头部 ✎ · renderer/app-textedit.js + css/textedit.css）：
+     像 WPS 一样写正文：所见即所得 + 全套 Markdown 工具栏 + 批注 / AI 逐轮修订；
+     版本链与批注**共用 node.review**（与「✎ AI 审阅」同一份记录），保存写回 node.text。
+     排在 app-review.js 之后：正文 ⇄ Markdown 转换（mdToRichHtml / richToMarkdown /
+     buildRevisionPrompt）与互斥判据都在调用期取它；插图走 app-inline-img.js（更早加载）。 -->
+<script src="app-textedit.js"></script>
 <!-- AI 事实库（新增的独立存储，给 AI 读的极简条例）：路径解析 / 读写 / 工具动作 / 查阅弹窗；
      挂 window.MTNodeAiFacts + 全局 aiFacts* 别名。放在 app-factlib.js 之后（同层相邻，
      两者之间没有调用关系）；左栏入口在 app-teamview.js，但那个文件的脚本行排在更前面，
@@ -791,10 +814,12 @@
      显隐受设置 · 开发者工具（S.config.dsh.developerTools，默认开）约束。
      排在 app-browser.js 之后：借它的第三栏显隐口径（.agent-pane.ba-open）与入口按钮。 -->
 <script src="app-trajectory.js"></script>
-<!-- CDP 面板：把这台浏览器**自带**的 DevTools 前端（同源直连本机 CDP）内嵌进会话右栏
-     （renderer/app-devtools.js + css/dsh-tokens.css 的 .dsh-cdp-*）。入口是浏览器活动栏
-     工具条上的「DevTools」按钮，受设置 · 开发者工具约束；走既有浏览器桥（action:'devtools'），
-     不新增接口、不落库、不进模型上下文。排在 app-browser.js 之后：借它的 BA.browser 通道。 -->
-<script src="app-devtools.js"></script>
+<!-- 全局语音输入：自包含模块（renderer/app-voice.js），状态栏最左那枚话筒（静态 DOM 在
+     footer.statusbar，见 #btnVoiceGlobal）＋跟随光标的转写浮窗＋右键快捷菜单，并把
+     「语音输入」设置小节给设置面板（window.VoiceInput.settingsSection，见 app-settings.js）。
+     链路 renderer → preload dshSpeech → main.js dsh:speech → 网关 speech → 运行时 mtnode-speech，
+     识别走 dsh 官方本地 SenseVoice（CPU、离线、不进模型上下文）；样式在 css/voice.css。
+     排在最后：调用期取 window.api / I18n / toast / S / agentRunWorkspace 这些既有全局。 -->
+<script src="app-voice.js"></script>
 </body>
 </html>

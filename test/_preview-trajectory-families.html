@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>轨迹横轴：工具族上色 + 图例 + 子代理轨（临时预览 · test/_preview-trajectory-families.html）</title>
+<!-- 只挂**仓库里真实的那两份样式表**（renderer/style.css 内部按 @import 串起 css/*.css），
+     不抄任何样式：这里量到 / 看到的就是应用的现行口径。
+     结构照 renderer/app-trajectory.js 的 updateRuler 一比一复刻（同类名、同层级、同 data-*），
+     只在标记上加 data-mk 便于逐个取出来量。 -->
+<link rel="stylesheet" href="../renderer/style.css">
+<link rel="stylesheet" href="../renderer/css/ai-facts.css">
+<style>
+  /* 预览页自己的「窗口」脚手架：真应用里轴挂在 .dsh-trace-list（滚动容器）里，sticky 吸顶 */
+  html, body { margin: 0; background: #14161a; color: #c9cdd4; font: 13px/1.5 system-ui, "Segoe UI", sans-serif; }
+  .preview-window {
+    height: 260px;
+    margin: 10px 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #2a2f38;
+    overflow: hidden;
+  }
+  .preview-title { padding: 4px 10px; color: #8b93a1; font-size: 11px; background: #101216; }
+  .dsh-trace-list { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .dsh-trace-row { border-bottom: 1px solid #1e222a; }
+</style>
+</head>
+<body>
+
+<div class="preview-window">
+  <div class="preview-title">① 本次口径：读数与图例在**色块轨下方**各占一行；块按工具族上色；子代理独占第 2 轨（轨左带小字）</div>
+  <div class="dsh-trace-list">
+    <div class="dsh-trace-ruler" id="rulerA" style="--dsh-trace-tracks: 3;">
+      <div class="dsh-trace-ruler-ticks">
+        <span class="dsh-trace-ruler-tick" style="left:4%">09:31:02</span>
+        <span class="dsh-trace-ruler-tick" style="left:50%">09:31:08</span>
+        <span class="dsh-trace-ruler-tick" style="left:96%">09:31:14</span>
+      </div>
+      <div class="dsh-trace-ruler-tracks">
+        <div class="dsh-trace-track n0">
+          <button class="dsh-trace-mark t-tool fam-read" data-mk="read1" title="读取 · 读取 · 09:31:02 · 1.2 s" style="left:2%;width:14%"></button>
+          <button class="dsh-trace-mark t-tool fam-run" data-mk="run1" title="运行命令 · 运行命令 · 09:31:05 · 2.4 s" style="left:20%;width:20%"></button>
+          <button class="dsh-trace-mark t-tool fam-write err" data-mk="err1" title="写入与编辑 · 编辑 · 09:31:11 · 0.8 s" style="left:46%;width:10%"></button>
+          <button class="dsh-trace-mark t-tool fam-other" data-mk="short" title="其它 · 0.1 s" style="left:78%;width:0.4%"></button>
+        </div>
+        <div class="dsh-trace-track n1 sub">
+          <span class="dsh-trace-track-label" title="子代理轨（这一轨是子代理自己的调用） · 派生子智能体">子代理</span>
+          <button class="dsh-trace-mark t-tool fam-sub" data-mk="sub" title="子代理 · 派生子智能体 · 09:31:04 · 8.0 s" style="left:16%;width:56%"></button>
+          <button class="dsh-trace-mark t-tool fam-web run" data-mk="web" title="联网 · 网页搜索 · 09:31:06 · 2.0 s" style="left:26%;width:14%"></button>
+          <button class="dsh-trace-mark t-tool fam-read" data-mk="read2" title="读取 · 读取 · 09:31:09 · 1.0 s" style="left:40%;width:8%"></button>
+        </div>
+        <div class="dsh-trace-track n2">
+          <button class="dsh-trace-mark t-tool fam-browser" data-mk="browser" title="浏览器 · 浏览器快照 · 09:31:06 · 3.0 s" style="left:24%;width:22%"></button>
+          <button class="dsh-trace-mark t-tool fam-job" data-mk="job" title="后台任务 · 读取后台任务 · 09:31:09 · 1.4 s" style="left:52%;width:12%"></button>
+        </div>
+      </div>
+      <span class="dsh-trace-scale">26 步 · 本视窗跨度 12.0 s · 09:31:02–09:31:14</span>
+      <div class="dsh-trace-legend" id="agentTraceLegend" title="本会话各工具族的调用次数">
+        <span class="dsh-trace-legend-item fam-read" data-fam="read"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">读取</span><span class="dsh-trace-legend-count">×7</span></span>
+        <span class="dsh-trace-legend-item fam-write" data-fam="write"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">写入与编辑</span><span class="dsh-trace-legend-count">×3</span></span>
+        <span class="dsh-trace-legend-item fam-run" data-fam="run"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">运行命令</span><span class="dsh-trace-legend-count">×5</span></span>
+        <span class="dsh-trace-legend-item fam-web" data-fam="web"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">联网</span><span class="dsh-trace-legend-count">×2</span></span>
+        <span class="dsh-trace-legend-item fam-sub" data-fam="sub"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">子代理</span><span class="dsh-trace-legend-count">×1</span></span>
+        <span class="dsh-trace-legend-item fam-talk" data-fam="talk"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">交互与计划</span><span class="dsh-trace-legend-count">×4</span></span>
+        <span class="dsh-trace-legend-item fam-own" data-fam="own"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">画布与自家工具</span><span class="dsh-trace-legend-count">×2</span></span>
+        <span class="dsh-trace-legend-item fam-browser" data-fam="browser"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">浏览器</span><span class="dsh-trace-legend-count">×1</span></span>
+        <span class="dsh-trace-legend-item fam-job" data-fam="job"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">后台任务</span><span class="dsh-trace-legend-count">×1</span></span>
+        <span class="dsh-trace-legend-item fam-other" data-fam="other"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">其它</span><span class="dsh-trace-legend-count">×1</span></span>
+      </div>
+    </div>
+    <!-- 行流（占位块 + 两行）只在下面撑出滚动空间，看轴自己怎么排 -->
+    <div class="dsh-trace-spacer" style="height:200px;position:relative">
+      <div class="dsh-trace-row t-tool fam-read" style="position:absolute;top:0;left:0;right:0">
+        <div class="dsh-trace-tick"><span class="dsh-trace-tick-at">09:31:02</span></div>
+        <div class="dsh-trace-body"><div class="dsh-trace-tool"><span class="dsh-trace-tool-name">读取</span><span class="dsh-trace-tool-raw">read</span></div></div>
+      </div>
+      <div class="dsh-trace-row t-tool fam-sub err" style="position:absolute;top:32px;left:0;right:0">
+        <div class="dsh-trace-tick"><span class="dsh-trace-tick-at">09:31:04</span></div>
+        <div class="dsh-trace-body"><div class="dsh-trace-tool"><span class="dsh-trace-tool-name">派生子智能体</span><span class="dsh-trace-tool-raw">subagent</span></div></div>
+      </div>
+      <div class="dsh-trace-row t-tool fam-run run" style="position:absolute;top:64px;left:0;right:0">
+        <div class="dsh-trace-tick"><span class="dsh-trace-tick-at">09:31:06</span></div>
+        <div class="dsh-trace-body"><div class="dsh-trace-tool"><span class="dsh-trace-tool-name">运行命令</span><span class="dsh-trace-tool-raw">pwsh</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

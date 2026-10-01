@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>逐项时刻 + 滑窗带 真样式预览（临时 · test/_preview-seg-time.html）</title>
+<!-- 只挂**仓库里真实的那两份样式表**（renderer/style.css 内部按 @import 串起 css/*.css），
+     不抄任何样式：这里量到的 padding / font / opacity / pointer-events 就是应用的现行口径。
+     页面结构照 renderer/app-assist.js 的 dshMsgBlock / dshHistSegEl 与 app-trajectory.js 的
+     updateRuler 一比一复刻（同层级、同类名、同行内几何），供 test/_preview-server.js 起服务后
+     用真浏览器量「时刻栏会不会压住正文 / 会不会折行 / 滑窗带挡不挡块的点击」。 -->
+<link rel="stylesheet" href="../renderer/style.css">
+<style>
+  /* 预览页自己的「窗口」脚手架：真应用里会话列有确定宽度（右栏 / 主区），这里逐档钉住宽度。 */
+  html, body { margin: 0; background: #14171c; color: #c9cdd4; font: 13px/1.5 system-ui, "Segoe UI", sans-serif; }
+  .pane { box-sizing: border-box; margin: 10px 0; border: 1px solid #2a2f38; }
+  .pane-title { padding: 4px 10px; color: #8b93a1; font-size: 11px; background: #101216; }
+  .agent-body { display: block; }
+  .agent-list { display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; }
+  .dsh-msg { position: relative; }
+</style>
+</head>
+<body>
+
+<div class="pane" data-w="1400" style="width:1400px">
+  <div class="pane-title">① 宽栏 1400px（消息级时刻 + 逐项时刻两层都在）</div>
+  <div class="agent-body"><div class="agent-list" data-list></div></div>
+</div>
+
+<div class="pane" data-w="900" style="width:900px">
+  <div class="pane-title">② 中栏 900px</div>
+  <div class="agent-body"><div class="agent-list" data-list></div></div>
+</div>
+
+<div class="pane" data-w="560" style="width:560px">
+  <div class="pane-title">③ 窄栏 560px（容器查询第二档）</div>
+  <div class="agent-body"><div class="agent-list" data-list></div></div>
+</div>
+
+<div class="pane" data-w="420" style="width:420px">
+  <div class="pane-title">④ 极窄 420px（容器查询最窄档）</div>
+  <div class="agent-body"><div class="agent-list" data-list></div></div>
+</div>
+
+<div class="pane" data-w="900" style="width:900px">
+  <div class="pane-title">⑤ 轨迹横轴：全轴 3 轨 + 滑窗带（进度示意，带不吃指针事件）</div>
+  <div class="agent-body dsh-trace-on">
+    <div class="dsh-trace-main">
+      <div class="dsh-trace-bar">
+        <input class="dsh-trace-search" type="search" placeholder="搜索工具名 / 步骤 / 内容首行">
+        <span class="dsh-trace-scount">命中 0 · 0/0</span>
+      </div>
+      <div class="dsh-trace-ruler" style="--dsh-trace-tracks:3">
+        <div class="dsh-trace-ruler-plot">
+          <div class="dsh-trace-ruler-ticks">
+            <span class="dsh-trace-ruler-tick" style="left:4%">09:12:01</span>
+            <span class="dsh-trace-ruler-tick" style="left:35%">09:12:14</span>
+            <span class="dsh-trace-ruler-tick" style="left:66%">09:12:27</span>
+            <span class="dsh-trace-ruler-tick" style="left:92%">09:12:40</span>
+          </div>
+          <div class="dsh-trace-ruler-tracks">
+            <div class="dsh-trace-track n0">
+              <button class="dsh-trace-mark t-tool fam-read" data-mk="m0" style="left:5%;width:9%"></button>
+              <button class="dsh-trace-mark t-tool fam-run" data-mk="m1" style="left:52%;width:18%"></button>
+            </div>
+            <div class="dsh-trace-track n1 sub">
+              <span class="dsh-trace-track-label">子代理</span>
+              <button class="dsh-trace-mark t-tool fam-sub" data-mk="m2" style="left:30%;width:40%"></button>
+            </div>
+            <div class="dsh-trace-track n2">
+              <span class="dsh-trace-stack">叠 2</span>
+            </div>
+          </div>
+          <div class="dsh-trace-window" data-mk="win" style="left:26%;width:44%"></div>
+        </div>
+        <span class="dsh-trace-scale">12 步 · 本视窗跨度 12.4 s · 09:12:06–09:12:18</span>
+        <div class="dsh-trace-legend">
+          <span class="dsh-trace-legend-item fam-read"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">读取</span><span class="dsh-trace-legend-count">×3</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 与 app-assist.js 的 dshMsgBlock / dshHistSegEl 同构的一屏：
+   消息级时刻（.dsh-msg-side）+ 逐项时刻（.dsh-seg-has-time > .dsh-seg-time）两层都在。
+   时刻文案取**最长形态**：非今天的「M/D HH:MM:SS」+ 工具耗时「· 12.3s」。 */
+const LONG_TIME = "10/1 09:12:31";
+function side(txt) {
+  const s = document.createElement("div");
+  s.className = "dsh-msg-side";
+  const t = document.createElement("span");
+  t.className = "dsh-msg-time";
+  t.textContent = txt;
+  s.appendChild(t);
+  return s;
+}
+function segTime(txt, approx) {
+  const s = document.createElement("span");
+  s.className = "dsh-seg-time" + (approx ? " is-approx" : "");
+  s.textContent = txt;
+  return s;
+}
+function segRow(at, approx) {
+  const wrap = document.createElement("div");
+  wrap.className = "dsh-seg dsh-seg-has-time";
+  wrap.dataset.mk = "seg";
+  wrap.appendChild(segTime(at, approx));
+  return wrap;
+}
+function buildMsg(list) {
+  const row = document.createElement("div");
+  row.className = "dsh-msg dsh-ai dsh-has-time";
+  row.dataset.mk = "msg";
+  const head = document.createElement("div");
+  head.className = "dsh-msg-head";
+  const role = document.createElement("span");
+  role.className = "dsh-role";
+  role.textContent = "AI";
+  head.appendChild(role);
+  row.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "dsh-msg-body dsh-msg-segs";
+
+  /* ① 思考项：折叠条 + 逐项时刻（两层：外层只当时刻栏宿主，灰盒是内层 details） */
+  const thinkWrap = segRow(LONG_TIME, false);
+  const det = document.createElement("details");
+  det.className = "dsh-seg dsh-seg-think";
+  det.dataset.mk = "thinkbox";
+  const sum = document.createElement("summary");
+  const sumTxt = document.createElement("span");
+  sumTxt.className = "dsh-think-sum-txt";
+  sumTxt.textContent = "◉ 思考 · 128 字";
+  sum.appendChild(sumTxt);
+  det.appendChild(sum);
+  thinkWrap.appendChild(det);
+  body.appendChild(thinkWrap);
+
+  /* ② 工具项：工具卡 + 逐项时刻（两层：外层只当时刻栏宿主，青轨 + 青底的皮肤盒是内层
+        —— 用户口径「颜色和左侧颜色竖条不该拉伸到时间的左边，应当与思考一致」） */
+  const toolWrap = segRow(LONG_TIME + " · 12.3s", false);
+  toolWrap.classList.add("dsh-seg-tool-wrap");
+  const toolBox = document.createElement("div");
+  toolBox.className = "dsh-seg dsh-seg-tool";
+  toolBox.dataset.mk = "toolbox";
+  const chips = document.createElement("div");
+  chips.className = "dsh-tools";
+  const tool = document.createElement("details");
+  tool.className = "dsh-tool st-done";
+  const tsum = document.createElement("summary");
+  tsum.className = "dsh-tool-sum";
+  const chip = document.createElement("span");
+  chip.className = "dsh-tool-chip";
+  chip.textContent = "🔧 读取";
+  tsum.appendChild(chip);
+  tool.appendChild(tsum);
+  chips.appendChild(tool);
+  toolBox.appendChild(chips);
+  toolWrap.appendChild(toolBox);
+  body.appendChild(toolWrap);
+
+  /* ③ 正文项：markdown 正文 + 逐项时刻 */
+  const say = segRow(LONG_TIME, false);
+  say.classList.add("dsh-seg-say");
+  const md = document.createElement("div");
+  md.className = "md";
+  md.innerHTML = "<p>已按小时汇总完成：共 24 个时段的统计，异常集中在 03、14、21 三个时段。</p><p>下面是每个时段的计数与首条异常样本，以及这次读取到的文件清单。</p>";
+  say.appendChild(md);
+  body.appendChild(say);
+
+  /* ④ 老存档项：回落时刻（.is-approx：不加「≈」字符，靠点线下划线 + 更淡表达） */
+  const ctx = segRow(LONG_TIME, true);
+  ctx.classList.add("dsh-ctx");
+  const lab = document.createElement("span");
+  lab.className = "dsh-ctx-label";
+  lab.textContent = "上下文注入";
+  const txt = document.createElement("span");
+  txt.className = "dsh-ctx-text";
+  txt.textContent = "已添加工具：read、grep";
+  ctx.appendChild(lab);
+  ctx.appendChild(txt);
+  body.appendChild(ctx);
+
+  row.appendChild(body);
+  row.appendChild(side(LONG_TIME));
+  list.appendChild(row);
+}
+for (const list of document.querySelectorAll("[data-list]")) buildMsg(list);
+</script>
+</body>
+</html>

@@ -72,7 +72,7 @@ const crypto = require("crypto");
 const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol, session } = require("electron");
 const { readJson, writeJson } = require("./config-providers.js");
 
 /* ---------------- 常量 ---------------- */
@@ -2669,6 +2669,35 @@ function openAppWindow(id) {
   });
   wcToAppId.set(w.webContents, sid);
   appWins.set(sid, w);
+  /* 麦克风权限（需求：应用里也能用内置 ASR 听写）：Electron 默认拒绝一切权限请求，
+     而主窗口那条 handler 只挂在**主窗口自己的会话**上，应用窗口拿不到 —— 这里按窗口补一份。
+     口径与主窗口一致且更窄：只放行 media 一类，只认本机页（file: / mtnode-preview:），
+     通知 / 定位 / 剪贴板读等仍走 Electron 默认拒绝。 */
+  {
+    const MEDIA_PERMISSIONS = new Set(["media", "audioCapture", "videoCapture"]);
+    const isLocalPage = (url) => !/^https?:/i.test(String(url || ""));
+    /* 会话取法容错：真 Electron 里 webContents.session 恒在；冒烟里的替身窗口可能没有 session，
+       那种情况下退回默认会话（拿不到会话就当权限这条不生效，绝不因此抛异常把窗口开不出来）。 */
+    let ses = null;
+    try {
+      ses = (w.webContents && w.webContents.session) || null;
+    } catch {}
+    if (!ses) {
+      try {
+        ses = session.defaultSession;
+      } catch {}
+    }
+    if (ses && typeof ses.setPermissionRequestHandler === "function") {
+      ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+        const url = (details && details.requestingUrl) || (wc && wc.getURL && wc.getURL()) || "";
+        callback(MEDIA_PERMISSIONS.has(permission) && isLocalPage(url));
+      });
+      ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
+        const url = (details && details.requestingUrl) || requestingOrigin || "";
+        return MEDIA_PERMISSIONS.has(permission) && isLocalPage(url);
+      });
+    }
+  }
   w.loadFile(html);
   w.once("ready-to-show", () => {
     if (!w.isDestroyed()) {
@@ -2742,6 +2771,228 @@ function senderAppDir(e) {
   const dir = configured ? appDirOf(root, id) : "";
   return { id: id, dir: dir && fs.existsSync(dir) ? dir : "" };
 }
+
+/* ---------------- appHost：语音转写（官方本地 SenseVoice，跑在 dsh 运行时里） ----------------
+ *
+ * 应用窗口侧的三个能力（需求：该 asr 能力也要允许被应用直接调用）：
+ *   pickAudio()                 → 系统选音频框，只回路径（用户亲自选的那一次才生效）
+ *   transcribe({ path|url, … }) → 读盘 → base64 WAV → dsh 语音通道 → { ok, text }
+ *   mic()                       → 只是**能力探测**：应用窗口的麦克风权限由宿主按会话
+ *                                 （见 main.js 的 APP 窗口 permission handler）放行，
+ *                                 真正的采集在应用页里用 getUserMedia + AudioContext 做
+ *   status() / prepare()        → 模型现况与首次下载权重（进度经 apps:hostSpeechState 推）
+ *
+ * 路径纪律：transcribe 只认「本机存在 + 用户在本应用里亲自选过（pickAudio）或应用数据文件夹里」
+ * 的音频；应用传别的路径一律拒绝。**不给任意路径读盘能力**（那等于把文件系统开给应用页）。
+ */
+let getDshForSpeech = null;
+let getAppDataDirForSpeech = null;
+/** 每个应用 id 记住用户在系统框里亲选过的音频路径（规范化小写） */
+const pickedAudioByApp = new Map();
+
+async function pickAudioForApp(e) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const parent = BrowserWindow.fromWebContents(e.sender) || getMainWin();
+  const r = await dialog.showOpenDialog(parent || undefined, {
+    title: t("选择音频"),
+    properties: ["openFile"],
+    filters: [
+      { name: t("音频"), extensions: ["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wma", "webm"] },
+    ],
+  });
+  if (r.canceled || !r.filePaths || !r.filePaths[0])
+    return { ok: false, code: "cancelled", error: "cancelled" };
+  const p = String(r.filePaths[0]);
+  const set = pickedAudioByApp.get(own.id) || new Set();
+  set.add(path.resolve(p).toLowerCase());
+  pickedAudioByApp.set(own.id, set);
+  return { ok: true, path: p, name: path.basename(p) };
+}
+/** 这一条路径允不允许读：亲选过，或在**本应用自己的数据文件夹**里（应用自己生成的录音等） */
+function audioPathAllowed(appId, p) {
+  const abs = path.resolve(String(p || ""));
+  if (!abs) return false;
+  const set = pickedAudioByApp.get(appId);
+  if (set && set.has(abs.toLowerCase())) return true;
+  try {
+    const dir = getAppDataDirForSpeech ? String(getAppDataDirForSpeech(appId) || "") : "";
+    if (dir && abs.toLowerCase().startsWith(path.resolve(dir).toLowerCase() + path.sep)) return true;
+  } catch {}
+  return false;
+}
+/** 路径 / file: URL 归一成绝对路径（应用侧给哪个都行） */
+function pathOfAudioArg(v) {
+  const s = String(v || "");
+  if (!s) return "";
+  try {
+    if (/^file:/i.test(s)) return decodeURIComponent(new URL(s).pathname.replace(/^\//, "").replace(/\//g, path.sep));
+  } catch {}
+  return s;
+}
+function base64OfAudio(abs, maxBytes) {
+  let st;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    return bad(t("音频文件不存在或已被移动"), "audio_missing");
+  }
+  if (!st.isFile()) return bad(t("音频文件不存在或已被移动"), "audio_missing");
+  const cap = Number(maxBytes) > 0 ? Number(maxBytes) : 256 * 1024 * 1024;
+  if (st.size > cap) return bad(t("音频超过上限"), "too_large");
+  try {
+    return { ok: true, base64: fs.readFileSync(abs).toString("base64"), bytes: st.size };
+  } catch (err) {
+    return fail(err);
+  }
+}
+/** 语音快照剪成给应用看的形状（不带内部字段；应用只关心「能不能用 / 下没下完」） */
+function speechStatusForApp(raw) {
+  const st = isObj(raw) ? raw : {};
+  if (st.ok === false) return { ok: false, error: String(st.error || ""), code: "speech_unavailable" };
+  const providers = Array.isArray(st.providers) ? st.providers : [];
+  const selection = isObj(st.selection) ? st.selection : {};
+  const cur =
+    providers.find((p) => String(p.id) === String(selection.providerId || "")) || providers[0] || null;
+  const prep = isObj(cur && cur.preparation) ? cur.preparation : {};
+  const phase = String(prep.phase || "unprepared");
+  return {
+    ok: true,
+    available: providers.length > 0,
+    providerId: String((cur && cur.id) || selection.providerId || ""),
+    providerName: String((cur && cur.name) || ""),
+    phase: phase,
+    ready: phase === "ready" || phase === "standby",
+    downloading: phase === "downloading" || phase === "checking" || phase === "loading",
+    completedBytes: Number(prep.completedBytes) || 0,
+    totalBytes: Number(prep.totalBytes) || 0,
+    message: String(prep.message || ""),
+    languages: Array.isArray(cur && cur.languages) ? cur.languages.slice(0, 16) : [],
+    language: String(selection.language || ""),
+  };
+}
+/** 语音运行时按 workspace 记账（网关 `handleSpeech` 硬性要求 workspace，缺了直接回
+ *  「缺少 workspace」）：应用窗口没有画布，统一用**本应用的数据文件夹**当工作区。
+ *  探测 / 准备 / 转写三条路必须同源 —— 否则「探测」落在另一台运行时上，
+ *  界面就会把「本机语音其实好着」误报成「dsh 没起来」（曾实测到的那条假警报）。 */
+function speechWorkspaceForApp(appId) {
+  try {
+    if (typeof getAppDataDirForSpeech === "function") {
+      const dir = String(getAppDataDirForSpeech(appId) || "");
+      if (dir) return dir;
+    }
+  } catch {}
+  return "";
+}
+/** 给「探活」这类调用加一道兜底超时：超了就回 fallback，绝不把界面挂死。
+ *  （dsh 语音走 IPC 到主进程再到网关，网关那侧自己有 8 秒等通道的窗口。） */
+function withTimeout(promise, ms, fallback) {
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      resolve(typeof fallback === "function" ? fallback() : fallback);
+    }, Math.max(1000, Number(ms) || 30000));
+    Promise.resolve(promise).then(
+      (v) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve({ ok: false, error: String((err && err.message) || err) });
+      },
+    );
+  });
+}
+/** 统一的 dsh 语音调用：固定补上 workspace，失败一律 { ok:false, error, code }。
+ *  timeoutNote = 探活超时的中文说明：网关那侧的超时文案对用户没有可操作性。 */
+async function speechCallForApp(appId, payload, timeoutNote) {
+  const ws = speechWorkspaceForApp(appId);
+  const raw = await getDshForSpeech()
+    .speech(Object.assign({}, payload, ws ? { workspace: ws } : {}))
+    .catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
+  if (raw && raw.ok === false && timeoutNote) {
+    return Object.assign({}, raw, { error: raw.error || timeoutNote });
+  }
+  return raw;
+}
+async function hostAsrStatus(e) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  if (typeof getDshForSpeech !== "function") return bad(t("语音服务不可用"), "no_dsh");
+  /* 探活不挂死界面：网关那侧「运行时冷起 + 等语音通道」最多约 8 秒，
+     超过就回一句能照做的中文（前端据此显示「语音引擎还在启动，稍后再试」）。 */
+  const raw = await withTimeout(
+    speechCallForApp(own.id, { action: "state" }),
+    30000,
+    { ok: false, error: t("语音引擎还在启动，稍后再试"), code: "speech_timeout" },
+  );
+  return speechStatusForApp(raw);
+}
+async function hostAsrPrepare(e, opts) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  if (typeof getDshForSpeech !== "function") return bad(t("语音服务不可用"), "no_dsh");
+  const raw = await speechCallForApp(own.id, {
+    action: "prepare",
+    ...(opts && opts.providerId ? { providerId: String(opts.providerId) } : {}),
+    ...(opts && opts.downloadSource ? { downloadSource: String(opts.downloadSource) } : {}),
+  });
+  /* prepare 立即返回（真正的下载在运行时里跑），这里回的是「开始下载那一刻」的快照 */
+  return speechStatusForApp(raw);
+}
+async function hostAsrTranscribe(e, opts) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  if (typeof getDshForSpeech !== "function") return bad(t("语音服务不可用"), "no_dsh");
+  const o = isObj(opts) ? opts : {};
+  /* 两条入口：① 应用自己录好的 16k 单声道 PCM16 WAV（base64，不落盘、不经过文件系统）；
+     ② 本机音频路径（只认用户在本窗口亲选过 / 在本应用数据文件夹里的那一份）。 */
+  const inlineB64 = String(o.base64 || "").replace(/\s+/g, "").replace(/^data:[^,]+,/, "");
+  let b64 = null;
+  let absPath = "";
+  if (inlineB64) {
+    if (!/^[A-Za-z0-9+/=]+$/.test(inlineB64)) return bad(t("音频数据不是合法的 base64"), "bad_audio");
+    if (inlineB64.length > 64 * 1024 * 1024)
+      return bad(t("音频超过上限（base64 64MB）"), "too_large");
+    b64 = { ok: true, base64: inlineB64, bytes: Math.floor((inlineB64.length * 3) / 4) };
+  } else {
+    absPath = pathOfAudioArg(o.path || o.url || "");
+    if (!absPath) return bad(t("未选择音频"), "no_audio");
+    if (!audioPathAllowed(own.id, absPath))
+      return bad(
+        t("只允许转写你在本应用里选过的音频（用 asrPickAudio 选，或先放进应用数据文件夹）"),
+        "path_denied",
+      );
+    b64 = base64OfAudio(absPath, o.maxBytes);
+    if (b64.ok !== true) return b64;
+  }
+  /* 语音运行时按 workspace 记账：应用窗口没有画布，用**本应用的数据文件夹**当工作区
+     （与 asrStatus / asrPrepare 同源；模型权重缓存与工作区同源，拿不到就退回语音内核的默认档）。 */
+  const raw = await speechCallForApp(own.id, {
+    action: "transcribe",
+    audio: b64.base64,
+    ...(o.language ? { language: String(o.language) } : {}),
+    ...(o.providerId ? { providerId: String(o.providerId) } : {}),
+  });
+  if (!raw || raw.ok === false)
+    return { ok: false, code: "speech_failed", error: String((raw && raw.error) || t("语音转写失败")) };
+  return {
+    ok: true,
+    text: String(raw.text || ""),
+    audioSeconds: Number(raw.audioSeconds) || 0,
+    inferenceSeconds: Number(raw.inferenceSeconds) || 0,
+    bytes: b64.bytes,
+    path: absPath,
+  };
+}
+
 
 /* ---------------- appHost：模型调用（服务商与 Key 只在本进程解析） ---------------- */
 
@@ -3366,6 +3617,16 @@ function registerAppsIpc(opts) {
      （长边 ≤ 1080 等比缩），不在这儿另写一套。 */
   if (typeof opts.shrinkImage === "function") shrinkImage = opts.shrinkImage;
   if (typeof opts.getProviderCatalog === "function") providerCatalog = opts.getProviderCatalog;
+  /* 语音转写（appHost.asr*）：dsh 适配器与「本应用数据文件夹」两个来源都由 main.js 注入 ——
+     apps-store 不认识 dsh，也不自己拼数据目录（路径只走 appDataDirOf 这一处口径）。 */
+  if (typeof opts.getDsh === "function") getDshForSpeech = opts.getDsh;
+  getAppDataDirForSpeech = (id) => {
+    try {
+      return appDataDirOf(String(id || ""));
+    } catch {
+      return "";
+    }
+  };
 
   const guard = (fn) => (e, arg) => {
     try {
@@ -3525,6 +3786,43 @@ function registerAppsIpc(opts) {
   ipcMain.handle("apps:hostDataDirReset", guard((e) => hostDataDirReset(e)));
   ipcMain.handle("apps:ackClose", guard((e) => ackAppClose(e)));
   ipcMain.handle("apps:quit", guard((e) => quitFromAppWindow(e)));
+  /* ── appHost 语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）──
+     选音频 / 转写 / 状态 / 首次下载权重：应用侧只拿到文本与状态，识别与读盘都在主进程。 */
+  ipcMain.handle("apps:hostPickAudio", async (e) => {
+    try {
+      return await pickAudioForApp(e);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle("apps:hostAsrTranscribe", async (e, arg) => {
+    try {
+      return await hostAsrTranscribe(e, arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle("apps:hostAsrStatus", async (e) => {
+    try {
+      return await hostAsrStatus(e);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle("apps:hostAsrPrepare", async (e, arg) => {
+    try {
+      return await hostAsrPrepare(e, arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  /* 应用窗口的麦克风可用性：只回「宿主放没放行 + 是不是应用窗口」，
+     真正的 getUserMedia 在应用页里（权限由 main.js 给 app 窗口的会话挂 handler 放行）。 */
+  ipcMain.handle("apps:hostAsrMic", guard((e) => {
+    const own = senderAppDir(e);
+    if (!own) return bad(t("不是应用窗口"), "not_app");
+    return { ok: true, mic: true, note: "getUserMedia 在应用页里直接调用（宿主已放行 media 权限）" };
+  }));
 
   /* ── 应用数据（主窗口 / 应用中心侧）：只留「打开数据目录」这一件事 ──
      数据目录用 app id 管理（默认数据根 <数据目录>/apps-data/<id>/，用户改过则是他选的那个），

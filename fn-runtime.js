@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 /* ============================================================
  * 函数节点运行时（主进程侧调度 + worker_threads 执行线程）
  * ------------------------------------------------------------
@@ -32,7 +32,7 @@
  *   fn:cancel { runId } → 同上形状（cancelled:true）
  *
  * 纯 Node、可注入（Worker / readSource / procHost / 定时器），便于
- * test/smoke-fn-runtime.js 直接加载断言。 */
+ * test/smoke-fn-array-param.js 的「已并入：smoke-fn-runtime.js」段直接加载断言。 */
 
 const path = require("path");
 const fs = require("fs");

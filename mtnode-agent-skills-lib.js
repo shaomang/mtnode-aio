@@ -218,10 +218,103 @@ function compactIndexText(index, maxChars) {
   return text;
 }
 
+/* ── 同步的「没变就不动」快路径（本轮修：会话输入框打字略显卡顿）─────────────
+   病根：skillList()（渲染层「/」候选与技能清单都打它）每次调用都**无条件**整树重建 ——
+   rm -rf 内置库 → 重拷 1MB / 119 个文件 → 逐个读 SKILL.md 算 sha256 → 重写 index.json /
+   INDEX.md → 再按技能逐个删目录、重拷。实测 106–140ms/次纯同步 I/O，全都在主进程线程上；
+   而渲染层 loadSkillsCached 只缓存 5 秒，于是「一边打字一边每 5 秒来一次」——
+   主进程这 100 多毫秒里 IPC 不响应，会话 / 应用开发输入框就跟着一顿。
+   做法：把「源树指纹 + 上次装出来的出处」记在库根的 .mtnode-skills-sync.json，
+   指纹一致且目标盘上该有的都在，就直接返回上次那份索引（不再碰任何文件）。
+   指纹 = 源树每个 SKILL.md 的相对路径 / 字节数 / mtime（源树随包，升级换文件必变），
+   再叠一个 SYNC_FORMAT：**同步算法的形态变了**（比如以后多写一个标记文件）就手动 +1，
+   老标记格式对不上即整树重建一次 —— 免得算法升级后快路径把新产物漏装。
+   缺文件 / 缺标记 / 多出一个该回收的内置目录，一律退回整树重建（升级自愈的口径不变）。 */
+const SYNC_STATE_FILE = ".mtnode-skills-sync.json";
+const SYNC_FORMAT = 2;
+
+function srcTreeFingerprint(src) {
+  const parts = [];
+  for (const hit of walkSkillFiles(src)) {
+    let st = null;
+    try {
+      st = fs.statSync(hit.full);
+    } catch {
+      st = null;
+    }
+    parts.push(
+      hit.rel.replace(/\\/g, "/") + ":" + (st ? st.size : -1) + ":" + (st ? Math.round(st.mtimeMs) : -1),
+    );
+  }
+  parts.sort();
+  return parts.join("|");
+}
+
+/* 目标盘上「该有的都在吗」：库根两个产物 + 每颗技能的 SKILL.md 与应有的出处标记。
+   只做 existsSync（13 颗技能 = 40 来次 stat），比整树重建便宜两个数量级。 */
+function syncStateUsable(prev, dist, skillsRoot) {
+  if (!prev || prev.format !== SYNC_FORMAT || !Array.isArray(prev.skills)) return false;
+  if (!fs.existsSync(path.join(dist, "index.json"))) return false;
+  if (!fs.existsSync(path.join(dist, "INDEX.md"))) return false;
+  for (const sk of prev.skills) {
+    if (!sk || !sk.name || !sk.path) return false;
+    if (!fs.existsSync(path.join(dist, sk.path))) return false;
+    const dir = path.join(skillsRoot, sk.name);
+    if (!fs.existsSync(path.join(dir, "SKILL.md"))) return false;
+    const visible = !!sk.visible;
+    if (!fs.existsSync(path.join(dir, visible ? ".builtin" : ".mtnode-internal"))) return false;
+    if (visible && !fs.existsSync(path.join(dir, ".mtnode-builtin"))) return false;
+  }
+  const keep = new Set(prev.skills.map((s) => s.name));
+  try {
+    for (const ent of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
+      if (!ent.isDirectory() || keep.has(ent.name)) continue;
+      const dir = path.join(skillsRoot, ent.name);
+      if (
+        fs.existsSync(path.join(dir, ".mtnode-internal")) ||
+        fs.existsSync(path.join(dir, ".mtnode-builtin"))
+      )
+        return false; /* 库里已下线的内置技能还留着 → 走整树重建把它回收掉 */
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/* 写同步标记：只记「源树指纹 + 装出来的是什么」，不记时间戳（免得每次同步都写盘） */
+function writeSyncState(dist, fingerprint, skills, count) {
+  try {
+    fs.writeFileSync(
+      path.join(dist, SYNC_STATE_FILE),
+      JSON.stringify({ format: SYNC_FORMAT, fingerprint, count, skills }, null, 2) + "\n",
+      "utf8",
+    );
+  } catch {}
+}
+
 function syncMtnodeAgentSkills(dshHome, appRoot) {
   const src = bundledRoot(appRoot);
   const dest = dshLibRoot(dshHome);
   if (!fs.existsSync(src)) return { ok: false, error: "bundled library missing: " + src };
+  const skillsRoot0 = path.join(dshHome, "skills");
+  const fingerprint = srcTreeFingerprint(src);
+  const prev = readJson(path.join(dest, SYNC_STATE_FILE), null);
+  if (prev && prev.fingerprint === fingerprint && syncStateUsable(prev, dest, skillsRoot0)) {
+    const index = readIndexAt(dest);
+    const indexMd = fs.existsSync(path.join(dest, "INDEX.md"))
+      ? fs.readFileSync(path.join(dest, "INDEX.md"), "utf8")
+      : renderIndexMd(index);
+    return {
+      ok: true,
+      count: flattenIndex(index).length,
+      index,
+      indexMd,
+      compact: compactIndexText(index),
+      libraryPath: dest,
+      skipped: true,
+    };
+  }
   rmDirSafe(dest);
   copyDir(src, dest);
   /* 索引一律按**落盘后的技能树**重建，不信任随包携带的 index.json：
@@ -275,9 +368,17 @@ function syncMtnodeAgentSkills(dshHome, appRoot) {
   const indexMd = fs.existsSync(path.join(dest, "INDEX.md"))
     ? fs.readFileSync(path.join(dest, "INDEX.md"), "utf8")
     : renderIndexMd(index);
+  /* 落同步标记：下一次 skillList 只要源树没变就走快路径（见文件上方 SYNC_STATE_FILE 段） */
+  const flat = flattenIndex(index);
+  writeSyncState(
+    dest,
+    fingerprint,
+    flat.map((s) => ({ name: s.name, path: s.path, visible: s.menu === "user" })),
+    flat.length,
+  );
   return {
     ok: true,
-    count: flattenIndex(index).length,
+    count: flat.length,
     index,
     indexMd,
     compact: compactIndexText(index),

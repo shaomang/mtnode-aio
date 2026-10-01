@@ -137,6 +137,9 @@ function makeDom(env) {
       parentNode: null,
       style: {},
       attrs: {},
+      /* dataset：本次需求新增的卡片标记用 data-state / data-tool-name / data-folded
+         落 DOM 契约（上游也是 data-chat-call-id 那一套），假 DOM 跟着补一格空表 */
+      dataset: {},
       __h: {},
       __cls: new Set(),
       __html: "",
@@ -817,6 +820,32 @@ const OUT = loadFileview({
 OUT.EV(
   fnBody(ASSIST, "dshToolDetailsEl") +
     "\n" +
+    /* 本次需求新增的卡片标记（标题 / 状态 / 准备态 / 失败摘要 / 文件改动 diff）：
+       真函数体一并抽进来 —— 冒烟跑的就是会话里那一条渲染路径，不抄逻辑。 */
+    fnBody(ASSIST, "dshToolTitleOf") +
+    "\n" +
+    fnBody(ASSIST, "dshToolIsCustom") +
+    "\n" +
+    fnBody(ASSIST, "dshToolStateOf") +
+    "\n" +
+    fnBody(ASSIST, "dshToolPrepText") +
+    "\n" +
+    fnBody(ASSIST, "dshToolErrSummary") +
+    "\n" +
+    fnBody(ASSIST, "dshToolDiffOf") +
+    "\n" +
+    fnBody(ASSIST, "dshDiffArgText") +
+    "\n" +
+    fnBody(ASSIST, "dshDiffRowsOf") +
+    "\n" +
+    fnBody(ASSIST, "dshToolDiffEl") +
+    "\nconst DSH_DIFF_MAX_ROWS = 9;\n" +
+    /* 标题表是 const 数组（fnBody 抽的是函数），按源码原样带一份；改表时冒烟跟着红 */
+    /const DSH_TOOL_TITLE_RULES = \[[\s\S]*?\n\];/.exec(ASSIST)[0] +
+    "\n" +
+    /* 非 dsh 工具的专属色判据（本次需求）：正则表同样按源码原样带一份 */
+    /const DSH_CUSTOM_TOOL_RES = \[[\s\S]*?\n\];/.exec(ASSIST)[0] +
+    "\n" +
     fnBody(ASSIST, "dshIsShellTool") +
     "\n" +
     fnBody(ASSIST, "dshToolArgsObj") +
@@ -863,14 +892,15 @@ OUT.EV(
   const sum = det.children.find((c) => c.tagName === "summary");
   ok(!!sum, "dshToolDetailsEl 造出 details + summary");
   EQS(sum.children[0].className, "dsh-tool-chip", "summary 的第一个孩子才是那颗「工具按钮」（药丸）—— 文件名不塞在它里面");
-  EQS(sum.children[0].textContent, "🔧 read", "药丸里只有工具名：文件名再长也不撑大按钮、不看着像工具名的一部分");
+  EQS(sum.children[0].textContent, "🔧 读取", "药丸里是工具族的中文标题（本次需求对齐上游 tool.title.*：read → 读取），原始工具名留在 title / dataset 上");
+  EQS(sum.children[0].dataset.toolName, "read", "药丸的 dataset.toolName 保留原始工具名（排查与自动化仍按真名找）");
   EQS(sum.children[1].className, "dsh-tool-file m-read", "文件名挂在按钮后方，仍是同一份徽标（class 与 [3] 一致）");
   sum.children[1].fire("click");
   EQS(JSON.stringify(OUT.EV("__peek2[__peek2.length-1]")), JSON.stringify(["E:\\s\\deep\\nested.js", { mode: "read", line: 7 }]), "点击走面板，且带 offset 定位");
   EQS(det.open, false, "点徽标没把 details 展开（preventDefault 生效）");
   const det2 = OUT.EV("dshToolDetailsEl({name:'pwsh',args:{workdir:'E:/x',command:'ls'},callId:'c2'},true,'s9')");
   const sum2 = det2.children.find((c) => c.tagName === "summary");
-  EQS(sum2.children.map((c) => c.textContent).join(" "), "◌ pwsh ls", "pwsh：工具名后面直接跟命令正文，不再只有那颗按钮");
+  EQS(sum2.children.map((c) => c.textContent).join(" "), "◌ 运行命令 ls", "pwsh：工具族标题后面直接跟命令正文（本次需求：标题按上游 tool.title.bash =「运行命令」），不再只有那颗按钮");
   ok(sum2.children[1].className === "dsh-tool-cmd", "命令正文是独立的 .dsh-tool-cmd（挂在药丸外面，绿色那一档）");
   /* —— shell 命令：折行 / 截断 / hover 描述 / 非 shell 不挂 —— */
   {
@@ -1092,6 +1122,19 @@ OUT.EV(
     OUT.I18n.setLocale("zh");
   }
   ok(sum2.children.length === 2 && sum2.children[0].className === "dsh-tool-chip", "非文件工具：按钮 + 命令正文，不多挂别的（没有文件徽标）");
+  /* 非 dsh 工具（本次需求）：同一个渲染函数里换成中文标签 + 专属色类 .t-custom，
+     原始工具名照旧留在 dataset 上（排查与自动化仍按真名找）。 */
+  {
+    const dc = OUT.EV("dshToolDetailsEl({name:'ask_user_question',args:{},callId:'c9'},false,'s9')");
+    const sc = dc.children.find((c) => c.tagName === "summary").children[0];
+    EQS(sc.className, "dsh-tool-chip t-custom", "非 dsh 工具的药丸带专属色类（青 = dsh 自带 / 紫 = MTNode 工具）");
+    EQS(sc.textContent, "🔧 询问用户", "非 dsh 工具显示中文标签（原来只能回落成「工具调用」再显英文原名）");
+    EQS(sc.dataset.toolName, "ask_user_question", "中文标签之下仍保留原始工具名");
+    EQS(sc.title, "ask_user_question · 询问用户", "hover 给「原名 · 中文标签」");
+    const dd = OUT.EV("dshToolDetailsEl({name:'read',args:{file_path:'E:/s/a.js'},callId:'c10'},false,'s9')");
+    const sd = dd.children.find((c) => c.tagName === "summary").children[0];
+    EQS(sd.className, "dsh-tool-chip", "dsh 自带工具不挂专属色类（颜色只区分来源，不改 dsh 那一档）");
+  }
   HAS(ASSIST, 'if (typeof dshToolFileBadges === "function")', "出口先探测符号（分块加载 / 切片跑测时不抛）");
   HAS(ASSIST, 'sum.className = "dsh-tool-sum"', "summary 不再是药丸本身（外框让给里面那颗按钮，两者不再同义）");
   HAS(ASSIST, "sum.appendChild(chip)", "按钮先挂上，文件名随后挂在它后面");

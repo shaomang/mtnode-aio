@@ -1,0 +1,116 @@
+/* 应用脚手架 —— footer 里的「语音听写」条（speech.js 的样式，见 speech.js 头部）
+   颜色只取语义变量（--accent / --line / --bg-soft / --fg-dim …），风格文件换肤时自动跟随。 */
+
+.speech-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.speech-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs, 6px);
+  background: var(--bg-soft);
+  color: var(--fg, inherit);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.15s var(--ease, ease), color 0.15s var(--ease, ease);
+}
+.speech-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.speech-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* 录音中：按钮上画一条按电平起伏的底（不用额外元素） */
+.speech-btn.is-rec::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  width: var(--level, 4%);
+  transition: width 0.08s linear;
+}
+
+.speech-note {
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.speech-note[data-kind="warn"] {
+  color: var(--warn, #f0b34a);
+}
+.speech-note[data-kind="ok"] {
+  color: var(--accent);
+}
+
+/* 结果小窗：贴在窗口底部上方，展示全文 + 复制（不自动改应用界面） */
+.speech-panel {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 56px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg, #0d1016);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.speech-panel[hidden] {
+  display: none;
+}
+.speech-panel-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.speech-panel-h b {
+  font-size: 12.5px;
+}
+.speech-panel-meta {
+  color: var(--fg-dim);
+  font-size: 11.5px;
+}
+.speech-x {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs, 6px);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 1px 6px;
+  font: inherit;
+}
+.speech-panel-body {
+  max-height: 26vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.speech-panel-f {
+  display: flex;
+  gap: 8px;
+}

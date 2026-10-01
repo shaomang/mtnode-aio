@@ -93,6 +93,20 @@
   config:
     policy: ask
 
+# ── OTel 遥测：整两行禁用（本机跑不起来，且我们不用这项遥测）───────────────────────
+# 基座组合自带两行 OTel（FEEDBACK_ONLY，见 @deepseek-ai/dsh-base 的 cordis.patch.yml：
+# otel + session-telemetry-otel），而它们在这台机器的运行时里**导入失败** —— 每次启动都在
+# stderr 刷「n entries did not activate / failed to import」（实测：把两个包单独 import 都成功，
+# 是运行时导入路径的问题，不是缺依赖）。dsh 的退出开关 DSH_TELEMETRY_DISABLED（网关在
+# getRuntime 的 env 里注入 '1'）按 id 只打得到 session-telemetry-otel 那一行，另一行仍会报，
+# 所以这里再按 id 把 otel 行也标禁用；两行都落在这里 = 不依赖运行时行为，稳定不报。
+# 需要遥测时删掉这两行即可（组合里有遥测行时 DSH_TELEMETRY_DISABLED 才生效，见 dsh 注释）。
+- id: otel
+  disabled: true
+
+- id: session-telemetry-otel
+  disabled: true
+
 - id: permission
   config:
     presets:
@@ -122,7 +136,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: mtnode-unattended
+    defaultPreset: workspace-write
 
 - id: tool-bash
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -482,6 +496,38 @@
     # 纯净模式：MTNODE_PURE=1 时移除 deployment:persona（会话「纯净模式」按钮开启）
     - id: pure-prompt
       name: './plugins/pure-prompt.mjs'
+
+    # ── 语音输入（dsh 0.2 官方四行，照 @deepseek-ai/dsh-experimental-voice-input-bundle 原文）──
+    # 用途：对话输入框的「录音 → 转文字」，模型侧全程不参与（转写结果只是草稿正文）。
+    # 四行缺一不可：speech-to-text 是服务定义（defaultProvider 必填）、-sensevoice 是本地
+    # CPU 识别提供者（SenseVoiceSmall ONNX + Silero VAD，平台包 sherpa-onnx-* 自带 ONNX
+    # Runtime，用户不需要 Python）、api-speech-to-text 是 Remote 面、ui-voice-input 是上游
+    # Web 前端的录音界面（MTNode 渲染层不用它，但仍按上游原样挂载，便于与官方组合对齐）。
+    # 首次使用才下载权重（revision 钉死 + SHA256 校验，int8 约 239MB），数据落
+    # <DSH_HOME>/speech-to-text/sensevoice；BongoChat 隔离态不挂（那档只有联网搜索）。
+    - id: speech-to-text
+      name: '@deepseek-ai/dsh-experimental-speech-to-text'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+      config:
+        defaultProvider: sensevoice-local
+    - id: speech-to-text-sensevoice
+      name: '@deepseek-ai/dsh-experimental-speech-to-text-sensevoice'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+      config:
+        dataRoot: !!js dshHomePath('speech-to-text', 'sensevoice')
+    - id: api-speech-to-text
+      name: '@deepseek-ai/dsh-experimental-api-speech-to-text'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+    - id: ui-voice-input
+      name: '@deepseek-ai/dsh-experimental-client-ui-voice-input'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
+
+    # MTNode 语音输入面：把上面那套服务接到 MTNode 自己的录音界面（渲染层不会被上游
+    # Web 前端接管）。侧通道 TCP 于 spawn 时经 MTNODE_SPEECH_PORT 注入；端口缺席 = 整体
+    # no-op，行为与未接入时一字不变。协议见 speech-plugin.mjs 顶部注释。
+    - id: mtnode-speech
+      name: './speech-plugin.mjs'
+      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'
 
     # 本行以下 = 用户插件段（由 MTNode 设置写回；网关启动时把这段与
     # $DSH_HOME/cordis-user.yml 同步）。shipped 行一律写在本行**之前**，否则会被

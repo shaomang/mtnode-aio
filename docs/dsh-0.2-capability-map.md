@@ -56,6 +56,14 @@ console.log('依赖',deps.length,'已启用',deps.filter(d=>names.has(d)).length
 **本轮范围（用户已确认）**：只做前三块 —— 定时/自动化任务、语音输入、MCP 资源读取界面；
 其余整块不做。
 
+**本轮结论（2026-09-30 实测后更新）**：
+
+| 能力块 | 本轮结果 |
+|---|---|
+| 语音输入 | **已落地全链路**（cordis 五行 + 网关 `speech` 方法 + 侧通道 + 主进程权限与 IPC + 渲染层录音键）。真机联网实测：权重下载 228.2MB `model.int8.onnx` + `tokens.txt` + `silero_vad.onnx` 共 230.2MB → `phase: ready` → `transcribe` 走通原生推理（合成音 `audioSeconds 1.2 / inferenceSeconds 0.009`，空文本符合预期）。 |
+| MCP 资源读取 | **已落地**（网关 `mcp-resources.mjs` 用官方 `@modelcontextprotocol/client` 只读连一次 + 本地协议方法 `mcpResources` + 主进程/preload 通道 + 「扩展能力管理」MCP 详情里的资源面板）。未用真实 MCP 服务器端到端验过（见交付说明）。 |
+| 定时/自动化任务 | **内核不提供，未做**（见 4.1 的实测结论）；界面上不放按不动的入口，改用画布既有的定时器节点。 |
+
 ## 四、本轮要用到的能力：实现事实
 
 ### 4.1 定时任务（`dsh-schedule`）
@@ -68,9 +76,29 @@ console.log('依赖',deps.length,'已启用',deps.filter(d=>names.has(d)).length
   之后才把 `lastDelivery` / `deliveryHistory` 与新目标一同落盘；提交以 Session 的 `session/flush`
   回执为准。依据：`dsh-schedule/lib/index.js:1576`（`resolveAgent`）、`:1596`（`followup`）、
   `:1598-1605`（receipt + appendDelivery）、README「Delivery resolves the original Session」段。
-- **不能单独挂载**：README 明说 `Schedule cannot be mounted alone in a headless or SDK-only
-  composition: delivery requires the Host Web Session controller and a Session persistence backend`
-  ⇒ **必须在真机实测**它在 `sdk` profile 下是否挂得上（本轮实施第一步就验）。
+- **不能单独挂载，实测在 SDK profile 下确实挂不起来（本轮实测结论）**：上游 README 明说
+  `Schedule cannot be mounted alone in a headless or SDK-only composition: delivery requires the
+  Host Web Session controller and a Session persistence backend`。本轮用真运行时做了 6 组对照探针
+  （临时 `DSH_HOME` + `DeepSeekHarness` 真起进程，脚本在 `%TEMP%\dsh-probe-02..11\probe.mjs`），实测：
+
+  | 探针 | 加载的行 | 结果 |
+  |---|---|---|
+  | probe-02 | schedule 三行 + voice 四行 | `start()` 成功（行都挂上了），模型工具表 24 项里**没有** `schedule_*` |
+  | probe-03 | 只 schedule 两行 | 同上；`time-context` **生效**（user/message 里出现 `Time sampled while preparing turn 1, step 1: …[Asia/Shanghai]`） |
+  | probe-04 | + `session-controller` 行 | 工具表仍无 `schedule_*` |
+  | probe-06 | +12 行（session-controller / job-controller / workspace / api-remotes / …） | 仍无 |
+  | probe-07 | + 自写插件在 `agent/created` 里注册 `probe_ping` | **`probe_ping` 进了工具表（25 项）** ⇒ 逐 agent 注册这条路本身是通的，缺的不是机制 |
+  | probe-09 | 自写插件查 `ctx.get('schedule')` | **`undefined`**（`hasSchedule: false`），`storages/` 里没有 `schedule.json` ⇒ 服务本体根本没被构造 |
+  | probe-11 | schedule + voice 混挂，插件查服务表 | `ctx.speechToText` = `object`（**语音服务挂起来了**）；`ctx.sessionController` = `undefined`、`ctx.schedule` = `undefined` |
+
+  结论：在 MTNode 这份 `0.2.0-rc.2` 组合（`dsh-base` + `dsh-sdk-app` + `cordis.yml`）里，
+  `@deepseek-ai/dsh-schedule` 的行**能插进去、服务却不上线**（缺 `ctx.sessionController`，
+  而它由 web-app 组合的 `session-controller` 行提供；该行插进来也没让 schedule 服务出现，
+  说明注入链上还有别的缺口）。上游 README 自己写明了这个前提 —— **这不是 MTNode 接线少写一行的问题**。
+  依据：`dsh-schedule/README.md`「Use this package」首段；`dsh-schedule/lib/index.js`
+  `static inject = ["agents","sessions","tools","storageDomain","sessionController","sessionPersistence"]`
+  （`:2590`）；`dsh-web-app/cordis.patch.yml:121-122`（`session-controller` 行在 web-app 组合里）。
+  **口径**：这块本轮按「内核未提供」处置，请用户裁决（见交付说明「遗留尾巴」）。
 - **错过的次数**：只有**一次**投递 —— 每个重复任务只贡献「最近一次错过的发生」；
   一次性任务在错过的那一刻到点才会投递。依据：README 首段 + `lib/index.js` 的
   `resolveEveryOccurrence` / `resolveDaily|Weekly|CronOccurrence`（`lib/types/domain.d.ts` 签名）。
@@ -111,9 +139,44 @@ console.log('依赖',deps.length,'已启用',deps.filter(d=>names.has(d)).length
   Electron 默认会拒掉麦克风 ⇒ 录音必然失败。这是本轮必须补的第一件事。
 - `ui-voice-input` 同样是 web 插件包（`client.js` + `PreparationCard` / `Waveform` 等），
   界面自研；它的 `zh.json` 只借文案口径。依据：`dsh-experimental-client-ui-voice-input/` 文件清单。
-- MTNode 现有本地 Qwen3-ASR（`renderer/app-asr.js`、`asr-pack/`、`test/smoke-asr.js`）
-  **一行不动**（用户已确认）：输入框录音走官方 SenseVoice，节点级批量转写仍走 Qwen3-ASR，
-  分工写进手册。
+- **节点级转写也统一到官方 SenseVoice**（本轮改造）：画布上「音频接进文字节点 → 自动转写并注入
+  提示词」这条能力保留，但识别引擎从「Qwen3-ASR 本地 HTTP 后端」换成 dsh 运行时的官方 SenseVoice
+  —— 与全局语音输入同一条通道（`renderer/app-speech.js` → `dsh:speech`）。
+  音频整形在渲染层做：`file:readAudioBytes` 读原始字节 → `decodeAudioData` 解码 → 混单声道 +
+  重采样到 16 kHz → **按「短停顿」逐句切分**（连续安静到全局「断句停顿」，默认 300ms，
+  与状态栏话筒共用 `S.config.voice.silenceMs`；句子不设长度上限，只在后端 4 MiB ≈ 131 秒的
+  硬顶处、最接近的低能量点切一刀）→ 每句编成 PCM16 WAV → base64 交给运行时（**不再依赖 Python 与 ffmpeg**）。
+  **一句一片、每句一行**：每句单独送一次识别，文本按行拼接、行末补句末标点（`spSentenceSpans` /
+  `spLineText` / `spJoinInline`）。
+  转写缓存与人工修订留在主进程 `speech-store.js`（`<数据目录>/speech/transcripts.json`）；
+  缓存键带上切分口径指纹（`SEG_TAG`）与当前阈值（`pauseMs`）—— 改规则或改设置都不会沿用旧文本。
+  旧后端（`asr/`、`asr-pack/`、`skills/asr-local-install/`、插件卡片、旧 IPC 通道）与它的
+  安装链**已整块删除**，回归见 `test/smoke-asr.js`。
+- **`speech` 每次调用都必须带 workspace（节点级转写踩过的坑，实测）**：网关的 `speech`
+  方法按 workspace 挑（必要时现拉起）那台语音运行时，**不带就一律回
+  `缺少 workspace：语音输入要绑定一台工作区运行时`**；而「回包是个错误」与「名单还空着
+  （运行时冷起）」在相位里长得一样（都是 providers 为空），于是节点转写的引擎闸门把前者
+  当成后者 —— 音频节点的 `asrState` 永远停在 `starting`（提示「语音服务正在启动，稍等一下
+  再试」），点多少次都一样，而话筒听写正常（它一直带 workspace：`app-voice.js` 的
+  `speechCall` / `apps-store.js` 的 `speechCallForApp`）。现状：`renderer/app-speech.js` 的
+  `spStatus` 与 `spTranscribeSamples` / `spEnsureReady` 同口径带上 workspace；`spPhaseOf`
+  多回一个 `error` 字段，把「明确报错」与「名单为空」分开，节点闸门据此如实上报。
+  另一个实测口径：语音运行时从零冷起时 **+1.9s 名单才出现（phase=checking）、+2.4s 变 ready**，
+  所以闸门的冷起窗口要连 `checking` / `loading` / `waking` 一起等（`asrStarting`），
+  否则首次点「转录」会被判成「模型未就绪」并弹出下载窗。回归见 `test/smoke-asr.js`
+  （桩按真网关口径校验 workspace 与冷起相位）。
+- **宿主界面口径（后续一轮改造，链路未变）**：入口从「会话 / 助手输入框各挂一枚 🎤」改为
+  **状态栏最左那一枚全局按钮**（`renderer/index.html` 的 `#btnVoiceGlobal` + `renderer/app-voice.js`
+  + `renderer/css/voice.css`），点一下在 **关闭 → 持续转录 → 按住 F1 按键转录** 三态之间循环，
+  识别结果实时写进**当前 focus 的输入框**。PTT 键用 **F1**（`PTT_KEY = "F1"`）：字符键要先插入再吞键、
+  两件事有竞态（会看到反引号先落进消息框），F1 无字符产出，天然不会被录入，按键态下 `keydown` /
+  `keyup` 成对吞掉、`ev.repeat` 不重复起停、Ctrl+F1 放行。启动 / 首次连接期按钮走 `is-loading`
+  载入旋转（纯 CSS 弧、不写文字），按 400ms 退避重试；真连不上给一句明确提示并 5 秒后自动重试一次。
+  因为官方运行时只吃整段 16 kHz 单声道 WAV（无原生流式），
+  这里用**整句停顿提交 + 有序提交 + 重叠去重**拼出实时感，句尾由「连续安静帧」判（全局
+  「断句停顿」，默认 300ms；句长不再封顶，只在后端 ≈131 秒硬顶处按低能量点切一刀）；
+  定稿走 `document.execCommand('insertText')`（保留节点撤销栈语义）。回归见
+  `test/smoke-global-voice.js`（三态 / 落点 / 静音门与逐句口径，含「已并入：smoke-voice-mcp.js」的接线段）。
 
 ### 4.3 MCP 资源读取（`dsh-mcp-resources`）
 

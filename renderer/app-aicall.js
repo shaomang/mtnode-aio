@@ -65,33 +65,13 @@
     ensureAiCallState(node);
   }
 
-  /* 新建的工具 / 函数节点：按当前默认路由 / 默认模型 / 默认预设补种一份可见的选择。
-     不补种的话按钮永远显示「自动」，用户会以为没有这套设定可用。 */
+  /* 新建的工具 / 函数节点：只补种预设 / 思考强度两档默认，**不写模型**。
+     模型侧一律「未选择 = 跟随设置 · 智能能力的默认模型」（S.config.dsh.model），
+     由 aiResolvedModelEffective 在运行期现算 —— 不在节点上固化一份「新建当时的默认」，
+     否则用户以后改设置，这些节点会一直在跑旧模型（这正是「工具用的模型与设置不符」）。 */
   function aiCallSeedDefaults(node) {
     if (!node || !(node.kind === "function" || isToolAiNode(node))) return;
     ensureAiCallState(node);
-    let route = "";
-    try {
-      route = String(preferredAgentProviderRoute() || "").trim();
-    } catch (_) {
-      route = "";
-    }
-    if (!route) {
-      try {
-        route = defaultAgentProviderRoute();
-      } catch (_) {
-        route = "";
-      }
-    }
-    if (!route) route = "deepseek-official";
-    let model = "";
-    try {
-      model = String(preferredAgentModelForRoute(route) || "").trim();
-    } catch (_) {
-      model = "";
-    }
-    node.aiProvider = route;
-    node.aiModel = model;
     if (!aiPresetKnown(node.aiPreset)) node.aiPreset = aiPresetKnown(AGENT_PRESET_DEFAULT);
     if (!aiEffortKnown(node.aiEffort)) node.aiEffort = aiEffortKnown("high");
   }
@@ -304,6 +284,35 @@
     };
   }
 
+  /* 同上的「现值」口径：没有任何节点选过时，回落到**设置 · 智能能力的默认模型**
+     （S.config.dsh.model，由 app.js / app-agent.js 的 dshDefaultModelPick 唯一解析）。
+     与 aiResolvedModel 分开，是为了不动「就近继承」那套语义：
+       · 弹层 / 提示行仍按 aiResolvedModel 说「继承自谁」（fromDefault 的「默认」不是节点，
+         不能冒充成继承源）；
+       · 真正要跑模型的地方（工具节点运行下发 / 函数节点的 mtnode.ai / 头部按钮显示）
+         按这一份取值 —— 未自选的工具节点因此跑的一律是设置里的那一只，不是别的清单首项。
+     默认模型不可用（空 / 那只模型不在本机任何服务商 / 所属服务商被停用或没 Key）时
+     返回 null 且 **不换别的模型**：运行入口由 dshDefaultModelRoute 抛出带指路的错误。 */
+  function aiResolvedModelEffective(node) {
+    const eff = aiResolvedModel(node);
+    if (eff) return eff;
+    let pick = null;
+    try {
+      pick =
+        typeof dshDefaultModelPick === "function" ? dshDefaultModelPick() : null;
+    } catch (_) {
+      pick = null;
+    }
+    if (!pick || !pick.ok) return null;
+    return {
+      provider: pick.route,
+      model: pick.model,
+      source: null,
+      inherited: false,
+      fromDefault: true,
+    };
+  }
+
   /* 需要借助 AI 的节点种类：按序号取服务商的图像 / 文本处理、智能任务 */
   function aiCallNodeNeeds(node) {
     if (!node) return false;
@@ -428,39 +437,37 @@
      返回 { provider, model, preset, effort, providerConfig } 或 null。 */
   function aiRunSpecFor(node) {
     const eff = aiResolvedOf(node);
-    if (!eff.model) return null;
+    /* 模型这一格走「现值」：本节点 / 上层都没选 → 设置 · 智能能力的默认模型；
+       不可用时 runSpec 仍要给出来（ai() 调用点据此报错，而不是静默换一只）。 */
+    const effModel = aiResolvedModelEffective(node);
+    if (!effModel || !effModel.model) return null;
     let providerConfig = null;
     try {
       if (typeof providerForAgentRoute === "function")
-        providerConfig = providerForAgentRoute(eff.provider) || null;
+        providerConfig = providerForAgentRoute(effModel.provider) || null;
     } catch (_) {
       providerConfig = null;
     }
     return {
-      provider: eff.provider,
-      model: eff.model,
+      provider: effModel.provider,
+      model: effModel.model,
       preset: eff.preset,
       effort: eff.effort,
-      providerName: aiRouteName(eff.provider),
+      providerName: aiRouteName(effModel.provider),
       providerConfig,
+      fromDefault: !!effModel.fromDefault,
     };
   }
 
-  /* 运行期兜底：把生效值写回本节点自己（没选过时补上），返回是否改动。
-     函数 / 工具节点「运行了就用选中的模型」这条不靠别的开关，靠这里落定。
-     预设 / 思考强度同样补齐：新建时补过种，这里兜住旧画布（加功能前建的节点）。
-     补种 = 写 aiPreset / aiEffort（不是 dev*，避免给开发节点之外的节点塞开发字段）。 */
+  /* 运行期兜底：只把**预设 / 思考强度**补齐（新建时补过种，这里兜住旧画布 —— 加功能前建的节点），
+     返回是否改动。
+     模型侧刻意不补种：空 = 跟随设置 · 智能能力的默认模型，由运行期现算（见
+     aiResolvedModelEffective）—— 一旦写回节点，用户之后改设置这些节点也不会跟着变。 */
   function aiApplyToSelf(node) {
     ensureAiCallState(node);
     if (!aiCallTarget(node)) return false;
     const eff = aiResolvedOf(node);
-    if (!eff.model) return false;
     let dirty = false;
-    if (!String(node.aiModel || "").trim()) {
-      node.aiModel = eff.model;
-      node.aiProvider = eff.provider;
-      dirty = true;
-    }
     if (!String(node.aiPreset || "").trim()) {
       const p = eff.preset || aiPresetKnown(AGENT_PRESET_DEFAULT);
       if (p) {
@@ -484,7 +491,10 @@
 
   function aiCallButtonLabel(node) {
     const s = aiResolvedOf(node);
-    const parts = [s.model || I18n.t("自动")];
+    /* 模型这一格显示**现值**：未自选时直接显示设置里的默认模型名，
+       而不是「自动」——「显示的那只 != 实际跑的那只」正是本次要修的观感。 */
+    const eff = aiResolvedModelEffective(node);
+    const parts = [s.model || (eff && eff.model) || I18n.t("自动")];
     if (s.preset) parts.push(aiPresetShortName(s.preset));
     if (s.effort) parts.push(aiEffortShortTag({ effort: s.effort }));
     return parts.filter(Boolean).join(" · ");
@@ -494,8 +504,9 @@
      类名用 .n-ai-call（与开发节点 .n-dev-model 同款视觉、不同类名 —— 开发节点上的
      Agent 设定按钮与它的锚点选择器保持原样，两块面板互斥但不共享 DOM 标记）。 */
   function aiCallButtonState(node) {
-    const eff = aiResolvedModel(node);
-    if (eff) return "n-ai-call ai-call-btn" + (eff.inherited ? " inherited" : "");
+    const eff = aiResolvedModelEffective(node);
+    if (eff)
+      return "n-ai-call ai-call-btn" + (eff.inherited ? " inherited" : "");
     const s = aiResolvedOf(node);
     return (
       "n-ai-call ai-call-btn" + (s.preset || s.effort ? "" : " auto")
@@ -510,19 +521,24 @@
 
   function aiCallButtonTitle(node) {
     const eff = aiResolvedModel(node);
+    const effNow = eff || aiResolvedModelEffective(node);
     const scoped = aiCallScopedWord(node);
     let t;
-    if (!eff)
+    if (!effNow)
       t = I18n.t("AI 调用：自动（跟随默认）· 点击选择模型 / 预设 / 思考强度");
     else {
-      const m = aiRouteName(eff.provider) + " · " + eff.model;
-      t = eff.inherited
+      const m = aiRouteName(effNow.provider) + " · " + effNow.model;
+      t = effNow.inherited
         ? I18n.t("AI 调用：") +
           m +
           I18n.t("（继承自「") +
-          ((eff.source && (eff.source.title || eff.source.id)) || "") +
+          ((effNow.source && (effNow.source.title || effNow.source.id)) || "") +
           I18n.t("」）· 点击为本节点单独选择")
-        : I18n.t("AI 调用：") + m + I18n.t(" · 点击修改");
+        : effNow.fromDefault
+          ? I18n.t("AI 调用：") +
+            m +
+            I18n.t("（设置 · 智能能力里的默认模型）· 点击为本节点单独选择")
+          : I18n.t("AI 调用：") + m + I18n.t(" · 点击修改");
     }
     return (
       t +
@@ -787,14 +803,31 @@
   function renderAiModelPane(list, node) {
     const own = aiModelOwn(node);
     const curKey = own ? own.provider + "|" + own.model : "";
+    /* 没自选时把「现在实际会用的那一只」（设置 · 智能能力的默认模型）标出来 ——
+       用户一眼看得出「不选」等于用哪一只，不必去设置里比对。 */
+    const effNow = aiResolvedModelEffective(node);
+    const curEffective = effNow && effNow.fromDefault;
     let any = 0;
     for (const g of aiModelGroups()) {
       const models = g.models || [];
       if (!models.length) continue;
       list.appendChild(aiDlgEl("div", "dev-model-group", g.name));
       for (const m of models) {
-        aiPopOption(list, m, curKey === g.id + "|" + m, () =>
-          applyAiCallSetting(node, "model", m, g.id),
+        const on = curKey === g.id + "|" + m;
+        const mark = on
+          ? ""
+          : curEffective && effNow.provider === g.id && effNow.model === m
+            ? I18n.t("（默认）")
+            : "";
+        aiPopOption(
+          list,
+          m,
+          on,
+          () => applyAiCallSetting(node, "model", m, g.id),
+          mark
+            ? I18n.t("设置 · 智能能力的默认模型：不选它时本节点就用它。")
+            : "",
+          mark,
         );
         any++;
       }
@@ -918,26 +951,32 @@
         I18n.t("未选择：本节点与未自行选择的内部节点跟随默认预设。"),
       );
     const eff = aiResolvedModel(node);
+    const effNow = eff || aiResolvedModelEffective(node);
     return aiScopeLine(
-      eff ? aiRouteName(eff.provider) + " · " + eff.model : "",
-      eff && eff.source,
-      !!(eff && eff.inherited),
-      I18n.t("未选择：本节点需要借助 AI 时跟随默认模型。"),
+      effNow ? aiRouteName(effNow.provider) + " · " + effNow.model : "",
+      effNow && effNow.source,
+      !!(effNow && effNow.inherited),
+      effNow
+        ? I18n.t("未选择：本节点需要借助 AI 时用设置 · 智能能力里的默认模型。")
+        : I18n.t("未选择：本节点需要借助 AI 时跟随默认模型。"),
     );
   }
 
   function aiModelDialogText(node) {
     const eff = aiResolvedModel(node);
-    if (!eff) return I18n.t("自动（跟随默认）");
+    const effNow = eff || aiResolvedModelEffective(node);
+    if (!effNow) return I18n.t("自动（跟随默认）");
     return (
-      aiRouteName(eff.provider) +
+      aiRouteName(effNow.provider) +
       " · " +
-      eff.model +
-      (eff.inherited
+      effNow.model +
+      (effNow.inherited
         ? I18n.t("（继承自「") +
-          ((eff.source && (eff.source.title || eff.source.id)) || "") +
+          ((effNow.source && (effNow.source.title || effNow.source.id)) || "") +
           I18n.t("」）")
-        : "")
+        : effNow.fromDefault
+          ? I18n.t("（设置 · 智能能力里的默认模型）")
+          : "")
     );
   }
 
@@ -1054,6 +1093,7 @@
     /* 生效值 */
     resolvedOf: aiResolvedOf,
     resolvedModel: aiResolvedModel,
+    resolvedModelEffective: aiResolvedModelEffective,
     modelOwn: aiModelOwn,
     presetOwn: aiPresetOwn,
     effortOwn: aiEffortOwn,
@@ -1083,6 +1123,7 @@
   window.aiCallSeedDefaults = aiCallSeedDefaults;
   window.aiResolvedOf = aiResolvedOf;
   window.aiResolvedModel = aiResolvedModel;
+  window.aiResolvedModelEffective = aiResolvedModelEffective;
   window.aiModelOwn = aiModelOwn;
   window.aiCallButtonEl = aiCallButtonEl;
   window.aiCallBodyButtonEl = aiCallBodyButtonEl;

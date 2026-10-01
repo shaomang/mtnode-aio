@@ -1,483 +1,696 @@
 "use strict";
 /* ============================================================================
- * 本地语音转写（Qwen3-ASR）渲染层
+ * 画布节点级语音转写（renderer/app-asr.js）
  * ----------------------------------------------------------------------------
- * 需求：把「音频输入」（input_audio / 素材音频条目 / 语音生成产物 / 工具与函数节点的
- *      音频端子）接到文字处理节点（proc_text 普通与智能模式、agent_task）后，
- *      运行时自动把音频转成文字，并以「【音频转写】…」段落注入提示词 / 任务描述。
+ * 需求（本轮改口径）：转写不再挂在文字处理节点上，而是**音频节点**自己的能力：
+ *   · 音频输入节点 / 视频输入节点（文件节点载入音频 / 视频后的那张节点）的预览下方
+ *     多一枚「转录」按钮 —— 点一下就地把该文件转成文字（可编辑、可重新转录）；
+ *   · 文字处理节点（proc_text 普通与智能模式、agent_task）**不再自己转写**：它们只在
+ *     点 ▶ 运行时，去上游音频 / 视频节点取已备好的转写文本，没有（或音频文件已变、
+ *     且文本不是用户手改的）就当场替那张音频节点转一次，再拿它的文字往下走。
  *
- * 分工：
- *   · 后端与缓存都在主进程（asr/main-asr.js）：静默起停、随 MTNode 退出、空闲释放、
- *     全局媒体互斥、按 路径+mtime+size+热词指纹 缓存；
- *   · 本文件只管：探测后端状态、首次连接时的安装弹窗、节点内转写文本的展示 / 编辑 /
- *     重新转写、把转写文本喂给提示词组装（同步取用，见 asrTextItemsOf / asrTranscriptBlockFor）。
+ * 识别引擎：**官方本地 SenseVoice**（跑在 dsh 运行时里，与状态栏那枚话筒、应用窗口的
+ * appHost.asr* 同一条通道 —— 全应用只有这一份语音模型与缓存，不会重复下载）。
+ * 本文件只做节点侧的那几件事：
+ *   · 找「这个节点的音频文件」（audio / video 输入节点的 mediaAsset）；
+ *   · 转写结果写在**音频节点自己身上**（node.asrTranscripts，随画布持久化）+ 主进程按
+ *     音频路径缓存（speech-store.js，命中即秒回）；
+ *   · 新鲜度：存指纹（路径 + 大小 + 修改时间）—— 文件变了就重转；用户手改过（edited）
+ *     的文本绝不覆盖，只给一句提醒；
+ *   · 运行前闸门 asrEnsureForRun（文字节点在 app-nodes.js 里调）与对外取文接口
+ *     asrTextItemsOf（app.js 的 allTextItems / resolveRefs 调）。
  *
- * 与既有「图像 → 视觉模型」的分工一致：音频只被文字节点消费，转写产物是纯文本。
+ * 与「图像 → 视觉模型」的分工一致：音频只被文字节点消费，转写产物是纯文本；
+ * 音频节点自己的输出端子口径不变（照旧给该文件的 file:/// URL，视频节点仍是视频 URL）。
+ *
+ * 不再有的东西（随旧口径移除）：文字节点上的「本地语音转写」区块、asrPrepareForRun、
+ * asrTaskAppendText（智能节点任务描述追加）与 node.asrTranscripts 的消费方假设。
+ * 更早的 Qwen3-ASR 那套（Python 后端 / venv / CUDA / ffmpeg / 插件控制台 / 热词表）
+ * 早已移除，SenseVoice 的官方调用只收 audio + language。
  * ==========================================================================*/
 
-const ASR_SKILL_NAME = "asr-local-install";
-const ASR_STATUS_TTL_MS = 4000;
-
-let _asrStatus = null;
-let _asrStatusAt = 0;
-let _asrStatusPromise = null;
-/** 转写文本的内存镜像：path(小写) → text；运行时同步取用（见 asrTranscriptOf） */
-const _asrMem = new Map();
-/** 节点内编辑防抖定时器：nodeId → timer */
+/** 现况缓存：同一帧里节点重绘可能问好几次，只留最近一次 */
+let _asrSt = null;
+let _asrStAt = 0;
+/** 节点上转写文本的写缓存防抖：nodeId + "\0" + path(小写) → timer */
 const _asrEditTimers = new Map();
+/** 在飞的转写：key 同上 → Promise（同一音频不被同时转两遍） */
+const _asrBusy = new Map();
 
-function asrHasApi() {
-  return !!(window.api && window.api.asrStatus);
-}
+/* 语音运行时是**按需冷起**的（实测约 1~2 秒；首次还要加载 ONNX + VAD）：这期间
+   speech 的提供者名单是空的。名单空 = **引擎还在启动**，不是「不可用」——
+   状态栏那枚话筒一直有这层退避重试（app-voice.js 的 READY_TRIES × READY_RETRY_MS），
+   节点这条也按同一口径重试：4 次 × 400ms；**只等名单**（模型没就绪另有下载流程，
+   不在这里等）。 */
+const ASR_READY_TRIES = 4;
+const ASR_READY_RETRY_MS = 400;
+
 function asrT(s, vars) {
   return typeof I18n !== "undefined" && I18n.t ? I18n.t(s, vars) : s;
 }
-
-/* 文字处理节点：本需求只服务这两类（音频 → 文字） */
-function isAsrConsumerNode(node) {
-  return !!(node && (node.kind === "agent_task" || node.kind === "proc_text"));
-}
-/* 智能节点（agent_task / 文本智能模式）：转写文本追加到任务描述 */
-function isAsrAgentNode(node) {
-  return !!(node && (node.kind === "agent_task" || (node.kind === "proc_text" && node.agent)));
+function asrHasApi() {
+  return !!(typeof window !== "undefined" && window.api && window.api.dshSpeech);
 }
 
-function asrBlockTitle(title) {
-  return asrT("音频转写") + (title ? " · " + title : "");
+/* ==================== 谁有音频：音频 / 视频输入节点 ==================== */
+/** 这个节点自身是否带音频文件（音频输入节点、视频输入节点：视频的音轨也是音频） */
+function isAsrMediaNode(node) {
+  return !!(node && (node.kind === "input_audio" || node.kind === "input_video"));
+}
+/** 该节点当前绑定的媒体文件绝对路径（未选文件 → 空串） */
+function asrMediaPathOf(node) {
+  if (!isAsrMediaNode(node)) return "";
+  return String(node.mediaAsset || "").trim();
+}
+/** 媒体类型：audio / video（视频节点的转写同样当文本给下游） */
+function asrMediaKindOf(node) {
+  return node && node.kind === "input_video" ? "video" : "audio";
+}
+/** 「音频节点」的显示名（转写块标题与提示词块标题都用它） */
+function asrSourceLabel(node) {
+  return (
+    String((node && (node.sourceName || node.title)) || "").trim() ||
+    (asrMediaKindOf(node) === "video" ? asrT("视频") : asrT("音频"))
+  );
 }
 
-/* ---- 状态（带 TTL 缓存，避免每个节点每次运行都探一遍） ---- */
-async function asrStatus(force) {
-  if (!asrHasApi()) return null;
-  const now = Date.now();
-  if (!force && _asrStatus && now - _asrStatusAt < ASR_STATUS_TTL_MS) return _asrStatus;
-  if (_asrStatusPromise) return _asrStatusPromise;
-  _asrStatusPromise = window.api
-    .asrStatus()
-    .then((st) => {
-      _asrStatus = st || null;
-      _asrStatusAt = Date.now();
-      _asrStatusPromise = null;
-      return _asrStatus;
-    })
-    .catch(() => {
-      _asrStatusPromise = null;
-      return _asrStatus;
-    });
-  return _asrStatusPromise;
-}
-function asrInvalidateStatus() {
-  _asrStatusAt = 0;
-}
-
-/* ---- 音频来源解析 ---- */
-function asrAudioValueOfWire(w, consumer) {
-  const src = w && nodeById(w.from);
-  if (!src || w.rel || wireFromIsControl(w)) return null;
-  const fi = Number(w.fromIndex || 0);
-  if (typeof wireSourceMediaType === "function" && wireSourceMediaType(src, fi) !== "audio")
-    return null;
-  const portIdx =
-    typeof refInputIdxFor === "function" ? refInputIdxFor(consumer, src, 0, w) : fi;
-  const v = typeof valueForInput === "function" ? valueForInput(src, portIdx, consumer) : null;
-  if (!v || v.kind !== "audio" || !v.path) return null;
-  const title =
-    (typeof itemTitleOf === "function" ? itemTitleOf(src, portIdx, consumer) : "") ||
-    src.title ||
-    asrT("音频");
-  return { src, path: String(v.path), title, portIdx };
-}
-/** 节点接进来的全部音频（按连线顺序） */
-function asrAudioInputsOf(node) {
-  if (!isAsrConsumerNode(node) || typeof wiresTo !== "function") return [];
-  const out = [];
-  for (const w of wiresTo(node.id)) {
-    const a = asrAudioValueOfWire(w, node);
-    if (a) out.push(a);
-  }
-  return out;
-}
-/* 该来源是否是「音频来源」（供 resolveRefs 的连线自动注入放行） */
-function isAsrAudioSourceKind(src, portIdx) {
-  if (!src) return false;
-  try {
-    return typeof wireSourceMediaType === "function"
-      ? wireSourceMediaType(src, Number(portIdx || 0)) === "audio"
-      : false;
-  } catch {
-    return false;
-  }
-}
-
-/** 取该音频在本节点已有的转写文本：node.asrTranscripts（持久化）优先，其次内存镜像 */
-function asrTranscriptOf(consumer, path) {
+/** 该节点的转写条目（一条媒体 = 一条转写；旧存档里可能不止一条） */
+function asrTranscriptOf(node, path) {
   const key = String(path || "").toLowerCase();
   if (!key) return null;
-  const list = (consumer && consumer.asrTranscripts) || [];
+  const list = (node && node.asrTranscripts) || [];
   for (const t of list) {
-    if (String(t && t.path ? t.path : "").toLowerCase() === key && t.text != null)
-      return t;
+    if (String(t && t.path ? t.path : "").toLowerCase() === key && t.text != null) return t;
   }
-  if (_asrMem.has(key)) return { path, text: _asrMem.get(key) };
   return null;
 }
-
-/** allTextItems 钩子：音频来源 → 已转写文本作为背景块（同步；没有转写就返回 null 走原逻辑） */
-function asrTextItemsOf(src, consumer, portIdx) {
-  if (!consumer || !isAsrConsumerNode(consumer) || !src) return null;
-  if (!isAsrAudioSourceKind(src, portIdx)) return null;
-  let v = null;
+/** 节点上「当前这条媒体」的转写文本（下游取文与界面共用） */
+function asrTranscriptTextOf(node) {
+  const p = asrMediaPathOf(node);
+  if (!p) return "";
+  const hit = asrTranscriptOf(node, p);
+  return hit ? String(hit.text || "") : "";
+}
+/** 媒体文件指纹（路径 + 大小 + 修改时间）：拿不到大小 / 时间（文件没了）时只认路径 */
+async function asrStampOf(path) {
+  const out = { path: String(path || ""), size: 0, mtime: 0 };
+  if (!out.path) return out;
   try {
-    v = valueForInput(src, portIdx == null ? 0 : portIdx, consumer);
-  } catch {
-    return null;
-  }
-  if (!v || v.kind !== "audio" || !v.path) return null;
-  const hit = asrTranscriptOf(consumer, v.path);
-  if (!hit) return null;
-  const title =
-    (typeof itemTitleOf === "function"
-      ? itemTitleOf(src, portIdx == null ? 0 : portIdx, consumer)
-      : "") || src.title;
-  return [{ title: asrBlockTitle(title), text: String(hit.text) }];
-}
-
-/** resolveRefs 钩子：这条连线的来源若是音频且有转写 → 给出背景块（否则 null 走原有口径） */
-function asrTranscriptBlockFor(consumer, src, portIdx) {
-  if (!consumer || !isAsrConsumerNode(consumer) || !src) return null;
-  if (!isAsrAudioSourceKind(src, portIdx)) return null;
-  let v = null;
-  try {
-    v = valueForInput(src, portIdx == null ? 0 : portIdx, consumer);
-  } catch {
-    return null;
-  }
-  if (!v || v.kind !== "audio" || !v.path) return null;
-  const hit = asrTranscriptOf(consumer, v.path);
-  if (!hit) return null;
-  const title =
-    (typeof itemTitleOf === "function"
-      ? itemTitleOf(src, portIdx == null ? 0 : portIdx, consumer)
-      : "") || src.title;
-  return { title: asrBlockTitle(title), text: String(hit.text) };
-}
-
-/* ---- 提示词注入：agent_task 的任务描述里追加「【音频转写】…」段落 ---- */
-function asrTaskAppendText(node) {
-  if (!isAsrAgentNode(node)) return "";
-  const list = (node && node.asrTranscripts) || [];
-  if (!list.length) return "";
-  const parts = [];
-  for (const t of list) {
-    const body = String(t.text || "").trim();
-    if (!body) continue;
-    parts.push(
-      "【" + asrT("音频转写") + (t.title ? " · " + t.title : "") + "】\n" + body,
-    );
-  }
-  return parts.join("\n\n");
-}
-
-/* ---- 节点上的热词 / 全局默认热词 ---- */
-function asrHotwordsOf(node) {
-  const raw = String((node && node.asrHotwords) || "");
-  return raw
-    .split(/[\n,，、;；]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/* ---- 错误文案 ---- */
-function asrErrText(r) {
-  const code = (r && (r.error || r.message)) || "";
-  const map = {
-    not_installed: asrT("本地语音后端尚未安装：请点节点上的「一键安装」或到「插件」里安装「本地语音转写」"),
-    no_cuda: asrT("未检测到可用的 NVIDIA 显卡，本地语音转写不可用（可在插件里选「仍装 CPU 版（很慢）」）"),
-    no_venv: asrT("语音后端缺少 Python 环境，请在插件卡片里点「自我修复」"),
-    audio_missing: asrT("音频文件不存在或已被移动"),
-    busy_media: (r && r.message) || asrT("已有音视频任务进行中，请稍后再试"),
-    backend_exited: asrT("语音后端起不来（已退出），请查看控制台日志或点「自我修复」"),
-    backend_start_timeout: asrT("语音后端启动超时（首次要加载模型，请稍后重试）"),
-    decode_failed: asrT("音频解码失败（后端缺少 ffmpeg？请在插件里点「自我修复」）"),
-    no_ffmpeg: asrT("后端缺少 ffmpeg，无法解码该音频格式（请在插件里点「自我修复」）"),
-    model_load_failed: asrT("模型加载失败，请查看控制台日志或点「自我修复」"),
-  };
-  return map[code] || (r && r.message) || code || asrT("转写失败");
-}
-
-/* ============================ 运行前准备 ============================ */
-/**
- * 文字节点运行前的音频准备（在 playNodeBody 里、上游补跑之前调用）：
- *   · 没有音频输入 → 直接放行；
- *   · 无 N 卡 / 未安装 → 节点上标状态并拦下本轮（不静默当作没输入）；
- *   · 逐个音频转写（命中缓存即秒回），结果写进 node.asrTranscripts 供提示词同步取用。
- * 返回 { ok:false, error } 时调用方必须中止本轮。
- */
-async function asrPrepareForRun(node) {
-  if (!isAsrConsumerNode(node) || !asrHasApi()) return { ok: true };
-  const audios = asrAudioInputsOf(node);
-  if (!audios.length) {
-    if (Array.isArray(node.asrTranscripts) && node.asrTranscripts.length) {
-      node.asrTranscripts = [];
-      node.asrState = "";
+    if (window.api && typeof window.api.fileStat === "function") {
+      const st = await window.api.fileStat(out.path);
+      if (st) {
+        out.size = Number(st.bytes || st.size) || 0;
+        out.mtime = Math.floor(Number(st.mtimeMs || st.mtime) || 0);
+      }
     }
-    return { ok: true };
+  } catch {}
+  return out;
+}
+/** 指纹是否一致（大小与时间都对得上才算「文件没变」） */
+function asrStampFresh(a, b) {
+  if (!a || !b) return false;
+  if (String(a.path || "").toLowerCase() !== String(b.path || "").toLowerCase()) return false;
+  const an = Number(a.size) || 0;
+  const bn = Number(b.size) || 0;
+  const am = Number(a.mtime) || 0;
+  const bm = Number(b.mtime) || 0;
+  /* 两边都没量到（无 fileStat / 旧存档没存）：只认路径，别把「没数据」当成「变了」 */
+  if (!an && !bn && !am && !bm) return true;
+  return an === bn && am === bm;
+}
+/** 转写是否新鲜：有文本 + 指纹一致 */
+async function asrIsFresh(node) {
+  const p = asrMediaPathOf(node);
+  if (!p) return false;
+  const rec = asrTranscriptOf(node, p);
+  if (!rec || !String(rec.text || "").trim()) return false;
+  return asrStampFresh(rec.stamp, await asrStampOf(p));
+}
+
+/* ==================== 引擎现况（带 TTL） ==================== */
+async function asrStatus(force) {
+  if (!asrHasApi() || typeof spStatus !== "function") return null;
+  if (!force && _asrSt && Date.now() - _asrStAt < 3000) return _asrSt;
+  const st = await spStatus(force);
+  _asrSt = st || null;
+  _asrStAt = Date.now();
+  return _asrSt;
+}
+function asrInvalidateStatus() {
+  _asrStAt = 0;
+}
+/** 引擎相位（ready / downloading / failed / unprepared） */
+function asrPhase(st) {
+  if (typeof spPhaseOf !== "function") return { ready: false, available: false, phase: "unprepared" };
+  return spPhaseOf(st);
+}
+/** 失败 → 一句人话（引擎那侧的词表在 app-speech.js，这里只补节点侧的语境） */
+function asrErrText(r) {
+  if (typeof spErrText === "function") return spErrText(r || {});
+  return (r && (r.message || r.error)) || asrT("语音识别没能完成（稍后再试）");
+}
+/** 冷起窗口里会看到的相位（实测：+1.9s 名单出现且 phase=checking、+2.4s ready）：
+ *  这段时间只该等 —— 判成「模型没就绪」会弹下载窗、把一次正常的首次转写吓回去。 */
+const ASR_STARTING_PHASES = /^(checking|loading|waking)$/;
+/** 名单为空 = 语音运行时还在冷起（实测约 1~2 秒），不是「服务不可用」；
+ *  名单已出但还在 checking / loading / waking 也在同一个窗口里。
+ *  「语音通道未就绪（运行时刚起来时请稍等一两秒再试）」这一类明确报错同样是这个窗口：
+ *  网关刚把运行时拉起来，插件那条 socket 还没登记 —— 都值得退避重试。
+ *  只有真配置错（缺工作目录之类）与真下载（phase=downloading）才当场如实上报，不在这儿空等。 */
+function asrStarting(st) {
+  if (typeof spPhaseOf !== "function") return false;
+  const p = spPhaseOf(st);
+  if (p.starting) return true;
+  if (ASR_STARTING_PHASES.test(String(p.phase || ""))) return true;
+  return /未就绪|通道|not\s*ready|starting|启动/i.test(String(p.error || ""));
+}
+function asrSleep(ms) {
+  return new Promise((r) => setTimeout(r, Math.max(0, Number(ms) || 0)));
+}
+/** 拿一次「已起步」的引擎现况：名单空（冷起窗口）就按 ASR_READY_TRIES 退避重试。
+ *  **每一轮都现读**（force）：3 秒 TTL 里那份可能是下载 / 冷起期间留下的旧值 ——
+ *  用户刚把模型下完就点「转录」，照着旧值会继续被判「未就绪」（本函数只在真转写前调）。
+ *  **只等名单**：模型没就绪是另一条流程（下载 + 下一轮重跑），不在这里空等。
+ *  返回 { st, starting }：starting=true = 重试完仍是空名单（引擎还在起，不是坏）。 */
+async function asrStatusReady() {
+  let st = null;
+  for (let i = 0; i < ASR_READY_TRIES; i++) {
+    st = await asrStatus(true);
+    if (!st) return { st: null, starting: false };
+    if (!asrStarting(st)) return { st: st, starting: false };
+    if (i < ASR_READY_TRIES - 1) await asrSleep(ASR_READY_RETRY_MS);
   }
-  const st = await asrStatus(true);
-  if (!st) return { ok: false, error: "no_api", message: asrT("本地语音模块不可用") };
-  if (!st.supported) {
-    node.asrState = "no_cuda";
-    node.error = asrErrText({ error: "no_cuda" });
-    toast(node.error, "warn");
-    return { ok: false, error: "no_cuda", message: node.error };
+  return { st: st, starting: true };
+}
+/** 引擎门：可用 / 模型就绪才放行；缺模型顺手把下载跑起来（约 239MB，全应用只此一份） */
+async function asrEngineGate(node) {
+  const got = await asrStatusReady();
+  const st = got.st;
+  if (!st) {
+    return {
+      ok: false,
+      error: "no_api",
+      message: asrT("语音识别服务不可用（本机 dsh 运行时的语音能力没起来）"),
+    };
   }
-  if (!st.installed) {
-    node.asrState = "not_installed";
-    node.error = asrErrText({ error: "not_installed" });
-    asrOpenInstallDialog({ reason: "run" });
-    return { ok: false, error: "not_installed", message: node.error };
+  const ph = asrPhase(st);
+  if (got.starting || !ph.available) {
+    /* 名单为空 = 语音运行时还在冷起（首次约 1~2 秒）：重试完仍是空的才当作「还在启动」，
+       说清「等一下再点」而不是把这一次判成服务坏掉。 */
+    if (got.starting) {
+      if (node) node.asrState = "starting";
+      return {
+        ok: false,
+        error: "starting",
+        message: asrT("语音服务正在启动（首次约一两秒）：稍等一下再试"),
+      };
+    }
+    if (node) node.asrState = "unavailable";
+    /* 通道明确报错时把原因翻成人话（缺工作目录 / 网关没起来…）：一律说「语音能力没起来」
+       会让用户没处下手。 */
+    const why = ph.error && typeof spErrText === "function" ? spErrText({ error: ph.error }) : "";
+    return {
+      ok: false,
+      error: "unavailable",
+      message: why || asrT("语音识别服务不可用（本机 dsh 运行时的语音能力没起来）"),
+    };
   }
-  node.error = null;
-  const out = [];
-  for (const a of audios) {
-    const hot = asrHotwordsOf(node);
+  if (!ph.ready) {
+    if (node) node.asrState = ph.failed ? "failed" : "downloading";
+    const msg = typeof spPhaseText === "function" ? spPhaseText(st) : asrT("语音模型尚未下载");
+    /* 没就绪就把下载跑起来（幂等；下载完下一轮即可转写），但不硬等 —— 本次明确拦下 */
+    if (typeof spEnsureReady === "function") {
+      try {
+        spEnsureReady();
+      } catch {}
+      try {
+        asrOpenModelDialog({ reason: "run" });
+      } catch {}
+    }
+    return {
+      ok: false,
+      error: ph.failed ? "prepare_failed" : "unprepared",
+      message: msg,
+    };
+  }
+  if (node) node.error = null;
+  return { ok: true, st: st };
+}
+
+/* ==================== 转写主流程 ==================== */
+/** 节点上的进度文案（长音频逐句跑，界面要看得见第几句） */
+function asrProgressText(info, total) {
+  const n = Math.max(1, Number(total) || 1);
+  const i = Math.min(n, Math.max(1, Number((info && info.index) || 0) + 1));
+  return n > 1 ? asrT("转录中…（第 {i}/{n} 句）", { i: i, n: n }) : asrT("转写中…");
+}
+/** 一次转写：写回节点字段（含指纹）+ 主进程缓存。force=true 时忽略已有文本（用户点重转）。 */
+async function asrTranscribeNode(node, opts) {
+  const o = opts || {};
+  if (!isAsrMediaNode(node)) return { ok: false, error: "not_media_node" };
+  const path = asrMediaPathOf(node);
+  if (!path) {
+    node.asrState = "error";
+    node.error = asrT("先选择音频文件，再点「转录」");
+    return { ok: false, error: "no_path", message: node.error };
+  }
+  const key = String(node.id || "") + "\u0000" + path.toLowerCase();
+  if (_asrBusy.has(key)) return _asrBusy.get(key);
+  const run = (async () => {
+    /* 每次真正要转写都现读一遍引擎现况：3 秒 TTL 的那份现况可能是下载 / 冷起期间留下的旧值，
+       照着它做决定会出现「明明已经就绪却仍被判没法转」。 */
+    asrInvalidateStatus();
+    const gate = await asrEngineGate(node);
+    if (!gate.ok) {
+      node.error = gate.message;
+      try {
+        toast(gate.message, /failed|unavailable/.test(String(gate.error)) ? "warn" : "info");
+      } catch {}
+      return gate;
+    }
+    node.asrState = "running";
+    node.error = null;
+    try {
+      renderCanvas();
+    } catch {}
     let r = null;
     try {
-      r = await window.api.asrTranscribe({
-        path: a.path,
-        hotwords: hot,
-        nodeId: node.id,
-        workflowId: (S.wf && S.wf.id) || "",
+      r = await spTranscribeFile(path, {
+        language: String(node.asrLanguage || "auto"),
+        force: !!o.force,
+        onProgress: (info) => {
+          try {
+            node.asrProgress = info || null;
+            node.asrState = "running";
+            renderCanvas();
+          } catch {}
+        },
       });
     } catch (e) {
       r = { ok: false, error: String((e && e.message) || e) };
     }
+    node.asrProgress = null;
     if (!r || !r.ok) {
       node.asrState = "error";
-      node.error = asrErrText(r);
-      toast(node.error, "err");
-      asrInvalidateStatus();
+      node.error = (r && r.message) || asrErrText(r);
+      try {
+        toast(node.error, "err");
+      } catch {}
+      try {
+        renderCanvas();
+      } catch {}
       return { ok: false, error: (r && r.error) || "asr_failed", message: node.error };
     }
-    _asrMem.set(String(a.path).toLowerCase(), String(r.text || ""));
-    out.push({
-      path: a.path,
-      title: a.title,
+    const stamp = await asrStampOf(path);
+    const list = Array.isArray(node.asrTranscripts)
+      ? node.asrTranscripts.filter(
+          (t) =>
+            String(t && t.path ? t.path : "").toLowerCase() !== path.toLowerCase(),
+        )
+      : [];
+    list.push({
+      path: path,
+      title: asrSourceLabel(node),
       text: String(r.text || ""),
+      edited: false,
       cached: !!r.cached,
       segments: Number(r.segments) || 0,
-      duration_sec: Number(r.duration_sec) || 0,
+      duration_sec: Number(r.durationSec) || Number(r.duration_sec) || 0,
+      stamp: stamp,
       at: Date.now(),
     });
+    node.asrTranscripts = list;
+    node.asrState = "ok";
+    node.error = null;
+    try {
+      scheduleSave();
+    } catch {}
+    try {
+      renderCanvas();
+    } catch {}
+    return { ok: true, text: String(r.text || ""), cached: !!r.cached, segments: Number(r.segments) || 0 };
+  })();
+  _asrBusy.set(key, run);
+  try {
+    return await run;
+  } finally {
+    _asrBusy.delete(key);
   }
-  node.asrTranscripts = out;
-  node.asrState = "ok";
-  node.error = null;
+}
+
+/** 音频节点上的「转录 / 重新转录」按钮入口 */
+async function asrTranscribeFromNode(node) {
+  const r = await asrTranscribeNode(node, { force: true });
+  if (r && r.ok) {
+    try {
+      toast(asrT("已转录"), "ok");
+    } catch {}
+  } else if (r && r.message) {
+    try {
+      toast(r.message, "warn");
+    } catch {}
+  }
+  return r;
+}
+
+/* ==================== 运行前闸门（文字节点点 ▶ 时调） ==================== */
+function asrNodeById(id) {
   try {
-    scheduleSave();
-  } catch {}
-  try {
-    renderCanvas();
-  } catch {}
+    return typeof nodeById === "function" ? nodeById(id) : null;
+  } catch {
+    return null;
+  }
+}
+/** 指向这个文字节点的上游音频 / 视频节点（同一个源只算一次，按连线顺序） */
+function asrUpstreamMediaNodes(node) {
+  const out = [];
+  const seen = new Set();
+  if (!node || typeof wiresTo !== "function") return out;
+  const push = (n) => {
+    if (!n || !isAsrMediaNode(n) || seen.has(n.id)) return;
+    seen.add(n.id);
+    out.push(n);
+  };
+  for (const w of wiresTo(node.id)) {
+    if (!w || w.rel) continue;
+    const src = asrNodeById(w.from);
+    if (!src) continue;
+    /* 超级节点壳 / 素材节点这类中转：src 不是音频节点就按「这个源的叶子」再摊一层 */
+    if (isAsrMediaNode(src)) {
+      push(src);
+      continue;
+    }
+    if (typeof refLeafSourcesForWire === "function") {
+      try {
+        for (const leaf of refLeafSourcesForWire(w, node)) push(leaf);
+      } catch {}
+    }
+  }
+  return out;
+}
+/**
+ * 文字节点运行前的音频闸门（app-nodes.js 在执行上游补跑之后、本节点起跑之前调）：
+ *   · 没有接音频 / 视频节点 → 直接放行（行为逐字不变）；
+ *   · 逐个上游音频节点：已有新鲜转写 → 直接用，**不重转**（转一次多处复用）；
+ *   · 没有转写 / 音频文件变了（指纹不一致）→ 当场替它转一次，写回那张音频节点；
+ *   · 文本是用户手改过的（edited）但文件变了 → 不覆盖，只提醒，照旧用用户那份；
+ *   · 引擎不可用 / 模型没下载 / 转写失败 → 拦下本轮（不静默把音频当没输入）。
+ * 返回 { ok:false, error, message } 时调用方必须中止本轮。
+ */
+async function asrEnsureForRun(node) {
+  const srcs = asrUpstreamMediaNodes(node);
+  if (!srcs.length) return { ok: true };
+  for (const src of srcs) {
+    const path = asrMediaPathOf(src);
+    if (!path) continue; /* 音频节点还没选文件：下游按「无输入」处理，不拦 */
+    const rec = asrTranscriptOf(src, path);
+    const fresh = await asrStampFresh(rec && rec.stamp, await asrStampOf(path));
+    if (rec && String(rec.text || "").trim()) {
+      if (fresh) continue;
+      if (rec.edited) {
+        /* 用户手改过的文本绝不覆盖：只提醒，照旧用他那一份 */
+        try {
+          toast(asrT("音频文件已变动，但该节点的转录是你手改过的：未自动重转（想刷新请在音频节点上点「重新转录」）"), "warn");
+        } catch {}
+        continue;
+      }
+    }
+    const r = await asrTranscribeNode(src, { force: true });
+    if (!r || !r.ok) {
+      const msg = (r && r.message) || asrErrText(r);
+      node.asrState = src.asrState || "error";
+      node.error = msg;
+      if (r && (r.error === "unprepared" || r.error === "prepare_failed" || r.error === "starting"))
+        node.error = asrT("转录还没完成：") + msg;
+      return { ok: false, error: (r && r.error) || "asr_failed", message: node.error };
+    }
+  }
   return { ok: true };
 }
 
-/** 「重新转写」：清掉缓存与节点上的旧结果，然后单独跑一次转写（不重跑整个节点）。 */
-async function asrRetranscribeNode(node, path) {
-  if (!node || !asrHasApi()) return { ok: false };
-  await window.api.asrCacheClear({ path: path || "" });
-  _asrMem.delete(String(path || "").toLowerCase());
-  node.running = true;
-  try {
-    renderCanvas();
-  } catch {}
-  try {
-    const r = await asrPrepareForRun(node);
-    if (!r.ok && r.error) toast(asrErrText({ error: r.error, message: r.message }), "warn");
-    else toast(asrT("已重新转写"), "ok");
-    return r;
-  } finally {
-    node.running = false;
-    try {
-      scheduleSave();
-      renderCanvas();
-    } catch {}
+/* ==================== 取文：下游文字节点读音频节点的转写 ==================== */
+function asrBlockTitle(node) {
+  const label = asrSourceLabel(node);
+  return asrT("音频转写") + (label ? " · " + label : "");
+}
+/** allTextItems / resolveRefs 钩子：这个来源是音频 / 视频节点且有转写 → 给出背景块 */
+function asrTextItemsOf(src, consumer, portIdx) {
+  const one = asrTranscriptBlockOf(consumer, src, portIdx);
+  return one ? [one] : null;
+}
+/** 单个背景块（没转写 → null，调用方走原有口径） */
+function asrTranscriptBlockOf(consumer, src) {
+  if (!consumer || !src || !isAsrMediaNode(src)) return null;
+  const text = asrTranscriptTextOf(src);
+  if (!text.trim()) return null;
+  return { title: asrBlockTitle(src), text: text };
+}
+/** 同上，签名沿用旧调用点的 (consumer, src, portIdx) */
+function asrTranscriptBlockFor(consumer, src) {
+  return asrTranscriptBlockOf(consumer, src);
+}
+/** 这个文字节点接线上所有音频 / 视频节点的转写块（会话模式补进 input 用） */
+function asrTextBlocksFor(node) {
+  const out = [];
+  for (const src of asrUpstreamMediaNodes(node)) {
+    const one = asrTranscriptBlockOf(node, src);
+    if (one) out.push(one);
   }
+  return out;
 }
 
-/* ---- 节点内编辑转写文本：覆盖该音频的缓存（一处编辑全画布生效） ---- */
-function asrCommitEdit(node, path, text) {
-  const key = String(path || "").toLowerCase();
-  _asrMem.set(key, String(text || ""));
-  if (Array.isArray(node.asrTranscripts)) {
-    for (const t of node.asrTranscripts) {
-      if (String(t.path || "").toLowerCase() === key) {
-        t.text = String(text || "");
-        t.edited = true;
-      }
+/* ==================== 旧字段清理（本轮口径切换） ==================== */
+/**
+ * 本轮起转写归音频节点所有：文字节点上的 node.asrTranscripts / node.asrState 是旧口径
+ * 留下的字段，打开存档 / 切画布时**默默删掉**（不再读、也不留残渣）。
+ * 返回是否有改动（true 时调用方落盘）。
+ */
+function asrPurgeLegacyTranscripts(wf) {
+  let hit = false;
+  for (const n of (wf && wf.nodes) || []) {
+    if (!n || (n.kind !== "proc_text" && n.kind !== "agent_task")) continue;
+    if (n.asrTranscripts !== undefined) {
+      delete n.asrTranscripts;
+      hit = true;
+    }
+    if (n.asrState !== undefined) {
+      delete n.asrState;
+      hit = true;
     }
   }
-  const key2 = node.id + "\u0000" + key;
-  if (_asrEditTimers.has(key2)) clearTimeout(_asrEditTimers.get(key2));
+  return hit;
+}
+
+/* ==================== 节点上的转写文本（编辑 / 重新转录） ==================== */
+/** 编辑防抖写缓存：停手 400ms 后写一次（一处编辑全画布生效） */
+function asrCommitEdit(node, path, text) {
+  const key = String(node && node.id ? node.id : "") + "\u0000" + String(path || "").toLowerCase();
+  const rec = asrTranscriptOf(node, path);
+  if (rec) {
+    rec.text = String(text || "");
+    rec.edited = true;
+  }
+  if (_asrEditTimers.has(key)) clearTimeout(_asrEditTimers.get(key));
   _asrEditTimers.set(
-    key2,
+    key,
     setTimeout(() => {
-      _asrEditTimers.delete(key2);
-      if (!asrHasApi() || !window.api.asrCacheSet) return;
-      window.api
-        .asrCacheSet({ path, text: String(text || ""), hotwords: asrHotwordsOf(node) })
-        .catch(() => {});
+      _asrEditTimers.delete(key);
+      try {
+        if (typeof spRememberEdited === "function")
+          spRememberEdited(path, text, (node && node.asrLanguage) || "auto");
+      } catch {}
     }, 400),
   );
   try {
     scheduleSave();
   } catch {}
 }
+/** 清掉这个节点的转写（文件与缓存都不动，只清节点上那份文字） */
+function asrClearNodeTranscript(node) {
+  const path = asrMediaPathOf(node);
+  if (!path) return;
+  if (Array.isArray(node.asrTranscripts)) {
+    node.asrTranscripts = node.asrTranscripts.filter(
+      (t) => String(t && t.path ? t.path : "").toLowerCase() !== path.toLowerCase(),
+    );
+  }
+  node.asrState = "";
+  node.error = null;
+  try {
+    if (typeof spCacheClear === "function") spCacheClear(path);
+  } catch {}
+  try {
+    scheduleSave();
+    renderCanvas();
+  } catch {}
+}
 
-/* ============================ 节点内的转写区块 ============================ */
-/** 节点 body 尾部追加「本地语音转写」区块（无音频连线时不显示，不占版面） */
+/** 转录文本区的展开 / 收起（存节点字段，随画布持久化） */
+function asrToggleNodePanel(node) {
+  if (!node) return;
+  node.asrOpen = !node.asrOpen;
+  try {
+    scheduleSave();
+    renderCanvas();
+  } catch {}
+}
+
+/**
+ * 音频 / 视频节点 body 上的转写块（由 app-canvas.js 在操作行之后调用）：
+ *   · 没选文件：只给一枚禁用的「转录」按钮，不占别的版面；
+ *   · 有文件：操作行旁那枚按钮展开后，这里出现可编辑文本区 + 「重新转录 / 清空」。
+ */
 function asrAppendNodeBody(node, body) {
-  if (!body || !isAsrConsumerNode(node)) return;
-  const audios = asrAudioInputsOf(node);
-  if (!audios.length) return;
+  if (!body || !isAsrMediaNode(node)) return;
+  const p = asrMediaPathOf(node);
+  const rec = p ? asrTranscriptOf(node, p) : null;
   const wrap = document.createElement("div");
   wrap.className = "n-asr";
+  wrap.addEventListener("click", (ev) => ev.stopPropagation());
 
   const hdr = document.createElement("div");
   hdr.className = "n-asr-hdr";
   const lab = document.createElement("span");
   lab.className = "n-asr-lab";
-  lab.textContent = asrT("本地语音转写（Qwen3-ASR）");
+  lab.textContent = asrT("本地语音转写（SenseVoice）");
   hdr.appendChild(lab);
   const state = document.createElement("span");
-  state.className = "n-asr-state" + (node.asrState === "error" || node.asrState === "not_installed" || node.asrState === "no_cuda" ? " err" : "");
+  const bad =
+    node.asrState === "error" || node.asrState === "unavailable" || node.asrState === "failed";
+  state.className = "n-asr-state" + (bad ? " err" : "");
+  const prog = node.asrProgress && node.asrState === "running" ? node.asrProgress : null;
   state.textContent =
-    node.asrState === "not_installed"
-      ? asrT("缺语音后端")
-      : node.asrState === "no_cuda"
-        ? asrT("无可用显卡")
-        : node.asrState === "ok"
-          ? asrT("已转写")
-          : asrT("待转写");
+    node.asrState === "running"
+      ? asrProgressText(prog, prog && prog.total)
+      : node.asrState === "ok"
+        ? asrT("已转录")
+        : node.asrState === "downloading"
+          ? asrT("模型未就绪")
+          : node.asrState === "starting"
+            ? asrT("语音服务启动中")
+            : node.asrState === "unavailable" || node.asrState === "failed"
+              ? asrT("语音服务不可用")
+              : rec && String(rec.text || "").trim()
+                ? asrT("已转录")
+                : asrT("待转录");
   hdr.appendChild(state);
-  if (node.asrState === "not_installed" || node.asrState === "no_cuda") {
+  if (
+    node.asrState === "downloading" ||
+    node.asrState === "starting" ||
+    node.asrState === "unavailable" ||
+    node.asrState === "failed"
+  ) {
     const inst = document.createElement("button");
     inst.type = "button";
     inst.className = "mini";
-    inst.textContent = asrT("一键安装");
+    inst.textContent = asrT("语音模型…");
     inst.onclick = (ev) => {
       ev.stopPropagation();
-      asrOpenInstallDialog({ reason: "node" });
+      asrOpenModelDialog({ reason: "node" });
     };
     hdr.appendChild(inst);
   }
   wrap.appendChild(hdr);
 
-  const list = Array.isArray(node.asrTranscripts) ? node.asrTranscripts : [];
-  audios.forEach((a) => {
-    const row = document.createElement("div");
-    row.className = "n-asr-row";
-    const t = document.createElement("div");
-    t.className = "n-asr-title";
-    t.textContent = a.title;
-    t.title = a.path;
-    row.appendChild(t);
-    const hit = list.find(
-      (x) => String(x.path || "").toLowerCase() === String(a.path).toLowerCase(),
-    );
-    const ta = document.createElement("textarea");
-    ta.className = "n-text n-asr-text";
-    ta.spellcheck = false;
-    ta.placeholder = asrT("（点 ▶ 运行时自动转写；也可在此直接改错字）");
-    ta.value = hit ? hit.text || "" : "";
-    ta.addEventListener("input", () => asrCommitEdit(node, a.path, ta.value));
-    ta.addEventListener("click", (ev) => ev.stopPropagation());
-    row.appendChild(ta);
-    const ops = document.createElement("div");
-    ops.className = "bentry-ops";
-    const again = document.createElement("button");
-    again.type = "button";
-    again.className = "mini";
-    again.textContent = asrT("重新转写");
-    again.onclick = (ev) => {
-      ev.stopPropagation();
-      asrRetranscribeNode(node, a.path);
-    };
-    ops.appendChild(again);
-    row.appendChild(ops);
-    wrap.appendChild(row);
-  });
+  if (!node.asrOpen) {
+    if (node.error) {
+      const e = document.createElement("div");
+      e.className = "n-asr-err";
+      e.textContent = String(node.error);
+      wrap.appendChild(e);
+    }
+    body.appendChild(wrap);
+    return;
+  }
 
-  /* 热词 / 术语：随该节点转写下发（与全局默认热词合并） */
-  const hw = document.createElement("div");
-  hw.className = "n-asr-hot";
-  const hwl = document.createElement("span");
-  hwl.textContent = asrT("术语 / 热词");
-  const hwi = document.createElement("input");
-  hwi.type = "text";
-  hwi.className = "n-asr-hot-input";
-  hwi.placeholder = asrT("人名、产品名、专业术语，用逗号分隔（提高识别准确率）");
-  hwi.value = String(node.asrHotwords || "");
-  hwi.addEventListener("change", () => {
-    node.asrHotwords = hwi.value;
-    try {
-      scheduleSave();
-    } catch {}
+  const row = document.createElement("div");
+  row.className = "n-asr-row";
+  const ta = document.createElement("textarea");
+  ta.className = "n-text n-asr-text";
+  ta.spellcheck = false;
+  ta.placeholder = p
+    ? asrT("（点「转录」把这段音频转成文字；也可以在这里直接改错字）")
+    : asrT("（先选择音频文件，再点「转录」）");
+  ta.value = rec ? String(rec.text || "") : "";
+  ta.disabled = !p;
+  ta.addEventListener("input", () => {
+    if (p) asrCommitEdit(node, p, ta.value);
   });
-  hwi.addEventListener("click", (ev) => ev.stopPropagation());
-  hw.appendChild(hwl);
-  hw.appendChild(hwi);
-  wrap.appendChild(hw);
+  ta.addEventListener("click", (ev) => ev.stopPropagation());
+  row.appendChild(ta);
+  wrap.appendChild(row);
 
+  if (node.error) {
+    const e = document.createElement("div");
+    e.className = "n-asr-err";
+    e.textContent = String(node.error);
+    wrap.appendChild(e);
+  }
+
+  const ops = document.createElement("div");
+  ops.className = "bentry-ops n-asr-ops";
+  const again = document.createElement("button");
+  again.type = "button";
+  again.className = "mini";
+  again.disabled = !p || node.asrState === "running";
+  again.textContent = p && rec ? asrT("重新转录") : asrT("转录");
+  again.onclick = (ev) => {
+    ev.stopPropagation();
+    asrTranscribeFromNode(node);
+  };
+  ops.appendChild(again);
+  const clr = document.createElement("button");
+  clr.type = "button";
+  clr.className = "mini";
+  clr.disabled = !p || !(rec && String(rec.text || "").trim());
+  clr.textContent = asrT("清空转录");
+  clr.onclick = (ev) => {
+    ev.stopPropagation();
+    asrClearNodeTranscript(node);
+  };
+  ops.appendChild(clr);
+  wrap.appendChild(ops);
   body.appendChild(wrap);
 }
 
-/* ============================ 首次连接：安装弹窗 ============================ */
-/* 每个画布只自动弹一次（记在画布上，随画布保存；用户拒绝后不再自动弹） */
-function asrCanvasAsked() {
-  return !!(S.wf && S.wf.asrPrompted);
-}
-function asrMarkCanvasAsked() {
-  if (S.wf && !S.wf.asrPrompted) {
-    S.wf.asrPrompted = true;
+/**
+ * 操作行里那枚「转录」按钮（app-canvas.js 把它 append 进 .n-av-ops）：
+ * 没选文件时禁用；点一下展开 / 收起本节点的转录文本区，并在没有转写时就地转一次。
+ */
+function asrOpsButton(node) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mini n-asr-btn";
+  b.textContent = asrT("转录");
+  const p = asrMediaPathOf(node);
+  b.disabled = !p;
+  b.title = p ? asrT("把这段音频转成文字（本机 SenseVoice 模型，与麦克风听写同一个）") : asrT("先选择音频文件");
+  b.onclick = (ev) => {
+    ev.stopPropagation();
+    const path = asrMediaPathOf(node);
+    if (!path) return;
+    const rec = asrTranscriptOf(node, path);
+    const dark = !node.asrOpen;
+    node.asrOpen = true;
     try {
-      scheduleSave();
+      renderCanvas();
     } catch {}
-  }
-}
-/** 连线时调用：把音频接到文字节点 → 需要时弹一次安装窗 */
-async function asrMaybePromptOnWire(fromId, toId) {
-  if (!asrHasApi()) return;
-  const to = typeof nodeById === "function" ? nodeById(toId) : null;
-  const from = typeof nodeById === "function" ? nodeById(fromId) : null;
-  if (!isAsrConsumerNode(to) || !from) return;
-  if (!isAsrAudioSourceKind(from, 0)) return;
-  if (asrCanvasAsked()) return;
-  const st = await asrStatus(true);
-  if (!st) return;
-  if (st.installed) return;
-  asrMarkCanvasAsked();
-  asrOpenInstallDialog({ reason: "wire" });
+    if (dark && !(rec && String(rec.text || "").trim())) asrTranscribeFromNode(node);
+    else {
+      try {
+        scheduleSave();
+      } catch {}
+    }
+  };
+  return b;
 }
 
-/* ==================== 后台安装（耗时数分钟，允许关窗继续） ====================
-   安装脚本动辄几分钟：进度订阅与状态都挂在模块级，点「后台继续安装」把窗关掉也照跑
-   （进度在插件卡片上），装完用 toast 收口；窗还开着就地把状态刷成「已安装」。 */
-const _asrInst = {
-  running: false,
-  pct: 0,
-  msg: "",
-  failed: "", // 上次脚本安装的失败原因（"" = 没失败过；失败后窗里给「交给 AI 安装」入口）
-  off: null,
-  p: null,
-  refs: null, // 当前安装窗的控件引用（关掉即失效，统一用 asrDialogLive 判定）
-};
-
-function asrInstallRunning() {
-  return !!_asrInst.running;
-}
-
-/** 安装窗是否还挂在 #overlay 上（关掉 / 被别的弹窗顶掉都不算） */
+/* ==================== 语音模型：下载 / 检查 / 语言（持久窗） ====================
+   与从前那套「Python 后端安装」的差别：这里没有安装目录、没有 venv / CUDA / ffmpeg，
+   只有一件事 —— 把官方 SenseVoice 权重（约 239MB）下到本机（进度由 dsh 运行时推）。
+   全应用只有这一份模型与缓存：状态栏话筒、应用窗口听写、画布节点转写共用它。 */
+let _asrModelOff = null;
+/** 窗是否还挂着（关掉 / 被别的弹窗顶掉都不算） */
 function asrDialogLive() {
   const t = document.getElementById("ovTitle");
   const ov = document.getElementById("overlay");
@@ -485,327 +698,113 @@ function asrDialogLive() {
     t &&
     ov &&
     ov.style.display === "flex" &&
-    t.textContent === asrT("本地语音转写（Qwen3-ASR）")
+    t.textContent === asrT("本地语音识别（SenseVoice）")
   );
 }
-
-/** 把模块级安装状态刷到当前安装窗（窗没开着就什么都不做） */
-function asrInstallPaint() {
-  const refs = _asrInst.refs;
-  if (!refs || !asrDialogLive()) return;
-  if (refs.prog) refs.prog.style.display = _asrInst.msg ? "block" : "none";
-  if (refs.bar) refs.bar.style.width = Math.max(0, Math.min(100, _asrInst.pct || 0)) + "%";
-  if (refs.msg) refs.msg.textContent = _asrInst.msg || "";
-  if (refs.runBtn) refs.runBtn.disabled = _asrInst.running;
-  /* 安装中：这颗按钮就是「后台继续安装」（关掉窗，脚本照跑） */
-  if (refs.laterBtn)
-    refs.laterBtn.textContent = _asrInst.running ? asrT("后台继续安装") : asrT("稍后");
-}
-
-function asrInstallSubscribe() {
-  if (_asrInst.off || !window.api || !window.api.onAsrProgress) return;
-  _asrInst.off = window.api.onAsrProgress((data) => {
-    if (!data) return;
-    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
-    _asrInst.pct = pct;
-    _asrInst.msg =
-      (data.stepLabel || data.step || "") +
-      (data.message ? " — " + data.message : "") +
-      (pct ? " " + pct + "%" : "");
-    asrInstallPaint();
+/** 订阅下载进度（模块级，窗关掉也不丢；重开窗时状态现读一次即可） */
+function asrModelSubscribe(refs) {
+  if (_asrModelOff || !window.api || !window.api.onSpeechState) return;
+  _asrModelOff = window.api.onSpeechState(() => {
+    asrInvalidateStatus();
+    if (!asrDialogLive()) return;
+    if (refs && refs.paint) refs.paint();
   });
 }
-
-/** 跑安装脚本：已经跑着就复用同一趟（不重复起进程），进度一直挂到结束。
-    opts.ffmpegOnly = 只补装便携 ffmpeg（不动 venv / 依赖 / 模型）。 */
-async function asrInstallRun(opts) {
-  const ffmpegOnly = !!(opts && opts.ffmpegOnly);
-  if (_asrInst.running) return _asrInst.p;
-  _asrInst.running = true;
-  _asrInst.pct = 0;
-  _asrInst.msg = ffmpegOnly
-    ? asrT("正在补装便携 ffmpeg…")
-    : asrT("安装中…（可点「后台继续安装」关闭此窗，进度在插件卡片上）");
-  asrInstallSubscribe();
-  asrInstallPaint();
-  _asrInst.p = (async () => {
-    let r = null;
-    try {
-      r = ffmpegOnly
-        ? await window.api.asrInstallFfmpeg({ force: true })
-        : await window.api.asrInstall({ agent: false });
-    } catch (e) {
-      r = { ok: false, error: (e && e.message) || String(e) };
-    }
-    _asrInst.running = false;
-    if (_asrInst.off) {
-      try {
-        _asrInst.off();
-      } catch {}
-      _asrInst.off = null;
-    }
-    if (r && r.ok) {
-      if (ffmpegOnly) {
-        _asrInst.msg = asrT("ffmpeg 已就位。");
-        _asrInst.failed = "";
-        asrInstallPaint();
-        toast(asrT("便携 ffmpeg 已就位，音频解码恢复可用"), "ok");
-      } else {
-        _asrInst.msg = asrT("安装完成，正在静默启动语音后端…");
-        asrInstallPaint();
-        try {
-          await window.api.asrEnsureReady({});
-        } catch {}
-        asrInvalidateStatus();
-        _asrInst.msg = asrT("安装完成。");
-        _asrInst.failed = "";
-        asrInstallPaint();
-        toast(asrT("本地语音后端安装完成，可以开始转写了"), "ok");
-      }
-    } else {
-      _asrInst.failed = (r && r.error) || "unknown";
-      _asrInst.msg = (ffmpegOnly ? asrT("ffmpeg 补装失败：") : asrT("安装失败：")) + _asrInst.failed;
-      asrInstallPaint();
-      toast(
-        (ffmpegOnly ? asrT("ffmpeg 补装失败：") : asrT("本地语音后端安装失败：")) + _asrInst.failed,
-        "err",
-      );
-    }
-    /* 窗还开着：重开一遍，让状态与按钮回到「已安装 / 失败」形态 */
-    if (asrDialogLive() && _asrInst.refs && _asrInst.refs.refresh) _asrInst.refs.refresh();
-    /* 这一轮的进度文案到此收口（下次开窗以状态表为准，不残留上一轮的进度条） */
-    _asrInst.msg = "";
-    _asrInst.pct = 0;
-    _asrInst.p = null;
-    return r;
-  })();
-  return _asrInst.p;
-}
-
-/** 安装 / 状态 / 设置窗（persistent，不点外部关闭；见 AGENTS.md 对话框纪律） */
-async function asrOpenInstallDialog(opts) {
-  opts = opts || {};
+/** 打开/刷新「语音模型」窗（persistent，不点外部关闭；见 AGENTS.md 对话框纪律） */
+async function asrOpenModelDialog() {
   if (typeof openOverlay !== "function") return;
-  openOverlay(asrT("本地语音转写（Qwen3-ASR）"), { persistent: true });
+  openOverlay(asrT("本地语音识别（SenseVoice）"), { persistent: true });
   const body = document.getElementById("ovBody");
   const foot = document.getElementById("ovFoot");
   if (!body || !foot) return;
-  const st = (await asrStatus(true)) || {};
-  const gpuList = (st.gpu && st.gpu.gpus) || [];
+  body.innerHTML = "";
+  foot.innerHTML = "";
 
-  const refs = {
-    bar: null,
-    msg: null,
-    prog: null,
-    runBtn: null,
-    laterBtn: null,
-    refresh: null,
-  };
-
-  const intro = document.createElement("div");
-  intro.className = "settings-hint";
-  intro.textContent = asrT(
-    "把音频（音频输入节点 / 素材音频条目 / 语音或音乐产物）接到文字处理节点后，运行时会自动把音频转成文字并注入提示词。模型与后端不随安装包分发，首次使用需下载安装。",
-  );
-  body.appendChild(intro);
-
-  const table = document.createElement("div");
-  table.className = "asr-kv";
-  const kv = (k, v, cls) => {
+  const refs = { paint: null };
+  const box = document.createElement("div");
+  box.className = "asr-set";
+  const row = (label, val) => {
     const r = document.createElement("div");
-    r.className = "asr-kv-row" + (cls ? " " + cls : "");
-    const a = document.createElement("span");
-    a.className = "asr-kv-k";
-    a.textContent = k;
-    const b = document.createElement("span");
-    b.className = "asr-kv-v";
-    b.textContent = v;
-    b.title = v;
-    r.appendChild(a);
-    r.appendChild(b);
-    table.appendChild(r);
+    r.className = "asr-set-row";
+    const l = document.createElement("span");
+    l.textContent = label;
+    const v = document.createElement("span");
+    v.className = "asr-set-val";
+    v.textContent = val;
+    r.appendChild(l);
+    r.appendChild(v);
+    box.appendChild(r);
+    return v;
   };
-  kv(asrT("模型来源"), "ModelScope · " + (st.model || "Qwen/Qwen3-ASR-0.6B"));
-  kv(asrT("分段模型"), st.vadModel || "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch");
-  kv(asrT("预计占用"), asrT("模型约 1.9GB + Python 依赖约 3-4GB（CUDA）+ ffmpeg 约 100MB，建议预留 {n}GB 磁盘", { n: st.diskHintGb || 8 }));
-  kv(
-    asrT("本机显卡"),
-    gpuList.length
-      ? gpuList.map((g) => (g.name || "") + (g.driver ? " / 驱动 " + g.driver : "")).join("；")
-      : asrT("未检测到 NVIDIA 显卡"),
-    gpuList.length ? "" : "err",
+  const vState = row(asrT("状态"), asrT("检查中…"));
+  row(asrT("预计占用"), asrT("识别模型约 239MB（首次使用自动下载到本机，离线可用）"));
+  const vLang = row(asrT("识别语言"), asrT("自动"));
+  row(
+    asrT("使用范围"),
+    asrT("全应用同一份：状态栏话筒听写、应用窗口听写、画布音频节点转录都用它，只下载一次"),
   );
-  kv(asrT("安装目录"), st.installDir || asrT("尚未选择"), st.installDir ? "" : "err");
-  const ff = st.ffmpeg || {};
-  kv(
-    asrT("ffmpeg（音频解码）"),
-    ff.ok
-      ? (ff.source === "path" ? asrT("系统 PATH") : asrT("便携版（安装目录内）")) + " · " + (ff.path || "")
-      : asrT("缺失：无 ffmpeg 时任何音频都无法解码，请点「补装 ffmpeg」"),
-    ff.ok ? "" : "err",
-  );
-  kv(asrT("运行状态"), st.running ? asrT("运行中（静默）") : st.installed ? asrT("已安装 · 未运行") : asrT("未安装"));
-  body.appendChild(table);
+  body.appendChild(box);
 
-  if (!st.supported) {
-    const warn = document.createElement("div");
-    warn.className = "settings-hint asr-warn";
-    warn.textContent = asrT(
-      "未检测到可用的 NVIDIA 显卡：本功能只装 CUDA 版后端，默认不可用。确有需要可在下方勾选「仍装 CPU 版（很慢）」。",
-    );
-    body.appendChild(warn);
-  }
+  const dlRow = document.createElement("label");
+  dlRow.className = "asr-set-row";
+  const dlLab = document.createElement("span");
+  dlLab.textContent = asrT("下载源");
+  const dlSel = document.createElement("select");
+  [
+    ["", asrT("自动（按官方顺序探测）")],
+    ["modelscope", "ModelScope"],
+    ["huggingface", "HuggingFace"],
+  ].forEach((o) => {
+    const op = document.createElement("option");
+    op.value = o[0];
+    op.textContent = o[1];
+    dlSel.appendChild(op);
+  });
+  dlRow.appendChild(dlLab);
+  dlRow.appendChild(dlSel);
+  body.appendChild(dlRow);
 
-  /* 进度 */
-  const prog = document.createElement("div");
-  prog.className = "asr-prog";
-  prog.style.display = "none";
-  const barWrap = document.createElement("div");
-  barWrap.className = "asr-prog-bar";
-  const bar = document.createElement("i");
-  barWrap.appendChild(bar);
-  const msg = document.createElement("div");
-  msg.className = "asr-prog-msg";
-  prog.appendChild(barWrap);
-  prog.appendChild(msg);
-  body.appendChild(prog);
-  refs.bar = bar;
-  refs.msg = msg;
-  refs.prog = prog;
-
-  /* 设置区：空闲释放 / 全局热词 / CPU 后门 */
-  const setBox = document.createElement("div");
-  setBox.className = "asr-settings";
-  const idleRow = document.createElement("label");
-  idleRow.className = "asr-set-row";
-  const idleLab = document.createElement("span");
-  idleLab.textContent = asrT("空闲释放（分钟，0 = 不释放）");
-  const idle = document.createElement("input");
-  idle.type = "number";
-  idle.min = "0";
-  idle.max = "240";
-  idle.value = String(st.idleMinutes == null ? 10 : st.idleMinutes);
-  idleRow.appendChild(idleLab);
-  idleRow.appendChild(idle);
-  setBox.appendChild(idleRow);
-
-  const hwRow = document.createElement("label");
-  hwRow.className = "asr-set-row";
-  const hwLab = document.createElement("span");
-  hwLab.textContent = asrT("全局默认热词（逗号分隔）");
-  const hw = document.createElement("input");
-  hw.type = "text";
-  hw.value = (st.hotwords || []).join("，");
-  hwRow.appendChild(hwLab);
-  hwRow.appendChild(hw);
-  setBox.appendChild(hwRow);
-
-  const cpuRow = document.createElement("label");
-  cpuRow.className = "asr-set-row";
-  const cpuLab = document.createElement("span");
-  cpuLab.textContent = asrT("仍装 CPU 版（很慢，仅在无 N 卡时兜底）");
-  const cpu = document.createElement("input");
-  cpu.type = "checkbox";
-  cpu.checked = !!st.allowCpu;
-  cpuRow.appendChild(cpuLab);
-  cpuRow.appendChild(cpu);
-  setBox.appendChild(cpuRow);
-  body.appendChild(setBox);
-
-  const saveSettings = async () => {
-    const patch = {
-      idleMinutes: Number(idle.value) || 0,
-      hotwords: String(hw.value || "")
-        .split(/[\n,，、;；]+/)
-        .map((s) => s.trim())
-        .filter(Boolean),
-      allowCpu: !!cpu.checked,
-    };
-    await window.api.asrSetConfig(patch);
-    asrInvalidateStatus();
-    toast(asrT("已保存语音转写设置"), "ok");
-  };
-
-  /* 底部按钮 */
-  const mkBtn = (label, fn, opts2) => {
+  const mkBtn = (label, fn, cls) => {
     const b = document.createElement("button");
-    b.className = (opts2 && opts2.cls) || "mini";
+    b.className = cls || "mini";
     b.textContent = label;
-    b.disabled = !!(opts2 && opts2.disabled);
     b.onclick = fn;
     foot.appendChild(b);
     return b;
   };
 
-  refs.refresh = () => asrOpenInstallDialog(opts);
-
-  mkBtn(asrT("选择安装目录"), async () => {
-    const r = await window.api.asrPickInstallDir();
-    if (r && r.ok) {
-      asrInvalidateStatus();
-      refs.refresh();
-    } else if (r && r.error) {
-      toast(asrT("该目录不可用：") + r.error, "err");
-    }
-  });
-  mkBtn(asrT("选择已有模型目录"), async () => {
-    const r = await window.api.asrPickModelDir();
-    if (r && r.ok) {
-      asrInvalidateStatus();
-      asrOpenInstallDialog(opts);
-    }
-  });
-  const showLog = async () => {
-    const tail = await window.api.asrConsoleTail(40000);
-    const pre = document.createElement("pre");
-    pre.className = "asr-log";
-    pre.textContent = tail || asrT("（暂无日志）");
-    body.appendChild(pre);
-    pre.scrollIntoView({ block: "nearest" });
+  const refresh = async () => {
+    const st = await asrStatus(true);
+    const ph = asrPhase(st);
+    vState.textContent = typeof spPhaseText === "function" ? spPhaseText(st) : asrT("语音状态未知");
+    vLang.textContent = (st && st.selection && st.selection.language) || asrT("自动");
+    runBtn.textContent = ph.ready
+      ? asrT("重新检查")
+      : ph.downloading
+        ? asrT("下载中…")
+        : asrT("下载语音模型");
+    runBtn.disabled = !!ph.downloading;
+    dlSel.disabled = !!ph.downloading;
   };
+  refs.paint = () => {
+    if (asrDialogLive()) void refresh();
+  };
+  asrModelSubscribe(refs);
 
-  refs.runBtn = mkBtn(
-    st.installed ? asrT("重新安装 / 补充安装") : asrT("下载并安装（脚本）"),
-    async () => {
-      saveSettings();
-      if (!st.installDir) {
-        const r = await window.api.asrPickInstallDir();
-        if (!r || !r.ok) return;
-      }
-      /* 安装动辄几分钟：交给模块级的后台安装，关窗照跑（见 asrInstallRun） */
-      await asrInstallRun({});
-    },
-    { cls: "mini primary" },
-  );
-  /* 缺便携 ffmpeg = 任何音频都解不开：单独一条快速补装通道（-FfmpegOnly，不动 venv / 模型） */
-  if (st.installed && st.ffmpeg && !st.ffmpeg.ok) {
-    mkBtn(asrT("补装 ffmpeg"), () => asrInstallRun({ ffmpegOnly: true }));
-  }
-  if (st.installed) mkBtn(asrT("查看安装日志"), showLog);
-  if (window.api.asrOpen) {
-    mkBtn(asrT("打开控制台"), async () => {
-      const r = await window.api.asrOpen();
-      if (!r || !r.ok) toast(asrT("打开失败：") + ((r && r.error) || asrT("未知错误")), "err");
-      else closeOverlay();
-    });
-  }
-  mkBtn(asrT("保存设置"), () => saveSettings());
-  /* 脚本安装 / 补装失败过：给「交给 AI 安装 / 自我修复」入口（Agent 会按 skill 修） */
-  if (_asrInst.failed) {
-    mkBtn(asrT("交给 AI 安装 / 自我修复"), async () => {
-      msg.textContent = asrT("Agent 正在安装…（可关闭此窗，进度在插件卡片上）");
-      prog.style.display = "block";
-      await window.api.asrAgentRecoverInstall({ error: _asrInst.failed });
-      _asrInst.failed = "";
-      asrInvalidateStatus();
-      if (asrDialogLive()) refs.refresh();
-    });
-  }
-  refs.laterBtn = mkBtn(asrT("稍后"), () => {
-    if (_asrInst.running) toast(asrT("安装已在后台继续，可在「插件」卡片查看进度"), "ok");
-    closeOverlay();
+  const runBtn = mkBtn(asrT("下载语音模型"), async () => {
+    runBtn.disabled = true;
+    vState.textContent = asrT("正在准备语音模型…");
+    if (typeof spEnsureReady === "function") await spEnsureReady();
+    await refresh();
   });
-  /* 重开窗时把仍在跑的安装状态接回来（进度条 / 按钮文案 / 运行状态） */
-  _asrInst.refs = refs;
-  asrInstallPaint();
+  mkBtn(asrT("关闭"), () => {
+    if (typeof closeOverlay === "function") closeOverlay();
+  });
+
+  await refresh();
+}
+
+/* 兼容旧调用点（节点区块与插件卡片原先叫「安装」）：一律落到新的语音模型窗 */
+function asrOpenInstallDialog() {
+  return asrOpenModelDialog();
 }

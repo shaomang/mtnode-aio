@@ -1,7 +1,0 @@
-.venv/
-models/
-ffmpeg/
-__pycache__/
-*.pyc
-.install-ok
-.asr-agent-result

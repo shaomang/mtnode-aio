@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 /* ══════════════════════════════════════════════════════════════════════
  * 长周期任务 · 条带 UI（画布 tabs 与顶部菜单条之间的细线 handler）
  * ----------------------------------------------------------------------
@@ -1099,7 +1099,7 @@ function ltBindGrip(grip, strip, body) {
 /* 重建后补悬停标（悬停保护的收尾步，见 ltHoverKey 段）：strip 那一层在 head / main 重建
    之后调它；main 内部那几条「只重建另一栏」的早退路也各调一次 —— 早退时头部与另一栏
    仍会被换掉，悬停态一条都不许丢。keys 由 ltRenderStrip 在任何 DOM 被换掉之前采好。
-   typeof 兜一层与 ltColHold 同一口径：纯 Node 的迷你 DOM 回归（test/smoke-longtask-refocus.js）
+   typeof 兜一层与 ltColHold 同一口径：纯 Node 的迷你 DOM 回归（test/smoke-longtask.js 的「已并入：smoke-longtask-refocus.js」段）
    只搬得动其中几个函数，搬不到就当作「没有悬停标要补」，不影响重建本身。 */
 function ltHoverHere() {
   try {
@@ -1904,7 +1904,7 @@ function ltRenderMain(wf) {
   const graph = run && run.graph ? run.graph : task.graph;
   /* 这一栏「正被占着」时按栏保留（见 ltColHold 的说明）：被保留的那一栏不摘出文档 ——
      焦点 / 选区（正在框选的那段文字）/ 输入法组合态原样活着，另一栏照常跟着运行态重绘。
-     typeof 兜一层：纯 Node 的迷你 DOM 回归（test/smoke-longtask-refocus.js）只搬得动其中几个函数。 */
+     typeof 兜一层：纯 Node 的迷你 DOM 回归（test/smoke-longtask.js 的「已并入：smoke-longtask-refocus.js」段）只搬得动其中几个函数。 */
   const oldLeft = ltColOf(main, "lt-left");
   const oldRight = ltColOf(main, "lt-right");
   /* 整条条带被按住（鼠标按在头部按钮 / 图里的可点件上）→ 两栏都原地留下：

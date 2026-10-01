@@ -32,6 +32,14 @@
  *   text(prompt, opts)       文本生成（流式；opts.images 可带本机路径 / dataURL → 多模态）
  *                            失败回 { ok:false, code }：bad_image / too_many_images / too_large /
  *                            no_provider / no_vision / bad_model / offline / http_4xx…
+ *
+ * 语音转写（同样只有 ① 有，识别跑在 MTNode 的 dsh 运行时里 = 官方本地 SenseVoice）：
+ *   pickAudio()              弹系统选音频框 → { ok, path, name }；取消 → code:"cancelled"
+ *   transcribe(opts)         本机音频 → { ok, text }；只认本窗口亲选过 / 本应用数据文件夹里的音频
+ *   transcribeWav(b64, opts) 应用自己录的 16 kHz 单声道 PCM16 WAV（base64）→ { ok, text }
+ *   speechStatus()           { ok, available, ready, downloading, phase, completedBytes, totalBytes }
+ *   speechPrepare(opts)      把首次权重大约 239MB 的下载跑起来（幂等）
+ *   onSpeechState(cb)        下载 / 就绪状态订阅，返回退订函数
  */
 (function () {
   "use strict";
@@ -74,6 +82,13 @@
     models: has(host, "hostModels") && has(host, "hostSetModel"),
     pick: has(host, "pickImage"),
     shown: has(host, "onShown"),
+    /* 语音转写（本机内置 SenseVoice，跑在 dsh 运行时里）：只有应用中心窗口那一套有。
+       四件分开判 —— 只会用到其中几件的应用不该因为缺一件就整块不可用。 */
+    speech: has(host, "transcribe") || has(host, "transcribeWav"),
+    speechFile: has(host, "pickAudio") && has(host, "transcribe"),
+    speechStatus: has(host, "asrStatus"),
+    speechPrepare: has(host, "asrPrepare"),
+    speechEvents: has(host, "onSpeechState"),
   };
 
   var subs = [];
@@ -249,6 +264,66 @@
       return { ok: false, code: "pick_failed", error: String((e && e.message) || e) };
     }
   }
+  /* ── 语音转写（本机内置 SenseVoice）────────────────────────────────────────
+     四件：选音频文件 / 转写（本机音频路径，或应用自录的 16k 单声道 PCM16 WAV 的 base64）/
+     现况与首次下载 / 状态订阅。识别与模型下载都在主进程与 dsh 运行时里，应用只拿文本。 */
+  async function pickAudio() {
+    if (!cap.speechFile) return { ok: false, code: "no_host", error: "no_host" };
+    try {
+      return await host.pickAudio();
+    } catch (e) {
+      return { ok: false, code: "pick_failed", error: String((e && e.message) || e) };
+    }
+  }
+  /** 本机音频 → 文字：opts = { path|url, language? }；只认用户在本窗口亲选过 / 本应用数据文件夹里的音频 */
+  async function transcribe(opts) {
+    if (!cap.speech) return { ok: false, code: "no_host", error: "宿主未提供语音转写能力" };
+    try {
+      return await host.transcribe(opts && typeof opts === "object" ? opts : {});
+    } catch (e) {
+      return { ok: false, code: "speech_failed", error: String((e && e.message) || e) };
+    }
+  }
+  /** 应用自己录的 16 kHz 单声道 PCM16 WAV（base64，不带 data: 前缀）→ 文字 */
+  async function transcribeWav(base64Wav, opts) {
+    if (!has(host, "transcribeWav")) return { ok: false, code: "no_host", error: "no_host" };
+    try {
+      return await host.transcribeWav(String(base64Wav || ""), opts || {});
+    } catch (e) {
+      return { ok: false, code: "speech_failed", error: String((e && e.message) || e) };
+    }
+  }
+  /** 语音现况：{ ok, available, ready, downloading, phase, completedBytes, totalBytes, … } */
+  async function speechStatus() {
+    if (!cap.speechStatus) return { ok: false, code: "no_host", error: "no_host" };
+    try {
+      return await host.asrStatus();
+    } catch (e) {
+      return { ok: false, code: "speech_failed", error: String((e && e.message) || e) };
+    }
+  }
+  /** 把权重下载跑起来（幂等；首次约 239MB）。不调用也能转写 —— 首次会自动下载 */
+  async function speechPrepare(opts) {
+    if (!cap.speechPrepare) return { ok: false, code: "no_host", error: "no_host" };
+    try {
+      return await host.asrPrepare(opts || {});
+    } catch (e) {
+      return { ok: false, code: "speech_failed", error: String((e && e.message) || e) };
+    }
+  }
+  /** 下载 / 就绪状态订阅：cb(state)；返回退订函数（没有这个能力就退化成空函数） */
+  function onSpeechState(cb) {
+    if (!cap.speechEvents || !isFn(cb)) return function () {};
+    try {
+      var off = host.onSpeechState(cb);
+      if (isFn(off)) {
+        subs.push(off);
+        return off;
+      }
+    } catch (e) {}
+    return function () {};
+  }
+
   /** 文本生成（流式）。opts = { system, messages, model, images, temperature, thinking, maxTokens }
    *  images = 本机绝对路径或 data:image/... 的数组 → 与 prompt 一起下发（多模态，需视觉模型）。
    *  thinking = 思考档：**不传 = off**（宿主默认关思考），要开就显式给 on / low / high / max。
@@ -491,6 +566,13 @@
     modelSet: modelSet,
     pickImage: pickImage,
     text: text,
+    /* 语音转写（本机内置 SenseVoice）：选音频 / 转写 / 现况 / 首次下载 / 状态订阅 */
+    pickAudio: pickAudio,
+    transcribe: transcribe,
+    transcribeWav: transcribeWav,
+    speechStatus: speechStatus,
+    speechPrepare: speechPrepare,
+    onSpeechState: onSpeechState,
     /* 要模型给 JSON 就用这个：关思考 + 剥围栏 + 截断感知 + 重试一次（见 json() 头部注释） */
     json: json,
     on: on,

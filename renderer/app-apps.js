@@ -219,6 +219,38 @@ function appsHubEl() {
 function appsHubIsOpen() {
   return !!APPS_HUB_OPEN;
 }
+
+/* 需求：「把画布的 footer 也放进应用界面」。#appsHub 是 position:fixed 的整屏浮层，
+   以前 inset:0 连 footer.statusbar 一起盖住 —— 状态栏最左那枚全局语音话筒 🎤 因此在应用中心
+   里既看不见也点不到。这里把浮层下沿抬到状态栏上沿（写 CSS 变量 --apps-hub-foot，规则在
+   css/apps.css 的 .apps-hub），footer 原样露在下面：话筒、画布截图、缩放 / 保存态都照旧可用，
+   全局语音识别出的文字仍写进当前 focus 的输入框（开发页的输入框也一样）。
+   高度实测（字号 / 主题 / 状态栏内容变了都跟着走）；量不到就退回 0 = 盖满，等于改动前的行为。 */
+let APPS_FOOT_GAP_HOOKED = false;
+function appsHubFootGap() {
+  const host = appsHubEl();
+  if (!host) return 0;
+  let px = 0;
+  try {
+    const sb = document.querySelector("footer.statusbar");
+    const r = sb && sb.getBoundingClientRect ? sb.getBoundingClientRect() : null;
+    /* 上取整：宁可多留 1px 缝，也不让浮层压掉状态栏最上一行像素 */
+    if (r && r.height > 0) px = Math.ceil(r.height);
+  } catch (_) {}
+  if (px > 0) host.style.setProperty("--apps-hub-foot", px + "px");
+  else host.style.removeProperty("--apps-hub-foot");
+  return px;
+}
+/* 窗口尺寸 / 字号变了要重算：只在页开着的时候跑，页关着时什么都不做 */
+function appsHubFootGapHook() {
+  if (APPS_FOOT_GAP_HOOKED) return;
+  APPS_FOOT_GAP_HOOKED = true;
+  try {
+    window.addEventListener("resize", () => {
+      if (APPS_HUB_OPEN) appsHubFootGap();
+    });
+  } catch (_) {}
+}
 /* 与 I18n 未就绪时同一口径：拿不到模块就原样回显中文（不报错、不缺字） */
 function appsT(s) {
   return window.I18n && window.I18n.t ? window.I18n.t(s) : String(s == null ? "" : s);
@@ -1258,7 +1290,6 @@ function appsHubTagRow() {
   const all = appsTagCatalog();
   const cat = appsTagShown(all);
   const sel = APPS_ST.tags;
-  row.hidden = !cat.length && !sel.length;
   if (!cat.length) return row;
   const lead = document.createElement("span");
   lead.className = "apps-hub-tags-lead";
@@ -1295,6 +1326,17 @@ function appsHubTagRow() {
     row.appendChild(clr);
   }
   return row;
+}
+
+/* 标签筛选条的显隐（唯一判定处）：**开发页不显示标签**（本轮需求），其余页照旧
+   —— 仍有标签可筛才露脸（appsTagCatalog 为空时条上什么都没有，留着只是白占一行），
+   已选中的标签一定还在条上（appsTagShown 的规矩），所以「有选中但目录空」也照样显示。
+   重绘（appsHubTopbar）与换页（appsHubNav）都调它：切到开发页立刻收起，切回来立刻还原。 */
+function appsHubTagsHidden() {
+  const bar = document.querySelector(".apps-hub-topbar");
+  const row = bar ? bar.querySelector(".apps-hub-tags") : null;
+  if (!row) return;
+  row.hidden = APPS_ST.nav === "dev" || !appsTagCatalog().length;
 }
 
 /* 正文顶部（幂等）：第 1 行 = 搜索框 + 右上角「返回 MTNode」，第 2 行 = 标签条。
@@ -1340,6 +1382,11 @@ function appsHubTopbar(host) {
     search.hidden = name !== "apps";
     if (document.activeElement !== search && search.value !== APPS_ST.q) search.value = APPS_ST.q;
   }
+  /* 标签筛选条只在「应用」/「库」两页出现：**开发页不显示标签**（本轮需求）——
+     那一页整屏交给三栏开发视图（左应用 / 中预览 / 右会话），标签筛选对它没有意义，
+     挂着只会白占一行。判定只有 appsHubTagsHidden() 一处：切走再切回来时
+     条上的标签照旧（选中态与热度排序都不动，只有 hidden 在变）。 */
+  appsHubTagsHidden();
   const back = bar.querySelector(".apps-hub-close");
   if (back) {
     back.title = appsT("返回 MTNode 界面（Esc 同效）");
@@ -1398,6 +1445,8 @@ function appsHubNav(id) {
   APPS_ST.nav = next;
   APPS_ST.detailId = "";
   APPS_ST.devExport = null;
+  /* 换页立刻同步标签条显隐（开发页不显示标签；它挂在壳上、不在被重绘的正文里） */
+  appsHubTagsHidden();
   appsHubPaint();
 }
 
@@ -1462,6 +1511,10 @@ function openAppsHub(nav) {
   APPS_HUB_OPEN = true;
   appsSearchFlush();
   host.hidden = false;
+  /* footer.statusbar 露出来（需求：画布那条 footer 也要在应用界面里）——必须在 hidden=false
+     之后量，元素是隐藏的时侯量出来是 0 */
+  appsHubFootGapHook();
+  appsHubFootGap();
   const btn = document.getElementById("btnApps");
   if (btn) btn.classList.add("on");
   appsHubProgressWatch(true);

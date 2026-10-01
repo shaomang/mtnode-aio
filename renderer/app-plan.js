@@ -244,7 +244,14 @@ function planCarryOpen(st) {
     return false;
   }
 }
-/* 「沿用 / 续跑现有计划」指令（替代重新规划指令） */
+/* 「沿用 / 续跑现有计划」指令 —— 用户又开了新一轮（本次需求：**新话优先**）。
+ *
+ * 背景：上一轮确认过的清单里还有没跑完的项 → 面板整份保留（app-assist.js 的
+ * agentRoundMarkNew 只清「已了结」的那一份），面板头部会标「上一轮遗留 N 项未完」。
+ * 这里给模型的指令绝不能写成「以既有清单为准、禁止做别的」—— 那会把用户现在真正
+ * 要做的事绑在旧清单上（旧口径的原文就是「本轮以这份既有清单为准」）。
+ * 现在的口径：先看用户这一轮的话 —— 是接着推进旧清单就做未完成项，是别的事就按新话做、
+ * 旧清单一律搁置；已完成项永远不重做。仍然禁止再输出计划块（否则新旧计划互相覆盖）。 */
 function planFlowCarryDirective(st) {
   const p = (st && st.plan) || {};
   const steps = Array.isArray(p.steps) ? p.steps.filter(Boolean) : [];
@@ -254,29 +261,32 @@ function planFlowCarryDirective(st) {
   const fin = steps.filter(
     (s) => s.status === "done" || s.status === "skipped",
   );
-  let lines = ["【任务流程 · 沿用现有计划】"];
+  let lines = ["【任务流程 · 上一轮遗留清单（新话优先）】"];
   if (String(p.goal || "").trim())
-    lines.push("目标：" + String(p.goal).trim().slice(0, PLAN_GOAL_MAX));
+    lines.push("上一轮目标：" + String(p.goal).trim().slice(0, PLAN_GOAL_MAX));
   lines.push(
-    "本会话已有一份经用户确认、尚未执行完的计划（已完成 " +
+    "用户又开了新一轮。上一轮那份经用户确认的清单还没跑完（已完成 " +
       (steps.length - open.length) +
       "/" +
       steps.length +
-      "），本轮以这份既有清单为准：",
+      "），它**仍挂在会话的「计划」面板上**，作为参考：",
   );
-  lines.push("未完成（本轮要做的）：");
+  lines.push("未完成（= 上一轮遗留项）：");
   lines = lines.concat(planBriefLines(open, PLAN_MAX_TASKS, 140, true));
   if (fin.length) {
     lines.push("已完成（禁止重做）：");
     lines = lines.concat(planBriefLines(fin, PLAN_MAX_TASKS, 60, true));
   }
   lines.push(
-    "要求：按上述未完成项继续推进；【禁止】再输出一份新计划，也禁止出现 " +
+    "要求：**以用户这一轮的话为准** —— 若这句话就是接着推进上面的未完成项，按未完成项继续做；" +
+      "若它说的是别的事（换了目标 / 换了方向 / 只是问一句），就按新话做，上一轮遗留项一律搁置、" +
+      "不要顺手接着跑，也不要把它们当成用户这轮的要求。" +
+      "无论哪种，都【禁止】再输出一份新计划，禁止出现 " +
       PLAN_MARK_START +
       " / " +
       PLAN_MARK_END +
-      " 计划标记；不要重新拆分、改名或替换既有任务。若你判断范围确实需要调整，只在正文里用一句话说明理由，" +
-      "由用户在「计划」面板上决定续跑还是清除。做完后逐项简要汇报结果。",
+      " 计划标记；不要重新拆分、改名或替换既有任务；已完成的项永远不重做。" +
+      "收尾时若旧清单还有遗留，用一句话说明「上一轮遗留 N 项未动」，由用户在「计划」面板上决定续跑还是清除。",
   );
   return lines.join("\n");
 }
@@ -3007,6 +3017,26 @@ function renderAgentPlanPanel(st) {
     done + " / " + steps.length + (failed ? " · " + failed + I18n.t(" 失败") : "");
   count.title = I18n.t("完成 / 总数");
   head.appendChild(count);
+  /* 「上一轮遗留 N 项未完」（本次需求）：新一轮开跑时会清掉**已了结**的清单，但真有
+     待执行 / 执行中的项时整份保留 —— 这一格把那批项明确标出来，免得用户误以为它们是
+     本轮要做的。判据 = 「用户确实开过一轮以上」（轮号复用 agentRoundOfRun，与顶部轮次
+     标签、轨迹同源）+ 「确实还有遗留项」。 */
+  const openLeft = planRemaining(st).length;
+  const roundNo =
+    typeof agentRoundOfRun === "function" ? Number(agentRoundOfRun(st)) || 0 : 0;
+  if (roundNo > 1 && openLeft > 0) {
+    const left = planPanelEl(
+      "span",
+      "ap-leftover",
+      I18n.t("上一轮遗留 {n} 项未完",
+        { n: openLeft }),
+    );
+    left.title = I18n.t(
+      "这 {n} 项是上一轮遗留、不是本轮的任务（本轮开始时不清理未完成项）；要接着跑请点「继续执行」",
+      { n: openLeft },
+    );
+    head.appendChild(left);
+  }
   const bar = planPanelEl("i", "at-bar");
   const fill = planPanelEl("u");
   fill.style.width = Math.round((done / steps.length) * 100) + "%";

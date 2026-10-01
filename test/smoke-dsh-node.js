@@ -21,9 +21,11 @@
  *   [6] 托管安装的失败路径与现场清理（zip 缺 node.exe、node.exe 不是可执行、下载被关掉）
  *   [7] 接线口径：build.json 白名单、main-dsh 不再硬编码 Electron、DESIGN.md 有该章
  */
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require("fs"), path = require("path"), vm = require("vm"), os = require("os"), childProcess = require("child_process");
+const SHARED = { fs, path, vm, os, spawn: childProcess.spawn };
+const TEST_DIR = __dirname;
+let MERGED_FAILED = false;
+
 const zlib = require("zlib");
 const { spawnSync } = require("child_process");
 
@@ -260,5 +262,98 @@ console.log("\n[6] 托管安装：失败路径要干净、要能说清原因");
 
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "ALL OK  " + checks + " checks"));
-  process.exit(fails ? 1 : 0);
 })();
+
+/* ==================== 已并入：test/smoke-dsh-default-model.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-dsh-default-model.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs.readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8");
+
+  console.log("\n[1] 默认模型下拉 = 全部文本服务商的模型（按服务商分组）");
+  const settings = read("renderer/app-settings.js");
+  ok(
+    /mtnodePiProviders\(\)/.test(settings),
+    "下拉构建遍历 mtnodePiProviders()（全部非 DeepSeek 文本服务商，不再只取第一个 DeepSeek 服务商）",
+  );
+  ok(
+    /optgroup/.test(settings),
+    "模型按服务商 optgroup 分组展示（与智能会话 / 全局助手同源）",
+  );
+  ok(
+    /dp\.models\.map\(\(m\) => String\(m\)\)/.test(settings),
+    "DeepSeek 官方组取 dshProvider().models",
+  );
+  ok(
+    /groups\.push\(\{ label: p\.name, models: models\.map\(\(m\) => String\(m\)\) \}\)/.test(settings),
+    "其余每个文本服务商各成一组的模型列表",
+  );
+
+  console.log("\n[2] 未保存时默认值跟随实际生效的智能路由");
+  ok(
+    /preferredAgentModelForRoute\(preferredAgentProviderRoute\(\)\)/.test(settings),
+    "默认值 = 生效智能路由的默认模型（优先其它文本服务商，不硬编码 deepseek）",
+  );
+  ok(
+    /保底：老配置里保存过、但已不在任何服务商模型清单中的值/.test(settings),
+    "老配置里保存过但不在清单中的模型仍能显示（不丢失用户已选值）",
+  );
+  ok(
+    /（无可用模型）/.test(settings),
+    "无任何模型时给出「无可用模型」空态",
+  );
+
+  console.log("\n[3] 硬编码兜底已清除");
+  ok(
+    settings.indexOf("deepseek-v4-flash") < 0,
+    "app-settings.js 不再出现 deepseek-v4-flash",
+  );
+
+  console.log("\n[4] 启动缺省合并不再强制 deepseek");
+  const boot = read("renderer/app-boot.js");
+  ok(
+    /nodePath: "",\s*\n\s*model: ""/.test(boot),
+    "app-boot.js dsh 缺省合并 model 为空串（留空 = 跟随生效路由）",
+  );
+  ok(
+    boot.indexOf('model: "deepseek-v4-flash"') < 0,
+    "app-boot.js 不再启动即写入 deepseek-v4-flash",
+  );
+
+  console.log(
+    "\n" +
+      (fails
+        ? "FAILED " + fails + " / " + checks + " checks"
+        : "ALL OK  " + checks + " checks"),
+  );
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-dsh-default-model.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-dsh-default-model.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
+if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+process.exit(MERGED_FAILED ? 1 : 0);

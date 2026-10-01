@@ -768,10 +768,6 @@ async function main() {
   ok(/planMaybeOffer/.test(read("renderer/app-assist.js")), "会话侧计划入口仍接线");
   ok(/planNodeOffer/.test(read("renderer/app-nodes.js")), "智能节点侧计划入口仍接线");
   ok(/planFlowDirective/.test(read("renderer/app-nodes.js")), "智能节点仍注入任务流程指令");
-  const log = read("CHANGELOG-v1.1.md");
-  ok(/计划弹窗|计划确认/.test(log), "更新文档记录了计划弹窗");
-  ok(/可拉伸|拖.*放大/.test(log), "更新文档写明窗口可拉伸");
-  ok(/三列/.test(log), "更新文档写明三列清单");
 
   /* ===================== [9] 归属绑定 · 弹窗过期 · 终止即永久消失 ===================== */
   console.log("\n[9] 计划归属与会话绑定 · 终止 / 清除即永久消失");
@@ -1054,6 +1050,16 @@ async function main() {
         design: (designM && designM[1].trim()) || (implM ? "" : s.trim()),
         impl: (implM && implM[1].trim()) || "",
       };
+    };
+    /* canvasWfIdForNode 住在 app-assist.js（本沙箱未加载）：按「节点所属画布 → 当前可见画布」给最小桩 */
+    sbZ.canvasWfIdForNode = (node) => {
+      try {
+        if (node && typeof sbZ.ownerWfOfNode === "function") {
+          const w = sbZ.ownerWfOfNode(node);
+          if (w && w.id) return String(w.id);
+        }
+      } catch (_) {}
+      return typeof sbZ.currentVisibleWfId === "function" ? sbZ.currentVisibleWfId() : "wf1";
     };
     const zsess = sbZ.createDevSessionForNode(devNode, "dev");
     ok(!!zsess && !!zsess.id, "零继承：新建绑定会话正常创建");

@@ -1471,6 +1471,10 @@ function traceReset(runKey) {
     items: [],
     turn: 0,
     step: 0,
+    /* 会话轮号（本次需求）：第 N 轮 = 该会话里用户第几次发送，由调用方随 opts.round 传进来，
+       轮头编号只认它 —— 网关的 turn 是「模型往返次数」，一次发送里调几次工具就会 +1，
+       按它分轮会把同一次发送的正文与工具调用拆到不同轮里去（见 dshRunTask 起始处的落号）。 */
+    round: 0,
     /* 当前开放段所属的 `${turn}:${step}`、正在增长的思考段下标、按「流键」记的工具
        调用计数（判「思考增量是否还是同一条流」）与可续写正文标记。
        流键 = 网关给的会话 id（e.sid，并发子代理 / 续跑轮会各带各的），老网关没有就
@@ -1481,6 +1485,12 @@ function traceReset(runKey) {
     _toolSeq: Object.create(null),
     _openSay: false,
     _calls: Object.create(null),
+    /* 本次「开一轮」的时刻（本次需求 · 每步 token 丢失修复）：usage 明细现在**自带
+       轮号 + 步号**（app-assist.js 的 usage 分支 → tokUsageStepNote），而每步明细挂在
+       会话对象上（st._usageSteps）；同名 runKey 被连续复用（「立即终止 + 立刻重发」等）
+       时，采集侧靠这个时刻判断「轨迹已新开一轮 → 上一轮的明细作废」，不必在 reset
+       路径上再去够会话对象（本函数拿不到 st）。 */
+    resetAt: Date.now(),
   };
   S.runTrace[traceRunKey(runKey)] = tr;
   return tr;
@@ -1600,6 +1610,11 @@ function tracePush(runKey, kind, txt, ev) {
   if (!kind) return null;
   const tr = traceOf(runKey);
   const e = ev || {};
+  /* 段的真实起始时刻（本次需求「时间应当在每一项」）：事件**到达**这一刻记一次，
+     与工具调用记录（app-assist.js 的 st._liveTools[].at = Date.now()）同一口径 ——
+     网关事件本身不带时间戳，这里不拿 turn/step 之类的序号去推算时刻。
+     只在**新起一段**时写：后续增量续写同一段时不覆盖，段上留的是它开头那一刻。 */
+  const atNow = Date.now();
   if (kind === "say-end") {
     traceCloseSay(tr);
     return null;
@@ -1630,6 +1645,52 @@ function tracePush(runKey, kind, txt, ev) {
   const items = tr.items;
   const last = items[items.length - 1];
   const callId = e.callId == null ? "" : String(e.callId);
+  if (kind === "tool-prep") {
+    /* 准备态（本次需求）：同一个 callId 反复刷新同一项 —— 参数还在流进来，
+       卡片先在时间线上占住位置，显示「正在准备内容 N KB」。
+       注意**不写 tr._calls**：那是「这条调用已经成段」的去重账，真 tool/call 到了还得成段。 */
+    if (!callId) return null;
+    const bytes = Math.max(0, Number(e.bytes) || 0);
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it && it.k === "tool" && String(it.callId || "") === callId) {
+        it.prep = { bytes, name: String(e.name || it.name || "") };
+        if (!it.name && e.name) it.name = String(e.name);
+        return it;
+      }
+    }
+    if (last && last.k === "say" && last.open) traceCloseSay(tr);
+    const nit = {
+      k: "tool",
+      text: "",
+      step,
+      callId,
+      at: atNow,
+      name: String(e.name || ""),
+      prep: { bytes, name: String(e.name || "") },
+    };
+    items.push(nit);
+    return nit;
+  }
+  if (kind === "ctx") {
+    /* 上下文注入行（本次需求）：只占一条普通段落，不参与正文拼接
+       （dshMsgSegsViewable 只按 say 段重建正文，故不影响该判据）。 */
+    const note = String(txt || "").trim();
+    if (!note) return null;
+    if (last && last.k === "ctx" && last.text === note) return last;
+    traceCloseSay(tr);
+    const cit = {
+      k: "ctx",
+      text: note,
+      step,
+      callId: "",
+      at: atNow,
+      ctxKind: e.ctxKind ? String(e.ctxKind) : "change",
+      names: e.names || null,
+    };
+    items.push(cit);
+    return cit;
+  }
   if (kind === "tool") {
     if (callId && tr._calls[callId]) return null;
     if (callId) tr._calls[callId] = 1;
@@ -1643,7 +1704,7 @@ function tracePush(runKey, kind, txt, ev) {
        （顺序不能反 —— traceCloseSay 认出的是当时最后那一条 say 段）；
        思考段的开合交给上面的收口判定。 */
     traceCloseSay(tr);
-    const it = { k: "tool", text: "", step, callId };
+    const it = { k: "tool", text: "", step, callId, at: atNow };
     items.push(it);
     return it;
   }
@@ -1656,7 +1717,7 @@ function tracePush(runKey, kind, txt, ev) {
       return last;
     }
     traceCloseSay(tr);
-    const it = { k: "err", text: msg, step, callId };
+    const it = { k: "err", text: msg, step, callId, at: atNow };
     items.push(it);
     return it;
   }
@@ -1697,6 +1758,7 @@ function tracePush(runKey, kind, txt, ev) {
       step,
       turn,
       callId: "",
+      at: atNow,
       open: true,
       sid,
       toolSeq: traceToolSeq(tr, traceStreamKey(e, turn, step)),
@@ -1718,7 +1780,7 @@ function tracePush(runKey, kind, txt, ev) {
     last.text += body;
     return last;
   }
-  const it = { k: "say", text: body, step, callId: "", open: true };
+  const it = { k: "say", text: body, step, callId: "", at: atNow, open: true };
   items.push(it);
   tr._openSay = true;
   return it;
@@ -1759,7 +1821,8 @@ function stripToolLines(t) {
     .filter((l) => !/^\s*🔧/.test(l))
     .join("\n");
 }
-/* 分段快照：think / say / err 带正文，tool 只留 callId 与 step（工具明细在 m.tools）。
+/* 分段快照：think / say / err 带正文，tool 只留 callId 与 step（工具明细在 m.tools），
+   每段另带这一轮的会话轮号 round（本次需求，见 traceSegmentsOf 内的注释）。
    随助手消息存档，重绘后仍能按同一步序还原「思考 · 正文 · 工具」的交替。
    只有 say / err 过限长闸；think 整段照收 —— 需求「一轮结束后不要自动隐藏或删除
    思考」，裁剪 / 丢弃思考段就是思考从会话里消失。 */
@@ -1767,11 +1830,19 @@ const TRACE_SEG_MAX_CHARS = 60000;
 function traceSegmentsOf(runKey) {
   const tr = S.runTrace && S.runTrace[traceRunKey(runKey)];
   if (!tr || !Array.isArray(tr.items) || !tr.items.length) return [];
+  /* 段快照带上这一轮的会话轮号（本次需求）：落盘后重画仍按「第 N 轮」分组。
+     轨迹上没有轮号（老数据 / 非会话运行）就写 null —— 读取端据此保留「全部」兜底，
+     绝不按消息顺序推断轮号（用户口径）。 */
+  const round = traceNum(tr.round, 0) || null;
   const out = [];
   let budget = TRACE_SEG_MAX_CHARS;
   for (const it of tr.items) {
+    /* 每段带上它自己的**真实起始时刻**（本次需求「时间应当在每一项」）：
+       段一旦落盘，重开会话后每项左侧照样显示各自的秒级时刻；老存档没有这个字段的
+       段拿不到（渲染层回落显示所属消息时刻并注明，绝不拿顺序推算时刻）。 */
+    const at = Number(it.at) || 0;
     if (it.k === "tool") {
-      out.push({ k: "tool", step: it.step, callId: it.callId || "" });
+      out.push({ k: "tool", step: it.step, callId: it.callId || "", round, at });
       continue;
     }
     let text = String(it.text || "");
@@ -1785,7 +1856,7 @@ function traceSegmentsOf(runKey) {
         budget -= text.length;
       }
     }
-    out.push({ k: it.k, step: it.step, text });
+    out.push({ k: it.k, step: it.step, text, round, at });
   }
   return out;
 }
@@ -1800,8 +1871,18 @@ function attachTraceSegments(msg, runKey) {
   if (typeof agentSegsForDisk === "function") segs = agentSegsForDisk(segs);
   if (!segs || segs.length < 2) return msg;
   msg.segments = segs;
-  if (typeof dshMsgSegsViewable === "function" && !dshMsgSegsViewable(msg))
-    delete msg.segments;
+  /* 正文对不上（say 段被单段上限截过 / 老数据裁过）时的旧口径是**整份 delete msg.segments**
+     —— 那等于把这一轮的时间线（含全部思考段）一起丢掉：思考不再随消息存档，重绘后会话里
+     就只剩正文，用户看到的正是「思考内容被移除了」。
+     新口径分两种，绝不整份丢：
+       · 段里还有思考 → 留着，只标 _segNoBody（渲染层据此不拿段重建正文，见 app-assist 的
+         dshMsgSegsViewable / dshMsgBlock：正文走 m.content，思考照旧按段渲染）；
+       · 段里没有思考（只有对不上的 say / err）→ 段本身没信息量，仍按旧口径丢掉。 */
+  if (typeof dshMsgSegsViewable === "function" && !dshMsgSegsViewable(msg)) {
+    const hasThink = segs.some((s) => s && s.k === "think" && String(s.text || "").trim());
+    if (!hasThink) delete msg.segments;
+    else msg._segNoBody = true;
+  }
   return msg;
 }
 /* 网关事件 → 轨迹：在 dshRunTask 内统一喂，节点 / 会话 / 助手共用同一套切段规则 */
@@ -1815,6 +1896,10 @@ function traceFeedEvent(runKey, type, d) {
     tracePush(runKey, "say-end", "", e);
   } else if (type === "tool") {
     tracePush(runKey, "tool", "", e);
+  } else if (type === "tool-preparing") {
+    /* 工具准备态（本次需求 · 对齐上游 preparing 阶段）：参数还在流进来时先占一行卡片，
+       显示「正在准备内容 N KB」。同一个 callId 会被多次刷新，只更新那一项、不新起段。 */
+    tracePush(runKey, "tool-prep", "", e);
   } else if (type === "error") {
     if (e.message) tracePush(runKey, "err", String(e.message), e);
   } else if (type === "session-event") {
@@ -1823,7 +1908,38 @@ function traceFeedEvent(runKey, type, d) {
       tracePush(runKey, "turn", "", e.data || {});
     else if (t === "step/start" || t === "step/end")
       tracePush(runKey, "step", "", e.data || {});
+    else if (t === "developer/message") {
+      /* 上下文注入行（本次需求 · 对齐上游 context 行）：上游 Chat 默认不显示普通上下文注入，
+         只在**工具集发生变化**时留一行（dsh-client-ui-chat 的 chat-visibility 口径）。
+         这里只认工具增删两类块，其余（普通 developer 指令）照上游一并隐藏。 */
+      const note = traceContextNoteOf(e.data);
+      if (note) tracePush(runKey, "ctx", note.text, { ctxKind: note.kind, names: note.names });
+    }
   }
+}
+
+/* developer/message 里的「工具增删」摘要：抽不出工具增删就返回 null（整行不显示）。
+   块形状见 @deepseek-ai/dsh-llm/types 的 ToolAdditionBlock / ToolRemovalBlock
+   （type: 'tool-addition' | 'tool-removal' + toolName），上游文案见 dsh-client-ui-chat
+   的 message.toolAdded / message.toolRemoved / message.toolsAdded / message.toolsChanged。 */
+function traceContextNoteOf(data) {
+  const msg = data && (data.message || data);
+  const blocks = Array.isArray(msg && msg.content) ? msg.content : [];
+  const added = [];
+  const removed = [];
+  for (const b of blocks) {
+    if (!b || typeof b !== "object") continue;
+    const nm = b.toolName == null ? "" : String(b.toolName);
+    if (!nm) continue;
+    if (b.type === "tool-addition") added.push(nm);
+    else if (b.type === "tool-removal") removed.push(nm);
+  }
+  if (!added.length && !removed.length) return null;
+  return {
+    kind: added.length && removed.length ? "change" : added.length ? "add" : "remove",
+    text: added.join("\n") + (added.length && removed.length ? "\n" : "") + removed.join("\n"),
+    names: { added, removed },
+  };
 }
 
 /* 运行一次 agent 任务；返回最终文本。onEvent(type, data) 观察流式事件。 */
@@ -2096,6 +2212,261 @@ function dshRunRetryable(msg) {
 /* 与 dshRunOnce 同一口径算出取消句柄键（会话 agent:<id> / 节点 node.id / 助手 assist） */
 function dshRunKeyOf(opts) {
   return String(opts.runKey || (opts.node && opts.node.id) || "default");
+}
+
+/* ── 两档完成音的时基（本次需求）──
+   ① **任务级短促音**：任何一件任务跑完就响一声（旧的「以前的短促音」，E5→A5）。判据 =
+   运行队列前后对比：上拍还在队列里的一条运行项这一拍不见了 = 它完成了（见
+   dshRunQueueDoneCheck）。只认「正在跑」的行，且换了键但活还在的行不算完成
+   （暂停↔运行 / 会话↔并行组 / 开发块行折叠都不发声）；被用户手动停止 / 取消的也不算。
+   ② **全局音**：「所有任务结束」之后再空满 5 分钟才响一声更清脆的三音上行（C6→E6→G6）。
+   判据 = 运行队列彻底为空（跨画布节点 / 会话 / 助手 / 开发块 + 后端在途与排队的音视频）、
+   没有任何智能运行还在飞（dshRunBusy）→ 起算空闲窗口，满 DSH_ALL_DONE_MIN_MS 且期间
+   没有任何新任务起跑才响。**不满 5 分钟就只留短促音**。
+   为什么不再用「连续运行 ≥ 3 分钟」那套区间口径（上一版的 bug 源）：旧口径要跨运行累加
+   时长，用户回话 / 新任务起跑都会把它顶掉，于是出现「跑了很久却没响」；现在只看**空闲
+   时长**这一个量，判据与队列状态同源，既不会提前响、也不会被回话顶掉。
+   ★ 这一档的**心跳**是它自己的（dshRunIdleTicker）：面板心跳「有活才跳」，队列一空就停了，
+   而这一档恰恰只在队列空的时候才谈得上判 —— 没有自己那一盏，它就永远等不到 5 分钟那一拍
+   （旧版只能等用户下次动手顺手判一次：该响时不响，会话一开始反而响）。
+   三张表都挂在 S 上、按 runKey 记：
+     _runLongAt[runKey] = 本轮的起跑时刻（毫秒）—— 只用于判「这一轮还在不在跑」；
+     _runUserAt[runKey] = 你在这一轮最近一次回答 / 审批的时刻（只认这两类回执）；
+     _allDoneSoundAt    = 上一次全局音的时刻（供短促音让位，也防同一段空闲叠响）；
+     _doneSoundAt       = 上一次短促音的时刻（同一瞬并行收尾据此合并成一声）。 */
+const DSH_ALL_DONE_MIN_MS = 5 * 60 * 1000;
+/* 队列空要连续确认这么久才算「全部跑完」（心跳 2 秒 → 至少下一拍再判），
+   确认之后才开始计那 5 分钟 */
+const DSH_QUEUE_IDLE_CONFIRM_MS = 3000;
+/* 同一瞬间并行收尾（并行任务 / 批处理）合成一声：这一窗内的后续完成不再单独发声 */
+const DSH_DONE_SOUND_MERGE_MS = 500;
+/* 短促音与全局音的让位窗：两档几乎同一刻要响时只留全局那一声（不叠音） */
+const DSH_DONE_SOUND_DEDUP_MS = 1200;
+function dshRunLongMark(runKey) {
+  if (!runKey || typeof S === "undefined" || !S) return;
+  S._runLongAt = S._runLongAt || {};
+  S._runLongAt[runKey] = Date.now();
+  /* 新任务起跑 = 这一段空闲到此为止：全局那一档的 5 分钟重新起算（本次需求口径
+     「空满 5 分钟且期间没有任何新任务起跑」）。队列还有别的活时本来也不会走到响，
+     这里统一清掉是为了队列取数漏拍时也不会拿旧起点误响。 */
+  S._queueIdleAt = 0;
+  dshRunIdleTicker(false); /* 空闲窗作废 → 那一盏自己的心跳跟着收灯 */
+}
+
+/* ── 空闲窗心跳（修复 · 症状「长任务那一档该响时不响、会话一开始反而响」）──
+   面板心跳是**有活才跳**的（app.js syncRunQueueTicker(hasQueue)：队列一空就
+   stopRunQueueTicker），而「队列空满 5 分钟」这一档的前提恰恰是「队列已经空了」——
+   于是它永远等不到下一拍：该响的那一刻没人判，一直等到用户下一次动手（新建 / 切会话、
+   点「继续」、任何刷面板的动作）才顺手判一次，听感就成了「会话一开始先响一声」；
+   要是那一拍新任务已经起跑（dshRunLongMark 清掉空闲窗），这一档索性彻底不响。
+   这里给它一盏自己的心跳：空闲窗口在走就开着，窗口清零（响过 / 新任务起跑 / 队列又活了）
+   即关。每拍走的是同一个 dshRunAllDoneCheck（它自己重取队列真身），没有第二套判据。 */
+const DSH_IDLE_TICK_MS = 5000;
+let _idleTicker = null;
+function dshRunIdleTicker(on) {
+  if (!on) {
+    if (_idleTicker) {
+      try {
+        clearInterval(_idleTicker);
+      } catch (_) {}
+      _idleTicker = null;
+    }
+    return;
+  }
+  if (_idleTicker || typeof setInterval !== "function") return;
+  _idleTicker = setInterval(() => {
+    try {
+      dshRunAllDoneCheck();
+    } catch (_) {}
+    /* 窗口已清零（响过 / 新任务起跑 / 队列又有活了）→ 这一盏自己收灯 */
+    if (!(typeof S !== "undefined" && S && S._queueIdleAt)) dshRunIdleTicker(false);
+  }, DSH_IDLE_TICK_MS);
+}
+
+/* 用户回话（回答 / 审批）也把空闲窗口顶掉：只认这两类回执（见 ixAnswerQuestion /
+   ixAnswerApproval），浏览器求助卡 / 画布确认框不计入。 */
+function dshRunUserMark(runKey) {
+  const k = String(runKey || "");
+  if (!k || (typeof S === "undefined" || !S)) return;
+  S._runUserAt = S._runUserAt || {};
+  S._runUserAt[k] = Date.now();
+}
+/* 本轮被替换（同一 runKey 新一轮开跑）或收尾时清掉自己的两份登记，键不残留 */
+function dshRunLongDrop(runKey) {
+  if (typeof S === "undefined" || !S || !runKey) return;
+  if (S._runLongAt) delete S._runLongAt[runKey];
+  if (S._runUserAt) delete S._runUserAt[runKey];
+}
+/* 还有智能运行在飞吗？判据 = 已起跑（dshRunLongMark）但还没收尾（dshRunLongDrop）。
+   这是全局音的闸：运行队列面板没刷到时也不能喊「全干完了」。 */
+function dshRunBusy() {
+  if (typeof S === "undefined" || !S || !S._runLongAt) return 0;
+  try {
+    return Object.keys(S._runLongAt).length;
+  } catch (_) {
+    return 0;
+  }
+}
+/* 运行队列彻底空的那一刻起算空闲窗口（_queueIdleAt = 那一刻的毫秒字符串；0 = 没在空闲）。
+   调用点 = 运行队列面板刷新（app.js 的 updateRunQueuePanel，有活时还有每 2 秒心跳）与
+   dshRunAllDoneCheck —— 不论最后收尾的是智能运行、生成节点还是排队项，队列空后总有一拍
+   走到这里，所以不必在每条收尾路径上各埋一遍。 */
+function dshRunQueueIdleMark() {
+  if (typeof S === "undefined" || !S) return;
+  if (!S._queueIdleAt) {
+    S._queueIdleAt = String(Date.now());
+    /* 起算空闲那一刻，面板心跳刚好被关掉（队列空了）—— 这一档的下一拍只能由自己给 */
+    dshRunIdleTicker(true);
+  }
+}
+/* 队列彻底空 + 没有任何智能运行还在飞 + 队列连续空够确认窗（3 秒）之后，再满 5 分钟
+   → 响一声更清脆的全局音（dingdong 档）。**不满 5 分钟就只留任务级短促音**。
+   调用点 = 运行队列面板刷新（app.js updateRunQueuePanel，心跳 2 秒）与 dshRunOnce 收尾。
+   与旧版的区别：不再看「连续运行 ≥ 3 分钟」那套跨运行区间（回话 / 新任务都会把它顶掉），
+   现在只看空闲时长这一个量 —— 一条任务先结束时队列里还有别的活，这里根本走不到响的那一步。 */
+function dshRunAllDoneCheck() {
+  try {
+    const q = typeof collectRunQueueAll === "function" ? collectRunQueueAll() : [];
+    const items = Array.isArray(q) ? q : (q && q.items) || [];
+    /* 队列还有活（在跑 / 排队 / 后端在途）：空闲窗口作废，等下一次彻底干完重新起算 */
+    if (items.length) {
+      S._queueIdleAt = 0;
+      dshRunIdleTicker(false);
+      return;
+    }
+    /* 队列空 ≠ 全干完：还在收尾的那一轮（resolve/reject 之后才清账）先不计，
+       下一拍心跳再判 —— 这样「全部执行完毕」是事后确认，不是边收尾边喊 */
+    if (Number(S._runCount) > 0) return;
+    if (dshRunBusy() > 0) return;
+    /* 起算空闲窗口（只在「从有活变没活」的那一拍落点，持续空闲不刷新） */
+    dshRunQueueIdleMark();
+    if (!S._queueIdleAt) return;
+    const idleMs = Date.now() - Number(S._queueIdleAt);
+    /* 先过确认窗（3 秒）：防「一件刚完、下一件立刻起跑」的抖动 */
+    if (idleMs < DSH_QUEUE_IDLE_CONFIRM_MS) return;
+    /* 满 5 分钟才响。不够长时**什么都不清** —— 空闲窗口继续走，下一拍接着判 */
+    if (idleMs < DSH_ALL_DONE_MIN_MS) return;
+    /* 同一段空闲里才响过全局音（并行收尾的余波 / 紧接着的第二拍）不再叠一遍 */
+    const lastAt = Number(S._allDoneSoundAt) || 0;
+    if (lastAt && Date.now() - lastAt < DSH_QUEUE_IDLE_CONFIRM_MS) return;
+    /* 短促音刚落（同一刻的收尾）→ 全局那一声让它先响完，下一拍再判 */
+    const lastTaskAt = Number(S._doneSoundAt) || 0;
+    if (lastTaskAt && Date.now() - lastTaskAt < DSH_DONE_SOUND_DEDUP_MS) return;
+    /* 响过就闭掉这一段空闲（下一次要等新任务起跑后再空满 5 分钟） */
+    S._queueIdleAt = 0;
+    dshRunIdleTicker(false);
+    playAllDoneSound();
+  } catch (_) {}
+}
+/* ── 任务级短促音：任何一件任务跑完就一声（本次需求，队列前后对比判定）──
+   运行队列（collectRunQueueAll）就是「全应用正在跑的活」的唯一总览：智能体会话 / 画布
+   节点 / 开发块 / 全局助手 / 后端媒体生成 / 排队项 / 批处理都在里面。上拍还在的一项这一拍
+   不见了 = 它结束了 —— 只要不是被你手动停止 / 取消（节点 _aborted / 明确取消的条目），
+   就发一声短促音。为什么走队列对比：这些类型各有各的收尾分支（app-nodes 的媒体链、
+   批处理级联、app-db 的智能运行…），逐条埋钩子必漏；队列是全应用唯一汇总处，一处覆盖全部。
+   毫秒级的函数节点 / 执行节点不发声（用户口径：这类短活会响成噪音）。
+   同一瞬间并行收尾（并行任务 / 批处理一批跑完）合并成一声：靠 DSH_DONE_SOUND_MERGE_MS。 */
+function dshRunQueueIsShortLived(node) {
+  const k = node && node.kind;
+  return k === "function" || k === "execute";
+}
+/* 这一项是自己收尾的、还是被用户终止的？只认显式证据：节点 _aborted（全仓唯一停止入口
+   bumpNodeStop 一定同时置它，见 app-nodes.js）与媒体链的「已取消 / cancelled」状态。
+   拿不准时按「完成任务」处理（宁可多响一声，也不让一次真正的完成安静地溜走）。 */
+function dshRunItemCancelled(it) {
+  try {
+    const n = it && it.node;
+    if (n && n._aborted) return true;
+    const txt = String((it && it.stateText) || "");
+    if (txt.indexOf("已取消") >= 0 || txt.indexOf("已终止") >= 0) return true;
+  } catch (_) {}
+  return false;
+}
+/* 这一行的状态（面板三枚举 run / wait / paused）。**只把「正在跑」的行算作在飞**
+   （修复 · 症状「会话一开始先响一声」）：排队中与已暂停都不是在飞的任务，可它们的行键
+   会随状态换 —— 会话「已暂停」行是 paused:<id>，点「继续」后那一行消失、运行行 sess:<id>
+   才出现，旧版把「键不见了」直接当「跑完了」，于是每点一次「继续」都先响一声短促音。
+   行上没有 state（老快照 / 单测桩）按 run 处理，口径与面板的 state 三枚举同源。 */
+function dshRunQueueRowState(it) {
+  return String((it && it.state) || "run");
+}
+/* 当前队列里仍活着的「事」：type:id + 节点 id + 会话归属的开发块 id。
+   行键变了但这里命中 = 同一件事换了一行（暂停↔运行 / 会话↔并行组 / 开发块行折叠），
+   那不是「跑完了」，不发声。 */
+function dshRunLiveOwners(items) {
+  const live = new Set();
+  for (const it of items) {
+    if (!it) continue;
+    const id = String(it.id || "");
+    if (id) live.add(String(it.type || "") + ":" + id);
+    const nid = String((it.node && it.node.id) || "");
+    if (nid) live.add("nodeid:" + nid);
+    /* 开发块行被折叠掉时（同一块 ≥2 条开发会话并行，见 app.js dropSessOnlyDevRows），
+       剩下的那几行会话各自带着 devNode —— 按它把「这块还活着」认回来 */
+    const dn = it.devNode;
+    if (dn && dn.id) live.add("nodeid:" + String(dn.id));
+  }
+  return live;
+}
+function dshRunRowStillAlive(rec, live) {
+  if (!rec || !live || !live.size) return false;
+  const id = String(rec.id || "");
+  if (id && live.has(String(rec.type || "") + ":" + id)) return true;
+  const nid = String((rec.node && rec.node.id) || "");
+  if (nid && live.has("nodeid:" + nid)) return true;
+  return false;
+}
+/* 快照：key → { node, sess, type, id, stateText, at }。node / stateText 都留着 —— 判定
+    「是不是被手动停止」要看节点上的 _aborted 与队列行上的取消文案（只留 node 会把「已取消」
+    的文案丢掉）；type / id 留着判「这一行是不是换了键但活还在」（见 dshRunRowStillAlive）。
+    at = 我们第一次看见它在队列里的时刻（只用于诊断，不参与判定 —— 用户口径是
+    「任何任务跑完都响」，没有最低时长门槛）。 */
+function dshRunQueueDoneCheck() {
+  if (typeof S === "undefined" || !S) return;
+  try {
+    const q = typeof collectRunQueueAll === "function" ? collectRunQueueAll() : [];
+    const items = Array.isArray(q) ? q : (q && q.items) || [];
+    S._runQueueSeen = S._runQueueSeen || {};
+    const seen = S._runQueueSeen;
+    const now = Date.now();
+    let doneCount = 0;
+    const cur = {};
+    for (const it of items) {
+      const k = String((it && it.key) || "");
+      if (!k) continue;
+      cur[k] = true;
+      /* 排队 / 已暂停：不是在飞的任务，不进快照（它的键会随状态换，见 dshRunQueueRowState） */
+      if (dshRunQueueRowState(it) !== "run") continue;
+      if (!seen[k])
+        seen[k] = {
+          node: (it && it.node) || null,
+          sess: (it && it.sess) || null,
+          type: String((it && it.type) || ""),
+          id: String((it && it.id) || ""),
+          stateText: String((it && it.stateText) || ""),
+          at: now,
+        };
+    }
+    const live = dshRunLiveOwners(items);
+    for (const k of Object.keys(seen)) {
+      if (cur[k]) continue;
+      const rec = seen[k] || {};
+      delete seen[k];
+      if (dshRunQueueIsShortLived(rec.node)) continue; /* 函数 / 执行节点：毫秒级短活不响 */
+      /* 行键没了但这件事还活着（换了一行）：不是完成，不发声 */
+      if (dshRunRowStillAlive(rec, live)) continue;
+      /* 被手动停止 / 取消：不算「完成」，不发这一声 */
+      if (dshRunItemCancelled({ node: rec.node, stateText: rec.stateText })) continue;
+      doneCount++;
+    }
+    if (!doneCount) return;
+    /* 同一瞬间并行收尾只响一声；全局那一声刚落（几乎同一刻）时让它独响 */
+    const lastShort = Number(S._doneSoundAt) || 0;
+    if (lastShort && now - lastShort < DSH_DONE_SOUND_MERGE_MS) return;
+    const lastAll = Number(S._allDoneSoundAt) || 0;
+    if (lastAll && now - lastAll < DSH_DONE_SOUND_DEDUP_MS) return;
+    playTaskDoneSound();
+  } catch (_) {}
 }
 
 /* 本轮活动流（浏览器活动右边栏）的归属会话：**渲染层会话 id**（agentSessions 的 as…）。
@@ -3169,6 +3540,17 @@ function dshRunOnce(input, opts) {
      （见 traceSplitThink —— 旧口径在这里整段摘掉，等于把会话里的思考内容删了）。 */
   if (!opts.keepTrace) traceReset(runKey);
   else if (opts.resumeSession) traceSplitThink(runKey);
+  /* 会话轮号落号（本次需求 · 用户已确认口径）：第 N 轮 = 该会话里用户第几次发送，
+     由调用方（app-assist 的 agentRoundOfRun）算好随 opts.round 透传。
+     轮头编号**只认它**，不再用网关的 turn 值：turn 是模型往返次数，一次发送里调几次
+     工具就会 +1，按它分轮会把同一次发送的正文与工具调用拆到不同的轮头里
+     （用户报的「一个在第一轮、一个在全部」正是这个成因 + 段上没记轮号）。
+     keepTrace（5s×5 重发 / 续跑 / 长任务纠错轮）沿用开轮时那一个号：同一逻辑轮不换轮头；
+     keepTrace 又没带号时保留轨迹上原有的号。拿不到号（非会话运行）就留 0 = 不编号。 */
+  {
+    const rn = traceNum(opts.round, 0);
+    if (rn > 0) traceOf(runKey).round = rn;
+  }
   /* 本次运行的唯一实例标识：同 runKey 可能被连续两轮复用（如「立即终止 + 立刻重发」），
      旧一轮的 finish 只能删自己的条目，绝不能误删新一轮的 —— 否则新一轮会被看门狗
      当成「已手动终止」、回复变成（已终止），两轮乱序。 */
@@ -3188,6 +3570,9 @@ function dshRunOnce(input, opts) {
   /* 轮次归属键（dshRunTask 算好随 opts 透传）：缺省回落 runKey，只用于逐轮明细 */
   const tokRoundKey = String(opts.tokRoundKey || runKey || "default");
   const t0 = Date.now();
+  /* 长任务「叮咚」的时基：本轮托管计时从这一刻起算，中途你在提问 / 审批里回过话
+     会被 dshRunUserMark 顶掉（那时从你的回应重新起算），见上面三张表的注释 */
+  dshRunLongMark(runKey);
   /* 交互面板:仅首个 run 清空,后续 run 保留其他会话/节点在途的提问与审批 */
   if (!(S._runCount || 0)) ixReset();
   S._runCount = (S._runCount || 0) + 1;
@@ -3271,7 +3656,11 @@ function dshRunOnce(input, opts) {
          误删会让新一轮被看门狗当成「已手动终止」 */
       if (S._runCancels) {
         const cur = S._runCancels[runKey];
-        if (cur && cur._runInst === runInst) delete S._runCancels[runKey];
+        if (cur && cur._runInst === runInst) {
+          delete S._runCancels[runKey];
+          /* 同一 runKey 被新一轮顶掉时也要清长任务时基，否则键会一直挂着 */
+          dshRunLongDrop(runKey);
+        }
       }
       S._runCount = Math.max(0, (S._runCount || 1) - 1);
       /* 本轮收尾只清自己这一轮(runKey)的提问 / 审批卡片:另一条在途会话的卡片保留,
@@ -3295,6 +3684,11 @@ function dshRunOnce(input, opts) {
          被用户「⏸暂停」收尾的这一轮也不清（keepRunSession）：暂停不是跑完，
          会话留在表里，宿主点「继续」时按它点名那条 dsh 会话从中断处接下去。 */
       if (ok && !keepRunSession && S._runSession) delete S._runSession[runKey];
+      /* 全局长任务提醒：本轮刚收尾，若运行队列已彻底为空就看要不要响「叮咚」。
+         放在这里只是「顺手判一次」—— 常见情况下队列里还有别的活或本轮的收尾计数
+         还没减完，会直接返回；真正的判定由运行队列面板的刷新与心跳完成
+         （见 app.js updateRunQueuePanel），所以这里排在 resolve/reject 之前也没关系。 */
+      dshRunAllDoneCheck();
       if (ok) resolve(val);
       else reject(val instanceof Error ? val : new Error(String(val || "")));
       /* 轮次封口：异步收口账本（等改前正文入完库 → rollbackDrain 补收迟到帧 → 落盘）。
@@ -3531,8 +3925,11 @@ function dshRunOnce(input, opts) {
             try { opts.onEvent(msg.type, msg.data || {}); } catch {}
           }
           if (msg.type === "done") {
-            /* 完成音效:仅当任务实际运行超过 5 分钟 */
-            if (Date.now() - t0 >= 300000) playTaskDoneSound();
+            /* 完成音效：**不在这里发声**（本次需求）。旧版是「单轮跑满 5 分钟才响一声短促
+               音」，于是短任务、媒体生成、批处理跑完都没有反馈。现在任务级短促音统一由
+               dshRunQueueDoneCheck 按运行队列前后对比判定（任何一件任务跑完都响一声），
+               全局那一档由 dshRunAllDoneCheck 按「队列空满 5 分钟」判定 —— 两条口径都不在
+               这条分支上，这里只负责收尾记账。 */
             const data = msg.data || {};
             /* 一轮结束：把本次用量按模型并进所属会话的累计台账（并落一条逐轮明细） */
             if (tokOwner && typeof tokMergeRun === "function") {
@@ -3722,33 +4119,237 @@ function onDshNodeEvent(node, attemptT, type, data) {
   scrollElToBottomIfStuck(list);
 }
 
-/* ── 任务完成音效:优先自定义音频文件,否则内置短促双音 ── */
-function builtinDoneChime() {
+/* 内置完成音的音量：设置里「完成音效音量」滑杆的百分比（0~100，默认 35）。
+   只在 0~100 的有限数字上取值；其余（未设 / 越界 / 非数字）一律回落到默认 35。
+   上一版内置音是固定幅度 0.14，35% 对应的 0.12 与它听感相当（并行的低一个八度
+   分值贡献了低频能量），滑杆拉满时约 0.34，足够醒而不刺耳。 */
+const DSH_DONE_SOUND_VOL_DEFAULT = 35;
+function doneSoundVolumePct() {
+  const d = (typeof S !== "undefined" && S && S.config && S.config.dsh) || {};
+  const n = Number(d.doneSoundVolume);
+  if (!isFinite(n) || n <= 0) return n === 0 ? 0 : DSH_DONE_SOUND_VOL_DEFAULT;
+  return Math.max(0, Math.min(100, n));
+}
+/* 完成音的音量系数（0~1）：滑杆百分比 → 增益。自定义音频文件的音量另算（见
+   playDoneSoundFile 的 0.5），滑杆只调内置音（需求口径）。 */
+function doneSoundGain() {
+  return (doneSoundVolumePct() / 100) * 0.34;
+}
+/* ── 两档完成音的音色真源 ──
+    全局音（dingdong）真源 = 随包音频文件 renderer/sounds/all-done.wav（主进程读盘缩放后播放，
+    渲染层兜底走 WebAudio fetch + decodeAudioData，见 allDoneWavBuffer / builtinDingDong）；
+    短促音（ding）仍是合成音（E5 → A5，约 0.42s，主进程按 DONE_TONE_DING 合成，渲染层兜底按
+    同一张表画曲线）；自定义文件只替换短促音那一档（见 playTaskDoneSound）。
+    短促音表与 sound-alert.js 的 TONES 同源，改它必须两边一起改。 */
+const DONE_TONE_DING = [
+  [659.25, 0, 0.18],
+  [880, 0.18, 0.18],
+];
+/* 全局档（dingdong）的真源是随包音频文件 renderer/sounds/all-done.wav（主进程与 WebAudio
+   兜底两路都以它为准，见 builtinDingDong）；下面这张三音表只在读不到 / 解不开那个文件时
+   当兜底用，不再是这一档的「正声」。 */
+const DONE_TONE_DINGDONG = [
+  [1046.5, 0, 0.16],
+  [1318.51, 0.16, 0.16],
+  [1567.98, 0.32, 0.16],
+];
+/* 每音衰减率 / 整段余韵时长：主进程按这两张表合成 WAV（全局档现在按 all-done.wav 的真源读盘，
+   这两张表只用于兜底合成），WebAudio 兜底按同一份包络画曲线 */
+const DONE_DECAY_DING = [9, 9];
+const DONE_DECAY_DINGDONG = [9, 9, 4.2];
+const DONE_TAIL_DING = 0.06;
+const DONE_TAIL_DINGDONG = 0.38;
+/* WebAudio 包络的终点值：exp(-dur × decay)，与主进程合成的同一段指数衰减对齐
+   （起点 0.0001 → 峰值 → 这个终点，总长 = dur + tail，见 sound-alert.js synthSamples） */
+function doneNoteFloor(decay, dur) {
+  const v = Math.exp(-Math.max(0.5, Number(decay) || 9) * Math.max(0.02, Number(dur) || 0.16));
+  return Math.max(0.00004, Math.min(0.25, v));
+}
+/* 内置完成音 → WebAudio 兜底的通用实现（两档共用；音色表不同而已）。
+   只在 alertViaHost 派不出去时走到（窗口可见性 / 聚焦状态会推迟渲染层的这一拍，
+   所以正常路径一律走主进程，见 alertViaHost 的注释）。 */
+function playBuiltinTones(notes, decays, tail) {
+  const amp = doneSoundGain();
+  if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   S._audioCtx = S._audioCtx || new AC();
   const ac = S._audioCtx;
   if (ac.state === "suspended") ac.resume().catch(() => {});
   const t0 = ac.currentTime;
-  [
-    [659.25, 0],
-    [880, 0.18],
-  ].forEach(([f, off]) => {
+  notes.forEach(([f, off, dur], ix) => {
     const o = ac.createOscillator();
     const g = ac.createGain();
     o.type = "sine";
     o.frequency.value = f;
+    const d = (decays && decays[ix]) || 9;
+    const end = off + dur + (ix === notes.length - 1 ? Number(tail) || 0 : 0);
+    /* 衰减终点与主进程合成的同一段指数衰减对齐：peak × exp(-dur × decay)；
+       但**必须留在峰值之下**（深度衰减的档位算出 0.5 倍峰值就会变成「先弱后强」，
+       听感与主进程那一路对不上），所以再夹一道 0.85 倍峰值上限。 */
+    const floor = Math.max(
+      0.00004,
+      Math.min(amp * 0.85, amp * doneNoteFloor(d, dur), 0.25),
+    );
     g.gain.setValueAtTime(0.0001, t0 + off);
-    g.gain.exponentialRampToValueAtTime(0.14, t0 + off + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + off + 0.16);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, amp), t0 + off + 0.02);
+    g.gain.exponentialRampToValueAtTime(floor, t0 + off + dur);
+    if (end > off + dur) g.gain.exponentialRampToValueAtTime(0.00004, t0 + end);
     o.connect(g);
     g.connect(ac.destination);
     o.start(t0 + off);
-    o.stop(t0 + off + 0.18);
+    o.stop(t0 + end + 0.02);
   });
 }
-/* 提问/审批提示音:内置短促双音(440→660),或用自定义文件 */
+/* ── 两档完成音的音色与派发（本次需求：两档必须听得出区别）──
+   任务级短促音（mode "ding"）沿用「以前的短促音」E5 → A5（0.42s），仍是合成音；
+   全局提示音（mode "dingdong"）真源 = 随包音频 renderer/sounds/all-done.wav（更清脆明显）。
+   短促音的音色表真源在下面（DONE_TONE_DING），主进程 sound-alert.js 的 TONES 与之逐条对齐
+   —— 改一处必须改另一处，否则「窗口在前台」与「窗口被盖住」两种情况下会听到两把不同的声音。
+   DONE_TONE_DINGDONG 只是全局档读不到那个 WAV 时的兜底合成音，不是它的正声。
+   两档共用同一个 AudioContext 与「完成音效音量」滑杆，不额外造音频文件（WAV 随包）、不联网。
+
+   ★ 发声顺序：**先走主进程通道**（window.api.soundAlert → sound-alert.js：
+   主进程按档位取声 —— "dingdong" 档读盘缩放 all-done.wav，短促档合成 —— 交给系统播放器），
+   下面这段 WebAudio 只在桥不在 / 调用失败时兜底。
+   为什么：窗口被别的软件盖住或最小化时，渲染层这一拍会被推迟到用户切回 MTNode 才响
+   （用户实测症状），主进程不受窗口可见性管辖。双通道共用同一把音量尺：
+   doneSoundGain() 算出的 amplitude 直接交给主进程，音色表在 sound-alert.js 的 TONES。 */
+/* 主进程提醒音通道：能派出去就返回 true（调用方**不要**再自己响一遍）。
+   桥不在（老 preload / 迷你 DOM 回归）或派发失败 → 返回 false，照旧走 WebAudio。 */
+function alertViaHost(mode, amp, file) {
+  try {
+    const api = (typeof window !== "undefined" && window.api) || null;
+    if (!api || typeof api.soundAlert !== "function") return false;
+    const opts = { mode: String(mode || ""), amp: Number(amp) || 0 };
+    const f = String(file || "").trim();
+    if (f) {
+      opts.file = f;
+      opts.volume = 50; /* 自定义文件按它自己的响度播（与下面 playDoneSoundFile 的 0.5 对齐） */
+    }
+    const p = api.soundAlert(opts);
+    if (p && typeof p.catch === "function") p.catch(() => {});
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+function builtinDoneDing() {
+  const amp = doneSoundGain();
+  if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
+  if (alertViaHost("ding", amp)) return; /* 后台也响：交给主进程发声 */
+  playBuiltinTones(DONE_TONE_DING, DONE_DECAY_DING, DONE_TAIL_DING);
+}
+/* 全局那一声（mode "dingdong"）：**真源 = 随包音频 renderer/sounds/all-done.wav**，
+   与任务级短促音（合成 E5→A5，0.42s）在音色与长度上都拉开 —— 本次需求「更清脆明显」。
+   派发顺序与短促音同口径：先给主进程（sound-alert.js 读盘 + 按滑杆缩放后交给系统播放器，
+   后台 / 最小化也响）；桥不在或派发失败才走这里的 WebAudio 兜底 —— 兜底同样先试那个 WAV，
+   只有读不到 / 解不开时才落回合成的 C6→E6→G6（那是兜底音，不是真源）。
+   函数名保留 = 档位名保留（playAllDoneSound 的 mode、设置试听都照旧走它）。 */
+function builtinDingDong() {
+  const amp = doneSoundGain();
+  if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
+  if (alertViaHost("dingdong", amp)) return; /* 后台也响：交给主进程发声（它读的是同一个 WAV） */
+  const cached = playAllDoneWav(amp);
+  if (cached) return;
+  allDoneWavBuffer()
+    .then((buf) => {
+      if (!buf) {
+        playBuiltinTones(DONE_TONE_DINGDONG, DONE_DECAY_DINGDONG, DONE_TAIL_DINGDONG);
+        return;
+      }
+      if (!playAllDoneWav(doneSoundGain())) {
+        /* 解出来了却放不出（AudioContext 被拒 / 已关闭）：仍以合成音收尾，不让这一声静默丢掉 */
+        if (doneSoundGain() > 0) playBuiltinTones(DONE_TONE_DINGDONG, DONE_DECAY_DINGDONG, DONE_TAIL_DINGDONG);
+      }
+    })
+    .catch(() => {
+      playBuiltinTones(DONE_TONE_DINGDONG, DONE_DECAY_DINGDONG, DONE_TAIL_DINGDONG);
+    });
+}
+/* ── 全局完成音的真源音频（随包文件，见 DONE_TONE_DINGDONG 上方的说明）──
+   renderer/sounds/all-done.wav：主进程那一路是读盘 + 按滑杆缩放后交给系统播放器；
+   这一路是 WebAudio 兜底（桥不在 / 派发失败时），同样以这个文件为准，按当前滑杆增益缩放。
+   路径取相对本文件的 URL —— 打包前后都是 renderer/sounds/all-done.wav（同目录关系不变）。 */
+const ALL_DONE_WAV_REL = "sounds/all-done.wav";
+let _allDoneWavBuf = null; /* 解码结果缓存（AudioBuffer）；同一个进程内不重复 fetch / decode */
+let _allDoneWavReq = null; /* 进行中的加载 Promise（并发触发只发一次请求） */
+/* 读取 + 解码内置 WAV；拿不到（桥/网络/解码任一环节失败）回 null → 调用方落回合成兜底音。
+   AudioBuffer 与采样率无关，用页面现成的（或新建的）AudioContext 解一次就够。 */
+function allDoneWavBuffer() {
+  if (_allDoneWavBuf) return Promise.resolve(_allDoneWavBuf);
+  if (_allDoneWavReq) return _allDoneWavReq;
+  _allDoneWavReq = (async () => {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      const url = new URL(ALL_DONE_WAV_REL, document.baseURI).href;
+      let buf = null;
+      try {
+        const r = await fetch(url);
+        if (r && r.ok) buf = await r.arrayBuffer();
+      } catch (_) {}
+      /* fetch 读不到时的二道口：走 preload 的 file:readAudioBytes（与 app-speech.js 同一条口），
+         按主进程给的 appPath 拼绝对路径；桥不在 / 拿不到路径就直接放弃，交给合成兜底。 */
+      if (!buf) {
+        const api = window.api || null;
+        if (api && typeof api.fileReadAudioBytes === "function" && typeof api.appDirs === "function") {
+          const dirs = await api.appDirs();
+          const root = String((dirs && dirs.appPath) || "").replace(/[\\/]+$/, "");
+          if (root) {
+            const sep = root.includes("\\") ? "\\" : "/";
+            const r2 = await api.fileReadAudioBytes(root + sep + "renderer" + sep + "sounds" + sep + "all-done.wav", 4 * 1024 * 1024);
+            if (r2 && r2.ok && r2.bytes && r2.bytes.length) {
+              const b = r2.bytes;
+              buf = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+            }
+          }
+        }
+      }
+      if (!buf || !buf.byteLength) return null;
+      S._audioCtx = S._audioCtx || new AC();
+      const decoded = await S._audioCtx.decodeAudioData(buf.slice(0));
+      if (!decoded) return null;
+      _allDoneWavBuf = decoded;
+      return decoded;
+    } catch (_) {
+      return null; /* 读不到 / 解不开：静默回落到合成音（builtinDingDong 里那一步） */
+    } finally {
+      _allDoneWavReq = null;
+    }
+  })();
+  return _allDoneWavReq;
+}
+
+/* 播放内置 WAV（WebAudio）：拿得到就返回 true（调用方**不要**再自己响一遍），
+   拿不到返回 false → 调用方落回合成兜底音。音量按当前滑杆增益（doneSoundGain）缩放，
+   与主进程那一路同一把尺（主进程按样本缩放，这里走 GainNode）。 */
+function playAllDoneWav(amp) {
+  const g = Number(amp);
+  if (!(g > 0)) return false; /* 滑杆拉到 0 = 静音（与两档内置音同口径） */
+  const ac = S._audioCtx;
+  if (!ac) return false; /* 还没解出过（首响由 allDoneWavBuffer 建好 ctx 再放） */
+  if (!_allDoneWavBuf) return false; /* 没解出内容就绝不放空源，交回调用方走合成兜底音 */
+  try {
+    if (ac.state === "suspended") ac.resume().catch(() => {});
+    const src = ac.createBufferSource();
+    src.buffer = _allDoneWavBuf;
+    const gain = ac.createGain();
+    gain.gain.value = g;
+    src.connect(gain);
+    gain.connect(ac.destination);
+    src.start();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+/* 提问/审批提示音:内置短促双音(440→660),或用自定义文件。
+   ★ 与完成音同口径：先派给主进程（sound-alert.js 的 "ask" 档，同一对频率 / 同一段包络），
+   窗口不在前台时也响；桥不在或派发失败才用下面的 WebAudio 兜底。固定幅度 0.12 =
+   滑杆 35% 那一档（提问音不跟完成音音量滑杆走，见 playIxSound）。 */
 function builtinIxBeep() {
+  if (alertViaHost("ask", 0.12)) return;
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   S._audioCtx = S._audioCtx || new AC();
@@ -3777,8 +4378,13 @@ function playIxSound() {
   if (d.askSound === false) return;
   if (!playDoneSoundFile(d.askSoundFile || "")) builtinIxBeep();
 }
-function playDoneSoundFile(file) {
+/* 自定义音效文件：先派给主进程（后台也响），派不出去才用页面里的 <audio>。
+   amp 只影响主进程那一路的音量（SoundPlayer 没有音量属性，只能按样本缩放；
+   MediaPlayer 走 settings.volume）；缺省 0.17 ≈ 旧口径的 a.volume = 0.5。 */
+function playDoneSoundFile(file, amp) {
   if (!file) return false;
+  const a0 = Number(amp);
+  if (alertViaHost("", Number.isFinite(a0) && a0 > 0 ? a0 : 0.17, file)) return true;
   try {
     const a = new Audio(window.api.toFileUrl(file));
     a.volume = 0.5;
@@ -3788,15 +4394,35 @@ function playDoneSoundFile(file) {
     return false;
   }
 }
+/* ── 两档完成音的派发（本次需求：两档必须听得出区别）──
+   ① 短促音 = 任务级「任何一件任务跑完」：内置短促双音 E5→A5（合成）；
+   ② 全局音 = 「所有任务结束 + 队列空了 5 分钟」：内置 all-done.wav（随包音频）。
+   两档共用同一个开关与音量滑杆；**自定义音频文件只替换短促音那一档**，全局声始终用内置音 ——
+   否则用户设了自定义文件后两档又变成同一个声音，正好是本次要修的毛病。 */
 function playTaskDoneSound() {
   const d = (S.config && S.config.dsh) || {};
   if (d.doneSound === false) return;
+  /* 任务级短音的落点：全局那一档据此去重（几乎同一刻要响两声时只留全局声） */
+  S._doneSoundAt = String(Date.now());
   const file = d.doneSoundFile || "";
-  if (!playDoneSoundFile(file)) builtinDoneChime();
+  if (!playDoneSoundFile(file)) builtinDoneDing();
+}
+/* 全局那一档：**忽略自定义文件**（那是短促音的替身），只响内置音频 all-done.wav；
+   落点记 _allDoneSoundAt 供短促音让位（见 dshRunQueueDoneCheck）。 */
+function playAllDoneSound() {
+  const d = (S.config && S.config.dsh) || {};
+  if (d.doneSound === false) return;
+  S._allDoneSoundAt = String(Date.now());
+  builtinDingDong();
 }
 /* 设置内试听:忽略 5 分钟限制与开关(用户主动点击) */
 function previewDoneSound(file) {
-  if (!playDoneSoundFile(file)) builtinDoneChime();
+  if (!playDoneSoundFile(file)) builtinDingDong();
+}
+/* 设置内调音量时试听内置音:只响内置「叮咚」（带自定义文件时也响内置音，
+   否则用户调滑杆听不出任何变化） */
+function previewDoneSoundVolume() {
+  builtinDingDong();
 }
 
 /* ── 交互面板:dsh 提问(ask_user)/ 审批(approval)的宿主侧 UI ── */
@@ -4466,6 +5092,9 @@ function ixAnswerQuestion(it) {
       if (res && res.stale)
         return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
       if (res && res.ok === false) throw new Error(res.error);
+      /* 你答了这一轮 = 一段空闲的结束点：全局那一档的 5 分钟从这一刻重新起算
+         （见 dshRunUserMark / dshRunLongMark：起跑与回话都会清掉空闲窗口）。 */
+      dshRunUserMark(String(it.runKey || ""));
       /* 提交成功 = 用户真的答了这一轮：先落进会话消息（进上下文 + 界面留痕），再撤卡。
          失败 / stale 的路径不走这里 —— 那不是答案，不该被当成「用户已确认」写进上下文。 */
       ixCommitAnswerToSession(it, answers);
@@ -4531,6 +5160,8 @@ function ixAnswerApproval(it, outcome) {
       if (res && res.stale)
         return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
       if (res && res.ok === false) throw new Error(res.error);
+      /* 与提问同口径：审批也是「你回过话」，这一轮的托管计时从这里重新起算 */
+      dshRunUserMark(String(it.runKey || ""));
       ixDrop(it.data.id);
     })
     .catch((e) =>

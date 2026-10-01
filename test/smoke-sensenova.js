@@ -33,9 +33,10 @@
  *   [8] i18n / 指南 / 图标
  *   [9] sensenova-pack 后端契约与国内镜像安装脚本
  */
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
+const fs = require("fs"), path = require("path"), vm = require("vm"), os = require("os"), childProcess = require("child_process");
+const SHARED = { fs, path, vm, os, spawn: childProcess.spawn };
+const TEST_DIR = __dirname;
+let MERGED_FAILED = false;
 
 let fails = 0;
 let checks = 0;
@@ -251,6 +252,12 @@ const NODES_FNS = [
   "sensenovaGenRefPaths",
   "normalizeGpuReading",
 ];
+/* think 显示链的三个口（常量 + 两个函数）单独抽：上面那份清单被 [1b] 断言「全是函数」 */
+const NODES_THINK_FNS = [
+  "SENSENOVA_THINK_MAX",
+  "sensenovaThinkTextOf",
+  "sensenovaApplyThinkText",
+];
 const nodesSandbox = Object.assign(
   {
     console,
@@ -272,6 +279,9 @@ const nodesSandbox = Object.assign(
 vm.createContext(nodesSandbox);
 vm.runInContext(NODES_FNS.map((n) => fnBody(nodesSrc, n)).join("\n"), nodesSandbox, {
   filename: "sensenova-nodes-extract.js",
+});
+vm.runInContext(NODES_THINK_FNS.map((n) => fnBody(nodesSrc, n)).join("\n"), nodesSandbox, {
+  filename: "sensenova-think-extract.js",
 });
 const NG = (name) =>
   vm.runInContext("(typeof " + name + " === 'undefined' ? null : " + name + ")", nodesSandbox);
@@ -511,6 +521,79 @@ const snDefaults = (ndBlock.match(/sensenova_gen:\s*\{([\s\S]*?)\n  \},/) || [nu
   for (const f of ["sensenovaPrompt", "ratioBucket", "numSteps", "cfgScale", "cfgNorm", "vramMode", "think", "sensenovaStatus", "sensenovaOutput"])
     has(nodesSrc, f + ":", "快照字段暴露 " + f);
   has(fnBody(nodesSrc, "applyNodePatch"), "sensenovaPrompt", "applyNodePatch 认 sensenovaPrompt（读侧字段名也能写）");
+
+  /* ===================== [3b] 思考内容（think 模式）显示链 ===================== */
+  console.log("\n[3b] think 模式的思考内容：后端回执 → 节点思考缓冲 → 头部「◉ 思考」");
+  /* 需求（本次开发）：「绘画中，思考内容仍然未正确显示，修复」。真源三处：
+       ① sensenova-pack 的 engine.generate 在 think 模式下回 thinkText + 落 <名>.think.txt；
+       ② sensenova/main-sensenova.js 把这两个字段随生成回执透传给渲染层；
+       ③ 渲染层过去把它们整个丢掉（节点跑完既没有思考按钮，也读不到一个字）。
+     这条链现在必须每一段都接着 —— 下面既盯静态口径，也把真实函数抠出来真跑。 */
+  has(hostSrc, "thinkText: String(j.thinkText || \"\")", "宿主回执带 thinkText（后端回的规划文本）");
+  has(hostSrc, "thinkPath: String(j.thinkPath || \"\")", "宿主回执带 thinkPath（图旁 .think.txt）");
+  has(read("sensenova-pack/app/engine.py"), '"thinkText": think_text', "后端 engine 在结果里回 thinkText");
+  has(read("sensenova-pack/app/engine.py"), ".think.txt", "后端把规划文本落到图旁 .think.txt");
+  const applyBody = fnBody(nodesSrc, "sensenovaApplyThinkText");
+  has(applyBody, "pushThinking", "生成结果里的思考文本接进节点思考缓冲（pushThinking）");
+  has(applyBody, "roll", "按抽卡槽写入（多次抽卡各有各的一份思考）");
+  has(fnBody(nodesSrc, "sensenovaThinkTextOf"), "res.thinkText", "优先用回执里的 thinkText（不多发一次 IPC）");
+  has(fnBody(nodesSrc, "sensenovaThinkTextOf"), "res.thinkPath", "只有路径时才按需读 .think.txt 兜底");
+  has(fnBody(nodesSrc, "playSensenovaGenNode"), "await sensenovaApplyThinkText(node, r, roll)", "生成成功后当场接思考（playSensenovaGenNode 里调用）");
+  has(playBody, "out.think = thinkText", "输出对象带上 think（产物不丢）");
+  has(playBody, "out.thinkPath = lastThinkPath", "输出对象带上 thinkPath");
+  has(playBody, "if (S.thinking) S.thinking[node.id] = []", "每次运行先重置思考缓冲（重跑不把两轮思考串在一起）");
+  has(playBody, "refreshThinkingUI(node.id)", "重置后刷一次头部思考按钮（上一轮的思考没了，按钮跟着收起）");
+  /* 真跑：回执有 thinkText → 写进 (节点, 抽卡槽)；只有路径 → 读文件兜底；都没有 → 一个字不写 */
+  {
+    const calls = [];
+    nodesSandbox.window = {
+      api: {
+        fileReadText: async (p) => ({
+          ok: true,
+          exists: true,
+          content: "文件里的规划文本(" + p + ")",
+        }),
+      },
+    };
+    nodesSandbox.pushThinking = (nid, slot, txt) => calls.push([nid, slot, txt]);
+    const node = { id: "n-sn-1", kind: "sensenova_gen", title: "SenseNova" };
+    const apply = NG("sensenovaApplyThinkText");
+    const t1 = await apply(node, { thinkText: "先想构图，再落笔" }, 2);
+    eqStr(t1, "先想构图，再落笔", "回执里的 thinkText 原样接住");
+    eqArr(calls[calls.length - 1], ["n-sn-1", 2, "先想构图，再落笔"], "写进该节点的抽卡槽 2（多次抽卡各一份）");
+    const t2 = await apply(node, { thinkPath: "D:/out/a.think.txt" }, 0);
+    eqStr(t2, "文件里的规划文本(D:/out/a.think.txt)", "只有路径时读 .think.txt 兜底（老后端 / 只落文件）");
+    const n0 = calls.length;
+    const t3 = await apply(node, {}, 0);
+    eqStr(t3, "", "没开 think（两者都缺）→ 返回空串");
+    eqNum(calls.length, n0, "没开 think 时不写任何思考（不造空思考块）");
+    has(fnBody(nodesSrc, "sensenovaThinkTextOf"), "SENSENOVA_THINK_MAX", "思考文本过一次长度闸（防超大回执拖垮弹窗）");
+  }
+  /* 头部「◉ 思考」按钮：图像节点也要有（否则思考接住了也点不开） */
+  const thinkBtnAt = canvasSrc.indexOf("/* 思考按钮：");
+  ok(thinkBtnAt > 0, "app-canvas.js 里存在头部思考按钮（n-think）");
+  {
+    const blk = canvasSrc.slice(thinkBtnAt, thinkBtnAt + 1200);
+    has(blk, '"n-think"', "按钮类名 n-think");
+    has(blk, 'node.kind === "sensenova_gen"', "思考按钮的成员条件收 sensenova_gen（与 proc_text / agent_task 同组）");
+    has(blk, "S.thinking[node.id]", "按钮显形判据 = 该节点真有思考内容");
+    has(blk, "showThinking(node)", "点击打开思考弹窗（与文本节点同一个口）");
+  }
+  has(appSrc, "const imageThinkNode = node.kind === \"sensenova_gen\"", "思考弹窗对图像节点换一份说明（不是流式 reasoning）");
+  has(appSrc, 'I18n.t("思考 · 出图前的规划文本")', "弹窗小节标题对图像节点写明「出图前的规划文本」");
+  {
+    const I18n2 = require(path.join(ROOT, "renderer", "i18n.js"));
+    for (const k of [
+      "思考 · 出图前的规划文本",
+      "上方是本次出图前模型先写的规划文本（think 模式）。它随生成结果取回、不写入存档，并另存为图旁的 .think.txt；每次「抽卡」各有一份，切换尝试方块可分别查看。",
+    ]) {
+      has(i18nSrc, '"' + k.slice(0, 14), "i18n 表里有新词条：" + k.slice(0, 12));
+      I18n2.setLocale("en");
+      const en = I18n2.t(k);
+      ok(!!en && en !== k && !/[\u4e00-\u9fa5]/.test(en), "英文界面已译（无中文残留）：" + k.slice(0, 12));
+      I18n2.setLocale("zh");
+    }
+  }
 
   /* ===================== [4] app-canvas.js 设置表单与节点体 ===================== */
   console.log("\n[4] app-canvas.js：设置表单 / 端子渲染 / 节点体");
@@ -820,7 +903,385 @@ const snDefaults = (ndBlock.match(/sensenova_gen:\s*\{([\s\S]*?)\n  \},/) || [nu
   console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");
   if (fails) {
     console.log(fails + " 项失败");
-    process.exit(1);
   }
   console.log("全部通过");
 })();
+
+/* ==================== 已并入：test/smoke-sensenova-e2e.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-sensenova-e2e.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const http = require("http");
+  const Module = require("module");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const show = (v) => JSON.stringify(v);
+  /** 数组逐项比（参考图路径顺序敏感：按连线顺序下发） */
+  function eqArr(got, want, msg) {
+    ok(show(got) === show(want), msg + "（得到 " + show(got) + "，期望 " + show(want) + "）");
+  }
+  function eqNum(got, want, msg) {
+    ok(Number(got) === Number(want), msg + "（得到 " + show(got) + "，期望 " + show(want) + "）");
+  }
+  const ROOT = path.join(__dirname, "..");
+
+  /* ---------------------------------------------------------------- */
+  (async function main() {
+    console.log("\n[sensenova e2e] electron 替身 + 本机 mock 后端");
+
+    /* ---------- 临时工作区：数据目录 / 安装目录 / 资产目录 ---------- */
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-sensenova-e2e-"));
+    const dataDir = path.join(tmpRoot, "data");
+    const installDir = path.join(tmpRoot, "install");
+    const assetsDir = path.join(tmpRoot, "assets");
+    /* 假安装目录：projectSignals().ready = scaffold && venv（权重缺席不算不可用） */
+    fs.mkdirSync(path.join(installDir, "app"), { recursive: true });
+    fs.mkdirSync(path.join(installDir, ".venv", "Scripts"), { recursive: true });
+    fs.writeFileSync(path.join(installDir, "app", "server.py"), "# mock scaffold\n");
+    fs.writeFileSync(path.join(installDir, "app", "engine.py"), "# mock scaffold\n");
+    fs.writeFileSync(path.join(installDir, ".venv", "Scripts", "python.exe"), "stub");
+    fs.mkdirSync(path.join(dataDir, "sensenova"), { recursive: true });
+
+    /* ---------- mock 后端：冻结契约的 /health · /generate · /progress · /cancel · /shutdown ---------- */
+    const PNG_1x1 = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    let lastBody = null;
+    let generateHits = 0;
+    const server = http.createServer((req, res) => {
+      const send = (code, obj) => {
+        res.writeHead(code, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(obj));
+      };
+      const u = new URL(req.url, "http://127.0.0.1");
+      if (req.method === "GET" && u.pathname === "/health")
+        return send(200, {
+          ok: true,
+          version: "mock-0.1",
+          loaded: true,
+          modelReady: true,
+          vramMode: "fast",
+          resolutions: [
+            { ratio: "1:1", width: 2048, height: 2048 },
+            { ratio: "16:9", width: 2720, height: 1536 },
+          ],
+        });
+      if (req.method === "GET" && u.pathname === "/progress")
+        return send(200, { ok: true, pct: 100, message: "mock" });
+      if (req.method === "POST" && u.pathname === "/cancel") return send(200, { ok: true });
+      if (req.method === "POST" && u.pathname === "/shutdown") return send(200, { ok: true });
+      if (req.method === "POST" && u.pathname === "/generate") {
+        let raw = "";
+        req.on("data", (c) => (raw += c));
+        req.on("end", () => {
+          let body = null;
+          try {
+            body = JSON.parse(raw);
+          } catch {}
+          lastBody = body;
+          generateHits++;
+          if (!body || !body.outputDir || !body.filename)
+            return send(400, { ok: false, error: "bad_request", message: "缺少 outputDir / filename" });
+          /* 非法输入：mock 判定 → 后端 400 bad_request（宿主应原样上报错误码） */
+          if (String(body.prompt || "").indexOf("ILLEGAL") >= 0)
+            return send(400, { ok: false, error: "bad_request", message: "提示词非法（mock 判定）" });
+          if (body.ratio === "bad_ratio")
+            return send(400, { ok: false, error: "bad_request", message: "ratio 不在官方训练桶里" });
+          const out = path.join(body.outputDir, body.filename);
+          fs.mkdirSync(path.dirname(out), { recursive: true });
+          fs.writeFileSync(out, Buffer.concat([PNG_1x1, Buffer.alloc(4096)]));
+          return send(200, {
+            ok: true,
+            imagePath: out,
+            width: Number(body.width) || 2048,
+            height: Number(body.height) || 2048,
+            ratio: String(body.ratio || "1:1"),
+            seed: Number(body.seed) || 0,
+            numSteps: Number(body.numSteps) || 30,
+            elapsedSec: 0.12,
+            peakVramGiB: 0,
+            mock: true,
+            warnings: [],
+          });
+        });
+        return;
+      }
+      send(404, { ok: false, error: "not_found" });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const mockPort = server.address().port;
+    ok(mockPort > 0 && mockPort !== 8774, "mock 后端起在随机端口 " + mockPort + "（不碰用户真实的 8774）");
+
+    /* 宿主配置：installDir + mock 端口（loadConfig 读 <data>\sensenova\config.json） */
+    fs.writeFileSync(
+      path.join(dataDir, "sensenova", "config.json"),
+      JSON.stringify({ installDir, port: mockPort, idleMinutes: 0 }, null, 2),
+      "utf8",
+    );
+
+    /* ---------- electron 替身 ---------- */
+    const HANDLERS = new Map();
+    const electronStub = {
+      app: {
+        isPackaged: false,
+        getPath: (n) =>
+          n === "userData" ? dataDir : n === "exe" ? path.join(ROOT, "mtnode.exe") : dataDir,
+        getAppPath: () => ROOT,
+        on() {},
+        whenReady: () => Promise.resolve(),
+        quit() {},
+      },
+      ipcMain: {
+        handle: (ch, fn) => HANDLERS.set(ch, fn),
+        on() {},
+        removeHandler() {},
+      },
+      ipcRenderer: {
+        send() {},
+        sendSync: () => undefined,
+        on() {},
+        invoke: () => Promise.resolve(),
+        removeListener() {},
+      },
+      BrowserWindow: class {
+        loadFile() {}
+        on() {}
+        static getAllWindows() {
+          return [];
+        }
+      },
+      dialog: {
+        showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+        showMessageBox: async () => ({ response: 0 }),
+        showErrorBox() {},
+      },
+      shell: { openPath: async () => "", openExternal: async () => "" },
+      screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) },
+      contextBridge: { exposeInMainWorld() {} },
+      webUtils: { getPathForFile: () => "" },
+    };
+
+    const origLoad = Module._load;
+    Module._load = function (request) {
+      if (request === "electron") return electronStub;
+      return origLoad.apply(this, arguments);
+    };
+    const HOST_PATH = path.join(ROOT, "sensenova", "main-sensenova.js");
+    delete require.cache[require.resolve(HOST_PATH)];
+    const host = require(HOST_PATH);
+    Module._load = origLoad;
+
+    host.registerSensenovaIpc({
+      getDataDir: () => dataDir,
+      getMainWin: () => null,
+      appRoot: ROOT,
+      getDsh: null,
+      /* main.js 的 assetDirFor 真源是 assetDir = (wfId) => mk(assetDirPath(wfId))：建目录并返回。
+         替身同样建目录，否则 copyFileSync 会因目标目录不存在而走 asset_copy_failed 分支。 */
+      assetDirFor: (wfId) => {
+        const d = path.join(assetsDir, String(wfId || "default"));
+        fs.mkdirSync(d, { recursive: true });
+        return d;
+      },
+    });
+    const generate = HANDLERS.get("sensenova:generate");
+    ok(typeof generate === "function", "宿主注册了 sensenova:generate（真实 IPC handler）");
+    const tmpOutDir = path.join(dataDir, "sensenova", "asset-tmp");
+    const consoleLog = path.join(dataDir, "sensenova", "console.log");
+
+    /* ===================== [1] 不设输出路径 → 落应用托管目录 ===================== */
+    console.log("\n[1] 不传 outputDir / workflowId：出图落应用托管目录");
+    const prompt1 = "清晨薄雾里的雪山湖泊，写实风光摄影，柔和逆光";
+    const r1 = await generate(null, {
+      nodeId: "sensenova-e2e-0001",
+      prompt: prompt1,
+      ratio: "1:1",
+      width: 2048,
+      height: 2048,
+      seed: 7,
+    });
+    ok(r1 && r1.ok === true, "[1] 出图成功（得到 " + show(r1 && (r1.error || "ok")) + "）");
+    const p1 = String((r1 && r1.path) || "");
+    ok(p1.startsWith(tmpOutDir + path.sep), "[1] 产物落应用托管目录 asset-tmp（得到 " + p1 + "）");
+    ok(!p1.startsWith(ROOT + path.sep), "[1] 绝不落应用文件夹（" + ROOT + "）");
+    ok(fs.existsSync(p1), "[1] 回传的是已落盘的绝对路径");
+    if (fs.existsSync(p1)) {
+      const head = fs.readFileSync(p1).subarray(0, 8);
+      ok(
+        head[0] === 0x89 && head.subarray(1, 4).toString("latin1") === "PNG",
+        "[1] 产物是合法 PNG（魔数校验 " + head.toString("hex") + "）",
+      );
+    } else ok(false, "[1] 产物是合法 PNG（文件不存在，跳过）");
+    ok(Number(r1.bytes) >= 1024, "[1] 回执带字节数（" + (r1 && r1.bytes) + "）");
+    ok(
+      Array.isArray(r1.warnings) && r1.warnings.some((w) => String(w).indexOf("managed_output_dir") >= 0),
+      "[1] 回执明说这是应用托管目录（managed_output_dir 警告）",
+    );
+    ok(Number(r1.seed) === 7 && Number(r1.nextSeed) === 8, "[3] 种子沿用 + 回传 nextSeed = seed+1");
+
+    /* ===================== [3] 提示词 / 抽卡编号进请求 ===================== */
+    console.log("\n[3] 提示词进请求体 · rollIndex 落文件名 · 多轮不撞名");
+    ok(lastBody && lastBody.prompt === prompt1, "[3] 装配后的提示词逐字进入 /generate 请求体");
+    ok(String(lastBody && lastBody.outputDir) === tmpOutDir, "[3] 请求体 outputDir = 托管临时目录");
+    ok(/\.png$/.test(String(lastBody && lastBody.filename)), "[3] 请求体文件名以 .png 结尾");
+    ok(String(lastBody && lastBody.ratio) === "1:1", "[3] 画幅桶原样下发（ratio）");
+
+    const r3a = await generate(null, {
+      nodeId: "sensenova-e2e-0003",
+      workflowId: "wf-e2e",
+      prompt: "抽卡第一张",
+      ratio: "1:1",
+      width: 2048,
+      height: 2048,
+      rollIndex: 1,
+    });
+    const nameA = String(lastBody && lastBody.filename);
+    const r3b = await generate(null, {
+      nodeId: "sensenova-e2e-0003",
+      workflowId: "wf-e2e",
+      prompt: "抽卡第二张",
+      ratio: "1:1",
+      width: 2048,
+      height: 2048,
+      rollIndex: 2,
+    });
+    const nameB = String(lastBody && lastBody.filename);
+    ok(r3a && r3a.ok === true && r3b && r3b.ok === true, "[3] 同一节点连跑两轮都成功");
+    ok(nameA !== nameB, "[3] 两轮资产名不同（rollIndex 修掉了撞名）");
+    ok(/#1\.png$/.test(nameA) && /#2\.png$/.test(nameB), "[3] rollIndex 编号进文件名（take 标记 #N：" + nameA + " / " + nameB + "）");
+
+    /* ===================== [2] 带 workflowId → 画布资产目录 ===================== */
+    console.log("\n[2] 带 workflowId：复制进画布资产目录并删临时件");
+    const assetFileA = path.join(assetsDir, "wf-e2e", nameA);
+    const tmpFileA = path.join(tmpOutDir, nameA);
+    ok(String(r3a.path) === assetFileA, "[2] 回传的是资产目录里的绝对路径（得到 " + r3a.path + "）");
+    ok(fs.existsSync(assetFileA), "[2] 资产文件真实存在（与 proc_image 同一去处）");
+    ok(!fs.existsSync(tmpFileA), "[2] 临时件已删除（复制后清理，" + tmpFileA + "）");
+
+    /* ===================== [4] 参考图：真的下发（图像编辑模式） ===================== */
+    console.log("\n[4] 参考图入参：核路径后随 refImages 下发后端（图像编辑模式）");
+    const refA = path.join(tmpRoot, "ref-a.png");
+    const refB = path.join(tmpRoot, "ref-b.png");
+    const refMissing = path.join(tmpRoot, "ref-missing.png");
+    fs.writeFileSync(refA, PNG_1x1);
+    fs.writeFileSync(refB, PNG_1x1);
+    const r4 = await generate(null, {
+      nodeId: "sensenova-e2e-0004",
+      prompt: "按参考图改造",
+      ratio: "1:1",
+      width: 2048,
+      height: 2048,
+      refImages: [refA, refMissing, refB, refA],
+    });
+    ok(r4 && r4.ok === true, "[4] 带参考图照常出图");
+    eqArr(lastBody && lastBody.refImages, [refA, refB], "[4] /generate 请求体带 refImages（不存在的路径被剔除、重复去重）");
+    ok(r4 && r4.mode === "edit", "[4] 回执 mode = edit（图像编辑模式，参考图参与条件）");
+    eqArr(r4 && r4.refImages, [refA, refB], "[4] 回执 refImages 只含真正下发的路径");
+    eqNum(r4 && r4.refImagesUsed, 2, "[4] 回执 refImagesUsed = 2");
+    ok(
+      Array.isArray(r4.warnings) && r4.warnings.some((w) => String(w).indexOf("ref_image_missing") >= 0),
+      "[4] 读不到的参考图逐条进 warnings（ref_image_missing，不静默）",
+    );
+    ok(r4.referenceIgnored === undefined, "[4] 回执不再有 referenceIgnored 降级字段");
+    ok(String(lastBody && lastBody.prompt) === "按参考图改造", "[4] 提示词照常进请求");
+    ok(String(lastBody && lastBody.prompt).indexOf(".png") < 0, "[4] 参考图路径没有被塞进提示词正文");
+    ok(
+      fs.existsSync(consoleLog) && fs.readFileSync(consoleLog, "utf8").indexOf("ref_image_missing") >= 0,
+      "[4] 控制台日志留痕（[job] warn ref_image_missing）",
+    );
+    /* 无参考图时不得下发 refImages（纯文生图路径保持不变） */
+    const r4b = await generate(null, {
+      nodeId: "sensenova-e2e-0004b",
+      prompt: "纯文生图",
+      ratio: "1:1",
+      width: 2048,
+      height: 2048,
+    });
+    ok(r4b && r4b.ok === true && !("refImages" in (lastBody || {})), "[4] 不传参考图 → 请求体不带 refImages（t2i）");
+    ok(r4b && r4b.mode === "t2i", "[4] 回执 mode = t2i（纯文生图）");
+
+    /* ===================== [5] 非法输入：明确报错 ===================== */
+    console.log("\n[5] 非法输入：明确错误码，不打后端 / 原样上报");
+    const hitsBefore = generateHits;
+    const r5 = await generate(null, { nodeId: "sensenova-e2e-0005", prompt: "   " });
+    ok(r5 && r5.ok === false && r5.error === "empty_prompt", "[5] 空提示词 → empty_prompt（得到 " + show(r5 && r5.error) + "）");
+    ok(generateHits === hitsBefore, "[5] 空提示词前置拦截，不请求后端");
+    const r6 = await generate(null, { prompt: "x" });
+    ok(r6 && r6.ok === false && r6.error === "missing_node_id", "[5] 缺 nodeId → missing_node_id（得到 " + show(r6 && r6.error) + "）");
+    const r7 = await generate(null, {
+      nodeId: "sensenova-e2e-0007",
+      prompt: "ILLEGAL 非法输入",
+      ratio: "1:1",
+      width: 2048,
+      height: 2048,
+    });
+    ok(r7 && r7.ok === false && r7.error === "bad_request", "[5] 后端 400 bad_request → 原样上报错误码（得到 " + show(r7 && r7.error) + "）");
+    ok(String((r7 && r7.message) || "").length > 0, "[5] 带后端给的错误正文（" + show(r7 && r7.message) + "）");
+    ok(
+      fs.readFileSync(consoleLog, "utf8").indexOf("bad_request") >= 0,
+      "[5] 控制台日志留痕（[job] error: bad_request）",
+    );
+
+    /* ===================== [6] 应用目录内的 outputDir → 回落 ===================== */
+    console.log("\n[6] 显式 outputDir 落在应用目录内：回落应用托管目录");
+    const inApp = path.join(ROOT, "e2e-should-not-exist");
+    const r8 = await generate(null, {
+      nodeId: "sensenova-e2e-0008",
+      prompt: "应用目录回落",
+      ratio: "1:1",
+      width: 2048,
+      height: 2048,
+      outputDir: inApp,
+    });
+    ok(r8 && r8.ok === true, "[6] 出图成功（目录被回落，不是失败）");
+    ok(String(r8 && r8.path).startsWith(tmpOutDir + path.sep), "[6] 产物落应用托管目录（得到 " + (r8 && r8.path) + "）");
+    ok(!fs.existsSync(inApp), "[6] 应用目录里没有新建任何产物目录");
+    ok(
+      Array.isArray(r8.warnings) && r8.warnings.some((w) => String(w).indexOf("output_dir_inside_app") >= 0),
+      "[6] 回声明说回落原因（output_dir_inside_app）",
+    );
+
+    /* ===================== 收尾 ===================== */
+    await new Promise((resolve) => server.close(resolve));
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {}
+
+    console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");
+    if (fails) {
+      console.log(fails + " 项失败");
+    }
+    console.log("全部通过");
+  })().catch((e) => {
+    console.log("FAIL  端到端联调异常：" + ((e && e.stack) || e));
+  });
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-sensenova-e2e.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-sensenova-e2e.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
+if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+process.exit(MERGED_FAILED ? 1 : 0);

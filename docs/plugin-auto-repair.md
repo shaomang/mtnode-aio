@@ -101,9 +101,10 @@
 
 这条链能不能修好，取决于 Agent 拿到的技能正文是不是当前方案。因此技能真源唯一化是同一次改动的一部分：
 
-- `dsh/main-dsh.js` → `INSTALL_SKILL_SOURCES` 一律指向**仓库根** `skills/<name>/SKILL.md`（6 条：
-  `minimax-h3-install` / `minimax-music3-install` / `tts-local-install` / `llama-local-install` / `asr-local-install` /
-  `sensenova-local-install`）；
+- `dsh/main-dsh.js` → `INSTALL_SKILL_SOURCES` 一律指向**仓库根** `skills/<name>/SKILL.md`（5 条：
+  `minimax-h3-install` / `minimax-music3-install` / `tts-local-install` / `llama-local-install` /
+  `sensenova-local-install`。本地语音转写那份随旧插件一并删除：识别改用 dsh 运行时的官方
+  SenseVoice，权重由运行时自己下，不再有 Agent 安装链）；
   各宿主的 `sync*InstallSkill()` 也走同一份（并先委托 `dsh.syncInstallSkills()`）。
 - `h3/skills/`、`music3/skills/` 两份宿主目录副本**已删除**：留着就是「改了新份、下发的还是旧份」，
   那是本模块所有「提示词不合方案」的根因。

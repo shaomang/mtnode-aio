@@ -1411,7 +1411,7 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 
-  /* 出口：浏览器活动面板的通道给别的自包含模块用（renderer/app-devtools.js 的 CDP 面板
-     走 BA.browser('devtools') 取 DevTools 前端地址 —— 与面板本身同一条通道，不另造一条）。 */
+  /* 出口：浏览器活动面板的通道给别的自包含模块用（BA.browser = 会话浏览器控制面这一条通道，
+     与面板本身共用，不另造一条）。 */
   window.MTNodeBrowser = { BA };
 })();

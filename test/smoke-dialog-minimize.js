@@ -1,5 +1,5 @@
 "use strict";
-/* 弹窗最小化到 Footer（画布 tab 同款页签）+ ASR 后台安装 —— 冒烟测试（纯 Node）
+/* 弹窗最小化到 Footer（画布 tab 同款页签）—— 冒烟测试（纯 Node）
  *   node test/smoke-dialog-minimize.js
  * 被测对象是「真实源码 / 真实切片」，不是抄一份逻辑：
  *   renderer/index.html    #ovMinBar（Footer 页签排）· #ovPark（被最小化的窗壳停放处）·
@@ -9,14 +9,14 @@
  *                          closeOverlay 接线（vm 沙箱里真跑状态机）
  *   renderer/css/components.css  .ov-min-btn / .ov-min-tab（与 .wf-tab 同款）
  *                                + 缓进缓出 ovMinOut / ovMinIn / ovTabIn
- *   renderer/app-asr.js    后台安装：asrInstallRun / asrInstallRunning / asrInstallSubscribe /
+ *   renderer/app-asr.js    「语音模型」窗（asrDialogLive：只在窗还开着时才回写 DOM）
  *                          asrDialogLive（关窗照跑，进度订阅挂在模块级）
  *   renderer/i18n.js       新词条中英成对
  * 覆盖：
  *   [1] 静态接线：入口 DOM · 状态机函数 · 关闭 / 切画布清理 · 最小化按钮
  *   [2] 样式：画布 tab 同款外观 + ease-in-out 动效 + reduced-motion 兜底
  *   [3] vm 真跑：最小化 → 页签 → 恢复 · 两只窗无损换位 · opts.min=false · dropAll
- *   [4] ASR：后台安装状态机（真跑）+ 源码口径（关窗照跑，不再有「点完就锁窗」的写法）
+ *   [3] vm 真跑：最小化 → 页签 → 恢复 · 两只窗无损换位 · opts.min=false · dropAll
  */
 const fs = require("fs");
 const path = require("path");
@@ -38,11 +38,12 @@ const read = (rel) =>
     .replace(/\r\n/g, "\n");
 const html = read("renderer/index.html");
 const app = read("renderer/app.js");
+/* 语音模型窗（app-asr.js）也走同一套 #overlay 壳与最小化：它的 asrDialogLive 就在上面钉着 */
 const asr = read("renderer/app-asr.js");
 const css = read("renderer/css/components.css");
 const i18n = read("renderer/i18n.js");
 
-console.log("smoke-dialog-minimize：弹窗最小化到 Footer + ASR 后台安装\n");
+console.log("smoke-dialog-minimize：弹窗最小化到 Footer\n");
 
 /* ============ [1] 静态接线 ============ */
 console.log("[1] 静态接线（index.html / app.js）");
@@ -363,67 +364,6 @@ console.log("\n[3] vm 真跑：最小化 / 页签 / 恢复");
   ok(R("_ovMinList.length") === 0 && park.children.length === 0 && bar().hidden === true, "ovMinDropAll：页签与停放窗一起清（切画布口径）");
 }
 
-/* ============ [4] ASR 后台安装 ============ */
-console.log("\n[4] ASR：安装可后台继续（关窗照跑）");
-{
-  ok(asr.indexOf("function asrInstallRun(") > 0 && asr.indexOf("function asrInstallRunning(") > 0, "app-asr.js 有后台安装状态机");
-  ok(asr.indexOf("function asrInstallSubscribe(") > 0 && asr.indexOf("_asrInst.off = window.api.onAsrProgress") > 0, "进度订阅挂在模块级（不随弹窗销毁）");
-  ok(asr.indexOf("function asrDialogLive(") > 0, "有 asrDialogLive：只在窗还开着时才回写 DOM / 重开窗");
-  ok(asr.indexOf("_asrDialogBound") < 0 && asr.indexOf("asrBindProgressInDialog") < 0, "旧的「窗内进度绑定」写法已撤掉（曾把完成后重开窗挂死在回调里）");
-  ok(
-    asr.indexOf("asrInstallRun(") > 0 && asr.indexOf('asrT("后台继续安装")') > 0,
-    "安装按钮走 asrInstallRun，「稍后」在安装时变「后台继续安装」",
-  );
-  ok(
-    /refs\.laterBtn\.textContent = _asrInst\.running \? asrT\("后台继续安装"\) : asrT\("稍后"\)/.test(asr),
-    "安装中按钮文案随状态切换",
-  );
-  ok(asr.indexOf('if (_asrInst.running) toast(asrT("安装已在后台继续') > 0, "点「后台继续安装」关窗并提示进度去处");
-  ok(i18n.indexOf('"后台继续安装": "Continue in background"') > 0, "i18n 有「后台继续安装」英文词条");
 
-  /* 真跑：安装中 → 关窗（无 DOM）→ 进度照收 → 完成收口，全程不抛 */
-  const audioSrc = { id: "a1", kind: "input_audio", title: "录音 1" };
-  const sb = {
-    console,
-    setTimeout,
-    clearTimeout,
-    S: { wf: { id: "wf1", nodes: [audioSrc], wires: [] } },
-    I18n: { t: (s) => String(s) },
-    document: { createElement: () => ({ style: {}, appendChild() {}, classList: { add() {}, remove() {} } }), getElementById: () => null },
-    toast: (m) => sb.__toasts.push(m),
-    scheduleSave: () => {},
-    __toasts: [],
-    window: { api: {} },
-  };
-  sb.window.api.asrStatus = async () => ({ installed: false });
-  sb.window.api.onAsrProgress = (cb) => {
-    sb.__prog = cb;
-    return () => {
-      sb.__off = true;
-    };
-  };
-  sb.window.api.asrInstall = () =>
-    new Promise((res) => {
-      sb.__resolve = res;
-    });
-  sb.window.api.asrEnsureReady = async () => ({ ok: true });
-  const actx = vm.createContext(sb);
-  try {
-    vm.runInContext(asr, actx, { filename: "renderer/app-asr.js" });
-  } catch (e) {
-    ok(false, "app-asr.js 加载失败：" + ((e && e.message) || e));
-  }
-  (async () => {
-    const p = actx.asrInstallRun();
-    ok(actx.asrInstallRunning() === true, "开跑后 asrInstallRunning() === true");
-    sb.__prog({ step: "download", stepLabel: "下载模型", pct: 42 });
-    ok(vm.runInContext("_asrInst.pct", actx) === 42, "进度事件照收（窗已关也收：订阅挂模块级）");
-    sb.__resolve({ ok: true });
-    await p;
-    ok(actx.asrInstallRunning() === false, "装完状态复位");
-    ok(sb.__off === true, "进度订阅随安装结束解绑");
-    ok(sb.__toasts.some((m) => m.indexOf("本地语音后端安装完成") === 0), "装完在 toast 里收口（即使窗已关）");
-    console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "ALL OK  " + checks + " checks"));
-    process.exit(fails ? 1 : 0);
-  })();
-}
+console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "ALL OK  " + checks + " checks"));
+process.exit(fails ? 1 : 0);

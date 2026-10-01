@@ -372,6 +372,15 @@ html[lang="en"] [data-lang="zh"] {
   padding: 8px 12px;
   border-top: 1px solid var(--line);
   font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* footer 里那条说明文案（语音听写条在上面，两者并列） */
+.foot-note {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 12px;
 }
 
 /* ── 风格的质感钩子（只在这里开一次口子，风格文件按需覆盖） ──

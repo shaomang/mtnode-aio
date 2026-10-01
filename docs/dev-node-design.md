@@ -1,4 +1,4 @@
-# 「开发」节点（Dev Node）设计文档
+﻿# 「开发」节点（Dev Node）设计文档
 
 > 状态：v1 设计 · 2026-08
 > 参考：[tt-a1i/archify](https://github.com/tt-a1i/archify)（Agent 扫描代码库产出可核验架构图的 Skill）。
@@ -359,7 +359,7 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 - **UI**（`renderer/app-canvas.js`）：按钮 `文件 N`（N = 条数，0 条只显示「文件」）插在**「打开」之后、「会话 N」之前**，`onclick` 先 `stopPropagation`（不触发超级节点展开/选中）再 `toggleDevFilesPanel(node)`；展开态记 `S.uiDevFiles = node.id`（与 `S.uiDevModelNode` 同一做法，只存节点 id），画布重绘时由 `nodeElement()` 在按钮行之后复原面板。样式全部作用在折叠卡 `.n-dev-info` 内（`renderer/css/canvas.css`）：按钮 `.n-dev-files-btn`（`.on` = 已展开）、面板 `.n-dev-files` + 头部 `.n-dev-files-head`（来源提示 +「编辑」`.n-dev-files-edit` +「打开项目根」`.n-dev-files-root`）、列表 `.n-dev-files-list`（自身 `max-height` 滚动，避开 `.n-body` 裁剪）、行 `.n-dev-file`（`.f` 文件名 / `.p` 灰色相对路径 / `.miss` 不存在标记 / `.missing` 行态）、空态 `.n-dev-files-empty`；颜色一律取既有 CSS 变量，暗 / 亮主题都可读，`[hidden]` 显式兜底 `display:none`。新中文词条在 `renderer/i18n.js` 补齐英文镜像。
 - **点一行 = 定位该文件**：`revealDevCoreFile(node, entry)` → `devCoreFileAbs()` 解析绝对路径 → **`window.api.shellShowItem(abs)`**（在资源管理器中选中该文件，即打开其所在文件夹；**复用既有 `shell:showItem` IPC，不新增主进程能力**）。解不出路径 / 未设 `devPath` / API 缺失一律 **toast 说明原因**，与 `openDevFileNode()` 同口径，绝不静默。每行显示 文件名（`devCoreFileLabel()`）+ 灰色相对路径，「不存在」标记由异步 `window.api.fileExists` 回填，结果缓存到模块级 `_devFileExistsCache`，只改 `.miss` 与 `.missing` 类、**不整盘重绘**。
 - **写入与持久化**：`devCoreFilesSet()` = 归一化 → 与旧值比较（相同不动）→ `pushHistory()`（可撤销）→ `scheduleSave(true)`；字段挂在 `NODE_DEFAULTS.super.devFiles`，`persist()` 全量序列化工作流、`migrateWf` 对 super 无字段白名单，故与 `devSuggest` 同机制自动随工作流 JSON 保存。
-- **测试口径**：`node test/smoke-dev-corefiles.js` 覆盖规范化（去重 / 裁剪到 10 / 绝对折相对 / 拒绝 `../`）、顶层块与非开发块**读写双向拒绝**、按钮渲染与「文件 N」计数、展开与再点收起、行点击调 `shellShowItem`、编辑对话框写回、兜底收集（后代 `file` 标题 + 概述 token）、`canvas_get` 快照与网关 schema 接线、CSS / i18n / 手册 / CHANGELOG / 技能索引接线；并须与既有 `node test/smoke-dev-suggest.js`、`node smoke.js` 一起保持通过（`devProjectRootOf` 相关回归 `test/smoke-workspace-project.js` 会把该段源码抠进沙箱独立跑，故 `devIsDevBlock` / `devIsTopBlock` 必须留在 `app.js` 同一节内）。
+- **测试口径**：`devFiles` 规范化（去重 / 裁剪到 10 / 绝对折相对 / 拒绝 `../`）、顶层块与非开发块**读写双向拒绝**、按钮渲染与「文件 N」计数、展开与再点收起、行点击调 `shellShowItem`、编辑对话框写回、自动兜底收集（后代 `file` 标题 + 概述 token）等断言随 `node test/smoke-dev-suggest.js` 一起跑（原先单独的 `test/smoke-dev-corefiles.js` 已不在仓库里）；并须与 `node smoke.js` 一起保持通过（`devProjectRootOf` 相关回归 `test/smoke-workspace-project.js` 会把该段源码抠进沙箱独立跑，故 `devIsDevBlock` / `devIsTopBlock` 必须留在 `app.js` 同一节内）。
 
 ## 7. 关系线渲染与架构图排版
 
@@ -462,13 +462,17 @@ HSV 色板弹出层（`#devColorPop`）内除方块 / 色相条 / Hex 外，还�
 ## 11. 自测
 
 ```
-node test/smoke-dev-suggest.js     # 309 项：「建议 / 开发 / 细化」行为契约（含 AGENTS.md 共识文件接线）
-node test/smoke-dev-corefiles.js   # 核心文件列表 devFiles：归一化与 10 条上限 / 顶层块读写拒绝 / 「文件 N」按钮与展开面板 / 行点击 reveal / 自动兜底收集 / 契约与文档接线
-node test/smoke-rel-layout.js      #  51 项：关系线几何 + 架构图排版 + 端子文字
-node test/smoke-plan-dialog.js     # 274 项：计划弹窗结构（头部单块：归属=标题 · 目标=内容 · 无「明确不做」栏）+ 归属绑定 / 弹窗过期 / 终止即永久消失
-node test/smoke-db.js              #  20 项：db-store（FTS 增量 / 查询 / calc / 日志）
-node test/smoke-exec-detached.js
+node test/smoke-dev-suggest.js     # 开发 / 细化「建议」行为契约（含 AGENTS.md 共识文件接线）
+node test/smoke-rel-layout.js      # 关系线几何 + 架构图排版 + 端子文字
+node test/smoke-plan-dialog.js     # 计划弹窗结构（头部单块：归属=标题 · 目标=内容）+ 归属绑定 / 弹窗过期 / 终止即永久消失
+node test/smoke-db.js              # db-store（FTS 增量 / 查询 / calc / 日志）
+node test/smoke-exec-detached.js   # 执行节点的独立进程启动
 ```
+
+> 用例整理（本轮）：核心文件列表 devFiles 的回归断言原先在 `test/smoke-dev-corefiles.js`，该文件已不在仓库里；
+> 同模块的小用例已按「并入主文件」口径合并（`test/smoke-*.js` 从 192 只收敛到 125 只），
+> 合并后的文件里以 `/* ==================== 已并入：test/<原文件名> ==================== */` 标出原段，
+> 想单独复跑某一段就 `node test/<主文件>` 或 `node test/run-all.mjs <名字子串>`。
 
 `smoke-db.js` 里的 `dbQuery` / `dbList` / `dbGet` 已按 `mtnode_db` 工具的需要改成返回 `{ sql, rows }` / `{ sql, record }`（断言必须能追溯到实际访问语句），测试用 `rowsOf()` 统一取行。
 
@@ -493,4 +497,4 @@ node test/smoke-exec-detached.js
 - 节点颜色：`devColor` 校验与小写化、元素类型默认色、自定义色优先、`hexToRgbTriplet`、HSV↔RGB/HEX 往返（黑 / 红 / 绿三个锚点）、头部按钮与色板弹层接线、`.dev-custom-color` 外框样式，另断言**执行节点 body 不再重复标题**；
 - Agent 模型：`devAgentModelOf` 就近继承（未选 → 祖先、自选 → 覆盖、兄弟块各自算、非开发节点返回 `null`）、路由与模型互校（失效路由 / 不匹配路由都按模型反查纠正）、按钮三态（auto / 实线自选 / 虚线继承 + 生效模型名）、弹层分组与条数、点选写 `devModel` + `devProvider` 并记撤销与存盘、「跟随默认（不指定）」清除后退回继承、「建议」只读调研与确认框真的带上所选模型与路由、绑定会话 / 序列化 / 网关 schema / CSS / 中英文手册 / 技能与索引的接线。
 
-跑法：仓库没有聚合的 `npm test`（package.json 里没这条 script），需要逐个 `node test/xxx.js`。
+跑法：`npm test`（= `node test/run-all.mjs`，默认 4 路并发；`--jobs=1` 回到严格串行；`--list` 只列清单）跑 `test/` 下全部 `smoke-*`；单只要复现就 `node test/smoke-xxx.js`，或 `node test/run-all.mjs <名字子串>`。

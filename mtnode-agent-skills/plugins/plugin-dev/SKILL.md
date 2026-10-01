@@ -1,4 +1,4 @@
----
+﻿---
 name: mtnode-plugin-dev
 title: MTNode 插件开发规范
 description: MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。
@@ -17,7 +17,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 
 | 东西 | 是什么 | 契约出处 |
 | --- | --- | --- |
-| **应用插件**（本技能管的） | 顶栏「插件」对话框里的卡片：窗口插件、pet、以及带本地后端 + 控制台 + 画布节点的 music3 / yue2 / sensenova / h3 / llama / tts / remotion / asr | `plugins/catalog.default.json`、`plugins/main-app-plugins.js`、各 `*/main-*.js` |
+| **应用插件**（本技能管的） | 顶栏「插件」对话框里的卡片：窗口插件、pet、以及带本地后端 + 控制台 + 画布节点的 music3 / yue2 / sensenova / h3 / llama / tts / remotion | `plugins/catalog.default.json`、`plugins/main-app-plugins.js`、各 `*/main-*.js` |
 | DSH 插件 | Agent 网关侧插件（工具能力） | `dsh/gateway/*-plugin.mjs`、`dsh/DESIGN.md` |
 | 技能 Skills | Agent 的按需指令集 | `mtnode-agent-skills/**`、`skills/**`（安装类）、`ext-repo/skills/**`（云发版） |
 | MCP 扩展 | 外部 MCP server 接入 | `renderer/app-plugins.js` 的 `EXT_KINDS` + `#extManagerDlg` |
@@ -37,7 +37,6 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 | `minimax-h3` | h3 | `h3/main-h3.js` | `h3/ui/` | `video_gen` | `h3-pack/` |
 | `llama-local` | llama | `llama/main-llama.js` | `llama/ui/console.html` | （做模型服务，无媒体节点） | `llama-pack/` |
 | `tts-local` | tts | `tts/main-tts.js` | `tts/ui/console.html` | `tts_gen` | `tts-pack/` |
-| `asr-local` | asr | `asr/main-asr.js` | `asr/ui/index.html` | 接音频输入即转写（无独立节点） | `asr-pack/` |
 | `remotion` | remotion | `remotion/main-remotion.js` | `remotion/ui/index.html` | `remotion` | `remotion-pack/` |
 | `bongochat` | pet | `pet/main-pet.js` | 独立宠物进程 `--mtnode-pet` | — | `pet-pack/` |
 | `forum` | builtin(window) | `plugins/main-app-plugins.js` 的 `BUILTIN_WINDOW_PLUGINS` | 应用内 `forum/chat.html` | — | `forum/**` 直接打包 |
@@ -93,7 +92,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
    - `plugins/main-app-plugins.js` → `KNOWN_KINDS`（把新 kind 加进去）；若 kind 与 handler 不同名，`normalizePlugin` 里的 handler 兜底链也要补一条；
    - `build.json` → `files`：`<kind 目录>/**` 与 `<pack 目录>` 的 extraResources 条目（见第八节）。
 3. **main.js 接线**：`require("./<dir>/main-<name>.js")` → 在 `app.whenReady` 段 `register<Name>Ipc({ getDataDir: DATA, getMainWin: () => mainWin, appRoot: __dirname, getDsh: () => dsh() })`，紧跟在 `initPluginErrorBus({ getMainWin: () => mainWin })` 之后；`app.on("before-quit")` 里补 `shutdown<Name>UiOnly()`。
-   - **后端要不要随 MTNode 退出**：单例后端（music3 / h3 / yue / sensenova）**故意不杀**，只在 before-quit 关控制台窗；asr 随 MTNode 退出（`shutdownAsr()`）。新插件必须在两处注释里写明选了哪种、为什么。
+    - **后端要不要随 MTNode 退出**：单例后端（music3 / h3 / yue / sensenova）**故意不杀**，只在 before-quit 关控制台窗；新插件必须在两处注释里写明选了哪种、为什么。
 4. **preload.js 桥**：`window.api.<kind>Xxx` 白名单转发（`ipcRenderer.invoke('<kind>:…')`），事件订阅（`onXxxProgress` / `onXxxConsoleChanged` / `onXxxGpu`）返回退订函数。渲染层拿不到桥 = 卡片与节点全是「未就绪」。
 5. **渲染层卡片**：`renderer/app-plugins.js` → `refresh<Name>PluginCard(root)` + `bind<Name>Progress(card)`，并在 `openAppPluginsDialog()` 的 `kind === "<kind>" || handler === "<kind>"` 链里挂一行（顺序无所谓，但要和 `attachInstalled` / catalog 词条一致）；卡片动作按钮的图标只能取 `PLUGIN_ACT_SVG`（`play` / `stop` / `download` / `update` / `gear`）——**表里没有的 kind 必须先补图标，否则按钮渲染成没有图标的空方块**。
    封面图标放 `plugins/icons/<id>.png`（1:1），加载顺序 `plugins/icons → renderer/plugin-icons`。
@@ -127,7 +126,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 
 ```jsonc
 "files": [
-  "<kind>/ **",              // 例："music3/**"、"asr/**"（宿主 + ui + preload）
+   "<kind>/**",              // 例："music3/**"（宿主 + ui + preload）
   "plugins/**",              // 已在
   "mtnode-agent-skills/**", "guides/**", "skills/**"   // 已在（技能 / 指南 / 安装技能）
 ],
@@ -171,7 +170,7 @@ reportErr(code, message, { phase: "install", nodeId: nid });
 ## 十、配套能力：dsh / 缓存 / 存储
 
 - **用 dsh 跑 LLM**：`getDsh` 由 `main.js` 注入；鉴权用 `dsh/mtnode-llm-creds.js` 的 `resolveDshRunAuth(getDataDir())`（复用 MTNode 设置里的模型 Key），把 `{ model, maxTokens, apiKey, baseUrl, provider, mtnodeProviders }` 塞进 `runFields`。事件回灌：导出 `on<Name>DshEvent(ev)` 并在 `main.js` 的 dsh 事件分发里挂一行。
-- **转写 / 生成缓存**：明文 JSON 落插件自己的数据目录（asr 的 `cacheGet/cacheSet/cacheClear` 是范本）。
+- **转写 / 生成缓存**：明文 JSON 落插件自己的数据目录（tts 的音色库、llama 的模型清单都是范本）。
 - **AI 事实库 / 素材库 / 工具库**：走 `db-store.js`、`assets-store.js`、`tools-store.js` 的既有 IPC，**不要**为插件新开一套存储。
 - **音视频互斥**：`media-gen-global-lock.js` 的 `tryAcquireLock / refreshStaleLock / clearLock / releaseLock / busyMessage` —— 同时在跑的只有 1 个音视频任务。
 - **资产落盘**：宿主拿 `assetDirFor(wfId)` 回调（sensenova 范本）或自己在宿主内落 `<数据目录>/assets/<wfId>`。

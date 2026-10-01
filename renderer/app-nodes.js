@@ -18,6 +18,20 @@ function imagesNotInBody(paths, bodyBlocks) {
   return out;
 }
 
+/* 本次请求要用的服务商对象 + 模型 id（buildSpec / buildSpecAgg / remotion 共用）：
+   服务商 type 是用户配置里的持久字段，而一个 OpenAI 兼容端点常常同时挂文本与图像模型
+   （MTNode 中转服务卡恒为 text_openai，形态靠 config.modelKinds 逐模型给出）。
+   类型与所选模型形态不符时只用**副本**纠偏（app-model-kind.js 的 providerForRequest），
+   绝不回写 S.config.providers —— 回写会让这一家的另一类模型从各处模型选择器里一起消失。 */
+function requestProviderOf(prov, modelId) {
+  return typeof providerForRequest === "function"
+    ? providerForRequest(S.config, prov, modelId)
+    : prov;
+}
+function requestModelOf(node, prov) {
+  return node.model || ((prov && prov.models) || [])[0] || "";
+}
+
 function buildSpec(node, prov, idx, skillWrap) {
   /* 图像参数（quality / background / 蒙版）先归一，旧画布缺字段也拿得到确定值 */
   if (node.kind === "proc_image" && typeof normalizeImgParams === "function")
@@ -49,10 +63,15 @@ function buildSpec(node, prov, idx, skillWrap) {
   /* 图生图：连线图已可能被 @ 引用进 refImages，再 concat 会翻倍；文生图背景仍可带标题说明。
      正文里内嵌的图像（refs.bodyImageBlocks）已按位置写进正文，其路径也从连线 / 广播图里剔掉，
      同一张图不重复下发（图像本身仍走 refImages → spec.images 的真多模态链路）。
-     文生图不带文本块（与相册口径一致：避免图像说明进提示词）。 */
+     图像节点只滤「内嵌图像的说明块」（「（图像输入）」那几行）：**文本来源（连线 / @ 引用 /
+     Tag / 全局广播）一律与文本处理节点同口径收进【背景信息】** —— 图像节点引用文本就得真的
+     收到那段文本。v1.4.5 起这里误写成 proc_image 整段不注入（连 @ 到的 refs.textSources 一起
+     丢），@ 只剩被替换掉的节点标题、正文一个字都到不了模型；聚合路径 buildSpecAgg 一直只滤
+     图像说明块，两条路径必须同一个口径（回归见 test/smoke-img-text-ref.js）。 */
   const bodyBlocks = refs.bodyImageBlocks || [];
-  const sources =
-    node.kind === "proc_image" ? [] : (refs.textSources || []).concat(bodyBlocks);
+  const sources = (refs.textSources || []).concat(
+    node.kind === "proc_image" ? [] : bodyBlocks,
+  );
   /* 下发图像序列：与蒙版底图同源（runImagePaths，@ 引用优先），images 已含连线图 + 广播图；
      正文里出现过的图不再作为连线 / 广播图重复下发 */
   const mergedImages = runImagePaths(
@@ -61,11 +80,12 @@ function buildSpec(node, prov, idx, skillWrap) {
     refs,
     imagesNotInBody(images, bodyBlocks),
   );
+  const modelOf = requestModelOf(node, prov);
   return {
-    provider: prov,
+    provider: requestProviderOf(prov, modelOf),
     kind:
       node.kind === "proc_text" || node.kind === "agent_task" ? "text" : "image",
-    model: node.model || (prov.models || [])[0] || "",
+    model: modelOf,
     temperature:
       node.temperature == null
         ? 0.7
@@ -266,11 +286,16 @@ async function runDshOnce(node, spec, attemptT, images) {
     useHist && hist
       ? hist + "\n\n用户(最新)：" + latest
       : spec.prompt;
-  /* 音频转写素材（本地语音转写 · Qwen3-ASR）：会话模式走「历史 + 最新一句」，
-     spec.prompt 里的【背景信息】块不会进 input —— 这里单独补一段转写文本，
-     保证「音频接进文字节点就有文字」在两种模式下都成立（见 renderer/app-asr.js）。 */
-  if (useHist && hist && typeof asrTaskAppendText === "function") {
-    const _asrTaskText = asrTaskAppendText(node);
+  /* 音频 / 视频转写（官方本地 SenseVoice）：文字节点不再自己转写 —— 接线上的音频节点
+     该转的前面「转录闸门」已经转好并写回它自己身上，这里只把它的文字取来用。
+     会话模式（历史 + 最新一句）下 spec.prompt 里的【背景信息】块不进 input，
+     所以这里单独补一段，保证「音频接进文字节点就有文字」在两种模式下都成立
+     （见 renderer/app-asr.js · asrTextBlocksFor）。 */
+  if (useHist && hist && typeof asrTextBlocksFor === "function") {
+    const _asrBlocks = asrTextBlocksFor(node);
+    const _asrTaskText = _asrBlocks
+      .map((b) => "【" + b.title + "】\n" + b.text)
+      .join("\n\n");
     if (_asrTaskText) input = input + "\n\n" + _asrTaskText;
   }
   const runOpts = {
@@ -388,9 +413,12 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
     );
   }
   spec.abKey = node._abKey || "";
-  /* 蒙版局部重绘：前置校验（服务商 / 原图），并在开启时让位画幅锁定（见 app.js 同名函数） */
+  /* 蒙版局部重绘：前置校验（服务商 / 原图），并在开启时让位画幅锁定（见 app.js 同名函数）。
+     判据用**本次请求的服务商**（spec.provider = 按所选模型纠过形态的副本，见 requestProviderOf）：
+     混挂端点（配成 text_openai、跑的却是图像模型）本来就该走 /images/edits，
+     不能因为服务商级 type 写着 text_openai 就把它判死。 */
   if (node.kind === "proc_image")
-    ensureMaskPrereqs(node, prov, typeof idx === "number" ? idx : 0);
+    ensureMaskPrereqs(node, spec.provider || prov, typeof idx === "number" ? idx : 0);
   /* 画幅锁定「与首参考图保持一致长宽比」：发请求前把首参考图换成补边副本、
      并把请求尺寸钉到目标画幅；出图后由 finishProcImageOutput 按同一矩形裁回。
      聚合运行没有条目标题，故 itemTitle 用 typeof 兜底（单次 / 聚合两条路径共用这段）。 */
@@ -566,11 +594,12 @@ function buildSpecAgg(node, prov, skillWrap) {
     imagesNotInBody(images, capBlocks),
     true,
   );
+  const modelOf = requestModelOf(node, prov);
   return {
-    provider: prov,
+    provider: requestProviderOf(prov, modelOf),
     kind:
       node.kind === "proc_text" || node.kind === "agent_task" ? "text" : "image",
-    model: node.model || (prov.models || [])[0] || "",
+    model: modelOf,
     temperature:
       node.temperature == null
         ? 0.7
@@ -652,9 +681,12 @@ async function runOnceAgg(node, prov, attemptT) {
     );
   }
   spec.abKey = node._abKey || "";
-  /* 蒙版局部重绘：前置校验（服务商 / 原图），并在开启时让位画幅锁定（见 app.js 同名函数） */
+  /* 蒙版局部重绘：前置校验（服务商 / 原图），并在开启时让位画幅锁定（见 app.js 同名函数）。
+     判据用**本次请求的服务商**（spec.provider = 按所选模型纠过形态的副本，见 requestProviderOf）：
+     混挂端点（配成 text_openai、跑的却是图像模型）本来就该走 /images/edits，
+     不能因为服务商级 type 写着 text_openai 就把它判死。 */
   if (node.kind === "proc_image")
-    ensureMaskPrereqs(node, prov, typeof idx === "number" ? idx : 0);
+    ensureMaskPrereqs(node, spec.provider || prov, typeof idx === "number" ? idx : 0);
   /* 画幅锁定「与首参考图保持一致长宽比」：发请求前把首参考图换成补边副本、
      并把请求尺寸钉到目标画幅；出图后由 finishProcImageOutput 按同一矩形裁回。
      聚合运行没有条目标题，故 itemTitle 用 typeof 兜底（单次 / 聚合两条路径共用这段）。 */
@@ -3470,6 +3502,45 @@ function appendSensenovaGenSummaryBody(node, body) {
   });
 }
 
+/* ── sensenova_gen 的「思考内容」（think 模式）──────────────────────────────
+   后端 think 模式下先出规划文本再出图，回执带 thinkText，同名文本另落图旁
+   `.think.txt`（见 sensenova-pack 的 engine.generate）。渲染层过去把这两个字段整个
+   丢在地上：节点跑完既看不到思考按钮，也读不到一个字 —— 本次需求「绘画中思考内容
+   未正确显示」就是这条链断了。这里接上：
+     · 文本优先用回执里的 thinkText（一次 IPC 都不多发）；
+     · 只有路径（老后端 / 只落了文件）才按需读 `.think.txt` 兜底；
+     · 结果按抽卡槽写进节点自己的思考缓冲（pushThinking → S.thinking[nodeId][roll]），
+       节点头部那颗「◉ 思考」按钮与思考弹窗（showThinking）都是现成的，接上即可显示。
+   两者都没有 = 这次没开 think（或后端没回），一个字都不写，不造空思考块。 */
+const SENSENOVA_THINK_MAX = 120000;
+async function sensenovaThinkTextOf(res) {
+  const inline = String((res && res.thinkText) || "").trim();
+  if (inline) return inline.slice(0, SENSENOVA_THINK_MAX);
+  const path = String((res && res.thinkPath) || "").trim();
+  if (!path) return "";
+  const api = (typeof window !== "undefined" && window.api) || {};
+  if (typeof api.fileReadText !== "function") return "";
+  try {
+    const rr = await api.fileReadText(path);
+    const txt = String((rr && rr.content) || "").trim();
+    return txt ? txt.slice(0, SENSENOVA_THINK_MAX) : "";
+  } catch (e) {
+    return "";
+  }
+}
+/* 把这一轮的思考文本接进节点的思考缓冲（按抽卡槽），并当场刷一次节点头部的思考按钮 */
+async function sensenovaApplyThinkText(node, res, roll) {
+  if (!node) return "";
+  const txt = await sensenovaThinkTextOf(res);
+  if (!txt) return "";
+  try {
+    if (typeof pushThinking === "function") pushThinking(node.id, roll || 0, txt);
+  } catch (e) {
+    /* 思考显示出问题绝不拖垮生成结果（图已经落盘了） */
+  }
+  return txt;
+}
+
 /* ═══════════════ H3 自建 ComfyUI 工作流（接入 video_gen 节点） ═══════════════
  * 分工真源：库读写 / UI→API 转换 / 参数扫描 / 参数校验 / 值注入全在主进程
  * h3/h3-workflows.js，渲染层只做四件事——选工作流、决定「哪些参数提升为节点端子」、
@@ -4781,6 +4852,12 @@ async function playSensenovaGenNode(node, quiet) {
   beginNodeRun(node);
   node.genRollDone = 0;
   node.genPaths = [];
+  /* 本次运行重新开始：先清空本节点的思考缓冲（与 proc_text / agent_task 每次运行重置
+     思考槽同一口径），否则重跑时新一轮思考会追加在上一轮后面，看起来像「思考串了」。
+     缓冲只在内存里，清掉的是上一次运行留下的思考，不是这一轮正在看的。 */
+  if (S.thinking) S.thinking[node.id] = [];
+  /* 顺手刷一次头部那颗「◉ 思考」：上一次运行的思考已经不在了，按钮该跟着收起 */
+  if (typeof refreshThinkingUI === "function") refreshThinkingUI(node.id);
   node.sensenovaStatus = I18n.t("启动后端并生成…");
   startMediaBackendRunWatcher(node);
   renderCanvas();
@@ -4788,6 +4865,7 @@ async function playSensenovaGenNode(node, quiet) {
   const t0 = Date.now();
   let okCount = 0;
   let lastPath = "";
+  let lastThinkPath = "";
   const warnings = [];
 
   try {
@@ -4856,8 +4934,17 @@ async function playSensenovaGenNode(node, quiet) {
       okCount++;
       lastPath = String(r.path || "");
       if (lastPath) node.genPaths.push(lastPath);
-      /* 输出端子语义与 proc_image 对齐：{kind:"image", path} → 下游 save_image / 预览直接复用 */
-      node.output = { kind: "image", path: lastPath };
+      /* think 模式：这一轮的思考内容接进节点头部「◉ 思考」按钮（按抽卡槽）。
+         图已落盘，思考显示失败不改变成功结论 —— 见 sensenovaApplyThinkText。 */
+      const thinkText = await sensenovaApplyThinkText(node, r, roll);
+      if (String(r.thinkPath || "").trim())
+        lastThinkPath = String(r.thinkPath).trim();
+      /* 输出端子语义与 proc_image 对齐：{kind:"image", path} → 下游 save_image / 预览直接复用。
+         思考文本与旁文件路径一并挂上（产物不丢；不写进正文，免得下游 save_text 把思考当输出） */
+      const out = { kind: "image", path: lastPath };
+      if (thinkText) out.think = thinkText;
+      if (lastThinkPath) out.thinkPath = lastThinkPath;
+      node.output = out;
       node.ranAt = Date.now();
       node.genRollDone = roll;
       /* 后端 OOM 自动降档 / 非训练桶尺寸等提醒：合并进节点状态，别静默吞掉 */
@@ -6488,7 +6575,7 @@ async function playRemotionNode(node, quiet) {
   let tsx = "";
   try {
     const spec = {
-      provider: prov,
+      provider: requestProviderOf(prov, requestModelOf(node, prov)),
       kind: "text",
       model: node.model || (prov.models || [])[0] || "",
       temperature:
@@ -6884,12 +6971,8 @@ async function playNodeBody(node, quiet, opts) {
       /* 素材库读挂了不能把整轮执行带崩：端子按「无输入」处理 */
     }
   }
-  /* 本地语音转写（Qwen3-ASR）：文字节点接了音频 → 先把音频转成文字再往下走。
-     缺后端 / 无 N 卡 / 转写失败一律拦下本轮（不静默把音频当没输入），原因写在节点上。 */
-  if (typeof asrPrepareForRun === "function") {
-    const ar = await asrPrepareForRun(node);
-    if (ar && ar.ok === false) return;
-  }
+  /* 转写归音频 / 视频节点所有（renderer/app-asr.js）：本节点不再自己转写，
+     真正的闸门在下面、上游补跑之后（那时音频文件才一定已经产出 / 更新）。 */
   const cascadePlan = await decideCascadeAfterPlay(node, quiet, opts);
   /* quiet：不弹 toast / 不加 pending；ensureUpstream：仍补跑未处理的上游（控制/级联调度用） */
   const ensureUpstream = !quiet || !!opts.ensureUpstream;
@@ -6909,6 +6992,27 @@ async function playNodeBody(node, quiet, opts) {
     }
     if (ran.length && !quiet)
       toast(I18n.t("已自动执行上游节点：") + I18n.listJoin(ran), "ok");
+    /* ── 转录闸门（本轮需求）──
+       上游补跑之后、本节点起跑之前：把接线上的音频 / 视频节点挨个看一遍 ——
+       已有新鲜转写（指纹一致）就直接用，没有 / 文件变了就当场替它转一次并写回
+       那张音频节点；引擎不可用 / 模型没下载 / 转写失败一律拦下本轮
+       （不静默把音频当没输入，也不把 file:/// 当文字喂给模型）。
+       见 renderer/app-asr.js · asrEnsureForRun。 */
+    if (typeof asrEnsureForRun === "function") {
+      let ar = null;
+      try {
+        ar = await asrEnsureForRun(node);
+      } catch (e) {
+        ar = { ok: false, error: "asr_failed", message: String((e && e.message) || e) };
+      }
+      if (ar && ar.ok === false) {
+        if (pendingIds) clearPendingRun(pendingIds);
+        node.error = ar.message || I18n.t("音频转写没能完成");
+        if (!quiet) toast(node.error, "warn");
+        renderCanvas();
+        return;
+      }
+    }
     if (!quiet) {
       const un =
         node.batchMode === "agg" && batchTitles(node)
@@ -6961,36 +7065,16 @@ async function playNodeBody(node, quiet, opts) {
   }
   let prov = S.config.providers.find((p) => p.id === node.providerId);
   /* ── 模型形态兜底（非智能节点）──
-     服务商级 type 决定请求形态，节点选的模型才是「真正要干什么」。老画布、
+     服务商级 type 只说明「这家端点的默认脾气」，节点选的模型才是「真正要干什么」。老画布、
      手工改过的配置、导入的画布都可能出现两者不符（最典型：OpenAI 兼容端点配成
-     text_openai，模型却是 gpt-image-*）—— 以前图像节点在这里抛「未知服务商类型」
-     或干脆选不到那家服务商。这里按**本次要用的那个模型的形态**把服务商 type
-     纠到正确形态；形态一致时一字不动。只纠类型，不在这里换服务商。 */
-  if (
-    !isDshTask(node) &&
-    (node.kind === "proc_text" || node.kind === "proc_image") &&
-    prov
-  ) {
-    const wantKind = node.kind === "proc_image" ? "image" : "text";
-    const modelId = node.model || (prov.models || [])[0] || "";
-    /* 只在本节点该用的形态上纠偏：模型形态与节点不符是另一种错（交回给用户），
-       不拿它去改服务商类型。 */
-    const fix =
-      modelKindOf(S.config, prov.id, modelId) === wantKind
-        ? correctedTypeForModel(S.config, prov, modelId)
-        : "";
-    if (fix) {
-      prov.type = fix;
-      scheduleSave(true);
-      if (!quiet)
-        toast(
-          I18n.t("服务商类型与所选模型不符，已按模型纠正为") +
-            I18n.t(prov.type === "image_openai" ? "图像服务商" : "文本服务商") +
-            I18n.t("（设置 · 模型服务里可核对）"),
-          "warn",
-        );
-    }
-  }
+     text_openai，模型却是 gpt-image-*）。
+     纠偏现在**只发生在本次请求的那份副本上**：buildSpec / buildSpecAgg 取 spec.provider 时
+     走 requestProviderOf → app-model-kind.js 的 providerForRequest，主进程侧还有
+     effectiveProviderType 兜底（见 main.js）。
+     以前这里把纠偏结果直接写进 prov.type 并写盘，等于用一次运行改掉用户的持久配置 ——
+     同一端点混挂文本与图像模型时（MTNode 中转服务卡恒为 text_openai），跑一次图像节点就把
+     这张卡的 type 改成 image_openai，它的文本模型随即从会话 / 节点的模型选择器里一起消失，
+     要用户去「设置 · 提供商」刷新才回来。这类「用着用着模型不见了」的报障根因就在这里。 */
   if (isDshTask(node)) {
     /* 智能模式按节点所选路由校验（DeepSeek 官方或全局其它文本服务商） */
     const sup = dshSupported();
@@ -7055,6 +7139,19 @@ async function playNodeBody(node, quiet, opts) {
   if (node.kind === "agent_task" && node.agentSessionId) {
     const sess = agentSessions().find((s) => s.id === node.agentSessionId);
     if (sess) sess.running = true;
+    /* 节点内也开新一轮（本次需求）：这一轮起跑时把上一轮**已了结**的计划与任务清单
+       一并清掉（与 app-assist.js 的 agentSessionSend 同口径、同一个入口）——
+       节点里的 todo_write 会镜像到这条绑定会话的面板（app-db.js），不清就又是
+       「上一轮的记录挂在本轮眼前」。清了要落盘：面板数据真删，切会话 / 重启都不复活。 */
+    if (sess && typeof agentRoundMarkNew === "function") {
+      try {
+        const rr = agentRoundMarkNew(sess);
+        if (rr && rr.cleared) {
+          sess._planDrops = 0;
+          persistAgentSession().catch(() => {});
+        }
+      } catch (_) {}
+    }
   }
   if (node.kind === "agent_task") node._convNearBottom = true;
   renderCanvas();
@@ -9885,7 +9982,8 @@ function fnToolInPortTypeError(host, idx, from, fi) {
    unsupportedFilesOf / toolBuildFileGreen），这里只负责把它接进 connectError：
      · 来源只认数据库「文件节点」（input_file）—— 它能装任意类型的文件，正是本机制
        要接的一类；input_image / input_audio / input_video 各有既有专线（图像→proc_text
-       自动开视觉、音频→proc_text 走 ASR、媒体→生成节点的参考槽），一律不在此拦；
+       自动开视觉、音频 / 视频→proc_text 走节点侧转写的转录文本、媒体→生成节点的参考槽），
+       一律不在此拦；
      · 目标未登记（智能 / 工具 / 函数 / 保存 / 素材等节点）一律不设限，行为逐字不变；
      · db_table 例外：它按 app-db.js 的设计吃任意文件（非文本走「文件名 / 内容说明」索引、
        图像问是否识图），不靠转换工具，所以不吃「可接受表」这一套，不拦；
@@ -10652,13 +10750,10 @@ function addWire(fromId, toId, toIndex, opts) {
     const filters = normalizeGlobalTagFilter(to);
     if (filters.length) stampTagsOntoGlobalWired(to, filters);
   }
-  /* 本地语音转写（Qwen3-ASR）：把音频接到文字处理节点 → 首次弹一次安装窗
-     （每个画布只弹一次；拒绝后靠节点上的「一键安装」与运行时的拦截，见 app-asr.js） */
-  if (to && from && typeof asrMaybePromptOnWire === "function") {
-    try {
-      asrMaybePromptOnWire(fromId, toId);
-    } catch (e) {}
-  }
+  /* 本地语音转写（官方本地 SenseVoice）：把音频 / 视频节点接到文字处理节点 → 那个节点
+     运行时先替音频节点把转好文字（renderer/app-asr.js 的 asrEnsureForRun），再取它的文字。
+     连线本身不弹任何窗、也不当场转（转录按钮在音频节点上）：模型权重由 dsh 运行时自己下，
+     首次识别时自动开始，进度在状态栏话筒 / 音频节点 /「语音模型」窗里都看得见。 */
 }
 
 /* ============ 关系线（rel）：仅表示模块/元素间关系，不参与数据流 ============ */
@@ -17706,7 +17801,13 @@ function editPortKindOf(node, dir, i, isFnT) {
     if (k === "remotion") return i === 0 ? "control" : "text";
     if (k === "task") return "control";
     if (isControlKind(node)) return "control";
-    if (k === "proc_image") return i === 0 ? "text" : "image";
+    /* 图像节点：输入端子与 sensenova_gen 同一泛用增量规则 —— 端口 0 = 提示词（文本入口），
+       端口 1+ 是增量数据槽：**文本节点与图像引用都收**（文本进【背景信息】、参考图进
+       参考图列表，见 buildSpec）。曾经在这里报 "image"，与同一份快照的 portRule
+       「文本 / 图像引用都收」自相矛盾：模型读到「1+ 号端子只收图像」就不再把文本节点
+       接上去（真源 inPortKindOf 对 proc_image 恒回 null，实际转接不拦）。按「由连线决定」
+       的 any 报，与 sensenova_gen 同口径。 */
+    if (k === "proc_image") return i === 0 ? "text" : "any";
     return "any";
   }
   if (k === "task" || k === "judge") return "control";

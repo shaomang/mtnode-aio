@@ -1,0 +1,347 @@
+/* 全局语音输入（状态栏最左那枚话筒 + 跟随光标的转写浮窗 + 右键快捷菜单）——
+   实现见 renderer/app-voice.js；本文件只放它自己的皮（前缀 .gv-*）与状态栏按钮 .sb-voice。
+
+   为什么要单独一份：这不是节点样式也不是会话面板样式，而是**状态栏级**的一块 UI
+   （按钮 + 浮窗 + 菜单三者同属一件功能），放 layout/dsh 里都会与既有分区打架。 */
+
+/* ── 状态栏按钮（紧挨 #btnCanvasShot 左侧）────────────────────────────── */
+.statusbar .sb-voice {
+  flex: none;
+  order: -2; /* 永远排在状态栏最左，画布截图键左边 */
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--mono);
+}
+
+.statusbar .sb-voice:hover {
+  color: var(--green2, #7ee787);
+  border-color: var(--bd2);
+  background: rgba(126, 231, 135, .08)
+}
+
+/* 已开启（持续转录 / 按键转录） */
+.statusbar .sb-voice.on {
+  color: var(--red2, #ff7b72);
+  border-color: color-mix(in srgb, var(--red2, #ff7b72) 45%, transparent)
+}
+
+/* 持续转录：青绿，与「按键转录」一眼区分 */
+.statusbar .sb-voice.is-live {
+  color: var(--cyan2, #38d6ff);
+  border-color: color-mix(in srgb, var(--cyan2, #38d6ff) 45%, transparent)
+}
+
+/* 按键转录：琥珀 */
+.statusbar .sb-voice.is-ptt {
+  color: #e3b341;
+  border-color: rgba(227, 179, 65, .45)
+}
+
+/* 开启中（live / ptt）恒定呼吸：判据只有「模式」，类不会逐帧摘挂 ——
+   每帧翻转一次会让 animation 反复从头播，看着就是闪。live 青 / ptt 琥珀 / off 灰。 */
+.statusbar .sb-voice.is-mic {
+  animation: gv-mic-pulse 1.6s ease-in-out infinite
+}
+
+.statusbar .sb-voice.is-busy {
+  opacity: .75
+}
+
+/* 载入态（麦克风启动 / 通道就绪等待 / 转写在途）：纯 CSS 旋转弧代替文字 '…' */
+.statusbar .sb-voice.is-loading::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: gv-spin .8s linear infinite;
+}
+
+/* 下载模型（⬇ / 百分比）与载入态互斥：is-setup 期间不出旋转弧 */
+.statusbar .sb-voice.is-setup::before {
+  content: none;
+  display: none
+}
+
+.statusbar .sb-voice.is-setup {
+  color: #d2a8ff;
+  border-color: rgba(210, 168, 255, .4)
+}
+
+/* 服务商 / 语音服务没就绪（载入重试也失败后）：红色错误态，怎么修写在 tooltip 与浮窗里 */
+.statusbar .sb-voice.is-err {
+  color: var(--red2, #ff7b72);
+  border-color: rgba(255, 123, 114, .5);
+  background: rgba(255, 123, 114, .08);
+  font-weight: 700
+}
+
+/* 模型下载失败：字面留着 ⬇（用户知道坏的是「下载」这件事），但走错误色 ——
+   绝不再停在「↓ 百分比」上（那看着像还在下，其实早就断在那儿了） */
+.statusbar .sb-voice.is-dlerr {
+  color: var(--red2, #ff7b72);
+  border-color: rgba(255, 123, 114, .5);
+  background: rgba(255, 123, 114, .08)
+}
+
+@keyframes gv-mic-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent);
+    opacity: 1
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px transparent;
+    opacity: .72
+  }
+}
+
+@keyframes gv-spin {
+  from {
+    transform: rotate(0)
+  }
+
+  to {
+    transform: rotate(360deg)
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusbar .sb-voice.is-mic {
+    animation: none
+  }
+
+  /* 转圈也停：留一枚静止的弧，仍然一眼看出「在载入」 */
+  .statusbar .sb-voice.is-loading::before {
+    animation: none
+  }
+}
+
+/* ── 转写浮窗（便笺式：不抢焦点，只报当前这句）───────────────────────── */
+.gv-note {
+  position: fixed;
+  z-index: 60;
+  max-width: 340px;
+  min-width: 180px;
+  padding: 6px 9px;
+  background: rgba(18, 20, 26, .96);
+  border: 1px solid color-mix(in srgb, var(--cyan2, #38d6ff) 38%, transparent);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg, #e6edf3);
+  /* 关键：便笺不吃鼠标 —— 点在它上面也不能把输入框的焦点抢走，否则语音插入会失去落点 */
+  pointer-events: none;
+  user-select: none;
+}
+
+.gv-note[hidden] {
+  display: none
+}
+
+.gv-note.is-err {
+  border-color: color-mix(in srgb, var(--red2, #ff7b72) 55%, transparent)
+}
+
+.gv-note.is-wait {
+  opacity: .88
+}
+
+.gv-note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 10px;
+  letter-spacing: .5px;
+  color: var(--muted);
+}
+
+.gv-note-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  color: var(--cyan2, #38d6ff)
+}
+
+.gv-note.is-err .gv-note-dot {
+  color: var(--red2, #ff7b72)
+}
+
+/* 录音中（还没落字）：青点常亮 —— 停顿才提交，中途没有文字，靠它告诉用户「在听、没坏」 */
+.gv-note.is-rec .gv-note-dot {
+  color: var(--cyan2, #38d6ff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan2, #38d6ff) 22%, transparent)
+}
+
+/* 音量条（5 格）：说话过程中唯一的「收到了」反馈 */
+.gv-note-vol {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1.5px;
+  margin-left: auto;
+  height: 9px;
+}
+
+.gv-note-vol[hidden] {
+  display: none
+}
+
+.gv-note-vol .gv-bar {
+  width: 3px;
+  height: 4px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.gv-note-vol .gv-bar:nth-child(2) {
+  height: 6px
+}
+
+.gv-note-vol .gv-bar:nth-child(3) {
+  height: 7px
+}
+
+.gv-note-vol .gv-bar:nth-child(4) {
+  height: 8px
+}
+
+.gv-note-vol .gv-bar:nth-child(5) {
+  height: 9px
+}
+
+.gv-note-vol .gv-bar.on {
+  background: var(--cyan2, #38d6ff)
+}
+
+.gv-note-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: hidden;
+}
+
+/* ── 右键快捷菜单（常驻浮层：只在点按钮 / 选中一项 / Esc 时关）─────────── */
+.gv-menu {
+  position: fixed;
+  z-index: 61;
+  min-width: 260px;
+  max-width: 360px;
+  padding: 8px 10px;
+  background: rgba(20, 22, 28, .98);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .5);
+  font-size: 12px;
+  color: var(--fg, #e6edf3);
+}
+
+.gv-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+
+.gv-menu-lab {
+  flex: 0 0 76px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.gv-menu-opt {
+  padding: 2px 7px;
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.gv-menu-opt:hover {
+  border-color: var(--cyan2, #38d6ff);
+  color: var(--cyan2, #38d6ff)
+}
+
+.gv-menu-opt.on {
+  border-color: var(--cyan2, #38d6ff);
+  color: var(--cyan2, #38d6ff);
+  background: rgba(56, 214, 255, .1)
+}
+
+.gv-menu-foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, .14);
+}
+
+/* 失败时菜单底部那一行：为什么失败、从哪个源下的（重试按钮就在它上面） */
+.gv-menu-status {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, .14);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.gv-menu-status.is-err {
+  color: var(--red2, #ff7b72)
+}
+
+/* ── 设置 · 语音输入（全局）里的「模型状态」行 ─────────────────────────── */
+.gv-dl-status {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.gv-dl-status.is-err .gv-dl-line {
+  color: var(--red2, #ff7b72)
+}
+
+.gv-dl-status.is-busy .gv-dl-line {
+  color: var(--cyan2, #38d6ff)
+}
+
+.gv-dl-line {
+  word-break: break-word;
+}
+
+.gv-dl-src {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.gv-dl-src[hidden] {
+  display: none
+}
+
+.gv-dl-src select {
+  max-width: 220px;
+}

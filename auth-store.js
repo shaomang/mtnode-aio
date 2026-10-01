@@ -58,6 +58,11 @@ function createAuthStore(opts) {
       ? opts.dataDir
       : () => String(opts.dataDir || "");
   let plainWarned = false;
+  /* 最近一次「读凭据失败」的原因（**只给界面显示用**，不含任何凭据内容）：
+     null = 没失败过（或刚刚读成功）。界面上要能区分「没登录」与「凭据在、但这台机器
+     解不开」（换 Windows 账号 / 换机器 / 加密密钥变了都会这样，见 readIssue()）。
+     每次 load() 重算，不缓存历史。 */
+  let lastReadIssue = null;
 
   function filePath() {
     return path.join(String(dataDir() || "."), FILE_NAME);
@@ -99,7 +104,11 @@ function createAuthStore(opts) {
     if (!payload) return null;
     try {
       if (raw.enc === "safeStorage") {
-        if (!encryptionAvailable()) return null; // 换机 / 换用户后无法解密
+        if (!encryptionAvailable()) {
+          /* 换机 / 换用户后无法解密：这是「凭据还在、只是解不开」，与「没登录」不同 */
+          lastReadIssue = "encryption_unavailable";
+          return null;
+        }
         const plain = safeStorage.decryptString(Buffer.from(payload, "base64"));
         return JSON.parse(plain);
       }
@@ -108,6 +117,8 @@ function createAuthStore(opts) {
         return JSON.parse(payload);
       }
     } catch (err) {
+      /* 解不开（DPAPI 密钥变了 / 文件被别处改过）：界面据此提示「重新登录一次」 */
+      lastReadIssue = "decrypt_failed";
       warn("账户凭据读取失败：" + String((err && err.message) || err));
     }
     return null;
@@ -135,6 +146,7 @@ function createAuthStore(opts) {
 
   /** 读回凭据：{ token, user, savedAt, encryption }；无有效凭据返回 null。 */
   function load() {
+    lastReadIssue = null;
     const raw = readRaw();
     const data = decode(raw);
     if (!data || typeof data !== "object") return null;
@@ -202,6 +214,9 @@ function createAuthStore(opts) {
       savedAt: cur ? cur.savedAt : 0,
       encryption,
       warning: encryption === "plain" ? WARN_PLAIN : "",
+      /* 凭据解不开的原因（"decrypt_failed" / "encryption_unavailable"；没失败就是 null）：
+         界面据此把「没登录」和「凭据在手却解不开」分开说。不含任何凭据内容。 */
+      readIssue: lastReadIssue,
     };
   }
 
@@ -214,6 +229,9 @@ function createAuthStore(opts) {
     clear,
     state,
     sanitizeUser,
+    /* 最近一次 load() 的失败原因（不含凭据内容）：给「设置 · 提供商」的中转卡说清
+       「为什么没有可用凭据」用 —— 与 state().readIssue 同一口径 */
+    readIssue: () => lastReadIssue,
   };
 }
 

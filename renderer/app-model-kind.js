@@ -445,6 +445,19 @@ function correctedTypeForModel(cfg, prov, modelId) {
   return next === prov.type ? "" : next;
 }
 
+/* 本次请求要用的服务商对象：类型与所选模型形态不符时返回**改过 type 的副本**，
+   原对象一字不动；无需纠偏时原样返回同一个引用。
+   为什么必须是副本：type 是用户配置里的**持久字段**，而一个 OpenAI 兼容端点常常同时挂
+   文本与图像模型（最典型 = MTNode 中转服务卡，恒为 text_openai，形态靠 config.modelKinds
+   逐模型给出）。运行期把这张卡的 type 改成另一形态，会让**这一家的另一类模型**从所有
+   模型选择器里一起消失（会话模型列表只认 text_openai 的服务商），用户得去设置里刷新才
+   能看见 —— 就是「用着用着模型突然不见了」那类报障。 */
+function providerForRequest(cfg, prov, modelId) {
+  if (!prov) return prov;
+  const next = correctedTypeForModel(cfg, prov, modelId);
+  return next ? Object.assign({}, prov, { type: next }) : prov;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     KIND_TEXT,
@@ -463,6 +476,7 @@ if (typeof module !== "undefined" && module.exports) {
     modelKindForNode,
     providerTypeForKind,
     correctedTypeForModel,
+    providerForRequest,
     /* 服务商模型策略：白名单 / 黑名单 / 停用 / 三档超时 */
     modelGlobToRegExp,
     modelPatterns,

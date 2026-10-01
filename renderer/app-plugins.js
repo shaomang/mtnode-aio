@@ -829,89 +829,12 @@ function bindTtsProgress(host) {
     }
   });
 }
-/* ---- 本地语音转写（Qwen3-ASR）：插件卡片状态 + 控制台入口（renderer/app-asr.js 主实现）
-   卡片动作只有「开始 / 关闭」两态：开始 = 打开控制台窗口（未安装时控制台本身就是安装入口），
-   关闭 = 关控制台窗口；不再有「删除 / 卸载 / 移除入口」，后端启停与安装在控制台里做。
-   注：此前「打开控制台 / 状态与设置」用的是 gear 图标，而 PLUGIN_ACT_SVG 没有 gear，
-   按钮会渲染成没有任何图标的空方块（用户看到的“按钮出错”）——gear 已补齐。 */
-async function refreshAsrPluginCard(root) {
-  if (!root || !window.api || !window.api.asrStatus) return;
-  const st = await window.api.asrStatus();
-  const actions = root.querySelector("[data-plugin-actions]");
-  const prog = root.querySelector("[data-plugin-progress]");
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
-  if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: true });
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
-  };
-  /* 开始 / 关闭：一律作用于插件控制台窗口（asr:open / asr:close），不打开设置弹窗 */
-  const openConsole = async () => {
-    const r = window.api.asrOpen ? await window.api.asrOpen() : { ok: false, error: "no_api" };
-    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-    refreshAsrPluginCard(root);
-  };
-  const closeConsole = async () => {
-    if (window.api.asrClose) await window.api.asrClose();
-    refreshAsrPluginCard(root);
-  };
-  if (st.consoleOpen) {
-    addBtn("stop", I18n.t("关闭控制台"), closeConsole, { primary: true });
-  } else {
-    addBtn("play", I18n.t("打开控制台"), openConsole, { primary: true });
-  }
-  /* 老版本装好的（或补装失败的）缺便携 ffmpeg：卡片上直接给「补装」入口，不必先开控制台 */
-  if (st.installed && st.ffmpeg && !st.ffmpeg.ok) {
-    addBtn("download", I18n.t("补装 ffmpeg"), async () => {
-      const r = window.api.asrInstallFfmpeg ? await window.api.asrInstallFfmpeg({ force: true }) : { ok: false };
-      toast(r && r.ok ? I18n.t("ffmpeg 已就位") : I18n.t("ffmpeg 补装失败，请在控制台重试"), r && r.ok ? "ok" : "warn");
-      refreshAsrPluginCard(root);
-    });
-  }
-  /* 状态与设置：无 N 卡时先说明不可用（仍可在控制台里查看与强制 CPU） */
-  if (!st.supported) {
-    addBtn("gear", I18n.t("本机无 N 卡 · 查看"), () => asrOpenInstallDialog({}), { primary: true });
-  } else {
-    addBtn("gear", I18n.t("状态与设置"), () => asrOpenInstallDialog({}));
-  }
-  if (prog && st.installing) {
-    prog.style.display = "block";
-    if (progTxt) {
-      progTxt.style.display = "block";
-      progTxt.textContent = I18n.t("安装中…");
-    }
-  }
-}
-function bindAsrProgress(host) {
-  if (!window.api || !window.api.onAsrProgress) return null;
-  const prog = host.querySelector("[data-plugin-progress]");
-  const progTxt = host.querySelector("[data-plugin-progress-txt]");
-  return window.api.onAsrProgress((data) => {
-    if (!data || (data.id && data.id !== "asr-local")) return;
-    if (data.phase !== "install") return;
-    if (prog) prog.style.display = "block";
-    if (progTxt) progTxt.style.display = "block";
-    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
-    const bar = prog && prog.querySelector("i");
-    if (bar) bar.style.width = pct + "%";
-    if (progTxt) {
-      progTxt.textContent =
-        (data.stepLabel || data.step || I18n.t("安装中…")) +
-        (data.message ? " — " + data.message : "") +
-        " " +
-        pct +
-        "%";
-    }
-    if (data.step === "done" || data.error) {
-      setTimeout(() => {
-        if (prog) prog.style.display = "none";
-        if (progTxt) progTxt.style.display = "none";
-        refreshAsrPluginCard(host);
-      }, 600);
-    }
-  });
-}
+/* ---- 本地语音转写：卡片已随「统一到 dsh 官方本地 SenseVoice」整块移除 ----
+   从前这里有一张本地语音转写插件卡片（安装 / 控制台 / 补依赖 / 自我修复）。现在语音识别
+   不再是本地 Python 后端，而是 dsh 运行时的官方 SenseVoice（模型权重由运行时自己下），
+   所以：插件目录里没有这张卡片、这里没有刷新与进度订阅、preload 里也没有对应通道。
+   画布节点级转写仍在（本轮起归音频 / 视频节点：renderer/app-asr.js 的转录按钮与文本区），
+   它走 renderer/app-speech.js 那条通道。 */
 
 /* ---- 本地图像生成（SenseNova-U1.5-8B-MoT）：插件卡片状态 + 控制台入口（sensenova/main-sensenova.js）
    卡片动作只有「打开控制台 / 关闭控制台」两态（与 yue2 同族：安装 / 启停 / 试生成都在控制台窗里做）。
@@ -1243,20 +1166,6 @@ async function openAppPluginsDialog() {
             compatible: true,
             installed: true,
           },
-          {
-            id: "asr-local",
-            kind: "asr",
-            handler: "asr",
-            icon: "asr-local.png",
-            version: "1.0.0",
-            title: { zh: "本地语音转写（Qwen3-ASR）", en: "Local Speech-to-Text (Qwen3-ASR)" },
-            subtitle: {
-              zh: I18n.t("基于 ModelScope Qwen3-ASR-0.6B 的本地语音转文字：音频接到文字处理节点即自动转写并注入提示词；指定目录安装（需 NVIDIA 显卡）、热词表、转写结果可编辑与缓存。后端静默运行、随 MTNode 退出而结束。"),
-              en: "Local speech-to-text with Qwen3-ASR-0.6B: audio wired into a text node is transcribed into the prompt. Silent backend, exits with MTNode.",
-            },
-            compatible: true,
-            installed: true,
-          },
         ]
   ).filter((p) => p && p.id !== "forum");
 
@@ -1351,13 +1260,6 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onLlamaConsoleChanged(() => refreshLlamaPluginCard(card)));
       }
       refreshLlamaPluginCard(card);
-    } else if (item.kind === "asr" || item.handler === "asr") {
-      const off = bindAsrProgress(card);
-      if (off) offs.push(off);
-      if (window.api && window.api.onAsrConsoleChanged) {
-        offs.push(window.api.onAsrConsoleChanged(() => refreshAsrPluginCard(card)));
-      }
-      refreshAsrPluginCard(card);
     } else if (item.kind === "tts" || item.handler === "tts") {
       const off = bindTtsProgress(card);
       if (off) offs.push(off);
@@ -2106,6 +2008,10 @@ function renderExtMcpInfo(s, info) {
       "disabled: " + (s.disabled ? "true" : "false"),
     ].join("\n"),
   );
+  /* 资源清单（只读）：点一下才去连，避免每次选中服务器都冷起一个 MCP 进程。
+     用的是 dsh 0.2 base 组合里已经启用的 @deepseek-ai/dsh-mcp-resources 同款能力，
+     但走宿主自己的只读通道（网关 mcp-resources.mjs）—— 那边是给模型的工具面，不对外查询。 */
+  extMcpResourcesPanel(info, s);
   extInfoButtons(info, [
     [s.disabled ? "启用" : "停用", "", async () => {
       try {
@@ -2141,6 +2047,170 @@ function renderExtMcpInfo(s, info) {
       paintExtManager();
     }],
   ]);
+}
+
+/* ── MCP 资源面板（只读）─────────────────────────────────────────────────────
+   做的一件事：让用户看见「这台 MCP 服务器有哪些资源」。dsh 0.2 的
+   @deepseek-ai/dsh-mcp-resources 已经把资源读取做成了**给模型的工具**（Agent 在任务里
+   自己会用），但它没有对外的查询接口 —— 所以宿主这一层用同一个官方 SDK 在网关进程里
+   只读地连一次（见 dsh/gateway/mcp-resources.mjs），把清单显示出来，并把 URI 抄进剪贴板
+   方便用户粘进对话当上下文。
+   三条纪律：
+     · 只读：只发 resources/list 与 resources/read，绝不调用服务器工具；
+     · 惰性：选中服务器不连，点「读取资源清单」才连（stdio 服务器 = 临时起一个进程）；
+     · 失败说话：错误原样显示在面板里（含「找不到命令」这类可自查的提示），不静默。 */
+function extMcpResourcesPanel(info, s) {
+  const wrap = document.createElement("div");
+  wrap.className = "dsh-mcp-res";
+  const bar = document.createElement("div");
+  bar.className = "dsh-mcp-res-bar";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mini";
+  btn.textContent = I18n.t("读取资源清单");
+  btn.title = I18n.t(
+    "只读：向这台服务器发 resources/list 与 resources/read，不会调用它的任何工具。stdio 服务器会临时起一个进程。",
+  );
+  const status = document.createElement("span");
+  status.className = "dsh-mcp-res-status";
+  bar.appendChild(btn);
+  bar.appendChild(status);
+  wrap.appendChild(bar);
+  const list = document.createElement("div");
+  list.className = "dsh-mcp-res-list";
+  wrap.appendChild(list);
+  info.appendChild(wrap);
+
+  const setStatus = (text, cls) => {
+    status.textContent = text || "";
+    status.className = "dsh-mcp-res-status" + (cls ? " " + cls : "");
+  };
+
+  const serversOf = () => (EXT_UI.state.mcp.list || []).map((x) => ({
+    serverName: x.serverName,
+    transport: x.transport,
+    command: x.command,
+    args: x.args,
+    url: x.url,
+    disabled: !!x.disabled,
+  }));
+
+  const renderRows = (resources, templates) => {
+    list.innerHTML = "";
+    for (const r of resources || []) {
+      const row = document.createElement("div");
+      row.className = "dsh-mcp-res-row";
+      const name = document.createElement("div");
+      name.className = "dsh-mcp-res-name";
+      name.textContent = r.title || r.name || r.uri;
+      const uri = document.createElement("div");
+      uri.className = "dsh-mcp-res-uri";
+      uri.textContent = r.uri + (r.mimeType ? " · " + r.mimeType : "");
+      if (r.description) uri.title = r.description;
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "mini";
+      open.textContent = I18n.t("查看");
+      const body = document.createElement("pre");
+      body.className = "dsh-mcp-res-body";
+      body.hidden = true;
+      open.onclick = async () => {
+        if (!body.hidden) {
+          body.hidden = true;
+          open.textContent = I18n.t("查看");
+          return;
+        }
+        open.textContent = I18n.t("读取中…");
+        open.disabled = true;
+        try {
+          const rr = await window.api.dshMcpResources({
+            action: "read",
+            serverName: s.serverName,
+            uri: r.uri,
+            servers: serversOf(),
+          });
+          if (!rr || rr.ok === false) throw new Error((rr && rr.error) || I18n.t("读取失败"));
+          const parts = (rr.contents || []).map((c) =>
+            typeof c.text === "string"
+              ? c.text
+              : I18n.t("（二进制内容，") + (c.blobBytes || 0) + I18n.t(" 字节，不在界面里展开）"),
+          );
+          body.textContent = parts.join("\n\n").slice(0, 20000);
+          body.hidden = false;
+          open.textContent = I18n.t("收起");
+        } catch (e) {
+          body.textContent = I18n.t("读取失败：") + extErrorText(e);
+          body.hidden = false;
+          open.textContent = I18n.t("收起");
+        } finally {
+          open.disabled = false;
+        }
+      };
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "mini";
+      copy.textContent = I18n.t("复制 URI");
+      copy.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(r.uri);
+          toast(I18n.t("已复制资源 URI"), "ok");
+        } catch (e) {
+          toast(I18n.t("复制失败：") + extErrorText(e), "err");
+        }
+      };
+      const acts = document.createElement("div");
+      acts.className = "dsh-mcp-res-acts";
+      acts.appendChild(open);
+      acts.appendChild(copy);
+      row.appendChild(name);
+      row.appendChild(uri);
+      row.appendChild(acts);
+      row.appendChild(body);
+      list.appendChild(row);
+    }
+    for (const t of templates || []) {
+      const row = document.createElement("div");
+      row.className = "dsh-mcp-res-row dsh-mcp-res-tpl";
+      const name = document.createElement("div");
+      name.className = "dsh-mcp-res-name";
+      name.textContent = I18n.t("模板：") + (t.title || t.name || t.uriTemplate);
+      const uri = document.createElement("div");
+      uri.className = "dsh-mcp-res-uri";
+      uri.textContent = t.uriTemplate;
+      row.appendChild(name);
+      row.appendChild(uri);
+      list.appendChild(row);
+    }
+    if (!list.childElementCount) {
+      const em = document.createElement("div");
+      em.className = "dsh-mcp-res-empty";
+      em.textContent = I18n.t("这台服务器没有暴露资源（没有资源能力，或清单为空）");
+      list.appendChild(em);
+    }
+  };
+
+  btn.onclick = async (ev) => {
+    ev.stopPropagation();
+    btn.disabled = true;
+    setStatus(I18n.t("正在连接服务器…"));
+    try {
+      const rr = await window.api.dshMcpResources({
+        action: "list",
+        serverName: s.serverName,
+        servers: serversOf(),
+      });
+      if (!rr || rr.ok === false) throw new Error((rr && rr.error) || I18n.t("读取失败"));
+      const n = (rr.resources || []).length;
+      const t = (rr.templates || []).length;
+      setStatus(I18n.t("资源 ") + n + I18n.t(" 条") + (t ? I18n.t(" · 模板 ") + t + I18n.t(" 条") : ""), "ok");
+      renderRows(rr.resources, rr.templates);
+    } catch (e) {
+      setStatus(I18n.t("读取失败：") + extErrorText(e), "err");
+      list.innerHTML = "";
+    } finally {
+      btn.disabled = false;
+    }
+  };
 }
 
 /* 新建 / 编辑表单（技能、MCP），同样开在右侧详情区，保持一个样式 */

@@ -272,6 +272,14 @@ const sandbox = {
   renderCanvas: () => {},
   renderStatus: () => {},
   paintApprovalsBtn: () => {},
+  /* 「工作步骤展示」四档（本次需求）：设置里那一行读 app-assist.js 的四档词汇表与判定
+     （真源与真逻辑由 test/smoke-session-markers.js 钉住；这里只给设置页跑起来的最小桩） */
+  DSH_TRANSCRIPT_VIEWS: ["compact", "standard", "detailed", "verbose"],
+  DSH_TRANSCRIPT_DEFAULT: "standard",
+  dshTranscriptViewNorm: () => "",
+  dshTranscriptViewLabel: (v) =>
+    ({ compact: "简洁", standard: "标准", detailed: "详细", verbose: "完全展开" })[v] || "标准",
+  dshTranscriptViewGlobal: () => "standard",
   repaintSettingsProvTiles: () => {},
   repaintSettingsTopup: () => {},
   settingsProvTilesRepaint: null,

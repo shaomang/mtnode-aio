@@ -1452,6 +1452,92 @@ button.mini.btn-sq.tpl-ico {
   margin-top: 2px
 }
 
+/* ── MCP 资源面板（renderer/app-plugins.js 的 extMcpResourcesPanel）──
+   只读清单 + 单条展开：行 = 名称 / URI + 「查看 / 复制 URI」，展开体是等宽正文。
+   与 .dsh-plugin-info-* 同族外观，不新增配色。 */
+.dsh-mcp-res {
+  margin: 6px 0 10px
+}
+
+.dsh-mcp-res-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap
+}
+
+.dsh-mcp-res-status {
+  font-size: 11px;
+  color: var(--muted)
+}
+
+.dsh-mcp-res-status.ok {
+  color: rgb(140, 214, 186)
+}
+
+.dsh-mcp-res-status.err {
+  color: rgb(240, 130, 130)
+}
+
+.dsh-mcp-res-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow: auto
+}
+
+.dsh-mcp-res-row {
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, .02)
+}
+
+.dsh-mcp-res-name {
+  font-size: 12px;
+  color: var(--fg);
+  word-break: break-all
+}
+
+.dsh-mcp-res-uri {
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+  margin-top: 2px
+}
+
+.dsh-mcp-res-acts {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px
+}
+
+.dsh-mcp-res-body {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .25);
+  color: var(--fg)
+}
+
+.dsh-mcp-res-tpl .dsh-mcp-res-name {
+  color: var(--cyan2)
+}
+
+.dsh-mcp-res-empty {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 2px
+}
+
 .dsh-plugin-info-text {
   font-size: 11.5px;
   line-height: 1.65;
@@ -1733,7 +1819,11 @@ button.mini.btn-sq.tpl-ico {
   color: var(--cyan2)
 }
 
-.dsh-trace-list {
+/* 工具调用轨迹**弹窗**（openMetricsDistribution，app.js）自己的那支列表。
+   类名一律走 .dsh-calllog-*：早先这里和会话·轨迹视图的滚动容器共用 `.dsh-trace-list`，
+   这条全局 max-height 就把轨迹视图按死在 220px（内容不足 → 列表下方留一片死区；
+   内容够 → 列表也长不高、只在内部滚）。两支列表从此各归各的作用域，互不命中。 */
+.dsh-calllog-list {
   max-height: 120px;
   overflow: auto;
   padding: 4px 6px;
@@ -1741,7 +1831,7 @@ button.mini.btn-sq.tpl-ico {
   font-size: 10px
 }
 
-.dsh-trace-row {
+.dsh-calllog-row {
   padding: 1px 0;
   border-bottom: 1px dashed var(--bd);
   word-break: break-all
@@ -2010,6 +2100,36 @@ button.mini.btn-sq.tpl-ico {
   display: flex;
   flex-direction: column;
   position: relative
+}
+
+/* 轮次标签（本次需求 · id=agentRound）：会话区顶部一行「第 N 轮」+ 开始时间。
+   会话正文只有一个填充项（.agent-list 的 flex:1），这一行必须是 flex:none，
+   否则它会跟消息区抢高度、把输入区的预算搞乱（见 base.css 的 ①②③④⑤ 契约）。
+   hidden（空会话 / 本轮还不该出标签）时整行不存在 —— [hidden] 显式压一次，
+   免得被本文件的 display:flex 反压回来（同 .agent-todo[hidden] 的写法）。 */
+.agent-round {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 22px 0;
+  font-size: 11.5px;
+  color: rgb(129, 133, 140);
+  user-select: none
+}
+
+.agent-round b {
+  font-weight: 600;
+  color: rgb(157, 163, 173)
+}
+
+.agent-round i {
+  font-style: normal;
+  opacity: .75
+}
+
+.agent-round[hidden] {
+  display: none
 }
 
 .agent-list {
@@ -2286,15 +2406,115 @@ button.mini.btn-sq.tpl-ico {
   border-color: rgb(86, 134, 254)
 }
 
-.agent-ctx {
-  font-family: inherit;
-  color: rgb(86, 134, 254);
-  white-space: nowrap;
-  cursor: pointer
+/* ── 任务清单的状态标记（本次需求 · 上游 Todo dock 的 idle / ongoing / done markers）──
+   形状：待处理空心圆、已完成实心圆、失败实心圆、未确认描边圆；
+   进行中是唯一「非圆点」的一档 —— 一枚旋转 loader（上游同一读法）。
+   上游依据（dsh-client-ui-primitives 0.2.0-rc.2 的 StateDot）：清单行用
+   appearance="dot"，done 只是 data-state 上色的实心圆点（solid states paint one
+   currentColor core）；带勾的 IconCheck 只出现在 appearance="step"（计划步骤）那一档。
+   所以已完成态是圆点，不再另画一枚 ✓ —— 这正是本次「✓ 左侧一个绿色块」的由来。 */
+/* 状态标记自带全部尺寸，**不要再叠 .at-icon**（app-assist.js 的 todo 行）
+   —— 那个类是给「用字符当图标」的计划面板行用的，它的 font-size:12px 与这里
+   font-size:0 同特异度、又写在文件后面，会把字形重新放出来：结果就是「绿色圆点
+   里还叠着一枚 ✓」，勾还不居中（标记左侧看着多出一个色块）。下面那条
+   .at-icon.at-dot 是历史兜底：老 DOM / 外部样式若还叠着 .at-icon，标记照样赢。 */
+.at-dot {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 0;
+  /* 形状全在伪元素上；这里清掉字符字形，只留 aria-label 给读屏 */
+  color: var(--dsh-ink-dim)
 }
 
-.agent-ctx:hover {
-  text-decoration: underline
+.at-icon.at-dot {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 0;
+  color: var(--dsh-ink-dim)
+}
+
+.at-dot::before {
+  content: "";
+  display: block;
+  box-sizing: border-box
+}
+
+.at-dot.m-pending::before {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--dsh-ink-faint);
+  border-radius: 50%
+}
+
+.at-dot.m-done::before {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--dsh-ok);
+  background: var(--dsh-ok);
+  border-radius: 50%
+}
+
+.at-dot.m-failed::before {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--dsh-err);
+  background: var(--dsh-err);
+  border-radius: 50%
+}
+
+.at-dot.m-unknown::before {
+  width: 9px;
+  height: 9px;
+  border: 1px dashed var(--dsh-warn);
+  border-radius: 50%
+}
+
+/* 进行中：旋转 loader（25% 透明轨道 + 呼吸弧），reduced-motion 下退化为静态圈 */
+.at-dot.m-active::before {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--dsh-bd-strong);
+  border-top-color: var(--dsh-accent);
+  border-radius: 50%;
+  animation: at-dot-spin 1s linear infinite
+}
+
+@keyframes at-dot-spin {
+  to {
+    transform: rotate(360deg)
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .at-dot.m-active::before {
+    animation: none;
+    border-top-color: var(--dsh-bd-strong)
+  }
+}
+
+/* ── 发送队列的两段分区（本次需求 · 上游 QueueDock：pending-steering 与排队分开）── */
+.aq-sec + .aq-sec {
+  margin-top: 6px
+}
+
+.aq-item-steer b {
+  color: var(--dsh-warn)
+}
+
+.aq-sec-steer .aq-head {
+  border-color: color-mix(in srgb, var(--dsh-warn) 30%, transparent)
+}
+
+.aq-sec-steer .aq-label {
+  color: var(--dsh-warn)
 }
 
 /* ── 会话发送队列（运行中收到的新消息排队，本轮结束后依次发送） ── */
@@ -2434,6 +2654,60 @@ button.mini.btn-sq.tpl-ico {
 .agent-send.agent-pause:hover {
   background: rgb(240, 130, 90);
   color: rgb(28, 28, 30);
+}
+
+/* ── 语音输入（历史遗留：对话输入框旁那枚录音键的样式） ──
+   本轮把语音输入改成**全局**入口（状态栏最左那枚话筒，见 renderer/app-voice.js 与
+   css/voice.css 的 .sb-voice / .gv-note），app-voice.js 不再生成 .agent-voice 按钮，
+   所以下面这组规则目前没有活引用。按要求（只做必要改动）本轮不删这组样式，留着也不会命中；
+   新写全局语音相关样式请一律进 css/voice.css，别再往这里加。
+   当年的四种状态：🎤 常态 / ■ .is-rec 录音中 / … .is-busy 转写中 / ↓ .is-setup 下载中。 */
+.agent-send.agent-voice {
+  width: auto;
+  min-width: 34px;
+  padding: 0 8px;
+  border-color: rgba(120, 200, 170, .4);
+  background: rgba(120, 200, 170, .12);
+  color: rgb(140, 214, 186);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.agent-send.agent-voice:hover {
+  background: rgb(120, 200, 170);
+  color: rgb(20, 30, 27);
+}
+
+.agent-send.agent-voice.is-rec {
+  border-color: rgba(240, 110, 110, .75);
+  background: rgba(240, 110, 110, .22);
+  color: rgb(255, 150, 150);
+  animation: voice-rec-pulse 1.15s ease-in-out infinite;
+}
+
+.agent-send.agent-voice.is-busy {
+  border-color: rgba(140, 160, 200, .35);
+  background: rgba(140, 160, 200, .12);
+  color: rgb(170, 186, 214);
+}
+
+.agent-send.agent-voice.is-setup {
+  border-color: rgba(232, 178, 74, .45);
+  background: rgba(232, 178, 74, .14);
+  color: rgb(232, 178, 74);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+@keyframes voice-rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: .5;
+  }
 }
 
 /* 桥没有这枚方法：JS 直接 style.display='none' 收起（不用 [hidden] ——
@@ -2587,6 +2861,19 @@ button.mini.btn-sq.tpl-ico {
 .at-count.has-fail {
   background: rgba(240, 120, 120, .16);
   color: rgb(240, 120, 120);
+}
+
+/* 「上一轮遗留 N 项未完」标记（本次需求 · 计划面板头部）：新一轮开始时会清掉已了结的清单，
+   但面板里真有待执行 / 执行中的项时整份保留 —— 这一格把那批项明确标成「不是本轮的」，
+   免得用户把它们当成这轮要做的。琥珀色 = 提醒，不是错误（失败那一档才是红的）。 */
+.ap-leftover {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: rgba(240, 190, 90, .16);
+  color: rgb(240, 190, 90);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .at-bar {
@@ -3251,6 +3538,19 @@ button.mini.btn-sq.tpl-ico {
   background: rgba(255, 255, 255, .04);
 }
 
+/* 整行可点的模式行（本次需求 · 用户报障「工作步骤展示无法点击」）：
+   菜单里每一行都由 buildAgentModeMenu 挂 role=button + onclick / onkeydown，
+   但视觉上原先只有右边那枚开关像能点的东西 —— 现在整行给指针手势与焦点环，
+   用户点「工作步骤展示」这几个字也切档。 */
+.agent-tools-row.as-btn {
+  cursor: pointer;
+}
+
+.agent-tools-row.as-btn:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, .65);
+  outline-offset: -2px;
+}
+
 .agent-tools-meta {
   flex: 1;
   min-width: 0;
@@ -3543,7 +3843,9 @@ button.mini.btn-sq.tpl-ico {
   border-bottom: none
 }
 
-.dsh-trace-list {
+/* 同上（后一份覆盖前一份，等于生效值）：弹窗专用类名 .dsh-calllog-list，
+   与轨迹视图的 .dsh-trace-list（dsh-tokens.css 里的 flex 链）彻底分家。 */
+.dsh-calllog-list {
   max-height: 220px;
   overflow: auto;
   margin-top: 4px;
@@ -3552,7 +3854,7 @@ button.mini.btn-sq.tpl-ico {
   background: var(--code)
 }
 
-.dsh-trace-row {
+.dsh-calllog-row {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--muted);
@@ -3560,7 +3862,7 @@ button.mini.btn-sq.tpl-ico {
   border-bottom: 1px solid var(--bd);
 }
 
-.dsh-trace-row:last-child {
+.dsh-calllog-row:last-child {
   border-bottom: none
 }
 
@@ -3812,6 +4114,156 @@ button.mini.btn-sq.tpl-ico {
   flex-wrap: wrap;
 }
 
+/* ── 消息左侧悬浮时刻（本次需求） ──
+   口径：时刻**不再单独占消息末尾一行**，改挂到每条消息左侧、悬浮在正文左边。
+   实现：app-assist.js 的 dshMsgBlock 给消息挂 .dsh-has-time 并插入 .dsh-msg-side
+   （内为 .dsh-msg-time）；这里把时刻栏从文档流里摘出来，绝对定位在消息左内边距那一块
+   —— 消息正文因此不会被压住（栏宽由 .dsh-msg-side 的 width 定死，见下）。
+   两条约束：
+   · 只在消息自带时刻栏（.dsh-has-time）时才留左侧余量 —— 没有时刻的老消息 / 系统行
+     一字不动，用户气泡的右对齐（align-items: flex-end）也不受影响。
+   · **时刻不折成两行**：栏宽按最长形态「M/D HH:MM:SS」（非今天）的实测字宽留够，
+     两种形态（今天 = HH:MM:SS / 更早 = M/D HH:MM:SS）都排得下一行。
+   档位**看容器宽度、不看窗口宽度**（容器查询，见下）：右栏会话在 1920 宽窗口里
+   可能只有 ~700px 宽 —— 按窗口宽度分档会让窄栏拿到宽档，时刻压住正文（正是首版的 bug）。
+   量测与判定：test/smoke-msg-time-side.js（真浏览器几何量测记录写在会话交付说明里）。
+   改这里先跑 node test/smoke-msg-time-side.js。 */
+.agent-body,
+.agent-conv,
+.ltg-conv {
+  container-type: inline-size
+}
+
+.agent-list .dsh-msg.dsh-has-time,
+.agent-conv .dsh-msg.dsh-has-time,
+.ltg-conv .dsh-msg.dsh-has-time {
+  position: relative;
+  padding-left: 84px
+}
+
+.agent-list .dsh-msg-side,
+.agent-conv .dsh-msg-side,
+.ltg-conv .dsh-msg-side {
+  position: absolute;
+  left: 2px;
+  top: 3px;
+  width: 78px;
+  text-align: left;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none
+}
+
+.agent-list .dsh-msg-side .dsh-msg-time,
+.agent-conv .dsh-msg-side .dsh-msg-time,
+.ltg-conv .dsh-msg-side .dsh-msg-time {
+  display: block;
+  white-space: nowrap;
+  /* 等宽 + 表格数字（本仓既有 mono 栈）：时刻的**实际字宽在真浏览器里量过**，
+     栏宽就是照这组读数留的（刻度字符串「M/D HH:MM:SS」/「HH:MM:SS」）：
+       --mono @10px → 78.8 / 48.5    @9.5px → 74.7 / 45.9
+       --mono @ 9px → 71.2 / 43.8    @8.5px → 67.2 / 41.4
+     栏宽 = 该档 padding-left 减 4~6px，最长形态排得下一行、又不压到正文
+     （真浏览器量测：七档视口下时刻右缘与正文左缘恒有 3~5px 余量，见交付说明）。 */
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: .5;
+  transition: opacity .15s
+}
+
+/* 悬浮 / 键盘聚焦时点亮（时刻本身就是「悬浮在左侧」的那一行小字） */
+.agent-list .dsh-msg:hover .dsh-msg-side .dsh-msg-time,
+.agent-list .dsh-msg:focus-within .dsh-msg-side .dsh-msg-time,
+.agent-conv .dsh-msg:hover .dsh-msg-side .dsh-msg-time,
+.agent-conv .dsh-msg:focus-within .dsh-msg-side .dsh-msg-time,
+.ltg-conv .dsh-msg:hover .dsh-msg-side .dsh-msg-time,
+.ltg-conv .dsh-msg:focus-within .dsh-msg-side .dsh-msg-time {
+  opacity: 1
+}
+
+/* 窄栏四档（**容器宽度**，不是窗口宽度）：栏宽与字号同步收
+   （栏宽 = 该档字号下最长形态「M/D HH:MM:SS」的实测字宽 + 约 6px 余量），
+   保证「时刻左边悬浮、正文不被压、时刻不折两行」三条同时成立。 */
+@container (max-width: 1400px) {
+
+  .agent-list .dsh-msg.dsh-has-time,
+  .agent-conv .dsh-msg.dsh-has-time,
+  .ltg-conv .dsh-msg.dsh-has-time {
+    padding-left: 82px
+  }
+
+  .agent-list .dsh-msg-side,
+  .agent-conv .dsh-msg-side,
+  .ltg-conv .dsh-msg-side {
+    width: 76px
+  }
+
+  .agent-list .dsh-msg-side .dsh-msg-time,
+  .agent-conv .dsh-msg-side .dsh-msg-time,
+  .ltg-conv .dsh-msg-side .dsh-msg-time {
+    font-size: 9.5px
+  }
+}
+
+@container (max-width: 900px) {
+
+  .agent-list .dsh-msg.dsh-has-time,
+  .agent-conv .dsh-msg.dsh-has-time,
+  .ltg-conv .dsh-msg.dsh-has-time {
+    padding-left: 80px
+  }
+
+  .agent-list .dsh-msg-side,
+  .agent-conv .dsh-msg-side,
+  .ltg-conv .dsh-msg-side {
+    width: 74px
+  }
+
+  .agent-list .dsh-msg-side .dsh-msg-time,
+  .agent-conv .dsh-msg-side .dsh-msg-time,
+  .ltg-conv .dsh-msg-side .dsh-msg-time {
+    font-size: 9px
+  }
+}
+
+@container (max-width: 620px) {
+
+  .agent-list .dsh-msg.dsh-has-time,
+  .agent-conv .dsh-msg.dsh-has-time,
+  .ltg-conv .dsh-msg.dsh-has-time {
+    padding-left: 76px
+  }
+
+  .agent-list .dsh-msg-side,
+  .agent-conv .dsh-msg-side,
+  .ltg-conv .dsh-msg-side {
+    width: 70px
+  }
+}
+
+@container (max-width: 440px) {
+
+  .agent-list .dsh-msg.dsh-has-time,
+  .agent-conv .dsh-msg.dsh-has-time,
+  .ltg-conv .dsh-msg.dsh-has-time {
+    padding-left: 79px
+  }
+
+  .agent-list .dsh-msg-side,
+  .agent-conv .dsh-msg-side,
+  .ltg-conv .dsh-msg-side {
+    width: 73px
+  }
+
+  .agent-list .dsh-msg-side .dsh-msg-time,
+  .agent-conv .dsh-msg-side .dsh-msg-time,
+  .ltg-conv .dsh-msg-side .dsh-msg-time {
+    font-size: 8.5px
+  }
+}
+
 /* ── dsh 风格消息流(透明背景):会话与对话节点共用 ── */
 .dsh-msg {
   display: flex;
@@ -3894,7 +4346,8 @@ button.mini.btn-sq.tpl-ico {
   font-variant-numeric: tabular-nums;
 }
 
-/* 消息末尾时间（精确到秒）：AI 靠左、用户消息靠右；会话视图隐藏 head 时仍可见 */
+/* 消息末尾剩下动作小按钮（「复制本条回复」/「回滚」）：靠左、不再带时刻
+   （时刻已上左侧悬浮时刻栏，见上方 .dsh-msg-side）；会话视图隐藏 head 时这些按钮仍可见 */
 .dsh-msg-tail {
   display: flex;
   justify-content: flex-start;
@@ -3906,6 +4359,7 @@ button.mini.btn-sq.tpl-ico {
   justify-content: flex-end
 }
 
+/* 时刻栏未挂上时的兜底字号（旧数据 / 外部拼的节点若直接把 .dsh-msg-time 放在别处） */
 .dsh-msg-tail .dsh-msg-time {
   font-size: 10px;
   opacity: .62;
@@ -3981,6 +4435,19 @@ button.mini.btn-sq.tpl-ico {
   color: var(--green);
   border-color: var(--green);
   background: rgba(62, 158, 110, .14);
+}
+
+/* 轮次页脚的动作行（本次需求 · 对齐上游 turn-tail）：
+   上游「最新一轮常显、历史轮悬停 / 键盘聚焦才现」，本仓落在消息列表上 ——
+   最后一条消息（= 最新一轮）的动作行常显，其余靠悬停或聚焦显形。 */
+.agent-list > .dsh-msg:not(:last-child) .dsh-msg-actions {
+  opacity: 0;
+  transition: opacity .12s;
+}
+
+.agent-list > .dsh-msg:not(:last-child):hover .dsh-msg-actions,
+.agent-list > .dsh-msg:not(:last-child):focus-within .dsh-msg-actions {
+  opacity: 1;
 }
 
 /* 上一轮用户输入下方的「回滚」小按钮（回滚入口） */
@@ -4335,7 +4802,91 @@ button.dsh-xlate-copy:hover {
   word-break: break-word;
 }
 
-/* 工具段：青调等宽小字 + 左侧青轨，紧凑一行一条 */
+/* ── 逐项时刻（本次需求 · 用户口径「时间应当在每一项，而不是总项」）─────────────
+   会话主体（对话区）**不画竖线 / 时间轴**：竖线 + 时间轴是「轨迹」视图那一套视觉
+   （renderer/app-trajectory.js + css/dsh-tokens.css 的 .dsh-trace-*），对话区保持
+   原来「每段各自一条 border-left、块间留 5px」的分块读法，整串不引轴、不加节点圆点。
+   这里给**每一项**（思考 / 正文 / 上下文注入 / 工具调用）在左侧留一条定宽时刻栏：
+     · .dsh-seg-has-time  = 这一项带时刻（由 app-assist.js 的 dshSegTimeAttach 挂上）；
+     · .dsh-seg-time      = 时刻本体（等宽 + 表格数字，恒显淡色）；
+     · 工具项的时刻后面另带这次调用的耗时（「HH:MM:SS · 12.3s」），
+       排不下时耗时自己折到第二行（white-space: normal），正文一个字都不会被压住。
+   **时刻栏宿主自己不上色**（用户口径「工具调用的颜色和左侧颜色竖条被错误地拉伸到了
+   左边时间的左侧，应当与思考一致、不包括时间」）：青轨是 border-left、青底是 background，
+   两者都以**元素自己的左边框**为起点 —— 宿主兼皮肤时这个起点落在时刻栏左边，颜色就把
+   时刻一起裹了进去。所以带皮肤的段一律**两层**：外层 `.dsh-seg-tool-wrap` 只当时刻栏
+   宿主（透明、只让出左侧栏），内层 `.dsh-seg-tool` 才是青轨 + 青底的皮肤盒。
+   **选择器写两段（.dsh-seg.dsh-seg-has-time）不是啰嗦**：`.dsh-seg-tool` 在本文件更靠后
+   的位置写了 padding 简写（3px 8px 4px），assist.css / canvas.css 里还各有一条
+   `.assist-list .dsh-seg-tool` 与 `.agent-conv .dsh-seg-tool` 的 padding 简写 —— 只写
+   `.dsh-seg-has-time` 的话同权会被它们清成 7px / 6px，时刻直接压在正文上（真浏览器量到
+   gap = −64px）。两段类名把这一条抬到同权之上，与文件里两条规则的先后顺序解耦
+   （宿主与皮肤分家后这条已不会被踩，仍按两段写：防以后再长出「兼皮肤的时刻宿主」）。
+   与「消息级时刻」（.dsh-msg-side，整条消息左侧那一栏）是两层：
+   消息级看整条，逐项看每一项。改这里先跑 node test/smoke-msg-time-side.js。 */
+.dsh-seg.dsh-seg-has-time {
+  position: relative;
+  padding-left: var(--dsh-seg-time-w, 92px);
+}
+
+.dsh-seg.dsh-seg-has-time > .dsh-seg-time {
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: calc(var(--dsh-seg-time-w, 92px) - 8px);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  opacity: .62;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: auto;
+}
+
+/* 回落时刻（老存档的段没有自己的 at → 显示所属消息时刻）：**不额外加「≈」字符** ——
+   多一个字符就把最长形态挤出栏宽、时刻会被折成两行（真浏览器量到「≈10/1」+「09:12:31」）。
+   改由「点线下划线 + 更淡」表达「这不是这一项自己的时刻」，tooltip 里写明来由。 */
+.dsh-seg.dsh-seg-has-time > .dsh-seg-time.is-approx {
+  opacity: .42;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.dsh-seg.dsh-seg-has-time:hover > .dsh-seg-time {
+  opacity: 1
+}
+
+/* 窄栏两档（**容器宽度**，不是窗口宽度，与消息级时刻同一套判据）：
+   栏宽与字号同步收，保证「时刻在项左侧、正文不被压、时刻排得下」三条同时成立。 */
+@container (max-width: 1400px) {
+  .dsh-seg.dsh-seg-has-time {
+    padding-left: 86px;
+    --dsh-seg-time-w: 86px;
+  }
+
+  .dsh-seg.dsh-seg-has-time > .dsh-seg-time {
+    font-size: 9.5px
+  }
+}
+
+@container (max-width: 900px) {
+  .dsh-seg.dsh-seg-has-time {
+    padding-left: 80px;
+    --dsh-seg-time-w: 80px;
+  }
+
+  .dsh-seg.dsh-seg-has-time > .dsh-seg-time {
+    font-size: 9px
+  }
+}
+
+/* 工具段皮肤盒（**不是时刻栏宿主** —— 宿主是外层 .dsh-seg-tool-wrap，见上）：
+   青调等宽小字 + 左侧青轨，紧凑一行一条。青轨 / 青底都以**这一层**的左边框为起点，
+   因此颜色从时刻栏右侧开始，不会裹住左侧那一枚时刻。 */
 .dsh-seg-tool {
   color: var(--cyan2);
   font-family: var(--mono);
@@ -4346,6 +4897,13 @@ button.dsh-xlate-copy:hover {
   border-radius: 0 3px 3px 0;
   padding: 3px 8px 4px;
   min-width: 0;
+}
+
+/* 工具段外层 = 时刻栏宿主：**自己不上色**（无底、无轨、无内边距），只由 .dsh-seg-has-time
+   让出左侧那条定宽时刻栏。内层皮肤盒的 margin 归零：间距已由这一层让出，
+   `.dsh-seg:first-child { margin-top: 0 }` 也不再命中内层（时刻栏抢了 first-child）。 */
+.dsh-seg-tool-wrap > .dsh-seg-tool {
+  margin: 0;
 }
 
 .dsh-seg-tool .dsh-tools {
@@ -4412,7 +4970,8 @@ button.dsh-xlate-copy:hover {
 }
 
 /* 药丸（工具名）是固定不可压的那一档：flex:none + nowrap，
-   否则容器一窄它自己会被压成两行（「🔧 / pwsh」），看着像按钮变成了两行。 */
+   否则容器一窄它自己会被压成两行（「🔧 / pwsh」），看着像按钮变成了两行。
+   这是 **dsh 引擎自带工具** 那一档：读 / 写 / 编辑 / 运行命令 / 搜索 / 网页 / 计划 / 子智能体… */
 .dsh-tool-chip {
   flex: none;
   white-space: nowrap;
@@ -4425,6 +4984,29 @@ button.dsh-xlate-copy:hover {
   font-family: var(--mono);
   letter-spacing: .5px;
 }
+
+/* 非 dsh 工具那一档（本次需求 · renderer/app-assist.js 的 dshToolIsCustom）：
+   MTNode 自有工具（画布 / 应用 / 识图 / 数据库 / 事实库 / 素材库 / 长任务状态 / 浏览器）
+   与被 MTNode 接管的引擎工具（提问 / 目标 / 子代理 / 后台任务）—— 药丸换工具库紫
+   （#c792ea，与顶栏 .btn-tools、功能色卡 ai 同色；写死 hex 与 css/layout.css 同源，
+   亮色主题共用同一个紫，故这一档不写令牌、也不进 theme-light 的槽位重定义）。
+   几何与上面那档一字不差，只换颜色：一行里「青 = dsh 自带 / 紫 = MTNode 工具」一眼分家。 */
+.dsh-tool-chip.t-custom {
+  color: #c792ea;
+  border-color: #c792ea;
+  background: rgba(199, 146, 234, .08);
+}
+
+/* 悬停与展开态同样只涂这一档自己的底色（青色那档仍是下面那条 rgba(56,214,255,.24)） */
+.dsh-tool-chip.t-custom:hover,
+.dsh-tool[open] .dsh-tool-chip.t-custom {
+  background: rgba(199, 146, 234, .24);
+  color: #d0a6ff;
+}
+
+/* 出错时仍走统一的失败红（下面 .dsh-tool.err 那条**没有** .t-custom，两者特异性相同
+   —— .dsh-tool.err .dsh-tool-chip 是 0,2,1，.dsh-tool-chip.t-custom 是 0,2,0，
+   红那条更高 —— 所以非 dsh 工具出错也照样变红，与青色那档行为一致）。 */
 
 /* shell 工具（pwsh / bash）按钮后面那句命令正文（app-assist.js 的 dshToolCmdEl）
    与药丸同一字号同一 mono，但在药丸「外面」、绿色（与读=青 / 改=橙一眼分家）：
@@ -4606,6 +5188,220 @@ button.dsh-xlate-copy:hover {
 
 .dsh-tool-body pre.term {
   color: #b7e6c2
+}
+
+/* ── 工具卡片的新标记（本次需求 · 对齐上游 dsh-client-ui-tool 的 ToolRow）──────
+   上游那一行的读法是「图标 + 标题 · 摘要 · 统计 / 失败摘要」：
+     · 标题后那颗 2×2 圆点分隔符由 ::before 画（不额外占 DOM 节点，
+       DOM 形状仍是「药丸 + 摘要 + 徽标」，文件徽标索引与既有冒烟都不动）；
+     · 运行中**不做扫光**：只有药丸边框一道低调呼吸灯（见下面 .dsh-tool.st-running，
+       上游 TextShimmer 的底色扫光太闪，已撤）；
+     · diff 统计只在 write / edit 上出现，悬停标题行或展开才着色（上游
+       .row:is(:hover,[aria-expanded=true]) 口径）。 */
+.dsh-tool-sum > :not(:first-child)::before {
+  content: "·";
+  margin: 0 6px 0 2px;
+  color: var(--dsh-ink-faint);
+}
+
+.dsh-tool-prep {
+  flex: none;
+  font-size: 10px;
+  color: var(--dsh-ink-dim);
+}
+
+.dsh-tool-diffstat {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  display: inline-flex;
+  gap: 4px;
+  color: var(--dsh-ink-dim);
+}
+
+.dsh-tool-diffstat .d-add,
+.dsh-tool-diffstat .d-del {
+  color: var(--dsh-ink-dim);
+}
+
+/* 悬停该行或展开详情：+N 变绿、-M 变红（上游同一口径） */
+.dsh-tool:hover .dsh-tool-diffstat .d-add,
+.dsh-tool[open] .dsh-tool-diffstat .d-add {
+  color: var(--dsh-diff-add);
+}
+
+.dsh-tool:hover .dsh-tool-diffstat .d-del,
+.dsh-tool[open] .dsh-tool-diffstat .d-del {
+  color: var(--dsh-diff-del);
+}
+
+.dsh-tool-errsum {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--dsh-err);
+}
+
+.dsh-tool-stopsum {
+  flex: none;
+  font-size: 10px;
+  color: var(--dsh-warn);
+}
+
+/* 运行中的呼吸灯：**只动边框**（低调、不抢正文），没有底色扫光、没有位移，
+   底色仍是常态那层 rgba(56,214,255,.06)。占位与字号不变 —— 列宽不会随动画抖。
+   想要更淡/更慢改 dsh-tokens.css 的 --dsh-tool-breath-* 令牌即可。 */
+.dsh-tool.st-running .dsh-tool-chip {
+  border-color: color-mix(in srgb, var(--dsh-accent) var(--dsh-tool-breath-hi), transparent);
+  animation: dsh-tool-breathe var(--dsh-tool-breath-dur) ease-in-out infinite;
+}
+
+@keyframes dsh-tool-breathe {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--dsh-accent) var(--dsh-tool-breath-lo), transparent);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--dsh-accent) var(--dsh-tool-breath-hi), transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsh-tool.st-running .dsh-tool-chip {
+    animation: none;
+    border-color: color-mix(in srgb, var(--dsh-accent) var(--dsh-tool-breath-mid), transparent);
+  }
+}
+
+/* ── 文件改动 diff 块（本次需求 · 对齐上游 DiffBlock）────────────────────────
+   上游：删除行 `- ` 前缀 + error 色 + 3px 内嵌左色条 + 红底；
+   新增行 `+ ` + success 色 + 同样 3px 左色条 + 绿底；上下文行用次级文字色。
+   会话内折叠 9 行（CHAT_DIFF_MAX_LINES），这里只管皮。 */
+.dsh-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dsh-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: var(--dsh-ink-dim);
+  text-transform: none;
+}
+
+.dsh-diff-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--dsh-mono);
+}
+
+.dsh-diff-stat {
+  flex: none;
+  font-family: var(--dsh-mono);
+  display: inline-flex;
+  gap: 4px;
+}
+
+.dsh-diff-stat .d-add {
+  color: var(--dsh-diff-add);
+}
+
+.dsh-diff-stat .d-del {
+  color: var(--dsh-diff-del);
+}
+
+.dsh-diff-body {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: var(--dsh-r-sm);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.dsh-diff-row {
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 0 6px;
+  color: var(--dsh-ink);
+}
+
+.dsh-diff-row.d-ctx {
+  color: var(--dsh-ink-dim);
+}
+
+.dsh-diff-row.d-add {
+  color: var(--dsh-diff-add);
+  background: var(--dsh-diff-add-bg);
+  box-shadow: inset 3px 0 0 var(--dsh-diff-add);
+}
+
+.dsh-diff-row.d-del {
+  color: var(--dsh-diff-del);
+  background: var(--dsh-diff-del-bg);
+  box-shadow: inset 3px 0 0 var(--dsh-diff-del);
+}
+
+.dsh-diff-more {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 9.5px;
+  color: var(--dsh-accent);
+}
+
+.dsh-diff-more:disabled {
+  color: var(--dsh-ink-dim);
+  cursor: default;
+}
+
+/* ── 已撤：轮次过程折叠行（.dsh-turn-process*）──────────────────────────────
+   它把工具 / 上下文注入这些「过程行」折进一行「✓ 已完成 · N 次工具调用」（对齐上游
+   turn-process 行）。**本轮需求撤掉**（用户口径「工具调用不应当被收纳，否则会和工具在
+   顺序上分离」）：段一律按段序内联渲染，这一段样式连同渲染器一起删除。
+   **不要再把它加回来** —— 回归口径见 test/smoke-session-markers.js [6]。 */
+
+/* ── 上下文注入行（本次需求 · 对齐上游 chat 的 context 行）────────────────────
+   上游默认不显示普通上下文注入与系统提示，只在工具集增删时留一行 ——
+   这一行因此做得很轻：一枚灰标签 + 一句摘要，不抢正文。 */
+.dsh-ctx {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--dsh-ink-dim);
+}
+
+.dsh-ctx-label {
+  flex: none;
+  border: 1px solid var(--dsh-bd);
+  border-radius: var(--dsh-r-sm);
+  padding: 0 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.5px;
+  color: var(--dsh-ink-dim);
+}
+
+.dsh-ctx-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── 服务商目录(设置:dsh Models 页风格) ── */
@@ -5100,7 +5896,10 @@ button.dsh-xlate-copy:hover {
    .agent-list / .assist-list 的吸附一并撤掉。
    节点内会话（.agent-conv / .chat-list）例外：节点框高被 convH + inputH 钉死，名片下方
    没有余量，挂到节点输入框下面会被 .n-proc-row 的 overflow:hidden 裁掉，故仍挂消息区
-   末位 sticky 贴住下沿。Badge 自身的折叠 / 展开 / 复制逻辑一行未动。 */
+   末位 sticky 贴住下沿。Badge 自身的折叠 / 展开 / 复制逻辑一行未动。
+   轨迹视图（会话主区的第二个 View，见 app-trajectory.js / dsh-tokens.css 的 .dsh-trace-*）
+   期间报告整块让位：它与消息区 / 输入区一样属于对话视图的件，由 .agent-body.dsh-trace-on
+   一并收起（重绘后再挂回来的那一枚也照收，见 dsh-tokens.css 里那份 display:none !important）。 */
 .agent-conv > .tok-badge,
 .chat-list > .tok-badge {
   position: sticky;

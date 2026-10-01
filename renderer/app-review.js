@@ -120,6 +120,15 @@ function openTextReview(node) {
     toast(I18n.t("请先等该节点运行完成再审阅"), "warn");
     return;
   }
+  /* 互斥：同一个节点上如果「Markdown 编辑器」（renderer/app-textedit.js）正开着，就先请用户
+     关掉它 —— 两个编辑面共用同一份 node.review，并存会互相覆盖正文（见 app-textedit.js 头顶）。 */
+  if (typeof textNodeEditorOpenFor === "function" && textNodeEditorOpenFor(node.id)) {
+    toast(
+      I18n.t("该节点的 Markdown 编辑器正开着：请先关掉它，再开 AI 审阅"),
+      "warn",
+    );
+    return;
+  }
   const doc = nodeDocTextOf(node);
   if (!doc.trim()) {
     toast(I18n.t("该节点还没有文本输出，请先运行一次再审阅"), "warn");

@@ -12,6 +12,164 @@
 
      本文件结构：EN 的键 = 中文原文（zh 界面直接回显键本身，不报错也不缺字），值 = 英文译文。 */
   var EN = {
+    /* ── 语音输入（renderer/app-voice.js：本轮起是**全局**入口）──
+       上一段是历史词条（旧的输入框话筒时代留下的，仍在用：模型准备态与报错文案），
+       下面那段「全局语音输入」才是状态栏那枚话筒的三态 / 浮窗 / 设置小节文案。 */
+    "语音输入：按一下开始录音，再按一下结束（本地识别，不上传）":
+      "Voice input: press to start recording, press again to stop (recognized locally, never uploaded)",
+    "结束录音并转成文字（Esc 也可结束）": "Stop recording and transcribe (Esc also stops)",
+    "正在转写…": "Transcribing…",
+    "正在下载语音模型（首次使用，约 239MB）：": "Downloading the speech model (first use, about 239 MB): ",
+    "准备中": "Preparing",
+    "语音输入不可用（宿主桥未就绪）": "Voice input unavailable (host bridge not ready)",
+    "本机不支持录音（缺少录音接口）": "Recording is not supported on this machine (no recording API)",
+    "本机不支持音频解码": "Audio decoding is not supported on this machine",
+    "拿不到麦克风权限：": "Microphone permission denied: ",
+    "无法开始录音：": "Cannot start recording: ",
+    "没有录到声音": "No audio was recorded",
+    "录音转码失败：": "Failed to convert the recording: ",
+    "转写失败": "Transcription failed",
+    "转写失败：": "Transcription failed: ",
+    "没听清（本地识别没有出文字），可以再说一遍或直接打字":
+      "Nothing was recognized — say it again or type it instead",
+    "已写入草稿：": "Inserted into the draft: ",
+    "无法开始下载语音模型": "Cannot start downloading the speech model",
+    "语音模型已就绪，再按一下录音": "Speech model is ready — press the mic again to record",
+    "正在下载语音模型（首次使用，约 239MB）":
+      "Downloading the speech model (first use, about 239 MB)",
+    "正在准备语音模型…": "Preparing the speech model…",
+    "语音模型正在准备中…": "The speech model is still being prepared…",
+    "语音模型准备失败：": "Speech model preparation failed: ",
+    /* ── 全局语音输入（renderer/app-voice.js：状态栏最左那枚话筒，三态循环）──
+       文案出现在按钮 tooltip、浮窗、右键快捷菜单、设置 · 语音输入小节与 toast 上。 */
+    "语音输入（关闭）：点一下开启持续转录，再点按键转录，再点关闭":
+      "Voice input (off): click to start continuous dictation, click again for push-to-talk, click again to turn off",
+    "持续转录中：说话即写入当前输入框（点一下切按键转录）":
+      "Continuous dictation: speech goes straight into the focused input (click to switch to push-to-talk)",
+    "按键转录：按住 F1 说话（点一下关闭）": "Push-to-talk: hold F1 to speak (click to turn off)",
+    "持续转录已开启：说话即写入当前输入框": "Continuous dictation on — speak and it is typed into the focused input",
+    "按键转录已开启：按住 F1 说话": "Push-to-talk on — hold F1 to speak",
+    "按住 F1 说话": "Hold F1 to speak",
+    "松开 F1 即写入": "Release F1 to insert it",
+    /* 浮窗标签与右键菜单的分组标题（都是短语，不是整句）：与上面两条「已开启」文案同源 */
+    "持续转录": "Continuous dictation",
+    "断句停顿": "Pause cutoff",
+    "语音输入已关闭": "Voice input is off",
+    "语音输入（全局）": "Voice input (global)",
+    /* 设置小节的说明：口径改成「停顿才提交」后，这句话必须跟着改 ——
+       「说话即写入」会让人以为边说边出字（现在是一句说完才落字）。旧那句话的词条
+       随改文一并删掉：留着就是一条永不命中的死条目。 */
+    "状态栏最左边那枚话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F1 说话），再点关闭。识别在本地 CPU 上跑，不上传。":
+      "The mic at the far left of the status bar: click once for continuous dictation (it keeps listening and writes each sentence into the focused input once you pause), again for push-to-talk (hold F1 to speak), again to turn off. Recognition runs locally on the CPU and is never uploaded.",
+    /* 本地识别服务未就绪 / 不可用（浮窗标签与 toast）：PTT 键是 F1，服务还在重试时先把
+       「为什么现在按了没反应」讲清楚；最后一句指向右键菜单里的同一枚动作，文案必须成对。 */
+    "本地语音识别服务未就绪（正在重试…）":
+      "The local speech recognition service is not ready yet (retrying…)",
+    "语音识别服务不可用：请稍后重试，仍失败可在右键菜单里点『重新检查语音服务』":
+      "Speech recognition service unavailable: try again in a moment; if it still fails, click 'Recheck speech service' in the right-click menu",
+    "重新检查语音服务": "Recheck speech service",
+    /* ── 失败可见性与重试入口（模型下载 / 准备失败：按钮、tooltip、浮窗、右键菜单、设置小节）──
+       口径：失败后**不停在 ↓ 百分比**，而是把「原因 + 下载源」摆出来，并给出能照做的重试入口。
+       下载失败的原因来自官方结构化诊断（SpeechDownloadFailure.reason 七种），逐个给中文。 */
+    "语音模型没能准备好：右键话筒 →「下载 / 检查语音模型」可以再来一次":
+      "The speech model could not be prepared: right-click the mic and pick “Download / check the speech model” to try again",
+    "正在检查语音服务…": "Checking the speech service…",
+    "上次失败：": "Last failure: ",
+    "上次下载失败：": "Last download failed: ",
+    "下载失败：": "Download failed: ",
+    "下载源": "Download source",
+    "自动（官方顺序）": "Auto (official order)",
+    "用这个源重试": "Retry with this source",
+    "语音模型尚未下载（首次使用约 239MB，本机识别，不上传）":
+      "The speech model has not been downloaded yet (about 239 MB on first use; recognized locally, never uploaded)",
+    "重试：右键这枚话筒 →「下载 / 检查语音模型」或「重新检查语音服务」":
+      "To retry: right-click the mic → “Download / check the speech model” or “Recheck speech service”",
+    /* 同一轮的另外三句 toast（都出现在「说了话却没落字」的那条链上）：失焦没处写、队列积压、
+       模型还没下完就按了持续转录 —— 每句都把「现在该做什么」写清楚，不给一个空提示。 */
+    "没找到要写入的输入框：先把光标点进文本框再说话":
+      "No input box to write into: put the caret in a text box first, then speak",
+    "语音输入积压过多：先让它把已录的写完（或点回文本框）":
+      "Voice input is backed up: let it finish the audio already recorded (or click back into a text box)",
+    "语音模型还没下载完：先让它下完，就绪后会自动开始录音":
+      "The speech model is still downloading: let it finish — recording starts by itself once it is ready",
+    "语音模型下载失败的原因：": "The speech model download failed: ",
+    "语音模型下载失败（检查网络后重试；仍失败可在设置里换一个下载源）":
+      "The speech model download failed (check your network and retry; if it keeps failing, pick another download source in settings)",
+    "网络连不上下载源": "the download source is unreachable",
+    "域名解析失败（可能被网络环境拦了）": "the domain could not be resolved (possibly blocked by the network)",
+    "下载超时": "the download timed out",
+    "HTTPS 证书校验没过": "the HTTPS certificate check failed",
+    "下载源返回了错误状态": "the download source returned an error status",
+    "下到的文件校验不通过（可能被代理改坏了）":
+      "the downloaded file failed its integrity check (a proxy may have altered it)",
+    "本机写不进去（磁盘满或没有权限）":
+      "the file could not be written locally (disk full or no permission)",
+    "下载没能完成": "the download did not finish",
+    "正在识别…": "Recognizing…",
+    "请说话…": "Speak…",
+    "待识别 ": "Pending: ",
+    " 片": " chunk(s)",
+    /* 分段改成「停顿才提交」后的浮窗回调（renderer/app-voice.js）：说话过程中没有可显示的
+       文字，这里报「在听 + 已录多久 + 句数」，绝不显示假文字。 */
+    "正在听…": "Listening…",
+    "已录 ": "recorded ",
+    " 句": " sentence(s)",
+    "这句话很长：先说到的这部分已经转写，后面接着收":
+      "That sentence is very long: the part so far has been transcribed and the rest keeps recording",
+    "分段（全局）：一整句说完（连续安静到「断句停顿」）才交一次识别，识别拿到的是完整一句；不再按时长切片、也没有句长封顶——只剩后端单次请求约 131 秒的硬顶。画布上的音频 / 视频节点转写同样按这一项逐句切分、每句一行。":
+      "Segmentation (global): a sentence is sent for recognition once you stop (that much continuous silence = the pause cutoff), so the engine gets the whole sentence. Nothing is cut by length any more and there is no sentence-length cap — the only hard edge is the backend's ~131 s per request. Audio / video node transcription on the canvas segments by the same setting and outputs one line per sentence.",
+    "最近一次失败：": "Last failure: ",
+    "识别语言": "Recognition language",
+    "切片长度": "Chunk length",
+    "切片长度（毫秒）": "Chunk length (ms)",
+    "断句停顿（毫秒）": "Pause cutoff (ms)",
+    "下载语音模型（≈239MB）": "Download speech model (≈239 MB)",
+    "正在下载语音模型…": "Downloading the speech model…",
+    "下载 / 检查语音模型": "Download / check the speech model",
+    "正在检查语音模型…": "Checking the speech model…",
+    "语音设置…": "Voice settings…",
+    "语音模型已就绪": "The speech model is ready",
+    "先选好工作目录（或打开一张画布）再用语音输入":
+      "Pick a working folder (or open a canvas) before using voice input",
+    /* 转写 / 采集失败一律走这几句：原始英文错误（网关、DOMException 的 message）只用来判类型，
+       不进 tooltip、浮窗与 toast；「服务未就绪」那一类另有上面成对的 tri 条文案。 */
+    "连不上语音服务（检查网络，或确认本地语音服务在运行）":
+      "Cannot reach the speech service (check your network, or make sure the local speech service is running)",
+    "语音识别没能完成（稍后再试，或右键话筒 → 下载 / 检查语音模型）":
+      "Speech recognition did not finish (try again, or right-click the mic → Download / check the speech model)",
+    "麦克风权限被拒绝（到系统设置里允许本应用使用麦克风）":
+      "Microphone permission denied (allow this app to use the microphone in system settings)",
+    "没找到可用的麦克风设备": "No usable microphone device was found",
+    "麦克风被别的程序占着（关掉占用它的程序再试）":
+      "The microphone is held by another program (close it and try again)",
+    "麦克风没能启动（检查系统输入设备与权限）":
+      "The microphone could not start (check your input device and permissions)",
+    "自动": "Auto",
+    "中文": "Chinese",
+    "粤语": "Cantonese",
+    "日本語": "Japanese",
+    "한국어": "Korean",
+    /* ── MCP 资源面板（renderer/app-plugins.js 的 extMcpResourcesPanel）── */
+    "读取资源清单": "Read resource list",
+    "只读：向这台服务器发 resources/list 与 resources/read，不会调用它的任何工具。stdio 服务器会临时起一个进程。":
+      "Read-only: sends resources/list and resources/read to this server; never calls its tools. stdio servers get a temporary process.",
+    "正在连接服务器…": "Connecting to the server…",
+    "资源 ": "Resources: ",
+    " 条": "",
+    " · 模板 ": " · templates: ",
+    "读取失败": "Read failed",
+    "读取失败：": "Read failed: ",
+    "查看": "View",
+    "收起": "Collapse",
+    "读取中…": "Reading…",
+    "复制 URI": "Copy URI",
+    "已复制资源 URI": "Resource URI copied",
+    "复制失败：": "Copy failed: ",
+    "（二进制内容，": "(binary content, ",
+    " 字节，不在界面里展开）": " bytes — not expanded here)",
+    "模板：": "Template: ",
+    "这台服务器没有暴露资源（没有资源能力，或清单为空）":
+      "This server exposes no resources (no resource capability, or an empty list)",
     /* ── 长周期任务（app-longtask.js / app-longtask-ui.js / 交付节点）──
        条带内部的长句一律走 I18n.t("中文")，未译即原样回退（不报错、不缺字）；
        这里只覆盖会出现在画布节点、右键菜单、设置项与条带头部的那批固定文案。 */
@@ -1235,6 +1393,55 @@
     "局部 · 被批注片段：": "Local · annotated passage: ",
     "对本节点输出做所见即所得全文/局部批注，并让 AI 依据批注逐轮修订出新版本（可回看 / 回滚）。":
       "Annotate this node's output (whole text or a passage) in a WYSIWYG editor and have the AI revise it round by round from your annotations (every version can be reviewed / rolled back).",
+    /* ── 文本节点的 Markdown 编辑器（renderer/app-textedit.js · 节点头部 ✎ 入口） ── */
+    "编辑正文（Markdown 编辑器）": "Edit text (Markdown editor)",
+    "用 Markdown 编辑器打开本节点正文：所见即所得、可切源码、全套 Markdown 工具栏，支持批注与让 AI 依据批注逐轮修订（保存写回节点正文）":
+      "Open this node's text in the Markdown editor: WYSIWYG with a source view, the full Markdown toolbar, annotations and round-by-round AI revision (saving writes back to the node body)",
+    "Markdown 编辑器未就绪（app-textedit.js）":
+      "Markdown editor is not ready (app-textedit.js)",
+    "该文本节点内容只读（来自上游 / 拆分），不能编辑":
+      "This text node's content is read-only (inherited from upstream or split) and cannot be edited",
+    "编辑": "Edit",
+    "保存": "Save",
+    "文本节点 · 正文实时保存（改动自动落盘）":
+      "Text node · body saves live (edits are persisted automatically)",
+    "正文随节点保存持久化；批注与历史版本与「✎ 审阅」共用同一份记录":
+      "The text persists with the node; annotations and version history are shared with “✎ AI Review”",
+    "字数": "Characters",
+    "当前版可编辑": "Current version is editable",
+    "历史版只读回看": "History version · read-only",
+    /* 实时保存的状态行（app-textedit.js 的 teSetSave / teRenderFoot）。
+       「保存中… / 刚刚 / N 分钟前」本表已有（后写覆盖，值一致），这里只补缺的几条。 */
+    "已自动保存": "Auto-saved",
+    "改动会自动保存": "Changes are saved automatically",
+    "Ctrl+S 立即保存": "Ctrl+S saves now",
+    " 秒前": "s ago",
+    "放大到全屏": "Expand to full screen",
+    "AI 修订中：等这一轮跑完再关闭（或先看结果）":
+      "AI revision in progress — wait for this round to finish before closing (or watch the result)",
+    "已保存到节点正文": "Saved to the node body",
+    /* 板身 textarea ⇄ 编辑器正文双向同步（app-textedit.js 的 teBodyEditable / tePullFromNode） */
+    "Markdown 编辑器已打开：正文在那里编辑，这里只读并实时同步":
+      "The Markdown editor is open — edit the text there; this box stays read-only and syncs live",
+    "关闭编辑器后，这里恢复为可编辑":
+      "Close the editor and this box becomes editable again",
+    "已从节点正文同步最新内容": "Synced the latest content from the node body",
+    "点这里在正文中定位该段": "Click to locate this passage in the text",
+    "暂无批注 · 添加批注后顶部会出现「让 AI 依据批注修订」":
+      "No annotations yet · the “Ask AI to revise from annotations” button appears at the top once you add one",
+    "该节点的 Markdown 编辑器正开着：请先关掉它，再开 AI 审阅":
+      "This node's Markdown editor is open — close it before opening AI Review",
+    "插图需要先设置画布工作目录：请在弹出的窗口里选一个文件夹":
+      "Inserting images needs a canvas working directory — pick a folder in the dialog that just opened",
+    "回滚后该版成为当前可编辑版，其后的版本将被作废、但仍可回看":
+      "After the rollback this version becomes the current editable one; later versions are discarded but remain viewable",
+    "确定回滚到该版本？它会重新成为当前可编辑版，其后各版作废（仍可回看，但不再参与修订）。":
+      "Roll back to this version? It becomes the current editable one again; later versions are discarded (still viewable, but no longer used for revision).",
+    "已回到该版本，它现在是当前可编辑版":
+      "Back to that version — it is now the current editable one",
+    "内嵌图片模块未就绪（app-inline-img.js）":
+      "Inline image module is not ready (app-inline-img.js)",
+    "回滚": "Rollback",
     /* 修订提示词：英文界面下发英文版；正文语言仍由用户文档本身决定 */
     "你是一位严谨的文字审阅与修订助手。":
       "You are a rigorous text review and revision assistant.",
@@ -1701,6 +1908,10 @@
       " task(s) left — press 继续执行 in the plan panel to resume",
     "该计划正在执行中": "This plan is already running",
     "该计划已全部完成": "This plan is already complete",
+    /* ── 轮次标签与「上一轮遗留」（本次需求：新一轮开跑时清掉已了结的清单） ── */
+    "上一轮遗留 {n} 项未完": "{n} item(s) left over from the previous turn",
+    "这 {n} 项是上一轮遗留、不是本轮的任务（本轮开始时不清理未完成项）；要接着跑请点「继续执行」":
+      "These {n} item(s) are left over from the previous turn and are not part of the current one (unfinished items are never auto-cleared at the start of a turn); press Continue to run them",
     "会话正在运行中": "This session is already running",
     "用户取消了该计划，未执行任何改动。": "The plan was cancelled; nothing was changed.",
     "（计划已取消，未执行任何改动）": "(Plan cancelled — no changes made)",
@@ -2787,7 +2998,13 @@
     "⧉ 拆分（批次 → 单项只读节点）": "⧉ Split (batch → per-item read-only nodes)",
     "插件（npm search 接口）": "Plugins (npm search API)",
     "插件（npm search 或 MTNode catalog）": "Plugins (npm search or MTNode catalog)",
+    "思考 · 模型 reasoning": "Thinking · model reasoning",
     "工具调用轨迹（点击展开参数与结果）": "Tool-call trace (click to expand args and result)",
+    /* 本地图像节点（sensenova_gen）think 模式的思考弹出说明：与文本节点的「模型 reasoning」
+       不是一回事 —— 它是后端出图前先写的规划文本，随生成回执取回，且另落 .think.txt 旁文件 */
+    "上方是本次出图前模型先写的规划文本（think 模式）。它随生成结果取回、不写入存档，并另存为图旁的 .think.txt；每次「抽卡」各有一份，切换尝试方块可分别查看。":
+      "Above is the planning text the model wrote before drawing (think mode). It comes back with the generation result, is not stored in the save file, and is also written next to the image as .think.txt; each attempt has its own copy — switch the attempt tabs to read them.",
+    "思考 · 出图前的规划文本": "Thinking · planning text written before drawing",
     "技能（jsDelivr repo）": "Skills (jsDelivr repo)",
     "技能（jsDelivr 或 MTNode catalog）": "Skills (jsDelivr or MTNode catalog)",
     "MCP（jsDelivr 或 MTNode catalog）": "MCP (jsDelivr or MTNode catalog)",
@@ -2954,9 +3171,9 @@
     "所见即所得": "WYSIWYG",
     "查看 / 编辑 Markdown 源码": "View / edit the Markdown source",
     "回到所见即所得直接编辑": "Back to WYSIWYG direct editing",
-    "源码模式 · Ctrl+S 保存": "Source mode · press Ctrl+S to save",
+    "源码模式 · Ctrl+S 保存": "Source mode · changes save live (Ctrl+S saves now)",
     "编辑模式：所见即所得 · Ctrl+S 保存":
-      "Editing — WYSIWYG, press Ctrl+S to save",
+      "Editing — WYSIWYG · changes save live (Ctrl+S saves now)",
     "链接地址（https://…）": "Link URL (https://…)",
     "链接": "Link",
     "一级标题": "Heading 1",
@@ -2973,6 +3190,14 @@
     "代码块": "Code block",
     "水平线": "Horizontal rule",
     "编辑并保存此文件（Ctrl+S 保存）": "Edit and save this file (Ctrl+S to save)",
+    "退出编辑": "Exit editing",
+    "回到预览（正文已实时保存，不会回退文件）":
+      "Back to preview (the body is already saved live; the file is not reverted)",
+    "编辑此文件：改动实时保存，Ctrl+S 立即保存":
+      "Edit this file: changes save live, Ctrl+S saves immediately",
+    "Markdown 编辑器未就绪（app.js mdViewer）":
+      "Markdown editor is not ready (app.js mdViewer)",
+    "调用方未接受这次改动": "The caller did not accept this change",
     "写回文件（Ctrl+S）": "Write back to file (Ctrl+S)",
     "放弃修改，回到预览": "Discard changes and return to preview",
     " 个标题": " headings",
@@ -3017,7 +3242,10 @@
     "技能名（kebab-case，如 pdf-summary）": "Skill name (kebab-case, e.g. pdf-summary)",
     "例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图": "e.g. Cyberpunk city at night… type @ to reference connected nodes/reference images",
     "描述任务…（Enter 换行，Ctrl+Enter 发送）": "Describe the task… (Enter newline, Ctrl+Enter send)",
-    "任务完成音效（仅当智能任务运行超过 5 分钟后完成时触发）": "Task completion sound (only when an agent task finishes after running more than 5 minutes)",
+    "任务完成音效（两档：任何一件任务跑完 → 一声短促的「叮咚」；所有任务都结束且运行队列空满 5 分钟 → 再响一声更清脆的三音上行）":
+      "Task completion sound (two tiers: a short “ding-dong” the moment any task finishes; a brighter three-note rising chime once every task has finished and the run queue has stayed empty for 5 minutes)",
+    "完成音效音量（两档内置音共用；0 = 静音）":
+      "Completion sound volume (both built-in tiers; 0 = silent)",
     /* 设置 · 智能能力 · 子代理（委派策略，写进 cordis.yml 的 subagent* 8 行，见 dsh-agent-policy.js） */
     "子代理（委派）": "Subagents (delegation)",
     "子代理嵌套深度（0 = 禁止委派）": "Subagent nesting depth (0 = delegation off)",
@@ -3067,7 +3295,7 @@
     "主页 · 下载 http://mt-agent.com/mtnode": "Home · Download http://mt-agent.com/mtnode",
     "框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）": "Marquee mode: when on, drag with left button to select nodes (or hold Ctrl+left-click anytime)",
     "选择导入方式：从 .mtnodes 文件，或粘贴 Base64 内容。": "Choose import method: from a .mtnodes file, or paste Base64 content.",
-    "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音）": "Custom sound file (mp3 / wav / ogg; leave empty = built-in chime)",
+    "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；只替换「任务完成」那一档的短促音，全部跑完的全局提示音固定用内置音）": "Custom sound file (mp3 / wav / ogg; empty = built-in chime; it replaces only the short task-completion chime — the all-done global chime always uses the built-in tone)",
     "点击 ▶ 将输入图像按网格均匀切割为 GIF 帧动画（依次行、从左到右）": "Click ▶ to slice the input image evenly on a grid into a GIF frame animation (row by row, left to right)",
     "运行智能任务：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成": "Run agent task: the prompt becomes the task; the model can read files / network / run commands, then finish",
     "点击切换查看对应尝试的结果，<b>下游节点引用当前选中的尝试内容</b>。": "Click to view that attempt's result; <b>downstream nodes use the currently selected attempt</b>.",
@@ -3123,12 +3351,206 @@
     "自动续跑已关闭（本轮跑完就停）": "Auto-continue is off (the session stops when this round finishes)",
     "自动续跑已到安全上限（": "Auto-continue hit its safety cap (",
     " 轮），已停下；确需继续请再发一句。": " rounds) and stopped; send one more message if you really want it to continue.",
-    /* 会话「显示思考内容」（模式菜单第三枚开关，见 app-assist.js agentModeEntryOf("think")）：
-       关掉只影响渲染，思考内容照旧随消息存档（不删不裁） */
-    "显示思考内容": "Show thinking",
-    "关掉后会话里不再显示模型的思考块（思考内容仍随消息存档，随时可再打开）": "Turn it off to hide the model's thinking blocks in this session (the thinking text is still archived with the message, so you can show it again any time)",
-    "显示思考内容：开启中，点击隐藏会话里的模型思考块": "Show thinking: ON — click to hide the model's thinking blocks in this session",
-    "显示思考内容：已关闭，点击重新显示会话里的模型思考块": "Show thinking: OFF — click to show the model's thinking blocks in this session again",
+    /* 会话「显示思考」（本次需求：原四档「工作步骤展示」在会话里收回成模式菜单第三枚
+       开关，见 app-assist.js agentModeEntryOf("think")）：
+       关掉只影响渲染（思考段根本不建 DOM），思考内容照旧随消息存档（不删不裁）。 */
+    "显示思考": "Show thinking",
+    "关闭后这条会话里整条不显示模型的思考（不是折叠，是真的不出现）；思考内容仍随消息存档，随时可再打开": "Turning it off hides the model's thinking entirely in this session (not collapsed — simply not rendered); the thinking text is still archived with the message and can be shown again any time",
+    "显示思考：开启中，点击隐藏这条会话里的模型思考（整条不显示）": "Show thinking: ON — click to hide the model's thinking in this session (not rendered at all)",
+    "显示思考：已关闭，点击重新显示这条会话里的模型思考": "Show thinking: OFF — click to show the model's thinking in this session again",
+    /* 「模式」菜单每一行都是**整行可点**（点标签 / 说明与点开关同一件事），
+       行 tooltip 末尾挂这一句说明；构件与挂法见 app-assist.js buildAgentModeMenu
+       里的 paintRowTitle（回归：test/smoke-mode-row-click.js）。 */
+    "点击整行也可切换": "Clicking anywhere on the row switches it too",
+    "简洁": "Compact",
+    "标准": "Standard",
+    "详细": "Detailed",
+    "完全展开": "Fully expanded",
+    "工作步骤展示（新会话默认档位：简洁 = 不显示思考 / 标准 / 详细 / 完全展开 = 思考与工具卡都默认摊开；工具调用一律按时间线内联、不收纳；每会话还可在输入区「模式」菜单里用「显示思考」开关单独隐藏 / 显示思考）": "Working-step display (default level for new sessions: Compact = no thinking / Standard / Detailed / Fully expanded = thinking and tool cards both open; tool calls are always shown inline in timeline order and never bundled away; each session can still use the Modes menu's Show thinking toggle to hide / show thinking on its own)",
+    /* ── 会话流标记（本次需求 · 对齐上游 dsh 0.2.0-rc.2 的会话可视化）──────────
+       工具卡片标题（上游 conversation 命名空间 tool.title.*） */
+    "读取": "Read",
+    "读取图片": "Read image",
+    "写入": "Write",
+    "运行命令": "Run command",
+    "搜索文件内容": "Search file contents",
+    "查找文件": "Find files",
+    "网页搜索": "Web search",
+    "网页获取": "Web fetch",
+    "更新计划": "Update plan",
+    "子智能体": "Subagent",
+    /* ── 工具卡片标题 · 非 dsh 工具（本次需求）──────────────────────────────
+       不是 dsh 引擎自带的那些工具：MTNode 自有（画布 / 应用 / 识图 / 数据库 / 事实库 /
+       素材库 / 长任务状态 / 会话自己的浏览器，注册在 dsh/gateway/*-plugin.mjs）与
+       被 MTNode 接管的引擎工具（提问 / 目标 / 子代理 / 后台任务）。卡片上换工具库紫，
+       见 renderer/css/dsh.css 的 .dsh-tool-chip.t-custom；「读取画布」「读取图片」
+       「更新计划」「子智能体」「AI 事实库」「素材库」几键表内已有，直接复用。 */
+    "询问用户": "Ask user",
+    "画布应用": "Canvas app",
+    "编辑画布": "Edit canvas",
+    "数据库查询": "Database query",
+    "长任务状态": "Long-task state",
+    "浏览器启动": "Browser launch",
+    "浏览器快照": "Browser snapshot",
+    "浏览器导航": "Browser navigate",
+    "浏览器点击": "Browser click",
+    "浏览器输入": "Browser type",
+    "浏览器按键": "Browser key",
+    "浏览器取值": "Browser eval",
+    "浏览器等待": "Browser wait",
+    "浏览器截图": "Browser screenshot",
+    "浏览器标签页": "Browser tabs",
+    "浏览器网络": "Browser network",
+    "浏览器求助": "Browser help",
+    "浏览器释放": "Browser release",
+    "建目标": "Create goal",
+    "读目标": "Get goal",
+    "改目标": "Update goal",
+    "派生子智能体": "Fork subagent",
+    "列出子智能体": "List agents",
+    "发消息": "Send message",
+    "中断子智能体": "Interrupt subagent",
+    "列出后台任务": "List jobs",
+    "读取后台任务": "Read job output",
+    "终止后台任务": "Kill job",
+    /* 工具卡片：准备态 / 停停止 / diff 统计 / diff 折叠（「失败」「编辑」「已完成」
+       「工具调用」「标准」等键表内已有，直接复用，不再重登记一份以免覆盖旧译文） */
+    "正在准备内容 {n} KB": "Preparing content {n} KB",
+    "已停止": "Stopped",
+    "本次改动：新增 {a} 行，删除 {r} 行": "This change: {a} added, {r} removed",
+    "… 其余 {n} 行": "… {n} more lines",
+    "收起差异": "Collapse diff",
+    /* 轨迹检查器（本次需求）：详情栏可拖宽 + 编辑类事件同款 diff / 参数折叠 */
+    "按住左右拖 = 调整详情栏宽度（向左拖变宽 · 双击复位）": "Drag left/right to resize the details pane (drag left to widen · double-click to reset)",
+    "文件改动": "File changes",
+    "点一下展开原始参数": "Click to expand the raw arguments",
+    /* 上下文注入行（上游 message.contextInjection / toolAdded / toolRemoved…） */
+    "上下文注入": "Context injection",
+    "已添加工具：": "Tool added: ",
+    "；已移除工具：": "; tool removed: ",
+    "新增 {n} 个工具": "{n} tools added",
+    "已移除工具：": "Tool removed: ",
+    " · ": " · ",
+    "移除 {n} 个工具": "{n} tools removed",
+    "新增 {a} 个，移除 {r} 个": "{a} added, {r} removed",
+    "上下文发生了变化（工具集增删）。普通上下文注入与系统提示按上游口径不显示。": "The context changed (tools added or removed). Plain context injection and the system prompt stay hidden, matching upstream.",
+    /* 轮次过程折叠行（上游 message.turnProcess.*；「已完成」表内已有，复用） */
+    "，用时 ": ", took ",
+    "{n} 次工具调用": "{n} tool calls",
+    "展开 / 收起这一轮的过程（思考与工具调用）": "Expand / collapse this round's process (thinking and tool calls)",
+    /* 输入区标记（本次需求 · 上游 ContextMeter 与 QueueDock 的两段分区） */
+    "剩余 ": "Remaining ",
+    " tok（点开看用量分布）": " tok (click for the usage breakdown)",
+    "已插话 · 待本轮下一步生效": "Steered · takes effect at this round's next step",
+    /* 会话头部的 View 标签（本次需求 · 上游 conversation.view 环的「对话 / 轨迹」）
+       ——「对话」表内已有（Chat），这里只补「轨迹」 */
+    "轨迹": "Trajectory",
+    /* 轨迹行的「发起 <时刻>」（app-trajectory.js 的 recLine：T("发起") + 时刻） */
+    "发起": "Started",
+    /* 轨迹视图（本轮完善 · 分组头 / 工具栏 / 分页 / 跟随 / 检查器）新词条 */
+    "第 {n} 轮": "Turn {n}",
+    "第 {n} 步": "Step {n}",
+    /* 本次需求：顶部搜索条**整条移除** —— 搜索框 placeholder / 回车导航 tooltip /「命中 」
+       计数三条词条已随 UI 一起删除（词条表只留还在用的）。
+       上一轮移除的右端四枚按钮（上一条 / 下一条 / 全折 / 全展）词条同理，一并清掉。 */
+    "↑ 加载更早的步骤": "↑ Load earlier steps",
+    "再往前加载一页更早的步骤": "Load one more page of earlier steps",
+    "正在加载更早的步骤…": "Loading earlier steps…",
+    "↓ 回到底部跟随": "↓ Back to latest",
+    "恢复跟随最新的记录": "Resume following the newest records",
+    " 步 · 工具 ": " steps · ",
+    " 步 · 工具调用 ": " steps · tool calls ",
+    "已加载最近 ": "loaded latest ",
+    /* 轨迹视图（检查器 / 空态）剩余词条 */
+    "复制原文到剪贴板": "Copy the original text to the clipboard",
+    "耗时 ": "Duration ",
+    "结果 ": "Result ",
+    "参数与结果明细在「设置 · 开发者工具」里打开（轨迹本身不受影响）": "Open Settings · Developer tools to see args and results (the trajectory itself is unaffected)",
+    "这条会话还没有可看的轨迹（跑一轮之后再看）": "This session has no trajectory to show yet (run a round first)",
+    "（空段）": "(empty segment)",
+    "错误（无正文）": "Error (no body)",
+    "本步 token ": "Step tokens ",
+    " 次调用": " calls",
+    /* 每步 token 的两步口径（本次需求 · renderer/app-trajectory.js 的 fmtInText /
+       tokStepNode）：入 = 计费输入（非缓存输入 + 缓存读 + 缓存写），小字里另报这一步
+       真正**新进入历史**的那一份；另补「本步 N 次调用」与「这一行属于第 N 步」两句
+       （用户口径：行内不写「未记到」这类状态字，归属只在 tooltip / 检查器里说清）。 */
+    "（新增 {n}）": " (new {n})",
+    "本步 {n} 次调用": "This step: {n} calls",
+    "这一行属于第 {n} 步": "This row belongs to step {n}",
+    "本步 token 未记到（这一步没有 usage 记录）": "Step tokens not recorded (no usage event for this step)",
+    "（显示在本步最后一段）": " (shown on this step's last segment)",
+    "步间隔 ": "Step gap ",
+    /* 会话轨迹「时间上横轴」（本次需求 · renderer/app-trajectory.js 的吸顶横轴 +
+       行内读数栏）新词条 */
+    "本屏跨度 ": "span in view ",
+    /* 会话轨迹横轴**窗口化**（本轮需求 · 同一模块的唯一一条横轴：随滚轮变化的滑窗）：
+       读数由「本屏」改口径为「本视窗」，另补空窗提示与「叠 N」计数（固定 3 轨时同轨叠画）。 */
+    " 步 · 本视窗跨度 ": " steps · window span ",
+    " 步 · 本视窗内无工具调用": " steps · no tool calls in this window",
+    "本视窗在这一段里的位置（滑窗带）": "Where this scroll window sits on the whole-session timeline (sliding window)",
+    "本视窗内无工具调用": "No tool calls in this window",
+    "当前滚动视窗里没有任何带真实时刻的工具调用（时间刻度与色块因此无可标之处）":
+      "This scroll window holds no tool call with a real timestamp, so there is nothing to plot",
+    "本视窗跨度 ": "window span ",
+    "叠 ": "stack ",
+    "这一轨上有 ": "This lane holds ",
+    " 个调用在时间上重叠（轴内固定 3 轨，重叠的块叠着画）":
+      " calls overlapping in time (the axis keeps 3 lanes, so overlapping blocks are stacked)",
+    "未记到": "not recorded",
+    /* 横轴缩放（本轮需求 · 轴身上滚轮做横向拉伸）：读数末尾那枚缩放倍数 + 它的 tooltip。
+       未缩放时一个像素都不出现（读数的其余部分与上一版逐字相同）。 */
+    "缩放 ": "zoom ",
+    "横轴已横向拉近 ": "Timeline stretched to ",
+    "缩放 ": "zoom ",
+    /* 工具族名（app-trajectory.js 的 TOOL_FAMILIES.label → familyLabel）：
+       「联网」那一条表内别处已有（本文件上方，别重复登记：撞键会让后写的悄悄覆盖前一条）。 */
+    "写入与编辑": "Write & edit",
+    "交互与计划": "Interaction & planning",
+    "画布与自家工具": "Canvas & built-in tools",
+    "其它": "Other",
+    "×（在轴上滚轮可继续拉近 / 拉远，双击轴或按 Esc 回全轴）":
+      "× (wheel over the axis to stretch further in / out; double-click the axis or press Esc to go back to the full session)",
+    /* 滑窗带拖动（本轮需求 · renderer/app-trajectory.js [23]）：带自己的 tooltip 加一句
+       「怎么拖」，拖动中脚下那一行读数前面多一段「拖动中 · 窗 起–止」，并换一条 tooltip。 */
+    "按住拖动可平移这段窗（窗长不变，列表跟随；双击轴或 Esc 回全轴）":
+      "Press and drag to pan this window (same window length, the list follows; double-click the axis or press Esc to go back to the full session)",
+    "拖动中 · 窗 ": "Dragging · window ",
+    "按住滑窗带拖动：窗整体平移（窗长不变），列表跟着滚到窗中点那一行；松手回到常规读数":
+      "Press and drag the sliding window: the window pans as a whole (same length) and the list scrolls to the row at its midpoint; release to return to the normal readout",
+    "每步 token": "Step tokens",
+    /* 点上轴跳窗 + hover 绿线（本轮需求 [25] · renderer/app-trajectory.js）：轴上的点击
+       把滑窗移到点到的时刻；指针在轴里时那条绿线挂一枚时刻读数（点一下同样跳过去）。 */
+    "点轴上任意时刻可把窗移过去": "Click any point on the axis to move the window there",
+    "指针下的时刻（点一下就把视窗移到这一刻）":
+      "The time under the pointer (click to move the scroll window to that moment)",
+    "时刻取自工具调用的真实时间戳": "The clock time comes from the tool call's real timestamp",
+    "这一段没有独立时间戳": "This segment has no timestamp of its own",
+    /* 逐项时刻（本轮需求 · 每一项左侧那条恒显时刻）：每一段自己记的起始时刻（随段快照落盘），
+       老存档没有这个字段时回落显示所属消息时刻并标「≈」。 */
+    "这一项自己的时刻（精确到秒）": "This item's own clock time (to the second)",
+    "，耗时 ": ", took ",
+    "这一项自己没有独立时刻（老存档的段）：显示的是所属消息的时刻": "This item has no timestamp of its own (segment from an older archive): this is the time of the message it belongs to",
+    "这次工具调用的真实时刻与耗时": "The real clock time and duration of this tool call",
+    "这一轮的真实时刻（消息时间戳）；思考段本身没有独立时间戳": "The real clock time of this round (the message timestamp); the thinking segment has no timestamp of its own",
+    "发起 ": "Started ",
+    "耗时": "Duration",
+    /* 会话轨迹 · 工具族图例与轴上色块（本次需求 · renderer/app-trajectory.js 的
+       TOOL_FAMILIES 与 css/dsh-tokens.css 的 --dsh-fam-*）。
+       只登记本表里还没有的族名：「读取」「运行命令」「子代理」「浏览器」「后台任务」
+       在本表别处已有（与工具卡片共用同一批词），不重复登记。 */
+    "写入与编辑": "Write & edit",
+    "交互与计划": "Interaction & planning",
+    "画布与自家工具": "Canvas & built-in tools",
+    "其它": "Other",
+    "子代理轨（这一轨是子代理自己的调用）": "Sub-agent lane (this lane holds that sub-agent's own calls)",
+    "本会话各工具族的调用次数": "Tool calls in this session, per tool family",
+    "数组": "Array",
+    "对象": "Object",
+    "树形": "Tree",
+    "在 JSON 树与代码之间切换": "Switch between the JSON tree and code",
+    "复制参数": "Copy args",
+    "复制结果": "Copy result",
     "这活看着要跑很久：可以把它提升为「长周期任务图」，重启后也能接着跑（会话里说一句我就给你搭）。": "This looks like hours of work: it can be promoted to a Long-running task graph that survives a restart (say the word in the chat and I will build it).",
     /* 「模式」chip 菜单（纯净模式 + 自动续跑 收进一只下拉，见 app-assist.js buildAgentModeMenu） */
     "模式": "Modes",
@@ -3419,82 +3841,86 @@
     "相对工作目录或绝对路径（*.md）…": "Relative to working directory or absolute path (*.md)…",
     "相对路径需要先设置工作目录（顶栏），或改用绝对路径": "Relative paths need a working directory (toolbar), or use an absolute path"
   };
-  /* ── 本地语音转写（Qwen3-ASR）：renderer/app-asr.js + app-plugins.js 卡片 ── */
+  /* ── 本地语音转写（官方本地 SenseVoice）：renderer/app-asr.js 音频 / 视频节点的转录块
+     （转录按钮 / 文本区 / 指纹新鲜度 / 运行前闸门）+「语音模型」窗 ──
+     识别统一走 dsh 运行时的官方 SenseVoice（与状态栏那枚话筒、应用窗口的 appHost.asr* 同一条
+     通道，全应用只此一份模型与缓存），所以这一组词条只有「现况 / 下载 / 语言 / 转录块」这几件事，
+     旧后端那套「安装目录 / 环境依赖 / 解码器 / 热词」的词条已随插件一并摘除。 */
   Object.assign(EN, {
+    /* 本轮新增：转录按钮 / 文本区 / 运行前闸门（音频节点自己转写，文字节点只取文字） */
+    "转录": "Transcribe",
+    "已转录": "Transcribed",
+    "清空转录": "Clear transcript",
+    "转录中…（第 {i}/{n} 句）": "Transcribing… (sentence {i}/{n})",
+    "把这段音频转成文字（本机 SenseVoice 模型，与麦克风听写同一个）":
+      "Turn this audio into text (local SenseVoice model — the same one the microphone dictation uses)",
+    "先选择音频文件": "Pick an audio file first",
+    "先选择音频文件，再点「转录」": "Pick an audio file first, then click “Transcribe”",
+    "（点「转录」把这段音频转成文字；也可以在这里直接改错字）":
+      "(Click “Transcribe” to turn this audio into text; you may also fix typos right here)",
+    "（先选择音频文件，再点「转录」）": "(Pick an audio file first, then click “Transcribe”)",
+    "转录还没完成：": "Transcription did not finish: ",
+    "音频文件已变动，但该节点的转录是你手改过的：未自动重转（想刷新请在音频节点上点「重新转录」）":
+      "The audio file changed, but this node’s transcript was edited by hand: it was not re-transcribed (click “Re-transcribe” on the audio node to refresh)",
+    "音频转写没能完成": "Audio transcription did not complete",
+    "全应用同一份：状态栏话筒听写、应用窗口听写、画布音频节点转录都用它，只下载一次":
+      "One shared model for the whole app: the status-bar mic, in-app dictation and canvas audio-node transcription all use it, downloaded once",
+    "使用范围": "Scope",
     "音频转写": "Audio transcript",
-    "本地语音转写（Qwen3-ASR）": "Local Speech-to-Text (Qwen3-ASR)",
-    "本地语音后端尚未安装：请点节点上的「一键安装」或到「插件」里安装「本地语音转写」":
-      "The local speech backend is not installed yet: use “Install” on the node or install “Local Speech-to-Text” from Plugins.",
-    "未检测到可用的 NVIDIA 显卡，本地语音转写不可用（可在插件里选「仍装 CPU 版（很慢）」）":
-      "No usable NVIDIA GPU detected, so local speech-to-text is unavailable (you may still install the CPU build from Plugins — very slow).",
-    "语音后端缺少 Python 环境，请在插件卡片里点「自我修复」":
-      "The speech backend has no Python environment; click “Repair” on the plugin card.",
+    "本地语音识别（SenseVoice）": "Local speech recognition (SenseVoice)",
+    "本地语音转写（SenseVoice）": "Local speech-to-text (SenseVoice)",
     "音频文件不存在或已被移动": "The audio file is missing or was moved.",
-    "已有音视频任务进行中，请稍后再试":
-      "Another audio/video job is running (global limit: 1); please retry later.",
-    "语音后端起不来（已退出），请查看控制台日志或点「自我修复」":
-      "The speech backend exited on startup; check the console log or click “Repair”.",
-    "语音后端启动超时（首次要加载模型，请稍后重试）":
-      "The speech backend timed out on startup (first run loads the model); please retry later.",
-    "音频解码失败（后端缺少 ffmpeg？请在插件里点「自我修复」）":
-      "Audio decoding failed (ffmpeg missing? click “Repair” in Plugins).",
-    "后端缺少 ffmpeg，无法解码该音频格式（请在插件里点「自我修复」）":
-      "The backend has no ffmpeg and cannot decode this format (click “Repair” in Plugins).",
-    "模型加载失败，请查看控制台日志或点「自我修复」":
-      "Model loading failed; check the console log or click “Repair”.",
-    "转写失败": "Transcription failed",
-    "本地语音模块不可用": "The local speech module is unavailable",
     "已重新转写": "Re-transcribed",
-    "缺语音后端": "Backend missing",
-    "无可用显卡": "No usable GPU",
     "已转写": "Transcribed",
+    "转写中…": "Transcribing…",
+    "模型未就绪": "Model not ready",
+    /* 冷起窗口（提供者名单为空）：节点这条以前当场报「不可用」，现在与话筒同口径退避重试 */
+    "语音服务启动中": "Speech service starting",
+    "语音服务正在启动（首次约一两秒）：稍等一下再点运行":
+      "The speech service is starting (about a second or two on first use): wait a moment and press run again",
+    "语音服务不可用": "Speech service unavailable",
     "待转写": "Not transcribed yet",
-    "一键安装": "Install now",
+    "语音模型…": "Speech model…",
     "（点 ▶ 运行时自动转写；也可在此直接改错字）":
       "(Press ▶ to transcribe automatically; you may also fix typos right here)",
     "重新转写": "Re-transcribe",
-    "术语 / 热词": "Terms / hotwords",
-    "人名、产品名、专业术语，用逗号分隔（提高识别准确率）":
-      "Names, product terms, jargon — comma separated (improves accuracy)",
-    "把音频（音频输入节点 / 素材音频条目 / 语音或音乐产物）接到文字处理节点后，运行时会自动把音频转成文字并注入提示词。模型与后端不随安装包分发，首次使用需下载安装。":
-      "Wire audio (audio input node / asset audio item / speech or music output) into a text node and it is transcribed into the prompt at run time. The model and backend are not bundled: the first use downloads and installs them.",
-    "模型来源": "Model source",
-    "分段模型": "Chunking model",
+    "语音识别服务不可用（本机 dsh 运行时的语音能力没起来）":
+      "Speech recognition is unavailable (the local dsh runtime exposes no speech service)",
+    "语音模型尚未下载": "The speech model has not been downloaded yet",
+    "语音模型尚未下载（首次识别会自动下载）":
+      "The speech model is not downloaded yet (first use downloads it automatically)",
+    "正在下载语音模型（首次使用，约 239MB）":
+      "Downloading the speech model (first use, ≈239MB)",
+    "语音模型已就绪": "The speech model is ready",
+    "语音模型准备失败（可重试下载）": "Speech model preparation failed (you can retry the download)",
+    "语音模型还没就绪：先点「下载语音模型」，下载完再转写":
+      "The speech model is not ready: click “Download speech model”, then transcribe",
+    "语音识别服务不可用：稍后重试（或点「重新检查语音服务」）":
+      "Speech recognition is unavailable: retry later (or click “Check the speech service again”)",
+    "该语言不被当前语音模型支持": "The current speech model does not support this language",
+    "连不上语音服务（检查网络，或确认本地语音服务在运行）":
+      "Cannot reach the speech service (check the network, or that the local speech service is running)",
+    "语音识别没能完成（稍后再试）": "Speech recognition did not complete (try again later)",
+    "语音转写需要工作目录：先打开一张画布（或选好工作目录）再试":
+      "Speech-to-text needs a working directory: open a canvas (or pick a working directory) first",
+    "状态": "Status",
+    "检查中…": "Checking…",
     "预计占用": "Estimated size",
-    "模型约 1.9GB + Python 依赖约 3-4GB（CUDA）+ ffmpeg 约 100MB，建议预留 {n}GB 磁盘":
-      "≈1.9GB model + ≈3-4GB Python deps (CUDA) + ≈100MB ffmpeg; reserve about {n}GB of disk.",
-    "本机显卡": "Local GPU",
-    "未检测到 NVIDIA 显卡": "No NVIDIA GPU detected",
-    "安装目录": "Install dir",
-    "尚未选择": "Not chosen yet",
-    "运行状态": "Runtime",
-    "运行中（静默）": "Running (silent)",
-    "已安装 · 未运行": "Installed · not running",
-    "未检测到可用的 NVIDIA 显卡：本功能只装 CUDA 版后端，默认不可用。确有需要可在下方勾选「仍装 CPU 版（很慢）」。":
-      "No usable NVIDIA GPU detected: this feature installs the CUDA backend only and is unavailable by default. Tick “Install the CPU build (very slow)” below if you really need it.",
-    "空闲释放（分钟，0 = 不释放）": "Release when idle (minutes; 0 = never)",
-    "全局默认热词（逗号分隔）": "Global default hotwords (comma separated)",
-    "仍装 CPU 版（很慢，仅在无 N 卡时兜底）":
-      "Install the CPU build (very slow; fallback for machines without an NVIDIA GPU)",
-    "已保存语音转写设置": "Speech-to-text settings saved",
-    "选择安装目录": "Choose install dir",
-    "选择已有模型目录": "Choose existing model dir",
-    "查看安装日志": "View install log",
-    "下载并安装（脚本）": "Download & install (script)",
-    "（暂无日志）": "(no log yet)",
-    "开始安装…": "Installing…",
-    "安装失败：": "Install failed: ",
-    "交给 AI 安装 / 自我修复": "Install / repair with AI",
-    "Agent 正在安装…（可关闭此窗，进度在插件卡片上）":
-      "The agent is installing… (you may close this dialog; progress shows on the plugin card)",
-    "安装完成，正在静默启动语音后端…":
-      "Install finished; starting the speech backend silently…",
-    "保存设置": "Save settings",
-    "该目录不可用：": "That directory is not usable: ",
-    "本机无 N 卡 · 查看": "No NVIDIA GPU · details",
-    "安装…": "Install…",
+    "识别模型约 239MB（首次使用自动下载到本机，离线可用）":
+      "≈239MB model (downloaded to this machine on first use; works offline afterwards)",
+    "识别语言": "Language",
+    "自动": "Auto",
+    "下载源": "Download source",
+    "自动（按官方顺序探测）": "Automatic (probe the official order)",
+    "下载语音模型": "Download speech model",
+    "重新检查": "Check again",
+    "下载中…": "Downloading…",
+    "正在准备语音模型…": "Preparing the speech model…",
+    "关闭": "Close",
+    "语音状态未知": "Speech status unknown",
+    /* 插件卡片通用（SenseNova 等仍用；从前与 ASR 卡片共用同一段，ASR 摘除后留在这里） */
     "状态与设置": "Status & settings",
-    "停止后端": "Stop backend"
+    "安装失败：": "Install failed: "
   });
   Object.assign(EN, {
     "创意工坊": "Creative Workshop",
@@ -6738,7 +7164,8 @@
     "本段思考（模型内部推理，非回复）": "This block is the model's internal reasoning, not the reply",
   });
 
-  /* 「思考」翻译（右侧小按钮）：默认模型（优先 flash · 无思考）逐段翻译思考内容。
+  /* 「思考」翻译（右侧小按钮）：用该会话自己的模型（无思考）逐段翻译思考内容；
+     会话那一位取不到才回落「默认模型（优先 flash · 无思考）」。
      只增键，不删改上方既有键。 */
   Object.assign(EN, {
     "翻译": "Translate",
@@ -6752,6 +7179,8 @@
     "复制译文到剪贴板": "Copy the translation to the clipboard",
     "用默认模型（优先 flash · 无思考）翻译这段思考":
       "Translate this thinking with the default model (flash preferred · no thinking)",
+    "用该会话自己的模型（无思考）翻译这段思考":
+      "Translate this thinking with this session's own model (no thinking)",
     "翻译质量校验未通过（模型仍在输出原文）":
       "Translation check failed (the model is still echoing the source)",
   });
@@ -7147,6 +7576,13 @@
       "Not set: this node and its inner nodes without their own pick follow the default preset.",
     "未选择：本节点需要借助 AI 时跟随默认模型。":
       "Not set: this node follows the default model when it needs AI.",
+    "未选择：本节点需要借助 AI 时用设置 · 智能能力里的默认模型。":
+      "Not set: when this node needs AI it uses the default model from Settings · Agent capability.",
+    "（设置 · 智能能力里的默认模型）": " (default model from Settings · Agent capability)",
+    "（设置 · 智能能力里的默认模型）· 点击为本节点单独选择":
+      " (default model from Settings · Agent capability) · click to pick one for this node",
+    "设置 · 智能能力的默认模型：不选它时本节点就用它。":
+      "The default model from Settings · Agent capability — this node uses it while nothing is picked.",
     "不指定：本节点与未自行选择的内部节点跟随默认预设。":
       "Unset: this node and its inner nodes without their own pick follow the default preset.",
     "本节点已选择：": "This node has picked: ",
@@ -8319,23 +8755,12 @@
     "安装完成。": "Installation complete.",
   });
 
-  /* ── 本地语音转写插件控制台 + 便携 ffmpeg 补装（asr/ui、renderer/app-asr.js） ── */
+  /* ── 插件控制台通用（SenseNova / H3 / Music3 / TTS / Llama / Remotion 的卡片都用） ──
+     本地语音转写插件已随「统一到 dsh 官方本地 SenseVoice」摘除，
+     它那一整套安装 / 便携解码器词条（含「补装 ffmpeg」）一并删除。 */
   Object.assign(EN, {
-    "重新安装 / 补充安装": "Reinstall / complete install",
-    "补装 ffmpeg": "Install ffmpeg",
     "打开控制台": "Open console",
     "关闭控制台": "Close console",
-    "ffmpeg（音频解码）": "ffmpeg (audio decoding)",
-    "系统 PATH": "System PATH",
-    "便携版（安装目录内）": "Portable build (inside install dir)",
-    "缺失：无 ffmpeg 时任何音频都无法解码，请点「补装 ffmpeg」":
-      "Missing: without ffmpeg no audio can be decoded — click “Install ffmpeg”",
-    "正在补装便携 ffmpeg…": "Installing portable ffmpeg…",
-    "ffmpeg 已就位。": "ffmpeg is ready.",
-    "便携 ffmpeg 已就位，音频解码恢复可用": "Portable ffmpeg is ready — audio decoding works again",
-    "ffmpeg 补装失败：": "ffmpeg install failed: ",
-    "ffmpeg 已就位": "ffmpeg is ready",
-    "ffmpeg 补装失败，请在控制台重试": "ffmpeg install failed; retry from the console",
   });
 
   /* ── SenseNova 本地图像生成：插件卡片与控制台入口（renderer/app-plugins.js · sensenova/ui） ──
@@ -9302,8 +9727,23 @@
         "构建失败，详见日志": "Build failed — see the log",
         "已启用工具：": "Tool enabled: ",
         /* 对话框骨架 */
-        "AI 先读一遍这个文件，给出能力缺口与转换方案；确认后才在画布上搭建工具节点并实测。":
-          "The AI reads this file first and reports the capability gap and a conversion plan; the tool node is built and tested only after you confirm.",
+        "先写下你希望这个工具做什么（必填）—— AI 按你的需求出方案，不会去读文件内容自己分析；确认后才在画布上搭建工具节点并用这个文件实测。":
+          "Write what you want this tool to do first (required) — the AI designs the plan from your requirement and never reads the file content on its own; the tool node is built and tested with this file only after you confirm.",
+        "本次需求": "This build's requirement",
+        "例如：把这个 .xlsx 的每个 sheet 转成一段带表头的 Markdown 文本，数字不要改格式，空单元格留空…":
+          "For example: turn every sheet of this .xlsx into a Markdown block with a header row, keep number formatting, leave empty cells empty…",
+        "这段需求会写进方案提示词与开发任务书（随节点保存）；留空时「生成方案 / 确认开发」按钮不可用。":
+          "This requirement goes into the plan prompt and the development brief (saved with the node); while it is empty the Generate plan / Confirm & build buttons stay disabled.",
+        "请先填写「本次需求」：说清这个工具要做什么":
+          "Fill in \u201cThis build's requirement\u201d first: say what this tool must do",
+        "按「本次需求」设计转换方案（不读文件内容）":
+          "Design the conversion plan from this build's requirement (no file content is read)",
+        "按当前「本次需求」重新设计转换方案（需先填好需求）":
+          "Redesign the conversion plan from the current requirement (fill the requirement in first)",
+        "【工具构建 · 实现问询（第一件事）】":
+          "[Tool build · implementation questions (do this first)]",
+        "等待你在询问窗里回答开发会话的实现问题…":
+          "Waiting for you to answer the development session's implementation questions in the question dialog…",
         "处理节点：": "Processing node: ",
         "文件类型：": "File type: ",
         "文件：": "File: ",
@@ -9441,7 +9881,14 @@
         "本次开发需求：": "This build's requirement: ",
         "给定文件": "given file",
         "按工具构建任务书：用 ": "Per the tool-build brief: use ",
-        " 实测通过这个工具": " to verify this tool with the file",
+        " 实测通过这个工具（先按任务书里的问询要求把实现取舍问清）":
+          " to verify this tool with the file (first settle the implementation trade-offs through the brief's question round)",
+        "默认模型不可用：请到 设置 · 智能能力 · 默认模型 里重选一只模型。":
+          "The default model is unavailable: pick a model again in Settings · Agent capability · Default model.",
+        "默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。":
+          "No default model yet: pick one in Settings · Agent capability · Default model (tool build, tool dev sessions and tool runs all use it).",
+        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。":
+          "The default model \"{model}\" is unavailable on this machine (no provider lists it, or its provider is disabled / has no API key): pick one again in Settings · Agent capability · Default model.",
         " 文件（工具构建自动生成 · 输入 file = 文件绝对路径）":
           " file (auto-generated by tool build · input file = absolute file path)",
         "输入文件的绝对路径": "Absolute path of the input file",
@@ -10057,6 +10504,16 @@
     "账号托管": "Account-managed",
     "接入信息由 MTNode 账号托管": "Connection details are managed by your MTNode account",
     "由账号登录态托管（只读）": "Managed by your signed-in account (read-only)",
+    "由账号登录态托管（只读）：打码显示，真凭据不下发到界面":
+      "Managed by your signed-in account (read-only): shown masked, the real credential is never handed to the UI",
+    "由账号登录态托管（只读）：暂未取到账号凭据，登录后自动带上":
+      "Managed by your signed-in account (read-only): no credential fetched yet — sign in and it comes along automatically",
+    "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上":
+      "This machine cannot read the stored account credential (different Windows account, or the encryption key changed): sign in to your MTNode account again and the credential is restored",
+    "凭据 = 本机登录账号的 token（打码显示，前 4 + **** + 后 4；真凭据只留在主进程）":
+      "The credential is this machine's signed-in account token (shown masked as first 4 + **** + last 4; the real one stays in the main process)",
+    "还没有取到账号凭据：登录 MTNode 账号后自动带上（打码显示）":
+      "No account credential fetched yet: it comes along automatically once you sign in to your MTNode account (shown masked)",
     "OpenAI 兼容（由 MTNode 账号下发）":
       "OpenAI-compatible (delivered by your MTNode account)",
     "模型清单（云端下发，从上到下为使用优先级）":
@@ -10077,6 +10534,10 @@
     "刷新中…": "Refreshing…",
     "中转清单已刷新": "Relay list refreshed",
     "刷新失败，请稍后重试": "Refresh failed, please try again later",
+    "该账号还没有充值记录，充值成功后中转清单会自动出现":
+      "This account has no top-up record yet; the relay list appears automatically once a top-up lands",
+    "未同步（点「刷新中转清单」重试）":
+      "Not synced yet (click “Refresh relay list” to retry)",
     "中转服务暂时不可用，请稍后重试":
       "The relay service is temporarily unavailable, please try again later",
     "上次同步 ": "Last synced ",

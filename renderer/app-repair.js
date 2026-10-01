@@ -64,9 +64,6 @@ const PLUGIN_REPAIR_SKILLS = {
   "gpt-sovits": "tts-local-install",
   llama: "llama-local-install",
   "llama-local": "llama-local-install",
-  asr: "asr-local-install",
-  "asr-local": "asr-local-install",
-  "qwen-asr": "asr-local-install",
 };
 
 /* 插件 id / kind → 打开它自己控制台窗的 preload 桥方法名（「打开控制台看日志」用） */
@@ -87,8 +84,6 @@ const PLUGIN_REPAIR_CONSOLE = {
   "tts-local": "ttsOpen",
   llama: "llamaOpen",
   "llama-local": "llamaOpen",
-  asr: "asrOpen",
-  "asr-local": "asrOpen",
   remotion: "remotionOpen",
 };
 
@@ -161,16 +156,6 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["llama-local"],
     results: [".llama-agent-result"],
   },
-  asr: {
-    label: "Qwen3-ASR",
-    resident: true,
-    start: "asrStart",
-    stop: "asrStop",
-    status: "asrStatus",
-    card: "refreshAsrPluginCard",
-    cards: ["asr-local"],
-    results: [".asr-agent-result"],
-  },
   remotion: {
     label: "Remotion",
     resident: false,
@@ -198,7 +183,6 @@ const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService() {
     sensenova: ["sensenova", "sensenova-local", "sensenova-u1", "sensenova_gen"],
     tts: ["tts", "tts-local", "gpt-sovits", "tts_gen"],
     llama: ["llama", "llama-local", "llama-cpp"],
-    asr: ["asr", "asr-local", "qwen-asr"],
     remotion: ["remotion", "remotion-video", "remotion-render"],
     pet: ["pet", "bongochat", "bongo-cat", "deskpet"],
   };

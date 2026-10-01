@@ -30,6 +30,9 @@ import { messagesBaseUrl } from './messages-base-url.mjs'
    ① 安全裁决（域名名单 / 危险动作 / 接管期间拒绝）② 把帧与留痕转成宿主事件。
    零新依赖：CDP 走 Node ≥22 内置 WebSocket（见 browser-host.mjs）。 */
 import * as BrowserHost from './browser-host.mjs'
+/* MCP 资源只读面（宿主「扩展能力管理」里那台服务器的资源清单 / 单条读取）。
+   服务器配置由宿主回传，连接缓存在网关进程里，见 mcp-resources.mjs。 */
+import { handleMcpResources, closeMcpResources } from './mcp-resources.mjs'
 import { domainVerdict, dangerOfClick, normalizePolicy, DEFAULT_POLICY, profileDirOf, downloadDirOf, shotsDirOf } from './browser-host.mjs'
 
 const require = createRequire(import.meta.url)
@@ -493,6 +496,17 @@ let runtimeOrder = 0
 /** @type {Map<string, {server: import('node:net').Server, sockets: Set<any>}>} */
 const bridgeServers = new Map()
 const socketToKey = new Map()
+/* ── 语音通道（mtnode-speech ↔ 渲染层录音界面）────────────────────────────
+   与交互桥共用同一只回环 TCP 服务，靠首帧 {t:'speech-hello', token} 区分。这条通道
+   **不受轮次归属门控**：录音是用户此刻想说话时发起的，与任何一轮都无关。 */
+/** runtime key -> {port, token}（该台运行时的语音通道凭据） */
+const speechRuntimes = new Map()
+/** runtime key -> 该台运行时当前连着的语音 socket（一台一个） */
+const speechSockets = new Map()
+/** socket -> runtime key（收回时按它清理） */
+const speechSocketKey = new Map()
+/** 请求 id -> {key, resolve, reject}（网关发起的 state / prepare / transcribe 等） */
+const speechPending = new Map()
 /** @type {Map<string, {socket: any, key: string, kind: string, reqId: string, sessionId: string}>} */
 const bridgePending = new Map()
 /** 在途占用表:runtime key -> {reqId, sessionId, sessions}。一台 runtime 同时只允许一个在途 run。
@@ -1161,12 +1175,6 @@ const BrowserCtl = {
     this.push({ kind: 'takeover', text: on ? '你接管了浏览器（Agent 动作已暂停）' : '你交还了控制权（Agent 可继续）' })
     return this.status()
   },
-  /* CDP 面板：这台浏览器自带 DevTools 前端的地址（Console / Network / Sources 全套）。
-     面板把地址塞进内嵌视图即可 —— 前端是同源页面，直接连本机 CDP，我们零依赖、零重写。
-     不申请驱动锁：它只是「看」，且与实况一样绝不落库、不进模型上下文。 */
-  async devtoolsUrl() {
-    return BrowserHost.devtoolsUrl()
-  },
   /* ── 实况流（会话主内容右边栏的「实况」区）───────────────────────────────
      用户口径：浏览器默认 dock 在右边栏、可交互；「提出来」= 真实窗口恢复可见，
      「收回」= 再 dock 回面板。帧只走内存回调 → 宿主事件（type 'browser-frame'），
@@ -1813,6 +1821,13 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   if (baseUrl) env.DEEPSEEK_BASE_URL = messagesBaseUrl(baseUrl)
   else delete env.DEEPSEEK_BASE_URL
   delete env.DSH_PERMISSION_MODE
+  /* 遥测关断:dsh 基座的组合里自带两行 OTel(dsh-otel / dsh-session-telemetry-otel,
+     FEEDBACK_ONLY 口径),它们在这台机器的运行时里导入失败 —— 每次启动都在 stderr 刷两条
+     `failed to import`(实测:这两个包单独 import 都成功,是运行时导入路径的问题,不是缺依赖)。
+     两行的**稳定**关断在 cordis.yml(按 id 标 disabled);这里再补 dsh 官方退出开关:
+     任何非空值即禁用(含 '0'/'false'),组合里没有遥测行时它无副作用。不参与 runtime key:
+     它不影响模型能力 / 工具集,换档不必多起进程。 */
+  env.DSH_TELEMETRY_DISABLED = '1'
   /* BongoChat：人设经环境变量注入运行时插件（dsh-system-prompt 不读 settings.yaml） */
   const personaText = hostPersona && String(hostPersona).trim()
   if (personaText) {
@@ -1856,11 +1871,17 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   /* 交互桥:每个运行时独占一个 localhost 端口。bridge + canvas 插件各连一条
      socket,按帧上的 id 把回答写回对应连接。 */
   const bridgeState = { server: null, sockets: new Set() }
+  /* 语音通道的令牌：这只 TCP 服务同时收「交互桥」与「语音面」两类连接，靠插件在 connect
+     后发的第一帧（{t:'speech-hello', token}）区分，令牌对不上的一律按交互桥处理（老行为）。
+     令牌随 spawn 注入 MTNODE_SPEECH_TOKEN，只在本机回环上出现。 */
+  const speechToken = crypto.randomUUID()
   const bridgePort = await new Promise((resolve, reject) => {
     const server = createServer((s) => {
       bridgeState.sockets.add(s)
       socketToKey.set(s, key)
       let buf = ''
+      /* 这只 socket 是不是语音通道：null = 首帧未到（尚未判定） */
+      let isSpeech = null
       s.on('data', (d) => {
         buf += d.toString()
         let i
@@ -1870,6 +1891,21 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
           if (!line) continue
           let m
           try { m = JSON.parse(line) } catch { continue }
+          /* 这条 socket 属于哪一侧：首帧是 {t:'speech-hello', token} 才算语音通道，
+             其余一律按交互桥处理（老行为一字不变）。判定放在**路由之前**：语音插件保证
+             先发 hello 再发别的（见 speech-plugin.mjs），所以这里不会把语音帧喂给交互桥。 */
+          if (isSpeech === null && m && m.t === 'speech-hello') {
+            const okTok = String(m.token || '') === speechToken
+            isSpeech = okTok
+            diag(`speech-hello token-match=${okTok}`)
+            if (okTok) registerSpeechSocket(key, s)
+            continue
+          }
+          if (isSpeech) {
+            onSpeechFrame(key, m, s)
+            continue
+          }
+          if (isSpeech === null) isSpeech = false
           /* 逐帧兜底:net socket 的 data 回调里抛出任何异常都没有人接管 —— 整个网关进程当场
              退出(此前这里引用了一个已被改名删掉的变量,一投交互帧 ReferenceError 掀翻全仓
              AI,且只在下次请求时才懒重启)。单帧出错只 abort 它自己那一条交互并留痕,
@@ -1889,7 +1925,8 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
       s.on('close', () => {
         bridgeState.sockets.delete(s)
         socketToKey.delete(s)
-        abortBridgePending(key, s)
+        if (isSpeech) unregisterSpeechSocket(key, s)
+        else abortBridgePending(key, s)
       })
     })
     server.on('error', (err) => {
@@ -1907,6 +1944,11 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
     throw err
   })
   env.MTNODE_BRIDGE_PORT = String(bridgePort)
+  /* 语音通道：复用上面同一只回环 TCP 服务，端口与令牌一起注入（见 speech-plugin.mjs）。
+     端口缺席 = 运行时那侧整体 no-op；pure 档不挂语音行，令牌也照样下发（无害）。 */
+  env.MTNODE_SPEECH_PORT = String(bridgePort)
+  env.MTNODE_SPEECH_TOKEN = speechToken
+  speechRuntimes.set(key, { port: bridgePort, token: speechToken })
   /* rollback:journal 落盘目录。同一配置档被不同会话复用同一台 runtime 时,
      env 只反映建桥那次传入的目录,所以 begin 帧再带一次 dir,插件以帧为准。 */
   if (rollbackDir) env.MTNODE_ROLLBACK_DIR = rollbackDir
@@ -1983,6 +2025,141 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
 }
 
 /* mtnode-bridge 帧路由:挂起 → 转发给对应 run 的渲染层事件 */
+/* ── 语音通道的实现（mtnode-speech）──────────────────────────────────────
+   三类角色：
+     · 渲染层 → 网关（本地协议方法 `speech`）：state / prepare / cancel / transcribe；
+     · 网关 → 运行时（这条回环 socket）：同样的 action 加一枚 id；
+     · 运行时 → 网关的主动帧（speech-state）：准备状态变化，转成宿主事件 `speech-state`。
+   没有在途 run 时也要能用：speech 方法会按需把这台 workspace 的运行时拉起来
+   （buildRuntime 幂等，key 相同即复用）。 */
+
+/** 语音 socket 连上时登记 */
+function registerSpeechSocket(key, socket) {
+  const prev = speechSockets.get(key)
+  if (prev && prev !== socket && !prev.destroyed) {
+    /* 一台运行时只留最新一条语音连接：旧连接（重连竞态）直接收掉，避免结果回到死 socket */
+    try { prev.destroy() } catch {}
+  }
+  speechSockets.set(key, socket)
+  speechSocketKey.set(socket, key)
+  diag(`speech channel up key=${key}`)
+}
+
+/** 语音 socket 断开时清理在途请求 */
+function unregisterSpeechSocket(key, socket) {
+  if (speechSockets.get(key) === socket) speechSockets.delete(key)
+  speechSocketKey.delete(socket)
+  for (const [id, p] of speechPending) {
+    if (p.key !== key) continue
+    speechPending.delete(id)
+    p.reject(new Error('语音通道已断开（运行时可能刚重启，请重试）'))
+  }
+}
+
+/** 运行时 → 网关的语音帧 */
+function onSpeechFrame(key, m, socket) {
+  if (!m || typeof m.t !== 'string') return
+  if (m.t === 'speech-ok' || m.t === 'speech-err') {
+    const p = typeof m.id === 'string' ? speechPending.get(m.id) : null
+    if (!p) return
+    speechPending.delete(m.id)
+    if (m.t === 'speech-ok') p.resolve(m.result)
+    else p.reject(new Error(String(m.error || '语音操作失败')))
+    return
+  }
+  if (m.t === 'speech-state') {
+    /* 准备状态变化（下载进度 / 已就绪 / 失败）：推给渲染层。没有 reqId —— 它不是某一轮
+       的产物，宿主按 type 分发即可（与 browser-act 同类）。 */
+    out({ event: { reqId: '', type: 'speech-state', data: { state: m.state || {} } } })
+    return
+  }
+  void socket
+}
+
+/**
+ * 往某台运行时的语音通道发一条请求。
+ * @param {string} key - runtime key
+ * @param {object} payload - {action, …}
+ * @param {number} timeoutMs - 超时（下载/转写都要留足）
+ * @returns {Promise<any>} 运行时回的结果
+ */
+function speechRequest(key, payload, timeoutMs) {
+  const socket = speechSockets.get(key)
+  if (!socket || socket.destroyed) {
+    return Promise.reject(new Error('语音通道未就绪（运行时刚起来时请稍等一两秒再试）'))
+  }
+  const id = crypto.randomUUID()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      speechPending.delete(id)
+      reject(new Error(`语音操作超时（${payload.action}）`))
+    }, timeoutMs)
+    speechPending.set(id, {
+      key,
+      resolve: (v) => { clearTimeout(timer); resolve(v) },
+      reject: (e) => { clearTimeout(timer); reject(e) },
+    })
+    try {
+      socket.write(JSON.stringify({ t: 'speech', id, ...payload }) + '\n')
+    } catch (err) {
+      clearTimeout(timer)
+      speechPending.delete(id)
+      reject(err)
+    }
+  })
+}
+
+/**
+ * 本地协议方法 `speech`：语音输入的宿主面。
+ * { workspace, action:'state'|'prepare'|'cancel'|'transcribe', providerId?, downloadSource?,
+ *   language?, audio? (base64 WAV 16kHz 单声道 PCM16) }
+ * @param {object} params
+ * @returns {Promise<object>} 运行时结果；失败抛错（调用方转成 {ok:false,error}）
+ */
+async function handleSpeech(params) {
+  const p = params && typeof params === 'object' ? params : {}
+  const action = String(p.action || 'state')
+  const workspace = String(p.workspace || p.cwd || '').trim()
+  if (!workspace) throw new Error('缺少 workspace：语音输入要绑定一台工作区运行时')
+  /* 语音运行时是一台**专用档**（key 里带 voice 标记）：它与「某一轮 run」无关，也不该
+     被某轮的取消 / 换档带着走 —— 复用同一台的话，一次语音请求可能撞进用户正在跑的会话。
+     key 只由 workspace 决定，同一张画布反复录音始终复用同一台（模型 / 密钥都为空，
+     识别在 CPU 上跑，不碰用户的服务商配置）。 */
+  let voiceKey = pickRuntimeKey(
+    runtimeKey(workspace, '', 0, 'voice', '', '', '|voice', ''),
+    'speech'
+  )
+  /* 运行时不在池里就先拉起来（幂等）：用户点录音时可能这台画布还没跑过任何一轮。
+     插件建连时是按**被拉起的那台**登记的，所以拉起后用它回报的 key 去找通道
+     （pickRuntimeKey 在「有在途 run 占着同一个 baseKey」时会派生出 ##speech 变体，
+     事先算出的 voiceKey 就不一定是最终那台）。 */
+  if (!speechSockets.has(voiceKey)) {
+    const rt = await getRuntime(
+      workspace, undefined, undefined, undefined, undefined, undefined, '', undefined, undefined,
+      undefined, undefined, 'speech', '', undefined, false, '', '', '', false, false, undefined, false,
+    )
+    if (rt && rt.key) voiceKey = rt.key
+  }
+  /* 通道刚建好时插件那侧还在建连（插件 connect 是同步发起的，握手要到下一个 tick），
+     这里等到「socket 登记」或超时，避免第一下点录音必然报「未就绪」。 */
+  const deadline = Date.now() + 8000
+  while (!speechSockets.has(voiceKey) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 120))
+  }
+  const timeout = action === 'prepare' ? 10 * 60 * 1000 : action === 'transcribe' ? 3 * 60 * 1000 : 30 * 1000
+  return speechRequest(
+    voiceKey,
+    {
+      action,
+      ...(p.providerId ? { providerId: String(p.providerId) } : {}),
+      ...(p.downloadSource ? { downloadSource: String(p.downloadSource) } : {}),
+      ...(p.language ? { language: String(p.language) } : {}),
+      ...(p.audio ? { audio: String(p.audio) } : {}),
+    },
+    timeout
+  )
+}
+
 function onBridgeFrame(key, m, socket) {
   if (!m || typeof m !== 'object') return
   /* journal 帧不是请求/应答:不进 bridgePending、不要求 id、不回 abort。
@@ -2084,6 +2261,216 @@ async function handleBrowserFrame(key, m, socket) {
   }
 }
 
+/* 工具「准备态」累计器（本次需求 · 会话可视化对齐上游 dsh 0.2.0-rc.2）：
+   上游把 assistant/chunk 的 `tool-call-delta`（工具参数逐块流入的那一段）渲染成
+   「正在准备内容 N KB」的一行不可展开卡片（dsh-client-ui-tool 的 preparing 阶段）。
+   这里按 callId 累计 argumentsDelta 的字符数并限频下发 tool-preparing，
+   真实 tool/call 到达时清账（卡片就此转入「运行中」）。
+   只记两个数字 + 工具名：完整参数一个字符都不在这里攒（那是 tool/call 的事）。 */
+const toolPrepAcc = new Map()
+const TOOL_PREP_MIN_GAP_MS = 120
+const TOOL_PREP_MAX_CALLS = 64
+
+/* 已经收到过**原生** assistant/chunk 增量帧的 (turn,step)：该步的完整 assistant/message
+   不再由 stream 合成增量（跨版本不双发）。原生 chunk 一律带 (turn,step)，这里只按它记；
+   完整消息那一侧另用带内容指纹的键，就能同时容纳「同一步里多条完整消息」。 */
+const chunkSeen = new Set()
+/* 合成幂等键 = (turn,step) + 这条消息的内容指纹（正文总长 / 思考总长 / stream 条数）。
+   为什么必须带指纹：实测**同一个 (turn,step) 会先后出现不止一条 assistant/message**
+   （工具调用轮次里就是「先一条 reasoning + tool-call、文本为空，再一条 reasoning + 正文」，
+   两条 turn/step 完全相同）—— 只按 (turn,step) 记，第二条的思考与正文就整段不会合成，
+   正好又退回「思考不显示」。指纹让「同一条消息重复到达」判等（幂等），
+   「两条不同消息」判不等（都要发）。 */
+function chunkSeenKey(d) {
+  const x = d || {}
+  const msg = x.message || {}
+  const blocks = Array.isArray(msg.content) ? msg.content : []
+  let text = ''
+  let rlen = 0
+  for (const b of blocks) {
+    if (!b) continue
+    if (b.type === 'text') text += String(b.text == null ? '' : b.text)
+    else if (b.type === 'reasoning') rlen += String(b.text == null ? '' : b.text).length
+  }
+  const stream = Array.isArray(x.stream) ? x.stream.length : 0
+  return String(x.turn == null ? 0 : x.turn) + ':' + String(x.step == null ? 0 : x.step) +
+    ':' + text.length + ':' + rlen + ':' + stream
+}
+
+/* 会话「思考 / 正文」增量的第二来源：完整的 assistant/message 里带的 stream 回放数据。
+   —— 为什么必须有它（本 bug 的真根因，别再当成渲染层问题）：
+   dsh 0.2 的运行时**不再向前端发 `assistant/chunk` 增量帧**（实测：连发 60 个会话日志
+   里 `assistant/chunk` 出现 0 次；每个 step 只有一条完整的 `assistant/message`），
+   而上面 mapNotification 的 assistant/chunk 分支正是 reasoning / text / tool-preparing
+   三类帧的唯一出口 —— 于是运行时明明思考了（message.content 里 reasoning 块有真文本），
+   宿主与渲染层一个字的思考增量都收不到：会话里既没有思考块，正文也不逐字出现
+   （只有 tool / tool-result 帧照常，卡片看起来是好的）。
+   0.2 把流式数据挪进了完整消息的 `stream` 字段：逐块 text 数组 + 每块之间的 dt 毫秒
+   数组，足以按原节奏复现这一次生成。本函数就做这件事：把 stream 还原成与
+   assistant/chunk 分支**完全同形**的帧（reasoning / text / say-end / tool-preparing）。
+   节奏：**默认 instant**（一条不延时地连发）。实测这条 assistant/message 是**生成完毕
+   之后**才到的（同一步里没有更早的同名事件），所以立刻连发就是「轮到就显示」，既不
+   假装逐字、也不白白多等一轮生成时间；想要逐字观感可以开
+   `MTNODE_STREAM_REPLAY=paced`（按 dt 限幅重放，用同步 sleep 保持 emit 顺序）。
+   跨版本兼容：
+     · 老运行时确实发 assistant/chunk → 该 (turn,step) 已登记，这里整步跳过（不双发）；
+     · 没有 stream（老网关 / 非流式生成）→ 不发增量，行为与接入前一致；
+     · 任何异常 → 一条帧都不发，只留一行日志，绝不影响这一轮收尾。
+   开关：env MTNODE_STREAM_REPLAY = `paced`（按 dt 重放）/ `0` / `off` / `false`（整关），
+   其余值 / 缺席 = instant。 */
+const STREAM_REPLAY_MAX_MS = 60
+const STREAM_REPLAY_BUDGET_MS = 20000
+function streamReplayDelay() {
+  try {
+    const raw = String(process.env.MTNODE_STREAM_REPLAY || '').trim().toLowerCase()
+    if (raw === '0' || raw === 'off' || raw === 'false' || raw === 'no') return -1
+    if (raw === 'paced' || raw === 'pace' || raw === 'dt') return STREAM_REPLAY_MAX_MS
+    return 0
+  } catch { return 0 }
+}
+/* 同步小睡（毫秒）：paced 档用它保持 emit 顺序 —— mapNotification 是同步函数，
+   用 await 会把帧序打乱（后一步的帧可能插到这一步前面）。 */
+function streamReplaySleep(ms) {
+  if (!(ms > 0)) return
+  try {
+    const buf = new SharedArrayBuffer(4)
+    Atomics.wait(new Int32Array(buf), 0, 0, ms)
+  } catch {
+    const end = Date.now() + ms
+    while (Date.now() < end) { /* 退化自旋：只在 paced 档且 Atomics 不可用时发生 */ }
+  }
+}
+function synthesizeChunksFromStream(p, emit, seen) {
+  const arr = p && p.stream
+  if (!Array.isArray(arr) || !arr.length) return
+  /* 该 (turn,step) 已收到过原生增量帧 → 一条都不合成（跨版本不双发）。
+     调用方也判了一次；这里再判一次是为了让函数自身就是幂等的（被别处复用时不会出错）。 */
+  if (seen && seen.has(chunkSeenKey(p))) return
+  const cap = streamReplayDelay()
+  if (cap < 0) return
+  /* 以完整消息的 content 为准（同一份数据，content 是权威形态） */
+  const blocks = (p.message && Array.isArray(p.message.content)) ? p.message.content : []
+  const turn = Number(p.turn) || 0
+  const step = Number(p.step) || 0
+  const textIdx = new Set()
+  blocks.forEach((b, i) => {
+    if (b && b.type === 'text') textIdx.add(b.index != null ? Number(b.index) : i)
+  })
+  /* stream 条目 → 与 assistant/chunk 同形的帧序列 */
+  const frames = []
+  for (const s of arr) {
+    if (!s || typeof s !== 'object') continue
+    if (s.type === 'reasoning-chunks' || s.type === 'text-chunks') {
+      const kind = s.type === 'reasoning-chunks' ? 'reasoning' : 'text'
+      const texts = Array.isArray(s.texts) ? s.texts : []
+      const dtms = Array.isArray(s.dt) ? s.dt : []
+      for (let i = 0; i < texts.length; i++) {
+        const text = String(texts[i] == null ? '' : texts[i])
+        const d = Number(dtms[i])
+        frames.push({ type: kind + '-delta', index: s.index, text, wait: Number.isFinite(d) && d > 0 ? d : 0 })
+      }
+      continue
+    }
+    if (s.type !== 'chunk' || !s.chunk) continue
+    const c = s.chunk
+    if (c.type === 'block-end') {
+      /* 正文块收尾 → say-end（与原生分支同一判据）。块序号对不上 content 时按
+         「最后一个正文块」兜底，宁可多收一次尾，也不让正文段永远定不了稿。 */
+      const idx = c.index != null ? Number(c.index) : -1
+      if (idx < 0 ? textIdx.size > 0 : textIdx.has(idx))
+        frames.push({ type: 'say-end', index: idx, wait: 0 })
+    } else if (c.type === 'tool-call-delta') {
+      const cid = String(c.id == null ? (c.callId == null ? '' : c.callId) : c.id)
+      if (cid)
+        frames.push({
+          type: 'tool-call-delta',
+          index: c.index,
+          callId: cid,
+          name: c.name || '',
+          argumentsDelta: String(c.argumentsDelta == null ? '' : c.argumentsDelta),
+          wait: 0,
+        })
+    }
+  }
+  let waited = 0
+  let emitted = 0
+  for (const f of frames) {
+    if (f.wait > 0 && cap > 0 && waited < STREAM_REPLAY_BUDGET_MS) {
+      const slice = Math.min(f.wait, cap, STREAM_REPLAY_BUDGET_MS - waited)
+      waited += slice
+      streamReplaySleep(slice)
+    }
+    const meta = { turn, step, index: f.index == null ? 0 : f.index }
+    if (f.type === 'reasoning-delta') {
+      if (f.text) { emit('reasoning', { text: f.text, ...meta }); emitted++ }
+    } else if (f.type === 'text-delta') {
+      if (f.text) { emit('text', { text: f.text, ...meta }); emitted++ }
+    } else if (f.type === 'say-end') {
+      emit('say-end', { ...meta }); emitted++
+    } else if (f.type === 'tool-call-delta') {
+      try {
+        const cur = toolPrepAcc.get(f.callId) || { bytes: 0, name: '', at: 0 }
+        cur.bytes += f.argumentsDelta.length
+        if (f.name) cur.name = String(f.name)
+        const now = Date.now()
+        if (now - cur.at >= TOOL_PREP_MIN_GAP_MS) {
+          cur.at = now
+          if (toolPrepAcc.size < TOOL_PREP_MAX_CALLS || toolPrepAcc.has(f.callId))
+            toolPrepAcc.set(f.callId, cur)
+          emit('tool-preparing', { callId: f.callId, name: cur.name, bytes: cur.bytes, ...meta })
+          emitted++
+        } else if (toolPrepAcc.size < TOOL_PREP_MAX_CALLS || toolPrepAcc.has(f.callId)) {
+          toolPrepAcc.set(f.callId, cur)
+        }
+      } catch { /* 准备态只是提示，任何异常都不影响这一轮 */ }
+    }
+  }
+  if (emitted) diag(`assistant/message 合成增量帧 turn=${turn} step=${step} frames=${emitted} 等待=${waited}ms`)
+  return emitted
+}
+
+/* 单次模型调用的用量记账（token 累计 + 逐模型台账 + 时间样本 + usage 帧）。
+   为什么必须抽成函数：dsh 0.2 的 usage **不再走 assistant/chunk**（实测 0.2 会话日志里
+   `assistant/chunk` 出现 0 次，usage 挂在完整 `assistant/message` 的 `data.usage` 上，
+   形如 {inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,totalTokens}），
+   于是 handleRun 的统计分支一条账都记不到：metrics 全是 0 → 会话里「上下文已用 0 / 1.0M tok」、
+   会话末尾的 Token 报告一个数都没有（本次需求要修的就是这个）。
+   两个来源（chunk 的 c.usage / message 的 data.usage）在 0.2 里互斥：原生 chunk 上不再带
+   usage，所以同一次调用只会经过这里一次，不存在双计。老运行时照旧走 chunk 那一支。 */
+function accountUsage(metrics, u, t) {
+  const stepStart = Number(metrics.stepStart) || 0
+  const stepTtft = Number(metrics.stepTtft) || 0
+  const stepMs = stepStart ? t - stepStart : 0
+  const bucket = metrics.modelBucket()
+  metrics.stats.inputTokens += u.inputTokens
+  metrics.stats.outputTokens += u.outputTokens
+  metrics.stats.cacheReadTokens += u.cacheReadTokens
+  metrics.stats.cacheWriteTokens += u.cacheWriteTokens
+  metrics.stats.reasoningTokens += u.reasoningTokens
+  bucket.inputTokens += u.inputTokens
+  bucket.outputTokens += u.outputTokens
+  bucket.cacheReadTokens += u.cacheReadTokens
+  bucket.cacheWriteTokens += u.cacheWriteTokens
+  bucket.reasoningTokens += u.reasoningTokens
+  bucket.calls++
+  metrics.stats.llmMs += stepMs
+  bucket.llmMs += stepMs
+  /* 逐模型性能:TTFT 累计(本步采样值)+ 本次调用的预处理量(计费输入),
+     genMs = 本次 LLM 用时扣掉首 Token 等待 = 纯生成时间 */
+  if (stepTtft > 0) {
+    bucket.ttftMs += stepTtft
+    bucket.ttftSamples++
+  }
+  bucket.prefillTokens += u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens
+  bucket.genMs += Math.max(0, stepMs - stepTtft)
+  /* 逐次调用用量带模型归属下发:会话末尾的累计报告 Badge 靠它实时增长 */
+  metrics.emit('usage', Object.assign({}, u, {
+    provider: bucket.provider,
+    model: bucket.model,
+    at: t,
+  }))
+}
+
 function mapNotification(n, emit, resumeCtx) {
   /* 活动流条目的归属会话：本轮 run 的宿主(渲染层)会话 id（缺省空串 = 本轮没有归属会话，
      面板就不会把这条算到某条会话头上）。工具 / 命令 / 文件摘要都按它盖章。 */
@@ -2092,9 +2479,25 @@ function mapNotification(n, emit, resumeCtx) {
     const ev = n.params.event
     if (!ev) return
     switch (ev.type) {
+      case 'assistant/message': {
+        /* dsh 0.2：增量帧缺席，流式数据骑在这条完整消息的 stream 字段上 —— 在这里把它
+           还原成 reasoning / text / say-end / tool-preparing 帧（见 synthesizeChunksFromStream
+           的文件头注释：不还原 = 会话里永远看不到思考与逐字输出）。
+           该 (turn,step) 已收到过原生 chunk 时整步跳过（跨版本不双发）。
+           注意用 break 不用 return：本函数末尾还有「原始事件透传」那一帧。 */
+        try {
+          if (!chunkSeen.has(chunkSeenKey(ev.data))) synthesizeChunksFromStream(ev.data, emit, chunkSeen)
+        } catch (e) {
+          diag(`assistant/message 合成增量失败（这一轮照常收尾）：${String((e && e.message) || e)}`)
+        }
+        break
+      }
       case 'assistant/chunk': {
         const c = ev.data && ev.data.chunk
         if (!c) return
+        /* 这个 (turn,step) 上真收到了原生增量块 → 该步的 assistant/message 不再由 stream 合成
+           （见 synthesizeChunksFromStream），避免同一段文字被发两遍。 */
+        chunkSeen.add(chunkSeenKey(ev.data))
         /* turn/step 实测在 ev.data 这一层(真实 session.jsonl:
            {type:'assistant/chunk', data:{turn:1, step:6, chunk:{…}}}),不在事件顶层;
            少数适配器会把它们放到事件顶层或 chunk 上,故 data → 顶层 → chunk 逐级回落。
@@ -2108,6 +2511,32 @@ function mapNotification(n, emit, resumeCtx) {
         }
         if (c.type === 'reasoning-delta' && c.text) emit('reasoning', { text: c.text, ...meta })
         else if (c.type === 'text-delta' && c.text) emit('text', { text: c.text, ...meta })
+        else if (c.type === 'tool-call-delta') {
+          /* 工具参数增量（见 toolPrepAcc 注释）：限频下发「已准备多少字节」。
+             上游口径是 Math.ceil(raw.length / 1024) → N KB，故这里只累计字符数。 */
+          const cid = String(c.id == null ? '' : c.id)
+          if (cid) {
+            try {
+              const cur = toolPrepAcc.get(cid) || { bytes: 0, name: '', at: 0 }
+              cur.bytes += String(c.argumentsDelta == null ? '' : c.argumentsDelta).length
+              if (c.name) cur.name = String(c.name)
+              const now = Date.now()
+              if (now - cur.at >= TOOL_PREP_MIN_GAP_MS) {
+                cur.at = now
+                if (toolPrepAcc.size < TOOL_PREP_MAX_CALLS || toolPrepAcc.has(cid))
+                  toolPrepAcc.set(cid, cur)
+                emit('tool-preparing', {
+                  callId: cid,
+                  name: cur.name,
+                  bytes: cur.bytes,
+                  ...meta,
+                })
+              } else if (toolPrepAcc.size < TOOL_PREP_MAX_CALLS || toolPrepAcc.has(cid)) {
+                toolPrepAcc.set(cid, cur)
+              }
+            } catch { /* 准备态只是提示，任何异常都不影响本轮 */ }
+          }
+        }
         else if (c.type === 'block-end') {
           /* 正文块收尾 → say-end,前端据此切段(一个 turn/step/index 一段)。
              思考块 / 工具块收尾不发,事件名与新字段都不动老语义。 */
@@ -2115,12 +2544,16 @@ function mapNotification(n, emit, resumeCtx) {
           if ((blk.type || c.blockType) === 'text') emit('say-end', { ...meta })
         }
         /* usage 不在此处上报:handleRun 的统计分支会带上 provider/model 归属后再 emit,
-           否则客户端无法按模型分别累计 token */
-        return
+           否则客户端无法按模型分别累计 token。
+           注意这里是 break 而不是 return：本函数末尾还有一帧「原始事件透传」
+           （session-event，见文件末尾），提前 return 会让 assistant/chunk 整帧到不了前端。 */
+        break
       }
       case 'tool/call': {
         const d = ev.data
         if (d) {
+          /* 准备态到此结束：真实调用已就位，卡片转入「运行中」（清掉累计器） */
+          try { toolPrepAcc.delete(String(d.callId == null ? '' : d.callId)) } catch {}
           /* 活动流：命令 / 工具的调用摘要（用户已确认「浏览器动作 + shell 命令 + 文件读写
              摘要都进活动流」）。这里只记工具名与一小段入参摘要，完整输出由 tool/result
              再补一条 —— 都只进活动流与宿主落库，**不进模型上下文**。 */
@@ -2193,6 +2626,8 @@ function mapNotification(n, emit, resumeCtx) {
         }
         return
       case 'turn/end':
+        /* 换轮 = 上一轮的准备态记账作废（没等到 tool/call 的调用不会跨轮留着） */
+        try { toolPrepAcc.clear() } catch {}
         if (ev.data && ev.data.reason && ev.data.reason.kind === 'error') {
           const msg = ev.data.reason.error && ev.data.reason.error.message
           if (msg) {
@@ -2627,7 +3062,6 @@ async function handleRun(params) {
               firstSeen = true
             }
             if (c.type === 'usage' && c.usage) {
-              const bucket = modelBucket()
               const u = {
                 inputTokens: Number(c.usage.inputTokens) || 0,
                 outputTokens: Number(c.usage.outputTokens) || 0,
@@ -2635,39 +3069,34 @@ async function handleRun(params) {
                 cacheWriteTokens: Number(c.usage.cacheWriteTokens) || 0,
                 reasoningTokens: Number(c.usage.reasoningTokens) || 0,
               }
-              stats.inputTokens += u.inputTokens
-              stats.outputTokens += u.outputTokens
-              stats.cacheReadTokens += u.cacheReadTokens
-              stats.cacheWriteTokens += u.cacheWriteTokens
-              stats.reasoningTokens += u.reasoningTokens
-              bucket.inputTokens += u.inputTokens
-              bucket.outputTokens += u.outputTokens
-              bucket.cacheReadTokens += u.cacheReadTokens
-              bucket.cacheWriteTokens += u.cacheWriteTokens
-              bucket.reasoningTokens += u.reasoningTokens
-              bucket.calls++
-              const stepMs = stepStart ? t - stepStart : 0
-              stats.llmMs += stepMs
-              bucket.llmMs += stepMs
-              /* 逐模型性能:TTFT 累计(本步采样值)+ 本次调用的预处理量(计费输入),
-                 genMs = 本次 LLM 用时扣掉首 Token 等待 = 纯生成时间 */
-              const ttft = stepTtft
-              if (ttft > 0) {
-                bucket.ttftMs += ttft
-                bucket.ttftSamples++
-              }
-              bucket.prefillTokens +=
-                u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens
-              bucket.genMs += Math.max(0, stepMs - ttft)
+              accountUsage({ stats, modelBucket, emit, stepStart, stepTtft }, u, t)
               stepStart = 0
               stepTtft = 0
-              /* 逐次调用用量带模型归属下发:会话末尾的累计报告 Badge 靠它实时增长 */
-              emit('usage', Object.assign({}, u, {
-                provider: bucket.provider,
-                model: bucket.model,
-                at: t,
-              }))
             }
+            break
+          }
+          /* dsh 0.2 的用量真源：完整 assistant/message 上的 data.usage（0.2 不再发
+             assistant/chunk 增量帧，见文件头 synthesizeChunksFromStream 的说明）。
+             没有这一支 = 一个 token 都统计不到（会话 Token 报告全 0 的根因）。 */
+          case 'assistant/message': {
+            const ru = d && d.usage
+            if (!ru) break
+            const u = {
+              inputTokens: Number(ru.inputTokens) || 0,
+              outputTokens: Number(ru.outputTokens) || 0,
+              cacheReadTokens: Number(ru.cacheReadTokens) || 0,
+              cacheWriteTokens: Number(ru.cacheWriteTokens) || 0,
+              reasoningTokens: Number(ru.reasoningTokens) || 0,
+            }
+            /* 五个口径全 0 = 这次调用没有用量权威值（老适配器 / 非计费路径），不记账，
+               免得凭空多一「次」调用把均值与轮次统计拉歪 */
+            if (
+              !u.inputTokens && !u.outputTokens && !u.cacheReadTokens &&
+              !u.cacheWriteTokens && !u.reasoningTokens
+            ) break
+            accountUsage({ stats, modelBucket, emit, stepStart, stepTtft }, u, t)
+            stepStart = 0
+            stepTtft = 0
             break
           }
           case 'tool/call': {
@@ -2933,6 +3362,16 @@ function stripYamlSection(text, key) {
 /* 统一写入宿主管理的 settings 段(llm-deepseek / llm-pi-ai.providers /
    permission.defaultPreset / 可选 system-prompt 宿主人设),其余用户内容原样保留;envPatch 始终构建,
    保证同一配置复用同一运行时。 */
+/* 权限档表:键序即「档位清单」,值即 cordis.yml `- id: permission` 的同一张表(唯一真源;
+   实测按 id 打补丁是**整份替换 config**而不是深合并,所以托管叠加层每次都必须带上全表,
+   少一个键 = 那个档在运行时不存在,插件构造时 resolve() 直接抛错、整行不激活)。
+   sandbox/approval 语义:
+     · read-only            只读沙箱 + 逐项审批
+     · workspace-write      工作区读写 + 逐项审批
+     · danger-full-access   不限目录 + 不询问
+     · mtnode-super-ask     沙箱全开 + 越权时询问(智能节点「超级权限 · 询问外部」)
+     · bongochat            只读沙箱 + 逐项审批(桌宠对话,宿主侧再逐项放行/拒绝)
+     · mtnode-unattended    工作区读写 + 沙箱拒绝时询问(默认档:限制不放松,只把拒绝改成询问) */
 const PERMISSION_PRESETS = [
   'mtnode-unattended',
   'read-only',
@@ -2941,6 +3380,28 @@ const PERMISSION_PRESETS = [
   'mtnode-super-ask',
   'bongochat',
 ]
+/* 档位 → 沙箱 / 审批。与 cordis.yml 那张表逐字一致(改一处必须改另一处,冒烟会核对)。 */
+const PERMISSION_PRESET_SPECS = {
+  'read-only': { sandbox: 'read-only', approval: 'ask' },
+  'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+  'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
+  'mtnode-super-ask': { sandbox: 'danger-full-access', approval: 'ask' },
+  bongochat: { sandbox: 'read-only', approval: 'ask' },
+  'mtnode-unattended': { sandbox: 'workspace-write', approval: 'ask' },
+}
+/* 托管 permission 行的完整 config:全表 + 当前选定档。**必须带全表** ——
+   补丁按 id 整份替换 config(applyEntryPatches: target[key] = value,不是深合并),
+   只写 defaultPreset 会把 cordis.yml 的 presets 表连带抹掉,插件回落自带的
+   workspace-write/danger-full-access 两个默认档,构造期 resolve('mtnode-unattended')
+   抛错 → 整行不激活(实测 stderr: permission: unknown preset "mtnode-unattended")。 */
+function permissionPresetsConfig(defaultPreset) {
+  const presets = {}
+  for (const id of PERMISSION_PRESETS) {
+    const spec = PERMISSION_PRESET_SPECS[id]
+    presets[id] = { sandbox: spec.sandbox, approval: spec.approval }
+  }
+  return { presets, defaultPreset }
+}
 let lastSettingsHome = ''
 let lastSettingsHash = ''
 
@@ -3236,7 +3697,9 @@ function applySettings(dshHome, effort, mtnodeProviders, permissionPreset, hostP
     }
     const rows = [
       { id: 'llm-deepseek', config: deepseek },
-      { id: 'permission', config: { defaultPreset: perm } },
+      /* permission 行带全表(见 permissionPresetsConfig):整份替换语义下少写一个键
+         就等于那个档在运行时不存在,插件构造期直接抛错。 */
+      { id: 'permission', config: permissionPresetsConfig(perm) },
     ]
     if (Object.keys(providers).length) rows.push({ id: 'llm-pi-ai', config: { providers } })
     if (persona) {
@@ -4053,7 +4516,7 @@ rl.on('line', (line) => {
         case 'configProbe': {
           /* 只读自检：把某台 live runtime 的**生效装配**回给宿主/冒烟（行 id + config）。
              用途：0.2 把设置真源搬到 profile 补丁层后，「宿主写了文件」不等于「运行时读到了
-             配置」；这枚方法让 test/smoke-settings-profile-patch.js 对着真实运行时核对。
+             配置」；这枚方法让 test/smoke-settings.js 的「已并入：smoke-settings-profile-patch.js」段 对着真实运行时核对。
              { reqId? | runKey? } 定位 runtime；都不给 = 取最近建立的那台。没有 live
              runtime 回 { ok:false, reason:'no_runtime' }（绝不为此起新进程）。 */
           reply(await handleConfigProbe(msg.params ?? {}))
@@ -4070,6 +4533,29 @@ rl.on('line', (line) => {
              pause 成功后本轮以 done{paused:true} 收尾,且不会有 error(见 pausedRuns)。 */
           const p = msg.params ?? {}
           reply(await handleInflightRequest(msg.method === 'pause' ? 'session/pause' : 'session/steer', p))
+          break
+        }
+        case 'mcpResources': {
+          /* MCP 资源面（「扩展能力管理」里每台 MCP 服务器的资源清单 / 单条读取走它）：
+             { action:'list'|'read', serverName, uri?, servers:[{serverName,transport,command,args,url,disabled}] }
+             服务器配置由宿主回传（网关不自己读配置来源），连接按服务器名缓存在网关进程里。
+             只发只读请求；失败一律回 { ok:false, error }，不抛到 stdio 外。见 mcp-resources.mjs。 */
+          const p = msg.params ?? {}
+          reply(await handleMcpResources(p))
+          break
+        }
+        case 'speech': {
+          /* 语音输入宿主面（对话输入框的录音按钮走它）：
+             { workspace, action:'state'|'prepare'|'cancel'|'transcribe', providerId?,
+               downloadSource?, language?, audio?(base64 WAV 16kHz 单声道 PCM16) }
+             与 dsh 的 run 无关，任何时刻都能调：没有在途轮时会按需拉起这台工作区的
+             语音运行时（见 handleSpeech）。失败一律回 error 文本（不抛到 stdio 外）。 */
+          const p = msg.params ?? {}
+          try {
+            reply(await handleSpeech(p))
+          } catch (err) {
+            reply({ ok: false, error: (err && err.message) || String(err) })
+          }
           break
         }
         case 'browser': {
@@ -4091,12 +4577,6 @@ rl.on('line', (line) => {
               if (p.policy && typeof p.policy === 'object') reply({ ok: true, policy: BrowserCtl.save(p.policy) })
               else reply({ ok: true, policy: BrowserCtl.load() })
             } else if (action === 'takeover') reply(BrowserCtl.takeover(!!p.on, p.sessionId))
-            else if (action === 'devtools') {
-              /* CDP 面板：把这台浏览器自带的 DevTools 前端地址交给宿主去开（Console /
-                 Network / Sources 全套）。见 browser-host.mjs 的 devtoolsUrl —— 不自己
-                 重写面板，直接借 Chromium 的 /devtools/ 前端，零依赖。 */
-              reply(await BrowserCtl.devtoolsUrl())
-            }
             else if (action === 'view') {
               /* 实况视图（会话右边栏）：{ action:'view', method:'status'|'start'|'stop'|'input'|'mode', ... }
                  不申请驱动锁（只「看」与摆窗口）；帧走事件总线（type 'browser-frame'），
@@ -4252,6 +4732,8 @@ rl.on('line', (line) => {
         }
         case 'shutdown':
           reply({ ok: true })
+          /* MCP 资源面为「点开看一眼」临时起的服务器进程随网关一起收掉 */
+          try { closeMcpResources() } catch {}
           await closeAllRuntimes()
           setTimeout(() => process.exit(0), 100)
           break

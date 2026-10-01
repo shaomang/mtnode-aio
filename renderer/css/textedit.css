@@ -1,0 +1,56 @@
+/* ===== 文本节点的 Markdown 编辑器（renderer/app-textedit.js）=====
+ * 与「✎ AI 审阅」对话框（css/review.css 的 .rv-*）共用同一套按钮 / 工具栏 / 批注卡片样式，
+ * 所以这里只放编辑器自己的容器尺寸与开关：
+ *   · 近全屏（98vw × 98vh 上限）、右下可拖调、最小宽 ≥ 50% 视口（与审阅窗同口径）；
+ *   · 头部 ✎ 入口按钮（节点头部 .n-play 家族里的一枚）。
+ */
+
+/* 节点头部：Markdown 编辑器入口（与 📄 文件参考、✎ 审阅同一排小按钮） */
+.n-play.n-md-edit {
+  color: var(--cyan);
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* 对话框壳：沿用 .review-dlg 的遮罩与定位，只把盒子放大到近全屏 */
+.txmd-dlg .txmd-box {
+  width: 98vw;
+  height: 98vh;
+  max-width: none;
+  max-height: none;
+  min-width: 50vw;
+  min-height: 420px;
+}
+
+/* 正文区比审阅窗更宽裕：写长稿时行宽舒服一些 */
+.txmd-dlg .review-editor .rv-rich,
+.txmd-dlg .review-editor .rv-src {
+  font-size: 14.5px;
+  line-height: 1.85;
+}
+
+/* 批注栏固定 300px，写作区其余全给正文 */
+.txmd-dlg .review-notes {
+  width: 300px;
+  flex: 0 0 300px;
+}
+
+/* 窗口放大 / 还原按钮 */
+.txmd-dlg #textEditSizeBtn {
+  min-width: 30px;
+  font-size: 13px;
+}
+
+/* 编辑器开着时，节点板身那颗正文 textarea 只读 + 一行说明（同一份正文不让两个面同时写） */
+.n-text[readonly].n-md-synced {
+  border-style: solid;
+  opacity: .82
+}
+
+.n-md-open-tip {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted)
+}

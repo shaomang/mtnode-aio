@@ -87,8 +87,8 @@ function settingsSaved(ms) {
 function openSettings() {
   reloadConfigProvidersFromDisk().then(() => {
     openSettingsBody();
-    /* 打开设置 = 用户要看提供商了：中转服务快照超过 24h 就顺手拉一次
-       （新旧判定与节流都在 renderer/app-relay.js 的 syncIfStale 里） */
+    /* 打开设置 = 用户要看提供商了：中转服务**本地没有快照**时顺手拉一次
+       （判定在 renderer/app-relay.js 的 syncIfStale：中转 Key 长期不变，有快照就不打扰服务端） */
     if (typeof MtRelay !== "undefined" && MtRelay.syncIfStale) {
       try {
         MtRelay.syncIfStale();
@@ -161,10 +161,12 @@ function openSettingsBody() {
   const body = $("#ovBody");
   let enterSelEl = null;
 
-  /* 很少用的小节（网络 / 配置数据目录 / 画布备份 / 错误与崩溃日志）统一沉到最下方：
-     这里先登记，函数末尾按 tailOrder 补挂，避免它们在正文里抢占视线。 */
-  const tailSecs = { net: null, data: null, backup: null, logs: null };
-  const tailOrder = ["data", "backup", "net", "logs"];
+  /* 很少用的小节（网络 / 配置数据目录 / 画布备份 / 存储占用与清理 / 错误与崩溃日志）
+     统一沉到最下方：这里先登记，函数末尾按 tailOrder 补挂，避免它们在正文里抢占视线。
+     注意：登记 ≠ 可选 —— 凡是「建了 sec 却忘了登记」的小节在界面上等于不存在
+     （只剩一个游离 DOM，用户找不到入口），新增小节务必同时补 tailSecs 与 tailOrder。 */
+  const tailSecs = { net: null, data: null, backup: null, storage: null, logs: null };
+  const tailOrder = ["data", "backup", "storage", "net", "logs"];
 
   /* ── 提供商配置（模型服务）：设置项最前面 ──
      两列网格，每格只显示服务商名称（标题）；点击该格弹出对话框做具体配置
@@ -186,8 +188,8 @@ function openSettingsBody() {
     provTitleRow.appendChild(provTitleSpan);
     provTitleRow.appendChild(provHint);
     /* MTNode 中转服务（账号托管）：清单与地址由云端下发（见 renderer/app-relay.js），
-       这里给一个手动「刷新」入口，卡里还有一个。没有这张卡时按钮不出现 ——
-       从没充过值的账号在提供商页里看不到中转服务的任何痕迹。 */
+       这里给一个手动「刷新」入口，卡里还有一个。**按钮始终在**（本地没有卡时更要能点：
+       新装应用登录后若自动拉取失败，这里是用户自己能救回来的那一个入口）。 */
     const relayRefresh = document.createElement("button");
     relayRefresh.className = "mini";
     relayRefresh.textContent = I18n.t("刷新中转清单");
@@ -199,11 +201,14 @@ function openSettingsBody() {
       relayRefresh.disabled = true;
       const old = relayRefresh.textContent;
       relayRefresh.textContent = I18n.t("刷新中…");
+      /* 显式点刷新 = 用户要求重拉（中转 Key 长期不变，平时本地有快照就不会打扰服务端） */
       MtRelay.sync({ force: true }).then((r) => {
         relayRefresh.disabled = false;
         relayRefresh.textContent = old;
-        if (r && r.ok) toast(I18n.t("中转清单已刷新"), "ok");
-        else toast((r && r.error) || I18n.t("刷新失败，请稍后重试"), "warn");
+        if (!r || !r.ok) toast((r && r.error) || I18n.t("刷新失败，请稍后重试"), "warn");
+        else if (r.everRecharged === false)
+          toast(I18n.t("该账号还没有充值记录，充值成功后中转清单会自动出现"), "warn");
+        else toast(I18n.t("中转清单已刷新"), "ok");
       });
     };
     provTitleRow.appendChild(relayRefresh);
@@ -238,7 +243,7 @@ function openSettingsBody() {
     const paintRelay = () => {
       relaySlot.innerHTML = "";
       const prov = typeof MtRelay !== "undefined" ? MtRelay.provider() : null;
-      relayRefresh.style.display = prov ? "" : "none";
+      /* 「刷新中转清单」始终可点（见上）：本地没有卡时它是唯一的自救入口 */
       if (!prov) {
         relaySlot.style.display = "none";
         return;
@@ -1068,6 +1073,8 @@ function openSettingsBody() {
     scInputs = { sessDays: sessDays };
     /* 打开设置即自动统计（后台跑，结果回来再渲染） */
     scanNow();
+    /* 很少用 → 沉到设置最下方（跟「配置数据目录 / 画布备份」挨着，见函数末尾统一补挂） */
+    tailSecs.storage = sec;
   }
 
 
@@ -1481,7 +1488,11 @@ function openSettingsBody() {
     );
     sec.appendChild(cascRow);
 
-    /* 完成音效:长任务(超过 5 分钟)结束时短促提示;可替换音频文件并试听 */
+    /* 完成音效（本次需求两档，音色互不相同）:
+       ① 任务级——**任何一件任务跑完**都响一声短促音（E5→A5，0.42 秒）；
+       ② 全局级——**所有任务都结束**且运行队列空满 5 分钟时，才响一声更清脆的三音上行
+          （C6→E6→G6，约 0.9 秒）；不满 5 分钟就只留短促音。
+       两档共用这个开关与下面的音量滑杆；自定义音频文件只替换任务级那一档（全局声固定内置音） */
     const sndRow = document.createElement("label");
     sndRow.className = "n-field";
     sndRow.style.flexDirection = "row";
@@ -1497,16 +1508,70 @@ function openSettingsBody() {
     sndRow.appendChild(sndCb);
     sndRow.appendChild(
       document.createTextNode(
-        I18n.t("任务完成音效（仅当智能任务运行超过 5 分钟后完成时触发）"),
+        I18n.t(
+          "任务完成音效（两档：任何一件任务跑完 → 一声短促的「叮咚」；所有任务都结束且运行队列空满 5 分钟 → 再响一声更清脆的三音上行）",
+        ),
       ),
     );
     sec.appendChild(sndRow);
     dshEls.doneSound = sndCb;
+    /* 完成音效音量（本次需求）：滑杆调两档内置音的响度（短促音 + 全局音同一把尺；
+       自定义音频文件音量固定 0.5，那是文件自己的响度口径），拖动时轻轻试听一声音量实况；
+       即时写盘，无保存按钮。 */
+    const sndVolRow = document.createElement("div");
+    sndVolRow.className = "dsh-btn-row";
+    const sndVol = document.createElement("input");
+    sndVol.type = "range";
+    sndVol.min = "0";
+    sndVol.max = "100";
+    sndVol.step = "5";
+    /* 滑杆初值：与 app-db.js 的 doneSoundVolumePct 同一口径就地算一遍（设置面板要能在
+       最小 DOM 影子 / 单测沙箱里独立跑，不依赖运行时全局函数） */
+    const doneVolNow = (function () {
+      const n = Number(S.config.dsh.doneSoundVolume);
+      if (!isFinite(n) || n <= 0) return n === 0 ? 0 : 35;
+      return Math.max(0, Math.min(100, n));
+    })();
+    sndVol.value = String(doneVolNow);
+    sndVol.style.flex = "1";
+    sndVol.title = I18n.t("完成音效音量（两档内置音共用；0 = 静音）");
+    const sndVolLabel = document.createElement("span");
+    sndVolLabel.style.minWidth = "42px";
+    sndVolLabel.style.textAlign = "right";
+    sndVolLabel.textContent = sndVol.value + "%";
+    /* 拖动时逐格试听会叠成一串：只在最后一格（180ms 静默）与松手各响一次 */
+    let volPreviewTimer = null;
+    const volPreview = () => {
+      if (volPreviewTimer) clearTimeout(volPreviewTimer);
+      volPreviewTimer = setTimeout(() => {
+        volPreviewTimer = null;
+        try {
+          previewDoneSoundVolume();
+        } catch (_) {}
+      }, 180);
+    };
+    sndVol.oninput = () => {
+      S.config.dsh.doneSoundVolume = Number(sndVol.value) || 0;
+      sndVolLabel.textContent = sndVol.value + "%";
+      volPreview();
+    };
+    /* 松手即落盘（拖动中的 oninput 只改内存值，避免每格一次写盘） */
+    sndVol.onchange = () => {
+      S.config.dsh.doneSoundVolume = Number(sndVol.value) || 0;
+      settingsSaved(0);
+      volPreview();
+    };
+    sndVolRow.appendChild(sndVol);
+    sndVolRow.appendChild(sndVolLabel);
+    sec.appendChild(sndVolRow);
+    dshEls.doneSoundVolume = sndVol;
     const sndFileRow = document.createElement("div");
     sndFileRow.className = "dsh-btn-row";
     const sndFile = document.createElement("input");
     sndFile.type = "text";
-    sndFile.placeholder = I18n.t("自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音）");
+    sndFile.placeholder = I18n.t(
+      "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；只替换「任务完成」那一档的短促音，全部跑完的全局提示音固定用内置音）",
+    );
     sndFile.value = S.config.dsh.doneSoundFile || "";
     sndFile.style.flex = "1";
     sndFile.readOnly = true;
@@ -1656,6 +1721,47 @@ function openSettingsBody() {
     );
     sec.appendChild(devRow);
     dshEls.developerTools = devCb;
+
+    /* 工作步骤展示（对齐上游 ChatPresentationPolicy 的四档）：**新会话的默认档位** ——
+       简洁 / 标准 / 详细 / 完全展开。逐会话不再切档，而是在输入区「模式」菜单里用
+       本次需求新收回来的「显示思考」开关单独隐藏 / 显示思考（存 st.showThink，
+       布尔覆盖 showThink 那一位；档位本身仍决定思考与工具卡的默认展开口径）。
+       本轮需求：**过程行折叠已撤掉** —— 工具与上下文注入段一律按时间线内联显示，
+       四档只在「思考显不显示 / 思考与工具卡默认展不展开」上分档。
+       消费方：renderer/app-assist.js 的 dshPolicyOfView / dshTranscriptViewGlobal。 */
+    const tvRow = document.createElement("label");
+    tvRow.className = "n-field";
+    tvRow.style.flexDirection = "row";
+    tvRow.style.alignItems = "center";
+    tvRow.style.gap = "6px";
+    const tvSel = document.createElement("select");
+    for (const v of DSH_TRANSCRIPT_VIEWS) {
+      const op = document.createElement("option");
+      op.value = v;
+      op.textContent = dshTranscriptViewLabel(v);
+      if (v === dshTranscriptViewGlobal()) op.selected = true;
+      tvSel.appendChild(op);
+    }
+    /* 即时生效：改完落盘，会话视图按新档位重绘（当下打开的那条会话若没单独覆盖就跟它走） */
+    tvSel.onchange = () => {
+      S.config.dsh.transcriptView = dshTranscriptViewNorm(tvSel.value) || DSH_TRANSCRIPT_DEFAULT;
+      settingsSaved(0);
+      try {
+        if (typeof renderAgentSession === "function") renderAgentSession();
+      } catch {
+        /* 会话窗还没建也不影响设置本身 */
+      }
+    };
+    tvRow.appendChild(tvSel);
+    tvRow.appendChild(
+      document.createTextNode(
+        I18n.t(
+          "工作步骤展示（新会话默认档位：简洁 = 不显示思考 / 标准 / 详细 / 完全展开 = 思考与工具卡都默认摊开；工具调用一律按时间线内联、不收纳；每会话还可在输入区「模式」菜单里用「显示思考」开关单独隐藏 / 显示思考）",
+        ),
+      ),
+    );
+    sec.appendChild(tvRow);
+    dshEls.transcriptView = tvSel;
     /* 即时生效：开关只影响「下一次运行注册哪些工具」，改完立刻落盘即可 */
     leanCb.onchange = () => {
       S.config.dsh.leanToolPayload = !!leanCb.checked;
@@ -1704,6 +1810,21 @@ function openSettingsBody() {
     refreshExtInventory();
 
     body.appendChild(sec);
+  }
+
+  /* ── 语音输入（全局）：状态栏最左那枚话筒的行为设置 ──
+     整块由 renderer/app-voice.js 自包含提供（window.VoiceInput.settingsSection），
+     设置项与按钮右键快捷菜单共用同一份配置（S.config.voice），这里只负责放进设置正文。
+     缺模块（老 preload / 未加载）时整块不出现，不报错。 */
+  {
+    try {
+      if (typeof window !== "undefined" && window.VoiceInput && typeof window.VoiceInput.settingsSection === "function") {
+        const voiceSec = window.VoiceInput.settingsSection();
+        if (voiceSec) body.appendChild(voiceSec);
+      }
+    } catch (err) {
+      console.warn("[settings] 语音输入小节挂载失败：", err);
+    }
   }
 
   /* 很少用的小节沉底：配置数据目录 → 画布备份 → 网络 → 错误与崩溃日志 */
@@ -1815,6 +1936,14 @@ function openSettingsBody() {
     permissionPreset: dshEls.permissionPreset.value,
     doneSound: dshEls.doneSound.checked,
     doneSoundFile: dshEls.doneSoundFile ? dshEls.doneSoundFile.value.trim() : (S.config.dsh && S.config.dsh.doneSoundFile) || "",
+    /* 完成音效音量（本次需求）：以滑杆那一刻为准；滑杆不在场（老窗）时保留现值 */
+    doneSoundVolume: dshEls.doneSoundVolume
+      ? Number(dshEls.doneSoundVolume.value) || 0
+      : (function () {
+          const n = Number(S.config.dsh && S.config.dsh.doneSoundVolume);
+          if (!isFinite(n) || n <= 0) return n === 0 ? 0 : 35;
+          return Math.max(0, Math.min(100, n));
+        })(),
     askSound: dshEls.askSound ? dshEls.askSound.checked : (S.config.dsh && S.config.dsh.askSound) !== false,
     askSoundFile: dshEls.askSoundFile ? dshEls.askSoundFile.value.trim() : (S.config.dsh && S.config.dsh.askSoundFile) || "",
     leanToolPayload: dshEls.leanToolPayload
@@ -1824,6 +1953,10 @@ function openSettingsBody() {
     developerTools: dshEls.developerTools
       ? !!dshEls.developerTools.checked
       : (S.config.dsh && S.config.dsh.developerTools) !== false,
+    /* 工作步骤展示档位（本次需求）：以选择框那一刻为准；选择框不在场（老窗）时保留现值 */
+    transcriptView: dshEls.transcriptView
+      ? dshTranscriptViewNorm(dshEls.transcriptView.value) || DSH_TRANSCRIPT_DEFAULT
+      : dshTranscriptViewGlobal(),
     theme: themeSelEl ? themeSelEl.value : (S.config.dsh && S.config.dsh.theme) || "industrial",
   });
 
@@ -1858,8 +1991,10 @@ function openSettingsBody() {
         chatEnter: "send",
         permissionPreset: "mtnode-unattended",
         doneSound: true,
+        doneSoundVolume: 35,
         askSound: true,
         developerTools: true,
+        transcriptView: "standard",
         theme: "industrial",
       },
       S.config.dsh || {},
@@ -3435,8 +3570,8 @@ function openProviderConfigDialog(prov) {
   paint();
   if (!alive) return;
   host.classList.add("on");
-  /* 中转服务卡：打开时快照过期（>24h）就顺手刷新一次，并把同步结果落回这张卡
-     （订阅 MtRelay 的变更 → 重画；关窗时退订，见 closeProvCfgDlg） */
+  /* 中转服务卡：打开时本地没有快照才顺手拉一次，并把同步结果落回这张卡
+     （判定见 renderer/app-relay.js 的 syncIfStale；订阅 MtRelay 的变更 → 重画，关窗时退订） */
   if (typeof MtRelay !== "undefined" && MtRelay.isRelay(prov)) {
     if (MtRelay.onChange) {
       host.__relayOff = MtRelay.onChange(() => {
@@ -3533,7 +3668,8 @@ function relayProvCard(prov, i, onChange) {
   head.appendChild(move);
   card.appendChild(head);
 
-  /* 只读字段：一律 <code> 展示，不放输入框 —— 改不了的东西别长得像能改 */
+  /* 只读字段：一律 <code> 展示，不放输入框 —— 改不了的东西别长得像能改。
+     返回那个 <code> 元素，调用方要补 title / 徽标就自己补（如 API Key 那一行）。 */
   const gridEl = document.createElement("div");
   gridEl.className = "prov-grid";
   const ro = (label, value, wide) => {
@@ -3545,6 +3681,7 @@ function relayProvCard(prov, i, onChange) {
     v.textContent = value == null || value === "" ? "—" : String(value);
     f.appendChild(v);
     gridEl.appendChild(f);
+    return v;
   };
   ro(I18n.t("类型"), I18n.t("OpenAI 兼容（由 MTNode 账号下发）"), true);
   ro(
@@ -3554,7 +3691,33 @@ function relayProvCard(prov, i, onChange) {
   );
   ro(I18n.t("名称"), prov.name || I18n.t("MTNode 中转服务"));
   ro(I18n.t("接口地址 Base URL"), prov.baseUrl || "", true);
-  ro(I18n.t("API Key"), I18n.t("由账号登录态托管（只读）"), true);
+  /* API Key：中转站的 Key **就是账号登录 token**（见 docs/relay-admin.md 第五节），
+     明文只在主进程、绝不回渲染层 —— 这里显示主进程算好的打码串（前 4 + **** + 后 4），
+     让用户看得见「凭据在不在、是哪一张」，又拼不回原文。没登录 / 还没取到时退回占位串打码。 */
+  {
+    const keyMasked =
+      String(meta.keyMasked || "") ||
+      (typeof MtRelay !== "undefined" && MtRelay.maskKey
+        ? MtRelay.maskKey(MtRelay.KEY_PLACEHOLDER)
+        : "****");
+    const kv = ro(I18n.t("API Key"), keyMasked, true);
+    kv.title = meta.authKey
+      ? I18n.t("凭据 = 本机登录账号的 token（打码显示，前 4 + **** + 后 4；真凭据只留在主进程）")
+      : I18n.t("还没有取到账号凭据：登录 MTNode 账号后自动带上（打码显示）");
+    const keyHint = document.createElement("div");
+    keyHint.className = "settings-hint";
+    keyHint.style.margin = "0";
+    /* 三档分开说（见 main.js 的 relay:keyInfo.readIssue）：有凭据 / 凭据读不出来 / 没登录。
+       「读不出来」最容易被误当成「Key 填错了」，所以要点明动作：重新登录一次。 */
+    keyHint.textContent = meta.authKey
+      ? I18n.t("由账号登录态托管（只读）：打码显示，真凭据不下发到界面")
+      : meta.keyIssue === "decrypt_failed" || meta.keyIssue === "encryption_unavailable"
+        ? I18n.t(
+            "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上",
+          )
+        : I18n.t("由账号登录态托管（只读）：暂未取到账号凭据，登录后自动带上");
+    gridEl.appendChild(keyHint);
+  }
 
   /* 模型清单：只读视图，逐行标出形态。余额耗尽时整块置灰，但**清单照旧列出来** ——
      让用户看得见这张卡正常时能用什么；它们在节点里选不到（见 app-model-kind.js

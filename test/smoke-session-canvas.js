@@ -20,9 +20,11 @@
  *   [7] 范围口径与提示词：渲染层纪律 + gateway 机制描述 + i18n 中英成对
  *   [8] 会话 UI 显示所属画布（侧栏 ▣ / 工作目录悬浮 / 开发绑定会话不加噪声）
  *   [9] 手册中英同口径 */
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
+const fs = require("fs"), path = require("path"), vm = require("vm"), os = require("os"), childProcess = require("child_process");
+const SHARED = { fs, path, vm, os, spawn: childProcess.spawn };
+const TEST_DIR = __dirname;
+let MERGED_FAILED = false;
+
 const I18n = require(path.join(__dirname, "..", "renderer", "i18n.js"));
 
 let fails = 0;
@@ -640,10 +642,1427 @@ async function main() {
       (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
       "  (smoke-session-canvas)",
   );
-  process.exit(fails ? 1 : 0);
 }
 main().catch((err) => {
   console.log("\n测试异常：" + ((err && (err.stack || err.message)) || err));
   console.log("✗ 异常中止（已累计 " + fails + " / " + checks + " 项失败）");
-  process.exit(1);
 });
+
+/* ==================== 已并入：test/smoke-session-draft-keep.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-session-draft-keep.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs.readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8");
+
+  /* ============================ 迷你 DOM ============================ */
+  function mkEl(tag, cls, id) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag || "div").toUpperCase(),
+      id: String(id || ""),
+      parentNode: null,
+      children: [],
+      dataset: {},
+      style: {},
+      title: "",
+      value: "",
+      hidden: false,
+      _cls: new Set(String(cls || "").split(/\s+/).filter(Boolean)),
+    };
+    el.classList = {
+      add: (c) => el._cls.add(c),
+      remove: (c) => el._cls.delete(c),
+      contains: (c) => el._cls.has(c),
+      toggle: (c, on) => {
+        if (on === undefined ? !el._cls.has(c) : !!on) el._cls.add(c);
+        else el._cls.delete(c);
+      },
+      toString: () => Array.from(el._cls).join(" "),
+    };
+    el.appendChild = (c) => {
+      if (!c) return c;
+      if (c.parentNode) c.parentNode.removeChild(c);
+      c.parentNode = el;
+      el.children.push(c);
+      return c;
+    };
+    el.insertBefore = (c, before) => {
+      if (!c) return c;
+      if (c.parentNode) c.parentNode.removeChild(c);
+      c.parentNode = el;
+      const i = el.children.indexOf(before);
+      if (i < 0) el.children.push(c);
+      else el.children.splice(i, 0, c);
+      return c;
+    };
+    el.removeChild = (c) => {
+      const i = el.children.indexOf(c);
+      if (i >= 0) el.children.splice(i, 1);
+      if (c) c.parentNode = null;
+      return c;
+    };
+    el.remove = () => {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    };
+    el.contains = (node) => {
+      for (let n = node; n; n = n.parentNode) if (n === el) return true;
+      return false;
+    };
+    el.setAttribute = () => {};
+    el.removeAttribute = () => {};
+    el.querySelector = () => null;
+    el.querySelectorAll = () => [];
+    el.addEventListener = () => {};
+    el.closest = (sel) => {
+      const s = String(sel || "");
+      for (let n = el; n; n = n.parentNode) {
+        if (s[0] === "." && n._cls && n._cls.has(s.slice(1))) return n;
+        if (s[0] === "#" && n.id === s.slice(1)) return n;
+      }
+      return null;
+    };
+    Object.defineProperty(el, "firstChild", { get: () => el.children[0] || null });
+    Object.defineProperty(el, "innerHTML", {
+      get: () => el.textContent || "",
+      set: () => {
+        for (const c of el.children.slice()) el.removeChild(c);
+      },
+    });
+    Object.defineProperty(el, "className", {
+      get: () => Array.from(el._cls).join(" "),
+      set: (v) => {
+        el._cls = new Set(String(v || "").split(/\s+/).filter(Boolean));
+      },
+    });
+    return el;
+  }
+  function docGetById(root, id) {
+    const walk = (node) => {
+      if (node.id === id) return node;
+      for (const c of node.children || []) {
+        const hit = walk(c);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(root);
+  }
+
+  /* ============================ 沙箱 ============================ */
+  const SESSIONS = [
+    { id: "s1", title: "开发 · 新应用", appId: "app-new", messages: [], updatedAt: 3, _draft: "" },
+    { id: "s2", title: "开发 · 中间应用", appId: "app-mid", messages: [], updatedAt: 2, _draft: "" },
+  ];
+  const APPS = [
+    { id: "app-new", name: "新应用", dev: true },
+    { id: "app-mid", name: "中间应用", dev: true },
+  ];
+
+  function build() {
+    const root = mkEl("body", "", "");
+    const sideList = root.appendChild(mkEl("div", "agent-side-list", "appsDevSideList"));
+    const pane = root.appendChild(mkEl("div", "agent-pane", "agentPane"));
+    const body = pane.appendChild(mkEl("div", "agent-body", ""));
+    const list = body.appendChild(mkEl("div", "agent-list", "agentList"));
+    const composer = body.appendChild(mkEl("div", "agent-composer", ""));
+    const input = composer.appendChild(mkEl("textarea", "chat-input", "agentInput"));
+    const calls = { configSave: [] };
+    const timers = new Map();
+    let timerSeq = 0;
+    const S = {
+      agentSessions: SESSIONS,
+      agentActiveId: "s1",
+      config: {},
+    };
+    const sandbox = {
+      document: {
+        getElementById: (id) => docGetById(root, String(id)),
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        createElement: (t) => mkEl(t),
+        createTextNode: (x) => ({ nodeType: 3, textContent: String(x) }),
+        body: root,
+        contains: (n) => root.contains(n),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        activeElement: null,
+      },
+      window: {
+        api: {
+          configSave: (cfg) => {
+            calls.configSave.push(cfg);
+            return Promise.resolve();
+          },
+        },
+        addEventListener: () => {},
+      },
+      console,
+      I18n: { t: (x) => x, getLocale: () => "zh" },
+      APPS_ST: { nav: "dev" },
+      AGENT_PRESET_DEFAULT: "standard",
+      AGENT_EFFORT_UI_ORDER: ["low", "medium", "high"],
+      S,
+      $: (sel) => {
+        const s = String(sel || "");
+        return s[0] === "#" ? docGetById(root, s.slice(1)) : null;
+      },
+      appsHubIsOpen: () => true,
+      appsLocalList: () => APPS,
+      appsLocalById: (id) => APPS.find((a) => a.id === id) || null,
+      appSessionsOf: (id) => SESSIONS.filter((s) => s.appId === id),
+      /* 重绘依赖：本轮不测渲染，全部换成空实现，只让「草稿存取」这条链真跑 */
+      liveNodeForSession: () => null,
+      sessionIsRunning: () => false,
+      markConvStick: () => {},
+      captureConvStick: () => null,
+      restoreConvStick: () => {},
+      scheduleHistoryCollapse: () => {},
+      rememberAgentThinkScroll: () => {},
+      agentNotifyBrowserSession: () => {},
+      paintAgentSendState: () => {},
+      renderAgentComposer: () => {},
+      renderAgentSessionSidebar: () => {},
+      renderAgentQueueBar: () => {},
+      renderAgentTodoPanel: () => {},
+      renderSessionFooterStat: () => {},
+      paintAgentToolsChip: () => {},
+      paintAgentModeChip: () => {},
+      persistAgentSession: () => Promise.resolve(),
+      appsDevToast: () => {},
+      toast: () => {},
+      /* 定时器：草稿落盘是防抖的，这里收着由测试自己兑现 */
+      setTimeout: (fn) => {
+        const id = ++timerSeq;
+        timers.set(id, fn);
+        return id;
+      },
+      clearTimeout: (id) => {
+        timers.delete(id);
+      },
+      requestAnimationFrame: () => 0,
+      cancelAnimationFrame: () => {},
+      setInterval: () => 0,
+      clearInterval: () => {},
+    };
+    vm.createContext(sandbox);
+    for (const f of ["renderer/app-apps-dev.js", "renderer/app-assist.js"]) {
+      vm.runInContext(read(f), sandbox, { filename: f });
+    }
+    const get = (expr) => vm.runInContext(expr, sandbox);
+    const flush = () => {
+      for (const [id, fn] of Array.from(timers.entries())) {
+        timers.delete(id);
+        fn();
+      }
+    };
+    /* 开发页「装起来」：宿主容器在文档里 + 选中一个应用（appsDevPageOpen 的判据） */
+    const openDev = (appId) => {
+      get("DEVD").listEl = sideList;
+      get("DEVD").appId = appId || "app-new";
+      get("DEVD").draft = true;
+      get("DEVD").sessionId = "";
+    };
+    return { sandbox, get, calls, timers, flush, root, sideList, list, composer, input, S, openDev };
+  }
+
+  /* ============================ [1] 视图键 ============================ */
+  console.log("[1] 草稿的视图键（agentDraftKeyNow）：谁的字记在谁名下");
+  {
+    const s = build();
+    s.openDev("app-new");
+    s.S.agentActiveId = "s1";
+    ok(
+      s.get("agentDraftKeyNow()") === "s1",
+      "会话页（没有显示覆盖）= 当前会话 id：得到 " + s.get("agentDraftKeyNow()"),
+    );
+    s.get('agentViewOverrideSet("s2")');
+    ok(
+      s.get("agentDraftKeyNow()") === "s2",
+      "开发页显示某条会话 = 那条会话 id（覆盖不改归属）",
+    );
+    s.get('agentViewOverrideSet("")');
+    ok(
+      s.get('agentDraftKeyNow()') === s.get('"\\u0000dev-first:" + "app-new"'),
+      "开发页首轮态 = \"\\u0000dev-first:<appId>\"（草稿挂不到占位空会话上，按应用存）",
+    );
+    s.get("DEVD").appId = "app-mid";
+    ok(
+      s.get('agentDraftKeyNow()') === s.get('"\\u0000dev-first:" + "app-mid"'),
+      "键跟着应用走（切应用 = 换一份草稿，A 的半截字不会跑到 B 名下）",
+    );
+    s.get("agentViewOverrideClear()");
+    ok(s.get("agentDraftKeyNow()") === "s1", "撤掉覆盖回会话页：键回到当前会话");
+  }
+
+  /* ============================ [2] 输入即记 ============================ */
+  console.log("[2] 输入即记（agentDraftTick）：草稿不再只活在 DOM 里");
+  {
+    const s = build();
+    s.openDev("app-new");
+    s.get('agentViewOverrideSet("")');
+    s.input.value = "给这个应用加一个聊天栏";
+    s.get("agentDraftTick()");
+    ok(
+      s.S.config.appsDevDrafts && s.S.config.appsDevDrafts["app-new"] === "给这个应用加一个聊天栏",
+      "首轮态：敲进去的字立刻进 config.appsDevDrafts[appId]",
+    );
+    s.flush();
+    ok(
+      s.calls.configSave.length === 1 && s.calls.configSave[0] === s.S.config,
+      "落盘走防抖的 window.api.configSave(S.config)（与 appsDevLastApp 同一口径）",
+    );
+    /* 会话侧：写的是会话自己的 _draft（老口径没变，随会话落盘） */
+    s.get("agentViewOverrideClear()");
+    s.S.agentActiveId = "s1";
+    s.get("renderAgentSession()");
+    s.input.value = "会话一的半截话";
+    s.get("agentDraftTick()");
+    ok(SESSIONS[0]._draft === "会话一的半截话", "会话页：输入即记进这条会话的 _draft");
+    ok(
+      !s.S.config.appsDevDrafts["s1"],
+      "会话草稿不混进开发页草稿表（两张表各管各的）",
+    );
+  }
+
+  /* ============================ [3] 切页 / 重绘不丢（本轮需求本体） ============================ */
+  console.log("[3] 开发页首轮态写一半 → 切走 → 回来，字还在");
+  {
+    const s = build();
+    s.openDev("app-new");
+    s.S.agentActiveId = "s1";
+    SESSIONS[0]._draft = "";
+    /* 进开发页：显示覆盖 = 空（首轮态），输入框空 */
+    s.get('agentViewOverrideSet("")');
+    s.get("renderAgentSession()");
+    ok(s.input.value === "", "首轮态刚画出来：输入框是空的（不凭空补字）");
+    s.input.value = "把这个应用的首页改成深色";
+    s.get("agentDraftTick()");
+    ok(
+      s.S.config.appsDevDrafts["app-new"] === "把这个应用的首页改成深色",
+      "用户正在写的第一轮需求已按应用留底",
+    );
+    /* 关页 / 切页回收 = app-apps-dev.js appsDevViewClear 的两步：撤覆盖 + 按会话页重绘 */
+    s.get("agentViewOverrideClear()");
+    s.get("renderAgentSession()");
+    ok(s.input.value === "", "切走后这只框换成会话页那条会话的草稿（首轮那半截不再占着它）");
+    ok(
+      s.S.config.appsDevDrafts["app-new"] === "把这个应用的首页改成深色",
+      "人走了，草稿没走",
+    );
+    /* 回来：重新进开发页（还是首轮态） */
+    s.get('agentViewOverrideSet("")');
+    s.get("renderAgentSession()");
+    ok(
+      s.input.value === "把这个应用的首页改成深色",
+      "回到开发页：那半截需求原样回到输入框（本轮需求：未输入完毕发送的内容不许丢）",
+    );
+    /* 再切走切回一次也不磨损 */
+    s.get("agentViewOverrideClear()");
+    s.get("renderAgentSession()");
+    s.get('agentViewOverrideSet("")');
+    s.get("renderAgentSession()");
+    ok(s.input.value === "把这个应用的首页改成深色", "来回切两次仍然在（存取幂等）");
+  }
+
+  /* ============================ [4] 有没发的字 → 右栏不许被自动选会话顶掉 ============================ */
+  console.log("[4] 首轮态有未发送内容时，自动选会话那条闸必须闭着");
+  {
+    const s = build();
+    s.openDev("app-new");
+    s.get('agentViewOverrideSet("")');
+    s.get("renderAgentSession()");
+    s.input.value = "写了一半的需求";
+    const picked = s.get("appsDevEnsureCurrentSession()");
+    ok(picked === false, "框里有字：appsDevEnsureCurrentSession 不动（返回 false）");
+    ok(
+      s.get("DEVD").draft === true && s.get("DEVD").sessionId === "",
+      "本页仍停在首轮态（没被换成 app-new 下面那条会话）",
+    );
+    ok(
+      s.get("appsDevDraftPending()") === true,
+      "appsDevDraftPending：识别出「有还没发出去的字」",
+    );
+    /* 用户自己清空输入框：闸放开，老行为恢复（还有会话就必须显示一条） */
+    s.input.value = "";
+    s.get("agentDraftTick()");
+    ok(s.get("appsDevDraftPending()") === false, "框清空 → 不再算 pending");
+    const picked2 = s.get("appsDevEnsureCurrentSession()");
+    ok(
+      picked2 === true && s.get("DEVD").sessionId === "s1",
+      "清空后照旧自动落到该应用最近一条会话（不会把开发页卡在首轮态）",
+    );
+  }
+
+  /* ============================ [5] 切应用：各归各的 ============================ */
+  console.log("[5] 切应用：A 的半截需求退回 A 名下，B 拿到自己那份");
+  {
+    const s = build();
+    s.openDev("app-new");
+    s.get('agentViewOverrideSet("")');
+    s.get("renderAgentSession()");
+    s.input.value = "A 应用的需求";
+    s.get("agentDraftTick()");
+    s.S.config.appsDevDrafts["app-mid"] = "B 应用早先写的";
+    /* 点左栏另一个应用（app-apps-dev.js appsDevSelectApp 的落点：换 appId + 整页重绘） */
+    s.get("DEVD").appId = "app-mid";
+    s.get("renderAgentSession()");
+    ok(
+      s.S.config.appsDevDrafts["app-new"] === "A 应用的需求",
+      "切走时 A 的字退回 A 名下（按视图键存，不跟到 B）",
+    );
+    ok(s.input.value === "B 应用早先写的", "B 的框显示 B 自己的那份草稿");
+    s.get("DEVD").appId = "app-new";
+    s.get("renderAgentSession()");
+    ok(s.input.value === "A 应用的需求", "切回 A：A 的半截需求还在");
+  }
+
+  /* ============================ [6] 发出去 / 清空 = 不留痕 ============================ */
+  console.log("[6] 首轮需求交出去之后，草稿槽清干净");
+  {
+    const s = build();
+    s.openDev("app-new");
+    s.get('agentViewOverrideSet("")');
+    s.get("renderAgentSession()");
+    s.input.value = "这条要发出去";
+    s.get("agentDraftTick()");
+    ok(s.get("appsDevDraftLoad('app-new')") === "这条要发出去", "前置：草稿在");
+    s.get("appsDevDraftClear('app-new')"); /* = appsDevStartDevSession 在会话建好那一刻做的事 */
+    ok(s.get("appsDevDraftLoad('app-new')") === "", "发出后：草稿槽清掉");
+    ok(
+      !s.S.config.appsDevDrafts || !("app-new" in s.S.config.appsDevDrafts),
+      "config 里不留空串（下次点「＋」不会冒出上一轮的需求）",
+    );
+    s.flush();
+    ok(
+      s.calls.configSave.length === 1,
+      "清草稿立刻落盘一次（防抖里那次被清掉，不会多写一遍）：得到 " + s.calls.configSave.length,
+    );
+    /* 空草稿不占位：写空 = 删条目 */
+    s.get("appsDevDraftSave('app-mid', 'x')");
+    s.get("appsDevDraftSave('app-mid', '')");
+    ok(s.get("appsDevDraftLoad('app-mid')") === "", "写空 = 删条目（不留下 '' 这种占位）");
+    /* 发出去之后的再次渲染：框是空的，不是旧字 */
+    s.input.value = "";
+    s.get("renderAgentSession()");
+    ok(s.input.value === "", "发完再画：输入框空白（旧字不会漂回来）");
+  }
+
+  /* ============================ [7] 老口径不回退：会话之间各留各的 ============================ */
+  console.log("[7] 会话之间的草稿隔离仍然成立（老行为）");
+  {
+    const s = build();
+    s.S.agentActiveId = "s1";
+    SESSIONS[0]._draft = "";
+    SESSIONS[1]._draft = "";
+    s.get("renderAgentSession()");
+    ok(s.input.value === "", "s1 没有草稿 → 空框");
+    s.input.value = "s1 写到一半";
+    s.get("agentDraftTick()");
+    s.S.agentActiveId = "s2";
+    s.get("renderAgentSession()");
+    ok(s.input.value === "", "切到 s2：s2 自己的草稿（空）");
+    ok(SESSIONS[0]._draft === "s1 写到一半", "s1 那半截存进它自己的 _draft");
+    s.input.value = "s2 写到一半";
+    s.get("agentDraftTick()");
+    s.S.agentActiveId = "s1";
+    s.get("renderAgentSession()");
+    ok(s.input.value === "s1 写到一半", "切回 s1：s1 的草稿回来");
+    ok(SESSIONS[1]._draft === "s2 写到一半" && SESSIONS[0]._draft === "s1 写到一半", "两条会话互不串台");
+    /* 老写法（只看会话 id、切那一刻抄一次）已退役：现在是按视图键 + 输入即记 */
+    const assist = read("renderer/app-assist.js");
+    ok(
+      assist.indexOf("const prev = agentSessions().find((x) => x.id === prevId);") < 0,
+      "旧的「切会话那一刻才抄一次」写法已去掉（改走 agentDraftKeyNow / agentDraftStash）",
+    );
+    ok(
+      assist.indexOf("S._agentInputDraftKey") >= 0 &&
+        assist.indexOf("agentDraftKeyNow()") >= 0,
+      "renderAgentSession 按视图键存 / 取草稿（首轮态也在这一条路上）",
+    );
+    const boot = read("renderer/app-boot.js");
+    ok(
+      boot.indexOf("agentDraftTick()") >= 0,
+      "app-boot.js 的 #agentInput input 监听里挂了 agentDraftTick（输入即记）",
+    );
+    const dev = read("renderer/app-apps-dev.js");
+    ok(
+      dev.indexOf("appsDevDraftClear(DEVD.appId);") >= 0,
+      "开发会话建好那一刻清掉首轮草稿槽（appsDevStartDevSession）",
+    );
+  }
+
+  console.log(
+    (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
+      "  (smoke-session-draft-keep)",
+  );
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-session-draft-keep.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-session-draft-keep.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-session-md-settle.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-session-md-settle.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n?/g, "\n");
+  const has = (src, needle, msg) =>
+    ok(src.indexOf(needle) >= 0, msg + (src.indexOf(needle) >= 0 ? "" : "（未找到）"));
+  const countOf = (src, re) => (src.match(re) || []).length;
+
+  /* ---------- 从源码里按名字抠出顶层函数 / 常量（不改动源文件） ---------- */
+  function fnBody(src, name) {
+    const pats = [
+      new RegExp("\\n(?:async\\s+)?function " + name + "\\s*\\(", "m"),
+      new RegExp("\\nconst " + name + "\\s*=", "m"),
+      new RegExp("\\nvar " + name + "\\s*=", "m"),
+    ];
+    let at = -1;
+    for (const p of pats) {
+      const m = src.match(p);
+      if (m) {
+        at = m.index + 1;
+        break;
+      }
+    }
+    if (at < 0) throw new Error("找不到函数/常量：" + name);
+    const isFn = /^(async\s+)?function/.test(src.slice(at, at + 14));
+    if (isFn) {
+      const i = src.indexOf("{", at);
+      if (i < 0) throw new Error("找不到函数体：" + name);
+      let depth = 0;
+      let inStr = null;
+      for (let j = i; j < src.length; j++) {
+        const c = src[j];
+        const p = src[j - 1];
+        if (inStr) {
+          if (c === inStr && p !== "\\") inStr = null;
+          continue;
+        }
+        if (c === "/" && src[j + 1] === "/") {
+          j = src.indexOf("\n", j) - 1;
+          continue;
+        }
+        if (c === "/" && src[j + 1] === "*") {
+          j = src.indexOf("*/", j) + 1;
+          continue;
+        }
+        if (c === '"' || c === "'" || c === "`") {
+          inStr = c;
+          continue;
+        }
+        if (c === "{") depth++;
+        else if (c === "}") {
+          depth--;
+          if (!depth) return src.slice(at, j + 1);
+        }
+      }
+      throw new Error("函数体不完整：" + name);
+    }
+    const iBrace = src.indexOf("{", at);
+    const iBracket = src.indexOf("[", at);
+    const start =
+      iBrace < 0 ? iBracket : iBracket < 0 || iBrace < iBracket ? iBrace : iBracket;
+    if (start < 0) throw new Error("找不到常量体：" + name);
+    let depth2 = 0;
+    for (let j = start; j < src.length; j++) {
+      const c = src[j];
+      if (c === "{" || c === "[") depth2++;
+      else if (c === "}" || c === "]") {
+        depth2--;
+        if (!depth2) return src.slice(at, j + 1) + ";";
+      }
+    }
+    throw new Error("常量体不完整：" + name);
+  }
+  function constLine(src, name) {
+    const re = new RegExp("\\n[ \\t]*(?:const|let|var) " + name + "\\s*=[^\\r\\n]*", "m");
+    const m = src.match(re);
+    if (!m) throw new Error("找不到单行常量：" + name);
+    return m[0].replace(/^\n/, "") + "\n";
+  }
+  const extract = (src, names) => names.map((n) => fnBody(src, n)).join("\n");
+
+  const DB = read("renderer/app-db.js");
+  const ASSIST = read("renderer/app-assist.js");
+
+  /* ==================== [1] 源码口径 ==================== */
+  console.log("\n[1] say 段开合标记 + 唯一收口出口");
+  has(DB, "function traceCloseSay(tr) {", "app-db.js 新增 traceCloseSay（正文段收口出口）");
+  ok(
+    countOf(DB, /tr\._openSay = false;/g) === 1,
+    "tr._openSay = false 只剩 traceCloseSay 里那一处（旧散点全部改走收口函数；实得 " +
+      countOf(DB, /tr\._openSay = false;/g) +
+      " 处）",
+  );
+  ok(
+    /function traceCloseSay\(tr\) \{[\s\S]{0,400}?if \(last && last\.k === "say" && last\.open !== false\) last\.open = false;/.test(
+      DB,
+    ),
+    "traceCloseSay 只把当时最后那一条 say 段标记为已定稿（思考 / 工具 / 错误段不动）",
+  );
+  has(
+    DB,
+    'const it = { k: "say", text: body, step, callId: "", at: atNow, open: true };',
+    "新建正文段带 open:true（与 think 段同一套「仍在增长」语义）+ at（这一段自己的起始时刻）",
+  );
+  ok(
+    countOf(DB, /traceCloseSay\(tr\);/g) >= 5,
+    "所有收口点（say-end / turn / step / tool / err）都走 traceCloseSay（实得 " +
+      countOf(DB, /traceCloseSay\(tr\);/g) +
+      " 处）",
+  );
+  ok(
+    /if \(traceThinkEventSameStream\(tr, e, turn, step\)\) traceThinkCloseIfBig\(tr\);[\s\S]{0,300}?traceCloseSay\(tr\);[\s\S]{0,120}?const it = \{ k: "tool"/.test(
+      DB,
+    ),
+    "工具段：先把正文段收口再落工具段（顺序不能反）",
+  );
+
+  /* ==================== [2] 真实 tracePush 行为（vm） ==================== */
+  console.log("\n[2] 真实 tracePush：收口后不再并进，续写另起新段");
+  const S = {};
+  const sandbox = { S, console };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    constLine(DB, "THINK_TINY_CHARS") +
+      "\n" +
+      extract(DB, [
+        "traceRunKey",
+        "traceNum",
+        "traceReset",
+        "traceOf",
+        "joinThinkText",
+        "traceStreamKey",
+        "traceToolSeq",
+        "traceThinkOpenItem",
+        "traceThinkEventSameStream",
+        "traceThinkCloseIfBig",
+        "traceCloseThink",
+        "traceCloseSay",
+        "tracePush",
+        "traceText",
+      ]),
+    sandbox,
+    { filename: "session-md-settle-extract.js" },
+  );
+  const G = (name) =>
+    vm.runInContext(
+      "(typeof " + name + " === 'undefined' ? null : " + name + ")",
+      sandbox,
+    );
+  ["traceCloseSay", "tracePush", "traceText"].forEach((n) =>
+    ok(typeof G(n) === "function", "vm 抽到真实函数：" + n),
+  );
+  const saySegs = (rk) => {
+    const tr = S.runTrace[G("traceRunKey")(rk)];
+    return (tr && tr.items ? tr.items : []).filter((it) => it.k === "say");
+  };
+
+  /* [2a] say-end 收口：段标定稿，续写另起新段（不再并回定稿段） */
+  const RK1 = "mdSettle:sayend";
+  G("traceReset")(RK1);
+  G("tracePush")(RK1, "say", "# 最终答复", { turn: 1, step: 4, index: 0 });
+  let segs = saySegs(RK1);
+  ok(segs.length === 1 && segs[0].open === true, "正文段建出来时 open=true（还在增长）");
+  G("tracePush")(RK1, "say-end", "", { turn: 1, step: 4, index: 0 });
+  ok(segs[0].open === false, "say-end 一到，该段立即定稿（open=false）→ 渲染层改走 markdown");
+  G("tracePush")(RK1, "say", "补充一句", { turn: 1, step: 4, index: 1 });
+  segs = saySegs(RK1);
+  ok(
+    segs.length === 2 && segs[1].open === true && segs[1].text === "补充一句",
+    "收口后的续写另起新段（定稿段不被改写、不重新打开）",
+  );
+  ok(segs[0].text === "# 最终答复", "定稿段正文原样保留（渲染出的 markdown 与前一段一致）");
+
+  /* [2b] 工具调用 / 换 step 同样收口 */
+  const RK2 = "mdSettle:tool";
+  G("traceReset")(RK2);
+  G("tracePush")(RK2, "say", "看完代码再答", { turn: 1, step: 1 });
+  G("tracePush")(RK2, "tool", "", { turn: 1, step: 1, callId: "c1" });
+  ok(saySegs(RK2)[0].open === false, "调工具前先把正文段收口（顺序：正文定稿 → 工具段）");
+  const tr2 = S.runTrace[G("traceRunKey")(RK2)];
+  ok(
+    tr2.items[0].k === "say" && tr2.items[1].k === "tool",
+    "轨迹顺序仍是「正文 → 工具」（收口没有插队）",
+  );
+
+  const RK3 = "mdSettle:step";
+  G("traceReset")(RK3);
+  G("tracePush")(RK3, "say", "第一段", { turn: 1, step: 1 });
+  G("tracePush")(RK3, "say", "第二段", { turn: 1, step: 2 });
+  segs = saySegs(RK3);
+  ok(
+    segs.length === 2 && segs[0].open === false && segs[1].open === true,
+    "换 step = 上一段收口 + 新开放段",
+  );
+  G("tracePush")(RK3, "say", "第二段续写", { turn: 1, step: 2 });
+  segs = saySegs(RK3);
+  ok(
+    segs.length === 2 && segs[1].text === "第二段第二段续写",
+    "新段仍在开放 → 同 step 增量照旧并进这一段（流式不碎段）",
+  );
+  ok(G("traceText")(RK3, "say") === "第一段\n\n第二段第二段续写", "全文口径不变（段间空行）");
+
+  /* ==================== [3] 落盘段快照不带界面状态位 ==================== */
+  console.log("\n[3] open / 运行态只活在运行轨迹里，不进存档（时刻与轮号例外：要随段落盘）");
+  has(
+    DB,
+    "out.push({ k: it.k, step: it.step, text, round, at });",
+    "traceSegmentsOf 只带 k / step / text / round / at（open 不随消息落盘；at = 逐项时刻，本轮需求要它）",
+  );
+  ok(
+    !/open: it\.open|o\.open =/.test(DB),
+    "落盘段快照里没有 open 这个键（界面状态位不随消息存档）",
+  );
+  has(
+    ASSIST,
+    "const o = { k: s.k, text, step: s.step != null ? s.step : null };",
+    "agentSegsForDisk 也只带 k / text / step（+callId）",
+  );
+
+  /* ==================== [4] 渲染接线 ==================== */
+  console.log("\n[4] 渲染接线：只有仍开放的尾段走纯文本，收尾必落定一次");
+  has(
+    ASSIST,
+    "const stillStreaming = streaming && !(seg.k === \"say\" && seg.open === false);",
+    "agentLiveSegsEl：已收口的正文段即使还是尾段也按 markdown 渲染",
+  );
+  ok(
+    /if \(stillStreaming\) \{[\s\S]{0,400}?\} else \{[\s\S]{0,200}?md\.innerHTML = renderMarkdown\(/.test(
+      ASSIST,
+    ),
+    "纯文本分支与 markdown 分支的分工保持原样（只是判定换成了 stillStreaming）",
+  );
+  has(
+    ASSIST,
+    'if (kind === "say" && last.open === false) return null;',
+    "agentLiveSegTail：已收口段不再当就地更新目标（返回 null → 调用方整表重绘）",
+  );
+  has(
+    ASSIST,
+    '} else if (type === "say-end") {',
+    "会话 onEvent 新增 say-end 分支（正文块收尾即重绘一次）",
+  );
+  ok(
+    /type === "say-end"[\s\S]{0,600}?const items = agentChatSegItems\(st\) && agentTraceItems\("agent:" \+ st\.id\);[\s\S]{0,300}?last\.k === "say" && last\.open === false[\s\S]{0,120}?renderAgentSession\(\);/.test(
+      ASSIST,
+    ),
+    "say-end 只在「刚收口的正文段正好是尾段」时重绘（后面还有工具 / 思考段就不白刷）",
+  );
+  ok(
+    /st\.running = false;\s*\n\s*st\._cancelled = false;\s*\n\s*st\._liveTools = \[\];[\s\S]{0,700}?if \(agentViewIs\(st\)\) renderAgentSession\(\);/.test(
+      ASSIST,
+    ),
+    "finally 一置 st.running=false 就先落定一次界面（排在 persist / 侧栏刷新之前）",
+  );
+  ok(
+    ASSIST.indexOf("旧口径里渲染是\n") > 0 ||
+      /finally 的最后一句，前面 persist/.test(ASSIST),
+    "注释写清根因：渲染原先是 finally 最后一句，前面任一步抛错就轮不到它",
+  );
+
+  /* ==================== [5] 真实 agentLiveSegTail 行为（vm） ==================== */
+  console.log("\n[5] 真实 agentLiveSegTail：已收口段不再被就地纯文本覆盖");
+  const sb2 = { Number, console };
+  vm.createContext(sb2);
+  vm.runInContext(fnBody(ASSIST, "agentLiveSegTail"), sb2, {
+    filename: "agentLiveSegTail.js",
+  });
+  const tailFn = vm.runInContext("agentLiveSegTail", sb2);
+  const el0 = { dataset: { segIdx: "0" } };
+  ok(
+    tailFn([{ k: "say", text: "还在写", open: true }], el0, "say") !== null,
+    "开放中的尾段：照旧返回该段（就地纯文本追加）",
+  );
+  ok(
+    tailFn([{ k: "say", text: "已定稿", open: false }], el0, "say") === null,
+    "已收口的尾段：返回 null（调用方整表重绘 → 渲染成 markdown）",
+  );
+  ok(
+    tailFn([{ k: "tool", step: 1 }], el0, "say") === null,
+    "段类型对不上照旧 null",
+  );
+  ok(
+    tailFn([{ k: "say", text: "x", open: true }], { dataset: { segIdx: "3" } }, "say") ===
+      null,
+    "段序对不上照旧 null（刚从别的段切过来时整表重绘一次）",
+  );
+
+  console.log(
+    "\n" +
+      (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
+      "  (smoke-session-md-settle)",
+  );
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-session-md-settle.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-session-md-settle.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-session-scroll-stable.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-session-scroll-stable.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n?/g, "\n");
+  const has = (src, needle, msg) =>
+    ok(src.indexOf(needle) >= 0, msg + (src.indexOf(needle) >= 0 ? "" : "（未找到）"));
+  const countOf = (src, re) => (src.match(re) || []).length;
+
+  /* ---------- 从源码里按名字抠出顶层函数（不改动源文件） ---------- */
+  function fnBody(src, name) {
+    const pats = [
+      new RegExp("\\n(?:async\\s+)?function " + name + "\\s*\\(", "m"),
+      new RegExp("\\nconst " + name + "\\s*=", "m"),
+      new RegExp("\\nvar " + name + "\\s*=", "m"),
+    ];
+    let at = -1;
+    for (const p of pats) {
+      const m = src.match(p);
+      if (m) {
+        at = m.index + 1;
+        break;
+      }
+    }
+    if (at < 0) throw new Error("找不到函数/常量：" + name);
+    const i = src.indexOf("{", at);
+    if (i < 0) throw new Error("找不到函数体：" + name);
+    let depth = 0;
+    let inStr = null;
+    for (let j = i; j < src.length; j++) {
+      const c = src[j];
+      const p = src[j - 1];
+      if (inStr) {
+        if (c === inStr && p !== "\\") inStr = null;
+        continue;
+      }
+      if (c === "/" && src[j + 1] === "/") {
+        j = src.indexOf("\n", j) - 1;
+        continue;
+      }
+      if (c === "/" && src[j + 1] === "*") {
+        j = src.indexOf("*/", j) + 1;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") {
+        inStr = c;
+        continue;
+      }
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (!depth) return src.slice(at, j + 1);
+      }
+    }
+    throw new Error("函数体不完整：" + name);
+  }
+  function constLine(src, name) {
+    const re = new RegExp(
+      "\\n[ \\t]*(?:const|let|var) " + name + "\\s*=[^\\r\\n]*",
+      "m",
+    );
+    const m = src.match(re);
+    if (!m) throw new Error("找不到单行常量：" + name);
+    return m[0].replace(/^\n/, "") + "\n";
+  }
+
+  const APP = read("renderer/app.js");
+
+  /* ==================== [1] 源码口径 ==================== */
+  console.log("\n[1] 键锚点还原 + 带序号的程序滚动守卫");
+  has(
+    APP,
+    "function convScrollGuardOn(el) {",
+    "app.js 新增 convScrollGuardOn（程序滚动守卫的唯一判定入口）",
+  );
+  has(
+    APP,
+    "function convAnchorRow(el, cap) {",
+    "app.js 新增 convAnchorRow（按键找还原锚点行）",
+  );
+  has(
+    APP,
+    "function convRestoreOff(el, want, top) {",
+    "app.js 新增 convRestoreOff（落点离谱才收口）",
+  );
+  ok(
+    /function convAnchorRow\(el, cap\) \{[\s\S]{0,400}?if \(!a\.key\) return null;/.test(APP),
+    "锚点没有键就不还原（不拿序号兜底）",
+  );
+  ok(APP.indexOf("rows[a.idx]") < 0, "restoreConvStick 里的 rows[a.idx] 序号兜底已删净");
+  ok(
+    APP.indexOf("(cap.top * el.scrollHeight) / cap.prevH") < 0,
+    "restoreConvStick 里的按比例还原已删净（不再均摊上方长出来的高度）",
+  );
+  ok(
+    /function setConvScrollTop\(el, top\) \{[\s\S]{0,260}?_convAutoScrollGen = \(Number\(el\._convAutoScrollGen\) \|\| 0\) \+ 1/.test(
+      APP,
+    ),
+    "setConvScrollTop 给每一笔程序写入编号（_convAutoScrollGen）",
+  );
+  ok(
+    /function setConvScrollTop\(el, top\) \{[\s\S]{0,520}?if \(Number\(el\._convAutoScrollGen\) !== gen\) return;/.test(
+      APP,
+    ),
+    "守卫只由「最后一笔」解除：期间又写过就不解锁",
+  );
+  ok(
+    countOf(APP, /_convAutoScroll = false;/g) === 2,
+    "解除守卫只剩 setConvScrollTop 里那两处（带序号回调 + 无 rAF 兜底；实得 " +
+      countOf(APP, /_convAutoScroll = false;/g) +
+      " 处）",
+  );
+  ok(
+    countOf(APP, /if \(convScrollGuardOn\(/g) >= 4,
+    "各处 scroll 监听 / 尺寸补滚统一走 convScrollGuardOn（实得 " +
+      countOf(APP, /if \(convScrollGuardOn\(/g) +
+      " 处）",
+  );
+
+  /* ==================== 纯几何桩 ====================
+     只给这套 helper 真正用到的量：el.scrollTop / clientHeight / scrollHeight，与每行的
+     contentTop / offsetHeight / getBoundingClientRect().top。行的 rect.top 直接按浏览器
+     口径写好（视口 = 内容坐标 - 容器 scrollTop）；列表自身固定在视口顶部（rect.top = 0），
+     与真 DOM 里对话区在 .agent-body 中的占位一致。 */
+  function mkList(rows, opt) {
+    const o = opt || {};
+    const list = {
+      scrollTop: Math.max(0, Number(o.top) || 0),
+      scrollHeight: Number(o.scrollHeight) || 0,
+      clientHeight: Number(o.clientHeight) || 0,
+      children: [],
+      /* 列表自身固定在视口顶部：rect.top 与 scrollTop 无关
+         （真 DOM 里对话区就贴在 .agent-body 顶部，页面本身不滚） */
+      getBoundingClientRect() {
+        return { top: 0, bottom: this.clientHeight };
+      },
+    };
+    const build = (spec) => {
+      list.children = spec.map((r) => ({
+        className: "dsh-msg",
+        classList: { contains: (c) => c === "dsh-msg" },
+        dataset: { histKey: r.key },
+        offsetHeight: r.h,
+        _ctop: r.top,
+        getBoundingClientRect() {
+          const t = this._ctop - list.scrollTop;
+          return { top: t, bottom: t + this.offsetHeight };
+        },
+      }));
+    };
+    build(rows);
+    return { list, build };
+  }
+  function rowTop(list, key) {
+    const r = list.children.find((x) => x.dataset.histKey === key);
+    return r ? r.getBoundingClientRect().top : null;
+  }
+
+  /* 这套 helper 的真源：app.js 里逐行抠出来跑 */
+  const SCROLL_FNS = [
+    "convRows",
+    "convScrollBase",
+    "convRowTop",
+    "convAnchorOf",
+    "convAnchorRow",
+    "convRestoreOff",
+    "captureConvStick",
+    "restoreConvStick",
+    "setConvScrollTop",
+    "convScrollGuardOn",
+    "convStickOf",
+    "markConvStick",
+    "isScrollNearBottom",
+  ];
+  function loadScrollApi(rafQueue) {
+    const code =
+      constLine(APP, "CONV_SCROLL_SLACK") +
+      constLine(APP, "CONV_STICK_SLACK") +
+      SCROLL_FNS.map((n) => fnBody(APP, n)).join("\n") +
+      "\n({ captureConvStick, restoreConvStick, setConvScrollTop, convScrollGuardOn," +
+      " markConvStick, convAnchorOf, convAnchorRow, convRowTop, convScrollBase, convRows })";
+    const sb = {
+      console,
+      getComputedStyle: () => ({ borderTopWidth: "0px" }),
+      requestAnimationFrame: (fn) => {
+        rafQueue.push(fn);
+        return rafQueue.length;
+      },
+      bindConvStick: () => {},
+    };
+    vm.createContext(sb);
+    return vm.runInNewContext(code, sb, { filename: "renderer/app.js#scroll" });
+  }
+
+  /* ==================== [2] 还原行为 ==================== */
+  console.log("\n[2] 重绘后阅读位置不跳（键锚点，不按序号也不按比例）");
+  {
+    const raf = [];
+    /* 视口 600px；四条消息；运行中用户上翻到 1500（m3 中段） */
+    const g = mkList(
+      [
+        { key: "m1", top: 0, h: 800 },
+        { key: "m2", top: 800, h: 600 },
+        { key: "m3", top: 1400, h: 900 },
+        { key: "m4", top: 2300, h: 700 },
+      ],
+      { top: 1500, clientHeight: 600, scrollHeight: 3000 },
+    );
+    const list = g.list;
+    const api = loadScrollApi(raf);
+    api.markConvStick(list, false); /* 用户上翻过：不贴底 */
+    const beforeView = rowTop(list, "m3");
+    ok(beforeView < 0 && beforeView > -600, "m3 在视口内（顶部偏移 " + beforeView + "）");
+    const cap = api.captureConvStick(list, false);
+    ok(!!cap.anchor && cap.anchor.key === "m3", "锚点 = 视口里最靠上的那条消息（m3）");
+
+    /* 运行中：m3 上方的思考块长高 300px（下方内容整体下移），滚动容器高度不变 */
+    g.build([
+      { key: "m1", top: 0, h: 800 },
+      { key: "m2", top: 800, h: 900 },
+      { key: "m3", top: 1700, h: 900 },
+      { key: "m4", top: 2600, h: 700 },
+    ]);
+    list.scrollHeight = 3300;
+    list.clientHeight = 600;
+    api.restoreConvStick(list, cap);
+    const want = 1700 - beforeView; /* 锚点新顶 - 原视口偏移（offset = 视口位置） */
+    ok(
+      list.scrollTop === want,
+      "锚点行在视口里的位置原样保持（还原到 " + want + "，实得 " + list.scrollTop + "）",
+    );
+    ok(
+      rowTop(list, "m3") === beforeView,
+      "锚点行相对视口的偏移与重绘前一致（" + beforeView + " → " + rowTop(list, "m3") + "）",
+    );
+
+    /* 再来一轮：锚点行自己的高度变了（markdown 落定），视口位置仍要原样 */
+    const cap2 = api.captureConvStick(list, false);
+    g.build([
+      { key: "m1", top: 0, h: 800 },
+      { key: "m2", top: 800, h: 900 },
+      { key: "m3", top: 1700, h: 1400 },
+      { key: "m4", top: 3100, h: 700 },
+    ]);
+    list.scrollHeight = 3800;
+    api.restoreConvStick(list, cap2);
+    ok(
+      list.scrollTop === cap2.top,
+      "锚点行在视口里的位置一字不差（" + cap2.top + "，实得 " + list.scrollTop + "）",
+    );
+
+    /* 高度没变时重绘：更不该动一下 */
+    const cap3 = api.captureConvStick(list, false);
+    g.build([
+      { key: "m1", top: 0, h: 800 },
+      { key: "m2", top: 800, h: 900 },
+      { key: "m3", top: 1700, h: 1400 },
+      { key: "m4", top: 3100, h: 700 },
+    ]);
+    api.restoreConvStick(list, cap3);
+    ok(list.scrollTop === cap3.top, "同高度重绘不产生任何位移（仍为 " + list.scrollTop + "）");
+
+    /* 可见窗口切片变化：锚点那条消息被裁到「更早内容」后面 → 原样回记录位置，
+       绝不按比例缩放（旧口径会把 top 按新高速放大，画面往上跳） */
+    const cap4 = {
+      stick: false,
+      top: 2000,
+      prevH: 3000,
+      anchor: { key: "m1", idx: 0, off: 100 },
+    };
+    g.build([
+      { key: "m5", top: 0, h: 1200 },
+      { key: "m6", top: 1200, h: 1200 },
+      { key: "m7", top: 2400, h: 1200 },
+    ]);
+    list.scrollHeight = 3600;
+    list.scrollTop = 2000;
+    api.restoreConvStick(list, cap4);
+    ok(
+      list.scrollTop === 2000,
+      "锚点不在窗口里 → 原样回记录位置（实得 " + list.scrollTop + "，比例口径会得到 2400）",
+    );
+    ok(
+      api.convAnchorRow(list, cap4) === null,
+      "锚点行不在重绘后的列表里时 convAnchorRow 明确返回 null（调用方走保守还原）",
+    );
+  }
+
+  /* ==================== [3] 程序滚动守卫 ==================== */
+  console.log("\n[3] 同帧内连续程序写入不提前解除守卫");
+  {
+    const raf = [];
+    const g = mkList([{ key: "m1", top: 0, h: 2000 }], {
+      clientHeight: 600,
+      scrollHeight: 2000,
+    });
+    const list = g.list;
+    const api = loadScrollApi(raf);
+    const drainOne = () => {
+      const fn = raf.shift();
+      if (fn) fn();
+    };
+    ok(api.convScrollGuardOn(list) === false, "初始没在程序滚动");
+    api.setConvScrollTop(list, 1200);
+    ok(
+      api.convScrollGuardOn(list) === true,
+      "写入期间守卫成立（自己那笔 scroll 事件不算用户滚动）",
+    );
+    api.setConvScrollTop(list, 1400); /* 同一帧里第二笔（重绘后再落一次锚点） */
+    drainOne(); /* 跑掉第一笔的回调 */
+    ok(
+      api.convScrollGuardOn(list) === true,
+      "只跑掉第一笔的回调时守卫仍然成立（第二笔还没解锁）",
+    );
+    drainOne();
+    ok(api.convScrollGuardOn(list) === false, "最后一笔的回调跑完才解锁");
+    api.setConvScrollTop(list, 2000); /* 已在底部则浏览器夹住，但守卫仍要成立 */
+    ok(api.convScrollGuardOn(list) === true, "再次写入重新上锁");
+    drainOne();
+    ok(api.convScrollGuardOn(list) === false, "解锁后回到可判定状态");
+  }
+
+  console.log(
+    "\n" +
+      (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
+      "  (smoke-session-scroll-stable)",
+  );
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-session-scroll-stable.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-session-scroll-stable.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-session-wrap.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-session-wrap.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  /* 读源码并统一换行：CSS 在 Windows 工作区里常是 CRLF，锚点串按 \n 写就好 */
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n?/g, "\n");
+
+  /* ==================== [1] 根因复现 ==================== */
+  console.log("\n[1] vendor marked 的输出里块之间真的带换行");
+  const { marked } = require("../renderer/vendor/marked.min.js");
+  const mdOut = marked.parse(
+    "第一段第一行\n第一段第二行\n\n- 列表项一\n- 列表项二\n\n最后一段",
+    { gfm: true, breaks: true },
+  );
+  ok(mdOut.indexOf("</p>\n<ul>") >= 0, "段落与列表之间输出 `</p>\\n<ul>`（pre-wrap 下即空行）");
+  ok(mdOut.indexOf("</li>\n<li>") >= 0, "列表项之间输出 `</li>\\n<li>`（pre-wrap 下即多撑一行）");
+  ok(mdOut.indexOf("<br>") >= 0, "段内单个换行由 breaks:true 发成 <br>（不依赖 pre-wrap）");
+
+  /* ==================== [2] 修复点 ==================== */
+  console.log("\n[2] .md 基础规则把空白归位 normal");
+  const cssCanvas = read("renderer/css/canvas.css");
+  const mdRuleAt = cssCanvas.indexOf("\n.md {");
+  ok(mdRuleAt >= 0, "canvas.css 里能找到 .md 基础规则（Markdown 渲染一节）");
+  const mdRule = mdRuleAt >= 0 ? cssCanvas.slice(mdRuleAt, cssCanvas.indexOf("}", mdRuleAt) + 1) : "";
+  ok(/white-space:\s*normal/.test(mdRule), ".md 显式 white-space: normal（块间换行不再被渲染）");
+  ok(
+    mdRule.indexOf("pre-wrap") >= 0 && mdRule.indexOf("breaks:true") >= 0,
+    ".md 规则注释写清根因（容器 pre-wrap 被继承）与段内换行的真正来源（breaks:true）",
+  );
+
+  /* ==================== [3] 全仓 CSS 扫描 ==================== */
+  console.log("\n[3] 没有任何 .md 自身规则把空白保留又打开");
+  const cssDir = path.join(__dirname, "..", "renderer", "css");
+  const cssFiles = fs
+    .readdirSync(cssDir)
+    .filter((f) => f.endsWith(".css"))
+    .map((f) => ["renderer/css/" + f, read("renderer/css/" + f)]);
+  ok(cssFiles.length >= 5, "扫到 renderer/css 全套样式表（" + cssFiles.length + " 份）");
+  function* rulesOf(src) {
+    const re = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    while ((m = re.exec(src))) yield { sel: m[1], body: m[2] };
+  }
+  let mdSelfRules = 0;
+  let mdPreWrapRules = [];
+  for (const [rel, src] of cssFiles) {
+    const clean = src.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const r of rulesOf(clean)) {
+      const targetsMd = r.sel
+        .split(",")
+        .map((s) => s.replace(/\s+/g, " ").trim())
+        .some((s) => /(^|[\s>+~])\.md$/.test(s));
+      if (!targetsMd) continue;
+      mdSelfRules++;
+      if (/white-space:\s*(pre|pre-wrap|pre-line)/.test(r.body)) mdPreWrapRules.push(rel);
+    }
+  }
+  ok(mdSelfRules >= 6, "扫到多条针对 .md 自身的规则（含亮色主题与节点内压缩版：" + mdSelfRules + " 条）");
+  ok(mdPreWrapRules.length === 0, "全部 .md 自身规则里没有任何 white-space: pre*（回归清单：" + mdPreWrapRules.join(", ") + "）");
+
+  /* ==================== [4] 零误伤：流式纯文本容器 ==================== */
+  console.log("\n[4] 流式未渲染正文仍保留换行");
+  const cssDsh = read("renderer/css/dsh.css");
+  const containers = [
+    [".dsh-msg-body", cssDsh],
+    [".dsh-seg-say", cssDsh],
+    [".chat-bubble", cssCanvas],
+  ];
+  for (const [sel, src] of containers) {
+    const at = src.indexOf("\n" + sel + " {");
+    const body = at >= 0 ? src.slice(at, src.indexOf("}", at) + 1) : "";
+    ok(/white-space:\s*pre-wrap/.test(body), sel + " 仍是 pre-wrap（纯文本 / 流式原文的换行照旧）");
+  }
+  /* 智能节点实时输出：元素同时挂了 .md（只为排版）与 dsh-out-live（装的是未渲染原文）
+     —— 这条更-specific 的规则必须还在，否则本次修复会把节点实时输出的换行吃掉 */
+  ok(
+    /\.n-out \.dsh-out-live\s*\{[^}]*white-space:\s*pre-wrap/.test(cssDsh),
+    ".n-out .dsh-out-live 仍以 pre-wrap 压过 .md（节点实时原文不被归位 normal 误伤）",
+  );
+  ok(
+    read("renderer/app-canvas.js").indexOf('className = "md dsh-out-live"') >= 0,
+    "该元素确实带着 .md 类（正是需要被更-specific 规则保护的那一个）",
+  );
+
+  /* ==================== [5] 会话 markdown 落点 ==================== */
+  console.log("\n[5] 会话正文的 markdown 都装在 .md 里");
+  const assist = read("renderer/app-assist.js");
+  ok(
+    (assist.match(/className = "md"/g) || []).length >= 2,
+    "分段正文段（dsh-seg-say）与历史段渲染都各自套一层 .md",
+  );
+  ok(
+    /<div class="md">' \+ renderMarkdown/.test(assist),
+    "旧整条渲染（无分段轨迹时）也走 .md —— 本次修复对两条路径同时生效",
+  );
+  ok(
+    read("renderer/app.js").indexOf('doc.className = "md-viewer-doc md"') >= 0,
+    "应用内 Markdown 阅读器也带 .md 类（同款换行口径）",
+  );
+
+  /* ==================== [6] breaks:true ==================== */
+  console.log("\n[6] renderMarkdown 仍按聊天口径转义并换行");
+  const appjs = read("renderer/app.js");
+  const rmAt = appjs.indexOf("function renderMarkdown(text)");
+  const rmBody = rmAt >= 0 ? appjs.slice(rmAt, appjs.indexOf("\n}\n", rmAt)) : "";
+  ok(rmBody.indexOf("breaks: true") >= 0, "renderMarkdown 保持 breaks:true（否则用户单回车真的会消失）");
+  ok(rmBody.indexOf("escapeHtml(text)") >= 0, "renderMarkdown 先转义 HTML（渲染口径未被这次改动带偏）");
+
+  /* ==================== [7] 节点浏览视图 ==================== */
+  console.log("\n[7] 节点只读视图：只有 yaml / plain 内联 pre-wrap");
+  const nodeview = read("renderer/app-nodeview.js");
+  const mdBranch = nodeview.slice(
+    nodeview.indexOf('if (lang === "md")'),
+    nodeview.indexOf('body.className = "ntv-plain"'),
+  );
+  ok(mdBranch.length > 0, "切到节点视图的 md 分支源码");
+  ok(mdBranch.indexOf("whiteSpace") < 0, "md 分支不设内联 white-space（交给 CSS，不复活 pre-wrap）");
+  ok(
+    nodeview.indexOf('pre.style.whiteSpace = "pre-wrap"') >= 0 &&
+      nodeview.indexOf('body.style.whiteSpace = "pre-wrap"') >= 0,
+    "yaml / plain 分支仍显式保留换行（它们装的是纯文本，不是 markdown）",
+  );
+
+  console.log(
+    "\n" +
+      (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
+      "  (smoke-session-wrap)",
+  );
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-session-wrap.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-session-wrap.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-session-styling.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-session-styling.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  "use strict";
+  const fs = require("node:fs");
+  const path = require("node:path");
+
+  let pass = 0;
+  let fail = 0;
+  function ok(cond, label) {
+    if (cond) {
+      pass++;
+      console.log("  ✓ " + label);
+    } else {
+      fail++;
+      console.log("  ✗ " + label);
+    }
+  }
+
+  const ROOT = path.resolve(__dirname, "..");
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
+
+  console.log("session-styling smoke");
+
+  /* ── [1] 令牌文件与装配顺序 ─────────────────────────────────────────────── */
+  const tokensPath = "renderer/css/dsh-tokens.css";
+  ok(fs.existsSync(path.join(ROOT, tokensPath)), "[1] " + tokensPath + " 存在");
+  const tokens = read(tokensPath);
+  ok(/--dsh-pane-bg\s*:/.test(tokens), "[1] 定义了 --dsh-* 语义令牌");
+  ok(/var\(--bg2\)/.test(tokens) && /var\(--ink\)/.test(tokens), "[1] 令牌值引用 base.css 的主题槽位（暗/亮同源，不写死 hex）");
+  ok(/\.dsh-view-tabs/.test(tokens) && /\.dsh-view-tab\b/.test(tokens), "[1] View 标签栏样式在位");
+  ok(/\.dsh-trace-list/.test(tokens) && /\.dsh-trace-row/.test(tokens), "[1] 轨迹列表样式在位");
+  ok(/\.dsh-trace-detail/.test(tokens) && /\[open\]/.test(tokens), "[1] 工具调用可展开详情样式在位");
+  ok(/\.dsh-trace-col/.test(tokens) && /position:\s*absolute/.test(tokens), "[1] 轨迹栏压在第三栏（绝对定位，与浏览器活动互斥）");
+  /* 亮色不加特例：令牌引用槽位，theme-light 重定义槽位即可（有特例就说明又写死了颜色） */
+  ok(!/theme-light/.test(tokens), "[1] 令牌文件里没有亮色特例（亮色靠槽位重定义，不再逐条补覆盖）");
+
+  const style = read("renderer/style.css");
+  const iDsh = style.indexOf("./css/dsh.css");
+  const iTokens = style.indexOf("./css/dsh-tokens.css");
+  const iAssist = style.indexOf("./css/assist.css");
+  ok(iTokens > 0, "[1] style.css 引入了 dsh-tokens.css");
+  ok(iDsh >= 0 && iTokens > iDsh && iAssist > iTokens, "[1] 装配顺序：dsh.css → dsh-tokens.css → assist.css");
+
+  /* ── [2] 会话「对话 / 轨迹」View 的接线（本次需求：轨迹从右栏升为主区第二个 View）───── */
+  const html = read("renderer/index.html");
+  ok(/<script src="app-trajectory\.js"><\/script>/.test(html), "[2] index.html 引入了 app-trajectory.js");
+  const iBrowser = html.indexOf('<script src="app-browser.js"></script>');
+  const iTraj = html.indexOf('<script src="app-trajectory.js"></script>');
+  ok(iBrowser >= 0 && iTraj > iBrowser, "[2] 排在 app-browser.js 之后（与它同一段装配，互不侵入）");
+
+  const traj = read("renderer/app-trajectory.js");
+  ok(/window\.MTNodeTrajectory\s*=/.test(traj), "[2] 导出 window.MTNodeTrajectory");
+  ok(/agentTraceItems|agentChatSegItems/.test(traj), "[2] 只读 app-assist.js 已有的轨迹段数据（不新增会话接口）");
+  ok(/data-seg-idx|dataset\.segIdx/.test(traj), "[2] 轨迹↔对话双向定位用对话区自己的段编号（dataset.segIdx）");
+  ok(/developerTools\s*!==\s*false/.test(traj), "[2] 检查器受 developerTools 开关约束（缺配置 = 默认开）");
+  ok(/trajView/.test(traj) && !/ba-open/.test(traj), "[2] 视图选择落在会话语义上（st.trajView），不再借右栏 .ba-open");
+  ok(
+    /tabsEl\.className = "dsh-view-tabs agent-view-tabs"/.test(traj) && /"对话"[\s\S]{0,120}?"轨迹"/.test(traj),
+    "[2] 会话头部「对话 / 轨迹」两枚标签（复用 dsh-tokens 的 .dsh-view-tabs 皮）",
+  );
+  ok(
+    /dsh-trace-ruler/.test(traj) && /dsh-trace-insp/.test(traj),
+    "[2] 主区轨迹 = 窗口横轴 + 记录表 + 检查器（本轮撤掉列表外那条总时间轴后只剩这一条轴）",
+  );
+  ok(/fileviewHighlight/.test(traj), "[2] 检查器的代码块复用右侧文件面板的词法高亮（行号 + 着色，不另起一套）");
+
+  /* ── [3] 设置项与缺省 ───────────────────────────────────────────────────── */
+  const boot = read("renderer/app-boot.js");
+  ok(/developerTools:\s*true/.test(boot), "[3] 配置缺省 developerTools: true（默认开）");
+  const settings = read("renderer/app-settings.js");
+  ok(/developerTools/.test(settings) && /devCb\.type\s*=\s*"checkbox"/.test(settings), "[3] 设置页有开发者工具开关");
+  ok(/developerTools:\s*dshEls\.developerTools/.test(settings), "[3] 开关进 collect()（关窗写盘不丢值）");
+  ok(/developerTools:\s*true/.test(settings), "[3] finalizeSettings 的缺省合并里有该键");
+  const i18n = read("renderer/i18n.js");
+  ok(/开发者工具（会话右栏「运行轨迹」视图/.test(i18n), "[3] 设置项有中英词条（i18n）");
+  ok(/Developer tools \(a Run trajectory view/.test(i18n), "[3] 英文词条在位");
+
+  /* ── [4] 版本（0.2 内核）口径仍钉住 ─────────────────────────────────────── */
+  const pkg = JSON.parse(read("dsh/gateway/package.json"));
+  ok(pkg.dependencies["@deepseek-ai/dsh"] === "0.2.0-rc.2", "[4] 网关仍锁 0.2.0-rc.2");
+  ok(String(pkg.dependencies["@deepseek-ai/cordis"]).startsWith("4."), "[4] cordis 仍在 4.x 线");
+
+  console.log("\nsession-styling smoke: pass " + pass + " / fail " + fail);
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-session-styling.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-session-styling.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
+if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+process.exit(MERGED_FAILED ? 1 : 0);

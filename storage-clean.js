@@ -1075,6 +1075,12 @@ const ALL_IDS = [
   "sessions",
 ];
 
+/* 界面语言：存储统计跑在 worker 线程里，统计标签（分类名 / 提示 / 细节）得跟着语言走。
+   单独一个入口，不动 registerStorageIpc 的既有签名（test/smoke-storage-clean.js 钉着那行源码）。 */
+function setScanLocale(fn) {
+  getLocale = typeof fn === "function" ? fn : null;
+}
+
 /* ---------------- 后台线程扫描 ---------------- */
 
 /* 扫描搬进 worker_threads：本机数据目录 19729 个文件 / 7 GB，一次 scan 实测 5.1–5.9s，原先
@@ -1136,7 +1142,6 @@ function registerStorageIpc(opts) {
   const o = opts || {};
   if (typeof o.getDataDir === "function") getDataDir = o.getDataDir;
   if (typeof o.t === "function") t = o.t;
-  if (typeof o.getLocale === "function") getLocale = o.getLocale;
   if (typeof o.rollbackGc === "function") rollbackGc = o.rollbackGc;
   ipcMain.handle("storage:scan", async (e, arg) => {
     try {
@@ -1157,6 +1162,7 @@ function registerStorageIpc(opts) {
 
 module.exports = {
   registerStorageIpc,
+  setScanLocale,
   scan,
   clean,
   WF_BACKUP_KEEP,

@@ -42,3 +42,15 @@ solely by the Thinking level control in the UI):
 - A more complex job along the canvas that reads and writes files by itself → an agent node.
 - Changing the canvas itself → the right-hand assistant.
 - Programs and software development → use a session directly (close to how Codex is used), or click a dev node's Develop button to create one.
+
+### Turns and cleanup
+
+The top of the conversation area shows one line, “Turn N · HH:MM” — turn N is **how many times you
+have sent in this session** (the same number the trajectory view uses). The instant a new turn
+starts, the previous turn's *finished* Plan and Task list are cleared automatically (the data is
+deleted too, so switching sessions or restarting never brings them back) — that way last turn's
+records are not mistaken for what this turn should do. If the previous turn still has **unfinished**
+items the panel is kept as is and its header shows “N item(s) left over from the previous turn”;
+press Continue in the panel to keep going. While a plan is running, or while the session is paused,
+nothing is cleared (you never lose running progress or the Continue button).
+

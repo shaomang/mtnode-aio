@@ -335,6 +335,24 @@ const byId = (s) => {
   has(SETTINGS, "runningWfIds: protectedIds()", "清理时把运行中画布 id 传给主进程");
   has(SETTINGS, "const scPick = (rows) => {", "清理前有二次确认（scPick）");
   has(SETTINGS, 'I18n.t("全部清理")', "有「全部清理」入口");
+  /* 建了 sec 却忘了登记 → 小节只留在内存里，用户在设置里根本看不到入口（真实踩过的坑） */
+  has(SETTINGS, "tailSecs.storage = sec;", "存储小节登记进 tailSecs（否则不会挂进设置面板）");
+  {
+    const regKeys = [...SETTINGS.matchAll(/tailSecs\.(\w+)\s*=\s*sec/g)].map((m) => m[1]);
+    const orderM = SETTINGS.match(/const tailOrder = \[([^\]]*)\]/);
+    const orderKeys = orderM
+      ? (orderM[1].match(/"(\w+)"/g) || []).map((s) => s.replace(/"/g, ""))
+      : [];
+    ok(
+      regKeys.length >= 4 && regKeys.every((k) => orderKeys.includes(k)),
+      "每个 tailSecs 登记的小节都在 tailOrder 里（登记=" +
+        regKeys.join("/") +
+        " · tailOrder=" +
+        orderKeys.join("/") +
+        "）",
+    );
+    ok(orderKeys.includes("storage"), "tailOrder 含 storage，函数末尾会把它补挂进 body");
+  }
   has(CSS, ".sc-row", "样式补齐分类行");
   has(CSS, ".sc-pick", "样式补齐确认清单");
   has(BUILD, '"storage-clean.js"', "build.json 白名单已加 storage-clean.js");

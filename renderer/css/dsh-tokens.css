@@ -10,6 +10,12 @@
    结构口径参考 dsh 桌面版（View 标签栏 / 轨迹列表 / 工具调用可展开详情）与 MTNode
    现有实现同源：轨迹段模型仍由 renderer/app-db.js 的 runTrace 提供，这里只给皮。
 
+   本轮（行皮肤与滑窗拖动）：轨迹段行的**色块与左轨与对话一致** —— 左轨 **2px**
+   （真 border-left，与对话 .dsh-seg-* 同一条通道；行是 border-box，外宽不变，
+   2px 由左内边距让回）+ 行的**右侧圆角** + 对话同款淡底（.dsh-trace-row.t-*
+   一条条对齐 css/dsh.css 的 .dsh-seg-*）；轴上的滑窗带 .dsh-trace-window **可按住拖动
+   平移时间**（窗长不变，下方列表随之滚动到对应位置）。
+
    放置顺序：紧跟 css/dsh.css（style.css 的 @import 表），排在 assist.css 之前 ——
    令牌先就位，两个窗格的样式再取用；亮色主题分片在其后，槽位重定义照样生效。 */
 
@@ -39,6 +45,21 @@
   --dsh-warn: var(--yellow);
   --dsh-err: var(--red);
   --dsh-err-bg: color-mix(in srgb, var(--red) 12%, transparent);
+  /* 文件改动 diff（本次需求 · 对齐上游 --dsw-alias-code-diff-{added,deleted} 与
+     file-diff-{added,deleted}-{bg,gutter,marker} 三件套）：行底色 + 左侧 3px 内嵌色条。
+     值一律由主题槽位混出，亮暗两套主题同源。 */
+  --dsh-diff-add: var(--green);
+  --dsh-diff-del: var(--red);
+  --dsh-diff-add-bg: color-mix(in srgb, var(--green) 12%, transparent);
+  --dsh-diff-del-bg: color-mix(in srgb, var(--red) 12%, transparent);
+  /* 工具行「运行中」的呼吸灯（dsh.css 的 .dsh-tool.st-running .dsh-tool-chip）：
+     只呼吸**边框**这一条通道 —— 三档百分数 + 一个周期，都作用在 --dsh-accent 上。
+     原来那道「扫光」底纹（--dsh-shimmer）动效太闪，已停用；令牌留着给别处备用。 */
+  --dsh-shimmer: color-mix(in srgb, var(--ink) 22%, transparent);
+  --dsh-tool-breath-lo: 42%;
+  --dsh-tool-breath-mid: 62%;
+  --dsh-tool-breath-hi: 88%;
+  --dsh-tool-breath-dur: 2.4s;
 
   /* ── 形状与节奏（圆角 / 间距 / 行高，四档各一）─────────────────────────── */
   --dsh-r-sm: 4px;
@@ -56,8 +77,62 @@
   --dsh-tab-ink: var(--muted);
   --dsh-tab-ink-on: var(--ink);
   --dsh-tab-underline: var(--cyan);
-  --dsh-trace-row-h: 26px;
-  --dsh-trace-rail: color-mix(in srgb, var(--bd2) 70%, transparent);
+  /* 固定行高 32px（会话轨迹）：行内并排放「时刻 · 耗时 · 每步 token 读数 | 正文摘要」。
+     仍是**固定**行高 —— 轨迹视图的虚拟滚动按它算占位高度，改成自适应会牵动整套窗口裁剪。
+     本次口径：行首的轴栏（序号刻度 / 节点圆点 / 贯穿竖轨）整条撤掉，时间上横轴。 */
+  --dsh-trace-row-h: 32px;
+  /* 行内读数栏（时刻 · 耗时 · 每步 token）的**定宽**（本次需求 · 行栅格统一）：
+     段行与分组头的第一列都是它 —— 所有行的正文因此从同一条竖线起排（不再各行一个起点），
+     读数栏也再不会去抢正文的宽度。窄栏逐级收列时这个宽度跟着收（见下面两处 @media）。 */
+  --dsh-trace-tick-w: 152px;
+  /* ── 横轴（本次需求 · 整个会话的总时间轴，固定在列表上方；当前视窗用滑窗带标出）──
+     轴里装四样（**从上到下**）：整个会话跨度内等距的绝对时刻刻度（2–4 个）/ 固定 3 轨的
+     色块时间带（一次工具调用 = 一块）/ 本视窗读数 / 工具族图例。轴高由这一行令牌守着。
+     高度账（改之前先算这一笔）：内容框 = 轴高 − 上下内边距（3 + 5）− 上下边框（1 + 1）= 轴高 − 10；
+     内容 = 刻度行 13 + 3 轨（3 × --dsh-trace-track-h）+ 读数行 12 + 图例行 12（族多会换行）。
+     本轮 96px：内容框 86 ≥ 内容 79 —— 图例不再被 overflow:hidden 裁掉。
+     历史坑：上一版 62px 时内容框只有 52px，而内容至少 58px —— 图例**必然**被裁掉一半
+     （用户报的「下方 legend 被遮挡」就是这个算法失衡，不是 z-index 或遮挡问题）。 */
+  --dsh-trace-ruler-h: 96px;
+  /* 轨高 = 一枚描边块放得下的值：块高 = 轨高 − 2×1px 描边余量（14 − 2 = 12px）。
+     上一版 7px（块只有 5px 高）在真机上「太小难以点击」—— 用户口径要求放大；
+     3 轨 × 14 = 42px，轴抬到 96px 后仍装得下脚下两行。轨数**仍固定 3 条**：
+     轴高因此恒定，超出的调用并轨叠画（轨右给「叠 N」），不靠加轨长高。 */
+  --dsh-trace-track-h: 14px;
+  --dsh-node-think: var(--muted);
+  --dsh-node-say: var(--cyan);
+  --dsh-node-tool: var(--orange);
+  --dsh-node-err: var(--red);
+  --dsh-node-ctx: color-mix(in srgb, var(--muted) 55%, var(--bd2));
+  --dsh-node-on: color-mix(in srgb, var(--cyan) 70%, var(--ink));
+  --dsh-node-glow: color-mix(in srgb, var(--dsh-node-on) 30%, transparent);
+  /* ── 工具族色（本次需求 · 轴上色块 / 列表工具名 / 图例三处同源）──────────────
+     轴上「哪一类工具」这一维度只有这一份定义：族 → 色。族由 renderer/app-trajectory.js
+     的 TOOL_FAMILIES 按工具名粗分（9 族 + 兜底「其它」），族色全部引用主题槽位或由槽位
+     混出，亮暗两套主题都不用另写分片。#c792ea 是仓库既有的「AI 紫 / 工具库紫」
+     （css/layout.css 的 .btn-tools、css/dsh.css 的 .dsh-tool-chip.t-custom 同色），
+     子代理用它：与「另有智能体在跑」这个语义一眼对得上。 */
+  --dsh-fam-read: var(--cyan);
+  --dsh-fam-write: var(--orange);
+  --dsh-fam-run: var(--green);
+  --dsh-fam-web: var(--yellow);
+  --dsh-fam-sub: #c792ea;
+  --dsh-fam-own: color-mix(in srgb, var(--cyan) 40%, #c792ea);
+  --dsh-fam-browser: color-mix(in srgb, var(--cyan) 45%, var(--green));
+  --dsh-fam-job: color-mix(in srgb, var(--green) 45%, var(--yellow));
+  --dsh-fam-talk: var(--orange2);
+  --dsh-fam-other: var(--muted);
+  /* ── 轨迹面板内部的层叠标尺（本次需求 · 层级钉死，唯一真源）────────────────────
+     只在本面板内比大小，与全局浮层不在一个量级：
+       行流 / 行 / 分组头            auto（0，不进标尺）
+       右侧检查器                    --dsh-z-trace-insp （3，自成一层，轴与行都不许盖它）
+       回到底部浮标                  --dsh-z-trace-tail （4，面板内最上）
+     面板**不设 z-index**（.dsh-trace-main 只是普通块），所以它不另开层叠上下文；
+     全局浮层（@ 引用 / 斜杠候选 #refMenu .fn-ctx = 998、命令面板 = 12000）永远在最上，
+     顶部横轴本轮已搬出滚动容器（列表之外的固定一行，与列表不重叠），不再需要自己的档位。
+     面板内部的 3/4 翻不上去 —— 下拉候选不会被轨迹面板盖住。 */
+  --dsh-z-trace-insp: 3;
+  --dsh-z-trace-tail: 4;
 }
 
 /* View 标签栏（会话右栏顶部：轨迹 / 浏览器活动 / …）——通用皮，谁挂谁用。 */
@@ -115,7 +190,9 @@
   text-align: center;
 }
 
-/* 轨迹列表：一行一步（think / say / tool / err），左侧一条竖轨串起来。 */
+/* 轨迹列表：一行一步（think / say / tool / err）。**行内不再画竖轨** ——
+   时间已上横轴（.dsh-trace-ruler，固定在**本列表上方**、列表之外那一行），行的两栏是
+   「时刻 · 耗时 · 每步 token 读数 | 正文摘要」，正文从读数后面铺满到行右缘。 */
 .dsh-trace-list {
   display: flex;
   flex-direction: column;
@@ -124,13 +201,24 @@
   overflow-y: auto;
 }
 
+/* 段行 = **唯一的 grid 定义**（本次需求 · 行栅格统一）。
+   先前这里有**两份**同名规则：一份 flex 组（display:flex + align-items:flex-start +
+   gap + min-height + 4px/18px 内边距），紧接着一份 grid 组（display:grid + 两栏 + 居中 +
+   0 8px 内边距）—— 后一份把前一份整个盖掉，等于白写一遍，读数栏宽度还在两份之间打架。
+   现在合成一份，口径只有这一处：
+     · 列 = 读数栏（**定宽** --dsh-trace-tick-w，不收缩、不抢正文宽度）| 正文 minmax(0,1fr)；
+     · 行高**固定** --dsh-trace-row-h（虚拟滚动的占位公式按它算），内容在行内垂直居中；
+     · 行首不再给竖轴让位（原先是 18px 左内边距 + 行首的轴栏）。
+   行在滚动容器里的定位（position:absolute + left/right + overflow）在下面
+   「虚拟滚动」一节，与这里的栅格各管一段、互不打架。 */
 .dsh-trace-row {
   position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--dsh-gap-sm);
-  min-height: var(--dsh-trace-row-h);
-  padding: 4px 6px 4px 18px;
+  display: grid;
+  grid-template-columns: var(--dsh-trace-tick-w) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  height: var(--dsh-trace-row-h);
+  padding: 0 8px;
   border-radius: var(--dsh-r-md);
   color: var(--dsh-ink);
   font-size: 12px;
@@ -146,48 +234,276 @@
   background: var(--dsh-accent-soft);
 }
 
-/* 竖轨与节点圆点：未完成的步骤是空心点，完成的是实心（状态色语义）。 */
-.dsh-trace-row::before {
-  content: "";
-  position: absolute;
-  left: 7px;
-  top: 12px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  border: 1px solid var(--dsh-trace-rail);
-  background: var(--dsh-pane-bg);
+/* 还在跑的段（本轮运行中）：左边一条柔光 —— 竖轴撤掉后，行内**不写任何「运行中」字样**，
+   「还在跑」只由这条柔光与轴上块的呼吸一起表达。
+   柔光**独占** box-shadow 这条通道（段轨已改成真 border-left，见下一节）：
+   两者不再挤同一条 box-shadow 里互相覆盖；行带左轨时内阴影从**内边距边**起画，
+   正好落在轨的内侧，轨与柔光各占各的 2px。 */
+.dsh-trace-row.run {
+  box-shadow: inset 2px 0 0 0 var(--dsh-node-on);
 }
 
-.dsh-trace-row + .dsh-trace-row::after {
-  content: "";
-  position: absolute;
-  left: 10px;
-  top: -6px;
-  width: 1px;
-  height: 18px;
-  background: var(--dsh-trace-rail);
-}
-
-.dsh-trace-row.t-think::before { border-color: var(--dsh-think); }
-.dsh-trace-row.t-say::before { border-color: var(--dsh-accent); background: var(--dsh-accent); }
-.dsh-trace-row.t-tool::before { border-color: var(--dsh-tool); background: var(--dsh-tool); }
-.dsh-trace-row.t-err::before { border-color: var(--dsh-err); background: var(--dsh-err); }
-
-.dsh-trace-kind {
-  flex: 0 0 auto;
-  min-width: 46px;
+/* ── 段行的段型皮肤（本次需求 · 用户口径「下面具体项目样式与对话一致」）──────────────
+   对话视图里每段长什么样（css/dsh.css 的 .dsh-seg-*），轨迹的行就照同一套**逐值**来：
+     · 思考 .t-think = 灰左轨 2px var(--bd2) + 极淡底 rgba(255,255,255,.025) + 灰字
+       （对话 .dsh-seg-think：border-left 2px solid var(--bd2) / rgba(255,255,255,.025)
+        / border-radius 0 3px 3px 0 / color var(--muted)，本层用它自己的 --dsh-ink-dim 同值令牌）；
+     · 工具 .t-tool  = 青左轨 2px var(--cyan) + 青底 rgba(56,214,255,.045) + 等宽青字
+       （对话 .dsh-seg-tool 同款同值）；
+     · 正文 .t-say   = 无轨无底的正常正文（对话 .dsh-seg-say）—— 一行都不写，别给它加皮；
+     · 失败 .t-err / 工具行的 .err = 红轨**压过族色**（工具行身上是 t-tool + err，红轨盖掉青轨），
+       同样只留右侧 3px 圆角。
+   **左轨改成真 border-left**（对话那两段本来就是 border-left，皮肤因此逐值同款）：
+   行是 grid + box-sizing:border-box，2px 轨**不改外宽**；被它挤窄的 2px 内容框由
+   下面「轨宽让位」一节的左内边距让回，读数栏与正文照旧落在同一条竖线上。
+   行高 --dsh-trace-row-h 与定宽读数栏 --dsh-trace-tick-w 一个字不动。 */
+.dsh-trace-row.t-think {
   color: var(--dsh-ink-dim);
-  font-size: 11px;
+  background: rgba(255, 255, 255, .025);
+  border-left: 2px solid var(--bd2);
+  border-radius: 0 3px 3px 0;
 }
 
-.dsh-trace-row.t-tool .dsh-trace-kind { color: var(--dsh-tool); }
-.dsh-trace-row.t-err .dsh-trace-kind { color: var(--dsh-err); }
+.dsh-trace-row.t-tool {
+  color: var(--cyan2);
+  font-family: var(--dsh-mono);
+  font-size: 11px;
+  background: rgba(56, 214, 255, .045);
+  border-left: 2px solid var(--cyan);
+  border-radius: 0 3px 3px 0;
+}
 
-.dsh-trace-body {
-  flex: 1 1 auto;
+.dsh-trace-row.t-err,
+.dsh-trace-row.err {
+  color: var(--dsh-err);
+  background: color-mix(in srgb, var(--dsh-err) 6%, transparent);
+  border-left: 2px solid var(--dsh-node-err);
+  border-radius: 0 3px 3px 0;
+}
+
+/* 轨宽让位：2px 左轨由左内边距让回（8 − 2 = 6），带轨行的内容框与无轨行 / 分组头等宽 ——
+   读数栏与正文因此仍与 .dsh-trace-group 的标题落在同一条竖线上。 */
+.dsh-trace-row.t-think,
+.dsh-trace-row.t-tool,
+.dsh-trace-row.t-err,
+.dsh-trace-row.err {
+  padding-left: 6px;
+}
+
+/* 运行中 × 段型：**不再需要组合规则** —— 柔光是 box-shadow、段轨是 border-left，
+   两条通道各写各的（原先两条竖轨挤在同一条 box-shadow 里，一改就互相覆盖）。 */
+
+/* 悬浮 / 选中的行底：段型的淡底让位（行底是交互态的唯一底色，别两套底色打架）。
+   失败行（t-err / 工具行的 .err）也列进来：它的段型底同样要让位给交互色。 */
+.dsh-trace-row.t-think:hover,
+.dsh-trace-row.t-tool:hover,
+.dsh-trace-row.t-err:hover,
+.dsh-trace-row.err:hover {
+  background: var(--dsh-card-bg-2);
+}
+
+.dsh-trace-row.on,
+.dsh-trace-row.t-think.on,
+.dsh-trace-row.t-tool.on,
+.dsh-trace-row.t-err.on,
+.dsh-trace-row.err.on {
+  background: var(--dsh-accent-soft);
+}
+
+/* 没有读数栏的行（如设置里的工具调用轨迹列表）让正文铺满整行 */
+.dsh-trace-row > .dsh-trace-body:first-child {
+  grid-column: 1 / -1;
+}
+
+/* 行里**一个元素子节点都没有**的行（如设置里那条纯文本的工具调用行）：
+   单栏铺满整幅宽 —— 否则那行字会被读数栏的定宽切一刀（挤成两行、再被固定行高裁掉）。 */
+.dsh-trace-row:not(:has(> *)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* 行内读数栏：时刻（有真实值才标）/ 耗时 / 每步 token —— 都在这一格里，缺失只留一枚淡点。
+   列宽由行的 --dsh-trace-tick-w 定死（不是 auto），所以这里**不参与伸缩**：
+   flex:none 写死「不涨不缩」，读数栏绝不会去抢正文的宽度（行是 grid，这句同时是给后人的口径）。
+   窄栏（会话右栏 / 开发页那种窄主区）逐级收列：先收 token、再收时长，时刻永远留着 ——
+   一行装不下时宁可少给读数，也不能让正文摘要被挤成两行（固定行高下就是被裁掉）；
+   收列时 --dsh-trace-tick-w 跟着收（见下面两处 @media），读数栏一起让宽。
+   等宽字体 + 定宽列保证同列的时刻对齐成一条竖线，且每行的正文都从同一条竖线起排。 */
+.dsh-trace-tick {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 6px;
   min-width: 0;
+  overflow: hidden;
+  color: var(--dsh-ink-faint);
+  font-family: var(--dsh-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.dsh-trace-tick-at {
+  min-width: 34px;
+}
+
+/* ── token 计数的配色（本次需求 · 用户口径「更醒目的绿色和蓝色」）────────────────
+   入口蓝、出口绿，一处定义**四**处共用（类名固定 .dsh-tok-in / .dsh-tok-out）：
+     · 轨迹行内读数栏 .dsh-trace-tick-tok；
+     · 右侧检查器的 meta（「本步 token …」）；
+     · 左下角 Token 报告 .tok-badge 的摘要行（.dsh-tok 容器里两段 span）；
+     · 同一份报告的「按模型 / 按轮次」表格与合计行的「计费输入 / 输出」两列（<td> 直接用色类）。
+   .dsh-tok 只是**并排容器**（inline-flex + 4px 间距），色只在两个色类上 ——
+   于是同一对色类既能用在 span 上、也能直接用在 td 上，不必两套。
+   **标签不上色**：摘要行「入 182K · 出 12.3k」里的「入」与「 · 出」是 .dsh-tok-label
+   （中性墨色，字号字重都不变），只有两段数码落进 .dsh-tok-in / .dsh-tok-out ——
+   本轮修复（用户报「token 入和出中的『出』字被错误上色」）：此前「 · 出」被塞进
+   绿色那一段里，标签跟着数码一起变绿。
+   令牌用 --cyan（亮蓝 #38d6ff）与 --green（绿 #5fd68a）：亮色主题自动换成深蓝 / 深绿，
+   不必另写分片。 */
+.dsh-tok {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+/* 标签（「入」/「 · 出」/ 拉丁 Out）：中性墨色，不吃输入蓝 / 输出绿 */
+.dsh-tok-label {
+  color: inherit;
+  font-weight: 400;
+}
+
+.dsh-tok-in {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.dsh-tok-out {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.dsh-tok-calls {
+  color: var(--dsh-ink-faint);
+  font-weight: 400;
+}
+
+/* 「（新增 N）」小字（本次需求 · 每步 token 的两步口径）：纯新增输入不是第二个数字，
+   而是一句说明 —— 所以它不落输入蓝、也不加粗，跟随容器墨色但更淡一级。
+   与 .dsh-tok-calls 同样只在 .dsh-tok 里当第三段（inline-flex 容器自带 4px 间距）。 */
+.dsh-tok-new {
+  color: var(--dsh-ink-faint);
+  font-weight: 400;
+}
+
+/* Token 报告的两张表（按模型 / 按轮次）与合计行：`<td>` 直接用上面那对色类。
+   **选择器必须写到与 dsh.css 的 `.tok-badge-table td`（0,2,1）同权以上** ——
+   那一份规则里有 `color: var(--ink)`（合计行还有 `tr.tok-badge-total td` 0,2,2），
+   只写单类名会被它盖掉：真浏览器实测两列仍是普通墨色（td 拿到的是 --ink）。
+   所以这里写成 `.tok-badge-table td.dsh-tok-*`（0,2,1，靠后即胜）与
+   `.tok-badge-table tr.tok-badge-total td.dsh-tok-*`（0,2,2，压过合计行那条）。 */
+.tok-badge-table td.dsh-tok-in,
+.tok-badge-table tr.tok-badge-total td.dsh-tok-in {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.tok-badge-table td.dsh-tok-out,
+.tok-badge-table tr.tok-badge-total td.dsh-tok-out {
+  color: var(--green);
+  font-weight: 600;
+}
+
+/* 没有真实时刻的那一栏：只留一枚淡点（满格占位会把正文摘要挤出固定行高） */
+.dsh-trace-tick-at.off {
+  min-width: 0;
+  color: var(--dsh-ink-faint);
+  opacity: .55;
+}
+
+/* 窄栏逐级收列 + 读数栏定宽跟着收：收起的那一列不再占宽，正文摘要就能多留几个字 */
+@media (max-width: 900px) {
+  :root {
+    --dsh-trace-tick-w: 96px;
+  }
+
+  .dsh-trace-tick-tok {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --dsh-trace-tick-w: 52px;
+  }
+
+  .dsh-trace-tick-dur {
+    display: none;
+  }
+}
+
+.dsh-trace-tick b {
+  color: var(--dsh-ink-dim);
+  font-weight: 500;
+}
+
+.dsh-trace-row.t-err .dsh-trace-tick b { color: var(--dsh-err); }
+
+/* 正文格（行的第二栏）：**一行到底** —— 行高固定 32px，第二行装不下就会被行裁掉。
+   所以这里是 flex 单行（nowrap），把「正文摘要 + 展开开关」「工具名 + 失败标记」都压在
+   同一行里：它们原是块级兄弟，第二件被挤到行外看不见也点不到（展开开关 / 失败标记都中招）。
+   min-width:0 是省略号生效的前提（否则长内容按 max-content 撑开，右缘溢出到行外被裁）；
+   overflow:hidden 兜住任何算不准的子项（检查器的详情块等）。 */
+.dsh-trace-body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+/* 分组头（轮头 / 助手头）：**与段行同一套栅格**（本次需求 · 第三次统一）——
+   第一列 = 段行的读数栏定宽（--dsh-trace-tick-w），标题因此与段行的正文摘要**落在同一条竖线上**；
+   折叠三角贴在这列右端（紧挨自己的标题，不在行首孤零零飘着）。
+   后一列再分两栏：标题（max-content，长了就省略号截断）| meta（右对齐到行右缘）——
+   meta 占**自己的一栏**，标题再长也压不到它（原先是同一格里 justify-self:end，两个会叠）。
+   分组头**不画节点圆点、也不画竖轨**（时间在横轴上，行内没有轴可骑）。
+   行高 / 绝对定位 / 悬浮态在下面「分组头」一节，与这里的栅格各管一段。 */
+.dsh-trace-group {
+  display: grid;
+  grid-template-columns: var(--dsh-trace-tick-w) minmax(0, max-content) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  padding: 0 8px;
+  border-radius: 0;
+}
+
+.dsh-trace-group.g-turn {
+  /* 轮头与上一轮之间那条分隔线（配色与它在虚拟滚动里的落点见下面「分组头」一节） */
+  border-top: 1px solid var(--dsh-bd);
+}
+
+.dsh-trace-group .dsh-trace-caret {
+  justify-self: end;
+  width: auto;
+  text-align: center;
+}
+
+/* 标题：长了截断，不许顶掉右边的 meta（同一行里 meta 是独立一栏，见上） */
+.dsh-trace-group .dsh-trace-group-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* meta：右对齐到行右缘 —— 每个分组头的落点都一致（不再跟标题的长短走）。
+   窄栏里它自己截断（min-width:0 + overflow:hidden），**不会反过来压到左边标题上**。 */
+.dsh-trace-group .dsh-trace-group-meta {
+  justify-self: end;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 工具调用详情：可展开（dsh 桌面版同款），收起时只留一行标题，展开后是等宽明细。 */
@@ -249,29 +565,756 @@
   text-align: center;
 }
 
-/* ── 轨迹栏（会话右栏 · 第三栏）────────────────────────────────────────────
-   grid 只有三列：本栏用绝对定位压在同一列（浏览器活动栏）上，与它互斥显示。
-   显示 = 该栏内出现「轨迹」视图；隐藏（更常见）= 旧界面一字不差。 */
-.dsh-trace-col {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: var(--ba-w, 340px);
-  display: flex;
-  flex-direction: column;
-  background: var(--dsh-pane-bg);
-  border-left: 1px solid var(--dsh-bd);
-  z-index: 3;
+/* 长会话不再硬截断：记录表按页挂（见 app-trajectory.js 的 TRACE_PAGE），
+   更早的一页由这一行加载控件拉进来 —— 与空态同一族的细提示，不抢记录表的视觉重量。 */
+.dsh-trace-more {
+  display: block;
+  width: 100%;
+  padding: var(--dsh-gap-sm) var(--dsh-gap-md);
+  border: 0;
+  border-bottom: 1px solid var(--dsh-bd);
+  background: none;
+  color: var(--dsh-ink-dim);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
 }
 
-.dsh-trace-col[hidden] {
+.dsh-trace-more:hover {
+  color: var(--dsh-ink);
+  background: var(--dsh-card-bg-2);
+}
+
+.dsh-trace-more[hidden] {
   display: none;
 }
 
-.dsh-trace-col .dsh-trace-list {
+/* ── 轨迹视图（会话主区里的第二个 View · 本次需求）───────────────────────────
+   对齐上游 dsh-client-ui-trajectory 的读法：主区顶部一排「对话 / 轨迹」标签，
+   选中轨迹就把主区换成「时间概览 + 事件记录表 + 右侧检查器」；底部一条状态条。
+   右栏（第三栏）留给浏览器活动与文件预览 —— 轨迹不再占那一格。 */
+.agent-view-tabs {
+  flex: 0 0 auto;
+}
+
+/* 轨迹视图 = 会话主区的**整块**视图（本次需求）：主区铺满 .agent-body 的整高整宽，
+   对话视图那一套件（消息区 / 清单面板 / 输入区 / 脚部 token 报告）一并让位。
+   三层一起写，缺一条就会被看见（谁先谁后都不吃亏）：
+     · 标记类 .agent-body.dsh-trace-on —— 由 app-trajectory.js 的 applyViewChrome 每帧按视图态挂 / 摘；
+     · 这里这份 CSS —— display:none !important **压得住行内样式**：renderAgentSession 每次重绘都会
+       把 #agentList 的 style.display 抹回 "" 并重新挂一枚 .tok-badge（app-assist.js 的
+       tokBadgeTailMount），只靠行内 display 挡不住「报告栏又冒出来压住列表」；
+     · 行内 hidden + style.display（JS 那份）—— 给 CSS 够不到的落点（开发页右栏 / 助手栏）兜底。
+   :not([hidden]) 是**给应用自己留的权限**：这些件被应用主动标 hidden（空清单 / 无报告 /
+   待办收起）时按原样收着，我们不在他头上写死一条 display。
+   切回对话：标记类摘掉、行内 display 归 "" —— 全部原样复原，报告栏自身的折叠 / 展开逻辑一行未动。 */
+.agent-body.dsh-trace-on > .hist-scroll-wrap:not([hidden]),
+.agent-body.dsh-trace-on > .agent-round:not([hidden]),
+.agent-body.dsh-trace-on > .agent-list:not([hidden]),
+.agent-body.dsh-trace-on > .agent-queue:not([hidden]),
+.agent-body.dsh-trace-on > .agent-todo:not([hidden]),
+.agent-body.dsh-trace-on > .agent-plan:not([hidden]),
+.agent-body.dsh-trace-on > .agent-composer:not([hidden]),
+.agent-body.dsh-trace-on > .tok-badge:not([hidden]),
+.assist-pane.dsh-trace-on > .agent-composer:not([hidden]),
+.assist-pane.dsh-trace-on > .tok-badge:not([hidden]),
+.apps-dev-conv.dsh-trace-on > .hist-scroll-wrap:not([hidden]),
+.apps-dev-conv.dsh-trace-on > .agent-round:not([hidden]),
+.apps-dev-conv.dsh-trace-on > .agent-list:not([hidden]),
+.apps-dev-conv.dsh-trace-on > .agent-composer:not([hidden]) {
+  display: none !important;
+}
+
+/* 轨迹主区：铺满 .agent-body 剩下的整块（工具条 + 概览 + 列表 + 检查器 + 页脚）。
+   它是唯一的填充项（flex:1 1 auto + min-height:0），宽吃到整块（width:100%）——
+   先前它和消息区（.hist-scroll-wrap.is-flex-fill{flex:1 1 0px}）一起分这份空间，
+   于是轨迹只占 #agentList 那一格、上下还压着输入区与 token 报告。 */
+.dsh-trace-main {
   flex: 1 1 auto;
   min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--dsh-pane-bg);
+}
+
+.dsh-trace-main[hidden] {
+  display: none;
+}
+
+/* 列表容器**铺满主区剩高**（本次需求 · 用户口径「右侧结果框占满高度，不要留下方空白空间」）：
+   上一版按内容收缩（flex:0 1 auto + max-height:100%），短会话时列高 = 内容高 ——
+   右侧检查器跟着只有内容高，下面留一片死区。现在改 flex:1 1 auto 吃掉剩余高：
+     · 面板仍是 flex 列（工具栏已撤、轴固定高、列吃剩高、页脚在底）；
+     · 列表自己仍按内容长（见下面 .dsh-trace-cols .dsh-trace-list 的 flex:0 1 auto），
+       再由这里的 min-height:0 压回可用高 —— 短会话列表不拉长、滚动条不出现，
+       长会话滚动条仍落在列表**内部**；
+     · 检查器因此与列同高 → 参数 / 结果块能把剩余高度用满（见 .dsh-trace-code 那条）。 */
+.dsh-trace-cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  display: flex;
+  align-items: stretch;
+}
+
+/* 列表：**按内容长，不按剩余空间长**（本次需求 · 检查器铺满高之后这一条更关键）：
+   它的自然高 = 加载行 + 占位块（全部行 × 行高），长会话必然超过列高，由上面的 min-height:0
+   与自身的 flex-shrink:1 压回可用高，滚动条落在列表内部；短会话老实收在内容高上，
+   不把行拉长、也不让页脚被顶走。**宽必须显式写满**：`flex: 0 1 auto` 的主轴基准是内容
+   （这里内容只有绝对定位的行，量出来才 100 多像素），不写 width:100% 的话列表会缩成一条窄缝
+   （实测 770px 的窗口里只剩 40px，行与顶部横轴全被挤扁）。flex 只管高、宽这一维交给 width。 */
+.dsh-trace-cols .dsh-trace-list {
+  flex: 0 1 auto;
+  width: 100%;
+  min-height: 0;
+}
+
+/* ── 横轴（本轮需求 · 整个会话的总时间轴 + 当前视窗的滑窗带）──────────────────
+   位置：**列表之外** —— .dsh-trace-main 的第一只子件（本次需求撤掉工具栏那一条后，
+   它直接顶到视图最上方），.dsh-trace-cols 在它下面。列表自己滚动、轴常驻其上
+   （不 position:sticky，也不随滚动跑掉）；列表里那条 sticky 吸顶轴
+   与「两轴并存」的旧写法都已撤掉，这一条是**唯一**一条时间轴。
+   轴里五样东西（**从上到下**）：
+     · 绘图区 .dsh-trace-ruler-plot —— 刻度行 + 色块轨 + 滑窗带共用的定位容器（同一套横坐标）；
+     · 刻度行 .dsh-trace-ruler-ticks —— **整个会话**跨度内等距的绝对时刻（2–4 个，按宿主宽度分档）；
+     · 色块轨 .dsh-trace-ruler-tracks —— 一次调用 = 一个块，横坐标 = 绝对时刻，
+       宽度 = 真实耗时；**固定 3 条轨**（不足补空轨、超出并轨叠画并在轨右给「叠 N」计数）；
+     · 滑窗带 .dsh-trace-window —— 当前滚动视窗对应的时间段，半透明叠在绘图区上、随滚动移动；
+     · hover 绿线 .dsh-trace-hoverline（本轮需求 [25]）—— 指针在轴里时的竖直绿线 + 时刻读数；
+     · 读数 .dsh-trace-scale + 图例 .dsh-trace-legend —— 本视窗步数 / 跨度 / 起止，
+       以及本会话各工具族的累计调用次数。
+   本轮（需求 [25]）：轴上**点任意时刻 = 把滑窗移过去**（窗长不变、点击处对齐窗中点），
+   轴与轨迹列表整块禁掉文字选中（不再误拖选），事件方块改「族色实心 + 同族深边框」并
+   移除全部发光边缘（run 态改用描边加粗 + 填充轻微提亮）。
+   轨数固定 ⇒ 轴高恒定（刻度行 + 3 × 轨高 + 脚下两行）：既不再随并行度长高，也不再需要
+   轴内纵向滚动与 --dsh-trace-maxh 封顶 —— 那套「轴长高把行流往下推」的写法一并撤掉。 */
+.dsh-trace-ruler {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  /* 恒定高度（本次需求）：刻度 13px + 3 轨（3 × --dsh-trace-track-h）+ 脚下两行 + 内边距 */
+  height: var(--dsh-trace-ruler-h);
+  margin: var(--dsh-gap-sm) var(--dsh-gap-sm) 0;
+  padding: 3px 6px 5px;
+  border: 1px solid var(--dsh-bd);
+  border-radius: var(--dsh-r-sm);
+  background: var(--dsh-card-bg);
+  /* 图例族多时会换行 —— 极端情况不许溢出轴框 */
+  overflow: hidden;
+}
+
+.dsh-trace-ruler[hidden] {
+  display: none;
+}
+
+/* 绘图区（本轮需求）：刻度行 + 色块轨 + 滑窗带同宽同原点 —— 滑窗带的百分比坐标因此
+   与刻度、色块逐像素对齐（三者不再各算一套左内边距）。 */
+.dsh-trace-ruler-plot {
+  position: relative;
+}
+
+/* 滑窗带（本轮需求）：把**当前滚动视窗**对应的时间段标在全轴上 ——
+   半透明填充 + 两侧竖边，盖住刻度与轨区（叠在色块之上：读作「这一段就在你的视窗里」）。
+   带自己**不吃指针事件**：轴上的块照常可点、可 hover。 */
+.dsh-trace-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  border-left: 1px solid color-mix(in srgb, var(--dsh-accent) 62%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--dsh-accent) 62%, transparent);
+  background: color-mix(in srgb, var(--dsh-accent) 9%, transparent);
+  pointer-events: none;
+}
+
+/* hover 绿线（本轮需求 [25]）：指针在轴里时跟着走的一条竖直绿线 + 一枚时刻读数。
+   它只**指位置**：不吃指针（pointer-events:none）、不参与任何几何签名（滚动 / 缩放把
+   绘图区整只重建之后，由 paintHover 按 hoverOn / hoverF 补回来）。
+   呼吸只做在**这一条辅助线**上（透明度来回）—— 「轴上不许闪烁」那条口径管的是读时间的
+   东西（事件方块仍然静态、无发光），这条线本身不是数据。 */
+.dsh-trace-hoverline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--green);
+  pointer-events: none;
+  animation: dsh-hoverline-breath 1.6s ease-in-out infinite;
+}
+
+/* 线脚的圆点：给这条线一个明确的落点（同色小圆，不发光） */
+.dsh-trace-hoverline::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  bottom: -1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+/* 时刻读数：跟着线走的小胶囊（贴边时由行内 transform 改对齐，见 app-trajectory.js 的
+   paintHover —— 左端 8% 内左对齐、右端 8% 内右对齐，中间居中）。 */
+.dsh-trace-hover-time {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translateX(-50%);
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--green) 82%, #000);
+  color: var(--dsh-pane-bg);
+  font-family: var(--dsh-mono);
+  font-size: 9px;
+  line-height: 12px;
+  white-space: nowrap;
+}
+
+/* 呼吸：只在这一条 hover 辅助线上（事件方块一条 animation 都没有）。 */
+@keyframes dsh-hoverline-breath {
+  0%,
+  100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 系统设了「减少动态效果」就不脉动（线仍看得见） */
+@media (prefers-reduced-motion: reduce) {
+  .dsh-trace-hoverline {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* 禁掉文字选中（本轮需求 [25]）：轴与轨迹列表整块 user-select:none —— 在轴上按住拖动
+   （拖滑窗带平移）不再把刻度 / 行文字拖蓝，也就是用户报的「误拖选」。
+   检查器（.dsh-trace-insp）**不在**这一条里：那里的参数 / 结果仍要能选中复制。 */
+.dsh-trace-ruler,
+.dsh-trace-list {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+
+/* 刻度行：贴着轴顶，中央对齐刻度值；轴的左/右各留一点内边距（避免贴边被裁） */
+.dsh-trace-ruler-ticks {
+  position: relative;
+  height: 13px;
+}
+
+.dsh-trace-ruler-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: var(--dsh-ink-faint);
+  font-family: var(--dsh-mono);
+  font-size: 9.5px;
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+/* 色块轨道（本次需求 · 固定 3 轨）：轨数由 JS 写进 --dsh-trace-tracks（恒为 3，不足补空轨；
+   同一时刻超过 3 个调用时并回已有轨叠画，轨右有一枚「叠 N」计数）——所以这里不再有
+   按需长高、也不再需要轴内纵向滚动与 --dsh-trace-maxh 封顶。 */
+.dsh-trace-ruler-tracks {
+  position: relative;
+  height: calc(var(--dsh-trace-tracks, 1) * var(--dsh-trace-track-h));
+  overflow: hidden;
+}
+
+.dsh-trace-track {
+  position: relative;
+  height: var(--dsh-trace-track-h);
+}
+
+/* 轨道底线：给色块一条可读的水平参照（弱色，不抢块本身） */
+.dsh-trace-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--dsh-bd);
+  opacity: .55;
+}
+
+/* 段的色变量（本轮起只给**实心块**取色：填充 = --dsh-seg，边框 = 同族深一档）。 */
+@property --dsh-seg {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: transparent;
+}
+
+/* 轴上的块 = 一次工具调用（或其它带真实时刻的段）：绝对定位在轨道里。
+   本轮口径（用户报「事件方块用带边框实心块，移除发光边缘，更简约」）：
+     · **实心填充** = 本块族色（--dsh-seg，与图例色块 / 列表工具行同源）；
+     · 1px 边框 = 同族**深一档**（与黑混 58%）：相邻块挨着时边界仍读得出来，
+       亮暗两套主题下都比填充更沉；
+     · 直角（border-radius 0）、**没有任何 box-shadow / 发光 / 动画**；
+     · 最小宽度 2px（<1.5% 的短调用也要看得见）。 */
+.dsh-trace-mark {
+  --dsh-seg: var(--dsh-node-tool);
+  position: absolute;
+  top: 1px;
+  height: calc(var(--dsh-trace-track-h) - 2px);
+  min-width: 2px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--dsh-seg) 58%, #000);
+  border-radius: 0;
+  cursor: pointer;
+  background: var(--dsh-seg);
+  box-shadow: none;
+}
+
+/* hover：只把边框提亮一档（**不加光晕、不改填充**）—— 发光边缘已按用户口径整族移除。 */
+.dsh-trace-mark:hover {
+  border-color: color-mix(in srgb, var(--dsh-seg) 45%, var(--dsh-ink));
+}
+
+/* 五类段各一色（语义令牌，亮暗同源）：描边按段类型取色，与行内的类型色一致 */
+.dsh-trace-mark.t-think { --dsh-seg: var(--dsh-node-think); }
+.dsh-trace-mark.t-say { --dsh-seg: var(--dsh-node-say); }
+.dsh-trace-mark.t-tool { --dsh-seg: var(--dsh-node-tool); }
+.dsh-trace-mark.t-ctx { --dsh-seg: var(--dsh-node-ctx); }
+.dsh-trace-mark.t-err { --dsh-seg: var(--dsh-node-err); }
+
+/* 族类：一族一条，只设 --dsh-fam —— 轴上的块 / 列表工具行 / 图例项三处各自取用，
+   颜色只在上面 :root 的族色令牌那一处定义（图例与轴因此永远对得上号）。
+   挂在轴上时压过上面那五条（选择器同为 0,2,0，写在后面即胜）：于是 t-tool 那条
+   退成「没有族的段」的兜底（思考 / 正文 / 错误 / 上下文段本来就不上轴）。 */
+.dsh-trace-mark.fam-read,
+.dsh-trace-mark.fam-write,
+.dsh-trace-mark.fam-run,
+.dsh-trace-mark.fam-web,
+.dsh-trace-mark.fam-sub,
+.dsh-trace-mark.fam-talk,
+.dsh-trace-mark.fam-own,
+.dsh-trace-mark.fam-browser,
+.dsh-trace-mark.fam-job,
+.dsh-trace-mark.fam-other {
+  --dsh-seg: var(--dsh-fam);
+}
+
+.fam-read { --dsh-fam: var(--dsh-fam-read); }
+.fam-write { --dsh-fam: var(--dsh-fam-write); }
+.fam-run { --dsh-fam: var(--dsh-fam-run); }
+.fam-web { --dsh-fam: var(--dsh-fam-web); }
+.fam-sub { --dsh-fam: var(--dsh-fam-sub); }
+.fam-talk { --dsh-fam: var(--dsh-fam-talk); }
+.fam-own { --dsh-fam: var(--dsh-fam-own); }
+.fam-browser { --dsh-fam: var(--dsh-fam-browser); }
+.fam-job { --dsh-fam: var(--dsh-fam-job); }
+.fam-other { --dsh-fam: var(--dsh-fam-other); }
+
+/* 失败的调用压过族色（轴上的块与列表里的行同一口径，写在族色之后）：
+   错误是本视图最该被看见的一件事，不能被族色淡化成「就是一次普通读取」。 */
+.dsh-trace-mark.err {
+  --dsh-seg: var(--dsh-node-err);
+}
+
+/* 还在跑的调用（本轮口径 · 去掉发光之后仍要看得出「还没回来」）：
+   **描边加粗到 2px + 填充轻微提亮**（与白混 12%），没有柔光、没有动画 ——
+   轴上任何东西都不忽明忽暗（横轴是拿来读时间的，眼睛不该被一块一闪一闪的块拽走）。
+   行内那条行首柔光（.dsh-trace-row.run）仍是对应的行上线索，两处同一判据。 */
+.dsh-trace-mark.run {
+  border-width: 2px;
+  border-color: color-mix(in srgb, var(--dsh-seg) 58%, #000);
+  background: color-mix(in srgb, var(--dsh-seg) 88%, #fff);
+  box-shadow: none;
+}
+
+/* 轴脚下第一行：本屏读数（可见步数 · 跨度 · 起止时刻）。小字、不吃点击。
+   本次需求：从「绝对定位压在轨道带上」（right:6px / bottom:3px）改成**轨道下面的
+   独立一行**——与色块再也不会重叠；窗口化后读数文案改成「本视窗步数 · 跨度 · 起止时刻」。 */
+.dsh-trace-scale {
+  display: block;
+  padding: 1px 0 0;
+  color: var(--dsh-ink-faint);
+  font-family: var(--dsh-mono);
+  font-size: 9.5px;
+  line-height: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 轴脚下第二行：工具族图例（族色小方块 + 族名 + 本会话调用次数）。
+   与读数各占一行（用户口径：读数一行、图例再一行），族多了自动换行；
+   整条只读（不可点），不吃鼠标，也不参与轨区的纵向滚动。 */
+.dsh-trace-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 1px 0 0;
+  pointer-events: none;
+}
+
+.dsh-trace-legend[hidden] {
+  display: none;
+}
+
+.dsh-trace-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dsh-ink-dim);
+  font-size: 9.5px;
+  line-height: 12px;
+  white-space: nowrap;
+}
+
+/* 图例色块：与轴上的块同一副「描边 + 极淡底」的写法（同一个 --dsh-fam 变量），
+   大小固定 8px，一眼能对回轴上的块 */
+.dsh-trace-legend-swatch {
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--dsh-fam, var(--dsh-ink-faint));
+  border-radius: 0;
+  background: color-mix(in srgb, var(--dsh-fam, transparent) 12%, transparent);
+}
+
+.dsh-trace-legend-count {
+  color: var(--dsh-ink-faint);
+  font-family: var(--dsh-mono);
+}
+
+/* 子代理轨左侧那枚小字：绝对定位（不占横向时间坐标），压在轨道基线上，
+   底色取卡片底色以便盖住基线；轨高只有 7px，故字号与行高都按它压到最小 */
+.dsh-trace-track-label {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  z-index: 1;
+  padding: 0 2px;
+  transform: translateY(-50%);
+  border: 1px solid var(--dsh-fam-sub);
+  border-radius: var(--dsh-r-sm);
+  background: var(--dsh-card-bg);
+  color: var(--dsh-fam-sub);
+  font-size: 8.5px;
+  line-height: 9px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 叠画计数（本次需求）：轴内固定 3 轨，同一时刻超过 3 个调用时并回已有轨叠画 ——
+   这一轨的重叠峰值写在这枚小字上（数据不藏，只是叠着画）。绝对定位在轨右，不占时间坐标。 */
+.dsh-trace-stack {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  z-index: 2;
+  padding: 0 2px;
+  transform: translateY(-50%);
+  border: 1px solid var(--dsh-bd2);
+  border-radius: var(--dsh-r-sm);
+  background: var(--dsh-card-bg);
+  color: var(--dsh-ink-faint);
+  font-family: var(--dsh-mono);
+  font-size: 8.5px;
+  line-height: 9px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 工具行上的两个数字：耗时 / 运行中 / 失败（上游记录表右侧那一列）。
+   它是正文格里的一件：可压缩（min-width:0 让里面的 .dsh-trace-tool-raw 省略号真的生效），
+   名字再长也不把同一行的「失败」标记挤出正文格。 */
+.dsh-trace-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 工具名的中文标题：**青色**（本次需求 · 行与对话一致）——与对话里 .dsh-seg-tool 的
+   青调等宽小字同款。族色不再上到行内的这一处（族色仍由轴上那枚色块与图例承担，
+   一处一族色不两说；行上仍挂 fam-* 类，只作文档与后续取用）。
+   行首那条 2px 左侧柔光已经是「运行中」的专用通道（.dsh-trace-row.run），
+   刻度栏红字是「失败段」的通道，都不动。 */
+.dsh-trace-tool-name {
+  flex: none;
+  color: var(--cyan);
+}
+
+/* 失败的调用：族色让位给错误红（与轴上的块 .dsh-trace-mark.err 同一口径） */
+.dsh-trace-row.err .dsh-trace-tool-name {
+  color: var(--dsh-node-err);
+}
+
+.dsh-trace-tool-raw {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsh-ink-faint);
+  font-family: var(--dsh-mono);
+  font-size: 10px;
+}
+
+/* 行内 meta（工具行只剩「失败」这一条）：正文格里的一件，**不参与收缩**
+   （工具名长了先压工具名，失败这几个字永远留在行内看得见）。 */
+.dsh-trace-row-meta {
+  flex: none;
+  margin-top: 2px;
+  color: var(--dsh-ink-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.dsh-trace-ctx {
+  color: var(--dsh-ink-dim);
+}
+
+/* ── 检查器（上游 Trajectory 的局部检查器）：选中记录 → 右侧一栏明细 ────────
+   参数与结果都走代码块（行号槽 + 词法高亮，复用右侧文件面板那一套）；
+   「设置 · 开发者工具」关掉时只给一句提示。
+   层叠：自成一层（--dsh-z-trace-insp 高于顶部横轴）—— 轴与行都在左边那一栏里滚，
+   不会盖到这一栏的代码块上（本次需求 · 层级钉死）。 */
+.dsh-trace-insp {
+  position: relative;
+  z-index: var(--dsh-z-trace-insp);
+  /* 宽度（本次需求 · 可拖动调宽）：默认 340px = 旧写死的 flex:0 0 340px，观感不变；
+     真值由 app-trajectory.js 写在 .dsh-trace-cols 的 --dsh-trace-insp-w 上
+     （见下面那条 .dsh-trace-divider）。这里只读变量 + 兜底 340，别再写死 min-width：
+     夹取（最小 220 / 最大宿主 60%）只有 app-trajectory.js 一处，两边都写会互相打架。 */
+  flex: 0 0 var(--dsh-trace-insp-w, 340px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dsh-gap-sm);
+  padding: var(--dsh-gap-sm);
+  border-left: 1px solid var(--dsh-bd);
+  background: var(--dsh-pane-head);
+  overflow-y: auto;
+}
+
+.dsh-trace-insp[hidden] {
+  display: none;
+}
+
+.dsh-trace-insp-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dsh-gap-sm);
+}
+
+.dsh-trace-insp-head b {
+  color: var(--dsh-ink);
+  font-size: 12px;
+}
+
+.dsh-trace-insp-name {
+  color: var(--dsh-tool);
+  font-size: 11px;
+}
+
+.dsh-trace-insp-meta {
+  color: var(--dsh-ink-dim);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.dsh-trace-insp-hint {
+  padding: var(--dsh-gap-sm);
+  border: 1px dashed var(--dsh-bd);
+  border-radius: var(--dsh-r-sm);
+  color: var(--dsh-ink-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ── 详情栏分隔条（本次需求 · 事件右侧详细内容可拖动调宽）──────────────────
+   位置：轨迹列表与检查器之间（app-trajectory.js 的 bindInspResize 建它）。
+   三件事一起成立才拖得顺手（与右栏那条分界线同一读法）：
+     · 宽度 0 + 左移 1px：**不占布局**，因此「最大 60% 宿主」量的是真宿主宽；
+     · 命中区加宽（::before 横向 ±4px）：竖筋只有 1px，但整条边界都拖得动；
+     · 常态只是一条淡竖筋（不抢视线），hover / 拖动才亮成强调色（拖动中挂 .dragging）。 */
+.dsh-trace-divider {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  align-self: stretch;
+  margin-left: -1px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.dsh-trace-divider[hidden] {
+  display: none; /* 没选中事件（检查器收起）时整条不显形 */
+}
+
+.dsh-trace-divider::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px; /* 命中区：按下这一点点就算拖这条线 */
+}
+
+.dsh-trace-divider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--dsh-bd);
+}
+
+.dsh-trace-divider:hover::after,
+.dsh-trace-divider.dragging::after {
+  width: 2px;
+  background: var(--dsh-accent);
+}
+
+/* 编辑类事件的「参数」折叠（本次需求 · diff 在上、参数默认收起）：
+   与旁边的结果分节同长相（同一条 label），只是正文收进 details —— 展开后代码块把本节
+   剩余高用满、内部滚动（与 .dsh-trace-code 那条同一口径）。 */
+.dsh-trace-sec-fold {
+  flex: 0 0 auto;
+}
+
+.dsh-trace-sec-fold[open],
+.dsh-trace-fold[open] {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.dsh-trace-fold {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+
+.dsh-trace-fold > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.dsh-trace-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dsh-trace-fold > summary::before {
+  content: "▸ ";
+  color: var(--dsh-ink-faint);
+}
+
+.dsh-trace-fold[open] > summary::before {
+  content: "▾ ";
+}
+
+/* 轨迹里的 diff 块：皮与对话**完全同源**（.dsh-diff* 在 dsh.css 里，本文件只动取高口径）。
+   位置：检查器里那一段「文件改动」分节（app-trajectory.js 的 renderInspector 建
+   .dsh-trace-insp-sec > .dsh-trace-insp-block > .dsh-diff）。
+   取高：对话那份是 max-height:260px 封顶；这里让 diff 自己吃下这段分节的剩余高
+   （长差异在块内滚动，检查器不会被撑出屏幕）。上面那两条是必需的：.dsh-trace-insp-block
+   在检查器里是 flex 件，不给它 min-height:0 + 弹性，里面的 flex:1 就没有可分配的高度。 */
+.dsh-trace-insp-block:has(.dsh-diff) {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+
+.dsh-trace-insp-block .dsh-diff-body {
+  max-height: none;
+  flex: 1 1 0;
+  min-height: 0;
+}
+/* 检查器分节（参数 / 结果各一节）：**弹性吃剩余高度**（本次需求 · 用户口径
+   「右侧结果框占满高度，不要留下方空白空间」）。三件事一起成立才不留下方死区：
+     · .dsh-trace-cols 改 flex:1 1 auto（上面那一节）→ 检查器与列同高；
+     · 本节 flex:1 1 0 + min-height:0 → 两节按比例分掉列里剩余的那点高；
+     · 下面的 .dsh-trace-code 去掉 260px 封顶、自己 flex:1 1 auto → 代码块把
+       本节给的高用满，内容长了在**块内**滚动（overflow:auto 仍在）。 */
+.dsh-trace-insp-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.dsh-trace-insp-label {
+  color: var(--dsh-ink-dim);
+  font-size: 10px;
+  letter-spacing: .5px;
+}
+
+.dsh-trace-insp-text {
+  color: var(--dsh-ink);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* 代码块：左侧行号槽（sticky 在横向滚动之外）+ 右侧高亮层。
+   本次需求：**去掉 max-height:260px 的封顶**，改成自己弹性吃下本节剩余高度 ——
+   短内容时块只有内容高（不硬撑），长内容时块长到列底、内部滚动
+   （.dsh-trace-cols 已铺满主区剩高，块因此不会在下面留死区）。 */
+.dsh-trace-code {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--dsh-bd);
+  border-radius: var(--dsh-r-sm);
+  background: var(--code);
+  overflow: auto;
+}
+
+.dsh-trace-ln {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 6px 6px 8px;
+  border-right: 1px solid var(--dsh-bd);
+  color: var(--dsh-ink-faint);
+  font-family: var(--dsh-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: right;
+  user-select: none;
+}
+
+.dsh-trace-src {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--dsh-ink);
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dsh-trace-copy {
+  align-self: flex-start;
+}
+
+.dsh-trace-copy.ok {
+  color: var(--dsh-ok);
+  border-color: var(--dsh-ok);
 }
 
 /* 高亮定位（轨迹 ↔ 对话双向跳转）：闪一下，不改变布局。 */
@@ -284,50 +1327,176 @@
   animation: dsh-flash .9s ease-out 1;
 }
 
-/* ── CDP 面板（renderer/app-devtools.js）────────────────────────────────────
-   内嵌的是这台浏览器自带的 DevTools 前端（同源直连本机 CDP）。它占满右栏那一格，
-   与浏览器活动列表互斥（由 app-devtools.js 切换列表显隐）。 */
-.dsh-cdp {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: flex;
-  flex-direction: column;
-  background: var(--dsh-pane-bg);
+/* 轨迹视图样式（分组头 / 虚拟滚动 / 跟尾 / 加载行 / JSON 树）。
+   放在 dsh-tokens.css 的轨迹一节里（.dsh-trace-* 前缀不变）。
+   本次需求：工具栏那一条（.dsh-trace-bar / .dsh-trace-search / .dsh-trace-scount）整节删除
+   —— 搜索条连输入框、命中计数与回车导航都由 app-trajectory.js 一起撤掉了，
+   留着只会是三条没有宿主的死规则。 */
+
+/* 虚拟滚动：列表是滚动容器，行绝对定位在占位块撑出的总高里。
+   行高统一固定 —— 长内容一律折成一行（见 .dsh-trace-oneline），没有展开态。 */
+.dsh-trace-list {
+  position: relative;
 }
 
-.dsh-cdp[hidden] {
+/* 虚拟占位块：高度 = 全部行 × 行高（保住滚动条；JS 写 inline height）。
+   **它同时是行流的定位容器**（position:relative）—— 这一点是本次需求的关键：
+   占位块是列表在**流**里的第一只节点（顶部横轴本轮已搬出滚动容器、在列表之外），所以：
+     · 行的绝对定位原点 = 占位块顶（行号 × 行高），与滚动坐标只差一个常量（列表内边距盒偏移，
+       由 app-trajectory.js 的 streamTop() 量 offsetTop 得到）；
+     · 行流不再被「轴长高」推来推去 —— 轴高固定（3 轨），不参与列表的滚动流。
+   占位块自己不吃指针事件（空档仍交给列表滚动），里面的行显式收回指针事件。 */
+.dsh-trace-spacer {
+  position: relative;
+  flex: 0 0 auto;
+  height: 0;
+  pointer-events: none;
+}
+
+.dsh-trace-spacer > * {
+  pointer-events: auto;
+}
+
+/* 行在行流容器（.dsh-trace-spacer）里的定位：绝对定位、吃满整幅宽、多出来的内容裁掉。
+   行高与栅格**只在上面「轨迹列表」那一处**写（同一份规则不去两处写第二遍）。 */
+.dsh-trace-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+}
+
+/* 固定行高里的长内容：一行截断（完整内容在右侧检查器与对话视图里看）。
+   本次需求撤掉「展开全文」开关后，这里是**唯一**的长内容出口 ——
+   .dsh-trace-expand / .dsh-trace-full 两条规则随 JS 一起删除（没有宿主了）。
+   正文格是 flex 单行（见 .dsh-trace-body），这一件吃满余宽并被压缩；
+   这里再 min-width:0 让省略号真的生效（否则长内容按 max-content 撑开，右缘溢出被裁）。 */
+.dsh-trace-oneline {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 轮次 / 助手分组头（上游的 turn header 与 assistant header）：可折叠，左侧一枚三角。
+   栅格（列 / 间隔 / 内边距）在**上面「轨迹列表」一节**与段行同一份口径 —— 这里只管
+   它在虚拟滚动里的定位与配色，不重复写栅格（两份同名规则互相盖是本次修掉的病根）。 */
+.dsh-trace-group {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--dsh-trace-row-h);
+  color: var(--dsh-ink-dim);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dsh-trace-group:hover {
+  background: var(--dsh-card-bg-2);
+}
+
+.dsh-trace-group.g-turn {
+  border-top: 1px solid var(--dsh-bd);
+  background: var(--dsh-card-bg);
+}
+
+.dsh-trace-group-label {
+  font-weight: 600;
+  color: var(--dsh-ink);
+}
+
+.dsh-trace-group-meta {
+  color: var(--dsh-ink-faint);
+  font-size: 10px;
+}
+
+/* 折叠三角：在分组头第一列（= 段行读数栏那一列）的右端 —— 紧挨自己的标题，不在行首孤零零飘着 */
+.dsh-trace-caret {
+  width: 10px;
+  color: var(--dsh-ink-dim);
+}
+
+/* 暂停跟随时的「回到底部」：钉在**记录表自己那一栏**的下沿
+   （sticky 在列表滚动容器里，JS 把它挂在 .dsh-trace-list 尾部）——
+   不越到右侧检查器上、也不遮页脚；层叠在最上（--dsh-z-trace-tail），顶部横轴也压不住它。 */
+.dsh-trace-tailbar {
+  position: sticky;
+  bottom: var(--dsh-gap-sm);
+  z-index: var(--dsh-z-trace-tail);
+  align-self: center;
+  padding: 4px 12px;
+  border: 1px solid var(--dsh-bd);
+  border-radius: 999px;
+  background: var(--dsh-card-bg);
+  color: var(--dsh-ink);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+}
+
+.dsh-trace-tailbar:hover {
+  border-color: var(--dsh-accent);
+}
+
+.dsh-trace-tailbar[hidden] {
   display: none;
 }
 
-.dsh-cdp-head {
+/* 检查器：代码块上面那排按钮（树形 / 代码切换 + 复制） */
+.dsh-trace-insp-block {
   display: flex;
+  flex-direction: column;
+  gap: var(--dsh-gap-xs);
+}
+
+.dsh-trace-insp-tools {
+  display: flex;
+  gap: 6px;
   align-items: center;
-  gap: var(--dsh-gap-sm);
-  height: var(--dsh-tabs-h);
-  padding: 0 var(--dsh-gap-sm);
-  border-bottom: 1px solid var(--dsh-bd);
-  background: var(--dsh-pane-head);
-  color: var(--dsh-ink);
-  font-size: 12px;
 }
 
-.dsh-cdp-head b {
-  flex: 1 1 auto;
-  font-weight: 600;
+/* JSON 树（上游「完整 JSON 用树形展示」）：默认折到两层，点标题展开。 */
+.dsh-trace-json {
+  display: inline-block;
+  min-width: 0;
 }
 
-.dsh-cdp-note {
-  padding: 4px var(--dsh-gap-sm);
+.dsh-trace-json-node > summary {
+  cursor: pointer;
   color: var(--dsh-ink-dim);
-  font-size: 11px;
+  font-size: 10px;
+  list-style: none;
+}
+
+.dsh-trace-json-node > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dsh-trace-json-node > summary::before {
+  content: "▸ ";
+}
+
+.dsh-trace-json-node[open] > summary::before {
+  content: "▾ ";
+}
+
+.dsh-trace-json-line {
+  padding-left: 12px;
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
   line-height: 1.5;
 }
 
-.dsh-cdp-frame {
-  flex: 1 1 auto;
-  min-height: 0;
-  width: 100%;
-  border: 0;
-  background: var(--dsh-card-bg);
+.dsh-trace-json-key {
+  color: var(--dsh-tool);
 }
+
+.dsh-trace-json-leaf {
+  color: var(--dsh-ink);
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
+}
+

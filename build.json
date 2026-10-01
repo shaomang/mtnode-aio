@@ -26,11 +26,14 @@
     "wechat-fastlogin.js",
     "media-gen-global-lock.js",
     "clipboard-images.js",
+    "sound-alert.js",
     "plugin-error-repair.js",
     "mtnode-agent-skills-lib.js",
     "db-store.js",
     "rollback-store.js",
     "storage-clean.js",
+    "storage-scan-worker.js",
+    "speech-store.js",
     "longtask-store.js",
     "ai-facts-store.js",
     "activity-store.js",
@@ -46,7 +49,6 @@
     "h3/**",
     "llama/**",
     "tts/**",
-    "asr/**",
     "sensenova/**",
     "remotion/**",
     "plugins/**",
@@ -220,19 +222,6 @@
         "install.cmd",
         "README.md",
         ".gitignore"
-      ]
-    },
-    {
-      "from": "asr-pack",
-      "to": "asr-pack",
-      "filter": [
-        "app/**",
-        "scripts/**",
-        "requirements.txt",
-        "README.md",
-        "start_backend.cmd",
-        ".gitignore",
-        "manifest.json"
       ]
     },
     {

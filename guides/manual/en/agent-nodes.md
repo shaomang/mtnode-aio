@@ -19,7 +19,7 @@ The **⚙ chip** in the composer opens the picker menu; top to bottom it has fou
 
 ## Other features
 
-- **Thinking translation**: reasoning is mostly in English, so to look into a segment and trace a problem, click the thinking segment on the right. It translates with DeepSeek with thinking off (the default).
+- **Thinking translation**: reasoning is mostly in English, so to look into a segment and trace a problem, click the thinking segment on the right. It translates with **this session's own model** (the provider · model picked above) with thinking off; only when the session has no usable model yet does it fall back to the default route's flash tier.
 - **Tool arguments**: the session shows the tool-call log and the details of each call.
 - **Token report**: the bottom shows this session's token usage report and cost (DeepSeek only). The calculation cannot be exact, so treat official platform statistics as final.
 

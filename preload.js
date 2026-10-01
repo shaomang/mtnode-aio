@@ -8,6 +8,11 @@ contextBridge.exposeInMainWorld('api', {
   getPathForFile: (f) => webUtils.getPathForFile(f),
 
   appVersion: () => ipcRenderer.invoke('app:version'),
+  /* 提醒音主进程通道（本次需求）：窗口不在前台 / 被别的软件盖住时，渲染层的 WebAudio
+     会被推迟到用户切回来才响；主进程合成 WAV 交给系统播放器出声，与窗口可见性无关。
+     入参 { mode:"ding"|"dingdong"|"ask", amp:0~0.34, file?, volume? }，只报「该响哪一档」，
+     发声与音色都在主进程（见 sound-alert.js）。桥不在 / 失败时渲染层自己用 WebAudio 兜底。 */
+  soundAlert: (opts) => ipcRenderer.invoke('sound:alert', opts || {}),
   crashStatus: () => ipcRenderer.invoke('crash:status'),
   crashExport: () => ipcRenderer.invoke('crash:export'),
   crashOpenLogs: () => ipcRenderer.invoke('crash:openLogs'),
@@ -98,6 +103,9 @@ contextBridge.exposeInMainWorld('api', {
   fileStat: (p) => ipcRenderer.invoke('file:stat', p),
   /* 音频字节（波形预览器取峰值用，见 renderer/app-audioview.js）：只读，超上限只回体积 */
   fileReadAudio: (p, maxBytes) => ipcRenderer.invoke('file:readAudio', p, maxBytes),
+  /* 音频字节（转写用，见 renderer/app-speech.js）：与 fileReadAudio 同源，但上限更宽
+     （长录音要整段解码成 16k 单声道再切片），仍只读、不落盘 */
+  fileReadAudioBytes: (p, maxBytes) => ipcRenderer.invoke('file:readAudioBytes', p, maxBytes),
   fileListDir: (p) => ipcRenderer.invoke('file:listDir', p),
   /* PDF 解析（见 main.js pdf:probe / pdf:parse）：入参为路径字符串或 { path } / { bytes } / { base64 } / { data:[…] }，
      只在主进程抽取文本后回传，绝不落盘；info 轻量探测，parse 出 markdown / pages / formulas / warning */
@@ -265,6 +273,9 @@ contextBridge.exposeInMainWorld('api', {
   /* MTNode 中转服务（账号托管）：主进程带着账号 token 拉 /api/relay/me，只回快照。
      地址与凭据都留在主进程，渲染层不出现中转站 URL，也不接触 token。 */
   relayMe: () => ipcRenderer.invoke('relay:me'),
+  /* 中转凭据的**打码**摘要（前 4 + **** + 后 4 / signedIn / 长度）：只读卡上「API Key」
+     那一行显示它，让用户看得见凭据在不在、用的是哪一张；明文 token 永远留在主进程。 */
+  relayKeyInfo: () => ipcRenderer.invoke('relay:keyInfo'),
   onAuthChanged: (cb) => {
     const handler = (_e, state) => {
       try { cb(state); } catch (_) {}
@@ -525,42 +536,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('tts:providerSynced', handler);
     return () => ipcRenderer.removeListener('tts:providerSynced', handler);
   },
-  /* ── 本地语音转写（Qwen3-ASR）：静默起停 + 转写缓存，见 asr/main-asr.js ── */
-  asrStatus: () => ipcRenderer.invoke('asr:getStatus'),
-  asrEnsureReady: (opts) => ipcRenderer.invoke('asr:ensureReady', opts || {}),
-  asrStart: (opts) => ipcRenderer.invoke('asr:start', opts || {}),
-  asrStop: () => ipcRenderer.invoke('asr:stop'),
-  asrTranscribe: (opts) => ipcRenderer.invoke('asr:transcribe', opts || {}),
-  asrCacheGet: (opts) => ipcRenderer.invoke('asr:cacheGet', opts || {}),
-  asrCacheSet: (opts) => ipcRenderer.invoke('asr:cacheSet', opts || {}),
-  asrCacheClear: (opts) => ipcRenderer.invoke('asr:cacheClear', opts || {}),
-  asrInstall: (opts) => ipcRenderer.invoke('asr:install', opts || {}),
-  asrInstallFfmpeg: (opts) => ipcRenderer.invoke('asr:installFfmpeg', opts || {}),
-  asrOpen: () => ipcRenderer.invoke('asr:open'),
-  asrClose: () => ipcRenderer.invoke('asr:close'),
-  asrAgentInstall: (opts) => ipcRenderer.invoke('asr:agentInstall', opts || {}),
-  asrAgentRecoverInstall: (opts) => ipcRenderer.invoke('asr:agentRecoverInstall', opts || {}),
-  asrCancelInstall: () => ipcRenderer.invoke('asr:cancelInstall'),
-  asrPickInstallDir: () => ipcRenderer.invoke('asr:pickInstallDir'),
-  asrPickModelDir: () => ipcRenderer.invoke('asr:pickModelDir'),
-  asrSetInstallDir: (dir) => ipcRenderer.invoke('asr:setInstallDir', dir),
-  asrSetConfig: (patch) => ipcRenderer.invoke('asr:setConfig', patch || {}),
-  asrGpuProbe: () => ipcRenderer.invoke('asr:gpuProbe'),
-  asrConsoleTail: (n) => ipcRenderer.invoke('asr:consoleTail', n),
-  onAsrProgress: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('asr:progress', handler);
-    return () => ipcRenderer.removeListener('asr:progress', handler);
-  },
-  onAsrConsoleChanged: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('asr:consoleChanged', handler);
-    return () => ipcRenderer.removeListener('asr:consoleChanged', handler);
-  },
+  /* ── 本地语音转写：不再有独立后端 ──
+     识别统一走 dsh 运行时的官方本地 SenseVoice（见上面的 dshSpeech / dshSpeechState /
+     speechCache* 三组）：从前那套 Qwen3-ASR 的 asr:* 通道（起停 / 安装 / 控制台 / ffmpeg）
+     已随插件整块移除，这里也不再暴露任何 asr* 方法。 */
 
   /* ── 本地图像生成（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图，见 sensenova/main-sensenova.js ── */
   sensenovaStatus: () => ipcRenderer.invoke('sensenova:getStatus'),
@@ -690,6 +669,11 @@ contextBridge.exposeInMainWorld('api', {
   dshMcpAdd: (cfg) => ipcRenderer.invoke('dsh:mcpAdd', cfg),
   dshMcpRemove: (serverName) => ipcRenderer.invoke('dsh:mcpRemove', serverName),
   dshMcpSetEnabled: (serverName, enabled) => ipcRenderer.invoke('dsh:mcpSetEnabled', { serverName, enabled }),
+  /* ── MCP 资源（只读）──
+     { action:'list'|'read', serverName, uri?, servers:[…] }：servers 是同一份 dshMcpList 的
+     结果（网关不自己找配置来源）。列表只发 resources/list，读取只发 resources/read，
+     绝不调用服务器的任何工具。 */
+  dshMcpResources: (params) => ipcRenderer.invoke('dsh:mcpResources', params),
   setLocale: (locale) => ipcRenderer.invoke('i18n:setLocale', locale),
   dshCancel: (params) => ipcRenderer.invoke('dsh:cancel', params),
   dshInteract: (params) => ipcRenderer.invoke('dsh:interact', params),
@@ -700,6 +684,39 @@ contextBridge.exposeInMainWorld('api', {
      {kind:'browser', id, outcome, answerText} 回传），type 'browser-act' 是活动流条目
      （只供界面回看与落库，不进模型上下文）。 */
   dshBrowser: (params) => ipcRenderer.invoke('dsh:browser', params),
+  /* ── 语音输入（对话输入框的录音按钮）──
+     一条 IPC 全包：{ workspace, action:'state'|'prepare'|'cancel'|'transcribe',
+                      providerId?, downloadSource?, language?, audio?（base64 WAV）}。
+     识别在网关拉起的运行时里用官方本地 SenseVoice 跑（CPU、离线、不进模型上下文）；
+     首次使用要下载权重（约 239MB），进度经 onSpeechState 回流。 */
+  dshSpeech: (params) => ipcRenderer.invoke('dsh:speech', params),
+  /* 语音准备状态的**主动读**（一次性快照：提供者名单 + 各自 preparation + 当前选择）。
+     与 onSpeechState 的事件推送互补：刚挂上的界面先读一次才知道该画「未下载 / 下载中 N% / 就绪」。 */
+  dshSpeechState: (params) => ipcRenderer.invoke('dsh:speechState', params || {}),
+  /* 转写缓存（<数据目录>/speech/transcripts.json，见 speech-store.js）：
+     同一份音频命中即秒回、用户在节点上改过的错字留着（edited）；clear 按音频路径清。 */
+  speechCacheGet: (opts) => ipcRenderer.invoke('speechCache:get', opts || {}),
+  speechCacheSet: (opts) => ipcRenderer.invoke('speechCache:set', opts || {}),
+  speechCacheClear: (opts) => ipcRenderer.invoke('speechCache:clear', opts || {}),
+  speechCacheList: () => ipcRenderer.invoke('speechCache:list'),
+  /* 语音准备状态的**主动读**（一次性快照：提供者名单 + 各自 preparation + 当前选择）。
+     与 onSpeechState 的事件推送互补：刚挂上的界面先读一次才知道该画「未下载 / 下载中 N% / 就绪」。 */
+  dshSpeechState: (params) => ipcRenderer.invoke('dsh:speechState', params || {}),
+  /* 转写缓存（<数据目录>/speech/transcripts.json，见 speech-store.js）：
+     同一份音频命中即秒回、用户在节点上改过的错字留着；clear 只按音频路径清。 */
+  speechCacheGet: (opts) => ipcRenderer.invoke('speechCache:get', opts || {}),
+  speechCacheSet: (opts) => ipcRenderer.invoke('speechCache:set', opts || {}),
+  speechCacheClear: (opts) => ipcRenderer.invoke('speechCache:clear', opts || {}),
+  speechCacheList: () => ipcRenderer.invoke('speechCache:list'),
+  /* 语音准备状态订阅（下载进度 / 就绪 / 失败；reqId 为空的全局通道）：返回退订函数。 */
+  onSpeechState: (cb) => {
+    const onEv = (ev, msg) => {
+      if (!msg || msg.type !== 'speech-state') return;
+      try { cb(msg.data || {}); } catch (e) { console.error('onSpeechState cb error:', e); }
+    };
+    ipcRenderer.on('dsh:event', onEv);
+    return () => ipcRenderer.removeListener('dsh:event', onEv);
+  },
   /* ── 会话右边栏「实况」区（浏览器默认 dock 在会话主内容右栏，可提出来变独立窗口）──
      帧通路：网关 → main-dsh.js → main.js（dsh:event）→ 这里 onBrowserFrame。
      帧只在内存/界面里走：**不落库（activityPush 那条路不经过它）、不进模型上下文**。

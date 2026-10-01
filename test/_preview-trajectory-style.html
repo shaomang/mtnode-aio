@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>轨迹视图真样式预览（临时 · test/_preview-trajectory-style.html）</title>
+<!-- 只挂**仓库里真实的那两份样式表**（renderer/style.css 内部按 @import 串起 css/*.css），
+     不抄任何样式：这里量到的轴高 / 轨高 / 左轨 / 代码块高 / token 颜色就是应用的现行口径。
+     页面结构照 renderer/app-trajectory.js 的 ensureMain / rowEl / updateRuler **一比一复刻**
+     （同层级、同类名、同 data-* 属性），只在标记上加了 data-mk 便于逐个取出来量。
+     本轮同步（用户口径五条）：① 顶部不再有 .dsh-trace-bar（搜索条整条撤掉），轴是主区第一只子件；
+     ② 轴里 3 轨 + 刻度 + 读数 + 图例四行齐备（量「图例有没有被裁」）；③ 行按段型上轨上底；
+     ④ token 是两段带色 span（.dsh-tok-in / .dsh-tok-out）；⑤ 没有「展开全文」开关。 -->
+<link rel="stylesheet" href="../renderer/style.css">
+<style>
+  /* 预览页自己的「窗口」脚手架：真应用里 .agent-body 的父链把它撑到整块高（flex:1; min-height:0）。 */
+  html, body { margin: 0; background: #14161a; color: #c9cdd4; font: 13px/1.5 system-ui, "Segoe UI", sans-serif; }
+  .preview-window {
+    height: 720px;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    margin: 10px 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #2a2f38;
+    overflow: hidden;
+  }
+  .preview-window > .agent-body { flex: 1 1 auto; min-height: 0; }
+  .preview-window > .preview-title { flex: 0 0 auto; }
+  .preview-title { padding: 4px 10px; color: #8b93a1; font-size: 11px; background: #101216; }
+</style>
+</head>
+<body>
+
+<!-- ① 主轴场景：3 轨 + 全部四行（刻度 / 色块 / 读数 / 图例）+ 4 条段行 + 铺满高的检查器 -->
+<div class="preview-window">
+  <div class="preview-title">① 总轴（3 轨 / 图例完整）+ 段行段型皮肤 + 右侧检查器铺满高 + Token 报告</div>
+  <div class="agent-body dsh-trace-on">
+    <div class="hist-scroll-wrap is-flex-fill" hidden style="display:none"><div class="agent-list"></div></div>
+    <div class="agent-queue agent-paused" hidden></div>
+    <div class="agent-todo agent-plan" hidden></div>
+    <div class="agent-composer" hidden></div>
+    <details class="tok-badge" hidden></details>
+    <div class="dsh-trace-main" id="mainA">
+      <!-- 主区第一只子件就是轴（上一版这里是 .dsh-trace-bar） -->
+      <div class="dsh-trace-ruler" id="rulerA" style="--dsh-trace-tracks:3">
+        <div class="dsh-trace-ruler-plot">
+          <div class="dsh-trace-ruler-ticks">
+            <span class="dsh-trace-ruler-tick" style="left:4%">00:00:01</span>
+            <span class="dsh-trace-ruler-tick" style="left:35%">00:00:03</span>
+            <span class="dsh-trace-ruler-tick" style="left:66%">00:00:05</span>
+            <span class="dsh-trace-ruler-tick" style="left:96%">00:00:07</span>
+          </div>
+          <div class="dsh-trace-ruler-tracks" id="bandsA">
+            <!-- 真页面的轨数恒为 3（RULER_TRACKS）：并行的调用并回已有轨叠画（轨右给「叠 N」） -->
+            <div class="dsh-trace-track n0"><button class="dsh-trace-mark t-tool fam-read" data-mk="m0" title="读取 · 00:00:01 · 2.0 s" style="left:2.000%;width:28.000%"></button><span class="dsh-trace-stack">叠 2</span></div>
+            <div class="dsh-trace-track n1"><button class="dsh-trace-mark t-tool fam-run" data-mk="m1" style="left:34.000%;width:12.000%"></button></div>
+            <div class="dsh-trace-track n2 sub"><span class="dsh-trace-track-label">子代理</span><button class="dsh-trace-mark t-tool fam-sub" data-mk="m2" style="left:48.000%;width:20.000%"></button></div>
+            <div class="dsh-trace-track n0"><button class="dsh-trace-mark t-tool fam-write err" data-mk="m3" style="left:70.000%;width:26.000%"></button></div>
+            <div class="dsh-trace-track n1"><button class="dsh-trace-mark t-tool fam-job run" data-mk="m4" title="后台任务 · 运行中（静态描边，不闪烁）" style="left:20.000%;width:8.000%"></button></div>
+          </div>
+          <!-- 滑窗带：叠在绘图区上，标出「当前滚动视窗」对应的时间段（不吃指针事件） -->
+          <div class="dsh-trace-window" id="bandA" style="left:18.000%;width:40.000%" title="本视窗在这一段里的位置（滑窗带）"></div>
+        </div>
+        <span class="dsh-trace-scale" id="scaleA">4 步 · 本视窗跨度 1.0 s · 00:00:01–00:00:02</span>
+        <div class="dsh-trace-legend" id="legA">
+          <span class="dsh-trace-legend-item fam-read"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">读取</span><span class="dsh-trace-legend-count">6</span></span>
+          <span class="dsh-trace-legend-item fam-write"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">改写</span><span class="dsh-trace-legend-count">3</span></span>
+          <span class="dsh-trace-legend-item fam-run"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">运行命令</span><span class="dsh-trace-legend-count">2</span></span>
+          <span class="dsh-trace-legend-item fam-web"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">联网</span><span class="dsh-trace-legend-count">1</span></span>
+          <span class="dsh-trace-legend-item fam-sub"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">子代理</span><span class="dsh-trace-legend-count">1</span></span>
+          <span class="dsh-trace-legend-item fam-talk"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">对话</span><span class="dsh-trace-legend-count">1</span></span>
+          <span class="dsh-trace-legend-item fam-own"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">自有工具</span><span class="dsh-trace-legend-count">1</span></span>
+          <span class="dsh-trace-legend-item fam-browser"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">浏览器</span><span class="dsh-trace-legend-count">1</span></span>
+          <span class="dsh-trace-legend-item fam-job"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">后台任务</span><span class="dsh-trace-legend-count">1</span></span>
+          <span class="dsh-trace-legend-item fam-other"><span class="dsh-trace-legend-swatch"></span><span class="dsh-trace-legend-label">其它</span><span class="dsh-trace-legend-count">1</span></span>
+        </div>
+      </div>
+      <div class="dsh-trace-cols" id="colsA">
+        <div class="dsh-trace-list" id="listA">
+          <button class="dsh-trace-more" hidden>↑ 加载更早的步骤</button>
+          <div class="dsh-trace-spacer" id="spacerA">
+            <div class="dsh-trace-group g-turn" data-idx="-1"><span class="dsh-trace-caret">▾</span><b class="dsh-trace-group-label">第 1 轮</b><span class="dsh-trace-group-meta">4 步 · 工具 2 次</span></div>
+            <div class="dsh-trace-row t-think" data-idx="0" data-seg-idx="0" style="top:32px">
+              <span class="dsh-trace-tick" title="思考 · 第 1 步 · 每步 token 未记到 · 这一段没有独立时间戳"><span class="dsh-trace-tick-at off">·</span></span>
+              <div class="dsh-trace-body"><div class="dsh-trace-oneline">先想清楚这一步要做什么，长内容只留一行，完整内容在右侧检查器里看</div></div>
+            </div>
+            <div class="dsh-trace-row t-tool fam-read" data-idx="1" data-seg-idx="1" style="top:64px">
+              <span class="dsh-trace-tick" title="工具 · 第 1 步 · 发起 00:00:01 · 耗时 500 ms"><span class="dsh-trace-tick-at">00:00:01</span><span class="dsh-trace-tick-dur">500 ms</span><span class="dsh-trace-tick-tok dsh-tok"><span class="dsh-tok-in">↑1.2k</span><span class="dsh-tok-out">↓340</span></span></span>
+              <div class="dsh-trace-body"><div class="dsh-trace-tool"><span class="dsh-trace-tool-name">读文件</span><span class="dsh-trace-tool-raw">read</span></div></div>
+            </div>
+            <div class="dsh-trace-row t-say" data-idx="2" data-seg-idx="2" style="top:96px">
+              <span class="dsh-trace-tick"><span class="dsh-trace-tick-at">00:00:02</span><span class="dsh-trace-tick-dur">1.2 s</span><span class="dsh-trace-tick-tok dsh-tok"><span class="dsh-tok-in">↑860</span><span class="dsh-tok-out">↓1.1k</span></span></span>
+              <div class="dsh-trace-body"><div class="dsh-trace-oneline">答复正文摘要铺满整行右缘，不再被读数栏挤成两行</div></div>
+            </div>
+            <div class="dsh-trace-row t-tool fam-write run" data-idx="3" data-seg-idx="3" style="top:128px">
+              <span class="dsh-trace-tick"><span class="dsh-trace-tick-at">00:00:03</span></span>
+              <div class="dsh-trace-body"><div class="dsh-trace-tool"><span class="dsh-trace-tool-name">改写文件</span><span class="dsh-trace-tool-raw">edit</span></div></div>
+            </div>
+            <div class="dsh-trace-row t-err" data-idx="4" data-seg-idx="4" style="top:160px">
+              <span class="dsh-trace-tick"><span class="dsh-trace-tick-at">00:00:04</span></span>
+              <div class="dsh-trace-body"><details class="dsh-trace-detail err" open><summary>错误</summary><pre>429 too many requests</pre></details></div>
+            </div>
+          </div>
+          <button class="dsh-trace-tailbar" hidden>↓ 回到底部跟随</button>
+        </div>
+        <aside class="dsh-trace-insp" id="inspA">
+          <div class="dsh-trace-insp-head"><b>工具</b><span class="dsh-trace-insp-name">读文件</span></div>
+          <div class="dsh-trace-insp-meta" id="inspMetaA">第 1 轮 · 第 1 步 · 00:00:01 · 耗时 500 ms · 结果 4 B · 步间隔 500 ms · 本步 token <span class="dsh-tok"><span class="dsh-tok-in">↑1.2k</span> · <span class="dsh-tok-out">↓340</span></span></div>
+          <div class="dsh-trace-insp-sec">
+            <div class="dsh-trace-insp-label">参数</div>
+            <div class="dsh-trace-code" id="codeA1"><div class="dsh-trace-ln"><span>1</span><span>2</span><span>3</span></div><pre class="dsh-trace-src">{
+  "path": "renderer/app-trajectory.js",
+  "limit": 40
+}</pre></div>
+          </div>
+          <div class="dsh-trace-insp-sec">
+            <div class="dsh-trace-insp-label">结果</div>
+            <div class="dsh-trace-code" id="codeA2"><div class="dsh-trace-ln"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span></div><pre class="dsh-trace-src">/* 会话 · 运行轨迹视图 */
+  1  第 1 行
+  2  第 2 行
+  3  第 3 行
+  4  第 4 行</pre></div>
+          </div>
+        </aside>
+      </div>
+      <div class="dsh-trace-foot" id="footA">5 步 · 工具调用 3 次 · 已加载最近 5 步</div>
+    </div>
+  </div>
+</div>
+
+<!-- ② Token 报告：摘要行 + 按模型表（计费输入蓝 / 输出绿） -->
+<div class="preview-window" style="height:320px">
+  <div class="preview-title">② Token 报告（摘要行与表格的「计费输入 / 输出」两段带色）</div>
+  <div class="agent-body">
+    <details class="tok-badge" id="badgeB" open>
+      <summary>
+        <span class="tok-badge-chip">📊 Token 报告</span>
+        <span class="tok-badge-sum" id="badgeSumB">Σ 12.3M tok · 入<span class="dsh-tok"><span class="dsh-tok-in">11.8M</span> · 出<span class="dsh-tok-out">530.0k</span></span> · 缓存命中 92% · 3 模型 · 18 轮 · ⏱ 1h 20m</span>
+      </summary>
+      <div class="tok-badge-body">
+        <div class="tok-sec-head">按模型 · 合计</div>
+        <table class="tok-badge-table">
+          <tr><th>模型 / 服务商</th><th>计费输入</th><th>缓存读</th><th>命中</th><th>输出</th><th>推理</th><th>调用</th><th>LLM</th><th>工具</th><th>费用</th></tr>
+          <tr><td>deepseek-chat<span class="tok-badge-prov">DeepSeek 官方</span></td><td class="dsh-tok-in">11.8M</td><td>10.9M</td><td>92%</td><td class="dsh-tok-out">530.0k</td><td>12.0k</td><td>120</td><td>1h 12m</td><td>8m</td><td class="tok-badge-cost">—</td></tr>
+          <tr class="tok-badge-total"><td>合计 · 3 模型</td><td class="dsh-tok-in">11.8M</td><td>10.9M</td><td>92%</td><td class="dsh-tok-out">530.0k</td><td>12.0k</td><td>120</td><td>1h 12m</td><td>8m</td><td class="tok-badge-cost">≈¥3.20</td></tr>
+        </table>
+      </div>
+    </details>
+  </div>
+</div>
+
+</body>
+</html>

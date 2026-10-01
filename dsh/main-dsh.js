@@ -36,7 +36,6 @@ const INSTALL_SKILL_SOURCES = {
   'minimax-music3-install': path.join(__dirname, '..', 'skills', 'minimax-music3-install', 'SKILL.md'),
   'tts-local-install': path.join(__dirname, '..', 'skills', 'tts-local-install', 'SKILL.md'),
   'llama-local-install': path.join(__dirname, '..', 'skills', 'llama-local-install', 'SKILL.md'),
-  'asr-local-install': path.join(__dirname, '..', 'skills', 'asr-local-install', 'SKILL.md'),
   'sensenova-local-install': path.join(__dirname, '..', 'skills', 'sensenova-local-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))
@@ -473,6 +472,35 @@ function createDshAdapter(opts) {
 
     providerCatalog() {
       return request('providerCatalog', undefined, 30000)
+    },
+
+    /* MCP 资源（只读）：{ action:'list'|'read', serverName, uri?, servers:[…] }。
+       「扩展能力管理」里点开一台 MCP 服务器时列它的资源 / 读一条内容；服务器配置由宿主
+       回传（网关不自己找配置来源），连接按服务器名在网关进程里缓存 60 秒。
+       超时留足：stdio 服务器要冷起一个进程。失败一律 resolve 成 {ok:false,error}。 */
+    mcpResources(params) {
+      const p = params && typeof params === 'object' ? params : {}
+      return request('mcpResources', p, 90000).catch((err) => ({
+        ok: false,
+        error: (err && err.message) || String(err),
+      }))
+    },
+
+    /* 语音输入（对话输入框的录音按钮）：
+       { workspace, action: 'state' | 'prepare' | 'cancel' | 'transcribe',
+         providerId?, downloadSource?, language?, audio?（base64，16 kHz 单声道 PCM16 WAV）}。
+       识别跑在本地 CPU（官方 SenseVoice），模型首次使用才下载；进度经事件总线回流
+       （type 'speech-state'），这里回的是当次结果。
+       超时按动作分档（下载 / 转写都要留足），任何异常一律 resolve 成 {ok:false,error} ——
+       界面上显示一行错误，不在控制台炸 unhandled rejection（与 browser 同一口径）。 */
+    speech(params) {
+      const p = params && typeof params === 'object' ? params : {}
+      const action = String(p.action || 'state')
+      const timeout = action === 'prepare' ? 660000 : action === 'transcribe' ? 200000 : 60000
+      return request('speech', p, timeout).catch((err) => ({
+        ok: false,
+        error: (err && err.message) || String(err),
+      }))
     },
 
     /* ── skills:文件系统技能,$DSH_HOME/skills/<name>/SKILL.md ──

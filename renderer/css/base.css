@@ -102,6 +102,29 @@ textarea {
   color-scheme: dark
 }
 
+/* 原生下拉（select）统一暗色基线 —— 修「设置里部分下拉展开后白底白字」：
+   Chromium 的 select 弹出层是拿**这个 select 自己的 background-color** 去画的
+   （新 SELECT 弹出层口径：背景取自 select 元素本身）。只要控件底色是半透明
+   （rgba / 未设底色走 UA 的 light-dark），弹出层就拿不到暗色底，而文字色仍是
+   --ink 的亮色 —— 于是白底 + 亮字看不清。已知 Chromium 缺陷：
+   https://issues.chromium.org/issues/565453079
+   （「color-scheme: dark 与半透明底混用时的弹出层对比度问题」）。
+   因此这一层只做一件事：给所有原生 select 一个**不透明**的暗色底 + 亮色字，
+   并带上 !important —— 免得别处再写 color:inherit / 半透明底把弹出层拖白
+   （设置 → 语音输入的「识别语言」就是这么坏的：asr.css 的 .asr-set-row > select）。
+   亮色主题在 theme-light.css 末尾用 :root[data-theme="light"] 整段撤销，肉眼不变。 */
+:root:not([data-theme="light"]) select {
+  background: var(--code) !important;
+  color: var(--ink) !important;
+  color-scheme: dark;
+}
+
+:root:not([data-theme="light"]) select option,
+:root:not([data-theme="light"]) select optgroup {
+  background: var(--code);
+  color: var(--ink);
+}
+
 /* 全局数字 / 日期输入：避免系统浅色控件 */
 input[type="number"],
 input[type="datetime-local"],
@@ -882,9 +905,12 @@ body.plan-resizing * {
  *      有空间就守住，想多看几行继续往上拖，空间真不够时只让清单变矮（min-height:0）；
  *   ④ 任务卡 / 发送队列同口径：可收缩 + 头部下限 + 内部列表各自封顶（.at-list 190 / .aq-list 132）；
  *   ⑤ 输入区 .agent-composer 是唯一钉死项（flex:none）：上面三项下限之和 45+38+36 = 119px，
- *      加最坏情况的输入区（chips 换两行）180px 也才 299px；实测 .agent-body 高 = 窗口高 − 125px，
+ *      加最坏情况的输入区（chips 换两行）180px、再加会话区顶部的轮次标签 #agentRound
+ *      （flex:none，约 26px）也才 325px；实测 .agent-body 高 = 窗口高 − 125px，
  *      主窗口 minHeight:640 时还剩 515px（测量台里 420px 高的非法窗口都还剩 295px）——
  *      所以输入区必然完整可见，清单永远盖不到他身上，消息区还留着 200px 上下的余量。
+ *      轮次标签是 flex:none 且空会话 / 未开跑时带 hidden（整行不占位），
+ *      app-plan.js 的 agentPlanMaxH 按「全部可见兄弟项实测」求和，它自然被算进预算。
  * 反过来说，消息区故意不设下限：它是第一个被牺牲的（见 ①），给他加下限就会把压力转嫁给输入区。
  * 这里用「①②③④⑤」编号，与下面各条规则前的标号一一对应。
  * overflow:hidden 从此只作异常兜底，不再是「不越界」的手段；能给空间时清单该多高就多高，

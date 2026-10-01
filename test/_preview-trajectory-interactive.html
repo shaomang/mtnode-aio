@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>轨迹视图交互真机联调（临时 · test/_preview-trajectory-interactive.html）</title>
+<!-- 与 _preview-trajectory-style.html 的分工：
+     那一份是**静态复刻**的样式尺（量几何 / 配色，快、稳），这一份**直接跑真模块**
+     renderer/app-trajectory.js（配最小现场：真样式 renderer/style.css + 一份假会话 + 三个
+     回调），为的是能在真浏览器里量「滚轮横向拉伸」这种**真事件**行为 —— 静态页没有 JS，
+     滚轮事件落不到任何监听上（上一版就在这里量出「没反应」的假象）。
+     模块本身照 window.MTNodeTrajectory 的出口驱动，页面脚本只负责：
+     ① 摆现场 ② dispatch 真 WheelEvent / 双击 ③ 把量到的几何写成 window.__mtn 供 CDP 读。 -->
+<link rel="stylesheet" href="../renderer/style.css">
+<style>
+  html, body { margin: 0; background: #14161a; color: #c9cdd4; font: 13px/1.5 system-ui, "Segoe UI", sans-serif; }
+  /* 真应用里 .agent-body 的父链把它撑到整块高（flex:1; min-height:0）：这里给同样的约束，
+     否则轨迹列表量不到视口高度，虚拟滚动与「本视窗」都会退化成全表可见。 */
+  #stage { height: 620px; display: flex; flex-direction: column; border: 1px solid #2a2f38; margin: 8px; }
+  #stage > .agent-main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  #stage > .agent-main > .agent-body { flex: 1 1 auto; min-height: 0; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <!-- .agent-main 是模块挂「对话 / 轨迹」标签栏的宿主（ensureTabs 用它 insertBefore）：
+       这一层**必须有**，否则 ensureTabs 回 null → sync 走「没有会话」分支 → 轨迹主区恒 hidden
+       （本轮在这个联调页上踩过：轴整条量不到，看起来像功能没生效）。 -->
+  <div class="agent-main">
+    <div class="agent-body">
+      <!-- 真应用里由 app-assist 渲染的会话主体件：轨迹视图靠 .agent-body / #agentList 找宿主，
+           其余兄弟件（队列 / 计划 / 输入区 / 报告）用来验证「轨迹视图下它们一起让位」 -->
+      <div class="agent-list" id="agentList"></div>
+      <div class="agent-queue" id="agentQueue" hidden></div>
+      <div class="agent-todo agent-plan" id="agentPlan" hidden></div>
+      <div class="agent-todo" id="agentTodo" hidden></div>
+      <div class="agent-composer" hidden></div>
+      <details class="tok-badge" hidden></details>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ── 最小现场：只有模块真的会读的那几样（读法见 app-trajectory.js 的 activeSession /
+   collectSegments / toolMapOf）─────────────────────────────────────────────── */
+window.S = {
+  agentActiveId: "aslive",
+  config: { dsh: {} },
+  agentSessions: [
+    {
+      id: "aslive",
+      trajView: "trace",
+      messages: [],
+      /* 工具记录（检查器 / 轴的块都读它）：at = 发起、doneAt = 结果回来 */
+      _liveTools: [
+        { callId: "c1", round: 1, step: 1, name: "read", at: 1000, doneAt: 1400, args: { path: "a.js" }, result: [{ text: "ok" }] },
+        { callId: "c2", round: 1, step: 2, name: "read", at: 2600, doneAt: 2900 },
+        { callId: "c3", round: 2, step: 1, name: "run", at: 4200, doneAt: 6100 },
+        { callId: "c4", round: 2, step: 2, name: "job", at: 7000, doneAt: 0 },
+      ],
+    },
+  ],
+};
+/* 本轮实时轨迹（collectSegments 的第一优先来源；留空则回落历史消息） */
+window.__items = [
+  { k: "think", text: "先看清楚这一段要做什么", round: 1, step: 1 },
+  { k: "tool", text: "", round: 1, step: 1, callId: "c1" },
+  { k: "tool", text: "", round: 1, step: 2, callId: "c2" },
+  { k: "say", text: "两处读取都回来了，接着跑命令", round: 1, step: 3 },
+  { k: "tool", text: "", round: 2, step: 1, callId: "c3" },
+  { k: "tool", text: "", round: 2, step: 2, callId: "c4" },
+];
+window.agentTraceItems = (rk) => (rk === "agent:aslive" ? window.__items : null);
+window.agentTraceRound = (rk) => (rk === "agent:aslive" ? 2 : null);
+window.traceRunKey = (k) => String(k);
+window.traceOf = (k) => (k === "agent:aslive" ? { items: window.__items, round: 2 } : null);
+window.fmtTime = (t) => {
+  const d = new Date(Number(t) || 0);
+  return d.toISOString().slice(11, 19);
+};
+window.plainTextToLinkHtml = (s) =>
+  String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+</script>
+<script src="../renderer/app-trajectory.js"></script>
+<script>
+/* ── 量测脚手架：只用模块自己的出口（sync / debug / resetZoom），不碰内部状态 ────── */
+(function () {
+  const api = window.MTNodeTrajectory;
+  const ruler = () => document.getElementById("agentTraceRuler");
+  const marks = () => Array.from(ruler().querySelectorAll(".dsh-trace-mark"));
+  const geom = () => marks().map((m) => m.style.left + "/" + m.style.width);
+  const ticks = () => Array.from(ruler().querySelectorAll(".dsh-trace-ruler-tick")).map((t) => t.textContent);
+  const scale = () => String((ruler().querySelector(".dsh-trace-scale") || {}).textContent || "");
+  const band = () => {
+    const b = ruler().querySelector(".dsh-trace-window");
+    return b ? { left: b.style.left, width: b.style.width, at: b.dataset.at, end: b.dataset.end } : null;
+  };
+  const snap = () => {
+    const r = ruler();
+    const rb = r.getBoundingClientRect();
+    return {
+    marks: geom(),
+    ticks: ticks(),
+    scale: scale(),
+    band: band(),
+    /* 轴的几何账（真浏览器里量，不是估算）：轴盒高 / 五件的高度与是否**被轴框裁掉**
+       （图例被 overflow:hidden 裁掉正是上一轮修掉的 bug，这里留一道可复核的判据）。 */
+    axis: (() => {
+      const pick = (sel) => {
+        const el = r.querySelector(sel);
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        return { h: Math.round(b.height), w: Math.round(b.width), top: Math.round(b.top), bottom: Math.round(b.bottom), clipped: b.bottom > rb.bottom + 0.5 || b.top < rb.top - 0.5 };
+      };
+      return {
+        ruler: { h: Math.round(rb.height), w: Math.round(rb.width) },
+        ticks: pick(".dsh-trace-ruler-ticks"),
+        tracks: pick(".dsh-trace-ruler-tracks"),
+        trackCount: r.querySelectorAll(".dsh-trace-track").length,
+        scale: pick(".dsh-trace-scale"),
+        legend: pick(".dsh-trace-legend"),
+        legendItems: r.querySelectorAll(".dsh-trace-legend-item").length,
+        markCount: r.querySelectorAll(".dsh-trace-mark").length,
+        mark: pick(".dsh-trace-mark"),
+        overflow: getComputedStyle(r).overflow,
+      };
+    })(),
+    /* 「运行中」的块：计算样式里不许有 animation（本轮需求：横轴不闪） */
+    runAnim: (() => {
+      const m = ruler().querySelector(".dsh-trace-mark.run");
+      if (!m) return null;
+      const cs = getComputedStyle(m);
+      return { name: cs.animationName, dur: cs.animationDuration, shadow: cs.boxShadow, border: cs.borderTopColor };
+    })(),
+    /* 整条轴里还有没有别的会动的元素 */
+    animCount: Array.from(ruler().querySelectorAll("*")).filter(
+      (el) => getComputedStyle(el).animationName !== "none",
+    ).length,
+    debug: api._debug(),
+    };
+  };
+
+  const mtn = {
+    ready: false,
+    snap: snap,
+    /* 在轴宽的 f 处滚 deltaY（真 WheelEvent：锚点 = 指针位置） */
+    wheel: (f, deltaY) => {
+      const r = ruler().getBoundingClientRect();
+      ruler().dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: deltaY,
+          clientX: r.left + r.width * f,
+          clientY: r.top + r.height / 2,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      return snap();
+    },
+    dblclick: () => {
+      ruler().dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      return snap();
+    },
+    resetZoom: () => api.resetZoom(),
+    /* 滚到顶 / 到底 / 指定像素：本视窗 = 那一段行。
+       顺带把轨迹列表**钉成 96px 高**（只看得见三行）—— 真会话里列表就是一屏行，这里不钉的话
+       列表按内容缩到 0 高（CSS 那条 flex: 0 1 auto + min-height:0 的口径，见 dsh-tokens.css），
+       clientHeight 恒 0 → 模块按「全表可见」算本视窗，滑窗带恒等于整条轴，
+       「视窗跟着走」这件事就量不出来。行内 style 直接压过样式表，量的是模块的真行为。 */
+    scroll: (top) => {
+      const list = document.querySelector(".dsh-trace-list");
+      list.style.flex = "0 0 auto";
+      list.style.width = "100%";
+      list.style.height = "96px";
+      list.scrollTop = top === "tail" ? list.scrollHeight : Number(top) || 0;
+      return snap();
+    },
+  };
+  window.__mtn = mtn;
+  requestAnimationFrame(() => {
+    /* 先 sync（挂标签栏与主区、量视口），再显式 render 一次：
+       真应用里 #agentList 由对话视图渲染过、children 不为空，sync 的
+       「trace && (sid !== lastRendered || !listEl.children.length)」因此总会进 render；
+       这个联调现场没有对话视图，列表是空的 —— 不显式 render 就会卡在
+       「列表空 → 不渲染 → 列表仍空」上（本轮踩过：量到一片空白）。 */
+    api.sync();
+    api.render("aslive");
+    requestAnimationFrame(() => {
+      mtn.ready = true;
+      window.__mtnBefore = snap();
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -5073,7 +5073,7 @@ const PROVIDER_TYPE_LABELS = [
    里有一份**逐字同步的第二份**，且那一份才是运行期生效的：index.html 里 app.js 先加载、
    app-agent.js 后加载，同名 function 声明被后一份静默覆盖。
    为什么留两份：回归脚本按名字从本文件切出源码进 vm 真跑
-   （test/smoke-save-name.js · smoke-workspace-project.js · smoke-file-node.js ·
+   （test/smoke-save.js 的「已并入：smoke-save-name.js」段 · smoke-workspace-project.js · smoke-file-node.js ·
    smoke-resume-on-retry.js [6c]），改这里必须同步改 app-agent.js 那一份 —— 两边内容
    必须逐字一致（含行尾 LF），否则 test/smoke-workspace-project.js [7] 的「两份逐字一致」判红。 */
 
@@ -5144,6 +5144,104 @@ function preferredAgentModelForRoute(route) {
   if (assistModel && agentModelFitsRoute(route, assistModel)) return assistModel;
   const models = agentModelsForRoute(route);
   return models[0] || "";
+}
+
+/* ═══════════ 「默认模型」（设置 · 智能能力）—— 全应用唯一一份解析 ═══════════
+   用户在设置 · 智能能力里填的「默认模型（智能能力使用）」= S.config.dsh.model（
+   app-settings.js 的 modelSel 写的就是这一格），这里给出「此刻到底用哪一只」与
+   「用不了时该说什么」的唯一口径。工具构建（方案生成 / 开发会话 / 工具运行 / 节点
+   头部 🤖 按钮）一律按它取值，不再各拿 preferredAgentModelForRoute（那条链读的是
+   S.assistModel，与设置里的默认模型可以不一致 —— 这正是「工具用的模型与设置不符」）。
+
+   三条纪律（用户口径）：
+     · 不静默回落：这一格为空、或那只模型在本机任何服务商里都找不到、或它能挂的服务商
+       全被停用 / 没填 Key —— 一律报错并指路「设置 · 智能能力 · 默认模型」，绝不偷偷
+       换成别的模型；
+     · 只在运行期算生效值：不往节点写 aiModel / aiProvider（改设置后所有未自选的节点
+       立刻跟着变，不会留下「新建时补种的那一份旧默认」）；
+     · 路由优先沿用本机默认智能路由（preferredAgentProviderRoute，与长任务面板同源），
+       只有当这只模型压根不属于那条路由时才改成它所属的路由。 */
+
+/* 这只模型能不能挂在这条路由上：路由不在本机 / 该路由清单里没有它 → 不能。 */
+function dshModelFitsRouteNow(route, model) {
+  const m = String(model || "").trim();
+  if (!m) return false;
+  let models = [];
+  try {
+    models =
+      typeof agentModelsForRoute === "function"
+        ? agentModelsForRoute(route) || []
+        : [];
+  } catch (_) {
+    models = [];
+  }
+  if (!models.length) return false;
+  const low = m.toLowerCase();
+  return models.some((x) => {
+    const s = String(x);
+    return s === m || s.toLowerCase() === low || s.endsWith("/" + low) || s.endsWith(low);
+  });
+}
+
+/* 本机此刻「可挂这只模型的智能路由」清单（同一条路由只出一次，顺序 = 候选优先级）：
+   ① 默认智能路由（沿用用户当前那一条，不改它的服务商）；
+   ② 路由反查真源 devRouteOfModel（模型只登记在别家时把服务商一并拨正）；
+   ③ 兜底：本机默认路由。 */
+function dshDefaultModelRoutes(model) {
+  const m = String(model || "").trim();
+  const out = [];
+  const push = (r) => {
+    const s = String(r || "").trim();
+    if (!s || out.indexOf(s) >= 0) return;
+    if (!dshModelFitsRouteNow(s, m)) return;
+    out.push(s);
+  };
+  try {
+    if (typeof preferredAgentProviderRoute === "function")
+      push(preferredAgentProviderRoute());
+  } catch (_) {}
+  try {
+    if (typeof devRouteOfModel === "function") push(devRouteOfModel(m));
+  } catch (_) {}
+  try {
+    if (typeof defaultAgentProviderRoute === "function") push(defaultAgentProviderRoute());
+  } catch (_) {}
+  return out;
+}
+
+/* 解析结果（不抛）：{ ok, route, model, reason } —— reason 只在 ok=false 时有值，
+   是给用户看的一句话（含指路）。凡是「要真的拿默认模型去跑」的入口都走这里。 */
+function dshDefaultModelPick() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const model = String(cfg.model || "").trim();
+  if (!model)
+    return {
+      ok: false,
+      route: "",
+      model: "",
+      reason: I18n.t(
+        "默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
+      ),
+    };
+  const routes = dshDefaultModelRoutes(model);
+  if (!routes.length)
+    return {
+      ok: false,
+      route: "",
+      model: model,
+      reason: I18n.t(
+        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。",
+        { model: model },
+      ),
+    };
+  return { ok: true, route: routes[0], model: model, reason: "" };
+}
+
+/* 同上，ok=false 时抛错（消息里已指路）。需要「拿到就用」的调用点走这个。 */
+function dshDefaultModelRoute() {
+  const pick = dshDefaultModelPick();
+  if (!pick.ok) throw new Error(pick.reason || I18n.t("默认模型不可用"));
+  return { provider: pick.route, model: pick.model };
 }
 
 /** 原 API 模式 providerId → 智能路由（DeepSeek 配置走官方路由，其余走 mtnode_） */
@@ -5841,14 +5939,8 @@ function sessionFooterTitle(st, m, running) {
         fmtTok(m.reasoningTokens) +
         " tok",
     );
-    if ((m.contextWindow || 0) > 0)
-      rows.push(
-        I18n.t("上下文 ") +
-          fmtTok((m.inputTokens || 0) + (m.outputTokens || 0)) +
-          " / " +
-          fmtTok(m.contextWindow) +
-          " tok",
-      );
+    /* 「上下文 X / Y tok」这行已移除（本次需求）：与 Token 报告重复。报告里的明细
+       （逐轮 + 逐模型）自带 contextWindow，不必在这里再写一份「已用 / 窗口」。 */
     if (m.subagents) rows.push(I18n.t("子代理 ") + m.subagents);
     if (m.jobs) rows.push(I18n.t("后台任务 ") + m.jobs);
   }
@@ -8826,6 +8918,17 @@ function updateRunQueuePanel() {
   const hasQueue = !!items.length;
   /* 心跳：有运行项才定时重绘面板（解决长任务期间「看着不动」），队列空即停 */
   syncRunQueueTicker(hasQueue);
+  /* 任务级完成短促音（本次需求）：同一次取数里先做一次「队列前后对比」——
+     上拍还在的运行项这一拍不见了 = 它跑完了，响一声短促音（被手动停止 / 取消的不发）。
+     放在这里 = 任何类型（智能体会话 / 节点 / 开发块 / 助手 / 后端媒体 / 排队项 / 批处理）
+     的收尾都汇到这一处，不必在 app-nodes / app-db 的每条收尾分支上各埋一遍。 */
+  if (typeof dshRunQueueDoneCheck === "function") dshRunQueueDoneCheck();
+  /* 全局长任务提醒（本次需求）：队列刚空这一刻由 app-db.js 的 dshRunAllDoneCheck 自己
+     取一次队列快照，判「彻底空了 + 空闲满 5 分钟」后响一声更清脆的内置音。放在这里 =
+     不论最后一件是智能运行、生成节点还是排队项，收尾后总有一拍心跳走到这儿，
+     不必在每个收尾路径上都埋一遍。（不传面板快照：面板那一份可能滞后一拍，
+     而「全都跑完」必须与队列真身同源 —— 上一版就是拿滞后的条目算时长，才会提前响。） */
+  if (typeof dshRunAllDoneCheck === "function") dshRunAllDoneCheck();
   /* 汇总文案（条状按钮 title 与面板 rq-count 同一份，口径不分叉） */
   const summary = [];
   if (nAssist) summary.push(I18n.t("助手执行中"));
@@ -12560,6 +12663,11 @@ function applyTransform() {
   syncCanvasGrid();
   /* 节点上的 persistent 参数面板不会点外部收起，画布一动就得自己跟回它的按钮 */
   repositionNodePops();
+  /* 全局语音输入（renderer/app-voice.js）：浮窗跟着光标，切画布（S.wf 换对象）时清掉
+     未定稿的临时字与插入锚点。模块自包含、按调用期取；每帧只做一次字符串比较。 */
+  if (typeof window !== "undefined" && window.VoiceInput && typeof window.VoiceInput.canvasTick === "function") {
+    window.VoiceInput.canvasTick((S.wf && S.wf.id) || "");
+  }
 }
 
 /* 相机变换合并到下一帧，避免平移/缩放时 mousemove/wheel 触发多次强制布局 */
@@ -14176,9 +14284,9 @@ function allTextItems(src, consumer, portIdx) {
     );
     return feed ? allTextItems(nodeById(feed.from), src) : [];
   }
-  /* 本地语音转写（Qwen3-ASR）：音频来源若已有转写文本，就用「音频转写 · 标题」块代替
-     原来那条 file:/// URL（见 renderer/app-asr.js · asrTextItemsOf）。只在消费者是文字
-     处理节点、且确实有转写时接管；没有转写返回 null，下面各分支行为逐字不变。 */
+  /* 本地语音转写（官方本地 SenseVoice）：音频 / 视频节点若已转录，就用「音频转写 · 标题」块
+     代替原来那条 file:/// URL（见 renderer/app-asr.js · asrTranscriptBlockOf）。只在确实有
+     转写时接管；没有转写返回 null，下面各分支行为逐字不变。 */
   if (typeof asrTextItemsOf === "function") {
     const asrItems = asrTextItemsOf(src, consumer, portIdx);
     if (asrItems && asrItems.length) return asrItems;
@@ -15628,8 +15736,9 @@ function resolveRefs(prompt, node, idx, opts) {
     const useIdx = fromIdx != null ? fromIdx : idx;
     if (!markSeen(c, useIdx)) return;
     const v = valueForInput(c, useIdx, node);
-    /* 音频来源（input_audio / 素材音频条目 / 语音与音乐产物 / 工具与函数节点的音频端子）：
-       有转写文本就用转写文本当背景块，没有才退回原口径（取 file:/// URL 或产物路径）。 */
+    /* 音频 / 视频来源（input_audio / input_video）：有转写文本就用转写文本当背景块，
+       没有才退回原口径（取 file:/// URL）。转写文本存在那张音频节点自己身上，
+       由它运行前备好（见 renderer/app-asr.js 的 asrTranscriptBlockOf / asrEnsureForRun）。 */
     if (typeof asrTranscriptBlockFor === "function") {
       const at = asrTranscriptBlockFor(node, c, useIdx);
       if (at) {
@@ -15653,7 +15762,7 @@ function resolveRefs(prompt, node, idx, opts) {
         wiredLeaves.add(src.id);
         if (
           isRefTextSourceKind(src) ||
-          /* 音频来源：只有「确有转写文本」才自动进背景块（没有转写时维持旧行为 ——
+          /* 音频 / 视频来源：只有「确有转写文本」才自动进背景块（没有转写时维持旧行为 ——
              音频线不往提示词里塞 file:/// URL，见 renderer/app-asr.js） */
           (typeof asrTranscriptBlockFor === "function" &&
             !!asrTranscriptBlockFor(node, src, refInputIdxFor(node, src, idx, w)))
@@ -16236,8 +16345,12 @@ const AGENT_SLASH_CMDS = [
 let _skillListCache = { at: 0, skills: [] };
 let _slashTickGen = 0;
 
+/* 技能清单缓存（TTL 只用来挡住「连按一串字符」这种密集重入；技能清单本身变化极少）。
+   别把 TTL 往小调：命中缓存是纯内存返回，未命中要走一次 IPC skill:list ——
+   宿主侧那一下会重扫技能库，主进程被占住时输入框就会顿（见 mtnode-agent-skills-lib.js
+   的 SYNC_STATE_FILE 段：宿主侧整树重建已改成「没变就不动」；这里再把窗口放宽，两层一起收敛）。 */
 async function loadSkillsCached(force) {
-  if (!force && Date.now() - _skillListCache.at < 5000) return _skillListCache.skills;
+  if (!force && Date.now() - _skillListCache.at < 60000) return _skillListCache.skills;
   try {
     const r = await window.api.skillList();
     _skillListCache = { at: Date.now(), skills: (r && r.skills) || [] };
@@ -16388,19 +16501,71 @@ function selectSlashItem(item) {
 function showSlashMenu(ta, items, scope, onChange) {
   const menu = $("#refMenu");
   if (!menu) return;
+  /* 候选没变就不重建 DOM（本轮修：打字卡顿）。
+     逐字打字时每次 input 都会走到这里，而候选列表只在 query 真的筛掉/加回条目时才变
+     （「/」后面接着打字命中同一批技能是常态）。重建是「清空 + 逐条建按钮 + 量宽定位」，
+     在一排候选下要 1ms 级、还把菜单整块重画一遍；这里按「作用域 + 每条的 name/标题」
+     记一个签名，签名一致就只重定位（光标横向移了，菜单得跟上），不碰列表内容。
+     选择位（sel）照旧归零：新的一次按键就是新的一轮候选，与旧写法一致。
+     签名挂在菜单宿主上（不是模块态），换输入框 / 关菜单都不会串味。
+     条数超过一屏没意义（菜单自己会滚），条数差异直接进签名前缀，签名串另有长度上限。 */
+  const list_ = Array.isArray(items) ? items : [];
+  const sig =
+    String(scope || "agent") +
+    "\u0001#" +
+    list_.length +
+    "\u0001" +
+    list_
+      .map(
+        (it) =>
+          String((it && it.name) || "") + "\u0002" + String((it && it.title) || ""),
+      )
+      .join("\u0003")
+      .slice(0, 4096);
+  /* 复用的前提有三条，缺一不可：
+     ① 签名一致；
+     ② 菜单里挂着的那份列表**还是上一次斜杠候选自己建的那一只**；
+     ③ 它还是菜单的最后一个子节点 —— 菜单宿主与 @ 引用共用，@ 引用会往同一只宿主里追加
+        自己的列表（斜杠那份留在原地）：这时把「最后一份」当成技能条目用就会点错东西。 */
+  const prevList = menu._slashList || null;
+  const reuse =
+    menu._slashSig === sig &&
+    menu.classList.contains("slash-menu") &&
+    !!prevList &&
+    menu.contains(prevList) &&
+    menu.lastElementChild === prevList &&
+    !!prevList.querySelector(".slash-item");
+  menu._slashSig = sig;
+  if (reuse) {
+    /* 只把选择位归零并重定位（列表内容一个字不动） */
+    closeSlashMenu();
+    menu.classList.add("slash-menu");
+    menu.style.display = "block";
+    positionSlashMenu(menu, caretXY(ta));
+    S.slashMenu = {
+      ta,
+      items: list_,
+      sel: 0,
+      focusable: prevList,
+      scope: scope || "agent",
+      onChange: typeof onChange === "function" ? onChange : null,
+    };
+    paintSlashSel();
+    return;
+  }
   closeRefMenu();
   menu.classList.add("slash-menu");
   menu.innerHTML = "";
   const list = document.createElement("div");
   list.className = "ref-list";
-  if (!items.length) {
+  if (!list_.length) {
     const empty = document.createElement("div");
     empty.className = "ref-item slash-item";
     empty.style.cursor = "default";
     empty.textContent = I18n.t("暂无匹配的命令或技能");
     list.appendChild(empty);
   } else {
-    items.forEach((it, i) => {
+    list_.forEach((it, i) => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "ref-item slash-item";
@@ -16426,27 +16591,35 @@ function showSlashMenu(ta, items, scope, onChange) {
     });
   }
   menu.appendChild(list);
-  const pos = caretXY(ta);
-  menu.style.left = "0px";
-  menu.style.top = "0px";
-  menu.style.display = "block";
-  const mw = menu.offsetWidth || 260;
-  const mh = menu.offsetHeight || 40;
-  const pad = 8;
-  let left = Math.max(pad, Math.min(pos.x, window.innerWidth - mw - pad));
-  let top = pos.y - mh - 4;
-  if (top < pad) top = pad;
-  menu.style.left = left + "px";
-  menu.style.top = top + "px";
+  menu._slashList = list; /* 复用判据：下一次签名一致时要认准这一只列表（见函数开头） */
+  positionSlashMenu(menu, caretXY(ta));
   S.slashMenu = {
     ta,
-    items,
+    items: list_,
     sel: 0,
     focusable: list,
     scope: scope || "agent",
     onChange: typeof onChange === "function" ? onChange : null,
   };
   paintSlashSel();
+}
+
+/* 斜杠候选菜单的落点：把菜单摆在光标上方，贴住窗口四边（8px 内边距）。
+   与「建列表」拆开，是因为候选没变时（见 showSlashMenu 的签名短路）只需要重新定位 ——
+   光标横向移了，菜单得跟着走，但列表内容一个字都不用重建。 */
+function positionSlashMenu(menu, pos) {
+  if (!menu || !pos) return;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  menu.style.display = "block";
+  const mw = menu.offsetWidth || 260;
+  const mh = menu.offsetHeight || 40;
+  const pad = 8;
+  const left = Math.max(pad, Math.min(pos.x, window.innerWidth - mw - pad));
+  let top = pos.y - mh - 4;
+  if (top < pad) top = pad;
+  menu.style.left = left + "px";
+  menu.style.top = top + "px";
 }
 
 async function slashTick(ta, scope, onChange) {
@@ -23356,6 +23529,12 @@ let _mdViewerState = {
   virtual: false,
   readOnly: false,
   onSave: null,
+  /* 实时保存（不再要求主动保存）：编辑态每次改动都排一次防抖落盘
+     —— 磁盘文件写 fileWriteText、虚拟文档调 onSave；状态只回显在底栏 */
+  autosaveTimer: 0,
+  saveState: "idle", // idle / pending / ok / err
+  saveErr: "",
+  saveAt: 0,
 };
 
 /* 当前编辑器里的正文（虚拟文档交给调用方时也用它，避免拿到旧值）。
@@ -23379,14 +23558,115 @@ function mdViewerDraftText() {
 }
 
 function closeMdViewer() {
-  /* 虚拟文档：关窗时把编辑中的内容交回调用方 —— 误点 ✕ / Esc 不丢技能正文草稿 */
-  if (_mdViewerState.virtual && _mdViewerState.editing && _mdViewerState.onSave) {
-    try {
-      _mdViewerState.onSave(mdViewerDraftText());
-    } catch (_) {}
-  }
+  /* 实时保存：关窗前把待落盘的那一笔写完（磁盘文件 / 虚拟文档 onSave 各自的写入口）。 */
+  flushMdViewerSave();
   const host = document.getElementById("mdViewerDlg");
   if (host) host.classList.remove("on");
+}
+
+/* ---------- 实时保存（Markdown 编辑器：不再要求主动保存） ----------
+   编辑态下正文一改就排一次防抖落盘：磁盘文件写 fileWriteText、虚拟文档调 onSave；
+   编辑中不重渲染（重渲染 contenteditable 会把光标 / 选中打回去），状态只回显在底栏。
+   顶部「保存」按钮已移除；Ctrl+S 仍是「立即保存」。 */
+const MD_VIEWER_SAVE_DEBOUNCE_MS = 600;
+/* 有没有可写的目标（虚拟文档 = onSave，磁盘文件 = path） */
+function mdViewerCanSave() {
+  if (!_mdViewerState.editing || _mdViewerState.readOnly) return false;
+  if (_mdViewerState.virtual) return !!_mdViewerState.onSave;
+  return !!_mdViewerState.path;
+}
+/* 底栏状态行：只在编辑态显示（阅读态底栏是「行数 / 字节 / 标题数」）。 */
+function mdViewerSetSaveState(s, err) {
+  _mdViewerState.saveState = s;
+  _mdViewerState.saveErr = s === "err" ? String(err || "") : "";
+  if (_mdViewerState.editing) {
+    if (s === "ok") _mdViewerState.saveAt = Date.now();
+    refreshMdViewerEditMeta();
+  }
+}
+/* 「待保存…」的可见回显：底栏状态里带一句，用户可以自己判断存没存 */
+function mdViewerSaveStatusText() {
+  if (!mdViewerCanSave()) return "";
+  const st = _mdViewerState.saveState;
+  if (st === "err") return I18n.t("保存失败：") + (_mdViewerState.saveErr || "");
+  if (st === "ok") return I18n.t("已自动保存") + " · " + mdViewerAgoText(_mdViewerState.saveAt);
+  if (st === "pending") return I18n.t("保存中…");
+  return I18n.t("改动会自动保存");
+}
+function mdViewerAgoText(ts) {
+  const t = Number(ts) || 0;
+  if (!t) return I18n.t("刚刚");
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 5) return I18n.t("刚刚");
+  if (s < 60) return s + I18n.t(" 秒前");
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + I18n.t(" 分钟前");
+  return new Date(t).toLocaleTimeString();
+}
+/* 停笔即保存：同一串输入只落盘一次（旧的定时器一律清掉） */
+function mdViewerScheduleSave() {
+  if (!mdViewerCanSave()) return;
+  try {
+    clearTimeout(_mdViewerState.autosaveTimer);
+  } catch (_) {}
+  mdViewerSetSaveState("pending");
+  _mdViewerState.autosaveTimer = setTimeout(() => {
+    _mdViewerState.autosaveTimer = 0;
+    mdViewerCommit();
+  }, MD_VIEWER_SAVE_DEBOUNCE_MS);
+}
+/* 把待落盘的那一笔立刻写完（Ctrl+S / 退出编辑 / 关窗 / 换文件共用）。没有待写的就什么都不做。 */
+function flushMdViewerSave() {
+  const pending = !!_mdViewerState.autosaveTimer || _mdViewerState.saveState === "pending";
+  try {
+    clearTimeout(_mdViewerState.autosaveTimer);
+  } catch (_) {}
+  _mdViewerState.autosaveTimer = 0;
+  if (!pending || !mdViewerCanSave()) return Promise.resolve(true);
+  return Promise.resolve(mdViewerCommit());
+}
+/* 落盘一次（留在编辑态：实时保存不关编辑、不重渲染）。
+   磁盘文件写 fileWriteText 并广播 mtnode:file-saved（产物节点据此刷新摘要）；
+   虚拟文档把正文交回 onSave（防抖后交回，退出编辑不再补一次）。
+   失败：底栏转红写原因 + 一次 toast，返回 false（由调用方决定是否继续）。 */
+async function mdViewerCommit() {
+  if (!mdViewerCanSave()) return false;
+  const content = mdViewerDraftText();
+  if (_mdViewerState.virtual) {
+    try {
+      const r = await _mdViewerState.onSave(content);
+      if (r === false) {
+        mdViewerSetSaveState("err", I18n.t("调用方未接受这次改动"));
+        return false;
+      }
+    } catch (e) {
+      mdViewerSetSaveState("err", (e && e.message) || e);
+      toast(I18n.t("保存失败：") + ((e && e.message) || e), "err");
+      return false;
+    }
+    _mdViewerState.raw = content;
+    mdViewerSetSaveState("ok");
+    return true;
+  }
+  const p = _mdViewerState.path;
+  if (!p) return false;
+  try {
+    const r = await window.api.fileWriteText(p, content);
+    if (r && r.ok === false) throw new Error((r && r.error) || "write failed");
+  } catch (e) {
+    mdViewerSetSaveState("err", (e && e.message) || e);
+    toast(I18n.t("保存失败：") + ((e && e.message) || e), "err");
+    return false;
+  }
+  _mdViewerState.raw = content;
+  mdViewerSetSaveState("ok");
+  /* 广播写盘成功：画布上的产物节点（app-canvas.js 的 ltartRefreshSavedFile）据此
+     重读文件指纹并刷新板身摘要（与 app-teamview.js 的 factlib:saved 同风格）。 */
+  if (typeof document !== "undefined" && document.dispatchEvent)
+    document.dispatchEvent(
+      new CustomEvent("mtnode:file-saved", { detail: { path: p, source: "viewer" } }),
+    );
+  return true;
 }
 
 function ensureMdViewer() {
@@ -23409,7 +23689,6 @@ function ensureMdViewer() {
     '<button type="button" class="mini" id="mdViewerRevealBtn"></button>' +
     '<button type="button" class="mini" id="mdViewerEditBtn"></button>' +
     '<button type="button" class="mini" id="mdViewerSrcBtn"></button>' +
-    '<button type="button" class="mini primary" id="mdViewerSaveBtn" disabled></button>' +
     '<button type="button" class="mini" id="mdViewerCloseBtn">✕</button>' +
     "</div></div>" +
     '<div class="yaml-viewer-path" id="mdViewerPath"></div>' +
@@ -23443,7 +23722,10 @@ function ensureMdViewer() {
       if (_mdViewerState.editing) {
         ev.preventDefault();
         ev.stopPropagation();
-        saveMdViewer();
+        /* Ctrl+S = 立即保存（实时保存之外的那条显式出口），保存后留在编辑态 */
+        flushMdViewerSave().then((okSaved) => {
+          if (okSaved) toast(I18n.t("已保存"), "ok");
+        });
       }
       return;
     }
@@ -23456,8 +23738,11 @@ function ensureMdViewer() {
     _mdViewerState.outline = !_mdViewerState.outline;
     applyMdViewerChrome();
   };
-  host.querySelector("#mdViewerReloadBtn").onclick = () => {
-    if (_mdViewerState.path) openMdViewer(_mdViewerState.path, { force: true });
+  host.querySelector("#mdViewerReloadBtn").onclick = async () => {
+    if (!_mdViewerState.path) return;
+    /* 重载前把待落盘的一笔写完，否则刚打的字会被刚读回来的旧文件盖掉 */
+    await flushMdViewerSave();
+    openMdViewer(_mdViewerState.path, { force: true });
   };
   host.querySelector("#mdViewerCopyBtn").onclick = async () => {
     /* 取当前草稿（所见即所得档要序列化一次），不是打开时那份原文 */
@@ -23476,9 +23761,11 @@ function ensureMdViewer() {
     const p = _mdViewerState.path;
     if (p && window.api && window.api.shellShowItem) window.api.shellShowItem(p);
   };
-  /* 编辑 / 保存：进编辑默认「所见即所得」直接改正文，源码只是可切的一档；
-     退出编辑 = 放弃修改回到预览（正文由 mdViewerDraftText 负责序列化）。 */
-  host.querySelector("#mdViewerEditBtn").onclick = () => {
+  /* 编辑 / 退出编辑：进编辑默认「所见即所得」直接改正文，源码只是可切的一档；
+     实时保存下正文一改就落盘，故「退出编辑」只是回到只读预览（不回退文件），
+     退出前先把待落盘的一笔写完（正文由 mdViewerDraftText 负责序列化）。 */
+  host.querySelector("#mdViewerEditBtn").onclick = async () => {
+    if (_mdViewerState.editing) await flushMdViewerSave();
     _mdViewerState.editing = !_mdViewerState.editing;
     _mdViewerState.src = false;
     renderMdViewerContent(_mdViewerState.raw);
@@ -23488,7 +23775,6 @@ function ensureMdViewer() {
     _mdViewerState.src = !_mdViewerState.src;
     renderMdViewerContent(draft);
   };
-  host.querySelector("#mdViewerSaveBtn").onclick = () => saveMdViewer();
 
   const box = host.querySelector("#mdViewerBox");
   const rz = host.querySelector("#mdViewerResize");
@@ -23563,10 +23849,10 @@ function applyMdViewerChrome() {
   if (eb) {
     /* 只读文档（内置技能正文）不给「编辑」入口 */
     eb.style.display = _mdViewerState.readOnly ? "none" : "";
-    eb.textContent = _mdViewerState.editing ? I18n.t("取消编辑") : I18n.t("编辑");
+    eb.textContent = _mdViewerState.editing ? I18n.t("退出编辑") : I18n.t("编辑");
     eb.title = _mdViewerState.editing
-      ? I18n.t("放弃修改，回到预览")
-      : I18n.t("编辑并保存此文件（Ctrl+S 保存）");
+      ? I18n.t("回到预览（正文已实时保存，不会回退文件）")
+      : I18n.t("编辑此文件：改动实时保存，Ctrl+S 立即保存");
     eb.classList.toggle("on", !!_mdViewerState.editing);
   }
   /* 源码 / 所见即所得切档：只在编辑态出现（阅读态没什么可切） */
@@ -23578,12 +23864,6 @@ function applyMdViewerChrome() {
       ? I18n.t("回到所见即所得直接编辑")
       : I18n.t("查看 / 编辑 Markdown 源码");
     scb.classList.toggle("on", !!_mdViewerState.src);
-  }
-  const sb = host.querySelector("#mdViewerSaveBtn");
-  if (sb) {
-    sb.textContent = I18n.t("保存");
-    sb.title = I18n.t("写回文件（Ctrl+S）");
-    sb.disabled = !_mdViewerState.editing;
   }
 }
 
@@ -23616,17 +23896,30 @@ function renderMdViewerContent(text) {
   /* 每次重建编辑区（打开 / 切档 / 保存后）都从「未改」起步：
      raw 已是当前稿，dirty 只在用户真的动了正文时置位 */
   _mdViewerState.dirty = false;
+  /* 重建编辑区 = 上一笔已由 raw 认下（保存 / 切档 / 重开都先 flush），状态回到未改动 */
+  _mdViewerState.saveState = "idle";
+  _mdViewerState.saveErr = "";
+  if (_mdViewerState.autosaveTimer) {
+    try {
+      clearTimeout(_mdViewerState.autosaveTimer);
+    } catch (_) {}
+    _mdViewerState.autosaveTimer = 0;
+  }
   if (_mdViewerState.editing) {
     if (_mdViewerState.src) {
-      /* 源码模式：全文可改 textarea（旧通道，仍在），Ctrl+S 或「保存」写回文件 */
+      /* 源码模式：全文可改 textarea（旧通道，仍在）——改动实时落盘，Ctrl+S 立即落盘 */
       const ta = document.createElement("textarea");
       ta.className = "viewer-editor";
       ta.id = "mdViewerEditor";
       ta.value = raw;
       ta.spellcheck = false;
+      ta.addEventListener("input", () => {
+        _mdViewerState.dirty = true;
+        refreshMdViewerEditMeta();
+        mdViewerScheduleSave();
+      });
       body.appendChild(ta);
-      meta.textContent =
-        lines.length + I18n.t(" 行") + " · " + I18n.t("源码模式 · Ctrl+S 保存");
+      refreshMdViewerEditMeta();
       applyMdViewerChrome();
       ta.focus();
       return;
@@ -23691,7 +23984,12 @@ function renderMdViewerContent(text) {
 /* ===== Markdown 阅读器 · 所见即所得直接编辑（无需切到源码） =====
  * 编辑态默认把**渲染出来的正文**本身变成 contenteditable 编辑区，配一条 Markdown 工具栏；
  * 「源码」只是可切的一档（textarea 旧通道保留）。正文 ↔ Markdown 复用审阅对话框同源的
- * mdToRichHtml / richToMarkdown，保存时序列化回原文，磁盘上仍是 Markdown。
+ * mdToRichHtml / richToMarkdown，落盘回磁盘的仍是 Markdown。
+ *
+ * 实时保存（本轮需求：Markdown 编辑采用实时保存，不再要求主动保存）：编辑态一改就防抖落盘
+ * （mdViewerScheduleSave → mdViewerCommit：磁盘文件写 fileWriteText、虚拟文档调 onSave），
+ * 顶部「保存」按钮已移除；Ctrl+S = flushMdViewerSave 立即落盘；退出编辑 / 关窗 / 重载前先 flush。
+ * 落盘后**不重渲染**（重渲染 contenteditable 会把光标 / 选中打回去），保存状态只回显在底栏。
  *
  * 插入类动作（水平线 / 任务清单 / 代码块 / 链接 / 行内码）在这里自己拼 DOM 插到光标处：
  * 审阅对话框那套 insertRichNode / rvInsertImgRich 认死了 `.review-editor .rv-rich`，
@@ -23765,6 +24063,8 @@ function buildMdViewerRichEditor(raw) {
   ed.addEventListener("input", () => {
     _mdViewerState.dirty = true;
     refreshMdViewerEditMeta();
+    /* 实时保存：停笔即落盘一次（编辑中不重渲染，状态只在底栏回显） */
+    mdViewerScheduleSave();
   });
   /* 粘贴一律按纯文本落进来：外部 HTML 会被序列化器当未知标签丢掉 / 丢格式，
      要让用户贴 HTML 等于悄悄改他的正文。 */
@@ -23887,21 +24187,23 @@ function mdViewerRichAct(action) {
   }
 }
 
-function mdViewerMarkDirty() {
-  _mdViewerState.dirty = true;
-  refreshMdViewerEditMeta();
-}
-
-/* 工具栏 / 粘贴之后的底栏计数（按当前草稿的 Markdown 行数算，与保存内容一致） */
-function refreshMdViewerEditMeta() {
+/* 工具栏 / 粘贴之后的底栏计数（按当前草稿的 Markdown 行数算，与保存内容一致） */function refreshMdViewerEditMeta() {
   const host = document.getElementById("mdViewerDlg");
   const meta = host && host.querySelector("#mdViewerMeta");
   if (!meta) return;
   const n = mdViewerDraftText().replace(/\r\n?/g, "\n").split("\n").length;
-  meta.textContent =
-    n + I18n.t(" 行") + " · " + I18n.t("编辑模式：所见即所得 · Ctrl+S 保存");
+  const bits = [n + I18n.t(" 行")];
+  /* 实时保存的状态回显（保存按钮已移除，这里就是唯一的「存没存」落点） */
+  const st = mdViewerSaveStatusText();
+  if (st) bits.push(st);
+  meta.textContent = bits.join(" · ");
 }
-
+/* 工具栏 / 粘贴 / 源码输入统一走这里：标脏 + 排一次实时保存 */
+function mdViewerMarkDirty() {
+  _mdViewerState.dirty = true;
+  refreshMdViewerEditMeta();
+  mdViewerScheduleSave();
+}
 /* 在富文本光标处插入一段 HTML（选区不在编辑区内就追加到末尾），光标落到插入内容之后 */
 function mdViewerInsertHtml(html) {
   const host = document.getElementById("mdViewerDlg");
@@ -23999,50 +24301,12 @@ function mdViewerCaretAfter(el) {
   } catch (_) {}
 }
 
-/* 把当前编辑内容写回文件 / 交回调用方（Markdown 阅读器） */
-async function saveMdViewer() {
-  const host = document.getElementById("mdViewerDlg");
-  if (_mdViewerState.virtual) {
-    if (!_mdViewerState.editing) return;
-    const content = mdViewerDraftText();
-    if (typeof _mdViewerState.onSave === "function") {
-      try {
-        const r = await _mdViewerState.onSave(content);
-        if (r === false) return;
-      } catch (e) {
-        toast(I18n.t("保存失败：") + ((e && e.message) || e), "err");
-        return;
-      }
-    }
-    _mdViewerState.raw = content;
-    _mdViewerState.editing = false;
-    toast(I18n.t("已保存"), "ok");
-    renderMdViewerContent(content);
-    return;
-  }
-  const p = _mdViewerState.path;
-  if (!host || !p) return;
-  const content = mdViewerDraftText();
-  try {
-    const r = await window.api.fileWriteText(p, content);
-    if (r && r.ok === false) throw new Error((r && r.error) || "write failed");
-    _mdViewerState.raw = content;
-    _mdViewerState.editing = false;
-    toast(I18n.t("已保存"), "ok");
-    renderMdViewerContent(content);
-    /* 广播写盘成功：画布上的产物节点（app-canvas.js 的 ltartRefreshSavedFile）据此
-       重读文件指纹并刷新板身摘要（与 app-teamview.js 的 factlib:saved 同风格）。 */
-    if (typeof document !== "undefined" && document.dispatchEvent)
-      document.dispatchEvent(
-        new CustomEvent("mtnode:file-saved", { detail: { path: p, source: "viewer" } }),
-      );
-  } catch (e) {
-    toast(I18n.t("保存失败：") + ((e && e.message) || e), "err");
-  }
-}
+/* 把当前编辑内容写回文件 / 交回调用方（Markdown 编辑器 · 实时保存的唯一落盘口）。
+   编辑态一改就防抖落盘（mdViewerScheduleSave → mdViewerCommit）；Ctrl+S 走 flushMdViewerSave
+   立即落盘；退出编辑 / 关窗 / 重载文件前都会先 flush。落盘后留在编辑态（不关窗、不重渲染）。 */
 
 /* opts.content 存在 = 虚拟文档（技能正文等表单草稿）：不读不写磁盘，
-   保存 / 关窗把正文交回 opts.onSave；opts.edit 直接进编辑态，opts.readOnly 只读。 */
+   改动实时交回 opts.onSave（退出编辑 / 关窗不再补一次）；opts.edit 直接进编辑态，opts.readOnly 只读。 */
 async function openMdViewer(filePath, opts) {
   opts = opts || {};
   const virtual = typeof opts.content === "string";
@@ -24061,6 +24325,16 @@ async function openMdViewer(filePath, opts) {
     box.style.width = _mdViewerState.w + "px";
     box.style.height = _mdViewerState.h + "px";
   }
+  /* 换文件 / 换虚拟文档前先把上一份的待落盘声明作废（否则防抖计时器会把旧正文写进新目标）：
+     写盘由各调用方在切目标前 flush，这里只保证状态与计时器干净。 */
+  if (_mdViewerState.autosaveTimer) {
+    try {
+      clearTimeout(_mdViewerState.autosaveTimer);
+    } catch (_) {}
+    _mdViewerState.autosaveTimer = 0;
+  }
+  _mdViewerState.saveState = "idle";
+  _mdViewerState.saveErr = "";
   _mdViewerState.path = resolved;
   _mdViewerState.virtual = virtual;
   _mdViewerState.readOnly = !!opts.readOnly;
@@ -26745,7 +27019,8 @@ function refreshThinkingUI(nid) {
   }
 }
 
-/* 点击思考 icon：弹窗上半 = 「思考」（模型 reasoning，按步分段，不含工具行），
+/* 点击思考 icon：弹窗上半 = 「思考」（文本 / 智能任务节点是模型 reasoning，按步分段，
+   不含工具行；本地图像节点 sensenova_gen 是出图前先写的规划文本 think，随生成回执取回），
    下半 = 「输出」（工具调用轨迹，走已有 #thinkTools 区） */
 function showThinking(node) {
   const running = !!node.running;
@@ -26754,18 +27029,28 @@ function showThinking(node) {
   const bodyEl = $("#ovBody");
   const hint = document.createElement("div");
   hint.className = "settings-hint";
-  hint.textContent = running
+  /* 本地图像节点（绘画 · sensenova_gen think 模式）：它的思考文本不是流式 reasoning，
+     而是后端出图前先写的规划文本（随生成回执取回，另存图旁 .think.txt）——弹窗里说清楚，
+     免得用户以为「思考应该是流水一样往外冒的」或者以为这段文字被存档了。 */
+  const imageThinkNode = node.kind === "sensenova_gen";
+  hint.textContent = imageThinkNode
     ? I18n.t(
-        "上方是模型思考（reasoning），按步分段流式显示；工具调用不写进思考，见下方「输出 · 工具调用轨迹」。",
+        "上方是本次出图前模型先写的规划文本（think 模式）。它随生成结果取回、不写入存档，并另存为图旁的 .think.txt；每次「抽卡」各有一份，切换尝试方块可分别查看。",
       )
-    : I18n.t(
-        "上方是本轮模型的思考（reasoning，仅保留在内存中，不写入存档）；工具调用见下方「输出 · 工具调用轨迹」。",
-      );
+    : running
+      ? I18n.t(
+          "上方是模型思考（reasoning），按步分段流式显示；工具调用不写进思考，见下方「输出 · 工具调用轨迹」。",
+        )
+      : I18n.t(
+          "上方是本轮模型的思考（reasoning，仅保留在内存中，不写入存档）；工具调用见下方「输出 · 工具调用轨迹」。",
+        );
   bodyEl.appendChild(hint);
   const thinkTitle = document.createElement("div");
   thinkTitle.className = "settings-sec-title";
   thinkTitle.style.marginTop = "8px";
-  thinkTitle.textContent = I18n.t("思考 · 模型 reasoning");
+  thinkTitle.textContent = imageThinkNode
+    ? I18n.t("思考 · 出图前的规划文本")
+    : I18n.t("思考 · 模型 reasoning");
   bodyEl.appendChild(thinkTitle);
   const pre = document.createElement("pre");
   pre.id = "thinkPre";
@@ -30386,6 +30671,10 @@ async function ensureWorkflow() {
   S.wf.id = id;
   setForegroundWf(S.wf); /* 用户可见的画布切换：登记前台真源（焦点归零也在这里做） */
   if (migrateWf(S.wf)) scheduleSave(true); /* 视频端口迁移：立即落盘打标 */
+  /* 旧口径残渣：转写归音频 / 视频节点所有，文字节点上的 asrTranscripts / asrState 一律
+     默默删掉（开机这一路也要过一遍，否则直接打开的画布会一直带着旧字段） */
+  if (typeof asrPurgeLegacyTranscripts === "function" && asrPurgeLegacyTranscripts(S.wf))
+    scheduleSave(true);
   /* 原先这里补了一句 resetTaskFocus()：上面那次前台切换已经把任务 / 超级节点焦点归零
      （视图记忆只活在本次运行内，开机一定是空袋 → 交接即「回根画布」），再来一次纯属重复。 */
   rememberWf(S.wf);
@@ -30439,6 +30728,10 @@ async function loadWorkflow(id, opts) {
     wf = r.data;
     wf.id = id;
     if (migrateWf(wf)) S._pendingVideoPortMigrateSave = true;
+    /* 旧口径残渣：转写已归音频 / 视频节点所有，文字节点上的 asrTranscripts / asrState
+       一律默默删掉（见 renderer/app-asr.js · asrPurgeLegacyTranscripts），删到就落盘。 */
+    if (typeof asrPurgeLegacyTranscripts === "function" && asrPurgeLegacyTranscripts(wf))
+      S._pendingVideoPortMigrateSave = true;
     /* 若袋中仍有该画布的运行中节点（极少：id 冲突），合并回写 */
     const live = S.wfBag[id];
     if (live && wfHasRunning(live)) {
@@ -30802,10 +31095,13 @@ function openMetricsDistribution(metrics) {
     t.textContent = I18n.t("工具调用轨迹");
     body.appendChild(t);
     const ul = document.createElement("div");
-    ul.className = "dsh-trace-list";
+    /* 弹窗自己的类名（.dsh-calllog-*）：**别**再用 .dsh-trace-list / .dsh-trace-row ——
+       那两个类名是会话·轨迹视图的滚动容器与段行的，dsh.css 里给弹窗写的那份全局
+       max-height 会把轨迹视图按死（尾部一片死区），样式见 dsh.css 的「工具调用轨迹」。 */
+    ul.className = "dsh-calllog-list";
     for (const x of metrics.tools) {
       const row = document.createElement("div");
-      row.className = "dsh-trace-row";
+      row.className = "dsh-calllog-row";
       row.textContent = "🔧 " + x.name + (x.at ? " · " + fmtTime(x.at) : "");
       ul.appendChild(row);
     }

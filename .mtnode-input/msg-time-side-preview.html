@@ -1,0 +1,72 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>消息左侧悬浮时刻 · 实样式量测</title>
+<link rel="stylesheet" href="/renderer/css/base.css">
+<link rel="stylesheet" href="/renderer/css/dsh-tokens.css">
+<link rel="stylesheet" href="/renderer/css/dsh.css">
+<link rel="stylesheet" href="/renderer/css/components.css">
+<link rel="stylesheet" href="/renderer/css/theme-light.css">
+<style>
+  /* 只为量测把会话壳按真实结构摆出来（壳自身的样式来自上面的真源 CSS） */
+  body { background: var(--bg, #14171c); margin: 0; }
+  #host { width: 100%; height: 100vh; display: flex; flex-direction: column; }
+  .hist-scroll-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .agent-list { flex: 1 1 auto; min-height: 0; overflow: visible; display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; }
+</style>
+</head>
+<body>
+<div id="host" class="agent-body">
+  <div class="hist-scroll-wrap">
+    <div class="agent-list" id="agentList"></div>
+  </div>
+</div>
+<script>
+/* DOM 与 renderer/app-assist.js 的 dshMsgBlock 输出同构（本次改动后的结构） */
+function sideEl(txt, stamp) {
+  var s = document.createElement("div");
+  s.className = "dsh-msg-side";
+  var t = document.createElement("span");
+  t.className = "dsh-msg-time";
+  t.textContent = txt;
+  t.title = stamp;
+  s.appendChild(t);
+  return s;
+}
+function msg(role, text, txt, stamp) {
+  var row = document.createElement("div");
+  row.className = "dsh-msg " + (role === "user" ? "dsh-user" : "dsh-ai") + " dsh-has-time";
+  row.dataset.role = role;
+  var head = document.createElement("div");
+  head.className = "dsh-msg-head";
+  var r = document.createElement("span");
+  r.className = "dsh-role";
+  r.textContent = role === "user" ? "你" : "AI";
+  head.appendChild(r);
+  row.appendChild(head);
+  var body = document.createElement("div");
+  body.className = "dsh-msg-body";
+  body.innerHTML = '<div class="md">' + text + "</div>";
+  row.appendChild(body);
+  row.appendChild(sideEl(txt, stamp));
+  var tail = document.createElement("div");
+  tail.className = "dsh-msg-tail";
+  if (role !== "user") {
+    var cp = document.createElement("button");
+    cp.type = "button";
+    cp.className = "dsh-msg-tail-copy";
+    cp.textContent = "复制";
+    tail.appendChild(cp);
+  }
+  row.appendChild(tail);
+  return row;
+}
+var list = document.getElementById("agentList");
+list.appendChild(msg("user", "把今天的日志按小时汇总一下，并给出异常最多的三个时段。", "10/1 09:12:03", "2026/10/1 09:12:03"));
+list.appendChild(msg("assistant", "已按小时汇总完成：共 24 个时段的统计，异常集中在 03、14、21 三个时段。<br>下面是每个时段的计数与首条异常样本。", "10/1 09:12:31", "2026/10/1 09:12:31"));
+list.appendChild(msg("user", "再按天汇总一份。", "10/1 09:15:47", "2026/10/1 09:15:47"));
+list.appendChild(msg("assistant", "按天汇总已生成，共 7 天。", "10/1 09:16:02", "2026/10/1 09:16:02"));
+</script>
+</body>
+</html>

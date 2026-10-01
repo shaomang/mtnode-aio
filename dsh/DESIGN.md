@@ -88,6 +88,26 @@ profile + 有序补丁层**：
 - 口径：`llm-deepseek.reasoningEffort` 只写兜底默认 `high`（档位切换走 env `MTNODE_EFFORT`
   + `mtnode-effort` 插件按模型能力夹紧）；`llm-pi-ai.providers` 的密钥只经 `apiKeyEnv`
   引用宿主注入的 `MTNODE_KEY_n`，配置文件里不出现密钥值。
+- **硬约束（踩过）**：按 id 的补丁是**整份替换该行的 `config`**，不是深合并
+  （`dsh-app-boot` 的 `applyEntryPatches`：`target[key] = value`）。所以托管行必须**自带它
+  需要的全部字段**：`- id: permission` 只写 `defaultPreset` 会把 `cordis.yml` 那张 presets
+  表整张抹掉 → 插件回落自带的 `workspace-write` / `danger-full-access` 两个默认档 →
+  `PermissionPresetService` 构造期 `resolve('mtnode-unattended')` 抛错 → 整行不激活，
+  stderr 见 `permission: unknown preset "mtnode-unattended" (known: workspace-write,
+  danger-full-access)`。故网关的 `permissionPresetsConfig()` 每次重写都带上六档全表
+  （`read-only` / `workspace-write` / `danger-full-access` / `mtnode-super-ask` /
+  `bongochat` / `mtnode-unattended`），用它与 `cordis.yml` 的 `- id: permission` 逐字同源；
+  回归见 `test/smoke-settings-profile-patch.js` [6]，组合层复核跑
+  `scripts/audit-dsh-profile-patch.mjs`（只读，审计本机 `DSH_HOME` 那份叠加层）。
+- 遥测：基座组合自带两行 OTel（`dsh-otel` / `dsh-session-telemetry-otel`，`FEEDBACK_ONLY`），
+  在这台机器的运行时里两行都导入失败、每次启动在 stderr 刷两条 `failed to import`
+  （实测：两个包单独 `import` 都成功，是运行时导入路径的问题，不是缺依赖）。
+  两行的**稳定**关断写在 `cordis.yml`：按 id 各来一行 `disabled: true`（**两行都要** ——
+  补丁一条只打一个 id，只关一行另一行照样报；dsh 自己的 `DSH_TELEMETRY_DISABLED` 开关
+  按 id 也只打得到 `session-telemetry-otel`）。网关另在 `getRuntime` 的 spawn env 里注入
+  `DSH_TELEMETRY_DISABLED=1` 作为 dsh 官方口径的兜底（任何非空值即禁用；组合里没有遥测行
+  时无副作用）。该 env 不进 runtime key：不影响模型能力 / 工具集，换档不多起进程。
+  需要遥测时删掉 `cordis.yml` 那两行即可。
 
 ### 设置抵达运行时的自检（`config/probe` 桥）
 
@@ -98,7 +118,7 @@ profile + 有序补丁层**：
 按 `{ id, config }` 回给网关。网关侧 `configProbe` 本地方法按 `reqId` / `runKey` 定位那台
 live runtime 转发（池里没有 = `{ ok:false, reason:'no_runtime' }`，不为探针新起进程）。
 回归见 `test/smoke-config-probe.js`（端到端，只跑假 key 的一轮、不跑真模型对话）与
-`test/smoke-settings-profile-patch.js`（写入器形状 + 幂等 + 用户补丁不被碰）。
+`test/smoke-settings.js` 的「已并入：smoke-settings-profile-patch.js」段（写入器形状 + 幂等 + 用户补丁不被碰）。
 
 ### Node 运行时（网关必须跑在真 Node 上）
 
@@ -153,7 +173,7 @@ dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Mess
 `messagesBaseUrl()`：**只给官方域（`api.deepseek.com`）的裸根补 `/anthropic`**，其它域、
 已带路径的端点（第三方 `.../v1`、本地 `127.0.0.1` 端点、用户手填的 Messages 根）一律原样透传。
 归一幂等，且不动 runtime key 的指纹成分（key 用的是用户配置原文）。回归见
-`test/smoke-dsh-base-url.js`。
+`test/smoke-dsh-node.js` 的「已并入：smoke-dsh-base-url.js」段。
 
 三层各守其界:
 
@@ -444,6 +464,63 @@ journal 帧(契约)`)、`session-event`(其余会话事件全量透传 —— **
   它们由 dsh 沙箱与审批档管辖,把 `read` 藏掉会让"读过的文件才能写"这类观察策略变成模型
   永远满足不了的条件,反而更费 token。`str_replace_editor` 与 read/edit/write 的重叠留待
   后续单独评估。
+
+## 流式增量帧契约(gateway ↔ 运行时 ↔ 宿主) —— dsh 0.2 的 `assistant/chunk` 缺席
+
+> **一句话**:宿主协议的 `reasoning` / `text` / `say-end` / `tool-preparing` 四类帧只有一个出口
+> = `gateway.mjs` 的 `mapNotification` 里的 `assistant/chunk` 分支;而 dsh 0.2 的运行时**不再发这条
+> 增量事件**,它把整段流式数据骑在完整的 `assistant/message` 上。不补这一层,会话里就永远看不到
+> 模型思考、正文也不逐字出现(前两轮都在改渲染层,因此怎么改都不好)。
+
+现场取证(2026-09-30,`node` 直连网关发真请求 + 扫本机会话日志):
+
+- 连发 **60 个** `<DSH_HOME>/sessions/**/session.jsonl*`,`assistant/chunk` 出现 **0 次**;
+  每个 step 只有一条 `assistant/message`(`{type:'assistant/message', data:{turn, step, message, usage, stream}}`)。
+- 该消息里 `message.content` **有真思考**:实测 `[{type:'reasoning', text:"…544 字…"},{type:'text', text:"…"}]`;
+  `data.stream` 是回放数据:`{type:'chunk', chunk:{type:'block-start'|'block-end'|'usage'|'finish', …}}`
+  与 `{type:'reasoning-chunks'|'text-chunks', index, time0, texts:[…], dt:[…]}`(`texts` = 逐块文本,
+  `dt[i]` = 该块相对前一块的毫秒间隔)。
+- `tool` / `tool-result` 两类帧照常到达 —— 所以事故现场看起来是「工具卡正常、就是没有思考」。
+
+落点(gateway 侧,`synthesizeChunksFromStream`):
+
+- `assistant/message` 分支把 `stream` 还原成**与 `assistant/chunk` 分支完全同形**的帧;文本以
+  `texts` 逐块原样相接(**不插空格**:插了就把字词拆开),`block-end(index ∈ 正文块)` → `say-end`,
+  tool-call 增量 → `tool-preparing`(同一个 `toolPrepAcc` 限频器,与原生分支共用)。
+- **不双发**:原生 `assistant/chunk` 分支登记 `(turn,step)`(`chunkSeen`),该步的
+  `assistant/message` 整步跳过;函数自身也做同一判据(幂等)。老运行时(发 chunk 的)行为一个字不变。
+- **用 `break` 不用 `return`**:`mapNotification` 末尾还要发「原始事件透传帧」
+  (`emit('session-event', …)`),提前 return 会让 `assistant/chunk` 整帧到不了前端。
+- **节奏 = 默认 instant**:实测 `assistant/message` 是生成完毕之后才到的(同一步里没有更早的同名
+  事件),所以立刻连发就是「轮到就显示」,既不假装逐字、也不白等一轮生成时间。
+  env `MTNODE_STREAM_REPLAY=paced` 改为按 `dt` 限幅重放(同步 `Atomics.wait` 保持帧序),
+  `0|off|false|no` 整关(回到「只有完整消息」的老行为)。
+- 失败面:合成任何异常只记一行 `diag`,一条帧都不发,不影响这一轮收尾。
+
+回归:`test/smoke-gateway-stream-replay.js`(帧序列 / 元数据 / 不双发 / 开关 / 接线口径);
+现场复核 = `test/_probe-trajectory-live.js` 同族的直连探针(改前 reasoning=0 帧 → 改后 reasoning/text 多帧)。
+
+> **别再改回渲染层**:报「思考不显示」时,第一步是确认**帧有没有到**(探针数列),不是改折叠逻辑。
+> 渲染层的 `dshMsgSegsViewable` / `agentLiveSegsEl` 只消费上面这四类帧。
+
+### 同源第二坑:token 统计也只在 `assistant/chunk` 上取(2026-10-01 修)
+
+同一份 0.2 事实的另一处后果:`handleRun` 的统计分支只在 `case 'assistant/chunk'` 里看
+`c.type === 'usage'` 记账。0.2 既然不发这条增量事件,**一个 token 都统计不到** —— 现场表现 =
+会话末尾的 Token 报告所有数字为 0(以及已下线的输入区圆环显示「上下文已用 0 / 1.0M tok」)。
+
+- 0.2 的用量真源 = 完整 `assistant/message` 的 **`data.usage`**,形如
+  `{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens}`
+  (实测本机会话日志 `session-*.v4.jsonl.zstd`:21 行记录里 `assistant/chunk` 0 条、
+  `assistant/message` 2 条且各带 `usage`)。
+- 落点:`gateway.mjs` 抽出 `accountUsage(metrics, u, t)` 一处记账(token 累计 + 逐模型台账 +
+  llmMs / TTFT / prefill / genMs + `emit('usage')`),`assistant/chunk` 的 `c.usage` 与
+  `assistant/message` 的 `data.usage` 两个来源都调它。两者在 0.2 里互斥(原生 chunk 不再带 usage),
+  同一次调用只记一次账;五个口径全 0 的 `usage`(老适配器 / 非计费路径)直接跳过,不凭空多一「次」。
+- 已知缺口:0.2 没有原生增量帧,`stats.firstTokenMs`(首 token 延迟)没有采样点,
+  `firstTokenAvgMs` / `ttftAvgMs` 在纯 0.2 运行时上恒为 0 —— 要恢复得靠 `request/header` 的
+  时间与首块 `dt` 反推,本轮不做(不猜数)。
+- 回归:真跑一轮看 `usage` 帧与 `done.metrics`(见下「现场复核」)。
 
 ## 历史思考回放裁剪契约(运行时插件 `mtnode-reasoning-replay-trim`)
 
@@ -929,7 +1006,8 @@ journal 帧(契约)`)、`session-event`(其余会话事件全量透传 —— **
   "agentToolPresets": [                    // 工具许可预设列表；default 为内置「当前能力全开」
     { "id": "default", "name": "默认（当前能力）", "builtin": true, "allow": { "canvas_read": true, "canvas_nodes": true, "canvas_control": true, "canvas_draw": true, "canvas_layout": true, "app_ops": true, "app_delete": true, "fs_read": true, "fs_write": true, "shell": true, "web": true, "subagent": true, "ask_user": true, "vision": true } }
   ],
-  "doneSound": true,               // 长任务(>5 分钟)完成音效
+  "doneSound": true,               // 完成音效总开关(两档,音色不同):① 任何一件任务跑完 → 短促「叮咚」(E5→A5,0.42s) ② 所有任务结束(运行队列彻底为空)后再空满 5 分钟 → 更清脆的三音上行(C6→E6→G6,≈0.86s);不满 5 分钟就只留短促音
+  "doneSoundVolume": 35,           // 内置完成音音量百分比(0~100,两档内置音共用;自定义音频文件按文件自身响度)
   "theme": "industrial"            // 主题色(10 款,见 app.js THEMES)
 }
 ```
@@ -1115,7 +1193,7 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
    (`deepseek-flash` → 实回 `deepseek-v4-flash`)。同一 key 单独打端点复核:
    `/v1/messages` 404(空体)、`/anthropic/v1/messages` 200。
 
-回归:`node test/smoke-dsh-node.js`(55 项)、`node test/smoke-dsh-base-url.js`(23 项)、
+回归:`node test/smoke-dsh-node.js`（55 项 +「已并入：smoke-dsh-base-url.js」23 项）、
 `node test/run-all.mjs` 全量口径见本轮交付说明。
 
 ## 已知风险

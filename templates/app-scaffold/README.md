@@ -17,6 +17,8 @@
 | `app-model.js` | **模型选择位**：右上「模型」按钮 + 下拉（首项 = 跟随 MTNode 默认、每项标「支持识图」）；`AppModel.errorText(res)` 把宿主的错误码翻成一句人话。两行接入，见文件尾注 |
 | `model.css` | 模型选择位与示例区样式（颜色仍走 `styles/<id>.css` 的语义变量） |
 | `store.js` | **落盘脚手架**：`Store.create({host, file, debounceMs})` → `set(data)` 标脏 + 防抖自动写盘，`load()` 读回，`flush()` 立即写盘；没有宿主时退化为内存态（`store.persisted === false`） |
+| `speech.js` | **底部语音听写**：footer 里一枚话筒（本机内置语音识别，官方本地 SenseVoice）+ 一枚「音频转文字」（选本机录音文件），结果进结果小窗、一键复制。`Speech.mount(el)` 挂载，`Speech.create()` 拿纯接口（`file()` / `wav(base64)` / `record()` / `status()` / `prepare()` / `onState()`）；桥缺席时整块禁用并写清原因 |
+| `speech.css` | 听写条与结果小窗的样式（颜色只取语义变量，换风格自动跟随） |
 | `close.js` | **关窗收尾脚手架**：`AppClose.on(cb)` 登记钩子，宿主关窗前（`apps:willClose`）跑完再关；`visibilitychange` / `pagehide` / `beforeunload` 三处兜底冲刷 |
 | `app.js` | 最小业务示范：便签落盘（脏标记 + 防抖 + 关窗冲刷）、数据文件夹显示 / 更改 / 打开、模型选择位初始化、文字+图像调用、关闭按钮 |
 | `style.css` | 深色主题样式；`.drag` / `.no-drag` 无框窗口拖动约定 |
@@ -74,10 +76,32 @@
 ## 复制后要做的替换
 
 1. `app.json`：`id`（= 目录名 = catalog 词条 id）、`title` / `subtitle` / `icon` / `description`、`version`、`minAppVersion`、`window` 尺寸。
-2. `index.html`：`<title>`、`#appTitle`、`#appSub`、页脚文案、图标字符。
+2. `index.html`：`<title>`、`#appTitle`、`#appSub`、页脚文案、图标字符（`#speechBar` 那一格是听写条，别删）。
 3. `app.js`：把便签与示例逻辑换成真实实现；`state` 的形状与落盘的 `data.json` 保持一致。
 4. 需要更多宿主能力时，只往 `apphost.js` 的 `cap` 表里加**已探测**的方法，别直接假设接口存在。
 5. 复制 `templates/app-agents/AGENTS.md` 成应用根目录的 `AGENTS.md`（已有就保留，别覆盖）。
+
+## 语音转写（本机内置，官方本地 SenseVoice）
+
+识别跑在 MTNode 的 dsh 运行时里（与主界面状态栏那枚话筒同一条通道），**应用侧只需要调桥**：
+
+```js
+var r = await AppHost.pickAudio();                       // 系统选音频框：{ ok, path }
+if (r.ok) {
+  var t = await AppHost.transcribe({ path: r.path });     // → { ok, text, audioSeconds }
+  if (t.ok) show(t.text);
+}
+var st = await AppHost.speechStatus();                    // { ok, available, ready, downloading, phase, … }
+if (!st.ready) await AppHost.speechPrepare({});           // 首次约 239MB，进度走 onSpeechState(cb)
+```
+
+- **只允许转写你在这个应用里选过的音频**（`pickAudio()` 那一次）或**本应用数据文件夹里的音频**；
+  应用自己传别的路径一律回 `path_denied`（应用页没有文件系统能力，这是有意的）。
+- 应用自己录音也行：`getUserMedia` + `AudioContext` 采到 **16 kHz 单声道 PCM16 WAV**，
+  转 base64 后 `AppHost.transcribeWav(b64)`（应用窗口的 media 权限由宿主放行，见 `speech.js`）。
+- 模型没下载时不降级：`speechStatus().phase` 会如实说 `unprepared / downloading / failed`，
+  `speechPrepare()` 只负责把下载跑起来（幂等），**不假装识别成功**。
+- 结果只展示 + 复制，**不自动往你的界面控件里塞**（插到哪儿由应用自己决定）。
 
 ## 契约（照做，别省）
 

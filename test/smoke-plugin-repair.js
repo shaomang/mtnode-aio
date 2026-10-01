@@ -6,7 +6,7 @@
  *          （错误码 / 正文 / 日志尾部 / 出问题的节点），并问用户要不要
  *          「自动修复」；点了就在左侧栏**新建一条看得见的会话**（工作区 = 该插件 INSTALL_DIR）按
  *          skill 的【自我修复】模式修，修完**自动重启该插件对应的服务**（无常驻服务则重跑报错节点）。
- *       ② 安装链路的技能真源必须唯一：Agent 拿到的 minimax-h3-install（及 music3 / tts / llama / asr）
+ *       ② 安装链路的技能真源必须唯一：Agent 拿到的 minimax-h3-install（及 music3 / tts / llama / sensenova）
  *          正文只能来自仓库根 `skills/<name>/SKILL.md`，宿主目录不留副本。
  * 覆盖：
  *   [1] 宿主注册表：所有插件都注册进报错总线（id / skillName / 日志 / 自我修复 / 重启）且接了上报点
@@ -87,7 +87,6 @@ const HOSTS = [
   { file: "music3/main-music3.js", id: "minimax-music3", skill: "minimax-music3-install", fn: "syncMusic3InstallSkill", selfRepair: true, restart: true, reports: 15 },
   { file: "tts/main-tts.js", id: "tts-local", skill: "tts-local-install", fn: "syncTtsInstallSkill", selfRepair: true, restart: true, reports: 8 },
   { file: "llama/main-llama.js", id: "llama-local", skill: "llama-local-install", fn: "syncLlamaInstallSkill", selfRepair: true, restart: true, reports: 8 },
-  { file: "asr/main-asr.js", id: "asr-local", skill: "asr-local-install", fn: "syncAsrInstallSkill", selfRepair: true, restart: true, reports: 15 },
   /* YuE2：skill 名走常量（宿主内 INSTALL_SKILL），注册形态与 h3 / music3 同构 */
   { file: "yue/main-yue.js", id: "yue", skill: "yue2-local-install", fn: "", selfRepair: true, restart: true, reports: 20, skillConst: true },
   /* SenseNova 本地图像生成：同构（skill 名走宿主内 INSTALL_SKILL，兜底同步同步一份到 dshHome） */
@@ -102,7 +101,6 @@ const INSTALL_SKILLS = [
   "minimax-music3-install",
   "tts-local-install",
   "llama-local-install",
-  "asr-local-install",
   "sensenova-local-install",
 ];
 
@@ -153,13 +151,13 @@ for (const h of HOSTS) {
   ok(calls >= h.reports, h.file + " 失败出口接了上报（" + calls + " 处 ≥ " + h.reports + "）");
 }
 {
-  const asr = read("asr/main-asr.js");
+  
   const music3 = read("music3/main-music3.js");
   ok(count(h3, /\bnodeId\b/g) >= 6, "h3 的上报点带得出「出问题的节点」（nodeId 多处出现）");
-  ok(count(asr, /\bnodeId\b/g) >= 4, "asr 的上报点同样带 nodeId（转写失败要能指认节点）");
+
   ok(music3.indexOf("emitProgress") > 0, "music3 保留原进度广播（上报是并行加的一层，不替换旧口径）");
-  /* tts / llama / asr 原本只有 agentRecoverInstall：自我修复要等价实现 */
-  for (const f of ["tts/main-tts.js", "llama/main-llama.js", "asr/main-asr.js"]) {
+  /* tts / llama 原本只有 agentRecoverInstall：自我修复要等价实现 */
+  for (const f of ["tts/main-tts.js", "llama/main-llama.js"]) {
     const src = read(f);
     ok(src.indexOf("function selfRepairFromConsole") > 0, f + " 补了 selfRepairFromConsole（控制台尾部 → Agent 恢复安装）");
     ok(/selfRepairFromConsole[\s\S]{0,1200}(agentRecoverInstall|recoverInstall)/.test(src), f + " 的自我修复复用既有 Agent 恢复安装链");
@@ -242,14 +240,14 @@ console.log("\n[3] 打包白名单与主进程入口");
   ok(count(filesBlock, /^\s*"!\w/gm) > 5, "build.json files 读到了（含取反规则）");
   ok(filesBlock.indexOf('"plugin-error-repair.js"') > 0, "files 含 plugin-error-repair.js（漏了 = 打包后 Cannot find module）");
   ok(filesBlock.indexOf('"pet/main-pet.js"') > 0 && filesBlock.indexOf('"plugins/**"') > 0, "files 覆盖新接线的 pet/main-pet.js 与 plugins/**");
-  for (const need of ["skills/**", "renderer/**", "h3/**", "music3/**", "tts/**", "llama/**", "asr/**", "remotion/**", "sensenova/**"]) {
+  for (const need of ["skills/**", "renderer/**", "h3/**", "music3/**", "tts/**", "llama/**", "remotion/**", "sensenova/**"]) {
     ok(filesBlock.indexOf('"' + need + '"') > 0, "files 含 " + need);
   }
   ok(mainJs.indexOf('require("./plugin-error-repair.js")') > 0, "main.js 引用总线模块");
   const at = mainJs.indexOf("initPluginErrorBus({");
   ok(at > 0, "main.js 调 initPluginErrorBus（注入主窗 getter）");
   ok(mainJs.indexOf("getMainWin: () => mainWin") > 0, "init 时给的是主窗口 getter（错误只送主窗一处）");
-  for (const fn of ["registerMusic3Ipc(", "registerYueIpc(", "registerH3Ipc(", "registerLlamaIpc(", "registerTtsIpc(", "registerRemotionIpc(", "registerAsrIpc(", "registerSensenovaIpc("]) {
+  for (const fn of ["registerMusic3Ipc(", "registerYueIpc(", "registerH3Ipc(", "registerLlamaIpc(", "registerTtsIpc(", "registerRemotionIpc(", "registerSensenovaIpc("]) {
     ok(mainJs.indexOf(fn) > at, fn.replace("(", "") + " 排在总线 init 之后（后端宿主注册不丢第一批错误）");
   }
   /* 桌宠与插件安装链排在 init 之前：宿主表是模块级 Map，注册不丢；
@@ -536,10 +534,10 @@ function groupTail() {
     for (const h of HOSTS) if (h.skill) ok(skillTable.indexOf('"' + h.skill + '"') > 0, "PLUGIN_REPAIR_SKILLS 覆盖 " + h.skill);
     const svcTable = seg(repair, "const PLUGIN_REPAIR_SERVICE_BASE = {", "\n};");
     ok(/remotion:\s*\{[\s\S]{0,220}resident: false/.test(svcTable), "Remotion 标 resident:false（无常驻服务 → 改成重跑节点）");
-    for (const fn of ["h3Start", "h3Stop", "h3Status", "music3Start", "music3Stop", "music3Status", "yue2Start", "yue2Stop", "yue2Status", "ttsStart", "ttsStop", "ttsStatus", "llamaStart", "llamaStop", "llamaStatus", "asrStart", "asrStop", "asrStatus"]) {
+    for (const fn of ["h3Start", "h3Stop", "h3Status", "music3Start", "music3Stop", "music3Status", "yue2Start", "yue2Stop", "yue2Status", "ttsStart", "ttsStop", "ttsStatus", "llamaStart", "llamaStop", "llamaStatus"]) {
       ok(svcTable.indexOf('"' + fn + '"') > 0 && new RegExp("\\n\\s*" + fn + ":").test(preload), "重启表里的 " + fn + " 在 preload 真有这个桥");
     }
-    for (const fn of ["refreshH3PluginCard", "refreshMusic3PluginCard", "refreshYuePluginCard", "refreshTtsPluginCard", "refreshLlamaPluginCard", "refreshAsrPluginCard", "refreshRemotionPluginCard", "refreshPetPluginCard"]) {
+    for (const fn of ["refreshH3PluginCard", "refreshMusic3PluginCard", "refreshYuePluginCard", "refreshTtsPluginCard", "refreshLlamaPluginCard", "refreshRemotionPluginCard", "refreshPetPluginCard"]) {
       ok(read("renderer/app-plugins.js").indexOf("async function " + fn) > 0, "卡片刷新口 " + fn + " 存在（修完就地刷那张卡）");
     }
     /* 「所有插件都接了自我修复」的硬口径：插件目录里每张卡片都要在渲染层服务表查得到条目 */

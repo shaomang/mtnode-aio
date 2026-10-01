@@ -298,7 +298,7 @@ vm.runInContext(
     "\n" +
     extract(appSrc, AT_REF_CONSTS) +
     "\n" +
-    extract(nodesSrc, ["isAutoProcKind", "buildSpec", "procSourcesOf", "imagesNotInBody"]) +
+    extract(nodesSrc, ["isAutoProcKind", "buildSpec", "procSourcesOf", "imagesNotInBody", "requestProviderOf", "requestModelOf"]) +
     "\n" +
     extract(dbSrc, ["procPromptOf", "procPromptForRun"]) +
     "\n/* 真实加载顺序里 app-agent.js 最后覆盖同名 imageInputsOf */\n" +

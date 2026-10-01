@@ -2,7 +2,7 @@
  * 三块：
  *   ① .tb-entry-btn / .tb-status-*  节点头部入口与状态徽标
  *   ② .tb-card                      节点 body 末尾的入口卡
- *   ③ .tb-dlg / .tb-plan / .tb-progress / .tb-session / .tb-log  方案 + 进度对话框
+ *   ③ .tb-dlg / .tb-req / .tb-plan / .tb-progress / .tb-session / .tb-log  需求 + 方案 + 进度对话框
  * 颜色一律走主题变量，亮色主题不需要单独覆盖。
  * ========================================================================= */
 
@@ -163,6 +163,35 @@
 
 .tb-plan-loading {
   color: var(--muted)
+}
+
+/* 「本次需求」输入框（工具构建窗）：与 .tb-plan 同一块面，但用正文字体（要读要写），
+   字号 12.5 与说明行同档，可纵向拖高（用户写长需求时自己拉）；样式单独一份，
+   不改 .tb-plan 一族（那几块是只读展示区，字体是等宽）。 */
+.tb-req {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--code);
+  color: inherit;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.75;
+  min-height: 88px;
+  max-height: 320px;
+  resize: vertical;
+  word-break: break-word
+}
+
+.tb-req:focus {
+  outline: none;
+  border-color: var(--accent, #7aa2f7)
+}
+
+.tb-req::placeholder {
+  color: var(--muted);
+  opacity: .8
 }
 
 .tb-progress {

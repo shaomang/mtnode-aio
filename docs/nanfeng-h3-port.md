@@ -1,4 +1,4 @@
-# 南风 H3 V10 提示词节点包 · 移植说明与限制
+﻿# 南风 H3 V10 提示词节点包 · 移植说明与限制
 
 把第三方 ComfyUI 节点包 **`nanfeng_prompt_nodes_v10`**（南风 H3-V10 公开版）移植进 MTNode 的
 MiniMax H3（24G ComfyUI）后端，作为**第三条自建工作流**与内置 FL2VA / R2V 并列。
@@ -98,7 +98,7 @@ type / role 复用现有 `text/prompt`、`image/image`、`video/video`、`audio/
 
 ## 六、回归
 
-- `node test/smoke-h3-ui.js` → **146/146 全过**。
+- `node test/smoke-h3-custom-workflow.js` 的「已并入：smoke-h3-ui.js」段 → **146/146 全过**。
 - `node test/smoke-h3-custom-workflow.js` → **233/235**；两条失败均为**既有**的手册内容缺口
   （`guides/manual/media-gen.md` 与英文版缺「自建 ComfyUI 工作流」段落），与本次移植的源码改动无关
   （该断言只读 4 个 guides 文件，改编未触及）。本次已把该段补进两版手册，两条断言随之转绿。

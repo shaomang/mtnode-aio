@@ -269,4 +269,4 @@
 | 桥帧路由（`facts` → 渲染层真源） | `renderer/app-db.js`（`handleAiFactsToolEvent`） |
 | Agent 工具 / 技能 | `dsh/gateway/ai-facts-plugin.mjs`（`mtnode_facts`）、`mtnode-agent-skills/mtnode/ai-facts/SKILL.md` |
 | 主进程装配 | `main.js`（require + 注册 `registerAiFactsIpc`）、`preload.js`（`aiFactsPathOf` / `aiFactsLoad` / `aiFactsSave`）、`build.json` → `files` 白名单 `ai-facts-store.js` |
-| 冒烟 | `test/smoke-ai-facts.js`、`test/smoke-ai-facts-renderer.js` |
+| 冒烟 | `test/smoke-ai-facts.js`（含「已并入：smoke-ai-facts-renderer.js」段） |

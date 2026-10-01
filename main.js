@@ -26,6 +26,7 @@ const {
   nativeImage,
   screen,
   safeStorage,
+  session,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -72,8 +73,9 @@ const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js"
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
-/* 本地语音转写（Qwen3-ASR）：唯一一个「随 MTNode 退出而结束」的本地后端 */
-const { registerAsrIpc, shutdownAsr } = require("./asr/main-asr.js");
+/* 本地语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）：主进程只留「转写缓存 +
+   音频读盘」这条小内核，识别本身走 dsh:speech 通道（见 speech-store.js 头部口径） */
+const { registerSpeechIpc } = require("./speech-store.js");
 /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：标准库 HTTP 服务，后端单例独立于 MTNode 生命周期 */
 const { registerSensenovaIpc, shutdownSensenovaUiOnly } = require("./sensenova/main-sensenova.js");
 const { patchProviders } = require("./config-providers.js");
@@ -84,7 +86,7 @@ const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
 /* 存储占用与清理（设置 · 存储占用与清理）：统计各类冗余占用 + 按类清理，判据是
    「文件还被不被 MTNode 用着」；回滚对象库那一类复用 rollback-store 的 gc（见 storage-clean.js） */
-const { registerStorageIpc } = require("./storage-clean.js");
+const { registerStorageIpc, setScanLocale } = require("./storage-clean.js");
 /* 应用宿主（用户自建应用）：根目录 / 云端目录 / 安装·更新·卸载 / 导出 zip / 变更探测 /
    独立窗口（preload-app.js 的 window.appHost），见 apps-store.js */
 const { registerAppsIpc, shutdownApps, setQuitHandler, mirrorAppCanvas } = require("./apps-store.js");
@@ -100,6 +102,10 @@ const activityStore = require("./activity-store.js");
 const wechatPc = require("./wechat-pc.js");
 /* 剪贴板里「被复制的图片文件」列表解析（CF_HDROP / FileNameW 的纯函数口径，见该文件顶部） */
 const clipImages = require("./clipboard-images.js");
+/* 提醒音（主进程侧出声）：完成音 / 提问音的兜底发声通道 —— 渲染层被后台节流或窗口不在
+   前台时，渲染层那一声会被推迟到「切回 MTNode」才响；主进程合成 WAV 交给系统播放器出声，
+   与窗口可见性无关。音色与渲染层内置音同一把尺，见该文件顶部口径。 */
+const soundAlert = require("./sound-alert.js");
 let dshAdapter = null;
 function dshConfig() {
   /* 只为取 cfg.dsh 下 6 个标量，原本却把整份 config.json（实测几十 MB，91% 是
@@ -184,10 +190,6 @@ function dsh() {
         try {
           const { onTtsDshEvent } = require("./tts/main-tts.js");
           if (typeof onTtsDshEvent === "function") onTtsDshEvent(ev);
-        } catch {}
-        try {
-          const { onAsrDshEvent } = require("./asr/main-asr.js");
-          if (typeof onAsrDshEvent === "function") onAsrDshEvent(ev);
         } catch {}
         try {
           const { onSensenovaDshEvent } = require("./sensenova/main-sensenova.js");
@@ -357,6 +359,36 @@ function loadConfigText(p) {
   const got = parseConfigText(p);
   return got ? { obj: got.obj, text: got.text } : null;
 }
+/* 异步读盘版（config:load 专用）：命中缓存（小文件）直接交对象；未命中就异步读 + parse。
+   本机 config.json 实测 36.4MB（大于缓存上限，见上），一次 readFileSync 约占 80ms —— 那是
+   主进程事件循环上的硬阻塞。改异步后这 80ms 不再卡住主进程；JSON.parse（约 60ms）仍在主
+   线程，这是 JS 的边界。返回值与同步路径同口径：读不到 / 坏档 / 非对象一律 null，交调用方
+   按原路径（readJson 兜底）处理。 */
+async function loadConfigTextAsync(p) {
+  const st = statOf(p);
+  if (!st) return null;
+  if (st.size <= CFG_CACHE_MAX_BYTES) {
+    if (cfgCache && cfgCache.mtimeMs === st.mtimeMs && cfgCache.size === st.size) return cfgCache;
+  } else {
+    cfgCache = null; /* 超大档不常驻（与同步路径同口径） */
+  }
+  let text = "";
+  try {
+    text = await fs.promises.readFile(p, "utf8");
+  } catch {
+    return null;
+  }
+  let obj = null;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (obj === null || typeof obj !== "object") return null;
+  if (st.size <= CFG_CACHE_MAX_BYTES)
+    cfgCache = { mtimeMs: st.mtimeMs, size: st.size, obj: obj, text: text };
+  return { obj: obj, text: text };
+}
 function rememberConfigWritten(p, obj, text) {
   const st = statOf(p);
   cfgCache =
@@ -514,6 +546,16 @@ function appVersion() {
   }
 }
 ipcMain.handle("app:version", () => ({ ok: true, version: appVersion() }));
+/* 提醒音：渲染层只报「该响哪一档 + 音量 + 自定义文件」，发声交给主进程（见 sound-alert.js）。
+   渲染层拿不到这台机器的系统播放器时它自己会用 WebAudio 兜底，所以这里失败只回 ok:false，
+   绝不抛给渲染层（响不响是体验问题，不该把一次任务收尾弄挂）。 */
+ipcMain.handle("sound:alert", async (_ev, opts) => {
+  try {
+    return await soundAlert.playAlert(opts || {});
+  } catch (e) {
+    return { ok: false, via: "error", error: String((e && e.message) || e) };
+  }
+});
 ipcMain.handle("mediaGen:getLock", () => ({ ok: true, lock: refreshMediaGenLock() }));
 ipcMain.handle("crash:status", () => crashReport.status());
 ipcMain.handle("crash:export", async () => crashReport.exportDiagnosticBundle({}));
@@ -652,11 +694,13 @@ ipcMain.handle("i18n:setLocale", (e, locale) => {
 });
 
 ipcMain.handle("config:load", () =>
-  (() => {
+  (async () => {
     const fp = join(DATA(), "config.json");
     /* 命中缓存 = 直接交出与磁盘上那一份同源的对象（IPC 会克隆给渲染层，不共享引用）；
-       未命中（首次 / 文件被别处改过 / 坏档）行为与原来的 readJson 逐字一致。 */
-    const c = loadConfigText(fp);
+       未命中（首次 / 文件被别处改过 / 坏档）行为与原来的 readJson 逐字一致。
+       读盘走异步（loadConfigTextAsync）：一份 36MB 的 config 用 readFileSync 会占住主进程
+       ~80ms —— 「点设置」这条路径上读盘不再阻塞事件循环。 */
+    const c = await loadConfigTextAsync(fp);
     if (c) return c.obj;
     return readJson(fp, {
       version: 1,
@@ -4279,6 +4323,44 @@ ipcMain.handle("relay:me", async () => {
   };
 });
 
+/* 凭据打码串（**只给界面看**）：前 4 + **** + 后 4，中间一律星号，
+   长度不足 8 位时退回全星号 —— 宁可不显示，也不让打码串把短凭据整串漏出去
+   （「前 4 + 后 4」在长度 ≤ 7 时会等于原文）。 */
+function maskSecret(secret) {
+  const s = String(secret == null ? "" : secret);
+  if (!s) return "";
+  if (s.length <= 7) return "*".repeat(s.length);
+  return s.slice(0, 4) + "****" + s.slice(-4);
+}
+
+/* 设置 · 提供商的只读卡要「看得见凭据是什么」，又不能把明文交出去：
+   这里只回打码串（见 maskSecret）+ 长度与来源标签，**真 token 一辈子不出主进程**
+   （登录态里已经没有任何一串能拼回原文的信息）。未登录 / 无凭据时 maskedKey 为空串。 */
+ipcMain.handle("relay:keyInfo", () => {
+  let cur = null;
+  let readIssue = null;
+  try {
+    cur = authStore.load();
+    readIssue = authStore.readIssue ? authStore.readIssue() : null;
+  } catch {
+    cur = null;
+  }
+  const token = String((cur && cur.token) || "");
+  return {
+    ok: true,
+    signedIn: !!(cur && cur.token),
+    maskedKey: maskSecret(token),
+    keyLength: token.length,
+    /* from = "store"（账号登录 token，中转站的 Key 就是它） / "placeholder"（没有凭据时
+       界面照 config.json 里的占位串打码显示） */
+    from: token ? "store" : "placeholder",
+    /* 没有凭据时的原因："" = 本来就没登录；"decrypt_failed" / "encryption_unavailable"
+       = 凭据文件在、但这台机器解不开（换 Windows 账号 / 换机器 / 密钥变了）⇒ 重新登录一次。
+       卡片据此把「没登录」和「凭据读不出来」分开说（见 auth-store.js 的 readIssue）。 */
+    readIssue: String(readIssue || ""),
+  };
+});
+
 /* 下发凭据：中转服务用账号登录 token（现取现用），其余服务商用配置里的 API Key */
 function providerAuthKey(provider) {
   const p = provider || {};
@@ -5623,6 +5705,22 @@ function apiMaskSizeFor(p) {
   return gptImageSizeOk(d.w, d.h) ? d.w + "x" + d.h : "auto";
 }
 
+/* ── 请求形态 vs 服务商类型 ──
+   spec.kind 才是「这次要干什么」（节点 / 应用宿主自己声明），provider.type 是**服务商级**的
+   配置字段：同一个 OpenAI 兼容端点常常同时挂文本与图像模型，最常见的配置就是 text_openai
+   （MTNode 中转服务卡也恒为 text_openai，模型形态由渲染层逐模型给出，见 app-model-kind.js）。
+   所以图像请求只认「接口族」：显式 image_stability / image_mj 走各自专用端点，其余一律按
+   OpenAI 兼容图像端点（/images/generations · /images/edits）发。
+   以前这里直接按 provider.type 分派，配成 text_openai 的图像请求会抛
+   「未知服务商类型：text_openai」—— 图像处理节点明明选好了图像模型，却因为这个服务商级
+   字段名而失败。渲染层已按所选模型纠偏（providerForRequest），这里是最后一道兜底。 */
+function effectiveProviderType(provider, kind) {
+  const t = String((provider && provider.type) || "");
+  if (kind !== "image") return t;
+  if (t === "image_stability" || t === "image_mj") return t;
+  return "image_openai";
+}
+
 /* 构建完整请求描述（预览与真实调用共用，保证一致）
    matteAnchor：透明图差分抠图的**第 2 通道**（images[0] / refImage 就是第 1 通道基准图）。
    该通路两条口径：① 参考图不缩放、原尺寸下发；② size 钉成基准图实际像素对应的档位，
@@ -5644,6 +5742,7 @@ function buildRequestSpec(
   maxTokens,
 ) {
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
+  const reqType = effectiveProviderType(provider, kind);
   const auth = {
     /* 中转服务（source=mtnode-relay）在这里换成账号登录 token：配置里只有占位串 */
     Authorization: "Bearer " + providerAuthKey(provider),
@@ -5698,7 +5797,7 @@ function buildRequestSpec(
       body,
     };
   }
-  if (provider.type === "image_openai") {
+  if (reqType === "image_openai") {
     let sz = GPT_IMAGE_SIZES.includes(size) ? size : "2048x1360";
     /* 差分抠图第 2 通道：size 以第 1 通道基准图的**实际像素**为准。
        auto 是合法档位且会被原样复制进第 2 请求 —— 两通道各自挑分辨率，
@@ -5764,7 +5863,7 @@ function buildRequestSpec(
       body: gen,
     };
   }
-  if (provider.type === "image_stability") {
+  if (reqType === "image_stability") {
     const form = { prompt, output_format: "png", aspect_ratio: "1:1" };
     if (model && model !== "core") form.model = model;
     if (refImage) form.image = refImage;
@@ -5781,7 +5880,7 @@ function buildRequestSpec(
       nativeRefImage: !!matteAnchor && !!refImage,
     };
   }
-  if (provider.type === "image_mj") {
+  if (reqType === "image_mj") {
     return {
       method: "POST",
       url: base,
@@ -5993,6 +6092,9 @@ async function apiCall({
   timeoutChunk,
 }) {
   checkProvider(provider);
+  /* 本次请求要走的接口族（与 buildRequestSpec 同一判据，见 effectiveProviderType）：
+     图像请求不被服务商级 type 拦住 —— text_openai 的混合端点照旧按 OpenAI 兼容图像端点发。 */
+  const reqType = effectiveProviderType(provider, kind);
   /* 三档超时（连接 / 首字节 / 分块空闲）：spec 显式下发 > 服务商对象 > 缺省 300000 */
   const tiers = timeoutTiersOf(
     { timeoutConnect, timeoutHeader, timeoutChunk },
@@ -6016,7 +6118,7 @@ async function apiCall({
     { quality, background, maskPath },
   );
 
-  if (kind === "text" || provider.type === "image_mj") {
+  if (kind === "text" || reqType === "image_mj") {
     const { status, j, text } = await fetchJson(
       req.url,
       {
@@ -6079,7 +6181,7 @@ async function apiCall({
     return { ok: true, base64: b64, ext: "png" };
   }
 
-  if (provider.type === "image_openai") {
+  if (reqType === "image_openai") {
     let status, j, text;
     if (req.body && req.body.__multipart) {
       /* 图生图 /images/edits：不设超时上限（0），高分辨率/多参考图都可能很久 */
@@ -6110,7 +6212,7 @@ async function apiCall({
     return { ok: true, base64: b64, ext: "png" };
   }
 
-  if (provider.type === "image_stability") {
+  if (reqType === "image_stability") {
     /* Stability 生图：不设超时上限（0） */
     const { status, j, text } = await sendMultipart(
       req.url,
@@ -6752,6 +6854,15 @@ ipcMain.handle("dsh:mcpSetEnabled", (event, { serverName, enabled }) =>
   dsh().mcpSetEnabled(serverName, enabled)
 );
 
+/* ── MCP 资源（只读）────────────────────────────────────────────────────────
+   「扩展能力管理」里点开一台 MCP 服务器时列它的资源 / 读一条内容。服务器配置由渲染层
+   回传（同一份 dshMcpList 的结果），网关只做连接与只读请求。兜底成 {ok:false,error}。 */
+ipcMain.handle("dsh:mcpResources", (event, params) =>
+  dsh()
+    .mcpResources(params)
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
+);
+
 ipcMain.handle("dsh:cancel", (event, params) => dsh().cancel(params));
 
 ipcMain.handle("dsh:interact", (event, params) => dsh().interact(params));
@@ -6763,6 +6874,23 @@ ipcMain.handle("dsh:interact", (event, params) => dsh().interact(params));
 ipcMain.handle("dsh:browser", (event, params) =>
   dsh()
     .browser(params)
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
+);
+
+/* ── 语音输入（对话输入框的录音按钮）────────────────────────────────────────   透传到网关的 `speech` 方法：识别在网关拉起的运行时里用官方本地 SenseVoice 跑
+   （CPU、离线），主进程只搬运 WAV 字节与结果，不落盘、不进任何模型上下文。
+   与 dsh:browser 同一口径：兜底成 {ok:false,error}，不 reject。 */
+ipcMain.handle("dsh:speech", (event, params) =>
+  dsh()
+    .speech(params)
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
+);
+/* 语音准备状态的**主动读**（一次性快照）：{ providers:[{id,name,preparation:{phase,completedBytes,totalBytes,download}}], selection }。
+   与 onSpeechState（事件推送）同源，供「点一下就查现况」的界面用（footer 话筒 / 节点转写区块 /
+   应用窗口的 appHost.asrStatus）：事件只推变化，界面刚挂上时需要现读一次才知道该画哪一态。 */
+ipcMain.handle("dsh:speechState", (event, params) =>
+  dsh()
+    .speech(Object.assign({}, params || {}, { action: "state" }))
     .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
 );
 
@@ -7097,6 +7225,17 @@ ipcMain.handle("pluginRepair:result", async (e, payload) => {
 
 /* ---------------- 窗口 ---------------- */
 
+/* 后台不降频（本次需求：「任务完成提示音」必须在 MTNode 不在前台时也响）。
+   Chromium 对「不可见 / 被盖住 / 最小化」的窗口有一套后台节流：定时器降频、渲染停下来、
+   整页静音/挂起音频会话 —— 被推迟的那一拍要等用户切回窗口才落地，用户看到的就是
+   「必须切回 MTNode 才响」。应用本体是常驻托管的编排器，用户切走是常态：
+   完成音的判定与排播都不该受窗口可见性影响，所以在 app ready 之前把这三个开关关掉。
+   三个开关各管一段：renderer-backgrounding（后台进程降级）、background-timer-throttling
+   （定时器降频）、backgrounding-occluded-windows（被别的窗口盖住也当后台）。 */
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+
 app.whenReady().then(() => {
   /* 隐藏原生窗口菜单栏（File/Edit/View/Window/Help），按键快捷方式由渲染层自行处理 */
   Menu.setApplicationMenu(null);
@@ -7133,9 +7272,32 @@ app.whenReady().then(() => {
       sandbox: false,
       webviewTag: true,
       preload: join(__dirname, "preload.js"),
+      /* 主窗永不按「后台」对待：后台节流会把「任务跑完该响的那一拍」推迟到用户切回来
+         （本次需求的核心症状）。命令行那三个开关是全局兜底，这一条钉住主窗自身；
+         渲染层的完成音 / 提问音另有一条主进程发声通道（sound:alert，见 sound-alert.js）。 */
+      backgroundThrottling: false,
     },
   });
   mainWin.loadFile(join(__dirname, "renderer", "index.html"));
+  /* 麦克风等**媒体权限**放行：Electron 默认拒绝一切权限请求，语音输入（对话输入框的录音
+     按钮，走 dsh 官方本地 SenseVoice）会直接拿不到 getUserMedia。只放行 media 一类，且只
+     认本机页面（file: / 自定义协议），其余权限（通知 / 定位 / 剪贴板读…）仍走 Electron 默认
+     拒绝 —— 要新增就显式加进 MEDIA_PERMISSIONS，不要整放开。两个 handler 都装：request
+     管「请求时批准」，check 管「已授权状态下复查」。装在 loadFile 之后、用户点录音之前，
+     时序上稳（handler 生效与页面加载无关）。 */
+  {
+    const MEDIA_PERMISSIONS = new Set(["media", "audioCapture", "videoCapture"]);
+    const isLocalPage = (url) => !/^https?:/i.test(String(url || ""));
+    const ses = mainWin.webContents.session;
+    ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+      const url = (details && details.requestingUrl) || (wc && wc.getURL && wc.getURL()) || "";
+      callback(MEDIA_PERMISSIONS.has(permission) && isLocalPage(url));
+    });
+    ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
+      const url = (details && details.requestingUrl) || requestingOrigin || "";
+      return MEDIA_PERMISSIONS.has(permission) && isLocalPage(url);
+    });
+  }
   /* 应用目录零数据：启动只读体检（违规即记日志 + 弹窗报警，不静默写入） */
   try { auditAppDirData(); } catch (err) { console.warn("[appdir-audit] 体检失败：" + ((err && err.message) || err)); }
   /* 禁止主窗被链接导航走；改为嵌套 modal 对话框打开 */
@@ -7228,13 +7390,9 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
-  /* 本地语音转写后端：静默起停、随 MTNode 退出而结束（见 asr/main-asr.js 头部注释） */
-  registerAsrIpc({
-    getDataDir: DATA,
-    getMainWin: () => mainWin,
-    appRoot: __dirname,
-    getDsh: () => dsh(),
-  });
+  /* 本地语音转写（官方本地 SenseVoice）：识别在 dsh 运行时里跑，主进程这一层只有
+     「转写缓存 + 音频读盘」（见 speech-store.js）；不再有需要起停的 ASR 后端进程 */
+  registerSpeechIpc({ getDataDir: DATA });
   /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：安装 / 启停 / 出图；后端单例不随 MTNode 退出（见 sensenova/main-sensenova.js） */
   registerSensenovaIpc({
     getDataDir: DATA,
@@ -7252,6 +7410,8 @@ app.whenReady().then(() => {
   /* 存储占用与清理（设置里的「存储占用与清理」小节）：分类统计 + 按类清理；
      rollback 那一类复用上一条注册好的 GC（孤儿对象与超期轮次） */
   registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s), rollbackGc: rollbackGc });
+  /* 分类统计跑在 storage-scan-worker.js 线程里，统计标签要跟着界面语言走 */
+  setScanLocale(() => I18n.getLocale());
   /* 素材库：独立于画布的文本/图像/音频/视频内容仓库（用户指定根目录，见 assets-store.js） */
   registerAssetsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 长周期任务系统：run checkpoint / 交付目录 / 长期记忆库（见 longtask-store.js） */
@@ -7281,6 +7441,9 @@ app.whenReady().then(() => {
         return null;
       }
     },
+    /* 语音转写（appHost.asr*）：识别在 dsh 运行时里跑（与状态栏那枚话筒同一条通道），
+       事务侧只借 dsh 适配器，不认识它的内部结构。 */
+    getDsh: () => dsh(),
   });
   /* 应用窗口里的 appHost.quit()：先把该应用收尾关掉，再请主进程走正常退出流程
      （before-quit → shutdownApps 再收一遍，幂等；见 apps-store.js 的 quitFromAppWindow） */
@@ -7313,8 +7476,6 @@ app.on("before-quit", () => {
   /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
      这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */
   try { shutdownSensenovaUiOnly(); } catch {}
-  /* 语音转写后端随 MTNode 退出而结束（与上面几个「故意不杀」的后端不同） */
-  try { shutdownAsr(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
   }
@@ -7324,8 +7485,6 @@ app.on("will-quit", () => {
   /* 函数节点运行线程：先终止 worker 再扫进程树 —— 节点不在运行态就不该有线程/进程 */
   try { if (fnRuntime) fnRuntime.shutdown().catch(() => {}); } catch {}
   try { procHost.killAll().catch(() => {}); } catch {}
-  /* 语音转写后端再收一次（before-quit 的结束是异步的，这里兜底） */
-  try { shutdownAsr(); } catch {}
 });
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

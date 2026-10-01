@@ -17,6 +17,7 @@
  *
  * 开关：
  *   --only=a,b        等价于位置参数过滤（子串匹配，不区分大小写）
+ *   --jobs=N          同时跑几只（默认 4，范围 1–16；--jobs=1 回到严格串行）
  *   --timeout=SECONDS 单只上限（默认 300）；超时判 timeout 并杀进程
  *   --tail=N          汇总里每只失败贴多少行关键输出（默认 24）
  *   --log-dir=PATH    完整输出落盘目录（默认 <tmp>/mtnode-smoke-logs/<时间戳>）
@@ -49,6 +50,7 @@ const filters = [];
 let timeoutSec = 300;
 let tailN = 24;
 let logDirArg = "";
+let jobs = 4;
 for (const a of argv) {
   if (a === "--include-manual") flags.manual = true;
   else if (a === "--list") flags.list = true;
@@ -57,12 +59,15 @@ for (const a of argv) {
   else if (a.startsWith("--timeout=")) timeoutSec = Number(a.slice(10)) || 300;
   else if (a.startsWith("--tail=")) tailN = Number(a.slice(7)) || 24;
   else if (a.startsWith("--log-dir=")) logDirArg = a.slice(10);
+  else if (a.startsWith("--jobs=")) jobs = Number(a.slice(7)) || 4;
   else if (a.startsWith("--")) {
     console.error("未知开关：" + a);
     process.exit(2);
   } else filters.push(a);
 }
 if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) timeoutSec = 300;
+if (!Number.isFinite(jobs) || jobs < 1) jobs = 4;
+jobs = Math.max(1, Math.min(16, Math.floor(jobs)));
 
 /* ---------------- 清单 ---------------- */
 const all = fs
@@ -165,41 +170,50 @@ function runOne(file) {
   });
 }
 
-/* ---------------- 主循环（逐只，不并发） ---------------- */
+/* ---------------- 主循环（默认 4 路并发，逐只仍是独立 node 子进程） ----------------
+ * 并发只影响「同时开几只」，每只的判定口径（自己的退出码 / 自己的完整输出）一字未改；
+ * 汇总行照旧按清单顺序打印，日志仍是一只一个文件。想回到严格串行：--jobs=1。 */
 console.log(
   C.bold(
-    `MTNode 冒烟聚合 · ${queue.length} 只（跳过 manual ${skippedManual.length}）· 单只超时 ${timeoutSec}s · 日志 ${LOG_DIR}`,
+    `MTNode 冒烟聚合 · ${queue.length} 只（跳过 manual ${skippedManual.length}）· 并发 ${jobs} · 单只超时 ${timeoutSec}s · 日志 ${LOG_DIR}`,
   ),
 );
-const results = [];
+const results = new Array(queue.length);
 let pass = 0;
-for (let i = 0; i < queue.length; i++) {
-  const file = queue[i];
-  const tag = `${String(i + 1).padStart(3)}/${queue.length}`;
-  process.stdout.write(C.dim(`[${tag}] ${file.padEnd(38)}`));
-  const r = await runOne(file);
-  results.push(r);
-  fs.writeFileSync(path.join(LOG_DIR, file + ".log"), r.out, "utf8");
-  const tally = tallyOf(r.out);
-  const dur = (r.ms / 1000).toFixed(1) + "s";
-  if (r.status === "pass") {
-    pass++;
-    console.log(C.green(" pass ") + C.dim(` ${dur}  ${tally}`));
-  } else {
-    console.log(
-      C.red(" " + r.status + " ") +
-        C.dim(` exit=${r.code} ${dur}  ${tally}${r.truncated ? "  (输出截断)" : ""}`),
-    );
+let nextIdx = 0;
+const wall0 = Date.now();
+async function worker() {
+  for (;;) {
+    const i = nextIdx++;
+    if (i >= queue.length) return;
+    const file = queue[i];
+    const r = await runOne(file);
+    results[i] = r;
+    fs.writeFileSync(path.join(LOG_DIR, file + ".log"), r.out, "utf8");
+    const tag = `${String(i + 1).padStart(3)}/${queue.length}`;
+    const tally = tallyOf(r.out);
+    const dur = (r.ms / 1000).toFixed(1) + "s";
+    const head = C.dim(`[${tag}] `) + file.padEnd(38);
+    if (r.status === "pass") {
+      pass++;
+      console.log(head + C.green(" pass ") + C.dim(` ${dur}  ${tally}`));
+    } else {
+      console.log(
+        head + C.red(" " + r.status + " ") + C.dim(` exit=${r.code} ${dur}  ${tally}${r.truncated ? "  (输出截断)" : ""}`),
+      );
+    }
   }
 }
+await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, () => worker()));
 
 /* ---------------- 汇总 ---------------- */
 const bad = results.filter((r) => r.status !== "pass");
 const totalMs = results.reduce((a, r) => a + r.ms, 0);
+const wallMs = Date.now() - wall0;
 const lines = [];
 lines.push(`MTNode 冒烟聚合 ${stamp}`);
 lines.push(`跑了 ${results.length} 只：pass ${pass} · fail ${results.filter((r) => r.status === "fail").length} · timeout ${results.filter((r) => r.status === "timeout").length} · spawn-error ${results.filter((r) => r.status === "spawn-error").length}`);
-lines.push(`墙钟（各只耗时之和） ${(totalMs / 1000).toFixed(1)}s · 单只超时上限 ${timeoutSec}s`);
+lines.push(`墙钟（各只耗时之和） ${(totalMs / 1000).toFixed(1)}s · 实际墙钟 ${(wallMs / 1000).toFixed(1)}s（并发 ${jobs}） · 单只超时上限 ${timeoutSec}s`);
 if (skippedManual.length) {
   lines.push("");
   lines.push(`默认跳过 ${skippedManual.length} 只（--include-manual 才跑）：`);

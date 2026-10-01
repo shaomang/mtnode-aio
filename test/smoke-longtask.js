@@ -13,9 +13,10 @@
  *   [6] 条带界面与生命周期口径
  * 只读断言：不改任何文件、不起 Electron。
  */
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
+const fs = require("fs"), path = require("path"), vm = require("vm"), os = require("os"), childProcess = require("child_process");
+const SHARED = { fs, path, vm, os, spawn: childProcess.spawn };
+const TEST_DIR = __dirname;
+let MERGED_FAILED = false;
 
 const ROOT = path.join(__dirname, "..");
 const read = (rel) => fs.readFileSync(path.join(ROOT, ...rel.split("/")), "utf8");
@@ -2750,10 +2751,3499 @@ async function main() {
   }
 
   console.log("\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") + "  (smoke-longtask)");
-  process.exit(fails ? 1 : 0);
 }
 
 main().catch((e) => {
   console.log("测试异常：" + String((e && e.stack) || e));
-  process.exit(1);
 });
+
+/* ==================== 已并入：test/smoke-longtask-artifacts.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-artifacts.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  const ROOT = path.join(__dirname, "..");
+  /* 行尾统一成 \n：工作区里的源码可能是 CRLF（git autocrlf / 编辑器各异），
+     下面有跨行断言（如 NODE_DEFAULTS 的 "ltart: {\n    w: 260,"），不归一就会误报。 */
+  const read = (rel) => fs.readFileSync(path.join(ROOT, ...rel.split("/")), "utf8").replace(/\r\n?/g, "\n");
+  const exists = (rel) => fs.existsSync(path.join(ROOT, ...rel.split("/")));
+
+  let fails = 0;
+  let checks = 0;
+  const ok = (cond, msg) => {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  };
+  const has = (hay, needle, msg) => {
+    const c = String(hay).indexOf(needle) >= 0;
+    ok(c, msg + (c ? "" : "（缺 " + JSON.stringify(needle) + "）"));
+  };
+  const hasnt = (hay, needle, msg) => {
+    const c = String(hay).indexOf(needle) < 0;
+    ok(c, msg + (c ? "" : "（仍含 " + JSON.stringify(needle) + "）"));
+  };
+  const eqNum = (a, b, msg) => ok(a === b, msg + "（得到 " + JSON.stringify(a) + "，期望 " + JSON.stringify(b) + "）");
+
+  const APP = read("renderer/app.js");
+  const NODES = read("renderer/app-nodes.js");
+  const CANVASJS = read("renderer/app-canvas.js");
+  const HELP = read("renderer/app-nodehelp.js");
+  const I18N_SRC = read("renderer/i18n.js");
+  const HTML = read("renderer/index.html");
+  const LTCSS = read("renderer/css/longtask.css");
+  const LTV = read("renderer/app-longtask.js");
+  const LTARTJS = read("renderer/app-longtask-artifacts.js");
+  const MANUAL = read("guides/manual/longtask.md");
+
+  /* ═══════════════ [1] 装配与文档（静态） ═══════════════ */
+  console.log("\n[1] 装配：加载顺序 / LOCKED / 登记与端子 / 渲染分支 / css / 指南");
+  has(HTML, '<script src="app-longtask-artifacts.js"></script>', "index.html 引入 app-longtask-artifacts.js");
+  ok(
+    HTML.indexOf('src="app-longtask.js"') >= 0 &&
+      HTML.indexOf('src="app-longtask.js"') < HTML.indexOf('src="app-longtask-artifacts.js"'),
+    "加载顺序在 app-longtask.js 之后（用到它的登记层与 makeNode）",
+  );
+  has(LTV, 'LOCKED: ["deliver", "ltout", "ltart"]', "LT.LOCKED 含 ltart（手动 / 复制 / 智能体建图三处闸都读它）");
+  has(APP, 'ltart: "ltart"', "KIND_CLS 有 ltart → 主画布按类上色");
+  has(APP, "ltart: {\n    w: 260,", "NODE_DEFAULTS 有 ltart（渲染 / 尺寸 / 字段缺省都靠它）");
+  has(APP, 'if (n.kind === "ltart") return 0;', "输出端子 0 个（产物节点不向下游出数据）");
+  has(APP, 'if (node.kind === "ltart") return 0;', "输入端子 0 个（连不了线）");
+  has(APP, 'ltart: "产物"', "kind 名显示为「产物」");
+  has(APP, 'ltart: "产物节点（长周期任务 · 每件产物一颗 · 板身预览 · ✎ 编辑保存 · ⇢ 打开）"', "设置项用途说明到位（含头部 ✎ 编辑保存入口）");
+  has(CANVASJS, "function buildLtartBody(", "板身按产物类型预览（buildLtartBody）");
+  has(CANVASJS, "function ltartOpenButtonEl(", "头部有「用系统程序打开」入口");
+  has(CANVASJS, 'if (node.kind === "ltart") {', "节点头部走 ltart 分支");
+  has(CANVASJS, "buildLtartBody(node, body);", "buildBody 分派到 ltart 板身");
+  has(CANVASJS, "fileUrlWithBust(p, bust)", "预览走 file:// URL + bust（同路径覆盖后不吃缓存）");
+  has(LTCSS, ".wf-node.ltart {", "产物节点有 .ltart 一族配色");
+  has(LTCSS, "body.theme-light .wf-node.ltart", "浅色主题同口径");
+  has(LTCSS, ".n-ltart-stage", "预览舞台有样式");
+  has(LTCSS, ".n-ltart-path", "完整路径有样式");
+  has(HELP, "ltart:", "app-nodehelp 的 KIND_HELP 有它（? 按钮不说「暂无说明」）");
+  /* ── 产物所在文件夹（头部 📁）：长任务产物常扎堆在一个输出目录里，用户的下一个动作
+     多半是去那个目录接着翻别的文件，所以头部再给一枚「打开所在文件夹」（与 ⇢ 同排）。
+     这里既钉静态入口 / 通道 / 样式 / 词条，也把文件夹路径的切分纯函数真跑一遍。 */
+  has(CANVASJS, "function ltartDirOf(", "有从产物路径切出文件夹的纯函数（不动 node 字段）");
+  has(CANVASJS, "function ltartFolderButtonEl(", "头部有「打开所在文件夹」入口按钮");
+  has(CANVASJS, 'b.className = "n-play n-ltart-folder";', "按钮走 .n-play + 专属 .n-ltart-folder");
+  has(CANVASJS, "head.appendChild(ltartFolderButtonEl(node));", "ltart 节点头部真的摆了这枚按钮");
+  has(
+    CANVASJS,
+    'if (String(node.ltFile || "").trim()) head.appendChild(ltartFolderButtonEl(node));',
+    "没有文件路径时不摆空按钮（点了只会弹提示）",
+  );
+  has(CANVASJS, "window.api.shellShowItem(p)", "走 shellShowItem（在文件管理器中定位并选中该文件）");
+  has(CANVASJS, "window.api.shellOpenPath(dir)", "老 preload 没有 showItem 通道时退回 shellOpenPath(文件夹)");
+  has(LTCSS, ".wf-node.ltart .n-head .n-ltart-folder", "这枚按钮与 ⇢ / ✎ 同排等宽、不参与收缩（挤不没）");
+  has(I18N_SRC, '"打开这件产物所在的文件夹（在文件管理器中显示）"', "i18n 表里有按钮 tooltip 词条");
+  has(I18N_SRC, '"打开产物所在文件夹"', "i18n 表里有 aria-label 词条");
+  has(I18N_SRC, "shown in the file manager", "英文词条成对（切英文不回中文）");
+  has(HELP, "点 📁 打开它所在的文件夹", "? 按钮说明里也提到这枚入口");
+  has(read("guides/nodes/ltart.md"), "📁", "指南写明「打开所在文件夹」入口");
+  has(read("guides/nodes/en/ltart.md"), "Open its folder", "英文指南成对（AGENTS：指南中英同步）");
+  {
+    /* 切分纯函数真跑：Windows 反斜杠 / POSIX 正斜杠 / 盘符根 / 根 / 相对 / 无分隔符。
+       ltartDirOf 自包含（不引用任何画布全局），可单独在 vm 里装起来验行为。 */
+    const fnSrc = (CANVASJS.match(/function ltartDirOf\(p\) \{[\s\S]*?\n\}/) || [])[0];
+    ok(!!fnSrc, "能在源码里切出 ltartDirOf 的函数体");
+    const box = {};
+    vm.createContext(box);
+    vm.runInContext(String(fnSrc || "function ltartDirOf(){return '';}") + "\nthis.dirOf = ltartDirOf;", box);
+    const dirOf = box.dirOf;
+    const cases = [
+      ["C:\\ws\\out\\a.png", "C:\\ws\\out", "Windows 绝对路径切出父目录"],
+      ["/home/u/out/a.mp4", "/home/u/out", "POSIX 路径切出父目录"],
+      ["out\\sub\\a.md", "out\\sub", "相对路径照切（不特判盘符）"],
+      ["E:\\a.png", "E:\\", "盘符根：保留根并补回分隔符（不能切成一截盘符）"],
+      ["/a.png", "/", "POSIX 根：留下根"],
+      ["a.png", "", "没有分隔符（纯文件名）→ 空串，按钮显式提示而不是瞎猜目录"],
+    ];
+    for (const [input, want, msg] of cases)
+      ok(dirOf(input) === want, msg + "（" + JSON.stringify(input) + " → " + JSON.stringify(dirOf(input)) + "，期望 " + JSON.stringify(want) + "）");
+  }
+  for (const k of [
+    "产物",
+    "产物节点（长周期任务 · 每件产物一颗 · 板身预览 · ✎ 编辑保存 · ⇢ 打开）",
+    "用系统默认程序打开这件产物（路径见节点底部）",
+    "这类文件不在节点里预览 · 点上方 ⇢ 用系统程序打开",
+  ])
+    has(I18N_SRC, '"' + k + '"', "i18n 表里有词条：" + k);
+  has(I18N_SRC, "one node per artifact", "英文词条成对（切英文不回中文）");
+  ok(exists("guides/nodes/ltart.md"), "guides/nodes/ltart.md 存在（AGENTS：新增节点类型必须补指南）");
+  ok(exists("guides/nodes/en/ltart.md"), "guides/nodes/en/ltart.md 存在（中英成对）");
+  has(read("guides/nodes/index.json"), '"ltart"', "guides/nodes/index.json 登记 ltart");
+  has(read("guides/nodes/ltart.md"), "一件产物 = 一颗节点", "指南写明「一件产物一颗节点」");
+  has(read("guides/nodes/ltart.md"), "复用同一颗节点", "指南写明认人复用（重跑不堆）");
+  has(MANUAL, "产物节点", "应用内手册写明产物节点");
+  has(MANUAL, "一件一件摆成主画布上的「产物节点」", "手册写明逐件摆上画布的口径");
+  has(MANUAL, "上游环节交下来的输入文件不会在下游再摆一遍", "手册写明只摆本环节自己的产物");
+  /* ═══════════════ [2][3] 真跑（vm） ═══════════════ */
+  async function main() {
+    console.log("\n[2] 数据层真跑：分类 / 清点 / 认人复用 / 读不到不摆 / 上限 / 排版");
+    const files = new Map();
+    const setFile = (p, mtime, size, content) => files.set(String(p), { mtime, size, content });
+    let nodeSeq = 0;
+    const S = { wf: { id: "wf-art", nodes: [], cam: { x: 0, y: 0, k: 1 } }, config: {}, _skipCanvasHistory: false };
+    const sandbox = {
+      window: {
+        innerWidth: 1280,
+        api: {
+          fileStat: async (p) => {
+            const f = files.get(String(p));
+            return f ? { ok: true, mtime: f.mtime, size: f.size } : { ok: false, exists: false };
+          },
+          fileReadText: async (p) => {
+            const f = files.get(String(p));
+            return f ? { ok: true, exists: true, content: f.content } : { ok: false, exists: false };
+          },
+          toFileUrl: (p) => "file:///" + String(p || "").replace(/\\/g, "/"),
+          ltRunSave: async () => ({ ok: true }),
+          dshInteract: () => {},
+        },
+      },
+      S: S,
+      I18n: { t: (s) => s },
+      document: { readyState: "loading", addEventListener() {}, getElementById() { return null; } },
+      toast() {},
+      scheduleSave() {},
+      renderCanvas() {},
+      focusNode() {},
+      addNode(kind, x, y, extra) {
+        const n = Object.assign(
+          { id: "ltn" + ++nodeSeq, kind: kind, x: x, y: y, w: 360, h: 260, title: kind, text: "" },
+          extra || {},
+        );
+        S.wf.nodes.push(n);
+        return n;
+      },
+      /* app.js 的 makeNode / uniqueNodeTitle 在沙箱里的等价物：本模块只依赖这两个建节点原语 */
+      makeNode(kind, x, y) {
+        return { id: "ltart" + ++nodeSeq, kind: kind, x: x, y: y, w: 260, h: 210, title: "产物" };
+      },
+      uniqueNodeTitle(desired) {
+        let t = String(desired || "");
+        let i = 2;
+        while (S.wf.nodes.some((n) => n.title === t)) t = String(desired) + " " + i++;
+        return t;
+      },
+      console, setTimeout, clearTimeout, Map, Set, Promise, JSON, Math, Date, Object, Array, String, Number, RegExp,
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(LTV, sandbox, { filename: "renderer/app-longtask.js" });
+    vm.runInContext(LTARTJS, sandbox, { filename: "renderer/app-longtask-artifacts.js" });
+    const LA = sandbox.window.LTART;
+    const LT = sandbox.window.LT;
+    ok(!!sandbox.window.LT && !!LA, "两份脚本在同一沙箱里整份执行并导出 window.LT / window.LTART（顶层不碰 DOM）");
+
+    /* 分类：什么类型走什么预览形态 */
+    eqNum(LA.typeOf("C:\\out\\shot01.PNG"), "image", "扩展名大小写不敏感：PNG → 图像");
+    eqNum(LA.typeOf("C:\\out\\pilot.mp4"), "video", "mp4 → 视频");
+    eqNum(LA.typeOf("C:\\out\\voice.wav"), "audio", "wav → 音频");
+    eqNum(LA.typeOf("C:\\out\\shotlist.md"), "text", "md → 文本");
+    eqNum(LA.typeOf("C:\\out\\镜头清单.csv"), "text", "中文名的 csv → 文本");
+    eqNum(LA.typeOf("C:\\out\\pack.zip"), "file", "未知类型落到「文件」（有路径 + 打开入口，不算漏）");
+    eqNum(LA.fileName("C:\\out\\shots\\01.mp4"), "01.mp4", "文件名从任意分隔符里取尾段");
+
+    /* ⓪ 关键文件口径（本轮需求）：清点出来的东西不是全都值得占画布 ——
+       画布只摆用户该读 / 该收的（报告文档 / 数据表 / 成品图），中间件与音视频一律不摆。
+       只影响**自动摆放**：交付环节用户亲手确认的交付件另走一条，不受这里的裁剪影响。 */
+    ok(typeof LA.pickKeyFiles === "function", "导出 pickKeyFiles（清点与挑选分开，ownPaths 口径不动）");
+    eqNum(LA.pickClassOf("C:\\out\\shotlist.md"), "doc", "报告文档一行 md → doc");
+    eqNum(LA.pickClassOf("C:\\out\\分镜表.pdf"), "doc", "pdf → doc（交付给用户读的成稿）");
+    eqNum(LA.pickClassOf("C:\\out\\角色表.csv"), "data", "数据表 csv → data");
+    eqNum(LA.pickClassOf("C:\\out\\成片.png"), "image", "成品图 png → image");
+    eqNum(LA.pickClassOf("C:\\out\\pilot.mp4"), null, "视频不是「读」的东西 → 不摆（画布上只多一个播放器）");
+    eqNum(LA.pickClassOf("C:\\out\\voice.wav"), null, "音频同样不摆");
+    eqNum(LA.pickClassOf("C:\\out\\run.log"), null, "运行日志不摆");
+    eqNum(LA.pickClassOf("C:\\out\\shots.json"), null, "中间件 JSON 不摆（产出节点引用清单里照旧有）");
+    eqNum(LA.pickClassOf("C:\\out\\pack.zip"), null, "归档 / 依赖包不摆");
+    eqNum(
+      LA.pickKeyFiles([
+        "C:\\out\\a.mp4",
+        "C:\\out\\b.log",
+        "C:\\out\\c.md",
+        "C:\\out\\d.csv",
+        "C:\\out\\e.png",
+        "C:\\out\\f.json",
+        "C:\\out\\c.md",
+      ]).join("|"),
+      "C:\\out\\c.md|C:\\out\\d.csv|C:\\out\\e.png",
+      "挑选 = 只留关键件（去重 + 报告 → 数据表 → 成品图的顺序）",
+    );
+    eqNum(LA.pickKeyFiles(["C:\\out\\a.mp4", "C:\\out\\b.log"]).length, 0, "整轮只有中间件时不摆任何东西（画布保持干净）");
+    eqNum(
+      LA.pickKeyFiles(["C:\\out\\1.md", "C:\\out\\2.md", "C:\\out\\3.csv"], 2).join("|"),
+      "C:\\out\\1.md|C:\\out\\2.md",
+      "挑选也吃上限（与产物节点上限同源，不把画布铺满）",
+    );
+
+    const mkRun = (uid) =>
+      sandbox.ltRunNew({ uid: uid, name: "演示任务", graph: LT.norm({ nodes: [], edges: [] }) }, "wf-art", {});
+    const P1 = "C:\\ws\\output\\shots\\pilot.md";
+    const P2 = "C:\\ws\\output\\shots\\01.png";
+    const P3 = "C:\\ws\\assets\\script\\shotlist.md";
+    setFile(P1, 1000, 2048, "");
+    setFile(P2, 1000, 4096, "");
+    setFile(P3, 1000, 128, "# 分镜\n1. 开场");
+
+    /* ① 清点 + 逐个放置 */
+    const runA = mkRun("taskArtA");
+    sandbox.ltInst(runA, "", runA.graph);
+    let res = await LA.publish(runA, "shots", [P1, P2, P3, P1]);
+    eqNum(res.placed, 3, "三件关键文件逐个摆上画布（重复路径只算一件）");
+    const arts = S.wf.nodes.filter((n) => n.kind === "ltart");
+    eqNum(arts.length, 3, "画布上真的多了三颗 kind ltart 节点");
+    const n1 = arts.find((n) => n.ltFile === P1);
+    ok(!!n1, "报告那件的节点在");
+    eqNum(n1.ltTaskUid, "taskArtA", "节点带任务身份（认人靠它）");
+    eqNum(n1.ltPath, "shots", "节点带环节路径");
+    eqNum(n1.ltType, "text", "节点带类型（渲染形态按它选）");
+    eqNum(n1.ltName, "pilot.md", "节点带文件名");
+    eqNum(n1.ltSize, 2048, "节点带大小");
+    eqNum(n1.ltMtime, 1000, "节点带 mtime（预览 bust 用）");
+    ok(/^产物 · 文本 · pilot\.md$/.test(n1.title), "标题 = 「产物 · 类型 · 文件名」（得到 " + n1.title + "）");
+    ok(n1.title.indexOf("产物") === 0, "标题前缀是「产物」");
+    const n2 = arts.find((n) => n.ltFile === P2);
+    eqNum(n2.ltType, "image", "png 那件按图像渲染");
+    const n3 = arts.find((n) => n.ltFile === P3);
+    eqNum(n3.ltType, "text", "md 那件按文本给摘要");
+
+    /* ② 认人复用：再发布不新建，只更新指纹 */
+    setFile(P1, 2000, 8192, "");
+    res = await LA.publish(runA, "shots", [P1, P2, P3]);
+    eqNum(res.placed, 0, "再发布：不新建节点");
+    eqNum(res.updated, 3, "三件全部走「更新已有节点」");
+    eqNum(S.wf.nodes.filter((n) => n.kind === "ltart").length, 3, "画布上仍只有三颗（重跑 / 回跳不堆新节点）");
+    eqNum(arts.find((n) => n.ltFile === P1).ltSize, 8192, "已有节点的指纹跟到最新一版");
+
+    /* ③ 只算本环节自己的产物：上游交下来的输入不在下游再摆一遍 */
+    const runB = mkRun("taskArtB");
+    sandbox.ltInst(runB, "", runB.graph);
+    sandbox.ltStatePut(runB, "", "upstream_png", P2); /* 上游环节写进父命名空间 */
+    res = await LA.publish(runB, "child", [P2, P3]);
+    eqNum(res.placed, 1, "父命名空间里已有的 P2 被剔除（只摆本环节自己的 P3）");
+    ok(!S.wf.nodes.some((n) => n.kind === "ltart" && n.ltPath === "child" && n.ltFile === P2), "下游环节没有重复摆上游的图");
+    ok(S.wf.nodes.some((n) => n.kind === "ltart" && n.ltPath === "child" && n.ltFile === P3), "本环节自己的产物照摆");
+    eqNum(LA.ownPaths(runB, "child", [P2, P3]).join("|"), P3, "ownPaths 直接给出「只剩自己的」那份清单");
+
+    /* ④ 读不到 = 此刻不算产物（不摆死卡） */
+    const runC = mkRun("taskArtC");
+    sandbox.ltInst(runC, "", runC.graph);
+    res = await LA.publish(runC, "shots", ["C:\\ws\\output\\ghost.mp4"]);
+    eqNum(res.placed, 0, "读不到的路径不摆（避免画布上出现一张死卡）");
+
+    /* ⑤ 上限：map 展开很多实例时不把画布铺满 */
+    const runD = mkRun("taskArtD");
+    sandbox.ltInst(runD, "", runD.graph);
+    const many = [];
+    for (let i = 0; i < 40; i++) {
+      const p = "C:\\ws\\output\\bulk\\f" + i + ".txt";
+      setFile(p, 1000, 10, "x");
+      many.push(p);
+    }
+    res = await LA.publish(runD, "shots", many);
+    eqNum(res.placed, LA.MAX, "单次最多摆 MAX（" + LA.MAX + "）件");
+
+    /* ⑤之二 关键件闸：清点出来的中间件不占画布（本轮需求的核心），
+       但清点口径（ownPaths）照旧 —— 文件没丢，只是不摆到画布上。 */
+    S.wf.nodes.length = 0;
+    const runK = mkRun("taskArtK");
+    sandbox.ltInst(runK, "", runK.graph);
+    const K1 = "C:\\ws\\raw\\shots.json";
+    const K2 = "C:\\ws\\out\\take-01.mp4";
+    const K3 = "C:\\ws\\out\\run.log";
+    const K4 = "C:\\ws\\out\\报告.md";
+    setFile(K1, 1000, 10, "{}");
+    setFile(K2, 1000, 10, "");
+    setFile(K3, 1000, 10, "");
+    setFile(K4, 1000, 10, "# 报告");
+    res = await LA.publish(runK, "shots", [K1, K2, K3, K4]);
+    eqNum(res.own, 4, "清点口径不动：本环节写出来的四件全部记账");
+    eqNum(res.selected, 1, "其中只有报告那件是关键件");
+    eqNum(res.placed, 1, "画布上只摆这一件");
+    ok(
+      S.wf.nodes.some((n) => n.kind === "ltart" && n.ltFile === K4),
+      "摆上来的正是报告（用户要读的那件）",
+    );
+    ok(
+      !S.wf.nodes.some((n) => n.kind === "ltart" && [K1, K2, K3].indexOf(n.ltFile) >= 0),
+      "中间件 / 视频 / 日志一件都没占画布",
+    );
+
+    /* ⑥ 排版：新节点不压住既有节点 */
+    S.wf.nodes.length = 0;
+    const runE = mkRun("taskArtE");
+    sandbox.ltInst(runE, "", runE.graph);
+    const blocker = { id: "blk", kind: "input_text", x: 700, y: 0, w: 300, h: 300, title: "挡路的节点" };
+    S.wf.nodes.push(blocker);
+    setFile("C:\\ws\\output\\layout\\a.png", 1000, 10, "");
+    setFile("C:\\ws\\output\\layout\\b.csv", 1000, 10, "");
+    await LA.publish(runE, "shots", ["C:\\ws\\output\\layout\\a.png", "C:\\ws\\output\\layout\\b.csv"]);
+    const placedNodes = S.wf.nodes.filter((n) => n.kind === "ltart");
+    eqNum(placedNodes.length, 2, "两件关键文件都摆上了");
+    const hit = (a, b) =>
+      !(Number(a.x) + Number(a.w) <= Number(b.x) || Number(b.x) + Number(b.w) <= Number(a.x) || Number(a.y) + Number(a.h) <= Number(b.y) || Number(b.y) + Number(b.h) <= Number(a.y));
+    ok(!placedNodes.some((n) => hit(n, blocker)), "新摆的产物节点不压住既有节点（自动找空位）");
+    ok(!hit(placedNodes[0], placedNodes[1]), "两件产物彼此也不重叠（按空位网格排开）");
+
+    /* ⑦ Agent 相对路径产物（线上 bug 的回归）：`write` 工具的入参是工作区相对路径
+       （assets/H3提示词/shot-01.md），状态里写回的也常是一段含相对路径的散文 ——
+       只认「整串绝对路径」会把一整轮产物全部漏掉（用户看到「文件落了盘、画布上什么都没有」）。 */
+    S.wf.nodes.length = 0;
+    const runG = mkRun("taskArtG");
+    sandbox.ltInst(runG, "", runG.graph);
+    runG.ws = "C:\\ws";
+    const RA1 = "C:\\ws\\assets\\H3提示词\\shot-01.md";
+    const RA2 = "C:\\ws\\assets\\H3提示词\\shot-02.md";
+    const RA3 = "C:\\ws\\assets\\script\\shotlist.md";
+    setFile(RA1, 1000, 100, "# S01");
+    setFile(RA2, 1000, 100, "# S02");
+    setFile(RA3, 1000, 100, "# 分镜表");
+    sandbox.ltNoteArtifactTool(runG, "script", {
+      name: "write",
+      args: JSON.stringify({ file_path: "assets/H3提示词/shot-01.md", content: "x" }),
+    });
+    eqNum((runG.arts.script || []).join("|"), RA1, "write 工具的相对入参按工作目录解析成绝对路径记账");
+    sandbox.ltNoteArtifactTool(runG, "script", {
+      name: "str_replace_editor",
+      args: JSON.stringify({ command: "view", path: "assets/H3提示词/shot-02.md" }),
+    });
+    eqNum((runG.arts.script || []).length, 1, "str_replace_editor 的 view（只读）不算产物");
+    sandbox.ltNoteArtifactTool(runG, "script", {
+      name: "pwsh",
+      args: JSON.stringify({ command: "Get-Content assets/H3提示词/shot-02.md" }),
+    });
+    eqNum((runG.arts.script || []).length, 1, "shell 工具不按入参路径记账（读到的文件不是产物）");
+    sandbox.ltNoteArtifactTool(runG, "script", {
+      name: "edit",
+      args: JSON.stringify({ file_path: "assets/H3提示词/shot-02.md", old_string: "a", new_string: "b" }),
+    });
+    ok((runG.arts.script || []).indexOf(RA2) >= 0, "edit 改过的文件也算本环节产物");
+    eqNum(LA.ownPaths(runG, "script", ["assets/script/shotlist.md"]).join("|"), RA3, "ownPaths 认相对路径");
+
+    sandbox.ltStatePut(
+      runG,
+      "script",
+      "script_path",
+      "assets/script/shotlist.md（分镜表·106 秒/12 段）\n根剧本：Deepseek娘与MTNode画布_动画剧本.md",
+    );
+    setFile("C:\\ws\\Deepseek娘与MTNode画布_动画剧本.md", 1000, 100, "# 剧本");
+    let pathsG = await sandbox.ltOutputPathsOf(runG, "script");
+    ok(pathsG.indexOf(RA3) >= 0, "状态里的散文也能抽出相对路径（shotlist.md）");
+    ok(pathsG.indexOf(RA1) >= 0, "工具记账的产物一起进清单（shot-01.md）");
+    await sandbox.ltOutputPublish(runG, "script", { text: "本轮正文", files: pathsG });
+    const artsG = S.wf.nodes.filter((n) => n.kind === "ltart");
+    ok(artsG.some((n) => n.ltFile === RA1), "线上 bug 回归：相对路径写出来的产物真的摆上了画布");
+    ok(artsG.some((n) => n.ltFile === RA3), "状态里抽出相对路径的那件也摆上了画布");
+    ok(S.wf.nodes.filter((n) => n.kind === "ltout").length === 1, "产出节点照旧落画布");
+
+    /* ⑧ 兜底清点：产物不从工具入参经过（外部程序把文件写进工作目录）时按时间窗扫一遍 */
+    S.wf.nodes.length = 0;
+    const runH = mkRun("taskArtH");
+    sandbox.ltInst(runH, "", runH.graph);
+    runH.ws = "C:\\ws";
+    const stH = sandbox.ltStat(runH, "shots");
+    stH.startedAt = 5000;
+    setFile("C:\\ws\\out\\from-shell.md", 6000, 10, "# 导出的报告");
+    sandbox.window.api.fileListDir = async (dir) => ({
+      ok: true,
+      list: [{ name: "from-shell.md", rel: "out/from-shell.md", isDir: false, mtime: 6000 }],
+    });
+    const scanned = await sandbox.ltStageWindowFiles(runH, "shots");
+    eqNum(scanned.join("|"), "C:\\ws\\out\\from-shell.md", "时间窗内新增的文件被兜底清点出来");
+    pathsG = await sandbox.ltOutputPathsOf(runH, "shots");
+    eqNum(pathsG.length, 1, "状态与工具记账都空手时退回扫工作目录");
+
+    /* ⑨ 旧 checkpoint 救援：早于本功能的 run 里产物一条都没记，点「继续」时按时间窗补摆 */
+    S.wf.nodes.length = 0;
+    const gI = LT.norm({ nodes: [{ id: "shots", kind: "agent", title: "写分镜", cfg: {} }], edges: [] });
+    const runI = sandbox.ltRunNew({ uid: "taskArtI", name: "演示任务", graph: gI }, "wf-art", {});
+    sandbox.ltInst(runI, "", runI.graph);
+    runI.ws = "C:\\ws";
+    const stI = sandbox.ltStat(runI, "shots");
+    stI.status = "done";
+    stI.startedAt = 5000;
+    stI.finishedAt = 9000;
+    setFile("C:\\ws\\out\\legacy.md", 6000, 10, "# 旧现场");
+    sandbox.window.api.fileListDir = async () => ({
+      ok: true,
+      list: [{ name: "legacy.md", rel: "out/legacy.md", isDir: false, mtime: 6000 }],
+    });
+    eqNum(await sandbox.ltArtRescueDone(runI), 1, "旧 checkpoint 的环节按自己的时间窗补摆产物");
+    ok(
+      S.wf.nodes.some((n) => n.kind === "ltart" && n.ltFile === "C:\\ws\\out\\legacy.md"),
+      "补摆的正是这个窗口里写出来的那件",
+    );
+    eqNum(await sandbox.ltArtRescueDone(runI), 0, "已经有产物节点的环节不再重复扫（幂等）");
+
+    /* ═══════════════ [3] 引擎联动 ═══════════════ */
+    console.log("\n[3] 引擎联动：ltOutputPublish 里真的调了放置（产出节点 + 产物节点一起落画布）");
+    S.wf.nodes.length = 0;
+    has(LTV, "if (typeof ltArtPublish === \"function\") {", "引擎按全局判空调用放置（模块缺席也不拦断产出回流）");
+    has(LTV, "if (type === \"tool\") ltNoteArtifactTool(run, path, data);", "引擎在 Agent 事件流上真记写文件工具入参");
+    has(LTV, "const LT_ART_WRITE_TOOL =", "写文件工具名单是显式常量（不是散落的魔法正则）");
+    has(LTV, "run.ws = ws;", "运行工作目录记进 run（相对路径解析的根）");
+    has(LTV, "const back = await ltArtRescueDone(j);", "打开画布（ltRestore）时对旧 checkpoint 补摆产物");
+    has(LTV, "const back = await ltArtRescueDone(run);", "点「▶ 继续」（ltResume）时同样补摆一次");
+    has(I18N_SRC, '"旧版本留下的现场：已把 "', "补摆日志有 i18n 词条（切英文不回中文）");
+    has(I18N_SRC, "artifacts onto the canvas", "补摆日志英文成对");
+    const runF = mkRun("taskArtF");
+    sandbox.ltInst(runF, "", runF.graph);
+    const pF = "C:\\ws\\output\\linked\\final.md";
+    setFile(pF, 3000, 999, "");
+    sandbox.ltStatePut(runF, "shots", "shot_file", pF); /* Agent 把落盘路径写回本环节状态 */
+    await sandbox.ltOutputPublish(runF, "shots", { text: "本环节正文", files: await sandbox.ltOutputPathsOf(runF, "shots") });
+    eqNum(S.wf.nodes.filter((n) => n.kind === "ltout").length, 1, "产出节点照旧落画布（产出回流没有被动过）");
+    const linked = S.wf.nodes.filter((n) => n.kind === "ltart");
+    eqNum(linked.length, 1, "产物节点同一次发布就摆上来了（引擎联动真的通）");
+    eqNum(linked[0].ltFile, pF, "摆的正是本环节落盘的那件产物");
+    eqNum(linked[0].ltPath, "shots", "归属到本环节路径");
+
+    /* ═══════════════ [9] 真跑：入口显隐 + 保存后刷新 ═══════════════ */
+    console.log("\n[9] 真跑：✎ 入口显隐 / 保存事件 → 重读指纹刷新板身");
+    /* ltartEditButtonEl / ltartRefreshSavedFile 引用的画布全局（document / S / toast / I18n /
+       scheduleSave / renderCanvas / window.api）在这里都补成最小桩：只需要装这两个函数体，
+       不整份跑 app-canvas.js（顶层会碰真实 DOM）。带 I18n.t 前缀的字符串取值，与运行期一致。 */
+    {
+      const grab = (name) =>
+        (CANVASJS.match(new RegExp("function " + name + "\\([^)]*\\)[ \\t]*\\{[\\s\\S]*?\\n\\}")) || [])[0];
+      /* 装真身：类型判定 + 三枚同排入口 + 编辑入口 + 刷新函数 + 监听，都是 app-canvas.js 里的原文；
+         只把它们的画布全局（document / S / toast / I18n / scheduleSave / renderCanvas / api）补成桩。
+         只读预览入口（ltartTextPreviewButtonEl）已随本轮「移除预览、只留编辑」删除，不再切它。 */
+      const typeFn = grab("ltartTypeOfNode");
+      const openFn = grab("ltartOpenButtonEl");
+      const folderFn = grab("ltartFolderButtonEl");
+      const editFn = grab("ltartEditButtonEl");
+      const refreshFn = grab("ltartRefreshSavedFile");
+      const listenerSrc = (CANVASJS.match(/document\.addEventListener\("mtnode:file-saved"[\s\S]*?\n  \}\);/) || [])[0];
+      ok(
+        !!typeFn && !!openFn && !!folderFn && !!editFn && !!refreshFn && !!listenerSrc,
+        "能在源码里切出类型判定 / 三枚入口 / 刷新函数 / 保存监听的全部函数体",
+      );
+      const listeners = {};
+      const saved = { count: 0, auto: 0, renders: 0 };
+      const statByPath = {
+        "C:\\ws\\out\\shot.md": { ok: true, size: 4321, mtime: 7777 },
+        "C:\\ws\\out\\other.md": { ok: true, size: 9, mtime: 8 },
+      };
+      const opened = [];
+      const nodeEdit = { id: "e1", kind: "ltart", title: "产物 · 文本 · shot.md", ltFile: "C:\\ws\\out\\shot.md", ltSize: 100, ltMtime: 1000 };
+      const nodeOther = { id: "e2", kind: "ltart", title: "产物 · 文本 · other.md", ltFile: "C:\\ws\\out\\other.md", ltSize: 1, ltMtime: 1 };
+      const nodeImage = { id: "e3", kind: "ltart", title: "产物 · 图像 · a.png", ltFile: "C:\\ws\\out\\a.png", ltSize: 10, ltMtime: 2 };
+      const nodeNoPath = { id: "e4", kind: "ltart", title: "产物 · 文本（旧版）", ltFile: "", ltSize: 0, ltMtime: 0 };
+      const box = {
+        S: { wf: { nodes: [nodeEdit, nodeOther, nodeImage, nodeNoPath] } },
+        I18n: { t: (s) => s },
+        toast(msg, kind) { box.toasts.push([msg, kind]); },
+        toasts: [],
+        renderCanvas() {
+          saved.renders++;
+        },
+        scheduleSave(auto) {
+          saved.count++;
+          if (auto === true) saved.auto++;
+        },
+        window: {
+          LTART: LA,
+          api: {
+            fileStat: async (p) => statByPath[String(p)] || { ok: false, exists: false },
+            fileReadText: async () => ({ ok: true, exists: true, content: "x" }),
+          },
+        },
+        openTextViewer(p) {
+          opened.push(p);
+        },
+        document: {
+          createElement(tag) {
+            if (String(tag) !== "button") return {};
+            return {
+              tagName: "button",
+              setAttribute() {},
+              getAttribute() {
+                return "";
+              },
+            };
+          },
+          addEventListener(type, fn) {
+            (listeners[type] = listeners[type] || []).push(fn);
+          },
+        },
+        console, Promise, Math, Number, String, Object, Array, JSON,
+      };
+      box.globalThis = box;
+      vm.createContext(box);
+      vm.runInContext(
+        [
+          typeFn || "function ltartTypeOfNode(){return 'file';}",
+          openFn || "function ltartOpenButtonEl(){return null;}",
+          folderFn || "function ltartFolderButtonEl(){return null;}",
+          editFn || "function ltartEditButtonEl(){return null;}",
+          refreshFn || "function ltartRefreshSavedFile(){return Promise.resolve(0);}",
+          listenerSrc || "",
+          "this.typeOfNode = ltartTypeOfNode;",
+          "this.editButtonEl = ltartEditButtonEl;",
+          "this.refreshSaved = ltartRefreshSavedFile;",
+          /* buildBody 的 ltart 头部分支（原文口径）：⇢ → 📁（有路径）→ 文本类再 ✎（有路径）。
+             这里逐字照 app-canvas.js 的 if 条件重演一遍，验证的是真函数在真分支下的显隐。
+             本轮已移除与 ✎ 重复的 👁 只读预览，头部只剩这三枚。 */
+          "this.headButtonsOf = function (node) {",
+          "  const head = { list: [], appendChild(el) { this.list.push(el && el.className); return el; } };",
+          "  if (node.kind !== 'ltart') return head.list;",
+          "  head.appendChild(ltartOpenButtonEl(node));",
+          "  if (String(node.ltFile || '').trim()) head.appendChild(ltartFolderButtonEl(node));",
+          "  if (ltartTypeOfNode(node) === 'text') {",
+          "    if (String(node.ltFile || '').trim()) head.appendChild(ltartEditButtonEl(node));",
+          "  }",
+          "  return head.list;",
+          "};",
+        ].join("\n"),
+        box,
+        { filename: "renderer/app-canvas.js[ltart-head]" },
+      );
+      /* ① 入口：文本类产物给按钮、非文本 / 无路径不摆空按钮 */
+      ok(typeof box.editButtonEl === "function", "ltartEditButtonEl 在 vm 里可执行（真函数原文）");
+      const okBtn = box.editButtonEl(nodeEdit);
+      ok(
+        !!okBtn && okBtn.className === "n-play n-ltart-edit" && okBtn.textContent === "✎",
+        "文本类产物的按钮 = ✎ + .n-play .n-ltart-edit（与 ⇢/📁 同排，👁 预览已移除）",
+      );
+      /* ② 点击走 openTextViewer（同一套既有编辑器，保存写回原文件） */
+      okBtn.onclick({ preventDefault() {}, stopPropagation() {} });
+      await new Promise((r) => setTimeout(r, 0));
+      ok(opened.join("|") === "C:\\ws\\out\\shot.md", "点 ✎ 走 openTextViewer(node.ltFile)（得到 " + opened.join("|") + "）");
+      ok(box.toasts.length === 0, "入口就绪时不弹任何提示（只有缺通道才显式 toast）");
+      /* ③ 头部真摆了这枚按钮：文本类有路径 → 有 ✎；非文本 / 无路径 → 没有（不摆空按钮） */
+      ok(
+        box.headButtonsOf(nodeEdit).indexOf("n-play n-ltart-edit") >= 0,
+        "头部分支在文本类产物上摆了 ✎（与 ⇢/📁 同排，👁 预览已移除）",
+      );
+      ok(
+        box.headButtonsOf(nodeImage).indexOf("n-play n-ltart-edit") < 0,
+        "非文本类产物不摆 ✎（真类型判定说了算）",
+      );
+      ok(
+        box.headButtonsOf(nodeNoPath).indexOf("n-play n-ltart-edit") < 0,
+        "没有文件路径的旧版节点不摆空按钮（点上只会弹提示）",
+      );
+      /* ④ 保存广播 → 命中的节点重读指纹 + 重渲染 + 落盘；其它类型 / 空路径不动 */
+      eqNum(listeners["mtnode:file-saved"] ? listeners["mtnode:file-saved"].length : 0, 1, "保存监听挂了一次（document 级）");
+      const before = { other: nodeOther.ltMtime, image: nodeImage.ltMtime, noPath: nodeNoPath.ltMtime };
+      const fire = (path) => {
+        for (const fn of listeners["mtnode:file-saved"] || []) fn({ detail: { path: path, source: "viewer" } });
+      };
+      fire("C:\\ws\\out\\shot.md");
+      await new Promise((r) => setTimeout(r, 0));
+      eqNum(nodeEdit.ltSize, 4321, "保存后命中节点重读出新的体积");
+      eqNum(nodeEdit.ltMtime, 7777, "保存后命中节点重读出新的 mtime（板身摘要据它 bust）");
+      ok(saved.renders === 1, "整面重渲染一次（得到 " + saved.renders + "）");
+      ok(saved.count === 1 && saved.auto === 1, "刷新后落盘一次且是 auto=true（重开画布不回退）");
+      eqNum(
+        [nodeOther.ltMtime, nodeImage.ltMtime, nodeNoPath.ltMtime].join("|"),
+        [before.other, before.image, before.noPath].join("|"),
+        "其它产物节点 / 非文本件 / 空路径节点一律不动",
+      );
+      /* ⑤ 保底：路径为空或文件读不到时不炸、也不瞎写指纹 */
+      fire("");
+      fire("C:\\ws\\out\\ghost.md");
+      await new Promise((r) => setTimeout(r, 0));
+      eqNum(nodeEdit.ltMtime, 7777, "空路径 / 读不到的路径都不改动已有指纹（保底不踩空）");
+    }
+
+    /* ═══════════════ [9] 编辑保存入口（头部 ✎ · 保存即刷新） ═══════════════ */
+    console.log("\n[9] 编辑保存入口：头部 ✎ / 复用可编辑阅读器 / 保存广播 → 节点刷新 / css / 词条 / 指南");
+    has(CANVASJS, "function ltartEditButtonEl(", "有头部「✎ 编辑保存」入口按钮（不另造第二套编辑器）");
+    has(CANVASJS, 'b.className = "n-play n-ltart-edit";', "按钮走 .n-play + 专属 .n-ltart-edit");
+    has(
+      CANVASJS,
+      'if (String(node.ltFile || "").trim()) head.appendChild(ltartEditButtonEl(node));',
+      "只有文本类产物且真有文件路径时才摆这枚按钮（空路径 / 非文本不摆空按钮）",
+    );
+    has(CANVASJS, 'ltartTypeOfNode(node) === "text"', "显隐按产物类型判定（文本件才给编辑保存）");
+    has(
+      CANVASJS.match(/function ltartEditButtonEl\(node\) \{[\s\S]*?\n\}/) || "",
+      "openTextViewer",
+      "复用应用内既有可编辑阅读器（.md 走 Markdown 阅读器、其它文本走行视图，保存写回原文件）",
+    );
+    has(
+      CANVASJS,
+      'toast(I18n.t("文本阅读器不可用（当前环境未就绪）"), "warn")',
+      "阅读器未就绪时显式 toast（不静默、不阻断重绘）",
+    );
+    has(
+      CANVASJS,
+      'toast(I18n.t("无法编辑这件产物（当前环境不支持读写本地文件）"), "warn")',
+      "没有本地读写通道时显式 toast（不静默）",
+    );
+    has(CANVASJS, 'toast(I18n.t("这件产物没有文件路径"), "warn")', "旧版节点没有文件路径时显式 toast（不瞎猜路径）");
+    /* 保存广播：两条阅读器落盘成功各广播一次（虚拟文档分支不受影响），画布侧一次监听就地刷新 */
+    has(
+      APP,
+      'new CustomEvent("mtnode:file-saved", { detail: { path: p, source: "viewer" } }),',
+      "saveMdViewer / saveYamlViewer 落盘成功后广播 mtnode:file-saved（写盘是阅读器本人，画布只被动刷新）",
+    );
+    has(
+      CANVASJS,
+      'document.addEventListener("mtnode:file-saved", function (ev) {',
+      "app-canvas 侧挂了一次监听（与 factlib:saved 同风格）",
+    );
+    has(CANVASJS, "ltartRefreshSavedFile(d && d.path);", "监听把路径交给刷新函数（其余节点原样不动）");
+    has(CANVASJS, "function ltartRefreshSavedFile(path) {", "有「保存即刷新节点」的刷新函数");
+    has(CANVASJS, 'n.kind === "ltart" && String(n.ltFile || "").trim() === want', "只认 ltFile 对得上的产物节点");
+    has(CANVASJS, "n.ltSize = Number(st.size) || 0;", "重读文件大小写回节点");
+    has(
+      CANVASJS,
+      "n.ltMtime = Number(st.mtime) || 0;",
+      "重读 mtime 写回节点（板身摘要 / 预览的 bust 靠它，不刷新会一直显示旧内容）",
+    );
+    has(CANVASJS, 'if (typeof scheduleSave === "function") scheduleSave(true);', "指纹变了就地落盘（重开画布不回退）");
+    has(CANVASJS, 'if (typeof renderCanvas === "function") renderCanvas();', "整面重渲染一次（板身摘要立刻跟上）");
+    has(LTCSS, ".wf-node.ltart .n-head .n-ltart-edit", "这枚按钮与 ⇢ / 📁 同排等宽、不参与收缩（挤不没）");
+    has(read("guides/nodes/ltart.md"), "编辑保存", "指南写明「编辑保存」入口");
+    has(read("guides/nodes/en/ltart.md"), "Edit & save", "英文指南成对（AGENTS：指南中英同步）");
+    has(MANUAL, "✎ 编辑保存", "应用内手册产物节点段补了同一句");
+    /* 本轮需求「移除预览、只留编辑」：预览窗模块已删，头部不再有重复的 👁 */
+    hasnt(CANVASJS, "ltartTextPreviewButtonEl", "头部不再有 👁 只读预览入口（与 ✎ 重复的那一半已移除）");
+    ok(!exists("renderer/app-textpreview.js"), "renderer/app-textpreview.js 已删除");
+    for (const k of [
+      "编辑这件文本产物并保存回文件（Markdown 阅读器 / 行视图，保存写回原文件）",
+      "编辑并保存文本产物",
+      "文本阅读器不可用（当前环境未就绪）",
+      "无法编辑这件产物（当前环境不支持读写本地文件）",
+    ])
+      has(I18N_SRC, '"' + k + '"', "i18n 表里有编辑保存词条：" + k);
+    has(I18N_SRC, "Edit this text artifact and save it back to the file", "英文词条成对（切英文不回中文）");
+
+    console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "ALL OK  " + checks + " checks"));
+  }
+
+  main().catch((e) => {
+    console.error("smoke-longtask-artifacts crashed:", (e && e.stack) || e);
+  });
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-artifacts.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-artifacts.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-longtask-edit.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-edit.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  const ROOT = path.join(__dirname, "..");
+  const read = (rel) => fs.readFileSync(path.join(ROOT, ...rel.split("/")), "utf8");
+
+  let fails = 0;
+  let checks = 0;
+  const ok = (cond, msg) => {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  };
+  const has = (hay, needle, msg) => {
+    const c = String(hay).indexOf(needle) >= 0;
+    ok(c, msg + (c ? "" : "（缺 " + JSON.stringify(needle) + "）"));
+  };
+  const hasnt = (hay, needle, msg) => {
+    const c = String(hay).indexOf(needle) < 0;
+    ok(c, msg + (c ? "" : "（仍含 " + JSON.stringify(needle) + "）"));
+  };
+  const eqNum = (a, b, msg) => ok(a === b, msg + "（得到 " + JSON.stringify(a) + "，期望 " + JSON.stringify(b) + "）");
+  const seg = (a, b) => {
+    const i = LTU.indexOf(a);
+    const j = LTU.indexOf(b);
+    ok(i >= 0 && j > i, "切片 " + a + " → " + b + " 存在");
+    return i >= 0 && j > i ? LTU.slice(i, j) : "";
+  };
+
+  const LTE = read("renderer/app-longtask-edit.js");
+  const LTU = read("renderer/app-longtask-ui.js");
+  const LTV = read("renderer/app-longtask.js");
+  const LTG = read("renderer/app-longtask-guide.js");
+  const NODES = read("renderer/app-nodes.js");
+  const PLUGIN = read("dsh/gateway/canvas-plugin.mjs");
+  const ROLLBACK = read("dsh/gateway/rollback-plugin.mjs");
+  const HTML = read("renderer/index.html");
+  const CSS = read("renderer/css/longtask.css");
+  const I18N = read("renderer/i18n.js");
+  const MANUAL = read("guides/manual/longtask.md");
+
+  /* ══════════════ [1] 引擎：updateFromGraph / graphOf（vm 里真跑）═══════════════ */
+  async function enginePart() {
+    console.log("\n[1] 引擎：LT.updateFromGraph 原地改图 + LT.graphOf 现况快照（真跑，不是 grep）");
+    let saves = 0;
+    const persisted = [];
+    const sandbox = {
+      window: { api: {} },
+      S: { wf: null, config: {} },
+      I18n: { t: (s) => s },
+      toast() {},
+      scheduleSave() {
+        saves++;
+      },
+      persistWf(wf) {
+        persisted.push(wf);
+      },
+      currentVisibleWf() {
+        return null; /* 测试里没有「用户看着的画布」→ 一律走 persistWf 这条 */
+      },
+      renderCanvas() {},
+      focusNode() {},
+      addNode() {
+        return null;
+      },
+      console,
+      setTimeout,
+      clearTimeout,
+      Map,
+      Set,
+      Promise,
+      JSON,
+      Math,
+      Date,
+      Object,
+      Array,
+      String,
+      Number,
+      RegExp,
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(LTV, sandbox, { filename: "renderer/app-longtask.js" });
+    const LT = sandbox.window.LT;
+    eqNum(typeof LT.updateFromGraph, "function", "window.LT 导出 updateFromGraph");
+    eqNum(typeof LT.graphOf, "function", "window.LT 导出 graphOf（现况快照）");
+
+    const G1 = {
+      nodes: [
+        { id: "s", kind: "start", title: "起点" },
+        { id: "a", kind: "agent", title: "起草", cfg: { goal: "写一版稿子", outKeys: ["draft"] } },
+        { id: "e", kind: "end_ok", title: "收工" },
+      ],
+      edges: [
+        { from: "s", to: "a" },
+        { from: "a", to: "e" },
+      ],
+    };
+    /* 改后的图：把「起草」拆成「起草 → 初审 → 终审」 */
+    const G2 = {
+      nodes: [
+        { id: "s", kind: "start", title: "起点" },
+        { id: "a", kind: "agent", title: "起草", cfg: { goal: "写一版稿子", outKeys: ["draft"] } },
+        { id: "r1", kind: "agent", title: "初审", cfg: { goal: "初审稿子", outKeys: ["review1"] } },
+        { id: "r2", kind: "agent", title: "终审", cfg: { goal: "终审定稿", outKeys: ["review2"] } },
+        { id: "e", kind: "end_ok", title: "收工" },
+      ],
+      edges: [
+        { from: "s", to: "a" },
+        { from: "a", to: "r1" },
+        { from: "r1", to: "r2" },
+        { from: "r2", to: "e" },
+      ],
+    };
+
+    const wf = { id: "wf1", name: "画布一" };
+    let r = LT.updateFromGraph(wf, "", G1, "");
+    ok(r && r.ok === false, "没有任务 → 拒绝（不静默吞掉）");
+    has(r.error, "没有找到这张长任务", "拒绝文本说清找不到任务");
+
+    const created = LT.createFromGraph("审稿流水线", G1, wf);
+    ok(created && created.ok === true, "先建一张任务（修改的前置）");
+    const uid = created.uid;
+    const t0 = wf.longtask.tasks[0];
+    const created0 = t0.createdAt;
+    eqNum(t0.ver, 1, "新建时 ver = 1");
+
+    r = LT.updateFromGraph(wf, uid, null, "");
+    ok(r && r.ok === false, "缺 graph → 拒绝");
+    has(r.error, "缺少图定义 graph", "拒绝文本说清缺的是图定义");
+    eqNum(saves, 0, "缺图不触发存盘");
+
+    r = LT.updateFromGraph(wf, uid, { nodes: [], edges: [] }, "");
+    ok(r && r.ok === false, "空图 → 拒绝（参数级直接挡，不把用户的图改没）");
+    eqNum((LT.tasks(wf) || [])[0].graph.nodes.length, 3, "空图不落库：原图仍是 3 个节点");
+
+    /* 校验不过的图：多出一个没有上游的节点 */
+    const DIRTY = {
+      nodes: G2.nodes.concat([{ id: "x", kind: "agent", title: "没上游", cfg: { goal: "g" } }]),
+      edges: G2.edges,
+    };
+    r = LT.updateFromGraph(wf, uid, DIRTY, "");
+    ok(r && r.ok === false, "脏图 → 拒绝（校验未过）");
+    has(r.error, "长周期任务图校验未通过：", "拒绝文本带「校验未通过」前缀（Agent 可读）");
+    has(r.error, "没有任何上游", "拒绝文本把引擎的 err 原样带回（Agent 知道改什么）");
+    has(r.error, "。请修正后重新调用 update_longtask。", "拒绝文本明确让 Agent 修正后重调 update_longtask");
+    ok(Array.isArray(r.errs) && r.errs.length >= 1, "拒绝回执带结构化 errs");
+    ok(Array.isArray(r.warnings), "拒绝回执带 warnings");
+    eqNum((LT.tasks(wf) || [])[0].graph.nodes.length, 3, "校验不过绝不半改：原图仍是 3 个节点");
+
+    saves = 0;
+    persisted.length = 0;
+    r = LT.updateFromGraph(wf, uid, G2, "");
+    ok(r && r.ok === true, "干净的新图 → 原地改图成功");
+    eqNum(r.uid, uid, "回执 uid 与被改的任务一致（不是新建）");
+    eqNum(r.ver, 2, "ver 只增不减：v1 → v2");
+    eqNum((LT.tasks(wf) || []).length, 1, "任务数不变：原地改，不新建第二条");
+    const t1 = LT.tasks(wf)[0];
+    eqNum(t1.uid, uid, "任务身份保留（uid 不变）");
+    eqNum(t1.createdAt, created0, "createdAt 保留（不是一份新任务）");
+    eqNum(t1.graph.nodes.length, 5, "图定义被换成新图（5 个节点）");
+    eqNum(t1.graph.nodes[3].title, "终审", "新图内容真的落进 task.graph");
+    eqNum(t1.graph.ver, 2, "图定义上的 ver 与任务 ver 同步");
+    eqNum(t1.enabled, false, "enabled 原样保留（改图不等于启用）");
+    ok(saves + persisted.length >= 1, "改图触发落盘");
+    eqNum(persisted.length, 1, "落盘按对象自己的 id 走 persistWf（不写用户看着的另一张）");
+    ok(persisted[0] === wf, "落盘的正是那张被改的画布");
+    eqNum(r.running, false, "没有在跑的 run 时 running:false（不吓唬 Agent）");
+    eqNum(r.runNote, "", "没在跑就没有 runNote 这句提醒");
+
+    /* graphOf：现况快照（身份 + 图 + 运行态） */
+    const snap = LT.graphOf(wf, uid);
+    ok(!!snap, "graphOf 拿得到现况");
+    eqNum(snap.uid, uid, "快照带 uid");
+    eqNum(snap.name, "审稿流水线", "快照带任务名");
+    eqNum(snap.ver, 2, "快照带当前图版本");
+    eqNum(snap.enabled, false, "快照带 enabled");
+    eqNum(snap.graph.nodes.length, 5, "快照带整张图定义（Agent 就是照它改）");
+    eqNum(snap.run, null, "没有 run 时 run:null");
+    eqNum(LT.graphOf(wf, "不存在"), null, "uid 不存在 → null（不抛错）");
+    eqNum(LT.graphOf(null, uid), null, "没有画布 → null");
+
+    /* 改图 ≠ 影响在跑的 run：run 拿的是启用那刻的快照（共识 q34）。
+       这里用「任务记了 activeRun 但 run 不在内存」模拟：running 仍报 false，
+       但 activeRun 原样留着 —— 这条钉住「改图不会把 run 记录抹掉」。 */
+    /* 写 activeRun 要写**真源对象** wf.longtask.tasks[0]：LT.tasks() 每次都走 ltEnsure 重建
+       一份归一后的 task 对象，上一行取到的 t1 在 updateFromGraph 内部那次 ltEnsure 之后
+       就已经不是它了（不是 bug，是「归一是唯一入口」的代价）。 */
+    wf.longtask.tasks[0].activeRun = "r_x";
+    r = LT.updateFromGraph(wf, uid, G2, "");
+    ok(r && r.ok === true, "带 activeRun 的任务也能改图");
+    eqNum(LT.tasks(wf)[0].activeRun, "r_x", "activeRun 原样保留（不打断也没抹掉）");
+    eqNum(typeof r.runNote, "string", "回执总是带 runNote 字段（无 run 时为空串）");
+    hasnt(LTV.slice(LTV.indexOf("function ltUpdateFromGraph"), LTV.indexOf("function ltGraphSnapshot")), "createFromGraph", "改图路径不偷偷调建图（只原地替换）");
+  }
+
+  /* ══════════════ [2] 工具层与分发 ═══════════════ */
+  function toolPart() {
+    console.log("\n[2] 工具层：mtnode_app 的 get_longtask / update_longtask（enum / 卡口 / 分发 / 权限）");
+    has(PLUGIN, "'get_longtask'", "action enum 收了 get_longtask");
+    has(PLUGIN, "'update_longtask'", "action enum 收了 update_longtask");
+    has(PLUGIN, "- get_longtask: read one existing long-running task in full", "APP_DESC 写了 get_longtask 给什么");
+    has(PLUGIN, "- update_longtask: replace the graph definition of an EXISTING long-running task in place", "APP_DESC 写了 update_longtask 干什么");
+    has(PLUGIN, "not a diff; the graph replaces the old one", "APP_DESC 说清 graph 是整张替换、不是增量");
+    has(PLUGIN, "get_longtask / update_longtask: target long-running task uid", "新增 uid 参数并写明两个动作都用它");
+    has(PLUGIN, "For create_longtask / update_longtask: the long-running-task state-machine graph.", "graph 参数说明覆盖两个动作");
+    has(PLUGIN, "mtnode-grill-me", "仍指向 mtnode-grill-me 的图契约（单一真源，不抄字段）");
+
+    has(NODES, 'if (action === "get_longtask") {', "应用动作分发有 get_longtask 分支");
+    has(NODES, 'if (action === "update_longtask") {', "应用动作分发有 update_longtask 分支");
+    has(NODES, "LT.graphOf(boundWf", "get_longtask 读的是「本会话所属画布」的现况");
+    has(NODES, "LT.updateFromGraph(", "update_longtask 调 window.LT.updateFromGraph（归一 + 校验都在引擎里）");
+    has(NODES, 'action === "get_longtask" ||', "两只动作都归 app_ops（工具清单里有它才可被模型调到）");
+    has(NODES, 'action === "update_longtask" ||', "update_longtask 同样归 app_ops");
+    {
+      const denied = NODES.slice(NODES.indexOf("const PLAN_DENIED_APP_ACTIONS"), NODES.indexOf("function canvasOpMutates("));
+      has(denied, '"update_longtask"', "规划模式把 update_longtask 列为拒绝动作（只出计划不改画布）");
+      hasnt(denied, '"get_longtask"', "get_longtask 是只读，规划模式下仍放行");
+    }
+    has(ROLLBACK, "'get_longtask'", "回滚记账把 get_longtask 当只读（连占位都不发）");
+    hasnt(ROLLBACK, "'update_longtask'", "回滚记账不放行 update_longtask（按写操作处理）");
+
+    /* 会话侧权限：修改会话走的是「允许读画布」的契约会话 → 三件套都在（= 有全部权限） */
+    has(LTE, "allowCanvas: true", "修改会话显式允许读画布（→ canvas_get / edit / app 三件套都在）");
+    has(LTE, "agentContractSession(", "复用既有契约会话装配（不另造一套会话机制）");
+    has(LTE, "noPlanFlow = true", "计划闸豁免：产物是改好的图，不是普通会话计划");
+    hasnt(LTE, "mtnode_canvas_edit(\"", "宿主不直接拿画布写工具去画状态机图（只走 update_longtask）");
+  }
+
+  /* ══════════════ [3] 修改弹窗 ═══════════════ */
+  function dialogPart() {
+    console.log("\n[3] 修改弹窗：契约（get → 改 → update 原地写回）+ 每轮现况喂给 Agent + 出口");
+    ok(fs.existsSync(path.join(ROOT, "renderer/app-longtask-edit.js")), "renderer/app-longtask-edit.js 存在");
+    has(LTE, "window.ltOpenEditDlg = ltOpenEditDlg", "导出 window.ltOpenEditDlg（头部按钮的落点）");
+    has(LTU, "window.ltOpenEditDlg", "头部按钮调的就是它");
+    has(LTU, "任务链修改模块未就绪", "模块没加载时给提示，不静默失败");
+
+    const ct = LTE.slice(LTE.indexOf("function lteContractText()"), LTE.indexOf("function lteGraphText()"));
+    has(ct, "get_longtask", "契约第一步：先读现状（get_longtask）");
+    has(ct, "update_longtask", "契约最后一步：原地写回（update_longtask）");
+    has(ct, "不是增量补丁，是整张替换", "契约说清 graph 是整张替换");
+    has(ct, "不要 create_longtask 新建任务", "契约禁止新建任务（修改 ≠ 创建）");
+    has(ct, "禁止手改画布 JSON 里的 wf.longtask", "契约禁止手改 wf.longtask");
+    has(ct, "禁止用 mtnode_canvas_edit 去画这张状态机图", "契约禁止用画布写工具画状态机图");
+    has(ct, "校验未通过", "契约要求按 err 修好再调一次");
+    has(ct, "ask_user_question", "要求有歧义时用询问窗问满（不是拿计划代替提问）");
+    has(ct, "禁止】输出 <!--MTNODE-PLAN-->", "契约禁止普通会话计划块");
+
+    /* 每轮把「当前图 + 运行态 + 用户要求」一次交清（少一条 Agent 就得凭记忆改） */
+    has(LTE, "function lteRoundInput(", "每轮拼一条起轮消息");
+    has(LTE, "当前图定义 JSON", "起轮消息里带当前图定义");
+    has(LTE, "当前运行态", "起轮消息里带运行态（哪个环节卡住 / 在等谁）");
+    has(LTE, "lteGraphText()", "图 JSON 从 LT.graphOf 现况取（不是窗内记忆）");
+    has(LTE, "JSON.stringify({ uid: snap.uid, name: snap.name, ver: snap.ver, graph: snap.graph })", "喂给 Agent 的 JSON 含 uid / 名字 / 版本 / 图");
+    has(LTE, "过长已截断，完整定义请用 get_longtask 读", "超长图截断并指回 get_longtask（不静默丢）");
+
+    /* 收尾闸：本轮没写回就自动纠偏一次 */
+    has(LTE, "const LTE_FIX_MAX = 1", "自动纠偏上限 = 1（一个用户轮最多一次）");
+    has(LTE, "function lteSettle(", "有每轮收尾闸");
+    has(LTE, "lteFixDirective()", "收尾闸会回发纠偏指令");
+    has(LTE, "本轮没有把改好的图写回", "纠偏前先明确告诉用户发生了什么");
+    has(LTE, "_ltEditFixRounds = 0", "用户亲口发话 → 纠偏额度清零（绝不来回拉扯）");
+
+    /* 兜底写回：回复里那份图也按同一份归一路径落库（工具不可用时不至于白聊） */
+    has(LTE, "window.LT.updateFromGraph(wf", "回复里的图由宿主走同一条 updateFromGraph 写回");
+    has(LTE, "LTE.applied", "同一份图只兜底写一次（幂等位记在窗内状态，重绘不回写）");
+    has(LTE, "ltgParseGraph", "复用引导区的图 JSON 解析（不双写解析器）");
+
+    /* 持久化浮层口径：与创建窗同款 */
+    has(LTE, 'openOverlay(lteT("修改任务链"), { persistent: true, min: true })', "持久化浮层 + 可最小化到状态栏");
+    has(LTE, "vw * 0.5", "最小宽 ≥ 50% 视口（与审阅窗 / 创建窗同口径）");
+    has(LTE, 'const rz = lteEl("div", "lte-resize")', "右下角可拖调大小");
+    has(LTE, "lteSaveSize(n)", "拖过的尺寸记 localStorage");
+    has(LTE, "lteDraftSave(ta.value)", "没发出去的要求随输入落盘（关窗不丢）");
+    has(LTE, 'const LTE_SESSION_KEY = "ltEditSession"', "历史接回记录仍会清掉（旧版留下的 key 不让下一次开窗复活旧上下文）");
+    has(LTE, "lteAbandonPrevSessions(", "开窗时结束遗留修改会话里可能还在跑的那一轮（不许它在后台继续烧）");
+    hasnt(LTE, "lteFindSession", "不再按契约抬头认回旧会话（本次需求：改任务链时重启，不继承前面的上下文）");
+    hasnt(LTE, "lteSessionSave", "不再把会话 id 落盘接回（同上）");
+    has(LTE, "dshMsgBlock(", "对话区复用会话视图的消息渲染");
+    has(LTE, "renderAgentSession", "挂窗口级重绘钩子（流式实时）");
+    has(LTE, "setInterval(", "运行期轮询兜底（重绘钩子漏了也跟得上）");
+
+    /* 输入区在最上面（用户要写的要求靠上），不用翻滚动条才找得到 */
+    const iTop = LTE.indexOf('wrap.appendChild(top)');
+    const iRow = LTE.indexOf('wrap.appendChild(row)');
+    const iMain = LTE.indexOf('wrap.appendChild(main)');
+    ok(iTop >= 0 && iRow > iTop && iMain > iRow, "排版自上而下：抬头 → 输入区 → 对话区（要写的东西在最上面）");
+
+    /* 出口三个：看条带 / 中断本轮 / 稍后 */
+    has(LTE, 'lteT("看条带")', "出口有「看条带」");
+    has(LTE, 'lteT("中断本轮")', "出口有「中断本轮」");
+    has(LTE, 'lteT("稍后")', "出口有「稍后」");
+    has(LTE, "stopSessionRuns(st, true)", "中断走既有的停止通道（不另造一套）");
+
+    /* 本次需求：改任务链时重启清空会话（不继承前面的上下文，避免干扰）——
+       两头都要钉住：开窗不认回旧会话、每轮发送都新起一条。 */
+    const segSend = LTE.slice(LTE.indexOf("async function lteSend("), LTE.indexOf("function lteClearDraft("));
+    has(segSend, "agentContractSession({", "每轮「发送」都新起一条契约会话（新上下文）");
+    hasnt(segSend, "agentSessionSend(", "不再往窗内旧会话续聊（改任务链不继承前面的上下文）");
+    hasnt(segSend, "st._ltEditFixRounds = 0\n  st.noPlanFlow", "追问轮那条续聊分支已移除");
+    has(segSend, "stopSessionRuns(prev, true)", "上一次还在跑就先停掉（不叠在旧上下文上白烧 token）");
+    const segOpen = LTE.slice(LTE.indexOf("function ltOpenEditDlg("), LTE.indexOf("window.ltOpenEditDlg = ltOpenEditDlg"));
+    has(segOpen, "lteClearSessionRec()", "开窗先清历史接回记录（旧 key 不复活旧上下文）");
+    has(segOpen, "lteAbandonPrevSessions(cap, task.uid)", "开窗停掉遗留会话在跑的那一轮");
+    hasnt(segOpen, "lteFindSession", "开窗不再认回旧会话");
+    hasnt(segOpen, "lteSessionSave", "开窗不再记「下次接着聊」");
+  }
+
+  /* ═══════════════ [4] 头部按钮收纳 + 装配与文案 ═══════════════ */
+  function headAndWiringPart() {
+    console.log("\n[4] 收纳：不常用的手动按钮进「⋯ 更多」（瞬时菜单）；装配 / 样式 / i18n");
+    /* 头部函数本身 = ltRenderHead 的开头到第一个菜单 helper（下面的 ltMenuClose）：
+       少切这一段，下面「不再平铺」的负向断言会被菜单实现自己误伤。 */
+    const headSeg = LTU.slice(LTU.indexOf("function ltRenderHead("), LTU.indexOf("function ltMenuClose("));
+    has(headSeg, "ltMoreBtn(wf, task)", "头部挂着「⋯ 更多」按钮");
+    has(headSeg, 'ltT("✎ 修改任务链")', "头部有「✎ 修改任务链」主入口");
+    /* 「开始长任务」上移到条带右端（本次需求）：lt-spacer 之后、⚙ 之前常驻一颗「▶ 启用并绑定」
+       主按钮 —— 落点仍是 ltEnable（与「⋯ 更多」那颗同一处逻辑），run 还活着时不出现。 */
+    has(headSeg, 'ltT("▶ 启用并绑定")', "条带右端常驻「▶ 启用并绑定」主按钮（从「⋯ 更多」提上来）");
+    has(headSeg, "ltEnable(wf, task.uid, {})", "主按钮的落点就是 ltEnable（不另造一套启用逻辑）");
+    has(headSeg, "lt-spacer", "它排在 lt-spacer 之后（右端一组）");
+    ok(
+      headSeg.indexOf('ltEl("div", "lt-spacer")') < headSeg.indexOf('ltT("▶ 启用并绑定")') &&
+        headSeg.indexOf('ltT("▶ 启用并绑定")') < headSeg.indexOf('ltT("⚙")'),
+      "位置口径：lt-spacer 之后、⚙ 之前（右端主按钮）",
+    );
+    has(headSeg, "runLive", "run 还活着（正在跑 / 停在等你处理）时主按钮让位（不顶掉用户手里的 run）");
+    has(headSeg, "ltForceAdvanceBtn(wf, run)", "run 停在手上时还有一颗「⏭ 强行进入下一状态」（本次需求：run 级统一出路）");
+    /* 模型 chip 可点开（本次需求）：条带头那枚「模型 …」从只读回显变成选型入口 ——
+       锚点身份 data-lt-menu="lt-model"（头部 ~90ms 一次重建后认回来，面板不被收掉），
+       点开走 ltAgentPanelOpen（四格控件与清单复用 ctl 那一份，不复制清单）。 */
+    has(headSeg, 'chip.setAttribute("data-lt-menu", "lt-model")', "模型 chip 是可点入口（锚点身份写在 data-lt-menu 上）");
+    has(headSeg, "ltAgentPanelOpen(wf, chip)", "点 chip 开四格选型面板（不必先下钻某一环再翻检查器）");
+    has(LTU, "function ltAgentPanelOpen(wf, chip) {", "面板本体在 app-longtask-ui.js");
+    has(LTU, "ltMenuOpen(chip, [{ el: box }]);", "面板挂瞬时菜单的自定义内容块（不另造一套浮层）");
+    /* forceAdvance 挂载（本次需求）：界面施加动作的唯一落点是引擎那一份 run 级推进 ——
+       界面不自己改 run，拿不到就什么都不做（点了没反应正是要避免的）。 */
+    has(LTV, "forceAdvance: ltForceAdvance,", "引擎导出 window.LT.forceAdvance（run 级手动推进）");
+    has(LTV, "autoRepairGraph: ltAutoRepairGraph,", "引擎导出 autoRepairGraph（结论性图问题就地补好）");
+    has(LTU, "API.forceAdvance(wf, { run: run })", "条带头那颗 ⏭ 的落点就是 LT.forceAdvance");
+    /* 右端主按钮与「▶ 继续」并存：run 卡住 / 失败 / 停住时两颗都在，各管一件事 */
+    ok(
+      headSeg.indexOf("runLive") < headSeg.indexOf('ltT("▶ 继续")'),
+      "主按钮先于「▶ 继续」渲染：run 停下时两颗并排（一个接着跑、一个按当前图重开）",
+    );
+    const moreSeg = LTU.slice(LTU.indexOf("function ltMoreBtn("), LTU.indexOf("function ltOpenEditDlg("));
+    for (const k of ["按当前图重跑", "停用解绑", "记忆", "历史 run", "交付目录体检", "任务图校验", "🗑 删除任务"]) {
+      has(moreSeg, 'ltT("' + k + '")', "「⋯ 更多」菜单里有「" + k + "」");
+    }
+    has(moreSeg, 'ltT("按当前图定义从起点重跑（正在跑的 run 会被替换）")', "「按当前图重跑」写清它会替换正在跑的 run");
+    hasnt(moreSeg, 'ltT("重新启用（新 run）")', "旧的那颗重复项（重新启用（新 run））已收敛掉，菜单里不再有两颗同义项");
+    hasnt(moreSeg, 'label: ltT("▶ 启用并绑定")', "菜单里不再有与右端主按钮同名的那一颗（收敛后只留「按当前图重跑」）");
+    /* 收纳后头部不该再平铺这些：少一条断言，下次又会一顆颗爬回来 */
+    hasnt(headSeg, 'ltT("记忆")', "「记忆」不再平铺在头部");
+    hasnt(headSeg, "ltRunsDlg", "「历史 run」不再平铺在头部");
+    hasnt(headSeg, "ltOrphanDlg", "「交付目录体检」不再平铺在头部");
+    hasnt(headSeg, 'ltT("按引擎规则校验当前这张图，列出 err / warn")', "「任务图校验」菜单项不再平铺在头部（头部只留出错 chip）");
+    /* 瞬时菜单：没有待提交的输入 → 点外部 / Esc 即收（AGENTS 的浮层分类） */
+    has(LTU, "function ltMenuOutside(", "下拉点外部即收");
+    has(LTU, 'ev.key === "Escape"', "下拉 Esc 即收");
+    has(LTU, "document.body.appendChild(el)", "面板挂 body + fixed（.lt-head 是 overflow-x 容器，挂里面会被裁）");
+    has(LTU, "ltMenuClose()", "开新面板前先收旧面板（不叠浮层）");
+    has(LTU, 'ltEl("div", "lt-more-pop")', "面板类名 lt-more-pop（样式在 longtask.css）");
+    hasnt(LTU.slice(LTU.indexOf("function ltMenuOutside("), LTU.indexOf("function ltMenuOpen(")), "persistent", "下拉不冒充持久化浮层（它本来就该点外部即收）");
+    /* 条带整块重建时头部按钮也一起换掉（长任务运行期约 90ms 一次），但面板不许被这一次重建收掉：
+       锚点身份写在按钮的 data-lt-menu 上，重建后由 ltMenuReadopt 认到新按钮并重新贴位；
+       只有认不到锚点（这颗按钮这一帧不再存在）才收掉，绝不留飘着的孤儿。
+       （本次需求变化：原来是「重建前先 ltMenuClose」，长任务跑着时点开菜单下一帧就被收。） */
+    has(LTU, "ltMenuReadopt(oldMenu)", "头部重建后把挂在头部按钮上的下拉认回来（认不到才收）");
+    has(LTU, 'b.setAttribute("data-lt-menu", "lt-more")', "下拉锚点身份 = 按钮上的 data-lt-menu（与按钮形状无关，重建后仍找得到）");
+    has(LTU.slice(LTU.indexOf("function ltMenuReadopt("), LTU.indexOf("function ltMoreBtn(")), "ltMenuClose()", "认不到锚点仍收掉（不留锚点已失效的浮层）");
+
+    const iUi = HTML.indexOf('src="app-longtask-ui.js"');
+    const iGuide = HTML.indexOf('src="app-longtask-guide.js"');
+    const iEdit = HTML.indexOf('src="app-longtask-edit.js"');
+    ok(iUi >= 0 && iEdit > iUi, "index.html 加载顺序：edit 在 ui 之后（要用 ltBtn / 头部入口）");
+    ok(iGuide >= 0 && iEdit > iGuide, "index.html 加载顺序：edit 在 guide 之后（复用 ltgParseGraph 与同一套会话口径）");
+    for (const c of [".lte-top", ".lte-row", ".lte-ta", ".lte-main", ".lte-conv", ".lte-right", ".lte-status", ".lte-sum", ".lte-acts", ".lte-resize", ".lt-more-pop", ".lt-more-i", ".lt-btn-pri", ".lt-btn-force", ".lt-chip-model", ".lt-mdl", ".lt-mdl-h"]) {
+      has(CSS, c, "longtask.css 有样式 " + c);
+    }
+    has(MANUAL, "任务链修改", "应用内手册补了「任务链修改」用法");
+
+    const I = require("../renderer/i18n.js");
+    I.setLocale("en");
+    const keys = [
+      "修改任务链",
+      "这张画布没有可修改的长任务：先创建一张",
+      "任务链修改",
+      "任务链修改模块未就绪",
+      "用一句话说清要改什么，Agent 按当前任务状态图原地改 / 修复（有全部权限）",
+      "⋯ 更多",
+      "其余不常用的操作（启用 / 停用 / 记忆 / 删除任务 等）",
+      "按当前图定义拍一张快照开一个 run（图改过就用新版跑）",
+      "按当前图定义从起点重跑（正在跑的 run 会被替换）",
+      /* 「⋯ 更多」里收敛后的那颗（与右端主按钮同名重复的旧项已删） */
+      "按当前图重跑",
+      "解绑本画布：图与历史记录都保留，随时可再启用",
+      "长任务记忆沉淀：查 / 记 / 导出到事实库",
+      "看这张任务跑过的每一轮 run 与它们的图版本",
+      "扫交付目录：报告缺项 / 孤儿，只报告不删",
+      "按引擎规则校验当前这张图，列出 err / warn",
+      "长任务设置：任务切换 / 历史 run / 交付目录体检 / 图校验",
+      "收起长任务条带",
+      "▶ 继续",
+      "■ 停止",
+      "▶ 启用并绑定",
+      /* 本次需求：模型 chip 的选型入口 + run 级「⏭ 强行进入下一状态」按钮 */
+      "⏭ 强行进入下一状态",
+      "强行进入下一状态",
+      "把卡住的环节放行、把被停止的环节排回队列，让状态机按图继续往下走（下一次先试「▶ 继续」）",
+      "这一轮跑哪只模型（共 {n} 个 Agent 环节）",
+      "模型选型控件未就绪",
+      "停用解绑",
+      "记忆",
+      "历史 run",
+      "交付目录体检",
+      "任务图校验",
+      "Agent 任务",
+      "人工任务",
+      "任务链已更新到 v",
+      "本轮没有把改好的图写回：已让 Agent 按契约重做一次。",
+      "当前任务图",
+      "先用一句话写清要改什么",
+      "这条修改会话留在左侧栏只作历史；下次打开本窗是一条全新会话（不继承上下文）",
+      "已中断本轮：会话留着，随时可以接着说",
+      "。请修正后重新调用 update_longtask。",
+      "该任务正在跑（run ",
+      "）：当前 run 仍按启用那刻的旧版图在跑，改图不会影响它；要按新图跑需在条带上重新启用。",
+    ];
+    const miss = keys.filter((k) => I.t(k) === k);
+    eqNum(miss.length, 0, "i18n 中英词条齐全（en 档下这些 key 都有译文）" + (miss.length ? "（缺：" + miss.join(" / ") + "）" : ""));
+    /* 新模块里每条 lteT 字面量都要有 EN 译文（不能中英混排）。
+       例外只剩「纯符号 / 数字」标签（如 ）—— 它们没有可翻译的语言内容，
+       I.t 原样返回即正确（这里显式列出，别处不许再用「看起来像中文却说没译文」的键）。 */
+    const re = /lteT\(\s*"((?:[^"\\]|\\.)*)"/g;
+    let m;
+    const unmatch = [];
+    while ((m = re.exec(LTE))) {
+      const k = m[1].replace(/\\n/g, "\n");
+      if (!k.trim() || k === "Agent" || !/[\u4e00-\u9fff]/.test(k)) continue;
+      if (I.t(k) === k) unmatch.push(k);
+    }
+    eqNum(unmatch.length, 0, "app-longtask-edit.js 的每条中文文案都有 EN 译文" + (unmatch.length ? "（缺：" + unmatch.join(" / ") + "）" : ""));
+    /* 头部收纳新增的标签同样要能中英对照 */
+    const re2 = /ltT\(\s*"((?:[^"\\]|\\.)*)"/g;
+    const newKeys = new Set(["▶ 继续", "■ 停止", "▶ 启用并绑定", "停用解绑", "记忆", "历史 run", "交付目录体检", "任务图校验", "⋯ 更多", "收起长任务条带", "修改任务链", "任务链修改模块未就绪", "⏭ 强行进入下一状态", "强行进入下一状态", "按当前图重跑"]);
+    const bad = [];
+    while ((m = re2.exec(LTU))) {
+      const k = m[1].replace(/\\n/g, "\n");
+      if (!newKeys.has(k)) continue;
+      if (I.t(k) === k) bad.push(k);
+    }
+    eqNum(bad.length, 0, "头部收纳这批标签都有 EN 译文" + (bad.length ? "（缺：" + bad.join(" / ") + "）" : ""));
+  }
+
+  async function main() {
+    await enginePart();
+    toolPart();
+    dialogPart();
+    headAndWiringPart();
+    console.log("\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") + "  (smoke-longtask-edit)");
+  }
+
+  main().catch((e) => {
+    console.log("测试异常：" + String((e && e.stack) || e));
+  });
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-edit.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-edit.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-longtask-refocus.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-refocus.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  /* 源码统一按 \n 处理（仓库是 CRLF），切段与断言不必管行尾差异 */
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n/g, "\n");
+
+  const LTU = read("renderer/app-longtask-ui.js");
+  const LTV = read("renderer/app-longtask.js");
+  const KEYS = read("renderer/app-keys.js");
+
+  function fnBody(src, name) {
+    const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+    if (!m) throw new Error("找不到函数：" + name);
+    const at = src.indexOf("{", m.index);
+    let depth = 0;
+    let inStr = null;
+    for (let j = at; j < src.length; j++) {
+      const c = src[j];
+      if (inStr) {
+        if (c === "\\") j++;
+        else if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") inStr = c;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (!depth) return src.slice(m.index + 1, j + 1);
+      }
+    }
+    throw new Error("函数体没闭合：" + name);
+  }
+
+  /* ── 迷你 DOM：够 ltRenderMain 用（children / appendChild / insertBefore / removeChild /
+        contains / classList / innerHTML = ""），并在整块重建时记一笔 ── */
+  function mkEl(cls) {
+    const el = {
+      nodeType: 1,
+      tagName: "DIV",
+      className: cls || "",
+      children: [],
+      parentNode: null,
+      _cleared: 0,
+      contains(t) {
+        let p = t;
+        while (p) {
+          if (p === this) return true;
+          p = p.parentNode;
+        }
+        return false;
+      },
+    };
+    el.classList = { contains: (c) => String(el.className).split(/\s+/).indexOf(c) >= 0 };
+    el.appendChild = function (c) {
+      if (c && c.parentNode && c.parentNode !== this) c.parentNode.removeChild(c);
+      this.children.push(c);
+      if (c) c.parentNode = this;
+      return c;
+    };
+    el.insertBefore = function (c, ref) {
+      if (c && c.parentNode && c.parentNode !== this) c.parentNode.removeChild(c);
+      const i = this.children.indexOf(ref);
+      if (i < 0) return this.appendChild(c);
+      this.children.splice(i, 0, c);
+      if (c) c.parentNode = this;
+      return c;
+    };
+    el.removeChild = function (c) {
+      const i = this.children.indexOf(c);
+      if (i >= 0) this.children.splice(i, 1);
+      if (c) c.parentNode = null;
+      return c;
+    };
+    Object.defineProperty(el, "innerHTML", {
+      get() {
+        return "";
+      },
+      set() {
+        this._cleared++;
+        for (const c of this.children.slice()) this.removeChild(c);
+      },
+    });
+    return el;
+  }
+  /* 输入控件（判据只看 tagName / isContentEditable，不需要真渲染）。
+     closest 给一份最小实现：只认 ltHoldCtrlEl 那条选择器里用到的 `tag` / `tag[type="x"]` 两种写法。 */
+  function mkClosest(el, tag, type) {
+    const T = String(tag || el.tagName || "").toLowerCase();
+    const ty = String(type || "").toLowerCase();
+    return (sel) => {
+      for (const part of String(sel).split(",")) {
+        const m = part.trim().match(/^([a-z]+)(?:\[type="([a-z]+)"\])?$/);
+        if (!m) continue;
+        if (m[1] !== T) continue;
+        if (m[2] && m[2] !== ty) continue;
+        return el;
+      }
+      return null;
+    };
+  }
+  function mkField(tag, type) {
+    const e = mkEl("lt-in");
+    e.tagName = String(tag || "input").toUpperCase();
+    if (type) e.type = type;
+    e.closest = mkClosest(e, tag, type);
+    return e;
+  }
+  /* 原生选区替身（ltSelInCol 只看 isCollapsed / rangeCount / anchorNode / focusNode） */
+  function mkSel(anchorNode, focusNode, collapsed) {
+    return {
+      isCollapsed: !!collapsed,
+      rangeCount: anchorNode || focusNode ? 1 : 0,
+      anchorNode: anchorNode || null,
+      focusNode: focusNode || null,
+    };
+  }
+  function mkDoc(active) {
+    const doc = {
+      activeElement: active || null,
+      body: mkEl(""),
+      documentElement: mkEl(""),
+      listeners: [],
+    };
+    doc.body.tagName = "BODY";
+    doc.documentElement.tagName = "HTML";
+    doc.addEventListener = function (type, fn, capture) {
+      this.listeners.push({ type, fn, capture: !!capture });
+    };
+    doc.removeEventListener = function (type, fn) {
+      this.listeners = this.listeners.filter((l) => !(l.type === type && l.fn === fn));
+    };
+    doc.emit = function (type) {
+      for (const l of this.listeners.slice()) if (l.type === type) l.fn({ type });
+    };
+    return doc;
+  }
+  /* 把 UI 源码里的判据函数搬进沙箱（共享同一份源码，不另抄一份逻辑）；
+     函数引用的两个模块级量（文本框类型表 / 已挂监听标志）也照源码取一份补上。 */
+  function sandboxFor(names, extra) {
+    const types = (LTU.match(/const LT_TEXT_INPUT_TYPES = (\[[^\]]*\]);/) || [])[1] || "[]";
+    const sb = Object.assign(
+      { console, Array, Object, String, Number, Date, Math, JSON, isFinite, parseFloat, parseInt },
+      { LT_TEXT_INPUT_TYPES: JSON.parse(types), ltRenderWait: false },
+      extra || {},
+    );
+    vm.createContext(sb);
+    for (const n of names) vm.runInContext(fnBody(LTU, n), sb);
+    return sb;
+  }
+
+  console.log("\n[1] 焦点保护判据就位（renderer/app-longtask-ui.js）");
+  {
+    for (const n of ["ltEditHost", "ltFocusCol", "ltFocusInside", "ltColOf", "ltRenderWhenFocusLeaves"])
+      ok(LTU.indexOf("\nfunction " + n + "(") > 0, "有 " + n);
+    for (const n of ["ltSelInCol", "ltColHold", "ltHoldArm", "ltHoldRelease", "ltHoldBind", "ltColHoldNow", "ltRenderFlushDeferred"])
+      ok(LTU.indexOf("\nfunction " + n + "(") > 0, "有框选 / 按住保护判据 " + n);
+    ok(
+      fnBody(LTU, "ltRenderMain").indexOf("ltFocusCol(oldRight)") > 0,
+      "ltRenderMain 先判断「焦点在右栏输入里」——不再无条件重建右栏",
+    );
+    ok(
+      fnBody(LTU, "ltRenderMain").indexOf("ltColHold(oldRight)") > 0 &&
+        fnBody(LTU, "ltRenderMain").indexOf("ltColHold(oldLeft)") > 0,
+      "ltRenderMain 还判断「这一栏正在框选 / 鼠标正按在栏里」（ltColHold）",
+    );
+    ok(
+      /const LT_TEXT_INPUT_TYPES = \["", "text", "search", "url", "email", "password", "tel", "number"\];/.test(LTU),
+      "拦重绘只认「文本输入」的控件类型表（下拉 / 复选框不算，见 ltEditHost 的取舍说明）",
+    );
+    ok(
+      fnBody(LTU, "ltMount").indexOf("ltHoldBind()") > 0,
+      "条带挂载时接上「鼠标按在哪一栏」的捕获监听（ltMount → ltHoldBind，只挂一次）",
+    );
+    const ctrlSel = (fnBody(LTU, "ltHoldCtrlEl").match(/el\.closest\(\s*'([^']+)'/) || [])[1] || "";
+    ok(
+      ctrlSel.indexOf("select") >= 0 && ctrlSel.indexOf("button") >= 0 && ctrlSel.indexOf('input[type="checkbox"]') >= 0,
+      "「提交即生效」的控件才不记：原生 select / 按钮 / 勾选型 input",
+    );
+    ok(
+      ctrlSel.indexOf("textarea") < 0 && ctrlSel.indexOf("[contenteditable]") < 0 && !/input(?!\[)/.test(ctrlSel.replace(/input\[[^\]]*\]/g, "")),
+      "文本框 / 富文本仍吃这条保护：按下到松手之间也不重建（框选起手不被换掉）",
+    );
+    const watch = fnBody(LTU, "ltRenderWhenFocusLeaves");
+    ok(
+      watch.indexOf('addEventListener("selectionchange", onOut, true)') > 0 &&
+        watch.indexOf('addEventListener("pointerup", onOut, true)') > 0 &&
+        watch.indexOf('addEventListener("keyup", onOut, true)') > 0,
+      "被推迟的重绘还听 selectionchange（选区折叠）/ pointerup（松手）/ keyup（Esc 收选区）",
+    );
+  }
+
+  console.log("\n[2] 判据口径：谁拦重绘、谁不拦（vm 真跑）");
+  {
+    const sb = sandboxFor(["ltEditHost", "ltFocusCol", "ltFocusInside"], { document: mkDoc(null) });
+    const col = mkEl("lt-right");
+    const ta = mkField("textarea");
+    const inp = mkField("input");
+    const search = mkField("input");
+    search.type = "search";
+    const sel = mkField("select");
+    const cb = mkField("input");
+    cb.type = "checkbox";
+    const rich = mkEl("md-rich");
+    rich.isContentEditable = true;
+    const btn = mkEl("lt-btn");
+    btn.tagName = "BUTTON";
+    const outside = mkField("input");
+    for (const e of [ta, inp, search, sel, cb, rich, btn]) col.appendChild(e);
+
+    sb.__col = col;
+    sb.__ta = ta;
+    const focusCol = (el) => {
+      sb.document.activeElement = el;
+      return vm.runInContext("ltFocusCol(__col)", sb);
+    };
+    const focusInside = (el) => {
+      sb.document.activeElement = el;
+      return vm.runInContext("ltFocusInside(__col)", sb);
+    };
+    ok(focusCol(ta) === true, "焦点在右栏 textarea（审批理由框 / 环节目标）→ 拦重绘（这一栏不许被重建）");
+    ok(focusCol(inp) === true, "焦点在右栏文本 input（环节参数 / 交付文件名）→ 拦重绘");
+    ok(focusCol(search) === true, "焦点在右栏搜索框（可搜索下拉：正打过滤词）→ 拦重绘（下拉不能被换掉）");
+    ok(focusCol(rich) === true, "焦点在右栏 contenteditable（富文本）→ 拦重绘");
+    ok(focusCol(sel) === false, "焦点在右栏 select → **不拦**：选完就是一次提交，「人工任务类型」切成交付要当场长出交付清单");
+    ok(focusCol(cb) === false, "焦点在右栏复选框 → 不拦：勾选就是提交（勾「允许读取画布」要当场把提示刷对）");
+    ok(focusCol(btn) === false, "焦点在右栏按钮上 → 不拦（按钮不是「正在输入」，面板照常跟着运行态刷）");
+    ok(focusCol(outside) === false, "焦点在栏外（左栏 / 别处）的输入框 → 不拦");
+    ok(focusCol(sb.document.body) === false, "焦点在 body（失焦态）→ 不拦，重绘立刻照旧");
+    ok(focusCol(null) === false, "没有活动元素 → 不报错、不误拦");
+    ok(focusInside(btn) === true, "补重绘的判据 ltFocusInside：按钮上的焦点也算「还在这一栏」，先把 click 让完");
+    ok(focusInside(outside) === false, "焦点离开了两栏 → 该补重绘了");
+  }
+
+  console.log("\n[2b] 选区判据 ltSelInCol：栏里有活的选区才拦（vm 真跑）");
+  {
+    const doc = mkDoc(null);
+    const sb = sandboxFor(["ltSelInCol"], { document: doc });
+    const col = mkEl("lt-right");
+    const textA = mkEl("");
+    const textB = mkEl("");
+    const outside = mkEl("");
+    col.appendChild(textA);
+    sb.__col = col;
+    const runSel = (sel) => {
+      doc.getSelection = sel ? () => sel : undefined;
+      return vm.runInContext("ltSelInCol(__col)", sb);
+    };
+    ok(
+      runSel(mkSel(textA, textB, false)) === true,
+      "拖选右栏里的只读文字（选区锚点在栏内）→ 拦重绘：被选中的那段文字不会被整块重建冲掉",
+    );
+    ok(runSel(mkSel(textA, textB, false)) === true, "（再判一次仍拦得住：~90ms 一次的重绘每次都拦得住）");
+    ok(runSel(mkSel(textA, null, false)) === true, "锚点 / 终点只落在一头也算（跨栏拖选时终点可能在栏外）");
+    ok(runSel(mkSel(outside, outside, false)) === false, "选区在栏外 → 不拦（另一栏照常重绘）");
+    ok(runSel(mkSel(textA, textB, true)) === false, "光标（折叠选区）不算框选 → 不拦");
+    ok(runSel(null) === false, "没有选区对象 → 不拦、不报错");
+    ok(runSel(mkSel(textA.parentNode, textB, false)) === true, "选区锚在**文本节点**上（真实拖选常见）→ 按父元素判定，照样拦得住");
+    ok(runSel(undefined) === false, "document 没有 getSelection（迷你环境）→ 不拦、不报错");
+  }
+
+  console.log("\n[2c] 按住判据 ltHoldArm / ltColHold：控件按下不记（提交语义不变）");
+  {
+    const doc = mkDoc(null);
+    const main = mkEl("lt-main");
+    const left = mkEl("lt-left");
+    const right = mkEl("lt-right");
+    main.appendChild(left);
+    main.appendChild(right);
+    const textEl = mkEl("lt-fh");
+    const ta = mkField("textarea");
+    const btnEl = mkEl("lt-btn");
+    btnEl.tagName = "BUTTON";
+    btnEl.closest = mkClosest(btnEl, "button");
+    const cbEl = mkField("input", "checkbox");
+    const selEl = mkField("select");
+    const outsideEl = mkEl("");
+    right.appendChild(textEl);
+    right.appendChild(ta);
+    right.appendChild(btnEl);
+    right.appendChild(cbEl);
+    right.appendChild(selEl);
+    let flushes = 0;
+    const sb = sandboxFor(
+      ["ltEditHost", "ltFocusCol", "ltSelInCol", "ltColOf", "ltHoldCtrlEl", "ltHoldArm", "ltHoldRelease", "ltColHold"],
+      { document: doc, LT_UI: { main }, ltRenderFlushDeferred: () => flushes++ },
+    );
+    const hold = () => vm.runInContext("ltHoldColEl", sb);
+    const colHold = (col) => {
+      sb.__col = col;
+      return vm.runInContext("ltColHold(__col)", sb);
+    };
+    const arm = (el) => {
+      sb.__el = el;
+      return vm.runInContext("ltHoldArm(__el)", sb);
+    };
+    const release = () => vm.runInContext("ltHoldRelease()", sb);
+
+    arm(textEl);
+    ok(hold() === right, "鼠标按在右栏的普通文字上（要框选）→ 记下这一栏");
+    ok(colHold(right) === true && colHold(left) === false, "这一栏从此不许重建，另一栏照常重绘");
+    release();
+    ok(hold() === null && flushes === 1, "松手即释放，并立刻兑现此前被推迟的那一次重绘");
+
+    arm(ta);
+    ok(hold() === right && colHold(right) === true, "按在文本框里（右栏的理由框 / 参数）→ 也记：框选起手那一下不能被换掉（提交走 change，不在这按下里）");
+    release();
+    arm(btnEl);
+    ok(hold() === null, "按在按钮上 → 不记：按钮的 click 要立刻生效");
+    arm(cbEl);
+    ok(hold() === null, "按在勾选型 input 上 → 不记：change 就是一次提交（勾「允许读取画布」要当场刷提示）");
+    arm(selEl);
+    ok(hold() === null, "按在原生 select 上 → 不记：选完即 change，「人工任务类型」切成交付要当场长出交付清单");
+    flushes = 0;
+    release();
+    ok(flushes === 0, "没有按住态时松手不做无谓重绘（不在 mouseup 上白刷一帧）");
+    arm(outsideEl);
+    ok(hold() === null, "按在两栏之外（画布 / 头部）→ 不记");
+    /* 左栏（SVG 状态机图）不吃这条保护：点节点的选中高亮要靠 pointerdown 里那次重绘落到当下这一帧 */
+    const leftText = mkEl("lt-graph");
+    left.appendChild(leftText);
+    arm(leftText);
+    ok(hold() === null, "按在左栏的图上 → 不记：点一下节点的选中高亮要立刻出来（拖动手势另有 document 级监听兜底）");
+    arm(textEl);
+    release();
+  }
+
+  console.log("\n[3] 真跑 ltRenderMain：焦点在哪一栏，那一栏的 DOM 原样留下");
+  {
+    const calls = { graph: 0, side: 0 };
+    const doc = mkDoc(null);
+    const main = mkEl("lt-main");
+    const sb = sandboxFor(["ltEditHost", "ltFocusCol", "ltColOf", "ltRenderMain", "ltHoverHere"], {
+      document: doc,
+      LT_UI: { main },
+      ltActiveTask: () => ({ uid: "t1", graph: { nodes: [], edges: [] }, ver: 1 }),
+      ltEnabledTask: () => null,
+      ltCurrentRun: () => null,
+      ltEmptyState: () => mkEl("lt-empty"),
+      ltEl: (tag, cls) => {
+        const e = mkEl(cls || "");
+        e.tagName = String(tag || "div").toUpperCase();
+        return e;
+      },
+      ltRenderGraph: (left) => {
+        calls.graph++;
+        left.appendChild(mkEl("lt-graph"));
+      },
+      ltRenderSide: (right) => {
+        calls.side++;
+        right.appendChild(mkEl("lt-card"));
+      },
+      ltRenderWhenFocusLeaves: () => {},
+      /* 按住保护 / 栏位登记（本次需求）：本档验的是「焦点保护」，按住态一律当「没按着」，
+         栏位登记给一份空实现（真行为由 smoke-longtask-strip-hold.js 与 scroll 那档钉）。 */
+      ltTrackCols: () => {},
+      ltStripHoldNow: () => false,
+    });
+    const render = () => vm.runInContext("ltRenderMain({ id: 'wf1' })", sb);
+    const colOf = (cls) => vm.runInContext("ltColOf(LT_UI.main, '" + cls + "')", sb);
+
+    /* A. 焦点在右栏输入里：右栏原地留下，只重建左栏 */
+    const leftA = mkEl("lt-left");
+    const rightA = mkEl("lt-right");
+    const taA = mkField("textarea");
+    rightA.appendChild(taA);
+    main.appendChild(leftA);
+    main.appendChild(rightA);
+    doc.activeElement = taA;
+    calls.graph = 0;
+    calls.side = 0;
+    render();
+    ok(colOf("lt-right") === rightA, "焦点在右栏输入里 → 右栏还是**同一个 DOM 节点**（没有重建、也没被摘出文档）");
+    ok(rightA.contains(taA) && taA.parentNode === rightA, "那只理由框还在原位：焦点 / 选区 / 输入法组合态不被打断");
+    ok(calls.side === 0, "右栏没有被重画（ltRenderSide 一次都没调）");
+    ok(calls.graph === 1 && main.children.length === 2 && main.children[0].classList.contains("lt-left"), "左栏照常重建并排在右栏之前（运行态可视化不丢）");
+    ok(main._cleared === 0, "这条路没有走 innerHTML = \"\"（整块重建）");
+
+    /* B. 焦点在左栏输入里：这一栏同样留下，只重建右栏 */
+    const rightB = mkEl("lt-right");
+    const leftB = colOf("lt-left");
+    const inpB = mkField("input");
+    leftB.appendChild(inpB);
+    doc.activeElement = inpB;
+    calls.graph = 0;
+    calls.side = 0;
+    render();
+    ok(colOf("lt-left") === leftB && leftB.contains(inpB), "焦点在左栏输入里 → 左栏原样留下（另一边：右栏照常跟着运行态重绘）");
+    ok(calls.graph === 0 && calls.side === 1, "只重建了右栏");
+
+    /* C. 没有可编辑焦点：维持原来的整块重建口径 */
+    const oldRight = colOf("lt-right");
+    doc.activeElement = doc.body;
+    calls.graph = 0;
+    calls.side = 0;
+    render();
+    ok(main._cleared === 1, "没有可编辑焦点 → 仍走 main.innerHTML = \"\" 整块重建（旧口径不变）");
+    ok(colOf("lt-right") !== oldRight && calls.graph === 1 && calls.side === 1, "两栏都重建了");
+
+    /* D. 条带里没有任务：仍是空态，不受影响 */
+    const sb2 = sandboxFor(["ltEditHost", "ltFocusCol", "ltColOf", "ltRenderMain", "ltHoverHere"], {
+      document: doc,
+      LT_UI: { main: mkEl("lt-main") },
+      ltActiveTask: () => null,
+      ltEnabledTask: () => null,
+      ltCurrentRun: () => null,
+      ltEmptyState: () => mkEl("lt-empty"),
+      ltEl: (tag, cls) => mkEl(cls || ""),
+      ltRenderGraph: () => {},
+      ltRenderSide: () => {},
+      ltRenderWhenFocusLeaves: () => {},
+      ltTrackCols: () => {},
+      ltStripHoldNow: () => false,
+    });
+    vm.runInContext("ltRenderMain({ id: 'wf1' })", sb2);
+    ok(sb2.LT_UI.main.children.length === 1 && sb2.LT_UI.main.children[0].classList.contains("lt-empty"), "没有长任务时照旧只画空态");
+
+    /* E/F. 本次需求：焦点不在输入里，但「右栏里有一段框选出来的选区」/「鼠标正按在右栏文字上」，
+           重绘也必须是「右栏原地留下、只重建左栏」—— 之前这两条路会走整块重建，被选中的
+           节点整体被换掉，浏览器只能把选区收掉 = 「框选后立刻 defocus」。 */
+    const calls3 = { graph: 0, side: 0 };
+    const doc3 = mkDoc(null);
+    const main3 = mkEl("lt-main");
+    const sb3 = sandboxFor(["ltEditHost", "ltFocusCol", "ltSelInCol", "ltColHold", "ltColOf", "ltRenderMain", "ltHoverHere"], {
+      document: doc3,
+      LT_UI: { main: main3 },
+      ltHoldColEl: null,
+      ltActiveTask: () => ({ uid: "t1", graph: { nodes: [], edges: [] }, ver: 1 }),
+      ltEnabledTask: () => null,
+      ltCurrentRun: () => null,
+      ltEmptyState: () => mkEl("lt-empty"),
+      ltEl: (tag, cls) => {
+        const e = mkEl(cls || "");
+        e.tagName = String(tag || "div").toUpperCase();
+        return e;
+      },
+      ltRenderGraph: (left) => {
+        calls3.graph++;
+        left.appendChild(mkEl("lt-graph"));
+      },
+      ltRenderSide: (right) => {
+        calls3.side++;
+        right.appendChild(mkEl("lt-card"));
+      },
+      ltRenderWhenFocusLeaves: () => {},
+      ltTrackCols: () => {},
+      ltStripHoldNow: () => false,
+    });
+    const render3 = () => vm.runInContext("ltRenderMain({ id: 'wf1' })", sb3);
+    const colOf3 = (cls) => vm.runInContext("ltColOf(LT_UI.main, '" + cls + "')", sb3);
+    const left3 = mkEl("lt-left");
+    const right3 = mkEl("lt-right");
+    const txt3 = mkEl("lt-fh"); /* 右栏里一段只读文字（检查器正文 / 待办卡提示） */
+    right3.appendChild(txt3);
+    main3.appendChild(left3);
+    main3.appendChild(right3);
+
+    doc3.activeElement = doc3.body;
+    doc3.getSelection = () => mkSel(txt3, txt3, false);
+    calls3.graph = 0;
+    calls3.side = 0;
+    render3();
+    ok(colOf3("lt-right") === right3, "右栏里有活的选区（框选只读文字）→ 右栏还是**同一个 DOM 节点**：选区不会被冲掉");
+    ok(right3.contains(txt3) && txt3.parentNode === right3, "被选中的那段文字原地留着（选区锚点没被摘出文档）");
+    ok(main3._cleared === 0 && calls3.side === 0, "这条路没走整块重建、右栏一次都没重画");
+    ok(calls3.graph === 1, "左栏照常重建（运行态可视化一条都不丢）");
+
+    /* F. 鼠标正按在右栏文字上（框选刚起手、选区还没成形）：同样不许重建 */
+    doc3.getSelection = () => mkSel(null, null, true);
+    sb3.ltHoldColEl = right3;
+    calls3.graph = 0;
+    calls3.side = 0;
+    render3();
+    ok(colOf3("lt-right") === right3 && main3._cleared === 0, "鼠标正按在右栏文字上 → 右栏照旧原地留下（mousedown 的落点不会被换掉，拖拽选中的手势不作废）");
+    ok(calls3.graph === 1 && calls3.side === 0, "只重建左栏");
+
+    /* 松手 + 选区折叠（点别处 / Esc）→ 回到整块重建的老口径，界面不会长期冻结 */
+    sb3.ltHoldColEl = null;
+    calls3.graph = 0;
+    calls3.side = 0;
+    render3();
+    ok(main3._cleared === 1 && colOf3("lt-right") !== right3 && calls3.graph === 1 && calls3.side === 1, "选区折叠 / 松手后 → 立刻回到整块重建的老口径（运行态更新不会被长期冻结）");
+  }
+
+  console.log("\n[4] 推迟的那一次重绘：打字 / 框选 / 按住都放开了才补，且只挂一轮监听");
+  {
+    const doc = mkDoc(null);
+    const main = mkEl("lt-main");
+    const left = mkEl("lt-left");
+    const right = mkEl("lt-right");
+    const ta = mkField("textarea");
+    const txt = mkEl("lt-fh"); /* 右栏里一段只读文字（框选它的场景） */
+    right.appendChild(ta);
+    right.appendChild(txt);
+    main.appendChild(left);
+    main.appendChild(right);
+    const calls = { strip: 0 };
+    const sb = sandboxFor(
+      ["ltEditHost", "ltFocusCol", "ltSelInCol", "ltColHold", "ltColHoldNow", "ltRenderFlushDeferred", "ltFocusInside", "ltColOf", "ltRenderWhenFocusLeaves"],
+      {
+        document: doc,
+        LT_UI: { main },
+        ltRenderWait: false,
+        ltRenderWaitOff: null,
+        ltHoldColEl: null,
+        ltRenderStrip: () => {
+          calls.strip++;
+        },
+      },
+    );
+    const arm = () => vm.runInContext("ltRenderWhenFocusLeaves()", sb);
+    const listeners = () => doc.listeners.map((l) => l.type).sort().join(",");
+    const WATCH_TYPES = "focusout,keyup,pointerup,selectionchange";
+
+    doc.activeElement = ta;
+    arm();
+    arm();
+    ok(doc.listeners.filter((l) => l.type === "focusout").length === 1, "只挂一条 focusout 监听（反复重绘不会越挂越多）");
+    ok(doc.listeners[0].capture === true, "挂在捕获阶段（早于各处自己的失焦处理）");
+    ok(listeners() === WATCH_TYPES, "四类监听各一条（focusout / selectionchange / pointerup / keyup），不重复挂");
+    doc.emit("focusout");
+    ok(calls.strip === 0, "焦点还在右栏输入里 → 不补重绘（用户还在打字，绝不重建这一栏）");
+    doc.activeElement = doc.body;
+    doc.emit("focusout");
+    ok(calls.strip === 1, "焦点离开两栏 → 补一次完整重绘（运行态更新一条都不丢）");
+    ok(doc.listeners.length === 0, "补完自己摘掉监听（不留悬挂）");
+    /* 点栏内按钮：焦点移到按钮上（还在栏内）→ 先不补，免得把按钮在 mouseup 之前拆掉 */
+    doc.activeElement = ta;
+    arm();
+    const btn = mkEl("lt-btn");
+    right.appendChild(btn);
+    doc.activeElement = btn;
+    doc.emit("focusout");
+    ok(calls.strip === 1 && listeners() === WATCH_TYPES, "点栏内按钮（焦点移到同栏按钮）→ 先不补重绘，让这次 click 落得下去");
+    doc.activeElement = doc.body;
+    doc.emit("focusout");
+    ok(calls.strip === 2, "点完离开这一栏 → 再补上（面板不会一直停在旧状态）");
+
+    /* 本次需求：焦点不在栏里、但右栏里留着一段框选出来的选区 → 重绘继续等，
+       选区折叠（点别处 / Esc，selectionchange）那一刻才兑现 —— 框选期间运行态更新不丢、选区也不丢 */
+    doc.getSelection = () => mkSel(txt, txt, false);
+    arm();
+    doc.emit("selectionchange");
+    ok(calls.strip === 2, "右栏里还有活的选区 → 不补重绘（框选的那段文字原地留着，不会被换掉）");
+    doc.getSelection = () => mkSel(txt, txt, true);
+    doc.emit("selectionchange");
+    ok(calls.strip === 3, "选区一折叠（点别处 / Esc）→ 立刻兑现这次重绘，界面不长期冻结");
+    ok(doc.listeners.length === 0, "兑现后监听摘干净");
+
+    /* 鼠标还按在右栏文字上（框选刚起手）→ 也等；松手（pointerup）那一刻兑现 */
+    sb.ltHoldColEl = right;
+    arm();
+    doc.emit("pointerup");
+    ok(calls.strip === 3, "鼠标还按着（pointerup 之前）→ 不补重绘：mousedown 的落点与拖拽手势都不会被打断");
+    sb.ltHoldColEl = null;
+    doc.emit("pointerup");
+    ok(calls.strip === 4, "松手 → 兑现重绘（ltHoldRelease 与这条监听任一路都能收口）");
+  }
+
+  console.log("\n[5] 症状对照（快捷键只是症状，不是起因）");
+  {
+    ok(
+      LTV.indexOf('if (type === "reasoning") st.think = 1;') > 0 &&
+        LTV.indexOf("      ltRenderStripSoon();\n    },\n  };") > 0,
+      "Agent 流式事件的 onEvent 逐帧叫重绘（app-longtask.js）——右栏被重建的密度来源",
+    );
+    ok(
+      LTV.indexOf("function ltRenderStripSoon()") > 0 && LTV.indexOf("}, 90);") > 0,
+      "这条重绘仍走 90ms 节流入口（依旧很密，所以只能靠「不许重建正在输入的那一栏」来治）",
+    );
+    ok(
+      KEYS.indexOf("isEditableEl(ev.target) || isEditableEl(document.activeElement)") > 0,
+      "顶栏快捷键只在「焦点还在可编辑元素里」时让位（app-keys.js）——失焦之后它才开始生效",
+    );
+    const mainBody = fnBody(LTU, "ltRenderMain");
+    ok(
+      mainBody.indexOf('main.innerHTML = ""') > 0 && mainBody.indexOf("ltRenderWhenFocusLeaves();") > 0,
+      "整块重建那条路仍在，只是被推迟到焦点离开之后（两条口径并存，不是删掉重绘）",
+    );
+  }
+
+  console.log(
+    fails
+      ? "\n " + fails + " / " + checks + " 项失败  (smoke-longtask-refocus)"
+      : "\n✓ " + checks + " 项全部通过  (smoke-longtask-refocus)",
+  );
+  if (fails ? 1 : 0) MERGED_FAILED = true;
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-refocus.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-refocus.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-longtask-hover.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-hover.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n/g, "\n");
+
+  const LTU = read("renderer/app-longtask-ui.js");
+  const LTC = read("renderer/css/longtask.css");
+
+  function fnBody(src, name) {
+    const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+    if (!m) throw new Error("找不到函数：" + name);
+    const at = src.indexOf("{", m.index);
+    let depth = 0;
+    let inStr = null;
+    for (let j = at; j < src.length; j++) {
+      const c = src[j];
+      if (inStr) {
+        if (c === "\\") j++;
+        else if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") inStr = c;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (!depth) return src.slice(m.index + 1, j + 1);
+      }
+    }
+    throw new Error("函数体没闭合：" + name);
+  }
+  /* 函数全文（到第 0 列的那个收尾大括号为止）。/["\\]/ 这类带引号的正则字面量会让上面那个
+     朴素括号计数器把字符串态判错，纯文本断言一律走这一份，不拿 fnBody 去切。 */
+  function fnSrc(src, name) {
+    const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+    if (!m) throw new Error("找不到函数：" + name);
+    const rest = src.slice(m.index);
+    const end = rest.indexOf("\n}\n");
+    return end < 0 ? rest : rest.slice(0, end + 3);
+  }
+
+  /* ── 迷你 DOM：够这条判据用（classList / 属性表 / children / parentNode / 递归遍历），
+        并集 ＝ HTML 元素（head 里那批 button）与 SVG 元素（图节点 g / 端子 circle）两种 ── */
+  function mkEl(cls, attrs) {
+    const el = {
+      nodeType: 1,
+      tagName: "DIV",
+      className: cls || "",
+      children: [],
+      parentNode: null,
+      attrs: Object.assign({}, attrs || {}),
+      textContent: "",
+      getAttribute(k) {
+        return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
+      },
+      setAttribute(k, v) {
+        this.attrs[k] = String(v);
+      },
+      removeAttribute(k) {
+        delete this.attrs[k];
+      },
+      /* 可点件判定用的是 closest——迷你元素照真元素给一份（只认选择器表里那几类：标签名与类名） */
+      closest(sel) {
+        for (const part of String(sel).split(",")) {
+          const s = part.trim().toLowerCase();
+          if (!s) continue;
+          if (s.charAt(0) === ".") {
+            if (String(this.className).split(/\s+/).indexOf(s.slice(1)) >= 0) return this;
+          } else if (s === String(this.tagName || "").toLowerCase()) return this;
+        }
+        return null;
+      },
+      appendChild(c) {
+        if (c && c.parentNode) c.parentNode.removeChild(c);
+        this.children.push(c);
+        if (c) c.parentNode = this;
+        return c;
+      },
+      removeChild(c) {
+        const i = this.children.indexOf(c);
+        if (i >= 0) this.children.splice(i, 1);
+        if (c) c.parentNode = null;
+        return c;
+      },
+      contains(t) {
+        let p = t;
+        while (p) {
+          if (p === this) return true;
+          p = p.parentNode;
+        }
+        return false;
+      },
+    };
+    el.classList = { contains: (c) => String(el.className).split(/\s+/).indexOf(c) >= 0 };
+    Object.defineProperty(el, "innerHTML", {
+      get() {
+        return "";
+      },
+      set() {
+        this._cleared = (this._cleared || 0) + 1;
+        for (const c of this.children.slice()) this.removeChild(c);
+      },
+    });
+    return el;
+  }
+  function mkBtn(cls, txt) {
+    const b = mkEl(cls);
+    b.tagName = "BUTTON";
+    b.textContent = txt;
+    return b;
+  }
+  function walkAll(root, out) {
+    out = out || [];
+    for (const c of root.children || []) {
+      out.push(c);
+      walkAll(c, out);
+    }
+    return out;
+  }
+  function withDataHover(root) {
+    return walkAll(root).filter((n) => n.getAttribute("data-hover") === "1");
+  }
+  /* 状态机图里的一个节点卡片 + 端子（结构照 ltRenderGraph：g.lt-nd[data-lt-id] > circle.lt-port） */
+  function mkGraphNode(id) {
+    const g = mkEl("lt-nd lt-k-agent");
+    g.tagName = "G";
+    g.setAttribute("data-lt-id", id);
+    const port = mkEl("lt-port");
+    port.tagName = "CIRCLE";
+    g.appendChild(port);
+    return { g, port };
+  }
+
+  console.log("\n[1] 悬停保护判据就位（renderer/app-longtask-ui.js）");
+  {
+    for (const n of ["ltHoverNodeKey", "ltHoverKey", "ltHoverCapture", "ltHoverApply", "ltHoverBind"])
+      ok(LTU.indexOf("\nfunction " + n + "(") > 0, "有 " + n);
+    ok(LTU.indexOf("ltHoverCapture(LT_UI.body)") > 0 && LTU.indexOf("ltHoverHere();") > 0, "ltRenderStrip 重建前后各走一步（先采一帧、建完补标）");
+    ok(fnSrc(LTU, "ltRenderStrip").indexOf("ltHoverBind()") > 0, "重绘入口顺手挂上指针监听（pointermove 一移就抹标）");
+    ok(/pointermove/.test(fnSrc(LTU, "ltHoverBind")) && /data-hover/.test(fnSrc(LTU, "ltHoverBind")), "指针一动就把上一帧的标清掉（悬停态只由「此刻指针在哪」决定）");
+  }
+
+  console.log("\n[2] key 口径（vm 真跑）");
+  {
+    const sb = { console, Array, Object, String, Number, isFinite };
+    vm.createContext(sb);
+    for (const n of ["ltHoverNodeKey", "ltHoverKey"]) vm.runInContext(fnBody(LTU, n), sb);
+    vm.runInContext("globalThis.DOC = { elementFromPoint: function () { return null; } };", sb);
+    const key = (el) => vm.runInContext("ltHoverKey", sb)(el);
+
+    const n1 = mkGraphNode("n_a1");
+    ok(key(n1.g) === "lt-nd:@n_a1", "图节点卡片：key = 节点 data-lt-id（与这一帧长什么样无关）");
+    ok(key(n1.port) === "lt-nd:|port@n_a1", "端子：并上「是哪一件」，指针从端子移到卡片不会被当成同一件");
+    const rs = mkEl("lt-nd-resize");
+    n1.g.appendChild(rs);
+    ok(key(rs) === "lt-nd:|resize@n_a1", "缩放手柄：同样带后缀（它是卡片组里的独立 rect）");
+    const noId = mkEl("lt-nd");
+    ok(key(noId) === "", "没有 data-lt-id 的卡片不给 key（不按没有身份的东西补标）");
+
+    const stop = mkBtn("lt-btn lt-btn-pri", "■ 停止");
+    ok(key(stop) === "lt-el:■ 停止", "普通按钮：按可点件类 + 文案取身份");
+    const more = mkBtn("lt-btn lt-more", "⋯ 更多");
+    ok(key(more) === "lt-el:⋯ 更多", "头部按钮同样认得出（文案就是它的身份）");
+    const chip = mkEl("lt-chip lt-chip-wait");
+    chip.textContent = "等你处理 ×2";
+    ok(key(chip) === "lt-el:等你处理 ×2", "可点的状态胶囊：key 取它自己的文案（点击落点可能是不带按钮结构的 span）");
+    const cardBtn = mkBtn("lt-btn", "通过");
+    const card = mkEl("lt-mem-i");
+    card.appendChild(cardBtn);
+    ok(key(card) === "" && key(cardBtn) === "lt-el:通过", "非可点容器不给 key、里面的按钮照给（补标只落在真正匹配的那一件上）");
+  }
+
+  console.log("\n[3] 重建后补标（vm 真跑 ltRenderStrip）");
+  {
+    const body = mkEl("lt-body");
+    const head = mkEl("lt-head");
+    const main = mkEl("lt-main");
+    body.appendChild(head);
+    body.appendChild(main);
+    const doc = {
+      listeners: [],
+      activeElement: null,
+      body: mkEl(""),
+      documentElement: mkEl(""),
+      addEventListener(type, fn) {
+        this.listeners.push({ type, fn });
+      },
+      removeEventListener() {},
+      querySelectorAll() {
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+    };
+    doc.body.tagName = "BODY";
+    doc.documentElement.tagName = "HTML";
+    /* 指针底下的那一件：由每轮的 hit 决定（模拟「鼠标停着不动、条带每 ~90ms 重建一次」） */
+    const hit = { el: null };
+    doc.elementFromPoint = () => hit.el;
+    let graphNode = null;
+    const sb = {
+      console,
+      Array,
+      Object,
+      String,
+      Number,
+      Date,
+      Math,
+      JSON,
+      isFinite,
+      parseFloat,
+      parseInt,
+      document: doc,
+      /* 滚动保护的两张表（本次需求）：照源码那一份建空表（Object.create(null)）—— 本档不验
+       滚动位置，只保证 ltRenderStrip 收尾那一步找得到表、不抛异常。 */
+      LT_SCROLL: Object.create(null),
+      LT_SCROLL_SUB: Object.create(null),
+      LT_UI: { body, head, main, grip: mkEl("lt-grip") },
+      ltHoverBound: false,
+      ltHoverX: 300,
+      ltHoverY: 40,
+      ltHoldColEl: null,
+      ltRenderWait: false,
+      S: { wf: { id: "wf1" } },
+      ltGripSync: () => {},
+      ltEnsure: () => {},
+      ltMenuClose: () => {},
+      ltMenuReadopt: () => {},
+      LT_MENU: null,
+      ltActiveTask: () => ({ uid: "t1", graph: { nodes: [], edges: [] }, ver: 1 }),
+      ltEnabledTask: () => null,
+      ltCurrentRun: () => null,
+      ltValidate: () => [],
+      ltMemPendingCount: () => 0,
+      /* 条带头那一枚「当前选型」chip（ltRenderHead 里新加的只读回显）：本档只验悬停补标，
+         回显四件套按「拿不到清单」的空态桩掉 —— 真行为由 smoke-longtask-model.js 钉。 */
+      ltAgentOptsNow: () => null,
+      ltAgentSelRead: () => ({ provider: "", model: "", preset: "", effort: "" }),
+      ltAgentSelParts: () => ({ route: "", model: "", preset: "", effort: "" }),
+      ltAgentSelText: () => "",
+      ltAgentModelShort: () => "",
+      ltEl: (tag, cls, txt) => {
+        const e = mkEl(cls || "");
+        e.tagName = String(tag || "div").toUpperCase();
+        if (txt != null) e.textContent = String(txt);
+        return e;
+      },
+      ltBtn: (text, cls) => mkBtn("lt-btn " + (cls || ""), text),
+      ltStatusChip: () => mkEl("lt-chip lt-chip-run"),
+      ltMoreBtn: () => mkBtn("lt-btn lt-more", "⋯ 更多"),
+      ltT: (t) => t,
+      ltEmptyState: () => mkEl("lt-empty"),
+      ltColOf: () => null,
+      ltColHold: () => false,
+      ltFocusCol: () => false,
+      ltEditHost: () => null,
+      ltFocusInside: () => false,
+      ltSelInCol: () => false,
+      ltRenderWhenFocusLeaves: () => {},
+      ltRenderSide: () => {},
+      /* 按住保护（本次需求）：本档只验悬停补标，按住态一律当「没按着」（真行为由
+         smoke-longtask-strip-hold.js 钉）。 */
+      ltStripHold: { el: null, at: 0 },
+      ltRenderGraph: (left) => {
+        const node = mkGraphNode("n_a1");
+        graphNode = node;
+        left.appendChild(node.g);
+      },
+    };
+    vm.createContext(sb);
+    for (const n of [
+      "ltHoverNodeKey",
+      "ltHoverKey",
+      "ltHoverCapture",
+      "ltHoverApply",
+      "ltHoverBind",
+      "ltHoverHere",
+      "ltRenderStrip",
+      "ltRenderHead",
+      "ltRenderMain",
+      "ltRenderFlushDeferred",
+      "ltRenderWhenFocusLeaves",
+      /* 按住保护与滚动保护（本次需求）：本档只验悬停补标，这两个直接跑真身即可 ——
+         「没按着」走 ltStripHoldNow，栏位登记走 ltTrackCols，都不会碰悬停标。 */
+      "ltStripOf",
+      "ltStripHoldNow",
+      "ltStripHoldRelease",
+      "ltDeferBecauseHold",
+      "ltTrackCols",
+      "ltScrollTopNow",
+      "ltScrollHNow",
+      "ltScrollCHNow",
+      "ltScrollKeyOf",
+      "ltScrollSave",
+      "ltScrollRestore",
+      "ltScrollCollect",
+      "ltScrollSaveSub",
+      "ltScrollRestoreSub",
+      "ltScrollSnapshot",
+      "ltScrollApply",
+      "ltScrollRebind",
+    ])
+      vm.runInContext(fnBody(LTU, n), sb);
+    doc.listeners = [];
+    const render = () => vm.runInContext("ltRenderStrip()", sb);
+    const headBtn = () => head.children.filter((c) => c.tagName === "BUTTON")[0] || null;
+
+    /* A. 指针压着头部按钮：重建后新按钮同样带悬停标（这正是「闪烁」的那一件） */
+    hit.el = null;
+    render();
+    const b1 = headBtn();
+    ok(!!b1 && b1.getAttribute("data-hover") === null, "第一帧（指针还不在条带里）不补任何标");
+    hit.el = b1;
+    render();
+    const b2 = headBtn();
+    ok(b2 !== b1 && b2.getAttribute("data-hover") === "1", "指针停在头部按钮上 → 重建出来的新按钮带上 data-hover（悬停态不再每 90ms 丢一帧）");
+    ok(withDataHover(body).length === 1, "只给真正匹配的那一件补标（不传播到别的按钮）");
+
+    /* B. 指针压着图节点 / 端子：左栏 SVG 整张重建，节点与端子照样补得上 */
+    hit.el = null;
+    render();
+    hit.el = graphNode.g;
+    render();
+    ok(graphNode.g.getAttribute("data-hover") === "1", "指针停在图节点上 → 新节点卡片补标（悬停态续到重建出来的那一张上）");
+    hit.el = graphNode.port;
+    render();
+    ok(graphNode.port.getAttribute("data-hover") === "1" && graphNode.g.getAttribute("data-hover") === "1", "指针停在端子上 → 新端子与它所属卡片都补标（端子悬停不会闪）");
+
+    /* C. 指针移开（elementFromPoint 落空 = 指针不在条带里）：一个标都不补 */
+    hit.el = null;
+    render();
+    ok(withDataHover(body).length === 0, "指针不在条带里 → 不补标（悬停态不会粘在重建后的新件上）");
+
+    /* D. 监听真挂上了：pointermove 一移就抹掉旧标 */
+    ok(doc.listeners.filter((l) => l.type === "pointermove").length === 1, "只挂一条 pointermove 监听（反复重绘不会越挂越多）");
+    const hovered = mkBtn("lt-btn", "占位");
+    hovered.setAttribute("data-hover", "1");
+    head.appendChild(hovered);
+    doc.querySelectorAll = () => [hovered];
+    const move = doc.listeners.filter((l) => l.type === "pointermove")[0];
+    move.fn({ clientX: 120, clientY: 33 });
+    ok(hovered.getAttribute("data-hover") === null, "指针一动就抹标（并且顺手记下新的指针坐标）");
+
+    /* E. 焦点保护那两条早退路也要补标：右栏正在打字时左栏重建，悬停态不能顺手丢掉 */
+    ok((fnSrc(LTU, "ltRenderMain").match(/ltHoverHere\(\)/g) || []).length >= 4, "ltRenderMain 的四条出口（空态 / 留右栏 / 留左栏 / 整块重建）都走补标，早退路不漏");
+    ok(fnBody(LTU, "ltRenderStrip").indexOf("ltHoverHere()") > 0, "strip 那一层重建后也补标（head 被换掉的那些件在这里续上）");
+    ok(fnSrc(LTU, "ltRenderStrip").indexOf("LT_UI.hoverKeys = typeof ltHoverCapture === \"function\" ? ltHoverCapture(LT_UI.body) : []") > 0, "采集在任何 DOM 被换掉之前落进 LT_UI.hoverKeys（各条重建路共用这一份）");
+  }
+
+  console.log("\n[4] CSS：悬停态写成 `:hover, [data-hover]` 两路（本次需求的真正落点）");
+  {
+    /* 取一条规则的选择器文本（第一个 { 之前的那段），逐个看它有没有把两路并在一起 */
+    const sels = [];
+    const re = /([^{}]+)\{/g;
+    let m;
+    while ((m = re.exec(LTC))) sels.push(m[1].trim());
+    const hasBoth = (frag) =>
+      sels.some((s) => s.indexOf(frag) >= 0 && s.indexOf(":hover") >= 0 && s.indexOf("[data-hover]") >= 0);
+    const pairs = [
+      [".lt-btn:hover", ".lt-btn", "通用按钮（头部「■ 停止 / ✎ 修改任务链 / ⚙ / ✕」与右栏按钮都在这一族）"],
+      [".lt-btn-pri:hover", ".lt-btn-pri", "主按钮（「＋ 创建长任务 / ▶ 继续」）"],
+      [".lt-btn-force:hover", ".lt-btn-force", "「⏭ 强行进入下一状态」（本次需求：run 停在手上时的出路）"],
+      [".lt-head .lt-btn.on", ".lt-head .lt-btn", "头部按钮的悬停 / 展开态"],
+      [".lt-chip-wait:hover", ".lt-chip-wait", "状态胶囊「等你处理 ×N」（可点）"],
+      [".lt-chip-mem:hover", ".lt-chip-mem", "状态胶囊「待确认记忆 ×N」（可点）"],
+      [".lt-crumb-i:hover", ".lt-crumb-i", "面包屑条目"],
+      [".lt-btn-zoom:hover", ".lt-btn-zoom", "缩放回显（点一下回 100%）"],
+      [".lt-port:hover", ".lt-port", "状态机图端子"],
+      [".lt-nd rect.lt-nd-resize:hover", ".lt-nd rect.lt-nd-resize", "节点缩放手柄"],
+      [".lt-sel-o:hover", ".lt-sel-o", "可搜索下拉的选项"],
+      [".lt-sel-tagx:hover", ".lt-sel-tagx", "多选芯片的 ✕"],
+    ];
+    for (const [frag, keep, label] of pairs) {
+      ok(LTC.indexOf(frag) > 0, frag + " 仍在（" + label + "）");
+      ok(hasBoth(keep + ":hover"), label + "：`:hover` 与 `[data-hover]` 并排写（重建后的补标与真 hover 同一份值）");
+    }
+    ok(/data-hover/.test(LTC) && LTC.indexOf("ltHoverKey") > 0, "样式里写清了这套标的来处（app-longtask-ui.js 的 ltHoverKey 一族）");
+  }
+
+  console.log("\n[5] 「⋯ 更多」下拉不再被头部重建收掉");
+  {
+    const headBody = fnSrc(LTU, "ltRenderHead");
+    ok(headBody.indexOf("data-lt-menu") > 0 && headBody.indexOf("ltMenuReadopt(") > 0, "头部重建后按锚点身份把下拉认回来（以前一律 ltMenuClose，长任务跑着时点开就被收）");
+    /* 只认「真的调了一次」的语句形态：注释里提到 ltMenuClose() 是说明，不是行为。
+       例外（本轮口径）：模型 chip 的「再点一次自身即收」也是**在 onclick 里**收掉自己刚开的
+       那一只面板 —— 它是点击手势的续写（紧跟 return），不是「重建时无条件收菜单」。
+       所以判据收紧成「没有不跟 return 的裸 ltMenuClose();」：老那种无条件收仍然判失败。 */
+    const bare = headBody.match(/ltMenuClose\(\s*\)\s*;(?!\s*return)/g) || [];
+    ok(bare.length === 0, "ltRenderHead 不再无条件收菜单（只有认不到锚点才由 ltMenuReadopt 收；chip 的「再点一次自身即收」是手势续写，不算）");
+    ok(LTU.indexOf('b.setAttribute("data-lt-menu", "lt-more")') > 0, "「⋯ 更多」按钮写下锚点身份（与按钮形状无关，重建后仍找得到）");
+    const readopt = fnSrc(LTU, "ltMenuReadopt");
+    ok(/ltMenuClose\(\s*\)\s*;/.test(readopt) && readopt.indexOf("ltMenuPlace(") > 0, "认不到锚点就收掉、认到就重新贴位（绝不留一只锚点已失效的浮层）");
+    ok(LTU.indexOf("\nfunction ltMenuPlace(") > 0 && fnSrc(LTU, "ltMenuOpen").indexOf("ltMenuPlace(") > 0, "贴位逻辑抽成 ltMenuPlace，开菜单与重建后认锚点共用一份（不会两处各写一套溢出回收）");
+  }
+
+  console.log(
+    fails
+      ? "\n " + fails + " / " + checks + " 项失败  (smoke-longtask-hover)"
+      : "\n✓ " + checks + " 项全部通过  (smoke-longtask-hover)",
+  );
+  if (fails ? 1 : 0) MERGED_FAILED = true;
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-hover.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-hover.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-longtask-side-null-run.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-side-null-run.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n/g, "\n");
+  const LTU = read("renderer/app-longtask-ui.js");
+  /* 源码闸要看**代码**、不看注释：本次修复的注释里就原样引用了那句坏写法
+     （解释来处用），拿全文做正则必然误判。这里只把块注释与行注释抹成等长空白，
+     行号与缩进保持原样，代码断言才有意义。 */
+  const LTU_CODE = LTU.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(
+    /(^|[^:"'`\\])\/\/[^\n]*/g,
+    (m, p1) => p1 + " ".repeat(m.length - p1.length),
+  );
+
+  /* 函数体（含首尾大括号）：与 smoke-longtask-strip-scroll.js 同一口径 */
+  function fnBody(src, name) {
+    const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+    if (!m) throw new Error("找不到函数：" + name);
+    const at = src.indexOf("{", m.index);
+    let depth = 0;
+    let inStr = null;
+    for (let j = at; j < src.length; j++) {
+      const c = src[j];
+      if (inStr) {
+        if (c === "\\") j++;
+        else if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") inStr = c;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (!depth) return src.slice(m.index + 1, j + 1);
+      }
+    }
+    throw new Error("函数体没闭合：" + name);
+  }
+  /* 函数全文（到第 0 列那个收尾大括号为止）：纯文本断言专用 */
+  function fnSrc(src, name) {
+    const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+    if (!m) throw new Error("找不到函数：" + name);
+    const rest = src.slice(m.index);
+    const end = rest.indexOf("\n}\n");
+    return end < 0 ? rest : rest.slice(0, end + 3);
+  }
+
+  /* ── 迷你 DOM（classList / children / 滚动几何 / querySelectorAll）── */
+  function mkEl(tag, cls) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag || "div").toUpperCase(),
+      className: cls || "",
+      children: [],
+      parentNode: null,
+      attrs: {},
+      textContent: "",
+      title: "",
+      style: {},
+      scrollTop: 0,
+      clientHeight: 0,
+      scrollHeight: 0,
+      hidden: false,
+      addEventListener() {},
+      removeEventListener() {},
+      getAttribute(k) {
+        return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null;
+      },
+      setAttribute(k, v) {
+        this.attrs[k] = String(v);
+      },
+      removeAttribute(k) {
+        delete this.attrs[k];
+      },
+      closest() {
+        return null;
+      },
+      appendChild(c) {
+        if (c && c.parentNode) c.parentNode.removeChild(c);
+        this.children.push(c);
+        if (c) c.parentNode = this;
+        return c;
+      },
+      removeChild(c) {
+        const i = this.children.indexOf(c);
+        if (i >= 0) this.children.splice(i, 1);
+        if (c) c.parentNode = null;
+        return c;
+      },
+      contains(t) {
+        let p = t;
+        while (p) {
+          if (p === this) return true;
+          p = p.parentNode;
+        }
+        return false;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        const keys = String(sel)
+          .split(",")
+          .map((s) => s.trim().replace(/^\[|\]$/g, ""))
+          .filter(Boolean);
+        const walk = (n) => {
+          for (const c of n.children) {
+            if (keys.some((k) => c.getAttribute(k) != null)) out.push(c);
+            walk(c);
+          }
+        };
+        walk(this);
+        return out;
+      },
+    };
+    el.classList = {
+      contains: (c) => String(el.className).split(/\s+/).indexOf(c) >= 0,
+      add: (c) => {
+        if (!el.classList.contains(c)) el.className = (el.className + " " + c).trim();
+      },
+      remove: (c) => {
+        el.className = String(el.className)
+          .split(/\s+/)
+          .filter((x) => x && x !== c)
+          .join(" ");
+      },
+      toggle() {},
+    };
+    Object.defineProperty(el, "innerHTML", {
+      get() {
+        return "";
+      },
+      set() {
+        for (const c of this.children.slice()) this.removeChild(c);
+      },
+    });
+    Object.defineProperty(el, "isConnected", {
+      get() {
+        let p = this;
+        let hops = 0;
+        while (p) {
+          if (p.parentNode == null) return hops > 0;
+          p = p.parentNode;
+          hops++;
+        }
+        return false;
+      },
+    });
+    return el;
+  }
+  function scroller(cls, h, ch, top) {
+    const el = mkEl("div", cls);
+    el.clientHeight = h;
+    el.scrollHeight = ch;
+    el.scrollTop = top || 0;
+    return el;
+  }
+  const SCROLL_FNS = [
+    "ltScrollTopNow",
+    "ltScrollHNow",
+    "ltScrollCHNow",
+    "ltScrollKeyOf",
+    "ltScrollSave",
+    "ltScrollRestore",
+    "ltScrollCollect",
+    "ltScrollSaveSub",
+    "ltScrollRestoreSub",
+    "ltScrollSnapshot",
+    "ltScrollApply",
+    "ltScrollRebind",
+  ];
+  function sandboxFor(names, extra) {
+    const sb = Object.assign(
+      {
+        console,
+        Array,
+        Object,
+        String,
+        Number,
+        Date,
+        Math,
+        JSON,
+        isFinite,
+        parseFloat,
+        parseInt,
+        LT_SCROLL: Object.create(null),
+        LT_SCROLL_SUB: Object.create(null),
+        ltEl: (tag, cls, txt) => {
+          const e = mkEl(tag, cls);
+          if (txt != null) e.textContent = String(txt);
+          return e;
+        },
+        ltT: (s) => String(s),
+        ltArr: (v) => (Array.isArray(v) ? v : []),
+        ltStr: (v) => String(v == null ? "" : v),
+      },
+      extra || {},
+    );
+    vm.createContext(sb);
+    for (const n of names) vm.runInContext(fnBody(LTU, n), sb);
+    return sb;
+  }
+
+  console.log("\n[1] 源码闸：stuck 必须落成数组，不许再是 run && … 的短路值");
+  {
+    ok(
+      !/const stuck =\s*\n?\s*run\s*&&/.test(LTU_CODE),
+      "ltRenderSide 里不再有 `const stuck = run && Object.keys(...).filter(...)`（run 为空时它等于 null）",
+    );
+    ok(
+      /const hasRun = !!run;/.test(LTU_CODE) && /const stuck = hasRun/.test(LTU_CODE),
+      "先给 run 归一成一个明确的布尔（hasRun），stuck 按它分支",
+    );
+    ok(
+      /: ltArr\(null\);/.test(LTU_CODE),
+      "run 为空时 stuck 走 ltArr(null) → []（数组口径与其它清单一致，.length 永远安全）",
+    );
+    ok(
+      /if \(stuck\.length\) \{/.test(LTU_CODE) && /ltArr\(null\);\n\s*if \(stuck\.length\)/.test(LTU_CODE),
+      "紧接着的 `if (stuck.length)` 现在读的一定是数组",
+    );
+    ok(
+      /run 为空（任务存着 activeRun/.test(LTU),
+      "源码里写清了来处与症状（下一次不会再被当成「重绘顺手删掉」的代码）",
+    );
+  }
+
+  console.log("\n[2] vm 真跑：run = null 时 ltRenderSide 不抛异常，右栏照样长内容");
+  {
+    const right = scroller("lt-right", 300, 900, 380);
+    const made = [];
+    const sb = sandboxFor(["ltRenderSide"], {
+      LT_UI: { right },
+      ltSel: { path: "", edge: "" },
+      ltHumanCard: () => {
+        const c = mkEl("div", "lt-card");
+        made.push("human");
+        return c;
+      },
+      ltBlockedCard: () => {
+        made.push("blocked");
+        return mkEl("div", "lt-card");
+      },
+      ltEdgeInspector: () => made.push("edge"),
+      ltNodeInspector: () => made.push("node"),
+      ltOverviewInspector: (host) => {
+        made.push("overview");
+        host.appendChild(mkEl("div", "lt-ov"));
+      },
+    });
+    const side = vm.runInContext("ltRenderSide", sb);
+    let err = null;
+    try {
+      /* run = null 正是「任务存着 activeRun、内存里那份 run 还没认领」那一刻 */
+      side(right, { id: "wf" }, { uid: "t1", name: "任务" }, null);
+    } catch (e) {
+      err = e;
+    }
+    ok(!err, "ltRenderSide(right, wf, task, null) 不抛异常（得到 " + (err ? err.message : "无异常") + "）");
+    ok(made.indexOf("overview") >= 0 || made.indexOf("node") >= 0, "右栏照常渲染检查器 / 图说明（没有因为 run 空就整块空掉）");
+    ok(right.children.length >= 1, "右栏真的挂上了内容（children=" + right.children.length + "）");
+    ok(made.indexOf("blocked") < 0, "run 为空 → 不列「卡住的环节」卡（没有清单可列）");
+  }
+
+  console.log("\n[3] vm 真跑：漫游一整遍「采帧 → 重建右栏 → 贴回」，滚动位置必须原样保住");
+  {
+    const oldRight = scroller("lt-right", 300, 1400, 520);
+    const head = scroller("lt-head", 40, 40, 0);
+    const left = scroller("lt-left", 300, 300, 0);
+    const ui = { right: oldRight, left, head };
+    const sb = sandboxFor(SCROLL_FNS, {
+      LT_UI: ui,
+      ltHoverHere: () => {},
+      ltColOf: (root, cls) => {
+        for (const c of root.children) if (c.classList.contains(cls)) return c;
+        return null;
+      },
+    });
+    const snapshot = vm.runInContext("ltScrollSnapshot", sb);
+    const rebind = vm.runInContext("ltScrollRebind", sb);
+    const snap = snapshot();
+    ok(!!snap && snap.parts.some((p) => p.key === "col:lt-right"), "采帧带上了右栏（key=col:lt-right）");
+    /* 重建：造一只同构的新右栏换进 LT_UI（模拟 ltRenderMain 的整块重建），
+       新元素 scrollTop 天然是 0 —— 滚动保护没跑起来的话，用户看到的就是「回到顶端」 */
+    const fresh = scroller("lt-right", 300, 1400, 0);
+    ui.right = fresh;
+    rebind(snap);
+    ok(fresh.scrollTop === 520, "重建后右栏仍在 520（得到 " + fresh.scrollTop + "）");
+    ok(oldRight.scrollTop === 520, "老栏的位置没被抹掉（ltScrollApply 记的是事实，不是 0）");
+  }
+
+  console.log("\n[4] 反证：渲染步骤抛异常 → 贴回再也跑不到（本次症状的机理）");
+  {
+    const oldRight = scroller("lt-right", 300, 1400, 430);
+    const ui = { right: oldRight, left: scroller("lt-left", 300, 300, 0), head: scroller("lt-head", 40, 40, 0) };
+    const sb = sandboxFor(SCROLL_FNS, { LT_UI: ui, ltHoverHere: () => {} });
+    const snapshot = vm.runInContext("ltScrollSnapshot", sb);
+    const rebind = vm.runInContext("ltScrollRebind", sb);
+    const snap = snapshot();
+    /* ltRenderStrip 的真实形状：先重建（旧栏被换掉），再收尾贴回 */
+    const boom = () => {
+      throw new TypeError("Cannot read properties of null (reading 'length')");
+    };
+    const fresh = scroller("lt-right", 300, 1400, 0);
+    let caught = null;
+    try {
+      boom(); /* ← ltRenderMain 里的 ltRenderSide 抛了 */
+      ui.right = fresh;
+      rebind(snap); /* ← 收尾这一步因此永远执行不到 */
+    } catch (e) {
+      caught = e;
+    }
+    ok(!!caught, "渲染抛出的异常会冒到 ltRenderStrip（它没有兜底），收尾那一步被跳过");
+    ok(fresh.scrollTop === 0, "于是新右栏停在 0 = 用户看到的「回到顶端」");
+    /* 反过来：异常不再发生（本次修复）→ 收尾照常贴回 */
+    ui.right = scroller("lt-right", 300, 1400, 0);
+    rebind(snap);
+    ok(ui.right.scrollTop === 430, "异常消失后，同一条收尾把位置贴回 430（修复后的行为）");
+  }
+
+  console.log(
+    fails
+      ? "\n " + fails + " / " + checks + " 项失败  (smoke-longtask-side-null-run)"
+      : "\n✓ " + checks + " 项全部通过  (smoke-longtask-side-null-run)",
+  );
+  if (fails ? 1 : 0) MERGED_FAILED = true;
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-side-null-run.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-side-null-run.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-longtask-guide-layout.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-guide-layout.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n/g, "\n");
+
+  const LTG = read("renderer/app-longtask-guide.js");
+  const CSS = read("renderer/css/longtask.css");
+  /* 结构断言要用「去过注释」的那份：规则里的说明文字常常自带 { }（例如 CSS 注释里举例写
+     button:active { transform: translateY(1px) }），用 [^}]* 取规则体会在注释里那个 } 处截断，
+     「这条规则到底写了什么」就量错了；注释类断言继续用带注释的 CSS。 */
+  const CSSR = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+  const ruleOf = (sel) =>
+    (CSSR.match(
+      new RegExp("(^|\\n)" + sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*\\}"),
+    ) || [""])[0];
+
+  function fnBody(src, name) {
+    const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+    if (!m) throw new Error("找不到函数：" + name);
+    const at = src.indexOf("{", m.index);
+    let depth = 0;
+    let inStr = null;
+    for (let j = at; j < src.length; j++) {
+      const c = src[j];
+      if (inStr) {
+        if (c === "\\") j++;
+        else if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") inStr = c;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (!depth) return src.slice(m.index + 1, j + 1);
+      }
+    }
+    throw new Error("函数体没闭合：" + name);
+  }
+  /* 迷你 DOM：够这只回归用（style / classList / 事件 / 尺寸量测 / setPointerCapture） */
+  function mkEl(tag, cls) {
+    const classes = new Set(String(cls || "").split(/\s+/).filter(Boolean));
+    const el = {
+      nodeType: 1,
+      tagName: String(tag || "div").toUpperCase(),
+      className: cls || "",
+      style: {},
+      children: [],
+      dataset: {},
+      attrs: {},
+      handlers: {},
+      offsetHeight: 0,
+      classList: {
+        add: (c) => classes.add(String(c)),
+        remove: (c) => classes.delete(String(c)),
+        contains: (c) => classes.has(String(c)),
+        toggle: (c, on) => (on ? classes.add(String(c)) : classes.delete(String(c))),
+      },
+      addEventListener(type, fn) {
+        (this.handlers[type] = this.handlers[type] || []).push(fn);
+      },
+      removeEventListener() {},
+      setAttribute(k, v) {
+        this.attrs[k] = String(v);
+      },
+      getAttribute(k) {
+        return this.attrs[k] == null ? null : this.attrs[k];
+      },
+      setPointerCapture() {},
+      releasePointerCapture() {},
+      appendChild(c) {
+        this.children.push(c);
+        return c;
+      },
+      emit(type, ev) {
+        for (const fn of (this.handlers[type] || []).slice()) fn(ev || {});
+      },
+    };
+    /* 迷你元素也要「量得到自己当下的高度」：真下载入用 offsetHeight 换高时，
+       inline height 一改，量出来的值立刻跟着变（本例就是拖拽以当下高度为基准那份逻辑）。 */
+    let _h = 0;
+    Object.defineProperty(el, "offsetHeight", {
+      get() {
+        const n = parseInt(String(el.style.height || ""), 10);
+        return n > 0 ? n : _h;
+      },
+      set(v) {
+        _h = Number(v) || 0;
+      },
+    });
+    return el;
+  }
+  function sandboxFor(names, extra) {
+    /* 常量与那个模块级高度变量（let 不会成为沙箱对象的属性，读高度走 getH） */
+    const consts = LTG.slice(
+      LTG.indexOf("const LTG_TA_MIN"),
+      LTG.indexOf("function ltgInputApply"),
+    );
+    const body = { console, Math, Number, String, Object, JSON, isFinite };
+    vm.createContext(body);
+    vm.runInContext(consts, body);
+    const sb = Object.assign(body, {
+      document: { body: mkEl("body") },
+      /* 窗口高度给一个足够大的值（上限 = min(520, 半屏)，这样固定上限 520 才生效） */
+      window: { innerHeight: 2000 },
+      isFinite,
+      console,
+      Math,
+      Number,
+      String,
+      Object,
+      JSON,
+    });
+    vm.createContext(sb);
+    for (const n of names) vm.runInContext(fnBody(LTG, n), sb);
+    return sb;
+  }
+  /* 读高度（沙箱里的 let 不挂在对象上，走 runInContext 求值） */
+  function getH(sb) {
+    return vm.runInContext("LTG_INPUT_H", sb);
+  }
+
+  console.log("\n[1] 布局顺序：会话消息的发送框在下方（左栏最后一格）");
+  {
+    ok(
+      /\.ltg-left\s*\{[^}]*flex-direction:\s*column;/.test(CSS),
+      ".ltg-left 是 flex 列（DOM 顺序即上下顺序）",
+    );
+    const mount = LTG.slice(LTG.indexOf("function ltgMount(wf) {"), LTG.indexOf("function ltgHookRepaint()"));
+    const iRow = mount.indexOf("left.appendChild(row)");
+    const iSplit = mount.indexOf("left.appendChild(split)");
+    const iConv = mount.indexOf("left.appendChild(conv)");
+    ok(iConv > 0 && iSplit > iConv, "对话区（conv）先挂，分隔条紧跟其后（消息流在上）");
+    ok(iRow > iSplit, "输入行（row）挂在分隔条之后 —— 发送框在下方，不是顶部");
+    ok(mount.indexOf("box.appendChild(left)") > iRow, "三者都挂在左栏里（不是别处）");
+    ok(/\.ltg-split\s*\{[^}]*cursor:\s*ns-resize;/.test(CSS), "分隔条光标是上下拖（ns-resize）");
+    ok(
+      /\.ltg-conv\s*\{[^}]*overflow:\s*auto;/.test(CSS) && /\.ltg-conv\s*\{[^}]*min-height:\s*0;/.test(CSS),
+      "对话区自己滚 + min-height:0（空间不够时让位给发送框，绝不把发送框顶出窗口）",
+    );
+    ok(mount.indexOf("box.appendChild(right)") > iRow, "右栏（状态 / 图摘要 / 出口）仍在左栏之后 —— 发送行不占它的位置");
+  }
+
+  console.log("\n[2] 出界根因：发送行不许越出左栏压在右栏上（用户报障那一条）");
+  {
+    /* 真根因（无头浏览器实测过）：inline 写 flex:none 时，textarea 以**默认内在宽（约 20 列）**
+       为 flex 基准而压不下去 —— 框独占整行、发送按钮被挤出左栏，正好落在右侧那栏上
+       （左栏 100..1130，按钮被算到 1138..1184，而右栏是 1140..1470）。
+       两条一起钉：① inline 的 flex 必须可收缩；② 左栏自己兜 horizontal overflow。 */
+    ok(
+      /function ltgInputApply[\s\S]{0,400}?style\.flex = "1 1 auto"/.test(LTG),
+      "ltgInputApply 写 inline flex:1 1 auto（可收缩 —— flex:none 会把发送按钮挤出左栏）",
+    );
+    ok(
+      !/style\.flex = "none"/.test(LTG),
+      "全模块没有 style.flex = \"none\" 的回潮（那正是出界根因）",
+    );
+    const leftRule2 = ruleOf(".ltg-left");
+    ok(
+      leftRule2.indexOf("overflow-x: clip") >= 0,
+      ".ltg-left 兜 overflow-x:clip（横向任何情况都不越出左栏；clip 不是滚动容器，纵轴仍归 flex）",
+    );
+    ok(
+      leftRule2.indexOf("overflow-x: hidden") < 0,
+      ".ltg-left 不再用 overflow-x:hidden（hidden 会把另一轴抬成 auto = 隐形纵向滚动容器，见 [7]）",
+    );
+    const taCss = (CSS.match(/(^|\n)\.ltg-ta\s*\{[^}]*\}/) || [""])[0];
+    ok(taCss.indexOf("flex: 1 1 auto") >= 0, "CSS 那份 .ltg-ta 也是 flex:1 1 auto（与 inline 同口径，不反压）");
+    const rowCss = (CSS.match(/(^|\n)\.ltg-row\s*\{[^}]*\}/) || [""])[0];
+    ok(
+      rowCss.indexOf("width: 100%") >= 0 && rowCss.indexOf("min-width: 0") >= 0,
+      ".ltg-row 整行占满左栏（width:100% + min-width:0，不被长内容撑破）",
+    );
+  }
+
+  console.log("\n[3] 拖高：往下拖变高、上下限夹住、双击回默认（vm 真跑）");
+  {
+    const sb = sandboxFor(["ltgInputClamp", "ltgInputApply", "ltgSplitBind"]);
+    const ta = mkEl("textarea", "ltg-ta");
+    ta.offsetHeight = 108;
+    const split = mkEl("div", "ltg-split");
+    vm.runInContext("ltgSplitBind", sb)(split, ta);
+    ok(getH(sb) === 108, "默认高度 108px（比旧版 54px 高，第一眼就够写）");
+    ok(!split._ltgSplitBound === false && split.handlers.pointermove.length > 0, "分隔条已接线（pointerdown / move / up）");
+    /* 按下（起点 y=400，此刻高度 108px），再往下拖 200px：输入框变高。
+       方向口径：分隔条挂在输入框的**下沿**，往下拖 = 输入框变高，所以高度增量是
+       「按下点到当下点的位移取反」—— 起点 y=400 拖到 y=200 就是变高 200px。 */
+    split.emit("pointerdown", { button: 0, clientY: 400, pointerId: 1, preventDefault() {}, stopPropagation() {} });
+    ok(split.classList.contains("dragging"), "按下即进拖动态（视觉 + 整窗光标）");
+    ok(sb.document.body.classList.contains("ltg-split-drag"), "拖动中 body 带 ltg-split-drag（光标锁 ns-resize、禁选）");
+    split.emit("pointermove", { clientY: 200, preventDefault() {} });
+    ok(getH(sb) === 308, "往下拖 200px → 108 + 200 = 308px（拖多少长多少）");
+    ok(ta.style.height === "308px" && ta.style.flex === "1 1 auto", "高度写在 inline style 上（flex:1 1 auto + px），CSS 不打架");
+    ok(ta.style.width === "100%", "宽度也写在 inline style 上（可收缩的 flex 基准就是这份 100%，框铺满除「发送」外的全部宽度）");
+    /* 继续往下拖：上限夹住 */
+    split.emit("pointermove", { clientY: -4000, preventDefault() {} });
+    ok(getH(sb) === 520, "拖过头 → 夹在上限 520px（不把消息流挤没）");
+    /* 第二次按下（起点 y=600，此刻高度 = 520px，量自 inline 高度）：往上拖 80px 变矮。
+       以「当下实际高度」为基准，不跳回旧值 —— 这就是拖手的那份逻辑。 */
+    split.emit("pointerdown", { button: 0, clientY: 600, pointerId: 3, preventDefault() {}, stopPropagation() {} });
+    split.emit("pointermove", { clientY: 680, preventDefault() {} });
+    ok(getH(sb) === 440, "往上拖 80px → 520 − 80 = 440px（以当下高度为基准，不跳回旧值）");
+    split.emit("pointermove", { clientY: 1000, preventDefault() {} });
+    ok(getH(sb) === 120, "再往上拖 400px → 520 − 400 = 120px（这一段还没到下限）");
+    split.emit("pointermove", { clientY: 1200, preventDefault() {} });
+    ok(getH(sb) === 72, "继续往上拖 200px → 算出来低于下限 → 夹在 72px（绝不把框压没）");
+    split.emit("pointermove", { clientY: 1800, preventDefault() {} });
+    ok(getH(sb) === 72, "下限之下再往上拖仍是 72px（不抖、不归零）");
+    /* 松手：退出拖动态 */
+    split.emit("pointerup", { pointerId: 3 });
+    ok(!split.classList.contains("dragging") && !sb.document.body.classList.contains("ltg-split-drag"), "松手退出拖动态（光标 / 禁选还原）");
+    split.emit("pointermove", { clientY: 100, preventDefault() {} });
+    ok(getH(sb) === 72, "松手后再移动指针不再改高度（不误触）");
+    /* 双击回默认 */
+    split.emit("dblclick", { preventDefault() {} });
+    ok(getH(sb) === 108, "双击分隔条回到默认高度 108px");
+    ok(ta.style.height === "108px", "回默认也落到 inline style 上");
+    /* 右键 / 非主键不进入拖动 */
+    split.emit("pointerdown", { button: 2, clientY: 100, pointerId: 9 });
+    ok(!split.classList.contains("dragging"), "右键按下不进拖动态（只认主键）");
+  }
+
+  console.log("\n[4] 清空会话：开窗一律全新会话（不接回上一条引导会话）");
+  {
+    const mount = LTG.slice(LTG.indexOf("function ltgMount(wf) {"), LTG.indexOf("function ltgHookRepaint()"));
+    ok(mount.indexOf("ltgFindSession(") < 0, "ltgMount 不再调用 ltgFindSession（不认领旧会话）");
+    ok(mount.indexOf('sid: "",') > 0, "LTG.sid 起始为空 = 空对话开窗");
+    ok(mount.indexOf("ltgPaint(null)") > 0, "开窗按「没有会话」重绘（消息流为空态，不是上一条的尾巴）");
+    ok(mount.indexOf("ltgCreateAgentSet") < 0, "不再用旧会话的选型回填（选型只认「Agent 选型」那一栏）");
+    ok(LTG.indexOf("function ltgFindSession(wf)") > 0, "判据函数本身还在（契约标记认领仍可复用，只是本窗不再调用）");
+    ok(
+      LTG.indexOf("本窗每次打开都是一条全新会话（不继承上一条引导会话的上下文）") > 0,
+      "契约写明「全新会话」（模型不会自称接着上次聊）",
+    );
+    ok(LTG.indexOf("const LTG_FRESH_NOTE") > 0 && LTG.indexOf("LTG_FRESH_NOTE +") > 0, "契约正文引用了这条说明（单一真源）");
+    ok(LTG.indexOf("每次打开本窗都是全新会话") > 0, "右侧说明向用户讲清：本窗不接回、旧会话留左侧栏作历史");
+    ok(LTG.indexOf("这条引导会话留在左侧栏只作历史") > 0, "「稍后」出口的文案同步（不再说「下次打开接着聊」）");
+  }
+
+  console.log("\n[5] 样式：输入框高度只由 inline 表达（CSS 不设死 height / max-height）");
+  {
+    const ta = (CSS.match(/(^|\n)\.ltg-ta\s*\{[^}]*\}/) || [""])[0];
+    ok(ta.indexOf("min-height") >= 0, ".ltg-ta 兜一个下限（inline 高度还没落上的那一帧不被压没）");
+    ok(ta.indexOf("max-height") < 0, ".ltg-ta 不写 max-height（拖高的结果由 inline 说了算，不会被 CSS 反压回去）");
+    ok(ta.indexOf("resize: none") >= 0, "resize:none —— 上面那条 .ltg-split 是唯一拖高入口");
+    ok(CSS.indexOf(".ltg-ta") === CSS.lastIndexOf(".ltg-ta") || CSS.split(".ltg-ta {").length === 2, "旧的一份 .ltg-ta 规则已删净（不留后一份反压）");
+    /* 宽度：输入框要铺满左栏（用户报障「输入框未占满宽度」）—— inline 与 CSS 各兜一份同值 */
+    ok(ta.indexOf("width: 100%") >= 0, ".ltg-ta 写 width:100%（inline 缺席的那一帧仍有宽度）");
+    ok(/function ltgInputApply[\s\S]{0,400}?style\.width = "100%"/.test(LTG), "ltgInputApply 同时写宽度 100%（与高度同一处，拖高 / 开窗都走它）");
+  }
+
+  console.log("\n[6] 本次修复：会话区滚动条槽恒定预留（点发送瞬间不再冒出一条滚动条）");
+  {
+    /* 用户报障：长任务新建窗里，消息框点「发送」的那一瞬间，右侧会冒出一条滚动条。
+       实测根因（真跑应用 + 逐帧量 offsetWidth-clientWidth）：空窗时消息流装得下、
+       一条滚动条都没有；发出第一条消息后内容一高，.ltg-conv 的 12px 竖直滚动条**第一次**
+       出现 —— 正好压在那只发送按钮的右侧，同时还把消息挤窄 10px（内容宽度抖动）。
+       口径：滚动条槽恒定预留（与 .n-prompt / .fp-scroll 同款）；不隐藏滚动条本身。 */
+    const conv = (CSS.match(/(^|\n)\.ltg-conv\s*\{[^}]*\}/) || [""])[0];
+    ok(conv.indexOf("scrollbar-gutter: stable") >= 0, ".ltg-conv 恒定预留滚动条槽（出不出滚动条内容宽度都一样）");
+    ok(conv.indexOf("overflow: auto") >= 0, "滚动条本身不隐藏：消息多了照样能滚（只是不再突变出现）");
+    const right = (CSS.match(/(^|\n)\.ltg-right\s*\{[^}]*\}/) || [""])[0];
+    ok(right.indexOf("scrollbar-gutter: stable") >= 0, ".ltg-right 同一口径（图摘要 / 提示长出来时宽度不抖）");
+    ok(
+      /点发送/.test(CSS.slice(CSS.indexOf(".ltg-conv {"), CSS.indexOf(".ltg-conv {") + 700)),
+      "CSS 注释写明这条是为「点发送瞬间冒滚动条」修的（后来人不会当噪音删掉）",
+    );
+  }
+
+  console.log("\n[7] 本次修复：按下发送键的那一帧不再冒出滚动条（左栏不是隐式滚动容器）");
+  {
+    /* 用户报障（[6] 修完仍在，即本条）：鼠标**按下**发送键的一瞬间，右侧出现一条滚动条。
+       真跑应用 + CDP 在 mousePressed 那一帧量到（修复前）：
+         .ltg-left clientWidth 1028 → 1018（多出 10px 竖直滚动条）、scrollHeight 507 → 508；
+         .ltg-row scrollHeight 108 → 109；按下按钮 computed transform = translateY(1px)。
+       根因链 = 全局 button:active 的 1px 按下位移 × 左栏被 CSS 规范抬成纵向滚动容器：
+         ① 全局 `button:active { transform: translateY(1px) }`（css/layout.css）让发送按钮
+            ——左栏最后一格——的下沿在按下那一帧多出 1px；
+         ② `.ltg-left` 原先写 overflow-x:hidden，而「一轴 hidden ⇒ 另一轴的 visible 变 auto」
+            让它成了纵向滚动容器 → 那 1px 就够它出滚动条（10px 宽，紧贴发送按钮右缘）。
+       口径：左栏写成 overflow-x:clip（不是滚动容器）+ 留 1px 下内边距（按下位移落进这一格，
+       按钮下沿不再被裁）。修复后同一探针：按下那一帧 .ltg-left 1028/1028、sh=ch=507、
+       按钮下沿正好落在余量里（越出 0），窗内无任何元素新增滚动条。
+       滚动条本身没有被隐藏：消息多时仍由 .ltg-conv 自己滚（[6] 的滚动条槽照旧）。 */
+    const left = ruleOf(".ltg-left");
+    ok(left.indexOf("overflow-x: clip") >= 0, ".ltg-left overflow-x:clip —— 横轴裁住但不成为滚动容器");
+    ok(left.indexOf("overflow-y") < 0, ".ltg-left 不写 overflow-y（纵轴保持 visible，任何 1px 生长都不出滚动条）");
+    ok(
+      left.indexOf("padding-bottom: 1px") >= 0,
+      "左栏留 1px 下内边距 —— 按下那 1px 落进这一格（不越界、也不被 clip 裁掉按钮下沿）",
+    );
+    /* 注释里的根因（带注释的那份 CSS） */
+    const leftDoc = CSS.slice(CSS.indexOf(".ltg-left {"), CSS.indexOf(".ltg-left {") + 1200);
+    ok(
+      /button:active/.test(leftDoc) && /translateY\(1px\)/.test(leftDoc),
+      "CSS 注释写明按下位移这条真根因（后来人不会把它当噪音删掉）",
+    );
+    ok(leftDoc.indexOf("鼠标按下瞬间") >= 0, "CSS 注释写明这条是为「点发送、鼠标按下瞬间冒滚动条」修的");
+    /* 1px 生长源确实还在全局样式里：这条修复不是为一条已经消失的规则留的 */
+    const LAYOUT = read("renderer/css/layout.css");
+    ok(
+      /button:active\s*\{[^}]*transform:\s*translateY\(1px\)/.test(LAYOUT),
+      "全局 button:active 的 translateY(1px) 仍在（css/layout.css）—— 左栏必须自己扛住这 1px",
+    );
+    /* 别用「删掉按下位移」绕开：发送键的按下反馈要保留 */
+    ok(
+      !/\.ltg[\s\S]{0,200}?:active\s*\{[^}]*transform:\s*none/.test(CSS),
+      "没有用「删掉按下位移」绕（发送键的按下反馈保留）",
+    );
+    const conv = (CSS.match(/(^|\n)\.ltg-conv\s*\{[^}]*\}/) || [""])[0];
+    ok(conv.indexOf("scrollbar-gutter: stable") >= 0, "[6] 的会话区滚动条槽没被这次修复撤掉（消息多了照样能滚）");
+  }
+
+  console.log(
+    fails
+      ? "\n " + fails + " / " + checks + " 项失败  (smoke-longtask-guide-layout)"
+      : "\n✓ " + checks + " 项全部通过  (smoke-longtask-guide-layout)",
+  );
+  if (fails ? 1 : 0) MERGED_FAILED = true;
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-guide-layout.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-guide-layout.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-longtask-deliver-draft.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-deliver-draft.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  const ROOT = path.join(__dirname, "..");
+  const read = (rel) => fs.readFileSync(path.join(ROOT, ...rel.split("/")), "utf8");
+
+  let fails = 0;
+  let checks = 0;
+  const ok = (cond, msg) => {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  };
+  const has = (hay, needle, msg) => {
+    const c = String(hay).indexOf(needle) >= 0;
+    ok(c, msg + (c ? "" : "（缺 " + JSON.stringify(needle) + "）"));
+  };
+  const eqStr = (a, b, msg) => ok(String(a) === String(b), msg + "（得到 " + JSON.stringify(a) + "，期望 " + JSON.stringify(b) + "）");
+  const eqNum = (a, b, msg) => ok(a === b, msg + "（得到 " + JSON.stringify(a) + "，期望 " + JSON.stringify(b) + "）");
+
+  const LTV = read("renderer/app-longtask.js");
+  const LTU = read("renderer/app-longtask-ui.js");
+
+  /* 取一个函数的正文：从 `function 名(` 起到**下一个顶层 `function` 声明**（列 0 起）之前。
+     不比括号 —— 函数体里带注释 / 模板串 / 正则，逐字符数括号容易提前收口（本文件踩过）。 */
+  function fnBody(src, name) {
+    const at = src.indexOf("\nfunction " + name + "(");
+    if (at < 0) throw new Error("找不到函数：" + name);
+    const next = src.indexOf("\nfunction ", at + 1);
+    return src.slice(at + 1, next < 0 ? src.length : next);
+  }
+
+  /* ── 迷你 DOM：够 ltChecklistEditor / ltItemInput 真跑（value / 事件 / 属性 / 尺寸） ── */
+  function mkEl(tag) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag || "div").toUpperCase(),
+      className: "",
+      value: "",
+      checked: false,
+      disabled: false,
+      rows: 0,
+      placeholder: "",
+      title: "",
+      type: "",
+      name: "",
+      textContent: "",
+      style: {},
+      children: [],
+      parentNode: null,
+      attrs: {},
+      handlers: {},
+      setAttribute(k, v) {
+        this.attrs[k] = String(v);
+      },
+      getAttribute(k) {
+        return this.attrs[k] == null ? null : this.attrs[k];
+      },
+      addEventListener(t, f) {
+        (this.handlers[t] = this.handlers[t] || []).push(f);
+      },
+      removeEventListener() {},
+      appendChild(c) {
+        this.children.push(c);
+        if (c) c.parentNode = this;
+        return c;
+      },
+      insertBefore(c) {
+        this.children.push(c);
+        if (c) c.parentNode = this;
+        return c;
+      },
+      contains(t) {
+        let p = t;
+        while (p) {
+          if (p === this) return true;
+          p = p.parentNode;
+        }
+        return false;
+      },
+      focus() {},
+      closest() {
+        return null;
+      },
+      getBoundingClientRect() {
+        return { width: 300, height: 66, left: 0, top: 0, right: 300, bottom: 66 };
+      },
+      setPointerCapture() {},
+      /* 真事件派发：既叫 addEventListener 的监听，也叫 onXxx 属性处理器（原生两条路都走）；
+       ev.target 必须是自己（原生就是它，提交时按「哪一格触发的」认草稿要靠它） */
+      emit(t, ev) {
+        const e = Object.assign({ type: t, target: this }, ev || {});
+        for (const f of (this.handlers[t] || []).slice()) f(e);
+        const p = this["on" + t];
+        if (typeof p === "function") p(e);
+      },
+    };
+    el.classList = { contains: (c) => String(el.className).split(/\s+/).indexOf(c) >= 0 };
+    return el;
+  }
+  function makeSandbox() {
+    const sandbox = {
+      window: { api: {} },
+      S: { wf: null, config: {} },
+      I18n: { t: (s) => s },
+      document: {
+        readyState: "loading",
+        addEventListener() {},
+        removeEventListener() {},
+        getElementById() {
+          return null;
+        },
+        createElement: (tag) => mkEl(tag),
+        activeElement: null,
+        body: mkEl("body"),
+        getSelection: () => ({ isCollapsed: true, rangeCount: 0, anchorNode: null, focusNode: null }),
+      },
+      toast() {},
+      scheduleSave() {},
+      renderCanvas() {},
+      focusNode() {},
+      addNode() {
+        return null;
+      },
+      console,
+      setTimeout,
+      clearTimeout,
+      Map,
+      Set,
+      Promise,
+      JSON,
+      Math,
+      Date,
+      Object,
+      Array,
+      String,
+      Number,
+      RegExp,
+      isFinite,
+      parseFloat,
+      parseInt,
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(LTV, sandbox, { filename: "renderer/app-longtask.js" });
+    vm.runInContext(LTU, sandbox, { filename: "renderer/app-longtask-ui.js" });
+    return sandbox;
+  }
+  function walk(el, fn) {
+    if (!el || !el.children) return;
+    for (const c of el.children) {
+      fn(c);
+      walk(c, fn);
+    }
+  }
+  function findAll(root, tag) {
+    const out = [];
+    walk(root, (c) => {
+      if (c.tagName === tag) out.push(c);
+    });
+    return out;
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /* ═══════════════ [1] 机制就位 ═══════════════ */
+  console.log("\n[1] 机制就位（renderer/app-longtask-ui.js）");
+  {
+    has(LTU, "function ltItemDraftKey(path, it, field) {", "有条目草稿键 ltItemDraftKey（环节路径 + 条目 id + 字段名）");
+    has(LTU, '":it:"', "草稿键带 it: 段：与检查器字段（goal / why / relnote）不串台");
+    has(LTU, 'return ltDraftKey(String(path || "") + ":it:" + String((it && it.id) || ""), field);', "键口径写明：路径 + 条目 id + 字段名（同一条 run 逐帧稳定）");
+    const guard = fnBody(LTU, "ltChecklistEditor");
+    has(guard, "ltDraftBind(el, k);", "每格走 ltDraftBind（还原草稿 + 输入即写）");
+    has(guard, "ltScrollBind(el, k);", "每格同时按同一个键记滚动位置（重绘后停在原处）");
+    has(guard, "draftKeys.push(k);", "本帧的草稿键登记成一列（提交成功后清）");
+    has(guard, "if (!el || !k) return el;", "guard 对空控件 / 认不出身份的格不动手（宁可这次不保，也不乱记）");
+    has(guard, 'guard(title, it, "title")', "文件名 / 标题那一格挂草稿保护");
+    has(guard, 'guard(desc, it, "desc")', "内容说明那一格挂草稿保护");
+    has(guard, ", guard);", "调用点把 guard 传给 ltItemInput（第 8 个参数）");
+    ok(
+      /function ltItemInput\(parent, it, commit, path, uid, editing, isDeliver, guardIn\) \{/.test(LTU),
+      "ltItemInput 的 guardIn 挂在末位（老调用处只传 7 个参数，行为一字不变）",
+    );
+    const itemInput = LTU.slice(LTU.indexOf("function ltItemInput("), LTU.indexOf("function ltNodeFilePaths("));
+    has(itemInput, 'typeof guardIn === "function" ? (el, field) => guardIn(el, it, field) : () => {}', "没传 guard 时退化成空动作（不抛错）");
+    has(itemInput, 'guard(ta, "value")', "文本条目在真渲染路径上也挂了保护");
+    has(LTU, "ltTaHBind(note, key);", "交付说明框（放行确认窗）也按草稿键记高度（与审批理由框同源）");
+  }
+
+  /* ═══════════════ [2] 提交即三份写同源 ═══════════════ */
+  console.log("\n[2] 提交即三份写同源、写同步（缺一份就会被画布同步链拿旧的盖回来）");
+  {
+    const body = fnBody(LTU, "ltChecklistEditor");
+    has(body, "node.cfg.items = items;", "图定义 cfg.items 指回本帧同一份清单（对象不换新的）");
+    has(body, "st.items = items;", "运行态快照 st.items 指回同一份（卡片渲染读它）");
+    has(body, "const dn = ltDeliverNodeOf(node.cfg.uid);", "按交付 uid 找到画布上那颗交付节点");
+    has(body, "if (dn) dn.ltItems = items;", "画布节点的 ltItems 指回同一份（同步链的权威那一份）");
+    has(body, "for (const k of draftKeys) ltDraftClear(k);", "提交成功后清本帧草稿（旧字不会跟着下一条漂）");
+    ok(
+      body.indexOf("draftKeys") < body.indexOf("ltRenderStrip();"),
+      "清草稿排在重绘之前（这一帧长出来的控件才不会带着旧草稿）",
+    );
+    /* 来源口径与画布侧同步链同源：对照 app-longtask.js 的权威顺序一眼看得出是哪一份 */
+    has(LTV, "if (st) st.items = JSON.parse(JSON.stringify(items));", "画布侧同步链（ltDeliverSyncFromNode）读的就是节点上的 ltItems");
+    has(LTV, "const items = JSON.parse(JSON.stringify(ltArr(node && node.ltItems)));", "同步链的权威那一份 = 节点 ltItems（所以它必须是最新的）");
+  }
+
+  /* ═══════════════ [3][4][5] 真跑 ltChecklistEditor ═══════════════ */
+  async function main() {
+    console.log("\n[3] 真跑：打字 → change → 三份同源；画布同步推回旧清单后字仍在");
+    const sandbox = makeSandbox();
+    vm.runInContext(
+      `
+      window.__items = [
+        { id: "i1", kind: "text", title: "风格说明", required: true, done: false, value: "" },
+        { id: "i2", kind: "file", file: "分镜表.md", desc: "每镜头一行", required: true, done: false, paths: [] }
+      ];
+      window.__node = { id: "n_h", kind: "human", title: "交稿", cfg: { mode: "deliver", uid: "ltx-交稿", items: window.__items } };
+      window.__rn = { path: "h", status: "waiting", uid: "ltx-交稿", items: window.__items, dir: "" };
+      window.__runObj = { runId: "r1", ns: {}, graph: { nodes: [window.__node], edges: [] }, nodes: { h: window.__rn }, waits: [], status: "waiting" };
+      window.__wf = { id: "wf1", longtask: { tasks: [{ uid: "t1", ver: 1, graph: { nodes: [window.__node], edges: [] } }], active: "t1" } };
+      /* 画布上那颗交付节点：ltItems 是它自己那一份（真实里由 ltEnsureDeliverNode 从 cfg.items 拷来，之后各走各的） */
+      window.__dn = { id: "n_dn", kind: "deliver", ltUid: "ltx-交稿", ltItems: JSON.parse(JSON.stringify(window.__items)), ltDir: "" };
+      ltCurrentRun = () => window.__runObj;
+      ltDeliverNodeOf = () => window.__dn;
+      ltDeliverWrite = async () => "";
+      ltSave = () => {};
+      ltRenderStrip = () => { window.__renders = (window.__renders || 0) + 1; };
+      window.__card = () => {
+        const parent = document.createElement("div");
+        return ltChecklistEditor(parent, window.__wf, { uid: "t1", ver: 1, graph: { nodes: [window.__node], edges: [] } }, window.__node, window.__node.cfg.items, false, "h");
+      };
+    `,
+      sandbox,
+      { filename: "lt-deliver-draft-probe" },
+    );
+    const inCtx = (code) => vm.runInContext(code, sandbox);
+    const card = () => inCtx("window.__card()");
+
+    const first = card();
+    const ta = findAll(first, "TEXTAREA")[0];
+    ok(!!ta, "交付卡渲染出文本条目的输入框");
+    ok(typeof (ta && ta.oninput) === "function", "输入框挂上了草稿记录（oninput 写草稿，不靠 change / blur）");
+    ta.value = "整体冷色调，夜戏为主";
+    ta.emit("input", {});
+    ta.emit("change", {});
+    await sleep(25); /* change 的收尾里有 await（commit 会写交付目录） */
+
+    const three = inCtx(
+      `({ v: window.__items[0].value, rv: window.__rn.items[0].value, cv: window.__node.cfg.items[0].value, dv: window.__dn.ltItems[0].value, renders: window.__renders || 0 })`,
+    );
+    eqNum(three.renders, 1, "提交触发了一次条带重绘（ltRenderStrip 被叫到）");
+    eqStr(three.v, "整体冷色调，夜戏为主", "条目自己那一份拿到用户写的字");
+    eqStr(three.rv, "整体冷色调，夜戏为主", "运行态快照 st.items（卡片渲染读的那一份）拿到");
+    eqStr(three.cv, "整体冷色调，夜戏为主", "图定义 cfg.items（下次启用 / 重跑读的那一份）拿到");
+    eqStr(three.dv, "整体冷色调，夜戏为主", "**画布交付节点 ltItems 也拿到**（同步链的权威那一份不再是旧的）");
+
+    /* 模拟画布侧同步链：以节点上的清单为准，整份推回运行态与图定义（老版本就是这一步把字顶掉） */
+    inCtx(`
+      (function () {
+        const items = JSON.parse(JSON.stringify(window.__dn.ltItems));
+        window.__rn.items = JSON.parse(JSON.stringify(items));
+        window.__node.cfg.items = JSON.parse(JSON.stringify(items));
+      })();
+    `);
+    const after = card();
+    const ta2 = findAll(after, "TEXTAREA")[0];
+    eqStr(ta2 && ta2.value, "整体冷色调，夜戏为主", "画布同步链走一轮之后，新长出来的输入框里那段字仍在（本次 bug 的验收口径）");
+
+    console.log("\n[4] 兜底那一路也真跑：未提交就重绘 → 按草稿键还原");
+    inCtx(`window.__items[0].value = ""; window.__rn.items[0].value = ""; window.__node.cfg.items[0].value = ""; window.__dn.ltItems[0].value = "";`);
+    const d1 = card();
+    const taD = findAll(d1, "TEXTAREA")[0];
+    taD.value = "还没提交的一段字";
+    taD.emit("input", {}); /* 只打字，不 change / 不失焦：真实里这就是「正在写」的那一段 */
+    const d2 = card(); /* 长任务 ~90ms 一次的重绘（或画布同步）把这一帧的 DOM 换掉 */
+    const taE = findAll(d2, "TEXTAREA")[0];
+    eqStr(taE && taE.value, "还没提交的一段字", "未提交就重绘：新框按草稿键还原（不靠提交链也不丢字）");
+
+    console.log("\n[5] 文件名 / 内容说明两格同样吃保护；提交过的草稿会清");
+    const titleIn = findAll(d2, "INPUT").filter((i) => String(i.className).indexOf("lt-in-title") >= 0)[1];
+    const descIn = findAll(d2, "INPUT").filter((i) => String(i.className).indexOf("lt-in-desc") >= 0)[0];
+    ok(!!titleIn, "找到文件条目的文件名输入框");
+    ok(!!descIn, "找到文件条目的内容说明输入框");
+    ok(typeof (titleIn && titleIn.oninput) === "function", "文件名格也挂草稿记录");
+    ok(typeof (descIn && descIn.oninput) === "function", "内容说明格也挂草稿记录");
+    titleIn.value = "成片-竖屏.mp4";
+    titleIn.emit("input", {});
+    titleIn.emit("change", {});
+    await sleep(25);
+    const f = inCtx(`({ f: window.__rn.items[1].file, dv: window.__dn.ltItems[1].file, rv: window.__rn.items[1].file, cv: window.__node.cfg.items[1].file, renders: window.__renders || 0 })`);
+    eqStr(f.f, "成片-竖屏.mp4", "文件名改动提交到条目上（与老行为一致）");
+    eqStr(f.dv, "成片-竖屏.mp4", "文件名改动同样同步到画布交付节点（三份同源）");
+    eqNum(f.renders, 2, "第二次提交又触发一次重绘");
+
+    /* 提交成功 = 草稿清掉：下一次重绘不该再拿旧草稿把条目里的新值盖回去 */
+    inCtx(`window.__items[1].file = "定稿-横屏.mp4"; window.__dn.ltItems[1].file = "定稿-横屏.mp4"; window.__rn.items[1].file = "定稿-横屏.mp4"; window.__node.cfg.items[1].file = "定稿-横屏.mp4";`);
+    const g = card();
+    const titleG = findAll(g, "INPUT").filter((i) => String(i.className).indexOf("lt-in-title") >= 0)[1];
+    eqStr(titleG && titleG.value, "定稿-横屏.mp4", "提交过的草稿被清：条目改了名字，重绘跟着显示新名字（旧草稿不会把值顶回去）");
+
+    /* 文本条目那一格：上一轮那条未提交的草稿还在（用户自己没提交）→ 仍按草稿还原，这是设计口径 */
+    const taG = findAll(g, "TEXTAREA")[0];
+    eqStr(taG && taG.value, "还没提交的一段字", "未提交的那格草稿照旧留着（只增不减，提交才清）");
+
+    console.log(
+      "\n" +
+        (fails
+          ? "✗ " + fails + " / " + checks + " 项失败  (smoke-longtask-deliver-draft)"
+          : "✓ " + checks + " 项全部通过  (smoke-longtask-deliver-draft)"),
+    );
+  }
+
+  main().catch((e) => {
+    console.log("测试异常：" + String((e && e.stack) || e));
+  });
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-deliver-draft.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-deliver-draft.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：test/smoke-longtask-textarea-height.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-longtask-textarea-height.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+  const vm = require("vm");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs
+      .readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8")
+      .replace(/\r\n/g, "\n");
+
+  const LTU = read("renderer/app-longtask-ui.js");
+  const CSS = read("renderer/css/longtask.css");
+
+  function fnBody(src, name) {
+    const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+    if (!m) throw new Error("找不到函数：" + name);
+    const at = src.indexOf("{", m.index);
+    let depth = 0;
+    let inStr = null;
+    for (let j = at; j < src.length; j++) {
+      const c = src[j];
+      if (inStr) {
+        if (c === "\\") j++;
+        else if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") inStr = c;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (!depth) return src.slice(m.index + 1, j + 1);
+      }
+    }
+    throw new Error("函数体没闭合：" + name);
+  }
+  /* 迷你 DOM：够这只回归用（style / 事件 / 尺寸量测 / setPointerCapture） */
+  function mkEl(tag, cls) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag || "textarea").toUpperCase(),
+      className: cls || "",
+      value: "",
+      style: {},
+      children: [],
+      parentNode: null,
+      dataset: {},
+      attrs: {},
+      handlers: {},
+      rect: { width: 300, height: 0, right: 400, bottom: 0, top: 0, left: 100 },
+      addEventListener(type, fn) {
+        (this.handlers[type] = this.handlers[type] || []).push(fn);
+      },
+      removeEventListener() {},
+      getAttribute(k) {
+        return this.attrs[k] == null ? null : this.attrs[k];
+      },
+      setAttribute(k, v) {
+        this.attrs[k] = String(v);
+      },
+      getBoundingClientRect() {
+        return Object.assign({}, this.rect);
+      },
+      setPointerCapture() {},
+      appendChild(c) {
+        this.children.push(c);
+        if (c) c.parentNode = this;
+        return c;
+      },
+      emit(type, ev) {
+        for (const fn of (this.handlers[type] || []).slice()) fn(ev || {});
+      },
+    };
+    return el;
+  }
+  function sandboxFor(names, extra) {
+    const mapExpr = (LTU.match(/const LT_TA_H = ([^;]+);/) || [])[1] || "null";
+    const sb = Object.assign(
+      { console, Array, Object, String, Number, Date, Math, JSON, isFinite, parseFloat, parseInt },
+      { LT_TA_H: vm.runInNewContext(mapExpr, {}) },
+      extra || {},
+    );
+    vm.createContext(sb);
+    for (const n of names) vm.runInContext(fnBody(LTU, n), sb);
+    return sb;
+  }
+  /* 把「量到的身高」摆到这只迷你框上（getBoundingClientRect 只读 rect） */
+  function setH(el, h) {
+    el.rect.height = h;
+    el.rect.bottom = el.rect.top + h;
+  }
+
+  console.log("\n[1] 机制就位（renderer/app-longtask-ui.js）");
+  {
+    ok(/const LT_TA_H = Object\.create\(null\);/.test(LTU), "有一张「手动拖高」高度表 LT_TA_H");
+    for (const n of ["ltTaH", "ltTaHNow", "ltTaHSet", "ltTaHApply", "ltTaHBind"])
+      ok(LTU.indexOf("\nfunction " + n + "(") > 0, "有 " + n);
+    ok(
+      fnBody(LTU, "ltInput").indexOf("ltTaHApply(i, hkey)") > 0 &&
+        fnBody(LTU, "ltInput").indexOf("ltTaHBind(i, hkey)") > 0,
+      "ltInput 建多行框时先按 key 还原高度、再接上拖高捕获（type = \"area\" 才走）",
+    );
+    const insp = fnBody(LTU, "ltNodeInspector");
+    ok(
+      insp.indexOf('ltT("目标 / 说明")') > 0 && insp.indexOf('"area", null, ltDraftKey(path, "goal")') > 0,
+      "环节检查器的「目标 / 说明」把 hkey 传给了 ltInput（key = 环节 path + 字段名，第 7 参）",
+    );
+    ok(
+      fnBody(LTU, "ltHumanCard").indexOf("ltTaHBind(why, whyKey)") > 0,
+      "审批卡的意见 / 理由框也按同一个草稿键记高度（相当长的多行框，同样不许回弹）",
+    );
+    ok(
+      /textarea\.lt-in\s*\{[^}]*min-height:\s*var\(--lt-ta-h,\s*\d+px\);/.test(CSS),
+      "多行框默认高度走 CSS（textarea.lt-in 的 min-height: var(--lt-ta-h, …)）——只设下限，拖高仍是原生行为",
+    );
+    ok(
+      /\.lt-in\s*\{[^}]*resize:\s*vertical;/.test(CSS),
+      "resize: vertical 仍在（右下角手柄本来就是给用户拖的，本需求是让拖出来的高度留得住）",
+    );
+  }
+
+  console.log("\n[2] key 口径：与草稿表同源（vm 真跑）");
+  {
+    const sb = sandboxFor(["ltTaH"]);
+    sb.LT_TA_H["/n_a1:goal"] = 182.4;
+    ok(vm.runInContext('ltTaH("/n_a1:goal")', sb) === 182, "记下 182px 意味着同一个格读到 182px（四舍五入到整数）");
+    ok(vm.runInContext('ltTaH("/n_a1:title")', sb) === 0, "同一个环节的别的字段读不到这一份（不串台）");
+    ok(vm.runInContext('ltTaH("")', sb) === 0 && vm.runInContext("ltTaH()", sb) === 0, "空 key / 不传 key → 0（没记过），不报错");
+    sb.LT_TA_H["/n_a1:goal"] = -5;
+    ok(vm.runInContext('ltTaH("/n_a1:goal")', sb) === 0, "脏值（负数）当没记过，不把框压没");
+  }
+
+  console.log("\n[3] 只在右下角（原生缩放手柄）上记账，框内点按不打扰（vm 真跑）");
+  {
+    const sb = sandboxFor(["ltTaH", "ltTaHNow", "ltTaHSet", "ltTaHBind"]);
+    const ta = mkEl("textarea", "lt-in");
+    ta.rect = { width: 300, height: 66, left: 100, top: 200, right: 400, bottom: 266 };
+    setH(ta, 66);
+    vm.runInContext("ltTaHBind", sb)(ta, "/n_a1:goal");
+    ok(ta.getAttribute("data-lt-hk") === "/n_a1:goal", "key 挂到 data-lt-hk 上（迷你运行 / 事后复核都认得出）");
+    /* 框内中部点按（选文字 / 改写）→ 抬起不记账 */
+    ta.emit("pointerdown", { clientX: 250, clientY: 230, pointerId: 1 });
+    setH(ta, 90);
+    ta.emit("pointerup", { clientX: 250, clientY: 230 });
+    ok(vm.runInContext('ltTaH("/n_a1:goal")', sb) === 0, "框中间按下再抬起（只是点选 / 改写）→ 不记高度，原生交互一字不变");
+    /* 右下角按下（= 拖手柄）→ 抬起按当下实际高度记账（第一次抬手后右下角已跟着长高） */
+    setH(ta, 90);
+    ta.emit("pointerdown", { clientX: 399, clientY: 289, pointerId: 2 });
+    setH(ta, 184);
+    ta.emit("pointerup", { clientX: 399, clientY: 365 });
+    ok(vm.runInContext('ltTaH("/n_a1:goal")', sb) === 184, "右下角按下拖高后抬起 → 记下 184px（拖到多高就记多高）");
+    /* 键盘 / 无指针路径：失焦也记一次 */
+    setH(ta, 120);
+    ta.emit("blur", {});
+    ok(vm.runInContext('ltTaH("/n_a1:goal")', sb) === 120, "不走指针的路径（失焦）也记一次：高度没变也照记，值就是用户当下定的一份");
+  }
+
+  console.log("\n[4] 真跑：记下的高度活过右栏重建（拖高不再回弹）");
+  {
+    const sb = sandboxFor(["ltTaH", "ltTaHNow", "ltTaHSet", "ltTaHApply", "ltTaHBind"]);
+    const KEY = "/n_a1:goal";
+    vm.runInContext("ltTaHBind", sb)(mkEl("textarea", "lt-in"), KEY);
+    /* 第一帧：用户把「目标 / 说明」拖到 208px */
+    const first = mkEl("textarea", "lt-in");
+    vm.runInContext("ltTaHBind", sb)(first, KEY);
+    first.rect.right = 400;
+    first.rect.bottom = 266;
+    setH(first, 208);
+    first.emit("pointerdown", { clientX: 399, clientY: 265, pointerId: 3 });
+    first.emit("pointerup", { clientX: 399, clientY: 365 });
+    /* 第二帧：右栏被 ltRenderStrip 整块重建 —— 新框是干净的一只（没有 inline 高度） */
+    const rebuilt = mkEl("textarea", "lt-in");
+    ok(!rebuilt.style.height, "重建出来的新框一开始没有 inline 高度（旧版就是这一步把高度丢了）");
+    vm.runInContext("ltTaHApply", sb)(rebuilt, KEY);
+    ok(rebuilt.style.height === "208px", "按 key 还原：重建后的框拿回 208px（用户拖出来的那一份）");
+    vm.runInContext("ltTaHBind", sb)(rebuilt, KEY); /* 真实路径里 ltInput 还原之后紧跟这一句 */
+    /* 别的环节 / 别的字段不会被上一格的高度串到 */
+    const other = mkEl("textarea", "lt-in");
+    vm.runInContext("ltTaHApply", sb)(other, "/n_a2:goal");
+    ok(!other.style.height, "另一个环节的同一格没有记录 → 不贴高度（各记各的）");
+    /* 高度表只增不减：与草稿表同一口径，重建不改写已有记录 */
+    setH(rebuilt, 240);
+    rebuilt.emit("pointerdown", { clientX: 399, clientY: 439, pointerId: 4 });
+    rebuilt.emit("pointerup", { clientX: 399, clientY: 439 });
+    ok(vm.runInContext('ltTaH("/n_a1:goal")', sb) === 240, "用户又拖一次 → 覆盖成新的高度（不是追加第二条记录）");
+  }
+
+  console.log("\n[5] 边界：量不到尺寸的迷你环境不报错、不写脏值");
+  {
+    const sb = sandboxFor(["ltTaH", "ltTaHNow", "ltTaHSet", "ltTaHApply", "ltTaHBind"]);
+    const noRect = mkEl("textarea", "lt-in");
+    noRect.getBoundingClientRect = undefined;
+    noRect.offsetHeight = 0;
+    ok(vm.runInContext("ltTaHNow", sb)(noRect) === 0 && vm.runInContext("ltTaHNow", sb)(null) === 0, "量不到尺寸（迷你 DOM / 尚未挂载）→ 0，不抛异常");
+    ok(vm.runInContext("ltTaHSet", sb)(noRect, "/x:goal") === 0, "量不到就不记账（不会把 0 写成高度把框压没）");
+    ok(vm.runInContext('ltTaH("/x:goal")', sb) === 0, "表里确实没写进脏值");
+    const plain = { tagName: "TEXTAREA" };
+    ok(vm.runInContext("ltTaHApply", sb)(plain, "/x:goal") === plain, "没有 style 的老运行时不报错，原样返回");
+    ok(vm.runInContext("ltTaHBind", sb)(null, "/x:goal") === null, "空元素 / 空 key 直接原样返回（调用处不必先判）");
+  }
+
+  console.log(
+    fails
+      ? "\n " + fails + " / " + checks + " 项失败  (smoke-longtask-textarea-height)"
+      : "\n✓ " + checks + " 项全部通过  (smoke-longtask-textarea-height)",
+  );
+  if (fails ? 1 : 0) MERGED_FAILED = true;
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-longtask-textarea-height.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-longtask-textarea-height.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
+if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+process.exit(MERGED_FAILED ? 1 : 0);

@@ -1275,31 +1275,6 @@ export async function setDownloadDir(dir) {
 }
 
 /** 浏览器当前状态（活动流面板 / 手动打开 / 排障共用）。 */
-/* ── DevTools 前端（CDP 面板）─────────────────────────────────────────────────
-   需求「网关内置浏览器视图开 DevTools 前端（Console / Network / Cordis 树）」的落地口径：
-   **不自己写 Console/Network 面板** —— 直接开这台浏览器自带的 DevTools 前端。Chromium
-   的调试端点本身就 serve 一份 `/devtools/` 前端（`devtoolsFrontendUrl`），它是同源页面，
-   能直接连本机 CDP；这样 Console / Network / Sources / Performance 全套与用户熟悉的一模一样，
-   我们零依赖、零重复实现。
-   返回 { ok, url, targetId, port } —— url 缺失时渲染层给一句「先打开浏览器」。 */
-export async function devtoolsUrl() {
-  if (!state.proc || !state.port || !state.cdp || state.cdp.closed) {
-    return { ok: false, reason: '浏览器还没启动' }
-  }
-  let list = []
-  try {
-    list = await fetchJson(`http://127.0.0.1:${state.port}/json/list`, 4000)
-  } catch (err) {
-    return { ok: false, reason: '调试端点没响应：' + String((err && err.message) || err).slice(0, 120) }
-  }
-  const pages = (Array.isArray(list) ? list : []).filter((t) => t && t.type === 'page' && t.devtoolsFrontendUrl)
-  /* 优先当前会话正在驱动的那一页；没有就取第一页（用户点开面板时想看的通常就是它） */
-  const target = pages.find((t) => t.id === state.targetId) || pages[0] || null
-  if (!target) return { ok: false, reason: '还没有可检查的页面（先导航一个网址）' }
-  const url = new URL(target.devtoolsFrontendUrl, `http://127.0.0.1:${state.port}`).href
-  return { ok: true, url, targetId: target.id || '', port: state.port }
-}
-
 export function statusOf() {
   return {
     running: !!(state.proc && !state.proc.killed && state.cdp && !state.cdp.closed),

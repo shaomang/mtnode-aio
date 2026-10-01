@@ -1,7 +1,11 @@
-/* 本地语音转写（Qwen3-ASR）样式 —— renderer/app-asr.js 专用
-   节点内转写区块（.n-asr-*）+ 安装/状态弹窗（.asr-*）；亮色覆盖在末尾。 */
+/* 本地语音转写（官方本地 SenseVoice）转录块样式 —— renderer/app-asr.js 专用
+   音频 / 视频节点自己的转录块（.n-asr-*，含操作行那枚 .n-asr-btn）
+   +「语音模型」窗里的设置行与进度（.asr-set-* / .asr-prog*）；亮色覆盖在末尾。
+   注：从前的安装对话框样式（.asr-kv* / .asr-log / 安装目录与热词输入）随 Qwen3-ASR 后端
+   一并移除 —— 现在没有安装目录、没有 venv / CUDA / ffmpeg、也没有热词表（SenseVoice 的
+   官方调用只收 audio + language）。 */
 
-/* ---- 节点 body 尾部：音频转写区块 ---- */
+/* ---- 音频 / 视频节点 body 尾部：转录块 ---- */
 .n-asr {
   margin-top: 6px;
   padding-top: 6px;
@@ -10,6 +14,15 @@
   flex-direction: column;
   gap: 6px;
   min-height: 0;
+}
+/* 操作行那枚「转录」按钮：与「选择音频 / 清除」同排同高，只多一点主题色提示「这是转写」 */
+.wf-node.in-media .n-av-ops .n-asr-btn {
+  color: var(--green, #5fd68a);
+  border-color: rgba(126, 231, 135, 0.35);
+}
+.wf-node.in-media .n-av-ops .n-asr-btn:hover:not(:disabled) {
+  color: #7ee787;
+  border-color: rgba(126, 231, 135, 0.6);
 }
 .n-asr-hdr {
   display: flex;
@@ -48,84 +61,27 @@
   min-height: 56px;
   font-size: 12px;
 }
-.n-asr-hot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* 转录块里的失败 / 提示一句（拦下运行时节点上也写着同一句） */
+.n-asr-err {
   font-size: 11px;
-  opacity: 0.9;
+  line-height: 1.5;
+  color: #ff7b72;
+  word-break: break-word;
 }
-.n-asr-hot-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 4px;
-  color: inherit;
-  font-size: 11px;
-  padding: 2px 6px;
+.n-asr-ops {
+  display: flex;
+  gap: 6px;
+}
+.n-asr-ops .mini {
+  flex: none;
 }
 
-/* ---- 安装 / 状态弹窗 ---- */
-.asr-kv {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin: 10px 0;
-  font-size: 12px;
-}
-.asr-kv-row {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-}
-.asr-kv-k {
-  flex: 0 0 96px;
-  opacity: 0.7;
-}
-.asr-kv-v {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.asr-kv-row.err .asr-kv-v {
-  color: #ff7b72;
-}
-.asr-warn {
-  border-left: 3px solid #d29922;
-  padding-left: 8px;
-}
-.asr-prog {
-  margin: 10px 0;
-}
-.asr-prog-bar {
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.12);
-  overflow: hidden;
-}
-.asr-prog-bar > i {
-  display: block;
-  height: 100%;
-  width: 0;
-  background: #58a6ff;
-  transition: width 0.3s ease;
-}
-.asr-prog-msg {
-  margin-top: 4px;
-  font-size: 11px;
-  opacity: 0.8;
-  word-break: break-all;
-}
-.asr-settings {
+/* ---- 「语音模型」窗：状态行 / 下载源 / 下载进度 ---- */
+.asr-set {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+  margin: 4px 0 0;
   font-size: 12px;
 }
 .asr-set-row {
@@ -133,49 +89,37 @@
   align-items: center;
   gap: 8px;
 }
-.asr-set-row > span {
-  flex: 0 0 210px;
-  opacity: 0.8;
+.asr-set-row > span:first-child {
+  flex: 0 0 130px;
+  opacity: 0.78;
 }
-.asr-set-row > input[type="text"],
-.asr-set-row > input[type="number"] {
+.asr-set-row > .asr-set-val {
   flex: 1 1 auto;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.06);
+  word-break: break-word;
+}
+/* 设置 → 语音输入（全局）那一行「识别语言」，以及「语音模型」窗里的「下载源」。
+   这里的底色 / 字色**必须**交给 base.css 的原生下拉暗色基线（不透明暗底 + --ink），
+   本文件不再自己写：
+     - 原来写的是 background: rgba(255,255,255,.06) + color: inherit —— Chromium 的
+       select 弹出层是拿这个半透明底去画的，结果弹出列表成了白底 + 亮字（看不清），
+       就是「设置里部分下拉没走暗色主题」的那一处；
+     - color: inherit 还会把行容器（.asr-set-row，字色跟着 --ink 走）的颜色带进来，
+       一旦有人把行改成浅色字，控件文字也跟着一起不可读。
+   所以这里只留尺寸与边框：底色 / 字色一律交给上面那条基线，本文件不再自己写。 */
+.asr-set-row > select {
+  flex: 1 1 auto;
+  min-width: 0;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 4px;
-  color: inherit;
   padding: 3px 6px;
-}
-.asr-set-row > input[type="checkbox"] {
-  flex: 0 0 auto;
-}
-.asr-log {
-  max-height: 220px;
-  overflow: auto;
-  margin: 8px 0 0;
-  padding: 8px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.35);
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 
 /* ---- 亮色主题覆盖 ---- */
 body.theme-light .n-asr {
   border-top-color: rgba(0, 0, 0, 0.14);
 }
-body.theme-light .n-asr-hot-input,
-body.theme-light .asr-set-row > input[type="text"],
-body.theme-light .asr-set-row > input[type="number"] {
+body.theme-light .asr-set-row > select {
   background: #fff;
   border-color: rgba(0, 0, 0, 0.18);
-}
-body.theme-light .asr-prog-bar {
-  background: rgba(0, 0, 0, 0.1);
-}
-body.theme-light .asr-log {
-  background: rgba(0, 0, 0, 0.05);
 }

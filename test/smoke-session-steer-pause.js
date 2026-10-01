@@ -31,10 +31,11 @@
  *   [4] i18n 中英两份齐全（真加载 renderer/i18n.js 逐条验证，英文界面不得回落中文）
  *   [5] cordis 挂载行与打包口径（新插件落在 dsh/gateway/plugins，随 afterPack 整树复制）
  *   [6] 契约文档：dsh/DESIGN.md 有「运行中插话与暂停契约」一节（三层职责 + unknown-method 降级） */
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const vm = require("vm");
+const fs = require("fs"), path = require("path"), vm = require("vm"), os = require("os"), childProcess = require("child_process");
+const SHARED = { fs, path, vm, os, spawn: childProcess.spawn };
+const TEST_DIR = __dirname;
+let MERGED_FAILED = false;
+
 const { pathToFileURL } = require("node:url");
 const { createRequire } = require("node:module");
 
@@ -720,10 +721,167 @@ const designSrc = read("dsh/DESIGN.md");
   console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");
   if (fails) {
     console.log(fails + " 项失败");
-    process.exit(1);
   }
   console.log("全部通过");
 })().catch((e) => {
   console.log("FATAL " + ((e && e.stack) || e));
-  process.exit(1);
 });
+
+/* ==================== 已并入：test/smoke-session-auto-title.js ==================== */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-session-auto-title.js";
+  const { fs, path, vm, os, spawn } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const fs = require("fs");
+  const path = require("path");
+
+  let fails = 0;
+  let checks = 0;
+  function ok(cond, msg) {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  }
+  const read = (rel) =>
+    fs.readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8");
+  const SRC = read("renderer/app-assist.js");
+  const GW = read("dsh/gateway/gateway.mjs");
+
+  /* ===================== [1] 武装位一次性化 ===================== */
+  console.log("\n[1] agentSessionSend：武装位不再按用户消息数重置");
+  ok(
+    /st\._autoTitleRound\s*=\s*!st\.titleAuto\s*&&\s*!st\.titleLocked/.test(SRC),
+    "武装位 st._autoTitleRound = !st.titleAuto && !st.titleLocked（一次武装、常驻放行）",
+  );
+  ok(
+    !/st\._autoTitleRound\s*=.*messages[\s\S]{0,80}\.role\s*===\s*"user"[\s\S]{0,40}length\s*<=\s*1/.test(SRC),
+    "不再按「用户消息数 ≤1」每次发送重算武装位（旧逻辑已移除）",
+  );
+  ok(
+    (SRC.match(/st\._autoTitleRound\s*=/g) || []).length >= 1,
+    "app-assist.js 仍对 _autoTitleRound 做赋值（无删改后空转）",
+  );
+
+  /* ===================== [2] applyAutoSessionTitle：来源分流 ===================== */
+  console.log("\n[2] applyAutoSessionTitle：按来源(source)分流，fallback 不锁位");
+  const fnMatch = SRC.match(
+    /function applyAutoSessionTitle\(st,\s*raw,\s*srcKind\)\s*\{[\s\S]*?\n\}/,
+  );
+  ok(!!fnMatch, "存在 applyAutoSessionTitle(st, raw, srcKind) 函数体（带第三入参 srcKind）");
+  if (fnMatch) {
+    const body = fnMatch[0];
+    ok(
+      /if\s*\(!st\s*\|\|\s*st\.titleLocked\s*\|\|\s*!st\._autoTitleRound\)\s*return\s*false/.test(
+        body,
+      ),
+      "首道闸 = !st || titleLocked || !_autoTitleRound（titleAuto 撤出首道闸，仅 provider/user 置位）",
+    );
+    /* 来源分流：provider/user 定名上锁；fallback/缺省仅占位 */
+    ok(
+      /if\s*\(srcKind\s*===\s*"provider"\s*\|\|\s*srcKind\s*===\s*"user"\)/.test(body),
+      "provider/user 分支：写 st.title、置 titleAuto=true、关武装位",
+    );
+    const prov = body.match(
+      /if\s*\(srcKind\s*===\s*"provider"\s*\|\|\s*srcKind\s*===\s*"user"\)\s*\{[\s\S]*?\n\}/,
+    );
+    if (prov) {
+      ok(
+        /st\.titleAuto\s*=\s*true/.test(prov[0]) &&
+          /st\._autoTitleRound\s*=\s*false/.test(prov[0]) &&
+          /if\s*\(srcKind\s*===\s*"user"\)\s*st\.titleLocked\s*=\s*true/.test(prov[0]),
+        "provider 置 titleAuto+关武装位；user 额外置 titleLocked（最终定名、不让位）",
+      );
+    } else {
+      ok(false, "provider/user 分流块细节未定位");
+    }
+    const fb = body.match(/else\s*\{[\s\S]*?\n\}/);
+    ok(!!fb, "存在 fallback/缺省 else 分支");
+    if (fb) {
+      ok(
+        /if\s*\(st\.title\)\s*return\s*false/.test(fb[0]),
+        "fallback/缺省：仅当前无标题时占位写一次",
+      );
+      ok(
+        !/titleAuto/.test(fb[0]) && !/titleLocked/.test(fb[0]),
+        "fallback/缺省：绝不置 titleAuto / titleLocked（真实主题仍可覆盖）",
+      );
+    }
+    ok(
+      /st\.title\s*=\s*next/.test(body) && /st\.titleAuto\s*=\s*true/.test(body),
+      "provider/user 命中写 st.title 并置 titleAuto = true",
+    );
+  }
+
+  /* ===================== [2b] 调用点透传 source ===================== */
+  console.log("\n[2b] 调用点：applyAutoSessionTitle(st, title, source) 透传第三参");
+  ok(
+    /applyAutoSessionTitle\s*\(\s*st\s*,\s*\((?:data\s*&&\s*)?data\.title\)\s*\|\|\s*""/.test(
+      SRC,
+    ) &&
+      /,\s*\((?:data\s*&&\s*)?data\.source\)\s*\|\|\s*""\s*\)\s*;/.test(SRC),
+    "渲染层调用点把网关透传的 data.source 作为 srcKind 传入 applyAutoSessionTitle",
+  );
+  ok(
+    /applyAutoSessionTitle\s*\(\s*st\s*,\s*\(data\s*&&\s*data\.title\)\s*\|\|\s*""\s*,\s*\(data\s*&&\s*data\.source\)\s*\|\|\s*""\s*\)/.test(
+      SRC,
+    ),
+    "调用点缺省 source 归一为空串（fallback 语义）",
+  );
+
+  /* ===================== [2c] 网关透传 source ===================== */
+  console.log("\n[2c] 网关：session/title 事件转发时透传来源 source");
+  ok(
+    /emit\(\s*['"]title['"]\s*,\s*\{\s*title:\s*ev\.data\.title\s*,\s*source:\s*\(\s*ev\.data\.source\s*&&\s*ev\.data\.source\.kind\s*\)\s*\|\|\s*['']['']\s*,?\s*\}/
+      .test(GW),
+    "gateway.mjs emit('title', {title, source: (ev.data.source&&.kind)||''}) 透传 source.kind",
+  );
+
+  /* ===================== [3] 回落命名与既有语义不被破坏 ===================== */
+  console.log("\n[3] 回落命名语义保持：只受 titleLocked 约束、开发绑定会话不受影响");
+  const fallback = SRC.match(/st\.title\s*=\s*t\.slice\(0,\s*24\)[^\n]*/);
+  ok(!!fallback, "回落命名（首条消息前 24 字）仍在 agentSessionSend 里保留");
+  ok(
+    /if\s*\(!st\.titleLocked\)\s*\n?\s*st\.title\s*=\s*t\.slice\(0,\s*24\)/.test(SRC),
+    "回落命名只受 titleLocked 约束（不写 titleAuto、不触碰新武装位）",
+  );
+  /* 回落命名只发生在「非开发/细化绑定会话」追加消息分支里：合并模式下 devContractMsg
+     走 else 分支（内容上方注释「合并模式不追加消息…标题保持创建时设定不被覆盖」），
+     不触发这条 24 字回落 —— 绑定会话标题交给引擎自动命名即可。 */
+  const mergeBlock = SRC.match(
+    /if\s*\(!devContractMsg\)\s*\{[\s\S]{0,400}?st\.title\s*=\s*t\.slice\(0,\s*24\)/,
+  );
+  ok(!!mergeBlock, "回落命名（24 字）位于 !devContractMsg 追加消息块内（绑定会话不触发）");
+  /* 同一轮内先做回落命名、再放行引擎自动命名：两次赋值在同一函数 agentSessionSend
+     中按先后顺序出现（两者之间隔 devContractMsg 的 else 块，不做邻接断言） */
+  const iFallback = SRC.indexOf("st.title = t.slice(0, 24)");
+  const iArm = SRC.indexOf("st._autoTitleRound = !st.titleAuto && !st.titleLocked");
+  ok(
+    iFallback >= 0 && iArm > iFallback,
+    "同一轮内先回落命名、后放行引擎命名（回落不写 titleAuto、让引擎命名可落地）",
+  );
+
+  console.log(
+    "\n" +
+      (fails
+        ? "FAILED " + fails + " / " + checks + " checks"
+        : "ALL OK  " + checks + " checks"),
+  );
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-session-auto-title.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-session-auto-title.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
+if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+process.exit(MERGED_FAILED ? 1 : 0);

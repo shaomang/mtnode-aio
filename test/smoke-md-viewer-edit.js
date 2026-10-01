@@ -147,21 +147,67 @@ ok(
   "插入后光标落到新内容之后",
 );
 
-console.log("\n[4] 保存 / 关窗 / 虚拟文档三条路径");
-const saveFn = fnBody(app, "async function saveMdViewer()");
+console.log("\n[4] 实时保存 / 关窗 / 虚拟文档三条路径");
+const commitFn = fnBody(app, "async function mdViewerCommit()");
 ok(
-  saveFn.indexOf("const content = mdViewerDraftText();") >= 0,
-  "文件模式取 mdViewerDraftText（所见即所得档也能写回）",
+  commitFn.indexOf("const content = mdViewerDraftText();") >= 0,
+  "落盘取 mdViewerDraftText（所见即所得档也能写回）",
 );
 ok(
-  saveFn.indexOf("const r = await window.api.fileWriteText(p, content);") >= 0,
+  commitFn.indexOf("const r = await window.api.fileWriteText(p, content);") >= 0,
   "文件模式仍原样写回磁盘",
 );
-ok(saveFn.indexOf("if (_mdViewerState.virtual) {") >= 0, "虚拟文档分支保持不变");
+ok(
+  commitFn.indexOf("mtnode:file-saved") >= 0 && commitFn.indexOf('source: "viewer"') >= 0,
+  "写盘成功后仍广播 mtnode:file-saved（产物节点据此刷新）",
+);
+ok(commitFn.indexOf("if (_mdViewerState.virtual) {") >= 0, "虚拟文档分支仍在，且落盘后留在编辑态");
+/* ── 实时保存（本轮需求：markdown 编辑采用实时保存，不再要求主动保存） ── */
+ok(
+  app.indexOf("const MD_VIEWER_SAVE_DEBOUNCE_MS = 600;") >= 0 &&
+    app.indexOf("function mdViewerScheduleSave()") >= 0,
+  "② 停笔 600ms 自动落盘（mdViewerScheduleSave 防抖）",
+);
+const schedFn = fnBody(app, "function mdViewerScheduleSave()");
+ok(
+  schedFn.indexOf("mdViewerCommit()") >= 0 && schedFn.indexOf("mdViewerSetSaveState(\"pending\")") >= 0,
+  "② 防抖到期调 mdViewerCommit，底栏先转「保存中…」",
+);
+const markFn = fnBody(app, "function mdViewerMarkDirty()");
+ok(
+  markFn.indexOf("mdViewerScheduleSave();") >= 0 &&
+    fnBody(app, "function buildMdViewerRichEditor(raw)").indexOf("mdViewerScheduleSave();") >= 0,
+  "② 所见即所得输入与工具栏 / 粘贴都排一次实时保存",
+);
+ok(
+  fnBody(app, "function renderMdViewerContent(text)").indexOf("mdViewerScheduleSave();") >= 0,
+  "② 源码档 textarea 的输入也排一次实时保存",
+);
+ok(
+  app.indexOf("#mdViewerSaveBtn") < 0 &&
+    app.indexOf('id="mdViewerSaveBtn"') < 0 &&
+    fnBody(app, "function applyMdViewerChrome()").indexOf("mdViewerSaveBtn") < 0,
+  "② 顶部「保存」按钮已移除（不再要求主动保存）",
+);
+ok(
+  fnBody(app, "function applyMdViewerChrome()").indexOf('I18n.t("退出编辑")') >= 0 &&
+    fnBody(app, "function applyMdViewerChrome()").indexOf('I18n.t("取消编辑")') < 0,
+  "②「取消编辑」改「退出编辑」（实时保存下无法真正放弃修改；YAML 阅读器不动）",
+);
+ok(
+  app.indexOf("flushMdViewerSave()") >= 0 &&
+    fnBody(app, "function closeMdViewer()").indexOf("flushMdViewerSave()") >= 0,
+  "② 关窗 / 退出编辑 / 重载文件前先 flush 待落盘的那一笔",
+);
+ok(
+  app.indexOf("编辑中不重渲染") >= 0 &&
+    commitFn.indexOf("renderMdViewerContent(") < 0,
+  "② 落盘后不重渲染（保住光标 / 选中），状态只回显底栏",
+);
 const closeFn = fnBody(app, "function closeMdViewer()");
 ok(
-  closeFn.indexOf("_mdViewerState.virtual && _mdViewerState.editing && _mdViewerState.onSave") >= 0,
-  "关窗仍把虚拟文档草稿交回调用方（所见即所得档同样适用）",
+  closeFn.indexOf("_mdViewerState.onSave") < 0,
+  "② 关窗不再补一次 onSave（防抖落盘已交回）",
 );
 ok(
   app.indexOf("openMdViewer(\"\", {") >= 0 ||
@@ -181,8 +227,11 @@ for (const k of [
   '"所见即所得": "WYSIWYG"',
   '"查看 / 编辑 Markdown 源码": "View / edit the Markdown source"',
   '"回到所见即所得直接编辑": "Back to WYSIWYG direct editing"',
-  '"源码模式 · Ctrl+S 保存": "Source mode · press Ctrl+S to save"',
+  '"源码模式 · Ctrl+S 保存": "Source mode · changes save live (Ctrl+S saves now)"',
   '"编辑模式：所见即所得 · Ctrl+S 保存"',
+  '"退出编辑": "Exit editing"',
+  '"已自动保存": "Auto-saved"',
+  '"保存中…": "Saving…"',
   '"链接地址（https://…）": "Link URL (https://…)"',
   '"加粗": "Bold"',
   '"无序列表": "Bullet list"',

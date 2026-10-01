@@ -393,6 +393,13 @@ async function init() {
   I18n.setLocale(S.config.locale);
   document.documentElement.lang = S.config.locale === "en" ? "en" : "zh-CN";
   document.title = I18n.t("MTNode AI编排器");
+  /* 登录态比配置先到（app-auth.js 在 DOMContentLoaded 就刷新登录态，那时 S.config
+     还是 null）：中转服务（renderer/app-relay.js）那一次同步只能记一笔待补，
+     配置就绪后在这里补拉一次 —— 否则「新装应用 + 重新登录充值账号」进界面后
+     一直缺中转卡与凭据（main.js checkProvider 会报「需要登录账号」）。 */
+  try {
+    if (window.MtRelay && window.MtRelay.flush) window.MtRelay.flush();
+  } catch (_) {}
   I18n.applyDom(document);
   paintLangBtn();
   paintApprovalsBtn();
@@ -434,9 +441,18 @@ async function init() {
          助手两个窗格回到只有对话的形态）。设置项见 app-settings.js，消费方见
          renderer/app-trajectory.js 的 devOn()。 */
       developerTools: true,
+      /* 工作步骤展示档位（本次需求 · 对齐上游 ChatPresentationPolicy 的四档）：
+         compact / standard / detailed / verbose —— 简洁 / 标准 / 详细 / 完全展开。
+         默认 standard（上游默认档）。这里只是**新会话的默认值**：每条会话还能在
+         输入区「模式」菜单里单独覆盖（存 st.transcriptView），消费方见
+         renderer/app-assist.js 的 dshPolicyOfView / dshTranscriptViewFor。 */
+      transcriptView: "standard",
       visionInspectAllowed: false,
       assistAutoApprove: false,
       doneSound: true,
+      /* 内置完成音（内置「叮咚」）的音量百分比，0 = 静音；只影响内置音，
+         自定义音频文件按文件自身响度播（见 app-db.js 的 doneSoundVolumePct） */
+      doneSoundVolume: 35,
       theme: "industrial",
     },
     S.config.dsh || {},
@@ -489,10 +505,16 @@ async function init() {
     sess.noCanvasRead = !!sess.noCanvasRead;
     /* 「与画布无关」（Gate B）同样必须载回原值：丢了这一位 = 可见集漂移 → 换 runtime */
     sess.canvasFree = !!sess.canvasFree;
-    /* 会话「显示思考内容」（模式菜单第三枚开关，落盘白名单见 persistAgentSession）：
-       缺省与老存档一律按「显示」—— 只有用户亲口关过（落盘 false）才隐藏思考块，
-       绝不因字段缺席就改行为。 */
-    sess.showThink = sess.showThink !== false;
+    /* 会话「显示思考」（本次需求：原四档「工作步骤展示」在会话里收回成这一枚开关，
+       全局默认档仍留在 设置 · 智能能力 的 dsh.transcriptView）：
+       缺省 null = 跟随全局默认档；布尔 = 用户亲口点过这一枚开关，以它为准。
+       老存档迁移：旧字段 sess.transcriptView（会话级四档）历史上与之等价 ——
+       「简洁」档 = 不显示思考，其余档 = 显示；迁完就删掉旧字段（不再有两个真源）。 */
+    const legacyView = dshTranscriptViewNorm(sess.transcriptView);
+    sess.showThink = legacyView ? legacyView !== "compact" : null;
+    delete sess.transcriptView;
+    /* 会话头部的 View 选择（本次需求 · 上游的 View 偏好）：只认 "trace"，其余一律回「对话」 */
+    sess.trajView = sess.trajView === "trace" ? "trace" : "";
     /* 「不走普通会话计划这条线」（长任务新建窗的引导建图会话）：重启后仍豁免 ——
        否则再跑一轮就会拿到「任务流程 / 交计划块」指令，交出来的就是普通会话计划了。 */
     sess.noPlanFlow = !!sess.noPlanFlow;
@@ -803,14 +825,6 @@ async function init() {
       effortSel.onchange = () => {
         agentSessionState().effort = effortSel.value;
         persistAgentSession();
-      };
-    const ctxBtn = $("#agentCtx");
-    if (ctxBtn)
-      ctxBtn.onclick = () => {
-        const m = agentSessionState().metrics;
-        if (m && (m.inputTokens || m.outputTokens || m.contextWindow))
-          openMetricsDistribution(m);
-        else toast(I18n.t("暂无运行统计,先发送一条消息再试"), "warn");
       };
     const newBtn = $("#agentNew");
     if (newBtn)
