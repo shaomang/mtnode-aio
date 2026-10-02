@@ -3,6 +3,7 @@ node_modules/
 dist/
 dist_check*/
 out/
+docs/
 release/
 *.blockmap
 *.nsis.7z
