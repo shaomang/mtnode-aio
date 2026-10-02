@@ -445,12 +445,15 @@
       meta.appendChild(idLine);
       /* 余额行：只对充值白名单账号显示（测试期 = ms2308，见 app-wallet.js 的 VISIBLE_USERS）。
          余额来自账号快照的 balanceYuan（云端 publicUser 下发的元，主进程 auth-store 已放行该字段）；
+         **显示按鲸圆币（1 币 = ¥0.02）**，真实值仍是元，判定不改口径（见 renderer/app-whalecoin.js）；
          MtWallet 模块缺席时整块不显示，不影响原有菜单。 */
       if (window.MtWallet && window.MtWallet.visibleFor(u)) {
         var balLine = el("div", "acct-sub acct-balance");
         balLine.appendChild(el("span", "", T("余额：")));
-        balLine.appendChild(el("b", "", window.MtWallet.money(window.MtWallet.balanceOf(u))));
-        balLine.title = T("点「账户充值」查看明细与付款");
+        var balVal = el("b");
+        balVal.appendChild(window.MtWallet.balanceEl(window.MtWallet.balanceOf(u)));
+        balLine.appendChild(balVal);
+        balLine.title = T("鲸圆币 · 1 币 = ¥0.02（¥1 = 50 币）") + " · " + T("点「账户充值」查看明细与付款");
         meta.appendChild(balLine);
       }
     } else {

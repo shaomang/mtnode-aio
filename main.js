@@ -4274,6 +4274,12 @@ ipcMain.handle("store:request", (e, opts) => storeRequest(opts));
    渲染层负责把快照合进 config.providers 并持久化（renderer/app-relay.js）。 */
 const RELAY_PROVIDER_SOURCE = "mtnode-relay";
 const RELAY_KEY_PLACEHOLDER = "mtnode-account-token";
+/* 中转 Key 续期提前量（与 auth-store.js 的 RELAY_RENEW_BEFORE_MS、服务端的
+   RELAY_KEY_MS / 6 同口径 = 30 天）：剩余不足这个窗口就重领一张独立票。 */
+const RELAY_RENEW_BEFORE_MS = 30 * 24 * 3600 * 1000;
+/* 中转站 401 的识别标记（store-saas/relay.mjs 写在错误文案最前面）：
+   客户端据此区分「中转凭据失效」与「别的服务商 Key 填错」，只对前者清本机凭据。 */
+const RELAY_AUTH_MARK = "MTNODE_RELAY_AUTH";
 
 /* 快照里的模型形态（text / image）→ 服务商形态判定的覆盖表：
    渲染层 app-model-kind.js 的 modelKinds 表按「服务商 id → 模型 id → 形态」读，
@@ -4301,9 +4307,67 @@ ipcMain.handle("relay:me", async () => {
     };
   }
   const doc = (r && r.data) || {};
+  /* 服务端在这个入口**发/回**独立的中转 Key（180 天票）：拿到就存进本机加密凭据，
+     此后所有中转请求都用它（providerAuthKey 优先读它）。
+     服务端每次来领都发一张新的（库里只有 hash，现役票的明文取不回来 —— 见
+     store-saas/server.mjs 的 ensureRelayKey），所以这里的「沿用上一张」分支只用于
+     老服务端（回包里没有 relayKey 时，把新有效期记在那张票上）。 */
+  let keyState = {
+    has: false,
+    expiresAt: 0,
+    due: false,
+    maskedKey: "",
+    fromRelayKey: false,
+    persisted: false,
+    writeIssue: "",
+  };
+  try {
+    const before = authStore.load();
+    const issued = String(doc.relayKey || "").trim();
+    const exp = Number(doc.relayKeyExpiresAt || 0) || 0;
+    if (issued) authStore.setRelayKey(issued, exp);
+    else if (before && before.relayKey && exp && exp !== before.relayKeyExpiresAt) {
+      authStore.setRelayKey(before.relayKey, exp);
+    }
+    const after = authStore.load();
+    /* persisted = 这次领到的票**真的落到本机并能读回来**。写下去读不回来时
+       （系统加密上下文出问题，见 auth-store.js 的写后回读校验）必须让界面说清，
+       否则用户看到的就是「按提示重登了、凭据还是没有」的死循环。 */
+    const writeIssue = authStore.writeIssue ? String(authStore.writeIssue() || "") : "";
+    keyState = {
+      has: !!(after && after.relayKey),
+      expiresAt: after ? Number(after.relayKeyExpiresAt || 0) || 0 : 0,
+      due: !!(
+        after &&
+        after.relayKey &&
+        Number(after.relayKeyExpiresAt || 0) > 0 &&
+        Number(after.relayKeyExpiresAt) - Date.now() <= RELAY_RENEW_BEFORE_MS
+      ),
+      /* 打码串一并回给渲染层：领到票的这一刻卡上「凭据」那一行就该从占位串换成真凭据的
+         打码（与 relay:keyInfo 同一口径，明文照旧不出主进程）。 */
+      maskedKey: maskSecret(String((after && after.relayKey) || "")),
+      fromRelayKey: !!(after && after.relayKey),
+      persisted: !!(after && after.relayKey) && !writeIssue,
+      writeIssue,
+    };
+    if (issued && !keyState.has) {
+      errLog(
+        "[relay] 领到中转 Key 但没能存住（writeIssue=" +
+          (writeIssue || "-") +
+          "）：界面会提示重新登录一次",
+      );
+    }
+  } catch (err) {
+    errLog("[relay] 中转 Key 落库失败：" + String((err && err.message) || err));
+  }
   return {
     ok: true,
     at: Date.now(),
+    /* 凭据状态一并回给渲染层（不含明文）：卡上显示有效期、主进程据此判「该续期了」 */
+    keyState,
+    /* 服务端这次到底发没发独立票（老服务端回包里没有 relayKey 字段 = false）。
+       客户端据此把「服务端没发」与「发了没存住」分开说，别再让用户瞎重登。 */
+    issuedRelayKey: !!String(doc.relayKey || "").trim(),
     doc: {
       baseUrl: String(doc.baseUrl || ""),
       providerName: String(doc.providerName || "") || "MTNode 中转服务",
@@ -4339,16 +4403,33 @@ function maskSecret(secret) {
 ipcMain.handle("relay:keyInfo", () => {
   let cur = null;
   let readIssue = null;
+  let writeIssue = "";
   try {
     cur = authStore.load();
     readIssue = authStore.readIssue ? authStore.readIssue() : null;
+    writeIssue = authStore.writeIssue ? String(authStore.writeIssue() || "") : "";
   } catch {
     cur = null;
   }
-  const token = String((cur && cur.token) || "");
+  /* 卡上显示的是**真正会下发的那张凭据**：优先独立的中转 Key，没有才退回登录 token
+     （老凭据的过渡态，用户下一次登录即换成独立票）。 */
+  const token = String((cur && cur.relayKey) || (cur && cur.token) || "");
+  const relayExpiresAt = cur ? Number(cur.relayKeyExpiresAt || 0) || 0 : 0;
   return {
     ok: true,
     signedIn: !!(cur && cur.token),
+    /* 独立票的状态（只给界面显示与续期判断，绝不含明文）：
+       fromRelayKey = 这张打码凭据来自独立票（false = 还是登录 token 兜底）；
+       expiresAt / renewBeforeMs / renewDue = 有效期与「该续期了」。 */
+    fromRelayKey: !!(cur && cur.relayKey),
+    expiresAt: relayExpiresAt,
+    renewBeforeMs: RELAY_RENEW_BEFORE_MS,
+    renewDue: !!(
+      cur &&
+      cur.relayKey &&
+      relayExpiresAt > 0 &&
+      relayExpiresAt - Date.now() <= RELAY_RENEW_BEFORE_MS
+    ),
     maskedKey: maskSecret(token),
     keyLength: token.length,
     /* from = "store"（账号登录 token，中转站的 Key 就是它） / "placeholder"（没有凭据时
@@ -4358,15 +4439,58 @@ ipcMain.handle("relay:keyInfo", () => {
        = 凭据文件在、但这台机器解不开（换 Windows 账号 / 换机器 / 密钥变了）⇒ 重新登录一次。
        卡片据此把「没登录」和「凭据读不出来」分开说（见 auth-store.js 的 readIssue）。 */
     readIssue: String(readIssue || ""),
+    /* 写侧的坏消息（"write_unverified" = 写下去读不回来 / "save_fallback" = 退回本机密钥
+       加密存下了）。与 readIssue 分开：写失败时文件已被隔离，readIssue 看不出问题。 */
+    writeIssue: writeIssue === "write_unverified" ? writeIssue : "",
   };
 });
 
-/* 下发凭据：中转服务用账号登录 token（现取现用），其余服务商用配置里的 API Key */
+/* 中转站 401 的**唯一处理点**（只认中转链路，别的服务商 401 一律不动登录态）：
+   识别靠错误文案最前面的 MTNODE_RELAY_AUTH 标记（store-saas/relay.mjs 写在最前面），
+   或「请求确实打到了那张中转卡」+ 401/403 这一组合。命中即：
+     · 清掉本机凭据（那张票服务端已经不认了，留着只会一直撞 401）；
+     · 播 authChanged —— 渲染层据此弹「登录已失效，请重新登录」并在会话里插一条可点的提示。
+   返回 true = 这次是「中转凭据失效」。
+
+   **只有真正的认证失败才算**（status 401/403，或标记 + 4xx）：带标记的响应在
+   5xx / 网络错误下也会出现，那种情况是服务端抖了一下，把本机凭据清掉等于让用户白重登一次。 */
+function relayAuthFailed(info) {
+  const i = info || {};
+  const body = String(i.body || "");
+  const status = Number(i.status || 0);
+  const marked = body.indexOf(RELAY_AUTH_MARK) >= 0;
+  const authStatus = status === 401 || status === 403;
+  /* 先看标记（绝大多数情形都命中，不必碰配置）；没标记再看「是不是打到了那张中转卡」。
+     looksLikeRelayProvider 不传已知地址时纯读对象字段，不会去解析 config.json。 */
+  const hit = marked || looksLikeRelayProvider(i.provider || {}, "");
+  if (!hit) return false;
+  /* 非认证类状态（5xx / 网络错误）：只报错，**不清凭据** —— 服务端抖一下不等于票失效，
+     清掉只会让用户白重登一次（重登本身在这个 bug 里就是用户最痛的动作）。 */
+  if (!authStatus) {
+    errLog("[relay] 中转服务异常（HTTP " + status + "），保留本机凭据不清理");
+    return false;
+  }
+  try {
+    authStore.clear();
+  } catch {}
+  try {
+    notifyAuthChanged();
+  } catch {}
+  errLog("[relay] 中转凭据失效（HTTP " + status + "）：已清理本机凭据并提示重新登录");
+  return true;
+}
+
+/* 下发凭据：中转服务用**独立的中转 Key**（现取现用），其余服务商用配置里的 API Key。
+   中转 Key 与登录会话是两码事（见 store-saas/server.mjs 的 issueRelayKey）：
+     · 优先用本机存下的独立票（180 天，主进程解密后现取现用，明文不出主进程、不落 config.json）；
+     · 老凭据还没有独立票时退回登录 token 兜底 —— 首次请求会拿到服务端的「请重新登录一次」，
+       客户端据此清凭据并提示；用户重登一次即补上独立票。 */
 function providerAuthKey(provider) {
   const p = provider || {};
   if (String(p.source || "") === RELAY_PROVIDER_SOURCE) {
     const cur = authStore.load();
-    return cur && cur.token ? String(cur.token) : "";
+    if (!cur) return "";
+    return String(cur.relayKey || "") || String(cur.token || "");
   }
   return String(p.apiKey == null ? "" : p.apiKey).trim();
 }
@@ -5090,6 +5214,21 @@ ipcMain.handle("gif:make", (e, { wfId, name, frames, delay }) => {
 
 /* ---------------- IPC：AI 接口调用（主进程发起，无 CORS 限制） ---------------- */
 
+/* 中转 401 的标记前缀在文案最前面（store-saas/relay.mjs 写入）：命中即认定为
+   「中转凭据失效」，清凭据 + 播 authChanged，并把标记从给用户看的文案里去掉。 */
+function relayAuthFailure(provider, status, j, text) {
+  const raw =
+    (j && j.error && (j.error.message || String(j.error))) ||
+    String(text || "");
+  if (String(raw).indexOf(RELAY_AUTH_MARK) < 0) return false;
+  return relayAuthFailed({ provider, status, body: String(raw) });
+}
+function stripRelayAuthMark(msg) {
+  return String(msg || "")
+    .split(RELAY_AUTH_MARK)
+    .join("")
+    .trim();
+}
 function apiErr(status, j, text) {
   const msg = j && j.error && (j.error.message || String(j.error));
   if (msg) return `HTTP ${status}：${String(msg).slice(0, 300)}`;
@@ -6132,7 +6271,13 @@ async function apiCall({
       abKey,
       tiers,
     );
-    if (status >= 400) throw new Error(apiErr(status, j, text));
+    if (status >= 400) {
+      const relayAuth = relayAuthFailure(provider, status, j, text);
+      const err = new Error(stripRelayAuthMark(apiErr(status, j, text)));
+      err.httpStatus = status;
+      if (relayAuth) { err.code = "RELAY_AUTH_FAILED"; err.relayAuth = true; }
+      throw err;
+    }
     if (kind === "text") {
       const content =
         j &&
@@ -6206,7 +6351,13 @@ async function apiCall({
         abKey,
       ));
     }
-    if (status >= 400) throw new Error(apiErr(status, j, text));
+    if (status >= 400) {
+      const relayAuth = relayAuthFailure(provider, status, j, text);
+      const err = new Error(stripRelayAuthMark(apiErr(status, j, text)));
+      err.httpStatus = status;
+      if (relayAuth) { err.code = "RELAY_AUTH_FAILED"; err.relayAuth = true; }
+      throw err;
+    }
     const b64 = normB64(j && j.data && j.data[0] && j.data[0].b64_json);
     if (!b64) throw new Error(I18n.t("响应无图像数据"));
     return { ok: true, base64: b64, ext: "png" };
@@ -6222,7 +6373,13 @@ async function apiCall({
       abKey,
       req.nativeRefImage,
     );
-    if (status >= 400) throw new Error(apiErr(status, j, text));
+    if (status >= 400) {
+      const relayAuth = relayAuthFailure(provider, status, j, text);
+      const err = new Error(stripRelayAuthMark(apiErr(status, j, text)));
+      err.httpStatus = status;
+      if (relayAuth) { err.code = "RELAY_AUTH_FAILED"; err.relayAuth = true; }
+      throw err;
+    }
     const b64 = normB64(
       (j && j.image) ||
         (j && j.artifacts && j.artifacts[0] && j.artifacts[0].base64),
@@ -6240,7 +6397,9 @@ async function validateApiKey(provider) {
   checkProvider(provider);
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const headers = {
-    Authorization: "Bearer " + String(provider.apiKey).trim(),
+    /* 走 providerAuthKey：中转卡（source=mtnode-relay）配置里只有占位串，
+       真凭据是账号登录态 —— 直取 provider.apiKey 会让「验证 Key」对中转卡恒失败。 */
+    Authorization: "Bearer " + providerAuthKey(provider),
     Accept: "application/json",
   };
   let url = base + "/models";
@@ -6337,9 +6496,18 @@ function modelMetaRows(pool) {
 async function listProviderModels(provider) {
   const p = provider || {};
   const base = String(p.baseUrl || "").trim().replace(/\/+$/, "");
-  const apiKey = String(p.apiKey || "").trim();
+  /* 凭据一律经 providerAuthKey：中转卡的 Key 是账号登录态（配置里只有占位串）。 */
+  const apiKey = String(providerAuthKey(p) || "").trim();
   if (!base) return { ok: false, error: I18n.t("未配置接口地址（设置 · API/配置）") };
-  if (!apiKey) return { ok: false, error: I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）") };
+  if (!apiKey) {
+    return {
+      ok: false,
+      error:
+        String(p.source || "") === RELAY_PROVIDER_SOURCE
+          ? I18n.t("MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新")
+          : I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"),
+    };
+  }
   if (!/^https?:\/\//i.test(base)) {
     return { ok: false, error: I18n.t("接口地址需以 http(s):// 开头") };
   }
@@ -6464,7 +6632,7 @@ ipcMain.handle("api:call", async (e, spec) => {
   try {
     return await apiCall(spec);
   } catch (err) {
-    return { ok: false, error: err.message || String(err) };
+    return { ok: false, error: err.message || String(err), relayAuth: !!err.relayAuth };
   }
 });
 
@@ -6536,8 +6704,10 @@ function streamTextChat(req, emit) {
             try {
               j = JSON.parse(buf);
             } catch {}
-            const e = new Error(apiErr(res.statusCode, j, buf));
+            const relayAuth = relayAuthFailure(req.provider, res.statusCode, j, buf);
+            const e = new Error(stripRelayAuthMark(apiErr(res.statusCode, j, buf)));
             e.httpStatus = res.statusCode;
+            if (relayAuth) { e.code = "RELAY_AUTH_FAILED"; e.relayAuth = true; }
             reject(e);
           });
           return;
@@ -6699,6 +6869,9 @@ ipcMain.handle("api:callStream", async (e, spec) => {
       spec.maxTokens,
     );
     if (spec.abKey) req.abKey = spec.abKey;
+    /* relayAuthFailure 认「这次是不是打到了中转卡」要用 provider：补上（缺省即 undefined，
+       只影响 401 兜底的精确度，不影响请求本身）。 */
+    req.provider = req.provider || spec.provider;
     /* 三档超时随 spec 下发（渲染层从该服务商配置带过来），缺省 300000 */
     req.timeouts = timeoutTiersOf(spec, spec.provider);
     const { text, reasoning } = await streamTextChat(req, emit);
@@ -6712,13 +6885,13 @@ ipcMain.handle("api:callStream", async (e, spec) => {
         return { ok: true };
       } catch (err2) {
         const m = err2.message || String(err2);
-        emit("error", { error: m });
-        return { ok: false, error: m };
+        emit("error", { error: m, relayAuth: !!err2.relayAuth });
+        return { ok: false, error: m, relayAuth: !!err2.relayAuth };
       }
     }
     const m = err.message || String(err);
-    emit("error", { error: m });
-    return { ok: false, error: m };
+    emit("error", { error: m, relayAuth: !!err.relayAuth });
+    return { ok: false, error: m, relayAuth: !!err.relayAuth };
   }
 });
 ipcMain.handle("api:preview", async (e, spec) => {
@@ -6771,7 +6944,18 @@ ipcMain.handle("api:preview", async (e, spec) => {
       request: {
         method: req.method,
         url: req.url,
-        headers: req.headers,
+        /* 预览里 Authorization 的口径**按来源分**（本轮新增）：
+           · 中转卡：真凭据是账号登录态（见 providerAuthKey），明文不回渲染层 —— 只给打码串；
+           · 其余服务商：用户自己填的 Key 本来就在渲染层手里，照原样回显（预览要能核对）。 */
+        headers: (() => {
+          const h = Object.assign({}, req.headers || {});
+          if (String(provider.source || "") === RELAY_PROVIDER_SOURCE) {
+            for (const k of Object.keys(h)) {
+              if (/^authorization$/i.test(k)) h[k] = "Bearer " + maskSecret(providerAuthKey(provider));
+            }
+          }
+          return h;
+        })(),
         multipart,
         body: mp ? null : JSON.parse(JSON.stringify(req.body)),
       },
@@ -6808,18 +6992,63 @@ ipcMain.handle("dsh:installNode", () =>
 
 /* 中转服务的凭据对智体会话同样适用：DSH 网关拿到的 provider 里
    source=mtnode-relay 的那份 apiKey 只是占位串，交给网关前换成账号 token
-   （网关把它写进运行时的 MTNODE_KEY_i，渲染层全程看不到真凭据）。 */
+   （网关把它写进运行时的 MTNODE_KEY_i，渲染层全程看不到真凭据）。
+
+   **为什么不能只看 source**：渲染层各处拼这张服务商表时（renderer/app-agent.js 的
+   mtnodePiProviders → app-db.js 的 runParams.mtnodeProviders）历来只带
+   route / name / baseUrl / apiKey / api / models，**不带 source**。于是会话选「MTNode
+   中转服务」那条路由时，网关拿到的是占位串 mtnode-account-token，写进 settings.yaml 的
+   apiKeyEnv，请求打到中转站就是 401「缺少或已失效的中转 Key」—— 充值用户反复撞的正是这条。
+   现在渲染层已补回 source（两道），这里同时按「占位串 / 卡 id / 地址」三个可核对的证据兜底，
+   老渲染层或将来再漏一处的入口也能被收住。判据只用**非机密**信息，真 token 不外泄。 */
+function relayProviderCardBase() {
+  /* 只读一次 config.json 里那张中转卡的地址（服务端下发的那一份）。
+     config.json 可能很大（内嵌工作流），所以走 readJson 直接解析、不用 8MB 上限的缓存。 */
+  const cfg = readJson(join(DATA(), "config.json"), {}) || {};
+  const list = Array.isArray(cfg.providers) ? cfg.providers : [];
+  const hit = list.find((p) => p && String(p.source || "") === RELAY_PROVIDER_SOURCE);
+  return String((hit && hit.baseUrl) || "").trim();
+}
+function looksLikeRelayProvider(x, knownBaseUrl) {
+  if (!x || typeof x !== "object") return false;
+  if (String(x.source || "") === RELAY_PROVIDER_SOURCE) return true;
+  if (String(x.apiKey || "").trim() === RELAY_KEY_PLACEHOLDER) return true;
+  if (String(x.route || "") === RELAY_PROVIDER_SOURCE) return true;
+  const url = String(x.baseUrl || "");
+  /* 中转站地址一律由服务端下发、渲染层不硬编码（见 renderer/app-relay.js）：
+     这里认的是**服务端下发的那一份**与中转站路径标记，不是抄来的写死地址。 */
+  if (knownBaseUrl && url && url === knownBaseUrl) return true;
+  return /\/store-api\/relay(\/|$)/.test(url);
+}
 function dshParamsWithRelayKey(params) {
   if (!params || typeof params !== "object") return params;
-  const isRelay = (x) => x && String(x.source || "") === RELAY_PROVIDER_SOURCE;
+  /* 中转卡地址（服务端下发的那一份）只为「条目既没 source 又没卡 id」的兜底准备：
+     config.json 可能几十 MB，能不问就不问 —— 先看这几条条目里有没有自带判据。 */
+  let knownBase = "";
+  const needBase = (x) =>
+    x &&
+    typeof x === "object" &&
+    !String(x.source || "").trim() &&
+    String(x.route || "") !== RELAY_PROVIDER_SOURCE;
+  const probe = Array.isArray(params.mtnodeProviders) ? params.mtnodeProviders : [];
+  if (probe.some(needBase)) knownBase = relayProviderCardBase();
+  const isRelay = (x) => looksLikeRelayProvider(x, knownBase);
   const out = Object.assign({}, params);
+  const realKey = () => providerAuthKey({ source: RELAY_PROVIDER_SOURCE });
   if (Array.isArray(out.mtnodeProviders)) {
     out.mtnodeProviders = out.mtnodeProviders.map((x) =>
-      isRelay(x) ? Object.assign({}, x, { apiKey: providerAuthKey(x) }) : x,
+      isRelay(x) ? Object.assign({}, x, { apiKey: realKey() }) : x,
     );
   }
-  if (String(out.apiKey || "").trim() === RELAY_KEY_PLACEHOLDER) {
-    out.apiKey = providerAuthKey({ source: RELAY_PROVIDER_SOURCE });
+  /* 顶层 apiKey：会话选的是中转路由时一定带着占位串（见 renderer/app-db.js 的
+     apiKey / mtnodeProviders 取值）。空凭据时如实传空串 —— 网关侧会给出认证失败，
+     不要拿占位串去撞 401（那样报错完全看不出原因）。 */
+  if (isRelay({ apiKey: out.apiKey })) out.apiKey = realKey();
+  if (
+    String(out.provider || "").indexOf("mtnode_" + RELAY_PROVIDER_SOURCE) === 0 &&
+    !String(out.apiKey || "").trim()
+  ) {
+    out.apiKey = realKey();
   }
   return out;
 }

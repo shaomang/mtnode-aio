@@ -744,7 +744,14 @@ has(assistSlice, "renderSections(", "切到的区间含 renderSections 调用");
 ok(assistSlice.indexOf("await") < 0, "切到的区间无 await（可在同步 vm 函数里跑真实那段）");
 /* 助手侧切片起点之前的那一个真实局部量（Gate B 判据）同样按原句求值；
    assistLean / assistHide 已经在切片区间里，prelude 里再声明一次会撞 id。 */
-const assistPrelude = decls(assistSrc, "app-assist.js", ["const assistCanvasFree = "]);
+/* 切片起点之前还有两句真实局部量（本次需求新增）：助手栏「模式」菜单的纯净模式与
+   「先拷问需求」开关 —— 装配段要用它们决定纯不纯、契约贴不贴人设尾部。
+   与 assistCanvasFree 同一口径：按原句抠出来，在夹具里真求值。 */
+const assistPrelude = decls(assistSrc, "app-assist.js", [
+  "const assistCanvasFree = ",
+  "const assistPure = ",
+  "const assistGrill = ",
+]);
 /* 上面那句判据调 assistCanvasTurnRelated（撤掉手动「与画布无关」按钮后，助手侧改为
    按这条消息自动判定）。它本身只是一层包装，真判据 agentCanvasTurnRelated 由
    smoke-token-budget 真跑；这里直接换成一个读夹具 canvasFree 的假体 —— 判据本身
@@ -809,6 +816,11 @@ function makeAssistEnv(fixture) {
     assistPreset: "standard",
     assistEffort: "high",
     assistCanvasFree: !!fx.canvasFree,
+    /* 助手栏「模式」菜单两枚开关的全局真源（本次需求）：夹具缺省两枚都关 ——
+       于是「九节逐字节等价」这条老对照仍按**未注入契约**的那份口径比（零回归基线）；
+       「开着会怎样」由下面那一段单独把开关打开来验。 */
+    assistPure: false,
+    assistGrill: false,
     wf: { name: "画布A", nodes: [], wires: [] },
     config: { dsh: { assistAutoApprove: fx.assistAuto } },
   };
@@ -831,6 +843,10 @@ function makeAssistEnv(fixture) {
     dshHiddenToolsFor: () => ["mtnode_db"],
     AGENT_PRESET_DEFAULT: "minimal",
     I18n: { t: (s) => String(s) },
+    /* 拷问契约正文（app-assist.js 的 GRILL_CONTRACT，本次需求）：这里只给一枚短标记 ——
+       夹具验的是「它贴没贴到人设尾部」，不是契约文案本身（文案由
+       test/smoke-grill-mode.js 与 i18n 词条两侧钉住）。 */
+    GRILL_CONTRACT: "\n\n[GRILL-CONTRACT]",
     S,
   });
   if (!fx.noKernel) {
@@ -891,6 +907,30 @@ eqNum(
   makeAssistEnv({}).run().systemPrompt,
   "内核不在时按同一节序直接串接兜底：结果与分节渲染逐字节一致",
 );
+/* ⓪ 拷问契约（本次需求）：助手栏那一枚「先拷问需求」开着 → 契约贴在人设尾部、整段
+   systemPrompt 只在尾部多这一段；关掉它 → 一字不多（夹具缺省 = 与改造前逐字节一致的基线）。
+   **基线要在 diff 打开之前取**：diff 一开，第二轮起会把未变节整段裁掉，那时的
+   "systemPrompt" 只剩本轮变化的那几节，拿它比就不再是「整段」的对照了。 */
+let ASSIST_FULL_OFF = "";
+{
+  const env0 = makeAssistEnv({});
+  const off = env0.run().systemPrompt;
+  ASSIST_FULL_OFF = off;
+  ok(
+    off.indexOf("[GRILL-CONTRACT]") < 0,
+    "拷问开关关掉：契约一字不发（缺省两枚都关 = 零回归基线）",
+  );
+  const on = makeAssistEnv({}).run({ s: { assistGrill: true } }).systemPrompt;
+  ok(
+    on.indexOf("[GRILL-CONTRACT]") >= 0,
+    "拷问开关开着：拷问契约贴进 systemPrompt（本次需求）",
+  );
+  eqNum(
+    on.replace("\n\n[GRILL-CONTRACT]", ""),
+    off,
+    "契约只多出尾部那一段，其余各节逐字节不变",
+  );
+}
 /* ① 跨轮裁剪：只有每轮都变的 app_state 需要重发 */
 {
   const env = makeAssistEnv({});

@@ -52,6 +52,9 @@
 @import url("./css/apps.css");
 /* 账户充值（钱包）：充值对话框 + 账号菜单余额行（renderer/app-wallet.js） */
 @import url("./css/wallet.css");
+/* 鲸圆币：金币图标与金额元件（renderer/app-whalecoin.js）；排在 wallet.css 之后，
+   钱包里的档位 / 到账行等更具体的覆盖由本文件决定。 */
+@import url("./css/whalecoin.css");
 /* 会话自己的浏览器：侧栏「浏览器活动」页 + 活动流 + 浏览器求助/接管卡
    （renderer/app-browser.js）；亮色覆盖在文件末尾。 */
 @import url("./css/browser.css");

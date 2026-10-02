@@ -275,6 +275,10 @@
               <!-- 会话不再有「规划 / 压缩」chip：规划模式与压缩上文仍可手敲 /plan、/compact
                    （见 app-assist.js 斜杠命令），按钮入口按需求移除。 -->
               <button type="button" class="agent-chip run-plan" id="agentRunPlanBtn" hidden data-i18n-title="关闭规划模式并按上一条计划开始实施" title="关闭规划模式并按上一条计划开始实施"><span data-i18n="▶ 执行计划">▶ 执行计划</span></button>
+              <!-- 「拷问需求」状态小字（本次开发需求）：模式菜单里那一枚「先拷问需求」默认开，
+                   这一枚只**回显**这一轮会不会被拷问（不挂 onclick，切换只走模式菜单）——
+                   开 = 显示，关 = hidden（见 app-assist.js paintGrillTag）。 -->
+              <button type="button" class="agent-chip agent-chip-grill" id="agentGrillTag" hidden data-i18n-title="先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手" title="先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手"><span data-i18n="拷问需求">拷问需求</span></button>
               <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span><span class="agent-tool-val" id="agentToolsTriggerVal"></span></button>
               <!-- 会话不再显示「本画布 / 工具库可调用工具」清单 chip：清单每轮重收集，
                    展示它要额外打 IPC（toolsList 读盘）且对用户没有决策价值；
@@ -458,6 +462,17 @@
         </select>
       </label>
     </div>
+    <!-- 助手栏「模式」菜单（本次开发需求）：与会话窗口「模式」菜单**同一套构件**
+         （app-assist.js 的 buildAgentModeMenu / agentModeEntryOf），行集 = assistModeEntries
+         （先拷问需求 + 纯净模式），真源是全局偏好 S.assistGrill / S.assistPure（随配置落盘）。
+         入口键面与「工作范围」同一行观感（.assist-ctrl-item），开着的开关由 .on 变色 +
+         tooltip 逐项「（开）/（关）」表达（见 paintAssistModeChip）。 -->
+    <div class="assist-ctrl" id="assistModeCtrl">
+      <button type="button" class="assist-chip-mode" id="assistModeTrigger" data-i18n-title="模式" title="模式"><span data-i18n="模式">模式</span></button>
+      <!-- 「拷问需求」状态小字：与会话头部那一枚同一份词条（见 assistGrillTagPaint） -->
+      <span class="assist-grill-tag" id="assistGrillTag" hidden data-i18n="拷问需求">拷问需求</span>
+    </div>
+    <div class="agent-menu agent-tools-menu" id="assistModeMenu" hidden></div>
     <div class="assist-ws-line">
       <span class="assist-ws-label" data-i18n="工作范围">工作范围</span>
       <select id="assistScopeSel" class="assist-scope-sel" data-i18n-title="限制助手可访问的画布范围" title="限制助手可访问的画布范围"></select>
@@ -602,6 +617,11 @@
 <!-- DeepSeek 单价与费用估算 + 官方余额查询（纯函数段可被 test/ 切片真跑）；
      排在 app-agent.js 之前；运行时才调用它的 tokViewModels / dshProvider -->
 <script src="app-cost.js"></script>
+<!-- 鲸圆币（MTNode 自己的计量单位：1 币 = ¥0.02，只用于账户钱包与 MTNode 中转服务；
+     官方 DeepSeek 余额与官方路由的费用估算仍是 ¥，口径见 app-whalecoin.js 文件头）：
+     换算 + 金币图标 + 金额元件。必须排在 app-wallet.js / app-relay.js / app-settings.js
+     之前 —— 它们都要用 window.MtCoin 画「金币 + 数量」。 -->
+<script src="app-whalecoin.js"></script>
 <script src="app-agent.js"></script>
 <script src="app-prompt-sections.js"></script>
 <script src="app-db.js"></script>
@@ -762,6 +782,7 @@
      config.modelKinds；只读卡渲染在 app-settings.js。必须排在 app-auth.js 之后
      （要用登录态）、app-wallet.js 之前（充值成功要立刻回刷）。 -->
 <script src="app-relay.js"></script>
+<script src="app-relay-auth.js"></script>
 <!-- 账户充值（钱包，自包含新模块，挂 window.MtWallet）：账号菜单里的「余额」行与「充值」入口
      （app-auth.js 的 paintMenu 按判空调用，模块缺席则整块不显示），以及充值对话框
      （档位 / 自定义金额 → 服务端下单 → 支付宝付款码 → 轮询入账 → 刷新余额）。

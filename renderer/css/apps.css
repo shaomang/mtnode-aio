@@ -258,8 +258,7 @@
 }
 
 /* ── 通用零件 ── */
-.apps-hint,
-.apps-sec-hint {
+.apps-hint {
   font-size: 11px;
   line-height: 1.6;
   color: var(--muted);
@@ -274,12 +273,6 @@
   color: var(--muted);
   border: 2px dashed var(--bd);
   border-radius: 8px;
-}
-
-.apps-empty-sm {
-  font-size: 11px;
-  color: var(--muted);
-  padding: 4px 0;
 }
 
 .apps-badge {
@@ -684,7 +677,7 @@
   justify-content: flex-end;
 }
 
-/* ── 详情块（应用页展开 / 开发页结果表） ── */
+/* ── 详情块（应用页展开） ── */
 .apps-detail {
   grid-column: 1 / -1;
   margin-top: 8px;
@@ -692,10 +685,6 @@
   border: 1px solid var(--bd2);
   border-radius: 8px;
   background: var(--code);
-}
-
-.apps-detail-inline {
-  margin-top: 8px;
 }
 
 .apps-detail-full {
@@ -816,30 +805,6 @@
 
 .apps-row-badges {
   margin-top: 5px;
-}
-
-/* ── 开发页：分节 ── */
-.apps-sec {
-  padding: 12px;
-  border: 2px solid var(--bd);
-  border-radius: 10px;
-  background: var(--panel);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
-}
-
-.apps-sec h3 {
-  font-size: 12.5px;
-  font-weight: 800;
-  letter-spacing: 1px;
-  color: #9ecdff;
-}
-
-.apps-select {
-  max-width: 320px;
-  font-size: 11.5px;
 }
 
 /* ── 同名目录冲突：覆盖 / 改名 / 取消（persistent：点外部不关，只走三个按钮 / Esc） ── */
@@ -1429,26 +1394,6 @@ body.theme-light .apps-dev-more-pop {
   padding-top: 10px;
   border-top: 2px solid var(--bd);
   background: var(--panel);
-}
-
-/* 折叠的工具区（导出应用包 / 变更探测 / 开发绑定） */
-.apps-sec-more {
-  flex: none;
-  border: 2px solid var(--bd);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 8px 12px;
-}
-
-.apps-sec-more > summary {
-  cursor: pointer;
-  font-size: 11.5px;
-  letter-spacing: .5px;
-  color: var(--muted);
-}
-
-.apps-sec-more > .apps-sec {
-  margin-top: 10px;
 }
 
 /* ── 设计风格卡片（renderer/app-app-flow.js 的 appsStyleCards）──────────────

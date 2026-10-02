@@ -102,7 +102,9 @@ if (!want) {
   process.exit(2);
 }
 const days = Number(arg("days", "0"));
-const ttl = Number.isFinite(days) && days > 0 ? Math.floor(days) * 24 * 3600 * 1000 : SESSION_MS;
+/* 缺省 180 天（与服务端 RELAY_KEY_MS 同口径）；--days 可覆盖。 */
+const RELAY_KEY_MS = 180 * 24 * 3600 * 1000;
+const ttl = Number.isFinite(days) && days > 0 ? Math.floor(days) * 24 * 3600 * 1000 : RELAY_KEY_MS;
 
 const low = want.toLowerCase();
 const user = users.find((u) => String(u.username || "").toLowerCase() === low) || users.find((u) => u.id === want);
@@ -113,7 +115,16 @@ if (!user) {
 
 const token = crypto.randomBytes(24).toString("hex");
 const t = Date.now();
-await store.createSession({ tokenHash: hashToken(token), userId: user.id, expiresAt: t + ttl });
+/* kind="relay" 是这个 Key 的**身份**：service 侧只认它（/relay/v1/* 不收登录会话 token），
+   客户端也按独立票存进本机加密凭据（180 天滑动续期，见 server.mjs 的 issueRelayKey）。
+   默认有效期跟服务端的 RELAY_KEY_MS 同口径（180 天），--days 可覆盖。 */
+await store.createSession({
+  tokenHash: hashToken(token),
+  userId: user.id,
+  expiresAt: t + ttl,
+  kind: "relay",
+  createdAt: t,
+});
 
 const total = Math.round((Math.round(Number(user.balanceCents) || 0) + subCentsOf(user)) * 1e4) / 1e4;
 const out = {

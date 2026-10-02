@@ -51,6 +51,8 @@
   var pendingFlush = false;
   var pendingForce = false;
   var retryTimer = null;
+  /* 正在续期凭据（renewDue 命中时 sync({force:true}) 跑着）：只挡并发，不做失败节流 */
+  var renewing = false;
 
   function T(s, vars) {
     return window.I18n && window.I18n.t ? window.I18n.t(s, vars) : s;
@@ -102,7 +104,12 @@
     return {
       authKey: r.signedIn === true,
       maskedKey: String(r.maskedKey || "") || maskKey(KEY_PLACEHOLDER),
-      keyIssue: String(r.readIssue || ""),
+      keyIssue: String(r.readIssue || r.writeIssue || ""),
+      /* 凭据有效期与续期状态（只读卡上那一行显示用）：来自主进程 relay:keyInfo 的
+         fromRelayKey / expiresAt / renewDue —— 渲染层永远拿不到凭据明文。 */
+      fromRelayKey: r.fromRelayKey === true,
+      expiresAt: Number(r.expiresAt || 0) || 0,
+      renewDue: r.renewDue === true,
     };
   }
   /* 最近一次取到的打码凭据（**还没落进卡时**的暂存）：第一次成功同步会新建整张卡，
@@ -118,6 +125,9 @@
       authKey: false,
       keyMasked: maskKey(KEY_PLACEHOLDER),
       keyIssue: "",
+      fromRelayKey: false,
+      expiresAt: 0,
+      renewDue: false,
     });
   }
   function syncKeyInfo() {
@@ -135,6 +145,9 @@
             authKey: key.authKey,
             keyMasked: key.maskedKey,
             keyIssue: key.keyIssue,
+            fromRelayKey: key.fromRelayKey,
+            expiresAt: key.expiresAt,
+            renewDue: key.renewDue,
           });
         }
         return key;
@@ -156,6 +169,9 @@
       authKey: !!(v && v.authKey),
       maskedKey: masked || maskKey(KEY_PLACEHOLDER),
       keyIssue: String((v && v.keyIssue) || ""),
+      fromRelayKey: !!(v && v.fromRelayKey),
+      expiresAt: Number((v && v.expiresAt) || 0) || 0,
+      renewDue: !!(v && v.renewDue),
     };
   }
   function tsText(ms) {
@@ -169,7 +185,10 @@
       " " + pad(d.getHours()) + ":" + pad(d.getMinutes())
     );
   }
-  /* 金额一律「元」（4 位小数）：入参已经是元，这里只格式化，不做分↔元换算。 */
+  /* 金额一律「元」（4 位小数）：入参已经是元，这里只格式化，不做分↔元换算。
+     **只在真正走支付宝的元金额上用**（充值窗的「实付 ¥…」与退款说明）。
+     中转余额 / 档位 / 订单流水这些账户资产一律走鲸圆币（window.MtCoin /
+     MtWallet.balanceEl / coinEl），本函数不要再拿去画余额 —— 那会把 ¥ 又带回来。 */
   function money(yuan) {
     if (window.MtWallet && window.MtWallet.money) return window.MtWallet.money(yuan);
     return "¥" + Number(yuan || 0).toFixed(4);
@@ -300,10 +319,14 @@
         balanceYuan: Number(doc.balanceYuan) || 0,
         totalYuan: Number(doc.totalYuan) || 0,
         blocked: blocked,
-        /* 凭据只以**打码串**落在这里给界面显示（真 token 由主进程现取现用，从不落盘） */
+        /* 凭据只以**打码串**落在这里给界面显示（真 token 由主进程现取现用，从不落盘）；
+           有效期 / 续期状态一起带上（卡上「凭据」那一行要说得清什么时候该重登）。 */
         authKey: keyView.authKey,
         keyMasked: keyView.maskedKey,
         keyIssue: keyView.keyIssue,
+        fromRelayKey: keyView.fromRelayKey,
+        expiresAt: keyView.expiresAt,
+        renewDue: keyView.renewDue,
       },
     };
     if (prov) next.disabled = prov.disabled === true;
@@ -327,6 +350,25 @@
   function hasLocalSnapshot() {
     var prov = providerOf();
     return !!(prov && Number(meta(prov).at) > 0);
+  }
+
+  /* 凭据该不该续期（纯本地问一次主进程，不打服务端）：中转 Key 是独立的 180 天票
+     （见 store-saas/server.mjs 的 issueRelayKey），剩余不足续期窗口就该重领一张 ——
+     否则一张票用到最后一天，用户会在毫无预兆的情况下撞「凭据已失效」401。
+     判据只来自主进程 relay:keyInfo 的 renewDue（明文凭据永远不出主进程）。
+     「没有独立票」（fromRelayKey=false）也算到期：服务端会借这次续期把票补上，
+     用户不必自己去点「刷新中转清单」。 */
+  function renewDue() {
+    if (!window.api || typeof window.api.relayKeyInfo !== "function") return Promise.resolve(false);
+    return Promise.resolve(window.api.relayKeyInfo()).then(
+      function (info) {
+        var i = info || {};
+        return !!(i.signedIn && (!i.fromRelayKey || i.renewDue));
+      },
+      function () {
+        return false;
+      },
+    );
   }
 
   /* 卡片类型自愈（只动本地，不打服务端）：中转卡的类型是**云端口径**，恒为 text_openai，
@@ -408,6 +450,42 @@
           };
         }
         var doc = (r && r.doc) || {};
+        /* 领到票的那一刻就把凭据状态落进卡里（不再等下一次登录 / 下次打开设置）：
+           主进程在这一次响应里已经把新票存下并算好打码串（keyState），
+           这里直接认它 —— 少了这一步，卡上「凭据」还是占位串、顶部横幅也照旧亮着，
+           用户会以为「重新登录根本没领到」，正是上报的那个死循环。 */
+        var ks = (r && r.keyState) || null;
+        if (ks && ks.fromRelayKey) {
+          cachedKeyView = {
+            authKey: true,
+            maskedKey: String(ks.maskedKey || "") || maskKey(KEY_PLACEHOLDER),
+            keyIssue: "",
+            fromRelayKey: true,
+            expiresAt: Number(ks.expiresAt || 0) || 0,
+            renewDue: ks.due === true,
+          };
+        } else if (ks && ks.writeIssue) {
+          /* 服务端发了票、本机存不住（写后回读校验拦下：见 auth-store.js）——
+             把原因摆在卡上，别再让用户对着「重新登录一次即可」反复重登。 */
+          cachedKeyView = {
+            authKey: true,
+            maskedKey: maskKey(KEY_PLACEHOLDER),
+            keyIssue: String(ks.writeIssue),
+            fromRelayKey: false,
+            expiresAt: 0,
+            renewDue: false,
+          };
+        } else if (!ks && r && r.issuedRelayKey === false) {
+          /* 服务端没发独立票（老服务端）：说清是服务端这一侧的事，不是用户没登录 */
+          cachedKeyView = {
+            authKey: true,
+            maskedKey: maskKey(KEY_PLACEHOLDER),
+            keyIssue: "server_no_relay_key",
+            fromRelayKey: false,
+            expiresAt: 0,
+            renewDue: false,
+          };
+        }
         if (!doc.everRecharged) {
           /* 从没充过值：连卡都不该在（含退出登录 / 换到没充值的账号） */
           var removed = dropProvider();
@@ -419,6 +497,14 @@
         var changed = applyDoc(doc, r.at);
         return saveConfig().then(function (saved) {
           emit("synced");
+          /* 领到票的这一刻，两条界面提示都要立刻改口径：卡上「凭据」那一行（emit 已经回刷了
+             网格与正在开着的卡）与顶部那条横幅（快到期 / 凭据解不开时亮的那条）——
+             横幅读的是主进程的 relay:keyInfo，所以要再问一次（纯本地，不打服务端）。 */
+          if (ks && ks.fromRelayKey && typeof MtRelayAuth !== "undefined" && MtRelayAuth.refresh) {
+            try {
+              MtRelayAuth.refresh();
+            } catch (e) {}
+          }
           return { ok: true, everRecharged: true, changed: changed || saved };
         });
       })
@@ -455,23 +541,44 @@
      让老快照的卡也能显示 Key（不打扰服务端，也不重写清单）。 */
   function syncIfStale() {
     var heal = healType();
-    if (hasLocalSnapshot()) {
-      var p = providerOf();
-      if (p && !String(meta(p).keyMasked || "")) {
-        return heal
-          .then(function () {
-            return syncKeyInfo();
-          })
-          .then(function () {
-            return { ok: true, skipped: true };
+    /* 凭据到期（或本机还没有独立票）时先续一次：入口 /api/relay/me 在服务端同时是发放口，
+       这一次同步会把新的 180 天票领回本机（见 main.js 的 relay:me）。登录 / 启动 /
+       打开设置卡片都经过这里，所以续期是「顺带发生」的，不靠用户记得去点刷新。
+       renewing 只挡并发：续期失败就是失败，下一轮（下次打开设置 / 下次登录态刷新）还会再来，
+       不做失败节流。 */
+    return renewDue().then(function (due) {
+      if (due) {
+        if (!renewing) {
+          renewing = true;
+          var retry = function () {
+            renewing = false;
+          };
+          heal = heal.then(function () {
+            return sync({ force: true }).then(retry, retry);
           });
+        }
+        return heal.then(function () {
+          return { ok: true, skipped: true, reason: "renewing" };
+        });
+      }
+      if (hasLocalSnapshot()) {
+        var p = providerOf();
+        if (p && !String(meta(p).keyMasked || "")) {
+          return heal
+            .then(function () {
+              return syncKeyInfo();
+            })
+            .then(function () {
+              return { ok: true, skipped: true };
+            });
+        }
+        return heal.then(function () {
+          return { ok: true, skipped: true };
+        });
       }
       return heal.then(function () {
-        return { ok: true, skipped: true };
+        return sync({});
       });
-    }
-    return heal.then(function () {
-      return sync({});
     });
   }
 

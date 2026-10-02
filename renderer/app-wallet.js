@@ -1,13 +1,20 @@
 /* 账户充值（钱包）：余额展示 + 支付宝扫码充值 + 订单/流水查看。
  *
  * 口径（与云端 store-saas 一致，详见 docs/recharge-design.md）：
- *   · 金额一律「元」（4 位小数）：服务端只下发 / 只接收元，前端不做分↔元换算，也不做算术决策。
+ *   · 传输与存储一律「元」（4 位小数）：服务端只下发 / 只接收元，前端不做分↔元换算，
+ *     也不做算术决策。
+ *   · **界面一律「鲸圆币」**（1 币 = ¥0.02，见 renderer/app-whalecoin.js）：余额、档位、
+ *     订单与流水都以币显示（余额四舍五入取整、<0.5 币显示「<1 币」）；只有两处仍写元 ——
+ *     支付宝实际收付的「实付金额」与部分退款说明。用户按币选档位 / 输入币数，提交给云端
+ *     的仍是元（yuanOfCoins 反算，最多 2 位小数）。
+ *     可用性与上下限判定始终按真实元值，不因为显示取整而改口径。
  *   · 入口只对白名单账号显示（测试期 = ms2308）；云端 MTNODE_RECHARGE_USERS 是同一份口径，
  *     两边都放开才算正式上线。服务端另有 403 RECHARGE_NOT_OPEN 兜底，前端藏入口只是体验层。
  *   · 下单成功才展示二维码（服务端先向支付宝预下单、再落本地订单），轮询只查自己的订单。
  *   · 弹窗 persistent + 可最小化；关闭 / 被别的弹窗顶掉后，轮询必须停（用代次 gen + isConnected 双保险）。
  *
- * 依赖：window.api.storeRequest（主进程统一带 Bearer）、app.js 的 openOverlay、I18n。
+ * 依赖：window.api.storeRequest（主进程统一带 Bearer）、app.js 的 openOverlay、
+ *       window.MtCoin（换算与金币图标）、I18n。
  */
 (function () {
   "use strict";
@@ -28,9 +35,31 @@
     if (text != null) n.textContent = String(text);
     return n;
   }
-  /* 金额一律「元」（4 位小数）：服务端只下发 / 只接收元，这里不做分↔元换算。 */
+  /* 金额一律「元」（4 位小数）：服务端只下发 / 只接收元，这里不做分↔元换算。
+     **只在「实付金额」这类真正走支付宝的元金额上用**（如 ¥10.0000）；余额 / 档位 /
+     订单流水这些账户资产走下面的 coin* 系列（鲸圆币）。 */
   function money(yuan) {
     return "¥" + Number(yuan || 0).toFixed(4);
+  }
+  /* 鲸圆币换算与元件（renderer/app-whalecoin.js）：模块缺席时退回纯数字，不炸界面 */
+  function coinsOfYuan(y) {
+    return window.MtCoin ? window.MtCoin.coinsOfYuan(y) : Number(y || 0) * 50;
+  }
+  function yuanOfCoins(c) {
+    return window.MtCoin ? window.MtCoin.yuanOfCoins(c) : Math.round(Number(c || 0) * 2) / 100;
+  }
+  function coinNum(coins) {
+    return window.MtCoin ? window.MtCoin.coinNumText(coins) : String(Math.round(Number(coins) || 0));
+  }
+  /* 「金币 + 数量」元件；opts 见 app-whalecoin.js 的 coinEl */
+  function coinEl(value, opts) {
+    if (window.MtCoin && window.MtCoin.coinEl) return window.MtCoin.coinEl(value, opts);
+    return el("span", "coin-amt", coinNum(value));
+  }
+  /* 余额元件（自动处理 <1 币的零头文案） */
+  function balanceEl(yuan) {
+    if (window.MtCoin && window.MtCoin.balanceEl) return window.MtCoin.balanceEl(yuan);
+    return el("span", "coin-bal", coinNum(coinsOfYuan(yuan)));
   }
   function visibleFor(u) {
     if (!u) return false;
@@ -134,7 +163,8 @@
           if (Number(r.data.maxYuan)) MAX_YUAN = Number(r.data.maxYuan);
           /* 界面是在配置回来**之前**用兜底值画的：档位、金额上下限、主按钮文案都要按服务端
              真值重画一次，否则 env 调过限额（例如验收时把下限降到 0.01 元）时，输入框的 min/max
-             与「¥1.0000 – ¥1000.0000」提示还停在兜底值，与实际校验口径不一致。 */
+             与「50 – 50,000」提示还停在兜底值，与实际校验口径不一致（限额仍是元口径，
+             界面按 50:1 换算成币显示，见 pickedCoins）。 */
           paintTiers();
           paintCustomRange();
         }
@@ -177,7 +207,10 @@
   function paintBalance() {
     if (!dialogAlive()) return;
     var v = ST.root.querySelector("#wlBalance");
-    if (v) v.textContent = money(ST.balanceYuan);
+    if (!v) return;
+    /* 余额以鲸圆币显示（原本读的是 balanceYuan 的元值，显示时换算）；判定不改口径 */
+    v.textContent = "";
+    v.appendChild(balanceEl(ST.balanceYuan));
   }
 
   function paintTiers() {
@@ -185,9 +218,13 @@
     var box = ST.root.querySelector("#wlTiers");
     if (!box) return;
     box.textContent = "";
+    /* 档位来自云端 tiersYuan（元）：按钮显示币数，下方小字标出这一档实付多少元 ——
+       用户的资产是币，但支付宝收的是元，两个数字都要看得见。 */
     ST.tiers.forEach(function (yuan) {
-      var b = el("button", "wl-tier" + (ST.pickedYuan === yuan ? " on" : ""), money(yuan));
+      var b = el("button", "wl-tier" + (ST.pickedYuan === yuan ? " on" : ""));
       b.type = "button";
+      b.appendChild(coinEl(coinsOfYuan(yuan)));
+      b.appendChild(el("span", "wl-tier-yuan", money(yuan)));
       b.onclick = function () {
         ST.pickedYuan = yuan;
         var inp = ST.root.querySelector("#wlCustom");
@@ -207,24 +244,27 @@
     box.appendChild(custom);
   }
 
-  /* 金额上下限按服务端真值刷到输入框与提示上（配置回来之前用的是兜底值）。 */
+  /* 金额上下限按服务端真值刷到输入框与提示上（配置回来之前用的是兜底值）。
+     输入框收的是**币数**（整数），上下限由元口径换算而来。 */
   function paintCustomRange() {
     if (!dialogAlive()) return;
     var inp = ST.root.querySelector("#wlCustom");
     if (inp) {
-      inp.min = String(MIN_YUAN);
-      inp.max = String(MAX_YUAN);
+      inp.min = String(Math.ceil(coinsOfYuan(MIN_YUAN)));
+      inp.max = String(Math.floor(coinsOfYuan(MAX_YUAN)));
     }
     var hint = ST.root.querySelector("#wlRange");
-    if (hint) hint.textContent = money(MIN_YUAN) + " – " + money(MAX_YUAN);
+    if (hint) hint.textContent = coinNum(coinsOfYuan(MIN_YUAN)) + " – " + coinNum(coinsOfYuan(MAX_YUAN));
   }
 
-  function pickedYuan() {
-    if (ST.pickedYuan > 0) return ST.pickedYuan;
+  /* 选中的充值金额（**币**）：点过档位取档位换算值，否则读自定义输入框。
+     调用点只有 createOrder —— 提交前一律经 yuanOfCoins 反算成元。 */
+  function pickedCoins() {
+    if (ST.pickedYuan > 0) return coinsOfYuan(ST.pickedYuan);
     var inp = ST.root && ST.root.querySelector("#wlCustom");
     var v = inp ? Number(inp.value) : 0;
     if (!isFinite(v) || v <= 0) return 0;
-    return Math.round(v * 1e4) / 1e4;
+    return Math.floor(v);
   }
 
   function paintQr() {
@@ -240,8 +280,9 @@
     panel.classList.remove("hidden");
     if (o.status === "paid") {
       panel.appendChild(el("div", "wl-qr-ok", "✓ " + T("充值成功")));
+      /* 到账写币、实付写元（支付宝实际收的是元） */
       panel.appendChild(
-        el("div", "wl-qr-sub", T("{amount} 已到账", { amount: money(o.paidAmountYuan || o.amountYuan) })),
+        el("div", "wl-qr-sub", T("{amount} 已到账", { amount: coinNum(coinsOfYuan(o.paidAmountYuan || o.amountYuan)) + " " + T("币") })),
       );
       panel.appendChild(el("div", "wl-qr-sub muted", T("订单号：{id}", { id: o.id })));
       return;
@@ -260,12 +301,18 @@
        · payUrl    电脑网站支付 → 「打开支付宝收银台」按钮，用系统浏览器付（页面自带二维码可手机扫）
        · qrDataUrl 当面付        → 窗内直接显示服务端自绘的付款二维码 */
     var left = el("div", "wl-qr-left");
+    /* 支付金额按元写（支付宝收的确实是元），到账币数另起一行 —— 用户最关心的是「付多少、得多少」 */
+    var coinsRow = el("div", "wl-qr-coins");
+    coinsRow.appendChild(
+      el("span", "", T("到账 ") + coinNum(coinsOfYuan(o.amountYuan)) + " " + T("币")),
+    );
     if (o.payUrl) {
       var go = el("button", "wl-btn primary wl-pay-open", T("打开支付宝收银台"));
       go.type = "button";
       go.onclick = function () { openPayUrl(o.payUrl); };
       left.appendChild(go);
-      left.appendChild(el("div", "wl-qr-amount", money(o.amountYuan)));
+      left.appendChild(el("div", "wl-qr-amount", T("实付 ") + money(o.amountYuan)));
+      left.appendChild(coinsRow);
       left.appendChild(el("div", "wl-pay-hint muted", T("会在系统浏览器里打开支付宝收银台，可用手机支付宝扫码付款")));
       if (ST.autoOpened !== o.id) {
         // 用户刚点了「充值」，直接把收银台打开（每笔单只自动开一次，重绘不重复弹浏览器）。
@@ -277,7 +324,8 @@
       img.alt = T("支付宝付款码");
       if (o.qrDataUrl) img.src = o.qrDataUrl;
       left.appendChild(img);
-      left.appendChild(el("div", "wl-qr-amount", money(o.amountYuan)));
+      left.appendChild(el("div", "wl-qr-amount", T("实付 ") + money(o.amountYuan)));
+      left.appendChild(coinsRow);
     }
     panel.appendChild(left);
 
@@ -370,7 +418,13 @@
       ST.orders.slice(0, 8).forEach(function (o) {
         var tr = el("tr");
         tr.appendChild(el("td", "", tsText(o.createdAt)));
-        tr.appendChild(el("td", "num", money(o.amountYuan)));
+        /* 订单金额按币显示（账户资产口径）；已退款 / 部分退款那两态另用小字把实际退回的元补出来 */
+        var amtTd = el("td", "num");
+        amtTd.appendChild(coinEl(coinsOfYuan(o.amountYuan), { size: "sm" }));
+        if ((o.status === "refunded" || o.status === "partial_refunded") && Number(o.refundedYuan)) {
+          amtTd.appendChild(el("div", "wl-tier-yuan", T("已退 ") + money(o.refundedYuan)));
+        }
+        tr.appendChild(amtTd);
         tr.appendChild(el("td", "st st-" + o.status, ST_TEXT[o.status] || o.status));
         tr.appendChild(el("td", "mono", o.id));
         t.appendChild(tr);
@@ -390,12 +444,14 @@
         var tr = el("tr");
         tr.appendChild(el("td", "", tsText(e.at)));
         tr.appendChild(el("td", "", TY[e.type] || e.type));
-        /* 负数要显示成 -¥4.00 而不是 ¥-4.00：符号在货币符号外面才读得顺 */
+        /* 负数要显示成 -500 而不是 500-：符号在数量外面才读得顺 */
         var dv = Number(e.deltaYuan) || 0;
         var d = el("td", "num " + (dv >= 0 ? "pos" : "neg"));
-        d.textContent = (dv >= 0 ? "+" : "-") + money(Math.abs(dv));
+        d.textContent = (dv >= 0 ? "+" : "-") + coinNum(coinsOfYuan(Math.abs(dv)));
         tr.appendChild(d);
-        tr.appendChild(el("td", "num", money(e.balanceAfterYuan)));
+        var afterTd = el("td", "num");
+        afterTd.appendChild(coinEl(coinsOfYuan(e.balanceAfterYuan), { size: "sm" }));
+        tr.appendChild(afterTd);
         t2.appendChild(tr);
       });
       box.appendChild(t2);
@@ -427,14 +483,20 @@
 
   function createOrder() {
     if (ST.busy) return;
-    var yuan = pickedYuan();
-    if (!yuan) {
+    /* 用户选 / 填的是币；提交给云端的永远是元（反算，最多 2 位小数 = 分位）。
+       上下限仍按服务端给的元口径判（MIN_YUAN / MAX_YUAN 来自 wallet/config）。 */
+    var coins = pickedCoins();
+    if (!coins) {
       setNotice(T("请选择或输入充值金额"), "err");
       return;
     }
+    var yuan = yuanOfCoins(coins);
     if (yuan < MIN_YUAN || yuan > MAX_YUAN) {
       setNotice(
-        T("充值金额需在 {min} – {max} 之间", { min: money(MIN_YUAN), max: money(MAX_YUAN) }),
+        T("充值金额需在 {min} – {max} 之间", {
+          min: coinNum(coinsOfYuan(MIN_YUAN)),
+          max: coinNum(coinsOfYuan(MAX_YUAN)),
+        }),
         "err",
       );
       return;
@@ -567,9 +629,9 @@
     ST.root = root;
     body.appendChild(root);
 
-    /* 余额 */
+    /* 余额（鲸圆币；零头显示「<1 币」，判定仍按真实元值） */
     var bal = el("div", "wl-balance");
-    bal.appendChild(el("div", "wl-k", T("当前余额")));
+    bal.appendChild(el("div", "wl-k", T("当前鲸圆币")));
     var bv = el("div", "wl-v", "—");
     bv.id = "wlBalance";
     bal.appendChild(bv);
@@ -590,7 +652,7 @@
     notice.id = "wlNotice";
     root.appendChild(notice);
 
-    /* 金额选择 */
+    /* 金额选择：档位与自定义都按**币**选，pay 之前才反算成元提交（见 createOrder） */
     var pick = el("div", "wl-pick");
     pick.appendChild(el("div", "wl-k", T("充值金额")));
     var tiers = el("div", "wl-tiers");
@@ -600,17 +662,17 @@
     var inp = el("input");
     inp.id = "wlCustom";
     inp.type = "number";
-    inp.min = String(MIN_YUAN);
-    inp.max = String(MAX_YUAN);
-    inp.step = "0.01";
-    inp.placeholder = T("自定义金额（元）");
+    inp.min = String(Math.ceil(coinsOfYuan(MIN_YUAN)));
+    inp.max = String(Math.floor(coinsOfYuan(MAX_YUAN)));
+    inp.step = "1";
+    inp.placeholder = T("自定义金额（币）");
     inp.addEventListener("input", function () {
       ST.pickedYuan = 0;
       paintTiers();
       setNotice("");
     });
     custom.appendChild(inp);
-    var range = el("span", "wl-hint", money(MIN_YUAN) + " – " + money(MAX_YUAN));
+    var range = el("span", "wl-hint", coinNum(coinsOfYuan(MIN_YUAN)) + " – " + coinNum(coinsOfYuan(MAX_YUAN)));
     range.id = "wlRange";
     custom.appendChild(range);
     pick.appendChild(custom);
@@ -660,14 +722,20 @@
     });
   }
 
-  /* 账号菜单里的余额行由 app-auth.js 调用（只在白名单账号显示）。 */
+  /* 账号菜单里的余额行由 app-auth.js 调用（只在白名单账号显示）。
+     返回币名 + 币数（真实值是元，这里按 50:1 换算后取整）。 */
   function balanceText(u) {
-    return T("余额：{amount}", { amount: money(balanceOf(u)) });
+    return T("余额：{amount}", { amount: coinNum(coinsOfYuan(balanceOf(u))) + " " + T("币") });
   }
 
   window.MtWallet = {
     visibleFor: visibleFor,
     money: money,
+    coinsOfYuan: coinsOfYuan,
+    yuanOfCoins: yuanOfCoins,
+    coinNum: coinNum,
+    coinEl: coinEl,
+    balanceEl: balanceEl,
     balanceOf: balanceOf,
     balanceText: balanceText,
     open: openWallet,

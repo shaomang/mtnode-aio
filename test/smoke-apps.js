@@ -593,12 +593,17 @@ async function main() {
 {
   console.log("[4] renderer/app-apps.js：库页 / 开发页的「运行」按钮");
   const R = read("renderer/app-apps.js");
+  const DEV4 = read("renderer/app-apps-dev.js");
   ok(R.indexOf("function appsRunBtnEl(id, label, onclick)") >= 0, "有唯一的「运行」按钮构造器 appsRunBtnEl");
   ok(R.indexOf('b.id = "appsRunBtn-" + String(id || "")') >= 0, "按钮 id 稳定可寻：appsRunBtn-<appId>");
   ok(R.indexOf('b.dataset.appRun = "1"') >= 0, "按钮带 data-app-run 标记（打开态回贴按它定位）");
   ok(R.indexOf('b.title = appsT("在独立窗口里运行这个应用")') >= 0, "按钮 title 说明它是独立窗口运行");
   ok(R.indexOf('b.className = primary ? "mini primary" : "mini"') >= 0 && R.indexOf("appsRunBtnEl(id, appsT(\"运行\"), () => appsOpenApp(id))") >= 0, "库页本机行：「运行」→ appsOpenApp(id)（mini primary 位置）");
-  ok(R.indexOf('appsRunBtnEl("dev", appsT("运行")') >= 0, "开发页：选中的应用也有「运行」按钮");
+  ok(
+    R.indexOf('appsRunBtnEl("dev"') < 0 &&
+      DEV4.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
+    "开发页的运行入口只剩三栏工具栏的「启动」（页脚工具区那一颗随整块移除）",
+  );
   ok(R.indexOf("appsRunBtnEl(id, appsT(\"运行\"), () => appsOpenApp(id))") >= 0 && R.indexOf('row.querySelector(".apps-row-acts button[data-app-run]")') >= 0, "库页打开态回贴落在 data-app-run 那颗按钮上");
   ok(R.indexOf("async function appsOpenApp(id)") >= 0 && R.indexOf("await api.appsOpenWindow(id)") >= 0, "appsOpenApp → window.api.appsOpenWindow(id)（主进程开窗）");
   ok(R.indexOf("appsBridgeMissing()") >= 0, "桥缺席（非 Electron / 未接入）时明确报错，不静默失败");
@@ -614,7 +619,46 @@ async function main() {
   const I18N = read("renderer/i18n.js");
   ok(I18N.indexOf('"在独立窗口里运行这个应用"') >= 0, "i18n：运行按钮的 title 词条");
   ok(I18N.indexOf('"运行": "Run"') >= 0, "i18n：「运行」有英文译文");
-  ok(I18N.indexOf("为一个应用开独立窗口") >= 0, "i18n：开发页运行说明词条");
+  ok(I18N.indexOf("为一个应用开独立窗口") < 0, "i18n：页脚工具区那条运行说明随整块删掉（不留死词条）");
+
+  /* 本轮需求：移除开发页页脚的「更多：导出应用包 / 变更探测 / 开发绑定」整块 */
+  const CSS4 = read("renderer/css/apps.css");
+  ok(
+    R.indexOf("apps-sec-more") < 0 &&
+      R.indexOf("apps-sec") < 0 &&
+      R.indexOf('appsT("导出应用包")') < 0 &&
+      R.indexOf('appsT("变更探测")') < 0 &&
+      R.indexOf('appsT("开发绑定")') < 0 &&
+      R.indexOf("api.appsExportZip") < 0 &&
+      R.indexOf("api.appsProbeChanges") < 0 &&
+      R.indexOf("devExport") < 0 &&
+      R.indexOf("devProbe") < 0 &&
+      R.indexOf("more.appendChild") < 0,
+    "开发页页脚整块移除：三节渲染、桥调用与 devExport / devProbe 状态都不留",
+  );
+  ok(
+    CSS4.indexOf(".apps-sec-more") < 0 &&
+      CSS4.indexOf(".apps-sec {") < 0 &&
+      CSS4.indexOf(".apps-sec-hint") < 0 &&
+      CSS4.indexOf(".apps-select {") < 0 &&
+      CSS4.indexOf(".apps-empty-sm") < 0 &&
+      CSS4.indexOf(".apps-detail-inline") < 0,
+    "css：只服务那一块的规则一并删掉（不留死规则）",
+  );
+  ok(
+    I18N.indexOf('"导出应用包"') < 0 &&
+      I18N.indexOf('"变更探测"') < 0 &&
+      I18N.indexOf('"开发绑定"') < 0 &&
+      I18N.indexOf('"导出 zip"') < 0 &&
+      I18N.indexOf("应用根目录 · 导出应用包 · 变更探测") < 0 &&
+      I18N.indexOf('"导出失败："') >= 0,
+    "i18n：那一块的词条一并删掉（「导出失败：」保留 —— 设置的数据导出与工坊导出链也在用）",
+  );
+  ok(
+    R.indexOf('"应用根目录 · 三栏开发台 · 实时预览"') >= 0 &&
+      I18N.indexOf('"应用根目录 · 三栏开发台 · 实时预览"') >= 0,
+    "开发页副标题改成这一页真实的内容（三栏开发台 / 实时预览），中英成对",
+  );
 }
 
 /* ============ [5] 打包白名单与脚手架 ============ */
@@ -2185,9 +2229,9 @@ async function previewSections() {
     "校验值收进「ⓘ 校验」小按钮 + 开发者信息折叠区（含样式）",
   );
   ok(
-    RENDERER.indexOf('appsHashBtnEl("校验 sha256", String(APPS_ST.devExport.sha256 || ""))') >= 0 &&
+    RENDERER.indexOf('appsHashBtnEl("校验 sha256", String(APPS_ST.devExport.sha256 || ""))') < 0 &&
       PUB.indexOf('appsHashBtnEl("校验 sha256", shaVal)') >= 0,
-    "导出结果与上架成功回执的 sha256 同样收进小按钮（三处口径一致）",
+    "校验小按钮只剩应用详情与上架回执两处（开发页页脚那处随整块移除）",
   );
   ok(
     RENDERER.indexOf('push(appsT("作者"), appsAuthorOf(spec))') >= 0 &&

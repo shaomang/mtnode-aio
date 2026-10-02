@@ -130,7 +130,14 @@ function apiCallTextStream(spec, onReasoning, onDelta) {
       } else if (ev.type === "done") {
         resolve(ev);
       } else if (ev.type === "error") {
-        reject(new Error(ev.error || I18n.t("调用失败")));
+        const err = new Error(ev.error || I18n.t("调用失败"));
+        /* 中转凭据失效（主进程打好的标记，见 main.js 的 relayAuthFailed）：
+           渲染层据此弹「登录已失效，请重新登录」并把标记挂到错误上，调用方照常报错。 */
+        if (ev.relayAuth) {
+          err.relayAuth = true;
+          if (typeof mtRelayAuthNotice === "function") mtRelayAuthNotice();
+        }
+        reject(err);
       }
     });
   });

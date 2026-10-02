@@ -129,6 +129,61 @@
   white-space: nowrap
 }
 
+/* 助手栏「模式」入口 + 「拷问需求」状态小字（本次开发需求）：入口键面照 .assist-ws-line 的
+   「工作范围」那一行的观感（小字 + 细边圆角），开着的开关由 .on 变主题蓝 + tooltip 逐项回显
+   （见 app-assist.js paintAssistModeChip）。这一块是自成一行的 flex 行（不塞进 .assist-ctrl 的
+   多行网格里，免得 wrap 后把下拉推乱）。 */
+#assistModeCtrl {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.assist-chip-mode {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  outline: none;
+}
+
+.assist-chip-mode:hover {
+  background: rgba(255, 255, 255, .06)
+}
+
+.assist-chip-mode.on {
+  color: rgb(86, 134, 254);
+  border-color: rgba(86, 134, 254, .34);
+  background: rgba(86, 134, 254, .08);
+}
+
+.assist-grill-tag {
+  flex: none;
+  padding: 0 7px;
+  height: 22px;
+  line-height: 20px;
+  border: 1px solid rgba(86, 134, 254, .34);
+  border-radius: 4px;
+  background: rgba(86, 134, 254, .08);
+  color: rgb(86, 134, 254);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.assist-grill-tag[hidden] {
+  display: none
+}
+
 .assist-ws-line input {
   flex: 1;
   min-width: 0;

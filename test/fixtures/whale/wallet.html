@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>wallet fixture</title>
+<link rel="stylesheet" href="../../../renderer/style.css">
+</head>
+<body>
+<div id="overlay" class="hidden"><div class="overlay-box"><div id="ovTitle"></div><div id="ovBody"></div><div id="ovFoot"></div></div></div>
+<script src="../../../renderer/i18n.js"></script>
+<script src="../../../renderer/app-whalecoin.js"></script>
+<script src="../../../renderer/app-wallet.js"></script>
+<script>
+/* ── 夹具：真 style.css + 真 i18n + 真 app-whalecoin.js + 真 app-wallet.js；
+      只桩掉 openOverlay / closeOverlay 与 window.api.storeRequest（钱包的云侧出口）。
+      目的：鲸圆币改造后，余额 / 档位 / 二维码 / 订单流水在真实 DOM 里的表现。 */
+(function () {
+  var results = [];
+  function ok(cond, msg) { results.push((cond ? "ok   " : "FAIL ") + msg); }
+
+  /* openOverlay 桩：把 ovBody/ovFoot 摆好（真实现见 renderer/app.js 的 ovShellEnsure）。
+     注意 #overlay 的隐藏靠 CSS 的 display:none（不是 .hidden 类）—— 桩里必须显式打开，
+     否则窗内元素都待在 0×0 的不可见盒子里，截图与像素断言只能拍到空气。 */
+  window.openOverlay = function (title) {
+    document.getElementById("ovTitle").textContent = title || "";
+    document.getElementById("overlay").style.display = "flex";
+    return { min: true };
+  };
+  window.closeOverlay = function () { document.getElementById("overlay").style.display = "none"; };
+
+  var calls = [];
+  window.api = {
+    storeRequest: function (req) { return req; },
+    authMe: function () { return Promise.resolve({ ok: true }); },
+  };
+  window.MTNodeAuth = { refresh: function () { return Promise.resolve(); } };
+  window.MtRelay = { sync: function () {} };
+  window.money = function () {};
+
+  var ORDER = {
+    id: "rc_fixture_1", status: "pending", amountYuan: 10, createdAt: Date.now(),
+    expiresAt: Date.now() + 600000, payUrl: "", qrDataUrl: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+  };
+  var SUMMARY = {
+    wallet: {
+      balanceYuan: 9.98,
+      orders: [
+        { id: "rc_o1", status: "paid", amountYuan: 10, createdAt: Date.now(), refundedYuan: 0 },
+        { id: "rc_o2", status: "partial_refunded", amountYuan: 30, createdAt: Date.now(), refundedYuan: 4 },
+      ],
+      ledger: [
+        { at: Date.now(), type: "recharge", deltaYuan: 10, balanceAfterYuan: 9.98 },
+        { at: Date.now(), type: "refund", deltaYuan: -0.02, balanceAfterYuan: 9.98 },
+      ],
+    },
+    user: { username: "ms2308", balanceYuan: 9.98 },
+  };
+
+  window.api.storeRequest = function (req) {
+    calls.push(req);
+    if (req.path.indexOf("/api/wallet/summary") === 0) {
+      var w = Object.assign({}, SUMMARY.wallet);
+      w.balanceYuan = Number(SUMMARY.wallet.balanceYuan);
+      return Promise.resolve({ ok: true, data: { wallet: w, user: { username: "ms2308", balanceYuan: w.balanceYuan } } });
+    }
+    if (req.path === "/api/wallet/config") {
+      return Promise.resolve({ ok: true, data: { payConfigured: true, channel: "alipay_f2f", tiersYuan: [10, 30, 50, 100, 500], minYuan: 1, maxYuan: 1000 } });
+    }
+    if (req.path.indexOf("/api/wallet/summary") === 0) return Promise.resolve({ ok: true, data: SUMMARY });
+    if (req.path === "/api/wallet/recharge/create") {
+      ORDER = Object.assign({}, ORDER, { amountYuan: req.json.amountYuan });
+      return Promise.resolve({ ok: true, data: { order: ORDER } });
+    }
+    return Promise.resolve({ ok: true, data: {} });
+  };
+
+  function txt(id) {
+    var n = document.querySelector(id);
+    return n ? n.textContent : "(缺 " + id + ")";
+  }
+
+  window.MtWallet.open();
+  setTimeout(function () {
+    /* [1] 余额：9.98 元 = 499 币 */
+    ok(txt("#wlBalance") === "499", "余额 9.98 元 → 499 币（实际：" + txt("#wlBalance") + "）");
+    ok(!!document.querySelector("#wlBalance .coin-ico"), "余额旁有金币图标");
+    var icon = document.querySelector("#wlBalance .coin-ico img");
+    ok(!!icon && /deepseek-logo\.png$/.test(icon.getAttribute("src")), "金币内部是 deepseek-logo.png");
+    ok(document.querySelector("#wlBalance .coin-amt, #wlBalance .coin-bal").title.indexOf("1 币 = ¥0.02") > 0,
+      "余额 tooltip 写明 1 币 = ¥0.02");
+
+    /* [2] 档位：币数 + 元小字 */
+    var tiers = document.querySelectorAll("#wlTiers .wl-tier");
+    ok(tiers.length === 6, "档位 5 档 + 自定义（实际 " + tiers.length + "）");
+    ok(tiers[0].textContent.indexOf("500") === 0 && tiers[0].textContent.indexOf("¥10.0000") > 0,
+      "第一档 = 500 币 + 小字 ¥10.0000（实际：" + tiers[0].textContent + "）");
+    ok(!!tiers[0].querySelector(".coin-ico"), "档位按钮里有金币图标");
+    ok(txt("#wlRange") === "50 – 50,000", "自定义范围提示按币：50 – 50,000（实际：" + txt("#wlRange") + "）");
+    ok(document.querySelector("#wlCustom").placeholder.indexOf("币") > 0, "自定义输入框占位写「币」");
+
+    /* [3] 选一档下单：提交给云端的仍是元 */
+    tiers[0].click();
+    document.querySelector("#wlPay").click();
+    setTimeout(function () {
+      var created = calls.filter(function (c) { return c.path === "/api/wallet/recharge/create"; })[0];
+      ok(!!created && created.json.amountYuan === 10, "选 500 币 → 提交 amountYuan = 10（实际：" +
+        (created ? created.json.amountYuan : "无") + "）");
+      ok(document.body.textContent.indexOf("到账 500 币") > 0, "二维码区写「到账 500 币」");
+      ok(document.body.textContent.indexOf("实付 ¥10.0000") > 0, "二维码区「实付」仍按元写");
+
+      /* [4] 历史：订单与流水按币；部分退款另标元 */
+      var hist = document.querySelector("#wlHistory").textContent;
+      ok(!!document.querySelector("#wlHistory .coin-amt"), "订单/流水表里有金币元件");
+      ok(hist.indexOf("500") > 0 && hist.indexOf("1,500") > 0, "¥10 → 500 币、¥30 → 1,500 币（实际：" + hist + "）");
+      ok(hist.indexOf("已退 ¥4.0000") > 0, "部分退款把小字实退金额（元）写出来");
+      ok(hist.indexOf("+500") > 0 && hist.indexOf("-1") > 0, "流水变动按币：+500 / -1（¥0.02 的零头）");
+
+      /* [5] 自定义币数反算：123 币 → ¥2.46 */
+      var inp = document.querySelector("#wlCustom");
+      inp.value = "123";
+      inp.dispatchEvent(new Event("input"));
+      document.querySelector("#wlPay").click();
+      setTimeout(function () {
+        var all = calls.filter(function (c) { return c.path === "/api/wallet/recharge/create"; });
+        var last = all[all.length - 1];
+        ok(all.length === 2 && last.json.amountYuan === 2.46, "自定义 123 币 → amountYuan = 2.46（实际：" +
+          (last ? last.json.amountYuan : "无") + "）");
+
+        /* [6] 低于下限：50 币被拦（下限 ¥1） */
+        inp.value = "20";
+        inp.dispatchEvent(new Event("input"));
+        document.querySelector("#wlPay").click();
+        setTimeout(function () {
+          var n = calls.filter(function (c) { return c.path === "/api/wallet/recharge/create"; }).length;
+          ok(n === 2, "20 币（¥0.40 < 下限 ¥1）被拦下，没有发第三单（实际 " + n + " 单）");
+          ok(txt("#wlNotice").indexOf("50 – 50,000") > 0, "拦截文案按币给区间（实际：" + txt("#wlNotice") + "）");
+
+          /* [7] 零头余额：<0.5 币显示「<1 币」，但真实值仍是元 */
+          SUMMARY.wallet.balanceYuan = 0.006;
+          document.querySelector("#wlBalance").textContent = "";
+          window.MtWallet.open();
+          setTimeout(function () {
+            ok(txt("#wlBalance") === "<1 币", "余 0.006 元（0.3 币）显示「<1 币」（实际：" + txt("#wlBalance") + "）");
+            ok(window.MtWallet.state().balanceYuan === 0.006, "真实元值原样留着（判定不跟着显示走）");
+
+            /* [8] 英文界面：币名走词条 */
+            window.I18n.setLocale("en");
+            var en = document.createElement("div");
+            en.appendChild(window.MtCoin.balanceEl(10));
+            ok(en.textContent === "500", "英文界面余额数字照旧（实际：" + en.textContent + "）");
+            ok(window.MtCoin.tooltip() === "W coins · 1 W coin = ¥0.02 (¥1 = 50 W coins)",
+              "英文 tooltip = Whale Coin 口径（实际：" + window.MtCoin.tooltip() + "）");
+
+            results.forEach(function (r) { console.log(r); });
+            var fails = results.filter(function (r) { return r.indexOf("FAIL") === 0; }).length;
+            /* 收尾把余额与界面摆回常用态，留给截图（run.js 随后拍一张整窗实渲染图） */
+            SUMMARY.wallet.balanceYuan = 9.98;
+            window.I18n.setLocale("zh");
+            window.MtWallet.open();
+            setTimeout(function () {
+              console.log(fails ? "FIXTURE FAIL " + fails + "/" + results.length : "FIXTURE OK " + results.length);
+              window.__fixtureDone = true;
+            }, 120);
+          }, 60);
+        }, 40);
+      }, 40);
+    }, 60);
+  }, 80);
+})();
+</script>
+</body>
+</html>

@@ -18,6 +18,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const vm = require("vm");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
@@ -103,7 +104,8 @@ async function main() {
   I18n.setLocale("en");
   const vars = { amount: "¥1.00", min: "¥1.00", max: "¥1000.00", t: "14:59", id: "rc123", code: "502" };
   const keys = [
-    "账户充值", "余额：", "余额：{amount}", "当前余额", "充值金额", "自定义金额（元）",
+    "账户充值", "余额：", "余额：{amount}", "当前鲸圆币", "充值金额", "自定义金额（币）",
+    "鲸圆币", "币", "到账 ", "实付 ", "已退 ",
     "生成支付宝付款码", "请选择或输入充值金额", "充值金额需在 {min} – {max} 之间",
     "用支付宝扫码付款", "支付宝付款码", "剩余 {t}", "我已完成支付", "放弃本单", "订单号：{id}",
     "充值成功", "充值成功，余额已更新", "{amount} 已到账", "订单已过期", "请重新发起充值",
@@ -120,6 +122,51 @@ async function main() {
   ok(missing.length === 0, "钱包 " + keys.length + " 条文案都有英文译文" + (missing.length ? "（缺：" + missing.join(" / ") + "）" : ""));
   ok(I18n.t("充值金额需在 {min} – {max} 之间", vars).includes("¥1000.00"), "{占位} 键真的被替换（不做字符串拼接）");
   ok(I18n.t("充值") === "Topped up", "既有「充值」= 费用面板流水类型标签，未被本轮改动覆盖");
+
+  /* ── [4b] 鲸圆币：换算与显示口径（app-whalecoin.js 切片真跑） ─────
+     本次需求：余额改成鲸圆币（1 币 = ¥0.02，即 ¥1 = 50 币），内部是 DeepSeek logo、
+     外面是金色圆圈的图标；mtnode 内只用于账户钱包与 MTNode 中转服务，
+     官方 DeepSeek 余额与官方路由的费用估算仍是 ¥（下面 [4c] 钉住这条边界）。 */
+  console.log("[4b] 鲸圆币换算与显示（真跑 app-whalecoin.js）");
+  const coinSrc = read("renderer/app-whalecoin.js");
+  const coinWin = { window: {}, document: null, I18n: { t: (s) => s } };
+  coinWin.window = coinWin;
+  vm.createContext(coinWin);
+  vm.runInContext(coinSrc, coinWin);
+  const MC = coinWin.window.MtCoin;
+  ok(!!MC && MC.COIN_PER_YUAN === 50 && MC.YUAN_PER_COIN === 0.02, "1 币 = ¥0.02（¥1 = 50 币）");
+  ok(MC.coinsOfYuan(10) === 500 && MC.coinsOfYuan(0.02) === 1, "元 → 币：¥10 = 500 币、¥0.02 = 1 币");
+  ok(MC.yuanOfCoins(500) === 10 && MC.yuanOfCoins(123) === 2.46, "币 → 元（提交云端前反算，≤2 位小数）");
+  ok(MC.balanceTextOfYuan(10) === "500" && MC.balanceTextOfYuan(0) === "0", "余额四舍五入取整（¥10 → 500 币）");
+  ok(MC.balanceTextOfYuan(0.008) === "<1 币", "不足 0.5 币的零头显示「<1 币」，不显示 0");
+  ok(MC.balancePartsOfYuan(0.008).yuan === 0.008, "零头只改显示：真实元值原样留着（可用性判定不跟着变）");
+  ok(MC.coinNumText(25000) === "25,000", "币数带千分位（25,000 币）");
+  ok(MC.coinCostText(0.05) === "0.05" && MC.coinCostText(1) === "1", "小额费用最多 2 位小数、无小数不带点");
+  ok(coinSrc.includes("deepseek-logo.png") && fs.existsSync(path.join(ROOT, "renderer/deepseek-logo.png")),
+    "金币内部的 DeepSeek logo 图随包（renderer/deepseek-logo.png）");
+  const coinCss = read("renderer/css/whalecoin.css");
+  ok(coinCss.includes(".coin-ico") && /radial-gradient/.test(coinCss) && coinCss.includes("#ffd76a"),
+    "金币 = 金色圆环（径向渐变 + 高光 + 内描边）");
+  ok(coinCss.includes(".coin-ico img") && coinCss.includes("ico-miss"),
+    "logo 居中嵌在金币里；图挂了有 CSS 兜底（不留空位）");
+  ok(has("renderer/style.css", '@import url("./css/whalecoin.css")'), "style.css @import css/whalecoin.css");
+  ok(/<script src="app-whalecoin\.js"><\/script>/.test(html), "index.html 接入 app-whalecoin.js");
+  const iCoin = html.indexOf('<script src="app-whalecoin.js">');
+  ok(iCoin > 0 && iCoin < html.indexOf('<script src="app-wallet.js">') &&
+    iCoin < html.indexOf('<script src="app-relay.js">'),
+    "app-whalecoin.js 排在 app-wallet.js / app-relay.js 之前（它们要用 window.MtCoin）");
+
+  /* ── [4c] 币的边界：只有钱包与中转用币，官方 DeepSeek 仍是 ¥ ──── */
+  console.log("[4c] 边界：鲸圆币仅用于钱包与中转（官方 DeepSeek 仍按元）");
+  ok(!fs.readFileSync(path.join(ROOT, "renderer/app-cost.js"), "utf8").includes("MtCoin") &&
+    !fs.readFileSync(path.join(ROOT, "renderer/app-cost.js"), "utf8").includes("鲸圆币"),
+    "app-cost.js（官方余额 + 单价表 + 费用估算）不碰鲸圆币，仍是 ¥");
+  ok(w.includes("yuanOfCoins") && w.includes("amountYuan: yuan"),
+    "充值提交给云端的永远是元（amountYuan = 币数反算），云端字段一个没改");
+  ok(w.includes('el("div", "wl-qr-amount", T("实付 ") + money(o.amountYuan))'),
+    "扫码区「实付」仍按元写（支付宝实际收的是元）");
+  ok(w.includes("balanceEl(ST.balanceYuan)") && w.includes("coinEl(coinsOfYuan") ,
+    "钱包余额 / 档位 / 订单流水都走币元件");
 
   /* ── [5] wallet.mjs 三条铁律（真跑） ──────────────────────────── */
   console.log("[5] wallet.mjs 三条铁律（真跑）");

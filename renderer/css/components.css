@@ -4613,3 +4613,84 @@ textarea.asset-form-input {
   background: var(--orange)
 }
 
+
+/* ── 中转凭据提示（renderer/app-relay-auth.js）────────────────────────────────
+   凭什么要有：中转站 401 的原文案是「缺少或已失效的中转 Key」，用户会去只读的提供商卡上
+   找地方填 Key —— 那条路是死的。这里给一条**能点**的路：重新登录一次即自动领回凭据。
+   .toast-action = 提示里的动作按钮（#toastBox 默认整只不吃指针事件，所以按钮自己吃）。 */
+.relay-auth-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-left-color: var(--orange, #e8a33d);
+  pointer-events: auto;
+}
+.toast-action {
+  flex: none;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 4px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.toast-action:hover {
+  border-color: var(--orange, #e8a33d);
+  color: var(--orange, #e8a33d);
+}
+/* 顶部常驻横幅：登录着但凭据不对时亮；点按钮去登录，点 ✕ 收起 */
+.relay-auth-bar {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1250;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(860px, 92vw);
+  padding: 7px 12px;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+}
+.relay-auth-bar[hidden] {
+  display: none;
+}
+.relay-auth-bar .rab-msg {
+  min-width: 0;
+}
+.relay-auth-bar .rab-btn {
+  flex: none;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--orange, #e8a33d);
+  background: transparent;
+  border: 1px solid var(--orange, #e8a33d);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.relay-auth-bar .rab-btn:hover {
+  background: rgba(232, 163, 61, .12);
+}
+.relay-auth-bar .rab-close {
+  flex: none;
+  padding: 0 4px;
+  font: inherit;
+  color: var(--ink2, var(--ink));
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: .7;
+}
+.relay-auth-bar .rab-close:hover {
+  opacity: 1;
+}

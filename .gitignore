@@ -3,6 +3,7 @@ node_modules/
 dist/
 dist_check*/
 out/
+docs/
 release/
 *.blockmap
 *.nsis.7z
@@ -29,6 +30,8 @@ dsh-home-*/
 *.rej
 *.old
 rebuild.log
+# 真渲染夹具（test/fixtures/**/*.html|js 入库，供复核）跑出来的截图只是本机证据，不入库
+test/fixtures/**/shot-*.png
 
 # ===== 编辑器 / 操作系统杂项 =====
 .DS_Store

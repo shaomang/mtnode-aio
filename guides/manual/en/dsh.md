@@ -43,6 +43,33 @@ solely by the Thinking level control in the UI):
 - Changing the canvas itself → the right-hand assistant.
 - Programs and software development → use a session directly (close to how Codex is used), or click a dev node's Develop button to create one.
 
+### Ask me first (grill-me · on by default)
+
+**Where:** the first row of the Modes menu above the session input — “Ask me first (grill-me)”.
+The right-hand assistant panel has the same switch. It is **on by default**: whenever a round is
+judged to be a requirement / development / change request, the agent **asks before acting** — it
+maps that round into a decision tree and clears the whole current frontier in one go through
+MTNode's question dialog (the “🐋 the model is waiting for you” card): candidates go into the card,
+your recommended option comes first and is marked “（推荐）”, and the reason sits on the line below.
+Pick an option or write your own; from your answers it recomputes the frontier and asks the next
+round, and only starts working once you explicitly confirm there is no ambiguity.
+
+- **Which rounds get grilled:** ones that create or change something (files, the canvas, nodes,
+  config, features, plans). Plain Q&A, lookups, explanations, small talk and continuing work you
+  already confirmed are done straight away — no string of counter-questions. **When in doubt it does
+  not grill** (better to just do the work than to turn an ordinary question into an interrogation).
+- **While grilling it does not quietly start:** no implementation plan, no edits. Looking at the
+  current state read-only (files, canvas) is allowed, so the questions can be sharp.
+- **When it does not grill:** pure mode is on (the whole system prompt is dropped), auto-continue
+  rounds, resumed rounds, and module-bound sessions that carry a dev task brief (that brief's own
+  grill paragraph is their contract). Your own slash commands (`/plan`, `/compact`, …) are commands,
+  not requirements, and are never blocked by a question.
+- **Turning it off:** click that row in the same Modes menu (the whole row is clickable). A session
+  you switched off stays off across restarts; sessions you never touched count as on. **You can
+  always see the state** — a small “Grill me” tag above the input appears while it is on.
+- **The right-hand assistant panel** has the same switch, with “Pure mode” next to it; the rules are
+  identical to a session (its value is a global preference persisted with the config).
+
 ### Turns and cleanup
 
 The top of the conversation area shows one line, “Turn N · HH:MM” — turn N is **how many times you

@@ -237,7 +237,9 @@ function openSettingsBody() {
     provSec.appendChild(topupSlot);
 
     /* 中转服务状态行：卡在（账号有过充值）才出现，一行给出「可用余额 + 上次同步 /
-       失败原因 / 余额不足」——余额与清单都来自云端，这里是它当前能不能用的一句话结论。 */
+       失败原因 / 余额不足」——余额与清单都来自云端，这里是它当前能不能用的一句话结论。
+       余额按**鲸圆币**显示（1 币 = ¥0.02，见 renderer/app-whalecoin.js）；快照里的 totalYuan
+       仍是元，判定与门禁口径一律不动。 */
     const relaySlot = document.createElement("div");
     relaySlot.className = "relay-sync-slot";
     const paintRelay = () => {
@@ -256,8 +258,8 @@ function openSettingsBody() {
       name.textContent = prov.name || I18n.t("MTNode 中转服务");
       line.appendChild(name);
       const bal = document.createElement("span");
-      bal.textContent =
-        " · " + I18n.t("可用余额 ") + MtRelay.money(Number(m.totalYuan) || 0);
+      bal.textContent = " · " + I18n.t("可用余额 ");
+      bal.appendChild(relayBalanceEl(m.totalYuan));
       line.appendChild(bal);
       const state = document.createElement("span");
       state.className = "relay-sync-state";
@@ -3542,16 +3544,33 @@ function openProviderConfigDialog(prov) {
   const titleEl = host.querySelector("#provCfgTitle");
   const bodyEl = host.querySelector("#provCfgBody");
   const footEl = host.querySelector("#provCfgFoot");
-  /* 每次重画都按「服务商对象」重算下标：窗口开着时也能删 / 调优先级 */
+  /* 每次重画都按「服务商对象」重算下标：窗口开着时也能删 / 调优先级。
+     对象在 config.providers 里被整只换掉（中转卡每次同步都会重建一份，见
+     renderer/app-relay.js 的 applyDoc）时必须**按 id / source 重绑到新的那一只**，
+     不能判成「已删除」：老写法只看 indexOf(prov)，中转卡一同步就把自己这张窗关掉，
+     用户看到的就是「打开立刻被自动关闭」。 */
   let alive = true;
+  const resolve = () => {
+    const list = (S.config && Array.isArray(S.config.providers) && S.config.providers) || [];
+    if (list.indexOf(prov) >= 0) return prov;
+    const id = String((prov && prov.id) || "");
+    const src = String((prov && prov.source) || "");
+    const hit =
+      (id && list.find((p) => p && String(p.id || "") === id)) ||
+      (src && list.find((p) => p && String(p.source || "") === src)) ||
+      null;
+    return hit;
+  };
   const paint = () => {
-    const i = S.config.providers.indexOf(prov);
-    if (i < 0) {
-      /* 已被删除：直接收窗（关窗路径里会回刷网格）；别再把自己显示回来 */
+    const cur = resolve();
+    if (!cur) {
+      /* 真的被删掉了：收窗（关窗路径里会回刷网格）；别再把自己显示回来 */
       alive = false;
       closeProvCfgDlg();
       return;
     }
+    prov = cur;
+    const i = S.config.providers.indexOf(cur);
     titleEl.textContent =
       I18n.t("服务商配置") + " · " + (prov.name || I18n.t("（未命名）"));
     bodyEl.innerHTML = "";
@@ -3593,6 +3612,18 @@ function openProviderConfigDialog(prov) {
   try {
     host.focus();
   } catch {}
+}
+
+/* ── MTNode 中转服务的余额元件（鲸圆币）──────────────────────────────
+   中转余额是本机唯一「按币计费」的钱：快照里的 totalYuan 仍是元（云端不下发币），
+   这里只把显示换成币（1 币 = ¥0.02，换算与金币图标见 renderer/app-whalecoin.js）。
+   MtCoin 缺席（老版渲染层）时退回元的 4 位小数串，界面不至于空着。 */
+function relayBalanceEl(totalYuan) {
+  const yuan = Number(totalYuan) || 0;
+  if (window.MtCoin && window.MtCoin.balanceEl) return window.MtCoin.balanceEl(yuan);
+  return document.createTextNode(
+    typeof MtRelay !== "undefined" ? MtRelay.money(yuan) : "¥" + yuan.toFixed(4),
+  );
 }
 
 /* ── MTNode 中转服务（账号托管）的只读卡 ──────────────────────────────
@@ -3709,13 +3740,33 @@ function relayProvCard(prov, i, onChange) {
     keyHint.style.margin = "0";
     /* 三档分开说（见 main.js 的 relay:keyInfo.readIssue）：有凭据 / 凭据读不出来 / 没登录。
        「读不出来」最容易被误当成「Key 填错了」，所以要点明动作：重新登录一次。 */
+    /* 凭据那一行要说清「这张凭据什么时候到期、要不要重登」：
+       独立的中转 Key 与登录会话是两码事（见 store-saas/server.mjs 的 issueRelayKey），
+       只写「由账号登录态托管」用户没法判断该不该去重登一次。 */
+    const keyWhen =
+      typeof MtRelayAuth !== "undefined" && MtRelayAuth.ts
+        ? MtRelayAuth.ts(meta.expiresAt)
+        : "";
     keyHint.textContent = meta.authKey
-      ? I18n.t("由账号登录态托管（只读）：打码显示，真凭据不下发到界面")
+      ? I18n.t("由账号登录态托管（只读）：打码显示，真凭据不下发到界面") +
+        (meta.renewDue
+          ? I18n.t("；凭据即将到期，重新登录一次即可换新")
+          : keyWhen
+            ? I18n.t("；有效期至 ") + keyWhen
+            : "")
       : meta.keyIssue === "decrypt_failed" || meta.keyIssue === "encryption_unavailable"
         ? I18n.t(
             "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上",
           )
-        : I18n.t("由账号登录态托管（只读）：暂未取到账号凭据，登录后自动带上");
+        : meta.keyIssue === "write_unverified"
+          ? I18n.t(
+              "本机存不住账号凭据（系统加密写得出读不回来）：请重新登录一次；若仍失败，重开应用后再登录",
+            )
+          : meta.keyIssue === "server_no_relay_key"
+            ? I18n.t(
+                "服务端这次没有下发独立中转凭据：请点「刷新」，仍无则稍后再试（与是否重新登录无关）",
+              )
+            : I18n.t("由账号登录态托管（只读）：暂未取到账号凭据，登录后自动带上");
     gridEl.appendChild(keyHint);
   }
 
@@ -3755,15 +3806,13 @@ function relayProvCard(prov, i, onChange) {
   gridEl.appendChild(modelsField);
   card.appendChild(gridEl);
 
-  /* 余额 + 「去充值」+「刷新」：余额不受前端充值白名单限制（中转接口自己回的） */
+  /* 余额 + 「去充值」+「刷新」：余额不受前端充值白名单限制（中转接口自己回的）；
+     余额按鲸圆币显示（快照里的 totalYuan 仍是元，见本文件 relayBalanceEl） */
   const moneyRow = document.createElement("div");
   moneyRow.className = "relay-balance";
   const bal = document.createElement("b");
-  bal.textContent =
-    I18n.t("可用余额 ") +
-    (typeof MtRelay !== "undefined"
-      ? MtRelay.money(Number(meta.totalYuan) || 0)
-      : "—");
+  bal.appendChild(document.createTextNode(I18n.t("可用余额 ")));
+  bal.appendChild(relayBalanceEl(Number(meta.totalYuan) || 0));
   moneyRow.appendChild(bal);
   const topupBtn = document.createElement("button");
   topupBtn.type = "button";

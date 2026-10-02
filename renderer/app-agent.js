@@ -1010,6 +1010,11 @@ function mtnodePiProviders() {
       name: p.name || p.id,
       baseUrl: p.baseUrl,
       apiKey: p.apiKey,
+      /* source 必须带上：主进程靠它认出中转卡（source="mtnode-relay"）并把配置里的
+         占位串换成账号真 token（见 main.js 的 dshParamsWithRelayKey）。丢了它，
+         网关会把占位串写进 settings.yaml 的 apiKeyEnv，会话请求就回
+         「缺少或已失效的中转 Key」401。 */
+      source: String(p.source || ""),
       api: p.api || "openai-completions",
       models,
     });

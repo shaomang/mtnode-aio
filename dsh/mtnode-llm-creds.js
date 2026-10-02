@@ -70,6 +70,9 @@ function mtnodePiProviders(dataDir) {
       name: p.name || p.id,
       baseUrl: p.baseUrl,
       apiKey: key,
+      /* source 一并带上：调用方（主进程插件宿主）据此知道这张卡的凭据来自哪里，
+         中转卡的真 token 在上面的 apiKeyOf() 里已经换好（见 main.js 的 setRelayKeyResolver）。 */
+      source: String(p.source || ""),
       api: p.api || "openai-completions",
       models: modelIdsOf(p),
     });

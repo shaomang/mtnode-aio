@@ -1,0 +1,125 @@
+/* renderer/css/whalecoin.css — 鲸圆币的金币图标与金额元件
+   结构见 renderer/app-whalecoin.js（window.MtCoin）；口径：
+   1 币 = ¥0.02，只用于账户钱包与 MTNode 中转服务，官方 DeepSeek 金额仍是 ¥。
+
+   尺寸一律用 em：图标跟着所在文字走（对话框 26px 的余额 = 26px 金币，
+   表格 12.5px 的小格子 = 12.5px 金币），不必逐处补尺寸。
+   亮色主题覆盖在文件末尾（与其它 css 同款写法）。 */
+
+.coin-ico {
+  display: inline-block;
+  position: relative;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  border-radius: 50%;
+  vertical-align: -0.14em;
+  /* 金色圆环：外深内亮 + 内描边 + 左上高光，小尺寸下也认得出是金币 */
+  background:
+    radial-gradient(circle at 32% 28%, #fff3c9 0%, #ffd76a 36%, #d9971f 74%, #a86c10 100%);
+  box-shadow:
+    inset 0 0 0 0.08em rgba(255, 250, 224, .75),
+    inset 0 -0.1em 0.16em rgba(120, 74, 6, .45),
+    0 0.02em 0.12em rgba(0, 0, 0, .35);
+  overflow: hidden;
+}
+
+/* DeepSeek logo（renderer/deepseek-logo.png）居中嵌在金币里，留一圈金边 */
+.coin-ico img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 74%;
+  height: 74%;
+  transform: translate(-50%, -50%);
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* 图挂了也不空着（CSS 兜底画一个深蓝圆心，仍读得出「币」这个形） */
+.coin-ico.ico-miss img {
+  display: none;
+}
+
+.coin-ico.ico-miss::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52%;
+  height: 52%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #4d6bfe;
+}
+
+.coin-ico.sm {
+  vertical-align: -0.12em;
+}
+
+/* 金币 + 数量（内联）：数字与图标之间留一点气口 */
+.coin-amt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22em;
+  font-variant-numeric: tabular-nums;
+}
+
+.coin-amt.sm {
+  gap: 0.18em;
+}
+
+/* 余额元件：数字大字 + 金币贴在同一行 */
+.coin-bal {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 充值对话框：档位按钮里的币数（下方小字是真正的支付金额，单位是元） */
+.wl-tier .coin-amt {
+  justify-content: center;
+  font-size: 14px;
+}
+
+.wl-tier-yuan {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wl-tier.on .wl-tier-yuan {
+  color: var(--orange2);
+}
+
+/* 扫码区：到账币数（与「实付 ¥…」那行并排说明） */
+.wl-qr-coins {
+  font-size: 13px;
+  color: var(--orange2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 表格里的币金额格子小一号 */
+.wl-table .coin-amt {
+  font-size: 12.5px;
+}
+
+/* 设置 · 提供商的中转卡片：余额数字 + 金币（沿用 .relay-balance b 的字重与颜色） */
+.relay-balance b .coin-amt {
+  font-size: inherit;
+  color: inherit;
+}
+
+/* ── 亮色主题：金币要压得住白底（外圈加深、高光收敛） ───────── */
+body.theme-light .coin-ico {
+  background:
+    radial-gradient(circle at 32% 28%, #fff8dd 0%, #f0bf52 40%, #bf8412 76%, #8d5c08 100%);
+  box-shadow:
+    inset 0 0 0 0.08em rgba(255, 255, 255, .85),
+    inset 0 -0.1em 0.16em rgba(110, 68, 4, .4),
+    0 0.02em 0.1em rgba(90, 60, 0, .3);
+}

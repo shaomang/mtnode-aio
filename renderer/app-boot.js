@@ -775,9 +775,9 @@ async function init() {
         if (el.hidden) { buildAgentToolsMenu(); openAgentMenu("agentToolsMenu"); }
         else closeAgentMenus();
       };
-    /* 「模式」chip：会话级开关的收纳口（纯净模式 + 自动续跑），与「工具」chip 同款下拉。
-       两枚开关的点击处置仍在各自模块（app-assist.js 的 agentModeEntryOf / app-longrun.js
-       的 toggleAuto），这里只管开合这只菜单。 */
+    /* 「模式」chip：会话级开关的收纳口（先拷问需求 + 纯净模式 + 自动续跑 + 显示思考），
+       与「工具」chip 同款下拉。各枚开关的点击处置仍在各自模块（app-assist.js 的
+       agentModeEntryOf / app-longrun.js 的 toggleAuto），这里只管开合这只菜单。 */
     const mdt = $("#agentModeTrigger");
     if (mdt)
       mdt.onclick = () => {
@@ -785,6 +785,18 @@ async function init() {
         if (!el) return;
         if (el.hidden) { buildAgentModeMenu(); openAgentMenu("agentModeMenu"); }
         else closeAgentMenus();
+      };
+    /* 助手栏「模式」chip（本次需求）：与会话侧同一个构件、同一个开合函数，
+       只是行集换成 assistModeEntries（先拷问需求 + 纯净模式），chip 换成助手栏那一枚。 */
+    const amt = $("#assistModeTrigger");
+    if (amt)
+      amt.onclick = () => {
+        const el = $("#assistModeMenu");
+        if (!el) return;
+        if (el.hidden) {
+          buildAgentModeMenu("assistModeMenu", assistModeEntries, paintAssistModeChip);
+          openAgentMenu("assistModeMenu");
+        } else closeAgentMenus();
       };
     /* 会话「与画布无关」chip 已随本次需求移除（改为按消息自动判定，见 app-assist.js 的
        agentCanvasTurnRelated）：chip 与它上面那段 onclick 都不再存在，这里不留空绑定。 */
@@ -1050,6 +1062,15 @@ async function init() {
   else if (typeof applySidebarVisibility === "function") applySidebarVisibility();
   applyTheme((S.config && S.config.theme) || "dsh");
   ensureTimerScheduler();
+  /* 中转凭据提示（renderer/app-relay-auth.js）：登录态一就绪就按主进程的凭据状态
+     决定要不要亮顶部那条横幅（凭据解不开 / 存不住、快到期时亮）——
+     没有它，用户会在「看起来还登录着」的状态下反复撞「缺少或已失效的中转 Key」401。
+     「登录着但本机还没有独立中转票」那条过渡态提示已按要求移除（票由客户端自动领）。 */
+  if (typeof MtRelayAuth !== "undefined" && MtRelayAuth.init) {
+    try {
+      MtRelayAuth.init();
+    } catch (e) {}
+  }
 }
 
 init();

@@ -12,8 +12,9 @@
  *     可打开（独立窗口启动）、更新（版本比较）、📂 打开它的数据目录、
  *     「二次开发」（登记为开发中 + 建同名画布与开发节点；该应用带 app.json 的 dev:true
  *     后就不再列在本页）、卸载（二次确认后**只删该应用子文件夹**）。
- *   · 开发：开发中的应用（带 dev:true 的：新建的 + 从库迁移来的）+ 三栏开发台、
- *     应用根目录、导出应用包（不含画布）、变更探测、开发绑定（见 app-apps-dev.js）。
+ *   · 开发：开发中的应用（带 dev:true 的：新建的 + 从库迁移来的）+ 三栏开发台与应用根目录
+ *     （见 app-apps-dev.js）。**本轮移除**页脚那个「更多：导出应用包 / 变更探测 / 开发绑定」
+ *     折叠块 —— 三栏开发台是这一页唯一的正文，工具区不再在页面上留入口。
  *
  * 名单与身份口径（本轮，docs/apps-market.md §八）：
  *   · 「开发中」真源 = app.json 的 dev:true：库页只列非开发中的，开发页只列开发中的，两边不重叠；
@@ -25,11 +26,13 @@
  *
  * 桥（preload.js 白名单，全部只转发给主进程 apps-store.js）：
  *   api.appsRootGet / appsRootSet / appsRootPick / appsList / appsCatalog /
- *   appsInstall(id, mode) / appsUninstall(id) / appsExportZip(id) / appsProbeChanges /
+ *   appsInstall(id, mode) / appsUninstall(id) /
  *   appsOpenWindow(id) / appsCloseWindow() / appsIsOpen(id) / appsSetMeta(id, patch) /
  *   appsDataOpen(id)（在资源管理器里打开该应用的数据目录，见下方「数据目录」一节）/
  *   onAppsProgress(cb) / onAppsWindowChanged(cb)
  * 渲染层不直连网络、不拼应用目录路径、不自己做 zip / sha256 —— 那些只留主进程。
+ * （appsExportZip / appsProbeChanges 仍在 preload 白名单里，走它们的是上架流程
+ *   renderer/app-publish.js 与主进程 apps-store.js；本页本轮不再有这两个入口。）
  *
  * 顶栏入口 #btnApps 只对白名单账号露出（APPS_USER_WHITELIST，可改常量）：登录态唯一来源
  * = window.MTNodeAuth.state()（统一账户模块 app-auth.js）；本文件按调用期探测订阅，
@@ -53,7 +56,7 @@ const APPS_USER_WHITELIST = ["ms2308"];
 const APPS_NAV = [
   ["apps", "应用", "浏览云端目录 · 下载到本机后用独立窗口运行"],
   ["lib", "库", "本机已下载的应用：打开 · 更新 · 卸载"],
-  ["dev", "开发", "应用根目录 · 导出应用包 · 变更探测"],
+  ["dev", "开发", "应用根目录 · 三栏开发台 · 实时预览"],
 ];
 
 /* 目录缓存新鲜期（毫秒）：这段时间内重开页面 / 切页不重复拉云端目录 */
@@ -78,8 +81,6 @@ const APPS_ST = {
   detailId: "", /* 应用页展开详情的应用 id */
   progress: Object.create(null), /* id -> { phase, percent, got, total, error } */
   busy: Object.create(null), /* id -> true：本机正在下载 / 安装 */
-  devProbe: null, /* 开发页：最近一次变更探测结果 */
-  devExport: null, /* 开发页：最近一次导出结果 */
   conflictAsk: null, /* 同名冲突框的收尾函数（Esc 走它） */
   /* 作者视角的线上条目（§七）：公开静态目录看不到「已下架」的自有条目，登录后另拉一次
      GET /api/apps?owner=<自己>&includeUnpublished=1，把 mine / unpublished / 版本树合并进来 */
@@ -1444,7 +1445,6 @@ function appsHubNav(id) {
   }
   APPS_ST.nav = next;
   APPS_ST.detailId = "";
-  APPS_ST.devExport = null;
   /* 换页立刻同步标签条显隐（开发页不显示标签；它挂在壳上、不在被重绘的正文里） */
   appsHubTagsHidden();
   appsHubPaint();
@@ -2455,7 +2455,6 @@ async function appsSecondaryDevRun(id) {
   /* 成功后按共识自动切到「开发」页并选中这个应用（与开发页「＋新建应用」收尾同一口径） */
   APPS_ST.nav = "dev";
   APPS_ST.detailId = "";
-  APPS_ST.devExport = null;
   if (typeof appsDevSelectApp === "function") appsDevSelectApp(r.id);
   else appsHubPaint();
   appsToast(appsT("已进入二次开发：") + (String(r.name || "") || r.id), "ok");
@@ -2521,7 +2520,7 @@ async function appsPaintLibPage(body, seq) {
   }
 }
 
-/* ───────────────── 开发页（三栏开发 + 根目录 / 导出包 / 变更探测） ───────────────── */
+/* ───────────────── 开发页（三栏开发 + 应用根目录） ───────────────── */
 
 async function appsPaintDevPage(body, seq) {
   await Promise.all([appsListLoad(false), appsCatalogLoad(false), appsRootLoad()]);
@@ -2534,224 +2533,14 @@ async function appsPaintDevPage(body, seq) {
      （renderer/app-apps-dev.js 的 appsDevPagePaint）并进它自己那条工具栏里，
      宽度不够时自动收进「更多 ▾」。库页（appsPaintLibPage）仍按原来的两行排。 */
 
-  /* ① 三栏开发页（renderer/app-apps-dev.js）：左 = 只属于该 appId 的会话列表 ·
+  /* 三栏开发页（renderer/app-apps-dev.js）：左 = 只属于该 appId 的会话列表 ·
      中 = iframe 实时预览该应用的静态页 · 右 = 该会话正文 · 下 = 输入框（同一个 composer）。
      首轮输入 = 在该应用的开发节点上点「开发」并提交；每轮开发结束后按应用目录的内容快照
      决定要不要重载预览（「维持状态」开关控制重载前后存 / 写回页面状态）。 */
   if (typeof appsDevPagePaint === "function") appsDevPagePaint(body, seq);
 
-  /* ② 原有的工具区（导出应用包 / 变更探测 / 开发绑定）收进折叠块，默认收起：
-     三栏是这一页的主内容，这些工具一个都不少，只是不占位。 */
-  const more = document.createElement("details");
-  more.className = "apps-sec-more";
-  const moreSum = document.createElement("summary");
-  moreSum.textContent = appsT("更多：导出应用包 / 变更探测 / 开发绑定");
-  more.appendChild(moreSum);
-  body.appendChild(more);
-
-  /* ③ 导出应用包（不含画布：主进程 apps-store.js 的 exportZip 只打 app.json + 入口页 + assets） */
-  const sec1 = document.createElement("section");
-  sec1.className = "apps-sec";
-  const h1 = document.createElement("h3");
-  h1.textContent = appsT("导出应用包");
-  const p1 = document.createElement("p");
-  p1.className = "apps-sec-hint";
-  p1.textContent = appsT("把某个已下载应用打成 zip（只含 app.json / 入口页 / assets，不含画布与该应用的存储），可用于搬家或上架云端目录。");
-  sec1.appendChild(h1);
-  sec1.appendChild(p1);
-  const list = appsLocalList();
-  if (!list.length) {
-    const none = document.createElement("div");
-    none.className = "apps-empty-sm";
-    none.textContent = appsT("本机还没有已下载的应用");
-    sec1.appendChild(none);
-  } else {
-    const sel = document.createElement("select");
-    sel.className = "apps-select";
-    for (const app of list) {
-      const o = document.createElement("option");
-      o.value = String(app.id || "");
-      o.textContent = String(app.name || app.id || "") + " v" + String(app.version || "");
-      sel.appendChild(o);
-    }
-    sec1.appendChild(sel);
-    const pRun = document.createElement("p");
-    pRun.className = "apps-sec-hint";
-    pRun.textContent = appsT("为一个应用开独立窗口（位置与「库」页的「运行」相同；应用本体不依赖宿主桥也能跑）");
-    sec1.appendChild(pRun);
-    /* 「运行」：给选中的那个应用开独立窗口（与库页同一口径：appsOpenApp → 主进程
-       apps:openWindow → BrowserWindow + preload-app.js 跑它自己的 index.html） */
-    sec1.appendChild(
-      appsRunBtnEl("dev", appsT("运行"), () => {
-        const id = String(sel.value || "");
-        if (id) appsOpenApp(id);
-      }),
-    );
-    sec1.appendChild(
-      appsMiniBtn(appsT("导出 zip"), async () => {
-        const api = window.api || {};
-        if (typeof api.appsExportZip !== "function") {
-          appsBridgeMissing();
-          return;
-        }
-        const r = await api.appsExportZip(sel.value);
-        if (!r || r.ok === false) {
-          appsToast(appsT("导出失败：") + appsErrText(r), "err");
-          return;
-        }
-        APPS_ST.devExport = r;
-        appsToast(appsT("已导出：") + r.path, "ok");
-        if (APPS_ST.nav === "dev") appsHubPaint();
-      }),
-    );
-  }
-  if (APPS_ST.devExport) {
-    const box = document.createElement("div");
-    box.className = "apps-detail apps-detail-inline";
-    const rows = [
-      [appsT("文件"), String(APPS_ST.devExport.path || "")],
-      [appsT("大小"), appsBytes(APPS_ST.devExport.bytes) + " · " + String(APPS_ST.devExport.files || 0) + appsT(" 个文件")],
-    ];
-    for (const [k, v] of rows) {
-      const row = document.createElement("div");
-      row.className = "apps-detail-row";
-      const kk = document.createElement("span");
-      kk.className = "apps-detail-k";
-      kk.textContent = k;
-      const vv = document.createElement("span");
-      vv.className = "apps-detail-v";
-      vv.textContent = v;
-      vv.title = v;
-      row.appendChild(kk);
-      row.appendChild(vv);
-      box.appendChild(row);
-    }
-    /* 校验值收进「ⓘ 校验」小按钮（本轮需求：长哈希对普通用户没有意义） */
-    if (String(APPS_ST.devExport.sha256 || "").trim()) {
-      const row = document.createElement("div");
-      row.className = "apps-detail-row";
-      const kk = document.createElement("span");
-      kk.className = "apps-detail-k";
-      kk.textContent = appsT("安装包校验");
-      const vv = document.createElement("span");
-      vv.className = "apps-detail-v";
-      vv.appendChild(appsHashBtnEl("校验 sha256", String(APPS_ST.devExport.sha256 || "")));
-      row.appendChild(kk);
-      row.appendChild(vv);
-      box.appendChild(row);
-    }
-    sec1.appendChild(box);
-  }
-  more.appendChild(sec1);
-
-  /* ② 变更探测：按应用算「文件数 / 字节 / 最新 mtime」快照并与上一份比对 */
-  const sec2 = document.createElement("section");
-  sec2.className = "apps-sec";
-  const h2 = document.createElement("h3");
-  h2.textContent = appsT("变更探测");
-  const p2 = document.createElement("p");
-  p2.className = "apps-sec-hint";
-  p2.textContent = appsT("对应用根目录下的每个应用算一份快照（文件数 / 字节 / 最新修改时间）并与上一份比对，看出哪些应用被改过（首次运行只落基线）。");
-  sec2.appendChild(h2);
-  sec2.appendChild(p2);
-  sec2.appendChild(
-    appsMiniBtn(appsT("探测变更"), async () => {
-      const api = window.api || {};
-      if (typeof api.appsProbeChanges !== "function") {
-        appsBridgeMissing();
-        return;
-      }
-      const r = await api.appsProbeChanges();
-      if (!r || r.ok === false) {
-        appsToast(appsT("探测失败：") + appsErrText(r), "err");
-        return;
-      }
-      APPS_ST.devProbe = r;
-      if (APPS_ST.nav === "dev") appsHubPaint();
-    }),
-  );
-  const probe = APPS_ST.devProbe;
-  if (probe) {
-    const sum = document.createElement("div");
-    sum.className = "apps-sec-hint";
-    sum.textContent = probe.baseline
-      ? appsT("已落基线：本次记下 ") + String((probe.added || []).length) + appsT(" 个应用，下次探测才有对照。")
-      : appsT("新增 ") +
-        String((probe.added || []).length) +
-        appsT(" · 变更 ") +
-        String((probe.changed || []).length) +
-        appsT(" · 移除 ") +
-        String((probe.removed || []).length) +
-        appsT(" · 未变 ") +
-        String(probe.unchanged || 0);
-    sec2.appendChild(sum);
-    const items = [];
-    for (const id of probe.added || []) items.push([appsT("新增"), String(id)]);
-    for (const c of probe.changed || []) items.push([appsT("变更"), String(c.id)]);
-    for (const id of probe.removed || []) items.push([appsT("移除"), String(id)]);
-    if (items.length) {
-      const box = document.createElement("div");
-      box.className = "apps-detail apps-detail-inline";
-      for (const [k, v] of items) {
-        const row = document.createElement("div");
-        row.className = "apps-detail-row";
-        const kk = document.createElement("span");
-        kk.className = "apps-detail-k";
-        kk.textContent = k;
-        const vv = document.createElement("span");
-        vv.className = "apps-detail-v";
-        vv.textContent = v;
-        row.appendChild(kk);
-        row.appendChild(vv);
-        box.appendChild(row);
-      }
-      sec2.appendChild(box);
-    }
-  }
-  more.appendChild(sec2);
-
-  /* ③ 开发绑定：当前画布项目根 ⇄ 应用目录 */
-  const sec3 = document.createElement("section");
-  sec3.className = "apps-sec";
-  const h3 = document.createElement("h3");
-  h3.textContent = appsT("开发绑定");
-  const p3 = document.createElement("p");
-  p3.className = "apps-sec-hint";
-  p3.textContent = appsT("把某个应用目录设为当前画布顶层开发节点的「项目文件夹」（devPath），该应用就与开发节点绑定：开发 / 细化会话的工作区跟着它走。绑定情况现在只在这一页显示（库页那枚徽标已去掉）。");
-  sec3.appendChild(h3);
-  sec3.appendChild(p3);
-  const cur = typeof devProjectRootOf === "function" ? String(devProjectRootOf() || "") : "";
-  const rootRow = document.createElement("div");
-  rootRow.className = "apps-sec-hint";
-  rootRow.textContent = cur ? appsT("当前画布项目根：") + cur : appsT("当前画布还没有项目根（在顶层开发块里设置「项目文件夹」）");
-  sec3.appendChild(rootRow);
-  /* 当前正在开发的那个应用（开发页顶栏选中的那个）：它的绑定情况最要紧 */
-  const curId = typeof DEVD === "object" && DEVD ? String(DEVD.appId || "") : "";
-  const curApp = curId ? appsLocalById(curId) : null;
-  if (curApp) {
-    const bind = appsDevBindingOf(curApp);
-    const row = document.createElement("div");
-    row.className = "apps-sec-hint";
-    row.textContent = bind.bound
-      ? appsT("当前应用已绑定开发节点：") + bind.titles.join(" · ")
-      : appsT("当前应用还没绑定开发节点（在它的顶层开发块里把「项目文件夹」指向应用目录即可）");
-    sec3.appendChild(row);
-  }
-  const devList = appsLocalList().filter((a) => a && a.dev === true);
-  const devRow = document.createElement("div");
-  devRow.className = "apps-sec-hint";
-  devRow.textContent = devList.length
-    ? appsT("开发中的应用（") + devList.length + appsT(" 个，只在「开发」页列出）：") + devList.map((a) => String(a.name || a.id)).join(" · ")
-    : appsT("本机还没有「开发中」的应用：在「库」页点「二次开发」，或在开发页点「＋新建应用」");
-  sec3.appendChild(devRow);
-  const bound = appsLocalList().filter((a) => appsDevBindingOf(a).bound);
-  const boundRow = document.createElement("div");
-  boundRow.className = "apps-sec-hint";
-  boundRow.textContent = bound.length
-    ? appsT("已绑定开发的应用：") + bound.map((a) => String(a.name || a.id)).join(" · ")
-    : appsT("本机还没有应用与当前画布的开发节点绑定");
-  sec3.appendChild(boundRow);
-  more.appendChild(sec3);
+  /* 页脚那个「更多：导出应用包 / 变更探测 / 开发绑定」折叠块本轮移除：
+     三栏开发台是这一页唯一的正文（应用根目录 / ＋新建应用 在它自己那条工具栏里）。 */
 }
 
 /* ───────────────── 入口接线 ───────────────── */

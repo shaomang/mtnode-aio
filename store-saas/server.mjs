@@ -98,7 +98,11 @@ const WIN_RESERVED = new Set([
   "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ]);
 const SESSION_MS = 30 * 24 * 3600 * 1000;
-// 短信频控口径见 docs/auth-design.md 第 8 节（服务端内存态，重启清零）。
+/* 中转站独立 Key（= 客户端「MTNode 中转服务」那张卡真正的凭据）的有效期：
+   与登录会话**解耦** —— 客户端登录态可能因换机、密码变更、会话清理而失效，
+   中转 Key 不该跟着一起死。180 天，每次使用滑动续期（见 touchSession 的 kind 分支）。 */
+const RELAY_KEY_MS = 180 * 24 * 3600 * 1000;
+const RELAY_KEY_KIND = "relay";// 短信频控口径见 docs/auth-design.md 第 8 节（服务端内存态，重启清零）。
 const SMS_COOLDOWN_MS = 60 * 1000; // 单号 60 秒冷却
 const SMS_DAILY_MAX = 10; // 单号每日上限
 const SMS_IP_HOURLY_MAX = 30; // 单 IP 每小时上限
@@ -573,18 +577,91 @@ function relayTestUser(req, isRelayPath) {
 // 除非主动登出」。仅当剩余不足一半才写库，避免每个请求都打一次云库；写库失败只记日志，
 // 内存已续期（本次请求照常放行），下次请求会重试写穿。
 async function touchSession(sess, t) {
-  if (sess.expiresAt - t >= SESSION_MS / 2) return;
-  const next = t + SESSION_MS;
+  /* 中转 Key 与登录会话同一张表，但 TTL 不同：各自用各自的窗口续期（见 RELAY_KEY_MS）。
+     判据取记录上的 kind（老记录没有 kind = 登录会话）。 */
+  const relay = String(sess.kind || "") === RELAY_KEY_KIND;
+  const ttl = relay ? RELAY_KEY_MS : SESSION_MS;
+  if (sess.expiresAt - t >= ttl / 2) return;
+  const next = t + ttl;
   sess.expiresAt = next;
   try {
     await accountStore.updateSession({
       tokenHash: sess.tokenHash,
       userId: sess.userId,
       expiresAt: next,
+      kind: sess.kind,
     });
   } catch (e) {
     console.warn("[mtnode-store] session renew failed: " + ((e && e.message) || e));
   }
+}
+
+/* ── 中转站独立 Key（180 天 · 滑动续期）─────────────────────────────────────
+   为什么要独立：以前「中转 Key = 账号登录 token」，客户端一换机 / 密码一变 /
+   会话被清，中转卡就跟着 401（症状 = 「缺少或已失效的中转 Key」，用户以为要自己填 Key）。
+   现在登录照旧发登录会话，中转另发一张 180 天的独立票；客户端把它存进本机加密凭据，
+   主进程每次请求现取现用（明文不出主进程，也不落 config.json）。
+   保底一票制：同一账号只留最新一张 —— 重发时把该账号的旧票（含过期的）一并作废，
+   换机 / 重装后老客户端手里那张自动失效。 */
+async function issueRelayKey(u, t) {
+  const token = crypto.randomBytes(24).toString("hex");
+  const nowTs = Number(t) || now();
+  const tokenHash = hashToken(token);
+  /* 先作废该账号手里的旧票（含已过期的），再发新的：库里只留这一张，
+     否则「重发」会变成「多张同时有效」，被顶掉的老客户端还能一直用。 */
+  const old = (db.sessions || []).filter(
+    (s) => String(s.userId || "") === String(u.id || "") && String(s.kind || "") === RELAY_KEY_KIND,
+  );
+  for (const s of old) {
+    try {
+      await accountStore.deleteSession(s.tokenHash);
+    } catch (e) {
+      console.warn("[mtnode-store] relay key revoke failed: " + ((e && e.message) || e));
+    }
+  }
+  if (old.length) {
+    const gone = new Set(old.map((s) => s.tokenHash));
+    db.sessions = db.sessions.filter((s) => !gone.has(s.tokenHash));
+  }
+  await accountStore.createSession({
+    tokenHash,
+    userId: u.id,
+    expiresAt: nowTs + RELAY_KEY_MS,
+    kind: RELAY_KEY_KIND,
+    createdAt: nowTs,
+  });
+  db.sessions = (db.sessions || []).filter((s) => s.tokenHash !== tokenHash);
+  db.sessions.push({ tokenHash, userId: u.id, expiresAt: nowTs + RELAY_KEY_MS, kind: RELAY_KEY_KIND, createdAt: nowTs });
+  return { token, expiresAt: nowTs + RELAY_KEY_MS, ttlMs: RELAY_KEY_MS };
+}
+
+/** 该账号的中转 Key：/api/relay/me 用它把票交给客户端。
+ *
+ *  **为什么每次都要重发、不能只发一次明文**（本 bug 的根因）：库里只存 tokenHash，
+ *  明文谁也拿不回来，所以「只在下发那一次给明文」等于**一次性的** ——
+ *  客户端只要那一次没接住（重装 / 清了本机凭据 / 解密失败丢了 / 换机 / 换账号回来 /
+ *  落库那一步失败），此后再怎么重新登录都只会拿到空串，只能退回登录 token 兜底，
+ *  而中转数据面只认 kind=relay 的独立票 ⇒ 恒 401；界面又一直提示「重新登录一次即可自动领取」，
+ *  用户按提示做多少遍都出不来凭据（死循环）。
+ *  发放口只有 /api/relay/me（要账号登录态），明文只经这一条路径回主进程、由主进程存进本机加密凭据，
+ *  所以这里每次来领都发一张新的（同时顶掉旧票），让「重新登录一次」真的能领到手。 */
+async function ensureRelayKey(u) {
+  const t = now();
+  const made = await issueRelayKey(u, t);
+  return { expiresAt: made.expiresAt, ttlMs: RELAY_KEY_MS, token: made.token };
+}
+
+/** 给客户端的中转 Key 视图：明文在这个入口下发（客户端存本机加密凭据；
+ *  库里只有 hash，所以每次来领都重发一张、旧票同时作废 —— 见 ensureRelayKey 的注释）。 */
+async function relayKeyView(u) {
+  const r = await ensureRelayKey(u);
+  return {
+    expiresAt: r.expiresAt,
+    ttlMs: r.ttlMs,
+    renewBeforeMs: Math.floor(RELAY_KEY_MS / 6),
+    issued: !!r.token,
+    relayKey: r.token || "",
+  };
 }
 
 function validPassword(password) {
@@ -1237,7 +1314,13 @@ function credentialCount(u) {
   return [!!u.pass, !!u.phone, !!u.wechatUnionId].filter(Boolean).length;
 }
 
-async function authUser(req, isRelayPath) {
+/* 鉴权唯一入口。
+   · bootRelayKey = 这次请求允许用**登录会话**去换中转 Key（只有 /api/relay/me 这个入口，
+     客户端登录后/老客户端首次同步时走它领取独立票）；
+   · 中转数据面（/relay/v1/*）只认 kind="relay" 的独立票 —— 老客户端拿着登录 token 打过来
+     必须被拒，让它走一次重登（否则「中转 Key 独立」就名存实亡）。 */
+async function authUser(req, isRelayPath, opts) {
+  const boot = !!(opts && opts.bootRelayKey);
   const h = req.headers.authorization || "";
   const m = /^Bearer\s+(\S+)/i.exec(h);
   if (!m) return null;
@@ -1248,6 +1331,8 @@ async function authUser(req, isRelayPath) {
   const t = now();
   const sess = db.sessions.find((s) => s.tokenHash === th && s.expiresAt > t);
   if (!sess) return null;
+  const isRelayKey = String(sess.kind || "") === RELAY_KEY_KIND;
+  if (isRelayPath && !isRelayKey && !boot) return null;
   await touchSession(sess, t);
   return db.users.find((u) => u.id === sess.userId) || null;
 }
@@ -2627,7 +2712,9 @@ async function handle(req, res) {
   const url = new URL(req.url || "/", "http://local");
   const p = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method || "GET";
-  const user = await authUser(req, p === "/relay/v1" || p.startsWith("/relay/v1/"));
+  /* bootRelayKey：/api/relay/me 允许用登录会话换独立的中转 Key（见 authUser 注释）。 */
+  const isRelayDataPath = p === "/relay/v1" || p.startsWith("/relay/v1/");
+  const user = await authUser(req, isRelayDataPath, { bootRelayKey: p === "/api/relay/me" });
 
   // 中转站：/relay/v1/* 全权交给 relay.mjs（它自己读请求体 —— multipart 要原包转发）。
   // 鉴权沿用它上面的账号 token（同一套 Bearer 会话），不另立一套 Key。
@@ -2770,6 +2857,9 @@ async function handle(req, res) {
         (e.type === "recharge" ||
           (e.type === "adjust" && Number(e.deltaCents) > 0)),
     );
+    /* 中转 Key（180 天独立票）：这个入口同时是**发放口** —— 客户端登录后 / 老客户端首次
+       同步时来这里领票，明文只在下发的这一次回给主进程（客户端存本机加密凭据）。 */
+    const keyView = await relayKeyView(user);
     return send(res, 200, {
       ok: true,
       baseUrl: RELAY_PUBLIC_BASE,
@@ -2782,6 +2872,11 @@ async function handle(req, res) {
       models: models,
       reason: models.length ? "" : "账号在中转站的可用余额为 0：充值后即可使用",
       updatedAt: Date.now(),
+      /* 凭据状态：relayKey 非空 = 这次新发的（客户端立刻存下）；为空 = 沿用现役那张。 */
+      relayKey: keyView.relayKey,
+      relayKeyExpiresAt: keyView.expiresAt,
+      relayKeyTtlMs: keyView.ttlMs,
+      relayKeyRenewBeforeMs: keyView.renewBeforeMs,
     });
   }
 

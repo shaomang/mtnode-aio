@@ -3051,6 +3051,25 @@ button.mini.btn-sq.tpl-ico {
   display: none
 }
 
+/* 「拷问需求」状态小字（本次开发需求 · 会话头部）：模式菜单里那一枚默认开，这一枚只**回显**
+   这一轮会不会被拷问（不挂 onclick，切换只走模式菜单）。它跟「工具 / 模式」一样是硬 chip：
+   状态要一眼看得见，不能被别的软 chip 挤没（.agent-chip[hidden] 已定义，关掉即整枚消失）。 */
+.agent-chip.agent-chip-grill {
+  flex: 0 0 auto;
+  max-width: none;
+  height: 22px;
+  padding: 0 7px;
+  border-color: rgba(86, 134, 254, .34);
+  background: rgba(86, 134, 254, .08);
+  color: rgb(86, 134, 254);
+  font-size: 10.5px;
+  cursor: default;
+}
+
+.agent-chip.agent-chip-grill:hover {
+  background: rgba(86, 134, 254, .08)
+}
+
 .agent-chip:hover {
   background: rgba(255, 255, 255, .06)
 }
@@ -3619,7 +3638,7 @@ button.mini.btn-sq.tpl-ico {
   font-weight: 600;
 }
 
-/* 「模式」菜单里的开关（纯净模式 / 自动续跑）—— 本轮需求：换成真开关（槽 + 滑块）。
+/* 「模式」菜单里的开关（先拷问需求 / 纯净模式 / 自动续跑 / 显示思考）—— 本轮需求：换成真开关（槽 + 滑块）。
    ① hit box：整块按钮 44×26 都可点（原先那枚字符按钮只有约 20px 高、按到的其实是几个
    像素的 ✓ / —，用户反馈点不中）；② 键面里不放任何文字，开关态只由滑块位置 + 配色表达，
    所以按钮宽度恒定，不会因为「开了」而变宽、把同一行的说明挤走。 */

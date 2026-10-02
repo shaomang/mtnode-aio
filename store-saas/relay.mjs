@@ -1106,7 +1106,23 @@ export function createRelay(deps) {
       return res.end();
     }
     if (!user) {
-      return sendError(res, 401, "缺少或已失效的中转 Key（= MTNode 账号登录 token）：请在「提供商」里填入账号 Key", "invalid_api_key", "authentication_error");
+      /* 两种情形分开说（旧文案把用户往「去提供商填 Key」推，而那张卡是只读的：
+         客户端只会去「设置 · 提供商」里白找一圈，问题其实在登录态上）：
+           · 请求里根本没带凭据 → 未登录；
+           · 带了凭据但服务端不认（独立票过期 / 已换账号 / 老客户端拿登录 token 来打）
+             → 凭据已失效，请重新登录一次领取新的中转 Key。
+         前缀 MTNODE_RELAY_AUTH 是给客户端识别的标记（客户端据此清本机凭据并提示重登，
+         见 main.js 的 relayAuthFailed / providerAuthKey）—— 客户端会把前缀从文案里去掉。 */
+      const hasAuth = !!(ctx && ctx.req && ctx.req.headers && String(ctx.req.headers.authorization || "").trim());
+      return sendError(
+        res,
+        401,
+        hasAuth
+          ? "MTNODE_RELAY_AUTH 中转 Key 已失效（有效期到了，或账号已更换）：请重新登录一次 MTNode 账号，客户端会自动领取新的中转 Key"
+          : "MTNODE_RELAY_AUTH 未提供中转 Key：请先登录 MTNode 账号（客户端在「设置 · 提供商」里自动带凭据，无需手填）",
+        "invalid_api_key",
+        "authentication_error",
+      );
     }
 
     const kind = p.startsWith("/relay/v1/images/") ? "image" : "account";

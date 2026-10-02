@@ -188,6 +188,44 @@ function assistCanvasTurnRelated(text) {
   return agentCanvasTurnRelated(text, null);
 }
 
+/* ── 「先拷问需求（grill-me）」：会话窗口 + 右侧助手栏的模式开关（本次开发需求）──
+   口径（用户拷问四轮已确认）：
+     · 会话级缺省开（st.grill：没写过 = 开，点关之后这条会话记住，随会话落盘）；
+       助手栏另存一个全局位（S.assistPure 同族的 S.assistGrill，随配置落盘，缺省开）。
+     · 契约**按轮注入**：每轮由模型自己判「这轮像不像需求 / 开发 / 要改东西」——
+       像才带契约；拿不准就不拷问、直接干活。判据写进契约，与「本轮是不是开工」
+       同一处判断，不会再出现两套判据互相打脸。
+     · 纯净模式开着时整段 system prompt 都置空（本就不注入）；
+       自动续跑轮 / 断点续跑轮 / 开发任务书契约会话都不注入（都不该由模型自己追问自己）；
+       用户手敲的斜杠命令（/plan、/compact 等）是命令不是需求，模型按契约自判不拷问。 */
+/* 会话级开关态：只有用户亲口写过 false 才算关（缺省开；水合见 agentSessions）。
+   这里刻意**不另抽一层函数**：本文件多处被冒烟按函数名抠进 vm 单独求值
+   （如 smoke-think 抠 agentModeEntryOf），多一层未一起抠出的依赖就会当场 ReferenceError。 */
+function grillTurnOn(s, opts) {
+  opts = opts || {};
+  return !!(
+    !(s && s.grill === false) &&
+    !opts.autoContinue &&
+    !opts.resumeRound &&
+    !opts.devContract
+  );
+}
+/* 拷问契约正文：与开发节点任务书里那段【拷问模式】同一套纪律，只改两处差异 ——
+   ① 会话 / 助手随时能改文件与画布，所以不禁「只读地查现状」，只禁「出实施计划 / 开工」；
+   ② 收尾不回写任何节点字段（那不是会话的活）。 */
+const GRILL_CONTRACT =
+  "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。" +
+  "你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；" +
+  "像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n" +
+  "要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— " +
+  "把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完" +
+  "（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；" +
+  "禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；" +
+  "到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工" +
+  "（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n" +
+  "用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。" +
+  "只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。";
+
 function summarizeCanvasEdit(params) {
   params = params || {};
   const bits = [];
@@ -651,6 +689,11 @@ function persistAssistUi() {
     S.assistScope === "global" ? "global" : "current";
   /* 与画布无关（Gate B · 助手侧）：全局偏好，与 assistScope 同级落盘 */
   S.config.assistCanvasFree = !!S.assistCanvasFree;
+  /* 助手栏「模式」菜单的两枚开关（本次需求）：助手没有会话档案，偏好只能落在全局
+     配置上（与会话级 st.grill / st.pure 各存各的）。两者都**缺省开 / 关**：
+     assistGrill 缺省开（没写过 = true），assistPure 缺省关。 */
+  S.config.assistGrill = S.assistGrill !== false;
+  S.config.assistPure = !!S.assistPure;
   S.config.assistW = clampAssistW(S.assistW || 320);
   S.config.assistMessages = (S.assistMessages || []).slice(-80).map((m) => {
     const o = {
@@ -1054,12 +1097,29 @@ function fillAssistScopeControl() {
 
 function updateAssistScopeChrome() {
   const scopeCurrent = assistScopeIsCurrent();
+  /* 「先拷问需求」状态回显（本次需求）：助手栏头部那行小字里带上它 ——
+     用户不再需要展开模式菜单才知道这一轮会不会被追问。 */
+  const grill = S.assistGrill !== false;
+  assistGrillTagPaint(grill);
   const sub = document.querySelector("#assistPane .assist-sub");
   if (sub) {
-    sub.textContent = scopeCurrent
+    const scope = scopeCurrent
       ? I18n.t("仅当前画布")
       : I18n.t("可见全局状态");
+    sub.textContent = grill
+      ? I18n.t("拷问需求") + " · " + scope
+      : scope;
   }
+  paintAssistModeChip();
+}
+/* 助手栏头部的「拷问需求」小字标记（本次需求）：开 = 显示，关 = 收起。
+   与会话侧头部那一枚同一份词条、同一处观感。 */
+function assistGrillTagPaint(on) {
+  const el = document.getElementById("assistGrillTag");
+  if (!el) return;
+  el.hidden = !on;
+  el.textContent = I18n.t("拷问需求");
+  el.title = I18n.t("先拷问需求：开启中 —— 像需求 / 开发的那几轮会先用询问窗问清再动手");
 }
 
 /* 助手侧「与画布无关」按钮已随本次需求移除（改为按消息自动判定，见 agentCanvasTurnRelated）：
@@ -1268,6 +1328,14 @@ async function assistSend(text) {
      所以助手默认行为与改造前完全一致，只有明确指向画布 / 节点图之外的消息才省这一档。
      判据在这里定一次，往下（快照 / 分节 / 隐藏名单 / 签名 / 运行参数）全用同一个值。 */
   const assistCanvasFree = !assistCanvasTurnRelated(t);
+  /* 助手栏「纯净模式」（本次需求 · 与助手栏「模式」菜单新增的那一枚同源）：
+     与会话窗口完全一致 —— system prompt 整段置空 + 工具侧 pure 位下发网关
+     （见 app-db.js 的 pureOn，最终走网关空预设文本 + MTNODE_PURE）。
+     读的是全局偏好 S.assistPure（随配置落盘，见 persistAssistUi）。 */
+  const assistPure = !!S.assistPure;
+  /* 「先拷问需求」助手栏这一枚的开关态（真源 = 全局偏好 S.assistGrill，缺省开）：
+     契约按轮贴在人设尾部，是否真拷问由模型自判（见下方 personaHostFull）。 */
+  const assistGrill = S.assistGrill !== false;
   /* 不缩进序列化：这份快照每轮原样重发，缩进（null, 2）纯属白送的空格 token */
   const stateJson = JSON.stringify(
     await assistAppSnapshot({ canvasFree: assistCanvasFree }),
@@ -1333,6 +1401,10 @@ async function assistSend(text) {
   const personaHost = assistCanvasFree
     ? "你是 MTNode AI编排器的全局助手，位于界面右侧栏。宿主按这条消息判定**本轮与画布无关**：本轮不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令，也不注入整张画布快照。\n本轮不要承诺任何画布改动，也不要臆造节点或画布现状。若这条任务其实需要动画布：**先别硬做** —— 用一句话说明「这轮按无关档跑、画布工具没在」，请用户在同一句里补上画布 / 节点（例如「改画布上的『文本节点 2』」）再发一次，下一轮就会带上画布工具。\n"
     : "你是 MTNode AI编排器的全局助手，位于界面右侧栏。你能看到并操作应用内画布、节点、服务商与智能配置摘要。\n";
+  /* 拷问契约（本次需求 · 助手栏「先拷问需求」那一枚）：贴在人设尾部（不是单开一节）——
+     节序表里没有这个 id 会被排到全表末尾，离「该不该开工」的判断点太远；
+     贴在人设后面才有约束力。纯净模式开着时整段 system prompt 都置空（本就不注入）。 */
+  const assistGrillContract = assistGrill && !assistPure ? GRILL_CONTRACT : "";
   const visionMediaRules = assistCanvasFree
     ? /* 无画布档：整段画布 / 节点口径撤掉，只留「回执即事实」这条通用纪律 */
       "- 工具回执里没有的结果，不要向用户声称已完成。\n"
@@ -1375,7 +1447,7 @@ async function assistSend(text) {
   const assistHide =
     typeof dshHiddenToolsFor === "function"
       ? dshHiddenToolsFor({
-          pure: false,
+          pure: assistPure,
           dbGrounded: false,
           lean: assistLean,
           noCanvas: assistCanvasFree,
@@ -1395,8 +1467,9 @@ async function assistSend(text) {
     app_state: appStateBlock,
   };
   /* 节序（app-prompt-sections.js 规范表）+ join:"" ⇒ 拼出来与改造前的整串逐字节一致 */
-  const systemPrompt =
-    typeof renderSections === "function"
+  const systemPrompt = assistPure
+    ? ""
+    : typeof renderSections === "function"
       ? renderSections("assist", assistSections, {
           join: "",
           sig: dshRunSigOf({
@@ -1405,14 +1478,15 @@ async function assistSend(text) {
             provider: S.assistProvider || "deepseek-official",
             preset: S.assistPreset || AGENT_PRESET_DEFAULT,
             effort: S.assistEffort || "high",
-            pure: false,
+            pure: assistPure,
             lean: typeof dshLeanToolsOn === "function" ? dshLeanToolsOn() : false,
             noCanvas: assistCanvasFree,
             hide: assistHide,
             maxTokens: assistMaxTok,
           }),
-        }).text
-      : /* 内核不在（老沙箱只抠单文件）：按同一节序直接串接，结果与分节渲染一致 */
+        }).text + assistGrillContract
+      : /* 内核不在（老沙箱只抠单文件）：按同一节序直接串接，结果与分节渲染一致；
+           拷问契约按同一口径在**整段之后**追加（与会话侧 systemPrompt += GRILL_CONTRACT 同源）。 */
         [
           personaHost,
           scopeBlock,
@@ -1423,7 +1497,8 @@ async function assistSend(text) {
           layoutRules,
           principleBlock,
           appStateBlock,
-        ].join("");
+        ].join("") +
+        assistGrillContract;
   let assistHitMaxTokens = false;
   try {
     const final = await dshRunTask(input, {
@@ -1437,6 +1512,9 @@ async function assistSend(text) {
       model: S.assistModel || undefined,
       effort: S.assistEffort || "high",
       systemPrompt,
+      /* 纯净模式（助手栏「模式」菜单里那一枚 · 本次需求）：与会话窗口同一条链 ——
+         systemPrompt 置空 + pure 标记下发网关（网关强制空预设文本、引擎按 MTNODE_PURE 移除人设）。 */
+      pure: assistPure,
       /* Gate B（助手侧）：与画布无关 → 走 MTNODE_NO_CANVAS 整档闸，画布三件套
          （get / edit / app 合计约 26.0K 字符/步）整个不注册；快照也已换成轻量摘要。 */
       noCanvas: assistCanvasFree,
@@ -1691,6 +1769,11 @@ function agentSessions() {
      现改为写入 _devContract（发送时注入系统提示）；载回旧会话时做一次迁移。 */
   if (typeof devContractHydrateSession === "function")
     for (const s of S.agentSessions) devContractHydrateSession(s);
+  /* 「先拷问需求（grill-me）」水合（本次需求）：会话级开关**缺省开** ——
+     老存档 / 没点过这一枚的会话都没有这一位，统一归一成 true（与开发节点 devGrill
+     「没写过 = 默认开」同一口径）；用户点过关掉的会话是布尔 false，原样留着。 */
+  for (const s of S.agentSessions)
+    if (s && typeof s.grill !== "boolean") s.grill = true;
   return S.agentSessions;
 }
 /* 旧版开发 / 细化会话迁移：首条 _src:"dev-node" 消息里是整份任务书 →
@@ -1918,6 +2001,9 @@ async function persistAgentSession() {
     model: s.model || "",
     effort: s.effort || "high",
     pure: !!s.pure,
+    /* 「先拷问需求（grill-me）」会话级开关（本次需求 · 会话窗口模式菜单里那一枚）：
+       缺省开 —— 只有用户亲口关掉（布尔 false）才落 false；载回时归一（见 agentSessions）。 */
+    grill: s.grill !== false,
     /* 「显示思考」开关（本次需求：原四档「工作步骤展示」在会话里收回成一枚开关）：
        只落「这条会话自己点过的那一态」（true / false），null = 没点过 ——
        跟随全局默认档（设置 · 智能能力 的 dsh.transcriptView）。
@@ -2215,7 +2301,15 @@ async function deleteAgentSession(id) {
 }
 /* ===================== dsh web composer（模型 / 命令 / 工作区 下拉） ===================== */
 function closeAgentMenus() {
-  ["agentModelMenu", "agentCmdMenu", "agentToolsMenu", "agentModeMenu"].forEach((id) => {
+  /* 助手栏「模式」菜单（#assistModeMenu · 本次需求）与会话侧同族：互斥收起必须把它
+     也带上，否则两只菜单会同时开着叠在输入区上。 */
+  [
+    "agentModelMenu",
+    "agentCmdMenu",
+    "agentToolsMenu",
+    "agentModeMenu",
+    "assistModeMenu",
+  ].forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
   });
@@ -2280,8 +2374,9 @@ function renderAgentComposer() {
       wt.title = tip;
     }
   }
-  /* 会话级开关（纯净模式 / 自动续跑）已收进「模式」菜单：chip 只留入口 + 摘要，
-     逐项开关态由 paintAgentModeChip 统一回显（见下方 buildAgentModeMenu）。 */
+  /* 会话级开关（先拷问需求 / 纯净模式 / 自动续跑）已收进「模式」菜单：chip 只留入口 +
+     摘要，逐项开关态由 paintAgentModeChip 统一回显（见下方 buildAgentModeMenu）。*/
+  paintGrillTag();
   /* 「与画布无关」chip 已随本次需求移除（改为按消息自动判定）：这里不再回显它。
      判据真源 = agentCanvasTurnRelated，下发点见 agentSessionSend 的 turnCanvasFree。 */
   /* 计划已产出且未在运行 → 浮现「▶ 执行计划」 */
@@ -2779,6 +2874,29 @@ function paintAgentToolsChip() {
    状态回显（唯一真源）：chip 摘要看着两个开关算，菜单行「开 / 关」按同一份判据画。 */
 function agentModeEntryOf(key) {
   const st = agentSessionState();
+  /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口模式菜单新增的一枚）：
+     会话级开关，**缺省开**（st.grill 不是布尔 = 没点过 → 开；水合见 agentSessions）。
+     开启 = 每一轮由模型自判这轮像不像需求，像就先加载内置技能 mtnode-grill-me、
+     用 ask_user_question 一次问完整轮前沿，直到你确认无歧义才开工（契约见 GRILL_CONTRACT）。 */
+  if (key === "grill") {
+    const on = !(st && st.grill === false);
+    return {
+      key: "grill",
+      label: "先拷问需求",
+      hint:
+        "开启 = 这条会话里每轮先自判「像不像需求」，像就先加载内置技能 mtnode-grill-me 问清整个前沿，经你确认无歧义后才动手；默认开启",
+      title: on
+        ? "先拷问需求：开启中，点击关闭（关闭后直接干活，不再逐轮拷问）"
+        : "先拷问需求：已关闭，点击开启（像需求 / 开发的那几轮先问清再动手）",
+      on,
+      toggle: () => {
+        st.grill = st.grill === false;
+        persistAgentSession();
+        renderAgentComposer();
+        if (typeof renderAgentSession === "function") renderAgentSession();
+      },
+    };
+  }
   if (key === "pure") {
     return {
       key: "pure",
@@ -2839,6 +2957,55 @@ function agentModeEntryOf(key) {
       },
     };
   }
+  /* 助手栏的两枚开关（本次需求：助手栏也加一枚「模式」菜单，与会话侧共用同一套构件）：
+     真源是全局偏好 S.assistGrill / S.assistPure（随配置落盘，见 persistAssistUi），
+     与「助手侧·与画布无关」同族 —— 助手没有会话档案，偏好只能落在全局配置上。 */
+  if (key === "assistGrill") {
+    const on = S.assistGrill !== false;
+    return {
+      key: "assistGrill",
+      label: "先拷问需求",
+      hint:
+        "开启 = 助手栏每轮先自判「像不像需求」，像就先加载内置技能 mtnode-grill-me 问清整个前沿，经你确认无歧义后才动手；默认开启",
+      title: on
+        ? "先拷问需求：开启中，点击关闭（关闭后助手直接干活，不再逐轮拷问）"
+        : "先拷问需求：已关闭，点击开启（像需求 / 开发的那几轮先问清再动手）",
+      on,
+      onPick() {
+        S.assistGrill = !(S.assistGrill !== false);
+        persistAssistUi();
+        renderAssistPanel();
+      },
+      toggle() {
+        S.assistGrill = !(S.assistGrill !== false);
+        persistAssistUi();
+        renderAssistPanel();
+      },
+    };
+  }
+  if (key === "assistPure") {
+    const on = !!S.assistPure;
+    return {
+      key: "assistPure",
+      label: "纯净模式",
+      hint:
+        "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；助手这条不再读写文件 / 改画布，省 token",
+      title: on
+        ? "纯净模式：开启中，点击关闭（助手栏这条不再读写文件 / 改画布）"
+        : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；助手这条不再读写文件 / 改画布，省 token",
+      on,
+      onPick() {
+        S.assistPure = !S.assistPure;
+        persistAssistUi();
+        renderAssistPanel();
+      },
+      toggle() {
+        S.assistPure = !S.assistPure;
+        persistAssistUi();
+        renderAssistPanel();
+      },
+    };
+  }
   return {
     key: "auto",
     label: "自动续跑",
@@ -2856,18 +3023,28 @@ function agentModeEntryOf(key) {
   };
 }
 function agentModeEntries() {
-  /* 顺序 = 菜单里的行序（纯净模式 / 自动续跑 / 显示思考 —— 本次需求把原四档
-     「工作步骤展示」在会话里收回成一枚「显示思考」开关：点开 = 会话里出现思考，
-     关闭 = 整条不显示（不是折叠）。全局默认档仍在 设置 · 智能能力 里改。） */
+  /* 顺序 = 菜单里的行序（先拷问需求 / 纯净模式 / 自动续跑 / 显示思考）。
+     本次需求把「先拷问需求（grill-me）」放在第一位：它是这条会话最常改的一枚，
+     默认又是开的（用户一进来看菜单就知道这轮会不会被追问）。
+     「显示思考」是原四档「工作步骤展示」在会话里收回来的：点开 = 会话里出现思考，
+     关闭 = 整条不显示（不是折叠）。全局默认档仍在 设置 · 智能能力 里改。 */
   return [
+    agentModeEntryOf("grill"),
     agentModeEntryOf("pure"),
     agentModeEntryOf("auto"),
     agentModeEntryOf("think"),
   ];
 }
-/* 按 key 现取（点完开关要拿刷新后的 on / title，不能拿点击瞬间那一份旧快照） */
-function agentModeEntryByKey(key) {
-  return agentModeEntries().filter((e) => e.key === key)[0] || null;
+/* 助手栏「模式」菜单的行（本次需求）：与会话侧**同一套构件、同一份词条**，
+   只是开关的真源换成全局偏好（见 agentModeEntryOf 的 assistGrill / assistPure 两支）。 */
+function assistModeEntries() {
+  return [agentModeEntryOf("assistGrill"), agentModeEntryOf("assistPure")];
+}
+/* 按 key 现取（点完开关要拿刷新后的 on / title，不能拿点击瞬间那一份旧快照）
+   entries 缺省 = 会话侧那四枚；助手栏的行传 assistModeEntries。 */
+function agentModeEntryByKey(key, entries) {
+  const list = typeof entries === "function" ? entries() : entries || agentModeEntries();
+  return list.filter((e) => e.key === key)[0] || null;
 }
 /* 自动续跑开关态：唯一真源在 app-longrun.js（缺省开）。模块还没挂 / 老页面 = 按开处理。 */
 function agentAutoOnNow() {
@@ -2898,8 +3075,10 @@ function agentModeToggleBtn(entry) {
   b.appendChild(track);
   return b;
 }
-function paintAgentModeToggleBtn(entry) {
-  const b = document.querySelector('#agentModeMenu [data-mode-key="' + entry.key + '"]');
+function paintAgentModeToggleBtn(entry, menuId) {
+  const b = document.querySelector(
+    "#" + (menuId || "agentModeMenu") + ' [data-mode-key="' + entry.key + '"]',
+  );
   if (!b) return;
   b.classList.toggle("on", !!entry.on);
   /* 键面只留开关本体：清掉任何可能残留在按钮里的文本节点（老版本写过 ✓ / —） */
@@ -2909,11 +3088,16 @@ function paintAgentModeToggleBtn(entry) {
   /* role=switch 的读屏口径就是 aria-checked 一项，不再重复挂 aria-pressed */
   b.setAttribute("aria-checked", entry.on ? "true" : "false");
 }
-function buildAgentModeMenu() {
-  const menu = document.getElementById("agentModeMenu");
+/* 会话「模式」菜单（#agentModeMenu）。
+   本次需求：助手栏也加一枚「模式」菜单（#assistModeMenu）——同一份构件、同一套处置，
+   只是行集与 chip 换一套：entries 缺省 = 会话侧四枚，助手栏传 assistModeEntries。 */
+function buildAgentModeMenu(menuId, entries, chipPainter) {
+  const menu = document.getElementById(menuId || "agentModeMenu");
   if (!menu) return;
+  const rows = typeof entries === "function" ? entries() : entries || agentModeEntries();
+  const paintChip = typeof chipPainter === "function" ? chipPainter : paintAgentModeChip;
   menu.innerHTML = "";
-  for (const entry of agentModeEntries()) {
+  for (const entry of rows) {
     const row = document.createElement("div");
     row.className = "agent-tools-row as-btn";
     /* 整行可点（本次需求 · 用户报障「模式菜单里的开关点不动」）：
@@ -2957,12 +3141,12 @@ function buildAgentModeMenu() {
       if (typeof entry.onPick === "function") entry.onPick();
       else entry.toggle();
       /* 重画用的条目必须是**切换后**的：旧快照的 on / title 还停在点击前 */
-      const fresh = agentModeEntryByKey(entry.key) || entry;
+      const fresh = agentModeEntryByKey(entry.key, rows) || entry;
       /* 提示文案带「开启中 / 已关闭」这类随状态变的字，就地按刷新后的条目重挂一份。
          顺序：先让两枚开关 / 键面的重画各写各的，最后再落这一份提示 —— 反过来的话
-         paintAgentModeToggleBtn / paintAgentModeChip 会把这里刚写的开关 title 覆盖掉。 */
+         paintAgentModeToggleBtn / paintChip 会把这里刚写的开关 title 覆盖掉。 */
       paintAgentModeToggleBtn(fresh);
-      paintAgentModeChip();
+      if (paintChip) paintChip();
       paintRowTitle(fresh);
     };
     row.onclick = () => {
@@ -2986,7 +3170,11 @@ function buildAgentModeMenu() {
   }
   const status = document.createElement("div");
   status.className = "agent-tools-status";
-  status.textContent = I18n.t("以上开关都只作用于当前会话，随时可改");
+  status.textContent = I18n.t(
+    menuId === "assistModeMenu"
+      ? "以上开关都只作用于右侧助手栏，随时可改"
+      : "以上开关都只作用于当前会话，随时可改",
+  );
   menu.appendChild(status);
 }
 /* chip 摘要（数据口径）：已开的开关名，空串 = 全关。仍给 tooltip 与外部读用。
@@ -3006,6 +3194,10 @@ function paintAgentModeChip() {
   if (!t) return;
   const entries = agentModeEntries();
   for (const e of entries) paintAgentModeToggleBtn(e);
+  /* 会话侧 chip 重绘顺带刷一次助手栏那一枚（切换会话 / 切语言 / 自动续跑态变化都会走到这里，
+     助手栏没有自己的重绘总线）—— 两边行集不同，各画各的，互不覆盖。 */
+  paintAssistModeChip();
+  paintGrillTag();
   const summary = agentModeChipSummary();
   t.classList.toggle("on", !!summary);
   /* 摘要 span 留在 DOM 里兼容外部读，但永不显示（写入 → 直清 + hidden） */
@@ -3018,6 +3210,33 @@ function paintAgentModeChip() {
      加开关不必再来这里补一行（原来写死 pure + auto，新开关进不了提示）。 */
   const mark = (e) => I18n.t(e.label) + I18n.t(e.on ? "（开）" : "（关）");
   /* 动态 title：切语言后由 renderAgentComposer（I18n.applyDom 之后的重绘）重算 */
+  delete t.dataset.i18nTitle;
+  t.title = I18n.t("模式：") + entries.map(mark).join(" / ");
+}
+/* 会话头部的「拷问需求」小字标记（本次需求 · 用户口径：这一轮到底会不会被拷问，
+   要能一眼看见）：开 = 显示，关 = 收起。挂在输入区上方那一排 chip 里（.agent-chip），
+   与会话头部同一处观感；文案与模式菜单里那一行共用一份词条。 */
+function paintGrillTag() {
+  const el = document.getElementById("agentGrillTag");
+  if (!el) return;
+  const s = agentSessionState();
+  const on = !(s && s.grill === false);
+  el.hidden = !on;
+  el.textContent = I18n.t("拷问需求");
+  el.title = I18n.t(
+    "先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手",
+  );
+}
+/* 助手栏「模式」chip 回显（本次需求）：与会话侧同款 —— 键面只写「模式」两个字，
+   开着的开关由 chip 变色（.on）+ tooltip 逐项「（开）/（关）」表达。 */
+function paintAssistModeChip() {
+  const t = document.getElementById("assistModeTrigger");
+  if (!t) return;
+  const entries = assistModeEntries();
+  for (const e of entries) paintAgentModeToggleBtn(e, "assistModeMenu");
+  const anyOn = entries.some((e) => e.on);
+  t.classList.toggle("on", anyOn);
+  const mark = (e) => I18n.t(e.label) + I18n.t(e.on ? "（开）" : "（关）");
   delete t.dataset.i18nTitle;
   t.title = I18n.t("模式：") + entries.map(mark).join(" / ");
 }
@@ -8715,6 +8934,20 @@ async function agentSessionSend(text, opts) {
       devContract +
       "\n【任务书结束】";
   }
+  /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口「模式」菜单新增的那一枚）：
+     会话级开关缺省开（st.grill，没点过 = 开），按轮注入契约 —— 是否真拷问由模型
+     自己判「这轮像不像需求」（判据写在契约里，与「本轮要不要开工」同一处判断）。
+     四种轮次不带契约：纯净模式（整段 system 本就置空）、自动续跑轮（不该由模型自己
+     追问自己）、断点续跑轮（那份 dsh 会话里 system 已落定，重发只会污染上下文）、
+     开发 / 细化任务书会话（任务书自己那一段【拷问模式】才是它的契约，不叠第二份）。 */
+  const grillTurn =
+    !pureMode &&
+    grillTurnOn(st, {
+      autoContinue: !!opts._autoContinue,
+      resumeRound,
+      devContract: !!devContract,
+    });
+  if (grillTurn) systemPrompt += GRILL_CONTRACT;
   try {
     /* 本轮的图像附件（只发这一轮新增的图）：本轮正文里的内嵌图行 → 网关 attachImages
        → 用户消息的 image 内容块（模型这才真正「看见」那张图，而不是只读到一行路径）。

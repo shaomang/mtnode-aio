@@ -1633,11 +1633,22 @@ let MERGED_FAILED = false;
       "全局档 = 简洁 → 没点过的会话默认不显示思考",
     );
     vm.runInContext('S.config.dsh.transcriptView = "standard";', sb);
-    /* 菜单行序：开关在最后一行（原四档那一枚的位置） */
+    /* 菜单行序：显示思考仍在最后一行（原四档那一枚的位置）；本轮起第一枚是
+       「先拷问需求（grill-me）」（本次开发需求 · 默认开）。 */
     vm.runInContext("function agentAutoOnNow() { return true; }", sb);
     vm.runInContext(extract(ASSIST, ["agentModeEntries"]), sb, { filename: "mode-entries.js" });
     const keys = vm.runInContext("agentModeEntries().map(function (e) { return e.key; })", sb);
-    eqStr(keys.join(","), "pure,auto,think", "菜单行序 = 纯净模式 / 自动续跑 / 显示思考（第三枚 = 最下方）");
+    eqStr(
+      keys.join(","),
+      "grill,pure,auto,think",
+      "菜单行序 = 先拷问需求 / 纯净模式 / 自动续跑 / 显示思考（烤问在最上、思考在最下）",
+    );
+    /* 「先拷问需求」缺省开：没写过这一位的会话（老存档）也算开 */
+    eqStr(
+      vm.runInContext('agentModeEntryOf("grill").on', sb),
+      true,
+      "会话没写过 grill → 这一枚按开处理（缺省开 · 与开发节点 devGrill 同口径）",
+    );
   }
   {
     /* 落盘白名单 + 重启水合（老存档迁移） */
@@ -1658,7 +1669,16 @@ let MERGED_FAILED = false;
       /t\.title = I18n\.t\("模式："\) \+ entries\.map\(mark\)\.join\(" \/ "\);/.test(ASSIST),
       "「模式」chip tooltip 逐项遍历（开关入口自动进提示）",
     );
-    has(ASSIST, 'I18n.t("以上开关都只作用于当前会话，随时可改")', "菜单说明文案仍说「以上开关…」（三项都在）");
+    has(
+      ASSIST,
+      'menuId === "assistModeMenu"',
+      "菜单说明文案分两处渲染（会话「以上开关都只作用于当前会话」/ 助手栏「…右侧助手栏」）",
+    );
+    ok(
+      ASSIST.indexOf('"以上开关都只作用于当前会话，随时可改"') > 0 &&
+        ASSIST.indexOf('"以上开关都只作用于右侧助手栏，随时可改"') > 0,
+      "两条说明词条都在（中英成对见 renderer/i18n.js）",
+    );
   }
   {
     /* 渲染判据真跑：按「这条消息属于哪条会话」取，别的视图（团队 / 节点 / 助手）不受影响。

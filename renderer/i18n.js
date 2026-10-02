@@ -2187,6 +2187,13 @@
     "刷新余额": "Refresh balance",
     "刷新中": "Refreshing",
     "余额查询失败": "Balance query failed",
+    /* ── 鲸圆币（MTNode 自己的计量单位，renderer/app-whalecoin.js）──
+       只用于账户钱包与 MTNode 中转服务：1 币 = ¥0.02（¥1 = 50 币）。
+       官方 DeepSeek 余额 / 官方路由的费用估算仍是 ¥，那几个键不要跟着改。 */
+    "鲸圆币": "W coins",
+    "币": "W coins",
+    "鲸圆币 · 1 币 = ¥0.02（¥1 = 50 币）": "W coins · 1 W coin = ¥0.02 (¥1 = 50 W coins)",
+    "<1 币": "<1 W coin",
     "未知单价": "Unknown price",
     "赠送": "Granted",
     "充值": "Topped up",
@@ -3340,6 +3347,9 @@
     "纯净": "Pure",
     "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this session no longer reads/writes files or edits the canvas; saves tokens",
     "纯净模式：开启中，点击关闭": "Pure mode: ON — click to turn off",
+    /* 助手栏那一枚纯净模式的词条：会话侧那份说的是「该会话」，这一份说「助手这条」 */
+    "纯净模式：开启中，点击关闭（助手栏这条不再读写文件 / 改画布）": "Pure mode: ON — click to turn off (this assistant no longer reads/writes files or edits the canvas)",
+    "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；助手这条不再读写文件 / 改画布，省 token": "Pure mode: drops every system prompt section and the runtime context, keeping only web search — this assistant turn no longer reads/writes files or edits the canvas; saves tokens",
     "与画布无关": "Canvas-free",
     "与画布无关：该会话不注册任何画布与应用工具（读图 / 改图 / 应用操作都不发），省 token；需要改画布时先关掉它": "Canvas-free: this session registers no canvas or app tools (no canvas read / graph edit / app actions), saving tokens; turn it off first when you do need canvas edits",
     "与画布无关：开启中，点击关闭（本会话不注册任何画布与应用工具）": "Canvas-free: ON — click to turn off (this session registers no canvas or app tools)",
@@ -3552,9 +3562,19 @@
     "复制参数": "Copy args",
     "复制结果": "Copy result",
     "这活看着要跑很久：可以把它提升为「长周期任务图」，重启后也能接着跑（会话里说一句我就给你搭）。": "This looks like hours of work: it can be promoted to a Long-running task graph that survives a restart (say the word in the chat and I will build it).",
-    /* 「模式」chip 菜单（纯净模式 + 自动续跑 收进一只下拉，见 app-assist.js buildAgentModeMenu） */
+    /* 「模式」chip 菜单（先拷问需求 / 纯净模式 / 自动续跑 / 显示思考 收进一只下拉，
+       见 app-assist.js buildAgentModeMenu；助手栏那只 #assistModeMenu 同一套构件） */
     "模式": "Modes",
     "以上开关都只作用于当前会话，随时可改": "All of these apply to this session only and can be changed at any time",
+    "以上开关都只作用于右侧助手栏，随时可改": "All of these apply to the right-side assistant panel only and can be changed at any time",
+    /* 「先拷问需求（grill-me）」（本次需求 · 会话窗口与助手栏模式菜单的第一枚，默认开） */
+    "先拷问需求": "Ask me first (grill-me)",
+    "拷问需求": "Grill me",
+    "开启 = 这条会话里每轮先自判「像不像需求」，像就先加载内置技能 mtnode-grill-me 问清整个前沿，经你确认无歧义后才动手；默认开启": "On = each round first decides whether it looks like a requirement; if so it loads the built-in skill mtnode-grill-me, clears the whole frontier with one question dialog, and only starts work once you confirm there is no ambiguity (on by default)",
+    "先拷问需求：开启中，点击关闭（关闭后直接干活，不再逐轮拷问）": "Ask me first: ON — click to turn off (it will then work straight away without interrogating you each round)",
+    "先拷问需求：已关闭，点击开启（像需求 / 开发的那几轮先问清再动手）": "Ask me first: OFF — click to turn on (rounds that look like requirements or development get questioned before any work)",
+    "先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手": "Ask me first: ON — rounds in this session that look like requirements or development are cleared with a question dialog before any work starts",
+    "先拷问需求：开启中 —— 像需求 / 开发的那几轮会先用询问窗问清再动手": "Ask me first: ON — rounds that look like requirements or development are cleared with a question dialog before any work starts",
     "模式：": "Modes: ",
     "（开）": " (on)",
     "（关）": " (off)",
@@ -6548,6 +6568,11 @@
     "先拷问需求（grill-me）": "Grill me on the requirements first (grill-me)",
     "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消":
       "Confirm = runs in the background in a new session (workspace = project root · titled Dev · module name · status becomes in progress · you stay on the canvas) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · the “grill me first” switch below stays on this module block (still there next time you open it) · Ctrl+Enter submits · Esc cancels",
+    /* 会话 / 助手栏【拷问模式】契约正文（app-assist.js 的 GRILL_CONTRACT，整段一条）：
+       与开发节点任务书里那段【拷问模式】同一套纪律，只改两处 —— 允许只读地查现状、
+       收尾不回写任何节点字段。 */
+    "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— 把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。":
+      "\n\n[Grill mode · ask first, then act] This session has “ask me first” switched on. In every round, first decide for yourself whether **this round looks like a requirement / development / change** (creating or modifying files, the canvas, nodes, config, features, plans). If it does, interrogate before acting; **if you are unsure, do not interrogate — just do the work** (ordinary Q&A, looking things up, explanations, small talk, and continuing already-confirmed work are not requirements).\nWhen you do interrogate: first load the built-in skill mtnode-grill-me with the skill tool and follow its discipline strictly — map this round's request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, asking that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description). Never list numbered questions in the reply body or make the user type answers into the input box; look facts up yourself with read-only tools (read code / files / the web) instead of asking the user about the environment. Until you get an explicit “no ambiguity — go ahead” through one final question dialog: **ask only, build nothing** — no implementation plan, no work started (and do not use a todo_write checklist as a substitute for an implementation plan); when genuinely needed you may look at the current state read-only (read files / read the canvas) to ask sharper questions.\nAfter the user answers, recompute the frontier and continue round by round; if they add new requirements mid-way, judge the new request again and interrogate afresh. Only start implementing after an explicit “no ambiguity — go ahead” (or after the user says “stop asking, just do it”).",
     "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。":
       "On = this dev session first uses the built-in skill mtnode-grill-me to interrogate the requirements round by round, and only starts work once you confirm the shared understanding.",
     "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。":
@@ -9323,18 +9348,21 @@
   /* ── 账户充值（钱包）：账号菜单的余额行与「账户充值」入口 + 充值对话框
         （renderer/app-wallet.js · app-auth.js paintMenu · css/wallet.css）──
         菜单项用「账户充值」而不是「充值」：后者已是费用面板的流水类型标签（"Topped up"），
-        同键两义会让英文界面串味。带变量的文案一律走 {占位} 键 + I18n.t 第二参。 */
+        同键两义会让英文界面串味。带变量的文案一律走 {占位} 键 + I18n.t 第二参。
+        **账户资产一律鲸圆币（W coins，1 币 = ¥0.02）**：余额 / 档位 / 订单流水都按币显示，
+        只有支付宝实际收付的两处写元 ——「实付 ¥…」与「已退 ¥…」。中文键一律不动
+        （i18n 靠中文键查表，改键会让老文案整批掉成中文）。 */
   Object.assign(EN, {
     "余额：": "Balance: ",
     "余额：{amount}": "Balance: {amount}",
     "点「账户充值」查看明细与付款": "Click “Top up account” for details and payment",
     "账户充值": "Top up account",
-    "当前余额": "Current balance",
+    "当前鲸圆币": "Current W coins",
     "充值金额": "Top-up amount",
-    "自定义金额（元）": "Custom amount (CNY)",
+    "自定义金额（币）": "Custom amount (W coins)",
     "生成支付宝付款码": "Generate Alipay QR code",
     "请选择或输入充值金额": "Please choose or enter a top-up amount",
-    "充值金额需在 {min} – {max} 之间": "The top-up amount must be between {min} and {max}",
+    "充值金额需在 {min} – {max} 之间": "The top-up amount must be between {min} and {max} W coins",
     "用支付宝扫码付款": "Scan the code with Alipay to pay",
     "支付宝付款码": "Alipay payment QR code",
     /* 电脑网站支付通道（浏览器收银台）：与窗内扫码是两套文案，按订单带的字段选用 */
@@ -9350,8 +9378,11 @@
     "放弃本单": "Discard this order",
     "订单号：{id}": "Order no.: {id}",
     "充值成功": "Top-up successful",
-    "充值成功，余额已更新": "Top-up successful — your balance has been updated",
+    "充值成功，余额已更新": "Top-up successful — your W-coin balance has been updated",
     "{amount} 已到账": "{amount} credited",
+    "到账 ": "Credited ",
+    "实付 ": "Paid ",
+    "已退 ": "Refunded ",
     "订单已过期": "Order expired",
     "请重新发起充值": "Please start a new top-up",
     "实付金额与订单不符": "The paid amount does not match the order",
@@ -10059,8 +10090,8 @@
           "Browse the cloud catalog · download and run in a separate window",
         "本机已下载的应用：打开 · 更新 · 卸载":
           "Apps downloaded to this computer: open · update · uninstall",
-        "应用根目录 · 导出应用包 · 变更探测":
-          "App root folder · Export a package · Change probe",
+        "应用根目录 · 三栏开发台 · 实时预览":
+          "App root folder · three-column dev bench · live preview",
         "搜索应用…": "Search apps…",
         "返回 MTNode": "Back to MTNode",
         "返回 MTNode 界面（Esc 同效）": "Back to the MTNode interface (Esc works too)",
@@ -10161,7 +10192,6 @@
         "还没有下载任何应用：到「应用」页挑一个下载，它会装进应用根目录。":
           "No app downloaded yet: pick one on the Apps page and it will be installed into the app root folder.",
         "去「应用」页看看": "Go to the Apps page",
-        "本机还没有已下载的应用": "No app has been downloaded yet",
         /* 应用设计风格（新建时选 / 开发页换）：清单真源在主进程 apps-store.js 的 APP_STYLES，
            这里只放界面词条；风格名与预览图随每套风格的模板一起维护（templates/app-default） */
         "设计风格": "Design style",
@@ -10230,8 +10260,6 @@
         "入口页路径不合法": "The entry page path is not allowed",
         /* 打开 / 更新 / 卸载 */
         "在独立窗口里运行这个应用": "Run this app in its own window",
-        "为一个应用开独立窗口（位置与「库」页的「运行」相同；应用本体不依赖宿主桥也能跑）":
-          "Opens a separate window for an app (same as “Run” on the Library page; the app itself also runs without the host bridge)",
         "这个应用已经开着独立窗口（再点一次把它调到前台）":
           "This app already has its own window open (click again to bring it to the front)",
         "更新到 v": "Update to v",
@@ -10283,41 +10311,9 @@
         "有专属画布": "Has its own canvas",
         "这个应用目录里存着自己的一张画布（": "This app folder holds a canvas of its own (",
         "）；卸载不会动它": "); uninstalling does not touch it",
-        /* 开发页：导出包 / 变更探测 / 开发绑定 */
-        "导出应用包": "Export app package",
-        "导出 zip": "Export zip",
+        /* 导出应用包 / 变更探测 / 开发绑定那一套词条随开发页页脚的工具区一起移除
+           （「导出失败：」保留：设置的数据导出与工坊的导出链也在用它） */
         "导出失败：": "Export failed: ",
-        "已导出：": "Exported: ",
-        "把某个已下载应用打成 zip（只含 app.json / 入口页 / assets，不含画布与该应用的存储），可用于搬家或上架云端目录。":
-          "Pack one downloaded app into a zip (only app.json / the entry page / assets — no canvas and no app storage); useful for moving to another computer or publishing to the cloud catalog.",
-        "变更探测": "Change probe",
-        "探测变更": "Probe changes",
-        "探测失败：": "Probe failed: ",
-        "对应用根目录下的每个应用算一份快照（文件数 / 字节 / 最新修改时间）并与上一份比对，看出哪些应用被改过（首次运行只落基线）。":
-          "Takes a snapshot of every app under the app root folder (file count / bytes / latest mtime) and compares it with the previous one, showing which apps have changed (the first run only records a baseline).",
-        "已落基线：本次记下 ": "Baseline recorded: noted ",
-        " 个应用，下次探测才有对照。":
-          " app(s); the next probe will have something to compare against.",
-        "新增 ": "Added ",
-        "变更": "Changed",
-        " · 变更 ": " · changed ",
-        " · 移除 ": " · removed ",
-        " · 未变 ": " · unchanged ",
-        "开发绑定": "Dev binding",
-        "开发绑定：已绑定": "Dev binding: bound",
-        "开发绑定：未绑定": "Dev binding: not bound",
-        "当前画布上的开发节点把该应用目录作为项目根（devPath）：":
-          "Dev nodes on the current canvas use this app folder as the project root (devPath): ",
-        "当前画布上没有开发节点把这个应用目录设为项目根（在顶层开发块「项目文件夹」里指向它即可绑定）":
-          "No dev node on the current canvas uses this app folder as the project root (point the top-level dev block's “project folder” at it to bind)",
-        "当前画布还没有项目根（在顶层开发块里设置「项目文件夹」）":
-          "The current canvas has no project root yet (set “project folder” on the top-level dev block)",
-        "当前画布项目根：": "Current canvas project root: ",
-        "本机还没有应用与当前画布的开发节点绑定":
-          "No app on this computer is bound to a dev node on the current canvas",
-        "已绑定开发的应用：": "Apps bound to dev: ",
-        "把某个应用目录设为当前画布顶层开发节点的「项目文件夹」（devPath），该应用就与开发节点绑定：库页那一行会显示「开发绑定：已绑定」，开发 / 细化会话的工作区也跟着它走。":
-          "Set an app folder as the “project folder” (devPath) of the top-level dev node on the current canvas and that app is bound to the dev node: the Library row shows “Dev binding: bound”, and dev / refine sessions use it as their workspace.",
         /* 开发页顶部菜单条（renderer/app-apps-dev.js + css/apps.css）：
            只允许一行，放不下的项收进「更多 ▾」。 */
         "刷新预览": "Reload preview",
@@ -10470,15 +10466,6 @@
       "): nothing was moved, to avoid overwriting it. Rename or delete that canvas first.",
     "已登记为开发中，但画布保存失败：":
       "Registered as in development, but saving the canvas failed: ",
-    "把某个应用目录设为当前画布顶层开发节点的「项目文件夹」（devPath），该应用就与开发节点绑定：开发 / 细化会话的工作区跟着它走。绑定情况现在只在这一页显示（库页那枚徽标已去掉）。":
-      "Point a top-level dev block's “Project folder” (devPath) at an app folder to bind that app to the dev node: development / refinement sessions then use it as their workspace. Binding status is now shown only on this page (the Library badge is gone).",
-    "当前应用已绑定开发节点：": "The current app is bound to a dev node: ",
-    "当前应用还没绑定开发节点（在它的顶层开发块里把「项目文件夹」指向应用目录即可）":
-      "The current app is not bound to a dev node yet (point its top-level dev block's “Project folder” at the app folder)",
-    "开发中的应用（": "Apps in development (",
-    " 个，只在「开发」页列出）：": ", listed only on the Development page): ",
-    "本机还没有「开发中」的应用：在「库」页点「二次开发」，或在开发页点「＋新建应用」":
-      "No “in development” apps yet: click “Build on it” on the Library page, or “＋ New app” on the Development page",
     "本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。":
       "No “in development” apps on this machine yet: click “Build on it” on the Library page, or “＋ New app” at the bottom of the left column.",
     "搜索应用 / 会话…": "Search apps / sessions…",
@@ -10552,6 +10539,31 @@
       "MTNode relay balance is insufficient: top up under Settings · Providers and click “Refresh”; this node then runs with its original settings again.",
     "停用后不出现在模型选择器里；刷新中转清单不会自动把它开回来":
       "Once disabled it no longer appears in model pickers; refreshing the relay list will not re-enable it",
+    /* ── 凭据失效提示（renderer/app-relay-auth.js + main.js 的 relayAuthFailed）──
+       中转站的 401 原文案把用户往「去提供商填 Key」推，而那张卡是只读的：
+       这几条把动作说成「重新登录一次」（独立的中转 Key 会自动领回来）。 */
+    "登录已失效：中转服务需要重新登录一次（本机凭据已自动清理）":
+      "Signed out: the relay service needs one more sign-in (this machine's credential was cleared automatically)",
+    "中转服务登录已失效：请重新登录一次（客户端会自动领取新的中转 Key，无需手填）":
+      "The relay credential has expired: sign in once more (the client fetches a new relay key automatically — no manual key needed)",
+    /* 凭据文件在、本机解不开 / 存不住（见 auth-store.js 的读后隔离与写后回读校验）：
+       这时「重新登录一次」才真的有用（旧文件已被隔离留档）。 */
+    "本机的登录凭据读不出来（已留档并清理）：请重新登录一次 MTNode 账号，登录后会自动领取中转凭据":
+      "This machine cannot read its stored sign-in credential (it was archived and cleared): sign in to your MTNode account once more and the relay credential is fetched automatically",
+    "本机保存登录凭据失败（系统加密写得出读不回来）：请重新登录一次；若仍失败请在「设置 · 提供商」里刷新中转清单":
+      "This machine failed to store the sign-in credential (system encryption writes data it cannot read back): sign in once more; if it still fails, click “Refresh” under Settings · Providers",
+    "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上":
+      "This machine cannot read the account credential (Windows account or encryption key changed): sign in to your MTNode account once more and it is restored",
+    "本机存不住账号凭据（系统加密写得出读不回来）：请重新登录一次；若仍失败，重开应用后再登录":
+      "This machine cannot persist the account credential (system encryption writes data it cannot read back): sign in once more; if it still fails, restart the app and sign in again",
+    "服务端这次没有下发独立中转凭据：请点「刷新」，仍无则稍后再试（与是否重新登录无关）":
+      "The server did not issue a relay credential this time: click “Refresh”; if it still fails, try again later (re-signing in will not help)",
+    "中转服务凭据即将到期：重新登录一次即可领取新的凭据":
+      "The relay credential expires soon: sign in once more to fetch a fresh one",
+    "重新登录": "Sign in again",
+    "；凭据即将到期，重新登录一次即可换新":
+      "; the credential expires soon — sign in once more to replace it",
+    "；有效期至 ": "; valid until ",
 
     /* ── 剪贴板图像 → 画布（画布 Ctrl+V 询问窗：renderer/app.js 的 clipImageAskDialog；
        设置 · 画布粘贴 小节的开关与这一批同源）── */
