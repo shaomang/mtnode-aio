@@ -1457,7 +1457,7 @@ function defaultConfig() {
     cudaPython: "",
     wantRunning: false,
     /* 24G 启动优化：默认开，可在插件控制台关闭 */
-    /** CPU VAE 默认关：开启会让 VideoVAE 解码 dtype 崩（float != c10::Half），南风 H3 链不可用。
+    /** CPU VAE 默认关：开启会让 VideoVAE 解码 dtype 崩（float != c10::Half），生成链起不来。
      *  真源见技能 skills/minimax-h3-install/SKILL.md「启动参数」。老用户 config.json 里显式存过的
      *  true 由 loadConfig 的合并保持原值，升级不静默翻转。 */
     cpuVae: false,
@@ -1697,8 +1697,6 @@ function modelExists(comfy, relParts) {
 
 /* ===== 交付要件清单（安装 / 保底修复 / 自我修复三支共用同一份）=====
  * Agent 按提示词逐项交付，缺项就是交付缺项：提示词与收尾判定必须同源，否则提示词形同虚设。 */
-/** 随包本地节点包（由 setup_env.ps1 的 Deploy-LocalCustomNode 部署到 ComfyUI\custom_nodes 下） */
-const NANFENG_NODE_PKG = "nanfeng_prompt_nodes_v10";
 /** 4K 超分补帧推荐链必须存在的 custom_nodes 目录 */
 const REQUIRED_CUSTOM_NODE_DIRS = ["ComfyUI-KJNodes", "ComfyUI-Frame-Interpolation"];
 /** TeaCache 已从推荐链移除（只保留 EasyCache 步缓存）：装不装都不算交付缺项 */
@@ -1707,33 +1705,6 @@ const OPTIONAL_CUSTOM_NODE_DIRS = ["ComfyUI-MiniMaxH3-TeaCache"];
 function dirExists(p) {
   try {
     return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-/** 目录内普通文件数（不递归）；目录不存在记 0。 */
-function countDirFiles(dir) {
-  try {
-    let n = 0;
-    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (ent.isFile()) n += 1;
-    }
-    return n;
-  } catch {
-    return 0;
-  }
-}
-
-/** 随包本地节点包是否「完整部署」：包目录在 + web/ 在 + 至少一个 *.api.py。
- *  南风包 __init__.py 的 WEB_DIRECTORY="./web" 指向 web/，*.api.py 注册 /nanfeng/* 等后端路由，
- *  缺任一项 ComfyUI 启动即报插件注册 / 前端加载错误，所以不能只看包目录存在。 */
-function localCustomNodeOk(comfy, name) {
-  const dir = join(String(comfy || ""), "custom_nodes", String(name || ""));
-  if (!dirExists(dir)) return false;
-  if (!dirExists(join(dir, "web"))) return false;
-  try {
-    return fs.readdirSync(dir).some((f) => /\.api\.py$/i.test(f));
   } catch {
     return false;
   }
@@ -1748,8 +1719,6 @@ function projectSignals(dir) {
       venv: false,
       models: false,
       hasPost: false,
-      nanfeng: false,
-      latentFiles: 0,
       customNodes: false,
       ready: false,
       installComplete: false,
@@ -1779,11 +1748,6 @@ function projectSignals(dir) {
       "rife",
       POST_MODELS.rife,
     ]);
-  /* 随包本地节点包：必须完整部署（web/ + *.api.py），否则南风工作流整条链起不来 */
-  const nanfeng = localCustomNodeOk(comfy, NANFENG_NODE_PKG);
-  /* 南风节点把 latent_upscale_models 的 combo 声明为 required：目录空 = /prompt 直接被拒，
-   * 占位文件即可（幂等，真实模型在也算命中） */
-  const latentFiles = comfy ? countDirFiles(join(comfy, "models", "latent_upscale_models")) : 0;
   /* 4K 超分补帧推荐链的 custom_nodes 清单（KJNodes 分块上采样 + Frame-Interpolation RIFE） */
   const customNodes =
     !!comfy && REQUIRED_CUSTOM_NODE_DIRS.every((n) => dirExists(join(comfy, "custom_nodes", n)));
@@ -1794,13 +1758,11 @@ function projectSignals(dir) {
     models,
     hasRef2va: hasRef,
     hasPost,
-    nanfeng,
-    latentFiles,
     customNodes,
     ready: scaffold && venv && models,
     /* 交付要件是否齐（不含 torch 版本 / comfy_kitchen / soundfile 这类要跑 python 的硬校验，
      * 那些由 healthCheckInstall 的 `python -m app` 收尾判定兜） */
-    installComplete: scaffold && venv && models && hasPost && nanfeng && latentFiles >= 1 && customNodes,
+    installComplete: scaffold && venv && models && hasPost && customNodes,
     comfyDir: comfy || "",
   };
 }
@@ -1812,12 +1774,6 @@ function installDeliverableGaps(sig) {
   if (!s.scaffold) gaps.push("脚手架缺失（app/scripts/ComfyUI 都没有）");
   if (!s.venv) gaps.push("ComfyUI\\venv 不存在（隔离 venv 未建）");
   if (!s.models) gaps.push("主模型权重不全（diffusion_models/" + MODELS.fl2va + "、text_encoders、vae）");
-  if (!s.nanfeng) {
-    gaps.push(
-      "custom_nodes/" + NANFENG_NODE_PKG + " 未完整部署（需包目录 + web/ + *.api.py，Deploy-LocalCustomNode）",
-    );
-  }
-  if (!(Number(s.latentFiles || 0) >= 1)) gaps.push("models/latent_upscale_models 为空（南风节点必填 combo，占位文件即可）");
   if (!s.customNodes) gaps.push("custom_nodes 缺 " + REQUIRED_CUSTOM_NODE_DIRS.join(" + "));
   if (!s.hasPost) {
     gaps.push(
@@ -2486,32 +2442,25 @@ async function agentInstallByAgent(opts) {
       `2.6.0+cu124 / cu126 一律不合格——ComfyUI 能启动但 comfy_kitchen 的 cuda backend 会被 disabled，首个 denoise forward 永久卡死。` +
       `自检（必须打印 ok）：${venvPyRel} -c "import torch;assert torch.cuda.is_available();assert 'cu130' in torch.__version__;import comfy_kitchen;print('ok',torch.__version__,torch.__file__)"；` +
       `并确认 torch.__file__ 落在 ComfyUI\\venv 内、comfy_kitchen 未被 disabled。`,
-    `4) 自检 venv 内 import soundfile 成功（南风节点音频链依赖，已列在 SCAFFOLD_REF\\requirements.txt）：` +
+    `4) 自检 venv 内 import soundfile 成功（音频读写依赖，已列在 SCAFFOLD_REF\\requirements.txt）：` +
       `${venvPyRel} -c "import soundfile;print(soundfile.__version__)"。装不上就是交付缺项，要补到成功为止。`,
     `5) 下载/就绪模型权重（参考 SCAFFOLD_REF\\scripts\\download_models.ps1）：` +
       `models\\diffusion_models\\${MODELS.fl2va}、models\\text_encoders\\${MODELS.clip}、models\\vae\\${MODELS.vaeVideo}。`,
-    `6) ComfyUI\\models\\latent_upscale_models 必须 ≥1 个文件（南风节点把它声明成 required combo，空目录会让整单 /prompt 被 value_not_in_list 拒）。` +
-      `缺就补一个合法的空 safetensors 占位（口径见 setup_env.ps1 的 Ensure-LatentUpscalePlaceholder：8 字节长度头 + "{}"），幂等；` +
-      `目录里已有文件（含用户自己的真实放大模型）一律不删不改。`,
-    `7) 后处理权重各就各位（4K 超分 + 补帧）：${POST_MODELS.upscale} → ComfyUI\\models\\upscale_models\\；` +
+    `6) 后处理权重各就各位（4K 超分 + 补帧）：${POST_MODELS.upscale} → ComfyUI\\models\\upscale_models\\；` +
       `${POST_MODELS.rife} → ComfyUI\\custom_nodes\\ComfyUI-Frame-Interpolation\\ckpts\\rife\\。`,
-    `8) ComfyUI\\custom_nodes 清单必须含 ${REQUIRED_CUSTOM_NODE_DIRS.join(" + ")}` +
+    `7) ComfyUI\\custom_nodes 清单必须含 ${REQUIRED_CUSTOM_NODE_DIRS.join(" + ")}` +
       `（前者供分块上采样，后者供 RIFE 补帧）；${OPTIONAL_CUSTOM_NODE_DIRS.join(" + ")} 标注为备用（推荐链已移除 TeaCache，只保留 EasyCache 步缓存），没装不算失败。`,
-    `9) 部署随包本地节点包 ${NANFENG_NODE_PKG}：按 setup_env.ps1 的 Deploy-LocalCustomNode 口径，` +
-      `从 INSTALL_DIR\\custom_nodes\\${NANFENG_NODE_PKG} 复制进 ComfyUI\\custom_nodes\\${NANFENG_NODE_PKG}，` +
-      `**必须保留 web\\ 目录与所有 *.api.py**（__init__.py 的 WEB_DIRECTORY="./web" 指向 web\\，*.api.py 注册 /nanfeng/* 后端路由；缺任一项启动即报插件注册 / 前端加载错）。` +
-      `幂等：只补该包，不清空 custom_nodes 下其它节点。`,
-    `10) 冒烟：venv python 下 import comfy_kitchen 与 torch.cuda 可用（即第 3 条那条命令），不要为此启动 ComfyUI 服务。`,
-    `11) 注意力加速（「安装」流程要覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— ` +
+    `8) 冒烟：venv python 下 import comfy_kitchen 与 torch.cuda 可用（即第 3 条那条命令），不要为此启动 ComfyUI 服务。`,
+    `9) 注意力加速（「安装」流程要覆盖这一项）：给 venv 补装 triton-windows + 与本 venv 配套的 sageattention 预编译 wheel —— ` +
       `口径见 skill「可选依赖」一节（PyPI 上只有老的 sageattention 1.0.6，2.x 走 woct0rdho/SageAttention 的 release wheel，` +
       `文件名里的 cuNNN / torchX 必须对上本机 CUDA 大版本与 torch 版本）。装完用 venv python 跑 import triton + import sageattention 自检。`,
-    `12) 收尾前自己先跑一次健康检查并在回复里带上退出码：在 INSTALL_DIR 下执行 ${venvPyRel} -m app ` +
+    `10) 收尾前自己先跑一次健康检查并在回复里带上退出码：在 INSTALL_DIR 下执行 ${venvPyRel} -m app ` +
       `（它打印 venv / 模型 / postModels / cuda 的 JSON 报告），退出码 0 才算完成。` +
       `插件收尾还会再跑一次同样的检查，缺项迟早被判失败，别为了交差先写 ok=true。`,
   ].join("\n");
   const disciplines =
     `纪律（四条，一律遵守）：不要启动 ComfyUI；不要删除用户 output/；模型已齐则勿重下（只补缺的）；` +
-    `Sage 加速（第 11 条）装不上不算失败——跳过即可，画布生成会自动退回非 Sage 链（只是慢 1.5-2×），已探测到可用则勿重复装。\n`;
+    `Sage 加速（第 9 条）装不上不算失败——跳过即可，画布生成会自动退回非 Sage 链（只是慢 1.5-2×），已探测到可用则勿重复装。\n`;
   const handoff =
     `成功后：创建空文件 ${marker}，写入 ${resultMarker}（首行 ok=true，可附 reason= 摘要），回复 install_ok=1 与 cuda_python=<path> torch_file=<path> health_exit=0。\n` +
     `失败则 ${resultMarker} 写 ok=false 与 reason=<上面哪一条没交付 + 具体报错>`;
@@ -3027,7 +2976,7 @@ function noteCpuVaeLaunchFailure(why) {
     "[warn] 本次后端启动带了 --cpu-vae 且未能就绪" +
       (why ? "（" + why + "）" : "") +
       "。CPU VAE 开启会让 VideoVAE 解码 dtype 崩（expected m1 and m2 to have the same dtype, " +
-      "but got: float != struct c10::Half），南风 H3 链（nanfeng_prompt_nodes_v10）直接不可用。" +
+      "but got: float != struct c10::Half），视频解码阶段直接失败。" +
       "请在控制台「24G 启动优化」区取消勾选 CPU VAE 再重启后端；口径见技能 minimax-h3-install「启动参数」。"
   );
 }
@@ -5932,9 +5881,8 @@ async function fetchObjectInfo(port) {
 }
 
 /** combo（下拉）字段的落点目录提示：命中就给「请往 ComfyUI/models/<目录> 放文件」的可执行文案。
- *  只覆盖 H3 / 南风常用的几类；没命中的字段退回通用文案，不猜目录。 */
+ *  只覆盖 H3 常用的几类；没命中的字段退回通用文案，不猜目录。 */
 const COMBO_FOLDER_HINTS = [
-  { re: /潜空间放大模型|latent_upscale/i, dir: "latent_upscale_models", note: "南风节点要求必填，占位文件即可" },
   { re: /文本编码器|text_encoder|clip/i, dir: "text_encoders" },
   { re: /lora/i, dir: "loras" },
   { re: /vae/i, dir: "vae" },
@@ -6045,33 +5993,6 @@ async function validateWorkflowRecord(id) {
   };
 }
 
-/** 内置模板的素材落点键名：ref_image_N / ref_video_N / ref_audio_N（N 从 0 起）。 */
-const H3_REF_ALIAS_RE = /^ref_(image|video|audio)_(\d+)$/;
-
-/**
- * 素材落点改写（南风中文控件）：参数表里可能还留着内置模板的英文落点
- * （ref_image_N / ref_video_N / ref_audio_N），而目标 H3 节点是
- * NanFengH3MultiReferenceGeneratorV10 —— 它的控件是中文键「图片N / 视频N / 音频N」
- * （N 从 1 起，键名真源在 h3-workflows.js 的 nanfengMaterialField）。
- * 只有「英文键不在该节点 inputs 里、且对应中文键在」时才改写，内置两条模板
- * （MiniMaxH3ImageToVideo / MiniMaxH3ReferenceToVideo）的英文键原样保留、行为不变。
- * 必须在 h3wf.normalizeParams 之前调用：后者会把图中不存在的字段判为错误。
- */
-function remapNanFengRefFields(graph, params) {
-  const list = Array.isArray(params) ? params : [];
-  return list.map((p) => {
-    const src = (p && p.source) || {};
-    const node = graph && graph[String(src.nodeId || "")];
-    const field = String(src.field || "");
-    const m = H3_REF_ALIAS_RE.exec(field);
-    if (!m || !h3wf.isPlainObject(node && node.inputs) || field in node.inputs) return p;
-    const cn = h3wf.nanfengMaterialField(m[1], Number(m[2]));
-    if (!cn || !(cn in node.inputs)) return p;
-    appendConsole("[wf] 素材落点 " + src.nodeId + "." + field + " → " + cn);
-    return { ...p, source: { nodeId: String(src.nodeId), field: cn } };
-  });
-}
-
 /** 自建工作流执行分支（generateVideo 分叉入口）。
  *  单阶段：不追加 4K 超分补帧、不做 24G 钳制、不读 duration/outputRes/post/postEnabled。
  *  抽卡（attempts）/ 进度 / 取消沿用现有链路（activeGenerate + emitProgress + interruptComfy）。 */
@@ -6094,7 +6015,7 @@ async function runCustomWorkflow(ctx) {
   /* 参数映射：节点面板存的自定义表优先；为空时回落智能建议映射 */
   let list = [];
   if (Array.isArray(params.wfParams) && params.wfParams.length) {
-    const n = h3wf.normalizeParams(remapNanFengRefFields(graph, params.wfParams), graph);
+    const n = h3wf.normalizeParams(params.wfParams, graph);
     if (n.errors.length) throw new Error("工作流参数表无效：" + n.errors[0]);
     list = n.params;
   } else {
@@ -6218,97 +6139,8 @@ function builtinTemplateGraph(mode) {
   return buildH3Workflow(params, {});
 }
 
-/* 随包工作流（h3-pack/workflows/*.json，API 格式）：与「内置 FL2VA / R2V」两条模板并列，
- * 是自建工作流库里的第三条。首次启动自动入列（ensureBundledWorkflows），入列后不再覆盖 ——
- * 用户改名 / 删除都不会被回滚。真源文件随 h3-pack 打包（build.json extraResources 的 workflows/**）。 */
-const BUNDLED_WORKFLOWS = Object.freeze([
-  {
-    file: "nanfeng-h3-v10-multiref.json",
-    title: "南风H3 V10 多参（模板）",
-    source: "bundled:nanfeng-h3-v10-multiref",
-    notes:
-      "南风H3 V10 一体化 Ref2VA：NanFengH3MultiReferenceGeneratorV10 → CreateVideo → SaveVideo。" +
-      "需要 ComfyUI/custom_nodes/nanfeng_prompt_nodes_v10（随包脚手架 setup_env.ps1 自动部署）。",
-  },
-]);
-
-function bundledWorkflowsDir() {
-  return join(packRoot(), "workflows");
-}
-
-/** 随包工作流「已入列」标记：落在数据目录（h3/bundled-workflows.json），保证用户删掉后不再被塞回来。 */
-function bundledSeedMarkerPath() {
-  return join(h3Root(), "bundled-workflows.json");
-}
-
-/** 读一条随包工作流的 API 图（仅供入列 / 另存模板复用，不缓存文件内容）。 */
-function readBundledWorkflowGraph(file) {
-  const p = join(bundledWorkflowsDir(), String(file || ""));
-  const parsed = h3wf.parseImportText(fs.readFileSync(p, "utf8"));
-  return h3wf.normalizeGraph(parsed);
-}
-
-/**
- * 把随包工作流并入自建工作流库（幂等、不回滚）。
- * 只对「从未入列过」的条目建记录；标记落 h3/bundled-workflows.json。
- * 首次入列后顺手跑一次 /object_info 校验（后端没起就记 skipped，与手动导入同口径）。
- */
-async function ensureBundledWorkflows() {
-  const marker = readJson(bundledSeedMarkerPath(), {}) || {};
-  const seeded = h3wf.isPlainObject(marker.seeded) ? marker.seeded : {};
-  const added = [];
-  for (const spec of BUNDLED_WORKFLOWS) {
-    if (seeded[spec.file]) continue;
-    let norm;
-    try {
-      norm = readBundledWorkflowGraph(spec.file);
-    } catch (e) {
-      appendConsole("[wf-seed] 读取随包工作流失败 " + spec.file + "：" + String((e && e.message) || e));
-      continue;
-    }
-    let rec;
-    try {
-      rec = workflowStore().createFromGraph({
-        title: spec.title,
-        graph: norm.graph,
-        format: norm.format,
-        sourceName: spec.source,
-        template: true,
-        overwrite: false,
-        notes: spec.notes || "",
-      });
-    } catch (e) {
-      appendConsole("[wf-seed] 随包工作流入库失败 " + spec.file + "：" + String((e && e.message) || e));
-      continue;
-    }
-    if (!rec || !rec.ok || !rec.record) continue;
-    seeded[spec.file] = rec.record.id;
-    writeJson(bundledSeedMarkerPath(), { version: 1, updatedAt: new Date().toISOString(), seeded });
-    added.push(rec.record.title);
-    appendConsole("[wf-seed] 随包工作流入列：" + rec.record.title + " (id=" + rec.record.id + ")");
-    /* 后台跑一次 /object_info 校验（不 await：后端没起时这里连不上，别让 wfList 卡住） */
-    validateWorkflowRecord(rec.record.id).catch(() => {});
-  }
-  return { ok: true, added };
-}
-
 async function templateToWorkflow(mode) {
   const raw = String(mode || "").trim().toLowerCase();
-  /* 第三条（南风H3 V10 多参）没有运行时拼装的图：真源就是随包 workflows/*.json 里的那条，
-   * 与内置 FL2VA / R2V 并列，可从库里删除后用「内置图另存」再取回。 */
-  if (raw === "nanfeng" || raw === "nanfeng-h3-v10-multiref") {
-    const spec = BUNDLED_WORKFLOWS[0];
-    const norm = readBundledWorkflowGraph(spec.file);
-    return workflowStore().createFromGraph({
-      title: spec.title,
-      graph: norm.graph,
-      format: norm.format,
-      sourceName: spec.source,
-      template: true,
-      overwrite: true,
-      notes: spec.notes || "",
-    });
-  }
   const m = raw === "r2v" ? "r2v" : "fl2va";
   const title = "内置 " + (m === "r2v" ? "R2V" : "FL2VA") + "（模板）";
   const graph = builtinTemplateGraph(m);
@@ -6947,8 +6779,6 @@ function registerH3Ipc(opts) {
   /* 自建工作流库（h3/ui 管理 + 主窗口 video_gen 面板共用） */
   ipcMain.handle("h3:wfList", async () => {
     try {
-      /* 随包工作流（第三条，与内置 FL2VA / R2V 并列）首次访问时入列，幂等且不回滚 */
-      await ensureBundledWorkflows();
       return { ok: true, items: workflowStore().listDetailed(), stats: workflowStore().stats() };
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };

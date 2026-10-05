@@ -1596,6 +1596,10 @@ const NODE_DEFAULTS = {
     aiProvider: "",
     aiPreset: "",
     aiEffort: "",
+    /* 「图像后端」设定（函数节点出图 / 图生图）：imgModel = 图像后端 id，空 = 跟随 MTNode 默认
+       （云端图像服务商优先，其次本机 SenseNova）。jscode 里 await mtnode.image(...) 用它出图，
+       产物落本画布资产目录。口径见 renderer/app-aicall.js 的 imgBackend*。 */
+    imgModel: "",
     output: null,
     batchOutputs: null,
     error: null,
@@ -1824,6 +1828,10 @@ function superExternalInWiresAll(superNode, wf) {
     })
     .sort((a, b) => a.toIndex - b.toIndex);
 }
+/* 控制线判定的唯一入口是 wireFromIsControl：它按方向分派到 superInPortIsControl（输入侧 /
+   壳内桥接，fromIndex = 壳的输入端子号）与 superOutPortIsControl（输出侧 / 壳外侧汇流），
+   递归隧穿由 nodeEmitsControlOnPort 带 seen 兜环。下面这只「外侧输入数据线」只排除直接
+   控制源（isControlKind），不反问 wireFromIsControl —— 否则会与超节点隧穿互相递归。 */
 /** 外侧输入数据线（直接控制源排除；勿用 wireFromIsControl，避免与超节点隧穿互相递归） */
 function superExternalInWires(superNode, wf) {
   wf = wf || S.wf;
@@ -6536,11 +6544,18 @@ function wireFromIsControl(w, wf) {
     Number(w.fromIndex || 0) >= 1
   )
     return true;
+  const to = nodeByIdIn(w.to, wf);
+  /* 壳内桥接优先判：这条线的 fromIndex 是**壳的输入端子号**（内侧桥接 = 壳 → 子节点），
+     不能拿去问「输出端子判据」。历史 bug：内置「Markdown 转 PDF」壳 3 入 2 出，端子 2 / 3
+     的桥接线被下面的输出判据判成控制线 → wiresTo() 静默滤掉 → 内部函数恒收不到「输出路径」。
+     只对工具 / 函数壳（参数即端子的那类）走这个分支，普通超级节点仍按外侧输出口径判。 */
+  if (isFnToolNode(from) && to && nodeParentSuperId(to) === from.id) {
+    return superInPortIsControl(from, w.fromIndex, wf);
+  }
   /* 函数 / 工具节点：输出 0..n-1 = 各输出参数（数据），末位 = 控制输出（端子契约见下） */
   if (fnToolOutPortIsControl(from, w.fromIndex)) return true;
-  const to = nodeByIdIn(w.to, wf);
   if (!to) return false;
-  /* 内侧桥接：外侧同号输入若为控制，则内线亦为控制（原数据线随之变控制线） */
+  /* 内侧桥接（普通超级节点）：外侧同号输入若为控制，则内线亦为控制 */
   if (from.kind === "super" && nodeParentSuperId(to) === from.id) {
     return superInPortIsControl(from, w.fromIndex, wf);
   }
@@ -6548,7 +6563,8 @@ function wireFromIsControl(w, wf) {
   if (from.kind === "super" && nodeParentSuperId(to) !== from.id) {
     return superOutPortIsControl(from, w.fromIndex, wf);
   }
-  return false;
+  /* 其余（多输入生成节点 / 递归隧穿）：统一走「该节点这个输出口会不会发控制」 */
+  return nodeEmitsControlOnPort(from, w.fromIndex, wf, new Set());
 }
 /* 数据输入（不含控制节点连入的指挥线；关系线不参与数据流） */
 function wiresTo(id) {
@@ -7012,6 +7028,8 @@ function ensureFnToolNodeState(node) {
     if (!Array.isArray(node.inputs)) node.inputs = [];
     if (!Array.isArray(node.outputs)) node.outputs = [];
     if (typeof ensureAiCallState === "function") ensureAiCallState(node);
+    /* 「图像后端」设定（函数节点出图 / 图生图用）：只补字段，与「AI 调用」同一归一时机 */
+    if (typeof ensureImgBackendState === "function") ensureImgBackendState(node);
     node.inputs = node.inputs.map((e, i) => {
       const p = normFnToolEntry(e, i, "in");
       if (!p.name) p.name = I18n.t("参数 ") + (i + 1);
@@ -9561,6 +9579,11 @@ function ovShellEnsure() {
       closeOverlay();
     });
   }
+  /* 补壳 / 空壳回收后再建都会走到这里：OV_SHELL_HTML 里本来就写着 ovTitle / ovBody /
+     ovFoot，但照它新造的这只壳在**没有 innerHTML 解析的环境**里可能拿不到这三个 id
+     （app.js 的单测就是这种环境），而 openOverlay 紧接着就要写 #ovTitle / #ovBody ——
+     缺 id 会直接抛错。这里按同一份结构把 id 对齐，幂等：线上解析出来的壳本来就对得上。 */
+  ovShellIds(box, true);
   return box;
 }
 /** 停放时摘 id、回来时挂回：全应用的 #ovTitle / #ovBody / #ovFoot 只认当前这只窗 */
@@ -9693,8 +9716,68 @@ function ovMinDropAll() {
   }
 }
 
+/* ── 开新窗 = 把当前这只窗无损收到状态栏（本次开发需求）─────────────────────
+   根因：全应用只有一只 #overlay，openOverlay 会把 #ovBody 清空重建 —— 用户正开着的
+   那只窗（节点设置窗被「画布修改 / 危险操作」确认框顶掉，或反过来）连同里面改到一半
+   的输入一起被静默冲掉，用户看到的就是「弹出多个询问窗时，前一个窗的内容被清空重置」。
+   口径（已与用户确认）：界面仍是一只窗、不做可叠多窗；开新窗前把当前这只**原样**
+   收进状态栏页签（DOM 与窗内状态都不重建，见 ovMinimizeActive），点页签即恢复继续填。
+   不改变任何窗自己的结算语义 —— 确认框仍只在「发起轮结束」时自动撤框（那时它的页签
+   与停放 DOM 由 ovMinDropWindow 一并清掉，不会留死框）。 */
+function ovParkActiveBox() {
+  const box = ovShellBox();
+  if (!box) return false;
+  if (box.dataset.ovMinPending === "1" || box.classList.contains("ov-min-out"))
+    return false; /* 已经在最小化路上：照旧由它自己的 finish 收尾，别再套一层 */
+  /* 空壳（还没人往 #ovBody / #ovFoot 里写过东西）不搬：它本来就该被下一只窗原地接管
+     （ovShellEnsure 会复用同一只壳），搬了反而会在状态栏留一枚点开什么都没有的空页签 */
+  if (!ovBoxHasContent(box)) return false;
+  return ovMinimizeActive(true);
+}
+/** 这只窗壳里有没有「用户的东西」（正文 / 按钮条里还有元素）。
+    按 id 认更稳：现有窗壳的 .overlay-body / .overlay-foot 是 index.html 里就写好的
+    （只有 id、不一定带类名），照类名找会漏判成空壳而被误丢。 */
+function ovBoxHasContent(box) {
+  if (!box) return false;
+  const byId = typeof document !== "undefined" && document.getElementById ? document.getElementById.bind(document) : null;
+  const body =
+    box.querySelector(".overlay-body") ||
+    (byId && byId("ovBody")) ||
+    null;
+  const foot =
+    box.querySelector(".overlay-foot") ||
+    (byId && byId("ovFoot")) ||
+    null;
+  return (
+    !!(body && body.children && body.children.length) ||
+    !!(foot && foot.children && foot.children.length)
+  );
+}
+/** 把某一枚宿主确认框（按 dataset.ixConfirmId 认）从页签与停放区一起摘掉：
+    它自己的结算路径（settle + closeOverlay）只认挂在 #overlay 上的那只窗，
+    窗被收进状态栏之后 closeOverlay 够不着它 —— 不补这一手就会留下一只
+    「点了没反应」的死框页签（本次修复的尾巴）。 */
+function ovMinDropWindow(match) {
+  const key = String(match || "");
+  if (!key) return false;
+  let hit = false;
+  for (let i = _ovMinList.length - 1; i >= 0; i--) {
+    const rec = _ovMinList[i];
+    const b = rec && rec.box;
+    if (!b || String(b.dataset.ixConfirmId || "") !== key) continue;
+    if (rec.chip && rec.chip.parentNode) rec.chip.parentNode.removeChild(rec.chip);
+    if (b.parentNode) b.parentNode.removeChild(b);
+    _ovMinList.splice(i, 1);
+    hit = true;
+  }
+  ovMinSyncBar();
+  return hit;
+}
 function openOverlay(title, opts) {
   opts = opts || {};
+  /* 先收旧的再开新的：当前这只（如果确实有内容）无损停到状态栏，
+     用户待填的内容留在原 DOM 里，点页签回来接着填 */
+  ovParkActiveBox();
   overlayPersistent = !!opts.persistent;
   overlayMinimizable = opts.min !== false;
   overlayKind = "";
@@ -9759,6 +9842,31 @@ function closeOverlay() {
 
 /* 独立于 #overlay 的深色确认 / 输入框（设置等弹窗打开时也能用，不冲掉内容） */
 let _mtDialogSeq = 0;
+/* ── 深色弹窗（#mtDialog）也是单例宿主：第二个窗起来会把第一个窗的内容清掉 ──────
+   根因（本次开发需求）：promptDialog / confirmDialog / mtDialogForm 共用一只 #mtDialog，
+   每次开窗都 body.innerHTML = "" 并把 _mtDialogSeq + 1 —— 前一只窗的正文与输入框当场
+   没了，而且它的 Promise 因为 seq 对不上**永远不会 resolve**，等它的调用方（rename /
+   保存路径 / 开发草稿 / 应用操作…）就永久挂住，用户看到的是「前面那只窗被清空重置、
+   点了也没反应」。
+   口径（已与用户确认，且与前一只窗的既有约定一致）：
+     · 仍是单例阻塞弹窗、不做可叠多窗，也不往状态栏放；
+     · 新窗起来时把前一只窗当场以「已取消」（null）结算并关掉 —— 与 Esc / 取消同一条
+       约定，调用方不必改代码（它们本来就要处理 null），也不再永久挂住；
+     · 前一只窗里已经打好的字由它自己的草稿机制兜住（mtDialogForm 的 opts.onText /
+       开发节点的 devDraft），这一层不重复存。 */
+let _mtDlgActive = null; /* 当前有回应权的那只窗：{ finish, close } */
+function mtDlgSupersede() {
+  const prev = _mtDlgActive;
+  _mtDlgActive = null;
+  if (!prev) return false;
+  try {
+    prev.finish(); /* 无参数 = 走各自的「取消」语义：promptDialog 回 null、confirmDialog 回 false */
+  } catch (_) {}
+  try {
+    if (typeof prev.close === "function") prev.close();
+  } catch (_) {}
+  return true;
+}
 function ensureMtDialog() {
   let host = document.getElementById("mtDialog");
   if (host) return host;
@@ -9783,6 +9891,7 @@ function closeMtDialog() {
 function confirmDialog(message, opts) {
   opts = opts || {};
   return new Promise((resolve) => {
+    mtDlgSupersede(); /* 顶掉前一只窗：它当场以「取消」结算，别让它的调用方永久挂住 */
     const host = ensureMtDialog();
     const seq = ++_mtDialogSeq;
     const titleEl = document.getElementById("mtDlgTitle");
@@ -9814,6 +9923,16 @@ function confirmDialog(message, opts) {
       closeMtDialog();
       resolve(!!ok);
     };
+    /* 「被顶掉」出口：与 Esc 同一条语义（取消 = false），调用方不必改代码。
+       只摘自己那只按键监听，不关宿主 —— 新窗此刻已经接上它自己的监听与内容，
+       这里绝不能替它收尾（老写法会把新窗的监听也一起摘掉）。 */
+    const supersede = () => {
+      if (done || seq !== _mtDialogSeq) return;
+      _mtDlgActive = null;
+      done = true;
+      host.removeEventListener("keydown", onKey);
+      resolve(false);
+    };
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.className = "mini";
@@ -9830,6 +9949,7 @@ function confirmDialog(message, opts) {
     }
     host.classList.add("on");
     host.addEventListener("keydown", onKey);
+    _mtDlgActive = { finish: supersede, close: closeMtDialog }; /* 登记在监听之后（同 mtDialogForm） */
     setTimeout(() => {
       try {
         ok.focus();
@@ -9841,6 +9961,7 @@ function confirmDialog(message, opts) {
 function promptDialog(message, defaultValue, opts) {
   opts = opts || {};
   return new Promise((resolve) => {
+    mtDlgSupersede(); /* 同上：单例宿主换窗，前一只窗内容被重建，它的等待当场结清 */
     const host = ensureMtDialog();
     const seq = ++_mtDialogSeq;
     const titleEl = document.getElementById("mtDlgTitle");
@@ -9878,6 +9999,15 @@ function promptDialog(message, defaultValue, opts) {
       closeMtDialog();
       resolve(val);
     };
+    /* 「被顶掉」出口：与 Esc 同一条语义（null = 取消），调用方不必改代码。
+       同 confirmDialog：只摘自己的按键监听，宿主与内容归新窗。 */
+    const supersede = () => {
+      if (done || seq !== _mtDialogSeq) return;
+      _mtDlgActive = null;
+      done = true;
+      host.removeEventListener("keydown", onKey);
+      resolve(null);
+    };
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.className = "mini";
@@ -9911,6 +10041,7 @@ function promptDialog(message, defaultValue, opts) {
     }
     host.classList.add("on");
     host.addEventListener("keydown", onKey);
+    _mtDlgActive = { finish: supersede, close: closeMtDialog }; /* 登记在监听之后（同 mtDialogForm） */
   });
 }
 
@@ -9922,6 +10053,7 @@ function promptDialog(message, defaultValue, opts) {
 function mtDialogForm(opts) {
   opts = opts || {};
   return new Promise((resolve) => {
+    mtDlgSupersede(); /* 同上：单例宿主换窗，前一只窗当场以「取消」结算（不欠调用方一个 resolve） */
     const host = ensureMtDialog();
     const seq = ++_mtDialogSeq;
     const box = host.querySelector(".mt-dialog-box");
@@ -10106,7 +10238,14 @@ function mtDialogForm(opts) {
           ];
     if (footEl) footEl.innerHTML = "";
     let done = false;
+    /* 本窗的「被顶掉」出口：只用固定引用来做 cleanup 的归属判定，做法与
+       confirmAssistAction 的 ixConfirmId / overlayIsMine 同源 —— 顶掉别人之后
+       自己的收尾绝不去动别人刚挂上的壳与监听（见 mtDlgSupersede）。 */
+    function mySupersede() {
+      finish(null, true);
+    }
     const cleanup = () => {
+      if (_mtDlgActive && _mtDlgActive.finish === mySupersede) _mtDlgActive = null;
       host.removeEventListener("keydown", onKey);
       closeMtDialog();
       if (box) {
@@ -10167,6 +10306,11 @@ function mtDialogForm(opts) {
     }
     host.classList.add("on");
     host.addEventListener("keydown", onKey);
+    /* 登记为「当前可被顶掉的那只窗」：下一次开窗（confirmDialog / promptDialog /
+       mtDialogForm）会先把它以「取消」结算掉。必须排在 addEventListener 之后 ——
+       顶掉它的那一步会连带清掉本窗的按键监听，注册早了新的监听就白挂。
+       新窗自己的注册同样晚于它自己的 addEventListener，所以旧的收尾动不到新窗。 */
+    _mtDlgActive = { finish: mySupersede, close: closeMtDialog };
     setTimeout(() => {
       try {
         if (ta) ta.focus();
@@ -25642,6 +25786,9 @@ function closeNodePopById(id) {
     closeDevModelPicker();
   else if (id === "aiCallPop" && typeof closeAiCallPicker === "function")
     closeAiCallPicker();
+  /* 函数节点「图像后端」弹层（与 aiCallPop 并列 · 同在 renderer/app-aicall.js） */
+  else if (id === "imgBackendPop" && typeof closeImgBackendPicker === "function")
+    closeImgBackendPicker();
   else if (id === "devColorPop" && typeof closeDevColorPicker === "function")
     closeDevColorPicker();
   /* 保存节点的「图像输出」面板在 renderer/app-imageout.js（晚于本文件加载，
@@ -25649,7 +25796,7 @@ function closeNodePopById(id) {
   else if (id === "imgOutPop" && typeof window.closeImgOutPop === "function")
     window.closeImgOutPop();
 }
-/* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "devColor" | "imgOut" | ""（全收） */
+/* keep = "bgRm" | "ratioLock" | "devModel" | "aiCall" | "imgBackend" | "devColor" | "imgOut" | ""（全收） */
 function closeNodePopsExcept(keep) {
   const pairs = [
     ["bgRm", "bgRmPop", closeBgRmPop],
@@ -25657,6 +25804,8 @@ function closeNodePopsExcept(keep) {
     ["devModel", "devModelPop", closeDevModelPicker],
     /* AI 调用弹层（工具 / 函数节点）在 renderer/app-aicall.js，晚于本文件加载 */
     ["aiCall", "aiCallPop", null],
+    /* 函数节点「图像后端」弹层（同文件，与 AI 调用并列的第二格） */
+    ["imgBackend", "imgBackendPop", null],
     ["devColor", "devColorPop", closeDevColorPicker],
     ["imgOut", "imgOutPop", null],
   ];
@@ -25678,6 +25827,7 @@ function repositionNodePops() {
     "ratioLockPop",
     "devModelPop",
     "aiCallPop",
+    "imgBackendPop",
     "devColorPop",
     "imgOutPop",
   ]) {
@@ -30168,6 +30318,22 @@ function migrateChatNodeToAgent(n) {
   return n;
 }
 
+/* 就地删除数组元素（保持数组同一性）：migrateWf 会与调用方共享同一份 wf 对象，
+   用 wf.wires = wf.wires.filter(...) 整体赋值会换掉数组对象 —— 外部还攥着旧引用的
+   地方（连线袋 / 正在跑的调用栈）就看不到这次清理与随后的补线。返回同一个数组。 */
+function dropWiresInPlace(arr, shouldDrop) {
+  const list = arr || [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    let drop = false;
+    try {
+      drop = !!shouldDrop(list[i], i);
+    } catch {
+      drop = false;
+    }
+    if (drop) list.splice(i, 1);
+  }
+  return list;
+}
 function migrateWf(wf) {
   wf.nodes = wf.nodes || [];
   wf.wires = wf.wires || [];
@@ -30621,6 +30787,72 @@ function migrateWf(wf) {
       if (m.parentSuperId && (!mhost || mhost.kind !== "super")) m.parentSuperId = "";
     }
   }
+  /* 工具壳内侧桥接自愈（一次性 · 幂等）：工具 / 函数节点的端子由参数表钉死 ——
+     壳声明的第 p 个入参，与壳内子节点声明的第 p 个入参是同一个参数，中间那条
+     「壳 → 子节点」的桥接线属于契约的一部分。历史存档里它可能整批没写进去（内置
+     「Markdown 转 PDF」的现场：桥接线其实在，却被 wireFromIsControl 把桥接方向
+     错当输出端子判成控制线，被 wiresTo() 静默滤掉 → 内部函数恒收不到「输出路径」。
+     判据已修（见该函数），这里补的只是「线真的没写进存档」的存量）。
+     只补**两侧都声明了**的同号端子：壳有第 p 个入参、子节点也有第 p 个入参，才认这
+     条线该在；对不上的（两边参数表长度/顺序对不上）一律不猜，交给节点卡片的入参
+     提示说明。不改任何已有连线的端子号，不改参数表，不进撤销历史；返回 true 让调用
+     方立即落盘打标。 */
+  let shellBridgeFilled = false;
+  {
+    for (const host of wf.nodes) {
+      if (!isFnToolNode(host)) continue;
+      const params = fnToolParamList(host, "in");
+      if (!params.length) continue;
+      /* 只碰「内部可运行的子节点」（函数节点 / 工具子壳）：参数即端子的那两类。 */
+      for (const child of wf.nodes) {
+        if (String(child.id) === String(host.id)) continue;
+        if (!isFnToolNode(child)) continue;
+        if (nodeParentSuperId(child) !== host.id) continue;
+        const childParams = fnToolParamList(child, "in");
+        if (!childParams.length) continue;
+        const shellPorts = new Set(
+          (wf.wires || [])
+            .filter((w) => !w.rel && w.from === host.id)
+            .map((w) => Number(w.fromIndex || 0)),
+        );
+        const childPorts = new Set(
+          (wf.wires || [])
+            .filter((w) => !w.rel && w.to === child.id)
+            .map((w) => Number(w.toIndex || 0)),
+        );
+        const n = Math.min(params.length, childParams.length);
+        for (let p = 1; p <= n; p++) {
+          if (shellPorts.has(p) && childPorts.has(p)) continue; /* 两侧都在：已经接好 */
+          wf.wires.push({ id: uid("w"), from: host.id, to: child.id, fromIndex: p, toIndex: p });
+          shellBridgeFilled = true;
+        }
+      }
+    }
+    /* 内侧汇流同理：两侧都声明了第 j 个出参、却没有「子节点 → 壳」那条线时补回。
+       输出号从 0 起（出参 0..M-1 是数据，末位才是控制出），与入参的 1 起不同。 */
+    for (const host of wf.nodes) {
+      if (!isFnToolNode(host)) continue;
+      const outParams = fnToolParamList(host, "out");
+      if (!outParams.length) continue;
+      const inner = wf.nodes.filter((c) => nodeParentSuperId(c) === host.id && isFnToolNode(c));
+      if (!inner.length) continue;
+      const already = new Set(
+        (wf.wires || []).filter((w) => !w.rel && w.to === host.id).map((w) => Number(w.toIndex || 0)),
+      );
+      for (let j = 0; j < outParams.length; j++) {
+        if (already.has(j)) continue;
+        const src = inner.find(
+          (c) =>
+            fnToolParamList(c, "out").length > j &&
+            !(wf.wires || []).some((w) => !w.rel && w.from === c.id && Number(w.fromIndex || 0) === j),
+        );
+        if (!src) continue;
+        wf.wires.push({ id: uid("w"), from: src.id, to: host.id, fromIndex: j, toIndex: j });
+        already.add(j);
+        shellBridgeFilled = true;
+      }
+    }
+  }
   /* 需求等待 / 起点无输入端子：去掉指向它们的旧连线；终点无输出端子 */
   {
     const noIn = new Set(
@@ -30633,8 +30865,11 @@ function migrateWf(wf) {
     );
     const noOut = new Set(wf.nodes.filter(isExecEnd).map((n) => n.id));
     if (noIn.size || noOut.size)
-      wf.wires = wf.wires.filter(
-        (w) => w.rel || (!noIn.has(w.to) && !noOut.has(w.from)),
+      /* 就地删除：整体赋值会换掉数组对象，外部还攥着旧引用的地方（调用方 / 连线袋）
+         就会看不到这次清理，与上层共享同一份 wf 的迁移必须保持数组同一性。 */
+      wf.wires = dropWiresInPlace(
+        wf.wires,
+        (w) => !(w.rel || (!noIn.has(w.to) && !noOut.has(w.from))),
       );
   }
   /* 清理组：移除指向不存在节点的引用，空组删除 */
@@ -30650,7 +30885,7 @@ function migrateWf(wf) {
   wf.groups = wf.groups.filter(
     (g) => (g.nodeIds && g.nodeIds.length) || (g.markIds && g.markIds.length),
   );
-  return videoPortMigrated; /* true = 发生了视频端口迁移，调用方应立即落盘 */
+  return videoPortMigrated || shellBridgeFilled; /* true = 发生了视频端口 / 壳内桥接迁移，调用方应立即落盘 */
 }
 
 async function ensureWorkflow() {
@@ -32384,7 +32619,10 @@ function mkIconBtn(icon, title, onclick, opts) {
   if (opts && opts.on) cls += " on";
   if (opts && opts.danger) cls += " danger";
   b.className = cls;
-  b.textContent = icon;
+  /* icon 可以是字符（老口径），也可以是**节点**（本轮：鲸圆币图标是自绘 SVG 元件，
+     直接挂进按钮，不再退化成 "[object HTMLSpanElement]"） */
+  if (icon && typeof icon === "object" && icon.nodeType === 1) b.appendChild(icon);
+  else b.textContent = icon;
   b.title = title;
   b.setAttribute("aria-label", title);
   b.onclick = onclick;

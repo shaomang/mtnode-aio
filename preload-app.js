@@ -33,7 +33,8 @@
  *   hostModel() / hostSetModel(id) 读 / 改本应用的模型选择（按应用 id 持久化，关窗重启还记得）
  *   pickImage()                   → { ok, path, name }      弹系统选图框（用户亲自选的那一次才生效）；
  *                                  取消回 { ok:false, code:"cancelled" }，**不是错误**
- *   imageGen(opts)                → { ok, base64, dataUrl } 图像生成（每次一张）
+ *   imageGen(opts)                → { ok, base64, dataUrl } 图像生成（每次一张；文生图，opts.images 也可带参考图）
+ *   imageEdit(opts, cb)           → 同一形状：**图生图 / 图像编辑**（opts.images 至少一张，必填）
  *   storageGet / storageSet / storageAll / storageRemove    本机存储（落该应用数据文件夹的 data.json）
  *   dataDirGet / dataDirPick / dataDirOpen / dataRead / dataWrite
  *                                                           数据文件夹与整份数据落盘（原子写）
@@ -99,8 +100,82 @@ const appHost = {
     return ipcRenderer.invoke("apps:hostTextStream", Object.assign({}, opts || {}, { reqId: reqId }));
   },
 
-  /* 图像生成：opts = { prompt, size?, quality?, background? }（每次只出一张，回 base64 + dataUrl） */
-  imageGen: (opts) => ipcRenderer.invoke("apps:hostImage", opts || {}),
+  /* 图像生成（每次只出一张，回 base64 + dataUrl）：
+     opts = { prompt, size?, quality?, background?, model?（见 hostImageModels）, images?（参考图：
+       本机绝对路径或 data:image/...;base64,…，一张或多张，主进程读盘 / 缩放）, strength?, reqId? }
+       · images 非空 = 图生图 / 图像编辑：**整组**下发（有几张发几张，上限见 hostImageModels()
+         的 maxRefImages）。云端 OpenAI 兼容端点走 /images/edits，多图按顺序对应提示词里的
+         「图1 / 图2…」；本机 SenseNova 一次吃 1–4 张。
+       · strength = 参考强度，0–1 归一（0 = 参考图只作前缀条件，1 = 最强）。**只有本机
+         SenseNova 后端认它**；云端没有这个参数，传了会在 warnings 里如实说明并忽略（不假装支持）。
+       · 要「必须带参考图」的显式语义用 imageEdit()，它参考图为空时直接回 no_ref_image。
+     cb（可选）= 进度回调，收 { type:'progress', stage, message, pct, step, totalSteps, elapsedSec }
+       与 { type:'error', error, code }；不传就与旧调用完全一致（同步等待，回同一个回执）。
+     与 textGenStream 共用 apps:hostStream 事件，按 reqId 分流；取消走 imageGenCancel(reqId)。
+     本机后端出图要几十秒到几分钟，且与音乐 / 视频共用一个全局互斥锁：
+     忙时回 { ok:false, code:'busy_media' }（应用提示等待 / 重试即可）；用户在界面上点取消 → 
+     { ok:false, code:'cancelled' }，**不是错误**。 */
+  imageGen: (opts, cb) => {
+    const o = Object.assign({}, opts || {});
+    const reqId = String(o.reqId || Date.now().toString(36) + Math.random().toString(36).slice(2));
+    o.reqId = reqId;
+    if (typeof cb === "function") {
+      const onEv = (ev, msg) => {
+        if (!msg || msg.reqId !== reqId) return;
+        if (msg.type === "error") ipcRenderer.removeListener("apps:hostStream", onEv);
+        try {
+          cb(msg);
+        } catch (err) {
+          console.error("appHost.imageGen cb error:", err);
+        }
+      };
+      ipcRenderer.on("apps:hostStream", onEv);
+      return ipcRenderer
+        .invoke("apps:hostImageStream", o)
+        .then((r) => {
+          ipcRenderer.removeListener("apps:hostStream", onEv);
+          return r;
+        });
+    }
+    /* 不给回调 = 旧调用：走同一个实现，只是不订阅进度事件 */
+    return ipcRenderer.invoke("apps:hostImageStream", o);
+  },
+  /* 图生图 / 图像编辑（显式入口）：opts.images（或 image / refImages / refImage）至少一张，
+     否则回 { ok:false, code:'no_ref_image' } —— **不降级成文生图**。其余参数与 imageGen 完全一致
+     （含 strength、进度回调 cb、取消 imageGenCancel(reqId)、busy_media / cancelled 等错误码）。 */
+  imageEdit: (opts, cb) => {
+    const o = Object.assign({}, opts || {});
+    const reqId = String(o.reqId || Date.now().toString(36) + Math.random().toString(36).slice(2));
+    o.reqId = reqId;
+    if (typeof cb === "function") {
+      const onEv = (ev, msg) => {
+        if (!msg || msg.reqId !== reqId) return;
+        if (msg.type === "error") ipcRenderer.removeListener("apps:hostStream", onEv);
+        try {
+          cb(msg);
+        } catch (err) {
+          console.error("appHost.imageEdit cb error:", err);
+        }
+      };
+      ipcRenderer.on("apps:hostStream", onEv);
+      return ipcRenderer
+        .invoke("apps:hostImageEdit", o)
+        .then((r) => {
+          ipcRenderer.removeListener("apps:hostStream", onEv);
+          return r;
+        });
+    }
+    return ipcRenderer.invoke("apps:hostImageEdit", o);
+  },
+  /* 取消本机后端的出图（云端请求不中断，只把登记撤掉；结果由调用方自己忽略） */
+  imageGenCancel: (reqId) => ipcRenderer.invoke("apps:hostImageCancel", { reqId: String(reqId || "") }),
+  /* 图像后端清单（云端服务商 + 本机 SenseNova）：与 hostModels 同构，
+     每项 { id, label, providerName, local, refImages, maxRefImages, strength }；
+     后三项 = 这个后端能不能吃参考图 / 最多几张 / 认不认参考强度（界面据此置灰，别让用户试错）。
+     首项不在清单里，模型位用 "auto" = 跟随 MTNode 默认 */
+  hostImageModels: () => ipcRenderer.invoke("apps:hostImageModels"),
+  hostImageModel: () => ipcRenderer.invoke("apps:hostImageModel"),
+  hostImageSetModel: (model) => ipcRenderer.invoke("apps:hostImageSetModel", { model: model }),
 
   /* 模型继承：列出 MTNode 已配置的全部文本模型（首项 = 跟随默认，每项带 vision 是否支持识图），
      读当前选择，改当前选择（只认清单里的 id；服务商与 Key 一律不回传）。 */
@@ -201,8 +276,25 @@ contextBridge.exposeInMainWorld("appHost", appHost);
  * contextBridge 暴露的对象过不了 world 边界。所以那条脚本自己去读 window.appHost（页面
  * 世界里本来就有），并在挂载失败时等宿主派发的 "mtnode-apphost" 事件兜底。
  *
- * 纪律：只在「DOM 就绪且页面世界真的拿到了 appHost」之后才注入；拿不到就什么也不做
- * （老版宿主 / 非应用窗口下应用照常跑，前端不该因为这条能力起不来）。 */
+ * 纪律（本轮共识改动）：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了
+ * 显示听写条**（app.json 的 capabilities.showDictate）」三条都满足时才注入 —— **默认不显示**
+ * 听写条；没声明 / 问不到一律不注入。桥上的语音接口（pickAudio / transcribe …）始终在，
+ * 应用自己写的语音 UI 照旧能用，能力位不是权限闸。
+ * 声明了这一位的应用仍走同一条注入路径，但那条条由 app-speech-ui.js 自己按同一个标记
+ * 决定可见性（默认隐藏、脚本仍可唤起）—— 两处口径一致，见 apSpeechMount。 */
+let dictateAllowed = null; /* null = 还没问到；true / false = 主进程的答复 */
+function askDictateAllowed() {
+  if (dictateAllowed !== null) return Promise.resolve(dictateAllowed);
+  return Promise.resolve(ipcRenderer.invoke("apps:hostCapabilities"))
+    .then((r) => {
+      dictateAllowed = !!(r && r.ok && r.capabilities && r.capabilities.showDictate === true);
+      return dictateAllowed;
+    })
+    .catch(() => {
+      dictateAllowed = false;
+      return false;
+    });
+}
 function injectDictateBar() {
   try {
     const path = require("path");
@@ -232,7 +324,15 @@ function injectDictateBar() {
     } catch {}
   }
 }
+/* 注入时机：DOM 就绪 → 先问主进程「这个应用声明要显示听写条没」→ 声明了才注入听写条。
+   问不到（老版主进程 / 非应用窗口）按「没声明」处理：宁可不注入，也不给默认应用硬塞语音。 */
+function maybeInjectDictateBar() {
+  askDictateAllowed().then((ok) => {
+    if (ok) injectDictateBar();
+  });
+}
 if (typeof document !== "undefined") {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", injectDictateBar, { once: true });
-  else injectDictateBar();
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", maybeInjectDictateBar, { once: true });
+  else maybeInjectDictateBar();
 }

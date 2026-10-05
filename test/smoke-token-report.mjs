@@ -27,6 +27,7 @@ function fakeEl(tag) {
   let cls = "";
   const el = {
     tag,
+    nodeType: 1, /* 真 DOM 的形状：节点判定（typeof v.nodeType === "number"）要用到 */
     children: [],
     dataset: {},
     style: {},
@@ -86,7 +87,9 @@ const ctx = {
   window: { api: null },
   document: {
     createElement: fakeEl,
-    createTextNode: (s) => ({ textContent: s }),
+    /* 文本节点带上 nodeType=3（真 DOM 的形状）：费用列这类「字符串 or 节点」两态的地方
+       要按 nodeType 判是不是节点，桩少了这个字段会把节点当字符串拼成 [object Object]。 */
+    createTextNode: (s) => ({ nodeType: 3, textContent: s }),
     querySelector: () => null,
     querySelectorAll: () => [],
     getElementById: () => null,
@@ -391,9 +394,14 @@ ok(sumCost.includes("¥"), "摘要含 ¥ 费用：" + sumCost);
 ok(ctx.tokBadgeSummary(st.tokenReport, t, false).indexOf("¥") < 0, "不传 owner 时摘要不追加费用（旧断言兼容）");
 const plainCost = ctx.tokReportPlain(st);
 ok(plainCost.includes("费用") && plainCost.includes("¥"), "纯文本报告含费用行");
+/* 合计行的费用列：表头现有 11 列（模型 / 计费输入 / 缓存读 / 命中 / 输出 / 推理 /
+   **图像** / 调用 / LLM / 工具 / 费用）—— 本轮为「中转图像按张」插入了「图像」列，
+   所以费用从第 10 格挪到第 11 格（下标 10）。断言口径不变，只是跟着列序走。 */
 const totalRow = findEl(table, (c) => /tok-badge-total/.test(c.className || ""));
-ok(!!totalRow && /^¥/.test(totalRow.children[9].textContent || ""), "明细表合计行费用列 = " + (totalRow && totalRow.children[9].textContent));
-ok(!!totalRow && totalRow.children[9].tag === "td", "合计行第 10 格是费用单元格（带 tok-badge-cost 类）");
+ok(!!totalRow && /^¥/.test(totalRow.children[10].textContent || ""), "明细表合计行费用列 = " + (totalRow && totalRow.children[10].textContent));
+ok(!!totalRow && totalRow.children[10].tag === "td" && /tok-badge-cost/.test(totalRow.children[10].className || ""),
+  "合计行第 11 格是费用单元格（带 tok-badge-cost 类）");
+ok(!!totalRow && totalRow.children[6].textContent === "—", "合计行的「图像」列无用量时显示 —");
 
 /* ── 7. 未知 DeepSeek 模型按 flash 兜底 + 峰谷价（按北京时间）──────
  * 表内数值 = 高峰价；空闲（工作日 12:00-14:00 / 18:00-次日 9:00、周末）半价。
@@ -576,11 +584,15 @@ ok(
   "四种口径都不产生 NaN / Infinity",
 );
 
-/* 8d. 性能摘要行：缺样本 —、推算值 ≈ */
+/* 8d. 性能摘要行：缺样本 —、推算值 ≈；**本轮口径：TTFT 与 Prefill 已从这一行移除**
+ * （当前运行时采不到首 Token 样本，两项恒为「—」；台账字段与计算逻辑保留，
+ *  见 renderer/app-agent.js 的 tokPerfLine / openModelPerfDialog 说明）。 */
 const perfLine = ctx.tokPerfLine({ llmMs: 5000, outputTokens: 100, calls: 1 });
-ok(/TTFT —/.test(perfLine), "老台账摘要 TTFT 显示 —：" + perfLine);
+ok(!/TTFT/.test(perfLine) && !/Prefill/.test(perfLine), "摘要行不再出现 TTFT / Prefill：" + perfLine);
+ok(/TPOT/.test(perfLine) && /端到端/.test(perfLine) && /出/.test(perfLine), "摘要行保留 出 / TPOT / 端到端：" + perfLine);
 ok(perfLine.includes("≈"), "推算吞吐前加 ≈ 标记：" + perfLine);
-ok(/TTFT/.test(plainCost) && /TPOT/.test(plainCost), "纯文本报告每模型行含性能摘要（TTFT / TPOT）");
+ok(!/TTFT/.test(plainCost) && !/Prefill/.test(plainCost) && /TPOT/.test(plainCost),
+  "纯文本报告每模型行：TTFT / Prefill 已去，保留 TPOT");
 
 /* 8e. 下钻入口：模型行可点击 + 弹窗函数存在 */
 ok(typeof ctx.openModelPerfDialog === "function", "存在 openModelPerfDialog 下钻弹窗函数");
@@ -599,7 +611,9 @@ ok(!!mr0 && (mr0.listeners.click || []).length === 1, "模型行绑定 click 打
 ok(!!mr0 && (mr0.listeners.keydown || []).length === 1, "模型行绑定 keydown（Enter / 空格）");
 ok(!!mr0 && !!mr0.title, "模型行带「点击查看性能指标」提示");
 
-/* 8f. 弹窗内容：逐项指标 + 推算标注 + 口径脚注 */
+/* 8f. 弹窗内容：逐项指标 + 推算标注 + 口径脚注
+ * **本轮口径**：首 Token 延迟（TTFT）与预处理吞吐（Prefill）两行已移除 ——
+ * 当前运行时采不到首 Token 样本，留着恒为「—」。台账字段与 tokPerfOf 的计算保留。 */
 ovBody.children.length = 0;
 ovFoot.children.length = 0;
 ctx.openModelPerfDialog(pf, P);
@@ -607,13 +621,15 @@ const dlgTable = ovBody.children[0];
 ok(!!dlgTable && /model-perf-table/.test(dlgTable.className), "弹窗渲染性能表（复用 tok-badge-table 体系）");
 const kv = {};
 for (const row of (dlgTable && dlgTable.children) || []) kv[row.children[0].textContent] = row.children[1].textContent;
-ok(/ms$/.test(kv["首 Token 延迟 (TTFT)"] || ""), "弹窗列出首 Token 延迟(TTFT)：" + kv["首 Token 延迟 (TTFT)"] + "（1400ms/3 样本）");
+ok(!("首 Token 延迟 (TTFT)" in kv) && !("预处理吞吐 (Prefill)" in kv) && !("TTFT 样本数" in kv),
+  "弹窗不再列出 TTFT / Prefill / TTFT 样本数三行（本轮需求）：" + Object.keys(kv).join(" / "));
 ok(!!kv["输出吞吐"] && /tok\/s/.test(kv["输出吞吐"]), "弹窗列出输出吞吐：" + kv["输出吞吐"]);
 ok(!!kv["每输出 Token 耗时 (TPOT)"], "弹窗列出 TPOT：" + kv["每输出 Token 耗时 (TPOT)"]);
 ok(!!kv["端到端延迟 · 单次均值"] && !!kv["端到端延迟 · 累计"], "弹窗列出端到端（单次均值 / 累计）");
-ok(!!kv["预处理吞吐 (Prefill)"], "弹窗列出预处理吞吐：" + kv["预处理吞吐 (Prefill)"]);
-ok(kv["TTFT 样本数"] === "3" && kv["调用次数"] === "4", "弹窗列出样本数与调用次数");
-ok(!!kv["费用"] && /¥/.test(kv["费用"]), "弹窗列出费用：" + kv["费用"]);
+ok(kv["调用次数"] === "4" && !!kv["输出 token"] && !!kv["LLM 用时"], "弹窗列出调用次数 / 输出 token / LLM 用时");
+ok(kv["图像张数"] === "—", "无图像用量的模型在弹窗显示 —（图像张数列保留）");
+/* 费用格是**节点**（中转币值带金币图标）→ 文本从节点树取，不再当字符串 */
+ok(!!kv["费用"] && /¥/.test(kv["费用"]), "弹窗列出费用（节点文本）：" + kv["费用"]);
 ok(
   !ovBody.children.some((c) => /model-perf-note/.test((c && c.className) || "")),
   "弹窗不再显示口径脚注（按需求移除）",
@@ -624,7 +640,6 @@ ovBody.children.length = 0;
 ctx.openModelPerfDialog(null, { provider: "deepseek", model: "deepseek-v4-flash", llmMs: 2000, outputTokens: 100, calls: 1 });
 const kv2 = {};
 for (const row of (ovBody.children[0] && ovBody.children[0].children) || []) kv2[row.children[0].textContent] = row.children[1].textContent;
-ok(kv2["首 Token 延迟 (TTFT)"] === "—", "无样本指标在弹窗显示 —");
 ok(/\(推算\)/.test(kv2["输出吞吐"] || ""), "推算值在弹窗带「(推算)」标注：" + kv2["输出吞吐"]);
 ok(!!kv2["费用"], "owner 为空的本次运行桶也能算费用（atFallback 口径）：" + kv2["费用"]);
 
@@ -853,6 +868,9 @@ ok(
 );
 
 /* 9g. Badge「按轮次」区：表格 + 可点击行 + 下钻函数 + 合计段保留 + 文本导出 */
+/* 「按轮次」区由脚部开关（owner._tokRoundOpen）控制：测试要把它打开再渲染 ——
+   与用户在界面上点开「N 轮」看到的是同一条路径。 */
+rd._tokRoundOpen = true;
 const badge9 = ctx.tokBadgeEl(rd);
 ok(!!badge9 && badge9.dataset.tokOwner === "as9", "带轮次台账仍能渲染 Badge");
 const rtable9 = findEl(badge9, (c) => c.tag === "table" && /tok-round-table/.test(c.className || ""));
@@ -888,14 +906,62 @@ for (const row of (ovBody.children[0] && ovBody.children[0].children) || [])
   kvr[row.children[0].textContent] = row.children[1].textContent;
 ok(/第二轮/.test(kvr["标题"] || ""), "轮次弹窗列出标题：" + kvr["标题"]);
 ok(!!kvr["轮次 / 步"], "轮次弹窗列出轮 / 步：" + kvr["轮次 / 步"]);
-ok(!!kvr["该轮性能"] && /TTFT/.test(kvr["该轮性能"]), "轮次弹窗列出该轮性能摘要：" + kvr["该轮性能"]);
-ok(!!kvr["费用"], "轮次弹窗列出该轮费用：" + kvr["费用"]);
+ok(!!kvr["该轮性能"] && /TPOT/.test(kvr["该轮性能"]) && !/TTFT/.test(kvr["该轮性能"]),
+  "轮次弹窗列出该轮性能摘要（已不含 TTFT / Prefill）：" + kvr["该轮性能"]);
+ok(!!kvr["费用"], "轮次弹窗列出该轮费用（节点文本）：" + kvr["费用"]);
 const rmt9 = findEl(ovBody, (c) => /tok-round-models/.test(c.className || ""));
 ok(!!rmt9 && rmt9.children.length === 2, "轮次弹窗逐模型列出（表头 + 1 模型）");
 const rmtRow = rmt9 && rmt9.children[1];
 ok(!!rmtRow && /tok-model-row/.test(rmtRow.className || "") && (rmtRow.listeners.click || []).length === 1, "轮次弹窗的模型行仍可下钻");
 ok(!!findEl(ovBody, (c) => /model-perf-note/.test(c.className || "")), "轮次弹窗带口径脚注（实测 / 推算 / —）");
 ok(ovFoot.children.length > 0, "轮次弹窗带关闭按钮");
+
+/* ── 10. 中转图像「按张」入账（本轮需求：中转按币）────────────────────
+ * 中转站的图像计费与 token 无关（每次调用即计费，见 store-saas/relay.mjs 的
+ * imageCostYuan）：出图后由 app-nodes.js 调 tokAddImages 记张数，费用在展示时由
+ * app-cost.js 的 costOfImages 按**内置中转价目表**现算，单位是鲸圆币。
+ * 这里的快照价目故意留空 —— 本轮口径：计价只认内置表，快照价目不再参与。 */
+console.log("\n[10] 中转图像按张入账（按币）");
+ctx.S.config = {
+  providers: [
+    {
+      id: "mtnode-relay",
+      name: "MTNode 中转服务",
+      source: "mtnode-relay",
+      baseUrl: "https://relay.example.com/v1",
+      relay: { prices: {}, peaks: [], coinYuan: 0 },
+    },
+  ],
+};
+const imgOwner = { id: "as13", title: "img", messages: [] };
+ok(typeof ctx.tokAddImages === "function", "存在 tokAddImages（图像「按张」入账口）");
+ctx.tokAddImages(imgOwner, {
+  /* provider 用**网关路由名**（会话台账里真存的那个串，见 dsh/gateway/gateway.mjs
+     的 routeOfProvider）：计价侧必须认它，否则中转图像费用显示 — */
+  provider: "mtnode_mtnode-relay",
+  model: "gpt-image-2.5-all",
+  images: 3,
+  at: T_PEAK,
+});
+const imgTotals = ctx.tokViewTotals(imgOwner);
+near(imgTotals.images, 3, "台账记下 3 张（与 token 无关的独立量）");
+ok(Number.isFinite(imgTotals.images), "图像合计不产生 NaN");
+near(imgTotals.calls, 3, "每次出图算一次调用");
+const imgBucket = ctx.tokViewModels(imgOwner)[0];
+const imgCost = ctx.tokModelCostOf(imgBucket, imgOwner);
+near(imgCost.amount, 31.5, "3 张 × ¥0.21 = ¥0.63 = 31.5 币（元 → 币 ×50）");
+ok(imgCost.currency === "COIN", "中转图像费用币种是 COIN（鲸圆币）");
+ok(ctx.tokCostMark(imgCost) === "31.5 币", "展示口径 = 31.5 币（不是 ¥）");
+near(ctx.tokCostOf(imgOwner).amount, 31.5, "合计也按币算同一笔");
+ok(
+  ctx.tokBadgeSummary(imgOwner.tokenReport, imgTotals, false, imgOwner).indexOf("张图") >= 0,
+  "折叠态摘要带图像张数",
+);
+ok(ctx.tokReportPlain(imgOwner).indexOf("图像 3 张") >= 0, "纯文本报告带图像张数");
+const badge10 = ctx.tokBadgeEl(imgOwner);
+const row10 = findEl(badge10, (c) => c.tag === "tr" && c.className === "tok-model-row");
+ok(!!row10 && row10.children[6].textContent === "3 张", "明细表「图像」列显示 3 张（第 7 格 = 计费输入/缓存读/命中/输出/推理 之后的「图像」列）");
+ok(!!row10 && /币/.test(row10.children[10].textContent || ""), "明细行费用按币显示（末列）：" + (row10 && row10.children[10].textContent));
 
 console.log(fails ? "\n✗ " + fails + " 项失败" : "\n✓ 全部通过");
 process.exit(fails ? 1 : 0);

@@ -117,7 +117,7 @@ console.log("\n[1] 真渲染：时刻挂在消息左侧时刻栏，末尾时间�
 
 /* 切片 = 被测函数本体（时刻格式化 → 档位/分段判定 → dshMsgBlock，只切真源码、不改一字） */
 const from = ASSIST.indexOf("/* 消息末尾时间：精确到秒（非今天自动带日期） */");
-const to = ASSIST.indexOf("/* ── 回滚入口：上一轮用户输入下方的「回滚」小按钮");
+const to = ASSIST.indexOf("/* ── 会话条目窗口：每个会话最多同时渲染");
 ok(from > 0 && to > from, "摘到 formatMsgTimeSec … dshMsgBlock 真源码段");
 const BLOCK_SRC = ASSIST.slice(from, to);
 
@@ -147,8 +147,6 @@ const sandbox = {
   renderMarkdown: (t) => "<p>" + String(t == null ? "" : t) + "</p>",
   plainTextToLinkHtml: (t) => String(t == null ? "" : t),
   fmtDur: (n) => String(n) + "ms",
-  rbLatestRid: () => "",
-  rbHasMsgRound: () => false,
   dshToolDetailsEl: () => mkEl("details"),
   dshTurnProcessFold: () => null,
   dshHistSegEl: () => null,
@@ -243,9 +241,10 @@ ok(
   "tail 里不再追加时刻元素（旧路径已摘干净）",
 );
 ok(
-  /if \(rbRid \|\| m\.role === "assistant"\) \{/.test(ASSIST) &&
-    !/if \(rbRid \|\| endTxt \|\| m\.role === "assistant"\) \{/.test(ASSIST),
-  "末尾行的出现条件不再看 endTxt（时刻不占行后，没按钮就不挂空行）",
+  /if \(m\.role === "assistant"\) \{/.test(ASSIST) &&
+    ASSIST.indexOf("rbRid") < 0 &&
+    !/if \(endTxt \|\| m\.role === "assistant"\) \{/.test(ASSIST),
+  "末尾行的出现条件只看「AI 回复」（回滚入口已移除，且不再看 endTxt：没按钮就不挂空行）",
 );
 ok(
   (ASSIST.match(/const endTxt = formatMsgTimeSec\(/g) || []).length === 1,

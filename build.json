@@ -22,15 +22,21 @@
     "tools-store.js",
     "assets-store.js",
     "apps-store.js",
+    "apps-capabilities.js",
     "wechat-pc.js",
     "wechat-fastlogin.js",
     "media-gen-global-lock.js",
     "clipboard-images.js",
-    "sound-alert.js",
     "plugin-error-repair.js",
     "mtnode-agent-skills-lib.js",
+    /* MCP 服务端（第三方客户端接进来操作 MTNode）：主进程服务端 + 生成的契约与校验表 +
+       stdio 桥脚本。mcp-tools.json 是运行时真源（tools/list 的描述正文），必须随包。 */
+    "mcp-server.js",
+    "mcp-prompts.js",
+    "mcp-tools.json",
+    "mcp-tool-schemas.js",
+    "mcp-stdio.js",
     "db-store.js",
-    "rollback-store.js",
     "storage-clean.js",
     "storage-scan-worker.js",
     "speech-store.js",
@@ -86,6 +92,10 @@
     "!node_modules/**/prebuilds/win32-arm64/**",
     "!node_modules/**/prebuilds/*-arm64*",
     "!node_modules/**/prebuilds/*-arm64*/**",
+    /* sharp 的无原生回退包（8.9MB）：sharp/dist/sharp.cjs 只在拿不到平台原生二进制时才
+       require 它，桌面 win32-x64 上必命中 @img/sharp-win32-x64（18.9MB，保留）→ 永不加载。
+       按包名精确剪，不动 @img/sharp-win32-x64 / sharp 本体。 */
+    "!node_modules/@img/sharp-wasm32/**",
     "!node_modules/better-sqlite3/deps/**",
     "!node_modules/better-sqlite3/src/**",
     "!node_modules/uiohook-napi/libuiohook/**",
@@ -99,6 +109,14 @@
     "**/node_modules/node-gyp-build/**"
   ],
   "extraResources": [
+    {
+      /* MCP · stdio 桥脚本：外部 MCP 客户端（Claude Code / Cursor）用**系统 Node** 拉起它，
+         而 asar 内路径外部 Node 读不了 —— 所以必须放在 asar 外的 resources/ 根。
+         脚本只 import node 内置模块（fs/os/path + 全局 fetch），随包零依赖。
+         主进程侧路径解析见 mcp-server.js 的 stdioCommand（优先 resourcesDir）。 */
+      "from": "mcp-stdio.js",
+      "to": "mcp-stdio.js"
+    },
     {
       "from": "node_modules/uiohook-napi",
       "to": "uiohook-napi",
@@ -174,8 +192,6 @@
         "app/**",
         "post/**",
         "scripts/**",
-        "custom_nodes/**",
-        "workflows/**",
         "requirements.txt",
         "README.md",
         "start_backend.cmd",

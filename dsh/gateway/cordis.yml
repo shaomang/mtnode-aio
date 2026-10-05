@@ -178,44 +178,35 @@
     section: |
           You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it.
 
-- id: subagent
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: subagent  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
-- id: subagent-spawn-in-process
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: subagent-spawn-in-process  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     providerName: spawn
 
-- id: subagent-fork-in-process
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: subagent-fork-in-process  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     providerName: fork
 
-- id: tool-subagent-control
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent-control  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
-- id: tool-subagent-list-agents
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent-list-agents  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
-- id: tool-subagent
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     provider: spawn
     toolName: subagent
     backgroundMode: continuable
     # 委派嵌套上限:0 禁止委派,dsh 自身默认 3。MTNode 默认收紧到 1(与 OpenCode 的
     # subagent_depth 默认一致);用户在「设置 · 智能能力 · 子代理」改了之后,由宿主
-    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。
-    maxDepth: 1
+    # dsh-agent-policy.js 改写本值(main.js 启动时与每次保存配置后)。    maxDepth: 1
 
-- id: tool-subagent-fork
-  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
+- id: tool-subagent-fork  disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
   config:
     provider: fork
     toolName: subagent_fork
     backgroundMode: one-shot
-    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。
-    maxDepth: 1
+    # 同 tool-subagent:默认收紧到 1 层嵌套,由 dsh-agent-policy.js 按用户设置改写。    maxDepth: 1
 
 - id: spill-policy
   config:
@@ -400,14 +391,6 @@
     # MTNode 画布工具:模型可在当前工作流中创建/改标题/连线/@引用/自动排版节点。
     - id: mtnode-canvas
       name: './canvas-plugin.mjs'
-      disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
-
-    # MTNode 回滚捕获:在工具 pre/post 观察点采样「改前正文 / 改后指纹」,经同一条桥
-    # 单向发 journal 帧给 gateway,由主进程落盘成对象库 + 轮次账本(契约见 dsh/DESIGN.md
-    # 「回滚账本与 journal 帧」)。插件自己不写盘;缺 MTNODE_ROLLBACK_DIR 或
-    # MTNODE_BRIDGE_PORT 时整体 no-op,行为与未接入时一致。
-    - id: mtnode-rollback
-      name: './rollback-plugin.mjs'
       disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
 
     # MTNode 数据库工具:接入数据库副本节点的任务经 mtnode_db 查询事实

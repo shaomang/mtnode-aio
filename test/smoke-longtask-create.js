@@ -16,7 +16,7 @@
  *   [3] 窗内 Agent 引导：契约（mtnode-grill-me + ask_user_question + create_longtask）
  *       + 契约会话装配（标题锁死 / 绑本画布 / 允许读画布）+ 回执落地 + 三个出口
  *   [4] 网关与分发：create_longtask 的 enum / APP_DESC 卡口 / graph 参数；
- *       app-nodes 分发 + app_ops 工具 + 规划模式拒绝 + 回滚记账不放行
+ *       app-nodes 分发 + app_ops 工具 + 规划模式拒绝
  *   [5] 引擎真行为（vm 里跑）：LT.createFromGraph 的归一 / 校验拒绝 / 落库字段
  *   [6] 装配与文案：index.html 脚本顺序 / longtask.css / i18n 中英词条
  * 只读断言：不改任何文件、不起 Electron。
@@ -66,7 +66,6 @@ const HTML = read("renderer/index.html");
 const CSS = read("renderer/css/longtask.css");
 const I18N = read("renderer/i18n.js");
 const PLUGIN = read("dsh/gateway/canvas-plugin.mjs");
-const ROLLBACK = read("dsh/gateway/rollback-plugin.mjs");
 const PLANJS = read("renderer/app-plan.js");
 const BOOT = read("renderer/app-boot.js");
 
@@ -330,8 +329,6 @@ has(NODES, 'throw new Error((r && r.error) || I18n.t("长周期任务图校验�
   const denied = NODES.slice(NODES.indexOf("const PLAN_DENIED_APP_ACTIONS"), NODES.indexOf("function canvasOpMutates("));
   has(denied, '"create_longtask"', "规划模式把 create_longtask 列为拒绝动作（只出计划不改画布）");
 }
-hasnt(ROLLBACK, "create_longtask", "回滚记账不放行 create_longtask（APP_READ_ONLY_ACTIONS 未收它 = 按写操作处理）");
-has(ROLLBACK, "APP_READ_ONLY_ACTIONS", "回滚插件的只读名单仍在（对照断言有效）");
 
 /* ═══════════════ [4b] 宿主闸：长任务会话不走「普通会话计划」那条线 ═══════════════
    这是本轮 bug 的宿主侧一半：引导会话的产物只能是长周期任务状态机图 ——

@@ -34,6 +34,9 @@ const ok = (cond, msg) => {
   if (cond) console.log("  ok  " + msg);
   else {
     fails++;
+    /* 正文的失败也必须点亮 MERGED_FAILED：退出码只看 MERGED_FAILED（文件末尾），
+       不置位就会出现「打印了 FAIL、进程仍退 0」的静默绿（本文件曾因此漏掉两条红）。 */
+    MERGED_FAILED = true;
     console.log("FAIL  " + msg);
   }
 };
@@ -98,8 +101,11 @@ const slice = (src, from, to) => {
   console.log("\n[3] 服务端：懒加载（列表不含正文）与免登录 / 需登录边界");
   const listHandler = slice(SERVER, 'p === "/api/forum/topics") {', 'p === "/api/forum/topic")');
   ok(listHandler.length > 0 && !/if \(!user\)/.test(listHandler), "GET 列表免登录（handler 内无 !user 401 分支）");
-  ok(/publicForumTopicSummary\)/.test(listHandler), "列表逐条走 publicForumTopicSummary（只出标题与元数据）");
-  ok(/\.map\(publicForumTopicSummary\)/.test(SERVER), "列表映射逐条走 publicForumTopicSummary（不展开完整话题对象）");
+  /* 列表仍**逐条走 publicForumTopicSummary**（懒加载：只出标题与元数据、不展开正文）；
+     签名多了第三个参数 en = 本页批量算好的打赏 / 评分 / 评论数（先收本页 ids 再算，避免 N²）。 */
+  ok(/publicForumTopicSummary\(t, en\(t\.id\)\)/.test(listHandler), "列表逐条走 publicForumTopicSummary（只出标题与元数据）");
+  ok(/\.map\(\(t\) => publicForumTopicSummary\(t, en\(t\.id\)\)\)/.test(SERVER), "列表映射逐条走 publicForumTopicSummary（不展开完整话题对象）");
+  ok(/enrichOf\("forum_topic", pageItems\.map\(\(t\) => t\.id\)\)/.test(listHandler), "打赏 / 评分 / 评论数按本页 ids 批量算（不在循环里逐个算）");
   const summary = slice(SERVER, "function publicForumTopicSummary", "function publicForumTopic");
   ok(summary.length > 0 && !/\bcontent\b/.test(summary), "publicForumTopicSummary 不含 content 字段");
   const detail = slice(SERVER, "function publicForumTopic(", "\nfunction publicForumReply");
@@ -242,11 +248,9 @@ const slice = (src, from, to) => {
   }
   const FX = [
     "dshRunLongMark",
-    "dshRunIdleTicker",
     "dshRunUserMark",
     "dshRunLongDrop",
     "dshRunBusy",
-    "dshRunQueueIdleMark",
     "dshRunAllDoneCheck",
     "dshRunQueueIsShortLived",
     "dshRunQueueRowState",
@@ -257,20 +261,18 @@ const slice = (src, from, to) => {
     "doneSoundVolumePct",
     "doneSoundGain",
     "doneNoteFloor",
-    "alertViaHost",
+    "playBuiltinTones",
     "builtinDoneDing",
-    "builtinDingDong",
-    /* 全局那一档的真源是随包 WAV（builtinDingDong → playAllDoneWav → allDoneWavBuffer），
-       桥不在 / 解不开才落回合成的三音上行 —— 这两个也得进沙箱，否则 builtinDingDong
-       一调用就 ReferenceError（合并块曾经整块崩在这里）。 */
-    "playAllDoneWav",
-    "allDoneWavBuffer",
+    /* 自定义音效文件那一路（<audio>）也进沙箱：构造器由 opts.window.Audio 注入，
+       测试拿得到 .volume（0.5 / 0.75 两档就是在这里被钉住的） */
+    "playDoneSoundFile",
   ];
-  /* 把需要真跑的函数装进一个沙箱：S / collectRunQueueAll / playTaskDoneSound /
-     playAllDoneSound / window 都是见证桩 */
+  /* 把需要真跑的函数装进一个沙箱：S / collectRunQueueAll / playTaskDoneSound / window
+     都是见证桩 */
   function makeSandbox(opts) {
     opts = opts || {};
     const clock = { now: 1000000 };
+    /* 每一次发声记一条：final 真 = 收尾那一档（所有任务都完成，1.5 倍音量） */
     const events = [];
     /* 队列是可变的：测试要模拟「上一拍还在、这一拍没了」（真源 = collectRunQueueAll） */
     let queue = opts.queue || [];
@@ -289,8 +291,8 @@ const slice = (src, from, to) => {
           _runLongAt: opts.runLongAt || {},
           _runUserAt: opts.runUserAt || {},
           _runCount: opts.runCount || 0,
-          _allDoneSoundAt: opts.allDoneSoundAt || 0,
           _queueIdleAt: opts.queueIdleAt || 0,
+          _queueRanAt: opts.queueRanAt || 0,
           _doneSoundAt: opts.doneSoundAt || 0,
         },
         opts.state || {},
@@ -299,19 +301,15 @@ const slice = (src, from, to) => {
       setQueue: (q) => {
         queue = q || [];
       },
-      /* 两档发声的见证桩：除记录事件外，**像真实现那样落时刻**（_doneSoundAt /
-         _allDoneSoundAt 是合并窗与让位判定的输入，桩不落就等于把这两条口径测空了）。 */
-      playTaskDoneSound: () => {
-        events.push("ding");
+      /* 发声见证桩：像真实现那样落 _doneSoundAt（合并窗与冷却判定的输入，
+         桩不落就等于把这两条口径测空了），并按 final 分开记事件。 */
+      playTaskDoneSound: (final) => {
+        events.push(final ? "final" : "ding");
         sandbox.S._doneSoundAt = String(clock.now);
       },
-      playAllDoneSound: () => {
-        events.push("dingdong");
-        sandbox.S._allDoneSoundAt = String(clock.now);
-      },
       window: opts.window || {},
-      /* 假定时器：面板心跳（app.js）与空闲窗心跳（app-db.js 的 dshRunIdleTicker）都登记
-         在这里，pump() 手动走一拍 —— 断言「队列空之后到底还有没有人在判」就靠它。 */
+      /* 假定时器：面板心跳（app.js 的 syncRunQueueTicker）登记在这里，pump() 手动走一拍。
+         队列空之后的判定不需要 app-db.js 自己留任何常驻心跳（定时器集合应当恒为空）。 */
       setInterval: (fn, ms) => {
         const id = ++sandbox.__tid;
         sandbox.__timers.set(id, { fn, ms });
@@ -323,117 +321,134 @@ const slice = (src, from, to) => {
       __timers: new Map(),
       __tid: 0,
     };
-    /* alertViaHost = 主进程发声通道（见 renderer/app-db.js / sound-alert.js）：
-       沙箱里给个可控假体 —— 缺省 true（派得出去，不碰 WebAudio）、传 false 时走
-       WebAudio 兜底那一段（断言音色与音量尺用）。opts.alertCalls 收下每次派发的入参。
-       注意：必须在 vm.runInContext 之后重新挂一遍（FX 导出会把真实现盖到沙箱同名属性上，
-       只挂一次的话这层假体等于没生效，派发记录就永远是空的）。 */
-    const fakeAlertViaHost = function (mode, amp, file) {
-      if (opts.alertCalls) opts.alertCalls.push({ mode, amp, file });
-      return opts.alertHost !== false;
-    };
-    /* playBuiltinTones 是 WebAudio 兜底的公共实现（两档共用，只换音色表）：
-       沙箱里保留真实现，AudioContext 由 opts.window 提供假体 */
+    /* 需要当**裸名全局**用的假体（如 Audio）：只挂进 window 时 vm 里拿不到裸名，
+       而 app-db.js 写的是 `new Audio(...)` —— 必须在建 context 之前挂到沙箱自身。 */
+    Object.assign(sandbox, opts.extraGlobals || {});
     const code =
-      constSrc("DSH_ALL_DONE_MIN_MS") +
-      "\n" +
       constSrc("DSH_QUEUE_IDLE_CONFIRM_MS") +
       "\n" +
       constSrc("DSH_DONE_SOUND_MERGE_MS") +
       "\n" +
-      constSrc("DSH_DONE_SOUND_DEDUP_MS") +
-      "\n" +
       constSrc("DSH_DONE_SOUND_VOL_DEFAULT") +
       "\n" +
-      constSrc("DSH_IDLE_TICK_MS") +
+      constSrc("DSH_DONE_SOUND_FINAL_RATIO") +
+      "\n" +
+      constSrc("DSH_DONE_SOUND_FINAL_MAX_GAIN") +
       "\n" +
       constSrc("DONE_TONE_DING") +
       "\n" +
-      constSrc("DONE_TONE_DINGDONG") +
-      "\n" +
       constSrc("DONE_DECAY_DING") +
-      "\n" +
-      constSrc("DONE_DECAY_DINGDONG") +
       "\n" +
       constSrc("DONE_TAIL_DING") +
       "\n" +
-      constSrc("DONE_TAIL_DINGDONG") +
-      "\n" +
-      /* 模块级 let（不是 const 也不是函数）：抽取式沙箱要自己声明，否则 builtinDingDong
-         里的 playAllDoneWav / allDoneWavBuffer 引用它们时 ReferenceError */
-      "let _allDoneWavBuf = null;\nlet _allDoneWavReq = null;\nlet _idleTicker = null;\n" +
-      fnSrc("playBuiltinTones") +
-      "\n" +
       FX.map(fnSrc).join("\n") +
       /* vm 里的顶层 const / function 不会自动挂到沙箱对象上：显式导出，测试才能从外面调它们 */
-      "\nthis.DSH_ALL_DONE_MIN_MS = DSH_ALL_DONE_MIN_MS;" +
       "\nthis.DSH_QUEUE_IDLE_CONFIRM_MS = DSH_QUEUE_IDLE_CONFIRM_MS;" +
       "\nthis.DSH_DONE_SOUND_MERGE_MS = DSH_DONE_SOUND_MERGE_MS;" +
-      "\nthis.DSH_DONE_SOUND_DEDUP_MS = DSH_DONE_SOUND_DEDUP_MS;" +
       "\nthis.DSH_DONE_SOUND_VOL_DEFAULT = DSH_DONE_SOUND_VOL_DEFAULT;" +
-      "\nthis.DSH_IDLE_TICK_MS = DSH_IDLE_TICK_MS;" +
+      "\nthis.DSH_DONE_SOUND_FINAL_RATIO = DSH_DONE_SOUND_FINAL_RATIO;" +
+      "\nthis.DSH_DONE_SOUND_FINAL_MAX_GAIN = DSH_DONE_SOUND_FINAL_MAX_GAIN;" +
       "\nthis.DONE_TONE_DING = DONE_TONE_DING;" +
-      "\nthis.DONE_TONE_DINGDONG = DONE_TONE_DINGDONG;" +
-      "\nthis.DONE_TAIL_DINGDONG = DONE_TAIL_DINGDONG;" +
       FX.map((f) => "\nthis." + f + " = " + f + ";").join("");
     vm.createContext(sandbox);
     vm.runInContext(code, sandbox, { filename: "app-db-extract.js" });
-    sandbox.alertViaHost = fakeAlertViaHost;
-    /* pump() = 让沙箱里所有已登记的心跳各走一拍（断言「队列空之后还有没有人在判」用） */
+    /* pump() = 让沙箱里所有已登记的心跳各走一拍 */
     const pump = () => {
       for (const t of [...sandbox.__timers.values()]) t.fn();
     };
     return { sb: sandbox, clock, events, pump, timers: sandbox.__timers };
   }
 
-  console.log("\n[1] 两档音色与常量：任务级短促音 / 全局级三音上行 / 5 分钟闸");
+  console.log("\n[1] 完成音：一把音色两档音量 + 长任务音效（三音上行 / all-done.wav / 主进程通道）已整体移除");
   {
     const { sb } = makeSandbox();
-    ok(sb.DSH_ALL_DONE_MIN_MS === 300000, "全局音门槛 = 空闲满 5 分钟（300000ms）");
-    ok(sb.DSH_QUEUE_IDLE_CONFIRM_MS === 3000, "「队列彻底空」需连续确认 3 秒（心跳 2 秒 = 下一拍）");
     ok(
-      sb.DSH_DONE_SOUND_MERGE_MS === 500 && sb.DSH_DONE_SOUND_MERGE_MS < sb.DSH_DONE_SOUND_DEDUP_MS,
+      sb.DSH_QUEUE_IDLE_CONFIRM_MS === 3000,
+      "「队列彻底空」需连续确认 3 秒（心跳 2 秒 = 下一拍）才下「全部完成」的结论",
+    );
+    ok(
+      sb.DSH_DONE_SOUND_MERGE_MS === 500 && sb.DSH_DONE_SOUND_MERGE_MS < sb.DSH_QUEUE_IDLE_CONFIRM_MS,
       "同一瞬并行收尾的合并窗 0.5 秒（并发跑完一批只响一声）",
     );
+    ok(sb.DSH_DONE_SOUND_FINAL_RATIO === 1.5, "收尾那一档 = 完成音 ×1.5 音量（本次需求的核心口径）");
     ok(
-      sb.DSH_DONE_SOUND_DEDUP_MS === 1200 && sb.DSH_DONE_SOUND_DEDUP_MS < sb.DSH_QUEUE_IDLE_CONFIRM_MS,
-      "短促音与全局音的让位窗 1.2 秒（两档几乎同一刻要响时只留全局那一声）",
+      sb.DSH_DONE_SOUND_FINAL_MAX_GAIN === 0.85 && sb.DSH_DONE_SOUND_FINAL_MAX_GAIN < 1,
+      "收尾那一档夹在 0.85 安全上限之下（滑杆拉满也只到 0.51，绝不削波破音）",
     );
-    ok(sb.DSH_DONE_SOUND_VOL_DEFAULT === 35, "内置音音量缺省 = 35%");
-    /* 两档音色必须真正不同：任务级 E5→A5 两音、全局级 C6→E6→G6 三音 */
+    ok(sb.DSH_DONE_SOUND_VOL_DEFAULT === 35, "完成音音量缺省 = 35%");
     ok(
       sb.DONE_TONE_DING.map((n) => n[0]).join(",") === "659.25,880",
-      "任务级短促音 = 以前的短促双音 E5 → A5（原样保留，没被改坏）",
+      "唯一的音色 = 原来的短促双音 E5 → A5（原样保留，没被改坏）",
+    );
+    /* 长任务音效那一整条链（函数 / 常量 / 通道 / 随包 WAV / 样式）一个都不许留 */
+    ok(
+      !/DONE_TONE_DINGDONG|DONE_TAIL_DINGDONG|DONE_DECAY_DINGDONG/.test(DB),
+      "三音上行的音色表已从 app-db.js 删除",
     );
     ok(
-      sb.DONE_TONE_DINGDONG.map((n) => n[0]).join(",") === "1046.5,1318.51,1567.98",
-      "全局音 = 三音上行 C6 → E6 → G6（与任务级音区拉开，用户能听出两回事）",
+      !/builtinDingDong|playAllDoneSound|playAllDoneWav|allDoneWavBuffer|ALL_DONE_WAV_REL|alertViaHost/.test(DB),
+      "全局音的真源 / 兜底 / 发声派发函数（builtinDingDong、playAllDoneWav、alertViaHost…）全删",
     );
-    const ddLast = sb.DONE_TONE_DINGDONG[2];
     ok(
-      ddLast[1] + ddLast[2] + sb.DONE_TAIL_DINGDONG > 0.8,
-      "全局音总长 ≈0.86 秒（末音 0.16s + 0.38s 余韵），比任务级 0.42 秒明显更长",
+      !/DSH_ALL_DONE_MIN_MS|DSH_DONE_SOUND_DEDUP_MS|dshRunBusySpan|_runBusyAt|_runBusyMs|_allDoneSoundAt/.test(DB),
+      "只服务于 5 分钟门槛的忙碌计时与两档让位窗常量一并删除（不留死码）",
+    );
+    ok(
+      !/sounds\/all-done\.wav/.test(fnSrc("playBuiltinTones")) &&
+        !/ALL_DONE_WAV_REL|allDoneWavBuffer|playAllDoneWav/.test(DB),
+      "app-db.js 不再有任何读取随包音频 renderer/sounds/all-done.wav 的代码（只剩注释说明它已下线）",
+    );
+    ok(
+      !/window\.api\.soundAlert|api\.soundAlert/.test(DB) &&
+        !/soundAlert\s*:/.test(read("preload.js")) &&
+        !/ipcMain\.handle\(\s*"sound:alert"/.test(MAIN),
+      "主进程提醒音通道（preload 的 soundAlert / main 的 sound:alert）已拆",
+    );
+    const ROOTFILES = SHARED.fs.readdirSync(path.join(__dirname, ".."));
+    ok(
+      ROOTFILES.indexOf("sound-alert.js") < 0 &&
+        !SHARED.fs.existsSync(path.join(__dirname, "..", "renderer", "sounds")) &&
+        !SHARED.fs.existsSync(path.join(__dirname, "smoke-sound-alert.js")),
+      "sound-alert.js / renderer/sounds/all-done.wav / test/smoke-sound-alert.js 三个文件都已删除",
+    );
+    ok(
+      !/"sound-alert\.js"/.test(read("build.json")),
+      "build.json 打包白名单里 sound-alert.js 已移除（不留指向不存在文件的条目）",
     );
   }
 
-  console.log("\n[2] 空闲时基：起跑 / 回话重置，收尾清理");
+  console.log("\n[2] 在飞登记与收尾清理（最终音只看队列空不空，不再累计任何时长）");
   {
     const { sb, clock } = makeSandbox();
-    sb.dshRunQueueIdleMark();
-    ok(Number(sb.S._queueIdleAt) === clock.now, "队列空那一刻起算空闲窗口（_queueIdleAt = 此刻）");
-    clock.now += 60000;
-    sb.dshRunQueueIdleMark();
-    ok(Number(sb.S._queueIdleAt) === clock.now - 60000, "持续空闲不刷新起点（窗口一直往前走）");
     sb.dshRunLongMark("agent:as1");
     ok(sb.S._runLongAt["agent:as1"] === clock.now, "起跑登记：_runLongAt[runKey] = 当前时刻");
-    ok(sb.S._queueIdleAt === 0, "新任务起跑 = 这一段空闲作废（5 分钟重新起算）");
-    ok(sb.dshRunBusy() === 1, "dshRunBusy() 数得清「还在飞」的智能运行");
-    sb.dshRunQueueIdleMark();
+    ok(sb.dshRunBusy() === 1, "dshRunBusy() 数得清「还在飞」的智能运行（最终音的闸之一）");
     clock.now += 30000;
     sb.dshRunUserMark("agent:as1");
-    ok(sb.S._runUserAt["agent:as1"] === clock.now, "用户回话（回答 / 审批）写入 _runUserAt");
+    ok(sb.S._runUserAt["agent:as1"] === clock.now, "用户回话（回答 / 审批）写入 _runUserAt（诊断用）");
     sb.dshRunUserMark("");
-    ok(Object.keys(sb.S._runUserAt).length === 1, "空 runKey 不写登记（无归属的卡不影响计时）");
+    ok(Object.keys(sb.S._runUserAt).length === 1, "空 runKey 不写登记（无归属的卡不算谁的账）");
+    /* 队列非空期间判定：一段活被标成「跑过东西」，那是收尾音的前提之一 */
+    const { sb: qsb } = makeSandbox({ queue: [{ key: "sess:q1", type: "session", id: "q1", state: "run" }] });
+    ok(!qsb.S._queueRanAt, "刚起跑还没取过数 → 还没标「这一段活跑过东西」");
+    qsb.dshRunAllDoneCheck();
+    ok(!!qsb.S._queueRanAt, "队列非空的这一拍标上「跑过东西」（_queueRanAt 非 0）");
+    /* 第二个见证点：队列前后对比也见过在飞的行（快速任务可能在心跳两拍之间就跑完，
+       只靠上面那一处会让「所有任务都完成」永远判不出来） */
+    ok(fnSrc("dshRunQueueDoneCheck").indexOf("_queueRanAt") >= 0, "队列对比那一处也记「跑过东西」");
+    {
+      const r = makeSandbox({ queue: [{ key: "sess:r1", type: "session", id: "r1", state: "run" }] });
+      r.sb.dshRunQueueDoneCheck();
+      ok(!!r.sb.S._queueRanAt, "dshRunQueueDoneCheck 看见在飞的行 → 同样标上「跑过东西」");
+      r.sb.setQueue([]);
+      r.sb.dshRunAllDoneCheck(); /* 队列刚空那一拍：起算确认窗 */
+      r.clock.now += 4000;
+      r.sb.dshRunAllDoneCheck();
+      ok(
+        r.events.length === 1 && r.events[0] === "final",
+        "心跳没抓到「队列非空」那一拍也不丢收尾音（两处见证点同义）",
+      );
+    }
     sb.dshRunLongDrop("agent:as1");
     ok(!sb.S._runLongAt["agent:as1"] && sb.dshRunBusy() === 0, "收尾清掉在飞登记（dshRunBusy 归零）");
     ok(!sb.S._runUserAt["agent:as1"], "换轮 / 收尾时两份登记都不残留");
@@ -449,94 +464,99 @@ const slice = (src, from, to) => {
         /dshRunLongDrop\(runKey\);/.test(DB),
       "收尾（且只在这一轮的句柄还在时）删登记",
     );
+    ok(!/\bdshRunBusySpan\w*\(/.test(DB), "忙碌时长那四个函数（Open/Tick/Close/Reset）已全部删除");
     ok(mark.length > 0, "dshRunLongMark 真函数存在（沙箱里已真跑过）");
   }
 
-  console.log("\n[3] 全局音判定（真跑 dshRunAllDoneCheck：队列空 + 空闲满 5 分钟）");
+  console.log("\n[3] 最终音判定（真跑 dshRunAllDoneCheck：所有任务都完成 → 1.5 倍那一声）");
   {
-    /* ① 队列里还有任务在跑 / 排队 —— 绝不响 */
+    /* ① 队列里还有任务在跑 / 排队 —— 一声都不响 */
     const a = makeSandbox({
       runLongAt: { "agent:as1": 1000000 - 600000, "agent:as2": 1000000 - 60000 },
-      queueIdleAt: 900,
-      doneSoundAt: 999000,
       queue: [
         { key: "as2", type: "session" },
         { key: "node:zz", type: "node" },
       ],
     });
     a.sb.dshRunAllDoneCheck();
-    ok(
-      a.events.length === 0 && a.sb.S._queueIdleAt === 0,
-      "队列里还有任务（会话 + 节点）→ 一声都不响，并重置空闲起点",
-    );
-    /* ② 队列空但还有智能运行在飞（收尾记账还没走完）→ 不响 */
-    const b = makeSandbox({ runCount: 1, runLongAt: { "agent:as1": 1000000 - 600000 } });
+    ok(a.events.length === 0, "队列里还有任务（会话 + 节点）→ 不响");
+    /* ② 队列空但本轮还在收尾 / 还有智能运行在飞 → 不响 */
+    const b = makeSandbox({ runCount: 1, queueRanAt: "1", runLongAt: { "agent:as1": 1000000 - 600000 } });
     b.sb.dshRunAllDoneCheck();
     ok(b.events.length === 0 && !b.sb.S._queueIdleAt, "本轮还在收尾（_runCount>0）→ 先不计，下一拍再判");
-    const b2 = makeSandbox({ runLongAt: { "agent:as1": 1000000 - 600000 } });
-    b2.sb.dshRunQueueIdleMark();
+    const b2 = makeSandbox({ queueRanAt: "1", runLongAt: { "agent:as1": 1000000 - 600000 } });
+    b2.sb.dshRunAllDoneCheck();
     b2.clock.now += 5000;
     b2.sb.dshRunAllDoneCheck();
     ok(b2.events.length === 0, "队列空但还有一处登记证明智能运行在飞（dshRunBusy>0）→ 不响");
-    /* ③ 队列刚空：起算空闲窗口，确认窗内不响 */
-    const c = makeSandbox({});
+    /* ③ 有效的一段活 + 队列彻底空 → 确认窗一过就响最终音（不管跑了多久） */
+    const c = makeSandbox({
+      queue: [{ key: "sess:s1", type: "session", id: "s1", state: "run" }],
+    });
+    c.sb.dshRunAllDoneCheck(); /* 先看见活（标上「跑过东西」） */
+    c.sb.setQueue([]);
+    c.clock.now += 30000;
     c.sb.dshRunAllDoneCheck();
     ok(
       c.events.length === 0 && Number(c.sb.S._queueIdleAt) === c.clock.now,
-      "队列刚空 → 记下空闲起点，不响",
+      "队列刚空 → 起算确认窗，不响",
     );
     c.clock.now += 1500;
     c.sb.dshRunAllDoneCheck();
     ok(c.events.length === 0, "空闲 1.5s → 仍不响（等下一拍心跳过 3 秒确认窗）");
     c.clock.now += 1700;
     c.sb.dshRunAllDoneCheck();
-    ok(c.events.length === 0, "空闲 3.2s → 还不响（门槛是 5 分钟，不是 3 秒）");
-    /* ④ 不满 5 分钟一律不响（旧版这里就响了 —— 「3 分钟连续运行」正是被删掉的条件） */
-    c.clock.now += 200000;
-    c.sb.dshRunAllDoneCheck();
-    ok(c.events.length === 0, "空闲 3.2 分钟 → 不响（「连续运行 ≥3 分钟」那一档已按需求删除）");
-    /* ⑤ 满 5 分钟：响一声全局音 */
-    c.clock.now += 100000; /* 累计空闲 ≈ 5 分 3 秒 */
-    c.sb.dshRunAllDoneCheck();
     ok(
-      c.events.length === 1 && c.events[0] === "dingdong",
-      "空闲满 5 分钟 → 响一声全局音（playAllDoneSound → dingdong 档）",
+      c.events.length === 1 && c.events[0] === "final",
+      "只跑了 30 秒的任务全部收尾 → 确认窗一过就响 1.5 倍最终音（**没有 5 分钟门槛**）",
     );
-    ok(c.sb.S._queueIdleAt === 0, "响过之后空闲窗口清零（下一次要等新任务起跑后再空满 5 分钟）");
+    ok(c.sb.S._queueIdleAt === 0 && c.sb.S._queueRanAt === 0, "响过之后确认窗与「跑过东西」标记都清掉");
     c.sb.dshRunAllDoneCheck();
-    ok(c.events.length === 1, "同一段空闲里不重复响");
-    /* ⑥ 期间又来了新任务：空闲窗口重新起算 */
-    const d = makeSandbox({ queueIdleAt: 1 });
-    d.clock.now = 1000000;
-    d.sb.dshRunLongMark("agent:as9");
-    ok(d.sb.S._queueIdleAt === 0, "新任务起跑 → 这一段空闲作废（哪怕之前已空满 4 分钟）");
-    d.sb.dshRunLongDrop("agent:as9");
+    ok(c.events.length === 1, "同一阵活不重复响");
+    /* ④ 队列一直空着（没跑过任何活）→ 不响：开机后不能凭空响一声收尾音 */
+    const d = makeSandbox({});
+    d.sb.dshRunAllDoneCheck();
+    d.clock.now += 10000;
     d.sb.dshRunAllDoneCheck();
     ok(
-      d.events.length === 0 && Number(d.sb.S._queueIdleAt) === d.clock.now,
-      "新任务收尾后重新起算空闲窗口，不满 5 分钟不响",
+      d.events.length === 0 && !d.sb.S._queueIdleAt,
+      "开机后队列一直空着（这一阵活压根没跑过东西）→ 不响（边界：不拿「什么都没跑」当「全都跑完」）",
     );
-    /* ⑦ 短促音刚落（同一刻的收尾）→ 全局音让位一拍 */
-    const e = makeSandbox({ queueIdleAt: 1000000 - 400000, doneSoundAt: 999500 });
-    e.clock.now = 1000000;
+    /* ⑤ 后端音视频还在途（排队中的行也算队列非空）→ 不响 */
+    const e = makeSandbox({ queue: [{ key: "media:m1", type: "media", state: "wait" }] });
     e.sb.dshRunAllDoneCheck();
-    ok(
-      Number(e.sb.S._queueIdleAt) === 1000000 - 400000 && e.events.length === 0,
-      "1.2 秒内已响过任务级短音 → 全局音让位（不叠音），空闲窗口原样留着、下一拍再判",
-    );
-    e.clock.now += 3000;
-    e.sb.dshRunAllDoneCheck();
-    ok(e.events.length === 1 && e.events[0] === "dingdong", "让位后下一拍正常响全局音");
-    /* ⑧ 上一声全局音才响过 → 冷却期内不响 */
-    const f = makeSandbox({ queueIdleAt: 1000000 - 400000, allDoneSoundAt: 1000000 });
-    f.clock.now = 1000000 + 1500;
+    ok(e.events.length === 0, "队列里还有排队中的后端生成 → 不响");
+    /* ⑥ 并行收尾收在一拍：多个运行项同时消失 → 只响一声 */
+    const f = makeSandbox({
+      queue: [
+        { key: "sess:o1", type: "session", id: "o1", state: "run" },
+        { key: "sess:o2", type: "session", id: "o2", state: "run" },
+      ],
+    });
     f.sb.dshRunAllDoneCheck();
-    ok(f.events.length === 0, "距上一声全局音不足 3 秒（并行收尾的余波）→ 不响");
-    /* ⑨ 后端音视频还在途（队列非空）→ 不响 */
-    const g = makeSandbox({ queue: [{ key: "media:m1", type: "media", state: "wait" }] });
+    f.sb.setQueue([]);
+    f.sb.dshRunAllDoneCheck(); /* 队列刚空那一拍：起算确认窗 */
+    f.clock.now += 4000;
+    f.sb.dshRunAllDoneCheck();
+    ok(
+      f.events.length === 1 && f.events[0] === "final",
+      "并行收尾的多项一起完成 → 只响一声最终音（实际 " + JSON.stringify(f.events) + "）",
+    );
+    /* ⑦ 刚响过（同一刻的余波）→ 不叠响，但账本照清 */
+    const g = makeSandbox({ queueRanAt: "1", doneSoundAt: 1000000 });
+    g.clock.now = 1000000 + 1500;
     g.sb.dshRunAllDoneCheck();
-    ok(g.events.length === 0 && g.sb.S._queueIdleAt === 0, "队列里还有排队中的后端生成 → 不响，空闲窗口作废");
-    /* ⑩ 来源接线：面板刷新（不传快照）+ 智能运行收尾各调一次 */
+    ok(g.events.length === 0, "1.5 秒内刚响过完成音 → 最终音不叠响（并行收尾的余波）");
+    /* ⑧ 队列空之后的判定不需要任何常驻心跳 */
+    const h = makeSandbox({ queueRanAt: "1" });
+    h.sb.dshRunAllDoneCheck();
+    h.clock.now += 4000;
+    h.sb.dshRunAllDoneCheck();
+    ok(
+      h.events.length === 1 && h.events[0] === "final" && h.sb.__timers.size === 0,
+      "空等 4 秒（> 确认窗）即响，且 app-db.js 全程不留任何常驻定时器",
+    );
+    /* ⑨ 来源接线：面板刷新（不传快照）+ 智能运行收尾各调一次 */
     ok(
       /if \(typeof dshRunAllDoneCheck === "function"\) dshRunAllDoneCheck\(\);/.test(APP),
       "运行队列面板刷新时判一次（app.js updateRunQueuePanel）",
@@ -546,45 +566,16 @@ const slice = (src, from, to) => {
       /dshRunAllDoneCheck\(\);\s*\n\s*if \(ok\) resolve\(val\)/.test(DB),
       "dshRunOnce 收尾（finish）也判一次",
     );
-    /* ⑪ 空闲窗自己有心跳（本次修复 · 症状「长任务那一档该响时不响、会话一开始反而响」）：
-       面板心跳是「有活才跳」的（队列一空 app.js 就 stopRunQueueTicker），而这一档的前提
-       恰恰是队列空 —— 旧版因此永远等不到下一拍，只能等用户下次动手顺手判一次。 */
-    {
-      const h = makeSandbox({});
-      ok(h.sb.DSH_IDLE_TICK_MS > 0 && h.sb.DSH_IDLE_TICK_MS <= 30000, "空闲窗心跳周期是有限正数（" + h.sb.DSH_IDLE_TICK_MS + "ms）");
-      h.sb.dshRunAllDoneCheck();
-      ok(
-        Number(h.sb.S._queueIdleAt) === h.clock.now && h.sb.__timers.size === 1,
-        "队列空那一刻起算空闲窗 = 同时点亮自己那一盏心跳（不必等用户动手）",
-      );
-      h.clock.now += 301000;
-      h.pump(); /* 心跳走到 5 分钟那一拍 */
-      ok(
-        h.events.length === 1 && h.events[0] === "dingdong",
-        "空等 5 分钟：由空闲窗心跳自己判到并响全局音（不靠任何面板刷新）",
-      );
-      ok(h.sb.__timers.size === 0, "响过之后心跳自己收灯（不留常驻定时器）");
-      h.sb.dshRunAllDoneCheck();
-      ok(h.events.length === 1, "同一段空闲不重复响");
-      /* 新任务起跑 = 窗口作废 → 心跳跟着收灯 */
-      const h2 = makeSandbox({});
-      h2.sb.dshRunAllDoneCheck();
-      ok(h2.sb.__timers.size === 1, "空闲窗心跳已点亮");
-      h2.sb.dshRunLongMark("agent:as1");
-      ok(h2.sb.__timers.size === 0 && h2.sb.S._queueIdleAt === 0, "新任务起跑 → 空闲窗作废并收灯");
-      /* 队列又有活：判定里顺手收灯 */
-      const h3 = makeSandbox({});
-      h3.sb.dshRunAllDoneCheck();
-      h3.sb.setQueue([{ key: "sess:as1", type: "session", id: "as1", state: "run" }]);
-      h3.sb.dshRunAllDoneCheck();
-      ok(h3.sb.__timers.size === 0 && h3.sb.S._queueIdleAt === 0, "队列又有活 → 空闲窗作废并收灯");
-    }
+    ok(
+      /playTaskDoneSound\(true\)/.test(fnSrc("dshRunAllDoneCheck")),
+      "最终音的落点 = playTaskDoneSound(true)（1.5 倍那一档）",
+    );
   }
 
-  console.log("\n[4] 任务级短促音（真跑 dshRunQueueDoneCheck：队列前后对比）");
+  console.log("\n[4] 任务级完成音（真跑 dshRunQueueDoneCheck：队列前后对比，final=false）");
   {
     const q = (keys) => keys.map((k) => ({ key: k, type: "session" }));
-    /* ① 队列里消失一项 = 它跑完了 → 响一声短促音（任何时长都响，没有 5 分钟门槛） */
+    /* ① 队列里消失一项 = 它跑完了 → 响一声（任何时长都响；这一档的 final 必须是假） */
     const a = makeSandbox({});
     a.sb.dshRunQueueDoneCheck(); /* 先看见它在队列里 */
     ok(a.events.length === 0, "首次取数只登记快照，不发声（它是「正在跑」不是「刚跑完」）");
@@ -596,7 +587,7 @@ const slice = (src, from, to) => {
     a0.sb.dshRunQueueDoneCheck();
     ok(
       a0.events.length === 1 && a0.events[0] === "ding",
-      "只跑了 30 秒的任务跑完也响一声短促音（旧版的「跑满 5 分钟才响」已删除）",
+      "只跑了 30 秒的任务跑完就响一声完成音（final=false = 不放大；旧的「跑满 5 分钟才响」已删除）",
     );
     /* ② 并行 / 批处理同一瞬收尾：合成一声 */
     const b = makeSandbox({ queue: q(["s1", "s2", "s3"]) });
@@ -646,12 +637,12 @@ const slice = (src, from, to) => {
     d2.sb.setQueue([]);
     d2.sb.dshRunQueueDoneCheck();
     ok(d2.events.length === 0, "执行节点（毫秒级短活）→ 不发声");
-    /* ⑥ 全局那一声刚落（1.2 秒内）→ 短促音让位，只留全局声 */
-    const e = makeSandbox({ allDoneSoundAt: 1000000, queue: q(["s1"]) });
-    e.sb.dshRunQueueDoneCheck();
-    e.sb.setQueue([]);
-    e.sb.dshRunQueueDoneCheck();
-    ok(e.events.length === 0, "1.2 秒内已响过全局音 → 短促音让位（同一件收尾不叠两声）");
+    /* ⑥ 长任务音效那一档已整体删除：让位/冷却窗随之不存在（同一瞬只可能由队列对比发声） */
+    ok(
+      !/DSH_DONE_SOUND_DEDUP_MS|_allDoneSoundAt/.test(DB) &&
+        !/lastAll|playAllDoneSound/.test(fnSrc("dshRunQueueDoneCheck")),
+      "任务级判定不再看「全局音刚落就让位」那一套（两档让位窗已随长任务音效删除）",
+    );
     /* ⑦ 「行换了键」≠「跑完了」（本次修复 · 用户症状「会话开始时会错误地触发一个音效」）*/
     /* ⑦.1 已暂停行：点「继续」时先清暂停位、运行行还没出现 → 旧版把这一行的消失当完成 */
     const p1 = makeSandbox({
@@ -706,7 +697,7 @@ const slice = (src, from, to) => {
     );
   }
 
-  console.log("\n[5] WebAudio 兜底音色：两档频率 / 时长 / 音量尺互不相同");
+  console.log("\n[5] WebAudio 发声：同一把音色（E5→A5）+ 收尾那一档 1.5 倍音量");
   {
     const mkAc = (notes, gains, stops) => ({
       state: "running",
@@ -742,99 +733,96 @@ const slice = (src, from, to) => {
     const gains = [];
     const stops = [];
     const ac = mkAc(notes, gains, stops);
-    const hostCalls = [];
-    /* alertHost:false = 桥不在 / 派发失败 → 真跑 WebAudio 兜底那一段（断言音色与音量尺） */
     const { sb } = makeSandbox({
-      alertHost: false,
-      alertCalls: hostCalls,
       window: { AudioContext: function () { return ac; } },
     });
+    /* ① 普通完成音（final 缺省 = 假） */
     sb.builtinDoneDing();
     const hz = notes.map((o) => o.frequency.value);
-    ok(hz.length === 2, "任务级完成音：两个振荡器 = 短促双音");
-    ok(hz[0] === 659.25 && hz[1] === 880, "任务级完成音 = E5 → A5（原来的短促音，未改）");
+    ok(hz.length === 2, "完成音：两个振荡器 = 短促双音");
+    ok(hz[0] === 659.25 && hz[1] === 880, "完成音 = E5 → A5（原来的短促音，未改）");
     const span = (arr) => Math.max.apply(null, arr.map((p) => p[1])) - Math.min.apply(null, arr.map((p) => p[0]));
-    ok(span(stops) > 0.3 && span(stops) < 0.5, "任务级总长 ≈0.4 秒，实际 " + span(stops).toFixed(2) + "s");
-    /* 全局那一档的 WebAudio 兜底音色：三音上行 + 末音余韵。
-       注意**不能在这里调 builtinDingDong()** —— 它的真源是随包 WAV（playAllDoneWav →
-       allDoneWavBuffer 是异步的），同步断言拿不到那一拍；这里直接走兜底的 public 实现
-       playBuiltinTones，真源与兜底的分派顺序由下面的静态断言钉住。 */
+    ok(span(stops) > 0.3 && span(stops) < 0.5, "完成音总长 ≈0.4 秒，实际 " + span(stops).toFixed(2) + "s");
+    const normalTop = Math.max.apply(null, gains);
+    ok(Math.abs(normalTop - 0.119) < 0.005, "35% 滑杆 → 普通完成音峰值幅度 ≈0.12");
+    /* ② 同一把音色，final=true = 收尾那一档：频率一个不差，只有音量是 1.5 倍 */
     notes.length = 0;
     gains.length = 0;
     stops.length = 0;
-    sb.playBuiltinTones(sb.DONE_TONE_DINGDONG, sb.DONE_DECAY_DINGDONG, sb.DONE_TAIL_DINGDONG);
+    sb.builtinDoneDing(true);
     const hz2 = notes.map((o) => o.frequency.value);
     ok(
-      hz2.length === 3 && hz2[0] === 1046.5 && hz2[1] === 1318.51 && hz2[2] === 1567.98,
-      "全局音 = 三音上行 C6 → E6 → G6（与任务级不再共用同一把音色）",
+      hz2.length === 2 && hz2[0] === 659.25 && hz2[1] === 880,
+      "收尾那一档是用**同一把音色**（E5 → A5），不是另一把三音上行",
+    );
+    const finalTop = Math.max.apply(null, gains);
+    ok(
+      Math.abs(finalTop - normalTop * 1.5) < 0.005,
+      "收尾那一档峰值 = 普通档 × 1.5（实际 " + normalTop.toFixed(3) + " → " + finalTop.toFixed(3) + "）",
     );
     ok(
-      span(stops) > 0.8 && span(stops) < 1.1,
-      "全局音总长 ≈0.86 秒（含末音余韵），明显长于任务级 0.42 秒，实际 " + span(stops).toFixed(2) + "s",
+      Math.abs(span(stops) - 0.42) < 0.12,
+      "收尾那一档时长不变（还是那一声，只是更响），实际 " + span(stops).toFixed(2) + "s",
     );
-    ok(
-      hostCalls.some((c) => c.mode === "ding"),
-      "任务级那一档派给主进程的 mode = ding",
-    );
-    /* 全局那一档的派发：桥在时 alertViaHost 立刻接住（同步路径，不碰 WAV） */
-    {
-      const { sb: host } = makeSandbox({ alertCalls: hostCalls });
-      host.builtinDingDong();
-      ok(
-        hostCalls.some((c) => c.mode === "dingdong"),
-        "全局那一档派给主进程的 mode = dingdong（两档 mode 不同，主进程据此取两把不同音色）",
-      );
-    }
-    /* 全局那一档的真源顺序：主进程 → 随包 WAV（playAllDoneWav）→ 解不出才落回三音合成 */
-    {
-      const dd = fnSrc("builtinDingDong");
-      ok(
-        /alertViaHost\("dingdong"/.test(dd) && /playAllDoneWav\(/.test(dd) && /allDoneWavBuffer\(\)/.test(dd),
-        "builtinDingDong：先派主进程，再放随包 all-done.wav，最后才落回合成的三音上行",
-      );
-      ok(
-        /DONE_TONE_DINGDONG/.test(dd) && /sounds\/all-done\.wav/.test(DB),
-        "all-done.wav 是全局档的真源（三音表只当读不到 / 解不开时的兜底）",
-      );
-      ok(
-        /function playAllDoneWav\(amp\)/.test(DB) && /function allDoneWavBuffer\(\)/.test(DB),
-        "两条 WAV 通道都是真函数（主进程读盘 / WebAudio 兜底共用同一份资源）",
-      );
-    }
-    /* 音量：35% ≈ 0.119，100% = 0.34，0% 静音（两档同一把尺） */
-    notes.length = 0;
-    gains.length = 0;
-    sb.builtinDoneDing();
-    ok(Math.abs(Math.max.apply(null, gains) - 0.119) < 0.005, "35% 时峰值幅度 ≈0.12");
-    const { sb: loud } = makeSandbox({
+    /* ③ 滑杆拉满 100%：普通档 0.34；收尾档本应 0.51，夹到安全上限 0.85 之下仍不破音 */
+    const loud = makeSandbox({
       dsh: { doneSoundVolume: 100 },
-      alertHost: false,
       window: { AudioContext: function () { return ac; } },
-    });
+    }).sb;
     gains.length = 0;
     loud.builtinDoneDing();
-    const loudTop = Math.max.apply(null, gains);
+    const loudNormal = Math.max.apply(null, gains);
     gains.length = 0;
-    loud.playBuiltinTones(loud.DONE_TONE_DINGDONG, loud.DONE_DECAY_DINGDONG, loud.DONE_TAIL_DINGDONG);
+    loud.builtinDoneDing(true);
+    const loudFinal = Math.max.apply(null, gains);
+    ok(Math.abs(loudNormal - 0.34) < 0.005, "滑杆拉满 → 普通完成音幅度 0.34");
     ok(
-      Math.abs(loudTop - 0.34) < 0.005 && Math.abs(Math.max.apply(null, gains) - 0.34) < 0.005,
-      "滑杆拉满 100% → 两档内置音幅度都是 0.34（同一把音量尺）",
+      Math.abs(loudFinal - 0.51) < 0.005 && loudFinal < 1,
+      "滑杆拉满 → 收尾那一档 0.51（0.34×1.5，仍在 1.0 满幅之下，不削波）",
     );
-    const { sb: mute } = makeSandbox({
+    /* ④ 静音与边界值：滑杆 0% 一个音都不发 */
+    const mute = makeSandbox({
       dsh: { doneSoundVolume: 0 },
-      alertHost: false,
       window: { AudioContext: function () { return ac; } },
-    });
+    }).sb;
     notes.length = 0;
     mute.builtinDoneDing();
-    mute.builtinDingDong();
-    mute.playBuiltinTones(mute.DONE_TONE_DINGDONG, mute.DONE_DECAY_DINGDONG, mute.DONE_TAIL_DINGDONG);
-    ok(notes.length === 0, "滑杆 0% → 两档都不发一个音（静音，但开关仍算开）");
+    mute.builtinDoneDing(true);
+    ok(notes.length === 0, "滑杆 0% → 普通档与收尾档都不发一个音（静音，但开关仍算开）");
     ok(mute.doneSoundVolumePct() === 0, "0 是合法值（不被当成「没设过」回落 35）");
-    const { sb: bad } = makeSandbox({ dsh: { doneSoundVolume: "abc" } });
+    const bad = makeSandbox({ dsh: { doneSoundVolume: "abc" } }).sb;
     ok(bad.doneSoundVolumePct() === 35, "非法值回落缺省 35");
-    const { sb: over } = makeSandbox({ dsh: { doneSoundVolume: 500 } });
+    const over = makeSandbox({ dsh: { doneSoundVolume: 500 } }).sb;
     ok(over.doneSoundVolumePct() === 100, "越界值（>100）夹到 100%，不放大到爆音");
+    ok(
+      Math.abs(bad.doneSoundGain(true) - Math.min(0.85, (35 / 100) * 0.34 * 1.5)) < 1e-9 &&
+        over.doneSoundGain(true) === 0.51,
+      "doneSoundGain(true) 在缺省 / 越界两档上都算得出 1.5 倍（同一把尺，单点封装）",
+    );
+    /* ⑤ 自定义音频文件：<audio>.volume 普通 0.5 / 收尾 0.75（= 0.5 × 1.5）。
+       注意 Audio 必须挂在**沙箱自身**（vm 的全局对象）上，只挂进 window 拿不到裸名 Audio。 */
+    const vols = [];
+    class FakeAudio {
+      constructor() {
+        this.volume = 0;
+      }
+      play() {
+        vols.push(this.volume);
+        return Promise.resolve();
+      }
+    }
+    const audioSb = makeSandbox({
+      window: { api: { toFileUrl: (p) => "file:///" + p } },
+      extraGlobals: { Audio: FakeAudio },
+    }).sb;
+    ok(audioSb.playDoneSoundFile("C:/tmp/x.wav") === true, "设了自定义文件 → 播它（返回 true，不走内置音）");
+    audioSb.playDoneSoundFile("C:/tmp/x.wav", true);
+    ok(
+      vols.length === 2 && vols[0] === 0.5 && vols[1] === 0.75,
+      "自定义音效文件：普通档 0.5 / 收尾档 0.75（1.5 倍同一把尺，页面 <audio> 不会溢出）实际 " +
+        JSON.stringify(vols),
+    );
+    ok(audioSb.playDoneSoundFile("") === false, "没设自定义文件 → 返回 false（调用方落回内置音）");
   }
 
   console.log("\n[6] 接线与设置：两档分派 / 自定义文件只管短促音 / 面板勾子 / 滑杆");
@@ -844,33 +832,37 @@ const slice = (src, from, to) => {
       "done 分支里的「跑满 5 分钟才响」门槛已删除（任务级判定改走队列对比）",
     );
     ok(
-      /function playTaskDoneSound\(\) \{[\s\S]{0,400}?if \(!playDoneSoundFile\(file\)\) builtinDoneDing\(\);/.test(fnSrc("playTaskDoneSound")),
-      "playTaskDoneSound()：自定义文件优先，否则内置短促音（短促音那一档的替身）",
+      /function playTaskDoneSound\(final\) \{[\s\S]{0,400}?if \(!playDoneSoundFile\(file, final\)\) builtinDoneDing\(final\);/.test(
+        fnSrc("playTaskDoneSound"),
+      ),
+      "playTaskDoneSound(final)：自定义文件优先，否则内置音；final 一路透传（两档共用一条派发）",
     );
     ok(
-      /function playAllDoneSound\(\) \{[\s\S]{0,260}?builtinDingDong\(\);/.test(fnSrc("playAllDoneSound")) &&
-        !/playDoneSoundFile/.test(fnSrc("playAllDoneSound")),
-      "playAllDoneSound()：全局音**不看自定义文件**，固定内置三音上行（否则两档又变成同一个声音）",
+      !/function playAllDoneSound/.test(DB) && !/function builtinDingDong/.test(DB),
+      "全局音那两档派发函数已删除（不留空壳）",
     );
     ok(
-      /function builtinDoneDing\(\) \{/.test(DB) && /function builtinDingDong\(\) \{/.test(DB),
-      "两档内置音各是真函数（设置试听 / 主进程派发都走它们）",
+      /function builtinDoneDing\(final\) \{/.test(DB) && /function playDoneSoundFile\(file, final\) \{/.test(DB),
+      "内置音与自定义文件都收 final 参数（唯一分档点）",
     );
     ok(
-      /function previewDoneSoundVolume\(\) \{\s*\n\s*builtinDingDong\(\);\s*\n\}/.test(DB),
-      "previewDoneSoundVolume 是真函数（设置里调音量就地试听全局那一声）",
+      /function previewDoneSoundVolume\(\) \{\s*\n\s*builtinDoneDing\(true\);\s*\n\}/.test(DB),
+      "previewDoneSoundVolume 试听的是收尾那一档（1.5 倍）—— 用户听到的就是真实响度",
+    );
+    ok(
+      /previewDoneSound\(\s*\n?\s*[\s\S]{0,240}?true,/.test(SETTINGS),
+      "设置里「试听」按钮也按收尾那一档响（传 true）",
     );
     ok(
       /S\._doneSoundAt = String\(Date\.now\(\)\);/.test(fnSrc("playTaskDoneSound")),
-      "任务级短音落点记 _doneSoundAt（并行收尾合并 / 全局音让位都据此判）",
+      "完成音落点记 _doneSoundAt（并行收尾合并 / 最终音冷却都据此判）",
     );
     ok(
-      /S\._allDoneSoundAt = String\(Date\.now\(\)\);/.test(fnSrc("playAllDoneSound")),
-      "全局音落点记 _allDoneSoundAt（同一段空闲不叠响）",
-    );
-    ok(
-      /dshRunQueueIdleMark\(\);\s*\n\s*if \(!S\._queueIdleAt\) return;/.test(fnSrc("dshRunAllDoneCheck")),
-      "判定里先起算空闲窗口，再按空闲时长判两档",
+      /if \(!S\._queueRanAt\) return;/.test(fnSrc("dshRunAllDoneCheck")) &&
+        /const idleMs = Date\.now\(\) - Number\(S\._queueIdleAt\);/.test(fnSrc("dshRunAllDoneCheck")) &&
+        /if \(idleMs < DSH_QUEUE_IDLE_CONFIRM_MS\) return;/.test(fnSrc("dshRunAllDoneCheck")) &&
+        /playTaskDoneSound\(true\);/.test(fnSrc("dshRunAllDoneCheck")),
+      "判定：这一段活跑过东西 → 队列空起算确认窗 → 窗过即响最终音（不再看时长）",
     );
     /* 设置：滑杆 + 即时写盘 + 试听 + 收口缺省 */
     ok(
@@ -894,29 +886,45 @@ const slice = (src, from, to) => {
     ok(/doneSoundVolume: 35,/.test(SETTINGS) && /doneSoundVolume: 35,/.test(BOOT), "设置收口与启动缺省都补 35");
   }
 
-  console.log("\n[7] 词条中英齐备 + dsh 文档口径（5 分钟 / 两档不同音色）");
+  console.log("\n[7] 词条中英齐备 + dsh 文档口径（一把音色 / 1.5 倍 / 无时长门槛）");
   {
     /* 文案真源 = app-settings.js 里那一句 I18n.t("…")，测试从源码里取，避免两处各写一份 */
     const m = SETTINGS.match(/I18n\.t\(\s*\n\s*"([^"]*任务完成音效[^"]*)"/);
     const zhKey = m ? m[1] : "";
     ok(
-      !!zhKey && /叮咚/.test(zhKey) && /5 分钟/.test(zhKey) && /任何一件任务/.test(zhKey),
-      "设置开关文案写明新口径（任何一件任务跑完响短促音 / 空满 5 分钟响全局音）",
+      !!zhKey && /叮咚/.test(zhKey) && /1\.5 倍/.test(zhKey) && /任何一件任务/.test(zhKey) && /所有任务都完成/.test(zhKey),
+      "设置开关文案写明新口径（任何一件任务跑完响一声 / 所有任务都完成时同一声音 1.5 倍）",
     );
-    ok(!/连续运行 3 分钟/.test(zhKey), "文案里不再有被删掉的「连续运行 3 分钟」说法");
+    ok(
+      !/5 分钟/.test(zhKey) && !/三音上行/.test(zhKey) && !/两档/.test(zhKey),
+      "文案里不再有 5 分钟门槛 / 三音上行 / 两档音色那套旧说法",
+    );
     ok(zhKey && I18N.indexOf('"' + zhKey + '"') >= 0, "i18n 有完成音效新文案（中文键）");
     ok(
-      zhKey && I18N.indexOf('"' + zhKey + '":') >= 0 && /ding-dong/.test(I18N),
-      "i18n 有对应英文译文（含 ding-dong）",
+      zhKey && I18N.indexOf('"' + zhKey + '":') >= 0 && /1\.5/.test(I18N),
+      "i18n 有对应英文译文（含 1.5×）",
     );
-    const volKey = "完成音效音量（两档内置音共用；0 = 静音）";
-    ok(I18N.indexOf('"' + volKey + '":') >= 0, "i18n 有音量滑杆 title 的英文译文");
     ok(
-      I18N.indexOf("自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；只替换「任务完成」那一档的短促音，全部跑完的全局提示音固定用内置音）") >= 0,
-      "i18n 新增自定义文件的限定说明（只替换短促音那一档）",
+      I18N.indexOf("完成音效音量（两档共用；收尾那一档再乘 1.5；0 = 静音）") >= 0,
+      "i18n 已同步音量滑杆 title 的新中文键",
     );
-    ok(/doneSoundVolume/.test(DESIGN) && /三音上行/.test(DESIGN) && /5 分钟/.test(DESIGN), "dsh/DESIGN.md 配置样例改成两档不同音色 + 5 分钟口径");
-    ok(/三音上行/.test(README) && /队列彻底为空/.test(README) && /5 分钟/.test(README), "dsh/README.md 说明两种音与「队列彻底为空满 5 分钟」口径");
+    ok(
+      I18N.indexOf("完成音效音量（两档内置音共用；0 = 静音）") < 0 &&
+        I18N.indexOf("两档：任何一件任务跑完") < 0,
+      "旧的两条词条（两档内置音 / 5 分钟口径）已从 i18n 删除",
+    );
+    ok(
+      I18N.indexOf("自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；两档都用它：任何一件任务跑完的那一声，以及全部完成时放大 1.5 倍的那一声）") >= 0,
+      "i18n 已同步自定义文件的说明（两档都用它，收尾那一档放大 1.5 倍）",
+    );
+    ok(
+      /doneSoundVolume/.test(DESIGN) && /1\.5 倍/.test(DESIGN) && /已移除/.test(DESIGN),
+      "dsh/DESIGN.md 配置样例已改成「一把音色 + 1.5 倍 + 长任务音效已移除」",
+    );
+    ok(
+      /1\.5 倍/.test(README) && /队列彻底为空/.test(README) && !/三音上行\(C6/.test(README),
+      "dsh/README.md 说明两档音量与「队列彻底为空即响」，且不再把三音上行写成现状",
+    );
     ok(
       !/dshRunLongMsNow/.test(DB) && !/dshRunLongMsNow/.test(APP),
       "旧的「按队列里那几条算时长」函数已下线（那正是提前响的根源）",

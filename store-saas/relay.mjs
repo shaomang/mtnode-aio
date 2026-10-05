@@ -83,7 +83,9 @@ const DEFAULT_UPSTREAM_LIST = [
   },
   {
     id: "image",
-    name: "APIYI(GPT-Image)",
+    /* 显示名只作管理台可读标签；这一路的上游是第三方图像聚合服务（地址与 Key 由部署侧
+       用 MTNODE_RELAY_IMAGE_BASE / MTNODE_RELAY_IMAGE_KEY 给，见 relay.env.example）。 */
+    name: "第三方图像聚合",
     kind: "image",
     base: "https://api.apiyi.com/v1",
     key: "",
@@ -92,6 +94,11 @@ const DEFAULT_UPSTREAM_LIST = [
     timeoutMs: 600000,
   },
 ];
+
+/* 鲸圆币汇率（1 币 = ¥0.02）：客户端把中转费用按币显示靠它换算。
+   它是**中转侧的计费单位口径**，所以由中转站随快照下发（唯一真源），
+   客户端 renderer/app-whalecoin.js 里的同值只作模块缺席时的兜底。 */
+const COIN_YUAN = 0.02;
 
 const DEFAULT_QUOTA = { accountPerMin: 60, imagePerMin: 10, ipPerMin: 120 };
 const USAGE_KEEP = 5000; // relayUsage 全局保留条数（明细只用于自查与排查，不参与对账）
@@ -667,7 +674,12 @@ export function createRelay(deps) {
   /** 该用户当前可用的模型清单（余额 ≤ 0 时为空数组：与门禁口径一致）。
    *  kind = **通道形态** text / image（不是上游 id）：客户端「MTNode 中转服务」这一张
    *  只读服务商卡靠它把每个模型分到文本 / 图像节点，别再把上游 id 当形态用
-   *  （生产配置里上游 id 是 deepseek / image，客户端判不出来）。 */
+   *  （生产配置里上游 id 是 deepseek / image，客户端判不出来）。
+   *
+   *  price = **这个模型真正会按它扣费的价目**（normPrice 归一后的那一份）：客户端
+   *  本地计价（Token 统计里的「中转按币」）与这里同源 —— 后台改价 / 改高峰倍率，
+   *  客户端跟着变，不必发版。字段见 normPrice：文本 cacheHit / cacheMiss / output
+   *  （元每百万 token）+ peakMultiplier（高峰倍率），图像 perImageYuan（元/张）。 */
   function userModels(user) {
     const fresh = (db.users || []).find((u) => u.id === (user && user.id)) || user;
     const total = totalCentsOf(fresh);
@@ -680,6 +692,7 @@ export function createRelay(deps) {
           id: m.id,
           kind: up.kind === "image" ? "image" : "text",
           upstream: m.upstream,
+          price: Object.assign({}, cfg.prices[m.id] || normPrice({}, m.upstream)),
         };
       });
   }
@@ -1176,6 +1189,107 @@ export function createRelay(deps) {
     };
   }
 
+  /* ---------- 管理台：调用流水的筛选与统计（**只读**：不碰计费 / 扣费 / 写入 / 保留策略） ----------
+     为什么要在服务端聚合：relayUsage 全局只留最近 USAGE_KEEP 条、管理台一次最多取 USAGE_QUERY_MAX 条，
+     前端按 500 条明细自己加出来的「今日 / 近 7 天」会在忙时偏小 —— 统计口径必须在全量记录上算。
+     未计费口径：明细里**实扣为 0** 的那几次（余额不足被夹紧 / 零费用）。
+     上游没回 usage 的调用**不写用量记录**（只进服务端日志），所以统计里没有它们，界面要写明这一点。
+     时间窗口按**服务器本地时区**的自然日（与「换 Key 每日 5 次」同一口径）。 */
+
+  const USAGE_QUERY_MAX = 1000;
+
+  /** 一组用量记录 → 统计口径（内部字段是分，出接口一律换成元）。 */
+  function usageAgg(rows) {
+    let promptTokens = 0;
+    let outputTokens = 0;
+    let images = 0;
+    let chargedCents = 0;
+    let costCents = 0;
+    let shortfallCents = 0;
+    let unbilled = 0;
+    let textCalls = 0;
+    let imageCalls = 0;
+    for (const r of rows) {
+      promptTokens += Number(r.promptTokens) || 0;
+      outputTokens += Number(r.outputTokens) || 0;
+      images += Number(r.images) || 0;
+      chargedCents += Number(r.chargedCents) || 0;
+      costCents += Number(r.costCents) || 0;
+      shortfallCents += Number(r.shortfallCents) || 0;
+      if (r.kind === "image") imageCalls += 1;
+      else textCalls += 1;
+      if (!(Number(r.chargedCents) > 0)) unbilled += 1;
+    }
+    return {
+      calls: rows.length,
+      textCalls,
+      imageCalls,
+      promptTokens,
+      outputTokens,
+      images,
+      unbilled,
+      chargedYuan: yuanOfCents(chargedCents),
+      costYuan: yuanOfCents(costCents),
+      shortfallYuan: yuanOfCents(shortfallCents),
+    };
+  }
+
+  /** 三档统计窗口（全站口径）：key → [标签, 往前几天]。 */
+  const USAGE_WINDOWS = [["today", "今日", 0], ["7d", "近 7 天", 6], ["30d", "近 30 天", 29]];
+
+  /** 某档窗口的起点（本地自然日 00:00，往前 N 天）。 */
+  function windowFrom(key) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    const hit = USAGE_WINDOWS.find((w) => w[0] === key);
+    return hit ? d.getTime() - hit[2] * 86400000 : 0;
+  }
+
+  /**
+   * 管理台调用流水：筛选 + 明细 + 统计一次给全（只读）。
+   * @param {{window?:string,from?:string|number,to?:string|number,model?:string,userId?:string,kind?:string,limit?:string|number}} q
+   * @returns {{ok:true,window:string,from:number,to:number,limit:number,matched:number,
+   *            scope:object,windows:object[],models:string[],items:object[]}}
+   *   · items     = 命中记录里**最近 limit 条**（倒序，元口径）
+   *   · scope     = 本次筛选口径的合计（列表上方那行「本次筛选合计」）
+   *   · windows   = 今日 / 近 7 天 / 近 30 天的**全站**合计（卡片口径，不受筛选影响）
+   *   · models    = 明细里出现过的模型 id（界面下拉的候选，与当前上架清单合并）
+   */
+  function usageQuery(q) {
+    const src = usageList();
+    const o = q && typeof q === "object" ? q : {};
+    const from = Number(o.from) > 0 ? Number(o.from) : windowFrom(String(o.window || ""));
+    const to = Number(o.to) > 0 ? Number(o.to) : Date.now();
+    const model = String(o.model || "");
+    const user = String(o.userId || "");
+    const kind = String(o.kind || "");
+    const limit = Math.max(1, Math.min(USAGE_QUERY_MAX, Math.floor(Number(o.limit) || 200)));
+    const hit = src.filter((r) => {
+      const at = Number(r.at) || 0;
+      if (at < from || at > to) return false;
+      if (model && r.model !== model) return false;
+      if (kind && r.kind !== kind) return false;
+      // 账号筛选用精确匹配：账号 ID 或用户名（不做子串匹配，避免同名账号串账）
+      if (user && r.userId !== user && r.username !== user) return false;
+      return true;
+    });
+    return {
+      ok: true,
+      window: String(o.window || ""),
+      from,
+      to,
+      limit,
+      matched: hit.length,
+      scope: usageAgg(hit),
+      windows: USAGE_WINDOWS.map(([key, label]) => {
+        const wf = windowFrom(key);
+        return Object.assign({ key, label, from: wf }, usageAgg(src.filter((r) => (Number(r.at) || 0) >= wf)));
+      }),
+      models: Array.from(new Set(src.map((r) => r.model).filter(Boolean))).sort(),
+      items: hit.slice(-limit).reverse().map(usagePublic),
+    };
+  }
+
   /** 管理台挂进来的那组接口（server.mjs 的 /api/admin/relay/* 与 /api/relay/me 直调）。 */
   const adminApi = {
     describe: describeAdmin,
@@ -1183,8 +1297,14 @@ export function createRelay(deps) {
     listUpstreamModels: adminListUpstreamModels,
     issueTestKey: issueTestKey,
     userModels: userModels,
+    /* 峰谷判据的两半：客户端本地对账要用与云端**完全相同**的公式（见 textCostYuan），
+       所以把「节假日豁免日期」与「鲸圆币汇率」也随快照一起给出去（只读、不含凭据）。 */
+    peaks: () => (cfg.peaks || []).slice(),
+    coinYuan: () => COIN_YUAN,
     audit: (limit) => auditArr().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse(),
     usage: (limit) => usageList().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse().map(usagePublic),
+    /* 调用流水的筛选 + 统计（只读，见上面 usageQuery 的口径注释）。 */
+    usageQuery: usageQuery,
     baseUrl: () => String((deps && deps.publicBase) || "").replace(/\/+$/, ""),
     reload: reload,
   };

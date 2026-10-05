@@ -108,7 +108,10 @@ console.log("\n[1] 接线与口径");
     'toast(I18n.t("粘贴板为空，请先 Ctrl+C 复制节点"), "warn")',
     "「粘贴板为空」不再在 keydown 里同步抢答（挪进入口，先看剪贴板有没有图像）",
   );
-  has(keySeg, "if (inField) {", "输入框内的分支单独处理（不介入剪贴板图像询问）");
+  /* 输入框里一律归浏览器原生粘贴（本轮改的口径：画布不再按「最近复制过节点」抢 Ctrl+V），
+     所以剪贴板图像询问窗在输入框里永远不会被唤起 */
+  has(keySeg, "if (inFieldHere) return false;", "输入框内一律归原生（不介入剪贴板图像询问）");
+  hasnt(keySeg, "if (inField) {", "旧的「输入框里按 Ctrl+V 粘节点」分支已去掉");
 
   has(APP, "function canvasPasteFromClipboard()", "入口函数存在");
   has(APP, "async function clipImageAskDialog(", "询问窗函数存在");

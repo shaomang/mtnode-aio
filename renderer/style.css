@@ -55,6 +55,10 @@
 /* 鲸圆币：金币图标与金额元件（renderer/app-whalecoin.js）；排在 wallet.css 之后，
    钱包里的档位 / 到账行等更具体的覆盖由本文件决定。 */
 @import url("./css/whalecoin.css");
+/* 打赏（renderer/app-tips.js）与评论（renderer/app-comments.js）：
+   排在钱包 / 鲸圆币之后 —— 两者都复用 .wl-btn / .wl-tier 与金币元件。 */
+@import url("./css/tips.css");
+@import url("./css/comments.css");
 /* 会话自己的浏览器：侧栏「浏览器活动」页 + 活动流 + 浏览器求助/接管卡
    （renderer/app-browser.js）；亮色覆盖在文件末尾。 */
 @import url("./css/browser.css");

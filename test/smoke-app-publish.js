@@ -237,6 +237,7 @@ async function main() {
   partRenderer();
   partPublishWindow();
   await partE2E(store);
+  await partVersionsDefault(store);
 
   feedServer.close();
   console.log("\n" + (fails ? "FAIL " + fails : "PASS") + " / " + checks + " 项断言");
@@ -336,6 +337,12 @@ function partContract() {
   ok(/--delete-version|--parent-version/.test(py), "upload-app.py：新增版本相关参数（旧参数保留）");
   const sh = read("store-saas/deploy.sh");
   ok(/apps\/\*|find .*apps/.test(sh), "deploy.sh：静态目录发布覆盖多版本子目录");
+  /* 多版本开关口径（线上事故回归）：默认必须是**开**，只有显式 0/false/no/off 才关；
+     部署收尾要有 appVersions 自检，否则下次部署漏开关没人发现。 */
+  ok(/APP_VERSIONS_OFF/.test(srv) && /"0", "false", "no", "off"/.test(srv), "server.mjs：关闭档取值集中在 APP_VERSIONS_OFF（默认开）");
+  ok(/function appVersionsOn\(\) \{\s*return !APP_VERSIONS_OFF\.has\(APP_VERSIONS_ENV\)/.test(srv), "server.mjs：appVersionsOn = 不在关闭档即开（不再要求显式设 1）");
+  ok(/apps-versions-gate/.test(sh) && /"appVersions":true/.test(sh), "deploy.sh：收尾自检 appVersions=true（关着直接报 BAD）");
+  ok(/ownMirror/.test(srv) && /fromVersionDir: false,/.test(srv), "server.mjs：版本包在盘上缺失时退回 <id>.zip 镜像（ownMirror 兜底）");
 }
 
 /* ============ [3] 渲染层：版本树真跑 + 接线 ============ */
@@ -388,7 +395,7 @@ function partRenderer() {
 
   /* 3.4 静态接线：按版本安装 / 下架重发 / 不上当的默认值 */
   const src = read("renderer/app-apps.js");
-  ok(/api\.appsInstall\(id, mode \|\| "", version \|\| ""\)/.test(src), "appsDownload 把版本号透传给 appsInstall（三参）");
+  ok(/api\.appsInstall\(id, mode \|\| "", version \|\| "", own\)/.test(src), "appsDownload 把版本号与分支作者透传给 appsInstall（四参，§十）");
   ok(/spec\.versions \|\| \[\]\)\.find\(\(v\) => v\.version === wantVersion\)/.test(read("apps-store.js")), "installApp 按版本挑 zipUrl / sha256");
   ok(/appsSetPublished/.test(src) && /\/unpublish/.test(src) && /\/publish/.test(src), "下架 / 重新发布走 POST /api/apps/:id/(un)publish");
   ok(/includeUnpublished=1/.test(src), "作者视角另拉接口（includeUnpublished=1）拿到 mine / unpublished");
@@ -416,7 +423,7 @@ function partPublishWindow() {
   const pre = read("preload.js");
   ok(/appsShotWindow/.test(pre) && /apps:\/\/|apps:shotWindow/.test(pre), "preload.js 暴露 appsShotWindow");
   ok(/appsReadZipBase64/.test(pre) && /apps:readZipBase64/.test(pre), "preload.js 暴露 appsReadZipBase64");
-  ok(/appsInstall: \(id, mode, version\)/.test(pre), "preload.js 的 appsInstall 收第三个参数 version");
+  ok(/appsInstall: \(id, mode, version, ownerId\)/.test(pre), "preload.js 的 appsInstall 收第四参 ownerId（分支，§十）");
   const main = read("main.js");
   ok(/timeoutMs/.test(main), "storeRequest 支持 timeoutMs（大包上传不按 120s 掐断）");
   const st = read("apps-store.js");
@@ -524,7 +531,10 @@ async function partE2E(store) {
       return;
     }
     const APP_ID = "smoke-pub-app";
-    const packPath = (v) => path.join(E2E_DATA, "apps", APP_ID, v + ".zip");
+    /* 同 id 多分支（docs/apps-market.md §十）：一版一包落在**分支私有**目录 apps/<id>/<作者uid>/<版本>.zip；
+       老落点 apps/<id>/<版本>.zip 仍是「同一 id 内共用」的退路（先到先得，见服务端 writeAppVersionZipPath）。 */
+    const OWNER_ID = "u_smoke";
+    const packPath = (v) => path.join(E2E_DATA, "apps", APP_ID, OWNER_ID, v + ".zip");
 
     /* 5.1 登录（写路径全部要登录） */
     const login = await api("POST", "/api/login", { username: "smoke-pub", password: PW });
@@ -543,8 +553,12 @@ async function partE2E(store) {
     );
     ok(create.status === 200 && create.data && create.data.ok, "POST /api/apps 上架成功（勾了声明）");
     ok(((create.data || {}).item || {}).version === "1.0.0", "首版 1.0.0");
-    ok(fs.existsSync(packPath("1.0.0")), "多版本布局：包落 DATA_DIR/apps/<id>/<version>.zip（真落盘）");
-    ok(fs.existsSync(path.join(E2E_DATA, "apps", APP_ID + ".zip")), "同时刷出 <id>.zip（老客户端 / 静态目录口径不变）");
+    ok(fs.existsSync(packPath("1.0.0")), "分支私有布局：包落 DATA_DIR/apps/<id>/<作者uid>/<version>.zip（真落盘，§十）");
+    ok(
+      fs.existsSync(path.join(E2E_DATA, "apps", APP_ID + "__" + OWNER_ID + ".zip")),
+      "同时刷出这一分支的镜像 <id>__<作者uid>.zip",
+    );
+    ok(fs.existsSync(path.join(E2E_DATA, "apps", APP_ID + ".zip")), "老口径镜像 <id>.zip 也在（跨分支最高版，旧链不 404）");
     const decl = readDb().appDeclarations || [];
     ok(
       decl.length === 1 && decl[0].id === APP_ID && decl[0].version === "1.0.0" && decl[0].userId === "u_smoke" && !!decl[0].ip,
@@ -578,7 +592,7 @@ async function partE2E(store) {
     const entry = (((cat.data || {}).apps) || []).find((a) => a.id === APP_ID) || {};
     ok(!!entry.id && entry.latestVersion === "2.0.0", "公开目录条目带 latestVersion");
     ok(Array.isArray(entry.versions) && entry.versions.length === 2, "公开目录条目带 versions[]（老目录无此字段时客户端退回单版）");
-    ok(entry.versions.some((v) => v.zipUrl === APP_ID + "/1.0.0.zip"), "每版自带 zipUrl = <id>/<version>.zip（静态目录一版一份包）");
+    ok(entry.versions.some((v) => v.zipUrl === APP_ID + "/" + OWNER_ID + "/1.0.0.zip"), "每版自带 zipUrl = <id>/<作者uid>/<version>.zip（分支私有包，§十）");
     const box = runRendererApps();
     const specOf = (a) => ({
       id: a.id,
@@ -654,5 +668,293 @@ async function partE2E(store) {
     try {
       fs.closeSync(logFd);
     } catch (_) {}
+  }
+}
+
+/* ============ [6] 多版本「默认开」与「显式关」 ============
+ * 线上事故回归：开关默认关时，作者在应用中心点「上传新版本」会撞 409 APP_VERSIONS_DISABLED，
+ * 客户端只把服务端那句「服务端未启用应用多版本」原样显示出来 —— 用户看到的就是它一直挂着。
+ * 这一节用两个独立实例把口径钉死：① 不设环境变量 = 默认开（追加版本可用）；
+ * ② 显式 MTNODE_APP_VERSIONS=0 = 关（仍回 409，旧口径没被悄悄改掉）；
+ * ③ 版本记录在册但那一版的包在盘上缺失 → 退回 <id>.zip 镜像，不许 404 掉老包；
+ * ④ 同 id 多分支（§十）：两个账号各占一条分支、无声明同 id 被 409 挡、owner 寻址能各下各的包。 */
+async function spawnStore(tag, env, username, users) {
+  const { spawn } = require("child_process");
+  const dir = path.join(TMP, tag);
+  const dataDir = path.join(dir, "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  /* 测试账号必须在**服务启动之前**种进 db.json（服务只在启动时载入库；起后再写文件它看不见）。
+     users 传入时按它建多个账号（同 id 多分支要两个作者）。 */
+  const accounts = Array.isArray(users) && users.length
+    ? users
+    : [{ id: "u_" + username, username: username, nickname: username }];
+  fs.writeFileSync(
+    path.join(dataDir, "db.json"),
+    JSON.stringify({
+      users: accounts.map((u) => {
+        const salt = "s-" + tag + "-" + u.username;
+        return {
+          id: u.id || "u_" + u.username,
+          username: u.username,
+          nickname: u.nickname || u.username,
+          salt,
+          pass: crypto.scryptSync("smoke-pass", salt, 32).toString("hex"),
+        };
+      }),
+    }),
+  );
+  const logPath = path.join(dir, "server.log");
+  const logFd = fs.openSync(logPath, "a");
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  /* 静态目录指到本实例自己的临时目录：否则会写到线上那台机器的 /var/www（或被本机既有的
+     静态副本干扰「包丢了要退回镜像」这条用例）。返回 webDir 供断言查静态副本。 */
+  const webDir = path.join(dir, "www");
+  fs.mkdirSync(webDir, { recursive: true });
+  const child = spawn(process.execPath, [path.join(ROOT, "store-saas", "server.mjs")], {
+    env: Object.assign(
+      {},
+      process.env,
+      { DATA_DIR: dataDir, PORT: String(port), HOST: "127.0.0.1", MTNODE_APPS_WEB_DIR: webDir },
+      env || {},
+    ),
+    stdio: ["ignore", logFd, logFd],
+  });
+  const base = "http://127.0.0.1:" + port;
+  const api = async (method, p, body, token) => {
+    const res = await fetch(base + p, {
+      method,
+      headers: Object.assign(
+        { "Content-Type": "application/json" },
+        token ? { Authorization: "Bearer " + token } : {},
+      ),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = null;
+    let text = "";
+    try {
+      text = await res.text();
+      data = text ? JSON.parse(text) : null;
+    } catch (_) {
+      data = null;
+    }
+    return { status: res.status, data, text: data ? "" : String(text || "").slice(0, 200) };
+  };
+  let up = false;
+  for (let i = 0; i < 80; i++) {
+    try {
+      const r = await fetch(base + "/api/health");
+      if (r.ok) {
+        up = true;
+        break;
+      }
+    } catch (_) {}
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!up) {
+    try {
+      console.log("  [" + tag + "] 服务端没起来，日志尾巴：" + String(fs.readFileSync(logPath, "utf8")).slice(-400).replace(/\s+/g, " "));
+    } catch (_) {}
+  }
+  const login = async (username) => {
+    const r = await api("POST", "/api/login", { username, password: "smoke-pass" });
+    return ((r.data || {}).token) || "";
+  };
+  const stop = () => {
+    try { child.kill(); } catch (_) {}
+    try { fs.closeSync(logFd); } catch (_) {}
+  };
+  return { child, base, api, login, stop, up, dataDir, webDir };
+}
+
+async function partVersionsDefault(store) {
+  console.log("[6] 多版本默认开：不设环境变量即可追加版本；显式 0 才回 409 APP_VERSIONS_DISABLED");
+  if (!exists("store-saas/server.mjs")) {
+    ok(false, "store-saas/server.mjs 存在");
+    return;
+  }
+  const on = await spawnStore("versions-default-on", {}, "on-user", [
+    { id: "u_on-user", username: "on-user", nickname: "实例①" },
+    { id: "u_branch-user", username: "branch-user", nickname: "分支作者" },
+  ]);
+  const off = await spawnStore("versions-explicit-off", { MTNODE_APP_VERSIONS: "0" }, "off-user");
+  try {
+    ok(on.up, "实例①（不设 MTNODE_APP_VERSIONS）起来了");
+    ok(off.up, "实例②（MTNODE_APP_VERSIONS=0）起来了");
+    if (!on.up || !off.up) return;
+
+    const h = await (await fetch(on.base + "/api/health")).json();
+    ok(h.appVersions === true, "不设环境变量 → /api/health 的 appVersions=true（默认开）");
+    const h2 = await (await fetch(off.base + "/api/health")).json();
+    ok(h2.appVersions === false, "显式 MTNODE_APP_VERSIONS=0 → appVersions=false（关档仍在）");
+
+    const onToken = await on.login("on-user");
+    const offToken = await off.login("off-user");
+    ok(!!onToken, "实例① 登录拿到 token");
+    ok(!!offToken, "实例② 登录拿到 token");
+    const zip = store.zipBuffer([
+      { name: "index.html", data: Buffer.from("<!doctype html><title>ver</title>", "utf8") },
+    ]);
+    const zipB64 = zip.toString("base64");
+
+    /* ① 默认开：新建即写 latestVersion，追加版本直接成功，包按多版本布局落盘 */
+    const c1 = await on.api(
+      "POST",
+      "/api/apps",
+      { id: "ver-default", title: "默认开", version: "1.0.0", zipBase64: zipB64, acceptDeclaration: true },
+      onToken,
+    );
+    ok(c1.status === 200 && ((c1.data || {}).item || {}).latestVersion === "1.0.0", "默认开：POST /api/apps 首版即写 latestVersion");
+    const a1 = await on.api(
+      "POST",
+      "/api/apps/ver-default/versions",
+      { version: "1.0.1", zipBase64: zipB64, acceptDeclaration: true },
+      onToken,
+    );
+    ok(a1.status === 200 && (a1.data || {}).ok === true, "默认开：POST /api/apps/:id/versions 直接成功（不再是 409）");
+    ok(
+      fs.existsSync(path.join(on.dataDir, "apps", "ver-default", "u_on-user", "1.0.1.zip")),
+      "默认开：新版包落 apps/ver-default/<作者uid>/1.0.1.zip（分支私有布局，§十）",
+    );
+    const tree = await on.api("GET", "/api/apps/ver-default/versions");
+    ok((((tree.data || {}).versions) || []).length === 2, "默认开：版本树两版（GET /api/apps/:id/versions）");
+
+    /* ② 显式关：同一请求回 409，且不留半成品 */
+    const c2 = await off.api(
+      "POST",
+      "/api/apps",
+      { id: "ver-off", title: "显式关", version: "1.0.0", zipBase64: zipB64, acceptDeclaration: true },
+      offToken,
+    );
+    ok(c2.status === 200, "显式关：新建仍可用（旧口径）");
+    const a2 = await off.api(
+      "POST",
+      "/api/apps/ver-off/versions",
+      { version: "1.0.1", zipBase64: zipB64, acceptDeclaration: true },
+      offToken,
+    );
+    ok(a2.status === 409 && (a2.data || {}).code === "APP_VERSIONS_DISABLED", "显式关：追加版本仍回 409 APP_VERSIONS_DISABLED");
+    ok(!fs.existsSync(path.join(off.dataDir, "apps", "ver-off", "1.0.1.zip")), "显式关：被拒的版本包没有落盘");
+
+    /* ③ 兼容退路：版本记录在册但这一分支的包在盘上缺失 → 退回**这一分支的镜像**，不 404。
+       同 id 多分支（§十）下这条退路只认「自己那一支」的镜像 —— 跨分支共享的 <id>.zip 是
+       最高版，拿它兜底会把别人的包当成这一版下发（见 locateAppZip 的逐层口径）。 */
+    const c3 = await on.api(
+      "POST",
+      "/api/apps",
+      { id: "ver-fallback", title: "退路", version: "1.0.0", zipBase64: zipB64, acceptDeclaration: true },
+      onToken,
+    );
+    ok(c3.status === 200, "造一条有版本记录的应用（ver-fallback@1.0.0）");
+    const vpack = path.join(on.dataDir, "apps", "ver-fallback", "u_on-user", "1.0.0.zip");
+    const mirror = path.join(on.dataDir, "apps", "ver-fallback__u_on-user.zip");
+    ok(fs.existsSync(vpack) && fs.existsSync(mirror), "一版一包与这一分支的镜像 <id>__<作者uid>.zip 都在");
+    /* 两处都要删掉才算「包真的丢了」：数据目录的落点 + 静态目录的发布副本
+       （appVersionZipPathVia 会先看数据目录，zipUrl 解析还会看静态目录）。 */
+    fs.unlinkSync(vpack);
+    /* 静态目录里的发布副本也要删掉，才算「这一版自己的包真的没了」 */
+    try { fs.unlinkSync(path.join(on.webDir, "ver-fallback", "u_on-user", "1.0.0.zip")); } catch (_) {}
+    const f1 = await on.api("GET", "/api/apps/ver-fallback/file");
+    ok(f1.status === 200 && (f1.data || {}).version === "1.0.0", "包丢了但镜像在：GET /file 仍 200（退回镜像，不 404）");
+    ok(
+      f1.data && (f1.data || {}).zipUrl === "ver-fallback.zip" &&
+        Buffer.from((f1.data || {}).base64 || "", "base64").length === zip.length,
+      "包丢了但镜像在：如实回老口径 zipUrl=<id>.zip 与真实字节（§十的退路）",
+    );
+    const f2 = await on.api("GET", "/api/apps/ver-fallback/file?version=1.0.0");
+    ok(f2.status === 200, "要的正是它自己那版 → 同样退回镜像");
+    const f3 = await on.api("GET", "/api/apps/ver-fallback/file?version=9.9.9");
+    ok(f3.status === 404 && (f3.data || {}).code === "VERSION_NOT_FOUND", "要别的版本 → 仍 404（绝不拿镜像冒充别的版）");
+
+    /* ④ 同 id 多分支（docs/apps-market.md §十）：两个作者各占一条分支 */
+    const A2 = await on.login("on-user");
+    const B2 = await on.login("branch-user");
+    ok(!!A2 && !!B2, "两个账号都拿到 token（主干作者 + 分支作者）");
+    const bzip = store.zipBuffer([
+      { name: "index.html", data: Buffer.from("<!doctype html><title>B</title>", "utf8") },
+    ]);
+    const mk = await on.api(
+      "POST",
+      "/api/apps",
+      { id: "shared-id", title: "多分支", version: "1.0.0", zipBase64: zipB64, acceptDeclaration: true },
+      A2,
+    );
+    ok(mk.status === 200, "A 先建 id=shared-id（这条就是主干）");
+    /* 本轮共识（docs/apps-market.md §11.3）：填别人的 id **不再 409**，服务端自动落来源声明
+       （forkOf = { id: 同 id, ownerId: 父分支作者 }，父 = 主干，或客户端显式点名的那条）——
+       用户口径「只要基于一个应用开发都应当是同一个 id」「填别人的 id = 就是那个应用的分支」。 */
+    const noDecl = await on.api(
+      "POST",
+      "/api/apps",
+      { id: "shared-id", title: "多分支 B", version: "1.0.0", zipBase64: bzip.toString("base64"), acceptDeclaration: true },
+      B2,
+    );
+    ok(
+      noDecl.status === 200 &&
+        String((((noDecl.data || {}).item || {}).forkOf || {}).ownerId) === "u_on-user",
+      "B 不声明来源传同一个 id → 200 且**自动落**来源声明（指向主干作者，不再 409 APP_EXISTS）",
+    );
+    const again = await on.api(
+      "POST",
+      "/api/apps",
+      {
+        id: "shared-id",
+        title: "多分支 B",
+        version: "1.0.0",
+        zipBase64: bzip.toString("base64"),
+        acceptDeclaration: true,
+        forkOf: { id: "shared-id", ownerId: "u_on-user" },
+      },
+      B2,
+    );
+    ok(
+      again.status === 409 && (again.data || {}).code === "BRANCH_EXISTS",
+      "B 第二次传同一个 id（自己名下已有这条分支）→ 409 BRANCH_EXISTS（提示改用追加版本）",
+    );
+    ok(
+      fs.existsSync(path.join(on.dataDir, "apps", "shared-id", "u_branch-user", "1.0.0.zip")) &&
+        fs.existsSync(path.join(on.dataDir, "apps", "shared-id__u_branch-user.zip")),
+      "B 的包落在分支私有目录与被刷新的分支镜像里",
+    );
+    const doc = await (await fetch(on.base + "/api/apps/catalog")).json();
+    const rows = (doc.apps || []).filter((a) => a.id === "shared-id");
+    ok(
+      rows.length === 2 && rows[0].ownerId !== rows[1].ownerId && rows[0].ownerId === "u_on-user",
+      "静态目录里同 id 两条（每分支一条）+ 主干（createdAt 最早）排在前",
+    );
+    ok(
+      rows.every((r) => !!r.ownerId && String(r.zipUrl).indexOf("__") > 0),
+      "每条自带 ownerId 与分支包名 <id>__<作者uid>.zip（客户端据此按分支寻址）",
+    );
+    const oneA = await on.api("GET", "/api/apps/shared-id");
+    const oneB = await on.api("GET", "/api/apps/shared-id?owner=u_branch-user");
+    ok(
+      (oneA.data || {}).item && (oneA.data || {}).item.ownerId === "u_on-user" &&
+        (oneB.data || {}).item && (oneB.data || {}).item.ownerId === "u_branch-user",
+      "GET /api/apps/<id> 缺省回主干；?owner= 指名分支",
+    );
+    ok(
+      Array.isArray((oneA.data || {}).branches) && (oneA.data || {}).branches.length === 2 &&
+        (oneA.data || {}).branches[0].trunk === true,
+      "回执带 branches[]（含主干标记），客户端据此画分支树",
+    );
+    const rawB = await fetch(on.base + "/api/apps/shared-id/file?format=raw&owner=u_branch-user");
+    const rawBbuf = Buffer.from(await rawB.arrayBuffer());
+    ok(
+      rawB.status === 200 && rawB.headers.get("x-app-owner") === "u_branch-user" &&
+        rawBbuf.length === bzip.length,
+      "?owner= 下到的是 B 自己的包（不是主干的：同号版本也不串包）",
+    );
+    const crossVersion = await fetch(on.base + "/api/apps/shared-id/file?format=raw&owner=u_branch-user&version=9.9.9");
+    ok(crossVersion.status === 404, "分支 B 没有 9.9.9 → 404（绝不跨分支拿别人的包充数）");
+    const delOther = await on.api("DELETE", "/api/apps/shared-id/versions/1.0.0?owner=u_branch-user", undefined, A2);
+    ok(delOther.status === 403, "A 删 B 分支的版本 → 403（只能删自己分支）");
+    const delNoOwner = await on.api("DELETE", "/api/apps/shared-id/versions/1.0.0", undefined, A2);
+    ok(
+      delNoOwner.status === 400 && (delNoOwner.data || {}).code === "BRANCH_REQUIRED",
+      "多条分支时不传 owner 删版本 → 400 BRANCH_REQUIRED（不会误删别人）",
+    );
+  } finally {
+    on.stop();
+    off.stop();
   }
 }

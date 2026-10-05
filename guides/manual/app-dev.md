@@ -48,7 +48,10 @@ MTNode 里的「应用」是一份**纯静态**的 HTML / JS / CSS（外加图�
 - **开发页左栏 = 应用列表**：每个「开发中」的应用占一行（应用名 / 作者 / 会话数 / 展开箭头），它自己的会话
   折叠在这一行下面（已归档的会话不列，去会话页看）；点某一行就进入那个应用 —— 中栏预览与右栏会话一起切，
   回到开发页自动选上次打开的那个应用。搜索框同时搜应用名与会话标题；「＋ 新建应用」在左栏最底部
-  （顶栏那条工具行不再放应用下拉框）。切应用时预览先盖一层黑幕、新页加载好再淡出（不再闪白）。
+  （顶栏那条工具行不再放应用下拉框）。**切应用只换该换的那几处**：三栏页面本身不重建、中栏预览复用
+  同一只 iframe 只换地址（切的那一下在预览区中央露一行「正在加载…」，新页加载好就收起），右栏落到
+  那个应用最近一条会话；上次离开某个应用时预览页的滚动 / 表单位置会被记着，切回来时回到原处
+  （「维持状态」开关关掉就不记不写）。
 - **新开发会话 = 应用行右端那枚「＋」**：每行一枚，点它 = 切到这个应用并回到首轮态 ——
   接着在底部输入框写下本次开发需求、回车，就在**这个应用**下新建一条开发会话并开工（等同在该应用的
   开发节点上点「开发」并提交）；每行一枚，不用先切应用再找按钮。工具栏那一颗也是同一枚「＋」，
@@ -93,6 +96,9 @@ my-app/
 | 账号摘要 | `account()` | `authGetState()` / `authMe()` / `onAuthChanged(cb)` |
 | 创意工坊请求 | — | `storeRequest({ method, path, json })`（凭据由主进程带，窗口不接触 token） |
 | 选图与图片缓存 | — | `pickImage()` / `compressImage()` / `cacheImage(id, base64)` / `readCachedImage(id)` |
+| 文本模型 | `textGenStream(opts, cb)`（文字 + 图像多模态；默认关思考）· `hostModels()` / `hostModel()` / `hostSetModel(id)` | — |
+| **图像生成** | `imageGen(opts, cb?)`（文生图 / 每次一张；`cb` 收进度）· **`imageEdit(opts, cb?)`**（图生图 · 参考图必填）· `imageGenCancel(reqId)` · `hostImageModels()` / `hostImageModel()` / `hostImageSetModel(id)` | — |
+| 语音转写 | `pickAudio()` / `transcribe()` / `transcribeWav(b64)` / `asrStatus()` / `asrPrepare()` / `onSpeechState(cb)` | — |
 | 窗口生命周期 | `close()` / `quit()` / `onWillClose(cb)` | `close()` / `onShown(cb)` |
 
 ### 正确关闭（所有应用都要）
@@ -108,17 +114,57 @@ my-app/
 - 「更改」**不搬旧数据**：新目录当场生效，旧目录的文件原样留着；「恢复默认」只删指针，也不删文件；
 - 宿主只允许写「默认数据根 + 用户选过的那个文件夹」，文件名限 `data.json`（老名字 `store.json` 兼容），一律原子写（tmp + rename），整份上限 2MB。
 
-## 模型 API 与工具不在应用窗口里
+## 模型与图像：从 MTNode 继承
 
-这一点最容易踩：**应用窗口拿不到模型 API，也拿不到 MTNode 的工具**（没有 `chat` / `generateText` 这类接口，也没有「服务端 LLM 补全」路由）。
+应用侧**永远拿不到服务商与 API Key**（那是主进程的事），但可以在 MTNode 已配好的清单里挑：
+文本模型走 `hostModels()` / `hostSetModel(id)`，图像后端走 `hostImageModels()` / `hostImageSetModel(id)`。
+两者都按**应用 id 持久化**，界面里各要有一个选择位（脚手架右上「模型」下拉已分「文本模型 / 图像后端」两区）。
 
-- 提示词 / 文案类小工具：应用只负责拼提示词与界面，生成交给**画布工作流**（文本处理、图像生成、智能节点），或交给全局助手 ✦。
-- 应用必须内建 LLM / 图像 / 语音能力：升级为**本地后端插件**——主进程复用「设置 → 模型服务」里的模型 Key 调模型，再由自己的控制台界面使用。
+```js
+// 出图：云端图像服务商或本机 SenseNova，后端由 MTNode 的配置决定
+var r = await AppHost.image("一只戴帽子的猫", {
+  model: M.imageModel(),                    // 空串 = 跟随 MTNode 默认（云端优先，其次本机）
+  images: [refPath],                        // 可选参考图（本机路径或 dataURL）→ 图生图 / 图像编辑
+  strength: 0.6,                            // 可选参考强度 0–1（只有本机 SenseNova 认；云端会如实警告并忽略）
+  onProgress: function (p) { bar(p.pct); }, // 可选：本机后端要几十秒到几分钟
+});
+if (!r.ok) show(AppModel.imageErrorText(r)); else img.src = r.dataUrl;
+
+// 显式图生图 / 图像编辑（参考图必填）：没给参考图回 no_ref_image，**不会**降级成文生图
+var e = await AppHost.imageEdit("保持主体，把背景换成雪天", { images: [refPath], strength: 0.8 });
+```
+
+- **图生图 / 图像编辑**：`opts.images`（数组，本机绝对路径或 `data:image/…`）有几张发几张 ——
+  云端 OpenAI 兼容端点走 `/images/edits`（多图按顺序对应提示词里的「图1 / 图2…」），本机 SenseNova 一次吃 1–4 张。
+- **参考强度 `strength`（0–1）**：0 = 参考图只作前缀条件（本机后端的官方默认），1 = 最强。
+  **只有本机 SenseNova 后端认它**；云端没有这个参数，传了会在回执 `warnings` 里如实说明并忽略（不假装支持）。
+- **先看能力再画界面**：`hostImageModels()` 每项带 `refImages` / `maxRefImages` / `strength` 三个字段 ——
+  据此把不支持参考图的后端置灰、把张数上限写出来，别让用户点下去才知道不行。
+- 每次只出一张（与画布图像节点同一口径）；本机后端与音乐 / 视频**共用全局锁**，忙时回 `busy_media`，界面提示等待 / 重试。
+- 取消：`AppHost.cancelImage(r.reqId)`（`imageEdit` 用同一个 `reqId` 机制）；用户主动取消回 `cancelled`，**不是错误**。
+- **不降级**：一个后端都没配回 `no_provider`，模型越界回 `bad_model`，显存不够回 `cuda_oom`，`imageEdit` 没给参考图回 `no_ref_image` —— 一律明确告知。
+- 想内建更重的本地能力（自己的后端进程 / 控制台窗）：升级为**本地后端插件**（见内置技能 `mtnode-plugin-dev`）。
+
+## 能力位（app.json 的 capabilities）
+
+`app.json` 里有一份能力声明：`{ "textInput": false, "showDictate": false, "imageGen": false }`。
+新建应用时那几个复选框（**默认都不勾**），开发页 ⋯「应用能力…」也改它。它是**静态声明**，
+不是权限闸（桥上的接口始终可调）：
+
+| 位 | 为真时 | 为假 / 没声明（缺省） |
+| --- | --- | --- |
+| `textInput` | 脚手架带语音听写模块（本机 SenseVoice） | 默认应用**不携带**语音转文字 |
+| `showDictate` | 应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字） | **默认隐藏**（页面上没有那条条；应用自己的代码仍可 `apSpeechReveal()` 唤起） |
+| `imageGen` | 声明这个应用要出图，模板按需带出图入口 | 只是没声明；接口照旧可调 |
+
+改这两位都会让宿主按模板重生成入口页（手改过的内容会没了）；改 `textInput` 还会补 / 撤应用目录里的
+`speech.js` / `speech.css`。
 
 ## 从零做一个应用
 
-1. 复制随包脚手架 `templates/app-scaffold/`（`index.html` + `apphost.js` + `store.js` + `close.js` + `app.js` + `style.css` + `app.json`）
-   到该应用的源码目录。
+1. 复制随包脚手架 `templates/app-scaffold/`（`index.html` + `apphost.js` + `app-model.js` + `model.css` + `store.js` +
+   `close.js` + `app.js` + `style.css` + `app.json`）到该应用的源码目录；**只有该应用声明了 `capabilities.textInput`
+   才一并复制 `speech.js` / `speech.css`**（默认应用不携带语音转文字）。
 2. 替换占位符：`app.json` 的 `id` / `title` / `subtitle` / `icon` / `version` / `window`；`index.html` 的标题、文案与图标字符。
 3. 在 `app.js` 里写真正的逻辑；数据一律走 `Store`（内部是 `AppHost.getData` / `setData`），**不要**用 `localStorage` 当存档、不要往应用目录写文件。
 4. `frame:false` 的窗口没有系统标题栏，必须自己留一个关闭按钮接 `close()`（脚手架已接，并把写盘挂在关窗收尾上）。

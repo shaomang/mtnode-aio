@@ -122,17 +122,15 @@ const LAYOUT_FNS = [
   "LAYOUT_REL_GAP_X",
   "LAYOUT_REL_GAP_Y",
   "LAYOUT_RATIO_R",
-  "LAYOUT_SHRINK_MIN",
-  "LAYOUT_SHRINK_MAX",
+  "LAYOUT_ASPECT_TARGET",
+  "LAYOUT_FLOW_MAX_W",
+  "LAYOUT_MAX_STACK_H",
   "LAYOUT_MIN_W",
   "LAYOUT_MIN_H",
-  "LAYOUT_REFINE_PASS",
-  "LAYOUT_REFINE_MS",
-  "LAYOUT_RATIO_GIVEUP",
-  "LAYOUT_MAX_STACK_H",
-  "LAYOUT_COST_ASPECT",
-  "LAYOUT_DIR_PEN",
-  "LAYOUT_SPREAD_STEPS",
+  "layoutGap",
+  "layoutSnapSized",
+  "layoutSnapSize",
+  "snapNodeSizesForLayout",
   "relWiresIn",
   "layoutEdgeSets",
   "nodesBBox",
@@ -153,24 +151,21 @@ const LAYOUT_FNS = [
   "layoutSortColumn",
   "layoutColumnWidth",
   "layoutColumnHeight",
-  "layoutPickRows",
+  "layoutRowMaxW",
+  "layoutSplitColumn",
+  "layoutBuildColumns",
+  "layoutAlignColumnsInRows",
   "layoutPlaceLayer",
-  "LAYOUT_SHRINK_STEPS",
-  "layoutStackColumnsToNeighbors",
-  "layoutSegCross",
-  "layoutCrossPairs",
-  "layoutPointSegDist",
-  "layoutCostOf",
-  "layoutRelaxWithScale",
-  "layoutRefinePlacement",
-  "layoutScaleHugeNodes",
-  "layoutFitAspect",
   "layoutFlowComponent",
   "layoutFlowEx",
   "LAYOUT_OVERLAP_PAD",
   "LAYOUT_OVERLAP_MAX_PASS",
+  "layoutOverlapPad",
   "resolvePlacedOverlaps",
   "canvasEditWantsLayout",
+  "nodePlacementObstacles",
+  "freeSpotForNode",
+  "rectsOverlap",
 ];
 
 const S = { wf: { nodes: [], wires: [] }, config: { snap: 8 } };
@@ -213,6 +208,114 @@ vm.runInContext(
   { filename: "rel-layout-extract.js" },
 );
 const ex = (expr) => vm.runInContext(expr, ctx);
+
+/* ============ 间距硬指标（2026-02 需求）：不重叠 + 相邻恰好 1 格 + 网格对齐 ============
+   这几条是排版的新契约，下面所有样本都拿它们过一遍：
+     · 任意两节点（按绘制尺寸）矩形不相交；
+     · 真紧靠的一对（x 区间重叠且垂直相邻 / y 区间重叠且水平相邻）缝宽 === 1 个网格，
+       且另一方「隔开」的一对缝 ≥ 1 个网格（不允许比 1 格更近）；
+     · x / y / w / h 都是网格倍数（展开的壳层按 expandW/H 计）。 */
+const G = 8;
+const rectsOf = (list) =>
+  list.map((n) => {
+    const s = ex("layoutNodeSize")(n);
+    return { id: n.id, x: n.x, y: n.y, w: s.w, h: s.h, superOpen: !!(n.superOpen || n.expandW) };
+  });
+function overlapPairs(list) {
+  const rs = rectsOf(list);
+  const out = [];
+  for (let i = 0; i < rs.length; i++)
+    for (let j = i + 1; j < rs.length; j++) {
+      const a = rs[i],
+        b = rs[j];
+      if (a.x < b.x + b.w - 0.001 && b.x < a.x + a.w - 0.001 && a.y < b.y + b.h - 0.001 && b.y < a.y + a.h - 0.001)
+        out.push(a.id + "/" + b.id);
+    }
+  return out;
+}
+/** 相邻对与「缝不足 1 格」的对：返回 { tightBad, count } */
+function gapAudit(list) {
+  const rs = rectsOf(list);
+  const tightBad = [];
+  let count = 0;
+  for (let i = 0; i < rs.length; i++) {
+    for (let j = i + 1; j < rs.length; j++) {
+      const a = rs[i],
+        b = rs[j];
+      const xOv = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const yOv = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      const vGap = Math.max(a.y, b.y) - Math.min(a.y + a.h, b.y + b.h); /* 竖直缝 */
+      const hGap = Math.max(a.x, b.x) - Math.min(a.x + a.w, b.x + b.w); /* 水平缝 */
+      let gap = null;
+      if (xOv > 0 && vGap >= 0) gap = vGap;
+      else if (yOv > 0 && hGap >= 0) gap = hGap;
+      if (gap == null) continue; /* 斜对角 / 隔着一列一行：不算相邻 */
+      count++;
+      if (gap < G - 0.001) tightBad.push(a.id + "/" + b.id + ":" + gap);
+    }
+  }
+  return { tightBad, count };
+}
+function gridAlignedBad(list) {
+  const bad = [];
+  for (const n of list) {
+    const s = ex("layoutNodeSize")(n);
+    const vals = [n.x, n.y, s.w, s.h].map((v) => Math.round(Number(v) || 0));
+    const isSuperCollapsed = n.kind === "super" && !(n.superOpen || n.expandW);
+    if (isSuperCollapsed) continue; /* 折叠壳层尺寸不参与本次口径（展开态才吸网格） */
+    if (vals.some((v) => v % G !== 0)) bad.push(n.id + "(" + vals.join(",") + ")");
+  }
+  return bad;
+}
+/** 一组硬指标跑完，返回 true=全过 */
+function okGridContract(list, label) {
+  const ov = overlapPairs(list);
+  ok(ov.length === 0, label + "：节点互不重叠（重叠 " + ov.length + " 对" + (ov.length ? "：" + ov.slice(0, 3) + "）" : "）"));
+  const audit = gapAudit(list);
+  ok(
+    audit.tightBad.length === 0,
+    label + "：没有比 1 格更近的缝（相邻对 " + audit.count + "，违例 " + audit.tightBad.length + (audit.tightBad.length ? "：" + audit.tightBad.slice(0, 3) : "") + "）",
+  );
+  const align = gridAlignedBad(list);
+  ok(
+    align.length === 0,
+    label + "：坐标与尺寸都是网格倍数（违例 " + align.length + (align.length ? "：" + align.slice(0, 3) : "") + "）",
+  );
+  return ov.length === 0 && audit.tightBad.length === 0 && align.length === 0;
+}
+/** 「相邻距离恰好 = 1 格」：只对**紧邻**的一对断言精确值 ——
+ *  相邻 = 同一行里左右紧邻 / 同一列里上下紧邻（中间没有第三方节点隔着）。
+ *  尺寸不同的两个节点之间做不到同时精确 1 格（共识：钉到「≥1 格 + 网格对齐」）。 */
+function exactGapViolations(list) {
+  const rs = rectsOf(list).filter((r) => !r.superOpen);
+  const between = (p, a, b) =>
+    rs.some(
+      (m) =>
+        m !== a &&
+        m !== b &&
+        m.x > Math.min(a.x, b.x) - 0.001 &&
+        m.x + m.w < Math.max(a.x + a.w, b.x + b.w) + 0.001 &&
+        m.y > Math.min(a.y, b.y) - 0.001 &&
+        m.y + m.h < Math.max(a.y + a.h, b.y + b.h) + 0.001,
+    );
+  const bad = [];
+  for (let i = 0; i < rs.length; i++)
+    for (let j = i + 1; j < rs.length; j++) {
+      const a = rs[i],
+        b = rs[j];
+      if (a.w !== b.w || a.h !== b.h) continue;
+      const xOv = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const yOv = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      const vGap = Math.max(a.y, b.y) - Math.min(a.y + a.h, b.y + b.h);
+      const hGap = Math.max(a.x, b.x) - Math.min(a.x + a.w, b.x + b.w);
+      if (xOv > 0 && vGap >= 0) {
+        if (vGap !== G && !between(null, a, b)) bad.push(a.id + "/" + b.id + " vGap=" + vGap);
+      } else if (yOv > 0 && hGap >= 0) {
+        if (hGap !== G && !between(null, a, b)) bad.push(a.id + "/" + b.id + " hGap=" + hGap);
+      }
+    }
+  return bad;
+}
 
 /* ================== 造一个「开发节点架构图」样本 ==================
  * 与真实画布同构：8 个功能块 + 一批带文字的关系线（含回边、双向、无箭头） */
@@ -450,8 +553,7 @@ ok(
   css.indexOf("n-port-label") < 0 &&
     lightCss.indexOf("n-port-label") < 0 &&
     canvasSrc.indexOf("n-port-label") < 0 &&
-    canvasSrc.indexOf('I18n.t("输入")') < 0 &&
-    canvasSrc.indexOf('I18n.t("输出")') < 0,
+    canvasSrc.indexOf("plabel") < 0,
   "端子排不再创建「输入 / 输出」板外文字（DOM 与样式一并清除，含浅色主题）",
 );
 ok(
@@ -575,8 +677,14 @@ for (let i = 0; i < S.wf.nodes.length; i++)
       overlap++;
   }
 ok(overlap === 0, "排版后没有互相压住的方块（重叠 " + overlap + " 对）");
-/* 需求 ② 的口径是「上游在左**或**在上」：同一行里靠左，折到下一行时靠上。
-   只要求严格靠左会与需求 ①（整体收进 16:9，长图必须折行）互相打架。 */
+/* 2026-02 新口径：相邻缝恰好 1 格 + 坐标尺寸网格对齐 */
+okGridContract(S.wf.nodes, "[2] 关系线架构图");
+const exact2 = exactGapViolations(S.wf.nodes);
+ok(
+  exact2.length === 0,
+  "[2] 相邻（同尺寸、真紧靠）的缝恰好 = 1 格（违例 " + exact2.length + (exact2.length ? "：" + exact2.slice(0, 3) : "") + "）",
+);
+/* 需求 ② 的口径是「上游在左**或**在上」：同一行里靠左，折到下一行时靠上。 */
 const badDir = hardPairs.filter((p) => {
   const [f, t] = p.split("->");
   const a = byId2[f],
@@ -928,22 +1036,24 @@ if (!real.length) {
       after.dup === 0,
       "真实架构图没有完全重合的关系线（朴素网格 " + naive.dup + " → " + after.dup + "）",
     );
-    /* 交叉「对数」在不同拓扑之间不可直接互比（朴素网格把无关方块塞进同一行，线更短、
-       交叉自然少）。可辨性的硬指标是：不叠线、不重合、不穿过无关方块，并且真的分了层。 */
+    /* 2026-02 口径：间距被钉成「恰好 1 格」，节点必然比旧的大间距排得更紧 ——
+       「穿块数」不再适合与朴素网格直接比高低（那是间距的函数，不是算法的优劣）。
+       这里改钉新契约：不叠线、不重合、真的分了层、并且 1 格间距硬指标全过。 */
     ok(
-      after.near <= naive.near && after.block <= naive.block && cols >= 2,
-      "分层排版比朴素网格更可辨（叠线 " +
-        naive.near +
-        "→" +
+      after.near === 0 && after.dup === 0 && cols >= 2,
+      "真实架构图排版后仍可辨（叠线 " +
         after.near +
-        "，穿块 " +
+        "，重合 " +
+        after.dup +
+        "，" +
+        cols +
+        " 列；穿块 " +
         naive.block +
         "→" +
         after.block +
-        "，" +
-        cols +
-        " 列）",
+        " 属紧凑间距的必然结果）",
     );
+    ok(okGridContract(kids, "[6] 真实架构图 " + file), "真实架构图满足 1 格间距硬指标");
     ok(
       after.cross <= relWires.length,
       "直线交叉数量在可解释范围内（" +
@@ -1005,7 +1115,7 @@ S.selWire = null;
  *          ④ 优化有界：确定性、无随机、小图快 */
 console.log("\n[8] 自动排版算法：形状 / 方向 / 聚焦 / 确定性 / 时延");
 
-/* 造 4 层 × N 个并排节点的「宽图」—— 面积上放得进 16:9，必须真的收进去 */
+/* 造 4 层 × N 个并排节点的「宽图」—— 4 条并行链（互不相连） */
 function gridSample(n) {
   const nodes = [];
   const wires = [];
@@ -1023,16 +1133,20 @@ function gridSample(n) {
   S.wf.nodes = g.nodes.map((x) => Object.assign({}, x));
   S.wf.wires = g.wires.map((x) => Object.assign({}, x));
   const r8 = ex("layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 8, y: 8 }, [], {})");
-  const ratio = r8.w / Math.max(1, r8.h);
+  /* 2026-02 口径：硬约束是「不重叠 + 相邻恰好 1 格」，宽高比不再硬求 */
   ok(
-    r8.ratioOk === true && ratio <= 16 / 9 + 0.02 && ratio >= 9 / 16 - 0.02,
-    "需求①：放得下的图必须收进 16:9~9:16（" +
+    r8.ratioOk === true,
+    "需求①：宽高比降级为形状偏好（如实回报实际形状 " +
       Math.round(r8.w) +
       "×" +
       Math.round(r8.h) +
-      " = " +
-      ratio.toFixed(2) +
       "）",
+  );
+  okGridContract(S.wf.nodes, "[8] 4 条并行链");
+  const exact8 = exactGapViolations(S.wf.nodes);
+  ok(
+    exact8.length === 0,
+    "需求①：相邻（同尺寸、真紧靠）的缝恰好 = 1 个网格（违例 " + exact8.length + (exact8.length ? "：" + exact8.slice(0, 3) : "") + "）",
   );
   /* 分层是硬顺序：同一条链上的节点必须左右/上下单调，不能把下游摆到上游左边 */
   const pos8 = new Map(S.wf.nodes.map((n) => [n.id, n]));
@@ -1044,7 +1158,7 @@ function gridSample(n) {
   }
   ok(bad8 === 0, "需求②：每条硬边都满足「上游在左或在上」（违反 " + bad8 + " 条）");
 
-  /* ③ 聚成方形：面积别比「紧贴的最小包围」大出一大截 */
+  /* 确定性：同一输入两次排版结果完全一致 */
   const r2 = ex("layoutFlowEx(S.wf.nodes.map((n) => Object.assign({}, n)), S.wf.wires, { x: 8, y: 8 }, [], {})");
   ok(
     Math.abs(r2.w - r8.w) < 1e-6 && Math.abs(r2.h - r8.h) < 1e-6,
@@ -1070,8 +1184,8 @@ function gridSample(n) {
   }
   const rows9 = new Set(S.wf.nodes.map((n) => n.y)).size;
   ok(
-    r9.ratioOk === true && rows9 >= 2,
-    "需求①③：9 连长链折成正形网格收进 16:9（" +
+    r9.ratioOk === true,
+    "需求①③：长链按 1 格间距排开（" +
       Math.round(r9.w) +
       "×" +
       Math.round(r9.h) +
@@ -1080,9 +1194,15 @@ function gridSample(n) {
       " 行）",
   );
   ok(rev9 === 0, "折行后仍满足「上游在左或在上」（违反 " + rev9 + " 条）");
+  okGridContract(S.wf.nodes, "[8] 9 连长链");
+  const exact9 = exactGapViolations(S.wf.nodes);
+  ok(
+    exact9.length === 0,
+    "9 连长链：相邻缝恰好 = 1 个网格（违例 " + exact9.length + (exact9.length ? "：" + exact9.slice(0, 3) : "") + "）",
+  );
 }
 
-/* 结构上就收不进 16:9 的图：如实报 ratioOk=false，且不为凑比值糟蹋节点尺寸 */
+/* 超宽节点（宽 2600 > 一行上限）也必须排开且尺寸不被缩 */
 {
   const nodes = [
     { id: "b0", x: 0, y: 0, w: 2600, h: 220 },
@@ -1096,10 +1216,15 @@ function gridSample(n) {
   S.wf.nodes = nodes;
   S.wf.wires = wires;
   const rb = ex("layoutFlowEx(S.wf.nodes, S.wf.wires, { x: 8, y: 8 }, [], {})");
-  ok(rb.ratioOk === false, "需求①：结构上收不进 16:9 的图如实报 ratioOk=false（交给调用方告警）");
   ok(
-    rb.scaled === 1 && nodes.every((n) => n.w === 2600 && n.h === 220),
-    "收不进时不硬缩节点凑比值（scaled=" + rb.scaled + "，节点尺寸原样）",
+    rb.scaled === 1 && nodes.every((n) => n.w === 2600 && n.h === 224),
+    "尺寸只吸网格、绝不缩放（w 原样 2600，h 220→224 就近吸到 8 的倍数；scaled=" + rb.scaled + "）",
+  );
+  okGridContract(S.wf.nodes, "[8] 超宽节点链");
+  const exactB = exactGapViolations(S.wf.nodes);
+  ok(
+    exactB.length === 0,
+    "超宽节点链：同尺寸相邻缝恰好 = 1 个网格（违例 " + exactB.length + (exactB.length ? "：" + exactB.slice(0, 3) : "") + "）",
   );
 }
 
@@ -1140,16 +1265,131 @@ function gridSample(n) {
   );
 }
 
-/* 自动执行闸：agent 每次「改图」都要触发排版（用户拖拽不走这条路，不受影响） */
+/* 排版闸（2026-02 需求改写）：编辑**不再**自动排版 —— agent / MCP 的普通编辑只落
+   内容与连线，位置与尺寸都不碰。排版只剩一个入口：调用方本笔显式写 layout:true
+   （用户点「一键排版」走 tidyLayout，那条路根本不进 applyCanvasEdit）。 */
 {
   const wants = ex("canvasEditWantsLayout");
-  ok(wants({ create: [{ alias: "a", kind: "input_text" }] }, [{}]) === true, "编辑闸：建图 → 排版");
-  ok(wants({ connect: [{ from: "a", to: "b" }] }, []) === true, "编辑闸：连线 → 排版");
-  ok(wants({ remove: ["x"] }, []) === true, "编辑闸：删节点 → 排版");
-  ok(wants({ createMarks: [{ kind: "box" }] }, []) === true, "编辑闸：加标注 → 排版");
-  ok(wants({ update: [{ w: 400 }] }, []) === true, "编辑闸：改尺寸 → 排版");
-  ok(wants({ update: [{ title: "只改标题" }] }, []) === false, "编辑闸：只改文本（不动几何）→ 不排版");
+  ok(wants({ create: [{ alias: "a", kind: "input_text" }] }, [{}]) === false, "编辑闸：建图 → 不自动排版");
+  ok(wants({ connect: [{ from: "a", to: "b" }] }, []) === false, "编辑闸：连线 → 不自动排版");
+  ok(wants({ remove: ["x"] }, []) === false, "编辑闸：删节点 → 不自动排版");
+  ok(wants({ createMarks: [{ kind: "box" }] }, []) === false, "编辑闸：加标注 → 不自动排版");
+  ok(wants({ update: [{ w: 400 }] }, []) === false, "编辑闸：改尺寸 → 不自动排版（尺寸是调用方钉的）");
+  ok(wants({ update: [{ title: "只改标题" }] }, []) === false, "编辑闸：只改文本 → 不排版");
+  ok(wants({ layout: true }, []) === true, "编辑闸：显式 layout:true → 唯一入口，照排");
+  ok(wants({ layout: true, create: [{ alias: "a", kind: "input_text" }] }, [{}]) === true, "编辑闸：显式 layout:true + 建图 → 照排");
   ok(wants({}, []) === false, "编辑闸：空编辑 → 不排版");
+  ok(wants(null, []) === false, "编辑闸：没有参数 → 不排版");
+}
+
+/* ============ [9] 绘制跟着 1 格口径重算（分区框 / 文字标注） ============
+   需求：分区框 = 节点外圈恰好 1 格；文字标注贴在节点上方 1 格；箭头端点贴节点边缘。
+   （框/文字的 pod 由 captureMarkBindings + rebindMarksAfterLayout 决定） */
+console.log("\n[9] 绘制按 1 格重算（分区框 / 文字标注）");
+{
+  const ctx9 = {
+    S: { wf: { nodes: [], wires: [], marks: [], groups: [] }, config: { snap: 8 } },
+    grid: () => 8,
+    snap: (v) => Math.round(v / 8) * 8,
+    nodeById: (id) => (ctx9.S.wf.nodes || []).find((n) => n.id === id) || null,
+    markById: (id) => (ctx9.S.wf.marks || []).find((m) => m.id === id) || null,
+    marksOf: () => ctx9.S.wf.marks || [],
+    nodeDrawSize: (n) => ({ w: (n && n.w) || 288, h: (n && n.h) || 192 }),
+    console,
+    Math,
+    Set,
+    Map,
+    Infinity,
+    JSON,
+    Array,
+    Object,
+    String,
+    Number,
+    RegExp,
+    Error,
+  };
+  vm.createContext(ctx9);
+  vm.runInContext(
+    extract(appSrc + "\n" + nodesSrc + "\n" + canvasSrc, [
+      "layoutGap",
+      "layoutSnapSized",
+      "layoutSnapSize",
+      "layoutNodeSize",
+      "nodesBBox",
+      "nodeCenter",
+      "markBounds",
+      "nodesInsideMarkBounds",
+      "nearestNodeId",
+      "ensureGroupArrays",
+      "captureMarkBindings",
+      "rebindMarksAfterLayout",
+    ]),
+    ctx9,
+    { filename: "mark-grid-extract.js" },
+  );
+  const nodes = [
+    { id: "m1", kind: "proc_text", x: 100, y: 100, w: 288, h: 192 },
+    { id: "m2", kind: "proc_text", x: 400, y: 100, w: 288, h: 192 },
+  ];
+  /* 原框完全按「外圈 1 格」画：留白 = 8 → pad 取 8，节点重排后框仍应贴 8 */
+  const box = { id: "b1", kind: "box", x: 92, y: 92, w: 604, h: 208, title: "分区" };
+  const txt = { id: "t1", kind: "text", x: 100, y: 52, w: 120, h: 40, text: "标题" };
+  ctx9.S.wf.nodes = nodes;
+  ctx9.S.wf.marks = [box, txt];
+  const bindings = ctx9.captureMarkBindings(nodes);
+  /* 先把节点按 1 格间距重排一次，再让绘制跟着重算 */
+  nodes[0].x = 16;
+  nodes[0].y = 16;
+  nodes[1].x = 16 + 288 + 8;
+  nodes[1].y = 16;
+  ctx9.rebindMarksAfterLayout(bindings);
+  ok(
+    box.x === 16 - 8 && box.y === 16 - 8 && box.w === 288 * 2 + 8 + 16 && box.h === 192 + 16,
+    "分区框 = 节点外圈恰好 1 格（x=" +
+      box.x +
+      " y=" +
+      box.y +
+      " w=" +
+      box.w +
+      " h=" +
+      box.h +
+      "，期望 8/8/" +
+      (288 * 2 + 8 + 16) +
+      "/" +
+      (192 + 16) +
+      "）",
+  );
+  ok(box.x % 8 === 0 && box.y % 8 === 0 && box.w % 8 === 0 && box.h % 8 === 0, "分区框坐标与尺寸都落在网格上");
+  ok(
+    txt.y === 16 - 40 - 8,
+    "文字标注贴在节点上方 1 格（t.y=" + txt.y + "，期望 " + (16 - 40 - 8) + "）",
+  );
+}
+
+/* 自动排版撤掉之后，新节点必须自己就近找空位、且绝不挪动已有节点（2026-02 需求） */
+{
+  const freeSpotForNode = ex("freeSpotForNode");
+  const S = ex("S");
+  const keep = S.wf.nodes.slice();
+  const snap0 = ex("snap");
+  S.wf.nodes = [
+    { id: "old1", kind: "input_text", title: "老节点", x: 64, y: 64, w: 240, h: 160, parentSuperId: "", parentTaskId: "" },
+  ];
+  const cand = { id: "new1", kind: "input_text", title: "新节点", x: 48, y: 48, w: 240, h: 160, parentSuperId: "", parentTaskId: "" };
+  const spot = freeSpotForNode(cand, { x: 48, y: 48 }, ex("nodePlacementObstacles")(cand));
+  const over = ex("rectsOverlap")(
+    { x: spot.x, y: spot.y, w: cand.w, h: cand.h },
+    { x: 64, y: 64, w: 240, h: 160 },
+    0,
+  );
+  ok(over === false, "新节点落点与已有节点不重叠（就近找空位）");
+  ok(spot.x >= 48 && spot.y >= 48, "落点只往外找（不往左上钻）");
+  ok(S.wf.nodes[0].x === 64 && S.wf.nodes[0].y === 64, "已有节点的坐标一个都没动");
+  /* 空画布：落点就是原点 48/48，不外扩 */
+  S.wf.nodes = [];
+  const empty = freeSpotForNode(cand, { x: 48, y: 48 }, []);
+  ok(empty.x === 48 && empty.y === 48, "空画布落点 = 原点（48/48）");
+  S.wf.nodes = keep;
 }
 
 console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");

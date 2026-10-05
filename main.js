@@ -52,6 +52,7 @@ function gifenc() {
 /* dsh agent 适配器（网关侧车）：全部 dsh 能力经此模块，契约见 dsh/DESIGN.md。
    本文件与渲染层不 import 任何 dsh 代码，dsh 升级只触及 dsh/gateway/。 */
 const { createDshAdapter, GATEWAY_PATH: DSH_GATEWAY_PATH } = require("./dsh/main-dsh.js");
+const { createMcpHost } = require("./mcp-server.js");
 /* 子代理策略（嵌套深度 / 后台并行委派 / fork / 总开关）→ 只改写 cordis.yml 里
    subagent* 这 8 行的配置值与 disabled 取值；dsh 三层契约一字未动。
    口径与网关的 applyCordisPreset 同源：新运行时（新会话）首个回合即用所选值。 */
@@ -77,19 +78,37 @@ const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main
    音频读盘」这条小内核，识别本身走 dsh:speech 通道（见 speech-store.js 头部口径） */
 const { registerSpeechIpc } = require("./speech-store.js");
 /* 本地图像生成后端（SenseNova-U1.5-8B-MoT）：标准库 HTTP 服务，后端单例独立于 MTNode 生命周期 */
-const { registerSensenovaIpc, shutdownSensenovaUiOnly } = require("./sensenova/main-sensenova.js");
+const {
+  registerSensenovaIpc,
+  shutdownSensenovaUiOnly,
+  /* 应用通道（appHost.imageGen 的本机那一路）用的三个入口：轻量现况 / 出图 / 取消。
+     与画布节点 sensenova_gen 共用同一份宿主实现（含全局音视频互斥锁与产物托管目录）。 */
+  imageHostInfo: sensenovaImageHostInfo,
+  generateImage: sensenovaGenerateImage,
+  cancelGenerate: sensenovaCancelGenerate,
+} = require("./sensenova/main-sensenova.js");
 const { patchProviders } = require("./config-providers.js");
 /* 文本 → PDF 落盘内核（隐藏窗口 + printToPDF，公式排版与画布预览同源，见 pdf-write.js） */
 const pdfWrite = require("./pdf-write.js");
-const { registerRollbackIpc, gc: rollbackGc } = require("./rollback-store.js");
 const { registerToolsIpc } = require("./tools-store.js");
 const { registerAssetsIpc } = require("./assets-store.js");
 /* 存储占用与清理（设置 · 存储占用与清理）：统计各类冗余占用 + 按类清理，判据是
-   「文件还被不被 MTNode 用着」；回滚对象库那一类复用 rollback-store 的 gc（见 storage-clean.js） */
+   「文件还被不被 MTNode 用着」（见 storage-clean.js） */
 const { registerStorageIpc, setScanLocale } = require("./storage-clean.js");
 /* 应用宿主（用户自建应用）：根目录 / 云端目录 / 安装·更新·卸载 / 导出 zip / 变更探测 /
    独立窗口（preload-app.js 的 window.appHost），见 apps-store.js */
-const { registerAppsIpc, shutdownApps, setQuitHandler, mirrorAppCanvas } = require("./apps-store.js");
+const {
+  registerAppsIpc,
+  shutdownApps,
+  setQuitHandler,
+  mirrorAppCanvas,
+  /* 函数节点的 mtnode.image(...) 复用应用通道的同一份图像内核（见 fnImageCall）；
+     图像后端清单给主窗口渲染层（函数节点头部「图像后端」按钮列候选）。 */
+  hostImageGenerate,
+  imageBackendsForUi,
+} = require("./apps-store.js");
+/* 全局音视频互斥锁（本地大模型一张卡只跑一个）：应用通道列图像后端 / 出图前先看它 */
+const mediaGenLock = require("./media-gen-global-lock.js");
 /* 长周期任务系统：运行态 checkpoint / 交付目录 / 长期记忆（SQLite+FTS5），全在数据目录 */
 const { registerLongtaskIpc } = require("./longtask-store.js");
 /* AI 事实库（每张画布一份的极简条例库）：固定文件 <画布文件夹>/团队事实库/AI/ai-facts.json
@@ -102,10 +121,8 @@ const activityStore = require("./activity-store.js");
 const wechatPc = require("./wechat-pc.js");
 /* 剪贴板里「被复制的图片文件」列表解析（CF_HDROP / FileNameW 的纯函数口径，见该文件顶部） */
 const clipImages = require("./clipboard-images.js");
-/* 提醒音（主进程侧出声）：完成音 / 提问音的兜底发声通道 —— 渲染层被后台节流或窗口不在
-   前台时，渲染层那一声会被推迟到「切回 MTNode」才响；主进程合成 WAV 交给系统播放器出声，
-   与窗口可见性无关。音色与渲染层内置音同一把尺，见该文件顶部口径。 */
-const soundAlert = require("./sound-alert.js");
+/* 提醒音的主进程通道（sound-alert.js / sound:alert）本次已整体移除：长任务音效与随包
+   all-done.wav 下线，完成音只走渲染层 WebAudio（见 renderer/app-db.js）。 */
 let dshAdapter = null;
 function dshConfig() {
   /* 只为取 cfg.dsh 下 6 个标量，原本却把整份 config.json（实测几十 MB，91% 是
@@ -162,8 +179,7 @@ function syncSubagentPolicy(cfg) {
   }
 }
 function dsh() {
-  if (!dshAdapter) {
-    dshAdapter = createDshAdapter({
+  if (!dshAdapter) {    dshAdapter = createDshAdapter({
       dataDir: DATA(),
       appRoot: __dirname,
       errLog,
@@ -199,6 +215,33 @@ function dsh() {
     });
   }
   return dshAdapter;
+}
+
+/* ── MCP 服务端（第三方客户端接进来操作 MTNode，见 mcp-server.js / docs/mcp-server.md）──
+   随应用启动即开监听（127.0.0.1 随机端口 + Bearer token，共识口径），面板里可关。
+   执行不在这里：本进程只做协议与服务端，工具调用推给渲染层同一条执行路径
+   （mcp:event → renderer/mcp-bridge.js → 既有宿主处理函数 → mcp:interact 回执）。 */
+let mcpHost = null;
+function mcp() {
+  if (!mcpHost) {
+    mcpHost = createMcpHost({
+      dataDir: DATA(),
+      appRoot: __dirname,
+      /* 打包态：stdio 桥脚本在 resources/mcp-stdio.js（extraResources，asar 外）——
+         外部 MCP 客户端用系统 Node 读不了 asar 内路径，故不进 asar。 */
+      resourcesDir: process.resourcesPath || __dirname,
+      log: (line) => {
+        try {
+          dshLog(line);
+        } catch {}
+      },
+      sendToRenderer: (ev) => {
+        if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("mcp:event", ev);
+        else if (mcpHost) mcpHost.settle({ id: ev.id, error: "MTNode 主窗口不可用，无法执行这次调用" });
+      },
+    });
+  }
+  return mcpHost;
 }
 
 const mk = (p) => {
@@ -546,16 +589,9 @@ function appVersion() {
   }
 }
 ipcMain.handle("app:version", () => ({ ok: true, version: appVersion() }));
-/* 提醒音：渲染层只报「该响哪一档 + 音量 + 自定义文件」，发声交给主进程（见 sound-alert.js）。
-   渲染层拿不到这台机器的系统播放器时它自己会用 WebAudio 兜底，所以这里失败只回 ok:false，
-   绝不抛给渲染层（响不响是体验问题，不该把一次任务收尾弄挂）。 */
-ipcMain.handle("sound:alert", async (_ev, opts) => {
-  try {
-    return await soundAlert.playAlert(opts || {});
-  } catch (e) {
-    return { ok: false, via: "error", error: String((e && e.message) || e) };
-  }
-});
+/* 提醒音的主进程通道（sound:alert → sound-alert.js）本次已整体移除：
+   长任务音效（全局三音上行 / 随包 renderer/sounds/all-done.wav）下线，完成音与
+   提问/审批提示音统一只走渲染层 WebAudio（见 renderer/app-db.js 的 playTaskDoneSound）。 */
 ipcMain.handle("mediaGen:getLock", () => ({ ok: true, lock: refreshMediaGenLock() }));
 ipcMain.handle("crash:status", () => crashReport.status());
 ipcMain.handle("crash:export", async () => crashReport.exportDiagnosticBundle({}));
@@ -749,6 +785,24 @@ ipcMain.handle("config:save", (e, cfg) => {
     const savedIds = new Set(saved.map((p) => String(p.id || "")));
     for (const p of managed) {
       if (!savedIds.has(String(p.id || ""))) saved.push(p);
+    }
+    /* 中转卡的真票是主进程写盘的那一串（见 writeRelayKeyToConfig）：渲染层手上那份
+       可能还没同步到（登录后那一小段时间 / 老渲染层），拿空值或占位串覆盖会把票从盘上抹掉。
+       那种情况下**保留盘上那份真票**，下一次同步再由渲染层认回来。 */
+    const prevRelay = (existing.providers || []).find(
+      (p) => p && String(p.source || "") === RELAY_PROVIDER_SOURCE,
+    );
+    const prevRelayKey = String((prevRelay && prevRelay.apiKey) || "").trim();
+    if (prevRelayKey && prevRelayKey !== RELAY_KEY_PLACEHOLDER) {
+      const ri = saved.findIndex(
+        (p) => p && String(p.source || "") === RELAY_PROVIDER_SOURCE,
+      );
+      if (ri >= 0) {
+        const curKey = String((saved[ri] && saved[ri].apiKey) || "").trim();
+        if (!curKey || curKey === RELAY_KEY_PLACEHOLDER) {
+          saved[ri] = Object.assign({}, saved[ri], { apiKey: prevRelayKey });
+        }
+      }
     }
     next.providers = saved;
   }
@@ -2922,6 +2976,10 @@ function fnRuntimeOf() {
          （provider 是渲染层按节点「AI 调用」选定路由解析出的服务商配置，
           含 baseUrl / apiKey / type；调用级显式传的 provider / model 只覆盖这一次）。 */
       aiCall: (spec) => fnAiCall(spec),
+      /* 函数节点的「图像后端」：mtnode.image(...) 走这里真正出一张图（文生图 / 图生图）。
+         spec = { prompt, images?, strength?, size?, ratio?, width?, height?, model?, img?, nodeId, wfId }
+         —— 与应用通道 appHost.imageGen 共用 apps-store 的同一份内核，产物落画布资产目录。 */
+      imageCall: (params) => fnImageCall(params),
       /* 函数节点的桌面截图后端：mtnode.screenShot(...) / screenList() / windowList()
          走这里（worker 线程没有任何 Electron 能力）。拍完 PNG 已落盘，回路径即可当图像值。 */
       screenCapture: (action, params) => fnScreenCapture(action, params),
@@ -2993,6 +3051,68 @@ async function fnAiCall(spec) {
     return out;
   }
 }
+/* 函数节点 jscode 里 mtnode.image(...) 的执行体（出图 / 图生图）。
+   与应用通道 appHost.imageGen 共用 apps-store 的同一份图像内核（hostImageGenerate）：
+   同一份后端清单与选择解析、同一份参考图读盘 / 缩放、同一把全局音视频互斥锁、同一套错误码。
+   两处只属于函数节点的差别：
+     ① 产物统一落**画布资产目录**（<数据目录>/assets/<wfId>，与画布出图同一处）——
+        函数节点的图像输出端子 / save_image / mtnode_vision 直接吃这个绝对路径；
+     ② 本机后端的产物由后端直写该目录；云端回的是 base64，这里替它落盘（同一目录、同名规则）。
+   失败一律 { ok:false, error, code }（不抛），与 mtnode.ai 同一口径 —— 用户代码自己决定要不要 throw。 */
+async function fnImageCall(params) {
+  const p = params && typeof params === "object" ? params : {};
+  const prompt = String(p.prompt == null ? "" : p.prompt);
+  if (!prompt.trim()) return { ok: false, error: "mtnode.image：缺少 prompt" };
+  const img = p.img && typeof p.img === "object" ? p.img : null;
+  const model = String(p.model || (img && img.model) || "").trim();
+  const nodeId = String(p.nodeId || "node");
+  const wfId = String(p.wfId || "").trim();
+  let outDir = "";
+  try {
+    outDir = wfId ? assetDir(wfId) : mk(join(DATA(), "fn-images"));
+  } catch (err) {
+    return { ok: false, error: "mtnode.image：资产目录不可用：" + ((err && err.message) || err) };
+  }
+  let r = null;
+  try {
+    r = await hostImageGenerate({
+      appId: "fn-" + nodeId,
+      opts: Object.assign({}, p, { prompt: prompt, model: model, outputDir: outDir }),
+    });
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+  if (!r || r.ok !== true) {
+    return {
+      ok: false,
+      error: String((r && (r.error || r.message)) || "mtnode.image：出图失败"),
+      code: String((r && r.code) || ""),
+      warnings: Array.isArray(r && r.warnings) ? r.warnings.slice(0, 8) : [],
+      model: model,
+    };
+  }
+  let file = String(r.path || r.file || "");
+  const warnings = Array.isArray(r.warnings) ? r.warnings.slice(0, 8) : [];
+  if (!file && r.base64) {
+    try {
+      const ext = String(r.mime || "").indexOf("jpeg") >= 0 ? "jpg" : "png";
+      file = join(outDir, "fn-" + nodeId + "-" + Date.now() + "." + ext);
+      writeAssetBytes(file, Buffer.from(String(r.base64), "base64"));
+    } catch (err) {
+      return { ok: false, error: "mtnode.image：产物落盘失败：" + ((err && err.message) || err) };
+    }
+  }
+  if (!file)
+    return { ok: false, error: "mtnode.image：出图回执里没有产物路径", warnings: warnings };
+  return {
+    ok: true,
+    path: file,
+    bytes: Number(r.bytes) || 0,
+    model: String(r.model || model || ""),
+    via: String(r.via || ""),
+    warnings: warnings,
+  };
+}
 /* 函数节点 jscode 里 mtnode.screenShot / screenList / windowList 的执行体（桌面截图）。
    action：capture 拍一张（落盘返回路径）· screens 列屏幕 · windows 列窗口。
    失败一律 { ok:false, error }（不抛），与 mtnode.ai 同一口径 —— 用户代码自己决定要不要 throw。 */
@@ -3059,6 +3179,15 @@ async function fnPdfWrite(params) {
     return { ok: false, error: String((err && err.message) || err) };
   }
 }
+/* 图像后端清单（主窗口渲染层用）：函数节点头部「图像后端」按钮列候选 / 把参考图能力写清楚。
+   与应用窗口的 apps:hostImageModels 同一份清单，只是没有「该应用选的是哪只」这一层。 */
+ipcMain.handle("image:backends", () => {
+  try {
+    return imageBackendsForUi();
+  } catch (err) {
+    return { ok: false, models: [], error: (err && err.message) || String(err) };
+  }
+});
 ipcMain.handle("fn:run", async (e, o = {}) => {
   const runId = String((o && o.runId) || "");
   const emit =
@@ -3771,6 +3900,21 @@ function auditAppDirData() {
   } catch {}
 }
 
+/* 只读查询：当前有哪些用户数据落在应用文件夹内（给顶栏那条红色警示用）。
+   与 auditAppDirData **同一份候选清单与同一个 isInsideAppDir 判据**，但**不弹窗、不写日志** ——
+   启动那次体检已经负责报警与 error.log，这里只是把同一结论按需回给渲染层，可反复调用。 */
+ipcMain.handle("app:dataAudit", () => {
+  try {
+    const all = appDirDataCandidates();
+    const hits = all
+      .filter((x) => isInsideAppDir(x.path))
+      .map((x) => ({ label: x.label, path: x.path }));
+    return { ok: true, hits: hits, checked: all.length };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
 const FACT_DIRS_FILE = path.join(APP_DATA_ROOT, "fact-asset-dirs.json");
 function factLoadAssetDirs() {
   try {
@@ -4184,6 +4328,27 @@ function migrateLegacyStoreAuth() {
   }
 }
 
+/* 本机设备标识（随机串，只落本机数据目录）：中转发放口用它判断「这台机器换了账号」，
+   从而只在换账号时轮换中转票（见 store-saas/server.mjs 的 ensureRelayKey）。 */
+let relayDeviceCache = "";
+function relayDeviceId() {
+  if (relayDeviceCache) return relayDeviceCache;
+  try {
+    const fp = join(DATA(), "relay-device.json");
+    const cur = readJson(fp, {}) || {};
+    let id = String(cur.id || "").trim();
+    if (!id) {
+      id = require("crypto").randomBytes(16).toString("hex");
+      writeJson(fp, { id: id, at: Date.now() });
+    }
+    relayDeviceCache = id;
+  } catch {
+    /* 数据目录不可写也不该挡住中转请求：退化成本次进程内的临时标识 */
+    if (!relayDeviceCache) relayDeviceCache = require("crypto").randomBytes(16).toString("hex");
+  }
+  return relayDeviceCache;
+}
+
 async function storeRequest(opts) {
   try {
     const o = opts || {};
@@ -4204,6 +4369,11 @@ async function storeRequest(opts) {
       if (cur) token = cur.token;
     }
     if (token) headers.Authorization = "Bearer " + token;
+    /* 本机设备标识（只发给中转发放口 /api/relay/me，不外发给别的接口）：
+       服务端靠它判断「换账号」—— 一台机器换了账号才轮换中转票，
+       同一账号多开客户端 / 多台设备彼此不顶掉（见 store-saas/server.mjs 的 ensureRelayKey）。
+       随机串只落本机数据目录，不含任何账号信息。 */
+    if (p === "/api/relay/me") headers["X-MTNode-Device"] = relayDeviceId();
     let body;
     if (o.json != null) {
       headers["Content-Type"] = "application/json";
@@ -4265,20 +4435,24 @@ async function storeRequest(opts) {
 ipcMain.handle("store:request", (e, opts) => storeRequest(opts));
 
 /* ---------------- MTNode 中转服务（账号托管 · 契约见 docs/relay-admin.md） ----------------
-   客户端「设置 · 提供商」里那张只读的「MTNode 中转服务」卡靠这里同步：
-     · 拉取：主进程带着账号登录 token 打 GET /api/relay/me —— 渲染层拿不到 token，
+   客户端「设置 · 提供商」里那张「MTNode 中转服务」卡靠这里同步：
+     · 拉取：主进程带着账号登录 token 打 GET /api/relay/me —— 渲染层拿不到登录 token，
        也不硬编码中转站地址（地址由服务端下发）；
-     · 凭据：provider.source === "mtnode-relay" 时，config.json 里落的是占位串
-       （渲染层各处「有没有填 Key」的闸门因此照旧通过），真正下发的 Authorization
-       在请求时现取账号 token —— 明文 token 不落 config.json、不回渲染层。
+     · 凭据：真票（3650 天独立票）**就落在这张卡的 apiKey 上并写进磁盘 config.json** ——
+       设置卡显示完整 Key、可一键复制给 Codex 等 OpenAI 兼容客户端（Base URL = 卡上那行），
+       桌宠 / 插件宿主这些独立进程读同一份配置即可用，不必各领一张票；
+       RELAY_KEY_PLACEHOLDER 只作「这张卡还没拿到真票」的识别标记，**绝不下发给上游**；
+     · 换票：卡上的「更换 Key」按钮走 POST /api/relay/me { rotate: true }
+       （服务端按账号自然日限 5 次，见 relay:rotateKey）。
    渲染层负责把快照合进 config.providers 并持久化（renderer/app-relay.js）。 */
 const RELAY_PROVIDER_SOURCE = "mtnode-relay";
 const RELAY_KEY_PLACEHOLDER = "mtnode-account-token";
-/* 中转 Key 续期提前量（与 auth-store.js 的 RELAY_RENEW_BEFORE_MS、服务端的
-   RELAY_KEY_MS / 6 同口径 = 30 天）：剩余不足这个窗口就重领一张独立票。 */
+/* 中转 Key 续期提前量：**真源在 auth-store.js**（RELAY_KEY_MS / 6，有效期 3650 天时约 608 天，
+   与 store-saas/server.mjs 的 relayKeyView.renewBeforeMs 同口径）—— 剩余不足这个窗口就重领一张。
+   这里这份只作兜底：老版本 auth-store 没有 relayRenewBeforeMs() 时用它（30 天）。 */
 const RELAY_RENEW_BEFORE_MS = 30 * 24 * 3600 * 1000;
 /* 中转站 401 的识别标记（store-saas/relay.mjs 写在错误文案最前面）：
-   客户端据此区分「中转凭据失效」与「别的服务商 Key 填错」，只对前者清本机凭据。 */
+   客户端据此区分「中转凭据失效」与「别的服务商 Key 填错」，只对前者丢那张票。 */
 const RELAY_AUTH_MARK = "MTNODE_RELAY_AUTH";
 
 /* 快照里的模型形态（text / image）→ 服务商形态判定的覆盖表：
@@ -4294,6 +4468,157 @@ function relayModelKindsOf(doc) {
   return out;
 }
 
+/* 本机磁盘配置里那张中转卡（source=mtnode-relay）：**真票就存在它的 apiKey 上**。
+   读的是当前落盘的那一份（config.json 可能几十 MB，所以只在需要时读一次，不做常驻缓存）。
+   为什么凭据要落在配置卡上（本轮口径，见 docs/relay-admin.md）：
+     · 「设置 · 提供商」要显示完整 Key 并给出复制按钮，用户直接拿去给 Codex 等
+       OpenAI 兼容客户端用（Base URL 就是卡上那行）；
+     · 桌宠 / 插件宿主是**独立进程**，各自的 auth-store 解密上下文未必可用，
+       它们读同一份 config.json 就能拿到票（不再各领一张、也不再互相顶掉）；
+     · 本机 safeStorage 反复解不开（现场 error.log 里成片的 decryptString 失败）时，
+       配置文件里这一份是唯一能读回来的凭据。 */
+function relayCardOfDisk() {
+  try {
+    const file = join(DATA(), "config.json");
+    const st = statOf(file);
+    /* (mtimeMs, size) 没变就复用上一次读到的那张卡：这条路径会在「本机凭据档解不开」
+       的机器上被每个中转请求走到，而 config.json 本机 60+ MB，不能每次都整份 parse。 */
+    if (
+      relayCardCache &&
+      st &&
+      relayCardCache.mtimeMs === st.mtimeMs &&
+      relayCardCache.size === st.size
+    ) {
+      return relayCardCache.card;
+    }
+    const cfg = loadConfigText(file);
+    const list = (cfg && cfg.obj && cfg.obj.providers) || [];
+    const card =
+      list.find((p) => p && String(p.source || "") === RELAY_PROVIDER_SOURCE) || null;
+    relayCardCache = { mtimeMs: st ? st.mtimeMs : 0, size: st ? st.size : 0, card };
+    return card;
+  } catch {
+    return null;
+  }
+}
+let relayCardCache = null; /* { mtimeMs, size, card } —— 见 relayCardOfDisk 的注释 */
+/* 把中转真票写进磁盘 config.json 那张卡：只改 source=mtnode-relay 那一条的
+   apiKey 与 relay（{ at, expiresAt, rotate }），别的服务商一行不碰。
+   写法与 config:save 同口径：内容逐字没变就不碰磁盘；要写就先备份再原子替换。 */
+function writeRelayKeyToConfig(key, expiresAt, rotate, opts) {
+  const k = String(key || "").trim();
+  const allowPlaceholder = !!(opts && opts.allowPlaceholder);
+  /* 占位串只作「这张卡还没拿到真票」的识别标记，正常路径一律拒绝写它
+     （只有 relayAuthFailed 丢废票时才显式放行，见 clearRelayCredentialEverywhere）。 */
+  if (!k || (k === RELAY_KEY_PLACEHOLDER && !allowPlaceholder)) return false;
+  const file = join(DATA(), "config.json");
+  const got = loadConfigText(file);
+  if (!got || !got.obj || !Array.isArray(got.obj.providers)) return false;
+  const list = got.obj.providers;
+  const i = list.findIndex((p) => p && String(p.source || "") === RELAY_PROVIDER_SOURCE);
+  if (i < 0) return false;
+  const card = list[i] || {};
+  const prev = card.relay && typeof card.relay === "object" ? card.relay : {};
+  const nextRelay = Object.assign({}, prev, {
+    at: Date.now(),
+    expiresAt: Number(expiresAt || 0) || 0,
+  });
+  if (rotate && typeof rotate === "object") {
+    nextRelay.rotate = {
+      day: String(rotate.day || ""),
+      left: Math.max(0, Number(rotate.left) || 0),
+      limit: Math.max(0, Number(rotate.limit) || 0),
+      at: Date.now(),
+    };
+  }
+  list[i] = Object.assign({}, card, { apiKey: k, relay: nextRelay });
+  const text = JSON.stringify(got.obj, null, 2);
+  if (got.text === text) return true;
+  try {
+    backupConfigFile(file);
+    mk(path.dirname(file));
+    const tmp = file + ".tmp" + process.pid;
+    fs.writeFileSync(tmp, text, "utf8");
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    errLog("[relay] 中转 Key 写进 config.json 失败：" + String((err && err.message) || err));
+    return false;
+  }
+  rememberConfigWritten(file, got.obj, text);
+  /* 顺手把「盘上那张卡」的缓存指到刚写进去的这份：紧接着的 relay:keyInfo / providerAuthKey
+     就能立刻读到新票（只靠 mtime+size 判失效时，短时间连写两张同长度的票会读回旧值）。 */
+  const st2 = statOf(file);
+  relayCardCache = {
+    mtimeMs: st2 ? st2.mtimeMs : 0,
+    size: st2 ? st2.size : 0,
+    card: Object.assign({}, list[i]),
+  };
+  return true;
+}
+/* 凭据落两处（权威在本机凭据档，配置文件那份是给用户看 + 给独立进程读的）：
+   任何一处失败都不抛错，由调用方按返回值决定要不要提示。 */
+function saveRelayKeyEverywhere(key, expiresAt, rotate) {
+  let storeOk = false;
+  try {
+    const r = authStore.setRelayKey(key, expiresAt);
+    storeOk = !!(r && r.ok);
+  } catch (err) {
+    errLog("[relay] 中转 Key 落本机凭据失败：" + String((err && err.message) || err));
+  }
+  const configOk = writeRelayKeyToConfig(key, expiresAt, rotate);
+  if (!configOk) errLog("[relay] 中转 Key 没能写进 config.json（卡上会一直显示旧值）");
+  return { storeOk, configOk };
+}
+
+/* 本机中转票的现状（**含明文** —— 「卡上要显示完整 Key、可复制」是本轮的口径）：
+   盘上那张卡的 apiKey 优先（它就是 Codex / 桌宠读的那一份），没有才退回本机凭据档里的票。
+   口径：has/fromRelayKey = 本机有没有那张独立票；due = 剩余不足续期窗口
+   （窗口见 authStore.relayRenewBeforeMs，与 setRelayKey 同一份常量）。 */
+function relayKeyStateNow() {
+  const card = relayCardOfDisk();
+  const cardKey = String((card && card.apiKey) || "").trim();
+  const fromConfig = !!cardKey && cardKey !== RELAY_KEY_PLACEHOLDER;
+  let cur = null;
+  let writeIssue = "";
+  try {
+    cur = authStore.load();
+    writeIssue = authStore.writeIssue ? String(authStore.writeIssue() || "") : "";
+  } catch {
+    cur = null;
+  }
+  const storeKey = String((cur && cur.relayKey) || "");
+  const key = fromConfig ? cardKey : storeKey;
+  const expiresAt = fromConfig
+    ? Number((card.relay && card.relay.expiresAt) || 0) || 0
+    : cur
+      ? Number(cur.relayKeyExpiresAt || 0) || 0
+      : 0;
+  const renewBeforeMs =
+    authStore && typeof authStore.relayRenewBeforeMs === "function"
+      ? Number(authStore.relayRenewBeforeMs()) || RELAY_RENEW_BEFORE_MS
+      : RELAY_RENEW_BEFORE_MS;
+  const rot = (card && card.relay && card.relay.rotate) || null;
+  return {
+    has: !!key,
+    fromRelayKey: !!storeKey,
+    fromConfig: fromConfig,
+    key: key,
+    signedIn: !!(cur && cur.token),
+    expiresAt,
+    renewBeforeMs,
+    due: !!(key && expiresAt > 0 && expiresAt - Date.now() <= renewBeforeMs),
+    persisted: !!key && !writeIssue,
+    writeIssue,
+    rotate: rot
+      ? {
+          day: String(rot.day || ""),
+          left: Math.max(0, Number(rot.left) || 0),
+          limit: Math.max(0, Number(rot.limit) || 0),
+        }
+      : null,
+  };
+}
+
 ipcMain.handle("relay:me", async () => {
   const r = await storeRequest({ path: "/api/relay/me" });
   if (!r || !r.ok) {
@@ -4307,54 +4632,50 @@ ipcMain.handle("relay:me", async () => {
     };
   }
   const doc = (r && r.data) || {};
-  /* 服务端在这个入口**发/回**独立的中转 Key（180 天票）：拿到就存进本机加密凭据，
-     此后所有中转请求都用它（providerAuthKey 优先读它）。
-     服务端每次来领都发一张新的（库里只有 hash，现役票的明文取不回来 —— 见
-     store-saas/server.mjs 的 ensureRelayKey），所以这里的「沿用上一张」分支只用于
-     老服务端（回包里没有 relayKey 时，把新有效期记在那张票上）。 */
+  /* 服务端在这个入口**发/回**独立的中转 Key（3650 天票）：拿到就存进本机凭据档，
+     **同时写进 config.json 那张中转卡**（卡上显示完整 Key、桌宠与外部客户端读同一份）。
+     服务端幂发（已有现役票就原样返回同一张，见 store-saas/server.mjs 的 ensureRelayKey），
+     所以「沿用上一张」的分支只用于老服务端（回包里没有 relayKey 字段时把新有效期记上）。 */
   let keyState = {
     has: false,
+    fromConfig: false,
+    key: "",
     expiresAt: 0,
     due: false,
-    maskedKey: "",
     fromRelayKey: false,
     persisted: false,
     writeIssue: "",
+    rotate: null,
+  };
+  const rotateNow = {
+    day: String(doc.relayKeyRotateDay || ""),
+    left: Math.max(0, Number(doc.relayKeyRotateLeft) || 0),
+    limit: Math.max(0, Number(doc.relayKeyRotateLimit) || 0),
   };
   try {
     const before = authStore.load();
     const issued = String(doc.relayKey || "").trim();
     const exp = Number(doc.relayKeyExpiresAt || 0) || 0;
-    if (issued) authStore.setRelayKey(issued, exp);
-    else if (before && before.relayKey && exp && exp !== before.relayKeyExpiresAt) {
-      authStore.setRelayKey(before.relayKey, exp);
+    if (issued) {
+      saveRelayKeyEverywhere(issued, exp, rotateNow);
+    } else {
+      const held = String((before && before.relayKey) || "").trim();
+      if (held) {
+        /* 服务端这次没发票（幂发）或老服务端：把手上这张补写进配置卡 ——
+           卡上从来只显示真票，占位串不下发、也不显示（见 relay:keyInfo）。 */
+        saveRelayKeyEverywhere(held, exp || Number((before && before.relayKeyExpiresAt) || 0) || 0, rotateNow);
+      }
     }
-    const after = authStore.load();
     /* persisted = 这次领到的票**真的落到本机并能读回来**。写下去读不回来时
        （系统加密上下文出问题，见 auth-store.js 的写后回读校验）必须让界面说清，
        否则用户看到的就是「按提示重登了、凭据还是没有」的死循环。 */
     const writeIssue = authStore.writeIssue ? String(authStore.writeIssue() || "") : "";
-    keyState = {
-      has: !!(after && after.relayKey),
-      expiresAt: after ? Number(after.relayKeyExpiresAt || 0) || 0 : 0,
-      due: !!(
-        after &&
-        after.relayKey &&
-        Number(after.relayKeyExpiresAt || 0) > 0 &&
-        Number(after.relayKeyExpiresAt) - Date.now() <= RELAY_RENEW_BEFORE_MS
-      ),
-      /* 打码串一并回给渲染层：领到票的这一刻卡上「凭据」那一行就该从占位串换成真凭据的
-         打码（与 relay:keyInfo 同一口径，明文照旧不出主进程）。 */
-      maskedKey: maskSecret(String((after && after.relayKey) || "")),
-      fromRelayKey: !!(after && after.relayKey),
-      persisted: !!(after && after.relayKey) && !writeIssue,
-      writeIssue,
-    };
+    keyState = relayKeyStateNow();
     if (issued && !keyState.has) {
       errLog(
         "[relay] 领到中转 Key 但没能存住（writeIssue=" +
-          (writeIssue || "-") +
-          "）：界面会提示重新登录一次",
+          (writeIssue || keyState.writeIssue || "-") +
+          "）：客户端会自己再领一次，界面只在确实救不回来时才提示重新登录",
       );
     }
   } catch (err) {
@@ -4363,8 +4684,14 @@ ipcMain.handle("relay:me", async () => {
   return {
     ok: true,
     at: Date.now(),
-    /* 凭据状态一并回给渲染层（不含明文）：卡上显示有效期、主进程据此判「该续期了」 */
+    /* 凭据状态一并回给渲染层（**含明文**：卡上要显示完整 Key，见 relay:keyInfo 的口径） */
     keyState,
+    /* 明文真票与有效期：渲染层把它写进内存里的中转卡（下次 config:save 落盘同一串）。
+       它已经落在 config.json 上，所以回渲染层不新增暴露面。 */
+    key: keyState.key,
+    keyExpiresAt: keyState.expiresAt,
+    /* 手动轮换的当日余量（卡上「更换 Key」按钮据此显示 n/5）。 */
+    rotate: keyState.rotate || rotateNow,
     /* 服务端这次到底发没发独立票（老服务端回包里没有 relayKey 字段 = false）。
        客户端据此把「服务端没发」与「发了没存住」分开说，别再让用户瞎重登。 */
     issuedRelayKey: !!String(doc.relayKey || "").trim(),
@@ -4387,70 +4714,143 @@ ipcMain.handle("relay:me", async () => {
   };
 });
 
-/* 凭据打码串（**只给界面看**）：前 4 + **** + 后 4，中间一律星号，
-   长度不足 8 位时退回全星号 —— 宁可不显示，也不让打码串把短凭据整串漏出去
-   （「前 4 + 后 4」在长度 ≤ 7 时会等于原文）。 */
-function maskSecret(secret) {
-  const s = String(secret == null ? "" : secret);
-  if (!s) return "";
-  if (s.length <= 7) return "*".repeat(s.length);
-  return s.slice(0, 4) + "****" + s.slice(-4);
-}
-
-/* 设置 · 提供商的只读卡要「看得见凭据是什么」，又不能把明文交出去：
-   这里只回打码串（见 maskSecret）+ 长度与来源标签，**真 token 一辈子不出主进程**
-   （登录态里已经没有任何一串能拼回原文的信息）。未登录 / 无凭据时 maskedKey 为空串。 */
-ipcMain.handle("relay:keyInfo", () => {
-  let cur = null;
-  let readIssue = null;
-  let writeIssue = "";
-  try {
-    cur = authStore.load();
-    readIssue = authStore.readIssue ? authStore.readIssue() : null;
-    writeIssue = authStore.writeIssue ? String(authStore.writeIssue() || "") : "";
-  } catch {
-    cur = null;
+/* 手动更换中转 Key（「设置 · 提供商」中转卡上的那个按钮）：
+   POST /api/relay/me { rotate: true } —— 幂发口径下 GET 只会拿回同一张票，
+   想换一张必须走这个显式入口；服务端按账号自然日限 5 次，超限回 429。
+   换到的票照旧落两处（本机凭据档 + config.json 那张卡），旧票由服务端立即作废。 */
+ipcMain.handle("relay:rotateKey", async () => {
+  const r = await storeRequest({
+    path: "/api/relay/me",
+    method: "POST",
+    json: { rotate: true },
+  });
+  const doc = (r && r.data) || {};
+  const status = Number((r && r.status) || 0) || 0;
+  if (!r || !r.ok) {
+    const rotateLimit = {
+      day: String(doc.relayKeyRotateDay || ""),
+      left: Math.max(0, Number(doc.relayKeyRotateLeft) || 0),
+      limit: Math.max(0, Number(doc.relayKeyRotateLimit) || 0),
+    };
+    return {
+      ok: false,
+      status,
+      code: String(doc.code || (r && r.code) || ""),
+      error: String(
+        doc.error ||
+          (status === 429
+            ? I18n.t("今日更换次数已用完（5/5）")
+            : status === 401
+              ? I18n.t("请先登录 MTNode 账号")
+              : I18n.t("更换中转 Key 失败，请稍后重试")),
+      ),
+      rotate: rotateLimit,
+    };
   }
-  /* 卡上显示的是**真正会下发的那张凭据**：优先独立的中转 Key，没有才退回登录 token
-     （老凭据的过渡态，用户下一次登录即换成独立票）。 */
-  const token = String((cur && cur.relayKey) || (cur && cur.token) || "");
-  const relayExpiresAt = cur ? Number(cur.relayKeyExpiresAt || 0) || 0 : 0;
+  const key = String(doc.relayKey || "").trim();
+  const exp = Number(doc.relayKeyExpiresAt || 0) || 0;
+  if (!key) {
+    return { ok: false, status, error: I18n.t("服务端没有下发新的中转 Key，请稍后重试") };
+  }
+  const rotate = {
+    day: String(doc.relayKeyRotateDay || ""),
+    left: Math.max(0, Number(doc.relayKeyRotateLeft) || 0),
+    limit: Math.max(0, Number(doc.relayKeyRotateLimit) || 0),
+  };
+  const saved = saveRelayKeyEverywhere(key, exp, rotate);
+  /* 刚换过票：清掉补领冷却，让紧接着的补领不受窗口影响。 */
+  lastRelayMintAt = 0;
+  errLog(
+    "[relay] 已手动更换中转 Key（当日第 " +
+      String(Math.max(0, rotate.limit - rotate.left)) +
+      "/" +
+      String(rotate.limit) +
+      " 次，有效期至 " +
+      (exp ? new Date(exp).toISOString() : "-") +
+      "，config.json " +
+      (saved.configOk ? "已更新" : "未更新") +
+      "）",
+  );
+  try {
+    notifyAuthChanged();
+  } catch {}
   return {
     ok: true,
-    signedIn: !!(cur && cur.token),
-    /* 独立票的状态（只给界面显示与续期判断，绝不含明文）：
-       fromRelayKey = 这张打码凭据来自独立票（false = 还是登录 token 兜底）；
-       expiresAt / renewBeforeMs / renewDue = 有效期与「该续期了」。 */
-    fromRelayKey: !!(cur && cur.relayKey),
-    expiresAt: relayExpiresAt,
-    renewBeforeMs: RELAY_RENEW_BEFORE_MS,
-    renewDue: !!(
-      cur &&
-      cur.relayKey &&
-      relayExpiresAt > 0 &&
-      relayExpiresAt - Date.now() <= RELAY_RENEW_BEFORE_MS
-    ),
-    maskedKey: maskSecret(token),
-    keyLength: token.length,
-    /* from = "store"（账号登录 token，中转站的 Key 就是它） / "placeholder"（没有凭据时
-       界面照 config.json 里的占位串打码显示） */
-    from: token ? "store" : "placeholder",
+    key,
+    keyExpiresAt: exp,
+    rotate,
+    storeOk: saved.storeOk,
+    configOk: saved.configOk,
+  };
+});
+
+/* 设置 · 提供商的「MTNode 中转服务」卡要**显示完整 Key**（用户要把它复制给
+   Codex 等 OpenAI 兼容客户端，Base URL 就是卡上那行），所以这里回明文 ——
+   它同时已经落在本机 config.json 的那张卡上，回渲染层不新增暴露面。
+   未登录 / 没票时 key 为空串，卡片据此提示「点刷新中转清单 / 先登录」，
+   绝不把占位串当 Key 显示或下发（见 providerAuthKey）。 */
+ipcMain.handle("relay:keyInfo", () => {
+  let readIssue = null;
+  try {
+    readIssue = authStore.readIssue ? authStore.readIssue() : null;
+  } catch {}
+  const st = relayKeyStateNow();
+  const writeIssue = st.writeIssue === "write_unverified" ? st.writeIssue : "";
+  return {
+    ok: true,
+    signedIn: st.signedIn,
+    /* 明文真票 + 它来自哪里：fromConfig = 配置卡上那份（Codex / 桌宠读的就是它）；
+       fromRelayKey = 本机凭据档里也有同一张。 */
+    key: st.key,
+    keyLength: st.key.length,
+    fromConfig: st.fromConfig,
+    fromRelayKey: st.fromRelayKey,
+    expiresAt: st.expiresAt,
+    renewBeforeMs: st.renewBeforeMs,
+    renewDue: st.due,
+    /* 手动轮换的当日余量（最后一次同步时的值，卡上显示 n/5）。 */
+    rotate: st.rotate,
+    /* from = "store"（本机有账号凭据） / "none"（没凭据，卡上不该有 Key）。
+       老口径的 "placeholder" 已随明文卡口径一并去掉。 */
+    from: st.signedIn ? "store" : "none",
     /* 没有凭据时的原因："" = 本来就没登录；"decrypt_failed" / "encryption_unavailable"
        = 凭据文件在、但这台机器解不开（换 Windows 账号 / 换机器 / 密钥变了）⇒ 重新登录一次。
        卡片据此把「没登录」和「凭据读不出来」分开说（见 auth-store.js 的 readIssue）。 */
     readIssue: String(readIssue || ""),
     /* 写侧的坏消息（"write_unverified" = 写下去读不回来 / "save_fallback" = 退回本机密钥
        加密存下了）。与 readIssue 分开：写失败时文件已被隔离，readIssue 看不出问题。 */
-    writeIssue: writeIssue === "write_unverified" ? writeIssue : "",
+    writeIssue,
   };
 });
+
+/* 丢掉那张已作废的中转票 —— **两处一起丢**，否则下一次请求还会从配置卡里把废票读出来
+   （那正是「按提示重登了、还是恒 401」的机器上会发生的事）：
+     · 本机凭据档：authStore.clearRelayKey()（只清票，登录态一律不动）；
+     · 配置卡：apiKey 退回占位标记 RELAY_KEY_PLACEHOLDER（=「这张卡还没拿到真票」，
+       它绝不下发给上游，见 providerAuthKey）。
+   紧接着由 ensureRelayCredential 补一张新票，补到就两处一起写回（saveRelayKeyEverywhere）。 */
+function clearRelayCredentialEverywhere() {
+  try {
+    authStore.clearRelayKey();
+  } catch (err) {
+    errLog("[relay] 清本机中转票失败：" + String((err && err.message) || err));
+  }
+  try {
+    writeRelayKeyToConfig(RELAY_KEY_PLACEHOLDER, 0, null, { allowPlaceholder: true });
+  } catch (err) {
+    errLog("[relay] 配置卡退回占位标记失败：" + String((err && err.message) || err));
+  }
+}
 
 /* 中转站 401 的**唯一处理点**（只认中转链路，别的服务商 401 一律不动登录态）：
    识别靠错误文案最前面的 MTNODE_RELAY_AUTH 标记（store-saas/relay.mjs 写在最前面），
    或「请求确实打到了那张中转卡」+ 401/403 这一组合。命中即：
-     · 清掉本机凭据（那张票服务端已经不认了，留着只会一直撞 401）；
-     · 播 authChanged —— 渲染层据此弹「登录已失效，请重新登录」并在会话里插一条可点的提示。
-   返回 true = 这次是「中转凭据失效」。
+     · **只丢掉那张作废的中转票**（凭据档 + 配置卡两处，见 clearRelayCredentialEverywhere）——
+       留着只会一直撞 401，但**账号登录态必须保住**：老写法整份 clear() 等于逼用户重新登录，
+       而登录后再领票失败就是死循环（上报症状 =「登录了还是恒 401」）；
+     · 调用方接着用 ensureRelayCredential 补一张新票并重试这一次请求；
+     · 渲染层只在「补领也失败」时才提示重新登录（见 renderer/app-relay-auth.js）。
+   返回 true = 这次确实是「中转凭据失效」（调用方可以补票后重试一次）。
 
    **只有真正的认证失败才算**（status 401/403，或标记 + 4xx）：带标记的响应在
    5xx / 网络错误下也会出现，那种情况是服务端抖了一下，把本机凭据清掉等于让用户白重登一次。 */
@@ -4468,31 +4868,130 @@ function relayAuthFailed(info) {
      清掉只会让用户白重登一次（重登本身在这个 bug 里就是用户最痛的动作）。 */
   if (!authStatus) {
     errLog("[relay] 中转服务异常（HTTP " + status + "），保留本机凭据不清理");
-    return false;
+    /* 非认证类但确实带标记（服务端 5xx 也用它报中转链路异常）：凭据不动，
+       返回 "marked" 让调用方至少别再把这串内部标记甩到用户脸上。 */
+    return "marked";
   }
   try {
-    authStore.clear();
+    clearRelayCredentialEverywhere();
   } catch {}
-  try {
-    notifyAuthChanged();
-  } catch {}
-  errLog("[relay] 中转凭据失效（HTTP " + status + "）：已清理本机凭据并提示重新登录");
+  /* 刚清掉票：把「最近补领时刻」也清掉，让紧接着的补领不受冷却窗口影响
+     （冷却只为挡住 401 风暴，不该挡住这一次真正的补票）。 */
+  lastRelayMintAt = 0;
+  errLog("[relay] 中转票失效（HTTP " + status + "）：已丢掉该票（登录态保留），准备自动补领");
   return true;
 }
 
-/* 下发凭据：中转服务用**独立的中转 Key**（现取现用），其余服务商用配置里的 API Key。
-   中转 Key 与登录会话是两码事（见 store-saas/server.mjs 的 issueRelayKey）：
-     · 优先用本机存下的独立票（180 天，主进程解密后现取现用，明文不出主进程、不落 config.json）；
-     · 老凭据还没有独立票时退回登录 token 兜底 —— 首次请求会拿到服务端的「请重新登录一次」，
-       客户端据此清凭据并提示；用户重登一次即补上独立票。 */
+/* 下发凭据：中转服务用**配置卡上的真票**（config.json 里那张卡的 apiKey），
+   别的服务商用各自配置里的 API Key。
+   为什么读卡而不是读本机凭据档（本轮口径）：卡上那份就是用户看见、复制、给 Codex 用
+   以及桌宠 / 插件宿主读的那一份 —— 三处同源才不会出现「界面显示一张、请求发另一张」。
+   只有两种情形才回退到本机凭据档里的票：
+     · 老配置迁移态：卡上还是空 / 还是占位串（RELAY_KEY_PLACEHOLDER）；
+     · 本机刚因 401 把票清掉（relayAuthFailed → clearRelayKey）。
+   绝不回退到登录 token —— 中转数据面只认 kind=relay 的独立票，拿登录 token 打过去必然 401。 */
 function providerAuthKey(provider) {
   const p = provider || {};
   if (String(p.source || "") === RELAY_PROVIDER_SOURCE) {
-    const cur = authStore.load();
-    if (!cur) return "";
-    return String(cur.relayKey || "") || String(cur.token || "");
+    const own = String(p.apiKey == null ? "" : p.apiKey).trim();
+    if (own && own !== RELAY_KEY_PLACEHOLDER) return own;
+    try {
+      const cur = authStore.load();
+      const k = String((cur && cur.relayKey) || "").trim();
+      if (k) return k;
+    } catch {
+      /* 凭据档解不开：接着看盘上那张卡（下面那条兜底） */
+    }
+    /* 最后一道兜底：盘上 config.json 那张卡里的真票。
+       走渲染层传下来的 provider 对象时，它可能还带着占位串（老配置 / 刚换过票的旧对象），
+       而本机凭据档在这台机器上又可能写不进 / 读不回（safeStorage 反复 decrypt_failed）——
+       配置卡是三者里唯一「写下去一定读得回来」的那一份。 */
+    const card = relayCardOfDisk();
+    const ck = String((card && card.apiKey) || "").trim();
+    return ck && ck !== RELAY_KEY_PLACEHOLDER ? ck : "";
   }
   return String(p.apiKey == null ? "" : p.apiKey).trim();
+}
+
+/* ── 中转票的自动补领（本 bug 的正解）────────────────────────────────────────
+   上报症状：登录成功、界面显示已登录，用中转模型仍然恒 401「中转 Key 已失效，请重新登录」。
+   根因：领票只有「登录那一刻 / 打开设置」两个时机（renderer/app-relay.js 的 syncIfStale），
+   而它判「要不要领」看的是**本机快照**在不在 —— 本机有卡（快照）但票丢了 / 被顶掉时，
+   这条链一个请求都不发；而中转数据面只认 kind=relay 的独立票 ⇒ 恒 401，
+   提示却让用户重登（用户照做多少遍都没用）。这里补上主进程侧的兜底：
+   缺票就补、撞 401 也补，补完调用方重试一次，用户零操作。
+
+   口径：
+     · 认登录会话（authStore.load().token）；没登录 / 凭据解不开一律不发请求（不白撞服务端，
+       也符合「未登录不允许使用」）；
+     · 领票与 relay:me 同一条路（storeRequest /api/relay/me + setRelayKey），明文只在本进程内过一手；
+     · 并发去重（同一个 in-flight 复用）+ 冷却（RELAY_MINT_GAP_MS），避免 401 风暴打成洪峰；
+     · 服务端一票制：补领会顶掉该账号旧票（多设备互顶是既定口径，本轮未改）。 */
+const RELAY_MINT_GAP_MS = 30 * 1000;
+let relayMintInflight = null;
+let lastRelayMintAt = 0;
+/* 启动后是否已经白试过一次「本机缺票就补领」——只在内存里，重启即重来一次。
+   没有它，一个未登录 / 解不开凭据的进程会对每个请求都去打一次发放口。 */
+let relayBootMintTried = false;
+
+function ensureRelayCredential(opts) {
+  const o = opts || {};
+  const src = o.provider || {};
+  /* 只对中转卡动手：别的服务商 401 = Key 填错，与账号登录态无关（老口径的边界不变） */
+  if (String(src.source || "") !== RELAY_PROVIDER_SOURCE) return Promise.resolve(false);
+  let cur = null;
+  try {
+    cur = authStore.load();
+  } catch {
+    cur = null;
+  }
+  /* 未登录 / 凭据解不开：没有可用的登录会话去换票，**不发请求**。
+     界面照旧按 relay:keyInfo 的 readIssue 提示「重新登录一次」。 */
+  if (!cur || !String(cur.token || "")) return Promise.resolve(false);
+  const hasKey = !!String(cur.relayKey || "");
+  if (!o.force && hasKey) return Promise.resolve(false);
+  /* 非强制（请求前的自愈）时一个进程只白试一次：登录 / 打开设置都会经 relay:me 领票，
+     这里只是兜底，不该对每个请求都打一次发放口。撞 401 的补领走 force，不受这条限制。 */
+  if (!o.force && relayBootMintTried) return Promise.resolve(false);
+  if (!o.force) relayBootMintTried = true;
+  if (relayMintInflight) return relayMintInflight;
+  const now = Date.now();
+  if (now - lastRelayMintAt < RELAY_MINT_GAP_MS) return Promise.resolve(false);
+  lastRelayMintAt = now;
+  const p = (async () => {
+    try {
+      const r = await storeRequest({ path: "/api/relay/me" });
+      const doc = (r && r.ok && r.data) || null;
+      const key = String((doc && doc.relayKey) || "").trim();
+      const exp = Number((doc && doc.relayKeyExpiresAt) || 0) || 0;
+      if (!key) {
+        errLog(
+          "[relay] 自动补领没拿到新票（服务端 status=" +
+            String((r && r.status) || 0) +
+            "）：交给渲染层提示",
+        );
+        return false;
+      }
+      const saved = saveRelayKeyEverywhere(key, exp);
+      const okSaved = saved.storeOk || saved.configOk;
+      if (!okSaved) {
+        errLog("[relay] 自动补领到的票没能存住（凭据档与 config.json 都写失败）：交给渲染层提示");
+        return false;
+      }
+      errLog("[relay] 已自动补领一张中转票（有效期至 " + new Date(exp).toISOString() + "）");
+      try {
+        notifyAuthChanged();
+      } catch {}
+      return true;
+    } catch (err) {
+      errLog("[relay] 自动补领中转票失败：" + String((err && err.message) || err));
+      return false;
+    } finally {
+      relayMintInflight = null;
+    }
+  })();
+  relayMintInflight = p;
+  return p;
 }
 
 /* 主进程插件宿主（Music3 / H3 等）解析 dsh.run 凭据时也读同一份 config.json：
@@ -5223,11 +5722,19 @@ function relayAuthFailure(provider, status, j, text) {
   if (String(raw).indexOf(RELAY_AUTH_MARK) < 0) return false;
   return relayAuthFailed({ provider, status, body: String(raw) });
 }
-function stripRelayAuthMark(msg) {
-  return String(msg || "")
-    .split(RELAY_AUTH_MARK)
-    .join("")
-    .trim();
+/* 给用户看的错误文案（**所有抛错路径的唯一出口**）：
+   中转凭据失效的那一支收敛成一句「无效的 API Key」——用户口径：中转 Key 由客户端自己领、
+   撞 401 自己换票重发（见 ensureRelayCredential），真救不回来只该看到这一句人话，
+   而不是上游那一大段 `401: {"message":"MTNODE_RELAY_AUTH 中转 Key 已失效…","code":"invalid_api_key"}`。
+   relayAuth 可以是 relayAuthFailure 的返回值：true = 凭据失效（已清票、调用方会补票重试）、
+   "marked" = 服务端 5xx 也带了这个内部标记（凭据没动，但标记不该给用户看）。
+   别的错误（上游限流、模型不存在、断网…）照旧原样透出，不掩盖真实原因。 */
+function apiErrUser(status, j, text, relayAuth) {
+  const raw = String(
+    (j && j.error && (j.error.message || String(j.error))) || text || "",
+  );
+  if (relayAuth || raw.indexOf(RELAY_AUTH_MARK) >= 0) return I18n.t("无效的 API Key");
+  return apiErr(status, j, text);
 }
 function apiErr(status, j, text) {
   const msg = j && j.error && (j.error.message || String(j.error));
@@ -5614,8 +6121,7 @@ function applyTextThinkingEffort(body, effort) {
               png（配 jpeg 会 400）。编辑接口的透明是「重绘去背」，不是精确抠像。
    mask       仅对第 1 张 image 生效，须与原图同尺寸、带 alpha 通道的 PNG（<4MB）。
               语义：**透明区域 = 允许模型编辑**，不透明区域 = 尽量保留原图。
-   参考：https://docs.apiyi.com/api-capabilities/gpt-image-2/image-edit
-        https://docs.apiyi.com/api-capabilities/gpt-image-2/mask-editing           */
+   参考：OpenAI 兼容图像服务的 gpt-image 系列文档（编辑 / 蒙版局部重绘两节）        */
 const GPT_IMAGE_QUALITIES = ["low", "medium", "high", "xhigh", "max", "auto"];
 const GPT_IMAGE_BACKGROUNDS = ["transparent", "opaque", "auto"];
 function apiQualityOf(v) {
@@ -5883,7 +6389,7 @@ function buildRequestSpec(
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const reqType = effectiveProviderType(provider, kind);
   const auth = {
-    /* 中转服务（source=mtnode-relay）在这里换成账号登录 token：配置里只有占位串 */
+    /* 凭据统一走 providerAuthKey：中转卡读的就是卡上那串真票（见该函数的取值顺序） */
     Authorization: "Bearer " + providerAuthKey(provider),
     "Content-Type": "application/json",
   };
@@ -6230,6 +6736,13 @@ async function apiCall({
   timeoutHeader,
   timeoutChunk,
 }) {
+  /* 请求前的中转票自愈：本机有账号登录态却没有独立票时先补一张（一个进程一次），
+     免得第一次请求白撞一次服务端 401。没有中转卡 / 没登录时它立刻返回 false。 */
+  await ensureRelayCredential({ provider });
+  /* 一次真正的请求：请求体构造 + 发送 + 响应解析，整段包成 attempt()。
+     **它必须是 apiCall 里唯一的一层显式块**：回归（test/smoke-relay-client.js）
+     按花括号配平取 apiCall 的函数体，多包一层就会把重试那段切到窗外。 */
+  const attempt = async () => {
   checkProvider(provider);
   /* 本次请求要走的接口族（与 buildRequestSpec 同一判据，见 effectiveProviderType）：
      图像请求不被服务商级 type 拦住 —— text_openai 的混合端点照旧按 OpenAI 兼容图像端点发。 */
@@ -6273,7 +6786,7 @@ async function apiCall({
     );
     if (status >= 400) {
       const relayAuth = relayAuthFailure(provider, status, j, text);
-      const err = new Error(stripRelayAuthMark(apiErr(status, j, text)));
+      const err = new Error(apiErrUser(status, j, text, relayAuth));
       err.httpStatus = status;
       if (relayAuth) { err.code = "RELAY_AUTH_FAILED"; err.relayAuth = true; }
       throw err;
@@ -6353,7 +6866,7 @@ async function apiCall({
     }
     if (status >= 400) {
       const relayAuth = relayAuthFailure(provider, status, j, text);
-      const err = new Error(stripRelayAuthMark(apiErr(status, j, text)));
+      const err = new Error(apiErrUser(status, j, text, relayAuth));
       err.httpStatus = status;
       if (relayAuth) { err.code = "RELAY_AUTH_FAILED"; err.relayAuth = true; }
       throw err;
@@ -6375,7 +6888,7 @@ async function apiCall({
     );
     if (status >= 400) {
       const relayAuth = relayAuthFailure(provider, status, j, text);
-      const err = new Error(stripRelayAuthMark(apiErr(status, j, text)));
+      const err = new Error(apiErrUser(status, j, text, relayAuth));
       err.httpStatus = status;
       if (relayAuth) { err.code = "RELAY_AUTH_FAILED"; err.relayAuth = true; }
       throw err;
@@ -6389,6 +6902,22 @@ async function apiCall({
   }
 
   throw new Error(I18n.t("未知服务商类型：") + provider.type);
+  };
+
+  /* 中转票失效（401）的自动兜底：补一张新票 —— ensureRelayCredential 走 /api/relay/me 现领，
+     并用 setRelayKey 落本机 —— 补到了就**原样重发这一次请求**。
+     补不到（未登录 / 凭据解不开 / 服务端发的还是空票 / 在冷却窗口内）就把原错误抛出去，
+     渲染层才提示「重新登录一次」：用户不会再因为「本机有卡但票没了」白重登。
+     重试只一次，再失败就是真失败（余额、模型、上游等），交给调用方报错。 */
+  let first = null;
+  try {
+    return await attempt();
+  } catch (err) {
+    first = err;
+  }
+  if (!(first && first.relayAuth)) throw first;
+  if (!(await ensureRelayCredential({ provider, force: true }))) throw first;
+  return await attempt();
 }
 
 /* 无 Token 消耗的 API Key 校验：OpenAI 兼容走 GET /models；
@@ -6397,8 +6926,8 @@ async function validateApiKey(provider) {
   checkProvider(provider);
   const base = String(provider.baseUrl).trim().replace(/\/+$/, "");
   const headers = {
-    /* 走 providerAuthKey：中转卡（source=mtnode-relay）配置里只有占位串，
-       真凭据是账号登录态 —— 直取 provider.apiKey 会让「验证 Key」对中转卡恒失败。 */
+    /* 走 providerAuthKey：中转卡的凭据在卡上（老配置里还是占位串时由它兜底），
+       直取 provider.apiKey 会让老配置的「验证 Key」对中转卡恒失败。 */
     Authorization: "Bearer " + providerAuthKey(provider),
     Accept: "application/json",
   };
@@ -6705,7 +7234,7 @@ function streamTextChat(req, emit) {
               j = JSON.parse(buf);
             } catch {}
             const relayAuth = relayAuthFailure(req.provider, res.statusCode, j, buf);
-            const e = new Error(stripRelayAuthMark(apiErr(res.statusCode, j, buf)));
+            const e = new Error(apiErrUser(res.statusCode, j, buf, relayAuth));
             e.httpStatus = res.statusCode;
             if (relayAuth) { e.code = "RELAY_AUTH_FAILED"; e.relayAuth = true; }
             reject(e);
@@ -6791,6 +7320,93 @@ function streamTextChat(req, emit) {
    接口不支持 stream（HTTP 4xx）时回退非流式单次请求，口径与节点调用一致。
    返回里多带 finishReason / truncated：应用要能把「正文被输出上限截断」与「模型就是没给 JSON」
    分开（实测 deepseek-v4 开思考 + max_tokens 1200 时 6 次里 4 次被截断成半截 JSON）。 */
+/* ── 应用通道的本机图像后端适配（appHost.imageGen 的本地那一路）─────────────────
+ * 与画布节点 sensenova_gen 共用同一份宿主实现：同一个全局互斥锁、同一份产物托管目录约定、
+ * 同一套错误码。这里只做三件应用侧特有的事：
+ *   ① 出图前先看全局锁：被音乐 / 视频 / 别的图像任务占着时直接回 busy_media（不透支后端）；
+ *   ② 产物落**该应用自己的数据目录** gen/（应用的东西归应用，不占画布资产目录）；
+ *   ③ 进度快照只回应用关心的字段（阶段 / 步数 / 百分比 / 已耗时）。
+ * 拿不到应用 id（老调用）时退回默认托管目录 —— 宿主自己会说明产物落在哪。 */
+function sensenovaAppGenerate(params) {
+  const o = params && typeof params === "object" ? params : {};
+  const lock = mediaGenLock.refreshStaleLock();
+  const nodeId = String(o.nodeId || "app-image");
+  if (lock && lock.nodeId && lock.nodeId !== nodeId) {
+    return Promise.resolve({
+      ok: false,
+      error: "busy_media",
+      lock: lock,
+      message: mediaGenLock.busyMessage(lock),
+    });
+  }
+  let outputDir = String(o.outputDir || "");
+  if (!outputDir) {
+    try {
+      /* 应用数据目录：<数据目录>/apps-data/<id>/gen —— 与 preload 侧的 dataRead/Write 同一根，
+         只是产物不放 data.json（那是应用自己写的整份 JSON），另开一个子目录更干净。
+         调用方显式给了 outputDir（函数节点把图落画布资产目录）时优先用它。 */
+      const id = String(o.appId || "").trim();
+      if (id) {
+        outputDir = path.join(DATA, "apps-data", id, "gen");
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+    } catch {
+      outputDir = "";
+    }
+  }
+  return sensenovaGenerateImage({
+    nodeId: nodeId,
+    prompt: o.prompt,
+    refImages: Array.isArray(o.refImages) ? o.refImages : [],
+    /* 参考强度（应用侧 strength 0–1 已由 apps-store 映射成本机后端认的 imgCfgScale；
+       不传 = 后端按官方默认 1.0 = 关闭图像 CFG）。历史上这里漏了透传，应用侧调不到强度。 */
+    imgCfgScale: o.imgCfgScale,
+    ratio: o.ratio,
+    width: o.width,
+    height: o.height,
+    timeoutMs: o.timeoutMs,
+    outputDir: outputDir,
+  });
+}
+/* 进度快照：直接读本机后端自己的 /progress（后端单例，端口由宿主给出）。
+   为什么不用 sensenova:progress 事件：那条事件广播给所有窗口，应用窗口按 reqId 分不清是哪一次；
+   而本机后端同一时刻只跑一张图，所以按 reqId 轮询一次快照就够，也不给应用开新的事件面。
+   拿不到（后端没起 / 没这一步）回 null —— 应用只是「没有更细的进度」，不影响出图。 */
+async function sensenovaAppSnapshot() {
+  try {
+    const st = sensenovaImageHostInfo();
+    const port = Number(st && st.port) || 0;
+    if (!port) return null;
+    const body = await new Promise((resolve) => {
+      const req = http.get({ host: "127.0.0.1", port: port, path: "/progress", timeout: 2500 }, (res) => {
+        let raw = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => { raw += c; if (raw.length > 64 * 1024) req.destroy(); });
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(raw));
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      req.on("timeout", () => { req.destroy(); resolve(null); });
+      req.on("error", () => resolve(null));
+    });
+    if (!body || typeof body !== "object") return null;
+    return {
+      stage: String(body.stage || ""),
+      message: String(body.message || ""),
+      step: Number(body.step) || 0,
+      totalSteps: Number(body.totalSteps) || 0,
+      pct: Math.max(0, Math.min(99, Number(body.percent) || 0)),
+      elapsedSec: Number(body.elapsedSec) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function appsAiCallStream(spec, emit) {
   checkProvider(spec.provider);
   const req = buildRequestSpec(
@@ -6880,6 +7496,13 @@ ipcMain.handle("api:callStream", async (e, spec) => {
   } catch (err) {
     if (err && err.httpStatus >= 400 && spec.kind === "text") {
       try {
+        /* 流式先被拒（httpStatus >= 400，流还没吐出任何字节）时的兜底重发。
+           中转票失效（err.relayAuth）要先补一张新票，否则这一次重发照样 401 ——
+           与 apiCall 里那套「补票 + 重试一次」同一口径。 */
+        if (err.relayAuth) {
+          const got = await ensureRelayCredential({ provider: spec.provider, force: true });
+          if (!got) throw err;
+        }
         const r = await apiCall(spec);
         emit("done", { text: r.text || "" });
         return { ok: true };
@@ -6944,18 +7567,11 @@ ipcMain.handle("api:preview", async (e, spec) => {
       request: {
         method: req.method,
         url: req.url,
-        /* 预览里 Authorization 的口径**按来源分**（本轮新增）：
-           · 中转卡：真凭据是账号登录态（见 providerAuthKey），明文不回渲染层 —— 只给打码串；
-           · 其余服务商：用户自己填的 Key 本来就在渲染层手里，照原样回显（预览要能核对）。 */
-        headers: (() => {
-          const h = Object.assign({}, req.headers || {});
-          if (String(provider.source || "") === RELAY_PROVIDER_SOURCE) {
-            for (const k of Object.keys(h)) {
-              if (/^authorization$/i.test(k)) h[k] = "Bearer " + maskSecret(providerAuthKey(provider));
-            }
-          }
-          return h;
-        })(),
+        /* 预览里的 Authorization 一律**照原样回显**（本轮口径）：
+           中转卡上的 Key 就是用户在「设置 · 提供商」里看得见、复制得走的那一串
+           （见 providerAuthKey / relay:keyInfo），预览没必要再打码 ——
+           而打码串反而让人核对不出「这次到底带的是哪张票」（旧口径的坑之一）。 */
+        headers: Object.assign({}, req.headers || {}),
         multipart,
         body: mp ? null : JSON.parse(JSON.stringify(req.body)),
       },
@@ -6990,9 +7606,8 @@ ipcMain.handle("dsh:installNode", () =>
     .catch((e) => ({ ok: false, error: e.message || String(e) }))
 );
 
-/* 中转服务的凭据对智体会话同样适用：DSH 网关拿到的 provider 里
-   source=mtnode-relay 的那份 apiKey 只是占位串，交给网关前换成账号 token
-   （网关把它写进运行时的 MTNODE_KEY_i，渲染层全程看不到真凭据）。
+/* 中转服务的凭据对智体会话同样适用：配置卡上那串真票（老配置里可能还是占位串）
+   在交给网关前统一解析一次（网关把它写进运行时的 MTNODE_KEY_i）。
 
    **为什么不能只看 source**：渲染层各处拼这张服务商表时（renderer/app-agent.js 的
    mtnodePiProviders → app-db.js 的 runParams.mtnodeProviders）历来只带
@@ -7000,7 +7615,7 @@ ipcMain.handle("dsh:installNode", () =>
    中转服务」那条路由时，网关拿到的是占位串 mtnode-account-token，写进 settings.yaml 的
    apiKeyEnv，请求打到中转站就是 401「缺少或已失效的中转 Key」—— 充值用户反复撞的正是这条。
    现在渲染层已补回 source（两道），这里同时按「占位串 / 卡 id / 地址」三个可核对的证据兜底，
-   老渲染层或将来再漏一处的入口也能被收住。判据只用**非机密**信息，真 token 不外泄。 */
+   老渲染层或将来再漏一处的入口也能被收住。判据只用**非机密**信息。 */
 function relayProviderCardBase() {
   /* 只读一次 config.json 里那张中转卡的地址（服务端下发的那一份）。
      config.json 可能很大（内嵌工作流），所以走 readJson 直接解析、不用 8MB 上限的缓存。 */
@@ -7096,10 +7711,50 @@ ipcMain.handle("dsh:cancel", (event, params) => dsh().cancel(params));
 
 ipcMain.handle("dsh:interact", (event, params) => dsh().interact(params));
 
+/* ── MCP 服务端：面板读写 / 自检 / 审计 / 抓包 + 渲染层执行回执 ───────────────── */
+ipcMain.handle("mcp:status", () => {
+  try {
+    return mcp().status();
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+ipcMain.handle("mcp:setEnabled", (event, { enabled } = {}) =>
+  mcp()
+    .setEnabled(!!enabled)
+    .then(() => mcp().status())
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
+);
+
+ipcMain.handle("mcp:resetToken", () => ({ ok: true, token: mcp().resetToken() }));
+
+ipcMain.handle("mcp:setClientId", (event, { clientId } = {}) => ({
+  ok: true,
+  clientId: mcp().setClientId(clientId),
+}));
+
+ipcMain.handle("mcp:setCapture", (event, { on } = {}) => ({ ok: true, capture: mcp().setCapture(on) }));
+
+ipcMain.handle("mcp:audit", (event, { limit } = {}) => ({ ok: true, entries: mcp().readAudit(limit || 50) }));
+
+ipcMain.handle("mcp:capture", (event, { limit } = {}) => ({ ok: true, entries: mcp().readCapture(limit || 100) }));
+
+ipcMain.handle("mcp:selfTest", () =>
+  mcp()
+    .selfTest()
+    .catch((e) => ({ ok: false, error: (e && e.message) || String(e) })),
+);
+
+/* 渲染层执行回执（mcp-bridge.js 跑完一帧后回传） */
+ipcMain.handle("mcp:interact", (event, params) => mcp().settle(params || {}));
+
 /* ── 会话自己的浏览器（browser_* 工具面的宿主侧控制）────────────────────────
    进程与 CDP 都在网关进程里（dsh/gateway/browser-host.mjs）；主进程只透传并
-   兜底成 {ok:false,error}。活动流面板的「打开浏览器 / 停止 / 名单管理 / 接管」
-   全走这一条。事件侧走既有的 dsh:event（type:'browser-act' / 'browser'）。 */
+   兜底成 {ok:false,error}。助手求助卡的「用真窗口打开 / 接管」与右栏实况
+   （view start/stop/input/mode）全走这一条。事件侧走既有的 dsh:event
+   （type:'browser-act' / 'browser' / 'browser-frame'）。
+   （本轮需求：右栏那排「打开浏览器 / 停止 / 名单」按钮与 'policy' 通道已下架。） */
 ipcMain.handle("dsh:browser", (event, params) =>
   dsh()
     .browser(params)
@@ -7149,14 +7804,6 @@ ipcMain.handle("dsh:steer", (event, params) =>
 ipcMain.handle("dsh:pause", (event, params) =>
   dsh()
     .pause(params)
-    .catch((e) => ({ ok: false, error: e.message || String(e) }))
-);
-
-/* 回滚收尾：向网关取回本轮 done 之后才到达的 journal 帧（渲染层封口前调一次）。
-   老版网关没有这个 method 时按错误返回，渲染层降级为「只靠事件推」。 */
-ipcMain.handle("dsh:rollbackDrain", (event, params) =>
-  dsh()
-    .rollbackDrain(params || {})
     .catch((e) => ({ ok: false, error: e.message || String(e) }))
 );
 
@@ -7454,16 +8101,21 @@ ipcMain.handle("pluginRepair:result", async (e, payload) => {
 
 /* ---------------- 窗口 ---------------- */
 
-/* 后台不降频（本次需求：「任务完成提示音」必须在 MTNode 不在前台时也响）。
+/* 后台不降频（常驻编排器：用户切走是常态，定时器降频 / 渲染停摆都会让界面「看着不动」）。
    Chromium 对「不可见 / 被盖住 / 最小化」的窗口有一套后台节流：定时器降频、渲染停下来、
-   整页静音/挂起音频会话 —— 被推迟的那一拍要等用户切回窗口才落地，用户看到的就是
-   「必须切回 MTNode 才响」。应用本体是常驻托管的编排器，用户切走是常态：
-   完成音的判定与排播都不该受窗口可见性影响，所以在 app ready 之前把这三个开关关掉。
+   整页静音/挂起音频会话 —— 被推迟的那一拍要等用户切回窗口才落地（完成音只剩渲染层
+   WebAudio 这一条路之后，这一点只能减轻、不能消除）。
    三个开关各管一段：renderer-backgrounding（后台进程降级）、background-timer-throttling
-   （定时器降频）、backgrounding-occluded-windows（被别的窗口盖住也当后台）。 */
+   （定时器降频）、backgrounding-occluded-windows（被别的窗口盖住也当后台）。
+   再加一条 disable-features=CalculateNativeWinOcclusion：Chromium 在 Windows 上会用
+   「窗口被别的窗口整片盖住」的原生遮挡判定把该窗当不可见，进而挂起它的页面（被挂起的
+   页面里，那一拍的发声会一直排到用户切回窗口才落地 —— 用户报的「只有返回 MTNode 才响」）。
+   关掉这个判定后「被盖住」不再等于「不可见」，盖住时的完成音 / 提问音当场响（最小化那条路
+   本来就不受它管：实测最小化后静置 6 秒发声，AudioContext 仍是 running）。 */
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 app.whenReady().then(() => {
   /* 隐藏原生窗口菜单栏（File/Edit/View/Window/Help），按键快捷方式由渲染层自行处理 */
@@ -7487,6 +8139,11 @@ app.whenReady().then(() => {
     syncSubagentPolicy(readJson(path.join(DATA(), "config.json"), {}));
   } catch {}
   dsh().ensureStarted().catch(() => {});
+  /* MCP 服务端随应用启动（幂等；失败只记日志，不阻塞应用）——
+     第三方客户端接进来时才有服务端可连，stdio 桥也是靠这个端口发现主进程的。 */
+  mcp()
+    .start()
+    .catch(() => {});
   mainWin = new BrowserWindow({
     width: 1500,
     height: 940,
@@ -7501,9 +8158,10 @@ app.whenReady().then(() => {
       sandbox: false,
       webviewTag: true,
       preload: join(__dirname, "preload.js"),
-      /* 主窗永不按「后台」对待：后台节流会把「任务跑完该响的那一拍」推迟到用户切回来
-         （本次需求的核心症状）。命令行那三个开关是全局兜底，这一条钉住主窗自身；
-         渲染层的完成音 / 提问音另有一条主进程发声通道（sound:alert，见 sound-alert.js）。 */
+      /* 主窗永不按「后台」对待：后台节流会把「任务跑完该响的那一拍」推迟到用户切回来。
+         完成音与提问音现在只走渲染层 WebAudio（主进程提醒音通道已下线，见 preload.js），
+         所以这一条只能减轻推迟、不能消除 —— 窗口被盖住 / 最小化时仍可能等到切回才响
+         （用户已知并接受）；命令行那三个开关是同一目的的全局兜底。 */
       backgroundThrottling: false,
     },
   });
@@ -7632,13 +8290,10 @@ app.whenReady().then(() => {
        显式传 outputDir 的插件控制台「试生成」不受影响 */
     assetDirFor: (wfId) => assetDir(wfId),
   });
-  /* 回滚存储：内容寻址对象 + 轮次账本 + GC（渲染层无 fs，字节读写只走这里） */
-  registerRollbackIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 工具库：跨画布可复用工具包（<数据目录>/tools/*.json 完整工具包落盘） */
   registerToolsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
-  /* 存储占用与清理（设置里的「存储占用与清理」小节）：分类统计 + 按类清理；
-     rollback 那一类复用上一条注册好的 GC（孤儿对象与超期轮次） */
-  registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s), rollbackGc: rollbackGc });
+  /* 存储占用与清理（设置里的「存储占用与清理」小节）：分类统计 + 按类清理 */
+  registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 分类统计跑在 storage-scan-worker.js 线程里，统计标签要跟着界面语言走 */
   setScanLocale(() => I18n.getLocale());
   /* 素材库：独立于画布的文本/图像/音频/视频内容仓库（用户指定根目录，见 assets-store.js） */
@@ -7673,6 +8328,25 @@ app.whenReady().then(() => {
     /* 语音转写（appHost.asr*）：识别在 dsh 运行时里跑（与状态栏那枚话筒同一条通道），
        事务侧只借 dsh 适配器，不认识它的内部结构。 */
     getDsh: () => dsh(),
+    /* 本机图像后端（appHost.imageGen 的本地那一路）：SenseNova 宿主。四项都是适配器，
+       apps-store 不认识它的内部结构 —— 与上面 getDsh 同一条纪律。
+         · localImageHost()     轻量现况（装了没 / 在跑没 / 相位）：不探 /health、不查 GPU，
+                                所以「列一次图像后端清单」不会把 32GB 权重拉起来；
+         · localImageGenerate() 真出图：默认产物落**该应用的数据目录**下的 gen/（应用自己的
+                                东西归应用，不占画布资产目录）并回绝对路径；调用方显式给
+                                outputDir（函数节点的 mtnode.image 走这条路：落本次运行的
+                                画布资产目录）时按它落；参考强度由 strength → imgCfgScale
+                                映射后透传（见 apps-store 的 imgCfgScaleOf）；
+         · localImageCancel()   在下一个采样步边界取消；
+         · localImageSnapshot() 轮询进度（阶段 / 步数 / 百分比）。 */
+    localImageHost: () => sensenovaImageHostInfo(),
+    localImageGenerate: (params) => sensenovaAppGenerate(params),
+    localImageCancel: (nodeId) => sensenovaCancelGenerate(nodeId),
+    localImageSnapshot: () => sensenovaAppSnapshot(),
+    /* 全局音视频互斥锁快照（应用侧据此提示「已有图像 / 视频任务在跑」） */
+    readMediaLock: () => mediaGenLock.refreshStaleLock(),
+    /* 应用侧展示语言（卡片能力小标 / 能力对话框文案） */
+    locale: () => I18n.getLocale(),
   });
   /* 应用窗口里的 appHost.quit()：先把该应用收尾关掉，再请主进程走正常退出流程
      （before-quit → shutdownApps 再收一遍，幂等；见 apps-store.js 的 quitFromAppWindow） */
@@ -7707,6 +8381,10 @@ app.on("before-quit", () => {
   try { shutdownSensenovaUiOnly(); } catch {}
   if (dshAdapter) {
     try { dshAdapter.shutdown(); } catch {}
+  }
+  /* MCP 服务端：关监听、撤在途调用（第三方客户端下一次调用会拿到明确错误） */
+  if (mcpHost) {
+    try { mcpHost.dispose(); } catch {}
   }
 });
 /* will-quit 兜底：before-quit 阶段若有运行仍在起进程，这里再收一次 */

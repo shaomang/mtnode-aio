@@ -27,20 +27,42 @@ import crypto from "node:crypto";
 
 /* ---------- 充值口径（金额一律「分」整数） ---------- */
 
-/** 固定档位：10 / 30 / 50 / 100 / 500 元。 */
-export const RECHARGE_TIERS_CENTS = Object.freeze([1000, 3000, 5000, 10000, 50000]);
+/** 固定档位：2 / 10 / 20 / 50 元（= 100 / 500 / 1000 / 2500 鲸圆币；1 币 = ¥0.02）。
+ *  中转服务定位「临时使用」，档位一律 ≤ ¥50，单笔不再出现大额。 */
+export const RECHARGE_TIERS_CENTS = Object.freeze([200, 1000, 2000, 5000]);
 /**
- * 自定义金额区间：默认 1.00 – 1000.00 元。
+ * 自定义金额区间：默认 2.00 – 100.00 元（= 100 – 5000 鲸圆币）。
  * 可用 env 覆盖（MTNODE_RECHARGE_MIN_CENTS / _MAX_CENTS，模块加载时读一次，改了要重启）：
  * 真机验收要跑 ¥0.01 全链路（下单 → 支付 → 入账 → 流水 → 管理台 → 退款）时，
- * 把下限临时降到 1 分即可用真实客户端 UI 走一遍，验完改回 100 —— 不必为此改代码。
+ * 把下限临时降到 1 分即可直接打服务端接口验完整条链 —— 客户端 UI 的下限仍是 ¥2
+ * （renderer/app-wallet.js 的 MIN_YUAN_FLOOR，云端值只能更严），界面不会跟着降。
  */
 function envCents(name, fallback) {
   const n = Math.round(Number(process.env[name]));
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
-export const RECHARGE_MIN_CENTS = envCents("MTNODE_RECHARGE_MIN_CENTS", 100);
-export const RECHARGE_MAX_CENTS = envCents("MTNODE_RECHARGE_MAX_CENTS", 100000);
+export const RECHARGE_MIN_CENTS = envCents("MTNODE_RECHARGE_MIN_CENTS", 200);
+export const RECHARGE_MAX_CENTS = envCents("MTNODE_RECHARGE_MAX_CENTS", 10000);
+
+/** 对外档位（分）的唯一出口：只留落在 [RECHARGE_MIN_CENTS, RECHARGE_MAX_CENTS] 内的档，
+ *  按升序、去重。env 把上限压低（或历史上常量写大了）时，档位**不会**超限下发 ——
+ *  客户端另有一道同口径硬闸（renderer/app-wallet.js 的 clampTiers），两边都不会放大额档。 */
+export function rechargeTiersCents() {
+  const out = [];
+  for (const c of RECHARGE_TIERS_CENTS) {
+    const n = Math.round(Number(c));
+    if (!Number.isFinite(n) || n <= 0) continue;
+    if (n < RECHARGE_MIN_CENTS || n > RECHARGE_MAX_CENTS) continue;
+    if (!out.includes(n)) out.push(n);
+  }
+  out.sort((a, b) => a - b);
+  return out.length ? out : [RECHARGE_MIN_CENTS];
+}
+
+/** 对外档位（元）：接口一律给元（4 位小数），内部仍是分。 */
+export function rechargeTiersYuan() {
+  return rechargeTiersCents().map(yuanOfCents);
+}
 /** 订单有效期：15 分钟（到期标 expired 并由服务端调 alipay.trade.close 关单）。 */
 export const ORDER_TTL_MS = 15 * 60 * 1000;
 /** 客户端 / 管理页默认展示的最近条数。 */
@@ -57,8 +79,20 @@ export const ORDER_STATUSES = Object.freeze([
   "closed",
 ]);
 
-/** 流水类型：recharge 入账 / refund 退款 / adjust 人工调账 / mismatch 金额不符留痕 / relay 中转站按用量扣费。 */
-export const LEDGER_TYPES = Object.freeze(["recharge", "refund", "adjust", "mismatch", "relay"]);
+/** 流水类型：recharge 入账 / refund 退款 / adjust 人工调账 / mismatch 金额不符留痕 / relay 中转站按用量扣费 /
+ *  tip_out 打赏转出（负）· tip_in 打赏转入（正）· tip_revoke_out 撤销打赏扣回作者（负）· tip_revoke_in 撤销打赏退回打赏者（正）。
+ *  打赏四类由 tips.mjs 经 adjustBalance 写入（见 docs/tips-comments-design.md 第一节）。 */
+export const LEDGER_TYPES = Object.freeze([
+  "recharge",
+  "refund",
+  "adjust",
+  "mismatch",
+  "relay",
+  "tip_out",
+  "tip_in",
+  "tip_revoke_out",
+  "tip_revoke_in",
+]);
 
 /**
  * 亚分精度（中转站按用量扣费专用）：账户行的 `relaySubCents` 存 0 ~ 0.9999 分的零头。
@@ -480,8 +514,16 @@ export function createWallet(deps) {
   /**
    * 管理员调账（赠送 / 扣减）：deltaCents 正负皆可，note 必填（审计留痕）。
    * 扣减不得把余额打成负数。
+   *
+   * source / type / meta 是**可选**透传（与 chargeRelayUsage 的 meta 同一口径）：
+   *   · source 缺省仍是 "admin_adjust"、type 缺省仍是 "adjust"（既有行为一字不改）；
+   *   · 打赏（tips.mjs）用 type 指定流水类型（tip_out / tip_in / tip_revoke_out / tip_revoke_in，
+   *     见 LEDGER_TYPES）—— 类型必须落在 LEDGER_TYPES 里，写错会被夹回 adjust（不脏账）；
+   *   · meta 里的字段原样并进流水条目 —— 打赏靠它把
+   *     tipId / targetKind / targetId / counterUserId / direction 记进流水，
+   *     这样「谁的账动了、因为哪一笔打赏」在流水与 CSV 里一眼能对上。
    */
-  async function adjustBalance({ user, deltaCents, note, operator }) {
+  async function adjustBalance({ user, deltaCents, note, operator, source, type, meta }) {
     if (!user || !user.id) return { ok: false, code: "USER_NOT_FOUND", error: "账号不存在" };
     const delta = intCents(deltaCents);
     if (!Number.isFinite(delta) || delta === 0) {
@@ -495,17 +537,23 @@ export function createWallet(deps) {
     if (after < 0) {
       return { ok: false, code: "BALANCE_INSUFFICIENT", error: "扣减后余额为负（当前 " + before + " 分）" };
     }
-    const entry = pushLedger({
-      userId: user.id,
-      type: "adjust",
-      deltaCents: delta,
-      balanceAfterCents: after,
-      orderId: "",
-      tradeNo: "",
-      note: text,
-      operator: String(operator || ""),
-      source: "admin_adjust",
-    });
+    const wantType = String(type || "");
+    const entry = pushLedger(
+      Object.assign(
+        {
+          userId: user.id,
+          type: LEDGER_TYPES.includes(wantType) ? wantType : "adjust",
+          deltaCents: delta,
+          balanceAfterCents: after,
+          orderId: "",
+          tradeNo: "",
+          note: text,
+          operator: String(operator || ""),
+          source: String(source || "admin_adjust"),
+        },
+        meta && typeof meta === "object" ? meta : {},
+      ),
+    );
     try {
       await writeBalance(user, after);
     } catch (e) {
@@ -643,7 +691,7 @@ export function createWallet(deps) {
     // 对外一律「元」（4 位小数）：档位 / 余额 / 订单金额都不再出现「分」
     return {
       balanceYuan: yuanOfCents(balanceOf(user)),
-      tiersYuan: RECHARGE_TIERS_CENTS.map(yuanOfCents),
+      tiersYuan: rechargeTiersYuan(),
       orders: mine,
       ledger: entries,
     };
@@ -702,6 +750,10 @@ export function createWallet(deps) {
 
   function adminLedger(e) {
     const u = (db.users || []).find((x) => x.id === e.userId) || null;
+    /* 打赏流水带对象 / 对手方字段（由 tips.mjs 通过 adjustBalance 的 meta 写进条目）：
+       tipId 打赏记录号 · targetKind/targetId 打赏对象 · counterUserId 对手方账号 ·
+       direction out|in|revoke_out|revoke_in|rollback（转出 / 转入 / 撤销两侧 / 补偿）。
+       非打赏流水这些字段为空串 —— 列一直在，不做条件裁剪（CSV 列宽稳定，Excel 公式不会被挪位）。 */
     return Object.assign(publicLedger(e), {
       userId: e.userId,
       username: (u && u.username) || "",
@@ -709,10 +761,15 @@ export function createWallet(deps) {
       tradeNo: e.tradeNo || "",
       operator: e.operator || "",
       source: e.source || "",
+      tipId: e.tipId || "",
+      targetKind: e.targetKind || "",
+      targetId: e.targetId || "",
+      counterUserId: e.counterUserId || "",
+      direction: e.direction || "",
     });
   }
 
-  /** CSV 导出：kind = orders | ledger。 */
+  /** CSV 导出：kind = orders | ledger（打赏 CSV 由 tips.mjs 的 csvTips 出，见 server.mjs 的 export.csv 路由）。 */
   function csv(kind) {
     if (kind === "ledger") {
       const rows = ledger()
@@ -730,6 +787,8 @@ export function createWallet(deps) {
         { title: "订单号", get: (r) => r.orderId },
         { title: "支付宝交易号", get: (r) => r.tradeNo },
         { title: "操作人", get: (r) => r.operator },
+        // 打赏对象列（**加在既有列之后**，原有列一列不删：老 CSV 用法与列序不受影响）
+        { title: "打赏对象", get: (r) => (r.tipId ? (r.targetKind || "") + ":" + (r.targetId || "") : "") },
         { title: "备注", get: (r) => r.note },
       ]);
     }
@@ -806,4 +865,4 @@ export function createWallet(deps) {
   };
 }
 
-export default { createWallet, validateAmount, RECHARGE_TIERS_CENTS, RECHARGE_MIN_CENTS, RECHARGE_MAX_CENTS, ORDER_TTL_MS, ORDER_STATUSES, LEDGER_TYPES, RECENT_LIMIT, subCentsOf, totalCentsOf, round4, yuanOfCents, centsOfYuan };
+export default { createWallet, validateAmount, RECHARGE_TIERS_CENTS, RECHARGE_MIN_CENTS, RECHARGE_MAX_CENTS, rechargeTiersCents, rechargeTiersYuan, ORDER_TTL_MS, ORDER_STATUSES, LEDGER_TYPES, RECENT_LIMIT, subCentsOf, totalCentsOf, round4, yuanOfCents, centsOfYuan };

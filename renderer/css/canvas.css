@@ -1711,8 +1711,12 @@ body.theme-light .n-chip.n-chip-lt {
 }
 
 /* 菜单栏「AI 调用」小按钮（工具节点 / 函数节点）：与开发节点的 Agent 设定按钮同款视觉，
-   类名独立（.n-ai-call）—— 两块弹层互斥但 DOM 标记各管各的。见 renderer/app-aicall.js */
-.n-ai-call {
+   类名独立（.n-ai-call）—— 两块弹层互斥但 DOM 标记各管各的。见 renderer/app-aicall.js。
+   「图像后端」小按钮（函数节点 · 与 AI 调用并列的第二格）共用同一份视觉：选择器并列写
+   .n-img-backend，**不能**给那枚按钮挂 .n-ai-call —— aiCallButtonRefresh 按 .n-ai-call
+   查询并重写类名与文字，挂上就会被 AI 调用那套刷新逻辑改写。 */
+.n-ai-call,
+.n-img-backend {
   flex: none;
   max-width: 112px;
   height: 18px;
@@ -1729,30 +1733,35 @@ body.theme-light .n-chip.n-chip-lt {
   cursor: pointer;
 }
 
-.n-ai-call:hover {
+.n-ai-call:hover,
+.n-img-backend:hover {
   border-color: rgba(56, 214, 255, .7);
   color: #e6f7ff;
 }
 
-.n-ai-call .ico {
+.n-ai-call .ico,
+.n-img-backend .ico {
   flex: none;
   font-size: 10px;
 }
 
-.n-ai-call .lbl {
+.n-ai-call .lbl,
+.n-img-backend .lbl {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.n-ai-call.auto {
+.n-ai-call.auto,
+.n-img-backend.auto {
   color: var(--muted);
   background: rgba(255, 255, 255, .04);
   border-color: var(--bd2);
 }
 
-.n-ai-call.inherited {
+.n-ai-call.inherited,
+.n-img-backend.inherited {
   border-style: dashed;
   color: #a8c4da;
 }

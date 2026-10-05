@@ -4,7 +4,7 @@
    ----------------------------------------------------------------------------
    gpt-image-2 的 /v1/images/edits 支持 image + mask + prompt 三件套做局部重绘。
    服务端按 **Alpha 通道**判定可编辑区域：**透明 = 允许模型编辑，不透明 = 尽量保留原图**
-   （参考 https://docs.apiyi.com/api-capabilities/gpt-image-2/mask-editing）。
+   （语义见 OpenAI 兼容图像服务的 gpt-image 蒙版局部重绘说明）。
 
    用户不该被迫理解 Alpha，所以本编辑器让人「在图上涂抹」：
      · 涂抹层（maskCanvas）只存形状，RGB 固定透明绿、Alpha 恒 1；

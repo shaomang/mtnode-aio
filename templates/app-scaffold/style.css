@@ -376,12 +376,7 @@ html[lang="en"] [data-lang="zh"] {
   flex-direction: column;
   gap: 6px;
 }
-/* footer 里那条说明文案（语音听写条在上面，两者并列） */
-.foot-note {
-  margin: 0;
-  color: var(--fg-dim);
-  font-size: 12px;
-}
+/* 注：页脚那行说明文案（.foot-note）已按本轮共识移除 —— 应用自己做界面时就别再塞说明字了。 */
 
 /* ── 风格的质感钩子（只在这里开一次口子，风格文件按需覆盖） ──
    底纹与顶栏 / 外框的玻璃感：风格文件写 --texture / --shell-blur 就能生效，

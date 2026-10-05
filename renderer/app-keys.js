@@ -1,9 +1,12 @@
 /* renderer/app-keys.js — 顶栏入口的全局快捷键（自包含，无依赖）
  * ============================================================================
- * 需求：为顶栏 8 个入口配键盘快捷键 ——
- *   1 = 画布（#btnToolWf）      2 = 会话（#btnToolAgent）   3 = 专家团（#btnTeam）
+ * 需求：为顶栏入口配键盘快捷键 ——
  *   Space = 居中（#btnFit）     D = 隐藏线（#btnHideWires）
  *   J = 插件（#btnPlugins）     K = 工具库（#btnTools）      L = 素材库（#btnAssets）
+ * 需求变更：原先切视图的 1 = 画布（#btnToolWf）/ 2 = 会话（#btnToolAgent）/
+ *   3 = 专家团（#btnTeam）三键**已移除**（打字或盲按会把整个视图切走），这三颗按钮
+ *   不再挂 data-shortcut，切视图只走鼠标点击。表由 data-shortcut 生成，删属性即失效，
+ *   本文件不需要为「某颗按钮不许有快捷键」另设黑名单。
  * 鼠标 hover 到按钮时，提示里同时显示快捷键（由 i18n.js 的 applyDom 读
  * index.html 上的 data-shortcut 追加「 · 快捷键 X」，本文件不重复维护文案）。
  *

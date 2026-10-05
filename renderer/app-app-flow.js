@@ -369,6 +369,26 @@ function appsCreateDialog() {
   styleLab.appendChild(styleAskNote);
   body.appendChild(styleLab);
 
+  /* 能力（app.json 的 capabilities）：新建时就问一句 —— 本轮共识：**三项默认都不勾**。
+     默认应用不再带语音听写（入口页 / 脚手架 / 应用窗口底部那条都不出现）；需要的人在
+     这一步或建好之后在开发页「应用能力…」里自己勾。 */
+  const capLab = document.createElement("div");
+  capLab.className = "n-field cap-field";
+  const capHead = document.createElement("div");
+  capHead.className = "style-head";
+  const capTitle = document.createElement("span");
+  capTitle.className = "style-title";
+  capTitle.textContent = I18n.t("能力");
+  capHead.appendChild(capTitle);
+  const capHint = document.createElement("span");
+  capHint.className = "style-hint";
+  capHint.textContent = I18n.t("决定起步模板带不带语音听写之类的现成能力；默认都不勾，建好之后也能在开发页「应用能力…」里改");
+  capHead.appendChild(capHint);
+  capLab.appendChild(capHead);
+  const capBox = appsCapabilityChecks({ textInput: false, showDictate: false, imageGen: false });
+  capLab.appendChild(capBox.box);
+  body.appendChild(capLab);
+
   let styleCards = null;
   const styleReady = appStylesLoad().then((list) => {
     if (!styleHost.isConnected) return null; /* 浮层已经关了：不用再画 */
@@ -435,7 +455,7 @@ function appsCreateDialog() {
       return;
     }
     ok.disabled = true;
-    const r = await appsCreateApp(name, id, styleCards ? styleCards.get() : "");
+    const r = await appsCreateApp(name, id, styleCards ? styleCards.get() : "", capBox.get());
     ok.disabled = false;
     if (r) closeOverlay();
   };
@@ -450,7 +470,7 @@ function appsCreateDialog() {
    画布在后台建好并居中；只有应用中心没开（外部直接调 appsCreateApp）才切到画布。
    style = 选中的设计风格 id（空 = 默认）。成功回 { id, name, dir, wfId, nodeId, style }，
    失败回 null（错误已 toast）。 */
-async function appsCreateApp(name, id, style) {
+async function appsCreateApp(name, id, style, capabilities) {
   const nm = String(name || "").trim();
   const aid = String(id || "").trim();
   if (!nm) {
@@ -471,7 +491,17 @@ async function appsCreateApp(name, id, style) {
     }
   } catch (_) {}
   try {
-    res = await window.api.appsCreate(nm, aid, String(style || ""), appFlowMeName());
+    res = await window.api.appsCreate(
+      nm,
+      aid,
+      String(style || ""),
+      appFlowMeName(),
+      /* 能力位（app.json 的 capabilities）：缺省三项全 false —— 与新建浮层里那三个复选框的
+         默认口径一致（本轮共识：默认不带语音听写；老调用方不传时就按这个默认） */
+      capabilities && typeof capabilities === "object"
+        ? capabilities
+        : { textInput: false, showDictate: false, imageGen: false },
+    );
   } catch (err) {
     toast(I18n.t("新建应用失败：") + ((err && err.message) || String(err)), "err");
     return null;
@@ -696,6 +726,183 @@ function startCustomStyleAsk(appId, appName, mode) {
     );
   }
   return done;
+}
+
+/* ---------- 能力复选框组（新建浮层与「应用能力…」共用） ---------- *
+ * 三个能力位就是 app.json 的 capabilities（见 apps-capabilities.js）：
+ *   textInput    需要文字输入 → 脚手架带上语音听写模块（本机 SenseVoice）
+ *   showDictate  显示听写条 → 应用窗口底部显示宿主注入的听写条（默认隐藏）
+ *   imageGen     需要生成图片 → 用 MTNode 已配好的图像能力（云端服务商或本机 SenseNova）
+ * 缺省**三项都不勾**（本轮共识：默认 footer 出现的听写等内容隐藏）。
+ * 界面这边只负责「勾选 + 一句话说明」；真正的落盘、入口页重生成、语音文件补撤都在主进程
+ * （apps:capabilitiesSet），渲染层不碰文件系统。
+ * 返回 { box, get() }：get() 回一份 { textInput, showDictate, imageGen } 布尔对象。 */
+function appsCapabilityChecks(value) {
+  const cur = Object.assign({ textInput: false, showDictate: false, imageGen: false }, value || {});
+  const box = document.createElement("div");
+  box.className = "cap-list";
+  const state = {
+    textInput: cur.textInput === true,
+    showDictate: cur.showDictate === true,
+    imageGen: cur.imageGen === true,
+  };
+  const rows = [
+    {
+      id: "textInput",
+      label: I18n.t("需要文字输入"),
+      hint: I18n.t("脚手架会带上语音听写模块（本机语音识别，首次用会自动下载模型）；要不要在窗口底部显示听写条，看下面那一项"),
+    },
+    {
+      id: "showDictate",
+      label: I18n.t("显示听写条"),
+      hint: I18n.t("在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；不勾就默认隐藏，应用自己的代码仍可唤起它"),
+    },
+    {
+      id: "imageGen",
+      label: I18n.t("需要图像生成"),
+      hint: I18n.t("用 MTNode 已配好的图像能力出图：云端图像服务商或本机 SenseNova（没配就用不了，界面会写清去哪配）"),
+    },
+  ];
+  for (const r of rows) {
+    const lab = document.createElement("label");
+    lab.className = "cap-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = state[r.id] === true;
+    cb.dataset.cap = r.id;
+    cb.onchange = () => {
+      state[r.id] = cb.checked;
+    };
+    lab.appendChild(cb);
+    const txt = document.createElement("span");
+    txt.className = "cap-text";
+    const b = document.createElement("b");
+    b.textContent = r.label;
+    txt.appendChild(b);
+    const h = document.createElement("span");
+    h.className = "cap-hint";
+    h.textContent = r.hint;
+    txt.appendChild(h);
+    lab.appendChild(txt);
+    box.appendChild(lab);
+  }
+  return {
+    box: box,
+    get: () => ({
+      textInput: state.textInput === true,
+      showDictate: state.showDictate === true,
+      imageGen: state.imageGen === true,
+    }),
+    set: (v) => {
+      const nv = v || {};
+      state.textInput = nv.textInput === true;
+      state.showDictate = nv.showDictate === true;
+      state.imageGen = nv.imageGen === true;
+      const boxes = box.querySelectorAll("input[data-cap]");
+      for (const b of boxes) b.checked = state[b.dataset.cap] === true;
+    },
+  };
+}
+
+/* ---------- ② 应用能力…（开发页 ⋯ 菜单那一项） ---------- *
+ * 改 app.json 的 capabilities。勾上「需要文字输入」= 宿主把脚手架里的 speech.js / speech.css
+ * 补进应用目录；取消勾选走反向（撤那两份文件）。「显示听写条」（showDictate）只管应用窗口
+ * footer 里那条宿主注入的听写条与入口页里的 dict.js（两处都缺省关 = 默认隐藏）。
+ * 任何一位变了都会按模板重生成入口页（入口页是模板生成的一份独立文件，与「换风格」同一口径），
+ * 重生成会覆盖用户手改过的内容 —— 所以这一步必须先弹确认，且确认文案里写清「会覆盖入口页」。
+ * opts.canRegen === false 时（调用方自己知道入口页是手写的）只写声明、不碰文件。 */
+async function appCapabilitiesDialog(appId, appName, opts) {
+  const id = String(appId || "");
+  if (!id) return;
+  const o = opts || {};
+  openOverlay(I18n.t("应用能力"), { persistent: true });
+  const body = $("#ovBody");
+  const lead = document.createElement("div");
+  lead.className = "settings-hint cap-lead";
+  lead.textContent = I18n.t("这个应用需要什么能力：") + String(appName || id);
+  body.appendChild(lead);
+  const loading = document.createElement("div");
+  loading.className = "settings-hint";
+  loading.textContent = I18n.t("正在读取…");
+  body.appendChild(loading);
+  let box = null;
+  const read = (async () => {
+    try {
+      return await window.api.appsCapabilitiesGet(id);
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || String(err) };
+    }
+  })();
+  const warn = document.createElement("div");
+  warn.className = "settings-hint cap-warn";
+  warn.textContent = I18n.t(
+    "改动能力位会按模板重生成这个应用的入口页（index.html）：你在里面手改过的页面内容会没了；assets/ 与数据文件夹不受影响。",
+  );
+  const foot = $("#ovFoot");
+  const ok = document.createElement("button");
+  ok.className = "mini primary";
+  ok.textContent = I18n.t("应用能力并重写入口页");
+  ok.disabled = true;
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = I18n.t("取消");
+  cancel.onclick = closeOverlay;
+  foot.appendChild(cancel);
+  foot.appendChild(ok);
+  const r0 = await read;
+  loading.remove();
+  if (!r0 || !r0.ok) {
+    const err = document.createElement("div");
+    err.className = "settings-hint";
+    err.textContent = I18n.t("读取失败：") + ((r0 && (r0.error || r0.reason)) || I18n.t("未知错误"));
+    body.appendChild(err);
+    return;
+  }
+  box = appsCapabilityChecks(r0.capabilities || {});
+  body.appendChild(box.box);
+  body.appendChild(warn);
+  ok.disabled = false;
+  ok.onclick = async () => {
+    const next = box.get();
+    const before = r0.capabilities || {};
+    const changed =
+      (before.textInput === true) !== (next.textInput === true) ||
+      (before.showDictate === true) !== (next.showDictate === true) ||
+      (before.imageGen === true) !== (next.imageGen === true);
+    if (!changed) {
+      toast(I18n.t("能力没有变化"));
+      return;
+    }
+    /* 任何一位变了都要按模板重生成入口页：textInput 影响脚手架那两份语音模块的补撤，
+       showDictate 影响入口页里 dict.js 的内联 —— 模板生成的那一份就是重写才跟得上。 */
+    const regen = o.canRegen !== false;
+    if (regen && typeof confirmDialog === "function") {
+      const yes = await confirmDialog(warn.textContent, {
+        title: I18n.t("按新能力重写入口页？"),
+        okText: I18n.t("重写入口页并保存"),
+        cancelText: I18n.t("取消"),
+      });
+      if (!yes) return;
+    }
+    ok.disabled = true;
+    let r = null;
+    try {
+      r = await window.api.appsCapabilitiesSet(id, next, { regenEntry: o.canRegen !== false });
+    } catch (err) {
+      r = { ok: false, error: (err && err.message) || String(err) };
+    }
+    ok.disabled = false;
+    if (!r || !r.ok) {
+      toast(I18n.t("保存失败：") + ((r && (r.error || r.reason)) || I18n.t("未知错误")), "err");
+      return;
+    }
+    box.set(r.capabilities || next);
+    toast(I18n.t("已保存应用能力"), "ok");
+    /* 应用列表带缓存：重拉一次，卡片上的能力小标立刻跟上 */
+    try {
+      if (typeof appsListLoad === "function") await appsListLoad(true);
+    } catch (_) {}
+  };
 }
 
 /* ---------- ② 换风格（开发页 ⋯ 菜单那一项） ---------- *
@@ -983,6 +1190,7 @@ function appsCreateButtonEl() {
    「新建应用」→ appsCreateDialog() */
 window.appsCreateDialog = appsCreateDialog;
 window.appsCreateApp = appsCreateApp;
+window.appCapabilitiesDialog = appCapabilitiesDialog;
 window.appsMigrateToDev = appsMigrateToDev;
 window.appsCreateAppBtnEl = appsCreateAppBtnEl;
 window.appsCreateButtonEl = appsCreateButtonEl;

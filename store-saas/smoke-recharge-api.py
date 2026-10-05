@@ -3,11 +3,13 @@
 
     python3 smoke-recharge-api.py                       # 默认 http://127.0.0.1:8787
     python3 smoke-recharge-api.py --base=https://mt-agent.com/mtnode/store-api
-    python3 smoke-recharge-api.py --token=<普通用户 Bearer>   # 多验一组「非白名单被拦」
+    python3 smoke-recharge-api.py --token=<普通用户 Bearer>   # 多验一组「钱包开放 + 余额下发」
 
 口径（详见 docs/recharge-design.md）：
   · 只走**不产生资金动作**的路径：健康检查、支付通道状态、鉴权与闸门、通知验签拒绝、
     管理台静态页与目录穿越守卫、管理台扫码登录起手（只在内存里登记一台设备）。
+  · 充值闸门 = **对所有已注册账号开放**（名单口径已作废，见 server.mjs 的 rechargeAllowed）：
+    健康检查的 recharge.open 必须是 true；带 --token 时再验一次钱包摘要与余额下发。
   · **不调用 /api/wallet/recharge/create 的成功路径**：支付宝配好之后那会在支付宝侧
     真的预下单，留下无人支付的交易。要验真实支付，请按文档 §十一 人工走一次 ¥1。
   · 退出码 0 = 全部通过；任何一条不符即非 0 并打印实际响应。
@@ -102,6 +104,10 @@ rc = h.get("recharge") or {}
 ok(isinstance(rc, dict) and "orders" in rc, "健康检查带 recharge 自检块（订单/流水计数）", body)
 ok("payConfigured" in rc and "payMissing" in rc, "健康检查报支付通道是否配好 + 缺哪些 env", body)
 ok("adminWeb" in rc, "健康检查报管理台静态页是否就位", body)
+# 充值闸门：对所有已注册账号开放（名单口径已作废，只剩一个显式全局关闭开关）。
+# open=false 时非名单账号会一路撞 403 RECHARGE_NOT_OPEN（用户读到「充值功能尚未对该账号开放」）。
+ok(rc.get("open") is True,
+   "充值闸门对所有已注册账号开放（recharge.open = true；false 只可能是 MTNODE_RECHARGE_CLOSED 被置上了）", body)
 print("        recharge = " + json.dumps(rc, ensure_ascii=False))
 
 st, _h, body = call("GET", "/api/pay/alipay/status")
@@ -134,9 +140,11 @@ ok(st == 200 and c.get("ok") is True, "GET /api/wallet/config 公开可读（200
 ok(c.get("opened") is False, "未登录 → opened=false（闸门不放行）", body)
 ok(not any(k in body for k in ("balanceCents", '"userId"', '"username"', '"phone"')),
    "配置里不含任何账号数据", body)
-tiers = c.get("tiersCents") or []
-ok(isinstance(tiers, list) and tiers and all(isinstance(x, int) for x in tiers), "档位是整数分清单", body)
-ok(c.get("minCents") == 100 and c.get("maxCents") == 100000, "上下限 = ¥1 – ¥1000（100 / 100000 分）", body)
+# 对外一律「元」（4 位小数）：档位 / 上下限都不再出现「分」字段。
+tiers = c.get("tiersYuan") or []
+ok(isinstance(tiers, list) and tiers and all(isinstance(x, (int, float)) for x in tiers),
+   "档位是元清单（tiersYuan）", body)
+ok(c.get("minYuan") == 2 and c.get("maxYuan") == 100, "上下限 = ¥2 – ¥100", body)
 ok(c.get("orderTtlMs") == 15 * 60 * 1000, "订单有效期 15 分钟", body)
 
 # ── 3. 管理台鉴权（三类令牌分清） ────────────────────────────────
@@ -170,24 +178,32 @@ if TOKEN:
     c = as_json(body) or {}
     ok(st == 200, "带令牌可读钱包配置", "status=%s %s" % (st, body))
     print("        wallet/config = " + json.dumps(c, ensure_ascii=False)[:300])
+    # 闸门已对所有已注册账号开放 ⇒ 登录账号的 opened 必须是 true；
+    # 万一还是 false（有人把 MTNODE_RECHARGE_CLOSED 置上了），至少确认拦截码是那一个。
     if not c.get("opened"):
-        st, _h, body = call("POST", "/api/wallet/recharge/create", {"amountCents": 1000}, token=TOKEN)
+        st, _h, body = call("POST", "/api/wallet/recharge/create", {"amountYuan": 10}, token=TOKEN)
         ok(st == 403 and (as_json(body) or {}).get("code") == "RECHARGE_NOT_OPEN",
-           "非白名单账号下单 → 403 RECHARGE_NOT_OPEN（不会碰到支付宝）", "status=%s %s" % (st, body))
+           "闸门被全局关闭时下单 → 403 RECHARGE_NOT_OPEN（不会碰到支付宝）", "status=%s %s" % (st, body))
     st, _h, body = call("GET", "/api/wallet/summary", token=TOKEN)
     s = as_json(body) or {}
     w = (s.get("wallet") or {})
     if c.get("opened"):
-        ok(st == 200 and "balanceCents" in w, "白名单账号 summary 回余额", "status=%s %s" % (st, body))
-        ok(isinstance(w.get("balanceCents"), int), "余额是整数分，不是浮点元", json.dumps(w)[:200])
+        # 已登录账号：钱包整块开放，余额按「元」下发（balanceYuan），
+        # 客户端「余额显示为 0」的另一半就靠这个字段（旧服务端不下发它时客户端只能显示「—」）。
+        ok(st == 200 and "balanceYuan" in w, "已登录账号 summary 回余额（wallet.balanceYuan）",
+           "status=%s %s" % (st, body))
+        ok(isinstance(w.get("balanceYuan"), (int, float)), "余额是数字（元，4 位小数以内）", json.dumps(w)[:200])
         ok(isinstance(w.get("orders"), list) and isinstance(w.get("ledger"), list),
            "summary 同时回最近订单与最近流水", json.dumps(w)[:200])
+        u = (s.get("user") or {})
+        ok("balanceYuan" in u, "summary 里的账号摘要也带 balanceYuan（客户端账号菜单的余额来源）",
+           json.dumps(u)[:200])
     else:
-        # 钱包整块对非白名单账号未开放（不只是挡下单）：余额仍可从 /api/me 的 balanceCents 读到。
+        # 闸门被全局关闭：钱包整块不开放（不只是挡下单）
         ok(st == 403 and s.get("code") == "RECHARGE_NOT_OPEN",
-           "非白名单账号 summary → 403 RECHARGE_NOT_OPEN（钱包整块未开放）", "status=%s %s" % (st, body))
+           "闸门被全局关闭时 summary → 403 RECHARGE_NOT_OPEN", "status=%s %s" % (st, body))
 else:
-    print("  skip  未提供 --token，跳过「普通用户被闸门拦下」那组（不影响其余断言）")
+    print("  skip  未提供 --token，跳过「普通用户钱包与闸门」那组（不影响其余断言）")
 
 # ── 4. 支付宝异步通知：验签必须挡住 ──────────────────────────────
 section("异步通知验签")

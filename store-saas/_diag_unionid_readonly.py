@@ -16,7 +16,7 @@ from pathlib import Path
 
 import paramiko
 
-SFTP_JSON = Path(r"E:\dev\mt-ai-router\.vscode\sftp.json")
+SFTP_JSON = Path(r"E:\dev\tools\ssh\sftp-mtnode-store.json")
 
 NODE_SCRIPT = r"""
 import fs from "node:fs";

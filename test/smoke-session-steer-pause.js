@@ -477,7 +477,7 @@ const designSrc = read("dsh/DESIGN.md");
   has(mainDshSrc, "return request('pause', p, 30000)", "pause 走 stdio 方法 pause");
   has(mainDshSrc, "function inflightParams(params) {", "两枚共用最小字段构造器");
   has(mainDshSrc, "for (const k of ['reqId', 'cancelTag', 'sessionId'])", "只透传点名三字段（不跟 run 一样补 dshHome）");
-  ok(!/steer[\s\S]{0,200}dshHome/.test(mainDshSrc.slice(mainDshSrc.indexOf("steer(params)"), mainDshSrc.indexOf("rollbackDrain(params)"))), "steer/pause 的参数里没有 dshHome（多带无关字段只会让老网关对参数形状产生误解）");
+  ok(!/steer[\s\S]{0,200}dshHome/.test(mainDshSrc.slice(mainDshSrc.indexOf("steer(params)"), mainDshSrc.indexOf("browser(params) {"))), "steer/pause 的参数里没有 dshHome（多带无关字段只会让老网关对参数形状产生误解）");
   has(mainDshSrc, "reason: 'timeout', retryable: true", "steer 超时 = 可安全重发（最多让模型多看一眼同一句话）");
   has(mainDshSrc, "reason: 'timeout', pending: true", "pause 超时 = 可能已落地（宿主按「正在暂停」进暂存态，不误报失败）");
   has(mainDshSrc, "ok: true, paused: true, idempotent: true", "pause 幂等：同一条在途轮再点直接回 ok");
@@ -493,7 +493,7 @@ const designSrc = read("dsh/DESIGN.md");
   has(mainSrc, 'ipcMain.handle("dsh:steer"', "main.js 有 dsh:steer handler");
   has(mainSrc, 'ipcMain.handle("dsh:pause"', "main.js 有 dsh:pause handler");
   const steerHandler = mainSrc.slice(mainSrc.indexOf('ipcMain.handle("dsh:steer"'));
-  const handlerRegion = steerHandler.slice(0, steerHandler.indexOf("dsh:rollbackDrain"));
+  const handlerRegion = steerHandler.slice(0, steerHandler.indexOf('ipcMain.handle("dsh:providerCatalog"'));
   eqNum(countOf(handlerRegion, /\.catch\(\(e\) => \(\{ ok: false, error: e\.message \|\| String\(e\) \}\)\)/g), 2, "两条 handler 异常一律 resolve 成 {ok:false,error}（与 dshCancel 同款容错，不炸 unhandled rejection）");
 
   console.log("\n[3b] 渲染层：插话 / 暂停 / 继续");

@@ -13,10 +13,18 @@
  *   失败一律回结构化错误码（no_provider / no_vision / bad_image / too_large / offline / http_401…），
  *   errorText() 给中文一句话，humanText() 给当前界面语言的一句话。
  *
+ * 同一个按钮里还有**图像后端**（本轮新增）：下拉分「文本模型 / 图像后端」两区，
+ *   · 图像后端清单走 AppHost.imageModels()（MTNode 里已配好的图像能力：云端服务商 + 本机 SenseNova）；
+ *   · 改动走 AppHost.imageModelSet(id)，同样按应用 id 持久化；
+ *   · 一个图像后端都没配 / 桥没这套接口 → 那一区写清原因（去哪里配），**不静默降级**。
+ * 出图用 AppHost.image(prompt, { images, onProgress })：失败码用 imageErrorText() 转人话
+ * （busy_media = 本机后端被别的任务占着；cancelled **不是错误**）。
+ *
  * 接法（两行）：
  *   const M = window.AppModel.create({ host: window.AppHost, btn: $("modelBtn"), menu: $("modelMenu") });
  *   await M.init();
- * 之后 M.selected() 就是当前选择（"auto" = 跟随 MTNode 默认），M.model() 是每次请求要带的 model 参数。
+ * 之后 M.selected() 就是当前选择（"auto" = 跟随 MTNode 默认），M.model() 是每次请求要带的 model 参数；
+ * 出图时带 M.imageModel()（空串 = 跟随 MTNode 默认：云端优先，其次本机）。
  */
 (function () {
   "use strict";
@@ -33,6 +41,13 @@
     current: "当前",
     modelPick: "选择模型",
     unnamed: "（未命名）",
+    textGroup: "文本模型",
+    imageGroup: "图像后端",
+    imageModels: "图像后端",
+    noImageModels: "MTNode 里还没有可用的图像后端：请在「设置 · 模型服务」配一个图像服务商（或把图像模型标成 image），或安装本机 SenseNova 插件。",
+    local: "本机",
+    imagePick: "选择图像后端",
+    imageBusy: "图像后端正忙",
   };
   var EN = {
     model: "Model",
@@ -46,6 +61,13 @@
     current: "current",
     modelPick: "Choose a model",
     unnamed: "(unnamed)",
+    textGroup: "Text models",
+    imageGroup: "Image backends",
+    imageModels: "Image backend",
+    noImageModels: "No image backend in MTNode yet: configure an image provider (or mark the model as image) under Settings · Model services, or install the local SenseNova plugin.",
+    local: "local",
+    imagePick: "Choose an image backend",
+    imageBusy: "Image backend busy",
   };
   /* 结构化错误码 → 一句话（中英各一份；未知码原样显示，方便开发者定位） */
   var ERR = {
@@ -61,6 +83,15 @@
     no_host: { zh: "宿主未接入：模型能力不可用", en: "No host: model capability unavailable" },
     pick_failed: { zh: "打开系统选图框失败", en: "Could not open the system file picker" },
     transport: { zh: "与宿主通信失败", en: "Communication with the host failed" },
+    /* 图像生成特有的码（文本那套之外） */
+    no_image: { zh: "服务商没有回图像数据，请换一个图像模型 / 后端重试", en: "The provider returned no image: try another image model or backend" },
+    no_prompt: { zh: "缺少提示词", en: "Missing prompt" },
+    busy_media: { zh: "已有图像 / 视频 / 音乐任务在进行中（本机同一时刻只跑一个），请等它完成后重试", en: "Another image / video / music job is running (one at a time locally): wait for it and retry" },
+    busy: { zh: "本机图像后端正忙（同时只跑一张图），请稍后重试", en: "The local image backend is busy (one image at a time): retry shortly" },
+    busy_other_node: { zh: "本机图像后端正在为别处出图，请稍后重试", en: "The local image backend is generating for something else: retry shortly" },
+    cuda_oom: { zh: "显存不足：请在插件里把本机图像后端的显存档位降到 balanced / low，或降低采样步数", en: "Out of VRAM: lower the local backend's VRAM mode to balanced / low, or reduce sampling steps" },
+    not_installed: { zh: "本机图像后端尚未安装：请在「插件 · SenseNova 本地图像生成」里安装", en: "The local image backend is not installed: install it in Plugins · SenseNova local image generation" },
+    no_local_backend: { zh: "本机图像后端不可用：请确认插件已安装并启动", en: "The local image backend is unavailable: check that the plugin is installed and started" },
   };
   function isZh() {
     return /^zh/i.test(document.documentElement.lang || navigator.language || "");
@@ -102,7 +133,19 @@
     var btn = findBtn(o.btn);
     var menu = findBtn(o.menu);
     var backdrop = findBtn(o.backdrop);
-    var state = { models: [], selected: "auto", hasAny: false, hasVision: false, ready: false };
+    var state = {
+      models: [],
+      selected: "auto",
+      hasAny: false,
+      hasVision: false,
+      /* 图像后端那一区（与文本模型共用这个下拉，但两套选择彼此独立） */
+      imgModels: [],
+      imgSelected: "auto",
+      imgHasAny: false,
+      imgBusy: false,
+      ready: false,
+      imgReady: false,
+    };
     var listeners = [];
     function emit() {
       for (var i = 0; i < listeners.length; i++) {
@@ -130,18 +173,35 @@
       for (var i = 0; i < state.models.length; i++) if (state.models[i].id === state.selected) hit = state.models[i];
       return hit ? hit.label || hit.id : L("model");
     }
+    /* 图像后端那一个的短名（与文本模型分开：按钮上只显示文本模型，图像后端在下拉里那一区） */
+    function imgShortLabel() {
+      if (state.imgSelected === "auto" || !state.imgSelected) return L("imageModels");
+      for (var i = 0; i < state.imgModels.length; i++)
+        if (state.imgModels[i].id === state.imgSelected) return state.imgModels[i].label || state.imgModels[i].id;
+      return L("imageModels");
+    }
     function paintBtn() {
       if (!btn) return;
       var label = shortLabel();
       /* 按钮文案由本文件接管（原来的 [data-lang] 双语 span 被替换掉，语言切换后靠 render() 重画） */
       btn.textContent = label;
-      btn.title = (state.ready && state.hasAny ? L("modelPick") : L("model")) + "：" + label;
-      btn.disabled = state.ready && !state.hasAny;
+      var title = (state.ready && state.hasAny ? L("modelPick") : L("model")) + "：" + label;
+      /* 图像后端也算「这个位置里有东西可选」：只有文本模型没有时按钮不该整个置灰 */
+      if (state.imgHasAny) title += " · " + L("imagePick") + "：" + imgShortLabel();
+      btn.title = title;
+      btn.disabled = state.ready && !state.hasAny && !state.imgHasAny;
       btn.setAttribute("aria-label", btn.title);
     }
     function hintLine(text) {
       var d = document.createElement("div");
       d.className = "model-note";
+      d.textContent = text;
+      return d;
+    }
+    /* 分区小标题（文本模型 / 图像后端两块之间的分隔 + 标题） */
+    function groupLine(text) {
+      var d = document.createElement("div");
+      d.className = "model-group";
       d.textContent = text;
       return d;
     }
@@ -157,10 +217,9 @@
         menu.appendChild(hintLine(L("noHost")));
         return;
       }
-      if (!state.hasAny) {
-        menu.appendChild(hintLine(L("noModels")));
-        return;
-      }
+      /* 分区一：文本模型（没有就写清去哪配，而不是整块不画） */
+      menu.appendChild(groupLine(L("textGroup")));
+      if (!state.hasAny) menu.appendChild(hintLine(L("noModels")));
       for (var i = 0; i < state.models.length; i++) {
         (function (m) {
           var b = document.createElement("button");
@@ -192,6 +251,52 @@
         })(state.models[i]);
       }
       if (!state.hasVision) menu.appendChild(hintLine(L("noVision")));
+      /* 分区二：图像后端（MTNode 已配好的图像能力：云端服务商 + 本机 SenseNova） */
+      menu.appendChild(groupLine(L("imageGroup")));
+      if (state.imgBusy) menu.appendChild(hintLine(L("imageBusy")));
+      if (!state.imgHasAny) {
+        menu.appendChild(hintLine(L("noImageModels")));
+        return;
+      }
+      var autoImg = document.createElement("button");
+      autoImg.type = "button";
+      autoImg.className = "model-item" + (state.imgSelected === "auto" ? " is-on" : "");
+      autoImg.setAttribute("role", "menuitemradio");
+      autoImg.setAttribute("aria-checked", state.imgSelected === "auto" ? "true" : "false");
+      autoImg.dataset.imageModel = "auto";
+      var autoName = document.createElement("span");
+      autoName.className = "model-name";
+      autoName.textContent = L("auto");
+      autoImg.appendChild(autoName);
+      autoImg.addEventListener("click", function () {
+        setImageModel("auto");
+      });
+      menu.appendChild(autoImg);
+      for (var j = 0; j < state.imgModels.length; j++) {
+        (function (m) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "model-item" + (m.id === state.imgSelected ? " is-on" : "");
+          b.setAttribute("role", "menuitemradio");
+          b.setAttribute("aria-checked", m.id === state.imgSelected ? "true" : "false");
+          b.dataset.imageModel = m.id;
+          var name = document.createElement("span");
+          name.className = "model-name";
+          name.textContent = m.label || m.id || L("unnamed");
+          b.appendChild(name);
+          var from = m.local ? L("local") : m.providerName;
+          if (from) {
+            var pv = document.createElement("span");
+            pv.className = "model-prov";
+            pv.textContent = from;
+            b.appendChild(pv);
+          }
+          b.addEventListener("click", function () {
+            setImageModel(m.id);
+          });
+          menu.appendChild(b);
+        })(state.imgModels[j]);
+      }
     }
 
     function onChange(cb) {
@@ -202,12 +307,21 @@
          两者缺一个就按「桥没这套能力」处理，不猜。 */
       var sel = H && H.modelGet ? await H.modelGet() : { ok: false, error: "no_host" };
       var r = H && H.models ? await H.models() : { ok: false, error: "no_host" };
-      state.host = !!(r && r.ok !== false);
+      /* 图像后端那一区：桥没有这套接口（老宿主 / 插件窗口）就按「没得选」处理，
+         老宿主下这一区只显示一句「还没有可用的图像后端」，不报错、不影响文本模型 */
+      var imgSel = H && H.imageModelGet ? await H.imageModelGet() : { ok: false, error: "no_host" };
+      var img = H && H.imageModels ? await H.imageModels() : { ok: false, error: "no_host" };
+      state.host = !!(r && r.ok !== false) || !!(img && img.ok !== false);
       state.models = (r && r.models) || [];
       state.selected = (sel && sel.ok !== false && sel.selected) || (r && r.selected) || "auto";
       state.hasAny = !!(r && r.hasAny);
       state.hasVision = !!(r && r.hasVision);
+      state.imgModels = (img && img.models) || [];
+      state.imgSelected = (imgSel && imgSel.ok !== false && imgSel.selected) || (img && img.selected) || "auto";
+      state.imgHasAny = !!(img && img.hasAny);
+      state.imgBusy = !!(img && img.busy);
       state.ready = true;
+      state.imgReady = true;
       render();
       return r;
     }
@@ -220,6 +334,21 @@
         return r;
       }
       state.selected = (r && r.selected) || id;
+      state.err = "";
+      render();
+      closeMenu();
+      emit();
+      return r;
+    }
+    async function setImageModel(id) {
+      var r = H && H.imageModelSet ? await H.imageModelSet(id) : { ok: false, error: "no_host" };
+      if (r && r.ok === false) {
+        state.err = errorText(r);
+        render();
+        if (menu) menu.appendChild(hintLine(state.err));
+        return r;
+      }
+      state.imgSelected = (r && r.selected) || id;
       state.err = "";
       render();
       closeMenu();
@@ -263,6 +392,18 @@
       model: function () {
         return state.selected === "auto" ? "" : state.selected;
       },
+      /** 出图时带的 model 参数（图像后端 id）：auto 时给空串（= 跟随 MTNode 默认：云端优先） */
+      imageModel: function () {
+        return !state.imgSelected || state.imgSelected === "auto" ? "" : state.imgSelected;
+      },
+      imageStats: function () {
+        return {
+          models: state.imgModels.slice(),
+          selected: state.imgSelected,
+          hasAny: state.imgHasAny,
+          busy: state.imgBusy,
+        };
+      },
       stats: function () {
         return {
           models: state.models.slice(),
@@ -278,5 +419,9 @@
     };
   }
 
-  window.AppModel = { create: create, errorText: errorText, humanText: humanText };
+  /* 出图的错误码 → 人话：与文本那套同一本字典（图像特有的码已补进去，见 ERR） */
+  function imageErrorText(res) {
+    return errorText(res);
+  }
+  window.AppModel = { create: create, errorText: errorText, imageErrorText: imageErrorText, humanText: humanText };
 })();

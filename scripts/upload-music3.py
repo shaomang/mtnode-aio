@@ -13,7 +13,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 LOCAL = ROOT / "dist" / "music3-publish"
 REMOTE = "/var/www/mtnode/music3"
-DEFAULT_SFTP = Path(r"E:\dev\mt-ai-router\.vscode\sftp.json")
+DEFAULT_SFTP = Path(r"E:\dev\tools\ssh\sftp-mtnode-store.json")
 
 
 def load_cfg() -> dict:

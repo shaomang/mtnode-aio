@@ -614,6 +614,377 @@
     }
   }
 
+  /* ---------------- 「图像后端」设定（函数节点出图 / 图生图） ----------------
+   * 与「AI 调用」并列的第二格：文本模型与图像后端本就是两套清单（前者是服务商路由上的
+   * chat 模型，后者是云端图像服务商 + 本机 SenseNova），所以字段 / 按钮 / 弹层各自独立，
+   * 唯一共享的是「就近继承」口径（沿 parentSuperId 往上找最近的承载节点）。
+   *   imgModel   图像后端 id（空 = 未选择，跟随 MTNode 默认的 auto：云端优先、其次本机）
+   * 函数节点运行（renderer/app-nodes.js 的 functionImageSpec）把生效值交给主进程，
+   * jscode 里 await mtnode.image(...) 就用它出图（见 fn-runtime.js 的 image 桥）。 */
+
+  /* 旧画布加载归一：只补字段，绝不清用户已选的键 */
+  function ensureImgBackendState(node) {
+    if (!node) return;
+    if (typeof node.imgModel !== "string") node.imgModel = "";
+  }
+
+  /* 本节点自己选定的图像后端 id（空 = 没选过） */
+  function imgBackendOwn(node) {
+    ensureImgBackendState(node);
+    if (!aiCallTarget(node)) return "";
+    return String(node.imgModel || "").trim();
+  }
+
+  /* 图像后端清单（主进程 image:backends → apps-store 的 imageBackendsForUi，与应用窗口
+     hostImageModels 同一份）：30 秒内复用同一份缓存，弹层的「刷新清单」按钮强制重拉。 */
+  let _imgList = null;
+  let _imgListAt = 0;
+  async function imgBackendLoad(force) {
+    if (_imgList && !force && Date.now() - _imgListAt < 30000) return _imgList;
+    let r = null;
+    try {
+      r =
+        window.api && typeof window.api.imageBackends === "function"
+          ? await window.api.imageBackends()
+          : null;
+    } catch (_) {
+      r = null;
+    }
+    _imgList =
+      r && r.ok === true
+        ? r
+        : { ok: false, models: [], hasAny: false, defaultModel: "" };
+    _imgListAt = Date.now();
+    return _imgList;
+  }
+  function imgBackendInfoOf(id) {
+    const list = (_imgList && _imgList.models) || [];
+    const want = String(id || "").trim();
+    if (!want) return null;
+    for (const m of list) if (String(m.id || "") === want) return m;
+    return null;
+  }
+
+  /* 生效值：{ model, label, local, refImages, maxRefImages, strength, source, inherited, auto }
+     未选过 → auto:true（走主进程的 auto：云端优先、其次本机），label 用清单里的默认后端名。 */
+  function imgBackendResolved(node) {
+    const out = {
+      model: "",
+      label: "",
+      local: false,
+      refImages: true,
+      maxRefImages: 0,
+      strength: false,
+      source: null,
+      inherited: false,
+      auto: true,
+    };
+    if (!node) return out;
+    let cur = node;
+    let guard = 0;
+    while (cur && guard++ < 64) {
+      const own = imgBackendOwn(cur);
+      if (own) {
+        const info = imgBackendInfoOf(own);
+        return Object.assign(out, {
+          model: own,
+          label: (info && info.label) || own,
+          local: !!(info && info.local),
+          refImages: !info || info.refImages !== false,
+          maxRefImages: info ? Number(info.maxRefImages) || 0 : 0,
+          strength: !!(info && info.strength),
+          source: cur,
+          inherited: cur !== node,
+          auto: false,
+        });
+      }
+      const parent = aiParentOf(cur);
+      cur = parent && aiOnChain(parent) ? parent : null;
+    }
+    const d = String((_imgList && _imgList.defaultModel) || "");
+    const dinfo = imgBackendInfoOf(d);
+    out.label = (dinfo && dinfo.label) || d || "";
+    if (dinfo) {
+      out.local = dinfo.local === true;
+      out.refImages = dinfo.refImages !== false;
+      out.maxRefImages = Number(dinfo.maxRefImages) || 0;
+      out.strength = dinfo.strength === true;
+    }
+    return out;
+  }
+
+  /* 函数节点运行的出图 spec（app-nodes.js 的 functionImageSpec 用它）：
+     { model, label, local, refImages, maxRefImages, strength } 或 null（没选过 = 跟随默认）。 */
+  function imgRunSpecFor(node) {
+    const r = imgBackendResolved(node);
+    if (!r.model) return null;
+    return {
+      model: r.model,
+      label: r.label,
+      local: r.local,
+      refImages: r.refImages,
+      maxRefImages: r.maxRefImages,
+      strength: r.strength,
+    };
+  }
+
+  /* ---------------- 「图像后端」头部按钮 / 弹层 ---------------- */
+
+  function imgBackendButtonLabel(node) {
+    const r = imgBackendResolved(node);
+    if (r.model) return (r.label || r.model) + (r.inherited ? " ↩" : "");
+    return r.label ? I18n.t("自动") + " · " + r.label : I18n.t("自动");
+  }
+
+  function imgBackendCapsText(info) {
+    if (!info) return "";
+    const parts = [info.local ? I18n.t("本机") : I18n.t("云端")];
+    const max = Number(info.maxRefImages) || 0;
+    if (info.refImages === false) parts.push(I18n.t("不支持参考图"));
+    else parts.push(I18n.t("支持参考图") + (max > 0 ? " ≤" + max : ""));
+    if (info.strength === true) parts.push(I18n.t("支持参考强度"));
+    return parts.join(" · ");
+  }
+
+  function imgBackendButtonTitle(node) {
+    const r = imgBackendResolved(node);
+    let scope;
+    if (r.model) {
+      scope =
+        (r.inherited
+          ? I18n.t("图像后端：继承自「") +
+            ((r.source && (r.source.title || r.source.id)) || "") +
+            I18n.t("」：")
+          : I18n.t("图像后端：本节点已选择：")) +
+        (r.label || r.model) +
+        " · " +
+        (r.local ? I18n.t("本机") : I18n.t("云端")) +
+        (r.refImages === false
+          ? " · " + I18n.t("不支持参考图")
+          : r.maxRefImages > 0
+            ? " · " + I18n.t("支持参考图") + " ≤" + r.maxRefImages
+            : "") +
+        (r.strength ? " · " + I18n.t("支持参考强度") : "");
+    } else {
+      scope = I18n.t(
+        "图像后端：自动（跟随 MTNode 默认：云端图像服务商优先，其次本机 SenseNova）",
+      );
+    }
+    return (
+      scope +
+      "\n" +
+      I18n.t(
+        "生效范围：本函数节点的 jscode 里 await mtnode.image(...) 用它出图 / 图生图（产物落本画布资产目录）。",
+      ) +
+      "\n" +
+      I18n.t("图像模型与 Key 只留主进程；这里只是选一只已配置好的后端。")
+    );
+  }
+
+  /* 头部按钮：与「AI 调用」同一款视觉（.ai-call-btn），类名另起一个（.n-img-backend） */
+  function imgBackendButtonEl(node) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const r = imgBackendResolved(node);
+    btn.className =
+      "n-img-backend ai-call-btn" + (r.model ? (r.inherited ? " inherited" : "") : " auto");
+    const ico = document.createElement("span");
+    ico.className = "ico";
+    ico.textContent = "🖼";
+    const lbl = document.createElement("span");
+    lbl.className = "lbl";
+    lbl.textContent = imgBackendButtonLabel(node);
+    btn.appendChild(ico);
+    btn.appendChild(lbl);
+    btn.title = imgBackendButtonTitle(node);
+    btn.setAttribute("aria-label", btn.title);
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      toggleImgBackendPicker(node, btn);
+    };
+    return btn;
+  }
+
+  function imgBackendButtonRefresh(node) {
+    if (!node) return;
+    const els = document.querySelectorAll(
+      '.wf-node[data-nid="' + node.id + '"] .n-img-backend',
+    );
+    for (const el of els) {
+      const r = imgBackendResolved(node);
+      el.className =
+        "n-img-backend ai-call-btn" + (r.model ? (r.inherited ? " inherited" : "") : " auto");
+      const lbl = el.querySelector(".lbl");
+      if (lbl) lbl.textContent = imgBackendButtonLabel(node);
+      const t = imgBackendButtonTitle(node);
+      el.title = t;
+      if (typeof el.setAttribute === "function") el.setAttribute("aria-label", t);
+    }
+  }
+
+  let _imgNode = null;
+
+  function imgBackendPopEl() {
+    let el = document.getElementById("imgBackendPop");
+    if (el) return el;
+    el = document.createElement("div");
+    el.id = "imgBackendPop";
+    el.className = "dev-model-pop";
+    const head = document.createElement("div");
+    head.className = "dev-model-head";
+    head.appendChild(aiDlgEl("b", null, I18n.t("图像后端")));
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "dev-model-close";
+    close.title = I18n.t("关闭");
+    close.setAttribute("aria-label", I18n.t("关闭"));
+    close.innerHTML =
+      '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
+      '<path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/>' +
+      "</svg>";
+    close.onclick = () => closeImgBackendPicker();
+    head.appendChild(close);
+    const scope = document.createElement("div");
+    scope.className = "dev-model-scope";
+    const list = document.createElement("div");
+    list.className = "dev-model-list";
+    const foot = document.createElement("div");
+    foot.className = "dev-model-actions";
+    el.appendChild(head);
+    el.appendChild(scope);
+    el.appendChild(list);
+    el.appendChild(foot);
+    el.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function renderImgBackendPop() {
+    const el = document.getElementById("imgBackendPop");
+    if (!el || !_imgNode) return;
+    const node = _imgNode;
+    const r = imgBackendResolved(node);
+    const scope = el.querySelector(".dev-model-scope");
+    if (scope)
+      scope.textContent = r.model
+        ? (r.inherited
+            ? I18n.t("当前继承自「") +
+              ((r.source && (r.source.title || r.source.id)) || "") +
+              I18n.t("」：")
+            : I18n.t("本节点已选择：")) +
+          (r.label || r.model) +
+          I18n.t("；其下未自行选择的内部节点一并使用它。")
+        : I18n.t(
+            "未选择：函数节点里的 mtnode.image(...) 跟随 MTNode 默认图像后端（云端图像服务商优先，其次本机 SenseNova）。",
+          );
+    const list = el.querySelector(".dev-model-list");
+    if (list) {
+      list.innerHTML = "";
+      const listInfo = _imgList || { ok: false, models: [], hasAny: false };
+      aiPopOption(
+        list,
+        I18n.t("跟随默认（自动）"),
+        !r.model,
+        () => applyImgBackendSetting(node, ""),
+        I18n.t("不指定：用 MTNode 默认的图像后端（云端图像服务商优先，其次本机 SenseNova）。"),
+      );
+      for (const m of listInfo.models || []) {
+        const id = String(m.id || "");
+        const on = r.model === id;
+        aiPopOption(
+          list,
+          (m.label || id) + (m.local ? " · " + I18n.t("本机") : ""),
+          on,
+          () => applyImgBackendSetting(node, id),
+          imgBackendCapsText(m),
+          imgBackendCapsText(m),
+        );
+      }
+      if (!(listInfo.models || []).length)
+        list.appendChild(
+          aiDlgEl(
+            "div",
+            "dev-model-empty",
+            I18n.t(
+              "暂无可用图像后端：请先在 设置 → 模型服务 里配图像服务商（或安装本机 SenseNova 插件）。",
+            ),
+          ),
+        );
+    }
+    const foot = el.querySelector(".dev-model-actions");
+    if (foot) {
+      foot.innerHTML = "";
+      const reset = aiDlgEl(
+        "button",
+        "mini dev-model-reset",
+        I18n.t("跟随默认（不指定）"),
+      );
+      reset.type = "button";
+      reset.title = I18n.t("清除本节点「图像后端」这一格的选择，退回跟随默认（或继承上层）。");
+      reset.onclick = () => applyImgBackendSetting(node, "");
+      foot.appendChild(reset);
+      const reload = aiDlgEl("button", "mini", I18n.t("刷新清单"));
+      reload.type = "button";
+      reload.title = I18n.t("重新读取图像后端清单（新装插件 / 刚配好服务商时点它）。");
+      reload.onclick = async () => {
+        await imgBackendLoad(true);
+        renderImgBackendPop();
+        imgBackendButtonRefresh(node);
+      };
+      foot.appendChild(reload);
+    }
+  }
+
+  /* 写回：空值 = 清除本节点选择（回到跟随默认）。写节点 → 存盘 → 刷新按钮 → 重绘画布。 */
+  function applyImgBackendSetting(node, id) {
+    if (!node || !aiCallTarget(node)) return;
+    pushHistory();
+    ensureImgBackendState(node);
+    node.imgModel = String(id || "").trim();
+    scheduleSave(true);
+    imgBackendButtonRefresh(node);
+    try {
+      renderCanvas();
+      renderImgBackendPop();
+    } catch (_) {}
+  }
+
+  async function openImgBackendPop(node, anchor) {
+    if (typeof closeNodePopsExcept === "function") closeNodePopsExcept("imgBackend");
+    _imgNode = node;
+    const el = imgBackendPopEl();
+    el.classList.add("on");
+    renderImgBackendPop();
+    if (anchor && typeof nodePopAnchor === "function") {
+      const nid =
+        anchor.closest && anchor.closest(".wf-node")
+          ? anchor.closest(".wf-node").getAttribute("data-nid") || node.id
+          : node.id;
+      nodePopAnchor(el, null, { h: 320 }, nid);
+    }
+    if (typeof placeNodePop === "function") placeNodePop(el, anchor, el._popOpt || {});
+    await imgBackendLoad(false);
+    /* 清单回来后重画一次：按钮标签与候选里的默认后端名都要用真实清单 */
+    renderImgBackendPop();
+    imgBackendButtonRefresh(node);
+  }
+
+  function closeImgBackendPicker() {
+    _imgNode = null;
+    const el = document.getElementById("imgBackendPop");
+    if (el) el.classList.remove("on");
+  }
+
+  function toggleImgBackendPicker(node, anchor) {
+    if (!node || !aiCallTarget(node)) return;
+    const el = document.getElementById("imgBackendPop");
+    if (_imgNode === node && el && el.classList.contains("on")) {
+      closeImgBackendPicker();
+      return;
+    }
+    openImgBackendPop(node, anchor);
+  }
+
   /* ---------------- 弹层 ---------------- */
 
   let _aiNode = null;
@@ -853,8 +1224,16 @@
     head.appendChild(aiDlgEl("b", null, I18n.t("AI 调用")));
     const close = document.createElement("button");
     close.type = "button";
-    close.className = "mini dev-model-close";
-    close.textContent = "✕";
+    close.className = "dev-model-close";
+    /* 与开发节点「Agent 设定」弹层同一颗：内联 SVG 关闭图标（不带通用 .mini ——
+       它在场会把钮内 svg 的宽度压成 0；字符 ✕ 在 20×20 方钮里字形还偏高 0.5px，
+       见 app-devnode.js devModelPopEl 与 css/components.css 的注释）。 */
+    close.title = I18n.t("关闭");
+    close.setAttribute("aria-label", I18n.t("关闭"));
+    close.innerHTML =
+      '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
+      '<path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/>' +
+      "</svg>";
     close.onclick = () => closeAiCallPicker();
     head.appendChild(close);
     const cells = document.createElement("div");
@@ -1105,6 +1484,18 @@
     applyToToolRun: aiApplyToToolRun,
     runSpecFor: aiRunSpecFor,
     applyToSelf: aiApplyToSelf,
+    /* 图像后端（函数节点出图 / 图生图） */
+    ensureImgState: ensureImgBackendState,
+    imgOwn: imgBackendOwn,
+    imgResolved: imgBackendResolved,
+    imgRunSpecFor: imgRunSpecFor,
+    imgButtonEl: imgBackendButtonEl,
+    imgButtonRefresh: imgBackendButtonRefresh,
+    imgLoad: imgBackendLoad,
+    imgOpenPicker: openImgBackendPop,
+    imgClosePicker: closeImgBackendPicker,
+    imgTogglePicker: toggleImgBackendPicker,
+    imgApplySetting: applyImgBackendSetting,
     /* UI */
     buttonEl: aiCallButtonEl,
     bodyButtonEl: aiCallBodyButtonEl,
@@ -1138,4 +1529,16 @@
   window.aiApplyToToolRun = aiApplyToToolRun;
   window.aiRunSpecFor = aiRunSpecFor;
   window.aiApplyToSelf = aiApplyToSelf;
+  /* 图像后端：函数节点头部按钮与 jscode 的 mtnode.image(...) 共用这套（app-canvas / app-nodes 取用） */
+  window.ensureImgBackendState = ensureImgBackendState;
+  window.imgBackendOwn = imgBackendOwn;
+  window.imgBackendResolved = imgBackendResolved;
+  window.imgRunSpecFor = imgRunSpecFor;
+  window.imgBackendButtonEl = imgBackendButtonEl;
+  window.imgBackendButtonRefresh = imgBackendButtonRefresh;
+  window.imgBackendLoad = imgBackendLoad;
+  window.openImgBackendPicker = openImgBackendPop;
+  window.closeImgBackendPicker = closeImgBackendPicker;
+  window.toggleImgBackendPicker = toggleImgBackendPicker;
+  window.applyImgBackendSetting = applyImgBackendSetting;
 })();

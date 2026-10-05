@@ -8,11 +8,10 @@ contextBridge.exposeInMainWorld('api', {
   getPathForFile: (f) => webUtils.getPathForFile(f),
 
   appVersion: () => ipcRenderer.invoke('app:version'),
-  /* 提醒音主进程通道（本次需求）：窗口不在前台 / 被别的软件盖住时，渲染层的 WebAudio
-     会被推迟到用户切回来才响；主进程合成 WAV 交给系统播放器出声，与窗口可见性无关。
-     入参 { mode:"ding"|"dingdong"|"ask", amp:0~0.34, file?, volume? }，只报「该响哪一档」，
-     发声与音色都在主进程（见 sound-alert.js）。桥不在 / 失败时渲染层自己用 WebAudio 兜底。 */
-  soundAlert: (opts) => ipcRenderer.invoke('sound:alert', opts || {}),
+  /* 提醒音主进程通道（soundAlert → sound:alert → sound-alert.js）本次已整体移除：
+     长任务音效（全局三音上行 / 随包 all-done.wav）下线，完成音与提问/审批提示音
+     统一只走页面内 WebAudio / <audio>。代价：窗口被盖住 / 最小化时这一拍可能被推迟到
+     用户切回本窗口才响（用户已知并接受）。别再把它加回来。 */
   crashStatus: () => ipcRenderer.invoke('crash:status'),
   crashExport: () => ipcRenderer.invoke('crash:export'),
   crashOpenLogs: () => ipcRenderer.invoke('crash:openLogs'),
@@ -128,29 +127,6 @@ contextBridge.exposeInMainWorld('api', {
   dbDelete: (dir, ids) => ipcRenderer.invoke('db:delete', { dir, ids }),
   dbCalc: (expr) => ipcRenderer.invoke('db:calc', { expr }),
   dbLog: (dir, entry) => ipcRenderer.invoke('db:log', { dir, entry }),
-  /* 回滚存储：字节读写与路径校验全在主进程 rollback-store.js，这里只是白名单桥 */
-  rollbackPutObj: (data) => ipcRenderer.invoke('rollback:putObj', { data }),
-  rollbackPutRound: (sessionId, round) => ipcRenderer.invoke('rollback:putRound', { sessionId, round }),
-  rollbackListRounds: (sessionId, limit) => ipcRenderer.invoke('rollback:listRounds', { sessionId, limit }),
-  rollbackGetRound: (sessionId, roundId) => ipcRenderer.invoke('rollback:getRound', { sessionId, roundId }),
-  rollbackRestoreFile: (sessionId, roundId, p, obj, opts) =>
-    ipcRenderer.invoke('rollback:restoreFile', {
-      sessionId,
-      roundId,
-      path: p,
-      obj,
-      expectHash: opts && opts.expectHash,
-      expectMissing: opts && opts.expectMissing,
-    }),
-  rollbackDeleteFile: (sessionId, roundId, p, opts) =>
-    ipcRenderer.invoke('rollback:deleteFile', {
-      sessionId,
-      roundId,
-      path: p,
-      expectHash: opts && opts.expectHash,
-    }),
-  rollbackStat: (opts) => ipcRenderer.invoke('rollback:stat', opts || {}),
-  rollbackGc: (opts) => ipcRenderer.invoke('rollback:gc', opts || {}),
   /* 存储占用与清理（设置 · 存储占用与清理）：分类统计 + 按类清理（见 storage-clean.js） */
   storageScan: (opts) => ipcRenderer.invoke('storage:scan', opts || {}),
   storageClean: (opts) => ipcRenderer.invoke('storage:clean', opts || {}),
@@ -186,6 +162,10 @@ contextBridge.exposeInMainWorld('api', {
   fnRun: (o) => ipcRenderer.invoke('fn:run', o || {}),
   fnCancel: (runId) => ipcRenderer.invoke('fn:cancel', { runId }),
   fnActive: () => ipcRenderer.invoke('fn:active'),
+  /* 图像后端清单（函数节点头部「图像后端」按钮列候选）：云端图像服务商 + 本机 SenseNova，
+     每项 { id, label, providerName, local, refImages, maxRefImages, strength }。
+     与应用窗口 appHost.hostImageModels 同一份清单（apps-store.js 的 imageBackendsForUi）。 */
+  imageBackends: () => ipcRenderer.invoke('image:backends'),
   onFnEvent: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -224,6 +204,8 @@ contextBridge.exposeInMainWorld('api', {
   dataGetRoot: () => ipcRenderer.invoke('data:getRoot'),
   /* 应用目录（app.getAppPath() / exe 目录）：事实库路径守卫用，库绝不允许落在应用目录内 */
   appDirs: () => ipcRenderer.invoke('app:dirs'),
+  /* 只读：当前有哪些用户数据落在应用文件夹内（顶栏红色警示；与启动体检同口径，不弹窗不写日志） */
+  appDataAudit: () => ipcRenderer.invoke('app:dataAudit'),
   dataSetRoot: (opts) => ipcRenderer.invoke('data:setRoot', opts || {}),
   dataOpenRoot: () => ipcRenderer.invoke('data:openRoot'),
   appRelaunch: () => ipcRenderer.invoke('app:relaunch'),
@@ -270,12 +252,17 @@ contextBridge.exposeInMainWorld('api', {
   authBind: (opts) => ipcRenderer.invoke('auth:bind', opts || {}),
   authUnbind: (opts) => ipcRenderer.invoke('auth:unbind', opts || {}),
   authLogout: () => ipcRenderer.invoke('auth:logout'),
-  /* MTNode 中转服务（账号托管）：主进程带着账号 token 拉 /api/relay/me，只回快照。
-     地址与凭据都留在主进程，渲染层不出现中转站 URL，也不接触 token。 */
+  /* MTNode 中转服务（账号托管）：主进程带着账号 token 拉 /api/relay/me，回快照 + 凭据。
+     地址由服务端下发；中转 Key 由主进程落进本机 config.json 那张卡（设置卡上直接显示全文，
+     可复制给 Codex 等 OpenAI 兼容客户端，桌宠读同一份配置）。 */
   relayMe: () => ipcRenderer.invoke('relay:me'),
-  /* 中转凭据的**打码**摘要（前 4 + **** + 后 4 / signedIn / 长度）：只读卡上「API Key」
-     那一行显示它，让用户看得见凭据在不在、用的是哪一张；明文 token 永远留在主进程。 */
+  /* 中转凭据现状（**含明文 Key** —— 卡上要显示完整值并给复制按钮，见 docs/relay-admin.md）：
+     key / keyLength / fromConfig / fromRelayKey / expiresAt / renewDue / rotate（当日换票余量）。
+     没票时 key 为空串，卡片据此提示「先登录 / 点刷新中转清单」，绝不显示占位串。 */
   relayKeyInfo: () => ipcRenderer.invoke('relay:keyInfo'),
+  /* 手动更换中转 Key：POST /api/relay/me { rotate: true }（服务端按账号自然日限 5 次，
+     超限回 429），换到的票照旧落本机凭据档 + config.json。 */
+  relayRotateKey: () => ipcRenderer.invoke('relay:rotateKey'),
   onAuthChanged: (cb) => {
     const handler = (_e, state) => {
       try { cb(state); } catch (_) {}
@@ -629,8 +616,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   /* ── dsh agent 网关（见 dsh/DESIGN.md）──
-     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'journal'|'canvas'|'db'|'question'|'approval'|'ix-drop'|'session-event'|'error'|'done', data}。
-     'journal' 是回滚帧（改前/改后采样），done 之后到达的帧改由 dshRollbackDrain 取回。
+     run 的事件经 dsh:event 推送：{reqId, type:'reasoning'|'text'|'tool'|'status'|'title'|'usage'|'canvas'|'db'|'question'|'approval'|'ix-drop'|'session-event'|'error'|'done', data}。
      'session-event' 是运行时原始帧的透传，插话（dshSteer）的注入回执就靠它：
      data.type === 'agent/inbox/spliced' 表示那句插话真的进了正在跑的这一轮；
      暂停（dshPause）之后的收尾则以 done{paused:true} 出现（不会有 error）。 */
@@ -755,13 +741,34 @@ contextBridge.exposeInMainWorld('api', {
      （老网关 / 老运行时 / 这一轮已经结束），调用方应回落成排队消息，别当发送失败。 */
   dshSteer: (params) => ipcRenderer.invoke('dsh:steer', params),
   dshPause: (params) => ipcRenderer.invoke('dsh:pause', params),
-  /* 回滚：取回 done 之后才到达的 journal 帧（网关环形缓冲），params {sessionId, roundId} */
-  dshRollbackDrain: (params) => ipcRenderer.invoke('dsh:rollbackDrain', params),
   dshProviderCatalog: () => ipcRenderer.invoke('dsh:providerCatalog'),
   skillList: () => ipcRenderer.invoke('skill:list'),
   skillGet: (name) => ipcRenderer.invoke('skill:get', name),
   mtnodeAgentSkillIndex: () => ipcRenderer.invoke('mtnodeAgentSkill:index'),
   mtnodeAgentSkillGet: (name) => ipcRenderer.invoke('mtnodeAgentSkill:get', name),
+  /* ── MCP 服务端（第三方客户端接进来操作 MTNode，见 mcp-server.js / docs/mcp-server.md）──
+     主进程是服务端与执行调度的唯一入口；渲染层只出「执行桥」：
+       mcpStatus / mcpSetEnabled / mcpResetToken / mcpSetClientId：面板读写（开关、令牌、客户端标识）
+       mcpSelfTest：自检探针（自己走一遍 initialize → tools/list → 一次真读数）
+       mcpAudit / mcpCapture：最近调用与原始 JSON-RPC 抓包（抓包需在面板里显式打开）
+       mcpInteract：**执行回执**——渲染层跑完一帧后把结果交回主进程
+    事件侧走 mcp:event：{id, sessionId, clientId, op, params, write}，由 mcp-bridge.js 消费。 */
+  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  mcpSetEnabled: (enabled) => ipcRenderer.invoke('mcp:setEnabled', { enabled }),
+  mcpResetToken: () => ipcRenderer.invoke('mcp:resetToken'),
+  mcpSetClientId: (clientId) => ipcRenderer.invoke('mcp:setClientId', { clientId }),
+  mcpSetCapture: (on) => ipcRenderer.invoke('mcp:setCapture', { on }),
+  mcpAudit: (limit) => ipcRenderer.invoke('mcp:audit', { limit }),
+  mcpCapture: (limit) => ipcRenderer.invoke('mcp:capture', { limit }),
+  mcpSelfTest: () => ipcRenderer.invoke('mcp:selfTest'),
+  mcpInteract: (params) => ipcRenderer.invoke('mcp:interact', params),
+  mcpOnEvent: (cb) => {
+    const onEv = (ev, msg) => {
+      try { cb(msg); } catch (e) { console.error('mcpOnEvent cb error:', e); }
+    };
+    ipcRenderer.on('mcp:event', onEv);
+    return () => ipcRenderer.removeListener('mcp:event', onEv);
+  },
   skillAdd: (skill) => ipcRenderer.invoke('skill:add', skill),
   skillRemove: (name) => ipcRenderer.invoke('skill:remove', name),
 
@@ -811,8 +818,8 @@ contextBridge.exposeInMainWorld('api', {
   /* 新建应用：{ name 标题, id 文件夹名, style 设计风格 id, author 当前登录账号名（可空）} →
      建 <root>/<id>/ + app.json（dev:true = 开发中、author = 作者）；画布（id = 文件夹名）由渲染层
      紧接着走既有 wfSave 建（见 renderer/app-app-flow.js）。 */
-  appsCreate: (name, id, style, author) =>
-    ipcRenderer.invoke('apps:create', { name, id, style: style || '', author: author || '' }),
+  appsCreate: (name, id, style, author, capabilities) =>
+    ipcRenderer.invoke('apps:create', { name, id, style: style || '', author: author || '', capabilities: capabilities || null }),
   /* 本机状态字段写入口（不碰文件系统）：{ id, dev?, author?, forkOf? } ——
      dev = 开发中（新建 / 二次开发）；author = 作者；forkOf = 二次开发来源 { id, ownerId }。
      省略的键保持原样；回 { ok, id, patched, app }。 */
@@ -822,15 +829,37 @@ contextBridge.exposeInMainWorld('api', {
      不传 preview:false 时带预览图；渲染层只在真开浮层时才要它。 */
   appsStyles: (opts) => ipcRenderer.invoke('apps:styles', opts || {}),
   appsSetStyle: (id, style) => ipcRenderer.invoke('apps:setStyle', { id, style }),
+  /* 应用能力位（app.json 的 capabilities：textInput 文字输入 / imageGen 图像生成）：
+     get 回 { ok, capabilities, list }；set 整份替换并（默认）按模板重生成入口页
+     —— 换 `textInput` 会补 / 撤应用目录里的 speech.js + speech.css。 */
+  appsCapabilitiesGet: (id) => ipcRenderer.invoke('apps:capabilitiesGet', { id }),
+  appsCapabilitiesSet: (id, capabilities, opts) =>
+    ipcRenderer.invoke('apps:capabilitiesSet', Object.assign({ id, capabilities }, opts || {})),
   appsCatalog: () => ipcRenderer.invoke('apps:catalog'),
   /* 安装 / 更新：同名目录已存在且没给 mode 时回三态
      { ok:false, conflict:true, choices:['overwrite','rename','cancel'], existing }，由界面弹窗；
      用户选完再带 mode='overwrite' | 'rename' 调一次（'cancel' 只关窗，不调）。
-     version 非空 = 只下那一版（应用中心版本树里点某一版，见 docs/apps-market.md §七）。 */
-  appsInstall: (id, mode, version) =>
-    ipcRenderer.invoke('apps:install', { id, mode: mode || '', version: version || '' }),
+     version 非空 = 只下那一版（应用中心版本树里点某一版，见 docs/apps-market.md §七）。
+     ownerId 非空 = 只下**那个作者的分支**（同 id 多作者，缺省 = 主干；见 §十）。 */
+  appsInstall: (id, mode, version, ownerId) =>
+    ipcRenderer.invoke('apps:install', { id, mode: mode || '', version: version || '', ownerId: ownerId || '' }),
   appsUninstall: (id) => ipcRenderer.invoke('apps:uninstall', { id }),
+  /* 本机多版本（docs/apps-market.md §九；应用详情对话窗的「本机版本」块走这两个）：
+     versions = 只读台账 —— 回 { ok, id, installed, dev, version, source, installedAt,
+       versions:[{ version, source, sha256, bytes, slot:'cur'|'prev', current }], canRollback, prev }；
+       载荷不落盘，所以这里只有「哪一版、从哪来」，没有历史包。
+     rollback = 把目标那一版**按台账来源重新下载**并换进来（地址过白名单 + sha256 校验；
+       进度仍走 onAppsProgress 的 apps:progress 事件）。失败如实回 gone（本机自建 / 云端已下架）/
+       bad_source（地址不在允许来源）等码，绝不静默降级成装最新版。 */
+  appsVersions: (id) => ipcRenderer.invoke('apps:versions', { id }),
+  appsRollback: (id, version) => ipcRenderer.invoke('apps:rollback', { id, version: version || '' }),
   appsExportZip: (id) => ipcRenderer.invoke('apps:exportZip', { id }),
+  /* 上架前体检（开发页那枚按钮）：**只读** —— 回 { ok, root, checkedAt, apps:[{ id, name,
+     version, files, packed, droppedCount, dropped:[{ rel, reason }], refsMissing:[{ ref, rel,
+     from }], ok }] }。reason：generated（本机生成物：画布 / 旧包 / 安装账本）/ storage
+     （应用自己的本机存档：上架包不带它）/ unknown（打包实现漏了它 —— 正是要报的那一类）。
+     id 非空 = 只查这一个应用；不传 = 全部本机应用。 */
+  appsPackAudit: (id) => ipcRenderer.invoke('apps:packAudit', { id: id || '' }),
   /* 上架窗（renderer/app-publish.js）：拍该应用自己的窗口（回 { ok, path, bytes, width, height }）；
      再把**现打的一份** zip 读回 base64（回 { ok, base64, sha256, bytes, version, name, path }）。
      两者都只回回执，渲染层不碰文件系统、不自己拼路径。 */

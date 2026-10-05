@@ -1,9 +1,14 @@
-/* renderer/css/whalecoin.css — 鲸圆币的金币图标与金额元件
+/* renderer/css/whalecoin.css — 鲸圆币的图标与金额元件
    结构见 renderer/app-whalecoin.js（window.MtCoin）；口径：
    1 币 = ¥0.02，只用于账户钱包与 MTNode 中转服务，官方 DeepSeek 金额仍是 ¥。
 
-   尺寸一律用 em：图标跟着所在文字走（对话框 26px 的余额 = 26px 金币，
-   表格 12.5px 的小格子 = 12.5px 金币），不必逐处补尺寸。
+   图标（本轮）：**自绘 SVG 金色圆环 + 圆内的 DeepSeek 官方 logo**（内联 SVG path，
+   官方品牌蓝 #4D6BFE，不再依赖 deepseek-logo.png，也不是自绘的鱼 / 鲸剪影）——
+   SVG 自带渐变与描边，所以这里只管尺寸与对齐；圆底仍然保留，给「ico-miss」那类
+   兜底与老图片路径留一条退路（老样式命中时有圆底、不会露出透明洞）。
+
+   尺寸一律用 em：图标跟着所在文字走（对话框 26px 的余额 = 26px 图标，
+   表格 12.5px 的小格子 = 12.5px 图标），不必逐处补尺寸。
    亮色主题覆盖在文件末尾（与其它 css 同款写法）。 */
 
 .coin-ico {
@@ -14,17 +19,25 @@
   flex: none;
   border-radius: 50%;
   vertical-align: -0.14em;
-  /* 金色圆环：外深内亮 + 内描边 + 左上高光，小尺寸下也认得出是金币 */
+  /* 兜底圆底（SVG 没渲染出来时不至于是个空洞；正常路径由 SVG 自己画金色圆环） */
   background:
     radial-gradient(circle at 32% 28%, #fff3c9 0%, #ffd76a 36%, #d9971f 74%, #a86c10 100%);
-  box-shadow:
-    inset 0 0 0 0.08em rgba(255, 250, 224, .75),
-    inset 0 -0.1em 0.16em rgba(120, 74, 6, .45),
-    0 0.02em 0.12em rgba(0, 0, 0, .35);
   overflow: hidden;
 }
 
-/* DeepSeek logo（renderer/deepseek-logo.png）居中嵌在金币里，留一圈金边 */
+/* 自绘 SVG（金色圆环 + DeepSeek 官方 logo）铺满这一格 */
+.coin-ico svg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  height: 100%;
+  transform: translate(-50%, -50%);
+  display: block;
+  pointer-events: none;
+}
+
+/* 老图片路径（若还有调用方用 img）：居中嵌在金币里，留一圈金边 */
 .coin-ico img {
   position: absolute;
   left: 50%;
@@ -36,8 +49,9 @@
   pointer-events: none;
 }
 
-/* 图挂了也不空着（CSS 兜底画一个深蓝圆心，仍读得出「币」这个形） */
-.coin-ico.ico-miss img {
+/* 图标没画出来也不空着（CSS 兜底画一个深色圆心，仍读得出「币」这个形） */
+.coin-ico.ico-miss img,
+.coin-ico.ico-miss svg {
   display: none;
 }
 
@@ -50,7 +64,7 @@
   height: 52%;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: #4d6bfe;
+  background: #4a3410;
 }
 
 .coin-ico.sm {
@@ -75,6 +89,28 @@
   align-items: center;
   gap: 0.28em;
   font-variant-numeric: tabular-nums;
+}
+
+/* 「数字 + 图标（+ 尾串）」内联元件：打赏窗的档位 / 合计 / 名单、条目详情的「累计打赏」、
+   应用中心卡片元信息都用它（本轮把「币」字换成图标后的统一形态） */
+.coin-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22em;
+  font-variant-numeric: tabular-nums;
+}
+.coin-inline > .coin-ico {
+  margin-left: 0.06em;
+}
+
+/* 余额取数时刻（余额窗余额行右端的小字「更新于 HH:MM」）：只在**取到过**余额时出现，
+   取不到（显示「—」）时没有时刻可报。字号跟着余额行的小字口径，别抢数字的注意力。 */
+.coin-time {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  vertical-align: baseline;
 }
 
 /* 充值对话框：档位按钮里的币数（下方小字是真正的支付金额，单位是元） */
@@ -114,12 +150,9 @@
   color: inherit;
 }
 
-/* ── 亮色主题：金币要压得住白底（外圈加深、高光收敛） ───────── */
+/* ── 亮色主题：图标要压得住白底（外圈加深、高光收敛） ─────────
+   （自绘 SVG 自带渐变与描边，这里的圆底只服务兜底路径与老图片路径） */
 body.theme-light .coin-ico {
   background:
     radial-gradient(circle at 32% 28%, #fff8dd 0%, #f0bf52 40%, #bf8412 76%, #8d5c08 100%);
-  box-shadow:
-    inset 0 0 0 0.08em rgba(255, 255, 255, .85),
-    inset 0 -0.1em 0.16em rgba(110, 68, 4, .4),
-    0 0.02em 0.1em rgba(90, 60, 0, .3);
 }

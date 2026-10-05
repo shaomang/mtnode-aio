@@ -1130,14 +1130,22 @@ async function dbLogToStore(db, wf, node, action, q, hits) {
 /* ---------- 宿主侧 mtnode_assets 事件处理（素材库 / 窗口截图 → 应答） ----------
    dsh/gateway/assets-plugin.mjs 那只工具的唯一宿主分发口。动作→许可键的映射真源在
    app-nodes.js 的 assetsToolKeyOf（一个许可项 = 一个工具：整只被拒就整只不注册）。
-   实现体在 app-assets.js（handleAssetEvent，读库 / 读条目 / 拍图落盘）。 */
-function handleAssetToolEvent(data, runKey) {
+   实现体在 app-assets.js（handleAssetEvent，读库 / 读条目 / 拍图落盘）。
+
+   回执通道：默认走 dshInteract（自家 Agent 那一轮，网关按 id 认领）；
+   第三方 MCP 客户端（主进程 mcp-server.js）推来的帧**不在任何 dsh 轮里**，
+   由 renderer/mcp-bridge.js 传 reply 覆盖成本桥的回执（window.api.mcpInteract）——
+   不覆盖就会把结果写给一个没人认领的 id，客户端一直等到超时。 */
+function handleAssetToolEvent(data, runKey, replyOverride) {
   const id = data && data.id;
   if (!id) return;
-  const reply = (result, error) =>
-    window.api
-      .dshInteract({ kind: "asset", id, result, error: error || undefined })
-      .catch(() => {});
+  const reply =
+    typeof replyOverride === "function"
+      ? replyOverride
+      : (result, error) =>
+          window.api
+            .dshInteract({ kind: "asset", id, result, error: error || undefined })
+            .catch(() => {});
   const p = (data && data.params) || {};
   const action = String((data && data.action) || p.action || "list").trim();
   const key = typeof assetsToolKeyOf === "function" ? assetsToolKeyOf() : "assets_read";
@@ -1163,10 +1171,12 @@ function handleAssetToolEvent(data, runKey) {
     .catch((e) => reply({ ok: false, error: String((e && e.message) || e) }));
 }
 
-async function handleDbToolEvent(data, node, wf) {
+async function handleDbToolEvent(data, node, wf, replyOverride) {
   const id = data && data.id;
-  const reply = (result) =>
-    window.api.dshInteract({ kind: "db", id, result }).catch(() => {});
+  const reply =
+    typeof replyOverride === "function"
+      ? replyOverride
+      : (result) => window.api.dshInteract({ kind: "db", id, result }).catch(() => {});
   if (!id) return;
   try {
     /* 工具参数经网关放在 data.params（帧顶层只有 action） */
@@ -1371,13 +1381,16 @@ async function handleDbToolEvent(data, node, wf) {
   }
 }
 /* ---------- 宿主侧 mtnode_facts 事件处理（AI 事实库读写 → 应答） ---------- */
-function handleAiFactsToolEvent(data, wf) {
+function handleAiFactsToolEvent(data, wf, replyOverride) {
   const id = data && data.id;
   if (!id) return;
-  const reply = (result, error) =>
-    window.api
-      .dshInteract({ kind: "facts", id, result, error: error || undefined })
-      .catch(() => {});
+  const reply =
+    typeof replyOverride === "function"
+      ? replyOverride
+      : (result, error) =>
+          window.api
+            .dshInteract({ kind: "facts", id, result, error: error || undefined })
+            .catch(() => {});
   const canvasId = String((wf && wf.id) || "");
   if (!canvasId) {
     reply({ ok: false, error: I18n.t("当前没有绑定画布") });
@@ -2214,77 +2227,41 @@ function dshRunKeyOf(opts) {
   return String(opts.runKey || (opts.node && opts.node.id) || "default");
 }
 
-/* ── 两档完成音的时基（本次需求）──
-   ① **任务级短促音**：任何一件任务跑完就响一声（旧的「以前的短促音」，E5→A5）。判据 =
+/* ── 完成音的时基（本次需求：长任务音效下线，收尾那一档换成一枚「最终音」）──
+   ① **任务级短促音**：任何一件任务跑完就响一声（E5→A5，两音各 0.18s）。判据 =
    运行队列前后对比：上拍还在队列里的一条运行项这一拍不见了 = 它完成了（见
    dshRunQueueDoneCheck）。只认「正在跑」的行，且换了键但活还在的行不算完成
    （暂停↔运行 / 会话↔并行组 / 开发块行折叠都不发声）；被用户手动停止 / 取消的也不算。
-   ② **全局音**：「所有任务结束」之后再空满 5 分钟才响一声更清脆的三音上行（C6→E6→G6）。
-   判据 = 运行队列彻底为空（跨画布节点 / 会话 / 助手 / 开发块 + 后端在途与排队的音视频）、
-   没有任何智能运行还在飞（dshRunBusy）→ 起算空闲窗口，满 DSH_ALL_DONE_MIN_MS 且期间
-   没有任何新任务起跑才响。**不满 5 分钟就只留短促音**。
-   为什么不再用「连续运行 ≥ 3 分钟」那套区间口径（上一版的 bug 源）：旧口径要跨运行累加
-   时长，用户回话 / 新任务起跑都会把它顶掉，于是出现「跑了很久却没响」；现在只看**空闲
-   时长**这一个量，判据与队列状态同源，既不会提前响、也不会被回话顶掉。
-   ★ 这一档的**心跳**是它自己的（dshRunIdleTicker）：面板心跳「有活才跳」，队列一空就停了，
-   而这一档恰恰只在队列空的时候才谈得上判 —— 没有自己那一盏，它就永远等不到 5 分钟那一拍
-   （旧版只能等用户下次动手顺手判一次：该响时不响，会话一开始反而响）。
-   三张表都挂在 S 上、按 runKey 记：
-     _runLongAt[runKey] = 本轮的起跑时刻（毫秒）—— 只用于判「这一轮还在不在跑」；
-     _runUserAt[runKey] = 你在这一轮最近一次回答 / 审批的时刻（只认这两类回执）；
-     _allDoneSoundAt    = 上一次全局音的时刻（供短促音让位，也防同一段空闲叠响）；
-     _doneSoundAt       = 上一次短促音的时刻（同一瞬并行收尾据此合并成一声）。 */
-const DSH_ALL_DONE_MIN_MS = 5 * 60 * 1000;
-/* 队列空要连续确认这么久才算「全部跑完」（心跳 2 秒 → 至少下一拍再判），
-   确认之后才开始计那 5 分钟 */
+   ② **最终音**：**所有任务都完成**（运行队列彻底为空：跨画布节点 / 会话 / 助手 /
+   开发块 + 后端在途与排队的音视频，且没有任何智能运行还在飞）→ 响**同一把音色**，
+   但按倍数放大（见 DSH_DONE_SOUND_FINAL_RATIO，1.5 倍）。
+   判据里**没有时长门槛**：干完那一刻就响，跑多久都一样（旧的「总时长满 5 分钟才响全局
+   三音上行」整档已下线，连同那套忙碌时长计时一并删除）。
+   挂在 S 上的几张表：
+     _runLongAt[runKey]  = 本轮的起跑时刻（毫秒）—— 判「这一轮还在不在跑」；
+     _runUserAt[runKey]  = 你在这一轮最近一次回答 / 审批的时刻（留作诊断）；
+     _doneSoundAt        = 上一次短促音的时刻（同一瞬并行收尾据此合并成一声）；
+     _queueIdleAt        = 队列刚空的时刻（确认窗起点，防「一件刚完、下一件立刻起跑」）；
+     _queueRanAt         = 这一段活里队列**真的跑过东西**的时刻（0 = 没跑过）。
+   最后这一项是必需的边界：启动后队列一直空着（没跑过任何活）也满足「队列空」这个
+   形式条件，若不记「跑过没有」，开机 3 秒后就会凭空响一声收尾音。
+   两处都会记它（谁先看见算谁的）：dshRunAllDoneCheck 看见队列非空的那一拍，
+   以及 dshRunQueueDoneCheck 的队列前后对比 —— 快速任务可能在心跳的两拍之间就跑完了，
+   只靠前者会让「所有任务都完成」永远判不出来。
+   最后一件事说清「那一瞬只响一声」的口径：最后一件任务跑完的那一拍响**普通完成音**
+   （它是「一件任务完成」），确认窗（3 秒）过后队列确实空了才响**最终音**（1.5 倍）
+   —— 两声先后分明，不会在同一拍上叠响；刚响过短音（1.5 秒内）时最终音让位一拍再判。 */
+/* 队列「彻底空」要连续确认这么久才下结论 —— 面板心跳 2 秒，所以至少下一拍再判，
+   防「一件刚完、下一件立刻起跑」被当成两段（第一件之后先响一声最终音） */
 const DSH_QUEUE_IDLE_CONFIRM_MS = 3000;
 /* 同一瞬间并行收尾（并行任务 / 批处理）合成一声：这一窗内的后续完成不再单独发声 */
 const DSH_DONE_SOUND_MERGE_MS = 500;
-/* 短促音与全局音的让位窗：两档几乎同一刻要响时只留全局那一声（不叠音） */
-const DSH_DONE_SOUND_DEDUP_MS = 1200;
 function dshRunLongMark(runKey) {
   if (!runKey || typeof S === "undefined" || !S) return;
   S._runLongAt = S._runLongAt || {};
   S._runLongAt[runKey] = Date.now();
-  /* 新任务起跑 = 这一段空闲到此为止：全局那一档的 5 分钟重新起算（本次需求口径
-     「空满 5 分钟且期间没有任何新任务起跑」）。队列还有别的活时本来也不会走到响，
-     这里统一清掉是为了队列取数漏拍时也不会拿旧起点误响。 */
-  S._queueIdleAt = 0;
-  dshRunIdleTicker(false); /* 空闲窗作废 → 那一盏自己的心跳跟着收灯 */
 }
 
-/* ── 空闲窗心跳（修复 · 症状「长任务那一档该响时不响、会话一开始反而响」）──
-   面板心跳是**有活才跳**的（app.js syncRunQueueTicker(hasQueue)：队列一空就
-   stopRunQueueTicker），而「队列空满 5 分钟」这一档的前提恰恰是「队列已经空了」——
-   于是它永远等不到下一拍：该响的那一刻没人判，一直等到用户下一次动手（新建 / 切会话、
-   点「继续」、任何刷面板的动作）才顺手判一次，听感就成了「会话一开始先响一声」；
-   要是那一拍新任务已经起跑（dshRunLongMark 清掉空闲窗），这一档索性彻底不响。
-   这里给它一盏自己的心跳：空闲窗口在走就开着，窗口清零（响过 / 新任务起跑 / 队列又活了）
-   即关。每拍走的是同一个 dshRunAllDoneCheck（它自己重取队列真身），没有第二套判据。 */
-const DSH_IDLE_TICK_MS = 5000;
-let _idleTicker = null;
-function dshRunIdleTicker(on) {
-  if (!on) {
-    if (_idleTicker) {
-      try {
-        clearInterval(_idleTicker);
-      } catch (_) {}
-      _idleTicker = null;
-    }
-    return;
-  }
-  if (_idleTicker || typeof setInterval !== "function") return;
-  _idleTicker = setInterval(() => {
-    try {
-      dshRunAllDoneCheck();
-    } catch (_) {}
-    /* 窗口已清零（响过 / 新任务起跑 / 队列又有活了）→ 这一盏自己收灯 */
-    if (!(typeof S !== "undefined" && S && S._queueIdleAt)) dshRunIdleTicker(false);
-  }, DSH_IDLE_TICK_MS);
-}
-
-/* 用户回话（回答 / 审批）也把空闲窗口顶掉：只认这两类回执（见 ixAnswerQuestion /
-   ixAnswerApproval），浏览器求助卡 / 画布确认框不计入。 */
 function dshRunUserMark(runKey) {
   const k = String(runKey || "");
   if (!k || (typeof S === "undefined" || !S)) return;
@@ -2298,7 +2275,7 @@ function dshRunLongDrop(runKey) {
   if (S._runUserAt) delete S._runUserAt[runKey];
 }
 /* 还有智能运行在飞吗？判据 = 已起跑（dshRunLongMark）但还没收尾（dshRunLongDrop）。
-   这是全局音的闸：运行队列面板没刷到时也不能喊「全干完了」。 */
+   这是最终音的闸：运行队列面板没刷到时也不能喊「全都完成了」。 */
 function dshRunBusy() {
   if (typeof S === "undefined" || !S || !S._runLongAt) return 0;
   try {
@@ -2307,55 +2284,41 @@ function dshRunBusy() {
     return 0;
   }
 }
-/* 运行队列彻底空的那一刻起算空闲窗口（_queueIdleAt = 那一刻的毫秒字符串；0 = 没在空闲）。
-   调用点 = 运行队列面板刷新（app.js 的 updateRunQueuePanel，有活时还有每 2 秒心跳）与
-   dshRunAllDoneCheck —— 不论最后收尾的是智能运行、生成节点还是排队项，队列空后总有一拍
-   走到这里，所以不必在每条收尾路径上各埋一遍。 */
-function dshRunQueueIdleMark() {
-  if (typeof S === "undefined" || !S) return;
-  if (!S._queueIdleAt) {
-    S._queueIdleAt = String(Date.now());
-    /* 起算空闲那一刻，面板心跳刚好被关掉（队列空了）—— 这一档的下一拍只能由自己给 */
-    dshRunIdleTicker(true);
-  }
-}
-/* 队列彻底空 + 没有任何智能运行还在飞 + 队列连续空够确认窗（3 秒）之后，再满 5 分钟
-   → 响一声更清脆的全局音（dingdong 档）。**不满 5 分钟就只留任务级短促音**。
-   调用点 = 运行队列面板刷新（app.js updateRunQueuePanel，心跳 2 秒）与 dshRunOnce 收尾。
-   与旧版的区别：不再看「连续运行 ≥ 3 分钟」那套跨运行区间（回话 / 新任务都会把它顶掉），
-   现在只看空闲时长这一个量 —— 一条任务先结束时队列里还有别的活，这里根本走不到响的那一步。 */
+/* 队列彻底空 + 没有任何智能运行还在飞 + 队列连续空够确认窗（3 秒）→ 所有任务都完成：
+   响一声**最终音**（与短促音同一把音色，按 DSH_DONE_SOUND_FINAL_RATIO 放大）。
+   **没有时长门槛**：跑 30 秒还是 3 小时都一样，干完那一刻就响（旧的「总时长满 5 分钟
+   才响全局三音上行」已下线）。
+   调用点 = 运行队列面板刷新（app.js updateRunQueuePanel，心跳 2 秒）与 dshRunOnce 收尾 ——
+   不论最后收尾的是智能运行、生成节点还是排队项，队列空后总有一拍走到这里，
+   所以不必在每条收尾路径上各埋一遍。 */
 function dshRunAllDoneCheck() {
   try {
     const q = typeof collectRunQueueAll === "function" ? collectRunQueueAll() : [];
     const items = Array.isArray(q) ? q : (q && q.items) || [];
-    /* 队列还有活（在跑 / 排队 / 后端在途）：空闲窗口作废，等下一次彻底干完重新起算 */
+    /* 队列还有活（在跑 / 排队 / 后端在途）：确认窗作废，同时记下「这一段活真的跑过东西」——
+       只有跑过东西，队列空之后才谈得上「全都完成」（见下面那条 _queueRanAt 判据） */
     if (items.length) {
       S._queueIdleAt = 0;
-      dshRunIdleTicker(false);
+      if (!S._queueRanAt) S._queueRanAt = String(Date.now());
       return;
     }
+    /* 这一段活压根没跑过东西（开机后队列一直空着）→ 没有「完成」可言，不发声 */
+    if (!S._queueRanAt) return;
     /* 队列空 ≠ 全干完：还在收尾的那一轮（resolve/reject 之后才清账）先不计，
        下一拍心跳再判 —— 这样「全部执行完毕」是事后确认，不是边收尾边喊 */
     if (Number(S._runCount) > 0) return;
     if (dshRunBusy() > 0) return;
-    /* 起算空闲窗口（只在「从有活变没活」的那一拍落点，持续空闲不刷新） */
-    dshRunQueueIdleMark();
-    if (!S._queueIdleAt) return;
+    /* 队列刚空的那一拍起算确认窗，窗内不下结论 */
+    if (!S._queueIdleAt) S._queueIdleAt = String(Date.now());
     const idleMs = Date.now() - Number(S._queueIdleAt);
-    /* 先过确认窗（3 秒）：防「一件刚完、下一件立刻起跑」的抖动 */
+    /* 确认窗（3 秒）内不下结论：防「一件刚完、下一件立刻起跑」被切碎 */
     if (idleMs < DSH_QUEUE_IDLE_CONFIRM_MS) return;
-    /* 满 5 分钟才响。不够长时**什么都不清** —— 空闲窗口继续走，下一拍接着判 */
-    if (idleMs < DSH_ALL_DONE_MIN_MS) return;
-    /* 同一段空闲里才响过全局音（并行收尾的余波 / 紧接着的第二拍）不再叠一遍 */
-    const lastAt = Number(S._allDoneSoundAt) || 0;
-    if (lastAt && Date.now() - lastAt < DSH_QUEUE_IDLE_CONFIRM_MS) return;
-    /* 短促音刚落（同一刻的收尾）→ 全局那一声让它先响完，下一拍再判 */
-    const lastTaskAt = Number(S._doneSoundAt) || 0;
-    if (lastTaskAt && Date.now() - lastTaskAt < DSH_DONE_SOUND_DEDUP_MS) return;
-    /* 响过就闭掉这一段空闲（下一次要等新任务起跑后再空满 5 分钟） */
     S._queueIdleAt = 0;
-    dshRunIdleTicker(false);
-    playAllDoneSound();
+    /* 刚响过（并行收尾的第二拍）→ 不叠响，但账本照清，等下一阵活重新跑过才再响 */
+    const lastShort = Number(S._doneSoundAt) || 0;
+    S._queueRanAt = 0;
+    if (lastShort && Date.now() - lastShort < DSH_QUEUE_IDLE_CONFIRM_MS) return;
+    playTaskDoneSound(true);
   } catch (_) {}
 }
 /* ── 任务级短促音：任何一件任务跑完就一声（本次需求，队列前后对比判定）──
@@ -2426,6 +2389,11 @@ function dshRunQueueDoneCheck() {
   try {
     const q = typeof collectRunQueueAll === "function" ? collectRunQueueAll() : [];
     const items = Array.isArray(q) ? q : (q && q.items) || [];
+    /* 这一段活「真的跑过东西」的第二个见证点：队列对比本身也看见过在飞的行。
+       与 dshRunAllDoneCheck 里那一处同义（_queueRanAt），为什么要两处都记 —— 快速任务
+       可能在面板心跳的下两拍之间就跑完了（队列非空的那一拍谁都没看见），只靠那边记
+       会让「所有任务都完成」永远判不出来；这边一次前后对比就够了。 */
+    if (items.length && !S._queueRanAt) S._queueRanAt = String(Date.now());
     S._runQueueSeen = S._runQueueSeen || {};
     const seen = S._runQueueSeen;
     const now = Date.now();
@@ -2460,11 +2428,12 @@ function dshRunQueueDoneCheck() {
       doneCount++;
     }
     if (!doneCount) return;
-    /* 同一瞬间并行收尾只响一声；全局那一声刚落（几乎同一刻）时让它独响 */
+    /* 同一瞬间并行收尾只响一声（合并窗内的后续完成不再单独发声）。
+       与最终音之间**不再需要让位窗**：收尾那一刻的判定要么走这里（普通短促音），
+       要么走 dshRunAllDoneCheck（1.5 倍最终音，且它自带「刚响过就跳过」的冷却），
+       两档不会在同一次收尾里各响一声（用户口径：那一瞬只响一声）。 */
     const lastShort = Number(S._doneSoundAt) || 0;
     if (lastShort && now - lastShort < DSH_DONE_SOUND_MERGE_MS) return;
-    const lastAll = Number(S._allDoneSoundAt) || 0;
-    if (lastAll && now - lastAll < DSH_DONE_SOUND_DEDUP_MS) return;
     playTaskDoneSound();
   } catch (_) {}
 }
@@ -3570,8 +3539,8 @@ function dshRunOnce(input, opts) {
   /* 轮次归属键（dshRunTask 算好随 opts 透传）：缺省回落 runKey，只用于逐轮明细 */
   const tokRoundKey = String(opts.tokRoundKey || runKey || "default");
   const t0 = Date.now();
-  /* 长任务「叮咚」的时基：本轮托管计时从这一刻起算，中途你在提问 / 审批里回过话
-     会被 dshRunUserMark 顶掉（那时从你的回应重新起算），见上面三张表的注释 */
+  /* 起跑即登记（见 dshRunLongMark）：给「还有没有活没干完」提供一处判据。
+     最终音只看队列空不空，与时长无关 */
   dshRunLongMark(runKey);
   /* 交互面板:仅首个 run 清空,后续 run 保留其他会话/节点在途的提问与审批 */
   if (!(S._runCount || 0)) ixReset();
@@ -3599,28 +3568,6 @@ function dshRunOnce(input, opts) {
     S.nodeTools = S.nodeTools || {};
     S.nodeTools[opts.node.id] = [];
   }
-  /* 回滚账本：这一轮 run 开一盏账，并把 {sessionId, roundId} 随 run 交给网关 ——
-     网关据此向该 runtime 的桥推 begin/end，运行时插件给每条 journal 盖章。
-     老版网关不认这个字段就整个忽略（本轮只剩画布与清单可回退），不报错。 */
-  let rbRound = null;
-  try {
-    if (typeof rbBeginRound === "function") {
-      rbRound = rbBeginRound({
-        runKey,
-        workspace: runParams.workspace,
-        node: opts.node || null,
-        owner: opts.rollbackOwner || tokOwner || null,
-        anchor: opts.rollbackAnchor || null,
-        wfId: (boundWf && boundWf.id) || "",
-        label: opts.rollbackLabel || "",
-      });
-      if (rbRound)
-        runParams.rollback = {
-          sessionId: rbRound.sessionId,
-          roundId: rbRound.rid,
-        };
-    }
-  } catch (_) {}
   return new Promise((resolve, reject) => {
     let settled = false;
     let seenError = "";
@@ -3691,12 +3638,6 @@ function dshRunOnce(input, opts) {
       dshRunAllDoneCheck();
       if (ok) resolve(val);
       else reject(val instanceof Error ? val : new Error(String(val || "")));
-      /* 轮次封口：异步收口账本（等改前正文入完库 → rollbackDrain 补收迟到帧 → 落盘）。
-         放在 resolve/reject 之后：回滚账本再慢/再坏也不影响这一轮的返回。 */
-      try {
-        if (rbRound && typeof rbEndRound === "function")
-          Promise.resolve(rbEndRound(rbRound, ok ? "done" : "error")).catch(() => {});
-      } catch (_) {}
     };
     const watchdog = setInterval(() => {
       if (settled) return;
@@ -3744,16 +3685,6 @@ function dshRunOnce(input, opts) {
       .dshRun(
         runParams,
         (msg) => {
-          if (msg.type === "journal") {
-            /* 回滚 journal 帧：主进程已把改前正文入对象库，这里只按 rid 合并进本轮账本。
-               不判 settled —— done 之后仍可能有帧挤进来，账本合并自身幂等。
-               迟到帧不算「活动」：看门狗不能因为它们无限期续命。 */
-            try {
-              if (typeof rbCollectJournal === "function")
-                rbCollectJournal(msg.data || {}, runKey);
-            } catch (_) {}
-            return;
-          }
           if (settled) return;
           /* 任何业务事件（含 canvas / db 工具回执）都刷新看门狗的活动时间戳 */
           lastActivity = Date.now();
@@ -3925,11 +3856,9 @@ function dshRunOnce(input, opts) {
             try { opts.onEvent(msg.type, msg.data || {}); } catch {}
           }
           if (msg.type === "done") {
-            /* 完成音效：**不在这里发声**（本次需求）。旧版是「单轮跑满 5 分钟才响一声短促
-               音」，于是短任务、媒体生成、批处理跑完都没有反馈。现在任务级短促音统一由
-               dshRunQueueDoneCheck 按运行队列前后对比判定（任何一件任务跑完都响一声），
-               全局那一档由 dshRunAllDoneCheck 按「队列空满 5 分钟」判定 —— 两条口径都不在
-               这条分支上，这里只负责收尾记账。 */
+            /* 完成音效：**不在这里发声**。任务级短促音由 dshRunQueueDoneCheck 按运行队列
+               前后对比判定（任何一件任务跑完都响一声），收尾那一档（所有任务都完成）由
+               dshRunAllDoneCheck 判定 —— 两条口径都不在这条分支上，这里只负责收尾记账。 */
             const data = msg.data || {};
             /* 一轮结束：把本次用量按模型并进所属会话的累计台账（并落一条逐轮明细） */
             if (tokOwner && typeof tokMergeRun === "function") {
@@ -4121,55 +4050,53 @@ function onDshNodeEvent(node, attemptT, type, data) {
 
 /* 内置完成音的音量：设置里「完成音效音量」滑杆的百分比（0~100，默认 35）。
    只在 0~100 的有限数字上取值；其余（未设 / 越界 / 非数字）一律回落到默认 35。
-   上一版内置音是固定幅度 0.14，35% 对应的 0.12 与它听感相当（并行的低一个八度
-   分值贡献了低频能量），滑杆拉满时约 0.34，足够醒而不刺耳。 */
+   0.34 = 滑杆拉满时的增益（35% 对应 0.119，与早先固定幅度 0.14 的内置音听感相当，
+   并行的低一个八度分音贡献了低频能量）。 */
 const DSH_DONE_SOUND_VOL_DEFAULT = 35;
+/* 最终音（所有任务都完成那一声）的音量倍数：同一把音色，按滑杆增益放大 1.5 倍。
+   为什么是倍数而不是另做一把音：本次需求要「以 1.5 倍音量播放完成音替代原本的长任务
+   音效」——收尾那一声就是熟悉的那一声，只是明显更响。 */
+const DSH_DONE_SOUND_FINAL_RATIO = 1.5;
+/* 最终音的增益上限：滑杆 100% 时 0.34 × 1.5 = 0.51，已经逼近满幅，再放大就会削波破音
+   （听感从「更响」变成「更刺」）。0.85 是「明显比普通完成音响、但绝不裂」的那一点。 */
+const DSH_DONE_SOUND_FINAL_MAX_GAIN = 0.85;
 function doneSoundVolumePct() {
   const d = (typeof S !== "undefined" && S && S.config && S.config.dsh) || {};
   const n = Number(d.doneSoundVolume);
   if (!isFinite(n) || n <= 0) return n === 0 ? 0 : DSH_DONE_SOUND_VOL_DEFAULT;
   return Math.max(0, Math.min(100, n));
 }
-/* 完成音的音量系数（0~1）：滑杆百分比 → 增益。自定义音频文件的音量另算（见
-   playDoneSoundFile 的 0.5），滑杆只调内置音（需求口径）。 */
-function doneSoundGain() {
-  return (doneSoundVolumePct() / 100) * 0.34;
+/* 完成音的音量系数（0~1）：滑杆百分比 → 增益。
+   final 传真 = 收尾那一档（所有任务都完成）：同一把尺再乘 1.5，并夹到安全上限。
+   自定义音效文件也按同一口径分档（见 playDoneSoundFile 的 final 参数）。 */
+function doneSoundGain(final) {
+  const base = (doneSoundVolumePct() / 100) * 0.34;
+  if (!final) return base;
+  return Math.min(DSH_DONE_SOUND_FINAL_MAX_GAIN, base * DSH_DONE_SOUND_FINAL_RATIO);
 }
-/* ── 两档完成音的音色真源 ──
-    全局音（dingdong）真源 = 随包音频文件 renderer/sounds/all-done.wav（主进程读盘缩放后播放，
-    渲染层兜底走 WebAudio fetch + decodeAudioData，见 allDoneWavBuffer / builtinDingDong）；
-    短促音（ding）仍是合成音（E5 → A5，约 0.42s，主进程按 DONE_TONE_DING 合成，渲染层兜底按
-    同一张表画曲线）；自定义文件只替换短促音那一档（见 playTaskDoneSound）。
-    短促音表与 sound-alert.js 的 TONES 同源，改它必须两边一起改。 */
+/* ── 完成音的音色真源 ──
+   只有**一把**音色：任务完成短促音 = 合成双音 E5 → A5（约 0.42s），
+   任何一件任务跑完响它，全部任务都完成时响放大 1.5 倍的它（见 doneSoundGain 的 final）。
+   原来的第二把音色（长任务音效：三音上行 C6→E6→G6 / 随包 renderer/sounds/all-done.wav）
+   与承载它的主进程提醒音通道本次整体下线，这里的表就是全仓唯一的完成音音色真源。 */
 const DONE_TONE_DING = [
   [659.25, 0, 0.18],
   [880, 0.18, 0.18],
 ];
-/* 全局档（dingdong）的真源是随包音频文件 renderer/sounds/all-done.wav（主进程与 WebAudio
-   兜底两路都以它为准，见 builtinDingDong）；下面这张三音表只在读不到 / 解不开那个文件时
-   当兜底用，不再是这一档的「正声」。 */
-const DONE_TONE_DINGDONG = [
-  [1046.5, 0, 0.16],
-  [1318.51, 0.16, 0.16],
-  [1567.98, 0.32, 0.16],
-];
-/* 每音衰减率 / 整段余韵时长：主进程按这两张表合成 WAV（全局档现在按 all-done.wav 的真源读盘，
-   这两张表只用于兜底合成），WebAudio 兜底按同一份包络画曲线 */
+/* 每音衰减率 / 整段余韵时长：WebAudio 按这两张表画包络 */
 const DONE_DECAY_DING = [9, 9];
-const DONE_DECAY_DINGDONG = [9, 9, 4.2];
 const DONE_TAIL_DING = 0.06;
-const DONE_TAIL_DINGDONG = 0.38;
-/* WebAudio 包络的终点值：exp(-dur × decay)，与主进程合成的同一段指数衰减对齐
-   （起点 0.0001 → 峰值 → 这个终点，总长 = dur + tail，见 sound-alert.js synthSamples） */
+/* WebAudio 包络的终点值：exp(-dur × decay)（起点 0.0001 → 峰值 → 这个终点，
+   总长 = dur + tail）。夹一道 0.25 上限：深度衰减的档位算出高于峰值的终点会变成
+   「先弱后强」，所以终点必须留在峰值之下（见 playBuiltinTones 里那一夹）。 */
 function doneNoteFloor(decay, dur) {
   const v = Math.exp(-Math.max(0.5, Number(decay) || 9) * Math.max(0.02, Number(dur) || 0.16));
   return Math.max(0.00004, Math.min(0.25, v));
 }
-/* 内置完成音 → WebAudio 兜底的通用实现（两档共用；音色表不同而已）。
-   只在 alertViaHost 派不出去时走到（窗口可见性 / 聚焦状态会推迟渲染层的这一拍，
-   所以正常路径一律走主进程，见 alertViaHost 的注释）。 */
-function playBuiltinTones(notes, decays, tail) {
-  const amp = doneSoundGain();
+/* 内置完成音 → WebAudio（唯一实现；主进程提醒音通道本次已下线）。
+   final 真 = 收尾那一档（所有任务都完成）：增益按 1.5 倍放大并夹到安全上限。 */
+function playBuiltinTones(notes, decays, tail, final) {
+  const amp = doneSoundGain(final);
   if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
@@ -4184,9 +4111,8 @@ function playBuiltinTones(notes, decays, tail) {
     o.frequency.value = f;
     const d = (decays && decays[ix]) || 9;
     const end = off + dur + (ix === notes.length - 1 ? Number(tail) || 0 : 0);
-    /* 衰减终点与主进程合成的同一段指数衰减对齐：peak × exp(-dur × decay)；
-       但**必须留在峰值之下**（深度衰减的档位算出 0.5 倍峰值就会变成「先弱后强」，
-       听感与主进程那一路对不上），所以再夹一道 0.85 倍峰值上限。 */
+    /* 衰减终点：peak × exp(-dur × decay)；但**必须留在峰值之下**（深度衰减的档位算出
+       0.5 倍峰值就会变成「先弱后强」，听感不对），所以再夹一道 0.85 倍峰值上限。 */
     const floor = Math.max(
       0.00004,
       Math.min(amp * 0.85, amp * doneNoteFloor(d, dur), 0.25),
@@ -4201,155 +4127,45 @@ function playBuiltinTones(notes, decays, tail) {
     o.stop(t0 + end + 0.02);
   });
 }
-/* ── 两档完成音的音色与派发（本次需求：两档必须听得出区别）──
-   任务级短促音（mode "ding"）沿用「以前的短促音」E5 → A5（0.42s），仍是合成音；
-   全局提示音（mode "dingdong"）真源 = 随包音频 renderer/sounds/all-done.wav（更清脆明显）。
-   短促音的音色表真源在下面（DONE_TONE_DING），主进程 sound-alert.js 的 TONES 与之逐条对齐
-   —— 改一处必须改另一处，否则「窗口在前台」与「窗口被盖住」两种情况下会听到两把不同的声音。
-   DONE_TONE_DINGDONG 只是全局档读不到那个 WAV 时的兜底合成音，不是它的正声。
-   两档共用同一个 AudioContext 与「完成音效音量」滑杆，不额外造音频文件（WAV 随包）、不联网。
-
-   ★ 发声顺序：**先走主进程通道**（window.api.soundAlert → sound-alert.js：
-   主进程按档位取声 —— "dingdong" 档读盘缩放 all-done.wav，短促档合成 —— 交给系统播放器），
-   下面这段 WebAudio 只在桥不在 / 调用失败时兜底。
-   为什么：窗口被别的软件盖住或最小化时，渲染层这一拍会被推迟到用户切回 MTNode 才响
-   （用户实测症状），主进程不受窗口可见性管辖。双通道共用同一把音量尺：
-   doneSoundGain() 算出的 amplitude 直接交给主进程，音色表在 sound-alert.js 的 TONES。 */
-/* 主进程提醒音通道：能派出去就返回 true（调用方**不要**再自己响一遍）。
-   桥不在（老 preload / 迷你 DOM 回归）或派发失败 → 返回 false，照旧走 WebAudio。 */
-function alertViaHost(mode, amp, file) {
-  try {
-    const api = (typeof window !== "undefined" && window.api) || null;
-    if (!api || typeof api.soundAlert !== "function") return false;
-    const opts = { mode: String(mode || ""), amp: Number(amp) || 0 };
-    const f = String(file || "").trim();
-    if (f) {
-      opts.file = f;
-      opts.volume = 50; /* 自定义文件按它自己的响度播（与下面 playDoneSoundFile 的 0.5 对齐） */
-    }
-    const p = api.soundAlert(opts);
-    if (p && typeof p.catch === "function") p.catch(() => {});
-    return true;
-  } catch (_) {
-    return false;
-  }
+/* ── 完成音的发声（一把音色 · 两档音量）──
+   ① 普通短促音 = 任务级「任何一件任务跑完」：内置短促双音 E5→A5（合成）；
+   ② 最终音 = 「所有任务都完成」：**同一把音色**，增益 ×1.5（见 doneSoundGain(final)）。
+   两档共用同一个开关与音量滑杆；自定义音频文件两档都用它（设了就用用户选的音，
+   留空用内置音）。原来的「长任务音效」（全局三音上行 / 随包 all-done.wav）已整体移除。
+   发声只走页面内 WebAudio / <audio>：提醒音的主进程通道（preload 的 soundAlert →
+   sound-alert.js）本次一并下线。代价是窗口被盖住 / 最小化时这一拍可能被推迟到用户切回
+   本窗口才响（用户已知并接受）；换来的是不必再维护两套音色表与一条 IPC 通道。 */
+function playTaskDoneSound(final) {
+  const d = (S.config && S.config.dsh) || {};
+  if (d.doneSound === false) return;
+  /* 落点登记：同一瞬并行收尾据此合并成一声，也是最终音的冷却判据（见两个 DoneCheck） */
+  S._doneSoundAt = String(Date.now());
+  const file = d.doneSoundFile || "";
+  if (!playDoneSoundFile(file, final)) builtinDoneDing(final);
 }
-function builtinDoneDing() {
-  const amp = doneSoundGain();
-  if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
-  if (alertViaHost("ding", amp)) return; /* 后台也响：交给主进程发声 */
-  playBuiltinTones(DONE_TONE_DING, DONE_DECAY_DING, DONE_TAIL_DING);
+/* 设置内试听：忽略开关与冷却（用户主动点击）。
+   final 真 = 试听收尾那一档（1.5 倍）—— 用户听到的就是「全部完成」时真实的那一声。 */
+function previewDoneSound(file, final) {
+  if (!playDoneSoundFile(file, final)) builtinDoneDing(final);
 }
-/* 全局那一声（mode "dingdong"）：**真源 = 随包音频 renderer/sounds/all-done.wav**，
-   与任务级短促音（合成 E5→A5，0.42s）在音色与长度上都拉开 —— 本次需求「更清脆明显」。
-   派发顺序与短促音同口径：先给主进程（sound-alert.js 读盘 + 按滑杆缩放后交给系统播放器，
-   后台 / 最小化也响）；桥不在或派发失败才走这里的 WebAudio 兜底 —— 兜底同样先试那个 WAV，
-   只有读不到 / 解不开时才落回合成的 C6→E6→G6（那是兜底音，不是真源）。
-   函数名保留 = 档位名保留（playAllDoneSound 的 mode、设置试听都照旧走它）。 */
-function builtinDingDong() {
-  const amp = doneSoundGain();
-  if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
-  if (alertViaHost("dingdong", amp)) return; /* 后台也响：交给主进程发声（它读的是同一个 WAV） */
-  const cached = playAllDoneWav(amp);
-  if (cached) return;
-  allDoneWavBuffer()
-    .then((buf) => {
-      if (!buf) {
-        playBuiltinTones(DONE_TONE_DINGDONG, DONE_DECAY_DINGDONG, DONE_TAIL_DINGDONG);
-        return;
-      }
-      if (!playAllDoneWav(doneSoundGain())) {
-        /* 解出来了却放不出（AudioContext 被拒 / 已关闭）：仍以合成音收尾，不让这一声静默丢掉 */
-        if (doneSoundGain() > 0) playBuiltinTones(DONE_TONE_DINGDONG, DONE_DECAY_DINGDONG, DONE_TAIL_DINGDONG);
-      }
-    })
-    .catch(() => {
-      playBuiltinTones(DONE_TONE_DINGDONG, DONE_DECAY_DINGDONG, DONE_TAIL_DINGDONG);
-    });
-}
-/* ── 全局完成音的真源音频（随包文件，见 DONE_TONE_DINGDONG 上方的说明）──
-   renderer/sounds/all-done.wav：主进程那一路是读盘 + 按滑杆缩放后交给系统播放器；
-   这一路是 WebAudio 兜底（桥不在 / 派发失败时），同样以这个文件为准，按当前滑杆增益缩放。
-   路径取相对本文件的 URL —— 打包前后都是 renderer/sounds/all-done.wav（同目录关系不变）。 */
-const ALL_DONE_WAV_REL = "sounds/all-done.wav";
-let _allDoneWavBuf = null; /* 解码结果缓存（AudioBuffer）；同一个进程内不重复 fetch / decode */
-let _allDoneWavReq = null; /* 进行中的加载 Promise（并发触发只发一次请求） */
-/* 读取 + 解码内置 WAV；拿不到（桥/网络/解码任一环节失败）回 null → 调用方落回合成兜底音。
-   AudioBuffer 与采样率无关，用页面现成的（或新建的）AudioContext 解一次就够。 */
-function allDoneWavBuffer() {
-  if (_allDoneWavBuf) return Promise.resolve(_allDoneWavBuf);
-  if (_allDoneWavReq) return _allDoneWavReq;
-  _allDoneWavReq = (async () => {
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      const url = new URL(ALL_DONE_WAV_REL, document.baseURI).href;
-      let buf = null;
-      try {
-        const r = await fetch(url);
-        if (r && r.ok) buf = await r.arrayBuffer();
-      } catch (_) {}
-      /* fetch 读不到时的二道口：走 preload 的 file:readAudioBytes（与 app-speech.js 同一条口），
-         按主进程给的 appPath 拼绝对路径；桥不在 / 拿不到路径就直接放弃，交给合成兜底。 */
-      if (!buf) {
-        const api = window.api || null;
-        if (api && typeof api.fileReadAudioBytes === "function" && typeof api.appDirs === "function") {
-          const dirs = await api.appDirs();
-          const root = String((dirs && dirs.appPath) || "").replace(/[\\/]+$/, "");
-          if (root) {
-            const sep = root.includes("\\") ? "\\" : "/";
-            const r2 = await api.fileReadAudioBytes(root + sep + "renderer" + sep + "sounds" + sep + "all-done.wav", 4 * 1024 * 1024);
-            if (r2 && r2.ok && r2.bytes && r2.bytes.length) {
-              const b = r2.bytes;
-              buf = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-            }
-          }
-        }
-      }
-      if (!buf || !buf.byteLength) return null;
-      S._audioCtx = S._audioCtx || new AC();
-      const decoded = await S._audioCtx.decodeAudioData(buf.slice(0));
-      if (!decoded) return null;
-      _allDoneWavBuf = decoded;
-      return decoded;
-    } catch (_) {
-      return null; /* 读不到 / 解不开：静默回落到合成音（builtinDingDong 里那一步） */
-    } finally {
-      _allDoneWavReq = null;
-    }
-  })();
-  return _allDoneWavReq;
+/* 设置内调音量时试听内置音（带自定义文件时也响内置音，否则用户调滑杆听不出任何变化）；
+   同样按最终音口径响，滑杆拉到哪一档、收尾那一声就有多响。 */
+function previewDoneSoundVolume() {
+  builtinDoneDing(true);
 }
 
-/* 播放内置 WAV（WebAudio）：拿得到就返回 true（调用方**不要**再自己响一遍），
-   拿不到返回 false → 调用方落回合成兜底音。音量按当前滑杆增益（doneSoundGain）缩放，
-   与主进程那一路同一把尺（主进程按样本缩放，这里走 GainNode）。 */
-function playAllDoneWav(amp) {
-  const g = Number(amp);
-  if (!(g > 0)) return false; /* 滑杆拉到 0 = 静音（与两档内置音同口径） */
-  const ac = S._audioCtx;
-  if (!ac) return false; /* 还没解出过（首响由 allDoneWavBuffer 建好 ctx 再放） */
-  if (!_allDoneWavBuf) return false; /* 没解出内容就绝不放空源，交回调用方走合成兜底音 */
-  try {
-    if (ac.state === "suspended") ac.resume().catch(() => {});
-    const src = ac.createBufferSource();
-    src.buffer = _allDoneWavBuf;
-    const gain = ac.createGain();
-    gain.gain.value = g;
-    src.connect(gain);
-    gain.connect(ac.destination);
-    src.start();
-    return true;
-  } catch (_) {
-    return false;
-  }
+/* 任务完成短促音（唯一一把音色）：E5 → A5 双音，约 0.42 秒。
+   final 真 = 「所有任务都完成」那一档：同一把音色，增益按 doneSoundGain(true) 放大 1.5 倍
+   （本次需求：它替代了原来的长任务音效）。 */
+function builtinDoneDing(final) {
+  const amp = doneSoundGain(final);
+  if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
+  playBuiltinTones(DONE_TONE_DING, DONE_DECAY_DING, DONE_TAIL_DING, final);
 }
-/* 提问/审批提示音:内置短促双音(440→660),或用自定义文件。
-   ★ 与完成音同口径：先派给主进程（sound-alert.js 的 "ask" 档，同一对频率 / 同一段包络），
-   窗口不在前台时也响；桥不在或派发失败才用下面的 WebAudio 兜底。固定幅度 0.12 =
-   滑杆 35% 那一档（提问音不跟完成音音量滑杆走，见 playIxSound）。 */
+/* 提问/审批提示音:内置短促双音(440→660),或用自定义文件。固定幅度 0.12 =
+   完成音滑杆 35% 那一档（提问音不跟完成音音量滑杆走，见 playIxSound）。
+   主进程提醒音通道本次下线，这一声同样只走页面内 WebAudio。 */
 function builtinIxBeep() {
-  if (alertViaHost("ask", 0.12)) return;
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   S._audioCtx = S._audioCtx || new AC();
@@ -4378,53 +4194,21 @@ function playIxSound() {
   if (d.askSound === false) return;
   if (!playDoneSoundFile(d.askSoundFile || "")) builtinIxBeep();
 }
-/* 自定义音效文件：先派给主进程（后台也响），派不出去才用页面里的 <audio>。
-   amp 只影响主进程那一路的音量（SoundPlayer 没有音量属性，只能按样本缩放；
-   MediaPlayer 走 settings.volume）；缺省 0.17 ≈ 旧口径的 a.volume = 0.5。 */
-function playDoneSoundFile(file, amp) {
+/* 自定义音效文件：走页面里的 <audio>（主进程提醒音通道本次已下线）。
+   音量分两档：普通 0.5（文件自己的响度口径）；final 真 = 收尾那一档，
+   0.5 × 1.5 = 0.75 —— 与内置音的 1.5 倍同一把尺（<audio>.volume 上限 1.0，不会溢出）。
+   返回 false = 没文件 / 播不动，调用方照旧回落到内置音（同样分两档）。 */
+function playDoneSoundFile(file, final) {
   if (!file) return false;
-  const a0 = Number(amp);
-  if (alertViaHost("", Number.isFinite(a0) && a0 > 0 ? a0 : 0.17, file)) return true;
   try {
     const a = new Audio(window.api.toFileUrl(file));
-    a.volume = 0.5;
+    a.volume = final ? 0.75 : 0.5;
     a.play().catch(() => {});
     return true;
   } catch {
     return false;
   }
 }
-/* ── 两档完成音的派发（本次需求：两档必须听得出区别）──
-   ① 短促音 = 任务级「任何一件任务跑完」：内置短促双音 E5→A5（合成）；
-   ② 全局音 = 「所有任务结束 + 队列空了 5 分钟」：内置 all-done.wav（随包音频）。
-   两档共用同一个开关与音量滑杆；**自定义音频文件只替换短促音那一档**，全局声始终用内置音 ——
-   否则用户设了自定义文件后两档又变成同一个声音，正好是本次要修的毛病。 */
-function playTaskDoneSound() {
-  const d = (S.config && S.config.dsh) || {};
-  if (d.doneSound === false) return;
-  /* 任务级短音的落点：全局那一档据此去重（几乎同一刻要响两声时只留全局声） */
-  S._doneSoundAt = String(Date.now());
-  const file = d.doneSoundFile || "";
-  if (!playDoneSoundFile(file)) builtinDoneDing();
-}
-/* 全局那一档：**忽略自定义文件**（那是短促音的替身），只响内置音频 all-done.wav；
-   落点记 _allDoneSoundAt 供短促音让位（见 dshRunQueueDoneCheck）。 */
-function playAllDoneSound() {
-  const d = (S.config && S.config.dsh) || {};
-  if (d.doneSound === false) return;
-  S._allDoneSoundAt = String(Date.now());
-  builtinDingDong();
-}
-/* 设置内试听:忽略 5 分钟限制与开关(用户主动点击) */
-function previewDoneSound(file) {
-  if (!playDoneSoundFile(file)) builtinDingDong();
-}
-/* 设置内调音量时试听内置音:只响内置「叮咚」（带自定义文件时也响内置音，
-   否则用户调滑杆听不出任何变化） */
-function previewDoneSoundVolume() {
-  builtinDingDong();
-}
-
 /* ── 交互面板:dsh 提问(ask_user)/ 审批(approval)的宿主侧 UI ── */
 /* 一次 run 的来源归属 → 卡片头部那行「来自：」+ 点击跳转目标。
    并行运行时（多个会话 / 多个节点 / 助手同时在跑）不标来源，用户根本分不清
@@ -4589,6 +4373,8 @@ function ixDeferRun(it) {
 }
 function ixReset() {
   S.activeIx = { items: [] };
+  ixDraft = Object.create(null); /* 整窗作废：草稿跟着一起清，不留到下一轮串题 */
+  ixFocusMemo = null;
   renderIxPanel();
 }
 /* ── 询问窗（#ixPanel）位置：可拖出 footer、也要能一键收回 ────────────────
@@ -4833,6 +4619,7 @@ function ixPush(kind, data, runKey, src) {
 function ixDrop(id) {
   if (!S.activeIx) return;
   S.activeIx.items = S.activeIx.items.filter((x) => x.data.id !== id);
+  ixDraftDropCard(id); /* 卡没了 = 它的草稿也没意义，别留着下张同 id 的卡把旧字捞回来 */
   renderIxPanel();
 }
 function ixDropRun(runKey) {
@@ -4840,6 +4627,9 @@ function ixDropRun(runKey) {
   /* 按 runKey 过滤:只清这一轮推上来的卡片,其余在途运行的卡片保留 */
   const items = S.activeIx.items.filter((x) => x.runKey !== runKey);
   if (items.length === S.activeIx.items.length) return;
+  /* 这一轮被撤了，它各家卡上的草稿一起作废（同一判活口径） */
+  for (const x of S.activeIx.items)
+    if (x.runKey === runKey && x.data && x.data.id) ixDraftDropCard(x.data.id);
   S.activeIx.items = items;
   renderIxPanel();
 }
@@ -4853,6 +4643,8 @@ function ixPruneOrphanCards() {
   const live = S._runCancels || {};
   const items = S.activeIx.items.filter((x) => !x.runKey || live[x.runKey]);
   if (items.length === S.activeIx.items.length) return false;
+  for (const x of S.activeIx.items)
+    if (items.indexOf(x) < 0 && x.data && x.data.id) ixDraftDropCard(x.data.id);
   S.activeIx.items = items;
   return true;
 }
@@ -5092,8 +4884,8 @@ function ixAnswerQuestion(it) {
       if (res && res.stale)
         return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
       if (res && res.ok === false) throw new Error(res.error);
-      /* 你答了这一轮 = 一段空闲的结束点：全局那一档的 5 分钟从这一刻重新起算
-         （见 dshRunUserMark / dshRunLongMark：起跑与回话都会清掉空闲窗口）。 */
+      /* 你答了这一轮：登记回话时刻（诊断用，见 dshRunUserMark）。
+         完成音的判定不看这个时刻 —— 收尾那一档只看队列空不空。 */
       dshRunUserMark(String(it.runKey || ""));
       /* 提交成功 = 用户真的答了这一轮：先落进会话消息（进上下文 + 界面留痕），再撤卡。
          失败 / stale 的路径不走这里 —— 那不是答案，不该被当成「用户已确认」写进上下文。 */
@@ -5243,10 +5035,258 @@ function ixAbortButton(it) {
   b.onclick = () => ixAbortRun(it);
   return b;
 }
+/* ── 询问窗草稿：面板是**整窗重绘**式渲染，绝不拿用户填到一半的内容当代价 ──────
+   根因（本次开发需求）：renderIxPanel() 每次重绘都 box.innerHTML="" 之后重建整只窗，
+   于是「并行多条会话 / 多轮同时各弹一张卡」时，后到的卡一进来重绘，前一张卡里用户
+   已经打好的「其他（自定义回答）」与已勾选项就被静默清空 —— 用户看到的就是
+   「弹出多个询问窗时，前一个询问窗的内容被清空重置」。
+   口径（已与用户确认）：
+     · 界面仍是一只窗、不做可叠多窗；重绘前把当前卡面抄进本模块内存，重绘后原样回填
+       （含勾选态与「选项 / 手填互斥」的既有语义）；
+     · 草稿活到该卡被提交 / 被撤（ixDrop / ixDropRun / ixReset）为止，**不落盘、不跨重启**；
+     · 静默保留，不加提示、不加词条。
+   键 = 卡 id + 题 id：题 id 在一条会话里可能重复（q1 / confirm），只有带上卡 id 才不串题。 */
+let ixDraft = Object.create(null); /* { [卡id]: { [题id]: { text, checked } } } */
+function ixDraftCardOf(cardId) {
+  const k = String(cardId || "");
+  if (!k) return null;
+  if (!ixDraft[k]) ixDraft[k] = Object.create(null);
+  return ixDraft[k];
+}
+/** 该卡草稿里这一题有没有「用户真的动过」的痕迹（空卡不入库，免得白占） */
+function ixDraftAlive(qd) {
+  return !!qd && (!!String(qd.text || "").length || (qd.checked && qd.checked.length > 0));
+}
+function ixDraftDropCard(cardId) {
+  const k = String(cardId || "");
+  if (k && ixDraft[k]) delete ixDraft[k];
+}
+/** 重绘前：把当前 DOM 上这一轮的选择 / 手填抄下来（按卡 id + 题 id 归位） */
+function ixDraftSaveFromDom() {
+  if (typeof document === "undefined" || !document.getElementById) return;
+  const box = document.getElementById("ixPanel");
+  if (!box || typeof box.querySelectorAll !== "function") return;
+  for (const inp of box.querySelectorAll(".ix-custom")) {
+    const card = inp.closest ? inp.closest(".ix-card") : null;
+    if (!card || !card.id || card.id.slice(0, 7) !== "ixCard_") continue;
+    const d = ixDraftCardOf(card.id.slice(7));
+    if (!d) continue;
+    const qid = String(inp.dataset && inp.dataset.qid ? inp.dataset.qid : "");
+    if (!qid) continue;
+    const qd = d[qid] || (d[qid] = { text: "", checked: [] });
+    qd.text = String(inp.value || "");
+    if (!ixDraftAlive(qd)) delete d[qid];
+  }
+  for (const inp of box.querySelectorAll(".ix-opt input")) {
+    const card = inp.closest ? inp.closest(".ix-card") : null;
+    if (!card || !card.id || card.id.slice(0, 7) !== "ixCard_") continue;
+    const d = ixDraftCardOf(card.id.slice(7));
+    if (!d) continue;
+    const qid = String(inp.dataset && inp.dataset.qid ? inp.dataset.qid : "");
+    if (!qid) continue;
+    const qd = d[qid] || (d[qid] = { text: "", checked: [] });
+    const i = qd.checked.indexOf(String(inp.value));
+    if (inp.checked) {
+      if (i < 0) qd.checked.push(String(inp.value));
+    } else if (i >= 0) qd.checked.splice(i, 1);
+    if (!ixDraftAlive(qd)) delete d[qid];
+  }
+  /* 抄完把「选项 / 手填互斥」这条既有不变式在草稿层面收口：两者同时留值 = 提交时自相矛盾
+     （ixAnswerQuestion 的手填优先会让勾选白勾）。只在草稿里落一条，不碰面板显示 ——
+     真实操作路径下本来就是互斥的（onCustomInput / 选项 change），这里收的是
+     「历史草稿 + 本轮新操作」叠加出来的那种混合态。 */
+  for (const cardId in ixDraft) {
+    const dc = ixDraft[cardId];
+    if (!dc) continue;
+    for (const qid in dc) {
+      const qd = dc[qid];
+      if (qd && String(qd.text || "").length && qd.checked && qd.checked.length) qd.checked.length = 0;
+    }
+  }
+}
+/* ── 焦点 / 光标位置：重绘会把正在打字的输入框整个换掉，保住位置才叫「没打扰」 ──
+   只认「光标本来就在询问窗里」这一种；抄的是卡 id + 题 id + 选择区间，回来时按键找回。 */
+let ixFocusMemo = null;
+function ixFocusSaveFromDom() {
+  ixFocusMemo = null;
+  if (typeof document === "undefined" || !document.getElementById) return;
+  const ac = document.activeElement;
+  if (!ac || typeof ac.closest !== "function") return;
+  const card = ac.closest(".ix-card");
+  if (!card || !card.id || card.id.slice(0, 7) !== "ixCard_") return;
+  const cls = String(ac.className || "");
+  const which = cls.indexOf("ix-custom") >= 0 ? "custom" : "opt";
+  const qid = String(ac.dataset && ac.dataset.qid ? ac.dataset.qid : "");
+  if (!qid) return;
+  let start = null;
+  let end = null;
+  try {
+    if (typeof ac.selectionStart === "number") {
+      start = ac.selectionStart;
+      end = ac.selectionEnd;
+    }
+  } catch (_) {}
+  ixFocusMemo = { card: card.id.slice(7), qid, which, value: String(ac.value || ""), start, end };
+}
+function ixFocusRestoreToDom() {
+  const m = ixFocusMemo;
+  ixFocusMemo = null;
+  if (!m || typeof document === "undefined" || !document.getElementById) return;
+  const box = document.getElementById("ixPanel");
+  if (!box || typeof box.querySelectorAll !== "function") return;
+  const sel = m.which === "custom" ? ".ix-custom" : ".ix-opt input";
+  for (const inp of box.querySelectorAll(sel)) {
+    const card = inp.closest ? inp.closest(".ix-card") : null;
+    if (!card || card.id.slice(7) !== m.card) continue;
+    if (String(inp.dataset && inp.dataset.qid ? inp.dataset.qid : "") !== m.qid) continue;
+    if (m.which === "custom" && String(inp.value || "") !== m.value) continue;
+    try {
+      inp.focus({ preventScroll: true });
+    } catch (_) {
+      try {
+        inp.focus();
+      } catch (_) {}
+    }
+    try {
+      if (m.start != null && typeof inp.setSelectionRange === "function")
+        inp.setSelectionRange(m.start, m.end == null ? m.start : m.end);
+    } catch (_) {}
+    return;
+  }
+}
+
+/* ── 询问卡正文：一句话题面 + 「📋 总结」区（本次开发需求）──────────────────
+   模型侧 ask_user_question 的 schema 只有 id / question / header / options /
+   multi_select 五项（没有 summary 那一格，detail 在本链路上也永远为空），长文本
+   只能落在 question 里。拷问 / 询问流程的**收尾确认卡**正是把整份共识塞进
+   question：这里原来走 textContent、`.ix-q` 又没有 pre-wrap —— 多行共识被 HTML
+   折成一整坨，用户看到的就是「最后的总结询问过于杂乱」。
+   现在按确认过的口径切成两块：
+     · 首行 = 一句话题面（.ix-q，大字、纯文本：保住「要你确认什么」第一眼可见）；
+     · 其余 = 总结区（.ix-summary：小标题「📋 总结」+ 渲染后的 Markdown +
+       限高内滚 + 「复制总结 Markdown」），一律启用、不设长度门槛；
+   没有其余内容 ≠ 有总结：那时不出现总结区（绝不把题面再抄一遍）。
+   渲染一律走全站唯一入口 renderMarkdown（GFM 表格 / 公式 / 链接安全），拿不到它
+   或它抛错时回落成转义后的纯文本 —— 卡片宁可朴素，也不能白屏或被执行注入。 */
+function ixSummarySplit(text) {
+  const raw = String(text == null ? "" : text).replace(/\r\n?/g, "\n").trim();
+  if (!raw) return { title: "", body: "" };
+  const cut = raw.indexOf("\n");
+  if (cut < 0) return { title: raw, body: "" };
+  return { title: raw.slice(0, cut).trim(), body: raw.slice(cut + 1).trim() };
+}
+/* 选项文本的行内 Markdown（只做行内子集：`code` / **粗体** / *斜体*）。
+   模型常把推荐项写成 **xxx（推荐）**、把标识符包进反引号，不渲染就是满屏星号
+   （「最后的总结询问过于杂乱」的一半来源）；块级结构一概不认 —— 选项是单行标签，
+   不是文档。先转义再替换，与 renderMarkdown 同一条安全纪律：HTML 标签进不来，
+   星号与反引号照旧是普通字符。 */
+function ixEsc(text) {
+  /* 与 app.js 的 escapeHtml 同一口径（它就是全站唯一实现）；被单独抠出来跑等边角
+     拿不到它时，就地做同一份转义 —— 绝不返回未转义的原文。 */
+  if (typeof escapeHtml === "function") return escapeHtml(text);
+  return String(text == null ? "" : text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function ixInlineMd(text) {
+  const s = String(text == null ? "" : text);
+  return ixEsc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    /* 斜体只认「星号紧贴非空白内容」的写法：`2 * 3 * 4` 这类算式不当斜体 */
+    .replace(/(^|[^*])\*([^\s*][^*\n]*?)\*/g, "$1<em>$2</em>");
+}
+/* 一段 Markdown 的 HTML（限高与内滚交给 CSS 的 .ix-md-block） */
+function ixMdHtml(text) {
+  const s = String(text == null ? "" : text);
+  try {
+    if (typeof renderMarkdown === "function") return renderMarkdown(s);
+  } catch (e) {
+    try {
+      console.error("询问卡 Markdown 渲染失败", e);
+    } catch (_) {}
+  }
+  return "<pre>" + ixEsc(s) + "</pre>";
+}
+function ixMdBlock(text, cls) {
+  const md = document.createElement("div");
+  md.className = "md ix-md-block" + (cls ? " " + cls : "");
+  md.innerHTML = ixMdHtml(text);
+  return md;
+}
+/* 写剪贴板：沿用会话那套 dshClipboardWrite（navigator.clipboard → preload 桥回退），
+   它不在（被单独抠出来跑等边角）时退到原生 API；两条都失败就只当没复制，不报错。 */
+function ixCopyText(txt, okMsg) {
+  const s = String(txt == null ? "" : txt);
+  const done = () => {
+    try {
+      if (typeof toast === "function") toast(okMsg, "ok");
+    } catch (_) {}
+  };
+  try {
+    if (typeof dshClipboardWrite === "function") {
+      Promise.resolve(dshClipboardWrite(s)).then(done).catch(() => {});
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      Promise.resolve(navigator.clipboard.writeText(s)).then(done).catch(() => {});
+    }
+  } catch (_) {}
+}
+/* 总结区：小标题 + 「复制总结 Markdown」+ 渲染后的正文。复制取**渲染前的源码**
+   （用户要的是能贴去别处的 Markdown，不是富文本）。 */
+function ixSummaryBlock(bodyText) {  const wrap = document.createElement("div");
+  wrap.className = "ix-summary";
+  const head = document.createElement("div");
+  head.className = "ix-summary-head";
+  const title = document.createElement("span");
+  title.className = "ix-summary-title";
+  title.textContent = I18n.t("📋 总结");
+  head.appendChild(title);
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "mini ix-summary-copy";
+  copy.textContent = I18n.t("复制总结 Markdown");
+  copy.title = I18n.t("把这一段总结的 Markdown 原文（渲染前的源码）复制到剪贴板");
+  copy.onclick = () => ixCopyText(bodyText, I18n.t("已复制总结 Markdown"));
+  head.appendChild(copy);
+  wrap.appendChild(head);
+  wrap.appendChild(ixMdBlock(bodyText, "ix-summary-md"));
+  return wrap;
+}
+/* 回填一题的草稿（见上面 ixDraft 段）：先恢复勾选，再按「选项 / 手填互斥」还原手填。
+   顺序不能反 —— 与用户手填时同一条规则（onCustomInput 会撤掉已勾选项），
+   否则「回填了文字却还留着勾选」这一对矛盾会在提交时打架。
+   勾选按 value 对号：同一个 label 出现两次时浏览器本来就只认其中一个，这里一视同仁。 */
+function ixRestoreQuestionDraft(card, q, custom, optInputs, onCustomInput) {
+  const d = ixDraftCardOf(card.id.slice(7));
+  const qd = d ? d[String(q.id)] : null;
+  if (!qd) return;
+  const picked = qd.checked || [];
+  for (let i = 0; i < optInputs.length; i++) {
+    const inp = optInputs[i];
+    inp.checked = picked.indexOf(String(inp.value)) >= 0;
+  }
+  const text = String(qd.text || "");
+  if (text) {
+    custom.value = text;
+    if (typeof onCustomInput === "function") onCustomInput();
+  } else {
+    /* 草稿里没留手填（或已被选项互相清掉）→ 一并清空，保证「面板显示的就是会提交的」 */
+    custom.value = "";
+  }
+}
+
 function renderIxPanel() {
   /* 每次重绘先做一次孤儿清理（网关没发撤卡帧时的本地兜底）：提问 / 审批卡片
      与宿主确认框一起扫 —— 只有确认框、没有卡片时本函数也会被 ixReset 带进来 */
   ixPruneAllInteraction();
+  /* 重绘 = 整窗重建（下面 box.innerHTML = ""）：先把用户已经填的抄下来，
+     重建完再回填，否则后到的卡进来一次就把前一张卡的内容冲干净（见 ixDraft 段） */
+  ixDraftSaveFromDom();
+  ixFocusSaveFromDom();
   const items = (S.activeIx && S.activeIx.items) || [];
   let box = $("#ixPanel");
   if (!items.length) {
@@ -5317,9 +5357,12 @@ function renderIxPanel() {
         u.textContent = String(d.url);
         card.appendChild(u);
       }
+      /* 求助正文（模型写的，常带步骤 / 列表）也走同一套 Markdown 渲染：
+         .ix-help-msg 只当外壳（浅底 + 左侧竖条），块级排版交给里面的 .md ——
+         它自己那句 white-space: pre-wrap 会盖掉 .md 的 normal，所以正文放里层。 */
       const m = document.createElement("div");
       m.className = "ix-help-msg";
-      m.textContent = String(d.message || "");
+      m.appendChild(ixMdBlock(String(d.message || ""), "ix-help-md"));
       card.appendChild(m);
       if (d.note) {
         const n = document.createElement("div");
@@ -5357,9 +5400,23 @@ function renderIxPanel() {
       const row = document.createElement("div");
       row.className = "ix-btns";
       const tk = document.createElement("button");
+      /* 本轮需求：右栏浏览器面板上那一排「打开浏览器 / 接管 / 独立窗口」都下架了，真窗口与
+         接管的**唯一**入口收口到这里（求助卡）。两枚按钮各管一件事：
+           · tk  = 接管 / 交还（不碰窗口形态，Agent 动作被网关拒绝，用户交还后再继续）；
+           · win = 用真窗口打开 / 收回右栏（窗口形态，见 app-browser.js 的 BA.realWindow；
+             点它会顺手接管，因为「用真窗口打开」的动机就是用户要亲自输账号 / 过验证）。
+         只给登录 / 验证码这类求助卡（d.helpKind === 'login' 或 d.takeover），
+         别的求助卡不给真窗口入口 —— 那是给「我要亲自操作」的场景，不是通用快捷键。 */
       const takenOver = (() => {
         try {
           return !!(window.BrowserAct && window.BrowserAct.takeover);
+        } catch (_) {
+          return false;
+        }
+      })();
+      const inRealWindow = (() => {
+        try {
+          return !!(window.BrowserAct && window.BrowserAct.live && window.BrowserAct.live.mode === "detached");
         } catch (_) {
           return false;
         }
@@ -5372,7 +5429,7 @@ function renderIxPanel() {
         tk.onclick = async () => {
           if (!ixMarkFirstSend(it)) return;
           try {
-            if (window.BrowserAct) await window.BrowserAct.browser("takeover", { on: !takenOver, sessionId: it.data.sessionId || "" });
+            if (window.BrowserAct) await window.BrowserAct.setTakeover(!takenOver, it.data.sessionId || "");
           } catch (_) {}
           ixAnswerBrowser(it, "released", { answerText: takenOver ? I18n.t("用户已交还控制权") : I18n.t("用户已接管浏览器") });
         };
@@ -5385,6 +5442,51 @@ function renderIxPanel() {
         row.appendChild(allow);
       }
       if (tk.textContent) row.appendChild(tk);
+      if (isHelp && (d.helpKind === "login" || d.takeover)) {
+        /* 「用真窗口打开 / 收回右栏」（本轮需求）：面板上那枚「打开浏览器」下架后，这是拿到
+           一只可见浏览器的唯一入口。键面随当前形态写「点一下会怎样」，点完就地改回 ——
+           卡还挂着的时候能来回切；切到真窗口后右栏实况区也有一枚「收回」小键（#baLiveBack），
+           两条路都能回来，不会把用户卡在真窗口上。 */
+        const win = document.createElement("button");
+        win.className = "mini";
+        win.textContent = inRealWindow ? I18n.t("收回右栏") : I18n.t("用真窗口打开");
+        win.title = inRealWindow
+          ? I18n.t("把这个浏览器收回会话右边栏的实况画面（真实窗口重新让位）")
+          : I18n.t("用一只真实的浏览器窗口打开它，并顺手接管：登录 / 验证码你自己输，密码不进对话");
+        win.onclick = async () => {
+          /* 不调 ixMarkFirstSend：它不是「回执帧」按钮，而是可来回切的窗口形态开关 ——
+             用了一次性闸会把后面「我已处理完，交还控制权」那一发也一起闸掉（卡上就点不动了）。 */
+          const on = win.textContent !== I18n.t("收回右栏");
+          try {
+            if (window.BrowserAct) await window.BrowserAct.realWindow(on, it.data.sessionId || "");
+          } catch (_) {}
+          win.textContent = on ? I18n.t("收回右栏") : I18n.t("用真窗口打开");
+          /* 提示语由 app-browser.js 的 BA.realWindow 统一给（成功 / 摆不出来各有说法），
+             这里只翻键面，不重复弹第二条 toast。 */
+        };
+        row.appendChild(win);
+        /* 本轮修：会话自动拉起的那只是**无窗口**（--headless=new）起的，CDP 里没有窗口可显形
+           （真机实测 Browser.getWindowForTarget 回「Browser window not found」，进程
+           MainWindowHandle=0）—— 所以点这枚键的代价是「温和关掉当前那只、重开一只带窗口的」。
+           必须在卡上写明，免得用户以为浏览器突然自己崩了。已经带窗口 / 已在独立窗口时不写这句
+           （那时点它只是把窗口摆出来，既不关也不重开）。 */
+        const headlessNow = (() => {
+          try {
+            return !!(window.BrowserAct && window.BrowserAct.headless);
+          } catch (_) {
+            return false;
+          }
+        })();
+        if (headlessNow && !inRealWindow) {
+          const hint = document.createElement("div");
+          hint.className = "ix-detail";
+          hint.style.fontFamily = "inherit";
+          hint.textContent = I18n.t(
+            "点「用真窗口打开」会把当前这只无窗口的浏览器温和关掉、重开一只带窗口的（当前页面地址会带回来；登录态在，不受影响）",
+          );
+          card.appendChild(hint);
+        }
+      }
       if (isHelp) {
         const done = document.createElement("button");
         done.className = "mini";
@@ -5417,10 +5519,10 @@ function renderIxPanel() {
           (sb.justification ? I18n.t("说明：") + sb.justification : "")
         : String(d.reason || "");
       if (detailText) {
-        const r = document.createElement("div");
-        r.className = "ix-detail";
-        r.textContent = detailText;
-        card.appendChild(r);
+        /* 审批说明 / 模型写的理由与提问卡同一套 Markdown 渲染（同样限高内滚）：
+           多行说明（目标权限 + 说明）不再挤成一行，长理由也不会把按钮挤出屏幕。
+           沙箱那句固定的操作提示（下面 note）是我们自己的短文案，保持原样式。 */
+        card.appendChild(ixMdBlock(detailText, "ix-approval-md"));
       }
       if (sb) {
         const note = document.createElement("div");
@@ -5467,10 +5569,15 @@ function renderIxPanel() {
       let ixQi = 0;
       for (const q of qs) {
         const qGroup = ixGroup + ixQi++;
+        /* 题面首行 = 一句话问题，其余 = 总结区（见 ixSummarySplit 上方那一段）：
+           拷问 / 询问流程的收尾确认卡把整份共识写在 question 里，切出来交给
+           renderMarkdown 渲染，才不会挤成一坨。 */
+        const qParts = ixSummarySplit(q.question);
         const qt = document.createElement("div");
         qt.className = "ix-q";
-        qt.textContent = (q.header ? q.header + " · " : "") + (q.question || "");
+        qt.textContent = (q.header ? q.header + " · " : "") + qParts.title;
         card.appendChild(qt);
+        if (qParts.body) card.appendChild(ixSummaryBlock(qParts.body));
         if (q.detail) {
           const det = document.createElement("div");
           det.className = "ix-detail";
@@ -5496,11 +5603,12 @@ function renderIxPanel() {
                整轮的推荐依据全指望这一句，看不到等于没问。 */
             const txt = document.createElement("span");
             txt.className = "ix-opt-label";
-            txt.textContent = o.label;
+            /* 行内 Markdown 子集：模型写 `**xxx（推荐）**` / 反引号标识符时不外露星号 */
+            txt.innerHTML = ixInlineMd(o.label);
             if (o.description) {
               const d = document.createElement("span");
               d.className = "ix-opt-desc";
-              d.textContent = o.description;
+              d.innerHTML = ixInlineMd(o.description);
               txt.appendChild(d);
               lab.title = o.description;
             }
@@ -5518,17 +5626,23 @@ function renderIxPanel() {
         custom.dataset.qid = q.id;
         /* 手填与选项互斥：这一格是「其他（自定义回答）」而不是补充说明，
            两边同时留值会让提交带着「别的选项」一起走（模型因此不认手填值）。
-           开始手填就撤掉已勾选项；改点选项就清掉手填文字，最终只留一种意图。 */
-        custom.addEventListener("input", () => {
+           开始手填就撤掉已勾选项；改点选项就清掉手填文字，最终只留一种意图。
+           重绘后的回填也走同一条规则（见下面 ixRestoreQuestionDraft）：
+           回填写了字，就与「撤掉已勾选项」等价 —— 否则填的字与选中的项会在提交时打架。 */
+        const onCustomInput = () => {
           if (!custom.value.trim()) return;
           for (const c of optInputs) c.checked = false;
-        });
+        };
+        custom.addEventListener("input", onCustomInput);
         for (const c of optInputs) {
           c.addEventListener("change", () => {
             if (c.checked) custom.value = "";
           });
         }
         card.appendChild(custom);
+        /* 回填这一题上次（上一次重绘前）填的内容：并行多条会话 / 多轮同时各弹一张卡时，
+           后到的卡一进来就会重绘整窗，前一张卡里已经打好的字与已勾选项不许被冲掉。 */
+        ixRestoreQuestionDraft(card, q, custom, optInputs, onCustomInput);
       }
       const row = document.createElement("div");
       row.className = "ix-btns";
@@ -5555,6 +5669,8 @@ function renderIxPanel() {
     ixFreshPulse = false;
     ixRevealNewCard(box, pulse);
   }
+  /* 重绘收尾：把「本来在打字」的光标放回原处（按卡 id + 题 id 找回，值不吻合就不硬塞） */
+  ixFocusRestoreToDom();
 }
 
 /* ── 主题(dsh = 默认, industrial = 旧 MTNode, light = 亮色) ── */

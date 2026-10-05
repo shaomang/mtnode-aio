@@ -1,7 +1,7 @@
 ---
 name: mtnode-app-dev
 title: MTNode 应用开发
-description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（模型从 MTNode 继承、界面上必须有模型选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
+description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不显示（默认隐藏）、imageGen 声明出图；是静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
 ---
 
 # MTNode 应用开发
@@ -20,7 +20,16 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 所有结论来自当前仓库真实代码，**唯一真源**：`preload-app.js` + `apps-store.js`（应用中心桥与宿主）、`plugins/preload-window.js`（插件窗口桥）、`build.json`（打包白名单）。与代码冲突时以代码为准，并回来修订本文件。
 
 **脚手架**：`templates/app-scaffold/`（随包分发，`build.json` 的 `files` 已含 `templates/**`）＝ 首次开发某个应用时**复制进它的源码目录**的源，占位符替换即得最小可用应用；
-里面五件套：`apphost.js`（桥探测与降级 + 模型四件 + 多模态 `text()`）、`app-model.js`（右上「模型」选择位）、`model.css`、`store.js`（脏标记 + 防抖存盘 + flush）、`close.js`（关窗收尾注册）、`app.js`（业务示范：便签 + 文字/图像提问）。
+里面五件套：`apphost.js`（桥探测与降级 + 模型四件 + 多模态 `text()` + **图像三件 `imageModels` / `image` / `cancelImage`**）、
+`app-model.js`（右上「模型」选择位，下拉分「文本模型 / 图像后端」两区）、`model.css`、`store.js`（脏标记 + 防抖存盘 + flush）、
+`close.js`（关窗收尾注册）、`app.js`（业务示范：便签 + 文字/图像提问）。
+
+**按 `capabilities` 决定复制哪些文件**：目标应用 `app.json` 的 `capabilities.textInput` 为真才复制 `speech.js` /
+`speech.css`；没声明就**不要**带这两个文件 —— 默认应用不携带语音转文字。
+`capabilities.showDictate`（默认 **false**）决定**应用窗口底部那条宿主注入的听写条**显不显示：宿主注入的
+`renderer/app-speech-ui.js` 挂上就带 `data-mtnode-hidden` + `display:none`，要露面得声明这一位（或应用自己调
+`apSpeechReveal()`）；默认欢迎页里的 `dict.js` 内联同样只看这一位（`apps-store.js` 的 `dictScriptTag()`）。
+`capabilities.imageGen` 只是声明，出图接口与文本接口一样始终可调。
 新建应用的**默认欢迎页**在 `templates/app-default/index.html`（`apps-store.js` 的 `defaultPageHtml()` 读它），与脚手架同一套设计语言与同一段上手文案。
 
 **默认随应用生成 AGENTS.md（不必问用户）**：复制脚手架时，把 `templates/app-agents/AGENTS.md` 一并复制成**该应用根目录的 `AGENTS.md`**
@@ -61,7 +70,7 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 | 账号摘要 | `account()` → `{ok,loggedIn,user,encryption}`（无 token） | `authGetState()` / `authMe()` / `authLoginPassword` / `authChangePassword` / `authLogout` / `onAuthChanged(cb)` |
 | 创意工坊请求 | —（应用中心窗口没有网络面） | `storeRequest({method,path,json,anon})`（主进程持 token） |
 | 选图 / 压图 / 缓存 | — | `pickImage()` / `compressImage()` / `cacheImage(id,base64)` / `readCachedImage(id)` |
-| 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |
+| 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` / `imageEdit(opts)`（出图 / 图生图，见第六节） · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |
 | **生命周期** | `close()`（关自己窗口）· `quit()`（连 MTNode 一起退）· **`onWillClose(cb)`**（关窗前收尾，见第三节） | `close()` · `onShown(cb)` · `onAuthChanged(cb)` |
 
 调用前一律先探测：`typeof host.dataWrite === "function"`，缺就走降级分支。**脚手架的 `window.AppHost` 把两套桥统一成一套名字**
@@ -280,7 +289,7 @@ else use(j.data);                              // 已经解析好的对象
 | 需求 | 正解 |
 | --- | --- |
 | 应用要有 LLM / 识图能力 | `appHost.textGenStream`（多模态）+ `hostModels()` 选模型；模型与 Key 留在主进程 |
-| 应用要出图 | `appHost.imageGen({ prompt })`（每次一张，回 base64 / dataUrl） |
+| 应用要出图 | `appHost.imageGen(opts, cb?)`（文生图 · 每次一张，回 base64 / dataUrl；`cb` 收进度）与 **`appHost.imageEdit(opts, cb?)`**（显式图生图 / 图像编辑，参考图必填，没给回 `no_ref_image`，**不降级**成文生图）：**后端从 MTNode 继承** —— 云端图像服务商（含「图像模型挂在 text_openai 卡上」那种）或本机 SenseNova。清单 `hostImageModels()`（每项带 `refImages` / `maxRefImages` / `strength` 能力字段，界面据此置灰），选择 `hostImageSetModel(id)`，取消 `imageGenCancel(reqId)`；参考图 `opts.images`（本机路径或 dataURL，**整组**下发：云端 `/images/edits` 多图按顺序对应「图1 / 图2…」，本机 1–4 张）走图生图 / 图像编辑；`opts.strength`（0–1，0 = 只作前缀条件、1 = 最强）**只有本机 SenseNova 认**，云端传了在回执 `warnings` 里如实说明并忽略；本机后端与音乐 / 视频共用一个全局锁，忙时回 `code:"busy_media"` |
 | 应用要更重的本地能力（本地模型 / 语音 / 视频 / 自己的后端） | 升级为**本地后端插件**（见 `mtnode-plugin-dev`）：主进程宿主用 `dsh/mtnode-llm-creds.js` 的 `resolveDshRunAuth(getDataDir())` 复用设置里的 Key |
 | 纯提示词工具（不需要真调用模型） | 应用内拼好提示词，交给全局助手 / 画布工作流（`proc_text` / `proc_image` / 智能节点） |
 | 需要联网但创意工坊服务端还没有路由 | 先在 `store-saas/server.mjs` 补路由，应用再用 `storeRequest` 调 |
@@ -334,6 +343,10 @@ else use(j.data);                              // 已经解析好的对象
 - [ ] **模型能力**（需要模型时）：界面上有选模型的位置（`#modelBtn` + `app-model.js`）；模型只从 `hostModels()` 清单里挑；
       带图走 `AppHost.text(prompt, { images })`（本机路径或 dataURL）；错误码（`no_provider` / `no_vision` / `offline` /
       `bad_image` / `too_large` / `cancelled`…）都有可操作的界面提示，**没有任何降级路径**
+- [ ] **出图能力**（需要出图时）：图像后端从 `hostImageModels()` 清单里挑、按应用 id 持久化；
+      界面按每项的 `refImages` / `maxRefImages` / `strength` 置灰与标注；图生图走 `AppHost.imageEdit`（参考图必填）
+      或 `imageGen` 的 `opts.images`（整组下发）；`no_provider` / `bad_model` / `busy_media` / `no_ref_image` /
+      `cancelled` 都有可操作提示（`cancelled` 不当报错）；云端忽略 `strength` 时如实显示 `warnings`
 - [ ] 应用侧不落凭据；账号摘要走 `accountText()` / `account()` / `authGetState()`
 - [ ] 事件 `onShown` / `onAuthChanged` 都退订
 - [ ] `app.json` 字段与云端 catalog 词条一致（`id` / `entry` / `version` / `window`）

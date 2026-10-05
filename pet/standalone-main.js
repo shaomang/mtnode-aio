@@ -15,6 +15,7 @@ const {
   nativeImage,
   dialog,
   shell,
+  safeStorage,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -24,6 +25,16 @@ const https = require("https");
 const { pathToFileURL } = require("url");
 /* 对话服务商解析（官方 DeepSeek 路由 / mtnode_* 路由 / 模型回落）唯一真源 */
 const PetProvider = require("./pet-provider.js");
+
+/* 中转卡（source="mtnode-relay"）的凭据**就在配置里**（本轮口径，见 docs/relay-admin.md）：
+   主进程把账号托管的中转 Key 写进 DATA/config.json 那张卡的 apiKey，桌宠读同一份配置即可用 ——
+   桌宠侧不再有自己的领票模块（pet/pet-relay-cred.js 已删），也不再各自去发放口换票，
+   谁也不会把谁的票顶掉。占位串 mtnode-account-token 只作「这张卡还没拿到真票」的识别标记：
+   它不是可用凭据，读不到真票时这里与 pet-provider.js 都把这家服务商判为不可用，绝不下发。 */
+const RELAY_KEY_PLACEHOLDER = "mtnode-account-token";
+const isRelayCard = (p) => !!p && String(p.source || "") === "mtnode-relay";
+const isRelayPlaceholderKey = (key) =>
+  String(key == null ? "" : key).trim() === RELAY_KEY_PLACEHOLDER;
 
 const BASE_W = 360;
 const BASE_H = 360;
@@ -866,6 +877,9 @@ function appConfigPath() {
    既不在 mtnode_* 路由表里，也不是普通第三方行 —— 任何一处漏掉它就表现为
    「桌宠里选不到官方供应商 / 选了也被降级成别家」。 */
 function readAppConfig() {
+  /* 直接读盘：中转 Key 就在配置里那张卡的 apiKey 上（由主进程写入，见文件头口径）——
+     桌宠侧不再有「先换票再读配置」这一步，所以这个同步函数读到的就是最新凭据。
+     占位串（这张卡还没拿到真票）由 pet-provider.js 的硬闸判为不可用，绝不下发上游。 */
   return readJson(appConfigPath(), {}) || {};
 }
 function listTextProviders() {
@@ -1206,12 +1220,27 @@ async function handleChatSend(text) {
   const t = String(text || "").trim();
   if (!t) return { ok: false, error: "empty" };
   if (findRunBySession(chatSessionIndex)) return { ok: false, error: "busy" };
+  /* 凭据就在配置里（由主进程写入，见文件头口径）：直接读盘即可，桌宠不再自己换票。 */
   const cfg = loadConfig();
   const resolved = resolveChatProvider(cfg);
   if (!resolved || !String(resolved.provider.apiKey || "").trim()) {
     return {
       ok: false,
       error: "未配置可用的文本服务商 API Key。请在 MTNode 设置里填写后重试。",
+    };
+  }
+  /* 硬闸：选中的是「MTNode 中转服务」卡、而卡上还是占位串（这张卡还没拿到真票）——
+     直接给一句明确错误，**绝不把占位串当 Key 下发给网关**（那样只有恒 401，
+     报错还完全看不出原因）。不降级到别家：用户选的就是中转，悄悄换一家只是把问题藏起来。 */
+  if (
+    isRelayCard(resolved.provider) &&
+    (isRelayPlaceholderKey(resolved.provider.apiKey) ||
+      !String(resolved.provider.apiKey || "").trim())
+  ) {
+    return {
+      ok: false,
+      error:
+        "MTNode 中转服务当前不可用：请回 MTNode 主程序的「设置 · 提供商」确认中转卡上有 Key（可点「刷新中转清单」），或改用其它服务商",
     };
   }
   chatHistory.push({ role: "user", content: t, at: Date.now() });
@@ -1711,7 +1740,9 @@ function registerIpc() {
     ...sessionRunState(chatSessionIndex),
   }));
   ipcMain.handle("pet:switchSession", (_e, index) => switchChatSession(index));
-  ipcMain.handle("pet:listProviders", () => {
+  /* 先读配置再列服务商：中转 Key 就在配置里那张卡上（主进程写入），
+     所以「登录后打开下拉，MTNode 中转服务立刻可用」这件事只取决于主程序有没有写票。 */
+  ipcMain.handle("pet:listProviders", async () => {
     const cfg = loadConfig();
     const appCfg = readAppConfig();
     return {

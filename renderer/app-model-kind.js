@@ -2,7 +2,7 @@
 /* ═══════════════ 模型形态识别：文本模型 / 图像生成模型 ═══════════════
    问题背景：服务商配置（config.json 的 providers[]）里只有**服务商级**的 type
    （text_openai / image_openai / image_stability / image_mj）与一串模型 id；
-   同一个 OpenAI 兼容端点常常同时挂文本模型与图像模型（如 api.apiyi.com 的
+   同一个 OpenAI 兼容端点常常同时挂文本模型与图像模型（如第三方聚合端点的
    gpt-image-2-vip 与 qwen3.7-plus），只配成 text_openai 时图像节点根本选不到那个
    图像模型，配错还会在运行期抛「未知服务商类型」。所以需要一层**模型级**的
    形态判定：

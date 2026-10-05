@@ -14,7 +14,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 REMOTE_TMP = "/tmp/mtnode-store-upload"
-DEFAULT_SFTP = Path(r"E:\dev\mt-ai-router\.vscode\sftp.json")
+DEFAULT_SFTP = Path(r"E:\dev\tools\ssh\sftp-mtnode-store.json")
 UPLOAD_FILES = (
     "server.mjs",
     "sms-provider.mjs",
@@ -27,6 +27,10 @@ UPLOAD_FILES = (
     "seed-skills.mjs",
     # 充值 / 钱包（见 docs/recharge-design.md）
     "wallet.mjs",
+    # 打赏（鲸圆币）+ 评论 + 消息：被 server.mjs import，漏传即 Cannot find module
+    "tips.mjs",
+    "comments.mjs",
+    "notifications.mjs",
     "alipay-provider.mjs",
     "alipay-keygen.mjs",
     # 线上只读探针：查这个 APPID 到底签约了哪些支付产品（控制台看不到接口权限）
@@ -126,6 +130,24 @@ def run(c: paramiko.SSHClient, cmd: str, timeout: int = 90) -> None:
         raise SystemExit(f"remote exit {code}: {cmd}")
 
 
+# 必须按 LF 上传的文本类型：Windows 检出（core.autocrlf）会把仓库里这些文件带成 CRLF，
+# 而 `bash deploy.sh` 会在第 2 行 `set -euo pipefail` 上直接炸 ——
+#   /tmp/.../deploy.sh: line 2: set: pipefail: invalid option name
+# （2026-10-05 现场踩到：上传成功、deploy 整段没跑，服务保持旧代码还以为部署过了）。
+# systemd unit 同理（CRLF 会被拼进 ExecStart）。其余 .js/.mjs/.py 里的 CR 无害，不动。
+LF_ONLY_SUFFIXES = (".sh", ".service")
+
+
+def put_file(sftp: paramiko.SFTPClient, src: Path, dest: str) -> None:
+    """上传一个文件；LF_ONLY_SUFFIXES 里的文本先去掉 CR 再写远端（其余按字节原样）。"""
+    if src.suffix.lower() in LF_ONLY_SUFFIXES:
+        data = src.read_bytes().replace(b"\r\n", b"\n")
+        with sftp.open(dest, "wb") as fh:
+            fh.write(data)
+        return
+    sftp.put(str(src), dest)
+
+
 def put_dir(sftp: paramiko.SFTPClient, local: Path, remote: str) -> int:
     n = 0
     mkdir_p(sftp, remote)
@@ -136,7 +158,7 @@ def put_dir(sftp: paramiko.SFTPClient, local: Path, remote: str) -> int:
             mkdir_p(sftp, dest)
             continue
         mkdir_p(sftp, dest.rsplit("/", 1)[0])
-        sftp.put(str(path), dest)
+        put_file(sftp, path, dest)
         n += 1
     return n
 
@@ -168,7 +190,7 @@ def main() -> None:
             if not src.is_file():
                 print("skip missing", name)
                 continue
-            sftp.put(str(src), REMOTE_TMP + "/" + name)
+            put_file(sftp, src, REMOTE_TMP + "/" + name)
             print("put", name)
         if ADMIN_LOCAL.is_dir():
             rm_tree(sftp, REMOTE_ADMIN)
@@ -226,9 +248,11 @@ def main() -> None:
     print("中转站 hint（内部测试 · 键名清单见 /opt/mtnode-store/relay.env.example）:")
     print("  1) 把上游凭据追加进 /etc/mtnode-store.env（MTNODE_RELAY_DEEPSEEK_KEY / MTNODE_RELAY_IMAGE_KEY）")
     print("     → systemctl restart mtnode-store；/api/health 的 relay 字段会回 textUpstream / imageUpstream")
-    print("  2) 给内测账号发 Key（= 账号登录 token，明文只打印一次）:")
+    print("  2) 给内测账号发 Key（独立中转票，3650 天；明文只打印一次）:")
     print("     cd /opt/mtnode-store && set -a && . /etc/mtnode-store.env && set +a && node relay-key.mjs --user <用户名>")
-    print("  3) 客户端「提供商」填 Base URL = https://www.mt-agent.com/mtnode/store-api/relay/v1 + 上面那串 Key")
+    print("  3) 客户端「提供商」里那张『MTNode 中转服务』卡会自己领票并显示完整 Key（可复制）；")
+    print("     也可以在设置 · 提供商里点「更换 Key」换一张（每账号每天 5 次，旧 Key 立即失效）。")
+    print("     手册页 guides/manual/providers.md 与 docs/relay-admin.md 第五/六节是同口径说明。")
 
 
 if __name__ == "__main__":

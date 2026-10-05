@@ -26,12 +26,14 @@ function isDeepseekHost(baseUrl) {
 }
 
 /* ── MTNode 中转服务（source="mtnode-relay"）的凭据 ──────────────────────────
-   这张服务商卡的 apiKey 在 config.json 里只是**占位串**，真凭据是账号登录态
-   （safeStorage 加密存在本机、只有主进程能解，见 auth-store.js / docs/relay-admin.md）。
-   因此本模块（被主进程插件宿主用来解析 dsh.run 凭据）有两种情形：
-     · 同进程 + 主进程调过 setRelayKeyResolver → 现取真 token；
-     · 解析不到（独立宿主进程里读磁盘配置）→ **跳过该服务商**，绝不把占位串当 Key
-       发出去（那会 401，且报错完全看不出原因）。 */
+   这张服务商卡的 apiKey **就是中转 Key 本身**（由主进程写进 config.json，
+   见 docs/relay-admin.md）：设置卡上显示全文、可复制，桌宠 / 插件宿主这些独立进程
+   读同一份配置即可用，所以本模块**直接读 p.apiKey**。
+   两种情形仍然要挡住：
+     · 卡上还是占位串 mtnode-account-token（= 这张卡还没拿到真票）→ 视为没有凭据；
+     · 同进程里主进程注入过 setRelayKeyResolver（老配置迁移态 / 票刚被 401 清掉）→ 用它的返回值。
+   两条都拿不到就**跳过该服务商**，绝不把占位串当 Key 发出去（那会 401，报错还看不出原因）。 */
+const RELAY_PLACEHOLDER = "mtnode-account-token";
 let relayKeyResolver = null;
 function setRelayKeyResolver(fn) {
   relayKeyResolver = typeof fn === "function" ? fn : null;
@@ -39,6 +41,7 @@ function setRelayKeyResolver(fn) {
 function apiKeyOf(p) {
   const raw = String((p && p.apiKey) || "").trim();
   if (p && String(p.source || "") === "mtnode-relay") {
+    if (raw && raw !== RELAY_PLACEHOLDER) return raw;
     return relayKeyResolver ? String(relayKeyResolver(p) || "").trim() : "";
   }
   return raw;
@@ -70,8 +73,8 @@ function mtnodePiProviders(dataDir) {
       name: p.name || p.id,
       baseUrl: p.baseUrl,
       apiKey: key,
-      /* source 一并带上：调用方（主进程插件宿主）据此知道这张卡的凭据来自哪里，
-         中转卡的真 token 在上面的 apiKeyOf() 里已经换好（见 main.js 的 setRelayKeyResolver）。 */
+      /* source 一并带上：调用方（主进程插件宿主）据此知道这张卡的凭据来自哪里；
+         中转卡的 Key 在上面的 apiKeyOf() 里已经取好（配置里那一串，或注入的解析器）。 */
       source: String(p.source || ""),
       api: p.api || "openai-completions",
       models: modelIdsOf(p),

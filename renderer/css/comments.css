@@ -1,0 +1,320 @@
+/* renderer/css/comments.css — 评论（工坊条目 / 应用条目 / 论坛话题与回复）
+   结构与交互见 renderer/app-comments.js；口径真源 store-saas/comments.mjs +
+   docs/tips-comments-design.md。颜色取 base.css 主题槽位；星级用 --yellow（与画布评分色同源）。 */
+
+/* ── 卡片上的摘要与按钮 ───────────────────────────────────── */
+.cmt-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cmt-meta:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.cmt-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cmt-btn:hover {
+  border-color: var(--blue, var(--orange2));
+}
+
+.cmt-btn-ico {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.cmt-btn-n {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 评论区（整块） ───────────────────────────────────────── */
+.cmt-root {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+}
+
+.cmt-window {
+  padding: 0;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+}
+
+.cmt-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cmt-head-t {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cmt-score {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.cmt-score-t {
+  color: var(--yellow);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmt-score-n {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 发表区 */
+.cmt-editor {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+}
+
+.cmt-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  background: var(--bg2);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.cmt-input:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+
+.cmt-input:disabled {
+  opacity: .6;
+}
+
+.cmt-erow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cmt-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmt-pick-k {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cmt-replying {
+  color: var(--orange2);
+  font-size: 12px;
+}
+
+.cmt-replying.hidden {
+  display: none;
+}
+
+.cmt-counter {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmt-send {
+  padding: 6px 14px !important;
+  font-size: 12.5px !important;
+}
+
+/* 星级 */
+.cmt-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.cmt-star {
+  background: none;
+  border: 0;
+  padding: 0 1px;
+  color: var(--bd2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: default;
+}
+
+.cmt-stars.pick .cmt-star {
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.cmt-star.on {
+  color: var(--yellow);
+}
+
+/* 列表 */
+.cmt-list {
+  display: grid;
+  gap: 2px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.cmt-empty {
+  padding: 14px 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.cmt-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--bd);
+}
+
+.cmt-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cmt-who {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.cmt-at {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmt-body {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cmt-acts {
+  display: flex;
+  gap: 10px;
+}
+
+.cmt-act {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cmt-act:hover {
+  color: var(--orange2);
+  text-decoration: underline;
+}
+
+.cmt-act.del:hover {
+  color: var(--red);
+}
+
+/* 分页 */
+.cmt-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cmt-pager:empty {
+  display: none;
+}
+
+.cmt-page-n {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 详情窗里的「评论」页签（工坊条目 / 应用 / 论坛话题共用同一套页签条） */
+.detail-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--bd);
+  margin-bottom: 10px;
+}
+
+.detail-tab {
+  padding: 5px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.detail-tab:hover {
+  border-color: var(--orange2);
+}
+
+.detail-tab.on {
+  border-color: var(--orange);
+  color: var(--orange2);
+  font-weight: 600;
+}
+
+.detail-pane {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-pane.hidden {
+  display: none;
+}

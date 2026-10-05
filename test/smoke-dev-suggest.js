@@ -1358,6 +1358,8 @@ const MODEL_JSON =
   ok(typeof ex(sb, "closeDevModelPicker") === "function", "弹层有显式收起入口（Esc 走它）");
   ok(!!pop, "点击按钮后创建模型弹层（#devModelPop）");
   ok(pop.classList.contains("on"), "弹层展开");
+  /* 关闭键「X」居中的回归断言在 test/smoke-ai-call.js [6]（同一颗 .dev-model-close，
+     两只弹层同源）：本文件 [3] 之后的中断会让这里的断言跑不到，故不在两处重复钉。 */
   ok(sb.S.uiDevModelNode === "n1", "记录正在选择的功能块（再点按钮 / Esc / 开别的面板互斥收起）");
   ok(
     pop.querySelector(".dev-model-scope").textContent.indexOf("继承自「渲染层」") >= 0,
@@ -1903,7 +1905,10 @@ const MODEL_JSON =
   ok(
     ixc12.indexOf('txt.className = "ix-opt-label"') >= 0 &&
       ixc12.indexOf('d.className = "ix-opt-desc"') >= 0 &&
-      ixc12.indexOf("d.textContent = o.description") >= 0,
+      /* 本次改动：两行文字都走行内 Markdown（**粗体** / `code` 不再外露星号与反引号），
+         结构与取答案口径不变 —— 见 test/smoke-ask-summary.js 的 [1]/[3]。 */
+      ixc12.indexOf("d.innerHTML = ixInlineMd(o.description)") >= 0 &&
+      ixc12.indexOf("txt.innerHTML = ixInlineMd(o.label)") >= 0,
     "询问卡选项把 description 渲染成第二行文字（grill-me 的推荐理由在卡片里直接可见）",
   );
   ok(

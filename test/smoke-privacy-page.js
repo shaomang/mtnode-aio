@@ -196,7 +196,8 @@ const CLAIMS = [
   { c: "config-backups" },
   { c: "trash/" },
   { c: "dsh-home/sessions" },
-  { c: "dsh-home/rollback" },
+  /* 会话轮次回滚已移除：页面只在「旧版本残留副本」那句里提 rollback，清单同口径 */
+  { c: "rollback/", inv: "rollback/" },
   { c: "dsh-home/attachments" },
   { c: "settings.yaml" },
   { c: "MTNODE_KEY_1", inv: "MTNODE_KEY_n" },

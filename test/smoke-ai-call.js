@@ -588,6 +588,40 @@ ok(html.indexOf('<script src="app-aicall.js"></script>') >= 0 &&
 ok(css.indexOf(".n-ai-call") >= 0 && css.indexOf(".n-ai-call.inherited") >= 0,
   "canvas.css：.n-ai-call 全套样式（auto / inherited 态齐备）");
 
+/* ---------------- [6] 弹层关闭键「X」居中（本轮修的 bug） ----------------
+   字符 ✕ 的字形墨水盒不是几何盒子：20×20 方钮里实测其中心比钮中心高 0.5px
+   （Range.getBoundingClientRect：ink 中心 41.5 / 钮中心 42）。改成 viewBox 24 的线性
+   SVG（path 中心恰 12,12，与 #overlay 的 .ov-close-btn 同一份）+ flex 居中后恒定正中。
+   components.css 的尺寸口径一并落在这里，浏览器像素复核见该条 CSS 注释。 */
+{
+  const devnodeJs = read("renderer/app-devnode.js");
+  const appJsSrc = read("renderer/app.js");
+  const componentsCss = read("renderer/css/components.css");
+  const X_PATH = "M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z";
+  const win = (src) => {
+    const i = src.indexOf('"dev-model-close"');
+    return i < 0 ? "" : src.slice(i - 400, i + 900);
+  };
+  ok(win(aicallSrc).indexOf(X_PATH) >= 0, "「AI 调用」弹层关闭键 = 内联 SVG（viewBox 24 的线性 ✕）");
+  ok(win(devnodeJs).indexOf(X_PATH) >= 0, "开发节点「Agent 设定」弹层同一颗关闭键同步换 SVG（两处同源）");
+  ok(win(aicallSrc).indexOf('textContent = "✕"') < 0 && win(devnodeJs).indexOf('textContent = "✕"') < 0,
+    "不再用字符 ✕ 当关闭键图标（字形偏移的根因去掉）");
+  ok(win(aicallSrc).indexOf('"mini dev-model-close"') < 0 && win(devnodeJs).indexOf('"mini dev-model-close"') < 0,
+    "关钮不挂通用 .mini：实测 .mini 在场会把钮内 svg 的 computed width 压成 0（图标看不见）");
+  ok(appJsSrc.indexOf(X_PATH) >= 0, "这份 ✕ path 与 #overlay 窗壳的 .ov-close-btn 同源（不另造图标）");
+  const cRule = componentsCss.slice(
+    componentsCss.indexOf(".dev-model-close {"),
+    componentsCss.indexOf(".dev-model-cells {"),
+  );
+  ok(/display:\s*inline-flex/.test(cRule) && /align-items:\s*center/.test(cRule) &&
+     /justify-content:\s*center/.test(cRule),
+    "components.css：.dev-model-close 用 inline-flex + 两轴居中（20×20 方钮内图标恒定正中）");
+  ok(/width:\s*20px/.test(cRule) && /height:\s*20px/.test(cRule) && /padding:\s*0/.test(cRule),
+    "components.css：方钮 20×20 / padding 0 由 .dev-model-close 自己给（不依赖 .mini 那套内边距）");
+  ok(/\.dev-model-close svg\s*\{/.test(componentsCss) === false,
+    "不给钮内 svg 另写规则（display:block 那类会让 width 属性失效、图标消失）");
+}
+
 const enKeys = [
   "AI 调用",
   "AI 调用模型：",

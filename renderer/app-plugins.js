@@ -1330,6 +1330,21 @@ const EXT_KINDS = [
     install: false,
     newLabel: "＋ 添加服务器",
   },
+  {
+    /* MTNode 自己作为 **MCP 服务端**（与上面那条相反的方向：上面是 MTNode 去连别人的
+       MCP 服务器，这一条是第三方客户端连进来操作 MTNode）。见 mcp-server.js 与
+       guides/mcp-server.md；面板没有清单（只有一个服务端），右侧整块就是它。 */
+    key: "server",
+    zh: "MCP 服务端",
+    tab: "服务端",
+    grid: "dshMcpServerGrid",
+    empty: "MCP 服务端未启用",
+    install: false,
+    newLabel: "",
+    countKey: "mcpServer",
+    noStore: true,
+    toolbarNone: true,
+  },
 ];
 
 const EXT_KIND = {};
@@ -1339,12 +1354,23 @@ const EXT_UI = {
   open: false,
   kind: "dsh",
   hintEl: null,
-  loaded: { dsh: false, skill: false, mcp: false },
-  errors: { dsh: "", skill: "", mcp: "" },
+  loaded: { dsh: false, skill: false, mcp: false, server: false },
+  errors: { dsh: "", skill: "", mcp: "", server: "" },
   state: {
     dsh: { list: [], selectedKey: "", query: "" },
     skill: { list: [], selectedKey: "", query: "", editor: null },
     mcp: { list: [], selectedKey: "", query: "", editor: null },
+    /* MCP 服务端：不是清单，只有一份运行状态 + 最近调用 / 抓包（见 mcpState / mcpPanel） */
+    server: {
+      list: [],
+      selectedKey: "",
+      query: "",
+      info: null,
+      audit: [],
+      capture: [],
+      busy: false,
+      selfTest: null,
+    },
   },
 };
 
@@ -1415,6 +1441,7 @@ function extHintText() {
       (zh ? "）" : ")"),
     I18n.t("技能 ") + extCount("skill"),
     I18n.t("MCP ") + extCount("mcp"),
+    I18n.t("MCP 服务端 ") + (EXT_UI.state.server.info && EXT_UI.state.server.info.running ? (zh ? "已启用" : "on") : zh ? "已关闭" : "off"),
   ];
   const errs = EXT_KINDS.filter((k) => EXT_UI.errors[k.key]).map(
     (k) => k.tab,
@@ -1431,7 +1458,7 @@ function extHintText() {
 function paintExtHint() {
   const hint = EXT_UI.hintEl;
   if (!hint) return;
-  if (!EXT_UI.loaded.dsh && !EXT_UI.loaded.skill && !EXT_UI.loaded.mcp) {
+  if (!EXT_UI.loaded.dsh && !EXT_UI.loaded.skill && !EXT_UI.loaded.mcp && !EXT_UI.loaded.server) {
     hint.textContent = I18n.t("（读取中…）");
     return;
   }
@@ -1522,6 +1549,7 @@ function ensureExtManagerDlg() {
     '<div class="dsh-plugins-grid" id="dshPluginsGrid"></div>' +
     '<div class="dsh-plugins-grid" id="dshSkillsGrid" style="display:none"></div>' +
     '<div class="dsh-plugins-grid" id="dshMcpGrid" style="display:none"></div>' +
+    '<div class="dsh-plugins-grid" id="dshMcpServerGrid" style="display:none"></div>' +
     '<div class="dsh-plugins-info" id="extManagerInfo"></div>' +
     "</div></div>";
   document.body.appendChild(host);
@@ -1585,6 +1613,16 @@ function paintExtToolbar(host) {
   const kind = EXT_UI.kind;
   const meta = EXT_KIND[kind];
   bar.innerHTML = "";
+  /* MCP 服务端这一页没有清单：工具栏只留一句说明（开关与令牌都在右侧面板里）。 */
+  if (meta.toolbarNone) {
+    const tip = document.createElement("span");
+    tip.className = "dsh-ext-count";
+    tip.textContent = I18n.t(
+      "MTNode 作为 MCP 服务端：第三方客户端（Claude Code / Cursor / 自研 Agent）连进来操作本机 MTNode。开关、地址与令牌在右侧面板。",
+    );
+    bar.appendChild(tip);
+    return;
+  }
   if (meta.install) {
     const inp = document.createElement("input");
     inp.type = "text";
@@ -1699,6 +1737,11 @@ function renderExtManagerInfo(host) {
   if (!info) return;
   info.innerHTML = "";
   const kind = EXT_UI.kind;
+  /* MCP 服务端是单例状态页，不走「清单 + 选中」那套（见 paintMcpServerPanel）。 */
+  if (kind === "server") {
+    paintMcpServerPanel(info);
+    return;
+  }
   const st = extState(kind);
   if (st.editor) {
     buildExtEditor(info, kind, st);
@@ -2495,8 +2538,9 @@ function paintExtManager() {
       dsh: I18n.t("筛选 DSH 插件（按包名 / 行 id / 描述）…"),
       skill: I18n.t("筛选技能（按技能名 / 描述）…"),
       mcp: I18n.t("筛选 MCP 服务器（按名称 / 命令 / URL）…"),
-    }[EXT_UI.kind];
+    }[EXT_UI.kind] || I18n.t("本页没有可筛选的清单");
     search.placeholder = ph;
+    search.disabled = EXT_UI.kind === "server";
     if (search.value !== (extState(EXT_UI.kind).query || ""))
       search.value = extState(EXT_UI.kind).query || "";
   }
@@ -2535,10 +2579,13 @@ async function fetchExtPlugins(attempt) {
 
 async function refreshExtInventory(opts) {
   opts = opts || {};
-  const want = opts.kinds || ["dsh", "skill", "mcp"];
+  const want = opts.kinds || ["dsh", "skill", "mcp", "server"];
   if (!want.length) return;
   const fetchers = {
     dsh: fetchExtPlugins,
+    server: async () => {
+      await fetchMcpServerState();
+    },
     skill: async () => {
       try {
         const r = await window.api.skillList();
@@ -2591,6 +2638,312 @@ async function openExtManagerDialog(kind) {
   /* 每次点「管理」都重新拉一遍三类清单：引擎可能刚装完插件又重启过 */
   await refreshExtInventory();
   paintExtManager();
+}
+
+/* ── 「MCP 服务端」面板 ──────────────────────────────────────────────────────
+   MTNode 自己作为 MCP 服务端（第三方客户端连进来操作本机 MTNode）。与上面「MCP 服务器」
+   那一类方向相反，所以它不是一份清单，而是**一个服务端的状态页**：
+     · 总开关（关 = 停止监听，端口不再存在）
+     · 地址 / 令牌 / 客户端标识（都能一键复制；令牌可重置）
+     · stdio 客户端配置片段（Claude Code / Cursor 那一行）
+     · 自检（自己走一遍 initialize → tools/list → 真读一次画布）
+     · 最近调用（审计，数据目录 mcp-audit/）与原始 JSON-RPC 抓包（需显式打开）
+   契约与工具表由 guides/mcp-server.md 说明，真源是 dsh/gateway/*-plugin.mjs。 */
+function mcpServerState() {
+  return EXT_UI.state.server;
+}
+
+async function fetchMcpServerState(opts) {
+  const st = mcpServerState();
+  try {
+    st.info = await window.api.mcpStatus();
+    EXT_UI.errors.server = "";
+  } catch (e) {
+    st.info = null;
+    EXT_UI.errors.server = I18n.t("MCP 服务端状态不可用（") + extErrorText(e) + I18n.t("）");
+  }
+  await mcpServerLoadLogs(opts);
+}
+
+async function mcpServerLoadLogs() {
+  const st = mcpServerState();
+  try {
+    const a = await window.api.mcpAudit(60);
+    st.audit = (a && a.entries) || [];
+  } catch (_) {
+    st.audit = [];
+  }
+  try {
+    const c = await window.api.mcpCapture(120);
+    st.capture = (c && c.entries) || [];
+  } catch (_) {
+    st.capture = [];
+  }
+}
+
+function mcpCopy(text, label) {
+  const write = (t) => {
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      return navigator.clipboard.writeText(t);
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } catch (_) {}
+    ta.remove();
+    return Promise.resolve();
+  };
+  Promise.resolve(write(String(text || "")))
+    .then(() => toast(I18n.t("已复制") + (label ? "：" + label : ""), "ok"))
+    .catch(() => toast(I18n.t("复制失败"), "err"));
+}
+
+function mcpClientSnippet(info) {
+  const cmd = (info && info.stdioCommand) || {};
+  return JSON.stringify(
+    {
+      mcpServers: {
+        mtnode: { command: cmd.node || "node", args: [cmd.script || "mcp-stdio.js"] },
+      },
+    },
+    null,
+    2,
+  );
+}
+
+function paintMcpServerPanel(info) {
+  const st = mcpServerState();
+  const s = st.info || {};
+  const run = !!s.running;
+  extInfoHead(
+    info,
+    I18n.t("MCP 服务端"),
+    [
+      [run ? "on" : "off", run ? I18n.t("已监听") : I18n.t("已关闭")],
+      ["builtin", "128.0.0.1 · token"],
+      ["builtin", I18n.t("工具 ") + (s.tools || 0)],
+    ],
+    "mcp-server",
+  );
+  extInfoField(
+    info,
+    I18n.t("这是什么"),
+    I18n.t(
+      "让第三方 MCP 客户端（Claude Code / Cursor / 自研 Agent）连进来操作本机 MTNode：读改画布、查数据库与事实库、素材库与识图。调用与你自己的会话走同一条执行路径，全部记进审计日志。",
+    ),
+  );
+  if (EXT_UI.errors.server) extInfoField(info, I18n.t("状态"), EXT_UI.errors.server);
+  extInfoField(info, I18n.t("地址（HTTP）"), run ? s.url : I18n.t("未监听（总开关已关）"));
+  extInfoField(info, I18n.t("令牌（Bearer）"), s.token || "");
+  extInfoField(info, I18n.t("工具 / 资源 / 提示词"), (s.tools || 0) + " / " + (s.resources || 0) + " / " + (s.prompts || 0));
+  if (run) {
+    extInfoField(
+      info,
+      I18n.t("监听信息"),
+      "127.0.0.1:" + s.port + " · " + I18n.t("已运行 ") + Math.max(1, Math.round((s.uptimeMs || 0) / 60000)) + I18n.t(" 分钟") +
+        " · " + I18n.t("本会话调用 ") + (s.calls || 0) + I18n.t(" 次") + " · " + I18n.t("连接 ") + (s.sessions || 0),
+    );
+  }
+  extInfoField(info, I18n.t("客户端标识"), s.clientId || I18n.t("（未设置，仅用于审计归类）"));
+  extInfoField(info, I18n.t("审计目录"), s.auditDir || "");
+  if (s.lastError) extInfoField(info, I18n.t("最近一次错误"), s.lastError);
+
+  extInfoDetails(
+    info,
+    I18n.t("stdio 客户端配置片段（Claude Code / Cursor 等）"),
+    I18n.t(
+      "把这段合并进客户端的 MCP 配置：桥脚本会自己从数据目录读端口与令牌，不用手填地址。",
+    ) + "\n" + mcpClientSnippet(s),
+  );
+
+  extInfoButtons(info, [
+    [
+      run ? I18n.t("关闭服务端") : I18n.t("开启服务端"),
+      run ? "" : "primary",
+      async () => {
+        st.busy = true;
+        paintExtManager();
+        try {
+          const r = await window.api.mcpSetEnabled(!run);
+          if (r && r.ok === false) throw new Error(r.error);
+          toast(run ? I18n.t("MCP 服务端已关闭") : I18n.t("MCP 服务端已开启"), "ok");
+        } catch (e) {
+          toast(I18n.t("操作失败：") + extErrorText(e), "err");
+        }
+        st.busy = false;
+        await fetchMcpServerState();
+        paintExtManager();
+      },
+    ],
+    [
+      I18n.t("复制地址"),
+      "",
+      async () => mcpCopy(run ? s.url : s.statePath, I18n.t("地址")),
+    ],
+    [I18n.t("复制令牌"), "", async () => mcpCopy(s.token, I18n.t("令牌"))],
+    [
+      I18n.t("复制配置片段"),
+      "",
+      async () => mcpCopy(mcpClientSnippet(s), I18n.t("stdio 配置")),
+    ],
+    [
+      I18n.t("重置令牌"),
+      "danger",
+      async () => {
+        if (
+          !(await confirmDialog(
+            I18n.t(
+              "重置令牌后，已配置好的客户端要重新复制一次配置片段才能连上。继续？",
+            ),
+            { title: I18n.t("重置 MCP 令牌"), danger: true, okText: I18n.t("重置") },
+          ))
+        )
+          return;
+        try {
+          const r = await window.api.mcpResetToken();
+          if (r && r.ok === false) throw new Error(r.error);
+          toast(I18n.t("令牌已重置"), "ok");
+        } catch (e) {
+          toast(I18n.t("操作失败：") + extErrorText(e), "err");
+        }
+        await fetchMcpServerState();
+        paintExtManager();
+      },
+    ],
+    [
+      I18n.t("自检"),
+      "",
+      async () => {
+        st.busy = true;
+        paintExtManager();
+        try {
+          st.selfTest = await window.api.mcpSelfTest();
+          toast(
+            st.selfTest && st.selfTest.ok
+              ? I18n.t("自检通过")
+              : I18n.t("自检未通过：见下方明细"),
+            st.selfTest && st.selfTest.ok ? "ok" : "err",
+          );
+        } catch (e) {
+          st.selfTest = { ok: false, error: extErrorText(e), steps: [] };
+        }
+        st.busy = false;
+        await fetchMcpServerState();
+        paintExtManager();
+      },
+    ],
+    [
+      I18n.t("编辑客户端标识"),
+      "",
+      async () => {
+        const cur = s.clientId || "";
+        const v = window.prompt(I18n.t("客户端标识（只用于审计归类，可留空）"), cur);
+        if (v === null) return;
+        try {
+          await window.api.mcpSetClientId(String(v || ""));
+          toast(I18n.t("已保存"), "ok");
+        } catch (e) {
+          toast(I18n.t("保存失败：") + extErrorText(e), "err");
+        }
+        await fetchMcpServerState();
+        paintExtManager();
+      },
+    ],
+    [
+      s.capture ? I18n.t("关掉抓包") : I18n.t("打开抓包"),
+      "",
+      async () => {
+        try {
+          await window.api.mcpSetCapture(!s.capture);
+          toast(s.capture ? I18n.t("抓包已关闭") : I18n.t("抓包已打开（只留最近 200 条，仅本机内存）"), "ok");
+        } catch (e) {
+          toast(I18n.t("操作失败：") + extErrorText(e), "err");
+        }
+        await fetchMcpServerState();
+        paintExtManager();
+      },
+    ],
+  ]);
+
+  if (st.selfTest) {
+    const t = st.selfTest;
+    const lines = (t.steps || []).map((x) => (x.ok ? "✓ " : "✗ ") + x.name + (x.detail ? " — " + x.detail : ""));
+    extInfoDetails(
+      info,
+      (t.ok ? I18n.t("自检结果：通过") : I18n.t("自检结果：未通过")) + (t.error ? " · " + t.error : ""),
+      lines.join("\n") || I18n.t("（没有步骤记录）"),
+    );
+  }
+
+  /* 最近调用（审计） */
+  const auditWrap = document.createElement("div");
+  auditWrap.className = "dsh-mcp-res";
+  const auditBar = document.createElement("div");
+  auditBar.className = "dsh-mcp-res-bar";
+  const auditTitle = document.createElement("span");
+  auditTitle.className = "dsh-mcp-res-status";
+  auditTitle.textContent = I18n.t("最近调用（审计 · 数据目录 mcp-audit/）");
+  const auditRefresh = document.createElement("button");
+  auditRefresh.type = "button";
+  auditRefresh.className = "mini";
+  auditRefresh.textContent = I18n.t("刷新");
+  auditRefresh.onclick = async () => {
+    await mcpServerLoadLogs();
+    paintExtManager();
+  };
+  auditBar.appendChild(auditTitle);
+  auditBar.appendChild(auditRefresh);
+  auditWrap.appendChild(auditBar);
+  const auditList = document.createElement("div");
+  auditList.className = "dsh-mcp-res-list";
+  if (!(st.audit || []).length) {
+    const em = document.createElement("div");
+    em.className = "dsh-mcp-res-row dsh-mcp-res-tpl";
+    em.textContent = I18n.t("暂无调用记录（第三方客户端调一次就会出现在这里）");
+    auditList.appendChild(em);
+  }
+  for (const e of (st.audit || []).slice().reverse()) {
+    const row = document.createElement("div");
+    row.className = "dsh-mcp-res-row";
+    const name = document.createElement("div");
+    name.className = "dsh-mcp-res-name";
+    name.textContent =
+      (e.ok ? "✓ " : "✗ ") +
+      (e.tool || e.method || "") +
+      (e.canvas ? " · " + e.canvas : "") +
+      (e.client ? " · " + e.client : "");
+    const uri = document.createElement("div");
+    uri.className = "dsh-mcp-res-uri";
+    uri.textContent =
+      String(e.ts || "").replace("T", " ").slice(0, 19) +
+      " · " + (e.ms != null ? e.ms + "ms" : "") +
+      (e.session ? " · " + e.session : "") +
+      (e.error ? " · " + e.error : "") +
+      (e.args ? " · " + e.args : "");
+    row.appendChild(name);
+    row.appendChild(uri);
+    auditList.appendChild(row);
+  }
+  auditWrap.appendChild(auditList);
+  info.appendChild(auditWrap);
+
+  /* 原始 JSON-RPC 抓包（显式打开；只留最近 200 条，仅本机内存） */
+  if (s.capture) {
+    const cap = document.createElement("details");
+    cap.className = "dsh-plugin-yaml";
+    const sum = document.createElement("summary");
+    sum.textContent = I18n.t("原始 JSON-RPC 抓包（最近 ") + (st.capture || []).length + I18n.t(" 条）");
+    cap.appendChild(sum);
+    const pre = document.createElement("pre");
+    pre.className = "dsh-plugin-detail";
+    pre.textContent = (st.capture || [])
+      .map((x) => x.ts + " " + x.kind + " " + JSON.stringify(x.payload))
+      .join("\n") || I18n.t("（暂无）");
+    cap.appendChild(pre);
+    info.appendChild(cap);
+  }
 }
 
 /* ── 兼容旧命名（设置与助手工具仍在用这些名字）── */

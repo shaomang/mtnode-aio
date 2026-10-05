@@ -1,0 +1,1433 @@
+{
+  "generator": "scripts/build-mcp-contract.mjs",
+  "note": "本文件由生成器产出，禁止手改。参数表真源 = dsh/gateway/*-plugin.mjs 的 defineTool 参数表；改插件后重跑 `node scripts/build-mcp-contract.mjs`（test/smoke-mcp-server.js 会钉住一致性）。",
+  "protocol": {
+    "name": "mtnode",
+    "version": 1
+  },
+  "tools": [
+    {
+      "name": "mtnode_canvas_get",
+      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nRead the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\nDEFAULTS TO THE CHEAPEST FORM — detail \"minimal\": one index line per node (only title / note / kind 标题 / 描述 / 类别) + workflow identity and scopeInfo; no config fields, no bodies, no wire / mark / group / tree block. Ask for more only when needed:\n- \"standard\": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:[\"refs\"]。\n- \"full\": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:[\"nodes\",\"wires\"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / tts_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows port 0 = prompt only), and port 1+ accepts text AND image references (connect reference images to port 1+, never port 0). Never infer \"this node has no image-reference port\" from a short ports list, and never test-wire just to read the warnings.\nscopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\nWhen the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。",
+      "family": "canvas",
+      "source": "dsh/gateway/canvas-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Node field granularity. DEFAULT (when omitted) = \"minimal\": per node only title / note / kind (标题 / 描述 / 类别) — no id, no position, no status, no config fields, no bodies, and no heavy block (marks / wires / groups / trees) either. standard = minimal + all per-kind config fields (provider/model/size/paths/timer/net/control/…, db_table rows, input_file files, task steps) + body *lengths* only, no body text, and the build references (markColors, devFuncColors, cam/view) — WITHOUT kinds / imageSizes / defaultImageSize; get those three static tables explicitly with sections:[\"refs\"]. full = everything incl. full text bodies (input_text.text, prompt, task, goal, jscode), rows, files, steps — you must ask for it explicitly, ideally with ids:[...] so only the nodes you need come back heavy.",
+            "enum": [
+              "minimal",
+              "standard",
+              "full"
+            ]
+          },
+          "ids": {
+            "type": "array",
+            "description": "Return ONLY these nodes (match by node id or unique title). Wires are restricted to the selected nodes. Use with detail:\"full\" to fetch a single node's complete config cheaply.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scope": {
+            "type": "string",
+            "description": "Read ONLY the inside of this super / dev / db node (id or unique title). \"global\" = whole canvas. Inspect one shell without pulling the whole graph into context."
+          },
+          "scopeDepth": {
+            "type": "string",
+            "description": "With scope: \"direct\" = that shell plus its direct children (default) · \"all\" = the whole subtree underneath it.",
+            "enum": [
+              "direct",
+              "all"
+            ]
+          },
+          "bodies": {
+            "type": "boolean",
+            "description": "Include full body text (text/prompt/task/goal, and 素材节点各条目的正文 / 媒体路径). Default: true when detail=\"full\", false otherwise. When false, *Len counts are still returned."
+          },
+          "bodyLimit": {
+            "type": "number",
+            "description": "Truncate each body value to N characters (0 = no limit, default). *Len fields always report the true length."
+          },
+          "sections": {
+            "type": "array",
+            "description": "Whitelist of the heavy top-level blocks: nodes, marks, wires, groups, taskTree, superTree, tagCatalog, workflows, selection, plus refs = 三张静态建图表 kinds / imageSizes / defaultImageSize. At detail \"minimal\" ONLY nodes is returned unless you name others here（只查连线就用 [\"nodes\",\"wires\"]）; at \"standard\" / \"full\" the default is all of them and this list narrows it — EXCEPT refs: 它在任何档位都默认缺席，只有显式点名才回。The small envelope (workflow, scopeInfo, assistScope / scopeNote) is always included.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "mtnode_app",
+      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nControl the MTNode desktop app beyond node graph edits (workflow status, rename, select nodes, undo/redo, delete with confirmation, DSH plugin install).\n\nAvailable actions:\n- status / list_workflows: inspect app + workflow catalog. When the run is locked to its own canvas（会话所属画布：agent_task nodes, agent session, assistant \"current\" scope）, the catalog contains ONLY that canvas — other workflows are omitted.\n- rename_workflow: rename the canvas this run belongs to (or a specified workflow) — other canvases are rejected when locked\n- create_longtask: store a long-running-task state-machine graph (DAG) into the canvas this run belongs to; the graph and its landing points (super-node shells / generation workflows / deliverable nodes) are placed on the canvas at creation time — nothing runs — and the task stays disabled (the user enables it from the strip to start it). When to use: once a requirements-grilling session has reached consensus — load the mtnode-grill-me skill and follow its graph contract for what goes into graph (the contract is the single source of truth; do not invent fields); pass name = task name, graph = the graph. Rejected with the validation errors if the graph does not pass, so fix and call again.\n- get_longtask: read one existing long-running task in full — its identity (uid / name / ver / enabled), the whole graph definition, and the LIVE run state (run status, per-node status by path, who is blocked, who is being waited on). Pass uid (omit = the canvas's active task). Always call this before update_longtask: the state graph the user wants changed is only knowable from here.\n- update_longtask: replace the graph definition of an EXISTING long-running task in place (same task, same uid; ver +1). When to use: the user asks to change / fix a task chain that already exists — pass uid plus the complete revised graph (not a diff; the graph replaces the old one). The task keeps its name / enabled / run; if a run is in progress it keeps running on the old snapshot (the receipt says so) and the user must re-enable to apply the new graph. Rejected with the validation errors if the graph does not pass, so fix and call again. Creating a brand-new task is create_longtask instead.\n- select_nodes: select nodes by id/title (optional; empty clears selection). Selection highlight only — it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background.\n- undo / redo: undo or redo the last canvas edit — same foreground-only rule (the undo stack belongs to the canvas you see).\n- export_canvas_png: take a high-resolution PNG \"photo\" of the whole canvas this run belongs to — every node, wire and mark, tiled and stitched exactly like the app's footer camera button (生成高清总览图). Read-only: nothing on the canvas changes. Like select_nodes it acts on the canvas on screen, so it is rejected when this run's own canvas is in the background (switch to it first); the host briefly reveals the canvas and restores the view afterwards, so the user sees a short pan. Pass path to choose an absolute .png destination; omit it and the PNG is written into that canvas's asset folder. The receipt returns the file path — hand it to mtnode_vision when you actually need to READ the picture (OCR / layout / verifying what was built), or give it to the user as a deliverable.\n- list_dsh_plugins: list DSH agent plugins (id, package name, enabled/disabled, core/user). Does not restart the engine.\n\nNeeds user confirmation (UI will prompt; may be rejected):\n- delete_workflow: permanently delete a workflow and its local assets (other canvases rejected when locked)\n- install_dsh_plugin: install a DSH plugin (npm package name, GitHub URL, local path, or .tgz). Pass pkg. Engine restarts after install. Packages are stored under the app config data directory (survive app updates).\n- remove_dsh_plugin: remove a user-installed DSH plugin. Pass pkg (package name). Bundled suites can only be unmounted via set_dsh_plugin.\n- set_dsh_plugin: mount or unmount a non-core plugin. Pass pkg and enabled (boolean); optional id when multiple rows share a name.\n\nFor creating/editing/wiring/removing NODES or canvas drawings (marks) on the canvas this run belongs to（会话所属画布，不是用户此刻看到的这张）, use mtnode_canvas_edit instead (confirmed when called from the global assistant or the agent-session view; rejection stops the agent session).",
+      "family": "canvas",
+      "source": "dsh/gateway/canvas-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "App-level action to perform.",
+            "enum": [
+              "status",
+              "list_workflows",
+              "rename_workflow",
+              "create_longtask",
+              "get_longtask",
+              "update_longtask",
+              "delete_workflow",
+              "select_nodes",
+              "undo",
+              "redo",
+              "export_canvas_png",
+              "list_dsh_plugins",
+              "install_dsh_plugin",
+              "remove_dsh_plugin",
+              "set_dsh_plugin"
+            ]
+          },
+          "node": {
+            "type": "string",
+            "description": "For select_nodes: node id or unique title."
+          },
+          "nodes": {
+            "type": "array",
+            "description": "For select_nodes: multiple ids or unique titles.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workflow": {
+            "type": "string",
+            "description": "For rename/delete: workflow id or exact name — when the run is locked to its own canvas（会话所属画布）, that canvas is the only valid target."
+          },
+          "name": {
+            "type": "string",
+            "description": "For rename_workflow / create_longtask: display name (for create_longtask it is optional; defaults to a numbered long-running task name). For update_longtask: optional new name for that task."
+          },
+          "uid": {
+            "type": "string",
+            "description": "For get_longtask / update_longtask: target long-running task uid. Omit = the canvas's active task."
+          },
+          "graph": {
+            "type": "object",
+            "description": "For create_longtask / update_longtask: the long-running-task state-machine graph. For update_longtask pass the COMPLETE revised graph — it replaces the stored definition (not a diff, not just the changed nodes). The graph contract (nodes / edges and their per-kind cfg) is the single source of truth in the mtnode-grill-me skill — do not invent fields.",
+            "additionalProperties": true
+          },
+          "pkg": {
+            "type": "string",
+            "description": "For install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin: npm package, GitHub URL, local path, .tgz, or installed package name."
+          },
+          "path": {
+            "type": "string",
+            "description": "For export_canvas_png: absolute .png output path. Omit = the PNG is written into the canvas asset folder and that path is returned."
+          },
+          "plugin": {
+            "type": "string",
+            "description": "Alias of pkg for DSH plugin actions."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "For set_dsh_plugin: true = mount, false = unmount."
+          },
+          "id": {
+            "type": "string",
+            "description": "For set_dsh_plugin: optional cordis row id when disambiguating."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "mtnode_canvas_edit",
+      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\n在当前画布上创建 / 修改 / 连线 / 删除 / 分组 / 自动排版节点，并用 createMarks / updateMarks / removeMarks 画装饰（text / box / arrow）。先 mtnode_canvas_get 读图，再在一次调用里建完整子图；alias 只在本调用内有效（connect / update / refs 用它）。回执自足：计数 + 每个 created / updated 的 x/y/w/h 与端口占用 + warnings，不必回读（detail:\"diff\" 只要明细）；要复核别的节点或取正文再用 mtnode_canvas_get（ids:[...]）。\n\ncreate.kind 枚举见 schema（生成族含 sensenova_gen 本机图像）。端子语义：tool / function 的参数表就是端子表（输入端子 0 = 控制入、1..N 各入参；输出 0..M-1 各出参、末位控制出）；judge 只有两个输出：fromIndex 0 = YES、1 = NO；super 对外只暴露边界端子，跨壳 / 跨层级用 superConnect。\n\n端子预检：canvas_get（detail \"standard\" / \"full\"）对端子数固定的节点回 ports:[{dir,index,name,kind,connectedTo}]，接线前先看它；connect 失败时 warnings 带候选端子与接法建议；save 的路径后缀按输入类型强制。\n\n不变量（违反即接线错）：\n- 标题必须唯一。\n- 智能节点（agent_task、agent:true 的 proc_text）自己会写文件：其后不接 save、也不当数据输入；用 wait_file 控制线挡下游。\n- 图像生成节点（proc_image / sensenova_gen）每次运行只出 1 张图；sensenova_gen 走本机后端（先装插件 sensenova-local），结果落资产目录、由输出端口 0 交付，不写 outputPath。\n- batchMode \"batch\" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；一次看全部用 \"agg\"。\n- 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。\n\n完整硬规则见技能 mtnode-canvas-edit-rules（save 与 wait_file、批次、task 三端、@引用、数据库 / 开发 / 排版 / scope）：建图 / 连线 / 批量 / 媒体前先加载它。",
+      "family": "canvas",
+      "source": "dsh/gateway/canvas-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "create": {
+            "type": "array",
+            "description": "要新增的节点；alias 必填，本次调用内的 connect / update / refs 用它引用这个新节点。",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "alias": {
+                  "type": "string",
+                  "description": "本调用内局部名（必填）。"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "节点类型（必填）；图像参考节点用 input_image。",
+                  "enum": [
+                    "input_text",
+                    "input_image",
+                    "input_audio",
+                    "input_video",
+                    "input_file",
+                    "db_table",
+                    "proc_text",
+                    "proc_image",
+                    "music_gen",
+                    "tts_gen",
+                    "video_gen",
+                    "video_upscale",
+                    "video_interp",
+                    "remotion",
+                    "sensenova_gen",
+                    "save",
+                    "save_text",
+                    "save_image",
+                    "save_pdf",
+                    "split",
+                    "merge",
+                    "global",
+                    "wait_file",
+                    "timer",
+                    "delayer",
+                    "sequencer",
+                    "gate",
+                    "splitter",
+                    "counter",
+                    "mutex",
+                    "agent_task",
+                    "task",
+                    "super",
+                    "db_replica",
+                    "control",
+                    "judge",
+                    "net_recv",
+                    "net_send",
+                    "execute",
+                    "tool",
+                    "function"
+                  ]
+                },
+                "title": {
+                  "type": "string",
+                  "description": "唯一显示标题；@标题 引用它。"
+                },
+                "tags": {
+                  "type": "array",
+                  "description": "节点标签，供 @标签名 引用。",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "text": {
+                  "type": "string",
+                  "description": "input_text 正文。"
+                },
+                "prompt": {
+                  "type": "string",
+                  "description": "proc_text / proc_image / sensenova_gen 提示词（也是 judge 判据）；可写 @标题 / @标签名。"
+                },
+                "sensenovaPrompt": {
+                  "type": "string",
+                  "description": "sensenova_gen 提示词别名（与 prompt 同义，两个都收）。"
+                },
+                "task": {
+                  "type": "string",
+                  "description": "agent_task 任务描述；可写 @标题 / @标签名。"
+                },
+                "goal": {
+                  "type": "string",
+                  "description": "task：本步要达成什么。"
+                },
+                "steps": {
+                  "type": "array",
+                  "description": "task：有序子步骤标题。",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "parentTaskId": {
+                  "type": "string",
+                  "description": "放进某 task 内部（id / alias / 标题）；父 task 要先在同一次调用里建。"
+                },
+                "parentSuperId": {
+                  "type": "string",
+                  "description": "放进某 super 内部（id / alias / 标题）；需 canvas_super。"
+                },
+                "scope": {
+                  "type": "string",
+                  "description": "局部画布：本次调用只在这一颗超级 · 开发节点内部（id 或唯一标题；\"global\" = 整图）。界外节点跳过 + warnings。"
+                },
+                "scopeDepth": {
+                  "type": "string",
+                  "description": "\"direct\" = 那颗壳 + 直接子节点（默认）· \"all\" = 整棵子树。",
+                  "enum": [
+                    "direct",
+                    "all"
+                  ]
+                },
+                "note": {
+                  "type": "string",
+                  "description": "super 卡片说明（开发节点必须【功能】+【实现】两段）。"
+                },
+                "expandW": {
+                  "type": "number",
+                  "description": "super 展开态宽度。"
+                },
+                "expandH": {
+                  "type": "number",
+                  "description": "super 展开态高度。"
+                },
+                "subFolder": {
+                  "type": "string",
+                  "description": "super 下相对工作目录的子目录（内部节点相对路径默认落这里）。"
+                },
+                "superOpen": {
+                  "type": "boolean"
+                },
+                "db": {
+                  "type": "boolean",
+                  "description": "super 标为数据库节点（事实存 subFolder + 内部信息节点，编译后出 db_replica）。"
+                },
+                "dbMode": {
+                  "type": "string",
+                  "description": "数据库 super 形态：画布式 / 控制台。",
+                  "enum": [
+                    "super",
+                    "db"
+                  ]
+                },
+                "dev": {
+                  "type": "boolean",
+                  "description": "super 标为开发节点（见技能 mtnode-dev-architect）。"
+                },
+                "devPath": {
+                  "type": "string",
+                  "description": "dev：项目根绝对路径（顶层块设，子块就近继承）。"
+                },
+                "devStatus": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "wip",
+                    "done"
+                  ]
+                },
+                "devKind": {
+                  "type": "string",
+                  "description": "dev：module → file → 类图元素。",
+                  "enum": [
+                    "module",
+                    "file",
+                    "class",
+                    "interface",
+                    "enum"
+                  ]
+                },
+                "devColor": {
+                  "type": "string",
+                  "description": "dev：外框色 #rrggbb；只用于改正功能色卡的自动上色，勿自创色值。"
+                },
+                "devModel": {
+                  "type": "string",
+                  "description": "dev：本块 Agent 模型 id（建议 / 开发 / 细化都用它）；子块未自选则就近继承。"
+                },
+                "devProvider": {
+                  "type": "string",
+                  "description": "dev：devModel 的路由（可省，按模型推断）。"
+                },
+                "devPreset": {
+                  "type": "string",
+                  "description": "dev：预设档 = AGENT_PRESETS id（minimal / standard / lean / code / cordis）。"
+                },
+                "devEffort": {
+                  "type": "string",
+                  "description": "dev：思考强度档。",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    ""
+                  ]
+                },
+                "devFiles": {
+                  "type": "array",
+                  "description": "dev：核心文件（≤10 条 · 相对 devPath）；最外层项目块不要传。",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "execPath": {
+                  "type": "string",
+                  "description": "execute：绑定文件绝对路径（.exe / .bat / .cmd / .lnk）；无数据端子。"
+                },
+                "execIcon": {
+                  "type": "string",
+                  "description": "execute：图标 auto / rocket / gear / terminal / play / bolt / wrench / folder / file / power。"
+                },
+                "execColor": {
+                  "type": "string"
+                },
+                "savePath": {
+                  "type": "string",
+                  "description": "save 落盘路径；扩展名按输入类型强制 .yaml / .png / .wav / .mp4。"
+                },
+                "waitPath": {
+                  "type": "string",
+                  "description": "wait_file：监视到该文件存在才放行下游。"
+                },
+                "waitIntervalSec": {
+                  "type": "number",
+                  "description": "wait_file：轮询秒 1–60。"
+                },
+                "timerMode": {
+                  "type": "string",
+                  "description": "timer：once → timerAt · interval → timerEverySec · cron → timerCron。",
+                  "enum": [
+                    "once",
+                    "interval",
+                    "cron"
+                  ]
+                },
+                "timerAt": {
+                  "type": "string",
+                  "description": "timer once：本地时间 \"YYYY-MM-DDTHH:mm\"。"
+                },
+                "timerEverySec": {
+                  "type": "number",
+                  "description": "timer interval：间隔秒 1–604800。"
+                },
+                "timerCron": {
+                  "type": "string",
+                  "description": "5 段 \"min hour dom mon dow\"。"
+                },
+                "timerArmed": {
+                  "type": "boolean",
+                  "description": "timer：是否上膛。"
+                },
+                "imagePath": {
+                  "type": "string",
+                  "description": "input_image：本机图片绝对路径（应用复制进画布资产）。"
+                },
+                "imagePaths": {
+                  "type": "array",
+                  "description": "input_image：多张图片路径（即批量项）。",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "toolConfig": {
+                  "type": "object",
+                  "description": "工具节点（kind \"tool\" = super + tool:true 变体）的定义；参数即端子，端子数由参数钉死。",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "工具名（标题默认跟随它）。"
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "用途说明。"
+                    },
+                    "inputs": {
+                      "type": "array",
+                      "description": "输入端子表（传完整数组；增删参数即增删端子）。",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "参数名 = 端子名；留空补「参数 N」。"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                            "enum": [
+                              "text",
+                              "image"
+                            ]
+                          },
+                          "list": {
+                            "type": "boolean",
+                            "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                          }
+                        }
+                      }
+                    },
+                    "outputs": {
+                      "type": "array",
+                      "description": "输出端子表（传完整数组；末位控制出不在表内）。",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "参数名 = 端子名；留空补「参数 N」。"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                            "enum": [
+                              "text",
+                              "image"
+                            ]
+                          },
+                          "list": {
+                            "type": "boolean",
+                            "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "fnName": {
+                  "type": "string",
+                  "description": "函数节点函数名。"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "函数节点用途说明。"
+                },
+                "jscode": {
+                  "type": "string",
+                  "description": "函数节点 JS：input = { 参数名: 值 }（图像 = { kind:\"image\", path }），return { 输出参数名: 值 }。"
+                },
+                "inputs": {
+                  "type": "array",
+                  "description": "函数节点输入端子表（工具节点用 toolConfig.inputs）；改表即改端子。",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "参数名 = 端子名；留空补「参数 N」。"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                        "enum": [
+                          "text",
+                          "image"
+                        ]
+                      },
+                      "list": {
+                        "type": "boolean",
+                        "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                      }
+                    }
+                  }
+                },
+                "outputs": {
+                  "type": "array",
+                  "description": "函数节点输出端子表（工具节点用 toolConfig.outputs）；末位控制出不在表内。",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "参数名 = 端子名；留空补「参数 N」。"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "端子类型（缺省 text；image 值 = 本机路径）：决定能否相接、着色与下游选型（图像输出 → 保存 .png）。",
+                        "enum": [
+                          "text",
+                          "image"
+                        ]
+                      },
+                      "list": {
+                        "type": "boolean",
+                        "description": "数组端子：可重复连多条线，运行时值 = 按连线顺序的数组；未标 list 的端子连多条线只留一个值。"
+                      }
+                    }
+                  }
+                },
+                "agent": {
+                  "type": "boolean",
+                  "description": "proc_text：开启智能模式。"
+                },
+                "bgRmOn": {
+                  "type": "boolean",
+                  "description": "proc_image 透明背景（抠图出带 Alpha 的 PNG）：内部先出纯黑基准、再以它为参考图复刻纯白并逐像素差分出 Alpha；约 2 倍 Token，仅支持把基准图当参考图下发的服务商才会抠图。false / 省略 = 正常单张出图。"
+                },
+                "globalRefs": {
+                  "type": "boolean",
+                  "description": "允许 @引用全局广播（还要在 prompt/task 写明 @标题）。"
+                },
+                "auto": {
+                  "type": "boolean",
+                  "description": "save：上游运行即自动保存。"
+                },
+                "batch": {
+                  "type": "boolean",
+                  "description": "input_*：开启批量项。"
+                },
+                "batchMode": {
+                  "type": "string",
+                  "description": "\"batch\" 每条一次运行（只看该条）；\"agg\" 一次看全部。",
+                  "enum": [
+                    "batch",
+                    "agg"
+                  ]
+                },
+                "providerId": {
+                  "type": "string",
+                  "description": "proc_text / proc_image：API 服务商 id 或名称。"
+                },
+                "provider": {
+                  "type": "string",
+                  "description": "智能节点路由：deepseek-official / mtnode_<id> / 服务商名。"
+                },
+                "model": {
+                  "type": "string",
+                  "description": "本节点模型 id（运行中的别改）。"
+                },
+                "size": {
+                  "type": "string",
+                  "description": "proc_image 尺寸：合法值（imageSizes）用 canvas_get sections:[\"refs\"] 取，缺省 2048x1360。"
+                },
+                "ratioBucket": {
+                  "type": "string",
+                  "description": "sensenova_gen 分辨率桶名（官方 11 个训练桶，如 \"1:1\" / \"16:9\"）；width / height 随桶固定，不能自由填。"
+                },
+                "numSteps": {
+                  "type": "number",
+                  "description": "sensenova_gen 采样步数（默认 30）；省显存降它。"
+                },
+                "vramMode": {
+                  "type": "string",
+                  "description": "sensenova_gen 显存档位：full（≥48G）· fast（24G 卡档）· balanced / low（逐级卸载到内存）；24G 卡用 fast。",
+                  "enum": [
+                    "full",
+                    "fast",
+                    "balanced",
+                    "low"
+                  ]
+                },
+                "dtype": {
+                  "type": "string",
+                  "description": "sensenova_gen 权重精度（默认 bfloat16）。",
+                  "enum": [
+                    "bfloat16",
+                    "float16",
+                    "float32"
+                  ]
+                },
+                "think": {
+                  "type": "boolean",
+                  "description": "sensenova_gen think 模式（先出思考文本再出图，默认 false）。"
+                },
+                "imgCfgScale": {
+                  "type": "number",
+                  "description": "sensenova_gen 参考图条件强度：1.0 = 关闭（默认），仅图像编辑模式生效。"
+                },
+                "imgQuality": {
+                  "type": "string",
+                  "description": "proc_image 的 quality 直传参数：low/medium/high/xhigh/max；空 = 不传（服务商按 auto）；旧版 DALL·E 的 standard / hd 不要传。",
+                  "enum": [
+                    "",
+                    "auto",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                },
+                "imgBackground": {
+                  "type": "string",
+                  "description": "proc_image 的 background 直传参数：transparent 直出带 Alpha 的 PNG（自动补「背景透明」提示词并禁用差分抠图 bgRmOn）；opaque；空 = 不传。",
+                  "enum": [
+                    "",
+                    "auto",
+                    "opaque",
+                    "transparent"
+                  ]
+                },
+                "maskOn": {
+                  "type": "boolean",
+                  "description": "proc_image 蒙版局部重绘（透明区 = 重绘，只对第 1 张 image 生效）：maskPath 须由用户在节点头部蒙版编辑器涂抹（Agent 不能代画）；需图像输入 + OpenAI 兼容图像服务商；与 ratioLockOn 同时开以蒙版为准；带蒙版时请求的 size 钉成首张参考图的像素尺寸，节点自己选的 size 这一轮不生效。"
+                },
+                "remotionSize": {
+                  "type": "string",
+                  "description": "remotion 分辨率（宽x高）。"
+                },
+                "fps": {
+                  "type": "number",
+                  "description": "remotion 帧率 1–60。"
+                },
+                "attempts": {
+                  "type": "number",
+                  "description": "抽卡次数 1–10（生成类节点）。"
+                },
+                "outputPath": {
+                  "type": "string",
+                  "description": "video_gen / music_gen / tts_gen 输出路径（.mp4 / .wav / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。"
+                },
+                "voice": {
+                  "type": "string",
+                  "description": "tts_gen 音色（留空 = 默认，勿编造）。"
+                },
+                "speed": {
+                  "type": "number",
+                  "description": "tts_gen 语速 0.5–2.0。"
+                },
+                "videoMode": {
+                  "type": "string",
+                  "description": "video_gen：fl2va 首末帧（默认）/ r2v 多参考。输入端子（**控制输入恒为端口 0 = 第一个端子**，数据端口从 1 起且与「端子号 / 数据槽号」同号）：fl2va = 控制（0）· 提示词（1）· 首帧（2）· 末帧（3）；r2v = 控制（0）· 提示词（1）· 参考图 I1–I9（2–10）· 参考视频 V1–V3（11–13）· 参考音频 A1–A3（14–16）；自建工作流 = 控制（0）· 文本（1）· 素材（2+）。connect 的 toIndex / fromIndex 用 0 起始端口下标，等于上面括号里的号。",
+                  "enum": [
+                    "r2v",
+                    "fl2va"
+                  ]
+                },
+                "duration": {
+                  "type": "number",
+                  "description": "时长秒：video_gen 4–15，remotion 1–60。"
+                },
+                "outputRes": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "480p",
+                    "720p",
+                    "1080p"
+                  ]
+                },
+                "postEnabled": {
+                  "type": "boolean",
+                  "description": "video_gen 超分补帧后处理（24G 建议关）。"
+                },
+                "postInterp": {
+                  "type": "boolean",
+                  "description": "video_gen RIFE 补帧开关。"
+                },
+                "workflowId": {
+                  "type": "string",
+                  "description": "video_gen 自建 ComfyUI 工作流库 id（H3 窗口导入，勿编造）；非空时端子按该工作流参数重排。"
+                },
+                "ctrlAction": {
+                  "type": "string",
+                  "description": "control 动作：只建 run，不要建 clear。",
+                  "enum": [
+                    "run",
+                    "clear"
+                  ]
+                },
+                "ctrlRole": {
+                  "type": "string",
+                  "description": "control 角色（task 自带三端勿删）。",
+                  "enum": [
+                    "start",
+                    "endSuccess",
+                    "endFail"
+                  ]
+                },
+                "refs": {
+                  "type": "array",
+                  "description": "要补进 prompt/task 的 @标题 / @标签名。",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "delaySec": {
+                  "type": "number",
+                  "description": "delayer：延时秒。"
+                },
+                "seqOutputs": {
+                  "type": "number",
+                  "description": "sequencer：顺序输出数 2–8。"
+                },
+                "seqGapSec": {
+                  "type": "number",
+                  "description": "sequencer：输出间隔秒。"
+                },
+                "gateInputs": {
+                  "type": "number",
+                  "description": "gate：AND 输入数 2–8。"
+                },
+                "splitOutputs": {
+                  "type": "number",
+                  "description": "splitter：并行输出数 2–8。"
+                },
+                "counterEvery": {
+                  "type": "number",
+                  "description": "counter：每 N 次触发放行 2–99。"
+                },
+                "counterCount": {
+                  "type": "number"
+                },
+                "mutexInputs": {
+                  "type": "number",
+                  "description": "mutex：输入数 2–8。"
+                },
+                "mutexMode": {
+                  "type": "string",
+                  "description": "mutex：哪个输入胜出。",
+                  "enum": [
+                    "first",
+                    "priority",
+                    "random"
+                  ]
+                },
+                "netChannel": {
+                  "type": "number",
+                  "description": "net_recv / net_send：通道号 0–65535。"
+                },
+                "netProto": {
+                  "type": "string",
+                  "enum": [
+                    "tcp",
+                    "udp"
+                  ]
+                },
+                "netHost": {
+                  "type": "string",
+                  "description": "net_recv / net_send：地址。"
+                },
+                "netPort": {
+                  "type": "number",
+                  "description": "net_recv / net_send：端口（0 = 全局设置）。"
+                },
+                "netAutoListen": {
+                  "type": "boolean",
+                  "description": "net_recv：启动即监听。"
+                },
+                "dbNodeId": {
+                  "type": "string",
+                  "description": "db_replica：镜像的数据库 super id。"
+                },
+                "dbName": {
+                  "type": "string",
+                  "description": "db_replica：源数据库显示名。"
+                },
+                "ctrlPinned": {
+                  "type": "boolean"
+                },
+                "ctrlFillOnly": {
+                  "type": "boolean",
+                  "description": "control run：只填数据不触发运行。"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "alias",
+                "kind"
+              ]
+            }
+          },
+          "update": {
+            "type": "array",
+            "description": "补丁已有或本次新建的节点：按 id / alias / 唯一标题定位，可改字段与 create[] 同一份属性表（kind 不可改）。",
+            "items": {
+              "type": "object",
+              "description": "可改字段与 create[] 的属性表同一份（省略的键保持原样，数组整体替换；kind 不可改）。",
+              "additionalProperties": true,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "目标节点 id（最稳）。"
+                },
+                "alias": {
+                  "type": "string",
+                  "description": "本次 create[] 的 alias。"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "按现有标题查找（须唯一）。"
+                },
+                "setTitle": {
+                  "type": "string",
+                  "description": "改标题（自动去重）。"
+                },
+                "w": {
+                  "type": "number"
+                },
+                "h": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "connect": {
+            "type": "array",
+            "description": "连线：源 → 目标。表达关系的 UML 直线（不传数据、不参与执行）用 rel:true + relLabel / relArrow。",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "from": {
+                  "type": "string",
+                  "description": "源节点：id / alias / 唯一标题。"
+                },
+                "to": {
+                  "type": "string",
+                  "description": "目标节点：id / alias / 唯一标题。"
+                },
+                "fromIndex": {
+                  "type": "number",
+                  "description": "源的输出端子序号（默认 0）；judge 0 = YES、1 = NO；tool / function 按参数表数端子。"
+                },
+                "rel": {
+                  "type": "boolean",
+                  "description": "关系线：UML 直线，不传数据也不参与执行（忽略 fromIndex）。"
+                },
+                "relLabel": {
+                  "type": "string",
+                  "description": "关系线文字（如 调用 / 依赖）。"
+                },
+                "relArrow": {
+                  "type": "string",
+                  "enum": [
+                    "forward",
+                    "backward",
+                    "both",
+                    "none"
+                  ]
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ]
+            }
+          },
+          "disconnect": {
+            "type": "array",
+            "description": "删除匹配 from→to 的连线；字段与 connect[] 同一份表（from / to / fromIndex，断关系线带 rel:true）。",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "superConnect": {
+            "type": "array",
+            "description": "跨 super / 跨层级连通两个节点：[{from,to}]（字段同 connect[]）。自动逐层桥接边界端子，无需手建桥接线；需 canvas_super。",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "remove": {
+            "type": "array",
+            "description": "要删除的节点 id / alias / 唯一标题；正在运行本任务的节点删不掉。",
+            "items": {
+              "type": "string"
+            }
+          },
+          "group": {
+            "type": "object",
+            "description": "把节点与绘制打包成组（整组一起移动 / 缩放）；分区框建议一并放进来。",
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "组名，如 处理区。"
+              },
+              "nodes": {
+                "type": "array",
+                "description": "要包含的节点 / 绘制 id、alias 或标题；省略 = 本次 create[] 的全部节点。",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "marks": {
+                "type": "array",
+                "description": "要包含的绘制 id / alias / 精确正文。",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "createMarks": {
+            "type": "array",
+            "description": "画布绘制（text / box / arrow）；优先 box + around:[alias] + label 划分区，在节点自动排版之后贴合生成。",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "alias": {
+                  "type": "string",
+                  "description": "本调用内局部名（updateMarks / removeMarks / group 引用）。"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "text 文字 · box 分区框 · arrow 箭头。",
+                  "enum": [
+                    "text",
+                    "box",
+                    "arrow"
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "description": "box 上方的标题（title 同义）。"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "text 标注正文。"
+                },
+                "around": {
+                  "type": "array",
+                  "description": "框住哪些节点（id / alias / 标题）：排版后 box 贴合它们再加 pad。",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "pad": {
+                  "type": "number",
+                  "description": "around 留白（默认 36）。"
+                },
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "w": {
+                  "type": "number"
+                },
+                "h": {
+                  "type": "number"
+                },
+                "x2": {
+                  "type": "number",
+                  "description": "arrow 终点 x。"
+                },
+                "y2": {
+                  "type": "number",
+                  "description": "arrow 终点 y。"
+                },
+                "color": {
+                  "type": "string",
+                  "description": "#rrggbb（取 canvas_get 的 markColors）。"
+                },
+                "fontSize": {
+                  "type": "number",
+                  "description": "字号 10–48。"
+                },
+                "stroke": {
+                  "type": "number",
+                  "description": "线宽 1–8。"
+                }
+              }
+            }
+          },
+          "marks": {
+            "type": "array",
+            "description": "createMarks 的旧别名，字段完全相同。",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "updateMarks": {
+            "type": "array",
+            "description": "改已有绘制（按 id / createMarks 的 alias / 精确正文定位）。",
+            "items": {
+              "type": "object",
+              "description": "改已有绘制：按 id | alias | 精确正文（title）定位，其余字段沿用 createMarks[] 那份表。",
+              "additionalProperties": true,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "alias": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "按精确正文查找（须唯一）。"
+                }
+              }
+            }
+          },
+          "removeMarks": {
+            "type": "array",
+            "description": "要删除的绘制 id / alias / 精确正文。",
+            "items": {
+              "type": "string"
+            }
+          },
+          "layout": {
+            "type": "boolean",
+            "description": "自动排版：改结构的编辑默认自动执行，传 false 跳过。"
+          },
+          "setWorkflowName": {
+            "type": "string",
+            "description": "改当前画布标签名（可选）。"
+          },
+          "detail": {
+            "type": "string",
+            "description": "回执口径：summary（默认）= 计数摘要 + created/updated 明细（含 x/y/w/h 与端口占用）；diff = 只回本次 created/updated/connected/removed 明细，不回计数摘要。回执已自足，无需回读画布。",
+            "enum": [
+              "summary",
+              "diff"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "mtnode_vision",
+      "description": "Vision subagent: inspect a local image with a multimodal (vision) model and return a text answer. Use when you need to READ pixels mid-task — e.g. game UI layout, screenshot OCR, icon/button recognition, verifying a generated image — without wiring a permanent vision node.\n\nRequirements:\n- imagePath must be an absolute path on THIS machine (workflow asset path, screenshot file, etc.).\n- question: what to look for (Chinese OK). Be specific.\n- FIRST CALL in this app requires user permission (host shows Allow once / Always allow / Deny), unless the user already set Always allow / full-access / session allow in the top-right Approvals button.\n- The host picks a vision model by provider order then model order in Settings → Model services (DeepSeek Official's deepseek-flash reads images natively; any other vision-capable OpenAI-compatible provider works too).\n- Prefer this over attaching large image batches to the main agent prompt (saves tokens; avoids N² batch mistakes).\n- Do not use for generating new images — only for understanding existing ones.",
+      "family": "canvas",
+      "source": "dsh/gateway/canvas-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "imagePath": {
+            "type": "string",
+            "description": "Absolute path to a local image file to inspect."
+          },
+          "question": {
+            "type": "string",
+            "description": "What to look for / ask about the image (e.g. describe the game HUD and list clickable buttons)."
+          },
+          "model": {
+            "type": "string",
+            "description": "Optional vision model id; omit to use the host default vision route."
+          }
+        },
+        "required": [
+          "imagePath",
+          "question"
+        ]
+      }
+    },
+    {
+      "name": "mtnode_db",
+      "description": "Grounded fact lookup for the database wired into the CURRENT task — OR any database referenced by writing !@数据库标题 in your prompt/task. Use it whenever the task needs facts — names, numbers, prices, paths, terms, statuses — instead of answering from memory. Facts NEVER come from your parameters: only this tool's returned records are truth.\n\nAvailable actions (full CRUD over the referenced database(s)):\n- list: schema + all record titles (id | title | kind | file). Use first to see what the database knows.\n- get: full record by id (from list/query results). Returns provenance, sql, and data (the record).\n- query: search records by keywords / question; supports field filters title:xxx file:xxx kind:fact|file|meta. Returns a structured object with provenance (record ids/titles/sources), sql (the actual access statement used), and data (the matched records as a JSON array; each record also carries its database + sql).\n- write: insert or update records (增 / 改). Pass records: [ {id?, title, content, kind?, source?, file?} ]. If id is omitted it is auto-generated (inserts a NEW record); if id matches an existing record it overwrites that record (update). Agent-written rows are tagged source=agent: and survive later compiles. Returns per-database written counts.\n- delete: remove records by id (删). Pass ids: [ ... ] (record ids from provenance). Returns per-database deleted counts.\n- calc: evaluate arithmetic with numbers and + - * / % ( ) only. ALL number/date math must go through calc — never compute in your head.\n\nWhen the run references more than one database (via !@ or wired replicas), pass database: \"<title or folder>\" to scope an action to a single database; otherwise the action applies to every referenced database.\n\nDiscipline (enforced by the host):\n- Every key assertion in your answer MUST cite [记录id · 标题] from the provenance of a query/get result.\n- If query/get finds nothing, say exactly \"数据库中没有该信息\" — do not guess, do not fill in from memory.\n- If the host rejects the call (未接入数据库), the database is unavailable: say so, and do NOT answer from memory.\n- Facts not in the database may only appear explicitly labelled as 推断, with \"数据库未记载\".\n- Prefer query before write: confirm a record id does not already exist before writing a duplicate.",
+      "family": "db",
+      "source": "dsh/gateway/db-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Which database action to run.",
+            "enum": [
+              "list",
+              "query",
+              "get",
+              "calc",
+              "write",
+              "delete"
+            ]
+          },
+          "q": {
+            "type": "string",
+            "description": "query: keywords or a question; optional field filters title:xxx file:xxx kind:fact|file|meta."
+          },
+          "id": {
+            "type": "string",
+            "description": "get: record id from list/query results."
+          },
+          "expr": {
+            "type": "string",
+            "description": "calc: arithmetic expression, numbers and + - * / % ( ) only."
+          },
+          "record": {
+            "type": "object",
+            "description": "write: a single record to upsert (id, title, content, kind, source, file). Omit id to insert a new record (id auto-generated). Use records for an array.",
+            "additionalProperties": true
+          },
+          "records": {
+            "type": "array",
+            "description": "write: array of records to upsert. Each takes title, content, optional kind/source/file; include an existing id to update that record, or omit id to insert a new one (id auto-generated).",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "ids": {
+            "type": "array",
+            "description": "delete: array of record ids to remove.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "database": {
+            "type": "string",
+            "description": "Optional database title or folder to scope this action to (else it applies to all referenced databases)."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "mtnode_facts",
+      "description": "AI 事实库（mtnode_facts）：本画布自己的极简条例库 —— 给 AI 读的紧凑索引。要知道「这个项目有哪些模块、关键文件与路径、定了哪些约定、工作流的端口与数据流、命令入口、已知坑」时，先查这里，再去看现文件与数据库。\n动作：\n- list：全部条目（id | 标题 | 是否保护）。\n- query：按关键词检索（q，可选 limit），返回最相关的少量条目；写之前先 query，避免重复。\n- get：按 id 取一条全文。\n- write：写入极简条例 —— record: {id?, title, text} 或 records: [...]；同标题即更新同一条，省略 id 即新增。\n- delete：按 ids 删除条目。\n- pin：按 ids 设 on:true（保护，不会被淘汰）/ on:false（取消保护）。\n条目纪律：一条一件事、标题可辨、正文只求信息传达，不写过程与废话 —— 命中计数只看被索引的频率，废话只会被淘汰；完整规范见技能 mtnode-ai-facts。\n冲突口径：与现文件、数据库记录冲突时，以现文件、数据库为准，并在回答里说明分歧；本库没有或查不到就如实说，不得凭记忆编造。\n没有绑定画布时返回「当前没有绑定画布」（工具调用失败，会话继续）。\nUse when indexing project content, or recording / recalling the key conclusions of a project's architecture or workflow (modules, file paths, conventions, ports, commands, known pitfalls).",
+      "family": "facts",
+      "source": "dsh/gateway/ai-facts-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Which AI fact library action to run.",
+            "enum": [
+              "list",
+              "query",
+              "get",
+              "write",
+              "delete",
+              "pin"
+            ]
+          },
+          "q": {
+            "type": "string",
+            "description": "query: keywords to search the library with (tags, titles, module names, paths)."
+          },
+          "id": {
+            "type": "string",
+            "description": "get: entry id from a list/query result."
+          },
+          "ids": {
+            "type": "array",
+            "description": "delete / pin: array of entry ids.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "record": {
+            "type": "object",
+            "description": "write: a single minimal clause {id?, title, text}. Omit id to insert a new entry (same title updates that entry). Use records for an array.",
+            "additionalProperties": true
+          },
+          "records": {
+            "type": "array",
+            "description": "write: array of minimal clauses {id?, title, text}; same title = update the existing entry, omit id = insert a new one.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "on": {
+            "type": "boolean",
+            "description": "pin: true = protect the entry from eviction, false = unprotect it."
+          },
+          "limit": {
+            "type": "number",
+            "description": "query: max entries to return (1–20, default 8)."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "lt_state",
+      "description": "Read / write the shared state of the LONG-RUNNING TASK this node belongs to.\n\n- read (default): returns the whole state object of the current run plus your own node's declared input values. Use it whenever the task needs upstream results — do NOT guess what an earlier step produced.\n- write: pass patch = { \"<key>\": <value> }. You may ONLY write the output keys your own node declared in its task brief (they are listed in the read result as allowedWrite). Writing anything else is rejected by the host — that is deliberate: it keeps one run reproducible.\n\nValues are JSON. Keep big payloads in files and write the PATH into state instead of the whole text.",
+      "family": "lt",
+      "source": "dsh/gateway/longtask-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "write": {
+            "type": "boolean",
+            "description": "true = write patch into state; default false = read."
+          },
+          "key": {
+            "type": "string",
+            "description": "read: optional single key to fetch instead of the whole state."
+          },
+          "patch": {
+            "type": "object",
+            "description": "write: { key: value } — only your own declared output keys.",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "name": "mtnode_assets",
+      "description": "The MTNode asset library (素材库) and full-window still screenshots — for runs that must PREPARE MATERIALS (交付 · 素材交付, 分镜参考图, 界面静帧截图 …). Both live OUTSIDE your workspace, so read_file / shell cannot reach them: every path this tool returns is already host-verified.\n\nAvailable actions:\n- list: the library tree. Returns categories, then assets: [{id, rel, displayName, desc, items:[{index, id, title, type}]}] and root. Pass filter (substring over category path / asset name / description) to narrow it (character turnarounds 三视图 are usually named 「…三视图」), or type:\"image\" to keep only assets that have an image item. Content items are numbered: item index = the port number of an 素材节点 bound to that asset.\n- read: one content item. Pass id (asset id, e.g. \"as…\") or rel (library-relative folder, e.g. \"DS Adventure/Characters/AI娘原人设Q版三视图\") or path (an absolute file path you already have), plus itemId (or index, 0-based) to pick the item; type:\"image\" + limit picks the first N image items. Returns {asset, item, file:{path, bytes}} — text items also come back as text (binary never does). The absolute path is what mtnode_vision eats, and what you hand to a deliver terminal / a save node.\n- screenshot: take a still PNG of the MTNode window as it is right now and write it to an absolute path. Defaults: whole window, hidden menus/lightboxes removed, saved next to the current output into the canvas asset folder when path is omitted. Pass canvasOnly:true to shoot only the canvas viewport (the 起始态/丰富态 UI stills of a delivery list), width/height to force the output pixel size (e.g. 1920x1080 — capture is scaled to fit; it never resizes the user's window), hideUI:false to keep transient UI, maximize:true to enlarge the window first (only when the user is not using it: the window really does resize). FAILS when the window is minimized or hidden — ask the user to show the MTNode window, then retry.\n\nDiscipline: never guess that a file exists — call read and quote the path it returns. The library is a MIRROR of the user's own folders: this tool reads it, it never writes into it. Screenshots are the only thing that writes, and only to the path you are given.",
+      "family": "asset",
+      "source": "dsh/gateway/assets-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Which asset action to run.",
+            "enum": [
+              "list",
+              "read",
+              "screenshot"
+            ]
+          },
+          "filter": {
+            "type": "string",
+            "description": "list: substring over category path / asset display name / description (e.g. \"三视图\", \"AI娘\"). Omit to walk the whole library."
+          },
+          "type": {
+            "type": "string",
+            "description": "list: keep only assets that hold an item of this type. read: pick an item of this type (with limit) instead of an explicit itemId/index.",
+            "enum": [
+              "text",
+              "image",
+              "audio",
+              "video"
+            ]
+          },
+          "limit": {
+            "type": "number",
+            "description": "list: max assets to return (default 60). read: max items to return (default 3, max 20)."
+          },
+          "id": {
+            "type": "string",
+            "description": "read: asset id from list (looks like \"as…\")."
+          },
+          "rel": {
+            "type": "string",
+            "description": "read: library-relative asset folder from list (e.g. \"DS Adventure/Characters/AI娘原人设Q版三视图\")."
+          },
+          "path": {
+            "type": "string",
+            "description": "read: an absolute file path already in hand (or under the library) instead of id/rel. screenshot: absolute .png destination; omit to write into the current canvas asset folder."
+          },
+          "itemId": {
+            "type": "string",
+            "description": "read: content item id from list (looks like \"it…\")."
+          },
+          "index": {
+            "type": "number",
+            "description": "read: 0-based content item index — the same ordinal as an 素材节点 port number."
+          },
+          "asText": {
+            "type": "boolean",
+            "description": "read: for text items include the body (default true). Set false to skip it."
+          },
+          "canvasOnly": {
+            "type": "boolean",
+            "description": "screenshot: shoot only the canvas viewport instead of the whole MTNode window (default false = whole window, the 界面静帧口径)."
+          },
+          "width": {
+            "type": "number",
+            "description": "screenshot: force the output pixel width (with height); the capture is scaled to fit, the window is NOT resized unless maximize:true. Omit = native capture size."
+          },
+          "height": {
+            "type": "number",
+            "description": "screenshot: force the output pixel height. See width."
+          },
+          "maximize": {
+            "type": "boolean",
+            "description": "screenshot: enlarge the MTNode window before shooting (the user sees the window resize; default false). Use only when a bigger still is really needed."
+          },
+          "hideUI": {
+            "type": "boolean",
+            "description": "screenshot: remove transient UI (open menus, hints, lightbox) before shooting (default true) so a delivery still has no残余 popups."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "mtnode://canvases",
+      "name": "canvases",
+      "title": "画布列表",
+      "kind": "canvas-list",
+      "mimeType": "application/json",
+      "description": "本机全部画布（id / 名称 / 节点数 / 是否当前打开）。"
+    },
+    {
+      "uriTemplate": "mtnode://canvas/{canvas}/snapshot",
+      "name": "canvas-snapshot",
+      "title": "画布快照",
+      "kind": "canvas-snapshot",
+      "mimeType": "application/json",
+      "description": "{canvas} 可为画布 id、精确名称或 current；默认 detail:\"minimal\"（纯节点索引）。"
+    },
+    {
+      "uriTemplate": "mtnode://canvas/{canvas}/node/{node}",
+      "name": "node-body",
+      "title": "节点正文",
+      "kind": "node-body",
+      "mimeType": "application/json",
+      "description": "{node} 可为节点 id 或唯一标题；返回该节点 detail:\"full\" 的正文（prompt / text / task / jscode / 参数表）。"
+    },
+    {
+      "uriTemplate": "mtnode://skill/{name}",
+      "name": "skill",
+      "title": "内置技能正文",
+      "kind": "skill-body",
+      "mimeType": "text/markdown",
+      "description": "内置技能 SKILL.md 正文（名称如 mtnode-canvas-edit-rules）。技能名清单见资源 mtnode://skills。"
+    },
+    {
+      "uri": "mtnode://skills",
+      "name": "skills",
+      "title": "内置技能清单",
+      "kind": "skill-list",
+      "mimeType": "application/json",
+      "description": "本机内置技能（名称 / 标题 / 描述 / 路径），供 mtnode://skill/{name} 使用。"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "takeover-canvas",
+      "title": "接手画布",
+      "description": "让客户端先看清画布现状、再动手改：读图 → 认节点 → 用 canvas_edit 一次改完。",
+      "arguments": [
+        {
+          "name": "canvas",
+          "description": "画布 id / 精确名称；省略 = 当前打开的画布",
+          "required": false
+        }
+      ],
+      "builder": "takeoverCanvas"
+    },
+    {
+      "name": "build-workflow",
+      "title": "建工作流",
+      "description": "按一句话需求在画布上建一条可重跑的数据流（输入 → 处理 → 保存），含控制与分区。",
+      "arguments": [
+        {
+          "name": "goal",
+          "description": "这条工作流要做什么（一句话）",
+          "required": true
+        },
+        {
+          "name": "canvas",
+          "description": "目标画布；省略 = 当前打开的画布",
+          "required": false
+        }
+      ],
+      "builder": "buildWorkflow"
+    },
+    {
+      "name": "review-canvas",
+      "title": "审阅画布",
+      "description": "只读审阅：读画布结构、指出断链 / 空参数 / 缺保存等硬问题，给出逐条修改建议（不改图）。",
+      "arguments": [
+        {
+          "name": "canvas",
+          "description": "要审阅的画布；省略 = 当前打开的画布",
+          "required": false
+        }
+      ],
+      "builder": "reviewCanvas"
+    }
+  ]
+}

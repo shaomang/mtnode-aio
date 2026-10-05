@@ -13,6 +13,7 @@
  *          剪出的精简 gateway —— 两份清单的装载也在这一个函数里，不可能各说一套
  *   ① 入口自检       —— 保留包的 main / exports 目标必须还在镜像里
  *   ② 相对引用完整性 —— kept 代码里的 ./ ../ 目标，源树有、镜像没有 = 剪坏了
+ *      （唯一白名单 REL_BROKEN_ALLOWED：sherpa-onnx-node 的异平台探针 shim）
  *   ③ 被引用但被排除 —— kept 代码里的**裸包名**引用命中排除集即失败，
  *                        例外只有 LAZY_ALLOWED 里逐条写死的「能力组懒加载白名单」
  *   ④ runtimeBin     —— 网关真正 spawn 的那个进程必须能加载 cordis.yml
@@ -121,7 +122,10 @@ const walk = (from, rel) => {
   for (const e of fs.readdirSync(from, { withFileTypes: true })) {
     const abs = path.join(from, e.name)
     const relPath = rel ? `${rel}/${e.name}` : e.name
-    if (e.name === '.cache' || e.name === '.yarn' || e.name === '.git') {
+    /* `.ignored` 是 pnpm 对「本平台用不到的 optionalDependency」的暂存目录（不是包，
+       Node 也从不解析它）——现实证据：1.5.0 的 dist/win-unpacked/resources/dsh 里没有它。
+       不混进镜像，守卫②③ 才不会把这个「源树有、包里本来就没有」的目录算成剪坏。 */
+    if (e.name === '.cache' || e.name === '.yarn' || e.name === '.git' || e.name === '.ignored') {
       if (e.isDirectory()) add('dotdir', dirBytes(abs))
       continue
     }
@@ -186,6 +190,18 @@ console.log('[check] ① 入口自检通过：镜像内所有保留包的 main/e
         （yaml 的 dist/doc/directives.js 事故属于这一类：入口守卫看不见包内部的深层 require） */
 const REL_SPEC_RE = /(["'`])((?:\.\.?\/)[^"'`\r\n]{0,200}?)\1/g
 const EXT_TRY = ['', '.js', '.mjs', '.cjs', '.json', '/index.js', '/index.mjs']
+/* ② 的**平台探针白名单**（唯一一类放行：不是「剪坏了」，是这份 shim 天生就要去 require
+   异平台的兄弟包）。`sherpa-onnx-node/addon-static-import.js` 里每个平台分支都是
+   `try { addon = require('../sherpa-onnx-<平台>-<架构>/sherpa-onnx.node') } catch {}`，
+   按 os.platform()/os.arch() 选路、且整段包在 try/catch 里 —— win32-x64 上只可能命中
+   `../sherpa-onnx-win-x64/sherpa-onnx.node`（保留），其余四条的 require 永远不执行。
+   平台包剪枝（① 的 platform-pkg 规则）本来就会把 darwin/linux/ia32 那几份剪掉，
+   所以这不是剪枝造成的破坏。（历史：这条 ② 在 1.5.0 之前的清单上同样报这 5 处。） */
+const REL_BROKEN_ALLOWED = [
+  { file: 'node_modules/sherpa-onnx-node/addon-static-import.js', specRe: /^\.\.\/sherpa-onnx-(darwin|linux|win)-(x64|arm64|ia32)\/sherpa-onnx\.node$/ },
+]
+const relBrokenAllowed = (relFile, spec) =>
+  REL_BROKEN_ALLOWED.some((a) => relFile === a.file && a.specRe.test(spec))
 const toSrc = (mirrorFile) => path.join(srcGateway, path.relative(dstGateway, mirrorFile))
 function existsAny(p) { for (const e of EXT_TRY) if (fs.existsSync(p + e)) return true; return false }
 const brokenRequires = []
@@ -212,7 +228,9 @@ let scanned = 0
       if (inMirror) continue                                  // 镜像里还在 → 没问题
       const inSrc = existsAny(path.resolve(path.dirname(srcFile), spec))
       if (!inSrc) continue                                    // 源树本来就没有（动态/可选引用）
-      brokenRequires.push(`${path.relative(dstGateway, full).split(path.sep).join('/')} → ${spec}`)
+      const relFile = path.relative(dstGateway, full).split(path.sep).join('/')
+      if (relBrokenAllowed(relFile, spec)) continue           // 平台探针 shim，见 REL_BROKEN_ALLOWED
+      brokenRequires.push(`${relFile} → ${spec}`)
     }
   }
 })(dstGateway)
@@ -226,13 +244,39 @@ console.log(`[check] ② 相对引用完整性通过（扫描 ${scanned} 个保�
 /* ── ③ 被引用但被排除：kept 代码里的**裸包名**引用命中排除集 → 失败 ──────────────
    守卫②只看相对路径，跨包的 `import '@aws-sdk/client-bedrock-runtime'` 它看不见；把某个
    能力组的包整包剪掉后，走到那条分支就是 Cannot find package —— 静态分析对懒加载一无所知，
-   所以这里宁可白名单写死、逐条可追溯：只放行「确实只在能力组懒加载分支上被 import」的引用方。
-   新增条目必须同时写清它是哪个 `.lazy.js` 的下游，否则一律按剪坏处理。 */
+   所以这里宁可白名单写死、逐条可追溯。放行只认三类，每类都要写清依据：
+     a) 能力组懒加载分支的下游（`*.lazy.js` 的 import() 目标）；
+     b) 能力组自己那几行在 cordis.yml 里被显式 `disabled` 的插件（行不执行，模块里的
+        import 就不会求值）；
+     c) 跟已摘能力组同生共死、本部署根本不走的整包（如一起被 awsui/浏览器自动化组摘掉
+        的 Web 侧文件），或永远不会被 import 的类型声明桶文件。
+   不在这三类里的引用一律按剪坏处理。 */
 const LAZY_ALLOWED_FILES = new Set([
   // mistral-conversations.lazy.js 的 import() 目标：只有挂载 mistral 能力才会走到
   'node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js',
   // bedrock-converse-stream.lazy.js 的 import() 目标：只有挂载 bedrock 能力才会走到
   'node_modules/@earendil-works/pi-ai/dist/api/bedrock-converse-stream.js',
+  /* (b) cordis.yml 第 104–107 行把 otel / session-telemetry-otel 两行都标了 `disabled: true`
+     （理由见 cordis.yml 第 97–103 行：这两行在本机运行时导入失败，网关另注入
+     DSH_TELEMETRY_DISABLED=1），行不执行 → @deepseek-ai/dsh-otel 的模块体不被求值，
+     它那 7 处 @opentelemetry/* 引用也就永不执行。需要遥测时删掉那两行即可。 */
+  'node_modules/@deepseek-ai/dsh-otel/lib/index.js',
+  'node_modules/@deepseek-ai/dsh-host-product-telemetry-otel/lib/index.js',
+  /* (c) office 能力组：这是**类型声明桶文件**（`Platform-neutral assembly of generated Host
+     Remote contributions`），全树没有任何文件 import
+     `dsh-api-remotes/lib/types/client`（已逐文件扫过），它是给客户端类型生成用的静态清单，
+     运行时永不加载；本组摘除后它引用的 @deepseek-ai/dsh-office-to-pdf/remote 也就不在了。 */
+  'node_modules/@deepseek-ai/dsh-api-remotes/lib/types/client/index.js',
+  /* (c) @browserbasehq/stagehand 属「浏览器自动化」一簇（dsh-experimental-browser-use-*），
+     MTNode 的 cordis.yml 从不挂载；本文件是它的 CJS 分发包，开头无条件 import
+     @opentelemetry/api · @opentelemetry/core（otel 能力组已摘）。这是**既有的**错配：
+     在本次改动前的清单上同样报这一条（已实测），不是本轮剪枝造成的。 */
+  'node_modules/@browserbasehq/stagehand/dist/index.mjs',
+  /* (c) node-fetch 用 whatwg-url，但要到 `new URLSearchParams` 跑在 Node 里时才 require；
+     这条链整体活在 @browserbasehq/sdk 里，与上面的浏览器自动化一簇同生共死。 */
+  'node_modules/@browserbasehq/sdk/node_modules/node-fetch/lib/index.js',
+  'node_modules/@browserbasehq/sdk/node_modules/node-fetch/lib/index.mjs',
+  'node_modules/@browserbasehq/sdk/node_modules/node-fetch/lib/index.es.js',
 ])
 const LAZY_ALLOWED_DIRS = [
   // 未挂载的 OTLP 遥测能力组：本包整体（含它对 @opentelemetry/* 的引用）属于可选能力，

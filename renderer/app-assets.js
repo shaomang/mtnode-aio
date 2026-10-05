@@ -172,6 +172,10 @@ async function assetEnsureRoot(opts) {
   }
   ASSET_LIB.root = r.path || p;
   toast(I18n.t("素材库根目录：") + ASSET_LIB.root, "ok");
+  /* 顶栏「数据不落应用文件夹」警示：素材库也算用户数据，换根后立刻重查一次 */
+  if (typeof window.checkAppDirWarn === "function") {
+    try { await window.checkAppDirWarn(); } catch (_) {}
+  }
   return ASSET_LIB.root;
 }
 
@@ -205,6 +209,10 @@ async function assetChangeRoot() {
     ASSET_LIB.selCat = "";
     assetLinkSyncNodes();
     toast(I18n.t("已更换素材库根目录并重新扫描：") + ASSET_LIB.root, "ok");
+    /* 同上：换根后重查顶栏那条警示（新根落在应用文件夹内 / 从里面挪出来都要立刻反映） */
+    if (typeof window.checkAppDirWarn === "function") {
+      try { await window.checkAppDirWarn(); } catch (_) {}
+    }
     return true;
   } finally {
     ASSET_LIB.busy = false;
@@ -1407,14 +1415,114 @@ async function assetMoveAsset(a) {
 /* 连点多次插入时错开位置，避免节点完全重叠（模 4 阶梯，看完就绕回去） */
 let _assetInsertStep = 0;
 
-function assetSpawnPoint() {
+/* 「复制到画布」的入口就在素材库里 —— 素材库是近全屏对话框（宽 min(96vw,1180px)、
+   高 min(92vh,820px)），而插入点原本固定取可见画布中心：框体恰好压住中心，新节点整只
+   被盖在框后面，观感就是「点了有提示、画布上什么都没有」——用户重开一次素材库（视口 /
+   相机微变）或再点一次，才让节点露出边角来，于是被记成「第一次失效、第二次才行」。
+   判定与避让只写在这一处：候选点先取可见画布中心，中心被浮层压住就在「可见区减去浮层」
+   的空白带里挑一条能整只放下新节点的（兜底回中心）。 */
+const ASSET_SPAWN_EDGE = 8; /* 落点距可见区/空白带边缘的最小留白 */
+/** 可见画布矩形（屏幕坐标）：插入落点与避让都以它为准 */
+function assetCanvasRect() {
   const c = document.getElementById("canvas");
-  const r =
-    (c && c.getBoundingClientRect()) ||
-    { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-  const pt = toStage(r.left + r.width / 2, r.top + r.height / 2);
+  const r = c && c.getBoundingClientRect();
+  if (!r || !r.width || !r.height)
+    return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  return r;
+}
+/** 此刻压在画布之上的浮层矩形（屏幕坐标）：对话框框体（#overlay / #assetsDlg / 设置等
+    所有 .mt-dialog 宿主里的 .mt-dialog-box）与图片预览灯箱。
+    口径说明：这里量的是**矩形**，不与命中测试混用 —— 命中测试的坐标口径受页面缩放
+    影响，实测与 getBoundingClientRect 对不上，两边混用会把「明明露着」判成被压住。 */
+function assetCoverLayers() {
+  const out = [];
+  const push = (el) => {
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (!r || r.width < 4 || r.height < 4) return;
+    out.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+  };
+  document.querySelectorAll(".mt-dialog.on .mt-dialog-box").forEach(push);
+  const lb = document.getElementById("imgLb");
+  if (lb && lb.offsetParent) push(lb);
+  return out;
+}
+/** 可见画布被浮层切过之后剩下的空白带：与 layers 有交叠才算被切（不相交原样留下） */
+function assetFreeBands(layers, box) {
+  let bands = [{ left: box.left, top: box.top, right: box.right, bottom: box.bottom }];
+  for (const L of layers) {
+    const next = [];
+    for (const b of bands) {
+      if (L.right <= b.left || L.left >= b.right || L.bottom <= b.top || L.top >= b.bottom) {
+        next.push(b);
+        continue;
+      }
+      if (L.left > b.left) next.push({ left: b.left, top: b.top, right: L.left, bottom: b.bottom });
+      if (L.right < b.right)
+        next.push({ left: L.right, top: b.top, right: b.right, bottom: b.bottom });
+      if (L.top > b.top) next.push({ left: b.left, top: b.top, right: b.right, bottom: L.top });
+      if (L.bottom < b.bottom)
+        next.push({ left: b.left, top: L.bottom, right: b.right, bottom: b.bottom });
+    }
+    bands = next;
+  }
+  return bands.filter(
+    (b) =>
+      b.right - b.left >= ASSET_SPAWN_EDGE * 2 && b.bottom - b.top >= ASSET_SPAWN_EDGE * 2,
+  );
+}
+/** 素材节点这里的绘制尺寸（世界坐标）：同 kind 的现成节点最准，没有就用节点默认值 */
+function assetSpawnNodeSize(sample) {
+  const sz = sample && typeof nodeDrawSize === "function" ? nodeDrawSize(sample) : null;
+  const def = (typeof NODE_DEFAULTS !== "undefined" && NODE_DEFAULTS.asset) || {};
+  return {
+    w: (sz && sz.w) || Number(sample && sample.w) || Number(def.w) || 300,
+    h: (sz && sz.h) || Number(sample && sample.h) || Number(def.h) || 240,
+  };
+}
+/** 空白带里能整只放下节点时挑一条（够宽的先看，其次够高低）：返回世界坐标，没地方放返回 null */
+function assetSpawnInBand(band, size) {
+  const bw = band.right - band.left;
+  const bh = band.bottom - band.top;
+  const roomW = bw - ASSET_SPAWN_EDGE * 2 - size.w;
+  const roomH = bh - ASSET_SPAWN_EDGE * 2 - size.h;
+  if (roomW < 0 || roomH < 0) return null;
+  /* 空白带正中（多出来的余量对半分）：框体左侧的窄带就贴着左边放，右侧的窄带贴着右边放，
+     上下的窄带同理 —— 不要一律顶到带宽的起点，那会在宽屏上把节点甩到最左边 */
+  const cx = band.left + ASSET_SPAWN_EDGE + roomW / 2;
+  const cy = band.top + ASSET_SPAWN_EDGE + roomH / 2;
+  const p = toStage(cx, cy);
+  return { x: snap(p.x), y: snap(p.y) };
+}
+function assetSpawnPoint() {
+  const r = assetCanvasRect();
+  const box = { left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height };
+  const pt = toStage((box.left + box.right) / 2, (box.top + box.bottom) / 2);
   const step = (_assetInsertStep = (_assetInsertStep + 1) % 4);
-  return { x: snap(pt.x + (step - 1) * 40), y: snap(pt.y + step * 30) };
+  const base = { x: snap(pt.x + (step - 1) * 40), y: snap(pt.y + step * 30) };
+  const layers = assetCoverLayers();
+  if (!layers.length) return base; /* 没有浮层压着（从别处调进来）：口径与改动前一字不差 */
+  const bands = assetFreeBands(layers, box);
+  if (!bands.length) return base; /* 浮层占满可见区（实测可见画布 654px < 框体 781px 就是这种）：
+                                     无处可躲时保持原行为，绝不把节点丢到看不见的地方 */
+  /* 优先挑能整只放下的空白带：够宽的先看（框体两侧的竖向带最常用），其次选面积大的 */
+  const sample = (S.wf && S.wf.nodes && S.wf.nodes.filter(isAssetNode)[0]) || null;
+  const size = assetSpawnNodeSize(sample);
+  const fits = bands
+    .map((b) => ({ b, wide: b.right - b.left - ASSET_SPAWN_EDGE * 2 >= size.w }))
+    .filter((x) => x.b.bottom - x.b.top - ASSET_SPAWN_EDGE * 2 >= size.h);
+  fits.sort((a, b) => {
+    if (a.wide !== b.wide) return a.wide ? -1 : 1;
+    return (
+      (b.b.right - b.b.left) * (b.b.bottom - b.b.top) -
+      (a.b.right - a.b.left) * (a.b.bottom - a.b.top)
+    );
+  });
+  for (const f of fits) {
+    const hit = assetSpawnInBand(f.b, size);
+    if (hit) return hit;
+  }
+  return base;
 }
 
 function assetInsertToCanvas(a) {

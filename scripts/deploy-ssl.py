@@ -35,7 +35,7 @@ REMOTE_TMP = "/tmp/mtnode-ssl-deploy"
 CONF = "/etc/nginx/sites-available/mt-ai-router.conf"
 ENABLED = "/etc/nginx/sites-enabled/mt-ai-router.conf"
 BACKUP = CONF + ".bak-ssl"
-DEFAULT_SFTP = Path(r"E:\dev\mt-ai-router\.vscode\sftp.json")
+DEFAULT_SFTP = Path(r"E:\dev\tools\ssh\sftp-mtnode-store.json")
 
 DOMAIN = "www.mt-agent.com"
 APEX = "mt-agent.com"

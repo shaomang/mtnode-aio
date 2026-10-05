@@ -35,10 +35,13 @@
     <div class="brand">MTNode 管理平台</div>
     <nav class="tabs" id="tabs">
       <button class="tab active" data-view="overview">概览</button>
+      <button class="tab" data-view="sysinfo">系统资源监控</button>
       <button class="tab" data-view="orders">订单</button>
       <button class="tab" data-view="users">用户</button>
       <button class="tab" data-view="ledger">流水</button>
+      <button class="tab" data-view="tips">打赏</button>
       <button class="tab" data-view="relay">中转服务</button>
+      <button class="tab" data-view="content">内容管理</button>
     </nav>
     <div class="who">
       <span id="whoName"></span>
@@ -55,6 +58,25 @@
       <div class="panel" id="ovHealth"></div>
       <h2>待人工处理</h2>
       <div class="panel" id="ovAttention"></div>
+    </section>
+
+    <!-- 系统资源监控：**只读**。切到本页签采样一次 + 页内「刷新」按钮，不做任何定时轮询，
+         也不放重启 / 清理类运维动作（需求口径：仅在主动获取时显示，不自动刷）。 -->
+    <section id="view-sysinfo" class="view hidden">
+      <div class="toolbar">
+        <span class="hint" id="siMeta" style="margin:0">正在采样…</span>
+        <span class="spacer"></span>
+        <button id="btnSiRefresh" class="btn">刷新</button>
+      </div>
+      <div class="cards" id="siCards"></div>
+      <h2>本服务进程</h2>
+      <div class="panel" id="siProc"></div>
+      <h2>主机</h2>
+      <div class="panel" id="siHost"></div>
+      <div class="hint">
+        只读页：仅在切到本页签时采样一次（点「刷新」再采一次），服务端不留历史、不起定时器，也不提供重启 / 清理类操作。
+        CPU 使用率取两次 os.cpus() 快照的差值；内存与负载走 os；磁盘看的是数据目录（db.json 与各内容包所在盘）。
+      </div>
     </section>
 
     <!-- 订单 -->
@@ -99,6 +121,10 @@
           <option value="adjust">adjust 人工调账</option>
           <option value="mismatch">mismatch 金额不符留痕</option>
           <option value="relay">relay 中转扣费</option>
+          <option value="tip_out">tip_out 打赏转出</option>
+          <option value="tip_in">tip_in 打赏转入</option>
+          <option value="tip_revoke_out">tip_revoke_out 撤销扣回</option>
+          <option value="tip_revoke_in">tip_revoke_in 撤销退回</option>
         </select>
         <input id="fLedgerUser" type="search" placeholder="账号ID（可留空）">
         <button id="btnLedgerSearch" class="btn">查询</button>
@@ -108,56 +134,193 @@
       <div class="table-wrap"><table id="tblLedger"></table></div>
     </section>
 
-    <!-- 中转服务：上游 + 模型 + 会话测试（配置保存即热生效，无需重启服务） -->
-    <section id="view-relay" class="view hidden">
+    <!-- 打赏：鲸圆币打赏留痕（汇总卡片 + 筛选 + 撤销） -->
+    <section id="view-tips" class="view hidden">
+      <div class="cards" id="tipCards"></div>
       <div class="toolbar">
-        <span class="hint" id="rlMeta" style="margin:0"></span>
+        <select id="fTipKind">
+          <option value="">全部对象类型</option>
+          <option value="template">模板</option>
+          <option value="skill">技能</option>
+          <option value="app">应用</option>
+          <option value="forum_topic">论坛话题</option>
+          <option value="forum_reply">论坛回复</option>
+        </select>
+        <input id="fTipUser" type="search" placeholder="账号关键词（打赏人 / 接收作者）">
+        <button id="btnTipSearch" class="btn">查询</button>
         <span class="spacer"></span>
-        <button id="btnRelayReload" class="btn btn-ghost">重新读取</button>
-        <button id="btnRelaySave" class="btn btn-primary">保存配置并热生效</button>
+        <button id="btnCsvTips" class="btn btn-ghost">导出打赏 CSV</button>
       </div>
+      <div class="table-wrap"><table id="tblTips"></table></div>
+      <div class="pager" id="pgTips"></div>
+    </section>
 
-      <h2>上游提供商（Base URL / Key / 超时）</h2>
-      <div class="hint">
-        Key 只显示「已配 + 后四位」，明文永不回传页面；留空表示不改，重填即覆盖。
-        来源标 env 的表示走服务器环境变量兜底（在管理台填一次就会转成库里的 Key）。
-      </div>
-      <div class="table-wrap"><table id="tblRelayUp"></table></div>
-      <div class="toolbar" style="margin-top:8px">
-        <button id="btnRelayAddUp" class="btn">＋ 添加上游</button>
-      </div>
+    <!-- 中转服务：页内二级页签（调用流水 / 配置 / 会话测试 / 改动留痕）——
+         五块内容不再堆在同一页上：日常看调用流水，配置与测试按需切过去。 -->
+    <section id="view-relay" class="view hidden">
+      <nav class="subtabs" id="relaySubtabs">
+        <button class="subtab active" data-sub="usage">调用流水</button>
+        <button class="subtab" data-sub="config">配置（上游 / 模型）</button>
+        <button class="subtab" data-sub="test">会话测试</button>
+        <button class="subtab" data-sub="audit">改动留痕</button>
+      </nav>
 
-      <h2>模型列表（上架 / 通道 / 上游模型名 / 价目）</h2>
-      <div class="hint">
-        只有出现在这里的模型客户端才拉得到；取消勾选 = 立即下架。
-        价目：文本 = 元 / 百万 tokens（缓存命中 · 未命中 · 输出，高峰按倍率）；图像 = 元 / 张。
-      </div>
-      <div class="table-wrap"><table id="tblRelayModels"></table></div>
-      <div class="toolbar" style="margin-top:8px">
-        <button id="btnRelayAddModel" class="btn">＋ 添加模型</button>
-        <span class="hint" style="margin:0">「拉取候选」用该上游的地址 + Key 读上游 /models（只读元信息，不消耗 Token）</span>
-      </div>
-
-      <h2>会话测试（走完整中转链路，按真实用量从当前管理员账号扣费）</h2>
-      <div class="panel">
-        <div class="toolbar" style="margin-bottom:8px">
-          <select id="rlTestModel"></select>
-          <label class="hint" style="margin:0"><input type="checkbox" id="rlTestStream"> 流式输出</label>
+      <!-- ① 调用流水：全站三档概览卡片 + 筛选 + 明细（默认页签） -->
+      <div id="sub-usage" class="subview">
+        <div class="cards" id="rlStatCards"></div>
+        <div class="hint" id="rlStatHint"></div>
+        <div class="toolbar">
+          <select id="fUsageWindow" title="时间窗口：与上方卡片联动，点卡片也会切这里">
+            <option value="today">今日</option>
+            <option value="7d" selected>近 7 天</option>
+            <option value="30d">近 30 天</option>
+            <option value="all">全部（不限时间）</option>
+          </select>
+          <select id="fUsageKind" title="通道类型">
+            <option value="">全部类型</option>
+            <option value="text">文本</option>
+            <option value="image">图像</option>
+          </select>
+          <select id="fUsageModel" title="模型（当前上架清单 + 明细里出现过的）">
+            <option value="">全部模型</option>
+          </select>
+          <input id="fUsageUser" type="search" placeholder="账号 ID / 用户名（精确匹配，可留空）">
+          <button id="btnUsageSearch" class="btn">查询</button>
+          <button id="btnUsageReset" class="btn btn-ghost">重置</button>
           <span class="spacer"></span>
-          <span class="hint" id="rlTestBalance" style="margin:0"></span>
-          <button id="btnRelayTest" class="btn btn-primary">发送测试</button>
+          <button id="btnUsageReload" class="btn btn-ghost">刷新</button>
         </div>
-        <textarea id="rlTestPrompt" rows="3" placeholder="输入测试提示词（如：只回一句「中转正常」）"
-          style="width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font:inherit"></textarea>
-        <div class="hint" id="rlTestStatus" style="margin:8px 0 0"></div>
-        <pre id="rlTestOut" class="rl-out"></pre>
+        <div class="hint" id="rlUsageMeta"></div>
+        <div class="table-wrap"><table id="tblRelayUsage"></table></div>
       </div>
 
-      <h2>改动留痕（谁 / 何时 / 改了哪一项）</h2>
-      <div class="table-wrap"><table id="tblRelayAudit"></table></div>
+      <!-- ② 配置：上游提供商 + 模型清单（保存配置并热生效只对这一页有意义） -->
+      <div id="sub-config" class="subview hidden">
+        <div class="toolbar">
+          <span class="hint" id="rlMeta" style="margin:0"></span>
+          <span class="spacer"></span>
+          <button id="btnRelayReload" class="btn btn-ghost">重新读取</button>
+          <button id="btnRelaySave" class="btn btn-primary">保存配置并热生效</button>
+        </div>
 
-      <h2>最近调用明细（中转站全局）</h2>
-      <div class="table-wrap"><table id="tblRelayUsage"></table></div>
+        <h2>上游提供商（Base URL / Key / 超时）</h2>
+        <div class="hint">
+          Key 只显示「已配 + 后四位」，明文永不回传页面；留空表示不改，重填即覆盖。
+          来源标 env 的表示走服务器环境变量兜底（在管理台填一次就会转成库里的 Key）。
+        </div>
+        <div class="table-wrap"><table id="tblRelayUp"></table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button id="btnRelayAddUp" class="btn">＋ 添加上游</button>
+        </div>
+
+        <h2>模型列表（上架 / 通道 / 上游模型名 / 价目）</h2>
+        <div class="hint">
+          只有出现在这里的模型客户端才拉得到；取消勾选 = 立即下架。
+          价目：文本 = 元 / 百万 tokens（缓存命中 · 未命中 · 输出，高峰按倍率）；图像 = 元 / 张。
+        </div>
+        <div class="table-wrap"><table id="tblRelayModels"></table></div>
+        <div class="toolbar" style="margin-top:8px">
+          <button id="btnRelayAddModel" class="btn">＋ 添加模型</button>
+          <span class="hint" style="margin:0">「拉取候选」用该上游的地址 + Key 读上游 /models（只读元信息，不消耗 Token）</span>
+        </div>
+      </div>
+
+      <!-- ③ 会话测试：走完整中转链路，按真实用量从当前管理员账号扣费 -->
+      <div id="sub-test" class="subview hidden">
+        <div class="hint">发一张 30 分钟的 <code>mtr_test_</code> 短时 Key 打 /relay/v1/*，按真实用量从当前管理员账号扣费（不是 dry-run）。</div>
+        <div class="panel">
+          <div class="toolbar" style="margin-bottom:8px">
+            <select id="rlTestModel"></select>
+            <label class="hint" style="margin:0"><input type="checkbox" id="rlTestStream"> 流式输出</label>
+            <span class="spacer"></span>
+            <span class="hint" id="rlTestBalance" style="margin:0"></span>
+            <button id="btnRelayTest" class="btn btn-primary">发送测试</button>
+          </div>
+          <textarea id="rlTestPrompt" rows="3" placeholder="输入测试提示词（如：只回一句「中转正常」）"
+            style="width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font:inherit"></textarea>
+          <div class="hint" id="rlTestStatus" style="margin:8px 0 0"></div>
+          <pre id="rlTestOut" class="rl-out"></pre>
+        </div>
+      </div>
+
+      <!-- ④ 改动留痕：谁 / 何时 / 改了哪一项 -->
+      <div id="sub-audit" class="subview hidden">
+        <div class="hint">配置保存（上游 / 模型 / 价目）的字段级差异留痕，最近 100 条。</div>
+        <div class="table-wrap"><table id="tblRelayAudit"></table></div>
+      </div>
+    </section>
+    <!-- 内容管理：应用 / 模板 / 技能 / 改动留痕 四个**页内**二级页签（二级页签用 data-csub，
+         与「中转服务」那套 data-sub 分开，互不干扰）。管理员可操作任何作者的内容。 -->
+    <section id="view-content" class="view hidden">
+      <nav class="subtabs" id="contentSubtabs">
+        <button class="subtab active" data-csub="app">应用</button>
+        <button class="subtab" data-csub="template">模板</button>
+        <button class="subtab" data-csub="skill">技能</button>
+        <button class="subtab" data-csub="audit">改动留痕</button>
+      </nav>
+
+      <!-- ① 应用：全套操作（上架 / 下架、编辑条目、版本历史与删单版本、下载 zip、删除分支） -->
+      <div id="cview-app" class="csubview">
+        <div class="toolbar">
+          <select id="fAppStatus" title="上架状态">
+            <option value="">全部状态</option>
+            <option value="published">已上架</option>
+            <option value="unpublished">已下架</option>
+          </select>
+          <input id="fAppAuthor" type="search" placeholder="作者账号 / uid（可留空）">
+          <input id="fAppQ" type="search" placeholder="应用 id / 标题 / 简介 / 标签">
+          <button id="btnAppSearch" class="btn">查询</button>
+          <span class="spacer"></span>
+          <span class="hint" id="appPubMeta" style="margin:0"></span>
+          <button id="btnAppRepublish" class="btn btn-ghost">重发静态目录</button>
+        </div>
+        <div class="hint">
+          管理员可对任何作者的应用操作。编辑只到元信息（标题 / 简介 / 标签 / 图标）：文件正文与 zip 不在管理台替换（谁上传谁改），
+          应用的版本号由版本记录掌管、也不手改。删除是真删除（含各版本 zip 与图标），会先弹二次确认并写入改动留痕。
+        </div>
+        <div class="table-wrap"><table id="tblApps"></table></div>
+        <div class="pager" id="pgApps"></div>
+      </div>
+
+      <!-- ② 模板：单文件 .mtnodes + 预览图（服务端没有多版本链、也没有「下架」位） -->
+      <div id="cview-template" class="csubview hidden">
+        <div class="toolbar">
+          <input id="fTplAuthor" type="search" placeholder="作者账号 / uid（可留空）">
+          <input id="fTplQ" type="search" placeholder="模板 id / 标题 / 简介 / 标签">
+          <button id="btnTplSearch" class="btn">查询</button>
+        </div>
+        <div class="hint">模板与技能一样是单份文件 + 预览图：管理台给编辑元信息、下载文件与预览图、删除（删除需二次确认并留痕）。</div>
+        <div class="table-wrap"><table id="tblTpls"></table></div>
+        <div class="pager" id="pgTpls"></div>
+      </div>
+
+      <!-- ③ 技能：单包 + 预览图；官方标记只有管理员能改 -->
+      <div id="cview-skill" class="csubview hidden">
+        <div class="toolbar">
+          <select id="fSkillStatus" title="官方标记">
+            <option value="">全部</option>
+            <option value="official">官方</option>
+            <option value="unofficial">非官方</option>
+          </select>
+          <input id="fSkillAuthor" type="search" placeholder="作者账号 / uid（可留空）">
+          <input id="fSkillQ" type="search" placeholder="skill name / 标题 / 简介 / 标签">
+          <button id="btnSkillSearch" class="btn">查询</button>
+        </div>
+        <div class="hint">技能同样是单包（SKILL.md + 附件）+ 预览图；「设为官方 / 取消官方」只有管理员能改，改动同样留痕。</div>
+        <div class="table-wrap"><table id="tblSkills"></table></div>
+        <div class="pager" id="pgSkills"></div>
+      </div>
+
+      <!-- ④ 改动留痕：谁 / 何时 / 对哪条做了什么（最近 200 条） -->
+      <div id="cview-audit" class="csubview hidden">
+        <div class="toolbar">
+          <span class="hint" id="cAuditMeta" style="margin:0"></span>
+          <span class="spacer"></span>
+          <button id="btnCAuditRefresh" class="btn btn-ghost">刷新</button>
+        </div>
+        <div class="hint">管理台对内容的每次上架 / 下架 / 编辑 / 删除 / 删版本 / 重发目录都记一条，落在服务端 db.json 的 contentAudit（最近 200 条）。</div>
+        <div class="table-wrap"><table id="tblContentAudit"></table></div>
+      </div>
     </section>
   </main>
 </section>

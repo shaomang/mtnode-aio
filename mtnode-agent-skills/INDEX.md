@@ -10,7 +10,7 @@
 
 - **impeccable** — Impeccable（前端设计规范）：Use when the user wants to design, redesign, shape, critique, audit, polish, clarify, distill, harden, optimize, adapt, animate, colorize, extract, or otherwise improve a frontend interface. Covers websites, landing pages, dashboards, product UI, app shells, components, forms, settings, onboarding, and empty states. Handles UX review, visual hierarchy, information architecture, cognitive load, acc
   - 文件：`app/impeccable/SKILL.md`
-- **mtnode-app-dev** — MTNode 应用开发：开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、桌面外壳与运行时能力（模型 API / 工具）的正确接法、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/。
+- **mtnode-app-dev** — MTNode 应用开发：开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不
   - 文件：`app/app-dev/SKILL.md`
 
 ## MTNode 产品与画布
@@ -29,6 +29,8 @@
   - 文件：`mtnode/dev-architect/SKILL.md`
 - **mtnode-grill-me** — 拷问我：需求拷问：把任务映射成决策树，按轮问完整个「前沿」（前置已定的全部问题）；每轮必须用 ask_user_question 工具跳出 MTNode 询问窗（一次带上整个前沿，禁止把问题当聊天正文罗列），每题选项把推荐项放第一位标「（推荐）」；环境事实自己查绝不问用户；直到前沿为空且用户在询问窗里确认达成共识才动手。共识若含审批 / 交付 / 驳回回跳 / 并行 / 子图，产出的是长周期任务图（DAG）JSON。Use when the user says 拷问我 / grill me / 先问清再动手 / 需求不明确, or a dev-node 开发 run turns on 先拷问需求.
   - 文件：`mtnode/grill-me/SKILL.md`
+- **mtnode-mcp-server** — MTNode MCP 服务端（第三方接进来操作）：从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、8 个工具各自怎么用、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、以及做不到的事（长任务人工环节 / 媒体生成仍要人在界面上点）。Use when connecting an external MCP client to MTNode, debugging third-party calls, or writing code that drives MTNode over MCP.
+  - 文件：`mtnode/mcp-server/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/语音/视频生成节点：MTNode music_gen / tts_gen / video_gen 节点：MiniMax Music 3、SoVITS 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, tts_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
   - 文件：`mtnode/media-gen-nodes/SKILL.md`
 
@@ -41,5 +43,5 @@
 
 ## 插件与后端
 
-- **mtnode-plugin-dev** — MTNode 插件开发规范：MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。
+- **plugin-dev** — MTNode 插件开发规范：（无描述）
   - 文件：`plugins/plugin-dev/SKILL.md`

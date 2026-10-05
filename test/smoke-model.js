@@ -779,7 +779,7 @@ let MERGED_FAILED = false;
     const cfg = {};
     const mixed = {
       id: "pmthfnbl9to6",
-      name: "API易",
+      name: "第三方图像聚合",
       type: "text_openai",
       models: ["qwen3.7-plus", "gpt-image-2-vip"],
     };

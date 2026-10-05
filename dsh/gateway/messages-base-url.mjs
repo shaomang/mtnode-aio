@@ -12,7 +12,7 @@
 //
 // 口径（宁可少动）：只认 DeepSeek 官方域的**裸根**，补 `/anthropic`；
 // 其它域、以及已经带路径的端点一律原样透传 —— 第三方走 pi-ai 路由，各自有自己的
-// baseURL；用户手填的 Messages 根（如 api.apiyi.com/v1）不该被我们改。
+// baseURL；用户手填的 Messages 根（第三方聚合端点等）不该被我们改。
 
 /** DeepSeek 官方 Messages 面的路径前缀 */
 const DEEPSEEK_MESSAGES_PATH = '/anthropic'

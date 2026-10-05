@@ -2189,9 +2189,13 @@
     "余额查询失败": "Balance query failed",
     /* ── 鲸圆币（MTNode 自己的计量单位，renderer/app-whalecoin.js）──
        只用于账户钱包与 MTNode 中转服务：1 币 = ¥0.02（¥1 = 50 币）。
-       官方 DeepSeek 余额 / 官方路由的费用估算仍是 ¥，那几个键不要跟着改。 */
+       官方 DeepSeek 余额 / 官方路由的费用估算仍是 ¥，那几个键不要跟着改。
+       **本轮界面口径**：中文界面把「币」字换成鲸圆币图标（单位由图标承担），
+       英文界面仍写 "W coins"（纯图标在英文排版里读不出单位）。 */
     "鲸圆币": "W coins",
     "币": "W coins",
+    "累计被打赏": "Total tipped",
+    "余额不足，去充值": "Not enough W coins — top up",
     "鲸圆币 · 1 币 = ¥0.02（¥1 = 50 币）": "W coins · 1 W coin = ¥0.02 (¥1 = 50 W coins)",
     "<1 币": "<1 W coin",
     "未知单价": "Unknown price",
@@ -2206,14 +2210,28 @@
     "费用为什么高于实际消费？": "Why is the cost shown higher than what was actually spent?",
     "估算未计入官方活动折扣与赠送余额抵扣，显示值可能高于实际消费；峰谷按调用时刻计价，与官方账单口径一致。":
       "The estimate does not include official promos or granted-balance offsets, so the figure shown may exceed what you actually spend; peak/off-peak is priced by the actual call time, matching the official bill.",
-    "价格表里没有的模型（如带日期后缀的内测模型）按 flash 价兜底，这类金额是估算值，已在行末用 * 标出。":
-      "Models missing from the price table (e.g. preview models with a date suffix) fall back to flash pricing; such amounts are estimates and are marked with * at the end of the row.",
+    "官方 DeepSeek 价格表里没有的模型（如带日期后缀的内测模型）按 flash 价兜底，这类金额是估算值，已在行末用 * 标出。":
+      "Models missing from the official DeepSeek price table (e.g. preview models with a date suffix) fall back to flash pricing; such amounts are estimates and are marked with * at the end of the row.",
     "估算按「每一次模型请求」累加，包含重试、预热等已发出但平台可能不计费的请求；平台按小时 / 按模型分账，与会话 / 轮次窗口口径不同，两边对不上属正常。":
       "The estimate sums every model request, including retries and warm-up requests that were sent but may not be billed by the platform; the platform breaks usage down by hour and by model, which is not the same window as a session/round here — a mismatch between the two is expected.",
     "对账请以 DeepSeek 账单和余额变化为准。":
       "Token counts themselves are not double counted (they match the sum of per-request usage in the local session log — verify with scripts/audit-token-usage.mjs); for reconciliation, trust DeepSeek's official billing.",
-    "口径：单价与峰谷按官方价格页，token 按上游逐请求返回的 usage 累加。":
-      "Scope: unit prices and peak/off-peak follow the official pricing page; tokens are summed from the per-request usage the upstream returns.",
+    /* 中转按币：MTNode 中转站仍以元记账，界面按币显示（1 币 = ¥0.02，价目取客户端内置表） */
+    "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取客户端内置的中转价目表，不再从云端快照取 —— 中转站改价后要等一次客户端更新才对得上，未列入内置表的模型不猜价（显示 —）。":
+      "Models routed through the MTNode relay are shown in W coins (1 W coin = ¥0.02): the calculation is the same as on the official route, only the unit changes into coins. Prices come from the relay price table built into the client, not from the cloud snapshot any more — after the relay changes prices, the local figure only catches up with a client update, and models missing from that table are never guessed (shown as —).",
+    "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（快照里的节假日豁免不再参与），法定节假日按高峰计，这一栏会偏高。":
+      "Relay peak hours are judged as Mon-Fri 09:00-12:00 / 14:00-18:00 Beijing time (the snapshot's holiday exemptions no longer apply), so public holidays are billed as peak and this column reads a bit high.",
+    /* 中转图像按张计费（与 token 无关，每次调用即计费）。「图像」这个键上文已有同值条目，
+       这里不重复登记（同键两写会被后写的覆盖，test/smoke-filepeek.js 会挑出来）。 */
+    "图像张数": "Images",
+    " 张": " img",
+    " 张图": " img",
+    "中转计费：高峰时段单价 × 高峰倍率（价目取客户端内置表，与会话统计同一份）":
+      "Relay billing: during peak hours the rate is multiplied by the peak multiplier (prices come from the client's built-in table, the same one the session stats use).",
+    "中转计费：当前为空闲时段，按价目原价（无高峰倍率）":
+      "Relay billing: off-peak right now, so the list rate applies (no peak multiplier).",
+    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取客户端内置的中转价目表；token 一律按上游逐请求返回的 usage 累加。":
+      "Scope: on the official route, unit prices and peak/off-peak follow the official pricing page; for relay models the unit prices come from the client's built-in relay price table; tokens are always summed from the per-request usage the upstream returns.",
     /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ── */
     "模型性能": "Model performance",
     "首 Token 延迟 (TTFT)": "Time to first token (TTFT)",
@@ -2247,6 +2265,22 @@
     "性能": "Performance",
     "该轮性能": "This round's performance",
     "点击查看该轮性能": "Click to view this round's performance",
+    /* 逐轮下钻弹窗（app-agent.js 的 openRoundPerfDialog）；「标题」表里已有 → 直接复用，
+       这里不重复登记（撞键会被 smoke-filepeek 判红） */
+    "轮次性能": "Round performance",
+    "该轮按模型": "This round by model",
+    "LLM 用时": "LLM time",
+    "墙钟用时": "Wall-clock time",
+    /* 峰谷计价可见性（app-agent.js 的 tokPeakMark / tokPeakTip）：
+       全价是默认口径，故只在真有折扣时标「谷 / 峰谷」；纯高峰行不标。 */
+    "峰谷": "peak/off-peak",
+    "谷": "off-peak",
+    "该行含高峰（全价）与空闲（谷时半价）两个时段的用量：已按各轮各自的记账时刻分别计价":
+      "This row mixes peak (full price) and off-peak (half price) usage: each round is priced by its own accounting time.",
+    "该行按空闲时段计价（谷时半价）":
+      "This row is priced at the off-peak rate (half price).",
+    "口径：本轮的 token 与用时按该轮自身的记账时刻（endedAt）计价 —— 峰谷折扣因此逐轮生效，明细逐行相加 = 合计。性能指标里「实测」= 网关逐次采样的累计值直接得出，「(推算)」= 缺纯生成时间 / Prefill 计数时用 LLM 用时、计费输入近似，「—」= 无样本。":
+      "How to read: this round's tokens and time are priced at the round's own accounting time (endedAt), so the peak/off-peak discount applies round by round and the detail rows add up to the total. For performance metrics, measured = derived directly from the cumulative per-call samples the gateway collects; (estimated) = approximated from LLM time / billed input when pure generation time or Prefill counts are missing; — = no samples.",
     "点击展开按轮次统计": "Click to expand round-by-round stats",
     "点击收起按轮次统计": "Click to collapse round-by-round stats",
     "口径：轮次 = 一次运行的入账（标题优先取计划任务标题，否则取用户输入前 24 字）；实测＝网关逐次采样的累计值直接得出；推算＝缺纯生成时间 / Prefill 计数时用 LLM 用时、计费输入近似（标「(推算)」）；—＝无样本（老台账或该轮未采到首 Token 延迟）。":
@@ -2763,6 +2797,68 @@
     "智能助手已更新画布：": "Agent assistant updated the canvas: ",
     "最近一次运行的输入 ": "Last run input ",
     "MCP 列表不可用（": "MCP list unavailable (",
+    /* ── MCP 服务端（renderer/app-plugins.js 的「服务端」页 + mcp-server.js）── */
+    "MCP 服务端": "MCP server",
+    "地址": "address",
+    "令牌": "token",
+    "stdio 配置": "stdio config",
+    "MCP 服务端状态不可用（": "MCP server status unavailable (",
+    "MCP 服务端已开启": "MCP server started",
+    "MCP 服务端已关闭": "MCP server stopped",
+    "开启服务端": "Start server",
+    "关闭服务端": "Stop server",
+    "已监听": "Listening",
+    "已关闭": "Stopped",
+    "未监听（总开关已关）": "Not listening (master switch is off)",
+    "地址（HTTP）": "Address (HTTP)",
+    "令牌（Bearer）": "Token (Bearer)",
+    "工具 / 资源 / 提示词": "Tools / resources / prompts",
+    "监听信息": "Listener",
+    "已运行 ": "up ",
+    " 分钟": " min",
+    "本会话调用 ": "calls ",
+    " 次": " calls",
+    "连接 ": "sessions ",
+    "客户端标识": "Client id",
+    "（未设置，仅用于审计归类）": "(unset; only used to group audit entries)",
+    "客户端标识（只用于审计归类，可留空）": "Client id (only used to group audit entries; may be empty)",
+    "编辑客户端标识": "Edit client id",
+    "审计目录": "Audit folder",
+    "最近一次错误": "Last error",
+    "这是什么": "What this is",
+    "让第三方 MCP 客户端（Claude Code / Cursor / 自研 Agent）连进来操作本机 MTNode：读改画布、查数据库与事实库、素材库与识图。调用与你自己的会话走同一条执行路径，全部记进审计日志。": "Let third-party MCP clients (Claude Code / Cursor / your own agent) connect in and drive this machine's MTNode: read and edit canvases, query the database replica and the AI fact library, use the asset library and vision. Calls travel the same execution path as your own sessions and are all written to the audit log.",
+    "stdio 客户端配置片段（Claude Code / Cursor 等）": "stdio client config snippet (Claude Code / Cursor …)",
+    "把这段合并进客户端的 MCP 配置：桥脚本会自己从数据目录读端口与令牌，不用手填地址。": "Merge this into the client's MCP config: the bridge script reads the port and token from the data folder itself, so the address never has to be typed.",
+    "复制地址": "Copy address",
+    "复制令牌": "Copy token",
+    "复制配置片段": "Copy config snippet",
+    "重置令牌": "Reset token",
+    "重置 MCP 令牌": "Reset MCP token",
+    "重置令牌后，已配置好的客户端要重新复制一次配置片段才能连上。继续？": "After resetting the token, already-configured clients must copy the config snippet again to reconnect. Continue?",
+    "令牌已重置": "Token reset",
+    "已复制": "Copied",
+    "复制失败": "Copy failed",
+    /* 设置页写剪贴板的最终退路（app-settings.js 的 settingsClipboardWrite 三级全废时）：
+       不再只说「复制失败」四个字，直接教用户怎么手工拿走这一串。 */
+    "复制失败，请手动选中后按 Ctrl+C 复制": "Copy failed — select the text and press Ctrl+C",
+    "自检": "Self-test",
+    "自检通过": "Self-test passed",
+    "自检未通过：见下方明细": "Self-test failed — see the details below",
+    "自检结果：通过": "Self-test: passed",
+    "自检结果：未通过": "Self-test: failed",
+    "（没有步骤记录）": "(no steps recorded)",
+    "打开抓包": "Start capture",
+    "关掉抓包": "Stop capture",
+    "抓包已打开（只留最近 200 条，仅本机内存）": "Capture on (last 200 entries, in-memory only)",
+    "抓包已关闭": "Capture off",
+    "最近调用（审计 · 数据目录 mcp-audit/）": "Recent calls (audit · data folder mcp-audit/)",
+    "暂无调用记录（第三方客户端调一次就会出现在这里）": "No calls yet (they appear here as soon as a third-party client calls once)",
+    "原始 JSON-RPC 抓包（最近 ": "Raw JSON-RPC capture (last ",
+    " 条）": ")",
+    "（暂无）": "(none)",
+    "MCP 服务端 ": "MCP server ",
+    "本页没有可筛选的清单": "Nothing to filter on this page",
+    "MTNode 作为 MCP 服务端：第三方客户端（Claude Code / Cursor / 自研 Agent）连进来操作本机 MTNode。开关、地址与令牌在右侧面板。": "MTNode as an MCP server: third-party clients (Claude Code / Cursor / your own agent) connect in and drive this machine's MTNode. The switch, address and token are in the panel on the right.",
     "\n\n【已连接图像输入】": "\n\n[Connected image inputs]",
     "（已完成，无文本输出）": "(Done, no text output)",
     "── 终端输出 ──\n": "── Terminal output ──\n",
@@ -3249,10 +3345,10 @@
     "技能名（kebab-case，如 pdf-summary）": "Skill name (kebab-case, e.g. pdf-summary)",
     "例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图": "e.g. Cyberpunk city at night… type @ to reference connected nodes/reference images",
     "描述任务…（Enter 换行，Ctrl+Enter 发送）": "Describe the task… (Enter newline, Ctrl+Enter send)",
-    "任务完成音效（两档：任何一件任务跑完 → 一声短促的「叮咚」；所有任务都结束且运行队列空满 5 分钟 → 再响一声更清脆的三音上行）":
-      "Task completion sound (two tiers: a short “ding-dong” the moment any task finishes; a brighter three-note rising chime once every task has finished and the run queue has stayed empty for 5 minutes)",
-    "完成音效音量（两档内置音共用；0 = 静音）":
-      "Completion sound volume (both built-in tiers; 0 = silent)",
+    "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；所有任务都完成 → 同一声音以 1.5 倍音量再响一声）":
+      "Task completion sound (a short “ding-dong” the moment any task finishes; once every task has finished, the same chime plays again at 1.5× volume)",
+    "完成音效音量（两档共用；收尾那一档再乘 1.5；0 = 静音）":
+      "Completion sound volume (shared by both tiers; the all-done one is ×1.5; 0 = silent)",
     /* 设置 · 智能能力 · 子代理（委派策略，写进 cordis.yml 的 subagent* 8 行，见 dsh-agent-policy.js） */
     "子代理（委派）": "Subagents (delegation)",
     "子代理嵌套深度（0 = 禁止委派）": "Subagent nesting depth (0 = delegation off)",
@@ -3302,11 +3398,23 @@
     "主页 · 下载 http://mt-agent.com/mtnode": "Home · Download http://mt-agent.com/mtnode",
     "框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）": "Marquee mode: when on, drag with left button to select nodes (or hold Ctrl+left-click anytime)",
     "选择导入方式：从 .mtnodes 文件，或粘贴 Base64 内容。": "Choose import method: from a .mtnodes file, or paste Base64 content.",
-    "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；只替换「任务完成」那一档的短促音，全部跑完的全局提示音固定用内置音）": "Custom sound file (mp3 / wav / ogg; empty = built-in chime; it replaces only the short task-completion chime — the all-done global chime always uses the built-in tone)",
+    "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；两档都用它：任何一件任务跑完的那一声，以及全部完成时放大 1.5 倍的那一声）": "Custom sound file (mp3 / wav / ogg; empty = built-in chime; used for both tiers — the per-task chime and the all-done one at 1.5× volume)",
     "点击 ▶ 将输入图像按网格均匀切割为 GIF 帧动画（依次行、从左到右）": "Click ▶ to slice the input image evenly on a grid into a GIF frame animation (row by row, left to right)",
     "运行智能任务：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成": "Run agent task: the prompt becomes the task; the model can read files / network / run commands, then finish",
     "点击切换查看对应尝试的结果，<b>下游节点引用当前选中的尝试内容</b>。": "Click to view that attempt's result; <b>downstream nodes use the currently selected attempt</b>.",
     "该节点已连接输入：内容只读，自动继承输入内容（符合 YAML 则转为批量）": "This node has connected input: content is read-only and inherited automatically (valid YAML becomes a batch)",
+    "文本节点（直接写文字 / 路径）": "Text node (write text / a path directly)",
+    "；本节点自己写的正文不参与取值": "; text written in this node does not take part in value resolution",
+    "本节点正文不参与取值（已连入线 = 继承态）：断开入线才用正文，或先让上游出值": "This node's own text does not take part in value resolution (an inbound wire puts it in inherit mode): disconnect that wire to use the text, or let the upstream produce a value first",
+    "继承态下节点正文只作历史保留，下游拿到的是上游的值（上游为空就是空）": "In inherit mode the node's own text is kept only as history; downstream gets the upstream value (empty upstream means empty)",
+    "改用正文（断开入线）": "Use own text (disconnect the inbound wire)",
+    "断开连进本节点的线：本节点回到「用自己写的正文」，下游立刻能取到它（可 Ctrl+Z 撤销）": "Disconnect the wire(s) feeding this node: it goes back to \"use its own text\" and downstream gets that value right away (Ctrl+Z to undo)",
+    "已断开入线：本节点改为使用自己写的正文（Ctrl+Z 可撤销）": "Inbound wire disconnected: this node now uses its own text (Ctrl+Z to undo)",
+    "入参没取到值（": "Input parameter(s) got no value (",
+    " 个）：": "): ",
+    "参数「{p}」没取到值：来源文本节点「{s}」挂着上游连线（继承态），它自己写的正文不参与取值 —— 请断开这根入线用正文，或先让上游出值": "Parameter \"{p}\" got no value: the source text node \"{s}\" has an inbound wire (inherit mode), so the text written in it does not take part in value resolution — disconnect that wire to use the text, or let the upstream produce a value first",
+    "参数「{p}」没取到值：来源「{s}」暂时没有输出（上游还没跑或结果为空）": "Parameter \"{p}\" got no value: the source \"{s}\" has no output yet (upstream not run, or its result is empty)",
+    "参数「{p}」没取到值：来源{kl}「{s}」自己还没有内容（没有上游可等，先给它填上内容 / 选好文件）": "Parameter \"{p}\" got no value: the source {kl} \"{s}\" has no content yet (there is no upstream to wait for — give it content / pick a file first)",
     "输出文件路径（批量模式下自动生成 {文件名}_{输入节点标题} 系列文件）": "Output file path (in batch mode, generates {filename}_{input node title} series files automatically)",
     "MTNode AI编排器 · MTNode AI Orchestrator": "MTNode AI Orchestrator",
     "<div class=\"dsh-plugin-empty\">插件列表不可用（": "<div class=\"dsh-plugin-empty\">Plugin list unavailable (",
@@ -3599,11 +3707,6 @@
     "收起浏览器活动栏": "Collapse the browser-activity panel",
     "拖动边框中部调整活动栏宽度": "Drag the middle of the border to resize the activity panel",
     "拖动分界线调整活动栏宽度（整条边界都可拖）": "Drag the divider to resize the activity panel (the whole border is draggable)",
-    "打开浏览器": "Open browser",
-    "停止": "Stop",
-    "接管": "Take over",
-    "交还": "Hand back",
-    "名单": "Lists",
     "筛活动…": "Filter activity…",
     "含其它会话": "Include other chats",
     "清空": "Clear",
@@ -3618,12 +3721,17 @@
     "读活动流失败：": "Failed to read the activity log: ",
     "浏览器操作失败：": "Browser action failed: ",
     "当前外壳没有浏览器桥（老版本）": "This shell has no browser bridge (older build)",
-    "浏览器已就绪（默认在右栏实况里；想看真窗口点「独立窗口」）": "Browser ready (it runs in the right panel live view by default — click \"Own window\" if you want the real window)",
     "没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。": "Could not bring the real window up: operate it in the right panel live view, or click again.",
-    "浏览器已停止": "Browser stopped",
     "实况": "Live view",
-    "独立窗口": "Own window",
     "收回": "Dock back",
+    "收回右栏：把这只会话浏览器放回这里的实况画面（真实窗口重新让位）": "Dock back: put this session's browser picture back into the live view here (the real window steps aside again)",
+    "用真窗口打开": "Open in a real window",
+    "收回右栏": "Dock back",
+    "用一只真实的浏览器窗口打开它，并顺手接管：登录 / 验证码你自己输，密码不进对话": "Open it in a real browser window and take over: you type the login / captcha yourself — the password never enters the chat",
+    "把这个浏览器收回会话右边栏的实况画面（真实窗口重新让位）": "Dock this browser back into the session's right panel live view (the real window steps aside again)",
+    "已用真窗口打开，且你已接管：顺手操作即可；做完点「我已处理完，交还控制权」。": "Opened in a real window and you are now driving: go ahead and operate it; when you are done click \"I'm done — hand control back\".",
+    "已关掉那只无窗口的、重开为真窗口并接管：顺手操作即可；做完点「我已处理完，交还控制权」。": "Closed the windowless browser and reopened it in a real window (you are now driving): go ahead and operate it; when you are done click \"I'm done — hand control back\".",
+    "点「用真窗口打开」会把当前这只无窗口的浏览器温和关掉、重开一只带窗口的（当前页面地址会带回来；登录态在，不受影响）": "Clicking \"Open in a real window\" closes the current windowless browser gently and reopens one with a real window (the current page address is carried over; logins are unaffected).",
     "暂停观察": "Pause live view",
     "继续观察": "Resume live view",
     "等待浏览器画面…": "Waiting for the browser picture…",
@@ -3634,13 +3742,10 @@
     "已在独立窗口": "in its own window",
     /* 无窗口（headless）那只：会话自动拉起的默认形态（开发 / 会话过程中不弹真窗口） */
     "无窗口运行": "running windowless",
-    "这只是无窗口（后台）浏览器，画面就在这里；想看真窗口请在面板上点「打开浏览器」。":
-      "This browser runs windowless in the background — the picture is right here; to see a real window, click \"Open browser\" in the panel.",
-    "这只是无窗口（后台）浏览器，没有可显示的窗口": "This is a windowless (background) browser: there is no window to show",
+    "这只是无窗口（后台）浏览器，画面就在这里；想要真窗口请在会话里让它求助（登录 / 验证码卡上点「用真窗口打开」）。":
+      "This browser runs windowless in the background — the picture is right here; to get a real window, let the session ask for help (click \"Open in a real window\" on the login / captcha card).",
     "已在独立窗口操作；点「收回」回到右栏。": "It is in its own window — operate it there, or click \"Dock back\" to return it to the right panel.",
-    "把这个浏览器变成独立窗口；再点一次收回右栏": "Turn this browser into its own window; click again to dock it back into the right panel",
     "暂停画面更新（重新打开即恢复）": "Pause the picture (resume by clicking again)",
-    "已切到独立窗口：这只浏览器现在是独立窗口，可直接在里面操作；点「收回」回到右栏。": "Now in its own window: operate the browser directly there, or click \"Dock back\" to return it to the right panel.",
     "已收回：画面回到会话右边栏。": "Docked back: the picture is in the session's right panel again.",
     "浏览器": "Browser",
     "运行中": "running",
@@ -3653,12 +3758,6 @@
     "你交还了控制权（Agent 可继续）": "You handed control back (the agent can continue)",
     "【用户接管浏览器】我现在亲自操作浏览器（登录 / 验证码 / 付款一类），你的浏览器动作会被拒绝。请先用 browser_help 说明你需要什么，或等我交还后再继续。": "[User took over the browser] I am driving the browser myself now (login / captcha / payment). Your browser actions will be refused — use browser_help to tell me what you need, or wait until I hand control back.",
     "【用户交还浏览器控制权】你可以继续操作浏览器了；先 browser_snapshot 看一眼当前页面再往下做。": "[User handed browser control back] You may drive the browser again — take a browser_snapshot first, then continue.",
-    "浏览器名单与审批": "Browser lists and approvals",
-    "拦截名单": "Blocked domains",
-    "风险名单（首次访问需确认）": "Risky domains (confirm on first visit)",
-    "拦截名单：这些域名一律拒绝访问（每行一条）。风险名单：首次访问会弹一次确认卡。空行与 # 开头会被忽略。": "Blocked domains: navigation to them is always refused (one per line). Risky domains: a one-time confirmation card is shown on first visit. Empty lines and # comments are ignored.",
-    "危险动作（提交 / 支付 / 删除 / 发送 / 发布…）先弹确认卡": "Ask for a confirmation card before dangerous actions (submit / pay / delete / send / publish …)",
-    "名单已保存（下一次动作即刻生效）": "Lists saved (effective from the next action)",
     "需要你登录 / 处理页面验证": "You need to log in / handle the page check",
     "请你验证这个结果": "Please verify this result",
     "需要你补充信息或做选择": "The session needs information or a decision from you",
@@ -5041,8 +5140,8 @@
     "画布上没有节点": "No nodes on the canvas",
     "已整理排版": "Layout tidied",
     "已整理排版（含超级节点内部）": "Layout tidied (including super insides)",
-    "排版提示：「{label}」这层仍是长条（宽 {w} × 高 {h}），已尽量收窄；可删减节点或手动微调后再排。":
-      "Layout note: level “{label}” is still a long strip ({w} × {h}); it has been narrowed as much as possible — remove nodes or adjust manually and lay out again.",
+    "排版提示：「{label}」这层排成了长条（宽 {w} × 高 {h}）。节点之间已按 1 个网格间距排开、互不重叠；想更方正可再增删节点或手动微调。":
+      "Layout note: level “{label}” came out as a long strip ({w} × {h}). Nodes are spaced exactly one grid apart with no overlap — add/remove nodes or nudge them for a squarer shape.",
     "已紧凑排版": "Compact layout applied",
     "排版失败：": "Layout failed: ",
     "隐藏线：临时把所有连线压到 95% 透明（几乎不可见），排版后看清布局；再次点击恢复":
@@ -5165,6 +5264,20 @@
     "点击定位到该节点": "Click to focus this node",
     "项目目录: ": "Project folder: ",
     "工作目录最外层文件夹: ": "Project folder: ",
+    /* ── 顶栏「数据不落应用文件夹」红色警示（renderer/app-boot.js 的 paintAppDirWarn：
+       index.html 的 #logoWarn，只有主进程 app:dataAudit 真查到命中才显示）── */
+    "请勿将文件保存在应用文件夹内，升级或卸载会丢失":
+      "Do not save files inside the app folder — upgrades or uninstalls will lose them",
+    "应用文件夹 = 应用安装目录（app.getAppPath() 与 exe 同目录）：升级或卸载会覆盖 / 带走里面的文件。":
+      "App folder = the app install directory (app.getAppPath() and the folder holding the exe): upgrades or uninstalls overwrite / remove files inside it.",
+    "用户数据请放在数据目录（默认 %APPDATA%\\pipeline-console）或自己的项目文件夹里。":
+      "Keep user data in the data directory (default %APPDATA%\\pipeline-console) or in your own project folder.",
+    "当前检测到这些数据落在应用文件夹内：":
+      "These items were detected inside the app folder:",
+    "等 {n} 处": "and {n} more",
+    "点击此处打开设置 · 配置数据目录":
+      "Click to open Settings · Config data directory",
+    "设置尚未就绪，请稍后重试": "Settings is not ready yet — please try again in a moment",
     "配置数据目录": "Config data directory",
     "存放 config.json（API Key 等）、画布存档与本地资产。更改后需重启应用生效。":
       "Stores config.json (API keys, etc.), canvas archives, and local assets. Restart required after changing.",
@@ -5237,8 +5350,8 @@
     "存储占用与清理": "Storage usage & cleanup",
     "清理": "Clean",
     "取消清理": "Cancel",
-    "统计数据目录里各类冗余的占用，并清理「已经没被 MTNode 用着」的文件：画布资产只清没有任何存档 / 备份 / 回收站引用的；正在运行的画布与正在编辑的文件一律跳过。清理默认把文件搬进系统回收站（可在资源管理器「还原」），只有会话记录与回滚对象是永久删除。":
-      "Measure how much space each kind of redundant data takes in the data folder, then clean only the files MTNode no longer uses: canvas assets are cleaned only when no save, backup or trash copy references them; canvases that are running and files being edited are skipped. Cleaning moves files to the system recycle bin (restorable in the file manager) — only session logs and rollback objects are deleted permanently.",
+    "统计数据目录里各类冗余的占用，并清理「已经没被 MTNode 用着」的文件：画布资产只清没有任何存档 / 备份 / 回收站引用的；正在运行的画布与正在编辑的文件一律跳过。清理默认把文件搬进系统回收站（可在资源管理器「还原」），只有会话记录与历史回滚数据是永久删除。":
+      "Measure how much space each kind of redundant data takes in the data folder, then clean only the files MTNode no longer uses: canvas assets are cleaned only when no save, backup or trash copy references them; canvases that are running and files being edited are skipped. Cleaning moves files to the system recycle bin (restorable in the file manager) — only session logs and leftover rollback data are deleted permanently.",
     "正在统计存储占用…": "Measuring storage usage…",
     "会话记录保留最近": "Keep session logs from the last",
     "超过这些天没动过的会话目录才计入「可清理」":
@@ -6336,42 +6449,11 @@
     "点击选择": "Click to select",
     "已处理": "Done",
     "候选": "Option",
-    "回滚": "Rollback",
-    "↶ 回滚": "↶ Rollback",
-    "撤销上一轮的全部更改": "Undo all changes of the previous round",
-    "确认回滚": "Confirm rollback",
-    "回滚将撤销此轮次的所有更改，且不可撤销。确认继续？":
-      "Rollback will undo ALL changes of this round, and it cannot be undone. Continue?",
-    "本次更改的内容": "Changes in this round",
-    "（本轮无可自动列举的具体条目）": "(no concrete items to list)",
-    "画布改动：": "Canvas changes: ",
-    "（需人工处理）": " (manual handling needed)",
-    "计划清单变更（需人工处理）": "Plan changed (manual handling needed)",
-    "事实库改动 ": "DB changes: ",
-    " 条（需人工处理）": " record(s) (manual handling needed)",
-    "该轮仍在运行中，结束后才能回滚": "This round is still running; roll back after it finishes",
-    "该轮没有可回滚的账本": "No rollback ledger for this round",
-    "该轮已回滚过，不能重复回滚": "This round was already rolled back",
-    "已还原 ": "Restored ",
     " 个文件": " file(s)",
-    " 个本轮新建文件": " file(s) created this round",
     "跳过 ": "Skipped ",
     " 项（": " item(s) (",
     "失败 ": "Failed ",
-    "需人工处理：": "Needs manual handling: ",
-    "本轮没有可回退的文件改动": "No file changes to roll back in this round",
-    "已回滚该轮：": "Rolled back this round: ",
-    "条消息已移出上下文": " message(s) removed from context",
-    "回滚未完全完成：": "Rollback incomplete: ",
-    "回滚失败：": "Rollback failed: ",
-    "（未记录）": "(not recorded)",
-    "（未逐条记录）": "(not recorded per-item)",
     "有 ": "There ",
-    " 次命令调用可能改了文件，账本无法覆盖，请自查":
-      " shell command(s) may have changed files beyond the ledger; please check",
-    "事实库改动超过逐条记账上限，无法逐条回退":
-      "DB changes exceed the per-record cap; cannot roll back individually",
-    "该轮记录不完整，还原可能不完整": "This round's ledger is incomplete; rollback may be partial",
     "时间": "Time",
     "工作区": "Workspace",
     "修改": "Modify",
@@ -6571,12 +6653,12 @@
     /* 会话 / 助手栏【拷问模式】契约正文（app-assist.js 的 GRILL_CONTRACT，整段一条）：
        与开发节点任务书里那段【拷问模式】同一套纪律，只改两处 —— 允许只读地查现状、
        收尾不回写任何节点字段。 */
-    "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— 把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。":
-      "\n\n[Grill mode · ask first, then act] This session has “ask me first” switched on. In every round, first decide for yourself whether **this round looks like a requirement / development / change** (creating or modifying files, the canvas, nodes, config, features, plans). If it does, interrogate before acting; **if you are unsure, do not interrogate — just do the work** (ordinary Q&A, looking things up, explanations, small talk, and continuing already-confirmed work are not requirements).\nWhen you do interrogate: first load the built-in skill mtnode-grill-me with the skill tool and follow its discipline strictly — map this round's request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, asking that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description). Never list numbered questions in the reply body or make the user type answers into the input box; look facts up yourself with read-only tools (read code / files / the web) instead of asking the user about the environment. Until you get an explicit “no ambiguity — go ahead” through one final question dialog: **ask only, build nothing** — no implementation plan, no work started (and do not use a todo_write checklist as a substitute for an implementation plan); when genuinely needed you may look at the current state read-only (read files / read the canvas) to ask sharper questions.\nAfter the user answers, recompute the frontier and continue round by round; if they add new requirements mid-way, judge the new request again and interrogate afresh. Only start implementing after an explicit “no ambiguity — go ahead” (or after the user says “stop asking, just do it”).",
+    "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— 把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」—— 卡片会把它显示成标题行），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把这一段渲染进「📋 总结」区；选项只留两项：推荐项 = 明确同意开工（如「确认无歧义，开始实施（推荐）」），另一个 = 还要改（如「还要改，我补充」），措辞随交流语言。不要把总结挤进题面那一行，也不要拆成几张卡。":
+      "\n\n[Grill mode · ask first, then act] This session has “ask me first” switched on. In every round, first decide for yourself whether **this round looks like a requirement / development / change** (creating or modifying files, the canvas, nodes, config, features, plans). If it does, interrogate before acting; **if you are unsure, do not interrogate — just do the work** (ordinary Q&A, looking things up, explanations, small talk, and continuing already-confirmed work are not requirements).\nWhen you do interrogate: first load the built-in skill mtnode-grill-me with the skill tool and follow its discipline strictly — map this round's request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, asking that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description). Never list numbered questions in the reply body or make the user type answers into the input box; look facts up yourself with read-only tools (read code / files / the web) instead of asking the user about the environment. Until you get an explicit “no ambiguity — go ahead” through one final question dialog: **ask only, build nothing** — no implementation plan, no work started (and do not use a todo_write checklist as a substitute for an implementation plan); when genuinely needed you may look at the current state read-only (read files / read the canvas) to ask sharper questions.\nAfter the user answers, recompute the frontier and continue round by round; if they add new requirements mid-way, judge the new request again and interrogate afresh. Only start implementing after an explicit “no ambiguity — go ahead” (or after the user says “stop asking, just do it”). When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?” — the card renders it as the heading line), and everything after a blank line is the whole consensus summary written in Markdown (sub-headings, bullet lists, a table when needed), which the card renders inside its “📋 总结” block; keep only two options — the recommended one meaning “no ambiguity, start now” and one meaning “needs changes” (phrase them in the conversation's language). Do not squeeze the summary into the prompt line and do not split it across several cards.",
     "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。":
       "On = this dev session first uses the built-in skill mtnode-grill-me to interrogate the requirements round by round, and only starts work once you confirm the shared understanding.",
-    "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。":
-      "【Grill mode · ask this round, build nothing】This module block has “grill me first” switched on: load the built-in skill mtnode-grill-me with the skill tool and follow it strictly — map this request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, putting that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description); never list numbered questions in the reply body and make the user type answers into the input box. Look facts up yourself with read-only tools instead of asking the user about the environment. This round you must not modify any file, touch the canvas, write back note / devStatus / devFiles, produce an implementation plan or start work; recompute the frontier from each answer and continue round by round until it is empty, then use one final question dialog to get the user's explicit “no ambiguity — go ahead” before implementing, and at the end write back the overview (note), status (devStatus) and this module's core file list (devFiles) as this task brief requires.",
+    "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；收尾那张确认卡按固定格式写：question 第一行只放一句话题面（如「以上共识是否无误？」），空行之后是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 卡片会把它渲染进「📋 总结」区；选项只留推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」两项，措辞随交流语言；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。":
+      "【Grill mode · ask this round, build nothing】This module block has “grill me first” switched on: load the built-in skill mtnode-grill-me with the skill tool and follow it strictly — map this request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, putting that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description); never list numbered questions in the reply body and make the user type answers into the input box. Look facts up yourself with read-only tools instead of asking the user about the environment. When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?”) and everything after a blank line is the whole consensus summary in Markdown (sub-headings, bullet lists, a table when needed) — the card renders it inside its “📋 总结” block; keep only two options: the recommended one (clearly agreeing to start) and one meaning “needs changes” (phrase them in the conversation's language). This round you must not modify any file, touch the canvas, write back note / devStatus / devFiles, produce an implementation plan or start work; recompute the frontier from each answer and continue round by round until it is empty, then use one final question dialog to get the user's explicit “no ambiguity — go ahead” before implementing, and at the end write back the overview (note), status (devStatus) and this module's core file list (devFiles) as this task brief requires.",
     "开始开发": "Start developing",
     /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */
     "已恢复上次未提交的内容": "Your unsent text from last time was restored",
@@ -7356,6 +7438,17 @@
       "Drag this window by its header (drag to the bottom = dock into the status bar); double-click the header to reset its position",
     "已收进底栏：点一下展开，拖回画布上方即恢复":
       "Docked in the status bar — click to expand, or drag it back up over the canvas",
+  });
+
+  /* ── 询问卡的「📋 总结」区（本次开发需求）───────────────────────────────
+     拷问 / 询问流程的收尾确认卡把整份共识写在 question 里：首行是题面，其余按
+     Markdown 渲染进这块带小标题的区块（限高内滚 + 复制源码）。 */
+  Object.assign(EN, {
+    "📋 总结": "📋 Summary",
+    "复制总结 Markdown": "Copy summary Markdown",
+    "把这一段总结的 Markdown 原文（渲染前的源码）复制到剪贴板":
+      "Copy this summary's Markdown source (before rendering) to the clipboard",
+    "已复制总结 Markdown": "Summary Markdown copied",
   });
 
   /* ── 删除画布安全（锁定目标 · 后台写入互斥 · 回收站软删）───────────────
@@ -8900,6 +8993,32 @@
         "What this app does for the user (still to be filled in).",
       "入口 index.html + app.json；宿主能力走 window.appHost（文本 / 图像生成、本机存储、账号摘要），模型与工具留在主进程与画布一侧。":
         "Entry point index.html + app.json; host capabilities go through window.appHost (text / image generation, local storage, account summary), while models and tools stay on the main-process and canvas side.",
+      /* ── 应用能力位（app.json 的 capabilities：textInput / showDictate / imageGen）────
+         新建浮层的「能力」一节、开发页「应用能力…」对话框与卡片小标都用这一组词条。 */
+      "能力": "Capabilities",
+      "决定起步模板带不带语音听写之类的现成能力；默认都不勾，建好之后也能在开发页「应用能力…」里改":
+        "Decides whether the starter template ships ready-made abilities such as voice dictation; everything is off by default, and you can change it later under App capabilities in the Develop page",
+      "需要文字输入": "Needs text input",
+      "脚手架会带上语音听写模块（本机语音识别，首次用会自动下载模型）；要不要在窗口底部显示听写条，看下面那一项":
+        "The scaffold ships the local dictation module (speech recognition on this machine; the model downloads on first use). Whether the bar shows at the bottom of the window is the next option",
+      "显示听写条": "Show dictate bar",
+      "在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；不勾就默认隐藏，应用自己的代码仍可唤起它":
+        "Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window; off means hidden by default, and the app's own code can still reveal it",
+      "需要图像生成": "Needs image generation",
+      "用 MTNode 已配好的图像能力出图：云端图像服务商或本机 SenseNova（没配就用不了，界面会写清去哪配）":
+        "Draws with the image backends already configured in MTNode: a cloud image provider or the local SenseNova (without one it simply cannot draw, and the UI says where to configure it)",
+      "应用能力": "App capabilities",
+      "这个应用需要什么能力：": "Which capabilities does this app need: ",
+      "正在读取…": "Reading…",
+      "已保存应用能力": "App capabilities saved",
+      "能力没有变化": "Capabilities unchanged",
+      "应用能力并重写入口页": "Save capabilities and rewrite the entry page",
+      "按新能力重写入口页？": "Rewrite the entry page for the new capabilities?",
+      "重写入口页并保存": "Rewrite the entry page and save",
+      "改动能力位会按模板重生成这个应用的入口页（index.html）：你在里面手改过的页面内容会没了；assets/ 与数据文件夹不受影响。":
+        "Changing capabilities regenerates this app's entry page (index.html) from the template: hand edits you made in it are gone; assets/ and the data folder are untouched.",
+      "这个应用声明的能力（在开发页「应用能力…」里改）":
+        "Capabilities this app declares (change them under App capabilities in the Develop page)",
     };
     var add = {};
     for (var ak in appNewLabels)
@@ -9142,6 +9261,49 @@
       "mtnode.ai: the function node's AI call backend is not wired (main.js did not inject fnRuntime.aiCall)",
     "未知的 mtnode 桥调用：": "unknown mtnode bridge call: ",
     "(空)": "(empty)",
+    /* ── 函数节点「图像后端」设定（renderer/app-aicall.js 的第二格 · mtnode.image 出图）──
+       与「AI 调用」那套并列：按钮 tooltip、弹层、能力小标（参考图 / 强度）都在这块。
+       「本机」/「自动」/「关闭」等短词条已在别处，这里只补新句。 */
+    "图像后端": "Image backend",
+    "云端": "Cloud",
+    "支持参考图": "reference images supported",
+    "不支持参考图": "no reference images",
+    "支持参考强度": "reference strength supported",
+    "图像后端：继承自「": "Image backend: inherited from \"",
+    "图像后端：本节点已选择：": "Image backend: chosen on this node: ",
+    "图像后端：自动（跟随 MTNode 默认：云端图像服务商优先，其次本机 SenseNova）":
+      "Image backend: auto (follows the MTNode default — cloud image provider first, then local SenseNova)",
+    "生效范围：本函数节点的 jscode 里 await mtnode.image(...) 用它出图 / 图生图（产物落本画布资产目录）。":
+      "Applies to: await mtnode.image(...) inside this function node's jscode generates / edits images with it (the file lands in this canvas's asset folder).",
+    "图像模型与 Key 只留主进程；这里只是选一只已配置好的后端。":
+      "Image models and keys stay in the main process; here you only pick a backend that is already configured.",
+    "当前继承自「": "Currently inherited from \"",
+    "」：": "\": ",
+    "本节点已选择：": "Chosen on this node: ",
+    "；其下未自行选择的内部节点一并使用它。":
+      "; inner nodes that have not picked their own follow it.",
+    "未选择：函数节点里的 mtnode.image(...) 跟随 MTNode 默认图像后端（云端图像服务商优先，其次本机 SenseNova）。":
+      "Unset: mtnode.image(...) in function nodes follows the MTNode default image backend (cloud image provider first, then local SenseNova).",
+    "跟随默认（自动）": "Follow default (auto)",
+    "不指定：用 MTNode 默认的图像后端（云端图像服务商优先，其次本机 SenseNova）。":
+      "Unset: use the MTNode default image backend (cloud image provider first, then local SenseNova).",
+    "暂无可用图像后端：请先在 设置 → 模型服务 里配图像服务商（或安装本机 SenseNova 插件）。":
+      "No image backend available: configure an image provider under Settings → Model services (or install the local SenseNova plugin).",
+    "刷新清单": "Reload list",
+    "重新读取图像后端清单（新装插件 / 刚配好服务商时点它）。":
+      "Reload the image-backend list (use it right after installing a plugin or configuring a provider).",
+    "清除本节点「图像后端」这一格的选择，退回跟随默认（或继承上层）。":
+      "Clear this node's image-backend choice and fall back to the default (or to the inherited one).",
+    /* 应用通道的图像语义（apps-store.js 的 imageSpec / hostImageEdit 与 main.js 的 fnImageCall）：
+       主进程也 require 本文件，两条界面语言都要有译文。 */
+    "当前图像后端不支持参考强度（strength），本次已忽略；本机 SenseNova 后端支持它":
+      "This image backend does not support reference strength (strength); it was ignored this time. The local SenseNova backend supports it",
+    "图像编辑需要至少一张参考图（opts.images）":
+      "Image editing needs at least one reference image (opts.images)",
+    "未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商，或安装本机 SenseNova 插件）":
+      "No image backend configured (set up an image provider under Settings · API/config, or install the local SenseNova plugin)",
+    "mtnode.image：函数节点的图像后端未接线（主进程未注入 fnRuntime.imageCall）":
+      "mtnode.image: the function node's image backend is not wired (main.js did not inject fnRuntime.imageCall)",
   });
 
   /* ── Puzzle 益智小游戏（app-puzzle.js 框架与顶栏入口共用 UI 词条）── */
@@ -9345,21 +9507,41 @@
     "不能改动应用目录本身": "The application folder itself cannot be modified",
   });
 
-  /* ── 账户充值（钱包）：账号菜单的余额行与「账户充值」入口 + 充值对话框
+  /* ── 余额（钱包）：账号菜单的余额行与「余额」入口 + 余额对话框
         （renderer/app-wallet.js · app-auth.js paintMenu · css/wallet.css）──
-        菜单项用「账户充值」而不是「充值」：后者已是费用面板的流水类型标签（"Topped up"），
-        同键两义会让英文界面串味。带变量的文案一律走 {占位} 键 + I18n.t 第二参。
+        窗口标题与菜单项都叫「余额」（原来叫「账户充值」）：这个窗本来就以余额与流水为主，
+        而且「充值」已是费用面板的流水类型标签（"Topped up"），同键两义会让英文界面串味。
+        带变量的文案一律走 {占位} 键 + I18n.t 第二参。
         **账户资产一律鲸圆币（W coins，1 币 = ¥0.02）**：余额 / 档位 / 订单流水都按币显示，
         只有支付宝实际收付的两处写元 ——「实付 ¥…」与「已退 ¥…」。中文键一律不动
         （i18n 靠中文键查表，改键会让老文案整批掉成中文）。 */
   Object.assign(EN, {
     "余额：": "Balance: ",
     "余额：{amount}": "Balance: {amount}",
-    "点「账户充值」查看明细与付款": "Click “Top up account” for details and payment",
-    "账户充值": "Top up account",
+    "点「余额」查看明细与付款": "Click “Balance” for details and payment",
+    /* 「余额」= Balance 与「（在浏览器中打开）」= (opens in your browser) 不在这里重复登记：
+       EN 表里已各有同值条目（费用面板 / 官方充值通道），同键两次不同值会被后写的悄悄覆盖。 */
     "当前鲸圆币": "Current W coins",
     "充值金额": "Top-up amount",
     "自定义金额（币）": "Custom amount (W coins)",
+    /* 汇率提示：**唯一一处可见的汇率**，只在余额窗金额区（app-wallet.js #wlRate）。
+       账号菜单余额行、设置里的中转卡余额 tooltip 一律不带汇率。 */
+    "¥1 = 50 币（1 币 = ¥0.02）": "¥1 = 50 W coins (1 W coin = ¥0.02)",
+    /* MTNode 中转服务警示（余额窗**最顶端** + 设置·提供商的中转卡各一份，
+       真源 app-wallet.js relayWarnEl；标题行明写「不建议使用任何中转服务」） */
+    "⚠ 不建议使用任何中转服务（含本中转）":
+      "⚠ Using any relay service is not recommended (including this one)",
+    "DeepSeek 官方充值：": "DeepSeek official top-up: ",
+    "申请 API Key 与设置方法：": "How to get an API key and set it up: ",
+    "查看文档《配置服务商与 API》": "Read the docs “Providers & API”",
+    "打开应用内文档，查看怎么申请 API Key 并填进 MTNode":
+      "Open the in-app docs to see how to get an API key and put it into MTNode",
+    "MTNode 中转仅提供最基本的 DeepSeek 与 GPT-Image-2.5 官方原价模型，供临时使用。":
+      "The MTNode relay only offers the most basic DeepSeek and GPT-Image-2.5 models at official list price, for temporary use.",
+    "LLM 模型（如 GPT / Claude 等）请不要轻易相信官方以外的任何中转站：它可以轻松把请求换成廉价模型、收集你的隐私信息，甚至直接在本机安装恶意软件。":
+      "For LLM models (GPT / Claude and the like), do not trust any relay other than the official one: a relay can easily swap in a cheap model, harvest your private data, or even install malware on your machine.",
+    "图像 / 视频 / 音频等因输出内容受限，相对安全。":
+      "Image / video / audio requests are comparatively safe because their output is limited in what it can carry.",
     "生成支付宝付款码": "Generate Alipay QR code",
     "请选择或输入充值金额": "Please choose or enter a top-up amount",
     "充值金额需在 {min} – {max} 之间": "The top-up amount must be between {min} and {max} W coins",
@@ -9410,6 +9592,14 @@
     /* 服务端错误码文案（store-saas 的 code → 用户可读） */
     "支付通道尚未配置，暂时无法充值": "The payment channel is not configured yet — top-up is unavailable",
     "充值功能尚未对该账号开放": "Top-up is not open for this account yet",
+    /* 闸门没开（服务端 /api/wallet/config 的 opened=false）时替换充值块的两行说明：
+       不是错误码文案（那是撞 403 之后才出现的），而是打开窗就先说清「为什么不能充」。 */
+    "充值暂未开放（服务端闸门未开启）": "Top-up is not open right now (server gate is off)",
+    "当前账号可以查看余额与流水；充值入口由服务端决定，请稍后重试或联系管理员。":
+      "You can still view your balance and history; the top-up entry is controlled by the server — try again later or contact the administrator.",
+    /* 余额现拉失败、界面显示的是上次已知值时，那行小字的悬停说明 */
+    "这次没取到最新余额，显示的是上次取到的值":
+      "Couldn't fetch the latest balance — showing the last value we got",
     "金额无效": "Invalid amount",
     "未支付订单过多，请先完成或等其过期":
       "Too many unpaid orders — complete them first or wait for them to expire",
@@ -9418,6 +9608,143 @@
     "支付宝接口异常，请稍后重试": "Alipay API error — please try again later",
     "请先登录": "Please sign in first",
     "请求失败（HTTP {code}）": "Request failed (HTTP {code})",
+  });
+
+  /* ── 打赏（renderer/app-tips.js）与评论（renderer/app-comments.js） ──
+     两处共用一套组件与 DOM（讨论区窗口也用同一份渲染层模块），词条只在这里登记一次；
+     中文键是唯一真源（缺表项时中文界面原样回显，不会缺字）。金额一律鲸圆币（W coins）。 */
+  Object.assign(EN, {
+    "打赏作者": "Tip the author",
+    "打赏": "Tip",
+    "打赏热度": "Tip popularity",
+    "打赏作者（鲸圆币）": "Tip the author (W coins)",
+    "用鲸圆币支持作者": "Support the author with W coins",
+    "打赏所得可用于作者调用 MTNode 中转模型":
+      "What the author receives can be spent on calling MTNode relay models",
+    "累计打赏 {v}（{n} 次）": "Tipped {v} in total ({n} times)",
+    "累计打赏": "Total tipped",
+    "累计 {v} · {n} 次": "Total {v} · {n} times",
+    "{n} 次": "{n} times",
+    "还没有人打赏": "No tips yet",
+    /* 卡片金币 icon 的悬停三态（renderer/app-apps.js 的 appsTipsTitleEl）：
+       数字还没取回来 / 取失败时**不能**写成「还没有人打赏」——那是谎报（用户报的错报就是这个）。 */
+    "正在读取打赏数据…": "Loading tip totals…",
+    "打赏数据暂未取到": "Tip totals unavailable right now",
+    "打赏名单": "Tip list",
+    /* 非作者视角的记录区（只看得到自己打赏出去的那几笔，见 app-tips.js 的 paintList）；
+       撤销口已停用，但存量已撤销记录仍要标出来。 */
+    "我的打赏记录": "My tips",
+    "您": "You",
+    "您已打赏 {v} · {n} 次": "You tipped {v} · {n} times",
+    "您还没有打赏过这个对象": "You have not tipped this yet",
+    "正在读取打赏记录…": "Loading tip records…",
+    "名单暂时取不到，稍后重试": "Tip list unavailable — please try again later",
+    /* 存量被撤销的打赏（撤销入口已停用，只在历史记录上标一枚小标签）。
+       注意**不能**用「已撤销」——那条键在撤销 / 重做语境里已经是 "Undone"（见字典前段），
+       这里用不带歧义的新键。 */
+    "已作废": "Voided",
+    "· {n} 次": "· {n} times",
+    "按作者分配（这一个条目有多个作者）": "Split between authors (this entry has several authors)",
+    "每位作者右侧填币数：合计不得超过 {v}，最后一个作者自动补齐剩余":
+      "Enter coins for each author: the total may not exceed {v}, and the last author fills in the remainder",
+    "（你自己）": " (you)",
+    "不能给自己打赏：你那一份固定为 0": "You cannot tip yourself — your share is fixed at 0",
+    "自动补齐：这一份 = 总额 − 其他作者的份数":
+      "Auto-filled: this share = the total minus the other authors' shares",
+    "总数不能超过你按的 {v}，已按上限调整": "The total cannot exceed {v} — clamped to the limit",
+    "分账之和必须等于你按的 {v}": "The split must add up to exactly {v}",
+    "分账金额不合法：请让合计正好等于你按的数额，且作者都在这一组里":
+      "Invalid split: make it add up exactly, using authors from this group",
+    /* 「打赏名单仅作者本人与管理员可见」这条提示已按需求移除（名单整块不画），词条一并删掉不留死键 */
+    "打赏金额": "Tip amount",
+    "当前余额": "Current balance",
+    /* 额度行与额度置灰已按需求移除（界面不显示「本月剩余额度」，服务端的月闸门仍在）：
+       相关的三个词条（本月剩余额度 / 不足最小档位 / 本月额度已用完）不再使用，也不留在表里当死键；
+       「本月打赏额度已用完（每月 1 日重置）」保留 —— 它是服务端真回 TIP_MONTH_LIMIT 时窗内那句。 */
+    "本月打赏额度已用完（每月 1 日重置）":
+      "The monthly tip quota is used up (it resets on the 1st of each month)",
+    /* 会话过期（401）与「余额暂时取不到」：打赏窗余额行、余额窗、账号菜单余额行三处共用 */
+    "登录已过期，点这里重新登录": "Your sign-in has expired — click here to sign in again",
+    "点这里重新登录": "Click here to sign in again",
+    "余额暂时取不到，稍后重试": "Balance unavailable right now — please try again later",
+    "该条目尚未上架云端，打赏记录不可用":
+      "This item has not been published to the cloud yet, so tip records are unavailable",
+    "今天已打赏过，明天再来": "Already tipped today — come back tomorrow",
+    "今天已给这个对象打赏过，明天再来": "You already tipped this today — come back tomorrow",
+    "今天已打赏过": "Already tipped today",
+    "余额不足：请到账号菜单里的「余额」充值":
+      "Not enough W coins — top up via “Balance” in the account menu",
+    "鲸圆币余额不足，先去充值": "Not enough W coins — top up first",
+    "不能给自己打赏": "You cannot tip yourself",
+    "确认打赏": "Confirm tip",
+    "正在打赏…": "Sending tip…",
+    "打赏 {v}": "Tip {v}",
+    "打赏成功，感谢支持！": "Tip sent — thank you for the support!",
+    "登录后可打赏": "Sign in to tip",
+    "正在读取打赏信息…": "Loading tip info…",
+    "读取失败，请稍后重试": "Could not load — please try again later",
+    "重置": "reset",
+    "匿名用户": "Anonymous",
+    "已删除": "Deleted",
+    "回复": "Reply",
+    "评论": "Comments",
+    "评论 · {t}": "Comments · {t}",
+    "查看 / 发表评论": "View / post comments",
+    "点击查看评论": "Click to view comments",
+    "{n} 条评论": "{n} comments",
+    "{n} 人评价": "{n} ratings",
+    "{n} 星": "{n} stars",
+    "暂无评分": "No ratings yet",
+    "评分（选填）": "Rating (optional)",
+    "说点什么…（最多 2000 字）": "Say something… (up to 2000 characters)",
+    "登录后可以发表评论": "Sign in to comment",
+    "发表评论": "Post comment",
+    "还没有评论，来说第一句": "No comments yet — be the first to say something",
+    "评论不能超过 2000 字": "A comment cannot exceed 2000 characters",
+    "评论过于频繁，请稍后再试": "Too many comments — please try again later",
+    "确定删除这条评论？": "Delete this comment?",
+    "已发表": "Posted",
+    "回复 @{n}": "Replying to @{n}",
+    "作者": "Author",
+    "下载": "Downloads",
+    "获赞": "Likes",
+    "评分": "Rating",
+    "体积": "Size",
+    "标签": "Tags",
+    "条目": "Item",
+    "简介": "Description",
+    "未知": "Unknown",
+    "应用": "App",
+  });
+
+  /* ── 消息（renderer/app-messages.js + css/messages.css · 顶栏「消息」入口与消息窗）──
+     打赏 / 评论 / 回复三类日志（云端保存）。按钮三态的 title、角标、列表、动作区、
+     跳转回执（含「暂不支持定位到具体话题」这类如实说明）全在这张表里；
+     中文键是唯一真源，缺表项时英文界面原样回显中文（I18n.t 回退）。 */
+  Object.assign(EN, {
+    "消息": "Messages",
+    "消息：打赏 / 评论 / 回复": "Messages: tips · comments · replies",
+    "登录后可看消息": "Sign in to see your messages",
+    "暂无消息": "No messages",
+    "消息服务暂时不可用，稍后重试":
+      "Messages are temporarily unavailable — please try again later",
+    "还没有消息": "No messages yet",
+    "加载更多": "Load more",
+    "未读": "Unread",
+    "点一下打开对应入口": "Click to open where it belongs",
+    "清空全部消息？清空后不可恢复。": "Clear all messages? This cannot be undone.",
+    "已清空消息": "Messages cleared",
+    "清空失败：": "Clear failed: ",
+    "讨论区话题": "Forum topic",
+    "讨论区回复": "Forum reply",
+    "这一类消息暂不支持跳转": "Jumping to this kind of message is not supported yet",
+    "已打开讨论区（暂不支持定位到具体话题）":
+      "Opened the forum (jumping to the exact topic is not supported yet)",
+    "条目详情暂时拉不到，已打开创意工坊":
+      "Could not load the item detail — opened the Workshop instead",
+    /* 消息窗打开时的兜底提示（app-apps.js 的同一句话也走这条键） */
+    "窗口模块未就绪（openOverlay 不存在）":
+      "Window module is not ready (openOverlay missing)",
   });
 
   /* ── 节点「?」说明按钮与说明小窗（renderer/app-nodehelp.js + app-settings.js） ──
@@ -10221,6 +10548,49 @@
         "换风格并重写入口页": "Change style and rewrite the page",
         "已经是这个风格了": "This is already the current style",
         "换风格失败：": "Could not change the style: ",
+        /* ── 上架前体检（开发页工具栏那枚按钮 + 弹窗；实现见 renderer/app-apps.js 的
+           appsPackAuditDialog 与主进程 apps-store.js 的 packAudit）──
+           查的是「打成包会丢哪些文件」：线上发生过只打包入口页、下载者拿到空壳的事故。 */
+        "上架前体检": "Pre-publish check",
+        "体检模块未就绪（renderer/app-apps.js 未加载）":
+          "Check module not ready (renderer/app-apps.js is not loaded)",
+        "检查这个应用打成包会丢哪些文件（只读：不打包、不上传、不写盘）":
+          "Check which files this app would lose when packed (read-only: nothing is packed, uploaded or written)",
+        "体检按上架口径真跑一遍打包：列出「目录里有、包里没有」的文件，并检查入口页引用的文件在不在（只读：不打包、不上传、不写盘）。":
+          "The check runs the packing rules used for publishing: it lists files that exist in the app folder but not in the package, and verifies that the files the entry page references exist (read-only: nothing is packed, uploaded or written).",
+        "当前应用": "This app",
+        "全部应用": "All apps",
+        "没有选中应用：从开发页当前应用点进来才有":
+          "No app selected: open it from the current app on the Develop page",
+        "正在体检…": "Checking…",
+        "没有可体检的应用": "No app to check",
+        "体检完成：": "Check finished: ",
+        " 个应用有问题（下面标红的几条）": " app(s) have problems (the red rows below)",
+        " 个应用都能打出完整的包": " app(s) all pack completely",
+        "体检失败：": "Check failed: ",
+        "通过：包是完整的": "Passed: the package is complete",
+        "这个应用不在本机了": "This app is no longer installed",
+        /* 体检一行的结论句（整句给词条：英文语序与中文不同，别拿「 个」这种碎片去拼） */
+        "缺文件": "Missing files",
+        "入口页缺引用": "Missing entry-page references",
+        "目录文件": "Files in folder",
+        "包内": "In package",
+        "会随包丢掉的文件": "Files that would be dropped from the package",
+        "本来就不随包的文件": "Files that intentionally never ship",
+        "（另有 ": " (plus ",
+        " 个同类文件已省略）": " more of the same kind, omitted)",
+        "入口页引用了但目录里没有": "Referenced by the entry page but missing",
+        "（入口页写的是：": " (entry page says: ",
+        "打包实现漏了这个文件（必须修）":
+          "The packer dropped this file (must be fixed)",
+        "本机生成物，本来就不随包（画布 / 旧包 / 安装账本）":
+          "Local generated file, never shipped (canvas / exported zip / install ledger)",
+        "应用自己的本机存档：上架包不带它（本地导出会保留）":
+          "The app's own local save data: not shipped in a published package (a local export keeps it)",
+        "应用缺少入口页（index.html）：打包会失败":
+          "The app has no entry page (index.html): packing will fail",
+        "打包这一步失败了": "The packing step failed",
+
         "已换成「": "Style changed to “",
         "」风格": "”",
         "未知的设计风格：": "Unknown design style: ",
@@ -10340,6 +10710,9 @@
         "预览不可用：": "Preview unavailable: ",
         "读不到该应用目录（可能在别处被删了）":
           "Cannot read this app folder (it may have been deleted elsewhere)",
+        /* 切应用的轻量加载提示（renderer/app-apps-dev.js 的 appsDevLoadingShow）：
+           只在换应用那一下露一行，替掉过去那块整块黑幕。 */
+        "正在加载…": "Loading…",
       };
       var out = {};
       for (var k in add)
@@ -10358,6 +10731,21 @@
       "Pack the current app and upload it to the cloud: other users can find it in the App Center, download it, use it or build on it",
     "上架需要先登录": "You need to sign in before publishing",
     "去登录": "Sign in",
+    /* 上架窗的登录态三条尾巴（renderer/app-publish.js）：窗内显示「以哪个账号上传」，
+       登录态没核到时如实说「没核到」而不是「未登录」，并给「重试读取登录态」。
+       「已登录 / 未登录」两条词条在别处已有（本表不重复登记：重复的 Object.assign 只会后盖前）。 */
+    "未登录：先登录再上传": "Not signed in: sign in before uploading",
+    "正在读取登录态…": "Checking your sign-in state…",
+    "登录态没核到（服务端 HTTP {code}）":
+      "Could not confirm your sign-in state (server returned HTTP {code})",
+    "登录态没核到（连不上账户服务）": "Could not confirm your sign-in state (account service unreachable)",
+    "账户服务报错（HTTP {code}）": "The account service returned an error (HTTP {code})",
+    "连不上账户服务，请检查网络": "Cannot reach the account service — check your network",
+    "登录已失效：请重新登录": "Your session has expired — please sign in again",
+    "重试读取登录态": "Check again",
+    "本机账户桥未就绪": "The local account bridge is not ready",
+    "本机没读到登录凭据：正在向账户服务确认这个账号…":
+      "No local credential found: confirming this account with the account service…",
     "版本": "Version",
     " 版": " version(s)",
     " · 最新 v": " · latest v",
@@ -10407,6 +10795,36 @@
     "追加版本": "Add a version",
     "本机版本": "Local version",
     "线上版本": "Cloud version",
+    /* ── 分支树（本轮需求：多层树 · 选好分支后才出下载/覆盖 · 卡片换「其他版本」）── */
+    "这一支的版本": "Versions on this branch",
+    "其他版本": "Other versions",
+    "原作者": "Original author",
+    "原作者 ": "Original author ",
+    "当前版本作者 ": "Current version by ",
+    "已选：": "Selected: ",
+    "（下方是这一支的版本与下载）": " (its versions and download are below)",
+    "点这一支：下方出现它的版本与下载 / 覆盖入口":
+      "Click a branch: its versions and download / overwrite entries appear below",
+    "下载这一支并装到本机": "Download this branch and install it",
+    "覆盖安装 v": "Overwrite with v",
+    "本机现在装的是别一支：会替换本机的应用文件（storage / 数据文件夹 / 画布不受影响）":
+      "A different branch is installed: this replaces the app files (storage, the data folder and the canvas are untouched)",
+    "本机已装：": "Installed locally: ",
+    "（换到别的分支会覆盖本机的应用文件；storage / 数据文件夹 / 画布保留）":
+      " (switching branches replaces the app files; storage, the data folder and the canvas are kept)",
+    "本机还没装这个应用。": "This app is not installed locally yet.",
+    "先在详情里选分支与版本（默认原作者最新版），确认后再装到本机":
+      "Pick a branch and a version in the details first (the original author's latest is preselected), then install",
+    "打开详情：可选别的作者分支或别的版本（本机已装的那一支会被替换，数据保留）":
+      "Open details: pick another author's branch or another version (the installed one is replaced, your data is kept)",
+    "更新到本机已装那一支的作者最新版": "Update to the latest version by the author of the installed branch",
+    "不会被覆盖：storage/ 、该应用的数据文件夹（data.json 与你自己选过的目录）、它自己的画布。确定更新吗？":
+      "Kept intact: storage/, the app's data folder (data.json and any folder you picked), and its own canvas. Update anyway?",
+    "覆盖 = 只替换上次装进去的应用文件（app.json / 入口页 / assets 与脚本样式）；不会被覆盖：该应用的 storage/ 、数据文件夹（data.json 与你自己选过的目录）、它自己的画布。改名 = 装成另一个目录，两份并存；取消 = 什么都不做。":
+      "Overwrite replaces only the app files installed last time (app.json, the entry page, assets, scripts and styles). Kept intact: the app's storage/, its data folder (data.json and any folder you picked) and its own canvas. Rename installs a second copy in another folder. Cancel does nothing.",
+    "原作者（主干）": "Original author (trunk)",
+    "这个应用共有 ": "This app has ",
+    " 条分支（原作者在最左，其余向右逐级展开）": " branches (the original author is leftmost, others unfold to the right)",
     "还没有可上架的应用：先新建或安装一个应用":
       "No app to publish yet: create or install one first",
     "这个应用的窗口还没打开：先点「启动」，再回来拍图":
@@ -10447,13 +10865,74 @@
       "No apps downloaded yet: pick one on the Apps page and it installs into the app root folder; apps you write yourself are created on the Development page.",
     "去「开发」页": "Go to the Development page",
     "切换分支": "Switch branch",
+    /* ── 同 id 多分支（`docs/apps-market.md` §十，本轮需求）──
+       应用身份 = id + 作者 uid：同一个 id 下每个作者一条分支，主干最左、逐级向右；
+       非自己的分支只读（不画勾选框与删除按钮），下载按 owner 寻址。 */
+    "分支": "Branch",
+    "看分支": "Branches",
+    "主干": "Trunk",
+    "我的分支": "My branch",
+    "分支与版本（主干在最左，每个作者向右延伸一级；点某一版就下那一版）":
+      "Branches and versions (trunk on the left, each author extends one level right; click a version to download it)",
+    "下载这一支": "Download this branch",
+    "下载所选": "Download selected",
+    "选作者": "Pick an author",
+    "选版本": "Pick a version",
+    "收起这一分支的版本": "Collapse this branch's versions",
+    "展开这一分支的版本": "Expand this branch's versions",
+    "本机已装 v": "Installed locally v",
+    "个分支 · ": " branches · ",
+    " 个版本 · 最新 v": " versions · latest v",
+    " 条分支 · ": " branches · ",
+    " 个版本": " versions",
+    "同一个 id 下有多个作者分支：主干在最左，其余向右延伸；每支每一版都能单独下载":
+      "Several authors have branches under this id: the trunk is leftmost and the rest extend right; every version of every branch can be downloaded on its own",
+    "切到这一支的分支详情（下载在下面的分支树上，逐版可下）":
+      "Switch the detail view to this branch (download from the branch tree below, version by version)",
+    "未知作者（无账号名）": "Unknown author (no account name)",
+    "已锁定为线上 id": "Locked to the online id",
+    "该版本号已存在": "That version already exists",
+    "这个应用 id 线上已经有条目：本次上架自动声明为它的二次开发分支（同一个 id 下建你自己的分支）。想改来源就换一个应用 id。":
+      "This app id already has entries online: this upload is automatically declared as a branch of it (creating your own branch under the same id). To change the source, use a different app id.",
+    "同一个 id 在线上已经有条目：本次会自动声明为「基于它的二次开发」，并新建**你自己的一条分支**（主干在最左、你的分支向右延伸）。唯一取消方式 = 把上面的应用 id 改成别的。":
+      "This id already has entries online: this upload is automatically declared as “built on it” and creates your own branch (trunk leftmost, your branch extending right). The only way to cancel is to change the app id above.",
+    "线上这个 id 已有 ": "This id already has ",
+    " 条作者分支（主干作者：": " author branches online (trunk author: ",
+    "）：本次上传会在同一个 id 下新建**你自己的分支**，别人的版本只读。":
+      "): this upload creates your own branch under the same id; other authors' versions are read-only.",
+    "同 id 已有 ": "This id already has ",
+    " 条作者分支（本次为你的新版本）": " author branches (this upload is a new version of yours)",
+    " 条作者分支，主干作者：": " author branches, trunk author: ",
+    "（本次会在同 id 下新建你的分支）": " (this upload creates your branch under the same id)",
+    "这些版本属于账号 ": "These versions belong to ",
+    "：只能查看（切分支下载走「应用详情 → 分支」），不能在这里删除。":
+      ": view-only (download other branches from “App details → Branches”); they cannot be deleted here.",
+    "你的分支": "Your branch",
+    "你这条分支线上已有版本 v": "Your branch already has version v",
+    "你这条分支的最新版是 v": "Your branch's latest version is v",
+    "：这次会作为它的新版本追加（parentVersion = ": ": this will be appended as its new version (parentVersion = ",
+    " 条作者分支：本次会在同一个 id 下新建**你的分支**（版本号从 1.0.0 起算，各分支各算各的）。":
+      " author branches: this upload creates your branch under the same id (version numbers start at 1.0.0 and count per branch).",
+    "首次上架默认 1.0.0；线上已有你自己这个 id 的分支时会自动取「你那条分支的最新版小版本 +1」。":
+      "A first upload defaults to 1.0.0; when you already have a branch under this id, it becomes “your branch's latest version +1 patch”.",
+    "将追加版本 v": "Will append version v",
+    "将在同一个 id 下新建你的分支 v": "Will create your branch under the same id at v",
+    "将新建应用 v": "Will create app v",
+    "这个应用 id 已被其他账号占用：本次应自动声明为「基于该应用的二次开发」再上传（同一个 id 下建你自己的分支）。若来源下拉被清空了，请把应用 id 改回原 id 后重试。":
+      "This app id is taken by another account: the upload should be declared as “built on that app” (creating your own branch under the same id). If the source dropdown got cleared, restore the app id and retry.",
+    "你名下已经有这个 id 的应用：请直接追加版本（重新打开本窗会自动判断），不要新建分支。":
+      "You already own an app with this id: append a version instead (reopening this window detects it); do not create a new branch.",
+    "你这条分支上已有这个版本号：请换一个版本号再上传。":
+      "Your branch already has this version number: pick another one before uploading.",
+    "这个 id 下有多条作者分支：删版本请指明分支（本窗会自动带上你自己那条）。":
+      "This id has several author branches: deleting a version needs an explicit branch (this window adds yours automatically).",
     "已装": "Installed",
     "更新正在开发的应用": "Update an app in development",
     "仍然更新": "Update anyway",
     " 正在开发中（本机这一份带「开发中」标记）。更新到 v":
       " is in development (the local copy carries the “In development” mark). Updating to v",
-    " 会覆盖它的 app.json / 入口页 / assets —— 你在这些文件上的改动会丢；本机存储与该应用自己的画布不动。确定更新吗？":
-      " will overwrite its app.json / entry page / assets — any changes you made to those files are lost; local storage and the app's own canvas stay untouched. Update anyway?",
+    " 会用它包里那批应用文件整目录替换这一份（app.json / 入口页 / assets 与脚本、样式都在内）—— 你在这些文件上的改动会丢；本机存储与该应用自己的画布不动。确定更新吗？":
+      " replaces this copy with the app files inside that package (app.json / entry page / assets plus scripts and styles) — any changes you made to those files are lost; local storage and the app's own canvas stay untouched. Update anyway?",
     "二次开发自": "Forked from",
     "基于哪个应用二次开发（可选）": "Builds on which app? (optional)",
     "（原创：不声明来源）": "(Original: no source declared)",
@@ -10482,6 +10961,48 @@
       "Deletes only this app's own subfolder; canvases, sessions and the app's storage stay untouched",
   });
 
+  /* ── 应用详情对话窗 + 本机多版本（renderer/app-apps.js 的 openAppsDetail / appsSwitchVersion，
+        css/apps.css 的 .apps-detail-box；口径见 docs/apps-market.md §九）──
+        详情单开一只可调宽高的浮层（不再内联进卡片）；本机多版本**不存历史载荷** ——
+        台账只记「当前 + 上一版」两个版本号与各自的下载来源，回滚 = 按来源重新下载那一版。 */
+  Object.assign(EN, {
+    "详情": "Details",
+    "应用详情": "App details",
+    "在独立窗口里运行这个应用": "Run this app in its own window",
+    "单开一只对话窗看详情：说明 / 云端版本 / 本机版本（可回滚）/ 评论":
+      "Open a dialog for the details: description / cloud versions / local version (rollback) / comments",
+    "拖拽右下角调整窗口大小": "Drag the bottom-right corner to resize",
+    "本机版本（可回滚）": "Local versions (rollback)",
+    "云端版本（点某一版就下那一版）": "Cloud versions (click a version to download it)",
+    "这个应用还没装到本机。": "This app is not installed on this machine.",
+    "本机当前": "Current here",
+    "上一版": "Previous",
+    "回到这一版": "Go back to this version",
+    "按台账里记的下载地址重新下载这一版并换成当前版本":
+      "Re-download this version from the address recorded in the ledger and make it the current one",
+    "本机只留当前与上一版两份记录（不存历史包）：回到上一版要按来源重新下载一次，离线或云端已下架时会如实报错。":
+      "Only the current and previous versions are recorded here (no historical packages kept): going back re-downloads it from its source, and will report an error honestly when offline or when the cloud no longer has that version.",
+    "还没有可回滚的上一版（本机自建、或只装过这一版）。本机不存历史包，回滚要按来源重新下载，所以没有来源就没有回滚入口。":
+      "There is no previous version to roll back to yet (either built here, or only this version was ever installed). No historical packages are kept, and rolling back needs a source to re-download from — no source means no rollback entry.",
+    "本机已经是这一版：v": "This machine already has this version: v",
+    " 正在开发中（本机这一份带「开发中」标记）。切换版本会按台账来源重新下载那一版，并用它整目录替换本机这一份（app.json / 入口页 / assets 与脚本、样式都在内）—— 你在这些文件上的改动会丢；本机存储与该应用自己的画布不动。确定切换到 v":
+      " is in development (this local copy carries the “in development” mark). Switching versions re-downloads that version from its recorded source and replaces this local copy wholesale (app.json / entry page / assets, scripts and styles included) — changes you made to those files are lost; the app's local storage and its own canvas stay untouched. Switch to v",
+    " 吗？": "?",
+    "切换正在开发的应用的版本": "Switch the version of an app in development",
+    "切换并重新下载": "Switch and re-download",
+    "已切回 v": "Switched back to v",
+    "切换失败：": "Switch failed: ",
+    "本机没有这一版的下载来源：它可能是本机自建的那一版，或云端已下架（回滚需要按来源重下）":
+      "No download source for this version on this machine: it may be the locally built one, or the cloud no longer has it (rolling back needs a source to re-download from)",
+    "这一版的下载地址不在允许的来源里（只认云端目录 / 云端接口）":
+      "This version's download address is not from an allowed source (only the cloud catalog / cloud API are accepted)",
+    "这一版就是本机当前的版本": "This is already the current version on this machine",
+    "没有指定要回滚到哪一版": "No version was specified to roll back to",
+    "应用清单损坏（app.json 读不出来）：先修好它再切换版本":
+      "Broken app manifest (app.json cannot be read): fix it before switching versions",
+    "该应用不在本机": "This app is not on this machine",
+  });
+
   /* ── MTNode 中转服务（账号托管 · renderer/app-relay.js + app-settings.js 的只读卡 +
         main.js 的 relay:me）──
         这张卡只有「充过值」的账号才有；接入信息与模型清单由云端下发，卡上可改的只有
@@ -10490,27 +11011,36 @@
     "MTNode 中转服务": "MTNode relay service",
     "账号托管": "Account-managed",
     "接入信息由 MTNode 账号托管": "Connection details are managed by your MTNode account",
-    "由账号登录态托管（只读）": "Managed by your signed-in account (read-only)",
-    "由账号登录态托管（只读）：打码显示，真凭据不下发到界面":
-      "Managed by your signed-in account (read-only): shown masked, the real credential is never handed to the UI",
-    "由账号登录态托管（只读）：暂未取到账号凭据，登录后自动带上":
-      "Managed by your signed-in account (read-only): no credential fetched yet — sign in and it comes along automatically",
-    "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上":
-      "This machine cannot read the stored account credential (different Windows account, or the encryption key changed): sign in to your MTNode account again and the credential is restored",
-    "凭据 = 本机登录账号的 token（打码显示，前 4 + **** + 后 4；真凭据只留在主进程）":
-      "The credential is this machine's signed-in account token (shown masked as first 4 + **** + last 4; the real one stays in the main process)",
-    "还没有取到账号凭据：登录 MTNode 账号后自动带上（打码显示）":
-      "No account credential fetched yet: it comes along automatically once you sign in to your MTNode account (shown masked)",
+    /* 凭据那一行说明（"由账号登录态托管（只读）：…"、"; 有效期至 …"、"；凭据即将到期…"）
+       与「本机的账号凭据读不出来…请重新登录一次」那条提示都已按需求**永久删除**：
+       · 卡上 API Key 那一格现在显示**完整 Key**（明文，可选中、可复制）+「更换 Key」按钮，
+         文案见本文件下面的「中转卡上的明文 Key」那一段；
+       · 本机凭据存不住时 auth-store.js 自己改用本机密钥加密重存（零提示），
+         中转 401 由主进程静默换票 + 重试，真救不回来只说一句「无效的 API Key」。
+       旧词条一并撤掉，别留下没人用的键（同键两义 / 死键都会被 test/smoke-i18n*.js 之类挑出来）。 */
+    "无效的 API Key": "Invalid API key",
     "OpenAI 兼容（由 MTNode 账号下发）":
       "OpenAI-compatible (delivered by your MTNode account)",
     "模型清单（云端下发，从上到下为使用优先级）":
       "Model list (delivered from the cloud; top to bottom is priority)",
+    /* 逐模型价目（元 + 括号内鲸圆币）：与本地计费用同一份价目，用户能自己核 */
+    "价目由云端随账号下发（元为平台账本口径，括号内为鲸圆币，1 币 = ¥0.02）：会话 Token 统计里中转模型按这份价目折算成币。":
+      "Prices come down from the cloud with your account (yuan is the platform ledger unit; the parenthesised figure is W coins, 1 W coin = ¥0.02). Relay models in the session Token report are converted with this same list.",
+    "按张 ": "Per image ",
+    "/张": "/image",
+    "入价 ": "In ",
+    "/百万": "/1M",
+    "（缓存命中 ": " (cache hit ",
+    "）· 出价 ": ") · out ",
+    " · 高峰 ×": " · peak ×",
+    "起）": " and up)",
+    "本地计价用的价目（与中转站同一份）：文本按元/百万 token、图像按元/张":
+      "The price list used for local billing (same one as the relay): text per yuan/1M tokens, images per yuan/image",
     "账号当前没有可用模型：充值后点「刷新」":
       "No models available for this account yet: top up, then click “Refresh”",
     "可用余额 ": "Available balance ",
-    "去充值": "Top up",
-    "打开账户充值（到账后中转清单会自动刷新）":
-      "Open account top-up (the relay model list refreshes automatically once it lands)",
+    /* 「去充值」/「打开余额（到账后中转清单会自动刷新）」两条随卡上那枚按钮一起撤掉：
+       全应用唯一的充值入口在右上角账户菜单的「余额」里（见 renderer/app-auth.js）。 */
     /* 「刷新」不在这里重复登记：EN 表里已有一条（见上文），同键两次不同值会被后写的
        悄悄覆盖（test/smoke-filepeek.js 就钉这一条），中转卡复用它即可。 */
     "按账号重新拉取中转服务的地址与可用模型":
@@ -10540,30 +11070,52 @@
     "停用后不出现在模型选择器里；刷新中转清单不会自动把它开回来":
       "Once disabled it no longer appears in model pickers; refreshing the relay list will not re-enable it",
     /* ── 凭据失效提示（renderer/app-relay-auth.js + main.js 的 relayAuthFailed）──
-       中转站的 401 原文案把用户往「去提供商填 Key」推，而那张卡是只读的：
-       这几条把动作说成「重新登录一次」（独立的中转 Key 会自动领回来）。 */
-    "登录已失效：中转服务需要重新登录一次（本机凭据已自动清理）":
-      "Signed out: the relay service needs one more sign-in (this machine's credential was cleared automatically)",
-    "中转服务登录已失效：请重新登录一次（客户端会自动领取新的中转 Key，无需手填）":
-      "The relay credential has expired: sign in once more (the client fetches a new relay key automatically — no manual key needed)",
-    /* 凭据文件在、本机解不开 / 存不住（见 auth-store.js 的读后隔离与写后回读校验）：
-       这时「重新登录一次」才真的有用（旧文件已被隔离留档）。 */
-    "本机的登录凭据读不出来（已留档并清理）：请重新登录一次 MTNode 账号，登录后会自动领取中转凭据":
-      "This machine cannot read its stored sign-in credential (it was archived and cleared): sign in to your MTNode account once more and the relay credential is fetched automatically",
-    "本机保存登录凭据失败（系统加密写得出读不回来）：请重新登录一次；若仍失败请在「设置 · 提供商」里刷新中转清单":
-      "This machine failed to store the sign-in credential (system encryption writes data it cannot read back): sign in once more; if it still fails, click “Refresh” under Settings · Providers",
-    "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上":
-      "This machine cannot read the account credential (Windows account or encryption key changed): sign in to your MTNode account once more and it is restored",
-    "本机存不住账号凭据（系统加密写得出读不回来）：请重新登录一次；若仍失败，重开应用后再登录":
-      "This machine cannot persist the account credential (system encryption writes data it cannot read back): sign in once more; if it still fails, restart the app and sign in again",
+       本轮口径（用户明确要求）：**永久移除**「本机凭据读不出来 / 请重新登录一次」这一整族文案
+       （代码、词条、横幅一起删），中转 401 由主进程静默换票 + 重试；
+       真救不回来只在界面上说一句「无效的 API Key」（词条见上）。
+       下面只留「登录态确实没了」时那句**去登录**（不是重登，也不是本机存不住）——
+       它的英文键在上面已登记过（同键重复登记会被后写的悄悄覆盖，见 test/smoke-filepeek.js），
+       这里不重复写。 */
     "服务端这次没有下发独立中转凭据：请点「刷新」，仍无则稍后再试（与是否重新登录无关）":
       "The server did not issue a relay credential this time: click “Refresh”; if it still fails, try again later (re-signing in will not help)",
-    "中转服务凭据即将到期：重新登录一次即可领取新的凭据":
-      "The relay credential expires soon: sign in once more to fetch a fresh one",
+
+    /* ── 中转卡上的明文 Key（设置 · 提供商）：完整值 + 复制 + 「更换 Key」──
+       本轮口径：中转 Key 就写在本机 config.json 那张卡上、卡上显示全文，
+       用户拿它直接配 Codex 等 OpenAI 兼容客户端；换票走按钮（服务端按账号自然日限 5 次）。 */
+    "这串就是中转 Key：可直接用于 Codex 等 OpenAI 兼容客户端（Base URL 即上面的接口地址）":
+      "This is your relay key: usable directly in Codex and other OpenAI-compatible clients (Base URL is the address above)",
+    "可直接用于 Codex 等 OpenAI 兼容客户端：Base URL 就是上面那行接口地址":
+      "Usable directly in Codex and other OpenAI-compatible clients: the Base URL is the address line above",
+    "复制中转 Key 到剪贴板": "Copy relay key to clipboard",
+    "中转 Key 已复制到剪贴板": "Relay key copied to clipboard",
+    "还没有取到中转 Key": "No relay key yet",
+    "还没有取到中转 Key：请先登录 MTNode 账号，或点「刷新中转清单」":
+      "No relay key yet: sign in to your MTNode account first, or click “Refresh relay list”",
+    "更换 Key": "Change key",
+    "更换中转 Key": "Change relay key",
+    "换一张新的中转 Key（旧 Key 立即失效）":
+      "Switch to a new relay key (the old key stops working immediately)",
+    "确定更换中转 Key？": "Change the relay key?",
+    "换新的之后旧 Key 立即失效：正在用旧 Key 的其它客户端（Codex、桌宠、别的电脑）需要重新复制这一串。":
+      "The old key stops working immediately after the switch: other clients still using it (Codex, the desktop pet, another computer) must copy the new key again.",
+    "今日还可更换 {n} 次（每天 5 次）": "{n} key changes left today (5 per day)",
+    "已更换中转 Key（旧 Key 已失效）":
+      "Relay key changed (the old key no longer works)",
+    "更换中转 Key 失败，请稍后重试":
+      "Failed to change the relay key, please try again later",
+    "今日更换次数已用完（5/5）": "Daily key-change limit reached (5/5)",
+    "请先登录 MTNode 账号": "Please sign in to your MTNode account first",
+    "服务端没有下发新的中转 Key，请稍后重试":
+      "The server did not return a new relay key, please try again later",
+    /* "中转服务凭据即将到期：重新登录一次即可领取新的凭据" 已撤：
+       到期前的换新由客户端自己完成（renderer/app-relay.js 的 syncIfStale → relay:me），
+       不再拿这句话让用户白重登。 */
+
+    /* 「去登录」的英文键在上面已有一条（同键重复登记会被后写的悄悄覆盖）。
+       「重新登录」这条**保留**：登录窗等别处仍在用 —— 本轮删的只是
+       「本机凭据读不出来 / 请重新登录一次」那一族凭据提示。 */
     "重新登录": "Sign in again",
-    "；凭据即将到期，重新登录一次即可换新":
-      "; the credential expires soon — sign in once more to replace it",
-    "；有效期至 ": "; valid until ",
+    /* "；凭据即将到期，重新登录一次即可换新" 与 "；有效期至 " 两条随卡的凭据说明行一起撤掉。 */
 
     /* ── 剪贴板图像 → 画布（画布 Ctrl+V 询问窗：renderer/app.js 的 clipImageAskDialog；
        设置 · 画布粘贴 小节的开关与这一批同源）── */

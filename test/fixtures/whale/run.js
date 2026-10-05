@@ -72,10 +72,10 @@ app.whenReady().then(() => {
                金圈 = R>G>B 且偏亮；圆心 = DeepSeek logo 的深蓝（B>R）。 */
             const js = `(function(){var ic=document.querySelector('#wlBalance .coin-ico');
               if(!ic) return null; var r=ic.getBoundingClientRect();
-              var ri=ic.querySelector('img'); var rr=ri?ri.getBoundingClientRect():null;
+              var lp=ic.querySelector('svg path[fill="#4D6BFE"]'); var lr=lp?lp.getBoundingClientRect():null;
               return {x:r.x,y:r.y,w:r.width,h:r.height,
                       page:{w:innerWidth,h:innerHeight,dpr:devicePixelRatio},
-                      img: ri?{x:rr.x,y:rr.y,w:rr.width,h:rr.height,ok:!!ri.naturalWidth,nat:ri.naturalWidth,src:ri.currentSrc}:null};})()`;
+                      logo: lp?{x:lr.x,y:lr.y,w:lr.width,h:lr.height,d:(lp.getAttribute('d')||'').slice(0,16),fill:lp.getAttribute('fill')}:null};})()`;
             return win.webContents.executeJavaScript(js).then((rect) => {
               if (!rect) {
                 say(false, "截不到金币位置（#wlBalance .coin-ico 不在 DOM）");
@@ -92,8 +92,11 @@ app.whenReady().then(() => {
               const crop = img.crop(box);
               const bmp = crop.toBitmap(); /* BGRA */
               const { width: cw, height: ch } = crop.getSize();
-              let gold = 0, blue = 0, total = 0, opaque = 0;
+              let gold = 0, blue = 0, total = 0, opaque = 0, brandExact = 0;
               const cx = cw / 2, cy = ch / 2;
+              /* 官方品牌蓝 #4D6BFE = rgb(77,107,254)：允许 ±6 的合成误差 */
+              const nearBrand = (r, g, b) =>
+                Math.abs(r - 77) <= 6 && Math.abs(g - 107) <= 6 && Math.abs(b - 254) <= 6;
               for (let y = 0; y < ch; y++) {
                 for (let x = 0; x < cw; x++) {
                   const i = (y * cw + x) * 4;
@@ -101,18 +104,27 @@ app.whenReady().then(() => {
                   total++;
                   if (a > 200) opaque++;
                   if (r > 170 && g > 110 && b < 150 && r >= g) gold++;
-                  /* 圆内 40% 半径看 logo 的深蓝 */
+                  if (nearBrand(r, g, b)) brandExact++;
+                  /* 圆内 40% 半径看 logo 的深蓝（官方品牌蓝 #4D6BFE：b 远大于 r） */
                   const dx = (x - cx) / cx, dy = (y - cy) / cy;
                   if (dx * dx + dy * dy < 0.16 && a > 200 && b > r + 12) blue++;
                 }
               }
               console.log("PIXEL 金币矩形 " + cw + "×" + ch + "（截图 " + JSON.stringify(img.getSize()) +
                 " / 页面 " + JSON.stringify(rect.page) + "）不透明 " + opaque + "/" + total +
-                " 金色像素 " + gold + " 圆内偏蓝像素 " + blue);
+                " 金色像素 " + gold + " 圆内偏蓝像素 " + blue +
+                " 命中官方品牌蓝 #4D6BFE 的像素 " + brandExact);
               say(gold > total * 0.15, "金币是真金色圆环（金像素占比 " + ((gold / total) * 100).toFixed(1) + "%）");
               say(blue > 4, "金币内部嵌着深蓝 logo（圆内偏蓝像素 " + blue + "）");
-              say(!!(rect.img && rect.img.ok), "金币里的 deepseek-logo.png 已解码到位（naturalWidth " +
-                (rect.img ? rect.img.nat : "无") + " · " + (rect.img ? rect.img.src : "无") + "）");
+              /* 光看「偏蓝」认不出是官方标志还是自绘的鱼：钉住**官方品牌蓝**这个具体色值 */
+              say(brandExact > 8, "圆内图形用的就是 DeepSeek 官方品牌蓝 #4D6BFE（命中 " + brandExact + " 像素）");
+              say(!!(rect.logo && rect.logo.fill === "#4D6BFE" && /^M23\.748 4\.482/.test(rect.logo.d)),
+                "金币里的 logo 是 DeepSeek 官方 path（fill " + (rect.logo ? rect.logo.fill : "无") +
+                " · d 起笔 " + (rect.logo ? rect.logo.d : "无") + "）");
+              say(!!rect.logo && rect.logo.w > 2 && rect.logo.w < rect.w && rect.logo.h > 2 && rect.logo.h < rect.h,
+                "官方 logo 落在金环内部且比金环小（logo " +
+                (rect.logo ? Math.round(rect.logo.w) + "×" + Math.round(rect.logo.h) + " / 环 " +
+                  Math.round(rect.w) + "×" + Math.round(rect.h) : "无") + "）");
             });
           })
           .catch((e) => console.log("SHOT 失败：" + ((e && e.message) || e)))

@@ -106,6 +106,97 @@ html[lang="en"] .logo-txt {
   letter-spacing: .5px
 }
 
+/* ── 「数据不落应用文件夹」警示（#logoWarn，renderer/app-boot.js 的 paintAppDirWarn）──
+   只有在主进程只读体检（app:dataAudit）真的查到有数据落在应用文件夹内时才由 JS 摘掉
+   hidden。**没命中（含拿不到结果 / JS 没跑起来）必须一点都不显示** —— 见下面
+   .topbar .logo-warn[hidden]：本文件的 display:flex 会盖掉浏览器默认的 [hidden]{display:none}，
+   不自己压回去，零命中时顶栏中段就会常驻一只**空的红框 + 警告三角**（同口径见
+   .topbar .btn-apps[hidden] / css/apps.css 第 16 行）。
+   位置：跟在 .logo 之后的兄弟节点，两侧自动边距 → 居中于 Logo 与右端按钮之间的空档；
+   单行不换行、太窄就省略号截断（绝不把右侧按钮挤走，也不遮 Logo）。红字 + 红 outline +
+   警告三角图标；完整说明与命中明细走 data-tip 即时悬停提示（文案由 JS 现算）。 */
+.logo-warn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--red);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+  position: relative
+}
+
+.logo-warn:hover,
+.logo-warn:focus-visible {
+  background: color-mix(in srgb, var(--red) 20%, transparent);
+  border-color: var(--red)
+}
+
+/* 没命中时**完全不显示**：上面的 display:flex 会盖掉浏览器默认的 [hidden]{display:none}
+   （本文件没有全局 [hidden] 兜底），所以这里自己压回去 —— 否则零命中时顶栏中段仍占位并
+   露出空红框与警告三角。JS 摘掉 hidden 即恢复 flex 显示。 */
+.topbar .logo-warn[hidden] {
+  display: none !important;
+}
+
+.logo-warn-ico {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--red)
+}
+
+.logo-warn-txt {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis
+}
+
+/* 悬停完整说明：与顶栏 .btn-ico / .tb-view 的 data-tip 同机制（即时、无原生延迟），
+   但本元素在最顶行，气泡改挂在元素**下方**，并允许折行（明细可能有多条）。 */
+.topbar .logo-warn[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(420px, 80vw);
+  padding: 6px 9px;
+  border: 1px solid var(--bd2);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.45;
+  text-align: left;
+  white-space: pre-line;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 60
+}
+
+.topbar .logo-warn[data-tip]:hover::after,
+.topbar .logo-warn[data-tip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible
+}
+
 .actions {
   display: flex;
   gap: 6px;

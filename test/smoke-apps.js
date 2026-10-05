@@ -15,8 +15,9 @@
  *
  * 覆盖：
  *   [1] 主进程真实执行：路径解析 / id 合法化 / zip 打包解包 / 新建应用目录结构 /
- *       导出 zip 只含三件套且不含画布 / 卸载只删子目录 / 落盘守卫（禁落应用目录）/
- *       配置写在数据目录
+ *       导出 zip = 整目录（含根目录脚本与子目录，不含画布 / 账本；上架包剔除 storage/）/
+ *       上架前体检 packAudit（完整应用通过、缺件与缺引用点名）/ 卸载只删子目录 /
+ *       落盘守卫（禁落应用目录）/ 配置写在数据目录
  *   [2] 独立窗口接线（源码断言）：ButtonWindow 选项、loadFile 入口页、title / 图标、
  *       不注册自定义协议、无网络面、随 MTNode 退出关闭
  *   [3] appHost 桥白名单（vm 真跑 preload-app.js）：只暴露白名单那些能力 + close；
@@ -212,6 +213,188 @@ async function closeWindowNow(id, budgetMs) {
 /* 冒烟应用目录（[1] 建出，[2] 真开窗口时再读） */
 let dir = "";
 
+/* ============ [16] 消息里点开应用详情：appsSpecById ↔ appsSpecOfBranch 必须不再互相回落 ============
+ * 用户报的报错：在「消息」弹窗里点一条打赏通知（app-messages.js → window.openAppsDetail(id)）
+ * 就 toast「渲染错误：Uncaught RangeError: Maximum call stack size exceeded @ app-apps.js:665」。
+ * 真因（%APPDATA%\pipeline-console\logs\error.log 的堆栈）：
+ *   appsSpecPoolAll ← appsSpecOfBranch ← appsSpecById ← appsSpecOfBranch ← appsSpecById ← … 无限递归。
+ * 这一节用**真实源码**（按函数名切出 app-apps.js 的那几个纯函数，喂进 vm 上下文真跑，
+ * 不另抄一份逻辑）覆盖两条最容易走到的入口，钉住：
+ *   ① 同 id 一条候选都没有（消息里的云端应用本机没装 / 目录还没拉到）→ 不递归、返回 null；
+ *   ② 详情窗入口 appsDetailSpecOf 即便拿不到条目也返回**对象**（调用方 appsIconEl / appsSpecTitle 才能安全取字段）；
+ *   ③ 反证：把旧写法放回同一个上下文 → 立刻 RangeError（这条用例就是它的回归闸）。
+ * 位置说明：放在 main() **之前**跑 —— 本文件收尾的 process.exit 会在 main() 的 await 走完之前
+ * 就结束进程（main 的 500+ 项检查因此从不输出），这一段同步执行才不会被跳过。 */
+{
+  console.log("[16] 消息里点开应用详情（原 bug：appsSpecById ↔ appsSpecOfBranch 互相回落 → 栈溢出）");
+  const SRC = read("renderer/app-apps.js");
+  const pick = (name) => {
+    const head = "function " + name + "(";
+    const i = SRC.indexOf(head);
+    if (i < 0) return "";
+    let d = 0, seen = false;
+    for (let j = i; j < SRC.length; j++) {
+      const ch = SRC[j];
+      if (ch === "{") { d++; seen = true; }
+      else if (ch === "}") { d--; if (seen && d === 0) return SRC.slice(i, j + 1); }
+    }
+    return SRC.slice(i);
+  };
+  /* 点名要测的函数（其余依赖自动解析：写死清单会随源码演进失效） */
+  const NAMES = [
+    "appsBranchIdOf", "appsCatalogList", "appsSpecById", "appsLocalById", "appsSpecTitle",
+    "appsNormForkOf", "appsMineOf", "appsTipsOf", "appsSpecWithTips", "appsMergeSameId",
+    "appsBranchesById", "appsBranchKeyOfSpec", "appsSpecPoolAll", "appsSpecOfBranch",
+    "appsSpecWithMine", "appsSpecPatchStoreUrls", "appsSpecListAll", "appsSpecPoolRaw",
+    "appsDetailBranchListOf", "appsDetailBranchOf", "appsDetailSpecOf", "appsIconUrl",
+    "appsLetterTile", "appsIconEl",
+  ];
+  /* 内建 / 环境名：源码里没有同名函数声明就不当依赖去切（URL、Object… 这类） */
+  const BUILTIN = new Set([
+    "apps", "URL", "Object", "String", "Number", "Array", "Map", "Set", "JSON", "Math",
+    "Date", "Boolean", "Promise", "parseInt", "parseFloat", "isFinite", "encodeURIComponent",
+    "decodeURIComponent", "setTimeout", "clearTimeout", "console", "window", "document",
+  ]);
+  const pickAll = (roots) => {
+    const out = [];
+    const seen = new Set();
+    const queue = roots.slice();
+    const unresolved = new Set();
+    while (queue.length) {
+      const name = queue.shift();
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const src = pick(name);
+      if (!src) { if (!BUILTIN.has(name)) unresolved.add(name); continue; }
+      out.push(src);
+      for (const m of src.matchAll(/\b(apps[A-Za-z0-9_]+)\s*\(/g)) {
+        const dep = m[1];
+        if (seen.has(dep)) continue;
+        /* 只切源码里真有函数声明的（否则是别处的全局，交给沙箱兜底） */
+        if (!SRC.includes("function " + dep + "(")) continue;
+        queue.push(dep);
+      }
+    }
+    return { code: out.join("\n"), unresolved: [...unresolved] };
+  };
+  const cut = pickAll(NAMES);
+  const missing = NAMES.filter((n) => !pick(n));
+  ok(
+    !missing.length && !cut.unresolved.length,
+    "从 renderer/app-apps.js 切出真实函数（点名缺：" + (missing.join(" / ") || "无")
+      + " · 依赖缺：" + (cut.unresolved.join(" / ") || "无") + "）",
+  );
+  /* 切出来的源码必须是**修好之后**的那一版：死 id 直接查表回落 null，不再回调对方 */
+  ok(
+    SRC.indexOf("if (!want) return list[0] || appsSpecById(id) || null;") < 0 &&
+      SRC.indexOf("return appsSpecOfBranch(id, \"\");") < 0,
+    "源码里已不存在「appsSpecOfBranch ← appsSpecById」这对互相回落的写法",
+  );
+
+  const EP = { id: "sudoku", title: "数独" };
+  const DEEP = "目录第 0 条（同 id 的旁支）";
+  const sandbox = {
+    console,
+    window: { I18n: { getLocale: () => "zh" } },
+    document: {
+      createElement: () => ({
+        style: {}, dataset: {},
+        setAttribute() {}, appendChild() {}, addEventListener() {}, replaceWith() {},
+      }),
+    },
+    APPS_ST: {
+      cat: { source: "api", sourceBase: "https://store.example", apps: [{ id: "sudoku", title: "数独" }, { id: "other", title: "别的" }] },
+      list: { apps: [{ id: EP.id, name: EP.title, owner: "me", ownerId: "u_me" }] },
+      mine: null,
+      tips: null,
+    },
+    APPS_DETAIL: { id: EP.id, branchOwnerId: "", ver: null },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    cut.code + "\n" + NAMES.map((n) => "this." + n + " = " + n + ";").join("\n"),
+    sandbox,
+    { filename: "renderer/app-apps.js(切片)" },
+  );
+
+  /* ① 同 id 一条候选都没有：修好的代码在这里必须是 null（旧写法在这里无限递归） */
+  sandbox.APPS_ST.cat.apps = [];
+  sandbox.APPS_ST.list.apps = [];
+  let bad = "";
+  try {
+    if (sandbox.appsSpecById("nowhere") !== null) bad = "未返回 null";
+  } catch (e) {
+    bad = String((e && e.message) || e);
+  }
+  ok(!bad, "同 id 一条候选都没有：appsSpecById 返回 null，不再走 appsSpecOfBranch ↔ appsSpecById 的死循环（" + (bad || "ok") + "）");
+  bad = "";
+  try {
+    if (sandbox.appsSpecOfBranch("nowhere", "") !== null) bad = "未返回 null";
+  } catch (e) {
+    bad = String((e && e.message) || e);
+  }
+  ok(!bad, "同 id 一条候选都没有：appsSpecOfBranch(id, \"\") 同样返回 null（" + (bad || "ok") + "）");
+
+  /* ①b 反证：把旧写法临时塞回沙箱（同一个 vm 上下文里重定义那两个函数）——
+        这正是 %APPDATA%\...\logs\error.log 里那条 RangeError 的成因；本用例就是它的回归闸。 */
+  const proof = (() => {
+    try {
+      vm.runInContext(
+        "appsSpecById = function (id) { return appsSpecOfBranch(id, \"\"); };\n" +
+          "appsSpecOfBranch = function (id, ownerId) {\n" +
+          "  const want = String(ownerId || \"\").trim();\n" +
+          "  const list = appsSpecPoolAll().filter((s) => appsBranchIdOf(s) === String(id || \"\"));\n" +
+          "  if (!want) return list[0] || appsSpecById(id) || null;\n" +
+          "  return list.find((s) => String(s.ownerId || \"\") === want) || null;\n" +
+          "};",
+        sandbox,
+      );
+      sandbox.appsSpecById("nowhere");
+      return ""; /* 没炸 = 反证不成立（说明上面的断言抓不住这个 bug，要重写） */
+    } catch (e) {
+      return String((e && e.message) || e);
+    }
+  })();
+  ok(
+    /Maximum call stack size exceeded/i.test(proof),
+    "反证：把旧写法放回同一个上下文 → 立刻 RangeError（" + (proof || "没炸：反证不成立！") + "）",
+  );
+  /* 反证之后把真源码重新装一遍，后面的用例仍跑真实实现 */
+  vm.runInContext(
+    cut.code + "\n" + NAMES.map((n) => "this." + n + " = " + n + ";").join("\n"),
+    sandbox,
+    { filename: "renderer/app-apps.js(切片·复位)" },
+  );
+
+  /* ② 详情窗入口：拿不到条目时也必须回对象（旧代码同样在这里溢出） */
+  let spec = null;
+  bad = "";
+  try {
+    spec = sandbox.appsDetailSpecOf("nowhere");
+  } catch (e) {
+    bad = String((e && e.message) || e);
+  }
+  ok(!bad && !!spec && typeof spec === "object", "拿不到条目时 appsDetailSpecOf 仍回对象（不会把 RangeError 抛给 openAppsDetail）");
+  bad = "";
+  try {
+    sandbox.appsIconEl(spec || {}, "数独");
+  } catch (e) {
+    bad = String((e && e.message) || e);
+  }
+  ok(!bad, "详情头的图标渲染能吃下这份空条目（{}.id / 没有 urls.icon 都不炸）");
+
+  /* ③ 修好了但没改坏：候选表里有条目时照旧取主干那条（目录顺序：第一条 = 主干） */
+  sandbox.APPS_ST.cat.apps = [{ id: EP.id, title: EP.title, owner: "me", ownerId: "u_me" }, { id: DEEP }];
+  const hit = sandbox.appsSpecById(EP.id);
+  ok(!!hit && hit.id === EP.id, "候选表里有条目时 appsSpecById 照旧取同 id 的第一条（主干口径未变）");
+  const named = sandbox.appsSpecOfBranch(EP.id, "me");
+  ok(!!named && named.id === EP.id, "appsSpecOfBranch(id, 作者) 仍按作者命中那一支（分支寻址未变）");
+  ok(
+    sandbox.appsSpecListAll().some((s) => s.id === EP.id),
+    "appsSpecListAll（列表 / 标签筛选）照旧出这一条",
+  );
+}
+
 main();
 
 /* ============ [1] 主进程真实执行 ============ */
@@ -274,12 +457,18 @@ async function main() {
   ok(listed.apps.some((a) => a.id === "smoke-app"), "listApps 包含刚建的应用");
   ok(listed.apps.find((a) => a.id === "smoke-app").canvasExists === false, "新应用的画布镜像尚不存在（canvasExists=false）");
 
-  /* 导出 zip：只含 app.json + index.html + assets/**，**不含画布、storage 与 installed 账本** */
+  /* 导出 zip：**整目录打包**（app.json + 入口页 + assets/** + 任意脚本 / 样式 / 子目录），
+     **不含画布、installed 账本与本机生成物**；本地导出**保留** storage/（换机搬家连存档一起走），
+     上架包（forUpload）才剔除它 —— 线上事故：旧实现只打 app.json + 入口页 + assets/**，
+     根目录放 game.js / style.css 的应用上架后，下载者拿到的是跑不起来的空壳。 */
   fs.mkdirSync(path.join(dir, "assets"), { recursive: true });
   origWrite(path.join(dir, "assets", "a.txt"), "hello", "utf8");
   origWrite(path.join(dir, "storage", "store.json"), "{\"kv\":{\"k\":1}}", "utf8");
   origWrite(path.join(dir, "冒烟应用.mtnodes"), "{\"nodes\":[]}", "utf8");
-  /* storage/ 也在目录里：导出必须跳过它（它是用户数据，不进包） */
+  origWrite(path.join(dir, "app.js"), "console.log(1);", "utf8");
+  origWrite(path.join(dir, "style.css"), "body{}", "utf8");
+  fs.mkdirSync(path.join(dir, "lib"), { recursive: true });
+  origWrite(path.join(dir, "lib", "util.js"), "export const a=1;", "utf8");
   const ex = store.exportZip("smoke-app");
   ok(ex && ex.ok, "exportZip 成功");
   const exBack = path.join(TMP, "exported");
@@ -294,8 +483,54 @@ async function main() {
   })(exBack, "");
   ok(names.includes("app.json") && names.includes("index.html"), "导出 zip 含 app.json + index.html");
   ok(names.includes("assets/a.txt"), "导出 zip 含 assets/**");
+  ok(names.includes("app.js") && names.includes("style.css") && names.includes("lib/util.js"), "导出 zip 含根目录脚本 / 样式与任意子目录（多文件应用不再丢件）");
   ok(!names.some((n) => /\.mtnodes$/.test(n)), "导出 zip **不含画布**（.mtnodes）");
-  ok(!names.some((n) => /^storage\//.test(n)) && !names.some((n) => /^installed\.json$/.test(n)), "导出 zip 不含 storage/ 与 installed.json");
+  ok(!names.some((n) => /^installed\.json$/.test(n)), "导出 zip 不含 installed.json");
+  ok(names.includes("storage/store.json"), "本地导出**保留** storage/（换机搬家连存档一起走）");
+  const up = store.exportZip("smoke-app", { forUpload: true });
+  ok(up && up.ok, "exportZip(forUpload) 成功");
+  store.unzipBuffer(fs.readFileSync(up.path), path.join(TMP, "exported-up"));
+  const upNames = fs.existsSync(path.join(TMP, "exported-up", "storage"))
+    ? fs.readdirSync(path.join(TMP, "exported-up", "storage"))
+    : [];
+  ok(upNames.length === 0, "上架包剔除 storage/（不把作者本机存档发给下载者）");
+  ok(
+    fs.existsSync(path.join(TMP, "exported-up", "app.js")) && fs.existsSync(path.join(TMP, "exported-up", "lib", "util.js")),
+    "上架包同样带上根目录脚本与子目录",
+  );
+
+  /* 上架前体检：真读目录 + 真跑打包口径 —— 完整应用报通过，缺件应用点名到文件 */
+  const au = store.packAudit({ id: "smoke-app" });
+  ok(au && au.ok && au.apps.length === 1, "packAudit 只查指定应用");
+  ok(
+    au.apps[0].ok === true && au.apps[0].droppedUnknown === 0,
+    "完整应用体检通过（打包实现没漏任何应用文件）",
+  );
+  ok(
+    au.apps[0].dropped.some((d) => d.rel === "storage/store.json" && d.reason === "storage"),
+    "体检如实列出「本来就不随包」的本机存档（reason=storage）",
+  );
+  origWrite(path.join(dir, "index.html"), '<script src="./missing.js"></script>', "utf8");
+  const au2 = store.packAudit({ id: "smoke-app" });
+  ok(au2.apps[0].refsMissing.some((x) => x.rel === "missing.js"), "入口页引用了目录里没有的脚本 → 体检点名");
+  ok(au2.apps[0].ok === false, "有缺失引用 → 体检不通过");
+  origWrite(path.join(dir, "index.html"), entryHtml, "utf8");
+  /* 体检与打包**必须同源**：体检的「包内」就是真跑打包实现数出来的，两处的丢件口径只此一处
+     （否则体检永远说「通过」而包还是缺文件）—— 源码钉住 + excludeExtra 注入点真作用得上 */
+  const auditSrc = (() => {
+    const s = fs.readFileSync(path.join(ROOT, "apps-store.js"), "utf8");
+    const i = s.indexOf("function packAudit(");
+    return i < 0 ? "" : s.slice(i, i + 6000);
+  })();
+  ok(
+    /packEntriesOf\(dir, id, packOpts\)/.test(auditSrc) && /if \(packRel\[rel\]\) continue;/.test(auditSrc),
+    "体检 = 真跑打包实现 + 拿包内清单比对（同源，不是另写一份名单）",
+  );
+  const exX = store.exportZip("smoke-app", { excludeExtra: ["app.js"] });
+  ok(exX && exX.ok && exX.files === ex.files - 1, "打包口径的 excludeExtra 注入点真的作用在实现上");
+  const au3 = store.packAudit("");
+  ok(au3 && au3.ok && Array.isArray(au3.apps) && au3.apps.some((r) => r.id === "smoke-app"), "packAudit 不传 id = 查全部本机应用");
+  ok(au3.apps[0].dropped.every((d) => d.reason !== "unknown"), "打包实现不丢应用文件（unknown 丢件恒为空）");
 
   /* 落盘守卫：镜像 / 导出 / 配置一律不写进应用目录（app.getAppPath() = 仓库根） */
   const insideApp = written.filter((p) => store.isInsideAppDir(p));
@@ -500,7 +735,51 @@ async function main() {
   const hostCh = handlers.map((h) => h.replace(/.*"apps:/, "").replace(/"$/, "")).filter((c) => c.startsWith("host"));
   const BAD_CH = ["hostManifest", "hostOpenExternal", "hostText"];
   ok(hostCh.filter((c) => BAD_CH.includes(c)).length === 0, "主进程不注册白名单外的 appHost 通道");
-  ok(hostCh.includes("hostTextStream") && hostCh.includes("hostImage") && hostCh.includes("hostStorageGet") && hostCh.includes("hostStorageSet") && hostCh.includes("hostStorageAll") && hostCh.includes("hostStorageRemove") && hostCh.includes("hostAccount"), "主进程恰好注册白名单那 7 个 appHost 通道");
+  ok(
+    hostCh.includes("hostTextStream") &&
+      hostCh.includes("hostImage") &&
+      hostCh.includes("hostStorageGet") &&
+      hostCh.includes("hostStorageSet") &&
+      hostCh.includes("hostStorageAll") &&
+      hostCh.includes("hostStorageRemove") &&
+      hostCh.includes("hostAccount"),
+    "主进程注册了基座那 7 个 appHost 通道（文本流 / 图像 / 本机存储 4 条 / 账号）",
+  );
+  /* 本轮新增：图像通道那条完整链路（流式 / 取消 / 清单 / 选择）+ 应用自报能力位 ——
+     应用侧默认就能调 MTNode 已配好的图像生成能力，语音听写则由能力位决定注不注入。 */
+  ok(
+    hostCh.includes("hostImageStream") &&
+      hostCh.includes("hostImageCancel") &&
+      hostCh.includes("hostImageModels") &&
+      hostCh.includes("hostImageModel") &&
+      hostCh.includes("hostImageSetModel") &&
+      hostCh.includes("hostCapabilities"),
+    "主进程注册图像通道那 5 条 + 应用能力位自报（hostCapabilities）",
+  );
+  ok(
+    APPS_SRC.indexOf("function usableImageProviders(") >= 0 &&
+      APPS_SRC.indexOf("providerHasKind(cfg, p, \"image\")") >= 0 &&
+      APPS_SRC.indexOf("LOCAL_IMAGE_PROVIDER_ID") >= 0,
+    "可用图像后端按模型形态认 + 本机 SenseNova 走同一份清单（不再只看服务商 type）",
+  );
+  /* 默认 footer 的听写等内容隐藏（本轮共识）：宿主注入闸门看 capabilities.showDictate（默认 false），
+     挂上来的那条也默认带隐藏标记；默认欢迎页与脚手架的页脚说明文案一起清掉。 */
+  {
+    const PRE_APP_SRC = read("preload-app.js");
+    ok(
+      PRE_APP_SRC.indexOf("capabilities.showDictate === true") > 0,
+      "听写条注入闸门看 showDictate（默认 false = 应用窗口 footer 默认没有听写条）",
+    );
+    ok(
+      read("renderer/app-speech-ui.js").indexOf('"data-mtnode-hidden"') > 0,
+      "注入进来的听写条默认隐藏（data-mtnode-hidden + display:none），脚本仍可唤起",
+    );
+    ok(
+      read("templates/app-default/index.html").indexOf("footText") < 0 &&
+        read("templates/app-scaffold/index.html").indexOf("foot-note") < 0,
+      "模板页脚说明文案已删（默认欢迎页 / 脚手架都不再默认塞说明字）",
+    );
+  }
   ok(
     hostCh.includes("hostModels") && hostCh.includes("hostModel") && hostCh.includes("hostSetModel") && hostCh.includes("hostPickImage"),
     "主进程注册模型继承与选图那四个通道（模型清单 / 读选择 / 改选择 / 选图）",
@@ -2181,7 +2460,7 @@ async function previewSections() {
     "安装账本记 owner / ownerId（「同作者才给更新」靠它判）",
   );
   ok(
-    STORE_SRC.indexOf("const keepMan = readManifest(targetDir) || {};") >= 0 &&
+    STORE_SRC.indexOf('const keepMan = readManifest(appDirOf(root, id) || "") || {};') >= 0 &&
       STORE_SRC.indexOf("dev: keepMan.dev === true") >= 0,
     "覆盖安装 / 更新前先留本机 dev / forkOf（一次更新不会把应用踢回「库」页）",
   );
@@ -2190,34 +2469,58 @@ async function previewSections() {
   ok(
     RENDERER.indexOf("function appsAuthorOf(") >= 0 &&
       RENDERER.indexOf("function appsSameAuthor(") >= 0 &&
-      RENDERER.indexOf("function appsBranchKeyOf(") >= 0 &&
-      RENDERER.indexOf("function appsBranchesOf(") >= 0,
-    "app-apps.js：作者 / 同作者 / 分支归组三个判据都在",
+      RENDERER.indexOf("function appsBranchesById(") >= 0,
+    "app-apps.js：作者 / 同作者 / 分支归组（同 id，§十）三个判据都在",
   );
   ok(
-    RENDERER.indexOf('appsT("开发中"), "dev"') >= 0 && CSS.indexOf(".apps-badge-dev") >= 0,
-    "「应用」页卡片给开发中的应用加「开发中」徽标（含样式）",
+    /function appsCatalogBadges\(spec\) \{\s*return \[\];/.test(RENDERER),
+    "「应用」页卡片与详情头部不再挂任何 chip 徽标（本轮口径：连「开发中」在内全部去掉）",
   );
   ok(
     RENDERER.indexOf('appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id))') >= 0 &&
-      RENDERER.indexOf('appsMiniBtn(busy ? appsT("下载中…") : appsT("下载"), () => appsDownload(id, ""), true)') >= 0,
-    "已装 = 启动（不再显示下载）；未装 = 下载",
+      RENDERER.indexOf('appsMiniBtn(busy ? appsT("下载中…") : appsT("下载"), () => appsOpenDetailForPick(id))') >= 0,
+    "已装 = 启动（不再显示下载）；未装 = 下载（点了先开详情选分支与版本）",
   );
   ok(
-    RENDERER.indexOf("spec.updateAvailable && appsSameAuthor(spec)") >= 0,
-    "「更新」按钮只在同作者时出现",
+    RENDERER.indexOf("const upTarget = spec ? appsCardUpdateTargetOf(spec) : null;") >= 0,
+    "「更新」按钮走 appsCardUpdateTargetOf（本机已装那一支的作者最新版）",
+  );
+  /* 同 id 多分支（docs/apps-market.md §十，本轮）：旧的「切换分支 ▾」（按 forkOf.id 归组、
+     列不同 id 的 fork 条目）已按用户共识去掉，换成「合并成一张卡 + 详情里的多层分支树」。 */
+  ok(
+    RENDERER.indexOf("function appsBranchBtnEl(") < 0 &&
+      RENDERER.indexOf('appsMiniBtn(appsT("切换分支") + " ▾"') < 0,
+    "旧的「切换分支 ▾」已去掉（分支统一走详情里的树）",
   );
   ok(
-    RENDERER.indexOf("function appsBranchBtnEl(") >= 0 &&
-      RENDERER.indexOf('appsMiniBtn(appsT("切换分支") + " ▾"') >= 0 &&
-      RENDERER.indexOf("if (bid === id || b.installed) appsOpenApp(bid);") >= 0,
-    "存在其他作者分支 → 「切换分支 ▾」列出同源条目（已装 = 启动 / 未装 = 下载到它自己的 id）",
+    RENDERER.indexOf("function appsBranchTreeEl(") >= 0 &&
+      RENDERER.indexOf("function appsBranchChildrenMap(") >= 0 &&
+      RENDERER.indexOf('row.style.setProperty("--br-depth", String(r.depth))') >= 0,
+    "分支树：根 = 原作者，其余按 parentOwnerId 逐级向右缩进（多层折线树）",
   );
   ok(
-    RENDERER.indexOf("appsCatalogUpdate(spec)") >= 0 &&
-      RENDERER.indexOf("正在开发中（本机这一份带「开发中」标记）") >= 0 &&
+    RENDERER.indexOf("function appsMergeSameId(") >= 0 &&
+      RENDERER.indexOf("branchSummary") >= 0 &&
+      RENDERER.indexOf("appsBranchTotalVersions") >= 0,
+    "同 id 的多个作者条目合并成一张卡（卡上给「N 个分支 · M 个版本」）",
+  );
+  ok(
+    CSS.indexOf(".apps-brtree") >= 0 &&
+      CSS.indexOf(".apps-br-elbow") >= 0 &&
+      CSS.indexOf(".apps-br-sel") >= 0 &&
+      CSS.indexOf(".apps-br-acts") >= 0,
+    "分支树样式齐（树身 / 折线 / 选中分支区 / 动作区）",
+  );
+  ok(
+    RENDERER.indexOf("appsDownload(id, local ? \"update\" : \"\", ver, ownerId)") >= 0 &&
+      RENDERER.indexOf("function appsSpecOfBranch(") >= 0,
+    "树上逐版下载带上分支作者（ownerId 寻址）",
+  );
+  ok(
+    RENDERER.indexOf("正在开发中（本机这一份带「开发中」标记）") >= 0 &&
+      RENDERER.indexOf("不会被覆盖：storage/") >= 0 &&
       RENDERER.indexOf("confirmDialog") >= 0,
-    "开发中的应用点更新要二次确认（写明会覆盖 app.json / 入口页 / assets）",
+    "开发中的应用点更新要二次确认（写明会覆盖 app.json / 入口页 / assets，并写明哪些不会被覆盖）",
   );
   ok(RENDERER.indexOf('push(appsT("二次开发自"), fo.id') >= 0, "详情显示「二次开发自」（源 id + 原作者账号）");
   ok(
@@ -2325,20 +2628,21 @@ async function previewSections() {
       DEV.indexOf('sideFoot.className = "apps-dev-sidefoot"') >= 0,
     "「＋ 新建应用」从顶栏菜单条移到左栏列表底部",
   );
+  /* 预览加载提示（本轮口径：黑幕换成一行小字）：只在切应用那一下露出、load 完成收起 + 超时兜底 */
   ok(
-    DEV.indexOf("function appsDevCurtainShouldShow(cur)") >= 0 &&
-      DEV.indexOf("const curtainOn = appsDevCurtainShouldShow(cur);") >= 0 &&
-      DEV.indexOf("if (curtainOn) appsDevCurtainShow();") >= 0 &&
-      DEV.indexOf("appsDevCurtainDrop();") >= 0 &&
-      DEV.indexOf("DEVD.curtainTimer = setTimeout(() => appsDevCurtainDrop(), 2500);") >= 0,
-    "预览黑幕：只在切应用时盖（首次进页 / 刷新预览不盖），load 完成撤幕 + 超时兜底",
+    DEV.indexOf("function appsDevLoadingShow()") >= 0 &&
+      DEV.indexOf("function appsDevLoadingHide()") >= 0 &&
+      DEV.indexOf("APPS_DEV_LOADING_FALLBACK_MS") >= 0 &&
+      DEV.indexOf('el.className = "apps-dev-loading";') >= 0 &&
+      DEV.indexOf("appsDevLoadingShow();") >= 0 &&
+      DEV.indexOf("appsDevCurtain") < 0,
+    "预览加载提示：只在切应用时露出（首次进页 / 刷新预览不露），load 完成收起 + 超时兜底（旧黑幕已删）",
   );
   ok(
-    CSS.indexOf(".apps-dev-curtain {") >= 0 &&
-      CSS.indexOf(".apps-dev-curtain.hide {") >= 0 &&
-      CSS.indexOf("background: #000;") >= 0 &&
+    CSS.indexOf(".apps-dev-loading {") >= 0 &&
+      CSS.indexOf(".apps-dev-curtain") < 0 &&
       CSS.indexOf("background: #fff;\n}\n\n.apps-dev-frame") < 0,
-    "css：预览底色改不透明黑 + 黑幕淡出（不再闪白）",
+    "css：预览加载提示那行小字在册，黑幕那层样式已撤（不再闪白 / 不再盖黑）",
   );
   ok(
     FLOW.indexOf("async function appsMigrateToDev(") >= 0 &&
@@ -2406,7 +2710,12 @@ async function previewSections() {
     SERVER.indexOf("function normalizeForkOf(") >= 0 && SERVER.indexOf("forkOf: appForkOfPublic(a)") >= 0,
     "服务端：接受·保存·目录输出 forkOf（契约 §八）",
   );
-  ok(SERVER.indexOf("if (selfId && id === selfId) return null;") >= 0, "服务端：自指 fork 声明一律当没声明");
+  /* 本轮共识改了自指的判据：**同 id 同作者**才算自指（当没声明）；
+     同 id 但基于**别人**那条分支开发 = 合法的分支声明（服务端会自动落它）。 */
+  ok(
+    SERVER.indexOf("if (selfId && id === selfId && (!selfOwnerId || ownerId === selfOwnerId)) return null;") >= 0,
+    "服务端：自指 fork 声明（同 id 且同作者）当没声明；同 id 不同作者 = 合法分支声明",
+  );
   ok(
     (SERVER.match(/if \(b\.forkOf !== undefined\)/g) || []).length === 2,
     "追加版本 / PATCH 两条路都支持改 forkOf（null = 清回原创，不带键 = 保持原样）",
@@ -2621,6 +2930,7 @@ async function previewSections() {
   );
 }
 
+
   Module._load = realLoad;
   fs.writeFileSync = origWrite;
   fs.renameSync = origRename;
@@ -2628,7 +2938,7 @@ async function previewSections() {
     fs.rmSync(TMP, { recursive: true, force: true });
   } catch {}
 
-  console.log("\n" + (fails ? "FAILED " + fails + " / " : "PASS ") + checks + " 项检查");
+console.log("\n" + (fails ? "FAILED " + fails + " / " : "PASS ") + checks + " 项检查");
 }
 
 /* ==================== 已并入：test/smoke-apps-dev-sidebar.js ==================== */
@@ -2900,29 +3210,32 @@ async function previewSections() {
     ok(s.calls.configSave.length === 1, "同值不重复落盘（重绘不刷盘）");
   }
 
-  /* ============================ [4] 预览黑幕 ============================ */
-  console.log("[4] 切应用的预览黑幕（appsDevCurtainShouldShow / Show / Drop）");
+  /* ============================ [4] 切应用的预览加载提示 ============================ */
+  /* 本轮口径：切开那块黑幕（.apps-dev-curtain / appsDevCurtain*）已被删掉，换成预览区中央
+     一行小字「正在加载…」（appsDevLoadingShow / Hide，只在换应用那一下露出）。 */
+  console.log("[4] 切应用的预览加载提示（appsDevLoadingShow / appsDevLoadingHide）");
   {
     const s = build();
     s.DEVD.frameWrap = s.wrap;
-    ok(s.get("appsDevCurtainShouldShow(\"app-new\")") === false, "首次进开发页不盖幕（lastApp 还是空）");
-    s.DEVD.lastApp = "app-new";
+    s.get("appsDevLoadingShow()");
+    const el = s.get("DEVD.loadingEl");
+    ok(!!el && s.wrap.contains(el), "Show：提示真的挂在预览容器（.apps-dev-framewrap）里");
+    ok(el._cls.has("apps-dev-loading"), "提示类名 = .apps-dev-loading（css 里那行居中小字）");
+    ok(String(el.textContent || "").indexOf("正在加载") === 0, "提示正文 =「正在加载…」（不再是黑幕）");
+    /* 沙箱里 setTimeout 是桩（回 0），所以这里只钉「真的挂了兜底」这一点 */
+    ok(s.get("DEVD.loadingTimer") !== null, "Show：挂了超时兜底（load 事件没来也得收起）");
+    /* 同一时刻只许有一行：再 Show 一次不会叠出第二行 */
+    s.get("appsDevLoadingShow()");
+    ok(s.wrap.children.filter((c) => c._cls && c._cls.has("apps-dev-loading")).length === 1, "Show 幂等：不会叠出第二行提示");
+    s.get("appsDevLoadingHide()");
+    ok(s.get("DEVD.loadingEl") === null && !s.wrap.contains(el), "Hide：元素摘掉、引用清空");
+    ok(Number(s.get("DEVD.loadingTimer")) === 0, "Hide：超时兜底一起清");
+    s.get("appsDevLoadingHide()");
+    ok(true, "Hide 幂等：没露着时再调不抛错（load 与超时会同时到）");
     ok(
-      s.get("appsDevCurtainShouldShow(\"app-new\")") === false,
-      "同一个应用重绘不盖幕（日常「刷新预览」不闪黑）",
+      read("renderer/app-apps-dev.js").indexOf("appsDevCurtain") < 0,
+      "旧黑幕那套（appsDevCurtain*）已删干净（源码里不再有）",
     );
-    ok(s.get("appsDevCurtainShouldShow(\"app-mid\")") === true, "换应用才盖幕");
-    ok(s.get("appsDevCurtainShouldShow(\"\")") === false, "没有选中应用时不盖幕");
-    s.get("appsDevCurtainShow()");
-    const cur = s.get("DEVD.curtainEl");
-    ok(!!cur && s.wrap.contains(cur), "Show：黑幕真挂在预览容器（.apps-dev-framewrap）里");
-    ok(cur._cls.has("apps-dev-curtain"), "黑幕类名 = .apps-dev-curtain（css 里那层不透明黑）");
-    ok(Number(s.get("DEVD.curtainTimer")) >= 0, "Show：挂了超时兜底（load 事件没来也得撤幕）");
-    s.get("appsDevCurtainDrop()");
-    ok(s.get("DEVD.curtainEl") === null, "Drop：引用清掉");
-    ok(cur._cls.has("hide"), "Drop：加 .hide（淡出，不是硬切）");
-    s.get("appsDevCurtainDrop()");
-    ok(true, "Drop 幂等：没幕时再调不抛错（load 与超时会同时到）");
   }
 
   /* ============================ [5] 左栏真画出来了（app-assist.js 应用分组渲染） ============================ */
@@ -3515,4 +3828,290 @@ async function previewSections() {
 
 /* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
 if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+
+/* ==================== [13] 本轮需求（独立块） ==================== */
+(function () {
+  const fs = require("fs"), path = require("path"), vm = require("vm");
+  const ROOT = path.join(__dirname, "..");
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel.split("/").join(path.sep)), "utf8");
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; console.log("FAIL  " + msg); } };
+/* ==================== [13] 本轮需求：应用中心与详情（分支树 / 去芯片 / 币图标） ====================
+ * 五条用户口径的界面回归（源码断言 + 真跑 app-whalecoin.js）：
+ *   ① 卡片与详情不显示「开发中」等 chip、不显示分支与版本，只显示原作者 + 当前版本作者；
+ *   ② 详情先给一棵**多层**分支树（根 = 原作者，与当前版本无关），选中后下方才出现下载 / 覆盖 / 启动；
+ *   ③ 卡片动作行：下载 → 先开详情；启动 → 更新（指向本机已装那一支的作者最新版）→ 其他版本；
+ *   ④ 移除「看分支」；存在其他版本时显示「其他版本」；
+ *   ⑤ 全应用把「币」字 / 金币 emoji 换成鲸圆币图标（真跑 MtCoin 验 SVG 与「中文不写单位词」）。 */
+  console.log("\n[13] 本轮需求：应用中心分支树 · 去芯片 · 鲸圆币图标");
+  const APPS = read("renderer/app-apps.js");
+  const CSS = read("renderer/css/apps.css");
+  const I18N = read("renderer/i18n.js");
+  const HTML = read("renderer/index.html");
+
+  /* ① chip 全部去掉 + 版本文字不再占卡片 / 头部 */
+  ok(/function appsCatalogBadges\(spec\) \{\s*return \[\];/.test(APPS),
+    "徽标出口 appsCatalogBadges 返回空（开发中 / 已下载 / 可更新 / 多分支 / 我上架的 / 已下架全去掉）");
+  const tileFn = APPS.slice(APPS.indexOf("function appsTileEl("), APPS.indexOf("function appsCloudTarget("));
+  ok(tileFn.indexOf('appsT("版本 ")') < 0 && tileFn.indexOf("apps-tile-ver") < 0,
+    "卡片不再单列版本号（版本只在分支树上）；库页那一行本机属性不受影响");
+  ok(APPS.indexOf('appsT("云端 v")') < 0 && APPS.indexOf('appsT("本机 v")') < 0,
+    "详情头部不再写「云端 vX / 本机 vX」");
+  ok(/appsT\("原作者 "\) \+ author/.test(APPS) && /appsT\(" · 当前版本作者 "\) \+ localAuthor/.test(APPS),
+    "卡片作者行 = 原作者 + 本机已装那一支的作者");
+  ok(/appsT\("原作者 "\) \+ rootAuthor/.test(APPS) && /appsT\(" · 当前版本作者 "\) \+ curAuthor/.test(APPS),
+    "详情头部 = 原作者 + 当前选中分支的作者");
+  ok(!/appsT\("命中分支/.test(APPS) && !/命中分支：/.test(APPS), "不再有「命中分支」这个叫法（只留注释里的历史说明）");
+
+  /* ② 多层分支树（根 = 原作者；与当前版本无关）+ 选中后才出下载 / 覆盖 / 启动 */
+  ok(/function appsBranchChildrenMap\(branches\)/.test(APPS) && /parentOwnerId/.test(APPS),
+    "分支树按 parentOwnerId 挂多层（谁基于谁开发就挂在谁下面）");
+  ok(/function appsBranchTreeVerSelEl\(id, branch, opts\)/.test(APPS),
+    "选中分支后的「这一支的版本 + 动作」是独立一块");
+  ok(/if \(withSel && sel\) \{/.test(APPS) && /const withSel = !!o\.withSel;/.test(APPS),
+    "只有开了 withSel 的调用方（应用详情）才有选中态与下载入口；上架窗复用同一棵树不受影响");
+  ok(/withSel: true,/.test(APPS), "详情把 withSel 传进去（点分支 → 下方出现版本与下载）");
+  ok(/appsBranchTreeSelect\(id, b, o\.onSelect\)/.test(APPS) && /APPS_DETAIL\.branchOwnerId = key/.test(APPS),
+    "点分支 = 记进 APPS_DETAIL.branchOwnerId 并重绘（保持滚动位置）");
+  const treeFn = APPS.slice(APPS.indexOf("function appsBranchTreeEl("), APPS.indexOf("function appsBranchTreeSelect("));
+  ok(treeFn.indexOf("APPS_DETAIL.branchOwnerId") >= 0 && treeFn.indexOf("tree.trunk") >= 0,
+    "树的默认选中 = 原作者（主干），与「本机装的是哪一支」无关");
+  ok(/appsT\("已选："\)/.test(APPS) && /appsT\("原作者"\)/.test(APPS), "树上标出「原作者」与「已选：…」");
+  ok(/for \(const b of tree\.list\) \{[\s\S]{0,220}walk\(b, 0, true, ""\)/.test(APPS),
+    "脏数据（父键指不到 / 成环）时其余分支平铺在末尾 —— 任何一条分支都不会从树上消失");
+
+  /* ③ 卡片动作行 */
+  const actsFn = APPS.slice(APPS.indexOf("function appsFillCatalogActions("), APPS.indexOf("function appsCardUpdateTargetOf("));
+  ok(/appsMiniBtn\(busy \? appsT\("下载中…"\) : appsT\("下载"\), \(\) => appsOpenDetailForPick\(id\)\)/.test(actsFn),
+    "未装：点「下载」先开详情界面（不是直接静默下载）");
+  ok(actsFn.indexOf("appsRunBtnEl") >= 0 && actsFn.indexOf("appsCardUpdateTargetOf") >= 0 &&
+    actsFn.indexOf("appsHasOtherVersions") >= 0,
+    "已装：启动 → 更新 → 其他版本（同一行依次排）");
+  ok(APPS.indexOf("const up = appsCardUpdateTargetOf(spec);") >= 0 &&
+    APPS.indexOf("function appsCardUpdateTargetOf(spec)") >= 0 && APPS.indexOf("本机已装那一支的作者") >= 0,
+    "「更新」指向本机已装那一支的作者最新版（不是「版本号最高那条」）");
+  ok(/function appsHasOtherVersions\(spec\)/.test(APPS) && /appsT\("其他版本"\)/.test(APPS),
+    "「其他版本」：本机还有没装的其它分支 / 其它版本时才出现");
+  ok(!/appsMiniBtn\(appsT\("看分支"\)/.test(APPS), "「看分支」按钮已移除");
+  ok(/function appsOpenDetailForPick\(id\)[\s\S]{0,240}APPS_DETAIL\.branchOwnerId = ""/.test(APPS),
+    "开详情前把选中态清空 ⇒ 默认落回原作者 + 其最新版");
+
+  /* ④ 详情按家族归组（跨 id 的二次开发也进同一棵）+ 打赏 / 评论走根 id */
+  ok(/function appsFamilyKeyOf\(spec\)/.test(APPS) && /familyRootId/.test(APPS),
+    "家族归组读服务端的 familyRootId（老目录没有该字段时退回按 id 归组）");
+  ok(/function appsCloudTarget\(spec\)[\s\S]{0,360}appsFamilyRootOf\(spec\)/.test(APPS),
+    "打赏 / 评论的目标 = 家族根条目的 id（同一应用族共用一份累计）");
+  ok(/function appsMergeSameId\(list\)/.test(APPS) && /const key = appsFamilyKeyOf\(s\);/.test(APPS),
+    "卡片按家族合并（同 id 的多作者分支 + 跨 id 的二次开发收进同一棵）");
+
+  /* ⑤ 覆盖口径：把「哪些不会被覆盖」写进确认框 */
+  ok(/不会被覆盖：storage\/ 、该应用的数据文件夹/.test(APPS) && /storage \/ 数据文件夹 \/ 画布保留/.test(APPS),
+    "覆盖 / 更新确认框写明 storage、数据文件夹与画布不会被覆盖");
+  ok(read("apps-store.js").indexOf("removePayload") >= 0,
+    "主进程侧覆盖仍只替换上次装进去的载荷（removePayload 保留 storage / 画布）");
+
+  /* ⑥ 真跑 MtCoin：鲸圆币图标 = 自绘 SVG；中文界面单位就是图标（不写「币」字） */
+  {
+    const coinSrc = read("renderer/app-whalecoin.js");
+    const nodeOf = (tag, ns) => ({
+      tagName: String(tag),
+      ns: ns || "",
+      className: "",
+      children: [],
+      attrs: {},
+      appendChild(c) {
+        this.children.push(c);
+        return c;
+      },
+      setAttribute(k, v) {
+        this.attrs[k] = v;
+      },
+    });
+    const doc = {
+      currentScript: { src: "file:///renderer/app-whalecoin.js" },
+      createElement: (tag) => nodeOf(tag),
+      createElementNS: (ns, tag) => nodeOf(tag, ns),
+      createTextNode: (t) => ({ nodeType: 3, text: String(t) }),
+    };
+    const sandbox = {
+      document: doc,
+      URL: URL,
+      I18n: { t: (s) => s, getLocale: () => "zh" },
+      console: console,
+    };
+    sandbox.window = sandbox;
+    vm.createContext(sandbox);
+    vm.runInContext(coinSrc, sandbox);
+    const MC = sandbox.window.MtCoin;    ok(!!MC && typeof MC.coinIcon === "function", "MtCoin.coinIcon 真跑可用");
+    const ico = MC.coinIcon("sm");
+    const svg = (ico.children || []).find((c) => c.tagName === "svg");
+    ok(!!svg && svg.attrs.viewBox === "0 0 24 24", "图标是内联 SVG（viewBox 0 0 24 24）");
+    const shapes = (svg && svg.children) || [];
+    ok(shapes.some((x) => x.tagName === "circle") && shapes.filter((x) => x.tagName === "path").length >= 2,
+      "SVG 里有金色圆环 + 高光（自绘外圈，不依赖外部图片）");
+    /* 用户纠正：鲸圆币圆内必须是 **DeepSeek 官方 logo**（官方图形 + 官方品牌蓝
+       #4D6BFE），不是自绘的鲸鱼 / 鱼剪影。 */
+    const logo = shapes
+      .filter((x) => x.tagName === "path")
+      .find((x) => x.attrs.fill === "#4D6BFE");
+    ok(!!logo && String(logo.attrs.d || "").indexOf("M23.748 4.482") === 0,
+      "圆内是 DeepSeek 官方 logo（官方 path 起笔 M23.748 4.482 + 官方品牌蓝 #4D6BFE）");
+    ok(!!logo && /translate\([\d.]+ [\d.]+\) scale\(0\.68\)/.test(String(logo.attrs.transform || "")),
+      "官方 logo 缩小居中落在圆内（translate + scale 变换，字面上不改官方 path）");
+    ok(!/鲸鱼剪影/.test(coinSrc) && !/M4\.9 12\.6c1\.9-3\.3/.test(coinSrc),
+      "自绘的鲸鱼剪影已彻底移除（不再有鱼形 path）");
+    ok(/radialGradient/.test(coinSrc) && /mcoin-g/.test(coinSrc),
+      "金色圆环走径向渐变，渐变 id 每枚图标唯一（同页几十枚不串色）");
+    ok(MC.unitText() === "", "中文界面 unitText() 为空 —— 币数后面不写「币」字，单位就是那枚图标");
+    const amt = MC.coinEl(500);
+    const hasSvg = (() => {
+      const walk = (n) => (n && n.children ? n.children.some((c) => c.tagName === "svg" || walk(c)) : false);
+      return walk(amt);
+    })();
+    const hasCoinWord = (amt.children || []).some((c) => c.nodeType === 3 && /币/.test(c.text));
+    ok(hasSvg && !hasCoinWord, "coinEl(500) 渲染成「500 + 图标」，没有「币」字");
+    ok(coinSrc.indexOf("鲸圆币") >= 0 && /span\.title = tooltipText\(\)/.test(coinSrc),
+      "单位语义收进图标 tooltip（悬停仍写「鲸圆币」）");
+  }
+  /* 全应用文案：不再有把「币」当单位文字拼进去的地方 */
+  for (const rel of ["renderer/app-tips.js", "renderer/app-wallet.js", "renderer/app-store.js", "renderer/app-cost.js"]) {
+    const src = read(rel);
+    ok(!/\+\s*"\s*币"/.test(src) && !/T\("币"\)/.test(src) && !/I18n\.t\(" 币"\)/.test(src),
+      rel + " 里不再把「币」拼成单位文字（改走图标）");
+  }
+  ok(I18N.indexOf('"累计被打赏": "Total tipped"') >= 0 &&
+    I18N.indexOf('"余额不足，去充值": "Not enough W coins — top up"') >= 0,
+    "i18n 补齐新词条（累计被打赏 / 余额不足去充值）");
+  ok(HTML.indexOf('<script src="app-whalecoin.js">') > 0 && HTML.indexOf("deepseek-logo.png") < 0,
+    "index.html 仍接入 app-whalecoin.js，且不再引用 deepseek-logo.png");
+  ok(CSS.indexOf(".apps-br-sel {") >= 0 && CSS.indexOf(".apps-br-hint {") >= 0,
+    "css/apps.css 补齐选中分支区与提示的样式");
+
+  console.log("\n" + (fails ? "FAILED " + fails + " / " : "ALL PASS ") + checks + " 项检查 [13]");
+  if (fails) process.exitCode = 1;
+})();
+
+/* ==================== [14] 家族合并与多层分支树（真跑 app-apps.js 的家族段） ====================
+ * 把 app-apps.js 里的家族 / 合并 / 树相关函数**切出来真跑**（用假目录条目）：
+ *   ① 同一个 familyRootId 的条目（含**跨 id** 的二次开发）合并成一张卡；
+ *   ② 主条目 = 家族根（原作者那条），不是「目录里第一条」；
+ *   ③ appsBranchChildrenMap 把分支按 parentOwnerId 挂成多层；
+ *   ④ appsHasOtherVersions / appsCardUpdateTargetOf 的真值判定（卡片按钮出现条件）。
+ * 为什么必须真跑：主进程 normSpec 会把不认识的字段丢掉 —— 单靠源码断言看不出
+ * 「familyRootId 有没有从目录一路走到客户端」。 */
+(function () {
+  const fs = require("fs"), path = require("path"), vm = require("vm");
+  const ROOT = path.join(__dirname, "..");
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel.split("/").join(path.sep)), "utf8");
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; console.log("FAIL  " + msg); } };
+  console.log("\n[14] 家族合并与多层分支树（真跑）");
+
+  const src = read("renderer/app-apps.js");
+  const pick = (name) => {
+    const i = src.indexOf("function " + name + "(");
+    if (i < 0) throw new Error("切不出函数：" + name);
+    let depth = 0, str = "", started = false;
+    for (let k = i; k < src.length; k++) {
+      const c = src[k];
+      if (str) {
+        if (c === "\\") { k++; continue; }
+        if (c === str) str = "";
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") { str = c; continue; }
+      if (c === "{") { depth++; started = true; continue; }
+      if (c === "}") { depth--; if (started && depth === 0) return src.slice(i, k + 1); }
+    }
+    throw new Error("括起来没配平：" + name);
+  };
+  const NAMES = [
+    "appsSpecTitle", "appsSpecWithTips", "appsBranchIdOf", "appsFamilyKeyOf", "appsBranchKeyOfSpec",
+    "appsBranchLabelOf", "appsBranchShortOf", "appsBranchVersionOf", "appsVerParts", "appsVerCmp",
+    "appsVersionsOfBranch",
+    "appsCreatedAtOf", "appsFamilyPoolRaw", "appsFamilyEntriesOf", "appsFamilyRootOf", "appsBranchParentKeyOf",
+    "appsBranchChildrenMap", "appsBranchTotalVersions", "appsBranchVersionCountOf", "appsMergeSameId",
+    "appsBranchSummaryLine", "appsHasOtherVersions", "appsCardUpdateTargetOf", "appsBranchSameAsLocal",
+    "appsBranchIsLocalDiff", "appsIsPlaceholderName", "appsAuthorOf", "appsNormForkOf",
+  ];
+  const sandbox = {
+    console: console,
+    appsSpecPoolRaw: () => [],
+    appsBranchesById: () => [],
+    appsSpecWithMine: (s) => s,
+    appsTipsOf: () => null,
+    appsLocalById: () => null,
+    APPS_ST: { tips: null },
+    document: undefined,
+  };
+  sandbox.window = sandbox;
+  sandbox.APPS_PLACEHOLDER_NAME_RE = /^u_[0-9a-f]{6,24}$/i;
+  /* i18n 直通（只影响文案，不影响判定） */
+  sandbox.appsT = (s) => s;
+  vm.createContext(sandbox);
+  let code = "";
+  for (const n of NAMES) {
+    try { code += pick(n) + "\n"; } catch (_) { /* 有的函数在别处（如 appsBranchKeyOf 是 const）；缺了会真跑时报出来 */ }
+  }
+  vm.runInContext(code, sandbox);
+
+  const A = { id: "demo", ownerId: "u_a", owner: "author-a", ownerName: "甲", version: "1.0.0",
+    latestVersion: "1.4.0", createdAt: 1000, trunk: true, familyRootId: "demo", parentOwnerId: "",
+    versions: [{ version: "1.0.0" }, { version: "1.4.0" }] };
+  const B = { id: "demo", ownerId: "u_b", owner: "author-b", ownerName: "乙", version: "2.0.0",
+    latestVersion: "2.0.0", createdAt: 2000, trunk: false, familyRootId: "demo", parentOwnerId: "u_a",
+    versions: [{ version: "2.0.0" }] };
+  /* 跨 id 的二次开发（老形态上架过、forkOf 指回 demo）：familyRootId 仍是 demo */
+  const C = { id: "demo-fork", ownerId: "u_c", owner: "author-c", ownerName: "丙", version: "3.0.0",
+    latestVersion: "3.0.0", createdAt: 3000, trunk: false, familyRootId: "demo", parentOwnerId: "u_b",
+    versions: [{ version: "3.0.0" }] };
+  const POOL = [A, B, C];
+  sandbox.appsSpecPoolRaw = () => POOL.slice();
+  sandbox.appsSpecPoolAll = () => POOL.slice();
+
+  const keyed = (fn, arg) => vm.runInContext(fn, sandbox)(arg);
+  ok(keyed("appsFamilyKeyOf", B) === "demo" && keyed("appsFamilyKeyOf", C) === "demo",
+    "跨 id 的条目靠 familyRootId 归到同一个家族（老目录没这字段时才退回按 id 归组）");
+  const entries = keyed("appsFamilyEntriesOf", C);
+  ok(entries.length === 3, "家族条目 = 3（含跨 id 的那条），实得 " + entries.length);
+  const root = keyed("appsFamilyRootOf", C);
+  ok(root && root.id === "demo" && root.ownerId === "u_a", "家族根 = 原作者那条（trunk），不是目录第一条");
+
+  const merged = vm.runInContext("appsMergeSameId", sandbox)(POOL.slice());
+  ok(merged.length === 1, "三条（含跨 id）合并成**一张卡**，实得 " + merged.length);
+  ok(merged[0] && merged[0].ownerId === "u_a" && merged[0].branchCount === 3,
+    "主条目 = 原作者（u_a），branchSiblings 收全 3 条");
+
+  const tree = vm.runInContext("appsBranchChildrenMap", sandbox)([A, B, C]);
+  const kidsOf = (b) => (tree.map.get(vm.runInContext("appsBranchKeyOfSpec", sandbox)(b)) || []).map((x) => x.ownerId);
+  ok(tree.trunk && tree.trunk.ownerId === "u_a", "树的根 = 原作者");
+  ok(JSON.stringify(kidsOf(A)) === '["u_b"]', "B 挂在 A 下面（多层第一层）");
+  ok(JSON.stringify(kidsOf(B)) === '["u_c"]', "C 挂在 B 下面（第二层 —— 谁基于谁开发就挂在谁下面）");
+
+  sandbox.appsLocalById = () => null;
+  ok(vm.runInContext("appsHasOtherVersions", sandbox)(merged[0]) === true,
+    "本机没装 → 卡片给「下载」（appsHasOtherVersions 只在本机已装时才管「其他版本」）");
+  sandbox.appsLocalById = () => ({ id: "demo", ownerId: "u_a", version: "1.0.0" });
+  ok(vm.runInContext("appsHasOtherVersions", sandbox)(merged[0]) === true,
+    "本机装了主干的 1.0.0、家族里还有别的分支 / 更高版本 → 显示「其他版本」");
+  const up = vm.runInContext("appsCardUpdateTargetOf", sandbox)(merged[0]);
+  ok(up && up.ownerId === "u_a" && up.version === "1.4.0",
+    "「更新」指向**本机已装那一支**（u_a）的最新版 1.4.0，而不是版本号最高的 u_c/3.0.0");
+  sandbox.appsLocalById = () => ({ id: "demo", ownerId: "u_b", version: "2.0.0" });
+  ok(vm.runInContext("appsCardUpdateTargetOf", sandbox)(merged[0]) === null,
+    "本机装的是 u_b 的 2.0.0（已是该支最新）→ 不给更新按钮");
+
+  /* 主进程必须把家族三字段从目录一路透传（否则上面这些判定拿到的永远是空串） */
+  const STORE_SRC = read("apps-store.js");
+  ok(/familyRootId: String\(s\.familyRootId \|\| ""\)\.trim\(\)/.test(STORE_SRC) &&
+    /trunk: s\.trunk === true/.test(STORE_SRC) &&
+    /parentOwnerId: String\(s\.parentOwnerId \|\| ""\)\.trim\(\)/.test(STORE_SRC),
+    "apps-store.js 的 normSpec 透传 familyRootId / trunk / parentOwnerId（少一个客户端就退回按 id 归组）");
+
+  console.log("\n" + (fails ? "FAILED " + fails + " / " : "ALL PASS ") + checks + " 项检查 [14]");
+  if (fails) process.exitCode = 1;
+})();
+
+/* 收尾：正文、已并入块与 [13] / [14] 块任一失败都算这只红 */
+if (MERGED_FAILED && !process.exitCode) process.exitCode = 1;
+

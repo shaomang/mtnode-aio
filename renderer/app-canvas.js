@@ -2560,7 +2560,7 @@ registerNodeSettingsForm("proc_image", {
       I18n.t("尺寸 Size（gpt-image-2-vip · auto 或 30 档）"),
       selS,
     );
-    /* ── gpt-image-2 直传参数：quality / background（见 docs.apiyi.com gpt-image-2 参考）──
+    /* ── gpt-image-2 直传参数：quality / background（见 OpenAI 兼容图像服务文档）──
        quality 只认官方六个枚举值（旧版 DALL·E 的 standard / hd 会被渠道静默忽略或 400）；
        background 选「透明」时接口直出带 Alpha 的 PNG，提示词会自动补「背景透明」要求，
        同时差分透明算法（双通道抠图）按钮被禁用 —— 已经透明了没必要再花 2 倍 Token。 */
@@ -4733,7 +4733,8 @@ function nodeElement(node) {
       chip.className = "n-chip on";
       chip.textContent = I18n.t("只读");
       chip.title =
-        I18n.t("该节点已连接输入：内容只读，自动继承输入内容（符合 YAML 则转为批量）");
+        I18n.t("该节点已连接输入：内容只读，自动继承输入内容（符合 YAML 则转为批量）") +
+        I18n.t("；本节点自己写的正文不参与取值");
       head.appendChild(chip);
       /* 符合 YAML：闪烁「YAML」按钮，点击可关闭解析（仅显示原始内容） */
       if (node.kind === "input_text") {
@@ -5760,6 +5761,11 @@ function nodeElement(node) {
        （renderer/app-aicall.js）。选中的模型 = 本节点需要借助 AI 时用的模型；工具节点
        下发给内部子图的 AI 节点（内部自己选过的不动），函数节点给 jscode 的 mtnode.ai。 */
     if (typeof aiCallButtonEl === "function") head.appendChild(aiCallButtonEl(node));
+    /* 「图像后端」设定（函数节点专属 · 与「AI 调用」并列的第二格）：jscode 里的
+       await mtnode.image(...) 用它出图 / 图生图（renderer/app-aicall.js 的 imgBackend*）。
+       工具节点不显示 —— 它自己不出图，内部子图要出图直接放图像节点即可。 */
+    if (!isTool && typeof imgBackendButtonEl === "function")
+      head.appendChild(imgBackendButtonEl(node));
     /* 「设置」入口：与 ▶/✕ 同一口径的头部按钮，点开跳窗（名称 / 描述 / 增删参数 = 增删端子）。
        原地点开的是折叠在卡片里的面板 —— 卡片宽度塞不下一整排参数行，改一次要来回滚，
        现在统一进窗口改（表单见 NODE_SETTINGS_FORMS 的 function / tool 登记）。
@@ -8258,6 +8264,9 @@ NODE_BROWSE_BODY.function = function (node, body) {
   body.appendChild(
     fnBrowseParamLine(I18n.t("出参"), fnToolParamList(node, "out")),
   );
+  /* 「哪个入参没取到值」在浏览态也要看得见：未选中的卡片是用户最常扫一眼的形态，
+     提示只在编辑态出现等于白写（同一份 fnToolInputNotesEl，建卡片时自己重算）。 */
+  body.appendChild(fnToolInputNotesEl(node));
   /* 代码正文：语言锁 plain（JS 常被自动判定误认成 md / yaml），等宽小字、
      无行号槽无格式化条；flex:1 吃满剩余高度，超高在 .n-view 这一层自己滚 */
   const code = browseTextEl(functionCodeOf(node), node, { lang: "plain" });
@@ -8316,6 +8325,97 @@ function fnToolOutSummaryEl(node) {
     el.style.color = "#e0a94a";
   }
   return el;
+}
+
+/* 「这个入参没取到值」的提示块（工具 / 函数节点卡片各一行）：
+   文案由 app-nodes.js 的 fnInputBlankReason 归因（空值 + 为什么 + 断在哪一环），
+   这里负责**什么时候算**与画出来。
+   两条纪律：
+     · 建卡片时就算（不走运行）—— 画布任何变化都会重建卡片，于是没点 ▶ 也能看见
+       「这个入参当前取不到值」，不必先撞一次报错（computeWireInputNotes 只读）；
+     · 工具节点的提示要画在**工具节点自己的卡片上**（壳收起时内部函数节点的提示块
+       根本不参与绘制，用户看不到原因），所以这里按内侧子节点自己算一遍再汇总。
+   运行态脏字段 node._inputNotes 不进存档；没有可说的就返回空占位，调用方不必判空。 */
+function fnToolShellInputNotes(node) {
+  const out = [];
+  if (!node || !isToolNode(node) || !S.wf) return out;
+  for (const n of S.wf.nodes || []) {
+    if (!n || n === node) continue;
+    if (String(n.parentSuperId || "") !== String(node.id)) continue;
+    if (!isFnToolNode(n)) continue;
+    const got =
+      typeof computeWireInputNotes === "function" ? computeWireInputNotes(n) : [];
+    for (const s of Array.isArray(got) ? got : []) {
+      const t = String(s || "").trim();
+      if (t && out.indexOf(t) < 0) out.push(t);
+    }
+  }
+  return out;
+}
+function fnToolInputNotesEl(node) {
+  const host = document.createElement("div");
+  host.style.flex = "none";
+  if (!node) return host;
+  const isTool = typeof isToolNode === "function" && isToolNode(node);
+  /* 工具节点：先在内部子图上重算一遍（壳收起时那些卡片不建，_inputNotes 可能是旧的 / 空的），
+     再拿它自己的外侧端子预检一次 —— 两者说的是同一件事的两头，命名有重叠就只留一条，
+     顺序上内部那条优先（它沿壳上溯，点的是用户真正该改的那个节点）。 */
+  const inner = isTool ? fnToolShellInputNotes(node) : [];
+  if (typeof computeWireInputNotes === "function") computeWireInputNotes(node);
+  /* 壳内子节点（以及壳自己）上「来源是父壳、且壳那个外侧端子还没接线」的那几条：不是
+     「取到空值」而是「这个参数还没配」，文案还会把用户指向壳自己 —— 卡片上不画。
+     同一个参数名在壳自己的预检里如果真有缺口（外侧接了线却没值），那条照旧留着，
+     它指向的是壳外面那个真节点。运行时口径不受影响。 */
+  const bare = [];
+  const addBare = (n) => {
+    if (!n || typeof fnInputBareShellPorts !== "function") return;
+    for (const p of fnInputBareShellPorts(n) || [])
+      if (p && bare.indexOf(p) < 0) bare.push(p);
+  };
+  addBare(node);
+  if (isTool && S.wf) {
+    for (const n of S.wf.nodes || []) {
+      if (!n || n === node) continue;
+      if (String(n.parentSuperId || "") !== String(node.id)) continue;
+      if (!isFnToolNode(n)) continue;
+      addBare(n);
+    }
+  }
+  const isBareNote = (s) => {
+    const t = String(s || "");
+    return bare.some((p) => t.indexOf("「" + p + "」") >= 0);
+  };
+  const seen = [];
+  const key = (s) => {
+    const m = /「([^」]*)」/.exec(String(s || ""));
+    return m ? m[1] : String(s || "");
+  };
+  const push = (s) => {
+    const t = String(s || "").trim();
+    if (!t || isBareNote(t)) return;
+    const k = key(t);
+    if (seen.some((x) => key(x) === k)) return;
+    seen.push(t);
+  };
+  for (const s of inner) push(s);
+  for (const s of Array.isArray(node._inputNotes) ? node._inputNotes : []) push(s);
+  if (!seen.length) return host;
+  const notes = seen;
+  const box = document.createElement("div");
+  box.style.cssText =
+    "font-size:10.5px;line-height:1.35;color:#e8bf5a;background:rgba(232,191,90,.12);border:1px solid rgba(232,191,90,.4);border-radius:5px;padding:3px 6px";
+  const head = document.createElement("div");
+  head.textContent =
+    I18n.t("入参没取到值（") +
+    notes.length +
+    I18n.t(" 个）：") +
+    clipStr(String(notes[0]), 120) +
+    (notes.length > 1 ? "  …" : "");
+  /* 完整清单（含每一条的为什么）进悬浮提示，卡片上不被撑爆 */
+  head.title = notes.join("\n");
+  box.appendChild(head);
+  host.appendChild(box);
+  return host;
 }
 
 /* body 只读摘要行：入参 / 出参一览（顺序 = 端子顺序 · 图像与数组端子标出来）。
@@ -9062,6 +9162,10 @@ function buildFnToolBodyMain(node, body, isTool) {
       body.appendChild(w);
     }
   }
+  /* 「哪个入参没取到值、为什么」：建卡片时现算（见 fnToolInputNotesEl 头注释，不走运行），
+     本张卡片上这一行就是「我明明给了路径却报缺少路径」那类困惑的正面回答 —— 只提示，
+     不改取值语义（卡片上截断到 120 字，完整清单进悬浮提示）。 */
+  body.appendChild(fnToolInputNotesEl(node));
   /* 函数 / 工具节点下方「开发」：弹窗填本次要改 / 扩展什么 → 确认后新建绑定会话在其中运行。
      复用开发节点那套按钮样式（.n-dev-info / .n-dev-btns / .n-dev-open），不新增 CSS 规则；
      函数节点实现（对话框 + 会话创建 + 契约）在 app-tools.js developFunctionNode；
@@ -10721,6 +10825,47 @@ function buildBody(node, body) {
         hint.className = "n-empty";
         hint.textContent = I18n.t("（等待上游输出…）内容只读");
         body.appendChild(hint);
+        /* 上游还没有值，但用户在节点里写过正文 —— 说清「你写的那段不参与取值」，
+           否则用户会以为节点坏了（这正是「我明明给了路径却报缺少路径」的现场）。 */
+        const own = String(node.text || "").trim();
+        if (node.kind === "input_text" && own) {
+          const w = document.createElement("div");
+          w.style.cssText =
+            "flex:none;font-size:10.5px;line-height:1.35;color:#e8bf5a;background:rgba(232,191,90,.12);border:1px solid rgba(232,191,90,.4);border-radius:5px;padding:3px 6px";
+          w.textContent = I18n.t(
+            "本节点正文不参与取值（已连入线 = 继承态）：断开入线才用正文，或先让上游出值",
+          );
+          w.title = I18n.t(
+            "继承态下节点正文只作历史保留，下游拿到的是上游的值（上游为空就是空）",
+          );
+          body.appendChild(w);
+          /* 一条正面出路（提示之外真的能动手）：断开入线 = 回到「用我自己写的正文」。
+             走的是与「删除连线」同一条路径（pushHistory + 改 S.wf.wires + 撤销/落盘），
+             所以 Ctrl+Z 能原样恢复，不是另造一套语义。 */
+          const fix = document.createElement("button");
+          fix.type = "button";
+          fix.className = "mini";
+          fix.textContent = I18n.t("改用正文（断开入线）");
+          fix.title = I18n.t(
+            "断开连进本节点的线：本节点回到「用自己写的正文」，下游立刻能取到它（可 Ctrl+Z 撤销）",
+          );
+          fix.onclick = (ev) => {
+            ev.stopPropagation();
+            if (!S.wf) return;
+            const inc = (S.wf.wires || []).filter((x) => x.to === node.id);
+            if (!inc.length) return;
+            pushHistory();
+            for (const x of inc) {
+              const k = S.wf.wires.indexOf(x);
+              if (k >= 0) S.wf.wires.splice(k, 1);
+            }
+            clearDownstream(node.id);
+            scheduleSave();
+            renderCanvas();
+            toast(I18n.t("已断开入线：本节点改为使用自己写的正文（Ctrl+Z 可撤销）"), "ok");
+          };
+          body.appendChild(fix);
+        }
       }
     } else if (node.batch) {
       const list = document.createElement("div");

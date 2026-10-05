@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /* ============================================================
  * 函数节点运行时（主进程侧调度 + worker_threads 执行线程）
  * ------------------------------------------------------------
@@ -243,6 +243,20 @@ function buildMtnodeBridge(deps = {}) {
       return null;
     }
   };
+  /* 「图像后端」设定（节点上选中的图像模型；空 = 跟随 MTNode 默认的 auto）。
+     与 aiGet 同一口径：传 getter 就按调用期读（start 帧可能晚于建桥到达）。 */
+  const imgGet =
+    typeof deps.img === "function"
+      ? deps.img
+      : () => (deps.img && typeof deps.img === "object" ? deps.img : null);
+  const imgCfgOf = () => {
+    try {
+      const v = imgGet();
+      return v && typeof v === "object" ? v : null;
+    } catch (_) {
+      return null;
+    }
+  };
 
   const bridge = {
     /* 本次运行的归属号：外部进程都记在它名下，运行一结束即整棵回收 */
@@ -353,6 +367,67 @@ function buildMtnodeBridge(deps = {}) {
         },
       },
     ),
+    /* 本节点「图像后端」选定的模型只读摘要（调用期读，start 帧后才有值；空 = 跟随 MTNode
+       默认的 auto：云端图像服务商优先、其次是本机 SenseNova）。字段与 hostImageModels()
+       一致，函数代码可据此判断这个后端吃不吃参考图 / 认不认参考强度。 */
+    imgConfig: new Proxy(
+      {},
+      {
+        get(_t, key) {
+          const cfg = imgCfgOf();
+          if (key === "model") return cfg ? cfg.model || "" : "";
+          if (!cfg) return undefined;
+          if (key === "label") return cfg.label || "";
+          if (key === "local") return cfg.local === true;
+          if (key === "refImages") return cfg.refImages !== false;
+          if (key === "maxRefImages") return Number(cfg.maxRefImages) || 0;
+          if (key === "strength") return cfg.strength === true;
+          return undefined;
+        },
+        has() {
+          return true;
+        },
+      },
+    ),
+    /* ── 出图（图像生成 / 图生图）────────────────────────────────
+       用法（函数体是 async，可直接 await）：
+         const r = await mtnode.image("一只戴帽子的猫");
+         if (r.ok) return { 图像: r.path };          // r.path / r.model / r.via / r.warnings
+         throw new Error(r.error);
+       参数：mtnode.image(prompt[, opts]) 或
+         mtnode.image({ prompt, images, strength, size, ratio, width, height, model })。
+         · images  参考图（本机绝对路径或 data:image/…;base64,…，一张或多张）→ 图生图 / 图像编辑；
+                   有几张发几张（上限见 mtnode.imgConfig.maxRefImages），一张都没有就是纯文生图。
+         · strength 参考强度 0–1（0 = 参考图只作前缀条件，1 = 最强）：**只有本机 SenseNova
+                   后端认它**，云端没有这个参数、传了会在 r.warnings 里如实说明并忽略。
+         · model   只覆盖这一次的图像后端 id（见 mtnode.imgConfig / 设置里的图像服务商）；
+                   不传就用本节点「图像后端」选定的那只，再没有就跟随 MTNode 默认（auto）。
+       产物**已落画布资产目录**，r.path 就是可直接交给图像输出端子 / save_image /
+       mtnode_vision 的本机绝对路径。返回 { ok, path, bytes, model, via, warnings }，不抛异常
+       （失败看 ok === false 与 error / code：busy_media = 本机后端被音乐 / 视频占用，
+       no_provider = 没配图像服务商，bad_model = 该 id 不在清单里）。 */
+    image: (a, b) => {
+      const cfg = imgCfgOf();
+      let payload = {};
+      if (typeof a === "string") payload.prompt = a;
+      else if (a && typeof a === "object") payload = Object.assign({}, a);
+      if (b && typeof b === "object") payload = Object.assign(payload, b);
+      if (payload && typeof payload.prompt !== "string")
+        payload.prompt = payload.prompt == null ? "" : String(payload.prompt);
+      if (!payload.prompt)
+        return Promise.resolve({
+          ok: false,
+          error: "mtnode.image：缺少 prompt",
+          model: cfg ? cfg.model || "" : "",
+        });
+      return call("image", payload)
+        .then((r) => r || { ok: false, error: "mtnode.image：调用没有返回结果" })
+        .catch((e) => ({
+          ok: false,
+          error: (e && e.message) || String(e),
+          model: cfg ? cfg.model || "" : "",
+        }));
+    },
     readText: (p) => fsx.readFileSync(String(p == null ? "" : p), "utf8"),
     writeText: (p, text) => {
       const file = String(p == null ? "" : p);
@@ -551,6 +626,7 @@ function startWorker() {
   const pending = new Map();
   let runId = "";
   let aiSpec = null;
+  let imgSpec = null;
   const send = (m) => {
     try {
       port.postMessage(m);
@@ -566,8 +642,9 @@ function startWorker() {
     call,
     post: (m) => send(Object.assign({ runId }, m)),
     runId,
-    /* aiConfig 只读摘要按调用期读；真正的模型随 start 帧的 ai 字段落进 aiSpec */
+    /* aiConfig / imgConfig 只读摘要按调用期读；真正的模型随 start 帧的 ai / img 字段落进 spec */
     ai: () => aiSpec,
+    img: () => imgSpec,
   });
 
   port.on("message", async (msg) => {
@@ -576,6 +653,7 @@ function startWorker() {
       runId = String(msg.runId);
       mtnode.runId = runId;
       aiSpec = msg.ai && typeof msg.ai === "object" ? msg.ai : null;
+      imgSpec = msg.img && typeof msg.img === "object" ? msg.img : null;
       const restore = withConsoleCapture((m) =>
         send(Object.assign({ runId }, m)),
       );
@@ -671,6 +749,10 @@ function createFnRuntime(deps = {}) {
      函数节点的 mtnode.ai(...) 走这里真正发请求；没注入或没选模型时，
      mtnode.ai() 返回明确错误，而不是静默为空。 */
   const aiCallFn = typeof deps.aiCall === "function" ? deps.aiCall : null;
+  /* 可选的「图像后端」后端（main.js 注入）：函数节点的 mtnode.image(...) 走这里真正出一张图。
+     与 appHost.imageGen 共用 apps-store 的同一份图像内核（清单 / 选择 / 参考图 / 全局互斥锁 /
+     错误码全同）；没注入时 mtnode.image() 返回明确错误，而不是静默为空。 */
+  const imageCallFn = typeof deps.imageCall === "function" ? deps.imageCall : null;
   /* 可选的桌面截图后端（main.js 注入）：函数节点的 mtnode.screenShot / screenList /
      windowList 走这里。签名 (action, params)，action ∈ screens | windows | capture；
      返回值必须是 { ok, … }（实现侧已把异常收口成 { ok:false, error }）。 */
@@ -853,6 +935,24 @@ function createFnRuntime(deps = {}) {
       if (!spec.provider && ai.provider) spec.provider = ai.provider;
       return await aiCallFn(spec, st);
     }
+    /* 「图像后端」桥：函数节点 jscode 里 await mtnode.image(...) 走这里。
+       st.img 是节点上「图像后端」选定的那只（渲染层解析后随 fn:run 传入，空 = 跟随默认 auto），
+       st.wfId 是本次运行所属画布 —— 产物落该画布的资产目录（与画布出图同一处）。 */
+    if (action === "image") {
+      if (!imageCallFn)
+        return {
+          ok: false,
+          error:
+            "mtnode.image：函数节点的图像后端未接线（主进程未注入 fnRuntime.imageCall）",
+        };
+      const img = st.img && typeof st.img === "object" ? st.img : null;
+      const spec = Object.assign({}, p || {});
+      if (img && img.model && !String(spec.model || "").trim()) spec.model = img.model;
+      spec.img = img;
+      spec.nodeId = st.nodeId;
+      spec.wfId = st.wfId;
+      return await imageCallFn(spec, st);
+    }
     /* 桌面 / 窗口截图桥：mtnode.screenShot / screenList / windowList 走这里。
        screenCapture 由 main.js 注入（desktop-capture.js）；没接线时给明确错误，
        而不是让用户代码拿到 undefined。 */
@@ -981,6 +1081,7 @@ function createFnRuntime(deps = {}) {
           code: st.code,
           input: st.input,
           ai: st.ai,
+          img: st.img,
         });
       } catch (e) {
         finish(st, { ok: false, error: errText(e) });
@@ -1066,6 +1167,11 @@ function createFnRuntime(deps = {}) {
       env: o.env && typeof o.env === "object" ? o.env : null,
       /* 「AI 调用」设定（模型 / 服务商 / 预设 / 思考强度；渲染层解析后传入） */
       ai: o.ai && typeof o.ai === "object" ? o.ai : null,
+      /* 「图像后端」设定（{ model }；空 = 跟随 MTNode 默认的 auto）与本次运行的画布归属
+         （产物落该画布资产目录，见 dispatchProc 的 image 分支） */
+      img: o.img && typeof o.img === "object" ? o.img : null,
+      wfId: String(o.wfId == null ? "" : o.wfId),
+      nodeId: String(o.nodeId == null ? "" : o.nodeId),
       emit: typeof emit === "function" ? emit : null,
       spawned: new Map(),
       done: new Map(),

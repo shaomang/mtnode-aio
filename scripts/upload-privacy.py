@@ -26,7 +26,7 @@ REMOTE_TMP = "/tmp/mtnode-privacy-upload"
 CONF = "/etc/nginx/sites-available/mt-ai-router.conf"
 ENABLED = "/etc/nginx/sites-enabled/mt-ai-router.conf"
 BACKUP = CONF + ".bak-privacy"
-DEFAULT_SFTP = Path(r"E:\dev\mt-ai-router\.vscode\sftp.json")
+DEFAULT_SFTP = Path(r"E:\dev\tools\ssh\sftp-mtnode-store.json")
 SITE = "mt-agent.com"
 # 目录页 + 无斜杠 302；两页都必须 text/html 且无 Content-Disposition
 PATHS = ("/mtnode/privacy/", "/mtnode/privacy")

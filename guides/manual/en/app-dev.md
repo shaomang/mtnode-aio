@@ -100,6 +100,9 @@ Probe before calling: `typeof host.dataWrite === "function"`, otherwise take the
 | Account summary | `account()` | `authGetState()` / `authMe()` / `onAuthChanged(cb)` |
 | Store requests | — | `storeRequest({ method, path, json })` (credentials stay in the main process) |
 | Image picking / caching | — | `pickImage()` / `compressImage()` / `cacheImage(id, base64)` / `readCachedImage(id)` |
+| Text models | `textGenStream(opts, cb)` (text + image multimodal; thinking off by default) · `hostModels()` / `hostModel()` / `hostSetModel(id)` | — |
+| **Image generation** | `imageGen(opts, cb?)` (text-to-image, one image per call; `cb` receives progress) · **`imageEdit(opts, cb?)`** (img2img; reference images required) · `imageGenCancel(reqId)` · `hostImageModels()` / `hostImageModel()` / `hostImageSetModel(id)` | — |
+| Speech-to-text | `pickAudio()` / `transcribe()` / `transcribeWav(b64)` / `asrStatus()` / `asrPrepare()` / `onSpeechState(cb)` | — |
 | Window lifecycle | `close()` / `quit()` / `onWillClose(cb)` | `close()` / `onShown(cb)` |
 
 ### Closing properly (every app needs this)
@@ -119,17 +122,65 @@ waits for everything registered through `AppClose.on(...)` to finish (up to 1.5 
 - The host only writes to "the default data root + the folder the user picked", with a fixed file name (`data.json`, legacy `store.json` accepted),
   always atomically (tmp + rename) and capped at 2MB per file.
 
-## No model API and no tools inside an app window
+## Models and images: inherited from MTNode
 
-This is the easiest trap: **an app window gets neither the model API nor MTNode's tools** (no `chat` / `generateText`, no server-side LLM completion route).
+An app **never sees providers or API keys** (those stay in the main process), but it can pick from what MTNode already
+has configured: text models via `hostModels()` / `hostSetModel(id)`, image backends via `hostImageModels()` /
+`hostImageSetModel(id)`. Both are **persisted per app id**, and the UI needs a place to choose (the scaffold's Model
+dropdown already has a Text models / Image backends split).
 
-- Prompt / copywriting helpers: the app builds the prompt and the UI, and generation goes to a **canvas workflow** (text processing, image generation, agent nodes) or to the global assistant ✦.
-- If the app really needs built-in LLM / image / speech: upgrade to a **local backend plugin** — its main-process host reuses the model key from Settings → Model services and its own console UI consumes it.
+```js
+// Draw: cloud image provider or the local SenseNova backend, whichever MTNode is configured for
+var r = await AppHost.image("a cat wearing a hat", {
+  model: M.imageModel(),                    // empty = follow the MTNode default (cloud first, then local)
+  images: [refPath],                        // optional reference image (local path or dataURL) -> img2img / edit
+  strength: 0.6,                            // optional reference strength 0-1 (local SenseNova only; the cloud warns and ignores it)
+  onProgress: function (p) { bar(p.pct); }, // optional: the local backend takes tens of seconds to minutes
+});
+if (!r.ok) show(AppModel.imageErrorText(r)); else img.src = r.dataUrl;
+
+// Explicit img2img / image edit (reference images required): without one it returns no_ref_image
+// and does **not** silently downgrade to text-to-image.
+var e = await AppHost.imageEdit("keep the subject, make the background snowy", { images: [refPath], strength: 0.8 });
+```
+
+- **img2img / image edit**: `opts.images` (array of local absolute paths or `data:image/…`) — every image is sent.
+  A cloud OpenAI-compatible endpoint uses `/images/edits` (multiple images map to "image 1 / image 2…" in the prompt);
+  the local SenseNova backend accepts 1-4.
+- **Reference strength `strength` (0-1)**: 0 = the reference only acts as a prefix condition (the local backend's
+  official default), 1 = strongest. **Only the local SenseNova backend honours it**; the cloud has no such parameter
+  and says so in the reply's `warnings` instead of pretending.
+- **Read the capability before drawing the UI**: each entry of `hostImageModels()` carries `refImages` /
+  `maxRefImages` / `strength` — grey out backends that cannot take reference images and show the limit up front.
+- One image per call (same contract as the canvas image node). The local backend **shares a global lock** with music /
+  video: when busy it returns `busy_media` — tell the user to wait or retry.
+- Cancel with `AppHost.cancelImage(r.reqId)` (`imageEdit` uses the same `reqId` mechanism); a user cancel returns
+  `cancelled`, which is **not an error**.
+- **No silent downgrade**: `no_provider` when nothing is configured, `bad_model` for an unknown id, `cuda_oom` when
+  VRAM runs out, `no_ref_image` when `imageEdit` gets no reference image.
+- Need a heavier local capability (own backend process, console window)? Upgrade to a **local backend plugin** (skill `mtnode-plugin-dev`).
+
+## Capabilities (app.json `capabilities`)
+
+`app.json` carries a capability declaration: `{ "textInput": false, "showDictate": false, "imageGen": false }` —
+the checkboxes when creating an app (**all off by default**), and Develop page ⋯ "App capabilities". It is a **static declaration, not a permission gate**
+(the bridge interfaces are always callable):
+
+| Flag | When true | When false / absent (default) |
+| --- | --- | --- |
+| `textInput` | The scaffold ships the local dictation module (SenseVoice) | The app carries **no** speech-to-text |
+| `showDictate` | Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window | **Hidden by default** (no bar on the page; the app's own code can still call `apSpeechReveal()`) |
+| `imageGen` | Declares that this app draws images; templates may ship an image entry | Merely undeclared; interfaces still callable |
+
+Toggling either of those makes the host regenerate the entry page from the template (hand edits are lost);
+toggling `textInput` also adds / removes `speech.js` / `speech.css` in the app folder.
 
 ## Building one from scratch
 
-1. Copy the bundled scaffold `templates/app-scaffold/` (`index.html` + `apphost.js` + `store.js` + `close.js` + `app.js` + `style.css` + `app.json`)
-   into the app's source directory.
+1. Copy the bundled scaffold `templates/app-scaffold/` (`index.html` + `apphost.js` + `app-model.js` + `model.css` +
+   `store.js` + `close.js` + `app.js` + `style.css` + `app.json`) into the app's source directory. Copy
+   `speech.js` / `speech.css` **only when the app declares `capabilities.textInput`** (by default an app carries no
+   speech-to-text).
 2. Replace the placeholders: `app.json`'s `id` / `title` / `subtitle` / `icon` / `version` / `window`, plus the titles, copy and icon glyph in `index.html`.
 3. Write the real logic in `app.js`; keep data in `Store` (which uses `AppHost.getData` / `setData`) — do **not** use `localStorage` as storage and do not write files into the app folder.
 4. A `frame:false` window has no system title bar, so ship your own close button calling `close()` (the scaffold already does, and hangs the flush off the shutdown hook).

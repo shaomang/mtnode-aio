@@ -181,12 +181,9 @@ let MERGED_FAILED = false;
     return start >= 0 && end > start ? HTML.slice(start, end + 1) : "";
   };
 
-  console.log("[1] 八个入口各自的 data-shortcut 键位");
+  console.log("[1] 五个入口各自的 data-shortcut 键位");
   {
     const want = {
-      btnToolWf: "1",
-      btnToolAgent: "2",
-      btnTeam: "3",
       btnFit: "Space",
       btnHideWires: "D",
       btnPlugins: "J",
@@ -204,6 +201,23 @@ let MERGED_FAILED = false;
         "#" + id + " 保留 data-i18n-title（hover 提示的文案真源）",
       );
     });
+    /* 已移除：切视图的 1 画布 / 2 会话 / 3 专家团 —— 打字或盲按会把整个视图切走 */
+    ["btnToolWf", "btnToolAgent", "btnTeam"].forEach((id) => {
+      const tag = openTagOf(id);
+      ok(tag.length > 0, "#" + id + " 按钮仍在（只是不再占单键）");
+      ok(
+        tag.indexOf("data-shortcut") < 0,
+        "#" + id + " 不再挂 data-shortcut（1 / 2 / 3 切视图已移除）",
+      );
+      ok(
+        tag.indexOf("data-i18n-title=") >= 0,
+        "#" + id + " 仍保留 data-i18n-title（hover 提示照旧，不含快捷键）",
+      );
+    });
+    ok(
+      !/data-shortcut="[123]"/.test(HTML),
+      "index.html 里没有任何数字键位（1 / 2 / 3）残留",
+    );
   }
 
   console.log("\n[2] app-keys.js：接线 + 输入 / 浮层闸门");
@@ -263,7 +277,8 @@ let MERGED_FAILED = false;
       "把快捷键并进 [data-i18n-title] 生成的提示文案（切语言重算）",
     );
     ok(/"快捷键 \{k\}": "shortcut \{k\}"/.test(I18N), "有英文译文");
-    /* 三颗视图按钮也走即时 data-tip 提示（不只是原生 title），快捷键才一眼可见 */
+    /* 三颗视图按钮也走即时 data-tip 提示（不只是原生 title）：1 / 2 / 3 快捷键已移除，
+       提示本身仍然即时可见，只是文案里不再有「 · 快捷键 X」 */
     ok(
       /el\.classList\.contains\("btn-ico"\) \|\| el\.classList\.contains\("tb-view"\)/.test(I18N),
       "视图按钮同样进 data-tip 即时提示分支",
@@ -287,6 +302,203 @@ let MERGED_FAILED = false;
     console.log("FAIL  [合并块异常] smoke-topbar-shortcuts.js：" + (e && e.stack ? e.stack : e));
   }
   if (fails) console.log("  ── 已并入块 smoke-topbar-shortcuts.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 顶栏「数据不落应用文件夹」红色警示 ==================== */
+(function () {
+  const fs = require("fs");
+  const path = require("path");
+  const ROOT = path.join(__dirname, "..");
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
+  let fails = 0,
+    checks = 0;
+  const ok = (cond, msg) => {
+    checks++;
+    if (cond) console.log("  ok  " + msg);
+    else {
+      fails++;
+      MERGED_FAILED = true;
+      console.log("FAIL  " + msg);
+    }
+  };
+  try {
+    const HTML = read("renderer/index.html");
+    const CSS = read("renderer/css/layout.css");
+    const BASE = read("renderer/css/base.css");
+    const BOOT = read("renderer/app-boot.js");
+    const I18N = read("renderer/i18n.js");
+    const MAIN = read("main.js");
+    const PRELOAD = read("preload.js");
+    const SET = read("renderer/app-settings.js");
+    const ASSETS = read("renderer/app-assets.js");
+
+    const at = HTML.indexOf('id="logoWarn"');
+    const tagStart = at >= 0 ? HTML.lastIndexOf("<", at) : -1;
+    const tagEnd = at >= 0 ? HTML.indexOf(">", at) : -1;
+    const tag = at >= 0 ? HTML.slice(tagStart, tagEnd + 1) : "";
+    const boxEnd = at >= 0 ? HTML.indexOf("</button>", at) : -1;
+    const box = at >= 0 && boxEnd > at ? HTML.slice(at, boxEnd) : "";
+    const logoEnd = HTML.indexOf("</div>", HTML.indexOf('<div class="logo">'));
+
+    console.log(
+      "\n[4] 顶栏警示：红字 + outline + 警告图标（默认 hidden，命中才显）",
+    );
+    ok(
+      tagStart > logoEnd && at > logoEnd && at < HTML.indexOf('<div class="tb-end">'),
+      "警示块紧跟 .logo 之后、在右端按钮群 .tb-end 之前（第一行中段）",
+    );
+    ok(
+      /\bhidden\b/.test(tag) && /type="button"/.test(tag) && /class="logo-warn"/.test(tag),
+      "是默认 hidden 的 button.logo-warn（静态骨架，命中才由 JS 摘掉 hidden）",
+    );
+    ok(/class="logo-warn-ico"/.test(box) && /viewBox="0 0 16 16"/.test(box), "带 16px 线性警告图标");
+    ok(
+      /class="logo-warn-txt" id="logoWarnTxt"/.test(box),
+      "正文容器 #logoWarnTxt 就位（文案由 JS 现算，故不挂 data-i18n）",
+    );
+    ok(
+      /logo-warn-ico[\s\S]{0,400}stroke="currentColor"/.test(box) &&
+        /M8 2.6L14\.4 13\.4H1\.6L8 2\.6z/.test(box),
+      "图标是内联描边三角（与顶栏其它线性图标同风格，无位图）",
+    );
+
+    const rule = (sel) => {
+      const i = CSS.indexOf(sel);
+      if (i < 0) return "";
+      const e = CSS.indexOf("}", i);
+      return e > i ? CSS.slice(i, e + 1) : "";
+    };
+    const R = rule(".logo-warn {");
+    ok(
+      !!R && /border:\s*1px solid var\(--red\)/.test(R) && /color:\s*var\(--red\)/.test(R),
+      "outline + 红字：border 1px solid var(--red) 且 color / 图标取 var(--red)",
+    );
+    ok(/margin:\s*0 auto/.test(R), "两侧自动边距 = 居中于 Logo 与右端按钮之间的空档");
+    ok(
+      /display:\s*flex/.test(R) && /flex:\s*0 1 auto/.test(R) && /min-width:\s*0/.test(R),
+      "可压缩的 flex 项（窄窗口先被压，不挤走右侧按钮）",
+    );
+    ok(
+      /background:\s*color-mix\(in srgb, var\(--red\) 12%/.test(R),
+      "红底淡填充（color-mix，亮 / 暗主题共用同一个 --red 变量）",
+    );
+    ok(
+      /white-space:\s*nowrap/.test(rule(".logo-warn-txt {")) &&
+        /text-overflow:\s*ellipsis/.test(rule(".logo-warn-txt {")) &&
+        /overflow:\s*hidden/.test(rule(".logo-warn-txt {")),
+      "单行不换行 + 省略号截断",
+    );
+    const TIP = rule(".topbar .logo-warn[data-tip]::after {");
+    ok(
+      /content:\s*attr\(data-tip\)/.test(TIP) &&
+        /white-space:\s*pre-line/.test(TIP) &&
+        /top:\s*calc\(100% \+ 6px\)/.test(TIP),
+      "悬停完整说明走 data-tip 即时气泡（挂在元素下方、允许折行显示明细）",
+    );
+    ok(
+      /\.topbar \.logo-warn\[data-tip\]:hover::after/.test(CSS),
+      "气泡有 hover / focus-visible 显形规则",
+    );
+    ok(/--red:\s*#ff5f56/.test(BASE) && /--red:\s*#cf2a1e/.test(BASE), "暗 / 亮主题都有 --red");
+    /* 回归（必须钉死在 .logo-warn 自身上）：本文件**没有**全局 [hidden] 兜底，基规则的
+       display:flex 会盖掉浏览器默认的 [hidden]{display:none} —— 零命中时顶栏中段就会常驻
+       一只空红框 + 警告三角。所以 .topbar .logo-warn[hidden] 必须自己压回 display:none。 */
+    const HID = rule(".topbar .logo-warn[hidden] {");
+    ok(
+      /display:\s*none\s*!important/.test(HID),
+      "没命中时完全不显示：.topbar .logo-warn[hidden]{display:none!important} 压住基规则的 display:flex",
+    );
+    ok(
+      /display:\s*flex/.test(R) && !!HID && CSS.indexOf(".topbar .logo-warn[hidden] {") > CSS.indexOf(".logo-warn {"),
+      "显隐两态齐备：基规则 flex（命中才显）· [hidden] none（零命中不占位、无空框残留）",
+    );
+
+    console.log("\n[5] 判定口径：主进程只读 IPC + 渲染层只在命中时显示");
+    ok(
+      /ipcMain\.handle\("app:dataAudit"/.test(MAIN) &&
+        /appDirDataCandidates\(\)/.test(MAIN.slice(MAIN.indexOf('ipcMain.handle("app:dataAudit"'), MAIN.indexOf('ipcMain.handle("app:dataAudit"') + 700)) &&
+        /isInsideAppDir/.test(MAIN.slice(MAIN.indexOf('ipcMain.handle("app:dataAudit"'), MAIN.indexOf('ipcMain.handle("app:dataAudit"') + 700)),
+      "新增只读 IPC app:dataAudit，复用同一份候选清单 + isInsideAppDir",
+    );
+    const HANDLER = MAIN.slice(
+      MAIN.indexOf('ipcMain.handle("app:dataAudit"'),
+      MAIN.indexOf('ipcMain.handle("app:dataAudit"') + 700,
+    );
+    ok(
+      !/dialog\.showMessageBox|appendFileSync/.test(HANDLER),
+      "这个只读口不弹窗、不写日志（报警与 error.log 仍只由启动体检负责）",
+    );
+    ok(/appDataAudit:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('app:dataAudit'\)/.test(PRELOAD), "preload 白名单桥暴露 appDataAudit");
+    ok(
+      /async function refreshAppDirAudit\(\)/.test(BOOT) &&
+        /function paintAppDirWarn\(\)/.test(BOOT) &&
+        /async function checkAppDirWarn\(\)/.test(BOOT) &&
+        /window\.checkAppDirWarn = checkAppDirWarn/.test(BOOT),
+      "app-boot.js 有体检 / 绘制 / 对外重查三个口",
+    );
+    const PAINT = BOOT.slice(
+      BOOT.indexOf("function paintAppDirWarn()"),
+      BOOT.indexOf("function openDataDirSettings()"),
+    );
+    ok(
+      /if \(!hits\.length\)[\s\S]{0,160}el\.hidden = true/.test(PAINT) &&
+        /el\.hidden = false/.test(PAINT),
+      "没命中（含拿不到结果）就 hidden，命中才显示 —— 绝不误报",
+    );
+    ok(
+      /appDirHits = \[\];/.test(BOOT.slice(BOOT.indexOf("async function refreshAppDirAudit()"), BOOT.indexOf("function paintAppDirWarn()"))),
+      "体检失败 / 桥未就绪一律回落空命中（静默，不弹错）",
+    );
+    ok(
+      /bindAppDirWarnClick\(\);\s*\n\s*checkAppDirWarn\(\);/.test(BOOT) && /paintAppDirWarn\(\)/.test(BOOT),
+      "启动时体检一次；切语言（applyLocale）时按新语言重画",
+    );
+    ok(
+      /window\.checkAppDirWarn/.test(SET) && /openSettings\(\{ section: "data" \}\)/.test(BOOT),
+      "点警示 = 打开设置并滚到「配置数据目录」；改数据目录成功后重查",
+    );
+    ok(
+      (SET.match(/window\.checkAppDirWarn/g) || []).length >= 2 &&
+        /id = "setDataRootSec"/.test(SET) &&
+        /settingsFocusSection === "data"/.test(SET),
+      "「更改目录…」与「恢复默认」两条路径都重查，落点小节有 id",
+    );
+    ok(
+      (ASSETS.match(/window\.checkAppDirWarn/g) || []).length >= 2,
+      "素材库根目录变更（首次指定 / 更换）后也重查",
+    );
+
+    console.log("\n[6] 中英词条齐备");
+    ok(
+      /"请勿将文件保存在应用文件夹内，升级或卸载会丢失":/.test(I18N) &&
+        /"Do not save files inside the app folder/.test(I18N),
+      "主文案有英文译文",
+    );
+    ok(
+      (I18N.match(/数据落(在)?应用文件夹|当前检测到这些数据落在应用文件夹内/g) || []).length >= 1 &&
+        /"These items were detected inside the app folder:"/.test(I18N),
+      "悬停明细引导句有英文译文",
+    );
+    ok(
+      /"点击此处打开设置 · 配置数据目录":/.test(I18N) &&
+        /"Click to open Settings · Config data directory"/.test(I18N),
+      "点击提示有英文译文",
+    );
+    ok(/"等 \{n\} 处":/.test(I18N), "命中超过 5 条时的「等 N 处」也有词条");
+
+    console.log(
+      fails
+        ? "\n✗ " + fails + " / " + checks + " 项失败  (smoke-topbar-appdir-warn)\n"
+        : "\n✓ 全部 " + checks + " 项通过  (smoke-topbar-appdir-warn)\n",
+    );
+    if (fails)
+      console.log(
+        "  ── 已并入块 appdir-warn：" + fails + " / " + checks + " 项失败",
+      );
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] appdir-warn：" + (e && e.stack ? e.stack : e));
+  }
 })();
 
 /* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */

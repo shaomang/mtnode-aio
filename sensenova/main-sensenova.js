@@ -2214,6 +2214,29 @@ async function forceKillBackend(reason) {
 
 /* ───────────────────────── 状态 / 控制台窗 ───────────────────────── */
 
+/**
+ * 轻量现况（**给应用通道用**，与 statusForUi 的差别是刻意不做重活）：
+ *   · 不探 /health、不查 GPU、不读控制台日志尾 —— 应用侧列一次图像后端清单不该拉起后端、
+ *     也不该等几秒（statusForUi 会 probeApi + consoleTail，属于控制台窗的活）；
+ *   · 只回答三件事：装了没、后端在跑没、生成的相位与显存档位。
+ * 回执：{ ok, installed, running, phase, vramMode, port }
+ */
+function imageHostInfo() {
+  const cfg = loadConfig();
+  const sig = projectSignals(cfg.installDir);
+  const installedMeta = readJson(installedMetaPath(), null);
+  const installed = !!(installedMeta && installedMeta.ok) || !!(sig && sig.ready);
+  const running = backendRunning();
+  return {
+    ok: true,
+    installed: installed,
+    running: running,
+    /* 相位文案与画布节点同源：没装 / 装了但后端没起 / 已就绪 */
+    phase: !installed ? "not_installed" : running ? "ready" : "idle",
+    vramMode: String(cfg.vramMode || (running && "fast") || "fast"),
+    port: port(),
+  };
+}
 async function statusForUi() {
   const cfg = loadConfig();
   const sig = projectSignals(cfg.installDir);
@@ -2464,6 +2487,8 @@ function shutdownSensenovaUiOnly() {
 module.exports = {
   registerSensenovaIpc,
   shutdownSensenovaUiOnly,
+  /* 应用通道（appHost.imageGen 的本机那一路）用的轻量现况：见 imageHostInfo 头部 */
+  imageHostInfo,
   onSensenovaDshEvent,
   statusForUi,
   startBackend,

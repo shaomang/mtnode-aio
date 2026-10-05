@@ -1,0 +1,502 @@
+/* renderer/css/tips.css — 打赏（鲸圆币）
+   结构与交互见 renderer/app-tips.js；口径真源 store-saas/tips.mjs + docs/tips-comments-design.md。
+   颜色一律取 base.css 的主题槽位（--orange 是鲸圆币/钱包一族的既定色），亮色主题自动同源。 */
+
+/* ── 卡片上的摘要 ─────────────────────────────────────────── */
+.tip-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--orange2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tip-meta.empty {
+  color: var(--muted);
+}
+
+.tip-meta.clickable {
+  cursor: pointer;
+}
+
+.tip-meta.clickable:hover {
+  text-decoration: underline;
+}
+
+/* ── 卡片上的打赏按钮 ─────────────────────────────────────── */
+.tip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+  color: var(--orange2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tip-btn:hover {
+  border-color: var(--orange);
+}
+
+.tip-btn.compact {
+  padding: 3px 7px;
+}
+
+/* 橙色 outlined、中间透明（需求口径）：应用卡片与应用详情里的打赏入口用这一档 */
+.tip-btn.outline {
+  background: transparent;
+  border-color: var(--orange);
+  color: var(--orange2);
+}
+
+.tip-btn.outline:hover {
+  background: transparent;
+  border-color: var(--orange2);
+  color: var(--orange);
+}
+
+.tip-btn-ico {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tip-btn-sum {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 二级浮层壳 #mtPop（打赏窗与评论窗共用；为什么不用 #overlay 见 app-tips.js 的 popRoot 注释） ── */
+.mt-pop {
+  position: fixed;
+  inset: 0;
+  z-index: 1400; /* 压过 #overlay(100) 与工坊的二级浮层 .tpl-sub-ov(1300) */
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .45);
+}
+
+.mt-pop.on {
+  display: flex;
+}
+
+.mt-pop-box {
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 92vw);
+  max-height: 86vh;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+  overflow: hidden;
+}
+
+.mt-pop-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--bd);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+}
+
+.mt-pop-title {
+  color: var(--ink);
+  font-size: 13.5px;
+}
+
+.mt-pop-close {
+  margin-left: auto;
+  width: 24px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.mt-pop-close:hover {
+  color: var(--ink);
+  border-color: var(--orange2);
+}
+
+/* 打赏窗不带内部 ✕（需求口径：移除内部的 X 按钮）：壳上加了 no-close 就不画它。
+   关闭出口仍是底部「关闭」+ Esc，persistent 口径不变（评论窗不传 noClose，照旧有 ✕）。 */
+.mt-pop.no-close .mt-pop-close {
+  display: none;
+}
+
+.mt-pop-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+}
+
+.mt-pop-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+/* 「确认打赏」的排布与配色统一在下面 .mt-pop-foot.tip-foot 那一段（橙色 outlined、排到下方）。 */
+
+/* ── 底部动作区（打赏窗）：动作区在正文**下方**，不是左上角 ────── */
+.mt-pop-foot.tip-foot {
+  justify-content: flex-end;
+  border-top: 1px solid var(--bd);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+/* 「确认打赏」= **橙色 outlined、中间透明**（需求口径；不填实色、不用红绿）。
+   选择器带上 .wl-btn.primary 是为了压过 wallet.css 的实心 primary（同权重时靠加载顺序，
+   这里直接提高到 4 个类，两头都稳）。 */
+.mt-pop-foot.tip-foot .tip-send,
+.mt-pop-foot.tip-foot .tip-send.wl-btn.primary {
+  margin-right: 0;
+  background: transparent;
+  border: 1px solid var(--orange);
+  color: var(--orange2);
+}
+
+.mt-pop-foot.tip-foot .tip-send:hover:not(:disabled),
+.mt-pop-foot.tip-foot .tip-send.wl-btn.primary:hover:not(:disabled) {
+  background: transparent; /* 中间始终透明：只加深描边与字色 */
+  border-color: var(--orange2);
+  color: var(--orange);
+}
+
+/* 置灰态：**只在真不可点**（额度用完 / 今天已打赏过）时出现；
+   余额不足那一种**必须保持可点**（点一下去充值），所以它不会命中这里。 */
+.mt-pop-foot .tip-send:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/* ── 公开总额行（**人人可见**：这个条目被打赏了多少） ─────────────── */
+.tip-total {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tip-total.empty {
+  color: var(--muted);
+}
+
+.tip-total-t {
+  color: var(--orange2);
+  font-size: 13px;
+}
+
+.tip-total-n {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ── 多作者分账（应用的同源分支有多个作者时出现） ─────────────────── */
+.tip-split {
+  display: grid;
+  gap: 8px;
+}
+
+.tip-split.hidden {
+  display: none;
+}
+
+.tip-split-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 一位作者一行（名 + 输入框 + 单位），排成一列 */
+.tip-split-row {
+  display: grid;
+  grid-template-columns: 1fr 96px auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 7px;
+}
+
+.tip-split-who {
+  color: var(--ink);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tip-split-in {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tip-split-in:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+
+/* 补差位（最后一个作者自动补齐剩余）：只读 + 虚线边，看得清是「自动填的」 */
+.tip-split-in.auto {
+  color: var(--orange2);
+  border-style: dashed;
+}
+
+/* 本人那一行（不能给自己打赏）：置灰实线，与补差位区分开 */
+.tip-split-in:disabled {
+  color: var(--muted);
+}
+
+.tip-split-unit {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tip-split-sum {
+  color: var(--ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tip-split-sum.over {
+  color: var(--red);
+}
+
+/* ── 应用详情底部的打赏条（app-apps.js 的 appsDetailBodyEl） ─────────
+   位置口径：**在正文下方**，不占头部左上角那一块。 */
+.apps-detail-tipbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--orange);
+  border-radius: 8px;
+}
+
+/* ── 打赏窗 ───────────────────────────────────────────────── */
+.tip-root {
+  display: grid;
+  gap: 14px;
+  padding: 4px 2px 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.tip-head {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--orange);
+  border-radius: 8px;
+}
+
+.tip-head-t {
+  color: var(--orange2);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tip-head-s {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tip-stat {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 6px 10px;
+  align-items: baseline;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+}
+
+.tip-stat-k {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tip-stat-v {
+  color: var(--ink);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 会话过期 / 余额暂时取不到的那句话（余额行 + 账号菜单余额行共用同一枚元件）：
+   401 时点它重新登录 → 加 .clickable 才可点、才有手型。 */
+.tip-stat-warn-t {
+  color: var(--yellow);
+  font-size: 12px;
+}
+
+.tip-stat-warn-t.clickable {
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.tip-stat-warn-t.clickable:hover {
+  color: var(--orange2);
+}
+
+.tip-notice {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--bd2);
+  background: var(--panel2);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.tip-notice.err {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.tip-notice.ok {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.tip-notice.warn {
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+.tip-notice.hidden {
+  display: none;
+}
+
+.tip-k {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: .4px;
+}
+
+.tip-pick {
+  display: grid;
+  gap: 10px;
+}
+
+.tip-tiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 档位按钮：**只有币数一行**（打赏窗内不出现「¥」，需求口径见 app-tips.js 文件头第二节；
+   真正按元收付的支付宝金额只在充值窗里出现） */
+.tip-tier {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+}
+
+.tip-tier-c {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ── 打赏名单（仅作者本人与管理员可见） ─────────────────────── */
+.tip-list {
+  display: grid;
+  gap: 6px;
+}
+
+.tip-list-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tip-list-sum {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tip-rows {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.tip-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--bd);
+  font-size: 12.5px;
+}
+
+.tip-row-who {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tip-row-amt {
+  color: var(--orange2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tip-row-at {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 存量已撤销记录（撤销入口已停用，但历史数据仍要能在自己的记录里看明白）：
+   整行压暗 + 一枚小标签，仍然只读展示。 */
+.tip-row.revoked .tip-row-who,
+.tip-row.revoked .tip-row-amt,
+.tip-row.revoked .tip-row-at {
+  opacity: 0.6;
+}
+
+.tip-row-rev {
+  color: var(--muted);
+  border: 1px solid var(--bd2);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}

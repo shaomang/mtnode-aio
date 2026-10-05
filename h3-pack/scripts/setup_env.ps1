@@ -101,57 +101,6 @@ function Ensure-CustomNode {
     if ($LASTEXITCODE -ne 0) { throw "clone $Name failed" }
 }
 
-function Deploy-LocalCustomNode {
-    # 随包脚手架自带的本地节点包：从 INSTALL_DIR\custom_nodes\<Name> 复制进
-    # ComfyUI\custom_nodes\<Name>。幂等（逐文件覆盖），不清理 custom_nodes 里的其它节点。
-    # 必须保留 web/ 与 *.api.py：web/ 由 __init__.py 的 WEB_DIRECTORY 指向，
-    # 缺失会让插件注册/前端加载报错；*.api.py 提供 /nanfeng/* 等后端路由。
-    param([string]$Name)
-    $srcDir = Join-Path $Root "custom_nodes\$Name"
-    $destDir = Join-Path $ComfyRoot "custom_nodes\$Name"
-    if (-not (Test-Path -LiteralPath $srcDir)) {
-        Write-Host "[skip] local custom node source missing: $srcDir"
-        return
-    }
-    Write-Host "Deploying local custom node $Name -> $destDir ..."
-    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-    $robocopy = Get-Command robocopy -ErrorAction SilentlyContinue
-    if ($robocopy) {
-        # /XD __pycache__: 不复制字节码缓存（exit 0-7 均为成功）
-        & robocopy $srcDir $destDir /E /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
-        if ($LASTEXITCODE -ge 8) { throw "deploy $Name failed (robocopy exit $LASTEXITCODE)" }
-    } else {
-        Copy-Item -Path (Join-Path $srcDir '*') -Destination $destDir -Recurse -Force
-        Get-ChildItem -Path $destDir -Recurse -Force -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
-    }
-    Write-Host "[ok] custom_nodes/$Name deployed"
-}
-
-function Ensure-LatentUpscalePlaceholder {
-    # 南风节点把 latent_upscale_models 的 combo 声明为 required：该目录为空时
-    # ComfyUI 返回 prompt_outputs_failed_validation / value_not_in_list，整单被拒。
-    # 这里只保证「列表非空」：缺占位文件就补一个 10 字节的合法空 safetensors（0 张量），
-    # 幂等；已存在（含用户真实 H3 放大模型）一律不删不改。
-    $dir = Join-Path $ComfyRoot "models\latent_upscale_models"
-    $dest = Join-Path $dir "h3_latent_upscaler_placeholder.safetensors"
-    if (Test-Path -LiteralPath $dest) {
-        Write-Host "[skip] latent upscale placeholder already present: $dest"
-    } else {
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        # 合法空 safetensors = 8 字节小端 header 长度 + header JSON "{}"（0 张量）
-        $jsonBytes = [System.Text.Encoding]::UTF8.GetBytes('{}')
-        $lenBytes = [System.BitConverter]::GetBytes([int64]$jsonBytes.Length)
-        $all = New-Object byte[] ($lenBytes.Length + $jsonBytes.Length)
-        [System.Array]::Copy($lenBytes, 0, $all, 0, $lenBytes.Length)
-        [System.Array]::Copy($jsonBytes, 0, $all, $lenBytes.Length, $jsonBytes.Length)
-        [System.IO.File]::WriteAllBytes($dest, $all)
-        Write-Host "[ok] wrote empty safetensors placeholder ($($all.Length) bytes): $dest"
-    }
-    $count = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue).Count
-    Write-Host "[ok] models/latent_upscale_models contains $count file(s)"
-    if ($count -lt 1) { throw "models/latent_upscale_models is empty; nanfeng node combo would reject /prompt" }
-}
-
 Ensure-ComfyUI
 
 if (-not (Test-Path $VenvPy)) {
@@ -211,15 +160,6 @@ Ensure-CustomNode -Name "ComfyUI-MiniMaxH3-TeaCache" -Url "https://github.com/Ic
 Ensure-CustomNode -Name "ComfyUI-KJNodes" -Url "https://github.com/kijai/ComfyUI-KJNodes.git"
 # 4K 超分补帧后处理：RIFE VFI 补帧节点（rife 模型 + RealESRGAN 权重由 download_models.ps1 拉取）
 Ensure-CustomNode -Name "ComfyUI-Frame-Interpolation" -Url "https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git"
-
-# 随包脚手架自带的本地节点包（南风提示词 / H3 多参视频生成 V10，已禁用二采）：
-# 从 scripts 同级 custom_nodes\ 部署进 ComfyUI\custom_nodes\nanfeng_prompt_nodes_v10。
-# 依赖 soundfile（见 requirements.txt）；numpy / aiohttp 由 ComfyUI 自身提供。
-Deploy-LocalCustomNode -Name "nanfeng_prompt_nodes_v10"
-
-# 南风节点把 latent_upscale_models 的 combo 声明为 required；该目录为空会导致
-# /prompt 校验失败（value_not_in_list）。补一个空占位保证列表非空，幂等。
-Ensure-LatentUpscalePlaceholder
 
 # 幂等：ComfyUI 新版 MiniMaxH3ReferenceToVideo 用 io.Autogrow 嵌套 refs，而插件发扁平键，
 # 需给 execute 加 **legacy_refs 折叠扁平键，否则抛 comfy_execution_error。

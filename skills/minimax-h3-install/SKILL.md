@@ -19,7 +19,6 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 ## 目录约定（以 `SCAFFOLD_REF` 为参考）
 
 - `INSTALL_DIR/ComfyUI/` — ComfyUI 根（`main.py` + `venv/` + `models/` + `custom_nodes/`）
-- `INSTALL_DIR/custom_nodes/` — 随包脚手架自带的本地节点包源（当前只有 `nanfeng_prompt_nodes_v10/`），由 `setup_env.ps1` 部署进 `ComfyUI\custom_nodes\`
 - `INSTALL_DIR/app/` — 冒烟/健康检查模块（`python -m app` 打印 JSON 报告，见下）
 - `INSTALL_DIR/scripts/` — setup_env.ps1 / download_models.ps1 / repair_torch_kitchen.ps1 / patch_*.py / start_backend.cmd
 - `INSTALL_DIR/output/` — 视频输出（**勿删**）
@@ -101,9 +100,8 @@ torch `cu130` wheel 自带 CUDA 13.0 运行时，但**要求 NVIDIA 驱动足够
   - `models\vae\minimax_h3_video_vae_fp16.safetensors` + `minimax_h3_audio_vae_fp32.safetensors`
   - 后处理：`models\upscale_models\RealESRGAN_x4plus.pth` + `custom_nodes\ComfyUI-Frame-Interpolation\ckpts\rife\rife47.pth`（供**独立后处理通道** `h3:postProcess` 用：视频超分 / 视频补帧节点；生成链不内联）
   - 后处理（可选）：`models\upscale_models\RealESRGAN_x2plus.pth` —— 超分节点选 **x2 倍率**时优先用它（中间张量只有 x4 的 1/4，峰值系统内存降一档）；**缺失不影响安装**，缺时用 x4 权重 + 输出端缩到 2 倍
-  - `models\latent_upscale_models\` **必须至少 1 个文件**（南风节点把该 combo 声明为 `required`，空目录会让 ComfyUI 以 `value_not_in_list` 拒单）；`setup_env.ps1` 会补一个空占位 `h3_latent_upscaler_placeholder.safetensors`，不删不改真实模型
-- custom_nodes：`ComfyUI-KJNodes`（含 Sage / VRAM_Debug / MiniMax LowVRAM / ChunkFFN）、`ComfyUI-Frame-Interpolation`（4K 补帧）、`ComfyUI-MiniMaxH3-TeaCache`（**脚手架仍克隆但推荐链已移除 TeaCache**，保留作可选）
-- custom_nodes（本地随包，非 git 克隆）：`nanfeng_prompt_nodes_v10`（南风提示词 / H3 多参视频生成 V10 公开版，**已强制禁用二采**）——`setup_env.ps1` 的 `Deploy-LocalCustomNode` 从 `INSTALL_DIR\custom_nodes\nanfeng_prompt_nodes_v10` 部署到 `ComfyUI\custom_nodes\nanfeng_prompt_nodes_v10`；**必须保留其 `web/` 与 `*.api.py`**（`__init__.py` 的 `WEB_DIRECTORY="./web"` 指向它，`*.api.py` 注册后端路由；缺失会让插件注册/前端加载报错）。MTNode 只走 `POST /prompt`，不加载其前端界面
+  - custom_nodes：`ComfyUI-KJNodes`（含 Sage / VRAM_Debug / MiniMax LowVRAM / ChunkFFN）、`ComfyUI-Frame-Interpolation`（4K 补帧）、`ComfyUI-MiniMaxH3-TeaCache`（**脚手架仍克隆但推荐链已移除 TeaCache**，保留作可选）
+  - **不随包附带任何第三方节点包**：内置两条链（FL2VA / R2V）只用上面这些节点，装完即可出片；自建工作流若要引用第三方节点（如中文控件的多参生成类节点），由用户在自己的 ComfyUI 里自行安装，MTNode 不做部署、只走 `POST /prompt`。
 - `python -m app` 健康检查退出码 0（见「冒烟与健康检查」）
 - **不要在本 skill 中启动 ComfyUI**
 
@@ -130,7 +128,7 @@ python main.py --listen 127.0.0.1 --port 8188
 > （【系统内存缓存保留下限】，置 0 = 不加该参数）。超分提交前插件还会按容器里的真实帧数估峰值，
 > 超预算先压目标长边、仍放不下就**进超分前预缩放源帧**（控制台会写明取舍）——排查这类问题先看那条日志。
 
-> **`--cpu-vae` 默认关闭，并且不要打开**（脚手架 `start_backend.cmd` 不带它；H3 后端设置里的「CPU VAE」开关同样按关闭口径处理，若发现自己环境启动参数里有它，一律关掉再复测）。**开启必致 dtype 崩**：VideoVAE 解码报 `expected m1 and m2 to have the same dtype, but got: float != struct c10::Half` —— 采样跑得完、解码阶段挂掉；**南风链（`nanfeng_prompt_nodes_v10`）在 CPU VAE 下直接不可用**。所以见到这条 dtype 报错，第一件事是核对插件 Console 的 `[launch] flags=…` 里**有没有** `--cpu-vae`，而不是去改工作流的 VAE 组合。
+> **`--cpu-vae` 默认关闭，并且不要打开**（脚手架 `start_backend.cmd` 不带它；H3 后端设置里的「CPU VAE」开关同样按关闭口径处理，若发现自己环境启动参数里有它，一律关掉再复测）。**开启必致 dtype 崩**：VideoVAE 解码报 `expected m1 and m2 to have the same dtype, but got: float != struct c10::Half` —— 采样跑得完、解码阶段挂掉，**任何 H3 生成链（内置与自建）都出不了片**。所以见到这条 dtype 报错，第一件事是核对插件 Console 的 `[launch] flags=…` 里**有没有** `--cpu-vae`，而不是去改工作流的 VAE 组合。
 > 显存峰值靠下面的 `VRAM_Debug` 屏障（先卸 DiT 再解码）压，不靠把 VAE 搬到 CPU。
 > `--disable-pinned-memory` 与 `--lowvram` 同开冲突；不要用 `--lowvram`。
 
@@ -218,23 +216,11 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
    ```
    打印 JSON：`{comfy_main, venv, models:{fl2va, ref2va, clip, vae_video, vae_audio}, postModels:{realesrgan_x4plus, rife47}, cuda}`；**退出码 0** 当 `comfy_main`+`venv`+`fl2va`+`clip` 均就绪且 >1MB。自修复/安装完成判定以此为准。
 3. 确认模型文件非空（>1MB）；确认 `custom_nodes\ComfyUI-Frame-Interpolation\ckpts\rife\rife47.pth` 非空。
-4. **南风节点包自检**（不启动 ComfyUI）：确认 `custom_nodes\nanfeng_prompt_nodes_v10\` 已部署且关键文件齐全，并确认 venv 内依赖可导入：
+4. **音频依赖自检**（不启动 ComfyUI）：内置链的音频读写要 `soundfile`，venv 内必须能导入：
    ```powershell
-   $p = "ComfyUI\custom_nodes\nanfeng_prompt_nodes_v10"
-   foreach ($f in @("__init__.py","nodes.py","h3_generator.py","storyboard_api.py",
-                    "audio_drive_api.py","audio_media_api.py","model_refresh_api.py",
-                    "web\nanfeng_prompt.js","web\h3_multiref.js")) {
-       if (-not (Test-Path (Join-Path $p $f))) { throw "nanfeng package missing: $f" }
-   }
-   & "ComfyUI\venv\Scripts\python.exe" -c "import soundfile, numpy, aiohttp; print('nanfeng deps ok', soundfile.__version__)"
+   & "ComfyUI\venv\Scripts\python.exe" -c "import soundfile, numpy, aiohttp; print('audio deps ok', soundfile.__version__)"
    ```
-   缺 `soundfile` 时音频节点（`audio_media_api.py`）会在运行期报错，补装：`& "ComfyUI\venv\Scripts\python.exe" -m pip install --isolated soundfile`（`numpy` / `aiohttp` 已由 ComfyUI 自身 requirements 提供，不重复装）。
-5. **`latent_upscale_models` 非空自检**（南风节点 combo 是 `required`，空列表会被 ComfyUI 以 `value_not_in_list` 拒单，`/prompt` 直接失败）：
-   ```powershell
-   Get-ChildItem -File "ComfyUI\models\latent_upscale_models" | Select-Object Name, Length
-   (Get-ChildItem -File "ComfyUI\models\latent_upscale_models").Count   # 必须 ≥ 1
-   ```
-   `setup_env.ps1` 的 `Ensure-LatentUpscalePlaceholder` 会幂等补一个 10 字节合法空 safetensors（`h3_latent_upscaler_placeholder.safetensors`，0 张量）保证列表非空；**已有真实 H3 放大模型时不删不改**，只补这一个占位文件。计数为 0 才需要处理。
+   缺 `soundfile` 时补装：`& "ComfyUI\venv\Scripts\python.exe" -m pip install --isolated soundfile`（`numpy` / `aiohttp` 已由 ComfyUI 自身 requirements 提供，不重复装）。
 
 ## 已知故障摘要
 
@@ -314,9 +300,9 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 ## 步骤（全新安装）
 
 1. **硬件探测**（见上）。GPU 非 NVIDIA / 驱动不支持 CUDA 13 → fail 并写 reason。
-2. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `requirements.txt` / `custom_nodes/nanfeng_prompt_nodes_v10/`（保留已有 ComfyUI/models/output）；或用内置脚本。
+2. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `requirements.txt`（保留已有 ComfyUI/models/output）；或用内置脚本。
 3. 探测 CUDA Python → 写 `.cuda-python`（仅作 venv 基座；优先 `MT_H3_CUDA_PYTHON`）。
-4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖（含 `soundfile`，见 `requirements.txt`）、KJNodes + ComfyUI-Frame-Interpolation（4K 补帧）+ ComfyUI-MiniMaxH3-TeaCache（备用），并把随包本地节点包 **`nanfeng_prompt_nodes_v10`** 部署到 `ComfyUI\custom_nodes\`（`Deploy-LocalCustomNode`，幂等；只补该包，**不清空 custom_nodes**）。
+4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖（含 `soundfile`，见 `requirements.txt`）、KJNodes + ComfyUI-Frame-Interpolation（4K 补帧）+ ComfyUI-MiniMaxH3-TeaCache（备用）。**该脚本不部署任何随包第三方节点包，也不清空 `custom_nodes`**。
    - 装完**必须**校验 `torch.cuda.is_available()` 为真且日志里 cuda backend 未被禁用；否则按「驱动太旧」处理。
    - pip 用 `--isolated` 避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）。
 5. 按需静默给 `nodes_minimax_h3.py` 加 `**legacy_refs` 折叠（幂等，见上）；如需，补 `polyfill`。

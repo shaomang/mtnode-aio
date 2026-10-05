@@ -193,7 +193,10 @@ const LONG = "推".repeat(300);
 const SHORT = "想两句";
 const ELIDED = "[earlier thinking elided]";
 
-(async () => {
+/* 主体是 async（内含多处 await import / await runAppSnapshot）——必须留句柄给收尾等它：
+   否则文件末尾那个同步的 process.exit() 会赶在主体跑完前退出，
+   本文件 [1]–[10] 的断言全部落空却仍报全绿（本轮实测踩到）。 */
+const MAIN = (async () => {
   /* ==================== [1][2] 画布工具负载上限与必留硬信息 ==================== */
   console.log("\n[1] mtnode_canvas_* 工具 JSON 负载上限（固定前缀的最大单项）");
   const canvas = await import(pathToFileURL(abs("dsh/gateway/canvas-plugin.mjs")).href);
@@ -378,8 +381,20 @@ const ELIDED = "[earlier thinking elided]";
   /* ==================== [4] 网关下达链路 ==================== */
   console.log("\n[4] gateway.mjs：run 参数 → runtime key → spawn env → 预设补一句");
   const GATE = read("dsh/gateway/gateway.mjs");
-  ok(/permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback, pure, tools,\s*\n\s*lean, noCanvas,/.test(GATE),
-    "handleRun 收宿主下发的 lean / noCanvas 两个 run 参数");
+  /* 只钉「handleRun 的解构表里点名了这几个 run 参数」，不钉换行与相邻字段：
+     原先的写法把 rollback 也钉进去，该参数已从 handleRun 摘除（全仓再无 rollback run 参数，
+     grep dsh/gateway/gateway.mjs 零命中），换行也改过一版 —— 于是这条断言长期假红，
+     只因文件末尾 process.exit 抢跑才没暴露（见文件顶部注释）。 */
+  const RUN_PARAMS_SRC = (() => {
+    const from = GATE.indexOf("async function handleRun(params)");
+    const to = GATE.indexOf("} = params", from);
+    return from >= 0 && to > from ? GATE.slice(from, to) : "";
+  })();
+  ok(
+    RUN_PARAMS_SRC.length > 0 &&
+      ["pure", "tools", "lean", "noCanvas"].every((n) => new RegExp("\\b" + n + "\\b").test(RUN_PARAMS_SRC)),
+    "handleRun 收宿主下发的 lean / noCanvas 两个 run 参数（在解构表里点名）",
+  );
   ok(GATE.indexOf("const leanFlag = !!lean && !pureFlag") >= 0 && GATE.indexOf("const noCanvasFlag = !!noCanvas && !pureFlag") >= 0,
     "pure 轮两个标记归零（画布 / 数据库插件本就被 cordis 整体禁用）");
   ok(GATE.indexOf("'|lean:' + (leanOn ? '1' : '0')") >= 0 && GATE.indexOf("'|nc:' + (noCanvasOn ? '1' : '0')") >= 0,
@@ -1151,12 +1166,17 @@ const ELIDED = "[earlier thinking elided]";
   /* —— canvas_get 读图缓存：结构哈希 + 同参重读短回执（网关侧，源码取证） —— */
   const hashFnSrc = grabFunction(NODES_SRC, "snapshotContentHashOf", "app-nodes.js");
   ok(
-    hashFnSrc.indexOf("nodes: snap.nodes") >= 0 && hashFnSrc.indexOf("cam") < 0 &&
-      hashFnSrc.indexOf("selection") < 0,
-    "结构哈希只覆盖 nodes/wires/groups/marks/taskTree/superTree，剔除 cam / selection 等易变项",
+    hashFnSrc.indexOf("snapshotHashSource") >= 0 && hashFnSrc.indexOf("snap.nodes") < 0 &&
+      hashFnSrc.indexOf("cam") < 0 && hashFnSrc.indexOf("selection") < 0,
+    "结构哈希对画布真源算（不拿裁过的快照算），剔除 cam / selection 等易变项",
   );
-  has(NODES_SRC, "snap.contentHash = snapshotContentHashOf(snap);",
-    "canvasSnapshotFull 把 contentHash 回给网关（哈希真源只在渲染层）");
+  has(NODES_SRC, "snap.contentHash = snapshotContentHashOf(S.wf);",
+    "canvasSnapshotFull 把真源的 contentHash 回给网关（哈希真源只在渲染层）");
+  /* 为什么必须与裁法解耦：这个哈希是写操作的乐观并发基准。跟着 detail 档位变，
+     客户端「读完立刻改」会被永远判成「画布已被改动」（实测：minimal 读 → standard
+     读哈希即变，写整片被拒）。真跑回归见 test/smoke-mcp-version-gate.js。 */
+  has(NODES_SRC, "哈希必须算在**画布真源**上",
+    "注释写明哈希与 detail / sections 裁法解耦的理由（否则后人一改又退回快照哈希）");
   for (const [needle, why] of [
     ["const getSeen = new Map()", "网关按会话记住读过的结构哈希"],
     ["const key = hash + '|' + JSON.stringify(a)", "键 = 结构哈希 + 本次请求参数（先 minimal 后 full 不会被误挡）"],
@@ -1195,7 +1215,9 @@ const ELIDED = "[earlier thinking elided]";
       (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
       "  (smoke-token-budget)",
   );
+  if (fails) MERGED_FAILED = true; /* 主体自己的失败也必须进退出码（原先只打印、不影响退出码） */
 })().catch((e) => {
+  MERGED_FAILED = true;
   console.error("smoke-token-budget 运行异常：" + (e && e.stack ? e.stack : e));
 });
 
@@ -1371,6 +1393,8 @@ const ELIDED = "[earlier thinking elided]";
   if (fails) console.log("  ── 已并入块 smoke-token-badge-bottom.js：" + fails + " / " + checks + " 项失败");
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+/* 收尾：先等主体（async）跑完，再连同并入块的结论定退出码 —— 顺序不能反 */
+MAIN.then(() => {
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+  process.exit(MERGED_FAILED ? 1 : 0);
+});

@@ -28,6 +28,11 @@
  * 模型能力（只有 ① 有，且模型从 MTNode 继承 —— 服务商与 API Key 永远留在主进程）：
  *   models()                 列出可用模型（首项 = 跟随默认；每项带 vision 是否支持识图）
  *   modelGet() / modelSet(id)  读 / 改本应用的模型选择（宿主按应用 id 持久化）
+ *   imageModels()            列出可用**图像后端**（云端服务商 + 本机 SenseNova）
+ *   imageModelGet() / imageModelSet(id)  读 / 改图像后端选择（同样按应用 id 持久化）
+ *   image(prompt, opts)      出图（每次一张）：opts.images 可带参考图 → 图生图 / 图像编辑；
+ *                            opts.onProgress 收进度；cancelImage(reqId) 取消；
+ *                            busy_media = 本机后端被别的任务占着；cancelled **不是错误**
  *   pickImage()              弹系统选图框 → { ok, path }；取消 → { ok:false, code:"cancelled" }
  *   text(prompt, opts)       文本生成（流式；opts.images 可带本机路径 / dataURL → 多模态）
  *                            失败回 { ok:false, code }：bad_image / too_many_images / too_large /
@@ -75,6 +80,9 @@
     account: has(host, "account") || has(host, "authGetState"),
     net: has(host, "storeRequest"),
     image: has(host, "imageGen") || has(host, "pickImage"),
+    /* 出图：imageGen 是出图本身，imageModels 是「有哪些图像后端可选」 */
+    imageModels: has(host, "hostImageModels") && has(host, "hostImageSetModel"),
+    imageCancel: has(host, "imageGenCancel"),
     text: has(host, "textGenStream"),
     /* 结构化输出助手（本文件 json()）：只要有文本桥就能用，不额外要求宿主新接口 */
     json: has(host, "textGenStream"),
@@ -251,6 +259,84 @@
     if (!cap.models) return { ok: false, error: "no_host" };
     try {
       return await host.hostSetModel(String(id == null ? "" : id));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+  /* ── 图像生成（与文本模型同一套思路：模型 / 后端从 MTNode 继承，应用只挑 id）────────
+     后端清单 = MTNode 里已配好的图像能力：云端服务商（含把图像模型挂在文本卡上的那种）
+     + 本机 SenseNova（装了才出现）。选择按应用 id 持久化，界面要有一个选后端的位置。 */
+  /** 图像后端清单：{ ok, models:[{id,label,providerName,local}], selected, hasAny, hasCloud, hasLocal, busy } */
+  async function imageModels() {
+    if (!cap.imageModels)
+      return { ok: false, error: "no_host", models: [], selected: "auto", hasAny: false, hasCloud: false, hasLocal: false };
+    try {
+      return await host.hostImageModels();
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e), models: [], selected: "auto", hasAny: false, hasCloud: false, hasLocal: false };
+    }
+  }
+  /** 读当前图像后端选择（"auto" = 跟随 MTNode 默认：云端优先，其次本机） */
+  async function imageModelGet() {
+    if (!cap.imageModels) return { ok: false, error: "no_host", selected: "auto", hasAny: false };
+    try {
+      return await host.hostImageModel();
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e), selected: "auto", hasAny: false };
+    }
+  }
+  /** 改图像后端选择（只认清单里的 id 或 "auto"） */
+  async function imageModelSet(id) {
+    if (!cap.imageModels) return { ok: false, error: "no_host" };
+    try {
+      return await host.hostImageSetModel(String(id == null ? "" : id));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+  /** 出图（每次一张）。opts = { prompt, size?, quality?, background?, model?, images?（参考图：
+   *  本机绝对路径或 data:image/... 的数组）, onProgress? }
+   *  返回 { ok, base64, dataUrl, bytes, mime, model, via, file?, warnings? }；
+   *  失败回 { ok:false, code }：no_provider（一个图像后端都没配）/ bad_model / busy_media
+   *  （本机后端被音乐 / 视频 / 别的出图占着，提示用户等待或重试）/ busy / cuda_oom / offline /
+   *  http_4xx …；用户在界面上点取消 → code:"cancelled"（**不是错误**，只恢复按钮）。
+   *  onProgress(msg) 收 { stage, message, pct, step, totalSteps, elapsedSec }；本机后端要几十秒到
+   *  几分钟，长任务记得给取消入口（cancel(reqId)）。 */
+  async function image(prompt, opts) {
+    var o =
+      typeof prompt === "string"
+        ? Object.assign({}, opts && typeof opts === "object" ? opts : {}, { prompt: prompt })
+        : prompt && typeof prompt === "object"
+          ? prompt
+          : {};
+    if (!cap.image) return { ok: false, code: "no_host", error: "宿主未提供图像生成能力" };
+    var body = { prompt: String(o.prompt == null ? "" : o.prompt) };
+    if (o.model) body.model = String(o.model);
+    if (o.size) body.size = String(o.size);
+    if (o.quality) body.quality = String(o.quality);
+    if (o.background) body.background = String(o.background);
+    var refs = Array.isArray(o.images) ? o.images.filter(Boolean).slice(0, 4) : [];
+    if (refs.length) body.images = refs;
+    /* reqId 由这里生成：取消与进度都按它定位（宿主原样回传） */
+    var reqId = o.reqId || "img-" + Date.now().toString(36) + Math.random().toString(36).slice(2);
+    body.reqId = reqId;
+    var cb = typeof o.onProgress === "function" ? o.onProgress : null;
+    try {
+      var r = await host.imageGen(body, function (msg) {
+        if (!cb || !msg || msg.type !== "progress") return;
+        cb(msg);
+      });
+      if (r && typeof r === "object") r.reqId = reqId;
+      return r;
+    } catch (e) {
+      return { ok: false, code: "transport", error: String((e && e.message) || e), reqId: reqId };
+    }
+  }
+  /** 取消一次出图（本机后端在下一个采样步边界停下；云端请求不中断，结果由调用方忽略） */
+  async function cancelImage(reqId) {
+    if (!cap.imageCancel) return { ok: false, error: "no_host" };
+    try {
+      return await host.imageGenCancel(String(reqId || ""));
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) };
     }
@@ -566,6 +652,12 @@
     modelSet: modelSet,
     pickImage: pickImage,
     text: text,
+    /* 图像生成：清单 / 选择 / 出图 / 取消（后端从 MTNode 继承，含本机 SenseNova） */
+    imageModels: imageModels,
+    imageModelGet: imageModelGet,
+    imageModelSet: imageModelSet,
+    image: image,
+    cancelImage: cancelImage,
     /* 语音转写（本机内置 SenseVoice）：选音频 / 转写 / 现况 / 首次下载 / 状态订阅 */
     pickAudio: pickAudio,
     transcribe: transcribe,

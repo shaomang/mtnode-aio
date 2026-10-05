@@ -41,13 +41,13 @@ try {
     '缺省 = 无窗口（headless）：屏幕上没有真窗口可弹（headless=' + H.viewStatus().headless + '）')
   {
     const r = await H.detachWindow()
-    ok(r.ok === false && /打开浏览器/.test(String(r.reason || '')),
-      '无窗口那只点「独立窗口」给可执行的说法（' + String(r.reason || '').slice(0, 40) + '…）')
+    ok(r.ok === false && /用真窗口打开/.test(String(r.reason || '')),
+      '无窗口那只要真窗口时给可执行的说法：去求助卡点「用真窗口打开」（' + String(r.reason || '').slice(0, 40) + '…）')
     ok(H.viewStatus().fallback === false,
       '无窗口那只不标 fallback（没有「真实窗口可能仍在屏幕上」这回事）')
   }
 
-  /* ② 用户亲手点「打开浏览器」：带窗口那只（窗口位姿断言都跑在它身上） */
+  /* ② 用户在求助卡上点「用真窗口打开」：带窗口那只（窗口位姿断言都跑在它身上） */
   const r = await H.ensureBrowser({ profileDir: path.join(dir, 'profile'), timeoutMs: 20000, visible: true })
   browserUp = true
   ok(!!r.port && r.headless === false, '带窗口那只起在调试端口 ' + r.port + '（headless=' + r.headless + '）')

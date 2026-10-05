@@ -15,6 +15,12 @@ install -m 644 "$SRC/mtnode-store.service" /etc/systemd/system/mtnode-store.serv
 # 充值 / 钱包：订单与流水模块、支付宝当面付、二维码编码（服务端自绘 SVG，零依赖）、
 # 微信归属迁移运维脚本（人工跑，见 docs/recharge-design.md §归属迁移）
 install -m 644 "$SRC/wallet.mjs" /opt/mtnode-store/wallet.mjs
+# 打赏（鲸圆币）+ 评论 + 消息：被 server.mjs import（漏传即 Cannot find module './tips.mjs'），
+# 编排逻辑分别在 tips.mjs（打赏，只经 wallet.adjustBalance 动钱）、comments.mjs（评论 / 五星评分）
+# 与 notifications.mjs（消息 / 通知，只落 db.notifications，绝不碰钱包）。
+install -m 644 "$SRC/tips.mjs" /opt/mtnode-store/tips.mjs
+install -m 644 "$SRC/comments.mjs" /opt/mtnode-store/comments.mjs
+install -m 644 "$SRC/notifications.mjs" /opt/mtnode-store/notifications.mjs
 install -m 644 "$SRC/alipay-provider.mjs" /opt/mtnode-store/alipay-provider.mjs
 # 应用密钥对生成器（人工跑：node alipay-keygen.mjs --appid … --print env；私钥只落 /etc/mtnode-store/alipay）
 install -m 644 "$SRC/alipay-keygen.mjs" /opt/mtnode-store/alipay-keygen.mjs
@@ -186,6 +192,15 @@ elif [ "$CAT_APPS" = "0" ]; then
   echo "apps-static: WARN（静态目录 0 条；云端确实没有应用时正常，否则检查 GET /api/apps/pub 的 fallback 与 server.mjs 启动日志）"
 fi
 if [ "$CAT_APPS" != "bad-json" ] && [ "$CAT_APPS" != "0" ]; then
+  # 多版本目录自检：**每一个** versions[].zipUrl 都要可达（开关打开后客户端只按它取包）。
+  printf '%s' "$CAT_BODY" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+n=0
+for e in (d.get("apps") or []):
+    for v in (e.get("versions") or []):
+        if v.get("zipUrl"):
+            n+=1
+print("apps-catalog-versions: {0} 项 versions[].zipUrl（多版本口径；0 项 = 全部老单版记录）".format(n))' 2>/dev/null || echo "apps-catalog-versions: （目录解析失败，见上行 apps-static）"
   printf '%s' "$CAT_BODY" | python3 -c 'import json,sys
 BASE="https://www.mt-agent.com/mtnode/apps"
 d=json.load(sys.stdin)
@@ -254,6 +269,24 @@ if printf '%s' "$PAY_BODY" | grep -q '"configured":true'; then
   fi
 else
   echo "pay-config: 未配齐（missing 见上行）→ 客户端显示「通道未配置」并禁用付款，不留假支付路径"
+fi
+# 充值闸门自检：`recharge.open` 必须为 true —— 充值对所有已注册账号开放（名单口径已作废，
+# 只剩一个显式的全局关闭开关 MTNODE_RECHARGE_CLOSED）。false 时非白名单账号会撞
+# 403 RECHARGE_NOT_OPEN（用户读到「充值功能尚未对该账号开放」），去环境文件里清掉那个开关。
+HEALTH_BODY=$(curl -sS http://127.0.0.1:8787/api/health)
+# 多版本开关自检：`/api/health` 的 appVersions 必须是 true。关着时作者点「上传新版本（追加版本）」
+# 会撞 409 APP_VERSIONS_DISABLED，而客户端只把服务端那句中文原样显示给用户
+# （线上踩过：开关从没打开过，「服务端未启用应用多版本」一直挂着）。
+# 开关默认开，只有 /etc/mtnode-store.env 里显式写了 0/false/no/off 才关 —— 命中就报 BAD 并给出改法。
+if printf '%s' "$HEALTH_BODY" | grep -q '"appVersions":true'; then
+  echo "apps-versions-gate: ok（多版本开启：一版一包 <id>/<version>.zip + 最新版镜像）"
+else
+  echo "apps-versions-gate: BAD（appVersions != true → 检查 /etc/mtnode-store.env 的 MTNODE_APP_VERSIONS，去掉该项或设 1 后 systemctl restart mtnode-store；关着时上架追版本一律 409 APP_VERSIONS_DISABLED）"
+fi
+if printf '%s' "$HEALTH_BODY" | grep -q '"open":true'; then
+  echo "recharge-gate: ok（对所有已注册账号开放）"
+else
+  echo "recharge-gate: BAD（recharge.open != true → 检查 /etc/mtnode-store.env 的 MTNODE_RECHARGE_CLOSED，清掉后 systemctl restart mtnode-store）"
 fi
 # 通道与跳回页自检：默认通道是 page（电脑网站支付），付完款浏览器要能跳回 /mtnode/pay-done/。
 # 只认页面内容（「支付完成」），因为 /mtnode/ 整段有 OSS 反代兜底，200 也可能是下载页。

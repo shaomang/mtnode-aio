@@ -453,7 +453,36 @@ async function runOnce(node, prov, idx, itemTitle, attemptT) {
   );
   /* 透明背景开启时：这里把第 1 通道（纯黑基准）原图当唯一参考图，内部补发第 2 通道（纯白复刻）并差分抠图（用户无感知） */
   const path = await finishProcImageOutput(node, spec, res.path, itemTitle, attemptT);
+  /* 中转图像计费：出图成功 = 一次调用 = 一张（与尺寸无关，见 store-saas/relay.mjs
+     的 imageCostYuan）。批量模式下每个条目各走一次 runOnce，所以这里记 1 张即可；
+     透明背景的差分补发是同一节点内部的第二次调用，那一次由补发路径自己记。 */
+  if (path) tokNoteImageCall(node, spec, 1);
   return { kind: "image", path };
+}
+
+/* ── 中转图像计费「按张」入账（一次调用 = 一张）────────────────────────
+ * 中转站的图像计费与 token 无关：**每次调用即计费，与尺寸无关**（见 store-saas/relay.mjs
+ * 的 imageCostYuan）。出图成功后在这里把「这次调用」记进 Token 台账，费用在展示时由
+ * app-cost.js 的 costOfImages 按云端价目现算（非中转发起人是本机、也没这条记录，
+ * 计价侧对非中转路由直接返回 null，所以这里不做路由判断）。 */
+function tokNoteImageCall(node, spec, n) {
+  try {
+    if (typeof tokAddImages !== "function" || typeof tokOwnerForRun !== "function") return;
+    const prov = (spec && spec.provider) || null;
+    const provider = String((prov && (prov.id || prov.route)) || node.providerId || "");
+    const model = String((spec && spec.model) || node.model || "");
+    if (!model) return;
+    const owner = tokOwnerForRun({ node: node });
+    if (!owner) return;
+    tokAddImages(owner, {
+      provider: provider,
+      model: model,
+      images: Math.max(1, Math.floor(Number(n) || 1)),
+      at: Date.now(),
+    });
+    /* owner 是会话时台账留在会话上（会话由 app-db.js 持久化），否则节点自己随画布保存 */
+    if (owner !== node && typeof persistAgentSession === "function") persistAgentSession().catch(() => {});
+  } catch (_) {}
 }
 
 /* 聚合模式：每个批量条目 = 一个「虚拟输入节点」（条目标题=标题，条目内容=内容），
@@ -720,6 +749,8 @@ async function runOnceAgg(node, prov, attemptT) {
     rr.ext || "png",
   );
   const path = await finishProcImageOutput(node, spec, res.path, "", attemptT);
+  /* 聚合模式：一次运行出一个条目结果 = 一次出图调用 = 一张（同 runOnce 的口径） */
+  if (path) tokNoteImageCall(node, spec, 1);
   return { kind: "image", path };
 }
 
@@ -7304,6 +7335,113 @@ function functionCodeOf(node) {
   return String(raw).replace(/^\uFEFF/, "");
 }
 
+/* ── 「这个入参怎么没取到值」的来源诊断（只读，给节点卡片用） ──────────────
+   需求背景：文本节点一旦挂上入线就进入**继承态**（app.js inputInherited / valueForInput），
+   此时它在节点里写的正文不再参与取值、改从上游取；上游若还没出值，下游收到的就是空串 ——
+   用户看到的是「我明明在文本节点里写了路径，工具却报缺少路径」。
+   取值语义一字不改（保留现有优先级），只把「空值 + 为什么 + 到底断在哪一环」如实记到
+   消费节点的 node._inputNotes（运行态脏字段，不进存档）与 console，由卡片渲染成一行提示。
+   注意：工具节点内部子图节点的直接来源是**工具节点壳**，而用户看到的是壳外面那个文本节点，
+   所以提示必须沿壳上溯（wireSourceMediaType 那套「超级节点穿透」的同一条口径），
+   否则用户照着提示找不到该改哪个节点。
+   另一条纪律：这份归因**不绑在运行上** —— computeWireInputNotes 只读、可随时调用，
+   建卡片时就算（画布一变即重算），所以没点 ▶ 也能在卡片上看到「这个入参当前取不到值」，
+   不必先撞一次报错。 */
+function fnInputSrcNoteLegacyTrap(src) {
+  if (!src) return false;
+  if (typeof inputInherited !== "function" || !inputInherited(src)) return false;
+  /* 继承态下「本节点自己写过正文」的两类：文本看 text（含批量条目），图像看已选图。
+     批量条目也算写了内容 —— 以前只看 text，会漏掉「批量文本节点挂入线」。 */
+  if (src.kind === "input_text")
+    return (
+      !!String(src.text || "").trim() ||
+      !!(Array.isArray(src.entries) && src.entries.length)
+    );
+  return src.kind === "input_image" && !!String(src.imageAsset || "").trim();
+}
+/** 输入端点的中文类型名（提示里说清「你给的那个节点自己没内容」）。 */
+function fnInputSrcKindLabel(src) {
+  if (!src) return "";
+  switch (src.kind) {
+    case "input_text":
+      return I18n.t("文本节点");
+    case "input_image":
+      return I18n.t("图像节点");
+    case "input_audio":
+      return I18n.t("音频节点");
+    case "input_video":
+      return I18n.t("视频节点");
+    case "input_any":
+      return I18n.t("文件节点");
+    case "asset":
+      return I18n.t("素材节点");
+    case "db_table":
+      return I18n.t("表节点");
+    case "global":
+      return I18n.t("全局节点");
+    default:
+      return "";
+  }
+}
+
+/** 沿「壳」上溯到实际给值的那一环：来源是工具 / 超级节点时，值其实是它外侧输入线上游给的
+    （app.js valueForInput 的 isSuperLikeNode 分支）。没有外侧输入线 → 返回 null（说明壳自身
+    就没有供值来源）；不是壳 → 原样返回。带环保护，最多穿 8 层。 */
+function fnInputProviderNode(src) {
+  let cur = src;
+  const seen = new Set();
+  for (let d = 0; d < 8 && cur; d++) {
+    if (!isSuperLikeNode(cur)) return cur;
+    const id = String(cur.id || "");
+    if (!id || seen.has(id)) return null;
+    seen.add(id);
+    const ws =
+      typeof superExternalInWiresAll === "function"
+        ? superExternalInWiresAll(cur)
+        : [];
+    const first = ws.find((w) => {
+      const f = nodeById(w.from);
+      return !!(f && !isControlKind(f));
+    });
+    if (!first) return null; /* 壳自己没有外侧输入线 = 这一环就是断点 */
+    cur = nodeById(first.from);
+  }
+  return null;
+}
+function fnInputValueIsBlank(v) {
+  if (v == null) return true;
+  if (typeof v === "object")
+    return !String(v.path != null && v.path !== "" ? v.path : (v.text == null ? "" : v.text)).trim();
+  return !String(v).trim();
+}
+/** 空值归因："" = 没有可说的（本参数不是「取到空值」）。
+    返回的文案里必须同时给出「谁」与「为什么」，用户照着就能改。 */
+function fnInputBlankReason(node, port, pname, src, v) {
+  const pn = String(pname || "").trim() || I18n.t("参数 ") + Number(port);
+  /* 先按壳上溯到实际供值的那一环（用户能看见的那个节点），再判是不是「继承态吃掉了正文」 */
+  const up = fnInputProviderNode(src);
+  const who = up || src;
+  const sn = String((who && who.title) || "").trim() || I18n.t("上游节点");
+  if (fnInputSrcNoteLegacyTrap(who))
+    return I18n.t(
+      "参数「{p}」没取到值：来源文本节点「{s}」挂着上游连线（继承态），它自己写的正文不参与取值 —— 请断开这根入线用正文，或先让上游出值",
+      { p: pn, s: sn },
+    );
+  /* 输入型端点自己就是空（静态源没有上游可等）：说清「你给的那个节点自己还没内容」，
+     不冤枉成「上游还没跑」—— 用户照着就能去给它填内容。 */
+  const kl =
+    typeof fnInputSrcKindLabel === "function" ? fnInputSrcKindLabel(who) : "";
+  if (kl)
+    return I18n.t(
+      "参数「{p}」没取到值：来源{kl}「{s}」自己还没有内容（没有上游可等，先给它填上内容 / 选好文件）",
+      { p: pn, kl: kl, s: sn },
+    );
+  return I18n.t("参数「{p}」没取到值：来源「{s}」暂时没有输出（上游还没跑或结果为空）", {
+    p: pn,
+    s: sn,
+  });
+}
+
 /* 沿入线取某个端子的值（类超级节点端口按 fromIndex 对齐） */
 function computePortValue(w, consumer) {
   const src = nodeById(w.from);
@@ -7345,6 +7483,8 @@ function functionInputObject(node) {
     ? node._agentCallArgs
     : null;
   if (callArgs) {
+    /* Agent 注入态：_inputNotes 用不上（卡片这一帧不会建），顺手清掉上一轮的画布连线诊断 */
+    node._inputNotes = [];
     for (let i = 0; i < params.length; i++) {
       const port = i + 1;
       const raw = callArgs[port] === undefined ? null : callArgs[port];
@@ -7365,16 +7505,25 @@ function functionInputObject(node) {
     }
     return input;
   }
+  /* 画布连线取数：诊断与取值同源 —— 同一份 `ws`、同一个 computePortValue，
+     算出的 node._inputNotes 与下面组装的入参逐字对应（卡片上看到的为什么 = 跑起来的结果）。
+     空端子不提示：只有**挂过线**的端子才进诊断（新节点还没接线，提示只会是噪声）。 */
   const ws = wiresTo(node.id);
+  const notes = [];
   for (let i = 0; i < params.length; i++) {
     const port = i + 1; /* 参数 i 对外侧端子 i+1 */
     const isArr = fnToolInPortIsArray(node, port);
     const list = [];
-    for (let k = 0; k < ws.length; k++) {
-      const w = ws[k];
+    let noteSrc = null;
+    for (const w of ws) {
       if ((Number(w.toIndex) || 0) !== port) continue;
       const src = nodeById(w.from);
       if (!src || isControlKind(src)) continue;
+      /* 注意：这里**不跳过**「来源是父壳自己」的那种线 —— 内侧子节点从父壳外侧端子取数
+         是工具节点的标准接线，值确实是这么一路传进来的（缺口径少一层值就没了）。
+         空值归因已经沿壳上溯（fnInputProviderNode），提示点名的是壳外面那个真节点；
+         壳外侧压根没接线时文案回落到点名壳本身，也仍然是「这个参数没配」的现场。 */
+      if (!noteSrc) noteSrc = src;
       /* 可能 null：上游暂无输出 */
       const value = normFnToolPortValue(
         node,
@@ -7385,9 +7534,81 @@ function functionInputObject(node) {
       if (isArr) list.push(value);
       else if (!list.length) list.push(value); /* 普通端子一号一值 */
     }
-    put(i, isArr ? list : list.length ? list[0] : null);
+    const val = isArr ? list : list.length ? list[0] : null;
+    if (noteSrc && fnInputValueIsBlank(val))
+      notes.push(fnInputBlankReason(node, port, params[i] && params[i].name, noteSrc, val));
+    put(i, val);
   }
+  node._inputNotes = notes;
+  if (notes.length)
+    for (const nmsg of notes)
+      console.warn(String(node.title || node.id) + "：" + nmsg);
   return input;
+}
+
+/* ── 画布连线入参预检（只读 · 建卡片时就算）────────────────────────────
+   需求：报错之前就要在卡片上看见「这个入参当前取不到值、为什么」——
+   所以这份归因必须能脱离运行单独算，并在每次建卡片（画布任何变化都会重建卡片）时重算
+   （app-canvas.js 的 fnToolInputNotesEl → 本函数）。工具节点自己的卡片按内侧子节点汇总调用
+   本函数（见 app-canvas.js fnToolShellInputNotes）。
+   口径与运行路径**同一份**：下面的 functionInputObject 就是它的完整体（多带一份入参组装），
+   这里只是把它跑一遍再取 node._inputNotes —— 绝不另写一套判据，免得卡片与运行各说各话。 */
+function computeWireInputNotes(node) {
+  if (!node || !S.wf) return [];
+  functionInputObject(node);
+  return Array.isArray(node._inputNotes) ? node._inputNotes : [];
+}
+
+/** 本节点是「壳内子节点」且某条入线来自**父壳自身**时：壳上那个外侧端子没接上游线。
+    外侧端子的标准接线就是「外部 → 壳 → 内侧子节点」，壳外侧空着 = 这个参数还没配。
+    返回「可以不在卡片上报缺口的参数名」清单：缺口由壳自己的预检负责说，而且说的是壳外面
+    那个真节点；否则用户在收起壳的工具卡片上只会看到一句「来源『XX工具』暂时没有输出」，
+    被引到壳身上去。运行时（functionInputObject）照旧算这条，只影响卡片那张提示。 */
+function fnInputBareShellPorts(node) {
+  const out = [];
+  if (!node || !S.wf) return out;
+  const params = fnToolParamList(node, "in");
+  const extOf = (src) =>
+    typeof superExternalInWiresAll === "function" ? superExternalInWiresAll(src) : [];
+  for (const w of wiresTo(node.id)) {
+    const src = nodeById(w.from);
+    if (!src || !isSuperLikeNode(src)) continue;
+    if (String(src.id) !== String(node.parentSuperId)) continue;
+    /* 这条线取的是壳的第 w.fromIndex 个外侧数据端子：它没接上游 → 本参数不算「取到空值」 */
+    if (extOf(src).some((x) => Number(x.toIndex) === Number(w.fromIndex))) continue;
+    const nm = String((params[Number(w.toIndex) - 1] || {}).name || "").trim();
+    const key = nm || "参数 " + Number(w.toIndex);
+    if (out.indexOf(key) < 0) out.push(key);
+  }
+  return out;
+}
+
+/** 本节点是「壳内子节点」且某条入线来自**父壳自身**时：壳上那个外侧端子没接上游线
+    （外侧端子的标准接线就是「外部 → 壳 → 内侧子节点」，壳外侧空着 = 这个参数还没配）。
+    返回 true 表示该入线可以**不在卡片上**报缺口 —— 缺口由壳自己的预检负责说，
+    而且说的是壳外面那个真节点；否则用户在收起壳的工具卡片上只会看到一句「来源『XX工具』
+    暂时没有输出」，被引到壳身上去。运行时（functionInputObject）照旧算这条，只影响卡片。 */
+function fnInputWireFromBareShell(node, w) {
+  if (!node || !w) return false;
+  const src = nodeById(w.from);
+  if (!src || !isSuperLikeNode(src)) return false;
+  if (String(src.id) !== String(node.parentSuperId)) return false;
+  const ext =
+    typeof superExternalInWiresAll === "function" ? superExternalInWiresAll(src) : [];
+  return !ext.some((x) => Number(x.toIndex) === Number(w.fromIndex));
+}
+
+/* 打开存档 / 切画布时清掉上一轮留下的预检提示（node._inputNotes 是运行态脏字段，
+   早先版本会随画布一起存盘 —— 不清的话，卡片还没重建的那一帧会显示旧结论）。
+   返回是否有改动（与 asrPurgeLegacyTranscripts 同口径，true 时调用方落盘）。 */
+function purgeWireInputNotes(wf) {
+  let hit = false;
+  for (const n of (wf && wf.nodes) || []) {
+    if (!n || n._inputNotes === undefined) continue;
+    delete n._inputNotes;
+    hit = true;
+  }
+  return hit;
 }
 
 /* ── 计算执行节点（函数 / 工具）并发闸 ─────────────────────────────────
@@ -7968,6 +8189,17 @@ function functionAiSpec(node) {
   };
 }
 
+/* 函数节点「图像后端」设定 → 主进程线程能用的形状（renderer/app-aicall.js 解析生效值）：
+   { model, label, local, refImages, maxRefImages, strength }；
+   没选过 → null（主进程按 auto 走：云端图像服务商优先、其次本机 SenseNova）。
+   jscode 里 await mtnode.image(...) 用它出图，见 fn-runtime.js 的 image 桥。 */
+function functionImageSpec(node) {
+  if (!node || typeof imgRunSpecFor !== "function") return null;
+  const s = imgRunSpecFor(node);
+  if (!s || !s.model) return null;
+  return s;
+}
+
 async function runFunctionNode(node, quiet, opts) {
   return runComputeExecNode(node, quiet, opts, async (n, q) => {
     const engine = window.mtnodeJsExec;
@@ -7990,6 +8222,11 @@ async function runFunctionNode(node, quiet, opts) {
         /* 「AI 调用」设定（模型 / 预设 / 思考强度）：交给 jscode 里的
            await mtnode.ai(...) 用；没选过模型就是 null，mtnode.ai 会给明确报错。 */
         ai: functionAiSpec(n),
+        /* 「图像后端」设定：交给 jscode 里的 await mtnode.image(...) 出图 / 图生图；
+           没选过就是 null（主进程按 auto 走）。wfId / nodeId 决定产物落哪个画布资产目录。 */
+        img: functionImageSpec(n),
+        wfId: S.wf ? S.wf.id : "",
+        nodeId: n.id,
       });
     } finally {
       fnSetCancel(n, null);
@@ -8049,6 +8286,10 @@ async function testFunctionNode(node, args) {
       runId: fnRunId(node, "test"),
       /* 「测试」台同样带上「AI 调用」设定：试跑里 await mtnode.ai(...) 也能真发请求 */
       ai: functionAiSpec(node),
+      /* 试跑里 await mtnode.image(...) 也按本节点选定的图像后端出图（产物同样落画布资产目录） */
+      img: functionImageSpec(node),
+      wfId: S.wf ? S.wf.id : "",
+      nodeId: node.id,
     });
   } catch (e) {
     res = { ok: false, error: (e && e.message) || String(e) };
@@ -12247,13 +12488,20 @@ function assistRestrictOtherCanvases() {
 
 function applyAssistScopeToSnapshot(snap, opts) {
   if (!snap || typeof snap !== "object") return snap;
+  /* 锁定口径只看会话自身状态（全局助手「仅当前画布」/ 智能节点 / 长任务只读档），
+     绝不因为「这次读的是另一张画布」就把范围说成当前画布：MCP 连接（第三方客户端）
+     可以带 canvas 参数读别的画布，那是**允许**的，不是越界。 */
   const locked = restrictOtherCanvases() || (opts && opts.restrict === true);
-  snap.assistScope = locked
-    ? "current"
-    : assistScopeIsCurrent()
-      ? "current"
-      : "global";
+  /* 给 API 使用者（第三方 MCP 客户端）一句话说明：这次读的是哪张、还能不能读别的。 */
+  if (opts && opts.wf && !locked) {
+    snap.scopeInfo = Object.assign({}, snap.scopeInfo || {}, {
+      canvas: String(opts.wf.id || ""),
+      canvasName: String(opts.wf.name || ""),
+      note: "本次读的是指定画布；其它画布同样可用（传 canvas 参数或资源 mtnode://canvases）。",
+    });
+  }
   if (!locked) return snap;
+  snap.assistScope = "current";
   /* 锁定的那一张 = 本轮绑定画布（会话「所属画布」）：opts.wf 由画布事件显式交进来，
      用户切走前台画布时它仍是会话自己那张。没有 opts.wf 的只剩助手侧的提示词快照
      （助手没有归属会话，锁定的就是用户正看着的那张）—— 两种情况都不看运行栈栈顶：
@@ -12275,31 +12523,79 @@ function applyAssistScopeToSnapshot(snap, opts) {
   return snap;
 }
 
-/* 结构内容哈希（FNV-1a）：只覆盖会随编辑变化的「结构块」—— nodes / wires / groups /
-   marks / taskTree / superTree，刻意剔除 cam / view / selection / assistOpen /
-   sidebarOpen 等易变项。网关按会话记住上次的哈希：同一份结构重复 canvas_get 时直接回
-   「无变化」短回执，不再把整图重发（哈希真源只在渲染层，网关只透传）。 */
-function snapshotContentHashOf(snap) {
-  if (!snap || typeof snap !== "object") return "";
-  let src = "";
+/* 结构内容哈希（FNV-1a）：**对画布真源（wf）算，不对过滤后的快照算**。
+   为什么必须与快照解耦：这个哈希是写操作的乐观并发闸（MCP 的 baseHash 与自家 Agent
+   同一口径）。快照是「按 detail / sections / ids / scope 裁出来的视图」——
+   detail:"minimal" 的节点只剩 标题/描述/类别，而 detail:"standard" 带全部配置字段与
+   位置连线，同一张没动过的画布会算出两个不同的哈希。客户端按服务端说明「把读回的
+   contentHash 原样回传」时就会被判成「画布已被改动」而拒写（实测：minimal 读 → standard
+   读，哈希即变，写必被拒）。所以哈希只覆盖真源里会随编辑变化的结构与设置：
+   nodes（结构字段 + 正文长度；正文本身不参与——按「显式存盘才改文件」的既有口径）、
+   wires / groups / marks / 画布名。刻意剔除 cam / view / selection / 运行态等易变项。 */
+function snapshotContentHashOf(snapOrWf) {
   try {
-    src = JSON.stringify({
-      nodes: snap.nodes || null,
-      wires: snap.wires || null,
-      groups: snap.groups || null,
-      marks: snap.marks || null,
-      taskTree: snap.taskTree || null,
-      superTree: snap.superTree || null,
-    });
+    const src = snapshotHashSource(snapOrWf);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < src.length; i++) {
+      h ^= src.charCodeAt(i);
+      h = (h * 0x01000193) >>> 0;
+    }
+    return "fnv1a-" + h.toString(16).padStart(8, "0") + "-" + src.length.toString(16);
   } catch {
     return "";
   }
-  let h = 0x811c9dc5;
-  for (let i = 0; i < src.length; i++) {
-    h ^= src.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
-  }
-  return "fnv1a-" + h.toString(16).padStart(8, "0") + "-" + src.length.toString(16);
+}
+
+/* 标量归一：函数 / undefined / Symbol 一律转成稳定的空串，避免序列化差异。 */
+function hashScalar(v) {
+  if (v == null) return "";
+  const t = typeof v;
+  if (t === "function" || t === "symbol") return "";
+  if (t === "number") return Number.isFinite(v) ? v : "";
+  if (t === "boolean") return v;
+  return String(v);
+}
+
+/* 画布真源的规范化文本：键按字典序排（对象字面量顺序无关），
+   节点正文只取长度（textLen / promptLen / taskLen / goalLen / jscodeLen）。 */
+function snapshotHashSource(snapOrWf) {
+  const wf = snapOrWf && (snapOrWf.nodes || snapOrWf.wires) ? snapOrWf : S.wf || {};
+  const nodePart = (wf.nodes || [])
+    .map((n) => {
+      if (!n || typeof n !== "object") return "";
+      const keys = Object.keys(n)
+        .filter((k) => k.charAt(0) !== "_")
+        .filter((k) => NODE_BODY_KEYS.indexOf(k) < 0)
+        .sort();
+      const body =
+        NODE_BODY_KEYS.map((k) => k + "Len:" + hashScalar(String(n[k] == null ? "" : n[k]).length)).join(",");
+      return (
+        "{" +
+        keys
+          .map((k) => {
+            const v = n[k];
+            if (Array.isArray(v)) return k + ":[" + v.map((x) => hashScalar(x && typeof x === "object" ? JSON.stringify(x) : x)).join("|") + "]";
+            if (v && typeof v === "object") return k + ":" + JSON.stringify(v);
+            return k + ":" + hashScalar(v);
+          })
+          .join(",") +
+        "}|" +
+        body
+      );
+    })
+    .join("\n");
+  const wirePart = (wf.wires || [])
+    .map((w) => hashScalar(w && w.from) + ">" + hashScalar(w && w.to) + "#" + hashScalar(w && w.fromIndex) + (w && w.rel ? "~rel" : ""))
+    .join(",");
+  const groupPart = (wf.groups || [])
+    .map((g) => JSON.stringify(g && g.nodes ? { id: g.id, title: g.title, nodes: g.nodes } : g))
+    .join(",");
+  const markPart = (wf.marks || [])
+    .map((m) => JSON.stringify(m))
+    .join(",");
+  return (
+    "name:" + hashScalar(wf.name) + "\n" + nodePart + "\n" + wirePart + "\n" + groupPart + "\n" + markPart
+  );
 }
 
 /* 全量快照（含 wfList IPC）。opts 直通 canvasSnapshot 的档位：canvas_get 用 detail 按需取
@@ -12348,7 +12644,10 @@ async function canvasSnapshotFull(opts, scopeOpts) {
      它仍能在 scopeNote 里说明「工作范围 = 本会话所属画布」，不必再带一份画布列表。 */
   if (minimal && !want("workflows")) delete snap.workflows;
   applySnapshotSectionFilter(snap, (opts || {}).sections);
-  snap.contentHash = snapshotContentHashOf(snap);
+  /* 哈希必须算在**画布真源**上，不能算在这个刚被 detail / sections / ids / scope 裁过的
+     快照上（minimal 档的节点只剩 标题/描述/类别，与 standard 档算出两个哈希 → 客户端
+     「读完立刻改」必被版本闸拒）。故显式交真源：S.wf 就是 canvasSnapshot 用的那张图。 */
+  snap.contentHash = snapshotContentHashOf(S.wf);
   return snap;
 }
 
@@ -12677,7 +12976,8 @@ async function applyAppOp(params, runWf, runKey) {
   if (!action) throw new Error(I18n.t("缺少 action"));
   /* 本轮绑定画布（= 会话「所属画布」，由 handleCanvasEvent 经 runCtx 交进来）。
      所有「哪张图」的判断都以它为准：状态快照、改名、删除目标一律精准命中所属画布，
-     同时绝不因为用户切到别的画布干活就误改 / 误删他正开着的那张。 */
+     同时绝不因为用户切到别的画布干活就误改 / 误删他正开着的那张。
+     MCP 连接（第三方客户端）点名了 canvas 时，runCtx.wf 已经是那张目标画布 → 同样精准命中。 */
   const boundWf = runWf || canvasTargetWf() || S.wf;
   if (action === "delete_workflow") await ensureAgentTool("app_delete", undefined, runKey);
   else if (
@@ -12963,6 +13263,9 @@ async function applyAppOp(params, runWf, runKey) {
 }
 
 function canvasOpNeedsConfirm(op, params) {
+  /* MCP 连接（第三方客户端）按首次连接授权生效：不逐笔弹确认框。
+     开关由 renderer/mcp-bridge.js 只在这一次调用期间置真（见 app.js 的 S._mcpAuthorized）。 */
+  if (S._mcpAuthorized) return false;
   if (!S.assistRunActive && !anyAgentSessionRunning()) return false;
   if (S.config && S.config.dsh && S.config.dsh.assistAutoApprove) return false;
   if (op === "edit") return true;
@@ -13428,6 +13731,9 @@ function agentDeniedToolNames(runKey) {
 }
 
 async function ensureAgentTool(key, detail, runKey) {
+  /* MCP 连接（第三方客户端）：授权在「首次连接」那一步已经给过，这里不再逐项问许可
+     （与 canvasOpNeedsConfirm 同一开关，只在这一次调用期间为真）。 */
+  if (S._mcpAuthorized) return;
   const mode = agentToolMode(key, runKey);
   if (mode === "deny") throw agentToolDeniedError(key, detail, runKey);
   if (mode !== "ask") return;
@@ -13477,11 +13783,10 @@ function collectCanvasEditToolKeys(params) {
   const removeMarksList = Array.isArray(params.removeMarks)
     ? params.removeMarks
     : [];
-  /* agent 驱动编辑的自动排版闸：建图 / 连线 / 改标注 / 删除 / 改尺寸 → 自动排版；
-     用户自己拖动或表单改 x/y 不走 applyCanvasEdit，天然不触发。 */
+  /* 排版闸：只有本笔显式写了 layout:true 才排（自动排版已按 2026-02 需求撤掉，
+     见 canvasEditWantsLayout；普通编辑既不挪位置也不改尺寸） */
   const wantsLayout = canvasEditWantsLayout(params, creates);
-  const doLayout =
-    params.layout === true || (params.layout !== false && wantsLayout);
+  const doLayout = wantsLayout;
   const aliasKind = new Map();
   for (const spec of creates) {
     if (!spec) continue;
@@ -14533,6 +14838,11 @@ function confirmAssistAction(title, info, opts) {
       if (closeDom && overlayIsMine()) {
         if (b && b.dataset.ixConfirmId) delete b.dataset.ixConfirmId;
         closeOverlay();
+      } else if (closeDom && confirmId) {
+        /* 这只框被后来的窗顶掉、已经收进状态栏页签（openOverlay 的无损收起）：
+           它不在 #overlay 上，closeOverlay 够不着 —— 把页签与停放的 DOM 一并摘掉，
+           否则会留下一只点了没反应的死框（本次开发需求：被顶掉的窗不许静默丢，也不许变死卡）。 */
+        ovMinDropWindow(confirmId);
       }
       resolve(ans);
     };
@@ -14647,6 +14957,12 @@ function handleCanvasEvent(data, runCtx) {
     /* 一帧只有一次回执：确认后走 run()、或确认框自毁，谁先到算谁，绝不重复发帧 */
     if (replied) return;
     replied = true;
+    /* MCP 帧（第三方客户端经主进程 mcp-server.js 推来）走 mcpFrameSettle 原路回主进程，
+       不走 dshInteract —— 那条通道只认 dsh 网关里在跑的轮。 */
+    if (typeof runCtx.mcpFrameSettle === "function") {
+      runCtx.mcpFrameSettle(result, error || undefined);
+      return;
+    }
     window.api
       .dshInteract({ kind: "canvas", id, result, error: error || undefined })
       .then((res) => {
@@ -14789,8 +15105,13 @@ function layoutOrigin(obstacles) {
 
 function shiftToClear(placed, obstacles) {
   if (!obstacles.length) return { x: 0, y: 0 };
-  const pad = 28;
+  /* 障碍物只要求「不压住」：这里留 1 格余量（与相邻缝同一口径），不是让块内变松 */
+  const pad = layoutGap();
+  const g = layoutGap();
   const hit = (dx, dy) => {
+    /* 整体平移必须落在网格上：块内「缝恰好 1 格」在平移下才保持成立 */
+    dx = Math.round(dx / g) * g;
+    dy = Math.round(dy / g) * g;
     for (const a of placed) {
       const sa = layoutNodeSize(a);
       const A = { x: a.x + dx, y: a.y + dy, w: sa.w, h: sa.h };
@@ -14802,8 +15123,8 @@ function shiftToClear(placed, obstacles) {
     return false;
   };
   if (!hit(0, 0)) return { x: 0, y: 0 };
-  const downs = [48, 96, 160, 240, 360, 520, 720, 960, 1280];
-  const rights = [80, 160, 280, 420, 600, 840, 1100];
+  const downs = [1, 2, 3, 4, 6, 8, 12, 18, 26, 36, 50].map((k) => k * g);
+  const rights = [1, 2, 3, 4, 6, 8, 12, 18, 26].map((k) => k * g);
   for (const dy of downs) {
     if (!hit(0, dy)) return { x: 0, y: dy };
   }
@@ -14813,18 +15134,23 @@ function shiftToClear(placed, obstacles) {
       if (!hit(dx, dy)) return { x: dx, y: dy };
     }
   }
-  return { x: 0, y: 1400 };
+  return { x: 0, y: downs[downs.length - 1] };
 }
 
-/* 排版收尾的兜底防重叠：
+/* 排版收尾的兜底防重叠（2026-02 口径：缝 ≥ 1 格 + 坐标对齐网格）：
    - 用「绘制尺寸」（layoutNodeSize）判断，展开超级节点按 expandW/H 参与碰撞；
-   - 任何残余重叠（绘制尺寸 ≠ 存储尺寸、跨组件装箱误差、障碍物误判、尺寸漂移等）
-     都按「更省位移的轴、优先向下」推开，网格向上取整保证不欠推；
-   - 多趟松弛直到干净或达到趟数上限（正常排版极少触发，纯兜底）。 */
+   - 残余重叠（绘制尺寸 ≠ 存储尺寸、跨组件装箱误差、障碍物误判、尺寸漂移等）
+     一律按「更省位移的轴、优先向下」推到**缝 ≥ 1 格**的位置，并落在网格上；
+   - 正常情况下上一段放置已经做到「缝恰好 1 格」，这里极少触发，纯兜底。 */
 const LAYOUT_OVERLAP_PAD = 10;
 const LAYOUT_OVERLAP_MAX_PASS = 12;
+/** 缝宽下限：相邻两节点之间只允许「≥ 1 个网格」（正常路径恰好 = 1 格） */
+function layoutOverlapPad(opts) {
+  if (opts && opts.pad != null) return Math.max(0, Number(opts.pad) || 0);
+  return layoutGap();
+}
 function resolvePlacedOverlaps(nodes, obstacles, opts) {
-  const pad = opts && opts.pad != null ? opts.pad : LAYOUT_OVERLAP_PAD;
+  const pad = layoutOverlapPad(opts);
   const placed = (nodes || []).filter(Boolean);
   const obs = (obstacles || []).filter(Boolean);
   if (placed.length < 2 && !obs.length) return 0;
@@ -14850,11 +15176,16 @@ function resolvePlacedOverlaps(nodes, obstacles, opts) {
         const ox = Math.min(ra.x + ra.w + pad, rb.x + rb.w + pad) - Math.max(ra.x, rb.x);
         const oy = Math.min(ra.y + ra.h + pad, rb.y + rb.h + pad) - Math.max(ra.y, rb.y);
         if (oy <= ox) {
+          /* 向下推：推到「上者底边 + 1 格」，再抬到网格（只会更远，不会更近） */
           const low = centerY(a) <= centerY(b) ? b : a;
-          low.y = Math.ceil((low.y + oy) / g) * g;
+          const up = low === b ? a : b;
+          low.y = Math.ceil(Math.max(low.y + oy, up.y + layoutNodeSize(up).h + pad) / g) * g;
         } else {
           const right = centerX(a) <= centerX(b) ? b : a;
-          right.x = Math.ceil((right.x + ox) / g) * g;
+          const left = right === b ? a : b;
+          right.x = Math.ceil(
+            Math.max(right.x + ox, left.x + layoutNodeSize(left).w + pad) / g,
+          ) * g;
         }
         total++;
         any = true;
@@ -14874,6 +15205,88 @@ function resolvePlacedOverlaps(nodes, obstacles, opts) {
     if (!any) break;
   }
   return total;
+}
+
+/* ── 新节点落点：就近找空位、绝不挪动已有节点（2026-02 需求）──────────────
+   背景：撤掉「编辑即自动排版」之后，agent / MCP 新建的节点不再由排版引擎摆位，
+   若照旧按 `placeY = node.y + node.h + 48` 一路往下堆，会直接压在老节点上。
+   于是这里只做一件事：在已有内容周围**只往外找**一个不重叠的位置（先向下、
+   再向右、最后右下），全程不读写已有节点的坐标 —— 已有节点一个都不动。
+   局部画布（scope / 父壳）里的新节点用的是舞台局部坐标，所以障碍物按同一层级取。 */
+function nodePlacementObstacles(cand) {
+  const sid = String(nodeParentSuperId(cand) || "");
+  const tid = String(nodeParentTaskId(cand) || "");
+  return (S.wf.nodes || []).filter((n) => {
+    if (!n || n.id === cand.id) return false;
+    if (isSuperIoNode(n)) return false;
+    const s = layoutNodeSize(n);
+    const onSid = String(nodeParentSuperId(n) || "");
+    return sid ? onSid === sid : !onSid && String(nodeParentTaskId(n) || "") === tid;
+  });
+}
+
+/** 新节点就近摆位（2026-02 需求：编辑不再自动排版）：只摆「本笔新建且没给 x/y」的节点。
+ *  给了坐标的、已有的一律不动；障碍物 = 同一层级的既有节点 + 本批已摆好的新节点
+ *  （逐个重算，同批也不重叠）；局部画布（scope）下跳过界外节点，与其余写入闸同一口径。
+ *  @param {Array} created 本笔新建的节点（已在 S.wf.nodes 里、父壳 / 父任务已解析完）
+ *  @param {{origin:{x:number,y:number}, pinned:Set<string>, outOfScope:(n)=>boolean}} opts */
+function applyNewNodePlacement(created, opts) {
+  const o = opts || {};
+  const pinned = o.pinned || new Set();
+  const originTop = o.origin || { x: snap(48), y: snap(48) };
+  const outOfScope = typeof o.outOfScope === "function" ? o.outOfScope : () => false;
+  for (const node of created || []) {
+    if (!node || !nodeById(node.id)) continue;
+    if (outOfScope(node)) continue;
+    if (pinned.has(node.id)) continue;
+    /* 顶层用「已有内容右边」当起点；壳 / 任务内部用的是舞台局部坐标，
+       起点取壳内左上（与 tidyOneSuperInner 的 16/16 同一口径），否则会飘到壳外很远。 */
+    const inShell = !!(nodeParentSuperId(node) || nodeParentTaskId(node));
+    const origin = inShell ? { x: snap(16), y: snap(16) } : originTop;
+    const spot = freeSpotForNode(node, origin, nodePlacementObstacles(node));
+    node.x = spot.x;
+    node.y = spot.y;
+  }
+}
+
+/** 就近空闲落点：从 origin 起按阶梯只往外搜索，第一个不重叠的位置就是答案 */
+function freeSpotForNode(cand, origin, obstacles) {
+  const g = typeof grid === "function" ? grid() : 16;
+  const snapTo = (v) => (typeof snapDim === "function" ? snapDim(v, g) : Math.round(v));
+  const pad = 28;
+  const downs = [0, 96, 200, 320, 470, 650, 870, 1120, 1420, 1820];
+  const rights = [0, 180, 380, 620, 900, 1240, 1640, 2140, 2760];
+  const clean = (x, y) => {
+    const probe = { x: x, y: y, w: cand.w, h: cand.h, kind: cand.kind };
+    for (const o of obstacles || []) {
+      const s = layoutNodeSize(o);
+      if (
+        rectsOverlap(
+          { x: x, y: y, w: cand.w, h: cand.h },
+          { x: o.x, y: o.y, w: s.w, h: s.h },
+          pad,
+        )
+      )
+        return false;
+    }
+    return true;
+  };
+  for (const dx of rights) {
+    for (const dy of downs) {
+      const x = snapTo(origin.x + dx);
+      const y = snapTo(origin.y + dy);
+      if (clean(x, y)) return { x: x, y: y };
+    }
+  }
+  /* 全阶梯都不行（极端密）：落到最右下方，仍不碰任何节点 */
+  let farX = origin.x;
+  let farY = origin.y;
+  for (const o of obstacles || []) {
+    const s = layoutNodeSize(o);
+    farX = Math.max(farX, o.x + s.w + 96);
+    farY = Math.max(farY, o.y + s.h + 96);
+  }
+  return { x: snapTo(farX), y: snapTo(farY) };
 }
 
 function layoutNodePriority(n) {
@@ -14915,7 +15328,29 @@ function layoutNodePriority(n) {
 /* 分层从左到右排版：连通分量 + barycenter 减交叉 + 父子垂直对齐 */
 function layoutNodeSize(n) {
   const sz = nodeDrawSize(n);
-  return { w: Math.max(40, sz.w || 240), h: Math.max(40, sz.h || 160) };
+  /* 尺寸一律吸网格（就近取整）：间距要精确 = 1 格，尺寸就必须是网格倍数，
+     否则「1 格」不可能同时对所有相邻对成立（见 layoutGap / 2026-02 需求）。 */
+  const s = layoutSnapSize(sz.w || 240, sz.h || 160);
+  return { w: s.w, h: s.h };
+}
+/** 节点自身 w/h 吸到网格倍数（展开的壳层吸 expandW/H，折叠尺寸 w/h 原样留着）。
+ *  排版入口在开工前调用一次：可见尺寸随后就是网格倍数，与 layoutNodeSize 完全一致。 */
+function snapNodeSizesForLayout(nodes) {
+  for (const n of nodes || []) {
+    if (!n) continue;
+    const sz = nodeDrawSize(n);
+    const s = layoutSnapSize(sz.w || 240, sz.h || 160);
+    if (
+      n.kind === "super" &&
+      (typeof superIsOpenShell !== "function" || superIsOpenShell(n))
+    ) {
+      n.expandW = s.w;
+      n.expandH = s.h;
+      continue;
+    }
+    n.w = s.w;
+    n.h = s.h;
+  }
 }
 
 function findLayoutComponents(nodes, wires) {
@@ -15181,48 +15616,71 @@ function alignLayerToParents(col, inEdges, nodeMap, gapY, originY, outEdges) {
   resolveLayerOverlaps(col, gapY);
 }
 
-/* ============ 新版自动排版引擎（2026 · 替代旧分层装箱） ============
+/* ============ 自动排版引擎（2026-02 起：1 格间距口径） ============
    目标（与需求一一对应，调用方 = agent 自动编辑 / 一键排版 / 局部排版 / 壳内排版）：
-     ① 每个可排层级的整体包围盒收进 16:9 ~ 9:16；
-     ② 连线节点就近（层内重心排序 + 跨层纵向对齐），上游在左或上，
-        交叉只做「重心 + 局部搜索」的廉价近似，不跑最优解；
-     ③ 整块形状聚集、尽量接近正方形（紧凑间距 + 长宽比收敛）；
-     ④ 优化只用「贪心分层 + 有限次局部搜索（8 趟内、60ms 上限、确定性）」。
+     ① **节点之间互不重叠**（硬约束，收尾还有一道兜底）；
+     ② **相邻距离恰好 = 1 个网格**（硬约束）：同一列里上下相邻 = 1 格，
+        同一行里左右相邻 = 1 格，折行后行与行之间 = 1 格，互不相连的块之间 = 1 格；
+     ③ 连线节点就近（层内重心排序 + 跨层纵向对齐），上游在左或上；
+     ④ 折行保留，但只作「形状偏好」——一行排到多宽换行由 4:3 与宽度上限定，
+        折行**不会**再放宽缝宽（缝宽只有 1 格这一种）；宽高比不再是硬约束。
 
    管线：分层（layoutEdgeSets + assignLayoutLayers + orderLayersByBarycenter）
-        → 层/列放置（超宽层折行，列内按邻居中心垂直对齐）
-        → 孤立节点填空（就近可编辑区）
-        → 局部搜索（同列交换 / 单节点微调 / 全局间距缩放，按目标函数取最优）
-        → 长宽比收敛（先间距、后只缩 >480px 的大节点，小节点不动）
-        → 收尾（平移避障 + 兜底防重叠，原有能力）。
+        → 列打包（层 = 列，超长列拆并排子列，孤立节点各成一列）
+        → 逐行放置（列宽/行高按该行最高最宽节点，缝宽一律 layoutGap()）
+        → 组件装箱（互不相连的块也间隔 1 格）
+        → 收尾（平移避障 + 兜底：缝 ≥ 1 格且对齐网格）。
 
-   注：本轮需求限定「用户自己的手动编辑不触发排版」——本引擎只在排版按钮与
-   agent 驱动的画布编辑里跑；applyCanvasEdit 的触发闸见 canvasEditWantsLayout。 */
+   注：用户自己的手动编辑不触发排版（2026-02 需求）——本引擎只在排版按钮与
+   agent 显式 layout:true 的编辑里跑；触发闸见 canvasEditWantsLayout。 */
 
-/** 长宽比目标：宽高比落在 [1/R, R] 内视为「方形聚集」（R=16/9） */
+/** 长宽比参考值：只用于「一行最多排多宽」的上限反推，**不再**是硬约束。
+ *  2026-02 需求：相邻间距必须精确 = 1 个网格、节点互不重叠 ——
+ *  包围盒比例是这两条硬约束的结果，不再反过来去压缩间距或缩节点。 */
 const LAYOUT_RATIO_R = 16 / 9;
-/** 只缩这个尺寸以上的节点（需求：硬约束优先时可缩节点，但小节点不动） */
-const LAYOUT_SHRINK_MIN = 480;
-/** 缩大节点的最大倍率：只对大节点生效，小节点一律不动 */
-const LAYOUT_SHRINK_MAX = 1.5;
-/** 节点尺寸下限（比这更小就不缩了，宁可放宽长宽比） */
+/** 折行的「形状目标」：一行排到多宽就该换行（4:3，比 16:9 更接近正方） */
+const LAYOUT_ASPECT_TARGET = 4 / 3;
+/** 一行/一整块的宽度上限（px）：折行阈值 = min(这个值, 高 × 4/3)。
+ *  取现有装箱上限，保证「节点间不重叠 + 精确 1 格」下也有个明确的换行点。 */
+const LAYOUT_FLOW_MAX_W = 4400;
+/** 单列超过这个高度就拆成并排子列（否则一列长成一根竖塔） */
+const LAYOUT_MAX_STACK_H = 2600;
+/** 节点尺寸下限（比这更小时不再往下吸网格，避免把节点压没） */
 const LAYOUT_MIN_W = 160;
 const LAYOUT_MIN_H = 120;
-/** 局部搜索趟数与时限（「不要消耗资源过多」的硬预算） */
-const LAYOUT_REFINE_PASS = 8;
+/** 局部搜索的时间预算（常量保留：旧函数族已撤，仅作回归对照） */
 const LAYOUT_REFINE_MS = 60;
-/** 长宽比收敛后仍差到多少倍才放弃（放弃 → 告警，不硬压） */
-const LAYOUT_RATIO_GIVEUP = LAYOUT_RATIO_R * 1.5;
-/** 列内纵向间距不超过这个值：硬塞成 3000px 高的竖列只是换了个难看的长条 */
-const LAYOUT_MAX_STACK_H = 2600;
-/** 长宽比惩罚权重：让局部搜索愿意为「更方」付一点连线代价 */
-const LAYOUT_COST_ASPECT = 0.35;
-/** 排完这层是否满足 16:9 ~ 9:16（以「可见尺寸」计，含展开的壳层） */
-function layoutRatioOk(w, h) {
-  if (!(w > 0) || !(h > 0)) return true;
-  const r = w / h;
-  return r <= LAYOUT_RATIO_R && r >= 1 / LAYOUT_RATIO_R;
+
+/* ── 间距口径（2026-02 需求）：相邻距离 = 恰好 1 个网格 ─────────────────
+   网格 = 设置里的画布网格间距（app.js 的 grid()，缺省 24，可改 4~64）。
+   引擎里所有间距都只认这一个值：调用方历史上传的 gapX/gapY 微调（80/48、
+   196/92、96/56…）一律不再影响缝宽，只保留 preferAnchor 这类行为开关。 */
+function layoutGap() {
+  return grid();
 }
+/** 节点尺寸的网格倍数规则：**就近**取整（250→240、154→168），
+ *  低于渲染下限时抬到「不小于下限的最近网格点」——与 app.js 的 snapDim 同口径 */
+function layoutSnapSized(v, minV) {
+  const g = grid();
+  const min = Math.max(0, Number(minV) || 0);
+  const s = Math.round(Number(v) / g) * g;
+  return s < min ? Math.ceil(min / g) * g : s;
+}
+function layoutSnapSize(w, h) {
+  const g = grid();
+  /* 下限随网格缩放：格子越大，节点越小会显得太碎（缺省 24px 时 = 160×120） */
+  return {
+    w: Math.max(40, layoutSnapSized(w, Math.max(160, g * 4))),
+    h: Math.max(40, layoutSnapSized(h, Math.max(120, g * 3))),
+  };
+}
+/** 长宽比校验：旧需求（包围盒必须收进 16:9~9:16）已在 2026-02 撤销 ——
+ *  保留函数是为了让「比例不再是硬约束」这件事在代码里可检索，恒回 true。 */
+function layoutRatioOk(w, h) {
+  return w > 0 && h > 0;
+}
+/** 节点尺寸缩放族（旧需求：为凑 16:9 缩 >480px 的大节点）已撤：现在尺寸只吸网格，不缩放。 */
+const LAYOUT_SHRINK_MIN = 480;
 function layoutNodeShrinkable(n) {
   const sz = layoutNodeSize(n);
   return Math.max(sz.w, sz.h) > LAYOUT_SHRINK_MIN;
@@ -15259,235 +15717,178 @@ function layoutSortColumn(col, inEdges, allIn, allOut, centerOf) {
 function layoutColumnWidth(col) {
   return Math.max(40, ...(col || []).map((n) => layoutNodeSize(n).w));
 }
-function layoutColumnHeight(col, gapY) {
+/** 一列的总高 = 各节点高之和 + 「恰好 1 格」× 间隔数（列内上下相邻就只有 1 格） */
+function layoutColumnHeight(col) {
   if (!col || !col.length) return 0;
-  return col.reduce((s, n) => s + layoutNodeSize(n).h, 0) + gapY * (col.length - 1);
+  const g = layoutGap();
+  return col.reduce((s, n) => s + layoutNodeSize(n).h, 0) + g * (col.length - 1);
 }
-/** 折几行最像正方形（需求 ①③）：n 列按行均分，模拟每种行数的包围盒，
- *  取「宽高比最贴近 16:9」的那种；并列时取行数少的（更扁平、更好读）。
- *  rowGap 必须与真正装箱时用的行间距一致（列装箱用 gapY*1.6、组件装箱用 compGapY），
- *  否则估出来的比值和落地的比值对不上，拐点会选错。 */
-function layoutPickRows(n, colW, colH, gapX, rowGap) {
-  if (n <= 1) return 1;
-  const blockOf = (R) => {
-    const per = Math.ceil(n / R);
-    let w = 0;
-    let h = 0;
-    let rowW = 0;
-    let rowH = 0;
-    let cnt = 0;
-    for (let i = 0; i < n; i++) {
-      if (cnt === per) {
-        w = Math.max(w, rowW);
-        h += rowH + rowGap;
-        rowW = 0;
-        rowH = 0;
-        cnt = 0;
-      }
-      rowW += colW[i] + gapX;
-      rowH = Math.max(rowH, colH[i]);
-      cnt++;
-    }
-    w = Math.max(w, rowW);
-    h += rowH;
-    return { w: Math.max(1, w), h: Math.max(1, h) };
-  };
-  let bestR = 1;
-  let bestScore = Infinity;
-  for (let R = 1; R <= n; R++) {
-    const b = blockOf(R);
-    const r = b.w / b.h;
-    const inside = r <= LAYOUT_RATIO_R && r >= 1 / LAYOUT_RATIO_R;
-    const score = (inside ? 0 : 10) + Math.abs(Math.log(r / LAYOUT_RATIO_R));
-    if (score < bestScore - 1e-9) {
-      bestScore = score;
-      bestR = R;
-    }
-  }
-  return bestR;
+/** 一行的宽度上限（折行阈值 = 形状偏好，**不影响缝宽**）：
+ *   · 给了 totalArea 时取 √(面积) —— 「排成正方形该有多宽」，让整块尽量接近方形；
+ *   · 没给（单个连通块内部）就取宽度上限 LAYOUT_FLOW_MAX_W ——
+ *     ⚠ 绝不能按几百像素的小阈值折行，否则一条链会被折成竖塔，破坏「上游在左或在上」；
+ *   · 单块比它宽时不折（每行至少放得下一块 → 不会死循环）。 */
+function layoutRowMaxW(blockW, area) {
+  const bw = Math.max(0, Number(blockW) || 0);
+  const a = Math.max(0, Number(area) || 0);
+  const square = a > 0 ? Math.sqrt(a) : LAYOUT_FLOW_MAX_W;
+  return Math.max(bw, Math.min(LAYOUT_FLOW_MAX_W, Math.max(720, square)));
 }
-function layoutPlaceLayer(nodes, wires, origin, opts) {
-  opts = opts || {};
-  const gapX = opts.gapX != null ? opts.gapX : 80;
-  const gapY = opts.gapY != null ? opts.gapY : 48;
-  /* hard 边（无环）决定分层；all 边（含软约束）决定减交叉与垂直靠拢 */
+/** 把一层的节点切成一列或多列（并排子列）：太长的一层竖着摆会成一根竖塔。
+ *  子列只影响视觉排布，不改「上游在左或在上」（同层节点之间本来就没有硬边）。 */
+function layoutSplitColumn(col, maxH) {
+  const g = layoutGap();
+  const h = layoutColumnHeight(col);
+  const limit = Math.max(g * 3, maxH || LAYOUT_MAX_STACK_H);
+  if (!col.length || h <= limit) return [col.slice()];
+  const need = Math.max(2, Math.ceil(h / limit));
+  const per = Math.max(1, Math.ceil(col.length / need));
+  const out = [];
+  for (let i = 0; i < col.length; i += per) out.push(col.slice(i, i + per));
+  return out;
+}
+/** 分层结果 → 列列表：每层一列（过长拆并排子列），孤立节点各成一列 */
+function layoutBuildColumns(nodes, wires) {
   const { inEdges, outEdges, allIn, allOut } = layoutEdgeSets(nodes, wires);
   const cols = assignLayoutLayers(nodes, inEdges, outEdges);
   orderLayersByBarycenter(cols, allIn, allOut);
-  const placed = new Map();
-  const filled = [];
-
-  /* ── 需求 ②③：列顺序 = 层顺序，再把列从左到右、逐行往下折 ──────────────
-     列的先后 = 层的先后，绝不重排（这是「上游在左或在上」的充分条件）：
-     每条硬边都从层号小的节点指向层号大的节点；两列要么在同一行里靠左，
-     要么落在更下面的行里 —— 两种情形都满足需求 ②，不靠任何启发式去凑。
-     折几行由「宽高比最贴近 16:9」决定（需求 ①③）；某一层比行还高时，
-     把它拆成并排子列（层内顺序不动），避免出现一根竖塔。 */
   const base = [];
   cols.forEach((col) => {
-    if (col && col.length) base.push({ col: col });
+    if (col && col.length) base.push(col);
   });
-  if (!base.length) return nodesBBox(nodes);
-  const maxColH0 = Math.max(40, ...base.map((g) => layoutColumnHeight(g.col, gapY)));
-  const colSplitH = Math.max(900, Math.min(LAYOUT_MAX_STACK_H, maxColH0));
+  const maxColH0 = Math.max(
+    layoutGap() * 3,
+    ...base.map((col) => layoutColumnHeight(col)),
+  );
+  const splitH = Math.max(900, Math.min(LAYOUT_MAX_STACK_H, maxColH0));
   const columns = [];
-  for (const g of base) {
-    const h = layoutColumnHeight(g.col, gapY);
-    const need = h > colSplitH ? Math.ceil(h / colSplitH) : 1;
-    const per = Math.max(1, Math.ceil(g.col.length / need));
-    for (let i = 0; i < g.col.length; i += per)
-      columns.push({ col: g.col.slice(i, i + per) });
+  for (const col of base) for (const part of layoutSplitColumn(col, splitH)) columns.push(part);
+  /* 孤立（无连线）节点：各成一列，跟连通部分一样遵守 1 格间距，不另开一套落点逻辑 */
+  const touched = new Set();
+  for (const col of columns) for (const n of col) touched.add(n.id);
+  for (const n of nodes) if (!touched.has(n.id)) columns.push([n]);
+  return { columns, inEdges, outEdges, allIn, allOut };
+}
+/** 行内「整列对齐邻居中心」的竖直微调（只动留白，不动缝宽）：
+ *  每一列在自己的可用区间里整体平移，让列内节点中心尽量贴近左右邻居的中心均值 ——
+ *  连线更接近水平、穿过无关方块的机率更低（实测稠密关系图上明显）。
+ *  区间 = [行顶, 行底 − 该列高]：区间内平移**不会**改变任何缝宽（列内缝恒 1 格，
+ *  列与列之间的水平缝也不受影响），所以「相邻恰好 1 格」照旧成立。
+ *  两趟（先按左邻、再按右邻）足够，确定性、无随机。 */
+function layoutAlignColumnsInRows(groups, rowY, rowH, inEdges, allIn, allOut, g) {
+  if (!groups || groups.length < 2) return;
+  const centerOf = (id) => {
+    for (const gr of groups) {
+      for (const it of gr.local) {
+        if (it.n.id === id) return { x: gr.x, y: rowY + it.y + it.h / 2 };
+      }
+    }
+    return null;
+  };
+  const slackOf = (gr) => {
+    const colH = gr.local.reduce((s, it, i) => s + it.h + (i ? g : 0), 0);
+    return Math.max(0, rowH - colH);
+  };
+  for (const pass of [0, 1]) {
+    const order = pass === 0 ? groups.slice() : groups.slice().reverse();
+    for (const gr of order) {
+      const slack = slackOf(gr);
+      if (slack <= 0) continue;
+      let sum = 0;
+      let k = 0;
+      for (const it of gr.local) {
+        const acc = (id, w) => {
+          const c = centerOf(id);
+          if (!c) return;
+          sum += c.y * w;
+          k += w;
+        };
+        for (const id of (inEdges && inEdges[it.n.id]) || []) acc(id, pass === 0 ? 2 : 1);
+        for (const id of (allOut && allOut[it.n.id]) || []) acc(id, pass === 0 ? 1 : 2);
+      }
+      if (!k) continue;
+      const wantTop = sum / k - (gr.local.reduce((s, it, i) => s + it.h + (i ? g : 0), 0)) / 2 - rowY;
+      const clamped = Math.max(0, Math.min(slack, wantTop));
+      const aligned = Math.round(clamped / g) * g;
+      const delta = aligned - gr.local[0].y;
+      if (!delta) continue;
+      for (const it of gr.local) it.y += delta;
+    }
   }
-  const colW = columns.map((c) => layoutColumnWidth(c.col));
-  const colH = columns.map((c) => layoutColumnHeight(c.col, gapY));
-  const rows = layoutPickRows(columns.length, colW, colH, gapX, gapY * 1.6);
-  const perRow = Math.max(1, Math.ceil(columns.length / rows));
-  let y = origin.y;
-  for (let i0 = 0; i0 < columns.length; i0 += perRow) {
-    const slice = columns.slice(i0, i0 + perRow);
-    let cx = origin.x;
-    let rowH = 0;
+}
+/** 层 / 列放置（2026-02 口径）：列顺序 = 层顺序（上游在左或在上），
+ *  逐行从左到右排；**任何相邻缝都恰好 = 1 个网格**：
+ *   · 列与列之间：下一列的 x = 上一列最右 + 1 格；
+ *   · 列内上下：下一个节点的 y = 上一个的底 + 1 格；
+ *   · 行与行之间：下一行 = 该行最高列的底 + 1 格。
+ *  行高按该行最高节点算；列内竖直留白只用于「整列对齐邻居」（见
+ *  layoutAlignColumnsInRows），不改任何缝宽；孤立节点也是列，同样吃这套规则。
+ *  opts 里的 gapX / gapY 等历史微调一律**不再影响缝宽**（只有 1 格这一种缝）。 */
+function layoutPlaceLayer(nodes, wires, origin, opts) {
+  opts = opts || {};
+  const o = origin || { x: 0, y: 0 };
+  const { columns, inEdges, allIn, allOut } = layoutBuildColumns(nodes, wires);
+  if (!columns.length) return nodesBBox(nodes);
+  const g = layoutGap();
+  /* 先量尺寸再排位：列宽 = 该列最宽节点，列高 = 该列总高（缝已按 1 格算进） */
+  const measured = columns.map((col) => ({
+    col,
+    w: layoutColumnWidth(col),
+    h: layoutColumnHeight(col),
+  }));
+  let rowY = o.y;
+  let i = 0;
+  while (i < measured.length) {
+    const rowCap = layoutRowMaxW(0, 0);
+    const slice = [];
+    let wSum = 0;
+    while (i < measured.length) {
+      const c = measured[i];
+      const add = c.w + (slice.length ? g : 0);
+      if (slice.length && wSum + add > rowCap) break;
+      slice.push(c);
+      wSum += add;
+      i++;
+      if (!c.col.length) break;
+    }
+    if (!slice.length) {
+      slice.push(measured[i]);
+      i++;
+    }
+    const rowH = Math.max(40, ...slice.map((c) => c.h));
+    /* 列内纵序：邻居中心均值定序（无邻居位置可参时「可编辑 / 控制节点靠上」） */
+    const centerOf = (id) => {
+      const n = nodeById(id);
+      if (!n || n.x == null) return null;
+      return n.y + layoutNodeSize(n).h / 2;
+    };
+    /* 先把这一行的每列算好局部坐标（以 rowY 为顶、缝恰好 1 格），再统一做「对齐邻居」
+       的竖直微调：整列平移 —— 只动留白，缝宽一分不变（见 layoutAlignColumnsInRows）。 */
+    const groups = [];
+    let cx = o.x;
     for (const c of slice) {
-      /* 列内纵序：无邻居位置可参时退化为「可编辑 / 控制节点靠上」 */
-      const sorted = layoutSortColumn(c.col, inEdges, allIn, allOut, () => null);
-      let cy = y;
+      const sorted = layoutSortColumn(c.col, inEdges, allIn, allOut, centerOf);
+      const colX = snap(cx);
+      const local = [];
+      let cy = 0;
       for (const n of sorted) {
         const sz = layoutNodeSize(n);
-        n.x = snap(cx);
-        n.y = snap(cy);
-        placed.set(n.id, n);
-        cy += sz.h + gapY;
+        local.push({ n: n, y: cy, h: sz.h });
+        cy += sz.h + g;
       }
-      rowH = Math.max(rowH, cy - gapY - y);
-      cx += layoutColumnWidth(sorted) + gapX;
+      groups.push({ local: local, w: layoutColumnWidth(sorted), x: colX });
+      cx = colX + layoutColumnWidth(sorted) + g;
     }
-    y += rowH + gapY * 1.6;
-  }
-  /* 列内按邻居中心再收一遍：连线更短、交叉更少（x 不变，列结构不破） */
-  {
-    const pairList = [];
-    const seenPair = new Set();
-    for (const n of nodes) {
-      for (const t of outEdges[n.id] || []) {
-        const k = n.id + "\u0000" + t;
-        if (seenPair.has(k)) continue;
-        seenPair.add(k);
-        pairList.push({ from: n.id, to: t });
+    layoutAlignColumnsInRows(groups, rowY, rowH, inEdges, allIn, allOut, g);
+    for (const gr of groups) {
+      for (const it of gr.local) {
+        it.n.x = gr.x;
+        it.n.y = snap(rowY + it.y);
       }
     }
-    layoutStackColumnsToNeighbors(nodes, pairList, gapY);
-  }
-  /* 孤立（无连线）节点：不散落，补在既有内容的右侧、与首列同高 */
-  for (const n of nodes) if (placed.has(n.id)) filled.push(n);
-  if (placed.size < nodes.length) {
-    let fx = origin.x;
-    let fy = origin.y;
-    const bb0 = nodesBBox(filled);
-    if (bb0) {
-      fx = snap(bb0.maxX + gapX);
-      fy = snap(bb0.minY);
-    }
-    let cx = fx;
-    let cy = fy;
-    let colH = 0;
-    for (const n of nodes) {
-      if (placed.has(n.id)) continue;
-      const sz = layoutNodeSize(n);
-      if (colH + sz.h > LAYOUT_MAX_STACK_H && cy > fy) {
-        cx += gapX + 320;
-        cy = fy;
-        colH = 0;
-      }
-      n.x = snap(cx);
-      n.y = snap(cy);
-      placed.set(n.id, n);
-      cy += sz.h + gapY;
-      colH += sz.h + gapY;
-    }
+    rowY += rowH + g;
   }
   return nodesBBox(nodes);
-}
-/** 列内「靠拢邻居中心」的优先级收尾 —— 缩小连线跨度、间接减交叉。
- *  x 不动（列结构 = 层顺序，是硬约束），列的纵向起点也不动（免得长到下一行去），
- *  只把列内节点重排：按「邻居中心均值」定序。
- *  每趟只在「中心连线交叉数变少，或交叉持平而总代价变小」时接受，否则整体回退。
- *  确定性、无随机；2 趟足够。 */
-function layoutStackColumnsToNeighbors(nodes, pairs, gapY) {
-  if (typeof layoutCostOf !== "function" || typeof layoutSegCross !== "function") return;
-  if (nodes.length < 3) return;
-  /* 需求 ④（有界优化）：这一步要对每列做交叉度量（O(连线²)），大图上不划算 ——
-     总工作量按「连线² × 列数」封顶，超了就停手（按规模算，不看时钟，保证确定性）。 */
-  const workCap = 150000;
-  const perTrial = pairs.length * pairs.length + pairs.length * nodes.length;
-  let work = 0;
-  const inCol = new Map();
-  for (const n of nodes) {
-    if (!inCol.has(n.x)) inCol.set(n.x, []);
-    inCol.get(n.x).push(n);
-  }
-  const centerOf = (id) => {
-    const m = nodes.find((x) => x.id === id);
-    if (!m) return null;
-    const sz = layoutNodeSize(m);
-    return { x: m.x + sz.w / 2, y: m.y + sz.h / 2 };
-  };
-  const crossNow = () => {
-    let c = 0;
-    for (let i = 0; i < pairs.length; i++) {
-      for (let j = i + 1; j < pairs.length; j++) {
-        const a = pairs[i],
-          b = pairs[j];
-        if (a.from === b.from || a.to === b.to || a.from === b.to || a.to === b.from) continue;
-        const ca = centerOf(a.from),
-          cb = centerOf(a.to),
-          cc = centerOf(b.from),
-          cd = centerOf(b.to);
-        if (!ca || !cb || !cc || !cd) continue;
-        if (layoutSegCross(ca.x, ca.y, cb.x, cb.y, cc.x, cc.y, cd.x, cd.y)) c++;
-      }
-    }
-    return c;
-  };
-  let bestCross = crossNow();
-  let bestCost = layoutCostOf(nodes, pairs, null);
-  for (let pass = 0; pass < 2; pass++) {
-    for (const col of inCol.values()) {
-      if (col.length < 2) continue;
-      if (work + perTrial > workCap) return; /* 预算到顶：保留已接受的结果，直接收手 */
-      work += perTrial;
-      const want = new Map();
-      for (const n of col) {
-        let sum = 0,
-          k = 0;
-        for (const p of pairs) {
-          const other = p.from === n.id ? p.to : p.to === n.id ? p.from : null;
-          if (!other) continue;
-          const c = centerOf(other);
-          if (!c) continue;
-          sum += c.y;
-          k++;
-        }
-        want.set(n.id, k ? sum / k : n.y + layoutNodeSize(n).h / 2);
-      }
-      const before = col.map((n) => ({ n, y: n.y }));
-      /* 列的起始 y 保持不变：只换顺序，不让这一列长到下一行的地盘里 */
-      const top = Math.min(...col.map((n) => n.y));
-      const order = col.slice().sort((a, b) => want.get(a.id) - want.get(b.id) || a.y - b.y);
-      let cy = top;
-      for (const n of order) {
-        n.y = snap(cy);
-        cy += layoutNodeSize(n).h + gapY;
-      }
-      const c = crossNow();
-      const cost = layoutCostOf(nodes, pairs, null);
-      if (c < bestCross || (c === bestCross && cost < bestCost - 1e-6)) {
-        bestCross = c;
-        bestCost = cost;
-      } else {
-        for (const b of before) b.n.y = b.y;
-      }
-    }
-  }
 }
 
 /* 两条「节点中心连线」是否交叉 —— 交叉度量用（不做精确几何，够用且便宜） */
@@ -15577,209 +15978,19 @@ function layoutCostOf(nodes, pairs, anchors) {
     (anchor / cntAll / (span * 0.02)) * 6
   );
 }
-/** 规则 ③：间距整体缩放 —— 每趟把「全局间距系数」换一档，取目标函数最优的一档 */
-const LAYOUT_SPREAD_STEPS = [1, 0.9, 0.8, 1.15, 1.3, 0.95, 1.06];
-function layoutRelaxWithScale(nodes, origin, scale) {
-  for (const n of nodes) {
-    n.x = snap(origin.x + (n.x - origin.x) * scale);
-    n.y = snap(origin.y + (n.y - origin.y) * scale);
-  }
-}
-function layoutRefinePlacement(nodes, pairs, anchors, opts) {
-  if (!nodes || nodes.length < 3) return;
-  opts = opts || {};
-  const budget = opts.budget != null ? opts.budget : LAYOUT_REFINE_MS;
-  const t0 = Date.now();
-  const bb0 = nodesBBox(nodes);
-  const origin = bb0 ? { x: snap(bb0.minX), y: snap(bb0.minY) } : { x: 0, y: 0 };
-  const neigh = new Map();
-  const addN = (a, b) => {
-    if (!neigh.has(a)) neigh.set(a, new Set());
-    neigh.get(a).add(b);
-  };
-  for (const p of pairs) {
-    addN(p.from, p.to);
-    addN(p.to, p.from);
-  }
-  let best = layoutCostOf(nodes, pairs, anchors);
-  const posOf = (n) => ({ x: n.x, y: n.y });
-  const apply = (fn) => {
-    const before = nodes.map(posOf);
-    fn();
-    const c = layoutCostOf(nodes, pairs, anchors);
-    if (c < best - 1e-6) {
-      best = c;
-      return true;
-    }
-    nodes.forEach((n, i) => {
-      n.x = before[i].x;
-      n.y = before[i].y;
-    });
-    return false;
-  };
-  /* 同列候选集：按 x 分组后逐对交换（O(Σ col²) 且每轮只接受真变好的） */
-  const groups = new Map();
-  for (const n of nodes) {
-    const key = Math.round(n.x / 8) * 8;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(n);
-  }
-  const nx = (v) => snap(v);
-  for (let pass = 0; pass < LAYOUT_REFINE_PASS; pass++) {
-    if (Date.now() - t0 > budget) break;
-    let improved = false;
-    for (const g of groups.values()) {
-      if (g.length < 2) continue;
-      for (let i = 0; i < g.length; i++) {
-        for (let j = i + 1; j < g.length; j++) {
-          if (Date.now() - t0 > budget) break;
-          const a = g[i],
-            b = g[j];
-          const ax = a.x,
-            ay = a.y,
-            bx = b.x,
-            by = b.y;
-          if (apply(() => {
-            a.x = bx;
-            a.y = by;
-            b.x = ax;
-            b.y = ay;
-          }))
-            improved = true;
-        }
-      }
-      /* 列内微调：贴邻居中心（就地挪一格再看是否变好） */
-      for (const n of g) {
-        if (Date.now() - t0 > budget) break;
-        const ns = neigh.get(n.id);
-        if (!ns || !ns.size) continue;
-        let sum = 0,
-          k = 0;
-        for (const id of ns) {
-          const m = nodes.find((x) => x.id === id);
-          if (!m) continue;
-          sum += m.y + layoutNodeSize(m).h / 2;
-          k++;
-        }
-        if (!k) continue;
-        const want = snap(sum / k - layoutNodeSize(n).h / 2);
-        if (Math.abs(want - n.y) < 8) continue;
-        const was = n.y;
-        if (
-          !apply(() => {
-            n.y = want;
-          })
-        )
-          n.y = was;
-      }
-    }
-    /* 间距档位（整层缩放） */
-    for (const s of LAYOUT_SPREAD_STEPS) {
-      if (s === 1) continue;
-      if (Date.now() - t0 > budget) break;
-      if (
-        apply(() => layoutRelaxWithScale(nodes, origin, s))
-      )
-        improved = true;
-    }
-    if (!improved) break;
-  }
-}
-/** 需求 ① 的硬约束收敛：先间距、再只缩 >480px 的大节点（小节点不动）。 */
-function layoutScaleHugeNodes(nodes, s) {
-  for (const n of nodes) {
-    if (!layoutNodeShrinkable(n)) continue;
-    const w = Math.max(LAYOUT_MIN_W, snap((Number(n.w) || 240) * s));
-    const h = Math.max(LAYOUT_MIN_H, snap((Number(n.h) || 160) * s));
-    n.w = w;
-    n.h = h;
-    if (n.kind === "super" && n.superOpen) {
-      n.expandW = Math.max(320, snap((Number(n.expandW) || 720) * s));
-      n.expandH = Math.max(220, snap((Number(n.expandH) || 480) * s));
-    }
-  }
-}
-/** 需求 ① 的硬约束收敛：先间距、再只缩 >480px 的大节点（小节点不动）。
- *  只处理「太宽」这一侧 —— 太窄（竖长条）时缩节点只会让它更窄，
- *  那种情况交给告警，不拿可读性换一个假比值。 */
-function layoutFitAspect(nodes, pairs, anchors) {
-  const bb0 = nodesBBox(nodes);
-  if (!bb0 || nodes.length < 2) return { ok: true, scaled: 1 };
-  const w0 = Math.max(1, bb0.maxX - bb0.minX);
-  const h0 = Math.max(1, bb0.maxY - bb0.minY);
-  if (layoutRatioOk(w0, h0)) return { ok: true, scaled: 1 };
-  /* 太窄（竖长条）：缩节点只会更窄，不可能收敛 —— 直接交给调用方告警。
-     需求 ① 的冲突口径是「硬约束优先但不硬凑」，所以宁可如实报 false。 */
-  if (w0 / h0 <= LAYOUT_RATIO_R) return { ok: false, scaled: 1 };
-  if (!nodes.some((n) => layoutNodeShrinkable(n))) return { ok: false, scaled: 1 };
-  const minX = bb0.minX;
-  const minY = bb0.minY;
-  const sizeAfter = (n, sc) => {
-    const sz = layoutNodeSize(n);
-    if (!layoutNodeShrinkable(n)) return sz;
-    return { w: Math.max(LAYOUT_MIN_W, sz.w * sc), h: Math.max(LAYOUT_MIN_H, sz.h * sc) };
-  };
-  const ratioAt = (sc) => {
-    let w = 1;
-    let h = 1;
-    for (const n of nodes) {
-      const sz = sizeAfter(n, sc);
-      w = Math.max(w, n.x + sz.w - minX);
-      h = Math.max(h, n.y + sz.h - minY);
-    }
-    return w / h;
-  };
-  /* 从小到大挑第一档能收进 16:9 的缩放；一档都不行就不动尺寸（可读性优先） */
-  let pick = 1;
-  for (const sc of LAYOUT_SHRINK_STEPS) {
-    if (layoutRatioOk(ratioAt(sc), 1)) {
-      pick = sc;
-      break;
-    }
-  }
-  if (pick >= 1) return { ok: false, scaled: 1 };
-  layoutScaleHugeNodes(nodes, pick);
-  const bb2 = nodesBBox(nodes);
-  const w2 = bb2 ? Math.max(1, bb2.maxX - bb2.minX) : w0;
-  const h2 = bb2 ? Math.max(1, bb2.maxY - bb2.minY) : h0;
-  return { ok: layoutRatioOk(w2, h2), scaled: pick };
-}
-/** 收敛长宽比时允许对大节点（>480px）做的缩放档位：最多缩到 2/3。
- *  再小就不是「排版」而是「毁图」了 —— 一档都不行就如实报 ratioOk=false 让调用方告警。 */
-const LAYOUT_SHRINK_STEPS = [0.95, 0.9, 0.82, 0.75, 0.67];
-function layoutFlowComponent(nodes, wires, origin, opts) {
+/** 自动排版主入口（所有入口共用这一套引擎）。
+ *  返回 { ok, nodes, ratioOk, w, h, scaled, gap } —— 调用方据此提示 / 记警告。
+ *  需求（2026-02）：① 节点互不重叠；② 相邻距离恰好 1 个网格；③ 上游在左或上、
+ *  连线就近；④ 折行保留（4:3 形状偏好），宽高比不再是硬约束。 */
+
+/** 单个连通分量内部排版（2026-02 口径）：分层 → 列打包 → 逐行 1 格放置。
+ *  列宽/行高按该行「最宽 / 最高」的节点算，缝宽一律 = 1 个网格；
+ *  opts 里的 gapX / gapY 等历史微调不再影响缝宽（只有 1 格这一种缝）。 */
+function layoutFlowComponent(nodes, wires, origin) {
   if (!nodes.length) return { w: 0, h: 0 };
-  opts = opts || {};
-  const gapX = opts.gapX != null ? opts.gapX : 80;
-  const gapY = opts.gapY != null ? opts.gapY : 48;
-  const { inEdges, outEdges, allIn, allOut } = layoutEdgeSets(nodes, wires);
-  const cols0 = assignLayoutLayers(nodes, inEdges, outEdges);
-  orderLayersByBarycenter(cols0, allIn, allOut);
-  /* 折行（列顺序 = 层顺序，按行折起）由 layoutPlaceLayer 一并决定：
-     它自己会挑「最贴近 16:9」的行数，组件装箱再用 layoutPickRows 收敛一次。 */
-  layoutPlaceLayer(nodes, wires, origin, { gapX, gapY });
-
-  /* 目标函数用：硬边对（上游→下游，用于方向惩罚）与全部边对（用于交叉 / 就近） */
-  const pairs = [];
-  const seen = new Set();
-  const pushPair = (from, to) => {
-    if (!from || !to || from === to) return;
-    const k = from + "\u0000" + to;
-    if (seen.has(k)) return;
-    seen.add(k);
-    pairs.push({ from, to });
-  };
-  for (const n of nodes) {
-    for (const t of outEdges[n.id] || []) pushPair(n.id, t);
-    for (const t of allOut[n.id] || []) pushPair(n.id, t);
-  }
-  const anchors = new Map();
-  for (const n of nodes) anchors.set(n.id, { x: n.x, y: n.y });
-  layoutRefinePlacement(nodes, pairs, anchors);
-  const fit = layoutFitAspect(nodes, pairs, anchors);
-
+  layoutPlaceLayer(nodes, wires, origin, {});
   const bb = nodesBBox(nodes);
-  if (!bb) return { w: 0, h: 0, ratioOk: true, scaled: 1 };
+  if (!bb) return { w: 0, h: 0, ratioOk: true, scaled: 1, gap: layoutGap() };
   const outW = bb.maxX - bb.minX;
   const outH = bb.maxY - bb.minY;
   return {
@@ -15788,16 +15999,18 @@ function layoutFlowComponent(nodes, wires, origin, opts) {
     minX: bb.minX,
     minY: bb.minY,
     ratioOk: layoutRatioOk(outW, outH),
-    scaled: fit.scaled,
+    scaled: 1,
+    gap: layoutGap(),
   };
 }
 
 function layoutFlow(nodes, wires, origin, obstacles, opts) {
-  /* 不写死间距：有 relation 线时 layoutFlowEx 自动放宽走廊 */
+  /* 间距不再由调用方钉：缝宽恒为 1 格（见 layoutGap） */
   layoutFlowEx(nodes, wires, origin, obstacles, opts || {});
 }
 
-/* 关系线主导的图（开发节点架构图）需要更宽的间距：直线才少穿方块、少叠在一起 */
+/* 关系线主导的图（开发节点架构图）：间距口径与数据图**完全一致**（恒 1 格）。
+   这两个常量只作历史留档 —— 缝宽已由 layoutGap() 唯一决定。 */
 const LAYOUT_REL_GAP_X = 164;
 const LAYOUT_REL_GAP_Y = 72;
 function relWiresIn(wires) {
@@ -15806,99 +16019,82 @@ function relWiresIn(wires) {
 }
 
 /** 自动排版主入口（所有入口共用这一套引擎）。
- *  返回 { ok, nodes, ratioOk, w, h, scaled } —— 调用方据此提示 / 记警告。
- *  需求：① 每层包围盒收进 16:9~9:16；② 上游在左或上、连线就近、少交叉；
- *        ③ 整块聚集、接近方形；④ 只用廉价的贪心 + 有限次局部搜索（不跑最优解）。 */
+ *  返回 { ok, nodes, ratioOk, w, h, scaled, gap } —— 调用方据此提示 / 记警告。
+ *  需求（2026-02）：① 节点互不重叠；② 相邻距离恰好 1 个网格；
+ *  ③ 上游在左或上、连线就近、少交叉；④ 折行保留（4:3 形状偏好），宽高比不再是硬约束。 */
 function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
   if (!nodes || !nodes.length) return { ok: false, nodes: 0, ratioOk: true };
   origin = origin || { x: snap(48), y: snap(48) };
-  /* 关系线也参与排版：按箭头定向，成环的降级为软约束（见 layoutEdgeSets） */
   opts = opts || {};
-  const hasRel = relWiresIn(wires);
-  /* 有关系线时列/行间距至少留够宽度（调用方给的更小值会被抬到下限） */
-  const gapX =
-    opts.gapX != null
-      ? Math.max(opts.gapX, hasRel ? LAYOUT_REL_GAP_X : 0)
-      : hasRel
-        ? LAYOUT_REL_GAP_X
-        : 80;
-  const gapY =
-    opts.gapY != null
-      ? Math.max(opts.gapY, hasRel ? LAYOUT_REL_GAP_Y : 0)
-      : hasRel
-        ? LAYOUT_REL_GAP_Y
-        : 48;
-  const compGapX =
-    opts.compGapX != null
-      ? Math.max(opts.compGapX, hasRel ? 208 : 0)
-      : hasRel
-        ? 208
-        : 128;
-  const compGapY =
-    opts.compGapY != null
-      ? Math.max(opts.compGapY, hasRel ? 160 : 0)
-      : hasRel
-        ? 160
-        : 120;
-  const maxRowW = opts.maxRowW != null ? opts.maxRowW : 4400;
-  /* 整体长宽收敛盒：不折行的 4400 上限之外，再按 16:9 反推一个「封顶高」 */
-  const ratioBoxW = Math.max(maxRowW, 4400);
-  const ratioBoxH = ratioBoxW / LAYOUT_RATIO_R;
+  /* 间距只有一种：1 个网格。调用方历史上传的 gapX / gapY / compGapX / compGapY
+     一律不再参与计算（否则「精确 1 格」立刻破功）——只保留 preferAnchor 行为开关。 */
+  const g = layoutGap();
+  snapNodeSizesForLayout(nodes);
   const components = findLayoutComponents(nodes, wires);
   components.sort((a, b) => b.nodes.length - a.nodes.length);
 
-  /* agent 显式给的坐标当起始锚点（需求：仍参与排版，但尽量少位移） */
+  /* agent 显式给的坐标当起始锚点（AI 排版路径：整体尽量少位移） */
   const anchorOf = new Map();
   if (opts.preferAnchor) for (const n of nodes) anchorOf.set(n.id, { x: n.x, y: n.y });
 
-  let cursorX = origin.x;
-  let cursorY = origin.y;
-  let rowMaxH = 0;
-  const compOpts = Object.assign({}, opts, { gapX, gapY });
-  const placed = [];
-
+  /* 组件内部先在 0/0 起算，再整块平移到装箱位 —— 两组之间的缝也是 1 格 */
   const laid = [];
   for (const comp of components) {
-    const relOrigin = { x: 0, y: 0 };
-    /* 连通分量内部沿用自身包围盒起算（形状 ③ 在 layoutFlowComponent 内收敛） */
-    layoutFlowComponent(comp.nodes, comp.wires, relOrigin, compOpts);
+    layoutFlowComponent(comp.nodes, comp.wires, { x: 0, y: 0 });
     const bb0 = nodesBBox(comp.nodes);
     if (!bb0) continue;
-    laid.push({ comp: comp, bb: bb0, w: bb0.maxX - bb0.minX, h: bb0.maxY - bb0.minY });
+    const w = bb0.maxX - bb0.minX;
+    const h = bb0.maxY - bb0.minY;
+    laid.push({ comp: comp, bb: bb0, w: w, h: h, area: Math.max(1, w) * Math.max(1, h) });
   }
-  if (laid.length) {
-    /* 组件之间也按 16:9 收敛（需求 ①③）：选「摆几行」，而不是一路右排到 4400 上限，
-       否则多张互不相连的小图会被排成一条横贯长带。 */
-    const rowsWant = layoutPickRows(
-      laid.length,
-      laid.map((c) => c.w),
-      laid.map((c) => c.h),
-      compGapX,
-      compGapY,
-    );
-    const perRow = Math.max(1, Math.ceil(laid.length / rowsWant));
-    let k = 0;
-    for (const item of laid) {
-      if (k > 0 && k % perRow === 0) {
-        cursorX = origin.x;
-        cursorY += rowMaxH + compGapY;
-        rowMaxH = 0;
-      }
-      const dx = cursorX - item.bb.minX;
-      const dy = cursorY - item.bb.minY;
-      for (const n of item.comp.nodes) {
+  /* 折行阈值：按「整块内容面积开平方」定 —— 排成正方形时该有多宽（形状偏好，不动缝宽） */
+  const totalArea = laid.reduce((s, it) => s + it.area, 0);
+  const widestBlock = laid.reduce((m, it) => Math.max(m, it.w), 0);
+  const rowCap = layoutRowMaxW(widestBlock, totalArea);
+  const rowMaxH = (row) => Math.max(40, ...row.map((it) => it.h));
+  let cursorX = snap(origin.x);
+  let cursorY = snap(origin.y);
+  let slice = [];
+  let sliceW = 0;
+  let sliceH = 0;
+  const flushRow = () => {
+    if (!slice.length) return;
+    /* 逐块左对齐摆放：下一块的起点 = 上一块所有节点**吸附之后**的最右缘 + 1 格。
+       不能拿「未吸附的包围盒宽度」累加 —— 那样相邻块的缝会小于 1 格（实测差 1 格）。 */
+    const baseX = snap(cursorX);
+    const baseY = snap(cursorY);
+    let cx = baseX;
+    for (const it of slice) {
+      const dx = cx - it.bb.minX;
+      const dy = baseY - it.bb.minY;
+      let right = cx;
+      for (const n of it.comp.nodes) {
         n.x = snap(n.x + dx);
         n.y = snap(n.y + dy);
+        right = Math.max(right, n.x + layoutNodeSize(n).w);
       }
-      for (const n of item.comp.nodes) placed.push(n);
-      cursorX += item.w + compGapX;
-      rowMaxH = Math.max(rowMaxH, item.h);
-      k++;
+      cx = right + g;
     }
+    cursorY = baseY + sliceH + g;
+    cursorX = snap(origin.x);
+    slice = [];
+    sliceW = 0;
+    sliceH = 0;
+  };
+  for (const item of laid) {
+    const add = item.w + (slice.length ? g : 0);
+    if (slice.length && sliceW + add > rowCap) flushRow();
+    slice.push(item);
+    sliceW += item.w + (slice.length > 1 ? g : 0);
+    sliceH = rowMaxH(slice);
   }
+  flushRow();
 
+  /* ── 收尾 ①：避障 ─────────────────────────────────────────────────────
+     障碍物（本次不参与排版的既有节点）只影响整块位移，块内相对位置不动，
+     所以「缝恰好 1 格」在平移下保持成立。 */
   let sh = shiftToClear(nodes, obstacles || []);
-  /* 锚点优先：用户给过 x/y 时，整体位移取「更省位移」的那一侧 */
+  /* 锚点优先：用户 / agent 给过 x/y 时，整体位移取「更省位移」的那一侧 */
   if (opts.preferAnchor && anchorOf.size) {
     let sx = 0,
       sy = 0,
@@ -15924,55 +16120,23 @@ function layoutFlowEx(nodes, wires, origin, obstacles, opts) {
     }
   }
 
-  /* 兜底防重叠：任何残余重叠（绘制尺寸 ≠ 存储尺寸、跨组件装箱误差、障碍物误判、
-     尺寸漂移等）都在这里按最小位移推开，保证排版结果互不压住 */
+  /* ── 收尾 ②：兜底防重叠（缝 ≥ 1 格 + 坐标对齐网格，见 resolvePlacedOverlaps） */
   resolvePlacedOverlaps(nodes, obstacles || []);
 
   const bb = nodesBBox(nodes);
-  let ratioOk = true;
-  let scaled = 1;
-  let outW = bb ? bb.maxX - bb.minX : 0;
-  let outH = bb ? bb.maxY - bb.minY : 0;
-  if (bb && !layoutRatioOk(outW, outH)) {
-    /* 需求 ① 硬约束优先：先间距、再只缩 >480px 的大节点（小节点不动）；
-       缩完仍放不下 → 放宽比值，由调用方 toast 告警 */
-    const allIn2 = {};
-    const outEdges2 = {};
-    const pairs = [];
-    const seen = new Set();
-    for (const n of nodes) {
-      allIn2[n.id] = [];
-      outEdges2[n.id] = [];
-    }
-    for (const w of wires || []) {
-      if (!w || w.rel || !allIn2[w.to] || !outEdges2[w.from]) continue;
-      allIn2[w.to].push(w.from);
-      outEdges2[w.from].push(w.to);
-      const k = w.from + "\u0000" + w.to;
-      if (!seen.has(k)) {
-        seen.add(k);
-        pairs.push({ from: w.from, to: w.to });
-      }
-    }
-    const fit = layoutFitAspect(nodes, pairs, anchorOf.size ? anchorOf : null);
-    scaled = fit.scaled;
-    resolvePlacedOverlaps(nodes, obstacles || []);
-    const bb2 = nodesBBox(nodes);
-    outW = bb2 ? bb2.maxX - bb2.minX : outW;
-    outH = bb2 ? bb2.maxY - bb2.minY : outH;
-    ratioOk = layoutRatioOk(outW, outH);
-  }
-  /* 折行上限护栏：整层宽超过一次装箱宽度时，把封顶高按 16:9 交回调用方参考，
-     真正收不进去的长条由 ratioOk=false 触发告警（不硬压、不牺牲可读性） */
+  const outW = bb ? bb.maxX - bb.minX : 0;
+  const outH = bb ? bb.maxY - bb.minY : 0;
+  /* 宽高比不再是硬约束：如实回报实际形状，交给调用方决定要不要提示 */
   return {
     ok: true,
     nodes: nodes.length,
     w: outW,
     h: outH,
-    ratioOk,
-    scaled,
-    ratioBoxW,
-    ratioBoxH,
+    ratioOk: layoutRatioOk(outW, outH),
+    scaled: 1,
+    gap: g,
+    ratioBoxW: LAYOUT_FLOW_MAX_W,
+    ratioBoxH: LAYOUT_FLOW_MAX_W / LAYOUT_ASPECT_TARGET,
   };
 }
 
@@ -16013,7 +16177,9 @@ function nodeHasVisibleImage(node) {
   return false;
 }
 
-/* 美观尺寸：图像节点便于观察；文本可读；控制保持默认 */
+/* 美观尺寸：图像节点便于观察；文本可读；控制保持默认。
+   2026-02 需求：尺寸一律吸到网格倍数（就近取整）—— 间距要精确 1 格，
+   尺寸就必须是网格倍数；因此这里所有赋值都过 layoutSnapSize，不再有裸像素值。 */
 function sizeNodeForTidy(node) {
   const d = NODE_DEFAULTS[node.kind];
   if (!d) return;
@@ -16021,35 +16187,31 @@ function sizeNodeForTidy(node) {
   const hasImg = nodeHasVisibleImage(node);
   const batchN =
     isBatch(node) && Array.isArray(node.entries) ? node.entries.length : 0;
+  const set = (w, h) => {
+    const s = layoutSnapSize(w, h);
+    node.w = s.w;
+    node.h = s.h;
+  };
 
   if (kind === "control") {
     if (isExecStart(node) || isExecEnd(node)) {
-      node.w = 180;
-      node.h = 96;
+      set(180, 96);
       return;
     }
-    node.w = d.w;
-    node.h = d.h;
+    set(d.w, d.h);
     return;
   }
   if (kind === "task") {
-    node.w = snap(Math.max(d.w, 280));
-    node.h = snap(Math.max(d.h, 220));
+    set(Math.max(d.w, 280), Math.max(d.h, 220));
     return;
   }
   if (kind === "judge") {
-    node.w = snap(Math.max(d.w, 240));
-    node.h = snap(Math.max(d.h, 160));
+    set(Math.max(d.w, 240), Math.max(d.h, 160));
     return;
   }
   if (kind === "input_image" || kind === "proc_image") {
-    if (hasImg) {
-      node.w = snap(batchN > 1 ? 320 : 300);
-      node.h = snap(batchN > 1 ? 280 : 250);
-    } else {
-      node.w = snap(d.w);
-      node.h = snap(d.h);
-    }
+    if (hasImg) set(batchN > 1 ? 320 : 300, batchN > 1 ? 280 : 250);
+    else set(d.w, d.h);
     return;
   }
   /* 素材节点：一条内容一行 —— 高度随条目数与类型走（图像 / 视频行更高），
@@ -16066,13 +16228,11 @@ function sizeNodeForTidy(node) {
             : it.type === "audio"
               ? 108
               : 122;
-    node.w = snap(Math.max(d.w, 300));
-    node.h = snap(Math.max(d.h, Math.min(620, 64 + rows)));
+    set(Math.max(d.w, 300), Math.max(d.h, Math.min(620, 64 + rows)));
     return;
   }
   if (isSaveKind(kind) && saveMediaKind(node) === "image") {
-    node.w = snap(hasImg ? 280 : d.w);
-    node.h = snap(hasImg ? 230 : d.h);
+    set(hasImg ? 280 : d.w, hasImg ? 230 : d.h);
     return;
   }
   if (kind === "input_text") {
@@ -16085,18 +16245,15 @@ function sizeNodeForTidy(node) {
       14,
       Math.max(4, body.split(/\n/).length + Math.floor(body.length / 56)),
     );
-    node.w = snap(Math.min(320, Math.max(d.w, 220)));
-    node.h = snap(Math.min(280, Math.max(d.h, 40 + lines * 16)));
+    set(Math.min(320, Math.max(d.w, 220)), Math.min(280, Math.max(d.h, 40 + lines * 16)));
     return;
   }
   if (isSaveKind(kind) || kind === "split" || kind === "merge" || kind === "global" || kind === "wait_file" || kind === "timer" || kind === "delayer" || kind === "sequencer" || kind === "gate" || kind === "splitter" || kind === "counter" || kind === "mutex") {
-    node.w = d.w;
-    node.h = d.h;
+    set(d.w, d.h);
     return;
   }
   sizeNodeForContent(node);
-  node.w = snap(Math.max(d.w, Math.min(node.w, 360)));
-  node.h = snap(Math.max(d.h, Math.min(node.h, 280)));
+  set(Math.max(d.w, Math.min(node.w, 360)), Math.max(d.h, Math.min(node.h, 280)));
 }
 
 function nodeCenter(n) {
@@ -16175,7 +16332,7 @@ function captureMarkBindings(nodes) {
         if (nid) nodeIds = [nid];
       }
     }
-    let pad = 36;
+    let pad = layoutGap();
     let labelAbove = false;
     if (m.kind === "box" && nodeIds.length) {
       const ns = nodeIds.map((id) => nodes.find((n) => n.id === id)).filter(Boolean);
@@ -16185,9 +16342,9 @@ function captureMarkBindings(nodes) {
         const top = Math.max(0, nb.minY - m.y);
         const right = Math.max(0, m.x + (m.w || 0) - nb.maxX);
         const bottom = Math.max(0, m.y + (m.h || 0) - nb.maxY);
-        pad = Math.round(
-          Math.max(24, Math.min(64, (left + top + right + bottom) / 4)),
-        );
+        /* 需求：分区框 = 节点外圈各让 1 格 —— 原框的留白也吸附到网格倍数，最少 1 格 */
+        const avg = (left + top + right + bottom) / 4;
+        pad = Math.max(layoutGap(), layoutSnapSized(avg, layoutGap()));
       }
     }
     if (m.kind === "text" && nodeIds.length) {
@@ -16240,7 +16397,8 @@ function rebindMarksAfterLayout(bindings) {
     if (m.kind === "box" && ns.length) {
       const nb = nodesBBox(ns);
       if (!nb) continue;
-      const pad = b.pad != null ? b.pad : 36;
+      /* 需求：分区框 = 节点外圈恰好 1 格（尺寸按网格倍数重算） */
+      const pad = b.pad != null ? b.pad : layoutGap();
       m.x = snap(nb.minX - pad);
       m.y = snap(nb.minY - pad);
       m.w = snap(Math.max(40, nb.maxX - nb.minX + pad * 2));
@@ -16252,13 +16410,13 @@ function rebindMarksAfterLayout(bindings) {
       if (!nb) continue;
       if (b.labelAbove || ns.length > 1) {
         m.x = snap(nb.minX);
-        m.y = snap(nb.minY - (m.h || 40) - 10);
+        m.y = snap(nb.minY - (m.h || layoutGap()) - layoutGap());
       } else if (b.anchorOff) {
         m.x = snap(ns[0].x + b.anchorOff.dx);
         m.y = snap(ns[0].y + b.anchorOff.dy);
       } else {
         m.x = snap(nb.minX);
-        m.y = snap(nb.minY - (m.h || 40) - 10);
+        m.y = snap(nb.minY - (m.h || layoutGap()) - layoutGap());
       }
       continue;
     }
@@ -16325,9 +16483,8 @@ function tidyLayoutWorkflow(opts) {
     const topWires = (S.wf.wires || []).filter(
       (w) => topIds.has(w.from) && topIds.has(w.to),
     );
+    /* 间距不再由调用方钉：缝宽恒为 1 个网格（见 layoutGap / 2026-02 需求） */
     layoutFlowEx(topNodes, topWires, { x: snap(64), y: snap(64) }, [], {
-      gapX: 96,
-      gapY: 56,
       prioritizeEditable: true,
     });
 
@@ -16462,11 +16619,9 @@ function tidyOneSuperInner(s) {
   const wires = (S.wf.wires || []).filter(
     (w) => ids.has(w.from) && ids.has(w.to),
   );
-  /* 开发节点（架构图）内部：关系线主导，需要更宽间距让直线少穿方块、彼此可辨 */
+  /* 开发节点（架构图）内部：关系线主导，但间距口径与别处一致 —— 恒 1 格 */
   const isDev = kids.some((n) => n.dev);
   layoutFlowEx(kids, wires, { x: snap(16), y: snap(16) }, [], {
-    gapX: isDev ? 196 : 72,
-    gapY: isDev ? 92 : 48,
     prioritizeEditable: true,
   });
   const bb = nodesBBox(kids);
@@ -17648,68 +17803,6 @@ function resolveCanvasRef(token, aliasMap, warnings) {
   return null;
 }
 
-/* ── 回滚·画布路：把这一笔编辑【点名】的元素解析成 id ─────────────────────
- * touched 的主体由 app-rollback.js 的前后快照 diff 得出；这里补的是「diff 看不出来」
- * 的那一类：本会话点名改过、结果只体现为坐标 / 尺寸变化的元素。少了它，
- * 「把某个节点挪个位置」会被当成自动排版副作用而漏回退。
- * 已经 remove 掉的节点此时查不到 —— 没关系，那种元素前后快照一定比得出来。 */
-function rbNamedFromParams(params, aliasMap, markAliasMap) {
-  const named = { nodeIds: [], wireIds: [], markIds: [], groupIds: [] };
-  const CAP = 600;
-  const nodeTok = (tok) => {
-    const s = String(tok == null ? "" : tok).trim();
-    if (!s) return;
-    const byAlias = aliasMap && aliasMap.get(s);
-    const sameTitle = (S.wf.nodes || []).filter((x) => x.title === s);
-    const n = byAlias || nodeById(s) || (sameTitle.length === 1 ? sameTitle[0] : null);
-    if (n && n.id && named.nodeIds.length < CAP && named.nodeIds.indexOf(n.id) < 0)
-      named.nodeIds.push(n.id);
-  };
-  const markTok = (tok) => {
-    const s = String(tok == null ? "" : tok).trim();
-    if (!s) return;
-    const byAlias = markAliasMap && markAliasMap.get(s);
-    const m = byAlias || markById(s) || marksOf().find((x) => x.text === s);
-    if (m && m.id && named.markIds.length < CAP && named.markIds.indexOf(m.id) < 0)
-      named.markIds.push(m.id);
-  };
-  const list = (v) => (Array.isArray(v) ? v : []);
-  for (const spec of list(params.create)) {
-    nodeTok(spec && spec.alias);
-    nodeTok(spec && spec.parentTaskId);
-    nodeTok(spec && spec.parentSuperId);
-    nodeTok(spec && spec.packIntoSuper);
-  }
-  for (const spec of list(params.update)) {
-    nodeTok(spec && (spec.id || spec.alias || spec.title));
-    nodeTok(spec && spec.parentTaskId);
-    nodeTok(spec && spec.parentSuperId);
-    nodeTok(spec && spec.packIntoSuper);
-  }
-  for (const pair of list(params.connect)) {
-    nodeTok(pair && pair.from);
-    nodeTok(pair && pair.to);
-  }
-  for (const pair of list(params.disconnect)) {
-    nodeTok(pair && pair.from);
-    nodeTok(pair && pair.to);
-  }
-  for (const pair of list(params.superConnect)) {
-    nodeTok(pair && pair.from);
-    nodeTok(pair && pair.to);
-  }
-  for (const token of list(params.remove)) nodeTok(token);
-  for (const spec of list(params.createMarks)) markTok(spec && spec.alias);
-  for (const spec of list(params.updateMarks))
-    markTok(spec && (spec.id || spec.alias || spec.title || spec.text));
-  for (const token of list(params.removeMarks)) markTok(token);
-  const g = params.group;
-  if (g && typeof g === "object") {
-    for (const t of list(g.marks)) markTok(t);
-  }
-  return named;
-}
-
 /* canvas_edit 回执的「端口占用摘要」：模型改完不必回读就知道每个端子叫什么、收什么、
    挂了几条线。端子**数量**复用既有推导（inputCount / outputCount），**名称**与画布端子
    徽标同一套口径（app-canvas.js renderPorts），**类型**在工具 / 函数节点上复用
@@ -17934,38 +18027,21 @@ function collectEditStaticWarnings(touchedIds, warnings) {
   }
 }
 
-/* ============ 自动排版的触发闸（2026 需求） ============
-   用户自己动手的编辑（拖动节点、面板里改 x/y、改正文）一律**不触发**自动排版，
-   排版只走两条路：① 用户点「一键排版」按钮；② agent 驱动的那笔画布编辑里
-   带有「建图 / 连线 / 改标注 / 删除 / 改尺寸」时自动执行。
-   （用户拖动 / 改数值走 app.js 的指针与表单路径，根本不进 applyCanvasEdit，
-     所以本闸只需管 agent 这一侧。） */
+/* ============ 排版的触发闸（需求改写 2026-02） ============
+   排版**只有一个入口**：调用方本笔显式写 `layout: true`（agent / MCP 自己要求的），
+   或用户点「一键排版」按钮走 tidyLayout（那条路根本不进 applyCanvasEdit）。
+
+   2026-02 需求：「不要自动改变」——编辑工具**不再**因为「建图 / 连线 / 改标注 /
+   删除 / 改尺寸」就顺手排一遍。原先那套自动闸会把用户摆好的位置整片挪走、
+   还会撑开超级壳，观感上就是「一次编辑把整张图重排了」。
+
+   于是 agent / MCP 的普通编辑只落内容与连线：
+     · 节点位置：只认本笔显式给的坐标（x/y）；
+     · 节点尺寸：只认本笔显式给的 w/h（不再按正文长短重算）；
+     · 新节点没给坐标 → 就近找空位落，绝不挪动已有节点（见 freeSpotForNode）。 */
 function canvasEditWantsLayout(params, creates) {
   if (!params) return false;
-  if (params.layout === true) return true;
-  const cre = Array.isArray(creates)
-    ? creates
-    : Array.isArray(params.create)
-      ? params.create
-      : [];
-  if (cre.length) return true;
-  const upd = Array.isArray(params.update) ? params.update : [];
-  for (const spec of upd) {
-    if (!spec) continue;
-    if (spec.w != null || spec.h != null || spec.width != null || spec.height != null)
-      return true;
-    if (spec.layout === true) return true;
-  }
-  if (Array.isArray(params.superConnect) && params.superConnect.length) return true;
-  if (Array.isArray(params.connect) && params.connect.length) return true;
-  if (Array.isArray(params.disconnect) && params.disconnect.length) return true;
-  if (Array.isArray(params.remove) && params.remove.length) return true;
-  if (Array.isArray(params.createMarks) && params.createMarks.length) return true;
-  if (Array.isArray(params.marks) && params.marks.length) return true;
-  if (Array.isArray(params.updateMarks) && params.updateMarks.length) return true;
-  if (Array.isArray(params.removeMarks) && params.removeMarks.length) return true;
-  if (params.group) return true;
-  return false;
+  return params.layout === true;
 }
 /* 每笔编辑里「排了哪些层级、各层收进 16:9~9:16 没有」——收不进的层级名与尺寸
    交给调用方去 toast（排版本身不弹窗，回执里的 warnings 才是唯一出口）。 */
@@ -18034,9 +18110,11 @@ async function applyCanvasEdit(params, ctx) {
      大调用（架构图、批量建图）的 connect / createMarks / group 引用被截掉的
      alias 全部落空，曾导致超级节点 / 开发节点架构图建成半成品（孤儿节点）。
      null.push 崩溃根因已修，大调用现在可安全完整执行。 */
+  /* 排版闸：只有本笔显式写了 layout:true 才排。2026-02 需求「不要自动改变」——
+     编辑只落内容与连线，不再因为建图 / 连线 / 改标注 / 删除 / 改尺寸就顺手重排，
+     也不再按正文长短重算节点尺寸（见 canvasEditWantsLayout 与 freeSpotForNode）。 */
   const wantsLayout = canvasEditWantsLayout(params, creates);
-  const doLayout =
-    params.layout === true || (params.layout !== false && wantsLayout);
+  const doLayout = wantsLayout;
 
   /* ── 局部画布（scope）：写入侧的越界闸 ──────────────────────────────
      需求：编辑工具要能「只改某一颗超级 / 开发节点内部」。传了 scope 就把这次调用
@@ -18111,14 +18189,6 @@ async function applyCanvasEdit(params, ctx) {
 
   await ensureCanvasEditTools(params, ctx && ctx.runKey);
 
-  /* 回滚·画布路：改动前先取整画布快照（本轮没开账就直接 null，零开销）。
-     与 pushHistory 的撤销栈是两回事：那是给用户手动撤销用的整栈，
-     这里要的是「本轮会话开始前」这一份，且必须按触碰实体逐字段回退。 */
-  const rbEdit =
-    typeof rbCanvasEditOpen === "function"
-      ? rbCanvasEditOpen(ctx && ctx.runKey)
-      : null;
-
   pushHistory();
   if (!Array.isArray(S.wf.groups)) S.wf.groups = [];
   if (!Array.isArray(S.wf.marks)) S.wf.marks = [];
@@ -18134,8 +18204,8 @@ async function applyCanvasEdit(params, ctx) {
   const originHint = layoutOrigin(
     (S.wf.nodes || []).filter((n) => !aliasMap.has(n.id)),
   );
-  let placeX = originHint.x;
-  let placeY = originHint.y;
+  /* 本笔显式给了 x/y 的新节点：记下来，收尾统一摆位时跳过它们（坐标是调用方钉的） */
+  const newXY = new Set();
 
   for (const spec of creates) {
     let kind = spec && spec.kind;
@@ -18167,8 +18237,8 @@ async function applyCanvasEdit(params, ctx) {
       isFinite(spec.y);
     const node = makeNode(
       kind,
-      hasXY ? spec.x : placeX,
-      hasXY ? spec.y : placeY,
+      hasXY ? spec.x : originHint.x,
+      hasXY ? spec.y : originHint.y,
     );
     /* 局部画布：scope 界外的锚点（x/y 落在壳外面）不建 —— 建了也只会飘在根画布上。
        给了 parentSuperId / packIntoSuper 的（含 alias 指向本次新建的壳）按后面的归属闸走。 */
@@ -18191,14 +18261,15 @@ async function applyCanvasEdit(params, ctx) {
     await importImagePathsForNode(node, imagePathsFromPatch(spec), warnings);
     node.title = uniqueNodeTitle(node.title || wantTitle, node.id);
     ensureDefaultSavePath(node);
+    /* 新建节点仍给「美观尺寸」（下方 sizeNodeForContent）—— 只对**已存在**节点不改尺寸。
+       没给坐标的新节点先落在 origin 附近，等父壳 / 父任务解析完（下面那次统一摆位）
+       再就近找空位：那时才拿得到真实的层级，局部坐标才对得上。 */
     sizeNodeForContent(node);
     S.wf.nodes.push(node);
     aliasMap.set(alias, node);
     aliasById[node.id] = alias;
+    if (hasXY) newXY.add(node.id);
     created.push(node);
-    if (!hasXY) {
-      placeY = node.y + node.h + 48;
-    }
   }
 
   for (const node of created) {
@@ -18263,6 +18334,14 @@ async function applyCanvasEdit(params, ctx) {
     applyParentSuper(node, raw, warnings);
   }
 
+  /* ── 新节点就近摆位（2026-02 需求：编辑不再自动排版）──────────────
+     父壳 / 父任务已定，这里的层级与坐标系才是最终口径 —— 见 applyNewNodePlacement。 */
+  applyNewNodePlacement(created, {
+    origin: originHint,
+    pinned: newXY,
+    outOfScope: outOfEditScope,
+  });
+
   for (const spec of updates) {
     const token = (spec && (spec.id || spec.alias || spec.title)) || "";
     const node = resolveCanvasRef(token, aliasMap, warnings);
@@ -18292,7 +18371,9 @@ async function applyCanvasEdit(params, ctx) {
     applyNodePatch(node, spec, warnings);
     await importImagePathsForNode(node, imagePathsFromPatch(spec), warnings);
     if (spec.refs) ensurePromptRefs(node, spec.refs, aliasMap);
-    sizeNodeForContent(node);
+    /* 2026-02 需求：**已存在节点的尺寸不再被自动重算**。原先这里跟着调
+       sizeNodeForContent()，会把用户 / 模型调好的 w/h 按新正文长短改掉（还会缩回默认尺寸）。
+       现在尺寸只认本笔显式给的 w/h（applyNodePatch 里那两行）与用户手拖。 */
     updated.push({
       id: node.id,
       title: node.title,
@@ -18515,10 +18596,12 @@ async function applyCanvasEdit(params, ctx) {
       g.report = report;
       const host = g.sid && !g.tid ? nodeById(g.sid) : null;
       g.label = host ? host.title || host.id : I18n.t("顶层画布");
-      if (report && report.ratioOk === false) {
+      /* 宽高比不再是硬约束：只在「排出来细长到不好读」时给一句提示（不缩节点、不放宽缝宽） */
+      const ratio = report && report.h > 0 ? report.w / report.h : 1;
+      if (report && ratio > 3) {
         warnings.push(
           I18n.t(
-            "排版提示：「{label}」这层仍是长条（宽 {w} × 高 {h}），已尽量收窄；可删减节点或手动微调后再排。",
+            "排版提示：「{label}」这层排成了长条（宽 {w} × 高 {h}）。节点之间已按 1 个网格间距排开、互不重叠；想更方正可再增删节点或手动微调。",
             {
               label: g.label || "",
               w: Math.round(report.w || 0),
@@ -18814,12 +18897,6 @@ async function applyCanvasEdit(params, ctx) {
   }
   if (grouped) for (const id of grouped.nodeIds || []) touchedIds.add(id);
   collectEditStaticWarnings(touchedIds, warnings);
-
-  /* 回滚·画布路：改动后收口 —— 前后整快照入库 + touched 只认本轮触碰的实体。
-     自动排版顺带挪动的【别人】的节点刻意不进 touched（快照备注里记 layoutMoved /
-     归属不明的记 drift），回滚弹窗据此说明「这部分不逐条回退」。 */
-  if (typeof rbCanvasEditClose === "function")
-    rbCanvasEditClose(rbEdit, rbNamedFromParams(params, aliasMap, markAliasMap));
 
   return Object.assign(
     {

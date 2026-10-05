@@ -8,9 +8,11 @@ WorkingDirectory=/opt/mtnode-store
 Environment=PORT=8787
 Environment=HOST=127.0.0.1
 Environment=DATA_DIR=/opt/mtnode-store/data
-# 充值（钱包）测试期闸门：只有名单内的账号能看到充值入口、也只有它们能下单
-# （服务端 403 RECHARGE_NOT_OPEN 兜底，客户端另有一道同名判空）。完全测试通过后再放开。
-Environment=MTNODE_RECHARGE_USERS=ms2308
+# 充值（钱包）**对所有已注册账号开放**：这里不再写任何名单（名单口径已作废，见 server.mjs
+# 的 rechargeAllowed）。唯一的闸门是下面的「全局关闭」开关，缺省不开（留空 / 不写 = 全开）；
+# 钱通道要临时停充时才把它置 1，改完 systemctl restart mtnode-store。
+# 客户端入口对所有已登录账号显示（renderer/app-wallet.js 的 visibleFor）。
+# Environment=MTNODE_RECHARGE_CLOSED=
 # 管理台可登录账号（并集口径：MTNODE_STORE_ADMINS ∪ 本项 ∪ MTNODE_ADMIN_WECHAT_UNIONIDS）。
 Environment=MTNODE_ADMIN_USERS=ms2308
 # 管理台静态页目录（相对 WorkingDirectory；nginx 另有一份 /var/www/mtnode/admin）。

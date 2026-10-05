@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-09-28T11:26:45.146Z",
+  "updatedAt": "2026-10-04T11:04:49.688Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -21,7 +21,7 @@
           "id": "app-dev",
           "name": "mtnode-app-dev",
           "title": "MTNode 应用开发",
-          "description": "开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、桌面外壳与运行时能力（模型 API / 工具）的正确接法、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/。",
+          "description": "开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不",
           "path": "app/app-dev/SKILL.md",
           "version": ""
         }
@@ -88,6 +88,14 @@
           "version": ""
         },
         {
+          "id": "mcp-server",
+          "name": "mtnode-mcp-server",
+          "title": "MTNode MCP 服务端（第三方接进来操作）",
+          "description": "从 MTNode 外面（Claude Code / Cursor / 自研 Agent）经 MCP 操作本机 MTNode 的完整规范：服务端在哪、8 个工具各自怎么用、必须先读图拿 contentHash 再改、resources/prompts 三类能力、权限与审计口径、以及做不到的事（长任务人工环节 / 媒体生成仍要人在界面上点）。Use when connecting an external MCP client to MTNode, debugging third-party calls, or writing code that drives MTNode over MCP.",
+          "path": "mtnode/mcp-server/SKILL.md",
+          "version": ""
+        },
+        {
           "id": "media-gen-nodes",
           "name": "mtnode-media-gen-nodes",
           "title": "音乐/语音/视频生成节点",
@@ -127,9 +135,9 @@
       "skills": [
         {
           "id": "plugin-dev",
-          "name": "mtnode-plugin-dev",
+          "name": "plugin-dev",
           "title": "MTNode 插件开发规范",
-          "description": "MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。",
+          "description": "",
           "path": "plugins/plugin-dev/SKILL.md",
           "version": ""
         }

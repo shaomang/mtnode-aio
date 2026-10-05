@@ -6,7 +6,7 @@
  *
  * 用法（在服务器上，与 mtnode-store 同一个账户后端 / 同一个 DATA_DIR）：
  *   node relay-key.mjs --list                     列出账号与可用余额（挑有余额的账号发）
- *   node relay-key.mjs --user ms2308              为该账号新签一张 30 天票（明文只打印这一次）
+ *   node relay-key.mjs --user ms2308              为该账号新签一张 3650 天票（明文只打印这一次）
  *   node relay-key.mjs --user ms2308 --days 7     自定义有效期
  *   node relay-key.mjs --user ms2308 --json       机器可读输出（只给 token 与账号摘要）
  *
@@ -98,12 +98,12 @@ if (has("list") || !arg("user", "")) {
 
 const want = String(arg("user", "")).trim();
 if (!want) {
-  console.error("用法：node relay-key.mjs --user <用户名|账号ID> [--days 30] [--json]   /   --list");
+  console.error("用法：node relay-key.mjs --user <用户名|账号ID> [--days 3650] [--json]   /   --list");
   process.exit(2);
 }
 const days = Number(arg("days", "0"));
-/* 缺省 180 天（与服务端 RELAY_KEY_MS 同口径）；--days 可覆盖。 */
-const RELAY_KEY_MS = 180 * 24 * 3600 * 1000;
+/* 缺省 3650 天（与服务端 RELAY_KEY_MS 同口径）；--days 可覆盖。 */
+const RELAY_KEY_MS = 3650 * 24 * 3600 * 1000;
 const ttl = Number.isFinite(days) && days > 0 ? Math.floor(days) * 24 * 3600 * 1000 : RELAY_KEY_MS;
 
 const low = want.toLowerCase();
@@ -116,8 +116,8 @@ if (!user) {
 const token = crypto.randomBytes(24).toString("hex");
 const t = Date.now();
 /* kind="relay" 是这个 Key 的**身份**：service 侧只认它（/relay/v1/* 不收登录会话 token），
-   客户端也按独立票存进本机加密凭据（180 天滑动续期，见 server.mjs 的 issueRelayKey）。
-   默认有效期跟服务端的 RELAY_KEY_MS 同口径（180 天），--days 可覆盖。 */
+   客户端也按独立票存进本机加密凭据（3650 天滑动续期，见 server.mjs 的 issueRelayKey）。
+   默认有效期跟服务端的 RELAY_KEY_MS 同口径（3650 天），--days 可覆盖。 */
 await store.createSession({
   tokenHash: hashToken(token),
   userId: user.id,

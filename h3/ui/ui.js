@@ -823,12 +823,7 @@
   if ($("btnWfTemplate")) {
     $("btnWfTemplate").onclick = async () => {
       const doOne = async (mode) => {
-        const label =
-          mode === "r2v"
-            ? "R2V（参考图/视频/音频）"
-            : mode === "nanfeng"
-              ? "南风H3 V10 多参（NanFengH3MultiReferenceGeneratorV10 → CreateVideo → SaveVideo）"
-              : "FL2VA（首末帧）";
+        const label = mode === "r2v" ? "R2V（参考图/视频/音频）" : "FL2VA（首末帧）";
         if (!confirm("把内置 " + label + " 工作流另存为库里的自定义工作流？\n保存后可自由编辑与复制，内置链本身不受影响。")) return false;
         const r = await api.wfTemplateExport(mode);
         if (r && r.ok) {
@@ -840,7 +835,6 @@
         return false;
       };
       if (await doOne("fl2va")) await doOne("r2v");
-      await doOne("nanfeng");
     };
   }
 

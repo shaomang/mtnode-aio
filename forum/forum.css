@@ -15,6 +15,14 @@
   --red: #ff5d5d;
   --blue: #4aa8ff;
   --violet: #a78bfa;
+  /* 主应用（renderer/）的语义槽位同名映射：本窗直接复用 renderer/css/tips.css 与
+     renderer/css/comments.css（打赏与评论区在主应用与讨论区共用同一套组件与 DOM），
+     那两份样式取的是 --ink / --muted / --yellow 这些主应用槽位名 —— 这里按讨论区
+     自己的调色板等价映射，不复制样式、也不改主应用那份的颜色口径。 */
+  --ink: var(--tx);
+  --muted: var(--tx2);
+  --yellow: #e8c46a;
+  --mono: "Cascadia Mono", Consolas, monospace;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -336,3 +344,23 @@ button.linkbtn {
   background: #2b3746; border-radius: 5px;
 }
 .scroll::-webkit-scrollbar-thumb:hover { background: #3a4a5e; }
+
+/* ── 打赏 / 评论（复用 renderer/css/tips.css 与 comments.css 的组件；
+       这里只给本窗特有的两处：话题详情页的页签条、回复行下方那排按钮） ── */
+.tdtabs {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px 0;
+}
+.tdtab {
+  padding: 4px 12px; border-radius: 7px 7px 0 0; cursor: pointer;
+  background: var(--panel2); border: 1px solid var(--bd); border-bottom: none;
+  color: var(--tx2); font-size: 12.5px;
+}
+.tdtab:hover { color: var(--tx); border-color: var(--bd2); }
+.tdtab.on { color: var(--orange2); border-color: var(--orange); font-weight: 600; }
+.cmt-host { padding: 4px 2px 10px; }
+.cmt-host[hidden] { display: none; }
+.racts { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.reply .tip-meta { color: var(--orange2); }
+.tdmeta .tip-btn { margin-left: 8px; }
+.tip-btn, .cmt-btn { font-size: 11.5px; padding: 3px 8px; }

@@ -56,6 +56,14 @@
   scrollbar-width: thin;
   scrollbar-color: var(--line-2) transparent;
 }
+/* 分区小标题：下拉里「文本模型 / 图像后端」两块的标题（本轮新增图像后端那一区） */
+.model-group {
+  padding: 8px 8px 4px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .model-item {
   display: flex;
   align-items: center;

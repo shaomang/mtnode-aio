@@ -153,9 +153,9 @@ const SRC_CONNECT = between(
 );
 const SRC_FNIN = between(
   NODES,
-  "function computePortValue(w, consumer) {",
+  "/* ── 「这个入参怎么没取到值」的来源诊断",
   "/* ── 计算执行节点（函数 / 工具）并发闸",
-  "app-nodes.js computePortValue / functionInputObject",
+  "app-nodes.js 入参空值诊断（fnInputBlankReason） / computePortValue / functionInputObject",
 );
 const SRC_FNTEST = between(
   TOOLS,
@@ -188,6 +188,9 @@ function nodeById(id) { return nodeByIdIn(id, S.wf); }
 function nodeByIdIn(id, wf) { wf = wf || S.wf; return wf ? (wf.nodes || []).find(function (n) { return n.id === id; }) : null; }
 function nodeParentSuperId(n) { return (n && n.parentSuperId) || ''; }
 function isSuperIoNode(n) { return !!(n && n.kind === 'super_io'); }
+/* 入参空值诊断（app-nodes.js fnInputProviderNode）沿「壳」上溯时要用它：
+   与 app.js isSuperLikeNode 同一口径（super，含工具节点变体） */
+function isSuperLikeNode(n) { return !!(n && (n.kind === 'super' || (n.kind === 'super' && n.tool))); }
 function isExecEnd() { return false; }
 function isExecStart() { return false; }
 function superInPortIsControl() { return false; }

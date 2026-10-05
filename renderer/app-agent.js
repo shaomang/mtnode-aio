@@ -1045,6 +1045,10 @@ const TOK_FIELDS = [
   "cacheReadTokens",
   "cacheWriteTokens",
   "reasoningTokens",
+  /* 中转图像模型的「按张」计数（一次调用 = 一张，与 token 无关）：
+     图像出图后由 app-nodes.js 登记（tokAddImages），费用走 app-cost.js 的 costOfImages。
+     老台账没有这一项 → 补 0，不影响任何既有数字。 */
+  "images",
 ];
 /* token 之外的累加型性能字段（网关 metrics.models 逐模型下发）：
  *   ttftMs        首 Token 延迟累计（毫秒）
@@ -1188,6 +1192,43 @@ function tokLiveAdd(owner, data, opts) {
   if (!rm.at) rm.at = Date.now();
   tokBadgeTouch(owner);
 }
+/* ── 图像「按张」入账（中转图像模型专用）────────────────────────────
+ * 中转站的图像计费与 token 无关：**每次调用即计费**（云端 imageCostYuan：张数 × 元/张）。
+ * 图像节点出图后由 app-nodes.js 调本函数，把张数记进归属台账的那一行；
+ * 费用在展示时由 app-cost.js 的 costOfImages 现算（价目来自云端快照）。
+ * owner 口径与文本一致：节点绑了会话就挂会话，没绑才挂节点自己（tokOwnerForRun）。
+ * data：{ provider, model, images, at }；非中转图像模型调用本函数会被计价侧忽略
+ * （costOfImages 对非中转返回 null），所以这里不做路由判断 —— 记的是事实，算不算在计价侧。 */
+function tokAddImages(owner, data) {
+  if (!owner || !data) return;
+  const n = tokNum(data.images);
+  if (!n) return;
+  const provider = String(data.provider || "");
+  const model = String(data.model || "");
+  if (!model) return;
+  const live = (owner._tokLive = owner._tokLive || {});
+  const key = tokKey(provider, model);
+  const b = live[key] || (live[key] = tokBucketNew(provider, model));
+  b.images = tokNum(b.images) + n;
+  b.calls += n;
+  if (!b.at) b.at = tokNum(data.at) || Date.now();
+  const runKey = String(data.runKey || "default");
+  const rounds = (owner._tokLiveRound = owner._tokLiveRound || {});
+  const rr =
+    rounds[runKey] ||
+    (rounds[runKey] = { runKey: runKey, title: "", titleFrom: "", at: 0, byModel: {} });
+  if (data.title && !rr.title) {
+    rr.title = String(data.title);
+    rr.titleFrom = String(data.titleFrom || "");
+  }
+  if (!rr.at) rr.at = tokNum(data.at) || Date.now();
+  const rm = rr.byModel[key] || (rr.byModel[key] = tokBucketNew(provider, model));
+  rm.images = tokNum(rm.images) + n;
+  rm.calls += n;
+  if (!rm.at) rm.at = tokNum(data.at) || Date.now();
+  tokBadgeTouch(owner);
+}
+
 /* 一轮运行结束：并入累计台账（幂等一次一页账，不重复计） */
 function tokMergeRun(owner, metrics, opts) {
   if (!owner) return;
@@ -1387,6 +1428,8 @@ function tokViewTotals(owner) {
     cacheWriteTokens: 0, reasoningTokens: 0, calls: 0,
     models: 0, llmMs: 0, toolMs: 0,
   };
+  /* 图像「按张」：TOK_FIELDS 里有 images，累加前必须先把这个键补出来（否则 += 出 NaN） */
+  for (const f of TOK_FIELDS) t[f] = 0;
   for (const b of tokViewModels(owner)) {
     t.models++;
     for (const f of TOK_FIELDS) t[f] += tokNum(b[f]);
@@ -1394,6 +1437,8 @@ function tokViewTotals(owner) {
     t.llmMs += tokNum(b.llmMs);
     t.toolMs += tokNum(b.toolMs);
   }
+  /* 图像的「张」是 calls 之外的独立量（中转按张计费）：token 合计里不掺它，
+     面板单列一列显示；上面的 TOK_FIELDS 已把 images 累进 t.images。 */
   const billed = t.inputTokens + t.cacheReadTokens + t.cacheWriteTokens;
   t.billedInput = billed;
   t.cacheHitPct = billed > 0 ? (t.cacheReadTokens / billed) * 100 : 0;
@@ -1485,19 +1530,24 @@ function tokRoundPerfLine(rec) {
 }
 /* 一轮的费用：该轮各模型桶按该轮自身记账时刻（endedAt → at）判峰谷，
  * 与合计（tokCostOf）同源；非官方路由 / 未知单价 → null（UI 显示 —）。
+ * 桶带 images（中转「按张」）时一并算进这一轮。
  * 注意不要再退到宿主台账 lastAt：那是整段会话的最近时刻，会把某一轮的峰谷判错。 */
 function tokRoundCost(owner, rec) {
-  if (typeof costOfBucket !== "function") return null;
   const bm = rec && rec.byModel && typeof rec.byModel === "object" ? rec.byModel : {};
   const at = tokNum(rec && rec.endedAt) || tokNum(rec && rec.at);
   const acc = { amount: 0, currency: "" };
-  let any = false;
-  for (const k of Object.keys(bm)) {
-    const before = acc.amount;
-    tokCostAdd(acc, bm[k] || {}, at);
-    if (acc.amount !== before) any = true;
-  }
-  return any ? { currency: acc.currency || "CNY", amount: acc.amount, estimated: !!acc.estimated } : null;
+  const byCur = {};
+  for (const k of Object.keys(bm)) tokCostAdd(acc, bm[k] || {}, at, { byCur: byCur });
+  if (!acc.amount && !acc.currency) return null;
+  const out = {
+    currency: acc.currency || "CNY",
+    amount: acc.amount,
+    estimated: !!acc.estimated,
+    peak: !!acc.peak,
+    offPeak: !!acc.offPeak,
+  };
+  if (Object.keys(byCur).length > 1) out.byCur = byCur;
+  return out;
 }
 /* 一轮的计费用量合计（只判「逐轮之和」是否完整覆盖累计台账，不参与计价） */
 function tokRoundUsage(rec) {
@@ -1524,7 +1574,8 @@ function tokRoundTitleFromLabel(from) {
 }
 
 /* ── 逐模型性能指标（Token 报告下钻口径）──────────────────────────
- * 纯函数：只读一个台账桶里的累计值，算 TTFT / 输出吞吐 / 端到端 / 预处理吞吐。
+ * 纯函数：只读一个台账桶里的累计值，算 输出吞吐 / 端到端 / （TTFT 与预处理吞吐
+ * 的计算**保留**但界面已按用户口径移除，见 openModelPerfDialog 的说明）。
  * 每个指标都带来源标记，供 UI 标明「推算」：
  *   measured  由实测累计字段直接得出（分子分母都是真累计量）
  *   estimated 缺实测字段，用既有累计量按公式推算（如缺 genMs 用 llmMs 兜）
@@ -1587,15 +1638,16 @@ function tokFmtMs(ms) {
   return fmtDurLong(ms);
 }
 /* 一行性能摘要（Badge tooltip 与复制报告共用）：缺样本显示 —，推算值前加 ≈ */
+/* 一行性能摘要（Token Badge 悬停 / 可复制报告共用）：
+ * 本轮需求把 TTFT 与 Prefill 从这一行**去掉**（当前运行时无首 Token 样本，
+ * 两项恒为「—」，见 openModelPerfDialog 里的同款说明）；其余口径一字未改。 */
 function tokPerfLine(b) {
   const p = tokPerfOf(b);
   const est = (v, src, txt) => (v == null ? "—" : (src === "estimated" ? "≈" : "") + txt);
   return (
-    "TTFT " + est(p.ttftAvgMs, p.ttftSource, tokFmtMs(p.ttftAvgMs)) +
-    " · " + I18n.t("出") + " " + est(p.outTokPerSec, p.outSource, Math.round(p.outTokPerSec || 0) + " tok/s") +
+    I18n.t("出") + " " + est(p.outTokPerSec, p.outSource, Math.round(p.outTokPerSec || 0) + " tok/s") +
     " · TPOT " + est(p.tpotMs, p.outSource, tokFmtMs(p.tpotMs)) +
-    " · " + I18n.t("端到端") + " " + est(p.e2eAvgMs, p.e2eSource, tokFmtMs(p.e2eAvgMs)) +
-    " · Prefill " + est(p.prefillTokPerSec, p.prefillSource, Math.round(p.prefillTokPerSec || 0) + " tok/s")
+    " · " + I18n.t("端到端") + " " + est(p.e2eAvgMs, p.e2eSource, tokFmtMs(p.e2eAvgMs))
   );
 }
 /* ── 逐模型性能下钻弹窗 ──────────────────────────────────────────
@@ -1613,6 +1665,12 @@ function openModelPerfDialog(owner, bucket, opts) {
   try {
     if (typeof costOfBucket === "function") bc = costOfBucket(b.provider, b.model, b, at);
   } catch {}
+  /* 图像「按张」的模型（中转图像模型没有 token）：单桶口径补一笔图像费用 */
+  if (!bc && b.images) {
+    try {
+      if (typeof costOfImages === "function") bc = costOfImages(b.provider, b.model, b.images);
+    } catch {}
+  }
   openOverlay(
     I18n.t("模型性能") + " · " + ((b.provider ? b.provider + " · " : "") + (b.model || "?")),
     { persistent: true },
@@ -1624,24 +1682,28 @@ function openModelPerfDialog(owner, bucket, opts) {
   const table = document.createElement("table");
   table.className = "tok-badge-table model-perf-table";
   const rows = [
-    [I18n.t("首 Token 延迟 (TTFT)"), val(p.ttftAvgMs, p.ttftSource, tokFmtMs(p.ttftAvgMs))],
+    /* 本轮需求：首 Token 延迟（TTFT）与预处理吞吐（Prefill）从界面上**移除** ——
+       当前运行时采不到首 Token 样本（dsh 0.2 不再发增量 usage 帧），这两项永远是
+       「— / 0」，留着只是噪声。台账字段与 tokPerfOf 的计算逻辑照旧保留，
+       将来运行时能采样了再加回这两行即可（口径一行都不用改）。 */
     [I18n.t("输出吞吐"), val(p.outTokPerSec, p.outSource, Math.round(p.outTokPerSec || 0) + " tok/s")],
     [I18n.t("每输出 Token 耗时 (TPOT)"), val(p.tpotMs, p.outSource, tokFmtMs(p.tpotMs))],
     [I18n.t("端到端延迟 · 单次均值"), val(p.e2eAvgMs, p.e2eSource, tokFmtMs(p.e2eAvgMs))],
     [I18n.t("端到端延迟 · 累计"), p.e2eTotalMs == null ? "—" : fmtDurLong(p.e2eTotalMs)],
-    [I18n.t("预处理吞吐 (Prefill)"), val(p.prefillTokPerSec, p.prefillSource, Math.round(p.prefillTokPerSec || 0) + " tok/s")],
     [I18n.t("调用次数"), String(p.calls)],
-    [I18n.t("TTFT 样本数"), String(p.samples)],
     [I18n.t("输出 token"), fmtTok(p.outputTokens)],
+    [I18n.t("图像张数"), b.images ? String(b.images) + I18n.t(" 张") : "—"],
     [I18n.t("LLM 用时"), fmtDurLong(p.llmMs)],
-    [I18n.t("费用"), bc ? tokCostMark(bc) : "—"],
+    /* 费用列是**节点**（中转的币值带金币图标）→ 走 appendChild，见 tokCostMarkEl */
+    [I18n.t("费用"), bc ? tokCostMarkEl(bc) : "—"],
   ];
   for (const [k, v] of rows) {
     const tr = document.createElement("tr");
     const td1 = document.createElement("td");
     td1.textContent = k;
     const td2 = document.createElement("td");
-    td2.textContent = v;
+    if (v && typeof v === "object" && typeof v.nodeType === "number") td2.appendChild(v);
+    else td2.textContent = v;
     tr.appendChild(td1);
     tr.appendChild(td2);
     table.appendChild(tr);
@@ -1675,24 +1737,42 @@ function fmtDurLong(ms) {
  * 今天完全一致（旧 smoke 断言不会因本改动而变）。
  * 会话合计走 tokCostReduce（逐轮之和 + 未覆盖尾段），保证与「按轮次」一致。 */
 /* 一个逐模型桶在给定时刻的费用，累加进 acc（空时刻 = 该桶不带记账时刻 → 不计价）。
- * 峰谷（app-cost.js 的空闲半价）只认一个时刻，所以「这一刻」必须一路传到底：
- * 逐轮传该轮 endedAt，合计尾段传累计桶自己的 at。 */
-function tokCostAdd(acc, b, at) {
-  if (typeof costOfBucket !== "function") return acc;
+ * 峰谷（app-cost.js 的空闲半价 / 中转的高峰倍率）只认一个时刻，所以「这一刻」必须
+ * 一路传到底：逐轮传该轮 endedAt，合计尾段传累计桶自己的 at。
+ * 桶上还带 images（中转「按张」）时，另加一笔图像费用 —— 同一行里 token 与张数各记各的。
+ * opts.byCur（可省）：把这一笔同时折进「按币种」的累加表（元 / 币并列显示用）。 */
+function tokCostAdd(acc, b, at, opts) {
+  if (!acc) return acc;
   const t = tokNum(at) || tokNum(b && b.at);
   if (!(t > 0)) return acc;
-  let c = null;
-  try { c = costOfBucket(b && b.provider, b && b.model, b, t); } catch {}
-  if (!c || !Number.isFinite(Number(c.amount))) return acc;
-  acc.amount += Number(c.amount);
-  if (!acc.currency) acc.currency = c.currency || "CNY";
-  /* 单价是兜底猜的（价格表里没有的模型按 flash 价）→ 整笔带「估算」标记，
-     展示层用 * 标出，别让人把猜的单价当官方价（见 app-cost.js 口径说明） */
-  if (c.estimated) acc.estimated = true;
+  const addOne = (c) => {
+    if (!c || !Number.isFinite(Number(c.amount))) return;
+    acc.amount += Number(c.amount);
+    if (!acc.currency) acc.currency = c.currency || "CNY";
+    /* 单价是兜底猜的（价格表里没有的模型按 flash 价）→ 整笔带「估算」标记，
+       展示层用 * 标出，别让人把猜的单价当官方价（见 app-cost.js 口径说明） */
+    if (c.estimated) acc.estimated = true;
+    if (c.peak) acc.peak = true;
+    if (c.offPeak) acc.offPeak = true;
+    if (opts && opts.byCur && typeof costAddCur === "function") costAddCur(opts.byCur, c);
+  };
+  if (typeof costOfBucket === "function") {
+    let c = null;
+    try { c = costOfBucket(b && b.provider, b && b.model, b, t); } catch {}
+    addOne(c);
+  }
+  const n = tokNum(b && b.images);
+  if (n && typeof costOfImages === "function") {
+    let ic = null;
+    try { ic = costOfImages(b && b.provider, b && b.model, n); } catch {}
+    addOne(ic);
+  }
   return acc;
 }
-/* 逐模型桶汇总费用（按各桶自己的 at 判峰谷）。仅用于老台账 / 未覆盖尾段；
- * 会话合计的常规路径是 tokCostReduce（逐轮之和），两者口径不同、不要混用。 */
+/* ⚠ 别再拿 tokCostOfBucket 去算「明细」行（本轮修复）：那是「整个会话的累计桶按
+ * 一个时刻判峰谷」的口径，跨了峰谷的会话只能得出一档折扣，与合计（逐轮各自时刻）
+ * 打架 —— 明细之和 ≠ 合计，看着就是「明细没加峰谷折扣」。明细一律走
+ * tokModelCostOf（按轮次累加，与合计同源）。本函数只给老台账兜底。 */
 function tokCostFallback(owner) {
   try {
     if (typeof costOfOwner === "function") return costOfOwner(owner);
@@ -1705,36 +1785,64 @@ function tokCostOf(owner) {
   } catch {}
   return tokCostFallback(owner);
 }
-/* 会话合计费用（只读展示；与「按轮次」逐轮费用同源，保证合计 = 逐轮之和）：
- *   · 已入账轮 + 在途轮 → 逐轮按各自时刻计价求和（各轮峰谷互不串味）
- *   · 老台账 / 逐轮没覆盖到的尾段 → 剩下的量按累计桶自己的时刻补一段
- * 这样「合计」与「按轮次」两处口径不再分裂（旧写法两处能差到 2 倍）。 */
-function tokCostReduce(owner) {
-  if (!owner) return null;
+/* ── 费用曲线：**全报告唯一的一遍计价**（合计 / 按模型明细 / 按轮次共用）──
+ * 本轮修复的根子就在这里：过去「合计」按轮次（各轮自己的记账时刻）逐轮计价，
+ * 「明细」却拿累计桶 + 一个时刻（桶最近一次入账的 at）整体判峰谷 —— 跨峰谷的
+ * 会话里这两条路必然对不上（明细要么全价、要么全程半价），用户看到的就是
+ * 「明细没加峰谷折扣，只有总计加了」。
+ * 现在两侧共用本函数：一遍走完，同时给出
+ *   · 合计：逐轮之和 + 未覆盖尾段（老台账没有 roundList 时的兜底）
+ *   · 逐模型：各模型分到的那部分（同理逐轮计价），累加起来 = 合计
+ *   · 峰谷标记：这一遍里是否有未被折扣的（peak）/ 已被折扣的（offPeak）份量，
+ *     供明细行标「峰 / 谷」—— 只在真算出费用时给，非官方路由不带标记。
+ * allAt / atOf 是同一趟里的两个视图：allAt = 合计，atOf[k] = 某个模型键，
+ * 两者都由同一份成本曲线派生，所以「明细之和 = 合计」是本函数的恒等式。 */
+function tokCostCurve(owner, atOf) {
+  if (!owner || typeof costOfBucket !== "function") return null;
   const rounds = tokViewRounds(owner);
-  let amount = 0;
-  let currency = "";
-  let any = false;
-  /* 有一笔用了兜底单价（价格表里没有的模型）→ 整笔费用标「估算」（UI 加 *） */
-  let estimated = false;
+  const models = tokViewModels(owner);
+  const rep = (owner && owner.tokenReport) || null;
+  const acc = { amount: 0, currency: "", estimated: false };
+  /* 按币种各记各的（键 = "CNY" / "COIN"）：混合会话里官方 ¥ 与中转币并列显示，
+     绝不把币折进 ¥。合计 / 明细 / 逐轮三条路都往这里折同一份，口径不会分叉。 */
+  const byCur = {};
+  const allAt = {};
+  /* 峰谷标记只按**逐轮记账时刻**记（尾段兜底那一遍不算：老台账按 lastAt 猜出来的
+     折扣不当结论展示）。合计与逐模型各记各的，明细行的「峰 / 谷」才与该行金额同源。
+     时刻一律取轮次自己的 endedAt / at —— 不读桶上的 at：那是「最近一次入账」，跟新到
+     最后一轮，会把早先的高峰轮也当成谷时（正是本 bug 的来源，标记不能重蹈）。 */
+  const markPeak = (bucket, at) => {
+    if (!(tokNum(at) > 0) || typeof costIsPeakAt !== "function") return;
+    if (costIsPeakAt(tokNum(at))) bucket.peak = true;
+    else bucket.offPeak = true;
+  };
+  for (const rec of rounds) {
+    const at = tokNum(rec && rec.endedAt) || tokNum(rec && rec.at);
+    if (!(at > 0)) continue;
+    markPeak(allAt, at);
+    const bm = rec && rec.byModel && typeof rec.byModel === "object" ? rec.byModel : {};
+    for (const k of Object.keys(bm)) {
+      const part = tokCostAdd({ amount: 0, currency: "" }, bm[k] || {}, at, { byCur: byCur });
+      const aux = atOf && atOf[k];
+      tokCostFoldAux(part, aux, at);
+      if (part.amount || part.currency) {
+        acc.amount += part.amount;
+        if (part.currency && !acc.currency) acc.currency = part.currency;
+        if (part.estimated) acc.estimated = true;
+        if (part.peak) acc.peak = true;
+        if (part.offPeak) acc.offPeak = true;
+      }
+    }
+  }
+  /* 尾段：累计台账里没被任何一轮记到的量（老台账没有 roundList；轮次被清过也会走到这里） */
   const covered = { billed: 0, output: 0, reads: 0, writes: 0 };
   for (const rec of rounds) {
-    const c = tokRoundCost(owner, rec);
-    if (c && Number.isFinite(Number(c.amount))) {
-      amount += Number(c.amount);
-      if (!currency) currency = c.currency || "CNY";
-      if (c.estimated) estimated = true;
-      any = true;
-    }
     const u = tokRoundUsage(rec);
     covered.billed += u.billed;
     covered.output += u.output;
     covered.reads += u.reads;
     covered.writes += u.writes;
   }
-  /* 尾段：累计台账里没被任何一轮记到的量（老台账没有 roundList；轮次被清过也会走到这里） */
-  const models = tokViewModels(owner);
-  const rep = (owner && owner.tokenReport) || null;
   let tbilled = 0, toutput = 0, treads = 0, twrites = 0;
   for (const b of models) {
     tbilled += tokNum(b.inputTokens) + tokNum(b.cacheReadTokens) + tokNum(b.cacheWriteTokens);
@@ -1759,32 +1867,141 @@ function tokCostReduce(owner) {
           (tbilled + toutput)
         : 0;
       if (!(share > 0)) continue;
-      const before = amount;
-      const acc = { amount: 0, currency: "" };
-      tokCostAdd(acc, {
+      const part = tokCostAdd({ amount: 0, currency: "" }, {
         provider: b.provider, model: b.model,
         inputTokens: restM.billed * share,
         cacheReadTokens: restM.reads * share,
         cacheWriteTokens: restM.writes * share,
         outputTokens: restM.output * share,
-      }, at);
-      amount += acc.amount;
-      if (acc.currency && !currency) currency = acc.currency;
-      if (acc.estimated) estimated = true;
-      if (amount !== before) any = true;
+      }, at, { byCur: byCur });
+      const key = tokKey(b.provider, b.model);
+      tokCostFoldAux(part, atOf && atOf[key], at);
+      if (part.amount || part.currency) {
+        acc.amount += part.amount;
+        if (part.currency && !acc.currency) acc.currency = part.currency;
+        if (part.estimated) acc.estimated = true;
+        if (part.peak) acc.peak = true;
+        if (part.offPeak) acc.offPeak = true;
+      }
     }
   }
-  return any ? { currency: currency || "CNY", amount: amount, estimated: estimated } : null;
+  /* 图像「按张」的尾段：累计台账里有张数、但逐轮没覆盖到的那些
+     （老台账 / 轮次被清过 / 图像条目直接入的累计账）。
+     逐轮已覆盖的张数由上面的轮循环按各轮时刻计价，这里只补差额，不重复计。 */
+  const roundImgs = {};
+  for (const rec of rounds) {
+    const bm = rec && rec.byModel && typeof rec.byModel === "object" ? rec.byModel : {};
+    for (const k of Object.keys(bm)) roundImgs[k] = tokNum(roundImgs[k]) + tokNum(bm[k] && bm[k].images);
+  }
+  const repAt = tokNum(rep && rep.lastAt) || 0;
+  for (const b of models) {
+    const key = tokKey(b.provider, b.model);
+    const rest = tokNum(b.images) - tokNum(roundImgs[key]);
+    if (!(rest > 0) || typeof costOfImages !== "function") continue;
+    const at = tokNum(b.at) || repAt;
+    if (!(at > 0)) continue;
+    let ic = null;
+    try { ic = costOfImages(b.provider, b.model, rest); } catch {}
+    if (!ic || !Number.isFinite(Number(ic.amount))) continue;
+    acc.amount += Number(ic.amount);
+    if (!acc.currency) acc.currency = ic.currency || "CNY";
+    if (typeof costAddCur === "function") costAddCur(byCur, ic);
+    tokCostFoldAux(ic, atOf && atOf[key], at);
+  }
+  const any = acc.amount !== 0 || !!acc.currency;
+  if (!any) return { total: null, allAt: allAt, byCur: byCur };
+  return {
+    total: { currency: acc.currency || "CNY", amount: acc.amount, estimated: acc.estimated },
+    byCur: byCur,
+    allAt: allAt,
+  };
 }
-/* 单桶费用：桶自带 at 优先；老台账（桶无 at）用宿主台账 lastAt 兜底判峰谷 */
+/* 把一趟计价的结果折进辅助累加器（合计总额之外的那一份：某个模型键）：
+ * 金额永远相加（同模型可能多笔拼出来 —— 多轮各一笔），峰谷与估算标记按「有过即真」
+ * 合并，且只在**这一笔真算出费用**时记（非官方路由 / 未知单价是空账 → 不误标峰谷）。 */
+function tokCostFoldAux(part, aux, at) {
+  if (!part || !aux) return;
+  if (!(part.amount || part.currency)) return;
+  aux.amount = (aux.amount || 0) + tokNum(part.amount);
+  if (part.currency && !aux.currency) aux.currency = part.currency;
+  if (part.estimated) aux.estimated = true;
+  /* 图像「按张」：金额之外把张数也留在这一行（明细表要显示「N 张」） */
+  if (part.images) aux.images = tokNum(aux.images) + tokNum(part.images);
+  if (typeof costIsPeakAt === "function" && tokNum(at) > 0) {
+    /* 中转那一档 != 官方：中转按云端公式（空闲 1 倍、高峰 × peakMultiplier），
+       判据是 costRelayIsPeak；官方的峰谷判据才是「空闲半价」那一套。 */
+    if (String(part.currency || "").toUpperCase() === "COIN") {
+      if (typeof costRelayIsPeak === "function" && typeof relayPriceOf === "function") {
+        const p = relayPriceOf(part.provider, part.model) || {};
+        if (tokNum(p.peakMultiplier) > 1) {
+          if (costRelayIsPeak(part.provider, at)) aux.peak = true;
+          else aux.offPeak = true;
+        }
+      }
+    } else if (costIsPeakAt(at)) aux.peak = true;
+    else aux.offPeak = true;
+  }
+}
+/* 会话合计费用（只读展示；与「按轮次」逐轮费用同源，保证合计 = 逐轮之和）：
+ *   · 已入账轮 + 在途轮 → 逐轮按各自时刻计价求和（各轮峰谷互不串味）
+ *   · 老台账 / 逐轮没覆盖到的尾段 → 剩下的量按累计桶自己的时刻补一段
+ *   · 峰谷标记随返回值一起给出（offPeak = 这一遍里确有被折扣的份量） */
+function tokCostReduce(owner) {
+  const curve = tokCostCurve(owner, null);
+  if (!curve) return null;
+  if (!curve.total) return null;
+  const out = { currency: curve.total.currency, amount: curve.total.amount, estimated: curve.total.estimated };
+  if (curve.allAt && (curve.allAt.peak || curve.allAt.offPeak)) {
+    out.peak = !!curve.allAt.peak;
+    out.offPeak = !!curve.allAt.offPeak;
+  }
+  /* 混合会话（官方 ¥ + 中转币）：把「按币种」那一份一起交出去，展示层并列显示。 */
+  if (curve.byCur && Object.keys(curve.byCur).length > 1) out.byCur = curve.byCur;
+  return out;
+}
+/* 「按模型」明细行的费用（本轮修复的主战场）：
+ * 与合计**同一趟**逐轮计价，取该模型分到的那一份 —— 明细逐行相加 = 合计行，
+ * 峰谷按各轮自己的记账时刻判，不再拿累计桶的最近时刻给整段会话定一个折扣档。
+ * 老台账（没有 roundList）没有「逐轮」可依，仍回落单桶口径（桶 at → 台账 lastAt），
+ * 这是唯一的例外，与合计的尾段兜底同一口径。 */
+function tokModelCostOf(b, owner) {
+  if (!b) return null;
+  const key = tokKey(b.provider, b.model);
+  const aux = { amount: 0, currency: "", estimated: false };
+  const curve = tokCostCurve(owner, { [key]: aux });
+  if (curve && aux.currency) {
+    return {
+      currency: aux.currency,
+      amount: aux.amount,
+      estimated: !!aux.estimated,
+      peak: !!aux.peak,
+      offPeak: !!aux.offPeak,
+      images: tokNum(aux.images),
+    };
+  }
+  /* 逐轮这一层没算出费用时：只有图像张数的模型（纯出图、无 token）走单桶口径，
+     其余（非官方路由 / 未知单价）与旧行为一致 —— 交给 tokCostOfBucket 收尾。 */
+  return tokCostOfBucket(b, owner);
+}
+/* 单桶费用：桶自带 at 优先；老台账（桶无 at）用宿主台账 lastAt 兜底判峰谷。
+ * 图像「按张」的桶在 token 侧算不出费用，这里补一笔图像费用（否则明细会显示 —）。 */
 function tokCostOfBucket(b, owner) {
-  if (typeof costOfBucket !== "function") return null;
   const bb = b || {};
   const t = tokNum(bb.at) || tokNum(owner && owner.tokenReport && owner.tokenReport.lastAt);
   let c = null;
-  try { c = costOfBucket(bb.provider, bb.model, bb, t); } catch {}
-  return c;
+  try {
+    if (typeof costOfBucket === "function") c = costOfBucket(bb.provider, bb.model, bb, t);
+  } catch {}
+  if (c) return c;
+  const n = tokNum(bb.images);
+  if (n && typeof costOfImages === "function") {
+    try { return costOfImages(bb.provider, bb.model, n); } catch {}
+  }
+  return null;
 }
+/* 费用金额的「统一进账口径」：COIN 的 amount 已经是币值，¥ 的原样。
+ * 之所以要这一步：fmtMoney(amount, "COIN") 与「元值换算后再格式化」必须得到同一个字符串，
+ * 免得两处（列表与合计）算法分叉。 */
 function tokMoney(c) {
   if (!c) return "—";
   try {
@@ -1792,11 +2009,140 @@ function tokMoney(c) {
   } catch {}
   return "—";
 }
+/* 分币种并列显示：混合会话返回 "¥1.23 + 61.5 币"，单币种与旧行为逐字一致。
+ * 中转（COIN）走币口径、官方（CNY）走 ¥ 口径，两边都保留自己的真账。 */
+function tokMoneyMulti(c) {
+  if (!c) return "—";
+  const parts = c.byCur && typeof c.byCur === "object" ? c.byCur : null;
+  const keys = parts ? Object.keys(parts).filter((k) => parts[k]) : [];
+  if (keys.length < 2) return tokMoney(c);
+  const out = [];
+  for (const k of ["CNY", "COIN"]) {
+    /* 只认这两种已知币种：未知键（USD 等）按原样跟在后面，不吞 */
+    if (keys.indexOf(k) < 0) continue;
+    const seg = tokMoney({ currency: k, amount: parts[k].amount });
+    out.push(seg + (parts[k].estimated ? "*" : ""));
+  }
+  for (const k of keys) {
+    if (k === "CNY" || k === "COIN") continue;
+    const seg = tokMoney({ currency: k, amount: parts[k].amount });
+    out.push(seg + (parts[k].estimated ? "*" : ""));
+  }
+  return out.join(" + ");
+}
 /* 费用展示值：单价是兜底猜的（价格表里没有的模型按 flash 价）→ 追加 * 标记。
- * 口径解释入口见 app-cost.js costHelpEl()；这里是它旁边那个 * 的来源。 */
+ * 口径解释入口见 app-cost.js costHelpEl()；这里是它旁边那个 * 的来源。
+ * 混合会话（官方 ¥ + 中转币）经 tokMoneyMulti 并列显示成「¥1.23 + 61.5 币」。 */
 function tokCostMark(c) {
   if (!c) return "—";
-  return tokMoney(c) + (c.estimated ? "*" : "");
+  return tokMoneyMulti(c) + (c.estimated ? "*" : "");
+}
+/* ── 费用单元格的 **DOM 版**（表格 / 弹窗用；纯文本入口继续用 tokCostMark）────
+ * 中转的币值要带金币图标（需求口径：与设置里中转余额同一套元件），而图标是节点、
+ * 没法拼进字符串，所以表格格外走这一套：
+ *   · tokMoneyEl(c)  金额节点：COIN → 「0.62 + 金币」（app-cost.js 的 costMoneyEl），
+ *                    ¥ → 纯文本，混合会话 → 「¥1.23 + 61.5币」（两个节点拼一串）
+ *   · tokCostMarkEl(c)  在金额后面补上估算 * 与峰谷标记（与文本版口径逐条对齐） */
+function tokMoneyEl(c) {
+  const seg = (currency, amount) =>
+    typeof costMoneyEl === "function"
+      ? costMoneyEl(amount, currency)
+      : document.createTextNode(tokMoney({ currency: currency, amount: amount }));
+  const wrap = document.createElement("span");
+  wrap.className = "tok-cost-amt";
+  if (!c) {
+    wrap.textContent = "—";
+    return wrap;
+  }
+  const parts = c.byCur && typeof c.byCur === "object" ? c.byCur : null;
+  const keys = parts ? Object.keys(parts).filter((k) => parts[k]) : [];
+  if (keys.length < 2) {
+    wrap.appendChild(seg(c.currency, c.amount));
+  } else {
+    const order = ["CNY", "COIN"].filter((k) => keys.indexOf(k) >= 0).concat(
+      keys.filter((k) => k !== "CNY" && k !== "COIN"),
+    );
+    order.forEach((k, i) => {
+      if (i) wrap.appendChild(document.createTextNode(" + "));
+      wrap.appendChild(seg(k, parts[k].amount));
+      if (parts[k].estimated) wrap.appendChild(document.createTextNode("*"));
+    });
+  }
+  return wrap;
+}
+function tokCostMarkEl(c, owner) {
+  const wrap = document.createElement("span");
+  wrap.className = "tok-cost-mark";
+  if (!c) {
+    wrap.textContent = "—";
+    return wrap;
+  }
+  wrap.appendChild(tokMoneyEl(c));
+  if (c.estimated) wrap.appendChild(document.createTextNode("*"));
+  const pk = tokPeakMark(c, owner);
+  if (pk) {
+    const s = document.createElement("span");
+    s.className = "tok-peak-mark";
+    s.textContent = pk;
+    wrap.appendChild(s);
+  }
+  return wrap;
+}
+/* 峰谷可见标记（本轮需求 · 用户口径「明细要能看出峰谷打折」）：这一行的费用里
+ * 有没有被折扣的份量。全部高峰 → 不标（全价是默认口径，标满屏噪声）；
+ * 峰谷混着 → 「峰谷」；整行都在谷时 → 「谷」。峰值来自计价那一趟按各轮时刻记下的
+ * 标记，所以标记与该行金额**同一来源**，不是另算一遍。非官方路由 / 未计价 → 空串。 */
+function tokPeakMark(c, owner) {
+  if (!c) return "";
+  let peak = !!c.peak;
+  let off = !!c.offPeak;
+  if (!peak && !off && owner) {
+    const b = tokPeakBandsOf(owner);
+    peak = b.peak;
+    off = b.offPeak;
+  }
+  if (peak && off) return " " + I18n.t("峰谷");
+  if (off) return " " + I18n.t("谷");
+  return "";
+}
+/* 峰谷位（按轮次现算）：给「一轮的费用」（tokRoundCost）这类只回金额的调用方用，
+ * 让它也能标出「这一轮里有没有谷时段」。口径与计价那趟一致：轮内各模型桶的记账
+ * 时刻（at）→ 退回该轮 endedAt / at。 */
+function tokPeakBandsOf(owner) {
+  const out = { peak: false, offPeak: false };
+  if (typeof costIsPeakAt !== "function") return out;
+  for (const rec of tokViewRounds(owner)) {
+    const bm = rec && rec.byModel && typeof rec.byModel === "object" ? rec.byModel : {};
+    for (const k of Object.keys(bm)) {
+      const t = tokNum(bm[k] && bm[k].at) || tokNum(rec.endedAt) || tokNum(rec.at);
+      if (!(t > 0)) continue;
+      if (costIsPeakAt(t)) out.peak = true;
+      else out.offPeak = true;
+    }
+  }
+  return out;
+}
+/* 峰谷标记的悬停解释（纯高峰行没有折扣可解释 → 空串）。
+ * 中转（币）那一档与官方口径不同，所以先按币种给专门的说法：
+ *   · 中转：空闲 1 倍、高峰 × peakMultiplier（内置价目 + 与云端同源的时段判据，
+ *     见 app-cost.js 的 RELAY_PRICE / costRelayIsPeak）；
+ *   · 官方：空闲 = 谷时半价（DS_OFFPEAK_RATIO）。
+ * 币行的 peak/offPeak 标记由 app-cost.js 给出（不在 tokCostFoldAux 里另判）。 */
+function tokPeakTip(c) {
+  if (!c) return "";
+  const coin = String(c.currency || "").toUpperCase() === "COIN";
+  const peak = !!c.peak;
+  const off = !!c.offPeak;
+  if (coin) {
+    if (peak)
+      return I18n.t("中转计费：高峰时段单价 × 高峰倍率（价目取客户端内置表，与会话统计同一份）");
+    if (off) return I18n.t("中转计费：当前为空闲时段，按价目原价（无高峰倍率）");
+    return "";
+  }
+  if (peak && off)
+    return I18n.t("该行含高峰（全价）与空闲（谷时半价）两个时段的用量：已按各轮各自的记账时刻分别计价");
+  if (off) return I18n.t("该行按空闲时段计价（谷时半价）");
+  return "";
 }
 /* 摘要里的费用片段：算不出费用时返回空串（不显示） */
 function tokCostText(owner) {
@@ -1840,6 +2186,8 @@ function tokBadgeSummary(rep, t, running, owner) {
   );
   parts.push(I18n.t("缓存命中 ") + Math.round(t.cacheHitPct) + "%");
   if (t.models > 1) parts.push(t.models + I18n.t(" 模型"));
+  /* 图像「张」：只有真有图像用量时才出现（普通会话不多个 0 张的噪声） */
+  if (t.images) parts.push(t.images + I18n.t(" 张图"));
   if (t.rounds) parts.push(t.rounds + I18n.t(" 轮"));
   parts.push("⏱ " + fmtDurLong(t.wallMs || t.spanMs));
   const cost = tokCostText(owner);
@@ -1973,7 +2321,7 @@ function tokRoundsLines(owner, indent) {
         ": " + (rec.turns || 0) + I18n.t(" 轮 · ") + (rec.steps || 0) + I18n.t(" 步") +
         ", " + I18n.t("入") + fmtTok(rt.billedInput) + I18n.t(" · 出") + fmtTok(rt.outputTokens) +
         ", LLM " + fmtDurLong(rt.llmMs) +
-        (rc ? ", " + I18n.t("费用") + " ≈" + tokCostMark(rc) : "") +
+        (rc ? ", " + I18n.t("费用") + " ≈" + tokCostMark(rc) + tokPeakMark(rc, owner) : "") +
         ", " + tokRoundPerfLine(rec),
     );
   }
@@ -1986,7 +2334,7 @@ function tokBadgeTitleText(owner) {
   for (const b of tokViewModels(owner)) {
     const bt = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens;
     const hit = bt > 0 ? (b.cacheReadTokens / bt) * 100 : 0;
-    const bc = tokCostOfBucket(b, owner);
+    const bc = tokModelCostOf(b, owner);
     lines.push(
       (b.provider ? b.provider + " · " : "") + b.model +
         ": " + I18n.t("入") + " " + fmtTok(bt) + " (" + I18n.t("缓存读") + " " + fmtTok(b.cacheReadTokens) + ", " + I18n.t("命中") + " " + Math.round(hit) + "%)" +
@@ -1994,7 +2342,7 @@ function tokBadgeTitleText(owner) {
         (b.reasoningTokens ? ", " + I18n.t("推理") + " " + fmtTok(b.reasoningTokens) : "") +
         ", " + b.calls + I18n.t(" 次调用, LLM ") + fmtDurLong(b.llmMs) +
         (b.toolMs ? " · " + I18n.t("工具") + " " + fmtDurLong(b.toolMs) : "") +
-        (bc ? ", " + I18n.t("费用") + " ≈" + tokCostMark(bc) : "") +
+        (bc ? ", " + I18n.t("费用") + " ≈" + tokCostMark(bc) + tokPeakMark(bc) : "") +
         ", " + tokPerfLine(b),
     );
   }
@@ -2016,7 +2364,8 @@ function tokReportPlain(owner) {
       " (" + I18n.t("未命中") + " " + t.inputTokens + " + " + I18n.t("缓存读") + " " + t.cacheReadTokens +
       " + " + I18n.t("缓存写") + " " + t.cacheWriteTokens + ")" +
       ", " + I18n.t("输出") + " " + t.outputTokens + ", " + I18n.t("推理") + " " + t.reasoningTokens +
-      ", " + I18n.t("缓存命中") + " " + tokFmtPct(t.cacheHitPct),
+      ", " + I18n.t("缓存命中") + " " + tokFmtPct(t.cacheHitPct) +
+      (t.images ? ", " + I18n.t("图像") + " " + t.images + I18n.t(" 张") : ""),
   );
   L.push(
     I18n.t("时间") + ": LLM " + fmtDurLong(t.llmMs) + " · " + I18n.t("工具") + " " + fmtDurLong(t.toolMs) +
@@ -2031,15 +2380,16 @@ function tokReportPlain(owner) {
   L.push(I18n.t("按模型") + ":");
   for (const b of tokViewModels(owner)) {
     const bt = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens;
-    const bc = tokCostOfBucket(b, owner);
+    const bc = tokModelCostOf(b, owner);
     L.push(
       "  " + ((b.provider ? b.provider + " · " : "") + b.model) +
         ": " + I18n.t("计费输入") + " " + bt + " (" + I18n.t("缓存读") + " " + b.cacheReadTokens +
         ", " + I18n.t("命中") + " " + tokFmtPct(bt > 0 ? (b.cacheReadTokens / bt) * 100 : 0) + ")" +
         " · " + I18n.t("输出") + " " + b.outputTokens + " · " + I18n.t("推理") + " " + b.reasoningTokens +
+        (b.images ? " · " + I18n.t("图像") + " " + b.images + I18n.t(" 张") : "") +
         " · " + b.calls + I18n.t(" 次") + " · LLM " + fmtDurLong(b.llmMs) +
         (b.toolMs ? " · " + I18n.t("工具") + " " + fmtDurLong(b.toolMs) : "") +
-        (bc ? " · " + I18n.t("费用") + " ≈" + tokCostMark(bc) : "") +
+        (bc ? " · " + I18n.t("费用") + " ≈" + tokCostMark(bc) + tokPeakMark(bc) : "") +
         " · " + tokPerfLine(b),
     );
   }
@@ -2061,6 +2411,144 @@ function tokReportPlain(owner) {
   }
   return L.join("\n");
 }
+/* ── 逐轮性能下钻弹窗 ────────────────────────────────────────────
+ * 从 Token 报告「按轮次」表的轮次行点开（app-agent.js 的 tokBadgeEl）：
+ * 一轮的概要（轮/步、标题与来源、时刻、该轮 token 与 LLM/工具/墙钟、该轮性能摘要、
+ * 费用）+ 该轮的逐模型行（仍可再下钻到模型性能弹窗）。
+ * 一轮 = tokRoundRec 记的一条（byModel 即该轮逐模型桶），所以在途轮（live）也能点开。
+ * 口径脚注（实测 / 推算 / —）与模型弹窗同源：tokPerfOf 的三态。 */
+function openRoundPerfDialog(owner, rec) {
+  rec = rec || {};
+  const rounds = tokViewRounds(owner);
+  const idx = rounds.findIndex((x) => (rec.rid && x.rid === rec.rid) || (!rec.rid && x.live && x.runKey === rec.runKey));
+  const no = idx >= 0 ? rounds.length - idx : 0; /* 与轮次表同一编号（最新在前） */
+  openOverlay(
+    I18n.t("轮次性能") + " · #" + (no || "?") + " " + tokRoundTitle(rec) + (rec.live ? " [" + I18n.t("运行中") + "]" : ""),
+    { persistent: true },
+  );
+  const body = $("#ovBody");
+  const rt = tokRoundTotals(rec);
+  const rc = tokRoundCost(owner, rec);
+  const fromLabel = tokRoundTitleFromLabel(rec.titleFrom);
+  const table = document.createElement("table");
+  table.className = "tok-badge-table round-perf-table";
+  const rows = [
+    [I18n.t("标题"), tokRoundTitle(rec) + (fromLabel ? " [" + fromLabel + "]" : "")],
+    [I18n.t("轮次 / 步"), String(rec.turns || 0) + " / " + String(rec.steps || 0)],
+    [I18n.t("时刻"), rec.at ? fmtTime(rec.at) : "—"],
+    [I18n.t("计费输入"), fmtTok(rt.billedInput) + " (" + I18n.t("缓存读") + " " + fmtTok(rt.cacheReadTokens) + ", " + I18n.t("命中") + " " + tokFmtPct(rt.cacheHitPct) + ")"],
+    [I18n.t("输出"), fmtTok(rt.outputTokens)],
+    [I18n.t("推理"), fmtTok(rt.reasoningTokens)],
+    [I18n.t("调用"), String(rt.calls)],
+    [I18n.t("LLM 用时"), fmtDurLong(rt.llmMs)],
+    [I18n.t("工具"), fmtDurLong(rt.toolMs)],
+    [I18n.t("墙钟用时"), fmtDurLong(rec.wallMs || 0)],
+    [I18n.t("该轮性能"), tokRoundPerfLine(rec)],
+    /* 费用是节点（中转币值带金币图标）→ 走 appendChild 分支，见 tokCostMarkEl */
+    [I18n.t("费用"), rc ? tokCostMarkEl(rc, owner) : "—"],
+  ];
+  for (const [k, v] of rows) {
+    const tr = document.createElement("tr");
+    const td1 = document.createElement("td");
+    td1.textContent = k;
+    const td2 = document.createElement("td");
+    if (v && typeof v === "object" && typeof v.nodeType === "number") td2.appendChild(v);
+    else td2.textContent = v;
+    tr.appendChild(td1);
+    tr.appendChild(td2);
+    table.appendChild(tr);
+  }
+  body.appendChild(table);
+  /* 该轮的逐模型行（桶自带时刻，仍可点开模型性能弹窗） */
+  const bm = rec.byModel && typeof rec.byModel === "object" ? rec.byModel : {};
+  const keys = Object.keys(bm);
+  if (keys.length) {
+    const head = document.createElement("div");
+    head.className = "tok-sec-head";
+    head.textContent = I18n.t("该轮按模型");
+    body.appendChild(head);
+    const mt = document.createElement("table");
+    mt.className = "tok-badge-table round-perf-models tok-round-models";
+    const hr = document.createElement("tr");
+    for (const h of [I18n.t("模型 / 服务商"), I18n.t("计费输入"), I18n.t("输出"), I18n.t("图像"), I18n.t("调用"), "LLM", I18n.t("费用")]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    }
+    mt.appendChild(hr);
+    const at = tokNum(rec.endedAt) || tokNum(rec.at);
+    for (const k of keys) {
+      const b = tokBucketFill(Object.assign({}, bm[k] || {}));
+      const billed = b.inputTokens + b.cacheReadTokens + b.cacheWriteTokens;
+      let bc = null;
+      try {
+        if (typeof costOfBucket === "function") bc = costOfBucket(b.provider, b.model, b, at);
+      } catch {}
+      if (!bc && b.images && typeof costOfImages === "function") {
+        try { bc = costOfImages(b.provider, b.model, b.images); } catch {}
+      }
+      const tr = document.createElement("tr");
+      tr.className = "tok-model-row";
+      tr.setAttribute("role", "button");
+      tr.tabIndex = 0;
+      tr.title = I18n.t("点击查看性能指标");
+      const openPerf = () => openModelPerfDialog(owner, b, { atFallback: at });
+      tr.addEventListener("click", openPerf);
+      tr.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+          ev.preventDefault();
+          openPerf();
+        }
+      });
+      const name = document.createElement("td");
+      name.textContent = b.model || "?";
+      const prov = document.createElement("span");
+      prov.className = "tok-badge-prov";
+      prov.textContent = b.provider || "";
+      name.appendChild(prov);
+      tr.appendChild(name);
+      const cells = [
+        fmtTok(billed),
+        fmtTok(b.outputTokens),
+        b.images ? String(b.images) + I18n.t(" 张") : "—",
+        String(b.calls),
+        fmtDurLong(b.llmMs),
+        /* 末位是**占位**（费用由下面循环 appendChild 填节点）；占位不能省，
+           否则 cells.length 少一列，费用会落到「LLM」格上。 */
+        null,
+      ];
+      const last = cells.length - 1;
+      for (let i = 0; i < cells.length; i++) {
+        const td = document.createElement("td");
+        if (i === last) {
+          td.className = "tok-badge-cost";
+          /* 费用列用节点版（中转币值带金币图标） */
+          if (bc) td.appendChild(tokCostMarkEl(bc, owner));
+          else td.textContent = "—";
+        } else {
+          td.textContent = cells[i];
+        }
+        tr.appendChild(td);
+      }
+      mt.appendChild(tr);
+    }
+    body.appendChild(mt);
+  }
+  /* 口径脚注：实测 / 推算 / — 三态（与模型弹窗同一套口径） */
+  const note = document.createElement("p");
+  note.className = "model-perf-note";
+  note.textContent = I18n.t(
+    "口径：本轮的 token 与用时按该轮自身的记账时刻（endedAt）计价 —— 峰谷折扣因此逐轮生效，明细逐行相加 = 合计。性能指标里「实测」= 网关逐次采样的累计值直接得出，「(推算)」= 缺纯生成时间时用 LLM 用时近似，「—」= 无样本。",
+  );
+  body.appendChild(note);
+  const foot = $("#ovFoot");
+  const okBtn = document.createElement("button");
+  okBtn.className = "mini primary";
+  okBtn.textContent = I18n.t("关闭");
+  okBtn.onclick = () => closeOverlay();
+  foot.appendChild(okBtn);
+}
+
 /* 报告 Badge：折叠时一行摘要，点击展开是按模型明细表 */
 function tokBadgeEl(owner) {
   if (!owner) return null;
@@ -2068,7 +2556,9 @@ function tokBadgeEl(owner) {
   const live = owner._tokLive;
   if (!r && !live) return null;
   const t = tokViewTotals(owner);
-  if (!t.totalTokens && !t.rounds) return null;
+  /* 只看张数的中转图像会话（没有 token、没有轮次）同样要有报告：
+     否则「图像按张计费」的账在界面上根本看不见（t.images 是独立于 token 的量）。 */
+  if (!t.totalTokens && !t.rounds && !t.images) return null;
   const running = !!(live && Object.keys(live).length);
   const det = document.createElement("details");
   det.className = "tok-badge" + (running ? " running" : "");
@@ -2157,6 +2647,8 @@ function tokBadgeEl(owner) {
     I18n.t("命中"),
     I18n.t("输出"),
     I18n.t("推理"),
+    /* 中转图像模型按「张」计费（与 token 无关）：这一列没有图像用量时整列为 — */
+    I18n.t("图像"),
     I18n.t("调用"),
     "LLM",
     I18n.t("工具"),
@@ -2191,26 +2683,42 @@ function tokBadgeEl(owner) {
     prov.textContent = b.provider || "";
     name.appendChild(prov);
     tr.appendChild(name);
-    const bc = tokCostOfBucket(b, owner);
+    /* 明细行费用 = 与合计同一趟逐轮计价（tokModelCostOf）。本轮之前的写法是
+       tokCostOfBucket（累计桶 + 一个时刻），跨峰谷的会话里它给不出逐轮折扣，
+       明细之和与合计对不上（用户报的「明细没加峰谷打折」）。 */
+    const bc = tokModelCostOf(b, owner);
     const cells = [
       fmtTok(billed) + (b.cacheWriteTokens ? " (w" + fmtTok(b.cacheWriteTokens) + ")" : ""),
       fmtTok(b.cacheReadTokens),
       tokFmtPct(hit),
       fmtTok(b.outputTokens),
       fmtTok(b.reasoningTokens),
+      b.images ? String(b.images) + I18n.t(" 张") : "—",
       String(b.calls),
       fmtDurLong(b.llmMs),
       fmtDurLong(b.toolMs),
-      bc ? tokCostMark(bc) : "—",
+      /* 末位是**占位**：费用是节点（中转币值带金币图标），由下面循环 appendChild 填。
+         占位不能省 —— cells.length 就是列数（11），省掉末列会让费用落到「工具」格上。 */
+      null,
     ];
     for (let i = 0; i < cells.length; i++) {
       const td = document.createElement("td");
+      /* 峰谷标记的解释（悬停）：只有真的分了峰谷才挂 title */
+      const tip = tokPeakTip(bc);
+      if (tip) td.title = tip;
+      if (i === cells.length - 1) {
+        td.className = "tok-badge-cost";
+        /* 费用列用节点版：中转的币值带金币图标（与设置里中转余额同一套元件） */
+        if (bc) td.appendChild(tokCostMarkEl(bc, owner));
+        else td.textContent = "—";
+        tr.appendChild(td);
+        continue;
+      }
       td.textContent = cells[i];
       /* 本次需求 · token 输入蓝 / 输出绿（与轨迹视图、报告摘要同一套配色）：
          第 1 列「计费输入」= 蓝、第 4 列「输出」= 绿（列序见上面的表头数组）。 */
       if (i === 0) td.className = "dsh-tok-in";
       else if (i === 3) td.className = "dsh-tok-out";
-      else if (i === cells.length - 1) td.className = "tok-badge-cost";
       tr.appendChild(td);
     }
     table.appendChild(tr);
@@ -2224,26 +2732,30 @@ function tokBadgeEl(owner) {
     tokFmtPct(t.cacheHitPct),
     fmtTok(t.outputTokens),
     fmtTok(t.reasoningTokens),
+    t.images ? String(t.images) + I18n.t(" 张") : "—",
     String(t.calls),
     fmtDurLong(t.llmMs),
     fmtDurLong(t.toolMs),
-    (function () {
-      const c = tokCostOf(owner);
-      return c ? tokCostMark(c) : "—";
-    })(),
+    /* 末位是**占位**：费用是节点（中转币值带金币图标），由下面的循环 appendChild 填。
+       占位不能省 —— tds.length 就是列数（11），省掉末列会让费用落到「工具」格上。 */
+    null,
   ];
   for (let i = 0; i < tds.length; i++) {
     const td = document.createElement("td");
-    td.textContent = tds[i];
     /* 合计行的「计费输入 / 输出」与明细行同一口径（本次需求）：蓝 / 绿 */
     if (i === 1) td.className = "dsh-tok-in";
     else if (i === 4) td.className = "dsh-tok-out";
     if (i === tds.length - 1) {
       td.className = "tok-badge-cost";
+      const c = tokCostOf(owner);
+      if (c) td.appendChild(tokCostMarkEl(c, owner));
+      else td.textContent = "—";
       /* 「合计计费」旁挂口径说明入口（app-cost.js 的 costHelpEl）：
          点它 / 悬停看「为什么显示会高于实际消费」。只在真能算出费用时出现。 */
       const why = typeof costHelpEl === "function" ? costHelpEl() : null;
       if (why) td.appendChild(why);
+    } else {
+      td.textContent = tds[i];
     }
     tr.appendChild(td);
   }
@@ -2288,10 +2800,16 @@ function tokBadgeEl(owner) {
     meta.appendChild(document.createTextNode(x));
   }
   wrap.appendChild(meta);
-  /* 展开态：meta 行下方列出全部轮次；行一律不可点击（只读展示，无下钻） */
+  /* 展开态：meta 行下方列出全部轮次。行可点击 → 该轮下钻弹窗（openRoundPerfDialog）：
+     一轮的概要 + 逐模型性能，与「按模型」表的下钻同一套弹窗体系。 */
   if (owner._tokRoundOpen && rounds.length) {
     const rbox = document.createElement("div");
     rbox.className = "tok-round-list";
+    /* 小标题（与「按模型 · 合计」对称；行可点开该轮下钻弹窗） */
+    const rHead = document.createElement("div");
+    rHead.className = "tok-sec-head";
+    rHead.textContent = I18n.t("按轮次") + " · " + rounds.length + I18n.t(" 轮");
+    rbox.appendChild(rHead);
     const rtable = document.createElement("table");
     rtable.className = "tok-badge-table tok-round-table";
     const rhead = document.createElement("tr");
@@ -2318,6 +2836,18 @@ function tokBadgeEl(owner) {
       const rc = tokRoundCost(owner, rec);
       const rtr = document.createElement("tr");
       rtr.className = "tok-round-row" + (rec.live ? " tok-round-live" : "");
+      /* 行可点：下钻该轮的性能指标弹窗（键盘可达，与模型行同一套交互） */
+      rtr.setAttribute("role", "button");
+      rtr.tabIndex = 0;
+      rtr.title = I18n.t("点击查看该轮性能");
+      const openRoundPerf = () => openRoundPerfDialog(owner, rec);
+      rtr.addEventListener("click", openRoundPerf);
+      rtr.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+          ev.preventDefault();
+          openRoundPerf();
+        }
+      });
       const tdT = document.createElement("td");
       tdT.className = "tok-round-title";
       tdT.appendChild(document.createTextNode("#" + (rounds.length - i) + " · "));
@@ -2336,15 +2866,24 @@ function tokBadgeEl(owner) {
         String(rt.calls),
         fmtDurLong(rt.llmMs),
         fmtDurLong(rt.toolMs),
-        rc ? tokCostMark(rc) : "—",
+        /* 末位是**占位**（费用由下面循环 appendChild 填节点）；占位不能省，
+           否则 cells.length 少一列，费用会落到「工具」格上。 */
+        null,
       ];
       for (let c = 0; c < cells.length; c++) {
         const td = document.createElement("td");
-        td.textContent = cells[c];
         /* 与合计表同一口径（本次需求）：计费输入 = 蓝、输出 = 绿 */
         if (c === 0) td.className = "dsh-tok-in";
         else if (c === 3) td.className = "dsh-tok-out";
-        else if (c === cells.length - 1) td.className = "tok-badge-cost";
+        else if (c === cells.length - 1) {
+          td.className = "tok-badge-cost";
+          /* 费用列用节点版：中转的币值带金币图标（与设置里中转余额同一套元件） */
+          if (rc) td.appendChild(tokCostMarkEl(rc, owner));
+          else td.textContent = "—";
+          rtr.appendChild(td);
+          continue;
+        }
+        td.textContent = cells[c];
         rtr.appendChild(td);
       }
       rtable.appendChild(rtr);

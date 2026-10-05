@@ -708,7 +708,7 @@ function renderGpu(gpu) {
   ok(/api\.installSage\(\{\}\)/.test(uiJs) && /api\.onSage/.test(uiJs), "点了真调宿主补装，探完自动刷新");
   ok(/if \(backendRunning\(\)\)/.test(sageSrc) || /backendRunning\(\)/.test(mainJs), "补装前有 backendRunning 守卫");
   /* 「安装」这条主路必须也覆盖加速包（不然装完还是缺，等于没修）
-     要件清单本轮重排过编号（补了南风包 / soundfile / latent 占位 / 后处理权重）→
+     要件清单本轮重排过编号（南风包与 latent 占位两条已删，Sage 由第 11 条变第 9 条）→
      只钉「注意力加速在 requirements 里」与「装不上不判失败」，不再钉死编号。 */
   const REQ_BLOCK = (() => {
     const i = mainJs.indexOf("const requirements = [");

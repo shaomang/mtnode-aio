@@ -14,11 +14,28 @@
        全局一份、跨会话保持登录态（用户已确认的口径）。
      · 浏览器崩溃 / 配置被锁 / 端口失效 → 自动重启一次（本文件自己恢复，不打扰模型）。
 
+    ── 本轮修（用户报的「外部的浏览器被关闭，然后又起来一只」）─────────────────
+    本机实测（2026-10-03 · Edge 154.0.4258.48，每条都能照着复核，不是推断）：
+      · 同一 --user-data-dir 已在跑时再 spawn 一只：新进程**立刻退出**（HasExited=True），
+        它的 --remote-debugging-port 永远起不来（实测 9344 连不上），旧那只照旧占着 profile
+        （9333 仍通）。旧代码这时会等 12s 超时报「调试端口没起来」，而下一轮调用又会再
+        spawn 一只 —— 用户看到的就是「浏览器被关掉 → 又起来一只」的循环。
+      · 硬杀那只之后 lockfile 自己消失、同 profile 立刻能重起（实测 9355 秒通）：卡住的
+        从来不是「残留锁」，而是**还活着的那只**占着 profile。
+      · --headless=new 那只**没有真窗口**：Browser.getWindowForTarget 回
+        「Browser window not found」，进程 MainWindowHandle=0 —— 「先把无窗口那只显形」
+        在本机做不到（用户已确认：不行才回落重起）。
+    因此本文件两条纪律（用户已确认的口径）：
+      ① **重起之前先探活复用**：profile 目录里留一份自己的账（marker），再按 profile 精确
+         扫一次进程命令行；活着就直接接管 —— 绝不 spawn 第二只、绝不为了换形态白 kill。
+      ② **关的时候先温和关、等真退出**：CDP Browser.close → 等进程真退出 → 超时才 kill →
+         确认端口没人听了再清残留锁（绝不换 profile：清不掉就明确报错）。
+
    本文件 import 只允许 node 内置（与 bridge/canvas 插件同一纪律），isolated。
    ========================================================================== */
 
-import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { spawn, execFile } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -60,9 +77,12 @@ export function detectBrowser() {
   return ''
 }
 
-/* ── 危险动作判据（域名名单 + 危险动作，用户已确认「固定几类可控项」）──
-   名单本身落在数据目录下的 JSON（活动流面板可编辑），这里只做纯函数判定，
-   免得把策略散到调用方。 */
+/* ── 危险动作判据（本轮需求：只留这一项，域名名单机制已删）────────────────
+   用户口径（本轮已确认）：右栏那排按钮与「名单」机制一起下架 —— 域名拦截名单 / 风险站点
+   首次确认卡（原 DEFAULT_POLICY.confirm 里那 15 条邮件 / 网银 / 支付域名）连同
+   domainVerdict / normalizePolicy / browser-policy.json 一并删除；
+   **危险动作审批保留且恒开**（提交 / 支付 / 删除 / 发送这类点击仍先弹一次确认卡），
+   开关不再露出，所以这里只做纯函数判定，策略常量在网关的 gate() 里只用这一条。 */
 const DANGEROUS_WORDS = [
   '提交', '确认提交', '下单', '支付', '购买', '结算', '删除', '移除', '注销',
   '发送', '发布', '确认支付', '立即购买', 'submit', 'buy', 'purchase', 'pay', 'delete',
@@ -80,52 +100,9 @@ export function dangerOfClick(text, selector) {
   return { danger: false, why: '' }
 }
 
-/** 默认名单（首次启动时写盘，之后以盘上的为准）。 */
-export const DEFAULT_POLICY = Object.freeze({
-  /* 黑名单：一律拒绝导航（硬拦截，不问用户）。默认为空 —— 不替用户封网站，
-     要封的在这里加（面板里可编辑）。注意判据是「域名或它的子域」精确匹配，
-     绝不拿子串去套（`bank` 这种词会把 bankofamerica.com 一起误伤）。 */
-  blocked: [],
-  /* 风险站点：首次访问弹一次确认卡（用户确认后本会话放行）。
-     只列「误点进去代价高」的几类：邮箱 / 社交 / 支付 / 网银。 */
-  confirm: [
-    'mail.google.com', 'outlook.office.com', 'web.whatsapp.com',
-    'x.com', 'twitter.com', 'facebook.com', 'linkedin.com',
-    'paypal.com', 'alipay.com', 'stripe.com',
-    'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'icbc.com.cn', 'ccb.com',
-  ],
-  /* 危险动作是否必须过审批卡（默认开；关掉＝危险动作直接执行，不建议） */
-  approveDangerous: true,
-})
-
-export function hostOf(url) {
-  try { return new URL(String(url)).host.toLowerCase() } catch { return '' }
-}
-
-/** 域名判定：返回 {blocked:bool, confirm:bool, why}。 */
-export function domainVerdict(url, policy) {
-  const p = policy && typeof policy === 'object' ? policy : DEFAULT_POLICY
-  const h = hostOf(url)
-  if (!h) return { blocked: false, confirm: false, why: '' }
-  /* 判据 = 「域名本身」或「它的子域」：`mail.google.com` 命中 `google.com`，
-     但 `bankofamerica.com` 绝不被 `bank` 命中 —— 名单是按域写的，不是按关键词。 */
-  const hit = (list) => (Array.isArray(list) ? list : []).some((d) => d && (h === d || h.endsWith('.' + d)))
-  if (hit(p.blocked)) return { blocked: true, confirm: false, why: `域名 ${h} 在拦截名单里` }
-  if (hit(p.confirm)) return { blocked: false, confirm: true, why: `域名 ${h} 属风险站点，首次访问需你确认` }
-  return { blocked: false, confirm: false, why: '' }
-}
-
-export function normalizePolicy(raw) {
-  const r = raw && typeof raw === 'object' ? raw : {}
-  const list = (v) => (Array.isArray(v) ? v.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean) : [])
-  const blocked = list(r.blocked)
-  const confirm = list(r.confirm)
-  return {
-    blocked,
-    confirm: confirm.length ? confirm : DEFAULT_POLICY.confirm.slice(),
-    approveDangerous: r.approveDangerous !== false,
-  }
-}
+/** 危险动作审批恒开（本轮需求：原来这份是可编辑的策略文件，名单机制删掉后只剩这一位，
+ *  留成常量是为了让「保留、默认开、不再可编辑」这句话在代码里有一个落点）。 */
+export const APPROVE_DANGEROUS = true
 
 /* ── CDP 客户端（极简：一页一连接，按 id 配平响应，事件按需订阅）───────────── */
 class Cdp {
@@ -222,14 +199,29 @@ const state = {
   viewBounds: null,          // docked 前的真实窗口位置（detached 时还原）
   /* 这一只浏览器是不是**无窗口（headless）**起的（见 launchArgs 的 headless 一节）：
      会话自动拉起一律无窗口 —— 屏幕上不弹真窗口、不占任务栏，画面只走右栏实况；
-     只有用户亲手点「打开浏览器」那一次才是带窗口的一只。
+     只有用户在求助卡上亲手点「用真窗口打开」那一次才是带窗口的一只（本轮需求：面板那排按钮已下架）。
      view.status 会把 headlessMode 回给渲染层，面板据此说明「这只没有窗口可摆」。 */
   headless: false,
   /* 真实窗口「是不是已经被搬出可视区」——与 viewMode 是两件事：
      viewMode 只是「想要的形态」（默认就是 docked），而新起的浏览器窗口就摆在屏幕上。
      不分开记：开流那一步会以为「已经是 docked 了，不必搬」，窗口就一直戳在用户眼前
      （用户报的「面板里有画面、屏幕上还多一只 Edge」就是这个）。 */
-  viewParked: false,
+
+  /* ── 本轮新增的记账（见文件头「本轮修」）─────────────────────────────────
+     attached      ：这只是「接管来的」而不是我们自己 spawn 的（stopBrowser 不碰它的进程树）
+     attachedPid   ：接管来那只的 pid（statusOf 回给界面）
+     stopping      ：正在主动关它 —— 出口处理器据此不把这一趟算成「异常退出」
+     lastAction    ：刚才在跑的是什么动作（异常退出留痕里带上，见 setLastAction）
+     lastExit      ：最近一次退出（码 / 信号 / 时间 / 存活时长 / 当时动作）
+     visibleRestart：这一轮是不是「无窗口那只没窗口可显形 → 温和关掉重开带窗口」的产物
+     stuckBrowser  ：停不掉的那只（继续认着它，绝不再 spawn 一只去撞 profile） */
+  attached: false,
+  attachedPid: 0,
+  stopping: false,
+  lastAction: null,
+  lastExit: null,
+  visibleRestart: false,
+  stuckBrowser: false,
 }
 
 export function profileDirOf(dshHome) {
@@ -271,7 +263,7 @@ export function drainLogs() {
        历史 bug：以前起的是带窗口的 Edge，靠 parkSessionWindow 把窗口搬到 -2400,-2400；
        该机器上离屏窗口不出帧时，1.5s 看门狗又会把窗口搬回屏幕（left:40,top:40）——
        用户看到的就是「开发过程中又开出一只 Edge」（而不是在中栏预览里看开发过程）。
-     · 只有**用户亲手点「打开浏览器」**那一次才带窗口（visible:true）：
+     · 只有**用户在求助卡上亲手点「用真窗口打开」**那一次才带窗口（visible:true，本轮需求）：
        真正看见一只 Edge 是用户自己的显式选择，那时右栏的「独立窗口」才有意义。 */
 function launchArgs(exe, profileDir, port, headless) {
   const args = [
@@ -334,14 +326,230 @@ async function pickFreePort() {
   return 9222
 }
 
+/* ── 复用 / 重起 的原语（本轮修：绝不「关掉又起来一只」）─────────────────────
+   文件头那三条实测就是这一节的由来。这里每一支只做一件事：
+     · browserAlive()      —— 本进程手里那只还活着吗（接管来的也算）
+     · findRunningBrowser  —— 探活复用：marker（我们自己的账）→ 按命令行精确扫
+     · attachRunning       —— 接管一只已经在跑的（不 spawn、不 kill）
+     · closeBrowserGracefully / waitProcExit / waitPortGone / cleanStaleProfileLocks
+                           —— 温和关 → 等真退出 → 超时才 kill → 确认没人听再清残留锁 */
+
+const MARKER_NAME = '.mtnode-browser.json'
+/* 温和关的预算：CDP Browser.close 最多等 4s；等进程真退出再给 5s；超时才 kill。 */
+const CLOSE_CDP_MS = 4000
+const CLOSE_GRACE_MS = 5000
+
+/** 本进程手里那只还活着吗（含「按账本 / 命令行接管来」的那只）。 */
+export function browserAlive() {
+  return !!(state.port && state.cdp && !state.cdp.closed)
+}
+
+function markerPathOf(profileDir) {
+  const d = String(profileDir || '').trim()
+  return d ? join(d, MARKER_NAME) : ''
+}
+
+/** 把我们这一只记在 profile 目录里：网关重启（真机见过 SDK 握手超时 exit 1）之后，新的
+ *  网关进程靠这份账认出「那只还在跑、还是我们的」，于是接管而不是再 spawn 一只去撞 profile。 */
+function writeMarker(profileDir, info) {
+  const p = markerPathOf(profileDir)
+  if (!p) return
+  try { writeFileSync(p, JSON.stringify({ v: 1, at: Date.now(), ...(info || {}) }), 'utf8') } catch { /* 写不进去只是少一层依据 */ }
+}
+
+function readMarker(profileDir) {
+  const p = markerPathOf(profileDir)
+  if (!p || !existsSync(p)) return null
+  try {
+    const o = JSON.parse(readFileSync(p, 'utf8'))
+    return o && typeof o === 'object' ? o : null
+  } catch { return null }
+}
+
+/** 抹账：只在「账上写的就是这一只」时抹（另一个应用实例后来写的新账不能被我清了）。 */
+function clearMarker(profileDir, pid) {
+  const p = markerPathOf(profileDir)
+  if (!p || !existsSync(p)) return
+  try {
+    const o = readMarker(profileDir)
+    if (pid && o && o.pid && Number(o.pid) !== Number(pid)) return
+    rmSync(p, { force: true })
+  } catch { /* 清不掉不影响行为 */ }
+}
+
+async function probeDebugPort(port, timeoutMs) {
+  const n = Number(port)
+  if (!n) return false
+  try {
+    const v = await fetchJson(`http://127.0.0.1:${n}/json/version`, Number(timeoutMs) > 0 ? Number(timeoutMs) : 900)
+    return !!(v && v.webSocketDebuggerUrl)
+  } catch { return false }
+}
+
+function pidAlive(pid) {
+  const n = Number(pid)
+  if (!n) return false
+  try { process.kill(n, 0); return true } catch (e) { return !!(e && e.code === 'EPERM') }
+}
+
+/** 按 --user-data-dir 精确找「还在跑的、我们自己 profile 的那只浏览器」。
+ *
+ *  为什么按命令行扫而不是扫端口：本机此刻就同时有别的调试浏览器在跑（实测 2026-10-03：
+ *  另有一只 %TEMP%\ds-edge-profile2 的孤儿 Edge 占着 9334/9335），扫端口会把它们当成我们
+ *  那只去导航 —— 只有**命令行里写着我们这个 profile** 才算数。
+ *  代价：win32 上一次 PowerShell 查询（≈200ms），只在「准备 spawn 之前」跑一次。 */
+async function findBrowserByProfileDir(profileDir) {
+  const prof = String(profileDir || '').trim()
+  if (!prof) return null
+  const norm = (s) => String(s).trim().toLowerCase().replace(/\//g, '\\')
+  const want = norm(prof)
+  const win = process.platform === 'win32'
+  const file = win ? 'powershell.exe' : 'ps'
+  const args = win
+    ? ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"]
+    : ['-eo', 'pid=,args=']
+  const text = await new Promise((resolve) => {
+    try {
+      execFile(file, args, { windowsHide: true, timeout: 5000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => resolve(err ? '' : String(stdout || '')))
+    } catch { resolve('') }
+  })
+  if (!text) return null
+  let rows = []
+  try {
+    const j = JSON.parse(text)
+    rows = (Array.isArray(j) ? j : [j]).map((r) => ({ pid: r && r.ProcessId, cmd: r && r.CommandLine }))
+  } catch {
+    rows = text.split('\n').map((l) => {
+      const m = l.trim().match(/^(\d+)\s+(.*)$/)
+      return m ? { pid: Number(m[1]), cmd: m[2] } : null
+    }).filter(Boolean)
+  }
+  for (const r of rows) {
+    const cmd = String(r.cmd || '')
+    if (!cmd) continue
+    if (/--type=/.test(cmd)) continue                     /* 子进程（renderer / gpu / utility）不算 */
+    const m = cmd.match(/--user-data-dir[= ]"?([^"]+)"?/i)
+    if (!m) continue
+    if (norm(m[1]) !== want) continue
+    const p = cmd.match(/--remote-debugging-port=(\d+)/i)
+    return { pid: Number(r.pid) || 0, port: p ? Number(p[1]) : 0, headless: /--headless/i.test(cmd), how: 'cmdline' }
+  }
+  return null
+}
+
+/** 探活复用：profile 里的账（marker）优先，其次按命令行精确扫。
+ *  返回 {port,pid,headless,how}；返回「有 pid 但没端口」= 有人拿着我们的 profile 却没开调试
+ *  端口（调用方据此报一句能照着做的错）；其余情况回 null（= 真没在跑）。 */
+async function findRunningBrowser(profileDir) {
+  const mk = readMarker(profileDir)
+  if (mk && Number(mk.port) > 0) {
+    /* pid 已不在、端口却还有人答话 = 那个端口被别人占了：绝不接管（可能是别的工具的调试浏览器） */
+    const pidOk = !mk.pid || pidAlive(mk.pid)
+    if (pidOk && (await probeDebugPort(mk.port, 1200))) {
+      return { port: Number(mk.port), pid: Number(mk.pid) || 0, headless: !!mk.headless, how: 'marker' }
+    }
+  }
+  const byCmd = await findBrowserByProfileDir(profileDir)
+  if (!byCmd) return null
+  if (!byCmd.port) return byCmd
+  if (await probeDebugPort(byCmd.port, 1200)) return byCmd
+  return null
+}
+
+/** 接管一只已经在跑的（不 spawn、不 kill）：连上它的页面 target 就算成功。 */
+async function attachRunning(port, info) {
+  const n = Number(port)
+  if (!n) return null
+  let ver = null
+  try { ver = await fetchJson(`http://127.0.0.1:${n}/json/version`, 4000) } catch { return null }
+  if (!ver || !ver.webSocketDebuggerUrl) return null
+  /* 端口必须先落进 state：下面 ensurePageTarget 靠 state.port 去打 /json/list 取页面调试地址 */
+  state.port = n
+  state.headless = !!(info && info.headless)
+  const page = await ensurePageTarget(ver.webSocketDebuggerUrl).catch(() => null)
+  if (!page || !page.wsUrl) return null
+  const cdp = await new Cdp(page.wsUrl).open()
+  state.cdp = cdp
+  state.targetId = page.targetId || ''
+  /* 接管来的那只不是我们的子进程：proc 留空（stopBrowser 不会去 kill 别人的进程树），
+     形态也归零到默认内部界面（「独立窗口」是用户本次运行里亲手点的例外）。 */
+  state.proc = null
+  state.attached = true
+  state.attachedPid = Number((info && info.pid) || 0)
+  state.viewMode = 'docked'
+  state.viewParked = !!state.headless
+  attachConsole(cdp)
+  return { port: n, targetId: state.targetId, headless: state.headless, pid: state.attachedPid }
+}
+
+async function waitProcExit(proc, timeoutMs) {
+  if (!proc || proc.exitCode !== null) return true
+  return await new Promise((resolve) => {
+    let done = false
+    const finish = (v) => { if (!done) { done = true; clearTimeout(to); resolve(v) } }
+    const to = setTimeout(() => finish(proc.exitCode !== null), Number(timeoutMs) > 0 ? Number(timeoutMs) : CLOSE_GRACE_MS)
+    try { proc.once('exit', () => finish(true)) } catch { finish(false) }
+  })
+}
+
+async function waitPortGone(port, timeoutMs) {
+  const end = Date.now() + (Number(timeoutMs) > 0 ? Number(timeoutMs) : 3000)
+  while (Date.now() < end) {
+    if (!(await probeDebugPort(port, 600))) return true
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  return !(await probeDebugPort(port, 600))
+}
+
+/** 温和关：先 CDP Browser.close（浏览器级端点）；内核不认它时退化为把页面逐条关掉
+ *  （headless 关掉最后一页即退出）。返回是否把指令发出去了（≠ 一定已经退出）。 */
+async function closeBrowserGracefully(port, timeoutMs) {
+  const n = Number(port)
+  if (!n) return false
+  try {
+    const ver = await fetchJson(`http://127.0.0.1:${n}/json/version`, 2500)
+    if (!ver || !ver.webSocketDebuggerUrl) return false
+    const bws = await new Cdp(ver.webSocketDebuggerUrl).open()
+    try {
+      try {
+        await bws.send('Browser.close', {}, Number(timeoutMs) > 0 ? Number(timeoutMs) : CLOSE_CDP_MS)
+        return true
+      } catch {
+        try {
+          const { targetInfos } = await bws.send('Target.getTargets', {}, 3000)
+          for (const t of (targetInfos || [])) {
+            if (t && t.type === 'page') { try { await bws.send('Target.closeTarget', { targetId: t.targetId }, 2000) } catch { /* 已关 */ } }
+          }
+          return true
+        } catch { return false }
+      }
+    } finally { bws.close() }
+  } catch { return false }
+}
+
+/** 清残留锁。**只允许在确认端口已经没人听之后调**（有活口时清锁等于把别人踹掉）。
+ *  实测：硬杀那只之后 lockfile 自己就没了 —— 卡住的从来不是锁，而是活着的那只占着 profile；
+ *  这一步只是兜底，真正的判据是「端口有没有人听」。 */
+function cleanStaleProfileLocks(profileDir) {
+  const d = String(profileDir || '').trim()
+  if (!d) return []
+  const cleared = []
+  for (const n of ['lockfile', 'SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    const p = join(d, n)
+    try { if (existsSync(p)) { rmSync(p, { force: true }); cleared.push(n) } } catch { /* 清不掉不算失败 */ }
+  }
+  return cleared
+}
+
 /** 确保浏览器在跑并拿到一条 CDP 页面连接。
  *
  *  窗口模式由 opts.visible 决定（缺省 = 无窗口，见 launchArgs 顶部那一节）：
  *   · 缺省 / visible:false → **无窗口**起（会话自动拉起的那条路）；
- *   · visible:true → 带窗口起（只有用户在面板上亲手点「打开浏览器」才走）。
- *  已经在跑的那只若不匹配请求的模式：无窗口的请求照旧复用（随后 parkSessionWindow
- *  会把带窗口那只移出可视区），带窗口的请求则**重起一只**——用户点「打开浏览器」
- *  就是想亲眼看见它，复用一只看不见的无窗口进程等于这个按钮点不动。 */
+ *   · visible:true → 带窗口起（只有求助卡上的「用真窗口打开」才走）。
+ *  本轮修：重起之前先探活复用 —— 本进程手里那只还活着就直接用；本进程手里没有、profile 里
+ *  那只还在跑（网关重启留下的孤儿 / 另一个应用实例在跑的那只）→ **接管**，绝不 spawn 第二只
+ *  （同 profile 的第二只实测会立刻退出、端口永远起不来，观感就是「关掉又起来一只」）。 */
 export async function ensureBrowser(opts) {
   const o = opts && typeof opts === 'object' ? opts : {}
   const exe = detectBrowser()
@@ -355,17 +563,57 @@ export async function ensureBrowser(opts) {
   state.profileDir = profileDir
   state.exe = exe
   const wantVisible = !!o.visible
+  state.visibleRestart = false
 
-  if (state.proc && !state.proc.killed && state.port && state.cdp && !state.cdp.closed) {
-    /* 要带窗口、在跑的却是无窗口那只 → 重起（用户亲手点的「打开浏览器」说了算） */
-    if (wantVisible && state.headless) await stopBrowser({ silent: true })
-    else return { exe, port: state.port, profileDir, reused: true, headless: !!state.headless }
+  /* ① 本进程手里那只还活着 → 复用。要带窗口而它偏偏是无窗口那只：**先试显形**（实测
+        headless 里没有窗口可显形），做不到才按口径温和关掉、重开一只带窗口的。 */
+  if (browserAlive()) {
+    if (wantVisible && state.headless) {
+      const s = await surfaceRealWindow()
+      if (s.ok) return { exe, port: state.port, profileDir, reused: true, surfaced: true, headless: !!state.headless }
+      note('browser', '这只没有真窗口可显形（' + String(s.reason || '') + '）：温和关掉重开一只带窗口的')
+      await stopBrowser({ silent: true, why: 'want-visible' })
+      if (browserAlive()) {
+        /* 停不掉的那只：继续认着它，绝不再 spawn 一只去撞 profile */
+        state.stuckBrowser = true
+        return { exe, port: state.port, profileDir, reused: true, headless: !!state.headless, stuck: true }
+      }
+      state.visibleRestart = true
+    } else {
+      return { exe, port: state.port, profileDir, reused: true, headless: !!state.headless, attached: !!state.attached }
+    }
   }
-  /* 上一次进程死了 / 没起过：清干净再起（崩溃恢复＝自动重启，不打扰模型） */
+
+  /* ② 本进程手里没有 → 先探活复用（profile 账本 marker → 按命令行精确扫）。 */
+  const found = await findRunningBrowser(profileDir)
+  if (found) {
+    if (!found.port) {
+      throw new Error(
+        '浏览器没能起来：这个用户数据目录正被另一只浏览器占用（' + profileDir + '，pid ' + (found.pid || '?') +
+        '），而它没有开调试端口。请先关掉它再重试（本模块绝不换 profile，以免丢掉登录态）。',
+      )
+    }
+    const at = await attachRunning(found.port, found)
+    if (at) {
+      note('browser', '已接管仍在运行的那只（' + (found.how === 'marker' ? 'profile 账本' : '进程命令行') + ' · 端口 ' + found.port + '）：没有关掉它、也没有另起一只')
+      try { console.error('[browser] reattach port=' + found.port + ' pid=' + (found.pid || 0) + ' headless=' + !!found.headless) } catch { /* stdout 已断 */ }
+      return { exe, port: found.port, profileDir, reused: true, attached: true, headless: !!found.headless }
+    }
+  }
+
+  /* ③ 真没在跑 → 干净重起。 */
   await stopBrowser({ silent: true })
+  if (browserAlive()) {
+    /* 停不掉（这只拒绝退出）：宁可继续用它，也绝不再 spawn 一只去撞 profile。 */
+    state.stuckBrowser = true
+    note('browser', '上一只没有在预算内退出：直接继续用它，不再另起一只')
+    return { exe, port: state.port, profileDir, reused: true, headless: !!state.headless, stuck: true }
+  }
+  state.stuckBrowser = false
 
   const headless = !wantVisible
   const port = await pickFreePort()
+  const startedAt = Date.now()
   const proc = spawn(exe, launchArgs(exe, profileDir, port, headless), {
     stdio: 'ignore',
     detached: false,
@@ -375,16 +623,76 @@ export async function ensureBrowser(opts) {
   state.proc = proc
   state.port = port
   state.headless = headless
+  state.attached = false
+  state.attachedPid = 0
+  state.stopping = false
   /* 新起的窗口（带窗口那只）一定在屏幕上（默认位置）：形态想要的还是 docked，
-     但「已经搬走」这件事必须从头算起 —— 否则开流时不会补搬（见 viewParked 注释）。
-     形态一并归零到 docked：「独立窗口」是用户上一次浏览器运行里的例外，
-     进程重启/换端口就是新的一只（调用方若要立刻停靠，紧接着走 parkSessionWindow）。 */
+     但「已经搬走」这件事必须从头算起 —— 否则开流时不会补搬（见 viewParked 注释）。 */
   state.viewParked = headless
   state.viewMode = 'docked'
-  proc.on('exit', () => { if (state.proc === proc) { state.proc = null; state.cdp = null; state.targetId = ''; state.driver = ''; state.viewParked = false; state.viewMode = 'docked'; state.headless = false } })
-  proc.on('error', () => { if (state.proc === proc) { state.proc = null; state.cdp = null; state.viewParked = false; state.viewMode = 'docked'; state.headless = false } })
+  writeMarker(profileDir, { port, pid: proc.pid, headless, exe })
 
-  const ver = await waitDebugPort(port, o.timeoutMs)
+  /* 出口处理器：留痕（活动流条目 + dsh.log 的 [browser] 行）并把状态清干净。
+     主动关（stopping）不算异常 —— 那是用户 / 网关自己要关的。 */
+  const handleGone = (kind, code, signal) => {
+    if (state.proc !== proc) return
+    const at = Date.now()
+    const upMs = at - startedAt
+    const la = state.lastAction || {}
+    const unexpected = !state.stopping
+    state.lastExit = {
+      kind,
+      code: code == null ? null : Number(code),
+      signal: signal || '',
+      at,
+      pid: proc.pid || 0,
+      uptimeMs: upMs,
+      lastAction: la.op || '',
+      lastActionAt: la.at || 0,
+    }
+    if (unexpected) {
+      const why = '浏览器异常退出（' + (kind === 'error' ? 'error=' + String(signal || '') : 'code=' + String(code)) +
+        ' · 存活 ' + Math.round(upMs / 1000) + 's · 上一次动作 ' + (la.op || '—') +
+        (la.at ? '（' + Math.round((at - la.at) / 1000) + 's 前）' : '') + '）'
+      note('browser', why + '：下次用到浏览器时会自动重起（用户口径：不设重起上限）')
+      try { console.error('[browser] ' + why + ' pid=' + (proc.pid || 0) + ' port=' + port) } catch { /* stdout 已断 */ }
+    }
+    clearMarker(profileDir, proc.pid)
+    state.proc = null
+    state.cdp = null
+    state.targetId = ''
+    state.driver = ''
+    state.viewParked = false
+    state.viewMode = 'docked'
+    state.headless = false
+    state.attached = false
+    state.attachedPid = 0
+  }
+  proc.on('exit', (code, signal) => handleGone('exit', code, signal))
+  proc.on('error', (err) => handleGone('error', null, (err && err.message) || String(err)))
+
+  let ver = null
+  try {
+    ver = await waitDebugPort(port, o.timeoutMs)
+  } catch (err) {
+    /* 起不来最常见的原因（实测）：同一个 --user-data-dir 已被另一只占着 —— 新 spawn 的这只会
+       把命令行转交给旧那只后**立刻退出**，调试端口永远起不来。先再探一次活：能接管就接管
+       （这才是「不关掉又起来一只」的正解）；接管不了就报一句能照着做的错。 */
+    const again = await findRunningBrowser(profileDir)
+    if (again && again.port && again.port !== port) {
+      const at = await attachRunning(again.port, again)
+      if (at) {
+        note('browser', '新起的那只把命令行交给了已在运行的那只（实测行为）：改为接管端口 ' + again.port + '，没有另起一只')
+        return { exe, port: again.port, profileDir, reused: true, attached: true, headless: !!again.headless, spawnFailed: true }
+      }
+    }
+    const holder = again && again.pid ? '（pid ' + again.pid + '）' : ''
+    throw new Error(
+      '浏览器没能起来：' + String((err && err.message) || err) +
+      '；这个用户数据目录可能仍被另一只 Edge / Chrome 占着' + holder + '：' + profileDir +
+      '。请先关掉占用它的那只浏览器再重试（本模块绝不换 profile，以免丢掉登录态）。',
+    )
+  }
   const page = await ensurePageTarget(ver.webSocketDebuggerUrl).catch(() => null)
   if (!page || !page.wsUrl) throw new Error('浏览器起来了，但没有可用页面（可用标签页为空）')
   const cdp = await new Cdp(page.wsUrl).open()
@@ -392,9 +700,8 @@ export async function ensureBrowser(opts) {
   state.targetId = page.targetId || ''
   attachConsole(cdp)
   note('browser', '浏览器已启动（' + (exe.includes('msedge') ? 'Edge' : exe.includes('chrome') ? 'Chrome' : exe) + (headless ? ' · 无窗口' : ' · 带窗口') + '）')
-  return { exe, port, profileDir, reused: false, headless }
+  return { exe, port, profileDir, reused: false, headless, restartedForVisible: !!state.visibleRestart }
 }
-
 /** 找一条普通页面 target 并连上它（没有就开一条）。 */
 async function ensurePageTarget(browserWsUrl) {
   const bws = await new Cdp(browserWsUrl).open()
@@ -421,7 +728,7 @@ async function ensurePageTarget(browserWsUrl) {
 
 /** 换一条页面 target（新开标签页 / 切标签）：把 CDP 连接挪过去。 */
 export async function useTarget(targetId) {
-  if (!state.proc || !state.port) throw new Error('浏览器还没启动')
+  if (!browserAlive()) throw new Error('浏览器还没启动')
   const list = await fetchJson(`http://127.0.0.1:${state.port}/json/list`, 4000)
   const hit = (Array.isArray(list) ? list : []).find((t) => t && t.id === targetId)
   if (!hit || !hit.webSocketDebuggerUrl) throw new Error('找不到该标签页：' + String(targetId || ''))
@@ -475,8 +782,7 @@ function attachConsole(cdp) {
    历史上登录求助卡也在这里抬窗口，本轮已撤（那是「又开出一个窗口」的第二条来源，
    接管 / 登录都在右栏实况里做）。 */
 export async function bringToFront() {
-  const proc = state.proc
-  if (!proc || !state.port) return { ok: false, reason: '浏览器还没启动' }
+  if (!browserAlive()) return { ok: false, reason: '浏览器还没启动' }
   try {
     /* 浏览器级端点要先问 /json/version（端口上的 ws 路径带 uuid，不能自己拼） */
     const ver = await fetchJson(`http://127.0.0.1:${state.port}/json/version`, 4000)
@@ -518,9 +824,17 @@ export async function bringToFront() {
 /** 帧输出钩子（网关注册）。帧是内存对象 {seq,w,h,dpr,frame}，不经活动流、不落库。 */
 export function registerViewSink(fn) { state.view.sink = typeof fn === 'function' ? fn : null }
 
-const VIEW_JPEG_QUALITY = 72
-const VIEW_MAX_WIDTH = 1280
-const VIEW_MAX_HEIGHT = 800
+/* 实况帧的编码档（本轮需求：清晰度）
+   · 质量 72 → 90：帧是从页面尺寸缩到面板尺寸画的（无窗口那只视口 750×485，面板实况区
+     约 324×230 CSS 像素），72 的压缩块与彩色边纹在这种缩放里最显眼；本机实测单帧
+     9KB → 13KB（约 +44%），CPU 变化不大。
+   · 上限 1280×800 → 2560×1600：上限只是「别超过」，实测 startScreencast 的输出分辨率
+     跟着页面 CSS 尺寸走（Emulation 开 2× 时帧仍是 750×485，md5 一字不差），所以这档只对
+     「真窗口被拉大 / 大视口页面」有意义 —— 那时不再被压到 1280，保住原生像素。
+     渲染层对应的另一半是 canvas 改用高质量降采样（app-browser.js 的 liveDraw）。 */
+const VIEW_JPEG_QUALITY = 90
+const VIEW_MAX_WIDTH = 2560
+const VIEW_MAX_HEIGHT = 1600
 /* 最小帧间隔（≈12fps 上限）：比这更密的帧直接丢（仍 ack），末帧必达 */
 const VIEW_MIN_INTERVAL_MS = 80
 
@@ -582,7 +896,7 @@ export async function readRealWindowBounds() {
  *  · 用户亲手点过「独立窗口」的这一轮不会被它顶掉：调用方（网关）只在「不是 detached」
  *    时才把它当默认形态，见 BrowserCtl.viewStart / handle 的 launch 分支。 */
 export async function parkSessionWindow() {
-  if (!state.proc || !state.port) return { ok: false, reason: '浏览器还没启动' }
+  if (!browserAlive()) return { ok: false, reason: '浏览器还没启动' }
   /* 无窗口那只（会话自动拉起的默认）：没有真窗口可搬，直接算「已经让位」——
      绝不能在这里读窗口位姿（headless 下 Browser.getWindowForTarget 拿不到 windowId），
      否则会把 fallback 标上、面板上白写一句「真实窗口可能仍在屏幕上」。 */
@@ -614,16 +928,16 @@ export async function parkSessionWindow() {
   }
 }
 
-/** 把真实窗口恢复成一只**今天能用的**独立窗口（面板上那句「点一下去独立窗口」的义）。
+/** 把真实窗口恢复成一只**今天能用的**独立窗口（求助卡那句「用真窗口打开」的义）。
  *  与 setViewMode('detached') 分开的原因：这里可以不落 viewMode（由调用方决定），
  *  并且**必须**兜住「窗口在 -2400,-2400 看不见」这件事 —— 位姿没还原成功就不算成功，
  *  调用方据此把面板文案落到实处（「窗口没恢复成功，请再点一次或改用右栏」）。 */
 export async function detachWindow(bounds) {
-  if (!state.proc || !state.port) return { ok: false, reason: '浏览器还没启动' }
+  if (!browserAlive()) return { ok: false, reason: '浏览器还没启动' }
   /* 无窗口那只没有真窗口可摆：要说清楚怎么拿到一只看得见的（用户口径：只有他亲手
-     点「打开浏览器」那一次才是带窗口的），绝不留一个点了没反应的按钮。 */
+     点「用真窗口打开」那一次才是带窗口的），绝不留一个点了没反应的按钮。 */
   if (state.headless) {
-    const reason = '这只是无窗口（后台）浏览器，没有可显示的窗口；想看真窗口请在面板上点「打开浏览器」。'
+    const reason = '这只是无窗口（后台）浏览器，没有可显示的窗口；想要真窗口请在会话里让它求助（登录 / 验证码卡上点「用真窗口打开」）。'
     state.viewMode = 'docked'
     state.viewParked = true
     state.view.reason = reason
@@ -644,7 +958,7 @@ export async function detachWindow(bounds) {
   const ok = !!okWin && !hidden
   state.viewParked = hidden
   if (!ok) {
-    state.view.reason = '真实窗口没能恢复到可见位置；可以再点一次「独立窗口」，或留在右栏实况里操作。'
+    state.view.reason = '真实窗口没能恢复到可见位置；可以从求助卡再点一次「用真窗口打开」，或留在右栏实况里操作。'
     emitView({ event: 'mode' })
   }
   return {
@@ -653,6 +967,39 @@ export async function detachWindow(bounds) {
     reason: ok ? '' : state.view.reason,
     bounds: after || null,
   }
+}
+
+
+/** 「先把无窗口那只的窗口显出来」的那一次尝试（用户口径：不行才重起）。
+ *
+ *  实测（2026-10-03 · Edge 154）：--headless=new 下 Browser.getWindowForTarget 直接回
+ *  「Browser window not found」，进程 MainWindowHandle=0 —— 没有窗口可显形，所以这里
+ *  如实回 ok:false（绝不假装成功）；调用方据此温和关掉、重开一只带窗口的。
+ *  已经有真窗口的那只（带窗口起的）：摆回可见位置就是「显形」。 */
+export async function surfaceRealWindow() {
+  if (!browserAlive()) return { ok: false, reason: '浏览器还没启动', headless: !!state.headless }
+  if (!state.headless) {
+    const r = await detachWindow()
+    return { ok: !!r.ok, reason: r.reason || '', bounds: r.bounds || null, headless: false }
+  }
+  const probe = await withBrowserCdp(async (bws) => {
+    try {
+      const g = await bws.send('Browser.getWindowForTarget', { targetId: state.targetId }, 4000)
+      return { windowId: (g && g.windowId) || 0 }
+    } catch (e) { return { err: String((e && e.message) || e) } }
+  })
+  return {
+    ok: false,
+    headless: true,
+    reason: '这只是无窗口（--headless=new）起的：CDP 里没有窗口可显形' +
+      (probe && probe.err ? '（' + probe.err + '）' : '') + '，按口径回落到温和关掉、重开一只带窗口的',
+  }
+}
+
+/** 记下「刚才在跑的是什么动作」（异常退出留痕里带上；网关每次转发 op 前调一次）。 */
+export function setLastAction(op, extra) {
+  state.lastAction = { op: String(op || ''), at: Date.now(), ...(extra && typeof extra === 'object' ? extra : {}) }
+  return state.lastAction
 }
 
 /** 状态里给渲染层的那一份（帧本体不在这里，也不落库）。 */
@@ -671,9 +1018,12 @@ export function viewStatus() {
     /* docked 形态下真实窗口是否**已经**让位（与 mode 区分：mode 只是想要的形态） */
     parked: !!state.viewParked,
     /* 这一只起的是无窗口（headless）浏览器：没有真窗口可摆，渲染层据此说明「独立窗口」不可用 */
+
     headless: !!state.headless,
+    /* 这一只是「接管来的」那只（网关重启后复用，不是这一轮 spawn 的） */
+    attached: !!state.attached,
     lastFrameAt: v.lastFrameAt,
-    running: !!(state.proc && !state.proc.killed && state.cdp && !state.cdp.closed),
+    running: browserAlive(),
   }
 }
 
@@ -695,7 +1045,7 @@ function isAtParkingSpot(b) {
  *  留成当前形态（否则他点什么都没反应，只能停浏览器）。 */
 export async function setViewMode(mode) {
   const want = String(mode || '').toLowerCase() === 'detached' ? 'detached' : 'docked'
-  if (!state.proc || !state.port) {
+  if (!browserAlive()) {
     /* 浏览器都没起：形态一律归零到默认（内部界面），别把「独立的窗口」这个想要的形态留在
        状态里 —— 下一次进程起起来时 viewMode 又要是 docked（见 ensureBrowser 的归零）。 */
     state.viewMode = 'docked'
@@ -905,27 +1255,73 @@ export async function viewInput(params) {
   throw new Error('未知的实况输入类型：' + kind)
 }
 
+/** 停掉这只浏览器（本轮修：**先温和关、等真退出**，不再 kill 完就走）。
+ *
+ *  顺序（每一步都有实测依据，见文件头）：
+ *   ① 温和关：CDP Browser.close（接管来的那只也能这么关 —— 我们没它的进程句柄）；
+ *   ② 等真退出：进程 exit 事件 + 「调试端口不再答话」两条一起看；
+ *   ③ 超时还没走 → kill（**只杀我们自己 spawn 的那只**：接管来的不是我们的子进程，不碰它）；
+ *   ④ 确认端口没人听了才清残留锁（有活口时清锁等于把别人踹掉）；
+ *   ⑤ 真的没走成的那只：**继续认着它**（句柄与账本都留着），绝不换 profile、也绝不再 spawn
+ *      一只去撞 profile —— 下一次用到时会先探活接管它。 */
 export async function stopBrowser(opts) {
   const o = opts && typeof opts === 'object' ? opts : {}
-  /* 浏览器都没了，实况流自然也没了：帧订阅与看门狗一并收掉 */
+  /* 浏览器都要走了，实况流自然也没了：帧订阅与看门狗一并收掉 */
   const v = state.view
   if (v.watch) { try { clearTimeout(v.watch) } catch {} v.watch = null }
   if (v.off) { try { v.off() } catch {} v.off = null }
   v.on = false
-  try { if (state.cdp) state.cdp.close() } catch { /* 已断 */ }
-  state.cdp = null
-  state.targetId = ''
-  state.driver = ''
-  state.viewParked = false
-  /* 停掉 = 形态回到默认内部界面（「独立窗口」只是那次浏览器运行里的例外） */
-  state.viewMode = 'docked'
   const proc = state.proc
-  state.proc = null
-  if (proc && !proc.killed) {
-    try { proc.kill() } catch { /* 已退出 */ }
+  const port = state.port
+  const profileDir = state.profileDir
+  const pid = (proc && proc.pid) || state.attachedPid || 0
+  /* 主动关：出口处理器据此不把这一趟算成「异常退出」 */
+  state.stopping = true
+  let portDead = true
+  try {
+    if (port) { try { await closeBrowserGracefully(port, CLOSE_CDP_MS) } catch { /* 连不上就是已经没了 */ } }
+    let exited = await waitProcExit(proc, CLOSE_GRACE_MS)
+    if (port) portDead = await waitPortGone(port, exited ? 2000 : CLOSE_GRACE_MS)
+    if (!portDead && proc && !proc.killed && proc.exitCode === null) {
+      try { proc.kill() } catch { /* 已退出 */ }
+      await waitProcExit(proc, 3000)
+      portDead = await waitPortGone(port, 2500)
+    }
+    if (portDead && profileDir) {
+      const cleared = cleanStaleProfileLocks(profileDir)
+      if (cleared.length) note('browser', '清掉残留锁：' + cleared.join(' / '))
+    }
+    if (!portDead) {
+      note('browser', '浏览器没有在预算内退出（端口 ' + port + ' 仍有人听）：不硬杀、也不换 profile，下一次用到时会先探活接管它')
+    }
+  } finally {
+    try { if (state.cdp) state.cdp.close() } catch { /* 已断 */ }
+    state.cdp = null
+    state.targetId = ''
+    state.driver = ''
+    state.viewParked = false
+    /* 停掉 = 形态回到默认内部界面（「独立窗口」只是那次浏览器运行里的例外） */
+    state.viewMode = 'docked'
+    state.stopping = false
+    if (portDead) {
+      state.proc = null
+      state.attached = false
+      state.attachedPid = 0
+      state.headless = false
+      state.port = 0
+      state.stuckBrowser = false
+      clearMarker(profileDir, pid)
+    } else {
+      /* 没走成：继续认着它（attached 语义 = 不是我们 spawn 的，别去动它的进程树） */
+      state.attached = true
+      state.attachedPid = pid
+      state.stuckBrowser = true
+      state.port = port
+    }
   }
+  if (!portDead) return { ok: false, stuck: true, port, pid, profileDir }
   if (!o.silent) note('browser', '浏览器已关闭')
-  return { ok: true }
+  return { ok: true, port, pid, closed: true }
 }
 
 /* ── 页面读取 ────────────────────────────────────────────────────────────── */
@@ -1277,13 +1673,18 @@ export async function setDownloadDir(dir) {
 /** 浏览器当前状态（活动流面板 / 手动打开 / 排障共用）。 */
 export function statusOf() {
   return {
-    running: !!(state.proc && !state.proc.killed && state.cdp && !state.cdp.closed),
+    running: browserAlive(),
     exe: state.exe,
     port: state.port,
     profileDir: state.profileDir,
     targetId: state.targetId,
     driver: state.driver,
-    pid: state.proc && !state.proc.killed ? state.proc.pid : 0,
+
+    pid: (state.proc && !state.proc.killed ? state.proc.pid : 0) || state.attachedPid || 0,
+    /* 这只是「接管来的」还是我们自己 spawn 的（排障用：接管的不会去 kill 别人的进程树） */
+    attached: !!state.attached,
+    /* 最近一次退出（码 / 信号 / 时间 / 当时动作）：排障时一眼看到「上一次是怎么没的」 */
+    lastExit: state.lastExit || null,
     /* 形态也带在只读快照里（渲染层每次 status 都能把面板对齐到网关的真形态：
        默认内部界面 docked；「独立窗口」detached 是用户本次运行里亲手点的例外）。
        parked = docked 下真实窗口**是否已经**让位（判据是「真搬走了没有」，见 viewStatus）。 */

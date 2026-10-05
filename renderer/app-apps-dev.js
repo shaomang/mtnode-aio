@@ -11,7 +11,9 @@
  *     （appsDevSidebarHost）：宿主在时它按宿主给的**应用分组**渲染（应用行 + 该应用里
  *     未归档的会话行；应用数据 = appsLocalList() 里 dev:true 的那些，会话 = app-app-flow.js
  *     的 appSessionsOf），写进 #appsDevSideList；宿主不在时它逐字走原来的总会话视图。
- *     点应用行 = 选中它（appsDevSelectApp：中栏预览与右栏会话一起换），点箭头 = 展开收起。
+ *     点应用行 = 选中它（appsDevSelectApp：**原地换**——三栏 DOM 不重建、预览复用同一只
+ *     iframe 只换 src、右栏落到该应用最近一条会话；只有「页面还没画好 / 新应用还没进名单」
+ *     才退回整页绘制），点箭头 = 展开收起。
  *   · 右栏正文 + 底部输入框 = 会话视图自己的 DOM（#agentList / #agentQueue / #agentPlan /
  *     #agentTodo / #agentPaused / .agent-composer）**原样搬过来**，关页 / 重绘时按原顺序还回
  *     .agent-body。#agentList 常被 ensureHistRail() 包在 .hist-scroll-wrap 里（轮次轨的壳），
@@ -36,6 +38,10 @@
  * 预览刷新：每轮开发结束后比对应用目录的内容快照（apps:devPreview 的 files / bytes / mtimeMs），
  *   有变才重载 iframe；重载前把预览页的滚动与表单值存下来、加载后写回（协议注入的状态小助手，
  *   见主进程 apps-store.js 的 PREVIEW_AGENT），界面上的「维持状态」开关关掉就不存不写。
+ *   切应用（换 iframe 上下文）那一下也在预览区中央露一行「正在加载…」，新页 load 后收起；
+ *   同一个应用的日常重载不出提示（用户已经看着旧页面刷）。
+ *   跨应用还多记一份状态（DEVD.stateByApp：appId → 滚动 / 表单值，**只在内存**）：
+ *   切走前向旧页要一次、切回来写回，所以 A→B→A 能回到 A 上次看的位置（仍受「维持状态」开关管）。
  *
  * 依赖全部在调用期按 typeof 取（APPS_ST / appSessionsOf / createDevSessionForNode / persistWf…），
  * 加载顺序只需在 app-apps.js 之后（index.html 生态层）。
@@ -44,14 +50,23 @@
 /* 中栏实时刷新的防抖门槛（毫秒）：快照比对仍是 1.2s 一拍（appsDevStartTimer），
    但「变了」之后要等改动停下来这么久才真重载 —— 见 appsDevCheckPreview 的注释。 */
 const LIVE_SETTLE_MS = 400;
+/* 「正在加载…」的兜底时限（毫秒）：切应用时露出的那行提示，新页 load 后即时收起；
+   页面卡住 / 拿不到目录时靠它收，别让这行字永远挂着（旧黑幕的兜底是 2.5s）。 */
+const APPS_DEV_LOADING_FALLBACK_MS = 4000;
 
 const DEVD = {
   appId: "", /* 当前开发的应用 id */
   listEl: null, /* 左栏应用 / 会话列表容器（renderAgentSessionSidebar 的宿主） */
   expanded: null, /* 左栏应用行的展开态（会话级记忆：{ appId: boolean }；没记过 = 当前应用展开） */
-  lastApp: "", /* 最近一次画过预览的应用 id（只为「切应用盖黑幕」记账，见 appsDevCurtain） */
-  curtainEl: null, /* 预览黑幕（只在切应用时出现） */
-  curtainTimer: 0, /* 黑幕超时兜底（加载事件没来也得撤幕） */
+  /* 跨应用的预览状态记忆（滚动位置 + 表单值，来自预览页里的状态小助手）：
+     appId → 该应用上一次离开预览时的状态。**只在内存里**（重启 MTNode 不恢复），
+     且跟随「维持状态」开关 —— 关掉就不存不写（与同应用内重载那条口径一致）。 */
+  stateByApp: new Map(),
+  /* 当前 iframe 里装的是哪个应用的页面：切走时只在「它装的确实是要切走的那个应用」时才
+     向它要状态（连着切两次 A→B→C 时，第二次切走的那一帧还是 A 的页面，不该记到 B 名下）。 */
+  frameApp: "",
+  loadingEl: null, /* 预览区中央的「正在加载…」（只在切应用时出现） */
+  loadingTimer: 0, /* 它的超时兜底（load 事件没来也得收起） */
   convEl: null, /* 右栏（搬运来的会话正文落这里） */
   composerEl: null, /* 底部输入框行 */
   frame: null, /* 预览 iframe */
@@ -407,14 +422,15 @@ function appsDevPageUnmount() {
   DEVD.warnEl = null;
   DEVD.grillEl = null;
   DEVD.pendingState = null;
-  /* 黑幕随容器一起被丢弃，引用必须清干净（否则下一次切应用会去操作一个已摘掉的节点） */
-  if (DEVD.curtainTimer) {
+  /* 加载提示随容器一起被丢弃，引用必须清干净（否则下一次切应用会去操作一个已摘掉的节点） */
+  if (DEVD.loadingTimer) {
     try {
-      clearTimeout(DEVD.curtainTimer);
+      clearTimeout(DEVD.loadingTimer);
     } catch (_) {}
   }
-  DEVD.curtainTimer = 0;
-  DEVD.curtainEl = null;
+  DEVD.loadingTimer = 0;
+  DEVD.loadingEl = null;
+  DEVD.frameApp = "";
   DEVD.seq++;
 }
 
@@ -577,45 +593,54 @@ function appsDevDraftPending() {
   return !!String(appsDevDraftLoad(DEVD.appId) || "").trim();
 }
 
-/* ── 预览黑幕：只在「切应用」时盖一层黑，新页加载完成前不闪白 ── */
+/* ── 预览加载提示：只在「切应用」时出现 ──
 
-/* 这次绘制要不要盖黑幕：最近一次画过预览的应用（DEVD.lastApp）跟这次选中的不一样 = 在切应用。
-   首次进开发页 lastApp 还是空 → 不盖；同一个应用重绘（刷新预览 / 会话变化）→ 不盖。 */
-function appsDevCurtainShouldShow(cur) {
-  return !!cur && !!DEVD.lastApp && DEVD.lastApp !== cur;
-}
-
-/* 盖幕。只在换应用时调（首次进开发页不盖）：预览 iframe 重建 + 白底那一下会被这层
-   不透明黑盖住，加载完淡出。 */
-function appsDevCurtainShow() {
+   旧实现是整块黑幕（.apps-dev-curtain）：切应用时把中栏整块盖黑，新页 load 后淡出。
+   用户口径（本轮）：不要那块黑 —— 换成预览区中央一行小字「正在加载…」，只在
+   换应用（= 换 iframe 上下文）那一下露出，新页加载完就收起，另有超时兜底。
+   同应用内的重载（开发改动跟手刷新 / 「刷新预览」）不出提示：那里用户已经看着旧页面刷。 */
+function appsDevLoadingShow() {
   const wrap = DEVD.frameWrap;
   if (!wrap) return;
-  appsDevCurtainDrop();
+  appsDevLoadingHide();
   const el = document.createElement("div");
-  el.className = "apps-dev-curtain";
+  el.className = "apps-dev-loading";
+  el.textContent = appsDevT("正在加载…");
   el.setAttribute("aria-hidden", "true");
   wrap.appendChild(el);
-  DEVD.curtainEl = el;
-  /* 兜底：load 事件没来（拿不到目录 / 页面卡住）也得撤幕，否则预览永远是黑的 */
-  DEVD.curtainTimer = setTimeout(() => appsDevCurtainDrop(), 2500);
+  DEVD.loadingEl = el;
+  /* 兜底：load 事件没来（拿不到目录 / 页面卡住）也得收起，否则这行字永远挂着 */
+  DEVD.loadingTimer = setTimeout(() => appsDevLoadingHide(), APPS_DEV_LOADING_FALLBACK_MS);
 }
-/* 撤幕（淡出后摘掉）。幂等：没幕时什么都不做。 */
-function appsDevCurtainDrop() {
-  if (DEVD.curtainTimer) {
+/* 收起（幂等：没露着时什么都不做） */
+function appsDevLoadingHide() {
+  if (DEVD.loadingTimer) {
     try {
-      clearTimeout(DEVD.curtainTimer);
+      clearTimeout(DEVD.loadingTimer);
     } catch (_) {}
-    DEVD.curtainTimer = 0;
+    DEVD.loadingTimer = 0;
   }
-  const el = DEVD.curtainEl;
-  DEVD.curtainEl = null;
+  const el = DEVD.loadingEl;
+  DEVD.loadingEl = null;
   if (!el) return;
-  el.classList.add("hide");
-  setTimeout(() => {
-    try {
-      el.remove();
-    } catch (_) {}
-  }, 300);
+  try {
+    el.remove();
+  } catch (_) {}
+}
+
+/* ── 跨应用的预览状态（滚动位置 + 表单值） ──
+
+   切到 B 再切回 A 时，A 的预览页回到上次离开时的位置。存的是状态小助手
+   （主进程 apps-store.js 的 PREVIEW_AGENT）给的那份：滚动位置 + 表单值。
+   跟随「维持状态」开关：关掉就不存不写（与同应用内重载同一口径）。 */
+function appsDevStateOf(appId) {
+  const id = String(appId || "");
+  return id && DEVD.keepState ? DEVD.stateByApp.get(id) || null : null;
+}
+function appsDevStateSave(appId, state) {
+  const id = String(appId || "");
+  if (!id || !DEVD.keepState || !state) return;
+  DEVD.stateByApp.set(id, state);
 }
 
 /* ── 预览（iframe + 内容快照 + 维持状态） ── */
@@ -823,11 +848,14 @@ async function appsDevCheckPreviewInner(force) {
     return;
   }
   const prev = DEVD.snap;
+  /* 没有基线（还没有 snap：刚进开发页 / 刚切过应用）不算「有改动」—— 这一拍只把快照收下，
+     绝不因此触发一次重载。旧写法把「没基线」当 changed，于是进页面 / 切应用之后
+     1.2s 那一拍会白白多刷一版预览（用户看到的就是切应用时多闪一下）。 */
   const changed =
-    !prev ||
-    prev.files !== r.files ||
-    prev.bytes !== r.bytes ||
-    prev.mtimeMs !== r.mtimeMs;
+    !!prev &&
+    (prev.files !== r.files ||
+      prev.bytes !== r.bytes ||
+      prev.mtimeMs !== r.mtimeMs);
   DEVD.snap = {
     files: r.files,
     bytes: r.bytes,
@@ -1265,12 +1293,12 @@ async function appsDevStartDevSession(text) {
 }
 /* 「新开发会话」：回到首轮态 —— 下一次输入就在本应用下新建一条绑定会话。
    两个入口都走这一处：左栏应用行右端的「＋」（本轮需求，每行一个）与工具栏那颗「＋」。
-   给了 appId 且不是当前应用 → 先按正常的换应用路径切过去（整页重绘，中栏预览与右栏一起换），
+   给了 appId 且不是当前应用 → 先按正常的换应用路径切过去（原地换：预览与右栏一起换），
    否则会出现「左栏指着 A、右栏却在 A 下建会话」的分家状态。 */
 function appsDevNewRound(appId) {
   const id = String(appId || "").trim();
   if (id && id !== String(DEVD.appId || "") && typeof appsDevSelectApp === "function") {
-    appsDevSelectApp(id); /* 换应用：draft=true / 清 sessionId，随后整页重绘 */
+    appsDevSelectApp(id); /* 换应用：draft=true / 清 sessionId，随后原地切换（预览与右栏） */
     return;
   }
   DEVD.draft = true;
@@ -1580,10 +1608,6 @@ function appsDevPagePaint(body, seq) {
     DEVD.appId = cur;
     appsDevLastAppSave(cur);
   }
-  /* 黑幕只在「换应用」时盖：最近一次画过预览的应用（DEVD.lastApp）跟这次选中的不一样
-     = 用户在切应用（首次进开发页 lastApp 还是空 → 不盖）。 */
-  const curtainOn = appsDevCurtainShouldShow(cur);
-  DEVD.lastApp = cur;
   DEVD.seq++;
   const mySeq = DEVD.seq;
 
@@ -1654,6 +1678,20 @@ function appsDevPagePaint(body, seq) {
         }),
       ),
     );
+  }
+  /* 「上架前体检」：只读查「这个应用打成包会丢哪些文件」+「入口页引用了但目录里没有的文件」。
+     pri=2.6 = 紧挨「上架」（上架前的最后一道自查），一行放不下就收进「更多 ▾」。
+     病根就出在这件事上：旧的打包实现只打 app.json + 入口页 + assets/**，根目录多文件的应用
+     上架后下载者拿到的是空壳（见 apps-store.js 的 packAudit）。 */
+  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
+    const auditBtn = appsMiniBtn(appsDevT("上架前体检"), () => {
+      if (typeof window.appsPackAuditDialog === "function") window.appsPackAuditDialog(DEVD.appId);
+      else appsDevToast(appsDevT("体检模块未就绪（renderer/app-apps.js 未加载）"), "err");
+    });
+    auditBtn.title = appsDevT(
+      "检查这个应用打成包会丢哪些文件（只读：不打包、不上传、不写盘）",
+    );
+    head.appendChild(addSlot(2.6, auditBtn));
   }
   head.appendChild(
     addSlot(
@@ -1728,6 +1766,24 @@ function appsDevPagePaint(body, seq) {
             );
         }),
         "换风格",
+      ),
+    );
+  }
+  /* 「应用能力…」：改这个应用的能力位（文字输入 / 图像生成）—— 入口页会按新能力重生成，
+     所以对话框里先弹一次确认（见 renderer/app-app-flow.js 的 appCapabilitiesDialog）。 */
+  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
+    head.appendChild(
+      addSlot(
+        9.5,
+        appsMiniBtn(appsDevT("应用能力…"), () => {
+          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId) : null;
+          if (typeof appCapabilitiesDialog === "function")
+            appCapabilitiesDialog(
+              DEVD.appId,
+              String((app && app.name) || DEVD.appId || ""),
+            );
+        }),
+        "应用能力",
       ),
     );
   }
@@ -1870,7 +1926,7 @@ function appsDevPagePaint(body, seq) {
       const sid = row && row.dataset ? row.dataset.sid : "";
       if (!sid) return;
       /* 点的是**别的应用**下的会话（左栏现在把所有开发中应用的会话都折叠在自己的应用行下）：
-         先切到那个应用（整页重绘，预览与右栏一起换），再把这条会话拨回来显示 ——
+         先切到那个应用（原地换：预览与右栏一起换），再把这条会话拨回来显示 ——
          否则中栏预览还停在上一个应用，右栏却已经是另一条会话的内容。 */
       const st0 =
         typeof agentSessionById === "function" ? agentSessionById(sid) : null;
@@ -1930,11 +1986,15 @@ function appsDevPagePaint(body, seq) {
   /* 首帧就挂上兜底 url（appId + 默认入口 index.html）：中栏不再等异步 info 才有 src，
      拿不到目录 / 入口页时也不会只剩 about:blank —— 协议层按目录兜底发默认入口页。 */
   DEVD.url = appsDevUrlOf(cur);
+  /* 这个应用上次离开预览时的状态（滚动 / 表单值）：挂在第一帧的 src 之前，
+     load 监听会把它写回去。整页重绘也走这一处，所以从别处回到开发页同样能接上。 */
+  DEVD.pendingState = appsDevStateOf(cur);
   if (DEVD.url) frame.setAttribute("src", DEVD.url);
+  DEVD.frameApp = cur;
   DEVD.frame = frame;
   frame.addEventListener("load", () => {
-    /* 新页加载完成 = 撤掉切应用时盖的那层黑幕（没盖时是幂等空操作） */
-    appsDevCurtainDrop();
+    /* 新页加载完成 = 收起切应用时露出的「正在加载…」（没露时是幂等空操作） */
+    appsDevLoadingHide();
     const pending = DEVD.pendingState;
     DEVD.pendingState = null;
     if (!pending || !frame.contentWindow) return;
@@ -1946,9 +2006,6 @@ function appsDevPagePaint(body, seq) {
     } catch (_) {}
   });
   frameWrap.appendChild(frame);
-  /* 切应用（换 iframe 上下文）时才盖黑幕：首帧 src 已挂好，幕盖在这层上，加载完淡出。
-     日常「刷新预览」（同一个应用重设 src）不盖 —— 那一下用户已经看着旧页面。 */
-  if (curtainOn) appsDevCurtainShow();
   view.appendChild(frameWrap);
   cols.appendChild(view);
 
@@ -2071,26 +2128,156 @@ async function appsDevSyncAfterPaint(mySeq, seq) {
   appsDevEnsureCurrentSession();
 }
 
-/* 换应用（左栏点应用行 / 迁移成功后自动切过来）：整页重绘（列 / 容器全部重建，
-   会话归属与预览跟着换）。选中的这个应用在左栏一定展开 —— 用户点它就是要看它的会话。 */
+/* 换应用（左栏点应用行 / 迁移成功后自动切过来）。
+   **不再整页重绘**（用户口径：切换左栏应用时整个界面被刷新了，应当只有预览窗部分刷新）：
+   三栏 DOM（左栏列表容器、中栏那**同一只** iframe、右栏会话）原样留着，只换「当前应用」
+   相关的那几处 ——
+     ① 左栏：原地重画一次列表（选中态 / 展开态变了，容器与搜索框不动）；
+     ② 中栏：复用同一只 iframe，只把 src 换到新应用，并露出「正在加载…」；
+     ③ 右栏：落到新应用最近一条会话（没有则首轮态）；
+     ④ 切换前先把旧应用预览页的状态（滚动 / 表单值）存进内存，切回来时写回。
+   页面还没画好（刚被别处重绘 / 还在开发页以外的页）时退回整页绘制 —— 它会重新拉一次
+   应用名单，把工具栏与三栏画齐。 */
 function appsDevSelectApp(appId) {
   const id = String(appId || "").trim();
-  DEVD.appId = id;
   if (id) {
     if (!DEVD.expanded) DEVD.expanded = {};
     DEVD.expanded[id] = true;
   }
+  const prev = String(DEVD.appId || "");
+  /* 同一个应用：只保证左栏选中态是对的，预览与右栏都不动（旧实现会整页重绘一次） */
+  if (id && id === prev) {
+    try {
+      if (typeof renderAgentSessionSidebar === "function")
+        renderAgentSessionSidebar();
+    } catch (_) {}
+    return;
+  }
+  /* 上次打开的应用跟着切（与整页绘制那条路同源：回开发页时自动选它）。放在最前面 ——
+     只有真换了一个应用才值得写盘，同值不重复落盘由 appsDevLastAppSave 自己挡。 */
+  if (id) appsDevLastAppSave(id);
+  DEVD.appId = id;
   DEVD.draft = true;
   DEVD.sessionId = "";
   DEVD.msgCount = 0;
   DEVD.snap = null;
   DEVD.liveChangedAt = 0;
   DEVD.url = "";
-  DEVD.filter = "";
+  DEVD.pendingState = null;
   DEVD.wf = null;
   DEVD.node = null;
   DEVD.nodeFor = "";
+  /* 左栏搜索词跟着留着（不再清空）：整页重绘被撤掉之后，搜索框与它里面的字都不该被这次
+     切换顺手抹掉。 */
+  /* 新应用不在左栏名单里（刚迁移 / 刚新建、名单还没刷到）：退回整页绘制，
+     它会重新拉一次名单再把工具栏与三栏画齐（左栏也得有这一行可点）。 */
+  const known = appsDevApps().some((a) => String(a.id || "") === id);
+  if (id && known && appsDevSwitchAppInPlace(prev)) return;
   if (typeof appsHubPaint === "function") appsHubPaint();
+}
+
+/* 预览 iframe 还在页面上吗：切应用复用的就是它；页面被别处重绘掉之后它已经脱离文档
+   （此时只剩「整页绘制」那条路能救）。用 document.contains 而不是 isConnected ——
+   本仓的渲染层冒烟用一只迷你 DOM 跑这些函数，那只 DOM 没有 isConnected。 */
+function appsDevFrameLive() {
+  const frame = DEVD.frame;
+  if (!frame) return null;
+  try {
+    if (typeof document.contains === "function" && !document.contains(frame)) return null;
+  } catch (_) {}
+  return frame;
+}
+
+/* 轻量切换：只在「开发页已经画好」时接管（iframe 与右栏都在 DOM 上），返回 true = 已接管。
+   返回 false 时调用方退回整页绘制。 */
+function appsDevSwitchAppInPlace(prevId) {
+  const frame = appsDevFrameLive();
+  if (!appsDevPageOpen() || !frame || !DEVD.frameWrap) return false;
+  const seq = DEVD.seq;
+  const id = String(DEVD.appId || "");
+  /* ① 左栏：立刻换选中态（原地重画这一列） */
+  try {
+    if (typeof renderAgentSessionSidebar === "function")
+      renderAgentSessionSidebar();
+  } catch (_) {}
+  /* ② 中栏：立刻露出「正在加载…」——旧应用的画面马上就要被换掉 */
+  appsDevLoadingShow();
+  appsDevSwitchAppRun(prevId, id, seq).catch(() => {});
+  return true;
+}
+
+/* 切换的异步段：先向旧预览页要一份状态（最多 700ms 兜底），再换右栏与 iframe 的 src。
+   中途用户随时可能再切一次 / 关页，所以每一步之前都先验「还是这一轮那次切换」。 */
+async function appsDevSwitchAppRun(prevId, id, seq) {
+  /* 切走前问一次旧预览页的状态（最多 700ms 兜底）；「维持状态」关掉 / 那一帧装的不是它
+     （连着切两次时）就不问。 */
+  const state =
+    DEVD.keepState && prevId && String(DEVD.frameApp || "") === String(prevId)
+      ? await appsDevFrameStateSave(700)
+      : null;
+  appsDevStateSave(prevId, state);
+  if (!appsDevSwitchAlive(id, seq)) return;
+  /* ③ 右栏：落到新应用最近一条会话（没有则首轮态）。这一段不依赖预览 info，先做完，
+     免得右栏在上一个应用的会话内容上多停一次 IPC 的工夫。 */
+  if (DEVD.draft && !DEVD.sessionId && !appsDevDraftPending()) {
+    const sess =
+      typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId)[0] : null;
+    if (sess) {
+      DEVD.draft = false;
+      DEVD.sessionId = sess.id;
+      DEVD.msgCount = Array.isArray(sess.messages) ? sess.messages.length : 0;
+      try {
+        if (typeof persistAgentSession === "function") await persistAgentSession();
+      } catch (_) {}
+    }
+  }
+  if (!appsDevSwitchAlive(id, seq)) return;
+  appsDevRenderConv();
+  /* ④ 中栏：preview info（入口页 / 文件数 / 修改时间）→ 复用同一只 iframe 换 src */
+  const info = await appsDevPreviewInfo();
+  if (!appsDevSwitchAlive(id, seq)) return;
+  if (!info || info.ok === false) {
+    DEVD.snap = null;
+    DEVD.url = appsDevUrlOf(id);
+    appsDevPaintPreviewStat("error");
+    appsDevPaintUrl();
+    appsDevPreviewStatMsg(
+      info && info.error
+        ? appsDevT("预览不可用：") + String(info.error)
+        : appsDevT("读不到该应用目录（可能在别处被删了）"),
+    );
+  } else {
+    DEVD.url = String(info.url || "") || appsDevUrlOf(id);
+    DEVD.snap = {
+      files: info.files,
+      bytes: info.bytes,
+      mtimeMs: info.mtimeMs,
+      entry: info.entry,
+    };
+    appsDevPaintPreviewStat("same");
+    appsDevPaintUrl();
+    appsDevPreviewStatMsg("");
+  }
+  const fr = appsDevFrameLive();
+  if (!DEVD.url || !fr) return;
+  /* 这个应用上次离开预览时的状态：挂在这一次 src 之前，load 监听会写回 */
+  DEVD.pendingState = appsDevStateOf(id);
+  const sep = DEVD.url.indexOf("?") >= 0 ? "&" : "?";
+  DEVD.reloadSeq = (Number(DEVD.reloadSeq) || 0) + 1;
+  fr.setAttribute("src", DEVD.url + sep + "_r=" + Date.now() + "-" + DEVD.reloadSeq);
+  DEVD.frameApp = id;
+  if (info && info.ok !== false) appsDevRefreshHead().catch(() => {});
+  /* 切换期间这条会话若在别处没了：补回本应用最新一条，别把右栏留在空白态 */
+  if (appsDevSwitchAlive(id, seq)) appsDevEnsureCurrentSession();
+}
+
+/* 还是这一轮那次切换吗：页面还开着、还是那个应用、没有被后来的绘制 / 再切一次顶掉 */
+function appsDevSwitchAlive(id, seq) {
+  return (
+    appsDevPageOpen() &&
+    DEVD.seq === seq &&
+    String(DEVD.appId || "") === String(id || "")
+  );
 }
 
 /* 入口别名（app-apps.js 的 appsPaintDevPage 按 typeof 取） */

@@ -34,7 +34,7 @@ try:
 except ImportError:
     sys.exit("需要 paramiko：pip install paramiko")
 
-DEFAULT_SFTP = Path(r"E:\dev\mt-ai-router\.vscode\sftp.json")
+DEFAULT_SFTP = Path(r"E:\dev\tools\ssh\sftp-mtnode-store.json")
 
 SERVICE = "mtnode-store"
 TARGET = "https://mt-agent.com/mtnode/store-api/api/auth/wechat/callback"

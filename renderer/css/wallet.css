@@ -1,4 +1,4 @@
-/* renderer/css/wallet.css — 账户充值（钱包）对话框与账号菜单余额行
+/* renderer/css/wallet.css — 余额（钱包）对话框与账号菜单余额行
    样式真源；结构与交互见 renderer/app-wallet.js，服务端口径见 docs/recharge-design.md */
 
 /* ── 账号菜单里的余额行 ───────────────────────────────────── */
@@ -15,6 +15,13 @@
 .acct-balance b {
   font-size: 13px;
   font-weight: 600;
+}
+
+/* 余额行末尾那句提示（会话过期 / 暂时取不到）：与「余额：」同一行，太窄时允许收缩换行，
+   不把余额数字挤掉。文字样式与打赏窗余额行同源（css/tips.css 的 .tip-stat-warn-t）。 */
+.acct-balnote {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* ── 对话框主体 ───────────────────────────────────────────── */
@@ -88,8 +95,49 @@
   gap: 10px;
 }
 
+/* 充值块宿主（#wlPick）：装「能充值时」的 .wl-pick，或「闸门没开时」的 .wl-closed。
+   本身不画样式，两块各自带；这样切换时布局不跳。 */
+.wl-pick-host {
+  display: block;
+}
+
+/* 闸门没开（服务端 /api/wallet/config 的 opened=false）：不是错误，是当前规则 ——
+   用中性说明块而不是红字报错，余额与流水照旧显示在它上面。 */
+.wl-closed {
+  padding: 12px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+}
+
+.wl-closed-t {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.wl-closed-l {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* 档位行：几个充值档位 + 右侧的支付宝付款 logo 按钮（同一行 —— 按钮原来单独占一行）。
+   .wl-tiers 吃剩余宽度（flex:1 + min-width:0）：档位多 / 窗窄时**档位自己换行**，
+   付款按钮始终留在右边那一格，不会被挤到下一行去（也不跟着缩窄）。
+   为什么不留空档靠 gap：需求是「按钮在档位右侧」，两者之间要有一段空隙看得清是两件事。 */
+.wl-tier-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
 .wl-tiers {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   flex-wrap: wrap;
   gap: 8px;
 }
@@ -117,6 +165,59 @@
   font-weight: 600;
 }
 
+/* 支付宝付款按钮（#wlPay）：**按钮面就是支付宝官方方形 logo**（需求口径：把「去支付宝付款」
+   那句文字直接换成 logo），底色 / 边框仍按支付宝品牌画（白底 / 蓝边），不跟应用主色走 ——
+   它是要用户一眼认出「这里用支付宝付」的付款入口。
+   尺寸：48×44 = logo 20px + 上下各 12px 内边距，与左边档位按钮（8px 上下内边距 + 14px 行高）
+   基本齐高；flex:0 0 auto 让它不吃档位行的伸缩（窄窗时换行的是档位，按钮不缩成一条）。
+   **选择器必须写成 .wl-btn.wl-pay（两个类）**：按钮同时挂着 .wl-btn，而 .wl-btn 那条规则
+   在本文件里排得更靠后、权重又同为 (0,1,0) —— 后写的会把前面同权重的压回去（现场表现：
+   计算样式仍是 .wl-btn 的深灰底 / 8px 14px 内边距 / 7px 圆角，只有 logo 是蓝的）。 */
+.wl-btn.wl-pay {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #1677ff;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.wl-btn.wl-pay:hover:not(:disabled) {
+  background: color-mix(in srgb, #1677ff 8%, #fff);
+  border-color: #0f5fd8;
+}
+
+.wl-btn.wl-pay:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+
+.wl-btn.wl-pay:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+/* 按钮面上的 logo：20px 方形（源图自带透明圆角，白底上直接就是官方那种圆角方标）。
+   object-fit:contain 是兜底 —— 换 logo 图时比例不是 1:1 也不会被拉变形。 */
+.wl-pay-logo {
+  display: block;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+/* 忙态那行文字（按钮面换成 logo 后只剩它在用）：按钮此时是纯文字，不要撑成 48px 方按钮 */
+.wl-btn.wl-pay .wl-pay-t {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .wl-custom {
   display: flex;
   align-items: center;
@@ -142,6 +243,70 @@
 .wl-hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* 汇率提示（#wlRate）：全应用唯一一处可见汇率，只在充值窗金额区下方 */
+.wl-rate {
+  font-size: 12px;
+  letter-spacing: .2px;
+}
+
+/* 中转服务警示（余额窗**最顶端**与设置里的中转卡共用；结构见 app-wallet.js 的 relayWarnEl）：
+   本轮起它是余额窗第一块内容，标题行因此提到 14px 并加大上间距，与下方余额行拉开层次。 */
+.wl-warn {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--yellow);
+  border-radius: 6px;
+}
+
+.wl-warn-t {
+  color: var(--orange2);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.wl-warn-l {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* 警示框下方两个出口：DeepSeek 官方充值网址 + 文档入口（可点，直接开浏览器 / 手册窗） */
+.wl-warn-rows {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd);
+}
+
+.wl-warn-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wl-warn-k {
+  color: var(--muted);
+}
+
+.wl-warn-a {
+  color: var(--orange2);
+  text-decoration: none;
+  word-break: break-all;
+  cursor: pointer;
+}
+
+.wl-warn-a:hover {
+  text-decoration: underline;
 }
 
 /* 按钮 */

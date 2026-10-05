@@ -9,6 +9,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { sendSmsCode, smsProviderStatus, SMS_CODE_TTL_MS } from "./sms-provider.mjs";
 import { createAccountStore } from "./account-store.mjs";
@@ -24,6 +25,9 @@ import {
 } from "./alipay-provider.mjs";
 import { qrDataUrl } from "./qr-encode.mjs";
 import { createRelay } from "./relay.mjs";
+import { createTips, TIP_TARGET_KINDS } from "./tips.mjs";
+import { createComments } from "./comments.mjs";
+import { createNotifications } from "./notifications.mjs";
 import {
   createWallet,
   makeOrderId,
@@ -31,9 +35,9 @@ import {
   totalCentsOf,
   yuanOfCents,
   centsOfYuan,
-  RECHARGE_TIERS_CENTS,
   RECHARGE_MIN_CENTS,
   RECHARGE_MAX_CENTS,
+  rechargeTiersYuan,
 } from "./wallet.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -81,14 +85,20 @@ const MAX_PREVIEW = 500 * 1024;
 // nginx client_max_body_size 40m 之内；图标沿用预览图口径（png/jpeg/webp，≤500KB）。
 const MAX_APP_ZIP = 24 * 1024 * 1024;
 // —— 上架与多版本（契约 = docs/apps-market.md §七）——
-// 总开关：默认关。关时旧口径逐字不变（<id>.zip 一版一份 + PATCH 覆盖 + apps[].version），
-// 打开时每版一包落 <id>/<version>.zip，并把最新版同时刷成 <id>.zip 供老客户端 / 静态目录。
+// 总开关：**默认开**（2026-10 起；此前是默认关，线上因此一直回 409 APP_VERSIONS_DISABLED）。
+// 打开时每版一包落 <id>/<version>.zip，并把最新版同时刷成 <id>.zip 供老客户端 / 静态目录；
+// 只有**显式**写成 0 / false / no / off 才退回旧口径（<id>.zip 一版一份 + PATCH 覆盖 + apps[].version）。
 const APP_VERSIONS_ENV = String(process.env.MTNODE_APP_VERSIONS || "").trim().toLowerCase();
+/** 关闭档的取值（判据集中在 appVersionsOn，别在别处再读一次环境变量）。 */
+const APP_VERSIONS_OFF = new Set(["0", "false", "no", "off"]);
 // 账号配额（服务端强制，落盘之前校验）：云端已存包总量 = 名下所有应用所有版本 bytes 之和；
 // 应用条数上限只算「新建」，给已有应用追加版本不计入。
 const MAX_ACCOUNT_APP_BYTES = 50 * 1024 * 1024;
 const MAX_ACCOUNT_APPS = 5;
 const MAX_VERSION_NOTE = 200;
+/* 打赏概述（GET /api/tips/summary）一次最多问多少个对象：列表页一页的量级（应用条目
+   同 id 多分支也各占一条），够整页一次问齐，又挡住「一条超长 ids」把服务端拖住。 */
+const TIP_SUMMARY_MAX_IDS = 100;
 // 应用 id = 客户端安装目录名（apps-store.js 的 safeAppId 同一口径）：
 // 2-64 位字母/数字/._-，统一小写入库；Windows 保留名不可用。
 const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
@@ -100,8 +110,11 @@ const WIN_RESERVED = new Set([
 const SESSION_MS = 30 * 24 * 3600 * 1000;
 /* 中转站独立 Key（= 客户端「MTNode 中转服务」那张卡真正的凭据）的有效期：
    与登录会话**解耦** —— 客户端登录态可能因换机、密码变更、会话清理而失效，
-   中转 Key 不该跟着一起死。180 天，每次使用滑动续期（见 touchSession 的 kind 分支）。 */
-const RELAY_KEY_MS = 180 * 24 * 3600 * 1000;
+   中转 Key 不该跟着一起死。
+   **3650 天（≈10 年）**：口径是「分发一次后不应当失效」—— 只要账号有余额就能一直用，
+   到期日只作为理论兜底；真正保命的是每次使用的滑动续期（见 touchSession 的 kind 分支）
+   与客户端到期前的提前换新（续期提前量 = 有效期 / 6，见 relayKeyView.renewBeforeMs）。 */
+const RELAY_KEY_MS = 3650 * 24 * 3600 * 1000;
 const RELAY_KEY_KIND = "relay";// 短信频控口径见 docs/auth-design.md 第 8 节（服务端内存态，重启清零）。
 const SMS_COOLDOWN_MS = 60 * 1000; // 单号 60 秒冷却
 const SMS_DAILY_MAX = 10; // 单号每日上限
@@ -125,8 +138,19 @@ const WECHAT_TICKET_MS = 5 * 60 * 1000; // 一次性 ticket 有效期 5 分钟
 const WECHAT_POLL_INTERVAL = 2; // 客户端轮询间隔（秒）
 
 // —— 充值（支付宝当面付）与独立管理平台（口径见 docs/recharge-design.md）——
-// 充值白名单：测试期只有名单内账号能下单 / 看钱包（客户端「充值」入口同样只对 ms2308 显示）。
-const RECHARGE_USERS = splitSet(process.env.MTNODE_RECHARGE_USERS, "ms2308");
+// 充值**对所有已注册账号开放**（不再按名单放行）：任何有效账号都能看钱包 / 下单。
+//
+// 口径演进（踩过的坑）：历史上这里读 MTNODE_RECHARGE_USERS（名单非空 = 只放名单 + 管理员），
+// 线上 /etc/mtnode-store.env 里留下的那份旧名单会**继续拦掉"其他账号"**，
+// 症状就是非名单账号下单 / 看余额一律 403 RECHARGE_NOT_OPEN（用户读到「充值功能尚未对该账号开放」）。
+// 现在名单这条路整个作废：本常量恒为空集（只为管理台回显保留形状），
+// 剩下的唯一闸门是一个**显式的全局关闭**开关 MTNODE_RECHARGE_CLOSED —— 默认全开，
+// 要兜住"钱通道出问题先停充值"的运维场景时才置 1。这样遗留名单不再能拦人。
+const RECHARGE_USERS = new Set();
+/** 全局关闭充值（缺省全开）：MTNODE_RECHARGE_CLOSED = 1/true/yes/on 时所有账号一律 403。 */
+function rechargeGloballyClosed() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.MTNODE_RECHARGE_CLOSED || "").trim());
+}
 /** 中转站对外 Base URL（下发给客户端「提供商」的 Base URL，末尾不带斜杠）。 */
 const RELAY_PUBLIC_BASE = String(process.env.MTNODE_RELAY_PUBLIC_BASE || "https://www.mt-agent.com/mtnode/store-api/relay/v1").replace(/\/+$/, "");
 // 管理平台管理员判据（三条任一命中即可）：
@@ -198,6 +222,12 @@ function emptyDb() {
     skillLikes: [],
     forumTopics: [],
     forumReplies: [],
+    // 打赏记录（鲸圆币打赏，见 tips.mjs 与 docs/tips-comments-design.md 第五节）
+    tips: [],
+    // 评论（含五星评分与软删除留档，见 comments.mjs）
+    comments: [],
+    // 消息 / 通知（打赏 / 评论 / 回复三条主流程写入，见 notifications.mjs 与契约第三节）
+    notifications: [],
     // 充值账本：订单与流水（余额在账户行的 balanceCents，见 wallet.mjs）
     rechargeOrders: [],
     rechargeLedger: [],
@@ -209,6 +239,8 @@ function emptyDb() {
     relayConfig: null,
     // 中转配置改动留痕（谁 / 何时 / 改了哪一项）
     relayAudit: [],
+    // 内容管理改动留痕（管理台上架 / 下架 / 编辑 / 删除 应用·模板·技能，谁 / 何时 / 对哪条做了什么）
+    contentAudit: [],
   };
 }
 
@@ -235,11 +267,15 @@ function loadDb() {
     }
     if (!Array.isArray(d.forumTopics)) d.forumTopics = [];
     if (!Array.isArray(d.forumReplies)) d.forumReplies = [];
+    if (!Array.isArray(d.tips)) d.tips = [];
+    if (!Array.isArray(d.comments)) d.comments = [];
+    if (!Array.isArray(d.notifications)) d.notifications = [];
     if (!Array.isArray(d.rechargeOrders)) d.rechargeOrders = [];
     if (!Array.isArray(d.rechargeLedger)) d.rechargeLedger = [];
     if (!Array.isArray(d.adminSessions)) d.adminSessions = [];
     if (!Array.isArray(d.relayUsage)) d.relayUsage = [];
     if (!Array.isArray(d.relayAudit)) d.relayAudit = [];
+    if (!Array.isArray(d.contentAudit)) d.contentAudit = [];
     if (!d.relayConfig || typeof d.relayConfig !== "object") d.relayConfig = null;
     return d;
   } catch {
@@ -429,10 +465,45 @@ function publicUser(u) {
   };
 }
 
-function publicTemplate(t, viewer) {
+/* ---------- 公开投影的「打赏 / 评分 / 评论数」三块（契约第三节） ---------- *
+ * 一律**实时算**（不在对象上存快照字段）。列表接口是分页的，绝不能在循环里逐个对象算：
+ *   先收本页 ids → tipEnrich / ratingEnrich 批量取 → 逐条投影时传进来。
+ * 单个对象（详情 / 新建返回）不传 enrich，函数自己算一次（O(表) 而已，不会 N²）。
+ * ------------------------------------------------------------------ */
+
+function tipEnrich(kind, ids) {
+  return plans.enricher(kind, ids);
+}
+function commentEnrich(kind, ids) {
+  return comments.enricher(kind, ids);
+}
+/** 打赏 + 评论一次收齐（列表接口两个 Map 都建好了再逐行投影）。 */
+function enrichOf(kind, ids) {
+  const tipsFn = tipEnrich(kind, ids);
+  const cmtFn = commentEnrich(kind, ids);
+  return (id) => {
+    const c = cmtFn(id);
+    return { tips: tipsFn(id), rating: c.rating, comments: c.comments };
+  };
+}
+/** 单条对象的三块（详情 / 新建返回用）。 */
+function enrichOne(kind, id) {
+  return {
+    tips: plans.summaryOf(kind, id),
+    rating: comments.ratingOf(kind, id),
+    comments: comments.countOf(kind, id),
+  };
+}
+/** 把三块并进投影（site 与缺省口径都在这里，别在各处重复拼字段名）。 */
+function withEnrich(obj, kind, id, en) {
+  const e = en || enrichOne(kind, id);
+  return Object.assign(obj, { tips: e.tips, rating: e.rating, comments: e.comments });
+}
+
+function publicTemplate(t, viewer, en) {
   const viewerId = viewer && viewer.id;
   const owner = db.users.find((u) => u.id === t.userId);
-  return {
+  return withEnrich({
     id: t.id,
     title: t.title,
     description: t.description || "",
@@ -449,13 +520,13 @@ function publicTemplate(t, viewer) {
     liked: viewerId ? db.likes.some((l) => l.userId === viewerId && l.templateId === t.id) : false,
     mine: !!(viewerId && viewerId === t.userId),
     canDelete: !!(viewerId && (viewerId === t.userId || isAdmin(viewer))),
-  };
+  }, "template", t.id, en);
 }
 
-function publicSkill(s, viewer) {
+function publicSkill(s, viewer, en) {
   const viewerId = viewer && viewer.id;
   const owner = db.users.find((u) => u.id === s.userId);
-  return {
+  return withEnrich({
     id: s.id,
     skillName: s.skillName,
     title: s.title,
@@ -478,7 +549,7 @@ function publicSkill(s, viewer) {
       : false,
     mine: !!(viewerId && viewerId === s.userId),
     canDelete: !!(viewerId && (viewerId === s.userId || isAdmin(viewer))),
-  };
+  }, "skill", s.id, en);
 }
 
 function tagCounts(kind) {
@@ -527,6 +598,10 @@ function findUserByName(name) {
 async function issueSession(u) {
   const token = crypto.randomBytes(24).toString("hex");
   const t = now();
+  /* 登录这里**不动中转票**：票是按账号幂发的（明文存在该账号记录里，见 ensureRelayKey），
+     同一账号重登一百次拿到的还是同一张（用户口径：分发一次后不应当失效）。
+     「换账号」的轮换不在这里做 —— 登录那一刻还不知道这台机器上原来是谁的票
+     （客户端往往还没同步中转清单），判据落在**领票**那一步：换个登录会话/换个账号来领票时轮换。 */
   if (db.sessions.some((s) => s.expiresAt <= t)) await accountStore.pruneSessions(t);
   // 多端并存：登录不再删除同一用户的其它会话（旧设备保持在线），登出只删当前 token。
   const session = await accountStore.createSession({
@@ -596,14 +671,73 @@ async function touchSession(sess, t) {
   }
 }
 
-/* ── 中转站独立 Key（180 天 · 滑动续期）─────────────────────────────────────
+/* ── 中转站独立 Key（3650 天 · 滑动续期）────────────────────────────────────
    为什么要独立：以前「中转 Key = 账号登录 token」，客户端一换机 / 密码一变 /
    会话被清，中转卡就跟着 401（症状 = 「缺少或已失效的中转 Key」，用户以为要自己填 Key）。
-   现在登录照旧发登录会话，中转另发一张 180 天的独立票；客户端把它存进本机加密凭据，
+   现在登录照旧发登录会话，中转另发一张 3650 天的独立票；客户端把它存进本机加密凭据，
    主进程每次请求现取现用（明文不出主进程，也不落 config.json）。
-   保底一票制：同一账号只留最新一张 —— 重发时把该账号的旧票（含过期的）一并作废，
-   换机 / 重装后老客户端手里那张自动失效。 */
-async function issueRelayKey(u, t) {
+   **常规不再轮换**：同一账号现役票只有一张，且这张的明文落在用户记录里（relayKeyPlain）——
+   /api/relay/me 已有有效票就**原样返回同一张**（幂发，见 ensureRelayKey），
+   多开客户端 / 多台机器 / 重登多少次都不会互相顶掉（老口径「每次重发 + 作废旧票」
+   正是「登录了还是恒 401、界面让人重登」的根因）。
+   作废只剩两条显式路径：**主动退出登录**与**删号**（见 revokeRelayKeys）。
+   已知边界（本轮据此把口径写在注释里，不改行为）：客户端在同一台机器上换账号时，
+   上一账号那张票会一直留在服务端有效（客户端手上那份已随换账号丢弃）；
+   要立刻收回它就**主动退出登录**一次 —— 退出登录带中转票也能打通（见 /api/logout）。 */
+/* 明文票的落库字段（用户记录上一个字段，见 ensureRelayKey 的注释）。
+   形状：{ key, expiresAt, issuedAt, holderSession, device }；没票 = 字段不存在 / 空对象。 */
+const RELAY_KEY_FIELD = "relayKeyPlain";
+/** 读用户记录里那份明文票（坏形状一律当没有）。 */
+function relayPlainOf(u) {
+  const v = u && u[RELAY_KEY_FIELD];
+  if (!v || typeof v !== "object") return null;
+  const key = String(v.key || "").trim();
+  if (!key) return null;
+  return {
+    key: key,
+    expiresAt: Number(v.expiresAt || 0) || 0,
+    issuedAt: Number(v.issuedAt || 0) || 0,
+    /* 领走这张票的**登录会话**（只存 tokenHash，不存明文）：留作排查与将来判据用。 */
+    holderSession: String(v.holderSession || ""),
+    /* 领走这张票的**本机设备标识**（客户端在 X-MTNode-Device 头里带，随机串）：
+       只作留档 / 排查（哪台机器领的这张票），**不参与轮换判定** ——
+       同一账号多开客户端、多台设备共用同一张票正是本轮要的幂发口径。 */
+    device: String(v.device || ""),
+  };
+}
+/** 清掉明文票字段（**只清明文**：hash 记录由调用方按需删）。 */
+async function clearRelayKeyPlain(u) {
+  if (!u || !u.id) return false;
+  if (!relayPlainOf(u)) return false;
+  const next = await applyUserPatch(u.id, { [RELAY_KEY_FIELD]: null });
+  if (!next) return false;
+  Object.assign(u, { [RELAY_KEY_FIELD]: null });
+  return true;
+}
+/** 作废该账号现役的中转票：删 kind=relay 的 hash 记录 + 清明文（换账号 / 退出登录用）。 */
+async function revokeRelayKeys(u) {
+  if (!u) return 0;
+  const gone = (db.sessions || []).filter(
+    (s) => String(s.userId || "") === String(u.id || "") && String(s.kind || "") === RELAY_KEY_KIND,
+  );
+  for (const s of gone) {
+    try {
+      await accountStore.deleteSession(s.tokenHash);
+    } catch (e) {
+      console.warn("[mtnode-store] relay key revoke failed: " + ((e && e.message) || e));
+    }
+  }
+  if (gone.length) {
+    const set = new Set(gone.map((s) => s.tokenHash));
+    db.sessions = db.sessions.filter((s) => !set.has(s.tokenHash));
+  }
+  /* 内存缓存里的这份用户对象也要改（它可能与库里那份不是同一个引用） */
+  const cached = (db.users || []).find((x) => x.id === u.id);
+  await clearRelayKeyPlain(cached || u);
+  return gone.length;
+}
+
+async function issueRelayKey(u, t, holderSession, device) {
   const token = crypto.randomBytes(24).toString("hex");
   const nowTs = Number(t) || now();
   const tokenHash = hashToken(token);
@@ -632,29 +766,152 @@ async function issueRelayKey(u, t) {
   });
   db.sessions = (db.sessions || []).filter((s) => s.tokenHash !== tokenHash);
   db.sessions.push({ tokenHash, userId: u.id, expiresAt: nowTs + RELAY_KEY_MS, kind: RELAY_KEY_KIND, createdAt: nowTs });
+  /* 明文存进用户记录：**这是「分发一次后不失效」的关键一步** —— 库里只有 hash 时
+     服务端拿不回现役票，只能每次来领都重发一张并作废旧的（多开客户端 / 多台机器
+     互相顶掉 ⇒ 恒 401 ⇒ 界面弹「请重新登录」，本 bug 的现场）。
+     存明文之后 /api/relay/me 可以「已有有效票就原样返回同一张」，同一个账号无论
+     多少台机器、重登多少次拿到的都是同一张票，谁也不会把谁顶掉。
+     安全口径：明文只落服务端用户记录、只经 /api/relay/me 回给客户端主进程；
+     publicUser 是白名单投影，不会外泄；hash 记录仍是鉴权真源（authUser 只认它）。 */
+  const plain = {
+    key: token,
+    expiresAt: nowTs + RELAY_KEY_MS,
+    issuedAt: nowTs,
+    /* 领走这张票的登录会话与设备标识（都只存摘要，见 relayPlainOf 的注释）。 */
+    holderSession: String(holderSession || ""),
+    device: String(device || ""),
+  };
+  try {
+    const patched = await accountStore.updateUser(u.id, { [RELAY_KEY_FIELD]: plain });
+    if (patched) {
+      const cached = (db.users || []).find((x) => x.id === u.id);
+      if (cached) Object.assign(cached, { [RELAY_KEY_FIELD]: plain });
+      Object.assign(u, { [RELAY_KEY_FIELD]: plain });
+    } else {
+      console.warn("[mtnode-store] relay key plain persist returned null: " + u.id);
+    }
+  } catch (e) {
+    /* 明文没落住不影响这次发出去的票（hash 已落，票照样能用）；
+       只影响「下次能不能原样返回同一张」—— 那种情况退回老口径（重发一张并作废旧票）。 */
+    console.warn("[mtnode-store] relay key plain persist failed: " + ((e && e.message) || e));
+  }
   return { token, expiresAt: nowTs + RELAY_KEY_MS, ttlMs: RELAY_KEY_MS };
 }
 
-/** 该账号的中转 Key：/api/relay/me 用它把票交给客户端。
+/** 复用窗口：剩余寿命还有**有效期一半**以上就原样返回现役票，不再轮换。
+ *  （客户端在「剩余不足有效期 1/6」时才主动来续期，所以正常拿到的永远是同一张；
+ *   只剩不到一半寿命时换一张新的，给客户端留足换票余量。） */
+const RELAY_KEY_REUSE_MS = Math.floor(RELAY_KEY_MS / 2);
+
+/* ── 手动轮换中转 Key（客户端「设置 · 提供商」中转卡上的「更换 Key」）──────────
+   幂发口径下「再领一次」只会拿回同一张票，所以换 Key 需要一个**显式**入口：
+   POST /api/relay/me { rotate: true } —— 跳过复用窗口、发新票并作废旧票。
+   为什么限频：一张票就是该账号的中转身份，随手换会让正在用旧 Key 的机器
+   （Codex / 桌宠 / 另一台电脑）当场 401；每日上限把误点与刷票挡住。
+   计数口径：按账号 + **服务器本地时区**的自然日，落在用户记录 relayKeyRotations
+   （形状 { day: "YYYY-MM-DD", count: n }）—— 跟库走，重启不清零。
+   旧票口径：换 Key 后**旧票立即失效**（issueRelayKey 本来就会作废旧 hash 记录），
+   不设宽限窗口 —— 免得两台机器长期各持一张有效票。 */
+const RELAY_ROTATE_LIMIT = 5;
+const RELAY_ROTATE_FIELD = "relayKeyRotations";
+/** 服务器本地时区的自然日键（"YYYY-MM-DD"）。 */
+function relayDayKey(ts) {
+  const d = new Date(Number(ts) || Date.now());
+  const p = (n) => (n < 10 ? "0" + n : String(n));
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+/** 该账号今天的轮换用量（只读，不变更任何东西）。 */
+function relayRotateStateOf(u, t) {
+  const rec = (u && u[RELAY_ROTATE_FIELD]) || null;
+  const day = relayDayKey(t);
+  const used =
+    rec && String(rec.day || "") === day ? Math.max(0, Number(rec.count || 0) || 0) : 0;
+  return {
+    day: day,
+    used: used,
+    limit: RELAY_ROTATE_LIMIT,
+    left: Math.max(0, RELAY_ROTATE_LIMIT - used),
+  };
+}
+/** 记一次轮换（超限返回 ok:false，调用方据此回 429）。 */
+async function consumeRelayRotate(u, t) {
+  const st = relayRotateStateOf(u, t);
+  if (st.left <= 0) return { ok: false, state: st };
+  const next = { day: st.day, count: st.used + 1 };
+  try {
+    const patched = await applyUserPatch(u.id, { [RELAY_ROTATE_FIELD]: next });
+    if (!patched) console.warn("[mtnode-store] relay rotate count persist returned null: " + u.id);
+  } catch (e) {
+    /* 计数没落住不影响这次换票（票已发），只影响「今天还能换几次」的准确性。 */
+    console.warn("[mtnode-store] relay rotate count persist failed: " + ((e && e.message) || e));
+  }
+  Object.assign(u, { [RELAY_ROTATE_FIELD]: next });
+  return {
+    ok: true,
+    state: {
+      day: st.day,
+      used: next.count,
+      limit: RELAY_ROTATE_LIMIT,
+      left: Math.max(0, RELAY_ROTATE_LIMIT - next.count),
+    },
+  };
+}
+/** 换票后的统一视图（GET 与 POST rotate 两条路共用一份字段口径）。 */
+function relayRotateView(u, t) {
+  const st = relayRotateStateOf(u, t);
+  return {
+    relayKeyRotateLimit: st.limit,
+    relayKeyRotateUsed: st.used,
+    relayKeyRotateLeft: st.left,
+    relayKeyRotateDay: st.day,
+  };
+}
+
+/** 该账号的中转 Key（**幂发**）：/api/relay/me 用它把票交给客户端。
  *
- *  **为什么每次都要重发、不能只发一次明文**（本 bug 的根因）：库里只存 tokenHash，
- *  明文谁也拿不回来，所以「只在下发那一次给明文」等于**一次性的** ——
- *  客户端只要那一次没接住（重装 / 清了本机凭据 / 解密失败丢了 / 换机 / 换账号回来 /
- *  落库那一步失败），此后再怎么重新登录都只会拿到空串，只能退回登录 token 兜底，
- *  而中转数据面只认 kind=relay 的独立票 ⇒ 恒 401；界面又一直提示「重新登录一次即可自动领取」，
- *  用户按提示做多少遍都出不来凭据（死循环）。
- *  发放口只有 /api/relay/me（要账号登录态），明文只经这一条路径回主进程、由主进程存进本机加密凭据，
- *  所以这里每次来领都发一张新的（同时顶掉旧票），让「重新登录一次」真的能领到手。 */
-async function ensureRelayKey(u) {
+ *  口径（本 bug 的正解）：**已有现役票就原样返回同一张，不再每次重发**。
+ *  客户端登录 / 启动 / 打开设置都会打这个入口（见 renderer/app-relay.js 的 syncIfStale），
+ *  老写法每次调用都 issueRelayKey() —— 发新票 + 作废该账号旧票，于是多开客户端 /
+ *  多台机器同步时互相顶掉：A 刚领到票，B 一次同步就把它作废 ⇒ A 恒 401 ⇒
+ *  界面弹「中转 Key 已失效，请重新登录」，而用户重登后 B 又把它顶掉（现场截图就是这么来的）。
+ *
+ *  实现：明文票落在用户记录 relayKeyPlain（见 issueRelayKey 的注释），所以这里能
+ *  「看得到现役票」并原样返回；hash 记录仍是鉴权真源，这里顺手确认它还在（被清过 / 过期
+ *  就重发一张）。作废只剩两条显式路径：**主动退出登录**与**删号**（都走 revokeRelayKeys）。
+ *
+ *  device = 客户端报的本机标识（X-MTNode-Device）：只记进明文票里留作排查与将来判据，
+ *  本身不参与轮换判定 —— 同一账号多开客户端 / 多台设备共用同一张票是本轮的需求口径。
+ *
+ *  返回的 token 一定非空：客户端据此把票存进本机加密凭据（明文只经这一条路径回主进程）。 */
+async function ensureRelayKey(u, requesterSession, device, opts) {
+  const o = opts || {};
   const t = now();
-  const made = await issueRelayKey(u, t);
+  const cur = relayPlainOf(u);
+  /* rotate = 客户端显式要求换一张（卡上「更换 Key」按钮）：跳过复用窗口，
+     直接走下面的重发（发新票 + 作废旧 hash 记录），限频由调用方先扣。 */
+  if (!o.rotate && cur && cur.expiresAt - t >= RELAY_KEY_REUSE_MS) {
+    let alive = null;
+    try {
+      alive = await accountStore.getSession(hashToken(cur.key));
+    } catch (e) {
+      alive = null;
+    }
+    const okSession = !!(alive && String(alive.kind || "") === RELAY_KEY_KIND && Number(alive.expiresAt || 0) >= t);
+    if (okSession) {
+      return { expiresAt: Number(alive.expiresAt || cur.expiresAt), ttlMs: RELAY_KEY_MS, token: cur.key };
+    }
+    /* 明文在、hash 记录没了（被手工清过 / 过期 / 退出登录清过）：走下面重发一张，
+       别把一张废票发给客户端。 */
+    console.warn("[mtnode-store] relay key plain 在但会话已失效，重发一张：" + String(u && u.id));
+  }
+  const made = await issueRelayKey(u, t, requesterSession, device);
   return { expiresAt: made.expiresAt, ttlMs: RELAY_KEY_MS, token: made.token };
 }
 
-/** 给客户端的中转 Key 视图：明文在这个入口下发（客户端存本机加密凭据；
- *  库里只有 hash，所以每次来领都重发一张、旧票同时作废 —— 见 ensureRelayKey 的注释）。 */
-async function relayKeyView(u) {
-  const r = await ensureRelayKey(u);
+/** 给客户端的中转 Key 视图：明文在这个入口下发（客户端存本机加密凭据）。
+ *  同一账号反复来领拿到的是**同一张**（见 ensureRelayKey），换账号 / 退出登录 / 过期才换新。 */
+async function relayKeyView(u, requesterSession, device, opts) {
+  const r = await ensureRelayKey(u, requesterSession, device, opts);
   return {
     expiresAt: r.expiresAt,
     ttlMs: r.ttlMs,
@@ -703,6 +960,51 @@ async function applyUserPatch(id, patch) {
 const wallet = createWallet({ db, saveDb, applyUserPatch });
 
 /* ========================================================================== *
+ * 打赏 + 评论 + 消息（编排逻辑分别在 tips.mjs / comments.mjs / notifications.mjs，
+ * 这里只做接线与鉴权）
+ *   · tips          —— 打赏只能经 wallet.adjustBalance 动钱（铁律①），本层不自己写余额；
+ *   · comments      —— 评论 / 五星评分 / 软删除，实时算平均星与评论数；
+ *   · notifications —— 消息（打赏 / 评论 / 回复），只落 db.notifications，**绝不碰钱包**。
+ * 消息实例先建（tips / comments 都把它当可选依赖注入，只用于旁路记消息），
+ * 实例化顺序：wallet → notifications → tips / comments。
+ * ========================================================================== */
+
+const alerts = createNotifications({
+  db,
+  saveDb,
+  users: () => db.users,
+  now,
+});
+
+const plans = createTips({
+  db,
+  saveDb,
+  wallet,
+  applyUserPatch,
+  users: () => db.users,
+  now,
+  notifications: alerts,
+  ledger: () => db.rechargeLedger,
+  /* 应用家族口径（本轮需求：分支树统一 + 打赏/评论按根应用统一）：
+     groupIdOf = 家族归组 id（根条目的 id）；entriesOf = 族里全部记录。
+     传下去让 tips 的统计、分账作者名单与评论的聚合都走同一份口径。 */
+  family: {
+    groupIdOf: (id, ownerId) => appFamilyGroupId(id, ownerId),
+    entriesOf: (id, ownerId) => appFamilyEntries(id, ownerId),
+  },
+});
+
+const comments = createComments({
+  db,
+  saveDb,
+  isAdmin,
+  users: () => db.users,
+  now,
+  notifications: alerts,
+  tips: plans,
+});
+
+/* ========================================================================== *
  * 中转站（内部测试用）：DeepSeek 文本/识图 + gpt-image-2.5 图像，鉴权 = 账号登录 token，
  * 门禁 = 可用余额 > 0，计费 = 按用量扣（亚分精度，见 relay.mjs 文件头）。逻辑全在 relay.mjs，
  * 这里只把 /relay/v1/* 转给它，并注入 db / 落盘 / 钱包 / 原样读体（multipart 要原包转发）。
@@ -717,9 +1019,11 @@ const relay = createRelay({
   publicBase: RELAY_PUBLIC_BASE,
 });
 
-/** 充值白名单（测试期只放 ms2308）：客户端入口同样只对白名单账号显示。 */
+/** 谁能用钱包 / 下单：**所有已注册（已登录）账号**。
+ *  唯一的闸门是显式全局关闭 MTNODE_RECHARGE_CLOSED（见上）；名单口径已作废。 */
 function rechargeAllowed(u) {
-  return !!u && (RECHARGE_USERS.has(String(u.username || "").toLowerCase()) || isAdmin(u));
+  if (!u) return false;
+  return !rechargeGloballyClosed();
 }
 
 /* ========================================================================== *
@@ -1334,7 +1638,11 @@ async function authUser(req, isRelayPath, opts) {
   const isRelayKey = String(sess.kind || "") === RELAY_KEY_KIND;
   if (isRelayPath && !isRelayKey && !boot) return null;
   await touchSession(sess, t);
-  return db.users.find((u) => u.id === sess.userId) || null;
+  const u = db.users.find((x) => x.id === sess.userId) || null;
+  /* 这次请求是**哪个会话**打的（只挂 tokenHash，不含明文）：
+     /api/relay/me 靠它判「换账号」（同一账号里换了另一个登录会话来领票，见 ensureRelayKey）。 */
+  if (u) Object.defineProperty(u, "__sessionHash", { value: th, configurable: true, enumerable: false });
+  return u;
 }
 
 function send(res, status, obj, extraHeaders) {
@@ -1782,8 +2090,8 @@ function forumAuthor(userId) {
 }
 
 // 列表投影：只有标题与元数据，绝不带正文（懒加载关键）。
-function publicForumTopicSummary(t) {
-  return {
+function publicForumTopicSummary(t, en) {
+  return withEnrich({
     id: t.id,
     title: t.title || "",
     status: t.status,
@@ -1794,18 +2102,18 @@ function publicForumTopicSummary(t) {
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
     lastReplyAt: t.lastReplyAt || t.createdAt,
-  };
+  }, "forum_topic", t.id, en);
 }
 
-function publicForumTopic(t, viewer) {
-  return Object.assign(publicForumTopicSummary(t), {
+function publicForumTopic(t, viewer, en) {
+  return Object.assign(publicForumTopicSummary(t, en), {
     content: t.content || "",
     mine: !!(viewer && viewer.id === t.userId),
   });
 }
 
-function publicForumReply(r) {
-  return {
+function publicForumReply(r, en) {
+  return withEnrich({
     id: r.id,
     topicId: r.topicId,
     content: r.content || "",
@@ -1813,7 +2121,7 @@ function publicForumReply(r) {
     userId: r.userId,
     author: forumAuthor(r.userId),
     createdAt: r.createdAt,
-  };
+  }, "forum_reply", r.id, en);
 }
 
 function forumPageArgs(url, pageKey, sizeKey) {
@@ -2032,72 +2340,164 @@ function detectAppEntry(rawEntry, names) {
   return top.length === 1 ? top[0] : "";
 }
 
-function appIconPath(id) {
-  for (const ext of ["png", "jpg", "webp"]) {
-    const p = path.join(APP_ICON_DIR, id + "." + ext);
-    if (fs.existsSync(p)) return p;
+function appIconPath(id, ownerId) {
+  const names = [];
+  const own = String(ownerId || "");
+  if (own) names.push(id + "__" + own);
+  names.push(id);
+  for (const base of names) {
+    for (const ext of ["png", "jpg", "webp"]) {
+      const p = path.join(APP_ICON_DIR, base + "." + ext);
+      if (fs.existsSync(p)) return p;
+    }
   }
   return null;
 }
 
-/** 图标在静态目录里的相对地址（icons/<id>.<ext>）：客户端把它解析到 /mtnode/apps/ 下，
- *  与 zipUrl 的 `<id>.zip` 同一套「相对目录」口径（deploy.sh 会把图标装进该目录）。 */
-function appIconRel(id) {
-  const p = appIconPath(id);
-  return p ? "icons/" + id + "." + path.extname(p).slice(1).toLowerCase() : "";
+/** 图标在静态目录里的相对地址（icons/<id>__<作者uid>.<ext>；老文件 icons/<id>.<ext> 仍在）：
+ *  客户端把它解析到 /mtnode/apps/ 下，与 zipUrl 同一套「相对目录」口径。 */
+function appIconRel(id, ownerId) {
+  const p = appIconPath(id, ownerId);
+  if (!p) return "";
+  return "icons/" + path.basename(p);
 }
 
-function writeAppIcon(id, icon) {
-  clearAppIcon(id);
-  fs.writeFileSync(path.join(APP_ICON_DIR, id + "." + icon.ext), icon.buf);
+function writeAppIcon(id, ownerId, icon) {
+  clearAppIcon(id, ownerId);
+  fs.writeFileSync(path.join(APP_ICON_DIR, appFileStem(id, ownerId) + "." + icon.ext), icon.buf);
 }
 
-function clearAppIcon(id) {
-  for (const ext of ["png", "jpg", "webp"]) {
-    try { fs.unlinkSync(path.join(APP_ICON_DIR, id + "." + ext)); } catch {}
+/* 只清这一分支自己的图标（新命名 + 它可能占着的老命名）——别的分支的图标绝不动。 */
+function clearAppIcon(id, ownerId) {
+  const stems = [];
+  const own = String(ownerId || "");
+  if (own) stems.push(id + "__" + own);
+  else {
+    /* 没给作者（老调用）：退化成「清这个 id 的所有图标」，与老行为一致 */
+    for (const ext of ["png", "jpg", "webp"]) {
+      try { fs.unlinkSync(path.join(APP_ICON_DIR, id + "." + ext)); } catch {}
+    }
+    return;
+  }
+  for (const stem of stems) {
+    for (const ext of ["png", "jpg", "webp"]) {
+      try { fs.unlinkSync(path.join(APP_ICON_DIR, stem + "." + ext)); } catch {}
+    }
   }
 }
 
 /* ---------- 上架与多版本：开关 / 路径 / 版本记录 / 配额 / 声明（契约 §七） ---------- */
 
 /**
- * 多版本总开关（`MTNODE_APP_VERSIONS=1|true|yes|on` 打开，默认关）。
+ * 多版本总开关：**默认开**，只有显式 `MTNODE_APP_VERSIONS=0|false|no|off` 才关。
  * 判据集中在这里：路由与目录口径都只问它，别在别处再读一次环境变量。
+ * 关档留给「PATCH 覆盖式更新」这类旧口径场景（老客户端 / 不想留版本史的自建站）。
  */
 function appVersionsOn() {
-  return (
-    APP_VERSIONS_ENV === "1" ||
-    APP_VERSIONS_ENV === "true" ||
-    APP_VERSIONS_ENV === "yes" ||
-    APP_VERSIONS_ENV === "on"
-  );
+  return !APP_VERSIONS_OFF.has(APP_VERSIONS_ENV);
 }
 
-/** 多版本包目录 `<APP_DIR>/<id>`（开关打开时一版一包；关时不用）。 */
+/** 多版本包目录 `<APP_DIR>/<id>`（开关打开时一版一包；关时不用）。
+ *  同 id 多分支后里面还会按作者分一层子目录：`<id>/<作者uid>/<版本>.zip`。 */
 function appVersionDir(id) {
   return path.join(APP_DIR, id);
 }
 
-/** 单版包路径 `<APP_DIR>/<id>.zip`：老口径的唯一落点，也是多版本模式下「最新版」的镜像。 */
+/** 一条分支的文件名主干：`<id>__<作者uid>`（同 id 多分支时区分彼此）。 */
+function appFileStem(id, ownerId) {
+  const own = String(ownerId || "").trim();
+  return own ? id + "__" + own : String(id || "");
+}
+
+/** 单版包路径 `<APP_DIR>/<id>.zip`：老口径的唯一落点，也是多版本 / 多分支下「最新版」的镜像。 */
 function appZipPath(id) {
   return path.join(APP_DIR, id + ".zip");
 }
 
-/** 某一版的包路径。版本号已过 normalizeVersion（无 `/` 与 `..`），拼路径是安全的。 */
+/** 某一分支当前版的包路径（**只对这一分支自己那版有效**，见 appZipPathOfBranchVia）。 */
+function appOwnerZipPath(id, ownerId) {
+  return path.join(APP_DIR, appFileStem(id, ownerId) + ".zip");
+}
+
+/** 某一版的包路径（老落点：`<id>/<版本>.zip`）。版本号已过 normalizeVersion（无 `/` 与 `..`），拼路径安全。 */
 function appVersionZipPath(id, version) {
   return path.join(appVersionDir(id), version + ".zip");
 }
 
+/** 某一版**分支私有**的包路径：`<id>/<作者uid>/<版本>.zip`（同 id 不同作者同号版本不会互撞）。 */
+function appBranchVersionZipPath(id, ownerId, version) {
+  return path.join(appVersionDir(id), String(ownerId || ""), version + ".zip");
+}
+
+/** 分支的静态包名（相对 /mtnode/apps/）：`<id>__<作者uid>.zip`。 */
+function appZipRel(id, ownerId) {
+  return appFileStem(id, ownerId) + ".zip";
+}
+
+/** 分支某一版的静态包相对路径：`<id>/<作者uid>/<版本>.zip`。 */
+function appVersionZipRel(id, ownerId, version) {
+  return id + "/" + String(ownerId || "") + "/" + version + ".zip";
+}
+
+/** 这一版该写哪儿：分支私有目录优先；已经存在（老落点被她占着）就退老落点 —— 内容都是同一份包。 */
+function writeAppVersionZipPath(id, ownerId, version) {
+  const own = appBranchVersionZipPath(id, ownerId, version);
+  const shared = appVersionZipPath(id, version);
+  if (!fs.existsSync(shared)) return own;
+  if (!fs.existsSync(own)) return shared;
+  return own;
+}
+
 /**
- * 落盘：开关打开时写 `<id>/<version>.zip`，**并且**把这一版同时刷成 `<id>.zip` 镜像，
- * 让老客户端与静态目录（`zipUrl = <id>.zip`）的口径一个字都不用改；关时只写镜像。
+ * 落盘：开关打开时写「这一版自己的包」（有作者 = `<id>/<作者uid>/<版本>.zip`，
+ * 老落点 `<id>/<版本>.zip` 已被占就与它共用），**并且**把这一版同时刷成
+ * `<id>__<作者uid>.zip`（这一分支的当前版镜像）；关开关（老单版口径）只写老镜像 `<id>.zip`。
  */
-function writeAppZipFiles(id, version, buf) {
+function writeAppZipFiles(id, version, buf, ownerId) {
   if (appVersionsOn() && version) {
-    mkdirp(appVersionDir(id));
-    fs.writeFileSync(appVersionZipPath(id, version), buf);
+    const target = writeAppVersionZipPath(id, ownerId, version);
+    mkdirp(path.dirname(target));
+    fs.writeFileSync(target, buf);
+  }
+  const own = String(ownerId || "");
+  if (own) {
+    fs.writeFileSync(appOwnerZipPath(id, own), buf);
+    return;
   }
   fs.writeFileSync(appZipPath(id), buf);
+}
+
+/**
+ * 一条分支的「当前版」包在哪：
+ *   ① 分支私有包 `<id>/<作者uid>/<版本>.zip`
+ *   ② 自己那份镜像 `<id>__<作者uid>.zip`
+ *   ③ 老落点 `<id>/<版本>.zip`（老落点被她占着的分支仍读得到）
+ *   ④ **全局**镜像 `<id>.zip` —— 只有「她的版本 = 这个 id 跨分支的最高版」时才认，
+ *      否则就是别的分支的包，绝不能拿错。
+ */
+function appZipPathOfBranchVia(a) {
+  const id = String((a && a.id) || "");
+  const own = String((a && a.userId) || "");
+  if (!id) return { path: "", via: "" };
+  for (const v of [appLatestVersion(a), String((a && a.version) || "")]) {
+    if (!v) continue;
+    const p = appBranchVersionZipPath(id, own, v);
+    if (fs.existsSync(p)) return { path: p, via: "branch" };
+  }
+  const mirror = appOwnerZipPath(id, own);
+  if (fs.existsSync(mirror)) return { path: mirror, via: "mirror" };
+  const latest = appLatestVersion(a);
+  if (latest && appGlobalLatest(id) === latest) {
+    for (const p of [appVersionZipPath(id, latest), appZipPath(id)]) {
+      if (fs.existsSync(p)) return { path: p, via: p === appZipPath(id) ? "legacy-mirror" : "shared" };
+    }
+  }
+  return { path: "", via: "" };
+}
+
+/** 分支当前版的落点（给老客户端 / 静态目录兜底用）：没有就回空串。 */
+function appZipPathOfBranch(a) {
+  return appZipPathOfBranchVia(a).path;
 }
 
 /** 版本记录数组：老记录（开关关时建的）没有这个字段 → 空数组。 */
@@ -2256,17 +2656,22 @@ function appEntryOf(a) {
 function appCatalogVersions(a) {
   const owner = db.users.find((u) => u.id === a.userId);
   const fallbackUploader = owner ? owner.username || owner.id : a.userId;
+  const fallbackUploaderName = accountDisplayNameOf(a.userId);
   const recs = appVersionRecords(a);
   if (!recs.length) {
     if (appHasVersionField(a)) return [];
     return [
       {
         version: a.version || "1.0.0",
-        zipUrl: a.id + ".zip",
+        /* 老单版记录的包：优先这一分支的命名（发布时会把老镜像复制过去），没有就仍是 <id>.zip */
+        zipUrl: appZipRel(a.id, a.userId),
         sha256: a.sha256 || "",
         bytes: Number(a.bytes) || 0,
         parentVersion: "",
         uploader: fallbackUploader,
+        /* 上传者显示名（昵称，按 uid 实时解析）：老单版记录也能显示作者现在的昵称 */
+        uploaderName: fallbackUploaderName,
+        ownerId: a.userId,
         createdAt: a.createdAt,
         note: "",
       },
@@ -2274,11 +2679,14 @@ function appCatalogVersions(a) {
   }
   return recs.map((v) => ({
     version: v.version,
-    zipUrl: a.id + "/" + v.version + ".zip",
+    zipUrl: appVersionZipRel(a.id, a.userId, v.version),
     sha256: v.sha256 || "",
     bytes: Number(v.bytes) || 0,
     parentVersion: v.parentVersion || "",
     uploader: v.uploader || fallbackUploader,
+    /* 显示名按这一版的上传者 uid 实时解析（uploader 那份快照可能还是占位账号名） */
+    uploaderName: accountDisplayNameOf(v.uploaderId || a.userId) || fallbackUploaderName,
+    ownerId: a.userId,
     createdAt: v.createdAt,
     note: v.note || "",
     entry: v.entry || appEntryOf(a),
@@ -2289,6 +2697,7 @@ function appCatalogVersions(a) {
 function appVersionsPublic(a) {
   const owner = db.users.find((u) => u.id === a.userId);
   const fallbackUploader = owner ? owner.username || owner.id : a.userId;
+  const fallbackUploaderName = accountDisplayNameOf(a.userId);
   const recs = appVersionRecords(a);
   if (!recs.length) {
     if (appHasVersionField(a)) return [];
@@ -2299,6 +2708,8 @@ function appVersionsPublic(a) {
         sha256: a.sha256 || "",
         parentVersion: "",
         uploader: fallbackUploader,
+        uploaderName: fallbackUploaderName,
+        ownerId: a.userId,
         createdAt: a.createdAt,
         note: "",
         current: true,
@@ -2312,23 +2723,109 @@ function appVersionsPublic(a) {
     sha256: v.sha256 || "",
     parentVersion: v.parentVersion || "",
     uploader: v.uploader || fallbackUploader,
+    uploaderName: accountDisplayNameOf(v.uploaderId || a.userId) || fallbackUploaderName,
+    ownerId: a.userId,
     createdAt: v.createdAt,
     note: v.note || "",
     current: v.version === latest,
   }));
 }
 
-/**
- * 定位要下发的包：多版本模式命中版本记录时取 `<id>/<version>.zip`（缺省最新版），
- * 其余情况退回 `<id>.zip` 镜像（关开关的老口径 / 老单版记录）。
- * wantVersion 为空 = 最新版；指定的版本拿不到「那一版自己的包」时返回 null（调用方回 404）——
- * 绝不拿别的版本充数，否则会静默下错版本。
- */
+/** 某一版的包在盘上真正在哪：分支私有 → 老落点 `<id>/<版本>.zip`（同一 id 内共用，先到先得）。 */
+function appVersionZipPathVia(id, ownerId, version) {
+  const own = appBranchVersionZipPath(id, ownerId, version);
+  if (fs.existsSync(own)) return own;
+  const shared = appVersionZipPath(id, version);
+  if (fs.existsSync(shared)) return shared;
+  return "";
+}
+
+/** 找「某个版本」的包：先在这个 id 的各分支里找（owner hint 优先、主干其次），再兜镜像。
+ *  返回 { path, version, sha256, bytes, entry, ownerId, fromVersionDir } 或 null。 */
+function locateVersionZip(id, wantVersion, ownerHint) {
+  const want = String(wantVersion || "").trim();
+  const branches = appBranchesOf(id);
+  const requested = appResolveOwnerId(ownerHint);
+  const ordered = branches.slice().sort((x, y) => {
+    const xs = requested && x.userId === requested ? 0 : 1;
+    const ys = requested && y.userId === requested ? 0 : 1;
+    if (xs !== ys) return xs - ys;
+    return appBranchCmp(x, y);
+  });
+  for (const a of ordered) {
+    /* 点名了分支（?owner=）：只在那一条分支里找，找不到就如实 404 ——
+       绝不跨分支回退（那会把别人的包当成这条分支的这一版下发）。 */
+    if (requested && a.userId !== requested) continue;
+    const rec = appVersionRecords(a).find((v) => v.version === want) || null;
+    const version = rec ? rec.version : appHasVersionField(a) ? "" : String(a.version || "");
+    if (version !== want) continue;
+    const p = appVersionZipPathVia(id, a.userId, want);
+    if (p) {
+      return {
+        path: p,
+        version: want,
+        sha256: rec ? rec.sha256 || "" : a.sha256 || "",
+        bytes: rec ? Number(rec.bytes) || 0 : Number(a.bytes) || 0,
+        entry: (rec && rec.entry) || appEntryOf(a),
+        ownerId: a.userId,
+        fromVersionDir: true,
+      };
+    }
+  }
+  /* 该版本自己的包不在盘上：只有「这一版就是**指定的那条分支**的当前版」时才回退
+     **这一分支自己的镜像**（`<id>__<作者uid>.zip`）—— 绝不用 appZipPathOfBranchVia 的
+     全局镜像兜底（那是跨分支最高版，会静默把别人的包当成这一版下发）。 */
+  const only = requested ? branches.filter((x) => x.userId === requested) : branches;
+  for (const a of only) {
+    if (appLatestVersion(a) !== want) continue;
+    const own = appOwnerZipPath(id, a.userId);
+    if (!fs.existsSync(own)) continue;
+    const rec = appVersionRecords(a).find((v) => v.version === want) || null;
+    return {
+      path: own,
+      version: want,
+      sha256: rec ? rec.sha256 || "" : a.sha256 || "",
+      bytes: rec ? Number(rec.bytes) || 0 : Number(a.bytes) || 0,
+      entry: (rec && rec.entry) || appEntryOf(a),
+      ownerId: a.userId,
+      fromVersionDir: false,
+    };
+  }
+  return null;
+}
+
 function locateAppZip(a, wantVersion) {
+  const want = String(wantVersion == null ? "" : wantVersion).trim();
+  if (want) return locateVersionZip(a.id, want, a.userId);
+  /* 「这一支的当前版」：**先认这一支自己的包**（分支私有包 → 自己的镜像），找不到才退回老路径。
+     不能反过来 —— 老路径把跨分支共享的 `<id>.zip` 顶在最前面，同号版本时会下发别人的包。 */
+  const via = appZipPathOfBranchVia(a);
+  if (via.path && via.via !== "legacy-mirror") {
+    const latest = appLatestVersion(a);
+    const rec = appVersionRecords(a).find((v) => v.version === latest) || null;
+    return {
+      path: via.path,
+      version: latest || String(a.version || ""),
+      sha256: rec ? rec.sha256 || "" : a.sha256 || "",
+      bytes: rec ? Number(rec.bytes) || 0 : Number(a.bytes) || 0,
+      entry: (rec && rec.entry) || appEntryOf(a),
+      ownerId: a.userId,
+      fromVersionDir: via.via === "branch" || via.via === "shared",
+    };
+  }
+  return locateAppZipLegacy(a, want);
+}
+
+function locateAppZipLegacy(a, wantVersion) {
   const want = String(wantVersion == null ? "" : wantVersion).trim();
   const recs = appVersionRecords(a);
   const target = want || appLatestVersion(a);
   const rec = recs.find((v) => v.version === target) || null;
+  /* 兜底（默认打开多版本后的必要退路）：**没有这一版自己的包时绝不 404 掉老包** ——
+     包在盘上丢了（手工清目录 / 老单版记录升上来的那一版）而 <id>.zip 镜像还在，
+     且要的就是它自己那版（want 为空 = 最新版，或 want === 记录的 version）时，
+     退回镜像下发，与「合成 versions[] 声明 zipUrl = <id>.zip」的口径一致；
+     要的是**别的**版本时仍走下面的 404 分支，不拿镜像冒充。 */
   if (appVersionsOn() && rec) {
     const vp = appVersionZipPath(a.id, rec.version);
     if (fs.existsSync(vp)) {
@@ -2339,6 +2836,17 @@ function locateAppZip(a, wantVersion) {
         bytes: Number(rec.bytes) || 0,
         entry: rec.entry || appEntryOf(a),
         fromVersionDir: true,
+      };
+    }
+    const ownMirror = appZipPath(a.id);
+    if ((!want || want === rec.version) && fs.existsSync(ownMirror)) {
+      return {
+        path: ownMirror,
+        version: rec.version,
+        sha256: rec.sha256 || "",
+        bytes: Number(rec.bytes) || 0,
+        entry: rec.entry || appEntryOf(a),
+        fromVersionDir: false,
       };
     }
     if (want) return null;
@@ -2358,18 +2866,55 @@ function locateAppZip(a, wantVersion) {
   };
 }
 
-/** 把 `<id>.zip` 镜像刷成当前最新版（删版本后调用）；没有剩余版本就删掉镜像。 */
+/** 把静态目录里这个 id 的「老口径镜像」刷成**跨分支最高版**：老客户端 / 老链接要的 <id>.zip 仍下得动。
+ *  只剩一个分支时它就是那个分支的最新版（与旧行为逐字一致）。 */
+function syncAppZipMirrorGlobal(id) {
+  const branches = appBranchesOf(id).filter((a) => !a.unpublished && appLatestVersion(a));
+  if (!branches.length) return;
+  const top = branches.reduce((best, a) =>
+    compareVersions(appLatestVersion(a), appLatestVersion(best)) > 0 ? a : best,
+  );
+  const src = appZipPathOfBranchVia(top).path;
+  if (!src) return;
+  try {
+    fs.copyFileSync(src, appZipPath(id));
+  } catch {}
+}
+
+/** 刷这一分支自己的镜像 `<id>__<作者uid>.zip`（删版本后也走它）；这一分支没版本了就清掉它。
+ *  同时把**老口径** `<id>.zip` 刷成跨分支最高版（旧链 / 老客户端仍要它）。 */
 function syncAppZipMirror(a) {
-  const recs = appVersionRecords(a);
-  if (!recs.length) {
-    try { fs.unlinkSync(appZipPath(a.id)); } catch {}
+  if (!a) return;
+  if (appHasVersionField(a) && !appVersionRecords(a).length) {
+    try { fs.unlinkSync(appOwnerZipPath(a.id, a.userId)); } catch {}
+    syncAppZipMirrorGlobal(a.id);
     return;
   }
-  const rec = recs.find((v) => v.version === appLatestVersion(a)) || null;
-  if (!rec) return;
-  const src = appVersionZipPath(a.id, rec.version);
-  if (!fs.existsSync(src)) return;
-  fs.copyFileSync(src, appZipPath(a.id));
+  /* 先把「这一版自己那份包」按分支口径补齐（老库里的包只有老落点 `<id>/<版本>.zip`），
+     再刷镜像 —— 否则老库走一次删版本会把镜像刷成不存在。 */
+  const cur = appLatestVersion(a);
+  if (cur && !fs.existsSync(appBranchVersionZipPath(a.id, a.userId, cur))) {
+    const from = appVersionZipPathVia(a.id, a.userId, cur);
+    if (from) {
+      try {
+        mkdirp(path.join(appVersionDir(a.id), a.userId));
+        fs.writeFileSync(appBranchVersionZipPath(a.id, a.userId, cur), fs.readFileSync(from));
+      } catch {}
+    }
+  }
+  const src = appZipPathOfBranchVia(a).path;
+  if (src) {
+    try {
+      fs.writeFileSync(appOwnerZipPath(a.id, a.userId), fs.readFileSync(src));
+    } catch {}
+    /* 老口径镜像：我这条分支是跨分支最高版时才拿它刷（否则会盖掉更高版那一条） */
+    if (appGlobalLatest(a.id) === cur) {
+      try {
+        fs.writeFileSync(appZipPath(a.id), fs.readFileSync(src));
+      } catch {}
+    }
+  }
+  syncAppZipMirrorGlobal(a.id);
 }
 
 /**
@@ -2381,25 +2926,286 @@ function syncAppZipMirror(a) {
  * 解析到 http://mt-agent.com/mtnode/apps/ 下（apps-store.js 的 resolveZipUrl / appsIconUrl）。
  */
 /**
- * 二次开发来源（fork，契约 §八）：应用身份 = **应用 id + 作者 uid**。
- * 同一应用被不同作者二次开发后各自上架成**不同 id** 的条目（id 全局唯一不变），条目上用
- * forkOf = { id, ownerId } 指回源应用（id = 源应用 id，ownerId = 源作者 uid，uid 为准；
- * owner = 源作者 username，只为显示）。
- *
+ * 二次开发来源（fork，契约 §八 + §十）：应用身份 = **应用 id + 作者 uid**。
+ * 两条形态都认：
+ *   · 跨 id 的旧形态（源条目是另一个 id）；
+ *   · **同 id 多分支**（本轮新增，q3）：forkOf.id === 自己的 id、ownerId = 主干作者 ——
+ *     这正是「同 id 下上架我自己那条分支」的声明方式，**不再当自指丢弃**。
  * 写入口径（服务端唯一实现）：
  *   · 只认 { id, ownerId } 两个字段，id 走 normalizeAppId、ownerId 非空；
  *   · **不校验源条目是否还在**：作者删了自己的应用不该让别人后续版本永远传不上去 ——
  *     客户端在源不可见时显示「分支来源已不可见」即可；
- *   · 自指（id 与被上传的同一个应用）一律当没声明 —— 那没有意义，只会在目录里绕圈。
+ *   · 自指（forkOf.id === 自己的 id 且 ownerId === 自己）= 没意义，当没声明。
  */
-function normalizeForkOf(raw, selfId) {
+function normalizeForkOf(raw, selfId, selfOwnerId) {
   if (!raw || typeof raw !== "object") return null;
   const id = normalizeAppId(raw.id);
   const ownerId = String(raw.ownerId || "").trim().slice(0, 64);
   if (!id || !ownerId) return null;
-  if (selfId && id === selfId) return null;
+  if (selfId && id === selfId && (!selfOwnerId || ownerId === selfOwnerId)) return null;
   return { id, ownerId };
 }
+
+/* ─────────────────── 同 id 多分支（本轮契约，docs/apps-market.md §十） ───────────────────
+ * 应用身份 = **应用 id + 作者 uid**（q1）：同一个 id 下允许不同作者各占**一条分支**
+ * （同 id 同作者只有一条，q15），主干 = createdAt 最早的那条（q20，只作展示与声明锚点，
+ * 主干下架 / 删光版本不影响其他分支，q27）。
+ * 旧模型（不同 id 各自一条 + forkOf 指回源）**数据与字段一律保留**：forkOf 的
+ * 写入口径、appForkOfPublic 的展示口径都一个字不变，上一轮上架的旧记录照旧能读能传。
+ * ------------------------------------------------------------------------- */
+
+/** 上传者账号名（找不到用户时用 uid 本身）——目录 / 版本项的 `owner` / `uploader` 口径。
+ *  ⚠ 这是**账号名**（可能还是自动占位名），只作内部比对与 ?owner= 寻址用；
+ *  界面要显示给用户的名字一律取 `ownerName` / `uploaderName`（见 accountDisplayNameOf）。 */
+function appOwnerNameOf(userId) {
+  const u = db.users.find((x) => x.id === userId);
+  return u ? String(u.username || u.id) : String(userId || "");
+}
+
+/* ---------- 作者显示名（用户共识：界面显示昵称，不再显示 uid / 占位账号名） ---------- *
+ * 现场：微信 / 手机号扫码自动建号时，account-store 会给一个 `u_xxxxxxxx` 的占位账号名，
+ * 作者显示名于是变成 uid 样的字符串（例：sudoku 第二条分支 owner=`u_f2bea279`，真昵称是
+ * 「Tester」）——「版本选择」里看到 uid 就是这个原因。
+ *
+ * 口径：
+ *   · 显示名 = 账号昵称，**按 uid 实时解析**：作者改一次昵称，目录 / 接口 / 历史版本行处处同步；
+ *   · 昵称为空才回落账号名，且**系统自动占位名**（`u_` + 十六进制、且没有密码）不算名字；
+ *   · 两者都没有 → 空串（客户端显示「未知作者」）。
+ *
+ * 字段：**新增** `ownerName` / `uploaderName` 承载显示名；`owner` / `uploader` 保持账号名语义不变
+ * （客户端 appsSameAuthor 的「同作者」判定与 ?owner= 下载寻址都按它比对，改成会变的昵称会让
+ * 老安装账本把同一个作者判成两个人）。管理台 `adminContentRowOf` 里那个 `ownerName` 是**另一份**
+ * 序列化（账号名，给管理台用），与本节的显示名不是一回事。
+ * ------------------------------------------------------------------------------------ */
+
+/** 系统自动占位账号名（account-store.mjs 的 newPlaceholderUsername：`u_` + 4 字节十六进制）。 */
+const PLACEHOLDER_USERNAME_RE = /^u_[0-9a-f]{6,24}$/i;
+function isPlaceholderUsername(u) {
+  if (!u) return true;
+  const name = String(u.username || "");
+  if (!name) return true;
+  if (u.pass) return false; // 有密码 = 用户自己注册的账号名，永远算真名
+  return PLACEHOLDER_USERNAME_RE.test(name);
+}
+
+/** 账号显示名：uid → 昵称 → 非占位账号名 → 空串。 */
+function accountDisplayNameOf(userId) {
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return "";
+  const nick = String(u.nickname || "").trim();
+  if (nick) return nick;
+  return isPlaceholderUsername(u) ? "" : String(u.username || "").trim();
+}
+
+/** 分支排序（主干判定与展示顺序）：createdAt 早的在前；同刻按 id 串稳定比较。 */
+function appBranchCmp(x, y) {
+  const d = (Number(x && x.createdAt) || 0) - (Number(y && y.createdAt) || 0);
+  if (d) return d;
+  return String((x && x.userId) || "") < String((y && y.userId) || "") ? -1 : 1;
+}
+
+/** 某个 id 下的全部分支（已排除下架的？不 —— 调用方按需要自己滤）。 */
+function appBranchesOf(id) {
+  const want = String(id || "");
+  if (!want) return [];
+  return (db.apps || []).filter((a) => a && a.id === want).sort(appBranchCmp);
+}
+
+/** 主干（最早创建的那条）：只在**可见**的分支里取（includeUnpublished 控制）。 */
+function appTrunkOf(id, includeUnpublished) {
+  const list = appBranchesOf(id).filter((a) => includeUnpublished || !a.unpublished);
+  return list.length ? list[0] : null;
+}
+
+/** 某个作者在这个 id 下的分支（同 id 同作者只有一条）。 */
+function appBranchOfOwner(id, ownerId) {
+  const want = String(ownerId || "");
+  if (!want) return null;
+  return (db.apps || []).find((a) => a && a.id === String(id || "") && a.userId === want) || null;
+}
+
+/* ─────────────────── 应用家族（打赏 · 评论 · 分支树的统一归组口径） ───────────────────
+ * 用户口径（本轮共识）：
+ *   · 「只要基于一个应用开发都应当是同一个 id」+「允许作者自己填 id，填同 id 就自动当分支」；
+ *   · 分支树是**多层**的：谁基于谁开发就挂在谁下面（forkOf = { id, ownerId } 只认这两个字段）；
+ *   · 打赏与评论/评分**按根应用统一**：一个应用族里的所有分支共用一个累计口径；
+ *   · 存量里「另一个 id + forkOf 指回源」的旧条目，也算同一个家族（迁移脚本会把它们改成同 id）。
+ *
+ * 家族 = 从某一条应用记录出发，沿 `forkOf { id, ownerId }` 双向闭包（父往子、子往父）得到的一批记录。
+ * 根（主干）= 沿父链走不到「同族内更早的条目」的那一条；它的 id 就是家族的归组 id。
+ * 这里同时兼容两种写法，保证旧数据也能正确归组：
+ *   · 老形态：`forkOf = { id: <源 id>, ownerId: <源作者 uid> }`（跨 id 或同 id 都认）；
+ *   · 新形态：同 id 多分支（`forkOf.id === 自己的 id`、`ownerId` = 基于哪条分支的作者）。
+ * ------------------------------------------------------------------------------------ */
+
+/** 一条应用记录能被谁指到（自己的 id / id+作者 / 家族归组 id 等）。 */
+function appAliases(a) {
+  if (!a || !a.id) return [];
+  const out = [String(a.id)];
+  if (a.userId) out.push(a.id + "\u0000" + String(a.userId));
+  const f = normalizeForkOf(a.forkOf, a.id, a.userId);
+  if (f) {
+    out.push(String(f.id));
+    out.push(String(f.id) + "\u0000" + String(f.ownerId));
+  }
+  return out;
+}
+
+/** 家族闭包：跨 id 的旧条目也收进来（沿 forkOf 双向可达）。 */
+function appFamily(id, ownerId) {
+  const apps = (db.apps || []).filter((a) => a && a.id);
+  const wantId = String(id || "");
+  const wantOwner = String(ownerId || "");
+  if (!wantId) return [];
+  let seed = null;
+  if (wantOwner) seed = apps.find((a) => a.id === wantId && String(a.userId || "") === wantOwner) || null;
+  if (!seed) seed = apps.find((a) => a.id === wantId) || null;
+  if (!seed) return [];
+  const idx = new Map();
+  for (const a of apps) {
+    for (const alias of appAliases(a)) {
+      if (!idx.has(alias)) idx.set(alias, []);
+      idx.get(alias).push(a);
+    }
+  }
+  const seen = new Set([seed]);
+  const out = [seed];
+  const queue = [seed];
+  while (queue.length) {
+    const cur = queue.shift();
+    const next = [];
+    for (const alias of appAliases(cur)) {
+      for (const a of idx.get(alias) || []) next.push(a);
+    }
+    for (const a of next) {
+      if (seen.has(a)) continue;
+      seen.add(a);
+      out.push(a);
+      queue.push(a);
+    }
+  }
+  return out;
+}
+
+/** 家族内每条记录的父：`forkOf` 指到的那条（同 id 多作者时取最早创建的那一条；自指 / 指不到 = 无父）。 */
+function appParentOf(a) {
+  const f = normalizeForkOf(a && a.forkOf, String((a && a.id) || ""), String((a && a.userId) || ""));
+  if (!f) return null;
+  const cands = (db.apps || []).filter(
+    (x) => x && String(x.id) === f.id && String(x.userId || "") === f.ownerId,
+  );
+  if (!cands.length) return null;
+  return cands.reduce((best, x) => (appBranchCmp(x, best) < 0 ? x : best), cands[0]);
+}
+
+/** 家族根条目（原作者那条；null = 找不到）。
+ *  两条判据按序取：
+ *    ① **单父优先** —— 「没有任何条目声明基于它」的那几条才是根候选（原创）；
+ *    ② 候选多于一条时取 createdAt 最早的那条（同刻再按 uid 稳定比较）。
+ *  为什么不能只看 createdAt：同一秒内连续上架时时间戳可能撞在一起，那样会把某条分支
+ *  误判成根（真出现过：A、B、C 同刻上架时根算到了 B 头上）。
+ *  脏数据（互相声明基于对方成环）由访问集合兜底：退回起点，绝不空转。 */
+function appFamilyRootOf(id, ownerId) {
+  const fam = appFamily(id, ownerId);
+  if (!fam.length) return null;
+  const inFam = new Set(fam);
+  const parents = new Map();
+  for (const a of fam) {
+    const p = appParentOf(a);
+    parents.set(a, p && inFam.has(p) && p !== a ? p : null);
+  }
+  const rootOf = (a) => {
+    const seen = new Set([a]);
+    let cur = a;
+    for (let i = 0; i < fam.length + 1; i++) {
+      const p = parents.get(cur);
+      if (!p || seen.has(p)) return cur;
+      seen.add(p);
+      cur = p;
+    }
+    return cur;
+  };
+  const roots = Array.from(new Set(fam.map(rootOf)));
+  const referenced = new Set();
+  for (const a of fam) {
+    const p = parents.get(a);
+    if (p) referenced.add(p);
+  }
+  const singles = roots.filter((r) => !referenced.has(r));
+  return (singles.length ? singles : roots).reduce((best, x) =>
+    appBranchCmp(x, best) < 0 ? x : best,
+  );
+}
+
+/** 家族根条目的 ownerId（**主干判定的真口径**：同 id 多分支时所有条目 id 相同，
+ *  只有作者 uid 能区分谁是根，所以 trunk 判据必须是 uid 而不是 id）。 */
+function appFamilyRootOwnerId(id, ownerId) {
+  const root = appFamilyRootOf(id, ownerId);
+  return root ? String(root.userId || "") : "";
+}
+
+/** 家族的归组 id（根条目的 id）。
+ *  同 id 多分支下所有条目 id 相同，所以这个值对全族是同一个 —— 客户端按它合并卡片、
+ *  打赏 / 评论按它统计。根条目的**作者**见 appFamilyRootOwnerId。 */
+function appFamilyGroupId(id, ownerId) {
+  const fam = appFamily(id, ownerId);
+  if (!fam.length) return "";
+  const rootOwner = appFamilyRootOwnerId(id, ownerId);
+  const hit = fam.find((a) => String(a.userId || "") === rootOwner);
+  return String((hit && hit.id) || fam[0].id || "");
+}
+
+/** 家族里的全部分支（**同一应用族**：同 id 的分支 + 跨 id 但 forkOf 指回本族的旧条目）。 */
+function appFamilyEntries(id, ownerId) {
+  return appFamily(id, ownerId).slice().sort(appBranchCmp);
+}
+
+/** 一条记录的父分支作者 uid（客户端画多层树用）：父找不到时回空串。 */
+function appParentOwnerOf(a) {
+  const f = normalizeForkOf(a && a.forkOf, String((a && a.id) || ""), String((a && a.userId) || ""));
+  if (!f) return "";
+  const p = appParentOf(a);
+  if (p) return String(p.userId || "");
+  /* 父条目已删 / 已下架而看不到：仍如实回报声明的 ownerId（客户端显示「分支来源已不可见」）。 */
+  return String(f.ownerId || "");
+}
+
+/** 某 id 下跨分支的最高版本号（老口径 `<id>.zip` 镜像指向它；空 = 没有任何版本）。 */
+function appGlobalLatest(id) {
+  let best = "";
+  for (const a of appBranchesOf(id)) {
+    if (a.unpublished) continue;
+    const v = appLatestVersion(a);
+    if (v && (!best || compareVersions(v, best) > 0)) best = v;
+  }
+  return best;
+}
+
+/** owner 参数（uid 或账号名）→ uid；认不出来回空串。 */
+function appResolveOwnerId(raw) {
+  const want = String(raw == null ? "" : raw).trim();
+  if (!want) return "";
+  const u = db.users.find((x) => x.id === want || String(x.username || "") === want);
+  return u ? u.id : want;
+}
+
+/**
+ * 解析「这个 id 的哪一条分支」——所有 /api/apps/<id>* 路由的**唯一**解析口。
+ * ownerHint：?owner=<uid|账号名>、body.ownerId，或 file/icon 想指定的分支作者。
+ * 规则：认得出就用它（该分支存在才认）；认不出 / 没传 → 主干；主干不可见 → 剩下的最早那条。
+ * 返回 { app, trunk, branches, ownerId, requested }；找不到任何一条时 app = null。
+ */
+function appResolveBranch(id, ownerHint, includeUnpublished) {
+  const branches = appBranchesOf(id);
+  const visible = branches.filter((a) => includeUnpublished || !a.unpublished);
+  const trunk = visible.length ? visible[0] : null;
+  const requested = appResolveOwnerId(ownerHint);
+  let app = null;
+  if (requested) app = visible.find((a) => a.userId === requested) || null;
+  if (!app) app = trunk;
+  return { app: app, trunk: trunk, branches: branches, ownerId: app ? app.userId : "", requested: requested };
+}
+
 /** 对外形态（目录条目 / 接口条目共用）：补上源作者的 username 供界面显示。 */
 function appForkOfPublic(a) {
   const f = a && a.forkOf;
@@ -2408,13 +3214,143 @@ function appForkOfPublic(a) {
   const ownerId = String(f.ownerId || "").trim();
   if (!id || !ownerId) return null;
   const u = db.users.find((x) => x.id === ownerId);
-  return { id, ownerId, owner: u ? String(u.username || "") : "" };
+  return { id, ownerId, owner: u ? String(u.username || "") : "", ownerName: accountDisplayNameOf(ownerId) };
 }
-function appCatalogEntry(a) {
+/** 某分支某一版的静态包名，**优先新命名、文件不在盘上就回退它实际占着的老命名**。
+ *  两处都查：静态目录（发布落点）与数据目录（接口直下用的落点）—— 客户端对外看到的
+ *  `e.versions[].zipUrl` / `e.zipUrl` 必须指到真能下到的那个文件（q12：老文件保留不迁）。 */
+function appZipRelOf(id, ownerId, version) {
+  const rel = version ? appVersionZipRel(id, ownerId, version) : appZipRel(id, ownerId);
+  const inWeb = (r) => fs.existsSync(path.join(APPS_WEB_DIR, ...r.split("/")));
+  if (inWeb(rel)) return rel;
+  const inData = (r) => fs.existsSync(path.join(APP_DIR, ...r.split("/")));
+  if (inData(rel)) return rel;
+  if (version) {
+    const legacyRel = id + "/" + version + ".zip";
+    if (inWeb(legacyRel) || inData(legacyRel)) return legacyRel;
+  }
+  const legacyZip = id + ".zip";
+  if (inWeb(legacyZip) || inData(legacyZip)) return legacyZip;
+  return rel;
+}
+
+/** 一条分支的「当前版包名」：新命名 `<id>__<作者uid>.zip` 优先；老库只有 <id>.zip 时回退它。 */
+function appBranchZipRelOf(id, ownerId) {
+  const rel = appZipRel(id, ownerId);
+  const inWeb = (r) => fs.existsSync(path.join(APPS_WEB_DIR, ...r.split("/")));
+  const inData = (r) => fs.existsSync(path.join(APP_DIR, ...r.split("/")));
+  if (inWeb(rel) || inData(rel)) return rel;
+  const legacy = id + ".zip";
+  if (inWeb(legacy) || inData(legacy)) return legacy;
+  return rel;
+}
+
+/** 图标静态相对地址：新命名优先、老命名兜底（同 appZipRelOf 的口径）。 */
+function appIconRelOf(id, ownerId) {
+  return appIconRel(id, ownerId) || appIconRel(id);
+}
+
+/** 静态目录条目筛选后的排序：**id 升序 + 同 id 内主干在前**（客户端按 id 合并成一张卡，q21）。 */
+function appCatalogSort(list) {
+  return list
+    .slice()
+    .sort((x, y) => {
+      const dx = String(x.id || "").localeCompare(String(y.id || ""), "en");
+      if (dx) return dx;
+      return appBranchCmp(x, y);
+    });
+}
+
+/** 一条分支对外形态（`branches[]` 用，契约 §十 + 本轮多层树）：作者 / 版本 / 父分支 / 这一分支的包。 */
+function appBranchEntry(a) {
   const owner = db.users.find((u) => u.id === a.userId);
-  const zipUrl = a.id + ".zip";
+  const rootId = appFamilyGroupId(a.id, a.userId) || a.id;
+  const rootOwner = appFamilyRootOwnerId(a.id, a.userId) || String(a.userId || "");
   return {
     id: a.id,
+    ownerId: a.userId,
+    owner: owner ? String(owner.username || owner.id) : String(a.userId || ""),
+    nickname: owner ? String(owner.nickname || "") : "",
+    /* 分支作者显示名（= 昵称；上面 owner / nickname 保持原义，客户端显示统一读它） */
+    ownerName: accountDisplayNameOf(a.userId),
+    title: a.title || a.id,
+    version: a.version || "",
+    latestVersion: appLatestVersion(a),
+    versions: appCatalogVersions(a),
+    bytes: a.bytes || 0,
+    zipUrl: appBranchZipRelOf(a.id, a.userId),
+    icon: appIconRelOf(a.id, a.userId),
+    sha256: a.sha256 || "",
+    /* trunk = 家族根条目（原作者那条）；parentOwnerId = 它基于哪条分支开发（多层树的父节点）。
+       两者都由家族口径算出来，客户端直接按 parentOwnerId 挂树，不必自己猜。
+       判据用**作者 uid**：同 id 多分支下所有条目的 id 相同，只有 uid 能区分谁是根。 */
+    trunk: rootOwner === String(a.userId || ""),
+    familyRootId: rootId,
+    familyRootOwnerId: rootOwner,
+    parentOwnerId: appParentOwnerOf(a),
+    unpublished: !!a.unpublished,
+    unpublishedAt: Number(a.unpublishedAt) || 0,
+    createdAt: a.createdAt,
+    updatedAt: a.updatedAt,
+  };
+}
+
+/** 把一个应用族串成树（`branches[]`）：**整个家族**（同 id 的各作者分支 + 跨 id 但 forkOf
+ *  指回本族的条目都在内），每条带 trunk / parentOwnerId —— 客户端按它画多层分支树。
+ *  根条目自己 parentOwnerId 为空。 */
+function appBranchViewOf(id, viewer) {
+  const branches = appFamilyEntries(id, "");
+  return branches.map((a) =>
+    Object.assign(appBranchEntry(a), {
+      mine: !!(viewer && viewer.id === a.userId),
+      canDelete: !!(viewer && (viewer.id === a.userId || isAdmin(viewer))),
+      forkOf: appForkOfPublic(a),
+    }),
+  );
+}
+
+/** 分支的 forkOf 公开形态：`branches[]` 直接出**声明过的**那一份（见 appForkOfPublic）。
+ *  ⚠️ 旧版这里叫 appForkOfTrunkOf（把每条分支的 forkOf 都指向主干）—— 本轮改成
+ *  「谁基于谁就指谁」，多层树的父子关系才连得起来；那个函数已随本轮删除，不留死代码。 */
+
+/**
+ * 上传新版本时的标签继承（用户口径：**上传新版本继承原版标签**）。
+ *
+ * 现场：上架窗打开时标签输入框是空的，用户不手填就等于把空标签发给服务端 ——
+ * 改前 `tags: []` 会把线上标签**清空**（`a.tags = []`），作者一追加版本就丢掉整组标签。
+ * 规则（服务端兜底，客户端还会开窗带回原标签，两层一起保）：
+ *   · 解析后**非空** → 用这一份（用户真填了新标签）；
+ *   · 解析后**为空 / 没带这个字段** → 保留应用原有标签，一个都不动。
+ * 代价是没有任何路径能把标签改成空（只能换成别的标签）——这是与用户确认过的取舍：
+ * 宁可「清不掉」，也不要「一追加版本就悄悄清掉」。
+ *
+ * @param {*} input 请求体里的 tags（数组或逗号分隔字符串；null/undefined 也算没填）
+ * @param {string[]} cur 应用当前标签
+ * @returns {string[]} 要写回应用的标签
+ */
+function appTagsNext(input, cur) {
+  const next = parseTags(input);
+  if (next.length) return next;
+  return Array.isArray(cur) ? cur.slice() : [];
+}
+
+function appCatalogEntry(a) {
+  const owner = db.users.find((u) => u.id === a.userId);
+  const zipUrl = appBranchZipRelOf(a.id, a.userId);
+  const rootId = appFamilyGroupId(a.id, a.userId) || a.id;
+  /* 家族根那条的作者：**trunk 判据只能用 uid** —— 同 id 的多条分支 id 全相同，
+     拿 id 比会把每一条都判成根（真踩过：三作者三条分支同时被标成 trunk）。 */
+  const rootOwner = appFamilyRootOwnerId(a.id, a.userId) || String(a.userId || "");
+  return {
+    id: a.id,
+    /* 同 id 多分支（契约 §十）：条目自带作者 uid，客户端按 id 归组、按 ownerId 指定分支下载 */
+    ownerId: a.userId,
+    /* 应用家族（本轮需求：分支树统一、打赏/评论按根应用统一）：
+       familyRootId = 家族归组 id（= 根条目的 id，客户端卡片按它合并）；trunk=true 表示这条是根。 */
+    familyRootId: rootId,
+    trunk: rootOwner === String(a.userId || ""),
+    familyRootOwnerId: rootOwner,
+    parentOwnerId: appParentOwnerOf(a),
     title: a.title,
     version: a.version || "1.0.0",
     // 多版本字段（契约 §7.6）：**始终**给 latestVersion / versions[]，
@@ -2423,11 +3359,13 @@ function appCatalogEntry(a) {
     versions: appCatalogVersions(a),
     desc: a.description || "",
     description: a.description || "",
-    icon: appIconRel(a.id) || String(a.icon || ""),
+    icon: appIconRelOf(a.id, a.userId),
     zipUrl: zipUrl,
     url: zipUrl,
     sha256: a.sha256 || "",
     owner: owner ? (owner.username || owner.id) : a.userId,
+    /* 作者显示名（昵称，按 uid 实时解析）——界面一律用它；没有名字时为空串（客户端显示「未知作者」） */
+    ownerName: accountDisplayNameOf(a.userId),
     /* 二次开发来源（可选；原创不出现这个字段）：{ id, ownerId, owner } —— 契约 §八 */
     forkOf: appForkOfPublic(a),
     entry: a.entry || "index.html",
@@ -2440,29 +3378,36 @@ function appCatalogEntry(a) {
 }
 
 /** 接口回给客户端 / 管理侧的完整条目 = 统一字段 + 归属与权限标记。 */
-function publicApp(a, viewer) {
+function publicApp(a, viewer, en) {
   const viewerId = viewer && viewer.id;
   const owner = db.users.find((u) => u.id === a.userId);
-  return Object.assign({}, appCatalogEntry(a), {
+  return withEnrich(Object.assign({}, appCatalogEntry(a), {
     ownerUser: owner
       ? { id: owner.id, username: owner.username, nickname: owner.nickname }
       : { id: a.userId, username: "", nickname: "" },
-    hasIcon: !!appIconPath(a.id),
+    hasIcon: !!appIconPath(a.id, a.userId),
     mine: !!(viewerId && viewerId === a.userId),
     canDelete: !!(viewerId && (viewerId === a.userId || isAdmin(viewer))),
+    // 同 id 的其他作者分支（含主干）：客户端据此画分支树与「作者 ▾」下拉（契约 §十）
+    branches: appBranchViewOf(a.id, viewer),
     // 下架状态只在详情 / 自己列表里露面（公开目录根本不列出这类条目）。
     unpublished: !!a.unpublished,
     unpublishedAt: Number(a.unpublishedAt) || 0,
-  });
+  }), "app", a.id, en);
 }
 
-/** 静态目录文档：把这份 JSON 原样写到 /var/www/mtnode/apps/catalog.json 即是线上目录。 */
+/** 静态目录文档：把这份 JSON 原样写到 /var/www/mtnode/apps/catalog.json 即是线上目录。
+ *  同 id 的多个作者分支**各占一条**（id 升序、同 id 内主干在前），客户端按 id 合并成一张卡。
+ *
+ *  条目另带**公开打赏汇总** `tips:{count,totalYuan}`：目录是客户端列表的主来源（静态文件），
+ *  接口那份（publicApp）本来就有 tips，目录少了它就出现「线上明明有人打赏、卡片悬停却说
+ *  还没有人打赏」的错报。整份目录一次遍历 db.tips 算齐（batchSummaryOf，不是逐个对象查表）。 */
 function appCatalogDoc() {
-  const apps = (db.apps || [])
-    .filter((a) => !a.unpublished) // 已下架的应用不进目录（契约 §7.6）
-    .slice()
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-    .map(appCatalogEntry);
+  const rows = appCatalogSort(
+    (db.apps || []).filter((a) => !a.unpublished), // 已下架的应用不进目录（契约 §7.6）
+  );
+  const tipFn = plans.enricher("app", rows.map((a) => a.id));
+  const apps = rows.map((a) => Object.assign(appCatalogEntry(a), { tips: tipFn(a.id) }));
   return {
     version: 1,
     updatedAt: new Date(now()).toISOString(),
@@ -2493,33 +3438,43 @@ function appStaticPlan() {
   const entries = [];
   const managed = [APPS_WEB_MANIFEST, "catalog.json"];
   const missing = [];
+  const seen = new Set(); /* 同 id 多分支：一个静态路径只登记一次（同号版本共用老落点时会出现） */
+  const push = (id, rel, src) => {
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    entries.push({ id: id, rel: rel, src: src, bytes: fs.statSync(src).size });
+    managed.push(rel);
+  };
   for (const e of doc.apps) {
-    const a = (db.apps || []).find((x) => x.id === e.id);
+    /* doc.apps 里同 id 可能有多条（每个作者分支一条），这里按 ownerId 找到**那一条** */
+    const a = (db.apps || []).find((x) => x.id === e.id && x.userId === e.ownerId);
     if (!a) continue;
-    // 最新版镜像：老客户端 / 单版布局只认 <id>.zip
+    // 这一分支当前版的镜像：<id>__<作者uid>.zip（新命名）
+    const ownMirror = appOwnerZipPath(a.id, a.userId);
+    if (fs.existsSync(ownMirror)) push(a.id, appZipRel(a.id, a.userId), ownMirror);
+    // 老口径镜像 <id>.zip：老客户端 / 老链接仍要它（内容 = 跨分支最高版）
     const mirror = appZipPath(a.id);
-    if (fs.existsSync(mirror)) {
-      entries.push({ id: a.id, rel: a.id + ".zip", src: mirror, bytes: fs.statSync(mirror).size });
-      managed.push(a.id + ".zip");
-    }
-    // 多版本：每一版 <id>/<version>.zip（catalog 的 versions[].zipUrl 就是它）
+    if (fs.existsSync(mirror)) push(a.id, a.id + ".zip", mirror);
+    // 多版本：每一版写自己那一份（新命名 <id>/<作者uid>/<版本>.zip；与老落点共用时不重复写）
     for (const v of appVersionRecords(a)) {
-      const rel = a.id + "/" + v.version + ".zip";
-      const src = appVersionZipPath(a.id, v.version);
-      if (fs.existsSync(src)) {
-        entries.push({ id: a.id, rel: rel, src: src, bytes: fs.statSync(src).size });
-        managed.push(rel);
+      const wantRel = appVersionZipRel(a.id, a.userId, v.version);
+      const src = appVersionZipPathVia(a.id, a.userId, v.version);
+      if (src) {
+        const legacyRel = a.id + "/" + v.version + ".zip";
+        const rel = src === appVersionZipPath(a.id, v.version) ? legacyRel : wantRel;
+        push(a.id, rel, src);
+        /* 同一版的老落点也留一份（catalog 里回退命名时会指到它），只有它已经就是 src 时才不重复 */
+        if (rel !== wantRel && fs.existsSync(appVersionZipPath(a.id, v.version))) {
+          push(a.id, legacyRel, appVersionZipPath(a.id, v.version));
+        }
       } else {
-        missing.push({ id: a.id, reason: "缺少版本包 " + rel });
+        missing.push({ id: a.id, reason: "缺少版本包 " + wantRel });
       }
     }
-    // 图标：相对静态目录 icons/<id>.<ext>（appCatalogEntry().icon 的写法）
-    const iconPath = appIconPath(a.id);
-    if (iconPath) {
-      const rel = "icons/" + a.id + "." + path.extname(iconPath).slice(1).toLowerCase();
-      entries.push({ id: a.id, rel: rel, src: iconPath, bytes: fs.statSync(iconPath).size });
-      managed.push(rel);
-    }
+    // 老单版记录（没有 versions 字段）：<id>.zip 就是它的包，已在上面登记过
+    // 图标：相对静态目录 icons/<id>__<作者uid>.<ext>（appCatalogEntry().icon 的写法）
+    const iconPath = appIconPath(a.id, a.userId);
+    if (iconPath) push(a.id, "icons/" + path.basename(iconPath), iconPath);
     if (appHasVersionField(a) && !appVersionRecords(a).length) {
       missing.push({ id: a.id, reason: "版本被删光，当前没有可分发的包" });
     }
@@ -2698,6 +3653,279 @@ function bumpAppVersion(v) {
   return m ? m[1] + "." + m[2] + "." + (Number(m[3]) + 1) : s + ".1";
 }
 
+/* ==========================================================================
+ * 管理台 · 系统资源监控（只读口径）
+ *   · **只在管理台主动拉取时**采样一次（GET /api/admin/sysinfo，切页签 / 点刷新各一次）：
+ *     服务端没有后台采样、没有定时器、也不留历史 —— 需求口径就是「不自动刷」。
+ *   · CPU 使用率 = 两次 os.cpus() 快照的差值（间隔 SYSINFO_SAMPLE_MS）；拿不到差值退回 1 分钟负载。
+ *   · 磁盘看的是**数据目录所在盘**（db.json / 应用 zip / 技能包都落在这里）。
+ *   · Swap 只有 Linux 有（读 /proc/meminfo）；读不到就 supported:false，界面显示「本机不支持」。
+ *   · 全程只读：不重启服务、不清缓存、不写任何文件。
+ * ========================================================================== */
+
+const SYSINFO_SAMPLE_MS = 200;
+
+function sysinfoPct(used, total) {
+  const t = Number(total) || 0;
+  if (!(t > 0)) return 0;
+  return Math.round((Math.max(0, Number(used) || 0) / t) * 1000) / 10;
+}
+
+/** 一次全机 CPU 时间快照（jiffies 口径，与 os.cpus() 的 times 字段同源）。 */
+function sysinfoCpuTimes() {
+  let idle = 0;
+  let total = 0;
+  for (const c of os.cpus()) {
+    const t = c.times || {};
+    const busy = (Number(t.user) || 0) + (Number(t.nice) || 0) + (Number(t.sys) || 0) + (Number(t.irq) || 0);
+    const id = Number(t.idle) || 0;
+    idle += id;
+    total += busy + id;
+  }
+  return { idle, total };
+}
+
+function sysinfoSwap() {
+  const none = { supported: false, totalBytes: 0, usedBytes: 0, freeBytes: 0, usedPct: 0 };
+  let txt = "";
+  try {
+    txt = fs.readFileSync("/proc/meminfo", "utf8");
+  } catch {
+    return none;
+  }
+  const pick = (key) => {
+    const m = new RegExp("^" + key + ":\\s+(\\d+)\\s+kB", "m").exec(txt);
+    return m ? Number(m[1]) * 1024 : 0;
+  };
+  const total = pick("SwapTotal");
+  if (!(total > 0)) return none;
+  const free = pick("SwapFree");
+  const used = Math.max(0, total - free);
+  return { supported: true, totalBytes: total, usedBytes: used, freeBytes: free, usedPct: sysinfoPct(used, total) };
+}
+
+async function sysinfoSnapshot() {
+  const at = now();
+  const cpuA = sysinfoCpuTimes();
+  const t0 = process.hrtime.bigint();
+  await new Promise((r) => setTimeout(r, SYSINFO_SAMPLE_MS));
+  const cpuB = sysinfoCpuTimes();
+  const sampleMs = Math.round(Number(process.hrtime.bigint() - t0) / 1e6);
+  const dIdle = cpuB.idle - cpuA.idle;
+  const dTotal = cpuB.total - cpuA.total;
+  const cpus = os.cpus();
+  const load = os.loadavg();
+
+  const memTotal = os.totalmem();
+  const memFree = os.freemem();
+  const memUsed = Math.max(0, memTotal - memFree);
+
+  let disk = { supported: false, path: DATA_DIR, totalBytes: 0, usedBytes: 0, freeBytes: 0, usedPct: 0 };
+  try {
+    const st = fs.statfsSync(DATA_DIR);
+    const bsize = Number(st.bsize) || 0;
+    const total = Number(st.blocks) * bsize;
+    const free = Number(st.bavail) * bsize;
+    const used = Math.max(0, total - Number(st.bfree) * bsize);
+    if (total > 0) {
+      disk = { supported: true, path: DATA_DIR, totalBytes: total, usedBytes: used, freeBytes: free, usedPct: sysinfoPct(used, total) };
+    }
+  } catch {
+    /* 不支持 statfs 的平台（或目录不在）就留 supported:false，界面显示「取不到」 */
+  }
+
+  const cpuUsage = process.cpuUsage();
+  const uptimeSec = Math.round(process.uptime());
+  const mem = process.memoryUsage();
+
+  return {
+    ok: true,
+    at: at,
+    sampleMs: sampleMs,
+    cpu: {
+      usagePct: dTotal > 0 ? Math.round((1 - dIdle / dTotal) * 1000) / 10 : 0,
+      cores: cpus.length,
+      model: (cpus[0] && cpus[0].model) || "",
+      load: [Number(load[0]) || 0, Number(load[1]) || 0, Number(load[2]) || 0],
+    },
+    mem: {
+      totalBytes: memTotal,
+      usedBytes: memUsed,
+      freeBytes: memFree,
+      usedPct: sysinfoPct(memUsed, memTotal),
+    },
+    swap: sysinfoSwap(),
+    disk: disk,
+    proc: {
+      pid: process.pid,
+      rssBytes: Number(mem.rss) || 0,
+      heapUsedBytes: Number(mem.heapUsed) || 0,
+      cpuTimeMs: Math.round(((Number(cpuUsage.user) || 0) + (Number(cpuUsage.system) || 0)) / 1000),
+      uptimeSec: uptimeSec,
+      startedAt: at - uptimeSec * 1000,
+      node: process.version,
+    },
+    host: {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      arch: os.arch(),
+      release: os.release(),
+      uptimeSec: Math.round(os.uptime()),
+    },
+  };
+}
+
+/* ==========================================================================
+ * 管理台 · 内容管理（管理员对 应用 / 模板 / 技能 的操作）
+ *   · 管理台的票是 adm_（不是客户端 Bearer），走不到 /api/apps|templates|skills 的 owner 判定，
+ *     所以单开一组 /api/admin/content/*：管理员可操作**任何作者**的内容（对齐 isAdmin 的既有口径）。
+ *   · 编辑只到元信息：应用 = 标题/简介/标签/图标；模板 = 标题/简介/标签；技能 = 标题/简介/标签/版本号/官方标记。
+ *     文件正文与 zip 一律不在管理台换（谁上传谁改）；应用的 version 由版本记录掌管，也不手改。
+ *   · 模板 / 技能服务端本来就没有多版本链与「下架」位，这层差异照现状适配，不新增字段。
+ *   · 删除类操作在界面上二次确认，服务端逐条写 contentAudit（谁 / 何时 / 对哪条做了什么）。
+ * ========================================================================== */
+
+const CONTENT_AUDIT_MAX = 200;
+const CONTENT_KINDS = ["app", "template", "skill"];
+
+function contentAuditList() {
+  if (!Array.isArray(db.contentAudit)) db.contentAudit = [];
+  return db.contentAudit;
+}
+
+async function contentAuditPush(admin, action, kind, row, detail) {
+  const list = contentAuditList();
+  list.unshift({
+    id: "ca_" + crypto.randomBytes(6).toString("hex"),
+    at: now(),
+    userId: admin.id,
+    username: admin.username || admin.id,
+    action: action,
+    kind: kind,
+    targetId: row.id,
+    targetOwnerId: row.ownerId || "",
+    targetTitle: row.title || row.skillName || row.id,
+    detail: detail || "",
+  });
+  if (list.length > CONTENT_AUDIT_MAX) list.length = CONTENT_AUDIT_MAX;
+  await saveDb();
+}
+
+function adminContentFind(kind, id, ownerId) {
+  const want = String(id || "").trim();
+  if (kind === "template") {
+    const t = db.templates.find((x) => x.id === want);
+    return t ? { row: t, ownerId: t.userId } : null;
+  }
+  if (kind === "skill") {
+    const s = db.skills.find((x) => x.id === want);
+    return s ? { row: s, ownerId: s.userId } : null;
+  }
+  const branches = appBranchesOf(want);
+  if (!branches.length) return null;
+  const asked = appResolveOwnerId(ownerId);
+  const a = asked ? appBranchOfOwner(want, asked) : branches.length === 1 ? branches[0] : null;
+  return a ? { row: a, ownerId: a.userId, branchRequired: false } : { row: null, ownerId: "", branches: branches.length, branchRequired: true };
+}
+
+function adminAppRow(a) {
+  const recs = appVersionRecords(a);
+  const owner = db.users.find((u) => u.id === a.userId);
+  return {
+    kind: "app",
+    id: a.id,
+    ownerId: a.userId,
+    ownerName: owner ? String(owner.username || owner.id) : String(a.userId || ""),
+    title: a.title || a.id,
+    desc: a.description || a.desc || "",
+    tags: Array.isArray(a.tags) ? a.tags : [],
+    version: appLatestVersion(a) || a.version || "",
+    versionCount: recs.length,
+    bytes: Number(a.bytes) || 0,
+    downloads: Number(a.downloads) || 0,
+    likes: Number(a.likes) || 0,
+    entry: a.entry || "",
+    sha256: a.sha256 || "",
+    hasIcon: !!appIconPath(a.id, a.userId),
+    unpublished: !!a.unpublished,
+    unpublishedAt: Number(a.unpublishedAt) || 0,
+    branchCount: appFamilyEntries(a.id, "").length,
+    createdAt: Number(a.createdAt) || 0,
+    updatedAt: Number(a.updatedAt) || 0,
+  };
+}
+
+function adminTemplateRow(t) {
+  const owner = db.users.find((u) => u.id === t.userId);
+  return {
+    kind: "template",
+    id: t.id,
+    ownerId: t.userId,
+    ownerName: owner ? String(owner.username || owner.id) : String(t.userId || ""),
+    title: t.title || t.id,
+    desc: t.description || "",
+    tags: Array.isArray(t.tags) ? t.tags : [],
+    bytes: Number(t.bytes) || 0,
+    downloads: Number(t.downloads) || 0,
+    likes: Number(t.likes) || 0,
+    hasPreview: !!t.hasPreview,
+    createdAt: Number(t.createdAt) || 0,
+    updatedAt: Number(t.updatedAt) || 0,
+  };
+}
+
+function adminSkillRow(s) {
+  const owner = db.users.find((u) => u.id === s.userId);
+  const files = Array.isArray(s.files) ? s.files : [];
+  return {
+    kind: "skill",
+    id: s.id,
+    ownerId: s.userId,
+    ownerName: owner ? String(owner.username || owner.id) : String(s.userId || ""),
+    title: s.title || s.id,
+    skillName: s.skillName || "",
+    desc: s.description || "",
+    tags: Array.isArray(s.tags) ? s.tags : [],
+    version: s.version || "1.0.0",
+    official: !!s.official,
+    fileCount: files.length,
+    fileList: files.map((f) => f.path),
+    bytes: Number(s.bytes) || 0,
+    downloads: Number(s.downloads) || 0,
+    likes: Number(s.likes) || 0,
+    hasPreview: !!s.hasPreview,
+    createdAt: Number(s.createdAt) || 0,
+    updatedAt: Number(s.updatedAt) || 0,
+  };
+}
+
+/** 一处匹配：关键词打 id / 标题 / 简介 / 标签 / skillName / 作者账号。 */
+function adminContentHit(row, q) {
+  if (!q) return true;
+  const hay = [row.id, row.title, row.desc, row.skillName, row.ownerName, row.ownerId, (row.tags || []).join(" ")]
+    .join("\n")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+function adminContentCounts() {
+  const apps = db.apps || [];
+  return {
+    app: apps.length,
+    appUnpublished: apps.filter((a) => a && a.unpublished).length,
+    template: (db.templates || []).length,
+    skill: (db.skills || []).length,
+    skillOfficial: (db.skills || []).filter((s) => s && s.official).length,
+  };
+}
+
+function adminContentPage(rows, url, defSize) {
+  const pageSize = Math.min(100, Math.max(5, Number(url.searchParams.get("pageSize")) || defSize || 20));
+  const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+  rows.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+  return { page, pageSize, total: rows.length, items: rows.slice((page - 1) * pageSize, page * pageSize) };
+}
+
 async function handle(req, res) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -2748,10 +3976,17 @@ async function handle(req, res) {
       recharge: {
         orders: (db.rechargeOrders || []).length,
         ledger: (db.rechargeLedger || []).length,
+        // 打赏 / 评论 / 消息自检：部署后 curl /api/health 一眼看出新集合有没有载入（0 也算正常）
+        tips: (db.tips || []).length,
+        comments: (db.comments || []).length,
+        notifications: (db.notifications || []).length,
         payConfigured: pay.configured,
         payMissing: pay.configured ? [] : pay.missing,
         notifyConfigured: pay.hasNotifyUrl,
         adminWeb: fs.existsSync(path.join(ADMIN_WEB_DIR, "index.html")),
+        /* 充值闸门是否对所有已注册账号开放（见 rechargeAllowed）：部署自检直接看这一行，
+           不必再猜线上有没有残留名单 —— false 只可能是 MTNODE_RECHARGE_CLOSED 被显式置上了。 */
+        open: !rechargeGloballyClosed(),
       },
       // 中转站自检：只回「上游凭据就位与否 + 白名单模型数」，不含任何 Key 材料
       relay: (() => {
@@ -2823,8 +4058,16 @@ async function handle(req, res) {
     const m = /^Bearer\s+(\S+)/i.exec(h);
     if (m) {
       const th = hashToken(m[1]);
+      /* 带的是**中转票**（不是登录会话）也算退出登录：客户端退出时手上可能只剩这张票
+         （本机存着票、登录会话已被清），这时必须能把票收回来 ——
+         十年票的口径是「分发一次后不失效」，不该变成「连登出都收不回来」。
+         两种票都算：把该账号的中转票与明文一并作废（见 revokeRelayKeys）。 */
+      const rec = (db.sessions || []).find((s) => s.tokenHash === th) || null;
+      const isRelayKey = rec && String(rec.kind || "") === RELAY_KEY_KIND;
       await accountStore.deleteSession(th);
       db.sessions = db.sessions.filter((s) => s.tokenHash !== th);
+      const who = user || (isRelayKey ? (db.users || []).find((x) => x.id === rec.userId) || null : null);
+      if (who) await revokeRelayKeys(who);
       await saveDb();
     }
     return send(res, 200, { ok: true, code: "OK" });
@@ -2857,9 +4100,13 @@ async function handle(req, res) {
         (e.type === "recharge" ||
           (e.type === "adjust" && Number(e.deltaCents) > 0)),
     );
-    /* 中转 Key（180 天独立票）：这个入口同时是**发放口** —— 客户端登录后 / 老客户端首次
+    /* 中转 Key（3650 天独立票）：这个入口同时是**发放口** —— 客户端登录后 / 老客户端首次
        同步时来这里领票，明文只在下发的这一次回给主进程（客户端存本机加密凭据）。 */
-    const keyView = await relayKeyView(user);
+    const keyView = await relayKeyView(
+      user,
+      user && user.__sessionHash,
+      String(req.headers["x-mtnode-device"] || "").trim().slice(0, 64),
+    );
     return send(res, 200, {
       ok: true,
       baseUrl: RELAY_PUBLIC_BASE,
@@ -2870,6 +4117,11 @@ async function handle(req, res) {
       balanceYuan: totalYuan,
       totalYuan: totalYuan,
       models: models,
+      /* 中转计费的两半（客户端本地「中转按币」计价要与云端同源，见 relay.mjs 的
+         textCostYuan / isPeak）：models[].price = 逐模型真实价目；peaks = 豁免高峰的
+         节假日日期；coinYuan = 鲸圆币汇率（1 币 = ¥0.02）。三个字段都只读、不含凭据。 */
+      peaks: relay.admin.peaks(),
+      coinYuan: relay.admin.coinYuan(),
       reason: models.length ? "" : "账号在中转站的可用余额为 0：充值后即可使用",
       updatedAt: Date.now(),
       /* 凭据状态：relayKey 非空 = 这次新发的（客户端立刻存下）；为空 = 沿用现役那张。 */
@@ -2877,6 +4129,63 @@ async function handle(req, res) {
       relayKeyExpiresAt: keyView.expiresAt,
       relayKeyTtlMs: keyView.ttlMs,
       relayKeyRenewBeforeMs: keyView.renewBeforeMs,
+      /* 手动轮换的当日余量（卡上「更换 Key」按钮据此置灰并显示 n/5）。 */
+      ...relayRotateView(user, Date.now()),
+    });
+  }
+
+  /**
+   * 手动更换中转 Key（客户端卡上的「更换 Key」按钮）：
+   * POST /api/relay/me { rotate: true } —— 幂发口径下 GET 只会拿回同一张票，
+   * 想换一张必须走这个显式入口。限频：**每账号自然日 5 次**（服务器本地时区），
+   * 超限回 429 RELAY_ROTATE_LIMIT；换 Key 后旧票立即失效（见 ensureRelayKey 的注释）。
+   * 只动中转票，**不动登录会话**（换 Key 不该把人踢下线）。
+   */
+  if (method === "POST" && p === "/api/relay/me") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    if (!b || b.rotate !== true) {
+      return send(res, 400, {
+        ok: false,
+        code: "BAD_REQUEST",
+        error: "该入口只支持 { rotate: true }（同步中转清单请用 GET）",
+      });
+    }
+    const t = Date.now();
+    const before = relayRotateStateOf(user, t);
+    if (before.left <= 0) {
+      return send(res, 429, {
+        ok: false,
+        code: "RELAY_ROTATE_LIMIT",
+        error: "今日更换次数已用完（" + before.limit + "/" + before.limit + "）",
+        ...relayRotateView(user, t),
+      });
+    }
+    const used = await consumeRelayRotate(user, t);
+    const keyView = await relayKeyView(
+      user,
+      user && user.__sessionHash,
+      String(req.headers["x-mtnode-device"] || "").trim().slice(0, 64),
+      { rotate: true },
+    );
+    await saveDb();
+    console.log(
+      "[mtnode-store] relay key rotated: user=" +
+        String(user.id) +
+        " 今日第 " +
+        String(used.state.used) +
+        "/" +
+        String(used.state.limit) +
+        " 次",
+    );
+    return send(res, 200, {
+      ok: true,
+      rotatedAt: Date.now(),
+      relayKey: keyView.relayKey,
+      relayKeyExpiresAt: keyView.expiresAt,
+      relayKeyTtlMs: keyView.ttlMs,
+      relayKeyRenewBeforeMs: keyView.renewBeforeMs,
+      ...relayRotateView(user, Date.now()),
     });
   }
 
@@ -2893,6 +4202,17 @@ async function handle(req, res) {
       return send(res, 500, { ok: false, code: "UPDATE_FAILED", error: "昵称更新失败" });
     }
     await saveDb();
+    /* 昵称就是应用市场里的作者显示名（用户共识：改一次处处生效）。静态目录是快照，
+       不重刷的话别人（以及作者自己）在市场里看到的还是旧名字 —— 所以这里顺带重发一次。
+       只在该账号名下真有应用时才写盘，避免每次改昵称都刷一遍静态目录。 */
+    if ((db.apps || []).some((a) => a && a.userId === user.id)) {
+      try {
+        publishStaticApps("nickname:" + user.id);
+      } catch (err) {
+        // 目录刷不动不影响昵称本身（接口目录那份是现算的，客户端兜底也能拿到新名字）
+        console.warn("[store] 改昵称后重发应用目录失败：" + ((err && err.message) || String(err)));
+      }
+    }
     return send(res, 200, { ok: true, user: publicUser(updated) });
   }
 
@@ -3320,10 +4640,12 @@ async function handle(req, res) {
 
   if (method === "GET" && p === "/api/me/templates") {
     if (!user) return send(res, 401, { ok: false, error: "未登录" });
-    const items = db.templates
+    const mine = db.templates
       .filter((t) => t.userId === user.id)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map((t) => publicTemplate(t, user));
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    // 打赏 / 评分 / 评论数：先收本页 ids 批量算，别在循环里逐个算（N²）
+    const en = enrichOf("template", mine.map((t) => t.id));
+    const items = mine.map((t) => publicTemplate(t, user, en(t.id)));
     return send(res, 200, { ok: true, items, user: publicUser(user) });
   }
 
@@ -3360,9 +4682,22 @@ async function handle(req, res) {
     }
     if (sort === "downloads") list.sort((a, b) => (b.downloads || 0) - (a.downloads || 0) || b.createdAt - a.createdAt);
     else if (sort === "likes") list.sort((a, b) => (b.likes || 0) - (a.likes || 0) || b.createdAt - a.createdAt);
-    else list.sort((a, b) => b.createdAt - a.createdAt);
+    /* 「打赏热度」：累计打赏额高的在前（同额比次数、再比时间）—— 需求口径
+       「打赏总额与次数对所有人在条目上可见，并计入按热度排序」。
+       额度用 batchSummaryOf 一次遍历整张打赏表算出来（不在比较函数里逐项查库 → 不是 N²）。 */
+    else if (sort === "tips") {
+      const tm = plans.batchSummaryOf("template", list.map((t) => t.id));
+      const cellOf = (id) => tm.get(String(id || "")) || { count: 0, totalYuan: 0 };
+      list.sort((a, b) => {
+        const x = cellOf(a.id);
+        const y = cellOf(b.id);
+        return y.totalYuan - x.totalYuan || y.count - x.count || b.createdAt - a.createdAt;
+      });
+    } else list.sort((a, b) => b.createdAt - a.createdAt);
     const total = list.length;
-    const items = list.slice((page - 1) * pageSize, page * pageSize).map((t) => publicTemplate(t, user));
+    const pageItems = list.slice((page - 1) * pageSize, page * pageSize);
+    const en = enrichOf("template", pageItems.map((t) => t.id));
+    const items = pageItems.map((t) => publicTemplate(t, user, en(t.id)));
     return send(res, 200, { ok: true, items, total, page, pageSize, tags: tagCounts("templates") });
   }
 
@@ -3554,10 +4889,11 @@ async function handle(req, res) {
 
   if (method === "GET" && p === "/api/me/skills") {
     if (!user) return send(res, 401, { ok: false, error: "未登录" });
-    const items = db.skills
+    const mine = db.skills
       .filter((t) => t.userId === user.id)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map((t) => publicSkill(t, user));
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const en = enrichOf("skill", mine.map((t) => t.id));
+    const items = mine.map((t) => publicSkill(t, user, en(t.id)));
     return send(res, 200, { ok: true, items, user: publicUser(user) });
   }
 
@@ -3594,9 +4930,20 @@ async function handle(req, res) {
         (a, b) =>
           Number(!!b.official) - Number(!!a.official) || b.createdAt - a.createdAt,
       );
+    } else if (sort === "tips") {
+      /* 打赏热度（与模板同一口径）：累计打赏额 → 次数 → 时间；一次批量算，不逐项查库 */
+      const tm = plans.batchSummaryOf("skill", list.map((t) => t.id));
+      const cellOf = (id) => tm.get(String(id || "")) || { count: 0, totalYuan: 0 };
+      list.sort((a, b) => {
+        const x = cellOf(a.id);
+        const y = cellOf(b.id);
+        return y.totalYuan - x.totalYuan || y.count - x.count || b.createdAt - a.createdAt;
+      });
     } else list.sort((a, b) => b.createdAt - a.createdAt);
     const total = list.length;
-    const items = list.slice((page - 1) * pageSize, page * pageSize).map((t) => publicSkill(t, user));
+    const pageItems = list.slice((page - 1) * pageSize, page * pageSize);
+    const en = enrichOf("skill", pageItems.map((t) => t.id));
+    const items = pageItems.map((t) => publicSkill(t, user, en(t.id)));
     return send(res, 200, { ok: true, items, total, page, pageSize, tags: tagCounts("skills") });
   }
 
@@ -3918,7 +5265,8 @@ async function handle(req, res) {
     if (q) {
       list = list.filter((a) => {
         const e = appCatalogEntry(a);
-        return [e.id, e.title, e.desc, e.owner, (e.tags || []).join(" ")]
+        /* 搜索也认作者显示名（改了昵称之后按昵称也能搜到；owner 那份可能只是占位账号名） */
+        return [e.id, e.title, e.desc, e.owner, e.ownerName, (e.tags || []).join(" ")]
           .join(" ")
           .toLowerCase()
           .includes(q);
@@ -3932,7 +5280,9 @@ async function handle(req, res) {
       list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     }
     const total = list.length;
-    const items = list.slice((page - 1) * pageSize, page * pageSize).map((a) => publicApp(a, user));
+    const pageItems = list.slice((page - 1) * pageSize, page * pageSize);
+    const en = enrichOf("app", pageItems.map((a) => a.id));
+    const items = pageItems.map((a) => publicApp(a, user, en(a.id)));
     return send(res, 200, { ok: true, items, total, page, pageSize });
   }
 
@@ -3959,11 +5309,17 @@ async function handle(req, res) {
   // 版本树数据（免登录，公开信息）：客户端详情区的「版本」块按它渲染。
   // 开关关闭时也用单版字段合成一项，客户端只有一条读路径。
   if (appVersionsR && method === "GET") {
-    const a = (db.apps || []).find((x) => x.id === appVersionsR[1]);
+    const rb = appResolveBranch(appVersionsR[1], url.searchParams.get("owner"), false);
+    const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     return send(res, 200, {
       ok: true,
       id: a.id,
+      ownerId: a.userId,
+      owner: appOwnerNameOf(a.userId),
+      ownerName: accountDisplayNameOf(a.userId),
+      trunkOwnerId: rb.trunk ? rb.trunk.userId : "",
+      branches: appBranchViewOf(a.id, user),
       latestVersion: appLatestVersion(a),
       unpublished: !!a.unpublished,
       versions: appVersionsPublic(a),
@@ -3972,22 +5328,26 @@ async function handle(req, res) {
 
   // 追加版本（仅 owner，必须 acceptDeclaration）：一版一包落 <id>/<version>.zip，
   // 同时把最新版刷成 <id>.zip 镜像（老客户端 / 静态目录口径不变）。
+  // 同 id 多分支（契约 §十）：body.ownerId 指定往哪条分支追加（缺省 = 我自己那条；不是我的 → 403）。
   if (appVersionsR && method === "POST") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "追加版本需要登录" });
-    const a = (db.apps || []).find((x) => x.id === appVersionsR[1]);
+    const id = String(appVersionsR[1] || "");
+    const b = await jsonBody();
+    const askedOwner = appResolveOwnerId(b.ownerId != null ? b.ownerId : b.owner);
+    const a = appBranchOfOwner(id, askedOwner || user.id) || appBranchOfOwner(id, user.id);
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
-    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能给自己的应用追加版本" });
+    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能给自己的分支追加版本" });
     if (!appVersionsOn()) {
       // 单版模式下追加版本无处安放（<id>.zip 只有一份）：明确报错，不静默覆盖旧包。
       return send(res, 409, {
         ok: false,
         code: "APP_VERSIONS_DISABLED",
         error:
-          "服务端未启用应用多版本（需设环境变量 MTNODE_APP_VERSIONS=1）；单版模式请用 PATCH /api/apps/" +
+          "服务端未启用应用多版本（MTNODE_APP_VERSIONS 被显式设成了 " + APP_VERSIONS_ENV +
+          "，去掉该项或设 1 即打开）；单版模式请用 PATCH /api/apps/" +
           a.id + " 覆盖更新",
       });
     }
-    const b = await jsonBody();
     // 声明（契约 §7.3）：没勾选就不落任何盘。
     if (b.acceptDeclaration !== true) return declarationRequired(res);
     requireFields(b, ["version"]);
@@ -4002,8 +5362,8 @@ async function handle(req, res) {
         ok: false,
         code: "VERSION_EXISTS",
         error:
-          "该版本号已存在（v" + version + "）：请换一个版本号，或先用 DELETE /api/apps/" + a.id +
-          "/versions/" + version + " 把旧的那一版下掉",
+          "你的分支已有这个版本号（v" + version + "）：请换一个版本号，或先用 DELETE /api/apps/" + a.id +
+          "/versions/" + version + "?owner=" + encodeURIComponent(a.userId) + " 把旧的那一版下掉",
       });
     }
     let nextTitle = null;
@@ -4060,9 +5420,9 @@ async function handle(req, res) {
     const q = appQuotaError(user.id, buf.length, 0, false);
     if (q) return send(res, q.status, q.body);
 
-    writeAppZipFiles(a.id, version, buf);
-    if (clearIcon) clearAppIcon(a.id);
-    else if (iconBuf) writeAppIcon(a.id, iconBuf);
+    writeAppZipFiles(a.id, version, buf, a.userId);
+    if (clearIcon) clearAppIcon(a.id, a.userId);
+    else if (iconBuf) writeAppIcon(a.id, a.userId, iconBuf);
     const sha = crypto.createHash("sha256").update(buf).digest("hex");
     a.versions = appVersionRecords(a).concat([
       makeAppVersion({
@@ -4082,32 +5442,59 @@ async function handle(req, res) {
     a.entry = entry;
     if (nextTitle != null) a.title = nextTitle;
     if (nextDesc != null) a.description = nextDesc;
-    if (nextTags != null) a.tags = nextTags;
+    /* 标签继承：空值不清空（见 appTagsNext 注释）——追加 / 覆盖一版是「同一件事的新一版」，
+       标签属于应用本身，作者没重填就该原样留着。 */
+    if (nextTags != null) a.tags = appTagsNext(nextTags, a.tags);
     /* 二次开发来源：本次带了这个键就按它改（null / 空对象 = 清掉声明，回到原创）；
        没带键 = 保持原样（追加一版不该悄悄抹掉上一版声明的来源）。 */
     if (b.forkOf !== undefined) {
-      const fo = normalizeForkOf(b.forkOf, a.id);
+      const fo = normalizeForkOf(b.forkOf, a.id, a.userId);
       if (fo) a.forkOf = fo;
       else delete a.forkOf;
     }
     a.updatedAt = now();
     recordAppDeclaration(req, user, a.id, version, "version");
     await saveDb();
-    publishStaticApps("追加版本 " + a.id + "@" + version);
-    return send(res, 200, { ok: true, version, item: publicApp(a, user), catalog: appCatalogEntry(a) });
+    syncAppZipMirror(a);
+    publishStaticApps("追加版本 " + a.id + "@" + version + "（" + appOwnerNameOf(a.userId) + "）");
+    return send(res, 200, {
+      ok: true,
+      version,
+      ownerId: a.userId,
+      branches: appBranchViewOf(a.id, user),
+      item: publicApp(a, user),
+      catalog: appCatalogEntry(a),
+    });
   }
 
   // 删某一版（仅 owner）：包与版本记录一起下掉（不留灰行），配额当场释放。
+  // 同 id 多分支（契约 §十）：?owner= 指定分支；多条分支时不传 owner 直接拒绝（q30）。
   if (appVersionOneR && method === "DELETE") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "删除版本需要登录" });
-    const a = (db.apps || []).find((x) => x.id === appVersionOneR[1]);
-    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
-    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能删除自己应用的版本" });
+    const id = String(appVersionOneR[1] || "");
+    const all = appBranchesOf(id);
+    if (!all.length) return send(res, 404, { ok: false, error: "应用不存在" });
+    const askedDel = appResolveOwnerId(url.searchParams.get("owner"));
+    if (!askedDel && all.length > 1) {
+      return send(res, 400, {
+        ok: false,
+        code: "BRANCH_REQUIRED",
+        error:
+          "这个 id 下有 " + all.length + " 个作者分支：删除版本请用 ?owner=<作者 uid 或账号名> 指明分支" +
+          "（自己的分支就是你的账号）",
+      });
+    }
+    const a = appBranchOfOwner(id, askedDel || user.id);
+    if (!a) {
+      return send(res, 404, { ok: false, code: "BRANCH_NOT_FOUND", error: "这个 id 下没有该作者的分支" });
+    }
+    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能删除自己分支的版本" });
     if (!appVersionsOn()) {
       return send(res, 409, {
         ok: false,
         code: "APP_VERSIONS_DISABLED",
-        error: "服务端未启用应用多版本（需设环境变量 MTNODE_APP_VERSIONS=1）：单版模式没有可分删的版本记录",
+        error: "服务端未启用应用多版本（MTNODE_APP_VERSIONS 被显式设成了 " + APP_VERSIONS_ENV +
+          "）：单版模式没有可分删的版本记录",
       });
     }
     let want = appVersionOneR[2];
@@ -4119,15 +5506,21 @@ async function handle(req, res) {
     }
     recs.splice(vi, 1);
     a.versions = recs;
-    try { fs.unlinkSync(appVersionZipPath(a.id, want)); } catch {}
+    /* 只删这一分支自己那份包：分支私有落点先删；老落点是同 id 共用的 —— 只有没有别的分支
+       还在用这个版本号时才删它（否则会把别人的包一起删掉）。 */
+    try { fs.unlinkSync(appBranchVersionZipPath(a.id, a.userId, want)); } catch {}
+    if (!(db.apps || []).some((x) => x !== a && x.id === a.id && appVersionRecords(x).some((v) => v.version === want))) {
+      try { fs.unlinkSync(appVersionZipPath(a.id, want)); } catch {}
+    }
     if (!recs.length) {
-      // 全删光：应用没有可分发的包了 → 随之下架，镜像也删掉（记录仍在，可重新上架新版本）。
+      // 全删光：这一分支没有可分发的包了 → 随之下架，镜像也删掉（记录仍在，可重新上架新版本）。
       a.latestVersion = "";
       a.unpublished = true;
       a.unpublishedAt = now();
       a.bytes = 0;
       a.sha256 = "";
-      try { fs.unlinkSync(appZipPath(a.id)); } catch {}
+      try { fs.unlinkSync(appOwnerZipPath(a.id, a.userId)); } catch {}
+      syncAppZipMirrorGlobal(a.id);
     } else {
       // 删的是最新版 → latestVersion 指向剩余最高版，并把镜像刷成它。
       const top = recs.reduce((best, v) => (compareVersions(v.version, best.version) > 0 ? v : best), recs[0]);
@@ -4145,21 +5538,34 @@ async function handle(req, res) {
   }
 
   // 下架 / 重新发布（仅 owner）：记录与所有版本的包都保留，只改目录可见性。
+  // 同 id 多分支（契约 §十）：**只作用于我自己那条分支**（q34），别人的分支照常可见。
   if (appPublishR && method === "POST") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "下架 / 重新发布需要登录" });
-    const a = (db.apps || []).find((x) => x.id === appPublishR[1]);
-    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
-    if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能下架 / 重新发布自己的应用" });
+    const a = appBranchOfOwner(appPublishR[1], user.id);
+    if (!a) {
+      if (!appBranchesOf(appPublishR[1]).length) return send(res, 404, { ok: false, error: "应用不存在" });
+      return send(res, 403, { ok: false, error: "只能下架 / 重新发布自己的分支" });
+    }
     const unpublish = appPublishR[2] === "unpublish";
     a.unpublished = unpublish;
     a.unpublishedAt = unpublish ? now() : 0;
     await saveDb();
-    publishStaticApps((unpublish ? "下架 " : "重新发布 ") + a.id);
-    return send(res, 200, { ok: true, id: a.id, unpublished: !!a.unpublished, item: publicApp(a, user) });
+    syncAppZipMirrorGlobal(a.id);
+    publishStaticApps((unpublish ? "下架 " : "重新发布 ") + a.id + "（" + appOwnerNameOf(a.userId) + "）");
+    return send(res, 200, {
+      ok: true,
+      id: a.id,
+      ownerId: a.userId,
+      unpublished: !!a.unpublished,
+      branches: appBranchViewOf(a.id, user),
+      item: publicApp(a, user),
+    });
   }
 
   if (appFileR && method === "GET") {
-    const a = (db.apps || []).find((x) => x.id === appFileR[1]);
+    // 同 id 多分支：?owner=<uid|账号名> 指定分支（缺省 = 主干）——下载寻址的唯一入口（q2）
+    const rb = appResolveBranch(appFileR[1], url.searchParams.get("owner"), true);
+    const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     // 多版本：?version=x.y.z 回指定版本、缺省回 latestVersion；关开关时该参数一律忽略（旧口径不变）。
     const wantVersion = appVersionsOn() ? String(url.searchParams.get("version") || "").trim() : "";
@@ -4180,34 +5586,45 @@ async function handle(req, res) {
     if (url.searchParams.get("format") === "raw") {
       return sendBin(res, 200, buf, "application/zip", {
         "X-Content-SHA256": sha,
-        "Content-Disposition": 'attachment; filename="' + a.id + '.zip"',
+        "X-App-Owner": loc.ownerId || a.userId,
+        "Content-Disposition": 'attachment; filename="' + appFileStem(a.id, loc.ownerId || a.userId) + '.zip"',
       });
     }
     return send(res, 200, {
       ok: true,
       id: a.id,
+      ownerId: a.userId,
       title: a.title,
       version: loc.version,
       entry: loc.entry,
       bytes: buf.length,
       sha256: sha,
-      zipUrl: loc.fromVersionDir ? a.id + "/" + loc.version + ".zip" : a.id + ".zip",
+      zipUrl: appZipRelOf(a.id, a.userId, loc.version),
       base64: buf.toString("base64"),
     });
   }
 
   if (appIconR && method === "GET") {
-    const a = (db.apps || []).find((x) => x.id === appIconR[1]);
+    const rb = appResolveBranch(appIconR[1], url.searchParams.get("owner"), true);
+    const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
-    const fp = appIconPath(a.id);
+    const fp = appIconPath(a.id, a.userId) || appIconPath(a.id);
     if (!fp) return send(res, 404, { ok: false, error: "无图标" });
     return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "public, max-age=3600" });
   }
 
   if (appOne && method === "GET") {
-    const a = (db.apps || []).find((x) => x.id === appOne[1]);
+    // 同 id 多分支：?owner= 指定看哪条分支（缺省 = 主干），item 里附 branches[] 全量（q11）
+    const rb = appResolveBranch(appOne[1], url.searchParams.get("owner"), true);
+    const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
-    return send(res, 200, { ok: true, item: publicApp(a, user) });
+    return send(res, 200, {
+      ok: true,
+      item: publicApp(a, user),
+      ownerId: a.userId,
+      trunkOwnerId: rb.trunk ? rb.trunk.userId : "",
+      branches: appBranchViewOf(a.id, user),
+    });
   }
 
   // 上传：必须登录，owner 由服务端绑定当前登录用户（客户端传的 userId 一律忽略）。
@@ -4224,12 +5641,29 @@ async function handle(req, res) {
         error: "应用 id 不合法（2-64 位字母 / 数字 / . _ -，不能是 Windows 保留名；统一小写）",
       });
     }
-    if ((db.apps || []).some((x) => x.id === id)) {
+    if ((db.apps || []).some((x) => x.id === id && x.userId === user.id)) {
+      /* 同 id 多分支（契约 §十，q9）：我名下已经有这个 id → 这次上传就是给它追加版本，
+         把请求原样交给追加路由（同一个 service 内递归调用自己会更绕，这里直接转语义）。 */
       return send(res, 409, {
         ok: false,
-        code: "APP_EXISTS",
-        error: "该应用 id 已存在；更新请用 PATCH /api/apps/" + id + "（仅 id 的所有者可改）",
+        code: "BRANCH_EXISTS",
+        error:
+          "你名下已经有 id「" + id + "」的应用：请用 POST /api/apps/" + id +
+          "/versions 追加版本（同一个 id 同一位作者只保留一条分支）",
       });
+    }
+    /* 同 id 多分支（契约 §十 + 本轮需求「填同 id 就自动当分支，不再报已被占用」）：
+       id 已被别人占用时**不再 409**，而是自动落一条来源声明（forkOf = { id 同 id, ownerId 父作者 }）：
+         · 客户端显式指名了父分支（b.forkOf.ownerId 且那条分支存在）→ 就用它当父；
+         · 否则父 = 主干（createdAt 最早那条）。
+       用户口径：填别人的 id 就是在那个应用下开我自己的分支；想真正无关就换一个 id。 */
+    const others = appBranchesOf(id);
+    const declaredFork = normalizeForkOf(b.forkOf, "", "");
+    if (others.length) {
+      const trunk = appTrunkOf(id, true) || others[0];
+      const wantParentId = declaredFork && String(declaredFork.id) === id ? String(declaredFork.ownerId) : "";
+      const parent = (wantParentId && appBranchOfOwner(id, wantParentId)) || trunk;
+      b.forkOf = { id: id, ownerId: String(parent.userId || "") };
     }
     const title = String(b.title).trim().slice(0, 80);
     if (!title) return send(res, 400, { ok: false, error: "标题不能为空" });
@@ -4266,11 +5700,11 @@ async function handle(req, res) {
     if (quota) return send(res, quota.status, quota.body);
 
     // 二次开发来源（可选，契约 §八）：声明了就记，没声明 = 原创
-    const forkOf = normalizeForkOf(b.forkOf, id);
+    const forkOf = normalizeForkOf(b.forkOf, id, user.id);
 
     // 开关打开时一版一包 + 最新版镜像；关闭时只写 <id>.zip（旧口径逐字不变）。
-    writeAppZipFiles(id, version, buf);
-    if (icon) writeAppIcon(id, icon);
+    writeAppZipFiles(id, version, buf, user.id);
+    if (icon) writeAppIcon(id, user.id, icon);
     const sha = crypto.createHash("sha256").update(buf).digest("hex");
     const a = {
       id,
@@ -4308,15 +5742,22 @@ async function handle(req, res) {
     db.apps.push(a);
     recordAppDeclaration(req, user, id, version, "create");
     await saveDb();
+    /* 镜像：这一分支自己的 <id>__<作者uid>.zip + 老口径 <id>.zip（跨分支最高版，旧链不 404） */
+    syncAppZipMirror(a);
     publishStaticApps("新建应用 " + id + "@" + version);
     return send(res, 200, { ok: true, item: publicApp(a, user), catalog: appCatalogEntry(a) });
   }
 
   // 更新：仅 owner 可改；覆盖文件（zip / 图标）并让版本 +1（显式传 version 时以传入为准）。
+  // 同 id 多分支（契约 §十）：只改**我自己那条分支**（?owner= 只能指到自己的分支，否则 403）。
   if (appOne && method === "PATCH") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
-    const a = (db.apps || []).find((x) => x.id === appOne[1]);
-    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    const askOwnerPatch = appResolveOwnerId(url.searchParams.get("owner"));
+    const a = appBranchOfOwner(appOne[1], askOwnerPatch || user.id);
+    if (!a) {
+      if (!appBranchesOf(appOne[1]).length) return send(res, 404, { ok: false, error: "应用不存在" });
+      return send(res, 403, { ok: false, error: "只能更新自己的分支" });
+    }
     if (a.userId !== user.id) return send(res, 403, { ok: false, error: "只能更新自己的应用" });
     const b = await jsonBody();
     // 声明（契约 §7.3）：更新同样必须 acceptDeclaration === true，没勾选就不落任何盘。
@@ -4362,7 +5803,7 @@ async function handle(req, res) {
         return send(res, 400, { ok: false, error: "包内找不到入口页（顶层需有 index.html，或显式传 entry）" });
       }
     } else if (b.entry != null) {
-      const fp = appZipPath(a.id);
+      const fp = appZipPathOfBranchVia(a).path;
       if (!fs.existsSync(fp)) return send(res, 400, { ok: false, error: "应用包缺失，请重新上传 zip" });
       try {
         nextEntry = detectAppEntry(b.entry, zipEntryNames(fs.readFileSync(fp)));
@@ -4421,7 +5862,7 @@ async function handle(req, res) {
     let appendRec = null;
     if (zipBuf) {
       if (appendVersion) {
-        writeAppZipFiles(a.id, nextVersion, zipBuf);
+        writeAppZipFiles(a.id, nextVersion, zipBuf, a.userId);
         appendRec = makeAppVersion({
           version: nextVersion,
           parentVersion: appendParent,
@@ -4432,7 +5873,7 @@ async function handle(req, res) {
           user,
         });
       } else {
-        fs.writeFileSync(appZipPath(a.id), zipBuf);
+        fs.writeFileSync(appOwnerZipPath(a.id, a.userId), zipBuf);
       }
       a.bytes = zipBuf.length;
       a.sha256 = zipSha;
@@ -4441,17 +5882,19 @@ async function handle(req, res) {
       a.versions = appVersionRecords(a).concat([appendRec]);
       a.latestVersion = nextVersion;
     }
-    if (clearIcon) clearAppIcon(a.id);
-    else if (iconBuf) writeAppIcon(a.id, iconBuf);
+    if (clearIcon) clearAppIcon(a.id, a.userId);
+    else if (iconBuf) writeAppIcon(a.id, a.userId, iconBuf);
 
     if (nextTitle != null) a.title = nextTitle;
     if (nextDesc != null) a.description = nextDesc;
-    if (nextTags != null) a.tags = nextTags;
+    /* 标签继承：空值不清空（见 appTagsNext 注释）——追加 / 覆盖一版是「同一件事的新一版」，
+       标签属于应用本身，作者没重填就该原样留着。 */
+    if (nextTags != null) a.tags = appTagsNext(nextTags, a.tags);
     if (nextIcon != null) a.icon = nextIcon;
     if (nextEntry != null) a.entry = nextEntry;
     /* 二次开发来源（契约 §八）：带了这个键才动它（null = 清回原创），不带就保持原样 */
     if (b.forkOf !== undefined) {
-      const fo = normalizeForkOf(b.forkOf, a.id);
+      const fo = normalizeForkOf(b.forkOf, a.id, a.userId);
       if (fo) a.forkOf = fo;
       else delete a.forkOf;
     }
@@ -4459,35 +5902,58 @@ async function handle(req, res) {
     a.updatedAt = now();
     recordAppDeclaration(req, user, a.id, nextVersion, appendRec ? "version" : "update");
     await saveDb();
+    syncAppZipMirror(a);
     publishStaticApps((appendRec ? "追加版本 " : "更新应用 ") + a.id + "@" + nextVersion);
     return send(res, 200, {
       ok: true,
       bumped,
+      ownerId: a.userId,
+      branches: appBranchViewOf(a.id, user),
       item: publicApp(a, user),
       catalog: appCatalogEntry(a),
     });
   }
 
+  // 删整条应用（仅 owner / 管理员）：同 id 多分支下**只删我这一条分支**，别人的分支照旧（q34）。
+  // ?owner=<uid|账号名> 指定删哪条（管理员可删别人的；缺省 = 我自己那条）。
   if (appOne && method === "DELETE") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
-    const idx = (db.apps || []).findIndex((x) => x.id === appOne[1]);
-    if (idx < 0) return send(res, 404, { ok: false, error: "应用不存在" });
-    const a = db.apps[idx];
+    const askOwner = appResolveOwnerId(url.searchParams.get("owner"));
+    const a =
+      (askOwner ? appBranchOfOwner(appOne[1], askOwner) : null) ||
+      appBranchOfOwner(appOne[1], user.id);
+    if (!a) {
+      if (!appBranchesOf(appOne[1]).length) return send(res, 404, { ok: false, error: "应用不存在" });
+      return send(res, 403, { ok: false, error: "只能删除自己的分支" });
+    }
     if (a.userId !== user.id && !isAdmin(user)) {
       return send(res, 403, { ok: false, error: "只能删除自己的应用" });
     }
+    const idx = (db.apps || []).indexOf(a);
     const owner = db.users.find((u) => u.id === a.userId) || user;
     await applyUserPatch(owner.id, {
       downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (a.downloads || 0)),
     });
     db.apps.splice(idx, 1);
-    try { fs.unlinkSync(appZipPath(a.id)); } catch {}
-    // 多版本：整条应用删掉时把它那一整个版本目录也带走（不留孤儿包）。
-    try { fs.rmSync(appVersionDir(a.id), { recursive: true, force: true }); } catch {}
-    clearAppIcon(a.id);
+    /* 这一分支的文件：自己的镜像 + 自己那份版本包（别人的包一个都不动）。
+       老落点 <id>/<版本>.zip 只有确认没有别的分支还用这个版本号时才删。 */
+    try { fs.unlinkSync(appOwnerZipPath(a.id, a.userId)); } catch {}
+    const rest = appBranchesOf(a.id);
+    for (const v of appVersionRecords(a)) {
+      const p = appBranchVersionZipPath(a.id, a.userId, v.version);
+      try { fs.unlinkSync(p); } catch {}
+      const sharedUsed = rest.some((x) => appVersionRecords(x).some((r) => r.version === v.version));
+      if (!sharedUsed) {
+        try { fs.unlinkSync(appVersionZipPath(a.id, v.version)); } catch {}
+      }
+    }
+    /* 这一分支自己的版本子目录（空的话顺手收掉；还有别人的东西就留着） */
+    try { fs.rmdirSync(path.join(appVersionDir(a.id), a.userId)); } catch {}
+    clearAppIcon(a.id, a.userId);
     await saveDb();
-    publishStaticApps("删除应用 " + a.id);
-    return send(res, 200, { ok: true });
+    syncAppZipMirrorGlobal(a.id);
+    publishStaticApps("删除分支 " + a.id + "（" + appOwnerNameOf(a.userId) + "）");
+    return send(res, 200, { ok: true, id: a.id, ownerId: a.userId, branches: appBranchViewOf(a.id, user) });
   }
 
   // —— 论坛（长期保留）——
@@ -4514,7 +5980,9 @@ async function handle(req, res) {
         ? (a, b) => (b.lastReplyAt || b.createdAt || 0) - (a.lastReplyAt || a.createdAt || 0)
         : (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
     );
-    const items = list.slice(skip, skip + pageSize).map(publicForumTopicSummary);
+    const pageItems = list.slice(skip, skip + pageSize);
+    const en = enrichOf("forum_topic", pageItems.map((t) => t.id));
+    const items = pageItems.map((t) => publicForumTopicSummary(t, en(t.id)));
     return send(res, 200, { ok: true, sort, page, pageSize, total: list.length, items });
   }
 
@@ -4656,6 +6124,229 @@ async function handle(req, res) {
   }
 
   /* ====================================================================== *
+   * 打赏（鲸圆币）+ 评论（含五星评分）
+   *   编排逻辑分别在 tips.mjs / comments.mjs，这里只做路由、鉴权与错误码映射。
+   *   契约真源：docs/tips-comments-design.md 第一 / 二 / 三节。
+   * ====================================================================== */
+
+  // 打赏配置：档位 / 单笔上限 / 月度额度 / 本人余额与今日已打赏对象（免登录可读静态口径）。
+  if (method === "GET" && p === "/api/tips/config") {
+    return send(res, 200, Object.assign({ ok: true }, plans.config(user)));
+  }
+
+  /* 打赏概述（**免登录 · 批量 · 只回公开数字**）：一次问一组对象的 `{count,totalYuan}`。
+     为什么单开一个接口：应用中心列表条目来自**静态目录** catalog.json（不带 tips），
+     卡片上的金币 icon 悬停要显示「累计 N 币 · M 次」，逐个对象打 /api/tips/authors 会变成
+     N 次请求 —— 这里一次遍历 db.tips 出整页（tips.mjs 的 summariesOf）。
+     口径：打赏人名单**永不出现在这里**（人数与金额是公开投影，名字仍只给作者本人，
+     见 /api/tips/list 的 scope 分流）；没被打赏过的对象照样回一条零值，客户端不必自己补零。
+     错误码：TIP_INVALID_TARGET（kind 不认识 / ids 为空）。 */
+  if (method === "GET" && p === "/api/tips/summary") {
+    const kind = String(url.searchParams.get("kind") || "").trim();
+    const ids = String(url.searchParams.get("ids") || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .slice(0, TIP_SUMMARY_MAX_IDS);
+    if (TIP_TARGET_KINDS.indexOf(kind) < 0 || !ids.length) {
+      return send(res, 400, {
+        ok: false,
+        code: "TIP_INVALID_TARGET",
+        error:
+          "参数不合法：kind 需为 " + TIP_TARGET_KINDS.join(" / ") + " 之一，ids 为逗号分隔的对象 id（至少一个）",
+      });
+    }
+    /* 列表页会随筛选反复问同一批 id，给一个 5 秒的公共缓存：既压住重复请求，
+        又不至于让刚打赏完的数字长时间不动（客户端每次打开打赏窗后也会重新拉一次）。 */
+    res.setHeader("Cache-Control", "public, max-age=5");
+    return send(res, 200, {
+      ok: true,
+      kind: kind,
+      items: plans.summariesOf(kind, ids),
+    });
+  }
+
+  /* 打赏记录：**作者本人**看全部名单；**其他登录用户只回自己打赏出去的那几笔**（scope:"mine"，
+     名单里不再有第三人）；未登录 401。管理员不再是一条特权路径（见 tips.mjs 的 listTips 注释）。 */
+  if (method === "GET" && p === "/api/tips/list") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const r = plans.listTips(user, {
+      targetKind: url.searchParams.get("targetKind") || "",
+      targetId: url.searchParams.get("targetId") || "",
+      limit: Number(url.searchParams.get("limit")) || 50,
+    });
+    if (!r.ok) {
+      const code = r.code === "TIP_TARGET_NOT_FOUND" ? 404 : 400;
+      return send(res, code, { ok: false, code: r.code, error: r.error });
+    }
+    return send(res, 200, r);
+  }
+
+  /* 待分账作者列表（按作者拆分打赏用）：**免登录可读**（未登录时 isSelf 全 false）。
+     作者来源 = 应用条目的同源分支（forkOf.id，含源条目自己）逐个取 uid 去重；
+     另带一个**公开**汇总 tips:{count,totalYuan}（口径 = summaryOf("app", id)，人人可见）——
+     打赏窗对非作者不再提示权限，只展示这个公开总额。 */
+  if (method === "GET" && p === "/api/tips/authors") {
+    const r = plans.listAuthors(user, {
+      targetKind: url.searchParams.get("targetKind") || "",
+      targetId: url.searchParams.get("targetId") || "",
+    });
+    if (!r.ok) {
+      const code = r.code === "TIP_TARGET_NOT_FOUND" ? 404 : 400;
+      return send(res, code, { ok: false, code: r.code, error: r.error });
+    }
+    return send(res, 200, r);
+  }
+
+  // 打赏：需登录；一次打赏 = 一条 tip_out（打赏者负数总额）+ 每位实收作者一条 tip_in（正数），
+  // 失败按已成功的部分逐条补偿。splits 缺省 = 单作者单笔（旧口径，向后兼容）。
+  if (method === "POST" && p === "/api/tips") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    /* splits 只在**显式给了数组**时才传下去（undefined = 旧口径；null / 非数组也当没给，
+       由 tips.mjs 的 `Array.isArray(splits)` 判据统一决定走哪条路径，server 层不重抄校验）。 */
+    const r = await plans.tip(user, {
+      targetKind: b.targetKind,
+      targetId: b.targetId,
+      amountYuan: b.amountYuan,
+      splits: Array.isArray(b.splits) ? b.splits : undefined,
+    });
+    if (!r.ok) {
+      // 目标不存在 → 404；其余（金额 / 分账 / 自打赏 / 频次 / 额度 / 余额不足）都是可纠正的 400，
+      // 余额不足额外带上当前余额（客户端据此决定是否拉起充值窗）。
+      const code = r.code === "TIP_TARGET_NOT_FOUND" ? 404 : 400;
+      const payload = { ok: false, code: r.code, error: r.error };
+      if (r.code === "BALANCE_INSUFFICIENT") payload.balanceYuan = yuanOfCents(Number(user.balanceCents) || 0);
+      return send(res, code, payload);
+    }
+    /* 打的是应用：静态目录条目里也带着公开打赏汇总（见 appCatalogDoc），这一次变更必须跟着落盘，
+       否则线上目录里的「打赏 0 次」会留到下一次应用变更 / 服务重启才自愈。
+       只在 app 目标上发（模板 / 技能的目录不带 tips，没必要为它们重写整份应用目录）。 */
+    if (String(b.targetKind || "") === "app") {
+      publishStaticApps("打赏 " + String(b.targetId || "") + "（" + appOwnerNameOf(user.id) + "）");
+    }
+    return send(res, 200, {
+      ok: true,
+      tip: r.tip,
+      // 按作者拆分时附上这一笔的全部记录（单作者单笔时 splitCount=1，客户端可忽略）
+      records: r.records.map((rec) => plans.publicTip(rec)),
+      splitGroupId: r.splitGroupId || "",
+      splitCount: r.splitCount || 1,
+      balanceYuan: r.balanceYuan,
+      quota: plans.config(user).quota,
+      target: r.target,
+    });
+  }
+
+  // 评论列表：免登录可看（平铺 + parentId 引用，口径见 comments.mjs 文件头）。
+  if (method === "GET" && p === "/api/comments") {
+    const r = comments.list({
+      targetKind: url.searchParams.get("targetKind") || "",
+      targetId: url.searchParams.get("targetId") || "",
+      page: Number(url.searchParams.get("page")) || 1,
+      pageSize: Number(url.searchParams.get("pageSize")) || 20,
+      parentId: url.searchParams.get("parentId"),
+      viewer: user,
+    });
+    if (!r.ok) {
+      const code = r.code === "COMMENT_TARGET_NOT_FOUND" ? 404 : 400;
+      return send(res, code, { ok: false, code: r.code, error: r.error });
+    }
+    return send(res, 200, r);
+  }
+
+  // 发评论 / 回复：需登录；限频 1 条/分钟 + 50 条/天；条目评论可带五星。
+  if (method === "POST" && p === "/api/comments") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const r = await comments.create(user, {
+      targetKind: b.targetKind,
+      targetId: b.targetId,
+      content: b.content,
+      rating: b.rating,
+      parentId: b.parentId,
+    });
+    if (!r.ok) {
+      const code =
+        r.code === "COMMENT_TARGET_NOT_FOUND" || r.code === "COMMENT_NOT_FOUND"
+          ? 404
+          : r.code === "RATE_LIMITED"
+            ? 429
+            : 400;
+      return send(res, code, { ok: false, code: r.code, error: r.error });
+    }
+    return send(res, 200, { ok: true, item: r.item, rating: r.rating, comments: r.comments });
+  }
+
+  // 改星（只本人、只条目评论）：契约里 PATCH /api/comments 就是「只改星」这一个动作。
+  if (method === "PATCH" && p === "/api/comments") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const r = await comments.setRating(user, { id: b.id, rating: b.rating });
+    if (!r.ok) {
+      const code =
+        r.code === "COMMENT_NOT_FOUND"
+          ? 404
+          : r.code === "COMMENT_FORBIDDEN"
+            ? 403
+            : 400;
+      return send(res, code, { ok: false, code: r.code, error: r.error });
+    }
+    return send(res, 200, { ok: true, item: r.item, rating: r.rating, comments: r.comments });
+  }
+
+  // 删除评论：软删除（作者 / 对象作者 / 管理员），记录留档。
+  if (method === "DELETE" && p === "/api/comments") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const r = await comments.remove(user, { id: b.id });
+    if (!r.ok) {
+      const code = r.code === "COMMENT_NOT_FOUND" ? 404 : r.code === "COMMENT_FORBIDDEN" ? 403 : 400;
+      return send(res, code, { ok: false, code: r.code, error: r.error });
+    }
+    return send(res, 200, { ok: true, rating: r.rating, comments: r.comments });
+  }
+
+  /* ====================================================================== *
+   * 消息（通知）—— 编排逻辑全在 notifications.mjs，这里只做路由与鉴权。
+   *   四个接口都要登录（未登录 401），且只操作**自己的**记录。
+   *   契约真源：docs/tips-comments-design.md 第三节（消息 / 通知）。
+   * ====================================================================== */
+
+  // 列表（新 → 旧分页，cursor = 上一页最后一条的 at）。
+  if (method === "GET" && p === "/api/notifications") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const r = alerts.list(user, {
+      limit: Number(url.searchParams.get("limit")) || undefined,
+      cursor: Number(url.searchParams.get("cursor")) || 0,
+    });
+    if (!r.ok) return send(res, 401, { ok: false, code: r.code, error: r.error });
+    return send(res, 200, { ok: true, unread: r.unread, items: r.items, cursor: r.cursor });
+  }
+
+  // 未读数（角标轮询专用：轻量，不拉列表）。
+  if (method === "GET" && p === "/api/notifications/unread") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const r = alerts.unreadCount(user);
+    return send(res, 200, { ok: true, unread: r.unread });
+  }
+
+  // 标记已读：ids 为空数组 / 不传 = 全部标记已读。
+  if (method === "POST" && p === "/api/notifications/read") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const r = alerts.markRead(user, { ids: b.ids });
+    return send(res, 200, { ok: true, unread: r.unread });
+  }
+
+  // 清空自己的消息。
+  if (method === "POST" && p === "/api/notifications/clear") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const r = alerts.clear(user);
+    return send(res, 200, { ok: true, unread: r.unread });
+  }
+
+  /* ====================================================================== *
    * 充值（支付宝当面付）—— 测试期仅白名单账号（默认 ms2308）可用
    * ====================================================================== */
 
@@ -4667,7 +6358,7 @@ async function handle(req, res) {
       // alipay_page = 电脑网站支付（浏览器收银台）· alipay_f2f = 当面付（窗内二维码）。
       // 由 MTNODE_ALIPAY_CHANNEL 决定，客户端据此决定「显示二维码」还是「显示去支付按钮」。
       channel: st.channel === "precreate" ? "alipay_f2f" : "alipay_page",
-      tiersYuan: RECHARGE_TIERS_CENTS.map(yuanOfCents),
+      tiersYuan: rechargeTiersYuan(),
       minYuan: yuanOfCents(RECHARGE_MIN_CENTS),
       maxYuan: yuanOfCents(RECHARGE_MAX_CENTS),
       orderTtlMs: 15 * 60 * 1000,
@@ -4987,14 +6678,18 @@ async function handle(req, res) {
       ok: true,
       admin: publicUser(a.user),
       sessionExpiresAt: a.session.expiresAt,
-      stats: wallet.stats(),
+      // stats 里附打赏汇总（count 未撤销笔数 / totalYuan 未撤销总额），管理台概览卡片直接用
+      stats: Object.assign(wallet.stats(), { tips: plans.adminStats() }),
       alipay: alipayStatus(),
       wechat: { configured: wechatConfigured(), ownerMapEntries: WECHAT_OWNER_MAP.size },
       config: {
-        tiersYuan: RECHARGE_TIERS_CENTS.map(yuanOfCents),
+        tiersYuan: rechargeTiersYuan(),
         minYuan: yuanOfCents(RECHARGE_MIN_CENTS),
         maxYuan: yuanOfCents(RECHARGE_MAX_CENTS),
+        /* 充值闸门：现在只有「全局关闭」一个开关（见 rechargeAllowed）。名单口径已作废，
+           rechargeUsers 恒为空数组 —— 管理台据此显示「对所有账号开放」。 */
         rechargeUsers: Array.from(RECHARGE_USERS),
+        rechargeClosed: rechargeGloballyClosed(),
       },
     });
   }
@@ -5223,6 +6918,22 @@ async function handle(req, res) {
     });
   }
 
+  /* 管理台 · 调用流水的筛选 + 统计（只读）：窗口 / 时间 / 类型 / 模型 / 账号 / 条数，
+     一次回「明细 + 本次筛选合计 + 今日・近 7 天・近 30 天全站合计」（口径在 relay.mjs 的 usageQuery）。 */
+  if (method === "GET" && p === "/api/admin/relay/usage") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    return send(res, 200, relay.admin.usageQuery({
+      window: url.searchParams.get("window") || "",
+      from: url.searchParams.get("from") || "",
+      to: url.searchParams.get("to") || "",
+      model: url.searchParams.get("model") || "",
+      userId: url.searchParams.get("userId") || "",
+      kind: url.searchParams.get("kind") || "",
+      limit: url.searchParams.get("limit") || "",
+    }));
+  }
+
   if (method === "POST" && p === "/api/admin/relay/config") {
     const a = requireAdmin(req, res);
     if (!a) return;
@@ -5266,16 +6977,511 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, items: relay.admin.audit(Number(url.searchParams.get("limit")) || 100) });
   }
 
-  // CSV 导出（UTF-8 BOM，Excel 双击不乱码）。
+  /* ---------- 管理台 · 打赏 ---------- */
+
+  // 打赏列表：对象类型 / 账号 / 关键词筛选 + 分页 + 汇总卡片（汇总恒为全站口径）。
+  if (method === "GET" && p === "/api/admin/tips") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const r = plans.adminList({
+      targetKind: url.searchParams.get("targetKind") || "",
+      userId: url.searchParams.get("userId") || "",
+      q: url.searchParams.get("q") || "",
+      page: Number(url.searchParams.get("page")) || 1,
+      pageSize: Number(url.searchParams.get("pageSize")) || 20,
+    });
+    return send(res, 200, { ok: true, total: r.total, page: r.page, pageSize: r.pageSize, items: r.items, stats: r.stats });
+  }
+
+  /* 撤销打赏：**已停用**（需求口径：前后端都不再提供撤销）。路由保留只为给老客户端 / 直连调用
+     一个稳定的拒绝回执 —— 一律 403 TIP_REVOKE_DISABLED，不写任何反向流水、不改任何记录。
+     历史已撤销的数据与 CSV 里的撤销列一律保留（tip_revoke_* 流水照旧可查）。 */
+  if (method === "POST" && p === "/api/admin/tips/revoke") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const b = await jsonBody();
+    const r = await plans.adminRevoke({ id: b.id, reason: b.reason });
+    return send(res, 403, { ok: false, code: r.code, error: r.error });
+  }
+
+  // CSV 导出（UTF-8 BOM，Excel 双击不乱码）：orders / ledger / tips 三种。
   if (method === "GET" && p === "/api/admin/export.csv") {
     const a = requireAdmin(req, res);
     if (!a) return;
-    const kind = String(url.searchParams.get("kind") || "orders") === "ledger" ? "ledger" : "orders";
-    const buf = Buffer.from(wallet.csv(kind), "utf8");
+    const raw = String(url.searchParams.get("kind") || "orders");
+    const kind = raw === "ledger" || raw === "tips" ? raw : "orders";
+    // tips 走 tips.mjs 自己的 CSV 出口（列含打赏对象 / 撤销理由），其余仍由 wallet 出。
+    const buf = Buffer.from(kind === "tips" ? plans.csvTips() : wallet.csv(kind), "utf8");
     const name = "mtnode-" + kind + "-" + new Date().toISOString().slice(0, 10) + ".csv";
     return sendBin(res, 200, buf, "text/csv; charset=utf-8", {
       "Content-Disposition": 'attachment; filename="' + name + '"',
       "Cache-Control": "no-store",
+    });
+  }
+
+  /* ---------- 管理台 · 系统资源监控（只读） ---------- */
+
+  // 只在管理台**主动拉取**时采样一次（切到该页签 / 点「刷新」各一次）。
+  // 服务端没有后台采样、没有定时器、不留历史 —— 需求口径就是「不自动刷」。
+  if (method === "GET" && p === "/api/admin/sysinfo") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    return send(res, 200, await sysinfoSnapshot());
+  }
+
+  /* ---------- 管理台 · 内容管理（应用 / 模板 / 技能） ---------- */
+
+  /** 列表取数的公共解释：类型 + 关键词 + 状态 + 作者 + 分页；counts 恒为全量（页签角标用）。 */
+  function adminContentQuery(kind) {
+    const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+    const author = String(url.searchParams.get("author") || "").trim().toLowerCase();
+    const status = String(url.searchParams.get("status") || "").trim().toLowerCase();
+    let rows = [];
+    if (kind === "app") rows = (db.apps || []).map(adminAppRow);
+    else if (kind === "template") rows = (db.templates || []).map(adminTemplateRow);
+    else rows = (db.skills || []).map(adminSkillRow);
+    rows = rows.filter((r) => adminContentHit(r, q));
+    if (author) {
+      rows = rows.filter(
+        (r) =>
+          String(r.ownerName || "").toLowerCase().includes(author) ||
+          String(r.ownerId || "").toLowerCase().includes(author),
+      );
+    }
+    if (kind === "app" && (status === "published" || status === "unpublished")) {
+      rows = rows.filter((r) => (status === "unpublished" ? r.unpublished : !r.unpublished));
+    }
+    if (kind === "skill" && (status === "official" || status === "unofficial")) {
+      rows = rows.filter((r) => (status === "official" ? r.official : !r.official));
+    }
+    return { q, author, status, page: adminContentPage(rows, url, 20) };
+  }
+
+  // 列表：三类内容各一张表（管理台「内容管理」页内二级页签）。
+  if (method === "GET" && p === "/api/admin/content") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const kind = String(url.searchParams.get("kind") || "app").trim().toLowerCase();
+    if (!CONTENT_KINDS.includes(kind)) return send(res, 400, { ok: false, error: "未知内容类型：" + kind });
+    const r = adminContentQuery(kind);
+    return send(res, 200, {
+      ok: true,
+      kind: kind,
+      q: r.q,
+      author: r.author,
+      status: r.status,
+      page: r.page.page,
+      pageSize: r.page.pageSize,
+      total: r.page.total,
+      items: r.page.items,
+      counts: adminContentCounts(),
+    });
+  }
+
+  // 应用的版本历史（管理员视角：任何作者、任何分支；?owner= 指分支）。
+  if (method === "GET" && p === "/api/admin/content/versions") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const found = adminContentFind("app", url.searchParams.get("id"), url.searchParams.get("owner"));
+    if (!found || !found.row) {
+      return send(res, found && found.branchRequired ? 400 : 404, {
+        ok: false,
+        code: found && found.branchRequired ? "BRANCH_REQUIRED" : "APP_NOT_FOUND",
+        error:
+          found && found.branchRequired
+            ? "这个 id 下有 " + found.branches + " 个作者分支：请用 ?owner=<作者 uid 或账号名> 指定分支"
+            : "应用不存在",
+      });
+    }
+    const app = found.row;
+    const latest = appLatestVersion(app);
+    const items = appVersionRecords(app)
+      .slice()
+      .sort((x, y) => compareVersions(y.version, x.version))
+      .map((v) => {
+        let hasFile = false;
+        try {
+          hasFile = !!locateAppZip(app, v.version);
+        } catch {
+          hasFile = false;
+        }
+        return {
+          version: v.version,
+          parentVersion: v.parentVersion || "",
+          bytes: Number(v.bytes) || 0,
+          sha256: v.sha256 || "",
+          entry: v.entry || "",
+          createdAt: Number(v.createdAt) || 0,
+          current: v.version === latest,
+          hasFile: hasFile,
+        };
+      });
+    return send(res, 200, {
+      ok: true,
+      id: app.id,
+      ownerId: app.userId,
+      ownerName: appOwnerNameOf(app.userId),
+      title: app.title || app.id,
+      latestVersion: latest,
+      unpublished: !!app.unpublished,
+      versionsOn: appVersionsOn(),
+      items: items,
+    });
+  }
+
+  // 改动留痕（最近 N 条，默认 100）。
+  if (method === "GET" && p === "/api/admin/content/audit") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const limit = Math.min(CONTENT_AUDIT_MAX, Math.max(1, Number(url.searchParams.get("limit")) || 100));
+    return send(res, 200, { ok: true, items: contentAuditList().slice(0, limit) });
+  }
+
+  // 下载（管理员排查用）：应用 zip / 模板 .mtnodes / 技能包内单个文件。
+  // **不计下载量**（这不是用户下载，别把作者的统计刷上去）。
+  if (method === "GET" && p === "/api/admin/content/download") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const kind = String(url.searchParams.get("kind") || "").trim().toLowerCase();
+    const id = String(url.searchParams.get("id") || "").trim();
+    const raw = url.searchParams.get("format") === "raw";
+    if (kind === "app") {
+      const found = adminContentFind("app", id, url.searchParams.get("owner"));
+      if (!found || !found.row) return send(res, 404, { ok: false, error: "应用不存在" });
+      const app = found.row;
+      const wantVersion = String(url.searchParams.get("version") || "").trim();
+      const loc = locateAppZip(app, wantVersion);
+      if (!loc) {
+        return send(res, 404, {
+          ok: false,
+          code: wantVersion ? "VERSION_NOT_FOUND" : "FILE_MISSING",
+          error: wantVersion ? "该版本不存在或已下架：v" + wantVersion : "应用包缺失",
+        });
+      }
+      const buf = fs.readFileSync(loc.path);
+      const name = appFileStem(app.id, loc.ownerId || app.userId) + (wantVersion ? "-v" + wantVersion : "") + ".zip";
+      if (!raw) return send(res, 200, { ok: true, kind: kind, id: app.id, version: wantVersion || appLatestVersion(app), bytes: buf.length, name: name });
+      return sendBin(res, 200, buf, "application/zip", {
+        "Content-Disposition": 'attachment; filename="' + name + '"',
+        "Cache-Control": "no-store",
+      });
+    }
+    if (kind === "template") {
+      const t = (db.templates || []).find((x) => x.id === id);
+      if (!t) return send(res, 404, { ok: false, error: "模板不存在" });
+      const fp = path.join(FILE_DIR, t.id + ".mtnodes");
+      if (!fs.existsSync(fp)) return send(res, 404, { ok: false, error: "文件缺失" });
+      const buf = fs.readFileSync(fp);
+      const name = t.id + ".mtnodes";
+      if (!raw) return send(res, 200, { ok: true, kind: kind, id: t.id, bytes: buf.length, name: name });
+      return sendBin(res, 200, buf, "application/octet-stream", {
+        "Content-Disposition": 'attachment; filename="' + name + '"',
+        "Cache-Control": "no-store",
+      });
+    }
+    if (kind === "skill") {
+      const s = (db.skills || []).find((x) => x.id === id);
+      if (!s) return send(res, 404, { ok: false, error: "技能不存在" });
+      const want = String(url.searchParams.get("file") || "SKILL.md").replace(/\\/g, "/");
+      if (want.includes("..") || want.startsWith("/") || want.includes("\0")) {
+        return send(res, 400, { ok: false, error: "非法文件名" });
+      }
+      const listed = listSkillBundleFiles(s.id);
+      const hit = (listed.files || []).find((f) => f.path === want);
+      if (!hit) return send(res, 404, { ok: false, code: "FILE_MISSING", error: "技能包里没有这个文件：" + want });
+      const base = skillBundleDir(s.id);
+      const fp = path.resolve(base, ...want.split("/"));
+      if (fp !== path.resolve(base) && !fp.startsWith(path.resolve(base) + path.sep)) {
+        return send(res, 403, { ok: false, error: "非法路径" });
+      }
+      if (!fs.existsSync(fp)) return send(res, 404, { ok: false, code: "FILE_MISSING", error: "文件缺失" });
+      const buf = fs.readFileSync(fp);
+      const name = (s.skillName || s.id) + "-" + path.basename(want);
+      if (!raw) return send(res, 200, { ok: true, kind: kind, id: s.id, file: want, bytes: buf.length, name: name });
+      return sendBin(res, 200, buf, "application/octet-stream", {
+        "Content-Disposition": 'attachment; filename="' + name.replace(/[^\w.\-]/g, "_") + '"',
+        "Cache-Control": "no-store",
+      });
+    }
+    return send(res, 400, { ok: false, error: "未知内容类型：" + kind });
+  }
+
+  // 预览图 / 图标（模板与技能各一张预览图；应用看图标）。只读。
+  if (method === "GET" && p === "/api/admin/content/preview") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const kind = String(url.searchParams.get("kind") || "").trim().toLowerCase();
+    const id = String(url.searchParams.get("id") || "").trim();
+    const size = String(url.searchParams.get("size") || "thumb").toLowerCase() === "full" ? "full" : "thumb";
+    if (kind === "app") {
+      const found = adminContentFind("app", id, url.searchParams.get("owner"));
+      if (!found || !found.row) return send(res, 404, { ok: false, error: "应用不存在" });
+      const fp = appIconPath(found.row.id, found.row.userId);
+      if (!fp) return send(res, 404, { ok: false, error: "无图标" });
+      return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "no-store" });
+    }
+    let has = false;
+    if (kind === "template") {
+      const t = (db.templates || []).find((x) => x.id === id);
+      has = !!(t && t.hasPreview);
+    } else if (kind === "skill") {
+      const s = (db.skills || []).find((x) => x.id === id);
+      has = !!(s && s.hasPreview);
+    } else {
+      return send(res, 400, { ok: false, error: "未知内容类型：" + kind });
+    }
+    const fp = has ? previewPath(id, size) : null;
+    if (!fp) return send(res, 404, { ok: false, error: "无预览图" });
+    return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "no-store" });
+  }
+
+  // 上架 / 下架（只有应用有下架位；模板 / 技能照现状没有这一位）。
+  if (method === "POST" && p === "/api/admin/content/publish") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const b = await jsonBody();
+    const found = adminContentFind("app", b.id, b.ownerId || b.owner);
+    if (!found || !found.row) {
+      return send(res, found && found.branchRequired ? 400 : 404, {
+        ok: false,
+        code: found && found.branchRequired ? "BRANCH_REQUIRED" : "APP_NOT_FOUND",
+        error: found && found.branchRequired ? "这个 id 下有 " + found.branches + " 个作者分支：请指明 ownerId（应用身份 = id + 作者 uid，管理台不会替你挑一条）" : "应用不存在",
+      });
+    }
+    const app = found.row;
+    const unpublish = b.unpublish !== false; // 缺省 = 下架
+    app.unpublished = unpublish;
+    app.unpublishedAt = unpublish ? now() : 0;
+    app.updatedAt = now();
+    await contentAuditPush(a.user, unpublish ? "unpublish" : "publish", "app", adminAppRow(app), unpublish ? "管理台下架" : "管理台重新上架");
+    syncAppZipMirrorGlobal(app.id);
+    publishStaticApps((unpublish ? "管理台下架 " : "管理台重新发布 ") + app.id + "（" + appOwnerNameOf(app.userId) + "）");
+    return send(res, 200, { ok: true, item: adminAppRow(app), counts: adminContentCounts() });
+  }
+
+  // 编辑元信息（标题 / 简介 / 标签 / 图标 / 技能版本号与官方标记）。
+  // 文件正文与 zip 一律不在这里换；应用的 version 由版本记录掌管，也不手改。
+  if (method === "POST" && p === "/api/admin/content/update") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const b = await jsonBody();
+    const kind = String(b.kind || "").trim().toLowerCase();
+    if (!CONTENT_KINDS.includes(kind)) return send(res, 400, { ok: false, error: "未知内容类型：" + kind });
+    const found = adminContentFind(kind, b.id, b.ownerId || b.owner);
+    if (!found || !found.row) {
+      return send(res, found && found.branchRequired ? 400 : 404, {
+        ok: false,
+        code: found && found.branchRequired ? "BRANCH_REQUIRED" : "NOT_FOUND",
+        error: found && found.branchRequired ? "这个 id 下有 " + found.branches + " 个作者分支：请指明 ownerId（应用身份 = id + 作者 uid，管理台不会替你挑一条）" : "内容不存在",
+      });
+    }
+    const row = found.row;
+    const before = kind === "app" ? adminAppRow(row) : kind === "template" ? adminTemplateRow(row) : adminSkillRow(row);
+    const changed = [];
+    if (b.title !== undefined) {
+      const title = String(b.title == null ? "" : b.title).trim().slice(0, 80);
+      if (!title) return send(res, 400, { ok: false, error: "标题不能为空" });
+      row.title = title;
+      changed.push("标题");
+    }
+    if (b.description !== undefined || b.desc !== undefined) {
+      const desc = String(b.description !== undefined ? b.description : b.desc).trim().slice(0, 2000);
+      row.description = desc;
+      changed.push("简介");
+    }
+    if (b.tags !== undefined) {
+      row.tags = parseTags(b.tags);
+      changed.push("标签");
+    }
+    if (kind === "skill" && b.version !== undefined) {
+      try {
+        row.version = normalizeVersion(b.version, row.version || "1.0.0");
+      } catch (e) {
+        return send(res, 400, { ok: false, error: (e && e.message) || String(e) });
+      }
+      changed.push("版本号");
+    }
+    if (kind === "skill" && b.official !== undefined) {
+      row.official = !!b.official;
+      changed.push(row.official ? "官方标记（已设为官方）" : "官方标记（已取消官方）");
+    }
+    // 图标：应用专属（模板 / 技能的预览图由作者上传，管理台只读）。
+    if (kind === "app" && (b.iconBase64 || b.iconClear)) {
+      if (b.iconClear) {
+        clearAppIcon(row.id, row.userId);
+        changed.push("清除图标");
+      } else {
+        let icon = null;
+        try {
+          icon = decodePreview(b.iconBase64);
+        } catch (e) {
+          return send(res, 400, { ok: false, error: "图标无效：" + ((e && e.message) || e) });
+        }
+        if (!icon) return send(res, 400, { ok: false, error: "图标无效" });
+        writeAppIcon(row.id, row.userId, icon);
+        changed.push("图标");
+      }
+    }
+    if (!changed.length) return send(res, 400, { ok: false, error: "没有要改的字段" });
+    row.updatedAt = now();
+    const after = kind === "app" ? adminAppRow(row) : kind === "template" ? adminTemplateRow(row) : adminSkillRow(row);
+    await contentAuditPush(a.user, "update", kind, after, "改了" + changed.join(" / "));
+    if (kind === "app") publishStaticApps("管理台更新应用 " + row.id);
+    return send(res, 200, { ok: true, item: after, before: before, changed: changed, counts: adminContentCounts() });
+  }
+
+  // 删除单条：应用 = 删这一条作者分支（含各版本 zip 与图标），模板 / 技能 = 删记录与文件。
+  if (method === "POST" && p === "/api/admin/content/delete") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const b = await jsonBody();
+    const kind = String(b.kind || "").trim().toLowerCase();
+    if (!CONTENT_KINDS.includes(kind)) return send(res, 400, { ok: false, error: "未知内容类型：" + kind });
+    const found = adminContentFind(kind, b.id, b.ownerId || b.owner);
+    if (!found || !found.row) {
+      return send(res, found && found.branchRequired ? 400 : 404, {
+        ok: false,
+        code: found && found.branchRequired ? "BRANCH_REQUIRED" : "NOT_FOUND",
+        error: found && found.branchRequired ? "这个 id 下有 " + found.branches + " 个作者分支：请指明 ownerId（应用身份 = id + 作者 uid，管理台不会替你挑一条）" : "内容不存在",
+      });
+    }
+    if (kind === "app") {
+      const app = found.row;
+      const row = adminAppRow(app);
+      const idx = (db.apps || []).indexOf(app);
+      const owner = db.users.find((u) => u.id === app.userId);
+      if (owner) {
+        await applyUserPatch(owner.id, {
+          downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (app.downloads || 0)),
+        });
+      }
+      db.apps.splice(idx, 1);
+      try { fs.unlinkSync(appOwnerZipPath(app.id, app.userId)); } catch {}
+      const rest = appBranchesOf(app.id);
+      for (const v of appVersionRecords(app)) {
+        try { fs.unlinkSync(appBranchVersionZipPath(app.id, app.userId, v.version)); } catch {}
+        const sharedUsed = rest.some((x) => appVersionRecords(x).some((r) => r.version === v.version));
+        if (!sharedUsed) {
+          try { fs.unlinkSync(appVersionZipPath(app.id, v.version)); } catch {}
+        }
+      }
+      try { fs.rmdirSync(path.join(appVersionDir(app.id), app.userId)); } catch {}
+      clearAppIcon(app.id, app.userId);
+      await contentAuditPush(a.user, "delete", "app", row, "删整条分支（" + row.versionCount + " 个版本）");
+      syncAppZipMirrorGlobal(app.id);
+      publishStaticApps("管理台删除分支 " + app.id + "（" + appOwnerNameOf(app.userId) + "）");
+      return send(res, 200, { ok: true, kind: kind, id: app.id, ownerId: app.userId, counts: adminContentCounts() });
+    }
+    if (kind === "template") {
+      const t = found.row;
+      const row = adminTemplateRow(t);
+      const idx = db.templates.findIndex((x) => x.id === t.id);
+      const owner = db.users.find((u) => u.id === t.userId);
+      if (owner) {
+        await applyUserPatch(owner.id, {
+          downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (t.downloads || 0)),
+          likesReceived: Math.max(0, (owner.likesReceived || 0) - (t.likes || 0)),
+        });
+      }
+      db.likes = db.likes.filter((l) => l.templateId !== t.id);
+      db.templates.splice(idx, 1);
+      try { fs.unlinkSync(path.join(FILE_DIR, t.id + ".mtnodes")); } catch {}
+      clearPreviews(t.id);
+      await contentAuditPush(a.user, "delete", "template", row, "删模板与其文件");
+      return send(res, 200, { ok: true, kind: kind, id: t.id, counts: adminContentCounts() });
+    }
+    const s = found.row;
+    const srow = adminSkillRow(s);
+    const idx = db.skills.findIndex((x) => x.id === s.id);
+    const owner = db.users.find((u) => u.id === s.userId);
+    if (owner) {
+      await applyUserPatch(owner.id, {
+        downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (s.downloads || 0)),
+        likesReceived: Math.max(0, (owner.likesReceived || 0) - (s.likes || 0)),
+      });
+    }
+    db.skillLikes = db.skillLikes.filter((l) => l.skillId !== s.id);
+    db.skills.splice(idx, 1);
+    clearSkillFile(s.id);
+    clearPreviews(s.id);
+    await contentAuditPush(a.user, "delete", "skill", srow, "删技能与其文件包");
+    return send(res, 200, { ok: true, kind: kind, id: s.id, counts: adminContentCounts() });
+  }
+
+  // 删应用的某一个版本（管理员视角；全删光时服务端会自动下架，与公开口径一致）。
+  if (method === "POST" && p === "/api/admin/content/delete-version") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const b = await jsonBody();
+    const found = adminContentFind("app", b.id, b.ownerId || b.owner);
+    if (!found || !found.row) {
+      return send(res, found && found.branchRequired ? 400 : 404, {
+        ok: false,
+        code: found && found.branchRequired ? "BRANCH_REQUIRED" : "APP_NOT_FOUND",
+        error: found && found.branchRequired ? "这个 id 下有 " + found.branches + " 个作者分支：请指明 ownerId（应用身份 = id + 作者 uid，管理台不会替你挑一条）" : "应用不存在",
+      });
+    }
+    const app = found.row;
+    const want = String(b.version || "").trim();
+    const recs = appVersionRecords(app).slice();
+    const vi = recs.findIndex((v) => v.version === want);
+    if (vi < 0) return send(res, 404, { ok: false, code: "VERSION_NOT_FOUND", error: "该版本不存在：v" + want });
+    recs.splice(vi, 1);
+    app.versions = recs;
+    try { fs.unlinkSync(appBranchVersionZipPath(app.id, app.userId, want)); } catch {}
+    if (!(db.apps || []).some((x) => x !== app && x.id === app.id && appVersionRecords(x).some((v) => v.version === want))) {
+      try { fs.unlinkSync(appVersionZipPath(app.id, want)); } catch {}
+    }
+    if (!recs.length) {
+      app.latestVersion = "";
+      app.unpublished = true;
+      app.unpublishedAt = now();
+      app.bytes = 0;
+      app.sha256 = "";
+      app.version = "";
+      try { fs.unlinkSync(appOwnerZipPath(app.id, app.userId)); } catch {}
+      syncAppZipMirrorGlobal(app.id);
+    } else {
+      const top = recs.reduce((best, v) => (compareVersions(v.version, best.version) > 0 ? v : best), recs[0]);
+      app.latestVersion = top.version;
+      app.version = top.version;
+      app.bytes = Number(top.bytes) || 0;
+      app.sha256 = top.sha256 || "";
+      if (top.entry) app.entry = top.entry;
+      syncAppZipMirror(app);
+    }
+    app.updatedAt = now();
+    await contentAuditPush(a.user, "delete-version", "app", adminAppRow(app), "删版本 v" + want);
+    publishStaticApps("管理台删版本 " + app.id + "@" + want);
+    return send(res, 200, {
+      ok: true,
+      id: app.id,
+      ownerId: app.userId,
+      latestVersion: app.latestVersion || "",
+      remaining: appVersionRecords(app).length,
+      counts: adminContentCounts(),
+    });
+  }
+
+  // 手动重发静态目录（客户端读的那份 /mtnode/apps/catalog.json）：目录刷坏时的修复按钮。
+  if (method === "POST" && p === "/api/admin/content/republish") {
+    const a = requireAdmin(req, res);
+    if (!a) return;
+    const out = publishStaticApps("管理台手动重发（" + (a.user.username || a.user.id) + "）");
+    const status = staticAppsStatus();
+    await contentAuditPush(a.user, "republish", "app", { id: "-", title: "静态目录" }, "手动重发静态目录");
+    return send(res, 200, {
+      ok: true,
+      result: out || null,
+      health: {
+        ok: !!status.ok,
+        dir: status.dir,
+        dbApps: status.dbApps,
+        diskApps: status.diskApps,
+        fallback: !!status.fallback,
+        missingOnDisk: status.missingOnDisk || [],
+        last: status.last || null,
+      },
     });
   }
 
@@ -5368,7 +7574,8 @@ server.listen(PORT, HOST, () => {
   if (pay.gatewayWarning) console.warn("[mtnode-store] alipay 网关体检：" + pay.gatewayWarning);
   if (pay.returnWarning) console.warn("[mtnode-store] alipay return_url 体检：" + pay.returnWarning);
   console.log(
-    "[mtnode-store] recharge: 白名单=" + (Array.from(RECHARGE_USERS).join(",") || "（空）") +
+    "[mtnode-store] recharge: 闸门=" +
+      (rechargeGloballyClosed() ? "已全局关闭（MTNODE_RECHARGE_CLOSED）" : "对所有注册账号开放") +
       " · 订单=" + (db.rechargeOrders || []).length + " 流水=" + (db.rechargeLedger || []).length +
       " · 管理会话=" + (db.adminSessions || []).length,
   );
@@ -5392,9 +7599,10 @@ server.listen(PORT, HOST, () => {
   console.log(
     "[mtnode-store] apps versions: " +
       (appVersionsOn()
-        ? "开（每版一包 <id>/<version>.zip，最新版镜像 <id>.zip；配额 " +
+        ? "开（默认：每版一包 <id>/<version>.zip，最新版镜像 <id>.zip；配额 " +
           fmtBytes(MAX_ACCOUNT_APP_BYTES) + " / " + MAX_ACCOUNT_APPS + " 个应用）"
-        : "关（默认：<id>.zip 一版一份 + PATCH 覆盖；设 MTNODE_APP_VERSIONS=1 打开多版本）") +
+        : "关（MTNODE_APP_VERSIONS=" + APP_VERSIONS_ENV + "：<id>.zip 一版一份 + PATCH 覆盖；" +
+          "去掉该项或设 1 即打开多版本）") +
       " · 声明留痕=" + (db.appDeclarations || []).length + " 条",
   );
   const rd = relay.describe();

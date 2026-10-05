@@ -24,6 +24,8 @@ dsh-home-*/
 # ===== 一次性取证 / 临时脚本与输出（开发会话产物，勿上传）=====
 .tmp-*
 .tmp*
+# MCP 端到端 / 干净环境建图的独立档位（临时数据目录 + 独立 Electron user-data-dir）
+.mcp-*
 *.tmp
 *.bak
 *.orig

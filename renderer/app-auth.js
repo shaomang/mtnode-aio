@@ -443,18 +443,52 @@
       var idLine = el("div", "acct-sub acct-id", u.id ? String(u.id) : "—");
       if (u.id) idLine.title = String(u.id);
       meta.appendChild(idLine);
-      /* 余额行：只对充值白名单账号显示（测试期 = ms2308，见 app-wallet.js 的 VISIBLE_USERS）。
-         余额来自账号快照的 balanceYuan（云端 publicUser 下发的元，主进程 auth-store 已放行该字段）；
-         **显示按鲸圆币（1 币 = ¥0.02）**，真实值仍是元，判定不改口径（见 renderer/app-whalecoin.js）；
-         MtWallet 模块缺席时整块不显示，不影响原有菜单。 */
+      /* 余额行：**只要登录了就总是显示**（判据在 app-wallet.js 的 visibleFor：有账号对象即可，
+         不再看用户名 / 余额 / 有没有中转卡；MtWallet 模块缺席时整块不显示）。
+         余额优先取账号快照的 balanceYuan（云端 publicUser 下发的元，主进程 auth-store 已放行该字段），
+         快照里**没有**这个字段时（老服务端 / 刚登录还没补快照）退回 MtWallet 现拉的值（见
+         refreshAccountSnapshot 的补拉），一次都没取到就显示「—」—— 绝不显示成 0 币。
+         **显示按鲸圆币（1 币 = ¥0.02）**，真实值仍是元，判定不改口径（见 renderer/app-whalecoin.js）。 */
       if (window.MtWallet && window.MtWallet.visibleFor(u)) {
         var balLine = el("div", "acct-sub acct-balance");
         balLine.appendChild(el("span", "", T("余额：")));
         var balVal = el("b");
-        balVal.appendChild(window.MtWallet.balanceEl(window.MtWallet.balanceOf(u)));
-        balLine.appendChild(balVal);
-        balLine.title = T("鲸圆币 · 1 币 = ¥0.02（¥1 = 50 币）") + " · " + T("点「账户充值」查看明细与付款");
-        meta.appendChild(balLine);
+        /* 账号摘要里的有效余额优先（0 也算：真的花光了），摘要没这个字段时才看现拉缓存，
+           两边都没有 → 「—」（旧服务端不下发 balanceYuan 时，菜单不再骗人地显示 0 币）。 */
+        var snapBal = window.MtWallet.snapshotBalance
+          ? window.MtWallet.snapshotBalance(u)
+          : null;
+        var cachedBal = window.MtWallet.balanceKnownYuan
+          ? window.MtWallet.balanceKnownYuan()
+          : null;
+        var balShown = snapBal != null ? snapBal : cachedBal;
+        /* 会话过期（钱包模块最近一次现拉回 401）：余额行说清原因 + 一键重登 ——
+           需求口径：**不擅自清登录态**，只把「登录了却看不到余额」这件事讲明白。
+           此时不再显示余额数字（本机快照里那份可能已经是过期数据）。 */
+        var wErr = window.MtWallet.balanceErr ? window.MtWallet.balanceErr() : "";
+        if (wErr === "401") {
+          var relog = el("span", "acct-balnote tip-stat-warn-t clickable", T("登录已过期，点这里重新登录"));
+          relog.title = T("点这里重新登录");
+          relog.addEventListener("click", function (ev) {
+            if (ev) ev.stopPropagation();
+            if (window.MtWallet.openRelogin) window.MtWallet.openRelogin();
+          });
+          balLine.appendChild(relog);
+          balLine.title = T("登录已过期，点这里重新登录");
+          meta.appendChild(balLine);
+        } else {
+          if (balShown == null) balVal.textContent = "—";
+          else balVal.appendChild(window.MtWallet.balanceEl(balShown));
+          balLine.appendChild(balVal);
+          /* 其余失败（网络 / 5xx）：数字位保留原样，后面补一句「暂时取不到」 */
+          if (wErr === "other") {
+            balLine.appendChild(el("span", "acct-balnote tip-stat-warn-t", T("余额暂时取不到，稍后重试")));
+          }
+          /* 余额行 tooltip：**不带汇率** —— 需求口径「账户里不提示 1￥=50 币，只在充值界面提示」，
+             汇率那一行只写在余额窗（renderer/app-wallet.js 的 #wlRate）。 */
+          balLine.title = T("点「余额」查看明细与付款");
+          meta.appendChild(balLine);
+        }
       }
     } else {
       meta.appendChild(
@@ -503,13 +537,16 @@
           );
         }
       }
-      /* 充值入口：与余额行同一道判空（测试期只对白名单账号显示）。
-         打开的是 app-wallet.js 的充值对话框（persistent + 可最小化）。
-         文案用「账户充值」而不是「充值」：后者在 i18n 里已是费用面板的流水类型标签
-         （"Topped up"），同一个键两种语义会让英文界面串味。 */
+      /* 余额入口：与余额行同一道判空（**只要登录了就总是显示**）。
+         它就是**全应用唯一的充值入口**（设置里的中转卡已不再挂「去充值」按钮）：
+         所以这里绝不能因为用户名 / 余额 / 中转卡缺失而少画一个按钮 —— 用户会再也找不到充值。
+         打开的是 app-wallet.js 的余额对话框（persistent + 可最小化），充值档位与支付宝码都在窗内。
+         文案用「余额」而不是「充值」：① 那个窗本来就以余额与流水为主，改名与窗标题一致；
+         ②「充值」在 i18n 里已是费用面板的流水类型标签（"Topped up"），
+         同一个键两种语义会让英文界面串味。 */
       if (window.MtWallet && window.MtWallet.visibleFor(u)) {
         body.appendChild(
-          menuItem(T("账户充值"), function () {
+          menuItem(T("余额"), function () {
             closeAccountMenu();
             window.MtWallet.open();
           }),
@@ -538,8 +575,17 @@
    *
    * 这里在每次打开菜单时补一次 authMe()，成功后再取一次登录态快照。先画缓存
    * （不闪空），新快照回来由 applyUser 的 paintMenu 重画；请求失败保留旧值、
-   * 绝不把余额清零。同一时刻只允许一次在途请求（快速开关菜单不叠请求）。 */
+   * 绝不把余额清零。同一时刻只允许一次在途请求（快速开关菜单不叠请求）。
+   *
+   * 另有一层兜底：老服务端的 PublicUser **不含 balanceYuan**，光靠 authMe 永远补不出余额
+   * （菜单会一直显示 0 币，而钱包窗现拉是对的）。所以快照里没有有效余额时，
+   * 再让钱包模块从 /api/wallet/summary 现拉一次（并发去重、失败保留旧值）。 */
   var acctSnap = { pending: false };
+
+  function applyAccountSnapshot() {
+    /* 同一个闭包里的 refresh()：拿 auth-state 快照 → 重画菜单（见上面的注释）。 */
+    return refresh();
+  }
 
   function refreshAccountSnapshot() {
     var a = bridge();
@@ -552,9 +598,18 @@
       .then(function (r) {
         /* 失败（未登录 / 网络不通）就到此为止：保留旧快照，余额绝不被清零 */
         if (!r || !r.ok) return null;
-        return refresh();
+        return applyAccountSnapshot();
       })
       .then(function () {
+        /* 每次打开菜单都让钱包模块**无条件**现拉一次余额（force=true，不吃 60s 缓存），
+           拿到就重画菜单行；同步发起、不阻塞菜单显示，失败保留旧值或「—」，绝不清零。
+           判据不再看「快照/缓存里有没有值」：无论有没有，用户要的都是打开时就看到的当前余额
+           （快照缺 balanceYuan 的老服务端同样覆盖：authMe 永远补不出它，只能靠现拉）。 */
+        if (window.MtWallet && window.MtWallet.ensureBalance) {
+          window.MtWallet.ensureBalance(true).then(function () {
+            if (menuOpen()) paintMenu();
+          });
+        }
         acctSnap.pending = false;
       })
       .catch(function () {

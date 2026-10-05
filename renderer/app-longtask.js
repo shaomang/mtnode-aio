@@ -3757,7 +3757,7 @@ async function ltExecNode(run, path) {
 }
 
 /* ── Agent 节点：一个可续跑的 dsh 会话 ─────────────────────────────
- * 复用会话基建（gateway run + resumeSession + 断点重发 + 回滚 + Token 台账），
+ * 复用会话基建（gateway run + resumeSession + 断点重发 + Token 台账），
  * 只是宿主换成「伪节点」：id 里带 runId 与路径，lt_state 的桥帧据此
  * 反查归属（见 ltHandleToolEvent），越权的写回一律被宿主拒。 */
 /* 本环节真正生效的选型（provider / model / preset / effort）：cfg 里写了的照用；

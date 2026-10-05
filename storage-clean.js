@@ -12,7 +12,8 @@
  *   trash       trash/ 回收站内容
  *   browser     browser-profile/ 里的缓存类子目录（Cache / Code Cache / GPUCache /
  *               Service Worker 等），**Cookie 与登录态一律保留**
- *   rollback    rollback 对象库的孤儿对象与超期轮次（外包给 rollback-store 的 gc）
+ *   rollback    <数据目录>/rollback 与 dsh-home/rollback 里的历史回滚数据（该功能已移除，
+ *               整目录永久删除）
  *   sessions    dsh-home/sessions/ 里超过保留天数（默认 7 天）的会话目录
  *
  * 「在用」判据（wf_assets）：某个资产文件名只要在 save/*.json（画布存档）、
@@ -23,8 +24,8 @@
  * 删除口径：与画布删除同源 —— 优先 shell.trashItem（系统回收站，可在资源管理器
  * 还原），失败则回退 <数据目录>/.storage-clean/<时间戳>__<名字>（rename，失败再
  * 复制 + 删除）；两条路都试过东西还留在原地就如实报 failed，绝不假装删掉了。
- * 唯一的例外是 sessions（纯诊断日志，按天数策略直接删）与 rollback（走现成 gc，
- * 删的是没人引用的孤儿对象），两者都在回执里如实报数。
+ * 唯一的例外是 sessions（纯诊断日志，按天数策略直接删）与 rollback（历史回滚数据，
+ * 整目录永久删除），两者都在回执里如实报数。
  *
  * 渲染层没有 fs：统计 / 清理全部经这里的 IPC（preload 白名单桥 api.storage*）。
  * ─────────────────────────────────────────────────────────────────── */
@@ -71,7 +72,6 @@ const CACHE_SUBDIRS = [
 
 let getDataDir = () => "";
 let t = (s) => String(s == null ? "" : s);
-let rollbackGc = null;
 /* 界面语言交给 worker（统计结果里的标签要跟着语言走）；未注册时按 i18n 默认语言 */
 let getLocale = null;
 
@@ -84,6 +84,12 @@ function dataRoot() {
 }
 function at(...parts) {
   return path.join(dataRoot(), ...parts);
+}
+/** 历史回滚数据可能落在两处（会话轮次回滚功能已移除，这里只做遗留清理）：
+ *  `<数据目录>/rollback` = 旧对象库与轮次账本（真正占空间的那一份）；
+ *  `<数据目录>/dsh-home/rollback/<会话>` = 网关当年为每个会话建的空目录。 */
+function rollbackDirs() {
+  return [at("rollback"), at("dsh-home", "rollback")];
 }
 function exists(p) {
   try {
@@ -695,22 +701,26 @@ function scanBrowserProfile() {
 function scanRollback() {
   const cat = emptyCat(
     "rollback",
-    t("回滚对象库（rollback）"),
-    t("按保留轮数清理没人引用的旧对象与超期轮次；清理后旧轮次不能再回滚"),
-    t("清理旧记录"),
+    t("历史回滚数据（rollback）"),
+    t("会话轮次回滚功能已移除；这里只剩历史遗留：改前正文副本、轮次账本与空会话目录。清理即永久删除，删后不可恢复"),
+    t("永久删除"),
   );
   cat.path = at("rollback");
-  const sub = walkSize(cat.path);
-  cat.bytes = sub.bytes;
-  cat.files = sub.files;
-  cat.permanent = true;
-  if (typeof rollbackGc === "function") {
-    cat.cleanable = true;
-    cat.detail = t("可清理没人引用的旧对象（按保留轮数）");
-  } else {
-    cat.cleanable = false;
-    cat.detail = t("回滚存储不可用（未注册），本次跳过");
+  for (const dir of rollbackDirs()) {
+    if (!exists(dir)) continue;
+    const sub = walkSize(dir);
+    cat.bytes += sub.bytes;
+    cat.files += sub.files;
+    cat.items += 1;
   }
+  /* 整目录永久删除：这一类的全部占用都是「可清理」的，别让界面显示 0 */
+  cat.cleanBytes = cat.bytes;
+  cat.cleanFiles = cat.files;
+  cat.permanent = true;
+  cat.cleanable = cat.items > 0;
+  cat.detail = cat.cleanable
+    ? t("整目录永久删除（含旧对象库与轮次账本）")
+    : t("没有历史回滚数据");
   return cat;
 }
 
@@ -719,7 +729,7 @@ function scanSessions(opts) {
   const cat = emptyCat(
     "sessions",
     t("会话记录（dsh-home/sessions）"),
-    t("超过 ") + days + t(" 天没动过的会话目录（历史对话与回滚依据，清了不可恢复）"),
+    t("超过 ") + days + t(" 天没动过的会话目录（历史对话，清了不可恢复）"),
     t("清理超期会话"),
   );
   cat.path = at("dsh-home", "sessions");
@@ -964,6 +974,15 @@ function planFor(id, opts) {
   }
   if (id === "rollback") {
     out.permanent = true;
+    /* 纯目录清理：整目录（两处都算）一把删掉，不再依赖任何存储模块 */
+    for (const dir of rollbackDirs()) {
+      if (!exists(dir)) continue;
+      const s = walkSize(dir);
+      out.paths.push(dir);
+      out.bytes += s.bytes;
+      out.files += s.files;
+      out.items += 1;
+    }
     return out;
   }
   throw new Error(t("未知的清理分类：") + String(id));
@@ -983,26 +1002,6 @@ async function cleanCat(id, opts) {
     items: 0,
     error: "",
   };
-  if (id === "rollback") {
-    res.permanent = true;
-    const before = walkSize(at("rollback"));
-    if (typeof rollbackGc !== "function") {
-      res.ok = false;
-      res.error = t("回滚存储不可用（未注册）");
-      return res;
-    }
-    const r = rollbackGc({
-      keepRounds: clampInt(o.keepRounds, 1, 1000, 20),
-    });
-    const after = walkSize(at("rollback"));
-    res.bytesFreed = Math.max(0, (before.bytes || 0) - (after.bytes || 0));
-    res.removed = (Number(r && r.objectsRemoved) || 0) + (Number(r && r.roundsRemoved) || 0);
-    res.items = Number(r && r.roundsRemoved) || 0;
-    res.detail =
-      t("清掉对象 ") + (Number(r && r.objectsRemoved) || 0) + t(" 个、轮次 ") +
-      (Number(r && r.roundsRemoved) || 0) + t(" 轮");
-    return res;
-  }
   const plan = planFor(id, o);
   res.permanent = !!plan.permanent;
   res.items = plan.items;
@@ -1108,8 +1107,6 @@ function scanInWorker(opts) {
         workerData: {
           dataDir: String(getDataDir() || ""),
           locale: typeof getLocale === "function" ? String(getLocale() || "") : "",
-          /* scan 只判「回滚存储是否可用」（typeof），线程里给个占位函数即可，绝不真调 */
-          hasRollbackGc: typeof rollbackGc === "function",
           opts: opts || {},
         },
       });
@@ -1142,7 +1139,6 @@ function registerStorageIpc(opts) {
   const o = opts || {};
   if (typeof o.getDataDir === "function") getDataDir = o.getDataDir;
   if (typeof o.t === "function") t = o.t;
-  if (typeof o.rollbackGc === "function") rollbackGc = o.rollbackGc;
   ipcMain.handle("storage:scan", async (e, arg) => {
     try {
       return await scanInWorker(arg || {});

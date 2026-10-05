@@ -85,6 +85,16 @@
   color: var(--red);
 }
 
+/* 登录账号 chip：窗内就能看清「这一版会以哪个账号上传」（未登录 / 未核到时标红，
+   与页脚「未登录：先登录再上传」是同一件事的两种说法） */
+.pub-chip-auth {
+  color: var(--green);
+}
+
+.pub-chip-auth.pub-err {
+  color: var(--red);
+}
+
 /* ── 两栏（左表单 / 右截图与线上信息）；窄屏自动单列 ── */
 .pub-grid {
   display: grid;
@@ -399,6 +409,39 @@
   margin-top: 8px;
 }
 
+/* ── 同 id 多分支（docs/apps-market.md §十，本轮）──
+   ⑤ 线上版本这一块：我的分支可勾可删；**其他作者的分支只读** —— 不渲染勾选框与删除按钮（q7），
+   块身给一点缩进与左侧竖线，一眼看出「这是别人的分支」；分支树本体复用 .apps-brtree（在 apps.css）。 */
+.pub-vers-head {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 4px 0 2px;
+}
+
+.pub-ver-other {
+  border-left: 2px solid var(--bd2);
+  padding-left: 8px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pub-ver-readonly {
+  cursor: default;
+  opacity: 0.92;
+}
+
+.pub-vers .apps-brtree {
+  margin: 4px 0 6px;
+}
+
+/* 分支树在窄栏里也要能读：下拉允许换行收缩 */
+.pub-vers .apps-br-sel {
+  flex: 1 1 130px;
+  min-width: 96px;
+}
+
 /* ── 配额 ── */
 .pub-quota-line {
   display: flex;
@@ -486,6 +529,21 @@
 
 .pub-foot-note.pub-ok {
   color: var(--green);
+}
+
+/* 页脚文案里内嵌的动作按钮（「去登录」/「重试读取登录态」）：不该整条提示都是一颗按钮，
+   所以动作按钮只跟在提示文字后面，字号与颜色跟父级一致 */
+.pub-foot-note.pub-note-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pub-foot-note .pub-act {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 3px;
 }
 
 /* ── 右下角拖拽手柄（定位锚 = .overlay-box 的 position:relative） ── */

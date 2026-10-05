@@ -98,7 +98,7 @@ body {
   z-index: 5;
 }
 .brand { font-weight: 600; letter-spacing: .5px; }
-.tabs { display: flex; gap: 4px; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
 .tab {
   background: transparent;
   border: 1px solid transparent;
@@ -107,6 +107,9 @@ body {
   border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
+  /* 页签多到 8 个之后，窗口一窄就会把「系统资源监控」逐字竖排 —— 标签整体不许折行，
+     放不下时由 .tabs 换行（整只页签挪到下一行），观感与点击区域都不变形。 */
+  white-space: nowrap;
 }
 .tab:hover { color: var(--text); background: var(--panel2); }
 .tab.active { color: var(--text); background: var(--panel2); border-color: var(--line); }
@@ -229,6 +232,33 @@ td .actions { display: flex; gap: 6px; }
 .dlg-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
 /* 中转服务页 */
+/* 页内二级页签：调用流水 / 配置 / 会话测试 / 改动留痕（五块内容不再堆在同一页上） */
+.subtabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.subtab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 7px 14px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  font-size: 14px;
+}
+.subtab:hover { color: var(--text); background: var(--panel2); }
+.subtab.active { color: var(--text); background: var(--panel2); border-color: var(--line); border-bottom-color: var(--accent); }
+
+/* 调用流水的窗口卡片：可点（点一下 = 统计与明细都切到那个窗口） */
+.card-click { cursor: pointer; }
+.card-click:hover { border-color: var(--accent); }
+.card-click.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(79, 140, 255, .35); }
+.card-line { font-size: 12.5px; margin-top: 4px; }
+
 .rl-out {
   margin: 10px 0 0;
   max-height: 320px;
@@ -255,6 +285,30 @@ td .actions { display: flex; gap: 6px; }
   padding: 8px 10px;
   font-size: 13px;
 }
+
+/* ---------- 系统资源监控页：只读指标卡 + 用量进度条 ---------- */
+/* 进度条按用量上色：< 80 常态（accent）、>= 80 黄、>= 90 红（阈值只在界面上，服务端不下发规则）。 */
+.card.metric .v { font-size: 20px; font-variant-numeric: tabular-nums; }
+.card .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.meter {
+  height: 6px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel2);
+  overflow: hidden;
+}
+.meter i { display: block; height: 100%; background: var(--accent); }
+.meter.warn i { background: var(--warn); }
+.meter.bad i { background: var(--bad); }
+
+/* ---------- 内容管理页：行内操作按钮 + 页内二级视图 ---------- */
+.csubview { min-width: 0; }
+.row-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+#view-content td { vertical-align: middle; }
+.dlg-body table { font-size: 12.5px; }
+.dlg-body .row-acts { justify-content: flex-end; }
+.dlg-body .table-wrap { overflow: auto; max-height: 46vh; }
 
 /* Toast */
 .toast {

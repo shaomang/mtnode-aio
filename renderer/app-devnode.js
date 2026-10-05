@@ -3901,8 +3901,21 @@ function devModelPopEl() {
   head.appendChild(devDlgEl("b", null, I18n.t("Agent 设定")));
   const close = document.createElement("button");
   close.type = "button";
-  close.className = "mini dev-model-close";
-  close.textContent = "✕";
+  /* 只挂 .dev-model-close，不带通用 .mini：.mini 在场时 Chromium 把钮内 svg 的
+     computed width 压成 0px（实测同一颗钮去掉 .mini → svg 12×12；留着 → 0×12，
+     图标直接看不见），尺寸 / 观感全部由 .dev-model-close 自己给
+     （见 css/components.css 该条注释）。 */
+  close.className = "dev-model-close";
+  /* 关闭键图标走内联 SVG（与 #overlay 窗壳的 .ov-close-btn 同一份线性 ✕）：
+     20×20 方钮里字符「✕」的字形墨水盒中心比按钮中心高 0.5px（Range.getBoundingClientRect
+     实测：ink 中心 y=41.5 / 按钮中心 y=42），方钮越小越看得出来；换成 viewBox 24 的
+     path（getBBox 中心恰为 12,12）+ flex 居中后偏差归零，也不再受字体 / 字号影响。 */
+  close.title = I18n.t("关闭");
+  close.setAttribute("aria-label", I18n.t("关闭"));
+  close.innerHTML =
+    '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
+    '<path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/>' +
+    "</svg>";
   close.onclick = () => closeDevModelPicker();
   head.appendChild(close);
   const cells = document.createElement("div");

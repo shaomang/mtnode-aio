@@ -5,6 +5,12 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'">
 <title>MTNode 讨论区</title>
 <link rel="stylesheet" href="forum.css">
+<!-- 打赏与评论共用主应用那一套组件与 DOM（renderer/app-tips.js · app-comments.js）：
+     样式真源在 renderer/css/，这里只链接同一份文件，不复制一份讨论区专用样式
+     （本窗是同一个应用目录下的插件窗口，相对路径可用；forum.css 里已把主应用的
+     语义槽位名 --ink / --muted / --yellow 映射到讨论区自己的调色板）。 -->
+<link rel="stylesheet" href="../renderer/css/tips.css">
+<link rel="stylesheet" href="../renderer/css/comments.css">
 </head>
 <body>
   <div class="panel">
@@ -43,6 +49,12 @@
           <select id="statusSel" hidden title="切换状态"></select>
         </div>
       </div>
+      <div class="tdtabs" id="tdTabs">
+        <button type="button" class="tdtab on" id="tdTabReply"
+          title="阅读与发表回复（讨论区原有形态）">回复</button>
+        <button type="button" class="tdtab" id="tdTabComment"
+          title="评价这条话题（评论支持互回；讨论区的话题评论不带星级）">评论</button>
+      </div>
       <div class="scroll" id="topicScroll">
         <div class="md card" id="tBody"></div>
         <div class="rlist" id="replyList"></div>
@@ -57,6 +69,8 @@
             <button type="button" id="btnReply" class="primary">回复</button>
           </div>
         </div>
+        <!-- 评论页签（renderer/app-comments.js 的评论区整块挂在这里；首次切过去才拉数据） -->
+        <div class="cmt-host" id="topicComments" hidden></div>
       </div>
     </section>
 
@@ -100,6 +114,15 @@
     <div class="toast" id="toast" hidden></div>
   </div>
   <script src="vendor/marked.min.js"></script>
+  <!-- 鲸圆币（window.MtCoin：换算 + 金币图标 + 金额元件）：讨论区也要画金币，
+       与主应用同一份文件（模块自包含，图挂了有 .ico-miss 兜底，不会空着）。 -->
+  <script src="../renderer/app-whalecoin.js"></script>
+  <!-- 打赏（window.MtTips）与评论（window.MtComments）：与主应用同一份模块，
+       讨论区用它做话题 / 回复的打赏与话题评论；两个模块只依赖
+       window.api.storeRequest / MTNodeAuth / I18n（chat.js 顶部已补适配层），
+       引用不到这些全局时自带头部有降级，不会把讨论区打崩。 -->
+  <script src="../renderer/app-tips.js"></script>
+  <script src="../renderer/app-comments.js"></script>
   <script src="chat.js"></script>
 </body>
 </html>

@@ -5,6 +5,8 @@ const fs = require("fs"), path = require("path"), vm = require("vm"), os = requi
 const SHARED = { fs, path, vm, os, spawn: childProcess.spawn };
 const TEST_DIR = __dirname;
 let MERGED_FAILED = false;
+let __pdfToolDone = false;
+let __pdfMathDone = false;
 
 /* ==================== 已并入：test/smoke-pdf-tool.js ==================== */
 (function () {
@@ -570,6 +572,7 @@ let MERGED_FAILED = false;
       ok(!!String(mdEntry.presets["输出路径"] || ""), "[7] 预设里给了输出路径样例（.pdf）");
 
       const mdWires = mdEntry.graph.wires || [];
+      const NODES_SRC = read("renderer/app-nodes.js"); /* 内部函数入参对象 / 取值链取自真实源码 */
       eq(mdWires.length, 5, "[7] 内部图 5 条线（3 条内侧桥接 + 2 条内侧汇流）");
       const mdBridge = mdWires
         .filter((w) => w.from === mdRoot.id && w.to === mdFn.id)
@@ -583,6 +586,186 @@ let MERGED_FAILED = false;
       eq(mdFeed.map((w) => w.toIndex).join(","), "0,1", "[7] 汇流落到壳的同号输出端子（0 / 1）");
       ok(mdWires.every((w) => !w.rel), "[7] 5 条都是数据线（rel 关系线不参与执行）");
 
+      /* —— 控制线判据：壳内桥接的 fromIndex 是**壳的输入端子号**，不能拿去问输出端子判据 ——
+         历史 bug（本次修复）：内置「Markdown 转 PDF」2 出 3 入，端子 2 / 3 的桥接线被
+         wireFromIsControl 判成控制线 → wiresTo() 静默滤掉 → 内部函数恒收不到「输出路径」，
+         现场表现就是工具试跑报「缺少输出路径（输入端子 3）」。这里用真实切片钉死判据。 */
+      const ctlSb = {
+        console,
+        Math,
+        JSON,
+        String,
+        Number,
+        Boolean,
+        RegExp,
+        Object,
+        Array,
+        Set,
+        Map,
+        S: { wf: null },
+        I18n: { t: (k) => String(k) },
+        uid: (p) => String(p || "n") + "x" + (ctlUid = (ctlUid || 0) + 1),
+      };
+      let ctlUid = 0;
+      vm.createContext(ctlSb);
+      vm.runInContext(
+        [
+          fnBody(APP, "nodeByIdIn"),
+          fnBody(APP, "nodeById"),
+          fnBody(APP, "isItemPortSource"),
+          fnBody(APP, "isSuperLikeNode"),
+          fnBody(APP, "isAssetNode"),
+          fnBody(APP, "nodeParentSuperId"),
+          fnBody(APP, "isSuperIoNode"),
+          fnBody(APP, "isControlKind"),
+          fnBody(APP, "isVideoPostKind"),
+          fnBody(APP, "isToolNode"),
+          fnBody(APP, "isFunctionNode"),
+          fnBody(APP, "isFnToolNode"),
+          fnBody(APP, "fnToolParamList"),
+          fnBody(APP, "fnToolInPortIsControl"),
+          fnBody(APP, "fnToolPortKind"),
+          fnBody(APP, "ctrlRoleOf"),
+          fnBody(APP, "isExecEnd"),
+          fnBody(NODES_SRC, "fnInputSrcNoteLegacyTrap"),
+          fnBody(NODES_SRC, "fnInputProviderNode"),
+          fnBody(NODES_SRC, "fnInputBlankReason"),
+          fnBody(NODES_SRC, "fnInputValueIsBlank"),
+          fnBody(APP, "fnToolOutPortIsControl"),
+          fnBody(APP, "superExternalInWiresAll"),
+          fnBody(APP, "superInPortIsControl"),
+          fnBody(APP, "superOutPortIsControl"),
+          fnBody(APP, "superInternalOutFeedsAll"),
+          fnBody(APP, "nodeEmitsControlOnPort"),
+          fnBody(APP, "wireFromIsControl"),
+          fnBody(APP, "wiresTo"),
+          /* 值贯通断言走真实取值链：壳外侧端子 → 内侧桥接 → 函数节点入参对象 */
+          fnBody(APP, "normPortValueByKind"),
+          fnBody(APP, "normFnToolPortValue"),
+          fnBody(APP, "externalValueIntoSuper"),
+          fnBody(APP, "valueForInput"),
+          fnBody(APP, "valueFromWire"),
+          fnBody(APP, "superPortIdxFromWire"),
+          fnBody(APP, "inputInherited"),
+          fnBody(APP, "isTextSource"),
+          fnBody(NODES_SRC, "computePortValue"),
+          fnBody(NODES_SRC, "fnToolInPortIsArray"),
+          fnBody(NODES_SRC, "functionInputObject"),
+          fnBody(APP, "ensureFnToolNodeState"),
+          fnBody(APP, "normFnToolEntry"),
+          /* migrateWf 里与本次无关的其它迁移：桩成 no-op（它们只碰别的节点类型） */
+          "function stripSuperIoNodes() { return null; }",
+          "function detachBoundMediaSaves() {}",
+          "function ensureTaskScaffold() {}",
+          "function refreshTimerStatus() {}",
+          "function canUseGlobalRefs() { return false; }",
+          "function isSaveNode() { return false; }",
+          "function isExecStart() { return false; }",
+          "function isMediaGenNode() { return false; }",
+          "function isSuperLikeNode(n) { return !!(n && n.kind === 'super'); }",
+          "function computeTimerNextAt() { return 0; }",
+          "function migrateChatNodeToAgent() {}",
+          "function migrateToolNodeToSuperForm() {}",
+          "function normalizeCounterNode() {}",
+          "function normalizeDelayerNode() {}",
+          "function normalizeGateNode() {}",
+          "function normalizeMutexNode() {}",
+          "function normalizeSequencerNode() {}",
+          "function normalizeSplitterNode() {}",
+          "function normalizeTimerNode() {}",
+          "function normalizeBgRm() {}",
+          "function normalizeImgParams() {}",
+          "function normalizeRatioLock() {}",
+          "function normalizeTaskSteps() {}",
+          "function normalizeTextEffort() {}",
+          "function ensureDevAiCallState() {}",
+          "function sensenovaNormalizeNode() {}",
+          "function normalizeAgentEffort(v) { return v; }",
+          "function videoGenControlPort() { return 0; }",
+          "function selResult() { return null; }",
+          fnBody(APP, "migrateWf"),
+        ].join("\n"),
+        ctlSb,
+      );
+      const C = (name, ...args) => vm.runInContext(name, ctlSb)(...args);
+      const mdWf2 = {
+        id: "wf-ctl",
+        nodes: JSON.parse(JSON.stringify(mdEntry.graph.nodes)),
+        wires: JSON.parse(JSON.stringify(mdEntry.graph.wires)),
+        groups: [],
+        marks: [],
+      };
+      ctlSb.S.wf = mdWf2;
+      const mdRoot2 = mdWf2.nodes.find((n) => n.id === mdEntry.graph.rootId);
+      const mdFn2 = mdWf2.nodes.find((n) => n.parentSuperId === mdEntry.graph.rootId);
+      ok(
+        mdWf2.wires.every((w) => C("wireFromIsControl", w, mdWf2) === false),
+        "[7] 修复判据：5 条内部线全部不是控制线（壳内桥接按输入端子判，不按输出端子判）",
+      );
+      eq(C("wiresTo", mdFn2.id).length, 3, "[7] wiresTo(子函数)：3 条数据入线一条不少（修复前只有 1 条）");
+      ok(
+        C("wireFromIsControl", { from: mdRoot2.id, to: mdFn2.id, fromIndex: 0, toIndex: 0 }, mdWf2) === true,
+        "[7] 判据没有被放宽：壳内桥接的 fromIndex 0 仍是控制线（控制入不算数据桥接）",
+      );
+      /* 值贯通：壳端子 1 / 3 有值、端子 2 空 —— 内部函数必须逐端拿到对应值 */
+      mdRoot2._agentCallArgs = [
+        null,
+        { kind: "text", text: "# 标题" },
+        null,
+        { kind: "text", text: "D:\\out\\报告.pdf" },
+      ];
+      const mdIn = C("functionInputObject", mdFn2);
+      ok(
+        mdIn["输出路径"] && mdIn["输出路径"].text === "D:\\out\\报告.pdf",
+        "[7] 值贯通：壳端子 3（输出路径）真的到了内部函数入参（此前恒为 null → 试跑报「缺少输出路径」）",
+      );
+      ok(mdIn["$3"] && mdIn["$3"].text === "D:\\out\\报告.pdf", "[7] 值贯通：$3 与命名键两条口径一致（内置 jscode 两条都读）");
+      ok(mdIn["源文件路径"] == null && mdIn["$2"] == null, "[7] 空端子仍为空（判据放宽不会凭空造值）");
+
+      /* —— 存量自愈：存档里桥接线整批没写进去时，migrateWf 按同号端子补回 —— */
+      const mdWf3 = {
+        id: "wf-heal",
+        nodes: JSON.parse(JSON.stringify(mdEntry.graph.nodes)),
+        wires: JSON.parse(JSON.stringify(mdEntry.graph.wires)).filter(
+          (w) => !(w.from === mdEntry.graph.rootId && w.to !== mdEntry.graph.rootId),
+        ),
+        groups: [],
+        marks: [],
+      };
+      ctlSb.S.wf = mdWf3;
+      /* migrateWf 会在中途重建 wires 数组：断言必须走「重新读 mdWf3.wires」这条口径，
+         不能攥着旧引用 —— 现场调用方（loadWorkflow）读的也是迁移后的那份对象。 */
+      const healChanged = C("migrateWf", mdWf3);
+      const healedAll = mdWf3.wires.filter((w) => w.from === mdEntry.graph.rootId && w.to === mdFn2.id);
+      ok(healChanged === true, "[7] 自愈：桥接线整批缺席时报告「有变更」（返回 true 让调用方落盘打标）");
+      eq(healedAll.length, 3, "[7] 自愈按壳的入参个数补回 3 条内侧桥接");
+      eq(healedAll.map((w) => w.fromIndex).join(","), "1,2,3", "[7] 自愈按同号端子补（不猜参数对应关系）");
+      eq(healedAll.map((w) => w.toIndex).join(","), "1,2,3", "[7] 自愈落到子节点同号端子");
+      eq(
+        mdWf3.wires.filter((w) => w.from === mdFn2.id && w.to === mdEntry.graph.rootId).length,
+        2,
+        "[7] 自愈顺带补回 2 条内侧汇流（子节点输出 → 壳）",
+      );
+      const healAgain = mdWf3.wires.length;
+      ok(C("migrateWf", mdWf3) === false && mdWf3.wires.length === healAgain, "[7] 自愈幂等：第二次跑不再改线、不再报「有变更」");
+      /* 边界：子节点只剩 2 个入参时，端子 3 没有可对齐的对象 —— 不许凭空补 */
+      const mdWf4 = {
+        id: "wf-heal2",
+        nodes: JSON.parse(JSON.stringify(mdEntry.graph.nodes)),
+        wires: JSON.parse(JSON.stringify(mdEntry.graph.wires)).filter(
+          (w) => !(w.from === mdEntry.graph.rootId && w.to !== mdEntry.graph.rootId),
+        ),
+        groups: [],
+        marks: [],
+      };
+      const mdFn4 = mdWf4.nodes.find((n) => n.parentSuperId === mdEntry.graph.rootId);
+      mdFn4.inputs = mdFn4.inputs.slice(0, 2); /* 子节点只剩 2 个入参 */
+      ctlSb.S.wf = mdWf4;
+      C("migrateWf", mdWf4);
+      ok(
+        mdWf4.wires.every((w) => !(w.from === mdEntry.graph.rootId && Number(w.fromIndex || 0) === 3)),
+        "[7] 自愈守边界：子节点没有端子 3 时不补（不猜、不越权接线）",
+      );
       /* 引擎认得这 5 条线（复用 [2] 的 vm 切片与上下文） */
       const mdWf = {
         nodes: JSON.parse(JSON.stringify(mdEntry.graph.nodes)),
@@ -817,6 +1000,7 @@ let MERGED_FAILED = false;
     console.log("FAIL  [合并块异常] smoke-pdf-tool.js：" + (e && e.stack ? e.stack : e));
   }
   if (fails) console.log("  ── 已并入块 smoke-pdf-tool.js：" + fails + " / " + checks + " 项失败");
+  __pdfToolDone = true;
 })();
 
 /* ==================== 已并入：test/smoke-pdf-math-review.js ==================== */
@@ -1587,8 +1771,29 @@ let MERGED_FAILED = false;
     console.log("FAIL  [合并块异常] smoke-pdf-math-review.js：" + (e && e.stack ? e.stack : e));
   }
   if (fails) console.log("  ── 已并入块 smoke-pdf-math-review.js：" + fails + " / " + checks + " 项失败");
+  __pdfMathDone = true;
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+
+/* 两个「已并入」块都是自执行 async IIFE 且没人 await：块内第一条 await 之后若事件循环
+   空闲，Node 会按「没有待办」直接退出 —— 后面的断言根本不会执行，却仍然报 PASS
+   （本文件此前就停在第 [3] 段）。这里留一个 ref 的等待定时器把事件循环撑住，两块都
+   跑完再判定成败。收尾不用 process.exit：管道 / 文件 stdout 的写入是异步的，强制退出
+   会把还没冲刷的输出吞掉（日志会缺一大段），改设 process.exitCode 让 Node 自然结束。 */
+function __pdfSettle() {
+  if (!__pdfToolDone || !__pdfMathDone) return;
+  clearInterval(__pdfSettleTimer);
+  clearTimeout(__pdfTimeoutTimer);
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+  else console.log("\n✓ smoke-pdf 全部通过");
+  process.exitCode = MERGED_FAILED ? 1 : 0;
+}
+const __pdfSettleTimer = setInterval(__pdfSettle, 100);
+const __pdfTimeoutTimer = setTimeout(() => {
+  console.log(
+    "\n✗ smoke-pdf 超时：已并入块没在 6 分钟内跑完（tool=" + __pdfToolDone + " math=" + __pdfMathDone + "）",
+  );
+  process.exitCode = 1;
+  clearInterval(__pdfSettleTimer);
+}, 360000);
+__pdfSettle();

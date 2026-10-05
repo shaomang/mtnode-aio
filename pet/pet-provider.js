@@ -11,6 +11,13 @@
  */
 const DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com";
 const DEEPSEEK_OFFICIAL_ROUTE = "deepseek-official";
+/* 中转卡（source="mtnode-relay"）的判据与「占位串」常量单一真源在 main.js
+   （RELAY_PROVIDER_SOURCE / RELAY_KEY_PLACEHOLDER）：本文件同口径各写一份常量，
+   不再从别的模块 require（pet/pet-relay-cred.js 已删 —— 中转 Key 现在就在配置里那张卡上，
+   由主进程写入，桌宠与主程序读同一份 config.json）。 */
+const RELAY_PROVIDER_SOURCE = "mtnode-relay";
+const RELAY_KEY_PLACEHOLDER = "mtnode-account-token";
+const isRelayCard = (p) => !!p && String(p.source || "") === RELAY_PROVIDER_SOURCE;
 
 /** baseUrl 是否指向 DeepSeek（官方路由判据，与 app.js 的 dshProvider 同口径）。 */
 function isDeepseekHost(baseUrl) {
@@ -37,9 +44,21 @@ function hasUsableCreds(p) {
   return !!(
     p &&
     String(p.baseUrl || "").trim() &&
-    String(p.apiKey || "").trim() &&
+    apiKeyOf(p) &&
     modelIdsOf(p).length
   );
+}
+
+/**
+ * 这张卡真正能下发的 Key（网关侧只读 p.apiKey，见 dsh/gateway/gateway.mjs 的
+ * MTNODE_KEY_i —— 它不经任何 apiKeyOf，所以真票必须是配置里那一串）。
+ * 中转卡：卡上还是占位串 = 这张卡还没拿到真票（真票由 MTNode 主进程写进同一份
+ * config.json），按**没有凭据**处理 —— 拿占位串去请求是恒 401，且报错完全看不出原因。
+ * （与 main.js / dsh/mtnode-llm-creds.js 的 apiKeyOf 同口径。） */
+function apiKeyOf(p) {
+  const raw = String((p && p.apiKey) || "").trim();
+  if (!isRelayCard(p)) return raw;
+  return RELAY_KEY_PLACEHOLDER && raw !== RELAY_KEY_PLACEHOLDER ? raw : "";
 }
 
 /** 第一个可用的 DeepSeek 官方文本服务商（设置里那行 id 通常为 "deepseek"）。 */
@@ -47,7 +66,7 @@ function officialTextProvider(appCfg) {
   const providers = Array.isArray(appCfg && appCfg.providers) ? appCfg.providers : [];
   for (const p of providers) {
     if (!isTextProvider(p)) continue;
-    if (!String(p.apiKey || "").trim()) continue;
+    if (!apiKeyOf(p)) continue;
     if (isDeepseekHost(p.baseUrl)) return p;
   }
   return null;
@@ -118,19 +137,25 @@ function resolveChatProvider(cfg, appCfg) {
 /**
  * 非 DeepSeek 的 OpenAI 兼容文本服务商 → 网关 mtnode_* 路由列表
  * （DeepSeek 官方走 llm-deepseek，不进这张表）。
+ * 中转卡的真票就在配置里那张卡的 apiKey 上（主进程写入）—— 卡上还是占位串
+ * （这张卡还没拿到真票）的那张不进表：网关只认这条 apiKey，绝不把占位串当凭据发出去。
  */
 function mtnodePiProviders(appCfg) {
   const out = [];
   const providers = Array.isArray(appCfg && appCfg.providers) ? appCfg.providers : [];
   providers.forEach((p, i) => {
-    if (!isTextProvider(p) || !String(p.apiKey || "").trim()) return;
+    const key = apiKeyOf(p);
+    if (!isTextProvider(p) || !key) return;
     if (isDeepseekHost(p.baseUrl)) return;
     if (!String(p.baseUrl || "").trim() || !(p.models || []).length) return;
     out.push({
       route: p.id || "p" + (i + 1),
       name: p.name || p.id,
       baseUrl: p.baseUrl,
-      apiKey: p.apiKey,
+      apiKey: key,
+      /* source 必须带上（与 main.js / dsh/mtnode-llm-creds.js 同口径）：调用方据此
+         认出中转卡（source="mtnode-relay"），知道这张卡的凭据来自哪里。 */
+      source: String(p.source || ""),
       api: p.api || "openai-completions",
       models: modelIdsOf(p),
     });
@@ -166,7 +191,7 @@ function routeNameOf(savedId, appCfg) {
 /** 配置里 DeepSeek 官方那一行的 apiKey（联网搜索固定用它），没有则空串。 */
 function deepseekWebSearchKey(appCfg) {
   const p = officialTextProvider(appCfg);
-  return p ? String(p.apiKey || "").trim() : "";
+  return p ? apiKeyOf(p) : "";
 }
 
 module.exports = {

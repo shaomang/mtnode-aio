@@ -17,6 +17,10 @@
  *   · Ctrl+V：画布焦点（非编辑区）时一律**消费按键**并交给 canvasPasteFromClipboard ——
  *     剪贴板里可能有图像（截图 / 复制的图片文件），要先读一次剪贴板才知道该弹询问窗、
  *     该粘节点，还是提示「粘贴板为空」，同步判定不出来（本轮的剪贴板图像需求）。
+ *   · Ctrl+V 的落点是 canvasPasteFromClipboard，它开头就是 `if (S.view !== "workflow") return;`
+ *     —— 所以 **boot 进画布视图时 S.view 必须落定**：app-boot 那句 setView 只给 agent / team 调，
+ *     画布视图只补 body 类；漏了这一步 S.view 一直是 undefined，画布 Ctrl+V 被整条吃掉
+ *     （本轮修的 bug：Ctrl+C 提示「已复制 N 个节点」，Ctrl+V 却毫无反应）。
  *
  * 口径：与 test/smoke-ref-keyboard.js 同一套路 —— 用 vm 从 renderer/app.js 里按名字抠出
  * **真实函数** 来跑（textSelectionWantsNativeCopy / canvasClipboardKey /
@@ -47,9 +51,9 @@ const has = (hay, needle, msg) =>
 const hasnt = (hay, needle, msg) =>
   ok(String(hay).indexOf(needle) < 0, msg + (String(hay).indexOf(needle) < 0 ? "" : "（仍含 " + JSON.stringify(needle) + "）"));
 
-/* ---------- 从源码里抠出顶层函数体（不改动源文件） ---------- */
+/* ---------- 从源码里抠出顶层函数体（不改动源文件；async 函数连 async 前缀一起抠） ---------- */
 function fnBody(src, name) {
-  const m = src.match(new RegExp("\\nfunction " + name + "\\s*\\(", "m"));
+  const m = src.match(new RegExp("\\n(?:async )?function " + name + "\\s*\\(", "m"));
   if (!m) throw new Error("找不到函数：" + name);
   const at = m.index + 1;
   const i = src.indexOf("{", at);
@@ -81,6 +85,7 @@ function fnBody(src, name) {
 }
 
 const APP = read("renderer/app.js");
+const BOOT = read("renderer/app-boot.js");
 
 /* ---------- 迷你 DOM：只实现被测函数用到的那点选择器 ---------- */
 function mkEl(o) {
@@ -163,14 +168,25 @@ vm.createContext(ctx);
 /* 把真实源码里的常量与函数搬进沙箱（同一份实现，不抄第二份）；
    源码里缺函数（例如修复被回退）时如实判失败，不让异常掀掉整只测试。 */
 let API = null;
+let EDITABLE_SRC = "";
 try {
   const constStart = APP.indexOf("const SELECTABLE_TEXT_HOSTS =");
   if (constStart < 0) throw new Error("找不到 SELECTABLE_TEXT_HOSTS");
   const constEnd = APP.indexOf(";", APP.indexOf(".mt-dialog", constStart));
   const HOSTS_SRC = APP.slice(constStart, constEnd + 1);
+  /* 可编辑控件选择器也是被测函数的依赖（输入框选区判定 / 焦点归属判定共用一份） */
+  const editStart = APP.indexOf("const EDITABLE_SEL =");
+  if (editStart >= 0) {
+    const editEnd = APP.indexOf(";", APP.indexOf('role="textbox"', editStart));
+    EDITABLE_SRC = APP.slice(editStart, editEnd + 1);
+  }
   const PRELUDE =
     HOSTS_SRC +
-    "\nlet nodeClipboard = null;\nlet nodeClipIsFresh = false;\n";
+    "\n" +
+    EDITABLE_SRC +
+    "\nlet nodeClipboard = null;\nlet nodeClipIsFresh = false;\n" +
+    /* S 只保留 canvasPasteFromClipboard 读的那一个字段（视图闸门） */
+    "\nlet S = { view: \"workflow\" };\n";
   vm.runInContext(PRELUDE, ctx, { filename: "prelude.js" });
   vm.runInContext(
     fnBody(APP, "textSelectionWantsNativeCopy") +
@@ -179,10 +195,13 @@ try {
       "\n" +
       fnBody(APP, "canvasPointerReleaseFocus") +
       "\n" +
+      fnBody(APP, "canvasPasteFromClipboard") +
+      "\n" +
       "this.__api = {\n" +
       "  wantsNative: textSelectionWantsNativeCopy,\n" +
       "  clipKey: canvasClipboardKey,\n" +
       "  release: canvasPointerReleaseFocus,\n" +
+      "  paste: canvasPasteFromClipboard,\n" +
       "  setSel: (a) => { selection = a; },\n" +
       "  setClip: (c) => { nodeClipboard = c; },\n" +
       "  setFresh: (v) => { nodeClipIsFresh = v; },\n" +
@@ -193,8 +212,12 @@ try {
   );
   API = ctx.__api;
   ok(
-    !!(API && API.wantsNative && API.clipKey && API.release),
-    "被测函数齐全：textSelectionWantsNativeCopy / canvasClipboardKey / canvasPointerReleaseFocus",
+    !!(API && API.wantsNative && API.clipKey && API.release && API.paste),
+    "被测函数齐全：textSelectionWantsNativeCopy / canvasClipboardKey / canvasPointerReleaseFocus / canvasPasteFromClipboard",
+  );
+  ok(
+    EDITABLE_SRC.indexOf("textarea") > 0 && EDITABLE_SRC.indexOf("contenteditable") > 0,
+    "EDITABLE_SEL 可编辑控件选择器已随源码搬进沙箱（归属判定与选区判定同源）",
   );
 } catch (e) {
   ok(false, "被测函数齐全（" + ((e && e.message) || e) + "）");
@@ -220,6 +243,10 @@ ctx.pasteNodesFromClipboard = () => {
 ctx.canvasPasteFromClipboard = () => {
   canvasPasteCalls++;
 };
+/* canvasPasteFromClipboard 自己的外围（本节只跑「剪贴板里没有图像」那条路） */
+ctx.canvasPasteModalOpen = () => false;
+ctx.clipboardImagesOfCanvas = async () => [];
+ctx.clipboardImageCount = () => 0;
 ctx.toast = (m) => toasts.push(String(m));
 
 const selOf = (anchor, focus, collapsed) => ({
@@ -257,6 +284,19 @@ function resetState() {
   API.setFresh(false);
   ctx.document.activeElement = body;
   body.blurred = 0;
+}
+/* 让某个输入控件「自己有一段选区」：给它 selectionStart / selectionEnd 两个属性
+   （真实 textarea 就有；光标停在某处时两者相等 = 没有选区）。传 null 收尾清理。 */
+let lastFieldSel = null;
+function withFieldSelection(el, start, end) {
+  if (lastFieldSel && lastFieldSel !== el) {
+    delete lastFieldSel.selectionStart;
+    delete lastFieldSel.selectionEnd;
+  }
+  lastFieldSel = el || null;
+  if (!el) return;
+  el.selectionStart = start;
+  el.selectionEnd = end;
 }
 
 console.log("── [1] 接线：Ctrl+C / Ctrl+V 的判定必须先于「输入中直接返回」");
@@ -336,6 +376,16 @@ if (API) {
   resetState();
   selection = selOf(topbar, topbar, false);
   ok(API.wantsNative() === true, "画布之外的选区 → 交给浏览器");
+
+  /* 本轮 bug：输入框自己选中的那一段（window.getSelection 看不到，段落里甚至整个折叠） */
+  const field = mkEl({ tag: "textarea", cls: "tb-wfname" });
+  resetState();
+  ctx.document.activeElement = field;
+  withFieldSelection(field, 0, 6);
+  ok(API.wantsNative() === true, "输入框自己的选区（拖选一段）→ 算「真要复制的文字」");
+  withFieldSelection(field, 3, 3);
+  ok(API.wantsNative() === false, "输入框里光标停在某处（没选字）→ 不算文字复制");
+  withFieldSelection(null, 0, 0);
 }
 
 console.log("── [3] canvasClipboardKey：这次 Ctrl+C / Ctrl+V 归谁");
@@ -406,27 +456,58 @@ if (API) {
     "判定前不抢着粘节点、也不抢先报「粘贴板为空」（都移到 canvasPasteFromClipboard 里）",
   );
 
-  /* Ctrl+V：节点输入框里 + 最近复制的是节点 → 粘贴节点 */
+  /* Ctrl+V：节点输入框里 → 一律归浏览器原生粘贴（本轮改的口径：画布不再把「最近复制过节点」
+     当成要粘节点的信号；复制的节点只在画布非编辑区 Ctrl+V 时粘贴） */
   resetState();
   API.setClip({ nodes: [{ id: "n1" }], marks: [] });
   API.setFresh(true);
   ctx.document.activeElement = nodeField;
   ev = keyEvent(nodeField);
   consumed = API.clipKey(ev, "v", true);
-  ok(consumed === true && pasteCalls === 1, "节点输入框里：最近复制的是节点 → 粘贴节点（Ctrl+C 后能接着 Ctrl+V）");
   ok(
-    canvasPasteCalls === 0,
-    "输入框内不介入剪贴板图像询问（那里的粘贴归原生 / 内嵌图片逻辑）",
+    consumed === false && pasteCalls === 0 && canvasPasteCalls === 0,
+    "节点输入框里按 Ctrl+V：归浏览器原生粘贴纯文本（不再抢去粘节点）",
   );
 
-  /* Ctrl+V：节点输入框里 + 最近复制的是文字 → 交给编辑器 */
+  /* Ctrl+V：焦点漂到 BODY（画布重绘后常见）但事件目标是输入框 → 仍要归原生粘贴 */
   resetState();
   API.setClip({ nodes: [{ id: "n1" }], marks: [] });
-  API.setFresh(false);
-  ctx.document.activeElement = nodeField;
+  API.setFresh(true);
+  ctx.document.activeElement = body;
   ev = keyEvent(nodeField);
   consumed = API.clipKey(ev, "v", true);
-  ok(consumed === false && pasteCalls === 0, "节点输入框里、最近复制的是文字 → 原生粘贴文字（不抢）");
+  ok(
+    consumed === false && pasteCalls === 0 && canvasPasteCalls === 0,
+    "焦点漂到 BODY 时在输入框里 Ctrl+V：不再被画布吃掉（本轮修的 bug）",
+  );
+
+  /* Ctrl+C：焦点漂到 BODY（画布重绘后常见）但页面上没有输入焦点 → 画布仍要复制节点，
+     不能因为 activeElement 是 <body> 就以为「没有焦点」。 */
+  resetState();
+  selNodes = [{}];
+  ctx.document.activeElement = body;
+  ev = keyEvent(body);
+  consumed = API.clipKey(ev, "c", false);
+  ok(
+    consumed === true && copiedCalls === 1,
+    "画布空白 / 页面空白聚焦时 Ctrl+C：照旧复制节点",
+  );
+
+  /* 本轮 bug 的正面口径：顶栏一类「画布之外的输入框」拿到焦点时，Ctrl+C / Ctrl+V 都归原生 ——
+     即使 ev.target 被报成 <body>（focusEl 取 activeElement 而不是 ev.target） */
+  resetState();
+  selNodes = [{}];
+  const nameInput = mkEl({ tag: "input", cls: "tb-wfname" });
+  ctx.document.activeElement = nameInput;
+  ev = keyEvent(body);
+  consumed = API.clipKey(ev, "c", true);
+  ok(
+    consumed === false && copiedCalls === 0,
+    "画布外输入框聚焦（哪怕 ev.target 是 body）：Ctrl+C 归原生，不再被画布吃掉",
+  );
+  ev = keyEvent(body);
+  consumed = API.clipKey(ev, "v", true);
+  ok(consumed === false && canvasPasteCalls === 0, "同一情形下 Ctrl+V 也归原生");
 
   /* Ctrl+V：画布焦点 + 有节点粘贴板 → 同样交给 canvasPasteFromClipboard（由它按剪贴板定夺） */
   resetState();
@@ -470,9 +551,60 @@ if (API) {
   ok(changed === false && foreign.blurred === 0, "点画布之外（顶栏 / 弹窗）：不动焦点");
 }
 
-console.log("");
-if (fails) {
-  console.log("✗ " + fails + " / " + checks + " 项失败");
-  process.exit(1);
-}
-console.log("✓ 全部 " + checks + " 项通过");
+/* [5] 的落点是异步函数（canvasPasteFromClipboard 要先读一次剪贴板），收尾与总结一并放进异步尾巴，
+     否则「复制节点后粘不出来」这条正好会在同步总结之后才判出来。 */
+(async () => {
+  console.log(
+    "── [5] boot 进画布视图时 S.view 必须落定（否则 canvasPasteFromClipboard 早退，Ctrl+V 静默失效）",
+  );
+  /* 接线：boot 那句 setView 只给 agent / team 调，画布视图必须自己把 S.view 落下来 */
+  const atBootView = BOOT.indexOf("const bootView =");
+  const atAssign = BOOT.indexOf("S.view = bootView;");
+  ok(atBootView > 0, "app-boot.js 里有 bootView（(S.config && S.config.view) || \"workflow\"）");
+  ok(
+    atAssign > atBootView,
+    "bootView 算出来之后立刻落定 S.view（画布视图不调 setView，漏了这句 S.view 一直是 undefined）",
+  );
+  has(
+    BOOT,
+    'if (bootView === "agent" || bootView === "team") setView(bootView);',
+    "agent / team 的 boot 仍走 setView（视图切换收口不变，画布视图不多跑一遍 renderCanvas）",
+  );
+  has(
+    APP,
+    'if (S.view !== "workflow") return;',
+    "canvasPasteFromClipboard 的视图闸门仍在（会话 / 团队视图里 Ctrl+V 不动画布）",
+  );
+
+  /* 行为：把真函数搬进沙箱，用 S.view 的三种取值各跑一次 */
+  if (API) {
+    const setView = (v) =>
+      vm.runInContext(
+        v === undefined ? "delete S.view;" : "S.view = " + JSON.stringify(v) + ";",
+        ctx,
+      );
+    API.setClip({ nodes: [{ id: "n1" }], marks: [] });
+    setView("workflow");
+    pasteCalls = 0;
+    await API.paste();
+    ok(pasteCalls === 1, "S.view=\"workflow\"（boot 进画布后的取值）：Ctrl+V 真的去粘节点");
+    setView("agent");
+    pasteCalls = 0;
+    await API.paste();
+    ok(pasteCalls === 0, "S.view=\"agent\"：不粘画布（会话视图里 Ctrl+V 不动画布）");
+    setView(undefined);
+    pasteCalls = 0;
+    await API.paste();
+    ok(
+      pasteCalls === 0,
+      "S.view 没落定：直接早退 —— 这就是本轮修的 bug 现场（复制有提示、粘贴没反应），所以 boot 必须落定它",
+    );
+  }
+
+  console.log("");
+  if (fails) {
+    console.log("✗ " + fails + " / " + checks + " 项失败");
+    process.exit(1);
+  }
+  console.log("✓ 全部 " + checks + " 项通过");
+})();

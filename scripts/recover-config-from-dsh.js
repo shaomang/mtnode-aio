@@ -67,7 +67,7 @@ function parseSettingsProviders(yaml) {
 function friendlyName(route, baseUrl) {
   if (route === "qwen-token-plan-cn") return "阿里云百炼兼容";
   if (baseUrl.includes("opencode.ai")) return "OpenCode Go";
-  if (baseUrl.includes("apiyi.com")) return "API易";
+  if (baseUrl.includes("apiyi.com")) return "第三方图像聚合";
   if (route.startsWith("pm")) return route;
   return route;
 }

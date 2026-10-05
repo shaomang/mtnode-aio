@@ -802,6 +802,10 @@ runToolNode = async (node, quiet, opts) => {
     const SRC_ASSET = between(APP, "const ASSET_ITEM_TYPES = { text: 1, image: 1, audio: 1, video: 1 };", "function assetItemTypeLabel(type) {", "app.js isAssetNode / assetItems / assetPortKind");
     const SRC_WIREHELP = between(APP, "function isControlKind(n) {", "/* ── 工具节点 / 函数节点：单一真源判定与参数模型", "app.js isControlKind / wireFromIsControl / wiresTo / allWiresTo / hasOutput / isTextSource / isImageSource");
     const SRC_EXTIN = between(APP, "function superExternalInWiresAll(superNode, wf) {", "function superExternalInWires(superNode, wf) {", "app.js superExternalInWiresAll");
+    /* 控制线判定链：wireFromIsControl 现在按方向分派到 superInPortIsControl / superOutPortIsControl，
+       最终落到 nodeEmitsControlOnPort（带 seen 兜环）—— 这三只必须取真实源码，缺一只就整段抛
+       "nodeEmitsControlOnPort is not defined"。取真实源码，不写桩。 */
+    const SRC_CTRLPORT = between(APP, "function nodeEmitsControlOnPort(node, portIndex, wf, seen) {", "function superDynamicPortCount(maxIdx, open) {", "app.js nodeEmitsControlOnPort / superInPortIsControl / superOutPortIsControl");
     const SRC_CONNECT = between(NODES, "function wireActsAsImage(from, fi) {", "/* 视频 / 音乐节点：找下一个空闲数据槽", "app-nodes.js wireActsAs* / wireParamKind / fnToolInPort* / connectError");
 
     const PRELUDE6 = `
@@ -857,7 +861,7 @@ function wfWith(nodes, wires) { S.wf = { id: 'w6', nodes: nodes, wires: wires ||
     const SB6 = vm.createContext({ console, I18n: I18N_STUB });
     vm.runInContext(PRELUDE6 + "\n" + ND_TEXT + "};\n", SB6);
     vm.runInContext(
-      SRC_SAVEFN + "\n" + SRC_EXT + "\n" + SRC_ASSET + "\n" + SRC_MEDIA + "\n" + SRC_WIREHELP + "\n" + SRC_EXTIN +
+      SRC_SAVEFN + "\n" + SRC_EXT + "\n" + SRC_ASSET + "\n" + SRC_MEDIA + "\n" + SRC_WIREHELP + "\n" + SRC_EXTIN + "\n" + SRC_CTRLPORT +
       "\n" + FN_CORE + "\n" + SRC_OUT + "\n" + SRC_IN + "\n" + SRC_CONNECT,
       SB6,
     );

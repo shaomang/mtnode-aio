@@ -94,6 +94,20 @@ function openUnifiedAuth(after) {
 }
 const TPL_MAX_BYTES = 10 * 1024 * 1024;
 const SKILL_MAX_BYTES = 200 * 1024;
+
+/* 「数字 + 鲸圆币图标 + 尾串」内联元件（本轮需求：界面上把「币」字换成鲸圆币 icon）。
+ * 中文界面单位就是那枚图标、不再写「币」字；英文界面在数字后补 " W coins"（纯图标读不出单位）。
+ * 用在条目的「累计打赏」行与卡片元信息行；MtCoin 缺席（夹具 / 预览页）时退回纯文本，不抛错。 */
+function storeCoinInlineEl(text, tail) {
+  const span = document.createElement("span");
+  span.className = "coin-inline";
+  span.appendChild(document.createTextNode(String(text)));
+  const en = window.I18n && I18n.getLocale && I18n.getLocale() === "en";
+  if (en && window.MtCoin && window.MtCoin.shortName) span.appendChild(document.createTextNode(" " + window.MtCoin.shortName()));
+  if (window.MtCoin && window.MtCoin.coinIcon) span.appendChild(window.MtCoin.coinIcon("sm"));
+  if (tail) span.appendChild(document.createTextNode(String(tail)));
+  return span;
+}
 function tplTooLarge(bytes) {
   const max = tplIsSkill() ? SKILL_MAX_BYTES : TPL_MAX_BYTES;
   if (bytes == null || !(bytes > max)) return false;
@@ -438,6 +452,108 @@ function closeTplSubOverlay() {
     el.classList.remove("on");
     const body = el.querySelector("#tplSubBody");
     if (body) body.innerHTML = "";
+  }
+}
+
+/* 打赏 / 评论的对象标识：工坊条目只有模板与 Skill 两类（与 store-saas 的 targetKind 同源）。
+   服务端与客户端都用这一份拼法，别在别处再拼一遍。 */
+function tplTipsTarget(item) {
+  return { kind: tplIsSkill() ? "skill" : "template", id: item && item.id };
+}
+
+/* 条目详情窗里的「条目 / 评论」页签（工坊与应用的评论是同一套评论区，见 app-comments.js）。
+   返回 { box, setTab }；内容由调用方填进两个 pane。 */
+function detailTabsEl(labels, onTab) {
+  const bar = document.createElement("div");
+  bar.className = "detail-tabs";
+  const panes = [];
+  const box = document.createElement("div");
+  box.className = "detail-tabs-box";
+  const btns = (labels || []).map((label, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "detail-tab" + (i === 0 ? " on" : "");
+    b.textContent = label;
+    const pane = document.createElement("div");
+    pane.className = "detail-pane" + (i === 0 ? "" : " hidden");
+    panes.push(pane);
+    b.addEventListener("click", () => {
+      btns.forEach((x, j) => {
+        x.classList.toggle("on", j === i);
+        panes[j].classList.toggle("hidden", j !== i);
+      });
+      if (typeof onTab === "function") onTab(i);
+    });
+    bar.appendChild(b);
+    return b;
+  });
+  box.appendChild(bar);
+  panes.forEach((p) => box.appendChild(p));
+  return { box, panes, setTab: (i) => btns[i] && btns[i].click() };
+}
+
+/* 条目详情窗：受窗口宽度限制，二级浮层里给「条目 / 评论」两个页签；
+   评论页签里是 app-comments.js 的完整评论区（列表 + 互回 + 发表 + 分页）。 */
+function openTplItemDetail(item) {
+  if (!item || !item.id) return;
+  const body = openTplSubOverlay(item.title || I18n.t("（未命名）"));
+  const isSkill = !!(item.skillName || item.files);
+  const target = { kind: isSkill ? "skill" : "template", id: item.id };
+  const tabs = detailTabsEl([I18n.t("条目"), I18n.t("评论")], (i) => {
+    if (i === 1) detailMountComments();
+  });
+  body.appendChild(tabs.box);
+
+  /* ── 条目页签 ── */
+  const info = tabs.panes[0];
+  const rows = [];
+  if (item.description) rows.push([I18n.t("简介"), item.description]);
+  if (item.skillName) rows.push(["Skill", item.skillName]);
+  if (item.version) rows.push([I18n.t("版本"), "v" + item.version]);
+  rows.push([I18n.t("作者"), (item.owner && (item.owner.nickname || item.owner.username)) || I18n.t("未知")]);
+  rows.push([I18n.t("下载"), String(item.downloads || 0)]);
+  rows.push([I18n.t("获赞"), String(item.likes || 0)]);
+  const rate = window.MtComments ? window.MtComments.ratingText(item.rating, { empty: "" }) : "";
+  if (rate) rows.push([I18n.t("评分"), rate]);
+  if (item.tips && item.tips.count) {
+    const coins = window.MtCoin ? window.MtCoin.coinsOfYuan(item.tips.totalYuan || 0) : 0;
+    /* 单位 = 鲸圆币图标（本轮口径：中文界面不写「币」字）：`100 [icon] · 3 次`。
+       行值允许是**节点**（见下面渲染那一段：字符串走 textContent，节点直接挂），
+       这样才能把图标插进「数字」与「· N 次」之间。 */
+    rows.push([I18n.t("累计打赏"), storeCoinInlineEl(Math.round(coins), " · " + String(item.tips.count) + I18n.t(" 次"))]);
+  }
+  if (item.bytes) rows.push([I18n.t("体积"), fmtBytes(item.bytes)]);
+  if (item.tags && item.tags.length) rows.push([I18n.t("标签"), item.tags.join(" · ")]);
+  const table = document.createElement("div");
+  table.className = "apps-detail-rows";
+  rows.forEach(([k, v]) => {
+    const r = document.createElement("div");
+    r.className = "apps-detail-row";
+    const kk = document.createElement("span");
+    kk.className = "apps-detail-k";
+    kk.textContent = k;
+    const vv = document.createElement("span");
+    vv.className = "apps-detail-v";
+    /* 行值：字符串走 textContent（老口径一字不改），节点直接挂（币数那种要插图标的走这条） */
+    if (v && typeof v === "object" && v.nodeType === 1) {
+      vv.appendChild(v);
+      vv.title = v.textContent || "";
+    } else {
+      vv.textContent = v;
+      vv.title = v;
+    }
+    r.appendChild(kk);
+    r.appendChild(vv);
+    table.appendChild(r);
+  });
+  info.appendChild(table);
+
+  /* ── 评论页签（懒挂载：第一次切过去才拉数据） ── */
+  let cmtMounted = false;
+  function detailMountComments() {
+    if (cmtMounted || !window.MtComments) return;
+    cmtMounted = true;
+    window.MtComments.mount(tabs.panes[1], target, { title: item.title || "" });
   }
 }
 
@@ -1055,7 +1171,21 @@ async function openTemplateStore() {
     }
     bits.push("↓" + (item.downloads || 0));
     bits.push("♥" + (item.likes || 0));
+    /* 评分与评论数（实时来自服务端；没人评分就不出假分），失败时静默 —— 卡片元信息不因它缺失而空 */
+    const cmtBits = [];
+    if (window.MtComments) {
+      const rt = window.MtComments.ratingText(item.rating, { empty: "" });
+      if (rt) cmtBits.push(rt);
+      if (item.comments) cmtBits.push(window.MtComments.commentsText(item.comments));
+    }
+    cmtBits.forEach((b) => bits.push(b));
     meta.textContent = bits.join(" · ");
+    /* 打赏那一枚币数走图标口径：数字 + 鲸圆币图标（中文界面不写「币」字），挂在元信息行末尾 */
+    if (window.MtTips && item.tips && item.tips.count) {
+      const coins = window.MtCoin ? window.MtCoin.coinsOfYuan(item.tips.totalYuan || 0) : 0;
+      meta.appendChild(document.createTextNode(" · " + I18n.t("打赏") + " "));
+      meta.appendChild(storeCoinInlineEl(Math.round(coins), ""));
+    }
     meta.title = meta.textContent;
     body.appendChild(meta);
 
@@ -1139,6 +1269,25 @@ async function openTemplateStore() {
         { on: !!item.liked },
       ),
     );
+    /* 打赏 + 评论（四类对象同一形态，见 app-tips.js / app-comments.js）。
+       打赏按钮只放一枚金币图标（卡片行已经比较满，金额与次数在 meta 行里出）；
+       评论按钮点开本条目的详情窗并直接切到「评论」页签。
+       带上 item.tips = 服务端公开投影的累计总额：打赏窗里那一行「累计被打赏」**人人可见**，
+       不是名单（名单仍仅作者本人与管理员可见）。 */
+    if (window.MtTips) {
+      /* 图标 = 鲸圆币本尊（本轮口径：全应用统一换掉金币 emoji 与「币」字） */
+      const tipIco = window.MtCoin && window.MtCoin.coinIcon ? window.MtCoin.coinIcon("sm") : "🪙";
+      row.appendChild(mkIconBtn(tipIco, I18n.t("打赏作者（鲸圆币）"), () =>
+        window.MtTips.open(tplTipsTarget(item), { onDone: () => paint(), tips: item.tips }),
+      ));
+    }
+    if (window.MtComments) {
+      row.appendChild(
+        mkIconBtn("💬", I18n.t("评论"), () => {
+          openTplItemDetail(item);
+        }),
+      );
+    }
     if (mine) {
       row.appendChild(
         mkIconBtn("✎", I18n.t("编辑"), () => {
@@ -1356,6 +1505,9 @@ async function openTemplateStore() {
       ["new", I18n.t("最新")],
       ["downloads", I18n.t("下载量")],
       ["likes", I18n.t("点赞量")],
+      /* 打赏热度：累计打赏额高的在前（服务端 sort=tips 的口径）。条目卡上也能直接看到
+         打赏总额与次数，两者同源 —— 需求口径「按热度排序时计入排序」。 */
+      ["tips", I18n.t("打赏热度")],
     ];
     if (tplIsSkill()) sortOpts.push(["official", I18n.t("官方优先")]);
     sortOpts.forEach(([v, lab]) => {

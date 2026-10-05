@@ -3489,7 +3489,6 @@ main().catch((e) => {
   const LTG = read("renderer/app-longtask-guide.js");
   const NODES = read("renderer/app-nodes.js");
   const PLUGIN = read("dsh/gateway/canvas-plugin.mjs");
-  const ROLLBACK = read("dsh/gateway/rollback-plugin.mjs");
   const HTML = read("renderer/index.html");
   const CSS = read("renderer/css/longtask.css");
   const I18N = read("renderer/i18n.js");
@@ -3672,8 +3671,6 @@ main().catch((e) => {
       has(denied, '"update_longtask"', "规划模式把 update_longtask 列为拒绝动作（只出计划不改画布）");
       hasnt(denied, '"get_longtask"', "get_longtask 是只读，规划模式下仍放行");
     }
-    has(ROLLBACK, "'get_longtask'", "回滚记账把 get_longtask 当只读（连占位都不发）");
-    hasnt(ROLLBACK, "'update_longtask'", "回滚记账不放行 update_longtask（按写操作处理）");
 
     /* 会话侧权限：修改会话走的是「允许读画布」的契约会话 → 三件套都在（= 有全部权限） */
     has(LTE, "allowCanvas: true", "修改会话显式允许读画布（→ canvas_get / edit / app 三件套都在）");

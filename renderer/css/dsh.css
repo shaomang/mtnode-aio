@@ -4106,6 +4106,68 @@ button.mini.btn-sq.tpl-ico {
   color: var(--muted)
 }
 
+/* ── 询问卡里的「📋 总结」区（本次开发需求）─────────────────────────────
+   拷问 / 询问流程的收尾确认卡把整份共识写在 question 正文里：题面首行留在 .ix-q
+   （大字、纯文本），其余进这里按 Markdown 渲染（全站唯一入口 renderMarkdown）。
+   限高 46vh ≈ 屏幕 40–50%：卡片不顶满屏幕，底下的选项与按钮始终看得见；超出部分
+   在区块内部滚动，面板自己那条滚动条不再被长总结拉到底。 */
+.ix-summary {
+  border-left: 3px solid var(--cyan);
+  border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, var(--cyan) 10%, var(--panel2));
+  padding: 7px 9px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ix-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ix-summary-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--cyan2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「复制总结 Markdown」不参与标题的省略号挤压 */
+.ix-summary-copy {
+  flex: 0 0 auto;
+}
+
+/* Markdown 区块（总结区正文 / 审批说明 / 浏览器求助正文共用）：限高 + 内部滚动。
+   字体与行距沿用全站 .md（canvas.css），这里只补尺寸与可滚动的边界。 */
+.ix-md-block {
+  font-size: 12.5px;
+  max-height: 46vh;
+  overflow: auto;
+  min-width: 0;
+}
+
+.ix-summary-md {
+  flex: 0 1 auto;
+}
+
+/* 审批卡的说明 / 理由：同样按 Markdown 渲染，但不当「总结」看待（无小标题） */
+.ix-approval-md {
+  border-left: 3px solid var(--bd2);
+  border-radius: 0 4px 4px 0;
+  background: var(--panel2);
+  padding: 6px 8px;
+}
+
 .ix-opt input {
   accent-color: var(--cyan)
 }
@@ -6108,6 +6170,48 @@ button.dsh-xlate-copy:hover {
 /* 展开后的轮次列表（表格沿用 .tok-badge-table，只留外边距） */
 .tok-round-list {
   margin: 5px 0 2px
+}
+
+/* 轮次行也可点（下钻该轮性能弹窗，app-agent.js 的 openRoundPerfDialog）：
+   与模型行同一套可点视觉 —— 手型 + 悬停底色 + 键盘焦点环 + 行尾 › 提示符。 */
+.tok-badge-table tr.tok-round-row {
+  cursor: pointer
+}
+
+.tok-badge-table tr.tok-round-row:hover td {
+  background: var(--code)
+}
+
+.tok-badge-table tr.tok-round-row:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: -1px
+}
+
+.tok-badge-table tr.tok-round-row td:last-child::after {
+  content: "›";
+  margin-left: 5px;
+  color: var(--muted);
+  opacity: .55
+}
+
+.tok-badge-table tr.tok-round-row:hover td:last-child::after,
+.tok-badge-table tr.tok-round-row:focus-visible td:last-child::after {
+  color: var(--cyan);
+  opacity: 1
+}
+
+/* 轮次下钻弹窗：概要表键列弱化（沿用 .model-perf-table 口径），逐模型表只留间距 */
+.round-perf-table td:first-child {
+  color: var(--muted)
+}
+
+.round-perf-table td:last-child {
+  font-weight: 600
+}
+
+.round-perf-models {
+  display: table;
+  width: 100%
 }
 
 .tok-badge-sum .tok-badge-bal {

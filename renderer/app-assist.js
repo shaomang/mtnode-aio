@@ -224,7 +224,11 @@ const GRILL_CONTRACT =
   "到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工" +
   "（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n" +
   "用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。" +
-  "只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。";
+  "只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。" +
+  /* 收尾卡的写法（与询问窗的渲染口径同源见 renderer/app-db.js 的 ixSummarySplit /
+     ixSummaryBlock）：题面首行 + 空行后的 Markdown 总结 → 卡片渲染成「📋 总结」区。
+     不写死这段，模型会把整份共识挤在题面那一行，卡片再好也只能显示成一坨。 */
+  "收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」—— 卡片会把它显示成标题行），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把这一段渲染进「📋 总结」区；选项只留两项：推荐项 = 明确同意开工（如「确认无歧义，开始实施（推荐）」），另一个 = 还要改（如「还要改，我补充」），措辞随交流语言。不要把总结挤进题面那一行，也不要拆成几张卡。";
 
 function summarizeCanvasEdit(params) {
   params = params || {};
@@ -1178,18 +1182,10 @@ function renderAssistPanel(opts) {
         );
     list.appendChild(empty);
   }
-  /* 回滚入口挂在每条挂有回滚轮次的用户消息上（会话不在运行中时显示） */
+  /* 消息逐条渲染（用户消息下方的「↶ 回滚」入口已随会话轮次回滚功能一并移除） */
   for (let i = 0; i < msgs.length; i++) {
     try {
-      list.appendChild(
-        dshMsgBlock(msgs[i], "assist", i, {
-          showRollback:
-            !S.assistRunning &&
-            !msgs[i]._rolledBack &&
-            typeof rbHasMsgRound === "function" &&
-            rbHasMsgRound(msgs[i]),
-        }),
-      );
+      list.appendChild(dshMsgBlock(msgs[i], "assist", i));
     } catch (e) {
       /* 单条消息坏数据不拖垮整表：跳过并留痕，避免列表停在旧消息处、新消息永远不出现 */
       try {
@@ -1340,9 +1336,8 @@ async function assistSend(text) {
   const stateJson = JSON.stringify(
     await assistAppSnapshot({ canvasFree: assistCanvasFree }),
   );
-  /* 已回滚轮次的消息不进上下文（rbActiveMessages 只在真有标记时才复制数组） */
-  const assistHist =
-    typeof rbActiveMessages === "function" ? rbActiveMessages(S.assistMessages) : S.assistMessages;
+  /* 历史存档里曾被回滚的轮次消息不进上下文（activeSessionMessages 无标记时不复制数组） */
+  const assistHist = activeSessionMessages(S.assistMessages);
   const hist = assistHist
     .slice(0, -1)
     .slice(-16)
@@ -1503,9 +1498,6 @@ async function assistSend(text) {
   try {
     const final = await dshRunTask(input, {
       runKey: "assist",
-      /* 本轮的开轮消息：rid 由回滚账本盖在它身上（供「↶ 回滚到此处」寻址） */
-      rollbackAnchor: assistUm,
-      rollbackLabel: t.slice(0, 160),
       workspace: S.assistRunWorkspace || S.dshWorkspaceFallback || "",
       preset: S.assistPreset || AGENT_PRESET_DEFAULT,
       provider: S.assistProvider || "deepseek-official",
@@ -6385,26 +6377,11 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     row.appendChild(side);
     row.classList.add("dsh-has-time");
   }
-  /* 消息末尾：AI 回复带「复制本条回复」小按钮；用户消息带回滚轮次时，前面加一个小「回滚」按钮。
-     时刻已上左侧时刻栏，这里只剩按钮，没有按钮就不挂这一行（不留空行）。 */
-  const rbRid = opts && opts.showRollback ? rbLatestRid(m) : "";
-  if (rbRid || m.role === "assistant") {
+  /* 消息末尾：AI 回复带「复制本条回复」小按钮（没有按钮就不挂这一行，不留空行）。
+     时刻已上左侧时刻栏，这里只剩按钮。 */
+  if (m.role === "assistant") {
     const tail = document.createElement("div");
     tail.className = "dsh-msg-tail";
-    if (rbRid) {
-      const rbBtn = document.createElement("button");
-      rbBtn.type = "button";
-      rbBtn.className = "dsh-msg-rollback";
-      rbBtn.textContent = I18n.t("↶ 回滚");
-      rbBtn.title = I18n.t("撤销上一轮的全部更改");
-      rbBtn.addEventListener("mousedown", (ev) => ev.stopPropagation());
-      rbBtn.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        rbAskRollback(m, nodeId);
-      });
-      tail.appendChild(rbBtn);
-    }
     /* 动作条已给出「复制」的消息不再挂这枚小按钮（同一条消息不出现两枚「复制」） */
     if (m.role === "assistant" && !hasActions)
       tail.appendChild(dshCopyBtn(m, "dsh-msg-tail-copy"));
@@ -6413,159 +6390,15 @@ function dshMsgBlock(m, nodeId, idx, opts) {
   return row;
 }
 
-/* ── 回滚入口：上一轮用户输入下方的「回滚」小按钮 → 确认弹窗 → 还原 ── */
-
-/** 弹窗里「本次更改的内容」清单：文件逐条 + 画布 / 计划 / 事实库计数。 */
-function rbRoundChangeItems(round) {
-  const items = [];
-  const verb = {
-    modify: I18n.t("修改"),
-    create: I18n.t("新增"),
-    delete: I18n.t("删除"),
-  };
-  const files = Array.isArray(round.files) ? round.files : [];
-  for (const f of files) {
-    const rel = String(f.rel || f.path || "");
-    items.push((verb[f.kind] || I18n.t("修改")) + " " + rel);
-  }
-  const canvas = Array.isArray(round.canvas) ? round.canvas : [];
-  for (const c of canvas) {
-    const t = (c && c.touched) || {};
-    const parts = [];
-    if ((t.nodeIds || []).length) parts.push(I18n.t("节点") + "×" + t.nodeIds.length);
-    if ((t.wireIds || []).length) parts.push(I18n.t("连线") + "×" + t.wireIds.length);
-    if ((t.markIds || []).length) parts.push(I18n.t("标注") + "×" + t.markIds.length);
-    if ((t.groupIds || []).length) parts.push(I18n.t("分组") + "×" + t.groupIds.length);
-    items.push(
-      I18n.t("画布改动：") +
-        (parts.join("、") || I18n.t("（未逐条记录）")) +
-        I18n.t("（需人工处理）"),
-    );
-  }
-  if (typeof rbPlanChanged === "function" && rbPlanChanged(round))
-    items.push(I18n.t("计划清单变更（需人工处理）"));
-  const db = Array.isArray(round.db) ? round.db : [];
-  if (db.length) items.push(I18n.t("事实库改动 ") + db.length + I18n.t(" 条（需人工处理）"));
-  if (!items.length) items.push(I18n.t("（本轮无可自动列举的具体条目）"));
-  return items;
-}
-
-/** 弹窗警示：账本覆盖不到的部分（命令调用 / 记录不完整等）。 */
-function rbRoundWarnings(round) {
-  const u = (round && round.untracked) || {};
-  const w = [];
-  if ((Number(u.shellCalls) || 0) > 0)
-    w.push(
-      I18n.t("有 ") + u.shellCalls + I18n.t(" 次命令调用可能改了文件，账本无法覆盖，请自查"),
-    );
-  if (u.dbCapped) w.push(I18n.t("事实库改动超过逐条记账上限，无法逐条回退"));
-  if ((Number(round && round.dropped) || 0) > 0 || (round && round.status === "partial"))
-    w.push(I18n.t("该轮记录不完整，还原可能不完整"));
-  return w;
-}
-
-/** 回滚入口点击：先确认（说明 + 本轮更改清单），确认后执行还原并汇报结果。 */
-async function rbAskRollback(m, nodeId) {
-  try {
-    const rid = rbLatestRid(m);
-    if (!rid) return;
-    const sessionId = rbSessionIdForMsg(nodeId);
-    const runKey = nodeId === "assist" ? "assist" : "agent:" + String(nodeId);
-    if (typeof rbActiveRid === "function" && rbActiveRid(runKey) === rid) {
-      toast(I18n.t("该轮仍在运行中，结束后才能回滚"), "warn");
-      return;
-    }
-    const round = await rbGetRound(sessionId, rid);
-    if (!round) {
-      toast(I18n.t("该轮没有可回滚的账本"), "warn");
-      return;
-    }
-    if (round.restoredAt) {
-      toast(I18n.t("该轮已回滚过，不能重复回滚"), "warn");
-      return;
-    }
-    const items = rbRoundChangeItems(round);
-    const warned = rbRoundWarnings(round);
-    const dlg = await mtDialogForm({
-      title: I18n.t("确认回滚"),
-      wide: true,
-      rows: [
-        [I18n.t("时间"), formatMsgStamp(round.startedAt || round.ts)],
-        [I18n.t("工作区"), round.workspace || I18n.t("（未记录）")],
-      ],
-      list: { label: I18n.t("本次更改的内容") + "（" + items.length + "）", items },
-      msg: I18n.t("回滚将撤销此轮次的所有更改，且不可撤销。确认继续？"),
-      warn: warned.length ? warned.join("\n") : "",
-      actions: [
-        { id: "cancel", label: I18n.t("取消") },
-        { id: "rollback", label: I18n.t("确认回滚"), primary: true, danger: true },
-      ],
-    });
-    if (!dlg || dlg.action !== "rollback") return;
-    const res = await rbRestoreRound(sessionId, rid);
-    if (!res.ok && res.error) {
-      toast(res.error, "err");
-      return;
-    }
-    /* 结果汇报：还原 / 删除 / 跳过 / 失败 / 待人工处理 / 账本警示 */
-    const parts = [];
-    if (res.restored.length)
-      parts.push(I18n.t("已还原 ") + res.restored.length + I18n.t(" 个文件"));
-    if (res.deleted.length)
-      parts.push(I18n.t("已删除 ") + res.deleted.length + I18n.t(" 个本轮新建文件"));
-    if (res.skipped.length) {
-      const first = res.skipped
-        .slice(0, 3)
-        .map((s) => s.path)
-        .join("、");
-      parts.push(
-        I18n.t("跳过 ") +
-          res.skipped.length +
-          I18n.t(" 项（") +
-          first +
-          (res.skipped.length > 3 ? "…" : "") +
-          "）",
-      );
-    }
-    if (res.errors.length)
-      parts.push(I18n.t("失败 ") + res.errors.length + I18n.t(" 项"));
-    if (res.pending.length)
-      parts.push(I18n.t("需人工处理：") + res.pending.join("、"));
-    if (res.warnings.length) parts.push(res.warnings.join("；"));
-    const summary = parts.length
-      ? parts.join("；")
-      : I18n.t("本轮没有可回退的文件改动");
-    if (res.complete) {
-      /* 完整回滚：账本标已回滚 + 该轮消息摘出上下文（不再进入后续对话） */
-      await rbMarkRoundRestored(sessionId, res.round, Date.now());
-      let dropped = 0;
-      if (nodeId === "assist") {
-        dropped = rbDropRoundMessages(S.assistMessages || [], rid);
-        persistAssistUi();
-        renderAssistPanel({ forceStick: true });
-      } else {
-        const st = agentSessionById(String(nodeId));
-        if (st) {
-          dropped = rbDropRoundMessages(st.messages || [], rid);
-          await persistAgentSession();
-          if (agentViewIs(st)) renderAgentSession({ forceStick: true });
-          else renderAgentSessionSidebar();
-        }
-      }
-      toast(
-        I18n.t("已回滚该轮：") +
-          summary +
-          (dropped ? I18n.t("（") + dropped + I18n.t(" 条消息已移出上下文）") : ""),
-        "ok",
-      );
-    } else {
-      /* 部分完成：不标 restoredAt、不摘消息（上下文须如实反映现状）；
-         文件部分幂等，可稍后重试。 */
-      toast(I18n.t("回滚未完全完成：") + summary, "warn");
-    }
-  } catch (e) {
-    toast(I18n.t("回滚失败：") + ((e && e.message) || String(e)), "err");
-  }
+/* ── 历史存档兼容：曾被「会话轮次回滚」回滚过的轮次消息不进上下文 ──────────
+ * 会话轮次回滚功能已移除（旧入口挂在用户消息下方，账本 / 对象库 / journal 捕获
+ * 四条链路一并删掉），这里只保留最小只读兼容：历史存档里可能还留着当时写下的
+ * `_rolledBack` 标记，那些轮的内容已按用户意愿撤销、与实际文件状态不符，
+ * 仍照旧摘在上下文之外，避免它们重新回到对话里。不写任何标记、不碰存档。 */
+function activeSessionMessages(list) {
+  const arr = Array.isArray(list) ? list : [];
+  for (const m of arr) if (m && m._rolledBack) return arr.filter((x) => !(x && x._rolledBack));
+  return arr;
 }
 
 /* ── 会话条目窗口：每个会话最多同时渲染 AGENT_MAX_VISIBLE_ITEMS 条，更早的靠手动
@@ -6576,7 +6409,7 @@ async function rbAskRollback(m, nodeId) {
    条目口径 = 真正落进 DOM 的时间线块：
      · 能按段渲染的消息（dshMsgSegsViewable）→ 每个段一条（思考 / 正文 / 工具）；
      · 其余消息（用户消息、退回整条渲染的老消息）→ 整条算一条。
-   只影响渲染，不动 st.messages 本身：上下文、存档、回滚口径一个字节都不变。 */
+   只影响渲染，不动 st.messages 本身：上下文与存档口径一个字节都不变。 */
 const AGENT_MAX_VISIBLE_ITEMS = 200;
 const AGENT_LOAD_MORE_ITEMS = 200;
 function agentEntryCount(m) {
@@ -6750,17 +6583,12 @@ function renderAgentSession(opts) {
     loadRow.appendChild(btn);
     list.appendChild(loadRow);
   }
-  /* 回滚入口挂在每条挂有回滚轮次的用户消息上（仅限可见列表内、且会话不在运行中） */
+  /* 会话消息逐条渲染（仅限可见列表内；回滚入口已随会话轮次回滚功能一并移除） */
   for (let i = slice.start; i < slice.msgs.length; i++) {
     const m = slice.msgs[i];
     try {
       list.appendChild(
         dshMsgBlock(m, st.id || "agent", i, {
-          showRollback:
-            !running &&
-            !m._rolledBack &&
-            typeof rbHasMsgRound === "function" &&
-            rbHasMsgRound(m),
           /* 窗口起点那条消息若被裁过段：前面的段不进 DOM（它们的工具也已对账掉） */
           segFrom: i === slice.start ? slice.skip : 0,
         }),
@@ -7619,9 +7447,8 @@ async function agentCompact() {
   }
 }
 async function agentCompactRun(st) {
-  /* 已回滚轮次的消息不参与压缩：它们已不在上下文里，摘要也不该复述它们 */
-  const rbSrc =
-    typeof rbActiveMessages === "function" ? rbActiveMessages(st.messages) : st.messages;
+  /* 历史存档里曾被回滚的轮次消息不参与压缩：它们已不在上下文里，摘要也不该复述它们 */
+  const rbSrc = activeSessionMessages(st.messages);
   const hist = rbSrc
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
     .join("\n\n");
@@ -8721,24 +8548,18 @@ async function agentSessionSend(text, opts) {
     } catch (_) {}
   }
   /* 合并模式不追加消息：任务书消息（_src:"dev-node"）已在会话里，直接发它 */
-  let rbAnchor = null;
   if (!devContractMsg) {
     const um = { role: "user", content: t, at: Date.now() };
     if (planExecMsg) um._src = "plan-exec";
     else if (opts._planFix) um._src = "plan-fix";
     st.messages.push(um);
-    rbAnchor = um;
     if (st.messages.filter((m) => m.role === "user").length === 1) {
       /* 回落命名（首条消息前 24 字）同样不得覆盖用户亲口改的名 */
       if (!st.titleLocked)
         st.title = t.slice(0, 24) + (t.length > 24 ? "…" : "");
     }
   } else {
-    /* 开发 / 细化绑定会话：开轮锚点就是那条任务书消息 */
-    rbAnchor =
-      (st.messages || []).find(
-        (m) => m && m.role === "user" && m._src === "dev-node",
-      ) || null;
+    /* 开发 / 细化绑定会话：合并模式，不追加消息，只按主题改名。 */
     /* 绑定会话同样要随主题改名：引擎那条 LLM 主题因首条用户消息超 maxInputBytes
        到不了（见 retitleBoundSessionByTopic 注释），所以这里按关键输入自己补一个 ——
        只换「开发 · 」后面的模块名，前缀一个字符不动；用户手改过（titleLocked）或
@@ -8805,12 +8626,12 @@ async function agentSessionSend(text, opts) {
   await persistAgentSession();
   if (agentViewIs(st)) renderAgentSession({ forceStick: true });
   else renderAgentSessionSidebar();
-  /* 已回滚轮次的消息不进上下文（rbActiveMessages 无标记时直接复用原数组，不复制）。
+  /* 历史存档里曾被回滚的轮次消息不进上下文（activeSessionMessages 无标记时直接复用
+     原数组，不复制）。
      构造口径收进 app-db.js 的 agentHistoryEntries：同文去重、回答气泡按题 id 取最新、
      整段设字符上限 —— 询问窗答案因此能随每一轮的 hist 一起进上下文（它只是一条
      普通用户消息，见 ixCommitAnswerToSession）。 */
-  const rbHistSrc =
-    typeof rbActiveMessages === "function" ? rbActiveMessages(st.messages) : st.messages;
+  const rbHistSrc = activeSessionMessages(st.messages);
   const hist = agentHistoryEntries({ messages: rbHistSrc }, { maxChars: 4000 })
     .map((r) => (r.role === "user" ? I18n.t("用户：") : I18n.t("助手：")) + r.text)
     .join("\n\n");
@@ -8968,9 +8789,6 @@ async function agentSessionSend(text, opts) {
       /* Token 台账逐轮明细的标题：调用方（如计划执行器）给的计划任务标题优先，
          缺省由 dshRunTask 用输入文本前 24 字回落 */
       tokTitle: opts.tokTitle || undefined,
-      /* 本轮开轮消息 + 摘要：回滚账本把稳定 rid 盖在这条消息上，并按会话建目录 */
-      rollbackAnchor: rbAnchor,
-      rollbackLabel: t.slice(0, 160),
       planMode,
       /* 生效工作区（st.workspace 手填优先 > 画布项目根 > 默认）：与展示层同源 */
       workspace: agentRunWorkspace(st),

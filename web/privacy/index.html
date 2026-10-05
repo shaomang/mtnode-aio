@@ -162,7 +162,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
     <tr><td>快照与回收站</td><td>定时快照 <code>save-backups/</code>（每 5 分钟一次、仅在源文件变化时复制，每条工作流保留最近 72 份，约 6 小时）；删除画布时整体搬入 <code>trash/</code>。</td></tr>
     <tr><td>配置与 API Key</td><td><code>config.json</code> 保存服务商列表、<b class="hl">API Key（明文存在本机文件里）</b>、创意工坊登录令牌、在线源列表、语言与主题等；每次改动服务商配置前会先写一份历史副本到 <code>config-backups/</code>（最近 30 份）。<b class="hl">API Key 只保存在这台电脑上</b>，仅随请求发往你为它配置的那家服务商，绝不上传到 <code>mt-agent.com</code>。</td></tr>
     <tr><td>事实库</td><td>数据库超级节点的记录（SQLite + FTS5），来自你在画布建表与录入的事实条目及其引用的本机文件路径。</td></tr>
-    <tr><td>Agent 会话与回滚</td><td><code>dsh-home/sessions/</code>（对话正文与工具调用结果的 JSONL）、<code>dsh-home/rollback/</code>（Agent 改写文件前的原内容副本）、<code>dsh-home/attachments/</code>（带图会话的图像附件）。其中可能包含 Agent 读到的本机文件内容片段。</td></tr>
+    <tr><td>Agent 会话</td><td><code>dsh-home/sessions/</code>（对话正文与工具调用结果的 JSONL）、<code>dsh-home/attachments/</code>（带图会话的图像附件）。其中可能包含 Agent 读到的本机文件内容片段。旧版本的「会话轮次回滚」会在改写文件前把原内容副本写进本机 <code>rollback/</code>：<b class="hl">该功能已移除</b>，新版不再采集，历史副本可在设置 ·「存储占用与清理」里永久删除。</td></tr>
     <tr><td>引擎设置</td><td><code>dsh-home/settings.yaml</code>：服务商路由名、<code>baseURL</code>、思考档、权限预设等；密钥<b class="hl">只写环境变量名</b>（如 <code>MTNODE_KEY_1</code>），运行时经进程环境变量注入，不写密钥值。</td></tr>
     <tr><td>匿名标识文件</td><td><code>dsh-home/.anonymous-user-id</code>：首次模型请求前由本机生成的随机 UUID v4（一行裸值）。它不含姓名、邮箱或任何硬件信息，<b class="hl">不由服务器下发</b>，本项目也无法用它关联到自然人。唯一用途见第 4 节。</td></tr>
     <tr><td>插件与缓存</td><td>已安装的应用插件及其自存数据 <code>app-plugins/</code>；讨论区话题与图片缓存 <code>forum/</code>；创意工坊预览图与模板包缓存 <code>store-cache/</code>。</td></tr>
@@ -235,7 +235,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
   <h2>8. Agent 网关：在本机读写文件、执行命令（属功能，不属收集）</h2>
   <p>本应用的智能节点与助手可以在授权范围内<b class="hl">读取和写入本机文件、执行命令</b>。这件事必须讲清楚三点：</p>
   <ul>
-    <li><b class="hl">它是功能，不是信息收集。</b>Agent 改文件前会把原内容副本写进本机回滚目录（<code>dsh-home/rollback/</code>），命令输出与会话正文也只写本机（<code>dsh-home/sessions/</code>）。</li>
+    <li><b class="hl">它是功能，不是信息收集。</b>命令输出与会话正文只写本机（<code>dsh-home/sessions/</code>）；旧版本的「会话轮次回滚」会另存一份文件改前副本，该功能已移除、新版不再采集。</li>
     <li><b class="hl">授权由 Agent 预设决定。</b>权限预设可在设置里选择，默认运行在无人值守预设；「纯净模式」会剥掉全部提示与工具、只保留联网搜索。工具是否可读写文件 / 跑命令，取决于你选的预设与具体批准。</li>
     <li><b class="hl">数据流向见第 4 节。</b>Agent 读到的文件内容会作为工具结果发往你为该会话选定的模型服务商 —— 请不要在包含机密文件的目录下授予文件与命令权限。</li>
   </ul>
@@ -272,7 +272,7 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
 <section id="delete">
   <h2>12. 数据保留与删除</h2>
   <h3>本机侧：删除目录即可彻底清除</h3>
-  <p>退出应用后，删除数据根目录 <code>%APPDATA%\pipeline-console\</code>（或你在设置里改指的目录），即一次性清除全部工作流、素材、快照与回收站、配置与 API Key、事实库、Agent 会话记录与回滚副本、日志与缓存。<b class="hl">Microsoft Store（MSIX）版同样适用本方式</b>：本项目没有额外把用户数据写进注册表或其他系统位置。你也可以在应用内按需删除单条工作流（进回收站）、清空某个插件的 <code>app-plugins/&lt;插件id&gt;/</code> 数据，或只删 <code>config.json</code> 里的 Key 字段。</p>
+  <p>退出应用后，删除数据根目录 <code>%APPDATA%\pipeline-console\</code>（或你在设置里改指的目录），即一次性清除全部工作流、素材、快照与回收站、配置与 API Key、事实库、Agent 会话记录（含旧版本留下的回滚副本）、日志与缓存。<b class="hl">Microsoft Store（MSIX）版同样适用本方式</b>：本项目没有额外把用户数据写进注册表或其他系统位置。你也可以在应用内按需删除单条工作流（进回收站）、清空某个插件的 <code>app-plugins/&lt;插件id&gt;/</code> 数据，或只删 <code>config.json</code> 里的 Key 字段。</p>
   <h3>服务器侧（mt-agent.com）</h3>
   <table class="tl">
     <tr><th>数据</th><th>保留期</th><th>删除方式</th></tr>

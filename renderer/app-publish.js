@@ -74,6 +74,15 @@ const PUB = {
   seq: 0, /* 异步回来时对不上的就丢弃 */
   loggedIn: false,
   user: null,
+  /* 登录态探测的两条尾巴（页脚据此说清「为什么传不了」）：
+     authChecked=主进程验过一次（false = 还没验完，页脚不急着下结论）；
+     authError=这次探测的坏消息（网络不通 / 服务端报错），有本机会话时只提示、不当「未登录」 */
+  authChecked: false,
+  authError: "",
+  /* 开窗后那串异步读取（登录态 → 线上状态 → 配额）的完成信号：
+     渲染层平时不需要它，但没有它就只能靠 setTimeout 猜「读完没有」——
+     测试与将来的「上架前自查」都从这里等（见 window.__mtnodeAppPublish）。 */
+  load: null,
   bridgeMiss: "", /* 关键桥缺失时的说明（storeRequest / appsExportZip …） */
   online: null, /* {known, exists, mine, id, latestVersion, unpublished, versions:[], item} */
   quota: null, /* {apps, bytes, at, error} */
@@ -90,6 +99,7 @@ const PUB = {
   idTouched: false, /* 用户手改过 id → 标题变化不再自动改写 */
   idLocked: false, /* 线上已有同 id 应用 → id 锁定 */
   verTouched: false, /* 用户手改过版本号 → 不再套用默认值 */
+  tagsTouched: false, /* 用户手改过标签 → 线上状态回来时不再覆盖（见 pubHydrateTags） */
   aiBusy: false,
   aiDone: false,
   busy: false,
@@ -100,8 +110,8 @@ const PUB = {
 
 /* ───────────────────────── 小工具 ───────────────────────── */
 
-function pubT(s) {
-  return window.I18n && I18n.t ? I18n.t(s) : String(s == null ? "" : s);
+function pubT(s, vars) {
+  return window.I18n && I18n.t ? I18n.t(s, vars) : String(s == null ? "" : s);
 }
 function pubStr(v) {
   return String(v == null ? "" : v).trim();
@@ -388,12 +398,21 @@ async function openAppPublish(appId) {
   PUB.app = app;
   PUB.user = user;
   PUB.loggedIn = true;
+  /* 本机凭据快照在手 → 先按已登录画（openAppPublish 已验过 pubAuthUser()）；
+     快照为空（凭据读不回来 / 账户模块未就绪）→ 标成「还没核完」，等 pubLoadAuth 的服务器回执下结论，
+     别在用户面前先闪一句「未登录」。 */
+  const snap = pubLocalUser();
+  PUB.authChecked = !!snap;
+  PUB.authError = snap
+    ? ""
+    : pubT("本机没读到登录凭据：正在向账户服务确认这个账号…");
   PUB.online = null;
   PUB.quota = null;
   PUB.shots = [];
   PUB.idTouched = false;
   PUB.idLocked = false;
   PUB.verTouched = false;
+  PUB.tagsTouched = false;
   PUB.aiBusy = false;
   PUB.aiDone = false;
   PUB.busy = false;
@@ -433,15 +452,18 @@ async function openAppPublish(appId) {
   pubPaintQuota();
   pubPaintFoot();
 
-  /* 异步：登录态（/api/me）→ 线上状态 + 版本树 → 配额（按顺序，后一步要知道账号名） */
-  pubLoadAll(pubSeqNow()).catch(() => {});
+  /* 异步：登录态（主进程账户契约）→ 线上状态 + 版本树 → 配额（按顺序，后一步要知道账号名）。
+     这一串挂到 PUB.load 上：调用方（开发页按钮）照旧不等它，测试 / 自查可以 await 它。 */
+  PUB.load = pubLoadAll(pubSeqNow()).catch(() => false);
   return true;
 }
 
-/* 开窗后的读取顺序：先确认登录态，再读线上状态，最后统计配额（同一份 PUB.seq 守卫） */
+/* 开窗后的读取顺序：先确认登录态，再读线上状态，最后统计配额（同一份 PUB.seq 守卫）。
+   登录态没核到（未登录 / 服务器不认这个会话）时后面两步没有意义：线上状态与配额都要账号名，
+   读出来只会是「接口不可达」之类的次生错误，把真正的病根（登录态）盖掉。 */
 async function pubLoadAll(seq) {
-  await pubLoadAuth(seq).catch(() => {});
-  if (!pubAlive(seq)) return;
+  const ok = await pubLoadAuth(seq).catch(() => false);
+  if (!pubAlive(seq) || !ok) return;
   await pubLoadOnline().catch(() => {});
   if (!pubAlive(seq)) return;
   await pubLoadQuota().catch(() => {});
@@ -469,12 +491,16 @@ function pubBuildShell(body, foot) {
   const root = pubEl("div", "pub-root");
   PUB.dom.root = root;
 
-  /* 顶部：应用名 + 本机版本 + 线上状态 */
+  /* 顶部：应用名 + 本机版本 + 登录账号 + 线上状态 */
   const head = pubEl("div", "pub-head");
   const who = pubEl("div", "pub-head-who");
   who.appendChild(pubEl("span", "pub-app-name", pubStr(PUB.app.name || PUB.appId)));
   who.appendChild(pubEl("span", "pub-chip", pubT("本机版本") + " v" + pubStr(PUB.app.version || "0.0.0")));
   who.appendChild(pubEl("span", "pub-chip", pubStr(PUB.app.entry || "index.html")));
+  /* 登录账号就摆在窗内（上架是「以哪个账号上传」的事，用户不该去顶栏找答案） */
+  const sess = pubEl("span", "pub-chip pub-chip-auth");
+  PUB.dom.authChip = sess;
+  who.appendChild(sess);
   head.appendChild(who);
   const chip = pubEl("span", "pub-chip pub-chip-online", pubT("正在读取线上状态…"));
   PUB.dom.onlineChip = chip;
@@ -680,6 +706,8 @@ function pubBuildFormSec(host) {
   sec.appendChild(pubField(pubT("标签"), tagsIn, null, pubT("英文逗号分隔，2-5 个短标签")));
   tagsIn.addEventListener("input", () => {
     PUB.form.tags = tagsIn.value;
+    /* 用户自己动过标签 → 线上状态回来时不再用线上那份覆盖他填的内容（见 pubHydrateTags） */
+    PUB.tagsTouched = true;
     pubEdit();
   });
 
@@ -776,7 +804,23 @@ function pubForkField() {
   const sel = pubEl("select", "pub-in");
   sel.id = "pubFork";
   PUB.dom.forkSel = sel;
+  wrap.appendChild(sel);
+  const hint = pubEl("div", "pub-hint", "");
+  PUB.dom.forkHint = hint;
+  wrap.appendChild(hint);
+  pubForkFill();
+  return wrap;
+}
+
+/* 填充「基于哪个应用二次开发」下拉（同 id 多分支，§十）：
+ *   · 线上这个 id 已经有条目（含别人先占的）→ 自动指向**主干作者**（createdAt 最早那条）
+ *     并**锁定不可改**（q8：id 一致时自动二次开发），提示里写清「改 id 就取消」；
+ *   · 线上没有这个 id → 回到本机已有声明（app.json.forkOf / 安装账本）或原创，可自由改。 */
+function pubForkFill() {
+  const sel = PUB.dom.forkSel;
+  if (!sel) return;
   const cur = PUB.form.forkOf || { id: "", ownerId: "", owner: "" };
+  const auto = pubAutoForkOf();
   const keyOf = (x) => pubStr(x.id) + "\u0000" + pubStr(x.ownerId) + "\u0000" + pubStr(x.owner);
   const opt = (value, text) => {
     const o = pubEl("option");
@@ -784,44 +828,71 @@ function pubForkField() {
     o.textContent = text;
     return o;
   };
-  sel.appendChild(opt("", pubT("（原创：不声明来源）")));
+  sel.innerHTML = "";
+  if (!auto) sel.appendChild(opt("", pubT("（原创：不声明来源）")));
   const choices = pubForkChoices();
   let matched = false;
   for (const c of choices) {
-    if (cur.id && keyOf(cur) === keyOf(c)) matched = true;
+    if (auto && keyOf(auto) === keyOf(c)) matched = true;
     sel.appendChild(
       opt(
         keyOf(c),
-        "v" + (c.version || "0.0.0") + " · " + c.title + " · " + c.id + " · " + pubT("作者 ") + (c.owner || pubT("未知")),
+        "v" + (c.version || "0.0.0") + " · " + c.title + " · " + c.id + " · " + pubT("作者 ") + (pubAuthorNameOf(c) || pubT("未知")),
       ),
     );
   }
-  /* 带出来的那一条不在目录里（源已下架 / 目录没拉到）：补一项，别让用户的声明被悄悄丢掉 */
-  if (cur.id && !matched) {
+  /* 自动指向 / 带出来的那一条不在目录里（源已下架 / 目录没拉到）：补一项，别让用户的声明被悄悄丢掉 */
+  if ((auto || cur.id) && !matched) {
+    const one = auto || cur;
     sel.appendChild(
-      opt(keyOf(cur), pubT("（已声明）") + cur.id + (cur.owner ? " · " + pubT("作者 ") + cur.owner : "")),
+      opt(keyOf(one), pubT("（已声明）") + one.id + (pubAuthorNameOf(one) ? " · " + pubT("作者 ") + pubAuthorNameOf(one) : "")),
     );
   }
-  sel.value = cur.id ? keyOf(cur) : "";
-  sel.addEventListener("change", () => {
+  sel.value = auto ? keyOf(auto) : cur.id ? keyOf(cur) : "";
+  if (auto) {
+    PUB.form.forkOf = { id: pubStr(auto.id), ownerId: pubStr(auto.ownerId), owner: pubStr(auto.owner) };
+    PUB.form.forkLocked = true;
+  } else {
+    PUB.form.forkLocked = false;
+  }
+  sel.disabled = !!auto;
+  sel.title = auto
+    ? pubT("这个应用 id 线上已经有条目：本次上架自动声明为它的二次开发分支（同一个 id 下建你自己的分支）。想改来源就换一个应用 id。")
+    : pubT("声明后云端条目会记下「二次开发自」这个应用（源 id + 原作者 uid），客户端就能在同一条分支树上看到它。");
+  sel.onchange = () => {
+    /* 锁定（自动声明）时下拉是 disabled，change 根本不会来；这里只管开放态 */
     const v = pubStr(sel.value);
-    if (!v) {
-      PUB.form.forkOf = { id: "", ownerId: "", owner: "" };
-    } else {
+    if (!v) PUB.form.forkOf = { id: "", ownerId: "", owner: "" };
+    else {
       const parts = v.split("\u0000");
       PUB.form.forkOf = { id: pubStr(parts[0]), ownerId: pubStr(parts[1]), owner: pubStr(parts[2]) };
     }
     pubEdit();
-  });
-  wrap.appendChild(sel);
-  wrap.appendChild(
-    pubEl(
-      "div",
-      "pub-hint",
-      pubT("声明后云端条目会记下「二次开发自」这个应用（源 id + 原作者 uid），别人的客户端就能在你的版本与它之间「切换分支」。选「原创」= 不声明，不影响上架；声明也会写进本机 app.json（随包走），以后再上架会自动带回。"),
-    ),
-  );
-  return wrap;
+  };
+  if (PUB.dom.forkHint) {
+    PUB.dom.forkHint.textContent = auto
+      ? pubT("同一个 id 在线上已经有条目：本次会自动声明为「基于它的二次开发」，并新建**你自己的一条分支**（主干在最左、你的分支向右延伸）。唯一取消方式 = 把上面的应用 id 改成别的。")
+      : pubT("声明后云端条目会记下「二次开发自」这个应用（源 id + 原作者 uid），别人的客户端就能在你的版本与它之间「切换分支」。选「原创」= 不声明，不影响上架；声明也会写进本机 app.json（随包走），以后再上架会自动带回。");
+  }
+}
+/* 线上这个 id 的主干作者（自动声明目标）：同 id 条目里 createdAt 最早那条；
+   目录没拉到就退回已经读到的线上条目本身。 */
+function pubAutoForkOf() {
+  const o = PUB.online;
+  if (!o || o.known === false || !o.exists) return null;
+  const list = Array.isArray(o.branches) && o.branches.length
+    ? o.branches
+    : [{ id: o.id, ownerId: o.ownerId, owner: o.owner, createdAt: o.createdAt }];
+  const sorted = list
+    .filter((b) => b && pubStr(b.id))
+    .slice()
+    .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+  const trunk = sorted[0];
+  if (!trunk) return null;
+  const id = pubStr(trunk.id) || pubStr(PUB.form.id);
+  const ownerId = pubStr(trunk.ownerId);
+  if (!id || !ownerId) return null;
+  return { id: id, ownerId: ownerId, owner: pubStr(trunk.owner) };
 }
 
 /* ── ③ 声明 ── */
@@ -919,6 +990,19 @@ function pubBuildQuotaSec(host) {
 /* ───────────────── 绘制：刷新各块 ───────────────── */
 
 function pubPaintHead() {
+  const auth = PUB.dom.authChip;
+  if (auth) {
+    const u = PUB.user || {};
+    /* 自己这一格也守同一条口径：昵称优先，占位账号名 / uid 不显示（都没有就只写「已登录」） */
+    const name = pubAuthorNameOf({ ownerName: u.nickname, owner: u.username });
+    auth.textContent = PUB.loggedIn
+      ? pubT("已登录") + (name ? "：" + name : "")
+      : PUB.authChecked
+        ? pubT("未登录")
+        : pubT("正在读取登录态…");
+    auth.className =
+      "pub-chip pub-chip-auth" + (PUB.loggedIn ? "" : PUB.authChecked ? " pub-err" : "");
+  }
   const chip = PUB.dom.onlineChip;
   if (!chip) return;
   const o = PUB.online;
@@ -927,11 +1011,16 @@ function pubPaintHead() {
   else if (o.known === false) text = pubT("线上状态未知（接口不可达）；上传时以服务端判断为准");
   else if (!o.exists) text = pubT("首次上架（线上还没有这个 id）");
   else if (o.mine) text = pubT("已有线上应用") + " v" + pubStr(o.latestVersion || "") + pubT("（本次为追加版本）");
-  else text = pubT("该 id 已被账号 ") + pubStr(o.owner || "") + pubT(" 占用，不能上架");
+  else if (o.myBranch) text = pubT("同 id 已有 ") + (Number(o.branches && o.branches.length) || 1) + pubT(" 条作者分支（本次为你的新版本）");
+  else
+    text =
+      pubT("同 id 已有 ") + (Number(o.branches && o.branches.length) || 1) + pubT(" 条作者分支，主干作者：") +
+      pubStr(o.branches && o.branches[0] ? pubBranchLabel(o.branches[0], o.branches) : o.ownerName || "") +
+      pubT("（本次会在同 id 下新建你的分支）");
   chip.textContent = text;
   chip.className =
     "pub-chip pub-chip-online" +
-    (!o ? "" : o.known === false ? " pub-warn" : !o.exists ? " pub-new" : o.mine ? "" : " pub-err");
+    (!o ? "" : o.known === false ? " pub-warn" : !o.exists ? " pub-new" : o.mine ? "" : " pub-warn");
 }
 
 function pubPaintShots() {
@@ -1001,12 +1090,19 @@ function pubAddShot(item) {
   return true;
 }
 
-/* 线上版本列表（可勾选删除） */
+/* 线上版本列表（同 id 多分支，§十）：
+   · **我的分支**：勾选框 + 删除按钮（全功能，只能删自己分支的版本）；
+   · **其他作者的分支**：只读展示（版本 / 作者 / 时间 / 说明），**不渲染勾选框、不渲染删除按钮**（q7/q23），
+     并补一句「这些版本属于账号 x，只能查看」。
+   分支树本身复用应用中心的 appsBranchTreeEl（同一个 id 一条分支一行、主干最左）。 */
 function pubPaintOnline() {
   const wrap = PUB.dom.versWrap;
   if (!wrap) return;
   wrap.innerHTML = "";
-  if (PUB.dom.delVerBtn) PUB.dom.delVerBtn.disabled = true;
+  if (PUB.dom.delVerBtn) {
+    PUB.dom.delVerBtn.disabled = true;
+    PUB.dom.delVerBtn.hidden = false;
+  }
   const o = PUB.online;
   if (!o) {
     wrap.appendChild(pubEl("div", "pub-hint", pubT("正在读取线上版本…")));
@@ -1019,46 +1115,227 @@ function pubPaintOnline() {
     return;
   }
   if (!o.exists) {
-    wrap.appendChild(pubEl("div", "pub-hint", pubT("线上还没有这个 id 的应用：本次是新建（POST /api/apps）。")));
+    wrap.appendChild(pubEl("div", "pub-hint", pubT("线上还没有这个 id 的应用：本次是新建（POST /api/apps），你这一条就是主干。")));
     return;
   }
-  const vs = Array.isArray(o.versions) ? o.versions : [];
-  if (!o.mine) {
+  const branches = pubNormBranches(o.branches);
+  const myBranch = o.myBranch || pubMyBranchOf(o);
+  const others = branches.filter((b) => b !== myBranch);
+  /* 分支树（多于一条分支才画）：主干最左、其余向右延伸，每行带作者与本机已装情况 */
+  if (branches.length > 1 && typeof appsBranchTreeEl === "function") {
+    const tree = appsBranchTreeEl(o.id, {
+      branches: branches.map((b) => Object.assign({}, b, { id: o.id })),
+      selectedOwnerId: pubStr(myBranch && (myBranch.ownerId || myBranch.owner)),
+    });
+    if (tree) wrap.appendChild(tree);
+  }
+  if (!myBranch) {
+    /* 这个 id 是别人先占的：本次上传 = 在同 id 下新建**我自己**的分支（q3，自动二次开发） */
     wrap.appendChild(
-      pubEl("div", "pub-hint pub-err", pubT("这个 id 在线上不属于当前账号：不能追加版本，也不能删它的版本。请改一个 id 再上传。")),
+      pubEl(
+        "div",
+        "pub-hint pub-warn",
+        pubT("线上这个 id 已有 ") + branches.length + pubT(" 条作者分支（主干作者：") +
+          pubBranchLabel(branches[0], branches) +
+          pubT("）：本次上传会在同一个 id 下新建**你自己的分支**，别人的版本只读。"),
+      ),
     );
   }
-  if (!vs.length) {
+  /* 我的分支：勾选 + 删除（只列我自己的版本 —— 接口也只允许删自己分支的） */
+  const mineVs = myBranch ? pubVersionsOfBranch(myBranch) : [];
+  if (myBranch && mineVs.length) {
+    const head = pubEl("div", "pub-vers-head", pubT("我的分支") + "（" + pubBranchLabel(myBranch, branches) + "）");
+    wrap.appendChild(head);
+    for (const v of mineVs) {
+      const row = pubEl("label", "pub-ver");
+      const cb = pubEl("input");
+      cb.type = "checkbox";
+      cb.dataset.ver = pubStr(v.version);
+      cb.addEventListener("change", () => pubSyncDelBtn());
+      row.appendChild(cb);
+      const main = pubEl("div", "pub-ver-main");
+      main.appendChild(pubEl("span", "pub-ver-no", "v" + pubStr(v.version)));
+      /* 「最新」标记：版本树接口给 current；退回 item.versions 时按这一分支的 latestVersion 认 */
+      const isCur =
+        v.current != null ? !!v.current : pubStr(v.version) === pubStr(pubBranchLatest(myBranch));
+      if (isCur) main.appendChild(pubEl("span", "pub-ver-tag", pubT("最新")));
+      if (v.parentVersion) main.appendChild(pubEl("span", "pub-ver-tag", pubT("父版 ") + pubStr(v.parentVersion)));
+      main.appendChild(
+        pubEl(
+          "span",
+          "pub-ver-sub",
+          [pubTime(v.createdAt), pubBytes(v.bytes), pubUploaderOf(v)].filter(Boolean).join(" · "),
+        ),
+      );
+      if (pubStr(v.note)) main.appendChild(pubEl("span", "pub-ver-note", pubStr(v.note)));
+      row.appendChild(main);
+      wrap.appendChild(row);
+    }
+  } else if (myBranch) {
+    wrap.appendChild(
+      pubEl("div", "pub-hint", pubT("你的分支下还没有版本（或版本已被删光）：本次上传会是它的第一版。")),
+    );
+  }
+  /* 其他作者的分支：只读，**不渲染勾选框、不渲染删除按钮**（q7） */
+  for (const b of others) {
+    const isMine = !!b.mine || pubStr(b.ownerId) === pubStr(PUB.user && PUB.user.id);
+    const box = pubEl("div", "pub-ver-other" + (isMine ? " is-mine" : ""));
+    const head = pubEl("div", "pub-vers-head", pubT("作者 ") + pubBranchLabel(b, branches) + (b.trunk ? " · " + pubT("主干") : ""));
+    box.appendChild(head);
+    box.appendChild(
+      pubEl(
+        "div",
+        "pub-hint",
+        pubT("这些版本属于账号 ") + pubBranchLabel(b, branches) + pubT("：只能查看（切分支下载走「应用详情 → 分支」），不能在这里删除。"),
+      ),
+    );
+    for (const v of pubVersionsOfBranch(b)) {
+      const row = pubEl("div", "pub-ver pub-ver-readonly");
+      const main = pubEl("div", "pub-ver-main");
+      main.appendChild(pubEl("span", "pub-ver-no", "v" + pubStr(v.version)));
+      if (pubStr(v.version) === pubStr(pubBranchLatest(b))) {
+        main.appendChild(pubEl("span", "pub-ver-tag", pubT("最新")));
+      }
+      if (v.parentVersion) main.appendChild(pubEl("span", "pub-ver-tag", pubT("父版 ") + pubStr(v.parentVersion)));
+      main.appendChild(
+        pubEl(
+          "span",
+          "pub-ver-sub",
+          [pubTime(v.createdAt), pubBytes(v.bytes)].filter(Boolean).join(" · "),
+        ),
+      );
+      if (pubStr(v.note)) main.appendChild(pubEl("span", "pub-ver-note", pubStr(v.note)));
+      row.appendChild(main);
+      box.appendChild(row);
+    }
+    wrap.appendChild(box);
+  }
+  if (!(myBranch && mineVs.length) && !others.length) {
     wrap.appendChild(
       pubEl("div", "pub-hint", pubT("线上已有这个应用（单版记录，没有版本树数据）：本次按追加版本处理。")),
     );
-    return;
   }
-  for (const v of vs) {
-    const row = pubEl("label", "pub-ver");
-    const cb = pubEl("input");
-    cb.type = "checkbox";
-    cb.dataset.ver = pubStr(v.version);
-    cb.addEventListener("change", () => pubSyncDelBtn());
-    row.appendChild(cb);
-    const main = pubEl("div", "pub-ver-main");
-    main.appendChild(pubEl("span", "pub-ver-no", "v" + pubStr(v.version)));
-    /* 「最新」标记：版本树接口给 current；退回 item.versions 时按 latestVersion 认 */
-    const isCur = v.current != null ? !!v.current : pubStr(v.version) === pubStr(o.latestVersion);
-    if (isCur) main.appendChild(pubEl("span", "pub-ver-tag", pubT("最新")));
-    if (v.parentVersion) main.appendChild(pubEl("span", "pub-ver-tag", pubT("父版 ") + pubStr(v.parentVersion)));
-    main.appendChild(
-      pubEl(
-        "span",
-        "pub-ver-sub",
-        [pubTime(v.createdAt), pubBytes(v.bytes), pubStr(v.uploader)].filter(Boolean).join(" · "),
-      ),
-    );
-    if (pubStr(v.note)) main.appendChild(pubEl("span", "pub-ver-note", pubStr(v.note)));
-    row.appendChild(main);
-    wrap.appendChild(row);
-  }
+  /* 删除按钮：只有「我的分支有版本」时才显示（别人的分支一律不出现删除入口，q7） */
+  if (PUB.dom.delVerBtn && !(myBranch && mineVs.length)) PUB.dom.delVerBtn.hidden = true;
   pubSyncDelBtn();
+}
+
+/* ── 同 id 多分支的小工具（都在本文件内，接口回执 / 老回执都能吃） ── */
+function pubNormBranches(raw) {
+  const out = [];
+  for (const b of Array.isArray(raw) ? raw : []) {
+    if (!b || typeof b !== "object") continue;
+    const ownerId = pubStr(b.ownerId || (b.ownerUser && b.ownerUser.id));
+    out.push({
+      id: pubStr(b.id),
+      ownerId: ownerId,
+      owner: pubStr(b.owner),
+      nickname: pubStr(b.nickname),
+      /* 作者显示名（服务端按 uid 实时解析的昵称；老服务端 / 静态目录没有就是空串） */
+      ownerName: pubStr(b.ownerName),
+      trunk: !!b.trunk,
+      mine: !!b.mine,
+      unpublished: !!b.unpublished,
+      createdAt: Number(b.createdAt) || 0,
+      latestVersion: pubStr(b.latestVersion || b.version),
+      versions: Array.isArray(b.versions) ? b.versions.slice() : [],
+    });
+  }
+  return out.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+}
+/* ── 作者显示名（与 renderer/app-apps.js 的 appsAuthorOf **同一口径**，这里自带一份实现：
+   本文件会被 test/smoke-app-publish-auth.js 单独装进迷你 VM 跑，不能指望 app-apps.js 已就位） ──
+   显示名 = 服务端按 uid **实时解析**的昵称（ownerName / uploaderName）→ 非占位账号名 → 空串
+   （空串由调用方显示「未知作者」）。系统自动占位名（微信 / 手机号自动建号生成的 u_xxxxxxxx）
+   不算名字，绝不再摊到界面上。 */
+const PUB_PLACEHOLDER_NAME_RE = /^u_[0-9a-f]{6,24}$/i;
+function pubIsPlaceholderName(name) {
+  return PUB_PLACEHOLDER_NAME_RE.test(pubStr(name));
+}
+function pubAuthorNameOf(b) {
+  const s = b || {};
+  const nick = pubStr(s.ownerName || s.nickname);
+  if (nick) return nick;
+  const name = pubStr(s.owner || s.author);
+  return pubIsPlaceholderName(name) ? "" : name;
+}
+/* 版本行的「上传者」显示名：uploaderName 优先；占位名 / uid 一律不显示（返回空串） */
+function pubUploaderOf(v) {
+  const nick = pubStr(v && v.uploaderName);
+  if (nick) return nick;
+  const up = pubStr(v && v.uploader);
+  return pubIsPlaceholderName(up) ? "" : up;
+}
+/* 分支标签：显示名；同一个 id 下两条分支昵称相同时补「#<ownerId 末 6 位>」区分
+   （传 all = 同 id 的全部分支才会判重名，见 app-apps.js 的 appsBranchLabelOf） */
+function pubBranchLabel(b, all) {
+  const base = pubAuthorNameOf(b) || pubT("未知作者");
+  const list = Array.isArray(all) ? all : null;
+  if (!list || base === pubT("未知作者")) return base;
+  const key = pubStr(b && (b.ownerId || b.owner));
+  const short = pubBranchShortOf(b);
+  if (!short) return base;
+  const dup = list.some(
+    (o) => o && o !== b && pubStr(o.ownerId || o.owner) !== key && (pubAuthorNameOf(o) || pubT("未知作者")) === base,
+  );
+  return dup ? base + " # " + short : base;
+}
+function pubBranchShortOf(b) {
+  const uid = pubStr(b && b.ownerId);
+  if (uid) return uid.slice(-6);
+  const name = pubStr(b && b.owner);
+  return pubIsPlaceholderName(name) ? "" : name.slice(-6);
+}
+function pubBranchLatest(b) {
+  return pubStr((b && (b.latestVersion || b.version)) || "");
+}
+function pubVersionsOfBranch(b) {
+  const vs = Array.isArray(b && b.versions) ? b.versions : [];
+  if (vs.length) return vs;
+  return pubBranchLatest(b) ? [{ version: pubBranchLatest(b), createdAt: 0, bytes: 0, note: "" }] : [];
+}
+/* 我名下那条分支（同 id 同作者只有一条）：先按 uid 认，其次按账号名 */
+function pubMyBranchOf(o) {
+  const uid = pubStr(PUB.user && PUB.user.id);
+  const name = pubUsername();
+  for (const b of pubNormBranches(o && o.branches)) {
+    if (b.mine) return b;
+    if (uid && pubStr(b.ownerId) === uid) return b;
+    if (name && pubStr(b.owner).toLowerCase() === name) return b;
+  }
+  return null;
+}
+/* 我那条分支已有的最高版本（默认版本号按它 +1，q10：只按我自己分支算） */
+function pubMyBranchLatestVersion() {
+  const o = PUB.online;
+  if (!o || !o.exists) return "";
+  const b = o.myBranch || pubMyBranchOf(o);
+  if (!b) return "";
+  const vs = pubVersionsOfBranch(b);
+  let best = pubBranchLatest(b);
+  for (const v of vs) {
+    const x = pubStr(v.version);
+    if (x && (!best || pubVerCmp(x, best) > 0)) best = x;
+  }
+  return best;
+}
+/* 版本号比较（与主进程 apps-store.js 的 verCmp 同一口径的精简版：够排 x.y.z 与后缀） */
+function pubVerCmp(x, y) {
+  const a = pubStr(x).split(/[.+-]/);
+  const b = pubStr(y).split(/[.+-]/);
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const sa = a[i] == null ? "" : a[i];
+    const sb = b[i] == null ? "" : b[i];
+    if (sa === sb) continue;
+    const na = /^\d+$/.test(sa) ? Number(sa) : null;
+    const nb = /^\d+$/.test(sb) ? Number(sb) : null;
+    if (na != null && nb != null) return na < nb ? -1 : 1;
+    if (na != null) return 1;
+    if (nb != null) return -1;
+    return sa < sb ? -1 : 1;
+  }
+  return 0;
 }
 function pubSyncDelBtn() {
   const btn = PUB.dom.delVerBtn;
@@ -1129,6 +1406,7 @@ function pubPaintFoot() {
   const set = (msg, kind, enabled, label) => {
     if (note) {
       note.textContent = pubStr(msg);
+      /* 状态行是复用的一行：上一条状态留下的动作按钮（去登录 / 重试）随文字一起清掉 */
       note.className = "pub-foot-note" + (kind ? " pub-" + kind : "");
     }
     btn.disabled = !enabled;
@@ -1148,8 +1426,24 @@ function pubPaintFoot() {
     set(pubT("宿主桥未就绪（") + PUB.bridgeMiss + pubT("）：当前版本还不能上架"), "err", false);
     return;
   }
+  /* 登录态三条尾巴（这次修的病根）：① 还没核完 → 先别下「未登录」的结论；
+     ② 本机会话在、只是这次没核到（网络 / 服务端错）→ 如实说「没核到」并给「重试」，
+        绝不说成「未登录：先登录再上传」（那会把已登录的用户指去重新登录，而顶栏还是已登录态）；
+     ③ 服务器明确不认这个会话（authMe 已清掉本机凭据）→ 按未登录处理，页脚给「去登录」。 */
+  if (!PUB.authChecked) {
+    set(pubT("正在读取登录态…"), "", false);
+    return;
+  }
+  if (PUB.loggedIn && PUB.authError) {
+    set(PUB.authError, "warn", false);
+    pubAuthAction();
+    return;
+  }
   if (!PUB.loggedIn) {
-    set(pubT("未登录：先登录再上传"), "err", false);
+    /* PUB.authError 存的就是**已经本地化好的文案**：这里不能再套一次 pubT ——
+       带 {code} 的模板二次翻译时 vars 已经丢了，页脚会原样印出「HTTP {code}」。 */
+    set(PUB.authError || pubT("未登录：先登录再上传"), "err", false);
+    pubAuthAction();
     return;
   }
   const v = pubValidate();
@@ -1170,11 +1464,14 @@ function pubPaintFoot() {
     );
     return;
   }
-  const append = !!(PUB.online && PUB.online.exists && PUB.online.mine);
+  const append = !!(PUB.online && PUB.online.exists && PUB.online.myBranch);
+  const newBranch = !!(PUB.online && PUB.online.exists && !append);
   set(
     (append
-      ? pubT("将追加版本 v") + pubStr(PUB.form.version) + pubT("（parentVersion = ") + pubStr(PUB.online.latestVersion || "") + "）"
-      : pubT("将新建应用 v") + pubStr(PUB.form.version)) +
+      ? pubT("将追加版本 v") + pubStr(PUB.form.version) + pubT("（parentVersion = ") + pubStr(pubMyBranchLatestVersion()) + "）"
+      : newBranch
+        ? pubT("将在同一个 id 下新建你的分支 v") + pubStr(PUB.form.version)
+        : pubT("将新建应用 v") + pubStr(PUB.form.version)) +
       (plan.kind === "shot" ? pubT("；接口没有图标时会用第 1 张截图当图标") : ""),
     "ok",
     true,
@@ -1213,12 +1510,13 @@ function pubValidate() {
     errors.push(pubT("版本说明超过 ") + PUB_NOTE_MAX + pubT(" 字"));
   }
   const o = PUB.online;
-  if (o && o.known !== false && o.exists && !o.mine) {
-    errors.push(pubT("该 id 在线上属于账号 ") + pubStr(o.owner || "") + pubT("：请改一个 id，或先在线上处理它"));
-  }
+  /* 同 id 多分支（§十）：线上这个 id 被别人占着**不再是错** —— 本次上传会在同 id 下
+     新建我自己的一条分支（服务端按 forkOf 声明接受，见附录 §十）。只有版本号撞车才算错。 */
   if (o && o.known !== false && o.exists && o.mine && Array.isArray(o.versions)) {
-    const dup = o.versions.some((x) => pubStr(x.version) === ver);
-    if (dup) errors.push(pubT("线上已有版本 v") + ver + pubT("：请换一个版本号"));
+    const myLatest = pubMyBranchLatestVersion();
+    const mineVs = pubVersionsOfBranch(o.myBranch || pubMyBranchOf(o) || {});
+    const dup = mineVs.some((x) => pubStr(x.version) === ver) || (!!myLatest && ver === myLatest);
+    if (dup) errors.push(pubT("你这条分支线上已有版本 v") + ver + pubT("：请换一个版本号"));
   }
   return {
     errors,
@@ -1241,27 +1539,188 @@ function pubTagsOf(raw) {
     .slice(0, 10);
 }
 
+/**
+ * 上传新版本时**继承原版标签**（客户端这一半）：线上状态读回来之后，把线上条目的 tags
+ * 填进表单。
+ *
+ * 现场：开窗时标签框是空的（PUB.form.tags 只从本机 app.json 带出，标签在云端），
+ * 用户不手填就等于把空标签发给服务端 —— 作者一追加版本就把整组标签抹掉。
+ * 判据（两层保护里的一层，服务端那份见 store-saas/server.mjs 的 appTagsNext）：
+ *   · 用户自己动过这个框（tagsTouched）→ 一个字都不覆盖；
+ *   · 表单里已经有内容（本机 app.json 带出来的）→ 不覆盖；
+ *   · 线上也没有标签 → 什么都不做。
+ * @param {object} item 线上条目（GET /api/apps/<id> 的 item）
+ */
+function pubHydrateTags(item) {
+  if (PUB.tagsTouched) return false;
+  if (pubStr(PUB.form.tags)) return false;
+  const next = pubTagsOf((item && item.tags) || []);
+  if (!next.length) return false;
+  PUB.form.tags = next.join(",");
+  if (PUB.dom.tagsIn) PUB.dom.tagsIn.value = PUB.form.tags;
+  return true;
+}
+
 /* ───────────────── 读取：登录态 / 线上状态 / 配额 ───────────────── */
 
+/* 本机登录态快照（app-auth.js 的 window.MTNodeAuth.state()）。
+   注意口径：**空快照不等于未登录** —— 主进程的凭据文件读不回来（readIssue）/ 账户模块还没刷新完
+   时它同样是空。所以它只用来兜底与显示，真结论一律由 pubLoadAuth 的服务器回执给出。 */
+function pubLocalUser() {
+  return pubAuthUser();
+}
+/* 服务器回执 → 登录态与页脚文案（唯一判据入口）。
+   · 服务器认这个会话（ok）→ 已登录，顺带把账号名换新；
+   · 服务器报别的错（5xx / 403 / 网络不通，status=0）→ **本机会话还在就只提示、不当未登录**，
+     页脚说清「登录态没核到」并给「重试」，用户还能照常试一次上传（真实拒绝会由上传自己报出来）；
+     本机也没有会话，才按未登录处理。
+   · 401（服务器明确不认这个会话）→ 按未登录收口，由 pubLoadAuth 补上失效文案。 */
+function pubApplyAuth(r) {
+  const status = Number((r && r.status) || 0);
+  const code = pubStr(((r && r.data) || {}).code || (r && r.code));
+  const local = pubLocalUser();
+  if (r && r.ok) {
+    PUB.loggedIn = true;
+    PUB.user = (r.data && r.data.user) || PUB.user || local;
+    PUB.authChecked = true;
+    PUB.authError = "";
+    return;
+  }
+  /* 服务器明确不认这个会话（401）：此刻本机会话快照还是旧值，不能因为它「在」就当作已登录 ——
+     否则又回到「界面说已登录、上架窗说没核到」。按未登录收口（失效文案由 pubLoadAuth 补上）。 */
+  if (status === 401 || code === "UNAUTHORIZED") {
+    PUB.loggedIn = false;
+    PUB.authChecked = true;
+    PUB.authError = "";
+    return;
+  }
+  if (!local) {
+    PUB.loggedIn = false;
+    PUB.authChecked = true;
+    PUB.authError = "";
+    return;
+  }
+  PUB.loggedIn = true;
+  PUB.user = PUB.user || local;
+  PUB.authChecked = true;
+  PUB.authError = status
+    ? pubT("登录态没核到（服务端 HTTP {code}）", { code: status })
+    : pubT("登录态没核到（连不上账户服务）");
+}
+/* 服务器回的坏消息（只取中文文案；英文原文 / 未知都退回「账户服务暂时不可用」） */
+function pubErrOf(r) {
+  const d = (r && r.data) || {};
+  const code = pubStr(d.code || (r && r.code));
+  if (code === "UNAUTHORIZED") return pubT("登录已失效：请重新登录");
+  const msg = pubStr(d.error || (r && r.error));
+  if (/[\u4e00-\u9fff]/.test(msg)) return msg;
+  const status = Number((r && r.status) || 0);
+  return status
+    ? pubT("账户服务报错（HTTP {code}）", { code: status })
+    : pubT("连不上账户服务，请检查网络");
+}
+/* 页脚那颗动作按钮：未登录 → 去登录；登录态没核到 → 重试。挂在 state() 已经填好的
+   状态行末尾（文字走同一条 set 路径，页面语言 / 颜色都跟状态行一致）。 */
+function pubAuthAction() {
+  const note = PUB.dom.footNote;
+  if (!note) return;
+  note.classList.add("pub-note-act");
+  const btn = pubEl("button", "mini pub-act", PUB.loggedIn ? pubT("重试读取登录态") : pubT("去登录"));
+  btn.type = "button";
+  btn.onclick = (ev) => {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    if (PUB.loggedIn) pubRetryAuth();
+    else pubGoLogin();
+  };
+  note.appendChild(btn);
+}
+/* 让用户能自己把「服务器认不认这个会话」再验一次（同一次飞行也记进 PUB.load，等它的人一起等） */
+function pubRetryAuth() {
+  PUB.authChecked = false;
+  PUB.authError = "";
+  pubPaintFoot();
+  PUB.load = pubLoadAuth(pubSeqNow()).catch(() => false);
+  return PUB.load;
+}
+
+/* 上传被服务端按「未登录」拒绝（401 / UNAUTHORIZED）时的收口：
+   本机那份凭据已经死了，别只把错误往页脚一贴 —— 走主进程的账户契约（api.authMe）
+   把它清掉并广播，界面各处（顶栏 / 应用库 / 本窗）一起收敛成未登录 + 「去登录」。
+   回真 = 已经按这条路径处理（调用方别再重复贴「上传失败：…」）。 */
+function pubSessionLost(r, msg) {
+  const d = (r && r.data) || {};
+  const code = pubStr(d.code || (r && r.code));
+  if (Number((r && r.status) || 0) !== 401 && code !== "UNAUTHORIZED") return false;
+  PUB.loggedIn = false;
+  PUB.user = null;
+  PUB.authChecked = true;
+  PUB.authError = pubT("登录已失效：请重新登录");
+  PUB.showNote = false;
+  pubPaintHead();
+  pubSetNote(msg || PUB.authError);
+  pubToast(PUB.authError, "err");
+  const api = window.api || {};
+  if (typeof api.authMe === "function") {
+    /* 只为副作用调用：主进程在 401 时清本机凭据 + 广播 auth:changed（返回值本身不用） */
+    try {
+      Promise.resolve(api.authMe()).catch(() => {});
+    } catch (_) {}
+  }
+  if (window.MTNodeAuth && typeof window.MTNodeAuth.refresh === "function") {
+    try {
+      Promise.resolve(window.MTNodeAuth.refresh()).catch(() => {});
+    } catch (_) {}
+  }
+  return true;
+}
+
+/* 登录态：以**主进程的账户契约**为准（window.api.authMe = IPC auth:me）。为什么不用
+   storeRequest 裸打 /api/me：auth:me 走的是同一条链路，但它在 401 时会清掉本机那份已失效的
+   凭据并广播登录态变化 —— 这是「已登录却显示未登录」这类分叉的唯一收敛点。
+   裸打的话，本机凭据文件还留着旧 token、顶栏照旧显示已登录、上架窗说未登录，用户点「去登录」
+   又被顶栏当成已登录、找不到重新登录的入口，只能自己想到先退出登录。
+
+   返回 true = 登录态可用（调用方可以继续读线上状态 / 配额）；false = 未登录或登录态没核到。 */
 async function pubLoadAuth(seq) {
   const api = window.api || {};
-  const user = pubAuthUser();
-  if (user) {
-    PUB.user = user;
-    PUB.loggedIn = true;
+  if (typeof api.authMe !== "function" && typeof api.storeRequest !== "function") {
+    PUB.loggedIn = !!pubLocalUser();
+    PUB.authChecked = false;
+    PUB.authError = pubT("本机账户桥未就绪");
+    pubPaintHead();
+    pubPaintFoot();
+    return PUB.loggedIn;
   }
-  if (typeof api.storeRequest !== "function") return;
-  try {
-    const r = await api.storeRequest({ method: "GET", path: "/api/me" });
-    if (!pubAlive(seq)) return;
-    const ok = !!(r && r.ok && r.data && r.data.user);
-    PUB.loggedIn = ok;
-    if (ok) PUB.user = r.data.user;
-  } catch (_) {
-    if (!pubAlive(seq)) return;
-    /* 拿不到就当未登录（口径：失败即未登录），但不清掉上面的本地快照 */
+  let r = null;
+  if (typeof api.authMe === "function") {
+    try {
+      r = await api.authMe();
+    } catch (err) {
+      r = { ok: false, status: 0, error: pubStr((err && err.message) || err) };
+    }
+  } else {
+    try {
+      r = await api.storeRequest({ method: "GET", path: "/api/me" });
+    } catch (err) {
+      r = { ok: false, status: 0, error: pubStr((err && err.message) || err) };
+    }
   }
+  if (!pubAlive(seq)) return false;
+  const hadLocal = !!pubLocalUser();
+  pubApplyAuth(r);
+  if (!PUB.loggedIn && hadLocal) {
+    /* 走到这儿说明服务器明确不认这个会话（authMe 已把本机凭据清掉）：
+       立刻按「未登录」收口 —— 顶栏 / 应用库 / 商店会随 auth:changed 一起收敛，
+       省下的是「界面说已登录、上架说未登录」那段分叉。 */
+    PUB.authError = pubErrOf(r);
+    PUB.user = null;
+  }
+  pubPaintHead();
   pubPaintFoot();
+  return PUB.loggedIn;
 }
 
 /* 线上状态：GET /api/apps/<id>（免登录，含 mine / latestVersion / versions）+
@@ -1270,13 +1729,25 @@ async function pubLoadOnline() {
   const seq = PUB.seq;
   const api = window.api || {};
   const id = pubStr(PUB.form.id) || PUB.appId;
-  const mine = { known: false, exists: false, mine: false, id, latestVersion: "", versions: [], owner: "", error: "" };
+  const mine = {
+    known: false,
+    exists: false,
+    mine: false,
+    id,
+    ownerId: "",
+    latestVersion: "",
+    versions: [],
+    branches: [],
+    owner: "",
+    error: "",
+  };
   PUB.online = mine;
   pubPaintHead();
   pubPaintOnline();
   pubPaintFoot();
   if (typeof api.storeRequest !== "function" || !id) return;
   let known = false;
+  let lost = false; /* 服务端说这个会话不认了（见下面 pubSessionLost） */
   try {
     const r = await api.storeRequest({ method: "GET", path: "/api/apps/" + encodeURIComponent(id) });
     if (!pubAlive(seq)) return;
@@ -1286,31 +1757,66 @@ async function pubLoadOnline() {
       mine.exists = true;
       mine.mine = !!it.mine || String(it.owner || "").toLowerCase() === pubUsername();
       mine.owner = pubStr(it.owner);
+      /* 显示名（昵称，服务端按 uid 实时解析）——「我这条分支」的标题读它 */
+      mine.ownerName = pubStr(it.ownerName);
+      mine.ownerId = pubStr(it.ownerId || (it.ownerUser && it.ownerUser.id) || "");
       mine.latestVersion = pubStr(it.latestVersion || it.version);
       mine.unpublished = !!it.unpublished;
       mine.item = it;
+      /* 继承原版标签（本轮需求）：线上有标签、而用户还没动过这个框 → 填回来（见 pubHydrateTags） */
+      pubHydrateTags(it);
       if (Array.isArray(it.versions)) mine.versions = it.versions.slice();
+      mine.branches = pubNormBranches(r.data.branches || it.branches);
+      if (!mine.ownerId) mine.ownerId = pubStr(mine.branches[0] && mine.branches[0].ownerId);
     } else if (r && Number(r.status) === 404) {
       known = true; /* 明确不存在 = 首次上架 */
+    } else if (pubSessionLost(r, pubT("线上状态读不到：登录已失效，请重新登录"))) {
+      lost = true;
     }
   } catch (_) {}
   /* 版本树（契约 §7.4：免登录；老服务端没有这个路由 → 404 就退回 item.versions） */
-  try {
-    const r2 = await api.storeRequest({ method: "GET", path: "/api/apps/" + encodeURIComponent(id) + "/versions" });
-    if (!pubAlive(seq)) return;
-    if (r2 && r2.ok && r2.data) {
-      const d = r2.data;
-      known = true;
-      mine.exists = true;
-      if (pubStr(d.latestVersion)) mine.latestVersion = pubStr(d.latestVersion);
-      if (d.unpublished != null) mine.unpublished = !!d.unpublished;
-      if (Array.isArray(d.versions)) mine.versions = d.versions.slice();
-    }
-  } catch (_) {}
+  if (!lost) {
+    try {
+      const r2 = await api.storeRequest({ method: "GET", path: "/api/apps/" + encodeURIComponent(id) + "/versions" });
+      if (!pubAlive(seq)) return;
+      if (r2 && r2.ok && r2.data) {
+        const d = r2.data;
+        known = true;
+        mine.exists = true;
+        if (pubStr(d.ownerId)) mine.ownerId = pubStr(d.ownerId);
+        /* 显示名（昵称）：条目接口没读到时用版本树接口那一份，别让「我的分支」退成「未知作者」 */
+        if (!mine.ownerName && pubStr(d.ownerName)) mine.ownerName = pubStr(d.ownerName);
+        if (pubStr(d.latestVersion)) mine.latestVersion = pubStr(d.latestVersion);
+        if (d.unpublished != null) mine.unpublished = !!d.unpublished;
+        if (Array.isArray(d.versions)) mine.versions = d.versions.slice();
+        const bs = pubNormBranches(d.branches);
+        if (bs.length) mine.branches = bs;
+      }
+    } catch (_) {}
+  }
+  /* 目录条目里没有 branches（老服务端 / 静态目录）：用已知信息合成「主干一条」，界面照旧只有一条分支 */
+  if (mine.exists && !mine.branches.length) {
+    mine.branches = [
+      {
+        id: id,
+        ownerId: mine.ownerId,
+        owner: mine.owner,
+        ownerName: mine.ownerName,
+        latestVersion: mine.latestVersion,
+        versions: mine.versions.slice(),
+        trunk: true,
+        mine: mine.mine,
+      },
+    ];
+  }
+  /* 我的那条分支（同 id 同作者只有一条）：优先按 uid 认，其次按账号名 */
+  mine.myBranch = pubMyBranchOf(mine);
   mine.known = known;
-  if (!known) mine.error = pubT("接口不可达或返回异常");
+  if (!known && !lost) mine.error = pubT("接口不可达或返回异常");
   if (!pubAlive(seq)) return;
-  /* id / 版本默认值：线上已有（且是我的）→ id 锁定 + 版本号默认 = 最新版小版本 +1 */
+  /* id / 版本默认值（同 id 多分支，§十）：
+     · id 只在**我名下已有这个 id** 时锁定（别人的同 id 不该挡我改 id —— 那正是取消自动分支的方式）；
+     · 版本号默认 = **我自己那条分支**的最新版小版本 +1（q10）；我还没有分支时用 1.0.0 / 模型给的版本。 */
   PUB.idLocked = !!(mine.exists && mine.mine);
   if (PUB.dom.idIn) {
     PUB.dom.idIn.readOnly = PUB.idLocked;
@@ -1322,8 +1828,9 @@ async function pubLoadOnline() {
     PUB.form.id = id;
     if (PUB.dom.idIn) PUB.dom.idIn.value = id;
   }
-  if (mine.exists && mine.mine && !PUB.verTouched) {
-    const next = pubBumpPatch(mine.latestVersion);
+  const myLatest = pubMyBranchLatestVersion();
+  if (mine.exists && !PUB.verTouched) {
+    const next = pubBumpPatch(myLatest);
     if (next) {
       PUB.form.version = next;
       if (PUB.dom.verIn) PUB.dom.verIn.value = next;
@@ -1331,14 +1838,18 @@ async function pubLoadOnline() {
   }
   if (PUB.dom.verHint) {
     PUB.dom.verHint.textContent = mine.exists && mine.mine
-      ? pubT("线上最新版是 v") + pubStr(mine.latestVersion) + pubT("：这次会作为新版本追加（parentVersion = ") + pubStr(mine.latestVersion) + "）"
-      : pubT("首次上架默认 1.0.0；线上已有同 id 时会自动取「最新版小版本 +1」。");
+      ? pubT("你这条分支的最新版是 v") + pubStr(myLatest) + pubT("：这次会作为它的新版本追加（parentVersion = ") + pubStr(myLatest) + "）"
+      : mine.exists
+        ? pubT("这个 id 已有 ") + (Number(mine.branches.length) || 1) + pubT(" 条作者分支：本次会在同一个 id 下新建**你的分支**（版本号从 1.0.0 起算，各分支各算各的）。")
+        : pubT("首次上架默认 1.0.0；线上已有你自己这个 id 的分支时会自动取「你那条分支的最新版小版本 +1」。");
   }
   if (PUB.dom.idHint) {
     PUB.dom.idHint.textContent = PUB.idLocked
       ? pubT("已锁定为线上 id")
       : pubStr(PUB.form.id).length + "/64";
   }
+  /* 自动二次开发声明跟着 id 重算（q8/q35）：同 id 已有条目 → 指向主干作者并锁定 */
+  pubForkFill();
   pubPaintHead();
   pubPaintOnline();
   pubPaintFoot();
@@ -1375,6 +1886,10 @@ async function pubLoadQuota() {
           out.bytes += Number((it && it.bytes) || 0);
         }
       }
+    } else if (pubSessionLost(r, pubT("配额读不到：登录已失效，请重新登录"))) {
+      /* 会话在服务端已不认：这里只负责让界面收口，配额留空（别把 401 说成「接口不可达」） */
+      pubPaintQuota();
+      return;
     } else {
       out.error = pubStr((r && r.data && r.data.error) || (r && r.error) || pubT("接口不可达"));
     }
@@ -1735,7 +2250,12 @@ function pubErrText(r) {
   const CODE_TEXT = {
     UNAUTHORIZED: "未登录或登录已过期：请重新登录后再上传",
     DECLARATION_REQUIRED: "服务端要求勾选声明：请勾上「我已阅读并同意，责任由我承担」再上传",
-    APP_EXISTS: "线上已存在这个 id：如果确实是你的应用，请改用「追加版本」（重新打开本窗会自动判断），否则换一个 id",
+    /* 同 id 多分支（§十）：这个 id 已被别人占用时，服务端要求声明来源才会新建你的分支 */
+    APP_EXISTS:
+      "这个应用 id 已被其他账号占用：本次应自动声明为「基于该应用的二次开发」再上传（同一个 id 下建你自己的分支）。若来源下拉被清空了，请把应用 id 改回原 id 后重试。",
+    BRANCH_EXISTS: "你名下已经有这个 id 的应用：请直接追加版本（重新打开本窗会自动判断），不要新建分支。",
+    VERSION_EXISTS: "你这条分支上已有这个版本号：请换一个版本号再上传。",
+    BRANCH_REQUIRED: "这个 id 下有多条作者分支：删版本请指明分支（本窗会自动带上你自己那条）。",
     APP_TOO_LARGE: "应用包超过云端上限",
   };
   if (code && CODE_TEXT[code]) return CODE_TEXT[code] + (msg ? "（" + msg + "）" : "");
@@ -1838,7 +2358,13 @@ async function pubUpload() {
       return;
     }
   }
-  const append = !!(PUB.online && PUB.online.exists && PUB.online.mine);
+  /* 追加还是新建（同 id 多分支，§十）：
+     · 我名下已有这个 id 的分支 → 追加到**我那条**（parentVersion = 我那条的最新版）；
+     · 这个 id 只在别人名下 → 走 POST /api/apps 新建**我自己**的分支（body 里带 forkOf 声明）；
+     · 线上没有 → 首次上架（POST，就是主干）。 */
+  const online = PUB.online || {};
+  const myBranch = online.myBranch || pubMyBranchOf(online);
+  const append = !!(online.exists && myBranch);
   const body = {
     acceptDeclaration: true,
     zipBase64: String(read.base64),
@@ -1860,8 +2386,10 @@ async function pubUpload() {
   let path = "/api/apps";
   if (append) {
     path = "/api/apps/" + encodeURIComponent(v.payload.id) + "/versions";
-    body.parentVersion = pubStr(PUB.online.latestVersion);
+    body.parentVersion = pubStr(pubMyBranchLatestVersion() || online.latestVersion);
     body.versionNote = v.payload.versionNote;
+    /* 同 id 多作者时点明分支（服务端只允许往自己的分支追加；不传也回落到我自己那条） */
+    if (pubStr(myBranch.ownerId)) body.ownerId = pubStr(myBranch.ownerId);
   } else {
     body.id = v.payload.id;
   }
@@ -1875,8 +2403,13 @@ async function pubUpload() {
   PUB.busy = false;
   if (!r || r.ok === false) {
     const msg = pubErrText(r);
-    pubSetNote(pubT("上传失败：") + msg);
-    pubToast(pubT("上传失败：") + msg, "err");
+    /* 服务端说会话不认（401）：本机那份凭据也失效了 —— 让主进程的账户契约去收口
+       （auth:me 会清掉本机凭据并广播登录态变化），本窗与顶栏一起变成「未登录」，
+       页脚立刻给「去登录」，不再留着「明明已登录」的假象。 */
+    if (!pubSessionLost(r, msg)) {
+      pubSetNote(pubT("上传失败：") + msg);
+      pubToast(pubT("上传失败：") + msg, "err");
+    }
     return;
   }
   const data = r.data || {};
@@ -1968,8 +2501,8 @@ function pubPrepareNext() {
     PUB.dom.result.innerHTML = "";
   }
   PUB.verTouched = false;
-  const latest = pubStr(PUB.online && PUB.online.latestVersion);
-  const next = pubBumpPatch(latest);
+  /* 默认版本号按**我自己那条分支**的最新版 +1（q10：分支各自计数） */
+  const next = pubBumpPatch(pubMyBranchLatestVersion());
   if (next) {
     PUB.form.version = next;
     if (PUB.dom.verIn) PUB.dom.verIn.value = next;
@@ -2008,11 +2541,15 @@ async function pubDeleteVersions() {
   }
   if (!go) return;
   const fails = [];
+  /* 同 id 多分支（§十）：删版本必须点明分支（?owner=），只删我自己那条（服务端也只允许自己的） */
+  const myOwner = pubStr((PUB.online && PUB.online.myBranch && PUB.online.myBranch.ownerId) || (PUB.user && PUB.user.id) || "");
   for (const v of picked) {
     try {
       const r = await api.storeRequest({
         method: "DELETE",
-        path: "/api/apps/" + encodeURIComponent(id) + "/versions/" + encodeURIComponent(v),
+        path:
+          "/api/apps/" + encodeURIComponent(id) + "/versions/" + encodeURIComponent(v) +
+          (myOwner ? "?owner=" + encodeURIComponent(myOwner) : ""),
       });
       if (!r || r.ok === false) fails.push("v" + v + "：" + pubErrText(r));
     } catch (err) {
@@ -2029,3 +2566,6 @@ async function pubDeleteVersions() {
 
 window.openAppPublish = openAppPublish;
 window.closeAppPublish = pubClose;
+/* 测试钩子（只读观测，不给产品路径用）：test/smoke-app-publish-auth.js 等 PUB.load
+   与 authChecked / loggedIn 判登录态收口。渲染层别依赖它 —— 它没有版本承诺。 */
+window.__mtnodeAppPublish = PUB;

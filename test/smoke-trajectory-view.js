@@ -176,6 +176,20 @@ function mkEl(tag, cls, id, opts) {
   };
   el.insertBefore = (c, ref) => {
     if (!c) return c;
+    /* 与真 DOM 同口径：参照点**必须是本容器的孩子**（ref 为 null = 追加，照旧允许）。
+       老写法「找不到就 push 到末尾」太宽容：拿别处的兄弟当参照点（例如把
+       `#agentList` 的 nextSibling 喂给 `.agent-body` —— 真壳里那个 nextSibling 是
+       轮次轨壳里的 .hist-rail）在真窗口里会当场抛
+       「Failed to execute 'insertBefore' on 'Node': The node before which the new node
+        is to be inserted is not a child of this node.」（用户报的那条渲染错误），
+       在冒烟里却一路绿灯、主区被静默塞到末尾。见 [21]。 */
+    if (ref && el._children.indexOf(ref) < 0) {
+      const err = new Error(
+        "Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
+      );
+      err.name = "NotFoundError";
+      throw err;
+    }
     if (c.parentNode) c.parentNode.removeChild(c);
     c.parentNode = el;
     const i = ref ? el._children.indexOf(ref) : -1;
@@ -285,6 +299,10 @@ function docGetById(root, id) {
    （量不到高度 = 无布局 → 模块全量挂，冒烟不该假装有视口）。
    滚动范围按模块写进占位块的高度算（32px 行高 × 行数），同真 DOM 的 scrollHeight 口径。 */
 /* opts.wrap = 把 #agentList 包进 .hist-scroll-wrap（真实会话壳的形态：ensureHistRail 的轮次轨壳）；
+   opts.rail = 连轮次轨（.hist-rail）一起给上 —— 真壳里 ensureHistRail() 一定把轨追加在
+   消息列**之后**（wrap > #agentList + .hist-rail），于是 `#agentList.nextSibling` 是壳里的
+   那条轨、不是 .agent-body 的孩子：轨迹主区的挂载点就在这种形态下抛过 insertBefore 的
+   NotFoundError（见 [21]）。默认 false = 老现场（只有壳、没有轨）保持原样。
    opts.xv = 会话主体的其余兄弟件（清单面板 / 输入区 / 脚部 token 报告）—— 轨迹视图必须让它们一起让位。 */
 function buildScene(opts) {
   const o = opts || {};
@@ -294,9 +312,11 @@ function buildScene(opts) {
   const body = main.appendChild(mkEl("div", "agent-body", ""));
   let list;
   let wrap = null;
+  let rail = null;
   if (o.wrap) {
     wrap = body.appendChild(mkEl("div", "hist-scroll-wrap is-flex-fill", ""));
     list = wrap.appendChild(mkEl("div", "agent-list", "agentList"));
+    if (o.rail) rail = wrap.appendChild(mkEl("div", "hist-rail", ""));
   } else {
     list = body.appendChild(mkEl("div", "agent-list", "agentList"));
   }
@@ -326,7 +346,7 @@ function buildScene(opts) {
     },
     configurable: true,
   });
-  return { root, pane, main, body, list, wrap, queue, plan, todo, composer, badge };
+  return { root, pane, main, body, list, wrap, rail, queue, plan, todo, composer, badge };
 }
 
 /* [12] 用：按**真实样式表**算一遍行栅格 / 读数栏宽度（getComputedStyle 只认本桩）。
@@ -2092,8 +2112,8 @@ ok(
   /\.dsh-trace-ruler-tracks \{[\s\S]{0,300}?height: calc\(var\(--dsh-trace-tracks, 1\) \* var\(--dsh-trace-track-h\)\);/.test(
     CSS_SRC,
   ) &&
-    /\.dsh-trace-ruler \{[\s\S]{0,800}?height: var\(--dsh-trace-ruler-h\);/.test(CSS_SRC) &&
-    /\.dsh-trace-ruler \{[\s\S]{0,800}?overflow: hidden;/.test(CSS_SRC),
+    /\.dsh-trace-ruler \{[\s\S]{0,1200}?height: var\(--dsh-trace-ruler-h\);/.test(CSS_SRC) &&
+    /\.dsh-trace-ruler \{[\s\S]{0,1200}?overflow: hidden;/.test(CSS_SRC),
   "[9] 轴高恒定（轴写死 height: 轴高令牌；轨区高度 = 3 × 轨高），不再需要轴内滚动 / 封顶",
 );
 ok(
@@ -2266,11 +2286,31 @@ ok(
     "固定行高 + 垂直居中 + 读数栏定宽 | 正文 1fr",
 );
 ok(
-  /--dsh-trace-tick-w: 152px;/.test(CSS_SRC) &&
+  /--dsh-trace-tick-w: 230px;/.test(CSS_SRC) &&
     (CSS_SRC.match(/--dsh-trace-tick-w: 96px;/g) || []).length === 1 &&
     (CSS_SRC.match(/--dsh-trace-tick-w: 52px;/g) || []).length === 1 &&
     /\.dsh-trace-tick \{[\s\S]*?flex: none;/.test(CSS_SRC),
-  "[10] 读数栏定宽不收缩：--dsh-trace-tick-w 三档（152 / 96 / 52），.dsh-trace-tick 不参与伸缩",
+  "[10] 读数栏定宽不收缩：--dsh-trace-tick-w 三档（230 / 96 / 52），.dsh-trace-tick 不参与伸缩",
+);
+/* 本轮需求（缩窄主内容 + 左侧读数栏不再被裁）：三条静态口径一次钉死 ——
+     · 内容宽度令牌唯一（--dsh-trace-content-w: 980px）；
+     · 列容器（列表 + 检查器）与页脚都按它封顶居中（宽度口径与对话列同一种写法）；
+     · 顶部横轴**本身整宽**，只把左右内边距按同一令牌让出对齐槽；
+     · 两档收缩断点按「列表实际可用宽」定（1180 收 token / 1000 收耗时）。 */
+ok(
+  /--dsh-trace-content-w: 980px;/.test(CSS_SRC) &&
+    (CSS_SRC.match(/--dsh-trace-content-w:/g) || []).length === 1 &&
+    /\.dsh-trace-cols \{[\s\S]*?max-width: var\(--dsh-trace-content-w\);[\s\S]*?margin: 0 auto;/.test(CSS_SRC) &&
+    /\.dsh-trace-foot \{[\s\S]*?max-width: var\(--dsh-trace-content-w\);[\s\S]*?margin: 0 auto;/.test(CSS_SRC) &&
+    /\.dsh-trace-ruler \{[\s\S]*?padding: 3px max\(6px, calc\(\(100% - var\(--dsh-trace-content-w\) - 16px\) \/ 2\)\) 5px;/.test(CSS_SRC),
+  "[10] 缩窄主内容：令牌唯一（980px），列容器 / 页脚按它居中，顶部横轴整宽但按它让出对齐槽",
+);
+ok(
+  /@media \(max-width: 1180px\) \{[\s\S]*?--dsh-trace-tick-w: 96px;/.test(CSS_SRC) &&
+    /@media \(max-width: 1000px\) \{[\s\S]*?--dsh-trace-tick-w: 52px;/.test(CSS_SRC) &&
+    !/@media \(max-width: 900px\) \{[\s\S]{0,60}?--dsh-trace-tick-w/.test(CSS_SRC) &&
+    !/@media \(max-width: 720px\) \{[\s\S]{0,60}?--dsh-trace-tick-w/.test(CSS_SRC),
+  "[10] 断点改按列表实际可用宽：1180px 收 token、1000px 收耗时（旧的 900 / 720 不再管读数栏）",
 );
 ok(
   /\.dsh-trace-group \{[\s\S]*?grid-template-columns: var\(--dsh-trace-tick-w\) minmax\(0, max-content\) minmax\(0, 1fr\);/
@@ -2642,7 +2682,7 @@ section("[12] 轨迹视图铺满与读数栏不收缩（容器量值 + 栅格唯
   const tokenTickW = cssToken(CSS_T, "--dsh-trace-tick-w");
   const cols = row ? cssStub.getComputedStyle(row).gridTemplateColumns : "";
   ok(
-    tokenTickW === "152px" && cols === tokenTickW + " minmax(0, 1fr)",
+    tokenTickW === "230px" && cols === tokenTickW + " minmax(0, 1fr)",
     "[12] 行栅格只有一处定义：.dsh-trace-row 的 grid-template-columns = 读数栏定宽 + 正文 1fr（实得「" +
       cols +
       "」）",
@@ -2652,13 +2692,13 @@ section("[12] 轨迹视图铺满与读数栏不收缩（容器量值 + 栅格唯
   ok(
     rowGridCount === 2 &&
       tickWDefs === 3 &&
-      (CSS_T.match(/--dsh-trace-tick-w: 152px;/g) || []).length === 1 &&
+      (CSS_T.match(/--dsh-trace-tick-w: 230px;/g) || []).length === 1 &&
       (CSS_T.match(/--dsh-trace-tick-w: 96px;/g) || []).length === 1 &&
       (CSS_T.match(/--dsh-trace-tick-w: 52px;/g) || []).length === 1 &&
       !/grid-template-columns:[^;]*auto/.test(
         (CSS_T.match(/\.dsh-trace-row \{[\s\S]*?\}/) || [])[0] || "",
       ),
-    "[12] 栅格唯一：轨迹样式里 grid-template-columns 只有段行 + 分组头两处，读数栏令牌一基两档（152 / 96 / 52），段行那一份不是 auto",
+    "[12] 栅格唯一：轨迹样式里 grid-template-columns 只有段行 + 分组头两处，读数栏令牌一基两档（230 / 96 / 52），段行那一份不是 auto",
   );
   ok(
     !!tick &&
@@ -2691,6 +2731,38 @@ section("[12] 轨迹视图铺满与读数栏不收缩（容器量值 + 栅格唯
   ok(
     cols === colsB && colsB.indexOf(tokenTickW) === 0,
     "[12] 窗口从 720px 换到 420px，读数栏第一列宽度一字不变（「" + cols + "」→「" + colsB + "」）",
+  );
+
+  /* ── 本轮需求 · 主内容缩窄（.dsh-trace-cols 封顶 980px 居中）────────────────────
+     「缩窄 + 居中」是**宽这一维的布局**：迷你 DOM 不做布局，这里钉的是「口径落在哪几个元素上、
+     取的是同一条令牌、横轴仍是整宽」—— 像素级量值由真浏览器实测补齐
+     （test/_cdp-measure-trace-narrow.js：1400px 下列宽 980、绘图区左右缘与列表差 1px）。 */
+  const colsRuleN = (CSS_T.match(/\.dsh-trace-cols \{[\s\S]*?\}/) || [])[0] || "";
+  const footRuleN = (CSS_T.match(/\.dsh-trace-foot \{[\s\S]*?\}/) || [])[0] || "";
+  const rulerRuleN = (CSS_T.match(/\.dsh-trace-ruler \{[\s\S]*?\}/) || [])[0] || "";
+  ok(
+    /width: 100%;/.test(colsRuleN) &&
+      /max-width: var\(--dsh-trace-content-w\);/.test(colsRuleN) &&
+      /margin: 0 auto;/.test(colsRuleN) &&
+      /max-width: var\(--dsh-trace-content-w\);/.test(footRuleN) &&
+      /margin: 0 auto;/.test(footRuleN) &&
+      /* 横轴必须仍是整宽：自己没有 max-width，只靠 padding 让出对齐槽 */
+      !/max-width:/.test(rulerRuleN) &&
+      /padding: 3px max\(6px, calc\(\(100% - var\(--dsh-trace-content-w\) - 16px\) \/ 2\)\) 5px;/.test(rulerRuleN),
+    "[12] 主内容缩窄：列容器（列表 + 检查器）与页脚封顶 980px 居中，顶部横轴保持整宽（只用内边距对齐绘图区）",
+  );
+  const colsElN = traceMain.querySelectorAll(".dsh-trace-cols")[0];
+  const footElN = traceMain.querySelectorAll(".dsh-trace-foot")[0];
+  ok(
+    !!colsElN && !!footElN &&
+      colsElN.parentNode === traceMain &&
+      footElN.parentNode === traceMain &&
+      /* 列表与检查器仍是列容器的两只子件（缩窄落在容器上，两块一起居中）；
+         两者之间还夹着可拖的分隔条，故只判「前三件是列表 · 分隔条 · 检查器」 */
+      colsElN.children.length >= 2 &&
+      /dsh-trace-list/.test(colsElN.children[0].className || "") &&
+      Array.from(colsElN.children).some((c) => /dsh-trace-insp/.test(c.className || "")),
+    "[12] 缩窄落在**列容器**上：列表与检查器仍是它的两只子件（只封列表会把检查器顶到整幅最右）",
   );
 
   /* ── 轴与首行不重叠：轴占自己的流（min-height + 行流排在轴之后）─────────────── */
@@ -4647,6 +4719,90 @@ section("[20] 编辑类事件：diff 置顶 + 参数默认收起（与对话逐�
   ok(
     /window\.MTNodeChatDiff = \{/.test(read("renderer/app-assist.js")),
     "[20] 对话侧确实把它挂了出来（app-assist.js 的 window.MTNodeChatDiff = { of, el, maxRows }）",
+  );
+}
+
+/* =====================================================================
+ * [21] 轨迹主区的挂载点：真实会话壳里 #agentList 不是 .agent-body 的直接子节点
+ *   用户报的渲染错误（截图那条 toast）：
+ *     `渲染错误：Uncaught NotFoundError: Failed to execute 'insertBefore' on 'Node':
+ *      The node before which the new node is to be inserted is not a child of this node.
+ *      @ app-trajectory.js:1696`
+ *   成因：ensureMain() 原来直接拿 `list.nextSibling` 当 insertBefore 的参照点，而真实壳里
+ *   app-assist.js 的 ensureHistRail() 会把 #agentList 包进 .hist-scroll-wrap、并把轮次轨
+ *   （.hist-rail）追加在消息列**之后** —— 那个 nextSibling 是壳里的孩子，不是 .agent-body
+ *   的孩子 → insertBefore 当场抛 NotFoundError（本文件 mini-DOM 的 insertBefore 已按真 DOM
+ *   同口径抛，见上面的注释）。抛一次就够毁掉整块视图：mainEl 永远挂不上，之后每次重绘与
+ *   1.5s 轮询都再抛一次（用户看到的就是那条报错反复出现、轨迹主区一直挂不上）。
+ *   本节用真壳形态（壳 + 轨）跑**首帧挂载**，并要求挂点仍是「消息区那一块之后」。
+ * ===================================================================== */
+section("[21] 轨迹主区挂得上：消息列被轮次轨壳包住（壳里还跟着一条 .hist-rail）");
+{
+  const scene = buildScene({ wrap: true, rail: true });
+  const st = { id: "asrail", messages: [], trajView: "trace" };
+  const items = [{ k: "say", text: "答复", round: 1, step: 1 }];
+  let threw = "";
+  let T = null;
+  try {
+    T = loadTrajectory(scene, {
+      S: {
+        agentSessions: [st],
+        agentActiveId: "asrail",
+        config: { dsh: {} },
+        runTrace: { "agent:asrail": { items } },
+      },
+    });
+    T.sync();
+  } catch (e) {
+    threw = (e && e.name ? e.name + ": " : "") + ((e && e.message) || e);
+  }
+  const traceMain = docGetById(scene.root, "agentTraceMain");
+  ok(
+    !threw,
+    "[21] 真壳形态（壳 + 轨）下首帧挂载不抛异常" + (threw ? "：抛了 " + threw : "（没抛）"),
+  );
+  ok(
+    !!traceMain && traceMain.parentNode === scene.body,
+    "[21] 轨迹主区挂在 .agent-body 里（不是被塞进轮次轨壳、也不是没人接）",
+  );
+  const kids = Array.from(scene.body.children).map((c) => c.className || c.id || c.tagName);
+  const iWrap = kids.indexOf("hist-scroll-wrap is-flex-fill");
+  ok(
+    iWrap >= 0 && kids.indexOf("dsh-trace-main") === iWrap + 1,
+    "[21] 挂点仍是「消息区那一块之后」（壳 → 主区 → 清单面板…）：实得 " + kids.join(" / "),
+  );
+  ok(
+    !!T && !!T.debug() && T.debug().hasList === true,
+    "[21] 主区自己的列表容器也建出来了（挂载没在半途断掉）",
+  );
+  /* 列表根本不在 .agent-body 里（开发页 / 助手栏借走会话正文）时也不许抛：
+     退回 body 末尾即可 —— 位置略偏可以接受，把整条 sync 抛出去不行。 */
+  const scene2 = buildScene({ wrap: true, rail: true });
+  let moved = "";
+  try {
+    scene2.pane.appendChild(scene2.wrap); /* 借走：壳与消息列一起搬出 .agent-body */
+    const T2 = loadTrajectory(scene2, {
+      S: {
+        agentSessions: [{ id: "asborrow", messages: [], trajView: "trace" }],
+        agentActiveId: "asborrow",
+        config: { dsh: {} },
+      },
+    });
+    T2.sync();
+  } catch (e) {
+    moved = (e && e.name ? e.name + ": " : "") + ((e && e.message) || e);
+  }
+  ok(
+    !moved && !!docGetById(scene2.root, "agentTraceMain"),
+    "[21] 消息列被借出 .agent-body 时同样不抛（挂到 body 末尾兜底）" + (moved ? "：抛了 " + moved : ""),
+  );
+  /* 静态口径：参照点必须先把「消息列在宿主里的顶层那一块」找出来，不许再直接吃 list.nextSibling */
+  const trajSrc = read("renderer/app-trajectory.js");
+  ok(
+    !/body\.insertBefore\(mainEl,\s*list\.nextSibling\)/.test(trajSrc) &&
+      /insertBefore\(mainEl,\s*anchor\.nextSibling\)/.test(trajSrc) &&
+      /anchor\.parentNode === body/.test(trajSrc),
+    "[21] 口径钉住：挂载点先上溯到宿主里的顶层那一块（不再直接拿 list.nextSibling 当参照点）",
   );
 }
 

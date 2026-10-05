@@ -25,9 +25,12 @@ const KEY_FILE_NAME = "auth-store.key";
 const WARN_FALLBACK = "safeStorage_write_unverified";
 /* 同一个「读不出来」不刷屏：同种原因最多每 10 分钟记一条日志。 */
 const WARN_GAP_MS = 10 * 60 * 1000;
-/* 中转 Key 续期提前量：剩余不足这个窗口就该重领一张（与 store-saas/server.mjs 的
-   RELAY_KEY_MS / 6 = 30 天同口径；服务端另有「每次使用滑动续期」兜底）。 */
-const RELAY_RENEW_BEFORE_MS = 30 * 24 * 3600 * 1000;
+/* 中转 Key（独立票）的有效期与续期提前量。**有效期真源在服务端**
+   （store-saas/server.mjs 的 RELAY_KEY_MS = 3650 天），这里同口径只为算「该续期了」：
+   客户端没有独立票就找发放口现领一张（main.js 的 ensureRelayCredential），
+   服务端另有「每次使用滑动续期」兜底。3650 天 / 6 ≈ 608 天。 */
+const RELAY_KEY_MS = 3650 * 24 * 3600 * 1000;
+const RELAY_RENEW_BEFORE_MS = Math.floor(RELAY_KEY_MS / 6);
 
 /* 允许持久化的账号摘要字段（与 docs/auth-design.md PublicUser 对齐）。 */
 const USER_FIELDS = [
@@ -89,6 +92,12 @@ function createAuthStore(opts) {
   /* 最近一次 save() 的结果摘要（"write_unverified" / ""）：写下去的凭据读不回来时，
      界面得说清「不是你没登录，是本机存不住凭据」——只靠 readIssue 看不出来（那时文件已隔离）。 */
   let lastWriteIssue = "";
+  /* safeStorage **已被证明在本机不可靠**（写出去了、读不回来）：此后一律直接用本机密钥的
+     AES-GCM 存，不再拿登录去赌系统加密。
+     为什么必须有它：safeStorage 是「同一台机器上也可能写了读不回来」（漫游配置 / DPAPI
+     上下文变动 / 多进程抢同一份凭据）。只靠每次 save() 的写后回读校验的话，用户每重启一次
+     就要白丢一次登录（写入-隔离循环），现场表现就是「登录了还是让重新登录」。 */
+  let forceAes = false;
 
   function filePath() {
     return path.join(String(dataDir() || "."), FILE_NAME);
@@ -228,8 +237,10 @@ function createAuthStore(opts) {
         return JSON.parse(payload);
       }
     } catch (err) {
-      /* 解不开（DPAPI 密钥变了 / 文件被别处改过）：界面据此提示「重新登录一次」 */
+      /* 解不开（DPAPI 密钥变了 / 文件被别处改过）：界面据此提示「重新登录一次」。
+         同时记下「本机 safeStorage 不可靠」——下次写入直接用本机密钥，别再写一份读不回来的。 */
       lastReadIssue = "decrypt_failed";
+      if (raw.enc === "safeStorage") forceAes = true;
       /* 同一原因不刷屏（现场曾 2 秒一条刷了 130 条，把 error.log 完全埋掉） */
       warnThrottled("decrypt_failed", "账户凭据读取失败：" + String((err && err.message) || err));
     }
@@ -237,10 +248,29 @@ function createAuthStore(opts) {
   }
 
   /* 编码一份**能读回来**的凭据：
-     首选系统加密（safeStorage）；写出去自检读不回来时，退回本机密钥的 AES-GCM。 */
-  function encode(payload) {
+     首选系统加密（safeStorage）；写出去自检读不回来时，退回本机密钥的 AES-GCM。
+     forceAes = 本机已经被证明「safeStorage 写了读不回来」，不再浪费一次登录去试。 */
+  function encode(payload, opt) {
+    const o = opt || {};
     const json = JSON.stringify(payload);
-    if (encryptionAvailable()) {
+    /* 回退顺序（fallback = true）：本机密钥 → 系统加密 → 明文。 */
+    if (o.fallback) {
+      if (encryptionAvailable()) {
+        try {
+          const buf = safeStorage.encryptString(json);
+          if (safeStorage.decryptString(buf) === json) {
+            return {
+              v: SCHEMA,
+              enc: "safeStorage",
+              payload: buf.toString("base64"),
+              savedAt: Date.now(),
+            };
+          }
+        } catch {}
+      }
+      return aesEncode(json, ensureKey());
+    }
+    if (encryptionAvailable() && !forceAes) {
       try {
         const buf = safeStorage.encryptString(json);
         if (safeStorage.decryptString(buf) === json) {
@@ -252,15 +282,17 @@ function createAuthStore(opts) {
           };
         }
         /* 自检不通过：这份密文写下去就是死的（本机 safeStorage 上下文有问题） */
+        forceAes = true;
         warnFallbackOnce();
       } catch (err) {
+        forceAes = true;
         warnFallbackOnce();
         warnThrottled(
           "safeStorage_roundtrip",
           "系统加密自检异常，改用本机密钥保存账户凭据：" + String((err && err.message) || err),
         );
       }
-    } else {
+    } else if (!encryptionAvailable()) {
       warnPlainOnce();
     }
     return aesEncode(json, ensureKey());
@@ -284,7 +316,10 @@ function createAuthStore(opts) {
         if (moved) {
           warnThrottled(
             "quarantine",
-            "账户凭据解不开，已移到 " + moved + " 留档；请重新登录一次（登录后会自动领取中转凭据）。",
+            "账户凭据解不开，已移到 " +
+              moved +
+              " 留档（这条只进日志：界面不再给出任何凭据相关提示 ——" +
+              "用户口径是这类把责任推给他的文案永久移除，凭据存不住时由本模块自己改用本机密钥重存）。",
           );
         }
       }
@@ -333,25 +368,54 @@ function createAuthStore(opts) {
       /* 写后回读校验：写下去的凭据**必须能读回来**，否则这次登录等于白登 ——
          界面会一直说「重新登录一次即可领取」，用户按提示重登多少遍都还是没凭据
          （现场 130 条 decryptString 失败 + 一直挂着「本机还没有中转服务凭据」就是这条）。
-         读不回来就把这份死文件隔离掉，避免它继续毒化后续每一次 load()。 */
-      const back = decode(JSON.parse(fs.readFileSync(filePath(), "utf8")));
+         读不回来就改用本机密钥的 AES-GCM 再写一次（真正治本的一步：**这一轮登录就此生效**），
+         仍不通过才隔离这份死文件并如实报错。 */
+      let back = decode(JSON.parse(fs.readFileSync(filePath(), "utf8")));
+      let recOut = rec;
+      let retried = false;
+      if (!back || String(back.token || "") !== token) {
+        forceAes = true;
+        warnFallbackOnce();
+        recOut = encode(
+          {
+            token,
+            relayKey: String((entry && entry.relayKey) || ""),
+            relayKeyExpiresAt: Number((entry && entry.relayKeyExpiresAt) || 0) || 0,
+            user: sanitizeUser(entry && entry.user),
+            savedAt: Date.now(),
+          },
+          { fallback: true },
+        );
+        atomicWrite(filePath(), JSON.stringify(recOut, null, 2), "utf8");
+        try {
+          fs.chmodSync(filePath(), 0o600);
+        } catch {}
+        back = decode(JSON.parse(fs.readFileSync(filePath(), "utf8")));
+        retried = true;
+      }
       if (!back || String(back.token || "") !== token) {
         const moved = quarantine("roundtrip");
         lastReadIssue = "write_unverified";
         lastWriteIssue = "write_unverified";
+        warnThrottled(
+          "write_unverified",
+          "账户凭据写下去读不回来（系统加密与本机密钥都没成），已隔离留档 " + (moved || "-"),
+        );
         return {
           ok: false,
           error: "write_unverified",
-          encryption: rec.enc,
+          encryption: recOut.enc,
           warning: WARN_FALLBACK,
           quarantined: moved || "",
+          retried,
         };
       }
-      lastWriteIssue = rec.enc === "safeStorage" ? "" : "save_fallback";
+      lastWriteIssue = back.savedAt && recOut.enc === "safeStorage" ? "" : "save_fallback";
       return {
         ok: true,
-        encryption: rec.enc === "safeStorage" ? "safeStorage" : rec.enc,
-        warning: rec.enc === "safeStorage" ? "" : WARN_FALLBACK,
+        encryption: recOut.enc === "safeStorage" ? "safeStorage" : recOut.enc,
+        warning: recOut.enc === "safeStorage" ? "" : WARN_FALLBACK,
+        retried,
       };
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) };
@@ -370,6 +434,25 @@ function createAuthStore(opts) {
       if (fs.existsSync(filePath())) fs.unlinkSync(filePath());
     } catch {}
     return { ok: true };
+  }
+
+  /** 只丢掉那张中转 Key（账号登录会话原样留着）。
+   *
+   *  为什么需要它：中转数据面 401 说明**这张票**作废了（被顶掉 / 过期 / 换过账号），
+   *  而账号登录会话往往还好好的 —— 发放口 /api/relay/me 认登录会话、每次都给新票。
+   *  老写法在 401 时调 clear() 把整份凭据（含登录 token）一起删掉，于是「补领新票」这条
+   *  路被自己掐断：用户必须重新登录一次才能再领，登录后若领票再失败就是死循环
+   *  （上报症状 =「登录了还是恒 401」）。这里只清票、保住登录态，main.js 的
+   *  ensureRelayCredential 就能立刻补一张新的并重试这一次请求。 */
+  function clearRelayKey() {
+    const cur = load();
+    if (!cur) return { ok: false, error: "not_logged_in" };
+    return save({
+      token: cur.token,
+      user: cur.user,
+      relayKey: "",
+      relayKeyExpiresAt: 0,
+    });
   }
 
   /** 给渲染层的状态：不含 token。 */
@@ -391,7 +474,7 @@ function createAuthStore(opts) {
       encryption,
       warning:
         encryption === "plain" ? WARN_PLAIN : encryption === "aesgcm" ? WARN_FALLBACK : "",
-      /* 中转 Key（180 天独立票）的状态：只给界面与续期判断用，**绝不含明文**。
+      /* 中转 Key（3650 天独立票）的状态：只给界面与续期判断用，**绝不含明文**。
          hasRelayKey = 本机有独立票；relayKeyExpiresAt = 到期时间戳；
          relayKeyRenewDue = 到了该续期的时候（剩余不足 RELAY_RENEW_BEFORE_MS）。 */
       hasRelayKey: !!(cur && cur.relayKey),
@@ -418,6 +501,7 @@ function createAuthStore(opts) {
     save,
     updateUser,
     clear,
+    clearRelayKey,
     state,
     sanitizeUser,
     /* 中转 Key 的两个专用入口（main.js 的 providerAuthKey / relay:keyInfo / relay:me 用）：
@@ -436,6 +520,9 @@ function createAuthStore(opts) {
         relayKeyExpiresAt: Number(expiresAt) || 0,
       });
     },
+    /* 中转 Key 续期窗口（毫秒）：main.js 的 relay:keyInfo / relay:me 判「该续期了」用它，
+       与 setRelayKey 落在同一份常量上（少一处手抄就会两边口径不一致）。 */
+    relayRenewBeforeMs: () => RELAY_RENEW_BEFORE_MS,
     /* 最近一次 load() 的失败原因（不含凭据内容）：给「设置 · 提供商」的中转卡说清
        「为什么没有可用凭据」用 —— 与 state().readIssue 同一口径 */
     readIssue: () => lastReadIssue,

@@ -29,6 +29,11 @@
      的主题变量（亮色主题自动跟随）。与 ai-facts.css 同一写法：本文件独立成一份、用 <link>
      跟在 style.css 之后（晚于 style.css 生效，同优先级时以本文件为准）。 -->
 <link rel="stylesheet" href="css/app-publish.css">
+<!-- 消息（renderer/app-messages.js 的 window.MtMessages + css/messages.css）：顶栏「消息」入口
+     的三态 / 未读角标，以及消息窗（打赏 / 评论 / 回复三类日志）的列表版式。
+     与上面两份同一写法：独立成一份、用 <link> 跟在 style.css 之后（css/*.css 走 style.css
+     的 @import，这一份不改 style.css）；配色一律用 base.css 的主题变量。 -->
+<link rel="stylesheet" href="css/messages.css">
 </head>
 <body>
 
@@ -38,10 +43,31 @@
       <div class="logo-mark"></div>
       <span class="logo-txt"><span data-i18n="MTNode AI编排器">MTNode AI编排器</span><span class="logo-sub" id="logoSub"></span></span>
     </div>
+    <!-- 「数据不落应用文件夹」警示：紧跟在 Logo 右侧（第一行中段，自动边距居中于 Logo 与右端
+         按钮之间，太窄只截断不遮挡）。**默认 hidden**：只有主进程只读体检（app:dataAudit，
+         与启动体检 auditAppDirData 同口径）真的查到有数据落在应用文件夹内才由
+         renderer/app-boot.js 的 paintAppDirWarn() 显示并填 tooltip；文案与 tooltip 一律
+         由 JS 按 I18n.t 现算（故不挂 data-i18n，避免切语言时被 applyDom 写掉明细）。
+         点击 = 打开设置并滚到「配置数据目录」小节（数据文件夹位置在那里改）。 -->
+    <button type="button" id="logoWarn" class="logo-warn" hidden aria-hidden="true" tabindex="-1" aria-label="">
+      <svg class="logo-warn-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6L14.4 13.4H1.6L8 2.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 6.6v3.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".85" fill="currentColor"/></svg>
+      <span class="logo-warn-txt" id="logoWarnTxt"></span>
+    </button>
     <div class="tb-end">
       <button type="button" id="btnPuzzle" class="corner mini btn-stack btn-puzzle" data-i18n-title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" title="益智小游戏：等待 AI 工作时玩几款小游戏打发时间" aria-label="益智小游戏">
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 12.5V4.6h3.1V2.4h2.8v2.2h3.1v3.1h-1.6a1.4 1.4 0 0 0 0 2.8h1.6v1.2H9.4v1.8H6.6V12.5H3.5z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
         <span class="btn-stack-txt" data-i18n="游戏">游戏</span>
+      </button>
+      <!-- 「消息」= 打赏 / 评论 / 回复三类日志（renderer/app-messages.js 的 window.MtMessages +
+            css/messages.css），位置**紧贴「应用」#btnApps 左边**。三态：
+             未登录 / 未读数接口不可用 / 一条消息都没有 → 置灰不可点（title 说明原因，
+             如「登录后可看消息」）；有消息（含已读但没清空）→ 可点，右上角角标显示未读数
+             （>99 → 99+，0 时隐藏）。点开 = 消息窗（#overlay，persistent + 可最小化）。
+           默认 disabled：脚本接管前先如实呈现「还不能点」。 -->
+      <button type="button" id="btnMessages" class="corner mini btn-stack btn-messages" disabled data-i18n-title="消息：打赏 / 评论 / 回复" title="消息：打赏 / 评论 / 回复" aria-label="消息">
+        <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 3.4h10.8v7.2H8.4L5.2 13.2v-2.6H2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M5.4 6.2h5.2M5.4 8.4h3.2" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>
+        <span class="btn-stack-txt" data-i18n="消息">消息</span>
+        <span class="btn-lang-badge btn-msg-badge" id="btnMessagesBadge" hidden></span>
       </button>
       <!-- 「应用」= 应用中心（renderer/app-apps.js 的 openAppsHub）：主窗口内整屏浮层页，
            左导航「应用 / 库 / 开发」，云端目录下载 zip（sha256 校验）解包到应用根目录，
@@ -91,16 +117,18 @@
     <!-- 画布 / 会话 / 专家团：与顶栏其它入口同风格「图标在上 · 文字在下」。
          文字必须留在 span[data-i18n] 上，不能挂在 button[data-i18n] —— I18n.applyDom 对
          [data-i18n] 是 el.textContent = t(key)，挂按钮上会在切语言时把图标一起抹掉。
-         图标 14px 比两字标题（25px）窄，所以按钮外框尺寸不变（高度仍 32px、内边距不变）。 -->
-    <button id="btnToolWf" class="corner on tb-view" data-shortcut="1" data-i18n-title="AI 画布编排：画布式节点编排" title="AI 画布编排：画布式节点编排">
+         图标 14px 比两字标题（25px）窄，所以按钮外框尺寸不变（高度仍 32px、内边距不变）。
+         这三颗**不挂 data-shortcut**：原先的 1 / 2 / 3 单键会在打字或盲按时把整个视图切走，
+         已按要求移除；切视图只走鼠标点击（renderer/app-boot.js 的 setView）。 -->
+    <button id="btnToolWf" class="corner on tb-view" data-i18n-title="AI 画布编排：画布式节点编排" title="AI 画布编排：画布式节点编排">
       <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.9" y="2.4" width="4.8" height="3.8" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><rect x="9.3" y="9.8" width="4.8" height="3.8" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.7 4.3h3.1a1.5 1.5 0 0 1 1.5 1.5v3.9" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="tb-view-txt" data-i18n="画布">画布</span>
     </button>
-    <button id="btnToolAgent" class="corner tb-view" data-shortcut="2" data-i18n-title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）" title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）">
+    <button id="btnToolAgent" class="corner tb-view" data-i18n-title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）" title="智能会话：全屏 agent 会话画布（等于常驻的智能任务）">
       <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 3.6h9.2c.9 0 1.6.7 1.6 1.6v4.4c0 .9-.7 1.6-1.6 1.6H7.6l-2.9 2.3V11.2H3.4c-.9 0-1.6-.7-1.6-1.6V5.2c0-.9.7-1.6 1.6-1.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8 5.4l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6-1.6-.7 1.6-.7z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>
       <span class="tb-view-txt" data-i18n="会话">会话</span>
     </button>
-    <button id="btnTeam" class="corner tb-view" data-shortcut="3" data-i18n-title="专家团：按画布管理专家，与专家对话" title="专家团：按画布管理专家，与专家对话">
+    <button id="btnTeam" class="corner tb-view" data-i18n-title="专家团：按画布管理专家，与专家对话" title="专家团：按画布管理专家，与专家对话">
       <svg class="tb-view-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.8" cy="5.4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M1.9 13.2c0-2.2 1.7-3.8 3.9-3.8s3.9 1.6 3.9 3.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M10.8 3.6a2.2 2.2 0 0 1 0 4.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M11.5 9.7c1.6.5 2.6 1.8 2.6 3.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
       <span class="tb-view-txt" data-i18n="专家团">专家团</span>
     </button>
@@ -341,23 +369,23 @@
           <b data-i18n="浏览器活动">浏览器活动</b>
           <button type="button" id="baClose" class="mini btn-sq" data-i18n-title="收起浏览器活动栏" title="收起浏览器活动栏">✕</button>
         </div>
-        <div class="ba-bar">
-          <button type="button" class="mini" id="baOpen" data-i18n="打开浏览器">打开浏览器</button>
-          <button type="button" class="mini" id="baStop" data-i18n="停止">停止</button>
-          <button type="button" class="mini" id="baTakeover" data-i18n="接管">接管</button>
-          <button type="button" class="mini" id="baPolicy" data-i18n="名单">名单</button>
-          <button type="button" class="mini btn-sq" id="baRefresh" data-i18n-title="刷新" title="刷新">↻</button>
-        </div>
+        <!-- 本轮需求：原来这一排「打开浏览器 / 停止 / 接管 / 名单 / ↻」整行下架（含 .ba-bar
+             容器与样式、app-browser.js 的接线、名单浮层与网关的域名名单机制）。状态行
+             .ba-status 照旧：跑没跑、端口多少、谁在驱动仍看得见。
+             真窗口改由助手求助卡上的「用真窗口打开」给（见 app-db.js 的 ix 卡）；
+             把真窗口收回右栏由下方实况区的「收回」小键负责（app-browser.js 的 #baLiveBack）。 -->
         <div class="ba-status" id="baStatus"></div>
         <!-- 实况区：浏览器默认 dock 在这里（帧来自网关 screencast，只走内存不进模型上下文）。
-             「独立窗口」= 真实窗口恢复可见、「收回」= 再 dock 回本栏；
-             浏览器没启动时这枚按钮自己 hidden（形态切换只有真有一只在跑的浏览器才有意义），
-             整条实况区也随面板 hidden / 未启动不显示。 -->
+             本轮需求：原来的「独立窗口」按钮下架 —— 让浏览器变成真窗口这件事收口到助手求助卡
+             （登录 / 验证码那类卡上的「用真窗口打开」，见 app-db.js）；但**收回**这一半必须留在
+             这里：真窗口一开，右栏就只剩一句「已在独立窗口」，没有回程键就会被卡住。
+             「收回」小键只在「真的在独立窗口」时出现（形态与网关 viewStatus().mode 同源），
+             浏览器没启动 / 无窗口那只 / 已 docked 时一律 hidden。 -->
         <div class="ba-live" id="baLive">
           <div class="ba-live-head">
             <span data-i18n="实况">实况</span>
             <span class="ba-live-mode" id="baLiveMode"></span>
-            <button type="button" class="mini" id="baLiveModeBtn" hidden data-i18n="独立窗口" data-i18n-title="把这个浏览器变成独立窗口；再点一次收回右栏" title="把这个浏览器变成独立窗口；再点一次收回右栏">独立窗口</button>
+            <button type="button" class="mini" id="baLiveBack" hidden data-i18n="收回" data-i18n-title="收回右栏：把这只会话浏览器放回这里的实况画面（真实窗口重新让位）" title="收回右栏：把这只会话浏览器放回这里的实况画面（真实窗口重新让位）">收回</button>
             <button type="button" class="mini" id="baLivePause" data-i18n="暂停观察" data-i18n-title="暂停画面更新（重新打开即恢复）" title="暂停画面更新（重新打开即恢复）">暂停观察</button>
           </div>
           <div class="ba-live-stage" id="baLiveStage">
@@ -647,8 +675,25 @@
 <script src="app-nodehelp.js"></script>
 <script src="js-exec.js"></script>
 <script src="app-nodes.js"></script>
-<script src="app-rollback.js"></script>
 <script src="app-store.js"></script>
+<!-- 打赏（自包含：window.MtTips + css/tips.css）：工坊条目 / 应用条目 / 论坛话题与回复
+     四处共用的打赏按钮、档位窗与「打赏名单」窗。金额口径与限额**全部由服务端下发**
+     （GET /api/tips/config），渲染层不做算术决策；金币图标与换算取 window.MtCoin。
+     排在 app-store.js 之后（与商店 / 生态同一分层）：它调用的 toast / openOverlay /
+     storeRequest / MTNodeAuth 全在调用期取，与前后模块的加载顺序无关。 -->
+<script src="app-tips.js"></script>
+<!-- 评论（自包含：window.MtComments + css/comments.css）：条目（模板 / Skill / 应用）与
+     论坛话题 / 回复共用的评论区 —— 列表（含互回）、发表（条目评论可带五星）、删除与分页；
+     详情窗的「评论」页签与卡片上的评论按钮都走它。排在打赏之后：卡片上两者常同排出现。 -->
+<script src="app-comments.js"></script>
+<!-- 消息（自包含：window.MtMessages + css/messages.css）：顶栏「消息」入口（三态 + 未读角标，
+     登录后 60 秒轮询一次未读数）+ 消息窗（打赏 / 评论 / 回复三类日志，云端保存；打开即标记
+     已展示条目已读、可清空、按 cursor 加载更多、点条目跳对应入口）。
+     排在打赏与评论之后 = 与它们同属「生态」那一档（点开的消息对象正是工坊条目 / 应用 / 讨论区）；
+     它依赖的 storeRequest / openOverlay / confirmDialog / MTNodeAuth / I18n 一律在调用期取，
+     与前后模块的加载顺序无关。对外只暴露 window.MtMessages.refresh()（app-tips.js 与
+     app-comments.js 侧按需调用，接线在对方文件里，本文件不碰它们）。 -->
+<script src="app-messages.js"></script>
 <script src="app-plugins.js"></script>
 <!-- 应用中心（renderer/app-apps.js + css/apps.css · 顶栏「应用」入口）：主窗口内整屏浮层页，
      左导航「应用 / 库 / 开发」；云端目录 / 下载（zip + sha256 校验 + 解包到应用根目录）/
@@ -792,8 +837,9 @@
      MTNODE_RECHARGE_USERS 同口径），服务端另有 403 RECHARGE_NOT_OPEN 兜底。 -->
 <script src="app-wallet.js"></script>
 <script src="app-boot.js"></script>
-<!-- 顶栏入口的全局快捷键（1 画布 / 2 会话 / 3 专家团 / Space 居中 / D 隐藏线 /
-     J 插件 / K 工具库 / L 素材库；自包含，键位单一真源 = index.html 的 data-shortcut）。
+<!-- 顶栏入口的全局快捷键（Space 居中 / D 隐藏线 / J 插件 / K 工具库 / L 素材库；
+     原先切视图的 1 画布 / 2 会话 / 3 专家团 三键已移除，这三颗视图按钮不再挂
+     data-shortcut，切视图只走鼠标点击。自包含，键位单一真源 = index.html 的 data-shortcut）。
      放在 app-boot.js 之后：动作全部走按钮自己的 onclick（boot 已接线），
      本文件只在按键时转发一次 .click()，不重复实现入口逻辑。 -->
 <script src="app-keys.js"></script>
@@ -842,5 +888,11 @@
      识别走 dsh 官方本地 SenseVoice（CPU、离线、不进模型上下文）；样式在 css/voice.css。
      排在最后：调用期取 window.api / I18n / toast / S / agentRunWorkspace 这些既有全局。 -->
 <script src="app-voice.js"></script>
+<!-- MCP 执行桥（第三方 MCP 客户端 → 主进程 MCP 服务端 → 这里 → 既有宿主执行路径）：
+     自包含（renderer/mcp-bridge.js）。挂在 window.MTNodeMcp，帧由 preload 的 mcpOnEvent
+     推来；落地一律复用 app-nodes.js / app-db.js / app-longtask.js / app-assets.js 的既有
+     处理函数（调用期按 typeof 取），所以必须排在它们之后。真正「哪个 MCP 连接能做什么」
+     由主进程 mcp-server.js 决定（见 docs/mcp-server.md）。 -->
+<script src="mcp-bridge.js"></script>
 </body>
 </html>

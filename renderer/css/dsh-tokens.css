@@ -83,8 +83,22 @@
   --dsh-trace-row-h: 32px;
   /* 行内读数栏（时刻 · 耗时 · 每步 token）的**定宽**（本次需求 · 行栅格统一）：
      段行与分组头的第一列都是它 —— 所有行的正文因此从同一条竖线起排（不再各行一个起点），
-     读数栏也再不会去抢正文的宽度。窄栏逐级收列时这个宽度跟着收（见下面两处 @media）。 */
-  --dsh-trace-tick-w: 152px;
+     读数栏也再不会去抢正文的宽度。窄栏逐级收列时这个宽度跟着收（见下面两处 @media）。
+     **本轮 152px → 230px**（用户报「左侧时间与 token 出入文字重叠」）：
+     三项读数（`12:34:56` ≈ 47px + `1234ms` ≈ 35px + `↑182k（新增 12.3k）↓12.3k` ≈ 144px）
+     加两处 6px 间距实测要 174~238px；152px 装不下而 .dsh-trace-tick 是 overflow:hidden，
+     超出的那一段被**硬裁**（右缘切在半截数字上，读起来就是与正文/相邻读数挤在一起）。
+     230px 是**真浏览器实测**（test/_cdp-measure-trace-narrow.js）下「最宽组合三项都完整」的值
+     —— 200px 仍差 25px 被裁在最后一个数字上。行高与栅格一个字不动。 */
+  --dsh-trace-tick-w: 230px;
+  /* 轨迹主区（列表 + 检查器）的**最大宽度**（本轮需求 · 用户口径「缩窄会话-轨迹中的主内容，
+     与对话的宽度一致」）：对话列是 .agent-list 的 max-width:820px + margin:0 auto（css/dsh.css），
+     轨迹这一侧取**略宽于对话**的 980px 居中（user 取舍：轨迹行比对话行多显示几个字）。
+     唯一真源 = 这一条：下面 .dsh-trace-cols（列表 + 检查器）/ .dsh-trace-foot（页脚）
+     与 .dsh-trace-ruler（顶部横轴的内边距算式）三处都读它，改宽度只改这里。
+     顶部横轴**本身仍是整宽**（user 口径）：轴身高不变的 96px、轨与刻度多 160px 可展，
+     只把轴内左右内边距按这条令牌对齐，绘图区左右缘因此与 980px 的列表同一条竖线。 */
+  --dsh-trace-content-w: 980px;
   /* ── 横轴（本次需求 · 整个会话的总时间轴，固定在列表上方；当前视窗用滑窗带标出）──
      轴里装四样（**从上到下**）：整个会话跨度内等距的绝对时刻刻度（2–4 个）/ 固定 3 轨的
      色块时间带（一次工具调用 = 一块）/ 本视窗读数 / 工具族图例。轴高由这一行令牌守着。
@@ -419,8 +433,13 @@
   opacity: .55;
 }
 
-/* 窄栏逐级收列 + 读数栏定宽跟着收：收起的那一列不再占宽，正文摘要就能多留几个字 */
-@media (max-width: 900px) {
+/* 窄栏逐级收列 + 读数栏定宽跟着收：收起的那一列不再占宽，正文摘要就能多留几个字。
+   **本轮断点改按「列表实际可用宽」定**（原先是 900 / 720，当初按「窗口宽 = 列表宽」估的）：
+     列表可用宽 ≈ 窗口宽 − 80px（检查器 340 + 主区左右内边距 + 列表自身内边距；
+     本轮主内容上限 980px 居中后，窗口 ≥1180px 时列表已是满宽 640px，读数栏完整 230px
+     仍给正文留 ≥390px）；1180~1000px 收 token、<1000px 再收耗时 ——
+     桌面最小窗口（约 1100px）仍能完整显示三项读数（已用真浏览器实测复核，见交付说明）。 */
+@media (max-width: 1180px) {
   :root {
     --dsh-trace-tick-w: 96px;
   }
@@ -430,7 +449,7 @@
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 1000px) {
   :root {
     --dsh-trace-tick-w: 52px;
   }
@@ -548,7 +567,9 @@
   background: var(--dsh-err-bg);
 }
 
-/* 底部状态条（步数 / 耗时 / 令牌）：灰字小号，只在有数据时出现。 */
+/* 底部状态条（步数 / 耗时 / 令牌）：灰字小号，只在有数据时出现。
+   本轮缩窄：与上面的列（.dsh-trace-cols）同一份居中口径 —— 否则「行居中、脚注铺满」
+   在宽窗口下会看出两截边框对不齐。 */
 .dsh-trace-foot {
   display: flex;
   gap: var(--dsh-gap-md);
@@ -556,6 +577,9 @@
   border-top: 1px solid var(--dsh-bd);
   color: var(--dsh-ink-dim);
   font-size: 11px;
+  width: 100%;
+  max-width: var(--dsh-trace-content-w);
+  margin: 0 auto;
 }
 
 .dsh-trace-empty {
@@ -650,11 +674,20 @@
      · 列表自己仍按内容长（见下面 .dsh-trace-cols .dsh-trace-list 的 flex:0 1 auto），
        再由这里的 min-height:0 压回可用高 —— 短会话列表不拉长、滚动条不出现，
        长会话滚动条仍落在列表**内部**；
-     · 检查器因此与列同高 → 参数 / 结果块能把剩余高度用满（见 .dsh-trace-code 那条）。 */
+     · 检查器因此与列同高 → 参数 / 结果块能把剩余高度用满（见 .dsh-trace-code 那条）。
+    **本轮缩窄**（用户口径「缩窄会话-轨迹中的主内容，与对话的宽度一致」）：
+    整列（列表 + 检查器）按 --dsh-trace-content-w 封顶并居中 —— 在宽度口径上与对话列
+    （.agent-list 的 max-width:820px + margin:0 auto）同一种写法，数值取 980px（略宽于对话）。
+    只改宽这一维：flex 链（吃满剩高）/ 列表的滚动 / 检查器的夹取口径一个字不动。
+    max-width + margin:auto 落在**列容器**上而不是列表自己 —— 检查器是它的 flex 兄弟项，
+    封在容器上两块才一起居中（只封列表的话检查器会被顶到整幅的最右边去）。 */
 .dsh-trace-cols {
   flex: 1 1 auto;
   min-height: 0;
   max-height: 100%;
+  width: 100%;
+  max-width: var(--dsh-trace-content-w);
+  margin: 0 auto;
   display: flex;
   align-items: stretch;
 }
@@ -696,7 +729,16 @@
   /* 恒定高度（本次需求）：刻度 13px + 3 轨（3 × --dsh-trace-track-h）+ 脚下两行 + 内边距 */
   height: var(--dsh-trace-ruler-h);
   margin: var(--dsh-gap-sm) var(--dsh-gap-sm) 0;
-  padding: 3px 6px 5px;
+  /* 左右内边距：**本轮缩窄**（用户口径「横轴保持整宽，只缩窄下面列表」+「轴内加左右
+     内边距把绘图区拉回与列表对齐」）—— 轴身自己仍是整宽（刻度与色块多 160px 可展），
+     但左右内边距按 --dsh-trace-content-w 让出一条槽，绘图区（刻度 / 轨 / 滑窗带）
+     左右缘因此与居中 980px 的列表落在同一条竖线上；脚下的读数行与图例是轴的内容盒子，
+     一并同线。算式里的 16px = 轴身左右**边框**各 1px + 轴身与列容器之间那 7px 余量 ×2
+     （真浏览器实测校正：不减这 16px 时绘图区比列表窄 18px、左右各差 9px，见
+     test/_cdp-measure-trace-narrow.js 的对齐实测）。窄窗（轴宽 − 12 < 980）时留给绘图区
+     的只有 6px 兜底内边距，轴里所有按百分比定位的东西（刻度 / 块 / 滑窗带）都按绘图区
+     宽度换算，一起缩。 */
+  padding: 3px max(6px, calc((100% - var(--dsh-trace-content-w) - 16px) / 2)) 5px;
   border: 1px solid var(--dsh-bd);
   border-radius: var(--dsh-r-sm);
   background: var(--dsh-card-bg);

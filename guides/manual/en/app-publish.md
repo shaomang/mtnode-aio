@@ -92,8 +92,9 @@ version's package — see “五、部署” and “七、上架与多版本” 
 
 ## Server switch (ops)
 
-- `MTNODE_APP_VERSIONS=1` turns multi-version mode on. **Unset (default) keeps the old overwrite behaviour**
-  (one package per app).
+- Multi-version mode is **on by default** (since 2026-10; it used to be off, which is why the live server kept
+  answering `409 APP_VERSIONS_DISABLED`). Set `MTNODE_APP_VERSIONS=0` (or `false` / `no` / `off`) in
+  `/etc/mtnode-store.env` and restart the service to fall back to the old overwrite behaviour (one package per app).
 - Version endpoints, quota error codes (`QUOTA_BYTES` / `QUOTA_APPS`) and the declaration fields are specified in
   `docs/apps-market.md` §7.
 - Command line too: `python store-saas/upload-app.py --accept-declaration …` (see §4 and §7 of that document).

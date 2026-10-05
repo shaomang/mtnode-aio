@@ -35,9 +35,6 @@ try {
 sc.registerStorageIpc({
   getDataDir: () => String(d.dataDir || ""),
   t: (s) => I18n.t(s),
-  /* scan 只判「回滚存储是否可用」（typeof rollbackGc === "function"）；
-     真清理走主进程的 clean，本线程绝不调它。 */
-  rollbackGc: d.hasRollbackGc ? () => {} : null,
 });
 
 let out = null;

@@ -1693,7 +1693,29 @@
       true,
     );
 
-    body.insertBefore(mainEl, list.nextSibling);
+    /* 挂到消息区**后面** —— 位置取「消息列在宿主里的顶层那一块」的下一个，不能直接拿
+       `list.nextSibling` 当 insertBefore 的参照点。用户报的渲染错误就是这里抛的：
+         `渲染错误：Uncaught NotFoundError: Failed to execute 'insertBefore' on 'Node':
+          The node before which the new node is to be inserted is not a child of this node.
+          @ app-trajectory.js:1696`
+       成因：#agentList 不一定是 .agent-body 的直接子节点 ——
+         · app-assist.js 的 ensureHistRail()（轮次轨的滚动壳）会把它包进 .hist-scroll-wrap、
+           并把轮次轨（.hist-rail）**追加在消息列之后**：此时 list.nextSibling 是壳里的那条轨，
+           它不是 .agent-body 的孩子 → insertBefore 当场抛 NotFoundError；
+         · 开发页 / 助手栏借走会话正文时，它的父级又是 .apps-dev-conv / .assist-pane。
+       抛一次就毁掉整块视图（mainEl 挂不上、hidden 也没人翻），而且**不是一次性的**：
+       mainEl 因此永远 isConnected=false，之后每次重绘（renderAgentSession → sync）与
+       boot 里那条 1.5s 轮询都会重建一次再抛一次。
+       所以先上溯到「父级就是 .agent-body」的那一层再插：
+         · 有壳 → 插在壳之后（仍在消息区之后，与旧行为一字不差）；
+         · 没壳（老形态）→ 插在消息列之后，与旧行为一字不差；
+         · 上溯不到（消息列被借到别处 / 已摘出文档）→ 退回 body 末尾：宁可位置略偏一次，
+           也绝不让「挂一块视图」把整条 sync 抛出去 —— 这条兜底只在「消息列不在会话主体里
+           且主区要重挂」的窄缝里生效，正常进出（会话视图 / 开发页借用）都走上面两条。 */
+    let anchor = list;
+    while (anchor.parentNode && anchor.parentNode !== body) anchor = anchor.parentNode;
+    if (anchor.parentNode === body) body.insertBefore(mainEl, anchor.nextSibling);
+    else body.appendChild(mainEl);
     return mainEl;
   }
 

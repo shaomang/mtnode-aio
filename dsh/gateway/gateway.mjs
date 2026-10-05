@@ -27,13 +27,13 @@ import { normalizeHiddenTools } from './tool-visibility.mjs'
 import { messagesBaseUrl } from './messages-base-url.mjs'
 /* 会话自己的浏览器（用户已确认的底座：系统 Edge/Chrome + CDP 直驱 + 独立用户数据目录）。
    进程、CDP 连接、驱动串行锁、接管状态与动作留痕全在这一个模块里；网关只做两件事：
-   ① 安全裁决（域名名单 / 危险动作 / 接管期间拒绝）② 把帧与留痕转成宿主事件。
+   ① 安全裁决（危险动作审批 / 接管期间拒绝）② 把帧与留痕转成宿主事件。
    零新依赖：CDP 走 Node ≥22 内置 WebSocket（见 browser-host.mjs）。 */
 import * as BrowserHost from './browser-host.mjs'
 /* MCP 资源只读面（宿主「扩展能力管理」里那台服务器的资源清单 / 单条读取）。
    服务器配置由宿主回传，连接缓存在网关进程里，见 mcp-resources.mjs。 */
 import { handleMcpResources, closeMcpResources } from './mcp-resources.mjs'
-import { domainVerdict, dangerOfClick, normalizePolicy, DEFAULT_POLICY, profileDirOf, downloadDirOf, shotsDirOf } from './browser-host.mjs'
+import { dangerOfClick, APPROVE_DANGEROUS, profileDirOf, downloadDirOf, shotsDirOf } from './browser-host.mjs'
 
 const require = createRequire(import.meta.url)
 /* dsh 0.2：运行时不再由 sdk-jsonrpc-demo/bin 直起，而是 SDK 客户端按 profile 启
@@ -62,6 +62,14 @@ const GATEWAY_DIR = import.meta.dirname
 const GATEWAY_VERSION = '0.1.0'
 /* 池化上限：仅回收空闲 runtime。有在途 run 的永不踢掉，可短暂超过此数。 */
 const MAX_RUNTIMES = 6
+/* SDK 握手（initialize）超时：SDK 默认只给 10s（@deepseek-ai/dsh-sdk-client 的
+   resolveDshLaunch：initializeTimeoutMs ?? 1e4）。冷起一台 runtime 要把 cordis 组合、
+   设置文档、语音通道全拉起来，慢盘 / 忙机上 10s 会踩线 —— 真机就踩过：
+   `RequestTimeoutError: initialize timed out after 10000ms waiting for dsh profile "sdk"`，
+   而且 SDK 那次**晚到的 abort 拒绝没人接**，Node ≥15 直接判进程死（网关 exit 1，
+   宿主接着报「dsh 网关已退出」，再往死管道写还带崩了主进程）。
+   握手预算放宽到 60s；真超时交给 warmStartHarness 按可重试处理。 */
+const INITIALIZE_TIMEOUT_MS = 60000
 /* 新 spawn 运行时首轮预热超时：预热轮不是关键路径，超时即放弃、继续真实请求 */
 const WARMUP_TIMEOUT_MS = 15000
 /* 续跑轮 run 前的 session/resume 桥握手超时：跨进程恢复要整读盘上会话日志（可达数 MB，
@@ -529,6 +537,25 @@ function diag(line) {
   try { process.stderr.write('[ix-gate] ' + line + '\n') } catch {}
 }
 
+/* 未处理拒绝的「窄护栏」——只放行 SDK 晚到的那类握手超时，别的照旧让进程死。
+   来由：SDK 客户端的 request() 用 AbortController 计时，超时那一枪 abort(reason) 会在
+   调用方已经收尾之后才把拒绝派发出来（@deepseek-ai/dsh-sdk-client lib/index.js 的
+   request()/initialize()），Node ≥15 的默认行为就是「未处理拒绝 = 致命错误」→
+   整只网关进程 exit 1，宿主那一轮只能拿到「dsh 网关已退出」。真机 2026-10-03 07:42
+   那次崩溃就是这条链（网关死 → 主进程往死管道写 EPIPE）。
+   判据收得很紧：只认 SDK 的 RequestTimeoutError / 那句 initialize 超时文案；
+   其它未处理拒绝 rethrow（= 保持 Node 默认的致命语义，真 bug 不许被吞掉）。 */
+const SDK_LATE_ABORT = /RequestTimeoutError|timed out after \d+ms waiting for dsh profile/
+process.on('unhandledRejection', (reason) => {
+  const name = (reason && reason.name) || ''
+  const msg = (reason && reason.message) || String(reason || '')
+  if (name === 'RequestTimeoutError' || SDK_LATE_ABORT.test(msg)) {
+    diag('已忽略 SDK 晚到的握手超时拒绝（网关保持存活）：' + msg.slice(0, 300))
+    return
+  }
+  throw reason
+})
+
 /* runtime key 里含绝对路径,日志只留足够定位的尾巴 */
 function shortKey(key) {
   const s = String(key || '')
@@ -621,15 +648,6 @@ function isRetryableGatewayFailure(message) {
   return RETRYABLE_FAILURE_RE.test(s)
 }
 
-/* rollback journal 的迟到暂存表:runtime key -> 帧数组(按时间先后)。
-   run 结束(或本就没有在途 run)后,运行时仍在往桥里推 journal 帧
-   (后台 job、子代理收尾),这些帧没有 reqId 可挂,先落这里,
-   渲染层用 rollbackDrain 按 sessionId/roundId 取回。
-   每 key 上限 2000 条(超出丢最旧),整表最多 32 个 key。 */
-const JOURNAL_BUFFER_LIMIT = 2000
-const JOURNAL_BUFFER_KEYS = 32
-/** @type {Map<string, any[]>} */
-const journalBuffers = new Map()
 /* cancelTag(会话 agent:<id> / 节点 id / assist)-> 该标签在途运行占用的 runtime key 集合。
    dsh 线协议没有「逐轮取消」,停一次运行只能关掉它自己那台 runtime 进程;
    若没有这层映射,cancel 只能退化成「按 workspace 全关」——同工作目录的其它会话
@@ -1107,62 +1125,47 @@ function out(msg) {
      · 底座＝系统 Edge/Chrome + CDP 直驱 + 独立用户数据目录（全局一份、跨会话保持登录态）；
      · 进程与 CDP 全在 browser-host.mjs，网关只做安全裁决与事件转发；
      · 一个浏览器进程、多标签，驱动串行化：同一时刻只让一条会话驱动；
-     · 危险动作（提交 / 支付 / 删除 / 发送 / 发布…）与风险域名首次访问弹确认卡，
+     · 危险动作（提交 / 支付 / 删除 / 发送 / 发布…）弹确认卡（**恒开**，本轮需求：
+       域名名单机制连同 browser-policy.json 一起删掉了，只剩这一条审批），
        复用既有提问/审批卡通道（browser 帧），用户拒绝即以失败收场、会话不中断；
      · 用户可「接管」：接管期间 Agent 的浏览器动作一律被拒（不是排队）；
      · 浏览器动作留痕（含导航 / 点击 / 输入长度 / 截图路径 / shell 命令）既实时推给
        渲染层的活动流面板，也落库在宿主侧（activity-store），不进模型上下文。
    ══════════════════════════════════════════════════════════════════════════ */
 
-/** 浏览器策略文件（域名白/黑名单 + 危险动作审批开关）：真源在本机数据目录。 */
-function browserPolicyPath() {
-  const home = dshHomeDir()
-  if (!home) return ''
-  return path.join(path.dirname(home), 'browser-policy.json')
-}
-
 const BrowserCtl = {
-  policy: { ...DEFAULT_POLICY },
-  /* 本轮已确认过的风险域名（一次确认，本进程内记住；重启后重新问一次） */
-  confirmedHosts: new Set(),
   /* 最近一次 browser 帧的发起会话（活动流盖归属章用，见 push()） */
   lastSessionId: '',
-  loaded: false,
-  load() {
-    if (this.loaded) return this.policy
-    this.loaded = true
-    const file = browserPolicyPath()
-    if (file && existsSync(file)) {
-      try {
-        this.policy = normalizePolicy(JSON.parse(readFileSync(file, 'utf8')))
-        return this.policy
-      } catch { /* 文件坏了就用默认，不让策略文件把人挡在门外 */ }
-    }
-    this.policy = normalizePolicy(DEFAULT_POLICY)
-    try { if (file) writeFileSync(file, JSON.stringify(this.policy, null, 2), 'utf8') } catch {}
-    return this.policy
-  },
-  save(raw) {
-    this.policy = normalizePolicy(raw == null ? this.policy : raw)
-    const file = browserPolicyPath()
-    try { if (file) writeFileSync(file, JSON.stringify(this.policy, null, 2), 'utf8') } catch {}
-    return this.policy
-  },
-  /* 浏览器进程 / 标签 / 驱动锁的只读快照（活动流面板与「手动打开」共用） */
+  /* 浏览器进程 / 标签 / 驱动锁的只读快照（活动流面板与求助卡的真窗口通道共用） */
   status() {
-    return { ...BrowserHost.statusOf(), takeover: BrowserHost.takeoverOf(), policy: this.load(), ok: true }
+    return { ...BrowserHost.statusOf(), takeover: BrowserHost.takeoverOf(), ok: true }
   },
-  /* 宿主主动拉起浏览器（用户点「打开浏览器」）：不启动任何任务、不占驱动锁。
-     这是**唯一**会带窗口的一只（用户口径：开发 / 会话过程中不该弹真窗口，
-     只有他亲手点这一下才给一只看得见的）—— 带窗口起完紧接着 parkSessionWindow，
-     默认形态仍是内部界面；想看真窗口就点面板上的「独立窗口」（本次运行内的显式例外）。
-     visible:false（老宿主不传也算）时不带窗口：与浏览器工具默认那条路一致。 */
+  /* 宿主主动拉起浏览器（**本轮需求后唯一的调用方**：求助卡上的「用真窗口打开」）：
+     不启动任何任务、不占驱动锁。这是唯一会带窗口的一只（用户口径：开发 / 会话过程中
+     不该弹真窗口，只有他在求助卡上亲手点这一下才给一只看得见的）—— 带窗口起完紧接着
+     parkSessionWindow，默认形态仍是内部界面；要真窗口由渲染层接着走 viewMode('detached')。
+     visible:false（老宿主不传也算）时不带窗口：与浏览器工具默认那条路一致。
+
+     重起前记住页面地址：无窗口那只与被要求「带窗口」的那只不是同一个进程（见
+     browser-host 的 ensureBrowser），页面会回到 about:blank —— 刚弹的登录页就白丢了。
+     只有**真的重起过**（r.reused === false）且原来停在 http(s) 页面上时才补一次导航。 */
   async open(opts) {
     const dsh = dshHomeDir()
     const wantVisible = !(opts && opts.visible === false)
+    const before = wantVisible ? await this.currentUrl().catch(() => '') : ''
     const r = await BrowserHost.ensureBrowser({ profileDir: profileDirOf(dsh), dshHome: dsh, visible: wantVisible })
     try { await BrowserHost.setDownloadDir(downloadDirOf(dsh)) } catch {}
+    if (r && r.reused === false && /^https?:/i.test(String(before || ''))) {
+      try { await BrowserHost.navigate({ url: before, waitMs: 800 }) } catch { /* 恢复不了就算了，不拦这一步 */ }
+    }
     try { await BrowserHost.parkSessionWindow() } catch {}
+
+    /* 本轮修：无窗口那只在 CDP 里没有窗口可显形（实测 Browser.getWindowForTarget 回
+       「Browser window not found」）→ 要真窗口只能温和关掉、重开一只带窗口的。这一条活动流
+       就是给用户的交代（渲染层按 restartedForVisible 换一句 toast），免得他以为浏览器自己崩了。 */
+    if (r && r.restartedForVisible) {
+      this.push({ kind: 'browser', text: '这只没有真窗口可显形：已温和关掉、重开一只带窗口的（当前页面地址已带回）' })
+    }
     return { ...r, ...this.status() }
   },
   async stop() {
@@ -1188,13 +1191,13 @@ const BrowserCtl = {
        （用户口径：没被调用 / 没启动 = 整条不显示，也不该顺手启动）。 */
     const st = BrowserHost.statusOf()
     if (!st.running) {
-      return { ok: false, error: '浏览器没在跑（先在面板点「打开浏览器」，或让会话调用 browser_launch）', ...BrowserHost.viewStatus() }
+      return { ok: false, error: '浏览器没在跑（让会话调用 browser_launch，或在求助卡上点「用真窗口打开」）', ...BrowserHost.viewStatus() }
     }
     const r = await BrowserHost.startViewStream(params || {})
     /* 开流即停靠：**默认形态就是内部界面**（真实窗口移出可视区，画面只在右栏实况里）。
        判据必须是「真的搬走了没有」（parked），不能只看 mode —— mode 默认就是 docked，
        新起的窗口却还摆在屏幕上，只看 mode 会漏搬，用户看到的仍是「面板有画面、屏幕上多一只 Edge」。
-       「独立窗口」是用户在面板上亲手点的例外（viewMode === 'detached'），那时不许把它搬回去 ——
+       「独立窗口」是用户在求助卡上亲手点的例外（viewMode === 'detached'），那时不许把它搬回去 ——
        否则他刚点开真窗口就被自动收走，等于那个按钮点不动。 */
     const vs = BrowserHost.viewStatus()
     if (vs.mode !== 'detached' && (vs.mode !== 'docked' || !vs.parked)) {
@@ -1230,29 +1233,15 @@ const BrowserCtl = {
     }
     try { out({ event: { reqId: '', type: 'browser-act', data } }) } catch { /* stdout 已断 */ }
   },
-  /* 判定一条浏览器动作该不该先问用户：返回 null = 直接执行 */
+  /* 判定一条浏览器动作该不该先问用户：返回 null = 直接执行。
+     本轮需求：域名名单机制（拦截名单 / 风险站点首次确认）连同 browser-policy.json
+     一起删掉了 —— 导航不再有域名级闸门，只剩下面这条**恒开**的危险动作审批。 */
   async gate(op, params) {
-    const pol = this.load()
     if (BrowserHost.isTakeover()) {
       const who = BrowserHost.takeoverOf().sessionId
-      return { ask: false, deny: `浏览器此刻由用户接管${who ? '（' + who.slice(0, 12) + '…）' : ''}：Agent 动作一律暂停。请等用户交还控制权（browser_help 或浏览器窗口的「交还」按钮），或先用 browser_help 说明你需要什么。` }
+      return { ask: false, deny: `浏览器此刻由用户接管${who ? '（' + who.slice(0, 12) + '…）' : ''}：Agent 动作一律暂停。请等用户交还控制权（browser_help 或求助卡上的「交还控制权」），或先用 browser_help 说明你需要什么。` }
     }
-    if (op === 'navigate' && params && params.url) {
-      const v = domainVerdict(params.url, pol)
-      if (v.blocked) return { ask: false, deny: `${v.why}。本次导航已拦截；若确实需要访问，请在「浏览器活动」面板里把它从拦截名单移除。` }
-      if (v.confirm && !this.confirmedHosts.has(BrowserHost.hostOf(params.url))) {
-        return {
-          ask: true,
-          askData: {
-            kind: 'confirm',
-            title: '风险站点访问确认',
-            message: `${v.why}\n${String(params.url).slice(0, 200)}`,
-            host: BrowserHost.hostOf(params.url),
-          },
-        }
-      }
-    }
-    if (op === 'click' && pol.approveDangerous) {
+    if (op === 'click' && APPROVE_DANGEROUS) {
       const d = dangerOfClick(params && params.label, params && params.text)
       if (d.danger) {
         return {
@@ -1329,6 +1318,10 @@ const BrowserCtl = {
   },
   async handle(key, m) {
     const op = String(m.op || '')
+
+    /* 本轮修：把「刚才在跑的是什么动作」记进宿主 —— 浏览器异常退出那条留痕要带上它
+       （真排障时最想知道的就是「它没的那一下正在干什么」）。status 只是读状态，不记。 */
+    if (op && op !== 'status') BrowserHost.setLastAction(op)
     const params = m.params && typeof m.params === 'object' ? m.params : {}
     const sessionId = String(m.sessionId || '')
     const dsh = dshHomeDir()
@@ -1346,14 +1339,14 @@ const BrowserCtl = {
     if (op === 'launch') {
       /* 会话自动拉起的那只**不带窗口**（visible 缺省 false → headless）：开发 / 会话过程中
          屏幕上不该弹真窗口，画面与截图全走 CDP（本机实测 screencast 照常出帧）。
-         想看真窗口只有一条路：用户在面板上亲手点「打开浏览器」（见 open()）。 */
+         想看真窗口只有一条路：用户在求助卡上亲手点「用真窗口打开」（见 open()）。 */
       const r = await BrowserHost.ensureBrowser({ profileDir: profileDirOf(dsh), dshHome: dsh, visible: !!params.visible })
       await BrowserHost.setDownloadDir(downloadDirOf(dsh)).catch(() => {})
       /* 会话启用浏览器的默认形态 = **内部界面**：进程照常起（登录态不变），但真实窗口
          立刻移出可视区 —— 用户口径是「启用时不该另开一个新窗口，画面就来内部的实况区」。
          不在这里停靠的后果：spawn 出来的窗口戳在屏幕上，只有「渲染层恰好开着右栏去开流」
          那条路才会搬运它（右栏没开 / 焦点不在该会话时根本不会开流）→ 用户看到多一只 Edge。
-         用户亲手点过「独立窗口」的那一轮例外：mode === 'detached' 时不搬回去（见 viewStart）。 */
+         用户从求助卡点过「用真窗口打开」的那一轮例外：mode === 'detached' 时不搬回去（见 viewStart）。 */
       if (BrowserHost.viewStatus().mode !== 'detached') {
         try { await BrowserHost.parkSessionWindow() } catch { /* 搬不动：实况侧有 fallback 兜底 */ }
       }
@@ -1367,7 +1360,7 @@ const BrowserCtl = {
     }
 
     /* 除 launch / release 外都要浏览器已经起来（没起就先起，用户口径是「按需自动拉起」）——
-       按需自动拉起同样不带窗口（visible 缺省 false）；用户要真窗口只有「打开浏览器」那一下。 */
+       按需自动拉起同样不带窗口（visible 缺省 false）；用户要真窗口只有求助卡「用真窗口打开」那一下。 */
     await BrowserHost.ensureBrowser({ profileDir: profileDirOf(dsh), dshHome: dsh, visible: !!params.visible })
     await BrowserHost.setDownloadDir(downloadDirOf(dsh)).catch(() => {})
 
@@ -1385,14 +1378,13 @@ const BrowserCtl = {
     if (op === 'type') return { ok: true, result: await BrowserHost.typeText(params) }
 
     if (op === 'navigate' || op === 'click' || op === 'submit') {
-      /* 安全闸：域名名单 + 危险动作。拒绝 = 失败回执，会话不中断。 */
+      /* 安全闸：只剩恒开的危险动作审批（域名名单已删）。拒绝 = 失败回执，会话不中断。 */
       const g = await this.gate(op, params)
       if (g && g.deny) throw new Error(g.deny)
       if (g && g.ask) {
         const outcome = await this.ask(key, sessionId, g.askData)
         if (outcome === 'rejected') throw new Error('用户拒绝了这次操作（' + String(g.askData.title || '') + '），请换一条路或先向用户说明。')
         if (outcome !== 'allowed-once') throw new Error('这次操作的确认已失效（发起轮已结束或用户撤下卡片）。')
-        if (g.askData.host) this.confirmedHosts.add(String(g.askData.host))
       }
       if (op === 'navigate') return { ok: true, result: await BrowserHost.navigate(params) }
       const r = await BrowserHost.click(params)
@@ -1423,7 +1415,7 @@ const BrowserCtl = {
       this.push({ kind: 'help', text: `${askData.title}：${askData.message.slice(0, 200)}` })
       /* 登录类求助：接管（他的动作优先，Agent 动作一律被拒），但**形态仍是内部界面**
          —— 用户口径：接管 / 登录也走右栏实况区，不再为了「看见窗口」把真窗口抬出来
-         （bringToFront 是「又开出一个窗口」的第二条来源）。他亲手点「独立窗口」才是例外。
+         （bringToFront 是「又开出一个窗口」的第二条来源）。他从求助卡点「用真窗口打开」才是例外。
          接管期间画面照常出帧，所以登录 / 验证码在实况区里就能操作。 */
       if (kind === 'login') BrowserHost.setTakeover(true, sessionId)
       const outcome = await this.ask(key, sessionId, askData)
@@ -1487,29 +1479,8 @@ function summarizeToolOutput(content, error) {
   return one || ''
 }
 
-/* ── rollback: 回合开合与 journal 路由 ─────────────────────────────────────
-   journal 的归属必须精确到「哪一轮」,而投递时机靠不住(迟到帧),所以盖章的是
-   运行时内的插件:gateway 在 run 开始时向该 runtime 的桥推 {t:'begin'},
-   结束时推 {t:'end'},插件把 begin 的 roundId 当作进程级 current round
-   (一个 runtime 同时只有一个在途 run,由 keyToReqId 保证,故进程级变量安全)。 */
-
-/* 向一台 runtime 的全部桥连接(bridge / canvas / db / journal 插件各一条 socket)
-   推一帧。未知 t 的接收方会自行忽略,因此广播比挑连接更稳。 */
-function bridgeBroadcast(key, frame) {
-  const b = bridgeServers.get(key)
-  if (!b || !b.sockets || !b.sockets.size) return false
-  let line = ''
-  try { line = JSON.stringify(frame) + '\n' } catch { return false }
-  let sent = false
-  for (const s of b.sockets) {
-    try { s.write(line); sent = true } catch { /* 连接已断 */ }
-  }
-  return sent
-}
-
-/* sid → 目录名的**单一真源**净化式子:rollback journal 目录与「会话是否可续跑」的日志
-   查找都走它。两处各写一遍迟早会漂移(journal 记在 A 目录、日志查到 B 目录),故只留
-   这一份。网关自铸的 id 本就是 ASCII(`session-<uuid hex>`),净化对它恒等;路径分隔符等
+/* sid → 目录名的**单一真源**净化式子:「会话是否可续跑」的日志查找走它。
+   网关自铸的 id 本就是 ASCII(`session-<uuid hex>`),净化对它恒等;路径分隔符等
    非法字符换成 `_` 并截断到 120。 */
 function normSessionId(sessionId) {
   return String(sessionId == null ? '' : sessionId)
@@ -1580,81 +1551,6 @@ function resumeCollisionMessage(message, sid) {
   )
 }
 
-/* journal 目录约定:<DSH_HOME>/rollback/<sessionId>。渲染层本来就持有 dshHome 与
-   sessionId,用同一式子反推路径即可;sessionId 做文件名净化后两边才一致。 */
-function rollbackDirFor(dshHome, sessionId) {
-  const home = String(dshHome || process.env.DSH_HOME || '').trim()
-  const sid = normSessionId(sessionId)
-  if (!home || !sid) return ''
-  const dir = path.join(home, 'rollback', sid)
-  /* 建目录失败不阻断运行:插件侧自行降级为不落盘 */
-  try { mkdirSync(dir, { recursive: true }) } catch { /* best-effort */ }
-  return dir
-}
-
-function bufferJournal(key, data) {
-  let arr = journalBuffers.get(key)
-  if (!arr) journalBuffers.set(key, (arr = []))
-  arr.push(data)
-  if (arr.length > JOURNAL_BUFFER_LIMIT) arr.splice(0, arr.length - JOURNAL_BUFFER_LIMIT)
-  while (journalBuffers.size > JOURNAL_BUFFER_KEYS) {
-    const oldest = journalBuffers.keys().next().value
-    /* 仍在途的 key 不丢:它的迟到帧只是暂时无处可去 */
-    if (keyToReqId.has(oldest)) break
-    journalBuffers.delete(oldest)
-  }
-}
-
-/* journal 帧原样往外投,只剥掉用于路由的 t:gateway 不猜内容、不重组载荷,
-   插件写什么渲染层就收到什么。 */
-function journalPayload(m) {
-  const data = {}
-  for (const k of Object.keys(m)) if (k !== 't') data[k] = m[k]
-  return data
-}
-
-/* 插件盖的章在哪都认:帧顶层,或帧自带的 data 里(两种写法都不用改 gateway)。 */
-function journalField(d, name) {
-  if (!d || typeof d !== 'object') return ''
-  const top = d[name]
-  if (top !== undefined && top !== null) return String(top)
-  const inner = d.data
-  if (inner && typeof inner === 'object' && inner[name] !== undefined && inner[name] !== null) {
-    return String(inner[name])
-  }
-  return ''
-}
-
-/* 取回暂存的 journal:按插件盖的章(sessionId/roundId)过滤,并可用 runtime
-   key 或 workspace 前缀限定范围。默认取出即清;peek 只看不取。 */
-function drainJournals(opts) {
-  const p = opts && typeof opts === 'object' ? opts : {}
-  const key = typeof p.key === 'string' ? p.key : ''
-  const workspace = typeof p.workspace === 'string' ? p.workspace : ''
-  const sessionId = p.sessionId == null ? '' : String(p.sessionId)
-  const roundId = p.roundId == null ? '' : String(p.roundId)
-  const peek = !!p.peek
-  const taken = []
-  for (const [k, arr] of Array.from(journalBuffers)) {
-    if (key && k !== key) continue
-    if (!key && workspace && !k.startsWith(workspace + '|')) continue
-    if (!arr || !arr.length) {
-      if (!peek) journalBuffers.delete(k)
-      continue
-    }
-    const kept = []
-    for (const d of arr) {
-      if (sessionId && journalField(d, 'sessionId') !== sessionId) { kept.push(d); continue }
-      if (roundId && journalField(d, 'roundId') !== roundId) { kept.push(d); continue }
-      taken.push({ key: k, data: d })
-    }
-    if (peek) continue
-    if (kept.length) journalBuffers.set(k, kept)
-    else journalBuffers.delete(k)
-  }
-  return taken
-}
-
 /* 图像附件:按 dsh-attachment-local 的内容寻址布局,把图像写入
    DSH_HOME/attachments/v1/objects/<sha 前2位>/<sha256>,
    返回 harness 用户消息的 image 内容块(引用 attachmentId)。
@@ -1708,6 +1604,19 @@ async function attachImages(home, paths) {
   return out
 }
 
+/* SDK 握手：可重试的失败有两类 ——
+   ① `no adapter registered`：运行时组合的 settings 文档由 chokidar 异步载入，llm-pi-ai
+      的 mtnode/pi-ai 路由在起机约 0.5~1s 后才注册进适配器表（见下）；
+   ② 握手超时（timed out after … waiting for dsh profile …）：冷起偶发慢，SDK 的
+      start() 失败时会 close 掉旧客户端、换一只新的，所以重试 = 换一台新子进程重来。
+   ③ 以外的一律上抛（宿主拿可读错误）。超时重试单独限次：每次最多等
+   INITIALIZE_TIMEOUT_MS（60s），别让一条真挂住的运行时把这一轮拖成几分钟。 */
+function warmHandshakeRetryable(err) {
+  const msg = String((err && err.message) || err || '')
+  const name = (err && err.name) || ''
+  return /no adapter registered/.test(msg) || name === 'RequestTimeoutError' || /waiting for dsh profile/.test(msg)
+}
+
 /* SDK 握手预热:运行时组合的 settings 文档由 chokidar 异步载入,
    llm-pi-ai 的 mtnode/pi-ai 路由在启动约 0.5~1s 后才注册进适配器表。
    立即 initialize 会在首个请求报 "no adapter registered for provider ..."
@@ -1716,6 +1625,7 @@ async function attachImages(home, paths) {
 async function warmStartHarness(harness) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   let lastErr
+  let timeoutRetries = 0
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       /* 0.2：握手参数（cwd / provider / model / maxTokens）改由构造函数接管，
@@ -1724,8 +1634,13 @@ async function warmStartHarness(harness) {
       return harness
     } catch (err) {
       lastErr = err
-      if (!/no adapter registered/.test(String((err && err.message) || err))) throw err
-      await sleep(400)
+      if (!warmHandshakeRetryable(err)) throw err
+      const isTimeout = (err && err.name) === 'RequestTimeoutError' || /waiting for dsh profile/.test(String((err && err.message) || ''))
+      /* 超时最多重试 2 次（合计最多 3 次握手）；适配器竞态照旧给满 6 次 */
+      if (isTimeout && ++timeoutRetries > 2) throw err
+      diag('harness 握手失败，重试 ' + (attempt + 1) + '/6（' + (isTimeout ? '超时' : '适配器未就绪') + '）：'
+        + String((err && err.message) || err).slice(0, 300))
+      await sleep(isTimeout ? 800 : 400)
     }
   }
   throw lastErr
@@ -1749,7 +1664,7 @@ function pickRuntimeKey(baseKey, cancelTag) {
   return k
 }
 
-async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, rollbackDir, pure, runSession, hostSessionId, toolsJson, lean, noCanvas, hideTools, noBrowser) {
+async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl, dshHome, envPatch, effort, webSearchApiKey, hostPersona, cancelTag, reqId, pure, runSession, hostSessionId, toolsJson, lean, noCanvas, hideTools, noBrowser) {
   const home = dshHome || process.env.DSH_HOME || ''
   const effMaxTokens =
     Number.isFinite(Number(maxTokens)) && Number(maxTokens) > 0
@@ -1949,10 +1864,6 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
   env.MTNODE_SPEECH_PORT = String(bridgePort)
   env.MTNODE_SPEECH_TOKEN = speechToken
   speechRuntimes.set(key, { port: bridgePort, token: speechToken })
-  /* rollback:journal 落盘目录。同一配置档被不同会话复用同一台 runtime 时,
-     env 只反映建桥那次传入的目录,所以 begin 帧再带一次 dir,插件以帧为准。 */
-  if (rollbackDir) env.MTNODE_ROLLBACK_DIR = rollbackDir
-  else delete env.MTNODE_ROLLBACK_DIR
   /* 思考强度生效档:经 env 下达给运行时 mtnode-effort 插件(在 agent/request waterfall
      上逐步把档位提案进模型请求)。settings.yaml 的 llm-deepseek.reasoningEffort 只留
      兜底默认(见 applySettings),档位切换只冷起新 runtime(档位在 runtime key 里),
@@ -1977,6 +1888,8 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
          用户自己的补丁在 profile 目录里、由运行时自己最后应用。 */
       profile: 'sdk',
       ...(RUNTIME_BIN ? { dshBin: RUNTIME_BIN } : {}),
+      /* 握手预算（默认只有 10s，见 INITIALIZE_TIMEOUT_MS） */
+      initializeTimeoutMs: INITIALIZE_TIMEOUT_MS,
       patches: [
         CORDIS_PATH,
         ...(settingsOverlay ? [settingsOverlay] : []),
@@ -2136,7 +2049,7 @@ async function handleSpeech(params) {
   if (!speechSockets.has(voiceKey)) {
     const rt = await getRuntime(
       workspace, undefined, undefined, undefined, undefined, undefined, '', undefined, undefined,
-      undefined, undefined, 'speech', '', undefined, false, '', '', '', false, false, undefined, false,
+      undefined, undefined, 'speech', '', false, '', '', '', false, false, undefined, false,
     )
     if (rt && rt.key) voiceKey = rt.key
   }
@@ -2162,17 +2075,6 @@ async function handleSpeech(params) {
 
 function onBridgeFrame(key, m, socket) {
   if (!m || typeof m !== 'object') return
-  /* journal 帧不是请求/应答:不进 bridgePending、不要求 id、不回 abort。
-     有在途 run → 顺着事件流直接投给渲染层;无在途(后台 job / 子代理迟到)
-     → 落 per-key 环形缓冲,等 rollbackDrain 取回。轮次归属由插件盖章决定,
-     这里只按「此刻有没有人听」选投递通道。 */
-  if (m.t === 'journal') {
-    const data = journalPayload(m)
-    const claim = claimOf(key)
-    if (claim) out({ event: { reqId: claim.reqId, type: 'journal', data } })
-    else bufferJournal(key, data)
-    return
-  }
   if (typeof m.id !== 'string') return
   if (m.t === 'drop') {
     bridgePending.delete(m.id)
@@ -2658,7 +2560,7 @@ async function handleRun(params) {
   const {
     reqId, workspace, input, model, maxTokens,
     apiKey, baseUrl, systemPrompt, preset, effort, provider, mtnodeProviders, dshHome,
-    permissionPreset, webSearchApiKey, hostPersona, cancelTag, rollback, pure, tools,
+    permissionPreset, webSearchApiKey, hostPersona, cancelTag, pure, tools,
     lean, noCanvas, hideTools, noBrowser,
     resumeSession, hostSessionId, officialModels: officialModelsRaw,
   } = params
@@ -2712,16 +2614,6 @@ async function handleRun(params) {
   let sessionOut = runSession
   /* 续跑判定留一行日志:出问题时先看得懂「宿主点名的那个 id 到底在不在盘上」 */
   if (resumeWanted) diag(`resume reqId=${reqId || '(无)'} sid=${resumeWanted} can=${canResume ? 1 : 0}`)
-  /* 回合开合:rollback = {sessionId, roundId}(渲染层每轮 run 生成)。
-     dir 按约定算给运行时插件写 journal;begin/end 让插件给这个进程
-     当前这一轮盖章,迟到帧靠章而不是靠投递时刻归属。 */
-  const rb = rollback && typeof rollback === 'object' ? rollback : null
-  const rbSession = rb ? String(rb.sessionId || '').trim() : ''
-  const rbRound = rb ? String(rb.roundId == null ? '' : rb.roundId).trim() : ''
-  const rollbackDir = rbSession ? rollbackDirFor(dshHome, rbSession) : ''
-  const roundOpen = !!(rbSession || rbRound)
-  /* begin 真的推出去了吗(桥可能还没连上):只有推过才需要补 end */
-  let roundBegun = false
   if (runTag) activeRunTags.add(runTag)
   /* 度量构建器在 try 内装配(需要 route/model 等),catch 里也要能记成本,故先声明 */
   let buildMetrics = null
@@ -2827,7 +2719,7 @@ async function handleRun(params) {
     const toolsJson = runTools.length ? JSON.stringify(runTools) : ''
     const rt = await getRuntime(
       workspace, model, maxTokens, route, apiKey, baseUrl, dshHome, settings.envPatch, runEffort,
-      webSearchApiKey, hostPersonaText, cancelTag, reqId, rollbackDir, pureFlag, runSession, hostSessionId, toolsJson,
+      webSearchApiKey, hostPersonaText, cancelTag, reqId, pureFlag, runSession, hostSessionId, toolsJson,
       leanFlag, noCanvasFlag, hideTools, noBrowserFlag,
     )
     runKey = rt.key
@@ -2926,13 +2818,6 @@ async function handleRun(params) {
         await closeRuntimeByKey(runKey)
         throw new Error('已请求终止')
       }
-    }
-    /* 开回合:等 harness 就绪再推 —— 运行时还在起机时桥连接尚未建立,
-       begin 丢了这一轮就没人盖章(宁缺勿错:无章的迟到帧走环形缓冲)。 */
-    if (roundOpen) {
-      roundBegun = bridgeBroadcast(runKey, {
-        t: 'begin', sessionId: rbSession, roundId: rbRound, dir: rollbackDir,
-      })
     }
     emit('status', { state: 'running' })
     /* 运行统计:与 dsh 客户端一致的信息表达(轮/步/时间/token/子代理/后台任务) */
@@ -3222,11 +3107,6 @@ async function handleRun(params) {
       resumed,
     })
   } finally {
-    /* 闭回合:先于解除占用推送,插件据此清空进程级 current round,
-       之后的迟到 journal 帧就没有本轮的章了。 */
-    if (roundBegun) {
-      bridgeBroadcast(runKey, { t: 'end', sessionId: rbSession, roundId: rbRound })
-    }
     if (runKey) {
       /* 只有自己仍占着这台时才清桥:已被下一轮接手的，不能拆它的交互桥 */
       const owns = releaseClaim(runKey, reqId, runTag)
@@ -4559,24 +4439,23 @@ rl.on('line', (line) => {
           break
         }
         case 'browser': {
-          /* 浏览器宿主面（活动流面板 / 手动打开 / 接管 / 名单管理全走它）：
-             { action: 'status'|'open'|'stop'|'policy'|'takeover', policy?, on?, sessionId? }
+          /* 浏览器宿主面（活动流面板 / 求助卡的真窗口与接管 / 实况视图全走它）：
+             { action: 'status'|'open'|'stop'|'takeover'|'view', on?, sessionId?, method?, ... }
+             本轮需求：'policy' 这条通道与域名名单机制一起删掉了（危险动作审批恒开，
+             不再有可编辑的策略）。
              与 dsh 的 run 无关，任何时刻都能调；失败一律回 error 文本（不抛到 stdio 外）。 */
           const p = msg.params ?? {}
           const action = String(p.action || 'status')
-          /* 界面触发的浏览器动作（打开 / 停止 / 接管）属于**用户此刻看着的那条会话**：
+          /* 界面触发的浏览器动作（真窗口 / 接管）属于**用户此刻看着的那条会话**：
              面板把会话号带上来，活动流条目就盖它的章（不带 / 老宿主不下发时保持旧口径，
              由 lastSessionId 或空串决定）—— 否则「我点了接管，活动里却没有这条」。 */
           if (p.sessionId) BrowserCtl.lastSessionId = String(p.sessionId)
           try {
             if (action === 'status') reply(BrowserCtl.status())
-            /* 面板的「打开浏览器」= 用户亲手点的那一下：唯一会带窗口的一只（visible 缺省 true）。 */
+            /* 求助卡上的「用真窗口打开」= 用户亲手点的那一下：唯一会带窗口的一只（visible 缺省 true）。 */
             else if (action === 'open') reply(await BrowserCtl.open({ visible: p.visible !== false }))
             else if (action === 'stop') reply(await BrowserCtl.stop())
-            else if (action === 'policy') {
-              if (p.policy && typeof p.policy === 'object') reply({ ok: true, policy: BrowserCtl.save(p.policy) })
-              else reply({ ok: true, policy: BrowserCtl.load() })
-            } else if (action === 'takeover') reply(BrowserCtl.takeover(!!p.on, p.sessionId))
+            else if (action === 'takeover') reply(BrowserCtl.takeover(!!p.on, p.sessionId))
             else if (action === 'view') {
               /* 实况视图（会话右边栏）：{ action:'view', method:'status'|'start'|'stop'|'input'|'mode', ... }
                  不申请驱动锁（只「看」与摆窗口）；帧走事件总线（type 'browser-frame'），
@@ -4588,15 +4467,6 @@ rl.on('line', (line) => {
           } catch (e) {
             reply(undefined, String((e && e.message) || e))
           }
-          break
-        }
-        case 'rollbackDrain': {
-          /* 取回「无在途 run」时暂存的 journal 帧(后台 job / 子代理迟到写入)。
-             params: { key?, workspace?, sessionId?, roundId?, peek? }
-             过滤按插件盖的章(sessionId/roundId);取出即清,peek=true 只看不取。
-             返回 { entries: [{ key, data }] } ,时间先后次序。 */
-          const entries = drainJournals(msg.params ?? {})
-          reply({ entries })
           break
         }
         case 'interact': {

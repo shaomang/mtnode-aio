@@ -17,7 +17,7 @@
  *       条目确实从原位消失；永久项（会话）直接删；暂存区自身永不被清。
  *   [5] 分类清理与「全部清理」回执：bytesFreed / removed / failed 与实际落盘一致；
  *       清理后重新统计，可清理量确实下降。
- *   [6] 静态接线：main.js 注册 IPC 并把 rollback-store 的 gc 传进来、preload 白名单桥、
+ *   [6] 静态接线：main.js 注册 IPC（不依赖任何存储模块）、preload 白名单桥、
  *       设置小节的自动扫描与二次确认、CSS、i18n 英译、build.json 打包白名单。
  *   [7] 引用读取失败时**放弃本轮清理**（宁可不清也不错删）。
  */
@@ -65,15 +65,9 @@ Module._load = function (request, parent, isMain) {
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-storage-clean-"));
 const sc = require(path.join(__dirname, "..", "storage-clean.js"));
 const DATA = path.join(ROOT, "data");
-let gcCalls = 0;
 sc.registerStorageIpc({
   getDataDir: () => DATA,
   t: (s) => I18n.t(s),
-  rollbackGc: () => {
-    gcCalls += 1;
-    fs.rmSync(path.join(DATA, "rollback"), { recursive: true, force: true });
-    return { ok: true, objectsRemoved: 1, roundsRemoved: 2 };
-  },
 });
 
 /* ═══════════════════ 造现场 ═══════════════════ */
@@ -152,6 +146,9 @@ for (let i = 0; i < 3; i++) {
 }
 put(P("dsh-home", "sessions", "new-sess", "session.jsonl"), pad(1500));
 put(P("rollback", "objects", "abc.bin"), pad(6000));
+/* 会话轮次回滚已移除：<数据目录>/dsh-home/rollback 下只剩当年按会话建的空目录，
+   与 <数据目录>/rollback 一起由同一类「历史回滚数据」清掉。 */
+mk(P("dsh-home", "rollback", "assist"));
 
 const byId = (s) => {
   const out = {};
@@ -202,6 +199,15 @@ const byId = (s) => {
   ok(c0.browser.permanent === false, "浏览器缓存走回收站，不是永久删除");
   ok(c0.sessions.items === 3, "会话可清 3 个（得到 " + c0.sessions.items + "）");
   ok(c0.sessions.permanent === true, "会话记录标为永久删除");
+  ok(
+    c0.rollback.permanent === true && c0.rollback.cleanable === true && c0.rollback.files === 1,
+    "历史回滚数据：整目录永久删除、含 1 个文件（得到 " + c0.rollback.files + "）",
+  );
+  ok(
+    c0.rollback.items === 2 && c0.rollback.cleanFiles === 1,
+    "两处历史目录都计入可清理（得到 " + c0.rollback.items + " 处 / " + c0.rollback.cleanFiles + " 个文件）",
+  );
+  has(c0.rollback.hint, "功能已移除", "历史回滚数据的说明写明功能已移除");
   ok(s0.totals.cleanBytes > 0 && s0.totals.files > 0, "总计给出可清理量与文件数");
 
   const s1 = await scan({ sessionDays: 60 });
@@ -264,8 +270,10 @@ const byId = (s) => {
   ok(fs.existsSync(P("dsh-home", "sessions", "new-sess", "session.jsonl")), "新会话保留");
 
   const r5 = await clean({ id: "rollback" });
-  ok(gcCalls === 1, "回滚那类调了 rollback-store 的 gc（得到 " + gcCalls + " 次）");
-  ok(!fs.existsSync(P("rollback", "objects", "abc.bin")), "回滚对象已删");
+  ok(r5.removed === 2, "历史回滚数据两处目录一起删（得到 " + r5.removed + " 项）");
+  ok(r5.results[0].permanent === true, "该分类的回执标为永久删除（不进回收站）");
+  ok(!fs.existsSync(P("rollback")), "旧对象库 / 轮次账本目录已删");
+  ok(!fs.existsSync(P("dsh-home", "rollback")), "dsh-home/rollback 里的空会话目录已删");
 
   const r6 = await clean({ id: "wf_backup" });
   ok(r6.removed === 9, "画布备份清 9 份（得到 " + r6.removed + "）");
@@ -319,13 +327,16 @@ const byId = (s) => {
   has(MAIN, 'require("./storage-clean.js")', "main.js require storage-clean.js");
   has(
     MAIN,
-    "registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s), rollbackGc: rollbackGc })",
-    "main.js 注册 IPC 并传入 rollbackGc",
+    "registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s) })",
+    "main.js 注册 IPC（不再向存储模块传任何回调）",
   );
-  has(
-    MAIN,
-    'const { registerRollbackIpc, gc: rollbackGc } = require("./rollback-store.js")',
-    "rollbackGc 取自 rollback-store 的导出",
+  ok(
+    MAIN.indexOf("rollback-store.js") < 0,
+    "main.js 不再 require 已删除的 rollback-store.js",
+  );
+  ok(
+    !fs.existsSync(path.join(__dirname, "..", "rollback-store.js")),
+    "rollback-store.js 已随会话轮次回滚一并删除",
   );
   has(PRELOAD, "storageScan: (opts) => ipcRenderer.invoke('storage:scan', opts || {})", "preload 暴露 storageScan");
   has(PRELOAD, "storageClean: (opts) => ipcRenderer.invoke('storage:clean', opts || {})", "preload 暴露 storageClean");

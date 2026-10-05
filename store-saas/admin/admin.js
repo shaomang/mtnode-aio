@@ -89,7 +89,9 @@
     paid_mismatch: "金额不符",
   };
   const stClass = (s) => (s === "paid" ? "st-paid" : s === "pending" ? "st-pending" : ["refunded", "partial_refunded", "paid_mismatch", "expired", "closed"].includes(s) ? "st-bad" : "st-muted");
-  const LEDGER_TEXT = { recharge: "充值入账", refund: "退款", adjust: "人工调账", mismatch: "金额不符", relay: "中转扣费" };
+  const LEDGER_TEXT = { recharge: "充值入账", refund: "退款", adjust: "人工调账", mismatch: "金额不符", relay: "中转扣费", tip_out: "打赏转出", tip_in: "打赏转入", tip_revoke_out: "撤销扣回", tip_revoke_in: "撤销退回" };
+  /** 打赏对象类型（服务端 /api/admin/tips 回的 targetKind 是英文枚举，界面显示中文）。 */
+  const TIP_KIND_TEXT = { template: "模板", skill: "技能", app: "应用", forum_topic: "论坛话题", forum_reply: "论坛回复" };
 
   let toastTimer = 0;
   function toast(msg, kind) {
@@ -115,7 +117,10 @@
       }
       const lab = el("label", "", f.label);
       const inp = el(f.type === "textarea" ? "textarea" : "input");
-      if (f.type !== "textarea") inp.type = f.type || "text";
+      if (f.type === "file") {
+        inp.type = "file";
+        if (f.accept) inp.accept = f.accept;
+      } else if (f.type !== "textarea") inp.type = f.type || "text";
       if (f.value != null) inp.value = f.value;
       if (f.placeholder) inp.placeholder = f.placeholder;
       if (f.type === "textarea") inp.rows = 3;
@@ -124,15 +129,28 @@
       body.appendChild(lab);
       inputs[f.name] = inp;
     }
+    $("dlgOk").classList.remove("hidden");
+    $("dlgCancel").classList.remove("hidden");
+    $("dlgCancel").textContent = "取消";
     $("dlgOk").textContent = okText || "确定";
     $("dlg").classList.remove("hidden");
     const first = Object.values(inputs)[0];
     if (first) first.focus();
     dlgOk = async () => {
       const vals = {};
-      for (const k of Object.keys(inputs)) vals[k] = inputs[k].value.trim();
+      const files = {};
+      for (const k of Object.keys(inputs)) {
+        if (inputs[k].type === "file") {
+          vals[k] = "";
+          files[k] = (inputs[k].files && inputs[k].files[0]) || null;
+        } else vals[k] = inputs[k].value.trim();
+      }
       $("dlgOk").disabled = true;
       try {
+        /* 文件字段：选中的文件读成 data URL（base64）再交给 onOk；没选就保持空串。 */
+        for (const k of Object.keys(files)) {
+          if (files[k]) vals[k] = await readFileBase64(files[k]);
+        }
         const keepOpen = await onOk(vals);
         if (!keepOpen) closeDialog();
       } catch (e) {
@@ -142,9 +160,32 @@
       }
     };
   }
+  function readFileBase64(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ""));
+      fr.onerror = () => reject(new Error("读取文件失败"));
+      fr.readAsDataURL(file);
+    });
+  }
+  /** 纯自定义弹窗（版本历史 / 技能包文件这类要放按钮的）：mount 自己往 #dlgBody 里挂东西。 */
+  function openRawDialog(title, mount, okText, onOk) {
+    $("dlgTitle").textContent = title;
+    const body = $("dlgBody");
+    body.textContent = "";
+    mount(body);
+    $("dlgOk").classList.toggle("hidden", !onOk);
+    $("dlgOk").textContent = okText || "关闭";
+    $("dlgCancel").classList.remove("hidden");
+    $("dlgCancel").textContent = onOk ? "取消" : "关闭";
+    $("dlg").classList.remove("hidden");
+    dlgOk = onOk || null;
+  }
   function closeDialog() {
     $("dlg").classList.add("hidden");
     $("dlgCancel").classList.remove("hidden"); // 详情弹窗会藏掉「取消」，关闭时统一复位
+    $("dlgOk").classList.remove("hidden");
+    $("dlgCancel").textContent = "取消";
     $("dlgOk").textContent = "确定";
     $("dlgOk").disabled = false;
     dlgOk = null;
@@ -207,13 +248,31 @@
   }
 
   /* ==========================================================================
-   * 中转服务（上游 / 模型 / 价目 / 会话测试 / 留痕 / 用量）
+   * 中转服务（页内二级页签：调用流水 · 配置 · 会话测试 · 改动留痕）
+   *   · 不再把五块内容堆在同一页上：「调用流水」是默认页签（统计卡片 + 筛选 + 明细）；
    *   · 配置保存走 POST /api/admin/relay/config，服务端校验 + 落 db.json + 热生效；
    *   · 界面拿到的上游永远不含 Key 明文（只有 keyFrom / keyTail）；
-   *   · 会话测试发一张 mtr_test_ 短时 Key 打 /relay/v1/*，按真实用量扣当前管理员账号。
+   *   · 会话测试发一张 mtr_test_ 短时 Key 打 /relay/v1/*，按真实用量扣当前管理员账号；
+   *   · 调用流水的筛选与统计走 GET /api/admin/relay/usage（服务端只读聚合，见 relay.mjs 的 usageQuery）：
+   *     relayUsage 全局保留有上限，前端按明细自己加出来的窗口合计会在忙时偏小，所以统计在服务端算。
    * ========================================================================== */
 
-  let RL = { config: null, audit: [], usage: [] };
+  let RL = { config: null, audit: [], usage: [], usageMeta: null };
+
+  /* ---------- 二级页签（默认停在「调用流水」） ---------- */
+
+  const RL_SUBS = ["usage", "config", "test", "audit"];
+  let relaySub = "usage";
+
+  function showRelaySub(name) {
+    const want = RL_SUBS.includes(name) ? name : "usage";
+    relaySub = want;
+    for (const b of document.querySelectorAll("#relaySubtabs .subtab")) b.classList.toggle("active", b.dataset.sub === want);
+    for (const v of document.querySelectorAll(".subview")) v.classList.toggle("hidden", v.id !== "sub-" + want);
+  }
+  for (const b of document.querySelectorAll("#relaySubtabs .subtab")) {
+    b.addEventListener("click", () => showRelaySub(b.dataset.sub));
+  }
 
   const KINDS = [["text", "文本"], ["image", "图像"]];
   const numOr0 = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -230,14 +289,154 @@
 
   async function loadRelay() {
     try {
-      const r = await api("GET", "/api/admin/relay?audit=100&usage=100");
-      RL = { config: r.config, audit: r.audit || [], usage: r.usage || [] };
+      const r = await api("GET", "/api/admin/relay?audit=100");
+      RL.config = r.config;
+      RL.audit = r.audit || [];
     } catch (e) {
       toast((e && e.message) || "加载中转配置失败", "err");
       return;
     }
     paintRelay();
   }
+
+  /* ---------- 调用流水：筛选 + 统计（GET /api/admin/relay/usage，一次回明细 + 三档合计） ---------- */
+
+  const USAGE_LIMIT = 1000; // 与 relay.mjs 的 USAGE_QUERY_MAX 同值（服务端会夹紧，界面按返回的 limit 标注）
+  const USAGE_DEFAULT_WINDOW = "7d";
+
+  const fmtNum = (n) => String(Math.round(numOr0(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const fmtTok = (n) => {
+    const v = numOr0(n);
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
+    return String(v);
+  };
+
+  /** 当前时间窗口：取下拉值，空则回落默认「近 7 天」（HTML 上也是 selected，这里是兜底）。 */
+  const usageWindowValue = () => $("fUsageWindow").value || USAGE_DEFAULT_WINDOW;
+
+  /** 筛选 → 查询串（时间窗口 / 类型 / 模型 / 账号 / 条数上限）。 */
+  function usageQueryString() {
+    const q = new URLSearchParams();
+    q.set("window", usageWindowValue());
+    q.set("kind", $("fUsageKind").value || "");
+    q.set("model", $("fUsageModel").value || "");
+    q.set("userId", $("fUsageUser").value.trim());
+    q.set("limit", String(USAGE_LIMIT));
+    return q.toString();
+  }
+
+  async function loadUsage() {
+    try {
+      const r = await api("GET", "/api/admin/relay/usage?" + usageQueryString());
+      RL.usage = r.items || [];
+      RL.usageMeta = r;
+    } catch (e) {
+      toast((e && e.message) || "加载调用流水失败", "err");
+      return;
+    }
+    paintUsageModels();
+    paintUsage();
+  }
+
+  /** 模型下拉：当前上架清单 ∪ 明细里出现过的模型（历史记录里的下架模型也要能筛）。 */
+  function paintUsageModels() {
+    const sel = $("fUsageModel");
+    const keep = sel.value;
+    const ids = [];
+    for (const m of (RL.config && RL.config.models) || []) if (m && m.id) ids.push(m.id);
+    for (const m of (RL.usageMeta && RL.usageMeta.models) || []) if (m) ids.push(m);
+    sel.textContent = "";
+    const all = el("option", "", "全部模型");
+    all.value = "";
+    sel.appendChild(all);
+    for (const id of Array.from(new Set(ids)).sort()) {
+      const o = el("option", "", id);
+      o.value = id;
+      sel.appendChild(o);
+    }
+    sel.value = keep && ids.includes(keep) ? keep : "";
+  }
+
+  function paintUsage() {
+    const meta = RL.usageMeta || {};
+    const scope = meta.scope || {};
+    const cur = usageWindowValue();
+
+    /* 三张窗口卡片（今日 / 近 7 天 / 近 30 天）：全站口径，点一张 = 把下面明细也收窄到该窗口。 */
+    const box = $("rlStatCards");
+    box.textContent = "";
+    for (const w of meta.windows || []) {
+      const c = el("div", "card card-click" + (w.key === cur ? " on" : ""));
+      c.title = "点一下：统计与明细都切到「" + w.label + "」";
+      c.appendChild(el("div", "k", w.label + "（全站）"));
+      c.appendChild(el("div", "v money", money(w.chargedYuan)));
+      c.appendChild(el("div", "card-line", "调用 " + fmtNum(w.calls) + " 次 · 文本 " + fmtNum(w.textCalls) + " / 图像 " + fmtNum(w.imageCalls) +
+        (numOr0(w.images) ? "（" + fmtNum(w.images) + " 张）" : "")));
+      c.appendChild(el("div", "card-line muted", "tokens 入 " + fmtTok(w.promptTokens) + " · 出 " + fmtTok(w.outputTokens)));
+      c.appendChild(el("div", "card-line muted", "未计费 " + fmtNum(w.unbilled) + " 次" +
+        (numOr0(w.shortfallYuan) > 0 ? " · 欠费未计 " + money(w.shortfallYuan) : "")));
+      c.addEventListener("click", () => {
+        $("fUsageWindow").value = w.key;
+        loadUsage();
+      });
+      box.appendChild(c);
+    }
+    $("rlStatHint").textContent =
+      "卡片是「全站」口径（不受下面筛选影响）；数字为「实扣」（真正从余额扣到的钱），欠费差额另列。" +
+      "「未计费」= 实扣为 0 的那几次（余额不足被夹紧 / 零费用）；上游没回 usage 的请求不写用量记录，" +
+      "所以不在统计里（服务端只记日志）。时间窗口按服务器本地时区的自然日。";
+
+    /* 明细上方的合计：本次筛选口径（含窗口 + 类型 + 模型 + 账号）与条数。 */
+    const shown = (meta.items || []).length;
+    let t = "命中 " + fmtNum(meta.matched) + " 条";
+    if (meta.matched > shown) {
+      t += "（下面显示最近 " + fmtNum(shown) + " 条，上限 " + fmtNum(meta.limit) + " 条；" +
+        (cur === "all" ? "请用类型 / 模型 / 账号筛选继续收窄" : "要更早的请收窄时间范围") + "）";
+    }
+    t += " · 本次筛选合计 " + fmtNum(scope.calls) + " 次（文本 " + fmtNum(scope.textCalls) + " / 图像 " + fmtNum(scope.imageCalls) + "）" +
+      " · 实扣 " + money(scope.chargedYuan) +
+      " · tokens 入 " + fmtNum(scope.promptTokens) + " / 出 " + fmtNum(scope.outputTokens) +
+      (numOr0(scope.unbilled) ? " · 未计费 " + fmtNum(scope.unbilled) + " 次" : "") +
+      (numOr0(scope.shortfallYuan) > 0 ? " · 欠费未计 " + money(scope.shortfallYuan) : "");
+    $("rlUsageMeta").textContent = t;
+
+    renderTable($("tblRelayUsage"), [
+      { title: "时间", get: (r) => ts(r.at) },
+      { title: "账号", get: (r) => r.username || r.userId },
+      { title: "模型", cls: "mono", get: (r) => r.model },
+      { title: "类型", render: (td, r) => td.appendChild(el("span", "badge", r.kind === "image" ? "图像 ×" + (r.images || 1) : "文本")) },
+      { title: "入 / 出 tokens", cls: "num", get: (r) => (r.kind === "image" ? "—" : fmtNum(r.promptTokens) + " / " + fmtNum(r.outputTokens)) },
+      { title: "应扣(元)", cls: "num", get: (r) => numOr0(r.costYuan).toFixed(4) },
+      {
+        title: "实扣(元)",
+        cls: "num",
+        render: (td, r) => {
+          const charged = numOr0(r.chargedYuan);
+          const short = numOr0(r.shortfallYuan);
+          td.appendChild(el("div", charged > 0 ? "" : "muted", charged.toFixed(4) + (charged > 0 ? "" : "（未计费）")));
+          if (short > 0) td.appendChild(el("div", "neg", "欠 " + short.toFixed(4)));
+        },
+      },
+      { title: "耗时(ms)", cls: "num", get: (r) => fmtNum(r.ms) },
+    ], RL.usage, "没有匹配的调用记录");
+  }
+
+  $("fUsageWindow").addEventListener("change", loadUsage);
+  $("fUsageKind").addEventListener("change", loadUsage);
+  $("fUsageModel").addEventListener("change", loadUsage);
+  $("btnUsageSearch").addEventListener("click", loadUsage);
+  $("btnUsageReload").addEventListener("click", loadUsage);
+  $("fUsageUser").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadUsage();
+  });
+  $("btnUsageReset").addEventListener("click", () => {
+    $("fUsageWindow").value = USAGE_DEFAULT_WINDOW;
+    $("fUsageKind").value = "";
+    $("fUsageModel").value = "";
+    $("fUsageUser").value = "";
+    loadUsage();
+  });
 
   function paintRelay() {
     const c = RL.config || { upstreams: [], models: [] };
@@ -313,17 +512,6 @@
       { title: "动作", get: (r) => r.action },
       { title: "改动", cls: "wrap-cell", get: (r) => (r.changes || []).join("；") || "（无字段级差异）" },
     ], RL.audit, "还没有改动记录");
-
-    renderTable($("tblRelayUsage"), [
-      { title: "时间", get: (r) => ts(r.at) },
-      { title: "账号", get: (r) => r.username || r.userId },
-      { title: "模型", cls: "mono", get: (r) => r.model },
-      { title: "类型", get: (r) => (r.kind === "image" ? "图像 ×" + (r.images || 1) : "文本") },
-      { title: "入 / 出 tokens", cls: "num", get: (r) => (r.kind === "image" ? "—" : numOr0(r.promptTokens) + " / " + numOr0(r.outputTokens)) },
-      { title: "应扣(元)", cls: "num", get: (r) => numOr0(r.costYuan).toFixed(4) },
-      { title: "实扣(元)", cls: "num", get: (r) => numOr0(r.chargedYuan).toFixed(4) + (numOr0(r.shortfallYuan) ? "（欠 " + numOr0(r.shortfallYuan).toFixed(4) + "）" : "") },
-      { title: "耗时(ms)", cls: "num", get: (r) => numOr0(r.ms) },
-    ], RL.usage, "还没有调用记录");
 
     const sel = $("rlTestModel");
     const keep = sel.value;
@@ -623,20 +811,16 @@
       $("rlTestStatus").textContent =
         "HTTP " + res.status + " · " + ms + "ms · 模型 " + modelId + "（" + (isImg ? "图像" : "文本") + "）" +
         (usage ? " · usage " + JSON.stringify(usage) : "") +
-        " · 按真实用量从管理员账号扣费，可在下面「最近调用明细」里核对实扣";
+        " · 按真实用量从管理员账号扣费，可在「调用流水」页里核对实扣";
       if (res.ok) toast("测试通过：" + modelId, "ok");
       else toast("测试失败 HTTP " + res.status + "（错误体见下方输出）", "err");
-      // 测试完刷新明细，让「扣了多少」当场可核
-      const r = await api("GET", "/api/admin/relay?audit=100&usage=100");
-      RL.config = r.config;
-      RL.audit = r.audit || [];
-      RL.usage = r.usage || [];
+      // 测试完刷新明细，让「扣了多少」当场可核（统计与明细都在「调用流水」页）
+      await loadUsage();
       const me = RL.usage.filter((x) => x.at >= t0 - 2000);
       if (me.length) {
         const charged = me.reduce((s, x) => s + numOr0(x.chargedYuan), 0);
         $("rlTestStatus").textContent += " · 本次实扣 " + Number(charged.toFixed(4)) + " 元";
       }
-      paintRelay();
       $("rlTestBalance").textContent = "管理员账号余额 " + money(k.totalYuan) + "（" + Number(k.totalYuan).toFixed(4) + " 元）";
     } catch (e) {
       $("rlTestStatus").textContent = "测试失败：" + ((e && e.message) || e);
@@ -772,10 +956,22 @@
     for (const b of document.querySelectorAll("#tabs .tab")) b.classList.toggle("active", b.dataset.view === name);
     for (const v of document.querySelectorAll(".view")) v.classList.toggle("hidden", v.id !== "view-" + name);
     if (name === "overview") loadOverview();
+    if (name === "sysinfo") loadSysinfo();
     if (name === "orders") loadOrders(ordersPage);
     if (name === "users") loadUsers(usersPage);
     if (name === "ledger") loadLedger();
-    if (name === "relay") loadRelay();
+    if (name === "tips") loadTips();
+    if (name === "relay") {
+      showRelaySub(relaySub);
+      loadRelay();
+      loadUsage();
+    }
+    if (name === "content") {
+      showContentSub(cSub);
+      if (cSub === "audit") loadContentAudit();
+      else loadContent(cSub, cPages[cSub]);
+      if (cSub === "app") loadAppPub();
+    }
   }
   for (const b of document.querySelectorAll("#tabs .tab")) {
     b.addEventListener("click", () => switchView(b.dataset.view));
@@ -820,6 +1016,8 @@
       ["流水条数", String(s.ledger || 0), ""],
       ["待支付", String((s.byStatus && s.byStatus.pending) || 0), ""],
       ["金额不符（需人工）", String((s.byStatus && s.byStatus.paid_mismatch) || 0), ""],
+      // 打赏汇总（server 的 stats.tips = { count, totalYuan, todayYuan, revokedCount }）
+      ["打赏总额", money((s.tips && s.tips.totalYuan) || 0) + " · " + String((s.tips && s.tips.count) || 0) + " 笔", "money"],
     ];
     const box = $("ovCards");
     box.textContent = "";
@@ -837,7 +1035,9 @@
       ["异步通知地址", pay.notifyUrl || "（未配置：只能靠轮询 / 手动补单入账）"],
       ["微信登录", OV.wechat && OV.wechat.configured ? "已配置" : "未配置（管理页无法扫码登录）"],
       ["微信归属映射", (OV.wechat && OV.wechat.ownerMapEntries) + " 条"],
-      ["充值白名单", ((OV.config && OV.config.rechargeUsers) || []).join(", ") || "（空）"],
+      /* 充值闸门：名单口径已作废（所有已注册账号一律可充），只剩一个显式全局关闭开关；
+         这里把「当前到底开没开」直接写清楚，省得再去服务器上翻 env。 */
+      ["充值闸门", (OV.config && OV.config.rechargeClosed) ? "已全局关闭（MTNODE_RECHARGE_CLOSED）" : "对所有注册账号开放"],
       ["充值区间", money(OV.config && OV.config.minYuan) + " – " + money(OV.config && OV.config.maxYuan)],
     ];
     const hp = $("ovHealth");
@@ -1194,6 +1394,86 @@
     if (e.key === "Enter") loadLedger();
   });
 
+  /* ---------- 打赏 ---------- */
+
+  let tipsPage = 1;
+  const TIPS_PAGE_SIZE = 20;
+
+  /** 打赏表格列（概览 / 别处要复用的话也在这里，别各写一份）。
+      **没有「操作」列**：撤销打赏已停用（需求口径：前后端都不提供撤销，也不提示原因），
+      表格里只留「状态」把存量已撤销记录标出来（历史数据与 CSV 的撤销列一律保留）。 */
+  function tipColumns() {
+    const cols = [
+      { title: "时间", get: (t) => ts(t.at) },
+      {
+        title: "打赏人",
+        get: (t) => (t.fromNickname || t.fromUsername || "—") + "（" + (t.fromUsername || t.fromUserId || "—") + " / " + (t.fromUserId || "—") + "）",
+      },
+      { title: "接收作者", get: (t) => (t.toNickname || t.toUsername || "—") + "（" + (t.toUsername || t.toUserId || "—") + "）" },
+      { title: "对象类型", render: (td, t) => td.appendChild(el("span", "badge", TIP_KIND_TEXT[t.targetKind] || t.targetKind || "—")) },
+      {
+        title: "对象",
+        render: (td, t) => {
+          td.appendChild(el("div", "wrap-cell", t.targetLabel || "（对象已删除）"));
+          td.appendChild(el("div", "mono muted", t.targetId || ""));
+        },
+      },
+      { title: "金额", cls: "num", get: (t) => money(t.amountYuan) },
+      {
+        title: "状态",
+        render: (td, t) => {
+          td.appendChild(el("span", "st " + (t.revoked ? "st-bad" : "st-paid"), t.revoked ? "已撤销" : "正常"));
+          if (t.revoked) {
+            td.appendChild(el("div", "muted wrap-cell", (t.revokeReason || "") + (t.revokedBy ? "（" + t.revokedBy + "）" : "")));
+          }
+        },
+      },
+    ];
+    return cols;
+  }
+
+  function paintTipCards(stats) {
+    const s = stats || {};
+    const cards = [
+      ["打赏笔数", String(s.count || 0), ""],
+      ["打赏总额", money(s.totalYuan), "money"],
+      ["今日打赏", money(s.todayYuan), "money"],
+      ["已撤销笔数", String(s.revokedCount || 0), ""],
+    ];
+    const box = $("tipCards");
+    box.textContent = "";
+    for (const [k, v, cls] of cards) {
+      const c = el("div", "card");
+      c.appendChild(el("div", "k", k));
+      c.appendChild(el("div", "v " + cls, v));
+      box.appendChild(c);
+    }
+  }
+
+  async function loadTips(page) {
+    tipsPage = Math.max(1, page || 1);
+    const kind = encodeURIComponent($("fTipKind").value);
+    const q = encodeURIComponent($("fTipUser").value.trim());
+    try {
+      const r = await api("GET", "/api/admin/tips?page=" + tipsPage + "&pageSize=" + TIPS_PAGE_SIZE + "&targetKind=" + kind + "&q=" + q);
+      paintTipCards(r.stats);
+      renderTable($("tblTips"), tipColumns(), r.items, "没有匹配的打赏");
+      renderPager($("pgTips"), r.total, r.page, r.pageSize, (p) => loadTips(p));
+    } catch (e) {
+      toast((e && e.message) || "加载打赏失败", "err");
+    }
+  }
+  $("btnTipSearch").addEventListener("click", () => loadTips(1));
+  $("fTipKind").addEventListener("change", () => loadTips(1));
+  $("fTipUser").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadTips(1);
+  });
+  if ($("btnCsvTips")) $("btnCsvTips").addEventListener("click", () => downloadCsv("tips"));
+
+  /* 撤销打赏的入口（按钮 + 理由弹窗 + POST /api/admin/tips/revoke）已按需求整体移除：
+     前后端都不提供撤销，界面上也不给任何「无法撤销」的提示 —— 存量已撤销记录照旧只读展示
+     （状态列 / 汇总卡片的「已撤销笔数」/ CSV 的撤销列都还在）。 */
+
   /* ---------- CSV 导出（带 Bearer，只能 fetch → blob 下载） ---------- */
 
   async function downloadCsv(kind) {
@@ -1217,6 +1497,574 @@
   }
   $("btnCsvOrders").addEventListener("click", () => downloadCsv("orders"));
   $("btnCsvLedger").addEventListener("click", () => downloadCsv("ledger"));
+
+  /* ==========================================================================
+   * 系统资源监控（只读 · 切页签采一次 + 手动刷新）
+   *   · 页签里**没有**任何定时器：所有请求都只来自「切到本页签」与「点刷新」；
+   *   · 进度条按用量百分比上色：< 80 常态、>= 80 黄、>= 90 红（阈值只在界面上，服务端不下发规则）；
+   *   · 采样时间戳用服务端下发的 at，界面不自己造时间；Swap / 磁盘取不到就明说，不假装有数。
+   * ========================================================================== */
+
+  let siSeq = 0;
+
+  const sizeText = (bytes) => {
+    const n = Number(bytes) || 0;
+    if (n >= 1024 ** 4) return (n / 1024 ** 4).toFixed(2) + " TB";
+    if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(2) + " GB";
+    if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return n + " B";
+  };
+  const durText = (sec) => {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d) return d + " 天 " + h + " 小时";
+    if (h) return h + " 小时 " + m + " 分";
+    if (m) return m + " 分 " + (s % 60) + " 秒";
+    return s + " 秒";
+  };
+  const meterClass = (pct) => (Number(pct) >= 90 ? "bad" : Number(pct) >= 80 ? "warn" : "");
+
+  /** 一张指标卡：pct 不为空时带用量进度条（并按阈值上色）。 */
+  function metricCard(label, value, pct, sub) {
+    const c = el("div", "card metric");
+    c.appendChild(el("div", "k", label));
+    c.appendChild(el("div", "v", value));
+    if (pct != null && Number.isFinite(Number(pct))) {
+      const bar = el("div", "meter " + meterClass(pct));
+      const fill = el("i");
+      fill.style.width = Math.max(0, Math.min(100, Number(pct))) + "%";
+      bar.appendChild(fill);
+      c.appendChild(bar);
+      c.appendChild(el("div", "sub", "用量 " + Number(pct).toFixed(1) + "%"));
+    }
+    if (sub) c.appendChild(el("div", "sub", sub));
+    return c;
+  }
+
+  function kvPanel(node, rows) {
+    node.textContent = "";
+    const dl = el("dl");
+    for (const [k, v] of rows) {
+      dl.appendChild(el("dt", "", k));
+      dl.appendChild(el("dd", "", v));
+    }
+    node.appendChild(dl);
+  }
+
+  async function loadSysinfo() {
+    const seq = ++siSeq;
+    $("siMeta").textContent = "正在采样…";
+    let r = null;
+    try {
+      r = await api("GET", "/api/admin/sysinfo");
+    } catch (e) {
+      if (seq === siSeq) {
+        $("siMeta").textContent = "采样失败：" + ((e && e.message) || e);
+        toast((e && e.message) || "采样失败", "err");
+      }
+      return;
+    }
+    if (seq !== siSeq) return;
+    const cpu = r.cpu || {};
+    const mem = r.mem || {};
+    const swap = r.swap || {};
+    const disk = r.disk || {};
+    const proc = r.proc || {};
+    const host = r.host || {};
+    const load = cpu.load || [0, 0, 0];
+    $("siMeta").textContent =
+      "采样时间 " + ts(r.at) + " · 本次采样耗时 " + (r.sampleMs || 0) + "ms · 切到本页签采一次、点「刷新」再采一次（服务端不留历史、不定时轮询）";
+
+    const box = $("siCards");
+    box.textContent = "";
+    box.appendChild(metricCard("CPU 使用率", Number(cpu.usagePct || 0).toFixed(1) + " %", cpu.usagePct,
+      (cpu.cores || 0) + " 核 · " + (cpu.model || "—")));
+    box.appendChild(metricCard("负载（1 / 5 / 15 分钟）", load.map((n) => Number(n).toFixed(2)).join(" / "), null,
+      cpu.cores ? "折合每核 1 分钟 " + (Number(load[0]) / Math.max(1, cpu.cores)).toFixed(2) : ""));
+    box.appendChild(metricCard("内存", sizeText(mem.usedBytes) + " / " + sizeText(mem.totalBytes), mem.usedPct,
+      "可用 " + sizeText(mem.freeBytes)));
+    box.appendChild(swap.supported
+      ? metricCard("Swap", sizeText(swap.usedBytes) + " / " + sizeText(swap.totalBytes), swap.usedPct, "空闲 " + sizeText(swap.freeBytes))
+      : metricCard("Swap", "—", null, "本机不支持（读不到 /proc/meminfo）"));
+    box.appendChild(disk.supported
+      ? metricCard("磁盘（数据目录所在盘）", sizeText(disk.usedBytes) + " / " + sizeText(disk.totalBytes), disk.usedPct, "可用 " + sizeText(disk.freeBytes) + " · " + disk.path)
+      : metricCard("磁盘", "—", null, "取不到磁盘信息（本机不支持 statfs）"));
+    box.appendChild(metricCard("本服务内存（RSS）", sizeText(proc.rssBytes), null, "堆已用 " + sizeText(proc.heapUsedBytes)));
+
+    kvPanel($("siProc"), [
+      ["进程 PID", String(proc.pid || "—")],
+      ["Node 版本", proc.node || "—"],
+      ["运行时长", durText(proc.uptimeSec)],
+      ["启动时间", ts(proc.startedAt)],
+      ["累计 CPU 时间", Math.round((Number(proc.cpuTimeMs) || 0) / 1000) + " 秒"],
+      ["RSS / 堆已用", sizeText(proc.rssBytes) + " / " + sizeText(proc.heapUsedBytes)],
+    ]);
+    kvPanel($("siHost"), [
+      ["主机名", host.hostname || "—"],
+      ["系统", (host.platform || "—") + " " + (host.release || "") + " · " + (host.arch || "")],
+      ["开机时长", durText(host.uptimeSec)],
+      ["CPU 型号 / 核数", (cpu.model || "—") + " · " + (cpu.cores || 0) + " 核"],
+      ["数据目录", disk.path || "—"],
+    ]);
+  }
+  if ($("btnSiRefresh")) $("btnSiRefresh").addEventListener("click", () => loadSysinfo());
+
+  /* ==========================================================================
+   * 内容管理（应用 / 模板 / 技能 / 改动留痕）
+   *   · 管理员的票是 adm_，走 /api/admin/content/*：可操作**任何作者**的内容；
+   *   · 编辑只到元信息（应用另可换图标）；文件正文与 zip 不在管理台换，应用的版本号也不手改；
+   *   · 删除类操作先弹二次确认（写清删哪条、影响多少文件），服务端逐条写 contentAudit 留痕；
+   *   · 模板 / 技能服务端本来就没有多版本链与「下架」位，界面上也不给这两类摆空按钮。
+   * ========================================================================== */
+
+  const C_SUBS = ["app", "template", "skill", "audit"];
+  const C_PAGE_SIZE = 20;
+  const KIND_TEXT = { app: "应用", template: "模板", skill: "技能" };
+  const C_ACT_TEXT = {
+    publish: "上架",
+    unpublish: "下架",
+    update: "编辑",
+    delete: "删除",
+    "delete-version": "删版本",
+    republish: "重发目录",
+  };
+  let cSub = "app";
+  const cPages = { app: 1, template: 1, skill: 1 };
+  const cSeq = { app: 0, template: 0, skill: 0 };
+
+  const cSubtabEls = () => Array.prototype.slice.call(document.querySelectorAll("#contentSubtabs .subtab"));
+
+  function showContentSub(name) {
+    const want = C_SUBS.includes(name) ? name : "app";
+    cSub = want;
+    for (const b of cSubtabEls()) b.classList.toggle("active", b.dataset.csub === want);
+    for (const v of document.querySelectorAll(".csubview")) v.classList.toggle("hidden", v.id !== "cview-" + want);
+  }
+  for (const b of cSubtabEls()) {
+    b.addEventListener("click", () => {
+      showContentSub(b.dataset.csub);
+      /* 切到哪个子页签就拉哪个列表（页签不轮询：只有点进来这一次与页内「查询 / 刷新」才请求）。 */
+      if (b.dataset.csub === "audit") loadContentAudit();
+      else loadContent(b.dataset.csub, cPages[b.dataset.csub]);
+    });
+  }
+
+  /** 页签角标 = 全量条数（服务端 counts 恒为全量口径，不受当前筛选影响）。 */
+  function paintContentCounts(counts) {
+    if (!counts) return;
+    for (const b of cSubtabEls()) {
+      const k = b.dataset.csub;
+      if (k === "app") b.textContent = "应用（" + (counts.app || 0) + "）";
+      else if (k === "template") b.textContent = "模板（" + (counts.template || 0) + "）";
+      else if (k === "skill") b.textContent = "技能（" + (counts.skill || 0) + "）";
+    }
+  }
+
+  const kindCell = (r) => el("span", "badge", KIND_TEXT[r.kind] || r.kind);
+  void kindCell;
+
+  function acts(td, buttons) {
+    const box = el("div", "row-acts");
+    for (const [text, cls, fn] of buttons) {
+      const b = el("button", "btn btn-sm " + (cls || ""), text);
+      b.addEventListener("click", fn);
+      box.appendChild(b);
+    }
+    td.appendChild(box);
+  }
+
+  function appColumns() {
+    return [
+      { title: "应用 id", get: (r) => r.id },
+      { title: "标题", get: (r) => r.title },
+      { title: "作者", get: (r) => r.ownerName },
+      { title: "当前版本", get: (r) => "v" + (r.version || "—") + (r.versionCount > 1 ? "（共 " + r.versionCount + " 版）" : "") },
+      { title: "大小", get: (r) => sizeText(r.bytes) },
+      { title: "下载 / 赞", get: (r) => r.downloads + " / " + r.likes },
+      { title: "状态", render: (td, r) => td.appendChild(el("span", "badge " + (r.unpublished ? "bad" : "ok"), r.unpublished ? "已下架" : "已上架")) },
+      { title: "更新时间", get: (r) => ts(r.updatedAt) },
+      {
+        title: "操作",
+        render: (td, r) =>
+          acts(td, [
+            [r.unpublished ? "重新上架" : "下架", "", () => contentPublish(r, !r.unpublished)],
+            ["编辑", "", () => contentEdit(r)],
+            ["版本历史", "", () => contentVersions(r)],
+            ["下载 zip", "", () => contentDownload(r)],
+            ["删除", "btn-danger", () => contentDelete(r)],
+          ]),
+      },
+    ];
+  }
+
+  function tplColumns() {
+    return [
+      { title: "模板 id", get: (r) => r.id },
+      { title: "标题", get: (r) => r.title },
+      { title: "作者", get: (r) => r.ownerName },
+      { title: "标签", get: (r) => (r.tags || []).join(" / ") || "—" },
+      { title: "大小", get: (r) => sizeText(r.bytes) },
+      { title: "下载 / 赞", get: (r) => r.downloads + " / " + r.likes },
+      { title: "预览图", get: (r) => (r.hasPreview ? "有" : "无") },
+      { title: "更新时间", get: (r) => ts(r.updatedAt) },
+      {
+        title: "操作",
+        render: (td, r) =>
+          acts(td, [
+            ["编辑", "", () => contentEdit(r)],
+            ["下载文件", "", () => contentDownload(r)],
+            ["看预览图", "", () => contentPreview(r)],
+            ["删除", "btn-danger", () => contentDelete(r)],
+          ]),
+      },
+    ];
+  }
+
+  function skillColumns() {
+    return [
+      { title: "skill name", get: (r) => r.skillName || "—" },
+      { title: "标题", get: (r) => r.title },
+      { title: "作者", get: (r) => r.ownerName },
+      { title: "版本", get: (r) => "v" + (r.version || "—") },
+      { title: "官方", render: (td, r) => td.appendChild(el("span", "badge " + (r.official ? "ok" : ""), r.official ? "官方" : "非官方")) },
+      { title: "文件", get: (r) => r.fileCount + " 个 · " + sizeText(r.bytes) },
+      { title: "下载 / 赞", get: (r) => r.downloads + " / " + r.likes },
+      { title: "更新时间", get: (r) => ts(r.updatedAt) },
+      {
+        title: "操作",
+        render: (td, r) =>
+          acts(td, [
+            [r.official ? "取消官方" : "设为官方", "", () => contentOfficial(r, !r.official)],
+            ["编辑", "", () => contentEdit(r)],
+            ["下载", "", () => contentDownload(r)],
+            ["删除", "btn-danger", () => contentDelete(r)],
+          ]),
+      },
+    ];
+  }
+
+  function contentQueryString(kind) {
+    const p = new URLSearchParams();
+    p.set("kind", kind);
+    p.set("page", String(cPages[kind] || 1));
+    p.set("pageSize", String(C_PAGE_SIZE));
+    if (kind === "app") {
+      p.set("q", $("fAppQ").value.trim());
+      p.set("author", $("fAppAuthor").value.trim());
+      p.set("status", $("fAppStatus").value);
+    } else if (kind === "template") {
+      p.set("q", $("fTplQ").value.trim());
+      p.set("author", $("fTplAuthor").value.trim());
+    } else if (kind === "skill") {
+      p.set("q", $("fSkillQ").value.trim());
+      p.set("author", $("fSkillAuthor").value.trim());
+      p.set("status", $("fSkillStatus").value);
+    }
+    return p.toString();
+  }
+
+  async function loadContent(kind, page) {
+    const k = C_SUBS.includes(kind) ? kind : "app";
+    if (k === "audit") return loadContentAudit();
+    if (page) cPages[k] = Math.max(1, page);
+    const seq = ++cSeq[k];
+    try {
+      const r = await api("GET", "/api/admin/content?" + contentQueryString(k));
+      if (seq !== cSeq[k]) return;
+      paintContentCounts(r.counts);
+      if (k === "app") {
+        renderTable($("tblApps"), appColumns(), r.items, "没有匹配的应用");
+        renderPager($("pgApps"), r.total, r.page, r.pageSize, (p) => loadContent("app", p));
+      } else if (k === "template") {
+        renderTable($("tblTpls"), tplColumns(), r.items, "没有匹配的模板");
+        renderPager($("pgTpls"), r.total, r.page, r.pageSize, (p) => loadContent("template", p));
+      } else {
+        renderTable($("tblSkills"), skillColumns(), r.items, "没有匹配的技能");
+        renderPager($("pgSkills"), r.total, r.page, r.pageSize, (p) => loadContent("skill", p));
+      }
+    } catch (e) {
+      if (seq === cSeq[k]) toast((e && e.message) || "加载内容列表失败", "err");
+    }
+  }
+
+  async function loadContentAudit() {
+    try {
+      const r = await api("GET", "/api/admin/content/audit?limit=100");
+      const items = r.items || [];
+      $("cAuditMeta").textContent = "最近 " + items.length + " 条（服务端留存上限 200 条）";
+      renderTable(
+        $("tblContentAudit"),
+        [
+          { title: "时间", get: (x) => ts(x.at) },
+          { title: "管理员", get: (x) => x.username || x.userId },
+          { title: "动作", get: (x) => C_ACT_TEXT[x.action] || x.action },
+          { title: "类型", get: (x) => KIND_TEXT[x.kind] || x.kind },
+          { title: "对象", get: (x) => (x.targetTitle || x.targetId) + "（" + x.targetId + " · " + (x.targetOwnerId || "—") + "）" },
+          { title: "说明", cls: "wrap-cell", get: (x) => x.detail || "" },
+        ],
+        items,
+        "还没有内容改动",
+      );
+    } catch (e) {
+      toast((e && e.message) || "加载改动留痕失败", "err");
+    }
+  }
+
+  /** 静态目录体检（公开只读接口 /api/apps/pub）：重发后的条数与缺项一眼可见。 */
+  async function loadAppPub() {
+    try {
+      const res = await fetch(API + "/api/apps/pub");
+      const d = await res.json();
+      const last = d && d.last;
+      $("appPubMeta").textContent =
+        "静态目录：" + (d && d.ok ? "正常" : "异常") +
+        " · 库 " + ((d && d.dbApps) || 0) + " 条 / 盘 " + ((d && d.diskApps) >= 0 ? d.diskApps : "?") + " 条" +
+        (d && d.fallback ? " · ⚠ 已回退接口目录（客户端读 /api/apps/catalog）" : "") +
+        (last ? " · 上次发布（" + (last.reason || "—") + "）：" + (last.ok ? "成功 " + (last.apps || 0) + " 条 / " + (last.files || 0) + " 文件" : "失败") : "");
+    } catch (e) {
+      $("appPubMeta").textContent = "静态目录体检失败：" + ((e && e.message) || e);
+    }
+  }
+
+  async function contentPublish(row, unpublish) {
+    try {
+      await api("POST", "/api/admin/content/publish", { id: row.id, ownerId: row.ownerId, unpublish: unpublish });
+      toast((unpublish ? "已下架 " : "已重新上架 ") + row.title, "ok");
+      loadContent("app", cPages.app);
+      loadAppPub();
+    } catch (e) {
+      toast((e && e.message) || "操作失败", "err");
+    }
+  }
+
+  function contentEdit(row) {
+    const fields = [
+      { kind: "note", text: "只改元信息：文件正文与 zip 不在管理台替换（谁上传谁改）。" },
+      { name: "title", label: "标题", value: row.title },
+      { name: "description", label: "简介", type: "textarea", value: row.desc },
+      { name: "tags", label: "标签（逗号分隔）", value: (row.tags || []).join(",") },
+    ];
+    if (row.kind === "skill") fields.push({ name: "version", label: "版本号（x.y.z）", value: row.version });
+    if (row.kind === "app") {
+      fields.push({ kind: "note", text: "图标：" + (row.hasIcon ? "已有（选新图片即覆盖）" : "暂无（可上传 png / jpg / webp）") + "；留空 = 不改。" });
+      fields.push({ name: "iconBase64", label: "图标文件（可留空）", type: "file", accept: "image/png,image/jpeg,image/webp" });
+    }
+    openDialog(
+      "编辑" + KIND_TEXT[row.kind] + " · " + row.title,
+      fields,
+      async (v) => {
+        const body = { kind: row.kind, id: row.id, ownerId: row.ownerId, title: v.title, description: v.description, tags: v.tags };
+        if (row.kind === "skill") body.version = v.version;
+        if (row.kind === "app" && v.iconBase64) body.iconBase64 = v.iconBase64;
+        const r = await api("POST", "/api/admin/content/update", body);
+        toast("已保存：" + ((r.changed || []).join(" / ") || "无字段变化"), "ok");
+        loadContent(row.kind, cPages[row.kind]);
+        if (row.kind === "app") loadAppPub();
+      },
+      "保存",
+    );
+  }
+
+  async function contentOfficial(row, official) {
+    try {
+      await api("POST", "/api/admin/content/update", { kind: "skill", id: row.id, ownerId: row.ownerId, official: official });
+      toast((official ? "已设为官方：" : "已取消官方：") + row.title, "ok");
+      loadContent("skill", cPages.skill);
+    } catch (e) {
+      toast((e && e.message) || "操作失败", "err");
+    }
+  }
+
+  function contentDelete(row) {
+    const what =
+      row.kind === "app"
+        ? "应用分支「" + row.title + "」（id " + row.id + " · 作者 " + row.ownerName + "），含 " + row.versionCount + " 个版本的 zip" + (row.hasIcon ? " 与图标" : "") + (row.branchCount > 1 ? "；同 id 下还有 " + (row.branchCount - 1) + " 条别的作者分支（不动它们）" : "")
+        : KIND_TEXT[row.kind] + "「" + row.title + "」（id " + row.id + " · 作者 " + row.ownerName + "），含" +
+          (row.kind === "template" ? "模板文件与预览图" : row.fileCount + " 个文件与预览图");
+    openDialog(
+      "删除" + KIND_TEXT[row.kind],
+      [
+        { kind: "note", text: "将要删除：" + what + "。" + (row.kind === "app" ? "删除后会自动重发静态目录（客户端立刻看不到）。" : "") + "此操作不可撤销，并会写入改动留痕。" },
+        { kind: "note", text: "确认无误点「确认删除」。" },
+      ],
+      async () => {
+        await api("POST", "/api/admin/content/delete", { kind: row.kind, id: row.id, ownerId: row.ownerId });
+        toast("已删除 " + row.title, "ok");
+        loadContent(row.kind, cPages[row.kind]);
+        if (row.kind === "app") loadAppPub();
+      },
+      "确认删除",
+    );
+  }
+
+  async function contentVersions(row) {
+    let r = null;
+    try {
+      r = await api("GET", "/api/admin/content/versions?id=" + encodeURIComponent(row.id) + "&owner=" + encodeURIComponent(row.ownerId));
+    } catch (e) {
+      toast((e && e.message) || "读取版本历史失败", "err");
+      return;
+    }
+    const items = r.items || [];
+    openRawDialog("版本历史 · " + row.title, (body) => {
+      body.appendChild(
+        el(
+          "div",
+          "hint",
+          "应用 " + r.id + " · 作者 " + r.ownerName + " · 当前 v" + (r.latestVersion || "—") + (r.unpublished ? "（已下架）" : "") +
+            " · 共 " + items.length + " 个版本" + (r.versionsOn ? "" : "（服务端未启用多版本：只有当前这一版）"),
+        ),
+      );
+      const table = el("table");
+      body.appendChild(table);
+      renderTable(
+        table,
+        [
+          { title: "版本", get: (v) => "v" + v.version + (v.current ? "（当前）" : "") },
+          { title: "大小", get: (v) => sizeText(v.bytes) },
+          { title: "入口", get: (v) => v.entry || "—" },
+          { title: "上传时间", get: (v) => ts(v.createdAt) },
+          { title: "包", get: (v) => (v.hasFile ? "在" : "缺失") },
+          {
+            title: "操作",
+            render: (td, v) =>
+              acts(td, [
+                ["下载此版本", "", () => contentDownload(row, v.version)],
+                ["删除此版本", "btn-danger", () => contentDeleteVersion(row, v, items.length)],
+              ]),
+          },
+        ],
+        items,
+        "没有版本记录",
+      );
+    }, "关闭");
+  }
+
+  function contentDeleteVersion(row, v, total) {
+    if (total <= 1) {
+      toast("只剩这一个版本了：要清空整条分支请用「删除」", "err");
+      return;
+    }
+    openDialog(
+      "删除版本",
+      [
+        { kind: "note", text: "将要删除：" + row.title + " 的 v" + v.version + "（" + sizeText(v.bytes) + (v.current ? " · 这是当前版本" : "") + "）。该版本的包会一并删除，删完不可撤销，并写入改动留痕。" },
+        { kind: "note", text: "全删光时服务端会自动把这条分支下架（与公开口径一致）。" },
+      ],
+      async () => {
+        await api("POST", "/api/admin/content/delete-version", { id: row.id, ownerId: row.ownerId, version: v.version });
+        toast("已删除 v" + v.version, "ok");
+        closeDialog();
+        loadContent("app", cPages.app);
+        loadAppPub();
+      },
+      "确认删除",
+    );
+  }
+
+  /** 技能是多文件包：>1 个文件时先让管理员挑哪个文件（下载默认 SKILL.md）。 */
+  function contentDownload(row, version, file) {
+    const list = row.kind === "skill" ? row.fileList || [] : [];
+    if (row.kind === "skill" && !file && list.length > 1) {
+      openRawDialog("下载技能文件 · " + row.title, (body) => {
+        body.appendChild(el("div", "hint", "技能包共 " + list.length + " 个文件（下载不计入作者的下载量统计）："));
+        const table = el("table");
+        body.appendChild(table);
+        renderTable(table, [
+          { title: "文件", get: (f) => f },
+          { title: "操作", render: (td, f) => acts(td, [["下载", "", () => contentDownload(row, version, f)]]) },
+        ], list, "包内没有文件");
+      }, "关闭");
+      return;
+    }
+    const q =
+      "kind=" + row.kind + "&id=" + encodeURIComponent(row.id) + "&owner=" + encodeURIComponent(row.ownerId || "") +
+      (version ? "&version=" + encodeURIComponent(version) : "") + (file ? "&file=" + encodeURIComponent(file) : "") + "&format=raw";
+    const name =
+      row.kind === "app" ? row.id + (version ? "-v" + version : "") + ".zip"
+        : row.kind === "template" ? row.id + ".mtnodes"
+          : (file || "SKILL.md").split("/").pop();
+    fetch(API + "/api/admin/content/download?" + q, { headers: { Authorization: "Bearer " + TOKEN } })
+      .then((res) => {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.blob();
+      })
+      .then((blob) => {
+        const a = el("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          URL.revokeObjectURL(a.href);
+          a.remove();
+        }, 2000);
+        toast("已开始下载 " + name, "ok");
+      })
+      .catch((e) => toast("下载失败：" + ((e && e.message) || e), "err"));
+  }
+
+  function contentPreview(row) {
+    const size = row.hasPreview ? "full" : "thumb";
+    const url = API + "/api/admin/content/preview?kind=" + row.kind + "&id=" + encodeURIComponent(row.id) + "&size=" + size;
+    if (!row.hasPreview) {
+      toast("这条没有预览图", "err");
+      return;
+    }
+    /* 预览图带管理票，不能直接开新窗口 → 先取 blob 再开本地地址。 */
+    fetch(url, { headers: { Authorization: "Bearer " + TOKEN } })
+      .then((res) => {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.blob();
+      })
+      .then((blob) => {
+        const href = URL.createObjectURL(blob);
+        window.open ? window.open(href, "_blank") : null;
+        setTimeout(() => URL.revokeObjectURL(href), 60000);
+      })
+      .catch((e) => toast("预览图打不开：" + ((e && e.message) || e), "err"));
+  }
+
+  async function republishApps() {
+    try {
+      const r = await api("POST", "/api/admin/content/republish");
+      const h = r.health || {};
+      toast("静态目录已重发：" + (h.ok ? "正常" : "仍有异常") + " · 库 " + (h.dbApps || 0) + " / 盘 " + (h.diskApps >= 0 ? h.diskApps : "?") + " 条", h.ok ? "ok" : "err");
+      loadAppPub();
+      loadContent("app", cPages.app);
+    } catch (e) {
+      toast((e && e.message) || "重发失败", "err");
+    }
+  }
+
+  $("btnAppSearch").addEventListener("click", () => loadContent("app", 1));
+  $("fAppStatus").addEventListener("change", () => loadContent("app", 1));
+  $("fAppAuthor").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("app", 1);
+  });
+  $("fAppQ").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("app", 1);
+  });
+  $("btnAppRepublish").addEventListener("click", () => republishApps());
+  $("btnTplSearch").addEventListener("click", () => loadContent("template", 1));
+  $("fTplAuthor").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("template", 1);
+  });
+  $("fTplQ").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("template", 1);
+  });
+  $("btnSkillSearch").addEventListener("click", () => loadContent("skill", 1));
+  $("fSkillStatus").addEventListener("change", () => loadContent("skill", 1));
+  $("fSkillAuthor").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("skill", 1);
+  });
+  $("fSkillQ").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadContent("skill", 1);
+  });
+  $("btnCAuditRefresh").addEventListener("click", () => loadContentAudit());
 
   /* ---------- 启动 ---------- */
 

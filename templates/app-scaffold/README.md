@@ -14,11 +14,11 @@
 | --- | --- |
 | `index.html` | 入口：无框窗口骨架、拖动区、模型选择位、降级横幅位、数据文件夹一行、便签示例、文字+图像示例 |
 | `apphost.js` | **宿主桥探测与优雅降级**：同时认 `window.appHost`（应用中心窗口）与 `window.pluginApi`（插件窗口），统一成 `window.AppHost`：`getData` / `setData` / `dataDirGet` / `dataDirPick` / `dataDirOpen` / `dataDirReset` / `storageGet…` / `accountText` / `request` / `on` / `onShown` / `offAll` / `onWillClose` / `close` / `quit`，外加**模型四件**：`models()` / `modelGet()` / `modelSet(id)` / `pickImage()`、`text(prompt, {images})` 与**结构化输出** `json(opts)`（关思考 + 剥围栏 + 截断感知 + 重试一次） |
-| `app-model.js` | **模型选择位**：右上「模型」按钮 + 下拉（首项 = 跟随 MTNode 默认、每项标「支持识图」）；`AppModel.errorText(res)` 把宿主的错误码翻成一句人话。两行接入，见文件尾注 |
+| `app-model.js` | **模型选择位**：右上「模型」按钮 + 下拉，分「文本模型 / 图像后端」两区（文本首项 = 跟随 MTNode 默认、每项标「支持识图」；图像后端 = 云端服务商 + 本机 SenseNova）；`AppModel.errorText(res)` 把宿主的错误码翻成一句人话，`AppModel.imageErrorText(res)` 管出图那条路的码（`busy_media` / `cuda_oom`…）。两行接入，见文件尾注 |
 | `model.css` | 模型选择位与示例区样式（颜色仍走 `styles/<id>.css` 的语义变量） |
 | `store.js` | **落盘脚手架**：`Store.create({host, file, debounceMs})` → `set(data)` 标脏 + 防抖自动写盘，`load()` 读回，`flush()` 立即写盘；没有宿主时退化为内存态（`store.persisted === false`） |
-| `speech.js` | **底部语音听写**：footer 里一枚话筒（本机内置语音识别，官方本地 SenseVoice）+ 一枚「音频转文字」（选本机录音文件），结果进结果小窗、一键复制。`Speech.mount(el)` 挂载，`Speech.create()` 拿纯接口（`file()` / `wav(base64)` / `record()` / `status()` / `prepare()` / `onState()`）；桥缺席时整块禁用并写清原因 |
-| `speech.css` | 听写条与结果小窗的样式（颜色只取语义变量，换风格自动跟随） |
+| `speech.js` | **底部语音听写（按需）**：footer 里一枚话筒（本机内置语音识别，官方本地 SenseVoice）+ 一枚「音频转文字」（选本机录音文件），结果进结果小窗、一键复制。`Speech.mount(el)` 挂载，`Speech.create()` 拿纯接口（`file()` / `wav(base64)` / `record()` / `status()` / `prepare()` / `onState()`）；桥缺席时整块禁用并写清原因。**只有该应用声明了 `capabilities.textInput` 才复制本文件**（见下「能力位」一节） |
+| `speech.css` | 听写条与结果小窗的样式（颜色只取语义变量，换风格自动跟随）。与 `speech.js` 同一条口径：**只有声明了 `textInput` 才复制** |
 | `close.js` | **关窗收尾脚手架**：`AppClose.on(cb)` 登记钩子，宿主关窗前（`apps:willClose`）跑完再关；`visibilitychange` / `pagehide` / `beforeunload` 三处兜底冲刷 |
 | `app.js` | 最小业务示范：便签落盘（脏标记 + 防抖 + 关窗冲刷）、数据文件夹显示 / 更改 / 打开、模型选择位初始化、文字+图像调用、关闭按钮 |
 | `style.css` | 深色主题样式；`.drag` / `.no-drag` 无框窗口拖动约定 |
@@ -76,10 +76,58 @@
 ## 复制后要做的替换
 
 1. `app.json`：`id`（= 目录名 = catalog 词条 id）、`title` / `subtitle` / `icon` / `description`、`version`、`minAppVersion`、`window` 尺寸。
-2. `index.html`：`<title>`、`#appTitle`、`#appSub`、页脚文案、图标字符（`#speechBar` 那一格是听写条，别删）。
+2. `index.html`：`<title>`、`#appTitle`、`#appSub`、图标字符（`#speechBar` 那一格是听写条，别删；
+   页脚文案已按本轮共识去掉，要写说明自己写）。
 3. `app.js`：把便签与示例逻辑换成真实实现；`state` 的形状与落盘的 `data.json` 保持一致。
 4. 需要更多宿主能力时，只往 `apphost.js` 的 `cap` 表里加**已探测**的方法，别直接假设接口存在。
 5. 复制 `templates/app-agents/AGENTS.md` 成应用根目录的 `AGENTS.md`（已有就保留，别覆盖）。
+6. **按能力位决定复制哪些文件**：目标应用的 `app.json` 里 `capabilities.textInput` 为真才复制 `speech.js` /
+   `speech.css`（并在入口页挂上听写条）；没声明就**不要**带这两个文件 —— 默认应用不携带语音转文字。
+   `capabilities.showDictate`（默认 **false**）决定**应用窗口底部那条宿主注入的听写条**显不显示
+   （见 `renderer/app-speech-ui.js`：默认带 `data-mtnode-hidden` + `display:none`，脚本仍可 `apSpeechReveal()` 唤起）。
+   `capabilities.imageGen` 只是声明（出图接口与文本接口一样，始终可调），界面按需自己写出图入口。
+
+## 图像生成：用 MTNode 已配好的图像能力
+
+应用侧的图像后端**从 MTNode 继承**（与文本模型同一套思路）：云端图像服务商，或本机 SenseNova 后端。
+服务商与 Key 留在主进程，应用只挑 id、只给提示词。
+
+```js
+/* ① 有哪些图像后端可选（首项不是 auto —— "auto" = 跟随 MTNode 默认：云端优先，其次本机） */
+var list = await AppHost.imageModels();      // { ok, models:[{id,label,providerName,local}], selected, hasAny, hasCloud, hasLocal, busy }
+if (!list.hasAny) show('MTNode 里还没有可用的图像后端：到「设置 · 模型服务」配一个图像服务商，或装本机 SenseNova');
+
+/* ② 出图（每次一张）：opts.images 可带参考图（本机路径或 dataURL）→ 后端走图生图 / 图像编辑 */
+var r = await AppHost.image('一只戴帽子的猫', {
+  model: M.imageModel(),                       // 空串 = 跟随 MTNode 默认
+  size: '1024x1024',                           // 语义尺寸，后端自己对齐（本机后端按官方分辨率桶）
+  images: [refPath],                           // 可选：参考图；读盘 / 缩放在主进程做
+  onProgress: function (p) { bar(p.pct); },    // 可选：本机后端要几十秒到几分钟，给用户看进度
+});
+if (!r.ok) show(AppModel.imageErrorText(r));    // no_provider / bad_model / busy_media / cuda_oom / http_4xx…
+else img.src = r.dataUrl;                       // 同时有 r.base64 / r.bytes / r.file（本机后端给落盘路径）
+```
+
+- **长任务要留取消入口**：本机后端出图很慢，`r.reqId` 交给 `AppHost.cancelImage(reqId)` 即可取消；
+  用户在界面上主动取消 → `code:"cancelled"`，**不是错误**，恢复按钮就行。
+- **本机后端与音乐 / 视频共用一个全局锁**：忙时回 `code:"busy_media"`，界面提示等待 / 重试，不要自动重发。
+- **不降级**：一个后端都没配 → `no_provider`；模型不在清单里 → `bad_model`；显存不够 → `cuda_oom`。
+  一律明确告知，绝不偷偷换后端、更不假装出图成功。
+
+## 能力位（app.json 的 capabilities）
+
+应用的自述能力位写在 `app.json`：`{ "textInput": false, "showDictate": false, "imageGen": false }`
+（**默认三项都不勾**）。它是**静态声明**，不是权限闸 —— 桥上的接口始终可调，它决定的是
+「起步模板带不带语音模块 / 应用窗口底部那条宿主注入的听写条显不显示」：
+
+| 位 | 为真时 | 为假 / 没声明时（缺省） |
+| --- | --- | --- |
+| `textInput` | 脚手架带语音听写模块（`speech.js` / `speech.css`） | 默认应用不带任何语音转文字 |
+| `showDictate` | 应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字） | **默认隐藏**（那条条挂上就带 `data-mtnode-hidden` + `display:none`，脚本仍可 `apSpeechReveal()` 唤起） |
+| `imageGen` | 声明这个应用要出图（界面自己写出图入口） | 只是没声明；接口照旧可调，只是模板不带 |
+
+新建应用时那几个复选框、以及开发页 ⋯「应用能力…」改的就是它；改了任一位宿主会按模板重生成入口页
+（你在入口页里手改过的内容会没了）。**复制脚手架时按这份声明决定要不要带 `speech.js` / `speech.css`。**
 
 ## 语音转写（本机内置，官方本地 SenseVoice）
 

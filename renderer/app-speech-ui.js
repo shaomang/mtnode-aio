@@ -7,6 +7,12 @@
  * preload-app.js 在 DOMContentLoaded 后调 apSpeechMount()，本模块负责画界面与调桥。
  * 没装桥（老版 MTNode / 不是应用窗口）时整体不出现，应用照常跑。
  *
+ * 默认隐藏（本轮共识：「默认 footer 出现的听写等内容隐藏」）：
+ *   挂载出来的 #mtnode-dictate 一律带 data-mtnode-hidden="1" + display:none —— 页面底部
+ *   不再默认出现 🎤 / 🎧 这一条；隐藏态下 placeStrip 不做落点搬移（见该函数）。要让它露面：
+ *   删掉那个属性、或调 window.apSpeechReveal()；隐藏 / 可见也能问 window.apSpeechHidden()。
+ *   宿主注不注入这一条另由 app.json 的 capabilities.showDictate 决定（preload-app.js 的闸门）。
+ *
  * 界面（与画布状态栏那枚话筒同族，但只保留应用用得上的）：
  *   🎤 听写        点一下开始（再点 / 静音 1.6s / 满 60s 自动结束）→ 转写 → 结果小窗
  *   🎧 音频转文字   系统选音频 → 转写 → 结果小窗
@@ -121,7 +127,10 @@
       ".mtn-dict-meta{opacity:.7;font-size:.92em}" +
       ".mtn-dict-x{margin-left:auto;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;opacity:.75}" +
       ".mtn-dict-body{padding:10px;overflow:auto;white-space:pre-wrap;word-break:break-word;line-height:1.6}" +
-      ".mtn-dict-pf{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px;border-top:1px solid " + p.line + "}";
+      ".mtn-dict-pf{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px;border-top:1px solid " + p.line + "}" +
+      /* 默认隐藏态的 CSS 兜底（内联 style 是主路，标记是给脚本认的）：!important 挡住应用
+         自己的 footer 样式把 display 又掰回来 */
+      "#mtnode-dictate[data-mtnode-hidden='1']{display:none !important}";
     (document.head || document.documentElement).appendChild(css);
   }
 
@@ -578,6 +587,47 @@
   var resizeHooked = false;
   var missCount = 0; /* 连续量到「在 footer 里看不见」的次数（连中两次才搬走，见 placeStrip） */
 
+  /* ── 默认隐藏（本轮共识）────────────────────────────────────────────────
+   * 「默认 footer 出现的听写」不再默认露面：这条条挂上去就带 data-mtnode-hidden="1" +
+   * display:none（标记 + 内联样式双保险，标记是给脚本 / 冒烟认的），CSS 兜底也写在 styleTag 里。
+   * 隐藏态下**不做落点搬移**（placeStrip 直接返回）：不然它一被量成「看不见」就会被搬到宿主
+   * 自建的固定底栏 #mtnode-dictate-bar 去，页面上凭空多一条底栏。
+   * 要让它露面：删掉那个属性（或调 apSpeechReveal()）—— 下一次 placeStrip 会先补一次落点。 */
+  var HIDDEN_ATTR = "data-mtnode-hidden";
+  function hiddenNow(el) {
+    var t = el || root;
+    try {
+      return !!(t && t.getAttribute && t.getAttribute(HIDDEN_ATTR) === "1");
+    } catch (_) {
+      return false;
+    }
+  }
+  function markHidden(el) {
+    var t = el || root;
+    if (!t) return false;
+    try {
+      t.setAttribute(HIDDEN_ATTR, "1");
+      if (t.style) {
+        t.style.display = "none";
+        /* box-sizing 也一并钉住：露面时不会因为内联样式残留而变形 */
+      }
+    } catch (_) {}
+    return true;
+  }
+  /** 让听写条露面（脚本 / 应用自己需要时调；幂等）。
+   *  返回 true 表示现在不再处于隐藏态 —— 顺手补一次落点，免得它挂在 footer 底下看不到。 */
+  function reveal() {
+    if (!root) return false;
+    try {
+      root.removeAttribute(HIDDEN_ATTR);
+      if (root.style) root.style.display = "";
+    } catch (_) {}
+    try {
+      placeStrip({ allowReturn: true });
+    } catch (_) {}
+    return true;
+  }
+
   function rectOf(el) {
     try {
       return el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
@@ -597,6 +647,7 @@
   }
   /** 这一条现在真的看得见吗（量不出来就返回 true） */
   function visibleNow(el) {
+    if (hiddenNow(el)) return false; /* 默认隐藏态：不算看得见（placeStrip 据此不搬它） */
     var r = rectOf(el);
     if (!r) return true;
     if (!r.width && !r.height) return false; /* display:none / 折叠：没有尺寸就是没显示 */
@@ -650,6 +701,11 @@
    *  opts.allowReturn=true 只在窗口尺寸**真的**变了（用户拖窗口）时才用：搬回 footer 重量一次。 */
   function placeStrip(opts) {
     if (!root) return false;
+    /* 默认隐藏态：一动不动 —— 既不算「装不下」，也不进宿主自建的固定底栏 */
+    if (hiddenNow(root)) {
+      missCount = 0;
+      return true;
+    }
     var allowReturn = !!(opts && opts.allowReturn);
     if (!footEl) {
       if (root.parentElement !== barEl) barHost().appendChild(root);
@@ -734,6 +790,9 @@
       esc(t("音频转文字", "Audio → text")) +
       '</span></button>' +
       '<span class="mtn-dict-note"></span>';
+    /* 默认隐藏（本轮共识）：先打标记再挂进 DOM —— 避免挂载到移除之间闪一帧。
+       要露面就走 reveal()（apSpeechReveal）。 */
+    markHidden(root);
     refs.mic = root.querySelector('[data-act="mic"]');
     refs.file = root.querySelector('[data-act="file"]');
     refs.note = root.querySelector(".mtn-dict-note");
@@ -827,6 +886,9 @@
     /* 落点自检（宿主 / 冒烟用）：placeStrip 重算一次落点，visibleNow 量「这条现在看得见吗」 */
     window.apSpeechPlace = placeStrip;
     window.apSpeechVisible = visibleNow;
+    /* 默认隐藏 + 显示入口（本轮共识）：hidden = 现在是不是隐藏态；reveal = 让它露面 */
+    window.apSpeechHidden = hiddenNow;
+    window.apSpeechReveal = reveal;
   } catch (_) {}
 
   /* 自挂载（默认路径）：注入脚本在页面世界里跑，window.appHost 这时已经在了 —— 直接挂。

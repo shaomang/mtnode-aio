@@ -210,6 +210,10 @@ ok(
   "build.json files 白名单登记 pet/pet-provider.js（否则打包后 Cannot find module）",
 );
 ok(
+  !/"pet\/pet-relay-cred\.js"/.test(build),
+  "build.json 白名单里没有已删的 pet/pet-relay-cred.js（桌宠不再自带领票模块，Key 就在配置卡上）",
+);
+ok(
   /chatProviderId: PetProvider\.routeNameOf\(cfg\.chatProviderId, appCfg\)/.test(stand),
   "pet:listProviders 下发归一的 chatProviderId（面板选中官方项）",
 );

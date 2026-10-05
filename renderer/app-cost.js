@@ -12,7 +12,24 @@
  *   · costOfOwner(owner)          按 tokViewModels(owner) 汇总费用 → 同上 | null
  *     （渲染层会话合计走 app-agent.js 的 tokCostReduce：逐轮之和 + 未覆盖尾段，
  *      保证与「按轮次」逐轮费用一致；本函数是它算不出时的兜底）
- *   · fmtMoney(n, currency)       统一两位小数
+ *   · fmtMoney(n, currency)       统一两位小数（currency="COIN" 时走币口径）
+ *   · costMoneyEl(n, currency)    DOM 口径的同款格式化：币值带金币图标（app-whalecoin.js
+ *     的 MtCoin.coinIcon），¥ 仍是纯文本；模块缺席 / 非浏览器环境退回纯文本
+ *
+ * **两条计价路线（2026 中转换币）**：
+ *   · DeepSeek 官方路由 → ¥（本文件 DS_PRICE + 官方峰谷半价），一分不改；
+ *   · MTNode 中转服务（source=mtnode-relay）→ **鲸圆币**，计算方式与官方路由一致
+ *     （同一套 hit/miss/output × 单价、同一套峰谷判定），**只把费用单位换成币**：
+ *     价目不再从云端快照取，改为本文件内置的 RELAY_PRICE（见下）；
+ *     公式与云端 store-saas/relay.mjs 的 textCostYuan / isPeak 逐字同源
+ *     （空闲 1 倍、高峰 × peakMultiplier）；图像按「张数 × 元/张」（云端 imageCostYuan）。
+ *     账目内部一律元，只在显示层 ×50 换成币（1 币 = ¥0.02，汇率固定）。
+ *     没有内置价目的中转模型不猜价（返回 null → 界面显示 —）。
+ *     归属归一：会话台账里的服务商串是**网关路由名** `mtnode_<卡 id>`（记账那趟的
+ *     provider 由 dsh/gateway/gateway.mjs 的 routeOfProvider 给出，与设置里的卡 id
+ *     不是同一个串），所以 costIsRelay 会摘掉 `mtnode_` 前缀回查一次卡；
+ *     台账本身存原始串、不改写，判据与展示同源。
+ *   混合会话里两条路线各记各的（costOfOwner 的 byCur），展示层并列显示。
  *
  * 后段才是 DOM：balanceGet(force) 取余额（模块级 60s 缓存 + 失败退避），
  * balanceChip() / balanceLine() 生成「金额 + 刷新按钮 + 取数时间」。
@@ -63,6 +80,31 @@ const DS_PRICE = {
 /* 未知 DeepSeek 模型的兜底档（按 flash 价） */
 const DS_FLASH_ID = "deepseek-flash";
 
+/* ── MTNode 中转服务（鲸圆币计价）──────────────────────────────
+   中转模型的费用**按币显示**（1 币 = ¥0.02），这是本文件唯一一处不按 ¥ 的分支：
+     · 计算方式与 DeepSeek 官方路由**一致**（同一套 hit / miss / output × 单价），
+       差别只在两处：**费用单位换成币**、单价取下面这份内置表（不走官方 DS_PRICE）；
+     · 价目 = 本文件内置的 RELAY_PRICE（键 = 中转站对外的模型 id，精确命中，不认前缀 /
+       后缀）：数值取自中转站现役配置（store-saas/relay.mjs 的 DEFAULT_PRICES /
+       DEFAULT_MODELS），改价时改这一处即可，客户端不再依赖云端下发；
+     · 公式与云端**完全相同**（store-saas/relay.mjs 的 textCostYuan / isPeak）：
+       (命中×cacheHit + 未命中×cacheMiss + 输出×output)/1e6，高峰再 × peakMultiplier，
+       高峰时段 = 北京时间周一至周五 9:00-12:00 / 14:00-18:00；
+     · 图像按「张数 × 元/张」（云端 imageCostYuan：每次调用即计费，与尺寸无关）；
+     · 没有内置价目的模型**不猜价**（显示 —）：宁可空着，也不拿官方价冒充中转价。
+   账目内部一律元（与云端账本同源），只在显示层换算成币（costCoinText）。 */
+const RELAY_PRICE_ID = "mtnode-relay";
+const RELAY_SOURCE = "mtnode-relay";
+const COIN_YUAN_FALLBACK = 0.02; /* 1 币 = ¥0.02（固定汇率，不再读云端快照） */
+
+/* 中转站模型价目（内置真源）：元 / 百万 token（文本）与元 / 张（图像）。
+   kind:"text" 三项 = 缓存命中 / 缓存未命中 / 输出；kind:"image" = 每次调用的单价。
+   peakMultiplier 只对文本生效（高峰期整体倍率）。 */
+const RELAY_PRICE = {
+  "deepseek-v4-flash": { kind: "text", cacheHit: 0.02, cacheMiss: 1, output: 4, peakMultiplier: 2 },
+  "gpt-image-2.5-all": { kind: "image", perImageYuan: 0.21 },
+};
+
 /* 峰谷：空闲时段单价 = 高峰 × 该比例（官方为空闲半价） */
 const DS_OFFPEAK_RATIO = 0.5;
 const DS_BJ_OFFSET = 8 * 3600000; /* 北京时间 = UTC+8，用 UTC getter 读 */
@@ -87,10 +129,168 @@ function costBaseUrl(p) {
   return String((p && (p.baseUrl || p.base_url)) || "").trim();
 }
 
+/* 服务商串 → 配置里那张卡：id / route / name 三种写法都收（route 与 id 不同名时也认）。
+ * 判据只在这一处，避免每个调用方各写一套匹配。 */
+function costCardOf(provider) {
+  if (provider == null) return null;
+  if (typeof provider === "object") return provider;
+  const s = String(provider).trim();
+  if (!s) return null;
+  const list = costProviders();
+  return (
+    list.find(
+      (p) =>
+        p &&
+        (String(p.id || "") === s ||
+          String(p.route || "") === s ||
+          String(p.name || "") === s),
+    ) || null
+  );
+}
+
+/* 是否走 MTNode 中转服务：单看配置里那张 source=mtnode-relay 的卡（也认它的保留 id）。
+ *
+ * **必须认网关的服务商串（route 名）** —— 运行中记账用的是引擎路由名，形如
+ * `mtnode_<卡 id>`（见 dsh/gateway/gateway.mjs 的 routeOfProvider / applySettings：
+ * `'mtnode_' + (p.route || 'p' + n)`，而渲染层下发的 route 就是服务商卡的 id）。
+ * 不摘这个前缀就认不出中转：会话台账里存的是 mtnode_mtnode-relay，于是中标模型
+ * 白记了 token、费用列却永远显示「—」（本次需求修的正是这条）。 */
+function costIsRelay(provider) {
+  if (provider == null) return false;
+  if (typeof provider === "string") {
+    const s = provider.trim();
+    if (!s) return false;
+    const low = s.toLowerCase();
+    if (low === RELAY_PRICE_ID || low === RELAY_SOURCE) return true;
+    const hit = costCardOf(s);
+    if (hit) return costIsRelay(hit);
+    /* mtnode_<卡 id>：网关路由名 → 摘掉前缀再回查一次 */
+    if (low.indexOf("mtnode_") === 0) {
+      const bare = costCardOf(s.slice("mtnode_".length));
+      if (bare) return costIsRelay(bare);
+      if (low.slice("mtnode_".length) === RELAY_PRICE_ID) return true;
+    }
+    return false;
+  }
+  if (String(provider.source || "").trim().toLowerCase() === RELAY_SOURCE) return true;
+  for (const f of [provider.id, provider.route]) {
+    const v = String(f || "").trim().toLowerCase();
+    if (v === RELAY_PRICE_ID || v === RELAY_SOURCE) return true;
+  }
+  const route = String(provider.route || "").trim();
+  if (route.indexOf("mtnode_") === 0) {
+    const hit = costCardOf(route.slice("mtnode_".length));
+    if (hit) return costIsRelay(hit);
+  }
+  return false;
+}
+
+/* 这个模型在**中转站**的价目（未见价目 → null，绝不猜）。
+ * 键按模型 id 精确命中（与云端 cfg.prices[model] 同一口径：中转不认前缀 / 后缀）——
+ * 找不到内置条目的中转模型（新上架 / 带日期后缀）一律显示「—」，不拿官方价兜底。 */
+function relayPriceOf(provider, model) {
+  if (!costIsRelay(provider)) return null;
+  const id = String(model || "").trim();
+  const p = (id && RELAY_PRICE[id]) || null;
+  return p && typeof p === "object" ? p : null;
+}
+
+/* 中转的峰谷判据：与云端 isPeak 同源（北京时间周一至周五 9:00-12:00 / 14:00-18:00）。
+ * 云端快照里的节假日豁免名单不再参与（价目与判据都以本机内置为准，见文件头）；
+ * 因此法定节假日会按高峰计（偏高，属于已知偏差，已在费用口径里写明）。 */
+function costRelayIsPeak(provider, ts) {
+  const t = Number(ts);
+  if (!Number.isFinite(t) || t <= 0) return true;
+  const d = new Date(t + DS_BJ_OFFSET);
+  const wd = d.getUTCDay();
+  if (wd === 0 || wd === 6) return false;
+  const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+  return (mins >= 540 && mins < 720) || (mins >= 840 && mins < 1080);
+}
+
+/* 鲸圆币换算（1 币 = ¥0.02，固定汇率）：不再读云端快照的 coinYuan。
+ * 这个汇率只用于**显示**：账目内部一律元，与云端账单对得上。 */
+function costCoinPerYuan() {
+  return 1 / COIN_YUAN_FALLBACK;
+}
+
+/* 币金额格式：中转费用按币显示时统一走它 ——
+ *   <0.01 币 → 「<0.01 币」（别把一次真实花费显示成 0）
+ *   <100 币  → 最多 2 位小数（0.05 / 61.5，无小数不带点）
+ *   ≥100 币  → 整数（会话长跑动辄几千币，小数位是噪声）
+ * 走 renderer/app-whalecoin.js 的 coinCostText（本模块加载在它之前，故调用期取）。
+ * **单位文字只在英文界面出现**（本轮口径：中文界面把「币」字换成鲸圆币图标；
+ * 这里是纯文本函数，没有插图标的余地，所以中文下不再补单位词 —— 调用方若要带图标，
+ * 请用 window.MtCoin.coinEl / coinIcon 那套元件）。 */
+function costCoinUnit() {
+  try {
+    const MC = typeof window !== "undefined" && window ? window.MtCoin : null;
+    if (MC && typeof MC.unitText === "function") return MC.unitText();
+  } catch {}
+  return "";
+}
+function costCoinText(coins) {
+  const n = Number(coins);
+  if (!Number.isFinite(n)) return "0" + costCoinUnit();
+  if (n > 0 && n < 0.01) return "<0.01" + costCoinUnit();
+  try {
+    const MC = typeof window !== "undefined" && window ? window.MtCoin : null;
+    if (MC && typeof MC.coinCostText === "function") return MC.coinCostText(n) + costCoinUnit();
+  } catch {}
+  const v = n >= 100 ? Math.round(n) : Math.round(n * 100) / 100;
+  return String(v) + costCoinUnit();
+}
+
+/* 统一的单价取用：中转 → 内置中转价目（拿不到 → null）；其余 → 官方表 + 配置覆盖。
+ * 两边都只回「每一百万 token 的元价」，峰谷判据由各自分支自己处理。 */
+function costPriceFor(provider, model) {
+  const p = relayPriceOf(provider, model);
+  if (p) {
+    if (String(p.kind || "") === "image") return null;
+    return {
+      cacheHit: costNum(p.cacheHit),
+      cacheMiss: costNum(p.cacheMiss),
+      output: costNum(p.output),
+      estimated: false,
+    };
+  }
+  if (costIsRelay(provider)) return null; /* 中转但没内置价目：不猜价 */
+  if (!costIsDeepseekOfficial(provider)) return null;
+  return costPriceOf(model);
+}
+
+/* 元 → 币（只用于显示口径；账目内部一律元）。
+ * 汇率固定 1 币 = ¥0.02（不再读快照里的 coinYuan，见文件头）。 */
+function costCoinOfYuan(provider, yuan) {
+  const n = Number(yuan);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * costCoinPerYuan(provider) * 1e4) / 1e4;
+}
+
+/* 中转图像模型：一次调用 = 一张（云端 imageCostYuan：张数 × 元/张，与尺寸无关）。
+ * 非中转 / 没价目 → null。张数由 Token 台账的 images 字段给出（图像出图后登记）。 */
+function costOfImages(provider, model, count) {
+  if (!costIsRelay(provider)) return null;
+  const p = relayPriceOf(provider, model);
+  if (!p || String(p.kind || "") !== "image") return null;
+  const n = Math.max(1, Math.floor(Number(count) || 1));
+  const yuan = n * costNum(p.perImageYuan);
+  return {
+    currency: "COIN",
+    amount: costCoinOfYuan(provider, yuan),
+    yuan: yuan,
+    images: n,
+    estimated: false,
+  };
+}
+
 /* 是否走 DeepSeek 官方：provider 为 deepseek / deepseek-official，或 baseUrl 含 deepseek。
- * provider 允许传服务商对象、配置里的 id / 名称 / 路由字符串。 */
+ * provider 允许传服务商对象、配置里的 id / 名称 / 路由字符串。
+ * **中转卡先排除**：中转站也可以转发 DeepSeek 模型，但那是按币计价的中转路由，
+ * 不能被这里的 /deepseek/i 名字匹配抢走（判据见 costIsRelay）。 */
 function costIsDeepseekOfficial(provider) {
   if (provider == null) return false;
+  if (costIsRelay(provider)) return false;
   if (typeof provider === "string") {
     const s = provider.trim();
     if (!s) return false;
@@ -202,20 +402,47 @@ function costOffPeakRatio() {
   return DS_OFFPEAK_RATIO;
 }
 
-/* 单个 token 桶的费用：
+/* 单个 token 桶的费用（返回 { currency, amount, … }；currency = "CNY" | "COIN"）：
  *   缓存命中 = cacheReadTokens，未命中 = inputTokens + cacheWriteTokens，输出 = outputTokens。
- * 峰谷：桶自带时刻（或第 4 参 atFallback，如台账 lastAt）落在空闲时段 → ×半价。
- * 非官方路由 / 未知单价（且不是 DeepSeek） → null（不猜价）。 */
+ *   · MTNode 中转（provider 命中 source=mtnode-relay）：按**币**，公式与云端 textCostYuan
+ *     逐字同源（空闲 1 倍、高峰 × peakMultiplier；价目来自本文件内置表，没有价目 → null）。
+ *   · DeepSeek 官方：按 ¥，峰谷 = 桶自带时刻（或第 4 参 atFallback，如台账 lastAt）
+ *     落在空闲时段 → ×半价（S.config.deepseekOffPeakRatio）。
+ * 其余路由 / 未知单价（且不是 DeepSeek） → null（不猜价）。 */
 function costOfBucket(provider, model, bucket, atFallback) {
   if (!bucket) return null;
+  const relay = costIsRelay(provider);
+  const price = costPriceFor(provider, model);
+  const fb = Number(atFallback);
+  const at = costBucketAt(bucket) || (Number.isFinite(fb) && fb > 0 ? fb : 0);
+  if (relay) {
+    /* ── MTNode 中转：按币 ──────────────────────────────────────
+       有价目才计价（没有 → null，不猜）：与云端 textCostYuan 同一公式，
+       只是把云端内部记的 hit / miss 拆成上游 usage 的三项 ——
+       两者相加相等，乘上同一份单价即同一个数。峰谷也同源：
+       空闲 = 1 倍，高峰 = × peakMultiplier（**不是**官方的空闲半价）。 */
+    if (!price) return null;
+    const rp = relayPriceOf(provider, model) || {};
+    const peak = costRelayIsPeak(provider, at) ? costNum(rp.peakMultiplier) || 1 : 1;
+    const hit = costNum(bucket.cacheReadTokens);
+    const miss = costNum(bucket.inputTokens) + costNum(bucket.cacheWriteTokens);
+    const out = costNum(bucket.outputTokens);
+    const yuan =
+      ((hit * price.cacheHit + miss * price.cacheMiss + out * price.output) / 1e6) * peak;
+    return {
+      currency: "COIN",
+      amount: costCoinOfYuan(provider, yuan),
+      yuan: yuan,
+      peak: peak > 1, /* 高峰才是「贵的那一档」——展示层据此标峰谷 */
+      offPeak: !(peak > 1),
+      estimated: false,
+    };
+  }
   if (!costIsDeepseekOfficial(provider)) return null;
-  const price = costPriceOf(model);
   if (!price) return null;
   const hit = costNum(bucket.cacheReadTokens);
   const miss = costNum(bucket.inputTokens) + costNum(bucket.cacheWriteTokens);
   const out = costNum(bucket.outputTokens);
-  const fb = Number(atFallback);
-  const at = costBucketAt(bucket) || (Number.isFinite(fb) && fb > 0 ? fb : 0);
   const offPeak = !!at && !costIsPeakAt(at);
   const ratio = offPeak ? costOffPeakRatio() : 1;
   const amount =
@@ -240,45 +467,116 @@ function costViewModels(owner) {
     for (const k of Object.keys(live)) {
       const m = live[k] || {};
       const b = out[k] || (out[k] = { provider: m.provider || "", model: m.model || "" });
-      for (const f of ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"])
+      for (const f of ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "images"])
         b[f] = costNum(b[f]) + costNum(m[f]);
     }
   return Object.keys(out).map((k) => out[k]);
 }
 
 /* 按会话 / 节点台账汇总费用（口径与 tokViewModels 一致）；一笔都算不出 → null。
- * 老台账（合并时还没记 at）用台账 lastAt 兜底判峰谷，避免默认按高峰多估。 */
+ * **分币种各记各的**：中转的桶算币、官方的桶算 ¥，混合会话两笔都在 byCur 里
+ * （展示层并列显示，绝不把币折进 ¥ —— 官方对账口径不能被动）。 */
 function costOfOwner(owner) {
   if (!owner) return null;
   const models = costViewModels(owner);
   if (!Array.isArray(models) || !models.length) return null;
   const rep = owner.tokenReport || null;
   const fallbackAt = (rep && Number(rep.lastAt)) || 0;
-  let amount = 0;
-  let any = false;
+  const byCur = {};
+  let imgCount = 0;
   for (const b of models) {
     if (!b) continue;
+    imgCount += costNum(b.images);
     const c = costOfBucket(b.provider, b.model, b, fallbackAt);
-    if (!c) continue;
-    amount += c.amount;
-    any = true;
+    if (c && c.currency) costAddCur(byCur, c);
   }
-  return any ? { currency: "CNY", amount } : null;
+  if (imgCount > 0) {
+    for (const b of models) {
+      const n = costNum(b && b.images);
+      if (!n) continue;
+      const c = costOfImages(b.provider, b.model, n);
+      if (c && c.currency) costAddCur(byCur, c);
+    }
+  }
+  const keys = Object.keys(byCur);
+  if (!keys.length) return null;
+  const main = byCur[keys.indexOf("CNY") >= 0 ? "CNY" : keys[0]];
+  const out = { currency: main.currency, amount: main.amount, estimated: !!main.estimated };
+  if (main.peak) out.peak = true;
+  if (main.offPeak) out.offPeak = true;
+  if (keys.length > 1) out.byCur = byCur;
+  return out;
 }
 
-const COST_SYMBOL = { CNY: "¥", RMB: "¥", USD: "$" };
+/* 把一笔计价结果折进「按币种」的累加表（键 = "CNY" / "COIN"） */
+function costAddCur(byCur, c) {
+  if (!byCur || !c || !c.currency) return byCur;
+  const cur = String(c.currency).toUpperCase();
+  const e = byCur[cur] || (byCur[cur] = { currency: cur, amount: 0, estimated: false });
+  e.amount += costNum(c.amount);
+  if (c.estimated) e.estimated = true;
+  if (c.peak) e.peak = true;
+  if (c.offPeak) e.offPeak = true;
+  return byCur;
+}
 
-/* 金额统一两位小数（负数、千分位都照顾到）；空值 / 非数字给 "—" */
+/* 币种符号：币这一档**不留文字单位**（本轮口径：中文界面单位是鲸圆币图标，英文才是 "W coins"）。
+   这里只用于纯文本拼接，取值走同一个出口（costCoinUnit），避免两处各写一份。 */
+const COST_SYMBOL = {
+  CNY: "¥",
+  RMB: "¥",
+  USD: "$",
+  get COIN() {
+    return costCoinUnit();
+  },
+};
+
+/* 金额格式：
+ *   · ¥（官方路由）：两位小数 + 千分位（**必须保住这个口径**，官方对账靠它）
+ *   · 币（MTNode 中转）：走 costCoinText（<0.01 / 两位小数 / 整数三档）
+ * 中转虽然 currency 标记为 COIN，但 money 字段可能拿到元值（云端账本同源），
+ * 所以金额一律先用币值喂进来（见 app-agent.js 的 tokCoinAmountOf）。 */
 function fmtMoney(n, currency) {
   if (n === null || n === undefined || n === "") return "—";
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
   const cur = String(currency || "CNY").toUpperCase();
+  if (cur === "COIN") return costCoinText(v);
   const sym = COST_SYMBOL[cur] || (cur ? cur + " " : "");
   const body = Math.abs(v)
     .toFixed(2)
     .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return (v < 0 ? "-" : "") + sym + body;
+}
+
+/* 同一份格式化的 **DOM 版**：中转的币值额外挂一枚金币图标（需求口径「与设置里
+ * 中转余额同一套元件」——统一走 app-whalecoin.js 的 MtCoin.coinIcon，图标换了
+ * 两处一起换）。返回值是**节点**，不是字符串：
+ *   · COIN 且 MtCoin 在 → <span class="coin-amt sm">0.62<span class="coin-ico sm">…
+ *     数字仍由本文件的 fmtMoney 说了算（千分位 / <0.01 档一字不差），只是把尾部的
+ *     「币」字换成图标 —— 图标本身就是币名，不必再写一遍。
+ *   · 其余（¥ / 模块缺席 / 非浏览器环境）→ 纯文本节点，文案与 fmtMoney 逐字相同
+ * 调用方一律 appendChild，别再当字符串拼。 */
+function costMoneyEl(n, currency) {
+  const txt = fmtMoney(n, currency);
+  const cur = String(currency || "CNY").toUpperCase();
+  if (typeof document === "undefined") return txt;
+  if (cur !== "COIN") return document.createTextNode(txt);
+  try {
+    const MC = typeof window !== "undefined" && window ? window.MtCoin : null;
+    if (MC && typeof MC.coinEl === "function")
+      return MC.coinEl(Number(n) || 0, {
+        size: "sm",
+        /* txt 里已经不写「币」了（见 costCoinText）；这里仍兜一层剥离：
+           老包 / 英文界面可能带上单位词，剥掉中文「币」后由元件自己决定要不要补单位。 */
+        text: txt.replace(/\s*(币|W coins)$/, ""),
+      });
+  } catch {}
+  try {
+    return document.createTextNode(txt);
+  } catch {
+    return txt;
+  }
 }
 
 /* ============================================================
@@ -506,6 +804,9 @@ function balanceLine() {
  *   · 价格表没有的模型按 flash 价兜底（estimated:true，UI 用 * 标出）
  *   · 估算按每一次模型请求累加（含重试 / 预热等平台可能不计费的请求）
  *   · 平台按小时 / 按模型分账，与会话 / 轮次窗口不是同一口径
+ *   · 中转模型按**内置价目**本地估算（不再随账号由云端下发）→ 中转站改价 / 节假日
+ *     按高峰计，都会让本地这一栏与账本有差；中转站账本才是准的
+ *   · 内置价目里没有的中转模型不猜价（显示 —）
  * 文案走 I18n（键就是中文原文），英文界面自动取词条；缺词条时回落中文。
  * ============================================================ */
 
@@ -518,13 +819,20 @@ function costWhyLines() {
       "估算未计入官方活动折扣与赠送余额抵扣，显示值可能高于实际消费；峰谷按调用时刻计价，与官方账单口径一致。",
     ),
     costI18n(
-      "价格表里没有的模型（如带日期后缀的内测模型）按 flash 价兜底，这类金额是估算值，已在行末用 * 标出。",
+      "官方 DeepSeek 价格表里没有的模型（如带日期后缀的内测模型）按 flash 价兜底，这类金额是估算值，已在行末用 * 标出。",
     ),
     costI18n(
       "估算按「每一次模型请求」累加，包含重试、预热等已发出但平台可能不计费的请求；平台按小时 / 按模型分账，与会话 / 轮次窗口口径不同，两边对不上属正常。",
     ),
     costI18n(
       "对账请以 DeepSeek 账单和余额变化为准。",
+    ),
+    /* 中转按币这一条：用户在中转模型上看到的是币，平台账本里仍是元。 */
+    costI18n(
+      "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取客户端内置的中转价目表，不再从云端快照取 —— 中转站改价后要等一次客户端更新才对得上，未列入内置表的模型不猜价（显示 —）。",
+    ),
+    costI18n(
+      "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（快照里的节假日豁免不再参与），法定节假日按高峰计，这一栏会偏高。",
     ),
   ];
 }
@@ -553,7 +861,7 @@ function costWhyDialog() {
   const foot = document.createElement("p");
   foot.className = "tok-cost-why-line tok-cost-why-foot";
   foot.textContent = costI18n(
-    "口径：单价与峰谷按官方价格页，token 按上游逐请求返回的 usage 累加。",
+    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取客户端内置的中转价目表；token 一律按上游逐请求返回的 usage 累加。",
   );
   p.appendChild(foot);
   body.appendChild(p);

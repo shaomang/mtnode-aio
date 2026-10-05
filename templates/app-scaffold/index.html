@@ -159,12 +159,12 @@
         <!-- 底部语音听写（speech.js + speech.css）：话筒 = 用本机内置语音识别把说的话变成
              文字，右边一枚「音频转文字」= 选本机录音文件转写。识别跑在 MTNode 的 dsh 运行时里
              （官方本地 SenseVoice，首次使用自动下载权重），结果只展示 + 一键复制。
-             这一条与下面的说明文案并列 —— 应用换皮肤可以挪位置，但别把 #speechBar 删了。 -->
+             应用换皮肤可以挪位置，但别把 #speechBar 删了。
+             注：应用窗口底部那条**宿主注入**的听写条默认隐藏（app.json 的 capabilities.showDictate，
+             见 renderer/app-speech-ui.js）；这一格是脚手架自带的，只在声明了 textInput 时才拷进来。 -->
         <div id="speechBar"></div>
-        <p class="foot-note">
-          <span data-lang="zh">应用只做前端；模型与工具留在 MTNode 主程序 / 画布一侧。关闭窗口前会自动存盘。</span>
-          <span data-lang="en">Apps are front-end only; models and tools stay in MTNode itself. Your work is saved before the window closes.</span>
-        </p>
+        <!-- 本轮共识：页脚不再默认放说明文案（原来那行「应用只做前端；模型与工具留在 MTNode
+             主程序 / 画布一侧。关闭窗口前会自动存盘。」已删）—— 应用要写什么自己写。 -->
       </footer>
     </div>
 

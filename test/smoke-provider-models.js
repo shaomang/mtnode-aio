@@ -560,8 +560,8 @@ void (async () => {
   const liveBox = {
     console,
     I18n: { t: (s) => s },
-    /* listProviderModels 的凭据取值走主进程的 providerAuthKey（中转卡的 Key 是账号登录态，
-       配置里只有占位串）：沙箱给一个直取 apiKey 的桩，普通服务商行为一字不变。 */
+    /* listProviderModels 的凭据取值走主进程的 providerAuthKey（中转卡的真票就在配置里那张卡的
+       apiKey 上，见 main.js 的 providerAuthKey）：沙箱给一个直取 apiKey 的桩，普通服务商行为一字不变。 */
     providerAuthKey: (p) => String((p && p.apiKey) || "").trim(),
     /* 中转来源标识：沙箱里跟 main.js 的常量同值（listProviderModels 用它区分两种「没 Key」文案）。 */
     RELAY_PROVIDER_SOURCE: "mtnode-relay",

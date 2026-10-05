@@ -1,6 +1,81 @@
 "use strict";
 /* ============ 设置（APIs/Config） ============ */
 
+/* ── 设置页写剪贴板：三级链路（本轮修「API Key 复制失败」） ──────────────
+   为什么不能只写 navigator.clipboard.writeText：主窗的会话权限闸（main.js 的
+   setPermissionRequestHandler / setPermissionCheckHandler）只放行 media 一类，
+   **clipboard-write 一律 callback(false)** —— 授权态下一次成功、之后（check 复查）
+   就被拒，渲染层只拿到一个 NotAllowedError，用户看到的就是「复制失败」这四个字。
+   preload 桥 window.api.clipboardWriteText → ipcMain "clipboard:writeText"
+   （main.js：electron clipboard.writeText）不经这层权限闸，是权限受限时唯一稳的路；
+   两个都不可用时再用 execCommand("copy") 兜底（老 Electron / 桥缺失的最后退路）。
+   返回 Promise<{ ok, via, error }>；调用方据此决定 toast 文案，绝不再凭 catch 猜「复制失败」。 */
+function settingsClipboardWrite(text) {
+  const txt = String(text == null ? "" : text);
+  /* ③ execCommand 兜底：临时 textarea + select + copy，用完立刻摘掉 */
+  const execCopy = () => {
+    try {
+      if (!document.body || !document.execCommand)
+        return Promise.resolve({ ok: false, via: "none", error: "no fallback" });
+      const ta = document.createElement("textarea");
+      ta.value = txt;
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const done = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return Promise.resolve(
+        done ? { ok: true, via: "exec" } : { ok: false, via: "none", error: "execCommand refused" },
+      );
+    } catch (err) {
+      return Promise.resolve({
+        ok: false,
+        via: "none",
+        error: (err && err.message) || String(err),
+      });
+    }
+  };
+  /* ② preload 桥：不过权限闸，权限受限时唯一稳的路。
+     桥**不存在**时回 null（不许把 null 当成功：它会顺着 obj.ok 的读法变成「已成功」） */
+  const ipcCopy = () => {
+    if (!(window && window.api && typeof window.api.clipboardWriteText === "function"))
+      return Promise.resolve(null);
+    try {
+      return Promise.resolve(window.api.clipboardWriteText(txt)).then((r) =>
+        /* 只有显式 { ok:true } 算成功：桥答不上来（undefined/null/别的形状）一律当失败往下退，
+           绝不因为「拿不到明确的 ok:false」就把没写进去的当成功骗用户 */
+        r && r.ok === true
+          ? { ok: true, via: "ipc" }
+          : { ok: false, via: "ipc", error: (r && r.error) || "bridge did not confirm" },
+      );
+    } catch (err) {
+      /* 桥自己抛了（极少）：继续往下退 */
+      return Promise.resolve(null);
+    }
+  };
+  /* ① Web 标准 API：成功就结束，失败只当「这条不通」，把错误交给下一级 */
+  let first = null;
+  try {
+    const nb = navigator && navigator.clipboard;
+    if (nb && typeof nb.writeText === "function") first = Promise.resolve(nb.writeText(txt));
+  } catch (err) {
+    first = null;
+  }
+  if (first)
+    return first.then(
+      () => ({ ok: true, via: "navigator" }),
+      () => ipcCopy().then((r) => (r && r.ok ? r : execCopy())),
+    );
+  return ipcCopy().then((r) => (r && r.ok ? r : execCopy()));
+}
+
+/* 「打开设置并直接滚到某一节」的请求位（顶栏红色警示点进来时落在「配置数据目录」）。
+   只在 openSettings(opts) 里写入、openSettingsBody 末尾消费一次，消费后即清空。 */
+let settingsFocusSection = "";
+
 function mergePluginManagedProviders(targetCfg, sourceCfg) {
   if (!targetCfg || !sourceCfg) return;
   const incoming = Array.isArray(sourceCfg.providers) ? sourceCfg.providers : [];
@@ -84,7 +159,10 @@ function settingsSaved(ms) {
   return Promise.resolve(false);
 }
 
-function openSettings() {
+function openSettings(opts) {
+  /* opts.section === "data"：打开设置并把「配置数据目录」那一节滚进视野
+     （顶栏「数据不落应用文件夹」红色警示的点击入口，见 renderer/app-boot.js）。 */
+  settingsFocusSection = (opts && opts.section) || "";
   reloadConfigProvidersFromDisk().then(() => {
     openSettingsBody();
     /* 打开设置 = 用户要看提供商了：中转服务**本地没有快照**时顺手拉一次
@@ -443,10 +521,12 @@ function openSettingsBody() {
     tailSecs.net = sec;
   }
 
-  /* ── 配置数据目录（API Key / 工作流等；更改后需重启）── */
+  /* ── 配置数据目录（API Key / 工作流等；更改后需重启）──
+     id = 顶栏「数据不落应用文件夹」红色警示点击后的滚动落点（见文件头的 settingsFocusSection） */
   {
     const sec = document.createElement("div");
     sec.className = "settings-sec";
+    sec.id = "setDataRootSec";
     const secTitle = document.createElement("div");
     secTitle.className = "settings-sec-title";
     secTitle.textContent = I18n.t("配置数据目录");
@@ -575,6 +655,11 @@ function openSettingsBody() {
         ) {
           toast(I18n.t("已保存新路径，请手动重启应用后生效"), "ok");
           await refreshRoot();
+          /* 顶栏「数据不落应用文件夹」警示：新数据目录也可能正好落在应用文件夹内
+             （或从里面挪了出来）→ 立刻重查一次，别让警示停在旧结论上 */
+          if (typeof window.checkAppDirWarn === "function") {
+            try { await window.checkAppDirWarn(); } catch (_) {}
+          }
           return;
         }
         await relaunchAfter();
@@ -611,6 +696,9 @@ function openSettingsBody() {
         ) {
           toast(I18n.t("已恢复默认路径，请手动重启应用后生效"), "ok");
           await refreshRoot();
+          if (typeof window.checkAppDirWarn === "function") {
+            try { await window.checkAppDirWarn(); } catch (_) {}
+          }
           return;
         }
         await relaunchAfter();
@@ -717,9 +805,9 @@ function openSettingsBody() {
        · 画布备份 / 配置备份：超出保留份数（72 / 30）的旧快照
        · 缓存：工坊 / 应用 / 讨论区 / 截图目录
        · 回收站内容、浏览器缓存子目录（保留 Cookie）
-       · 回滚对象库（走 rollback-store 的 GC）、超期会话记录（默认 7 天，可改）
-     删除一律先搬进系统回收站（失败回退数据目录下的清理暂存区）；会话记录与回滚
-     对象是永久删除（回执里注明）。 */
+       · 历史回滚数据（会话轮次回滚功能已移除，剩下的历史目录整目录删除）、超期会话记录（默认 7 天，可改）
+     删除一律先搬进系统回收站（失败回退数据目录下的清理暂存区）；会话记录与历史回滚
+     数据是永久删除（回执里注明）。 */
   let scRefresh = null;
   let scInputs = null;
   let scBusy = false;
@@ -735,7 +823,7 @@ function openSettingsBody() {
     const hint = document.createElement("div");
     hint.className = "n-field";
     hint.textContent = I18n.t(
-      "统计数据目录里各类冗余的占用，并清理「已经没被 MTNode 用着」的文件：画布资产只清没有任何存档 / 备份 / 回收站引用的；正在运行的画布与正在编辑的文件一律跳过。清理默认把文件搬进系统回收站（可在资源管理器「还原」），只有会话记录与回滚对象是永久删除。",
+      "统计数据目录里各类冗余的占用，并清理「已经没被 MTNode 用着」的文件：画布资产只清没有任何存档 / 备份 / 回收站引用的；正在运行的画布与正在编辑的文件一律跳过。清理默认把文件搬进系统回收站（可在资源管理器「还原」），只有会话记录与历史回滚数据是永久删除。",
     );
     sec.appendChild(hint);
 
@@ -1490,11 +1578,12 @@ function openSettingsBody() {
     );
     sec.appendChild(cascRow);
 
-    /* 完成音效（本次需求两档，音色互不相同）:
-       ① 任务级——**任何一件任务跑完**都响一声短促音（E5→A5，0.42 秒）；
-       ② 全局级——**所有任务都结束**且运行队列空满 5 分钟时，才响一声更清脆的三音上行
-          （C6→E6→G6，约 0.9 秒）；不满 5 分钟就只留短促音。
-       两档共用这个开关与下面的音量滑杆；自定义音频文件只替换任务级那一档（全局声固定内置音） */
+    /* 完成音效（本次需求：只剩一把音色、两档音量）:
+       ① 任何一件任务跑完 → 一声短促的「叮咚」（E5→A5，0.42 秒）；
+       ② 所有任务都完成 → **同一把音色**，音量按 1.5 倍放大再响一声
+          （原来那一档「全局三音上行 / 总时长超 5 分钟」的长任务音效已移除）。
+       两档共用这个开关与下面的音量滑杆；自定义音频文件两档都用它（设了就用用户选的音，
+       留空用内置音）。 */
     const sndRow = document.createElement("label");
     sndRow.className = "n-field";
     sndRow.style.flexDirection = "row";
@@ -1502,7 +1591,7 @@ function openSettingsBody() {
     const sndCb = document.createElement("input");
     sndCb.type = "checkbox";
     sndCb.checked = S.config.dsh.doneSound !== false;
-    /* 即时生效：勾 / 取消立刻写盘，下一次长任务结束就按新档位响或不响 */
+    /* 即时生效：勾 / 取消立刻写盘，下一次任务收尾就按新档位响或不响 */
     sndCb.onchange = () => {
       S.config.dsh.doneSound = !!sndCb.checked;
       settingsSaved(0);
@@ -1511,15 +1600,15 @@ function openSettingsBody() {
     sndRow.appendChild(
       document.createTextNode(
         I18n.t(
-          "任务完成音效（两档：任何一件任务跑完 → 一声短促的「叮咚」；所有任务都结束且运行队列空满 5 分钟 → 再响一声更清脆的三音上行）",
+          "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；所有任务都完成 → 同一声音以 1.5 倍音量再响一声）",
         ),
       ),
     );
     sec.appendChild(sndRow);
     dshEls.doneSound = sndCb;
-    /* 完成音效音量（本次需求）：滑杆调两档内置音的响度（短促音 + 全局音同一把尺；
-       自定义音频文件音量固定 0.5，那是文件自己的响度口径），拖动时轻轻试听一声音量实况；
-       即时写盘，无保存按钮。 */
+    /* 完成音效音量（本次需求）：滑杆调内置音的响度（短促音与收尾那一声同一把尺，
+       收尾那一档再乘 1.5、并夹到安全上限防破音）；自定义音频文件同样分两档
+       （<audio> 音量 0.5 / 0.75）。拖动时轻轻试听一声音量实况；即时写盘，无保存按钮。 */
     const sndVolRow = document.createElement("div");
     sndVolRow.className = "dsh-btn-row";
     const sndVol = document.createElement("input");
@@ -1536,7 +1625,7 @@ function openSettingsBody() {
     })();
     sndVol.value = String(doneVolNow);
     sndVol.style.flex = "1";
-    sndVol.title = I18n.t("完成音效音量（两档内置音共用；0 = 静音）");
+    sndVol.title = I18n.t("完成音效音量（两档共用；收尾那一档再乘 1.5；0 = 静音）");
     const sndVolLabel = document.createElement("span");
     sndVolLabel.style.minWidth = "42px";
     sndVolLabel.style.textAlign = "right";
@@ -1572,7 +1661,7 @@ function openSettingsBody() {
     const sndFile = document.createElement("input");
     sndFile.type = "text";
     sndFile.placeholder = I18n.t(
-      "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；只替换「任务完成」那一档的短促音，全部跑完的全局提示音固定用内置音）",
+      "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；两档都用它：任何一件任务跑完的那一声，以及全部完成时放大 1.5 倍的那一声）",
     );
     sndFile.value = S.config.dsh.doneSoundFile || "";
     sndFile.style.flex = "1";
@@ -1598,7 +1687,11 @@ function openSettingsBody() {
     const sndPlay = document.createElement("button");
     sndPlay.className = "mini";
     sndPlay.textContent = I18n.t("试听");
-    sndPlay.onclick = () => previewDoneSound(sndFile.value.trim() || (S.config.dsh && S.config.dsh.doneSoundFile) || "");
+    sndPlay.onclick = () =>
+      previewDoneSound(
+        sndFile.value.trim() || (S.config.dsh && S.config.dsh.doneSoundFile) || "",
+        true, /* 试听收尾那一档（1.5 倍）—— 用户听到的就是「全部完成」时真实的那一声 */
+      );
     const sndClear = document.createElement("button");
     sndClear.className = "mini";
     sndClear.textContent = I18n.t("清除");
@@ -2049,6 +2142,22 @@ function openSettingsBody() {
   foot.appendChild(spacer);
   foot.appendChild(stamp);
   foot.appendChild(closeBtn);
+
+  /* 请求过的落点（顶栏红色警示 → 「配置数据目录」）：整页挂完后再滚，只消费一次。
+     小节是沉底的，不滚的话用户进来只看到最上面的提供商配置，找不到那一段。 */
+  if (settingsFocusSection === "data") {
+    settingsFocusSection = "";
+    const tgt = $("#setDataRootSec");
+    if (tgt) {
+      try {
+        tgt.scrollIntoView({ block: "center", behavior: "auto" });
+      } catch (_) {
+        try { tgt.scrollIntoView(); } catch (_) {}
+      }
+    }
+  } else if (settingsFocusSection) {
+    settingsFocusSection = "";
+  }
 }
 
 /* 目录中可添加的服务商(与 dsh 一致的全部内置服务商):
@@ -3614,15 +3723,50 @@ function openProviderConfigDialog(prov) {
   } catch {}
 }
 
+/* 逐模型价目的一行文字（中转只读卡专用）：价目由云端随快照下发（meta.prices），
+   与本地「中转按币」计价同一份 —— 用户对不上账时能自己核。
+   口径：存的是元（与云端账本同源），括号里给鲸圆币（用户看的就是币）；
+   文本行标出「入（未命中 / 缓存命中）· 出」与高峰倍率，图像行给元/张。
+   没有价目（老部署没下发 / 老快照）返回空串 —— 卡上不写「—」，免得看着像免费。 */
+function relayPriceText(id, meta) {
+  const p = ((meta && meta.prices) || {})[id] || null;
+  if (!p) return "";
+  const coinYuan = Number((meta && meta.coinYuan) || 0) || 0.02; /* 1 币 = ¥0.02（云端汇率优先） */
+  const per = 1 / coinYuan; /* 1 元 = 多少币 */
+  const y = (v) => "¥" + (Number(v) || 0);
+  const c = (v) =>
+    (typeof costCoinText === "function"
+      ? costCoinText((Number(v) || 0) * per)
+      : String(Math.round((Number(v) || 0) * per * 100) / 100) +
+        (window.MtCoin && window.MtCoin.unitText ? window.MtCoin.unitText() : I18n.t(" 币")));
+  if (p.kind === "image") {
+    const y0 = Number(p.perImageYuan) || 0;
+    return I18n.t("按张 ") + y(y0) + I18n.t("/张") + "（" + c(y0) + "）";
+  }
+  const peak = Number(p.peakMultiplier) || 1;
+  return (
+    I18n.t("入价 ") + y(p.cacheMiss) + I18n.t("/百万") +
+    I18n.t("（缓存命中 ") + y(p.cacheHit) + I18n.t("）· 出价 ") + y(p.output) + I18n.t("/百万") +
+    (peak > 1 ? I18n.t(" · 高峰 ×") + peak : "") +
+    "（" + c(p.cacheMiss) + I18n.t("起）")
+  );
+}
+
 /* ── MTNode 中转服务的余额元件（鲸圆币）──────────────────────────────
    中转余额是本机唯一「按币计费」的钱：快照里的 totalYuan 仍是元（云端不下发币），
-   这里只把显示换成币（1 币 = ¥0.02，换算与金币图标见 renderer/app-whalecoin.js）。
-   MtCoin 缺席（老版渲染层）时退回元的 4 位小数串，界面不至于空着。 */
+   这里只把显示换成币（换算与金币图标见 renderer/app-whalecoin.js）。
+   悬停提示**不带汇率** —— 需求口径「账户里不提示 1￥=50 币，只在充值界面提示」，
+   汇率那行只写在充值窗（renderer/app-wallet.js 的 #wlRate）。
+   MtCoin 缺席（老版渲染层）时退回元的 1 位小数串，界面不至于空着。 */
 function relayBalanceEl(totalYuan) {
   const yuan = Number(totalYuan) || 0;
-  if (window.MtCoin && window.MtCoin.balanceEl) return window.MtCoin.balanceEl(yuan);
+  if (window.MtCoin && window.MtCoin.balanceEl) {
+    const bal = window.MtCoin.balanceEl(yuan);
+    if (bal) bal.title = I18n.t("鲸圆币");
+    return bal;
+  }
   return document.createTextNode(
-    typeof MtRelay !== "undefined" ? MtRelay.money(yuan) : "¥" + yuan.toFixed(4),
+    typeof MtRelay !== "undefined" ? MtRelay.money(yuan) : "¥" + yuan.toFixed(1),
   );
 }
 
@@ -3722,51 +3866,101 @@ function relayProvCard(prov, i, onChange) {
   );
   ro(I18n.t("名称"), prov.name || I18n.t("MTNode 中转服务"));
   ro(I18n.t("接口地址 Base URL"), prov.baseUrl || "", true);
-  /* API Key：中转站的 Key **就是账号登录 token**（见 docs/relay-admin.md 第五节），
-     明文只在主进程、绝不回渲染层 —— 这里显示主进程算好的打码串（前 4 + **** + 后 4），
-     让用户看得见「凭据在不在、是哪一张」，又拼不回原文。没登录 / 还没取到时退回占位串打码。 */
+  /* API Key：中转 Key 由账号托管，但**明文就在这张卡上**（主进程写进本机 config.json
+     的那一串，见 docs/relay-admin.md）——这里显示完整值（等宽、可选中、长串换行）+ 复制按钮，
+     用户拿它就能直接填进 Codex 等 OpenAI 兼容客户端（Base URL 即上面那行接口地址）。
+     换票走「更换 Key」按钮（服务端按账号自然日限 5 次），不提供可手改的输入框：
+     手改的值下一次同步就会被覆盖，只会让人白改一遍。 */
   {
-    const keyMasked =
-      String(meta.keyMasked || "") ||
-      (typeof MtRelay !== "undefined" && MtRelay.maskKey
-        ? MtRelay.maskKey(MtRelay.KEY_PLACEHOLDER)
-        : "****");
-    const kv = ro(I18n.t("API Key"), keyMasked, true);
-    kv.title = meta.authKey
-      ? I18n.t("凭据 = 本机登录账号的 token（打码显示，前 4 + **** + 后 4；真凭据只留在主进程）")
-      : I18n.t("还没有取到账号凭据：登录 MTNode 账号后自动带上（打码显示）");
+    const view =
+      typeof MtRelay !== "undefined" && MtRelay.keyView
+        ? MtRelay.keyView(prov)
+        : { key: String(prov.apiKey || ""), authKey: !!String(prov.apiKey || "") };
+    const keyText = String(view.key || "");
+    const rotate = meta.rotate && typeof meta.rotate === "object" ? meta.rotate : null;
+    const kv = ro(I18n.t("API Key"), keyText, true);
+    kv.classList.add("relay-key");
+    kv.title = keyText
+      ? I18n.t("这串就是中转 Key：可直接用于 Codex 等 OpenAI 兼容客户端（Base URL 即上面的接口地址）")
+      : "";
+    const row = document.createElement("div");
+    row.className = "relay-keyops";
+    const cp = document.createElement("button");
+    cp.className = "mini";
+    cp.type = "button";
+    cp.textContent = I18n.t("复制");
+    cp.title = I18n.t("复制中转 Key 到剪贴板");
+    cp.disabled = !keyText;
+    cp.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!keyText) {
+        toast(I18n.t("还没有取到中转 Key"), "warn");
+        return;
+      }
+      settingsClipboardWrite(keyText).then((r) =>
+        r && r.ok
+          ? toast(I18n.t("中转 Key 已复制到剪贴板"), "ok")
+          : toast(I18n.t("复制失败，请手动选中后按 Ctrl+C 复制"), "err"),
+      );
+    };
+    const rb = document.createElement("button");
+    rb.className = "mini";
+    rb.type = "button";
+    rb.textContent = I18n.t("更换 Key");
+    rb.title = I18n.t("换一张新的中转 Key（旧 Key 立即失效）");
+    rb.disabled = !keyText;
+    rb.onclick = async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const left = rotate && typeof rotate.left === "number" ? rotate.left : null;
+      const okGo = await confirmDialog(
+        I18n.t("确定更换中转 Key？") +
+          "\n\n" +
+          I18n.t(
+            "换新的之后旧 Key 立即失效：正在用旧 Key 的其它客户端（Codex、桌宠、别的电脑）需要重新复制这一串。",
+          ) +
+          (left == null ? "" : "\n\n" + I18n.t("今日还可更换 {n} 次（每天 5 次）", { n: left })),
+        {
+          title: I18n.t("更换中转 Key"),
+          okText: I18n.t("更换"),
+          cancelText: I18n.t("取消"),
+        },
+      );
+      if (!okGo) return;
+      if (typeof MtRelay === "undefined" || !MtRelay.rotateKey) {
+        toast(I18n.t("更换中转 Key 失败，请稍后重试"), "warn");
+        return;
+      }
+      rb.disabled = true;
+      try {
+        const r = await MtRelay.rotateKey();
+        if (r && r.ok) {
+          toast(I18n.t("已更换中转 Key（旧 Key 已失效）"), "ok");
+          rerender();
+        } else {
+          toast((r && r.error) || I18n.t("更换中转 Key 失败，请稍后重试"), "warn");
+        }
+      } finally {
+        rb.disabled = false;
+      }
+    };
+    row.appendChild(cp);
+    row.appendChild(rb);
+    /* 按钮贴着 API Key 那一格放（跟在 <code> 后面），别在网格里另起一格 */
+    (kv.parentElement || gridEl).appendChild(row);
     const keyHint = document.createElement("div");
     keyHint.className = "settings-hint";
     keyHint.style.margin = "0";
-    /* 三档分开说（见 main.js 的 relay:keyInfo.readIssue）：有凭据 / 凭据读不出来 / 没登录。
-       「读不出来」最容易被误当成「Key 填错了」，所以要点明动作：重新登录一次。 */
-    /* 凭据那一行要说清「这张凭据什么时候到期、要不要重登」：
-       独立的中转 Key 与登录会话是两码事（见 store-saas/server.mjs 的 issueRelayKey），
-       只写「由账号登录态托管」用户没法判断该不该去重登一次。 */
-    const keyWhen =
-      typeof MtRelayAuth !== "undefined" && MtRelayAuth.ts
-        ? MtRelayAuth.ts(meta.expiresAt)
-        : "";
-    keyHint.textContent = meta.authKey
-      ? I18n.t("由账号登录态托管（只读）：打码显示，真凭据不下发到界面") +
-        (meta.renewDue
-          ? I18n.t("；凭据即将到期，重新登录一次即可换新")
-          : keyWhen
-            ? I18n.t("；有效期至 ") + keyWhen
-            : "")
-      : meta.keyIssue === "decrypt_failed" || meta.keyIssue === "encryption_unavailable"
-        ? I18n.t(
-            "本机的账号凭据读不出来（换了 Windows 账号或加密密钥变动）：请重新登录一次 MTNode 账号，凭据会自动补上",
-          )
-        : meta.keyIssue === "write_unverified"
-          ? I18n.t(
-              "本机存不住账号凭据（系统加密写得出读不回来）：请重新登录一次；若仍失败，重开应用后再登录",
-            )
-          : meta.keyIssue === "server_no_relay_key"
-            ? I18n.t(
-                "服务端这次没有下发独立中转凭据：请点「刷新」，仍无则稍后再试（与是否重新登录无关）",
-              )
-            : I18n.t("由账号登录态托管（只读）：暂未取到账号凭据，登录后自动带上");
+    /* 提示只留两档：
+       · 有票 → 说清「这串给谁用、Base URL 是上面那行」（用户拿它去配 Codex）；
+       · 没票 → 说清该做什么（登录 / 刷新），**绝不提「凭据读不出来 / 重新登录」**
+         （那一族文案按用户口径已永久移除，见 renderer/i18n.js 的凭据提示段）。 */
+    keyHint.textContent = keyText
+      ? I18n.t("可直接用于 Codex 等 OpenAI 兼容客户端：Base URL 就是上面那行接口地址")
+      : meta.keyIssue === "server_no_relay_key"
+        ? I18n.t("服务端这次没有下发独立中转凭据：请点「刷新」，仍无则稍后再试（与是否重新登录无关）")
+        : I18n.t("还没有取到中转 Key：请先登录 MTNode 账号，或点「刷新中转清单」");
     gridEl.appendChild(keyHint);
   }
 
@@ -3778,6 +3972,16 @@ function relayProvCard(prov, i, onChange) {
   modelsField.appendChild(
     document.createTextNode(I18n.t("模型清单（云端下发，从上到下为使用优先级）")),
   );
+  /* 价目口径：费用按币显示、平台账本按元 —— 两边同一个数，只是单位不同。 */
+  {
+    const priceHint = document.createElement("div");
+    priceHint.className = "settings-hint";
+    priceHint.style.margin = "0";
+    priceHint.textContent = I18n.t(
+      "价目由云端随账号下发（元为平台账本口径，括号内为鲸圆币，1 币 = ¥0.02）：会话 Token 统计里中转模型按这份价目折算成币。",
+    );
+    modelsField.appendChild(priceHint);
+  }
   const orderBox = document.createElement("div");
   orderBox.className = "model-order relay-model-order" + (meta.blocked ? " off" : "");
   const ids = (meta.models || []).map(String);
@@ -3800,35 +4004,31 @@ function relayProvCard(prov, i, onChange) {
     const k = (meta.kinds || {})[id];
     kind.textContent = k === "image" ? I18n.t("图像") : I18n.t("文本");
     row.appendChild(kind);
+    const priceTxt = relayPriceText(id, meta);
+    if (priceTxt) {
+      const price = document.createElement("span");
+      price.className = "relay-price";
+      price.textContent = priceTxt;
+      price.title = I18n.t("本地计价用的价目（与中转站同一份）：文本按元/百万 token、图像按元/张");
+      row.appendChild(price);
+    }
     orderBox.appendChild(row);
   }
   modelsField.appendChild(orderBox);
   gridEl.appendChild(modelsField);
   card.appendChild(gridEl);
 
-  /* 余额 + 「去充值」+「刷新」：余额不受前端充值白名单限制（中转接口自己回的）；
-     余额按鲸圆币显示（快照里的 totalYuan 仍是元，见本文件 relayBalanceEl） */
+  /* 余额 + 「刷新」：**这里没有充值入口** —— 全应用唯一的充值入口是右上角账户菜单里的
+     「余额」（见 renderer/app-auth.js），设置里的中转卡只把余额与刷新摆出来。
+     口径：充值入口只留一处，用户不必记「充值得去设置里找那张卡」；卡本身只有充过值的
+     账号才有（everRecharged），把入口挂在卡上等于对没充值的账号把它藏起来。
+     余额按鲸圆币显示（快照里的 totalYuan 仍是元，见本文件 relayBalanceEl）。 */
   const moneyRow = document.createElement("div");
   moneyRow.className = "relay-balance";
   const bal = document.createElement("b");
   bal.appendChild(document.createTextNode(I18n.t("可用余额 ")));
   bal.appendChild(relayBalanceEl(Number(meta.totalYuan) || 0));
   moneyRow.appendChild(bal);
-  const topupBtn = document.createElement("button");
-  topupBtn.type = "button";
-  topupBtn.className = "mini";
-  topupBtn.textContent = I18n.t("去充值");
-  topupBtn.title = I18n.t("打开账户充值（到账后中转清单会自动刷新）");
-  topupBtn.onclick = (ev) => {
-    ev.preventDefault();
-    if (window.MtWallet && window.MtWallet.open) {
-      closeProvCfgDlg();
-      window.MtWallet.open();
-      return;
-    }
-    toast(I18n.t("充值功能尚未对该账号开放"), "warn");
-  };
-  moneyRow.appendChild(topupBtn);
   const refreshBtn = document.createElement("button");
   refreshBtn.type = "button";
   refreshBtn.className = "mini";
@@ -3858,6 +4058,13 @@ function relayProvCard(prov, i, onChange) {
   stateLine.textContent =
     typeof MtRelay !== "undefined" ? MtRelay.stateText(prov) : "";
   card.appendChild(stateLine);
+
+  /* 中转服务警示（与充值窗同一份文案与样式，真源 = MtWallet.relayWarnEl）：
+     中转只供临时使用；LLM 模型不要轻信官方以外的中转站。MtWallet 缺席（老版渲染层）
+     时整块不出现，不影响这张卡原有信息。 */
+  if (window.MtWallet && window.MtWallet.relayWarnEl) {
+    card.appendChild(window.MtWallet.relayWarnEl());
+  }
 
   /* ── 启用开关（可改；手动停用后刷新不会自动恢复） ── */
   const offRow = document.createElement("label");
@@ -4112,10 +4319,11 @@ function provCard(prov, i, onChange) {
         toast(I18n.t("暂无 API Key"), "warn");
         return;
       }
-      navigator.clipboard
-        .writeText(v)
-        .then(() => toast(I18n.t("API Key 已复制到剪贴板"), "ok"))
-        .catch(() => toast(I18n.t("复制失败"), "err"));
+      settingsClipboardWrite(v).then((r) =>
+        r && r.ok
+          ? toast(I18n.t("API Key 已复制到剪贴板"), "ok")
+          : toast(I18n.t("复制失败，请手动选中后按 Ctrl+C 复制"), "err"),
+      );
     };
     const testBtn = document.createElement("button");
     testBtn.className = "mini";

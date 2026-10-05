@@ -321,7 +321,257 @@
   border-color: var(--cyan2);
 }
 
-/* ── 作者行 + 开发者信息折叠区 + 校验值小按钮 + 分支菜单（本轮新增） ──
+/* 「N 个分支 · M 个版本」徽标（同 id 多分支，docs/apps-market.md §十）：
+   与作者 / 分支相关的标记统一用紫（#c792ea，与 .apps-badge-own 同一档） */
+.apps-badge-branch {
+  color: #c792ea;
+  border-color: #c792ea;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.apps-badge-warn {
+  color: var(--orange2);
+  border-color: var(--orange);
+}
+
+/* ── 分支树（同 id 多分支，§十）：主干在最左（depth 0），每个作者分支向右延伸一级 ──
+   真·折线树：每行左侧一段竖干线 + 折线（├─ / └─），行身按 --br-depth 缩进。
+   depth 由 app-apps.js 的 appsBranchTreeEl 写在行上（主干 0、其余 +1）。 */
+.apps-brtree {
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  background: var(--code);
+}
+
+.apps-br-head {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.apps-br-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.apps-br-branch,
+.apps-br-ver {
+  position: relative;
+  padding-left: calc(14px + var(--br-depth, 0) * 18px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.apps-br-branch {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.apps-br-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* 折线：竖干线 + 向右的横枝（depth 0 的主干只画干线，不画横枝） */
+.apps-br-elbow {
+  position: absolute;
+  left: calc(6px + var(--br-depth, 0) * 18px);
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  pointer-events: none;
+}
+
+.apps-br-elbow::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--bd2);
+}
+
+.apps-br-ver .apps-br-elbow::before,
+.apps-br-branch:not(.is-trunk) .apps-br-elbow::before {
+  bottom: 50%;
+}
+
+.apps-br-elbow::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 9px;
+  height: 1px;
+  background: var(--bd2);
+}
+
+.apps-br-branch.is-trunk .apps-br-elbow::after {
+  display: none;
+}
+
+.apps-br-elbow.is-last::before {
+  bottom: 50%;
+}
+
+.apps-br-caret {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  padding: 0;
+  font-size: 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.apps-br-caret:hover {
+  color: var(--fg);
+  border-color: var(--bd2);
+}
+
+.apps-br-who {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.apps-br-branch.is-trunk .apps-br-who {
+  font-weight: 600;
+}
+
+.apps-br-meta,
+.apps-br-vermeta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.apps-br-verno {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-family: var(--mono, monospace);
+  color: var(--fg);
+}
+
+.apps-br-vernote {
+  flex: 1 1 60px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.apps-br-rowdl,
+.apps-br-dl {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.apps-br-ver {
+  opacity: 0.95;
+}
+
+.apps-br-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--bd);
+}
+
+/* 选中分支之后出现的「这一支的版本 + 动作」块（本轮口径：选择好分支后才出现下载 / 覆盖等信息）。
+   .apps-br-sel 是这块的容器；.apps-br-info 是树上那一行的「N 个版本 · 时间」附加信息；
+   .apps-br-hint 是「已选：…」那句提示；.apps-br-acts 是动作区（主按钮 + 本机状态说明）。 */
+.apps-br-sel {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--bd);
+}
+
+.apps-br-hint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.apps-br-info {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.apps-br-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.apps-br-acts .apps-br-main {
+  font-weight: 600;
+}
+
+.apps-br-note {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* 树上选中的那一支（点整行切换） */
+.apps-br-branch.on .apps-br-who {
+  color: var(--orange2);
+}
+
+.apps-detail-branchbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--bd);
+}
+
+.apps-detail-branchlab {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.apps-detail-branchbtn.on {
+  border-color: #c792ea;
+  color: #c792ea;
+}
+
+/* 作者行 + 开发者信息折叠区 + 校验值小按钮 + 分支菜单（本轮新增） ──
    口径：作者是给人看的（云端条目 = 上架账号，本机 = app.json 的作者）；
    校验值这类长哈希对普通用户没有意义 → 收进「ⓘ」小按钮，点开才看全文、可复制。 */
 .apps-tile-author {
@@ -634,9 +884,59 @@
   font-weight: 800;
   letter-spacing: .5px;
   color: var(--ink);
+  /* 第一行 = 标题（.apps-tile-name）+ 右端两枚图标按钮（金币 / ⓘ，见 app-apps.js 的
+     appsAppsIconRow）：行内 flex + 两端对齐，标题过长时自己截断（图标 flex:none 不被压扁）。 */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.apps-tile-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 卡片第一行右端的两枚图标按钮：同一套小方框（需求口径：打赏只留一枚金币 icon，
+   「详细」换成 info icon）——方框尺寸固定，悬停文案在 title 上。 */
+.apps-tile-icoacts {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+button.mini.apps-ico-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  border-radius: 5px;
+  flex: none;
+}
+
+button.mini.apps-ico-coin {
+  color: var(--orange2);
+}
+
+button.mini.apps-ico-coin:hover {
+  border-color: var(--orange);
+}
+
+button.mini.apps-ico-coin .coin-ico.sm {
+  font-size: 12px;
+}
+
+button.mini.apps-ico-info {
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .apps-tile-ver {
@@ -721,6 +1021,195 @@
   color: var(--ink);
   font-family: var(--mono);
   word-break: break-all;
+}
+
+/* ───────────────── 应用详情对话窗（单开的浮层；详情不再内联进卡片） ─────────────────
+   尺寸只走 .overlay-box.apps-detail-box 这一个类（绝不内联改共享的 .overlay-box：内联残留
+   会让下一个弹窗继承宽身 / 高度，见 AGENTS.md 与 app-publish.css 同一坑）；类的摘除由
+   renderer/app-apps.js 的 appsDetailBoxCleanup 负责。右下角手柄 .apps-detail-resize 挂在
+   #ovBody 里的 .apps-detail-root 上：定位锚是 .overlay-box 的 position:relative，
+   所以贴在窗框右下角，关窗时随 #ovBody 一起消失、不留残件。 */
+.overlay-box.apps-detail-box {
+  width: min(1180px, 94vw);
+  min-width: 50vw; /* 最小宽 ≥50%：版本表要摊得开（与上架窗同一口径） */
+  max-width: 96vw;
+  height: 86vh;
+  max-height: calc(100vh - 60px);
+  position: relative;
+  border-top-color: var(--orange);
+}
+
+.apps-detail-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  height: 100%;
+}
+
+/* 头部：图标 + 标题 + 作者 / 云端版本 / 本机版本 + 徽标 */
+.apps-detail-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-left: 3px solid var(--orange);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+
+.apps-detail-ico {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 两头都兼容：云端图标 = .apps-ico-img（撑满父格）、拉不到时的首字占位 = .apps-tile-ph */
+.apps-detail-ico .apps-ico-img {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
+
+.apps-detail-who {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.apps-detail-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-detail-meta {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.apps-detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* 正文：整块可滚（版本表长起来时头尾不跟着滚） */
+.apps-detail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.apps-detail-scroll .apps-detail {
+  grid-column: auto;
+  margin-top: 0;
+}
+
+/* 窗里的详情不再走卡片的整行跨列（那是给网格用的） */
+.apps-detail-in-dlg {
+  grid-column: auto;
+}
+
+/* 本机版本 / 云端版本两块 */
+.apps-detail-vers {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.apps-detail-cloudvers {
+  background: var(--code);
+}
+
+.apps-detail-vers .apps-vers {
+  margin-top: 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.apps-detail-ver {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.apps-detail-ver.is-cur {
+  color: var(--ink);
+}
+
+.apps-detail-ver-no {
+  flex: none;
+  min-width: 64px;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--orange2);
+}
+
+.apps-detail-ver-meta {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-detail-ver-tag {
+  flex: none;
+  color: var(--cyan2);
+  font-size: 10.5px;
+}
+
+.apps-detail-vers-none {
+  margin-top: 4px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* 进度条与卡片同形（窗里那份在底部一行） */
+.apps-detail-prog {
+  flex: none;
+  margin-top: 0;
+}
+
+/* 右下角拖拽手柄 */
+.apps-detail-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--bd2);
+  border-bottom: 2px solid var(--bd2);
+  border-bottom-right-radius: 4px;
+  opacity: .8;
+}
+
+.apps-detail-resize:hover {
+  border-color: var(--orange2);
+  opacity: 1;
 }
 
 /* ── 库页：行式列表 + 根目录一行 ── */
@@ -1275,6 +1764,50 @@ body.theme-light .apps-dev-more-pop {
   padding-left: 22px;
 }
 
+/* ── 应用能力（app.json 的 capabilities）────────────────────────────────────
+   卡片小标 + 新建浮层 / 「应用能力…」对话框里的复选框组（renderer/app-app-flow.js）。
+   颜色只取既有语义变量（--line / --fg-dim / --accent），不新增色板。 */
+.apps-badge-cap {
+  border-color: var(--line);
+  color: var(--fg-dim);
+}
+.cap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.cap-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cap-row:hover {
+  border-color: var(--accent-dim, var(--accent));
+}
+.cap-row input {
+  margin-top: 2px;
+  flex: none;
+}
+.cap-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cap-hint {
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.cap-warn {
+  margin-top: 10px;
+}
+
 /* 左栏底部那一行「＋ 新建应用」（本轮从顶栏菜单条移到列表底部，不随列表滚动） */
 .apps-dev-sidefoot {
   flex: none;
@@ -1288,9 +1821,7 @@ body.theme-light .apps-dev-more-pop {
   flex: 1 1 auto;
 }
 
-/* 预览：iframe 占满中栏；底色 = 不透明黑。
-   本轮需求：以前是白底，切应用时 iframe 重建会先闪一下白，很刺眼；现在底色是黑，
-   切应用时再盖一层黑幕（.apps-dev-curtain）盖住新页没画出来的那一小段时间。 */
+/* 预览：iframe 占满中栏；底色 = 不透明黑（切应用时新页画出来之前不会闪白）。 */
 .apps-dev-framewrap {
   position: relative;
   flex: 1;
@@ -1306,21 +1837,23 @@ body.theme-light .apps-dev-more-pop {
   background: #000;
 }
 
-/* 切应用的过渡黑幕（renderer/app-apps-dev.js 的 appsDevCurtainShow / appsDevCurtainDrop）：
-   只在换应用时出现（首次进开发页不盖、日常「刷新预览」不盖），新页 load 完成就淡出摘掉，
-   另有 2.5s 超时兜底。不吃指针事件（幕在上面时用户仍能点预览 / 点重试）。 */
-.apps-dev-curtain {
+/* 切应用的加载提示（renderer/app-apps-dev.js 的 appsDevLoadingShow / appsDevLoadingHide）：
+   只在换应用时出现（首次进开发页不出、日常「刷新预览」与开发中的跟手重载都不出），
+   新页 load 完成就收起，另有超时兜底。**只是一行小字**：不再像旧黑幕那样盖满整块中栏
+   （用户口径：切应用时整个界面被刷新般闪一下，要轻）。不吃指针事件，用户照样能点预览。 */
+.apps-dev-loading {
   position: absolute;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   z-index: 5;
-  background: #000;
-  opacity: 1;
-  transition: opacity .28s ease;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .62);
+  color: var(--fg);
+  font-size: 12px;
+  letter-spacing: .02em;
   pointer-events: none;
-}
-
-.apps-dev-curtain.hide {
-  opacity: 0;
 }
 
 /* 中栏兜底提示层（renderer/app-apps-dev.js 的 appsDevPreviewStatMsg）：
@@ -1552,3 +2085,88 @@ body.theme-light .apps-dev-more-pop {
   font-size: 11.5px;
   line-height: 1.5;
 }
+
+/* ── 上架前体检（开发页工具栏那枚按钮 → 弹窗）
+   只读体检的回执：默认当前应用，可切「全部应用」；每个应用一行，出问题的那几行标红。
+   配色沿用本文件的口径（var(--bd/--bd2/--muted/--ink/--green/--red) + body.theme-light 覆盖）。 */
+.apps-audit-lead {
+  margin-bottom: 8px;
+}
+.apps-audit-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.apps-audit-tabs button.on {
+  border-color: #c792ea;
+  color: #c792ea;
+}
+.apps-audit-stat {
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.apps-audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.apps-audit-row {
+  padding: 7px 9px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel2);
+}
+.apps-audit-row.bad {
+  border-color: var(--red);
+}
+.apps-audit-rowhead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.apps-audit-rowhead b {
+  font-size: 12px;
+  color: var(--ink);
+}
+.apps-audit-ver {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.apps-audit-state {
+  margin-left: auto;
+  font-size: 11px;
+}
+.apps-audit-state.ok {
+  color: var(--green);
+}
+.apps-audit-state.bad {
+  color: var(--red);
+}
+.apps-audit-count {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.apps-audit-files {
+  margin-top: 6px;
+}
+.apps-audit-files-t {
+  font-size: 11px;
+  color: var(--muted);
+}
+.apps-audit-files ul {
+  margin: 3px 0 0;
+  padding-left: 18px;
+  max-height: 180px;
+  overflow: auto;
+}
+.apps-audit-files li {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--ink);
+  word-break: break-all;
+}
+

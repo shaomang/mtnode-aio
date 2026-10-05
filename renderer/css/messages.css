@@ -1,0 +1,197 @@
+/* renderer/css/messages.css — 消息（打赏 / 评论 / 回复三类日志）
+   结构与交互见 renderer/app-messages.js；接口契约真源 = 云端 /api/notifications*
+   （GET /api/notifications · /unread · POST /read · /clear，字段名以服务端为准）。
+   颜色一律取 base.css 的主题槽位（亮色主题自动同源），不引入新框架 / 新配色。
+   本文件由 renderer/index.html 用 <link> 直接挂在 style.css 之后（与 ai-facts.css /
+   app-publish.css 同一写法）—— css/*.css 走 style.css 的 @import，这一份不改 style.css。 */
+
+/* ── 顶栏入口（.tb-end 按钮栈里紧贴「应用」#btnApps 左边） ──────────────
+   尺寸口径照 .btn-docs / .btn-forum / .btn-approvals / .btn-apps：
+   宽 auto、最小 36px、14px 图标 + 9px 文字；position:relative 给角标当锚点。 */
+
+.topbar .btn-messages {
+  width: auto;
+  min-width: 36px;
+  padding: 2px 4px 1px;
+  position: relative;
+  color: var(--cyan2);
+}
+
+.topbar .btn-messages .btn-stack-ico {
+  width: 14px;
+  height: 14px;
+}
+
+.topbar .btn-messages:hover:not(:disabled) {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+/* 有未读时图标/文字更亮一点（置灰态由通用 button:disabled 压暗，这里不再叠） */
+.topbar .btn-messages.unread {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+}
+
+/* 未读角标：字形口径复用 .btn-lang-badge（8px / 800 / mono），这里只补「右上角小药丸」 */
+.btn-msg-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  box-sizing: border-box;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--red);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* display:inline-flex 会盖掉浏览器默认的 [hidden]：未读为 0 时必须真的不占位 */
+.btn-msg-badge[hidden] {
+  display: none !important;
+}
+
+/* ── 消息窗（#overlay 里的一只普通弹窗，宿主 = 画布） ────────────── */
+
+.msg-root {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.msg-list {
+  display: grid;
+  gap: 8px;
+  /* 列表自己滚：底部动作区（加载更多 / 清空 / 关闭）永远够得着 */
+  max-height: min(56vh, 520px);
+  overflow: auto;
+}
+
+.msg-empty {
+  padding: 26px 10px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.msg-row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel2);
+  cursor: pointer;
+}
+
+.msg-row:hover {
+  border-color: var(--cyan);
+}
+
+.msg-row.unread {
+  border-left: 3px solid var(--cyan);
+}
+
+.msg-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.msg-kind {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .3px;
+}
+
+/* 三类一眼分家：打赏=鲸圆币橙、评论=青、回复=绿 */
+.msg-kind-tip {
+  color: var(--orange2);
+  border-color: var(--orange);
+}
+
+.msg-kind-comment {
+  color: var(--cyan2);
+  border-color: var(--cyan);
+}
+
+.msg-kind-reply {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.msg-who {
+  color: var(--ink);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-at {
+  margin-left: auto;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-dot {
+  flex: none;
+  color: var(--cyan2);
+}
+
+.msg-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.msg-text {
+  font-size: 12px;
+  color: var(--ink);
+  opacity: .9;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 对象行：类型标签 + 目标 id（服务端只给 targetKind / targetId，没有名字字段） */
+.msg-target {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.msg-notice {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.msg-notice.ok {
+  color: var(--green);
+}
+
+.msg-notice.warn {
+  color: var(--orange2);
+}
+
+.msg-notice.err {
+  color: var(--red);
+}
+
+.msg-notice.hidden {
+  display: none;
+}

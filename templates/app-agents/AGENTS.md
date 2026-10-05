@@ -9,7 +9,7 @@
 ```
 index.html      入口页（app.json 的 entry；宿主只认 .html）。资源一律相对路径（./app.js、./assets/a.png）
 apphost.js      宿主桥探测与优雅降级（window.AppHost）——两套宿主窗口都认
-app-model.js    模型选择位（右上「模型」按钮 + 下拉，模型从 MTNode 继承）
+app-model.js    模型选择位（右上「模型」按钮 + 下拉；分「文本模型 / 图像后端」两区，都从 MTNode 继承）
 model.css       模型选择位与示例区样式
 store.js        内容落盘（脏标记 + 防抖 + flush）
 close.js        关窗收尾登记（AppClose.on）
@@ -36,6 +36,11 @@ assets/         图标 / 图片 / 字体 / 静态 json
 - **不要把凭据写进任何文件**：服务商、API Key、token 一律只留 MTNode 主进程，应用侧一个字节都不落。
 - **不要删掉模型选择位**（`#modelBtn` + `#modelMenu` + `app-model.js`）：换皮肤可以挪位置，但不能没有。
 - 不改 `app.json` 的 `id`（= 目录名 = 云端词条 id）；改它等于换一个应用。
+- **`app.json` 的 `capabilities` 是能力声明**：`textInput` 为真才带语音模块（`speech.js` / `speech.css`），
+  没声明就是「不携带语音转文字」；`showDictate` 为真才在**应用窗口底部**显示宿主注入的那条听写条
+  （默认 **false** = 隐藏，挂上的条带 `data-mtnode-hidden` + `display:none`，应用自己调
+  `apSpeechReveal()` 仍能唤起）；`imageGen` 只是声明要出图。它是静态声明、不是权限闸 ——
+  桥上的接口始终可调，别拿它去拦代码。
 
 ## 三、能力桥用法（appHost / pluginApi → window.AppHost）
 
@@ -49,7 +54,9 @@ assets/         图标 / 图片 / 字体 / 静态 json
 | **列模型 / 选模型** | `AppHost.models()` / `modelGet()` / `modelSet(id)`（只认 MTNode 已配置的模型清单） |
 | **文字 + 图像问模型** | `AppHost.text(prompt, { images: [路径或 dataURL], model, onDelta })` |
 | 选一张本机图 | `AppHost.pickImage()`（用户取消 → `{ ok:false, code:"cancelled" }`，不是报错） |
-| 出图 | `AppHost.host.imageGen({ prompt })`（只有应用中心窗口那套桥有） |
+| **出图** | `AppHost.image(prompt, { model, images, onProgress })`（云端图像服务商或本机 SenseNova，每次一张；取消走 `AppHost.cancelImage(reqId)`） |
+| 列图像后端 / 选 | `AppHost.imageModels()` / `imageModelGet()` / `imageModelSet(id)` |
+| 语音转写（可选） | `AppHost.pickAudio()` / `transcribe()` / `transcribeWav(b64)`（**只有声明了 `capabilities.textInput` 的应用才带脚手架的语音模块**；窗口底部那条宿主注入的听写条另看 `capabilities.showDictate`，缺省隐藏，脚本可用 `apSpeechReveal()` 唤起） |
 | 关窗 | `AppHost.close()`；收尾挂 `AppClose.on(cb)` |
 | 语言 / 外观 | 只改 `<html lang>` 与 `styles/<id>.css`，不动其它文件的文案与配色 |
 

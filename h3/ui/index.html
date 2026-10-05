@@ -228,7 +228,7 @@
         <div style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap">
           <button id="btnWfImport" title="导入 ComfyUI 导出的工作流 JSON（API 或 UI 格式均可，自动识别转换）">导入 JSON</button>
           <button id="btnWfPaste" title="把工作流 JSON 文本粘贴进来导入">粘贴导入</button>
-          <button id="btnWfTemplate" title="把内置 FL2VA / R2V / 南风H3 V10 多参 图另存为库里的自定义工作流，可自由编辑">内置图另存</button>
+          <button id="btnWfTemplate" title="把内置 FL2VA / R2V 图另存为库里的自定义工作流，可自由编辑">内置图另存</button>
         </div>
       </div>
       <div class="meta" style="color:var(--muted)">
@@ -240,8 +240,8 @@
 
     <div class="card" id="launchOptsCard">
       <div class="meta">24G 启动优化（除 CPU VAE 外默认开 · 下次启动后端生效）</div>
-      <label class="meta" title="开启会让 VideoVAE 解码 dtype 崩（expected m1 and m2 to have the same dtype, but got: float != struct c10::Half），南风 H3 链（nanfeng_prompt_nodes_v10）直接不可用。口径见技能 minimax-h3-install「启动参数」。">
-        <input type="checkbox" id="optCpuVae" /> CPU VAE（默认关：开启会让 VideoVAE 解码 dtype 崩、南风 H3 链不可用）
+      <label class="meta" title="开启会让 VideoVAE 解码 dtype 崩（expected m1 and m2 to have the same dtype, but got: float != struct c10::Half），视频解码阶段必失败。口径见技能 minimax-h3-install「启动参数」。">
+        <input type="checkbox" id="optCpuVae" /> CPU VAE（默认关：开启会让 VideoVAE 解码 dtype 崩、生成必失败）
       </label>
       <label class="meta"><input type="checkbox" id="optPinned" checked /> --disable-pinned-memory（允许 CPU offload）</label>
       <label class="meta"><input type="checkbox" id="optFp16" checked /> --fp16-intermediates</label>

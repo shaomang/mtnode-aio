@@ -38,9 +38,16 @@ const has = (rel, needle) => read(rel).includes(needle);
 const near = (a, b, eps) => Math.abs(Number(a) - Number(b)) <= (eps == null ? 1e-6 : eps);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const bjToday = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+/* 服务端轮换计数按**服务器本地时区**的自然日（server.mjs 的 relayDayKey）：
+   测试与服务端同机同区，这里用同一套算法算期望值。 */
+const localDay = (ts) => {
+  const d = new Date(Number(ts) || Date.now());
+  const p = (n) => (n < 10 ? "0" + n : String(n));
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+};
 const hashToken = (t) => crypto.createHash("sha256").update(t).digest("hex");
 
-/* ---------- mock 上游：DeepSeek 文本 + APIYI 图像 ---------- */
+/* ---------- mock 上游：DeepSeek 文本 + 第三方图像聚合 ---------- */
 
 function startMock() {
   const state = { chat: [], image: [], edits: [] };
@@ -152,9 +159,61 @@ async function main() {
     "relay-key.mjs 用 account-store 的会话表发放**独立中转 Key**（kind=relay，不再等于登录 token）");
   ok(has("store-saas/server.mjs", "RELAY_KEY_MS") && has("store-saas/server.mjs", "async function issueRelayKey") &&
     has("store-saas/server.mjs", "async function relayKeyView") && has("store-saas/server.mjs", "relayKeyRenewBeforeMs"),
-    "服务端自带独立中转 Key 的发放口（/api/relay/me 下发，180 天 + 提前量字段）");
+    "服务端自带独立中转 Key 的发放口（/api/relay/me 下发 + 提前量字段）");
+  /* 本轮需求：「Key 分发一次后不应当失效」—— 有效期 3650 天（≈10 年）+ 用着就滑动续期。
+     人工发放 CLI 必须与服务端同口径，否则运维手发的票只有 180 天。 */
+  ok(has("store-saas/server.mjs", "const RELAY_KEY_MS = 3650 * 24 * 3600 * 1000;") &&
+    has("store-saas/relay-key.mjs", "const RELAY_KEY_MS = 3650 * 24 * 3600 * 1000;"),
+    "中转票有效期 3650 天（服务端与人工发放 CLI 同口径）");
+  /* 「分发一次后不应当失效」的**服务端根因**（老口径：/api/relay/me 每次调用都重发一张并作废旧票，
+     多开客户端 / 多台机器互相顶掉 ⇒ 恒 401 ⇒ 界面让人重登）：
+     明文票落用户记录 + 已有有效票原样返回 + 作废只剩三条显式路径。 */
+  ok(has("store-saas/server.mjs", 'const RELAY_KEY_FIELD = "relayKeyPlain"') &&
+    has("store-saas/server.mjs", "RELAY_KEY_REUSE_MS") &&
+    has("store-saas/server.mjs", "已有现役票就原样返回同一张"),
+    "发放口**幂发**：明文票落用户记录 relayKeyPlain，已有有效票原样返回（不再每次轮换）");
+  ok(has("store-saas/server.mjs", "async function revokeRelayKeys") &&
+    has("store-saas/server.mjs", "if (who) await revokeRelayKeys(who);") &&
+    has("store-saas/server.mjs", "两种票都算：把该账号的中转票与明文一并作废") &&
+    has("main.js", "relayDeviceId()") &&
+    has("main.js", 'headers["X-MTNode-Device"]'),
+    "作废只剩两条显式路径：主动退出登录（登录票或中转票都能打）/ 删号（都走 revokeRelayKeys）；设备标识随发放口上报");
+  ok(!/"relayKeyPlain"/.test(read("store-saas/server.mjs").slice(
+    read("store-saas/server.mjs").indexOf("function publicUser"),
+    read("store-saas/server.mjs").indexOf("function tipEnrich"))),
+    "publicUser 白名单投影里不含明文票字段（明文不外泄给客户端界面）");
 
-  /* ======================= [2] 只做服务端 ======================= */
+  /* ======================= [2] 客户端与本轮范围 ======================= */
+  /* 本轮需求：客户端与用户界面不得再出现「本机凭据读不出来 / 请重新登录一次」这类文案
+     （用户口径：**永久移除**）。只扫**代码**（注释里留一句「为什么删」是允许的，
+     与下面 settingsCode 的口径一致），把「不许再出现」钉成回归。 */
+  const stripJsComments = (s) =>
+    String(s)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  const purgeHits = [];
+  for (const rel of [
+    "main.js",
+    "renderer/app-relay-auth.js",
+    "renderer/app-settings.js",
+    "renderer/i18n.js",
+    "renderer/app-relay.js",
+  ]) {
+    const s = stripJsComments(read(rel));
+    for (const bad of ["凭据读不出来", "留档并清理", "请重新登录一次"]) {
+      if (s.includes(bad)) purgeHits.push(rel + ":" + bad);
+    }
+  }
+  ok(purgeHits.length === 0, "「凭据读不出来 / 留档并清理 / 请重新登录一次」一族文案已彻底移除（界面 / 词条 / 代码里都不留）" + (purgeHits.length ? "：" + purgeHits.join("、") : ""));
+  ok(!stripJsComments(read("renderer/app-relay-auth.js")).includes("relay-auth-bar") &&
+    !/^[^\n]*\.relay-auth-bar\s*\{/m.test(read("renderer/css/components.css")) &&
+    !/^[^\n]*\.relay-auth-toast\s*\{/m.test(read("renderer/css/components.css")) &&
+    !/^[^\n]*\.toast-action\s*\{/m.test(read("renderer/css/components.css")),
+    "中转凭据横幅（.relay-auth-bar / .relay-auth-toast / .toast-action）整块删除：不再有把责任推给用户的提示与按钮");
+  ok(has("renderer/app-relay-auth.js", "无效的 API Key") &&
+    has("renderer/i18n.js", '"无效的 API Key": "Invalid API key"') &&
+    has("main.js", "function apiErrUser"),
+    "中转 401 的界面口径收敛成一句「无效的 API Key」（补票重试仍由主进程先做）");
   console.log("[2] 客户端与本轮范围");
   const walletSrc = read("store-saas/wallet.mjs");
   ok(walletSrc.includes('"relay"') && walletSrc.includes("chargeRelayUsage") && walletSrc.includes("writeRelaySub"),
@@ -180,13 +239,41 @@ async function main() {
     has("renderer/app-relay.js", "KEY_PLACEHOLDER") && has("renderer/app-relay.js", "everRecharged") &&
     has("renderer/app-relay.js", "modelKinds"),
     "renderer/app-relay.js：来源标识 / 占位串 / everRecharged / modelKinds 四件事齐备");
+  /* 本轮口径「真票就在配置卡上」：占位串 mtnode-account-token 只作「这张卡还没拿到真票」的
+     识别标记（绝不下发），真票由主进程写进磁盘 config.json 那张卡的 apiKey，
+     渲染层卡上也放同一串（设置卡显示完整 Key + 复制给 Codex 用）。 */
+  ok(has("renderer/app-relay.js", "apiKey: keyView.key || KEY_PLACEHOLDER") &&
+    !has("renderer/app-relay.js", "keyMasked") && !has("renderer/app-relay.js", "maskKey"),
+    "渲染层把真票写进卡上（apiKey: keyView.key || KEY_PLACEHOLDER），打码口径已删");
+  ok(has("main.js", "function writeRelayKeyToConfig") && has("main.js", "function saveRelayKeyEverywhere") &&
+    has("main.js", "function relayCardOfDisk") && has("main.js", "function clearRelayCredentialEverywhere") &&
+    has("main.js", "function providerAuthKey"),
+    "主进程接线齐备：写配置卡 / 两处一起写 / 读盘上那张卡 / 401 两处一起丢 / 下发凭据");
+  ok(!has("main.js", "function maskSecret") && !has("main.js", "maskedKey"),
+    "打码口径（maskSecret / maskedKey）在 main.js 里已彻底删除（relay:keyInfo 回明文 key）");
+  ok(has("preload.js", "relayKeyInfo:") && has("preload.js", "relayRotateKey:") &&
+    has("main.js", 'ipcMain.handle("relay:rotateKey"'),
+    "桥：relayKeyInfo（回明文 Key 现状）/ relayRotateKey（换 Key）两条都在");
+  ok(has("store-saas/server.mjs", 'if (method === "POST" && p === "/api/relay/me")') &&
+    has("store-saas/server.mjs", "code: \"RELAY_ROTATE_LIMIT\"") &&
+    has("store-saas/server.mjs", "relayKeyRotateLeft: st.left") &&
+    has("store-saas/server.mjs", 'const RELAY_ROTATE_FIELD = "relayKeyRotations"'),
+    "服务端有手动轮换入口（POST /api/relay/me { rotate:true } · 每账号自然日 5 次 · 计数落库）");
   ok(has("renderer/index.html", 'src="app-relay.js"') && has("preload.js", "relayMe:") &&
     has("main.js", 'ipcMain.handle("relay:me"') && has("main.js", "providerAuthKey"),
     "接线：index.html 载入 / preload 暴露 relayMe / main 有 relay:me 与 providerAuthKey");
   ok(has("renderer/app-settings.js", "function relayProvCard") &&
     has("renderer/app-settings.js", "刷新中转清单") &&
-    has("renderer/app-settings.js", "由账号登录态托管（只读）"),
-    "设置页有只读中转卡（含「刷新中转清单」入口与「由账号登录态托管」文案）");
+    has("renderer/app-settings.js", "relay-ro"),
+    "设置页有只读中转卡（含「刷新中转清单」入口与只读字段）");
+  /* 本轮口径：卡上不再有凭据说明行，也不再有充值按钮 ——
+     充值入口只留右上角账户菜单的「余额」（renderer/app-auth.js）。
+     断言只扫**代码**（注释里留一句「为什么删」是允许的，与 smoke-relay-client 同口径）。 */
+  const settingsCode = read("renderer/app-settings.js")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  ok(!settingsCode.includes("由账号登录态托管") && !settingsCode.includes('I18n.t("去充值")'),
+    "卡上既没有凭据说明行，也没有「去充值」按钮（入口只留账户菜单）");
   ok(has("renderer/app-auth.js", "MtRelay.onAuthState") && has("renderer/app-wallet.js", "MtRelay.sync"),
     "登录态与充值成功各接一次同步（登录成功刷新 / 充值到账立刻回拉）");
 
@@ -197,15 +284,22 @@ async function main() {
   /* TOKEN = u_relay_rich 手里那张客户端凭据：由 [3b] 从发放口现领后赋值（夹具不预置）。 */
   let TOKEN = "";
   /* 三个账号的中转凭据**一律由发放口现领**（见下面的 [3b] 段），夹具不预置 kind="relay" 记录：
-     预置票在发放口一领就会被顶掉，预置反而会制造「旧票还有效」的假象。
-     下面四条是不带 kind 的登录会话，供发放口认登录态用（数据面不认它们，这是刻意的口径）。 */
+     装置里那几条不带 kind 的登录会话就是「已登录的客户端」，供发放口认登录态用
+     （数据面不认它们，这是刻意的口径）。 */
   let STALE_KEY = "";
+  /* 上面那次「换账号 / 重新登录」用的登录会话明文（作废是持久的：重启后拿它打数据面仍应被拒）。 */
+  let loginTicket = "";
   let TOKEN_POOR = "";
   let TOKEN_ADJUST = "";
   const LOGIN_RICH = crypto.randomBytes(24).toString("hex");
   const LOGIN_POOR = crypto.randomBytes(24).toString("hex");
   const LOGIN_ADJUST = crypto.randomBytes(24).toString("hex");
   const LOGIN_BOOT = crypto.randomBytes(24).toString("hex");
+  /* 同一个账号的**第二台设备**（另一个登录会话）：幂发口径要「两台设备拿到同一张票」。 */
+  const LOGIN_OTHER = crypto.randomBytes(24).toString("hex");
+  /* 「换账号」用的另一个账号及其密码摘要（走真登录口 POST /api/login，见 [3b]）。 */
+  const SWITCH_PASS = "switch-pass-123";
+  const SWITCH_SALT = crypto.randomBytes(8).toString("hex");
   const t0 = Date.now();
   fs.writeFileSync(
     path.join(DATA, "db.json"),
@@ -216,6 +310,10 @@ async function main() {
         /* 后台人工调过账、但余额已花光：everRecharged 为真而清单为空 ——
            正是客户端「卡还在、置灰、提示充值」那一种状态 */
         { id: "u_relay_adjust", username: "adjusted", nickname: "后台充过", balanceCents: 0, createdAt: t0 },
+        /* 「换账号」那个账号：带密码摘要（同一套 scrypt 口径，见 server.mjs 的 hashPass），
+           供 [3b] 走真登录口（POST /api/login）换账号 —— 换账号是三条显式轮换路径之一。 */
+        { id: "u_relay_switch", username: "switchy", nickname: "换账号用", balanceCents: 100, createdAt: t0,
+          salt: SWITCH_SALT, pass: crypto.scryptSync(SWITCH_PASS, SWITCH_SALT, 32).toString("hex") },
       ],
       /* kind="relay" = 独立中转 Key（与登录会话分开的凭据，见 server.mjs 的 issueRelayKey）：
          /relay/v1/* 只认它，登录会话 token 一律拒（这一条另有专门的负例断言）。 */
@@ -229,6 +327,7 @@ async function main() {
         { tokenHash: hashToken(LOGIN_POOR), userId: "u_relay_poor", expiresAt: t0 + 86400e3 },
         { tokenHash: hashToken(LOGIN_ADJUST), userId: "u_relay_adjust", expiresAt: t0 + 86400e3 },
         { tokenHash: hashToken(LOGIN_BOOT), userId: "u_relay_boot", expiresAt: t0 + 86400e3 },
+        { tokenHash: hashToken(LOGIN_OTHER), userId: "u_relay_rich", expiresAt: t0 + 86400e3 },
       ],
       identities: [], templates: [], skills: [], apps: [], likes: [], skillLikes: [],
       forumTopics: [], forumReplies: [], rechargeOrders: [], adminSessions: [], relayUsage: [],
@@ -263,6 +362,11 @@ async function main() {
   const BASE = "http://127.0.0.1:" + port;
   const readDb = () => JSON.parse(fs.readFileSync(path.join(DATA, "db.json"), "utf8"));
   const userOf = (id) => readDb().users.find((u) => u.id === id);
+  /* 该账号在库里有没有挂明文中转票（退出登录 / 换账号后必须为 false）。 */
+  const relayPlainInDb = (id) => {
+    const u = userOf(id) || {};
+    return !!(u.relayKeyPlain && String(u.relayKeyPlain.key || ""));
+  };
   /* 可用余额一律按「元」（4 位小数）：内部账仍是整数分 + 亚分零头，这里只做换算，
      好让断言口径与接口 / 管理台一致（对外的名字与单位都是元）。 */
   const totalOf = (id) => {
@@ -345,45 +449,91 @@ async function main() {
     const anonChat = await api("/relay/v1/chat/completions", { method: "POST", json: { model: "deepseek-flash", messages: [{ role: "user", content: "hi" }] } });
     ok(anonChat.status === 401, "无 token 打 chat 也 401（鉴权在门禁之前，任何端点都不放行）");
 
-    /* ============ [3b] 发放口必须每次都给得到真凭据（上报 bug 的回归）============
-       上报症状：客户端一直提示「本机还没有中转服务凭据：重新登录一次即可自动领取」，
-       照提示重登多少遍都没用，用中转模型恒 401。
-       根因：库里只存 tokenHash，「明文只在下发那一次给」= 一次性 —— 客户端那一次没接住
-       （重装 / 清了本机凭据 / 解密失败 / 换机 / 落库失败）就再也拿不到，只能退回登录 token，
-       而数据面只认 kind=relay ⇒ 恒 401，提示却让用户「重新登录」⇒ 死循环。
-       现在发放口每次都发一张新的（同时顶掉旧票），这里把「领得到 + 领到的立刻能用 + 旧票作废」钉住。 */
-    console.log("[3b] 发放口 /api/relay/me：每次都能领到可用凭据（bug 回归）");
-    const mint = async (loginToken) => {
-      const r = await api("/api/relay/me", { token: loginToken });
+    /* ============ [3b] 发放口幂发：同一账号永远拿到同一张（「分发一次后不应当失效」）============
+       上报症状：登录成功、界面显示已登录，用中转模型仍恒 401
+       「MTNODE_RELAY_AUTH 中转 Key 已失效…请重新登录一次」，照提示重登多少遍都没用。
+       根因（本轮已改）：发放口每次调用都 issueRelayKey() —— 发新票 + **作废该账号旧票**，
+       而客户端的登录 / 启动 / 打开设置都会打这个入口 ⇒ 多开客户端 / 多台机器互相顶掉，
+       谁先用谁 401。现在明文票落在用户记录 relayKeyPlain 上，发放口**已有有效票就原样返回同一张**。
+       作废只剩三条显式路径：主动退出登录、登录（换账号）、删号。 */
+    console.log("[3b] 发放口 /api/relay/me：同一账号幂发同一张（不再互相顶掉）");
+    /* 两台机器的设备标识（客户端在 X-MTNode-Device 头里带的本机随机串）：
+       换账号轮换只在**同一台机器**上判定（见 server.mjs 的 ensureRelayKey）。 */
+    const DEV_A = "dev-" + crypto.randomBytes(8).toString("hex");
+    const DEV_B = "dev-" + crypto.randomBytes(8).toString("hex");
+    const mint = async (loginToken, device) => {
+      const r = await api("/api/relay/me", {
+        token: loginToken,
+        headers: device ? { "X-MTNode-Device": device } : {},
+      });
       return { status: r.status, key: String((r.json || {}).relayKey || ""), expiresAt: Number((r.json || {}).relayKeyExpiresAt) || 0 };
     };
-    /* u_relay_rich 的「客户端凭据」从这里领（夹具不再预置独立票）：拿到手就能打数据面 */
-    const k1 = await mint(LOGIN_RICH);
-    STALE_KEY = k1.key; /* 被顶掉的旧票：重启后仍应被拒（见 [9] 之后的负例） */
-    ok(k1.status === 200 && k1.key.length >= 32 && k1.expiresAt > Date.now() + 60 * 86400e3,
-      "本机没有凭据来领：发放口给一张可用的独立票（180 天）");
+    const k1 = await mint(LOGIN_RICH, DEV_A);
+    ok(k1.status === 200 && k1.key.length >= 32 && k1.expiresAt > Date.now() + 3600 * 86400e3,
+      "本机没有凭据来领：发放口给一张可用的独立票（3650 天 ≈ 10 年，口径「分发一次后不应当失效」）");
     const use1 = await api("/relay/v1/models", { token: k1.key });
     ok(use1.status === 200, "刚领到的票立刻能打数据面（发放 → 使用闭环）");
-    /* 客户端「重新登录一次」＝ 再打一次同一个发放口：必须仍拿得到明文（本 bug 的核心） */
-    const k2 = await mint(LOGIN_RICH);
-    ok(k2.status === 200 && k2.key.length >= 32 && k2.key !== k1.key,
-      "同一账号再来领（重新登录 / 清了本机凭据 / 解密失败丢了）：仍然拿得到明文票，不是空串");
-    const use2 = await api("/relay/v1/models", { token: k2.key });
-    ok(use2.status === 200, "第二张票立刻能用（重新登录真的解决了问题）");
-    const oldGone = await api("/relay/v1/models", { token: k1.key });
-    ok(oldGone.status === 401, "被顶掉的旧票随即失效（保底一票制：库里只留最新一张）");
-    /* 顶掉必须**落盘**：重启段（[11]）用的是从 db.json 重读的夹具，夹具里最初那张预置票
-       就是 k1（STALE_KEY）。不把这次顶掉写进库，重启后它又会活过来 —— 一并钉住。 */
-    const dbStale = readDb();
-    dbStale.sessions = (dbStale.sessions || []).filter((s) => s.tokenHash !== hashToken(k1.key));
-    fs.writeFileSync(path.join(DATA, "db.json"), JSON.stringify(dbStale));
-    const parts = dbStale.sessions.filter((s) => s.userId === "u_relay_rich" && s.kind === "relay");
-    ok(parts.length === 1 && parts[0].tokenHash === hashToken(k2.key),
-      "库里该账号只剩刚领的那一张（旧票被删掉、重发不攒垃圾）");
-    TOKEN = k2.key;
+    TOKEN = k1.key;
+    /* 客户端「重新登录 / 重开应用 / 打开设置」都会再打一次这个入口：必须是同一张 */
+    const k2 = await mint(LOGIN_RICH, DEV_A);
+    ok(k2.status === 200 && k2.key === k1.key,
+      "同一账号再来领（重登 / 重开应用 / 打开设置）：**拿到的是同一张票**，不再轮换");
+    /* 同一账号的**另一台机器**（另一个登录会话 + 另一个设备标识）领到的也必须是同一张 */
+    const kOther = await mint(LOGIN_OTHER, DEV_B);
+    ok(kOther.status === 200 && kOther.key === k1.key && kOther.expiresAt === k1.expiresAt,
+      "同一账号的第二台设备（另一个登录会话 + 另一个 device）领到同一张票：多开不再互相顶掉");
+    const use2 = await api("/relay/v1/models", { token: k1.key });
+    ok(use2.status === 200, "被「别人同步过一次」之后这张票照样能用（老口径下这里就是 401）");
+    const plainRow = userOf("u_relay_rich") || {};
+    const plainRec = plainRow.relayKeyPlain || {};
+    ok(String(plainRec.key || "") === k1.key && Number(plainRec.expiresAt) > Date.now() + 3600 * 86400e3 &&
+      String(plainRec.device || "") === DEV_A,
+      "明文票落在用户记录 relayKeyPlain 上（幂发的依据 + 登记领它的设备；hash 记录仍是鉴权真源）");
+    const parts0 = readDb().sessions.filter((s) => s.userId === "u_relay_rich" && s.kind === "relay");
+    ok(parts0.length === 1 && parts0[0].tokenHash === hashToken(k1.key),
+      "库里该账号只有一张中转票（幂发不攒垃圾）");
+    const pubMe = await api("/api/me", { token: LOGIN_RICH });
+    ok(pubMe.status === 200 && !JSON.stringify(pubMe.json).includes(k1.key) && !/"relayKeyPlain"/.test(JSON.stringify(pubMe.json)),
+      "明文票不外泄：publicUser 白名单投影里既没有票串也没有 relayKeyPlain 字段");
+    /* 在同一台机器上换账号（POST /api/login 真登录口，fixture 给 u_relay_switch 预置了密码摘要）：
+       **按账号幂发** —— 新账号领到的是它自己的新票，绝不复用上一账号那张；
+       同时**不顺手作废**老账号那张（服务端认不出「另一台设备」与「换了账号」的区别，
+       按会话 / 设备判都会把正常的多开用户顶掉）。要立刻收回就主动退出登录一次。 */
+    const otherLogin = await api("/api/login", {
+      method: "POST",
+      json: { username: "switchy", password: "switch-pass-123" },
+    });
+    ok(otherLogin.status === 200 && typeof otherLogin.json.token === "string",
+      "换账号：真登录口（POST /api/login）签发另一个账号的登录会话");
+    const kOtherUser = await mint(otherLogin.json.token, DEV_A);
+    ok(kOtherUser.status === 200 && kOtherUser.key.length >= 32 && kOtherUser.key !== k1.key,
+      "同一台机器上换了账号：新账号领到的是新一张票（按账号幂发，绝不复用上一账号那张）");
+    const kOtherUser2 = await mint(otherLogin.json.token, DEV_A);
+    ok(kOtherUser2.key === kOtherUser.key, "换账号之后继续幂发：新那张也不会被下一次同步顶掉");
+    const aAlive = await api("/relay/v1/models", { token: k1.key });
+    ok(aAlive.status === 200, "换账号不会顺手把老账号那张票顶掉（多开用户的票不该被别人的切换连累）");
+    /* 主动退出登录 = 唯一的显式收回路径：客户端退出时手上可能只剩这张十年票
+       （登录会话已先清掉），所以 /api/logout 带**中转票**也必须能把票收回来。 */
+    const logoutWithKey = await api("/api/logout", { method: "POST", token: kOtherUser.key });
+    ok(logoutWithKey.status === 200, "主动退出登录：带中转票打 /api/logout 也能成功（客户端手上可能只剩这张票）");
+    const afterLogout = await api("/relay/v1/models", { token: kOtherUser.key });
+    ok(afterLogout.status === 401, "退出登录后这张票立刻失效（十年票不该连登出都收不回来）");
+    const parts3 = readDb().sessions.filter((s) => s.userId === "u_relay_switch" && s.kind === "relay");
+    ok(parts3.length === 0 && !relayPlainInDb("u_relay_switch"), "退出登录把票与明文一并作废（库里不留）");
+    /* 退出后重新登录（同一账号）：领一张新的，且此后幂发同一张 */
+    const reloginKey = await mint(otherLogin.json.token, DEV_A);
+    ok(reloginKey.status === 200 && reloginKey.key.length >= 32 && reloginKey.key !== kOtherUser.key,
+      "退出后重新登录：领到一张新票（同一账号重登本身不会轮换，但登出已把旧票作废）");
+    const reloginAgain = await mint(otherLogin.json.token, DEV_A);
+    ok(reloginAgain.key === reloginKey.key, "重新登录之后接着幂发同一张");
+    loginTicket = LOGIN_RICH;
+    STALE_KEY = kOtherUser.key; /* 被登出作废的那张：重启后仍应被拒（见 [9] 之后的负例） */
+    TOKEN = k1.key;
+    const stillMine = await mint(LOGIN_RICH, DEV_A);
+    ok(stillMine.key === k1.key, "换账号 + 登出别家账号这一路都不影响本账号那张票（幂发口径不变）");
     /* 另外两个账号的票同样走发放口现领（夹具不预置），与真实客户端同一条路 */
-    const poorKey = await mint(LOGIN_POOR);
-    const adjustKey = await mint(LOGIN_ADJUST);
+    const poorKey = await mint(LOGIN_POOR, DEV_B);
+    const adjustKey = await mint(LOGIN_ADJUST, DEV_B);
     ok(poorKey.key.length >= 32 && adjustKey.key.length >= 32, "余额 0 / 人工调账两个账号同样领得到凭据");
     TOKEN_POOR = poorKey.key;
     TOKEN_ADJUST = adjustKey.key;
@@ -581,17 +731,22 @@ async function main() {
     const loginOnData = await api("/relay/v1/models", { token: LOGIN_BOOT });
     ok(loginOnData.status === 401 && /MTNODE_RELAY_AUTH/.test(loginOnData.json.error.message),
       "登录会话 token 打 /relay/v1/* → 401（中转只认独立票，这是刻意的「不兼容老凭据」口径）");
-    /* [3b] 手里那张废票（STALE_KEY）：库里的记录当时就删掉了，重启后自然还是 401 ——
-       这里钉的是「顶掉是持久的，不是内存里的一笔」（重启前那次 401 已在 [3b] 验过）。
+    /* [3b] 手里那张废票（STALE_KEY = 换账号时被作废的那张）：库里的记录当时就删掉了，
+       重启后自然还是 401 —— 这里钉的是「作废是持久的，不是内存里的一笔」
+       （重启前那次 401 已在 [3b] 验过）。
+       另外：重启后拿**作废那次换来的登录会话**再领，仍是同一张（幂发跨重启成立）。
        前面连打了好几次同账号请求，先等限流窗口过去，免得把 429 当成「旧票还能用」。 */
     await sleep(62000);
     const staleGone = await api("/relay/v1/models", { token: STALE_KEY });
-    ok(staleGone.status === 401, "重启后被顶掉的旧票依然失效");
+    ok(staleGone.status === 401, "重启后被作废的旧票依然失效");
+    const again = await mint(loginTicket);
+    ok(again.status === 200 && again.key === TOKEN,
+      "重启后再领一次仍是同一张（幂发跨重启成立，落库不是内存态）");
     const bootByLogin = await api("/api/relay/me", { token: LOGIN_BOOT });
     ok(
       bootByLogin.status === 200 && typeof bootByLogin.json.relayKey === "string" && bootByLogin.json.relayKey.length >= 32 &&
         bootByLogin.json.relayKeyExpiresAt > Date.now() + 60 * 86400e3,
-      "/api/relay/me 认登录会话并发一张独立票（老客户端重登一次即补齐，且**每次都发明文**）",
+      "/api/relay/me 认登录会话并发明文独立票（老客户端重登一次即补齐，不必自己去主进程里翻凭据）",
     );
     const minted = await api("/relay/v1/models", { token: bootByLogin.json.relayKey });
     ok(minted.status === 200, "刚领到的独立票立刻能打数据面（发放 → 使用闭环）");
@@ -667,6 +822,33 @@ async function main() {
       "改动留痕：谁 / 何时 / 新增上游 mockup + 上架模型 mock-chat");
     ok(audit.json.items[0].username === "ms2308", "留痕里能查到是哪位管理员改的");
 
+    /* 调用流水的筛选 + 统计（管理台「中转服务 → 调用流水」页的数据面）：
+       统计在**全量记录**上算（明细一次最多 1000 条），窗口按服务器本地自然日。 */
+    const uAll = await admin("/api/admin/relay/usage?window=today&limit=1000");
+    ok(uAll.status === 200 && uAll.json.ok && Array.isArray(uAll.json.items) && uAll.json.items.length >= 1,
+      "调用流水接口通：GET /api/admin/relay/usage 回明细（" + (uAll.json.items || []).length + " 条）");
+    ok(uAll.json.items.every((r) => r.chargedYuan != null && r.costYuan != null && r.balanceCents === undefined),
+      "明细一律元口径（内部 Cents 字段不出接口）");
+    ok(Array.isArray(uAll.json.windows) && uAll.json.windows.map((w) => w.key).join(",") === "today,7d,30d",
+      "三档全站统计齐：今日 / 近 7 天 / 近 30 天");
+    ok(uAll.json.windows[0].calls >= uAll.json.items.length && uAll.json.windows[0].chargedYuan > 0 &&
+      uAll.json.windows[1].calls >= uAll.json.windows[0].calls && uAll.json.windows[2].calls >= uAll.json.windows[1].calls,
+      "窗口越宽次数不减，且统计算在全量记录上（今日 " + uAll.json.windows[0].calls + " ≥ 明细 " + uAll.json.items.length + "）");
+    ok(uAll.json.scope && uAll.json.scope.calls === uAll.json.items.length && uAll.json.scope.unbilled >= 0 &&
+      uAll.json.scope.textCalls + uAll.json.scope.imageCalls === uAll.json.scope.calls,
+      "本次筛选合计与明细同口径（scope.calls = 返回条数），并按文本 / 图像分列 + 未计费计数");
+    const uModel = await admin("/api/admin/relay/usage?window=all&model=mock-chat&limit=1000");
+    ok(uModel.json.matched >= 1 && uModel.json.items.every((r) => r.model === "mock-chat"),
+      "按模型筛选：只回该模型（" + uModel.json.matched + " 条）");
+    const uKind = await admin("/api/admin/relay/usage?window=all&kind=image&limit=1000");
+    ok(uKind.json.items.every((r) => r.kind === "image"), "按类型筛选：只回图像调用（" + uKind.json.matched + " 条）");
+    const uUser = await admin("/api/admin/relay/usage?window=all&userId=ms2308&limit=1000");
+    ok(uUser.json.matched >= 1 && uUser.json.items.every((r) => r.username === "ms2308" || r.userId === "u_relay_rich"),
+      "按账号筛选：账号 ID 与用户名都能精确命中（" + uUser.json.matched + " 条）");
+    const uCap = await admin("/api/admin/relay/usage?window=all&limit=99999");
+    ok(uCap.json.limit === 1000, "条数上限夹紧到 1000（界面按返回的 limit 标注）");
+    ok(uAll.json.models.includes("mock-chat"), "明细里出现过的模型随接口回给前端（已下架的历史模型也能筛）");
+
     /* ======================= [12] 客户端同步入口 ======================= */
     console.log("[12] 客户端同步：GET /api/relay/me");
     /* 这一段的 /api/relay/me 一律用**登录会话**打（它就是客户端「同步清单」那条路）：
@@ -711,6 +893,90 @@ async function main() {
     const tkBad = await api("/relay/v1/models", { token: "mtr_test_deadbeef" });
     ok(tkBad.status === 401, "伪造 / 过期的测试 Key 一律 401");
 
+    /* ======================= [14] 手动更换中转 Key =======================
+       客户端卡上的「更换 Key」按钮走 POST /api/relay/me { rotate: true }：
+       幂发口径下 GET 只会拿回同一张票，想换一张必须走这个显式入口。
+       口径：每账号**自然日 5 次**（超限 429 RELAY_ROTATE_LIMIT）；换 Key 后**旧票立即失效**；
+       只动中转票、不动登录会话。这一段的账号用 [3b] 那个 u_relay_switch（余额 1 元，能打数据面又
+       不被别的用例使用），免得把 rich 那张现役票换掉影响前面的计费用例。 */
+    console.log("[14] 手动更换中转 Key：旧票立即失效 / 新票可用 / 每日 5 次限频");
+    const rotLogin = otherLogin.json.token; /* u_relay_switch 的登录会话 */
+    const rotOld = reloginAgain.key; /* [3b] 最后领到的那张现役票 */
+    ok((await api("/relay/v1/models", { token: rotOld })).status === 200,
+      "换 Key 之前：现役票能打数据面（基线）");
+    const meBefore = await api("/api/relay/me", { token: rotLogin });
+    ok(
+      meBefore.status === 200 &&
+        meBefore.json.relayKeyRotateLimit === 5 &&
+        meBefore.json.relayKeyRotateUsed === 0 &&
+        meBefore.json.relayKeyRotateLeft === 5 &&
+        meBefore.json.relayKeyRotateDay === localDay(),
+      "GET /api/relay/me 回包带 relayKeyRotateLimit/Used/Left/Day 四个字段（当日 0/5，按服务器本地自然日）",
+    );
+    const rotAnon = await api("/api/relay/me", { method: "POST", json: { rotate: true } });
+    ok(rotAnon.status === 401, "未登录换 Key → 401（与 GET 同一条账号门禁）");
+    const rotBad = await api("/api/relay/me", { method: "POST", token: rotLogin, json: {} });
+    ok(rotBad.status === 400 && rotBad.json.code === "BAD_REQUEST",
+      "该入口只认 { rotate: true }（别的体一律 400，别把同步入口当换票口用）");
+    const rotateOnce = async () => {
+      const r = await api("/api/relay/me", { method: "POST", token: rotLogin, json: { rotate: true } });
+      return { status: r.status, json: r.json || {} };
+    };
+    const r1 = await rotateOnce();
+    const rotKey1 = String(r1.json.relayKey || "");
+    ok(
+      r1.status === 200 && r1.json.ok === true && /^[0-9a-f]{48}$/.test(rotKey1) &&
+        Number(r1.json.relayKeyExpiresAt) > Date.now() + 3600 * 86400e3 &&
+        r1.json.relayKeyRotateLeft === 4 && r1.json.relayKeyRotateUsed === 1,
+      "第 1 次换 Key：回一张新的 48 位十六进制票（3650 天）+ 当日余量 4/5",
+    );
+    ok(rotKey1 !== rotOld, "换出来的是一张**新**票（不是幂发那张旧的）");
+    ok((await api("/relay/v1/models", { token: rotOld })).status === 401,
+      "① 旧票立即失效：拿换 Key 之前那张打 /relay/v1/models 回 401");
+    ok((await api("/relay/v1/models", { token: rotKey1 })).status === 200,
+      "② 新票可用：刚换到的票立刻能打数据面");
+    let rotLast = rotKey1;
+    for (let i = 2; i <= 5; i++) {
+      const r = await rotateOnce();
+      const k = String(r.json.relayKey || "");
+      ok(
+        r.status === 200 && /^[0-9a-f]{48}$/.test(k) && k !== rotLast &&
+          r.json.relayKeyRotateLeft === 5 - i && r.json.relayKeyRotateUsed === i,
+        "第 " + i + " 次换 Key：拿到另一张新票（当日余量 " + (5 - i) + "/5）",
+      );
+      ok((await api("/relay/v1/models", { token: rotLast })).status === 401,
+        "第 " + i + " 次换 Key 让上一张立即失效");
+      rotLast = k;
+    }
+    ok((await api("/relay/v1/models", { token: rotLast })).status === 200,
+      "第 5 次换出的票仍然可用（当日额度用满不代表票坏了）");
+    const r6 = await rotateOnce();
+    ok(
+      r6.status === 429 && r6.json.code === "RELAY_ROTATE_LIMIT" &&
+        /今日更换次数已用完/.test(String(r6.json.error)) &&
+        r6.json.relayKeyRotateLimit === 5 && r6.json.relayKeyRotateLeft === 0 &&
+        !String(r6.json.relayKey || ""),
+      "③ 第 6 次换 Key：429 code=RELAY_ROTATE_LIMIT +「今日更换次数已用完（5/5）」且不下发任何票",
+    );
+    ok((await api("/relay/v1/models", { token: rotLast })).status === 200,
+      "被限频拒绝的那一次不动作废：现役票照旧可用");
+    const meAfter = await api("/api/relay/me", { token: rotLogin });
+    ok(
+      meAfter.status === 200 && meAfter.json.relayKeyRotateUsed === 5 &&
+        meAfter.json.relayKeyRotateLeft === 0 &&
+        String(meAfter.json.relayKey || "") === rotLast,
+      "④ 换满 5 次后 GET /api/relay/me：relayKeyRotateLeft=0，且下发的是最后换到的那张现役票",
+    );
+    /* 换 Key 只动中转票、不动登录会话：本段一直用同一个登录会话打请求，最后仍能同步 */
+    ok(meAfter.status === 200, "换 Key 不动登录会话（同一个登录会话全程可用，换票不该把人踢下线）");
+    const rotDbUser = userOf("u_relay_switch") || {};
+    ok(Number((rotDbUser.relayKeyRotations || {}).count) === 5 &&
+      (rotDbUser.relayKeyRotations || {}).day === localDay(),
+      "轮换计数落 db.json（按账号 + 自然日，重启不清零）");
+    const rotSessions = readDb().sessions.filter((s) => s.userId === "u_relay_switch" && s.kind === "relay");
+    ok(rotSessions.length === 1 && rotSessions[0].tokenHash === hashToken(rotLast),
+      "库里该账号只剩最后那张中转票（换 Key 即作废旧票，不留多张并存）");
+
     const log2 = fs.readFileSync(logPath, "utf8");
     ok(!/k-mock-new/.test(log2), "日志里不出现管理台刚填的上游 Key");
     try {
@@ -732,6 +998,11 @@ async function main() {
     mock.srv.close();
     await sleep(120);
     try {
+      if (process.env.MTNODE_SMOKE_KEEP_LOG) {
+        const keep = path.join(ROOT, "test", "_smoke-relay-server.log");
+        fs.copyFileSync(logPath, keep);
+        console.log("      server log kept at " + keep);
+      }
       fs.rmSync(DATA, { recursive: true, force: true });
     } catch {
       /* Windows 偶发占用，留 tmp 无害 */

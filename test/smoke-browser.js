@@ -5,7 +5,10 @@
  *
  * 覆盖（对标用户已确认的 16 条共识）：
  *   [1] 浏览器底座：候选探测链 / 用户数据目录落在数据目录下 / CDP 零新依赖（内置 WebSocket）
- *   [2] 安全闸纯函数：域名名单判定 / 危险动作关键词 / 策略归一
+ *       本轮修（「外部的浏览器被关闭，然后又起来一只」）：重起前先探活复用（profile 账本 marker
+ *       + 按 --user-data-dir 精确认领 + 接管）/ 关的时候先温和关等真退出 / 残留锁只在没人听后清 /
+ *       「先试显形」如实回不行 / 异常退出留痕（活动流 + lastExit）
+ *   [2] 安全闸纯函数：危险动作关键词（域名名单机制本轮已删）
  *   [3] 网关接线：interact 白名单含 browser · browser 方法 · 桥帧处理 · 活动流留痕 ·
  *                 runtime key 的 nb: 成分 · MTNODE_NO_BROWSER 注入
  *   [4] 运行时插件：13 个 browser_* 工具全注册 · 整档闸（PURE / NO_BROWSER）· 只在会话可用
@@ -85,6 +88,30 @@ console.log("[1] 浏览器底座（browser-host.mjs）");
   ok(/--user-data-dir=/.test(HOST) && /--remote-debugging-port=/.test(HOST), "启动参数带专属 user-data-dir 与调试端口");
   ok(/export async function stopBrowser/.test(HOST) && /自动重启|清干净再起/.test(HOST),
     "崩溃 / 失效后自动重起（不打扰模型）");
+  /* 本轮修（用户报「外部的浏览器被关闭，然后又起来一只」）：两条纪律的静态判据 ——
+     ① 重起之前先探活复用（账本 marker + 按命令行精确认领 + 接管），绝不 spawn 第二只；
+     ② 关的时候先温和关、等真退出，超时才 kill，确认没人听再清残留锁。 */
+  ok(/export function browserAlive\(/.test(HOST) && /MARKER_NAME = '\.mtnode-browser.json'/.test(HOST)
+    && /async function findRunningBrowser\(/.test(HOST) && /async function attachRunning\(/.test(HOST)
+    && /export async function ensureBrowser[\s\S]{0,2000}await findRunningBrowser\(profileDir\)/.test(HOST),
+    "重起前先探活复用：profile 账本（marker）+ 接管仍在跑的那只（绝不 spawn 第二只去撞 profile）");
+  ok(/async function findBrowserByProfileDir\(/.test(HOST) && /--user-data-dir\[= \]/.test(HOST)
+    && /--remote-debugging-port=\(\\d\+\)/.test(HOST) && /--type=/.test(HOST),
+    "按 --user-data-dir 精确认领：只有命令行里写着我们这个 profile 的主进程才算（本机同时有别的调试浏览器）");
+  ok(/async function closeBrowserGracefully\(/.test(HOST) && /'Browser\.close'/.test(HOST) && /Target\.closeTarget/.test(HOST),
+    "温和关：CDP Browser.close，退化路径 = 逐页关（headless 关掉最后一页即退出）");
+  ok(/async function waitProcExit\(/.test(HOST) && /async function waitPortGone\(/.test(HOST)
+    && /const CLOSE_GRACE_MS = 5000/.test(HOST) && /state\.stopping/.test(HOST),
+    "关的时候等真退出（进程 exit + 端口不再答话两条一起看），主动关不算「异常退出」");
+  ok(/function cleanStaleProfileLocks\(/.test(HOST) && /lockfile/.test(HOST) && /SingletonLock/.test(HOST)
+    && /只允许在确认端口已经没人听之后调/.test(HOST),
+    "残留锁只在确认端口没人听后清（有活口时清锁等于把别人踹掉）");
+  ok(/export async function surfaceRealWindow\(/.test(HOST) && /Browser window not found/.test(HOST) && /MainWindowHandle=0/.test(HOST),
+    "「先把无窗口那只显形」有真机依据：headless 下 CDP 里没有窗口（实测回 Browser window not found），如实回 ok:false");
+  ok(/export function setLastAction\(/.test(HOST) && /浏览器异常退出（/.test(HOST) && /state\.lastExit = \{/.test(HOST),
+    "异常退出留痕：活动流一条 + lastExit（码 / 信号 / 时间 / 当时动作）");
+  ok(/同一 --user-data-dir 已在跑时再 spawn 一只/.test(HOST) && /HasExited=True/.test(HOST) && /9355 秒通/.test(HOST),
+    "文件头钉着本机实测证据（第二只立刻退出 / 端口起不来；硬杀后同 profile 秒起），不是凭印象");
   ok(/export function claimDriver/.test(HOST) && /另一条会话驱动/.test(HOST),
     "驱动串行锁：同一时刻只让一条会话驱动，抢用给明确错误而非排队");
   ok(/export function setTakeover/.test(HOST) && /export function isTakeover/.test(HOST), "接管状态可设可读（接管期间由网关拒绝 Agent 动作）");
@@ -98,7 +125,8 @@ console.log("[1] 浏览器底座（browser-host.mjs）");
   ok(/Network\.requestWillBeSent|Network\.enable/.test(HOST), "页内网络留痕（方法 / 状态 / URL）");
   ok(/Runtime\.exceptionThrown|Log\.entryAdded/.test(HOST), "页内控制台错误留痕（活动流里能看到它报了什么错）");
   ok(/危险动作|DANGEROUS_WORDS/.test(HOST) && /dangerOfClick/.test(HOST), "危险动作判据是纯函数（提交 / 支付 / 删除 / 发送 / 发布…）");
-  ok(/export function domainVerdict/.test(HOST) && /blocked/.test(HOST) && /confirm/.test(HOST), "域名判定：拦截名单硬拒绝 + 风险名单首次确认");
+  ok(!/export function domainVerdict/.test(HOST) && !/export const DEFAULT_POLICY/.test(HOST) && /export const APPROVE_DANGEROUS = true/.test(HOST),
+    "本轮需求：域名名单机制已删（无 domainVerdict / DEFAULT_POLICY），只剩恒开的 APPROVE_DANGEROUS");
 }
 
 /* ============ [2] 纯函数真跑 ============ */
@@ -106,22 +134,13 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
 (async () => {
   const H = await import(require("url").pathToFileURL(path.join(__dirname, "..", "dsh", "gateway", "browser-host.mjs")).href);
   {
-    const v1 = H.domainVerdict("https://mail.google.com/mail/u/0", H.DEFAULT_POLICY);
-    ok(v1.confirm === true && v1.blocked === false, "风险站点（mail.google.com）判为「首次访问需确认」");
-    const v2 = H.domainVerdict("https://example.com/x", { blocked: ["example.com"], confirm: [] });
-    ok(v2.blocked === true && /拦截名单/.test(v2.why), "拦截名单命中 → 硬拒绝并给出原因");
-    const v3 = H.domainVerdict("https://docs.deepseek.com/a", H.DEFAULT_POLICY);
-    ok(v3.blocked === false && v3.confirm === false, "普通站点不拦不问（默认名单不误伤）");
+    ok(typeof H.domainVerdict !== "function" && typeof H.normalizePolicy !== "function",
+      "domainVerdict / normalizePolicy 已从宿主删除（域名名单机制本轮下架）");
+    ok(H.APPROVE_DANGEROUS === true, "危险动作审批恒开（保留、默认开、不再可编辑）");
     ok(H.dangerOfClick("立即购买", "#buy").danger === true, "「立即购买」判为危险动作");
     ok(H.dangerOfClick("Submit", "button[type=submit]").danger === true, "Submit / type=submit 判为危险动作");
     ok(H.dangerOfClick("下一页", "a.next").danger === false, "翻页类点击不算危险动作（不打扰用户）");
-    const vBank = H.domainVerdict("https://www.bankofamerica.com/login", { blocked: ["bank"], confirm: [] });
-    ok(vBank.blocked === false, "名单按「域名 / 子域」精确匹配：拦截 `bank` 不误伤 bankofamerica.com");
-    const vSub = H.domainVerdict("https://mail.google.com/mail", { blocked: [], confirm: ["google.com"] });
-    ok(vSub.confirm === true, "子域命中父域名单（mail.google.com 命中 google.com）");
-    const p = H.normalizePolicy({ blocked: [" A.com ", "", "a.com"], confirm: [] });
-    ok(p.blocked.length === 2 && p.blocked[1] === "a.com", "名单归一：去空白 / 小写 / 保序");
-    ok(p.confirm.length > 0 && p.approveDangerous === true, "风险名单为空时回落默认名单（不出现「什么都不问」）");
+    ok(H.dangerOfClick("删除这条记录", "button.del").danger === true, "「删除」类点击同样判危险（保留的那条闸）");
     ok(H.profileDirOf("C:/data/dsh-home").replace(/\\/g, "/").endsWith("data/browser-profile"),
       "用户数据目录 = 数据目录下（不落应用文件夹）");
   }
@@ -134,8 +153,8 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     ok(/BrowserHost\.registerActivitySink/.test(GATEWAY), "浏览器留痕转成宿主事件（活动流实时 + 落库）");
     ok(/'browser-act'/.test(GATEWAY), "活动流事件名 browser-act（渲染层全局订阅）");
     ok(/case 'browser': \{/.test(GATEWAY) && /action === 'status'/.test(GATEWAY) && /action === 'open'/.test(GATEWAY)
-      && /action === 'policy'/.test(GATEWAY) && /action === 'takeover'/.test(GATEWAY),
-      "控制面方法：status / open / stop / policy / takeover");
+      && /action === 'takeover'/.test(GATEWAY) && !/action === 'policy'/.test(GATEWAY),
+      "控制面方法：status / open / stop / takeover（policy 随名单机制一起删掉）");
     ok(/p\.kind === 'browser'/.test(GATEWAY) && /browser-result/.test(GATEWAY),
       "interact 回执分流：browser 确认卡与 browser-result 工具结果不混用同一通道");
     ok(/\|nb:' \+ \(noBrowserOn \? '1' : '0'\)/.test(GATEWAY), "runtime key 有 nb: 成分（可见集变了换台运行时，不打爆提示缓存）");
@@ -239,13 +258,28 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     ok(/mtnode\.baOpen/.test(APP_BROWSER) && /mtnode\.baW/.test(APP_BROWSER), "显隐与宽度按本机记忆恢复（只在会话视图恢复）");
     ok(/MutationObserver/.test(APP_BROWSER) && /agentPane/.test(APP_BROWSER), "视图切进 / 切出走 #agentPane display 同步（画布 / 团队视图不显示）");
     ok(/dshBrowser/.test(APP_BROWSER) && /activityPush/.test(APP_BROWSER) && /activityQuery/.test(APP_BROWSER), "面板经桥说话：控制面 + 留痕读写");
-    ok(/baOpen/.test(APP_BROWSER) && /打开浏览器/.test(APP_BROWSER), "面板上有「打开浏览器」入口（可先手动登录）");
-    ok(/baTakeover/.test(APP_BROWSER) && /toggleTakeover/.test(APP_BROWSER), "面板上有接管 / 交还");
-    ok(/openPolicy|baPolicy/.test(APP_BROWSER) && /approveDangerous/.test(APP_BROWSER), "名单与危险动作审批可在面板编辑");
+    ok(!/\$\("#ba(Open|Stop|Takeover|Policy|Refresh)"\)/.test(APP_BROWSER)
+      && !/id="ba(Open|Stop|Takeover|Policy|Refresh|LiveModeBtn)"/.test(HTML) && !/class="ba-bar"/.test(HTML),
+      "本轮需求：面板那排「打开浏览器 / 停止 / 接管 / 名单 / ↻」整行下架（接线、HTML 与容器都不再有；"
+      + "落盘的 mtnode.baOpen 只是面板显隐记忆，与按钮无关）");
+    ok(/BA\.realWindow = async function/.test(APP_BROWSER) && /BA\.setTakeover = async function/.test(APP_BROWSER),
+      "真窗口与接管改由求助卡走 BA.realWindow / BA.setTakeover（能力没消失，只是换了入口）");
+    ok(!/openPolicy/.test(APP_BROWSER) && !/approveDangerous/.test(APP_BROWSER) && /imageSmoothingQuality = "high"/.test(APP_BROWSER),
+      "名单编辑浮层已删；实况绘制改用高质量降采样（清晰度那一半）");
     ok(/KIND_GROUP/.test(APP_BROWSER) && /GROUP_LABEL/.test(APP_BROWSER) && /g-browser/.test(CSS) && /g-shell/.test(CSS) && /g-file/.test(CSS),
       "活动流分类着色：浏览器 / 命令 / 文件一眼区分（源码分组 + 样式三色）");
     ok(/dshOnActivity/.test(APP_BROWSER) && /dshOnActivity/.test(PRELOAD), "活动流走全局事件订阅（reqId 空通道，preload 侧同源）");
-    ok(/ix-browser-help/.test(APP_DB) && /ixAnswerBrowser/.test(APP_DB), "求助 / 确认卡有专属渲染与回执出口");
+    /* 本轮需求：求助卡是真窗口与接管在界面上的**唯一**入口 —— 两枚键各管一件事，
+       且真窗口那枚不能用 ixMarkFirstSend 的一次性闸（用了会把「我已处理完」也闸掉）。 */
+    ok(/BrowserAct\.realWindow\(on, it\.data\.sessionId/.test(APP_DB) && /I18n\.t\("用真窗口打开"\)/.test(APP_DB),
+      "求助卡（登录 / 验证码类）给了「用真窗口打开 / 收回右栏」，走 BA.realWindow");
+    ok(/BrowserAct\.setTakeover\(!takenOver/.test(APP_DB),
+      "求助卡上的接管 / 交还走 BA.setTakeover（面板那枚按钮下架后不许留死路）");
+    {
+      const winBlock = APP_DB.split('const win = document.createElement("button")')[1] || "";
+      ok(!/ixMarkFirstSend\(it\)/.test(winBlock.slice(0, 900)),
+        "真窗口那枚键不占一次性回执闸（否则同一张卡上的「我已处理完，交还控制权」会点不动）");
+    }    ok(/ix-browser-help/.test(APP_DB) && /ixAnswerBrowser/.test(APP_DB), "求助 / 确认卡有专属渲染与回执出口");
     ok(/msg\.type === "browser"/.test(APP_DB), "会话事件分发认得 browser 帧");
     ok(/kind: "browser"/.test(APP_DB), "回执按 kind:'browser' 回传（与 canvas / tool 同一条交互通道）");
     ok(/window\.LongRun\.afterRound/.test(APP_ASSIST), "轮末钩子接进会话收尾（自动续跑入口）");
@@ -262,7 +296,7 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     ok(/canvasFreeOn/.test(APP_DB) && /noBrowser: \(nodeLock \|\| canvasFreeOn\) && !pureOn/.test(APP_DB.replace(/\s+/g, " ")),
       "宿主按运行算 noBrowser（节点 / 与画布无关整档不注册）");
     ok(/MTNODE_NO_BROWSER/.test(APP_NODES) || /noBrowser/.test(APP_DB), "浏览器工具可用范围在宿主侧有唯一判据");
-    for (const k of ["浏览器活动", "自动续跑", "打开浏览器", "接管", "拦截名单", "浏览器需要你帮忙", "收起浏览器活动栏", "拖动分界线调整活动栏宽度（整条边界都可拖）", "拖动边框中部调整活动栏宽度", "自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（不打断你，随时可关）"]) {
+    for (const k of ["浏览器活动", "自动续跑", "用真窗口打开", "收回右栏", "浏览器需要你帮忙", "收起浏览器活动栏", "拖动分界线调整活动栏宽度（整条边界都可拖）", "拖动边框中部调整活动栏宽度", "自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（不打断你，随时可关）"]) {
       ok(I18N.indexOf('"' + k + '"') > 0, "i18n 有词条：" + k);
     }
     /* 真跑一次 I18n：切到 en 后新词条必须回英文（键在表里不等于调得对 ——
@@ -270,7 +304,7 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     try {
       const I = require(path.join(__dirname, "..", "renderer", "i18n.js"));
       I.setLocale("en");
-      const probe = ["浏览器活动", "自动续跑", "允许这一次", "浏览器需要你帮忙", "拦截名单", "会话在浏览器上需要你帮忙（点「浏览器活动」右边栏查看）", "停止跟随", "跟随最新", "已停止跟随：往上翻旧记录不会被拽回底部；点一下恢复跟随最新"];
+      const probe = ["浏览器活动", "自动续跑", "允许这一次", "浏览器需要你帮忙", "用真窗口打开", "会话在浏览器上需要你帮忙（点「浏览器活动」右边栏查看）", "停止跟随", "跟随最新", "已停止跟随：往上翻旧记录不会被拽回底部；点一下恢复跟随最新"];
       const miss = probe.filter((k) => {
         const en = I.t(k);
         return !en || en === k;
@@ -411,28 +445,44 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       ok(/--headless=new/.test(HOST) && /function launchArgs\(exe, profileDir, port, headless\)/.test(HOST),
         "启动参数按窗口模式分支：无窗口（headless）那只走 --headless=new");
       ok(/windowsHide: true/.test(HOST), "spawn 一律 windowsHide（无窗口那只绝不闪窗体）");
-      ok(/export async function ensureBrowser\(opts\)[\s\S]{0,2600}const headless = !wantVisible/.test(HOST)
-        && /if \(wantVisible && state\.headless\) await stopBrowser/.test(HOST),
-        "ensureBrowser 认 visible：缺省无窗口；要带窗口而当前是无窗口那只时重起一只");
+      ok(/export async function ensureBrowser\(opts\)[\s\S]{0,30000}const headless = !wantVisible/.test(HOST)
+        && /if \(wantVisible && state\.headless\) \{/.test(HOST)
+        && /await stopBrowser\(\{ silent: true, why: 'want-visible' \}\)/.test(HOST),
+        "ensureBrowser 认 visible：缺省无窗口；要带窗口而当前是无窗口那只时 —— 先试显形，不行才温和关掉重开一只");
       ok(/headless: !!state\.headless/.test(HOST) && /if \(state\.headless\) \{[\s\S]{0,400}viewParked = true/.test(HOST),
         "viewStatus 带 headless；无窗口那只的 parkSessionWindow 直接算已让位（不读位姿、不标 fallback）");
-      ok(/这只是无窗口（后台）浏览器/.test(HOST), "detachWindow 对无窗口那只给可执行的说法（点「打开浏览器」看真窗口）");
+      ok(/这只是无窗口（后台）浏览器/.test(HOST) && /用真窗口打开/.test(HOST), "detachWindow 对无窗口那只给可执行的说法（去求助卡点「用真窗口打开」）");
       const launchBranch2 = GATEWAY.split("if (op === 'launch')")[1] || "";
       ok(/visible: !!params\.visible/.test(launchBranch2.slice(0, 1600)),
         "网关 launch 分支按 visible 传给宿主（浏览器工具不传 = 无窗口）");
-      ok(/async open\(opts\)[\s\S]{0,600}visible: wantVisible/.test(GATEWAY)
+      ok(/async open\(opts\)[\s\S]{0,900}visible: wantVisible/.test(GATEWAY)
         && /visible: p\.visible !== false/.test(GATEWAY),
-        "面板「打开浏览器」= 唯一带窗口的入口（visible 缺省 true）");
-      ok(/BA\.headless/.test(APP_BROWSER) && /btn\.hidden = !BA\.running \|\| !!BA\.headless/.test(APP_BROWSER),
-        "渲染层跟随 headless：无窗口那只收起「独立窗口」按钮");
+        "求助卡「用真窗口打开」= 唯一带窗口的入口（visible 缺省 true）");
+      ok(/ensureBrowser\([\s\S]{0,1600}r\.reused === false[\s\S]{0,300}BrowserHost\.navigate/.test(GATEWAY),
+        "无窗口 → 带窗口会重起进程：网关先记下当前页地址，重起后补一次导航（登录页不丢）");
+      /* 本轮修：真窗口那次「温和关掉重开一只」要在活动流里说得明白（渲染层按 restartedForVisible 换 toast） */
+      ok(/restartedForVisible/.test(GATEWAY) && /这只没有真窗口可显形：已温和关掉、重开一只带窗口的/.test(GATEWAY),
+        "网关就「重开了一只带窗口的」推一条活动流（用户看得见，不是悄悄关掉）");
+      ok(/if \(op && op !== 'status'\) BrowserHost\.setLastAction\(op\)/.test(GATEWAY),
+        "网关每次转发 op 前记下「刚才在跑什么动作」（异常退出留痕要带上它）");
+      ok(/restartedForVisible/.test(APP_BROWSER)
+        && /已关掉那只无窗口的、重开为真窗口并接管：顺手操作即可；做完点「我已处理完，交还控制权」。/.test(APP_BROWSER),
+        "渲染层真窗口那条 toast 分「重开了一只」与「只是摆窗口」两种说法");
+      ok(/headlessNow/.test(APP_DB) && /点「用真窗口打开」会把当前这只无窗口的浏览器温和关掉、重开一只带窗口的/.test(APP_DB),
+        "求助卡上写明代价：无窗口那只点「用真窗口打开」= 温和关掉重开一只（不让用户以为浏览器崩了）");
+      ok(/BA\.headless/.test(APP_BROWSER) && /backBtn\.hidden = !BA\.running \|\| !detached/.test(APP_BROWSER),
+        "渲染层跟随形态与 headless：实况区「收回」小键只在真的在独立窗口时出现");
       ok(/visible: true/.test(APP_BROWSER) && /T\("无窗口运行"\)/.test(APP_BROWSER),
-        "面板「打开浏览器」显式要带窗口的一只，实况区文案切「无窗口运行」");
+        "求助卡那条显式要带窗口的一只，实况区文案切「无窗口运行」");
       ok(/无窗口运行/.test(I18N)
-        && /这只是无窗口（后台）浏览器，画面就在这里；想看真窗口请在面板上点「打开浏览器」。/.test(I18N)
-        && /这只是无窗口（后台）浏览器，没有可显示的窗口/.test(I18N),
-        "无窗口三句词条都在 i18n 里（实况区文案 / 说明 / 按钮 title 才有中英）");
+        && /这只是无窗口（后台）浏览器，画面就在这里；想要真窗口请在会话里让它求助（登录 \/ 验证码卡上点「用真窗口打开」）。/.test(I18N),
+        "无窗口两句词条都在 i18n 里（实况区文案 + 说明才有中英）");
     }
-    ok(/export function viewStatus\(/.test(HOST) && /viewMode/.test(HOST) && /fallback/.test(HOST),
+    /* 本轮需求（清晰度）：实况帧的编码档。本机实测：质量 72 → 90 时单帧 9KB → 13KB；
+       maxWidth/Height 只是上限（screencast 输出分辨率跟着页面 CSS 尺寸走，Emulation 开 2×
+       时帧仍是 750×485、md5 一致），这档只对「真窗口被拉大 / 大视口页面」有意义。 */
+    ok(/const VIEW_JPEG_QUALITY = 90/.test(HOST) && /const VIEW_MAX_WIDTH = 2560/.test(HOST) && /const VIEW_MAX_HEIGHT = 1600/.test(HOST),
+      "实况帧档位：质量 90 + 上限 2560×1600（清晰度那一半的另一半在渲染层的高质量降采样）");    ok(/export function viewStatus\(/.test(HOST) && /viewMode/.test(HOST) && /fallback/.test(HOST),
       "状态里有 mode / fallback / seq（渲染层据此画文案与按钮）");
     ok(/v\.on = false/.test(HOST) && /Page\.stopScreencast/.test(HOST), "停流会摘订阅 + stopScreencast");
     ok(/state\.view\.sink = typeof fn === 'function'/.test(HOST), "viewSink 只收函数（帧不落任何外部存储）");
@@ -454,8 +504,9 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       "主进程同一条 dsh:browser 透传并兜底（老网关不认 view 时回错误而不 reject）");
 
     /* 渲染层：默认 dock、可切独立窗口，且未被调用 / 未启动时整条不显示 */
-    ok(/id="baLive"/.test(HTML) && /id="baLiveCanvas"/.test(HTML) && /id="baLiveModeBtn"/.test(HTML) && /id="baLivePause"/.test(HTML),
-      "右栏实况区 DOM（画面 + 独立窗口/收回 + 暂停观察）在 index.html 里自带");
+    ok(/id="baLive"/.test(HTML) && /id="baLiveCanvas"/.test(HTML) && /id="baLiveBack"/.test(HTML) && /id="baLivePause"/.test(HTML)
+      && !/baLiveModeBtn/.test(HTML),
+      "右栏实况区 DOM（画面 + 收回小键 + 暂停观察）在 index.html 里自带，「独立窗口」按钮已下架");
     ok(/id="baPanel" hidden/.test(HTML), "面板默认 hidden：没被调用 / 没启动浏览器时整条不显示");
     ok(/BA\.setOpen = function \(open, persist\)[\s\S]{0,700}classList\.toggle\("ba-open", on\)/.test(APP_BROWSER)
       && /if \(box\) box\.hidden = !on;/.test(APP_BROWSER),
@@ -480,17 +531,21 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       "画布上的指针 / 滚轮 / 键盘 / IME 都转发（按 CSS 像素 + 画布显示尺寸）");
     ok(/window\.api\.onBrowserFrame\(BA\.onFrame\)/.test(APP_BROWSER) && /BA\.onFrame = function/.test(APP_BROWSER),
       "帧订阅 + seq 去重（乱序 / 重放的旧帧直接丢）");
-    ok(/data-i18n="独立窗口"/.test(HTML) && /id="baLiveModeBtn"[^>]*hidden/.test(HTML) && /id="baLiveModeBtn"/.test(HTML),
-      "「独立窗口 / 收回」入口在实况区头部（静态 hidden：浏览器没启动时这枚按钮不出现；文案由 JS 按形态切）");
-    ok(/btn\.hidden = !BA\.running/.test(APP_BROWSER),
-      "渲染层按真状态显隐这枚按钮：#baLiveModeBtn.hidden = !BA.running（未启动＝不显示）");
+    ok(/data-i18n="收回"/.test(HTML) && /id="baLiveBack"[^>]*hidden/.test(HTML),
+      "「收回」小键在实况区头部（静态 hidden：不是独立窗口形态时不出现）");
+    ok(/backBtn\.hidden = !BA\.running \|\| !detached/.test(APP_BROWSER),
+      "渲染层按真状态显隐这枚小键：#baLiveBack.hidden = !BA.running || !detached（未启动 / 已 docked＝不显示）");
     ok(/\.ba-live-stage/.test(CSS) && /\.ba-live-mask/.test(CSS) && /\.ba-live-note/.test(CSS), "实况区样式（画面 / 等待遮罩 / 兜底说明）");
-    const pair = ["实况", "独立窗口", "收回", "暂停观察", "等待浏览器画面…", "已在独立窗口"];
+    const pair = ["实况", "收回", "用真窗口打开", "收回右栏", "暂停观察", "等待浏览器画面…", "已在独立窗口"];
     ok(pair.every((k) => I18N.includes('"' + k + '"')), "i18n 新词条齐备：" + pair.join(" / "));
     /* 本轮修：默认内部界面（toast / 失败兜底文案都有中英词条，否则切英文就露中文） */
-    ok(I18N.includes('"浏览器已就绪（默认在右栏实况里；想看真窗口点「独立窗口」）"')
+    ok(I18N.includes('"已用真窗口打开，且你已接管：顺手操作即可；做完点「我已处理完，交还控制权」。"')
       && I18N.includes('"没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。"'),
       "i18n 补上「默认内部界面」两条词条（就绪提示 + detached 没摆出来的兜底提示）");
+    /* 本轮修：真窗口那两条新文案也要中英成对（切英文不能露中文） */
+    ok(I18N.includes('"已关掉那只无窗口的、重开为真窗口并接管：顺手操作即可；做完点「我已处理完，交还控制权」。"')
+      && I18N.includes('"点「用真窗口打开」会把当前这只无窗口的浏览器温和关掉、重开一只带窗口的（当前页面地址会带回来；登录态在，不受影响）"'),
+      "i18n 补上本轮两条词条（「重开了一只带窗口的」toast + 求助卡上的代价说明）");
     /* 本轮修：会话列表上的被动标记（静默处理时用户扫一眼就知道哪条会话在用浏览器） */
     ok(/\.side-sess-ba/.test(require("fs").readFileSync(require("path").join(__dirname, "..", "renderer", "css", "dsh.css"), "utf8"))
       && /BA\.noteBrowserSession/.test(APP_BROWSER)
@@ -562,6 +617,50 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
           await new Promise((r) => setTimeout(r, 1200));
           const n1 = frames.filter((f) => f.frame).length;
           ok(n1 === n0, "停流后不再有画面帧（" + n0 + " 帧为止；只多一条 stop 状态）");
+        }
+        /* 本轮修的真机段：账本 / 探活复用 / 温和关 / 异常退出留痕 —— 这四条只有真跑能验。
+           （先关掉上一段那只：profile 是全局一份，带着旧的一只去要新目录只会拿到旧那只。） */
+        {
+          await H.stopBrowser({ silent: true });
+          const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-brreuse-"));
+          const prof2 = path.join(dir2, "profile");
+          const mkPath = path.join(prof2, ".mtnode-browser.json");
+          const b1 = await H.ensureBrowser({ profileDir: prof2, timeoutMs: 20000 });
+          ok(fs.existsSync(mkPath), "profile 目录里写了我们自己的账本（.mtnode-browser.json）");
+          const mk = JSON.parse(fs.readFileSync(mkPath, "utf8"));
+          ok(mk.port === b1.port && mk.pid > 0, "账本带 port / pid（" + mk.port + " / " + mk.pid + "）");
+          const s2 = await H.surfaceRealWindow();
+          ok(s2.ok === false && s2.headless === true && /没有窗口可显形/.test(String(s2.reason || "")),
+            "「先试显形」如实回不行：无窗口那只在 CDP 里没有窗口（" + String(s2.reason || "").slice(0, 42) + "…）");
+          /* 模拟「网关重启」：句柄全丢、那只还在跑 → 必须接管同一只（不能关掉又起来） */
+          const st = H._state();
+          st.proc = null; st.cdp = null; st.port = 0; st.targetId = ""; st.attached = false; st.attachedPid = 0;
+          const b2 = await H.ensureBrowser({ profileDir: prof2, timeoutMs: 20000 });
+          ok(b2.reused === true && b2.attached === true && b2.port === b1.port && H.statusOf().attached === true,
+            "句柄丢失后再要浏览器 = 接管同一只（端口 " + b2.port + " 没变，没有关掉又起来一只）");
+          const stop2 = await H.stopBrowser({ silent: true });
+          let dead = false;
+          try { await fetch("http://127.0.0.1:" + b1.port + "/json/version", { signal: AbortSignal.timeout(900) }); }
+          catch (_) { dead = true; }
+          ok(stop2.ok === true && dead, "温和关成功且端口 " + b1.port + " 已经没人听（等真退出，不是 kill 完就走）");
+          ok(!fs.existsSync(mkPath), "关掉后账本已抹掉（下次不会拿着过期端口乱接管）");
+          /* 异常退出留痕：外部硬杀（模拟崩溃）→ 活动流一条 + lastExit；随后自动重起照旧 */
+          if (process.platform === "win32") {
+            const notes = [];
+            H.registerActivitySink((it) => notes.push(it));
+            await H.ensureBrowser({ profileDir: prof2, timeoutMs: 20000 });
+            try {
+              childProcess.execFileSync("taskkill", ["/PID", String(H.statusOf().pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+            } catch (_) { /* 已经没了也算 */ }
+            await new Promise((r) => setTimeout(r, 2000));
+            const hit = notes.filter((n) => /浏览器异常退出/.test(String(n.text || "")));
+            ok(hit.length >= 1 && !!H.statusOf().lastExit,
+              "异常退出有活动流条目 + lastExit 记账：" + String((hit[0] || {}).text || "").slice(0, 52) + "…");
+            await H.ensureBrowser({ profileDir: prof2, timeoutMs: 20000 });
+            ok(H.browserAlive() === true, "崩了之后下一次调用自动重起（用户口径：不设重起上限）");
+            await H.stopBrowser({ silent: true });
+          }
+          try { fs.rmSync(dir2, { recursive: true, force: true }) } catch (_) { /* 清不掉不算失败 */ }
         }
         await H.stopBrowser({ silent: true });
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch (_) { /* 浏览器进程可能还捏着目录：清不掉不算失败 */ }
@@ -648,9 +747,11 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
   }
 
   const IDS = [
-    "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose", "baOpen", "baStop",
-    "baTakeover", "baPolicy", "baRefresh", "baFilter", "baAll", "baClear", "baList",
-    "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveModeBtn", "baLiveMode",
+    /* 本轮需求：baOpen / baStop / baTakeover / baPolicy / baRefresh 与 baLiveModeBtn 已下架，
+       实况区新增一枚只在独立窗口形态下出现的「收回」小键（#baLiveBack）。 */
+    "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
+    "baFilter", "baAll", "baClear", "baList",
+    "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveBack", "baLiveMode",
     "baLiveNote", "baLiveMask", "baLive",
   ];
 
@@ -745,8 +846,8 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       ok(BA.isOpen() === false && app.els.baPanel.hidden === true && !app.pane.classList.contains("ba-open"),
         "右栏默认收起（hidden + 无 .ba-open，旧两栏界面一字不差）");
       ok(app.calls.viewStart === 0, "没被调用就不开流（不占帧、不占解码成本）");
-      ok(app.els.baLiveModeBtn.hidden === true,
-        "浏览器没开时「独立窗口」按钮不显示（形态切换只在真有一只在跑的浏览器时才有意义）");
+      ok(app.els.baLiveBack.hidden === true,
+        "浏览器没开时「收回」小键不显示（形态切换只在真有一只在跑的浏览器时才有意义）");
     }
 
     /* ── [2] 会话一用浏览器 → 右栏出现 + 真开流 ──────────────────────────── */
@@ -766,8 +867,8 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
         + " [viewStart=" + app.calls.viewStart + " on=" + app.BA.live.on + " running=" + app.BA.running
         + " open=" + app.BA.isOpen() + " stop=" + app.calls.viewStop + "]");
       ok(app.store["mtnode.baOpen"] === "1", "显隐照旧落 localStorage（可复核）");
-      ok(app.els.baLiveModeBtn.hidden === false,
-        "浏览器在跑时「独立窗口」按钮显示出来（文案由 livePaintStatus 按形态切）");
+      ok(app.els.baLiveBack.hidden === true,
+        "浏览器在跑但形态是 docked：收回小键仍然不显示（只有真在独立窗口时才给它）");
     }
 
     /* ── [3] 用户亲手关过就不打扰 ─────────────────────────────────────────── */
@@ -854,27 +955,44 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     }
 
     /* ── [9] 控件引用的 API 真实存在：点下去真把形态切一圈 ────────────────── */
-    console.log("\n[9] #baLiveModeBtn 的 onclick 真能切 docked / detached（不是属性在、实现没了）");
+    console.log("\n[9] #baLiveBack 的 onclick 真能把真窗口收回右栏（不是属性在、实现没了）");
     {
       const app = makeApp({ running: true });
       await tick(); await tick();
-      const btn = app.els.baLiveModeBtn;
-      ok(typeof app.BA.liveToggleMode === "function",
-        "BA.liveToggleMode 是函数（控件引用的成员真实存在）");
-      ok(!!btn.onclick, "#baLiveModeBtn.onclick 被接上了（bindLive 认得这个 id）");
+      const btn = app.els.baLiveBack;
+      ok(typeof app.BA.liveSetMode === "function" && typeof app.BA.realWindow === "function",
+        "BA.liveSetMode / BA.realWindow 都是函数（控件与求助卡引用的成员真实存在）");
+      ok(!!btn.onclick, "#baLiveBack.onclick 被接上了（bindLive 认得这个 id）");
       ok(app.BA.live.mode === "docked", "实况默认形态 = docked（右栏）");
-      /* 点下去要等一拍：BA.liveSetMode 是 async（先 viewMode 再改形态），
-         不等就把「同步刻还没变」误判成按钮空转 */
+      ok(btn.hidden === true, "docked 形态下这枚小键不显示（它不是常驻按钮，只是回程）");
+      await app.BA.liveSetMode("detached");
+      await tick();
+      ok(app.BA.live.mode === "detached" && btn.hidden === false,
+        "切到真窗口后「收回」小键出现（不会把用户卡在真窗口上）");
       let threw = "";
       try { await btn.onclick(); } catch (err) { threw = String((err && err.message) || err); }
       await tick();
-      ok(!threw && app.BA.live.mode === "detached",
-        "点一下 → detached（真调到了 BA 的实现，不是空转）"
+      ok(!threw && app.BA.live.mode === "docked" && btn.hidden === true,
+        "点一下 → 收回右栏（真调到了 BA 的实现，不是空转）"
         + " [mode=" + app.BA.live.mode + (threw ? " threw=" + threw : "") + "]");
-      try { await btn.onclick(); } catch (_) {}
+      /* 求助卡那枚：on=true 要一只带窗口的 + 接管 + 摆到眼前；on=false 收回。
+         用桩盯住「它真调了这三步」，别让卡片上的键变成只弹提示的空壳。 */
+      const acts = [];
+      const origBrowser = app.BA.browser;
+      app.BA.browser = async (action, extra) => {
+        acts.push(action);
+        if (action === "open") { app.BA.applyStatus({ ok: true, running: true, headless: false, reused: false }); return { ok: true, running: true }; }
+        return origBrowser.call(app.BA, action, extra);
+      };
+      await app.BA.realWindow(true, "asX");
       await tick();
-      ok(app.BA.live.mode === "docked",
-        "再点一下 → 切回来 docked（两个方向都通，不是单向假按钮）");
+      ok(acts.indexOf("open") >= 0 && acts.indexOf("takeover") >= 0 && app.BA.live.mode === "detached",
+        "求助卡「用真窗口打开」= open(visible) → takeover → detached 三步都真走了"
+        + " [calls=" + acts.join(",") + " mode=" + app.BA.live.mode + "]");
+      await app.BA.realWindow(false, "asX");
+      await tick();
+      ok(app.BA.live.mode === "docked", "同一枚键再点 = 收回右栏（双向都通）");
+      app.BA.browser = origBrowser;
     }
 
     /* ── [10] 静态扫描：每个 BA.<name> 引用都必须在 BA 上真实存在 ─────────── */
@@ -886,7 +1004,7 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       /* 白名单 = BA 上的数据字段 / 容器（不是 API），只放行这些；
          其余引用一律要求「在 BA 上真实存在」，函数类引用还要求可调用 */
       const DATA = {
-        rows: "object", total: "number", running: "boolean", takeover: "boolean", policy: "object",
+        rows: "object", total: "number", running: "boolean", takeover: "boolean",
         sessionId: "string", browserSessions: "object", dbBrowserSession: "string", driver: "string",
         userChoice: "object", open: "boolean", userClosed: "boolean", userOpened: "boolean",
         autoOpenBusy: "boolean", filter: "string", follow: "boolean", w: "number", live: "object",
@@ -936,8 +1054,8 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       ok(typeof on.pointerdown === "function" || (on.pointerdown || []).length > 0,
         "指针接线在（_bound 之后才挂的画布监听）");
       /* 桩一个会抛错的实现：真机换模型 / 网关卡死时就是这种抛错 */
-      app.BA.liveToggleMode = function () { throw new Error("boom-live-toggle"); };
-      const btn = app.els.baLiveModeBtn;
+      app.BA.liveSetMode = function () { throw new Error("boom-live-mode"); };
+      const btn = app.els.baLiveBack;
       let threw = "";
       try { btn.onclick(); } catch (err) { threw = String((err && err.message) || err); }
       ok(canvas._bound === true,
@@ -1005,6 +1123,11 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
   if (fails) console.log("  ── 已并入块 smoke-browser-rail.js：" + fails + " / " + checks + " 项失败");
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+/* 收尾：正文与并入块任一失败都算这只红。
+   ⚠ 不能用 process.exit(...)：聚合块里的断言都在 async 体里（第一个 await 之后就交还控制权），
+   强制退出会在它们跑完之前把进程掐掉 —— 本轮实测发现本文件 await 之后的断言一条都没执行过
+   （只印了块首那几行 console.log）。改成 exit 钩子里定 exitCode：既等所有块跑完，又保留退出码。 */
+process.on("exit", () => {
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+  process.exitCode = MERGED_FAILED ? 1 : 0;
+});

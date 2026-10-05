@@ -1,6 +1,11 @@
 "use strict";
 /* ============ 启动 ============ */
 
+/* 顶栏「数据不落应用文件夹」警示的命中缓存（声明放最前：本文件后面挂出去的
+   window.checkAppDirWarn 可能被更早的装载层在 evaluate 期调一次，那时若还停在 TDZ 就会炸）。
+   真源仍是主进程 app:dataAudit，这里只存最近一次结论，供绘制与切语言复用。 */
+let appDirHits = [];
+
 /* 渲染层错误自诊断：toast + 写入主进程诊断日志，便于导出提交 */
 window.addEventListener("error", (ev) => {
   const msg =
@@ -117,6 +122,109 @@ function applyLogoSub() {
     I18n.t(" · 右键画布添加节点 · 拖线连接节点 · Ctrl+拖拽框选 · 滚轮缩放画布");
   sub.title = I18n.t("版本 ") + (S.appVersion || "") + " · DeepSeek Harness Empowered";
 }
+
+/* ── 顶栏「数据不落应用文件夹」红色警示（#logoWarn / .logo-warn）──────────────
+   口径：AGENTS.md「数据不落应用文件夹」——数据目录、事实库、素材库、save / 日志等一切用户
+   数据只允许写 %APPDATA% 或用户选定的项目文件夹；落在应用文件夹（app.getAppPath() / exe
+   同目录）内的东西，升级或卸载会带走或覆盖。
+   判定只有一处真源：主进程 app:dataAudit（main.js）——它复用启动体检的 appDirDataCandidates()
+   与 isInsideAppDir()，但**不弹窗、不写日志**，可反复调用。渲染层不自己拼应用目录、也不自己
+   抄候选清单，避免与主进程口径跑偏。
+   **只在真的查到命中时才显示**（没命中、拿不到结果都静默隐藏，绝不误报）。 */
+async function refreshAppDirAudit() {
+  try {
+    const api = window.api || {};
+    if (typeof api.appDataAudit !== "function") {
+      appDirHits = [];
+      return [];
+    }
+    const r = await api.appDataAudit();
+    if (!r || !r.ok || !Array.isArray(r.hits) || !r.hits.length) {
+      appDirHits = [];
+      return [];
+    }
+    appDirHits = r.hits
+      .map((h) => ({
+        label: String((h && h.label) || "").trim(),
+        path: String((h && h.path) || "").trim(),
+      }))
+      .filter((h) => h.label || h.path);
+    return appDirHits;
+  } catch (_) {
+    appDirHits = [];
+    return [];
+  }
+}
+
+/* 按当前命中重画红字与 tooltip（文案一律现算，切语言时由 applyLocale 再调一次） */
+function paintAppDirWarn() {
+  const el = $("#logoWarn");
+  if (!el) return;
+  const txt = $("#logoWarnTxt");
+  const hits = Array.isArray(appDirHits) ? appDirHits : [];
+  if (!hits.length) {
+    el.hidden = true;
+    el.setAttribute("aria-hidden", "true");
+    el.tabIndex = -1;
+    el.removeAttribute("data-tip");
+    el.removeAttribute("title");
+    if (txt) txt.textContent = "";
+    return;
+  }
+  const base = I18n.t("请勿将文件保存在应用文件夹内，升级或卸载会丢失");
+  if (txt) txt.textContent = base;
+  const show = hits.slice(0, 5);
+  const more =
+    hits.length > show.length
+      ? "\n" + I18n.t("等 {n} 处").replace("{n}", String(hits.length))
+      : "";
+  const tip =
+    base +
+    "\n" +
+    I18n.t(
+      "应用文件夹 = 应用安装目录（app.getAppPath() 与 exe 同目录）：升级或卸载会覆盖 / 带走里面的文件。",
+    ) +
+    "\n" +
+    I18n.t("用户数据请放在数据目录（默认 %APPDATA%\\pipeline-console）或自己的项目文件夹里。") +
+    "\n" +
+    I18n.t("当前检测到这些数据落在应用文件夹内：") +
+    "\n" +
+    show.map((h) => "· " + (h.label || "") + (h.path ? " → " + h.path : "")).join("\n") +
+    more +
+    "\n" +
+    I18n.t("点击此处打开设置 · 配置数据目录");
+  el.setAttribute("data-tip", tip);
+  el.setAttribute("title", tip);
+  el.setAttribute("aria-label", base);
+  el.tabIndex = 0;
+  el.hidden = false;
+  el.setAttribute("aria-hidden", "false");
+}
+
+/* 打开设置并滚到「配置数据目录」小节（app-settings.js 里那一段的 id 见该文件） */
+function openDataDirSettings() {
+  try {
+    if (typeof openSettings === "function") openSettings({ section: "data" });
+    else if (typeof toast === "function") toast(I18n.t("设置尚未就绪，请稍后重试"), "warn");
+  } catch (_) {}
+}
+
+/* 红字点击：数据文件夹位置就在设置里那一段改 */
+function bindAppDirWarnClick() {
+  const el = $("#logoWarn");
+  if (!el || el.dataset.bound === "1") return;
+  el.dataset.bound = "1";
+  el.onclick = () => openDataDirSettings();
+}
+
+/* 体检一次并重画（启动、改数据目录 / 素材库根目录后、切语言时调用） */
+async function checkAppDirWarn() {
+  await refreshAppDirAudit();
+  paintAppDirWarn();
+}
+
+/* 供 app-settings.js / app-assets.js 在路径变更后调用：重查并重画，失败静默 */
+window.checkAppDirWarn = checkAppDirWarn;
 
 function paintLangBtn() {
   const btn = $("#btnLang");
@@ -312,6 +420,9 @@ function applyLocale(locale, persist) {
   if ($("#approvalsPanel") && $("#approvalsPanel").classList.contains("on"))
     openApprovalsPanel();
   applyLogoSub();
+  /* 顶栏「数据不落应用文件夹」警示的文案与 tooltip 由 JS 现算（含命中明细）→ 切语言重画一次 */
+  bindAppDirWarnClick();
+  paintAppDirWarn();
   /* 全局搜索浮层（Ctrl+F）：切语言时重绘占位符与提示文案 */
   if (typeof globalSearchRepaint === "function") globalSearchRepaint();
   /* 输入框内查找条（Ctrl+F · app-find.js）：同一口径，切语言时重绘文案与计数 */
@@ -1055,6 +1166,13 @@ async function init() {
   }
   /* 视图与左侧栏互斥：先落 body 类，让 CSS 硬闸从首帧起生效 */
   const bootView = (S.config && S.config.view) || "workflow";
+  /* S.view = 「现在是哪个视图」的唯一真源，必须在这儿就落定：下面那句 setView 只给
+     agent / team 调（画布视图只补 body 类，不再多跑一遍 renderCanvas），于是一路 boot 进
+     画布的用户 S.view 一直是 undefined —— 而 canvasPasteFromClipboard 开头的
+     `if (S.view !== "workflow") return;` 读的正是它，画布 Ctrl+V 被整条吃掉：
+     Ctrl+C 有「已复制 N 个节点」的提示、Ctrl+V 却毫无反应（本轮修的 bug：复制节点后粘不出来）。
+     这里落定后，画布视图的 S.view 与 body.view-workflow 同源，视图切换仍由 setView 收口。 */
+  S.view = bootView;
   document.body.classList.toggle("view-agent", bootView === "agent");
   document.body.classList.toggle("view-team", bootView === "team");
   document.body.classList.toggle("view-workflow", bootView === "workflow");
@@ -1071,6 +1189,10 @@ async function init() {
       MtRelayAuth.init();
     } catch (e) {}
   }
+  /* 顶栏「数据不落应用文件夹」警示：启动后做一次只读体检（主进程 app:dataAudit），
+     只在真的查到命中时才亮红字；失败静默不显示（见本文件 paintAppDirWarn）。 */
+  bindAppDirWarnClick();
+  checkAppDirWarn();
 }
 
 init();

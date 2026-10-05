@@ -37,6 +37,7 @@ const INSTALL_SKILL_SOURCES = {
   'tts-local-install': path.join(__dirname, '..', 'skills', 'tts-local-install', 'SKILL.md'),
   'llama-local-install': path.join(__dirname, '..', 'skills', 'llama-local-install', 'SKILL.md'),
   'sensenova-local-install': path.join(__dirname, '..', 'skills', 'sensenova-local-install', 'SKILL.md'),
+  'office-local-install': path.join(__dirname, '..', 'skills', 'office-local-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))
 
@@ -167,10 +168,48 @@ function createDshAdapter(opts) {
     return false
   }
 
-  function out(msg) {
-    if (child && child.stdin && !child.stdin.destroyed) {
-      try { child.stdin.write(JSON.stringify(msg) + '\n') } catch {}
+  /* 往网关 stdin 写一帧。**网关刚死时这一帧绝不能打崩主进程** —— 真机崩过一次：
+     网关因 SDK 握手超时 exit 1，宿主这一帧的 write 以 EPIPE 形式异步派发 'error'
+     事件，没有监听者就是进程级未捕获异常（弹崩溃报告）。所以这里有三道闸：
+       ① 先判子进程与 stdin 还活着（killed / exitCode / destroyed）；
+       ② 写入失败在回执里就地判掉对应请求（reqId 给了才判），并让在途表跟着清；
+       ③ child.stdin 挂 'error'（见 startGateway）兜住异步 in-flight 的写入失败。
+     返回 true = 这一帧交出去了（不代表网关一定处理）；false = 没交出去。 */
+  function out(msg, reqId) {
+    const stdin = child && child.stdin
+    if (!child || !stdin || stdin.destroyed || child.killed || child.exitCode !== null) return false
+    let payload
+    try { payload = JSON.stringify(msg) + '\n' } catch { return false }
+    const onBroken = (err) => {
+      const why = (err && err.message) || String(err || 'EPIPE')
+      noteStdinBroken(why)
+      if (reqId !== undefined && reqId !== null) failReq(reqId, 'dsh 网关连接已断开:' + why)
+      else failPending('dsh 网关连接已断开:' + why)
     }
+    try {
+      stdin.write(payload, (err) => { if (err) onBroken(err) })
+      return true
+    } catch (err) {
+      onBroken(err)
+      return false
+    }
+  }
+
+  /* stdin 已断：只记一次日志（网关半路死掉时会有连串写入失败，别刷屏） */
+  let stdinBrokenLogged = false
+  function noteStdinBroken(why) {
+    if (stdinBrokenLogged) return
+    stdinBrokenLogged = true
+    errLog('dsh gateway stdin 已断开（后续写入不再尝试）: ' + why)
+  }
+
+  /* 判掉一条在途请求（不存在就什么都不做，避免 exit / stdin 两条路径重复拒绝） */
+  function failReq(reqId, reason) {
+    const p = pending.get(reqId)
+    if (!p) return
+    pending.delete(reqId)
+    clearTimeout(p.timer)
+    p.reject(new Error(reason))
   }
 
   async function startGateway() {
@@ -190,6 +229,23 @@ function createDshAdapter(opts) {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       windowsHide: true,
+    })
+    /* 新网关：重置「stdin 已断」记账 */
+    stdinBrokenLogged = false
+    /* 三条 stdio 流的 'error' 都必须有人接：网关半路死掉时已排队/在飞的写入会以
+       EPIPE（或 ERR_STREAM_DESTROYED）异步派发过来，没有监听者就是进程级未捕获异常
+       —— 主进程直接崩、弹崩溃报告（真机 2026-10-03 07:42 那次就是这么崩的）。
+       stdin 断开 = 这一轮所有在途请求都废了，就地判失败让渲染层拿到可读错误。 */
+    child.stdin.on('error', (err) => {
+      const why = (err && err.message) || String(err)
+      noteStdinBroken(why)
+      failPending('dsh 网关连接已断开:' + why)
+    })
+    child.stdout.on('error', (err) => {
+      log('dsh gateway stdout error: ' + ((err && err.message) || err))
+    })
+    child.stderr.on('error', (err) => {
+      log('dsh gateway stderr error: ' + ((err && err.message) || err))
     })
     rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
     rl.on('line', (line) => {
@@ -265,7 +321,11 @@ function createDshAdapter(opts) {
           reject(new Error(`dsh 请求超时:${method}`))
         }, timeoutMs || 60000)
         pending.set(id, { resolve, reject, timer })
-        out({ id, method, params })
+        /* 没交出去（进程已死 / stdin 已断）就地判失败：绝不留一个等满超时的空请求，
+           也绝不把 EPIPE 交给进程级异常处理 */
+        if (!out({ id, method, params }, id)) {
+          failReq(id, 'dsh 网关已退出，请求未发出:' + method)
+        }
       })
     })
   }
@@ -447,19 +507,14 @@ function createDshAdapter(opts) {
       })
     },
 
-    /* 回滚收尾：取回 gateway 侧「无在途 run」时暂存的 journal 帧。
-       params {key?, workspace?, sessionId?, roundId?, peek?} → {entries:[{key,data}]} */
-    rollbackDrain(params) {
-      return request('rollbackDrain', params, 30000)
-    },
-
     /* 会话自己的浏览器（browser_* 工具面的宿主侧控制）：
-       { action: 'status' | 'open' | 'stop' | 'policy' | 'takeover' | 'view',
-         policy?, on?, sessionId?, method?: 'status'|'start'|'stop'|'input'|'mode', ... }。
+       { action: 'status' | 'open' | 'stop' | 'takeover' | 'view',
+         on?, sessionId?, method?: 'status'|'start'|'stop'|'input'|'mode', ... }。
        进程与 CDP 都在网关进程里（browser-host.mjs），这里只是一条透传：
-       活动流面板的「打开浏览器 / 停止 / 名单管理 / 接管」与右边栏实况
+       助手求助卡的「用真窗口打开 / 接管」与右边栏实况
        （method start/stop/input/mode）全走它。实况帧走事件总线（type 'browser-frame'），
        不在这里回值。
+       （本轮需求：'policy' 那条与右栏那排按钮一起下架了。）
        任何异常一律 resolve 成 {ok:false,error} —— 面板拿到失败就显示一行错误，
        不该在控制台炸出 unhandled rejection（与 steer / pause 同一口径）。 */
     browser(params) {
@@ -833,7 +888,12 @@ function createDshAdapter(opts) {
       return new Promise((resolve) => {
         const t = setTimeout(resolve, 3000)
         try {
-          out({ id: nextId++, method: 'shutdown' })
+          /* 没交出去（网关已死）= 没什么可等的，直接收尾 */
+          if (!out({ id: nextId++, method: 'shutdown' })) {
+            clearTimeout(t)
+            resolve()
+            return
+          }
           child.once('exit', () => { clearTimeout(t); resolve() })
         } catch { clearTimeout(t); resolve() }
       })

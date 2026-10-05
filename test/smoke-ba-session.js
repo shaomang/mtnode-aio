@@ -37,9 +37,11 @@ const waitMs = (ms) => new Promise((r) => setTimeout(r, ms));
 const settle = async () => { for (let i = 0; i < 6; i++) await tick(); };
 
 const IDS = [
-  "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose", "baOpen", "baStop",
-  "baTakeover", "baPolicy", "baRefresh", "baFilter", "baAll", "baClear", "baFollow",
-  "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveModeBtn", "baLiveMode",
+  /* 本轮需求：baOpen / baStop / baTakeover / baPolicy / baRefresh 与 baLiveModeBtn 已下架，
+     实况区改为只在独立窗口形态下出现的「收回」小键 #baLiveBack。 */
+  "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
+  "baFilter", "baAll", "baClear", "baFollow",
+  "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveBack", "baLiveMode",
   "baLiveNote", "baLiveMask", "baLive",
 ];
 

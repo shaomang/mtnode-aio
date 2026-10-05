@@ -475,7 +475,12 @@ function part3() {
   has(
     NODES,
     ").filter((n) => !editScope || editAllowed.has(n.id));",
-    "自动排版的目标收窄到 scope 内（不顺手挪界外节点）",
+    "旧自动排版的目标收窄到 scope 内（该段现在只在显式 layout:true 下才走到）",
+  );
+  has(
+    NODES,
+    "outOfEditScope(node)) continue;",
+    "新节点就近摆位时同样跳过 scope 界外节点（2026-02：编辑不再自动排版，改为就近找空位）",
   );
   has(
     NODES,

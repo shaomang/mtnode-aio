@@ -1530,6 +1530,10 @@ const host = () => PV.EV("document.getElementById('filePeek')");
     const extM = APP.match(/const MT_RELPATH_EXT =[\s\S]*?;\n/);
     ok(!!extM, "app.js 里有 MT_RELPATH_EXT 扩展名白名单（不是随手一个 \\.[a-z]+$ 就认）");
     vm.runInContext(extM[0], box);
+    /* 网址停止符表（中文 / 全角一律不进网址）：也来自真源，不抄一份 */
+    const stopM = APP.match(/const MT_URL_STOP =\n[\s\S]*?;\n/);
+    ok(!!stopM, "app.js 里有 MT_URL_STOP 网址停止符表（中文与全角符号不进网址）");
+    vm.runInContext(stopM[0], box);
     /* 这两个函数体里有正则字面量（含字符类里的 } ），fnBody 的花括号配平会被它骗到，
        所以按「行首 } 收尾」整段取（app.js 里这两个顶层函数就是这么排的）。 */
     const fnRaw = (name) => {
@@ -1538,6 +1542,7 @@ const host = () => PV.EV("document.getElementById('filePeek')");
       return m[0];
     };
     vm.runInContext(fnRaw("stripLinkTrailPunct"), box);
+    vm.runInContext(fnRaw("maskAnchorsForLinkify"), box);
     vm.runInContext(fnRaw("linkifyEscapedText"), box);
     const L = (s) => vm.runInContext("linkifyEscapedText(" + JSON.stringify(s) + ")", box);
     const A = (raw) => '<a class="mt-link" href="' + raw + '" data-mt-open="relpath"';
@@ -1551,6 +1556,32 @@ const host = () => PV.EV("document.getElementById('filePeek')");
     EQS(L("https://github.com/a/b.js").indexOf(A("a/b.js")), -1, "URL 里的路径不被切出来当相对路径");
     EQS(L("目录 renderer/css 与 src/").indexOf("<a "), -1, "目录（没有扩展名）不做链接");
     HAS(L("E:\\dev\\x\\renderer\\app.js"), 'data-mt-open="path"', "绝对路径仍走原来那一支（相对路径这一支不抢它的活）");
+
+    /* —— 网址吞字回归：全角括号 / 中文尾巴 / Markdown 链接重复这三条都钉住 ——
+       在修之前，`https://api.x/v1）与刚刚拿到的` 整段会进 href（点开必然打不开）；
+       `[文字](网址)` 已被 marked 解析成 <a> 后，裸网址还会被兜底再包一层。 */
+    const U = (raw) => '<a class="mt-link" href="' + raw + '" data-mt-open="url" title="点击打开">';
+    EQS(
+      L("例如 https://api.example.com/v1）与刚刚拿到的 API Key").indexOf(U("https://api.example.com/v1）")),
+      -1,
+      "全角 `）` 不吞进网址（href 到网址为止）",
+    );
+    HAS(L("例如 https://api.example.com/v1）与刚刚拿到的 API Key"), U("https://api.example.com/v1"), "全角括号前的网址仍是可点链接");
+    HAS(L("例如 https://api.example.com/v1）与刚刚拿到的 API Key"), "）与刚刚拿到的", "`）` 与后面那串中文原样留在正文里");
+    HAS(L("（例如 DeepSeek：https://platform.deepseek.com/），用手机号注册"), U("https://platform.deepseek.com/"), "中文括号里的注册网址不被后面的中文吞掉");
+    HAS(L("注册网址：https://api.example.com/"), U("https://api.example.com/"), "句末没有标点的网址照旧成链接");
+    HAS(L("网址 https://a.com/b然后中文紧跟"), U("https://a.com/b"), "网址后紧跟中文时，链接在中文处就停");
+    HAS(L("网址 https://a.com/b然后中文紧跟"), ">https://a.com/b</a>然后中文紧跟", "被截下的中文原样留在链接外");
+    EQS(
+      L("文件在 <a href=\"https://a.com/x\">https://a.com/x</a> 里，后面还有 https://b.com/y").split("<a class=\"mt-link\"").length - 1,
+      1,
+      "marked 已解析出的 <a> 不再被兜底二次链接化（同一网址只出现一次）",
+    );
+    HAS(L("文件在 <a href=\"https://a.com/x\">https://a.com/x</a> 里"), '<a href="https://a.com/x">https://a.com/x</a>', "原 <a> 原样保留，不被改写");
+    HAS(L("后面还有 https://b.com/y。"), U("https://b.com/y"), "同一个片段里真正的裸网址照旧成链接");
+    HAS(L("地址：`http://127.0.0.1:<随机端口>/mcp`，只绑本机回环。"), U("http://127.0.0.1"), "示范串 `http://127.0.0.1:<随机端口>/mcp` 不再把中文占位符吞进网址");
+    HAS(L("GitHub：https://github.com/OpenSenseNova/SenseNova-U1)） 移植）。"), U("https://github.com/OpenSenseNova/SenseNova-U1"), "半角 + 全角双括号收尾都剥干净");
+
     HAS(APP, 'if (kind === "relpath")', "openContentRef 里真有 relpath 分支");
     HAS(APP, 'openFilePeek(abs, { mode: "read" })', "relpath 点开的就是右侧「文件查看」面板（与工具条文件名同一个出口）");
     ok(

@@ -121,18 +121,16 @@ Video generation uses MiniMax H3 (a ComfyUI backend) to generate video clips, ou
 - **R2V multiple references**: give several reference images to control the character's look and the scene, for character consistency.
 - Enable it in the plugin panel.
 
-### Custom ComfyUI workflow (including "NanFeng H3 V10 multi-reference")
+### Custom ComfyUI workflow
 
 Besides the two built-in chains, the video generation node can also run **a ComfyUI graph you built yourself**:
 open the node's **⚙ Settings → Workflow source** and pick "Custom ComfyUI workflow", then import the graph in the
 H3 manager's **custom workflow library** (drag a JSON file or paste JSON; both API and UI formats are recognized).
-The third template in the library, "**NanFeng H3 V10 multi-reference (template)**", comes from the third-party node
-pack `nanfeng_prompt_nodes_v10`: a single node is the whole multi-reference pipeline (up to 9 images + 3 videos +
-3 audio references). It ships with the app and is deployed automatically when you install H3.
+You can also save a built-in FL2VA / R2V chain into the library with "save built-in graph as custom workflow" and edit it.
 
-- Parameters: every field "promoted to a node parameter" becomes a port — **port 1 = text · port 2+ = material**; the NanFeng node's Chinese controls (prompt / image N / video N / audio N / duration in seconds) are recognized correctly.
-- **Limitation**: MTNode only sends `/prompt` to ComfyUI and does **not** load this pack's UI or server routes. Its asset cards, **audio drive, smart storyboard, audio lock and second-pass upscale** are therefore **not available** on the MTNode side yet and need extra bridging.
-- Install prerequisites: `ComfyUI/models/latent_upscale_models/` must contain **at least one file** (that field is a required combo; an empty list makes ComfyUI reject the prompt), and **do not enable "CPU VAE"** — NanFeng H3's VAE decode raises a dtype error under CPU VAE.
+- Parameters: every field "promoted to a node parameter" becomes a port — **port 1 = text · port 2+ = material**. Any third-party node pack a graph uses must be installed in your own ComfyUI; MTNode no longer ships any third-party node pack.
+- **Limitation**: MTNode only sends `/prompt` to ComfyUI and does **not** load third-party packs' UI or server routes.
+- Prerequisite: every node used by the graph must already exist in your ComfyUI, and **do not enable "CPU VAE"** — VideoVAE decode raises a dtype error under CPU VAE.
 
 ### Key parameters
 

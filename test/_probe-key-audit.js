@@ -21,7 +21,7 @@ for (const p of ps) {
   console.log(" models=", (p.models || []).length, (p.models || []).slice(0, 6).map((m) => (typeof m === "string" ? m : m && m.id)).join(","));
   if (p.relay) {
     const r = p.relay;
-    console.log(" relay=", JSON.stringify({ baseUrl: r.baseUrl, apiKey: mask(r.apiKey), keyMasked: r.keyMasked, authKey: r.authKey, enabled: r.enabled, providerName: r.providerName, at: r.at, error: r.error }).slice(0, 400));
+    console.log(" relay=", JSON.stringify({ baseUrl: r.baseUrl, authKey: r.authKey, keyIssue: r.keyIssue, fromConfig: r.fromConfig, fromRelayKey: r.fromRelayKey, expiresAt: r.expiresAt, renewDue: r.renewDue, rotate: r.rotate, at: r.at, error: r.error }).slice(0, 400));
   }
   if (p.blocks) console.log(" blocks=", JSON.stringify(p.blocks).slice(0, 200));
 }

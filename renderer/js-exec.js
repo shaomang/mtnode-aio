@@ -158,6 +158,13 @@
           /* 「AI 调用」设定：{ providerRoute, providerName, provider, model, preset, effort }
              （节点上选中的模型；mtnode.ai(...) 用它真正发请求，见 fn-runtime.js） */
           ai: opts.ai && typeof opts.ai === "object" ? opts.ai : undefined,
+          /* 「图像后端」设定：{ model, label, local, refImages, maxRefImages, strength }
+             （节点上选中的图像模型；空 = 跟随 MTNode 默认的 auto）—— 函数代码里的
+             await mtnode.image(...) 用它出图 / 图生图（见 fn-runtime.js 的 image 桥）。 */
+          img: opts.img && typeof opts.img === "object" ? opts.img : undefined,
+          /* 本次运行所属画布与节点：出图产物落该画布资产目录（与画布出图同一处） */
+          wfId: opts.wfId ? String(opts.wfId) : undefined,
+          nodeId: opts.nodeId ? String(opts.nodeId) : undefined,
         }),
       );
     } catch (e) {

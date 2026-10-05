@@ -34,9 +34,11 @@ let MERGED_FAILED = false;
   const settle = () => new Promise((r) => setTimeout(r, 460));
 
   const IDS = [
-    "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose", "baOpen", "baStop",
-    "baTakeover", "baPolicy", "baRefresh", "baFilter", "baAll", "baClear", "baFollow", "baListOn",
-    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveModeBtn", "baLiveMode",
+    /* 本轮需求：baOpen / baStop / baTakeover / baPolicy / baRefresh 与 baLiveModeBtn 已下架，
+       实况区改为只在独立窗口形态下出现的「收回」小键 #baLiveBack。 */
+    "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
+    "baFilter", "baAll", "baClear", "baFollow", "baListOn",
+    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveBack", "baLiveMode",
     "baLiveNote", "baLiveMask", "baLive",
   ];
 
@@ -272,9 +274,9 @@ let MERGED_FAILED = false;
   const tick = () => new Promise((r) => setTimeout(r, 0));
 
   const IDS = [
-    "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose", "baOpen", "baStop",
-    "baTakeover", "baPolicy", "baRefresh", "baFilter", "baAll", "baClear", "baFollow",
-    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveModeBtn", "baLiveMode",
+    "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
+    "baFilter", "baAll", "baClear", "baFollow",
+    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveBack", "baLiveMode",
     "baLiveNote", "baLiveMask", "baLive",
   ];
 
@@ -481,6 +483,11 @@ let MERGED_FAILED = false;
   if (fails) console.log("  ── 已并入块 smoke-ba-follow.js：" + fails + " / " + checks + " 项失败");
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+/* 收尾：正文与并入块任一失败都算这只红。
+   ⚠ 不能用 process.exit(...)：聚合块里的断言都在 async 体里（第一个 await 之后就交还控制权），
+   强制退出会在它们跑完之前把进程掐掉 —— 本轮实测发现本文件 await 之后的断言一条都没执行过
+   （只印了块首那几行 console.log）。改成 exit 钩子里定 exitCode：既等所有块跑完，又保留退出码。 */
+process.on("exit", () => {
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+  process.exitCode = MERGED_FAILED ? 1 : 0;
+});

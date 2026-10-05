@@ -127,6 +127,34 @@ const CAPABILITY_GROUPS = [
       + '同时摘才自洽；只摘一边不会炸（对方只是它的一次性消费者）。',
   },
   {
+    key: 'office', title: 'Office→PDF 与 office 技能（LibreOffice 引擎）',
+    globs: [
+      '@deepseek-ai/dsh-skill-office', '@deepseek-ai/dsh-office-to-pdf',
+      '@deepseek-ai/libreoffice-kit', '@deepseek-ai/libreoffice-kit-win32-x64',
+      '@deepseek-ai/libreoffice-kit-wasm',
+    ],
+    reason: 'MTNode 部署里这套能力**从未加载**，但占了网关 327.6MB（win32-x64 原生引擎 182.0MB —— '
+      + '其中 bin/libreoffice-kit.exe 单个 170.3MB —— 加 wasm 兜底 145.3MB）：'
+      + '（1）唯一挂载点是 @deepseek-ai/dsh-sdk-app/cordis.patch.yml 的 skill-office 行，该行带门控 '
+      + 'disabled: !(process.env.DSH_PRIMARY_RUNTIME ?? process.env.DSH_BUNDLED_PRIMARY_RUNTIME)，'
+      + '而这两个变量在本仓库与 MTNode 运行时全仓 0 命中（网关 spawn 见 dsh/main-dsh.js，从不设置）；'
+      + '（2）另一处挂载点 @deepseek-ai/dsh-web-app/cordis.patch.yml 的 office-to-pdf 行随 awsui 组'
+      + '一起被摘，现包里已无 dsh-web-app；'
+      + '（3）活代码扫描：整棵网关树里 dsh-skill-office 的代码引用数 = 0（只有 @deepseek-ai/dsh 与 '
+      + 'dsh-sdk-app 的 package.json 声明），dsh-office-to-pdf 只有 @deepseek-ai/dsh-api-remotes 的'
+      + '两处类型字符串（无 import 语句）。'
+      + 'wasm 兜底另有独立依据：libreoffice-kit/lib/index.js 自述「macOS 与 Windows require their '
+      + 'native engine. Linux uses WASM when no compatible development native engine is installed」'
+      + '，win32-x64 上 resolvePackage(`${ENGINE_PREFIX}-wasm`) 永不执行。',
+    risk: '摘除后 Agent 失去 office-docx / office-pptx / office-xlsx 三个技能与 Office→PDF 转换'
+      + '（本部署里它们本来就没注册：skill-office 行 disabled）。要恢复：从本组 globs 删掉对应名字'
+      + '（或整组删除）重跑 deps:cap / deps:check 再打包 —— 包一直在开发树里，从未删除。'
+      + '「用时再装」的安装链见 skills/office-local-install/SKILL.md（引擎装到 '
+      + '%APPDATA%/pipeline-console/libreoffice-kit，不进应用目录）。'
+      + '注意 fflate / fontkit / saxes 是 libreoffice-kit 的共享依赖，被其它保留包引用，因此**不在**'
+      + '本组 globs 里（字面量匹配不会误伤）。',
+  },
+  {
     key: 'aws', title: 'AWS Bedrock 运行时 SDK',
     globs: ['@aws-sdk/*', '@smithy/*', '@aws-crypto/*'],
     reason: 'Bedrock / S3 签名栈，唯一入口是 pi-ai 的 dist/api/bedrock-converse-stream.js'

@@ -1,6 +1,6 @@
 # Providers & API
 
-> One-sentence goal: get an API key that starts with `sk-` and enter it into MTNode — first understand what an API key is, sign up with one of the four Chinese providers, go through an aggregator when you need foreign models or image generation, and finally get the key and enter it in three steps.
+> One-sentence goal: get an API key that starts with `sk-` and enter it into MTNode — first understand what an API key is, sign up with one of the four Chinese providers, carefully consider a third-party aggregator when you need foreign models or image generation, and finally get the key and enter it in three steps.
 
 ![From sign-up to entering it in MTNode](img/mtnode-start-01-ui.svg)
 
@@ -46,24 +46,23 @@ Register an account (phone number / email) → verify identity and top up (most 
 
 Note: a key is usually shown in full only once, at creation time; close the page and you can never see it again — you can only create a new one.
 
-## Foreign models / GPT image generation: the API易 aggregator
+## Foreign models / GPT image generation: a third-party aggregator is worth careful consideration
 
 ### What to do when you need foreign models or GPT image generation models
 
-Connecting directly to foreign model APIs from mainland China is usually inconvenient — especially for GPT-series image generation models. An aggregator such as API易 solves this.
-
-Sign-up URL: https://api.apiyi.com/
+Connecting directly to foreign model APIs from mainland China is usually inconvenient — especially for GPT-series image generation models. For that need you may **carefully consider a third-party aggregator**: MTNode names and endorses none, so whether to use one, and which one, is your call.
 
 ### Notes
 
-- API易 is recommended mainly for image generation; calling a foreign flagship model (for example GPT-6 or Fable 5) is very expensive, and you are free to choose another aggregator of the same kind.
-- What an aggregator does: with one account, one key and one OpenAI-compatible endpoint it forwards your calls to many models, so you do not have to solve network access yourself.
-- How to use it in MTNode: open the "Model services (模型服务)" settings → add a provider → follow API易's official docs to enter the Base URL (the endpoint, for example https://api.apiyi.com/v1) and the API key you just got → the corresponding foreign / image models become selectable (for example gpt-image-2.5-all).
+- **First, what it is**: an aggregator gives you one account, one key and one OpenAI-compatible endpoint that forwards your calls to many models, so you do not have to solve network access yourself.
+- **It is a third party, not the vendor**: your requests are forwarded through the platform and your key is held by it; model authenticity, logging and privacy policy, and billing rules are all its own. Check the platform's credentials and reputation before using it, and **do not make it your only long-term route**.
+- **Check the cost yourself**: calling a foreign flagship model (a GPT / Claude flagship tier, for example) is usually very expensive, and the aggregator bills you on top of that. Start with a small top-up, confirm the unit price and actual output, then scale up.
+- **How to use it in MTNode**: open the "Model services (模型服务)" settings → add a provider → follow your chosen platform's own documentation to enter the Base URL (the endpoint, shaped like `https://<platform-domain>/v1`) and the API key you just got → the foreign / image models that platform offers become selectable.
 
 ### Reminders
 
 - An aggregator is also pay-as-you-go: watch your balance and usage cap, and the key must never be shared.
-- "Image models" need a provider of their own, with the type set to "图像 OpenAI兼容" (Image · OpenAI-compatible).
+- Model names a platform exposes sometimes differ from the vendor's (a `-vip` suffix, for instance) — go by the platform's docs; "Image models" need a provider of their own, with the type set to "图像 OpenAI兼容" (Image · OpenAI-compatible).
 
 ## Get the key and enter it into MTNode in three steps
 
@@ -81,4 +80,25 @@ Open the app's "Settings → Model services (设置 → 模型服务)" → pick 
 
 ### One last reminder
 
-This key is your bank account number plus password: never share it, and if you suspect a leak, delete and recreate it in the provider's console right away.
+This key is your bank account number plus password: never share it, and if you suspect a leak, delete and recreate it in the provider's console right away. The same goes for the relay key below: anyone holding it can spend your relay balance.
+
+## Don't want to buy a key yourself? Use the MTNode relay (account-managed)
+
+An account that has topped up gets an extra card, "MTNode relay service (MTNode 中转服务)", under
+Settings → Model services: the model list and the endpoint come down from MTNode's cloud, and the
+**key is filled in for you** — it is issued automatically once you sign in and is shown right on the card.
+
+### What the key on the card is for
+
+- The "API Key" row shows the **whole key** (you can select all of it); the Copy button next to it takes it away.
+- To use it in another AI tool (**Codex or any OpenAI-compatible client**): set the Base URL to the
+  `…/relay/v1` address on the card and paste this key. It is not tied to a device, so several computers can share one key.
+- The desktop pet reads the very same configuration, so you do not enter it twice.
+
+### Getting a new key
+
+The "Change key (更换 Key)" button next to it asks for confirmation, then issues a **new** key and the old
+one **stops working immediately** — other software still using it (Codex, the pet, another computer) must
+copy the new one. You can change it at most **5 times per day** (by server date; once used up, the card tells
+you how many are left). Normally you never need to: the key is valid for **3650 days**, and it only stops
+working when the account **runs out of balance** (top up and it works again).

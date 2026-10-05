@@ -59,9 +59,9 @@
 }
 
 /* ── 浏览器活动面板 ───────────────────────────────────────────────────── */
-.ba-bar { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px; }
-.ba-bar .mini { font-size: 11px; padding: 3px 7px; }
-.ba-bar .mini.on { background: rgba(96, 165, 250, 0.25); border-color: rgba(96, 165, 250, 0.6); color: #eaf2ff; }
+/* 本轮需求：原来这里还有一组 .ba-bar（面板头部那排「打开浏览器 / 停止 / 接管 / 名单 / ↻」）
+   的样式，整排下架后一并删掉；名单编辑浮层的 .ba-policy-* / .ba-hint / .ba-p2 也已删除
+   （网关侧域名名单机制一起去掉，只剩恒开的危险动作审批卡，卡片样式在下面 .ix-card 那节）。 */
 .ba-status {
   font-size: 11px;
   color: #8fa0bd;
@@ -208,58 +208,6 @@
 .ba-live-note[hidden] { display: none; }
 .ba-live-note.warn { color: #e0b566; }
 
-/* ── 名单编辑（右栏内的轻量浮层，不用 #overlay：它是侧栏级小面板；挂 .ba-col）──
-   挂进 .ba-col 之后就地绝对定位：跟着右边栏面板一起显隐，也不再横跨到中栏上。
-   **必须自己写 [hidden] 规则**：下面这条 display:flex 会盖掉浏览器默认的
-   [hidden]{display:none}（类选择器 > 标签属性选择器），于是 app-browser.js 里
-   box.hidden = true 关不掉这只浮层 —— 名单打开后就再也关不上（✕ 与「保存」都失效）。 */
-.ba-policy-box[hidden] { display: none; }
-.ba-policy-box {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: 44px;
-  z-index: 60;
-  background: #171d2b;
-  border: 1px solid rgba(120, 150, 210, 0.45);
-  border-radius: 8px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55);
-  display: flex;
-  flex-direction: column;
-  max-height: 78vh;
-}
-.ba-policy-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  font-size: 12.5px;
-  color: #dbe6f8;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-.ba-policy-body { padding: 10px; overflow: auto; }
-.ba-hint { font-size: 11.5px; color: #93a3bd; line-height: 1.7; margin: 0 0 8px; }
-.ba-p2 { display: flex; flex-direction: column; gap: 8px; }
-.ba-p2 label { flex: 1 1 0; font-size: 11.5px; color: #b9c8e2; display: flex; flex-direction: column; gap: 4px; }
-.ba-p2 textarea {
-  min-height: 130px;
-  font-size: 11px;
-  font-family: Consolas, "Courier New", monospace;
-  background: rgba(0, 0, 0, 0.3);
-  color: #dfe8f7;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 5px;
-  padding: 5px 6px;
-  resize: vertical;
-}
-.ba-check { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: #b9c8e2; margin-top: 10px; }
-.ba-policy-foot {
-  padding: 8px 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  display: flex;
-  justify-content: flex-end;
-}
-
 /* ── 浏览器求助卡 / 确认卡（app-db.js 的 ix 面板内）──────────────────── */
 .ix-card .ix-shot { margin: 6px 0; }
 .ix-card .ix-shot img {
@@ -269,6 +217,10 @@
   border: 1px solid rgba(255, 255, 255, 0.12);
   cursor: zoom-in;
 }
+/* 求助正文（d.message）现在是里层 .md.ix-md-block 的 Markdown 渲染结果
+   （app-db.js renderIxPanel）：这一层只管浅底与左侧竖条，块级排版归 .md ——
+   外层这句 white-space: pre-wrap 会被里层 .md 自己的 normal 就地归位，
+   不会在块边界撑出空行。 */
 .ix-card .ix-help-msg {
   font-size: 12.5px;
   color: #e3ebf8;
@@ -279,6 +231,9 @@
   background: rgba(96, 165, 250, 0.1);
   border-left: 3px solid rgba(96, 165, 250, 0.8);
   border-radius: 0 5px 5px 0;
+}
+.ix-card .ix-help-msg .ix-help-md {
+  font-size: 12.5px;
 }
 .ix-card.ix-browser-help .ix-title { color: #bfe0ff; }
 
@@ -325,9 +280,6 @@ body.theme-light .ba-row .ba-k { color: #41506b; background: rgba(0, 0, 0, 0.06)
 body.theme-light .ba-row .ba-x { color: #26324a; }
 body.theme-light .ba-filter input { background: #fff; color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
 body.theme-light .ba-foot { color: #66738c; }
-body.theme-light .ba-policy-box { background: #fff; border-color: rgba(56, 132, 255, 0.45); box-shadow: 0 12px 34px rgba(20, 40, 80, 0.22); }
-body.theme-light .ba-policy-head { color: #1d2a44; border-color: rgba(0, 0, 0, 0.08); }
-body.theme-light .ba-hint { color: #5d6b85; }
 body.theme-light .ba-live-head { color: #41506b; }
 body.theme-light .ba-live-head > span:first-child { color: #1d2a44; }
 body.theme-light .ba-live-head .ba-live-mode { color: #66738c; }
@@ -335,7 +287,5 @@ body.theme-light .ba-live-stage { background: #eef2f8; border-color: rgba(0, 0, 
 body.theme-light .ba-live-mask { background: rgba(238, 242, 248, 0.92); color: #5d6b85; }
 body.theme-light .ba-live-note { color: #66738c; }
 body.theme-light .ba-live-note.warn { color: #9a6a12; }
-body.theme-light .ba-p2 label, body.theme-light .ba-check { color: #41506b; }
-body.theme-light .ba-p2 textarea { background: #fff; color: #26324a; border-color: rgba(0, 0, 0, 0.14); }
 body.theme-light .ix-card .ix-help-msg { color: #1d2a44; background: rgba(56, 132, 255, 0.1); }
 body.theme-light .ix-card.ix-browser-help .ix-title { color: #14416f; }

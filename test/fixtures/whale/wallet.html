@@ -7,13 +7,32 @@
 </head>
 <body>
 <div id="overlay" class="hidden"><div class="overlay-box"><div id="ovTitle"></div><div id="ovBody"></div><div id="ovFoot"></div></div></div>
-<script src="../../../renderer/i18n.js"></script>
-<script src="../../../renderer/app-whalecoin.js"></script>
-<script src="../../../renderer/app-wallet.js"></script>
+<!-- 夹具给真模块挂一个随进程变化的 query：Electron 会把 file:// 的脚本按 URL 缓存，
+     改完真模块再跑夹具时曾拿到上一版代码（表现为断言看到的是旧行为），加 ?v= 强制重读。 -->
+<script>window.__WL_V = "?v=" + Date.now();</script>
+<script>document.write('<script src="../../../renderer/i18n.js' + window.__WL_V + '"><\/script>');</script>
+<script>document.write('<script src="../../../renderer/app-whalecoin.js' + window.__WL_V + '"><\/script>');</script>
+<script>document.write('<script src="../../../renderer/app-wallet.js' + window.__WL_V + '"><\/script>');</script>
+<script>
+/* 夹具的页面在 test/fixtures/whale/ 下，而真模块引的随包资源是按**它自己所在的 renderer/**
+   解析的（例：app-wallet.js 付款按钮的 img.src = "alipay-logo.png" —— app 里 index.html 与它同目录，
+   夹具这里却会去 whale/ 下找，图就是裂的）。只在夹具侧把解析基准补回 renderer/：
+   先让那个 <img> 照原样加载失败（捕获阶段拦掉 img 的 error 事件），再按 renderer/ 重发同一张图 ——
+   与 app 里拿到的是同一个文件；真实应用一行代码都不用改。 */
+window.__RDP = new URL("../../../renderer/", location.href).href;
+document.addEventListener("error", function (ev) {
+  var el = ev.target;
+  if (!el || el.tagName !== "IMG" || el.__rdFixed) return;
+  el.__rdFixed = true;
+  el.src = window.__RDP + el.getAttribute("src");
+}, true);
+</script>
 <script>
 /* ── 夹具：真 style.css + 真 i18n + 真 app-whalecoin.js + 真 app-wallet.js；
       只桩掉 openOverlay / closeOverlay 与 window.api.storeRequest（钱包的云侧出口）。
-      目的：鲸圆币改造后，余额 / 档位 / 二维码 / 订单流水在真实 DOM 里的表现。 */
+      目的：鲸圆币改造后，余额 / 档位 / 二维码 / 订单流水在真实 DOM 里的表现；
+      外加 [9] 客户端硬闸：config 装成「线上未更新的老服务端」回旧大额档（¥2/10/100/1000 +
+      下限 1 元），断言界面仍只出现 ≤ ¥50 的档、区间仍是 ¥2 – ¥100（1 位小数显示）。 */
 (function () {
   var results = [];
   function ok(cond, msg) { results.push((cond ? "ok   " : "FAIL ") + msg); }
@@ -56,6 +75,8 @@
     user: { username: "ms2308", balanceYuan: 9.98 },
   };
 
+  var OLD_CFG = false; /* [9] 用：让 config 装成「线上未更新的老服务端」回旧大额档 */
+  var GATE_CLOSED = false; /* [10] 用：让 config 回 opened:false（服务端闸门没开） */
   window.api.storeRequest = function (req) {
     calls.push(req);
     if (req.path.indexOf("/api/wallet/summary") === 0) {
@@ -64,7 +85,15 @@
       return Promise.resolve({ ok: true, data: { wallet: w, user: { username: "ms2308", balanceYuan: w.balanceYuan } } });
     }
     if (req.path === "/api/wallet/config") {
-      return Promise.resolve({ ok: true, data: { payConfigured: true, channel: "alipay_f2f", tiersYuan: [10, 30, 50, 100, 500], minYuan: 1, maxYuan: 1000 } });
+      if (OLD_CFG) {
+        return Promise.resolve({ ok: true, data: { payConfigured: true, channel: "alipay_f2f", tiersYuan: [2, 10, 100, 1000], minYuan: 1, maxYuan: 1000 } });
+      }
+      /* GATE_CLOSED = 服务端闸门没开（opened:false）：老服务端根本不回这个字段，
+         所以这里显式给 false 才能复现「充值块换成说明块」那条路。 */
+      if (GATE_CLOSED) {
+        return Promise.resolve({ ok: true, data: { payConfigured: true, channel: "alipay_f2f", tiersYuan: [2, 10, 20, 50], minYuan: 2, maxYuan: 100, opened: false } });
+      }
+      return Promise.resolve({ ok: true, data: { payConfigured: true, channel: "alipay_f2f", tiersYuan: [2, 10, 20, 50], minYuan: 2, maxYuan: 100, opened: true } });
     }
     if (req.path.indexOf("/api/wallet/summary") === 0) return Promise.resolve({ ok: true, data: SUMMARY });
     if (req.path === "/api/wallet/recharge/create") {
@@ -81,21 +110,53 @@
 
   window.MtWallet.open();
   setTimeout(function () {
-    /* [1] 余额：9.98 元 = 499 币 */
-    ok(txt("#wlBalance") === "499", "余额 9.98 元 → 499 币（实际：" + txt("#wlBalance") + "）");
+    /* [1] 余额：9.98 元 = 499 币
+       （只认 .coin-bal 里的币数：余额行在有旧值时还会挂一行「更新于 HH:MM」小字，
+        那是现拉失败时的过期提示，不该混进币数断言） */
+    var balEl = function () {
+      var n = document.querySelector("#wlBalance .coin-bal");
+      return n ? n.textContent : "(缺 .coin-bal)";
+    };
+    ok(balEl() === "499", "余额 9.98 元 → 499 币（实际：" + balEl() + "）");
     ok(!!document.querySelector("#wlBalance .coin-ico"), "余额旁有金币图标");
-    var icon = document.querySelector("#wlBalance .coin-ico img");
-    ok(!!icon && /deepseek-logo\.png$/.test(icon.getAttribute("src")), "金币内部是 deepseek-logo.png");
-    ok(document.querySelector("#wlBalance .coin-amt, #wlBalance .coin-bal").title.indexOf("1 币 = ¥0.02") > 0,
-      "余额 tooltip 写明 1 币 = ¥0.02");
+    /* 圆内是 DeepSeek 官方 logo（内联 SVG path + 官方品牌蓝 #4D6BFE）——
+       用户口径：金环里必须是 DeepSeek 官方 logo，不是自绘的鱼 / 鲸剪影。 */
+    var logo = document.querySelector('#wlBalance .coin-ico svg path[fill="#4D6BFE"]');
+    ok(!!logo && (logo.getAttribute("d") || "").indexOf("M23.748 4.482") === 0,
+      "金币内部是 DeepSeek 官方 logo（官方 path + #4D6BFE）");
+    ok(!document.querySelector("#wlBalance .coin-ico img"), "金币里不再有 <img>（logo 走内联 SVG，不依赖图片文件）");
+    ok(document.querySelector("#wlBalance .coin-amt, #wlBalance .coin-bal").title.indexOf("¥0.02") < 0,
+      "余额 tooltip 不再带汇率（账户里不提示 1￥=50 币）");
+    ok(txt("#wlRate").indexOf("¥1 = 50 币") >= 0, "充值窗有可见汇率小字（实际：" + txt("#wlRate") + "）");
+    ok(!!document.querySelector(".wl-warn") && document.querySelector(".wl-warn").textContent.indexOf("中转仅提供最基本的 DeepSeek") > 0,
+      "充值窗有中转服务警示（含「仅提供最基本的 DeepSeek」）");
+    ok(document.querySelector(".wl-warn").textContent.indexOf("恶意软件") > 0,
+      "警示里写明 LLM 走非官方中转的风险（含「恶意软件」）");
+    /* [1b] 本轮需求：警示放到开头（余额行之前）+ 标题声明不建议用中转 + 官方网址与文档入口 */
+    var rootBox = document.querySelector(".wallet-root");
+    ok(rootBox && rootBox.firstElementChild && rootBox.firstElementChild.className.indexOf("wl-warn") === 0,
+      "警示是余额窗第一块内容（实际第一块：" + (rootBox && rootBox.firstElementChild ? rootBox.firstElementChild.className : "无") + "）");
+    ok(document.querySelector(".wl-warn-t").textContent.indexOf("不建议使用任何中转服务") > 0,
+      "警示标题行声明「不建议使用任何中转服务」（实际：" + document.querySelector(".wl-warn-t").textContent + "）");
+    var warnLink = document.querySelector('.wl-warn-a[href^="https://platform.deepseek.com"]');
+    ok(!!warnLink && warnLink.textContent.indexOf("platform.deepseek.com") > 0,
+      "警示框下方给出 DeepSeek 官方充值网址（实际：" + (warnLink ? warnLink.textContent : "无") + "）");
+    var docLink = Array.prototype.filter.call(document.querySelectorAll(".wl-warn-a"), function (a) {
+      return a.textContent.indexOf("查看文档") === 0;
+    })[0];
+    ok(!!docLink, "警示框下方给出文档入口（申请 API Key 与设置方法）");
 
-    /* [2] 档位：币数 + 元小字 */
+    /* [2] 档位：币数 + 元小字（元保留 1 位小数） */
     var tiers = document.querySelectorAll("#wlTiers .wl-tier");
-    ok(tiers.length === 6, "档位 5 档 + 自定义（实际 " + tiers.length + "）");
-    ok(tiers[0].textContent.indexOf("500") === 0 && tiers[0].textContent.indexOf("¥10.0000") > 0,
-      "第一档 = 500 币 + 小字 ¥10.0000（实际：" + tiers[0].textContent + "）");
+    ok(tiers.length === 5, "档位 4 档 + 自定义（实际 " + tiers.length + "）");
+    ok(tiers[0].textContent.indexOf("100") === 0 && tiers[0].textContent.indexOf("¥2.0") > 0,
+      "第一档 = 100 币 + 小字 ¥2.0（实际：" + tiers[0].textContent + "）");
+    ok(tiers[3].textContent.indexOf("2,500") === 0 && tiers[3].textContent.indexOf("¥50.0") > 0,
+      "最高档 = 2,500 币（¥50，单笔不超上限）（实际：" + tiers[3].textContent + "）");
+    ok(!/\.\d{2,}/.test(tiers[0].textContent + " / " + tiers[3].textContent),
+      "元小字不拖长尾（不再有 ¥2.0000 / ¥50.0000）：" + tiers[0].textContent + " / " + tiers[3].textContent);
     ok(!!tiers[0].querySelector(".coin-ico"), "档位按钮里有金币图标");
-    ok(txt("#wlRange") === "50 – 50,000", "自定义范围提示按币：50 – 50,000（实际：" + txt("#wlRange") + "）");
+    ok(txt("#wlRange") === "100 – 5,000", "自定义范围提示按币：100 – 5,000（实际：" + txt("#wlRange") + "）");
     ok(document.querySelector("#wlCustom").placeholder.indexOf("币") > 0, "自定义输入框占位写「币」");
 
     /* [3] 选一档下单：提交给云端的仍是元 */
@@ -103,16 +164,16 @@
     document.querySelector("#wlPay").click();
     setTimeout(function () {
       var created = calls.filter(function (c) { return c.path === "/api/wallet/recharge/create"; })[0];
-      ok(!!created && created.json.amountYuan === 10, "选 500 币 → 提交 amountYuan = 10（实际：" +
+      ok(!!created && created.json.amountYuan === 2, "选 100 币 → 提交 amountYuan = 2（实际：" +
         (created ? created.json.amountYuan : "无") + "）");
-      ok(document.body.textContent.indexOf("到账 500 币") > 0, "二维码区写「到账 500 币」");
-      ok(document.body.textContent.indexOf("实付 ¥10.0000") > 0, "二维码区「实付」仍按元写");
+      ok(document.body.textContent.indexOf("到账 100 币") > 0, "二维码区写「到账 100 币」");
+      ok(document.body.textContent.indexOf("实付 ¥2.0") > 0, "二维码区「实付」仍按元写（1 位小数）");
 
       /* [4] 历史：订单与流水按币；部分退款另标元 */
       var hist = document.querySelector("#wlHistory").textContent;
       ok(!!document.querySelector("#wlHistory .coin-amt"), "订单/流水表里有金币元件");
       ok(hist.indexOf("500") > 0 && hist.indexOf("1,500") > 0, "¥10 → 500 币、¥30 → 1,500 币（实际：" + hist + "）");
-      ok(hist.indexOf("已退 ¥4.0000") > 0, "部分退款把小字实退金额（元）写出来");
+      ok(hist.indexOf("已退 ¥4.0") > 0, "部分退款把小字实退金额（元，1 位小数）写出来");
       ok(hist.indexOf("+500") > 0 && hist.indexOf("-1") > 0, "流水变动按币：+500 / -1（¥0.02 的零头）");
 
       /* [5] 自定义币数反算：123 币 → ¥2.46 */
@@ -126,21 +187,21 @@
         ok(all.length === 2 && last.json.amountYuan === 2.46, "自定义 123 币 → amountYuan = 2.46（实际：" +
           (last ? last.json.amountYuan : "无") + "）");
 
-        /* [6] 低于下限：50 币被拦（下限 ¥1） */
+        /* [6] 低于下限：20 币被拦（下限 100 币 = ¥2） */
         inp.value = "20";
         inp.dispatchEvent(new Event("input"));
         document.querySelector("#wlPay").click();
         setTimeout(function () {
           var n = calls.filter(function (c) { return c.path === "/api/wallet/recharge/create"; }).length;
-          ok(n === 2, "20 币（¥0.40 < 下限 ¥1）被拦下，没有发第三单（实际 " + n + " 单）");
-          ok(txt("#wlNotice").indexOf("50 – 50,000") > 0, "拦截文案按币给区间（实际：" + txt("#wlNotice") + "）");
+          ok(n === 2, "20 币（¥0.40 < 下限 100 币）被拦下，没有发第三单（实际 " + n + " 单）");
+          ok(txt("#wlNotice").indexOf("100 – 5,000") > 0, "拦截文案按币给区间（实际：" + txt("#wlNotice") + "）");
 
           /* [7] 零头余额：<0.5 币显示「<1 币」，但真实值仍是元 */
           SUMMARY.wallet.balanceYuan = 0.006;
           document.querySelector("#wlBalance").textContent = "";
           window.MtWallet.open();
           setTimeout(function () {
-            ok(txt("#wlBalance") === "<1 币", "余 0.006 元（0.3 币）显示「<1 币」（实际：" + txt("#wlBalance") + "）");
+            ok(balEl() === "<1 币", "余 0.006 元（0.3 币）显示「<1 币」（实际：" + balEl() + "）");
             ok(window.MtWallet.state().balanceYuan === 0.006, "真实元值原样留着（判定不跟着显示走）");
 
             /* [8] 英文界面：币名走词条 */
@@ -148,18 +209,81 @@
             var en = document.createElement("div");
             en.appendChild(window.MtCoin.balanceEl(10));
             ok(en.textContent === "500", "英文界面余额数字照旧（实际：" + en.textContent + "）");
-            ok(window.MtCoin.tooltip() === "W coins · 1 W coin = ¥0.02 (¥1 = 50 W coins)",
-              "英文 tooltip = Whale Coin 口径（实际：" + window.MtCoin.tooltip() + "）");
+            ok(window.MtCoin.tooltip() === "W coins",
+              "英文 tooltip 只给币名、不带汇率（实际：" + window.MtCoin.tooltip() + "）");
 
-            results.forEach(function (r) { console.log(r); });
-            var fails = results.filter(function (r) { return r.indexOf("FAIL") === 0; }).length;
-            /* 收尾把余额与界面摆回常用态，留给截图（run.js 随后拍一张整窗实渲染图） */
-            SUMMARY.wallet.balanceYuan = 9.98;
+            /* [9] 线上还是老服务端：它回的是旧的大额档（¥2/10/100/1000，下限 1 元）——
+               客户端硬闸必须把大额档滤掉、把区间钳回 ¥2 – ¥100，否则收紧口径被一把弹回去。
+               这正是「充值档仍然存在高额」的现场复现。 */
+            OLD_CFG = true;
             window.I18n.setLocale("zh");
             window.MtWallet.open();
             setTimeout(function () {
-              console.log(fails ? "FIXTURE FAIL " + fails + "/" + results.length : "FIXTURE OK " + results.length);
-              window.__fixtureDone = true;
+              var t2 = document.querySelectorAll("#wlTiers .wl-tier");
+              var txt2 = Array.prototype.map.call(t2, function (b) { return b.textContent; }).join(" | ");
+              ok(t2.length === 3, "老服务端的大额档被滤掉：只剩 ¥2/¥10 两档 + 自定义（实际 " + t2.length + "：" + txt2 + "）");
+              ok(txt2.indexOf("5,000") < 0 && txt2.indexOf("50,000") < 0 && txt2.indexOf("¥100") < 0 && txt2.indexOf("¥1,000") < 0,
+                "界面一个高额档都没有（实际：" + txt2 + "）");
+              ok(t2[1].textContent.indexOf("500") === 0 && t2[1].textContent.indexOf("¥10.0") > 0,
+                "保留的档仍是币数 + 1 位小数元（实际：" + t2[1].textContent + "）");
+              ok(txt("#wlRange") === "100 – 5,000",
+                "自定义区间被钳回 100 – 5,000 币（老服务端 minYuan=1 / maxYuan=1000 不生效）：实际 " + txt("#wlRange"));
+
+              /* [10] 服务端闸门没开（config.opened=false）：充值块换成说明块，
+                 但余额与流水照旧显示 —— 用户看得见自己的钱，只是不能下单。
+                 OLD_CFG 必须归位：上一段装的是「老服务端」，不归位就会先命中那条分支
+                 （表现为 config 里根本没有 opened 字段，用例永远看不到闸门关闭的样子）。 */
+              OLD_CFG = false;
+              GATE_CLOSED = true;
+              window.MtWallet.open();
+              setTimeout(function () {
+                ok(!document.querySelector("#wlPay"), "opened=false：付款按钮从 DOM 里摘掉（不是点不动的灰按钮）");
+                ok(!document.querySelector("#wlTiers"), "opened=false：金额档位不再显示");
+                ok(!!document.querySelector("#wlClosed"), "opened=false：换成说明块（.wl-closed）");
+                ok(txt("#wlClosed").indexOf("暂未开放") > 0, "说明块写明当前不能充（实际：" + txt("#wlClosed") + "）");
+                ok(!!document.querySelector("#wlBalance .coin-bal"),
+                  "opened=false 时余额照旧显示（余额行还在：" + balEl() + "）");
+                GATE_CLOSED = false;
+
+                /* [11] 付款按钮 = 支付宝官方方形 logo 位图，摆在档位右侧（真渲染里量位置与解码）：
+                   「按钮在档位右侧」是几何关系，静态断言看不出来；图有没有解码更要真渲染才知道
+                   （路径写错时 <img> 就是一张裂图，源码断言照样全绿）。 */
+                window.MtWallet.open();
+                setTimeout(function () {
+                  var pay = document.querySelector("#wlPay");
+                  var pimg = pay && pay.querySelector("img.wl-pay-logo");
+                  var tiers = document.querySelector("#wlTiers");
+                  var pr = pay ? pay.getBoundingClientRect() : null;
+                  var tr = tiers ? tiers.getBoundingClientRect() : null;
+                  ok(!!pimg && /renderer\/alipay-logo\.png$/.test(pimg.currentSrc || pimg.src),
+                    "付款按钮上的 logo 就是随包的 renderer/alipay-logo.png（实得 " +
+                    (pimg ? (pimg.currentSrc || pimg.src) : "无") + "）");
+                  ok(!!pimg && pimg.complete && pimg.naturalWidth > 0,
+                    "logo 位图真解码到位（naturalWidth " + (pimg ? pimg.naturalWidth : "无") + "，裂图时这里就是 0）");
+                  ok(!!pr && !!tr && pr.left >= tr.right - 1 && Math.abs(pr.top + pr.height / 2 - (tr.top + tr.height / 2)) < 8,
+                    "按钮在档位块**右侧**且与档位同一行（按钮 " + (pr ? Math.round(pr.left) + "," + Math.round(pr.top) : "?") +
+                    " 档位右缘 " + (tr ? Math.round(tr.right) : "?") + "）");
+                  ok(!!pay && pay.textContent === "" && !!pay.getAttribute("aria-label"),
+                    "按钮面上只有 logo 没有文字，可读名留在 aria-label（实得「" +
+                    (pay ? pay.getAttribute("aria-label") : "无") + "」）");
+
+                  results.forEach(function (r) { console.log(r); });
+                  var fails = results.filter(function (r) { return r.indexOf("FAIL") === 0; }).length;
+                  /* 收尾把余额与界面摆回常用态，留给截图（run.js 随后拍一张整窗实渲染图） */
+                  try {
+                    OLD_CFG = false;
+                    SUMMARY.wallet.balanceYuan = 9.98;
+                    window.MtWallet.open();
+                  } catch (e) {
+                    /* 收尾这一步挂了也要给出结论，别让夹具吊在「未跑完」（真出错时把栈打出来） */
+                    console.log("FIXTURE THROW " + ((e && e.stack) || e));
+                  }
+                  setTimeout(function () {
+                    console.log(fails ? "FIXTURE FAIL " + fails + "/" + results.length : "FIXTURE OK " + results.length);
+                    window.__fixtureDone = true;
+                  }, 120);
+                }, 300);
+              }, 400);
             }, 120);
           }, 60);
         }, 40);

@@ -990,7 +990,7 @@ reset([
   eqNum(countOf(gwSrc, /function normSessionId\(/g), 1, "normSessionId 全仓只有一份定义");
   eqNum(countOf(gwSrc, /function resumeSessionExists\(/g), 1, "resumeSessionExists 全仓只有一份定义");
   eqNum(countOf(gwSrc, /\[\^A-Za-z0-9_\.\\-\\u4e00/g), 1, "sid 净化式子只有一个真源");
-  has(gwSrc, "const sid = normSessionId(sessionId)", "rollbackDirFor 与日志查找共用净化规则");
+  has(gwSrc, "const sid = normSessionId(sessionId)", "会话日志查找用同一份净化规则（与网关自铸 session id 同源）");
   has(dbSrc, "S._runSession[runKey] = { sid: sid, sig: runSig, at: Date.now() };", "宿主登记 sid + 配置指纹");
   has(dbSrc, "if (msg.type === \"session\") {", "宿主捕获 session 帧");
   ok(

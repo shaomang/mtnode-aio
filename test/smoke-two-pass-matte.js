@@ -1279,8 +1279,8 @@ secondPassContract()
   })
   .then(() => {
     /* [14] quality / background / 蒙版局部重绘：透明背景直出 Alpha 与差分抠图互斥
-   （参考 docs.apiyi.com/api-capabilities/gpt-image-2/image-edit ·
-     mask-editing：background=transparent 直出带 Alpha 的 PNG，mask 只对第 1 张 image 生效） */
+   （参考 OpenAI 兼容图像服务的 gpt-image 编辑 / mask 说明：
+     background=transparent 直出带 Alpha 的 PNG，mask 只对第 1 张 image 生效） */
 console.log("\n[14] 透明背景（直出 Alpha）与蒙版局部重绘：参数下发与互斥");
 {
   const imgNode = {

@@ -14,6 +14,8 @@
  *   [2] after-pack 两道保险：跳过 node_modules/.pnpm；遇到指向目录的链接直接报错中止打包
  *   [3] 真机布局：网关 node_modules 里没有目录链接（真实目录，npm 式）
  *   [4] 已打包产物（存在才查）：网关树完整 —— 事故当时缺的路径现在必须在
+ *   [5] 崩溃链的两道闸（2026-10-03 真机崩过一次）：网关不因 SDK 握手超时整只退出，
+ *       主进程也不因往死管道写（write EPIPE）被未捕获异常打崩
  */
 const fs = require("fs");
 const path = require("path");
@@ -103,7 +105,6 @@ if (!fs.existsSync(distGw)) {
     "gateway.mjs",
     "cordis.yml",
     "tools-plugin.mjs",
-    "rollback-plugin.mjs",
     "plugins/session-resume-server.mjs",
     "node_modules/@deepseek-ai/dsh-sdk-client",
     "node_modules/@deepseek-ai/dsh/lib/bin.js",
@@ -111,6 +112,46 @@ if (!fs.existsSync(distGw)) {
     ok(fs.existsSync(path.join(distGw, ...rel.split("/"))), "产物含 " + rel);
   }
 }
+
+console.log("\n[5] 崩溃链的两道闸（真机 2026-10-03 崩过一次：write EPIPE 打崩主进程）");
+const gw = read("dsh/gateway/gateway.mjs");
+const mdsh = read("dsh/main-dsh.js");
+ok(
+  /const INITIALIZE_TIMEOUT_MS = 60000/.test(gw) && /initializeTimeoutMs: INITIALIZE_TIMEOUT_MS,/.test(gw),
+  "网关给 SDK 握手放宽到 60s（SDK 默认 initializeTimeoutMs ?? 1e4，真机就是踩这条线超时）",
+);
+ok(
+  /function warmHandshakeRetryable\(err\)/.test(gw) &&
+    /RequestTimeoutError/.test(gw) &&
+    /waiting for dsh profile/.test(gw) &&
+    /warmHandshakeRetryable\(err\)\) throw err/.test(gw),
+  "握手失败里「超时」也算可重试（不再一次超时就把这轮判死），超时重试单独限次",
+);
+ok(
+  /process\.on\('unhandledRejection'/.test(gw) &&
+    /const SDK_LATE_ABORT = /.test(gw) &&
+    /throw reason/.test(gw) &&
+    /initializeTimeoutMs/.test(gw),
+  "窄护栏：只放行 SDK 晚到的握手超时拒绝（网关保持存活），其它未处理拒绝照旧抛出",
+);
+ok(
+  /child\.stdin\.on\('error'/.test(mdsh) &&
+    /child\.stdout\.on\('error'/.test(mdsh) &&
+    /child\.stderr\.on\('error'/.test(mdsh),
+  "主进程给网关三条 stdio 流都挂了 error 处理（死管道的 EPIPE 不再升级成未捕获异常）",
+);
+ok(
+  /function out\(msg, reqId\)/.test(mdsh) &&
+    /child\.exitCode !== null\) return false/.test(mdsh) &&
+    /let stdinBrokenLogged = false/.test(mdsh) &&
+    /function failReq\(reqId, reason\)/.test(mdsh),
+  "out() 先判子进程还活着，写不出去就把那条在途请求就地判失败（不丢给进程级异常）",
+);
+ok(
+  /if \(!out\(\{ id, method, params \}, id\)\) \{/.test(mdsh) &&
+    /failReq\(id, 'dsh 网关已退出，请求未发出:' \+ method\)/.test(mdsh),
+  "request() 认 out() 的返回值：没交出去就不留一个等满超时的空请求",
+);
 
 console.log(
   "\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "ALL OK  " + checks + " checks"),

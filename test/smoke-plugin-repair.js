@@ -20,7 +20,8 @@
  *   [6] 弹窗 persistent：本模块两只窗都不挂「点外部即关」（与 test/smoke-dialog-persistence.js 同口径）
  *   [7] 修复提示词与「修完重启」服务表：skill 名 + INSTALL_DIR + 纪律 + repair_ok；重启入口指向真存在的桥；
  *       服务表按插件目录逐张卡片覆盖（含桌宠 / Remotion 这类无常驻服务的）
- *   [8] H3 安装链按当前方案：交付要件（南风包 / soundfile / latent 占位 / 后处理权重 / cu130）+ 健康检查收尾 + CPU VAE 默认关
+ *   [8] H3 安装链按当前方案：交付要件（soundfile / 后处理权重 / cu130 / Sage）+ 健康检查收尾 + CPU VAE 默认关；
+ *       且不随包附带任何第三方节点包（南风包与南风工作流模板已整体移除，回归见「南风链已移除」那组）
  *   [9] i18n：app-repair.js 的 I18n.t 字面量 + 主进程「为什么按不动」指路文案，在英文档逐条命中（不得回落中文）
  *  [10] 文档收口：docs/plugin-auto-repair.md、手册中英段、节点指南中英同步、节点指南不被生成器回滚
  *  [11] 端到端契约（总线 → 弹窗）：同一次报错既推原始事件 `pluginError:report`，也推渲染层订阅的
@@ -103,6 +104,10 @@ const INSTALL_SKILLS = [
   "llama-local-install",
   "sensenova-local-install",
 ];
+/* office-local-install 没有「插件宿主」，是随包内置的按需安装技能（Office→PDF 引擎不再随包，
+   见 docs/app-size-audit.md）：同步表里要有它，但不进上面那份「每行配一个宿主」的清单 ——
+   下面按名单独钉住，并把同步表总条数钉成 INSTALL_SKILLS.length + 1。 */
+const STANDALONE_INSTALL_SKILLS = ["office-local-install"];
 
 const dsh = read("dsh/main-dsh.js");
 const mainJs = read("main.js");
@@ -203,7 +208,18 @@ console.log("\n[2] 安装技能真源唯一：根 skills/<name>/SKILL.md，宿�
     const p = "skills/" + name + "/SKILL.md";
     ok(exists(p) && fs.statSync(path.join(ROOT, p.split("/").join(path.sep))).size > 4000, p + " 在盘上且非空壳");
   }
-  ok(count(table, /SKILL\.md/g) === INSTALL_SKILLS.length, "映射表恰好 " + INSTALL_SKILLS.length + " 条（新增后端宿主时必须同步）");
+  for (const name of STANDALONE_INSTALL_SKILLS) {
+    ok(
+      table.indexOf("'" + name + "': path.join(__dirname, '..', 'skills', '" + name + "', 'SKILL.md')") > 0,
+      "INSTALL_SKILL_SOURCES[" + name + "] 指向仓库根 skills/ 真源（无插件宿主的按需安装技能）",
+    );
+    const p = "skills/" + name + "/SKILL.md";
+    ok(exists(p), p + " 在盘上");
+  }
+  ok(
+    count(table, /SKILL\.md/g) === INSTALL_SKILLS.length + STANDALONE_INSTALL_SKILLS.length,
+    "映射表恰好 " + (INSTALL_SKILLS.length + STANDALONE_INSTALL_SKILLS.length) + " 条（新增后端宿主 / 按需安装技能时必须同步）",
+  );
   const sync = seg(dsh, "syncInstallSkills() {", "\n    },", "syncInstallSkills");
   ok(sync.indexOf("'.install-only'") > 0, "syncInstallSkills 给每个安装技能写 .install-only（不进用户技能列表 / 工坊）");
   ok(count(dsh, /INSTALL_SKILL_NAMES/g) >= 3, "INSTALL_SKILL_NAMES 在 skillList / skillAdd / skillGet 多处复用");
@@ -608,17 +624,19 @@ function groupTail() {
   console.log("\n[8] H3 安装链与自修复提示词符合当前方案");
   {
     const req = seg(h3, "const requirements = [", "].join");
-    ok(req.indexOf("NANFENG_NODE_PKG") > 0 && req.indexOf("Deploy-LocalCustomNode") > 0 && req.indexOf("*.api.py") > 0, "要件含南风节点包部署（保留 web/ + *.api.py）");
+    ok(!/NANFENG_NODE_PKG|Deploy-LocalCustomNode/.test(req), "要件不再含随包本地节点包部署（南风包已整体移除）");
     ok(req.indexOf("import soundfile") > 0, "要件含 venv 内 import soundfile 自检");
-    ok(req.indexOf("latent_upscale_models") > 0 && req.indexOf("占位") > 0, "要件含 latent_upscale_models ≥1 文件（幂等占位，不删真实模型）");
+    ok(!/latent_upscale_models/.test(req), "要件不再要求 latent_upscale_models 占位（该 combo 是已移除节点包的要求）");
     ok(req.indexOf("POST_MODELS.upscale") > 0 && req.indexOf("POST_MODELS.rife") > 0 && req.indexOf("ComfyUI-Frame-Interpolation") > 0, "要件含 4K 后处理两份权重落点");
     ok(req.indexOf("REQUIRED_CUSTOM_NODE_DIRS") > 0 && req.indexOf("OPTIONAL_CUSTOM_NODE_DIRS") > 0, "要件区分必装 custom_nodes 与备用（TeaCache 不再算缺项）");
     ok(req.indexOf("2.9.1") > 0 && req.indexOf("cu130") > 0 && req.indexOf("comfy_kitchen") > 0, "要件含 torch ≥2.9.1+cu130 硬校验与 comfy_kitchen 自检");
     ok(req.indexOf("-m app") > 0, "要件要求收尾前自跑 python -m app 并回报退出码");
+    const nums = (req.match(/\b(\d{1,2})\)\s/g) || []).map((s) => Number(s.replace(/\D/g, "")));
     ok(
-      ["1)", "2)", "3)", "4)", "5)", "6)", "7)", "8)", "9)", "10)", "11)", "12)"].every((k) => req.indexOf(k) > 0),
-      "交付要件编号 1)–12) 齐（一条一句，Agent 才有一条条可交付的东西）",
+      nums.length === 10 && nums.every((n, i) => n === i + 1 && n <= 10),
+      "交付要件编号 1)–10) 连号且只 10 条（南风包与 latent 占位两条已删；实收 " + nums.join(",") + "）",
     );
+    ok(/Sage 加速（第 9 条）/.test(h3), "纪律里指 Sage 的条号跟着重排后仍然指对（第 9 条）");
     const disc = seg(h3, "const disciplines =", "const handoff");
     for (const keep of ["不要启动 ComfyUI", "output/", "勿重下", "Sage"]) {
       ok(disc.indexOf(keep) > 0, "四条纪律保留其一：「" + keep + "」");
@@ -630,7 +648,7 @@ function groupTail() {
     ok(sp.indexOf("repair_ok=1") > 0, "自我修复支要求回 repair_ok=1（与渲染层判定的记号同一套）");
     ok(h3.indexOf("install_ok=1") > 0 && h3.indexOf("const handoff =") > 0, "安装支的回写记号是 install_ok=1（两套判据各归各）");
     const sig = seg(h3, "function projectSignals", "\n}");
-    ok(sig.indexOf("nanfeng") > 0 && sig.indexOf("latentFiles") > 0 && sig.indexOf("installComplete") > 0, "projectSignals 扩出南风 / latent / installComplete");
+    ok(!/nanfeng|latentFiles/.test(sig) && sig.indexOf("installComplete") > 0, "projectSignals 不再有南风 / latent 项，仍判 installComplete");
     ok(h3.indexOf("function installDeliverableGaps") > 0, "缺项翻译成中文条目（进收尾 reason）");
     ok(h3.indexOf("function healthCheckInstall") > 0, "健康检查函数就位（python -m app）");
     ok(h3.indexOf("deliverable_missing") > 0 && h3.indexOf("health_check_failed") > 0, "收尾两条失败路径各有 reason");
@@ -641,7 +659,7 @@ function groupTail() {
     ok(h3.indexOf("!!cfg.cpuVae") > 0 || h3.indexOf("launchCpuVae") > 0, "启动参数按实际值决定，不再「默认兜成开」");
     const uiHtml = read("h3/ui/index.html");
     ok(/<input[^>]*id="optCpuVae"[^>]*>/.test(uiHtml) && !/<input[^>]*id="optCpuVae"[^>]*checked/.test(uiHtml), "控制台 #optCpuVae 不再默认勾选");
-    ok(uiHtml.indexOf("dtype") > 0 && uiHtml.indexOf("南风") > 0, "该选项文案写明开了会怎样（dtype 崩 / 南风链不可用）");
+    ok(uiHtml.indexOf("dtype") > 0 && uiHtml.indexOf("VideoVAE") > 0, "该选项文案写明开了会怎样（dtype 崩 / 生成必失败）");
     ok(read("h3/ui/ui.js").indexOf("!!st.cpuVae") > 0, "ui.js 回显口径与后端一致");
 
     ok(skillH3.indexOf("EASY_SAFE") > 0 && skillH3.indexOf("0.08") > 0 && skillH3.indexOf("0.30") > 0 && skillH3.indexOf("0.90") > 0, "技能 EasyCache 档 = 实现真源口径并指向 EASY_SAFE");
@@ -652,7 +670,7 @@ function groupTail() {
     ok(skillH3.indexOf("chainDenoise") > 0 && skillH3.indexOf("chainFrames") > 0, "技能记内置 fl2va 分段衔接子图契约");
     ok(skillH3.indexOf("outputRes") > 0, "技能说明 outputRes 档位与红线的先后");
     ok(skillH3.indexOf("python -m app") > 0, "技能把 python -m app 当完成判定（与收尾判定同一口径）");
-    ok(skillH3.indexOf("soundfile") > 0 && skillH3.indexOf("nanfeng_prompt_nodes_v10") > 0, "技能覆盖南风包与 soundfile");
+    ok(skillH3.indexOf("soundfile") > 0 && !/nanfeng_prompt_nodes_v10|南风/.test(skillH3), "技能覆盖 soundfile，且不再提已移除的节点包");
     ok(skillH3.indexOf("自我修复") > 0, "技能有【自我修复】章节（弹窗那条链指的就是它）");
   }
 
@@ -721,9 +739,13 @@ function groupTail() {
     for (const id of ["video_gen", "music_gen", "tts_gen"]) {
       ok(owned.indexOf('"' + id + '"') > 0, "diskOwned 含 " + id + "（本轮同步的段落不会被生成器回滚）");
     }
-    const s3 = seg(read("docs/nanfeng-h3-port.md"), "## 三、安装链", "## 四、");
-    ok(s3.indexOf("skills/minimax-h3-install/SKILL.md") > 0, "§三 指的是仓库根那份技能真源");
-    ok(s3.indexOf("唯一") > 0 && s3.indexOf("smoke-plugin-repair") > 0, "§三 写明「唯一真源 + 回归钉住」，不再是一句无据的「已同步」");
+    /* 南风链（第三方多参节点包 + 随包工作流模板）已整体移除：契约真源不再挂在已删的文档上，
+       改为就地钉「随包脚手架不含第三方节点包 / 安装链不再部署它」。 */
+    const setupPs1 = read("h3-pack/scripts/setup_env.ps1");
+    ok(!/nanfeng|南风|Deploy-LocalCustomNode|Ensure-LatentUpscalePlaceholder/.test(setupPs1), "脚手架脚本已无南风包部署与 latent 占位补丁");
+    ok(!exists("h3-pack/custom_nodes/nanfeng_prompt_nodes_v10"), "随包节点包目录已删（h3-pack/custom_nodes/nanfeng_prompt_nodes_v10）");
+    ok(!exists("h3-pack/workflows/nanfeng-h3-v10-multiref.json"), "随包南风工作流模板已删（h3-pack/workflows/nanfeng-h3-v10-multiref.json）");
+    ok(!/nanfeng|NanFeng|NANFENG|南风/.test(h3 + read("h3/h3-workflows.js") + read("h3/ui/ui.js") + read("h3/ui/index.html")), "H3 宿主与工作流链、管理窗已无任何南风字样");
   }
 }
 

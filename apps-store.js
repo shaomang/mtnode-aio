@@ -11,8 +11,11 @@
  *     app.json                       应用清单（可迁移：id / name / version / entry / description / icon
  *                                    + 本机状态：author 作者 / dev 开发中 / forkOf 二次开发来源）
  *     index.html                     入口页（zip 里带；缺失时补一份最小脚手架）
- *     assets/**                      应用自带资产（导出 zip 只带它 + app.json + index.html）
- *     storage/store.json             **该应用自己的本机存储**（appHost.storageGet / storageSet）
+ *     assets/** 与任意其它文件        应用自己的文件（**整目录随包**，子目录递归 —— 根目录
+ *                                    放 game.js / style.css 这类多文件应用照样能上架；
+ *                                    只排除画布 / 旧包 / 安装账本 / .staging，见 packExcludedFiles）
+ *     storage/store.json             **该应用自己的本机存储**（appHost.storageGet / storageSet）：
+ *                                    本地导出保留，上架包剔除（不把作者存档发给下载者）
  *     <AppName>.mtnodes              该应用的画布（保存画布时写入；导出 zip 与更新安装都不碰它）
  *     <AppName>.zip                  导出的应用包（appHost 目录 = 用户搬家 / 上架用）
  *     installed.json                 本机安装账本（本次装进去的文件清单 / 来源 / sha256 / 来源作者，**不导出**）
@@ -54,7 +57,8 @@
  * IPC（主窗口侧，preload.js 的 api.apps* 转发；本文件只注册通道，方法名见 registerAppsIpc）：
  *   apps:rootGet / rootSet / rootPick · apps:list · apps:create · apps:catalog · apps:install / uninstall
  *   apps:setMeta（本机状态字段 dev / author / forkOf 的唯一写入口，渲染层不碰文件系统）
- *   apps:exportZip · apps:probeChanges · apps:openWindow / closeWindow / isOpen
+ *   apps:exportZip · apps:packAudit（上架前体检：打包会丢哪些文件 + 入口页引用了但不存在的
+ *   文件，只读）· apps:probeChanges · apps:openWindow / closeWindow / isOpen
  *   apps:shotWindow · apps:readZipBase64（上架窗用：拍应用自己的窗口 + 现打包读回 base64，
  *   契约见 docs/apps-market.md §七；渲染层不碰文件系统与网络）
  *   apps:devPreview（开发页预览：iframe url = mtnode-preview://<appId>/<entry> + 内容快照；
@@ -74,6 +78,17 @@ const http = require("http");
 const https = require("https");
 const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol, session } = require("electron");
 const { readJson, writeJson } = require("./config-providers.js");
+/* 应用能力清单（app.json 的 capabilities）：纯计算模块，见文件头 */
+const {
+  normCapabilities,
+  capabilityOn,
+  capabilitiesForUi,
+  capabilityBadges,
+} = require("./apps-capabilities.js");
+/* 模型形态识别（config.modelKinds 手工覆盖 + 图像模型家族特征词）：与渲染层的设置页、
+   画布节点共用同一份纯函数段 —— 应用侧的「可用图像后端」不再只看服务商 type 是否 image_*，
+   否则把图像模型挂在 text_openai 卡上（本机最常见的一种配法）时应用永远出不了图。 */
+const { providerHasKind, modelKindOf, providerForRequest } = require("./renderer/app-model-kind.js");
 
 /* ---------------- 常量 ---------------- */
 
@@ -481,10 +496,22 @@ let t = (s) => String(s == null ? "" : s);
 let authState = () => ({ ok: true, loggedIn: false, user: null, encryption: "plain", warning: "" });
 let aiCall = null;
 let aiCallStream = null;
+/* 本机图像后端（SenseNova）宿主适配器：由 main.js 注入，apps-store 不认识它的内部结构 ——
+   与语音（getDshForSpeech）同一条纪律。四项都是「能不给就不给」的可选注入。 */
+let localImageHost = null;
+let localImageGenerate = null;
+let localImageCancel = null;
+let localImageSnapshot = null;
+/* 全局音视频互斥锁快照（main.js 注入 media-gen-global-lock 的 refreshStaleLock） */
+let readMediaLock = null;
+/* 在飞的图像请求（reqId → { appId, nodeId, abort }）：取消与进度都按它定位 */
+const imageReqs = new Map();
 /* 图像缩放内核：registerAppsIpc 注入（main.js 的 shrinkImageBuffer），默认原样返回 */
 let shrinkImage = (buf, ext) => ({ buf: buf, ext: ext });
 /* 模型目录（main.js 注入 dsh().providerCatalog）：用来判某个模型是否「支持识图」 */
 let providerCatalog = null;
+/* 应用侧展示语言（config.json 的 locale）：卡片小标与能力对话框的文案按它选 */
+let hostLocale = null;
 
 /* ---------------- 通用小工具 ---------------- */
 
@@ -767,8 +794,10 @@ function normForkOf(v) {
   const id = safeAppId(v.id);
   const ownerId = String(v.ownerId == null ? "" : v.ownerId).trim();
   const owner = String(v.owner == null ? "" : v.owner).trim();
+  /* 源作者显示名（昵称；老条目 / 本机 app.json 里没有 = 空串，渲染层退账号名） */
+  const ownerName = String(v.ownerName == null ? "" : v.ownerName).trim();
   if (!id) return null;
-  return { id: id, ownerId: ownerId, owner: owner };
+  return { id: id, ownerId: ownerId, owner: owner, ownerName: ownerName };
 }
 /* fork 身份键：源 id + 源作者 uid（同一源应用的不同分支靠它归组；uid 缺失时退回 username，
    绝不让一条老数据把整个归组算成「同一个源」）。 */
@@ -996,6 +1025,42 @@ function readInstalled(dir) {
   const j = readJson(installedPath(dir), null);
   return isObj(j) ? j : null;
 }
+
+/* ── 本机多版本台账（台账只记「当前 + 上一版」两个槽，**不存历史载荷**） ──────────
+ * 口径（docs/apps-market.md §九）：应用目录永远只有一份活动副本（就是 app.json 那一份），
+ * 回滚 = 按台账里记的下载地址 + sha256 **重新下载**那一版再换进来 —— 所以台账只需要
+ * 「这一版从哪来」，不需要任何包体。上一版记不下来的情形：本机自建（从没下载过）、
+ * 只装过一次、或这一版就是上一版时 —— 一律记 null，回滚入口跟着消失（不编造来源）。 */
+function verRecord(version, src, sha256, bytes, uploadedAt) {
+  const v = String(version == null ? "" : version).trim();
+  const from = String(src == null ? "" : src).trim();
+  if (!v || !from) return null;
+  return {
+    version: v,
+    source: from,
+    sha256: String(sha256 == null ? "" : sha256).trim(),
+    bytes: Number(bytes) || 0,
+    uploadedAt: Number(uploadedAt) || 0,
+  };
+}
+/* 台账里的版本槽：只认 { version, source } 齐备的那一份，别的（老账本 / 脏数据）当没有 */
+function ledgerSlot(raw) {
+  if (!isObj(raw)) return null;
+  const v = String(raw.version == null ? "" : raw.version).trim();
+  const source = String(raw.source == null ? "" : raw.source).trim();
+  if (!v || !source) return null;
+  return {
+    version: v,
+    source: source,
+    sha256: String(raw.sha256 == null ? "" : raw.sha256).trim(),
+    bytes: Number(raw.bytes) || 0,
+    uploadedAt: Number(raw.uploadedAt) || 0,
+  };
+}
+/* 版本槽比对：同一版 = 版本号相同（来源地址不同（静态目录 / 接口两种写法）不算换版） */
+function sameVerSlot(a, b) {
+  return !!(a && b && String(a.version) === String(b.version));
+}
 /* app.json 的 title 可以是字符串，也可以是 {zh,en}（与云端目录词条同一口径）；
    窗口标题取它，缺了退回 name（再缺才用 id）。 */
 function manifestTitle(j, fb) {
@@ -1027,6 +1092,9 @@ function manifestOf(dir, id) {
     style: normStoredAppStyle(j.style),
     styleSet: String(j.style == null ? "" : j.style).trim() !== "",
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
+    /* 应用能力位（textInput / imageGen）：清单白名单里**必须**带上它 ——
+       漏掉的话卡片小标、「应用能力…」对话框读出来永远是 false（见 apps-capabilities.js） */
+    capabilities: normCapabilities(j.capabilities),
     createdAt: Number(j.createdAt) || 0,
     updatedAt: Number(j.updatedAt) || 0,
   };
@@ -1080,6 +1148,9 @@ function writeManifest(dir, spec, prevManifest) {
        退回「库」页；forkOf 抹掉 = 分支关系在重新下载后丢失）。 */
     dev: spec.dev === true ? true : spec.dev === false ? false : prev.dev === true,
     forkOf: normForkOf(spec.forkOf) || normForkOf(prev.forkOf),
+    /* 应用能力位（textInput / imageGen）：只由显式参数改写，缺省继承目录里已有的那份；
+       从没声明过的一律 false（存量应用按「不携带语音」处理）—— 见 apps-capabilities.js */
+    capabilities: normCapabilities(spec.capabilities == null ? prev.capabilities : spec.capabilities),
     createdAt: Number(prev.createdAt) || now,
     updatedAt: now,
   };
@@ -1105,6 +1176,8 @@ function ensureStructure(dir, man) {
 const DEFAULT_PAGE_TPL = path.join(__dirname, "templates", "app-default", "index.html");
 const BASE_CSS_TPL = path.join(__dirname, "templates", "app-default", "base.css");
 const STYLES_CSS_DIR = path.join(__dirname, "templates", "app-default", "styles");
+/* 默认页里可选的语音听写条：只有声明了 capabilities.showDictate 的应用才注入这一份 */
+const DICT_JS_TPL = path.join(__dirname, "templates", "app-default", "dict.js");
 function pageEsc(s) {
   return String(s == null ? "" : s).replace(/[<>&"]/g, (c) => {
     return { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c];
@@ -1123,11 +1196,27 @@ function appStyleCss(style) {
     return "";
   }
 }
+/* 语音听写条（可选）：声明了 showDictate 的应用把 templates/app-default/dict.js **内联**进
+   入口页（保持「入口页单文件、离线可用」这条契约：不新增相对资源，也就不怕用户拷走一个 html）。
+   没声明 / 模板缺失 → 空串（默认页不带任何语音转文字）。 */
+function dictScriptTag(caps) {
+  if (!capabilityOn(caps, "showDictate")) return "";
+  try {
+    const js = fs.readFileSync(DICT_JS_TPL, "utf8");
+    if (!String(js).trim()) return "";
+    /* 收尾防呆：内联脚本里出现 </script 会提前结束这个 <script> 块（转义掉） */
+    return "<script>\n" + String(js).replace(/<\/script/gi, "<\\/script") + "\n</script>";
+  } catch (_) {
+    return "";
+  }
+}
 function defaultPageHtml(man) {
   const name = String((man && man.name) || (man && man.id) || "应用");
   /* 生成入口页用预设口径：选了「自定义」的应用先落 minimal 那一套（页面绝不花），
      真正的长相由开发会话问清风格要求后改写页面 —— 见 APP_STYLES 里 custom 那一条。 */
   const style = normAppStyle(man && man.style);
+  /* 能力位：没声明过的一律 false（存量应用 / 云端包都按「不携带语音」处理） */
+  const caps = normCapabilities(man && man.capabilities);
   try {
     const tpl = fs.readFileSync(DEFAULT_PAGE_TPL, "utf8");
     if (tpl.indexOf("{{APP_NAME}}") >= 0) {
@@ -1139,6 +1228,8 @@ function defaultPageHtml(man) {
       return tpl
         .split("{{STYLE_CSS}}")
         .join(css)
+        .split("{{DICT_SCRIPT}}")
+        .join(dictScriptTag(caps))
         .split("{{APP_NAME}}")
         .join(pageEsc(name))
         .split("{{STYLE}}")
@@ -1203,6 +1294,9 @@ function appSummary(root, id) {
     dev: man.dev === true,
     /* 二次开发来源（可选）：{ id, ownerId, owner } */
     forkOf: man.forkOf,
+    /* 能力位（app.json 的 capabilities）：卡片小标与「应用能力…」对话框都读这一份 */
+    capabilities: normCapabilities(man.capabilities),
+    capabilityBadges: capabilityBadges(man.capabilities, appLocale()),
     /* 来源作者（安装账本里那份）：owner = 云端 username，ownerId = 云端 uid */
     owner: String(led.owner || ""),
     ownerId: String(led.ownerId || ""),
@@ -1223,6 +1317,17 @@ function appSummary(root, id) {
     installedAt: Number(led.installedAt) || 0,
     source: String(led.source || ""),
     sha256: String(led.sha256 || ""),
+    /* 本机多版本台账（§九）：cur = 本机这一版的来源（下载地址 / sha256），
+       prev = 上一版的版本号 + 来源（**没有载荷**，回滚按它重下）。
+       老账本（没有 versions 字段）这里回 null —— 界面据此不画回滚入口，不编造来源。 */
+    rollback: (() => {
+      const v = isObj(led.versions) ? led.versions : null;
+      if (!v) return null;
+      const cur = ledgerSlot(v.cur);
+      const prev = ledgerSlot(v.prev);
+      if (!cur && !prev) return null;
+      return { cur: cur, prev: prev, canRollback: !!(prev && cur && prev.version !== cur.version) };
+    })(),
     /* 目录里的核心文件（相对路径，≤10 条，已去掉 storage/ 运行期数据）：
        「二次开发」建开发节点时用它填 devFiles，与「新建应用」同一口径、不靠猜扩展名。 */
     coreFiles: (() => {
@@ -1353,7 +1458,7 @@ function createApp(arg) {
        author = 当前登录账号名（渲染层传进来；未登录就不写，界面按当前登录账号回落）。 */
     const man = writeManifest(
       dir,
-      { id: id, name: name, version: "1.0.0", style: a.style, dev: true, author: a.author },
+      { id: id, name: name, version: "1.0.0", style: a.style, dev: true, author: a.author, capabilities: a.capabilities },
       null,
     );
     ensureStructure(dir, man);
@@ -1591,16 +1696,24 @@ function resolveZipUrl(zipUrl, base) {
 }
 
 /* 一条目录条目的下载地址：多版本目录优先取 versions[] 里对应那一版 ——
-   **接口目录**的 versions[].zipUrl 是静态写法（<id>/<ver>.zip），静态目录里并不存在这个文件，
-   必须换成接口的 /api/apps/<id>/file?version=<ver>&format=raw；静态目录则原样用。 */
+   **接口目录**的 versions[].zipUrl 是静态写法（<id>/<作者>/<ver>.zip），静态目录里并不存在那个文件，
+   必须换成接口的 /api/apps/<id>/file?owner=<作者uid>&version=<ver>&format=raw；静态目录则原样用。
+   同 id 多分支（docs/apps-market.md §十）：**owner 参数必须带上**（同一 id 下每个作者一份包），
+   条目没有 ownerId 时（老静态目录）退回不带 owner 的老写法，行为与以前一致。 */
 function zipUrlsOf(spec) {
   const id = String((spec && spec.id) || "");
   const base = specBaseOf(spec);
   const api = isApiSpec(spec);
   const version = String((spec && spec.version) || "");
+  const owner = String((spec && spec.ownerId) || "").trim();
+  const ownQ = owner ? "owner=" + encodeURIComponent(owner) : "";
+  const q = (...parts) => {
+    const list = parts.filter(Boolean);
+    return list.length ? "?" + list.join("&") : "";
+  };
   const out = {
     zip: api
-      ? base + "/api/apps/" + encodeURIComponent(id) + "/file" + (version ? "?version=" + encodeURIComponent(version) + "&format=raw" : "?format=raw")
+      ? base + "/api/apps/" + encodeURIComponent(id) + "/file" + q(version ? "version=" + encodeURIComponent(version) : "", ownQ, "format=raw")
       : resolveZipUrl(spec && spec.zipUrl, base),
     versions: {},
     icon: "",
@@ -1608,7 +1721,7 @@ function zipUrlsOf(spec) {
   for (const v of ((spec && spec.versions) || [])) {
     if (!v || !v.version) continue;
     out.versions[v.version] = api
-      ? base + "/api/apps/" + encodeURIComponent(id) + "/file?version=" + encodeURIComponent(v.version) + "&format=raw"
+      ? base + "/api/apps/" + encodeURIComponent(id) + "/file" + q("version=" + encodeURIComponent(v.version), ownQ, "format=raw")
       : resolveZipUrl(v.zipUrl, base);
   }
   const raw = String((spec && spec.icon) || "").trim();
@@ -1616,12 +1729,13 @@ function zipUrlsOf(spec) {
     if (/^data:image\//i.test(raw)) out.icon = raw;
     else if (/^https?:\/\//i.test(raw)) out.icon = resolveZipUrl(raw, base);
     else if (api) {
-      /* 接口目录的 icon 是相对接口的写法（icons/<id>.<ext> / 裸文件名）→ 统一走 /api/apps/<id>/icon。
+      /* 接口目录的 icon 是相对接口的写法（icons/<id>__<作者>.<ext> / 裸文件名）→ 统一走 /api/apps/<id>/icon。
          base 已过白名单（只有 FEED / STORE_BASE 会挂上来），不会被目录内容换成别的站。 */
       const rel = raw.replace(/^\.\//, "");
-      out.icon = rel.indexOf("/") <= 0 || rel.startsWith("icons/")
-        ? base + "/api/apps/" + encodeURIComponent(id) + "/icon"
-        : resolveZipUrl(rel, base);
+      out.icon =
+        rel.indexOf("/") <= 0 || rel.startsWith("icons/")
+          ? base + "/api/apps/" + encodeURIComponent(id) + "/icon" + q(ownQ)
+          : resolveZipUrl(rel, base);
     } else out.icon = resolveZipUrl(raw, base);
   }
   return out;
@@ -1669,6 +1783,9 @@ function normVersionItem(raw, fallback) {
     sha256: String(v.sha256 || fb.sha256 || "").trim().toLowerCase(),
     bytes: Number(v.bytes) || Number(fb.bytes) || 0,
     uploader: String(v.uploader || fb.uploader || "").trim(),
+    /* 上传者显示名（服务端按上传者 uid 实时解析的昵称；老目录没有 = 空串：
+       渲染层拿不到它就退账号名，占位名 / uid 一律不出现在界面上，见 renderer/app-apps.js） */
+    uploaderName: String(v.uploaderName || fb.uploaderName || "").trim(),
     note: String(v.note || "").trim(),
     createdAt: Number(v.createdAt) || 0,
     declarationAt: Number(v.declarationAt) || 0,
@@ -1720,11 +1837,23 @@ function normSpec(raw) {
     window: isObj(s.window) ? s.window : {},
     /* 多版本（§七）：latestVersion 缺省 = version；versions[] 缺省 = 就这一版 */
     owner: String(s.owner || "").trim(),
+    /* 作者显示名（昵称，服务端按 uid 实时解析；老目录 / 接口没有 = 空串）——
+       界面显示一律用它，`owner` 只留给「同作者」判定与下载寻址（见 renderer/app-apps.js 的
+       appsAuthorOf / appsSameAuthor）。 */
+    ownerName: String(s.ownerName || "").trim(),
     /* 来源作者 uid（接口条目带 ownerUser.id；静态目录只有 username，那就空着）——
        「更新按钮只在同作者时出现」靠它判，判定口径见 docs/apps-market.md §八。 */
     ownerId: String(s.ownerId || (isObj(s.ownerUser) && s.ownerUser.id) || "").trim(),
     /* 二次开发来源（可选）：{ id, ownerId, owner } —— 同一源应用的不同作者分支按它归组 */
     forkOf: normForkOf(s.forkOf),
+    /* 应用家族（本轮需求：分支树统一 · 打赏 / 评论按根应用统一）——
+       服务端在目录条目与 branches[] 里下发这三项，客户端据此把「同一个应用族」的条目
+       合并成一张卡、画多层分支树（父挂在 parentOwnerId 那条下面）：
+         familyRootId = 家族归组 id（= 根条目的 id）；trunk = 这条是不是根；
+         parentOwnerId = 它基于哪条分支开发。老目录没有这三项 → 客户端退回按 id 归组。 */
+    familyRootId: String(s.familyRootId || "").trim(),
+    trunk: s.trunk === true,
+    parentOwnerId: String(s.parentOwnerId || "").trim(),
     latestVersion: String(s.latestVersion || version).trim() || version,
     versions: normVersionsOf(s, single),
   };
@@ -1872,15 +2001,23 @@ async function loadCatalog() {
     remoteError: errors.join(" · "),
   };
 }
-/* 找一个目录条目：先缓存、再远端（安装时云端刚更新过也能装上） */
-async function findSpec(id) {
+/* 找一个目录条目：先缓存、再远端（安装时云端刚更新过也能装上）。
+   同 id 多分支（docs/apps-market.md §十）：同一个 id 下每个作者一条，**必须按 ownerId 区分** ——
+   传了 ownerId 就只认那一条；不传则回主干（目录里同 id 的第一条，服务端也是这个缺省语义）。 */
+async function findSpec(id, ownerId) {
+  const want = String(ownerId || "").trim();
+  const pick = (list) => {
+    const arr = Array.isArray(list) ? list : [];
+    if (want) return arr.find((a) => a && a.id === id && String(a.ownerId || "") === want) || null;
+    return arr.find((a) => a && a.id === id) || null;
+  };
   const c = readCatalogCache();
   if (c && c.doc) {
-    const hit = parseCatalogDoc(c.doc, c.sourceBase, c.sourceKind).apps.find((a) => a.id === id);
+    const hit = pick(parseCatalogDoc(c.doc, c.sourceBase, c.sourceKind).apps);
     if (hit) return hit;
   }
   const cat = await loadCatalog();
-  return (cat.apps || []).find((a) => a.id === id) || null;
+  return pick(cat.apps);
 }
 
 /* ---------------- zip：解包（安装）与打包（导出 zip） ---------------- */
@@ -2073,15 +2210,47 @@ async function installApp(arg) {
   sendProgress({ id: id, phase: "start", percent: 0 });
   try {
     mk(root);
-    let spec = await findSpec(id);
-    if (!spec) throw new Error("not_in_catalog");
+    /* 直连地址（本机多版本回滚走这条）：台账里记着那一版**那次真正的下载地址**，
+       云端目录可能已经改版 / 下架，找不到那一版就按台账直连 —— 但守卫一条不少：
+       地址仍要过 resolveZipUrl 白名单，sha256 仍要校验（见 §九）。 */
+    const directUrl = String(a.directUrl || "").trim();
+    const directRaw = String(a.sha256 || a.directSha || "").trim();
+    /* 覆盖安装 / 更新前先读一把**本机**清单与安装账本：dev（开发中）/ forkOf（来源）/
+       本机多版本台账都只存在于本机目录里，云端包与目录都没有 —— 必须在 removePayload
+       抹掉 app.json 之前取到（否则一次更新就会让应用从「开发」页退回「库」页）。 */
+    const keepMan = readManifest(appDirOf(root, id) || "") || {};
+    const oldLedger = readInstalled(appDirOf(root, id) || "") || {};
+    let spec = null;
+    if (!directUrl) {
+      /* 同 id 多分支：ownerId 指明要装哪条分支（不传 = 主干），见 docs/apps-market.md §十 */
+      spec = await findSpec(id, a.ownerId);
+      /* 目录拉不到（离线 / 那一版已下架）但本机装着它时，退回本机清单装「同一版」——
+         这样在两个已下过的版本之间来回切换不需要网络；否则如实报 not_in_catalog。 */
+      if (!spec && keepMan) spec = Object.assign({ id: id }, keepMan);
+      if (!spec) throw new Error("not_in_catalog");
+    }
     /* 下载地址按**来源**解析（静态目录 = FEED + 相对路径；接口目录 = <store>/api/apps/<id>/file|icon）。
        必须在选版**之前**算：接口目录的 versions[].zipUrl 是静态写法，静态目录里并不存在那个文件。 */
-    const urls = zipUrlsOf(spec);
+    const urls = spec ? zipUrlsOf(spec) : { zip: "", versions: {} };
     /* 选版下载（§七）：渲染层点了版本树里的某一版 → 只换 zipUrl / sha256 / version，
        其余（entry / window / tags…）仍取应用条目；目录里没有那一版就如实报错。 */
     const wantVersion = String(a.version || "").trim();
-    if (wantVersion) {
+    if (directUrl) {
+      if (!wantVersion) throw new Error("bad_version");
+      spec = {
+        id: id,
+        name: "",
+        version: wantVersion,
+        entry: "",
+        description: "",
+        icon: "",
+        author: "",
+        zipUrl: directUrl,
+        sha256: directRaw,
+        sourceBase: "",
+        source: "",
+      };
+    } else if (wantVersion) {
       const hit = (spec.versions || []).find((v) => v.version === wantVersion);
       if (!hit) throw new Error("version_not_in_catalog");
       spec = Object.assign({}, spec, {
@@ -2093,8 +2262,8 @@ async function installApp(arg) {
     } else if (urls.zip) {
       spec = Object.assign({}, spec, { zipUrl: urls.zip });
     }
-    if (!spec.compatible) throw new Error("need_app_update");
-    const zipUrl = resolveZipUrl(spec.zipUrl, specBaseOf(spec));
+    if (spec.compatible === false) throw new Error("need_app_update");
+    const zipUrl = directUrl || resolveZipUrl(spec.zipUrl, specBaseOf(spec));
     if (!zipUrl) throw new Error("bad_zip_url");
     const exists = fs.existsSync(path.join(root, id));
     let targetId = id;
@@ -2143,10 +2312,6 @@ async function installApp(arg) {
       if (!fs.existsSync(path.join(srcDir, ...entry.split("/")))) throw new Error("pack_missing_entry");
       closeAppWindow(targetId);
       mk(targetDir);
-      /* 覆盖安装 / 更新前先读一把**本机**清单：dev（开发中）与 forkOf（二次开发来源）只存在于
-         本机目录里，云端包与目录都没有 —— 它们必须在 removePayload 抹掉 app.json 之前取到，
-         否则一次更新就会让应用从「开发」页退回「库」页、分支关系也跟着丢。 */
-      const keepMan = readManifest(targetDir) || {};
       removePayload(targetDir);
       /* 包内自带的 app.json（导出时写进去的）当上一份清单：目录条目补它缺的字段，
          目录条目没有的（自绘应用）也留得住 */
@@ -2166,18 +2331,39 @@ async function installApp(arg) {
       ensureStructure(targetDir, man);
       const ledger = payload.slice();
       for (const rel of [SUB.manifest, man.entry]) if (!ledger.includes(rel)) ledger.push(rel);
+      const sha = sha256(zipBuf);
+      const now = Date.now();
+      /* 本机多版本台账（§九）：进「当前」槽的这一版记的是**这次真正下下来的地址**（zipUrl 已过
+         白名单解析），上一版那一槽接着往下传 —— 但要走一次 app.json 里的旧版本号核对：
+         从版本表直接下某一版时，账本里的「当前」还停在上一次装的那版，不核对就会把旧账当上一版。 */
+      const oldVer = String((keepMan && keepMan.version) || "").trim();
+      const prevSlot = ledgerSlot(isObj(oldLedger.versions) ? oldLedger.versions.cur : null);
+      const nextVer = String(man.version || "").trim();
+      /* 上一版这一槽怎么定：
+         ① 台账的「当前」= 这次要装的版本（同版重装 / 从版本表重下同一版）→ 上一版照旧不动
+            （上一版 = 上一版，绝不是自己）；
+         ② 换了版：台账当前正对得上 app.json 的旧版本号 → 就用它（含它那次真正的下载地址）；
+         ③ 换了版但台账当前对不上（老账本 / 从版本表直接下某一版）→ 记下旧版本号 + 这次用的地址 ——
+            地址不一定是最贴切的那一个，但比「没有上一版」强；sha256 留空则不校验，填了就必须对上。 */
+      const oldPrev = ledgerSlot(isObj(oldLedger.versions) ? oldLedger.versions.prev : null);
+      let keepPrev = oldPrev;
+      if (oldVer && oldVer !== nextVer) {
+        keepPrev = sameVerSlot(prevSlot, { version: oldVer }) ? prevSlot : verRecord(oldVer, zipUrl, "", 0, 0);
+      }
+      const curSlot = verRecord(man.version, zipUrl, sha, zipBuf.length, Number(spec.uploadedAt || spec.createdAt || 0));
       writeJson(installedPath(targetDir), {
         schema: SCHEMA,
         id: targetId,
         version: man.version,
         source: zipUrl,
-        sha256: sha256(zipBuf),
+        sha256: sha,
         /* 来源作者（「更新按钮只在同作者时出现」与「分支作者」都靠它判）：
            owner = 云端 username（显示用），ownerId = 云端 uid（判定用，见 docs/apps-market.md §八）。 */
         owner: String(spec.owner || ""),
         ownerId: String(spec.ownerId || ""),
         files: ledger,
-        installedAt: Date.now(),
+        installedAt: now,
+        versions: { cur: curSlot || null, prev: keepPrev || null },
       });
       sendProgress({ id: id, phase: "done", percent: 100, version: man.version });
       return {
@@ -2206,6 +2392,102 @@ async function installApp(arg) {
   }
 }
 
+/* ── 本机多版本（台账查询 + 回滚；口径见 docs/apps-market.md §九） ──────────────
+ * 载荷不落盘：应用目录里只有一份活动副本，回滚 = 按台账里那一版的下载地址 + sha256
+ * **重新下载**再换进来。所以源不可达（离线 / 云端已下架那一版）时必须如实报错，
+ * 绝不静默降级成「装最新版」。 */
+
+/* 台账（本机装过的那一版从哪来）—— 渲染层据此画「本机版本」块 */
+function appsVersionPick(id) {
+  const sid = safeAppId(id);
+  if (!sid) return bad(t("应用 id 不合法"), "bad_id");
+  const { root, configured } = rootPath();
+  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  const dir = appDirOf(root, sid);
+  const app = dir && fs.existsSync(dir) ? appSummary(root, sid) : null;
+  const led = dir ? readInstalled(dir) || {} : {};
+  const vers = isObj(led.versions) ? led.versions : null;
+  const cur = ledgerSlot(vers && vers.cur);
+  const prev = ledgerSlot(vers && vers.prev);
+  const curVersion = app ? String(app.version || "") : "";
+  const rows = [];
+  if (cur) rows.push(Object.assign({ slot: "cur", direct: true, current: true }, cur));
+  /* 上一版那一槽只在「真的与本机这一版不同版」时才作为可回滚目标给出 */
+  const prevRow = prev && prev.version !== curVersion ? Object.assign({ slot: "prev", direct: false, current: false }, prev) : null;
+  if (prevRow) rows.push(prevRow);
+  return {
+    ok: true,
+    id: sid,
+    dir: dir || "",
+    installed: !!app,
+    dev: !!(app && app.dev),
+    version: curVersion,
+    source: String(led.source || ""),
+    sha256: String(led.sha256 || ""),
+    installedAt: Number(led.installedAt) || 0,
+    versions: rows,
+    canRollback: !!prevRow,
+    prev: prevRow,
+  };
+}
+
+/* 回滚：把目标那一版重新下载并换进来。目标版本的地址只认两处（都以本机台账为准）：
+ *   ① 台账「上一版」那一槽（记着它那次真正的下载地址）；
+ *   ② 本机账本 / 云端目录里同版本号的地址（从版本表点某一版时用）。
+ * 都不认识 → gone；地址过不了白名单 → bad_source；重下必过 sha256 校验（对不上即失败）。 */
+async function rollbackApp(arg) {
+  const a = isObj(arg) ? arg : { id: arg, version: "" };
+  const id = safeAppId(a.id);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  const target = String(a.version || "").trim();
+  if (!target) return bad(t("没有指定要回滚到哪一版"), "bad_version");
+  const { root, configured } = rootPath();
+  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  const dir = appDirOf(root, id);
+  if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: id });
+  const man = readManifest(dir);
+  if (!man) return bad(t("应用清单损坏（app.json 读不出来）：先修好它再切换版本"), "broken_manifest");
+  const curVer = String(man.version || "").trim();
+  if (target === curVer)
+    return Object.assign(bad(t("这一版就是本机当前的版本"), "same_version"), { version: curVer, same: true });
+  const led = readInstalled(dir) || {};
+  const vers = isObj(led.versions) ? led.versions : {};
+  const prev = ledgerSlot(vers.prev);
+  let hit = sameVerSlot(prev, { version: target }) ? prev : null;
+  /* 本机账本只记「当前这一版」：同版本号才算命中（界面点「已装的这一版」走的就是这条） */
+  if (!hit && String(led.version || "").trim() === target && String(led.source || "").trim())
+    hit = verRecord(target, led.source, led.sha256, led.bytes, 0);
+  /* 再退回云端目录里那一版（多版本条目的 versions[]） */
+  if (!hit) {
+    let spec = null;
+    try {
+      spec = await findSpec(id);
+    } catch (_) {}
+    const v = spec && Array.isArray(spec.versions) ? spec.versions.find((x) => String(x.version) === target) : null;
+    if (v) {
+      const urls = zipUrlsOf(spec);
+      hit = verRecord(target, (urls.versions && urls.versions[target]) || v.zipUrl || "", v.sha256, v.bytes, v.createdAt);
+    }
+  }
+  if (!hit || !hit.source)
+    return Object.assign(
+      bad(t("本机没有这一版的下载来源：它可能是本机自建的那一版，或云端已下架（回滚需要按来源重下）")),
+      { gone: true, id: id, version: target },
+    );
+  /* 台账里的地址一样要过白名单（只认允许基址；绝对地址 host 必须命中）——
+     与安装同一条守卫，回滚不是绕过它的后门 */
+  const url = resolveZipUrl(hit.source, specBaseOf({ sourceBase: "", source: "" }));
+  if (!url) return bad(t("这一版的下载地址不在允许的来源里（只认云端目录 / 云端接口）"), "bad_source");
+  return installApp({
+    id: id,
+    mode: "overwrite",
+    version: target,
+    directUrl: url,
+    directSha: hit.sha256 || "",
+    rollback: true,
+  });
+}
+
 /* 卸载：只删该应用自己的子文件夹（守卫：必须严格等于 <root>/<id>；优先送系统回收站） */
 async function uninstallApp(id) {
   const sid = safeAppId(id);
@@ -2232,9 +2514,64 @@ async function uninstallApp(id) {
   return { ok: true, id: sid, dir: dir, trashed: trashed, root: root };
 }
 
-/* ---------------- 导出 zip（仅 app.json + index.html + assets，不含画布） ---------------- */
+/* ---------------- 导出 zip（应用目录里的应用文件全部随包，不含画布 / 本机态） ---------------- *
+ *
+ * 打包范围：**整目录**（子目录递归）—— 应用怎么写都行（根目录多份 js / css、lib/、media/…）。
+ * 只排除生成物与本机态（见 packExcludedFiles）：<AppName>.zip（导出的包自己）、
+ * <AppName>.mtnodes（该应用的画布）、installed.json（本机安装账本）、.staging/（解包中转）。
+ * storage/ 是应用自己的本机存档：**本地「导出 zip」保留**（换机搬家连存档一起走），
+ * **上架包剔除**（opts.forUpload，绝不把作者本机存档发给下载者）。
+ * 包里那份 app.json 去掉本机的「开发中」标记 dev（本机状态，跟包跑出去会让下载者把这个
+ * 应用当成「正在开发」而不列进「库」）；author 与 forkOf 照常随包走 —— 契约见 docs/apps-market.md §八。 */
 
-function exportZip(id) {
+/* 本机自己生成 / 与包无关的文件（相对应用目录，"/" 分隔）：打包一律不带它们。
+   名字口径跟着清单走：画布与导出包分别是 <AppName>.mtnodes / <AppName>.zip。
+   **app.json 不在这里**：包里那份 app.json 是 packEntriesOf 现读现写的（去掉 dev 标记），
+   列进来会让包缺清单（下载方认不出应用）。
+   尾参 opts.excludeExtra 是「打包口径」的显式注入点：正常路径不传；冒烟用它模拟
+   「打包实现漏了一类应用文件」，验证体检真能把丢件报成 unknown（而不是只看自己那份名单）。 */
+function packExcludedFiles(dir, man, opts) {
+  const name = safeBaseName((man && man.name) || path.basename(dir), "app");
+  const out = [SUB.installed, name + CANVAS_EXT, name + ZIP_EXT];
+  const extra = isObj(opts) && Array.isArray(opts.excludeExtra) ? opts.excludeExtra : [];
+  for (const rel of extra) out.push(String(rel || ""));
+  return out.filter((v, i) => v && out.indexOf(v) === i);
+}
+/* 应用目录 → 包里的文件清单（顺序稳定：按相对路径字典序；唯一读取实现，导出与体检共用）。
+   回 [{ name, data }]。 */
+function packEntriesOf(dir, sid, opts) {
+  const o = isObj(opts) ? opts : {};
+  const man = manifestOf(dir, sid);
+  const entry = safeEntry(man.entry) || SUB.index;
+  const skip = packExcludedFiles(dir, man, o);
+  const inStorage = (rel) => rel === SUB.storage || rel.indexOf(SUB.storage + "/") === 0;
+  const files = walkFiles(dir, "", [])
+    .filter((rel) => {
+      if (skip.indexOf(rel) >= 0) return false;
+      /* 上架包不带本机存档（作者自己的未完成一局 / 统计不该发给下载者） */
+      if (o.forUpload === true && inStorage(rel)) return false;
+      return true;
+    })
+    .sort();
+  const entries = [];
+  for (const rel of files) {
+    const abs = resolveInside(dir, rel);
+    if (!abs || !fs.existsSync(abs)) continue;
+    let data = null;
+    if (rel === SUB.manifest) {
+      const packMan = Object.assign({}, readManifest(dir) || {});
+      delete packMan.dev;
+      data = Buffer.from(JSON.stringify(packMan, null, 2), "utf8");
+    } else {
+      data = fs.readFileSync(abs);
+    }
+    entries.push({ name: rel, data: data });
+  }
+  if (!entries.some((e) => e.name === entry)) return { ok: false, error: t("应用缺少入口页"), reason: "missing_entry" };
+  return { ok: true, entries: entries, man: man, entry: entry };
+}
+
+function exportZip(id, opts) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
   const { root, configured } = rootPath();
@@ -2242,29 +2579,10 @@ function exportZip(id) {
   const dir = appDirOf(root, sid);
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
   try {
-    const man = manifestOf(dir, sid);
-    const entry = safeEntry(man.entry) || SUB.index;
-    const entries = [];
-    const manAbs = manifestPath(dir);
-    if (fs.existsSync(manAbs)) {
-      /* 包里那份 app.json **去掉本机的「开发中」标记（dev）**：它是本机状态，跟着包跑出去
-         会让下载者（或自己在另一台机器上）把这个应用当成「正在开发」而不列进「库」。
-         author 与 forkOf（二次开发来源）照常随包走 —— 契约见 docs/apps-market.md §八。 */
-      const packMan = Object.assign({}, readManifest(dir) || {});
-      delete packMan.dev;
-      entries.push({ name: SUB.manifest, data: Buffer.from(JSON.stringify(packMan, null, 2), "utf8") });
-    }
-    const entryAbs = resolveInside(dir, entry);
-    if (!entryAbs || !fs.existsSync(entryAbs)) return bad(t("应用缺少入口页"), "missing_entry");
-    entries.push({ name: entry, data: fs.readFileSync(entryAbs) });
-    const assetsDir = path.join(dir, SUB.assets);
-    if (fs.existsSync(assetsDir)) {
-      for (const rel of walkFiles(assetsDir, "", [])) {
-        const abs = resolveInside(assetsDir, rel);
-        if (!abs || !fs.existsSync(abs)) continue;
-        entries.push({ name: SUB.assets + "/" + rel, data: fs.readFileSync(abs) });
-      }
-    }
+    const built = packEntriesOf(dir, sid, opts);
+    if (built.ok === false) return bad(built.error, built.reason);
+    const man = built.man;
+    const entries = built.entries;
     const buf = zipBuffer(entries);
     const out = zipPathOf(dir, man.name);
     const tmp = out + ".tmp" + process.pid;
@@ -2348,10 +2666,10 @@ async function shotAppWindow(id) {
   }
 }
 
-/* 上架用：**现打一份** zip 再读回 base64（与 exportZip 同一份打包实现：只含 app.json +
-   入口页 + assets，不含画布）。现打现读 = 绝不会把上一轮导出的旧包传上去。 */
+/* 上架用：**现打一份** zip 再读回 base64（与 exportZip 同一份打包实现：应用目录里的应用文件
+   全部随包，不含画布与本机存档）。现打现读 = 绝不会把上一轮导出的旧包传上去。 */
 function readPackBase64(id) {
-  const r = exportZip(id);
+  const r = exportZip(id, { forUpload: true });
   if (!r || r.ok === false) return r || bad(t("打包失败"), "pack_failed");
   try {
     const buf = fs.readFileSync(r.path);
@@ -2370,6 +2688,149 @@ function readPackBase64(id) {
   } catch (err) {
     return fail(err);
   }
+}
+
+/* ---------------- 上架前体检：这个应用打成包会丢哪些文件（只读，不写盘不上传） ----------------
+ *
+ * 病根就是这里查出来的那件事：**目录里的应用文件没进包**（历史实现只打 app.json + 入口页 +
+ * assets/**，根目录里的 game.js / style.css 这类脚本与样式一律丢，下载者拿到的是一个跑不起来的
+ * 空壳）。体检按**上架口径**（forUpload）真跑一遍打包实现 packEntriesOf，再把「目录里有、包里
+ * 没有」的文件列出来；顺带按入口页里写的 src / href 报出「引用了但目录里不存在」的文件
+ * （statically 只查入口页那一份 HTML，不跟 js 里的二次引用）。
+ * 只读：不写 zip、不装、不上传。 */
+
+/* 入口页里的本机相对引用（./x.js、assets/y.css…）：外链 / 锚点 / data: / 协议前缀一律不算 */
+const AUDIT_REF_RE = /(?:src|href)\s*=\s*["']([^"']+)["']/gi;
+function isLocalRef(u) {
+  const v = String(u || "").trim();
+  if (!v) return false;
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(v)) return false; /* http(s): / data: / mailto: / #anchor */
+  return true;
+}
+/* 相对入口页所在目录解析成应用目录内的相对路径；越界（.. / 绝对路径 / 盘符）回 "" */
+function refRelOf(entry, ref) {
+  const raw = String(ref || "").split("#")[0].split("?")[0].replace(/\\/g, "/").trim();
+  /* 只认「像文件路径」的引用：$(...) / {{...}} / 纯文字这类模板残渣不误报 */
+  if (!raw || raw.startsWith("/")) return "";
+  if (raw.indexOf("$") >= 0 || raw.indexOf("{") >= 0 || raw.indexOf("}") >= 0) return "";
+  const parts = String(entry || "").split("/").slice(0, -1);
+  for (const seg of raw.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (!parts.length) return "";
+      parts.pop();
+    } else parts.push(seg);
+  }
+  return parts.join("/");
+}
+/* 入口页引用检查：报「入口页里写了、应用目录里没有」的文件（相对入口页所在目录） */
+function auditEntryRefs(dir, entryAbs, entry) {
+  const out = [];
+  let html = "";
+  try {
+    html = fs.readFileSync(entryAbs, "utf8");
+  } catch (_) {
+    return out;
+  }
+  const seen = Object.create(null);
+  AUDIT_REF_RE.lastIndex = 0;
+  let m = null;
+  while ((m = AUDIT_REF_RE.exec(html)) !== null) {
+    const raw = String(m[1] || "").trim();
+    if (!isLocalRef(raw)) continue;
+    const rel = refRelOf(entry, raw);
+    if (!rel || seen[rel]) continue;
+    seen[rel] = true;
+    const abs = resolveInside(dir, rel);
+    if (!abs || !fs.existsSync(abs)) out.push({ ref: raw, rel: rel, from: entry });
+  }
+  return out;
+}
+/* 上架前体检：id 非空 = 只查这一个应用；否则查全部本机应用 */
+function packAudit(arg) {
+  const a = isObj(arg) ? arg : { id: arg };
+  const { root, configured } = rootPath();
+  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  const wantId = safeAppId(a.id);
+  const ids = [];
+  if (wantId) ids.push(wantId);
+  else {
+    let ents = [];
+    try {
+      ents = fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }) : [];
+    } catch {}
+    for (const ent of ents) {
+      if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
+      const id = safeAppId(ent.name);
+      if (id) ids.push(id);
+    }
+  }
+  const checkedAt = Date.now();
+  const results = [];
+  for (const id of ids) {
+    const dir = appDirOf(root, id);
+    if (!dir || !fs.existsSync(dir)) {
+      results.push({ id: id, name: id, missing: true, files: 0, packed: 0, dropped: [], refsMissing: [], ok: false });
+      continue;
+    }
+    const man = manifestOf(dir, id);
+    const row = {
+      id: id,
+      name: man.name,
+      version: man.version,
+      more: 0,
+      files: 0,
+      packed: 0,
+      droppedCount: 0,
+      droppedUnknown: 0,
+      entry: man.entry,
+      dropped: [],
+      refsMissing: [],
+      ok: false,
+    };
+    try {
+      const packOpts = { forUpload: true };
+      if (Array.isArray(a.excludeExtra)) packOpts.excludeExtra = a.excludeExtra;
+      const built = packEntriesOf(dir, id, packOpts);
+      const packRel = Object.create(null);
+      if (built.ok === false) row.dropped.push({ rel: "", reason: built.reason || "pack_failed" });
+      else {
+        for (const ent of built.entries) packRel[ent.name] = true;
+        row.packed = built.entries.length;
+      }
+      /* 目录里（含子目录）的文件：包里没有的那些就是丢件。walkFiles 会跳过 .staging。
+         droppedCount = 全部不随包的文件数（含生成物与本机存档，如实计数）；
+         droppedUnknown = 打包实现**漏掉**的应用文件数 —— 这一位才是「包不完整」，
+         ok 只看它（生成物 / storage 本来就不该进包，不该把体检判成失败）。 */
+      const all = walkFiles(dir, "", []).sort();
+      row.files = all.length;
+      for (const rel of all) {
+        if (packRel[rel]) continue;
+        row.droppedCount++;
+        const reason = auditDropReason(dir, man, rel, a.excludeExtra);
+        if (reason === "unknown") row.droppedUnknown++;
+        if (row.dropped.length >= 60) {
+          row.more++;
+          continue;
+        }
+        row.dropped.push({ rel: rel, reason: reason });
+      }
+      const entryAbs = resolveInside(dir, man.entry);
+      if (entryAbs && fs.existsSync(entryAbs)) row.refsMissing = auditEntryRefs(dir, entryAbs, man.entry);
+      row.ok = built.ok !== false && row.droppedUnknown === 0 && row.refsMissing.length === 0;
+    } catch (err) {
+      row.error = String((err && err.message) || err);
+      row.ok = false;
+    }
+    results.push(row);
+  }
+  return { ok: true, root: root, checkedAt: checkedAt, apps: results };
+}
+/* 丢件原因：生成物 / 本机存档 / 上架包口径剔除 / 未知（未知 = 打包实现漏了它，必须报出来） */
+function auditDropReason(dir, man, rel, excludeExtra) {
+  if (packExcludedFiles(dir, man, { excludeExtra: excludeExtra }).indexOf(rel) >= 0) return "generated";
+  if (rel === SUB.storage || rel.indexOf(SUB.storage + "/") === 0) return "storage";
+  return "unknown";
 }
 
 /* ---------------- 变更探测（mtime 快照比对：预览刷新 + 重打包） ---------------- */
@@ -3012,11 +3473,20 @@ function usableTextProviders() {
   return providersFromConfig().filter((p) => String(p.type || "") === "text_openai" && usable(p));
 }
 /* 默认服务商：文本优先 DeepSeek 官方（本机配置里 host 含 deepseek 的那条），否则第一条可用文本；
-   图像优先第一条 image_* 服务商。应用窗口**不能**指定服务商 / Key —— 只能给提示词与模型 id。 */
+   图像优先第一条 image_* 服务商。应用窗口**不能**指定服务商 / Key —— 只能给提示词与模型 id。
+   注：图像那一支只在 imageSpec 里当兜底（选中的图像模型没带 providerId 时用）；
+   「哪些服务商算图像后端」已按**模型形态**判（见 usableImageProviders / listCloudImageModels），
+   不再只看 type 是否以 image_ 开头 —— 否则把图像模型挂在 text_openai 卡上（本机最常见）的应用
+   永远出不了图。 */
 function providerFor(kind) {
   const list = providersFromConfig();
   const usable = (p) => !!String(p.apiKey || "").trim() && !!String(p.baseUrl || "").trim();
-  if (kind === "image") return list.filter((p) => /^image_/.test(String(p.type || "")) && usable(p))[0] || null;
+  if (kind === "image") {
+    const provider = usableImageProviders()[0] || null;
+    if (provider) return provider;
+    /* 兜底：没有任何「有图像模型」的服务商时，仍认显式 image_* 的那条（行为与旧版一致） */
+    return list.filter((p) => /^image_/.test(String(p.type || "")) && usable(p))[0] || null;
+  }
   const texts = usableTextProviders();
   return texts.find((p) => isDeepseekHost(p.baseUrl)) || texts[0] || null;
 }
@@ -3134,6 +3604,17 @@ function hostModelsPayload(e) {
     hasVision: models.some((m) => m.vision),
     defaultModel: fallback ? modelIdsOf(fallback)[0] || "" : "",
   };
+}
+/* 应用自报能力位（读 app.json 的 capabilities）：preload 的听写条注入闸门用它 ——
+ * 只在声明了 showDictate 时才注入（默认隐藏：能力位缺省 false = 不注入，宿主侧也就没有那条条）。
+ * **不是权限闸**：桥上的语音 / 图像接口始终可调，这里只回答「这个应用声明的界面能力里有没有
+ * 让他把听写条显示出来」。认不出应用回 ok:false。 */
+function hostCapabilities(e) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const man = manifestOf(own.dir || "", own.id) || {};
+  const caps = normCapabilities(man.capabilities);
+  return { ok: true, id: own.id, capabilities: caps };
 }
 function hostModelGet(e) {
   const own = senderAppDir(e);
@@ -3379,6 +3860,505 @@ function textResult(r, model) {
     model: model,
   };
 }
+/* ---------------- appHost：图像生成（云端服务商 + 本机 SenseNova） ----------------
+ *
+ * 需求（用户共识）：应用默认就能用 MTNode 已配好的图像生成能力 ——
+ *   · 云端：任何**有图像形态模型**的服务商卡（显式 image_* 类型，或 text_openai 卡上被
+ *     config.modelKinds / 模型家族特征词判成 image 的那个模型，如 gpt-image-2-vip）；
+ *   · 本地：本机 SenseNova 后端（sensenova-local 插件，127.0.0.1:8774，24G 卡出图），
+ *     由 main.js 注入的宿主适配器调用（apps-store 不认识它的内部结构）；
+ *   · 选择方式与文字模型同构：默认 auto（云端优先、其次本地），另给 hostImageModels()
+ *     清单 + 按应用 id 持久化选择（存 apps-models.json 的 image.<appId>）；
+ *   · 参数：应用只传 prompt + 尺寸语义（size），本地后端的采样步数 / 分辨率桶 / 显存档
+ *     跟随节点自身配置；参考图（本机路径或 dataURL）由主进程读盘 / 缩放到长边 ≤1080；
+ *   · 进度与取消：本地出图几十秒到几分钟，事件走 apps:hostStream（type:"progress"），
+ *     取消走 apps:hostImageCancel；总遵守全局音视频互斥锁（忙时回 code:"busy_media"）。
+ *
+ * 回执（云端与本地同一形状）：{ ok, base64, dataUrl, bytes, mime, model, via, size }，
+ *   本地另有 { path, width, height, seed }（产物已落盘在数据目录资产区，路径可直接交给
+ *   save 类动作或画布素材库）。取消回 { ok:false, code:"cancelled" }，不是错误。
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+const LOCAL_IMAGE_PROVIDER_ID = "sensenova-local";
+
+/* 云端「可用图像服务商」：按**模型形态**认（与渲染层同一判据），不再只看服务商 type */
+function usableImageProviders() {
+  const cfg = readJson(configPath(), {}) || {};
+  const usable = (p) => !!String(p.apiKey || "").trim() && !!String(p.baseUrl || "").trim();
+  return (Array.isArray(cfg.providers) ? cfg.providers : []).filter(
+    (p) => isObj(p) && usable(p) && providerHasKind(cfg, p, "image"),
+  );
+}
+/* 云端图像模型清单（顺序 = 设置里的优先级，同一 id 只留第一个）：
+   只回 id 与来源名 —— 服务商与 Key 一律不出主进程（与 hostModels 同一纪律）。 */
+function listCloudImageModels() {
+  const cfg = readJson(configPath(), {}) || {};
+  const out = [];
+  const seen = new Set();
+  for (const p of usableImageProviders()) {
+    for (const m of Array.isArray(p.models) ? p.models : []) {
+      const id = String(typeof m === "string" ? m : (m && m.id) || "").trim();
+      if (!id || seen.has(id)) continue;
+      /* 两条判据取或：① 服务商 type 显式声明是图像端点（image_*，卡上的模型名不必带图像特征词）；
+         ② 模型形态被判成 image（人工覆盖 config.modelKinds > 模型家族特征词）—— 这是
+         「把图像模型挂在 text_openai 卡上」那种最常见的错配能被认出来的那一半。 */
+      const byType = /^image_/.test(String(p.type || ""));
+      if (!byType && modelKindOf(cfg, p.id, id) !== "image") continue;
+      seen.add(id);
+      out.push(
+        Object.assign(
+          {
+            id: id,
+            label: id,
+            providerId: String(p.id || ""),
+            providerName: String(p.name || p.id || ""),
+            local: false,
+          },
+          cloudImageCaps(cfg, p, id),
+        ),
+      );
+    }
+  }
+  return out;
+}
+/* 本机本地图像后端（SenseNova）：装了才进清单。探测函数由 main.js 注入（轻量、不拉起后端、
+   不探显存），拿不到就当一个都没装 —— 应用侧只会看到云端那一条，绝不报错。 */
+/* 云端图像后端的参考图能力（图生图 / 图像编辑）—— 按**这个后端真正会走的那条接口族**声明，
+ * 应用界面据此把不行的路置灰、把上限写清楚，不让它点下去才知道不行：
+ *   · OpenAI 兼容图像端点（/images/edits）：多图按顺序对应提示词里的「图1 / 图2…」，
+ *     但**没有**参考强度参数（strength 对云端永远为 false）；
+ *   · Stability（/v2beta/stable-image/generate/core）：只吃 1 张参考图；
+ *   · MJ 自定义接口：不吃参考图（界面应置灰）。
+ * 上限统一按「一条消息 8 张图」的既有多模态配额（MAX_MSG_IMAGES），不另造一个数。 */
+function cloudImageCaps(cfg, prov, modelId) {
+  /* 判据取**服务商自己的 type**（不是 providerForRequest 纠偏后的那份）：能力由接口族决定，
+     而接口族正是 type 写的；纠偏只把「混合端点上的图像模型」按形态路由，不改变这家端点
+     的接口族（text_openai 的混合卡走的就是 OpenAI 兼容图像端点 = 多图 / 无强度）。 */
+  const raw = String((prov || {}).type || "");
+  const type = raw || String((providerForRequest(cfg, prov, modelId) || {}).type || "");
+  if (type === "image_stability")
+    return { refImages: true, maxRefImages: 1, strength: false };
+  if (type === "image_mj")
+    return { refImages: false, maxRefImages: 0, strength: false };
+  return { refImages: true, maxRefImages: MAX_MSG_IMAGES, strength: false };
+}
+/* 本机 SenseNova 后端一次能吃的参考图张数（sensenova-pack README：/generate 带 refImages 1–4 张）；
+   它也是唯一认参考强度（imgCfgScale）的后端（见 sensenova/main-sensenova.js）。 */
+const LOCAL_MAX_REF_IMAGES = 4;
+function localImageBackend() {
+  if (typeof localImageHost !== "function") return null;
+  let info = null;
+  try {
+    info = localImageHost() || null;
+  } catch {
+    info = null;
+  }
+  if (!info || info.installed !== true) return null;
+  return {
+    id: LOCAL_IMAGE_PROVIDER_ID,
+    label: String(info.label || t("本机图像生成（SenseNova）")),
+    providerName: "",
+    local: true,
+    ready: info.ready === true,
+    phase: String(info.phase || ""),
+    vramMode: String(info.vramMode || ""),
+    /* 本机能吃多张参考图，也能给参考强度（imgCfgScale）—— 与云端那套同名字段，应用侧一套判据 */
+    refImages: true,
+    maxRefImages: LOCAL_MAX_REF_IMAGES,
+    strength: true,
+  };
+}
+/* 主窗口渲染层的图像后端清单（函数节点的「图像后端」按钮用它列候选）：与应用窗口的
+   hostImageModels 同一份清单（云端图像服务商 + 本机 SenseNova），每项带参考图能力三字段。
+   不含「谁选了哪只」—— 应用窗口那份按应用 id 存，函数节点那份存节点自身字段。 */
+function imageBackendsForUi() {
+  const cloud = listCloudImageModels();
+  const local = localImageBackend();
+  const models = cloud.concat(local ? [local] : []);
+  return {
+    ok: true,
+    models: models,
+    hasAny: models.length > 0,
+    hasCloud: cloud.length > 0,
+    hasLocal: !!local,
+    defaultModel: cloud.length ? cloud[0].id : local ? local.id : "",
+  };
+}
+function readImageSelection(appId) {
+  const v = (readModelSelections() || {}).image;
+  const per = isObj(v) ? v : {};
+  const raw = per[String(appId || "")];
+  return typeof raw === "string" ? raw.trim() : "";
+}
+function writeImageSelection(appId, model) {
+  const aid = String(appId || "");
+  if (!aid) return;
+  try {
+    const all = readModelSelections();
+    const per = isObj(all.image) ? all.image : {};
+    const next = String(model || "").trim();
+    if (!next || next === MODEL_AUTO) delete per[aid];
+    else per[aid] = next;
+    all.image = per;
+    writeJson(modelsFilePath(), all);
+  } catch (err) {
+    console.warn("[apps-models] 写入失败：" + ((err && err.message) || err));
+  }
+}
+/* 本次要用的图像后端：显式给的清单内 id > 该应用存过的选择 > auto（云端优先，其次本机）
+   越界 / 后端不存在回 { error }（错误码即契约，绝不静默换一个后端出图）。 */
+function resolveImagePick(appId, modelId) {
+  const cloud = listCloudImageModels();
+  const local = localImageBackend();
+  const all = cloud.concat(local ? [{ id: local.id, label: local.label, local: true }] : []);
+  if (!all.length) return { error: "no_provider" };
+  const want = String(modelId == null ? "" : modelId).trim() || readImageSelection(appId);
+  if (!want || want === MODEL_AUTO) {
+    if (cloud.length) return { auto: true, ...cloud[0] };
+    return { auto: true, id: local.id, label: local.label, local: true };
+  }
+  const hit = all.find((m) => m.id === want);
+  if (!hit) return { error: "bad_model" };
+  return Object.assign({ auto: false }, hit);
+}
+function imageModelsPayload(e) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const cloud = listCloudImageModels();
+  const local = localImageBackend();
+  const saved = readImageSelection(own.id);
+  const ids = cloud.map((m) => m.id).concat(local ? [local.id] : []);
+  return {
+    ok: true,
+    models: cloud.concat(local ? [local] : []),
+    selected: saved && ids.indexOf(saved) >= 0 ? saved : MODEL_AUTO,
+    hasAny: ids.length > 0,
+    hasCloud: cloud.length > 0,
+    hasLocal: !!local,
+    localReady: !!(local && local.ready),
+    defaultModel: cloud.length ? cloud[0].id : local ? local.id : "",
+    /* 全局音视频互斥锁被别的任务占着时先告诉应用，别让它点了才发现忙 */
+    busy: !!(readMediaLock() || {}).nodeId,
+  };
+}
+function hostImageModelGet(e) {
+  const p = imageModelsPayload(e);
+  if (p.ok !== true) return p;
+  delete p.models;
+  return p;
+}
+function hostImageModelSet(e, arg) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const want = String((isObj(arg) && arg.model) || "").trim();
+  if (!want) return bad(t("缺少模型 id"), "bad_model");
+  if (want !== MODEL_AUTO && resolveImagePick(own.id, want).error)
+    return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
+  writeImageSelection(own.id, want);
+  return hostImageModelGet(e);
+}
+/* 参考图（图生图 / 图像编辑）：dataURL 或本机绝对路径，逐张读盘 / 解码 / 缩放到长边 ≤1080，
+   页面拿不到任何文件内容（与多模态消息同一条纪律）。回 { images:[dataURL], warnings:[] }。 */
+function imageRefDataUrls(opts) {
+  const o = isObj(opts) ? opts : {};
+  const src = [].concat(
+    Array.isArray(o.images) ? o.images : [],
+    o.image == null || o.image === "" ? [] : [o.image],
+    Array.isArray(o.refImages) ? o.refImages : [],
+    o.refImage == null || o.refImage === "" ? [] : [o.refImage],
+  );
+  const images = [];
+  const warnings = [];
+  const quota = { bytes: 0 };
+  for (const raw of src) {
+    if (images.length >= MAX_MSG_IMAGES) {
+      warnings.push("ref_image_too_many: 参考图超过 " + MAX_MSG_IMAGES + " 张上限，已忽略多余的");
+      break;
+    }
+    const one = imagePartUrl(raw, quota);
+    if (one.error) {
+      warnings.push("ref_image_skipped: " + one.error);
+      continue;
+    }
+    images.push(one.url);
+  }
+  return { images: images, warnings: warnings };
+}
+/* 应用侧参考强度（strength）：0–1 归一，越界夹紧，空 / 非数 = 不传（null）。
+ * 别名 imgStrength / refStrength / imgCfgScale 一并认（老写法与后端原生名都收），
+ * 但**语义只有一种**：0 = 参考图只作前缀条件（本机后端 imgCfgScale 1.0 = 官方默认关闭图像 CFG），
+ * 1 = 最强（映射到 4.0，与节点默认 cfgScale 同尺度，见 sensenova-pack engine 的说明）。 */
+function strengthOf(opts) {
+  const o = isObj(opts) ? opts : {};
+  let raw = o.strength;
+  if (raw == null || raw === "") raw = o.refStrength;
+  if (raw == null || raw === "") raw = o.imgStrength;
+  if (raw == null || raw === "") raw = o.imgCfgScale;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(1, n));
+}
+/* strength（0–1）→ 本机后端 imgCfgScale：1.0 = 关闭图像 CFG（官方默认），1 映射到 4.0（与 cfgScale 同尺度）。
+   strengthOf 为 null 时返回 null = 不下发，后端用官方默认 1.0。 */
+function imgCfgScaleOf(opts) {
+  const s = strengthOf(opts);
+  if (s == null) return null;
+  if (s <= 0) return 1;
+  return 1 + 3 * s;
+}
+/* 本次图像请求的 spec：云端走 aiCall 内核（与画布 proc_image 同一份 buildRequestSpec，
+   于是「配成 text_openai 的混合端点」也照旧按 OpenAI 兼容图像端点发）。 */
+function imageSpec(id, pick, opts) {
+  const o = isObj(opts) ? opts : {};
+  let provider = pick.providerId
+    ? providersFromConfig().find((p) => String(p.id || "") === String(pick.providerId)) || null
+    : null;
+  if (!provider) provider = providerFor("image");
+  if (!provider) return { error: "no_provider" };
+  /* 模型形态与服务商类型不符时用「改过 type 的副本」（原对象一字不动）—— 与画布节点同一口径 */
+  const cfg = readJson(configPath(), {}) || {};
+  const refs = imageRefDataUrls(o);
+  const warnings = refs.warnings.slice();
+  /* 参考强度（strength）只在**本机后端**有意义：云端 OpenAI 兼容图像端点没有这个参数，
+     绝不假装支持 —— 传了就在回执里如实说明并忽略（与「不降级、明确提示」同一口径）。 */
+  if (strengthOf(o) != null)
+    warnings.push(
+      "strength_unsupported: " +
+        t("当前图像后端不支持参考强度（strength），本次已忽略；本机 SenseNova 后端支持它"),
+    );
+  return {
+    spec: {
+      provider: providerForRequest(cfg, provider, pick.id) || provider,
+      kind: "image",
+      model: String(pick.id || ""),
+      prompt: String(o.prompt || "").slice(0, MAX_PROMPT),
+      size: String(o.size || ""),
+      quality: String(o.quality || ""),
+      background: String(o.background || ""),
+      /* 参考图（图生图 / 图像编辑）：**整组**下发。这里曾经只给第 1 张（refImage），
+         而 buildRequestSpec 的 OpenAI 兼容分支只在 images 非空时才走 /images/edits，
+         于是云端应用侧的参考图根本没发出去（回落成纯文生图）—— 该 bug 的回归见
+         test/smoke-apps-image-capabilities.js 的 [4] 段。refImage 仍保留：Stability
+         那条路（image_stability）吃的就是它。 */
+      refImage: refs.images[0] || "",
+      images: refs.images.slice(),
+    },
+    warnings: warnings,
+  };
+}
+/* 本地（SenseNova）出图：拍一个唯一 nodeId 占全局互斥锁 → 宿主生成（产物落数据目录）
+ *   → 读回字节成 base64 / dataURL。进度：生成期间轮询宿主快照（1.2s），经 emit 推给应用；
+ *   取消：把请求登记成 abort，轮询里发现就走宿主的 cancel（后端在下一个采样步边界停下）。 */
+let imageReqSeq = 0;
+async function generateLocalImage(appId, pick, opts, img, emit, reqId, outDir) {
+  const o = isObj(opts) ? opts : {};
+  if (typeof localImageGenerate !== "function") return bad(t("本机图像后端不可用"), "no_local_backend");
+  const req = {
+    appId: appId,
+    nodeId: "app-" + appId,
+    abort: false,
+    cancelled: false,
+    createdAt: Date.now(),
+    emit: emit,
+  };
+  if (reqId) imageReqs.set(String(reqId), req);
+  const timer = setInterval(async () => {
+    if (req.abort && !req.cancelled) {
+      req.cancelled = true;
+      try {
+        if (typeof localImageCancel === "function") await localImageCancel(req.nodeId);
+      } catch (_) {}
+      return;
+    }
+    try {
+      const snap = typeof localImageSnapshot === "function" ? await localImageSnapshot(req.nodeId) : null;
+      if (snap && !req.abort)
+        emit("progress", {
+          stage: String(snap.stage || ""),
+          message: String(snap.message || ""),
+          pct: Number(snap.pct) || 0,
+          step: Number(snap.step) || 0,
+          totalSteps: Number(snap.totalSteps) || 0,
+          elapsedSec: Number(snap.elapsedSec) || 0,
+        });
+    } catch (_) {}
+  }, 1200);
+  if (timer.unref) timer.unref();
+  try {
+    if (req.abort) return { ok: false, code: "cancelled", error: "已取消" };
+    emit("progress", { stage: "prepare", message: t("正在启动本机图像后端…"), pct: 1 });
+    const r = await localImageGenerate({
+      /* appId 透传给适配器：本机后端把产物落这个应用自己的数据目录（apps-data/<id>/gen） */
+      appId: appId,
+      nodeId: req.nodeId,
+      prompt: String(o.prompt || "").slice(0, MAX_PROMPT),
+      /* 画幅语义：应用给 ratio（如 "16:9"）或 size（"1280x720"）都收，宿主按官方桶对齐 */
+      ratio: String(o.ratio || o.aspect || ""),
+      width: Number(o.width) || 0,
+      height: Number(o.height) || 0,
+      refImages: img.images,
+      /* 参考强度：应用侧 0–1 → 本机后端 imgCfgScale（1.0 = 关闭图像 CFG 的官方默认，1 → 4.0）。
+         不传 = 后端按官方默认出图（与旧调用完全一致）。 */
+      imgCfgScale: imgCfgScaleOf(o) == null ? undefined : imgCfgScaleOf(o),
+      /* 产物目录（只有宿主内部那条路会给：函数节点把图落画布资产目录）；
+         应用通道不给 = 该应用自己的数据目录 gen/。 */
+      outputDir: String(outDir || ""),
+      requestId: reqId ? String(reqId) : "",
+    });
+    if (req.abort || (r && (r.cancelled || r.error === "cancelled")))
+      return { ok: false, code: "cancelled", error: "已取消" };
+    if (!r || r.ok !== true)
+      return bad(String((r && (r.message || r.error)) || t("本机图像生成失败")), String((r && r.error) || "local_failed"));
+    const file = String(r.path || "");
+    let buf = null;
+    try {
+      buf = fs.readFileSync(file);
+    } catch (_) {
+      buf = null;
+    }
+    const ext = String(path.extname(file)).slice(1).toLowerCase() || "png";
+    const mime = IMG_EXT_TYPES[ext] || "image/png";
+    const b64 = buf ? buf.toString("base64") : "";
+    return Object.assign(
+      {
+        ok: true,
+        via: "local",
+        backend: LOCAL_IMAGE_PROVIDER_ID,
+        model: LOCAL_IMAGE_PROVIDER_ID,
+        mime: mime,
+        base64: b64,
+        dataUrl: b64 ? "data:" + mime + ";base64," + b64 : "",
+        bytes: buf ? buf.length : Number(r.bytes) || 0,
+        file: file,
+        size: String(r.ratio || o.size || ""),
+        warnings: Array.isArray(r.warnings) ? r.warnings.slice(0, 8) : [],
+      },
+      r,
+    );
+  } catch (err) {
+    return fail(err);
+  } finally {
+    clearInterval(timer);
+    if (reqId) imageReqs.delete(String(reqId));
+  }
+}
+/* 云端出图（每次一张）：回 base64 + dataUrl（与旧行为一致）+ 尺寸与耗时旁证 */
+async function generateCloudImage(pick, built, emit) {
+  if (typeof aiCall !== "function") return bad(t("模型调用内核不可用"), "no_kernel");
+  emit("progress", { stage: "request", message: t("正在请求图像服务商…"), pct: 1 });
+  const started = Date.now();
+  const r = await aiCall(built.spec);
+  const b64 = String((r && r.base64) || "");
+  const ext = String((r && r.ext) || "png");
+  if (!b64) return bad(t("响应无图像数据"), "no_image");
+  const mime = ext === "jpeg" || ext === "jpg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+  return {
+    ok: true,
+    via: "cloud",
+    model: String(pick.id || ""),
+    providerName: String(pick.providerName || ""),
+    mime: mime,
+    base64: b64,
+    dataUrl: "data:" + mime + ";base64," + b64,
+    bytes: Buffer.from(b64, "base64").length,
+    size: String(built.spec.size || ""),
+    elapsedSec: Math.round((Date.now() - started) / 100) / 10,
+    warnings: built.warnings,
+  };
+}
+async function hostImageStream(e, opts) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const o = isObj(opts) ? opts : {};
+  const reqId = String(o.reqId || "");
+  const wc = e.sender;
+  const emit = (type, data) => {
+    try {
+      if (!wc.isDestroyed()) wc.send("apps:hostStream", Object.assign({ reqId: reqId, type: type }, data || {}));
+    } catch {}
+  };
+  try {
+    if (!String(o.prompt || "").trim()) return bad(t("缺少提示词"), "no_prompt");
+    const pick = resolveImagePick(own.id, o.model || o.imageModel);
+    if (pick.error === "no_provider")
+      return bad(
+        t("未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商，或安装本机 SenseNova 插件）"),
+        "no_provider",
+      );
+    if (pick.error) return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
+    const img = imageRefDataUrls(o);
+    if (pick.local) return await generateLocalImage(own.id, pick, o, img, emit, reqId);
+    const built = imageSpec(own.id, pick, o);
+    if (built.error) return bad(t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), built.error);
+    return await generateCloudImage(pick, built, emit);
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    const code = callErrCode(err);
+    emit("error", { error: msg, code: code });
+    return { ok: false, error: msg, code: code };
+  }
+}
+/* 显式图生图 / 图像编辑（appHost.imageEdit）：参考图**必填**，其余与 hostImageStream 同一份实现。
+   没有参考图不是「降级成文生图」，而是明确回错 —— 与产品「宁可报错也不偷偷换路」的口径一致。 */
+async function hostImageEdit(e, opts) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const o = isObj(opts) ? opts : {};
+  const refs = []
+    .concat(
+      Array.isArray(o.images) ? o.images : [],
+      o.image == null || o.image === "" ? [] : [o.image],
+      Array.isArray(o.refImages) ? o.refImages : [],
+      o.refImage == null || o.refImage === "" ? [] : [o.refImage],
+    )
+    .filter((x) => x != null && x !== "");
+  if (!refs.length)
+    return bad(t("图像编辑需要至少一张参考图（opts.images）"), "no_ref_image");
+  return hostImageStream(e, o);
+}
+/* 宿主内部出图（函数节点的 mtnode.image(...) 走这里，main.js 的 fnImageCall 调用）：
+   与 appHost.imageGen 同一份内核 —— 同一份后端清单与选择解析、同一份参考图读盘 / 缩放、
+   同一把全局音视频互斥锁、同一套错误码与 warning。差别只有两处：
+     · 调用方不是应用窗口（没有 sender 可校验），appId 由调用方给（函数节点用它自己的 id）；
+     · 产物目录可由调用方指定（函数节点落画布资产目录），不给就落 <数据目录>/apps-data/<id>/gen。
+   回执形状与 imageGen 完全一致（ok / base64 / dataUrl / bytes / mime / via / model / warnings）。 */
+async function hostImageGenerate(arg) {
+  const a = isObj(arg) ? arg : {};
+  const appId = String(a.appId || a.nodeId || "fn-node");
+  const o = isObj(a.opts) ? a.opts : {};
+  const outDir = String(o.outputDir || "");
+  if (!String(o.prompt || "").trim()) return bad(t("缺少提示词"), "no_prompt");
+  const pick = resolveImagePick(appId, o.model || o.imageModel);
+  if (pick.error === "no_provider")
+    return bad(
+      t("未配置可用的图像后端（请在「设置 · API/配置」里配图像服务商，或安装本机 SenseNova 插件）"),
+      "no_provider",
+    );
+  if (pick.error) return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
+  const img = imageRefDataUrls(o);
+  const emit = () => {};
+  try {
+    if (pick.local) return await generateLocalImage(appId, pick, o, img, emit, "", outDir);
+    const built = imageSpec(appId, pick, o);
+    if (built.error)
+      return bad(t("未配置可用的图像服务商（请在「设置 · API/配置」中填写）"), built.error);
+    return await generateCloudImage(pick, built, emit);
+  } catch (err) {
+    return fail(err);
+  }
+}
+/* 取消：应用侧按 reqId 请求取消（本地后端在下一个采样步边界停下；云端请求不中断，
+   只把登记撤掉，结果由调用方自己忽略）。 */
+function hostImageCancel(e, arg) {
+  const own = senderAppDir(e);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const reqId = String((isObj(arg) && (arg.reqId || arg.id)) || "");
+  const req = reqId ? imageReqs.get(reqId) : null;
+  if (!req || req.appId !== own.id) return { ok: true, cancelled: false };
+  req.abort = true;
+  return { ok: true, cancelled: true, via: "local" };
+}
 async function hostText(e, opts) {
   const own = senderAppDir(e);
   if (!own) return bad(t("不是应用窗口"), "not_app");
@@ -3420,23 +4400,11 @@ async function hostTextStream(e, opts) {
     return { ok: false, error: msg, code: code };
   }
 }
+/* 图像生成（旧签名，一次调用一张）：实现统一走 hostImageStream —— 云端 / 本机两条路、
+   参考图、进度与取消都在那儿。这里只保证**老调用的行为与回执不变**（ok/base64/dataUrl/bytes/mime），
+   额外多回 via / model / size 等旁证字段（只增不改）。 */
 async function hostImage(e, opts) {
-  const own = senderAppDir(e);
-  if (!own) return bad(t("不是应用窗口"), "not_app");
-  const built = hostSpec(own.id, "image", opts);
-  if (built.error) return bad(built.error, built.code || "no_provider");
-  if (!String(built.spec.prompt || "").trim()) return bad(t("缺少提示词"), "no_prompt");
-  if (typeof aiCall !== "function") return bad(t("模型调用内核不可用"), "no_kernel");
-  try {
-    const r = await aiCall(built.spec);
-    const b64 = String((r && r.base64) || "");
-    const ext = String((r && r.ext) || "png");
-    if (!b64) return bad(t("响应无图像数据"), "no_image");
-    const mime = ext === "jpeg" || ext === "jpg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
-    return { ok: true, mime: mime, base64: b64, dataUrl: "data:" + mime + ";base64," + b64, bytes: Buffer.from(b64, "base64").length };
-  } catch (err) {
-    return fail(err);
-  }
+  return hostImageStream(e, Object.assign({}, isObj(opts) ? opts : {}, { legacy: true }));
 }
 
 /* ---------------- appHost：数据落盘（默认数据根 / 可改的数据文件夹） ----------------
@@ -3469,6 +4437,104 @@ function readKvOf(id) {
   return { data: data, kv: isObj(data.kv) ? data.kv : {}, file: r.file, migrated: !!r.migrated };
 }
 
+/* ---------------- appHost：应用能力位（capabilities） ----------------
+ *
+ * 需求（用户共识）：默认应用**不再携带语音转文字** —— 「这个应用要不要文字输入 / 要不要在
+ * 窗口底部显示听写条 / 要不要图像生成」写在 app.json 的 capabilities 里（见 apps-capabilities.js）：
+ *   · textInput   决定脚手架那两份语音模块（speech.js / speech.css）补不补进应用目录；
+ *   · showDictate 决定宿主注不注入听写条（preload-app.js 的闸门）与默认页注不注入 dict.js；
+ * 两者都缺省 false（新应用浮层里也不勾）。能力位是**静态声明**，不是权限闸
+ * （桥上的接口始终在，旧应用不会突然报错）。
+ *
+ * 两条主进程入口（应用中心渲染层用）：
+ *   appCapabilitiesGet({ id })             → { ok, capabilities, list:[{id,label,hint,on}] }
+ *   appCapabilitiesSet({ id, capabilities, regenEntry? })
+ *        · 整份替换能力位（缺的键按 false）；
+ *        · textInput 打开 → 把随包脚手架的 speech.js / speech.css 补进应用目录 + 按模板重生成
+ *          入口页（入口页本是模板生成的一份独立文件，「换风格」也是这么重生成的）；
+ *        · textInput 关掉 → 反向：重生成入口页并删掉这两个文件；
+ *        · showDictate 打开 / 关掉 → 只影响入口页里那份 dict.js 内联（宿主注入侧看同一个位）；
+ *        · regenEntry=false 时只写声明、不碰文件（给「我自己写的入口页」留出口）。
+ * ─────────────────────────────────────────────────────────────────────── */
+function appCapById(id) {
+  const sid = safeAppId(id);
+  if (!sid) return { error: bad(t("应用 id 不合法"), "bad_id") };
+  const { root } = rootPath();
+  const dir = appDirOf(root, sid);
+  if (!dir || !fs.existsSync(dir)) return { error: Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid }) };
+  return { id: sid, dir: dir, root: root };
+}
+function appCapabilitiesGet(arg) {
+  const a = isObj(arg) ? arg : {};
+  const hit = appCapById(a.id);
+  if (hit.error) return hit.error;
+  const man = manifestOf(hit.dir, hit.id) || {};
+  const caps = normCapabilities(man.capabilities);
+  return { ok: true, id: hit.id, capabilities: caps, list: capabilitiesForUi(caps, appLocale()) };
+}
+function appCapabilitiesSet(arg) {
+  const a = isObj(arg) ? arg : {};
+  const hit = appCapById(a.id);
+  if (hit.error) return hit.error;
+  const prev = manifestOf(hit.dir, hit.id) || {};
+  const caps = normCapabilities(a.capabilities);
+  const regen = a.regenEntry !== false;
+  const man = writeManifest(hit.dir, { capabilities: caps }, prev);
+  const out = { ok: true, id: hit.id, capabilities: caps, wroteFiles: [] };
+  if (regen) {
+    /* 语音模块两份文件：声明打开就补，关掉就撤（撤的是我们补的那两份，绝不碰别的文件） */
+    const speech = syncSpeechFiles(hit.dir, caps);
+    out.wroteFiles = speech;
+    const entry = safeEntry(man.entry) || SUB.index;
+    const abs = resolveInside(hit.dir, entry);
+    if (abs) {
+      try {
+        fs.writeFileSync(abs, defaultPageHtml(man), "utf8");
+        out.regeneratedEntry = entry;
+      } catch (err) {
+        return fail(err);
+      }
+    }
+  }
+  out.capabilities = normCapabilities(readManifest(hit.dir) ? (readManifest(hit.dir) || {}).capabilities : caps);
+  out.list = capabilitiesForUi(out.capabilities, appLocale());
+  return out;
+}
+/* 应用侧展示语言（config.json 的 locale；hostLocale 由 main.js 注入，取不到按中文） */
+function appLocale() {
+  try {
+    if (typeof hostLocale === "function") return String(hostLocale() || "zh");
+  } catch {}
+  try {
+    return String((readJson(configPath(), {}) || {}).locale || "zh");
+  } catch {
+    return "zh";
+  }
+}
+/* 脚手架里的语音模块文件（templates/app-scaffold/speech.js + speech.css）：
+   声明了 textInput 才复制进应用目录（README 里写明这条口径）。 */
+const SCAFFOLD_DIR = path.join(__dirname, "templates", "app-scaffold");
+function syncSpeechFiles(dir, caps) {
+  const wrote = [];
+  const on = capabilityOn(caps, "textInput");
+  for (const name of ["speech.js", "speech.css"]) {
+    const src = path.join(SCAFFOLD_DIR, name);
+    const dst = path.join(dir, name);
+    try {
+      if (on) {
+        if (!fs.existsSync(src)) continue;
+        fs.copyFileSync(src, dst);
+        wrote.push(name);
+      } else if (fs.existsSync(dst)) {
+        fs.unlinkSync(dst);
+        wrote.push("-" + name);
+      }
+    } catch (err) {
+      console.warn("[apps-cap] " + name + " 同步失败：" + ((err && err.message) || err));
+    }
+  }
+  return wrote;
+}
 function hostDataDirGet(e) {
   const own = senderAppDir(e);
   if (!own) return bad(t("不是应用窗口"), "not_app");
@@ -3620,6 +4686,15 @@ function registerAppsIpc(opts) {
   /* 语音转写（appHost.asr*）：dsh 适配器与「本应用数据文件夹」两个来源都由 main.js 注入 ——
      apps-store 不认识 dsh，也不自己拼数据目录（路径只走 appDataDirOf 这一处口径）。 */
   if (typeof opts.getDsh === "function") getDshForSpeech = opts.getDsh;
+  /* 本机图像后端（SenseNova）：四项都由 main.js 注入 —— 探测（装了没 / 相位）、出图、取消、
+     进度快照。apps-store 不认识它的内部结构（与 getDsh 同一条纪律）。 */
+  if (typeof opts.localImageHost === "function") localImageHost = opts.localImageHost;
+  if (typeof opts.localImageGenerate === "function") localImageGenerate = opts.localImageGenerate;
+  if (typeof opts.localImageCancel === "function") localImageCancel = opts.localImageCancel;
+  if (typeof opts.localImageSnapshot === "function") localImageSnapshot = opts.localImageSnapshot;
+  /* 全局音视频互斥锁快照（media-gen-global-lock.js 的 refreshStaleLock） */
+  if (typeof opts.readMediaLock === "function") readMediaLock = opts.readMediaLock;
+  if (typeof opts.locale === "function") hostLocale = opts.locale;
   getAppDataDirForSpeech = (id) => {
     try {
       return appDataDirOf(String(id || ""));
@@ -3676,6 +4751,10 @@ function registerAppsIpc(opts) {
   /* 本机状态字段写入口（渲染层不碰文件系统）：{ id, dev?, author?, forkOf? } ——
      二次开发（dev:true + 作者）、上架成功后写作者与二次开发来源都走这一条。 */
   ipcMain.handle("apps:setMeta", guard((e, arg) => setAppMeta(arg)));
+  /* 应用能力位（app.json 的 capabilities）：文字输入 / 图像生成 —— 卡片小标、脚手架起步文件、
+     宿主听写条注入都读它。设 textInput 时按模板重生成入口页（与「换风格」同一口径）。 */
+  ipcMain.handle("apps:capabilitiesGet", guard((e, arg) => appCapabilitiesGet(arg)));
+  ipcMain.handle("apps:capabilitiesSet", guard((e, arg) => appCapabilitiesSet(arg)));
   ipcMain.handle("apps:catalog", async (e, arg) => {
     try {
       const cat = await loadCatalog(arg || {});
@@ -3708,7 +4787,19 @@ function registerAppsIpc(opts) {
       return fail(err);
     }
   });
+  /* 本机多版本（§九）：versions = 只读台账（当前版 + 上一版，回滚入口据此显隐）；
+     rollback = 把目标那一版按台账来源重新下载并换进来（进度仍走 apps:progress）。 */
+  ipcMain.handle("apps:versions", guard((e, arg) => appsVersionPick(isObj(arg) ? arg.id : arg)));
+  ipcMain.handle("apps:rollback", async (e, arg) => {
+    try {
+      return await rollbackApp(arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
   ipcMain.handle("apps:exportZip", guard((e, arg) => exportZip(isObj(arg) ? arg.id : arg)));
+  /* 上架前体检（开发页那枚按钮）：只读，查「打包会丢哪些文件」+「入口页引用了但不存在」 */
+  ipcMain.handle("apps:packAudit", guard((e, arg) => packAudit(isObj(arg) ? arg : { id: arg })));
   /* 上架（§七）：拍应用自己的窗口 + 现打包读回 base64（上架窗只拿回执，不碰文件系统） */
   ipcMain.handle("apps:shotWindow", async (e, arg) => shotAppWindow(isObj(arg) ? arg.id : arg));
   ipcMain.handle("apps:readZipBase64", guard((e, arg) => readPackBase64(isObj(arg) ? arg.id : arg)));
@@ -3745,9 +4836,33 @@ function registerAppsIpc(opts) {
       return fail(err);
     }
   });
+  /* 图像生成（流式 + 可取消 + 可带参考图）：事件走 apps:hostStream（type:"progress"）。
+     与 hostTextStream 同一个通道，应用侧按 reqId 分流。 */
+  ipcMain.handle("apps:hostImageStream", async (e, arg) => {
+    try {
+      return await hostImageStream(e, arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle("apps:hostImageCancel", guard((e, arg) => hostImageCancel(e, arg)));
+  /* 显式图生图 / 图像编辑（参考图必填）：与 hostImageStream 同一份实现，事件同样走 apps:hostStream */
+  ipcMain.handle("apps:hostImageEdit", async (e, arg) => {
+    try {
+      return await hostImageEdit(e, arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  /* 图像后端清单与选择（与文字模型那套同构：默认 auto + 按应用 id 持久化） */
+  ipcMain.handle("apps:hostImageModels", guard((e) => imageModelsPayload(e)));
+  ipcMain.handle("apps:hostImageModel", guard((e) => hostImageModelGet(e)));
+  ipcMain.handle("apps:hostImageSetModel", guard((e, arg) => hostImageModelSet(e, arg)));
   /* 模型继承（列清单 / 读选择 / 改选择）：应用窗口不能在已配置清单之外挑模型，
      服务商与 Key 一律不回传（见 hostModelsPayload 一节）。 */
   ipcMain.handle("apps:hostModels", guard((e) => hostModelsPayload(e)));
+  /* 应用自报能力位：preload 据此决定要不要注入听写条（没声明 = 不注入） */
+  ipcMain.handle("apps:hostCapabilities", guard((e) => hostCapabilities(e)));
   ipcMain.handle("apps:hostModel", guard((e) => hostModelGet(e)));
   ipcMain.handle("apps:hostSetModel", guard((e, arg) => hostModelSet(e, arg)));
   /* 宿主选图（多模态输入里的「选一张本机图」）：只回路径，读盘 / 缩放留在主进程 */
@@ -3867,6 +4982,13 @@ module.exports = {
   installApp,
   uninstallApp,
   exportZip,
+  /* 本机多版本（docs/apps-market.md §九）：台账查询 + 按来源重下的回滚。纯函数段为主，
+     冒烟直接真跑（载荷不落盘，所以回滚必须真的走一次下载 + sha256 校验）。 */
+  appsVersionPick,
+  rollbackApp,
+  /* 上架前体检（开发页那枚按钮走的是同一份实现：真读目录 + 真跑打包口径） */
+  packEntriesOf,
+  packAudit,
   /* 目录双源（静态目录 / 云端接口）：解析与来源判定是纯函数段，冒烟直接真跑 */
   parseCatalogDoc,
   resolveZipUrl,
@@ -3913,6 +5035,39 @@ module.exports = {
   resolveModelFor,
   readModelSelection,
   writeModelSelection,
+  /* 应用侧图像通道（冒烟直接真跑）：云端清单按模型形态认、本机后端按注入的探测函数认 */
+  listCloudImageModels,
+  usableImageProviders,
+  resolveImagePick,
+  readImageSelection,
+  writeImageSelection,
+  imageModelsPayload,
+  imageBackendsForUi,
+  localImageBackend,
+  hostImageModelGet,
+  hostImageModelSet,
+  hostImageStream,
+  hostImageEdit,
+  hostImage,
+  hostImageCancel,
+  imageRefDataUrls,
+  strengthOf,
+  imgCfgScaleOf,
+  cloudImageCaps,
+  hostImageGenerate,
+  generateLocalImage,
+  imageSpec,
+  LOCAL_MAX_REF_IMAGES,
+  LOCAL_IMAGE_PROVIDER_ID,
+  /* 应用能力位（app.json 的 capabilities）：主进程两条入口真跑 + 默认页注入口径 */
+  appCapabilitiesGet,
+  appCapabilitiesSet,
+  defaultPageHtml,
+  normCapabilities,
+  capabilityOn,
+  capabilityBadges,
+  capabilitiesForUi,
+  syncSpeechFiles,
   buildMessages,
   imagePartUrl,
   decodeImageDataUrl,

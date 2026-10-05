@@ -21,7 +21,8 @@
  *     存量应用由主进程一次性回填（没有 installed.json 安装账本 = 自己新建的 → dev:true）。
  *   · 作者：云端条目取 owner（上架账号），本机取 app.json.author，空则回落当前登录账号（未登录不显示）。
  *   · 应用身份 = 应用 id + 作者 uid（uid 只在内部判定用）；同源（forkOf）条目 = 同一应用的多个分支。
- *   · 卡片按钮随状态：未装 = 下载；已装 = 启动；同作者有新版本 = 更新；有其他作者分支 = 切换分支 ▾。
+ *   · 卡片按钮随状态：未装 = 下载；已装 = 启动；同作者有新版本 = 更新；
+ *     同 id 有多个作者分支（§十）= 合并成一张卡 + 「看分支（N）」→ 详情里的分支树。
  *   · 校验值（sha256）与其余技术字段收进「ⓘ 校验」小按钮 + 默认折叠的「开发者信息 ▾」。
  *
  * 桥（preload.js 白名单，全部只转发给主进程 apps-store.js）：
@@ -34,9 +35,9 @@
  * （appsExportZip / appsProbeChanges 仍在 preload 白名单里，走它们的是上架流程
  *   renderer/app-publish.js 与主进程 apps-store.js；本页本轮不再有这两个入口。）
  *
- * 顶栏入口 #btnApps 只对白名单账号露出（APPS_USER_WHITELIST，可改常量）：登录态唯一来源
+ * 顶栏入口 #btnApps 对**所有已登录账号**露出（原白名单常量已去掉）：登录态唯一来源
  * = window.MTNodeAuth.state()（统一账户模块 app-auth.js）；本文件按调用期探测订阅，
- * 未就绪 / 未登录 / 不在白名单一律隐藏；登录态变化时同步显隐（不在白名单时连页面一起收掉）。
+ * 未就绪 / 未登录一律隐藏；登录态变化时同步显隐（退出登录时连页面一起收掉）。
  *
  * 对话框纪律（AGENTS.md「协作约定」）：本页 persistent —— **没有**「点外部 / 点蒙层自动收起」；
  * 关闭只走三处：正文顶部第 1 行最右的「返回 MTNode」、Esc、再点一次顶栏「应用」（同一开关）。开着它时点顶栏任何
@@ -48,9 +49,10 @@
 
 /* ───────────────────────── 常量 ───────────────────────── */
 
-/* 顶栏「应用」入口的用户名白名单（可改常量，小写比较）：登录用户名在这里才露出入口。
-   加账号只改这一个数组；留空数组 = 谁都不露出。 */
-const APPS_USER_WHITELIST = ["ms2308"];
+/* 顶栏「应用」入口的可见口径：**所有已登录账号**都能看到应用中心与应用开发（原白名单
+   常量 ["ms2308"] 已去掉）。未就绪 / 未登录一律隐藏；登录态变化时
+   同步显隐（退出登录时连页面一起收掉）。上架不吃客户端门禁：服务端按当前登录账号绑 owner
+   并强制账号配额（store-saas/server.mjs 的 appQuotaError）。 */
 
 /* 左导航（顺序即显示顺序）：[id, 标题, 副标题] */
 const APPS_NAV = [
@@ -70,6 +72,10 @@ const APPS_SEARCH_DEBOUNCE = 180;
 /* 标签条最多列几枚（多的只计数；选中过的标签一定保留在条上，否则一选就滚没了） */
 const APPS_TAG_MAX = 16;
 
+/* 打赏汇总（卡片金币 icon 的悬停文案）的新鲜期：这段时间内重绘不再重复问服务端。
+   比目录 TTL（5 分钟）短得多 —— 刚打赏完的用户会立刻回来看这一页。 */
+const APPS_TIPS_TTL = 45 * 1000;
+
 const APPS_ST = {
   nav: "apps", /* apps | lib | dev */
   q: "", /* 应用页的搜索词 */
@@ -78,7 +84,6 @@ const APPS_ST = {
   catAt: 0,
   list: null, /* 本机应用列表响应 */
   root: null, /* { path, configured, exists } */
-  detailId: "", /* 应用页展开详情的应用 id */
   progress: Object.create(null), /* id -> { phase, percent, got, total, error } */
   busy: Object.create(null), /* id -> true：本机正在下载 / 安装 */
   conflictAsk: null, /* 同名冲突框的收尾函数（Esc 走它） */
@@ -86,6 +91,15 @@ const APPS_ST = {
      GET /api/apps?owner=<自己>&includeUnpublished=1，把 mine / unpublished / 版本树合并进来 */
   mine: null, /* { ok, at, byId: { <id>: item } } */
   mineAt: 0,
+  /* 打赏汇总（GET /api/tips/summary 的批量回执）：byId = { <应用id>: {count,totalYuan} }。
+     为什么要另拉一次：卡片走的是**静态目录** catalog.json（老目录带 tips、老客户端拿不到），
+     列表页用这一个接口一次问齐整页，悬停文案就不会再出现「线上有人打赏、卡片说没人打赏」。 */
+  tips: null, /* { ok, at, byId, ids:Set, count } */
+  tipsAt: 0,
+  tipsBusy: false, /* 正在问服务端（悬停文案显示「正在读取打赏数据…」而不是谎报无人打赏） */
+  tipsFailed: false, /* 上一次问失败（未登录 / 断网 / 5xx）：文案说「暂未取到」，金币 icon 照旧可点 */
+  tipsAsked: "", /* 上一次问过的 id 集合签名（同一批不再重问，避免重绘 → 再问 → 再重绘） */
+  tipsErr: "",
   seq: 0, /* 渲染序号：异步回来时对不上就丢弃（防切页后旧数据重绘） */
 };
 
@@ -301,6 +315,82 @@ function appsRunBtnEl(id, label, onclick) {
   b.title = appsT("在独立窗口里运行这个应用");
   return b;
 }
+/* 「详细」= 单开一只对话窗（应用中心目录卡片右上角那一枚 ⓘ；库页卡片仍用它，但文案由调用方给）。
+   本轮需求：目录卡片上的「详细」不再是一颗带文案的按钮，改成**一枚 info icon**（ⓘ）——
+   卡片第一行右端与金币 icon 并排，同一套小方框样式（.apps-ico-btn）。
+   按钮仍是同一个元件（data-app-detail / title / 点击开窗都不变），只是不再显示文案。 */
+function appsDetailBtnEl(id, label) {
+  const text = label ? appsT(label) : "ⓘ";
+  const b = appsMiniBtn(text, () => {
+    if (typeof window.openAppsDetail === "function") window.openAppsDetail(id);
+  });
+  b.classList.add("apps-ico-btn", "apps-ico-info");
+  b.dataset.appDetail = "1";
+  b.title = appsT("单开一只对话窗看详情：说明 / 云端版本 / 本机版本（可回滚）/ 评论");
+  b.setAttribute("aria-label", appsT("详情"));
+  return b;
+}
+
+/* 卡片第一行右端的两枚图标按钮（需求口径）：
+ *   · 金币 icon = 打赏入口（只上架到云端的应用才有，见 appsCloudTarget）；汇总（`N 币 · M 次`）
+ *     不再占卡片正文，收到它的悬停 tooltip 里（没人打赏过就写「还没有人打赏」）。
+ *   · ⓘ = 原来的「详细」，见 appsDetailBtnEl。
+ * 两枚都走同一套小方框样式（.apps-ico-btn）：与卡片上其它按钮一样不做纯文字裸链。 */
+/* 悬停文案的数据来源：先问本轮拉到的公开汇总（GET /api/tips/summary，见 appsTipsLoad），
+   退回目录条目自带的 tips（tips 有值时就是原地走 MtTips.tipSumTitle(tips)），
+   再退回「还没有人打赏」—— 三种状态各有各的话：
+   · 有数字（哪怕 0 次）→「累计打赏 N 币（M 次）」/「还没有人打赏」；
+   · 还没问回来 →「正在读取打赏数据…」；
+   · 问失败（未登录 / 断网 / 5xx）→「打赏数据暂未取到」——**绝不谎报成无人打赏**。 */
+function appsTipsTitleEl(spec) {
+  const T = window.MtTips;
+  if (!T || typeof T.tipSumTitle !== "function") return appsT("打赏作者（鲸圆币）");
+  const tips = appsSpecWithTips(spec).tips;
+  if (tips) return T.tipSumTitle(tips);
+  const id = appsBranchIdOf(spec);
+  const known = !!(id && APPS_ST.tips && APPS_ST.tips.byId && APPS_ST.tips.byId[id]);
+  if (known) return T.tipSumTitle(APPS_ST.tips.byId[id]);
+  if (APPS_ST.tipsFailed) return appsT("打赏数据暂未取到");
+  return appsT("正在读取打赏数据…");
+}
+function appsAppsIconRow(spec) {
+  const cloudTarget = appsCloudTarget(spec);
+  const row = document.createElement("span");
+  row.className = "apps-tile-icoacts";
+  if (cloudTarget && window.MtTips) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mini apps-ico-btn apps-ico-coin";
+    btn.dataset.appTip = "1";
+    const tips = appsSpecWithTips(spec).tips;
+    btn.appendChild(window.MtTips.coinIcon("sm"));
+    btn.title = appsTipsTitleEl(spec);
+    btn.setAttribute("aria-label", appsT("打赏作者（鲸圆币）"));
+    btn.onclick = (ev) => {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      window.MtTips.open(cloudTarget, {
+        tips: tips,
+        /* 打赏成功（或窗里刷新过）→ 立刻重拉这一页的汇总并重绘：刚打赏完回来看到的数字必须是新的 */
+        onDone: () => {
+          appsTipsRefreshNow();
+          appsHubPaint();
+        },
+      });
+    };
+    row.appendChild(btn);
+  }
+  row.appendChild(appsDetailBtnEl(spec && spec.id));
+  return row;
+}
+/* 打赏成功后强制重拉一次（跳过新鲜期）：不重绘、只更新缓存，由调用方决定什么时候重绘。 */
+function appsTipsRefreshNow() {
+  const ids = appsTipsIdsOf(appsSpecPoolAll());
+  if (!ids.length) return Promise.resolve(null);
+  return appsTipsLoad(ids, true).catch(() => null);
+}
 function appsBridgeMissing() {
   appsToast(appsT("应用服务未就绪（主进程应用宿主尚未接入）"), "err");
 }
@@ -330,7 +420,7 @@ function appsErrText(r) {
   return raw || appsT("未知错误");
 }
 
-/* ───────────────── 登录态白名单 → 顶栏入口显隐 ───────────────── */
+/* ───────────────── 登录态 → 顶栏入口显隐 ───────────────── */
 
 /* 登录态快照：window.MTNodeAuth.state()（{ signedIn, user }）；模块未就绪 = 未登录。 */
 function appsAuthUser() {
@@ -339,12 +429,13 @@ function appsAuthUser() {
   const st = A.state() || {};
   return st.signedIn && st.user ? st.user : null;
 }
+/* 可见判据 = 已登录且有用户名字段（与钱包侧口径一致：账号相关能力只按登录态判定，
+   不再按用户名发白名单）。 */
 function appsEntryAllowed() {
   const u = appsAuthUser();
-  const name = String((u && u.username) || "").trim().toLowerCase();
-  return !!name && APPS_USER_WHITELIST.indexOf(name) >= 0;
+  return !!String((u && u.username) || "").trim();
 }
-/* 同步顶栏入口显隐；掉出白名单（退出登录 / 换账号）时把页面一并收掉 */
+/* 同步顶栏入口显隐；退出登录（不再满足判据）时把页面一并收掉 */
 function appsSyncEntryVisibility() {
   const btn = document.getElementById("btnApps");
   const ok = appsEntryAllowed();
@@ -369,8 +460,20 @@ function appsBindAuthWatch() {
     try {
       appsSyncEntryVisibility();
     } catch (_) {}
+    /* 换账号 / 退出登录：本机目录与打赏汇总都得当没读过（下一个人不该看到上一个人的缓存）。
+       打赏汇总本身是公开数字，但换账号后仍重拉一次最省心。 */
+    appsTipsReset();
   });
   return true;
+}
+/* 清空打赏汇总缓存（换账号、退出登录、强制刷新时调）。 */
+function appsTipsReset() {
+  APPS_ST.tips = null;
+  APPS_ST.tipsAt = 0;
+  APPS_ST.tipsAsked = "";
+  APPS_ST.tipsBusy = false;
+  APPS_ST.tipsFailed = false;
+  APPS_ST.tipsErr = "";
 }
 
 /* ───────────────── 图标（云端目录声明 → 可显示的 URL） ───────────────── */
@@ -475,27 +578,33 @@ async function appsRootLoad() {
 function appsCatalogList() {
   return (APPS_ST.cat && Array.isArray(APPS_ST.cat.apps) ? APPS_ST.cat.apps : []).slice();
 }
-/* 本页能看到的全部条目（云端目录 + 作者自己的线上条目，同 appsPaintAppsPage 的合并口径）
-   —— 标签条（appsTagCatalog）按它收集，保证「条上有的标签一定筛得出东西」。 */
+/* 本页能看到的全部条目（云端目录 + 作者自己的线上条目）——
+   同 id 多分支**已合并成一条**（主干那条带上 branchSiblings / branchCount / branchSummary，
+   见 appsMergeSameId），所以列表、标签条、搜索看到的都是「一个应用一张卡」。
+   另挂上打赏汇总（appsSpecWithTips：接口那份优先、目录条目自带的 tips 兜底）——
+   卡片金币 icon 的悬停文案与合并卡片的副标题都读它。 */
 function appsSpecListAll() {
-  const out = appsCatalogList().map(appsSpecWithMine);
-  const have = Object.create(null);
-  for (const s of out) have[String(s.id)] = 1;
-  const mineAll = APPS_ST.mine && APPS_ST.mine.byId ? APPS_ST.mine.byId : null;
-  if (mineAll) {
-    for (const id of Object.keys(mineAll)) {
-      if (have[id]) continue;
-      const s = appsSpecFromMine(mineAll[id]);
-      if (s) out.push(s);
-    }
-  }
-  return out;
+  return appsMergeSameId(appsSpecPoolAll()).map(appsSpecWithTips);
+}
+/* 合并前的原始条目池（要按分支取某一条时用它） */
+function appsSpecPoolRaw() {
+  return appsSpecPoolAll();
 }
 function appsLocalList() {
   return (APPS_ST.list && Array.isArray(APPS_ST.list.apps) ? APPS_ST.list.apps : []).slice();
 }
 function appsSpecById(id) {
-  return appsCatalogList().find((a) => a && a.id === id) || null;
+  /* 同 id 多分支（§十）：缺省给主干那条（目录里同 id 的第一条 = 服务端的缺省口径）；
+     要指名某条分支用 appsSpecOfBranch(id, ownerId)。
+     **不许把这里写成 appsSpecOfBranch(id, "") 当唯一实现** —— 那一对是互相回落的：
+     appsSpecOfBranch 在「同 id 一条候选都没有」时回落 appsSpecById，appsSpecById 又回落
+     appsSpecOfBranch，两者对着递归，栈一满就是 `RangeError: Maximum call stack size exceeded`。
+     用户报的「消息里点开就报错」正是这条链：点打赏通知（app-messages.js）→ openAppsDetail(id)
+     → appsDetailSpecOf → appsSpecById → appsSpecOfBranch → appsSpecById → …（真堆栈见
+     %APPDATA%\pipeline-console\logs\error.log，报错位置 app-apps.js:665 = appsSpecPoolAll）。
+     所以这一支**自己查表**（与 appsSpecOfBranch 的「没指定作者」口径逐字同源），不绕回去。 */
+  const list = appsSpecPoolAll().filter((s) => appsBranchIdOf(s) === String(id || ""));
+  return list[0] || null;
 }
 function appsLocalById(id) {
   return appsLocalList().find((a) => a && a.id === id) || null;
@@ -521,17 +630,52 @@ function appsSpecDesc(spec) {
 }
 
 /* ─────────── 作者 / 二次开发来源 / 校验值小按钮（docs/apps-market.md §八） ───────────
- * 作者口径（本轮共识）：
- *   · 云端条目：owner（上架账号名，接口按登录态绑定；老目录可能只写了 author 字段）。
- *   · 本机条目：app.json 里的 author；没写过就回落当前登录账号；仍未登录 → 空（界面不显示作者行）。
- * 应用身份 = 应用 id + 作者 uid：uid 只在内部判定（同不同作者、分支归组）用，界面一律显示账号名。 */
+ * 作者显示口径（本轮共识，与 store-saas/server.mjs 的 accountDisplayNameOf **同源**）：
+ *   · 显示名 = 账号昵称 —— 服务端按 uid **实时解析**（字段 `ownerName` / `uploaderName`），
+ *     作者在账户菜单改一次昵称，应用市场处处同步；
+ *   · 昵称为空才回落账号名，且**系统自动占位名**（微信 / 手机号自动建号时生成的 `u_xxxxxxxx`，
+ *     不是作者取的）不算名字；
+ *   · 两者都没有 → 空串（调用方显示「未知作者」）。
+ * 云端条目的 `owner` 仍是账号名（可能正是那个占位名）：它只用于「同作者」判定与下载寻址
+ * （见 appsSameAuthor / appsDownload），界面一律不直接显示它。
+ * 本机条目：app.json 里的 author 优先（离线可读）；它也是占位名 / 为空时回落当前登录账号的昵称。
+ * 应用身份 = 应用 id + 作者 uid：uid 只在内部判定（同不同作者、分支归组）用，界面一律显示昵称。 */
+
+/* 系统自动占位账号名（account-store.mjs 的 newPlaceholderUsername：`u_` + 4 字节十六进制）。 */
+const APPS_PLACEHOLDER_NAME_RE = /^u_[0-9a-f]{6,24}$/i;
+function appsIsPlaceholderName(name) {
+  return APPS_PLACEHOLDER_NAME_RE.test(String(name || "").trim());
+}
+/* 当前登录账号的显示名（昵称优先；占位账号名不算名字）。 */
+function appsMeDisplayName() {
+  const u = appsAuthUser() || {};
+  const nick = String(u.nickname || "").trim();
+  if (nick) return nick;
+  const name = String(u.username || "").trim();
+  return appsIsPlaceholderName(name) ? "" : name;
+}
+/* 作者显示名（卡片作者行、详情「作者」行、分支树、开发页应用列表都读它）。
+   云端条目只认云端信息：老目录里 owner 是占位名又没有 ownerName → 空串（显示「未知作者」），
+   **绝不再回落成「我自己」**。本机条目才走 app.json / 登录账号那一条链。 */
 function appsAuthorOf(spec) {
   const s = spec || {};
-  const cloud = String(s.owner || "").trim();
+  const cloudKey = String(s.ownerId || s.owner || "").trim();
+  const cloudName = String(s.ownerName || "").trim();
+  if (cloudName) return cloudName;
+  const owner = String(s.owner || "").trim();
+  if (cloudKey) return appsIsPlaceholderName(owner) ? "" : owner;
   const local = String(s.localAuthor || s.author || "").trim();
-  if (cloud || local) return cloud || local;
-  const u = appsAuthUser();
-  return String((u && u.username) || "").trim();
+  if (local && !appsIsPlaceholderName(local)) return local;
+  return appsMeDisplayName();
+}
+/* 版本行的「上传者」显示名：`uploaderName`（服务端按上传者 uid 实时解析）→ 非占位账号名 → 空串
+   （空串 = 这一行不写「上传者 …」，绝不把占位名 / uid 摊出来）。 */
+function appsUploaderOf(v) {
+  const s = v || {};
+  const nick = String(s.uploaderName || "").trim();
+  if (nick) return nick;
+  const up = String(s.uploader || "").trim();
+  return appsIsPlaceholderName(up) ? "" : up;
 }
 /* 当前登录账号（作者回落的来源）：{ name, uid } —— 未登录两个都空。 */
 function appsMeOf() {
@@ -547,33 +691,616 @@ function appsNormForkOf(v) {
     id: id,
     ownerId: String(v.ownerId || "").trim(),
     owner: String(v.owner || "").trim(),
+    /* 源作者显示名（服务端按 uid 实时解析；老目录 / 本机 app.json 里没有就是空串） */
+    ownerName: String(v.ownerName || "").trim(),
   };
 }
-/* 分支归组键 = **源应用 id**（forkOf.id；自己就是源时用自己的 id）——
-   服务端 id 全局唯一，所以「同一个源」用 id 就够，不必要求两侧都带作者 uid
-   （静态目录里源条目只有 username、接口目录才带 uid，带上作者反而会把同源拆成两组）。
-   作者 uid 仍随 forkOf 保存并在展示 / 判定「同作者」时用，只是不作为归组键。 */
-function appsBranchKeyOf(spec) {
-  const s = spec || {};
-  const f = appsNormForkOf(s.forkOf);
-  return String((f ? f.id : s.id) || "").trim();
+/* ─────────── 同 id 多分支：分支树（docs/apps-market.md §十，本轮） ───────────
+ * 口径（用户共识）：
+ *   · 应用身份 = id + 作者 uid；**同一个 id 下的不同作者各占一条分支**，主干 = createdAt 最早那条；
+ *   · 列表里同 id 的条目**合并成一张卡**（q21），树上主干在最左、每个作者分支向右延伸一级（q4/q5）；
+ *   · 每行写「作者（账号名 / 昵称）· 最新版 · 本机已装哪一版」，并带自己的下载（q28/q29/q37）；
+ *   · 另给「作者 ▾ / 版本 ▾」两个联动下拉（先选作者，版本只列该作者的版本，q13/q22）。
+ * 旧那套「不同 id 的 forkOf 条目当分支」的字段与数据保留，但**不再作为归组键**（q14/q25/q31）：
+ * 分支 = 同 id，跨 id 的 fork 只在上架窗的「二次开发来源」里体现。 */
+function appsBranchIdOf(spec) {
+  return String((spec && (spec.id || spec.appId)) || "").trim();
 }
-/* 同一应用的其他分支（云端目录里同源的条目，含源条目自己）；目录还没拉到时回空。 */
-function appsBranchesOf(spec) {
-  const key = appsBranchKeyOf(spec);
-  if (!key) return [];
-  const list = appsCatalogList().map(appsSpecWithMine);
+/* ─────────── 应用家族（本轮需求：分支树统一 · 打赏/评论按根应用统一） ───────────
+ * 用户口径：
+ *   · 「只要基于一个应用开发都应当是同一个 id」+「填同 id 就自动当分支」→ 服务端把同一个应用
+ *     的所有分支归到**一个家族**（`familyRootId` = 家族根条目的 id）；
+ *   · 分支树是**多层**的：谁基于谁开发就挂在谁下面（`parentOwnerId` = 父分支的作者 uid）；
+ *   · 打赏与评论/评分**按根应用统一**（服务端已按家族汇总，客户端一律拿家族根 id 去问）。
+ * 客户端据此把「同一个家族的条目」合并成一张卡、画一棵树、共用一个打赏口径。
+ * 老目录（没下发 familyRootId）退回按 id 归组 —— 与老客户端行为一致，不会炸。 */
+function appsFamilyKeyOf(spec) {
+  const root = String((spec && spec.familyRootId) || "").trim();
+  if (root) return root;
+  return appsBranchIdOf(spec);
+}
+/** 家族里的一条分支挂在谁下面（空 = 根）；老数据用 ownerName/owner 兜一层，认不出就是根。 */
+function appsBranchParentKeyOf(b, family) {
+  const pid = String((b && b.parentOwnerId) || "").trim() || (appsNormForkOf(b && b.forkOf) || {}).ownerId || "";
+  if (!pid) return "";
+  const list = Array.isArray(family) ? family : [];
+  for (const o of list) {
+    if (String(o.ownerId || "") === pid && !(o === b)) return appsBranchKeyOfSpec(o);
+  }
+  /* 父条目已下架 / 已删（界面上看不到它）：仍尽量按作者挂到同作者那条上，挂不上就归到根。 */
+  for (const o of list) {
+    if (String((o && o.owner) || "") === pid && !(o === b)) return appsBranchKeyOfSpec(o);
+  }
+  return "";
+}
+/** 应用族的原始条目（**不带**合并结果：合并只多出 branchSiblings 这些展示字段，家族归组用不着它们）。
+ *  刻意不调 appsSpecListAll —— 那条路会回调 appsMergeSameId，而合并本身要用家族键，会绕成环。 */
+function appsFamilyPoolRaw() {
+  return appsSpecPoolRaw();
+}
+/** 某条分支 / 某个 id 所属家族的**全部**条目（同 id 的各作者分支 + 跨 id 但 forkOf 指回本族的旧条目）。 */
+function appsFamilyEntriesOf(spec) {
+  const root = appsFamilyKeyOf(spec);
+  if (!root) return [];
+  const pool = appsFamilyPoolRaw();
+  const out = pool.filter((s) => appsFamilyKeyOf(s) === root);
+  if (out.length) return out;
+  return appsBranchesById(root, pool);
+}
+/** 家族根条目（原作者那条）：trunk=true 优先，其次 parentOwnerId 为空，最后按 createdAt 最早。 */
+function appsFamilyRootOf(spec) {
+  const list = appsFamilyEntriesOf(spec);
+  if (!list.length) return spec || null;
+  const byTrunk = list.filter((s) => s && s.trunk === true);
+  if (byTrunk.length) return byTrunk.reduce((best, x) => (appsCreatedAtOf(x) < appsCreatedAtOf(best) ? x : best));
+  const roots = list.filter((s) => !String(s.parentOwnerId || "").trim());
+  const pick = roots.length ? roots : list;
+  return pick.reduce((best, x) => (appsCreatedAtOf(x) < appsCreatedAtOf(best) ? x : best));
+}
+function appsCreatedAtOf(spec) {
+  const n = Number(spec && spec.createdAt);
+  return isFinite(n) && n > 0 ? n : Number.MAX_SAFE_INTEGER;
+}
+/** 打赏 / 评论的对象目标：**一律指向家族根条目的 id**（同一应用族共用一份累计）——
+ *  用户口径「打赏全局统一，所有打赏归到同一个根下」，所以客户端不再拿分支自己的 id 去问。
+ *  根条目在云端不存在（本机自建、还没上架）时返回 null —— 调用方不放入口，不弹空窗。
+ *  函数体在文件后部（appsCloudTarget），这里只留家族口径说明。 */
+/** 本机已装那一支的作者显示名（卡片作者行的第二段：本机装的是谁的版本）。 */
+function appsInstalledAuthorOf(spec, app) {
+  const ownerId = String((app && app.ownerId) || "").trim();
+  if (!ownerId) return "";
+  const list = appsFamilyEntriesOf(spec);
+  const hit = list.find((b) => String((b && b.ownerId) || "") === ownerId);
+  if (hit) return appsAuthorOf(hit) || "";
+  const own = String((app && app.owner) || "").trim();
+  return own && !appsIsPlaceholderName(own) ? own : "";
+}
+/* 云端条目 + 我自己（含已下架）的线上条目合并成一份候选表（与 appsSpecListAll 同一口径） */
+function appsSpecPoolAll() {
+  const out = appsCatalogList().map(appsSpecWithMine);
+  const have = Object.create(null);
+  for (const s of out) have[String(s.id)] = 1;
   const mineAll = APPS_ST.mine && APPS_ST.mine.byId ? APPS_ST.mine.byId : null;
   if (mineAll) {
-    const have = Object.create(null);
-    for (const s of list) have[String(s.id)] = 1;
     for (const id of Object.keys(mineAll)) {
       if (have[id]) continue;
       const s = appsSpecFromMine(mineAll[id]);
-      if (s) list.push(s);
+      if (s) out.push(s);
     }
   }
-  return list.filter((s) => appsBranchKeyOf(s) === key);
+  return out;
+}
+/* 同一个 id 下的全部分支（主干在前：createdAt 最早；缺 createdAt 时保持目录顺序）。 */
+function appsBranchesById(id, pool) {
+  const want = String(id || "");
+  if (!want) return [];
+  const list = (pool || appsSpecPoolAll()).filter((s) => appsBranchIdOf(s) === want);
+  const byOwner = Object.create(null);
+  const out = [];
+  for (const s of list) {
+    const key = appsBranchKeyOfSpec(s) || "idx" + out.length;
+    if (byOwner[key]) continue; /* 同 id 同作者只算一条（服务端也是这个口径） */
+    byOwner[key] = 1;
+    out.push(s);
+  }
+  return out.sort((a, b) => {
+    const d = (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0);
+    if (d) return d;
+    return String(a.ownerId || a.owner || "").localeCompare(String(b.ownerId || b.owner || ""));
+  });
+}
+/* 一条分支的稳定键：uid > 账号名 > 序号（老静态目录只有 username） */
+function appsBranchKeyOfSpec(spec) {
+  const uid = String((spec && spec.ownerId) || "").trim();
+  if (uid) return "u:" + uid;
+  const name = String((spec && spec.owner) || "").trim();
+  return name ? "n:" + name : "";
+}
+/* 一条分支的显示标签：显示名（昵称）；同一个应用下两条分支昵称相同时，后面补一段短 uid
+   （ownerId 末 6 位，如「Tester # 539e484」）——只显示昵称之后，同名分支不然会长得一模一样。
+   传 all（同一 id 的全部分支）才会判重名；不传 = 只给显示名（日志 / 单条场景）。 */
+function appsBranchLabelOf(spec, all) {
+  const base = appsAuthorOf(spec) || appsT("未知作者");
+  const list = Array.isArray(all) ? all : null;
+  if (!list || base === appsT("未知作者")) return base;
+  const key = appsBranchKeyOfSpec(spec);
+  const short = appsBranchShortOf(spec);
+  if (!short) return base;
+  const dup = list.some((o) => {
+    if (!o || o === spec) return false;
+    if (appsBranchKeyOfSpec(o) === key) return false;
+    return (appsAuthorOf(o) || appsT("未知作者")) === base;
+  });
+  return dup ? base + " # " + short : base;
+}
+/* 重名时补的短 uid：ownerId 末 6 位；老目录只有账号名时退账号名末 6 位。 */
+function appsBranchShortOf(spec) {
+  const uid = String((spec && spec.ownerId) || "").trim();
+  if (uid) return uid.slice(-6);
+  const name = String((spec && spec.owner) || "").trim();
+  return appsIsPlaceholderName(name) ? "" : name.slice(-6);
+}
+function appsBranchVersionOf(spec) {
+  return String((spec && (spec.latestVersion || spec.version)) || "0.0.0");
+}
+/* 版本号比较：与主进程 apps-store.js 的 verCmp **同一口径**（按 . - + 切段、逐段取整比较、
+   段缺位当 0）。这一份必须存在于此：本文件里排版本（合并卡的「最新 vX」、分支对比）
+   用的是它 —— 早先直接写出 `verCmp(...)` 而渲染层根本没有这个函数，页面一渲染就
+   `Uncaught ReferenceError: verCmp is not defined @ app-apps.js`（用户报的「打开应用时的报错」）。
+   命名加 apps 前缀是为了不在渲染层抢一个通用名字（同名冲突一出现又是一次静默错指）。 */
+function appsVerParts(s) {
+  return String(s == null ? "" : s)
+    .split(/[.\-+]/)
+    .map((x) => parseInt(x, 10))
+    .map((n) => (Number.isFinite(n) ? n : 0));
+}
+function appsVerCmp(a, b) {
+  const x = appsVerParts(a);
+  const y = appsVerParts(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+function appsVersionsOfBranch(branch) {
+  /* 版本表：分支条目自带 versions[]；老条目只有单版 → 合成一条 */
+  const vs = Array.isArray(branch && branch.versions) ? branch.versions : [];
+  if (vs.length) return vs;
+  return [
+    {
+      version: String((branch && branch.version) || "0.0.0"),
+      bytes: Number(branch && branch.bytes) || 0,
+      uploader: String((branch && branch.owner) || ""),
+      /* 显示名（昵称）：老条目没有 versions[] 时合成这一条，版本行照样显示昵称而不是占位账号名 */
+      uploaderName: String((branch && (branch.ownerName || branch.nickname)) || ""),
+      createdAt: Number(branch && branch.createdAt) || 0,
+      note: "",
+      parentVersion: "",
+    },
+  ];
+}
+
+/* 分支树本体（详情窗 / 上架窗共用）。
+   opts.selectedOwnerId：初始展开（也是下拉默认）的那条分支；
+   opts.mount(el)：塞进宿主（上架窗自己在它的左栏里再排一遍）。 */
+/* 应用家族的多层分支树（本轮需求：分支树统一、与当前版本无关、选中后才出下载/覆盖）
+ *
+ * 形态（用户共识）：
+ *   · 根 = 原作者（主干那条），谁基于谁开发就挂在谁下面 → 真正的多层，横向缩进一级一层；
+ *   · 每个节点只写「作者名 · v最新版号」（树上不放版本列表），未选中时下方**什么都不出现**；
+ *   · 点某个节点 = 选中它 → 下方才出现这一支的版本列表与下载 / 覆盖 / 启动（见 appsBranchTreeVerSelEl）；
+ *   · 排序：原作者永远最左，其余按 createdAt 从早到晚（同刻按作者名稳定比较）；
+ *   · 默认选中 = 原作者（主干）+ 其最新版（APPS_DETAIL.branchOwnerId 为空时即此口径）。
+ * 与版本无关：树本身只由家族结构与作者决定，不随「当前选了哪一版」变化。
+ */
+function appsBranchChildrenMap(branches) {
+  const list = Array.isArray(branches) ? branches.slice() : [];
+  const map = new Map();
+  for (const b of list) map.set(appsBranchKeyOfSpec(b), []);
+  for (const b of list) {
+    const pk = appsBranchParentKeyOf(b, list);
+    if (pk && pk !== appsBranchKeyOfSpec(b) && map.has(pk)) map.get(pk).push(b);
+  }
+  const byTime = (a, b) => {
+    const d = appsCreatedAtOf(a) - appsCreatedAtOf(b);
+    if (d) return d;
+    return String(appsBranchKeyOfSpec(a)).localeCompare(String(appsBranchKeyOfSpec(b)), "en");
+  };
+  for (const arr of map.values()) arr.sort(byTime);
+  /* 根 = 家族根条目那一条（appsFamilyRootOf 的口径）；找不到就退回 createdAt 最早那条 */
+  const trunk =
+    list.find((b) => b && b.trunk === true) ||
+    list.reduce((best, x) => (!best || appsCreatedAtOf(x) < appsCreatedAtOf(best) ? x : best), null);
+  return { map: map, trunk: trunk, list: list };
+}
+
+/** 某一支一共有几个版本（树上「N 个版本」用它；老目录没有 versions[] 时按 1 算）。 */
+function appsBranchVersionCountOf(b) {
+  const vs = appsVersionsOfBranch(b);
+  return vs && vs.length ? vs.length : 1;
+}
+
+function appsBranchTreeEl(id, opts) {
+  const o = opts || {};
+  const branches = (o.branches && o.branches.length ? o.branches : appsBranchesById(id, o.pool)).slice();
+  if (!branches.length) return null;
+  const me = appsMeOf();
+  const local = appsLocalById(id);
+  const localOwnerId = String((local && local.ownerId) || "").trim();
+  const localAuthor = String((local && (local.owner || local.author)) || "").trim().toLowerCase();
+  const tree = appsBranchChildrenMap(branches);
+  /* 交互开关（withSel）：**只有应用详情**开它（点分支 → 下方才出现版本与下载/覆盖/启动）。
+     上架窗那处复用不带这个开关 —— 那边只是看一眼分支，不该长出下载按钮（用户口径：
+     「选择好分支后，下方才出现下载/覆盖等信息」说的是**应用详情**）。
+     没开开关时不读 APPS_DETAIL（上架窗与详情窗共用同一份模块状态，读了会显示错分支的详情）。 */
+  const withSel = !!o.withSel;
+  const want = withSel
+    ? String(o.selectedOwnerId || (APPS_DETAIL && APPS_DETAIL.branchOwnerId) || "")
+    : String(o.selectedOwnerId || "");
+  const selOf = (b) =>
+    String((b && b.ownerId) || "") === want || String((b && b.owner) || "") === want;
+  let sel = want && withSel ? tree.list.find(selOf) || null : null;
+  if (!sel) sel = tree.trunk || tree.list[0];
+  const selKey = sel ? appsBranchKeyOfSpec(sel) : "";
+
+  const box = document.createElement("div");
+  box.className = "apps-brtree";
+  const head = document.createElement("div");
+  head.className = "apps-br-head";
+  head.textContent =
+    appsT("分支") +
+    "（" + tree.list.length + appsT(" 条分支 · ") + appsBranchTotalVersions(tree.list) + appsT(" 个版本") + "）";
+  box.appendChild(head);
+
+  const rowsWrap = document.createElement("div");
+  rowsWrap.className = "apps-br-rows";
+  box.appendChild(rowsWrap);
+
+  const rows = [];
+  const walk = (b, depth, isLast, parentKey) => {
+    const key = appsBranchKeyOfSpec(b);
+    const kids = tree.map.get(key) || [];
+    rows.push({ b: b, depth: depth, isLast: !!isLast, parentKey: parentKey || "", hasKids: kids.length > 0 });
+    kids.forEach((k, i) => walk(k, depth + 1, i === kids.length - 1, key));
+  };
+  if (tree.trunk) walk(tree.trunk, 0, true, "");
+  /* 脏数据（父键指不到任何条目，或存在环）不能让任何一条分支消失：剩下的按 createdAt 平铺在末尾 */
+  const shown = new Set(rows.map((r) => appsBranchKeyOfSpec(r.b)));
+  for (const b of tree.list) {
+    if (shown.has(appsBranchKeyOfSpec(b))) continue;
+    shown.add(appsBranchKeyOfSpec(b));
+    walk(b, 0, true, "");
+  }
+
+  for (const r of rows) {
+    const b = r.b;
+    const key = appsBranchKeyOfSpec(b);
+    const on = key === selKey;
+    const isTrunk = !!(tree.trunk && key === appsBranchKeyOfSpec(tree.trunk));
+    const isLocal = appsBranchSameAsLocal(b, local, localOwnerId, localAuthor);
+    const isMine = !!me.uid && String(b.ownerId || "") === me.uid;
+
+    const row = document.createElement("div");
+    row.className =
+      "apps-br-branch" +
+      (isTrunk ? " is-trunk" : "") +
+      (isLocal ? " is-local" : "") +
+      (on ? " on" : "");
+    row.dataset.depth = String(r.depth);
+    row.dataset.branchKey = key;
+    row.style.setProperty("--br-depth", String(r.depth));
+
+    const line = document.createElement("div");
+    line.className = "apps-br-line";
+    /* 折线树的枝线：depth 0 画竖干线，其余画 ├─ / └─ 折线（见 css/apps.css 的 .apps-br-elbow） */
+    const elbow = document.createElement("i");
+    elbow.className = "apps-br-elbow" + (r.isLast ? " is-last" : "");
+    elbow.setAttribute("aria-hidden", "true");
+    line.appendChild(elbow);
+
+    const name = document.createElement("span");
+    name.className = "apps-br-who";
+    /* 多层树里同名作者会有多条，紧挨着看容易混 —— 一律「作者名 · v最新版号」，主干再带一枚「原作者」 */
+    name.textContent =
+      appsBranchLabelOf(b, tree.list) + " · v" + appsBranchVersionOf(b);
+    name.title = name.textContent;
+    line.appendChild(name);
+    if (isTrunk) {
+      const tag = document.createElement("span");
+      tag.className = "apps-badge apps-badge-on";
+      tag.textContent = appsT("原作者");
+      line.appendChild(tag);
+    }
+    if (isLocal) {
+      const tag = document.createElement("span");
+      tag.className = "apps-badge";
+      tag.textContent = appsT("本机已装");
+      line.appendChild(tag);
+    }
+    if (isMine) {
+      const tag = document.createElement("span");
+      tag.className = "apps-badge";
+      tag.textContent = appsT("我的分支");
+      line.appendChild(tag);
+    }
+    if (b.unpublished) {
+      const tag = document.createElement("span");
+      tag.className = "apps-badge apps-badge-warn";
+      tag.textContent = appsT("已下架");
+      line.appendChild(tag);
+    }
+
+    const info = document.createElement("span");
+    info.className = "apps-br-info";
+    const bits = [];
+    bits.push(appsBranchVersionCountOf(b) + appsT(" 个版本"));
+    /* 版本号不在树上写第二遍（上面刚写过），这里只补「几个版本 + 时间」这类附加信息 */
+    if (b.createdAt) bits.push(appsTime(b.createdAt));
+    info.textContent = bits.join(" · ");
+    line.appendChild(info);
+
+    /* 点整行 = 选中这一支（与点作者名同效）；选中后下方才出现版本与下载/覆盖/启动 —— 用户口径。
+       没开 withSel 的调用方（上架窗）点了不做事：那边不是「选择分支去下载」的场景。 */
+    if (withSel) {
+      line.addEventListener("click", (ev) => {
+        if (ev && ev.target && ev.target.closest && ev.target.closest("button")) return;
+        appsBranchTreeSelect(id, b, o.onSelect);
+      });
+      line.title = appsT("点这一支：下方出现它的版本与下载 / 覆盖入口");
+    }
+    row.appendChild(line);
+    rowsWrap.appendChild(row);
+  }
+
+  /* 「已选哪一支 + 这一支的版本与动作」——**只有开了 withSel 的调用方**（应用详情）才有。
+     没开开关时不画提示、不画版本列表、不画任何下载按钮（上架窗那处只看结构）。 */
+  if (withSel && sel) {
+    const hint = document.createElement("div");
+    hint.className = "apps-br-hint";
+    hint.textContent =
+      appsT("已选：") + appsBranchLabelOf(sel, tree.list) + appsT("（下方是这一支的版本与下载）");
+    box.appendChild(hint);
+    box.appendChild(appsBranchTreeVerSelEl(id, sel, o));
+  }
+
+  if (typeof o.debug === "function") {
+    o.debug(
+      "树：" + tree.list.length + " 条分支；根 = " + appsBranchLabelOf(tree.trunk || tree.list[0], tree.list) +
+        "（原作者，最左）→ 谁基于谁开发向下逐级缩进" +
+        (withSel ? "；选中 = " + appsBranchLabelOf(sel, tree.list) : "；只看结构（无可下载入口）"),
+    );
+  }
+  return box;
+}
+
+/** 树上选中某条分支（点击整行 / 作者名时走它）：记进 APPS_DETAIL 并重绘详情窗（保持滚动位置）。
+ *  只有应用详情会走到这里（上架窗那处不带 withSel，行上没有点击监听）。 */
+function appsBranchTreeSelect(id, b, onSelect) {
+  const key = String((b && b.ownerId) || "");
+  if (APPS_DETAIL) APPS_DETAIL.branchOwnerId = key;
+  if (typeof onSelect === "function") {
+    onSelect(b);
+    return;
+  }
+  const sc = APPS_DETAIL && APPS_DETAIL.dom ? APPS_DETAIL.dom.scroll : null;
+  const top = sc ? sc.scrollTop : 0;
+  appsDetailPaint();
+  const sc2 = APPS_DETAIL && APPS_DETAIL.dom ? APPS_DETAIL.dom.scroll : null;
+  if (sc2) sc2.scrollTop = top;
+}
+
+/** 选中分支的「版本列表 + 动作」块：这是用户口径里「选择好分支后才出现」的那一半。
+ *  动作按状态给一颗主按钮：
+ *    · 本机没装 → 「下载」（装这一支的这一版）
+ *    · 本机已装这一支的同一版 → 「启动」
+ *    · 本机装的是别的分支 / 别的版本 → 「覆盖安装」（会替换本机这一份载荷，数据保留）
+ *    · 同一支有更新 → 「更新到 vX」
+ *  另附本机已装那一支的说明与「打开数据文件夹」入口。 */
+function appsBranchTreeVerSelEl(id, branch, opts) {
+  const o = opts || {};
+  const spec = branch || {};
+  const list = appsFamilyEntriesOf(spec).length ? appsFamilyEntriesOf(spec) : [spec];
+  const box = document.createElement("div");
+  box.className = "apps-br-sel";
+  const ownerId = String(spec.ownerId || "");
+  const local = appsLocalById(id);
+  const vs = appsVersionsOfBranch(spec);
+  const latest = appsBranchVersionOf(spec);
+  const localOwnerId = String((local && local.ownerId) || "").trim();
+  const sameBranch = !!local && !!localOwnerId && localOwnerId === ownerId;
+  const localVer = String((local && local.version) || "");
+  const specObj = spec;
+
+  /* 版本列表：这一支的全部版本，逐版可下（点某一版 = 装那一版） */
+  const versBox = document.createElement("div");
+  versBox.className = "apps-br-vers";
+  const vhead = document.createElement("div");
+  vhead.className = "apps-vers-head";
+  vhead.textContent =
+    appsT("这一支的版本") + "（" + vs.length + appsT(" 个") + (latest ? appsT(" · 最新 v") + latest : "") + "）";
+  versBox.appendChild(vhead);
+  if (!vs.length) {
+    const none = document.createElement("div");
+    none.className = "apps-detail-vers-none";
+    none.textContent = appsT("这一支还没有可下载的版本。");
+    versBox.appendChild(none);
+  }
+  for (const v of vs) {
+    const ver = String(v.version || "");
+    const row = document.createElement("div");
+    row.className = "apps-vers-row" + (ver === latest ? " is-cur" : "");
+    const no = document.createElement("span");
+    no.className = "apps-vers-ver";
+    no.textContent = "v" + ver;
+    row.appendChild(no);
+    const bits = [];
+    if (v.createdAt) bits.push(appsTime(v.createdAt));
+    if (v.bytes) bits.push(appsBytes(v.bytes));
+    const upWho = appsUploaderOf(v);
+    if (upWho) bits.push(appsT("上传者 ") + upWho);
+    if (bits.length) {
+      const meta = document.createElement("span");
+      meta.className = "apps-vers-meta";
+      meta.textContent = bits.join(" · ");
+      row.appendChild(meta);
+    }
+    if (v.note) {
+      const nt = document.createElement("span");
+      nt.className = "apps-vers-note";
+      nt.textContent = String(v.note);
+      nt.title = String(v.note);
+      row.appendChild(nt);
+    }
+    const onLocal = sameBranch && localVer === ver;
+    if (onLocal) {
+      const tag = document.createElement("span");
+      tag.className = "apps-badge apps-badge-on";
+      tag.textContent = appsT("本机当前");
+      row.appendChild(tag);
+    }
+    const dl = appsMiniBtn(appsT("下载这一版"), () => {
+      appsDownload(id, local ? "update" : "", ver, ownerId);
+    });
+    dl.className += " apps-vers-dl";
+    dl.disabled = !!APPS_ST.busy[id] || specObj.compatible === false;
+    dl.title = onLocal ? appsT("重新下载并覆盖本机这一版") : appsT("装这一版到本机（会替换本机现有的那一份载荷）");
+    row.appendChild(dl);
+    versBox.appendChild(row);
+  }
+  box.appendChild(versBox);
+
+  /* 动作区：主按钮一颗 + 本机状态说明 */
+  const acts = document.createElement("div");
+  acts.className = "apps-br-acts";
+  const busy = !!APPS_ST.busy[id];
+  if (!local) {
+    const dl = appsMiniBtn(busy ? appsT("下载中…") : appsT("下载这一支并装到本机"), () => {
+      appsDownload(id, "", latest, ownerId);
+    });
+    dl.className += " apps-br-main";
+    dl.disabled = busy || specObj.compatible === false;
+    acts.appendChild(dl);
+  } else if (sameBranch && localVer === latest) {
+    const run = appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id));
+    run.className += " apps-br-main";
+    acts.appendChild(run);
+  } else if (sameBranch) {
+    const up = appsMiniBtn(appsT("更新到 v") + latest, () => {
+      appsDownload(id, "update", latest, ownerId);
+    });
+    up.className += " apps-br-main";
+    up.disabled = busy;
+    acts.appendChild(up);
+  } else {
+    const ov = appsMiniBtn(appsT("覆盖安装 v") + latest, () => {
+      appsDownload(id, "overwrite", latest, ownerId);
+    });
+    ov.className += " apps-br-main";
+    ov.disabled = busy;
+    ov.title = appsT("本机现在装的是别一支：会替换本机的应用文件（storage / 数据文件夹 / 画布不受影响）");
+    acts.appendChild(ov);
+  }
+  const note = document.createElement("div");
+  note.className = "apps-br-note";
+  const localWho = appsInstalledAuthorOf(spec, local) || appsT("未知作者");
+  note.textContent = local
+    ? appsT("本机已装：") + localWho + " · v" + localVer +
+      (sameBranch ? "" : appsT("（换到别的分支会覆盖本机的应用文件；storage / 数据文件夹 / 画布保留）"))
+    : appsT("本机还没装这个应用。");
+  acts.appendChild(note);
+  box.appendChild(acts);
+  return box;
+}
+function appsBranchTotalVersions(branches) {
+  let n = 0;
+  for (const b of branches || []) n += appsVersionsOfBranch(b).length;
+  return n;
+}
+/* 树上这一行 = 本机装的那一条分支？（uid 都记过按 uid 判；只有账号名时按名字判） */
+function appsBranchSameAsLocal(branch, local, localOwnerId, localAuthor) {
+  if (!local) return false;
+  const bid = String((branch && branch.ownerId) || "").trim();
+  const bname = String((branch && branch.owner) || "").trim().toLowerCase();
+  if (localOwnerId || bid) return !!localOwnerId && !!bid && localOwnerId === bid;
+  if (localAuthor) return !!bname && localAuthor === bname;
+  return false;
+}
+function appsBranchIsLocalDiff(branch, local, localOwnerId, localAuthor) {
+  if (!appsBranchSameAsLocal(branch, local, localOwnerId, localAuthor)) return false;
+  return String((local && local.version) || "") !== appsBranchVersionOf(branch);
+}
+/* 一行「N 个分支 · M 个版本 · 最新 vX」：合并卡片的副标题（q32） */
+function appsBranchSummaryLine(branches) {
+  if (!branches || branches.length < 2) return "";
+  const top = branches[branches.length - 1];
+  let latest = "";
+  for (const b of branches) {
+    const v = appsBranchVersionOf(b);
+    if (!latest || appsVerCmp(v, latest) > 0) latest = v;
+  }
+  return (
+    branches.length +
+    appsT(" 个分支 · ") +
+    appsBranchTotalVersions(branches) +
+    appsT(" 个版本 · 最新 v") +
+    (latest || appsBranchVersionOf(top))
+  );
+}
+/* 同一个**应用族**的多条合并成一张卡（本轮需求）：主条目 = 家族根（原作者那条），
+   其余挂到 spec.branchSiblings。家族键优先用服务端下发的 familyRootId（跨 id 的 fork 也能归到一起），
+   老目录没有这个字段时退回应用 id —— 与老客户端行为一致。
+   搜索命中任一分支都显示这一条卡（命中哪支就在卡上标出来，供标签 / 作者搜索）。 */
+function appsMergeSameId(list) {
+  const out = [];
+  const at = Object.create(null);
+  for (const s of list) {
+    if (!s || !appsBranchIdOf(s)) continue;
+    const key = appsFamilyKeyOf(s);
+    if (at[key] == null) {
+      const fam = appsFamilyEntriesOf(s);
+      const root = appsFamilyRootOf(s) || s;
+      const base = Object.assign({}, root, {
+        /* 本机安装状态、我的条目、打赏汇总这些是**按 id** 挂在具体条目上的：
+           家族合并后主条目取的是根那条，所以把当前这一条的这几个字段并回来（谁有值用谁）。 */
+        installed: root.installed || s.installed,
+        installedVersion: root.installedVersion || s.installedVersion,
+        localDev: root.localDev || s.localDev,
+        mine: root.mine || s.mine,
+        unpublished: root.unpublished || s.unpublished,
+        tips: root.tips || s.tips,
+        branchSiblings: fam,
+        branchCount: fam.length,
+        branchSummary: appsBranchSummaryLine(fam),
+        branchLatest: fam.reduce(
+          (best, b) => (!best || appsVerCmp(appsBranchVersionOf(b), best) > 0 ? appsBranchVersionOf(b) : best),
+          "",
+        ),
+      });
+      at[key] = out.length;
+      out.push(base);
+      continue;
+    }
+    const cur = out[at[key]];
+    if (!cur) continue;
+    if (!cur.hitBranch && appsBranchKeyOfSpec(s) !== appsBranchKeyOfSpec(cur)) {
+      cur.hitBranch = appsBranchLabelOf(s, cur.branchSiblings);
+    }
+  }
+  return out;
+}
+/* 按分支键找一条目录条目（同 id 多分支：下载 / 详情要指名哪一条）。
+   候选表为空时**只回落 null，不许再回调 appsSpecById**（那条回落与 appsSpecById 互为递归，
+   见 appsSpecById 上方注释：同 id 一条都没有时就栈溢出）。 */
+function appsSpecOfBranch(id, ownerId) {
+  const want = String(ownerId || "").trim();
+  const list = appsSpecPoolAll().filter((s) => appsBranchIdOf(s) === String(id || ""));
+  if (!want) return list[0] || null;
+  return (
+    list.find((s) => String(s.ownerId || "") === want) ||
+    list.find((s) => String(s.owner || "") === want) ||
+    null
+  );
 }
 /* 「同作者」：云端条目与本机那一份的作者是否同一个人（更新按钮只在同作者时出现）。
    判定顺序：uid（都记过才判）→ username（账本）→ app.json 的作者名 → 两边都没信息按同作者。 */
@@ -734,6 +1461,115 @@ function appsMineOf(id) {
   const m = APPS_ST.mine;
   return (m && m.byId && m.byId[String(id || "")]) || null;
 }
+
+/* ─────────── 打赏汇总（卡片金币 icon 的悬停数据来源） ───────────
+ * 需求口径：**已打赏的应用从外部 hover 要显示真实的累计（N 币 · M 次）**，不能写「无人打赏」。
+ * 数据来源三条，优先级从高到低：
+ *   ① GET /api/tips/summary?kind=app&ids=…（本轮新增，免登录、批量、只回公开数字）；
+ *   ② 静态目录条目自带的 tips（服务端 appCatalogDoc 写进 catalog.json 的那一份）；
+ *   ③ 都没有 → 「打赏数据暂未取到」/「还没有人打赏」由 appsTipsTitleOf 分辨（绝不谎报）。
+ * 触发时机：应用列表**载入 / 刷新时**问一次（打开页、切回来、手动刷新、打赏成功后），
+ * 不是悬停那一刻才问 —— 悬停是最频繁的动作，不能让它等网络。 */
+
+/** 一次问的 id 集合签名：排序 + 拼接，用来判断「这批 id 已经问过了」。 */
+function appsTipsSigOf(ids) {
+  return (Array.isArray(ids) ? ids : [])
+    .map((x) => String(x || ""))
+    .filter(Boolean)
+    .sort()
+    .join(",");
+}
+/** 现在这一页需要打赏汇总的全部应用 id（同 id 多分支只需问一次）。 */
+function appsTipsIdsOf(list) {
+  const out = [];
+  const seen = Object.create(null);
+  for (const s of list || []) {
+    const id = appsBranchIdOf(s);
+    if (!id || seen[id]) continue;
+    seen[id] = 1;
+    out.push(id);
+  }
+  return out;
+}
+/** 单个应用的打赏汇总：接口那一份优先，缺失时用目录条目自带的 tips（老目录 / 接口没答上也聊胜于无）。 */
+function appsTipsOf(spec) {
+  const id = appsBranchIdOf(spec);
+  const cached = id && APPS_ST.tips && APPS_ST.tips.byId ? APPS_ST.tips.byId[id] : null;
+  if (cached) return cached;
+  const t = spec && spec.tips;
+  if (t && (Number(t.count) || Number(t.totalYuan))) return { count: Number(t.count) || 0, totalYuan: Number(t.totalYuan) || 0 };
+  return null;
+}
+/** 把汇总合并进条目（不改原对象：目录缓存要留着原样） */
+function appsSpecWithTips(spec) {
+  const t = appsTipsOf(spec);
+  if (!t) return spec;
+  return Object.assign({}, spec, { tips: t });
+}
+
+/**
+ * 拉一次打赏汇总（force = 跳过新鲜期）。
+ * 失败也**不抛**：记一个 tipsFailed，界面据此说「打赏数据暂未取到」，金币 icon 照旧可点。
+ * @param {string[]} ids 要问的应用 id
+ * @param {boolean} force 跳过新鲜期（手动刷新 / 打赏成功后）
+ */
+async function appsTipsLoad(ids, force) {
+  const api = window.api || {};
+  const list = (Array.isArray(ids) ? ids : []).map((x) => String(x || "")).filter(Boolean);
+  const sig = appsTipsSigOf(list);
+  if (!list.length || typeof api.storeRequest !== "function") return APPS_ST.tips;
+  if (!force && sig === APPS_ST.tipsAsked && Date.now() - APPS_ST.tipsAt < APPS_TIPS_TTL) return APPS_ST.tips;
+  APPS_ST.tipsAsked = sig;
+  APPS_ST.tipsBusy = true;
+  let r = null;
+  try {
+    r = await api.storeRequest({
+      method: "GET",
+      path: "/api/tips/summary?kind=app&ids=" + encodeURIComponent(list.slice(0, 100).join(",")),
+    });
+  } catch (err) {
+    r = { ok: false, error: (err && err.message) || String(err) };
+  }
+  APPS_ST.tipsBusy = false;
+  const items = r && r.ok !== false && r.data && Array.isArray(r.data.items) ? r.data.items : null;
+  if (!items) {
+    /* 取不到：**保留上一次的数字**（有旧值也比突然说「没人打赏」强），只标记失败 */
+    APPS_ST.tipsFailed = true;
+    APPS_ST.tipsErr = String((r && (r.error || (r.data && r.data.error))) || "");
+    return APPS_ST.tips;
+  }
+  const byId = Object.create(null);
+  if (APPS_ST.tips && APPS_ST.tips.byId) {
+    for (const k of Object.keys(APPS_ST.tips.byId)) byId[k] = APPS_ST.tips.byId[k];
+  }
+  for (const it of items) {
+    const id = String((it && it.id) || "");
+    if (!id) continue;
+    byId[id] = { count: Number(it.count) || 0, totalYuan: Number(it.totalYuan) || 0 };
+  }
+  APPS_ST.tips = { ok: true, at: Date.now(), byId: byId, count: items.length };
+  APPS_ST.tipsAt = Date.now();
+  APPS_ST.tipsFailed = false;
+  APPS_ST.tipsErr = "";
+  return APPS_ST.tips;
+}
+
+/**
+ * 列表载入 / 刷新时调它：把当前这一页要问的 id 交给 appsTipsLoad，问到就把页面重绘一次
+ * （重绘后才带得上悬停文案）。**同一批 id 只问一次**（APPS_ST.tipsAsked 记着）：
+ * 失败也不重问 —— 否则「重绘 → 再问 → 再重绘」会自己转圈。
+ */
+function appsTipsEnsure(list, force) {
+  const ids = appsTipsIdsOf(list);
+  if (!ids.length) return;
+  const sig = appsTipsSigOf(ids);
+  if (!force && sig === APPS_ST.tipsAsked && Date.now() - APPS_ST.tipsAt < APPS_TIPS_TTL) return;
+  appsTipsLoad(ids, force).then(() => {
+    if (!APPS_HUB_OPEN) return;
+    if (appsTipsSigOf(appsTipsIdsOf(appsSpecPoolAll())) !== APPS_ST.tipsAsked) return;
+    appsHubPaint();
+  }).catch(() => {});
+}
 function appsSpecWithMine(spec) {
   const mine = appsMineOf(spec && spec.id);
   if (!mine) return spec;
@@ -746,6 +1582,8 @@ function appsSpecWithMine(spec) {
     version: String(mine.version || spec.version || ""),
     versions: versions,
     owner: String(mine.owner || spec.owner || ""),
+    /* 作者显示名（昵称）：接口那份（mine）优先，缺了就用目录那份 —— 界面只读它 */
+    ownerName: String(mine.ownerName || spec.ownerName || ""),
     ownerId: String(
       mine.ownerId || (mine.ownerUser && mine.ownerUser.id) || spec.ownerId || "",
     ),
@@ -800,6 +1638,8 @@ function appsSpecFromMine(item) {
     icon: String((item && item.icon) || ""),
     window: {},
     owner: String((item && item.owner) || ""),
+    /* 作者显示名（昵称）：接口条目自带；下架条目也照目录条目同形带上 */
+    ownerName: String((item && item.ownerName) || ""),
     ownerId: String((item && item.ownerId) || (item && item.ownerUser && item.ownerUser.id) || ""),
     forkOf: appsNormForkOf(item && item.forkOf),
     versions: Array.isArray(item && item.versions) ? item.versions : [],
@@ -835,6 +1675,7 @@ function appsVersionRows(spec) {
             sha256: (spec && spec.sha256) || "",
             bytes: (spec && spec.bytes) || 0,
             uploader: (spec && spec.owner) || "",
+            uploaderName: String((spec && spec.ownerName) || ""),
             note: "",
             createdAt: 0,
           },
@@ -918,7 +1759,8 @@ function appsVersionTreeEl(spec) {
       const bits = [];
       if (r.item.createdAt) bits.push(appsTime(r.item.createdAt));
       if (r.item.bytes) bits.push(appsBytes(r.item.bytes));
-      if (r.item.uploader) bits.push(appsT("上传者 ") + r.item.uploader);
+      const upWho = appsUploaderOf(r.item);
+      if (upWho) bits.push(appsT("上传者 ") + upWho);
       if (bits.length) {
         const meta = document.createElement("span");
         meta.className = "apps-vers-meta";
@@ -948,7 +1790,7 @@ function appsVersionTreeEl(spec) {
       }
       row.appendChild(tags);
       const dl = appsMiniBtn(appsT("下载这一版"), () =>
-        appsDownload(spec.id, spec.installed ? "update" : "", r.version),
+        appsDownload(spec.id, spec.installed ? "update" : "", r.version, String(spec.ownerId || "")),
       );
       dl.className += " apps-vers-dl";
       dl.disabled = busy || spec.compatible === false;
@@ -1210,10 +2052,13 @@ function appsTagsClear() {
 }
 
 /* 搜索词（小写 / 去空白）+ 标签筛选：两件事各一个判据，命中为空时给出可读的原因 */
+/* 同 id 多分支（§十）：合并成一条之后就是「一条结果」（命中任一分支都显示这一条卡，
+   卡上标出命中分支的作者，q36）。标签筛选同理。 */
 function appsFilterSpecs(list) {
   const q = String(APPS_ST.q || "").trim().toLowerCase();
   const tags = APPS_ST.tags;
-  let out = list;
+  const merged = appsMergeSameId(list);
+  let out = merged;
   if (tags.length) {
     out = out.filter((s) =>
       appsTagsOf(s).some((t) => tags.indexOf(appsTagKey(t)) >= 0),
@@ -1221,6 +2066,7 @@ function appsFilterSpecs(list) {
   }
   if (q) {
     out = out.filter((s) => {
+      const branches = Array.isArray(s.branchSiblings) ? s.branchSiblings : [];
       const hay = (
         appsSpecTitle(s) +
         " " +
@@ -1230,9 +2076,19 @@ function appsFilterSpecs(list) {
         " " +
         String(s.id || "") +
         " " +
-        appsTagsOf(s).join(" ")
+        appsTagsOf(s).join(" ") +
+        " " +
+        /* 同 id 的其他分支也要能搜到（作者名、标题） */
+        branches.map((b) => appsBranchLabelOf(b, branches) + " " + appsSpecTitle(b)).join(" ")
       ).toLowerCase();
-      return hay.indexOf(q) >= 0;
+      if (hay.indexOf(q) >= 0) return true;
+      /* 支持「按作者找这一条」：搜索词命中某一分支作者时，卡上标出是哪一支 */
+      const hit = branches.find((b) => appsBranchLabelOf(b, branches).toLowerCase().indexOf(q) >= 0);
+      if (hit) {
+        s.hitBranch = appsBranchLabelOf(hit, branches);
+        return true;
+      }
+      return false;
     });
   }
   return out;
@@ -1422,6 +2278,9 @@ async function appsHubRefresh(opts) {
   const o = opts || {};
   APPS_ST.cat = o.force ? null : APPS_ST.cat;
   APPS_ST.list = null;
+  /* 手动刷新（force）= 用户明确要求「给我最新的」：打赏汇总也一并作废重拉，
+     否则刚打赏完的数字会被新鲜期挡住（见 APPS_TIPS_TTL）。 */
+  if (o.force) appsTipsReset();
   await Promise.all([appsCatalogLoad(!!o.force), appsListLoad(true), appsRootLoad()]);
   if (o.force) {
     const src = APPS_ST.cat && APPS_ST.cat.source;
@@ -1438,13 +2297,14 @@ async function appsHubRefresh(opts) {
 function appsHubNav(id) {
   const next = APPS_NAV.some((n) => n[0] === id) ? id : "apps";
   if (next === APPS_ST.nav) {
-    /* 同一页再点一次：只把展开的详情收回去（不切页） */
-    APPS_ST.detailId = "";
+    /* 同一页再点一次：把开着的那只详情对话窗收掉（不切页） */
+    closeAppsDetail();
     appsHubPaint();
     return;
   }
   APPS_ST.nav = next;
-  APPS_ST.detailId = "";
+  /* 切页 = 上下文整块换掉：详情窗跟着收（它讲的是上一页那个应用） */
+  closeAppsDetail();
   /* 换页立刻同步标签条显隐（开发页不显示标签；它挂在壳上、不在被重绘的正文里） */
   appsHubTagsHidden();
   appsHubPaint();
@@ -1626,7 +2486,9 @@ function appsConflictAsk(res) {
       (inc.version ? " v" + inc.version : "") +
       appsT("」。");
     const l2 = document.createElement("p");
-    l2.textContent = appsT("覆盖 = 只替换上次装进去的应用文件（该应用自己的存储与画布保留）；改名 = 装成另一个目录，两份并存；取消 = 什么都不做。");
+    l2.textContent = appsT(
+      "覆盖 = 只替换上次装进去的应用文件（app.json / 入口页 / assets 与脚本样式）；不会被覆盖：该应用的 storage/ 、数据文件夹（data.json 与你自己选过的目录）、它自己的画布。改名 = 装成另一个目录，两份并存；取消 = 什么都不做。",
+    );
     body.appendChild(l1);
     body.appendChild(l2);
     const foot = document.createElement("div");
@@ -1683,7 +2545,9 @@ async function appsEnsureRoot() {
 }
 
 /* version 非空 = 只下那一版（版本树里点「下载这一版」；目录里没有那一版时主进程如实报错） */
-async function appsDownload(id, mode, version) {
+/* 下载 / 更新某一条分支的某一版（同 id 多分支，§十）：
+   ownerId 非空 = 只下那个作者的分支（不传 = 主干，与旧行为一致）；version 非空 = 只下那一版。 */
+async function appsDownload(id, mode, version, ownerId) {
   const api = window.api || {};
   if (typeof api.appsInstall !== "function") {
     appsBridgeMissing();
@@ -1695,9 +2559,10 @@ async function appsDownload(id, mode, version) {
   APPS_ST.progress[id] = { id: id, phase: "start", percent: 0 };
   appsPaintProgress(id);
   appsPaintCardState(id);
+  const own = String(ownerId || "");
   let r = null;
   try {
-    r = await api.appsInstall(id, mode || "", version || "");
+    r = await api.appsInstall(id, mode || "", version || "", own);
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
@@ -1710,7 +2575,7 @@ async function appsDownload(id, mode, version) {
       return;
     }
     try {
-      r = await api.appsInstall(id, choice, version || "");
+      r = await api.appsInstall(id, choice, version || "", own);
     } catch (e) {
       r = { ok: false, error: (e && e.message) || String(e) };
     }
@@ -1728,8 +2593,9 @@ async function appsDownload(id, mode, version) {
     );
     APPS_ST.list = null;
     await appsListLoad(true);
-    APPS_ST.detailId = "";
-    appsHubPaint();
+    /* 装完这一版 = 详情窗里的「本机版本」块也变了（开关窗都刷）：窗开着就只重画窗，
+       窗关着才整页重绘（重绘会顺带把列表徽标刷新） */
+    if (!appsDetailRefresh()) appsHubPaint();
   } else {
     appsToast(appsT("下载失败：") + appsErrText(r), "err");
     appsPaintCardState(id);
@@ -1815,6 +2681,8 @@ function appsProgressText(p) {
 function appsPaintProgress(id) {
   const host = appsHubEl();
   if (!host) return;
+  /* 详情对话窗开着同一个应用时，进度也在窗里显示（装 / 回滚都看得见） */
+  if (APPS_DETAIL.id === id) appsDetailPaintProg();
   const p = APPS_ST.progress[id];
   const cards = host.querySelectorAll('[data-app-id="' + id + '"]');
   cards.forEach((card) => {
@@ -1859,36 +2727,53 @@ function appsPaintCardState(id) {
 
 /* ───────────────── 应用页（云端目录） ───────────────── */
 
-/* 卡片按钮随状态走（本轮需求）：
- *   未装 → 「下载」；已装 → 「启动」（不再显示下载，避免两颗按钮干同一件事）；
- *   同作者有新版本 → 「更新到 vX」；存在其他作者分支 → 「切换分支 ▾」。 */
+/* 卡片动作行（本轮需求重排）：
+ *   未装   → 「下载」：**先开详情界面**（分支树默认选中原作者 + 其最新版），在详情里下载；
+ *   已装   → 「启动」（本机已装的那一支）→（有更新时）「更新」→（还有没装的时）「其他版本」；
+ *   更新   → 指向**本机已装那一支的作者**的最新版；
+ *   其他版本 → 本机还有没装的其它分支 / 其它版本时才出现，点了开详情并定位到分支树。
+ * 「看分支」按用户口径**移除**（分支树是详情里的正文，卡片上不再放第二入口）。 */
 function appsFillCatalogActions(acts, spec) {
   const id = spec.id;
   const busy = !!APPS_ST.busy[id];
   if (!spec.installed) {
-    const dl = appsMiniBtn(busy ? appsT("下载中…") : appsT("下载"), () => appsDownload(id, ""), true);
+    const dl = appsMiniBtn(busy ? appsT("下载中…") : appsT("下载"), () => appsOpenDetailForPick(id));
     dl.disabled = busy || spec.compatible === false;
-    if (spec.compatible === false) dl.title = appsT("该应用要求的 MTNode 版本高于当前版本");
+    dl.title = spec.compatible === false
+      ? appsT("该应用要求的 MTNode 版本高于当前版本")
+      : appsT("先在详情里选分支与版本（默认原作者最新版），确认后再装到本机");
     acts.appendChild(dl);
   } else {
     /* 已装 = 启动（与库页 / 开发页同一个入口：appsOpenApp → 独立窗口） */
     acts.appendChild(appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id)));
-    if (spec.updateAvailable && appsSameAuthor(spec)) {
-      const up = appsMiniBtn(appsT("更新到 v") + spec.version, () => appsCatalogUpdate(spec));
-      up.disabled = busy;
-      acts.appendChild(up);
+    const up = appsCardUpdateTargetOf(spec);
+    if (up) {
+      const btn = appsMiniBtn(
+        appsT("更新到 v") + up.version,
+        () => appsCatalogUpdate(spec, up.ownerId, up.version),
+      );
+      btn.disabled = busy;
+      btn.title = appsT("更新到本机已装那一支的作者最新版");
+      acts.appendChild(btn);
+    }
+    if (appsHasOtherVersions(spec)) {
+      const btn = appsMiniBtn(appsT("其他版本"), () => appsOpenDetailForPick(id));
+      btn.disabled = busy;
+      btn.title = appsT("打开详情：可选别的作者分支或别的版本（本机已装的那一支会被替换，数据保留）");
+      acts.appendChild(btn);
     }
   }
-  acts.appendChild(
-    appsMiniBtn(APPS_ST.detailId === id ? appsT("收起详情") : appsT("查看详情"), () => {
-      APPS_ST.detailId = APPS_ST.detailId === id ? "" : id;
-      appsHubPaint();
-    }),
-  );
-  /* 其他分支（同源的其他作者条目）：点开列出「作者 · 版本 · 是否已装」，选一个就装 / 启动它 ——
-     每个分支各装在自己的 id 目录里，本机可以同时存在多份，彼此独立、不覆盖任何数据。 */
-  if (appsBranchesOf(spec).filter((b) => String(b.id) !== id).length) {
-    acts.appendChild(appsBranchBtnEl(spec));
+  /* 「详细」不再占动作行（它已换成卡片第一行右端的 ⓘ，见 appsAppsIconRow + appsDetailBtnEl）。
+     打赏 + 评论（仅上架到云端的应用，见 appsCloudTarget）：与工坊条目同一形态 ——
+     打赏窗（含名单）/ 评论窗由 app-tips.js 与 app-comments.js 提供，本模块只放入口；
+     打赏入口已移到卡片第一行右端（金币 icon），动作行里只留「评论」。 */
+  if (spec.installed && window.MtComments) {
+    const cloudTarget = appsCloudTarget(spec);
+    if (cloudTarget) {
+      acts.appendChild(
+        appsMiniBtn(appsT("评论"), () => window.MtComments.open(cloudTarget, { title: appsSpecTitle(spec) })),
+      );
+    }
   }
   /* 作者自己的条目（§七）：下架 / 重新发布。看不懂「作者」这两个字的人不会被这条按钮影响 ——
      只有登录且 owner 是自己时才出现。 */
@@ -1903,17 +2788,66 @@ function appsFillCatalogActions(acts, spec) {
     acts.appendChild(pub);
   }
 }
-/* 已装且有新版本时的更新入口：开发中的应用（本机正在改的）要先把风险说清楚 —— 更新会覆盖
-   app.json / 入口页 / assets（本机存储与该应用自己的画布不动），一次误点就可能冲掉开发成果。 */
-async function appsCatalogUpdate(spec) {
+
+/** 「更新」按钮的目标：**本机已装那一支的作者**的最新版（本机没装 / 已是最新 → null）。
+ *  用户口径：更新按钮指向本机已装那一支的作者最新版，不跟着「谁版本号最高」乱跑。 */
+function appsCardUpdateTargetOf(spec) {
+  const id = String((spec && spec.id) || "");
+  const local = appsLocalById(id);
+  if (!local) return null;
+  const localOwnerId = String(local.ownerId || "").trim();
+  const fam = appsFamilyEntriesOf(spec);
+  let mine = localOwnerId ? fam.find((b) => String((b && b.ownerId) || "") === localOwnerId) || null : null;
+  if (!mine) mine = appsFamilyRootOf(spec) || spec;
+  if (!mine) return null;
+  const latest = appsBranchVersionOf(mine);
+  const cur = String(local.version || "");
+  if (!latest || !cur || appsVerCmp(latest, cur) <= 0) return null;
+  return { ownerId: String(mine.ownerId || ""), version: latest };
+}
+
+/** 卡片要不要显示「其他版本」：只要本机还有**没装的**分支或版本就显示（用户口径）。
+ *  判据：① 家族里存在「本机没装的那条分支」；② 本机装的那一支有比本机更新的版本；
+ *        ③ 本机装的那一支还有别的（更高 / 更低）版本可选。 */
+function appsHasOtherVersions(spec) {
+  const id = String((spec && spec.id) || "");
+  const local = appsLocalById(id);
+  const fam = appsFamilyEntriesOf(spec);
+  if (fam.length > 1) {
+    const localOwnerId = String((local && local.ownerId) || "").trim();
+    const localAuthor = String((local && (local.owner || local.author)) || "").trim().toLowerCase();
+    const other = fam.some((b) => !appsBranchSameAsLocal(b, local, localOwnerId, localAuthor));
+    if (other) return true;
+  }
+  if (!local) return false;
+  const root = appsFamilyRootOf(spec) || spec;
+  const vs = appsVersionsOfBranch(root);
+  const localVer = String(local.version || "");
+  return vs.some((v) => String(v.version || "") !== localVer);
+}
+
+/** 「下载 / 其他版本」的落点：打开详情界面并把分支树定位到**原作者 + 其最新版**（用户口径）。
+ *  详情里的分支树本身就是「选好分支后再出现下载 / 覆盖」的那个界面，所以这里只负责开窗与默认选中。 */
+function appsOpenDetailForPick(id) {
+  const sid = String(id || "");
+  if (!sid) return;
+  APPS_DETAIL.branchOwnerId = "";
+  if (typeof window.openAppsDetail === "function") window.openAppsDetail(sid);
+}
+/* 已装且有新版本时的更新入口：开发中的应用（本机正在改的）要先把风险说清楚 —— 更新会用包里的
+   应用文件整目录替换这一份（包里有 app.json / 入口页 / assets 与任意脚本样式；本机存储
+   storage/ 与该应用自己的画布不动），一次误点就可能冲掉开发成果。 */
+async function appsCatalogUpdate(spec, ownerId, version) {
   const id = String((spec && spec.id) || "");
   if (!id) return;
+  const want = String(version || (spec && (spec.latestVersion || spec.version)) || "");
   if (spec.localDev) {
     const body =
       appsSpecTitle(spec) +
       appsT(" 正在开发中（本机这一份带「开发中」标记）。更新到 v") +
-      String(spec.version || "") +
-      appsT(" 会覆盖它的 app.json / 入口页 / assets —— 你在这些文件上的改动会丢；本机存储与该应用自己的画布不动。确定更新吗？");
+      want +
+      appsT(" 会用它包里那批应用文件整目录替换这一份（app.json / 入口页 / assets 与脚本、样式都在内）—— 你在这些文件上的改动会丢。") +
+      appsT("不会被覆盖：storage/ 、该应用的数据文件夹（data.json 与你自己选过的目录）、它自己的画布。确定更新吗？");
     let ok = true;
     if (typeof confirmDialog === "function") {
       ok = await confirmDialog(body, {
@@ -1924,93 +2858,24 @@ async function appsCatalogUpdate(spec) {
     }
     if (!ok) return;
   }
-  await appsDownload(id, "update");
-}
-/* 「切换分支 ▾」：列同源的其他作者条目（作者 · 版本 · 是否已装）。已装 = 直接启动它；
-   未装 = 装到它自己的 id（各分支各一份，本机可同时存在多份，互不覆盖）。 */
-function appsBranchBtnEl(spec) {
-  const id = String(spec.id || "");
-  const btn = appsMiniBtn(appsT("切换分支") + " ▾", () => {
-    const old = document.querySelector(".apps-branchpop");
-    if (old) old.remove();
-    const pop = document.createElement("div");
-    pop.className = "apps-branchpop";
-    const all = appsBranchesOf(spec);
-    for (const b of all) {
-      const bid = String(b.id || "");
-      const row = document.createElement("div");
-      row.className = "apps-branchrow" + (bid === id ? " is-cur" : "");
-      const who = document.createElement("span");
-      who.className = "apps-branchwho";
-      who.textContent = appsAuthorOf(b) || appsT("未知作者");
-      const meta = document.createElement("span");
-      meta.className = "apps-branchmeta";
-      meta.textContent =
-        "v" +
-        String(b.version || "0.0.0") +
-        (b.localDev ? " · " + appsT("开发中") : b.installed ? " · " + appsT("已装") : "");
-      const act = appsMiniBtn(
-        bid === id ? appsT("当前") : b.installed ? appsT("启动") : appsT("下载"),
-        () => {
-          pop.remove();
-          if (bid === id || b.installed) appsOpenApp(bid);
-          else appsDownload(bid, "");
-        },
-      );
-      act.disabled = bid === id;
-      row.appendChild(who);
-      row.appendChild(meta);
-      row.appendChild(act);
-      pop.appendChild(row);
-    }
-    const host = appsHubEl() || document.body;
-    host.appendChild(pop);
-    /* 贴在按钮下方（固定定位 + 视口内夹取：卡片可能靠近右/下边缘）。 */
-    try {
-      const r = btn.getBoundingClientRect();
-      const w = pop.offsetWidth || 320;
-      const h = pop.offsetHeight || 160;
-      const left = Math.max(8, Math.min(r.left, Math.max(8, window.innerWidth - w - 8)));
-      const top =
-        r.bottom + 6 + h > window.innerHeight - 8
-          ? Math.max(8, r.top - 6 - h)
-          : r.bottom + 6;
-      pop.style.left = Math.round(left) + "px";
-      pop.style.top = Math.round(top) + "px";
-    } catch (_) {}
-    /* 瞬时菜单口径：点外部 / Esc 收掉（只有按钮，没有待保存的输入） */
-    const off = (ev) => {
-      if (ev.type === "keydown" && ev.key !== "Escape") return;
-      if (ev.type === "mousedown" && pop.contains(ev.target)) return;
-      if (ev.type === "mousedown" && (ev.target === btn || btn.contains(ev.target))) return;
-      pop.remove();
-      document.removeEventListener("mousedown", off, true);
-      document.removeEventListener("keydown", off, true);
-    };
-    document.addEventListener("mousedown", off, true);
-    document.addEventListener("keydown", off, true);
-  });
-  return btn;
+  await appsDownload(id, "update", want, ownerId);
 }
 
+/* 卡上「下载 / 更新」指向哪条分支：合并卡里版本最高的那条（同 id 多分支，§十） */
+﻿
+
+/* 卡片上的徽标：**本轮全部去掉**（用户口径：应用界面不显示「开发中」等 chips，也不显示分支与版本）。
+ * 函数保留成空实现，是因为卡片与详情头部都按同一个出口取徽标 —— 一处清干净，
+ * 将来要恢复某一枚时也只改这一处；`spec` 参数刻意留住（调用点不必改签名）。 */
 function appsCatalogBadges(spec) {
-  const out = [];
-  /* 「开发中」= 本机这一份带着 app.json 的 dev:true（自己新建 / 从库迁移来的）：它不出现在
-     「库」页，在「应用」页也必须一眼看得出来，否则用户会以为应用丢了。 */
-  if (spec.localDev) out.push([appsT("开发中"), "dev"]);
-  if (spec.installed) out.push([appsT("已下载"), "on"]);
-  if (spec.updateAvailable) out.push([appsT("可更新"), "upd"]);
-  if (spec.compatible === false) out.push([appsT("需要更新的 MTNode"), "bad"]);
-  if (spec.mine && spec.unpublished) out.push([appsT("已下架（仅自己可见）"), "bad"]);
-  if (spec.mine) out.push([appsT("我上架的"), "own"]);
-  return out;
+  return [];
 }
 
 function appsTileEl(spec) {
   const id = spec.id;
   const name = appsSpecTitle(spec) || id;
   const card = document.createElement("div");
-  card.className = "apps-tile" + (APPS_ST.detailId === id ? " open" : "");
+  card.className = "apps-tile";
   card.dataset.appId = id;
 
   const cover = document.createElement("div");
@@ -2021,25 +2886,33 @@ function appsTileEl(spec) {
   info.className = "apps-tile-info";
   const h = document.createElement("div");
   h.className = "apps-tile-title";
-  h.textContent = name;
-  /* 作者：云端条目 = 上架账号（owner）；本机自建 = app.json 的作者（没写过回落当前登录账号）。
-     未登录且没写过作者 → 整行不出现（不编造）。 */
-  const author = appsAuthorOf(spec);
+  /* 标题单独一层 span：第一行是 flex（标题 + 右端两枚图标按钮），标题要自己截断 ——
+     文字节点直接挂在 flex 容器里不会出省略号（见 css/apps.css 的 .apps-tile-name）。 */
+  const hTxt = document.createElement("span");
+  hTxt.className = "apps-tile-name";
+  hTxt.textContent = name;
+  hTxt.title = name;
+  h.appendChild(hTxt);
+  /* 作者（本轮口径）：**原作者**（家族根条目那条的作者）+ 本机已装的那一版是谁做的。
+     不再写版本号、不再写「命中分支」（用户口径：只显示原作者与当前版本作者；
+     版本与分支数都交给详情里的分支树）。 */
+  const fam = appsFamilyEntriesOf(spec);
+  const rootSpec = appsFamilyRootOf(spec) || spec;
+  const author = appsAuthorOf(rootSpec) || appsAuthorOf(spec);
+  const localApp = appsLocalById(id) || null;
+  const localAuthor = localApp ? appsInstalledAuthorOf(spec, localApp) : "";
   const who = document.createElement("div");
   who.className = "apps-tile-author";
-  who.textContent = author ? appsT("作者 ") + author : "";
-  who.hidden = !author;
-  const ver = document.createElement("div");
-  ver.className = "apps-tile-ver";
-  ver.textContent =
-    appsT("版本 ") +
-    String(spec.version || "0.0.0") +
-    (spec.installed && spec.installedVersion && spec.installedVersion !== spec.version
-      ? " · " + appsT("本机 ") + spec.installedVersion
-      : "");
+  who.textContent = author
+    ? appsT("原作者 ") + author + (localAuthor && localAuthor !== author ? appsT(" · 当前版本作者 ") + localAuthor : "")
+    : "";
+  who.hidden = !who.textContent;
   const desc = document.createElement("div");
   desc.className = "apps-tile-desc";
   desc.textContent = appsSpecDesc(spec) || appsT("（这个应用还没写描述）");
+  info.appendChild(h);
+  info.appendChild(who);
+  info.appendChild(desc);
   const badges = document.createElement("div");
   badges.className = "apps-tile-badges";
   for (const [label, kind] of appsCatalogBadges(spec)) {
@@ -2048,11 +2921,12 @@ function appsTileEl(spec) {
     b.textContent = label;
     badges.appendChild(b);
   }
-  info.appendChild(h);
-  info.appendChild(who);
-  info.appendChild(ver);
-  info.appendChild(desc);
   info.appendChild(badges);
+  /* 卡片第一行右端的两枚图标按钮（需求口径：打赏只留一枚金币 icon 放右上方，「详细」换成 ⓘ）：
+     挂进 .apps-tile-info 的标题行（与图标 / 标题同一视觉行），不再占下面的动作行。
+     金币与 ⓘ 同一套小方框样式（.apps-ico-btn），悬停才展开汇总文案与用途 —— 见 appsAppsIconRow。 */
+  const iconRow = appsAppsIconRow(spec);
+  if (iconRow) h.appendChild(iconRow);
 
   const acts = document.createElement("div");
   acts.className = "apps-tile-acts";
@@ -2072,17 +2946,52 @@ function appsTileEl(spec) {
   card.appendChild(prog);
   card.appendChild(progTxt);
 
-  if (APPS_ST.detailId === id) card.appendChild(appsDetailEl(spec, { spec: spec }));
+  /* 详情不再内联进卡片：走「详情」按钮单开对话窗（window.openAppsDetail） */
   appsPaintProgress(id);
   return card;
+}
+
+/* 打赏 / 评论的对象标识：只有**上架到云端**的应用才在服务端有记录（本机自建、还没上架的
+   在云端不存在，打赏与评论都无处可挂 —— 那种情况下一律不显示这两个入口，不弹空窗）。
+   判据用「有没有云端作者身份」（ownerId / owner），与 appsSpecFromMine / catalog 条目同源。 */
+function appsCloudTarget(spec) {
+  /* 本轮口径：打赏 / 评论的目标 = **家族根条目的 id**（同一应用族的各作者分支共用一份累计；
+     服务端按家族根统计，见 store-saas/tips.mjs 的 idSetOf）。根条目在云端不存在（本机自建、
+     还没上架）时返回 null —— 调用方不放入口，不弹空窗。 */
+  const root = appsFamilyRootOf(spec) || spec || {};
+  const id = String(root.id || (spec && spec.id) || "");
+  if (!id) return null;
+  const cloud = !!(root.ownerId || root.owner);
+  return cloud ? { kind: "app", id: id } : null;
 }
 
 /* 详情块：把目录条目里能给人看的字段摊开（没有的字段不占位、不编造）。
    分两层：给用户看的（说明 / 版本树 / 作者 / 标签）+ 默认折叠的「开发者信息」
    （应用 id、来源作者 uid、入口页、需要版本、下载地址、窗口尺寸、本机目录、校验值小按钮）——
-   校验值这类长哈希对普通用户没有意义，只留一个「ⓘ」小按钮，点开才看全文、可复制。 */
+   校验值这类长哈希对普通用户没有意义，只留一个「ⓘ」小按钮，点开才看全文、可复制。
+   云端条目另有「评论」页签（共用 app-comments.js 的评论区）。 */
 function appsDetailEl(spec, extra) {
+  if (!window.MtComments) return appsDetailBodyEl(spec, extra);
+  const cloud = appsCloudTarget(spec);
+  if (!cloud) return appsDetailBodyEl(spec, extra);
+  const tabs = detailTabsEl([appsT("应用"), appsT("评论")], (i) => {
+    if (i === 1) mountComments();
+  });
+  tabs.panes[0].appendChild(appsDetailBodyEl(spec, extra));
+  let mounted = false;
+  function mountComments() {
+    if (mounted) return;
+    mounted = true;
+    window.MtComments.mount(tabs.panes[1], cloud, { title: appsSpecTitle(spec) || "" });
+  }
+  return tabs.box;
+}
+
+function appsDetailBodyEl(spec, extra) {
   const local = (extra && extra.app) || appsLocalById(spec.id);
+  /* 云端版本表（多版本条目）默认画在这里；详情对话窗里由窗口自己排（本机版本块在前），
+     所以那条路径传 noVers:true 免得同一份版本表画两遍 */
+  const noVers = !!(extra && extra.noVers);
   const box = document.createElement("div");
   box.className = "apps-detail";
   const rows = [];
@@ -2092,17 +3001,24 @@ function appsDetailEl(spec, extra) {
   };
   push(appsT("版本"), String(spec.version || "") + (local ? " · " + appsT("本机 ") + String(local.version || "") : ""));
   push(appsT("作者"), appsAuthorOf(spec));
-  /* 二次开发来源（有声明才显示）：写清「基于谁的那一版改的」——ui 只显示账号名与源应用 id */
+  /* 二次开发来源（有声明才显示）：写清「基于谁的那一版改的」——ui 只显示作者名与源应用 id
+     （作者名同「作者」行口径：显示名优先，占位名 / uid 不显示） */
   const fo = appsNormForkOf(spec.forkOf) || appsNormForkOf(spec.localForkOf);
-  if (fo) push(appsT("二次开发自"), fo.id + (fo.owner ? "（" + fo.owner + "）" : ""));
+  if (fo) {
+    const foWho = String(fo.ownerName || "").trim() || (appsIsPlaceholderName(fo.owner) ? "" : String(fo.owner || "").trim());
+    push(appsT("二次开发自"), fo.id + (foWho ? "（" + foWho + "）" : ""));
+  }
   push(appsT("标签"), Array.isArray(spec.tags) && spec.tags.length ? spec.tags.join(" · ") : "");
   const full = document.createElement("div");
   full.className = "apps-detail-full";
   full.textContent = appsSpecDesc(spec) || appsT("（这个应用还没写描述）");
   box.appendChild(full);
-  /* 多版本（§七）：只有一版时不画（详情里那行「版本」已经够了） */
-  const vers = appsVersionTreeEl(spec);
-  if (vers) box.appendChild(vers);
+  /* 多版本（§七）：只有一版时不画（详情里那行「版本」已经够了）。
+     对话窗里不在这里画（noVers）—— 窗把「本机版本」块排在前、云端版本表排在后，只画一次。 */
+  if (!noVers) {
+    const vers = appsVersionTreeEl(spec);
+    if (vers) box.appendChild(vers);
+  }
   const table = document.createElement("div");
   table.className = "apps-detail-rows";
   for (const [k, v] of rows) {
@@ -2120,6 +3036,24 @@ function appsDetailEl(spec, extra) {
     table.appendChild(row);
   }
   box.appendChild(table);
+  /* 打赏入口 + 公开累计总额（**人人可见**）：排在正文**下方**（需求口径：放在下方而不是左上角），
+     入口是橙色 outlined、中间透明；打赏人名单仍仅作者本人与管理员可见（见 app-tips.js）。
+     没人打赏过时保留一句可点的引导（alwaysShow），不让这一块凭空消失。 */
+  const tipTarget = appsCloudTarget(spec);
+  if (tipTarget && window.MtTips) {
+    const bar = document.createElement("div");
+    bar.className = "apps-detail-tipbar";
+    const meta = window.MtTips.metaEl(tipTarget, spec.tips, {
+      alwaysShow: true,
+      clickable: true,
+      onDone: () => appsDetailRefresh(),
+    });
+    if (meta) bar.appendChild(meta);
+    bar.appendChild(
+      window.MtTips.buttonEl(tipTarget, spec.tips, { outline: true, onDone: () => appsDetailRefresh() }),
+    );
+    box.appendChild(bar);
+  }
   /* 开发者信息（默认折叠）：技术字段 + 校验值小按钮 */
   const devRows = [];
   const pushDev = (k, v) => {
@@ -2166,6 +3100,9 @@ async function appsPaintAppsPage(body, seq) {
   /* 目录条目 × 我的线上条目（mine / unpublished / 更全的版本树） */
   const list = appsSpecListAll();
   const shown = appsFilterSpecs(list);
+  /* 打赏汇总：列表**载入 / 刷新**就问一次（悬停时不问网络，见 appsTipsEnsure 的注释）。
+     同一批 id 只问一次，回来重绘一次 —— 卡片的金币 icon 悬停文案随即带上真实数字。 */
+  appsTipsEnsure(list, false);
   const hint = document.createElement("div");
   hint.className = "apps-hint";
   hint.textContent =
@@ -2228,12 +3165,19 @@ function appsNoMatchText() {
 function appsFillLocalActions(acts, app) {
   const id = String(app.id || "");
   const busy = !!APPS_ST.busy[id];
+  /* 同 id 多分支（§十）：库页这一份装的是哪一支，就拿那一支的条目比版本 / 更新 */
+  const spec =
+    appsSpecOfBranch(id, String((app && (app.ownerId || app.owner)) || "")) || appsSpecById(id);
   acts.appendChild(appsRunBtnEl(id, appsT("运行"), () => appsOpenApp(id)));
-  const spec = appsSpecById(id);
-  /* 更新只在**同作者**时出现（与「应用」页同一口径）：作者对不上说明这是别人的同 id 条目，
-     更新会拿别人的包盖掉本机这一份 —— 那种情况该走「分支」。 */
-  if (spec && spec.updateAvailable && appsSameAuthor(spec)) {
-    const up = appsMiniBtn(appsT("更新到 v") + spec.version, () => appsDownload(id, "update"));
+  acts.appendChild(appsDetailBtnEl(id));
+  /* 更新只在**同一支作者**时出现（与「应用」页同一口径）：更新按钮指向本机已装那一支的作者最新版，
+     作者对不上说明这是别人的同 id 条目，更新会拿别人的包盖掉本机这一份 —— 那种情况该走「其他版本」。 */
+  const upTarget = spec ? appsCardUpdateTargetOf(spec) : null;
+  if (upTarget) {
+    const up = appsMiniBtn(
+      appsT("更新到 v") + upTarget.version,
+      () => appsDownload(id, "update", upTarget.version, upTarget.ownerId),
+    );
     up.disabled = busy;
     acts.appendChild(up);
   }
@@ -2294,6 +3238,14 @@ function appsLocalRowEl(app) {
      绑定情况改在开发页顶栏显示（见 renderer/app-apps-dev.js）。 */
   const badges = document.createElement("div");
   badges.className = "apps-row-badges";
+  /* 能力小标（app.json 的 capabilities）：库页一眼看得出这个应用带不带语音 / 出图 */
+  for (const label of Array.isArray(app.capabilityBadges) ? app.capabilityBadges : []) {
+    const bCap = document.createElement("span");
+    bCap.className = "apps-badge apps-badge-cap";
+    bCap.textContent = String(label || "");
+    bCap.title = appsT("这个应用声明的能力（在开发页「应用能力…」里改）");
+    badges.appendChild(bCap);
+  }
   if (app.canvasExists) {
     const bCanvas = document.createElement("span");
     bCanvas.className = "apps-badge apps-badge-off";
@@ -2454,7 +3406,7 @@ async function appsSecondaryDevRun(id) {
   }
   /* 成功后按共识自动切到「开发」页并选中这个应用（与开发页「＋新建应用」收尾同一口径） */
   APPS_ST.nav = "dev";
-  APPS_ST.detailId = "";
+  closeAppsDetail();
   if (typeof appsDevSelectApp === "function") appsDevSelectApp(r.id);
   else appsHubPaint();
   appsToast(appsT("已进入二次开发：") + (String(r.name || "") || r.id), "ok");
@@ -2543,6 +3495,712 @@ async function appsPaintDevPage(body, seq) {
      三栏开发台是这一页唯一的正文（应用根目录 / ＋新建应用 在它自己那条工具栏里）。 */
 }
 
+/* ───────────────── 上架前体检（开发页工具栏那枚按钮） ───────────────── *
+ * 查的是「这个应用打成包会不会缺文件」—— 线上确实发生过：打包实现只打 app.json + 入口页 +
+ * assets/**，根目录里放 game.js / style.css 的应用上架后，别的账号下载到的是一个跑不起来的
+ * 空壳（wordless 1.0.0 就是这样）。体检在主进程真读目录 + 真跑上架口径的打包实现
+ * （apps-store.js 的 packAudit），渲染层只展示回执：不打包、不上传、不写盘。
+ * 默认看当前应用，窗内可切到「全部应用」。 */
+const APPS_AUDIT_T = {
+  unknown: "打包实现漏了这个文件（必须修）",
+  generated: "本机生成物，本来就不随包（画布 / 旧包 / 安装账本）",
+  storage: "应用自己的本机存档：上架包不带它（本地导出会保留）",
+  missing_entry: "应用缺少入口页（index.html）：打包会失败",
+  pack_failed: "打包这一步失败了",
+};
+function appsAuditReasonT(r) {
+  const key = String(r || "");
+  return appsT(APPS_AUDIT_T[key] || "打包实现漏了这个文件（必须修）");
+}
+/* 体检文件清单（标题 + 条目；最多列 60 条，多的由调用方在标题里说明省略了多少） */
+function appsAuditFileList(title, items) {
+  const box = document.createElement("div");
+  box.className = "apps-audit-files";
+  const t = document.createElement("div");
+  t.className = "apps-audit-files-t";
+  t.textContent = title;
+  box.appendChild(t);
+  const ul = document.createElement("ul");
+  for (const it of (items || []).slice(0, 60)) {
+    const li = document.createElement("li");
+    li.textContent = String(it);
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
+  return box;
+}
+async function appsPackAuditDialog(appId) {
+  const api = window.api || {};
+  if (typeof api.appsPackAudit !== "function") {
+    appsBridgeMissing();
+    return;
+  }
+  const curId = String(appId || "");
+  let mode = curId ? "cur" : "all";
+  openOverlay(appsT("上架前体检"), { persistent: true });
+  const body = $("#ovBody");
+  const lead = document.createElement("div");
+  lead.className = "settings-hint apps-audit-lead";
+  lead.textContent = appsT(
+    "体检按上架口径真跑一遍打包：列出「目录里有、包里没有」的文件，并检查入口页引用的文件在不在（只读：不打包、不上传、不写盘）。",
+  );
+  body.appendChild(lead);
+  const tabs = document.createElement("div");
+  tabs.className = "apps-audit-tabs";
+  const stat = document.createElement("div");
+  stat.className = "apps-audit-stat";
+  const list = document.createElement("div");
+  list.className = "apps-audit-list";
+  const mkTab = (key, label) => {
+    const b = appsMiniBtn(label, () => {
+      if (mode === key) return;
+      mode = key;
+      paintTabs();
+      run();
+    });
+    b.dataset.auditTab = key;
+    return b;
+  };
+  const tabCur = mkTab("cur", appsT("当前应用"));
+  const tabAll = mkTab("all", appsT("全部应用"));
+  const paintTabs = () => {
+    tabCur.classList.toggle("on", mode === "cur");
+    tabAll.classList.toggle("on", mode === "all");
+    tabCur.disabled = !curId;
+    if (!curId) tabCur.title = appsT("没有选中应用：从开发页当前应用点进来才有");
+  };
+  tabs.appendChild(tabCur);
+  tabs.appendChild(tabAll);
+  body.appendChild(tabs);
+  body.appendChild(stat);
+  body.appendChild(list);
+  const foot = $("#ovFoot");
+  const close = document.createElement("button");
+  close.className = "mini";
+  close.textContent = appsT("关闭");
+  close.onclick = closeOverlay;
+  foot.appendChild(close);
+  const run = async () => {
+    list.innerHTML = "";
+    stat.textContent = appsT("正在体检…");
+    let r = null;
+    try {
+      r = await api.appsPackAudit(mode === "cur" ? curId : "");
+    } catch (err) {
+      r = { ok: false, error: (err && err.message) || String(err) };
+    }
+    if (!list.isConnected) return; /* 窗已经关了（换页 / 切画布会收掉弹窗）：结果丢掉 */
+    list.innerHTML = "";
+    if (!r || r.ok === false) {
+      stat.textContent = appsT("体检失败：") + ((r && (r.error || r.reason)) || appsT("未知错误"));
+      return;
+    }
+    const rows = Array.isArray(r.apps) ? r.apps : [];
+    if (!rows.length) {
+      stat.textContent = appsT("没有可体检的应用");
+      return;
+    }
+    let bad = 0;
+    for (const row of rows) {
+      /* 只把「打包实现漏了它（unknown）」与「入口页引用了不存在的文件」算不通过；
+         生成物（画布 / 旧包 / 安装账本）与本机存档（上架包本来就不带）如实列出但不判失败。
+         droppedUnknown 由主进程给（它就是 ok 的判据），认不出这一位时按清单自己算一遍。 */
+      const dropped = Array.isArray(row.dropped) ? row.dropped : [];
+      const unknown = dropped.filter((d) => d.reason === "unknown" || !d.reason);
+      const unknownCount = Number.isFinite(row.droppedUnknown) ? row.droppedUnknown : unknown.length;
+      const known = dropped.filter((d) => d.reason && d.reason !== "unknown");
+      const refsMissing = Array.isArray(row.refsMissing) ? row.refsMissing : [];
+      const okRow = !row.missing && !row.error && unknownCount === 0 && refsMissing.length === 0;
+      if (!okRow) bad++;
+      const box = document.createElement("div");
+      box.className = "apps-audit-row" + (okRow ? "" : " bad");
+      const head = document.createElement("div");
+      head.className = "apps-audit-rowhead";
+      const nm = document.createElement("b");
+      nm.textContent = String(row.name || row.id || "");
+      const ver = document.createElement("span");
+      ver.className = "apps-audit-ver";
+      ver.textContent = "v" + String(row.version || "?");
+      const st = document.createElement("span");
+      st.className = "apps-audit-state " + (okRow ? "ok" : "bad");
+      st.textContent = okRow
+        ? appsT("通过：包是完整的")
+        : row.missing
+          ? appsT("这个应用不在本机了")
+          : row.error
+            ? appsT("体检失败：") + row.error
+            : appsT("缺文件") + " " + unknownCount +
+              (refsMissing.length ? appsT(" · 入口页缺引用") + " " + refsMissing.length : "");
+      head.appendChild(nm);
+      head.appendChild(ver);
+      head.appendChild(st);
+      box.appendChild(head);
+      const cnt = document.createElement("div");
+      cnt.className = "apps-audit-count";
+      cnt.textContent =
+        appsT("目录文件") + " " + String(row.files || 0) + " · " + appsT("包内") + " " + String(row.packed || 0);
+      box.appendChild(cnt);
+      if (unknown.length) {
+        box.appendChild(appsAuditFileList(appsT("会随包丢掉的文件"), unknown.map((d) => d.rel)));
+      }
+      if (known.length) {
+        const moreTxt = row.more ? appsT("（另有 ") + row.more + appsT(" 个同类文件已省略）") : "";
+        box.appendChild(
+          appsAuditFileList(
+            appsT("本来就不随包的文件") + moreTxt,
+            known.map((d) => String(d.rel || "") + "  —— " + appsAuditReasonT(d.reason)),
+          ),
+        );
+      }
+      if (refsMissing.length) {
+        box.appendChild(
+          appsAuditFileList(
+            appsT("入口页引用了但目录里没有"),
+            refsMissing.map((x) => String(x.rel || "") + appsT("（入口页写的是：") + String(x.ref || "") + appsT("）")),
+          ),
+        );
+      }
+      list.appendChild(box);
+    }
+    stat.textContent = bad
+      ? appsT("体检完成：") + bad + appsT(" 个应用有问题（下面标红的几条）")
+      : appsT("体检完成：") + rows.length + appsT(" 个应用都能打出完整的包");
+  };
+  paintTabs();
+  run();
+}
+window.appsPackAuditDialog = appsPackAuditDialog;
+
+/* ───────────────── 应用详情对话窗（单开一只浮层；不再内联进卡片） ─────────────────
+ * 需求口径：应用的详情**单开一个 dialogue**，避免内容挤兑 —— 卡片列窄，版本表 / 详情行 /
+ * 评论区塞进卡片里既挤又会被邻卡的展开挤歪，所以详情整体搬进一只可调宽高的浮层。
+ * 形态：window.openAppsDetail(id)，宽身（apps-detail-box）+ 右下角手柄可拖调宽高；
+ * persistent（点外部不关）+ 可最小化到状态栏 + ✕ / Esc 显式关（与 AGENTS.md 的弹窗纪律一致）。
+ * 内容：说明 / 本机版本（可回滚）/ 云端版本表（全宽）/ 评论页签 / 折叠的开发者信息。
+ * 入口：应用中心卡片与库页卡片共用 appsDetailBtnEl 那一颗「详情」；开发页不挂（它有自己的正文）。 */
+
+const APPS_DETAIL = {
+  id: "", /* 窗里讲的是哪个应用 */
+  branchOwnerId: "", /* 同 id 多分支（§十）：窗里当前选中的那条分支（空 = 主干 / 跟着本机来源） */
+  dom: Object.create(null),
+  ver: null, /* apps:versions 的回执（本机台账：当前版 + 上一版） */
+  verSeq: 0,
+};
+
+/* 当前窗框（#overlay 上那只；被最小化搬走后为 null） */
+function appsDetailShellBox() {
+  const ov = document.getElementById("overlay");
+  return ov ? ov.querySelector(":scope > .overlay-box") : null;
+}
+/* 摘掉尺寸类（当前窗上那一只；停在 #ovPark 里的最小化窗保留原样 —— 它还要原样搬回来） */
+function appsDetailBoxCleanup() {
+  try {
+    document.querySelectorAll("#overlay > .overlay-box.apps-detail-box").forEach((b) => {
+      b.classList.remove("apps-detail-box");
+    });
+  } catch (_) {}
+}
+/* 关窗收尾：.overlay-box 是 **全应用共享** 的一只壳（见 AGENTS.md 与 app-publish.js 同一个坑），
+   openOverlay / closeOverlay 只清内联样式、不摘未登记的类 —— 残留的宽身会让下一个弹窗
+   （设置 / 插件 / 工坊…）继承近全屏尺寸，甚至顶到屏幕外关不掉。
+   关窗路径不止 ✕：Esc、切画布、别的入口开新窗都会走 closeOverlay，所以这里不挂某一只按钮，
+   而是盯 #overlay 的显隐：它一变成 display:none（只有 closeOverlay 会做这件事）就摘类并撤掉观察。 */
+let APPS_DETAIL_OV_WATCH = null;
+function appsDetailWatchOverlay() {
+  appsDetailUnwatchOverlay();
+  const ov = document.getElementById("overlay");
+  if (!ov || typeof MutationObserver !== "function") return;
+  APPS_DETAIL_OV_WATCH = new MutationObserver(() => {
+    if (ov.style.display === "none") {
+      appsDetailBoxCleanup();
+      appsDetailUnwatchOverlay();
+    }
+  });
+  APPS_DETAIL_OV_WATCH.observe(ov, { attributes: true, attributeFilter: ["style"] });
+}
+function appsDetailUnwatchOverlay() {
+  if (!APPS_DETAIL_OV_WATCH) return;
+  try {
+    APPS_DETAIL_OV_WATCH.disconnect();
+  } catch (_) {}
+  APPS_DETAIL_OV_WATCH = null;
+}
+/* 右下角拖拽手柄：与上架窗同一套写法（改 .overlay-box 的内联宽高，关窗时随 cssText 清） */
+function appsDetailResizeBind(handle) {
+  handle.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const box = appsDetailShellBox();
+    if (!box) return;
+    const base = { w: box.offsetWidth, h: box.offsetHeight, x: ev.clientX, y: ev.clientY };
+    const vw = Number(window.innerWidth) || 1200;
+    const vh = Number(window.innerHeight) || 800;
+    const minW = Math.max(360, Math.round(vw * 0.5)); /* 最小宽 ≥50%：版本表要摊得开 */
+    const minH = 320;
+    const onMove = (e) => {
+      if (!APPS_DETAIL.dom.root || !document.contains(APPS_DETAIL.dom.root)) {
+        onUp();
+        return;
+      }
+      const w = Math.max(minW, Math.min(vw - 24, base.w + (e.clientX - base.x)));
+      const h = Math.max(minH, Math.min(vh - 24, base.h + (e.clientY - base.y)));
+      box.style.width = Math.round(w) + "px";
+      box.style.height = Math.round(h) + "px";
+      box.style.maxHeight = Math.round(h) + "px";
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+    };
+    document.body.style.cursor = "nwse-resize";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+/* 显式关闭（窗内「关闭」/ Esc / 切页 / 二次开发跳页） */
+function closeAppsDetail() {
+  APPS_DETAIL.id = "";
+  APPS_DETAIL.branchOwnerId = "";
+  APPS_DETAIL.ver = null;
+  APPS_DETAIL.verSeq++;
+  APPS_DETAIL.dom = Object.create(null);
+  appsDetailUnwatchOverlay();
+  appsDetailBoxCleanup();
+  if (typeof closeOverlay === "function") closeOverlay();
+}
+/* 窗开着就只重画窗（保住滚动位置），回 true；窗关着回 false（调用方去重绘页面） */
+function appsDetailRefresh() {
+  if (!APPS_DETAIL.id) return false;
+  const body = document.getElementById("ovBody");
+  const root = APPS_DETAIL.dom.root;
+  if (!body || !root || !body.contains(root)) {
+    APPS_DETAIL.id = "";
+    return false;
+  }
+  appsDetailPaint();
+  return true;
+}
+
+/* 目录条目（可能为空：本机自建、还没上架的应用在云端不存在）+ 本机那一份。
+ * 家族口径（本轮）：详情讲的是**整个应用族**（同 id 的各作者分支 + 跨 id 但 forkOf 指回本族的旧条目），
+ * 默认选中 = 原作者（主干）那条 —— 用户口径「永远默认原作者最新版」，与「本机装的是哪一支」无关。 */
+function appsDetailBranchListOf(id) {
+  const seed = appsSpecById(id) || appsLocalById(id) || { id: id };
+  const fam = appsFamilyEntriesOf(seed);
+  return fam.length ? fam : appsBranchesById(id, appsSpecPoolRaw());
+}
+function appsDetailBranchOf(id) {
+  const list = appsDetailBranchListOf(id);
+  const want = String((APPS_DETAIL && APPS_DETAIL.branchOwnerId) || "");
+  let hit = want
+    ? list.find((b) => appsBranchKeyOfSpec(b) === want || String(b.ownerId || b.owner || "") === want)
+    : null;
+  if (!hit) hit = appsFamilyRootOf(list[0] || {}) || null;
+  return hit || list[0] || null;
+}
+function appsDetailSpecOf(id) {
+  const b = appsDetailBranchOf(id);
+  if (b) return appsSpecWithMine(b) || b;
+  return appsSpecWithMine(appsSpecById(id) || {}) || appsSpecById(id) || null;
+}
+function appsDetailLocalOf(id) {
+  return appsLocalById(id) || null;
+}
+function appsDetailTitleOf(id) {
+  const spec = appsDetailSpecOf(id);
+  const app = appsDetailLocalOf(id);
+  return appsSpecTitle(spec) || String((app && app.name) || "") || id;
+}
+
+/* 窗壳：一只 #ovBody 里的 .apps-detail-root（右下角手柄挂在它里面 → 定位锚是窗框） */
+function appsDetailBuildShell(body, foot) {
+  body.innerHTML = "";
+  foot.innerHTML = "";
+  const root = document.createElement("div");
+  root.className = "apps-detail-root";
+  APPS_DETAIL.dom.root = root;
+
+  const head = document.createElement("div");
+  head.className = "apps-detail-head";
+  APPS_DETAIL.dom.head = head;
+  root.appendChild(head);
+
+  const sc = document.createElement("div");
+  sc.className = "apps-detail-scroll";
+  APPS_DETAIL.dom.scroll = sc;
+  root.appendChild(sc);
+
+  const prog = document.createElement("div");
+  prog.className = "apps-prog apps-detail-prog";
+  prog.hidden = true;
+  const bar = document.createElement("i");
+  prog.appendChild(bar);
+  const txt = document.createElement("div");
+  txt.className = "apps-prog-txt";
+  txt.hidden = true;
+  root.appendChild(prog);
+  root.appendChild(txt);
+  APPS_DETAIL.dom.prog = prog;
+  APPS_DETAIL.dom.progBar = bar;
+  APPS_DETAIL.dom.progTxt = txt;
+
+  const grip = document.createElement("div");
+  grip.className = "apps-detail-resize";
+  grip.title = appsT("拖拽右下角调整窗口大小");
+  grip.setAttribute("aria-label", appsT("拖拽右下角调整窗口大小"));
+  appsDetailResizeBind(grip);
+  root.appendChild(grip);
+
+  /* Esc = 窗内显式关闭路径（点外部照旧什么都不做） */
+  root.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeAppsDetail();
+    }
+  });
+
+  /* 壳建好了必须**挂进窗**：root 不 appendChild，body 就是空的 —— 详情窗整片空白，
+     而且 appsDetailRefresh() 的 body.contains(root) 永远为假（窗再也刷不新），
+     appsDetailLoadVersions() 还会在游离树上做替换。这一行不许省。 */
+  body.appendChild(root);
+
+  const closeBtn = appsMiniBtn(appsT("关闭"), closeAppsDetail);
+  foot.appendChild(closeBtn);
+}
+
+/* 头部：图标 + 标题 + 作者/版本/标签/二次开发来源一行（详情主体里不再重复这些） */
+/* 详情窗头部（本轮需求：不显示分支 / 版本，只显示原作者 + 当前版本作者）
+ * 用户口径：
+ *   · 头部不再写「云端 vX / 本机 vX」，也不再挂任何 chip 徽标（开发中 / 已下载 / 可更新 /
+ *     需要更新的 MTNode / 多个分支 / 我上架的 / 已下架 全部去掉）；
+ *   · 只留两行作者信息：原作者（家族根那条的作者）+ 当前选中分支的作者。
+ * 其余技术字段（哈希 / 路径 / 文件数）仍在正文的「开发者信息 ▾」里，不受影响。 */
+function appsDetailPaintHead() {
+  const id = APPS_DETAIL.id;
+  const spec = appsDetailSpecOf(id);
+  const app = appsDetailLocalOf(id);
+  const head = APPS_DETAIL.dom.head;
+  if (!head) return;
+  head.innerHTML = "";
+  const name = appsDetailTitleOf(id);
+  const icon = document.createElement("div");
+  icon.className = "apps-detail-ico";
+  icon.appendChild(appsIconEl(spec || app || {}, name));
+  head.appendChild(icon);
+
+  const who = document.createElement("div");
+  who.className = "apps-detail-who";
+  const h = document.createElement("div");
+  h.className = "apps-detail-name";
+  h.textContent = name;
+  who.appendChild(h);
+
+  const fam = appsFamilyEntriesOf(spec || app || {});
+  const root = appsFamilyRootOf(spec || app || {});
+  const curAuthor = appsAuthorOf(spec || app || {}) || appsT("未知作者");
+  const rootAuthor = (root && appsAuthorOf(root)) || curAuthor;
+  const meta = document.createElement("div");
+  meta.className = "apps-detail-meta";
+  meta.textContent =
+    appsT("原作者 ") + rootAuthor +
+    (curAuthor && curAuthor !== rootAuthor ? appsT(" · 当前版本作者 ") + curAuthor : appsT(" · 当前版本作者 ") + curAuthor);
+  if (fam.length > 1) {
+    meta.title = appsT("这个应用共有 ") + fam.length + appsT(" 条分支（原作者在最左，其余向右逐级展开）");
+  }
+  who.appendChild(meta);
+  head.appendChild(who);
+}
+
+/* 本机版本块（本机多版本，docs/apps-market.md §九）：
+ *   载荷不落盘 —— 本机只有一份活动副本，能切换的只有「本机这一版」与「上一版」，
+ *   上一版要点一次确认再**重新下载**（走 apps:rollback）。没有上一版就明说，不编造来源。 */
+function appsDetailVerRow(v, cur) {
+  const row = document.createElement("div");
+  row.className = "apps-detail-ver" + (cur ? " is-cur" : "");
+  const ver = document.createElement("span");
+  ver.className = "apps-detail-ver-no";
+  ver.textContent = "v" + String(v.version || "");
+  row.appendChild(ver);
+  const bits = [];
+  if (v.uploadedAt) bits.push(appsTime(v.uploadedAt));
+  if (v.bytes) bits.push(appsBytes(v.bytes));
+  const meta = document.createElement("span");
+  meta.className = "apps-detail-ver-meta";
+  meta.textContent = bits.join(" · ");
+  row.appendChild(meta);
+  const tag = document.createElement("span");
+  tag.className = "apps-detail-ver-tag";
+  tag.textContent = cur ? appsT("本机当前") : appsT("上一版");
+  row.appendChild(tag);
+  if (!cur) {
+    const go = appsMiniBtn(appsT("回到这一版"), () => appsSwitchVersion(APPS_DETAIL.id, String(v.version || "")));
+    go.classList.add("apps-vers-dl");
+    go.disabled = !!APPS_ST.busy[APPS_DETAIL.id];
+    go.title = appsT("按台账里记的下载地址重新下载这一版并换成当前版本");
+    row.appendChild(go);
+  }
+  return row;
+}
+
+/* 详情主体（本轮需求重排）：
+ *   ① 分支树（家族统一、多层、根 = 原作者）—— 选择哪一支
+ *   ② 选中分支之后**才**出现：这一支的版本列表 + 下载 / 覆盖 / 启动（由 appsBranchTreeEl 自己带出）
+ *   ③ 说明 + 详情行（作者 / 二次开发来源 / 标签 → 收在「开发者信息 ▾」里的那些技术字段不动）
+ *   ④ 打赏 / 评论（目标 = **家族根条目**，见 appsCloudTarget）
+ * 去掉的旧块：「在几支之间切换」那一行（分支树已表达）、单独的云端版本表（并入选中分支区）、
+ * 单独的「本机版本（可回滚）」块（回滚入口跟着选中分支走）。 */
+function appsDetailBodyBox(id) {
+  const spec = appsDetailSpecOf(id) || {};
+  const app = appsDetailLocalOf(id);
+  const box = document.createElement("div");
+  box.className = "apps-detail apps-detail-in-dlg";
+
+  if (spec.id) {
+    const tree = appsBranchTreeEl(id, {
+      branches: appsDetailBranchListOf(id),
+      selectedOwnerId: APPS_DETAIL.branchOwnerId || String((appsDetailBranchOf(id) || {}).ownerId || ""),
+      /* 详情才开交互：点分支 → 下方出现这一支的版本与下载 / 覆盖 / 启动 */
+      withSel: true,
+      debug: typeof window.__mtnodeAppsBranchDbg === "function" ? window.__mtnodeAppsBranchDbg : null,
+    });
+    if (tree) box.appendChild(tree);
+  }
+
+  if (spec.id) box.appendChild(appsDetailBodyEl(spec, { app: app || undefined, noVers: true }));
+  else {
+    /* 本机自建、云端没有这一条：详情就只有本机那一份（不编造云端字段） */
+    const full = document.createElement("div");
+    full.className = "apps-detail-full";
+    full.textContent = String((app && app.description) || "") || appsT("（这个应用还没写描述）");
+    box.appendChild(full);
+    const rowsBox = document.createElement("div");
+    rowsBox.className = "apps-detail-rows";
+    const push = (k, val) => {
+      if (val == null || val === "") return;
+      const row = document.createElement("div");
+      row.className = "apps-detail-row";
+      const kk = document.createElement("span");
+      kk.className = "apps-detail-k";
+      kk.textContent = k;
+      const vv = document.createElement("span");
+      vv.className = "apps-detail-v";
+      vv.textContent = String(val);
+      vv.title = String(val);
+      row.appendChild(kk);
+      row.appendChild(vv);
+      rowsBox.appendChild(row);
+    };
+    push(appsT("版本"), app && app.version);
+    push(appsT("作者"), appsAuthorOf(app || {}));
+    push(appsT("本机目录"), app && app.dir);
+    push(appsT("占用"), app ? appsBytes(app.bytes) + " · " + app.files + appsT(" 个文件") : "");
+    box.appendChild(rowsBox);
+  }
+  /* 本机回滚入口：只在真能回滚时出现，且跟在选中分支的动作区后面（不再单开一块「本机版本」） */
+  const roll = appsLocalRollbackEl(id);
+  if (roll) box.appendChild(roll);
+  return box;
+}
+
+/* 本机回滚（原「本机版本（可回滚）」块的入口形态）：只留一句说明 + 一颗按钮，
+ * 没有可回滚的上一版时**整块不出现**（不编造来源）。 */
+function appsLocalRollbackEl(id) {
+  const v = APPS_DETAIL.ver;
+  if (!v || !v.installed) return null;
+  const rows = Array.isArray(v.versions) ? v.versions : [];
+  const prev = rows.find((r) => !r.current) || null;
+  if (!prev || !v.canRollback) return null;
+  const box = document.createElement("div");
+  box.className = "apps-detail-vers";
+  const head = document.createElement("div");
+  head.className = "apps-vers-head";
+  head.textContent = appsT("本机版本");
+  box.appendChild(head);
+  box.appendChild(appsDetailVerRow(prev, false));
+  const note = document.createElement("div");
+  note.className = "apps-detail-vers-none";
+  note.textContent = appsT("本机只留当前与上一版两份记录（不存历史包）：回到上一版要按来源重新下载一次，离线或云端已下架时会如实报错。");
+  box.appendChild(note);
+  return box;
+}
+function appsDetailPaint() {
+  const id = APPS_DETAIL.id;
+  if (!id) return;
+  appsDetailPaintHead();
+  const sc = APPS_DETAIL.dom.scroll;
+  if (!sc) return;
+  sc.innerHTML = "";
+  const body = appsDetailBodyBox(id);
+  const spec = appsDetailSpecOf(id);
+  const cloud = spec ? appsCloudTarget(spec) : null;
+  if (!cloud || typeof detailTabsEl !== "function") {
+    sc.appendChild(body);
+    return;
+  }
+  /* 评论页签（与工坊条目同一份组件）：详情里就能看评价，不必先关掉再点「评论」 */
+  const tabs = detailTabsEl([appsT("应用"), appsT("评论")], (i) => {
+    if (i === 1) mountComments();
+  });
+  tabs.panes[0].appendChild(body);
+  let mounted = false;
+  function mountComments() {
+    if (mounted || !window.MtComments) return;
+    mounted = true;
+    window.MtComments.mount(tabs.panes[1], cloud, { title: appsDetailTitleOf(id) });
+  }
+  sc.appendChild(tabs.box);
+  appsDetailPaintProg();
+}
+/* 进度（装 / 回滚都在窗里可见）：与卡片共用 APPS_ST.progress 那一份状态 */
+function appsDetailPaintProg() {
+  const id = APPS_DETAIL.id;
+  const dom = APPS_DETAIL.dom;
+  if (!dom.prog) return;
+  const p = APPS_ST.progress[id];
+  if (!p) {
+    dom.prog.hidden = true;
+    dom.progTxt.hidden = true;
+    dom.progBar.style.width = "0%";
+    dom.progTxt.textContent = "";
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, Number(p.percent) || 0));
+  dom.prog.hidden = false;
+  dom.progTxt.hidden = false;
+  dom.progBar.style.width = (p.phase === "error" ? 100 : pct) + "%";
+  dom.prog.classList.toggle("err", p.phase === "error");
+  dom.progTxt.textContent = appsProgressText(p);
+}
+
+/* 本机台账读取（apps:versions）：窗先画出来，台账回来再把「本机版本（可回滚）」那块补上。
+ * 本轮它**跟在选中分支的动作区后面**（没有可回滚的上一版时整块不出现）。 */
+async function appsDetailLoadVersions(seq) {
+  const id = APPS_DETAIL.id;
+  const api = window.api || {};
+  if (!id || typeof api.appsVersions !== "function") return;
+  let r = null;
+  try {
+    r = await api.appsVersions(id);
+  } catch (_) {
+    r = null;
+  }
+  if (seq !== APPS_DETAIL.verSeq || id !== APPS_DETAIL.id) return;
+  APPS_DETAIL.ver = r && r.ok !== false ? r : null;
+  const sc = APPS_DETAIL.dom.scroll;
+  if (!sc) return;
+  const old = sc.querySelector(".apps-detail-vers");
+  const fresh = appsLocalRollbackEl(id);
+  if (old && old.parentNode && fresh) old.parentNode.replaceChild(fresh, old);
+  else if (old && old.parentNode) old.parentNode.removeChild(old);
+  else if (fresh) sc.appendChild(fresh);
+  appsDetailPaintProg();
+}
+
+/* 版本切换（本机多版本）：目标就是本机这一版 → 只提示；否则按台账**重新下载**那一版。
+   本机带「开发中」标记时先确认一次（与「更新」同一套口径：整目录替换应用文件，
+   storage/ 与该应用自己的画布不动）。失败一律如实报错、不静默降级。 */
+async function appsSwitchVersion(id, version) {
+  const sid = String(id || "");
+  const want = String(version || "").trim();
+  const api = window.api || {};
+  if (!sid || !want) return;
+  if (APPS_ST.busy[sid]) return;
+  const cur =
+    (APPS_DETAIL.id === sid && APPS_DETAIL.ver && APPS_DETAIL.ver.version) ||
+    String((appsLocalById(sid) || {}).version || "");
+  if (cur && cur === want) {
+    appsToast(appsT("本机已经是这一版：v") + want, "warn");
+    return;
+  }
+  const app = appsLocalById(sid) || {};
+  if (app.dev === true) {
+    const body =
+      appsDetailTitleOf(sid) +
+      appsT(
+        " 正在开发中（本机这一份带「开发中」标记）。切换版本会按台账来源重新下载那一版，并用它整目录替换本机这一份（app.json / 入口页 / assets 与脚本、样式都在内）—— 你在这些文件上的改动会丢；本机存储与该应用自己的画布不动。确定切换到 v",
+      ) +
+      want +
+      appsT(" 吗？");
+    let ok = true;
+    if (typeof confirmDialog === "function") {
+      ok = await confirmDialog(body, {
+        title: appsT("切换正在开发的应用的版本"),
+        okText: appsT("切换并重新下载"),
+      });
+    }
+    if (!ok) return;
+  }
+  if (typeof api.appsRollback !== "function") {
+    appsBridgeMissing();
+    return;
+  }
+  APPS_ST.busy[sid] = true;
+  APPS_ST.progress[sid] = { id: sid, phase: "start", percent: 0, version: want };
+  appsPaintCardState(sid);
+  appsDetailPaintProg();
+  let r = null;
+  try {
+    r = await api.appsRollback(sid, want);
+  } catch (e) {
+    r = { ok: false, error: (e && e.message) || String(e) };
+  }
+  APPS_ST.busy[sid] = false;
+  delete APPS_ST.progress[sid];
+  if (r && r.ok) {
+    appsToast(appsT("已切回 v") + String(r.version || want), "ok");
+    APPS_ST.list = null;
+    await appsListLoad(true);
+    appsDetailRefresh();
+    return;
+  }
+  appsToast(appsT("切换失败：") + appsErrText(r), "err");
+  appsPaintCardState(sid);
+  appsDetailRefresh();
+}
+
+/* 入口：window.openAppsDetail(id)。同一只窗已开着同一个应用 → 再点只把它抬起来（不重建）。 */
+function openAppsDetail(id) {
+  const sid = String(id || "");
+  if (!sid) return false;
+  if (typeof openOverlay !== "function") {
+    appsToast(appsT("窗口模块未就绪（openOverlay 不存在）"), "err");
+    return false;
+  }
+  const title = appsT("应用详情") + " · " + appsDetailTitleOf(sid);
+  const ovNow = document.getElementById("overlay");
+  if (APPS_DETAIL.id === sid && APPS_DETAIL.dom.root && document.contains(APPS_DETAIL.dom.root)) {
+    if (ovNow && ovNow.style.display === "flex") return true;
+  } else if (APPS_DETAIL.id) {
+    /* 换一个应用：先把上一只详情窗收干净（它可能正停在状态栏页签里）——
+       全应用只允许一只详情窗，免得留下点不开的页签 */
+    closeAppsDetail();
+  }
+  APPS_DETAIL.id = sid;
+  APPS_DETAIL.branchOwnerId = "";
+  APPS_DETAIL.ver = null;
+  APPS_DETAIL.verSeq++;
+  openOverlay(title, { persistent: true, min: true });
+  /* 尺寸类：先摘残留，再挂自己的（宽身 + 最小宽 50vw，见 css/apps.css） */
+  appsDetailBoxCleanup();
+  const box = appsDetailShellBox();
+  if (box) box.classList.add("apps-detail-box");
+  appsDetailWatchOverlay();
+
+  const body = document.getElementById("ovBody");
+  const foot = document.getElementById("ovFoot");
+  if (!body || !foot) {
+    closeAppsDetail();
+    return false;
+  }
+  appsDetailBuildShell(body, foot);
+  appsDetailPaint();
+  appsDetailLoadVersions(APPS_DETAIL.verSeq);
+  return true;
+}
+
 /* ───────────────── 入口接线 ───────────────── */
 
 function appsEntryInit() {
@@ -2573,5 +4231,8 @@ appsEntryInit();
 /* 全局别名（页面级入口；与 app-search.js 等模块同口径：只挂入口，不挂内部状态） */
 window.openAppsHub = openAppsHub;
 window.appsHubClose = appsHubClose;
+/* 应用详情对话窗（单开浮层）：卡片上的「详情」按钮走它 */
+window.openAppsDetail = openAppsDetail;
+window.closeAppsDetail = closeAppsDetail;
 window.appsHubRefresh = appsHubRefresh;
 window.appsHubIsOpen = appsHubIsOpen;
