@@ -559,7 +559,7 @@ function pluginRepairBtn(foot, label, fn, opts) {
   return b;
 }
 
-/* ── 错误报告窗（persistent：只有显式按钮 / ✕ / Esc 能关；默认可最小化到状态栏） ── */
+/* ── 错误报告窗（persistent：只有显式按钮 / ✕ / Esc 能关；最小化已下线） ── */
 function openPluginRepairDialog(raw) {
   const info = raw && raw.__normalized ? raw : pluginRepairNormalize(raw);
   const name = pluginRepairName(info);

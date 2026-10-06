@@ -329,17 +329,24 @@
   cursor: not-allowed;
 }
 
+/* primary = **橙色空心**（需求口径：全站按钮不许亮色实心填色 —— 亮底上中间的字读不清）。
+   背景始终 transparent，只有 1px 描边 + 同色字；悬停另叠一层约 8% 同色半透底（色相由
+   color-mix 从 --orange 现推，暗色 / 亮色主题共用同一条规则，不必各写一套）。
+   本类当前只有三个调用处，且都要空心：消息窗「关闭」（app-messages.js）、评论窗「关闭」
+   （app-comments.js）、钱包「打开支付宝收银台」（app-wallet.js）；打赏弹窗那颗由
+   tips.css 以更高权重再覆一次，写法一致。 */
 .wl-btn.primary {
-  background: var(--orange);
+  background: transparent;
   border-color: var(--orange);
-  color: #1a1206;
+  color: var(--orange2);
   font-weight: 600;
   justify-self: start;
 }
 
 .wl-btn.primary:hover:not(:disabled) {
-  background: var(--orange2);
+  background: color-mix(in srgb, var(--orange) 8%, transparent);
   border-color: var(--orange2);
+  color: var(--orange2);
 }
 
 .wl-btn.ghost {

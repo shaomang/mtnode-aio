@@ -574,11 +574,7 @@
 /* 作者行 + 开发者信息折叠区 + 校验值小按钮 + 分支菜单（本轮新增） ──
    口径：作者是给人看的（云端条目 = 上架账号，本机 = app.json 的作者）；
    校验值这类长哈希对普通用户没有意义 → 收进「ⓘ」小按钮，点开才看全文、可复制。 */
-.apps-tile-author {
-  font-size: 10.5px;
-  color: var(--muted);
-  margin: 1px 0 2px;
-}
+
 
 .apps-devmeta {
   margin-top: 8px;
@@ -611,40 +607,10 @@
   margin-bottom: 4px;
 }
 
+/* 「ⓘ 复制校验值」小按钮（本轮：点一下直接复制进剪贴板，不再有「点开看全文」的小窗，
+   所以这里只剩按钮自己的等宽字体 —— 界面上只显示算法名 + 前 8 位） */
 .apps-hashbtn {
   font-family: ui-monospace, Menlo, Consolas, monospace;
-}
-
-/* 校验值小窗：全文 + 复制 + 关闭（persistent：只有「关闭」与 Esc 收它）；
-   固定定位 = 从「应用」页与应用详情的上架窗里都能用同一份实现 */
-.apps-hashpop {
-  position: fixed;
-  z-index: 30;
-}
-
-.apps-hashpop-box {
-  width: min(92%, 620px);
-}
-
-.apps-hashpop-t {
-  padding: 9px 12px;
-  border-bottom: 2px solid var(--bd);
-  font-size: 12px;
-  color: #9ecdff;
-}
-
-.apps-hashpop-v {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--panel2);
-  border: 0;
-  border-bottom: 2px solid var(--bd);
-  color: var(--ink);
-  font: 11.5px/1.6 ui-monospace, Menlo, Consolas, monospace;
-  resize: vertical;
 }
 
 /* 「切换分支 ▾」浮层：同源的其他作者条目（作者 · 版本 · 是否已装）。
@@ -803,29 +769,179 @@
   word-break: break-all;
 }
 
-/* ── 应用页：卡片网格（Microsoft Store 观感：封面 + 标题 + 版本 + 描述 + 动作） ── */
+/* ── 应用页 / 库页：16:9 封面卡网格（Microsoft Store 观感） ──────────────
+   本轮需求：每张卡就是一块 16:9 圆角封面（背景图 = 云端缩略图，居中裁切铺满），
+   标题与作者压在封面**左下角**（底部黑色渐变遮罩保证亮底截图上也看得清），
+   下载/更新、ⓘ 详细、金币打赏三枚小图标排在封面**右下角**；
+   点卡本身 = 打开详情窗（图标按钮各自 stopPropagation）。 */
 .apps-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
   gap: 12px;
   align-items: start;
 }
 
 .apps-tile {
-  display: grid;
-  grid-template-columns: 52px 1fr;
-  grid-template-rows: auto auto auto;
-  gap: 4px 10px;
-  padding: 12px;
+  position: relative;
   border: 2px solid var(--bd);
-  border-radius: 10px;
-  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  border-radius: 12px;
+  background: var(--panel);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.apps-tile:hover,
+.apps-tile:focus-visible {
+  border-color: var(--cyan2);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+  outline: none;
 }
 
 .apps-tile.open {
   border-color: #6db4ff;
 }
 
+/* ── 封面块（16:9 固定长宽比） ── */
+.apps-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--code);
+}
+
+.apps-cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* 固定长宽比 + 居中截取：非 16:9 的源图两头被裁掉，不拉伸变形 */
+  object-fit: cover;
+  object-position: center;
+  display: block;
+  transition: filter .15s ease;
+}
+
+/* 悬停：封面轻微提亮（用户口径：提亮 + 描边/阴影加重，不缩放、不动布局） */
+.apps-tile:hover .apps-cover-img,
+.apps-tile:focus-visible .apps-cover-img {
+  filter: brightness(1.08);
+}
+
+/* 兜底底色层：没图 / 图拉不到时露出来（纯色底 + 左下标题仍然可读） */
+.apps-cover-fb {
+  position: absolute;
+  inset: 0;
+  display: none;
+  background: linear-gradient(135deg, var(--panel2), var(--code));
+}
+
+.apps-cover.noimg .apps-cover-fb {
+  display: block;
+}
+
+/* 左下角标题 / 作者：底部黑色渐变遮罩 + 白字（亮底截图上也读得清） */
+.apps-cover-shade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 58%;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, .55) 55%, rgba(0, 0, 0, .78));
+  pointer-events: none;
+}
+
+.apps-cover-cap {
+  position: absolute;
+  left: 10px;
+  right: 76px; /* 给右下角那排图标让位，长标题不会钻到按钮底下 */
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  pointer-events: none;
+}
+
+.apps-cover-name {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-cover-author {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .82);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右下角那排图标按钮（下载/更新、ⓘ、金币）：压在封面上，底色半透明才看得清 */
+.apps-cover-acts {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+.apps-cover-acts .apps-ico-btn {
+  background: rgba(0, 0, 0, .5);
+  border-color: rgba(255, 255, 255, .34);
+  color: #fff;
+  backdrop-filter: blur(2px);
+}
+
+.apps-cover-acts .apps-ico-btn:hover {
+  background: rgba(0, 0, 0, .72);
+  border-color: #fff;
+}
+
+.apps-cover-acts .apps-ico-btn.on {
+  border-color: var(--green, #6ddc8b);
+  color: var(--green, #6ddc8b);
+}
+
+.apps-cover-acts .apps-ico-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* 下载/更新那颗在深色封面上用青色，与「详细」区分开 */
+.apps-cover-acts .apps-ico-download {
+  color: var(--cyan2);
+}
+
+.apps-cover-acts .apps-ico-play {
+  color: var(--green, #6ddc8b);
+}
+
+.apps-ico-svg,
+.apps-ico-svg svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+/* 详情头部那块大封面：宽高比同卡片，不叠标题（标题在下面的 .apps-detail-who 里） */
+.apps-cover-big {
+  border-radius: 8px;
+}
+
+/* 旧的小方图封面（.apps-tile-cover / .apps-row-cover）留着一处尺寸口径：
+   开发页 / 应用窗口列表还在用 40px 的小图标，别把那条路径的样式一起删掉。 */
 .apps-tile-cover,
 .apps-row-cover {
   grid-row: 1;
@@ -873,43 +989,8 @@
   font-size: 15px;
 }
 
-.apps-tile-info {
-  grid-column: 2;
-  grid-row: 1;
-  min-width: 0;
-}
-
-.apps-tile-title {
-  font-size: 12.5px;
-  font-weight: 800;
-  letter-spacing: .5px;
-  color: var(--ink);
-  /* 第一行 = 标题（.apps-tile-name）+ 右端两枚图标按钮（金币 / ⓘ，见 app-apps.js 的
-     appsAppsIconRow）：行内 flex + 两端对齐，标题过长时自己截断（图标 flex:none 不被压扁）。 */
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  min-width: 0;
-}
-
-.apps-tile-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 卡片第一行右端的两枚图标按钮：同一套小方框（需求口径：打赏只留一枚金币 icon，
-   「详细」换成 info icon）——方框尺寸固定，悬停文案在 title 上。 */
-.apps-tile-icoacts {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
+/* 图标小方框（卡片封面右下角那一排、详情头部都用它）：方框尺寸固定，文案全在 title / aria-label 上。
+   旧卡片内部的 .apps-tile-info / -title / -name / -desc / -badges / -acts 已随封面卡改版删除。 */
 button.mini.apps-ico-btn {
   width: 20px;
   height: 20px;
@@ -937,44 +1018,6 @@ button.mini.apps-ico-coin .coin-ico.sm {
 button.mini.apps-ico-info {
   font-size: 12px;
   font-weight: 700;
-}
-
-.apps-tile-ver {
-  font-size: 10px;
-  color: var(--muted);
-  font-family: var(--mono);
-  margin-top: 1px;
-}
-
-.apps-tile-desc {
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--muted);
-  margin-top: 4px;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.apps-tile-badges {
-  margin-top: 6px;
-}
-
-.apps-tile-acts,
-.apps-row-acts {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.apps-row-acts {
-  grid-column: auto;
-  margin-top: 0;
-  align-items: center;
-  justify-content: flex-end;
 }
 
 /* ── 详情块（应用页展开） ── */
@@ -1047,12 +1090,15 @@ button.mini.apps-ico-info {
   height: 100%;
 }
 
-/* 头部：图标 + 标题 + 作者 / 云端版本 / 本机版本 + 徽标 */
+/* 头部（本轮需求：封面缩小 + 左图右文横排）：320px 的小封面在左，标题与两行作者在右，
+   竖向只占封面那一行的高度，正文能多出一大截可见区。
+   旧的大封面竖排（整幅铺满、占掉半屏高度）已按用户口径改掉。 */
 .apps-detail-head {
   flex: none;
   display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 8px 10px;
   border: 1px solid var(--bd);
   border-left: 3px solid var(--orange);
@@ -1060,20 +1106,12 @@ button.mini.apps-ico-info {
   background: var(--panel2);
 }
 
-.apps-detail-ico {
+/* 小封面：固定 320px 宽（16:9 = 180px 高）；窗很窄时降到可用宽度，绝不溢出撑破头部。
+   放大取图口径（缓存令牌 / 本机兜底）在 app-apps.js 的 appsCoverEl({ big: true })。 */
+.apps-detail-head .apps-cover-big {
   flex: none;
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* 两头都兼容：云端图标 = .apps-ico-img（撑满父格）、拉不到时的首字占位 = .apps-tile-ph */
-.apps-detail-ico .apps-ico-img {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  width: 320px;
+  max-width: 100%;
 }
 
 .apps-detail-who {
@@ -1093,10 +1131,106 @@ button.mini.apps-ico-info {
   white-space: nowrap;
 }
 
+/* ── 详情窗：上架截图画廊（大图 + 缩略图条，点缩略图切大图）──
+   本轮需求：服务端存多图 + 目录下发 shots[]，这一块把它们画出来；
+   卡片封面仍只用第 1 张（thumb / icon），与本块互不影响。 */
+.apps-gallery {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 560px;
+}
+
+.apps-gallery-big {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border: 2px solid var(--bd);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.apps-gallery-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.apps-gallery-thumb {
+  flex: none;
+  width: 68px;
+  height: 44px;
+  padding: 0;
+  border: 2px solid var(--bd);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.apps-gallery-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.apps-gallery-thumb:hover {
+  border-color: var(--acc);
+}
+
+.apps-gallery-thumb.on {
+  border-color: var(--acc);
+  box-shadow: 0 0 0 1px var(--acc);
+}
+
 .apps-detail-meta {
   font-size: 10.5px;
   color: var(--muted);
   font-family: var(--mono);
+}
+
+/* ── 详情正文里那行只读的「打赏记录 N 币」（本轮需求：详情不再有第二个打赏入口） ──
+   形态：橙色左边条的小条 + 「打赏记录」+ 币数（单位是鲸圆币图标）。
+   **整行不可点**（不挂 clickable / cursor:pointer）：悬停只出 title 里的总次数；
+   一次都没被打赏过时这一行根本不画（见 app-tips.js 的 detailRecordEl）。 */
+.apps-detail-tipbar.tip-record {
+  cursor: default;
+  gap: 6px;
+}
+
+.apps-detail-tipbar.tip-record .tip-record-k {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--muted);
+}
+
+/* ── 详情里的「本机应用」动作区（库页卡上收掉的三个入口搬到这里） ── */
+.apps-detail-local {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.apps-detail-local-k {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.apps-detail-local-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .apps-detail-badges {
@@ -1213,6 +1347,24 @@ button.mini.apps-ico-info {
 }
 
 /* ── 库页：行式列表 + 根目录一行 ── */
+/* 库页：**两套根两行**（下载根 / 项目根）+ 末尾一枚「迁移旧布局…」 */
+.apps-roots {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.apps-roots .apps-rootline-act {
+  border-style: dashed;
+  background: transparent;
+  padding: 5px 10px;
+}
+
+.apps-roots .apps-rootline-act .mini {
+  margin-left: auto;
+}
+
 .apps-rootline {
   flex: none;
   display: flex;
@@ -1242,58 +1394,12 @@ button.mini.apps-ico-info {
   white-space: nowrap;
 }
 
+/* 库页：与应用中心同一套封面卡（卡片样式在文件上部的 .apps-tile 一块），这里只给容器 */
 .apps-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.apps-row {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
-  grid-template-rows: auto auto auto;
-  gap: 4px 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 2px solid var(--bd);
-  border-radius: 10px;
-  background: linear-gradient(180deg, var(--panel2), var(--panel));
-}
-
-.apps-row-info {
-  grid-column: 2;
-  min-width: 0;
-}
-
-.apps-row-title {
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: .5px;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.apps-row-meta {
-  font-size: 10px;
-  color: var(--muted);
-  font-family: var(--mono);
-  margin-top: 1px;
-}
-
-.apps-row-path {
-  font-size: 10px;
-  color: var(--muted);
-  font-family: var(--mono);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.apps-row-badges {
-  margin-top: 5px;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 12px;
+  align-items: start;
 }
 
 /* ── 同名目录冲突：覆盖 / 改名 / 取消（persistent：点外部不关，只走三个按钮 / Esc） ── */
@@ -1402,6 +1508,20 @@ body.theme-light .apps-tile-ph {
 }
 
 /* 应用根目录：路径（等宽、可省略）+ 更改…；点路径 = 在资源管理器中打开 */
+/* 开发页菜单条上的两枚根标签（下载根 / 项目根）：小一号的组名 */
+.apps-dev-roots {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.apps-dev-root-k {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .5px;
+  margin-right: 2px;
+}
+
 .apps-dev-root {
   display: flex;
   align-items: center;
@@ -1905,7 +2025,7 @@ body.theme-light .apps-dev-more-pop {
 
 /* 首轮态要藏的不只是四块面板：#agentList 常被包在 .hist-scroll-wrap 里（见上一条），
    壳也得一起藏 —— 只写 > .agent-list 的话，正文会从壳里露出来（首轮态本该只剩引导）。
-   轮次标签 #agentRound 同理：首轮态还没有本应用的会话，露一行「第 N 轮」与
+   时间区间标签 #agentRound 同理：首轮态还没有本应用的会话，露一行时间区间与
    「只留一句引导」相冲（app-apps-dev.js 的 appsDevClearConvPanels 也会清它一次）。 */
 .apps-dev-conv.is-draft > .hist-scroll-wrap,
 .apps-dev-conv.is-draft > .agent-list,

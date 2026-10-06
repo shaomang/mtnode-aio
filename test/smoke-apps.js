@@ -158,11 +158,32 @@ Module._load = function (request, parent, isMain) {
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-apps-smoke-"));
 const DATA = path.join(TMP, "data");
 const APPS_ROOT = path.join(TMP, "apps-root");
+/* 两套根（本次需求：下载的与开发的严格分开）：下载根 = APPS_ROOT（老断言逐字沿用），
+   项目根 = APPS_DEV_ROOT（新建 / 二次开发的应用落这里）。 */
+const APPS_DEV_ROOT = path.join(TMP, "apps-project");
+/* 造一个「从云端下来的」本机应用（下载根里 + 安装账本）：删除范围按下载那一类走 */
+function makeLocalApp(root, id) {
+  const d = path.join(root, id);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(
+    path.join(d, "app.json"),
+    JSON.stringify({ schema: 1, id: id, name: id, version: "1.0.0", entry: "index.html", dev: false }, null, 2),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(d, "index.html"), "<html><body>" + id + "</body></html>", "utf8");
+  fs.writeFileSync(
+    path.join(d, "installed.json"),
+    JSON.stringify({ schema: 1, id: id, version: "1.0.0", source: "https://x/y.zip", sha256: "", files: ["index.html", "app.json"], installedAt: 1 }, null, 2),
+    "utf8",
+  );
+  return d;
+}
 fs.mkdirSync(DATA, { recursive: true });
 fs.mkdirSync(APPS_ROOT, { recursive: true });
+fs.mkdirSync(APPS_DEV_ROOT, { recursive: true });
 fs.writeFileSync(
   path.join(DATA, "config.json"),
-  JSON.stringify({ apps: { installDir: APPS_ROOT } }, null, 2),
+  JSON.stringify({ apps: { installDir: APPS_ROOT, projectDir: APPS_DEV_ROOT } }, null, 2),
   "utf8",
 );
 /* 记录「真正被写盘」的路径，用于守卫断言（写进换目录 / 越界 = 立刻看得见） */
@@ -544,15 +565,45 @@ async function main() {
   ok(m && m.ok && fs.existsSync(m.path) && /\.mtnodes$/.test(m.path), "mirrorAppCanvas 写 <AppName>.mtnodes");
   ok(store.mirrorAppCanvas("nope-not-there", {}) .ok === true, "mirrorAppCanvas 认不出应用时静默跳过（镜像失败不影响画布保存）");
 
-  /* 卸载：**只删该应用自己的子目录**（优先送回收站），别的目录一个都不碰 */
+  /* 删除范围（本次需求：删一个绝不误删另一个）：
+     ① 开发的（createApp 建的 = 项目根里的开发应用）→ 只「移除登记」，磁盘文件一个都不删；
+     ② 下载的（下载根里的应用）→ 真删自己在下载根下的子目录 + 它那一棵数据。 */
   const other = store.createApp({ name: "待卸载", id: "to-remove" });
-  ok(other.ok && fs.existsSync(other.dir), "另建一个应用用于卸载口径验证");
+  ok(other.ok && fs.existsSync(other.dir), "另建一个应用用于删除口径验证");
+  ok(
+    path.resolve(other.dir) === path.resolve(path.join(APPS_DEV_ROOT, "to-remove")),
+    "新建（开发）的应用落在**项目根**里",
+  );
   const sib = path.join(APPS_ROOT, "keep-me.txt");
   origWrite(sib, "keep", "utf8");
-  const u = await store.uninstallApp("to-remove");
-  ok(u && u.ok && u.id === "to-remove", "uninstallApp 成功（只传自己的 id）");
-  ok(!fs.existsSync(other.dir), "卸载后该应用子目录没了");
-  ok(fs.existsSync(APPS_ROOT) && fs.existsSync(sib), "应用根目录与其它文件原样留着（只删子目录）");
+  const u0 = await store.uninstallApp("to-remove");
+  ok(u0 && u0.ok === false && u0.reason === "dev_keep_files", "开发中的应用直接卸载被拒（只能移除登记）");
+  ok(fs.existsSync(other.dir), "被拒之后项目文件夹原样在（一个文件都没删）");
+  const u = await store.uninstallApp("to-remove", { force: "dev_remove" });
+  ok(u && u.ok && u.id === "to-remove" && u.mode === "unregister", "移除登记成功（mode=unregister）");
+  ok(u.filesKept === true && fs.existsSync(other.dir), "移除登记后项目文件夹与文件全部原样保留");
+  ok(
+    JSON.parse(fs.readFileSync(path.join(other.dir, "app.json"), "utf8")).removed === true,
+    "app.json 记下 removed:true（列表不再列它）",
+  );
+  /* 下载的那一类：真删（只删下载根下的自己 + apps-data/downloaded/<id>） */
+  const dlDir = makeLocalApp(APPS_ROOT, "dl-to-remove");
+  fs.mkdirSync(path.join(DATA, "apps-data", "downloaded", "dl-to-remove"), { recursive: true });
+  const keptDevData = path.join(DATA, "apps-data", "dev", "keep-dev-data");
+  fs.mkdirSync(keptDevData, { recursive: true });
+  origWrite(path.join(keptDevData, "data.json"), '{"keep":1}', "utf8");
+  const u2 = await store.uninstallApp("dl-to-remove");
+  ok(u2 && u2.ok && u2.mode === "uninstall", "下载的应用走真删（mode=uninstall）");
+  ok(!fs.existsSync(dlDir), "卸载后该应用在下载根下的子目录没了");
+  ok(
+    !fs.existsSync(path.join(DATA, "apps-data", "downloaded", "dl-to-remove")),
+    "它自己那一棵数据（apps-data/downloaded）跟着删掉",
+  );
+  ok(
+    fs.existsSync(path.join(keptDevData, "data.json")),
+    "开发那一棵（apps-data/dev/**）一个字节都没动",
+  );
+  ok(fs.existsSync(APPS_ROOT) && fs.existsSync(sib), "下载根与其它文件原样留着（只删子目录）");
   ok(fs.existsSync(dir), "另一个应用（smoke-app）没被牵连");
 
   /* 根目录校验：不能落应用目录、不能是盘根、必须绝对路径 */
@@ -877,13 +928,13 @@ async function main() {
   ok(R.indexOf('b.id = "appsRunBtn-" + String(id || "")') >= 0, "按钮 id 稳定可寻：appsRunBtn-<appId>");
   ok(R.indexOf('b.dataset.appRun = "1"') >= 0, "按钮带 data-app-run 标记（打开态回贴按它定位）");
   ok(R.indexOf('b.title = appsT("在独立窗口里运行这个应用")') >= 0, "按钮 title 说明它是独立窗口运行");
-  ok(R.indexOf('b.className = primary ? "mini primary" : "mini"') >= 0 && R.indexOf("appsRunBtnEl(id, appsT(\"运行\"), () => appsOpenApp(id))") >= 0, "库页本机行：「运行」→ appsOpenApp(id)（mini primary 位置）");
+  ok(R.indexOf('b.className = primary ? "mini primary" : "mini"') >= 0 && R.indexOf("function appsRunIcoBtnEl(id)") >= 0 && R.indexOf("appsRunBtnEl(id, \"\", () => appsOpenApp(id))") >= 0, "库页卡片：「运行」→ appsOpenApp(id)（同一个 appsRunBtnEl，封面卡上换成 play 图标形态）");
   ok(
     R.indexOf('appsRunBtnEl("dev"') < 0 &&
       DEV4.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
     "开发页的运行入口只剩三栏工具栏的「启动」（页脚工具区那一颗随整块移除）",
   );
-  ok(R.indexOf("appsRunBtnEl(id, appsT(\"运行\"), () => appsOpenApp(id))") >= 0 && R.indexOf('row.querySelector(".apps-row-acts button[data-app-run]")') >= 0, "库页打开态回贴落在 data-app-run 那颗按钮上");
+  ok(R.indexOf("appsRunIcoBtnEl(spec.id)") >= 0 && R.indexOf('row.querySelector(".apps-cover-acts button[data-app-run]")') >= 0, "库页打开态回贴落在 data-app-run 那颗按钮上（封面右下角那一排）");
   ok(R.indexOf("async function appsOpenApp(id)") >= 0 && R.indexOf("await api.appsOpenWindow(id)") >= 0, "appsOpenApp → window.api.appsOpenWindow(id)（主进程开窗）");
   ok(R.indexOf("appsBridgeMissing()") >= 0, "桥缺席（非 Electron / 未接入）时明确报错，不静默失败");
   ok(read("renderer/css/apps.css").length > 0, "css/apps.css 存在（.apps-row-acts 样式随文件走）");
@@ -1150,7 +1201,9 @@ async function main() {
   );
   ok(
     DEV.indexOf("function appsDevClearConvPanels()") >= 0 &&
-      DEV.indexOf('"agentPlan", "agentTodo", "agentQueue", "agentPaused"') >= 0,
+    ["agentPlan", "agentTodo", "agentQueue", "agentPaused"].every(
+      (id) => DEV.indexOf('"' + id + '"') >= 0,
+    ),
     "开发页右栏：四块面板（计划 / 任务清单 / 发送队列 / 已暂停）一起清",
   );
   ok(
@@ -1169,11 +1222,14 @@ async function main() {
     APPS.slice(APPS.indexOf("async function appsPaintLibPage(")).indexOf("body.appendChild(appsRootLineEl())") >= 0,
     "库页保持原样（根目录一行 + ＋新建应用一行）",
   );
+  /* 根目录动作现在**按类型**（两套根：下载 / 项目）抽成共用函数；迁移入口也在这一处 */
   ok(
-    APPS.indexOf("async function appsRootPickNow()") >= 0 &&
-      APPS.indexOf("function appsRootFolderNow()") >= 0 &&
+    APPS.indexOf("async function appsRootPickNow(kind)") >= 0 &&
+      APPS.indexOf("function appsRootFolderNow(kind)") >= 0 &&
+      APPS.indexOf("async function appsMigrateLayoutNow()") >= 0 &&
+      APPS.indexOf("function appsRootRowEl(kind)") >= 0 &&
       FLOW.indexOf("function appsCreateAppBtnEl()") >= 0,
-    "根目录动作与「＋新建应用」抽成共用函数（库页 / 开发页同一份）",
+    "根目录动作（按类型）与「＋新建应用」抽成共用函数（库页 / 开发页同一份）+ 迁移入口",
   );
   ok(
     I18N.indexOf('"刷新预览": "Reload preview"') >= 0 &&
@@ -1373,10 +1429,11 @@ async function previewSections() {
     DEV.indexOf('if (!DEVD.url) DEVD.url = appsDevUrlOf(DEVD.appId);') >= 0,
     "「刷新预览」不再空转：url 空时先退兜底再重载",
   );
-  const noAppAt = DEV.indexOf(
-    'appsDevPreviewStatMsg(\n      appsDevT("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。"),\n    );',
-  );
-  ok(noAppAt >= 0, "一个应用都没有时中栏给可读提示（同样不是白底；并指向「二次开发」）");
+  /* 调用点的缩进会随包裹层级变化：按「函数名 + 那句文案」放宽匹配（判据不变） */
+  const noAppAt = new RegExp(
+    'appsDevPreviewStatMsg\\(\\s*appsDevT\\("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。"\\)',
+  ).test(DEV);
+  ok(noAppAt, "一个应用都没有时中栏给可读提示（同样不是白底；并指向「二次开发」）");
   /* 左栏空态（应用列表由宿主渲染，一个应用都没有时宿主不生效，得自己补一行空态） */
   ok(
     DEV.indexOf('e.className = "side-empty";') >= 0 &&
@@ -1392,8 +1449,10 @@ async function previewSections() {
   for (const k of ["本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。", "正在读取应用目录…", "预览不可用：", "读不到该应用目录（可能在别处被删了）"])
     ok(I18N.indexOf('"' + k + '"') >= 0, "i18n 中英成对：" + k.slice(0, 12) + "…");
 
-  /* ⑥ 主进程 devPreview：app.json 缺 entry / 入口页不在磁盘上 → 一律回落默认入口页 */
-  const previewDir = store.appDirOf(path.resolve(APPS_ROOT), "smoke-app");
+  /* ⑥ 主进程 devPreview：app.json 缺 entry / 入口页不在磁盘上 → 一律回落默认入口页。
+     本轮起 smoke-app 算「开发的」那一类（无安装账本 → devBackfill 会给它补 dev:true），
+     目录按类型取（项目根）；这里用一个**肯定存在**的目录做预览断言，不再写死下载根。 */
+  const previewDir = store.dirOfApp("smoke-app") || store.appDirOf(path.resolve(APPS_ROOT), "smoke-app");
   store.setRoot(path.resolve(APPS_ROOT));
   const manPath2 = path.join(previewDir, "app.json");
   let man2 = JSON.parse(fs.readFileSync(manPath2, "utf8"));
@@ -1465,9 +1524,20 @@ async function previewSections() {
   const MAINPRE = read("preload.js");
   const MAINJS = read("main.js");
 
-  /* ① 默认数据根 = <数据目录>/apps-data/<id>/（与 config.json / save 同一层，不落应用目录） */
+  /* ① 默认数据根 = <数据目录>/apps-data/<kind>/<id>/（**按类型分两棵**，本次需求；
+     与 config.json / save 同一层，不落应用目录）。
+     smoke-app 是**本机新建的**（createApp → app.json 的 dev:true）→ 归「开发的应用」那一棵；
+     「下载的」那一棵按同一条规则落在 apps-data/downloaded/<id>/（两棵互不重叠，删一个不误删另一个）。 */
   const root8 = store.appDataRoot("smoke-app");
-  ok(root8 === path.join(DATA, "apps-data", "smoke-app"), "默认数据根 = <数据目录>/apps-data/<id>/");
+  ok(
+    root8 === path.join(DATA, "apps-data", "dev", "smoke-app"),
+    "默认数据根 = <数据目录>/apps-data/dev/<id>/（本机新建 = 开发的应用）",
+  );
+  ok(
+    store.appDataRootPath("smoke-app", "down") ===
+      path.join(DATA, "apps-data", "downloaded", "smoke-app"),
+    "下载的应用那棵 = <数据目录>/apps-data/downloaded/<id>/（两棵互不重叠）",
+  );
   ok(!store.isInsideAppDir(root8), "默认数据根不在应用目录内（数据纪律）");
   ok(store.appDataDirOf("smoke-app") === root8, "还没有指针时，数据文件夹 = 默认数据根");
 
@@ -1531,6 +1601,9 @@ async function previewSections() {
   /* ④ 落盘 + 老数据自动迁移（只认默认数据根里的 data.json，不碰用户另选过的目录） */
   const legacyFile = path.join(dir, "storage", "store.json");
   origWrite(legacyFile, JSON.stringify({ schema: 1, updatedAt: 1, kv: { a: 1 } }), "utf8");
+  /* 本机新建的应用（app.json 的 dev:true）→ 类型判定走 dev 那一棵；
+     从云端下来的那些（有 installed.json）判为 down（见 test/smoke-apps-roots.js [1]）。 */
+  ok(store.diskKindOf("smoke-app") === "dev", "本机新建的应用判为「开发的」（diskKindOf）");
   const mig = store.migrateLegacyStorage("smoke-app");
   ok(mig.ok === true && mig.moved === true, "老 storage/store.json 首次读取时自动迁移");
   ok(fs.existsSync(path.join(root8, "data.json")), "迁移落点是默认数据根里的 data.json");
@@ -2074,7 +2147,8 @@ async function previewSections() {
   ok(
     FLOW.indexOf("appsCreateDialog") >= 0 &&
       FLOW.indexOf("appsStyleCards({") >= 0 &&
-      FLOW.indexOf('window.api.appsCreate(nm, aid, String(style || ""), appFlowMeName())') >= 0,
+      /* 调用点带 5 个参数且被格式化折成多行：用 \s* 放宽匹配（判据不变） */
+      /window\.api\.appsCreate\(\s*nm,\s*aid,\s*String\(style \|\| ""\),\s*appFlowMeName\(\)/.test(FLOW),
     "新建应用浮层：选中的风格 + 当前登录账号（作者）随 appsCreate 一起交给主进程",
   );
   ok(
@@ -2156,7 +2230,9 @@ async function previewSections() {
     DEV.indexOf("function devStyleAskContract(") >= 0 &&
       DEV.indexOf('if (style !== "custom") return ""') >= 0 &&
       DEV.indexOf('devStyleAskContract(DEVD.appId)') >= 0 &&
-      DEV.indexOf('createDevSessionForNode(node, "dev", reqText, devStyleAskContract(DEVD.appId))') >= 0,
+      /* 本轮起第一个参数是**带 agentWorkspace 的节点副本**（工作区强制指应用项目文件夹）：
+         按「函数名 + 第 4 参」匹配，节点变量名变化不再误报 */
+      /createDevSessionForNode\(\w+, "dev", reqText, devStyleAskContract\(DEVD\.appId\)\)/.test(DEV),
     "开发页：只有「自定义」那一轮才附风格约束，且走会话契约（createDevSessionForNode 第 4 参）",
   );
   ok(
@@ -2482,7 +2558,8 @@ async function previewSections() {
     "已装 = 启动（不再显示下载）；未装 = 下载（点了先开详情选分支与版本）",
   );
   ok(
-    RENDERER.indexOf("const upTarget = spec ? appsCardUpdateTargetOf(spec) : null;") >= 0,
+    RENDERER.indexOf("appsCardUpdateTargetOf(spec)") >= 0 &&
+      RENDERER.indexOf('appsIcoBtnEl(\r\n        "download",') >= 0,
     "「更新」按钮走 appsCardUpdateTargetOf（本机已装那一支的作者最新版）",
   );
   /* 同 id 多分支（docs/apps-market.md §十，本轮）：旧的「切换分支 ▾」（按 forkOf.id 归组、
@@ -2523,23 +2600,107 @@ async function previewSections() {
     "开发中的应用点更新要二次确认（写明会覆盖 app.json / 入口页 / assets，并写明哪些不会被覆盖）",
   );
   ok(RENDERER.indexOf('push(appsT("二次开发自"), fo.id') >= 0, "详情显示「二次开发自」（源 id + 原作者账号）");
+  /* sha256 校验值：本轮需求 = 点一下直接复制，不再开「点开看全文」的小窗（那个浮层整块删掉） */
   ok(
     RENDERER.indexOf("function appsHashBtnEl(") >= 0 &&
-      RENDERER.indexOf("function appsHashPopOpen(") >= 0 &&
+      RENDERER.indexOf("function appsCopyText(") >= 0 &&
       RENDERER.indexOf("function appsDevMetaEl(") >= 0 &&
-      CSS.indexOf(".apps-hashpop") >= 0 &&
+      RENDERER.indexOf("btn.onclick = () => appsHashPopOpen(") < 0 &&
+      RENDERER.indexOf("function appsHashPopOpen(") < 0 &&
+      CSS.indexOf(".apps-hashpop") < 0 &&
+      CSS.indexOf(".apps-hashbtn") >= 0 &&
       CSS.indexOf(".apps-devmeta") >= 0,
-    "校验值收进「ⓘ 校验」小按钮 + 开发者信息折叠区（含样式）",
+    "校验值 = 「ⓘ 复制校验值」按钮直接进剪贴板（校验收纳处 + 小窗函数与其样式已删，开发者信息折叠区还在）",
   );
+  {
+    /* 真跑 appsHashBtnEl：假 DOM 只给这段代码真正用到的那几样，验「点一下 = 写剪贴板 + toast」 */
+    const made = [];
+    const toasts = [];
+    let wrote = "";
+    const mkEl = () => {
+      const el = {
+        type: "",
+        className: "",
+        textContent: "",
+        title: "",
+        disabled: false,
+        onclick: null,
+        appendChild: (c) => c,
+        style: {},
+        setAttribute: () => {},
+      };
+      made.push(el);
+      return el;
+    };
+    const sandbox = {
+      document: {
+        createElement: () => mkEl(),
+        body: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        getElementById: () => null,
+      },
+      window: {
+        api: {
+          clipboardWriteText: (t) => {
+            wrote = String(t);
+            return Promise.resolve({ ok: true });
+          },
+        },
+      },
+      navigator: null,
+      I18n: { t: (x) => x },
+      /* appsToast 是个薄壳（它只是把话转给全局 toast），所以这里给的是真 toast：
+         考的是「按钮到底说没说那句话」，不是 appsToast 自己怎么写 */
+      toast: (m, k) => toasts.push([m, k]),
+      __dumpToast: () => JSON.stringify(toasts),
+      console,
+      Promise,
+      setTimeout,
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(read("renderer/app-apps.js"), sandbox, { filename: "renderer/app-apps.js" });
+    const FULL = "a".repeat(64);
+    const btn = vm.runInContext('appsHashBtnEl("复制校验值", ' + JSON.stringify(FULL) + ")", sandbox);
+    ok(
+      btn.textContent === "ⓘ 复制校验值 · aaaaaaaa" && btn.title === "点一下复制完整校验值",
+      "按钮只摊算法名 + 前 8 位，title 写「点一下复制完整校验值」：" + btn.textContent,
+    );
+    ok(btn.disabled === false && typeof btn.onclick === "function", "有校验值时按钮可点（点击处理器已挂）");
+    /* 「点一下」与「看到了什么」都在同一个 vm 域里跑（onclick 是不返回 promise 的老式处理器，
+       且 vm 域的微任务宿主直接 await 追不到）：让 vm 自己在微任务都跑完后把 toast 报回来 */
+    const clickAndSettle = () =>
+      vm.runInContext(
+        "new Promise(function(res){ __click(); setTimeout(function(){ res(__dumpToast()) }, 0) })",
+        sandbox,
+      );
+    sandbox.__click = () => {
+      btn.onclick();
+    };
+    ok(await clickAndSettle() === '[["已复制校验值","ok"]]', "点一下写剪贴板并回一句「已复制校验值」的 ok toast");
+    ok(wrote === FULL, "点一下把**完整**校验值（64 位）写进剪贴板，不是界面上那 8 位");
+    const btnNo = vm.runInContext('appsHashBtnEl("复制校验值", "")', sandbox);
+    ok(btnNo.disabled === true, "没有校验值时按钮禁用（不给假成功）");
+    wrote = "";
+    sandbox.window.api.clipboardWriteText = () => Promise.resolve({ ok: false });
+    toasts.length = 0;
+    ok(
+      (await clickAndSettle()) === '[["复制失败：请手动复制","warn"]]',
+      "桥回 { ok:false } 时如实报「复制失败：请手动复制」（warn），绝不假装成功",
+    );
+  }
   ok(
     RENDERER.indexOf('appsHashBtnEl("校验 sha256", String(APPS_ST.devExport.sha256 || ""))') < 0 &&
-      PUB.indexOf('appsHashBtnEl("校验 sha256", shaVal)') >= 0,
+      PUB.indexOf('appsHashBtnEl("复制校验值", shaVal)') >= 0,
     "校验小按钮只剩应用详情与上架回执两处（开发页页脚那处随整块移除）",
   );
   ok(
     RENDERER.indexOf('push(appsT("作者"), appsAuthorOf(spec))') >= 0 &&
-      RENDERER.indexOf("const rowAuthor = appsAuthorOf(app);") >= 0,
-    "详情与库页行都显示作者（云端 owner / 本机 app.json.author）",
+      RENDERER.indexOf("function appsCoverAuthorOf(spec)") >= 0 &&
+      RENDERER.indexOf("appsAuthorOf(root) || appsAuthorOf(spec)") >= 0,
+    "详情与卡片封面都显示作者（云端 owner / 本机 app.json.author）",
   );
 
   /* ⑧ 库 / 开发两页名单分工 + 二次开发入口（在每张卡片右侧，不再是页顶一行） */
@@ -2551,9 +2712,9 @@ async function previewSections() {
   ok(
     RENDERER.indexOf("function appsMigrateRowEl(") < 0 &&
       RENDERER.indexOf('appsT("迁移到开发")') < 0 &&
-      RENDERER.indexOf("appsFillLocalActions(acts, app);") >= 0 &&
-      RENDERER.indexOf("acts.appendChild(appsSecondaryDevBtnEl(app));") >= 0,
-    "「二次开发」不再独占页顶一行，改为每张卡片右侧按钮（appsFillLocalActions 里挂）",
+      RENDERER.indexOf("function appsDetailLocalActionsEl(spec, local)") >= 0 &&
+      RENDERER.indexOf("row.appendChild(appsSecondaryDevBtnEl(local || { id: id }));") >= 0,
+    "「二次开发」不再独占页顶一行，改挂在本机应用的详情动作区（库页卡上收掉了）",
   );
   ok(
     DEV.indexOf('appsDevT("数据目录")') >= 0 && DEV.indexOf("appsDataOpenNow(DEVD.appId)") >= 0,
@@ -2672,7 +2833,9 @@ async function previewSections() {
   );
   ok(
     FLOW.indexOf("const wf = appCanvasWf(res.id, res.name, res.dir);") >= 0 &&
-      FLOW.indexOf("const wf = appCanvasWf(id, String(app.name || id), app.dir);") >= 0,
+      /* 二次开发那条现在用的是**归位后**的目录（appDirNow：apps:migrateLayout 把它搬进项目根），
+         仍走同一个构造函数 —— 判据是「两条路都走 appCanvasWf 且都带应用目录」 */
+      /const wf = appCanvasWf\(id, String\(app\.name \|\| id\), app(?:DirNow|\.dir)\)/.test(FLOW),
     "「新建应用」与「二次开发」两条建图路径都走 appCanvasWf（都带上应用目录）",
   );
   ok(
@@ -3859,8 +4022,12 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
     "详情头部不再写「云端 vX / 本机 vX」");
   ok(/appsT\("原作者 "\) \+ author/.test(APPS) && /appsT\(" · 当前版本作者 "\) \+ localAuthor/.test(APPS),
     "卡片作者行 = 原作者 + 本机已装那一支的作者");
-  ok(/appsT\("原作者 "\) \+ rootAuthor/.test(APPS) && /appsT\(" · 当前版本作者 "\) \+ curAuthor/.test(APPS),
-    "详情头部 = 原作者 + 当前选中分支的作者");
+  ok(
+    /* 源码里写作多行拼接（appsT("原作者 ") +\n rootAuthor + …），所以按 \s* 放宽匹配 */
+    /appsT\("原作者 "\) \+\s*rootAuthor/.test(APPS) &&
+      /appsT\(" · 当前版本作者 "\) \+\s*curAuthor/.test(APPS),
+    "详情头部 = 原作者 + 当前选中分支的作者",
+  );
   ok(!/appsT\("命中分支/.test(APPS) && !/命中分支：/.test(APPS), "不再有「命中分支」这个叫法（只留注释里的历史说明）");
 
   /* ② 多层分支树（根 = 原作者；与当前版本无关）+ 选中后才出下载 / 覆盖 / 启动 */

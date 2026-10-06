@@ -2102,7 +2102,8 @@ button.mini.btn-sq.tpl-ico {
   position: relative
 }
 
-/* 轮次标签（本次需求 · id=agentRound）：会话区顶部一行「第 N 轮」+ 开始时间。
+/* 会话时间区间标签（本次需求 · id=agentRound）：会话区左上角一行「起点 – 终点」——
+   整个会话第一条消息到最后一条消息（**不显示轮号**，见 app-assist.js 的 agentRoundSpanText）。
    会话正文只有一个填充项（.agent-list 的 flex:1），这一行必须是 flex:none，
    否则它会跟消息区抢高度、把输入区的预算搞乱（见 base.css 的 ①②③④⑤ 契约）。
    hidden（空会话 / 本轮还不该出标签）时整行不存在 —— [hidden] 显式压一次，
@@ -3793,7 +3794,8 @@ button.mini.btn-sq.tpl-ico {
   color: rgb(173, 178, 184)
 }
 
-/* 全屏会话视图里的分段：字号跟随该视图的大正文（15/24），思考段仍保持灰调低对比 */
+/* 全屏会话视图里的分段：字号跟随该视图的大正文（15/24），思考段仍保持灰调低对比
+   （本次需求：思考只剩一行摘要条，旧的 summary / 内嵌 pre 规则随之删掉） */
 .agent-list .dsh-seg-say {
   font-size: 15px;
   line-height: 24px;
@@ -3807,30 +3809,10 @@ button.mini.btn-sq.tpl-ico {
   padding: 4px 10px 5px
 }
 
-.agent-list .dsh-seg-think>summary {
+.agent-list button.dsh-think-row {
   font-family: inherit;
   font-size: 12.5px;
   color: rgb(173, 178, 184)
-}
-
-.agent-list .dsh-seg-think>summary::before {
-  color: rgb(120, 126, 134)
-}
-
-.agent-list .dsh-seg-think>summary:hover,
-.agent-list .dsh-seg-think[open]>summary {
-  color: rgb(235, 238, 242)
-}
-
-.agent-list .dsh-seg-think pre,
-.agent-list .dsh-seg-think .dsh-think-live {
-  background: rgb(27, 27, 28);
-  border: 1px solid rgba(255, 255, 255, .06);
-  border-radius: 10px;
-  color: rgb(207, 211, 214);
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 20px
 }
 
 .agent-list .dsh-seg-tool {
@@ -3885,7 +3867,10 @@ button.mini.btn-sq.tpl-ico {
   border-bottom: none
 }
 
-/* ── 交互面板(dsh 提问 / 审批):窗口下部居中悬浮卡片,不遮挡画布 ─
+/* ── 交互面板(dsh 提问 / 审批):窗口下部居中悬浮的「一整只玻璃窗」 ─
+   结构（本次开发需求）：一圈外框 + 毛玻璃包住整只窗；头部（拖动条）钉在窗顶、
+   与下面的正文零缝，只有一条 1px 分隔线；滚动交给 .ix-body，卡片进那只容器 ——
+   从前滚动条挂在 #ixPanel 自己身上，问题 / 总结一长，往下滚就把拖动条一起滚出视野。
    头部即拖拽手柄：拖到窗口底部 = 收进 footer 那一条（.ix-docked 压成紧凑条），
    用户可以先看画布再回来答；双击头部回到默认位置。位置记忆 localStorage。
    层级：总在最前（12600）—— 这只窗是「模型正卡在这一问上」的唯一出口，晚答一秒
@@ -3902,10 +3887,34 @@ button.mini.btn-sq.tpl-ico {
   width: 420px;
   max-width: 92vw;
   max-height: 78vh;
-  overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  /* 头部与正文零缝：整只窗只有一圈外框，两者靠 .ix-head 那条 1px 分隔线分界
+     （多张卡片之间仍是 6px，见 .ix-body） */
+  gap: 0;
+  /* 滚动交给里面的 .ix-body：拖动条因此永远钉在窗顶 */
+  overflow: hidden;
+  /* 外框 + 毛玻璃（本次开发需求）：整只窗只做这一层 backdrop-filter，里面的卡片
+     只给半透明底、不各自 blur（嵌套 backdrop-filter 既费性能又让文字发虚）。
+     底色取 --panel 的 72%：后面的画布透出柔光，正文照样清晰。 */
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+}
+
+/* 毛玻璃按主题分档（三套主题都要清晰可读）：蓝黑档略实一点；
+   浅色档明显更实 + 更轻的模糊 —— 浅色下 blur 白底容易发灰发糊，宁可靠不透明度。 */
+body.theme-industrial #ixPanel {
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+}
+
+body.theme-light #ixPanel {
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  backdrop-filter: blur(8px) saturate(120%);
 }
 
 #ixPanel.ix-dragging {
@@ -3920,11 +3929,19 @@ button.mini.btn-sq.tpl-ico {
   gap: 0;
 }
 
-#ixPanel.ix-docked .ix-card {
+/* 正文整块收起（卡片的宿主是 .ix-body）；窗里没有正文了，头部那条分隔线也一起去掉 */
+#ixPanel.ix-docked .ix-body {
   display: none;
 }
 
+#ixPanel.ix-docked .ix-head {
+  border-bottom: none;
+}
+
+/* 头部：钉在窗顶的拖动条 —— 不再自带边框 / 圆角 / 投影（那些统一交给整窗那圈外框），
+   只留一条与正文的分隔线；底色比正文实一点，正文从它下面滚过时不会糊在标题上。 */
 .ix-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3932,11 +3949,9 @@ button.mini.btn-sq.tpl-ico {
   letter-spacing: 1px;
   color: var(--cyan2);
   font-weight: 700;
-  background: var(--panel2);
-  border: 1px solid var(--bd2);
-  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel2) 82%, transparent);
+  border-bottom: 1px solid var(--bd);
   padding: 7px 10px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
   cursor: grab;
   user-select: none;
 }
@@ -3946,23 +3961,28 @@ button.mini.btn-sq.tpl-ico {
 }
 
 /* 新的一问到达时的「看这里」脉冲：一边把收起的窗展开、夹回视口，一边让头部
-   闪两下边框（颜色取 currentColor，跟随主题），用户不用盯着底栏那一条才知道
-   模型在等他。类名由 app-db.js 的 ixRevealNewCard 挂上，1.6 秒后自行摘掉。 */
+   闪两下（颜色取 currentColor，跟随主题），用户不用盯着底栏那一条才知道
+   模型在等他。类名由 app-db.js 的 ixRevealNewCard 挂上，1.6 秒后自行摘掉。
+   注意：整只窗现在是一圈外框 + overflow:hidden（见 #ixPanel），从前那种往外画的
+   光晕会被裁掉 —— 所以脉冲改成往内画的描边 + 底色提亮。 */
 #ixPanel .ix-head.ix-attn {
   animation: ixHeadAttn 0.7s ease-out 2;
 }
 
 @keyframes ixHeadAttn {
   0% {
-    box-shadow: 0 6px 24px rgba(0, 0, 0, .45), 0 0 0 0 currentColor;
+    background: color-mix(in srgb, var(--panel2) 82%, transparent);
+    box-shadow: inset 0 0 0 0 transparent;
   }
 
   40% {
-    box-shadow: 0 6px 24px rgba(0, 0, 0, .45), 0 0 0 3px currentColor;
+    background: color-mix(in srgb, var(--cyan) 22%, var(--panel2));
+    box-shadow: inset 0 0 0 2px currentColor;
   }
 
   100% {
-    box-shadow: 0 6px 24px rgba(0, 0, 0, .45), 0 0 0 0 currentColor;
+    background: color-mix(in srgb, var(--panel2) 82%, transparent);
+    box-shadow: inset 0 0 0 0 transparent;
   }
 }
 
@@ -3975,16 +3995,28 @@ button.mini.btn-sq.tpl-ico {
   white-space: nowrap;
 }
 
+/* 卡片的内容滚动容器（app-db.js 的 renderIxPanel 挂在头部之后）：滚动只发生在
+   它身上，头部因此永远钉在窗顶；与头部零缝、卡片之间保留原来的 6px；底部留 6px，
+   最后一张卡不贴死在圆角边上。 */
+.ix-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 0 6px;
+}
+
+/* 卡片 = 玻璃窗里的区块，不再是一只只小窗：自身那圈边框 / 圆角 / 投影、以及
+   3px 青色身份色竖条都去掉（统一交给整窗那圈外框），只把底色抬亮一档，
+   靠与头部的分隔线和卡间的 6px 间距分区。 */
 .ix-card {
-  background: var(--panel);
-  border: 1px solid var(--bd2);
-  border-left: 3px solid var(--cyan);
-  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel2) 46%, transparent);
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 7px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
 }
 
 /* 标题与紧随其后的正文（正文说明 / 题面）之间不留缝：
@@ -4652,7 +4684,18 @@ button.mini.btn-sq.tpl-ico {
   display: none
 }
 
-/* 思考段：灰调、略小、左侧灰轨 + 极淡底，折叠时只留 summary 一行 */
+/* ── 思考：一行摘要条 → 点击开弹窗（本次需求 · 拷问共识）──────────────────
+   旧形态是 <details> 下拉（summary 折叠条 + 限高 pre 内滚），展开后正文被夹在
+   180px 的小滚动区里、会话本身也被顶长 —— 用户口径「移除思考下拉，改为点击思考
+   条目弹窗，避免文字滚动影响浏览」。
+   现在是：会话里只留 **一行可点的摘要条**（.dsh-think-row，就是原来那条折叠条），
+   点它开 #overlay 里的居中弹窗（下面的 .dsh-think-pop*），原文 / 译文左右分栏、
+   各自独立滚动。
+   结构：.dsh-seg-think-wrap（时刻栏宿主，透明）
+           └─ button.dsh-think-row（皮肤：灰调 + 左灰轨 + 一行文案）
+   —— details / summary / 内嵌 pre 那一套连同只服务于它的规则一并删掉了，
+      同一处只留一条交互口径（不再有「展开 / 收起」）。回归见
+      test/smoke-session-markers.js 的「思考点击开弹窗」一节。 */
 .dsh-seg-think {
   color: var(--muted);
   font-size: 11.5px;
@@ -4665,108 +4708,31 @@ button.mini.btn-sq.tpl-ico {
   min-width: 0;
 }
 
-.dsh-seg-think>summary {
-  list-style: none;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: .4px;
-  opacity: .82;
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.dsh-seg-think>summary::-webkit-details-marker {
-  display: none
-}
-
-.dsh-seg-think>summary::before {
-  content: "▸";
-  display: inline-block;
-  width: 10px;
-  margin-left: -2px;
-  color: var(--bd2);
-}
-
-.dsh-seg-think[open]>summary::before {
-  content: "▾"
-}
-
-.dsh-seg-think>summary:hover {
-  color: var(--ink);
-  opacity: 1
-}
-
-.dsh-seg-think[open]>summary {
-  opacity: 1;
-  color: var(--ink)
-}
-
-/* 结构容错：段本身不是 details、而是内嵌一层 details 时，同款外观（外观只认 class） */
-.dsh-seg-think details {
-  display: block;
-  width: 100%;
-  min-width: 0
-}
-
-.dsh-seg-think summary {
-  list-style: none;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: .4px;
-  opacity: .82
-}
-
-.dsh-seg-think summary::-webkit-details-marker {
-  display: none
-}
-
-.dsh-seg-think summary:hover,
-.dsh-seg-think details[open]>summary {
-  color: var(--ink);
-  opacity: 1
-}
-
-/* 思考正文：限高独立滚动，不把会话撑长（details / pre / .dsh-think-live 皆可） */
-.dsh-seg-think pre,
-.dsh-seg-think .dsh-think-live,
-.dsh-seg-think .dsh-seg-body {
-  margin: 4px 0 0;
-  padding: 6px 8px;
-  max-height: 180px;
-  overflow: auto;
-  background: rgba(0, 0, 0, .22);
-  border: 1px dashed var(--bd2);
-  border-radius: 3px;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-/* ── 「思考」翻译（折叠条最右侧小按钮 + 译文行）─────────────────────
-   结构：.dsh-seg-think-wrap（一段思考整体）
-           ├─ details.dsh-seg-think / details.dsh-think（折叠条 + 思考正文）
-           │    └─ summary.dsh-think-bar（一整行：文字 span.dsh-think-sum-txt + 按钮）
-           └─ .dsh-seg-xlate（译文行，点了才有）
-   按钮就在思考折叠条那一行的最右端（不另起一行）：折叠收起时按钮与译文也都还在，
-   不用展开就能点、就能看译文。 */
-.dsh-seg-think>summary.dsh-think-bar,
-.dsh-think summary.dsh-think-bar {
+/* 摘要条（button 重置成一行文字的样子，整行可点） */
+button.dsh-think-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .4px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  opacity: .82;
+}
+
+button.dsh-think-row:hover {
+  color: var(--ink);
+  opacity: 1;
+}
+
+button.dsh-think-row:focus-visible {
+  outline: 1px solid var(--cyan2);
+  outline-offset: 1px;
 }
 
 .dsh-think-sum-txt {
@@ -4777,7 +4743,170 @@ button.mini.btn-sq.tpl-ico {
   white-space: nowrap;
 }
 
-/* 右端对齐：前面的文字撑满剩余宽度，按钮自然落到最右 */
+/* ── 思考弹窗（#overlay 宿主 + .dsh-think-pop-box 外形 + 上下两框）───────────
+   宽幅靠 .dsh-think-pop-box 这一个类（照 .overlay-box.wide 的口径，绝不用内联
+   尺寸：内联残留会被下一个弹窗继承）。
+   本轮调整（用户口径）：窗里只有原文框；译文框**点了翻译才出现**，长在原文框下面，
+   译文本体写在译文框栏头下方的框里 —— 两个框各自滚动，互不牵连。 */
+.overlay-box.dsh-think-pop-box {
+  width: min(1200px, 96vw);
+  max-height: min(88vh, 900px);
+}
+
+.dsh-think-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 2px 0 4px;
+}
+
+.dsh-think-pop-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+/* 译文那一栏：跟着内容长，不跟原文抢高度（原文框留得住自己的滚动区） */
+.dsh-think-pop-col-xlate {
+  flex: 0 1 auto;
+  max-height: 60%;
+}
+
+.dsh-think-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--bd);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .4px;
+  color: var(--muted);
+}
+
+.dsh-think-pop-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-think-pop-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.dsh-think-pop-meta {
+  color: var(--muted);
+  opacity: .75;
+}
+
+.dsh-think-pop-pane {
+  flex: 1 1 auto;
+  min-height: 160px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  overflow: auto;
+  background: rgba(0, 0, 0, .22);
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+}
+
+/* ── 原文 / 译文的正文都按 Markdown 渲染（本次需求「内容显示时支持 markdown」）───
+   版式复用应用内 Markdown 阅读器的 .md-viewer-doc（app-review.js 的 rvMarkdownHtml
+   渲染出来的就是那套结构），这里只把阅读器的大留白与页宽收掉，挤进弹窗的框里。 */
+.dsh-think-pop .md-viewer-doc {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.dsh-think-pop .md-viewer-doc h1,
+.dsh-think-pop .md-viewer-doc h2,
+.dsh-think-pop .md-viewer-doc h3,
+.dsh-think-pop .md-viewer-doc h4,
+.dsh-think-pop .md-viewer-doc h5,
+.dsh-think-pop .md-viewer-doc h6 {
+  color: var(--ink);
+  margin: .9em 0 .4em;
+}
+
+.dsh-think-pop .md-viewer-doc > :first-child {
+  margin-top: 0;
+}
+
+.dsh-think-pop .md-viewer-doc h1 {
+  font-size: 15.5px;
+  padding-bottom: 3px;
+}
+
+.dsh-think-pop .md-viewer-doc h2 {
+  font-size: 14px;
+  padding-bottom: 2px;
+}
+
+.dsh-think-pop .md-viewer-doc h3 {
+  font-size: 13px;
+}
+
+.dsh-think-pop .md-viewer-doc pre {
+  max-height: 280px;
+  overflow: auto;
+  margin: .5em 0;
+  background: rgba(0, 0, 0, .3);
+  border: 1px solid var(--bd2);
+}
+
+.dsh-think-pop .md-viewer-doc blockquote {
+  margin: .5em 0;
+}
+
+.dsh-think-pop .md-viewer-doc p,
+.dsh-think-pop .md-viewer-doc li {
+  margin: .35em 0;
+}
+
+/* 译文那一栏的正文位：**不套第二层虚线框** —— 译文块（.dsh-seg-xlate）自己就是那个框
+   （用户口径「现在额外出了两个框」：一个译文只该占一个框）。 */
+.dsh-think-pop-pane-xlate {
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+/* 弹窗里的译文块：复用 .dsh-seg-xlate 那套青调（一眼区别于灰调原文），
+   只把作为「会话段」的外边距收掉，青轨与青底留着 —— 它就是译文的那一个框。 */
+.dsh-think-pop-pane .dsh-seg-xlate {
+  margin: 0;
+}
+
+/* 译文正文（Markdown，本次需求「翻译也应当注意格式」）：青调 + 长译文自滚，
+   与上面原文的正文字号 / 行高同一档（只换色，不换版式）。 */
+.dsh-think-pop-pane .dsh-xlate-md {
+  margin: 4px 0 0;
+  color: var(--cyan2);
+}
+
+.dsh-think-pop-pane .dsh-xlate-md h1,
+.dsh-think-pop-pane .dsh-xlate-md h2,
+.dsh-think-pop-pane .dsh-xlate-md h3,
+.dsh-think-pop-pane .dsh-xlate-md h4,
+.dsh-think-pop-pane .dsh-xlate-md h5,
+.dsh-think-pop-pane .dsh-xlate-md h6 {
+  color: var(--cyan2);
+}
+
+/* 翻译按钮（原来挂在折叠条最右端，现在在弹窗两栏的栏头） */
 button.dsh-think-xlate {
   flex: 0 0 auto;
   margin-left: auto;
@@ -4810,7 +4939,8 @@ button.dsh-think-xlate:disabled {
   opacity: .6;
 }
 
-/* 译文行：青调（一眼区别于灰调思考原文），与思考正文同款限高自滚 */
+/* 译文框：青调（一眼区别于灰调思考原文），正文是 Markdown（.dsh-xlate-md），
+   长译文的滚动交给它所在的那个框（思考弹窗的 .dsh-think-pop-pane） */
 .dsh-seg-xlate {
   margin: 2px 0 0;
   padding: 3px 8px 4px;
@@ -4845,9 +4975,10 @@ button.dsh-think-xlate:disabled {
 
 .dsh-xlate-err {
   color: var(--red);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 换行而不截断：失败原因要能整句读完（本次需求的现场就是读不全这句报错）——
+     tooltip 也照旧挂着同一条完整文案。 */
+  white-space: normal;
+  overflow-wrap: anywhere;
   min-width: 0;
 }
 
@@ -4867,20 +4998,26 @@ button.dsh-xlate-copy:hover {
   color: var(--ink)
 }
 
-.dsh-seg-xlate pre {
-  margin: 3px 0 0;
-  padding: 6px 8px;
-  max-height: 220px;
-  overflow: auto;
-  background: rgba(0, 0, 0, .22);
-  border: 1px dashed var(--bd2);
-  border-radius: 3px;
-  color: var(--ink);
-  font-family: var(--mono);
+/* 译文正文（.dsh-xlate-md）：由 Markdown 渲染而来，版式见思考弹窗那一节
+   旧的 <pre> 纯文本输出已随本次需求撤掉，这里不再有 .dsh-seg-xlate pre 那一条。 */
+
+/* 失败态里「模型本次到底回了什么」（.dsh-xlate-why + .dsh-xlate-raw）：
+   不是译文，所以不沿用青调正文那套气色 —— 灰调降饱和 + 左侧灰线，与「思考原文」
+   同一种读法，用户一眼能分辨「这是它返回的原文，不是我的译文」。 */
+.dsh-xlate-why {
+  margin: 2px 0 3px;
+  color: var(--muted);
   font-size: 10.5px;
-  line-height: 1.75;
-  white-space: pre-wrap;
-  word-break: break-word;
+  line-height: 1.6;
+}
+
+.dsh-xlate-raw {
+  border-left: 2px solid var(--bd2);
+  background: rgba(128, 128, 128, .05);
+  padding: 2px 8px 3px;
+  border-radius: 0 3px 3px 0;
+  color: var(--muted);
+  opacity: .92;
 }
 
 /* ── 逐项时刻（本次需求 · 用户口径「时间应当在每一项，而不是总项」）─────────────
@@ -5585,12 +5722,15 @@ button.dsh-xlate-copy:hover {
 
 /* 行内「删除」的二次确认态：第一下点完变成高亮的「确认」并呼吸，第二下才真删；
    鼠标移开由 JS 收回（app-assist.js 的 dlIdle / mouseleave）。
-   必须排在 .danger:hover 之后 —— 同一特异性下后写的规则才盖得住 hover 的红描边。 */
+   必须排在 .danger:hover 之后 —— 同一特异性下后写的规则才盖得住 hover 的红描边。
+   **红空心**（需求口径：全站按钮不许亮色实心填色；这里原来是 #d9534f 实心 + #fff 白字，
+   正是「亮底配白字看不清」那一类）：改成 transparent 底 + 1px 红描边 + 红字，
+   呼吸光环（box-shadow 扩散 + brightness）与「确认」文案原样保留 —— 强提示不靠填色。 */
 .side-sess-btn.danger.confirm,
 .side-sess-btn.danger.confirm:hover {
-  color: #fff;
-  background: #d9534f;
-  border-color: #ff8a80;
+  color: var(--red);
+  background: transparent;
+  border-color: var(--red);
   font-weight: 600;
   animation: side-sess-del-breathe 1.05s ease-in-out infinite
 }

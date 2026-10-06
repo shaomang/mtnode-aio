@@ -1670,7 +1670,12 @@ export async function setDownloadDir(dir) {
   } catch { return { ok: false } }
 }
 
-/** 浏览器当前状态（活动流面板 / 手动打开 / 排障共用）。 */
+/** 浏览器当前状态（活动流面板 / 手动打开 / 排障共用）。
+ *  本次需求：**带上 viewStatus 那一份**（headless / mode / parked / view）。
+ *  原因：渲染层的 BA.applyStatus 认 `st.headless`，而 status 回执过去不带它 ——
+ *  于是面板永远以为「这只是带窗口的」（BA.headless 恒为 false），求助卡也就没法
+ *  判断「现在这只没窗口、登录页根本看不见」而自动切真窗口（自动切的判据正是
+ *  `status.headless`）。两种回执从此同源，绝不出现「status 说一套、view 说另一套」。 */
 export function statusOf() {
   return {
     running: browserAlive(),
@@ -1679,6 +1684,10 @@ export function statusOf() {
     profileDir: state.profileDir,
     targetId: state.targetId,
     driver: state.driver,
+    /* view 那一份（on / mode / parked / fallback / headless / attached / running） */
+    ...viewStatus(),
+    /* viewStatus 的 running 与上面的 browserAlive() 同源，这里保留上面的口径 */
+    running: browserAlive(),
 
     pid: (state.proc && !state.proc.killed ? state.proc.pid : 0) || state.attachedPid || 0,
     /* 这只是「接管来的」还是我们自己 spawn 的（排障用：接管的不会去 kill 别人的进程树） */

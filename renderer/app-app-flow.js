@@ -585,8 +585,9 @@ async function appsCreateApp(name, id, style, capabilities) {
 
 /* ---------- ①b 二次开发（库页每张卡片右侧的「二次开发」按钮） ----------
  *
- * 与「新建应用」同规格：写 dev 标记（库页据此不再列它、开发页据此列它）+ 建同名画布 +
- * 在画布上建开发节点（devPath 指向应用目录）—— **应用目录原地不动**，一个字节都不搬。
+ * 与「新建应用」同规格：写 dev 标记（库页据此不再列它、开发页据此列它）+ **把这个应用
+ * 从下载根归位到项目根**（只搬它一个，见 apps:migrateLayout）+ 建同名画布 +
+ * 在画布上建开发节点（devPath 指向归位后的项目文件夹）。
  *
  * 同 id 冲突一律拒绝（避免误覆盖）：本机已有同名画布就直接停手并说清 —— 应用目录同名是
  * 本动作的前提（要迁的那个已经在那儿），所以只需要判画布这一条。
@@ -652,9 +653,35 @@ async function appsMigrateToDev(appId) {
     toast(I18n.t("二次开发失败：") + ((err && err.message) || String(err)), "err");
     return null;
   }
+  /* ①b 归位到**项目根**（下载的应用与开发的应用严格分开：下载根只放云端下来的东西）：
+     只搬这一个应用（apps:migrateLayout 带 id），它的数据目录也一并按类型归位。
+     搬不动（跨盘失败 / 目标已存在）不算失败：如实提示，应用仍可用当前位置继续开发。 */
+  let appDirNow = String(app.dir || "");
+  if (typeof window.api.appsMigrateLayout === "function") {
+    try {
+      const mv = await window.api.appsMigrateLayout({ id: id });
+      if (mv && mv.ok !== false) {
+        const hit = (Array.isArray(mv.moves) ? mv.moves : []).find(
+          (m) => m && m.kind === "app" && m.id === id,
+        );
+        if (hit && hit.to) appDirNow = String(hit.to);
+        const bad =
+          (Array.isArray(mv.skipped) ? mv.skipped.length : 0) +
+          (Array.isArray(mv.conflicts) ? mv.conflicts.length : 0);
+        if (bad) {
+          toast(
+            I18n.t(
+              "已登记为开发中，但项目文件夹没能自动归位（项目根里可能已有一份同名目录）：位置未变，可稍后在「应用根目录」里手动迁移",
+            ),
+            "warn",
+          );
+        }
+      }
+    } catch (_) {}
+  }
   /* ② 同名画布（id = 应用 id，与新建应用同一条路：前台画布 + workflow:save）
      + workspace = 应用目录（画布的工作目录必填，见 appCanvasWf） */
-  const wf = appCanvasWf(id, String(app.name || id), app.dir);
+  const wf = appCanvasWf(id, String(app.name || id), appDirNow);
   clearHistory();
   setForegroundWf(wf);
   reviveWf(id); /* 同名画布曾被删过：这次建的是一张全新画布，解禁它的 id */
@@ -680,7 +707,7 @@ async function appsMigrateToDev(appId) {
   const node = appsCreateDevNode({
     id: id,
     name: app.name,
-    dir: app.dir,
+    dir: appDirNow,
     coreFiles: Array.isArray(app.coreFiles) ? app.coreFiles : [],
   });
   if (node) focusNode(node.id);

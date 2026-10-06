@@ -635,13 +635,19 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('dsh:event', onEv);
     return ipcRenderer.invoke('dsh:run', Object.assign({}, params, { reqId }));
   },
-  /* 全局撤卡通道：reqId 为空的 ix-drop 不属于任何一次 run（预热轮在问话、
-     上一轮遗留的后台 job 现在才醒过来提问 —— 网关已就地 abort，但那张卡可能
-     已经推到界面）。dshRun 的按 reqId 过滤收不到它，所以单独订阅，渲染层按 id 兜底撤卡。
+  /* 全局撤卡通道：ix-drop 帧按 id 兜底撤卡（渲染层 ixDrop / canvasConfirmDrop 都幂等）。
+     两种帧都要收：
+       ① reqId 为空 —— 不属于任何一次 run（预热轮在问话、上一轮遗留的后台 job 现在才醒
+          过来提问；网关已就地 abort，但那张卡可能已经推到界面）；
+       ② **带 reqId** —— 本轮收尾时网关补发的那批（gateway.mjs 的 abortBridgePending，
+          它排在 done 之后：dshRun 的按 reqId 订阅在收到 done 的同一拍就退订了，帧因此
+          谁都收不到）。这批帧要是丢了，屏上就留下一张网关侧 pending 已删的死卡 ——
+          用户点它任何按钮都只撞 { ok:true, stale:true }，右下角弹「这张卡已失效
+          （发起轮已结束）」。所以这里**不再按 reqId 过滤**（撤卡幂等，run 侧再收一次无害）。
      返回退订函数（启动时订阅一次即可）。 */
   dshOnIxDrop: (cb) => {
     const onEv = (ev, msg) => {
-      if (!msg || msg.type !== 'ix-drop' || msg.reqId) return;
+      if (!msg || msg.type !== 'ix-drop') return;
       try { cb(msg.data || {}); } catch (e) { console.error('dshOnIxDrop cb error:', e); }
     };
     ipcRenderer.on('dsh:event', onEv);
@@ -806,14 +812,22 @@ contextBridge.exposeInMainWorld('api', {
   aiFactsSave: (canvasDir, data) => ipcRenderer.invoke('aifact:save', { canvasDir, data }),
 
   /* ── 应用宿主（apps-store.js）：用户自建应用的根目录 / 云端目录 / 安装·更新·卸载 /
-        导出 zip / 变更探测 / 独立窗口。根目录设置写在 <数据目录>/config.json 的
-        apps.installDir，解析结果落在应用目录内一律拒绝（升级 / 卸载会带走用户的应用）。
+        导出 zip / 变更探测 / 独立窗口。
+        **两套根**（本次需求：下载的应用与开发的应用严格分开，删一个不误删另一个）：
+          · kind='down' 下载根 → config.json 的 apps.installDir（老键名沿用）
+          · kind='dev'  项目根 → config.json 的 apps.projectDir
+        不给 kind 一律按下载根（老调用点 / 老渲染层逐字不变）；解析结果落在应用目录内一律拒绝。
         应用窗口**内部**的桥另有一份：preload-app.js 的 window.appHost（无画布 / 无文件系统 /
         无账号 token），与本表互不重叠。 */
-  appsRootGet: () => ipcRenderer.invoke('apps:rootGet'),
-  appsRootSet: (p) => ipcRenderer.invoke('apps:rootSet', p),
-  /* 弹系统目录选择框并落 config：回 { ok, path, previous, changed } / { ok:false, canceled:true } */
-  appsRootPick: () => ipcRenderer.invoke('apps:rootPick'),
+  appsRootGet: (kind) => ipcRenderer.invoke('apps:rootGet', { kind: kind || 'down' }),
+  appsRootSet: (p, kind) => ipcRenderer.invoke('apps:rootSet', { path: p, kind: kind || 'down' }),
+  /* 弹系统目录选择框并落 config：{ kind } → 回 { ok, kind, path, previous, changed, roots }
+     / { ok:false, canceled:true } */
+  appsRootPick: (kind) => ipcRenderer.invoke('apps:rootPick', { kind: kind || 'down' }),
+  /* 旧布局显式迁移（含 dryRun 预览）：{ id?, dryRun? } —— 只搬「该在项目根却躺在下载根」的
+     应用与它那一棵数据（apps-data/<id> → apps-data/<dev|downloaded>/<id>）。
+     绝不自动迁移、绝不覆盖已存在的目标；回 { ok, dryRun, moves, conflicts, skipped, note, roots } */
+  appsMigrateLayout: (opts) => ipcRenderer.invoke('apps:migrateLayout', opts || {}),
   appsList: () => ipcRenderer.invoke('apps:list'),
   /* 新建应用：{ name 标题, id 文件夹名, style 设计风格 id, author 当前登录账号名（可空）} →
      建 <root>/<id>/ + app.json（dev:true = 开发中、author = 作者）；画布（id = 文件夹名）由渲染层
@@ -843,7 +857,13 @@ contextBridge.exposeInMainWorld('api', {
      ownerId 非空 = 只下**那个作者的分支**（同 id 多作者，缺省 = 主干；见 §十）。 */
   appsInstall: (id, mode, version, ownerId) =>
     ipcRenderer.invoke('apps:install', { id, mode: mode || '', version: version || '', ownerId: ownerId || '' }),
-  appsUninstall: (id) => ipcRenderer.invoke('apps:uninstall', { id }),
+  /* 删除该应用：**按类型两种语义**（用户口径：删一个绝不误删另一个）——
+     · 下载的（kind='down'）：真删自己在下载根下的子文件夹 + 它自己那一棵数据
+       <数据目录>/apps-data/downloaded/<id>/；项目根与 apps-data/dev/ 一个字节都不动。
+     · 开发的（kind='dev'）：**只移除登记**，必须显式传 force:'dev_remove'，否则回 dev_keep_files；
+       磁盘上的项目文件夹原样保留（要删文件由用户自己在资源管理器里删）。 */
+  appsUninstall: (id, force) =>
+    ipcRenderer.invoke('apps:uninstall', { id, force: force || '' }),
   /* 本机多版本（docs/apps-market.md §九；应用详情对话窗的「本机版本」块走这两个）：
      versions = 只读台账 —— 回 { ok, id, installed, dev, version, source, installedAt,
        versions:[{ version, source, sha256, bytes, slot:'cur'|'prev', current }], canRollback, prev }；

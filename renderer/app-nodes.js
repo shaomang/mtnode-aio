@@ -14838,11 +14838,6 @@ function confirmAssistAction(title, info, opts) {
       if (closeDom && overlayIsMine()) {
         if (b && b.dataset.ixConfirmId) delete b.dataset.ixConfirmId;
         closeOverlay();
-      } else if (closeDom && confirmId) {
-        /* 这只框被后来的窗顶掉、已经收进状态栏页签（openOverlay 的无损收起）：
-           它不在 #overlay 上，closeOverlay 够不着 —— 把页签与停放的 DOM 一并摘掉，
-           否则会留下一只点了没反应的死框（本次开发需求：被顶掉的窗不许静默丢，也不许变死卡）。 */
-        ovMinDropWindow(confirmId);
       }
       resolve(ans);
     };
@@ -14968,9 +14963,15 @@ function handleCanvasEvent(data, runCtx) {
       .then((res) => {
         /* stale = 网关侧这条 pending 已经没了（本轮结束 / 已被撤销）：插件那端
            早已收到 {t:'abort'} 并以失败收场，模型不会拿到半截结果。自毁路径自己
-           会提示一次，这里别再重复刷屏；其余路径必须说明，否则用户以为改了。 */
-        if (res && res.stale && !(opts && opts.silentStale))
-          toast(I18n.t("画布操作已失效（发起轮已结束），未执行"), "warn");
+           会提示一次，这里别再重复刷屏；其余路径必须说明，否则用户以为改了。
+           说明的落点（本次需求 · 拷问共识）：**不弹右下角红字**，改在会话里落一行
+           「这一轮已经结束」痕迹（与卡片收口同一条通道，可复核、可重发本轮）。 */
+        if (res && res.stale && !(opts && opts.silentStale)) {
+          const why = I18n.t("画布操作已失效（发起轮已结束），未执行");
+          if (typeof ixRoundEndTrace === "function")
+            ixRoundEndTrace(frameOwner.runKey, "⏹ " + why);
+          else toast(why, "warn");
+        }
       })
       .catch(() => {});
   };

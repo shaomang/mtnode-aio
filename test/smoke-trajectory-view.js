@@ -504,9 +504,11 @@ function chatDiffStub() {
   const body = [
     grabFn(src, "dshToolArgsObj"),
     grabFn(src, "dshOneLine"),
+    grabFn(src, "dshDiffPartsOf"),
     grabFn(src, "dshToolDiffOf"),
     grabFn(src, "dshDiffArgText"),
     grabFn(src, "dshDiffRowsOf"),
+    grabFn(src, "dshDiffBlockEl"),
     grabFn(src, "dshToolDiffEl"),
   ].join("\n");
   const code =
@@ -514,7 +516,8 @@ function chatDiffStub() {
     grabNumConst(src, "DSH_DIFF_MAX_ROWS") +
     ";\nconst DSH_DIFF_MAX_CHARS = " +
     grabNumConst(src, "DSH_DIFF_MAX_CHARS") +
-    ";\n" +
+    ";\nconst DSH_DIFF_WRITE_RE = /^(write|write_file|create_file)$/;\n" +
+    "const DSH_DIFF_EDIT_RE = /^(edit|edit_file|str_replace_editor|apply_patch)$/;\n" +
     body +
     "\nreturn { of: dshToolDiffOf, el: dshToolDiffEl, maxRows: DSH_DIFF_MAX_ROWS };";
   return new Function("document", "I18n", code)(
@@ -658,10 +661,12 @@ section("[1] 会话头部的「对话 / 轨迹」标签与轨迹主区（真模�
   ok(tabs && tabs.hidden === false, "[1] 有会话时标签栏不再 hidden（老 bug：恒 hidden = 轨迹一次都出不来）");
   ok(
     tabs &&
-      tabs.children.length === 2 &&
+      tabs.children.length === 3 &&
       tabs.children[0].dataset.view === "chat" &&
-      tabs.children[1].dataset.view === "trace",
-    "[1] 两枚标签 = 对话 / 轨迹",
+      tabs.children[1].dataset.view === "trace" &&
+      /* 第三枚 = 本次需求新增的「改动」栏（渲染归 renderer/app-changes.js） */
+      tabs.children[2].dataset.view === "changes",
+    "[1] 三枚标签 = 对话 / 轨迹 / 改动",
   );
   ok(!!traceMain, "[1] 轨迹主区建在 .agent-body 里（#agentList 之后）");
   ok(traceMain && traceMain.hidden === true, "[1] 默认仍看对话（主区收着，不改用户默认）");
@@ -1876,7 +1881,8 @@ section("[8.5] 竖线 + 时间轴（轴栏 / 刻度栏 / 节点配色；对话�
   ok(
     /function dshSegTimeEl\(/.test(ASSIST) &&
       /function dshSegTimeAttach\(/.test(ASSIST) &&
-      /dshSegTimeAttach\(wrap, seg\.at, 0, msgAt\)/.test(ASSIST) &&
+      /* 思考段（本次需求后是一行可点开的摘要条）挂在 .dsh-seg-think-wrap 那一层：row */
+      /dshSegTimeAttach\(row, seg\.at, 0, msgAt\)/.test(ASSIST) &&
       /dshSegTimeAttach\(d, seg\.at, 0, msgAt\)/.test(ASSIST),
     "[8.5] 对话区每一项（思考 / 正文 / 上下文注入）都在左侧挂自己的时刻栏（段 at → 老存档回落 msgAt）",
   );

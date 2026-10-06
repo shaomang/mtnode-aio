@@ -81,6 +81,8 @@
   font-size: 12px;
 }
 
+/* 消息条目**只读**（需求口径：不支持点消息内看应用）：没有手型光标、没有 hover 变边框
+   （都不给「能点开」的暗示），正文整块可拖选复制 —— 要抄 id / 时间就直接选。 */
 .msg-row {
   display: grid;
   gap: 4px;
@@ -88,11 +90,7 @@
   border: 1px solid var(--bd);
   border-radius: 8px;
   background: var(--panel2);
-  cursor: pointer;
-}
-
-.msg-row:hover {
-  border-color: var(--cyan);
+  user-select: text;
 }
 
 .msg-row.unread {

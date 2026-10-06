@@ -407,13 +407,15 @@ body.theme-light .agent-side-new:hover {
 }
 
 /* ── 会话行「删除」的二次确认态（浅色主题）──
-   深色主题的红底白字在浅色下同样可读，这里只把底色压深一档；
+   口径改成**红空心**（与 dsh.css 同源：透明底 + 红描边 + 红字，不许亮色实心填色）。
+   这一条特异性高于本文件下面的 body.theme-light .side-sess-btn（3 类 > 2 类），
+   也高于同特异性的 .danger:hover 红描边，所以浅底上不会被基础态再刷回深灰底/灰字；
    呼吸光环沿用同一份 @keyframes（红光在亮底上也看得清），不重复定义动画。 */
 body.theme-light .side-sess-btn.danger.confirm,
 body.theme-light .side-sess-btn.danger.confirm:hover {
-  color: #fff;
-  background: #c0392b;
-  border-color: #e57373;
+  color: var(--red);
+  background: transparent;
+  border-color: var(--red);
 }
 
 body.theme-light .agent-side-search input {
@@ -552,27 +554,19 @@ body.theme-light .agent-list .dsh-think-live {
   color: var(--muted);
 }
 
-/* ── 分段渲染（.dsh-seg-*）浅色版：思考段淡灰底、正文段正常正文色 ── */
+/* ── 分段渲染（.dsh-seg-*）浅色版：思考段淡灰底、正文段正常正文色 ──
+   本次需求：思考不再是 details 下拉（只留一行可点开的摘要条 + 弹窗），
+   所以 summary / pre 那几组只服务于旧下拉的规则一并删掉。 */
 body.theme-light .dsh-seg-think {
   color: var(--muted);
   background: rgba(90, 100, 114, .09);
   border-left-color: var(--bd2);
 }
-body.theme-light .dsh-seg-think>summary {
+body.theme-light button.dsh-think-row {
   color: var(--muted);
 }
-body.theme-light .dsh-seg-think>summary::before {
-  color: var(--bd2);
-}
-body.theme-light .dsh-seg-think>summary:hover,
-body.theme-light .dsh-seg-think[open]>summary {
+body.theme-light button.dsh-think-row:hover {
   color: var(--ink);
-}
-body.theme-light .dsh-seg-think pre,
-body.theme-light .dsh-seg-think .dsh-think-live {
-  background: var(--bg2);
-  border: 1px solid var(--bd);
-  color: var(--muted);
 }
 body.theme-light .dsh-seg-say,
 body.theme-light .dsh-stream>.dsh-seg-say {
@@ -605,16 +599,7 @@ body.theme-light .agent-list .dsh-seg-think {
   color: var(--muted);
   background: rgba(90, 100, 114, .07);
 }
-body.theme-light .agent-list .dsh-seg-think summary {
-  color: var(--muted);
-}
-body.theme-light .agent-list .dsh-seg-think summary::before {
-  color: var(--bd2);
-}
-body.theme-light .agent-list .dsh-seg-think pre,
-body.theme-light .agent-list .dsh-seg-think .dsh-think-live {
-  background: var(--bg2);
-  border: 1px solid var(--bd);
+body.theme-light .agent-list button.dsh-think-row {
   color: var(--muted);
 }
 body.theme-light .agent-list .dsh-seg-say {
@@ -708,6 +693,32 @@ body.theme-light #agent-think pre {
   border: 1px solid var(--bd);
   color: var(--muted);
 }
+/* 思考弹窗（本次需求）：浅底上的原文框与译文框各用一档浅底，别沿用暗色的 rgba(0,0,0,.22) */
+body.theme-light .dsh-think-pop-pane {
+  background: var(--bg2);
+  border-color: var(--bd);
+}
+body.theme-light .dsh-think-pop .md-viewer-doc,
+body.theme-light .dsh-think-pop .md-viewer-doc h1,
+body.theme-light .dsh-think-pop .md-viewer-doc h2,
+body.theme-light .dsh-think-pop .md-viewer-doc h3,
+body.theme-light .dsh-think-pop .md-viewer-doc h4,
+body.theme-light .dsh-think-pop .md-viewer-doc h5,
+body.theme-light .dsh-think-pop .md-viewer-doc h6 {
+  color: var(--ink);
+}
+body.theme-light .dsh-think-pop .md-viewer-doc pre {
+  background: var(--bg);
+}
+body.theme-light .dsh-think-pop-pane .dsh-xlate-md,
+body.theme-light .dsh-think-pop-pane .dsh-xlate-md h1,
+body.theme-light .dsh-think-pop-pane .dsh-xlate-md h2,
+body.theme-light .dsh-think-pop-pane .dsh-xlate-md h3,
+body.theme-light .dsh-think-pop-pane .dsh-xlate-md h4,
+body.theme-light .dsh-think-pop-pane .dsh-xlate-md h5,
+body.theme-light .dsh-think-pop-pane .dsh-xlate-md h6 {
+  color: var(--cyan2);
+}
 body.theme-light .dsh-msg-copy {
   background: rgba(0, 0, 0, .05);
   color: var(--muted);
@@ -758,7 +769,8 @@ body.theme-light .agent-conv .dsh-msg-body {
 body.theme-light .agent-conv .dsh-seg-say {
   color: var(--ink);
 }
-body.theme-light .agent-conv .dsh-seg-think {
+/* 节点内会话的思考（本次需求：一行摘要条 + 点开弹窗；旧的下拉规则已删） */
+body.theme-light .agent-conv button.dsh-think-row {
   color: var(--muted);
 }
 body.theme-light .agent-conv .dsh-stream {

@@ -1,22 +1,23 @@
 "use strict";
-/* 弹窗最小化到 Footer（画布 tab 同款页签）—— 冒烟测试（纯 Node）
+/* 弹窗最小化 —— 冒烟测试（纯 Node）
  *   node test/smoke-dialog-minimize.js
- * 被测对象是「真实源码 / 真实切片」，不是抄一份逻辑：
- *   renderer/index.html    #ovMinBar（Footer 页签排）· #ovPark（被最小化的窗壳停放处）·
- *                          .overlay-head 里的 .ov-min-btn
- *   renderer/app.js        ovShellBox / ovShellEnsure / ovShellIds / ovMinimizeActive /
- *                          ovMinRestore / ovMinDropAll / OV_SHELL_HTML + openOverlay /
- *                          closeOverlay 接线（vm 沙箱里真跑状态机）
- *   renderer/css/components.css  .ov-min-btn / .ov-min-tab（与 .wf-tab 同款）
- *                                + 缓进缓出 ovMinOut / ovMinIn / ovTabIn
- *   renderer/app-asr.js    「语音模型」窗（asrDialogLive：只在窗还开着时才回写 DOM）
- *                          asrDialogLive（关窗照跑，进度订阅挂在模块级）
- *   renderer/i18n.js       新词条中英成对
+ *
+ * 本轮需求「移除 footer 最小化，以及所有的最小化，仅保留关闭」之后，这个文件从
+ * 「最小化到 Footer 能用」翻面成「最小化已整体移除」的**回归闸**：谁再把
+ * #ovMinBar / #ovPark / .ov-min-btn / ovMinimizeActive 那一套加回来，这里必红。
+ *
+ * 被测对象是真实源码，不是抄一份逻辑：
+ *   renderer/index.html            没有 #ovMinBar / #ovPark / .ov-min-btn；✕ 仍在
+ *   renderer/app.js                没有 ovMin* 任何定义与调用；OV_SHELL_HTML 只含 ✕；
+ *                                  openOverlay 的 opts.min 只剩「给不给通用 ✕」一层语义
+ *   renderer/css/components.css    没有 .ov-min-btn / .ov-minbar / .ov-min-tab / ovMin* 动效；
+ *                                  ✕ 独占 margin-left:auto
+ *   renderer/app-asr.js            语音模型窗的 asrDialogLive 照旧（不依赖最小化）
+ *   renderer/i18n.js               「最小化到状态栏」词条已删，「关闭」中英成对
  * 覆盖：
- *   [1] 静态接线：入口 DOM · 状态机函数 · 关闭 / 切画布清理 · 最小化按钮
- *   [2] 样式：画布 tab 同款外观 + ease-in-out 动效 + reduced-motion 兜底
- *   [3] vm 真跑：最小化 → 页签 → 恢复 · 两只窗无损换位 · opts.min=false · dropAll
- *   [3] vm 真跑：最小化 → 页签 → 恢复 · 两只窗无损换位 · opts.min=false · dropAll
+ *   [1] 静态：DOM / 源码里最小化一套全无
+ *   [2] 样式：最小化样式与动效全无，✕ 顶到最右
+ *   [3] vm 真跑：窗壳只有 ✕ · 原地换窗 · opts.min=false 不给 ✕ · closeOverlay 收窗
  */
 const fs = require("fs");
 const path = require("path");
@@ -38,79 +39,60 @@ const read = (rel) =>
     .replace(/\r\n/g, "\n");
 const html = read("renderer/index.html");
 const app = read("renderer/app.js");
-/* 语音模型窗（app-asr.js）也走同一套 #overlay 壳与最小化：它的 asrDialogLive 就在上面钉着 */
 const asr = read("renderer/app-asr.js");
 const css = read("renderer/css/components.css");
 const i18n = read("renderer/i18n.js");
 
-console.log("smoke-dialog-minimize：弹窗最小化到 Footer\n");
+console.log("smoke-dialog-minimize：最小化已整体移除（只剩关闭）\n");
 
-/* ============ [1] 静态接线 ============ */
-console.log("[1] 静态接线（index.html / app.js）");
+/* ============ [1] 静态：最小化一套全无 ============ */
+console.log("[1] 静态：DOM 与源码里都没有最小化");
 {
-  ok(/<footer class="statusbar">[\s\S]{0,200}?id="ovMinBar"/.test(html), "Footer 里有 #ovMinBar 页签排");
-  const ovAt = html.indexOf('<div id="overlay">');
-  const parkAt = html.indexOf('id="ovPark"');
-  ok(ovAt > 0 && parkAt > ovAt, "#ovPark 在 #overlay 之后（#ovBody 等 id 先命中当前窗）");
-  ok(html.indexOf('class="ov-min-btn"') > 0, "初始窗壳的标题栏里有 .ov-min-btn");
-  ok(html.indexOf('class="ov-close-btn"') > 0, "初始窗壳的标题栏里有 .ov-close-btn（通用关闭）");
-  ok(html.indexOf("<b id=\"ovTitle\">设置</b><button") > 0, "最小化按钮挂在标题右侧");
+  ok(!/\sid="ovMinBar"/.test(html), "index.html 没有 #ovMinBar（Footer 页签排）");
+  ok(!/class="ov-minbar"/.test(html), "index.html 没有 .ov-minbar");
+  ok(!/\sid="ovPark"/.test(html), "index.html 没有 #ovPark（窗壳停放处）");
+  ok(html.indexOf('class="ov-min-btn"') < 0, "index.html 初始窗壳里没有 .ov-min-btn");
+  ok(html.indexOf('class="ov-close-btn"') > 0, "index.html 初始窗壳里仍有 .ov-close-btn（通用关闭）");
+  ok(html.indexOf('id="ovTitle">设置</b><button type="button" class="ov-close-btn"') > 0, "✕ 仍是标题行里唯一那颗按钮");
+  ok(/最小化[\s\S]{0,200}已整体移除/.test(html), "index.html 留了一句话说明最小化已移除（不是无声消失）");
 
-  for (const name of [
-    "ovShellBox",
-    "ovShellEnsure",
-    "ovShellIds",
-    "ovMinCancel",
-    "ovMinBar",
-    "ovMinPark",
-    "ovMinSyncBar",
-    "ovMinimizeActive",
-    "ovMinRestore",
-    "ovMinDropAll",
-  ]) {
-    ok(app.indexOf("function " + name + "(") > 0, "app.js 定义 " + name);
+  for (const name of ["ovMinimizeActive", "ovMinRestore", "ovMinDropAll", "ovMinDropWindow", "ovMinCancel", "ovMinBar", "ovMinPark", "ovMinSyncBar", "ovParkActiveBox", "ovBoxHasContent"]) {
+    ok(app.indexOf("function " + name + "(") < 0, "app.js 不再定义 " + name);
   }
-  ok(
-    app.indexOf("const OV_SHELL_HTML =") > 0 && app.indexOf("const OV_MIN_MS = ") > 0,
-    "窗壳模板与动效时长常量都在 app.js（结构须与 index.html 一致）",
-  );
+  ok(app.indexOf("let overlayMinimizable") < 0 && app.indexOf("overlayMinimizable") < 0, "app.js 没有 overlayMinimizable（旧的最小化开关）");
+  ok(app.indexOf("const OV_MIN_MS") < 0, "app.js 没有 OV_MIN_MS（最小化动效时长）");
+  ok(app.indexOf("_ovMinList") < 0 || !/const _ovMinList = /.test(app), "app.js 没有 _ovMinList（最小化清单）");
+  ok(!/document\.getElementById\("ovMinBar"\)/.test(app) && !/getElementById\("ovPark"\)/.test(app), "app.js 不再去取 #ovMinBar / #ovPark");
+  /* 窗壳模板与 index.html 同口径：只有 ✕ */
+  const shell = app.slice(app.indexOf("const OV_SHELL_HTML ="), app.indexOf("/** 当前挂在 #overlay 上的窗壳 */"));
+  ok(shell.indexOf("ov-min-btn") < 0 && shell.indexOf('class="ov-close-btn"') > 0, "OV_SHELL_HTML 只含 ✕（补壳不再带最小化按钮）");
   const openOv = app.slice(app.indexOf("function openOverlay("), app.indexOf("function closeOverlay("));
-  ok(openOv.indexOf("ovShellEnsure()") > 0 && openOv.indexOf("ovMinCancel(box)") > 0, "openOverlay：换窗前补壳 + 撤销未跑完的最小化动画");
-  ok(openOv.indexOf('minBtn.hidden = !overlayMinimizable') > 0, "openOverlay：按 opts.min 显隐最小化按钮");
-  ok(
-    app.indexOf("overlayMinimizable = opts.min !== false;") > 0,
-    "默认允许最小化，opts.min === false 可关（多数弹窗都能最小化）",
-  );
+  ok(openOv.indexOf("overlayClosable = opts.min !== false;") > 0, "openOverlay：opts.min 只剩「给不给通用 ✕」");
+  ok(openOv.indexOf("closeBtn.hidden = !overlayClosable") > 0, "openOverlay：✕ 按该开关显隐");
+  ok(openOv.indexOf("ovMin") < 0, "openOverlay 里没有任何最小化 / 停放动作（原地换窗）");
   const closeOv = app.slice(app.indexOf("function closeOverlay("), app.indexOf("let _mtDialogSeq"));
-  ok(closeOv.indexOf("ovShellBox()") > 0 && closeOv.indexOf("ovMinCancel(box)") > 0, "closeOverlay：走同一只窗壳并撤销动画");
-  ok((app.match(/ovMinDropAll\(\); \/\* /g) || []).length >= 2, "切画布 / loadWorkflow 都清掉最小化窗（各 1 处）");
+  ok(closeOv.indexOf("ovShellBox()") > 0 && closeOv.indexOf('$("#overlay").style.display = "none"') > 0, "closeOverlay 仍是唯一收窗实现（✕ 复用同一条）");
+  ok(app.indexOf("ovMinDropAll") < 0, "切画布 / loadWorkflow 里的 ovMinDropAll 调用已清掉");
+  /* 语音模型窗的存活判定照旧（它跟最小化无关，只是历史注释里提过停放处） */
+  ok(/function asrDialogLive\(/.test(asr), "app-asr.js 的 asrDialogLive 照旧在（不依赖最小化）");
+  ok(asr.indexOf("ovPark") < 0, "app-asr.js 不再提 #ovPark");
+  ok(i18n.indexOf('"最小化到状态栏"') < 0 && i18n.indexOf('"点击恢复到对话窗"') < 0, "i18n 的「最小化到状态栏 / 点击恢复到对话窗」词条已删");
+  ok(i18n.indexOf('"关闭": "Close"') > 0, "i18n「关闭」中英仍成对");
 }
 
-/* ============ [2] 样式 ============ */
-console.log("\n[2] 样式：画布 tab 同款 + 缓进缓出动效");
+/* ============ [2] 样式：最小化样式全无，✕ 顶到最右 ============ */
+console.log("\n[2] 样式：最小化样式与动效全无");
 {
-  ok(/\.overlay-head \.ov-min-btn\s*\{/.test(css), "components.css 有 .overlay-head .ov-min-btn");
-  ok(/\.ov-min-tab\s*\{[^}]*border-radius:\s*8px 8px 0 0/.test(css), ".ov-min-tab 与 .wf-tab 同款圆角（8px 8px 0 0）");
-  ok(
-    /\.ov-min-tab\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*\.28\)/.test(css) &&
-      /\.ov-min-tab:hover\s*\{[^}]*rgba\(56,\s*214,\s*255,\s*\.06\)/.test(css),
-    ".ov-min-tab 的底色 / hover 与画布 tabs 一致",
-  );
-  ok(
-    /\.overlay-box\.ov-min-out\s*\{[^}]*animation:\s*ovMinOut\s*\.18s\s*ease-in-out/.test(css) &&
-      /\.overlay-box\.ov-min-in\s*\{[^}]*animation:\s*ovMinIn\s*\.18s\s*ease-in-out/.test(css),
-    "最小化 / 恢复都走 ease-in-out（缓进缓出）",
-  );
-  ok(/@keyframes ovMinOut/.test(css) && /@keyframes ovMinIn/.test(css) && /@keyframes ovTabIn/.test(css), "三段动效 keyframes 齐备");
-  ok(
-    /prefers-reduced-motion[\s\S]{0,200}\.overlay-box\.ov-min-out/.test(css),
-    "动效尊重 prefers-reduced-motion（关掉动画）",
-  );
-  const ms = Number((app.match(/const OV_MIN_MS = (\d+);/) || [])[1]);
-  ok(ms > 0 && css.indexOf(".18s ease-in-out") > 0 && ms === 180, "JS 等待时长与 CSS 动画时长一致（" + ms + "ms）");
+  ok(!/\.overlay-head \.ov-min-btn/.test(css), "components.css 没有 .overlay-head .ov-min-btn");
+  ok(!/\.ov-minbar/.test(css) && !/\.ov-min-tab/.test(css), "components.css 没有 .ov-minbar / .ov-min-tab");
+  ok(!/ovMinOut|ovMinIn|ovTabIn/.test(css), "components.css 没有 ovMinOut / ovMinIn / ovTabIn 动效");
+  ok(!/\.overlay-box\.ov-min-/.test(css), "components.css 没有 .overlay-box.ov-min-out / -in");
+  const blocks = [...css.matchAll(/\.overlay-head \.ov-close-btn\s*\{([^}]*)\}/g)].map((m) => m[1]);
+  ok(blocks.length >= 1 && blocks.some((b) => /margin-left:\s*auto/.test(b)), "✕ 独占 margin-left:auto（顶到标题行最右）");
+  ok(/\.overlay-head \.ov-close-btn\[hidden\]\s*\{[^}]*display:\s*none/.test(css), "✕ 的 [hidden] 仍走 display:none");
 }
 
-/* ============ [3] vm 真跑：最小化 / 页签 / 恢复 ============ */
+/* ============ [3] vm 真跑：窗壳只有 ✕ / 原地换窗 ============ */
 function mkEl(tag) {
   const el = {
     tagName: String(tag || "").toUpperCase(),
@@ -150,7 +132,6 @@ function mkEl(tag) {
       parseInto(el, String(v));
     },
   });
-  Object.defineProperty(el, "firstChild", { get: () => el.children[0] || null });
   el.appendChild = (c) => {
     if (c.parentNode) c.parentNode.removeChild(c);
     c.parentNode = el;
@@ -190,7 +171,7 @@ function mkEl(tag) {
   el.querySelectorAll = (s) => qsa(el, s);
   return el;
 }
-/* 极简 HTML 解析：只覆盖 OV_SHELL_HTML / index.html 那点结构（div / b / button / svg / path） */
+/* 极简 HTML 解析：只覆盖 index.html / OV_SHELL_HTML 那点结构（div / b / button / svg / path） */
 function parseInto(host, src) {
   const re = /<\/?([a-zA-Z0-9]+)((?:\s+[^>]*?)?)(\/?)>/g;
   const stack = [host];
@@ -263,107 +244,87 @@ function qs(root, sel) {
   return qsa(root, sel)[0] || null;
 }
 
-const ROOT = mkEl("body");
-const footer = mkEl("footer");
-footer.className = "statusbar";
-ROOT.appendChild(footer);
-const overlay = mkEl("div");
-overlay.id = "overlay";
-overlay.style.display = "none";
-ROOT.appendChild(overlay);
-const park = mkEl("div");
-park.id = "ovPark";
-park.hidden = true;
-ROOT.appendChild(park);
-const shell = mkEl("div");
-shell.className = "overlay-box";
-shell.innerHTML =
-  '<div class="overlay-head"><b id="ovTitle">设置</b><button type="button" class="ov-min-btn" title="x"></button></div>' +
-  '<div class="overlay-body" id="ovBody"></div>' +
-  '<div class="overlay-foot" id="ovFoot"></div>';
-overlay.appendChild(shell);
-const findByDom = (id) => descAll(ROOT).filter((e) => e.id === id)[0] || null;
-const DOC = {
-  body: ROOT,
-  createElement: (t) => mkEl(t),
-  getElementById: (id) => findByDom(id),
-  querySelector: (s) => qs(ROOT, s),
-  querySelectorAll: (s) => qsa(ROOT, s),
-};
-function $(sel) {
-  return String(sel).charAt(0) === "#" ? DOC.getElementById(String(sel).slice(1)) : DOC.querySelector(sel);
-}
-const SEG_START = "let overlayPersistent = false;";
-const SEG_END = "/* 独立于 #overlay 的深色确认";
-const seg = app.slice(app.indexOf(SEG_START), app.indexOf(SEG_END));
-const sandbox = {
-  console,
-  document: DOC,
-  $,
-  I18n: { t: (s) => String(s) },
-  S: { thinkOpen: null },
-  closeTplSubOverlay: () => {},
-  setTimeout,
-  clearTimeout,
-};
-const ctx = vm.createContext(sandbox);
-try {
-  vm.runInContext(seg, ctx, { filename: "app.js#overlay" });
-  ok(true, "app.js 弹窗切片在沙箱中加载（无语法 / 顶层错误）");
-} catch (e) {
-  ok(false, "切片加载失败：" + ((e && e.message) || e));
-}
-const R = (expr) => vm.runInContext(expr, ctx);
-
-console.log("\n[3] vm 真跑：最小化 / 页签 / 恢复");
+console.log("\n[3] vm 真跑：窗壳只有 ✕ · 原地换窗 · closeOverlay 收窗");
 {
-  const bar = () => DOC.getElementById("ovMinBar") || qs(footer, ".ov-minbar");
+  const ROOT = mkEl("body");
+  const footer = mkEl("footer");
+  footer.className = "statusbar";
+  ROOT.appendChild(footer);
+  const overlay = mkEl("div");
+  overlay.id = "overlay";
+  overlay.style.display = "none";
+  ROOT.appendChild(overlay);
+  /* 初始窗壳：**照抄 index.html 的真实标记**（模板与页面失同步时这里必红） */
+  const shellHtml = html.slice(
+    html.indexOf('<div class="overlay-head"><b id="ovTitle">设置</b>'),
+    html.indexOf('<div class="overlay-foot" id="ovFoot"></div>'),
+  );
+  const shell = mkEl("div");
+  shell.className = "overlay-box";
+  shell.innerHTML = shellHtml + '<div class="overlay-foot" id="ovFoot"></div>';
+  overlay.appendChild(shell);
+  const findByDom = (id) => descAll(ROOT).filter((e) => e.id === id)[0] || null;
+  const DOC = {
+    body: ROOT,
+    createElement: (t) => mkEl(t),
+    getElementById: (id) => findByDom(id),
+    querySelector: (s) => qs(ROOT, s),
+    querySelectorAll: (s) => qsa(ROOT, s),
+  };
+  const $ = (sel) =>
+    String(sel).charAt(0) === "#" ? DOC.getElementById(String(sel).slice(1)) : DOC.querySelector(sel);
+  const sandbox = {
+    console,
+    document: DOC,
+    $,
+    I18n: { t: (s) => String(s) },
+    S: { thinkOpen: null },
+    closeTplSubOverlay: () => {},
+    setTimeout,
+    clearTimeout,
+  };
+  const ctx = vm.createContext(sandbox);
+  const seg = app.slice(app.indexOf("/* 弹窗 persistent 是全应用铁律"), app.indexOf("/* 独立于 #overlay 的深色确认"));
+  try {
+    vm.runInContext(seg, ctx, { filename: "app.js#overlay" });
+    ok(true, "app.js 弹窗切片在沙箱中加载（无语法 / 顶层错误）");
+  } catch (e) {
+    ok(false, "切片加载失败：" + ((e && e.message) || e));
+  }
+  ok(shell.querySelector(".ov-min-btn") === null, "初始窗壳里没有最小化按钮");
+  const footMinBar = descAll(footer).filter((e) => e.className.indexOf("ov-minbar") >= 0);
+  ok(footMinBar.length === 0, "Footer 里没有页签排（连动态建的也没有）");
+
   ctx.openOverlay("设置 · APIs/Config", { persistent: true });
   ok(overlay.style.display === "flex", "openOverlay 打开窗");
   ok(shell.querySelector(".overlay-head b").textContent === "设置 · APIs/Config", "标题写进窗壳");
-  ok(shell.querySelector(".ov-min-btn").dataset.wired === "1", "最小化按钮已接线");
-  ok(shell.querySelector(".ov-min-btn").hidden === false, "默认允许最小化（按钮可见）");
+  const btn = shell.querySelector(".ov-close-btn");
+  ok(!!btn && btn.dataset.wired === "1", "✕ 已接线（wired=1）");
+  ok(btn.hidden === false, "默认开窗 ✕ 可见");
+  ok(descAll(ROOT).filter((e) => e._cls.has("ov-min-tab")).length === 0, "开窗后也没有任何最小化页签");
+  ok(vm.runInContext("typeof ovMinimizeActive", ctx) === "undefined", "沙箱里 ovMinimizeActive 已不存在（调用即报错，不会静默可用）");
 
-  ctx.ovMinimizeActive(true);
-  ok(overlay.style.display === "none", "最小化后蒙层收起");
-  ok(shell.parentNode === park, "窗壳整体搬进 #ovPark（DOM 与状态不重建）");
-  ok(!shell.querySelector(".overlay-head b").id && !shell.querySelector(".overlay-body").id, "停放时 ovTitle / ovBody 等 id 摘掉（不与当前窗撞号）");
-  ok(!!bar() && bar().hidden === false && bar().children.length === 1, "Footer 出现 1 枚页签");
-  const chip = bar().children[0];
-  ok(chip.className.indexOf("ov-min-tab") >= 0 && chip.textContent === "设置 · APIs/Config", "页签带标题、用的是 .ov-min-tab（画布 tab 同款）");
-  ok(R("_ovMinList.length") === 1, "最小化清单登记 1 只窗");
+  /* 原地换窗：连开两只仍是同一只壳，且#ovBody 已被清空重铺 */
+  const bodyEl = shell.querySelector(".overlay-body");
+  bodyEl.appendChild(mkEl("input"));
+  ctx.openOverlay("确认画布修改", { persistent: true });
+  ok(qsa(overlay, ":scope > .overlay-box").length === 1 && qs(overlay, ":scope > .overlay-box") === shell, "第二只窗原地接管同一只壳");
+  ok(shell.querySelector(".overlay-body").children.length === 0, "旧窗内容当场清空（不再无损停放）");
+  ok(shell.querySelector(".overlay-head b").textContent === "确认画布修改", "标题换成新窗的");
+  ok(shell.querySelector(".ov-close-btn").hidden === false, "新窗的 ✕ 照旧可见");
 
-  ctx.ovMinRestore(R("_ovMinList[0]"));
-  ok(shell.parentNode === overlay && overlay.style.display === "flex", "点页签把窗原样搬回 #overlay");
-  ok(shell.querySelector(".overlay-head b").id === "ovTitle" && shell.querySelector(".overlay-body").id === "ovBody", "回来时 id 挂回（#ovBody 指回自己）");
-  ok(DOC.getElementById("ovBody") === shell.querySelector(".overlay-body"), "document.getElementById('ovBody') 命中当前窗");
-  ok(R("_ovMinList.length") === 0 && bar().children.length === 0 && bar().hidden === true, "页签用完即撤，排空后整排隐藏");
-
-  /* 两只窗无损换位：开着 B 时点回 A 的页签 → 先把 B 停放下去，再搬回 A */
-  ctx.openOverlay("窗口 A", {});
-  const boxA = qs(overlay, ":scope > .overlay-box");
-  ctx.ovMinimizeActive(true);
-  ctx.openOverlay("窗口 B", {});
-  const boxB = qs(overlay, ":scope > .overlay-box");
-  ok(boxB !== boxA && boxB.parentNode === overlay, "最小化后开新窗：自动补一只新窗壳");
-  ok(R("_ovMinList.length") === 1, "旧窗仍在页签里");
-  ctx.ovMinRestore(R("_ovMinList[0]"));
-  ok(boxA.parentNode === overlay && boxA.querySelector(".overlay-head b").textContent === "窗口 A", "换位后回到被点的 A");
-  ok(R("_ovMinList.length") === 1 && R("_ovMinList[0].title") === "窗口 B", "另一只 B 无损停放到页签（没被丢掉）");
-  ok(R("_ovMinList[0].box") === boxB, "页签里存的正是 B 那只窗壳");
-
-  /* opts.min === false：个别窗不给最小化，也不给通用关闭（阻塞式确认框出口在窗内） */
+  /* opts.min === false：阻塞式确认框不给通用 ✕ */
   ctx.openOverlay("提示", { min: false });
-  ok(qs(overlay, ":scope > .overlay-box").querySelector(".ov-min-btn").hidden === true, "opts.min === false 时最小化按钮隐藏");
+  ok(qs(overlay, ":scope > .overlay-box").querySelector(".ov-close-btn").hidden === true, "opts.min === false → ✕ 隐藏（出口只在窗内按钮）");
   ctx.openOverlay("提示", {});
-  ok(qs(overlay, ":scope > .overlay-box").querySelector(".ov-min-btn").hidden === false, "下一次开窗恢复可见（不跨窗残留）");
-  ctx.ovMinRestore(R("_ovMinList[0]"));
+  ok(qs(overlay, ":scope > .overlay-box").querySelector(".ov-close-btn").hidden === false, "下一次开窗 ✕ 恢复可见（不跨窗残留）");
 
-  ctx.ovMinimizeActive(true);
-  ctx.ovMinDropAll();
-  ok(R("_ovMinList.length") === 0 && park.children.length === 0 && bar().hidden === true, "ovMinDropAll：页签与停放窗一起清（切画布口径）");
+  /* closeOverlay 仍是唯一收窗路径 */
+  btn.click();
+  ok(overlay.style.display === "none", "点 ✕ → closeOverlay 收窗");
+  ok(shell.parentNode === overlay, "收窗不搬壳：仍挂在 #overlay 上（下一窗复用）");
+  ok(descAll(ROOT).filter((e) => e._cls.has("ov-min-tab")).length === 0, "关窗后依旧没有任何页签残留");
 }
-
 
 console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "ALL OK  " + checks + " checks"));
 process.exit(fails ? 1 : 0);

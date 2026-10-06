@@ -396,8 +396,7 @@ function ltgHookRepaint() {
   wrapped.__ltGuideHooked = 1;
   window.renderAgentSession = wrapped;
 }
-/* 本窗是不是真的还活着：挂载点仍在文档里就算活着（最小化到 #ovPark 也算 ——
-   窗没关，只是换了个停放处；重绘照做，恢复出来就是最新的）。 */
+/* 本窗是不是真的还活着：挂载点仍在文档里就算活着（最小化已下线，只剩「开着 / 已关」两态）。 */
 function ltgDialogLive() {
   return !!(LTG && LTG.host && LTG.host.isConnected);
 }

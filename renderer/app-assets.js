@@ -3813,7 +3813,7 @@ async function assetAgentRead(p) {
 /* ── 窗口静帧截图：先收瞬时浮层，再等一帧，然后主进程 capturePage 拍整窗 ── */
 function assetAgentShotHide() {
   const saved = [];
-  const hideSel = ["#ctx", "#imgLb", "#portTip", "#ovMinBar"];
+  const hideSel = ["#ctx", "#imgLb", "#portTip"];
   for (const sel of hideSel) {
     const el = document.querySelector(sel);
     if (!el) continue;

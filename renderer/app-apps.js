@@ -315,6 +315,49 @@ function appsRunBtnEl(id, label, onclick) {
   b.title = appsT("在独立窗口里运行这个应用");
   return b;
 }
+
+/* 「运行」的**图标**形态（封面卡右下角那一排用它）：
+   同一个按钮对象（复用 appsRunBtnEl → 同一份 data-app-run / id / title / 点击出口），
+   只把文字换成 play 图标 —— 库页的「窗口已开着」回贴循环仍旧按 data-app-run 找得到它。 */
+function appsRunIcoBtnEl(id) {
+  const b = appsRunBtnEl(id, "", () => appsOpenApp(id));
+  b.textContent = "";
+  b.classList.add("apps-ico-btn", "apps-ico-play");
+  appsIcoInto(b, "play");
+  b.setAttribute("aria-label", appsT("在独立窗口里运行这个应用"));
+  return b;
+}
+
+/* ─────────── 封面右下角那一排小图标按钮（本轮需求：卡上只留三枚小图标）───────────
+ * 卡片的动作行收掉之后，卡上只剩这三枚：下载/更新、ⓘ 详细、金币打赏。
+ * 图标一律取这里的 APPS_ICO_SVG（内联 SVG，stroke=currentColor 跟着主题走），与顶栏那批
+ * 线性图标同一风格；**不带文案**，用途全在 title / aria-label 上。 */
+const APPS_ICO_SVG = {
+  download:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8"/><path d="M4.6 7.4 8 10.8l3.4-3.4"/><path d="M2.6 13.4h10.8"/></svg>',
+  play:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 2.8v10.4l8.2-5.2z"/></svg>',
+};
+/** 把图标 SVG 直接塞进按钮（不套一层 span）：按钮自身的 data-* / id / 点击监听才是唯一可点目标。 */
+function appsIcoInto(btn, kind) {
+  btn.innerHTML = APPS_ICO_SVG[kind] || "";
+  return btn;
+}
+/** 封面上的图标按钮：同一套小方框（.apps-ico-btn），点了只做自己的事、不冒泡到「点卡开详情」。 */
+function appsIcoBtnEl(kind, title, onclick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mini apps-ico-btn apps-ico-" + kind;
+  appsIcoInto(b, kind);
+  b.title = title || "";
+  b.setAttribute("aria-label", title || "");
+  b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    onclick();
+  };
+  return b;
+}
 /* 「详细」= 单开一只对话窗（应用中心目录卡片右上角那一枚 ⓘ；库页卡片仍用它，但文案由调用方给）。
    本轮需求：目录卡片上的「详细」不再是一颗带文案的按钮，改成**一枚 info icon**（ⓘ）——
    卡片第一行右端与金币 icon 并排，同一套小方框样式（.apps-ico-btn）。
@@ -331,11 +374,7 @@ function appsDetailBtnEl(id, label) {
   return b;
 }
 
-/* 卡片第一行右端的两枚图标按钮（需求口径）：
- *   · 金币 icon = 打赏入口（只上架到云端的应用才有，见 appsCloudTarget）；汇总（`N 币 · M 次`）
- *     不再占卡片正文，收到它的悬停 tooltip 里（没人打赏过就写「还没有人打赏」）。
- *   · ⓘ = 原来的「详细」，见 appsDetailBtnEl。
- * 两枚都走同一套小方框样式（.apps-ico-btn）：与卡片上其它按钮一样不做纯文字裸链。 */
+/* 卡片上的图标入口（金币 / ⓘ / 下载更新）现在是封面右下角那一排，见 appsCoverActionsEl。 */
 /* 悬停文案的数据来源：先问本轮拉到的公开汇总（GET /api/tips/summary，见 appsTipsLoad），
    退回目录条目自带的 tips（tips 有值时就是原地走 MtTips.tipSumTitle(tips)），
    再退回「还没有人打赏」—— 三种状态各有各的话：
@@ -352,38 +391,6 @@ function appsTipsTitleEl(spec) {
   if (known) return T.tipSumTitle(APPS_ST.tips.byId[id]);
   if (APPS_ST.tipsFailed) return appsT("打赏数据暂未取到");
   return appsT("正在读取打赏数据…");
-}
-function appsAppsIconRow(spec) {
-  const cloudTarget = appsCloudTarget(spec);
-  const row = document.createElement("span");
-  row.className = "apps-tile-icoacts";
-  if (cloudTarget && window.MtTips) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "mini apps-ico-btn apps-ico-coin";
-    btn.dataset.appTip = "1";
-    const tips = appsSpecWithTips(spec).tips;
-    btn.appendChild(window.MtTips.coinIcon("sm"));
-    btn.title = appsTipsTitleEl(spec);
-    btn.setAttribute("aria-label", appsT("打赏作者（鲸圆币）"));
-    btn.onclick = (ev) => {
-      if (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-      }
-      window.MtTips.open(cloudTarget, {
-        tips: tips,
-        /* 打赏成功（或窗里刷新过）→ 立刻重拉这一页的汇总并重绘：刚打赏完回来看到的数字必须是新的 */
-        onDone: () => {
-          appsTipsRefreshNow();
-          appsHubPaint();
-        },
-      });
-    };
-    row.appendChild(btn);
-  }
-  row.appendChild(appsDetailBtnEl(spec && spec.id));
-  return row;
 }
 /* 打赏成功后强制重拉一次（跳过新鲜期）：不重绘、只更新缓存，由调用方决定什么时候重绘。 */
 function appsTipsRefreshNow() {
@@ -1316,72 +1323,74 @@ function appsSameAuthor(spec) {
   if (author) return !!cloudName && author === cloudName;
   return true;
 }
-/* 「ⓘ 校验」小按钮：默认只显示算法名 + 前 8 位，点开小窗看全文并可复制（长哈希不该摊在界面上）。 */
+/* 复制一段文本到系统剪贴板（校验值直接用，不再为它开小窗）。
+   复用设置页那条三级链路（settingsClipboardWrite：navigator → preload 桥 → execCommand，
+   定义在 app-settings.js，本文件先加载，所以调用期探测 typeof）；链路不在时自己走
+   preload 桥 / execCommand 兜底，绝不假装复制成功。返回 Promise<boolean>。 */
+function appsCopyText(txt) {
+  const s = String(txt == null ? "" : txt);
+  if (!s) return Promise.resolve(false);
+  if (typeof settingsClipboardWrite === "function")
+    return Promise.resolve(settingsClipboardWrite(s))
+      .then((r) => !!(r && r.ok === true))
+      .catch(() => false);
+  const viaBridge = () => {
+    try {
+      if (window && window.api && typeof window.api.clipboardWriteText === "function")
+        return Promise.resolve(window.api.clipboardWriteText(s)).then((r) => !!(r && r.ok === true));
+    } catch (_) {}
+    return Promise.resolve(false);
+  };
+  const viaExec = () => {
+    try {
+      if (!document.body || !document.execCommand) return false;
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const done = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!done;
+    } catch (_) {
+      return false;
+    }
+  };
+  let first = null;
+  try {
+    const nb = navigator && navigator.clipboard;
+    if (nb && typeof nb.writeText === "function") first = Promise.resolve(nb.writeText(s));
+  } catch (_) {
+    first = null;
+  }
+  if (first)
+    return first.then(
+      () => true,
+      () => viaBridge().then((ok) => ok || viaExec()),
+    );
+  return viaBridge().then((ok) => ok || viaExec());
+}
+/* 「ⓘ 复制校验值」小按钮：界面上只摊算法名 + 前 8 位（长哈希不该摊在界面上），
+   **点一下直接把完整校验值复制进剪贴板**（本轮需求：不再开「点开看全文」的小窗），
+   复制成功 / 失败各给一句 toast，仍走 persistent 口径 —— 全程没有任何浮层。 */
 function appsHashBtnEl(label, value) {
   const v = String(value || "").trim();
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "mini apps-hashbtn";
   const short = v ? v.slice(0, 8) : "";
-  btn.textContent = "ⓘ " + appsT(label) + (short ? " · " + short : "");
-  btn.title = appsT("点开看完整校验值并可复制");
+  btn.textContent = "ⓘ " + appsT(label == null ? "" : label) + (short ? " · " + short : "");
+  btn.title = appsT("点一下复制完整校验值");
   btn.disabled = !v;
-  btn.onclick = () => appsHashPopOpen(appsT(label), v);
+  btn.onclick = () => {
+    appsCopyText(v).then((ok) =>
+      appsToast(ok ? appsT("已复制校验值") : appsT("复制失败：请手动复制"), ok ? "ok" : "warn"),
+    );
+  };
   return btn;
-}
-/* 校验值小窗：全文 + 复制 + 关闭。persistent（不点外部关，只有「关闭」与 Esc）——
-   它有要复制的内容，属于「有未提交输入」的浮层口径。 */
-function appsHashPopOpen(title, value) {
-  /* 宿主的优先级：应用中心 → document.body（上架窗等别处复用同一个实现）；
-     两边都没有才退回 toast（绝不把用户挡在门外）。 */
-  const host = appsHubEl() || document.body;
-  if (!host) {
-    appsToast(String(value || ""), "warn");
-    return;
-  }
-  const old = host.querySelector(".apps-hashpop");
-  if (old) old.remove();
-  const box = document.createElement("div");
-  box.className = "apps-modal apps-hashpop";
-  const inner = document.createElement("div");
-  inner.className = "apps-modal-box apps-hashpop-box";
-  const h = document.createElement("div");
-  h.className = "apps-hashpop-t";
-  h.textContent = String(title || "");
-  const ta = document.createElement("textarea");
-  ta.className = "apps-hashpop-v";
-  ta.readOnly = true;
-  ta.rows = 3;
-  ta.value = String(value || "");
-  const foot = document.createElement("div");
-  foot.className = "apps-modal-foot";
-  const copy = appsMiniBtn(appsT("复制"), () => {
-    try {
-      ta.select();
-      const ok = document.execCommand("copy");
-      appsToast(ok ? appsT("已复制校验值") : appsT("复制失败：请手动选中复制"), ok ? "ok" : "warn");
-    } catch (_) {
-      appsToast(appsT("复制失败：请手动选中复制"), "warn");
-    }
-  }, true);
-  const close = appsMiniBtn(appsT("关闭"), () => box.remove());
-  foot.appendChild(copy);
-  foot.appendChild(close);
-  inner.appendChild(h);
-  inner.appendChild(ta);
-  inner.appendChild(foot);
-  box.appendChild(inner);
-  box.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") {
-      ev.stopPropagation();
-      box.remove();
-    }
-  });
-  host.appendChild(box);
-  try {
-    ta.focus();
-    ta.select();
-  } catch (_) {}
 }
 /* 开发者信息折叠区（详情里那一块技术字段）：默认收起，校验小按钮也放在这一区 ——
    普通用户看到的是标题 / 版本 / 作者 / 说明，要看细节的人展开就看得到。 */
@@ -1415,7 +1424,7 @@ function appsDevMetaEl(rows, hash) {
     kk.textContent = appsT("安装包校验");
     const vv = document.createElement("span");
     vv.className = "apps-detail-v";
-    vv.appendChild(appsHashBtnEl(hash.label || "校验 sha256", hash.value));
+    vv.appendChild(appsHashBtnEl(hash.label || "复制校验值", hash.value));
     row.appendChild(kk);
     row.appendChild(vv);
     table.appendChild(row);
@@ -1491,14 +1500,25 @@ function appsTipsIdsOf(list) {
   }
   return out;
 }
-/** 单个应用的打赏汇总：接口那一份优先，缺失时用目录条目自带的 tips（老目录 / 接口没答上也聊胜于无）。 */
+/** 单个应用的打赏汇总：接口那一份优先，缺失时用目录条目自带的 tips（老目录 / 接口没答上也聊胜于无）。
+ *  · 接口那份（APPS_ST.tips.byId，GET /api/tips/summary 的批量回执）**只要问回来过就以它为准，
+ *    哪怕它是 0** —— 它比目录条目新（目录自带的可能是老目录 / 上一版的旧数字）；
+ *  · 没问回来过才退回目录条目自带的 tips；两份都没有时回 null（**不是** {count:0}）——
+ *    调用方据此说「打赏数据暂未取到」，绝不谎报成「还没有人打赏」（用户报的错报就是这个）。
+ *  **本函数是「打赏累计」的唯一取数口径**：列表卡片（appsSpecWithTips）与详情窗
+ *  （appsDetailBodyEl 那行「打赏记录 N 币」）都走它 —— 两边不会再出现「一个说有、一个说没有」。 */
 function appsTipsOf(spec) {
   const id = appsBranchIdOf(spec);
   const cached = id && APPS_ST.tips && APPS_ST.tips.byId ? APPS_ST.tips.byId[id] : null;
-  if (cached) return cached;
-  const t = spec && spec.tips;
-  if (t && (Number(t.count) || Number(t.totalYuan))) return { count: Number(t.count) || 0, totalYuan: Number(t.totalYuan) || 0 };
-  return null;
+  if (!cached) {
+    const t = spec && spec.tips;
+    if (t && (Number(t.count) || Number(t.totalYuan))) {
+      return { count: Number(t.count) || 0, totalYuan: Number(t.totalYuan) || 0 };
+    }
+    return null;
+  }
+  /* 缓存里有这个 id 就以它为准（口径见上面的注释） */
+  return { count: Number(cached.count) || 0, totalYuan: Number(cached.totalYuan) || 0 };
 }
 /** 把汇总合并进条目（不改原对象：目录缓存要留着原样） */
 function appsSpecWithTips(spec) {
@@ -1609,6 +1629,11 @@ function appsSpecPatchStoreUrls(spec) {
     if (rel && !/^https?:\/\//i.test(rel) && !/^data:image\//i.test(rel) && (rel.indexOf("/") <= 0 || rel.startsWith("icons/"))) {
       urls.icon = storeBase + "/api/apps/" + encodeURIComponent(id) + "/icon";
     }
+  }
+  /* 封面缩略图（卡片 16:9 背景图）同源补一次：接口这条路由是懒生成 + 落盘缓存
+     （store-saas/server.mjs），拿不到会自动退回 icon（见 appsCoverUrl）。 */
+  if (!urls.thumb && urls.icon && !/^data:image\//i.test(urls.icon)) {
+    urls.thumb = storeBase + "/api/apps/" + encodeURIComponent(id) + "/thumb";
   }
   return Object.assign({}, spec, { urls: urls });
 }
@@ -1931,14 +1956,19 @@ function appsHubPaintNav(host) {
   if (brand) brand.textContent = appsT("应用");
   const foot = host.querySelector(".apps-hub-sidefoot");
   if (foot) {
-    const root = APPS_ST.root || {};
-    const path = String(root.path || "");
-    foot.innerHTML =
+    /* 两套根都显示（本次需求：下载的与开发的分开）：下载根 + 项目根各一行，最后一行是条数 */
+    const roots = (APPS_ST.list && APPS_ST.list.roots) || {};
+    const down = String(((roots.down || APPS_ST.root || {}) || {}).path || "");
+    const dev = String(((roots.dev || {}) || {}).path || "");
+    const line = (label, path) =>
       '<div class="apps-hub-footline" title="' + appsEscape(path) + '">' +
-      appsEscape(appsT("应用根目录")) +
+      appsEscape(label) +
       "：" +
       (path ? appsEscape(path) : appsEscape(appsT("未设置"))) +
-      "</div>" +
+      "</div>";
+    foot.innerHTML =
+      line(appsT("下载根目录（从应用中心下载的）"), down) +
+      line(appsT("项目根目录（开发中的应用）"), dev) +
       '<div class="apps-hub-footline apps-hub-footdim">' +
       appsEscape(appsT("已下载 ") + appsLocalList().length + appsT(" 个应用")) +
       "</div>";
@@ -2530,7 +2560,7 @@ async function appsEnsureRoot() {
   }
   let picked = null;
   try {
-    picked = await api.appsRootPick();
+    picked = await api.appsRootPick("down");
   } catch (e) {
     appsToast(appsT("选择应用根目录失败：") + ((e && e.message) || e), "err");
     return false;
@@ -2539,8 +2569,14 @@ async function appsEnsureRoot() {
     appsToast(appsT("还没指定应用根目录：下载前要先选一个文件夹"), "warn");
     return false;
   }
-  APPS_ST.root = { ok: true, path: picked.path, configured: true, exists: !!picked.exists };
-  appsToast(appsT("应用根目录已设置：") + picked.path, "ok");
+  if (picked.roots && APPS_ST.list) APPS_ST.list.roots = picked.roots;
+  APPS_ST.root =
+    (picked.roots && picked.roots.down) ||
+    { ok: true, path: picked.path, configured: true, exists: !!picked.exists };
+  appsToast(
+    appsT("下载根目录（从应用中心下载的）") + appsT("已设置：") + picked.path,
+    "ok",
+  );
   return true;
 }
 
@@ -2625,18 +2661,28 @@ async function appsUninstallApp(app) {
   if (APPS_ST.busy[id]) return;
   const name = String((app && app.name) || id);
   const binding = appsDevBindingOf(app);
+  /* **按类型两种语义**（用户口径：删一个绝不误删另一个）：
+     · 开发的（dev）→ 只「移除登记」，磁盘上的项目文件夹一个字节都不动（源码不能被我们删）；
+     · 下载的（down）→ 真删自己在下载根下的子文件夹 + 它自己那一棵数据（主进程按类型收口）。 */
+  const isDev = !!(app && (app.dev === true || app.kind === "dev"));
   const ok = await new Promise((resolve) => {
     if (typeof confirmDialog !== "function") {
       resolve(true);
       return;
     }
     confirmDialog(
-      appsT("确定卸载「") +
-        name +
-        appsT("」？只删除它的应用子文件夹（") +
-        String(app.dir || "") +
-        appsT("）；画布、会话、该应用的存储与其它用户内容一概不动。"),
-      { title: appsT("卸载应用"), okText: appsT("卸载"), danger: true },
+      isDev
+        ? appsT("确定移除「") +
+            name +
+            appsT("」的登记？项目文件夹与里面的文件一个都不会删（要删文件请自己在资源管理器里删）。")
+        : appsT(
+            "删除该应用？只删它在下载根下的子文件夹与它自己那一棵数据（apps-data/downloaded/），项目根与开发数据一概不动。",
+          ) + "\n" + String(app.dir || ""),
+      {
+        title: isDev ? appsT("移除登记") : appsT("卸载应用"),
+        okText: isDev ? appsT("移除登记") : appsT("卸载"),
+        danger: !isDev,
+      },
     ).then(resolve);
   });
   if (!ok) return;
@@ -2647,18 +2693,25 @@ async function appsUninstallApp(app) {
   }
   let r = null;
   try {
-    r = await api.appsUninstall(id);
+    r = await api.appsUninstall(id, isDev ? "dev_remove" : "");
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
   if (!r || r.ok === false) {
-    appsToast(appsT("卸载失败：") + appsErrText(r), "err");
+    appsToast(appsT(isDev ? "移除登记失败：" : "卸载失败：") + appsErrText(r), "err");
     return;
   }
-  appsToast(
-    appsT("已卸载：") + name + (r.trashed ? appsT("（已放进回收站）") : "") + (binding.bound ? appsT("｜注意：它当前绑定着开发节点") : ""),
-    "ok",
-  );
+  if (r.mode === "unregister" || isDev) {
+    appsToast(
+      appsT("只移除了登记：") + name + appsT("（项目文件夹与文件都还在）") + (binding.bound ? appsT("｜注意：它当前绑定着开发节点") : ""),
+      "ok",
+    );
+  } else {
+    appsToast(
+      appsT("已卸载：") + name + (r.trashed ? appsT("（已放进回收站）") : ""),
+      "ok",
+    );
+  }
   APPS_ST.list = null;
   await appsListLoad(true);
   appsHubPaint();
@@ -2705,21 +2758,19 @@ function appsPaintProgress(id) {
     txt.textContent = appsProgressText(p);
   });
 }
-/* 悬停 / 进度态：只重画那一张卡的动作区（保住滚动位置与已输入的搜索词） */
+/* 悬停 / 进度态：只重画那一张卡右下角那一排图标（保住滚动位置与已输入的搜索词）。
+   与应用页 / 库页首次渲染**同一个出口**（appsCoverActionsEl），不另写一套按钮。 */
 function appsPaintCardState(id) {
   const host = appsHubEl();
   if (!host) return;
   host.querySelectorAll('[data-app-id="' + id + '"]').forEach((card) => {
-    const acts = card.querySelector(".apps-tile-acts");
-    if (!acts) return;
     const isLocal = !!card.dataset.local;
-    acts.innerHTML = "";
     if (isLocal) {
       const app = appsLocalById(id);
-      appsFillLocalActions(acts, app || { id: id });
+      appsPaintTileActions(card, appsLocalSpecOf(app || { id: id }), true);
     } else {
       const spec = appsSpecById(id);
-      appsFillCatalogActions(acts, spec || { id: id });
+      appsPaintTileActions(card, spec || { id: id }, false);
     }
     appsPaintProgress(id);
   });
@@ -2871,67 +2922,286 @@ function appsCatalogBadges(spec) {
   return [];
 }
 
-function appsTileEl(spec) {
+/* ─────────── 卡片封面（16:9 背景图 + 左下标题/作者 + 右下图标行）───────────
+ * 需求口径（本轮，参考微软商店）：
+ *   · 整张卡就是一块 16:9 圆角封面（背景图固定长宽比、居中裁切），标题与作者压在封面**左下角**，
+ *     底部一条黑色渐变遮罩保证亮底截图上也看得清；悬停封面轻微提亮 + 描边加重。
+ *   · 卡上只留三枚小图标（下载/更新、ⓘ 详细、金币打赏）排在封面**右下角**；其余动作全进详情窗。
+ *   · 点封面空白处 = 打开应用详情窗（图标按钮各自 stopPropagation，不误触）。
+ *   · 「已安装 / 可更新」不加徽标，靠那颗动作图标的形态与提示区分（用户口径）。 */
+
+/* 封面的取图口径（**唯一**一处）：
+ *   urls.thumb（服务端懒生成的 640×360 缩略图）→ 退回 urls.icon（原图）→ 退回 icon 字段。
+ * 静态目录没有 /thumb 路由（nginx 直发），那就自己从 icon 地址推同主干的 .png：
+ *   静态 icons/sudoku__u_x.jpg → icons/sudoku__u_x.png（缩略图与图标同目录、同主干）
+ *   接口 …/api/apps/<id>/icon?owner=… → …/api/apps/<id>/thumb?owner=…
+ * 推不出就返回空串（调用方退回原图）。 */
+function appsThumbUrlOf(spec) {
+  const direct = String((spec && spec.urls && spec.urls.thumb) || "").trim();
+  if (direct) return direct;
+  const icon = appsIconUrl(spec);
+  if (!icon || /^data:image\//i.test(icon)) return "";
+  if (/\/api\/apps\/[^/]+\/icon(\?|$)/i.test(icon)) return icon.replace(/\/icon(\?|$)/i, "/thumb$1");
+  try {
+    const u = new URL(icon);
+    const m = /\/([^/]+)\.[a-z0-9]+$/i.exec(u.pathname);
+    if (m) {
+      u.pathname = u.pathname.replace(/\/[^/]+$/, "/" + m[1] + ".png");
+      return u.href;
+    }
+  } catch (_) {}
+  return "";
+}
+
+/* 上架截图的可用地址（**唯一一处**，与图标同一套来源口径）：
+ *   · 静态目录：条目里的 shots[] 是相对静态目录的写法（shots/<主干>/<n>.png）→ sourceBase + 它；
+ *   · 接口目录：源站没有 /shots 静态路由时走 /api/apps/<id>/shots/<n>（见 store-saas/server.mjs）。
+ * 一律带上限大小的图；拿不到就回空数组（详情窗不画画廊，绝不画一堆破图）。 */
+function appsShotsUrlsOf(spec) {
+  const s = spec || {};
+  const rels = Array.isArray(s.shots) ? s.shots.filter((x) => typeof x === "string" && x) : [];
+  if (!rels.length) return [];
+  const st = APPS_ST.cat || {};
+  const base = String(st.sourceBase || "").trim();
+  const id = String(s.id || "");
+  const isApi = st.source === "api" || st.source === "cache";
+  const out = [];
+  for (let i = 0; i < rels.length; i++) {
+    const rel = String(rels[i]).replace(/^\.\//, "");
+    if (/^https?:\/\//i.test(rel)) {
+      out.push(rel);
+      continue;
+    }
+    if (isApi && id) {
+      out.push(base + "/api/apps/" + encodeURIComponent(id) + "/shots/" + (i + 1));
+      continue;
+    }
+    out.push(base ? base.replace(/\/+$/, "") + "/" + rel.replace(/^\/+/, "") : rel);
+  }
+  return out;
+}
+
+/* 封面地址的**缓存令牌**（本轮需求：换了图立刻看到新图，不再被 HTTP 缓存卡住）：
+ *   服务端 /api/apps/<id>/icon|thumb 都回 Cache-Control: max-age=3600，而图标文件本身是
+ *   「每个分支只保留最新一份」—— 重新发布 / 换图后**文件名不变**，不补令牌就会一小时看不到新图。
+ *   口径（已与用户确认）：用该条目的**最新版本号**当 ?v=（版本变了图必然是新上传的那张）。
+ *   静态目录那条链（urls.icon = icons/<主干>.png）文件名里已经带版本信息、没有查询串可加字段
+ *   时不动它；data: 图直接跳过。 */
+function appsCoverVerToken(spec) {
+  const s = spec || {};
+  return String(s.latestVersion || s.version || "").trim();
+}
+function appsUrlWithToken(rawUrl, spec) {
+  const url = String(rawUrl || "").trim();
+  const ver = appsCoverVerToken(spec);
+  if (!url || !ver || /^data:image\//i.test(url) || /[?&]v=/.test(url)) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set("v", ver);
+    return u.href;
+  } catch (_) {
+    /* 相对地址（静态目录 / 老写法）：拼不上就不拼，别改成坏地址 */
+    return url;
+  }
+}
+/* 本机兜底封面：本机已装那份应用清单的 icon（apps-store.js 读成 data URL）才用 ——
+   云端图拉不到（离线 / 404 / 已下架）时顶上，比纯色底好看，也不额外发网络请求。 */
+function appsLocalCoverOf(spec) {
+  const id = String((spec && spec.id) || "");
+  if (!id) return "";
+  const local = appsLocalById(id);
+  return String((local && local.iconBase64) || "").trim();
+}
+
+/* 封面元素：一个 16:9 定位块 + 背景图（拉不到就退回原图，再不行就纯色底）。
+   `withText` 时叠左下角标题/作者与底部渐变遮罩 —— 卡片用 withText:true，详情头部用 false。 */
+function appsCoverEl(spec, name, opts) {
+  const o = opts || {};
+  const cover = document.createElement("div");
+  cover.className = "apps-cover" + (o.big ? " apps-cover-big" : "");
+  /* 详情头部（o.big）额外把「缓存令牌」拼上：同一个 spec 对象上补一次就行（幂等），
+     让这张图绕开 max-age 缓存拿到最新上传的那张。 */
+  if (o.big && spec && spec.urls) {
+    const c = appsUrlWithToken(spec.urls.thumb, spec);
+    const d = appsUrlWithToken(spec.urls.icon, spec);
+    if (c && c !== spec.urls.thumb) spec.urls.thumb = c;
+    if (d && d !== spec.urls.icon) spec.urls.icon = d;
+  }
+  const url = appsThumbUrlOf(spec) || appsIconUrl(spec);
+  if (url) {
+    const img = document.createElement("img");
+    img.className = "apps-cover-img";
+    img.alt = "";
+    img.loading = o.eager ? "eager" : "lazy";
+    img.decoding = "async";
+    img.src = url;
+    img.addEventListener("error", () => {
+      /* 缩略图 404 / 断网：先退回原图（只退一次），再退回**本机已装**那份的封面图（o.big 才给，
+         用户口径），都拉不到才交给兜底底色。
+         不做「首字块替换」是刻意的 —— 封面是整块背景图，替换会把标题盖掉。 */
+      const icon = appsIconUrl(spec);
+      if (!img.dataset.fallback && icon && icon !== url) {
+        img.dataset.fallback = "1";
+        img.src = icon;
+        return;
+      }
+      const local = o.big && !img.dataset.localTried ? appsLocalCoverOf(spec) : "";
+      if (local) {
+        img.dataset.localTried = "1";
+        img.src = local;
+        return;
+      }
+      img.hidden = true;
+      cover.classList.add("noimg");
+    });
+    cover.appendChild(img);
+  } else {
+    /* 云端一个地址都给不出（无图标声明 / 静态目录推导失败）：详情头部还能拿本机那张兜底 */
+    const local = o.big ? appsLocalCoverOf(spec) : "";
+    if (local) {
+      const img = document.createElement("img");
+      img.className = "apps-cover-img";
+      img.alt = "";
+      img.loading = o.eager ? "eager" : "lazy";
+      img.decoding = "async";
+      img.dataset.localTried = "1";
+      img.src = local;
+      img.addEventListener("error", () => {
+        img.hidden = true;
+        cover.classList.add("noimg");
+      });
+      cover.appendChild(img);
+    } else {
+      cover.classList.add("noimg");
+    }
+  }
+  /* 没图 / 图拉不到时的兜底底色层（纯色底 + 左下标题，见上面注释） */
+  const fb = document.createElement("div");
+  fb.className = "apps-cover-fb";
+  cover.appendChild(fb);
+  if (o.withText !== false) {
+    const shade = document.createElement("div");
+    shade.className = "apps-cover-shade";
+    cover.appendChild(shade);
+    const cap = document.createElement("div");
+    cap.className = "apps-cover-cap";
+    const t = document.createElement("div");
+    t.className = "apps-cover-name";
+    t.textContent = name;
+    t.title = name;
+    cap.appendChild(t);
+    const who = document.createElement("div");
+    who.className = "apps-cover-author";
+    const author = appsCoverAuthorOf(spec);
+    who.textContent = author;
+    who.hidden = !author;
+    who.title = author;
+    cap.appendChild(who);
+    cover.appendChild(cap);
+  }
+  return cover;
+}
+
+/* 卡片作者口径（用户口径：只显示**原作者**；本机装的是别人的分支时补一句当前版本作者）：
+   原作者 = 家族根条目的作者，本机已装那一支的作者挂在后面。 */
+function appsCoverAuthorOf(spec) {
+  const id = String((spec && spec.id) || "");
+  const root = appsFamilyRootOf(spec) || spec;
+  const author = appsAuthorOf(root) || appsAuthorOf(spec);
+  const localApp = id ? appsLocalById(id) : null;
+  const localAuthor = localApp ? appsInstalledAuthorOf(spec, localApp) : "";
+  return author
+    ? appsT("原作者 ") + author + (localAuthor && localAuthor !== author ? appsT(" · 当前版本作者 ") + localAuthor : "")
+    : "";
+}
+
+/* 封面右下角那一排图标按钮（同一套小方框 .apps-ico-btn）。返回 null = 这一张卡一个入口都没有。
+ * 目录卡：下载（未装）/ 更新（已装且有新版本）/ ⓘ / 金币；
+ * 库页卡：运行 / 更新（有新版才有）/ ⓘ / 金币 —— 卸载、数据目录、二次开发、其他版本全在详情窗里。 */
+function appsCoverActionsEl(spec, opts) {
+  const o = opts || {};
+  const row = document.createElement("div");
+  row.className = "apps-cover-acts";
+  let n = 0;
+  const push = (el) => {
+    if (el) {
+      row.appendChild(el);
+      n++;
+    }
+  };
+  if (o.local) {
+    push(appsRunIcoBtnEl(spec.id));
+    const upTarget = appsCardUpdateTargetOf(spec);
+    if (upTarget) {
+      push(
+        appsIcoBtnEl(
+          "download",
+          appsT("更新到本机已装那一支的作者最新版（v") + upTarget.version + "）",
+          () => appsCatalogUpdate(spec, upTarget.ownerId, upTarget.version),
+        ),
+      );
+    }
+  } else if (!spec.installed) {
+    const dl = appsIcoBtnEl(
+      "download",
+      spec.compatible === false
+        ? appsT("该应用要求的 MTNode 版本高于当前版本")
+        : appsT("下载：先在详情里选分支与版本（默认原作者最新版），确认后再装到本机"),
+      () => appsOpenDetailForPick(spec.id),
+    );
+    dl.disabled = !!APPS_ST.busy[spec.id] || spec.compatible === false;
+    push(dl);
+  } else {
+    /* 已装：卡上不再放「启动」（点卡就进详情，详情里有运行入口），只在有新版本时给更新 */
+    const up = appsCardUpdateTargetOf(spec);
+    if (up) {
+      const b = appsIcoBtnEl(
+        "download",
+        appsT("更新到本机已装那一支的作者最新版（v") + up.version + "）",
+        () => appsCatalogUpdate(spec, up.ownerId, up.version),
+      );
+      b.disabled = !!APPS_ST.busy[spec.id];
+      push(b);
+    }
+  }
+  push(appsDetailBtnEl(spec && spec.id));
+  const cloudTarget = appsCloudTarget(spec);
+  if (cloudTarget && window.MtTips) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mini apps-ico-btn apps-ico-coin";
+    btn.dataset.appTip = "1";
+    btn.appendChild(window.MtTips.coinIcon("sm"));
+    btn.title = appsTipsTitleEl(spec);
+    btn.setAttribute("aria-label", appsT("打赏作者（鲸圆币）"));
+    btn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      window.MtTips.open(cloudTarget, {
+        tips: appsSpecWithTips(spec).tips,
+        /* 打赏成功（或窗里刷新过）→ 立刻重拉这一页的汇总并重绘：刚打赏完回来看到的数字必须是新的 */
+        onDone: () => {
+          appsTipsRefreshNow();
+          appsHubPaint();
+        },
+      });
+    };
+    push(btn);
+  }
+  return n ? row : null;
+}
+
+function appsTileEl(spec, opts) {
+  const o = opts || {};
   const id = spec.id;
   const name = appsSpecTitle(spec) || id;
   const card = document.createElement("div");
   card.className = "apps-tile";
   card.dataset.appId = id;
-
-  const cover = document.createElement("div");
-  cover.className = "apps-tile-cover";
-  cover.appendChild(appsIconEl(spec, name));
-
-  const info = document.createElement("div");
-  info.className = "apps-tile-info";
-  const h = document.createElement("div");
-  h.className = "apps-tile-title";
-  /* 标题单独一层 span：第一行是 flex（标题 + 右端两枚图标按钮），标题要自己截断 ——
-     文字节点直接挂在 flex 容器里不会出省略号（见 css/apps.css 的 .apps-tile-name）。 */
-  const hTxt = document.createElement("span");
-  hTxt.className = "apps-tile-name";
-  hTxt.textContent = name;
-  hTxt.title = name;
-  h.appendChild(hTxt);
-  /* 作者（本轮口径）：**原作者**（家族根条目那条的作者）+ 本机已装的那一版是谁做的。
-     不再写版本号、不再写「命中分支」（用户口径：只显示原作者与当前版本作者；
-     版本与分支数都交给详情里的分支树）。 */
-  const fam = appsFamilyEntriesOf(spec);
-  const rootSpec = appsFamilyRootOf(spec) || spec;
-  const author = appsAuthorOf(rootSpec) || appsAuthorOf(spec);
-  const localApp = appsLocalById(id) || null;
-  const localAuthor = localApp ? appsInstalledAuthorOf(spec, localApp) : "";
-  const who = document.createElement("div");
-  who.className = "apps-tile-author";
-  who.textContent = author
-    ? appsT("原作者 ") + author + (localAuthor && localAuthor !== author ? appsT(" · 当前版本作者 ") + localAuthor : "")
-    : "";
-  who.hidden = !who.textContent;
-  const desc = document.createElement("div");
-  desc.className = "apps-tile-desc";
-  desc.textContent = appsSpecDesc(spec) || appsT("（这个应用还没写描述）");
-  info.appendChild(h);
-  info.appendChild(who);
-  info.appendChild(desc);
-  const badges = document.createElement("div");
-  badges.className = "apps-tile-badges";
-  for (const [label, kind] of appsCatalogBadges(spec)) {
-    const b = document.createElement("span");
-    b.className = "apps-badge apps-badge-" + kind;
-    b.textContent = label;
-    badges.appendChild(b);
-  }
-  info.appendChild(badges);
-  /* 卡片第一行右端的两枚图标按钮（需求口径：打赏只留一枚金币 icon 放右上方，「详细」换成 ⓘ）：
-     挂进 .apps-tile-info 的标题行（与图标 / 标题同一视觉行），不再占下面的动作行。
-     金币与 ⓘ 同一套小方框样式（.apps-ico-btn），悬停才展开汇总文案与用途 —— 见 appsAppsIconRow。 */
-  const iconRow = appsAppsIconRow(spec);
-  if (iconRow) h.appendChild(iconRow);
-
-  const acts = document.createElement("div");
-  acts.className = "apps-tile-acts";
-  appsFillCatalogActions(acts, spec);
-
+  if (o.local) card.dataset.local = "1";
+  card.appendChild(appsCoverEl(spec, name, { withText: true, eager: !!o.eager }));
+  const acts = appsCoverActionsEl(spec, { local: !!o.local });
+  if (acts) card.appendChild(acts);
   const prog = document.createElement("div");
   prog.className = "apps-prog";
   prog.hidden = true;
@@ -2939,17 +3209,26 @@ function appsTileEl(spec) {
   const progTxt = document.createElement("div");
   progTxt.className = "apps-prog-txt";
   progTxt.hidden = true;
-
-  card.appendChild(cover);
-  card.appendChild(info);
-  card.appendChild(acts);
   card.appendChild(prog);
   card.appendChild(progTxt);
-
-  /* 详情不再内联进卡片：走「详情」按钮单开对话窗（window.openAppsDetail） */
+  /* 点封面空白处 = 打开应用详情窗（与微软商店一致）；图标按钮各自 stopPropagation，不误触。
+     键盘也一样：卡片自己 tabindex=0，Enter / 空格即开。 */
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.setAttribute("aria-label", name);
+  card.addEventListener("click", () => {
+    if (typeof window.openAppsDetail === "function") window.openAppsDetail(id);
+  });
+  card.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      if (typeof window.openAppsDetail === "function") window.openAppsDetail(id);
+    }
+  });
   appsPaintProgress(id);
   return card;
 }
+
 
 /* 打赏 / 评论的对象标识：只有**上架到云端**的应用才在服务端有记录（本机自建、还没上架的
    在云端不存在，打赏与评论都无处可挂 —— 那种情况下一律不显示这两个入口，不弹空窗）。
@@ -3036,25 +3315,84 @@ function appsDetailBodyEl(spec, extra) {
     table.appendChild(row);
   }
   box.appendChild(table);
-  /* 打赏入口 + 公开累计总额（**人人可见**）：排在正文**下方**（需求口径：放在下方而不是左上角），
-     入口是橙色 outlined、中间透明；打赏人名单仍仅作者本人与管理员可见（见 app-tips.js）。
-     没人打赏过时保留一句可点的引导（alwaysShow），不让这一块凭空消失。 */
+  /* 打赏记录一行（**本轮需求：修「详细里打赏反复全套了两次」**）：
+     原来这里塞了两块 —— `MtTips.metaEl` 的只读汇总 + `MtTips.buttonEl` 打赏按钮，
+     而那颗按钮内部又原样印了一遍「N [币] · M 次」（app-tips.js 的 buttonEl），
+     于是同一个窗口里同一份数字出现两遍、且两处都能点开打赏窗。
+     现在只留**一行**：「打赏记录 N 币」（币数走鲸圆币图标）。整行**不可点**，
+     鼠标悬停才出「累计打赏 N 币（M 次）」；一次都没被打赏过（N = 0 / 数据没取到）**整行不显示**。
+     打赏入口只留在卡片右下角那枚金币图标上（见 appsCoverActionsEl）。 */
   const tipTarget = appsCloudTarget(spec);
   if (tipTarget && window.MtTips) {
-    const bar = document.createElement("div");
-    bar.className = "apps-detail-tipbar";
-    const meta = window.MtTips.metaEl(tipTarget, spec.tips, {
-      alwaysShow: true,
-      clickable: true,
-      onDone: () => appsDetailRefresh(),
-    });
-    if (meta) bar.appendChild(meta);
-    bar.appendChild(
-      window.MtTips.buttonEl(tipTarget, spec.tips, { outline: true, onDone: () => appsDetailRefresh() }),
-    );
-    box.appendChild(bar);
+    /* 详情窗是按 id 取条目的（appsDetailSpecOf 不走 appsSpecListAll 那条挂汇总的路），
+       同一份汇总只有从这条口径拿才与卡片一致（appsTipsOf = 唯一取数口径）。 */
+    const tips = appsTipsOf(spec);
+    const bar = window.MtTips.detailRecordEl(tipTarget, tips);
+    if (bar) box.appendChild(bar);
+  }
+  /* 本机应用的管理动作（本轮需求：库页卡上只留三枚图标，这三个入口搬进详情窗）：
+     只在**本机装了**这个应用时出现，且只在这里出现一次（卡片上不再有第二份）。 */
+  if (local) {
+    /* 能力小标（app.json 的 capabilities，主进程已算好文案与 tooltip）：卡片的描述行收掉之后，
+       它挪到详情里这一行 —— 用一句话说清这个应用带不带语音 / 出图。 */
+    const caps = Array.isArray(local.capabilityBadges) ? local.capabilityBadges : [];
+    if (caps.length) {
+      const capRow = document.createElement("div");
+      capRow.className = "apps-detail-caps";
+      for (const label of caps) {
+        const b = document.createElement("span");
+        b.className = "apps-badge apps-badge-cap";
+        b.textContent = String(label || "");
+        b.title = appsT("这个应用声明的能力（在开发页「应用能力…」里改）");
+        capRow.appendChild(b);
+      }
+      box.appendChild(capRow);
+    }
+    box.appendChild(appsDetailLocalActionsEl(spec, local));
   }
   /* 开发者信息（默认折叠）：技术字段 + 校验值小按钮 */
+  box.appendChild(appsDetailDevMetaEl(spec, local));
+  return box;
+}
+
+/* 详情窗里「本机应用」的管理动作区（本轮需求：库页卡上收掉的那三个入口搬到这里）：
+   运行 / 📂 数据目录 / 二次开发 / 卸载。只在本机装了时出现，且只在详情正文里出现一次
+   —— 与卡片右下角那排图标不重复（打赏 / 详细 / 下载更新仍在卡上）。 */
+function appsDetailLocalActionsEl(spec, local) {
+  const id = String((spec && spec.id) || (local && local.id) || "");
+  if (!id) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "apps-detail-local";
+  const head = document.createElement("div");
+  head.className = "apps-detail-local-k";
+  head.textContent = appsT("本机应用");
+  wrap.appendChild(head);
+  const row = document.createElement("div");
+  row.className = "apps-detail-local-row";
+  row.appendChild(appsMiniBtn(appsT("运行"), () => appsOpenApp(id), true));
+  /* 数据目录（用 app id 管理，默认 <数据目录>/apps-data/<id>/）：路径只由主进程解析 */
+  const dirBtn = appsMiniBtn("📂 " + appsT("数据目录"), () => appsDataOpenNow(id));
+  dirBtn.title = appsT("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
+  row.appendChild(dirBtn);
+  /* 「二次开发」：登记为开发中 + 建同名画布与开发节点 */
+  row.appendChild(appsSecondaryDevBtnEl(local || { id: id }));
+  const isDevApp = !!(local && (local.dev === true || local.kind === "dev"));
+  const un = appsMiniBtn(
+    appsT(isDevApp ? "移除登记" : "卸载"),
+    () => appsUninstallApp(local || { id: id }),
+  );
+  if (!isDevApp) un.classList.add("danger");
+  un.title = isDevApp
+    ? appsT("只移除登记：项目文件夹与里面的文件一个都不会删（要删文件请自己在资源管理器里删）")
+    : appsT("卸载只删它在下载根下的子文件夹与它自己那一棵数据，项目根与开发数据一概不动");
+  row.appendChild(un);
+  wrap.appendChild(row);
+  return wrap;
+}
+
+/* 开发者信息块（默认折叠）：技术字段 + 校验值小按钮。单独成函数是为了让
+   appsDetailBodyEl 只做「排版」，技术字段这堆值的来源一眼可查。 */
+function appsDetailDevMetaEl(spec, local) {
   const devRows = [];
   const pushDev = (k, v) => {
     if (v == null || v === "") return;
@@ -3077,10 +3415,7 @@ function appsDetailBodyEl(spec, extra) {
     pushDev(appsT("安装时间"), appsTime(local.installedAt || local.mtimeMs));
     pushDev(appsT("来源作者"), local.owner || local.author || "");
   }
-  box.appendChild(
-    appsDevMetaEl(devRows, { label: "安装包 sha256", value: spec.sha256 || (local && local.sha256) || "" }),
-  );
-  return box;
+  return appsDevMetaEl(devRows, { label: "安装包 sha256", value: spec.sha256 || (local && local.sha256) || "" });
 }
 
 async function appsPaintAppsPage(body, seq) {
@@ -3162,147 +3497,71 @@ function appsNoMatchText() {
 
 /* ───────────────── 库页（本机已下载） ───────────────── */
 
-function appsFillLocalActions(acts, app) {
-  const id = String(app.id || "");
-  const busy = !!APPS_ST.busy[id];
-  /* 同 id 多分支（§十）：库页这一份装的是哪一支，就拿那一支的条目比版本 / 更新 */
-  const spec =
-    appsSpecOfBranch(id, String((app && (app.ownerId || app.owner)) || "")) || appsSpecById(id);
-  acts.appendChild(appsRunBtnEl(id, appsT("运行"), () => appsOpenApp(id)));
-  acts.appendChild(appsDetailBtnEl(id));
-  /* 更新只在**同一支作者**时出现（与「应用」页同一口径）：更新按钮指向本机已装那一支的作者最新版，
-     作者对不上说明这是别人的同 id 条目，更新会拿别人的包盖掉本机这一份 —— 那种情况该走「其他版本」。 */
-  const upTarget = spec ? appsCardUpdateTargetOf(spec) : null;
-  if (upTarget) {
-    const up = appsMiniBtn(
-      appsT("更新到 v") + upTarget.version,
-      () => appsDownload(id, "update", upTarget.version, upTarget.ownerId),
-    );
-    up.disabled = busy;
-    acts.appendChild(up);
+/* 卡片上那一排图标入口（**唯一的渲染出口**：卡片初次画、下载完 / 窗口开关后局部重画都走它，
+   免得「重画时用另一套按钮」这种漂移）。两点说明：
+   · 更新只在**同一支作者**时出现（与「应用」页同一口径）：更新按钮指向本机已装那一支的作者最新版，
+     作者对不上说明这是别人的同 id 条目，更新会拿别人的包盖掉本机这一份 —— 那种情况该走详情里的「其他版本」。
+   · 重画时**整排换掉**（不是往里塞按钮）：图标按钮带 disabled / 打开态，整排替换最省心。 */
+function appsPaintTileActions(card, spec, local) {
+  const row = card.querySelector(".apps-cover-acts");
+  const fresh = appsCoverActionsEl(spec, { local: !!local });
+  if (row) {
+    if (fresh) {
+      row.replaceWith(fresh);
+    } else {
+      row.remove();
+    }
+    return;
   }
-  /* 数据目录（用 app id 管理，默认 <数据目录>/apps-data/<id>/）：不在库里单占一行，
-     每张卡片右侧一颗 📂 就地打开；路径只由主进程解析。 */
-  const dirBtn = appsMiniBtn("📂", () => appsDataOpenNow(id));
-  dirBtn.title = appsT("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
-  dirBtn.disabled = busy;
-  acts.appendChild(dirBtn);
-  /* 「二次开发」：登记为开发中 + 建同名画布与开发节点（原「二次开发」，动作不变、入口移到卡片右侧） */
-  acts.appendChild(appsSecondaryDevBtnEl(app));
-  const un = appsMiniBtn(appsT("卸载"), () => appsUninstallApp(appsLocalById(id) || app));
-  un.classList.add("danger");
-  un.disabled = busy;
-  un.title = appsT("卸载只删该应用自己的子文件夹，画布 / 会话 / 其它用户内容不动");
-  acts.appendChild(un);
+  if (fresh) card.appendChild(fresh);
+}
+
+/* 库页卡片 = **与应用中心同一套 16:9 封面卡**（用户口径：库页一起统一）：本机这一份的作者 / 版本 /
+   占用 / 路径 / 能力标全部收进详情窗（封面上只留标题 + 作者 +「本机 vX」），卡上只留三枚图标
+   （运行、ⓘ 详细、金币）；卸载 / 数据目录 / 二次开发三个入口移到详情窗的「本机应用」动作区。
+   本机条目 → 卡片 / 详情用得上的合并条目：显示名走本机 app.json 的 name（用户自己改过的那个），
+   封面图 / 作者 / 打赏口径走云端目录条目（那条有 ownerId / ownerName / icon）。
+   云端条目暂时拉不到（离线 / 还没上架）时退回本机 app.json 的作者，绝不因此不显示封面。 */
+function appsLocalSpecOf(app) {
+  const id = String((app && app.id) || "");
+  const spec = appsSpecById(id);
+  return Object.assign({}, spec || {}, {
+    id: id,
+    title: String((app && app.name) || (spec && appsSpecTitle(spec)) || id),
+    ownerId: (spec && spec.ownerId) || (app && app.ownerId) || "",
+    owner: (spec && spec.owner) || (app && app.owner) || "",
+    ownerName: (spec && spec.ownerName) || "",
+  });
 }
 
 function appsLocalRowEl(app) {
   const id = String(app.id || "");
   const spec = appsSpecById(id);
-  const name = String(app.name || id);
-  const row = document.createElement("div");
-  row.className = "apps-row";
-  row.dataset.appId = id;
-  row.dataset.local = "1";
-
-  const cover = document.createElement("div");
-  cover.className = "apps-row-cover";
-  cover.appendChild(appsIconEl(spec || {}, name));
-
-  const info = document.createElement("div");
-  info.className = "apps-row-info";
-  const h = document.createElement("div");
-  h.className = "apps-row-title";
-  h.textContent = name;
-  const meta = document.createElement("div");
-  meta.className = "apps-row-meta";
-  /* 作者放最前（连标题一起读）：来源作者（安装账本）→ app.json 的作者 → 当前登录账号 */
-  const rowAuthor = appsAuthorOf(app);
-  meta.textContent =
-    (rowAuthor ? appsT("作者 ") + rowAuthor + " · " : "") +
-    appsT("版本 ") +
-    String(app.version || "0.0.0") +
-    " · " +
-    appsBytes(app.bytes) +
-    " · " +
-    String(app.files || 0) +
-    appsT(" 个文件") +
-    (app.installedAt || app.mtimeMs ? " · " + appsTime(app.installedAt || app.mtimeMs) : "");
-  const path = document.createElement("div");
-  path.className = "apps-row-path";
-  path.textContent = String(app.dir || "");
-  path.title = String(app.dir || "");
-
-  /* 数据目录不再占库页一行（本轮需求）：入口是卡片右侧那颗 📂（appsFillLocalActions）。
-     「开发绑定」徽标已去掉：开发中的应用不再列在库页，这枚徽标在这里只剩常态「未绑定」；
-     绑定情况改在开发页顶栏显示（见 renderer/app-apps-dev.js）。 */
-  const badges = document.createElement("div");
-  badges.className = "apps-row-badges";
-  /* 能力小标（app.json 的 capabilities）：库页一眼看得出这个应用带不带语音 / 出图 */
-  for (const label of Array.isArray(app.capabilityBadges) ? app.capabilityBadges : []) {
-    const bCap = document.createElement("span");
-    bCap.className = "apps-badge apps-badge-cap";
-    bCap.textContent = String(label || "");
-    bCap.title = appsT("这个应用声明的能力（在开发页「应用能力…」里改）");
-    badges.appendChild(bCap);
-  }
-  if (app.canvasExists) {
-    const bCanvas = document.createElement("span");
-    bCanvas.className = "apps-badge apps-badge-off";
-    bCanvas.textContent = appsT("有专属画布");
-    bCanvas.title = appsT("这个应用目录里存着自己的一张画布（") + String(app.canvas || "") + appsT("）；卸载不会动它");
-    badges.appendChild(bCanvas);
-  }
-  if (spec && spec.updateAvailable) {
-    const bUp = document.createElement("span");
-    bUp.className = "apps-badge apps-badge-upd";
-    bUp.textContent = appsT("可更新：云端 v") + String(spec.version || "");
-    badges.appendChild(bUp);
-  }
-  if (app.broken) {
-    const bBad = document.createElement("span");
-    bBad.className = "apps-badge apps-badge-bad";
-    bBad.textContent = appsT("清单损坏");
-    bBad.title = appsT("这个目录里没有可读的 app.json（可能是手改坏了）：删掉重装即可恢复");
-    badges.appendChild(bBad);
-  }
-  info.appendChild(h);
-  info.appendChild(meta);
-  info.appendChild(path);
-  info.appendChild(badges);
-
-  const acts = document.createElement("div");
-  acts.className = "apps-row-acts apps-tile-acts";
-  appsFillLocalActions(acts, app);
-
-  const prog = document.createElement("div");
-  prog.className = "apps-prog";
-  prog.hidden = true;
-  prog.innerHTML = "<i></i>";
-  const progTxt = document.createElement("div");
-  progTxt.className = "apps-prog-txt";
-  progTxt.hidden = true;
-
-  row.appendChild(cover);
-  row.appendChild(info);
-  row.appendChild(acts);
-  row.appendChild(prog);
-  row.appendChild(progTxt);
-  return row;
+  const card = appsTileEl(appsLocalSpecOf(app), { local: true });
+  /* 卡片上不写版本号（用户口径：详情头部不写「云端 vX / 本机 vX」，卡片同样不写）——
+     本机装的是哪一版在详情窗的「本机版本（可回滚）」块与本机信息里看。 */
+  return card;
 }
 
 /* 根目录一行（库页 / 开发页共用）：路径 + 更改… + 在资源管理器中打开 */
-function appsRootLineEl() {
-  const root = APPS_ST.root || {};
+/* 根目录两行（库页 / 开发页共用）：**下载根**（云端下来的）与**项目根**（自己开发的）——
+   本次需求：两者严格分开，包括数据，删一个绝不误删另一个。每行 = 名称 + 路径 + 更改… + 📂，
+   末尾再挂一枚「迁移旧布局…」（把该在项目根却躺在下载根的应用与数据显式搬过去，先预览再搬）。 */
+function appsRootRowEl(kind) {
+  const roots = (APPS_ST.list && APPS_ST.list.roots) || {};
+  const root = roots[kind] || (kind === "down" ? APPS_ST.root || {} : {}) || {};
   const wrap = document.createElement("div");
   wrap.className = "apps-rootline";
+  wrap.dataset.rootKind = kind;
   const label = document.createElement("span");
   label.className = "apps-rootline-k";
-  label.textContent = appsT("应用根目录");
+  label.textContent =
+    kind === "dev" ? appsT("项目根目录（开发中的应用）") : appsT("下载根目录（从应用中心下载的）");
   const val = document.createElement("span");
   val.className = "apps-rootline-v";
-  val.textContent = String(root.path || "") || appsT("未设置");
-  val.title = String(root.path || "");
+  const path = String(root.path || "");
+  val.textContent = path || appsT("未设置");
+  val.title = path;
   wrap.appendChild(label);
   wrap.appendChild(val);
   if (!root.configured) {
@@ -3311,37 +3570,133 @@ function appsRootLineEl() {
     warn.textContent = appsT("未设置：下载前会先让你选一个文件夹");
     wrap.appendChild(warn);
   }
-  wrap.appendChild(appsMiniBtn(appsT("更改…"), appsRootPickNow));
-  wrap.appendChild(appsMiniBtn("📂", appsRootFolderNow));
+  wrap.appendChild(appsMiniBtn(appsT("更改…"), () => appsRootPickNow(kind)));
+  wrap.appendChild(appsMiniBtn("📂", () => appsRootFolderNow(kind)));
   return wrap;
 }
+/* 两行一起给（调用方一行代码接入，顺序：下载根 → 项目根 → 迁移入口） */
+function appsRootLineEl() {
+  const box = document.createElement("div");
+  box.className = "apps-roots";
+  box.appendChild(appsRootRowEl("down"));
+  box.appendChild(appsRootRowEl("dev"));
+  const act = document.createElement("div");
+  act.className = "apps-rootline apps-rootline-act";
+  const mig = appsMiniBtn(appsT("迁移旧布局…"), () => appsMigrateLayoutNow());
+  mig.title = appsT(
+    "把「开发中的应用」与它们的数据搬到项目根（先给你看会动哪些目录，确认后才搬）",
+  );
+  act.appendChild(mig);
+  box.appendChild(act);
+  return box;
+}
 /* ── 数据文件夹（每个应用一份：默认 <数据目录>/apps-data/<id>/，可让用户改成自己的文件夹）──
-/* 选应用根目录（库页那行与开发页工具栏共用同一份动作，别写两遍） */
-async function appsRootPickNow() {
+/* 选某一类应用的根目录（下载根 / 项目根；库页两行与开发页工具栏共用同一份动作） */
+async function appsRootPickNow(kind) {
+  const k = kind === "dev" ? "dev" : "down";
   const api = window.api || {};
   if (typeof api.appsRootPick !== "function") {
     appsBridgeMissing();
     return;
   }
-  const r = await api.appsRootPick();
+  const r = await api.appsRootPick(k);
   if (!r || r.canceled || r.ok === false) {
     if (r && r.ok === false) appsToast(appsT("设置失败：") + appsErrText(r), "err");
     return;
   }
-  APPS_ST.root = { ok: true, path: r.path, configured: true, exists: !!r.exists };
+  if (r.roots) {
+    if (APPS_ST.list) APPS_ST.list.roots = r.roots;
+    APPS_ST.root = r.roots.down || APPS_ST.root;
+  } else {
+    APPS_ST.root = { ok: true, path: r.path, configured: true, exists: !!r.exists };
+  }
   APPS_ST.list = r.list && r.list.ok !== false ? r.list : null;
-  appsToast(appsT("应用根目录已设置：") + r.path, "ok");
+  appsToast(appsT(k === "dev" ? "项目根目录（开发中的应用）" : "下载根目录（从应用中心下载的）") + appsT("已设置：") + r.path, "ok");
   await appsListLoad(true);
   appsHubPaint();
 }
-/* 在资源管理器中打开应用根目录 */
-function appsRootFolderNow() {
-  const p = String((APPS_ST.root && APPS_ST.root.path) || "");
+/* 在资源管理器中打开某一类根目录 */
+function appsRootFolderNow(kind) {
+  const k = kind === "dev" ? "dev" : "down";
+  const roots = (APPS_ST.list && APPS_ST.list.roots) || {};
+  const p = String(((roots[k] || (k === "down" ? APPS_ST.root : null)) || {}).path || "");
   if (!p) {
     appsToast(appsT("还没设置应用根目录"), "warn");
     return;
   }
   if (typeof openWorkspaceFolder === "function") openWorkspaceFolder(p);
+}
+/* 迁移旧布局（**显式入口**：先 dry-run 给用户看会动哪些目录，确认后才真搬） */
+async function appsMigrateLayoutNow() {
+  const api = window.api || {};
+  if (typeof api.appsMigrateLayout !== "function") {
+    appsBridgeMissing();
+    return;
+  }
+  let dry = null;
+  try {
+    dry = await api.appsMigrateLayout({ dryRun: true });
+  } catch (e) {
+    dry = { ok: false, error: (e && e.message) || String(e) };
+  }
+  if (!dry || dry.ok === false) {
+    appsToast(appsT("迁移检查失败：") + appsErrText(dry), "err");
+    return;
+  }
+  const moves = Array.isArray(dry.moves) ? dry.moves : [];
+  const conflicts = Array.isArray(dry.conflicts) ? dry.conflicts : [];
+  const note = Array.isArray(dry.note) ? dry.note : [];
+  const body = [
+    note.map((s) => "· " + s).join("\n"),
+    moves.length
+      ? appsT("将搬动 ") + moves.length + appsT(" 项：") + "\n" +
+        moves.map((m) => "· [" + (m.kind === "app" ? appsT("应用目录") : appsT("数据目录")) + "] " + m.id + "\n    " + m.from + "\n → " + m.to).join("\n")
+      : appsT("没有需要搬动的内容。"),
+    conflicts.length
+      ? "\n" + appsT("以下 " ) + conflicts.length + appsT(" 项目标已存在，不会覆盖：") + "\n" +
+        conflicts.map((c) => "· " + c.id + "：" + (c.reason || "")).join("\n")
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  if (!moves.length) {
+    appsToast(appsT("没有需要迁移的内容"), "ok");
+    return;
+  }
+  const ok = await new Promise((resolve) => {
+    if (typeof confirmDialog !== "function") {
+      resolve(true);
+      return;
+    }
+    confirmDialog(body, {
+      title: appsT("迁移旧布局…"),
+      okText: appsT("开始迁移"),
+    }).then(resolve);
+  });
+  if (!ok) return;
+  let run = null;
+  try {
+    run = await api.appsMigrateLayout({ dryRun: false });
+  } catch (e) {
+    run = { ok: false, error: (e && e.message) || String(e) };
+  }
+  if (!run || run.ok === false) {
+    appsToast(appsT("迁移失败：") + appsErrText(run), "err");
+    return;
+  }
+  const skipped = Array.isArray(run.skipped) ? run.skipped : [];
+  appsToast(
+    appsT("已迁移 ") + (Number(run.moved) || 0) + appsT(" 项") + (skipped.length ? appsT("；") + skipped.length + appsT(" 项没能搬动（见日志）") : ""),
+    skipped.length ? "warn" : "ok",
+  );
+  if (skipped.length) {
+    try {
+      console.warn("[apps] 迁移未完成：", skipped);
+    } catch (_) {}
+  }
+  APPS_ST.list = null;
+  await appsListLoad(true);
+  appsHubPaint();
 }
 
 /* ── 「📂 打开数据目录」与「二次开发」：库页每张卡片右侧、开发页菜单条共用同一份动作 ──
@@ -3454,17 +3809,18 @@ async function appsPaintLibPage(body, seq) {
   wrap.className = "apps-rows";
   for (const app of list) wrap.appendChild(appsLocalRowEl(app));
   body.appendChild(wrap);
-  /* 库页不再单列「应用数据文件夹」那一条（本轮需求）：数据目录按 app id 管理，入口收进每张
-     卡片右侧的 📂 按钮（appsFillLocalActions → appsDataOpenNow），点一下打开该应用的数据目录。
-     改数据文件夹位置仍在应用窗口里（appHost.dataDir*），不在这里另开一条路径。 */
-  /* 打开状态贴到按钮上（不阻塞首帧：先画行，再逐个对齐） */
+  /* 库页的管理动作（数据目录 / 二次开发 / 卸载）本轮收进**详情窗**（用户口径：库页卡上只留
+     三枚图标）。卡片上的图标入口只有：运行、ⓘ 详细、金币（上架过的才有）——见 appsCoverActionsEl。
+     数据目录位置仍归应用窗口（appHost.dataDir*），这里不另开一条路径。 */
+  /* 打开状态贴到按钮上（不阻塞首帧：先画卡，再逐个对齐）：
+     卡片是封面卡（.apps-tile），运行按钮在封面右下角那一排里。 */
   for (const app of list) {
     const id = String(app.id || "");
     const open = await appsIsWindowOpen(id);
     if (seq !== APPS_ST.seq || APPS_ST.nav !== "lib") return;
-    const row = body.querySelector('.apps-row[data-app-id="' + id + '"]');
+    const row = body.querySelector('.apps-tile[data-app-id="' + id + '"]');
     if (!row) continue;
-    const btn = row.querySelector(".apps-row-acts button[data-app-run]");
+    const btn = row.querySelector(".apps-cover-acts button[data-app-run]");
     if (btn && open) {
       btn.classList.add("on");
       btn.title = appsT("这个应用已经开着独立窗口（再点一次把它调到前台）");
@@ -3675,7 +4031,7 @@ window.appsPackAuditDialog = appsPackAuditDialog;
  * 需求口径：应用的详情**单开一个 dialogue**，避免内容挤兑 —— 卡片列窄，版本表 / 详情行 /
  * 评论区塞进卡片里既挤又会被邻卡的展开挤歪，所以详情整体搬进一只可调宽高的浮层。
  * 形态：window.openAppsDetail(id)，宽身（apps-detail-box）+ 右下角手柄可拖调宽高；
- * persistent（点外部不关）+ 可最小化到状态栏 + ✕ / Esc 显式关（与 AGENTS.md 的弹窗纪律一致）。
+ * persistent（点外部不关）+ ✕ / Esc 显式关（与 AGENTS.md 的弹窗纪律一致；最小化已整体下线）。
  * 内容：说明 / 本机版本（可回滚）/ 云端版本表（全宽）/ 评论页签 / 折叠的开发者信息。
  * 入口：应用中心卡片与库页卡片共用 appsDetailBtnEl 那一颗「详情」；开发页不挂（它有自己的正文）。 */
 
@@ -3685,14 +4041,15 @@ const APPS_DETAIL = {
   dom: Object.create(null),
   ver: null, /* apps:versions 的回执（本机台账：当前版 + 上一版） */
   verSeq: 0,
+  tipsWarmId: "", /* 本窗已经为哪个应用补拉过打赏汇总（开窗时一次，见 appsDetailWarmTips） */
 };
 
-/* 当前窗框（#overlay 上那只；被最小化搬走后为 null） */
+/* 当前窗框（#overlay 上那只） */
 function appsDetailShellBox() {
   const ov = document.getElementById("overlay");
   return ov ? ov.querySelector(":scope > .overlay-box") : null;
 }
-/* 摘掉尺寸类（当前窗上那一只；停在 #ovPark 里的最小化窗保留原样 —— 它还要原样搬回来） */
+/* 摘掉尺寸类（只摘当前窗上那一只，别的窗壳不受影响） */
 function appsDetailBoxCleanup() {
   try {
     document.querySelectorAll("#overlay > .overlay-box.apps-detail-box").forEach((b) => {
@@ -3871,12 +4228,14 @@ function appsDetailBuildShell(body, foot) {
   foot.appendChild(closeBtn);
 }
 
-/* 头部：图标 + 标题 + 作者/版本/标签/二次开发来源一行（详情主体里不再重复这些） */
-/* 详情窗头部（本轮需求：不显示分支 / 版本，只显示原作者 + 当前版本作者）
+/* 详情窗头部（本轮需求：小封面 + 左图右文横排）
  * 用户口径：
- *   · 头部不再写「云端 vX / 本机 vX」，也不再挂任何 chip 徽标（开发中 / 已下载 / 可更新 /
+ *   · 头部不写「云端 vX / 本机 vX」，也不挂任何 chip 徽标（开发中 / 已下载 / 可更新 /
  *     需要更新的 MTNode / 多个分支 / 我上架的 / 已下架 全部去掉）；
- *   · 只留两行作者信息：原作者（家族根那条的作者）+ 当前选中分支的作者。
+ *   · 封面 = 与应用卡片**同一张缩略图**（同一个 appsCoverEl），但尺寸缩小到 320px 宽、
+ *     与标题 / 作者横排（见 css/apps.css 的 .apps-detail-head）；封面取图还会带上
+ *     缓存令牌（?v=<最新版本号>）并在拉不到时退回本机已装那份的封面（见 appsCoverEl）。
+ *   · 作者信息一行：原作者（家族根那条的作者）；当前选中分支是别人时在后面补一句。
  * 其余技术字段（哈希 / 路径 / 文件数）仍在正文的「开发者信息 ▾」里，不受影响。 */
 function appsDetailPaintHead() {
   const id = APPS_DETAIL.id;
@@ -3886,10 +4245,9 @@ function appsDetailPaintHead() {
   if (!head) return;
   head.innerHTML = "";
   const name = appsDetailTitleOf(id);
-  const icon = document.createElement("div");
-  icon.className = "apps-detail-ico";
-  icon.appendChild(appsIconEl(spec || app || {}, name));
-  head.appendChild(icon);
+  /* 封面（16:9 小图，创建时优先加载：详情是用户主动点开的，不该先闪一块空底） */
+  const cover = appsCoverEl(spec || app || { id: id }, name, { withText: false, big: true, eager: true });
+  head.appendChild(cover);
 
   const who = document.createElement("div");
   who.className = "apps-detail-who";
@@ -3902,16 +4260,58 @@ function appsDetailPaintHead() {
   const root = appsFamilyRootOf(spec || app || {});
   const curAuthor = appsAuthorOf(spec || app || {}) || appsT("未知作者");
   const rootAuthor = (root && appsAuthorOf(root)) || curAuthor;
+  /* 上架截图（本轮需求：多图画廊）——大图 + 缩略图条，点缩略图切大图。
+     只在这一处画：卡片封面仍只用第 1 张（thumb / icon），互不影响。 */
+  const shotUrls = appsShotsUrlsOf(spec || app || {});
+  let gallery = null;
+  if (shotUrls.length) {
+    gallery = document.createElement("div");
+    gallery.className = "apps-gallery";
+    const big = document.createElement("img");
+    big.className = "apps-gallery-big";
+    big.loading = "lazy";
+    big.alt = appsT("上架截图");
+    big.src = shotUrls[0];
+    const strip = document.createElement("div");
+    strip.className = "apps-gallery-strip";
+    const pick = (k) => {
+      big.src = shotUrls[k];
+      Array.prototype.forEach.call(strip.children, (el, idx) => {
+        el.classList.toggle("on", idx === k);
+      });
+    };
+    shotUrls.forEach((u, k) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "apps-gallery-thumb" + (k === 0 ? " on" : "");
+      b.title = appsT("第 {n} 张（点它看大图）", { n: k + 1 });
+      const im = document.createElement("img");
+      im.loading = "lazy";
+      im.src = u;
+      im.alt = "";
+      b.appendChild(im);
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        pick(k);
+      };
+      strip.appendChild(b);
+    });
+    gallery.appendChild(big);
+    gallery.appendChild(strip);
+  }
+
   const meta = document.createElement("div");
   meta.className = "apps-detail-meta";
   meta.textContent =
-    appsT("原作者 ") + rootAuthor +
-    (curAuthor && curAuthor !== rootAuthor ? appsT(" · 当前版本作者 ") + curAuthor : appsT(" · 当前版本作者 ") + curAuthor);
+    appsT("原作者 ") +
+    rootAuthor +
+    (curAuthor && curAuthor !== rootAuthor ? appsT(" · 当前版本作者 ") + curAuthor : "");
   if (fam.length > 1) {
     meta.title = appsT("这个应用共有 ") + fam.length + appsT(" 条分支（原作者在最左，其余向右逐级展开）");
   }
   who.appendChild(meta);
   head.appendChild(who);
+  if (gallery) head.appendChild(gallery);
 }
 
 /* 本机版本块（本机多版本，docs/apps-market.md §九）：
@@ -4182,6 +4582,7 @@ function openAppsDetail(id) {
   APPS_DETAIL.branchOwnerId = "";
   APPS_DETAIL.ver = null;
   APPS_DETAIL.verSeq++;
+  APPS_DETAIL.tipsWarmId = ""; /* 换了应用：打赏汇总的重问标记一并作废（见 appsDetailWarmTips） */
   openOverlay(title, { persistent: true, min: true });
   /* 尺寸类：先摘残留，再挂自己的（宽身 + 最小宽 50vw，见 css/apps.css） */
   appsDetailBoxCleanup();
@@ -4198,7 +4599,31 @@ function openAppsDetail(id) {
   appsDetailBuildShell(body, foot);
   appsDetailPaint();
   appsDetailLoadVersions(APPS_DETAIL.verSeq);
+  appsDetailWarmTips(sid);
   return true;
+}
+
+/**
+ * 详情窗自己补拉一次这个应用的打赏汇总（需求口径：开窗顺手拉一次，跳过新鲜期）。
+ * 为什么不能只靠应用页载入时那一问：详情窗可以**不经应用页**直接打开（消息里的打赏通知、
+ * 搜索、外部调用 openAppsDetail），那时缓存可能还是空的 / 上一批 id 的 —— 界面就会先闪
+ * 一下「还没有人打赏」。失败保留旧值（appsTipsLoad 只标记 tipsFailed），取到就重绘这一窗。
+ * 这里**不**调 appsTipsEnsure：那只函数带着「重绘整页」的副作用，详情窗只要自己的那一格。
+ */
+function appsDetailWarmTips(id) {
+  const sid = String(id || "");
+  if (!sid) return;
+  /* 一只窗里同一个应用只补拉一次（失败也不反复重问：重绘由别的路径触发时不会互相推着转圈）。 */
+  if (APPS_DETAIL.tipsWarmId === sid) return;
+  APPS_DETAIL.tipsWarmId = sid;
+  const seq = APPS_DETAIL.verSeq;
+  appsTipsLoad([sid], true)
+    .then(() => {
+      /* 窗已关 / 已换成别的应用：不再回写（与 appsDetailLoadVersions 同一口径） */
+      if (APPS_DETAIL.id !== sid || APPS_DETAIL.verSeq !== seq) return;
+      appsDetailRefresh();
+    })
+    .catch(() => {});
 }
 
 /* ───────────────── 入口接线 ───────────────── */

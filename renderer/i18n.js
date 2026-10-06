@@ -1909,6 +1909,9 @@
     "该计划正在执行中": "This plan is already running",
     "该计划已全部完成": "This plan is already complete",
     /* ── 轮次标签与「上一轮遗留」（本次需求：新一轮开跑时清掉已了结的清单） ── */
+    /* 会话区左上角的时间区间标签（本次需求）：那里只报整个会话的时间区间、**不报轮号** ——
+       可见文案是「起点 – 终点」（时刻与语言无关），这条词条只给它的 tooltip。 */
+    "本会话时间区间：{range}": "Session time range: {range}",
     "上一轮遗留 {n} 项未完": "{n} item(s) left over from the previous turn",
     "这 {n} 项是上一轮遗留、不是本轮的任务（本轮开始时不清理未完成项）；要接着跑请点「继续执行」":
       "These {n} item(s) are left over from the previous turn and are not part of the current one (unfinished items are never auto-cleared at the start of a turn); press Continue to run them",
@@ -3563,6 +3566,17 @@
     /* 会话头部的 View 标签（本次需求 · 上游 conversation.view 环的「对话 / 轨迹」）
        ——「对话」表内已有（Chat），这里只补「轨迹」 */
     "轨迹": "Trajectory",
+    /* 会话第三栏「改动」（本次需求 · renderer/app-changes.js）：本会话对所有文件的所有改动，
+       一项 = 一个被改过的文件（同一文件的多笔合并成一项），右侧列该文件的历次 diff 片段。 */
+    "改动": "Changes",
+    "共 {n} 次": "{n} edits",
+    "昨天 {t}": "Yesterday {t}",
+    "左侧选一个文件": "Pick a file on the left",
+    "拖动调整左栏宽度（双击复位）": "Drag to resize the left column (double-click to reset)",
+    "本次会话还没有文件改动": "This session has no file changes yet",
+    /* 「改动」栏的降级兜底（模块没加载 / 渲染抛错时只给一句明确空态，不静默白屏） */
+    "改动视图模块未加载（renderer/app-changes.js）": "Changes view module is not loaded (renderer/app-changes.js)",
+    "改动视图渲染失败": "Failed to render the changes view",
     /* 轨迹行的「发起 <时刻>」（app-trajectory.js 的 recLine：T("发起") + 时刻） */
     "发起": "Started",
     /* 轨迹视图（本轮完善 · 分组头 / 工具栏 / 分页 / 跟随 / 检查器）新词条 */
@@ -3720,6 +3734,22 @@
     "活动流已清空": "Activity log cleared",
     "读活动流失败：": "Failed to read the activity log: ",
     "浏览器操作失败：": "Browser action failed: ",
+    "复制这段思考原文到剪贴板": "Copy this thinking text to the clipboard",
+    "点击打开思考弹窗（原文按 Markdown 显示，译文点了翻译才出现）":
+      "Click to open the thinking dialog (original shown as Markdown; the translation pane appears only after you click Translate)",
+    "思考原文": "Thinking (original)",
+    "重发失败：": "Resend failed: ",
+    "这条会话已经不在，无法重发": "This session no longer exists, cannot resend",
+    "已终止本轮": "This round has been stopped",
+    "终止本轮": "Stop this round",
+    "重发本轮": "Resend this round",
+    "⚠ 已等 {n} 秒没有任何新进展：模型可能没能接着往下走。": "⚠ {n}s with no new progress: the model may not have continued.",
+    "已回应，模型继续中": "Replied — the model is continuing",
+    "自动切真窗口没成功：可以在右栏实况里操作，或再点一次「用真窗口打开」。": "Auto-switching to a real window failed: operate it in the right panel live view, or click “Open a real window” again.",
+    "浏览器此刻由另一条会话驱动，没有抢过来：点「用真窗口打开」可以把这只换成带窗口的。": "Another session is driving the browser right now, so it was not taken over: click “Open a real window” to replace it with a windowed one.",
+    "没能切换接管状态（浏览器可能已经关了）：请再点一次，或直接点「我已处理，继续」。": "Could not switch the takeover state (the browser may already be closed): click again, or just click “Done, continue”.",
+    "接管切换失败：": "Failed to switch takeover: ",
+    "⏳ 模型正在等你的回应 · 已等 {n} 秒（不会超时自动跳过）": "⏳ The model is waiting for you · {n}s elapsed (no timeout, it will not skip ahead)",
     "当前外壳没有浏览器桥（老版本）": "This shell has no browser bridge (older build)",
     "没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。": "Could not bring the real window up: operate it in the right panel live view, or click again.",
     "实况": "Live view",
@@ -3774,6 +3804,20 @@
     "我已处理，继续": "Done — continue",
     "撤销这张卡": "Dismiss this card",
     "这张卡已失效（发起轮已结束）": "This card is stale (its round already ended)",
+    "⏹ 这一轮已经结束": "⏹ This round has ended",
+    "⏹ 这一轮已经结束：上面那张卡已收口，模型不再等它了。": "⏹ This round has ended: that card was settled and the model is no longer waiting for it.",
+    "⏹ 这一轮已经结束：那张浏览器卡已收口，你的回应没能送达模型。": "⏹ This round has ended: that browser card was settled, so your response never reached the model.",
+    "⏹ 这一轮已经结束：那张卡已收口，你的回答没能送达模型（可把它作为新消息再发一次）。": "⏹ This round has ended: that card was settled, so your answer never reached the model (you can send it again as a new message).",
+    "这一轮已经结束。要从头再跑一遍就点「重发本轮」。": "This round has ended. Click \"Resend this round\" to run it again from the top.",
+    "发起这一问的那一轮已经结束，你的回答送不到模型了。": "The round that asked this question has ended; your answer cannot reach the model any more.",
+    "发起这次审批的那一轮已经结束，你的选择送不到模型了。": "The round that asked for this approval has ended; your choice cannot reach the model any more.",
+    "把这句回答作为新消息发给模型": "Send this answer to the model as a new message",
+    "直接新起一轮，把上面这份回答原样发给模型": "Starts a new round and sends the answer above to the model as-is",
+    "这张卡上没有写下回答；要接着做，请点上面那行痕迹里的「重发本轮」。": "No answer was written on this card; to carry on, click \"Resend this round\" in the trace line above.",
+    "撤掉这张卡": "Dismiss this card",
+    "【我对上面审批的回答】": "[My answer to the approval above]",
+    " · 已收口 ": " · settled ",
+    " 项": " item(s)",
     "提交失败：": "Submit failed: ",
     "点一下看大图": "Click to enlarge",
     "与画布无关：助手本轮不注册任何画布与应用工具，也不再注入整张画布快照，省 token；需要改画布时先关掉它": "Canvas-free: the assistant registers no canvas or app tools and no longer injects the full canvas snapshot, saving tokens; turn it off first when you do need canvas edits",
@@ -7290,6 +7334,9 @@
       "Translate this thinking with this session's own model (no thinking)",
     "翻译质量校验未通过（模型仍在输出原文）":
       "Translation check failed (the model is still echoing the source)",
+    /* 失败态里摆在译文框里的那句说明（被拒返回的正文由 dshThinkMdHtml 渲染在它下面） */
+    "模型没有给出译文，以下是它本次返回的内容（点「重试翻译」会换一只模型再试）":
+      "The model returned no translation. Below is what it actually answered this time (Retry translate switches to another model).",
   });
 
   /* 403「not eligible」（服务商 / 套餐没买到这个模型）时的换模型询问窗：
@@ -8858,11 +8905,8 @@
     "占用参考视频": "takes reference video",
   });
 
-  /* ── 弹窗最小化到状态栏（renderer/app.js 的 ovMin* 一套）+ 本地语音后端后台安装 ── */
+  /* ── 本地语音后端后台安装（弹窗最小化到状态栏的 ovMin* 一套连同词条已随本轮需求移除） ── */
   Object.assign(EN, {
-    "最小化到状态栏": "Minimize to status bar",
-    "点击恢复到对话窗": "Click to restore the dialog",
-    "窗口": "Window",
     "后台继续安装": "Continue in background",
     "安装中…（可点「后台继续安装」关闭此窗，进度在插件卡片上）":
       "Installing… (click \"Continue in background\" to close this window; progress stays on the plugin card)",
@@ -9631,6 +9675,8 @@
     "正在读取打赏数据…": "Loading tip totals…",
     "打赏数据暂未取到": "Tip totals unavailable right now",
     "打赏名单": "Tip list",
+    /* 详情正文里那行只读记录（app-tips.js 的 detailRecordEl）：整行不可点，悬停才出总次数 */
+    "打赏记录": "Tips received",
     /* 非作者视角的记录区（只看得到自己打赏出去的那几笔，见 app-tips.js 的 paintList）；
        撤销口已停用，但存量已撤销记录仍要标出来。 */
     "我的打赏记录": "My tips",
@@ -9718,9 +9764,10 @@
   });
 
   /* ── 消息（renderer/app-messages.js + css/messages.css · 顶栏「消息」入口与消息窗）──
-     打赏 / 评论 / 回复三类日志（云端保存）。按钮三态的 title、角标、列表、动作区、
-     跳转回执（含「暂不支持定位到具体话题」这类如实说明）全在这张表里；
-     中文键是唯一真源，缺表项时英文界面原样回显中文（I18n.t 回退）。 */
+     打赏 / 评论 / 回复三类日志（云端保存）。按钮三态的 title、角标、列表、动作区全在这张表里；
+     中文键是唯一真源，缺表项时英文界面原样回显中文（I18n.t 回退）。
+     **消息行只读**（不支持点消息内看应用）：原来那套跳转回执词条（点一下打开对应入口 /
+     跳转不支持 / 已打开讨论区 / 条目详情暂时拉不到）已随跳转件一起删除。 */
   Object.assign(EN, {
     "消息": "Messages",
     "消息：打赏 / 评论 / 回复": "Messages: tips · comments · replies",
@@ -9731,17 +9778,11 @@
     "还没有消息": "No messages yet",
     "加载更多": "Load more",
     "未读": "Unread",
-    "点一下打开对应入口": "Click to open where it belongs",
     "清空全部消息？清空后不可恢复。": "Clear all messages? This cannot be undone.",
     "已清空消息": "Messages cleared",
     "清空失败：": "Clear failed: ",
     "讨论区话题": "Forum topic",
     "讨论区回复": "Forum reply",
-    "这一类消息暂不支持跳转": "Jumping to this kind of message is not supported yet",
-    "已打开讨论区（暂不支持定位到具体话题）":
-      "Opened the forum (jumping to the exact topic is not supported yet)",
-    "条目详情暂时拉不到，已打开创意工坊":
-      "Could not load the item detail — opened the Workshop instead",
     /* 消息窗打开时的兜底提示（app-apps.js 的同一句话也走这条键） */
     "窗口模块未就绪（openOverlay 不存在）":
       "Window module is not ready (openOverlay missing)",
@@ -10469,6 +10510,7 @@
         /* 下载 / 安装 */
         "下载地址": "Download URL",
         "校验 sha256": "sha256",
+        "复制校验值": "copy checksum",
         "校验并解包…": "Verifying and unpacking…",
         "准备下载…": "Preparing the download…",
         "下载中 ": "Downloading ",
@@ -10504,6 +10546,94 @@
         "该应用不在本机": "That app is not on this computer",
         "应用入口页不存在": "The app's entry page does not exist",
         /* 库页 / 根目录 */
+        /* ── 两套根（本次需求：下载的应用与开发的应用严格分开，目录 / 数据 / 删除范围三样都分）──
+           下载的进「下载根目录」、开发的进「项目根目录」；数据也各有一棵
+           （apps-data/downloaded 与 apps-data/dev）。词条按主进程 kindLabel 的整句给。 */
+        /* 详情窗多图画廊（上架截图） */
+        "上架截图": "Screenshots",
+        "第 {n} 张（点它看大图）": "Shot {n} (click to view)",
+        /* 两套根的迁移 / 移除登记 / 截图上传的界面文案（本轮新增，逐条补英文） */
+        "没有需要迁移的内容": "Nothing to migrate",
+        "没有需要迁移的内容。": "Nothing to migrate.",
+        "将搬动 ": "Will move ",
+        " 项：": " item(s):",
+        "应用目录": "App folder",
+        "数据目录": "Data folder",
+        " 项目标已存在，不会覆盖：": " target(s) already exist and will NOT be overwritten:",
+        "迁移检查失败：": "Migration check failed: ",
+        "迁移失败：": "Migration failed: ",
+        "已迁移 ": "Migrated ",
+        " 项": " item(s)",
+        "开始迁移": "Start migration",
+        "移除登记失败：": "Removing the registration failed: ",
+        "移除登记：": "Remove registration: ",
+        "只移除登记：项目文件夹与里面的文件一个都不会删（要删文件请自己在资源管理器里删）":
+          "Only the registration is removed: not a single file in the project folder is deleted (delete files yourself in Explorer if you want)",
+        "卸载只删它在下载根下的子文件夹与它自己那一棵数据，项目根与开发数据一概不动":
+          "Uninstalling removes only its own folder under the download root and its own data tree; the project root and dev data are untouched",
+        "下载根": "Download root",
+        "项目根": "Project root",
+        "读取第 1 张截图失败：请改用「图标」选一张本机图片，或重新拍一次窗口":
+          "Reading the first screenshot failed: pick a local image under Icon, or take the window shot again",
+        " 张截图读不出来（文件可能已被移走）：删掉它或重新拍一张再上传":
+          " screenshot(s) could not be read (the file may have been moved): delete it or take it again before uploading",
+        "上传中…（③ 正在上传到云端，请勿关闭窗口）":
+          "Uploading… (3/3 uploading to the cloud, do not close this window)",
+        "· 截图 ": " · screenshots: ",
+        "· 含截图 ": " · with ",
+        "已设置：": " is set: ",
+        "下载根目录（从应用中心下载的）": "Download root folder (apps from the App Center)",
+        "项目根目录（开发中的应用）": "Project root folder (apps you develop)",
+        "选择下载根目录（从应用中心下载的）": "Choose the download root folder (apps from the App Center)",
+        "选择项目根目录（开发中的应用）": "Choose the project root folder (apps you develop)",
+        "尚未指定下载根目录（从应用中心下载的）":
+          "The download root folder is not set yet (apps from the App Center)",
+        "尚未指定项目根目录（开发中的应用）":
+          "The project root folder is not set yet (apps you develop)",
+        /* 旧布局显式迁移（只搬该在项目根却躺在下载根的应用 + 它那一棵数据） */
+        "迁移旧布局…": "Migrate old layout…",
+        "把「开发中的应用」与它们的数据搬到项目根（先给你看会动哪些目录，确认后才搬）":
+          "Move apps you develop (and their data) into the project root — you see exactly what will move before anything happens",
+        "两套根当前指向同一个目录：应用目录无需搬动（每条应用按自己的 dev 标记归位）":
+          "Both roots currently point at the same folder: nothing to move (each app is classified by its own dev flag)",
+        "下载根目录不存在，没有需要搬动的应用":
+          "The download root folder does not exist, so there is nothing to migrate",
+        "目标目录已存在（同一个 id 在项目根里已有一份）：不覆盖，请自己核对后手动处理":
+          "The destination already exists (same id already in the project root): nothing is overwritten — check it yourself",
+        "项目根目录还没设置：本轮会先落到默认项目根，之后可在「应用根目录」里改":
+          "The project root folder is not set: this run uses the default project root, which you can change later in App root folder",
+        "开发中的应用搬进项目根": "Apps you develop move into the project root",
+        "目标数据目录已存在：不覆盖（两边都留着，请自己核对后手动合并）":
+          "The destination data folder already exists: nothing is overwritten (both are kept — merge them yourself)",
+        "开发应用的数据搬进 apps-data/dev": "Data of developed apps moves into apps-data/dev",
+        "下载应用的数据搬进 apps-data/downloaded":
+          "Data of downloaded apps moves into apps-data/downloaded",
+        /* 删除范围（本次需求：删一个绝不误删另一个） */
+        "开发中的应用不能卸载（源码就在项目文件夹里）：只能「移除登记」":
+          "An app you develop cannot be uninstalled (its source lives in the project folder): you can only remove its registration",
+        "移除登记": "Remove registration",
+        "移除登记…": "Remove registration…",
+        "只移除了登记：项目文件夹与其中的文件全部原样保留（要删文件请在资源管理器里自己删）":
+          "Only the registration was removed: the project folder and all its files stay exactly as they are (delete files yourself in Explorer if you want)",
+        "确定移除「": "Remove the registration of “",
+        "」的登记？项目文件夹与里面的文件一个都不会删（要删文件请自己在资源管理器里删）。":
+          "”? Not a single file in the project folder is deleted (delete files yourself in Explorer if you want).",
+        "只移除了登记：": "Registration removed only: ",
+        "（项目文件夹与文件都还在）": " (project folder and files are all still there)",
+        "删除该应用？只删它在下载根下的子文件夹与它自己那一棵数据（apps-data/downloaded/），项目根与开发数据一概不动。":
+          "Delete this app? Only its own folder under the download root and its own data tree (apps-data/downloaded/) are deleted; the project root and dev data are untouched.",
+        "（已放进回收站）": " (moved to the recycle bin)",
+        /* 开发页 / 会话工作区（bug：应用下列没有会话时会话落到默认目录） */
+        "找不到这个应用的项目文件夹：先把它装回来（或修好 app.json），再发本轮需求":
+          "Cannot find this app's project folder: bring the app back (or fix its app.json), then send this round's request",
+        "这个应用在本机的目录不见了：会话工作区无法确定，本轮不新建会话（避免文件落到默认目录）":
+          "This app's folder is gone from this computer: the session workspace cannot be determined, so no session is created (files must not land in the default folder)",
+        "找不到这个应用在本机的项目文件夹：会话无法确定工作区（先把它装回来或修好 app.json）":
+          "Cannot find this app's project folder on this computer: the session workspace cannot be determined (bring the app back or fix app.json)",
+        "开发节点的「项目文件夹」与该应用当前目录不一致：新建会话一律以应用目录为准":
+          "The dev node's project folder differs from this app's current folder: new sessions always use the app folder",
+        "已登记为开发中，但项目文件夹没能自动归位（项目根里可能已有一份同名目录）：位置未变，可稍后在「应用根目录」里手动迁移":
+          "Registered as in-development, but the project folder could not be moved automatically (the project root may already hold a folder with the same name): nothing changed — migrate manually later from App root folder",
         "应用根目录": "App root folder",
         "应用根目录已设置：": "App root folder set: ",
         "未设置": "Not set",
@@ -10843,9 +10973,9 @@
     "开发者信息": "Developer info",
     "安装包校验": "Package checksum",
     "安装包 sha256": "Package sha256",
-    "点开看完整校验值并可复制": "Click to see the full checksum and copy it",
+    "点一下复制完整校验值": "Click to copy the full checksum",
     "已复制校验值": "Checksum copied",
-    "复制失败：请手动选中复制": "Copy failed: select the text and copy it manually",
+    "复制失败：请手动复制": "Copy failed: please copy it manually",
     "二次开发": "Build on it",
     "会把该应用登记为「开发中」（库页不再列它），并给它建一张同名画布与开发节点；应用目录不动。":
       "Registers this app as “in development” (so the Library no longer lists it) and creates a same-named canvas plus a dev node for it; the app folder itself is untouched.",
@@ -10968,6 +11098,15 @@
   Object.assign(EN, {
     "详情": "Details",
     "应用详情": "App details",
+    /* 封面卡与详情窗（本轮：16:9 封面卡 + 详情里搬进来的本机动作区） */
+    "本机应用": "Installed here",
+    "数据目录": "Data folder",
+    "打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）":
+      "Open this app’s data folder (by default created under the MTNode data folder, keyed by app id)",
+    "下载：先在详情里选分支与版本（默认原作者最新版），确认后再装到本机":
+      "Download: pick the branch and version in the details first (defaults to the original author’s latest), then install",
+    "更新到本机已装那一支的作者最新版（v": "Update to the latest version by the author of the branch installed here (v",
+    "本机 v": "here v",
     "在独立窗口里运行这个应用": "Run this app in its own window",
     "单开一只对话窗看详情：说明 / 云端版本 / 本机版本（可回滚）/ 评论":
       "Open a dialog for the details: description / cloud versions / local version (rollback) / comments",

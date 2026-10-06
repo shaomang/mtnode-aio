@@ -140,6 +140,21 @@ function appsDevStartApp() {
   }
   if (typeof appsOpenApp === "function") appsOpenApp(id);
 }
+/* 该应用在本机的项目文件夹（开发页一切「项目文件夹」口径的唯一取数点）：
+   appsLocalList 的那条记录里的 dir（apps-store 按类型解析好的绝对路径），取不到就回空串。
+   为什么不自己拼：应用可能躺在下载根或项目根（两套根，见 apps-store.js 的 kindOfManifest），
+   路径真源只有主进程，渲染层不猜。 */
+function appsDevProjectDir(appId) {
+  const id = String(appId || DEVD.appId || "").trim();
+  if (!id) return "";
+  try {
+    const hit =
+      typeof appsLocalById === "function" ? appsLocalById(id) : null;
+    return String((hit && hit.dir) || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
 function appsDevHubOpen() {
   try {
     if (typeof appsHubIsOpen === "function") return !!appsHubIsOpen();
@@ -1242,7 +1257,25 @@ async function appsDevStartDevSession(text) {
     return true;
   }
   if (typeof createDevSessionForNode !== "function") return true;
-  const sess = createDevSessionForNode(node, "dev", reqText, devStyleAskContract(DEVD.appId));
+  /* 工作区**强制指到这个应用的项目文件夹**（本次需求 · bug：应用下列没有会话时新会话落到默认目录）：
+     createDevSessionForNode 取的是 node.devPath（没有就一路退到画布项目根 / 默认目录），
+     开发页这条路的真源是「该应用在本机的那份目录」—— 所以显式把它当节点工作目录传下去
+     （dshWorkspaceOf 的 manual 分支优先）。
+     取不到应用目录（清单读不出来 / 目录被删）时**不静默降级**：说清楚并停手，
+     绝不把会话的工作区悄悄落到默认目录里去。 */
+  const appDir = appsDevProjectDir();
+  if (!appDir) {
+    appsDevToast(
+      appsDevT("找不到这个应用的项目文件夹：先把它装回来（或修好 app.json），再发本轮需求"),
+      "err",
+    );
+    appsDevPaintWarn(
+      appsDevT("这个应用在本机的目录不见了：会话工作区无法确定，本轮不新建会话（避免文件落到默认目录）"),
+    );
+    return true;
+  }
+  const nodeForSession = Object.assign({}, node, { agentWorkspace: appDir });
+  const sess = createDevSessionForNode(nodeForSession, "dev", reqText, devStyleAskContract(DEVD.appId));
   if (!sess) return true;
   if (node.devStatus !== "done") node.devStatus = "wip";
   /* 该应用的画布落盘：createDevSessionForNode 把会话 id 写进了节点
@@ -1390,12 +1423,13 @@ async function appsDevRefreshHead() {
     );
     return;
   }
+  const appDir = appsDevProjectDir();
   appsDevPaintWarn(
-    String(node.devPath || "").trim()
-      ? ""
-      : appsDevT(
-          "该开发节点还没设「项目文件夹」（devPath）：会话工作区会退回默认目录",
-        ),
+    !appDir
+      ? appsDevT("找不到这个应用在本机的项目文件夹：会话无法确定工作区（先把它装回来或修好 app.json）")
+      : String(node.devPath || "").trim() && String(node.devPath).trim() !== appDir
+        ? appsDevT("开发节点的「项目文件夹」与该应用当前目录不一致：新建会话一律以应用目录为准")
+        : "",
   );
 }
 
@@ -1406,18 +1440,32 @@ const DEVD_STAT_MIN = 96;
 
 /* 应用根目录（这条工具栏里的紧凑版）：路径 + 更改…；点路径 = 在资源管理器中打开。
    与库页那行（app-apps.js 的 appsRootLineEl）共用同一份动作函数，不写第二份逻辑。 */
-function appsDevRootItem() {
-  const root = (typeof APPS_ST === "object" && APPS_ST && APPS_ST.root) || {};
+/* 应用根目录（这条工具栏里的紧凑版）：**两套根各一枚**（下载根 / 项目根）——
+   路径 + 更改…；点路径 = 在资源管理器中打开。
+   与库页那两行（app-apps.js 的 appsRootRowEl）共用同一份动作函数，不写第二份逻辑。 */
+function appsDevRootChip(kind) {
+  const roots = (typeof APPS_ST === "object" && APPS_ST && APPS_ST.list && APPS_ST.list.roots) || {};
+  const root = roots[kind] || (kind === "down" ? (APPS_ST && APPS_ST.root) || {} : {}) || {};
   const box = document.createElement("span");
   box.className = "apps-dev-root";
+  box.dataset.rootKind = kind;
+  const tag = document.createElement("span");
+  tag.className = "apps-dev-root-k";
+  tag.textContent = appsDevT(kind === "dev" ? "项目根" : "下载根");
+  box.appendChild(tag);
   const path = String(root.path || "");
   const val = document.createElement("button");
   val.type = "button";
   val.className = "apps-dev-root-v";
   val.textContent = path || appsDevT("未设置");
-  val.title = (path || appsDevT("未设置")) + "\n" + appsDevT("点击在资源管理器中打开");
+  val.title =
+    appsDevT(kind === "dev" ? "项目根目录（开发中的应用）" : "下载根目录（从应用中心下载的）") +
+    "\n" +
+    (path || appsDevT("未设置")) +
+    "\n" +
+    appsDevT("点击在资源管理器中打开");
   val.onclick = () => {
-    if (typeof appsRootFolderNow === "function") appsRootFolderNow();
+    if (typeof appsRootFolderNow === "function") appsRootFolderNow(kind);
   };
   box.appendChild(val);
   if (!root.configured) {
@@ -1429,9 +1477,16 @@ function appsDevRootItem() {
   }
   box.appendChild(
     appsMiniBtn(appsDevT("更改…"), () => {
-      if (typeof appsRootPickNow === "function") appsRootPickNow();
+      if (typeof appsRootPickNow === "function") appsRootPickNow(kind);
     }),
   );
+  return box;
+}
+function appsDevRootItem() {
+  const box = document.createElement("span");
+  box.className = "apps-dev-roots";
+  box.appendChild(appsDevRootChip("dev"));
+  box.appendChild(appsDevRootChip("down"));
   return box;
 }
 

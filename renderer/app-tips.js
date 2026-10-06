@@ -344,6 +344,26 @@
     });
   }
 
+  /* ── 详情里的「打赏记录 N 币」一行（**只读**） ─────────────────
+     用户口径（本轮需求，修「详细里打赏反复全套了两次」）：
+       · 只留**一行**：「打赏记录」+ 币数（单位是鲸圆币图标，中文界面不写「币」字）；
+       · **整行不可点** —— 详情里不再有第二个能打开打赏窗的入口（入口只在卡片的金币图标上）；
+       · 鼠标悬停才出总次数：「累计打赏 N（M 次）」（复用 tipSumTitle，全应用同一句话）；
+       · 一次都没被打赏过、或汇总还没取回来 → 回 null（调用方整行不画，不占位、不谎报）。
+     为什么另起一个元件而不是 metaEl(clickable:false)：那一支是给「卡片角落的小字」用的
+     （空数据要出引导句、形态是行内小字），这里要的是详情正文里一行明确的记录 ——
+     分开两个元件，比往 metaEl 塞第四种形态清楚。 */
+  function detailRecordEl(target, tips) {
+    void target; /* 只读行不开窗：target 留住只为与 metaEl / buttonEl 同一签名口径 */
+    var n = Number((tips && tips.count) || 0);
+    if (!n) return null; /* 没打赏过 / 数据没取到：整行不显示（用户口径） */
+    var row = el("div", "apps-detail-tipbar tip-record");
+    row.appendChild(el("span", "tip-record-k", T("打赏记录")));
+    row.appendChild(coinInline(coinText(coinOf((tips && tips.totalYuan) || 0))));
+    row.title = tipSumTitle(tips); /* 悬停才出总次数 */
+    return row;
+  }
+
   /* ── 打赏窗（档位 + 余额/额度 + 名单） ───────────────────────── */
 
   /* 名单查询（仅作者本人与管理员）。others 时静默失败，只显示一句说明。 */
@@ -911,13 +931,16 @@
     kindText: kindText,
     metaEl: metaEl,
     buttonEl: buttonEl,
+    /* 详情正文里那行只读的「打赏记录 N 币」（不可点、hover 出总次数、0 则整行不画）：
+       见 app-apps.js 的 appsDetailBodyEl —— 详情不再放第二个打赏入口。 */
+    detailRecordEl: detailRecordEl,
     open: openTipDialog,
     list: loadList,
     coinText: coinText,
     coinIcon: coinIcon,
     summaryText: summaryText,
     /* 累计打赏的悬停文案：卡片上只剩一枚金币 icon 时，汇总（`N 币 · M 次`）由它出
-       （见 app-apps.js 的 appsAppsIconRow；没人打赏过时那句「还没有人打赏」也在它里面）。 */
+       （见 app-apps.js 的 appsCoverActionsEl；没人打赏过时那句「还没有人打赏」也在它里面）。 */
     tipSumTitle: tipSumTitle,
   };
   /* 二级浮层壳：评论窗（app-comments.js）与打赏窗共用同一只，不各自造一只。 */

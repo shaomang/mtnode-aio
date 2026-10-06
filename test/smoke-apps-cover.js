@@ -1,0 +1,422 @@
+/* 封面卡与本轮打赏条改动的**真跑**回归（人工跑；也可挂进冒烟）：
+     node test/apps-cover-unit.js
+   口径（都是「会真炸」的那几条，不靠正则看源码，而是把真源码跑起来断言行为）：
+     [1] MtTips.detailRecordEl：一次都没打赏 / 数据没取到 → null（整行不画）；
+         有数字 → 一行「打赏记录 + 币数」，**整行不挂任何 click**（详情里不能再有第二个打赏入口）。
+     [2] appsThumbUrlOf：urls.thumb 优先；静态目录从 icon 推导同主干 .png；接口地址换成 /thumb；
+         data: 与没图标一律回空串（调用方退回原图）。
+     [3] appsCoverEl：缩略图 404 → 退回原图一次（data-fallback）；原图也 404 → 收起 img + .noimg
+         兜底底色（封面不破图、标题仍在）。
+     [4] appsCoverActionsEl：未装 = 下载 + ⓘ（上架到云端才多一枚金币）；库页 = 运行(play) + ⓘ；
+         点图标**不冒泡**（卡片主点击 = 开详情，不能被图标连带触发）。
+     [5] appsTileEl：点卡片 → openAppsDetail(id)；卡片 role=button。
+   这里只造它们真正用到的最小 DOM —— 但**语义要对齐真 DOM**（on* 句柄赋值即挂监听、
+   element.id 与 setAttribute("id") 等价），否则量到的是假现场。 */
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+
+let fails = 0;
+const ok = (cond, msg) => {
+  if (!cond) fails++;
+  console.log((cond ? "  ok   " : "  FAIL ") + msg);
+};
+const ROOT = path.resolve(__dirname, "..");
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
+
+/* ───────── 最小 DOM（语义对齐真 DOM 的那几处） ───────── */
+const ON_TYPES = ["click", "error", "keydown", "input", "change"];
+function makeEl(tag) {
+  const el = {
+    tagName: String(tag || "div").toUpperCase(),
+    children: [],
+    parentNode: null,
+    dataset: {},
+    style: {},
+    hidden: false,
+    className: "",
+    textContent: "",
+    title: "",
+    innerHTML: "",
+    attrs: {},
+    listeners: {},
+    classList: {
+      _set: new Set(),
+      add(...cs) {
+        for (const c of cs) this._set.add(c);
+        el.className = [...this._set].join(" ");
+      },
+      remove(...cs) {
+        for (const c of cs) this._set.delete(c);
+        el.className = [...this._set].join(" ");
+      },
+      contains: (c) => el.classList._set.has(c),
+      toggle(c, on) {
+        if (on) el.classList.add(c);
+        else el.classList.remove(c);
+      },
+    },
+    appendChild(c) {
+      c.parentNode = el;
+      el.children.push(c);
+      return c;
+    },
+    replaceWith(n) {
+      const p = el.parentNode;
+      if (!p) return;
+      const i = p.children.indexOf(el);
+      if (i >= 0) p.children.splice(i, 1, n);
+      n.parentNode = p;
+    },
+    remove() {
+      const p = el.parentNode;
+      if (!p) return;
+      const i = p.children.indexOf(el);
+      if (i >= 0) p.children.splice(i, 1);
+      el.parentNode = null;
+    },
+    setAttribute(k, v) {
+      if (k === "id") {
+        el.attrs.id = String(v);
+        return;
+      }
+      el.attrs[k] = String(v);
+      if (k === "class") el.classList.add(String(v));
+      if (/^on/.test(k)) el.addEventListener(k.slice(2), v);
+    },
+    getAttribute: (k) => (k in el.attrs ? el.attrs[k] : null),
+    addEventListener(type, fn) {
+      el.listeners[type] = el.listeners[type] || [];
+      el.listeners[type].push(fn);
+    },
+    removeEventListener(type, fn) {
+      const l = el.listeners[type] || [];
+      const i = l.indexOf(fn);
+      if (i >= 0) l.splice(i, 1);
+    },
+    querySelector(sel) {
+      const all = el.querySelectorAll(sel);
+      return all.length ? all[0] : null;
+    },
+    querySelectorAll(sel) {
+      const out = [];
+      const want = String(sel || "").trim();
+      const walk = (n) => {
+        for (const c of n.children) {
+          if (matches(c, want)) out.push(c);
+          walk(c);
+        }
+      };
+      walk(el);
+      return out;
+    },
+    /** 派发事件：顺着 parentNode 冒泡，stopPropagation 就停（与真 DOM 同） */
+    dispatch(type, ev) {
+      let stopped = false;
+      const e = Object.assign({ type, preventDefault() {}, stopPropagation() { stopped = true; } }, ev || {});
+      let node = el;
+      while (node) {
+        for (const fn of node.listeners[type] || []) fn(e);
+        if (stopped) break;
+        node = node.parentNode;
+      }
+      return e;
+    },
+  };
+  /* id 与 on* 句柄：真 DOM 里直接赋值就生效，冒烟里也必须这样 */
+  Object.defineProperty(el, "id", {
+    get: () => el.attrs.id || "",
+    set: (v) => {
+      el.attrs.id = String(v);
+    },
+    configurable: true,
+  });
+  for (const type of ON_TYPES) {
+    Object.defineProperty(el, "on" + type, {
+      get: () => (el.listeners[type] || [])[0] || null,
+      set(fn) {
+        const keep = (el.listeners[type] || []).slice(1);
+        el.listeners[type] = typeof fn === "function" ? [fn].concat(keep) : keep;
+      },
+      configurable: true,
+    });
+  }
+  return el;
+}
+function classListOf(el) {
+  return String(el.className || "").split(/\s+/).filter(Boolean);
+}
+function matches(el, sel) {
+  if (!sel) return false;
+  return sel
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((part) => {
+      const m = /^([.#]?)([\w-]+)$/.exec(part);
+      if (!m) return false;
+      if (m[1] === ".") return classListOf(el).includes(m[2]);
+      if (m[1] === "#") return el.attrs.id === m[2];
+      return el.tagName === m[2].toUpperCase();
+    });
+}
+const document = {
+  createElement: makeEl,
+  createTextNode: (t) => ({ nodeType: 3, textContent: String(t), children: [], parentNode: null, listeners: {} }),
+  body: makeEl("body"),
+  getElementById: () => null,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  addEventListener() {},
+};
+
+/* 自检：迷你 DOM 的 on* 句柄语义必须与真 DOM 一致（否则后面量到的是假现场） */
+{
+  const b = makeEl("button");
+  let n = 0;
+  b.onclick = () => n++;
+  b.dispatch("click");
+  ok(n === 1, "[0] 迷你 DOM：onclick 赋值即挂监听（触发 " + n + " 次）");
+  const c = makeEl("button");
+  c.setAttribute("id", "x1");
+  ok(c.id === "x1", "[0] 迷你 DOM：setAttribute('id') 与 element.id 等价");
+}
+
+/* ───────── 真源码加载 ───────── */
+function baseSandbox() {
+  const sandbox = {
+    window: {},
+    document,
+    console,
+    location: {},
+    URL,
+    setTimeout,
+    clearTimeout,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    fetch: () => Promise.resolve({ ok: false, json: () => Promise.resolve({}) }),
+  };
+  sandbox.window.document = document;
+  sandbox.window.setTimeout = setTimeout;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  return sandbox;
+}
+function loadTips() {
+  const sandbox = baseSandbox();
+  sandbox.window.MtCoin = { coinsOfYuan: (y) => Number(y || 0) * 50, coinNumText: (n) => String(n) };
+  vm.runInContext(read("renderer/app-tips.js"), sandbox);
+  return sandbox.window.MtTips;
+}
+function loadApps() {
+  const sandbox = baseSandbox();
+  sandbox.window.clampAppsColsW = () => {};
+  vm.runInContext(read("renderer/app-apps.js"), sandbox);
+  vm.runInContext(
+    ";globalThis.__spies = { appsThumbUrlOf: appsThumbUrlOf, appsCoverEl: appsCoverEl, appsCoverActionsEl: appsCoverActionsEl, appsTileEl: appsTileEl, appsIconUrl: appsIconUrl, appsUrlWithToken: appsUrlWithToken, appsLocalCoverOf: appsLocalCoverOf };",
+    sandbox,
+  );
+  return { spies: sandbox.__spies, sandbox };
+}
+const textsOf = (root) => {
+  const out = [];
+  const walk = (n) => {
+    if (n.textContent) out.push(n.textContent);
+    for (const c of n.children || []) walk(c);
+  };
+  walk(root);
+  return out;
+};
+
+console.log("[1] detailRecordEl：0 / 缺数据整行不画，有数字只画一行只读记录");
+{
+  const T = loadTips();
+  ok(typeof T.detailRecordEl === "function", "MtTips.detailRecordEl 已导出");
+  ok(T.detailRecordEl({ kind: "app", id: "x" }, null) === null, "没取到汇总（null）→ 回 null");
+  ok(T.detailRecordEl({ kind: "app", id: "x" }, { count: 0, totalYuan: 0 }) === null, "一次都没打赏（count 0）→ 回 null");
+  const row = T.detailRecordEl({ kind: "app", id: "x" }, { count: 3, totalYuan: 120 });
+  ok(!!row, "有打赏 → 画一行");
+  ok(
+    classListOf(row).includes("apps-detail-tipbar") && classListOf(row).includes("tip-record"),
+    "行样式 = apps-detail-tipbar tip-record：" + row.className,
+  );
+  const texts = textsOf(row);
+  ok(texts.includes("打赏记录"), "行里有「打赏记录」标签：" + JSON.stringify(texts));
+  ok(texts.some((t) => /6000/.test(t)), "行里有币数（120 元 → 6000 鲸圆币）：" + JSON.stringify(texts));
+  ok(!row.listeners.click || row.listeners.click.length === 0, "整行**不挂 click**（不可点）");
+  ok(!classListOf(row).includes("clickable"), "整行不带 clickable 类");
+  ok(/累计打赏/.test(row.title || ""), "悬停文案是累计总次数：" + row.title);
+  ok(!row.onclick, "整行没有 onclick（点它什么都不发生）");
+}
+
+console.log("[2] appsThumbUrlOf：thumb 优先 / 静态推导 / 接口换路径 / 空值回空串");
+{
+  const { spies } = loadApps();
+  const FEED = "https://mt-agent.com/mtnode/apps";
+  ok(spies.appsThumbUrlOf({ urls: { thumb: FEED + "/api/apps/x/thumb" } }) === FEED + "/api/apps/x/thumb", "urls.thumb 优先");
+  ok(
+    spies.appsThumbUrlOf({ icon: "icons/sudoku__u_1.png", urls: { icon: FEED + "/icons/sudoku__u_1.png" } }) ===
+      FEED + "/icons/sudoku__u_1.png",
+    "静态目录：icon 已是 .png → 推导结果就是它本身",
+  );
+  ok(
+    spies.appsThumbUrlOf({ icon: "icons/a__u1.jpg", urls: { icon: FEED + "/icons/a__u1.jpg" } }) === FEED + "/icons/a__u1.png",
+    "静态目录：icon 是 .jpg → 换成同主干 .png（服务端发布的缩略图落点）",
+  );
+  ok(
+    spies.appsThumbUrlOf({ icon: "icons/a.png", urls: { icon: "https://s.example/api/apps/a/icon?owner=u1" } }) ===
+      "https://s.example/api/apps/a/thumb?owner=u1",
+    "接口来源：/icon?owner=… → /thumb?owner=…（带上 owner）",
+  );
+  ok(spies.appsThumbUrlOf({ icon: "data:image/png;base64,AAA" }) === "", "data: 图（没有独立缩略图）→ 空串");
+  ok(spies.appsThumbUrlOf({}) === "" && spies.appsThumbUrlOf(null) === "", "没图标 → 空串");
+}
+
+console.log("[3] appsCoverEl：缩略图 404 → 退回原图 → 再 404 收图 + 兜底底色");
+{
+  const { spies } = loadApps();
+  const FEED = "https://mt-agent.com/mtnode/apps";
+  const cover = spies.appsCoverEl({ id: "a", icon: "icons/a.jpg", urls: { icon: FEED + "/icons/a.jpg" } }, "演示应用", {
+    withText: true,
+  });
+  const img = cover.querySelector(".apps-cover-img");
+  ok(!!img, "有图标 → 画了背景图元素");
+  ok(img.src === FEED + "/icons/a.png", "背景图先取缩略图（.png）：" + img.src);
+  ok(!!cover.querySelector(".apps-cover-shade") && !!cover.querySelector(".apps-cover-name"), "带底部渐变 + 标题层");
+  ok(cover.querySelector(".apps-cover-name").textContent === "演示应用", "标题层写的是应用名");
+  img.dispatch("error");
+  ok(img.src === FEED + "/icons/a.jpg" && img.dataset.fallback === "1", "缩略图 404 → 退回原图一次：" + img.src);
+  ok(img.hidden === false, "退回原图时图还在");
+  img.dispatch("error");
+  ok(img.hidden === true && classListOf(cover).includes("noimg"), "原图也 404 → 收图 + .noimg 兜底底色");
+  ok(cover.querySelector(".apps-cover-fb") !== null, "兜底底色层仍在（标题照常可读）");
+  const noIcon = spies.appsCoverEl({ id: "b" }, "没图的应用", { withText: true });
+  ok(noIcon.querySelector(".apps-cover-img") === null && classListOf(noIcon).includes("noimg"), "压根没图标 → 直接兜底底色");
+}
+
+console.log("[4] appsCoverActionsEl：卡上只留该有的那几枚图标，且都不冒泡");
+{
+  const { spies, sandbox } = loadApps();
+  sandbox.window.MtTips = { coinIcon: () => makeEl("span") };
+  const mk = (over) => spies.appsCoverActionsEl(Object.assign({ id: "a", title: "A" }, over), {});
+  const notInstalled = mk({});
+  let btns = notInstalled.children.filter((c) => c.tagName === "BUTTON");
+  ok(btns.length === 2, "未装 + 未上架云端 → 两枚（下载 + ⓘ），实际 " + btns.length);
+  ok(
+    classListOf(btns[0]).includes("apps-ico-download") && classListOf(btns[1]).includes("apps-ico-info"),
+    "顺序 = 下载、ⓘ：" + btns.map((b) => b.className).join(" | "),
+  );
+  ok(/<svg/.test(String(btns[0].innerHTML || "")), "下载那颗的内联 SVG 直接在按钮里（不是套一层 span）");
+  const cloud = mk({ ownerId: "u1" });
+  btns = cloud.children.filter((c) => c.tagName === "BUTTON");
+  ok(btns.length === 3 && classListOf(btns[2]).includes("apps-ico-coin"), "上架到云端 → 多一枚金币");
+  const localRow = spies.appsCoverActionsEl({ id: "a", title: "A" }, { local: true });
+  btns = localRow.children.filter((c) => c.tagName === "BUTTON");
+  ok(btns.length === 2 && classListOf(btns[0]).includes("apps-ico-play"), "库页：运行（play）+ ⓘ");
+  ok(
+    btns[0].dataset.appRun === "1" && btns[0].id === "appsRunBtn-a",
+    "运行那颗带 data-app-run + 稳定 id（打开态回贴靠它）：" + btns[0].id,
+  );
+  let cardClicks = 0;
+  const card = makeEl("div");
+  card.addEventListener("click", () => cardClicks++);
+  card.appendChild(btns[0]);
+  card.appendChild(btns[1]);
+  btns[0].dispatch("click");
+  btns[1].dispatch("click");
+  ok(cardClicks === 0, "点图标不冒泡到卡片（不会连带打开详情）");
+}
+
+console.log("[5] appsTileEl：点卡片开详情；点图标各自做自己的事（不冒泡）");
+{
+  const { spies, sandbox } = loadApps();
+  const opened = [];
+  sandbox.window.openAppsDetail = (id) => {
+    opened.push(id);
+    return true;
+  };
+  const tipOpens = [];
+  sandbox.window.MtTips = { coinIcon: () => makeEl("span"), open: (t) => tipOpens.push(t) };
+  const card = spies.appsTileEl({ id: "sudoku", title: "数独", icon: "icons/s.png", ownerId: "u1" }, {});
+  ok(card.attrs.role === "button", "卡片带 role=button（可键盘触发）");
+  card.dispatch("click");
+  ok(opened.length === 1 && opened[0] === "sudoku", "点卡片 → openAppsDetail(id)");
+  const acts = card.querySelector(".apps-cover-acts");
+  ok(!!acts, "卡片上有封面右下角那一排图标");
+  /* 这一排里只有 ⓘ 与金币「本来就该开详情」，所以拿它们验「不重复触发」；
+     下载那颗按设计点了就是开详情选分支（appsOpenDetailForPick），它开一次是对的。 */
+  const info = acts.querySelector(".apps-ico-info");
+  const before = opened.length;
+  info.dispatch("click");
+  ok(opened.length === before + 1, "点 ⓘ → 开详情一次（自己开，卡片那次不重复）");
+  const coin = acts.querySelector(".apps-ico-coin");
+  if (coin) {
+    const n0 = opened.length;
+    coin.dispatch("click");
+    ok(opened.length === n0, "点金币 → 只开打赏窗，不开详情（不冒泡）");
+    ok(tipOpens.length === 1 && tipOpens[0] && tipOpens[0].kind === "app", "点金币 → MtTips.open({kind:'app'}) 一次");
+  }
+}
+
+console.log("[6] 详情头部封面：缓存令牌（新图立刻可见）+ 本机已装封面兜底");
+{
+  const { spies, sandbox } = loadApps();
+  const STORE = "https://s.example";
+  /* 缓存令牌：?v= 用该条目的最新版本号（版本变了图必然是新上传的那张） */
+  ok(
+    spies.appsUrlWithToken(STORE + "/api/apps/a/thumb?owner=u1", { latestVersion: "1.2.0" }) ===
+      STORE + "/api/apps/a/thumb?owner=u1&v=1.2.0",
+    "拼上 ?v=<最新版本号>（保留原有查询串）",
+  );
+  ok(spies.appsUrlWithToken(STORE + "/api/apps/a/icon?owner=u1", { version: "1.0.0" }) === STORE + "/api/apps/a/icon?owner=u1&v=1.0.0", "没有 latestVersion 就用 version");
+  ok(spies.appsUrlWithToken(STORE + "/api/apps/a/thumb?v=9", { latestVersion: "1.2.0" }) === STORE + "/api/apps/a/thumb?v=9", "已经有 v= 就不再动它（幂等）");
+  ok(spies.appsUrlWithToken("", { latestVersion: "1.2.0" }) === "" && spies.appsUrlWithToken(STORE + "/x", {}) === STORE + "/x", "空地址 / 没版本号 → 原样回（绝不改成坏地址）");
+  ok(spies.appsUrlWithToken("data:image/png;base64,AAA", { latestVersion: "1.2.0" }) === "data:image/png;base64,AAA", "data: 图不加令牌");
+
+  /* 详情头部（big:true）：先取带令牌的缩略图 → 404 退回带令牌的原图 → 再 404 退本机封面。
+     本机那份封面由 appsLocalCoverOf 从 APPS_ST.list 里取（沙箱里换掉它当桩，口径不变）。 */
+  const spec = {
+    id: "a",
+    latestVersion: "1.2.0",
+    icon: "icons/a__u1.png",
+    urls: { icon: STORE + "/api/apps/a/icon?owner=u1", thumb: STORE + "/api/apps/a/thumb?owner=u1" },
+  };
+  sandbox.window.__localCover = "data:image/png;base64,LOCAL";
+  vm.runInContext("appsLocalCoverOf = function () { return window.__localCover || ''; };", sandbox);
+  const cover = spies.appsCoverEl(spec, "演示应用", { withText: false, big: true, eager: true });
+  const img = cover.querySelector(".apps-cover-img");
+  ok(img.src === STORE + "/api/apps/a/thumb?owner=u1&v=1.2.0", "详情封面取带令牌的缩略图：" + img.src);
+  img.dispatch("error");
+  ok(img.src === STORE + "/api/apps/a/icon?owner=u1&v=1.2.0" && img.dataset.fallback === "1", "缩略图拉不到 → 退回带令牌的原图：" + img.src);
+  img.dispatch("error");
+  ok(img.src === "data:image/png;base64,LOCAL" && img.dataset.localTried === "1", "原图也拉不到 → 退回本机已装那份的封面图");
+  img.dispatch("error");
+  ok(img.hidden === true && classListOf(cover).includes("noimg"), "本机图也拉不到 → 收图 + .noimg 兜底底色");
+
+  /* 云端一个地址都给不出（无图标声明）：详情头部还能拿本机那张顶上 */
+  const noCloud = spies.appsCoverEl({ id: "a", latestVersion: "1.0.0" }, "没云端图的应用", { withText: false, big: true });
+  const nimg = noCloud.querySelector(".apps-cover-img");
+  ok(!!nimg && nimg.src === "data:image/png;base64,LOCAL" && nimg.dataset.localTried === "1", "没有云端图 → 直接用本机封面（不是一块纯色底）");
+  ok(!classListOf(noCloud).includes("noimg"), "本机图在时不加 .noimg");
+  const noCloudNone = (() => {
+    sandbox.window.__localCover = "";
+    return spies.appsCoverEl({ id: "b", latestVersion: "1.0.0" }, "连本机图也没有", { withText: false, big: true });
+  })();
+  ok(noCloudNone.querySelector(".apps-cover-img") === null && classListOf(noCloudNone).includes("noimg"), "本机图也没有 → 兜底底色");
+  /* 本机兜底只认 app.json 的 icon 声明（apps-store.js 的 localAppIconOf 读成 data URL）：
+     沙箱里把桩撤掉，验证真实实现在「没声明 / 没这个应用」时回空串。 */
+  vm.runInContext("appsLocalCoverOf = function () { return ''; };", sandbox);
+  ok(spies.appsLocalCoverOf({ id: "b" }) === "" && spies.appsLocalCoverOf({ id: "nowhere" }) === "", "本机没声明 icon / 没这个应用 → 空串（退回纯色底）");
+  /* 卡片（big 不给）不掺和：不带 ?v=、拉不到就是兜底底色，不读本机封面 */
+  sandbox.window.__localCover = "data:image/png;base64,LOCAL";
+  vm.runInContext("appsLocalCoverOf = function () { return window.__localCover || ''; };", sandbox);
+  const card = spies.appsCoverEl({ id: "a", icon: "icons/a.png", urls: { icon: STORE + "/api/apps/a/icon" } }, "演示应用", { withText: true });
+  const cimg = card.querySelector(".apps-cover-img");
+  ok(cimg.src === STORE + "/api/apps/a/thumb", "卡片封面不带 ?v=（本轮只动详情头部）：" + cimg.src);
+  cimg.dispatch("error"); /* 缩略图 404 → 退回静态原图（既有链路，见 [3]） */
+  ok(cimg.src === STORE + "/api/apps/a/icon" && cimg.dataset.localTried === undefined, "卡片退回的是云端原图，**没去读本机封面**");
+  cimg.dispatch("error");
+  ok(cimg.hidden === true && classListOf(card).includes("noimg"), "两张云端图都拉不到 → 直接兜底底色（不读本机封面）");
+}
+
+console.log(fails ? "\n[" + fails + " 项失败]" : "\n全部通过");
+process.exit(fails ? 1 : 0);

@@ -1299,9 +1299,12 @@ body.theme-light .n-chip.n-chip-lt {
   cursor: pointer;
 }
 
+/* 悬停：**蓝空心加深**（原来是 #6db4ff 亮蓝实心 + 深字 —— 同一条需求口径：
+   按钮不许亮色实心填色）。背景保持 transparent，只叠一层约 8% 同色半透底，
+   描边落到实色蓝，字色维持常态那支蓝。 */
 .n-dev-info .n-dev-file-open:hover {
-  color: #06111d;
-  background: #6db4ff;
+  color: #6db4ff;
+  background: color-mix(in srgb, #6db4ff 8%, transparent);
   border-color: #6db4ff;
 }
 
@@ -2157,10 +2160,14 @@ body.theme-light .n-chip.n-chip-lt {
 .n-asset-sync:disabled { opacity: .45; cursor: default; }
 .n-asset-sync:not(:disabled):hover { color: var(--ink); border-color: var(--cyan); }
 
+/* 「覆盖」钮的「有待覆盖内容」态：**黄空心**（需求口径：全站按钮不许亮色实心填色）。
+   原来是 #ffd66a 亮黄实心 + 深字 —— 改成 transparent 底 + 黄描边 + 黄字，
+   字色走主题槽位 --yellow（暗色 #ffd166 / 亮色 #9a6b00），暗亮两主题都不必另写覆写；
+   保留原黄光晕与「可点」的强调感（强调靠描边 + 晕，不再靠填色）。 */
 .n-asset-sync.on {
-  color: #0d1117;
+  color: var(--yellow);
   border-color: #ffd66a;
-  background: #ffd66a;
+  background: transparent;
   box-shadow: 0 0 6px rgba(255, 214, 106, .6);
 }
 
@@ -3857,7 +3864,8 @@ body.theme-light .n-chip.n-chip-lt {
   color: var(--ink)
 }
 
-.agent-conv .dsh-think-live {
+/* 节点内会话的思考（本次需求：一行摘要条 + 点开弹窗） */
+.agent-conv button.dsh-think-row {
   color: var(--muted)
 }
 
@@ -3887,15 +3895,10 @@ body.theme-light .n-chip.n-chip-lt {
   padding: 2px 6px 3px
 }
 
-.agent-conv .dsh-seg-think>summary {
+/* 本次需求后会话里的思考只有一行摘要条（button.dsh-think-row）：旧的下拉
+   summary / 内嵌 pre 规则已随交互一起删掉，这里只保留摘要条的字号收紧。 */
+.agent-conv button.dsh-think-row {
   font-size: 10px
-}
-
-.agent-conv .dsh-seg-think pre,
-.agent-conv .dsh-seg-think .dsh-think-live {
-  max-height: 120px;
-  font-size: 10px;
-  line-height: 1.6
 }
 
 .agent-conv .dsh-seg-tool {

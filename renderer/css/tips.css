@@ -288,8 +288,8 @@
   color: var(--red);
 }
 
-/* ── 应用详情底部的打赏条（app-apps.js 的 appsDetailBodyEl） ─────────
-   位置口径：**在正文下方**，不占头部左上角那一块。 */
+/* ── 应用详情里的那一行「打赏记录 N 币」（app-tips.js 的 detailRecordEl） ─────────
+   位置口径：**在正文下方**，不占头部左上角那一块。整行只读（不可点），见 app-apps.js 的注释。 */
 .apps-detail-tipbar {
   display: flex;
   flex-wrap: wrap;

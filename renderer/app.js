@@ -9512,27 +9512,17 @@ async function stopAllRuns() {
    overlayPersistent 仍保留给调用方表达意图（设置窗等），并供冒烟断言读取。 */
 let overlayPersistent = false;
 let overlayKind = "";
-/* 是否允许这只窗最小化到状态栏（openOverlay 的 opts.min === false 可关掉；默认允许） */
-let overlayMinimizable = true;
+/* 是否给通用关闭（✕）：openOverlay 的 opts.min === false 可关掉（阻塞式确认框的出口只走窗内按钮）。
+   沿用 opts.min 这个既有开关名，语义只作用于 ✕ —— 弹窗最小化到状态栏已整体下线
+   （本轮需求：移除 footer 最小化与所有的最小化，仅保留关闭），不再有任何停放 / 页签机制。 */
+let overlayClosable = true;
 
-/* ═══════════════ 弹窗最小化到状态栏（Footer） ═══════════════
-   最小化 = 把整只 .overlay-box 原样搬进隐藏的 #ovPark 停放（搬走前摘掉 ovTitle /
-   ovBody / ovFoot 三个 id，避免与当前窗撞号），状态栏那一排留一枚「画布 tab 同款」
-   页签；点页签再原样搬回来 —— DOM 与窗内状态都不重建，改到一半的输入不会丢。
-   同一时刻只有一只窗挂在 #overlay 上：要恢复另一只时先把当前这只同样停放下去（无损换位）。 */
-const OV_MIN_MS = 180; /* 与 css/components.css 的 ovMinOut / ovMinIn 时长一致 */
 /* 结构须与 index.html 里 #overlay 的初始窗壳一致（加元素两边都要改）。
-   标题栏常驻两颗方钮：最小化到状态栏、关闭（✕）—— ✕ 是全应用**每一只 #overlay 弹窗**的
-   通用显式出口（本次需求：后续所有打开的 dialogue 都要有关闭选项）；opts.min === false 的
-   阻塞式确认框不给最小化，也不给 ✕（关掉等于替用户做决定，出口只能走窗内按钮）。 */
+   标题栏只有一颗方钮：关闭（✕）—— ✕ 是全应用**每一只 #overlay 弹窗**的通用显式出口
+   （点外部 / 点蒙层依旧不算关闭）；opts.min === false 的阻塞式确认框不给 ✕
+   （关掉等于替用户做决定，出口只能走窗内按钮）。 */
 const OV_SHELL_HTML =
   '<div class="overlay-head"><b id="ovTitle"></b>' +
-  '<button type="button" class="ov-min-btn" title="' +
-  I18n.t("最小化到状态栏") +
-  '" aria-label="' +
-  I18n.t("最小化到状态栏") +
-  '"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
-  '<path fill="currentColor" d="M5 11h14v2H5z"/></svg></button>' +
   '<button type="button" class="ov-close-btn" title="' +
   I18n.t("关闭") +
   '" aria-label="' +
@@ -9541,15 +9531,13 @@ const OV_SHELL_HTML =
   '<path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/></svg></button></div>' +
   '<div class="overlay-body" id="ovBody"></div>' +
   '<div class="overlay-foot" id="ovFoot"></div>';
-let _ovMinSeq = 0;
-const _ovMinList = []; /* [{ id, title, box, chip }] 已最小化的窗（页签顺序即最小化顺序） */
 
-/** 当前挂在 #overlay 上的窗壳（被最小化搬走后为 null） */
+/** 当前挂在 #overlay 上的窗壳 */
 function ovShellBox() {
   const ov = document.getElementById("overlay");
   return ov ? ov.querySelector(":scope > .overlay-box") : null;
 }
-/** 取当前窗壳；上一只被最小化搬走了就照 OV_SHELL_HTML 补一只（#ovBody / #ovFoot 永远可用） */
+/** 取当前窗壳；上一只窗壳被回收了就照 OV_SHELL_HTML 补一只（#ovBody / #ovFoot 永远可用） */
 function ovShellEnsure() {
   const ov = document.getElementById("overlay");
   if (!ov) return null;
@@ -9560,17 +9548,8 @@ function ovShellEnsure() {
     box.innerHTML = OV_SHELL_HTML;
     ov.appendChild(box);
   }
-  const minBtn = box.querySelector(".ov-min-btn");
-  if (minBtn && !minBtn.dataset.wired) {
-    minBtn.dataset.wired = "1";
-    minBtn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ovMinimizeActive();
-    });
-  }
   /* 通用关闭（✕）：每一只 #overlay 弹窗都有的显式出口，只走 closeOverlay（点外部 / 点蒙层
-     依旧不算关闭，见 AGENTS.md「协作约定」）。窗壳被最小化停放 / 再恢复时 DOM 不重建，
-     wired 标记随元素留着，不会重复挂监听。 */
+     依旧不算关闭，见 AGENTS.md「协作约定」）。wired 标记随元素留着，不会重复挂监听。 */
   const closeBtn = box.querySelector(".ov-close-btn");
   if (closeBtn && !closeBtn.dataset.wired) {
     closeBtn.dataset.wired = "1";
@@ -9586,7 +9565,7 @@ function ovShellEnsure() {
   ovShellIds(box, true);
   return box;
 }
-/** 停放时摘 id、回来时挂回：全应用的 #ovTitle / #ovBody / #ovFoot 只认当前这只窗 */
+/** 对齐窗壳里那三个 id：全应用的 #ovTitle / #ovBody / #ovFoot 只认当前这只窗 */
 function ovShellIds(box, on) {
   if (!box) return;
   [
@@ -9600,191 +9579,23 @@ function ovShellIds(box, on) {
     else el.removeAttribute("id");
   });
 }
-/** 开新窗时撤销还没跑完的最小化动画（否则 180ms 后会把刚填好的窗搬走） */
-function ovMinCancel(box) {
-  if (!box) return;
-  delete box.dataset.ovMinPending;
-  box.classList.remove("ov-min-out");
-}
-function ovMinBar() {
-  let bar = document.getElementById("ovMinBar");
-  if (bar) return bar;
-  const foot = document.querySelector("footer.statusbar");
-  if (!foot) return null;
-  bar = document.createElement("div");
-  bar.id = "ovMinBar";
-  bar.className = "ov-minbar";
-  bar.hidden = true;
-  foot.insertBefore(bar, foot.firstChild);
-  return bar;
-}
-function ovMinPark() {
-  let park = document.getElementById("ovPark");
-  if (!park) {
-    park = document.createElement("div");
-    park.id = "ovPark";
-    park.hidden = true;
-    park.setAttribute("aria-hidden", "true");
-    document.body.appendChild(park);
-  }
-  return park;
-}
-function ovMinSyncBar() {
-  const bar = document.getElementById("ovMinBar");
-  if (bar) bar.hidden = !bar.children.length;
-}
-/** 最小化当前窗（缓进缓出：动画走完再搬走；instant = 立即停放，用于恢复时的无损换位） */
-function ovMinimizeActive(instant) {
-  const box = ovShellBox();
-  if (!box || box.dataset.ovMinPending === "1" || box.classList.contains("ov-min-out"))
-    return false;
-  const titleEl = box.querySelector(".overlay-head b");
-  const title = (titleEl && titleEl.textContent) || I18n.t("窗口");
-  const ov = document.getElementById("overlay");
-  const finish = () => {
-    if (box.dataset.ovMinPending !== "1") return; /* 其间被新窗抢占 / 已取消 */
-    delete box.dataset.ovMinPending;
-    box.classList.remove("ov-min-out");
-    ovShellIds(box, false);
-    ovMinPark().appendChild(box);
-    if (ov) {
-      ov.style.pointerEvents = "";
-      ov.style.display = "none";
-    }
-    const rec = { id: "ovmin" + ++_ovMinSeq, title, box, chip: null };
-    _ovMinList.push(rec);
-    const bar = ovMinBar();
-    if (bar) {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "ov-min-tab";
-      chip.title = I18n.t("点击恢复到对话窗") + " · " + title;
-      const name = document.createElement("span");
-      name.className = "ov-min-tab-name";
-      name.textContent = title;
-      chip.appendChild(name);
-      chip.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        ovMinRestore(rec);
-      });
-      bar.appendChild(chip);
-      bar.hidden = false;
-      rec.chip = chip;
-    }
-  };
-  box.dataset.ovMinPending = "1";
-  if (instant) {
-    finish();
-    return true;
-  }
-  box.classList.add("ov-min-out");
-  if (ov) ov.style.pointerEvents = "none";
-  setTimeout(finish, OV_MIN_MS);
-  return true;
-}
-/** 点状态栏页签：把它原样搬回 #overlay（当前正开着的另一只先无损停放下去） */
-function ovMinRestore(rec) {
-  if (!rec || !rec.box || !rec.box.parentNode) return;
-  const active = ovShellBox();
-  if (active && active !== rec.box) ovMinimizeActive(true);
-  const box = rec.box;
-  if (rec.chip && rec.chip.parentNode) rec.chip.parentNode.removeChild(rec.chip);
-  const i = _ovMinList.indexOf(rec);
-  if (i >= 0) _ovMinList.splice(i, 1);
-  const ov = document.getElementById("overlay");
-  if (!ov) return;
-  ov.appendChild(box);
-  ovShellIds(box, true);
-  const titleEl = box.querySelector(".overlay-head b");
-  if (titleEl) titleEl.textContent = rec.title;
-  box.classList.add("ov-min-in");
-  setTimeout(() => box.classList.remove("ov-min-in"), OV_MIN_MS + 40);
-  ov.style.pointerEvents = "";
-  ov.style.alignItems = "";
-  ov.style.display = "flex";
-  ovMinSyncBar();
-}
-/** 上下文整块换掉（切画布等）时丢弃全部最小化窗：DOM 与页签一起清，不留指向旧对象的窗 */
-function ovMinDropAll() {
-  _ovMinList.length = 0;
-  const park = document.getElementById("ovPark");
-  if (park) park.innerHTML = "";
-  const bar = document.getElementById("ovMinBar");
-  if (bar) {
-    bar.innerHTML = "";
-    bar.hidden = true;
-  }
-}
-
-/* ── 开新窗 = 把当前这只窗无损收到状态栏（本次开发需求）─────────────────────
-   根因：全应用只有一只 #overlay，openOverlay 会把 #ovBody 清空重建 —— 用户正开着的
-   那只窗（节点设置窗被「画布修改 / 危险操作」确认框顶掉，或反过来）连同里面改到一半
-   的输入一起被静默冲掉，用户看到的就是「弹出多个询问窗时，前一个窗的内容被清空重置」。
-   口径（已与用户确认）：界面仍是一只窗、不做可叠多窗；开新窗前把当前这只**原样**
-   收进状态栏页签（DOM 与窗内状态都不重建，见 ovMinimizeActive），点页签即恢复继续填。
-   不改变任何窗自己的结算语义 —— 确认框仍只在「发起轮结束」时自动撤框（那时它的页签
-   与停放 DOM 由 ovMinDropWindow 一并清掉，不会留死框）。 */
-function ovParkActiveBox() {
-  const box = ovShellBox();
-  if (!box) return false;
-  if (box.dataset.ovMinPending === "1" || box.classList.contains("ov-min-out"))
-    return false; /* 已经在最小化路上：照旧由它自己的 finish 收尾，别再套一层 */
-  /* 空壳（还没人往 #ovBody / #ovFoot 里写过东西）不搬：它本来就该被下一只窗原地接管
-     （ovShellEnsure 会复用同一只壳），搬了反而会在状态栏留一枚点开什么都没有的空页签 */
-  if (!ovBoxHasContent(box)) return false;
-  return ovMinimizeActive(true);
-}
-/** 这只窗壳里有没有「用户的东西」（正文 / 按钮条里还有元素）。
-    按 id 认更稳：现有窗壳的 .overlay-body / .overlay-foot 是 index.html 里就写好的
-    （只有 id、不一定带类名），照类名找会漏判成空壳而被误丢。 */
-function ovBoxHasContent(box) {
-  if (!box) return false;
-  const byId = typeof document !== "undefined" && document.getElementById ? document.getElementById.bind(document) : null;
-  const body =
-    box.querySelector(".overlay-body") ||
-    (byId && byId("ovBody")) ||
-    null;
-  const foot =
-    box.querySelector(".overlay-foot") ||
-    (byId && byId("ovFoot")) ||
-    null;
-  return (
-    !!(body && body.children && body.children.length) ||
-    !!(foot && foot.children && foot.children.length)
-  );
-}
-/** 把某一枚宿主确认框（按 dataset.ixConfirmId 认）从页签与停放区一起摘掉：
-    它自己的结算路径（settle + closeOverlay）只认挂在 #overlay 上的那只窗，
-    窗被收进状态栏之后 closeOverlay 够不着它 —— 不补这一手就会留下一只
-    「点了没反应」的死框页签（本次修复的尾巴）。 */
-function ovMinDropWindow(match) {
-  const key = String(match || "");
-  if (!key) return false;
-  let hit = false;
-  for (let i = _ovMinList.length - 1; i >= 0; i--) {
-    const rec = _ovMinList[i];
-    const b = rec && rec.box;
-    if (!b || String(b.dataset.ixConfirmId || "") !== key) continue;
-    if (rec.chip && rec.chip.parentNode) rec.chip.parentNode.removeChild(rec.chip);
-    if (b.parentNode) b.parentNode.removeChild(b);
-    _ovMinList.splice(i, 1);
-    hit = true;
-  }
-  ovMinSyncBar();
-  return hit;
-}
+/* ═══════════════ 开新窗 = 原地换窗（本次开发需求：最小化已整体下线）═══════════════
+   全应用只有一只 #overlay，openOverlay 会把 #ovBody / #ovFoot 清空重建。此前为了不丢
+   用户改到一半的输入，开新窗前会把当前这只窗**无损停到状态栏**（ovMinimizeActive +
+   页签 + #ovPark 停放）；「移除 footer 最小化与所有的最小化，仅保留关闭」之后这条
+   停放链整体删掉：开新窗就是原地换窗 —— 旧窗内容当场作废，用户要保住输入只能在
+   开新窗之前自己提交或关闭。窗自己的结算语义不变（确认框仍只在「发起轮结束」时
+   由 closeOverlay 自动撤框）。 */
 function openOverlay(title, opts) {
   opts = opts || {};
-  /* 先收旧的再开新的：当前这只（如果确实有内容）无损停到状态栏，
-     用户待填的内容留在原 DOM 里，点页签回来接着填 */
-  ovParkActiveBox();
+  /* 「仅保留关闭」：opts.min === false 的阻塞式确认框不给通用 ✕（出口只在窗内按钮）。
+     这里不再有任何停放动作 —— 开新窗就是原地换窗（见上面的模块说明）。 */
+  overlayClosable = opts.min !== false;
   overlayPersistent = !!opts.persistent;
-  overlayMinimizable = opts.min !== false;
   overlayKind = "";
   S.thinkOpen = null; // 打开新弹窗时结束上一弹窗的思考流式更新
   const box = ovShellEnsure();
   if (box) {
-    ovMinCancel(box);
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
@@ -9797,11 +9608,9 @@ function openOverlay(title, opts) {
        把「正在显示的别的弹窗」误认成自己而 closeOverlay（见 app-nodes.js
        confirmAssistAction 的 overlayIsMine） */
     if (box.dataset.ixConfirmId) delete box.dataset.ixConfirmId;
-    const minBtn = box.querySelector(".ov-min-btn");
-    if (minBtn) minBtn.hidden = !overlayMinimizable;
-    /*  跟最小化同一档：min === false 的阻塞式确认框不给通用关闭（出口只在窗内按钮） */
+    /* min === false 的阻塞式确认框不给通用关闭（出口只在窗内按钮）；其余窗一律给 ✕ */
     const closeBtn = box.querySelector(".ov-close-btn");
-    if (closeBtn) closeBtn.hidden = !overlayMinimizable;
+    if (closeBtn) closeBtn.hidden = !overlayClosable;
   }
   /* 内联居中同理：作者窗曾写死 alignItems，清掉让后续弹窗走样式表 */
   $("#overlay").style.alignItems = "";
@@ -9820,7 +9629,6 @@ function closeOverlay() {
   closeTplSubOverlay();
   const box = ovShellBox();
   if (box) {
-    ovMinCancel(box);
     box.classList.remove("wide");
     box.classList.remove("tpl-store");
     box.classList.remove("g-ref-wide");
@@ -30893,7 +30701,6 @@ async function ensureWorkflow() {
      再 persist 一次可能把刚删掉的画布写回磁盘。 */
   closeNodeSettingsDialog({ silentRerender: true, skipSave: true });
   closeAllNodePops();
-  ovMinDropAll(); /* 最小化到状态栏的窗也随旧画布作废，别让它指着一个已经换掉的上下文 */
   clearHistory();
   const list = await window.api.wfList();
   let id = S.config.activeWorkflowId;
@@ -30942,7 +30749,6 @@ async function loadWorkflow(id, opts) {
     await flushCurrentWf();
   }
   closeAllNodePops();
-  ovMinDropAll(); /* 同上：最小化窗跟随旧上下文一起作废 */
   clearHistory();
   let wf = null;
   /* 袋里那份能不能顶掉磁盘副本：两种情况必须复用内存对象，否则整份读盘覆盖 =

@@ -15,6 +15,8 @@
  *       app-db.js 里那组位置函数抽出来在 vm 里真跑一遍）。
  *   [3] 只有「新卡到达」才露窗：答题过程中的重绘（ixDrop / ixDropRun）不打扰用户摆放。
  *   [4] 本来就在屏上的窗，到达时头部闪两下（.ix-head.ix-attn），别让人盯着底栏猜。
+ *   [5] 一整只玻璃窗（本次开发需求）：一圈外框 + 毛玻璃 + 拖动条钉在窗顶（它与正文
+ *       零缝、只隔一条 1px 分隔线），滚动只发生在 .ix-body 上；卡片不再是「小窗」。
  * 只读断言：不改任何文件。
  * ============================================================================
  */
@@ -260,6 +262,86 @@ console.log("\n[4] 头部注意脉冲：CSS 定义 + JS 挂摘都在");
   const reveal = fnSrc(DB_JS, "ixRevealNewCard");
   ok(/classList\.add\("ix-attn"\)/.test(reveal) && /classList\.remove\("ix-attn"\)/.test(reveal), "挂上后 1.6 秒自行摘掉（不残留）");
   ok(/clearTimeout\(ixAttnTimer\)/.test(reveal), "连续两问不叠定时器");
+}
+
+console.log("\n[5] 一整只玻璃窗：外框 + 毛玻璃 + 拖动条钉住 + 零缝（本次开发需求）");
+{
+  /* ① 窗本体：一圈外框 + 毛玻璃，且不再自己滚动（滚动交给 .ix-body） */
+  const panel = cssRule(DSH_CSS, "#ixPanel {");
+  ok(/gap:\s*0/.test(panel), "头部与正文零缝（旧的那 6px 空隙去掉）");
+  ok(
+    /border:\s*1px solid var\(--bd2\)/.test(panel) && /border-radius:\s*8px/.test(panel),
+    "整只窗一圈外框（1px var(--bd2) + 8px 圆角）",
+  );
+  ok(/box-shadow:/.test(panel), "外框带投影（浮起来的一整只窗）");
+  ok(/overflow:\s*hidden/.test(panel), "窗自己不再滚动（否则滚动条会连头部一起滚走）");
+  ok(
+    /backdrop-filter:\s*blur\(14px\) saturate\(140%\)/.test(panel) &&
+      /-webkit-backdrop-filter:\s*blur\(14px\) saturate\(140%\)/.test(panel),
+    "整窗一层毛玻璃 blur(14px) saturate(140%)（-webkit- 同步）",
+  );
+  ok(
+    /background:\s*color-mix\(in srgb, var\(--panel\) 72%, transparent\)/.test(panel),
+    "底色 = --panel 的 72% 不透明（后面的画布透出柔光）",
+  );
+
+  /* ② 拖动条：钉在窗顶的那一条 —— 不再自带边框 / 圆角 / 投影，只留与正文的分隔线
+     （选择器带上换行锚点：".ix-head {" 会先命中上面那条 "#ixPanel.ix-docked .ix-head {"） */
+  const head = cssRule(DSH_CSS, "\n.ix-head {");
+  ok(/flex:\s*0 0 auto/.test(head), "头部不参与压缩（永远占着窗顶那一条）");
+  ok(/border-bottom:\s*1px solid var\(--bd\)/.test(head), "头部与正文之间一条 1px 分隔线");
+  ok(
+    !/border-radius/.test(head) && !/box-shadow/.test(head) && !/border:\s*1px solid var\(--bd2\)/.test(head),
+    "头部不再自带边框 / 圆角 / 投影（统一交给整窗那圈外框）",
+  );
+
+  /* ③ 内容滚动容器：卡片进它，滚动只发生在它身上 */
+  const body = cssRule(DSH_CSS, "\n.ix-body {");
+  ok(!!body, "dsh.css 定义 .ix-body（卡片的内容滚动容器）");
+  ok(/overflow:\s*auto/.test(body), "滚动只发生在 .ix-body 上");
+  ok(/flex:\s*1 1 auto/.test(body) && /min-height:\s*0/.test(body), "内容区吃掉剩余高度且可收缩（否则滚不动）");
+  ok(/gap:\s*6px/.test(body), "多张卡片之间仍是原来的 6px");
+
+  /* ④ 卡片：窗内区块，不再是一只只小窗 */
+  const card = cssRule(DSH_CSS, "\n.ix-card {");
+  ok(!/border/.test(card), "卡片不再自带边框（含那条 3px 青色身份色竖线）");
+  ok(!/border-radius/.test(card) && !/box-shadow/.test(card), "卡片不再是「小窗」（无圆角 / 无投影）");
+  ok(
+    /color-mix\(in srgb, var\(--panel2\) 46%, transparent\)/.test(card),
+    "卡片改半透明底、比窗底亮一档",
+  );
+  /* 全仓只有 #ixPanel 这一层做 backdrop-filter（卡片 / 头部等内层不各自 blur） */
+  const cssRules = DSH_CSS.match(/^[^\n{}\/][^{}\n]*\{[^}]*\}/gm) || [];
+  const glassRules = cssRules.filter((r) => /backdrop-filter:/.test(r));
+  ok(
+    glassRules.length === 2 &&
+      glassRules.every((r) => /^(#ixPanel|body\.theme-(industrial|light) #ixPanel) \{/.test(r)),
+    "玻璃只做整窗那一层（唯一两处 = #ixPanel 与浅色档覆盖，内层不嵌套 blur）",
+  );
+
+  /* ⑤ 收起态 + 主题分档 */
+  ok(
+    /display:\s*none/.test(cssRule(DSH_CSS, "#ixPanel.ix-docked .ix-body {")),
+    "收进底栏时正文整块收起（卡片的宿主已经是 .ix-body）",
+  );
+  ok(
+    /border-bottom:\s*none/.test(cssRule(DSH_CSS, "#ixPanel.ix-docked .ix-head {")),
+    "收起态里头部那条分隔线一起去掉（窗里没有正文，不留孤线）",
+  );
+  ok(!!cssRule(DSH_CSS, "body.theme-industrial #ixPanel {"), "蓝黑主题：毛玻璃底色分档");
+  const light = cssRule(DSH_CSS, "body.theme-light #ixPanel {");
+  ok(!!light, "浅色主题：毛玻璃分档");
+  ok(/blur\(8px\)/.test(light), "浅色档减强度（blur 8px）");
+  ok(/var\(--panel\) 90%/.test(light), "浅色档提高不透明度（90%，不靠模糊硬撑可读性）");
+
+  /* ⑥ 结构：头部 → 内容容器 → 卡片，卡片一律进容器 */
+  const render = fnSrc(DB_JS, "renderIxPanel");
+  ok(/body\.className = "ix-body"/.test(render), "renderIxPanel 建出内容滚动容器 .ix-body");
+  const headAt = render.indexOf("box.appendChild(head)");
+  const bodyAt = render.indexOf("box.appendChild(body)");
+  const cardAt = render.indexOf("body.appendChild(card)");
+  ok(headAt > 0 && bodyAt > headAt && cardAt > bodyAt, "顺序：头部 → 内容容器 → 卡片都挂进内容容器");
+  ok(!/box\.appendChild\(card\)/.test(render), "卡片不再直接挂在窗上（那会让滚动连头部一起滚）");
 }
 
 console.log(

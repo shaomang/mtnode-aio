@@ -46,68 +46,84 @@ let MERGED_FAILED = false;
     console.log("\n" + name);
   }
 
-  /* ═══════════════════ [1] 三处思考渲染都接线 ═══════════════════ */
-  section("[1] 三处思考渲染都挂上翻译按钮（历史分段 / 运行中分段 / 无分段老消息）");
+  /* ═══════════════════ [1] 思考条目 + 弹窗都接线 ═══════════════════ */
+  section("[1] 思考条目只剩一行摘要条，翻译按钮活在弹窗的原文栏头（本次需求）");
   ok(
     typeof I18N_SRC === "string" && ASSIST.indexOf("function dshThinkTranslateBtn(") > 0,
-    "app-assist.js 有 dshThinkTranslateBtn（右侧小按钮 builder）",
+    "app-assist.js 有 dshThinkTranslateBtn（按钮 builder）",
   );
   ok(
-    ASSIST.indexOf("function dshThinkTranslateAppend(") > 0,
-    "app-assist.js 有 dshThinkTranslateAppend（按钮 + 译文行一次插入）",
+    ASSIST.indexOf("function dshThinkRowEl(") > 0,
+    "app-assist.js 有 dshThinkRowEl（一行摘要条：整行可点 → 弹窗）",
   );
   ok(
     ASSIST.indexOf("function dshThinkTranslateRow(") > 0 &&
-      ASSIST.indexOf("function dshThinkTranslatePaint(") > 0,
-    "app-assist.js 有译文行 builder + 就地刷新（不整表重绘）",
+      ASSIST.indexOf("function dshThinkPopPaintXlate(") > 0,
+    "app-assist.js 有译文框 builder + 就地刷新那一个框（不整表重绘）",
   );
   ok(
     ASSIST.indexOf("function dshTranslateThinking(") > 0,
     "app-assist.js 有 dshTranslateThinking（点击后的翻译流程）",
   );
-  const appendCalls = (ASSIST.match(/dshThinkTranslateAppend\(/g) || []).length;
+  const rowCalls = (ASSIST.match(/dshThinkRowEl\(\{/g) || []).length;
   ok(
-    appendCalls >= 4,
-    "dshThinkTranslateAppend 至少 4 处出现（1 定义 + 3 处渲染接线），实测 " + appendCalls,
+    rowCalls >= 4,
+    "dshThinkRowEl 至少 4 处接线（历史分段 / 运行中分段 / 无分段老消息 / 无分段 live），实测 " + rowCalls,
   );
   ok(
-    ASSIST.indexOf("dshThinkTranslateAppend(wrap, det, sum, txt, nodeId, oKey, txt)") > 0,
-    "历史分段（dshHistSegEl）挂上翻译",
+    /const btn = dshThinkRowEl\(\{\s*\n\s*text: txt,\s*\n\s*scopeId: nodeId,/.test(ASSIST),
+    "历史分段（dshHistSegEl）改成一行摘要条",
   );
   ok(
-    ASSIST.indexOf("else dshThinkTranslateAppend(box, det, sum, txt, st.id, oKey, txt)") >
-      0,
-    "运行中分段（agentLiveSegsEl）在思考段定稿后挂上翻译",
+    /const btn = dshThinkRowEl\(\{\s*\n\s*text: txt,\s*\n\s*scopeId: st\.id,/.test(ASSIST),
+    "运行中分段（agentLiveSegsEl）同样是摘要条（正在增长的那段也照旧跟字数）",
   );
   ok(
-    /if \(streaming\) box\.appendChild\(det\);\s*\n\s*else dshThinkTranslateAppend/.test(
-      ASSIST,
-    ),
-    "仍在增长的思考段不挂按钮（不翻半截、避免译文与原文对不上）",
+    /const tRow = dshThinkRowEl\(\{/.test(ASSIST) &&
+      (ASSIST.match(/const tRow = dshThinkRowEl\(\{/g) || []).length >= 2,
+    "无分段老消息（m.reasoning 整段）与无分段 live 也各有一行摘要条",
+  );
+  /* 本次需求：不再有下拉开合 —— details / summary / 展开态键都不该再出现 */
+  ok(
+    ASSIST.indexOf("dshThinkTranslateAppend") < 0 &&
+      ASSIST.indexOf(".dsh-think-bar") < 0 &&
+      ASSIST.indexOf('S.openDshTools[oKey]') < 0,
+    "旧的「下拉展开 + 折叠条最右端按钮」整套接线已删（同一处只剩一条交互口径）",
   );
   ok(
-    /dshThinkTranslateAppend\(\s*\n?\s*thinkBox,\s*\n?\s*det,\s*\n?\s*sum,/.test(ASSIST),
-    "无分段的老消息（m.reasoning 整段）也挂上翻译",
+    (ASSIST.match(/[A-Za-z]+\.className = "dsh-think-sum-txt"/g) || []).length >= 1 &&
+      ASSIST.indexOf('rowBtn.querySelector(".dsh-think-sum-txt")') > 0,
+    "摘要条文案单独一层 span（流式刷新字数只改这一层，不冲掉整行结构）",
   );
-  /* 按钮必须在思考折叠条那一行最右端：append 只往 summary 里塞按钮，不再另起一行 */
-  const appendSrc = ASSIST.slice(
-    ASSIST.indexOf("function dshThinkTranslateAppend("),
-    ASSIST.indexOf("/* 历史消息的一段 → DOM"),
+  /* 本轮需求（用户口径）：窗里只有一个原文框，翻译按钮挂在它的栏头；译文框点了翻译才建，
+     译文本体写在译文框栏头下方的框里 —— 旧写法把译文框插进栏头、又在正文区画一次。 */
+  ok(
+    ASSIST.indexOf("function dshThinkPopCol(") > 0 &&
+      /dshThinkPopCol\(root, "src", I18n\.t\("思考原文"\)\)/.test(ASSIST) &&
+      !/dshThinkPopCol\(root, "xlate"/.test(ASSIST),
+    "弹窗只建原文一栏（译文那一栏不预先建 → 未点翻译时看不到译文框）",
   );
   ok(
-    appendSrc.indexOf("sum.appendChild(") > 0 &&
-      appendSrc.indexOf('sum.classList.add("dsh-think-bar")') > 0,
-    "按钮塞进折叠条 summary 的最右端（不另起一行）",
+    ASSIST.indexOf("function dshThinkTranslatePaint(") < 0 &&
+      /left\.tools\.appendChild\(cp\)/.test(ASSIST) &&
+      /left\.tools\.appendChild\(btn\)/.test(ASSIST),
+    "「复制」与「翻译」都挂原文栏头，旧的「往按钮后面插一行」那条路径已删",
   );
   ok(
-    appendSrc.indexOf('document.createElement("div")') < 0,
-    "append 不再创建独立的按钮行 div（按钮行已并入折叠条）",
+    /if \(!r\) \{[\s\S]{0,160}?removeChild\(col\)/.test(ASSIST) &&
+      /root\.appendChild\(col\); \/\* 原文框下面（不是右栏）\*\//.test(ASSIST),
+    "有译文才建译文框、并把正文写进它栏头下方的框（没译文就把整栏收掉）",
   );
   ok(
-    (ASSIST.match(/class="dsh-think-sum-txt"|className = "dsh-think-sum-txt"/g) || [])
-      .length >= 3 &&
-      ASSIST.indexOf('sum.querySelector(".dsh-think-sum-txt")') > 0,
-    "折叠条文案单独一层 span（刷新字数不会把按钮冲掉）",
+    !/paneEl\.dataset\.xkey = XKEY/.test(ASSIST) && !/\bconst XKEY = /.test(ASSIST),
+    "弹窗不再按 xkey 找「右栏正文位」（那一层分栏已撤）",
+  );
+  ok(
+    ASSIST.indexOf("function dshThinkMdHtml(") > 0 &&
+      /escapeHtml\(s\)/.test(ASSIST) &&
+      ASSIST.indexOf("rvMarkdownHtml(esc)") > 0 &&
+      ASSIST.indexOf("plainTextToLinkHtml(s)") > 0,
+    "原文 / 译文都按 Markdown 渲染：先转义 HTML 再走应用唯一那份渲染入口，拿不到才回落纯文本",
   );
 
   /* ═══════════════════ [2] 调用口径 ═══════════════════ */
@@ -148,9 +164,13 @@ let MERGED_FAILED = false;
     "翻译复用渲染层统一的流式文本调用 apiCallTextStream",
   );
   ok(
-    ASSIST.indexOf("【思考内容】") > 0 &&
-      ASSIST.indexOf("只输出译文本身") > 0,
-    "提示词写清「只输出译文」并附【思考内容】",
+    /* 本轮（翻译质量校验误杀修）后提示词改成 system + user 分离：
+       卡口在 system（「你是翻译引擎…只输出译文本身」），整段思考单独一条 user ——
+       「【思考内容】」这个拼接标记已撤（把指令与思考拼成一条 user 会让模型原样复述）。 */
+    ASSIST.indexOf("你是翻译引擎") > 0 &&
+      ASSIST.indexOf("只输出译文本身") > 0 &&
+      /chatMessages:\s*\[\s*\n\s*\{ role: "system"/.test(ASSIST),
+    "提示词写清「只输出译文本身」并走 system + user 分离（不再拼【思考内容】一条 user）",
   );
   ok(
     ASSIST.indexOf("const DSH_XLATE_MAX = 12000") > 0 &&
@@ -159,19 +179,19 @@ let MERGED_FAILED = false;
   );
 
   /* ═══════════════════ [3] 按钮交互 ═══════════════════ */
-  section("[3] 按钮交互：不会连带开合思考折叠块");
+  section("[3] 按钮交互：不连带关窗 / 开合任何东西");
   const btnSrc = ASSIST.slice(
     ASSIST.indexOf("function dshThinkTranslateBtn("),
-    ASSIST.indexOf("function dshThinkTranslateAppend("),
+    ASSIST.indexOf("function dshThinkPopPaintXlate("),
   );
   ok(
     btnSrc.indexOf("ev.stopPropagation()") > 0 &&
       btnSrc.indexOf("ev.preventDefault()") > 0,
-    "按钮 click / mousedown 拦掉冒泡（点按钮不会顺带展开 / 收起 details）",
+    "按钮 click / mousedown 拦掉冒泡（点按钮不顺带触发祖先上的点击）",
   );
   ok(
     btnSrc.indexOf('ev.key === "Enter"') > 0 && btnSrc.indexOf('ev.key === " "') > 0,
-    "键盘 Enter / Space 一并拦掉（键盘激活也不会开合 details）",
+    "键盘 Enter / Space 一并拦掉（键盘激活也不会触发祖先）",
   );
   ok(
     btnSrc.indexOf('b.disabled = true') > 0,
@@ -179,15 +199,17 @@ let MERGED_FAILED = false;
   );
   const rowSrc = ASSIST.slice(
     ASSIST.indexOf("function dshThinkTranslateRow("),
-    ASSIST.indexOf("function dshThinkTranslatePaint("),
+    ASSIST.indexOf("function dshThinkTranslateBtn("),
   );
   ok(
     rowSrc.indexOf("dshClipboardWrite") > 0 && rowSrc.indexOf('I18n.t("复制")') > 0,
-    "译文行带「复制」按钮（复用 dshClipboardWrite）",
+    "译文块带「复制」按钮（复用 dshClipboardWrite）",
   );
   ok(
-    rowSrc.indexOf("plainTextToLinkHtml") > 0,
-    "译文用纯文本渲染（plainTextToLinkHtml），不把模型输出当 HTML 执行",
+    rowSrc.indexOf("dshThinkMdHtml") > 0 &&
+      rowSrc.indexOf("dsh-xlate-md") > 0 &&
+      rowSrc.indexOf('I18n.t("翻译中…")') > 0,
+    "译文本体写在译文框栏头**下方**的正文框里、按 Markdown 渲染（翻译中 / 失败不占正文框）",
   );
 
   /* ═══════════════════ [4] 状态与样式 ═══════════════════ */
@@ -198,13 +220,18 @@ let MERGED_FAILED = false;
   );
   ok(
     DSS.indexOf("button.dsh-think-xlate") > 0 &&
-      DSS.indexOf(".dsh-think-bar") > 0 &&
-      DSS.indexOf(".dsh-seg-xlate") > 0,
-    "dsh.css 有按钮 / 按钮行 / 译文行的样式",
+      DSS.indexOf(".dsh-seg-xlate") > 0 &&
+      DSS.indexOf(".dsh-think-pop-pane") > 0,
+    "dsh.css 有按钮 / 译文框 / 弹窗正文框的样式",
   );
   ok(
-    DSS.indexOf(".dsh-seg-xlate pre") > 0,
-    "译文正文限高自滚（.dsh-seg-xlate pre），不把会话撑长",
+    DSS.indexOf(".dsh-think-pop-pane .dsh-xlate-md") > 0 &&
+      DSS.indexOf(".dsh-think-pop .md-viewer-doc") > 0,
+    "原文 / 译文的 Markdown 正文都限在弹窗的框里（复用 .md-viewer-doc 版式并收掉页宽）",
+  );
+  ok(
+    DSS.indexOf(".dsh-think-pop-pane-xlate") > 0 && !/\.dsh-seg-xlate pre \{/.test(DSS),
+    "一个译文只占一个框（译文栏不再套第二层虚线框，旧的 pre 规则已撤）",
   );
   ok(
     LIGHT.indexOf(".dsh-seg-xlate") > 0 && LIGHT.indexOf("button.dsh-think-xlate") > 0,
@@ -212,8 +239,8 @@ let MERGED_FAILED = false;
   );
   ok(
     // 只用真实存在的变量：--cyan / --cyan2 / --red / --bd2
-    !/var\(--(cyan2|red2|cyan|red|bd2)\s*,/.test(DSS.slice(DSS.indexOf(".dsh-think-bar"))),
-    "思考翻译样式只用已定义的主题变量（无 --cyan2, --cyan 式无效回退）",
+    !/var\(--(cyan2|red2|cyan|red|bd2)\s*,/.test(DSS.slice(DSS.indexOf(".dsh-think-pop-pane"))),
+    "思考弹窗样式只用已定义的主题变量（无 --cyan2, --cyan 式无效回退）",
   );
 
   /* ═══════════════════ [5] i18n 中英成对 ═══════════════════ */
@@ -412,8 +439,8 @@ let MERGED_FAILED = false;
     "403 换模型的候选路由也把会话自己那家排在最前（换模型不跳出该会话的供应商）",
   );
   ok(
-    ASSIST.indexOf("dshXlateAskSwitchModel(pick.route, c.model, em, scopeId)") > 0,
-    "403 询问窗带 scope（换模型候选与本次 scope 一致）",
+    ASSIST.indexOf("dshXlateAskSwitchModel(cRoute, c.model, em, scopeId)") > 0,
+    "403 询问窗带 scope 与**候选自己的路由**（换家后当前路由就是那一家，候选与本次 scope 一致）",
   );
   ok(
     ASSIST.indexOf("用该会话自己的模型（无思考）翻译这段思考") > 0 &&
@@ -702,6 +729,315 @@ let MERGED_FAILED = false;
     console.log("FAIL  [合并块异常] smoke-think-translate.js：" + (e && e.stack ? e.stack : e));
   }
   if (fails) console.log("  ── 已并入块 smoke-think-translate.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：思考翻译「校验误杀 + 重试没换模型」回归 ====================
+   现场（用户报）：点「翻译」后永远得到
+     「翻译质量校验未通过（模型仍在输出原文）｜模型仍返回原文，已重试 2 次」
+   本机实测（.tmp-xlate/diag.mjs · deepseek-v4-flash · thinking disabled）：
+     · 思考正文是「英文推理 + 本项目中文原文 / 路径」的混合文本时，旧提示词
+       （把英文指令与思考塞在同一条 user 消息里）会让模型原样复述整段；
+     · 旧校验「输出里有中文 ⇒ 通过」于是放行这段复述（真相被掩盖），
+       而候选链里两只候选（会话自己那只 deepseek-v4-flash 与全局助手那只
+       deepseek-v4.1-flash）都是同族 flash ⇒ 第 2 次请求是同一只模型的同一份
+       确定性请求，必然同结果。
+   现口径：① 校验先判「同文复述」（与语言无关，剔掉代码块 / 行内码 / 链接 / 路径后的
+   字符级重合度 ≥ 0.8 即判死）；② 候选链必须在第 2 档就换一只真模型（换路由）；
+   ③ 提示词改成 system + user 分离，正文单独一条 user。 */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-think-xlate-quality.js";
+  const { fs, path, vm } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+  const readRel = (rel) =>
+    fs.readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8");
+  const ASSIST = readRel("renderer/app-assist.js");
+  const DSS = readRel("renderer/css/dsh.css");
+  const I18N_SRC = readRel("renderer/i18n.js");
+  const I18n = require(path.join(__dirname, "..", "renderer", "i18n.js"));
+
+  /* 按大括号配平抽顶层函数 / 常量（跳过字符串与行注释），不靠固定锚点。
+     注意：本次要抽的函数里有正则字面量（/[*_>#...]/），而字符类里会出现 { } [ ]
+     —— 配平必须先把注释 / 字符串 / 正则整体吞掉，否则会在大括号计数上提前收尾
+     （报「函数体不完整」）。吞掉的片段用空格占位，长度与索引保持一一对应。 */
+  function blankOut(src) {
+    const out = src.split("");
+    const n = src.length;
+    const isId = (ch) => /[A-Za-z0-9_$]/.test(ch || "");
+    let prev = "";
+    for (let i = 0; i < n; i++) {
+      const c = src[i];
+      if (c === "/" && src[i + 1] === "/") {
+        while (i < n && src[i] !== "\n") out[i++] = " ";
+        continue;
+      }
+      if (c === "/" && src[i + 1] === "*") {
+        out[i++] = " ";
+        out[i++] = " ";
+        while (i < n && !(src[i] === "*" && src[i + 1] === "/")) out[i++] = " ";
+        if (i < n) out[i++] = " ";
+        if (i < n) out[i++] = " ";
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") {
+        const q = c;
+        out[i] = " ";
+        i++;
+        while (i < n && src[i] !== q) {
+          if (src[i] === "\\") {
+            out[i++] = " ";
+            if (i < n) out[i++] = " ";
+            continue;
+          }
+          out[i++] = " ";
+        }
+        if (i < n) out[i] = " ";
+        prev = q;
+        continue;
+      }
+      /* 正则字面量：`/` 出现在「不是标识符 / 数字之后」的位置（= ( , : [ ! & | ? { ; return …） */
+      if (c === "/" && !isId(prev) && prev !== ")" && prev !== "]") {
+        out[i] = " ";
+        i++;
+        let inClass = false;
+        while (i < n) {
+          const d = src[i];
+          if (d === "\\") {
+            out[i++] = " ";
+            if (i < n) out[i++] = " ";
+            continue;
+          }
+          if (d === "[") inClass = true;
+          else if (d === "]") inClass = false;
+          else if (d === "/" && !inClass) break;
+          else if (d === "\n") break;
+          out[i++] = " ";
+        }
+        if (i < n && src[i] === "/") out[i] = " ";
+        i++;
+        while (i < n && /[a-z]/i.test(src[i])) out[i++] = " ";
+        i--;
+        prev = "/";
+        continue;
+      }
+      if (!/\s/.test(c)) prev = c;
+    }
+    return out.join("");
+  }
+  const BLANK_ASSIST = blankOut(ASSIST);
+  function fnBody(src, name) {
+    const clean = src === ASSIST ? BLANK_ASSIST : blankOut(src);
+    const pats = [
+      new RegExp("\\n(?:async\\s+)?function " + name + "\\s*\\(", "m"),
+      new RegExp("\\nconst " + name + "\\s*=", "m"),
+    ];
+    let at = -1;
+    for (const p of pats) {
+      const m = clean.match(p);
+      if (m) {
+        at = m.index + 1;
+        break;
+      }
+    }
+    if (at < 0) throw new Error("找不到函数/常量：" + name);
+    const isFn = /^(async\s+)?function/.test(clean.slice(at, at + 14));
+    const i = clean.indexOf(isFn ? "{" : "=", at);
+    let depth = 0;
+    for (let j = i; j < clean.length; j++) {
+      const c = clean[j];
+      if (c === "{" || c === "[") depth++;
+      else if (c === "}" || c === "]") {
+        depth--;
+        if (!depth) return src.slice(at, j + 1) + (isFn ? "" : ";");
+      }
+    }
+    throw new Error("函数体不完整：" + name);
+  }
+
+  /* ═══════════════════ [A] 真跑校验函数：同文复述必须判死，真译文不许误杀 ═══════════════════ */
+  section("[A] 译文校验真跑：混合中英思考的同文复述判死、带代码 / 路径的真译文不误杀");
+  {
+    const sb = { console };
+    vm.createContext(sb);
+    vm.runInContext(
+      [
+        fnBody(ASSIST, "DSH_XLATE_CODE_RE"),
+        fnBody(ASSIST, "dshXlateProse"),
+        fnBody(ASSIST, "dshXlateEchoes"),
+        fnBody(ASSIST, "dshXlateLooksTranslated"),
+      ].join("\n"),
+      sb,
+      { filename: "xlate-quality.js" },
+    );
+    const looks = (src, out) =>
+      vm.runInContext("dshXlateLooksTranslated(" + JSON.stringify(src) + "," + JSON.stringify(out) + ")", sb);
+    const echoes = (src, out) =>
+      vm.runInContext("dshXlateEchoes(" + JSON.stringify(src) + "," + JSON.stringify(out) + ")", sb);
+
+    /* 现场语料 ①：DeepSeek 在中文项目里的常态思考 —— 英文推理 + 中文原文 / 路径 */
+    const mixed = [
+      "The user says the thinking translation keeps failing the quality check.",
+      "需求：检查思考翻译功能为什么出现 翻译质量校验未通过（模型仍在输出原文）。",
+      "I need to read E:\\dev\\tools\\pipeline-console\\renderer\\app-assist.js and find",
+      "dshTranslateThinking, then check the candidate chain in dshTranslateCandidates.",
+    ].join("\n");
+    const mixedOut = mixed;
+    const mixedZh =
+      "用户说思考翻译一直通不过质量校验。需求：检查思考翻译功能为什么出现这句话。" +
+      "需要查看 renderer/app-assist.js 里的 dshTranslateThinking，再核对 dshTranslateCandidates 的候选链。";
+    /* 现场语料 ②：纯英文推理 */
+    const en = [
+      "The user reports that the thinking-translation feature shows a quality check failure.",
+      "I need to look at renderer/app-assist.js around dshTranslateThinking and check how",
+      "dshXlateLooksTranslated decides whether the output is a translation.",
+    ].join("\n");
+    const enZh =
+      "用户反馈思考翻译功能出现质量校验失败，需要查看 renderer/app-assist.js 中 dshTranslateThinking 附近的代码，" +
+      "确认 dshXlateLooksTranslated 如何判断输出是否为译文。";
+
+    ok(looks(mixed, mixedOut) === false, "混合中英思考被原样复述 ⇒ 判死（旧口径「见中文就放行」会把它当译文）");
+    ok(echoes(mixed, mixedOut) === true, "同文判据命中（字符级重合度口径，与原文语言无关）");
+    ok(looks(mixed, mixedZh) === true, "混合中英思考的真译文 ⇒ 通过（不误杀）");
+    ok(looks(en, en) === false, "纯英文原文被原样复述 ⇒ 判死");
+    ok(looks(en, enZh) === true, "纯英文原文的真译文 ⇒ 通过");
+    ok(
+      looks(en, "用户反馈翻译功能报错。\n```js\nfunction dshXlateLooksTranslated(src, out) { return true; }\n```\n路径 E:\\dev\\tools\\pipeline-console\\renderer\\app-assist.js 第 5415 行是 dshTranslateThinking。") === true,
+      "真译文但正文带大段代码 / 路径 ⇒ 通过（语言占比只在剔掉代码与路径后的可读正文上算）",
+    );
+    ok(looks(en, "以下是这段思考的中文翻译：") === false, "只回「以下是……翻译：」的元话术 ⇒ 判死");
+    ok(looks("我需要检查一下这个函数的行为，然后修掉这个 bug。", "我需要检查一下这个函数的行为，然后修掉这个 bug。") === false, "中文原文被原样吐回（漏翻）⇒ 判死");
+    ok(looks("我需要检查一下这个函数的行为，然后修掉这个 bug。", "I need to check the behavior of this function and fix the bug.") === true, "中文原文 → 地道英文译文 ⇒ 通过");
+    ok(looks("", "") === false, "空输出 ⇒ 判死（不给空译文落缓存）");
+    ok(
+      ASSIST.indexOf("function dshXlateEchoes(") > 0 &&
+        ASSIST.indexOf("hit / gb.size >= 0.8") > 0 &&
+        /if \(dshXlateEchoes\(src, text\)\) return false;/.test(ASSIST),
+      "同文判据在语言占比判据**之前**（dshXlateLooksTranslated 第一刀就是 dshXlateEchoes）",
+    );
+  }
+
+  /* ═══════════════════ [B] 候选链真跑：第 2 档必须换一只真模型（换路由） ═══════════════════ */
+  section("[B] 候选链真跑：同一只模型不再连发两次，第 2 档换到别家模型");
+  {
+    const sb = {
+      console,
+      agentRouteOptions: () => ["deepseek-official", "mtnode_p1", "mtnode_nokey"],
+      providerForAgentRoute: (r) =>
+        r === "mtnode_nokey" ? { apiKey: "" } : r === "mtnode_p1" ? { apiKey: "sk-p1" } : { apiKey: "sk-ds" },
+      agentModelsForRoute: (r) =>
+        r === "mtnode_p1" ? ["qwen3.7-max", "qwen3.8-flash"] : ["deepseek-v4-flash"],
+      preferredAgentModelForRoute: (r) => (r === "deepseek-official" ? "deepseek-v4-flash" : "qwen3.7-max"),
+    };
+    vm.createContext(sb);
+    vm.runInContext(
+      [
+        fnBody(ASSIST, "dshXlateRankModels"),
+        fnBody(ASSIST, "dshXlateAltCandidates"),
+        fnBody(ASSIST, "dshTranslateCandidates"),
+      ].join("\n"),
+      sb,
+      { filename: "xlate-cands.js" },
+    );
+    const cands = (route, model) =>
+      vm.runInContext(
+        "dshTranslateCandidates(" + JSON.stringify(route) + "," + JSON.stringify(model) + ")",
+        sb,
+      );
+    /* 现场配置：会话自己 = deepseek-official · deepseek-v4-flash（该家只有这一只）、
+       全局助手 = mtnode_qwen-token-plan-cn · deepseek-v4.1-flash（这里用 mtnode_p1 代） */
+    const list = cands("deepseek-official", "deepseek-v4-flash");
+    ok(list.length >= 3, "候选链至少 3 档（实测 " + list.length + " 档：" + list.map((c) => c.route + "/" + c.model).join(" → ") + "）");
+    ok(
+      list[0].route === "deepseek-official" && list[0].model === "deepseek-v4-flash",
+      "第 1 档 = 该会话自己的模型（不跳档）",
+    );
+    ok(
+      list[1].route === "mtnode_p1" && list[1].model === "qwen3.8-flash",
+      "第 2 档 = 别家模型（flash 档优先，实测 " + list[1].route + "/" + list[1].model + "）",
+    );
+    const modelsAtRoute = (r, m) => list.filter((c) => c.route === r && c.model === m).length;
+    ok(
+      modelsAtRoute("deepseek-official", "deepseek-v4-flash") <= 2 &&
+        list.length === new Set(list.map((c) => c.route + "\u0000" + c.model)).size,
+      "同一只模型最多两档（常规 + 强化提示词），且候选链无 (路由, 模型) 重复档（实测 " +
+        list.length + " 档，去重后 " + new Set(list.map((c) => c.route + "\u0000" + c.model)).size + " 档）",
+    );
+    ok(
+      list.every((c) => String(c.route || "").length > 0),
+      "每档都带自己的路由（调用方按它取服务商，换家后不会拿着 A 家的 Key 发 B 家的模型）",
+    );
+    ok(
+      !list.some((c) => c.route === "mtnode_nokey"),
+      "没有 API Key 的路由不进候选链（不白发一次必然 401 的请求）",
+    );
+    ok(
+      ASSIST.indexOf("dshTranslateCandidates(pick.route, pick.model, scopeId)") > 0 &&
+        ASSIST.indexOf("cands = dshTranslateCandidates(np.route, np.model, scopeId)") > 0,
+      "两处调用都带上 scope（403 换家后候选链按同一 scope 重算）",
+    );
+    ok(
+      ASSIST.indexOf("cRoute === String(pick.route || \"\") ? pick.prov : dshTranslateProvider(cRoute)") > 0,
+      "spec.provider 随候选路由切换（同路由仍用最初那份含 Key 校验的服务商对象）",
+    );
+    ok(
+      ASSIST.indexOf("模型没有给出译文，以下是它本次返回的内容（点「重试翻译」会换一只模型再试）") > 0 &&
+        ASSIST.indexOf("it.raw = lastOut;") > 0 &&
+        ASSIST.indexOf("dsh-xlate-raw") > 0,
+      "失败态保留「模型本次返回的内容」并在译文框里展示（用户能自查，不靠猜）",
+    );
+    ok(
+      ASSIST.indexOf('"｜模型仍返回原文，已重试 " + Math.max(0, tried - 1) + " 次"') > 0,
+      "「已重试 N 次」按真正发出去的次数算（不再拿候选链长度冒充重试次数）",
+    );
+  }
+
+  /* ═══════════════════ [C] 提示词：system + user 分离（不再把指令与思考拼成一条） ═══════════════════ */
+  section("[C] 提示词 system + user 分离：整段思考单独一条 user 消息");
+  ok(
+    /chatMessages:\s*\[\s*\n\s*\{ role: "system", content: sysMsg \},\s*\n\s*\{ role: "user", content: body \},/.test(
+      ASSIST,
+    ) && ASSIST.indexOf("prompt: body,") > 0,
+    "spec 带 chatMessages（system=翻译卡口 / user=思考正文），prompt 仍是正文",
+  );
+  ok(
+    ASSIST.indexOf("【思考内容】") < 0,
+    "旧的「指令 + 【思考内容】 + 正文」拼一条 user 的写法已撤（app-assist.js 里不再有该标记）",
+  );
+  ok(
+    ASSIST.indexOf("你是翻译引擎") > 0 &&
+      ASSIST.indexOf("never repeat or quote the source") > 0,
+    "常规 / 强化两套卡口都在（中文常规、英文强化）",
+  );
+
+  /* ═══════════════════ [D] 词条与样式 ═══════════════════ */
+  section("[D] 新词条中英成对 + 失败态样式");
+  const newKeys = ["模型没有给出译文，以下是它本次返回的内容（点「重试翻译」会换一只模型再试）"];
+  for (const k of newKeys) {
+    ok(I18N_SRC.indexOf('"' + k + '"') >= 0, "i18n 有词条：" + k.slice(0, 20));
+    I18n.setLocale("en");
+    const en = I18n.t(k);
+    ok(en && en !== k && /^[\x20-\x7e…⚠·（）()「」]*$/.test(en), "英文界面已译：" + en.slice(0, 60));
+    I18n.setLocale("zh");
+  }
+  ok(
+    DSS.indexOf(".dsh-xlate-why") > 0 && DSS.indexOf(".dsh-xlate-raw") > 0,
+    "dsh.css 有失败态说明 / 原始返回的样式（灰调降饱和，与青调译文一眼可分）",
+  );
+
+  console.log(
+    "\n" + (fails ? "✗ " + fails + " 项失败" : "✓ " + checks + " 项全部通过") + "  (smoke-think-xlate-quality)",
+  );
+  if (fails) MERGED_FAILED = true;
+
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-think-xlate-quality.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-think-xlate-quality.js：" + fails + " / " + checks + " 项失败");
 })();
 
 /* ==================== 已并入：test/smoke-think-merge.js ==================== */
@@ -1718,11 +2054,21 @@ let MERGED_FAILED = false;
     eqNum(Q('dshThinkShownFor("")'), true, "没有归属 → 照常显示");
     eqNum(Q('agentThinkShown({ showThink: false })'), false, "会话对象口径同源（live 渲染用）");
     eqNum(Q("agentThinkShown(null)"), true, "拿不到会话时按全局默认档（standard）→ 显示");
-    /* 全局档位仍派生三位策略（会话级「显示思考」开关只覆写其中的 showThink） */
+    /* 全局档位仍派生两位策略（会话级「显示思考」开关只覆写其中的 showThink）；
+       本次需求把原来第三位 expandThink（详细 / 完全展开 = 思考落地即展开）删掉了 ——
+       思考一律收成一行摘要条、点开在弹窗里读，没有「展开」这回事。 */
     eqNum(Q('dshPolicyOfView("compact").showThink'), false, "简洁档：不显示思考块");
     eqNum(Q('dshPolicyOfView("standard").showThink'), true, "标准档：显示思考块");
-    eqNum(Q('dshPolicyOfView("detailed").expandThink'), true, "详细档：思考块默认展开");
-    eqNum(Q('dshPolicyOfView("verbose").expandThink'), true, "完全展开：思考块默认展开");
+    eqNum(
+      Q('typeof dshPolicyOfView("detailed").expandThink'),
+      "undefined",
+      "详细档不再有 expandThink（思考一律点开弹窗）",
+    );
+    eqNum(
+      Q('typeof dshPolicyOfView("verbose").expandThink'),
+      "undefined",
+      "完全展开档同样没有 expandThink",
+    );
     eqNum(Q('dshPolicyOfView("verbose").expandProcess'), true, "完全展开：工具卡也默认摊开");
     eqNum(
       Q('typeof dshPolicyOfView("standard").foldCompletedTurns'),
@@ -1770,8 +2116,8 @@ let MERGED_FAILED = false;
   );
   has(
     ASSIST,
-    "if (agentThinkShown(st)) row.appendChild(think);",
-    "无分段 live 的思考块（节点绑定运行等）关掉时不挂进 DOM",
+    "if (tRow && agentThinkShown(st)) row.appendChild(tRow);",
+    "无分段 live 的思考摘要条（节点绑定运行等）关掉时不挂进 DOM",
   );
   /* 关掉只是不渲染：数据侧一字不动 */
   ok(
@@ -1915,6 +2261,7 @@ let MERGED_FAILED = false;
     vm.createContext(sb);
     vm.runInContext(
       [
+        grabFn(TRAJ_SRC, "agentSegsMergeRounds"),
         grabFn(TRAJ_SRC, "collectSegments"),
         grabFn(TRAJ_SRC, "histSegmentsOf"),
         grabFn(TRAJ_SRC, "toolMapOf"),
@@ -1931,12 +2278,23 @@ let MERGED_FAILED = false;
     ok(collect("none").length === 0, "[7] 三个来源都空 → 空数组（不是 undefined，轨迹走空态）");
     liveEmpty = false;
     const liveSegs = collect("asX");
+    /* 本次需求（用户报的「轨迹 / 改动只剩最后一轮」）：历史段与 live 段**合并**输出，
+       旧轮一条不丢。fixture 里那份历史段正是上一轮（步骤号递增，与 live 不是同一份），
+       所以这里既钉住「live 三轮都在」，也钉住「旧轮还在它前面」。 */
+    ok(
+      liveSegs.length === 6 &&
+        liveSegs.slice(0, 3).every((s) => s.round == null) &&
+        liveSegs.slice(3).map((s) => s.k).join(",") === "think,tool,say",
+      "[7] 旧轮段在前 + 本轮 live 段在后，两份都留着（实得 " +
+        liveSegs.map((s) => s.k).join(",") +
+        "）",
+    );
     eqStr(
-      liveSegs.map((s) => s.k).join(","),
+      liveSegs.slice(3).map((s) => s.k).join(","),
       "think,tool,say",
       "[7] 本轮 live 轨迹（showThink=false）→ 思考 / 工具 / 正文三段都在",
     );
-    eqNum(liveSegs[0].round, 1, "[7] live 段照旧带上本轮轮号（轨迹按「第 N 轮」分组不受影响）");
+    eqNum(liveSegs[3].round, 1, "[7] live 段照旧带上本轮轮号（轨迹按「第 N 轮」分组不受影响）");
     /* 会话侧口径（真函数）：开关关着时历史分段仍可渲染（思考留在存档里，轨迹读得到） */
     const viewSb = { console, S: { agentSessions: [], config: { dsh: {} } } };
     vm.createContext(viewSb);
@@ -1961,6 +2319,341 @@ let MERGED_FAILED = false;
     console.log("FAIL  [合并块异常] smoke-think-visible.js：" + (e && e.stack ? e.stack : e));
   }
   if (fails) console.log("  ── 已并入块 smoke-think-visible.js：" + fails + " / " + checks + " 项失败");
+})();
+
+/* ==================== 已并入：思考弹窗的「译文只写一个框」（本轮需求） ====================
+   真函数跑进迷你 DOM：未点翻译时窗里只有原文一栏；点过翻译才在原文框**下面**建出译文栏，
+   译文本体只写在译文框栏头下方的那个框里（旧写法会多出两个框：栏头里插一个、正文区再画一个）。 */
+(function () {
+  const __dirname = TEST_DIR;
+  const { fs, path, vm } = SHARED;
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      MERGED_FAILED = true;
+      console.log("FAIL  " + msg);
+    }
+  };
+  const section = (name) => console.log("\n" + name);
+  const ASSIST_SRC = fs.readFileSync(path.join(TEST_DIR, "..", "renderer", "app-assist.js"), "utf8");
+
+  /* 抠函数本体（跳过字符串与注释再按大括号配对，与 smoke-agent-changes 同一读法） */
+  function fnBody(src, name) {
+    const re = new RegExp("(^|\\n)\\s*(async\\s+)?function\\s+" + name + "\\s*\\(");
+    const m = re.exec(src);
+    if (!m) throw new Error("找不到函数 " + name);
+    const at = m.index + (m[1] ? 1 : 0);
+    let j = src.indexOf("{", at);
+    let depth = 0;
+    let inStr = null;
+    for (; j < src.length; j++) {
+      const c = src[j];
+      const p = src[j - 1];
+      if (inStr) {
+        if (c === inStr && p !== "\\") inStr = null;
+        continue;
+      }
+      if (c === "/" && src[j + 1] === "/") {
+        j = src.indexOf("\n", j) - 1;
+        continue;
+      }
+      if (c === "/" && src[j + 1] === "*") {
+        j = src.indexOf("*/", j) + 1;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") {
+        inStr = c;
+        continue;
+      }
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (!depth) return src.slice(at, j + 1);
+      }
+    }
+    throw new Error("函数 " + name + " 括号不配对");
+  }
+
+  /* 迷你 DOM：只做弹窗这条链路用到的那几样（含 [attr="v"] 选择器 —— 模块按 data-think-pop
+     找译文栏）。 */
+  function mkEl(tag) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag || "div").toUpperCase(),
+      id: "",
+      parentNode: null,
+      _children: [],
+      _cls: new Set(),
+      _attrs: {},
+      dataset: {},
+      title: "",
+      type: "",
+      disabled: false,
+      _text: "",
+      _html: "",
+    };
+    Object.defineProperty(el, "textContent", {
+      get() {
+        let s = el._text == null ? "" : el._text;
+        for (const c of el._children) s += c.textContent;
+        return s;
+      },
+      set(v) {
+        el._text = String(v == null ? "" : v);
+        for (const c of el._children.slice()) el.removeChild(c);
+      },
+    });
+    el.classList = {
+      add: (...c) => c.forEach((x) => el._cls.add(x)),
+      remove: (...c) => c.forEach((x) => el._cls.delete(x)),
+      contains: (c) => el._cls.has(c),
+      toggle: (c, on) =>
+        on === undefined
+          ? el._cls.has(c)
+            ? el._cls.delete(c)
+            : el._cls.add(c)
+          : on
+            ? el._cls.add(c)
+            : el._cls.delete(c),
+    };
+    Object.defineProperty(el, "className", {
+      get: () => Array.from(el._cls).join(" "),
+      set: (v) => {
+        el._cls = new Set(String(v || "").split(/\s+/).filter(Boolean));
+      },
+    });
+    Object.defineProperty(el, "innerHTML", {
+      get: () => el._html,
+      set: (v) => {
+        el._html = String(v == null ? "" : v);
+        if (!el._html) for (const c of el._children.slice()) el.removeChild(c);
+      },
+    });
+    el.appendChild = (c) => {
+      if (!c) return c;
+      if (c.parentNode) c.parentNode.removeChild(c);
+      c.parentNode = el;
+      el._children.push(c);
+      return c;
+    };
+    el.removeChild = (c) => {
+      const i = el._children.indexOf(c);
+      if (i >= 0) el._children.splice(i, 1);
+      if (c) c.parentNode = null;
+      return c;
+    };
+    el.setAttribute = (k, v) => {
+      el._attrs[k] = String(v);
+    };
+    el.getAttribute = (k) => (k in el._attrs ? el._attrs[k] : null);
+    el.addEventListener = () => {};
+    el.querySelectorAll = (sel) => {
+      const out = [];
+      const walk = (n) => {
+        for (const c of n._children) {
+          if (matches(c, sel)) out.push(c);
+          walk(c);
+        }
+      };
+      walk(el);
+      return out;
+    };
+    el.querySelector = (sel) => el.querySelectorAll(sel)[0] || null;
+    return el;
+  }
+  function matchesSelf(node, sel) {
+    const s = String(sel || "").trim();
+    if (!s || !node || node.nodeType !== 1) return false;
+    let rest = s;
+    for (const m of s.match(/\[[^\]]+\]/g) || []) {
+      rest = rest.replace(m, "");
+      const am = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(m);
+      if (!am) return false;
+      const key = am[1].replace(/^data-/, "").replace(/-([a-z])/g, (x, c) => c.toUpperCase());
+      const val = node.dataset[key];
+      if (am[2] == null ? val == null : String(val) !== am[2]) return false;
+    }
+    for (const p of rest.match(/[.#][\w-]+/g) || []) {
+      if (p[0] === ".") {
+        if (!node._cls.has(p.slice(1))) return false;
+      } else if (node.id !== p.slice(1)) return false;
+    }
+    const tag = /^[a-zA-Z]+/.exec(rest);
+    if (tag && node.tagName !== tag[0].toUpperCase()) return false;
+    return true;
+  }
+  function matches(node, sel) {
+    const parts = String(sel || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return false;
+    if (!matchesSelf(node, parts[parts.length - 1])) return false;
+    let n = node.parentNode;
+    for (let i = parts.length - 2; i >= 0; i--) {
+      let hit = false;
+      while (n) {
+        if (matchesSelf(n, parts[i])) {
+          hit = true;
+          n = n.parentNode;
+          break;
+        }
+        n = n.parentNode;
+      }
+      if (!hit) return false;
+    }
+    return true;
+  }
+
+  section("[9] 思考弹窗：译文只写一个框（未点翻译时没有译文框）");
+  try {
+    const docRoot = mkEl("body");
+    const ovBody = mkEl("div");
+    const ovFoot = mkEl("div");
+    const ovBox = mkEl("div");
+    ovBox.className = "overlay-box";
+    docRoot.appendChild(ovBody);
+    const seenEsc = [];
+    const sb = {
+      console,
+      S: { thinkTrans: {} },
+      I18n: { t: (s) => String(s) },
+      document: {
+        createElement: (t) => mkEl(t),
+        getElementById: (id) =>
+          id === "ovBody" ? ovBody : id === "ovFoot" ? ovFoot : id === "overlay" ? ovBox : null,
+        querySelector: (s) => docRoot.querySelector(s),
+        querySelectorAll: (s) => docRoot.querySelectorAll(s),
+      },
+      openOverlay: () => {},
+      formatMsgTimeSec: (t) => String(t),
+      dshTranslateModel: () => ({ route: "deepseek-official", model: "m1", prov: { id: "p" } }),
+      plainTextToLinkHtml: (t) => String(t),
+      escapeHtml: (t) =>
+        String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+      rvMarkdownHtml: (md) => {
+        seenEsc.push(String(md));
+        return "<p>" + md + "</p>";
+      },
+    };
+    vm.createContext(sb);
+    vm.runInContext(
+      [
+        fnBody(ASSIST_SRC, "dshThinkTransKey"),
+        fnBody(ASSIST_SRC, "dshThinkTransItem"),
+        fnBody(ASSIST_SRC, "dshThinkMdHtml"),
+        fnBody(ASSIST_SRC, "dshThinkTranslateRow"),
+        fnBody(ASSIST_SRC, "dshThinkPopPaintXlate"),
+        fnBody(ASSIST_SRC, "dshThinkPopCol"),
+        fnBody(ASSIST_SRC, "dshThinkTranslateBtn"),
+        fnBody(ASSIST_SRC, "openDshThinkPop"),
+        "this.paintXlate = dshThinkPopPaintXlate;",
+        "this.openPop = openDshThinkPop;",
+      ].join("\n"),
+      sb,
+      { filename: "think-pop.js" },
+    );
+    const cols = () => docRoot.querySelectorAll(".dsh-think-pop-col");
+    const xlateCol = () => docRoot.querySelector('.dsh-think-pop-col[data-think-pop="xlate"]');
+
+    /* ① 未点翻译：只有原文一栏，正文是 Markdown（转义后进渲染入口），栏头挂「复制」+「翻译」 */
+    sb.openPop({ text: "看一看 <b>这段</b>\n## 小标题", scopeId: "s1", segKey: "k1" });
+    ok(cols().length === 1 && !xlateCol(), "[9] 未点翻译：窗里只有原文一栏（不显示译文框）");
+    ok(
+      docRoot.querySelectorAll(".dsh-think-pop-pane").length === 1 &&
+        !!docRoot.querySelector('.dsh-think-pop [data-think-pop="src"] .dsh-think-pop-md'),
+      "[9] 原文正文写在原文框里（.dsh-think-pop-md，Markdown 渲染）",
+    );
+    ok(
+      seenEsc.length === 1 && seenEsc[0].indexOf("&lt;b&gt;") > 0,
+      "[9] 模型输出先转义再进 Markdown 渲染入口（不被当 HTML 执行）",
+    );
+    ok(
+      docRoot.querySelectorAll(".dsh-think-pop-tools .dsh-think-xlate").length === 2,
+      "[9] 原文栏头挂「复制」+「翻译」两枚按钮（没有第二处入口）",
+    );
+
+    /* ② 点翻译（翻译中）：译文栏才建出来，长在原文框**下面**，正文写它栏头下方的框里 */
+    sb.S.thinkTrans["s1:k1"] = { status: "pending", text: "", model: "m1" };
+    sb.paintXlate("s1", "k1");
+    const c2 = cols();
+    ok(
+      c2.length === 2 && c2[0].dataset.thinkPop === "src" && c2[1].dataset.thinkPop === "xlate",
+      "[9] 点翻译后译文栏建在原文框下面（一上一下，不是左右分栏）",
+    );
+    ok(
+      docRoot.querySelectorAll(".dsh-seg-xlate").length === 1 &&
+        xlateCol().querySelector(".dsh-xlate-md").textContent.indexOf("翻译中…") >= 0,
+      "[9] 翻译中只占译文框那一个框的正文位（不再往栏头插一个框）",
+    );
+
+    /* ③ 翻完：译文也走同一个 Markdown 渲染入口，仍然只有一个译文框 */
+    const escBefore = seenEsc.length;
+    sb.S.thinkTrans["s1:k1"] = { status: "done", text: "## 标题\n- 一条", model: "m1" };
+    sb.paintXlate("s1", "k1");
+    ok(
+      docRoot.querySelectorAll(".dsh-seg-xlate").length === 1 &&
+        seenEsc.length === escBefore + 1 &&
+        seenEsc[seenEsc.length - 1].indexOf("- 一条") > 0,
+      "[9] 译文也按 Markdown 渲染（翻译注意格式），整块重建后仍然只有一个译文框",
+    );
+    ok(
+      xlateCol().querySelector(".dsh-xlate-md").innerHTML.indexOf("<p>") === 0 &&
+        xlateCol().querySelector(".dsh-xlate-copy").textContent === "复制",
+      "[9] 译文正文落在译文框栏头下方的正文位里（翻完才挂「复制译文」）",
+    );
+
+    /* ④ 失败：栏头红字原因，正文留空 */
+    sb.S.thinkTrans["s1:k1"] = { status: "error", error: "boom", model: "m1" };
+    sb.paintXlate("s1", "k1");
+    ok(
+      xlateCol().querySelector(".dsh-xlate-err").textContent === "boom" &&
+        !xlateCol().querySelector(".dsh-xlate-md"),
+      "[9] 翻译失败只在栏头给原因（不多画一个空正文框）",
+    );
+
+    /* ④b 失败但留了「模型本次返回的内容」（本轮需求）：说明句 + 原始返回摆在译文框里，
+       且**不得**写成译文正文（.dsh-xlate-md）——失败态绝不能被当成译文缓存。 */
+    sb.S.thinkTrans["s1:k1"] = {
+      status: "error",
+      error: "校验未通过",
+      model: "m1",
+      raw: "原始返回正文",
+    };
+    sb.paintXlate("s1", "k1");
+    const escBefore2 = seenEsc.length;
+    ok(
+      !!xlateCol().querySelector(".dsh-xlate-why") &&
+        !!xlateCol().querySelector(".dsh-xlate-raw") &&
+        seenEsc.length === escBefore2, /* 假 DOM 的 innerHTML 桩不落 HTML，转义在 ④c 验 */
+      "[9] 失败态展示「模型本次返回的内容」的说明句 + 内容框（不是译文正文、不给「复制译文」）",
+    );
+    /* ④c 原始返回同样走「先转义再进渲染入口」这条唯一安全底线（与原文 / 译文同源），
+       且失败态绝不写 it.text（不会被当成译文缓存） */
+    const escSeen = [];
+    sb.rvMarkdownHtml = (md) => {
+      escSeen.push(String(md));
+      return "<p>" + md + "</p>";
+    };
+    sb.S.thinkTrans["s1:k1"] = { status: "error", error: "x", model: "m1", raw: "看 <b>这个</b>" };
+    sb.paintXlate("s1", "k1");
+    ok(
+      escSeen.length >= 1 && escSeen[escSeen.length - 1].indexOf("&lt;b&gt;") > 0 &&
+        !sb.S.thinkTrans["s1:k1"].text,
+      "[9] 被拒返回先转义再进 Markdown 渲染入口，且不写进 it.text（失败态不当译文缓存）",
+    );
+
+    /* ⑤ 没有译文项（切走 / 重跑）：整栏收掉，回到「只有原文框」 */
+    delete sb.S.thinkTrans["s1:k1"];
+    sb.paintXlate("s1", "k1");
+    ok(cols().length === 1 && !xlateCol(), "[9] 译文项没了就把整栏收掉（回到未点翻译的形态）");
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [9] 弹窗 DOM 用例异常：" + (e && e.stack ? e.stack : e));
+  }
+  console.log(
+    "\n" + (fails ? "✗ " + fails + " 项失败" : "✓ " + checks + " 项全部通过") + "  (smoke-think-pop)",
+  );
 })();
 
 /* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */

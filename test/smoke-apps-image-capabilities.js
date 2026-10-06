@@ -678,7 +678,7 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   );
   ok(read("renderer/app-apps-dev.js").indexOf("appCapabilitiesDialog") > 0, "开发页 ⋯ 菜单挂了「应用能力…」入口");
   const APPS_JS = read("renderer/app-apps.js");
-  ok(APPS_JS.indexOf("capabilityBadges") > 0 && APPS_JS.indexOf("apps-badge-cap") > 0, "库页卡片画能力小标");
+  ok(APPS_JS.indexOf("capabilityBadges") > 0 && APPS_JS.indexOf("apps-badge-cap") > 0, "本机应用的能力小标画在详情里（封面卡改版后卡片不再放描述 / 小标）");
   const CSS = read("renderer/css/apps.css");
   ok(CSS.indexOf(".apps-badge-cap") > 0 && CSS.indexOf(".cap-row") > 0, "样式补齐：能力小标 + 能力复选框行");
   const I18N = read("renderer/i18n.js");

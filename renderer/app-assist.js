@@ -171,6 +171,11 @@ function agentSessionUserHistory(st, msg) {  try {
     for (let i = list.length - 1; i >= 0 && out.length < 6; i--) {
       const m = list[i];
       if (!m || m.role !== "user") continue;
+      /* 只算用户真正说过的话：浏览器求助的「已回应，模型继续中」是界面痕迹（本次需求），
+         既不是用户的输入，也不该参与「这轮与画布有关吗」的判据；
+         「这一轮已经结束」（轮次收尾时卡片收口的痕迹）同理 */
+      if (String(m._src || "") === "ix-browser") continue;
+      if (String(m._src || "") === "ix-round-end") continue;
       const c = String(m.content || "").trim();
       if (!c || c === cur) continue;
       out.push(c);
@@ -1755,8 +1760,8 @@ function agentSessions() {
      水合过就有 _planHydrated 标记，后续调用只是几次属性读，开销可忽略。 */
   if (typeof planHydrateSession === "function")
     for (const s of S.agentSessions) planHydrateSession(s);
-  /* 轮次标签不需要水合（本次需求）：第 N 轮与开始时刻都从消息历史现推
-     （agentRoundOfRun / agentRoundRoundAt），没有第二个计数器、也没有持久键要搬。 */
+  /* 轮次标签（本次需求改为「会话时间区间」）不需要水合：区间从消息历史现推
+     （agentRoundRange），没有第二个计数器、也没有持久键要搬。 */
   /* 开发 / 细化绑定会话的水合：旧版把整份任务书当作首条 _src:"dev-node" 用户消息，
      现改为写入 _devContract（发送时注入系统提示）；载回旧会话时做一次迁移。 */
   if (typeof devContractHydrateSession === "function")
@@ -1972,6 +1977,29 @@ function wsGroupOf(ws) {
   /* 用最内层文件夹名作为项目目录（分组标签） */
   return parts.length ? parts[parts.length - 1] : I18n.t("默认目录");
 }
+/* ── 会话消息的保留上限（本次需求 · 用户口径「本会话每一轮都长期保留」）─────────
+   过去这里是「超过 100 条就从头裁掉」的固定条数上限（本文件的开轮裁切、落盘 slice，
+   app-db.js 的三处写入路径各一份）。它的实际后果不是「少留点闲聊」：一次开发 / 细化
+   轮次里用户消息本来就多（询问窗的每一条回答都是一条 user 消息），一轮能吃掉 8～15 条，
+   于是一到 7 轮上下，最早的**助手消息**就被整条挤出去 —— 轨迹与改动两栏的数据源正是
+   「每条助手消息的 m.segments / m.tools」，那一轮从此在那两栏里消失（用户报的
+   「轨迹和改动仅保留了最后一轮」）。
+   所以口径改成**按轮保留**：至少留住最近 AGENT_MIN_KEEP_PER_ROUND 轮（一轮按最多
+   AGENT_ROUND_MAX_ENTRIES 条消息折算），另设一个宽松的总条数上限兜住极端情况。
+   两个数都只是「最多留多少」的闸，不改变任何一条消息的字段与内容。 */
+const AGENT_MIN_KEEP_PER_ROUND = 120; /* 至少留住这么多轮（每轮按下面那个折算） */
+const AGENT_ROUND_MAX_ENTRIES = 16; /* 一轮最多按这么多条消息算 */
+const AGENT_MSG_KEEP_MAX = AGENT_MIN_KEEP_PER_ROUND * AGENT_ROUND_MAX_ENTRIES; /* 1920 条 */
+/* 按「至少留住最近 N 轮」裁掉开头的旧条目；返回被裁掉的条数（未裁 = 0）。
+   调用点：开轮追加用户消息后、落盘前、以及 app-db.js 那三处「问询窗回答 / 痕迹」写入后
+   —— 全部同源到这一处，免得四个地方各留一个数字走神。 */
+function agentTrimSessionMessages(st) {
+  if (!st || !Array.isArray(st.messages)) return 0;
+  if (st.messages.length <= AGENT_MSG_KEEP_MAX) return 0;
+  const cut = st.messages.length - AGENT_MSG_KEEP_MAX;
+  st.messages.splice(0, cut);
+  return cut;
+}
 async function persistAgentSession() {
   const list = agentSessions();
   if (list.length > 60) list.splice(60);
@@ -2001,9 +2029,10 @@ async function persistAgentSession() {
        跟随全局默认档（设置 · 智能能力 的 dsh.transcriptView）。
        重启后这条会话显不显示思考，仍由它自己说了算。 */
     showThink: typeof s.showThink === "boolean" ? s.showThink : null,
-    /* 会话头部的「对话 / 轨迹」View 选择（本次需求 · 上游把 View 选择做成持久化偏好）：
-       只落「选了轨迹」这一种非默认态，空串 = 对话（默认）。 */
-    trajView: s.trajView === "trace" ? "trace" : "",
+    /* 会话头部的「对话 / 轨迹 / 改动」View 选择（本次需求 · 上游把 View 选择做成持久化偏好）：
+       只落「选了轨迹 / 选了改动」这两种非默认态，空串 = 对话（默认）。
+       判据与 app-trajectory.js 的 VIEWS 同一份口径 —— 改动栏就是本轮新增的第三栏。 */
+    trajView: s.trajView === "trace" || s.trajView === "changes" ? s.trajView : "",
     /* 开发绑定会话「不读画布」标记：必须随会话落盘 —— 重启后若丢了这一位，本轮可见集
        就与那份 session 的历史前缀不一致（网关 hx: 指纹变了 → 换 runtime 冷起 → 续跑
        撞 id 只能整轮重发），所以它与 pure 同级持久化。 */
@@ -2028,10 +2057,13 @@ async function persistAgentSession() {
           }
         : null,
     draft: s._draft || "",
-    /* 整对象落盘（含 reasoning / tools / segments）；segments 再限一次长：
-       只夹单段字数（段一条不丢，见 agentSegsForDisk），控制 messages.slice(-100)
-       的存档体积 —— 段一丢，工具 chip 就会从时间线掉到消息尾部压住最终回复 */
-    messages: (s.messages || []).slice(-100).map((m) => {
+    /* 整对象落盘（含 reasoning / tools / segments），条数走**按轮保留**的那一个闸
+       （见 agentTrimSessionMessages：至少留住最近 AGENT_MIN_KEEP_PER_ROUND 轮，
+       过去的 messages.slice(-100) 会在一轮 8～15 条消息时把最早的助手消息挤掉 ——
+       轨迹与改动两栏的数据源就是它，所以那边一裁，这里就只剩最后一轮）。
+       segments 再限一次长：只夹单段字数（段一条不丢，见 agentSegsForDisk）——
+       段一丢，工具 chip 就会从消息尾部压住最终回复 */
+    messages: (s.messages || []).slice(-AGENT_MSG_KEEP_MAX).map((m) => {
       if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
       try {
         const segs = agentSegsForDisk(m.segments);
@@ -2063,8 +2095,8 @@ async function persistAgentSession() {
     })),
     todoHidden: (s.todoHidden || []).slice(-80).map(String),
     todosCollapsed: !!s.todosCollapsed,
-    /* 轮次标签（本次需求）不落盘：第 N 轮与开始时刻都从消息历史现推
-       （agentRoundOfRun / agentRoundRoundAt），重启后自然复原，无需持久键。 */
+    /* 会话时间区间（本次需求）不落盘：第一条 / 最后一条消息的时刻都从消息历史现推
+       （agentRoundRange），重启后自然复原，无需持久键。 */
     /* 已确认的计划清单（逐项状态 + 进度指针）：重启后「计划」面板仍在，
        未完成项可从那一台会话继续跑，而不是随弹窗一起消失 */
     plan:
@@ -3706,27 +3738,48 @@ function dshToolErrSummary(t) {
  * 返回 null = 这次调用看不到文件改动（read / grep / shell 等）。 */
 const DSH_DIFF_MAX_ROWS = 9; /* 上游会话内折叠上限：CHAT_DIFF_MAX_LINES = 9 */
 /* 超大正文不算 diff（上游「文件过大，无法显示改动」那一档）：会话每次重绘都会问一次，
-   把几百 KB 的正文逐行切开再切片，流式刷新期间会明显卡；宁可只显示统计缺省的一行。 */
+   把几百 KB 的正文逐行切开再切片，流式刷新期间会明显卡；宁可只显示统计缺省的一行。
+   **这一档只属于对话 / 轨迹**（用户口径）：会话「改动」栏（renderer/app-changes.js）
+   要能回看任意大小的一笔改动，走的是下面不带本上限的 dshToolDiffOfFull。 */
 const DSH_DIFF_MAX_CHARS = 300000;
-function dshToolDiffOf(t) {
+/* 判据只写一处：哪些工具算「看得见文件改动」。两个入口（对话口径 / 改动栏口径）共用 ——
+   本函数返回 null 就是「这次调用看不到文件改动」（read / grep / shell 等）。
+   返回 {isEdit, path, oldTxt, newTxt} —— 字符上限由调用方决定，本层不算。 */
+const DSH_DIFF_WRITE_RE = /^(write|write_file|create_file)$/;
+const DSH_DIFF_EDIT_RE = /^(edit|edit_file|str_replace_editor|apply_patch)$/;
+function dshDiffPartsOf(t) {
   if (!t) return null;
-  /* 缓存：一条工具调用的入参不再变，同一份 diff 不必每次重绘重算 */
-  if (t._diff !== undefined) return t._diff;
   const a = dshToolArgsObj(t);
-  if (!a) return (t._diff = null);
+  if (!a) return null;
   const nm = String((t && t.name) || "").toLowerCase();
-  const isWrite = /^(write|write_file|create_file)$/.test(nm);
-  const isEdit = /^(edit|edit_file|str_replace_editor|apply_patch)$/.test(nm);
-  if (!isWrite && !isEdit) return (t._diff = null);
+  const isEdit = DSH_DIFF_EDIT_RE.test(nm);
+  if (!isEdit && !DSH_DIFF_WRITE_RE.test(nm)) return null;
   const path = dshOneLine(a.file_path || a.path || a.filename || "");
   const oldTxt = isEdit ? dshDiffArgText(a, ["old_string", "oldText", "old_text"]) : "";
   const newTxt = isEdit
     ? dshDiffArgText(a, ["new_string", "newText", "new_text"])
     : dshDiffArgText(a, ["content", "text", "new_string", "newText"]);
-  if (!newTxt && !oldTxt) return (t._diff = null);
-  if (String(oldTxt).length + String(newTxt).length > DSH_DIFF_MAX_CHARS)
-    return (t._diff = null);
-  return (t._diff = dshDiffRowsOf(oldTxt, newTxt, path));
+  if (!newTxt && !oldTxt) return null;
+  return { isEdit, path, oldTxt: String(oldTxt), newTxt: String(newTxt) };
+}
+function dshToolDiffOf(t) {
+  if (!t) return null;
+  /* 缓存：一条工具调用的入参不再变，同一份 diff 不必每次重绘重算 */
+  if (t._diff !== undefined) return t._diff;
+  const p = dshDiffPartsOf(t);
+  if (!p) return (t._diff = null);
+  if (p.oldTxt.length + p.newTxt.length > DSH_DIFF_MAX_CHARS) return (t._diff = null);
+  return (t._diff = dshDiffRowsOf(p.oldTxt, p.newTxt, p.path));
+}
+/* 会话「改动」栏专用入口：**不看字符上限**（用户口径「移除这个上限，包括代码上色」）——
+   同一份判据、同一份行级算法与皮肤，只少那一档拒绝。缓存另挂 _diffFull，绝不与 _diff 串台
+   （同一条工具记录在两处口径下结论可能不同：对话里 null、改动栏里有）。 */
+function dshToolDiffOfFull(t) {
+  if (!t) return null;
+  if (t._diffFull !== undefined) return t._diffFull;
+  const p = dshDiffPartsOf(t);
+  if (!p) return (t._diffFull = null);
+  return (t._diffFull = dshDiffRowsOf(p.oldTxt, p.newTxt, p.path));
 }
 function dshDiffArgText(a, keys) {
   for (const k of keys) if (typeof a[k] === "string" && a[k]) return a[k];
@@ -3763,8 +3816,10 @@ function dshDiffRowsOf(oldTxt, newTxt, path) {
   return { path, rows, added: add.length, removed: del.length, hidden };
 }
 /* diff 块：逐行 +/- 着色（上游 .del/.add 的 3px 内嵌左色条 + 语义色），
-   超过 9 行折叠，点一下就地展开 / 收起。 */
-function dshToolDiffEl(diff) {
+   超过 9 行折叠，点一下就地展开 / 收起。
+   opts（本次需求 · 会话「改动」栏，缺省 = 上面这条原口径）：
+     { foldCap, rowsLimit, batchRows } —— 折叠阈值 / 首屏行数 / 每批行数。 */
+function dshDiffBlockEl(diff, opts) {
   if (!diff || !diff.rows.length) return null;
   const box = document.createElement("div");
   box.className = "dsh-diff";
@@ -3791,7 +3846,28 @@ function dshToolDiffEl(diff) {
   const more = document.createElement("button");
   more.type = "button";
   more.className = "dsh-diff-more";
+  /* 折叠阈值与分批渲染（本次需求 · 会话「改动」栏）：
+     · foldCap   —— 超过多少行先折住（缺省 = DSH_DIFF_MAX_ROWS，即对话 / 轨迹原口径）；
+     · rowsLimit —— 首屏最多画多少行，之后点按钮或滚到底自动再续一批（0 / 缺省 = 不限）。
+     两者只由 opts 传进来 —— 对话与轨迹那两处不传 ⟹ 行为与改动前一字不差。 */
+  const o = opts && typeof opts === "object" ? opts : null;
+  const foldCap =
+    o && Number(o.foldCap) > 0
+      ? Math.max(1, Math.floor(Number(o.foldCap)))
+      : DSH_DIFF_MAX_ROWS;
+  const rowsLimit = o && Number(o.rowsLimit) > 0 ? Math.floor(Number(o.rowsLimit)) : 0;
+  const stepRows = rowsLimit ? Math.max(1, Math.floor(Number(o.batchRows) || rowsLimit)) : 0;
+  /* 折叠态画到 min(foldCap, rowsLimit)；展开后每点一次 / 每滚到底再画 stepRows 行 */
+  const foldedFirst = () => Math.min(foldCap, rowsLimit || foldCap);
+  let shown = foldedFirst();
+  /* 每批一锁：一次「滚到底」只续一批 —— 续完内容变高，若滚动位置仍落在近底区，
+     同一次用户滚动里再连画就会一路连到底（用户口径是「滚到底自动再续一批」）。 */
+  let moreLock = false;
+  /* 上一批画完时的滚动位置：同一位置上的重复 scroll 事件不再连画（真浏览器里一次滚到底
+     会连着来好几个 scroll 事件，位置却还是那一个）。 */
+  let lastScrollTop = null;
   const foldedNow = () => more.dataset.folded !== "0";
+  /* 只画出 [0, limit) 这一段（limit = 0 → 全部）：整段重建，与改动前同一写法 */
   const render = (limit) => {
     body.innerHTML = "";
     const rows = limit ? diff.rows.slice(0, limit) : diff.rows;
@@ -3803,10 +3879,11 @@ function dshToolDiffEl(diff) {
       body.appendChild(line);
     }
   };
-  const paint = (folded) => {
-    more.dataset.folded = folded ? "1" : "0";
-    render(folded ? DSH_DIFF_MAX_ROWS : 0);
-    if (diff.rows.length <= DSH_DIFF_MAX_ROWS) {
+  /* 底部那颗按钮的文案与可用态（三种）：折住 = 「… 其余 N 行」可点；展开未画完 = 同样
+     「… 其余 N 行」可点（点了再续一批）；已画完 = 「收起差异」可点收起。 */
+  const paintMore = () => {
+    const total = diff.rows.length;
+    if (total <= foldCap) {
       more.hidden = true;
       if (diff.hidden > 0) {
         more.hidden = false;
@@ -3817,30 +3894,79 @@ function dshToolDiffEl(diff) {
     }
     more.hidden = false;
     more.disabled = false;
-    more.textContent = folded
-      ? I18n.t("… 其余 {n} 行", { n: diff.rows.length - DSH_DIFF_MAX_ROWS })
-      : I18n.t("收起差异");
+    more.textContent = foldedNow()
+      ? I18n.t("… 其余 {n} 行", { n: total - foldedFirst() })
+      : shown < total
+        ? I18n.t("… 其余 {n} 行", { n: total - shown })
+        : I18n.t("收起差异");
   };
-  paint(true);
+  const paint = () => {
+    const folded = foldedNow();
+    shown = folded ? foldedFirst() : Math.max(shown, foldedFirst());
+    render(folded ? foldedFirst() : rowsLimit ? Math.min(shown, diff.rows.length) : 0);
+    paintMore();
+  };
+  paint();
+  /* 再画一批（点按钮 / 滚到底都走它）：返回 true = 这一下真又画了一批，false = 已经画完。 */
+  const moreRows = () => {
+    const total = diff.rows.length;
+    if (!foldedNow()) {
+      if (!stepRows || shown >= total) return false;
+      shown = Math.min(total, shown + stepRows);
+      render(shown);
+      paintMore();
+      return true;
+    }
+    /* 折住时第一次展开：先摊一档（rowsLimit 有值就只摊一批，否则整块摊平） */
+    more.dataset.folded = "0";
+    shown = rowsLimit ? Math.min(total, Math.max(foldedFirst(), stepRows)) : total;
+    render(rowsLimit ? shown : 0);
+    paintMore();
+    return true;
+  };
   more.addEventListener("mousedown", (ev) => ev.stopPropagation());
   more.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    paint(!foldedNow());
+    /* 已经画完再点 = 收起（对话 / 轨迹的原口径）；还没画完 = 再续一批 */
+    if (!foldedNow() && (!stepRows || shown >= diff.rows.length)) {
+      more.dataset.folded = "1";
+      shown = foldedFirst();
+      paint();
+      return;
+    }
+    moreRows();
   });
   box.appendChild(body);
   box.appendChild(more);
+  box._diffMoreRows = moreRows;
+  /* 分批续画的出口（点按钮与滚到底共用它）：**监听不挂这里** —— diff 块归谁滚只有调用方知道（对话 / 轨迹是
+     块内滚，会话「改动」栏把 .dsh-diff-body 的 max-height 放开、由外层容器滚），
+     所以这里只交出口，各自那一层监听自己的滚动容器再调它。 */
   return box;
+}
+/* 对话 / 轨迹两处照旧走它（不带 opts ⟹ 折叠上限 9 行、展开即全文）；会话「改动」栏
+   走 opts（240 行折叠 + 每批 200 行 + 「滚到底续画」）—— 判据与皮肤同源，只有这档参数不同。 */
+function dshToolDiffEl(diff) {
+  return dshDiffBlockEl(diff, null);
+}
+function dshToolDiffElOpt(diff, opts) {
+  if (!diff || !diff.rows.length) return null;
+  return dshDiffBlockEl(diff, opts);
 }
 /* 同一份 diff 供**轨迹检查器**复用（本次需求：轨迹里的事件详情也要与对话同款 diff）：
    会话·运行轨迹视图（renderer/app-trajectory.js）是独立 IIFE，过去只能把这段算法再抄一份。
-   现在由本文件把三个真函数挂到 window.MTNodeChatDiff 上 —— **就这一处**，改判据 / 改折叠
-   上限只改上面那三个常量与函数，两边同时生效（轨迹那边是薄层，不自己算 diff）。
-   挂法（照 window.MTNodeTeam = API 那份口径）：挂真函数本体，不包一层、不改行为。 */
+   现在由本文件把真函数挂到 window.MTNodeChatDiff 上 —— **就这一处**，改判据 / 改折叠
+   上限只改上面那几个常量与函数，各处同时生效（轨迹那边是薄层，不自己算 diff）。
+   挂法（照 window.MTNodeTeam = API 那份口径）：挂真函数本体，不包一层、不改行为。
+   · of / el / maxRows：对话与轨迹的原口径（含 30 万字符不作 diff 那一档）；
+   · ofFull / elFull：「改动」栏专用 —— 没有字符上限，折叠与分批由 opts 传（见 dshToolDiffElOpt）。 */
 window.MTNodeChatDiff = {
   of: dshToolDiffOf, /* (工具记录) → { path, rows, added, removed, hidden } | null */
   el: dshToolDiffEl, /* (diff) → 逐行 +/- 着色的 .dsh-diff 块（含「… 其余 N 行」折叠） */
   maxRows: DSH_DIFF_MAX_ROWS,
+  ofFull: dshToolDiffOfFull, /* 同 of，但**不看字符上限**（改动栏口径） */
+  elFull: dshToolDiffElOpt, /* (diff, { foldCap, rowsLimit, batchRows }) → 同款 diff 块 */
 };
 
 function dshToolDetailsEl(t, live, nodeId, opts) {
@@ -4531,7 +4657,8 @@ function agentChatSegItems(st) {
     两者都以元素自己的左边框为起点 —— 宿主兼皮肤时，颜色就从时刻栏**左边**起画、把时刻
     一起裹进去（用户口径：「颜色和左侧竖条被错误地拉伸到了时间的左边，应当与思考一致」）。
     所以带皮肤的段一律**两层**：外层 .dsh-seg-*-wrap 只当时刻栏宿主（透明），
-    内层才是皮肤盒（思考 = details.dsh-seg-think、工具 = div.dsh-seg-tool）。
+    内层才是皮肤盒（思考 = button.dsh-think-row（本次需求：一行可点开弹窗）、
+    工具 = div.dsh-seg-tool）。
     回归口径：test/smoke-session-markers.js [6]。
    落法：时刻栏是该项元素的**第一只子节点**（.dsh-seg-time），CSS 按 .dsh-seg-has-time
    给这一项留出左侧一条定宽栏（--dsh-seg-time-w），因此正文一个字都不会被压住。
@@ -4647,16 +4774,19 @@ function dshMsgSegsViewable(m) {
 }
 /* ── 过程行展示档位（对齐上游 ChatPresentationPolicy）──────────────────────
    上游把「过程行怎么显示」收成四个用户档位（settings.transcript.* =
-   简洁 / 标准 / 详细 / 完全展开），派生三个策略位：
-     showThink          思考块画不画（简洁档不画；数据仍随消息存档）
-     expandThink        详细 / 完全展开：思考块落地即展开，不等用户点
+   简洁 / 标准 / 详细 / 完全展开），派生两个策略位：
+     showThink          思考画不画（简洁档不画；思考仍随消息存档）
      expandProcess      完全展开：工具卡也默认摊开
+   **本次需求删掉了第三位 expandThink**（原来是「详细 / 完全展开：思考块落地即展开」）：
+   会话里的思考一律收成一行摘要条、点开在弹窗里读（见 dshThinkRowEl），
+   没有「展开 / 收起」这回事了 —— 档位再管「落地即展开」就是管一个不存在的东西。
+   档位本身保留（简洁 / 标准 / 详细 / 完全展开），差异只剩 showThink 与 expandProcess。
    **不再有「已完成轮次的过程行折成一行」这一位**（历史需求 · 用户口径
    「不应当进行任何收纳：工具调用被折进折叠条就与它在时间线上的位置分离了」）：
-   工具 / 上下文注入行一律按发生顺序内联渲染，档位只在上面三位上分档。
+   工具 / 上下文注入行一律按发生顺序内联渲染，档位只在上面两位上分档。
    本仓落点：设置 · 智能能力给**新会话的全局默认档**；输入区「模式」菜单那一枚 =
-   本次需求的会话级开关「显示思考」（原四档循环已收回成开关：点开 = 会话里出现思考，
-   关闭 = 整条不显示；见 agentModeEntryOf("think") 与 agentThinkShown）。
+   会话级开关「显示思考」（点开 = 会话里出现思考条目，关闭 = 整条不显示；
+   见 agentModeEntryOf("think") 与 agentThinkShown）。
    取值口径：会话上有布尔 st.showThink 就用它，否则用全局档位派生的 showThink；
    全局档位非法 / 缺失 → "standard"（上游默认档）。 */
 const DSH_TRANSCRIPT_VIEWS = ["compact", "standard", "detailed", "verbose"];
@@ -4693,10 +4823,8 @@ function dshPolicyOfView(view) {
   const v = dshTranscriptViewNorm(view) || DSH_TRANSCRIPT_DEFAULT;
   return {
     view: v,
-    /* 思考块：简洁档整块不渲染（数据仍随消息存档），其余档照旧给折叠条 */
+    /* 思考：简洁档整块不渲染（数据仍随消息存档），其余档给一行可点开的摘要条 */
     showThink: v !== "compact",
-    /* 详细 / 完全展开：思考块默认展开（用户手动收起过的那一段以用户那一次为准） */
-    expandThink: v === "detailed" || v === "verbose",
     /* 完全展开：工具卡也默认摊开 */
     expandProcess: v === "verbose",
   };
@@ -4918,10 +5046,13 @@ function agentRoundMsgTail(st, msg, runKey) {
        强化提示词 → 该路由更强模型」逐档重试，全失败才判 error（绝不当成功缓存）；
      · 按段缓存（S.thinkTrans），同一段只翻一次，命中即显示译文，可重复点开看。
    思考段有两种渲染（历史消息 dshHistSegEl / 运行中 agentLiveSegsEl）与两种形态
-   （按段的时间线 seg、无段时的整段 m.reasoning），所以按钮 + 译文行拆成
-   两个 builder（dshThinkTranslateBtn / dshThinkTranslateRow），三处渲染共用一份状态；
-   按钮由 dshThinkTranslateAppend 塞进折叠条 <summary> 的最右端（不另起一行），
-   折叠条文案是其中的 span.dsh-think-sum-txt，刷新字数只改这层。 */
+   （按段的时间线 seg、无段时的整段 m.reasoning），所以按钮 + 译文框拆成两个 builder
+   （dshThinkTranslateBtn / dshThinkTranslateRow），共用同一份状态。
+   **本次需求（用户口径）后它只活在思考弹窗里，而且只往一个地方写**：会话里那一行摘要条
+   （dshThinkRowEl）不挂按钮、也没有译文行；窗里**只有原文框**（翻译按钮挂在它的栏头），
+   点过翻译之后译文框才建出来（未点翻译时不显示译文框），译文本体写在译文框栏头**下方**
+   的框里 —— 翻完由 dshThinkPopPaintXlate 就地刷新那一个框（弹窗可能已被重画，按 DOM 找，
+   不 captured 引用）。原文与译文正文都按 Markdown 渲染（dshThinkMdHtml）。 */
 function dshThinkTransKey(scopeId, segKey) {
   return String(scopeId || "") + ":" + String(segKey == null ? "" : segKey);
 }
@@ -5152,24 +5283,84 @@ function dshXlatePick(route, model) {
   };
 }
 
-/* 翻译候选链：同一条思考按「便宜优先」逐档重试。
+/* 换一只「另一只模型」来翻：按本机可用路由逐家挑。
+   现场（本次需求）：会话自己那只（deepseek-official · deepseek-v4-flash）与全局助手那只
+   （mtnode_qwen-token-plan-cn · deepseek-v4.1-flash）对同一段思考都原样复述，而候选链里
+   只有这两只同族 flash ⇒ 逐档重试其实是「同一只模型发两遍确定性请求」，第 2 遍必然同结果，
+   用户看到的永远是「翻译质量校验未通过（模型仍在输出原文）｜模型仍返回原文，已重试 2 次」。
+   对策：候选链必须真的换模型（换路由），flash 档优先、其余按原顺序。 */
+function dshXlateRankModels(models) {
+  const list = (models || []).map((m) => String(m || "").trim()).filter(Boolean);
+  const flash = list.filter((m) => /flash/i.test(m));
+  const rest = list.filter((m) => !/flash/i.test(m));
+  return flash.concat(rest);
+}
+function dshXlateAltCandidates(route, tried) {
+  const out = [];
+  const skip = (r, m) => {
+    const rr = String(r || "").trim();
+    const mm = String(m || "").trim();
+    return tried.some((t) => t.route === rr && t.model === mm);
+  };
+  let routes = [];
+  try {
+    if (typeof agentRouteOptions === "function") routes = agentRouteOptions() || [];
+  } catch (_) {
+    routes = [];
+  }
+  for (const r of routes) {
+    const rr = String(r || "").trim();
+    if (!rr || rr === String(route || "").trim()) continue;
+    if (typeof providerForAgentRoute !== "function") continue;
+    let prov = null;
+    try {
+      prov = providerForAgentRoute(rr);
+    } catch (_) {}
+    if (!prov || !String(prov.apiKey || "").trim()) continue;
+    let models = [];
+    try {
+      models =
+        typeof agentModelsForRoute === "function"
+          ? agentModelsForRoute(rr) || []
+          : [];
+    } catch (_) {
+      models = [];
+    }
+    for (const m of dshXlateRankModels(models)) {
+      if (skip(rr, m)) continue;
+      out.push({ route: rr, model: m });
+    }
+  }
+  return out;
+}
+/* 翻译候选链：同一条思考按「便宜优先」逐档重试，**每档必须换一只真模型**。
    实测（DeepSeek 官方 deepseek-v4-flash / v4-pro · thinking disabled）会**原样复述英文原文**
    或只输出「以下是对这段思考的翻译：」这类元话术 —— 旧实现把这种返回也当成功缓存，
-   于是用户看到「译文」还是英文。对策：提示词收紧 + 译文校验 + 逐档重试（模型升档），
-   全部候选都拿不到像样译文才判失败（错误行里可点「重试翻译」）。 */
-function dshTranslateCandidates(route, model) {
+   于是用户看到「译文」还是英文。对策：提示词收紧（system + user 分离，见下方 spec）+
+   译文校验 + 逐档重试，全部候选都拿不到像样译文才判失败（错误行里可点「重试翻译」）。
+   档序：① 该会话自己的模型 · 常规提示词 → ② 别的可用模型（换路由，flash 优先）· 常规提示词 →
+   ③ 该会话自己的模型 · 强化提示词 → ④ 该路由默认（更强）模型 · 强化提示词。
+   tried 去重键含路由：换了家之后的同名模型（各家都挂 deepseek-v4-flash）才会被当成新档。 */
+function dshTranslateCandidates(route, model, scopeId) {
   const out = [];
-  const push = (m, strict) => {
+  const tried = [];
+  const push = (m, strict, r) => {
     const mm = String(m || "").trim();
+    const rr = String(r == null ? route : r || "").trim();
     if (!mm) return;
-    if (out.some((c) => c.model === mm && c.strict === strict)) return;
-    out.push({ model: mm, strict: !!strict });
+    const key = rr + "\u0000" + mm;
+    if (out.some((c) => c.key === key)) return;
+    out.push({ model: mm, strict: !!strict, route: rr, key: key });
+    tried.push({ route: rr, model: mm });
   };
-  /* ① 首选：默认路由下的 flash 档（快 + 无思考）· 常规提示词 */
+  /* ① 首选：该会话自己的模型 · 常规提示词 */
   push(model, false);
-  /* ② 同模型 + 强化提示词（补「你是翻译引擎 / 不要分析任务」的卡口） */
+  /* ② 换模型：别的可用路由上的模型（flash 优先）· 常规提示词 —— 这一步保证「重试」是一次
+     真正的换模型，而不是把同一只模型的同一份确定性请求再发一遍。 */
+  for (const a of dshXlateAltCandidates(route, tried)) push(a.model, false, a.route);
+  /* ③ 同模型 + 强化提示词（补「你是翻译引擎 / 不要分析任务」的卡口） */
   push(model, true);
-  /* ③ 升档：该路由的默认（更强）模型 · 强化提示词 */
+  /* ④ 升档：该路由的默认（更强）模型 · 强化提示词 */
   let strong = "";
   try {
     strong =
@@ -5177,27 +5368,71 @@ function dshTranslateCandidates(route, model) {
         ? String(preferredAgentModelForRoute(route) || "")
         : "";
   } catch (_) {}
-  if (strong && strong !== String(model || "").trim()) push(strong, true);
+  push(strong, true);
   return out;
 }
 /* 输出疑似「复述原文 / 元话术」而非译文时判不通过。
-   实测口径：
+   实测口径（本次需求补齐第 4 条 —— 它就是「翻译质量校验未通过」的真凶）：
+     · 输出与原文**同文**（去空白后逐字相同，或字符级重合度过高）⇒ 复述，不通过。
+       DeepSeek 的思考大多是「英文推理 + 本项目的中文原文 / 路径 / 术语」，这种混合文本
+       仍带中文 ⇒ 旧口径只要见中文就放行（第一条 / 第二条），于是「原样吐回来」被当成译文，
+       用户看到「译文」还是原文；反过来，模型有时把同一段回得一字不差，
+       所以同文判据必须放在语言占比判据**前面**，且与原文语言无关。
      · 输出没有中文，且原文以中文为主 ⇒ 这是「中文→英文」的译文，通过；
      · 输出没有中文，原文也以英文为主 ⇒ 模型原样吐回英文（复述），不通过；
-     · 原文以英文为主时，译文前 400 字英文占比 ≥ 80% ⇒ 仍是复述；
-     · 开头就是「以下是这段思考的翻译：」式元话术（回的是任务分析不是译文）⇒ 不通过；
-     · 前 400 字与原文逐字相同且原文以英文为主 ⇒ 复述，不通过。 */
+     · 原文以英文为主时，正文（剔掉代码块 / 行内码 / 链接 / 路径后的可读文字）前 400 字
+       英文占比 ≥ 80% ⇒ 仍是复述；代码与路径不算「没翻译」，所以先把它们剔掉再算占比；
+     · 开头就是「以下是这段思考的翻译：」式元话术（回的是任务分析不是译文）⇒ 不通过。 */
+const DSH_XLATE_CODE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
+function dshXlateProse(s) {
+  return String(s || "")
+    .replace(DSH_XLATE_CODE_RE, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/!?\[[^\]\n]*\]\([^)\n]*\)/g, " ")
+    .replace(/[A-Za-z]:\\[^\s）)，,；;]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/* 同文判据：正常化（只留中日韩文字与字母数字）后的逐字相同，或字符级重合度 ≥ 0.8
+   （阈值 0.8 是实测取的口径：模型对同一段文本的复述常常只多/少一两个标点，
+   而真译文与原文的重合度远低于它）。太短（< 40 字）的返回不判同文，
+   否则「是的」「OK」这类短答也会被算成复述。 */
+function dshXlateEchoes(src, out) {
+  const norm = (s) =>
+    String(s || "")
+      .replace(DSH_XLATE_CODE_RE, " ")
+      .replace(/[\s\u3000]+/g, "")
+      .replace(/[*_>#\-|`~\[\]()]/g, "");
+  const a = norm(src);
+  const b = norm(out);
+  if (a && b && a === b) return true;
+  if (a.length < 40 || b.length < 40) return false;
+  const grams = (s) => {
+    const set = new Set();
+    for (let i = 0; i + 4 <= s.length; i++) set.add(s.slice(i, i + 4));
+    return set;
+  };
+  const ga = grams(a);
+  const gb = grams(b);
+  if (!ga.size || !gb.size) return false;
+  let hit = 0;
+  for (const g of gb) if (ga.has(g)) hit++;
+  return hit / gb.size >= 0.8;
+}
 function dshXlateLooksTranslated(src, out) {
   const text = String(out || "").trim();
   if (!text) return false;
+  /* ⓪ 同文 / 复述：与原文语言无关，先判（DeepSeek 的混合中英思考最常命中这一条） */
+  if (dshXlateEchoes(src, text)) return false;
   const isCjk = (s) => (String(s || "").match(/[\u4e00-\u9fff]/g) || []).length;
   const isLat = (s) => (String(s || "").match(/[A-Za-z]/g) || []).length;
   const srcCjk = isCjk(src);
   const srcLatin = isLat(src);
   const srcMostlyCjk = srcCjk > srcLatin;
+  const prose = dshXlateProse(text);
   if (!/[\u4e00-\u9fff]/.test(text)) return srcMostlyCjk;
   if (srcMostlyCjk) return true; /* 目标是英文译文，有内容即算通过 */
-  const head = text.slice(0, 400);
+  const head = prose.slice(0, 400);
   const cjk = isCjk(head);
   const latin = isLat(head);
   const latinRatio = latin / (latin + cjk + 1);
@@ -5210,14 +5445,31 @@ function dshXlateLooksTranslated(src, out) {
   ) {
     return false;
   }
-  /* 近乎逐字复述原文（前 400 字去空白后完全一致）⇒ 若原文以英文为主即复述 */
-  const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
-  const srcHead = norm(String(src || "").slice(0, 400));
-  const outHead = norm(text.slice(0, 400));
-  if (srcHead && outHead && outHead === srcHead && !srcMostlyCjk) return false;
   return true;
 }
-/* 译文行：有译文（或错误）就挂在该思考块下方，点按钮后可反复看，不必再等一次请求 */
+/* 思考原文 / 译文正文 → HTML（本次需求「内容显示时支持 markdown，翻译也应当注意格式」）。
+   两道底线：
+     · HTML 先转义再交给应用唯一那份 Markdown 渲染入口（app-review.js 的 rvMarkdownHtml，
+       带公式渲染），模型输出因此不会被当 HTML 执行 —— 与旧口径（plainTextToLinkHtml）
+       同一条安全底线；
+     · 渲染入口拿不到（老构建 / 切片冒烟）就退回旧写法，绝不白框。 */
+function dshThinkMdHtml(raw) {
+  const s = String(raw || "");
+  if (!s.trim()) return "";
+  const esc =
+    typeof escapeHtml === "function"
+      ? escapeHtml(s)
+      : s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  try {
+    if (typeof rvMarkdownHtml === "function") {
+      const h = rvMarkdownHtml(esc);
+      if (h) return h;
+    }
+  } catch (_) {}
+  return typeof plainTextToLinkHtml === "function" ? plainTextToLinkHtml(s) : esc;
+}
+/* 译文框：栏头（译文 · 模型 · 复制）+ **栏头下方的正文框**（Markdown）。翻译中就写一句
+   「翻译中…」，翻失败就在栏头给红字原因（正文留空）—— 三种状态都只占这一个框。 */
 function dshThinkTranslateRow(scopeId, segKey) {
   const it = dshThinkTransItem(scopeId, segKey);
   if (!it) return null;
@@ -5247,47 +5499,54 @@ function dshThinkTranslateRow(scopeId, segKey) {
     } else {
       head.appendChild(tag);
     }
-    const cp = document.createElement("button");
-    cp.type = "button";
-    cp.className = "dsh-xlate-copy";
-    cp.textContent = I18n.t("复制");
-    cp.title = I18n.t("复制译文到剪贴板");
-    cp.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const done = () => {
-        cp.textContent = I18n.t("已复制");
-        setTimeout(() => {
-          cp.textContent = I18n.t("复制");
-        }, 1200);
-      };
-      dshClipboardWrite(String(it.text || ""))
-        .then((r) => {
-          if (r && r.ok === false) toast(I18n.t("复制失败"), "err");
-          else done();
-        })
-        .catch(() => toast(I18n.t("复制失败"), "err"));
-    });
-    head.appendChild(cp);
+    if (it.status === "done") {
+      const cp = document.createElement("button");
+      cp.type = "button";
+      cp.className = "dsh-xlate-copy";
+      cp.textContent = I18n.t("复制");
+      cp.title = I18n.t("复制译文到剪贴板");
+      cp.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const done = () => {
+          cp.textContent = I18n.t("已复制");
+          setTimeout(() => {
+            cp.textContent = I18n.t("复制");
+          }, 1200);
+        };
+        dshClipboardWrite(String(it.text || ""))
+          .then((r) => {
+            if (r && r.ok === false) toast(I18n.t("复制失败"), "err");
+            else done();
+          })
+          .catch(() => toast(I18n.t("复制失败"), "err"));
+      });
+      head.appendChild(cp);
+    }
   }
   row.appendChild(head);
   if (it.status !== "error") {
-    const pre = document.createElement("pre");
-    pre.innerHTML = plainTextToLinkHtml(String(it.text || ""));
-    row.appendChild(pre);
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "dsh-xlate-md md-viewer-doc";
+    if (it.status === "pending") bodyEl.textContent = I18n.t("翻译中…");
+    else bodyEl.innerHTML = dshThinkMdHtml(it.text);
+    row.appendChild(bodyEl);
+  } else if (String(it.raw || "").trim()) {
+    /* 失败时把「模型到底回了什么」摆在译文框里（本次需求）：这条报错原本只说
+       「校验未通过」，用户看不到返回内容，无从判断是模型复述还是提示词不对。
+       只做展示与复制，不写成 it.text —— 失败态不得被当成译文缓存。 */
+    const why = document.createElement("div");
+    why.className = "dsh-xlate-why";
+    why.textContent = I18n.t(
+      "模型没有给出译文，以下是它本次返回的内容（点「重试翻译」会换一只模型再试）",
+    );
+    row.appendChild(why);
+    const raw = document.createElement("div");
+    raw.className = "dsh-xlate-md dsh-xlate-raw md-viewer-doc";
+    raw.innerHTML = dshThinkMdHtml(it.raw);
+    row.appendChild(raw);
   }
   return row;
-}
-/* 替换某一思考块下方的译文行（就地刷新，避免整表重绘丢失滚动位置） */
-function dshThinkTranslatePaint(det, scopeId, segKey) {
-  const row = det.parentNode ? det.nextElementSibling : null;
-  const fresh = dshThinkTranslateRow(scopeId, segKey);
-  if (row && row.classList && row.classList.contains("dsh-seg-xlate")) {
-    if (fresh) row.replaceWith(fresh);
-    else row.remove();
-    return;
-  }
-  if (fresh) det.insertAdjacentElement("afterend", fresh);
 }
 /* 单段翻译送入的最大字符数：思考落盘上限是 12000（与 app-boot 的 reasoning 截断同口径），
    超了只翻前 12000 字并注明截断 —— 避免一段超长推理把翻译请求顶成巨量 token。 */
@@ -5295,10 +5554,15 @@ const DSH_XLATE_MAX = 12000;
 async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
   const store = S.thinkTrans || (S.thinkTrans = {});
   const key = dshThinkTransKey(scopeId, segKey);
-  const det = btn.parentNode;
+  /* 就地刷新弹窗里那一个译文框（本次需求）：正文只写在译文框栏头下方的框里 ——
+     旧写法是「在按钮所在的那个元素后面插一行」，按钮挂在栏头里，于是译文框被插进栏头，
+     再被 dshThinkPopPaintXlate 在正文区画一次，用户看到的就是多出来的两个框。 */
+  const paintXlate = () => {
+    try {
+      dshThinkPopPaintXlate(scopeId, segKey);
+    } catch (_) {}
+  };
   const paint = (it) => {
-    if (!det || !det.parentNode) return;
-    dshThinkTranslatePaint(det, scopeId, segKey);
     btn.disabled = it.status === "pending";
     btn.textContent =
       it.status === "pending"
@@ -5311,12 +5575,12 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
       it.status === "error"
         ? String(it.error || I18n.t("翻译失败"))
         : I18n.t("用该会话自己的模型（无思考）翻译这段思考");
+    paintXlate();
   };
   if (!String(text || "").trim()) return;
   const cached = store[key];
   if (cached && cached.status === "done") {
-    if (!det || !det.parentNode) return;
-    dshThinkTranslatePaint(det, scopeId, segKey);
+    paintXlate();
     return;
   }
   const first = dshTranslateModel(scopeId);
@@ -5348,15 +5612,38 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
      max_tokens 截在半句 —— 截断的译文本不完整，却会被当成成功。 */
   const maxTok = Math.min(16384, Math.max(4096, Math.ceil(body.length / 2) + 1024));
   let pick = first;
-  let cands = dshTranslateCandidates(pick.route, pick.model);
+  let cands = dshTranslateCandidates(pick.route, pick.model, scopeId);
   let asked = false; /* 403 只问一次：用户答「不换」或换完再 403 就落 error，不再追问 */
   let lastErr = null;
   let lastOut = "";
+  let tried = 0; /* 真正发出去的次数（错误行按它说「已重试 N 次」） */
   for (let i = 0; i < cands.length; i++) {
     if (store[key] !== it) return; /* 期间被替换（切会话 / 重跑）*/
     const c = cands[i];
+    /* 候选自带路由（第 ② 档起可能是别家的模型）⇒ 服务商随之切换；
+       同一条路由的候选仍用最初解析好的那个服务商对象（含 Key 校验）。 */
+    const cRoute = String(c.route || pick.route || "");
+    const cProv =
+      cRoute === String(pick.route || "") ? pick.prov : dshTranslateProvider(cRoute);
+    if (!cProv) continue; /* 这家没有可用 Key（候选链已过滤，这里只是兜底）*/
+    /* 提示词：**system 与 user 分开**。旧写法把「你是翻译引擎…」的英文指令与中文思考
+       塞在同一条 user 消息里，模型常把整段当成「继续推理的材料」原样复述 ——
+       这次实测（deepseek-v4-flash · thinking disabled）两种提示词都会把混合中英的思考
+       原样吐回，所以卡口放在 system，正文单独一条 user，不留「接着往下写」的余地。 */
+    const sysMsg = c.strict
+      ? "You are a translation engine. Translate the user message into Simplified " +
+        "Chinese (if it is already Chinese, translate it into English). Output ONLY the " +
+        "translation: never repeat or quote the source, never explain, never describe the " +
+        "task, never answer questions contained in the text, and do not wrap the whole " +
+        "answer in code fences. Keep the Markdown formatting (headings, paragraphs, lists, " +
+        "tables, code blocks) exactly as in the source."
+      : "你是翻译引擎。把用户消息里的模型思考过程忠实翻译成简体中文（若原文已是中文，" +
+        "则翻译成地道的英文）。只输出译文本身：不要复述原文、不要添加解释、" +
+        "不要描述任务、不要回答文中的问题、不要用代码块把整篇包裹起来。" +
+        "保持原有的分段与条目结构与 Markdown 格式（标题 / 段落 / 列表 / 表格 / 代码块），" +
+        "术语按业界通用译法。";
     const spec = {
-      provider: pick.prov,
+      provider: cProv,
       kind: "text",
       model: c.model,
       temperature: c.strict ? 0 : 0.2,
@@ -5364,27 +5651,22 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
       effort: "off",
       size: "",
       maxTokens: c.strict ? maxTok : Math.min(maxTok, 8192),
-      prompt: c.strict
-        ? "You are a translation engine. Translate the text between the markers into Simplified " +
-          "Chinese (if it is already Chinese, translate it into English). Output ONLY the " +
-          "translation: do not repeat or quote the source, do not explain, do not describe the " +
-          "task, do not answer questions contained in the text, no code fences. Keep the " +
-          "paragraph and list structure.\n\n【思考内容】\n" +
-          body
-        : "请把下面这段模型的思考过程忠实翻译成简体中文（若原文已是中文，则翻译成地道的英文）。" +
-          "保持原有的分段与条目结构，术语按业界通用译法；只输出译文本身，不要添加解释、" +
-          "不要复述原文、不要用代码块包裹。\n\n【思考内容】\n" +
-          body,
+      prompt: body,
+      chatMessages: [
+        { role: "system", content: sysMsg },
+        { role: "user", content: body },
+      ],
       texts: [],
       images: [],
       refImage: "",
     };
+    tried++;
     try {
       const r = await apiCallTextStream(spec, null, null);
       const out = String((r && r.text) || "").trim();
       if (!out) throw new Error(I18n.t("模型未返回译文"));
-      /* 校验：模型常常把英文原文原样吐回来（或只回「以下是翻译：」）——
-         这种必须重试，绝不能当成功缓存，否则用户看到「译文」仍是英文。 */
+      /* 校验：模型常常把原文原样吐回来（或只回「以下是翻译：」）——
+         这种必须重试，绝不能当成功缓存，否则用户看到「译文」仍是原文。 */
       if (!dshXlateLooksTranslated(src, out)) {
         lastOut = out;
         lastErr = new Error(I18n.t("翻译质量校验未通过（模型仍在输出原文）"));
@@ -5411,14 +5693,14 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
         lastErr = e;
         if (!asked) {
           asked = true;
-          const sw = await dshXlateAskSwitchModel(pick.route, c.model, em, scopeId);
+          const sw = await dshXlateAskSwitchModel(cRoute, c.model, em, scopeId);
           if (store[key] !== it) return;
           if (sw) {
             const np = dshXlatePick(sw.route, sw.model);
             if (np.prov) {
               pick = np;
               it.model = np.model;
-              cands = dshTranslateCandidates(np.route, np.model);
+              cands = dshTranslateCandidates(np.route, np.model, scopeId);
               i = -1; /* 换家后从候选链第 1 档重来 */
               continue;
             }
@@ -5435,12 +5717,24 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
     it.status = "error";
     it.error =
       (lastErr && lastErr.message ? lastErr.message : String(lastErr || I18n.t("翻译失败"))) +
-      (lastOut ? "｜模型仍返回原文，已重试 " + cands.length + " 次" : "");
+      (lastOut
+        ? "｜模型仍返回原文，已重试 " + Math.max(0, tried - 1) + " 次"
+        : "");
+    /* 被拒的那一版留在项上：用户能在译文框里看到「模型到底回了什么」，
+       不必靠猜（本次需求的现场就是这个提示，看不到返回内容无从判断）。 */
+    it.raw = lastOut;
   }
-  if (store[key] === it) paint(it);
+  if (store[key] === it) {
+    paint(it);
+    /* 思考弹窗也画着同一条译文：翻完就把它那一栏就地换掉（弹窗可能已被重画，按 DOM 找） */
+    try {
+      dshThinkPopPaintXlate(scopeId, segKey);
+    } catch (_) {}
+  }
 }
-/* 思考段右侧小按钮。stopPropagation 必须齐：summary 内的点击会开合 details，
-   键盘 Enter / Space 也会触发 toggle，所以 keydown 一并拦掉。 */
+/* 思考段右侧小按钮。本次需求后它只活在思考弹窗里（会话里那一行摘要条不再挂按钮），
+   stopPropagation 仍然全留着：弹窗里的按钮祖先链上还有可点的行 / 宿主，别让一次
+   点击顺带把窗关了。 */
 function dshThinkTranslateBtn(text, scopeId, segKey, sig) {
   const b = document.createElement("button");
   b.type = "button";
@@ -5468,21 +5762,181 @@ function dshThinkTranslateBtn(text, scopeId, segKey, sig) {
   });
   return b;
 }
-/* 思考块 + 折叠条【最右侧】一颗翻译小按钮 + 译文行。
-   按钮直接挂在 <summary> 里（不另起一行）：折叠条本身就是一整行，按钮整行右端对齐；
-   summary 变 flex、文案单独套 span（更新字数时只改这个 span，不会把按钮冲掉）。
-   点按钮靠 dshThinkTranslateBtn 里的 stopPropagation 拦掉 toggle，不会顺带开合思考。 */
-function dshThinkTranslateAppend(row, det, sum, text, scopeId, segKey, sig) {
-  row.appendChild(det);
-  if (sum) {
-    sum.classList.add("dsh-think-bar");
-    sum.dataset.xlateBtnKey = dshThinkTransKey(scopeId, segKey);
-    sum.appendChild(
-      dshThinkTranslateBtn(String(text || ""), scopeId, segKey, sig),
-    );
-  }
+/* 译文一变就刷新弹窗里的译文框（翻译是异步的：发起后弹窗可能已经被重画过，
+   所以刷新走 DOM 查找、不 captured 元素引用）。
+   口径（本次需求）：**未点翻译时不显示译文框**，所以这一栏是按需建 / 按需收的 ——
+   点过翻译（翻译中 / 已成 / 失败）才在原文框**下面**建出这一栏，正文只往它栏头下方的
+   框里写；没有译文项就把整栏收掉。 */
+function dshThinkPopPaintXlate(scopeId, segKey) {
+  const root = document.querySelector(
+    '.dsh-think-pop[data-xkey="' + String(dshThinkTransKey(scopeId, segKey)) + '"]',
+  );
+  if (!root) return null;
+  let col = root.querySelector('.dsh-think-pop-col[data-think-pop="xlate"]');
   const r = dshThinkTranslateRow(scopeId, segKey);
-  if (r) row.appendChild(r);
+  if (!r) {
+    if (col && col.parentNode) col.parentNode.removeChild(col);
+    return null;
+  }
+  if (!col) {
+    col = document.createElement("div");
+    col.className = "dsh-think-pop-col dsh-think-pop-col-xlate";
+    col.dataset.thinkPop = "xlate";
+    const paneEl = document.createElement("div");
+    paneEl.className = "dsh-think-pop-pane dsh-think-pop-pane-xlate";
+    paneEl.dataset.thinkPop = "xlate";
+    col.appendChild(paneEl);
+    root.appendChild(col); /* 原文框下面（不是右栏）*/
+  }
+  const paneEl = col.querySelector(".dsh-think-pop-pane");
+  if (!paneEl) return col;
+  paneEl.textContent = "";
+  paneEl.appendChild(r);
+  return col;
+}
+
+/* ── 思考弹窗（本次需求 · 拷问共识 + 本轮调整）──────────────────────────────
+   原来会话里的思考段是 <details> 下拉：展开后正文被限高框在自己的小滚动区里，
+   会话本身也跟着被顶长 —— 用户口径「移除思考下拉，改为点击思考条目弹窗，
+   避免文字滚动影响浏览」。
+   现在的形态：会话里只留一行摘要条（◉ 思考 · N 字），点它开一只**居中弹窗**
+   （应用现有 #overlay：近全屏宽幅、正文区各自独立滚动、✕ / Esc 关；最小化已下线）。
+   本轮调整（用户口径，别再改回去）：
+     · 窗里**只有一个原文框**（Markdown 渲染），翻译按钮挂在它的栏头（复制旁边）；
+     · **未点翻译时不显示译文框**：译文那一栏由 dshThinkPopPaintXlate 按需建出来，
+       点过翻译才出现在原文框**下面**，正文写在译文框栏头下方的框里 ——
+       旧写法把译文框插进栏头、又在正文区画一次，用户看到的是多出来的两个框；
+     · 翻译仍走该会话自己的模型 + 按段缓存 + 译文校验那套，状态一并留在弹窗里。
+   每次只开一个（#overlay 是全应用独一份的宿主）；不记忆用户拖改的尺寸。 */
+let _dshThinkPop = null;
+function dshThinkPopClose() {
+  _dshThinkPop = null;
+  try {
+    if (typeof closeOverlay === "function") closeOverlay();
+  } catch (_) {}
+}
+/* 一栏 = 栏头（标题 + 工具位）+ 正文框（自己滚）。译文那一栏只在有译文时建。 */
+function dshThinkPopCol(root, which, label) {
+  const col = document.createElement("div");
+  col.className = "dsh-think-pop-col dsh-think-pop-col-" + which;
+  col.dataset.thinkPop = which;
+  const head = document.createElement("div");
+  head.className = "dsh-think-pop-head";
+  const t = document.createElement("span");
+  t.className = "dsh-think-pop-title";
+  t.textContent = label;
+  head.appendChild(t);
+  const tools = document.createElement("span");
+  tools.className = "dsh-think-pop-tools";
+  head.appendChild(tools);
+  col.appendChild(head);
+  const paneEl = document.createElement("div");
+  paneEl.className = "dsh-think-pop-pane";
+  paneEl.dataset.thinkPop = which;
+  col.appendChild(paneEl);
+  root.appendChild(col);
+  return { col, tools, paneEl };
+}
+function openDshThinkPop(desc) {
+  const d = desc || {};
+  const txt = String(d.text || "");
+  if (!txt.trim()) return;
+  const scopeId = String(d.scopeId || "");
+  const segKey = d.segKey == null ? "" : String(d.segKey);
+  if (typeof openOverlay !== "function") return;
+  openOverlay(I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字"));
+  const box = document.getElementById("overlay");
+  const shell = box ? box.querySelector(".overlay-box") : null;
+  if (shell) shell.classList.add("dsh-think-pop-box");
+  const body = document.getElementById("ovBody");
+  if (!body) return;
+  body.innerHTML = "";
+  const root = document.createElement("div");
+  root.className = "dsh-think-pop";
+  root.dataset.xkey = dshThinkTransKey(scopeId, segKey);
+
+  /* 原文框：栏头 = 「思考原文」+ 时刻 + 复制 + 翻译；正文 = Markdown，自己滚 */
+  const left = dshThinkPopCol(root, "src", I18n.t("思考原文"));
+  const md = document.createElement("div");
+  md.className = "dsh-think-pop-md md-viewer-doc";
+  md.innerHTML = dshThinkMdHtml(txt);
+  left.paneEl.appendChild(md);
+  if (d.at || d.meta) {
+    const meta = document.createElement("div");
+    meta.className = "dsh-think-pop-meta";
+    meta.textContent = [d.meta, d.at ? formatMsgTimeSec(d.at) : ""]
+      .filter(Boolean)
+      .join(" · ");
+    if (meta.textContent) left.tools.appendChild(meta);
+  }
+  const cp = document.createElement("button");
+  cp.type = "button";
+  cp.className = "dsh-think-xlate";
+  cp.textContent = I18n.t("复制");
+  cp.title = I18n.t("复制这段思考原文到剪贴板");
+  cp.onclick = () => {
+    const done = () => {
+      cp.textContent = I18n.t("已复制");
+      setTimeout(() => {
+        cp.textContent = I18n.t("复制");
+      }, 1200);
+    };
+    dshClipboardWrite(txt)
+      .then((r) => (r && r.ok === false ? toast(I18n.t("复制失败"), "err") : done()))
+      .catch(() => toast(I18n.t("复制失败"), "err"));
+  };
+  left.tools.appendChild(cp);
+
+  /* 翻译按钮也挂在原文栏头（译文框按需长在下面，未点翻译时窗里就只有这一个框） */
+  const first = dshTranslateModel(scopeId);
+  const btn = dshThinkTranslateBtn(txt, scopeId, segKey, txt);
+  if (!first || !first.prov) {
+    btn.disabled = true;
+    btn.title = I18n.t("未找到可用文本服务商（请在设置 · API/配置中配置并填写 API Key）");
+  }
+  left.tools.appendChild(btn);
+  /* 已经翻过（缓存命中 / 正在翻）：译文框照原样建出来 */
+  dshThinkPopPaintXlate(scopeId, segKey);
+
+  body.appendChild(root);
+  const foot = document.getElementById("ovFoot");
+  if (foot) {
+    const close = document.createElement("button");
+    close.className = "mini primary";
+    close.textContent = I18n.t("关闭");
+    close.onclick = () => dshThinkPopClose();
+    foot.appendChild(close);
+  }
+  _dshThinkPop = { scopeId: scopeId, segKey: segKey, text: txt };
+}
+
+/* 会话里那一行思考摘要条（历史消息与运行中同一形态）：
+   ◉ 思考 · N 字 + 右端时刻，整行可点 → 弹窗；hover 出「点击打开」的提示。 */
+function dshThinkRowEl(desc) {
+  const d = desc || {};
+  const txt = String(d.text || "");
+  if (!txt.trim()) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "dsh-seg dsh-seg-think dsh-think-row";
+  btn.title = I18n.t("点击打开思考弹窗（原文按 Markdown 显示，译文点了翻译才出现）");
+  const txtEl = document.createElement("span");
+  txtEl.className = "dsh-think-sum-txt";
+  txtEl.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+  btn.appendChild(txtEl);
+  btn.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openDshThinkPop({
+      text: txt,
+      scopeId: d.scopeId,
+      segKey: d.segKey,
+      at: d.at,
+      meta: d.meta,
+    });
+  });
+  return btn;
 }
 
 /* 历史消息的一段 → DOM。工具段按 callId / step 从 m.tools 池里取对应条目，
@@ -5555,42 +6009,27 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy) {
     return c;
   }
   if (seg.k === "think") {
-    /* 会话「显示思考」关掉时整块不渲染（不是折叠：数据仍在 msg.reasoning / segments 里） */
+    /* 会话「显示思考」关掉时整条不渲染（数据仍在 msg.reasoning / segments 里，打开即见）。
+       本次需求：思考不再有下拉开合 —— 只留一行可点的摘要条，点开在弹窗里读。 */
     if (showThink === false) return null;
     const txt = String(seg.text || "");
     if (!txt.trim()) return null;
-    const det = document.createElement("details");
-    det.className = "dsh-seg dsh-seg-think";
+    /* 段序 × 会话 id 就是这一段思考在缓存里的键（翻译按它缓存）。 */
     const oKey =
       "segthink:" + (nodeId || "") + ":" + (idx == null ? "" : idx) + ":" + n;
-    /* 展开态三态：用户点过就以用户那一次为准（true / false 都记下来），
-       没点过才按档位默认（详细 / 完全展开 = 默认展开，见 dshPolicyOfView） */
-    const oSt = S.openDshTools ? S.openDshTools[oKey] : undefined;
-    if (oSt === true || (oSt === undefined && pol && pol.expandThink)) det.open = true;
-    det.addEventListener("mousedown", (ev) => ev.stopPropagation());
-    det.addEventListener("click", (ev) => ev.stopPropagation());
-    det.addEventListener("toggle", () => {
-      S.openDshTools = S.openDshTools || {};
-      S.openDshTools[oKey] = !!det.open;
+    const row = document.createElement("div");
+    row.className = "dsh-seg dsh-seg-think-wrap";
+    const btn = dshThinkRowEl({
+      text: txt,
+      scopeId: nodeId,
+      segKey: oKey,
+      at: seg.at,
     });
-    const sum = document.createElement("summary");
-    /* 折叠条文案单独套一层 span：翻译按钮要坐在同一行最右侧，运行时刷新字数只改这层 */
-    const sumTxt = document.createElement("span");
-    sumTxt.className = "dsh-think-sum-txt";
-    sumTxt.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
-    sum.title = I18n.t("点击展开 / 收起模型思考过程");
-    sum.appendChild(sumTxt);
-    const pre = document.createElement("pre");
-    pre.innerHTML = plainTextToLinkHtml(txt);
-    det.appendChild(sum);
-    det.appendChild(pre);
-    /* 思考块 + 折叠条最右侧「翻译」小按钮 + 译文行（一个整体，一次插进时间线）；
-       左侧挂这一项自己的时刻（段自带 at，老存档回落所属消息时刻）。 */
-    const wrap = document.createElement("div");
-    wrap.className = "dsh-seg dsh-seg-think-wrap";
-    dshThinkTranslateAppend(wrap, det, sum, txt, nodeId, oKey, txt);
-    dshSegTimeAttach(wrap, seg.at, 0, msgAt);
-    return wrap;
+    if (!btn) return null;
+    row.appendChild(btn);
+    /* 左侧挂这一项自己的时刻（段自带 at，老存档回落所属消息时刻） */
+    dshSegTimeAttach(row, seg.at, 0, msgAt);
+    return row;
   }
   if (seg.k === "say" || seg.k === "err") {
     let txt = String(seg.text || "");
@@ -5639,10 +6078,9 @@ function agentLiveSegsEl(row, st, live, items) {
   /* 会话「显示思考」开关：live 行与历史消息同一判据（关掉 = 思考段整块不渲染，
      数据照旧随本轮轨迹落进消息存档，见 agentRoundMsgTail）。 */
   const showThink = agentThinkShown(st);
-  /* 「详细 / 完全展开」档：思考块落地即展开；「完全展开」档工具卡也默认摊开
-     （与历史消息那一支同一条档位判据，见 dshPolicyOfView） */
+  /* 「完全展开」档：工具卡默认摊开（与历史消息那一支同一条档位判据，见 dshPolicyOfView）——
+     本次需求后这一档不再管思考（思考一律收成一行摘要条、点开在弹窗里读）。 */
   const polLive = dshPolicyOfView(dshTranscriptViewFor(st));
-  const expandThink = !!polLive.expandThink;
   const expandProcess = !!polLive.expandProcess;
   /* 正在增长的思考段未必是尾段：agent 每步「思考 → 工具」，思考段后面还会挂
      tool 段，所以按 tracePush 打的 open 标记认它，而不是认 items 末尾。 */
@@ -5665,67 +6103,30 @@ function agentLiveSegsEl(row, st, live, items) {
     const streaming =
       seg.k === "think" ? seg.open === true || (isLast && !anyOpenThink) : isLast;
     if (seg.k === "think") {
-      /* 「显示思考」关掉：这一块不渲染（数据仍在轨迹与消息存档里，
+      /* 「显示思考」关掉：这一项不渲染（数据仍在轨迹与消息存档里，
          再打开开关即整表重绘看回来） */
       if (!showThink) continue;
       const txt = String(seg.text || "");
       if (!txt) continue;
-      const det = document.createElement("details");
-      det.className = "dsh-seg dsh-seg-think";
-      /* 仍在增长的思考段挂上旧 id + 段序：重绘前的
-         rememberAgentThinkScroll 与就地更新都按这两个信息找到它 */
-      if (streaming) {
-        det.id = "agent-think";
-        det.dataset.segIdx = String(i);
-      }
       const oKey = "segthink:" + (st.id || "") + ":" + i;
-      const sum = document.createElement("summary");
-      const sumTxt = document.createElement("span");
-      sumTxt.className = "dsh-think-sum-txt";
-      sumTxt.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
-      sum.title = I18n.t("点击展开 / 收起模型思考过程");
-      sum.appendChild(sumTxt);
-      /* 这一项的时刻来自**段自己**的 at（app-db.js tracePush 在思考增量到达那一刻记下）——
-         不再拿「本轮 / 消息」的时刻冒充本段时刻（见 dshSegTimeEl 的上方口径）。 */
-      const pre = document.createElement("pre");
-      if (streaming) {
-        pre.id = "agent-think-body";
-        bindAgentThinkScroll(st, pre);
-      }
-      det.appendChild(sum);
-      det.appendChild(pre);
-      /* 先挂监听再程序设 open（toggle 异步派发），沿用现有滚动跟随逻辑 */
-      det.addEventListener("toggle", () => {
-        S.openDshTools = S.openDshTools || {};
-        S.openDshTools[oKey] = !!det.open;
-        if (!det.open) return;
-        pre.textContent = String(seg.text || "");
-        applyAgentThinkScroll(
-          st,
-          pre,
-          streaming && !det._progToggle && agentThinkStickOf(st),
-        );
-      });
-      /* 展开态三态：用户点过就以用户那一次为准；没点过才看档位默认
-         （详细 / 完全展开 = 思考块落地即展开，见 dshPolicyOfView） */
-      const oSt = S.openDshTools ? S.openDshTools[oKey] : undefined;
-      if (oSt === true || (oSt === undefined && expandThink)) {
-        det._progToggle = true;
-        det.open = true;
-        if (typeof requestAnimationFrame === "function")
-          requestAnimationFrame(() => {
-            det._progToggle = false;
-          });
-        else det._progToggle = false;
-      }
-      /* 已经定稿的思考段：块 + 折叠条最右侧「翻译」小按钮 + 译文行。
-         正在增长的那段先不挂按钮 —— 译文要对整段思考负责，翻译一段还会继续变长的
-         文字，用户下次重绘就会看到译文与原文对不上；等这段定稿（后一步的思考段或
-         本轮收尾重绘）按钮自动出现。按钮在折叠条里，收起时按钮与译文都还在。 */
+      /* 本次需求：不再有 details 下拉开合 —— 一行可点的摘要条，点开在弹窗里读全文。
+         仍在增长的那一段挂上旧 id + 段序：重绘前的就地字数刷新与滚动记忆按它们找它。 */
       const box = document.createElement("div");
       box.className = "dsh-seg dsh-seg-think-wrap";
-      if (streaming) box.appendChild(det);
-      else dshThinkTranslateAppend(box, det, sum, txt, st.id, oKey, txt);
+      const btn = dshThinkRowEl({
+        text: txt,
+        scopeId: st.id,
+        segKey: oKey,
+        at: seg.at,
+      });
+      if (!btn) continue;
+      if (streaming) {
+        btn.id = "agent-think";
+        btn.dataset.segIdx = String(i);
+      }
+      box.appendChild(btn);
+      /* 这一项的时刻来自**段自己**的 at（app-db.js tracePush 在思考增量到达那一刻记下）——
+         不再拿「本轮 / 消息」的时刻冒充本段时刻（见 dshSegTimeEl 的上方口径）。 */
       dshSegTimeAttach(box, seg.at, 0, 0);
       row.appendChild(box);
     } else if (seg.k === "say" || seg.k === "err") {
@@ -5830,12 +6231,12 @@ function updateAgentLiveThink(st) {
     }
     if (idx < 0) idx = items.length - 1;
     const seg = items[idx];
-    const det = document.getElementById("agent-think");
+    const rowBtn = document.getElementById("agent-think");
     if (
       !seg ||
       seg.k !== "think" ||
-      !det ||
-      Number(det.dataset.segIdx) !== idx
+      !rowBtn ||
+      Number(rowBtn.dataset.segIdx) !== idx
     ) {
       try {
         renderAgentSession();
@@ -5843,22 +6244,20 @@ function updateAgentLiveThink(st) {
       return;
     }
     const txt = String(seg.text || "");
-    const sum = det && det.querySelector("summary");
-    /* 只改折叠条里的文案 span：整条 textContent 会被冲掉（那里面还有翻译按钮） */
-    if (sum) {
-      const sumTxt =
-        sum.querySelector(".dsh-think-sum-txt") || sum.firstElementChild;
-      const label = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
-      if (sumTxt && sumTxt.tagName !== "BUTTON") sumTxt.textContent = label;
-      else sum.textContent = label;
-    }
-    if (det && det.open) {
-      const pre = document.getElementById("agent-think-body");
-      if (pre) {
-        pre.textContent = txt;
-        applyAgentThinkScroll(st, pre, false);
-      }
-    }
+    /* 只改摘要条里的文案 span（本次需求后那一行不再有按钮，但仍按 span 就地改：
+       整条 textContent 会连带把行内结构与 id / dataset 一起冲掉） */
+    const sumTxt =
+      rowBtn.querySelector(".dsh-think-sum-txt") || rowBtn.firstElementChild;
+    const label = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+    if (sumTxt) sumTxt.textContent = label;
+    else rowBtn.textContent = label;
+    /* 全文只在弹窗里读：弹窗若正开着这一段，正文跟着长（见 openDshThinkPop 的 live 分支）。
+       正文按 Markdown 渲染（本次需求），所以这里也走 dshThinkMdHtml 这同一个入口。 */
+    const popMd = document.querySelector(
+      '.dsh-think-pop [data-think-pop="src"] .dsh-think-pop-md',
+    );
+    if (popMd && _dshThinkPop && String(_dshThinkPop.segKey) === "segthink:" + (st.id || "") + ":" + idx)
+      popMd.innerHTML = dshThinkMdHtml(txt);
   });
 }
 
@@ -6205,6 +6604,21 @@ function bindDshUserImgOpen(body) {
 function dshMsgBlock(m, nodeId, idx, opts) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
+  /* 浏览器求助的「已回应 / 等模型继续」内嵌记录（app-db.js 的 ixNoteBrowserAnswer）：
+     标记出来 —— ① 行内提示样式（不是用户手打的正文）② 无进展看门狗按这个
+     data-ix-bnote 找回这一行就地补「重发本轮 / 终止本轮」。 */
+  if (m && m._src === "ix-browser") {
+    row.classList.add("dsh-msg-bnote");
+    row.dataset.ixBnote = String(Number(m.at) || 0);
+  }
+  /* 「这一轮已经结束」痕迹（app-db.js 的 ixRoundEndTrace：轮次收尾时卡片收口后落的
+     一行界面痕迹 —— 落盘、重开可见、不进模型上下文）。与上面那条同族，另外自带
+     一枚「重发本轮」出口（落点是 app-db.js 的 ixRoundEndPaint，与无进展提示同源；
+     它在函数末尾才挂 —— 出口要排在正文气泡之后，不能跑到上面去）。 */
+  if (m && m._src === "ix-round-end") {
+    row.classList.add("dsh-msg-bnote");
+    row.dataset.ixRnote = String(Number(m.at) || 0);
+  }
   if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
   /* 有分段轨迹（且正文拼接与 content 一致）就按段渲染，否则走旧渲染 */
   const segsView = dshMsgSegsViewable(m);
@@ -6236,9 +6650,10 @@ function dshMsgBlock(m, nodeId, idx, opts) {
         : I18n.t("已递交给正在跑的这一轮，在下一步边界生效；送不进去时自动改走发送队列");
     head.appendChild(tag);
   }
-  /* 旧渲染（无分段轨迹）的思考块：head 之后单独一行，见下方 row.appendChild。
+  /* 旧渲染（无分段轨迹）的思考：head 之后单独一行摘要条，见下方 row.appendChild
+     （本次需求：不再是 <details> 下拉开合，点开在弹窗里读全文）。
      m._segNoBody（段里还留着思考、但 say 段拼不回正文）也走这一支：正文退回整段
-     content 渲染，思考照样给折叠条 —— 绝不因为它就整条消息什么都不显示。 */
+     content 渲染，思考照样给一行摘要条 —— 绝不因为它就整条消息什么都不显示。 */
   let thinkBoxEl = null;
   if (
     m.role === "assistant" &&
@@ -6247,42 +6662,20 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     m.reasoning &&
     String(m.reasoning).trim()
   ) {
-    const det = document.createElement("details");
-    det.className = "dsh-think";
     const rKey = "think:" + (nodeId || "") + ":" + String(m.content || "").slice(0, 40);
-    if (S.openDshTools && S.openDshTools[rKey]) det.open = true;
-    det.addEventListener("mousedown", (ev) => ev.stopPropagation());
-    det.addEventListener("click", (ev) => ev.stopPropagation());
-    det.addEventListener("toggle", () => {
-      S.openDshTools = S.openDshTools || {};
-      if (det.open) S.openDshTools[rKey] = true;
-      else delete S.openDshTools[rKey];
-    });
-    const sum = document.createElement("summary");
-    const sumTxt = document.createElement("span");
-    sumTxt.className = "dsh-think-sum-txt";
-    sumTxt.textContent =
-      I18n.t("思考过程 · ") + String(m.reasoning).length + I18n.t(" 字");
-    sum.title = I18n.t("点击展开 / 收起模型思考过程");
-    sum.appendChild(sumTxt);
-    const pre = document.createElement("pre");
-    pre.innerHTML = plainTextToLinkHtml(m.reasoning);
-    det.appendChild(sum);
-    det.appendChild(pre);
-    /* 思考块 + 折叠条最右侧「翻译」小按钮 + 译文行（无分段轨迹的老消息也能翻）。
-       不塞进 .dsh-msg-head（那是一行 flex role + 折叠条），改挂在 head 之后 */
+    /* 思考摘要条 + 自己的时刻栏（与分段渲染同一形态、同一份翻译缓存键） */
     const thinkBox = document.createElement("div");
     thinkBox.className = "dsh-seg dsh-seg-think-wrap dsh-think-head";
-    dshThinkTranslateAppend(
-      thinkBox,
-      det,
-      sum,
-      m.reasoning,
-      nodeId,
-      rKey,
-      m.reasoning,
-    );
-    thinkBoxEl = thinkBox;
+    const tRow = dshThinkRowEl({
+      text: String(m.reasoning),
+      scopeId: nodeId,
+      segKey: rKey,
+      at: m.at,
+    });
+    if (tRow) {
+      thinkBox.appendChild(tRow);
+      thinkBoxEl = thinkBox;
+    }
   }
   /* 正文含代码块 / Markdown 结构 → 消息最下方补「复制 / 保存」动作条
      （口径见 dshMsgActionBar 上方注释）。判定提前算：头部 / 时间行原有的小「复制」
@@ -6386,6 +6779,14 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     if (m.role === "assistant" && !hasActions)
       tail.appendChild(dshCopyBtn(m, "dsh-msg-tail-copy"));
     row.appendChild(tail);
+  }
+  /* 「这一轮已经结束」痕迹自带的那枚出口（app-db.js 的 ixRoundEndPaint：与无进展提示
+     同源，点了 = 终止当前这一轮 + 把最后一条用户消息再发一次）。挂在正文气泡之后 ——
+     排在函数开头就等于把按钮顶到正文上面去。 */
+  if (m && m._src === "ix-round-end") {
+    try {
+      if (typeof ixRoundEndPaint === "function") ixRoundEndPaint(row, m);
+    } catch (_) {}
   }
   return row;
 }
@@ -6550,10 +6951,9 @@ function renderAgentSession(opts) {
   );
   const live = liveNodeForSession(st);
   const running = !!(st.running || live);
-  /* 整表重绘会销毁旧的 details/pre（工具事件也会走到这里）：清空前先把
-     思考区的阅读位置与跟随状态存到 S（按会话 id 隔离），重建后再还原 */
-  if (!switched)
-    rememberAgentThinkScroll(st, document.getElementById("agent-think-body"));
+  /* 本次需求：会话列表里不再有可滚的思考正文（思考只剩一行摘要条，正文在 #overlay
+     的思考弹窗里），所以原来「清空前记住思考滚动位置、重建后再还原」那一步整条撤掉 ——
+     再叫一次也只是拿一个永远不存在的 #agent-think-body。 */
   list.innerHTML = "";
   if (list) list.style.display = "";
   if (!st.messages.length && !running) {
@@ -6620,44 +7020,16 @@ function renderAgentSession(opts) {
       agentLiveSegsEl(box, st, live, segItems);
       row.appendChild(box);
     } else {
-      const think = document.createElement("details");
-      think.className = "dsh-think-live";
-      think.id = "agent-think";
-      const thinkSum = document.createElement("summary");
-      thinkSum.textContent =
-        I18n.t("思考过程 · ") +
-        "0" +
-        I18n.t(" 字") +
-        I18n.t(" · 点击查看");
-      thinkSum.title = I18n.t("点击展开 / 收起模型思考过程");
-      const thinkPre = document.createElement("pre");
-      thinkPre.id = "agent-think-body";
-      bindAgentThinkScroll(st, thinkPre);
-      think.appendChild(thinkSum);
-      think.appendChild(thinkPre);
-      /* 先挂监听：程序设 open 同样会派发 toggle（异步排队），
-         用一次性标记 _progToggle 把它和用户真实点击区分开 */
-      think.addEventListener("toggle", () => {
-        S._agentThinkOpen = !!think.open;
-        if (!think.open) return;
-        thinkPre.textContent = agentThinkText(st, live);
-        /* 重建（工具事件触发整表重绘）只还原上次阅读位置，不跳底；
-           只有用户真实点击展开且本就贴底时才定位到底 */
-        applyAgentThinkScroll(
-          st,
-          thinkPre,
-          !think._progToggle && agentThinkStickOf(st),
-        );
+      /* 非分段（老路径）：思考同样只给一行可点开的摘要条（本次需求）
+         —— 全文改在弹窗里读，不再有下拉开合。 */
+      const tRow = dshThinkRowEl({
+        text: agentThinkText(st, live),
+        scopeId: st.id,
+        segKey: "think-live:" + (st.id || ""),
+        at: Date.now(),
       });
-      think._progToggle = true;
-      think.open = !!S._agentThinkOpen;
-      if (typeof requestAnimationFrame === "function")
-        requestAnimationFrame(() => {
-          think._progToggle = false;
-        });
-      else think._progToggle = false;
-      /* 「显示思考」关掉时这一块不挂进 DOM（思考数据仍在，打开开关即重绘看回） */
-      if (agentThinkShown(st)) row.appendChild(think);
+      /* 「显示思考」关掉时这一行不挂进 DOM（思考数据仍在，打开开关即重绘看回） */
+      if (tRow && agentThinkShown(st)) row.appendChild(tRow);
       updateAgentThinkEl(st, live);
       const tools = document.createElement("div");
       tools.className = "dsh-tools";
@@ -7447,10 +7819,13 @@ async function agentCompact() {
   }
 }
 async function agentCompactRun(st) {
-  /* 历史存档里曾被回滚的轮次消息不参与压缩：它们已不在上下文里，摘要也不该复述它们 */
+  /* 历史存档里曾被回滚的轮次消息不参与压缩：它们已不在上下文里，摘要也不该复述它们。
+     构造口径收进 agentHistoryEntries（同文去重 + 整段限长 + 把只给用户看的界面痕迹
+     `_src:'dev-node'` / `_src:'ix-browser'` 挡在外面）—— 压缩摘要不该把浏览器求助的
+     「已回应，模型继续中」当成用户说过的话抄进去。 */
   const rbSrc = activeSessionMessages(st.messages);
-  const hist = rbSrc
-    .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
+  const hist = agentHistoryEntries({ messages: rbSrc }, { maxChars: 40000, skipLast: false })
+    .map((r) => (r.role === "user" ? "用户：" : "助手：") + r.text)
     .join("\n\n");
   toast(I18n.t("正在压缩上文…"), "ok");
   try {
@@ -8100,56 +8475,74 @@ function agentRoundClearTodos(st) {
   } catch (_) {}
   return true;
 }
-/* ── 轮次标签（本次需求）：第 N 轮 = 该会话里用户第几次发送 ──
- * 号一律复用 agentRoundOfRun（本文件上面那段「会话轮号」就是它，与轨迹的「第 N 轮」同一个
- * 真源）—— 绝不自造第二个计数器：两套计数早晚会分叉，用户就会看到顶部写「第 2 轮」、
- * 轨迹里那一轮却叫「第 3 轮」。这里只负责把它连同**本轮开始时刻**摆到会话区顶部。 */
-function agentRoundTime(atMs) {
-  const d = new Date(Number(atMs) || Date.now());
+/* ── 会话时间区间（本次需求 · 用户口径）：会话区左上角**不再报轮数** ──
+ * 只报**整个会话**的时间区间：第一条消息 → 最后一条消息（跨轮累计）。
+ * 区间一律从消息历史现推（重启后自然复原，没有第二个计数器、也没有持久键要搬）；
+ * 轮号仍只在轨迹 / 改动两栏按「第 N 轮」分组（那里的号取自 agentRoundOfRun，一行未动）。 */
+function agentRoundHm(d) {
   const p = (n) => (n < 10 ? "0" + n : String(n));
   return p(d.getHours()) + ":" + p(d.getMinutes());
 }
-/* 本轮开始时刻 = 历史里最后一条用户消息的时间；没有用户消息 → 0（标签整行不占位）。
-   不另存字段：重启后从消息历史即可复原，少一个会写坏的持久键。 */
-function agentRoundRoundAt(st) {
+function agentRoundTime(atMs) {
+  return agentRoundHm(new Date(Number(atMs) || Date.now()));
+}
+/* 时刻文案：同一天 → 「HH:MM」；跨天 → 各带「MM-DD 」前缀（跨零点的会话能一眼看出跨天）。
+   日期格式只写这一处，标签与 tooltip 两边共用。 */
+function agentRoundTimeOf(atMs, withDay) {
+  const d = new Date(Number(atMs) || Date.now());
+  if (!withDay) return agentRoundHm(d);
+  const p = (n) => (n < 10 ? "0" + n : String(n));
+  return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + agentRoundHm(d);
+}
+/* 整个会话的时间区间 = 历史里**第一条带时刻的消息** → **最后一条带时刻的消息**
+   （用户 / 助手消息都算，这就是「第一次消息开始到最后一条」）。一条带时刻的都没有
+   （空会话 / 老存档没写 at）→ { from: 0, to: 0 }，调用方整行不占位、也绝不编一个时刻。 */
+function agentRoundRange(st) {
   const msgs = (st && Array.isArray(st.messages) && st.messages) || [];
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i];
-    if (m && m.role === "user") return Number(m.at) || 0;
+  let from = 0;
+  let to = 0;
+  for (const m of msgs) {
+    const at = Number(m && (m.at || m.createdAt || m.ts)) || 0;
+    if (!(at > 0)) continue;
+    if (!from || at < from) from = at;
+    if (at > to) to = at;
   }
-  return 0;
+  return { from, to };
 }
-/* 轮次文案：「第 N 轮 · HH:MM」；还没有任何用户消息 → ""（不占位） */
+/* 区间文案：「09:07 – 10:32」；只有一条消息（起 = 止）→ 只报一个时刻，
+   不写「09:07 – 09:07」那种同刻区间。没有任何带时刻的消息 → ""（不占位）。 */
+function agentRoundSpanText(st) {
+  const r = agentRoundRange(st);
+  if (!(r.from > 0)) return "";
+  const withDay = new Date(r.from).toDateString() !== new Date(r.to).toDateString();
+  const a = agentRoundTimeOf(r.from, withDay);
+  if (!(r.to > r.from)) return a;
+  return a + " – " + agentRoundTimeOf(r.to, withDay);
+}
+/* 标签文案 = 区间本身（只有时间，没有轮号）；没有任何带时刻的消息 → ""（整行不占位） */
 function agentRoundLabel(st) {
-  const no = typeof agentRoundOfRun === "function" ? agentRoundOfRun(st) : null;
-  if (!(Number(no) > 0)) return "";
-  const at = agentRoundRoundAt(st);
-  /* 「第 {n} 轮」这条词条已经带「轮」字，这里只补分隔与时间 ——
-     再拼一次「 轮」会变成「第 2 轮 轮 · 09:07」 */
-  return (
-    I18n.t("第 {n} 轮", { n: Number(no) }) +
-    (at ? I18n.t(" · ") + agentRoundTime(at) : "")
-  );
+  return agentRoundSpanText(st);
 }
-/* 把轮次标签落到会话区顶部（#agentRound：<b>第 N 轮</b><i>时间</i>）：
-   还没有任何用户消息（空会话 / 从未开跑过一轮）→ 整行 hidden 不占位。 */
+/* 把时间区间落到会话区左上角（#agentRound：<b>起点</b><i>– 终点</i>）：
+   还没有任何带时刻的消息（空会话 / 从未开跑过一轮）→ 整行 hidden 不占位。 */
 function agentRoundLabelApply(st) {
   let el = null;
   try {
     el = document.getElementById("agentRound");
   } catch (_) {}
   if (!el) return;
-  const no = typeof agentRoundOfRun === "function" ? agentRoundOfRun(st) : null;
-  if (!(Number(no) > 0)) {
+  const r = agentRoundRange(st);
+  if (!(r.from > 0)) {
     el.hidden = true;
     return;
   }
-  const at = agentRoundRoundAt(st);
+  const withDay = new Date(r.from).toDateString() !== new Date(r.to).toDateString();
   const b = el.querySelector("b");
   const i = el.querySelector("i");
-  if (b) b.textContent = I18n.t("第 {n} 轮", { n: Number(no) });
-  if (i) i.textContent = at ? agentRoundTime(at) : "";
-  el.title = agentRoundLabel(st);
+  if (b) b.textContent = agentRoundTimeOf(r.from, withDay);
+  if (i) i.textContent = r.to > r.from ? "– " + agentRoundTimeOf(r.to, withDay) : "";
+  const span = agentRoundSpanText(st);
+  el.title = span ? I18n.t("本会话时间区间：{range}", { range: span }) : "";
   el.hidden = false;
 }
 /* 新一轮开跑时的统一入口：清掉两块卡里**已了结**的那一份。
@@ -8573,7 +8966,15 @@ async function agentSessionSend(text, opts) {
      都能落地；真正应用过一次（titleAuto=true）或用户手改后，此位才让位。 */
   st._autoTitleRound = !st.titleAuto && !st.titleLocked;
   st.updatedAt = Date.now();
-  if (st.messages.length > 100) st.messages.splice(0, st.messages.length - 100);
+  /* 开轮裁切（本次需求 · 口径改成「按轮保留」）：这里原来是 `length > 100 → splice`
+     一刀切。两个毛病：① 100 条在一轮 8～15 条消息的开发 / 细化会话里就是 7 轮上下，
+     最早的**助手消息**被整条挤掉 —— 轨迹与改动两栏的数据源正是它（用户报的「只剩
+     最后一轮」）；② 这一刀切在**本轮用户消息刚 push、助手的还没写**的位置，
+     除非溢出量超过 AGENT_ROUND_MAX_ENTRIES，否则它会从中间切开上一轮。
+     现在只把「总条数超上限且溢出量已跨过一整轮」的那一段切掉（agentTrimSessionMessages
+     同源口径），否则留给落盘前与下一轮收尾去裁。 */
+  if (st.messages.length - AGENT_MSG_KEEP_MAX >= AGENT_ROUND_MAX_ENTRIES)
+    agentTrimSessionMessages(st);
   /* 新的一轮开始：显示窗口回到默认最近 200 条，更早的可从最前端重新「显示更早内容」 */
   st._visItems = undefined;
   st.running = true;

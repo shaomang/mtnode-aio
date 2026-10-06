@@ -17,15 +17,15 @@
  *     草稿活到该卡被提交 / 被撤为止，不落盘、不跨重启、不加提示词条。
  *   B 仍是单例阻塞弹窗：新窗起来时把前一只当场以「已取消」（false / null / 取消动作）
  *     结算并关掉 —— 与 Esc / 取消同一约定，调用方不必改代码，也不再永久挂住。
- *   C 开新窗前把当前这只窗原样收进状态栏页签（ovMinimizeActive），点页签恢复继续填；
- *     确认框被收走后 CloseOverlay 够不着它，由 ovMinDropWindow 连同页签一并摘掉；
- *     确认框自己的结算语义（发起轮结束自动撤框）不变。
+ *   C **（后续需求改写）** 本轮「移除 footer 最小化与所有的最小化，仅保留关闭」之后，
+ *     开新窗 = 原地换窗：旧窗内容当场作废，不再有「收进状态栏页签」这一档，
+ *     也不再需要 ovMinDropWindow 去摘停放框。本文件 [4] 已翻面成「停放链已删干净」的断言。
  *
  * 覆盖：
  *   [1] A 的静态接线（存取顺序 · 清理点 · 回填函数）
  *   [2] A 的真跑：假 DOM + vm 跑 app-db.js 询问窗整段，两卡在手时前一张卡内容不丢
  *   [3] B 的静态接线 + vm 真跑：单例换窗 → 旧窗当场结算、按键监听不被新窗误摘
- *   [4] C 的静态接线 + vm 真跑：openOverlay 自动停放上一只窗、空壳不停放
+ *   [4] C 的静态接线 + vm 真跑：openOverlay 原地换窗（既无停放、也无最小化页签）
  * 只跑本机 Node + 假 DOM：不拉浏览器、不碰 Electron、不改任何文件。
  * ============================================================================
  */
@@ -435,6 +435,34 @@ console.log("\n[2] #ixPanel 真跑（假 DOM · 第二张卡到来时前一张�
   let cards = bodyCards(dom);
   ok(cards.length === 1 && cards[0].id === "ixCard_card1", "第一张卡渲染出来");
 
+  /* 头部常驻（本次开发需求「上方拖动条不应跟着下方下拉而下拉」）：
+     拖动条与内容滚动容器都是窗的直接子节点，卡片挂在滚动容器里 ——
+     所以往下滚内容时被滚走的是卡片，头部原地不动。 */
+  const panel = dom.body.children.filter((e) => e.id === "ixPanel")[0];
+  const heads = panel ? panel.children.filter((e) => e.classList.contains("ix-head")) : [];
+  const bodies = panel ? panel.children.filter((e) => e.classList.contains("ix-body")) : [];
+  ok(heads.length === 1 && bodies.length === 1, "窗里恰好一条拖动条 + 一个内容滚动容器");
+  ok(
+    heads[0].parentNode === panel && bodies[0].parentNode === panel,
+    "拖动条挂在窗上、不在滚动容器里（内容滚动时它不会被一起滚走）",
+  );
+  ok(cards[0].parentNode === bodies[0], "卡片进的是 .ix-body（滚动只发生在它身上）");
+  /* 滚轮停在拖动条那一条上也要把正文滚起来（从前整只窗自己滚，滚轮在哪儿都灵） */
+  let wheelPrevented = false;
+  bodies[0].scrollTop = 0;
+  heads[0].dispatch("wheel", {
+    type: "wheel",
+    deltaY: 40,
+    preventDefault() {
+      wheelPrevented = true;
+    },
+  });
+  ok(
+    bodies[0].scrollTop === 40 && wheelPrevented,
+    "滚轮落在拖动条上 → 转发给 .ix-body（滚轮位置不再有死角）",
+  );
+  bodies[0].scrollTop = 0;
+
   /* 用户在第一张卡上：勾了「方案 B」、又在「其他（自定义回答）」里写了字（互斥规则会撤掉勾选） */
   const custom1 = byClass(dom, "ix-custom")[0];
   const opts1 = byClass(dom, "ix-opt").map((l) => l.children.filter((x) => x.tag === "input")[0]);
@@ -599,42 +627,42 @@ has(APP, "if (typeof prev.close === \"function\") prev.close();", "顶掉时顺�
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   [4] C：#overlay 开新窗 = 把当前窗无损收进状态栏（确认框也可恢复 / 可清）
+   [4] C：#overlay 开新窗 = 原地换窗（最小化已下线，不再有「收进状态栏」这一档）
    ════════════════════════════════════════════════════════════════════════════ */
-console.log("\n[4] #overlay 开新窗：上一只窗收进状态栏（内容不重建）");
-has(APP, "function ovParkActiveBox() {", "新增 ovParkActiveBox（开新窗前先收旧的）");
-has(APP, "function ovBoxHasContent(box) {", "空壳判定（别在状态栏留一枚点开什么都没有的页签）");
-has(APP, "function ovMinDropWindow(match) {", "新增 ovMinDropWindow（按 confirmId 摘掉停放中的确认框与页签）");
+console.log("\n[4] #overlay 开新窗：原地换窗（最小化 / 停放链已整体移除）");
+has(APP, "function ovShellBox() {", "窗壳定位函数还在（closeOverlay 复用）");
+ok(APP.indexOf("ovParkActiveBox") < 0, "ovParkActiveBox（开新窗前收旧窗）已删干净");
+ok(
+  APP.indexOf("function ovMinimizeActive(") < 0 &&
+    APP.indexOf("function ovMinRestore(") < 0 &&
+    APP.indexOf("const _ovMinList = ") < 0 &&
+    APP.indexOf("let _ovMinSeq = ") < 0,
+  "最小化状态机（_ovMinList / _ovMinSeq / ovMinimizeActive / ovMinRestore）已删干净",
+);
 {
   const oo = fnSrc(APP, "openOverlay");
-  ok(oo.indexOf("ovParkActiveBox();") > 0, "openOverlay 第一件事就是收走当前窗");
-  ok(oo.indexOf("ovParkActiveBox();") < oo.indexOf("const box = ovShellEnsure();"), "收起排在补新壳之前（顺序即正确性）");
-  const park = fnSrc(APP, "ovParkActiveBox");
-  ok(park.indexOf("if (!ovBoxHasContent(box)) return false;") > 0, "空壳不搬也不丢（留给下一只窗原地接管，不产生空页签）");
-  ok(park.indexOf("return ovMinimizeActive(true);") > 0, "有内容 → 走既有的最小化到状态栏（DOM 与状态不重建）");
-  const drop = fnSrc(APP, "ovMinDropWindow");
-  ok(drop.indexOf("rec.chip.parentNode.removeChild(rec.chip);") > 0 && drop.indexOf("b.parentNode.removeChild(b);") > 0, "ovMinDropWindow 把页签与停放 DOM 一起摘（不留死框）");
+  ok(oo.indexOf("ovShellEnsure()") > 0, "openOverlay 仍先取窗壳（原地接管同一只壳）");
+  ok(oo.indexOf("ovParkActiveBox") < 0, "openOverlay 不再做任何停放动作（原地换窗）");
+  ok(oo.indexOf("overlayClosable = opts.min !== false;") > 0, "opts.min 只剩「给不给通用 ✕」这一层语义");
+  ok(oo.indexOf('$("#ovBody").innerHTML = "";') > 0 && oo.indexOf('$("#ovFoot").innerHTML = "";') > 0, "开新窗照旧清空正文与按钮条（旧窗内容当场作废）");
 }
 {
   const settleAt = NODES.indexOf("const settle = (ans, closeDom) => {");
   const settleEnd = NODES.indexOf("};", NODES.indexOf("resolve(ans);", settleAt));
   const settle = settleAt >= 0 && settleEnd > settleAt ? NODES.slice(settleAt, settleEnd) : "";
   ok(settle.length > 0, "抠到 confirmAssistAction 的 settle 收尾函数");
-  ok(settle.indexOf("ovMinDropWindow(confirmId);") > 0, "确认框被收进状态栏后，结算路径会连页签一起摘掉");
+  ok(settle.indexOf("ovMinDropWindow") < 0, "确认框结算不再去摘页签（没有停放区了）");
   ok(settle.indexOf("closeDom && overlayIsMine()") > 0, "挂在 #overlay 上的那只照旧走 closeOverlay（原语义不变）");
 }
 {
-  /* vm 真跑：openOverlay 连开两只 → 前一只进状态栏页签，点页签内容原样回来 */
+  /* vm 真跑：连开两只窗 → 只有一只壳，第二只当场接管（旧内容不保留、不产生页签） */
   const dom = mkDom();
   const overlay = dom.mkEl("div");
   overlay.id = "overlay";
   const foot = dom.mkEl("footer");
   foot.className = "statusbar";
-  const park = dom.mkEl("div");
-  park.id = "ovPark";
   dom.body.appendChild(overlay);
   dom.body.appendChild(foot);
-  dom.body.appendChild(park);
   /* 与 index.html 的初始窗壳一致：首次 openOverlay 时应用里本来就挂着一只空壳 */
   const shell0 = dom.mkEl("div");
   shell0.className = "overlay-box";
@@ -687,42 +715,24 @@ has(APP, "function ovMinDropWindow(match) {", "新增 ovMinDropWindow（按 conf
     ok(false, "#overlay 段加载失败：" + ((e && e.message) || e));
   }
   const R = (expr) => vm.runInContext(expr, ctx);
-  const footerBar = () => foot.children.filter((c) => c.id === "ovMinBar")[0] || null;
   ctx.openOverlay("设置 · APIs/Config", { persistent: true });
-  let shellA = dom.DOC.querySelector("#overlay > .overlay-box");
+  const shellA = dom.DOC.querySelector("#overlay > .overlay-box");
   ok(!!shellA && overlay.children.length === 1, "第一只窗开起来（就地接管那只初始空壳，只留一只壳）");
-  const titleA = shellA.querySelector(".overlay-head b");
-  titleA.textContent = "设置 · APIs/Config";
   const bodyA = shellA.querySelector(".overlay-body");
   bodyA.appendChild(dom.mkEl("input"));
   bodyA.children[0].value = "用户填到一半的内容";
-  ok(R("_ovMinList.length") === 0, "第一只窗还没人顶它，状态栏是空的");
 
   ctx.openOverlay("确认画布修改", { persistent: true });
-  ok(R("_ovMinList.length") === 1, "开第二只窗前，第一只被自动收进状态栏（修复前：内容被当场清空）");
-  ok(R("_ovMinList[0].title") === "设置 · APIs/Config", "页签写的是被收走那只窗的标题");
   const shellB = dom.DOC.querySelector("#overlay > .overlay-box");
-  ok(shellB !== shellA, "新窗是另一只壳（旧的整只搬走了，没被重建）");
-  const bar = footerBar();
-  const chip = (bar && bar.children[0]) || null;
-  const chipName = chip && chip.children[0];
+  ok(shellB === shellA, "开第二只窗：还是同一只壳（原地换窗，不再搬走旧壳）");
+  ok(overlay.children.length === 1, "蒙层下始终只有一只窗壳（没有停放区）");
   ok(
-    !!chip && chip.classList.contains("ov-min-tab") && !!chipName && chipName.textContent === "设置 · APIs/Config",
-    "Footer 上出现可点回的页签（标题就是被收走那只窗）",
+    dom.walk(foot).filter((e) => e.classList && e.classList.contains("ov-min-tab")).length === 0,
+    "Footer 里没有任何最小化页签（那一排已整体移除）",
   );
-  ctx.ovMinRestore(R("_ovMinList[0]"));
-  ok(overlay.children.indexOf(shellA) >= 0 && shellA.querySelector(".overlay-body").children.length === 1, "点页签回来：原来填的内容（DOM）原样还在");
-  ok(R("_ovMinList.length") === 1 && R("_ovMinList[0].box") === shellB, "另一只窗无损停放到页签（没被丢掉）");
-
-  /* 确认框被收走后：结算路径要能连页签一起摘掉（否则留一只点了没反应的死框） */
-  shellB.dataset.ixConfirmId = "cfm1";
-  ctx.ovMinimizeActive(true);
-  ok(R("_ovMinList.length") === 2, "确认框也进了状态栏页签");
-  vm.runInContext("ovMinDropWindow('cfm1');", ctx);
-  ok(R("_ovMinList.length") === 1, "确认框结算时页签与停放 DOM 一起摘掉");
   ok(
-    dom.walk(park).filter((e) => e.dataset.ixConfirmId === "cfm1").length === 0,
-    "停放区里不再留着那只死框",
+    (foot.children || []).filter((c) => c.id === "ovMinBar").length === 0,
+    "Footer 里没有 #ovMinBar",
   );
 }
 

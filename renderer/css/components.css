@@ -201,36 +201,11 @@
   color: var(--cyan)
 }
 
-/* 最小化到状态栏：标题右侧的方形小按钮（点它把整只窗搬到 Footer 页签） */
-.overlay-head .ov-min-btn {
-  margin-left: auto;
-  flex: none;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.overlay-head .ov-min-btn:hover {
-  color: var(--cyan2);
-  border-color: var(--bd2);
-  background: rgba(56, 214, 255, .08)
-}
-
-.overlay-head .ov-min-btn[hidden] {
-  display: none
-}
-
-/* 通用关闭（✕）：紧挨最小化那颗方钮，是每一只 #overlay 弹窗的显式出口。
-   与 .ov-min-btn 同尺寸同风格，不再 margin-left:auto（auto 由最小化那颗吃掉）。 */
+/* 通用关闭（✕）：每一只 #overlay 弹窗唯一的显式出口，标题右侧那颗方钮。
+   弹窗最小化到状态栏已整体下线（本轮需求），它现在是标题行唯一一颗按钮 ——
+   margin-left:auto 归它，把 ✕ 顶到最右。 */
 .overlay-head .ov-close-btn {
+  margin-left: auto;
   flex: none;
   width: 20px;
   height: 20px;
@@ -253,107 +228,6 @@
 
 .overlay-head .ov-close-btn[hidden] {
   display: none
-}
-
-/* 缓进缓出：最小化时窗壳缩一下淡出，恢复时反过来（时长与 app.js 的 OV_MIN_MS 一致） */
-.overlay-box.ov-min-out {
-  animation: ovMinOut .18s ease-in-out forwards
-}
-
-.overlay-box.ov-min-in {
-  animation: ovMinIn .18s ease-in-out
-}
-
-@keyframes ovMinOut {
-  from {
-    opacity: 1;
-    transform: scale(1)
-  }
-  to {
-    opacity: 0;
-    transform: scale(.96)
-  }
-}
-
-@keyframes ovMinIn {
-  from {
-    opacity: 0;
-    transform: scale(.96)
-  }
-  to {
-    opacity: 1;
-    transform: scale(1)
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .overlay-box.ov-min-out,
-  .overlay-box.ov-min-in {
-    animation: none
-  }
-}
-
-/* 状态栏上的最小化页签：外观与画布 tabs（.wf-tab）一致，点它把窗原样搬回来 */
-.ov-minbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  max-width: 46vw;
-  overflow: hidden;
-}
-
-.ov-minbar[hidden] {
-  display: none !important
-}
-
-.ov-min-tab {
-  display: inline-flex;
-  align-items: center;
-  max-width: 220px;
-  min-width: 0;
-  padding: 3px 10px;
-  font-size: 11.5px;
-  color: var(--muted);
-  cursor: pointer;
-  background: rgba(0, 0, 0, .28);
-  border: 1px solid var(--bd2);
-  border-bottom: none;
-  border-radius: 8px 8px 0 0;
-  user-select: none;
-  font-family: var(--mono);
-  letter-spacing: 1px;
-  animation: ovTabIn .18s ease-in-out;
-}
-
-.ov-min-tab:hover {
-  color: var(--ink);
-  background: rgba(56, 214, 255, .06);
-  border-color: var(--bd)
-}
-
-.ov-min-tab-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap
-}
-
-@keyframes ovTabIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px)
-  }
-  to {
-    opacity: 1;
-    transform: none
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ov-min-tab {
-    animation: none
-  }
 }
 
 .overlay-body {

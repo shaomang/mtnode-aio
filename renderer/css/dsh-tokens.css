@@ -1542,3 +1542,210 @@
   font-size: 10.5px;
 }
 
+/* ── 会话第三栏「改动」（本次需求 · renderer/app-changes.js）────────────────────
+   与轨迹主区并列的第二块整块视图：左栏 = 本会话改过的文件（一行一个文件），
+   右栏 = 选中那个文件的历次 diff（每笔一小抬头 + 与对话同款的 .dsh-diff 块）。
+   皮与轨迹同源：文字色 / 圆角 / 间距 / 选中态全部取上面那套 --dsh-* 令牌，
+   diff 的皮肤照旧在 css/dsh.css 的 .dsh-diff*（本文件只动取高口径，与检查器同一种写法）。 */
+.dsh-chg-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--dsh-pane-bg);
+}
+
+.dsh-chg-main[hidden] {
+  display: none;
+}
+
+/* 两栏：左列表**占主体**（默认 52%，宽度由 app-changes.js 写 --dsh-chg-list-w：
+   拖动中缝每帧改这个变量、松手才落盘；双击中缝复位）+ 中缝分隔条 + 右详情吃剩余宽。 */
+.dsh-chg-cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: stretch;
+}
+
+.dsh-chg-list {
+  flex: 0 0 var(--dsh-chg-list-w, 52%);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--dsh-gap-sm);
+  overflow-y: auto;
+}
+
+/* 中缝：可拖（拖宽左栏）+ 双击复位（本次需求）。分栏线画在它身上，
+   列表不再自画右边框 —— 否则拖动时会出现两条线。 */
+.dsh-chg-split {
+  flex: 0 0 6px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--bd2);
+  border-right: 1px solid var(--bd2);
+}
+
+.dsh-chg-split:hover,
+.dsh-chg-split:active {
+  background: var(--dsh-accent-soft);
+}
+
+/* 拖动中：整页光标保持「左右拖」并禁掉文本选中（鼠标滑过列表会顺手选中路径 / 时刻） */
+body.dsh-chg-dragging,
+body.dsh-chg-dragging * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* 量一个等宽字符宽度的探针（折算「这一行能放几个字」，量完即摘） */
+.dsh-chg-probe {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  visibility: hidden;
+  white-space: pre;
+  font-family: var(--dsh-mono);
+  font-size: 11.5px;
+}
+
+/* 左栏一行 = 一个文件：时刻 | 项目根相对路径（占本行主体、超长中间省略）| ±行数 | 共 N 次 */
+.dsh-chg-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--dsh-r-md);
+  background: transparent;
+  color: var(--dsh-ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: var(--dsh-line);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dsh-chg-row:hover {
+  background: var(--dsh-card-bg-2);
+}
+
+.dsh-chg-row.on {
+  background: var(--dsh-accent-soft);
+}
+
+.dsh-chg-row-time {
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
+  color: var(--dsh-ink-dim);
+  white-space: nowrap;
+}
+
+/* 路径（项目根相对）：中间省略由 app-changes.js 的 midEllipsis 按实测宽度做（文件名整段
+   留在尾部），这里只兜底尾部省略 —— 量不到宽度（无布局）时至少不会把行撑破。 */
+.dsh-chg-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--dsh-mono);
+  font-size: 11.5px;
+}
+
+.dsh-chg-row-stat {
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
+  color: var(--dsh-diff-add);
+  white-space: nowrap;
+}
+
+.dsh-chg-row-count {
+  font-size: 10.5px;
+  color: var(--dsh-ink-faint);
+  white-space: nowrap;
+}
+
+/* 右栏：抬头（文件名 + 全路径 · 共 N 次 · ±行数）+ 逐笔卡片；整栏自己滚 */
+.dsh-chg-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dsh-chg-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--dsh-gap-sm) var(--dsh-gap-sm) var(--dsh-gap-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dsh-gap-sm);
+}
+
+.dsh-chg-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dsh-chg-head-name {
+  font-family: var(--dsh-mono);
+  font-size: 12.5px;
+  color: var(--dsh-ink);
+}
+
+.dsh-chg-head-sub {
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
+  color: var(--dsh-ink-dim);
+  word-break: break-all;
+}
+
+/* 一笔改动 = 一块：小抬头（时刻 · 第 N 轮 · ±行数 · 工具）+ diff 块 */
+.dsh-chg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--dsh-gap-xs) 0;
+}
+
+.dsh-chg-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--dsh-mono);
+  font-size: 10.5px;
+  color: var(--dsh-ink-dim);
+}
+
+.dsh-chg-card-stat {
+  color: var(--dsh-diff-add);
+}
+
+.dsh-chg-card-tool {
+  color: var(--dsh-tool);
+}
+
+/* 本栏的 diff 取高（与检查器同一读法）：不封 260px，让块自己长 —— 分批渲染时
+   滚动落在块内（app-assist.js 在正文盒上挂了「滚到底再续一批」）。 */
+.dsh-chg-card .dsh-diff-body {
+  max-height: none;
+}
+
+/* 空态 / 未选中态：一句短话，两侧各一处 */
+.dsh-chg-empty,
+.dsh-chg-pane-empty {
+  padding: var(--dsh-gap-md);
+  color: var(--dsh-ink-faint);
+  font-size: 12px;
+}

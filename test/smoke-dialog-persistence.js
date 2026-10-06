@@ -453,8 +453,8 @@ console.log("\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "�
   const css = read("renderer/css/components.css");
   const i18n = read("renderer/i18n.js");
   const lte = read("renderer/app-longtask-edit.js");
-  /* 切片：openOverlay 之前是窗壳状态机（OV_SHELL_HTML / ovShellEnsure / ovMin*），
-     到 emoji 深色确认框为止（与 smoke-dialog-minimize 同一切法）。 */
+  /* 切片：openOverlay 之前是窗壳状态机（OV_SHELL_HTML / ovShellEnsure / ovShellIds），
+     到 emoji 深色确认框为止。 */
   const overlaySeg = app.slice(app.indexOf("/* 弹窗 persistent 是全应用铁律"), app.indexOf("/* 独立于 #overlay 的深色确认"));
 
   console.log("smoke-dialog-close：每只 #overlay 弹窗的通用关闭（✕）\n");
@@ -464,38 +464,38 @@ console.log("\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "�
   {
     ok(html.indexOf('class="ov-close-btn"') > 0, "index.html 初始窗壳标题栏里有 .ov-close-btn");
     ok(/class="ov-close-btn"[^>]*title="关闭"[^>]*aria-label="关闭"/.test(html), "✕ 带「关闭」title / aria-label（可读、可点）");
-    ok(html.indexOf('class="ov-min-btn"') < html.indexOf('class="ov-close-btn"'), "✕ 排在最小化按钮之后（右上角两颗方钮）");
-    ok(html.indexOf('id="ovTitle">设置</b><button type="button" class="ov-min-btn"') > 0, "标题 → 最小化 →  的结构没被拆散");
+    ok(html.indexOf('class="ov-min-btn"') < 0, "✕ 是标题行里唯一一颗按钮（最小化那颗已随本轮需求移除）");
+    ok(html.indexOf('id="ovTitle">设置</b><button type="button" class="ov-close-btn"') > 0, "标题 → ✕ 的结构没被拆散");
     const closeBlocks = // 把 .ov-close-btn 的规则块逐条取出来（不能拿全文正则会误伤注释）
       [...css.matchAll(/\.overlay-head \.ov-close-btn\s*\{([^}]*)\}/g)].map((m) => m[1]);
     ok(closeBlocks.length >= 1, "components.css 有 .ov-close-btn 规则块");
-    ok(!closeBlocks.some((b) => /margin-left/.test(b)), "✕ 不抢 margin-left:auto（auto 归最小化那颗，✕ 紧贴它）");
+    ok(closeBlocks.some((b) => /margin-left:\s*auto/.test(b)), "✕ 独占 margin-left:auto（最小化没了，auto 归它，顶到最右）");
 
-    const shell = app.slice(app.indexOf("const OV_SHELL_HTML ="), app.indexOf("let _ovMinSeq = 0"));
+    const shell = app.slice(app.indexOf("const OV_SHELL_HTML ="), app.indexOf("/** 当前挂在 #overlay 上的窗壳 */"));
     ok(shell.indexOf('class="ov-close-btn"') > 0, "OV_SHELL_HTML（补壳模板）里也有 ✕");
     ok(shell.indexOf('I18n.t("关闭")') > 0, "补壳模板的 ✕ 文案走 i18n（不写死中文）");
-    ok(shell.indexOf('class="ov-min-btn"') < shell.indexOf('class="ov-close-btn"'), "补壳模板里 ✕ 同样排在最小化之后");
     /* 两处窗壳（index.html 的初始壳 + app.js 的补壳模板）必须成对出现：少一处就是「有的窗没有 ✕」 */
     for (const [file, src, label] of [
       ["index.html", html, "初始窗壳"],
       ["app.js", shell, "补壳模板"],
     ]) {
       ok(
-        src.indexOf('class="ov-min-btn"') > 0 && src.indexOf('class="ov-close-btn"') > 0,
-        file + " 的" + label + "最小化 + 关闭两颗方钮齐备",
+        src.indexOf('class="ov-close-btn"') > 0 && src.indexOf('class="ov-min-btn"') < 0,
+        file + " 的" + label + "只有关闭这一颗方钮（没有最小化）",
       );
     }
 
-    const ensure = app.slice(app.indexOf("function ovShellEnsure("), app.indexOf("/** 停放时摘 id"));
+    const ensure = app.slice(app.indexOf("function ovShellEnsure("), app.indexOf("/** 对齐窗壳里那三个 id"));
     ok(ensure.indexOf('box.querySelector(".ov-close-btn")') > 0, "ovShellEnsure：补壳时就地取 ✕");
-    ok(ensure.indexOf("closeBtn.dataset.wired") > 0, "✕ 只挂一次监听（wired 幂等，停放 / 恢复不重复挂）");
+    ok(ensure.indexOf("closeBtn.dataset.wired") > 0, "✕ 只挂一次监听（wired 幂等）");
     ok(/closeBtn\.addEventListener\(\s*"click"/.test(ensure) || /closeBtn\.addEventListener\("click"/.test(ensure), "✕ 点按有监听");
     ok(ensure.indexOf("closeOverlay();") > 0, "✕ 只走 closeOverlay（不改蒙层 / 不挂点外部即关）");
-    ok(ensure.indexOf("ovMinimizeActive()") > 0, "最小化那颗仍走 ovMinimizeActive（两颗各管各的）");
+    ok(ensure.indexOf("ovMin") < 0, "补壳里不再有任何最小化接线");
 
     const openOv = app.slice(app.indexOf("function openOverlay("), app.indexOf("function closeOverlay("));
-    ok(openOv.indexOf('minBtn.hidden = !overlayMinimizable') > 0, "openOverlay：最小化按 opts.min 显隐");
-    ok(openOv.indexOf('closeBtn.hidden = !overlayMinimizable') > 0, "openOverlay：✕ 同一档显隐（min:false 的阻塞框不给通用关闭）");
+    ok(openOv.indexOf("overlayClosable = opts.min !== false;") > 0, "openOverlay：opts.min 只剩「给不给通用 ✕」一层语义");
+    ok(openOv.indexOf("closeBtn.hidden = !overlayClosable") > 0, "openOverlay：✕ 同一档显隐（min:false 的阻塞框不给通用关闭）");
+    ok(openOv.indexOf("ovMin") < 0, "openOverlay 里没有任何停放 / 最小化动作（原地换窗）");
 
     const closeOv = app.slice(app.indexOf("function closeOverlay("), app.indexOf("let _mtDialogSeq"));
     ok(closeOv.indexOf("ovShellBox()") > 0 && closeOv.indexOf('$("#overlay").style.display = "none"') > 0, "closeOverlay 仍是唯一收窗实现（✕ 复用同一条）");
@@ -724,22 +724,16 @@ console.log("\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "�
     ok(overlay.style.display === "none", "点  → 关窗（closeOverlay 真跑）");
     ok(shell.parentNode === overlay, "关窗不搬壳：仍挂在 #overlay 上（下一窗复用）");
 
-    /* 最小化停放 → 补壳：新壳的 ✕ 也必须可用 */
+    /* 原地换窗：连开两只窗后仍只有一只壳，✕ 照旧可用（不再有最小化补壳那一套） */
     ctx.openOverlay("窗口 A", {});
-    ctx.ovMinimizeActive(true);
     ctx.openOverlay("窗口 B", {});
     const boxB = qs(overlay, ":scope > .overlay-box");
-    ok(boxB !== shell, "最小化后开新窗：照 OV_SHELL_HTML 补了一只新壳");
+    ok(boxB === shell, "原地换窗：还是同一只壳（不再搬走旧壳 / 补新壳）");
+    ok(qsa(overlay, ":scope > .overlay-box").length === 1, "蒙层下始终只有一只窗壳");
     const btnB = boxB.querySelector(".ov-close-btn");
-    ok(!!btnB && btnB.dataset.wired === "1", "补壳里的 ✕ 同样接线（模板没漏 ✕）");
+    ok(!!btnB && btnB.dataset.wired === "1", "同一只壳的 ✕ 照旧接线");
     btnB.click();
-    ok(overlay.style.display === "none", "补壳的 ✕ 也关得掉窗");
-
-    /* 恢复停放的窗 → ✕ 仍认它 */
-    ctx.ovMinRestore(R("_ovMinList[0]"));
-    ok(overlay.style.display === "flex", "点页签把窗口 A 搬回来");
-    shell.querySelector(".ov-close-btn").click();
-    ok(overlay.style.display === "none", "恢复后的 ✕ 关掉的正是这只窗");
+    ok(overlay.style.display === "none", "✕ 关得掉窗");
 
     /* opts.min === false：阻塞式确认框不给通用关闭 */
     ctx.openOverlay("提示", { min: false });

@@ -168,9 +168,16 @@ const server = http.createServer((req, res) => {
 function freshStore(dataDir) {
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(path.join(dataDir, "apps-root"), { recursive: true });
+  /* 两套根（本次需求：下载的与开发的严格分开）：下载根 = apps-root（老断言逐字沿用），
+     项目根 = apps-dev（新建 / 二次开发的应用落这里）。 */
+  fs.mkdirSync(path.join(dataDir, "apps-dev"), { recursive: true });
   fs.writeFileSync(
     path.join(dataDir, "config.json"),
-    JSON.stringify({ apps: { installDir: path.join(dataDir, "apps-root") } }, null, 2),
+    JSON.stringify(
+      { apps: { installDir: path.join(dataDir, "apps-root"), projectDir: path.join(dataDir, "apps-dev") } },
+      null,
+      2,
+    ),
     "utf8",
   );
   const p = require.resolve("../apps-store.js");
@@ -423,20 +430,24 @@ async function main() {
     ok(APPS.indexOf("APPS_ST.detailId") < 0, "app-apps.js 里已无 detailId（内联展开整体撤掉）");
     ok(APPS.indexOf('card.className = "apps-tile" + (') < 0, "卡片不再带 open 态（不因展开改高度）");
     ok(APPS.indexOf("收起详情") < 0 && APPS.indexOf("查看详情") < 0, "不再有「查看详情 / 收起详情」两态按钮");
-    ok(/appsDetailBtnEl\(id\)/.test(APPS), "卡片与库页都挂 appsDetailBtnEl(id) 这一颗详情入口");
-    /* 本轮需求：目录卡片上的「详细」不再显示文案，改成 ⓘ 图标（同一元件、同一 data-app-detail）；
-       库页卡片的动作区仍用同一个函数（它那边保留按钮形态）。 */
+    /* 本轮需求：卡片换成 16:9 封面卡，动作收进封面右下角那一排（appsCoverActionsEl）；
+       「详情」仍是同一个元件、同一个 data-app-detail，卡片与库页都从这一处出。 */
+    ok(/function appsCoverActionsEl\(spec, opts\)/.test(APPS) && /push\(appsDetailBtnEl\(spec && spec\.id\)\);/.test(APPS),
+      "卡片与库页的详情入口都从 appsCoverActionsEl 出（appsDetailBtnEl 同一元件）");
     ok(
       /function appsDetailBtnEl\(id, label\) \{[\s\S]{0,300}const text = label \? appsT\(label\) : "ⓘ";/.test(APPS),
-      "目录卡片上的详情按钮显示 ⓘ 图标（不再显示「详情」文案）",
+      "卡片上的详情按钮显示 ⓘ 图标（不再显示「详情」文案）",
     );
     ok(
       /classList\.add\("apps-ico-btn", "apps-ico-info"\)/.test(APPS) && /b\.dataset\.appDetail = "1"/.test(APPS),
       "详情按钮仍是同一元件：小方框样式 + data-app-detail 标记不变",
     );
     ok(
-      /acts\.appendChild\(appsDetailBtnEl\(id\)\);\s*\n\s*\/\* 更新只在\*\*同一支作者\*\*时出现/.test(APPS),
-      "库页的「详情」挂在动作区里（与运行 / 更新并列）",
+      APPS.indexOf("push(appsRunIcoBtnEl(spec.id));") > 0 &&
+        APPS.indexOf("push(appsRunIcoBtnEl(spec.id));") < APPS.indexOf("push(appsDetailBtnEl(spec && spec.id))") &&
+        APPS.indexOf("push(appsDetailBtnEl(spec && spec.id))") > 0 &&
+        /push\(\s*appsIcoBtnEl\(\s*"download",/.test(APPS.slice(APPS.indexOf("function appsCoverActionsEl("))),
+      "库页卡片：运行 / 更新 / ⓘ / 金币 同排在一处（封面右下角那一排）",
     );
     /* 开发页不挂（它自己就有一整块正文） */
     const DEV = read("renderer/app-apps-dev.js");

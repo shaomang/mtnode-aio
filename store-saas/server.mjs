@@ -25,6 +25,7 @@ import {
 } from "./alipay-provider.mjs";
 import { qrDataUrl } from "./qr-encode.mjs";
 import { createRelay } from "./relay.mjs";
+import { makeAppThumb, makeAppShot, THUMB_W, THUMB_H } from "./thumb.mjs";
 import { createTips, TIP_TARGET_KINDS } from "./tips.mjs";
 import { createComments } from "./comments.mjs";
 import { createNotifications } from "./notifications.mjs";
@@ -50,6 +51,16 @@ const FORUM_IMG_DIR = path.join(DATA_DIR, "forum-images");
 // 记录进 db.json 的 apps[]（与 templates / skills 同一套存储口径）。
 const APP_DIR = path.join(DATA_DIR, "apps");
 const APP_ICON_DIR = path.join(DATA_DIR, "app-icons");
+// 应用封面缩略图缓存（640×360 PNG，首次请求时由 thumb.mjs 现生成，见 appThumbOf）
+const APP_THUMB_DIR = path.join(DATA_DIR, "app-thumbs");
+/* 上架截图（本轮需求：**多图落盘**）：
+   · 目录：<DATA_DIR>/app-shots/<主干>/<序号>.png（主干 = <id>__<作者uid>，与图标同一套命名）
+   · 上限：每个分支最多 8 张、单张 ≤ 500KB、长边压到 1280（服务端统一压缩，见 makeAppShot）
+   · 下发：目录条目带 shots[]（相对静态目录的 icons|shots 地址），客户端详情窗拿它画多图 */
+const APP_SHOT_DIR = path.join(DATA_DIR, "app-shots");
+const MAX_APP_SHOTS = 8;
+const MAX_APP_SHOT_BYTES = 500 * 1024;
+const APP_SHOT_MAX_EDGE = 1280;
 // 应用市场静态目录（客户端唯一入口：<MTNODE_APPS_URL>/catalog.json）：
 // 线上 = nginx 直发的 /var/www/mtnode/apps，本机开发 = DATA_DIR/apps-web。
 // 接口一有应用变更就把 appCatalogDoc() 与 zip / 图标按静态布局落这里（单一真源，见 publishStaticApps）。
@@ -206,6 +217,7 @@ mkdirp(PREV_DIR);
 mkdirp(FORUM_IMG_DIR);
 mkdirp(APP_DIR);
 mkdirp(APP_ICON_DIR);
+mkdirp(APP_SHOT_DIR);
 
 function emptyDb() {
   return {
@@ -2364,7 +2376,66 @@ function appIconRel(id, ownerId) {
 
 function writeAppIcon(id, ownerId, icon) {
   clearAppIcon(id, ownerId);
+  clearAppThumb(id, ownerId); /* 图标换了：缓存的封面缩略图必须一起作废（否则卡片一直是老图） */
   fs.writeFileSync(path.join(APP_ICON_DIR, appFileStem(id, ownerId) + "." + icon.ext), icon.buf);
+}
+
+/* ---------- 应用封面缩略图（卡片背景图）：懒生成 + 落盘缓存 ----------
+ * 客户端卡片是 16:9 背景图，直接铺 1805×1230 / 400KB 的原图会把一页卡片拖成几 MB。
+ * 所以这里在**第一次请求时**把图标（= 上架时第 1 张截图的原图）下采样成固定 640×360 的缩略图，
+ * 落到 APP_THUMB_DIR 缓存；存量图标与将来新上传的图标都不用迁移脚本。
+ * 图片解码 / 缩放 / 编码全在 store-saas/thumb.mjs（零依赖纯 JS，见那里的说明）。
+ * 任何一步失败都**回原图**（200），绝不 5xx —— 一张解不开的图不该让卡片墙塌掉。 */
+function appThumbFile(id, ownerId) {
+  return path.join(APP_THUMB_DIR, appFileStem(id, ownerId) + ".png");
+}
+/** 图标变了 / 应用删了：把这一分支的缩略图缓存清掉（别的分支的绝不动）。 */
+function clearAppThumb(id, ownerId) {
+  const own = String(ownerId || "").trim();
+  if (!own) {
+    /* 没给作者（老调用）：与 clearAppIcon 同口径，清这个 id 的所有缩略图 */
+    let names = [];
+    try {
+      names = fs.readdirSync(APP_THUMB_DIR);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (n === id + ".png" || n.startsWith(id + "__")) {
+        try { fs.unlinkSync(path.join(APP_THUMB_DIR, n)); } catch {}
+      }
+    }
+    return;
+  }
+  try { fs.unlinkSync(appThumbFile(id, own)); } catch {}
+}
+/** 拿这个分支的封面缩略图（没有就现生成）；做不了回 null，调用方回原图。 */
+function appThumbOf(a) {
+  const src = appIconPath(a.id, a.userId) || appIconPath(a.id);
+  if (!src) return null;
+  const dest = path.join(APP_THUMB_DIR, appFileStem(a.id, a.userId) + ".png");
+  try {
+    const st = fs.statSync(src);
+    if (fs.existsSync(dest) && fs.statSync(dest).mtimeMs >= st.mtimeMs) return dest;
+    const made = makeAppThumb(fs.readFileSync(src), { width: THUMB_W, height: THUMB_H });
+    if (!made || !made.length) return null;
+    mkdirp(APP_THUMB_DIR);
+    fs.writeFileSync(dest, made);
+    return dest;
+  } catch {
+    return null;
+  }
+}
+/** 缩略图的缓存令牌（静态目录里的 ?v= 用它）：取图标文件的 mtime（秒）。
+ *  换图标 → 令牌变 → 客户端与 nginx 都不会拿旧图。 */
+function appThumbVer(a) {
+  const src = appIconPath(a.id, a.userId) || appIconPath(a.id);
+  if (!src) return "";
+  try {
+    return String(Math.floor(fs.statSync(src).mtimeMs / 1000));
+  } catch {
+    return "";
+  }
 }
 
 /* 只清这一分支自己的图标（新命名 + 它可能占着的老命名）——别的分支的图标绝不动。 */
@@ -2376,6 +2447,8 @@ function clearAppIcon(id, ownerId) {
     /* 没给作者（老调用）：退化成「清这个 id 的所有图标」，与老行为一致 */
     for (const ext of ["png", "jpg", "webp"]) {
       try { fs.unlinkSync(path.join(APP_ICON_DIR, id + "." + ext)); } catch {}
+      /* 截图目录（shots/<主干>/）：删应用时一并清掉（只清这一分支那一个目录） */
+      try { fs.rmSync(appShotDirOf(id, ""), { recursive: true, force: true }); } catch {}
     }
     return;
   }
@@ -2404,6 +2477,146 @@ function appVersionDir(id) {
 }
 
 /** 一条分支的文件名主干：`<id>__<作者uid>`（同 id 多分支时区分彼此）。 */
+/* ── 上架截图（多图）：落盘 / 列表 / 清理 ──────────────────────────────
+ * 为什么单独一个目录：图标（icon）只留一张、语义是「封面」；截图是一组、语义是「界面实拍」。
+ * 两者都会同步到静态目录（icons/ 与 shots/），客户端详情窗按 shots[] 画大图 + 缩略图条。 */
+function appShotDirOf(id, ownerId) {
+  return path.join(APP_SHOT_DIR, appFileStem(id, ownerId));
+}
+/* 该分支现有的截图文件（按序号升序）：返回绝对路径数组 */
+function appShotFiles(id, ownerId) {
+  const dir = appShotDirOf(id, ownerId);
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((n) => /^\d+\.(png|jpg|jpeg|webp)$/i.test(n))
+    .sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
+    .map((n) => path.join(dir, n));
+}
+/* 截图在静态目录里的相对地址（shots/<主干>/<n>.png）——与 zipUrl / icon 同一套「相对目录」口径 */
+function appShotRelsOf(id, ownerId) {
+  const dir = appShotDirOf(id, ownerId);
+  return appShotFiles(id, ownerId).map((p) => "shots/" + path.basename(dir) + "/" + path.basename(p));
+}
+/* 覆盖式写入这一批截图（先清旧目录再写新的：多图是一组，不做逐张对账）。
+ * 入参已经是压缩好的 [{ buf, ext }]（见 decodeAppShots）；写盘失败如实抛错给调用方。 */
+function writeAppShots(id, ownerId, shots) {
+  const dir = appShotDirOf(id, ownerId);
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {}
+  if (!shots || !shots.length) return 0;
+  mkdirp(dir);
+  let n = 0;
+  for (const s of shots) {
+    const name = String(n + 1) + "." + String(s.ext || "png");
+    fs.writeFileSync(path.join(dir, name), s.buf);
+    n++;
+  }
+  return n;
+}
+/* 删除这一批截图（应用被删 / 作者清空时用） */
+function clearAppShots(id, ownerId) {
+  try {
+    fs.rmSync(appShotDirOf(id, ownerId), { recursive: true, force: true });
+  } catch {}
+}
+/* 解码客户端发来的截图数组：**逐张**按上限校验 + 服务端统一压缩（长边→1280，PNG）。
+ * 契约（本轮需求，客户端与服务端同时升级，不做旧字段兼容）：
+ *   body.shotsBase64 = [ "<base64 或 data:image/...;base64,...>", ... ]，最多 8 张。
+ * 回 { ok, shots:[{buf,ext,bytes,w,h,changed}], total, errors:[] }；任何一张不合格整批拒绝
+ * （宁可让作者看到明确报错，也不落一半截图 —— 半批最难查）。 */
+function decodeAppShots(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const errors = [];
+  if (arr.length > MAX_APP_SHOTS) {
+    return { ok: false, errors: ["截图最多 " + MAX_APP_SHOTS + " 张（收到 " + arr.length + " 张）"], shots: [] };
+  }
+  const shots = [];
+  let total = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const raw = arr[i];
+    let one = null;
+    try {
+      one = decodePreview(raw);
+    } catch (e) {
+      return { ok: false, errors: ["第 " + (i + 1) + " 张截图无效：" + ((e && e.message) || e)], shots: [] };
+    }
+    if (!one) {
+      return { ok: false, errors: ["第 " + (i + 1) + " 张截图为空或格式不被支持（png / jpeg / webp）"], shots: [] };
+    }
+    if (one.buf.length > MAX_APP_SHOT_BYTES) {
+      return {
+        ok: false,
+        errors: [
+          "第 " + (i + 1) + " 张截图 " + Math.round(one.buf.length / 1024) + "KB 超过单张上限 " +
+            Math.round(MAX_APP_SHOT_BYTES / 1024) + "KB（请换小一点的图或先压缩）",
+        ],
+        shots: [],
+      };
+    }
+    /* 统一压缩：长边压到 APP_SHOT_MAX_EDGE（只缩不放）。压不动（认不出的格式）就原样存，
+       并在回执里把 changed=false 如实带出去 —— 绝不假装压过。 */
+    let buf = one.buf;
+    let ext = one.ext;
+    let w = 0;
+    let h = 0;
+    let changed = false;
+    const small = makeAppShot(one.buf, { maxEdge: APP_SHOT_MAX_EDGE });
+    if (small && small.buf && small.buf.length) {
+      buf = small.buf;
+      ext = small.changed ? "png" : one.ext;
+      w = small.w;
+      h = small.h;
+      changed = !!small.changed;
+    }
+    if (buf.length > MAX_APP_SHOT_BYTES) {
+      return {
+        ok: false,
+        errors: ["第 " + (i + 1) + " 张截图压缩后仍超过 " + Math.round(MAX_APP_SHOT_BYTES / 1024) + "KB"],
+        shots: [],
+      };
+    }
+    total += buf.length;
+    shots.push({ buf, ext, bytes: buf.length, w, h, changed });
+  }
+  return { ok: true, shots, total, errors };
+}
+
+/* 上架链路的**全链路诊断**（本轮需求：截图没落盘这件事下次要一眼看出断在哪）：
+ * 逐环节给出可核对的数字 —— 收没收到、解码过没过、压了多少、落盘几个文件、静态目录同步过没有。 */
+function appShotsDiag(a) {
+  const dir = appShotDirOf(a.id, a.userId);
+  const files = appShotFiles(a.id, a.userId);
+  const rels = appShotRelsOf(a.id, a.userId);
+  const webDir = path.join(APPS_WEB_DIR, "shots", path.basename(dir));
+  const webFiles = (() => {
+    try {
+      return fs.readdirSync(webDir);
+    } catch {
+      return [];
+    }
+  })();
+  return {
+    id: a.id,
+    ownerId: a.userId,
+    dir: dir,
+    dirExists: fs.existsSync(dir),
+    files: files.map((p) => ({ name: path.basename(p), bytes: fs.statSync(p).size })),
+    rels: rels,
+    totalBytes: files.reduce((n, p) => n + (fs.statSync(p).size || 0), 0),
+    staticDir: webDir,
+    staticFiles: webFiles,
+    staticInSync: webFiles.length === files.length,
+    icon: appIconRelOf(a.id, a.userId),
+    iconExists: !!appIconPath(a.id, a.userId),
+  };
+}
+
 function appFileStem(id, ownerId) {
   const own = String(ownerId || "").trim();
   return own ? id + "__" + own : String(id || "");
@@ -3360,6 +3573,13 @@ function appCatalogEntry(a) {
     desc: a.description || "",
     description: a.description || "",
     icon: appIconRelOf(a.id, a.userId),
+    /* 封面缩略图（卡片 16:9 背景图）在静态目录里的相对地址：与 icon 同一个 icons/ 目录，
+       固定 <主干>.png。**能生成才给**（appThumbOf 现生成 / 命中缓存），给不出就留空
+       让客户端退回 icon —— 不下发一个会 404 的地址。 */
+    thumb: appThumbOf(a) ? "icons/" + path.basename(appThumbFile(a.id, a.userId)) : "",
+    /* 上架截图（本轮需求）：相对静态目录的 shots/<主干>/<n>.png 数组，顺序 = 作者排的顺序，
+       第 1 张同时是封面来源（客户端卡片仍用 thumb 兜 icon）。空数组 = 没有截图。 */
+    shots: appShotRelsOf(a.id, a.userId),
     zipUrl: zipUrl,
     url: zipUrl,
     sha256: a.sha256 || "",
@@ -3475,6 +3695,15 @@ function appStaticPlan() {
     // 图标：相对静态目录 icons/<id>__<作者uid>.<ext>（appCatalogEntry().icon 的写法）
     const iconPath = appIconPath(a.id, a.userId);
     if (iconPath) push(a.id, "icons/" + path.basename(iconPath), iconPath);
+    /* 上架截图（多图）：与图标同一套发布口径 —— 相对静态目录 shots/<主干>/<n>.<ext> */
+    for (const sp of appShotFiles(a.id, a.userId)) {
+      push(a.id, "shots/" + path.basename(appShotDirOf(a.id, a.userId)) + "/" + path.basename(sp), sp);
+    }
+    /* 封面缩略图（卡片 16:9 背景图）：同一批发布顺手生成 + 一起发到静态目录，
+       省掉「第一张卡片要等接口现生成」那一下。生成不了（认不出的格式 / 源图太小）就不登记，
+       客户端会退回原图标（urls.thumb 空 → 前端拿 icon 当封面）。 */
+    const thumbPath = appThumbOf(a);
+    if (thumbPath) push(a.id, "icons/" + path.basename(thumbPath), thumbPath);
     if (appHasVersionField(a) && !appVersionRecords(a).length) {
       missing.push({ id: a.id, reason: "版本被删光，当前没有可分发的包" });
     }
@@ -5299,9 +5528,29 @@ async function handle(req, res) {
     return send(res, 200, Object.assign({ ok: true }, staticAppsStatus()));
   }
 
+  /* 上架截图链路体检（只读、免登录）：**全链路可观测**的入口 —— 截图没落盘时先打这一条，
+     一眼看出断在哪一环（有没有收下 / 解码过没过 / 压了多少 / 落盘几个文件 / 静态目录同步没有）。
+     口径与 appShotsDiag 同一处实现（管理台与部署自检也读它）。 */
+  const appShotsDiagR = /^\/api\/apps\/([^/]+)\/shots-diag$/.exec(p);
+  if (appShotsDiagR && method === "GET") {
+    const rb = appResolveBranch(appShotsDiagR[1], url.searchParams.get("owner"), true);
+    const a = rb.app;
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    return send(res, 200, Object.assign({ ok: true }, appShotsDiag(a), {
+      /* 客户端上一次上传声明的张数（没有记录就是 null：这次上架还没带 shots[]） */
+      maxShots: MAX_APP_SHOTS,
+      maxShotBytes: MAX_APP_SHOT_BYTES,
+      maxEdge: APP_SHOT_MAX_EDGE,
+      catalogShots: appCatalogEntry(a).shots || [],
+    }));
+  }
+
   const appOne = /^\/api\/apps\/([^/]+)$/.exec(p);
   const appFileR = /^\/api\/apps\/([^/]+)\/file$/.exec(p);
   const appIconR = /^\/api\/apps\/([^/]+)\/icon$/.exec(p);
+  /* 上架截图单张：/api/apps/<id>/shots/<n>（n 从 1 起，顺序 = 作者排的顺序） */
+  const appShotR = /^\/api\/apps\/([^/]+)\/shots\/(\d+)$/.exec(p);
+  const appThumbR = /^\/api\/apps\/([^/]+)\/thumb$/.exec(p);
   const appVersionsR = /^\/api\/apps\/([^/]+)\/versions$/.exec(p);
   const appVersionOneR = /^\/api\/apps\/([^/]+)\/versions\/([^/]+)$/.exec(p);
   const appPublishR = /^\/api\/apps\/([^/]+)\/(unpublish|publish)$/.exec(p);
@@ -5402,6 +5651,10 @@ async function handle(req, res) {
         return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
       }
     }
+    /* 上架截图（本轮需求：多图落盘）：带了这个键就整批替换；没带就原样留着（别的调用方不受影响） */
+    const shotsGiven = b.shotsBase64 != null;
+    const shotsIn = shotsGiven ? decodeAppShots(b.shotsBase64) : null;
+    if (shotsIn && !shotsIn.ok) return send(res, 400, { ok: false, error: shotsIn.errors[0] || "截图无效" });
     // 父版本：显式传入优先，否则 = 当前 latestVersion（第一版传空串）。
     let parentVersion = appLatestVersion(a);
     if (b.parentVersion != null) {
@@ -5423,6 +5676,7 @@ async function handle(req, res) {
     writeAppZipFiles(a.id, version, buf, a.userId);
     if (clearIcon) clearAppIcon(a.id, a.userId);
     else if (iconBuf) writeAppIcon(a.id, a.userId, iconBuf);
+    if (shotsIn && shotsIn.ok) writeAppShots(a.id, a.userId, shotsIn.shots);
     const sha = crypto.createHash("sha256").update(buf).digest("hex");
     a.versions = appVersionRecords(a).concat([
       makeAppVersion({
@@ -5613,6 +5867,33 @@ async function handle(req, res) {
     return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "public, max-age=3600" });
   }
 
+  // 封面缩略图（应用卡片的 16:9 背景图）：懒生成固定 640×360，落盘缓存（见 appThumbOf）。
+  // 生成不了（认不出的格式 / 源图比目标还小）就**回原图**：卡片照样有图，不报错、不 5xx。
+  if (appThumbR && method === "GET") {
+    const rb = appResolveBranch(appThumbR[1], url.searchParams.get("owner"), true);
+    const a = rb.app;
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    const cache = { "Cache-Control": "public, max-age=604800" };
+    const tp = appThumbOf(a);
+    if (tp) return sendBin(res, 200, fs.readFileSync(tp), "image/png", cache);
+    const fp = appIconPath(a.id, a.userId) || appIconPath(a.id);
+    if (!fp) return send(res, 404, { ok: false, error: "无图标" });
+    return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), cache);
+  }
+
+  /* 上架截图单张（静态目录没有 shots/ 这条静态路由时客户端走这里，见 appsShotsUrlsOf）：
+     免登录、只读；序号越界一律 404（不悄悄回第 1 张 —— 那会让画廊出现重复图）。 */
+  if (appShotR && method === "GET") {
+    const rb = appResolveBranch(appShotR[1], url.searchParams.get("owner"), true);
+    const a = rb.app;
+    if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
+    const n = Math.max(1, parseInt(appShotR[2], 10) || 1);
+    const files = appShotFiles(a.id, a.userId);
+    const fp = files[n - 1];
+    if (!fp) return send(res, 404, { ok: false, error: "无这张截图" });
+    return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "public, max-age=3600" });
+  }
+
   if (appOne && method === "GET") {
     // 同 id 多分支：?owner= 指定看哪条分支（缺省 = 主干），item 里附 branches[] 全量（q11）
     const rb = appResolveBranch(appOne[1], url.searchParams.get("owner"), true);
@@ -5695,6 +5976,10 @@ async function handle(req, res) {
     } catch (e) {
       return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
     }
+    /* 上架截图（本轮需求：多图落盘；**只认 shots[]**，客户端与服务端同时升级）。
+       逐张按上限校验 + 服务端统一压缩（长边→1280），任何一张不合格整批拒绝。 */
+    const shotsIn = decodeAppShots(b.shotsBase64);
+    if (!shotsIn.ok) return send(res, 400, { ok: false, error: shotsIn.errors[0] || "截图无效" });
     // 配额：全部校验通过之后、落盘之前（契约 §7.5；超限时磁盘与内存都不留半成品）。
     const quota = appQuotaError(user.id, buf.length, 0, true);
     if (quota) return send(res, quota.status, quota.body);
@@ -5705,6 +5990,8 @@ async function handle(req, res) {
     // 开关打开时一版一包 + 最新版镜像；关闭时只写 <id>.zip（旧口径逐字不变）。
     writeAppZipFiles(id, version, buf, user.id);
     if (icon) writeAppIcon(id, user.id, icon);
+    /* 截图落盘（空数组 = 作者没传：把旧的那批清掉，避免「换了一版还在展示老图」） */
+    writeAppShots(id, user.id, shotsIn.shots);
     const sha = crypto.createHash("sha256").update(buf).digest("hex");
     const a = {
       id,

@@ -454,6 +454,25 @@ function applyLocale(locale, persist) {
   refreshAppDocsIfOpen();
 }
 
+/* ---------------- 启动首绘闸门（本次需求：修「打开应用后刷新两次（闪烁）」） ----------------
+   根因：init() 里有两次整屏重绘 —— ① await ensureWorkflow() 之后那句 renderAll()；
+   ② ensureProviderCatalog().then(...) 到达时的那次 renderCanvas() / renderAgentSession()。
+   两次都真拆真建 DOM（renderCanvas 先把 .wf-node / .wf-mark / 连线整批 detach 再重建；
+   renderAgentSession 先 list.innerHTML="" 再逐条重建），于是第一帧画完又整屏重画一次
+   = 用户看到的「刷新了两次」。
+   收口：首绘只做一次，且必须等「要的数据都到齐」（当前画布 + 服务商目录）。启动期间来的
+   整屏重绘请求一律只记账（bootPaintDeferred = true）不拆建 DOM，等数据齐了在**同一帧**里
+   连同视图类 / 主题一起画出来。运行期不受影响：闸门只在启动这一段（S._bootSeen 为假）生效。 */
+let bootPaintDeferred = false;
+function paintBootFrame() {
+  if (!S._bootSeen) {
+    /* 首绘还没落：只记账（数据齐了统一画一次），绝不在这里拆建 DOM */
+    bootPaintDeferred = true;
+    return;
+  }
+  renderAll();
+}
+
 async function init() {
   S.config = await window.api.configLoad();
   /* 旧版把商店 / 论坛会话存在 S.config.storeAuth 里，现已统一到主进程 auth-store
@@ -624,8 +643,9 @@ async function init() {
     const legacyView = dshTranscriptViewNorm(sess.transcriptView);
     sess.showThink = legacyView ? legacyView !== "compact" : null;
     delete sess.transcriptView;
-    /* 会话头部的 View 选择（本次需求 · 上游的 View 偏好）：只认 "trace"，其余一律回「对话」 */
-    sess.trajView = sess.trajView === "trace" ? "trace" : "";
+    /* 会话头部的 View 选择（本次需求 · 上游的 View 偏好 + 本轮的第三栏「改动」）：
+       只认 "trace" / "changes"，其余一律回「对话」（判据与 app-trajectory.js 的 VIEWS 同源） */
+    sess.trajView = sess.trajView === "trace" || sess.trajView === "changes" ? sess.trajView : "";
     /* 「不走普通会话计划这条线」（长任务新建窗的引导建图会话）：重启后仍豁免 ——
        否则再跑一轮就会拿到「任务流程 / 交计划块」指令，交出来的就是普通会话计划了。 */
     sess.noPlanFlow = !!sess.noPlanFlow;
@@ -690,11 +710,16 @@ async function init() {
   ensureDefaultProviders();
   await ensureWorkflow();
   renderWfTabs();
-  /* 供应商目录懒加载(pi-ai + DeepSeek 官方):到达后刷新会话/画布面板 */
+  /* 供应商目录懒加载(pi-ai + DeepSeek 官方)：目录只补「模型可选清单」，不给画布内容 ——
+     所以它到达时**不再**整屏重绘一次（那正是启动第二次刷新的来源），只刷新会话面板里
+     那几个模型下拉。首绘落点见下面 bootPaintDeferred 那段：数据没齐就交给首绘一起画。 */
   ensureProviderCatalog().then(() => {
-    if (S.config && S.config.view === "agent") renderAgentSession();
-    else renderCanvas();
-    if (S.assistOpen) renderAssistPanel();
+    if (!S._bootSeen || bootPaintDeferred) return;
+    if (S.config && S.config.view === "agent") {
+      if (typeof renderAgentComposer === "function") renderAgentComposer();
+    } else if (typeof fillAssistModelControls === "function") {
+      fillAssistModelControls();
+    }
   });
 
   $("#btnNewWf").onclick = newWorkflowDialog;
@@ -811,7 +836,8 @@ async function init() {
   bindNetMessageListener();
   /* 应用插件目录缓存（菜单可见性 / remotion 节点警示条）；插件对话框增删后再刷 */
   refreshAppPluginsCache().catch(() => {});
-  renderAll();
+  /* 第一帧：这里只记账（数据齐了统一画一次，见上方「启动首绘闸门」） */
+  paintBootFrame();
   /* MTNode 启动：让当前画布处于监听模式的接收节点自动进入监听状态 */
   autoListenNetRecvNodes(true).catch(() => {});
   try { ensureMediaBackendProbesForWorkflow({ reset: true }); } catch {}
@@ -1176,9 +1202,21 @@ async function init() {
   document.body.classList.toggle("view-agent", bootView === "agent");
   document.body.classList.toggle("view-team", bootView === "team");
   document.body.classList.toggle("view-workflow", bootView === "workflow");
-  if (bootView === "agent" || bootView === "team") setView(bootView);
-  else if (typeof applySidebarVisibility === "function") applySidebarVisibility();
+  const bootToAgentOrTeam = bootView === "agent" || bootView === "team";
+  /* 启动期先把视图切过去，但**别**在这里拆建 DOM：setView 对 agent / team 会各画一遍
+     （renderAgentSession / renderTeamPane），紧接着下面那句首绘还要整屏再画一遍 ——
+     那正是「刷新两次」的另一半来源。视图类上面已落定，这里让首绘一次性画齐。
+     （S._bootSeen 为假 = 还在启动这一段；运行期切视图照旧走 setView。） */
+  if (bootToAgentOrTeam && S._bootSeen) setView(bootView);
+  else if (!bootToAgentOrTeam && typeof applySidebarVisibility === "function")
+    applySidebarVisibility();
   applyTheme((S.config && S.config.theme) || "dsh");
+  /* 首绘落点：到此为止「画布 / 视图与主题 / 服务商目录」都齐了 —— 一帧画一次，
+     中间那些被记下的整屏重绘请求（bootPaintDeferred）在这里一并结清，不再画第二遍。
+     闸门随后永久打开（S._bootSeen）：此后 renderAll 一律照常真画。 */
+  S._bootSeen = true;
+  renderAll();
+  bootPaintDeferred = false;
   ensureTimerScheduler();
   /* 中转凭据提示（renderer/app-relay-auth.js）：登录态一就绪就按主进程的凭据状态
      决定要不要亮顶部那条横幅（凭据解不开 / 存不住、快到期时亮）——

@@ -43,6 +43,9 @@ UPLOAD_FILES = (
     "relay.mjs",
     "relay-key.mjs",
     "relay.env.example",
+    # 应用封面缩略图（卡片 16:9 背景图，640×360）：server.mjs import 它做懒生成
+    # （漏传即 Cannot find module './thumb.mjs' —— 卡片墙与详情大封面全都取不到图）
+    "thumb.mjs",
 )
 # 管理台静态页（独立界面，站点不设入口）：整目录上传，deploy.sh 同时装进
 # /opt/mtnode-store/admin（服务自身 /admin/ 路由）与 /var/www/mtnode/admin（nginx 静态）。

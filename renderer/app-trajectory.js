@@ -240,9 +240,63 @@
     }
   }
 
-  /* 段列表：优先本轮实时轨迹（agentTraceItems，平铺的 items 数组），没有（或为空）就回落到
-     会话已渲染的段（agentChatSegItems，形状一致），再回落到历史消息里的段快照。
-     三者都归一成 [{k,text,step,callId,round}]（round = 会话轮号，见文件头 [1]）。
+  /* 历史轮次段与本轮 live 段的合并（本次需求的唯一一处判据；抽成独立函数是为了让
+     test/smoke-think.js 能按函数名抓到它，与 collectSegments 一起在沙箱里真跑）。
+     返回「该保留的历史段」（本轮 live 段由调用方接在后面），三条规则：
+       ① 历史段的 round 与本轮不同 → 保留（这就是旧轮不再消失的那一步）；
+       ② round 相同 → 由 live 段代表本轮（同一轮刚跑完还没归档时 live 更全），
+          不整轮丢历史 —— 先去掉与 live 段完全同一份（k+text+step+callId）的重复项，
+          再只丢「对齐到尾部、内容也一致」的那一段（老存档段上常没有 round，
+          只能按这个弱判据认；对不上的一律当旧轮留着）；
+       ③ 段上没有 round（老存档 / 非会话运行）→ 只有当它确实是尾部那一段的重复时才丢，
+          其余一律保留 —— 宁可多留一份，也绝不凭空丢掉旧轮。 */
+  function agentSegsMergeRounds(hist, live, liveRound) {
+    /* 尾部对位用的弱签名：只比「段类 + 正文 + 步号」，**不比 callId** ——
+       落盘的 tool 段在 app-db.js 的 traceSegmentsOf 里就不带 callId（它由展示层按
+       m.tools 的 callId ↔ step 配对补回来），live 段却带着；拿 callId 一起比会让
+       「同一份段的两种形态」永远配不上，于是老存档段被重复显示一遍。 */
+    const tailSigOf = (s) =>
+      [String(s && s.k), String((s && s.text) || ""), s && s.step == null ? "" : s.step].join(
+        "\u0000",
+      );
+    const sigOf = (s) => tailSigOf(s) + "\u0001" + (s && s.callId == null ? "" : s.callId);
+    const liveSigs = Object.create(null);
+    for (const s of Array.isArray(live) ? live : []) liveSigs[sigOf(s)] = 1;
+    const kept = [];
+    for (const s of Array.isArray(hist) ? hist : []) {
+      if (liveSigs[sigOf(s)]) continue;
+      if (liveRound != null && s && s.round != null && String(s.round) === String(liveRound))
+        continue;
+      kept.push(s);
+    }
+    /* 尾部对位：i of kept ←→ i of live（都从最后一段往前比）。只有「对齐到尾部、且段类 /
+       正文 / 步号都同一份」的才算本轮 live 的同一份 —— 老存档的 tool 段不带 callId
+       （见上面的弱签名），拿 callId 比就永远配不上；而**尾部对位 + 步号相等**这三点
+       同时撞上的概率只可能是「同一份段的两种形态」（相邻两轮的步号会递增、不会相等）。
+       对不上的一律当旧轮留着，绝不整段丢。 */
+    const hi = kept.length;
+    const li = Array.isArray(live) ? live.length : 0;
+    let pair = 0;
+    while (pair < hi && pair < li) {
+      const h = kept[hi - 1 - pair];
+      const l = live[li - 1 - pair];
+      if (!h || !l) break;
+      if (tailSigOf(h) !== tailSigOf(l)) break;
+      pair++;
+    }
+    return pair > 0 ? kept.slice(0, hi - pair) : kept;
+  }
+
+  /* 段列表 = **已归档的历史轮次段快照 + 本轮实时轨迹（agentTraceItems）**，两者**合并**
+     （本次需求 · 用户口径「本会话每一轮都长期保留，按第 N 轮回看」）。
+     过去这里是「live 非空就直接 return」的三段回落：旧轮次的段只活在每条助手消息的
+     m.segments 里，一开第二轮（app-db.js 的 traceReset 把 items 清成新轮）旧轮就整段
+     从轨迹里消失 —— 用户报的「连发第二轮后切到轨迹 / 改动就只剩最后一轮」正是它。
+     合并口径：历史段一律保留（按轮号分组，见 buildRows），本轮 live 段**覆盖同轮**的
+     历史段 —— 同一轮刚跑完还没归档时，live 是更全的那一份，两边都在时不能一份显示两遍。
+     回落到「会话已渲染的段」（agentChatSegItems）只在**没有任何已归档历史**时兜底
+     （节点绑定运行等 live 段尚未落盘的形态）。
+     三者都归一成 [{k,text,step,callId,round,at}]（round = 会话轮号，见文件头 [1]）。
 
      ⚠ 不许在这里按「显示思考」过滤（本次需求 · 用户口径，这条是硬不变量）：
      会话输入区「模式」菜单里那枚「显示思考」**只是会话视图的渲染开关** —— 关闭 =
@@ -275,8 +329,21 @@
     };
     try {
       if (typeof agentTraceItems === "function") {
-        const live = norm(agentTraceItems(rk), traceRoundOf(rk));
-        if (live.length) return live;
+        const liveRound = traceRoundOf(rk);
+        const live = norm(agentTraceItems(rk), liveRound);
+        if (live.length) {
+          /* 已完成的历史轮次（每条助手消息的 m.segments）与本轮 live 段合并：
+             live 段的轮号就是本轮，所以按轮号剔掉历史里**属于本轮**的那一份
+             （同一轮刚跑完、归档还没落地时 live 更全，两边都在时不能一份显示两遍），
+             其余轮次一条不丢 —— 这就是「连发第二轮后旧轮不再消失」的那一步。 */
+          const st =
+            typeof agentSessionById === "function" ? agentSessionById(sid) : activeSession();
+          const hist = histSegmentsOf(st);
+          const kept = agentSegsMergeRounds(hist, live, liveRound);
+          /* 只有真的还有别的轮次时才拼：kept 为空 = 历史里那几条本来就是本轮 live 的
+             同一份（老存档段上没有 round）→ 原样回 live，段序与轮号都还是 live 那一份。 */
+          return kept.length ? kept.concat(live) : live;
+        }
       }
     } catch {
       /* 运行时形态变了就回落 */
@@ -897,12 +964,14 @@
   /* ── 视图状态：每条会话自己记「当前看的是对话还是轨迹」 ─────────────────────
      上游的 View 选择是持久化偏好（有效且已注册的偏好优先，否则回 chat）。本仓把它落在
      会话对象上（st.trajView === "trace" 即轨迹视图），随会话落盘白名单一起走。 */
+  const VIEWS = ["chat", "trace", "changes"];
   function viewOf(st) {
-    return st && st.trajView === "trace" ? "trace" : "chat";
+    const v = st && st.trajView ? String(st.trajView) : "";
+    return VIEWS.indexOf(v) > 0 ? v : "chat";
   }
   function setView(st, v) {
     if (!st) return;
-    st.trajView = v === "trace" ? "trace" : "";
+    st.trajView = VIEWS.indexOf(String(v)) > 0 ? String(v) : "";
     try {
       if (typeof persistAgentSession === "function") persistAgentSession();
     } catch {
@@ -913,6 +982,8 @@
 
   let tabsEl = null;
   let mainEl = null;
+  /* 「改动」主区（第三栏 · 本次需求）：与轨迹主区并列的另一块整块视图 */
+  let changesEl = null;
   let listEl = null;
   let inspEl = null;
   let footEl = null;
@@ -1149,8 +1220,10 @@
     return out;
   }
 
-  /* ── 会话头部的「对话 / 轨迹」标签栏（上游 conversation.view 环）─────────────
-     宿主：主区顶部（.agent-main 的第一个孩子）。两个标签，纯按钮，不引框架。 */
+  /* ── 会话头部的「对话 / 轨迹 / 改动」标签栏（上游 conversation.view 环）─────────
+     宿主：主区顶部（.agent-main 的第一个孩子）。三个标签，纯按钮，不引框架。
+     第三枚「改动」= 本次需求（renderer/app-changes.js：本会话改过哪些文件 + 逐笔 diff）：
+     它常显、不受「设置 · 开发者工具」开关约束（那一位只管轨迹的检查器 / 参数明细）。 */
   function ensureTabs() {
     if (tabsEl && tabsEl.isConnected) return tabsEl;
     const main = $(".agent-main");
@@ -1175,6 +1248,7 @@
     };
     tabsEl.appendChild(mk("chat", T("对话")));
     tabsEl.appendChild(mk("trace", T("轨迹")));
+    tabsEl.appendChild(mk("changes", T("改动")));
     main.insertBefore(tabsEl, main.firstChild);
     return tabsEl;
   }
@@ -3679,6 +3753,9 @@
     for (const child of Array.from(host.children)) {
       if (!child || !child.classList) continue;
       if (child.classList.contains("dsh-trace-main")) continue;
+      /* 「改动」主区（本次需求）：与轨迹主区同级 —— 它也是「本视图自己的」整块，
+         绝不能被当成对话视图那几件收掉，否则切进改动栏主区自己就 hidden 了。 */
+      if (child.classList.contains("dsh-chg-main")) continue;
       if (child.id === "agentViewTabs" || child.classList.contains("agent-view-tabs")) continue;
       if (
         child.id === "agentList" ||
@@ -3746,10 +3823,12 @@
     const sid = activeSessionId();
     const view = st ? viewOf(st) : "chat";
     const main = ensureMain();
-    /* 没选中会话（或会话都没了）：标签栏收起来，主区回到对话 */
+    const chg = ensureChangesMain();
+    /* 没选中会话（或会话都没了）：标签栏收起来，两块主区都收起、回到对话 */
     if (!tabs || !st || !sid) {
       if (tabs) tabs.hidden = true;
       if (main) main.hidden = true;
+      if (chg) chg.hidden = true;
       /* 没有会话也按「对话视图」复原：不留残留的 hidden / 行内 display
          （#agentList 的复原由 applyViewChrome 的复原分支一并做掉）。 */
       applyViewChrome(false);
@@ -3763,10 +3842,15 @@
     }
     if (!main) return;
     const trace = view === "trace";
+    const changes = view === "changes";
     main.hidden = !trace;
-    /* 视图态统一收口（本次需求）：轨迹视图下消息区 / 清单面板 / 输入区 / token 报告全让位，
-       主区吃满 .agent-body 的整块高度与宽度；切回对话原样复原（见 applyViewChrome）。 */
-    applyViewChrome(trace);
+    if (chg) chg.hidden = !changes;
+    /* 视图态统一收口（本次需求）：轨迹 / 改动两栏下消息区 / 清单面板 / 输入区 / token 报告
+       全让位，主区吃满 .agent-body 的整块高度与宽度；切回对话原样复原（见 applyViewChrome）。 */
+    applyViewChrome(trace || changes);
+    /* 改动栏每次切进来都重挂一次（mount 是幂等的：换会话才重置选中态）——它跟着会话走，
+       会话里的改动随时在长（正在跑的这一轮也照收），所以不做「画过就跳过」的优化。 */
+    if (changes) renderChanges(sid);
     /* 轨迹视图下要跟着会话走：切会话 = 换内容（collectSegments 结果不同）。
        lastRendered 只在 render() 真的把内容画出来之后才记 —— 用它而不是用「切过视图」
        当判据：老写法（sid !== lastSid 才算换会话）在「本条会话第一次切进轨迹视图」时会
@@ -3777,6 +3861,53 @@
       syncViewport();
       render(sid);
     } else if (trace) renderRows();
+  }
+
+  /* ── 「改动」主区（本次需求 · 会话改过哪些文件 + 逐笔 diff）───────────────────
+     与轨迹主区**并列**的第二块主区：两块各自铺满 .agent-body 剩高，同一时刻只显一块。
+     渲染整块交给 renderer/app-changes.js（它自包含，只读窗口上的 window.MTNodeChanges）：
+     本文件不碰它的内部 —— 每次切进来 / 换会话时调一次 mount(sid)，它自己收、自己画。
+     缺模块（老构建 / 切片冒烟）时给一句明确空态，绝不静默白屏。 */
+  function ensureChangesMain() {
+    if (changesEl && changesEl.isConnected) return changesEl;
+    const body = $(".agent-body");
+    const list = $("#agentList");
+    if (!body || !list) return null;
+    changesEl = document.createElement("div");
+    changesEl.className = "dsh-chg-main";
+    changesEl.id = "agentChangesMain";
+    changesEl.hidden = true;
+    body.appendChild(changesEl);
+    return changesEl;
+  }
+  function changesApi() {
+    try {
+      return typeof window !== "undefined" && window.MTNodeChanges ? window.MTNodeChanges : null;
+    } catch {
+      return null;
+    }
+  }
+  function renderChanges(sid) {
+    const host = ensureChangesMain();
+    if (!host) return;
+    const api = changesApi();
+    if (!api || typeof api.mount !== "function") {
+      host.textContent = "";
+      const e = document.createElement("div");
+      e.className = "dsh-chg-empty";
+      e.textContent = T("改动视图模块未加载（renderer/app-changes.js）");
+      host.appendChild(e);
+      return;
+    }
+    try {
+      api.mount(host, sid);
+    } catch (_) {
+      host.textContent = "";
+      const e = document.createElement("div");
+      e.className = "dsh-chg-empty";
+      e.textContent = T("改动视图渲染失败");
+      host.appendChild(e);
+    }
   }
 
   /* 出口：sync / render 是外部驱动入口（renderAgentSession 与标签点击都调 sync），
@@ -3877,6 +4008,12 @@
         hoverT: hoverOn ? hoverTime() : 0,
         dom: lastDom ? { min: lastDom.min, max: lastDom.max } : null,
         hoverLine: !!hoverElOf(),
+        /* 「改动」主区（本次需求 · 纯只读诊断）：它建出来了没 / 显不显 / 里面收了几组改动。
+           冒烟靠这三项核对「切到改动栏 = 轨迹主区收起、改动主区显形」，不碰任何内部状态。 */
+        hasChanges: !!changesEl,
+        changesHidden: changesEl ? !!changesEl.hidden : true,
+        changeGroups: changesEl ? Number(changesEl.dataset.chgGroups || 0) : -1,
+        changePicked: changesEl ? String(changesEl.dataset.chgPicked || "") : "",
       };
     },
   };

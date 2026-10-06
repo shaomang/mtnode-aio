@@ -94,7 +94,7 @@ console.log("\n[1] 入口：四处「＋ 创建长任务」都开对话框，不
 /* ═══════════════ [2] 对话框骨架 ═══════════════ */
 console.log("\n[2] 对话框：持久化浮层 / 近全屏 / 右下拖调 / 唯一手动新建 / Esc");
 has(LTC, 'window.openLtCreateDlg = openLtCreateDlg', "挂 window.openLtCreateDlg（自包含新模块）");
-has(LTC, 'openOverlay(ltcT("新建长周期任务"), { persistent: true, min: true })', "持久化浮层（不点外部即关）且可最小化到状态栏");
+has(LTC, 'openOverlay(ltcT("新建长周期任务"), { persistent: true, min: true })', "持久化浮层（不点外部即关）+ 给通用 ✕（min 现在只管这颗 ✕；最小化已下线）");
 has(LTC, "ltcOvBox", "窗壳从 #overlay 取（不重造浮层壳）");
 has(LTC, "vw * 0.94", "默认近全屏（宽按视口 94%）");
 has(LTC, "vh * 0.86", "默认近全屏（高按视口 86%）");
@@ -299,7 +299,7 @@ has(LTG, "ltgInputApply(ta)", "建框即按记住的高度落 inline 高度");
 has(LTG, 'ta.style.flex = "1 1 auto"', "宽度由 inline 的 flex:1 1 auto 收缩铺满（flex:none 会把发送按钮挤出左栏压在右栏上）");
 has(CSS, "body.ltg-split-drag", "拖动中光标 / 禁选有样式（指针划出分隔条也不丢跟手）");
 has(LTG, "window.renderAgentSession = wrapped", "wrap 全局重绘钩子（窗内实时刷消息流）");
-has(LTG, "setInterval", "运行期轮询兜底（最小化到状态栏也继续）");
+has(LTG, "setInterval", "运行期轮询兜底（窗被别的窗顶掉 / 重新打开也继续）");
 has(LTG, "/create_longtask/i.test", "从工具回执里认 create_longtask");
 has(LTG, "window.LT.ui.enable(wf, task.uid, {})", "「启用并绑定」把落库任务启用并绑本画布");
 has(LTG, "ltgAbort", "有中断出口");

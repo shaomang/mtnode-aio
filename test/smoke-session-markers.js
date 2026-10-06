@@ -299,14 +299,19 @@ section("[4] 文件改动 diff（真函数跑）");
     extract(ASSIST, [
       "dshDiffArgText",
       "dshDiffRowsOf",
+      "dshDiffPartsOf",
       "dshToolArgsObj",
       "dshToolDiffOf",
+      "dshToolDiffOfFull",
       "dshOneLine",
       "dshIsShellTool",
       "dshIsGrepTool",
       "dshIsGlobTool",
       "dshIsSearchTool",
-    ]) + "\nvar DSH_DIFF_MAX_ROWS = 9;\nvar DSH_DIFF_MAX_CHARS = 300000;\n",
+    ]) +
+      "\nvar DSH_DIFF_MAX_ROWS = 9;\nvar DSH_DIFF_MAX_CHARS = 300000;\n" +
+      "\nvar DSH_DIFF_WRITE_RE = /^(write|write_file|create_file)$/;\n" +
+      "\nvar DSH_DIFF_EDIT_RE = /^(edit|edit_file|str_replace_editor|apply_patch)$/;\n",
     sb,
     { filename: "diff.js" },
   );
@@ -353,13 +358,16 @@ section("[4] 文件改动 diff（真函数跑）");
 has(ASSIST, "const DSH_DIFF_MAX_ROWS = 9;", "[4] 会话内折叠上限 = 9 行（上游 CHAT_DIFF_MAX_LINES）");
 ok(
   ASSIST.indexOf("const rows = limit ? diff.rows.slice(0, limit) : diff.rows;") > 0 &&
-    /render\(folded \? DSH_DIFF_MAX_ROWS : 0\);/.test(ASSIST),
-  "[4] 渲染层按上限切片（折叠后点一下就地展开）",
+    /* 折叠态画到 min(foldCap, rowsLimit)；对话 / 轨迹不传 opts ⟹ 阈值缺省回落上限常量 */
+    /foldCap =\s*\r?\n\s*o && Number\(o\.foldCap\) > 0/.test(ASSIST) &&
+    /:\s*DSH_DIFF_MAX_ROWS;/.test(ASSIST) &&
+    /function dshToolDiffEl\(diff\) \{\s*\r?\n\s*return dshDiffBlockEl\(diff, null\);/.test(ASSIST),
+  "[4] 渲染层按上限切片（折叠后点一下就地展开；对话 / 轨迹缺省仍 = 9 行）",
 );
 /* 两条断言原先写的是**带 \n 的字面串**，而这两份源文件是 CRLF 行尾 —— indexOf 恒不命中，
    它们从写下那天起就恒红（不是代码坏了）。改成行尾无关的正则：真回归才算数。 */
 ok(
-  /more\.textContent = folded\s*\n\s*\? I18n\.t\("… 其余 \{n\} 行"/.test(ASSIST),
+  /more\.textContent = foldedNow\(\)\s*\r?\n\s*\? I18n\.t\("… 其余 \{n\} 行"/.test(ASSIST),
   "[4] 折叠提示照上游「… 其余 N 行」",
 );
 ok(
@@ -443,8 +451,21 @@ section("[6] 轮次组织（不收纳工具调用 + 逐项时刻 + 四档策略�
   ok(Q('dshTranscriptViewGlobal()') === "standard", "[6] 全局默认 = standard（上游默认档）");
   ok(Q('dshPolicyOfView("compact").showThink') === false, "[6] 简洁档：不显示思考块");
   ok(Q('dshPolicyOfView("standard").showThink') === true, "[6] 标准档：显示思考块");
-  ok(Q('dshPolicyOfView("detailed").expandThink') === true, "[6] 详细档：思考块默认展开");
-  ok(Q('dshPolicyOfView("verbose").expandThink') === true, "[6] 完全展开：思考块默认展开");
+  /* 本次需求：会话里的思考一律收成一行摘要条、点开在弹窗里读 —— 档位不再管
+     「思考落地即展开」这一位（expandThink 整只撤掉，删掉它是因为它已经没有地方生效）。 */
+  ok(
+    Q('typeof dshPolicyOfView("detailed").expandThink') === "undefined",
+    "[6] 详细档不再有 expandThink（思考一律点开弹窗，没有「落地即展开」）",
+  );
+  ok(
+    Q('typeof dshPolicyOfView("verbose").expandThink') === "undefined",
+    "[6] 完全展开档同样没有 expandThink",
+  );
+  ok(
+    Q('dshPolicyOfView("detailed").showThink') === true &&
+      Q('dshPolicyOfView("verbose").showThink') === true,
+    "[6] 详细 / 完全展开档仍显示思考（只是形态换成可点的一行摘要条）",
+  );
   ok(Q('dshPolicyOfView("verbose").expandProcess') === true, "[6] 完全展开：工具卡也默认摊开");
   ok(
     Q('typeof dshPolicyOfView("standard").foldCompletedTurns') === "undefined",
@@ -479,12 +500,14 @@ has(ASSIST, "function dshSegDurText(at, doneAt)", "[6] 工具项的耗时格式�
 has(ASSIST, "function dshSegTimeAttach(host, own, doneAt, msgAt)", "[6] 时刻栏挂载口径在位");
 has(ASSIST, "function dshSegSetStreamText(el, txt)", "[6] 流式正文就地更新时不冲掉时刻栏");
 ok(
-  /* 历史 + 运行中两条渲染路径的每一项都挂：思考 / 正文 / 工具 / 上下文注入 */
-  /dshSegTimeAttach\(wrap, seg\.at, 0, msgAt\)/.test(ASSIST) &&
+  /* 历史 + 运行中两条渲染路径的每一项都挂：思考 / 正文 / 工具 / 上下文注入
+     （本次需求后历史思考段的时刻栏宿主是 .dsh-seg-think-wrap 那一层 row，
+       运行中依然是 box —— 两处都必须挂着，思考不能因为换成一行摘要条就丢了时刻）。 */
+  /dshSegTimeAttach\(row, seg\.at, 0, msgAt\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(box, seg\.at, 0, 0\)/.test(ASSIST) &&
     /dshSegTimeAttach\(d, seg\.at, 0, msgAt\)/.test(ASSIST) &&
     /dshSegTimeAttach\(wrap, t && t\.at, t && t\.doneAt, msgAt\)/.test(ASSIST) &&
     /dshSegTimeAttach\(c, seg\.at, 0, msgAt\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(box, seg\.at, 0, 0\)/.test(ASSIST) &&
     /dshSegTimeAttach\(d, seg\.at, 0, 0\)/.test(ASSIST) &&
     /dshSegTimeAttach\(wrap, t\.at \|\| seg\.at, t\.doneAt, 0\)/.test(ASSIST) &&
     /dshSegTimeAttach\(c, seg\.at, 0, 0\)/.test(ASSIST),
@@ -493,6 +516,58 @@ ok(
 ok(
   !/dshChatMetaEl|dshChatTickText/.test(ASSIST) && DSH_CSS.indexOf(".dsh-chat-meta") < 0,
   "[6] 旧的段尾「时刻 · 耗时」刻度（.dsh-chat-meta）整只撤掉（同一份时间不再两处显示）",
+);
+/* ── 本次需求：思考不再是 <details> 下拉，改成一行摘要条 + 点击开弹窗 ──────────
+   口径（拷问共识）：会话里只留一行「◉ 思考 · N 字」，整行可点；全文与译文在
+   居中 #overlay 弹窗里左右分栏看；旧的下拉展开逻辑、只服务于它的样式、以及
+   「详细 / 完全展开 = 思考落地即展开」那一位（expandThink）一并删掉 ——
+   同一处只留一条交互口径。 */
+ok(
+  /function dshThinkRowEl\(desc\)/.test(ASSIST) &&
+    /function openDshThinkPop\(desc\)/.test(ASSIST) &&
+    (ASSIST.match(/dshThinkRowEl\(\{/g) || []).length >= 4,
+  "[6] 思考摘要条与弹窗渲染器在位（历史消息 / 运行中 / 无分段旧渲染 / 节点会话四处共用同一行）",
+);
+ok(
+  !/det\.className = "dsh-seg dsh-seg-think"/.test(ASSIST) &&
+    !/det\.className = "dsh-think"/.test(ASSIST) &&
+    /* 助手栏（右侧那一栏）运行中的思考仍是一段纯文本（#assist-think），本来就没有下拉；
+       这里只钉会话两条渲染路径不再建 details */
+    (ASSIST.match(/dsh-think-live/g) || []).length === 1 &&
+    !/\.dsh-seg-think>summary/.test(ASSIST),
+  "[6] 思考不再建 <details>（点击开弹窗，没有「展开 / 收起」这一层）",
+);
+ok(
+  !/dshThinkTranslateAppend|dsh-think-bar|document\.getElementById\("agent-think-body"\)/.test(ASSIST) &&
+    !/S\.openDshTools\[oKey\]/.test(ASSIST) &&
+    !/S\._agentThinkOpen/.test(ASSIST),
+  "[6] 旧下拉的按钮挂载（dshThinkTranslateAppend / dsh-think-bar）与展开态键一并撤掉",
+);
+ok(
+  !/\.dsh-seg-think>summary/.test(DSH_CSS) &&
+    !/\.dsh-seg-think summary/.test(DSH_CSS) &&
+    !/\.dsh-seg-think pre/.test(DSH_CSS) &&
+    /button\.dsh-think-row/.test(DSH_CSS),
+  "[6] 只服务于旧下拉的样式（summary / 内嵌 pre）删掉，摘要条样式在位",
+);
+ok(
+  /\.overlay-box\.dsh-think-pop-box/.test(DSH_CSS) &&
+    /\.dsh-think-pop \{[\s\S]{0,120}?display: flex;/.test(DSH_CSS) &&
+    /\.dsh-think-pop \{[\s\S]{0,200}?flex-direction: column;/.test(DSH_CSS) &&
+    /\.dsh-think-pop-pane \{[\s\S]{0,200}?overflow: auto;/.test(DSH_CSS),
+  "[6] 弹窗宽幅靠专属类、原文与译文**上下两个框**各自独立滚动（避免文字滚动影响浏览）",
+);
+ok(
+  /openOverlay\(I18n\.t\("◉ 思考 · "\) \+ txt\.length/.test(ASSIST) &&
+    /shell\.classList\.add\("dsh-think-pop-box"\)/.test(ASSIST) &&
+    /dshThinkTranslateBtn\(txt, scopeId, segKey, txt\)/.test(ASSIST) &&
+    /left\.tools\.appendChild\(cp\)/.test(ASSIST),
+  "[6] 弹窗走 #overlay（近全屏 / 可最小化 / Esc 关），原文栏头挂「复制」+「翻译」",
+);
+ok(
+  /function dshThinkPopPaintXlate\(scopeId, segKey\)/.test(ASSIST) &&
+    /dshThinkPopPaintXlate\(scopeId, segKey\)/.test(ASSIST.split("async function dshTranslateThinking")[1] || ""),
+  "[6] 弹窗里翻译沿用同一条按段缓存 + 校验链，且翻完就地刷新译文框（未点翻译时没有这一栏）",
 );
 has(DSH_CSS, ".dsh-seg-has-time {", "[6] 逐项时刻给每一项留出左侧定宽栏（不压正文）");
 has(DSH_CSS, ".dsh-seg-has-time > .dsh-seg-time {", "[6] 时刻栏样式在位（等宽表格数字、恒显淡色）");
@@ -796,13 +871,17 @@ section("[8] 轨迹 View（本次需求 · 上游 conversation.view / ui-traject
   has(TRAJ, 'tabsEl.className = "dsh-view-tabs agent-view-tabs";', "[8] 复用 dsh-tokens 的 View 标签栏皮");
   has(TRAJ, 'tabsEl.id = "agentViewTabs";', "[8] 标签栏宿主有稳定 id");
   ok(
-    /mk\("chat", T\("对话"\)\)[\s\S]{0,120}?mk\("trace", T\("轨迹"\)\)/.test(TRAJ) &&
+    /mk\("chat", T\("对话"\)\)[\s\S]{0,200}?mk\("trace", T\("轨迹"\)\)[\s\S]{0,200}?mk\("changes", T\("改动"\)\)/.test(
+      TRAJ,
+    ) &&
       /function T\(s\) \{[\s\S]{0,200}?I18n\.t\(s\)/.test(TRAJ),
-    "[8] 两枚标签 = 对话 / 轨迹（走 i18n，中英成对）",
+    "[8] 三枚标签 = 对话 / 轨迹 / 改动（走 i18n，中英成对）",
   );
   ok(
-    /function viewOf\(st\) \{\s*\n\s*return st && st\.trajView === "trace" \? "trace" : "chat";/.test(TRAJ),
-    "[8] 视图选择落在会话语义上（st.trajView），默认回对话（上游「绝不选第一个 View」同读法）",
+    /const VIEWS = \["chat", "trace", "changes"\];/.test(TRAJ) &&
+    /function viewOf\(st\) \{[\s\S]{0,200}?VIEWS\.indexOf\(v\) > 0 \? v : "chat";/.test(TRAJ) &&
+    /st\.trajView = VIEWS\.indexOf\(String\(v\)\) > 0 \? String\(v\) : "";/.test(TRAJ),
+    "[8] 视图选择落在会话语义上（st.trajView ∈ chat / trace / changes），非法值回对话（上游「绝不选第一个 View」同读法）",
   );
   has(TRAJ, "if (typeof persistAgentSession === \"function\") persistAgentSession();", "[8] 选择随会话落盘（上游的持久化 View 偏好）");
   ok(!/ba-open/.test(TRAJ), "[8] 不再借右栏 .ba-open 显隐（右栏回归浏览器活动 + 文件预览）");
@@ -821,8 +900,18 @@ section("[8] 轨迹 View（本次需求 · 上游 conversation.view / ui-traject
   has(TRAJ, "const ticks = document.createElement(\"div\");", "[8] 窗口轴带刻度行");
   /* 主区接线：会话每次重绘同步一次（轮询只是兜底） */
   has(ASSIST, "if (window.MTNodeTrajectory && typeof MTNodeTrajectory.sync === \"function\")", "[8] renderAgentSession 主路径调 sync");
-  has(ASSIST, 'trajView: s.trajView === "trace" ? "trace" : "",', "[8] 落盘白名单带上 trajView（只落非默认态）");
-  has(BOOT, 'sess.trajView = sess.trajView === "trace" ? "trace" : "";', "[8] 重启水合归一 trajView");
+  /* 落盘白名单与重启水合都要认「改动」这第三档（只落非默认态，其余一律回对话）：
+     判据与 app-trajectory.js 的 VIEWS 同一份口径，两处少一处就会出现「切回改动栏却回到了对话」。 */
+  has(
+    ASSIST,
+    'trajView: s.trajView === "trace" || s.trajView === "changes" ? s.trajView : "",',
+    "[8] 落盘白名单带上 trajView（trace / changes 两种非默认态，其余回对话）",
+  );
+  has(
+    BOOT,
+    'sess.trajView = sess.trajView === "trace" || sess.trajView === "changes" ? sess.trajView : "";',
+    "[8] 重启水合归一 trajView（同样认改动档）",
+  );
   /* 右栏那一格交还给浏览器活动 / 文件预览 */
   ok(!/\.dsh-trace-col\s*\{/.test(TOKENS), "[8] 旧的「右栏轨迹栏」样式已撤（不再与浏览器活动互斥抢占）");
   for (const cls of [".dsh-trace-main {", ".dsh-trace-cols {", ".dsh-trace-insp {", ".dsh-trace-code {", ".dsh-trace-mark {"]) {

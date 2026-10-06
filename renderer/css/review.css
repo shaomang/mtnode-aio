@@ -139,14 +139,30 @@
   white-space: nowrap;
 }
 .rv-btn:hover { border-color: var(--cyan); color: var(--cyan); }
-.rv-btn.primary { border-color: var(--cyan); background: var(--cyan); color: var(--bg); font-weight: 600; }
-.rv-btn.primary:hover { opacity: .88; color: var(--bg); }
-.rv-btn.rv-revise {
-  border-color: #e0a800; background: #ffd24a; color: #6b4d00;
-  font-weight: 700; font-size: 12.5px;
-  box-shadow: 0 0 0 1px #e0a800;
+/* primary = **青色空心**（需求口径：全站按钮不许亮色实心填色，亮底上中间的字读不清）；
+   背景始终 transparent，只有 1px 描边 + 同色字，悬停另叠约 8% 同色半透底。
+   调用处：审阅窗全文批注便笺的「确定」（app-review.js 的 #reviewNoteOk）。 */
+.rv-btn.primary {
+  border-color: var(--cyan);
+  background: transparent;
+  color: var(--cyan2);
+  font-weight: 600;
 }
-.rv-btn.rv-revise:hover { background: #ffcf33; color: #5a4200; }
+.rv-btn.primary:hover {
+  background: color-mix(in srgb, var(--cyan) 8%, transparent);
+  border-color: var(--cyan2);
+  color: var(--cyan2);
+  opacity: 1;
+}
+/* 「让 AI 依据批注修订」= **明黄空心**（同一口径；原来是明黄实心 + 深黄字）：
+   只保留描边与字色，字色走主题槽位 --yellow（暗色 #ffd166 / 亮色 #9a6b00），
+   亮色主题下深琥珀字压在浅底上同样清楚，不必另写一套 theme-light 覆写。 */
+.rv-btn.rv-revise {
+  border-color: #e0a800; background: transparent; color: var(--yellow);
+  font-weight: 700; font-size: 12.5px;
+  box-shadow: none;
+}
+.rv-btn.rv-revise:hover { background: color-mix(in srgb, var(--yellow) 8%, transparent); color: var(--yellow); }
 .rv-revise-ic { margin-right: 3px; }
 
 /* 工具栏 */

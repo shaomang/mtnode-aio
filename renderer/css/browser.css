@@ -237,6 +237,83 @@
 }
 .ix-card.ix-browser-help .ix-title { color: #bfe0ff; }
 
+/* ── 永久等待的两条可见凭据（本次需求 · 拷问共识）─────────────────────────
+   ① 卡上的常驻等待行（app-db.js 的 ixWaitStart）：卡还在 = 模型还在等你，
+      每秒刷「已等 N 秒（不会超时自动跳过）」——等待改为不超时之后，这一行就是
+      「不是它卡死了」的唯一凭据；
+   ② 用户答完之后，会话里那条记录在 60 秒无新进展时变成 ⚠ 提示 + 两个出口
+      （app-db.js 的 ixStallBanner，宿主是 .dsh-msg[data-ix-bnote]）。
+   两处同一套配色：等待 = 青（进行中），无进展 = 橙（要人来决定）。 */
+.ix-detail.ix-wait-line {
+  color: var(--cyan2, #7ca2fe);
+  opacity: .9;
+  font-size: 11px;
+  letter-spacing: .3px;
+  margin-top: 2px;
+}
+.ix-detail.ix-auto-note {
+  color: var(--muted);
+  opacity: .92;
+}
+.dsh-msg-bnote {
+  opacity: .95;
+}
+.dsh-msg-bnote .dsh-role {
+  color: var(--cyan2, #7ca2fe);
+}
+.ix-stall {
+  margin: 5px 0 0;
+  padding: 5px 7px;
+  border-left: 3px solid #ff8f2e;
+  background: rgba(255, 143, 46, .1);
+  border-radius: 0 4px 4px 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.ix-stall-txt {
+  color: #ffd0a6;
+}
+.ix-stall-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+body.theme-light .ix-stall-txt { color: #7a3d05; }
+
+/* ── 「这一轮已经结束」的两处可见态（本次需求 · 拷问共识）─────────────────
+   轮次收尾时卡片按族收口（app-db.js 的 ixEndRound / ixEndCardOnStale）：
+     ① 会话里那行痕迹（.dsh-msg[data-ix-rnote]，宿主渲染见 app-assist.js dshMsgBlock，
+        出口由 app-db.js 的 ixRoundEndPaint 补）：配色比无进展提示低一档 ——
+        它是「这一轮收口了」的交代，不是催人处理的告警；
+     ② 提问 / 审批卡转成的「已结束」态（.ix-card.ix-ended）：正文用中性色，
+        留着的回答用浅底块，一眼看出这张卡已收口、还能把回答发出去。 */
+.ix-stall.ix-roundend {
+  border-left-color: var(--cyan, #5686fe);
+  background: rgba(86, 134, 254, .1);
+}
+.ix-stall.ix-roundend .ix-stall-txt { color: var(--cyan2, #7ca2fe); }
+.ix-card.ix-ended { opacity: .94; }
+.ix-card.ix-ended .ix-title { color: var(--muted); }
+.ix-card.ix-ended .ix-ended-note { color: #e0b566; }
+.ix-card.ix-ended .ix-ended-answer {
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #e3ebf8;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  padding: 6px 8px;
+  max-height: 140px;
+  overflow: auto;
+}
+body.theme-light .ix-stall.ix-roundend .ix-stall-txt { color: #14416f; }
+body.theme-light .ix-card.ix-ended .ix-ended-note { color: #9a6a12; }
+body.theme-light .ix-card.ix-ended .ix-ended-answer {
+  color: #1d2a44;
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
 /* ── 「只看浏览器实况」收起态（本次需求）────────────────────────────────
    .ba-col.ba-list-off = 用户点了 #baListOn：下方活动区（状态条 / 筛选 / 列表 / 底栏）
    整块收起，实况画面铺满右栏剩余高度；事件同时停止追踪（不重画、不落库，见

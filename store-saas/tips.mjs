@@ -22,6 +22,8 @@
  *
  * 金额口径与钱包一致：内部整数分 `*Cents`，出接口一律元 `*Yuan`（4 位小数）；
  * **任何对外字段都不出现 Cents**（本模块的公开投影只有 `amountYuan` / `totalYuan` / 各种 `*Yuan`）。
+ * **唯一例外是给人看的文案**：打赏通知正文按**鲸圆币**写（1 币 = ¥0.02，见 `coinTextOfCents`）——
+ * 需求口径「打赏不要显示元，显示鲸圆币」；账目、接口字段、管理台 / CSV 一律仍是元。
  *
  * ── 本模块定的三个字段 / 键口径（其它模块只读这些字段） ──────────────────────
  *   1. 打赏记录的「对象键」`targetKey` = `"<targetKind>:<targetId>"`（对外也用它，客户端拿它查当天是否已打赏）；
@@ -35,6 +37,17 @@ import crypto from "node:crypto";
 import { yuanOfCents, centsOfYuan, round4 } from "./wallet.mjs";
 
 /* ---------- 打赏口径（金额一律整数「分」） ---------- */
+
+/** 1 鲸圆币 = ¥0.02（即 ¥1 = 50 币）：与客户端 renderer/app-whalecoin.js 的固定汇率同源。
+ *  **只用于「给人看的文案」**（目前唯一一处 = 打赏通知正文），账目与对外字段仍是元。 */
+const COIN_PER_YUAN = 50;
+
+/** 分 → 币数文案（千分位、四舍五入取整）：打赏通知正文按鲸圆币显示用（需求口径：
+ *  打赏不出现「元」，一律按鲸圆币；拆分打赏那种除不尽的零头与界面一致地取整）。 */
+function coinTextOfCents(cents) {
+  const coins = Math.round((Number(cents) || 0) / 100 * COIN_PER_YUAN);
+  return coins.toLocaleString("en-US");
+}
 
 /** 档位（元）：2 / 10 / 20 = 100 / 500 / 1000 鲸圆币；**不开放自由输入**。 */
 export const TIP_TIERS_YUAN = Object.freeze([2, 10, 20]);
@@ -724,7 +737,9 @@ export function createTips(deps) {
     }));
     for (const rec of records) tips().push(rec);
     /* ④ 消息（通知）：每位**实收作者**各一条 kind:"tip"，金额写自己那一份。
-       旁路：不参与任何金额 / 额度判定，失败也不影响这笔打赏（自己给自己不记；收件人不存在静默跳过）。 */
+       旁路：不参与任何金额 / 额度判定，失败也不影响这笔打赏（自己给自己不记；收件人不存在静默跳过）。
+       **正文按鲸圆币写**（需求口径：打赏不出现「元」；数值用币数，见 coinTextOfCents）——
+       账目与接口字段仍是元，只有这句给人看的话换单位。 */
     if (notifications) {
       for (const p of paid) {
         const uid = String(p.uid);
@@ -735,7 +750,7 @@ export function createTips(deps) {
           kind: "tip",
           at: t,
           title: "收到打赏",
-          text: "「" + label + "」收到 " + yuanOfCents(p.cents) + " 元打赏（来自 " + fromName + "）",
+          text: "「" + label + "」收到 " + coinTextOfCents(p.cents) + " 鲸圆币打赏（来自 " + fromName + "）",
           targetKind: rt.kind,
           targetId: rt.canonId || rt.id,
           actorId: String(user.id),

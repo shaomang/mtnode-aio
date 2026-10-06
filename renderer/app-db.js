@@ -2726,6 +2726,11 @@ function dshRunTask(input, opts) {
   /* 起跑时读到的终止代号：重发闸拿它比对，判「这一轮是不是在跑的中途被 ■ 停掉了」。
      真源 = dshStopMark（所有终止入口共用的 dshCancelActive 负责盖）。 */
   const stopBase = dshStopSeqOf(runKey);
+  /* 同一条会话新起一轮：上一轮留下的「这一轮已经结束」态卡片到此为止
+     （要重发有痕迹里那枚键；不撤就会一轮一轮攒下去） */
+  try {
+    ixDropEndedCards(runKey);
+  } catch (_) {}
   let tries = 0;
   /* 已累计正文：包一层 onEvent 把各轮的 text 增量攒下来 —— 续跑那一轮拿它当
      seedText，所以 dshRunOnce 返回的仍是「前半 + 续写后半」的整轮完整正文 */
@@ -3590,8 +3595,13 @@ function dshRunOnce(input, opts) {
     const DSH_WATCHDOG_INTERVAL_MS = 5000;
     const DSH_CANCEL_GRACE_MS = 10000;
     const DSH_RUN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-    /* 有未消费的提问 / 审批卡片时也设独立上限（模型在等用户，但引擎若挂起同样不能无限等） */
-    const DSH_IX_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+    /* 有未消费的提问 / 审批 / 浏览器求助卡片时**永久等待**（本次需求 · 拷问共识）：
+       原实现给 2 小时，超时后自动取消 —— 用户正好在登录 / 看页面 / 慢慢填答案时，
+       这一刀下来就是「我明明答了，会话却自己停了」。现在只要卡还在（pendingIx > 0）
+       就不设上限：唯一能结束这一问的是用户自己（作答 / 稍后 / 中断 / 撤销这张卡）。
+       真正的「引擎挂了」不再靠这条静默上限兜底，而由求助卡上那条 60 秒无进展提示
+       与「重发本轮 / 终止本轮」出口兜（见 ixStallTick）。 */
+    const DSH_IX_WAIT_TIMEOUT_MS = Number.POSITIVE_INFINITY;
     let lastActivity = Date.now();
     const finish = (ok, val, keepRunSession) => {
       if (settled) return;
@@ -3610,9 +3620,11 @@ function dshRunOnce(input, opts) {
         }
       }
       S._runCount = Math.max(0, (S._runCount || 1) - 1);
-      /* 本轮收尾只清自己这一轮(runKey)的提问 / 审批卡片:另一条在途会话的卡片保留,
-         而本轮的卡片也不会因为「还有别的 run 活着」变成没人清的幽灵 */
-      ixDropRun(runKey);
+      /* 本轮收尾把这一轮推上来的卡片**按族收口**（见 ixEndRound）：求助卡 / 危险动作
+         确认卡当场撤卡，提问卡 / 审批卡转「这一轮已经结束」态留住（回答没丢，卡上给
+         一枚键把它当新消息发出去），并在会话里落一行可复核的痕迹。另一条在途会话的
+         卡片不受影响（只按 runKey 过滤） */
+      ixEndRound(runKey);
       /* 同理撤掉这一轮挂起的宿主确认框（画布修改 / 危险操作）：本轮已经封口，
          再留着就是一张点「确认」也没人回执的死框 */
       if (typeof canvasConfirmDropRun === "function")
@@ -3688,6 +3700,9 @@ function dshRunOnce(input, opts) {
           if (settled) return;
           /* 任何业务事件（含 canvas / db 工具回执）都刷新看门狗的活动时间戳 */
           lastActivity = Date.now();
+          /* 本轮「有新进展」的心跳（本次需求）：求助卡的 60 秒无进展提示按它判 ——
+             正文 / 思考 / 工具 / 用量任何一帧都算进展，只有真的什么都没来才算卡住。 */
+          dshRunProgressTick(runKey);
           /* 断点续跑的原料：网关在起真实轮之前就把本轮 dsh session id 报回来
              （session 帧，运行时自行改铸 id 时还会再报一次），done / error 上各带
              一份兜底 —— 拿到它，这一轮失败后才有可能接着写而不是从头再烧一遍。
@@ -4528,6 +4543,19 @@ function ixMakeDraggable(box) {
     const t = box.querySelector(".ix-head");
     if (t) t.title = I18n.t("按住头部拖动这只窗（拖到底部 = 收进底栏）；双击回到默认位置");
   });
+  /* 滚轮停在头部（拖动条）那一条上也要能把正文滚起来：从前滚动条挂在整只窗上，
+     滚轮在窗内哪儿都灵；现在滚动归 .ix-body，不转发这一下就等于在头部上滚不动。 */
+  head.addEventListener(
+    "wheel",
+    (ev) => {
+      const b = box.querySelector(".ix-body");
+      if (!b) return;
+      const before = b.scrollTop;
+      b.scrollTop = before + (Number(ev.deltaY) || 0);
+      if (b.scrollTop !== before) ev.preventDefault();
+    },
+    { passive: false },
+  );
   /* 窗口尺寸变了按记住的位置重夹一次：不然改过窗口大小，窗可能落在视口外找不到 */
   if (window.__ixPosResize !== 1) {
     window.__ixPosResize = 1;
@@ -4606,6 +4634,8 @@ function ixPush(kind, data, runKey, src) {
       kind,
       data,
       runKey: runKey || "",
+      /* 这张卡进来的时刻：求助卡的「已等 N 秒」按它起算（重绘不重置） */
+      at: Date.now(),
       src: src && src.label ? src : null,
     });
     /* 新的一问：重绘时把窗重新露出来（可能正收在底栏 / 停在旧坐标上）；
@@ -4617,6 +4647,7 @@ function ixPush(kind, data, runKey, src) {
   renderIxPanel();
 }
 function ixDrop(id) {
+  ixWaitStop(id);
   if (!S.activeIx) return;
   S.activeIx.items = S.activeIx.items.filter((x) => x.data.id !== id);
   ixDraftDropCard(id); /* 卡没了 = 它的草稿也没意义，别留着下张同 id 的卡把旧字捞回来 */
@@ -4627,11 +4658,267 @@ function ixDropRun(runKey) {
   /* 按 runKey 过滤:只清这一轮推上来的卡片,其余在途运行的卡片保留 */
   const items = S.activeIx.items.filter((x) => x.runKey !== runKey);
   if (items.length === S.activeIx.items.length) return;
+  for (const x of S.activeIx.items)
+    if (x.runKey === runKey && x.data && x.data.id) ixWaitStop(x.data.id);
   /* 这一轮被撤了，它各家卡上的草稿一起作废（同一判活口径） */
   for (const x of S.activeIx.items)
     if (x.runKey === runKey && x.data && x.data.id) ixDraftDropCard(x.data.id);
   S.activeIx.items = items;
   renderIxPanel();
+}
+/* ── 轮次收尾时的卡片收口（本次需求 · 拷问共识）─────────────────────────────
+   症状：点浏览器求助卡上的「接管浏览器（我来操作）／我已处理，继续」，右下角弹出
+   「这张卡已失效（发起轮已结束）」。
+   根因：卡所属的那一轮早已收尾（网关侧 bridgePending 里那条 pending 已删），卡片却
+   还挂在屏上 —— 回执帧一到网关只能回 { ok:true, stale:true }（见 dsh/gateway/gateway.mjs
+   的 interact 分支与 diag `interact stale browser`），渲染层 ixFinalizeCard 就把它翻成
+   一条 warn toast。与 30 秒 interact 超时无关。
+   两族口径（用户已确认）：
+     · 浏览器求助卡 / 危险动作确认卡：**当场撤卡**（它们含接管 / 真窗口这类本地动作，
+       撤卡不丢东西），会话里落一行痕迹说明「这一轮已经结束」；
+     · 提问卡 / 审批卡：**留住并转「这一轮已经结束」态** —— 卡上就地说明 + 一枚
+       「把这句回答作为新消息发给模型」（回答本身没丢，重发即见效）。
+   两族的痕迹都落盘、重开可见、**不进模型上下文**，并自带「重发本轮」出口。 */
+const IX_ROUND_END_SRC = "ix-round-end";
+const IX_ENDED_KINDS = { question: 1, approval: 1 };
+
+/* 同一条会话新起一轮：上一轮留下的「已结束」态卡片到此为止（要重发有痕迹里那枚键） */
+function ixDropEndedCards(runKey) {
+  const k = String(runKey || "");
+  if (!k || !S.activeIx || !S.activeIx.items.length) return;
+  const items = S.activeIx.items.filter((x) => !(x.ended && x.runKey === k));
+  if (items.length === S.activeIx.items.length) return;
+  S.activeIx.items = items;
+  renderIxPanel();
+}
+/* 本轮收尾：卡片按族收口 + 落一行痕迹。
+   只有「这一轮确实有卡片被收口」时才写痕迹 —— 正常跑完的一轮不刷屏。 */
+function ixEndRound(runKey) {
+  const k = String(runKey || "");
+  if (!k || !S.activeIx || !S.activeIx.items.length) return;
+  const mine = S.activeIx.items.filter((x) => x.runKey === k);
+  if (!mine.length) return;
+  for (const it of mine) {
+    if (IX_ENDED_KINDS[it.kind]) {
+      /* 提问 / 审批卡：留住并转「已结束」态。卡面上已经写好的答案就地收下来，
+         那一枚「把这句回答作为新消息发给模型」靠它 —— 采集口径与提交时同源。 */
+      it.ended = true;
+      it.endedAt = Date.now();
+      if (it.endedText == null)
+        it.endedText =
+          it.kind === "question" ? ixEndedAnswerTextOf(it, ixCollectAnswers(it)) : "";
+    } else if (it.data && it.data.id) {
+      /* 求助卡 / 危险动作确认卡：当场撤卡（本地动作走 BA.realWindow / BA.setTakeover，
+         不依赖网关那一问；画布确认框另有 canvasConfirmDropRun 一并收） */
+      ixDrop(it.data.id);
+    }
+  }
+  ixRoundEndTrace(
+    k,
+    I18n.t("⏹ 这一轮已经结束：上面那张卡已收口，模型不再等它了。"),
+  );
+  renderIxPanel();
+}
+/* 「这一轮已经结束」痕迹：与「已回应，模型继续中」（ixNoteBrowserAnswer）同源 ——
+   落盘、重开可见、**不进模型上下文**（见 agentHistoryEntries / agentConfirmedHistoryEntries
+   的过滤）。同一轮只落一条：收尾收口与「点到残留的死卡」两条路都可能想写它。 */
+function ixRoundEndTrace(runKey, text) {
+  const k = String(runKey || "");
+  const sid = k.slice(0, 6) === "agent:" ? k.slice(6).trim() : "";
+  if (!sid || typeof agentSessionById !== "function") return 0;
+  const st = agentSessionById(sid);
+  if (!st || !st.id) return 0;
+  st.messages = Array.isArray(st.messages) ? st.messages : [];
+  for (let i = st.messages.length - 1; i >= 0; i--) {
+    const m = st.messages[i];
+    if (!m || m._src !== IX_ROUND_END_SRC) continue;
+    if (String(m._roundKey || "") === k) return 0; /* 同一轮已有痕迹，不重复写 */
+    break;
+  }
+  const at = Date.now();
+  st.messages.push({
+    role: "user",
+    content: String(
+      text || I18n.t("⏹ 这一轮已经结束：上面那张卡已收口，模型不再等它了。"),
+    ),
+    at: at,
+    _src: IX_ROUND_END_SRC,
+    _roundKey: k,
+  });
+  /* 条数闸与开轮 / 落盘同源（app-assist.js 的 agentTrimSessionMessages：按轮保留，
+     不再是一刀切的固定 100 条 —— 那个上限在开发 / 细化会话里会把最早的**助手消息**
+     连同它的 segments / tools 一起挤掉，轨迹与改动两栏因此只剩最后一轮）。
+     拿不到那个函数（模块尚未加载 / 冒烟桩）时按同一份判据就地兜底：
+     AGENT_MIN_KEEP_PER_ROUND(120) × AGENT_ROUND_MAX_ENTRIES(16) = 1920，改那两个常量时这里要跟着改。 */
+  if (typeof agentTrimSessionMessages === "function") agentTrimSessionMessages(st);
+  else if (st.messages.length > 1920) st.messages.splice(0, st.messages.length - 1920);
+  st.updatedAt = Date.now();
+  try {
+    if (typeof persistAgentSession === "function")
+      Promise.resolve(persistAgentSession()).catch(() => {});
+  } catch (_) {}
+  /* 正在跑的那一轮占着界面：只落库，等本轮收尾自会重绘（与 ixCommitAnswerToSession 同口径） */
+  try {
+    if (typeof sessionIsRunning === "function" && sessionIsRunning(st)) return at;
+    if (typeof agentViewIs === "function" && agentViewIs(st)) {
+      if (typeof renderAgentSession === "function") renderAgentSession();
+    } else if (typeof renderAgentSessionSidebar === "function") {
+      renderAgentSessionSidebar();
+    }
+  } catch (_) {}
+  return at;
+}
+/* 痕迹那一行自带的出口：与无进展提示（ixStallBanner）同源共用出口 ——
+   「重发本轮」= 终止当前这一轮 + 把最后一条用户消息再发一次。 */
+function ixRoundEndPaint(row, m) {
+  if (!row || !m) return;
+  const prev = row.querySelector(".ix-roundend");
+  if (prev) prev.remove();
+  const k = String(m._roundKey || "");
+  const sid = k.slice(0, 6) === "agent:" ? k.slice(6).trim() : "";
+  const box = document.createElement("div");
+  box.className = "ix-stall ix-roundend";
+  const t = document.createElement("div");
+  t.className = "ix-stall-txt";
+  t.textContent = I18n.t("这一轮已经结束。要从头再跑一遍就点「重发本轮」。");
+  box.appendChild(t);
+  const btns = document.createElement("div");
+  btns.className = "ix-stall-btns";
+  const again = document.createElement("button");
+  again.type = "button";
+  again.className = "mini primary";
+  again.textContent = I18n.t("重发本轮");
+  again.title = I18n.t("先终止当前这一轮，再把最后一条用户消息重新发一次");
+  again.onclick = () => ixBrowserResend(sid);
+  btns.appendChild(again);
+  box.appendChild(btns);
+  row.appendChild(box);
+}
+/* 卡面当前这份答案（提问卡）：提交（ixAnswerQuestion）与「轮次收尾时收口」（ixEndRound）
+   两处共用同一份采集口径，否则卡上留着的回答与提交的那份会不一样。 */
+function ixCollectAnswers(it) {
+  const id = String((it && it.data && it.data.id) || "");
+  const card = id ? document.getElementById("ixCard_" + id) : null;
+  const answers = [];
+  const byQ = {};
+  if (card) {
+    for (const inp of card.querySelectorAll("input")) {
+      if (!inp.dataset.qid) continue;
+      (byQ[inp.dataset.qid] = byQ[inp.dataset.qid] || []).push(inp);
+    }
+  }
+  for (const q of (it && it.data && it.data.questions) || []) {
+    const inputs = byQ[q.id] || [];
+    const selected = [];
+    let custom;
+    for (const inp of inputs) {
+      if (inp.type === "text") {
+        if (inp.value.trim()) custom = inp.value.trim();
+      } else if (inp.checked) {
+        selected.push(inp.value);
+      }
+    }
+    answers.push({
+      id: q.id,
+      selected: custom ? [custom] : selected,
+      ...(custom ? { custom } : {}),
+    });
+  }
+  return answers;
+}
+/* 这份回答的正文（按不下去/没写时回空串 = 卡上不给重发键，免得发一句空话出去）。
+   提问卡复用回答气泡那套「题面 → 答案」正文（与 ixCommitAnswerToSession 字字一致）。 */
+function ixEndedAnswerTextOf(it, answers) {
+  if (!it) return "";
+  if (!IX_ENDED_KINDS[it.kind]) return "";
+  if (it.kind === "approval") return String(it.endedText || "");
+  const pairs = ixAnswerPairsOf(it, answers || []);
+  if (!pairs.some((p) => p && String(p.a || "").trim())) return "";
+  return ixAnswerBubbleText(pairs);
+}
+function ixApprovalAnswerText(outcome) {
+  const yes = String(outcome || "") === "allowed-once";
+  return I18n.t("【我对上面审批的回答】") + "\n· " + (yes ? I18n.t("允许这一次") : I18n.t("拒绝"));
+}
+/* 点到「已经失效」的提问 / 审批卡：不再弹右下角红字（用户口径：stale 静默化），
+   改成卡上就地收口 —— 说明这一轮已经结束 + 把这句回答当新消息发出去的出口。 */
+function ixEndCardOnStale(it, answerText) {
+  if (!it || !it.data || !it.data.id) return;
+  it.ended = true;
+  it.endedAt = Date.now();
+  if (answerText != null) it.endedText = String(answerText || "");
+  ixRoundEndTrace(
+    it.runKey,
+    I18n.t("⏹ 这一轮已经结束：那张卡已收口，你的回答没能送达模型（可把它作为新消息再发一次）。"),
+  );
+  renderIxPanel();
+}
+/* 「这一轮已经结束」态的卡片（提问卡 / 审批卡专用，见 ixEndRound / ixEndCardOnStale）：
+   只留两件事 —— ① 就地说明这一轮已结束、回答送不到模型；② 一枚把这份回答当成
+   **新的一句用户消息**发出去的出口。原来的「回答 / 允许一次 / 拒绝 / 稍后 / 中断」
+   一律不下发：它们的回执注定撞 stale，留着就是「点了就报错」。 */
+function ixRenderEndedCard(card, it) {
+  card.classList.add("ix-ended");
+  const t1 = document.createElement("div");
+  t1.className = "ix-title";
+  t1.textContent = I18n.t("⏹ 这一轮已经结束");
+  card.appendChild(t1);
+  const note = document.createElement("div");
+  note.className = "ix-detail ix-ended-note";
+  note.style.fontFamily = "inherit";
+  note.textContent =
+    it.kind === "approval"
+      ? I18n.t("发起这次审批的那一轮已经结束，你的选择送不到模型了。")
+      : I18n.t("发起这一问的那一轮已经结束，你的回答送不到模型了。");
+  card.appendChild(note);
+  const txt = String(it.endedText || "").trim();
+  if (txt) {
+    const val = document.createElement("div");
+    val.className = "ix-detail ix-ended-answer";
+    val.style.fontFamily = "inherit";
+    val.textContent = txt;
+    card.appendChild(val);
+  }
+  const row = document.createElement("div");
+  row.className = "ix-btns";
+  if (txt) {
+    const again = document.createElement("button");
+    again.className = "mini primary";
+    again.textContent = I18n.t("把这句回答作为新消息发给模型");
+    again.title = I18n.t("直接新起一轮，把上面这份回答原样发给模型");
+    again.onclick = () => ixResendEndedAnswer(it);
+    row.appendChild(again);
+  } else {
+    const hint = document.createElement("div");
+    hint.className = "ix-detail";
+    hint.style.fontFamily = "inherit";
+    hint.textContent = I18n.t("这张卡上没有写下回答；要接着做，请点上面那行痕迹里的「重发本轮」。");
+    card.appendChild(hint);
+  }
+  const drop = document.createElement("button");
+  drop.className = "mini danger";
+  drop.textContent = I18n.t("撤掉这张卡");
+  drop.onclick = () => ixDrop(it.data.id);
+  row.appendChild(drop);
+  card.appendChild(row);
+}
+/* 把「已结束」卡上留着的回答当成新的一句用户消息发出去（用户口径：直接发，不二次确认）。
+   会话按卡自己的归属取（runKey = agent:<会话id>），绝不回落到「当前活动会话」。 */
+function ixResendEndedAnswer(it) {
+  const text = String((it && it.endedText) || "").trim();
+  const st = ixAnswerSessionOf(it);
+  if (it && it.data && it.data.id) ixDrop(it.data.id);
+  if (!st || !text) {
+    toast(I18n.t("这条会话已经不在，无法重发"), "warn");
+    return;
+  }
+  try {
+    if (typeof agentSessionSend === "function")
+      void agentSessionSend(text, { sessionId: String(st.id) });
+    else toast(I18n.t("这条会话已经不在，无法重发"), "warn");
+  } catch (e) {
+    toast(I18n.t("重发失败：") + ((e && e.message) || String(e)), "warn");
+  }
 }
 /* 本地兜底撤卡：卡片所属那一轮的取消句柄已经不在 _runCancels 里 = 那一轮已经结束
    （正常收尾 / 用户点终止 / 看门狗兜底），网关的 ix-drop 却没来（进程被强杀、
@@ -4641,7 +4928,11 @@ function ixDropRun(runKey) {
 function ixPruneOrphanCards() {
   if (!S.activeIx || !S.activeIx.items || !S.activeIx.items.length) return false;
   const live = S._runCancels || {};
-  const items = S.activeIx.items.filter((x) => !x.runKey || live[x.runKey]);
+  /* 判活：取消句柄还在 = 那一轮还在跑。两种例外保留不动 ——
+       ① runKey 为空的卡不归属任何轮次（渲染层本地调用，老行为）；
+       ② `ended` 卡是**故意**留着的（提问 / 审批卡转「这一轮已经结束」态，见 ixEndRound）：
+          它的轮次本就该已经结束，按判活口径清掉就等于把用户还没发出去的回答丢了。 */
+  const items = S.activeIx.items.filter((x) => !x.runKey || live[x.runKey] || x.ended);
   if (items.length === S.activeIx.items.length) return false;
   for (const x of S.activeIx.items)
     if (items.indexOf(x) < 0 && x.data && x.data.id) ixDraftDropCard(x.data.id);
@@ -4737,7 +5028,13 @@ function ixCommitAnswerToSession(it, answers) {
   };
   st.messages = Array.isArray(st.messages) ? st.messages : [];
   st.messages.push(um);
-  if (st.messages.length > 100) st.messages.splice(0, st.messages.length - 100);
+  /* 条数闸与开轮 / 落盘同源（app-assist.js 的 agentTrimSessionMessages：按轮保留，
+     不再是一刀切的固定 100 条 —— 那个上限在开发 / 细化会话里会把最早的**助手消息**
+     连同它的 segments / tools 一起挤掉，轨迹与改动两栏因此只剩最后一轮）。
+     拿不到那个函数（模块尚未加载 / 冒烟桩）时按同一份判据就地兜底：
+     AGENT_MIN_KEEP_PER_ROUND(120) × AGENT_ROUND_MAX_ENTRIES(16) = 1920，改那两个常量时这里要跟着改。 */
+  if (typeof agentTrimSessionMessages === "function") agentTrimSessionMessages(st);
+  else if (st.messages.length > 1920) st.messages.splice(0, st.messages.length - 1920);
   st.updatedAt = Date.now();
   try {
     if (typeof persistAgentSession === "function")
@@ -4783,6 +5080,13 @@ function agentHistoryEntries(st, opts) {
     /* 任务书 kick 不进历史段：那份契约（含本次开发需求）每轮随系统提示注入，
        抄进用户输入只会白烧 token 并盖掉真正要保留的问答记录。 */
     if (String(m._src || "") === "dev-node") continue;
+    /* 浏览器求助的「已回应，模型继续中 / 等待模型继续…」是**给用户看的**界面痕迹
+       （本次需求），不进模型上下文：模型刚亲口拿到那一问的结果，再抄一份「已回应」
+       只会白烧 token 并让它以为自己还要再确认一次。 */
+    if (String(m._src || "") === "ix-browser") continue;
+    /* 「这一轮已经结束」痕迹同理（本次需求：轮次收尾时卡片收口的界面痕迹，
+       同样是给用户看的，不是用户说过的话） */
+    if (String(m._src || "") === "ix-round-end") continue;
     if (m.role === "user" && String(m._src || "") === "ix-answer") {
       /* 这张卡答过的题里，只要有一题的最新答案不在这条上 → 这条是旧版，整条丢掉 */
       let stale = false;
@@ -4822,6 +5126,10 @@ function agentConfirmedHistoryEntries(st, opts) {
     if (m.role !== "user") continue;
     /* 任务书 kick 不进这一段：那份契约每轮随系统提示注入，重复写只是白烧 token */
     if (String(m._src || "") === "dev-node") continue;
+    /* 浏览器求助的界面痕迹同理（见 agentHistoryEntries）：它是给用户看的，不是用户说的话 */
+    if (String(m._src || "") === "ix-browser") continue;
+    /* 「这一轮已经结束」痕迹同样不进这一段（同上） */
+    if (String(m._src || "") === "ix-round-end") continue;
     rows.push({ at: Number(m.at) || 0, text: txt, answer: isAnswer, qids: m._ixQids || [] });
   }
   /* 回答气泡按题 id 去重取最新；用户消息按原文去重（与 agentHistoryEntries 同源口径） */
@@ -4851,38 +5159,16 @@ function ixAnswerQuestion(it) {
   if (!ixMarkFirstSend(it)) return;
   const card = document.getElementById("ixCard_" + it.data.id);
   if (!card) return;
-  const byQ = {};
-  for (const inp of card.querySelectorAll("input")) {
-    if (!inp.dataset.qid) continue;
-    (byQ[inp.dataset.qid] = byQ[inp.dataset.qid] || []).push(inp);
-  }
-  const answers = [];
-  for (const q of (it.data && it.data.questions) || []) {
-    const inputs = byQ[q.id] || [];
-    const selected = [];
-    let custom;
-    for (const inp of inputs) {
-      if (inp.type === "text") {
-        if (inp.value.trim()) custom = inp.value.trim();
-      } else if (inp.checked) {
-        selected.push(inp.value);
-      }
-    }
-    /* 手填优先：用户在「其他（自定义回答）」里写了字 = 他自己给了这一题的答案，
-       此时必须把手填值当作被选中的选项回传（selected = [手填值]），不能把
-       旁边残留的勾选项一起带上 —— 模型见 selected 里已有选项就会照它作答，
-       表现正是「决定手填、答案却仍落在别的选项上」。 */
-    answers.push({
-      id: q.id,
-      selected: custom ? [custom] : selected,
-      ...(custom ? { custom } : {}),
-    });
-  }
+  /* 采集口径抽成 ixCollectAnswers：提交与「轮次收尾时收口」（ixEndRound）共用一份 */
+  const answers = ixCollectAnswers(it);
   window.api
     .dshInteract({ kind: "question", id: it.data.id, answers })
     .then((res) => {
       if (res && res.stale)
-        return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
+        /* stale = 发起这一问的那一轮已经结束（网关侧 pending 已删）：不再弹右下角红字，
+           改成卡上就地收口 —— 回答没丢，卡上那枚键把它当新的一句用户消息发出去
+           （见 ixRenderEndedCard）。 */
+        return ixEndCardOnStale(it, ixEndedAnswerTextOf(it, answers));
       if (res && res.ok === false) throw new Error(res.error);
       /* 你答了这一轮：登记回话时刻（诊断用，见 dshRunUserMark）。
          完成音的判定不看这个时刻 —— 收尾那一档只看队列空不空。 */
@@ -4901,29 +5187,285 @@ function ixAnswerQuestion(it) {
 }
 /* 浏览器帧的回执（确认框 / 求助卡共用一个出口）：
    outcome = allowed-once（放行这一次）| released（用户已处理 / 已交还）| rejected（拒绝 / 撤卡）。
-   answerText 只在求助卡里带（用户选的选项或写的话）。 */
+   answerText 只在求助卡里带（用户选的选项或写的话）。
+
+   本次需求（「答了卡、模型不往下走」的直接成因之一）：
+     `_ixSent` 原来在入口就置位，**失败也照样锁死** —— 网关那一发超时 / IPC 报错之后，
+     卡还留在屏上，可它后面每一次点击（「我已处理，继续」「交还控制权」「拒绝」）
+     都在第一行被静默 return。用户看到的就是「点了没反应」，而模型那边仍在等这一问，
+     整条会话就此停住。
+     现在只有**回执真的送到网关**才保持锁定；失败 / stale 一律解锁并写明原因，
+     用户可以直接再点一次（绝不会出现「一次失败 = 这张卡永久哑掉」）。 */
 function ixAnswerBrowser(it, outcome, extra) {
   if (!ixMarkFirstSend(it)) return;
   const d = it.data || {};
-  window.api
-    .dshInteract(
+  const unlock = (why) => {
+    /* 解锁 = 允许这张卡再发一帧；同时把卡上按钮的临时态撤回去 */
+    it._ixSent = false;
+    if (it._ixAnswering) it._ixAnswering = false;
+    if (why) toast(why, "warn");
+  };
+  let p;
+  try {
+    p = window.api.dshInteract(
       Object.assign(
         { kind: "browser", id: d.id, outcome, sessionId: d.sessionId || "" },
         extra || {},
       ),
-    )
-    .then((res) => {
-      if (res && res.stale)
-        return ixFinalizeCard(it, I18n.t("这张卡已失效（发起轮已结束）"));
-      if (res && res.ok === false) throw new Error(res.error);
-      ixDrop(d.id);
-      try {
-        if (window.BrowserAct) void window.BrowserAct.reload();
-      } catch (_) {}
-    })
-    .catch((e) =>
-      ixFinalizeCard(it, I18n.t("提交失败：") + ((e && e.message) || String(e))),
     );
+  } catch (e) {
+    return unlock(I18n.t("提交失败：") + ((e && e.message) || String(e)));
+  }
+  p.then((res) => {
+    if (res && res.stale) {
+      /* 网关侧这一问已经作废（发起轮已结束）—— 卡当场收口。
+         注意这不是失败：求助卡上的本地动作（接管 / 真窗口 / 收回右栏）是在发这一帧
+         之前就已经按下的，网关那一边的 pending 没了并不影响它们。
+         用户口径（拷问共识）：stale 静默化 —— 撤卡 + 会话里落一行「这一轮已经结束」
+         痕迹（带「重发本轮」出口），右下角不再弹红字。 */
+      ixDrop(d.id);
+      ixRoundEndTrace(
+        it.runKey,
+        I18n.t("⏹ 这一轮已经结束：那张浏览器卡已收口，你的回应没能送达模型。"),
+      );
+      return;
+    }
+    if (res && res.ok === false)
+      return unlock(I18n.t("提交失败：") + String(res.error || ""));
+    /* 回执已送达：先落一条「已回应，模型继续中」并起无进展看门狗（本次需求），
+       再撤卡 —— 用户在会话里立刻能看到「它收到我的回应了」，而不是只剩下屏上少了一张卡。 */
+    try {
+      ixNoteBrowserAnswer(it);
+    } catch (_) {}
+    ixDrop(d.id);
+    try {
+      if (window.BrowserAct) void window.BrowserAct.reload();
+    } catch (_) {}
+  }).catch((e) =>
+    unlock(I18n.t("提交失败：") + ((e && e.message) || String(e))),
+  );
+}
+
+/* ── 「已回应，模型继续中」＋ 无进展看门狗（本次需求 · 拷问共识）────────────
+   背景：用户点了求助卡上的按钮之后，模型那一轮会继续跑；但只要它迟迟没有新正文 /
+   新工具调用，屏上就没有任何变化 —— 用户分不清「它在想」和「它已经卡死了」。
+   这一块做两件事：
+     ① 用户答完求助卡，会话里落一条内嵌提示行「已回应，模型继续中」（_src:'ix-browser'，
+        落盘、重开可见；**不进模型上下文**，见 agentHistoryEntries 的过滤）；
+     ② 此后 **60 秒**内没有任何新进展（正文 / 思考 / 工具 / 用量任何一帧都算进展）→
+        同一条记录变成 ⚠ 提示 + 两个出口：「重发本轮 / 终止本轮」。
+        注意：重发是「终止当前轮 + 把最后一条用户消息再发一次」，**不依赖卡上那一问**，
+        卡真的卡住时它照样能把会话救回来。
+   进展的真源是网关事件流：dshRunTask 的每一帧都刷 S._runProgress[runKey]（见那里）。 */
+const IX_STALL_MS = 60 * 1000;
+const IX_BROWSER_NOTE_SRC = "ix-browser";
+let _ixStallTimer = 0;
+let _ixStallCheckers = [];
+
+function ixAnswerBubbleAt(st, at) {
+  if (!st || !Array.isArray(st.messages)) return -1;
+  for (let i = st.messages.length - 1; i >= 0; i--) {
+    const m = st.messages[i];
+    if (m && m._src === IX_BROWSER_NOTE_SRC && Number(m.at) === Number(at)) return i;
+  }
+  return -1;
+}
+/* 用户答完求助卡：落一条「已回应」记录 + 起一条无进展看门狗 */
+function ixNoteBrowserAnswer(it) {
+  const runKey = String((it && it.runKey) || "");
+  if (!runKey) return 0;
+  const st = ixAnswerSessionOf(it);
+  if (!st || !st.id) return 0;
+  const at = Date.now();
+  st.messages = Array.isArray(st.messages) ? st.messages : [];
+  /* 一条记录、一个 at：它就是「已回应」那一行在会话里的宿主；
+     60 秒无新进展时由 ixStallTick 在同一行底下补 ⚠ 提示与两个出口。 */
+  st.messages.push({
+    role: "user",
+    content: I18n.t("已回应，模型继续中"),
+    at: at,
+    _src: IX_BROWSER_NOTE_SRC,
+    _waitProg: { at: at, stalled: false },
+  });
+  /* 条数闸与开轮 / 落盘同源（app-assist.js 的 agentTrimSessionMessages：按轮保留，
+     不再是一刀切的固定 100 条 —— 那个上限在开发 / 细化会话里会把最早的**助手消息**
+     连同它的 segments / tools 一起挤掉，轨迹与改动两栏因此只剩最后一轮）。
+     拿不到那个函数（模块尚未加载 / 冒烟桩）时按同一份判据就地兜底：
+     AGENT_MIN_KEEP_PER_ROUND(120) × AGENT_ROUND_MAX_ENTRIES(16) = 1920，改那两个常量时这里要跟着改。 */
+  if (typeof agentTrimSessionMessages === "function") agentTrimSessionMessages(st);
+  else if (st.messages.length > 1920) st.messages.splice(0, st.messages.length - 1920);
+  st.updatedAt = Date.now();
+  try {
+    if (typeof persistAgentSession === "function")
+      Promise.resolve(persistAgentSession()).catch(() => {});
+  } catch (_) {}
+  _ixStallCheckers.push({
+    sid: String(st.id),
+    at: at,
+    startedAt: at,
+    progressAt: dshRunProgressAt(runKey) || at,
+  });
+  /* 刚才收到的这一帧就算一次进展的起点：往后的 60 秒只要有一帧新进展就重新起算 */
+  dshRunProgressTick(runKey);
+  ixStallTick();
+  ixStartStallTimer();
+  return at;
+}
+function ixStartStallTimer() {
+  if (_ixStallTimer) return;
+  _ixStallTimer = setInterval(() => {
+    if (!_ixStallCheckers.length) {
+      clearInterval(_ixStallTimer);
+      _ixStallTimer = 0;
+      return;
+    }
+    ixStallTick();
+  }, 1000);
+}
+/* 这一轮还有没有在跑（终止 / 收尾后看门狗自己退休） */
+function ixRunAlive(runKey) {
+  try {
+    return !!(S._runCancels && S._runCancels[String(runKey || "")]);
+  } catch (_) {
+    return false;
+  }
+}
+/* 本轮最后一次「有新进展」的时刻（dshRunTask 的每一帧都刷，见那里）。
+   看门狗因此不必依赖任何渲染时机：只在「这一帧都没来过」满 60 秒时才提示。 */
+function dshRunProgressTick(runKey) {
+  const k = String(runKey || "");
+  if (!k) return;
+  if (!S._runProgress) S._runProgress = Object.create(null);
+  S._runProgress[k] = Date.now();
+}
+function dshRunProgressAt(runKey) {
+  const k = String(runKey || "");
+  const v = S._runProgress ? S._runProgress[k] : 0;
+  return Number(v) || 0;
+}
+function ixStallTick() {
+  const now = Date.now();
+  const cap = Math.round(IX_STALL_MS / 1000);
+  const keep = [];
+  for (const c of _ixStallCheckers) {
+    const runKey = "agent:" + c.sid;
+    const st =
+      typeof agentSessionById === "function" ? agentSessionById(c.sid) : null;
+    const idx = ixAnswerBubbleAt(st, c.at);
+    const alive = ixRunAlive(runKey);
+    if (!st || idx < 0 || !alive) {
+      /* 这一轮已收尾 / 会话没了 / 记录被裁：正常收场，撤提示不再追 */
+      if (st && idx >= 0) {
+        const m = st.messages[idx];
+        if (m && m._waitProg && m._waitProg.stalled) {
+          m._waitProg = { at: c.at, waited: 0, stalled: false, done: true };
+          ixPaintWaitRow(c.sid, c.at, m);
+        }
+      }
+      continue;
+    }
+    const prog = (S._runProgress && S._runProgress[runKey]) || c.startedAt;
+    if (prog > c.progressAt) c.progressAt = prog;
+    const waited = Math.round((now - c.progressAt) / 1000);
+    const m = st.messages[idx];
+    if (m) {
+      m._waitProg = { at: c.progressAt, waited: waited, stalled: waited >= cap };
+      ixPaintWaitRow(c.sid, c.at, m);
+    }
+    keep.push(c);
+  }
+  _ixStallCheckers = keep;
+}
+/* 就地刷新那条记录（只改 DOM，不整表重绘 —— 正在跑的一轮重绘一次很贵） */
+function ixPaintWaitRow(sid, at, msg) {
+  try {
+    if (
+      typeof agentViewIs !== "function" ||
+      typeof agentSessionById !== "function"
+    )
+      return;
+    const st = agentSessionById(sid);
+    if (!st || !agentViewIs(st)) return;
+  } catch (_) {
+    return;
+  }
+  const el = document.querySelector('.dsh-msg[data-ix-bnote="' + String(at) + '"]');
+  if (!el) return;
+  const prev = el.querySelector(".ix-stall");
+  if (prev) prev.remove();
+  if (!msg || !msg._waitProg || !msg._waitProg.stalled) return;
+  el.appendChild(ixStallBanner(sid, at, msg._waitProg.waited));
+}
+function ixStallBanner(sid, at, waited) {
+  const box = document.createElement("div");
+  box.className = "ix-stall";
+  const t = document.createElement("div");
+  t.className = "ix-stall-txt";
+  t.textContent = I18n.t("⚠ 已等 {n} 秒没有任何新进展：模型可能没能接着往下走。", {
+    n: Math.max(0, Number(waited) || 0),
+  });
+  box.appendChild(t);
+  const row = document.createElement("div");
+  row.className = "ix-stall-btns";
+  const again = document.createElement("button");
+  again.type = "button";
+  again.className = "mini primary";
+  again.textContent = I18n.t("重发本轮");
+  again.title = I18n.t("先终止当前这一轮，再把最后一条用户消息重新发一次");
+  again.onclick = () => ixBrowserResend(sid);
+  const stop = document.createElement("button");
+  stop.type = "button";
+  stop.className = "mini danger";
+  stop.textContent = I18n.t("终止本轮");
+  stop.title = I18n.t("立刻终止这一轮运行（求助卡也会一并撤掉）");
+  stop.onclick = () => {
+    try {
+      dshCancelActive("agent:" + sid);
+    } catch (_) {}
+    ixDropRun("agent:" + sid);
+    toast(I18n.t("已终止本轮"), "ok");
+  };
+  row.appendChild(again);
+  row.appendChild(stop);
+  box.appendChild(row);
+  return box;
+}
+/* 「重发本轮」：终止当前这一轮 → 把最后一条用户消息再发一次。
+   找不到最后一条用户消息（例如首轮就是开发任务书）时发一句「继续」兜底 ——
+   无论哪条路，模型都会带着「求助卡已被收走」继续往下走。 */
+function ixBrowserResend(sid) {
+  const runKey = "agent:" + String(sid || "");
+  try {
+    dshCancelActive(runKey);
+  } catch (_) {}
+  ixDropRun(runKey);
+  const st =
+    typeof agentSessionById === "function" ? agentSessionById(String(sid)) : null;
+  let text = "";
+  const list = (st && Array.isArray(st.messages) && st.messages) || [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (!m || m.role !== "user" || typeof m.content !== "string") continue;
+    if (String(m._src || "") === IX_BROWSER_NOTE_SRC) continue;
+    /* 「这一轮已经结束」痕迹自己也是 user 行（_src 同上那类界面痕迹）：
+       拿它当「最后一条用户消息」重发出去只会把痕迹再抄一遍 */
+    if (String(m._src || "") === IX_ROUND_END_SRC) continue;
+    if (!m.content.trim()) continue;
+    text = m.content;
+    break;
+  }
+  if (!text) text = I18n.t("继续");
+  setTimeout(() => {
+    try {
+      /* 归属会话必须显式点名（agentSessionSend(text, { sessionId })）：
+         原来的三参写法把 sid 当正文发给了**当前活动会话**，重发键因此发错地方 */
+      if (typeof agentSessionSend === "function")
+        void agentSessionSend(text, { sessionId: String(sid), resend: true });
+      else toast(I18n.t("这条会话已经不在，无法重发"), "warn");
+    } catch (e) {
+      toast(I18n.t("重发失败：") + ((e && e.message) || String(e)), "warn");
+    }
+  }, 500);
 }
 
 /* 帮助卡里显示的本机截图：优先走已有的内嵌图片转 URL 入口（file:// 直读会被
@@ -4950,7 +5492,9 @@ function ixAnswerApproval(it, outcome) {
     .dshInteract({ kind: "approval", id: it.data.id, outcome })
     .then((res) => {
       if (res && res.stale)
-        return ixFinalizeCard(it, I18n.t("该询问已失效（发起轮已结束）"));
+        /* 与提问同口径（本次需求 · 拷问共识）：stale 静默化 —— 卡上就地收口，
+           你刚才的选择没丢，那枚键把它当新的一句用户消息发出去。 */
+        return ixEndCardOnStale(it, ixApprovalAnswerText(outcome));
       if (res && res.ok === false) throw new Error(res.error);
       /* 与提问同口径：审批也是「你回过话」，这一轮的托管计时从这里重新起算 */
       dshRunUserMark(String(it.runKey || ""));
@@ -5279,6 +5823,106 @@ function ixRestoreQuestionDraft(card, q, custom, optInputs, onCustomInput) {
   }
 }
 
+/* ── 求助卡的常驻可见态：卡还在 = 模型还在等（本次需求）────────────────────
+   等待口径改成**永久等待、不超时**之后，用户最需要知道的一件事就是「它还在等，
+   不是我点了没反应」。这一块给每张求助卡挂一行「模型正在等你的回应 · 已等 N 秒」，
+   按卡 id 记账，1 秒刷一次（只改这一行的文字，不重绘整只面板）。 */
+const _ixWaitTimers = new Map();
+function ixWaitStop(id) {
+  const k = String(id || "");
+  const t = _ixWaitTimers.get(k);
+  if (t) clearInterval(t);
+  _ixWaitTimers.delete(k);
+}
+function ixWaitStopAll() {
+  for (const t of _ixWaitTimers.values()) clearInterval(t);
+  _ixWaitTimers.clear();
+}
+function ixWaitStart(id, el, sig) {
+  const k = String(id || "");
+  if (!el) return;
+  ixWaitStop(k);
+  const t0 = Number(sig) || Date.now();
+  const secs = () => Math.max(0, Math.round((Date.now() - t0) / 1000));
+  const paint = () => {
+    el.textContent = I18n.t("⏳ 模型正在等你的回应 · 已等 {n} 秒（不会超时自动跳过）", {
+      n: secs(),
+    });
+  };
+  paint();
+  _ixWaitTimers.set(
+    k,
+    setInterval(() => {
+      /* 卡被撤了 / 面板被整只重画（元素已脱离文档，新的一行自己会重新起表）→ 收掉 */
+      if (!el.isConnected) return ixWaitStop(k);
+      paint();
+    }, 1000),
+  );
+}
+
+/* 卡片上补一行说明（幂等：同一张卡只留一行） */
+function ixCardNote(card, text) {
+  if (!card) return;
+  const old = card.querySelector(".ix-detail.ix-auto-note");
+  if (old) old.remove();
+  const n = document.createElement("div");
+  n.className = "ix-detail ix-auto-note";
+  n.style.fontFamily = "inherit";
+  n.textContent = String(text || "");
+  card.appendChild(n);
+}
+
+/* ── 登录 / 验证码求助卡：自动切真窗口（本次需求 · 拷问共识）──────────────
+   为什么需要它：会话自动拉起的那只浏览器是**无窗口（headless）**跑的 —— 右栏实况
+   里能看画面，但「登录 / 验证码要你亲自看一眼并输入」这件事在无窗口那只上做不到
+   （CDP 里没有窗口可显形）。所以登录类求助卡一到，就把那只**温和关掉、重开一只带
+   窗口的**并摆到眼前（同一用户目录 + 当前 URL 带回，登录态与页面填了一半的内容不
+   丢），默认即接管，用户做完点「我已处理完，交还控制权」。
+   前提（缺一不做，只给说明 + 现成的「用真窗口打开」键）：
+     · 那只真的没窗口（status.headless）；
+     · 没有别的会话正驱动它（driver 为空或就是本条会话）；
+     · 用户已经亲手把它收回右栏过一次 → 不再自动往外切，尊重他的选择。
+   每张卡只自动尝试一次，避免反复「关掉重开」。 */
+const _ixAutoWinTried = new Set();
+async function ixMaybeAutoRealWindow(it, card) {
+  const d = (it && it.data) || {};
+  if (!d.id || d.kind !== "help" || d.helpKind !== "login") return;
+  if (_ixAutoWinTried.has(String(d.id))) return;
+  const BA = (() => {
+    try {
+      return window.BrowserAct || null;
+    } catch (_) {
+      return null;
+    }
+  })();
+  if (!BA || typeof BA.realWindow !== "function" || typeof BA.browser !== "function") return;
+  if (BA.userChoice && BA.sessionId && BA.userChoice.get(BA.sessionId) === false) return;
+  _ixAutoWinTried.add(String(d.id));
+  let st = null;
+  try {
+    st = await BA.browser("status");
+  } catch (_) {
+    st = null;
+  }
+  if (!st || st.ok === false) return;
+  const sid = String(d.sessionId || "");
+  const driver = String(st.driver || "");
+  if (driver && sid && driver !== sid) {
+    ixCardNote(
+      card,
+      I18n.t("浏览器此刻由另一条会话驱动，没有抢过来：点「用真窗口打开」可以把这只换成带窗口的。"),
+    );
+    return;
+  }
+  if (!st.headless) return; /* 已经有真窗口了，没什么可切的 */
+  const ok = await BA.realWindow(true, sid);
+  if (!ok)
+    ixCardNote(
+      card,
+      I18n.t("自动切真窗口没成功：可以在右栏实况里操作，或再点一次「用真窗口打开」。"),
+    );
+}
+
 function renderIxPanel() {
   /* 每次重绘先做一次孤儿清理（网关没发撤卡帧时的本地兜底）：提问 / 审批卡片
      与宿主确认框一起扫 —— 只有确认框、没有卡片时本函数也会被 ixReset 带进来 */
@@ -5291,6 +5935,7 @@ function renderIxPanel() {
   let box = $("#ixPanel");
   if (!items.length) {
     if (box) box.remove();
+    ixWaitStopAll();
     ixFreshCard = false;
     ixFreshPulse = false;
     return;
@@ -5305,8 +5950,16 @@ function renderIxPanel() {
   head.className = "ix-head";
   const headTxt = document.createElement("span");
   headTxt.className = "ix-head-txt";
+  /* 头部计数只数「还在等回应的」：转成「这一轮已经结束」态的卡片（见 ixEndRound）
+     不再等任何人，把它们算进「模型等待你的回应」就是一句假话。它们仍留在窗里
+     （说明 + 重发键），所以额外带一句「已收口 N 项」交代它们的存在。 */
+  const ixPendingN = items.filter((x) => !x.ended).length;
+  const ixEndedN = items.length - ixPendingN;
   headTxt.textContent =
-    I18n.t("🐋 模型等待你的回应（") + items.length + I18n.t(" 项）");
+    I18n.t("🐋 模型等待你的回应（") +
+    ixPendingN +
+    I18n.t(" 项）") +
+    (ixEndedN ? I18n.t(" · 已收口 ") + ixEndedN + I18n.t(" 项") : "");
   head.appendChild(headTxt);
   /* 头部总出口：一次性中断所有在途询问（逐轮发 abort + 停轮） */
   const abortAll = document.createElement("button");
@@ -5316,6 +5969,14 @@ function renderIxPanel() {
   abortAll.onclick = () => ixAbortAllRuns();
   head.appendChild(abortAll);
   box.appendChild(head);
+  /* 头部是这只窗的拖动条，必须钉在窗顶：卡片一律进这只内容滚动容器（.ix-body），
+     滚动只发生在它身上 —— 以前滚动条挂在 #ixPanel 自己身上，问题 / 总结一长，
+     往下滚就把拖动条一起滚出视野（本次开发需求：「拖动条不应跟着下方下拉」）。
+     容器与头部之间不留缝（零缝 + 一条 1px 分隔线，见 css/dsh.css 的 .ix-head /
+     .ix-body），多张卡片之间仍保留原来的 6px。 */
+  const body = document.createElement("div");
+  body.className = "ix-body";
+  box.appendChild(body);
   for (const it of items) {
     const card = document.createElement("div");
     card.className = "ix-card";
@@ -5329,10 +5990,24 @@ function renderIxPanel() {
       s.onclick = () => ixSrcJump(it.src);
       card.appendChild(s);
     }
+    /* 「这一轮已经结束」态（提问卡 / 审批卡，见 ixEndRound / ixEndCardOnStale）：
+       只留说明 + 一枚把回答当新消息发出去的出口，正常的提交 / 稍后 / 中断键一律不下发
+       —— 它们的回执注定撞 stale，留着就是「点了就报错」。 */
+    if (it.ended) {
+      ixRenderEndedCard(card, it);
+      body.appendChild(card);
+      continue;
+    }
     if (it.kind === "browser-help") {
       const d = it.data || {};
       const isHelp = d.kind === "help";
       card.classList.add("ix-browser-help");
+      /* 常驻等待行：卡还在 = 模型还在等你（永久等待之后，这是「不是它卡死了」的可见凭据）。
+         它排在所有按钮之后、由本块末尾启动；每张卡只留一行。 */
+      const waitEl = document.createElement("div");
+      waitEl.className = "ix-detail ix-wait-line";
+      waitEl.style.fontFamily = "inherit";
+      card.appendChild(waitEl);
       /* 提醒：这张卡可能在用户没看这一条会话时到达 —— 弹一枚提示让他知道
          「有张浏览器卡在等他」，点提示直接跳到会话右边栏「浏览器活动」（不抢焦点、
          不自动切会话：用户可能正在别的会话里打字）。 */
@@ -5423,15 +6098,26 @@ function renderIxPanel() {
       })();
       if (isHelp && (d.helpKind === "login" || d.takeover)) {
         /* 登录 / 验证码一类：按钮就是「接管」——点下去用户亲自操作浏览器，
-           Agent 的动作被网关拒绝（不是排队），用户交还后再继续。 */
+           Agent 的动作被网关拒绝（不是排队），用户交还后再继续。
+           本次需求：只有接管**真的切过去了**才发回执 —— 原来不管成功失败都照发
+           （用户以为「我已处理完」已经答过了，其实网关那边的接管态没动），
+           失败时现在停在卡上并写明原因，可以直接再点。 */
         tk.className = "mini primary";
         tk.textContent = takenOver ? I18n.t("我已处理完，交还控制权") : I18n.t("接管浏览器（我来操作）");
         tk.onclick = async () => {
-          if (!ixMarkFirstSend(it)) return;
+          const want = !takenOver;
+          let ok = false;
           try {
-            if (window.BrowserAct) await window.BrowserAct.setTakeover(!takenOver, it.data.sessionId || "");
-          } catch (_) {}
-          ixAnswerBrowser(it, "released", { answerText: takenOver ? I18n.t("用户已交还控制权") : I18n.t("用户已接管浏览器") });
+            ok = !!(window.BrowserAct && (await window.BrowserAct.setTakeover(want, it.data.sessionId || "")));
+          } catch (e) {
+            toast(I18n.t("接管切换失败：") + ((e && e.message) || String(e)), "warn");
+            return;
+          }
+          if (!ok) {
+            toast(I18n.t("没能切换接管状态（浏览器可能已经关了）：请再点一次，或直接点「我已处理，继续」。"), "warn");
+            return;
+          }
+          ixAnswerBrowser(it, "released", { answerText: want ? I18n.t("用户已接管浏览器") : I18n.t("用户已交还控制权") });
         };
       }
       if (!isHelp) {
@@ -5502,6 +6188,10 @@ function renderIxPanel() {
       row.appendChild(ixLaterButton(it));
       row.appendChild(ixAbortButton(it));
       card.appendChild(row);
+      /* 本块收尾：① 常驻等待行起表（永久等待的可见凭据）
+                   ② 登录 / 验证码类：那只没窗口就自动切真窗口（见 ixMaybeAutoRealWindow） */
+      ixWaitStart(d.id, waitEl, Number(it.at) || Date.now());
+      void ixMaybeAutoRealWindow(it, card);
     } else if (it.kind === "approval") {
       const d = it.data;
       /* 沙箱升权（沙箱拒绝了这次访问）单独成卡：标题点明是「沙箱放行」，正文给出
@@ -5655,7 +6345,7 @@ function renderIxPanel() {
       row.appendChild(ixAbortButton(it));
       card.appendChild(row);
     }
-    box.appendChild(card);
+    body.appendChild(card);
   }
   /* 每次重绘都把「记住的位置 / 底部收起态」恢复一次：面板是重绘式渲染，
      位置只挂在样式上，不补这一下拖动过的窗会跳回默认的底部居中。 */

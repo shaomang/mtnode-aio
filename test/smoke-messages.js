@@ -13,7 +13,11 @@
  *       「点外部」关闭监听**（点蒙层 / 点外部一律不关，出口只有 ✕ / 「关闭」/ Esc）
  *   [7] 已读与清空：打开即标记已展示条目已读（空 ids 绝不误发 = 全部已读）、清空前确认一次、
  *       分页按 cursor 拉下一页
- *   [8] 跳转：应用 / 工坊条目 / 讨论区各走既有入口，跳不了就如实说
+ *   [8] 消息行只读：不支持点消息内看应用 —— 没有 click / Enter 监听与 tooltip，
+ *       跳转三件套与只被它用到的 i18n 词条已整体删除，正文可选可复制
+ *   [8] 金额一律鲸圆币：服务端通知正文按币数写（1 币 = ¥0.02）、客户端 msgTextParts
+ *       兜底把历史正文里的「N 元」换成「币数 + 鲸圆币图标」，渲染层含「打赏」的
+ *       中文文案里不许再出现「元」（需求：打赏不要显示元，显示鲸圆币）
  *   [9] 样式与加载顺序：css/messages.css 存在且被 index.html 引用；app-messages.js 排在
  *       app-tips.js 之后、初始化脚本 app-boot.js 之前
  *  [10] i18n 真跑：本模块用到的中文键在 en locale 下都有译文
@@ -178,21 +182,63 @@ function main() {
   ok(code.includes('T("还没有消息")'), "空态一句「还没有消息」");
   ok(/setNotice\(T\("读取失败，请稍后重试"\)/.test(code), "列表读取失败如实报错（不假装空列表）");
 
-  /* ── [7] 跳转（只走既有入口） ─────────────────────────────── */
-  console.log("\n[7] 点条目跳转（做不到就如实说）");
-  ok(/window\.openAppsDetail\(id\)/.test(code), "应用 → window.openAppsDetail(id)（既有入口）");
-  ok(/window\.openAppsHub\("apps"\)/.test(code), "应用详情不可用时退回应用中心目录页");
-  ok(/\/api\/skills\//.test(code) && /\/api\/templates\//.test(code) && /window\.openTplItemDetail\(r\.data\.item\)/.test(code),
-    "模板 / Skill → 先按 id 取条目再走既有条目详情窗 openTplItemDetail");
-  ok(/typeof TPL_ST === "object"/.test(code) && /openTemplateStore\(\)/.test(code),
-    "条目拉不到时退回创意工坊并落到对应栏目（仍是真实入口）");
-  ok(/window\.api\.forumOpen\(\)/.test(code), "讨论区 → window.api.forumOpen()（打开讨论区窗口）");
-  ok(code.includes('T("已打开讨论区（暂不支持定位到具体话题）")'), "讨论区做不到定位到具体话题 → 如实说一句（不假装跳到了）");
-  ok(code.includes('T("这一类消息暂不支持跳转")'), "其余情况只显示 + 一句「暂不支持跳转」");
-  ok(!/暂不支持[\s\S]{0,80}toastSafe\([^)]*"ok"/.test(code), "不把「跳不了」报成成功态");
+  /* ── [7] 消息行只读（需求：不支持点消息内看应用） ─────────────── */
+  console.log("\n[7] 消息行只读（不点消息内看应用 · 跳转件已整体删除）");
+  ok(!/function jumpTo\(/.test(code) && !/function openStoreItem\(/.test(code) && !/function storeFallback\(/.test(code),
+    "跳转三件套（jumpTo / openStoreItem / storeFallback）已从源码删除");
+  ok(!/openAppsDetail|openTplItemDetail|openTemplateStore|openAppsHub|forumOpen/.test(code),
+    "不再引用任何「打开别的界面」的入口（本模块只读日志）");
+  const rowBody = fnBody(code, "rowEl");
+  ok(!/addEventListener/.test(rowBody) && !/tabIndex/.test(rowBody) && !/\.title\s*=/.test(rowBody),
+    "消息行不挂任何 click / Enter 监听、不给 tabIndex 与 tooltip（点了什么都不发生的东西不该像能点）");
+  ok(/targetLine\(it\)/.test(rowBody), "行内的「对象：<类型> · <id>」照旧显示（要抄 id 就拖选正文）");
+  ok(/user-select:\s*text/.test(read(CSS)) && !/cursor:\s*pointer/.test(read(CSS).slice(read(CSS).indexOf(".msg-row {"))),
+    "css/messages.css：条目正文可拖选复制，且不再有 cursor:pointer（也没有 hover 变边框）");
+  /* 只被跳转件用到的四条词条已随跳转件一起删（i18n.js 里连键都不该留；注释不算） */
+  const i18nCode = stripComment(read("renderer/i18n.js"));
+  const deadKeys = ["点一下打开对应入口", "这一类消息暂不支持跳转", "已打开讨论区", "条目详情暂时拉不到"];
+  const leftKeys = deadKeys.filter((k) => i18nCode.includes(k));
+  ok(leftKeys.length === 0, "只被跳转件用到的 i18n 词条已一并清掉（不留死键）", leftKeys.join(" / "));
 
-  /* ── [8] 样式与加载顺序 ───────────────────────────────────── */
-  console.log("\n[8] 样式与脚本加载顺序");
+  /* ── [8] 金额一律鲸圆币（需求：打赏不要显示元，显示鲸圆币） ──────
+     两条防线：
+       ① 服务端生成的通知正文按币数写（不是元）—— 否则新消息一进来就带「元」；
+       ② 客户端渲染历史消息时兜底把「N 元」换成「币数 + 鲸圆币图标」——
+          改版前落库的那批老正文里还写着「2.00 元」。
+     这正是用户报的那个 bug（「消息中又出现了元」），所以两侧都要钉住。 */
+  console.log("\n[8] 打赏通知按鲸圆币显示（正文不出现「元」）");
+  const TIPS_SRV = "store-saas/tips.mjs";
+  const srvTips = read(TIPS_SRV);
+  const notifCall = (srvTips.match(/coinTextOfCents\([^)]*\)\s*\+\s*"[^"\n]*"/) || [""])[0];
+  const coinFn = (srvTips.match(/function coinTextOfCents\([\s\S]{0,400}?\n\}/) || [""])[0];
+  const RE_YUAN_SRC = (code.match(/var RE_YUAN_AMOUNT = (\/[^\n]*\/g);/) || [])[1] || "";
+  ok(notifCall.includes("鲸圆币"), "服务端通知正文按鲸圆币写（" + notifCall.trim() + "）");
+  ok(!/\d\s*元/.test(notifCall) && !/元打赏/.test(notifCall), "服务端通知正文里不再有「…元打赏」");
+  ok(/COIN_PER_YUAN\s*=\s*50/.test(srvTips) && /\/\s*100\s*\*\s*COIN_PER_YUAN/.test(coinFn),
+    "币数由「分 → 币」现算（50 币 = ¥1，与客户端 app-whalecoin.js 同源），不写死金额");
+  ok(/function msgTextParts\(/.test(code) && /RE_YUAN_AMOUNT/.test(code),
+    "客户端有正文兜底 msgTextParts（元金额 → 币数 + 图标），历史消息也不出现元");
+  ok(/coinAmountEl\(/.test(code) && /window\.MtCoin[\s\S]{0,80}coinEl/.test(code),
+    "兜底统一走 MtCoin.coinEl（与钱包 / 打赏窗 / 工坊条目同一套币数元件）");
+  ok(/元/.test(RE_YUAN_SRC) && /[¥￥]/.test(RE_YUAN_SRC),
+    "兜底认得中文「元」与「¥ / ￥」两种写法（老正文两种都可能出现）");
+  ok(/appendChild\(node\)/.test(fnBody(code, "rowEl")),
+    "消息行用节点渲染正文（不再把 it.text 直接塞 textContent）");
+  /* 渲染层文案例扫：**任何**带「打赏」字样的界面文案都不许再出现「元」
+     （中文字符串字面量里查，字段名 / 注释 / 逻辑代码不算）。 */
+  const zhStrRe = /"([^"\\\n]*[\u4e00-\u9fa5][^"\\\n]*)"/g;
+  const guilt = [];
+  for (const f of fs.readdirSync(path.join(ROOT, "renderer")).filter((x) => x.endsWith(".js"))) {
+    const body = stripComment(read("renderer/" + f));
+    for (const m of body.matchAll(zhStrRe)) {
+      const s = m[1];
+      if (s.includes("打赏") && s.includes("元")) guilt.push(f + " : " + s);
+    }
+  }
+  ok(guilt.length === 0, "渲染层所有含「打赏」的中文文案里都没有「元」", guilt.join(" | "));
+
+  /* ── [9] 样式与加载顺序 ───────────────────────────────────── */
+  console.log("\n[9] 样式与脚本加载顺序");
   ok(fs.existsSync(path.join(ROOT, CSS)), CSS + " 存在");
   const css = read(CSS);
   ok(html.includes('href="css/messages.css"'), "index.html 用 <link> 引了 css/messages.css");
@@ -218,8 +264,8 @@ function main() {
   /* 边界：本任务不许碰 app-tips.js / app-comments.js（接线由对方做） */
   ok(src.includes("window.MtMessages"), "对外只暴露 window.MtMessages（把 refresh() 留给对方调用）");
 
-  /* ── [9] i18n 真跑（en locale） ───────────────────────────── */
-  console.log("\n[9] i18n 真跑（en locale）");
+  /* ── [10] i18n 真跑（en locale） ──────────────────────────── */
+  console.log("\n[10] i18n 真跑（en locale）");
   const I18n = require(path.join(ROOT, "renderer", "i18n.js"));
   I18n.setLocale("en");
   const zhKeys = new Set();
@@ -242,7 +288,6 @@ function main() {
     ["未读", "Unread"],
     ["清空全部消息？清空后不可恢复。", "Clear all messages? This cannot be undone."],
     ["讨论区话题", "Forum topic"],
-    ["这一类消息暂不支持跳转", "Jumping to this kind of message is not supported yet"],
   ];
   for (const [k, want] of spot) ok(I18n.t(k) === want, "词条 " + k + " → " + want, I18n.t(k));
   ok(I18n.t("打赏") !== "打赏" && I18n.t("评论") !== "评论" && I18n.t("回复") !== "回复",

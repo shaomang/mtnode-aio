@@ -1,5 +1,15 @@
 /* 消息（打赏 / 评论 / 回复三类日志，云端保存）—— 自包含模块，挂 window.MtMessages
  *
+ * 〇、金额一律按「鲸圆币」（需求口径：打赏不要显示元，显示鲸圆币）
+ *   · 通知正文由服务端在打赏时写死落库（store-saas/tips.mjs 已按**币数**生成：
+ *     「XX」收到 100 鲸圆币打赏（来自 YY）），本模块不改写服务端数据；
+ *   · 但**历史消息**（改版前落库的那批）正文里写着「2.00 元」，所以渲染时走一次
+ *     msgTextParts() 兜底：把 `N 元 / N 元打赏 / ¥N` 换算成「币数 + 鲸圆币图标」，
+ *     保证新老消息都不出现「元」。单位靠图标（与钱包 / 打赏窗 / 工坊条目同一套元件，
+ *     见 renderer/app-whalecoin.js）；MtCoin 缺席时退回「N 鲸圆币」纯文本，绝不显示元。
+ *   · 只有真正按元收付的地方才留元（支付宝实付 / 退款、DeepSeek 官方余额与 ¥ 费用、
+ *     管理台与 CSV）：那些都在别的模块，本文件不碰。
+ *
  * 一、它是什么
  *   顶栏「消息」入口（.tb-end 里紧贴「应用」左边）+ 一只消息窗：把**别人对你做的事**
  *   按三类列出来 —— 打赏（tip）/ 评论（comment）/ 回复（reply）。日志存在云端，
@@ -32,13 +42,12 @@
  *   打开即把**已展示的条目**逐条标记已读（POST read 带这些 id），角标随之归零；
  *   分页由底部「加载更多」按 cursor 拉下一页。
  *
- * 五、跳转（只走既有入口，不假装跳转）
- *   · 应用（targetKind=app）→ window.openAppsDetail(id)（拉不到退回应用中心目录页）
- *   · 工坊条目（template / skill）→ 先 GET /api/templates|skills/<id> 取条目，
- *     再 openTplItemDetail(item)（二级浮层，不会冲掉本窗）；条目拉不到退回创意工坊
- *   · 讨论区（forum_topic / forum_reply）→ window.api.forumOpen() 打开讨论区窗口，
- *     并**明说**暂不支持定位到具体那条话题（做不到就如实讲，不弹假动作）
- *   · 其它 → 一句「这一类消息暂不支持跳转」，只显示
+ * 五、消息行只读（需求口径：**不支持点消息内看应用**）
+ *   · 消息窗是**只读日志**：条目上不挂任何点击 / 键盘跳转，也没有手型光标与
+ *     「点一下打开对应入口」的 tooltip —— 不让人去点一个点不动的东西。
+ *   · 行内「对象：应用 · <id>」照旧显示；要复制 id 直接拖选正文即可（正文可选可复制）。
+ *   · 原来的跳转件（jumpTo / openStoreItem / storeFallback）与只被它们用到的词条已整体
+ *     删除。哪天要恢复「点消息跳应用」，按既有入口重写一遍，别把死代码留在这里当占位。
  *
  * 六、依赖
  *   window.api.storeRequest、app.js 的 openOverlay / closeOverlay / toast / confirmDialog、
@@ -61,6 +70,42 @@
   /* toast 是 app.js 顶层的全局函数；模块被单独加载（单测 / 预览页）时不该炸 */
   function toastSafe(msg, kind) {
     if (typeof toast === "function") toast(msg, kind);
+  }
+
+  /* ── 正文里的金额：一律按鲸圆币显示（见文件头第〇节） ─────────────────────
+     anchor = 正文里被识别出的「元的金额」；换算与格式化一律复用 MtCoin
+     （renderer/app-whalecoin.js：1 币 = ¥0.02，千分位整数），这样消息与钱包 /
+     打赏窗 / 工坊条目的币数逐字一致（50 →「50」、1000 →「1,000」）。 */
+  var RE_YUAN_AMOUNT = /[¥￥]?\s*(\d+(?:\.\d+)?)\s*元/g;
+
+  /** 币数 + 鲸圆币图标（入参是**元数**；换算与格式化一律交 MtCoin，口径不在这里重写）。
+      注意 MtCoin.coinEl 收的是**币数**（它不认元），所以这里必须先 coinsOfYuan 换算 ——
+      直接把元数递进去会把 2 元显示成「2」。 */
+  function coinAmountEl(yuan) {
+    var C = window.MtCoin;
+    if (C && typeof C.coinsOfYuan === "function" && typeof C.coinEl === "function") {
+      return C.coinEl(C.coinsOfYuan(yuan));
+    }
+    /* 模块缺席（夹具 / 预览页）：退回纯文本 —— 单位写鲸圆币，绝不写「元」 */
+    var coins = C && typeof C.coinsOfYuan === "function" ? C.coinsOfYuan(yuan) : (Number(yuan) || 0) * 50;
+    return document.createTextNode(String(Math.round(coins)) + " " + T("鲸圆币"));
+  }
+
+  /** 正文 → 节点数组：普通文字照原样，`N 元 / ¥N` 换成「币数 + 鲸圆币图标」。
+      返回节点数组，调用方直接 appendChild（纯文本也走这条，口径只写一次）。 */
+  function msgTextParts(text) {
+    var s = String(text == null ? "" : text);
+    var out = [];
+    var last = 0;
+    var m;
+    RE_YUAN_AMOUNT.lastIndex = 0;
+    while ((m = RE_YUAN_AMOUNT.exec(s))) {
+      if (m.index > last) out.push(document.createTextNode(s.slice(last, m.index)));
+      out.push(coinAmountEl(m[1]));
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) out.push(document.createTextNode(s.slice(last)));
+    return out;
   }
   function api(method, path, json) {
     if (!window.api || typeof window.api.storeRequest !== "function") {
@@ -349,7 +394,7 @@
       toastSafe(T("窗口模块未就绪（openOverlay 不存在）"), "err");
       return;
     }
-    /* persistent:true = 点蒙层 / 点外部一律不关；min:true = 可以最小化到状态栏 */
+    /* persistent:true = 点蒙层 / 点外部一律不关；min 不再表示最小化，只表示给不给通用 ✕ */
     openOverlay(T("消息"), { persistent: true, min: true });
     var body = document.getElementById("ovBody");
     var foot = document.getElementById("ovFoot");
@@ -392,10 +437,11 @@
       more.disabled = !!ST.busy;
     }
 
-    /* 一条消息：类型标签 · actor 昵称 · 时间 / title / text / 对象 */
+    /* 一条消息：类型标签 · actor 昵称 · 时间 / title / text / 对象。
+       **整行只读**（需求口径：不支持点消息内看应用）：不挂 click / Enter、不给 tabIndex
+       与「点一下打开对应入口」的 tooltip，正文靠 CSS 的 user-select:text 拖选复制。 */
     function rowEl(it) {
       var row = el("div", "msg-row" + (it && it.read ? "" : " unread"));
-      row.tabIndex = 0;
       var head = el("div", "msg-row-head");
       head.appendChild(el("span", "msg-kind msg-kind-" + kindCls(it && it.kind), kindText(it && it.kind)));
       head.appendChild(el("span", "msg-who", actorName(it)));
@@ -403,16 +449,17 @@
       if (it && !it.read) head.appendChild(el("span", "msg-dot", T("未读")));
       row.appendChild(head);
       if (it && it.title) row.appendChild(el("div", "msg-title", it.title));
-      if (it && it.text) row.appendChild(el("div", "msg-text", it.text));
+      /* 正文经 msgTextParts 兜底：历史消息里写死的「N 元」在这里换成「币数 + 鲸圆币图标」
+         （新消息服务端已直接按鲸圆币生成，这条兜底只对老条目生效；见文件头第〇节） */
+      if (it && it.text) {
+        var textEl = el("div", "msg-text");
+        msgTextParts(it.text).forEach(function (node) {
+          textEl.appendChild(node);
+        });
+        row.appendChild(textEl);
+      }
       var tl = targetLine(it);
       if (tl) row.appendChild(el("div", "msg-target", tl));
-      row.title = T("点一下打开对应入口");
-      row.addEventListener("click", function () {
-        jumpTo(it);
-      });
-      row.addEventListener("keydown", function (ev) {
-        if (ev.key === "Enter") jumpTo(it);
-      });
       return row;
     }
 
@@ -508,73 +555,6 @@
 
     more.hidden = true;
     loadPage(false);
-  }
-
-  /* ── 跳转（只走既有入口；做不到就如实说，不假装） ───────────── */
-
-  function jumpTo(it) {
-    var tk = String((it && it.targetKind) || "");
-    var id = String((it && it.targetId) || "");
-    if (tk === "app" && id) {
-      if (typeof window.openAppsDetail === "function") {
-        window.openAppsDetail(id);
-        return;
-      }
-      if (typeof window.openAppsHub === "function") {
-        window.openAppsHub("apps");
-        return;
-      }
-    }
-    if ((tk === "template" || tk === "skill") && id) {
-      openStoreItem(tk, id);
-      return;
-    }
-    if (tk === "forum_topic" || tk === "forum_reply") {
-      if (window.api && typeof window.api.forumOpen === "function") {
-        var p = window.api.forumOpen();
-        if (p && typeof p.then === "function") {
-          p.then(function (r) {
-            if (r && r.ok) toastSafe(T("已打开讨论区（暂不支持定位到具体话题）"), "warn");
-            else toastSafe(T("打开失败：") + String((r && r.error) || ""), "err");
-          }).catch(function () {});
-        } else {
-          toastSafe(T("已打开讨论区（暂不支持定位到具体话题）"), "warn");
-        }
-        return;
-      }
-    }
-    toastSafe(T("这一类消息暂不支持跳转"), "warn");
-  }
-
-  /* 工坊条目（模板 / Skill）：按 id 拉条目 → 走既有条目详情窗（二级浮层，不冲掉本窗） */
-  function openStoreItem(kind, id) {
-    var base = kind === "skill" ? "/api/skills/" : "/api/templates/";
-    api("GET", base + encodeURIComponent(id))
-      .then(function (r) {
-        if (r && r.ok && r.data && r.data.item && typeof window.openTplItemDetail === "function") {
-          window.openTplItemDetail(r.data.item);
-          return;
-        }
-        storeFallback(kind, r);
-      })
-      .catch(function () {
-        storeFallback(kind, null);
-      });
-  }
-  /* 条目详情拉不到：退回「创意工坊 + 落到对应栏目」——仍是真实入口，不是假动作 */
-  function storeFallback(kind, r) {
-    try {
-      if (typeof TPL_ST === "object" && TPL_ST) {
-        TPL_ST.kind = kind === "skill" ? "skills" : "templates";
-        TPL_ST.page = 1;
-      }
-    } catch (_) {}
-    if (typeof openTemplateStore === "function") {
-      openTemplateStore();
-      toastSafe(T("条目详情暂时拉不到，已打开创意工坊"), "warn");
-      return;
-    }
-    toastSafe(r ? T("打开失败：") + errText(r) : T("这一类消息暂不支持跳转"), "warn");
   }
 
   /* ── 显式关闭路径：Esc（另外两条：窗内「关闭」按钮、标题栏 ✕） ──────

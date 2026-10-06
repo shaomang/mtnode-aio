@@ -13,7 +13,8 @@
  *   [1] 计划清单判据与清理（真跑源码切片的 agentRoundPlanSettled / agentRoundClearPlan）
  *   [2] 任务清单判据与清理（agentRoundTodosSettled / agentRoundClearTodos + 记账进 todoHidden）
  *   [3] 新一轮入口 agentRoundMarkNew：清理 + 轮次推进 + 标签落文案 / 跳过规则
- *   [4] 轮次标签文案与 DOM（agentRoundLabel / agentRoundLabelApply）
+ *   [4] 左上角时间区间标签文案与 DOM（agentRoundSpanText / agentRoundRange /
+ *       agentRoundLabel / agentRoundLabelApply · 本次需求：只报时间区间，不报轮号）
  *   [5] 接线：index.html 元素 · 样式 · agentSessionSend 挂点 · 节点内运行 · 计划面板头部标记
  *   [6] 未完成时给模型注入的指令改为「新话优先」（planFlowCarryDirective 真跑）
  *   [7] i18n 词条（中英）
@@ -117,14 +118,6 @@ function load(opts) {
 function sess(o) {
   return Object.assign({ id: "as1", messages: [], todos: [] }, o || {});
 }
-/* 造一段消息历史：n 条用户消息，最后一条的时间 = stamp */
-function msgsOf(n, stamp) {
-  const out = [];
-  for (let i = 1; i <= n; i++)
-    out.push({ role: "user", content: "u" + i, at: stamp - (n - i) * 1000 });
-  out.push({ role: "assistant", content: "a" });
-  return out;
-}
 const steps = (...stt) => stt.map((s, i) => ({ n: i + 1, title: "t" + (i + 1), status: s }));
 
 (async () => {
@@ -225,31 +218,56 @@ const steps = (...stt) => stt.map((s, i) => ({ n: i + 1, title: "t" + (i + 1), s
     ok(!!s5.plan && s5.todos.length === 0, "留 / 清各按自己那份判据落地");
   }
 
-  /* ═══════════ [4] 轮次标签：文案 + DOM ═══════════ */
-  console.log("\n[4] 轮次标签：文案与 DOM（#agentRound > b + i）");
+  /* ═══════════ [4] 时间区间标签：文案 + DOM ═══════════ */
+  console.log("\n[4] 时间区间标签：文案与 DOM（#agentRound > b + i，只报时间、不报轮号）");
   {
     const { sandbox, round } = load();
     ok(sandbox.agentRoundLabel(sess({})) === "",
-      "还没有任何用户消息（空会话）→ 空文案（标签整行不占位）");
+      "还没有任何消息（空会话）→ 空文案（标签整行不占位）");
     const stamp = new Date(2026, 0, 2, 9, 7).getTime();
-    ok(
-      sandbox.agentRoundLabel(sess({ messages: msgsOf(2, stamp) })) === "第 2 轮 · 09:07",
-      "有 2 条用户消息 → 「第 2 轮」+ 分隔 + 「09:07」（两位补零）",
-    );
     ok(sandbox.agentRoundTime(stamp) === "09:07", "时间格式 HH:MM");
-    ok(
-      sandbox.agentRoundRoundAt(sess({ messages: msgsOf(3, stamp) })) === stamp,
-      "开始时刻 = 最后一条用户消息的时间",
+    const r = sandbox.agentRoundRange(
+      sess({
+        messages: [
+          { role: "user", content: "u1", at: stamp },
+          { role: "assistant", content: "a1", at: stamp + 60 * 1000 },
+          { role: "user", content: "u2", at: stamp + 90 * 1000 },
+        ],
+      }),
     );
+    ok(r.from === stamp && r.to === stamp + 90 * 1000,
+      "区间 = 第一条带时刻的消息 → 最后一条带时刻的消息（用户 / 助手都算）");
+    const two = sess({
+      messages: [
+        { role: "user", content: "u1", at: stamp },
+        { role: "assistant", content: "a1", at: stamp + 85 * 60 * 1000 },
+      ],
+    });
+    ok(sandbox.agentRoundLabel(two) === "09:07 – 10:32", "整个会话一条区间「09:07 – 10:32」");
+    ok(sandbox.agentRoundLabel(two).indexOf("第") < 0,
+      "标签里没有轮号（本次需求：不再显示轮数）");
+    const one = sess({ messages: [{ role: "user", content: "u1", at: stamp }] });
+    ok(sandbox.agentRoundLabel(one) === "09:07", "只有一条消息 → 只报一个时刻，不写同刻区间");
+    const cross = sess({
+      messages: [
+        { role: "user", content: "u1", at: new Date(2026, 0, 2, 23, 59).getTime() },
+        { role: "assistant", content: "a1", at: new Date(2026, 0, 3, 0, 1).getTime() },
+      ],
+    });
+    ok(sandbox.agentRoundLabel(cross) === "01-02 23:59 – 01-03 00:01",
+      "跨天 → 两侧各带 MM-DD 前缀");
     ok(
-      sandbox.agentRoundRoundAt(sess({ messages: [{ role: "assistant", content: "x" }] })) === 0,
-      "只有助手消息 → 没有时刻（不编一个）",
+      sandbox.agentRoundRange(sess({ messages: [{ role: "assistant", content: "x" }] })).from === 0,
+      "一条带时刻的都没有 → 不编时刻（整行不占位）",
     );
 
-    sandbox.agentRoundLabelApply(sess({ messages: msgsOf(5, stamp) }));
-    ok(round.hidden === false, "有用户消息 → 标签显示");
-    ok(round.children.b.textContent === "第 5 轮", "前半 = 第 5 轮（用户第几次发送）");
-    ok(round.children.i.textContent === "09:07", "后半 = 本轮开始时间");
+    sandbox.agentRoundLabelApply(two);
+    ok(round.hidden === false, "有带时刻的消息 → 标签显示");
+    ok(round.children.b.textContent === "09:07" && round.children.i.textContent === "– 10:32",
+      "前半 = 起点、后半 = 「– 终点」（不再有「第 N 轮」）");
+    sandbox.agentRoundLabelApply(one);
+    ok(round.children.b.textContent === "09:07" && round.children.i.textContent === "",
+      "只有一条消息 → 后半留空（不写一个假终点）");
     sandbox.agentRoundLabelApply(sess({}));
     ok(round.hidden === true, "空会话 → 整行隐藏");
     ok(sandbox.agentRoundLabelApply({}) === undefined, "没有 DOM 也不报错（开发页 / 测试桩）");
@@ -289,22 +307,29 @@ const steps = (...stt) => stt.map((s, i) => ({ n: i + 1, title: "t" + (i + 1), s
       /typeof agentRoundLabelApply === "function"\) agentRoundLabelApply\(st\);/.test(ASSIST),
       "renderAgentSession 每次重绘都落一次标签（切会话 / 重启都在）",
     );
-    /* 轮号的唯一真源：agentRoundOfRun（会话里用户第几次发送，与轨迹的「第 N 轮」同一份）。
-       绝不自造第二个计数器 —— 两套计数分叉就会「顶部第 2 轮、轨迹第 3 轮」。 */
+    /* 本次需求：左上角只报**时间区间**，不再显示轮数 —— 标签里不许再出现轮号词条的拼接，
+       也不许再调轮号真源；轮号仍归轨迹 / 改动两栏（它们照旧用 agentRoundOfRun）。 */
     ok(
-      /function agentRoundLabel\(st\) \{\s*\n\s*const no = typeof agentRoundOfRun === "function" \? agentRoundOfRun\(st\) : null;/.test(
-        ASSIST,
-      ),
-      "轮次标签的号取自 agentRoundOfRun（与轨迹同源，不自造计数器）",
+      /function agentRoundLabel\(st\) \{\s*\n\s*return agentRoundSpanText\(st\);/.test(ASSIST),
+      "时间区间标签只返回区间文案（不再拼「第 N 轮」）",
+    );
+    ok(
+      ASSIST.indexOf('I18n.t("第 {n} 轮", { n: Number(no) })') < 0,
+      "标签段里不再有「第 {n} 轮」文案拼接",
+    );
+    ok(
+      /function agentRoundOfRun\(st\) \{/.test(ASSIST),
+      "轮号真源 agentRoundOfRun 仍在（轨迹 / 改动按「第 N 轮」分组用，标签不再用）",
     );
     ok(
       !/st\._round\b/.test(ASSIST) && !/s\._round\b/.test(ASSIST),
       "会话上不再有第二份轮次计数（st._round 已整体拆净）",
     );
     ok(
-      /function agentRoundRoundAt\(st\) \{/.test(ASSIST) &&
-        /for \(let i = msgs\.length - 1; i >= 0; i--\) \{/.test(ASSIST),
-      "开始时刻从消息历史现推（最后一条用户消息的时间），不落盘",
+      /function agentRoundRange\(st\) \{/.test(ASSIST) &&
+        /if \(!from \|\| at < from\) from = at;/.test(ASSIST) &&
+        /if \(at > to\) to = at;/.test(ASSIST),
+      "区间从消息历史现推（第一条 → 最后一条带时刻的消息），不落盘",
     );
     /* 标签会占一行高度，所以它必须被计划面板的高度预算算进去：
        agentPlanMaxH 是「宿主高 − 消息区下限 − 全部可见兄弟项实测」，按 dom 遍历现量。 */
@@ -405,9 +430,12 @@ const steps = (...stt) => stt.map((s, i) => ({ n: i + 1, title: "t" + (i + 1), s
       ok(I18N.indexOf('"' + zh + '"') >= 0, "中文词条在表里：" + zh.slice(0, 18) + "…");
       ok(I18N.indexOf(enTxt) >= 0, "英文词条在表里：" + enTxt.slice(0, 34) + "…");
     }
-    ok(I18N.indexOf('"第 {n} 轮": "Turn {n}"') >= 0, "复用既有词条「第 {n} 轮」（不另造一份）");
-    ok(ASSIST.indexOf('I18n.t("第 {n} 轮", { n: Number(no) })') >= 0,
-      "轮次文案走参数化词条（可译）");
+    ok(I18N.indexOf('"第 {n} 轮": "Turn {n}"') >= 0,
+      "既有词条「第 {n} 轮」仍在（轨迹 / 改动按轮分组继续用，不另造一份）");
+    ok(I18N.indexOf('"本会话时间区间：{range}": "Session time range: {range}"') >= 0,
+      "新增「本会话时间区间」词条（中英齐备，标签 tooltip 用）");
+    ok(ASSIST.indexOf('I18n.t("本会话时间区间：{range}", { range: span })') >= 0,
+      "标签 tooltip 走参数化词条（可译）");
   }
 
   console.log(

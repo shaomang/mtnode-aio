@@ -3719,7 +3719,7 @@ main().catch((e) => {
     has(LTE, "ltgParseGraph", "复用引导区的图 JSON 解析（不双写解析器）");
 
     /* 持久化浮层口径：与创建窗同款 */
-    has(LTE, 'openOverlay(lteT("修改任务链"), { persistent: true, min: true })', "持久化浮层 + 可最小化到状态栏");
+    has(LTE, 'openOverlay(lteT("修改任务链"), { persistent: true, min: true })', "持久化浮层 + 给通用 ✕（最小化已下线）");
     has(LTE, "vw * 0.5", "最小宽 ≥ 50% 视口（与审阅窗 / 创建窗同口径）");
     has(LTE, 'const rz = lteEl("div", "lte-resize")', "右下角可拖调大小");
     has(LTE, "lteSaveSize(n)", "拖过的尺寸记 localStorage");

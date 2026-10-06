@@ -268,6 +268,8 @@ function appPresetStyleIds() {
  * 与「数据不落应用文件夹」同一口径：默认数据根、指针、data.json 全在数据目录下
  * （见 AGENTS.md 协作约定）；用户另选文件夹时是用户自己的选择，不在这里替他决定。 */
 const DATA_ROOT_DIR = "apps-data";
+/* 类型 → 那棵数据根的子目录名（见 apps-data/<dev|downloaded>/<id>） */
+const DATA_SUB = { dev: "dev", down: "downloaded" };
 const DATA_FILE = "data.json";
 const DATA_DIR_POINTER = "dataDir.json";
 /* 数据文件整份上限：与老的 storage 同量级（2MB），单次写入超限直接拒绝 */
@@ -685,31 +687,99 @@ function isInsideAppDir(p) {
   });
 }
 
-/* ---------------- 根目录（config.json 的 apps.installDir） ---------------- */
+/* ---------------- 根目录（config.json 的 apps.installDir / apps.projectDir） ----------------
+ *
+ * **两套根，互不重叠**（用户口径：下载的应用与开发的应用严格分开，删一个不能误删另一个）：
+ *   · 下载根（kind="down"）：云端目录下来的应用，配置键沿用老名字 `apps.installDir`
+ *     （老配置一个字都不用改），默认 <数据目录>/apps。
+ *   · 项目根（kind="dev"）：自己开发 / 二次开发的应用（app.json 里 dev:true），
+ *     配置键 `apps.projectDir`，默认 <数据目录>/apps-dev。
+ * 「这个应用算哪一类」只由 app.json 的 dev 标记决定（见 kindOfManifest），根目录也按类型取：
+ * rootPathOf(kind) / appDirOf(kind, id) / appDataRootPath(id)。
+ * 旧布局搬家见 migrateAppsLayout()（显式入口，绝不自动搬）。 */
 
 const configPath = () => path.join(String(getDataDir() || ""), "config.json");
 const cacheDir = () => mk(path.join(String(getDataDir() || ""), "apps-cache"));
 
-function defaultRoot() {
+/* 应用类型：down = 下载的（云端目录 / 安装账本），dev = 开发的（app.json 的 dev:true） */
+const APP_KIND_DOWN = "down";
+const APP_KIND_DEV = "dev";
+const APP_KINDS = [APP_KIND_DOWN, APP_KIND_DEV];
+/* 类型 → 配置键。**installDir 是下载根的老键名**（老配置照旧认，不改键名） */
+const KIND_CFG_KEY = { down: "installDir", dev: "projectDir" };
+function kindOfRoot(v) {
+  const s = String(v == null ? "" : v).trim().toLowerCase();
+  return s === APP_KIND_DEV ? APP_KIND_DEV : APP_KIND_DOWN;
+}
+function kindLabel(kind) {
+  return kindOfRoot(kind) === APP_KIND_DEV
+    ? t("项目根目录（开发中的应用）")
+    : t("下载根目录（从应用中心下载的）");
+}
+/* 默认根：下载 <数据目录>/apps、开发 <数据目录>/apps-dev（都落在数据目录，绝不落应用目录） */
+function defaultRoot(kind) {
   const d = String(getDataDir() || "").trim();
   if (!d) throw new Error(t("应用宿主未初始化（缺少数据目录）"));
-  return path.join(d, "apps");
+  return path.join(d, kindOfRoot(kind) === APP_KIND_DEV ? "apps-dev" : "apps");
 }
-/* 只读：配置里记着的根目录（没配就回默认路径，configured=false 由渲染层走引导框） */
-function rootPath() {
+/* 老写法（手改过配置 / 迁移中途）：下载根的老键名们，按老顺序认 */
+const LEGACY_DOWN_ROOT_KEYS = ["appsInstallDir", "appInstallDir", "appsRoot"];
+/* 只读：某一类应用的根目录（没配就回默认路径，configured=false 由渲染层走引导框）。
+   dev 根没配时**回落下载根**：老用户在项目根出现之前建的应用都躺在下载根里，
+   不回落就等于升级后它们全部「不在本机」（用户什么也没干却丢了一屏应用）。
+   回落是**只为读**：新建 / 安装各写各的根，绝不把新东西塞进另一边。 */
+function rootPathOf(kind) {
+  const k = kindOfRoot(kind);
   const cfg = readJson(configPath(), {}) || {};
   const apps = isObj(cfg.apps) ? cfg.apps : {};
-  const cands = [
-    apps.installDir,
-    cfg.appsInstallDir,
-    cfg.appInstallDir,
-    cfg.appsRoot,
-  ];
-  for (const v of cands) {
+  const pick = (v) => {
     const s = typeof v === "string" ? v.trim() : "";
-    if (s && path.isAbsolute(s)) return { root: path.resolve(s), configured: true };
+    return s && path.isAbsolute(s) ? path.resolve(s) : "";
+  };
+  const own = pick(apps[KIND_CFG_KEY[k]]);
+  if (own) return { root: own, configured: true, kind: k, fallback: false };
+  if (k === APP_KIND_DEV) {
+    for (const key of LEGACY_DOWN_ROOT_KEYS.concat(["installDir"])) {
+      const abs = pick(key === "installDir" ? apps.installDir : cfg[key]);
+      if (abs)
+        return { root: abs, configured: false, kind: k, fallback: true, legacyKey: key };
+    }
+  } else {
+    for (const key of LEGACY_DOWN_ROOT_KEYS) {
+      const abs = pick(cfg[key]);
+      if (abs) return { root: abs, configured: true, kind: k, fallback: false, legacyKey: key };
+    }
   }
-  return { root: defaultRoot(), configured: false };
+  return { root: defaultRoot(k), configured: false, kind: k, fallback: false };
+}
+/* 兼容别名：老调用点（下载 / 安装 / 列表）逐字走下载根 */
+function rootPath() {
+  return rootPathOf(APP_KIND_DOWN);
+}
+/* 两套根的只读快照（渲染层一次拿到两个根：库页页脚两行、设置里两条） */
+function rootsInfo() {
+  const out = {};
+  for (const k of APP_KINDS) {
+    const r = rootPathOf(k);
+    out[k] = {
+      ok: true,
+      kind: k,
+      label: kindLabel(k),
+      path: r.root,
+      configured: !!r.configured,
+      fallback: !!r.fallback,
+      legacyKey: r.legacyKey || "",
+      exists: fs.existsSync(r.root),
+      defaultPath: (() => {
+        try {
+          return defaultRoot(k);
+        } catch {
+          return "";
+        }
+      })(),
+    };
+  }
+  return out;
 }
 /* 校验一个候选根目录：绝对、非盘根、不在应用目录内（命中返回 bad，reason 见注释） */
 function checkRoot(raw) {
@@ -722,12 +792,13 @@ function checkRoot(raw) {
   if (fs.existsSync(abs) && !fs.statSync(abs).isDirectory()) return bad(t("该路径不是文件夹"), "notdir");
   return { ok: true, path: abs, reason: "", error: "" };
 }
-function setRoot(p) {
+function setRoot(p, kind) {
+  const k = kindOfRoot(kind);
   const c = checkRoot(p);
   if (!c.ok) return c;
   const before = (() => {
     try {
-      const r = rootPath();
+      const r = rootPathOf(k);
       return r.configured ? r.root : "";
     } catch {
       return "";
@@ -736,34 +807,37 @@ function setRoot(p) {
   mk(c.path);
   const cfg = readJson(configPath(), {}) || {};
   const apps = isObj(cfg.apps) ? Object.assign({}, cfg.apps) : {};
-  apps.installDir = c.path; /* 键名沿用 installDir 口径；写在 config.json，不写应用目录 */
+  apps[KIND_CFG_KEY[k]] = c.path; /* 按类型写键：installDir（下载）/ projectDir（开发），写在 config.json */
   writeJson(configPath(), Object.assign({}, cfg, { apps: apps }));
   return {
     ok: true,
+    kind: k,
     path: c.path,
     previous: before,
     changed: !!before && path.resolve(before) !== c.path,
     exists: fs.existsSync(c.path),
     defaultPath: (() => {
       try {
-        return defaultRoot();
+        return defaultRoot(k);
       } catch {
         return "";
       }
     })(),
+    roots: rootsInfo(),
   };
 }
-async function pickRoot() {
+async function pickRoot(kind) {
+  const k = kindOfRoot(kind);
   const cur = (() => {
     try {
-      return rootPath().root;
+      return rootPathOf(k).root;
     } catch {
       return "";
     }
   })();
   const parent = getMainWin && getMainWin();
   const opts = {
-    title: t("选择应用安装根目录"),
+    title: t("选择") + kindLabel(k),
     properties: ["openDirectory", "createDirectory"],
     defaultPath: cur || undefined,
   };
@@ -771,7 +845,7 @@ async function pickRoot() {
     ? await dialog.showOpenDialog(parent, opts)
     : await dialog.showOpenDialog(opts);
   if (!r || r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
-  return setRoot(r.filePaths[0]);
+  return setRoot(r.filePaths[0], k);
 }
 
 /* ---------------- 应用目录结构 ---------------- */
@@ -782,6 +856,66 @@ function appDirOf(root, id) {
   const dir = path.resolve(path.join(root, sid));
   if (path.dirname(dir) !== path.resolve(root)) return "";
   return dir;
+}
+/* ── 应用类型（down = 下载的 / dev = 开发的）：**只认 app.json 的 dev 标记** ─────────
+ * 为什么是 app.json 而不是安装账本：用户口径是「我开发的应用 / 我下载的应用」，
+ * 而 dev:true 正是新建应用与「二次开发」写下的那一位（库页 / 开发页也按它分栏）。
+ * 安装账本只用来给「没写过 dev 的老应用」兜底分类：有 installed.json = 从云端下来的。 */
+function rawManifestOf(dir) {
+  try {
+    return dir ? readJson(manifestPath(dir), null) : null;
+  } catch (_) {
+    return null;
+  }
+}
+function kindOfManifest(raw, dir) {
+  const j = isObj(raw) ? raw : {};
+  if (j.dev === true) return APP_KIND_DEV;
+  if (j.dev === false) return APP_KIND_DOWN;
+  /* 没写过 dev：有安装账本（installed.json）= 从云端下载的，否则算本机开发的
+     （与 devBackfillOnce 同口径） */
+  try {
+    if (dir && fs.existsSync(installedPath(dir))) return APP_KIND_DOWN;
+  } catch (_) {}
+  return APP_KIND_DEV;
+}
+/* 该 id 在本机算哪一类（两套根都看一眼；都不在 = 下载那一类，调用方多半会报 missing） */
+function diskKindOf(id) {
+  const sid = safeAppId(id);
+  if (!sid) return APP_KIND_DOWN;
+  for (const k of APP_KINDS) {
+    let dir = "";
+    try {
+      dir = appDirOf(rootPathOf(k).root, sid);
+    } catch (_) {
+      dir = "";
+    }
+    if (!dir || !fs.existsSync(dir)) continue;
+    return kindOfManifest(rawManifestOf(dir), dir);
+  }
+  return APP_KIND_DOWN;
+}
+/* 该应用在某一类根下的目录（不给类型就按本机实际所在的那一边取） */
+function dirOfKind(kind, id) {
+  try {
+    return appDirOf(rootPathOf(kindOfRoot(kind)).root, id);
+  } catch (_) {
+    return "";
+  }
+}
+/* 该应用在本机的目录：**先按类型取（新布局两边各一份），取不到再两套根都找一遍** ——
+   老布局 / 手放进来的应用（文件与类型不一致）也要能打开，绝不因为「哪一边」猜错就打不开。
+   两处都没有时回「按类型算出的那一个」（调用方多半会如实报 missing）。 */
+function dirOfApp(id) {
+  const sid = safeAppId(id);
+  if (!sid) return "";
+  const byKind = dirOfKind(diskKindOf(sid), sid);
+  if (byKind && fs.existsSync(byKind)) return byKind;
+  for (const k of APP_KINDS) {
+    const d = dirOfKind(k, sid);
+    if (d && fs.existsSync(d)) return d;
+  }
+  return byKind;
 }
 /* ── 二次开发（fork）来源声明 ────────────────────────────────────────────────
  * 契约见 docs/apps-market.md §八：应用身份 = **应用 id + 作者 uid**（uid 以账号 id 为准，
@@ -822,45 +956,66 @@ function cmpPath(p) {
   const s = path.resolve(String(p || ""));
   return process.platform === "win32" ? s.toLowerCase() : s;
 }
-/* 默认数据根：<数据目录>/apps-data/<id>/（数据目录未就绪时抛错，由 guard 变成一句失败） */
-function appDataRoot(id) {
+/* 默认数据根：<数据目录>/apps-data/<dev|downloaded>/<id>/ —— **按类型分两棵**，
+   下载的与开发的各自一棵，删一棵绝不碰另一棵（数据目录未就绪时抛错，由 guard 变成一句失败）。
+   kind 省略 = 按该应用在本机实际所在的那一边（diskKindOf）。 */
+function appDataRootPath(id, kind) {
   const sid = safeAppId(id);
   const d = String(getDataDir() || "").trim();
   if (!sid) throw new Error(t("应用 id 不合法"));
   if (!d) throw new Error(t("应用宿主未初始化（缺少数据目录）"));
+  const k = kind ? kindOfRoot(kind) : diskKindOf(sid);
+  return path.join(d, DATA_ROOT_DIR, DATA_SUB[k], sid);
+}
+/* 兼容别名（老调用点）：默认那一棵 = 按类型算出来的那一棵 */
+function appDataRoot(id) {
+  return appDataRootPath(id, "");
+}
+/* 老结构（升级前）：<数据目录>/apps-data/<id>/ —— 只用于「读回落 + 显式迁移」，绝不往这里写新数据 */
+function legacyDataRoot(id) {
+  const sid = safeAppId(id);
+  const d = String(getDataDir() || "").trim();
+  if (!sid || !d) return "";
   return path.join(d, DATA_ROOT_DIR, sid);
 }
-/* 数据文件夹指针：<数据目录>/apps-data/<id>/dataDir.json
+/* 数据文件夹指针：<那棵数据根>/dataDir.json
  *   { dir, relative, updatedAt } —— 用户选在默认数据根里面时记相对名（换机器 / 换数据目录仍认），
- *   选在外面时记绝对路径（只在本进程内有效，绝不因此把应用目录当数据目录用）。 */
-function dataDirPointerFile(id) {
-  return path.join(appDataRoot(id), DATA_DIR_POINTER);
+ *   选在外面时记绝对路径（只在本进程内有效，绝不因此把应用目录当数据目录用）。
+ *   读的时候新位置优先、**老位置（apps-data/<id>/）回落**：升级后老数据一条都不丢，
+ *   真正搬家交给 migrateAppsLayout()（显式入口，不自动动用户的盘）。 */
+function dataDirPointerFile(id, kind) {
+  return path.join(appDataRootPath(id, kind), DATA_DIR_POINTER);
 }
-function readDataDirPointer(id) {
-  const j = readJson(dataDirPointerFile(id), null);
-  if (!isObj(j)) return null;
-  /* 相对名优先（根内目录换数据目录 / 换机器仍认）；只允许根内的**一层**，. / .. 与分隔符不算 */
-  const rel = String(j.relative || "").trim();
-  if (rel && rel !== "." && rel !== ".." && !/[\\/]/.test(rel)) {
-    const abs = path.resolve(path.join(appDataRoot(id), rel));
-    if (path.dirname(abs) === path.resolve(appDataRoot(id))) return { dir: abs, relative: true };
-  }
-  const d = String(j.dir || "").trim();
-  if (d && path.isAbsolute(d)) {
-    /* 绝对路径再来一道闸：落在应用目录里的一律不算（老配置被手改坏也不认） */
-    const abs = path.resolve(d);
-    if (!isInsideAppDir(abs) && abs !== path.parse(abs).root) return { dir: abs, relative: false };
+function readDataDirPointer(id, kind) {
+  const roots = [appDataRootPath(id, kind)];
+  const old = legacyDataRoot(id);
+  if (old && cmpPath(old) !== cmpPath(roots[0])) roots.push(old);
+  for (const root of roots) {
+    const j = readJson(path.join(root, DATA_DIR_POINTER), null);
+    if (!isObj(j)) continue;
+    /* 相对名优先（根内目录换数据目录 / 换机器仍认）；只允许根内的**一层**，. / .. 与分隔符不算 */
+    const rel = String(j.relative || "").trim();
+    if (rel && rel !== "." && rel !== ".." && !/[\\/]/.test(rel)) {
+      const abs = path.resolve(path.join(root, rel));
+      if (path.dirname(abs) === path.resolve(root)) return { dir: abs, relative: true };
+    }
+    const d = String(j.dir || "").trim();
+    if (d && path.isAbsolute(d)) {
+      /* 绝对路径再来一道闸：落在应用目录里的一律不算（老配置被手改坏也不认） */
+      const abs = path.resolve(d);
+      if (!isInsideAppDir(abs) && abs !== path.parse(abs).root) return { dir: abs, relative: false };
+    }
   }
   return null;
 }
 /* 计算该应用的数据文件夹（不建目录；建目录只在真正要写盘的那几处做） */
-function appDataDirOf(id) {
-  const p = readDataDirPointer(id);
-  return p ? p.dir : appDataRoot(id);
+function appDataDirOf(id, kind) {
+  const p = readDataDirPointer(id, kind);
+  return p ? p.dir : appDataRootPath(id, kind);
 }
 /* 记账用的相对名：默认数据根内 = 相对名（""=根本身），根外 = 绝对路径 */
-function dataDirRecord(id, dir) {
-  const root = path.resolve(appDataRoot(id));
+function dataDirRecord(id, dir, kind) {
+  const root = path.resolve(appDataRootPath(id, kind));
   const abs = path.resolve(String(dir || ""));
   if (cmpPath(abs) === cmpPath(root)) return "";
   if (cmpPath(abs).startsWith(cmpPath(root) + path.sep)) {
@@ -869,15 +1024,15 @@ function dataDirRecord(id, dir) {
   return abs;
 }
 /* 写指针：用户亲自选完才调这里，同时把该目录记进本次进程的写入白名单 */
-function writeDataDirPointer(id, dir) {
+function writeDataDirPointer(id, dir, kind) {
   const abs = path.resolve(String(dir || ""));
   if (!abs) return bad(t("请选择数据文件夹"), "empty");
   if (abs === path.parse(abs).root) return bad(t("非法路径（磁盘根目录）"), "root");
   if (isInsideAppDir(abs)) return bad(t("数据文件夹不能落在应用目录内"), "app");
   if (fs.existsSync(abs) && !fs.statSync(abs).isDirectory()) return bad(t("该路径不是文件夹"), "notdir");
-  mk(appDataRoot(id));
-  const record = dataDirRecord(id, abs);
-  writeJson(dataDirPointerFile(id), {
+  mk(appDataRootPath(id, kind));
+  const record = dataDirRecord(id, abs, kind);
+  writeJson(dataDirPointerFile(id, kind), {
     schema: SCHEMA,
     /* dir = 绝对落点（就地解析用）；relative = 根内相对名（换数据目录 / 换机器仍认） */
     dir: abs,
@@ -886,19 +1041,19 @@ function writeDataDirPointer(id, dir) {
   });
   dataWriteAllow.add(cmpPath(abs));
   mk(abs);
-  return { ok: true, id: id, dir: abs, def: false, root: appDataRoot(id) };
+  return { ok: true, id: id, dir: abs, def: false, root: appDataRootPath(id, kind) };
 }
 /* 默认数据根（不带指针）：给「恢复默认」用 */
-function clearDataDirPointer(id) {
-  const p = dataDirPointerFile(id);
+function clearDataDirPointer(id, kind) {
+  const p = dataDirPointerFile(id, kind);
   try {
     if (fs.existsSync(p)) fs.unlinkSync(p);
   } catch {}
-  return { ok: true, id: id, dir: appDataRoot(id), def: true, root: appDataRoot(id) };
+  return { ok: true, id: id, dir: appDataRootPath(id, kind), def: true, root: appDataRootPath(id, kind) };
 }
 /* 该应用当前的写入白名单：默认数据根 + 用户选过的目录 */
 function dataAllowList(id) {
-  const out = [path.resolve(appDataRoot(id))];
+  const out = [path.resolve(appDataRootPath(id))];
   const p = readDataDirPointer(id);
   if (p && p.dir) out.push(path.resolve(p.dir));
   for (const a of dataWriteAllow) out.push(a);
@@ -956,13 +1111,13 @@ function readAppData(id, name) {
 /* 老数据自动迁移：<应用安装目录>/<id>/storage/store.json → <默认数据根>/data.json（旧文件保留）。
  *  只在还没有 data.json 时才搬，且只用默认数据根（绝不动用户另选过的文件夹）。 */
 function migrateLegacyStorage(id) {
-  const { root, configured } = rootPath();
+  const { root, configured } = rootPathOf(diskKindOf(id));
   if (!configured) return { ok: true, moved: false };
   const dir = appDirOf(root, id);
   if (!dir) return { ok: true, moved: false };
   const old = storageFile(dir);
   if (!fs.existsSync(old)) return { ok: true, moved: false };
-  const rootDir = appDataRoot(id);
+  const rootDir = appDataRootPath(id);
   const target = path.join(rootDir, DATA_FILE);
   if (fs.existsSync(target)) return { ok: true, moved: false };
   const data = readJson(old, null);
@@ -1274,16 +1429,26 @@ function dirStatOf(dir) {
   return { files: files.length, bytes: bytes, mtimeMs: mtimeMs };
 }
 /* 目录 → 渲染层用的摘要（列表 / 冲突提示 / 变更探测共用同一份口径） */
-function appSummary(root, id) {
+function appSummary(root, id, kindHint) {
   const dir = appDirOf(root, id);
   if (!dir || !fs.existsSync(dir)) return null;
   const man = manifestOf(dir, id);
   const led = readInstalled(dir) || {};
+  /* 这个应用算哪一类：**只认 app.json 的 dev 标记**（唯一真源）。
+     kindHint = 调用方是从哪一边的根扫到它的，只当「老应用没写过 dev」时的兜底。 */
+  const listKind = kindHint ? kindOfRoot(kindHint) : "";
+  const kind = kindOfManifest(rawManifestOf(dir), dir) || listKind || APP_KIND_DOWN;
   const stat = dirStatOf(dir);
   const canvas = canvasPathOf(dir, man.name);
   const zip = zipPathOf(dir, man.name);
   return {
     id: id,
+    /* 下载的 / 开发的（见 kindOfManifest）：根目录、数据目录、删除范围都按它分 */
+    kind: kind,
+    kindLabel: kindLabel(kind),
+    /* 这次是在哪一边的根下扫到它的（"down" / "dev"）：与 kind 不一致 = 该走一次显式迁移 */
+    listKind: listKind,
+    kindMismatch: !!listKind && listKind !== kind,
     name: man.name,
     version: man.version,
     entry: man.entry,
@@ -1291,7 +1456,16 @@ function appSummary(root, id) {
     /* 作者：新建 / 上架时写进 app.json 的登录账号名（空 = 没写过，界面按当前登录账号回落） */
     author: man.author,
     /* 「开发中」（本机自建 / 从库迁移来的）：库页据此过滤，开发页据此列出 —— 真源只有 app.json */
-    dev: man.dev === true,
+    dev: kind === APP_KIND_DEV,
+    /* 数据文件夹（按类型的那一棵；用户改过数据文件夹时是那个绝对路径）：
+       渲染层不拼路径、不猜类型，一律读这里与 apps:data* 的回执。 */
+    dataDir: (() => {
+      try {
+        return appDataDirOf(id, kind);
+      } catch (_) {
+        return "";
+      }
+    })(),
     /* 二次开发来源（可选）：{ id, ownerId, owner } */
     forkOf: man.forkOf,
     /* 能力位（app.json 的 capabilities）：卡片小标与「应用能力…」对话框都读这一份 */
@@ -1363,9 +1537,11 @@ function setAppMeta(arg) {
   const a = isObj(arg) ? arg : {};
   const id = safeAppId(a.id);
   if (!id) return bad(t("应用 id 不合法"), "bad_id");
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
-  const dir = appDirOf(root, id);
+  /* 类型：显式传了就用它，没传按本机实际所在的那一边（两套根都看一眼）。
+     目录一律走 dirOfApp（按类型 + 两套根兜底）：**改 dev 标记本身不改目录**，
+     物理搬家由 apps:migrateLayout 那一处显式入口负责（见「二次开发」流程）。 */
+  const kind = a.kind ? kindOfRoot(a.kind) : diskKindOf(id);
+  const dir = dirOfApp(id);
   if (!dir || !fs.existsSync(dir))
     return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: id });
   const raw = readManifest(dir);
@@ -1380,12 +1556,26 @@ function setAppMeta(arg) {
   } catch (err) {
     return fail(err);
   }
-  return { ok: true, id: id, patched: Object.keys(patch), app: appSummary(root, id) };
+  /* 改了 dev 就等于换了类型：先回**现在**这一边的摘要（下一次 list 会按新类型归位） */
+  const nowKind = kindOfManifest(Object.assign({}, raw, patch), dir);
+  return {
+    ok: true,
+    id: id,
+    kind: nowKind,
+    kindChanged: nowKind !== kind,
+    patched: Object.keys(patch),
+    app: appSummary(path.dirname(dir), id, nowKind),
+  };
 }
+/* 本机应用列表：**两套根都扫**（下载的 + 开发的），每条带自己的 kind / 根 / 数据目录。
+ * 两套根配成同一个目录时（用户还没分开）只扫一次，按各应用自己的 dev 标记归位。 */
 function listApps() {
-  const { root, configured } = rootPath();
+  const roots = rootsInfo();
   const apps = [];
-  if (fs.existsSync(root)) {
+  const seen = new Set();
+  for (const k of APP_KINDS) {
+    const root = String((roots[k] || {}).path || "");
+    if (!root || !fs.existsSync(root)) continue;
     let ents = [];
     try {
       ents = fs.readdirSync(root, { withFileTypes: true });
@@ -1394,13 +1584,30 @@ function listApps() {
       if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
       const id = safeAppId(ent.name);
       if (!id) continue;
+      const key = String(id).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
       devBackfillOnce(root, id);
-      const s = appSummary(root, id);
-      if (s) apps.push(s);
+      const s = appSummary(root, id, k);
+      if (!s) continue;
+      /* 已经登记为「移除过」的开发应用不再列（用户主动摘掉的登记，不自动回来） */
+      if (rawManifestOf(path.join(root, id))?.removed === true) continue;
+      apps.push(s);
     }
   }
   apps.sort((a, b) => (b.installedAt || b.mtimeMs) - (a.installedAt || a.mtimeMs));
-  return { ok: true, root: root, configured: configured, exists: fs.existsSync(root), apps: apps, at: Date.now() };
+  const down = roots[APP_KIND_DOWN] || {};
+  return {
+    ok: true,
+    /* 老字段（一批老调用点读它 = 下载根）：兼容保留，不删 */
+    root: String(down.path || ""),
+    configured: !!down.configured,
+    exists: !!down.exists,
+    /* 新口径：两套根的完整信息 + 每条应用自己的 kind / 数据目录 */
+    roots: roots,
+    apps: apps,
+    at: Date.now(),
+  };
 }
 
 /* ---------------- 本机新建应用（库页 / 开发页的「新建应用」入口） ----------------
@@ -1443,7 +1650,9 @@ function createApp(arg) {
     );
   let root = "";
   try {
-    root = rootPath().root;
+    /* 新建应用 = 开发的应用：一律落在**项目根**（apps.projectDir，默认 <数据目录>/apps-dev），
+       绝不再往下载根里塞（用户口径：下载的与开发的严格分开） */
+    root = rootPathOf(APP_KIND_DEV).root;
   } catch (err) {
     return fail(err);
   }
@@ -1503,7 +1712,9 @@ function setAppStyle(arg) {
   let dir = "";
   let root = "";
   try {
-    root = rootPath().root;
+    /* 应用可能在哪一边：按本机实际所在的那一类取根 */
+    const k = a.kind ? kindOfRoot(a.kind) : diskKindOf(id);
+    root = rootPathOf(k).root;
     dir = appDirOf(root, id);
   } catch (err) {
     return fail(err);
@@ -1574,7 +1785,8 @@ function mirrorAppCanvas(id, obj) {
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
   let dir = "";
   try {
-    dir = appDirOf(rootPath().root, sid);
+    /* 画布镜像跟着应用自己的那一类走：开发的应用镜像进项目根，下载的进下载根 */
+    dir = dirOfApp(sid);
   } catch (err) {
     return fail(err);
   }
@@ -1834,6 +2046,11 @@ function normSpec(raw) {
     zipUrl: String(s.zipUrl || "").trim(),
     sha256: String(s.sha256 || "").trim().toLowerCase(),
     icon: String(s.icon || "").trim(),
+    /* 上架截图（本轮需求 · 多图）：目录条目下发的相对静态目录写法数组（shots/<主干>/<n>.<ext>）。
+       渲染层拿它画详情窗的多图画廊；老目录没有这个字段 = 空数组（画廊不出现，其余一切照旧）。 */
+    shots: (Array.isArray(s.shots) ? s.shots : [])
+      .map((x) => String(x == null ? "" : x).trim())
+      .filter(Boolean),
     window: isObj(s.window) ? s.window : {},
     /* 多版本（§七）：latestVersion 缺省 = version；versions[] 缺省 = 就这一版 */
     owner: String(s.owner || "").trim(),
@@ -2202,8 +2419,9 @@ async function installApp(arg) {
   const a = isObj(arg) ? arg : { id: arg };
   const id = safeAppId(a.id);
   if (!id) return bad(t("应用 id 不合法"), "bad_id");
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  /* 安装 = **只动下载根**（云端目录下来的东西绝不进项目根；用户口径：两套根严格分开） */
+  const { root, configured } = rootPathOf(APP_KIND_DOWN);
+  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DOWN)), { needRoot: true });
   if (installing[id]) return Object.assign(bad(t("该应用已有安装任务在跑"), "busy"), { busy: true });
   installing[id] = true;
   const mode = String(a.mode || "").trim();
@@ -2269,7 +2487,7 @@ async function installApp(arg) {
     let targetId = id;
     if (exists && mode === "rename") targetId = uniqueAppId(root, id);
     else if (exists && mode !== "overwrite" && mode !== "update") {
-      const ex = appSummary(root, id);
+      const ex = appSummary(root, id, APP_KIND_DOWN);
       sendProgress({ id: id, phase: "conflict", percent: 0 });
       return {
         ok: false,
@@ -2401,10 +2619,12 @@ async function installApp(arg) {
 function appsVersionPick(id) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  /* 台账属于**本机那一边**：按该应用实际所在的类型取根 */
+  const k = diskKindOf(sid);
+  const { root, configured } = rootPathOf(k);
+  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(k)), { needRoot: true });
   const dir = appDirOf(root, sid);
-  const app = dir && fs.existsSync(dir) ? appSummary(root, sid) : null;
+  const app = dir && fs.existsSync(dir) ? appSummary(root, sid, k) : null;
   const led = dir ? readInstalled(dir) || {} : {};
   const vers = isObj(led.versions) ? led.versions : null;
   const cur = ledgerSlot(vers && vers.cur);
@@ -2441,8 +2661,9 @@ async function rollbackApp(arg) {
   if (!id) return bad(t("应用 id 不合法"), "bad_id");
   const target = String(a.version || "").trim();
   if (!target) return bad(t("没有指定要回滚到哪一版"), "bad_version");
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  const k = diskKindOf(id);
+  const { root, configured } = rootPathOf(k);
+  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(k)), { needRoot: true });
   const dir = appDirOf(root, id);
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: id });
   const man = readManifest(dir);
@@ -2488,17 +2709,29 @@ async function rollbackApp(arg) {
   });
 }
 
-/* 卸载：只删该应用自己的子文件夹（守卫：必须严格等于 <root>/<id>；优先送系统回收站） */
-async function uninstallApp(id) {
+/* 删除该应用（**按类型分两种语义**，用户口径：删一个绝不误删另一个）：
+ *   · 下载的（kind="down"）：真删 —— 只删它自己在**下载根**下的子文件夹
+ *     （守卫：必须严格等于 <下载根>/<id>；优先送系统回收站）+ 它自己那一棵数据
+ *     <数据目录>/apps-data/downloaded/<id>/（且只在「就是默认那一棵」时才删，
+ *     用户自己选过的数据文件夹一律不动）；**绝不碰项目根、绝不碰 apps-data/dev/**。
+ *   · 开发的（kind="dev"）：**只移除登记**（unregisterApp）—— 源码就在项目根里，
+ *     删目录等于删用户的工程；要删文件由用户在资源管理器里自己删。
+ * opts = { force: "dev_remove" } —— 开发中的应用必须显式带这个标记，
+ * 免得调用方拿老签名误删自己的工程。 */
+async function uninstallApp(id, opts) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  const k = diskKindOf(sid);
+  if (k === APP_KIND_DEV) return unregisterApp(sid, opts);
+  const { root, configured } = rootPathOf(APP_KIND_DOWN);
+  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DOWN)), { needRoot: true });
   const dir = appDirOf(root, sid);
   if (!dir) return bad(t("非法路径"), "bad_id");
   if (!fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
+  /* 类型核对：文件说它是**开发中的应用**却躺在下载根里（老布局 / 用户手放）也走「移除登记」 */
+  if (kindOfManifest(rawManifestOf(dir), dir) === APP_KIND_DEV) return unregisterApp(sid, opts);
   closeAppWindow(sid);
-  writeModelSelection(sid, MODEL_AUTO); /* 卸载顺手清掉该应用的模型选择（不留孤儿条目） */
+  writeModelSelection(sid, MODEL_AUTO); /* 删除顺手清掉该应用的模型选择（不留孤儿条目） */
   let trashed = false;
   try {
     await shell.trashItem(dir);
@@ -2511,7 +2744,244 @@ async function uninstallApp(id) {
       return fail(err);
     }
   }
-  return { ok: true, id: sid, dir: dir, trashed: trashed, root: root };
+  /* 它自己那一棵数据：只删 downloaded 这一棵（dev 那棵一个字节都不动） */
+  const dataRootAbs = (() => {
+    try {
+      return appDataRootPath(sid, APP_KIND_DOWN);
+    } catch (_) {
+      return "";
+    }
+  })();
+  const dataDir = (() => {
+    const p = readDataDirPointer(sid, APP_KIND_DOWN);
+    return p && p.dir && path.isAbsolute(p.dir) ? p.dir : dataRootAbs;
+  })();
+  let dataRemoved = false;
+  if (dataDir && dataRootAbs && cmpPath(dataDir) === cmpPath(dataRootAbs) && fs.existsSync(dataDir)) {
+    try {
+      await shell.trashItem(dataDir);
+      dataRemoved = true;
+    } catch {
+      try {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+        dataRemoved = true;
+      } catch {}
+    }
+  }
+  return {
+    ok: true,
+    id: sid,
+    kind: APP_KIND_DOWN,
+    mode: "uninstall",
+    dir: dir,
+    trashed: trashed,
+    root: root,
+    dataDir: dataDir,
+    dataRemoved: dataRemoved,
+    dataKept: !!dataDir && !dataRemoved,
+  };
+}
+
+/* 「移除登记」= 开发中的应用唯一的移除方式：只摘掉应用中心里的登记（app.json 的 dev → false
+ * + removed:true），**磁盘上的项目文件夹一个字节都不动**（源码 / 画布镜像 / 数据目录全保留）。 */
+async function unregisterApp(id, opts) {
+  const sid = safeAppId(id);
+  if (!sid) return bad(t("应用 id 不合法"), "bad_id");
+  const o = isObj(opts) ? opts : {};
+  if (o.force !== "dev_remove")
+    return bad(t("开发中的应用不能卸载（源码就在项目文件夹里）：只能「移除登记」"), "dev_keep_files");
+  const dir = dirOfApp(sid);
+  if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
+  const raw = readManifest(dir);
+  if (!raw) return bad(t("应用清单损坏（app.json 读不出来）：先修好它再移除登记"), "broken_manifest");
+  closeAppWindow(sid);
+  writeModelSelection(sid, MODEL_AUTO);
+  try {
+    writeJson(manifestPath(dir), Object.assign({}, raw, { dev: false, removed: true, removedAt: Date.now() }));
+  } catch (err) {
+    return fail(err);
+  }
+  return {
+    ok: true,
+    id: sid,
+    kind: APP_KIND_DEV,
+    mode: "unregister",
+    dir: dir,
+    filesKept: true,
+    removed: true,
+    note: t("只移除了登记：项目文件夹与其中的文件全部原样保留（要删文件请在资源管理器里自己删）"),
+  };
+}
+
+/* ---------------- 旧布局显式迁移（下载的与开发的分开） ----------------
+ *
+ * 用户口径（本次需求）：
+ *   · 下载的应用与开发的应用要**严格分开**：目录、数据、删除范围三样都分；
+ *   · 但**绝不自动搬用户的盘** —— 只给显式入口，先 dry-run 列出会动哪些目录，用户点了才动。
+ *
+ * 迁移动作（只搬两类东西，业务文件一律不动）：
+ *   A. 应用目录：下载根里那些 app.json 写着 dev:true 的目录 → 项目根（<devRoot>/<id>）。
+ *      项目根与下载根配成同一个目录时什么都不用搬（里面本来就各就各位）。
+ *   B. 数据目录：<数据目录>/apps-data/<id>/ → apps-data/<dev|downloaded>/<id>/
+ *      （按该应用的类型；目标已存在则跳过并如实报出，绝不覆盖）。
+ *
+ * 冲突处理：目标目录已存在 → 跳过（conflicts 里给出原因），绝不覆盖、绝不合并半份。
+ * 返回 { ok, dryRun, devRoot, downRoot, moves:[{kind, what, from, to, action, reason}], ... }。 */
+function migrateAppsLayout(arg) {
+  const a = isObj(arg) ? arg : {};
+  const dryRun = a.dryRun !== false; /* 缺省 = 只看不动（安全默认） */
+  /* 只搬一个应用（「二次开发」刚把某个下载的应用改成开发中时用它就地归位）；
+     不给 id 就是全量迁移。 */
+  const onlyId = safeAppId(a.id);
+  const roots = rootsInfo();
+  const downRoot = String((roots[APP_KIND_DOWN] || {}).path || "");
+  const devRoot = String((roots[APP_KIND_DEV] || {}).path || "");
+  const devConfigured = !!(roots[APP_KIND_DEV] || {}).configured;
+  const sameRoot = !!downRoot && cmpPath(downRoot) === cmpPath(devRoot);
+  const moves = [];
+  const conflicts = [];
+  const skipped = [];
+  const note = [];
+
+  /* ---- A. 应用目录 ---- */
+  if (sameRoot) {
+    note.push(t("两套根当前指向同一个目录：应用目录无需搬动（每条应用按自己的 dev 标记归位）"));
+  } else if (!downRoot || !fs.existsSync(downRoot)) {
+    note.push(t("下载根目录不存在，没有需要搬动的应用"));
+  } else {
+    let ents = [];
+    try {
+      ents = fs.readdirSync(downRoot, { withFileTypes: true });
+    } catch (_) {
+      ents = [];
+    }
+    for (const ent of ents) {
+      if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
+      const id = safeAppId(ent.name);
+      if (!id) continue;
+      if (onlyId && id !== onlyId) continue;
+      const from = path.join(downRoot, ent.name);
+      const raw = rawManifestOf(from);
+      if (!raw) continue;
+      if (kindOfManifest(raw, from) !== APP_KIND_DEV) continue;
+      const to = appDirOf(devRoot, id);
+      if (!to) continue;
+      if (cmpPath(from) === cmpPath(to)) continue;
+      if (fs.existsSync(to)) {
+        conflicts.push({
+          kind: "app",
+          id: id,
+          from: from,
+          to: to,
+          reason: t("目标目录已存在（同一个 id 在项目根里已有一份）：不覆盖，请自己核对后手动处理"),
+        });
+        continue;
+      }
+      if (!devConfigured) {
+        note.push(t("项目根目录还没设置：本轮会先落到默认项目根，之后可在「应用根目录」里改"));
+      }
+      moves.push({ kind: "app", id: id, from: from, to: to, action: "move", reason: t("开发中的应用搬进项目根") });
+    }
+  }
+
+  /* ---- B. 数据目录 ---- */
+  const dataRoot = path.join(String(getDataDir() || ""), DATA_ROOT_DIR);
+  let dataEnts = [];
+  try {
+    dataEnts = fs.existsSync(dataRoot) ? fs.readdirSync(dataRoot, { withFileTypes: true }) : [];
+  } catch (_) {
+    dataEnts = [];
+  }
+  const kindById = new Map();
+  for (const app of (listApps().apps || [])) kindById.set(String(app.id), app.kind);
+  for (const ent of dataEnts) {
+    if (!ent.isDirectory()) continue;
+    const id = safeAppId(ent.name);
+    if (!id) continue; /* dev / downloaded 这两棵自己会被跳过（不是合法 app id 的除外） */
+    if (onlyId && id !== onlyId) continue;
+    const from = path.join(dataRoot, ent.name);
+    const k = kindById.get(id) || kindOfManifest(rawManifestOf(dirOfApp(id)), dirOfApp(id));
+    const to = path.join(dataRoot, DATA_SUB[k], id);
+    if (cmpPath(from) === cmpPath(to)) continue;
+    if (fs.existsSync(to)) {
+      conflicts.push({
+        kind: "data",
+        id: id,
+        from: from,
+        to: to,
+        reason: t("目标数据目录已存在：不覆盖（两边都留着，请自己核对后手动合并）"),
+      });
+      continue;
+    }
+    moves.push({
+      kind: "data",
+      id: id,
+      from: from,
+      to: to,
+      action: "move",
+      reason: k === APP_KIND_DEV ? t("开发应用的数据搬进 apps-data/dev") : t("下载应用的数据搬进 apps-data/downloaded"),
+    });
+  }
+  /* dev / downloaded 这两棵容器目录本身不参与搬动（它们就是目的地） */
+  for (const dir of [DATA_SUB.dev, DATA_SUB.down]) {
+    const i = moves.findIndex((m) => m.kind === "data" && cmpPath(m.from) === cmpPath(path.join(dataRoot, dir)));
+    if (i >= 0) moves.splice(i, 1);
+  }
+
+  if (dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      only: onlyId || "",
+      downRoot: downRoot,
+      devRoot: devRoot,
+      sameRoot: sameRoot,
+      moves: moves,
+      conflicts: conflicts,
+      skipped: skipped,
+      note: note,
+      at: Date.now(),
+    };
+  }
+
+  /* ---- 真搬（逐个，失败的记进 skipped，绝不半途而废地覆盖任何东西） ---- */
+  let moved = 0;
+  for (const m of moves) {
+    try {
+      mk(path.dirname(m.to));
+      fs.renameSync(m.from, m.to);
+      moved++;
+    } catch (err) {
+      /* 跨盘 / 被占用 → 退回「复制后删源」；复制失败就整条跳过，源目录原样留着 */
+      try {
+        copyDirRecursive(m.from, m.to);
+        rmDirRecursive(m.from);
+        moved++;
+      } catch (err2) {
+        skipped.push({
+          kind: m.kind,
+          id: m.id,
+          from: m.from,
+          to: m.to,
+          error: String((err2 && err2.message) || err2 || (err && err.message) || err),
+        });
+      }
+    }
+  }
+  return {
+    ok: true,
+    dryRun: false,
+    only: onlyId || "",
+    downRoot: downRoot,
+    devRoot: devRoot,
+    sameRoot: sameRoot,
+    moved: moved,
+    moves: moves,
+    conflicts: conflicts,
+    skipped: skipped,
+    note: note,
+    at: Date.now(),
+  };
 }
 
 /* ---------------- 导出 zip（应用目录里的应用文件全部随包，不含画布 / 本机态） ---------------- *
@@ -2574,9 +3044,7 @@ function packEntriesOf(dir, sid, opts) {
 function exportZip(id, opts) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
-  const dir = appDirOf(root, sid);
+  const dir = dirOfApp(sid);
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
   try {
     const built = packEntriesOf(dir, sid, opts);
@@ -2749,26 +3217,33 @@ function auditEntryRefs(dir, entryAbs, entry) {
 /* 上架前体检：id 非空 = 只查这一个应用；否则查全部本机应用 */
 function packAudit(arg) {
   const a = isObj(arg) ? arg : { id: arg };
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
+  /* 体检覆盖**两套根**（下载的 + 开发的）：上架前体检查的往往就是开发者自己那一份 */
+  const roots = rootsInfo();
+  const root = String((roots[APP_KIND_DOWN] || {}).path || "");
+  const configured =
+    !!(roots[APP_KIND_DOWN] || {}).configured || !!(roots[APP_KIND_DEV] || {}).configured;
+  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DOWN)), { needRoot: true });
   const wantId = safeAppId(a.id);
   const ids = [];
   if (wantId) ids.push(wantId);
   else {
-    let ents = [];
-    try {
-      ents = fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }) : [];
-    } catch {}
-    for (const ent of ents) {
-      if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
-      const id = safeAppId(ent.name);
-      if (id) ids.push(id);
+    for (const k of APP_KINDS) {
+      const r = String((roots[k] || {}).path || "");
+      let ents = [];
+      try {
+        ents = r && fs.existsSync(r) ? fs.readdirSync(r, { withFileTypes: true }) : [];
+      } catch {}
+      for (const ent of ents) {
+        if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
+        const id = safeAppId(ent.name);
+        if (id && ids.indexOf(id) < 0) ids.push(id);
+      }
     }
   }
   const checkedAt = Date.now();
   const results = [];
   for (const id of ids) {
-    const dir = appDirOf(root, id);
+    const dir = dirOfApp(id);
     if (!dir || !fs.existsSync(dir)) {
       results.push({ id: id, name: id, missing: true, files: 0, packed: 0, dropped: [], refsMissing: [], ok: false });
       continue;
@@ -2824,7 +3299,7 @@ function packAudit(arg) {
     }
     results.push(row);
   }
-  return { ok: true, root: root, checkedAt: checkedAt, apps: results };
+  return { ok: true, root: root, roots: roots, checkedAt: checkedAt, apps: results };
 }
 /* 丢件原因：生成物 / 本机存档 / 上架包口径剔除 / 未知（未知 = 打包实现漏了它，必须报出来） */
 function auditDropReason(dir, man, rel, excludeExtra) {
@@ -2857,9 +3332,22 @@ function snapshotOf(root) {
 /* 与上一份快照比对：新增 / 内容变更 / 移除。首次调用（没有上一份）不算「全都变了」，
    只落一份基线并回 changed=[]。 */
 function probeChanges() {
-  const { root, configured } = rootPath();
+  /* 两套根各自快照（下载的 + 开发的），合并成一份按 id 的变更表 */
+  const roots = rootsInfo();
+  const root = String((roots[APP_KIND_DOWN] || {}).path || "");
+  const configured =
+    !!(roots[APP_KIND_DOWN] || {}).configured || !!(roots[APP_KIND_DEV] || {}).configured;
   const prev = readJson(snapshotPath(), null);
-  const next = snapshotOf(root);
+  const next = (() => {
+    const merged = { at: Date.now(), root: root, apps: Object.create(null) };
+    for (const k of APP_KINDS) {
+      const r = String((roots[k] || {}).path || "");
+      if (!r) continue;
+      const snap = snapshotOf(r);
+      for (const id of Object.keys(snap.apps)) merged.apps[id] = snap.apps[id];
+    }
+    return merged;
+  })();
   let changed = [];
   let added = [];
   let removed = [];
@@ -2910,29 +3398,39 @@ function probeChanges() {
 function previewDirOf(id) {
   const sid = safeAppId(id);
   if (!sid) return "";
-  const { root } = rootPath();
-  const direct = appDirOf(root, sid);
-  if (direct && fs.existsSync(direct)) return direct;
-  let ents = [];
-  try {
-    ents = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return "";
+  /* 两套根都找：开发的应用在项目根、下载的在下载根（大小写不敏感，URL 的 host 会被规范化） */
+  for (const k of APP_KINDS) {
+    let root = "";
+    try {
+      root = rootPathOf(k).root;
+    } catch (_) {
+      continue;
+    }
+    if (!root || !fs.existsSync(root)) continue;
+    const direct = appDirOf(root, sid);
+    if (direct && fs.existsSync(direct)) return direct;
+    let ents = [];
+    try {
+      ents = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const hit = ents.find((e) => e.isDirectory() && e.name.toLowerCase() === sid.toLowerCase());
+    const dir = hit ? path.join(root, hit.name) : "";
+    if (dir && fs.existsSync(dir)) return dir;
   }
-  const hit = ents.find(
-    (e) => e.isDirectory() && e.name.toLowerCase() === sid.toLowerCase(),
-  );
-  const dir = hit ? path.join(root, hit.name) : "";
-  return dir && fs.existsSync(dir) ? dir : "";
+  return "";
 }
 /* 开发页一次拿齐：iframe 预览 url + 内容快照（文件数 / 字节 / 最新 mtime，口径同 appSummary）。
    开发页每轮开发结束后调它，快照没变就不重载预览。 */
 function devPreview(id) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  const { root, configured } = rootPath();
+  const roots = rootsInfo();
+  const configured =
+    !!(roots[APP_KIND_DOWN] || {}).configured || !!(roots[APP_KIND_DEV] || {}).configured;
   if (!configured)
-    return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), {
+    return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DEV)), {
       needRoot: true,
     });
   const dir = previewDirOf(sid);
@@ -3051,9 +3549,8 @@ function openAppWindow(id) {
     notifyWindowChanged(sid, true);
     return { ok: true, id: sid, open: true, reused: true };
   }
-  const { root, configured } = rootPath();
-  if (!configured) return Object.assign(bad(t("尚未指定应用安装根目录"), "need_root"), { needRoot: true });
-  const dir = appDirOf(root, sid);
+  /* 应用可能在哪一边（下载根 / 项目根）：按本机实际所在的那一类取目录 */
+  const dir = dirOfApp(sid);
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
   const man = manifestOf(dir, sid);
   const entry = safeEntry(man.entry) || SUB.index;
@@ -3228,7 +3725,8 @@ function appIdOfSender(e) {
 function senderAppDir(e) {
   const id = appIdOfSender(e);
   if (!id) return null;
-  const { root, configured } = rootPath();
+  const k = diskKindOf(id);
+  const { root, configured } = rootPathOf(k);
   const dir = configured ? appDirOf(root, id) : "";
   return { id: id, dir: dir && fs.existsSync(dir) ? dir : "" };
 }
@@ -4459,10 +4957,10 @@ function readKvOf(id) {
 function appCapById(id) {
   const sid = safeAppId(id);
   if (!sid) return { error: bad(t("应用 id 不合法"), "bad_id") };
-  const { root } = rootPath();
-  const dir = appDirOf(root, sid);
+  const dir = dirOfApp(sid);
   if (!dir || !fs.existsSync(dir)) return { error: Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid }) };
-  return { id: sid, dir: dir, root: root };
+  /* root = 它所在的那一套根（下载根 / 项目根）：语音文件同步等下游按它拼路径 */
+  return { id: sid, dir: dir, root: path.dirname(dir) };
 }
 function appCapabilitiesGet(arg) {
   const a = isObj(arg) ? arg : {};
@@ -4541,7 +5039,7 @@ function hostDataDirGet(e) {
   try {
     const dir = appDataDirOf(own.id);
     const p = readDataDirPointer(own.id);
-    const root = appDataRoot(own.id);
+    const root = appDataRootPath(own.id);
     return {
       ok: true,
       id: own.id,
@@ -4697,7 +5195,7 @@ function registerAppsIpc(opts) {
   if (typeof opts.locale === "function") hostLocale = opts.locale;
   getAppDataDirForSpeech = (id) => {
     try {
-      return appDataDirOf(String(id || ""));
+      return appDataDirOf(String(id || ""), diskKindOf(String(id || "")));
     } catch {
       return "";
     }
@@ -4711,33 +5209,33 @@ function registerAppsIpc(opts) {
     }
   };
 
-  /* 根目录：get / set / pick（set 与 pick 都是主进程写 config.json，渲染层不管路径） */
-  ipcMain.handle("apps:rootGet", guard(() => {
-    const { root, configured } = rootPath();
-    return {
-      ok: true,
-      path: root,
-      configured: configured,
-      exists: fs.existsSync(root),
-      defaultPath: (() => {
-        try {
-          return defaultRoot();
-        } catch {
-          return "";
-        }
-      })(),
-    };
+  /* 根目录：get / set / pick（set 与 pick 都是主进程写 config.json，渲染层不管路径）。
+     **两套根**：kind = "down"（下载根，老键名 apps.installDir）/ "dev"（项目根，apps.projectDir）；
+     不给 kind 一律按下载根走（老调用点 / 老渲染层逐字不变）。 */
+  ipcMain.handle("apps:rootGet", guard((e, arg) => {
+    const roots = rootsInfo();
+    const k = kindOfRoot(isObj(arg) ? arg.kind : arg);
+    const one = roots[k] || {};
+    return Object.assign({}, one, { roots: roots });
   }));
-  ipcMain.handle("apps:rootSet", guard((e, arg) => setRoot(typeof arg === "string" ? arg : isObj(arg) ? arg.path : "")));
+  ipcMain.handle("apps:rootSet", guard((e, arg) => {
+    const o = isObj(arg) ? arg : { path: arg };
+    return setRoot(o.path, o.kind);
+  }));
   ipcMain.handle("apps:rootPick", async (e, arg) => {
     try {
-      const r = await pickRoot();
+      const o = isObj(arg) ? arg : {};
+      const r = await pickRoot(o.kind);
       if (!r.ok) return r;
       return Object.assign({}, r, { list: listApps() });
     } catch (err) {
       return fail(err);
     }
   });
+  /* 旧布局搬家（**显式入口**，用户口径：不自动迁移）：dryRun=true 只回一份「会动哪些目录」的清单 */
+  ipcMain.handle("apps:migrateLayout", guard((e, arg) =>
+    migrateAppsLayout(isObj(arg) ? arg : {}),
+  ));
 
   ipcMain.handle("apps:list", guard(() => listApps()));
   /* 新建应用：{ name 标题, id 文件夹名, style 设计风格 } → 建 <root>/<id>/ + app.json
@@ -4782,7 +5280,8 @@ function registerAppsIpc(opts) {
   });
   ipcMain.handle("apps:uninstall", async (e, arg) => {
     try {
-      return await uninstallApp(isObj(arg) ? arg.id : arg);
+      const o = isObj(arg) ? arg : { id: arg };
+      return await uninstallApp(o.id, o);
     } catch (err) {
       return fail(err);
     }
@@ -5068,6 +5567,22 @@ module.exports = {
   capabilityBadges,
   capabilitiesForUi,
   syncSpeechFiles,
+  /* 两套根（下载 / 开发）与它们的数据目录：冒烟与迁移直接真跑这几个 */
+  APP_KIND_DOWN,
+  APP_KIND_DEV,
+  APP_KINDS,
+  kindOfRoot,
+  kindLabel,
+  rootPathOf,
+  rootsInfo,
+  dirOfKind,
+  dirOfApp,
+  diskKindOf,
+  kindOfManifest,
+  appDataRootPath,
+  legacyDataRoot,
+  migrateAppsLayout,
+  unregisterApp,
   buildMessages,
   imagePartUrl,
   decodeImageDataUrl,

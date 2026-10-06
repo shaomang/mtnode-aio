@@ -4,6 +4,8 @@ SRC=/tmp/mtnode-store-upload
 mkdir -p /opt/mtnode-store/data/files /opt/mtnode-store/data/skills /opt/mtnode-store/data/previews /opt/mtnode-store/data/forum-images
 # 应用市场：记录进 db.json 的 apps[]，zip / 图标落这两个目录
 mkdir -p /opt/mtnode-store/data/apps /opt/mtnode-store/data/app-icons
+# 应用封面缩略图缓存（卡片 16:9 背景图）：首次请求时由 thumb.mjs 现生成落这里
+mkdir -p /opt/mtnode-store/data/app-thumbs
 mkdir -p /var/www/mtnode/plugins
 mkdir -p /var/www/mtnode/apps/icons
 install -m 644 "$SRC/server.mjs" /opt/mtnode-store/server.mjs
@@ -36,6 +38,8 @@ install -m 644 "$SRC/migrate-wechat-owner.mjs" /opt/mtnode-store/migrate-wechat-
 #   · relay-key.mjs  —— 人工发放中转 Key（= 账号登录 token）：node relay-key.mjs --user <用户名>
 install -m 644 "$SRC/relay.mjs" /opt/mtnode-store/relay.mjs
 install -m 644 "$SRC/relay-key.mjs" /opt/mtnode-store/relay-key.mjs
+# 应用封面缩略图内核（被 server.mjs import，漏传即 Cannot find module './thumb.mjs'）
+install -m 644 "$SRC/thumb.mjs" /opt/mtnode-store/thumb.mjs
 # 管理台（独立界面，站点不设入口，仅微信扫码 + 白名单账号可登录）：
 #   · /opt/mtnode-store/admin  → 服务自身 GET /admin/ 用（本机 curl 自检与兜底）
 #   · /var/www/mtnode/admin    → nginx 静态目录，对外走 https://mt-agent.com/mtnode/admin/

@@ -4,7 +4,7 @@
  * ============================================================================
  * 【这个模块干什么】
  *   开发页顶部菜单条「启动」右边的「上架」按钮 → window.openAppPublish(appId) 开一只 #overlay
- *   浮层（persistent，可最小化到状态栏），面向非技术用户的一条流水线：
+ *   浮层（persistent；最小化已下线，只有 ✕ / 窗内按钮 / Esc 能关），面向非技术用户的一条流水线：
  *     ① 开窗即拉：本机应用（appsList）、线上状态（该 id 的详情 / 版本树）、账号配额；
  *     ② 可选「AI 生成」：素材 = 应用 app.json（fileReadText）+ 入口页可见文本 + 目录文件清单，
  *        提示词只让模型回一段 JSON，剥 ``` 围栏 + 容错解析；解析不出 / 没有服务商就留空让用户手填，
@@ -13,7 +13,10 @@
  *        [a-z0-9._-]、不以符号开头、非 Windows 保留名）、说明、版本号、版本说明、标签、图标；
  *     ④ 截图：拍应用自己的窗口（主进程 appsShotWindow；窗口没开就提示先点「启动」）或从本机选图
  *        （<input type=file> + FileReader，不依赖桥）；最多 8 张，可删 / 可上下排序，首张 = 封面；
- *        上传时**只取第 1 张**当 iconBase64（图标字段已填则用图标字段），绝不把 8 张都塞进请求体；
+ *        **本轮起 8 张全部上传**（body.shotsBase64[]，服务端统一压缩到长边 1280 / 单张 ≤500KB
+ *        并整批落盘；第 1 张同时当 iconBase64 作封面）；旧口径「只发第 1 张」已废弃，
+ *        客户端与服务端同时升级、不做兼容 —— 见 store-saas/server.mjs 的 decodeAppShots。
+ *        服务端体检：GET /api/apps/<id>/shots-diag（收了没有 / 落了几个文件 / 静态目录同步没有）。
  *     ⑤ 声明：契约 §7.3 的声明正文逐字展示 + 「我已阅读并同意，责任由我承担」勾选，
  *        未勾选时上传按钮禁用并在页脚说明原因；
  *     ⑥ 上传：appsExportZip（现打一份包，不含画布）→ appsReadZipBase64（同一份包读回 base64，
@@ -38,10 +41,10 @@
  *
  * 【对话框纪律（AGENTS.md「协作约定」）】
  *   本窗 persistent：**没有**任何「点外部 / 点蒙层自动关闭」的监听。关闭只有显式路径：
- *   窗内「取消」、标题栏 ✕ / 最小化（app.js 的 ovMinimizeActive）、窗内 Esc、再点一次「上架」。
+ *   窗内「取消」、标题栏 ✕、窗内 Esc、再点一次「上架」（最小化已整体下线，标题栏只有 ✕）。
  *   尺寸 = .overlay-box 上的 .app-publish-box 类（css/app-publish.css）+ 右下角手柄拖拽写内联宽高；
  *   openOverlay / closeOverlay 只清内联样式、不清未登记的类，所以类的清理由本文件自己负责
- *   （pubBoxClassOff：开窗时把落在 #overlay 上的残留类摘掉，停在 #ovPark 里的最小化窗保留原样）。
+ *   （pubBoxClassOff：开窗时把落在 #overlay 上的残留类摘掉）。
  * ==========================================================================*/
 
 /* ───────────────────────── 常量 ───────────────────────── */
@@ -67,7 +70,7 @@ const PUB_RESERVED_IDS = [
   "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
-/* 窗内状态（每次开窗重置；浮层最小化到状态栏再搬回来时 DOM 不重建，所以它必须够用） */
+/* 窗内状态（每次开窗重置；浮层只开一只、开新窗就是原地换窗，所以它必须够用） */
 const PUB = {
   appId: "",
   app: null, /* 本机应用摘要（api.appsList 的那条） */
@@ -232,7 +235,7 @@ function pubShellBox() {
   const ov = document.getElementById("overlay");
   return ov ? ov.querySelector(":scope > .overlay-box") : null;
 }
-/* 摘掉落在「当前窗」上的尺寸类（停在 #ovPark 里的最小化窗保留原样 —— 它还要原样搬回来）。
+/* 摘掉落在「当前窗」上的尺寸类（最小化已下线，只可能是本窗自己的残留）。
    openOverlay / closeOverlay 只清内联样式，未登记的类得自己收，否则 ✕ 关窗后下一个弹窗会继承
    近全屏尺寸（AGENTS.md 记着这个坑：残留尺寸让「关不掉的窗」）。 */
 function pubBoxClassOff() {
@@ -2346,7 +2349,7 @@ async function pubUpload() {
     pubToast(pubT("应用包校验失败：sha256 不一致，未提交"), "err");
     return;
   }
-  /* 图标：显式图标优先，否则第 1 张截图（只发这一张，绝不发整组） */
+  /* 图标（封面，一张）：显式图标优先，否则第 1 张截图 */
   let iconBase64 = "";
   if (plan.kind === "icon") {
     iconBase64 = pubStripDataUrl(PUB.form.icon.dataUrl);
@@ -2357,6 +2360,20 @@ async function pubUpload() {
       PUB.busy = false;
       return;
     }
+  }
+  /* 上架截图（本轮需求：**8 张全部上传**，不做兼容）：逐张读成 base64 放进 shotsBase64[]，
+     服务端统一压缩 + 整批落盘（任何一张读不出来就整批停下，并指名第几张 —— 绝不静默少传）。 */
+  const shotsBase64 = [];
+  for (let i = 0; i < PUB.shots.length; i++) {
+    const one = await pubShotBase64(PUB.shots[i]);
+    if (!one) {
+      pubSetNote(
+        pubT("第 ") + (i + 1) + pubT(" 张截图读不出来（文件可能已被移走）：删掉它或重新拍一张再上传"),
+      );
+      PUB.busy = false;
+      return;
+    }
+    shotsBase64.push(one);
   }
   /* 追加还是新建（同 id 多分支，§十）：
      · 我名下已有这个 id 的分支 → 追加到**我那条**（parentVersion = 我那条的最新版）；
@@ -2375,6 +2392,8 @@ async function pubUpload() {
     tags: v.payload.tags,
   };
   if (iconBase64) body.iconBase64 = iconBase64;
+  /* 截图整组（含第 1 张）：服务端按 shots[] 落盘并下发目录（空数组 = 作者清空了截图） */
+  if (shotsBase64.length) body.shotsBase64 = shotsBase64;
   /* 二次开发来源（可选）：只在真声明了才发，绝不发空对象（服务端按「缺字段 = 原创」处理） */
   const fork = PUB.form.forkOf || {};
   if (pubStr(fork.id))
@@ -2393,7 +2412,10 @@ async function pubUpload() {
   } else {
     body.id = v.payload.id;
   }
-  pubSetNote(pubT("上传中…（③ 正在上传到云端，请勿关闭窗口）"));
+  pubSetNote(
+    pubT("上传中…（③ 正在上传到云端，请勿关闭窗口）") +
+      (shotsBase64.length ? pubT("· 截图 ") + shotsBase64.length + pubT(" 张") : ""),
+  );
   let r = null;
   try {
     r = await api.storeRequest({ method: "POST", path: path, json: body, timeoutMs: 600000 });
@@ -2414,7 +2436,11 @@ async function pubUpload() {
   }
   const data = r.data || {};
   PUB.showNote = true;
-  pubSetNote(pubT("上传成功：") + pubStr((data.item && (data.item.latestVersion || data.item.version)) || v.payload.version));
+  pubSetNote(
+    pubT("上传成功：") +
+      pubStr((data.item && (data.item.latestVersion || data.item.version)) || v.payload.version) +
+      (shotsBase64.length ? pubT("· 含截图 ") + shotsBase64.length + pubT(" 张") : ""),
+  );
   pubShowResult(data, append ? "version" : "create");
   pubToast(pubT("上架成功"), "ok");
   /* 本机也记一份（契约 §八）：author = 当前登录账号（云端条目只用 owner 显示作者，本机写
@@ -2475,13 +2501,13 @@ async function pubWriteLocalMeta() {
     row.appendChild(pubEl("span", "pub-res-v", v || "—"));
     wrap.appendChild(row);
   }
-  /* 校验值收进「ⓘ 校验」小按钮（本轮需求：长哈希对普通用户没有意义） */
+  /* 校验值收进「ⓘ 复制校验值」小按钮（长哈希对普通用户没有意义；本轮：点一下直接进剪贴板，不再开小窗） */
   const shaVal = pubStr(cat.sha256 || item.sha256);
   if (shaVal) {
     const row = pubEl("div", "pub-res-row");
     row.appendChild(pubEl("span", "pub-res-k", pubT("安装包校验")));
     const vv = pubEl("span", "pub-res-v");
-    if (typeof appsHashBtnEl === "function") vv.appendChild(appsHashBtnEl("校验 sha256", shaVal));
+    if (typeof appsHashBtnEl === "function") vv.appendChild(appsHashBtnEl("复制校验值", shaVal));
     else vv.textContent = pubTrim(shaVal, 20);
     row.appendChild(vv);
     wrap.appendChild(row);

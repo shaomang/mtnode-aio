@@ -832,14 +832,20 @@ OUT.EV(
     "\n" +
     fnBody(ASSIST, "dshToolErrSummary") +
     "\n" +
+    fnBody(ASSIST, "dshDiffPartsOf") +
+    "\n" +
     fnBody(ASSIST, "dshToolDiffOf") +
     "\n" +
     fnBody(ASSIST, "dshDiffArgText") +
     "\n" +
     fnBody(ASSIST, "dshDiffRowsOf") +
     "\n" +
+    fnBody(ASSIST, "dshDiffBlockEl") +
+    "\n" +
     fnBody(ASSIST, "dshToolDiffEl") +
     "\nconst DSH_DIFF_MAX_ROWS = 9;\n" +
+    "const DSH_DIFF_WRITE_RE = /^(write|write_file|create_file)$/;\n" +
+    "const DSH_DIFF_EDIT_RE = /^(edit|edit_file|str_replace_editor|apply_patch)$/;\n" +
     /* 标题表是 const 数组（fnBody 抽的是函数），按源码原样带一份；改表时冒烟跟着红 */
     /const DSH_TOOL_TITLE_RULES = \[[\s\S]*?\n\];/.exec(ASSIST)[0] +
     "\n" +

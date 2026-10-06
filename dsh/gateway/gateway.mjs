@@ -1259,13 +1259,27 @@ const BrowserCtl = {
     }
     return null
   },
-  /* 问用户一次（浏览器帧通道）：回 'allowed-once' | 'rejected' | 'cancelled' */
+  /* 问用户一次（浏览器帧通道）：回 'allowed-once' | 'rejected' | 'cancelled'
+     | { outcome, answer, selected }（求助卡答了话时是对象）。
+
+     等待口径（本次需求 · 用户已确认）：**永久等待，不超时、不自动放行**。
+     旧实现有一条 10 分钟硬编码 setTimeout —— 到点就把这一问按「已取消」收场，
+     用户还在页面上登录（或刚点完卡）就被当成「没答过」，看上去就是「答了没反应 /
+     会话自己卡死」。只有三条路能结束这一问：
+       ① 用户在卡上作答（渲染层 interact kind:'browser'）；
+       ② 用户点「稍后 / 中断 / 撤销这张卡」—— 渲染层发同一条 interact（rejected / abort）
+          + 终止本轮，本轮的收尾（handleRun 的 finally → abortBridgePending）会把它清掉；
+       ③ 本轮自己结束（收尾撤卡，同上）。
+     另有一条保命线：渲染层发现这张卡所属的那一轮已经不在了（死卡，例如网关重启后
+     残留）会发一条 outcome:'rejected' 的 abandon 帧，这里照常 resolve，模型因此
+     继续往下走，而不是等一个永远不会来的答案。 */
   ask(key, sessionId, askData) {
     return new Promise((resolve) => {
       const id = crypto.randomUUID()
       const claim = claimOf(key)
       const reqId = claim ? claim.reqId : ''
       const sock = this.socketFor(key)
+      /* 拿不到运行时的桥（那一轮已经不在）＝这一问注定没人接：立刻收场，别让工具挂住 */
       if (!sock) return resolve('cancelled')
       const payload = { id, sessionId, ...askData }
       bridgePending.set(id, {
@@ -1278,12 +1292,6 @@ const BrowserCtl = {
         reject: () => resolve('cancelled'),
       })
       out({ event: { reqId, type: 'browser', data: { ...askData, id, sessionId } } })
-      setTimeout(() => {
-        if (!bridgePending.has(id)) return
-        bridgePending.delete(id)
-        out({ event: { reqId, type: 'ix-drop', data: { id, kind: 'browser', reason: 'aborted' } } })
-        resolve('cancelled')
-      }, 10 * 60 * 1000)
     })
   },
   socketFor(key) {

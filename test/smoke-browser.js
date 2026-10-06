@@ -127,6 +127,32 @@ console.log("[1] 浏览器底座（browser-host.mjs）");
   ok(/危险动作|DANGEROUS_WORDS/.test(HOST) && /dangerOfClick/.test(HOST), "危险动作判据是纯函数（提交 / 支付 / 删除 / 发送 / 发布…）");
   ok(!/export function domainVerdict/.test(HOST) && !/export const DEFAULT_POLICY/.test(HOST) && /export const APPROVE_DANGEROUS = true/.test(HOST),
     "本轮需求：域名名单机制已删（无 domainVerdict / DEFAULT_POLICY），只剩恒开的 APPROVE_DANGEROUS");
+  /* 本次需求（「求助卡答了却被当成没答 / 会话自己卡死」的两条根）：
+     ① 网关那一问的 10 分钟硬编码超时整条删掉 —— 永久等待，只有用户作答或本轮收尾能结束它；
+     ② status 回执要带上 viewStatus 那一份（headless）—— 渲染层就是按它判「这只是无窗口的，
+        登录页根本看不见」并自动切真窗口的；不比不知道，status 不带 headless 时 BA.headless
+        恒为 false，自动切真窗口这一步永远不会发生。 */
+  ok(
+    /永久等待，不超时、不自动放行/.test(GATEWAY) &&
+      /abandon/.test(GATEWAY) &&
+      (() => {
+        /* 只钉浏览器那一问的 ask() 本体：语音准备那条 10 分钟超时是另一处合法用法 */
+        const src = GATEWAY.split("ask(key, sessionId, askData) {")[1] || "";
+        const body = src.slice(0, src.indexOf("socketFor(key) {"));
+        return (
+          body.length > 200 &&
+          !/10 \* 60 \* 1000/.test(body) &&
+          !/setTimeout\(/.test(body) &&
+          /bridgePending\.set\(id, \{/.test(body) &&
+          /out\(\{ event: \{ reqId, type: 'browser'/.test(body)
+        );
+      })(),
+    "求助卡等待不再有硬编码超时（永久等待；只有作答 / 本轮收尾 / 明确的 abandon 帧能结束它）",
+  );
+  ok(
+    /export function statusOf\(\)[\s\S]{0,600}?\.\.\.viewStatus\(\)/.test(HOST),
+    "statusOf() 带上 viewStatus 那一份（headless / mode / parked）——自动切真窗口的判据靠它",
+  );
 }
 
 /* ============ [2] 纯函数真跑 ============ */
@@ -273,13 +299,60 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
        且真窗口那枚不能用 ixMarkFirstSend 的一次性闸（用了会把「我已处理完」也闸掉）。 */
     ok(/BrowserAct\.realWindow\(on, it\.data\.sessionId/.test(APP_DB) && /I18n\.t\("用真窗口打开"\)/.test(APP_DB),
       "求助卡（登录 / 验证码类）给了「用真窗口打开 / 收回右栏」，走 BA.realWindow");
-    ok(/BrowserAct\.setTakeover\(!takenOver/.test(APP_DB),
+    ok(/BrowserAct\.setTakeover\(want, it\.data\.sessionId/.test(APP_DB),
       "求助卡上的接管 / 交还走 BA.setTakeover（面板那枚按钮下架后不许留死路）");
+    /* 本次需求（「答了卡、模型不往下走」）：接管切换失败不许照发回执 —— 原来不管成败
+       都发一帧，用户以为答过了、网关那边的接管态却没动；现在失败就停在卡上并写明原因。 */
+    ok(
+      /ok = !!\(window\.BrowserAct && \(await window\.BrowserAct\.setTakeover\(/.test(APP_DB) &&
+        /if \(!ok\) \{/.test(APP_DB),
+      "接管切换失败时不发回执（停在卡上写明原因，可以直接再点）",
+    );
     {
       const winBlock = APP_DB.split('const win = document.createElement("button")')[1] || "";
       ok(!/ixMarkFirstSend\(it\)/.test(winBlock.slice(0, 900)),
         "真窗口那枚键不占一次性回执闸（否则同一张卡上的「我已处理完，交还控制权」会点不动）");
     }    ok(/ix-browser-help/.test(APP_DB) && /ixAnswerBrowser/.test(APP_DB), "求助 / 确认卡有专属渲染与回执出口");
+    /* 本次需求（等待改为永久之后的可见凭据 + 无进展兜底 + 自动切真窗口）：
+       ① 卡还在 = 模型还在等：常驻一行「已等 N 秒（不会超时自动跳过）」；
+       ② 答完落一条会话内嵌记录 + 60 秒无新进展 → ⚠ 提示 + 「重发本轮 / 终止本轮」；
+       ③ 登录类求助卡一到，若那只没窗口就自动切真窗口（前提：没有别的会话正驱动它）。 */
+    ok(
+      /function ixWaitStart\(id, el, sig\)/.test(APP_DB) &&
+        /模型正在等你的回应 · 已等 \{n\} 秒（不会超时自动跳过）/.test(APP_DB) &&
+        /ixWaitStart\(d\.id, waitEl, Number\(it\.at\) \|\| Date\.now\(\)\)/.test(APP_DB),
+      "求助卡常驻一行「模型正在等你的回应 · 已等 N 秒」（永久等待的可见凭据）",
+    );
+    ok(
+      /const IX_STALL_MS = 60 \* 1000;/.test(APP_DB) &&
+        /function ixNoteBrowserAnswer\(it\)/.test(APP_DB) &&
+        /已回应，模型继续中/.test(APP_DB) &&
+        /重发本轮/.test(APP_DB) &&
+        /终止本轮/.test(APP_DB),
+      "答完落会话内嵌记录，60 秒无新进展给「重发本轮 / 终止本轮」（不依赖卡上那一问，卡死了也能救）",
+    );
+    ok(
+      /_src === IX_BROWSER_NOTE_SRC/.test(APP_DB) &&
+        /String\(m\._src \|\| ""\) === "ix-browser"\) continue;/.test(APP_DB),
+      "「已回应」记录落盘可见、但**不进模型上下文**（只给用户看的界面痕迹）",
+    );
+    ok(
+      /async function ixMaybeAutoRealWindow\(it, card\)/.test(APP_DB) &&
+        /d\.helpKind !== "login"/.test(APP_DB) &&
+        /if \(!st\.headless\) return;/.test(APP_DB) &&
+        /driver !== sid/.test(APP_DB) &&
+        /await BA\.realWindow\(true, sid\)/.test(APP_DB),
+      "登录类求助卡自动切真窗口（仅那只没窗口、且没有别的会话正驱动它时才切）",
+    );
+    ok(
+      /DSH_IX_WAIT_TIMEOUT_MS = Number\.POSITIVE_INFINITY/.test(APP_DB) &&
+        /function dshRunProgressTick\(runKey\)/.test(APP_DB),
+      "渲染层看门狗也不再给交互等待设上限（2 小时那一刀会砍掉「我明明答了」的轮次）",
+    );
+    ok(
+      /\.ix-wait-line/.test(CSS) && /\.ix-stall\b/.test(CSS) && /\.dsh-msg-bnote/.test(CSS),
+      "等待行 / 无进展提示 / 已回应记录三处样式齐备（亮色主题另有 .ix-stall-txt 规则）",
+    );
     ok(/msg\.type === "browser"/.test(APP_DB), "会话事件分发认得 browser 帧");
     ok(/kind: "browser"/.test(APP_DB), "回执按 kind:'browser' 回传（与 canvas / tool 同一条交互通道）");
     ok(/window\.LongRun\.afterRound/.test(APP_ASSIST), "轮末钩子接进会话收尾（自动续跑入口）");

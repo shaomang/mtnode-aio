@@ -281,8 +281,9 @@
       <div class="agent-main">
         <input id="agentWsInput" type="text" style="display:none" aria-hidden="true">
         <div class="agent-body">
-          <!-- 轮次标签（本次需求）：会话区顶部一行「第 N 轮 · HH:MM」，用户发出的一轮真正开跑时
-               由 app-assist.js 的 agentRoundMarkNew 落文案与显隐（空会话 / 从未开跑 → 整行不占位）。
+          <!-- 会话时间区间标签（本次需求）：会话区左上角只报**时间区间**「起点 – 终点」——
+               整个会话第一条消息到最后一条消息，**不显示轮号**；文案与显隐由 app-assist.js
+               的 agentRoundLabelApply 从消息历史现推（空会话 / 从未开跑 → 整行不占位）。
                轮次推进的那一瞬同时清掉上一轮已了结的「计划」与「任务清单」（见 app-assist.js
                的会话任务清单段），避免上一轮的记录被当成本轮的。 -->
           <div class="agent-round" id="agentRound" hidden><b></b><i></i></div>
@@ -532,8 +533,6 @@
 </div>
 
 <footer class="statusbar">
-  <!-- 最小化到状态栏的弹窗页签（画布 tab 同款外观；renderer/app.js 的 ovMin* 一套维护） -->
-  <div class="ov-minbar" id="ovMinBar" hidden></div>
   <!-- 全局语音输入（renderer/app-voice.js）：状态栏最左 1 枚话筒，点一下在三态之间循环
        （关闭 → 持续转录 → 按住 F1 按键转录 → 关闭），识别出的文字实时写进当前 focus 的输入框。
        占位在 #btnCanvasShot 左侧（CSS 用 order:-2 钉死，即使别的按钮插到前面也不移位）。
@@ -559,16 +558,16 @@
 </footer>
 
 <div id="overlay">
-  <!-- 初始窗壳；最小化会把它整体搬进 #ovPark，再由 app.js 的 ovShellEnsure 照这个结构补一只
+  <!-- 初始窗壳；标题栏只有一颗「关闭」（✕），弹窗最小化到状态栏已整体下线
        （app.js 里的 OV_SHELL_HTML 必须与这里保持一致，加元素两边都要改） -->
   <div class="overlay-box">
-    <div class="overlay-head"><b id="ovTitle">设置</b><button type="button" class="ov-min-btn" title="最小化到状态栏" aria-label="最小化到状态栏"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M5 11h14v2H5z"/></svg></button><button type="button" class="ov-close-btn" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/></svg></button></div>
+    <div class="overlay-head"><b id="ovTitle">设置</b><button type="button" class="ov-close-btn" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/></svg></button></div>
     <div class="overlay-body" id="ovBody"></div>
     <div class="overlay-foot" id="ovFoot"></div>
   </div>
 </div>
-<!-- 被最小化的窗壳停放处（隐藏；放在 #overlay 之后，保证 #ovBody 等 id 始终先命中当前窗） -->
-<div id="ovPark" hidden aria-hidden="true"></div>
+<!-- 弹窗最小化到状态栏（#ovPark 停放处 / #ovMinBar 页签排 / .ov-min-btn）已整体移除：
+     现在每只 #overlay 弹窗只有「关闭（✕）」一条显式出口（窗内按钮 / Esc 照旧）。 -->
 
 <div id="ctx" class="fn-ctx"></div>
 <div id="refMenu" class="fn-ctx ref-menu" style="display:none"></div>
@@ -881,6 +880,14 @@
      显隐受设置 · 开发者工具（S.config.dsh.developerTools，默认开）约束。
      排在 app-browser.js 之后：借它的第三栏显隐口径（.agent-pane.ba-open）与入口按钮。 -->
 <script src="app-trajectory.js"></script>
+<!-- 会话第三栏「改动」（本次需求：本会话对所有文件进行的所有改动，一项 = 一个被改过的文件，
+     右侧列出该文件的历次 diff 片段）。自包含（renderer/app-changes.js + css/dsh-tokens.css 的
+     .dsh-chg-*），出口 window.MTNodeChanges；数据全取自会话本来就有的工具调用记录
+     （messages[].tools / st._liveTools），diff 复用 app-assist.js 挂在 window.MTNodeChatDiff
+     上的 ofFull / elFull（不看字符上限的那一档）。
+     排在 app-trajectory.js 之后：标签与显隐归轨迹那边（它是「哪一栏」的唯一真源），
+     本文件只负责把这一栏画出来。 -->
+<script src="app-changes.js"></script>
 <!-- 全局语音输入：自包含模块（renderer/app-voice.js），状态栏最左那枚话筒（静态 DOM 在
      footer.statusbar，见 #btnVoiceGlobal）＋跟随光标的转写浮窗＋右键快捷菜单，并把
      「语音输入」设置小节给设置面板（window.VoiceInput.settingsSection，见 app-settings.js）。

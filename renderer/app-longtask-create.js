@@ -3,7 +3,7 @@
  * 长周期任务 · 新建对话框（window.openLtCreateDlg）
  * ----------------------------------------------------------------------
  * 条带头部 / 空态 / 设置窗里那三处「＋ 创建长任务」都开这一只窗：
- *   · 持久化浮层（openOverlay persistent + 可最小化到状态栏），近全屏；
+ *   · 持久化浮层（openOverlay persistent；最小化已下线，只有 ✕ / 窗内按钮 / Esc 能关），近全屏；
  *   · 右下角可拖调大小，最小宽 ≥ 50% 视口（与 renderer/app-review.js 的编辑器窗同口径），
  *     拖过的尺寸记在 localStorage，跨画布统一；
  *   · 窗内右上角两个出口：「＋ 手动新建」（调既有的 ltNewTask(wf, ctx)
@@ -98,7 +98,7 @@ window.ltCreateAgentSet = function (cfg) {
   } catch (_) {}
 };
 /* Esc 是这只窗的显式关闭路径（持久化浮层不点外部即关）。
-   只在「本窗正挂在 #overlay 上」时认——最小化停放（#ovPark）或已被别的窗换掉时不抢 Esc。 */
+   只在「本窗正挂在 #overlay 上」时认 —— 已被别的窗换掉时不抢 Esc（最小化已下线）。 */
 function ltcOnEsc(ev) {
   if (ev.key !== "Escape") return;
   const main = document.getElementById("ltcMain");
