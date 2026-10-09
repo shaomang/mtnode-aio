@@ -7,7 +7,7 @@ Create: right-click empty canvas → **Dev node (project architecture · feature
 ## How to use
 1. Pick the file to bind (absolute path).
 2. Optional: set an icon (`execIcon`) and body color (`execColor`) to spot it fast.
-3. **Double-click the node**, or **click the play button twice**, to launch it through the OS default handler.
+3. **One click on the play button** launches it (double-clicking the node works too) — the OS default handler opens it; no second click needed.
 
 ## Ports
 - **Input**: none

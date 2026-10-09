@@ -3910,7 +3910,7 @@ function devModelPopEl() {
      20×20 方钮里字符「✕」的字形墨水盒中心比按钮中心高 0.5px（Range.getBoundingClientRect
      实测：ink 中心 y=41.5 / 按钮中心 y=42），方钮越小越看得出来；换成 viewBox 24 的
      path（getBBox 中心恰为 12,12）+ flex 居中后偏差归零，也不再受字体 / 字号影响。 */
-  close.title = I18n.t("关闭");
+  /* 本轮提示去重：title 与 aria-label 逐字相同（都是「关闭」）→ 只留 aria-label */
   close.setAttribute("aria-label", I18n.t("关闭"));
   close.innerHTML =
     '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +

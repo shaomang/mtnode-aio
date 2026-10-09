@@ -164,13 +164,21 @@ let MERGED_FAILED = false;
     "mediaRunStopped",
     "mediaGenQueuedIds",
     "mediaGenQueueHolds",
+    "mediaRequeueStaleLock",
+    "mediaNodeRequeueStale",
     "addPendingRun",
     "clearPendingRun",
     "findMediaGenNodeById",
     "mediaGenMarkDropped",
     "runMediaGenSerial",
+    /* mediaGenQueueRun 是 runMediaGenSerial 的实际排队实现（本轮 bug 的修复面就在这里）：
+       少了它 runMediaGenSerial 会在链上抛 ReferenceError，被 _mediaGenChain 的吞异常分支
+       吃掉 —— 排队表永远空着，[1]~[6] 的断言就全落空。 */
+    "mediaGenQueueRun",
     "hasAnyMediaGenActivity",
     "stopAllMediaGen",
+    /* 本轮 bug 的复现面在 playNode 的重入闸上：真源码抽进来跑（它的依赖见沙箱与 [7] 的临时补桩） */
+    "playNode",
   ];
   const NODES_VARS = ["mediaGenWaiters", "mediaGenRestoreTimers", "mediaBackendRunWatchers"];
   vm.runInContext(
@@ -180,7 +188,8 @@ let MERGED_FAILED = false;
       extract(nodesSrc, NODES_FNS) +
       "\nglobalThis.__st = { runMediaGenSerial, clearPendingRun, addPendingRun, bumpNodeStop, beginNodeRun," +
       " mediaRunStopped, mediaGenWaiters, mediaGenQueuedIds, mediaGenQueueHolds, hasAnyMediaGenActivity," +
-      " stopAllMediaGen, markGlobalStop, globalStopSeq };",
+      " mediaRequeueStaleLock, mediaNodeRequeueStale," +
+      " mediaGenQueueRun, stopAllMediaGen, markGlobalStop, globalStopSeq, playNode };",
     sandbox,
     { filename: "media-queue-extract.js" },
   );
@@ -341,6 +350,96 @@ let MERGED_FAILED = false;
       gate.release();
       await Promise.all(ps);
       ok(!T.mediaGenQueueHolds("up2"), "出队后不再持有排队项");
+    }
+
+    console.log("\n[7] 本轮 bug：排队中被取消后，再点 ▶ 必须真的重新入队（不许只 await 旧 playLock）");
+    {
+      /* 复现口径（用户报：视频 / 语音 / 音乐・图像节点在运行队列里被取消后无法再进队列）：
+         媒体族节点被 runMediaGenSerial 排在串行链上等位时，那一轮 playNode 的 playLock
+         一直挂着（它正 await 链上的排队位）；取消排队只摘排队表条目、清等待态，
+         不碰那把 playLock。于是再点 ▶ 时 playNode 仍命中 `if (hit) { await hit; return; }`
+         —— 只等一个已经没人要的旧位次，既不报错也不重新入队。
+
+         这里用真 playNode（extract 出的源码）+ 真排队表 + 真 playLock 跑全程：
+         ① up1 在跑、itp1 排队（旧调用方直接进链）；
+         ② up2 由**真 playNode** 发起（它因此占住 playLock，并在链上等位 = 排队窗口）；
+         ③ 取消 up2 的排队位（app.js stopNode 的媒体分支原样三步：摘表 + 清等待态）；
+         ④ 再点 ▶ —— 修复前它只 await 旧锁，**排队表里不会重新出现 up2**；
+         ⑤ 放开闸门：重入那一发必须自己跑完，且全程 up2 只跑一次。 */
+      resetScene(["up1", "itp1"]);
+      const ran = [];
+      const gate = deferred();
+      const run = makeRunner(ran, gate.p); /* 旧调用方：直接进链（无 playLock） */
+      const ps = sandbox.S.wf.nodes.map((n) => run(n));
+      await sleep(2);
+
+      /* 用户这一发走的是真 playNode：它会占住 playLock，并在链上等位（排队窗口） */
+      sandbox.S.playLocks = sandbox.S.playLocks || new Map();
+      if (typeof sandbox.assetSyncConsumers !== "function") sandbox.assetSyncConsumers = async () => {};
+      if (typeof sandbox.nodePlaySucceeded !== "function") sandbox.nodePlaySucceeded = () => true;
+      if (typeof sandbox.runDownstreamCascade !== "function") sandbox.runDownstreamCascade = async () => {};
+      if (typeof sandbox.playNodeBody !== "function") {
+        sandbox.playNodeBody = (n) =>
+          T.mediaGenQueueRun(n, async () => {
+            ran.push(n.id);
+            n.running = true;
+            await gate.p;
+            n.running = false;
+          });
+      }
+      const up2 = mkNode("up2", "video_interp");
+      sandbox.S.wf.nodes.push(up2);
+      /* 用户第一次点 ▶：占住 playLock，在链上等位 —— 这正是后来卡住重入的那把锁 */
+      const first = T.playNode(up2, false, {});
+      await sleep(2);
+      ok(sandbox.S.playLocks.has("up2"), "前置：up2 的上一发真占着 playLock（这正是卡住重入的那把）");
+      ok(T.mediaGenWaiters.has("up2") && !up2.running, "前置：它正停在链上排队、还没轮到起跑");
+
+      /* 用户点运行队列那一条的 ■（app.js stopNode 的媒体分支原样三步）：
+         摘排队表 + force 清等待态 —— 只碰这两处，绝不碰 playLock */
+      T.bumpNodeStop(up2);
+      T.mediaGenWaiters.delete("up2");
+      T.clearPendingRun(["up2"], { force: true });
+      ok(
+        T.mediaRequeueStaleLock(up2),
+        "已被取消的排队节点：mediaRequeueStaleLock 认定可以击穿旧 playLock（不再等旧位次）",
+      );
+      const nb = mkNode("plain1", "proc_text");
+      ok(!T.mediaRequeueStaleLock(nb), "非媒体族节点一律不适用（普通处理节点的 ▶ 语义不变）");
+      up2.running = true;
+      ok(!T.mediaRequeueStaleLock(up2), "真在跑的媒体节点不击穿（照旧 await 旧锁）");
+      up2.running = false;
+
+      /* 用户再点 ▶ */
+      const again = T.playNode(up2, false, {});
+      await sleep(5);
+      ok(T.mediaGenQueueHolds("up2"), "再点 ▶ 后 up2 真的重新挂回串行链排队（bug 当场复现为「否」）");
+      ok(sandbox.S.pendingRun.has("up2"), "重新入队也补回「等待中」（运行队列看得见）");
+
+      gate.release();
+      await Promise.all(ps);
+      await first; /* 旧那一发在链上被认出是残条目 → 静默作废（返回 null，不起跑） */
+      /* 修复前这一条必挂：「只 await 旧 playLock」那一版在这一刻就返回了，
+         于是 up2 的重入那一发永远不会起跑（负对照实测得到 ["up1","itp1"]）。 */
+      await Promise.race([again, sleep(300).then(() => {})]);
+      await sleep(10);
+      eqArr(ran, ["up1", "itp1", "up2"], "取消 → 重入后 up2 真的跑了，且全程只跑一次");
+      ok(!up2.running, "重入那一发已收尾（running 复位）");
+      eqArr([...T.mediaGenWaiters.keys()], [], "跑完排队表清空（旧残条目没有留在表里）");
+      eqArr([...sandbox.S.playLocks.keys()], [], "playLock 正常释放（没有留下第二把卡住的锁）");
+    }
+
+    console.log("\n[8] playNode 的重入闸：媒体重入走作废分支，其余一律照旧 await 旧锁");
+    {
+      const body = fnBody(nodesSrc, "playNode");
+      const bodyHas = (s, msg) => ok(body.indexOf(s) >= 0, msg + (body.indexOf(s) >= 0 ? "" : "（缺 " + s + "）"));
+      bodyHas("mediaRequeueStaleLock", "playNode 用 mediaRequeueStaleLock 判定「只允许击穿媒体排队残锁」");
+      bodyHas("mediaNodeRequeueStale", "击穿时先作废旧排队条目与等待态");
+      bodyHas("await hit;", "未命中击穿条件的照旧 await 旧 playLock（重入语义不变）");
+      const stale = fnBody(nodesSrc, "mediaNodeRequeueStale");
+      const staleHas = (s, msg) => ok(stale.indexOf(s) >= 0, msg + (stale.indexOf(s) >= 0 ? "" : "（缺 " + s + "）"));
+      staleHas("mediaGenWaiters.delete", "作废 = 摘掉串行链上的旧条目（出队时认不出自己 → 静默作废）");
+      staleHas("clearPendingRun", "作废 = 同时清等待态标记");
     }
 
     console.log("\n" + (fails ? "FAIL " + fails + " / " + checks : "全部通过 " + checks + " 项"));

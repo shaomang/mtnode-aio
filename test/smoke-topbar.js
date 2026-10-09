@@ -172,13 +172,19 @@ let MERGED_FAILED = false;
     }
   };
 
-  /* 取某入口按钮的开标签（到 > 为止） */
-  const openTagOf = (id) => {
+  /* 取某入口按钮的完整标签正文（开标签 + 内文，到它自己的 </button> 为止） */
+  const btnTagOf = (id) => {
     const at = HTML.indexOf('id="' + id + '"');
     if (at < 0) return "";
     const start = HTML.lastIndexOf("<button", at);
-    const end = HTML.indexOf(">", at);
-    return start >= 0 && end > start ? HTML.slice(start, end + 1) : "";
+    const end = HTML.indexOf("</button>", at);
+    return start >= 0 && end > start ? HTML.slice(start, end + 9) : "";
+  };
+  /* 取某入口按钮的开标签（到 > 为止） */
+  const openTagOf = (id) => {
+    const tag = btnTagOf(id);
+    const end = tag.indexOf(">");
+    return tag && end > 0 ? tag.slice(0, end + 1) : "";
   };
 
   console.log("[1] 五个入口各自的 data-shortcut 键位");
@@ -196,27 +202,74 @@ let MERGED_FAILED = false;
         tag.indexOf('data-shortcut="' + want[id] + '"') >= 0,
         "#" + id + " 的 data-shortcut = " + want[id],
       );
+      /* 新口径（顶栏提示去重）：按钮身上只剩可见文字 + aria-label —— 键位仍由
+         data-shortcut 生效（renderer/app-keys.js），但"提示真源"不再是这里。 */
       ok(
-        tag.indexOf("data-i18n-title=") >= 0,
-        "#" + id + " 保留 data-i18n-title（hover 提示的文案真源）",
+        tag.indexOf('aria-label="') >= 0,
+        "#" + id + " 的 aria-label 仍在（无障碍名，不随清理一起丢）",
+      );
+      ok(
+        tag.indexOf("data-i18n-title=") < 0 && tag.indexOf("data-tip=") < 0,
+        "#" + id + " 不再带 data-i18n-title / data-tip（气泡与会话里的文字重复，已去重）",
       );
     });
     /* 已移除：切视图的 1 画布 / 2 会话 / 3 专家团 —— 打字或盲按会把整个视图切走 */
     ["btnToolWf", "btnToolAgent", "btnTeam"].forEach((id) => {
       const tag = openTagOf(id);
+      const box = btnTagOf(id);
       ok(tag.length > 0, "#" + id + " 按钮仍在（只是不再占单键）");
       ok(
         tag.indexOf("data-shortcut") < 0,
         "#" + id + " 不再挂 data-shortcut（1 / 2 / 3 切视图已移除）",
       );
       ok(
-        tag.indexOf("data-i18n-title=") >= 0,
-        "#" + id + " 仍保留 data-i18n-title（hover 提示照旧，不含快捷键）",
+        box.indexOf('class="tb-view-txt" data-i18n="') >= 0,
+        "#" + id + " 可见文字留在 span.tb-view-txt[data-i18n]（按钮自身标签已说明用途）",
+      );
+      ok(
+        tag.indexOf("data-tip=") < 0,
+        "#" + id + " 不再挂 data-tip（气泡与按钮可见文字重复，已去重）",
       );
     });
     ok(
       !/data-shortcut="[123]"/.test(HTML),
       "index.html 里没有任何数字键位（1 / 2 / 3）残留",
+    );
+
+    /* 本轮清理面：整组第二排工具按钮（同一口径 = 可见文字已说明自身，不再挂气泡） */
+    const CLEANED_BTN_ICO = [
+      "btnUndo",
+      "btnRedo",
+      "btnDupNode",
+      "btnFit",
+      "btnGroup",
+      "btnWrapSuper",
+      "btnAutoLayout",
+      "btnFind",
+      "btnHideWires",
+      "btnNewWf",
+      "btnRenameWf",
+      "btnImport",
+      "btnExport",
+      "btnDelWf",
+      "btnPlugins",
+      "btnTools",
+      "btnAssets",
+      "btnStore",
+      "btnSettings",
+    ];
+    ok(
+      CLEANED_BTN_ICO.length === 19,
+      "本轮清理清单钉住 19 颗工具按钮（第二条 data-shortcut 带键位后缀的旧文案已删）",
+    );
+    const leaked = CLEANED_BTN_ICO.filter((id) => {
+      const tag = openTagOf(id);
+      return !tag || tag.indexOf("data-i18n-title=") >= 0 || tag.indexOf("data-tip=") >= 0;
+    });
+    ok(leaked.length === 0, "19 颗工具按钮一个不挂气泡（漏挂：" + (leaked.join(" / ") || "无") + "）");
+    ok(
+      CLEANED_BTN_ICO.every((id) => /class="[^"]*btn-ico/.test(openTagOf(id))),
+      "19 颗都被 .topbar .btn-ico 尺寸/样式规则覆盖（口径与第二排参照一致）",
     );
   }
 
@@ -266,28 +319,49 @@ let MERGED_FAILED = false;
     ok(/ev\.repeat/.test(KEYS) && /isComposing/.test(KEYS), "长按自动重复与输入法组合态忽略");
   }
 
-  console.log("\n[3] hover 提示同时显示快捷键");
+  console.log("\n[3] 提示口径：不再往气泡里拼键位，即时提示机制本身保留");
   {
     ok(
-      /getAttribute\("data-shortcut"\)/.test(I18N),
-      "i18n.applyDom 读取 data-shortcut",
+      /getAttribute\("data-shortcut"\)/.test(KEYS) && /data-shortcut/.test(KEYS),
+      "键位仍只有一处真源：app-keys.js 读 index.html 的 data-shortcut",
     );
     ok(
-      /t\("快捷键 \{k\}", \{ k: sc \}\)/.test(I18N),
-      "把快捷键并进 [data-i18n-title] 生成的提示文案（切语言重算）",
+      /快捷键/.test(I18N) && /"快捷键 \{k\}": "shortcut \{k\}"/.test(I18N),
+      "「快捷键 {k}」词条保留（显式书写键位的调用点还要用）",
     );
-    ok(/"快捷键 \{k\}": "shortcut \{k\}"/.test(I18N), "有英文译文");
-    /* 三颗视图按钮也走即时 data-tip 提示（不只是原生 title）：1 / 2 / 3 快捷键已移除，
-       提示本身仍然即时可见，只是文案里不再有「 · 快捷键 X」 */
     ok(
-      /el\.classList\.contains\("btn-ico"\) \|\| el\.classList\.contains\("tb-view"\)/.test(I18N),
-      "视图按钮同样进 data-tip 即时提示分支",
+      !/t\("快捷键 \{k\}", \{ k: sc \}\)/.test(I18N) &&
+        !/getAttribute\("data-shortcut"\)[\s\S]{0,200}?t\("快捷键 \{k\}"/.test(I18N),
+      "applyDom 里不再有「把键位并进提示文案」的拼接（本轮去键位口径）",
+    );
+    ok(
+      /\.btn-ico|\.tb-view/.test(I18N) && /setAttribute\("data-tip", val\)/.test(I18N),
+      "即时 data-tip 机制保留（只给 .btn-ico / .tb-view 这两类按钮生成，且只看该按钮自己的 data-i18n-title）",
+    );
+    /* 顶栏工具按钮已整组不挂 data-i18n-title（见 [1]），所以 applyDom 这个分支
+       在它们身上无从生成气泡；三颗视图按钮同理（可见文字 = 画布 / 会话 / 专家团）。 */
+    ok(
+      /class="btn-ico-txt"/.test(HTML) && /class="tb-view-txt"/.test(HTML),
+      "两类按钮的可见文字标签仍在（气泡被删的前提：文字本身已说明自身）",
     );
     const CSS = read("renderer/css/layout.css");
+    /* 气泡挂载点：.btn-ico 是动态生成 data-tip 的按钮（如运行时状态按钮）的锚点；
+       .tb-view 是视图按钮的锚点，规则留着不影响（本轮删的是它们身上的提示文案，不是机制） */
     ok(
       /\.topbar \.tb-view\[data-tip\]:hover::after/.test(CSS) &&
         /\.topbar \.tb-view\[data-tip\]::after/.test(CSS),
-      "layout.css 为 .tb-view[data-tip] 补了提示气泡规则",
+      "layout.css 保留 .tb-view[data-tip] 气泡规则（即时提示机制不随文案清理一起删）",
+    );
+    ok(
+      /\.topbar \.btn-ico\[data-tip\]::after/.test(CSS) &&
+        /\.topbar \.btn-ico\[data-tip\]:hover::after/.test(CSS),
+      "layout.css 的 .btn-ico[data-tip] 气泡规则同样保留",
+    );
+    /* 数据落应用文件夹红色警示是"提示与可见文字不同"的正当用例：机制仍走同一份代码 */
+    ok(
+      /\.topbar \.logo-warn\[data-tip\]::after/.test(CSS) &&
+        /setAttribute\("data-tip", tip\)/.test(read("renderer/app-boot.js")),
+      "logo-warn 的 data-tip 长说明保持原样（说明内容 ≠ 可见红字，不在本次去重范围）",
     );
   }
 

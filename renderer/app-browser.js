@@ -18,9 +18,10 @@
      · 本轮需求：原来面板上那一排「打开浏览器 / 停止 / 接管 / 名单 / ↻」整行下架，
        连「名单」机制（域名名单 + 危险动作审批的可编辑入口）一并删掉 —— 网关侧域名名单
        判定与 browser-policy.json 也删了，**危险动作审批保留且恒开**（见 gateway.mjs 的 gate）；
-     · 真窗口这件事改由助手求助卡收口（app-db.js 的 ix 卡 → BA.realWindow）：
-       登录 / 验证码那类卡上给「用真窗口打开 / 收回右栏」，右栏实况区在「已在独立窗口」时
-       给一枚「收回」小键（#baLiveBack）当回程；实况区不再有「独立窗口」按钮；
+     · 本次需求：真窗口的入口回到右栏实况区头部那枚常态小键「用真窗口打开 / 收回」
+       （#baLiveWin，见 BA.liveWindowToggle / BA.realWindow）—— 求助卡改成与询问模式
+       同一张卡之后，卡上不再有窗口按钮；接管也不再由界面按钮给（登录类求助由网关
+       自动进入，答完那一问自动交还）；
      · 清空 / 跟随最新 / 只看浏览器 / 含其它会话 这些活动流控件一律未动。
 
    本文件自包含：只经 window.api 的桥说话，调用期取 I18n / toast / agentSessions
@@ -45,8 +46,8 @@
     total: 0,
     running: false,
     /* 这一只是**无窗口（后台）**起的（会话自动拉起的默认形态，见 dsh/gateway/browser-host.mjs
-       的 launchArgs）：面板据此把实况区写成「无窗口运行」，并说明真窗口要走求助卡
-       （登录 / 验证码那类卡上的「用真窗口打开」）。 */
+       的 launchArgs）：面板据此把实况区写成「无窗口运行」。要真窗口点实况区那枚
+       「用真窗口打开」（#baLiveWin）—— 网关会把无窗口那只温和重开成带窗口的。 */
     headless: false,
     takeover: false,
     /* ── 会话绑定（本轮需求：活动与浏览器跟随当前会话）─────────────────────
@@ -481,8 +482,9 @@
   };
 
   /* 与网关对话（浏览器控制面）────────────────────────────────────────
-     本轮需求：面板上的按钮全下架后，这条通道的调用方只剩三处 —— 「打开浏览器 / 接管」
-     由求助卡（BA.realWindow）走，view* 由实况区（收 / 开流、收回、暂停）走。 */
+     本次需求：面板上的按钮全下架后，这条通道的调用方只剩三处 —— 「打开浏览器」
+     由真窗口那枚小键（BA.realWindow）走，view* 由实况区（收 / 开流、收回、暂停）走，
+     takeover 只在会话接管态切换时走（登录类求助由网关自动给，见 gateway.mjs）。 */
   BA.browser = async function (action, extra) {
     try {
       if (!window.api || typeof window.api.dshBrowser !== "function") {
@@ -552,8 +554,10 @@
     BA.liveSync();
   };
 
-  /* 接管 / 交还的**唯一**入口（本轮需求：面板上那枚 #baTakeover 已下架，只剩求助卡：
-     app-db.js 的「接管浏览器（我来操作）」与 BA.realWindow 的真窗口那一路）。
+  /* 接管 / 交还的**唯一**入口（本次需求：界面上的接管按钮已全部下架 —— 面板那枚
+     #baTakeover 与求助卡上那枚都撤了。登录 / 验证码类求助由网关在开这一问时自动接管、
+     用户答完自动交还，见 dsh/gateway/gateway.mjs 的 help 分支；这个函数留给
+     会话侧显式切换用（按会话记的取舍 / 自修复路径），不再挂任何按钮）。
      接管期间 Agent 的动作会被网关直接拒绝（不是排队），所以顺手把这件事插话告诉
      正在跑的那一轮：模型下一步就听见「现在由我操作，别动浏览器」。 */
   BA.setTakeover = async function (on, sessionId) {
@@ -574,21 +578,21 @@
     return true;
   };
 
-  /* 求助卡上的真窗口通道（本轮需求：面板那一排下架后，这是**唯一**能拿到一只可见浏览器的
-     入口 —— browser_launch / 会话自动拉起的都是无窗口那只，而网关只认 renderer 这一侧
-     给的形态切换）。
+  /* 真窗口通道（本次需求：入口收口到右栏实况区那枚常态小键，见 BA.liveWindowToggle；
+     登录 / 验证码求助卡到达时也会自动走一次去程，见 app-db.js 的 ixMaybeAutoRealWindow）。
+     会话自动拉起 / 按需拉起的都是无窗口那只，而网关只认渲染层这一侧给的形态切换。
 
      on = true：① 要一只带窗口的（无窗口那只会被网关重起成带窗口的；重起时网关会把
-     重起前的页面地址重新打开，登录页不会因此丢掉）② 真窗口摆到用户眼前（detached）
-     ③ 顺手接管 —— 点这枚键的意思就是「让我自己来」；
-     on = false：收回右栏（docked，真实窗口重新让位）。接管状态**不动** —— 操作完了他会
-     另点「我已处理完，交还控制权」，两件事各归各的按钮。 */
+     重起前的页面地址重新打开，登录页不会因此丢掉）② 真窗口摆到用户眼前（detached）。
+     on = false：收回右栏（docked，真实窗口重新让位）。接管状态一概不动
+     （登录类那一问被回答时由网关自动交还，见 gateway.mjs 的 help 分支）。 */
   BA.realWindow = async function (on, sessionId) {
     const sid = String(sessionId || BA.currentSessionId() || "");
     if (on) {
       const res = await BA.browser("open", Object.assign({ visible: true }, sid ? { sessionId: sid } : {}));
       if (!res || res.ok === false) return false;
-      await BA.setTakeover(true, sid);
+      /* 本次需求：不再顺手接管（接管只由登录类求助自动进入，答完自动交还）——
+         否则「没有卡可答」时会留下一个没有出口的接管态（Agent 全被拒、用户无处交还）。 */
       const back = await BA.liveSetMode("detached");
 
       const failed = !!(back && back.ok === false);
@@ -600,14 +604,22 @@
         failed
           ? T("没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。")
           : restarted
-            ? T("已关掉那只无窗口的、重开为真窗口并接管：顺手操作即可；做完点「我已处理完，交还控制权」。")
-            : T("已用真窗口打开，且你已接管：顺手操作即可；做完点「我已处理完，交还控制权」。"),
+            ? T("已关掉那只无窗口的、重开为真窗口：顺手操作即可；做完在求助卡上点「回答」（登录类会自动交还控制权）。")
+            : T("已用真窗口打开：顺手操作即可；做完在求助卡上点「回答」（登录类会自动交还控制权）。"),
         failed ? "warn" : "ok",
       );
       return !failed;
     }
     await BA.liveSetMode("docked");
     return true;
+  };
+
+  /* 实况区那枚「用真窗口打开 / 收回」（本次需求）：真窗口在界面上的**唯一**入口。
+     只要浏览器在跑就露出（键面随当前形态切）—— 去程 = realWindow(true)，
+     回程 = realWindow(false)（= liveSetMode('docked')）。 */
+  BA.liveWindowToggle = function () {
+    const detached = BA.live.mode === "detached" && !BA.headless;
+    return BA.realWindow(!detached, BA.currentSessionId());
   };
 
   BA.reload = async function () {
@@ -666,7 +678,7 @@
       kind,
       /* 归属会话＝网关盖的章（**渲染层会话 id**，见 dsh/gateway 的 hostSessionId）：
         每一条 browser-act 都带它（浏览器动作 / 命令 / 文件摘要都归属发起那一轮）。
-        缺章（用户从求助卡点「用真窗口打开 / 接管」这类由界面触发的条目）才回落到
+        缺章（用户从右栏实况区点「用真窗口打开」这类由界面触发的条目）才回落到
         「当前会话」—— 用户此刻看的就是它。旧库里用 dsh session id 盖的老条目
         （session-…）对不上任何会话，勾「含其它会话」仍看得到。 */
       sessionId: String((data && data.sessionId) || BA.sessionId || ""),
@@ -780,7 +792,7 @@
     if (cnt) cnt.textContent = T("共 ") + rows.length + T(" 条（库内 ") + BA.total + T(" 条）");
   };
 
-  /* ── 实况区：浏览器默认 dock 在右栏；真窗口形态由求助卡切过去、「收回」小键切回来 ──
+  /* ── 实况区：浏览器默认 dock 在右栏；真窗口由头部那枚常态小键（#baLiveWin）切过去 / 切回来 ──
      帧来自 preload.onBrowserFrame（网关 screencast → dsh 事件总线），**只走内存**：
      不落库、不进模型上下文。帧只在面板开着且没暂停时画；画布上的指针 / 滚轮 / 键盘
      按 CSS 像素转发给页面（BA.liveInput），所以右栏里点得动、滚得动、打得进字。 */
@@ -912,17 +924,22 @@
   };
 
   BA.livePaintStatus = function () {
-    const backBtn = $("#baLiveBack");
+    const winBtn = $("#baLiveWin");
     const modeEl = $("#baLiveMode");
     const note = $("#baLiveNote");
     const mask = $("#baLiveMask");
     const L = BA.live;
     const detached = L.mode === "detached" && !BA.headless;
-    if (backBtn) {
-      /* 本轮需求：原来的两用按钮（独立窗口 / 收回）下架 —— 「变成真窗口」那一半收口到
-         助手求助卡（BA.realWindow），这里只留**回程**：真的在独立窗口时才出现。
-         无窗口那只不可能 detached（网关侧 setViewMode 会把它按回 docked），所以不必另判 headless。 */
-      backBtn.hidden = !BA.running || !detached;
+    if (winBtn) {
+      /* 本次需求：真窗口的入口回到这里，且**常态露出**（只要浏览器在跑）——
+         求助卡改成与询问模式同一张卡之后，卡上不再有窗口按钮。键面随形态切：
+         docked（含无窗口那只）→「用真窗口打开」；detached →「收回」。
+         无窗口那只点它是「温和关掉、重开一只带窗口的」（网关自己给 toast 交代），照旧露出。 */
+      winBtn.hidden = !BA.running;
+      winBtn.textContent = detached ? T("收回") : T("用真窗口打开");
+      winBtn.title = detached
+        ? T("收回右栏：把这只会话浏览器放回这里的实况画面（真实窗口重新让位）")
+        : T("用一只真实的浏览器窗口打开它（当前无窗口那只会被温和重开成带窗口的）：登录 / 验证码你自己输，密码不进对话");
     }
     if (modeEl) {
       modeEl.textContent = BA.headless
@@ -933,7 +950,7 @@
     }
     if (note) {
       const txt = BA.headless
-        ? T("这只是无窗口（后台）浏览器，画面就在这里；想要真窗口请在会话里让它求助（登录 / 验证码卡上点「用真窗口打开」）。")
+        ? T("这只是无窗口（后台）浏览器，画面就在这里；想要真窗口点上面那枚「用真窗口打开」（会温和重开成带窗口的）。")
         : L.reason || (detached ? T("已在独立窗口操作；点「收回」回到右栏。") : "");
       note.textContent = txt;
       note.hidden = !txt;
@@ -1025,8 +1042,8 @@
   };
 
   /* 「收回右栏」= 把真实窗口再移出可视区、画面回到右栏实况。
-     本轮需求：只剩「收回」这一个方向（#baLiveBack）；「变成真窗口」由求助卡走
-     BA.realWindow → open(visible) → liveSetMode('detached')，见那个函数的注释。
+     本次需求：去程与回程都收口在实况区头部那枚常态小键（#baLiveWin →
+     BA.liveWindowToggle → BA.realWindow），这里只管形态本身。
      **不落 localStorage**：默认形态是内部界面，独立窗口只是本次运行里的显式例外。 */
   BA.liveSetMode = async function (mode) {
     const want = mode === "detached" ? "detached" : "docked";
@@ -1107,21 +1124,19 @@
     }
   }
 
-  /* 实况区的接线：「收回」（真窗口形态下才有）· 暂停 · 画布上的指针·滚轮·键盘。
-     本轮需求：「独立窗口」按钮已下架，这里只剩**回程**（#baLiveBack → docked）；
-     去程（变真窗口）在助手求助卡上（app-db.js → BA.realWindow）。
-     坐标换算（CSS 像素 → 页面视口）在网关侧做（browser-host.viewInput），
-     这里只负责把事件原样翻译成 {kind, ...}。 */
+  /* 实况区的接线：「用真窗口打开 / 收回」· 暂停 · 画布上的指针·滚轮·键盘。
+     本次需求：真窗口的去程与回程合成一枚常态小键（#baLiveWin → BA.liveWindowToggle）；
+     求助卡与询问卡同型之后，卡上不再有窗口按钮。 */
   function bindLive() {
     const canvas = $("#baLiveCanvas");
     const pause = $("#baLivePause");
-    const backBtn = $("#baLiveBack");
+    const winBtn = $("#baLiveWin");
     if (!canvas || canvas._bound) { BA.livePaintStatus(); return; }
     /* 先盖章再接线：后面任一入口抛错，也不让「这颗画布已经绑过」这一事实被跳过
        （重复 bindLive 会把指针 / 键盘转发再挂一遍，帧收到两次就有双倍输入） */
     canvas._bound = true;
     bindLiveBtn(pause, "pause", () => BA.toggleLivePause && BA.toggleLivePause());
-    bindLiveBtn(backBtn, "back", () => BA.liveSetMode && BA.liveSetMode("docked"));
+    bindLiveBtn(winBtn, "win", () => BA.liveWindowToggle && BA.liveWindowToggle());
     /* 形态默认 docked（右栏实况 = 内部界面），**不按上次恢复**：
        独立窗口只是本次运行里的例外，重开应用回到内部界面；跟随网关的那一半见
        applyStatus / applyView。 */
@@ -1330,10 +1345,10 @@
     if (chip) chip.onclick = () => BA.toggle();
     const close = $("#baClose");
     if (close) close.onclick = () => BA.setOpen(false);
-    /* 本轮需求：原来这里给「打开浏览器 / 停止 / 接管 / 名单 / ↻」五枚按钮接线，整排下架后
+    /* 原来这里给「打开浏览器 / 停止 / 接管 / 名单 / ↻」五枚按钮接线，整排下架后
        只剩下面这些活动流控件（筛选 / 含其它会话 / 清空 / 跟随最新 / 只看浏览器）。
-       真窗口、接管两条能力没消失，只是搬到了助手求助卡上（BA.realWindow / BA.setTakeover，
-       app-db.js 的 ix 卡调用）；「收回」小键在 bindLive 里接。 */
+       本次需求：真窗口收口到实况区头部那枚常态小键（#baLiveWin，在 bindLive 里接）；
+       接管不再有界面按钮（登录类求助由网关自动接管 / 答完自动交还）。 */
     $("#baFilter").oninput = (e) => { BA.filter = e.target.value.trim().toLowerCase(); BA.render(); };
     $("#baAll").onchange = () => BA.reload();
     $("#baClear").onclick = () => BA.clear();

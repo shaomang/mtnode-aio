@@ -13,6 +13,13 @@ Paths are relative to the workspace or absolute. Inside a **super** with a subfo
 
 Placing music or video gen also creates a bound save node on the right (fixed offset, pinned wire). The gen node writes its filename into that save node.
 
+## Upstream generators may leave their output path empty
+Music / speech / video gen — and video upscale / interpolation — carry their own output path, but you do **not** have to fill it: wire their **data output** into this node and the path becomes this node's job. The upstream file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and this node then writes it to its own **save path**. The upstream card then shows its path as managed, and naming / de-duplication are the host's call: after a run its status line adds “Managed folder · written by the Save node”.
+
+- **This node's save path is still required**: it is the final destination, and leaving it empty makes ▶ warn “Set a save path first (use "Browse" to choose)”.
+- With **no Save node wired**, upstream generators keep the old rule: their own output path is required, otherwise ▶ reports “Generation cannot start until an output path is set”.
+- Legacy auto-bound generator ↔ save pairs still migrate the path back into the generator; **wires you drew yourself are never touched** — they are what carries the managed path.
+
 ## Settings
 **The file name** is edited right on the node card: a "File name" field with a read-only chip beside it showing the suffix that will be appended (`.md` / `.png` / `.wav` / `.mp4`). The name carries **no extension by default**; the extension is only decided once the input content type is known (an input is wired, or you typed a recognizable suffix yourself) — until then the chip reads "suffix pending" and nothing is guessed before saving. Renaming only swaps the last path segment and keeps the folder; Enter / blur commits, Esc reverts.
 

@@ -3251,6 +3251,79 @@ section("[13] 工具族上色 / 图例 / 读数成行 / 子代理分轨（本次
       /if \(seen\.has\(FAM_OTHER\.id\)\)/.test(TRAJ_CODE),
     "[13] 图例次数按整个会话（all）统计，不随滚动变（不是本屏 marks）",
   );
+  /* ── 会话-对话里「不同工具不同色，与轨迹一致」（本次需求）────────────────────────
+     那一侧**不另抄族表**：按工具名去问 window.MTNodeTrajectory.familyOf（本模块导出的
+     唯一出口），拿族标识拼 "dsh-fam-<族>" 挂在药丸与工具段上（肤色见 css/dsh.css 的
+     `.dsh-tool-chip.dsh-fam-*` / `.dsh-seg-tool.dsh-fam-*`，取的是同一份 --dsh-fam-*）。
+     这里跑的是**真模块真函数**（沙箱里 loadTrajectory 装的就是 renderer/app-trajectory.js），
+     所以「同一个工具名在两处算出同一个族」是当场证出来的，不是两边各写一遍正则各看各的。 */
+  {
+    const famScene = buildScene();
+    const famT = loadTrajectory(famScene, { S: { agentSessions: [{ id: "asx", messages: [] }] } });
+    const famVal = (code) => vm.runInContext(code, famT.sandbox);
+    /* 工具名按轨迹那 9 族 + 兜底逐族挑代表（既有 dsh 引擎工具、也有 MTNode 自家工具） */
+    const famCases = [
+      ["read", "read"],
+      ["read_image", "read"],
+      ["grep", "read"],
+      ["glob", "read"],
+      ["write", "write"],
+      ["edit_file", "write"],
+      ["str_replace_editor", "write"],
+      ["pwsh", "run"],
+      ["bash", "run"],
+      ["web_search", "web"],
+      ["web_fetch", "web"],
+      ["subagent", "sub"],
+      ["subagent_fork", "sub"],
+      ["ask_user_question", "talk"],
+      ["todo_write", "talk"],
+      ["mtnode_canvas_edit", "own"],
+      ["mtnode_facts", "own"],
+      ["lt_state", "own"],
+      ["browser_click", "browser"],
+      ["browser_snapshot", "browser"],
+      ["job_list", "job"],
+      ["job_output", "job"],
+      ["weird_tool", "other"],
+    ];
+    const famBad = [];
+    for (const [nm, want] of famCases) {
+      const got = famVal("window.MTNodeTrajectory.familyOf(" + JSON.stringify(nm) + ").id");
+      if (got !== want) famBad.push(nm + "→" + got);
+    }
+    ok(
+      famBad.length === 0 && famVal('window.MTNodeTrajectory.familyOf("").id') === "other",
+      "[13] MTNodeTrajectory.familyOf（会话侧按名去问的那一处）逐族判对（" +
+        famCases.length +
+        " 例 + 空名兜底）" +
+        (famBad.length ? " · 例外：" + famBad.join(" ") : ""),
+    );
+    ok(
+      famVal('window.MTNodeTrajectory.familyClassOf("read","dsh-fam-")') === "dsh-fam-read" &&
+        famVal('window.MTNodeTrajectory.familyClassOf("other","dsh-fam-")') === "dsh-fam-other" &&
+        famVal('window.MTNodeTrajectory.familyClassOf("read","")') === "read",
+      "[13] familyClassOf 按前缀出类名（会话用 dsh-fam-，轨迹自己用空前缀 fam-*）：两处同族同类形",
+    );
+    /* 肤色两处同一份令牌：对话那两条族类皮肤（css/dsh.css）取 --dsh-fam，
+       族色令牌与轨迹那边的族类规则（css/dsh-tokens.css）也取同一份 —— 谁也别自己写死 hex。
+       两份文件各读一次（本模块的 CSS_SRC 只是 dsh-tokens.css，会话那两条规则在 dsh.css）。 */
+    const CONV_TOOL_CSS = read("renderer/css/dsh.css");
+    ok(
+      /\.dsh-seg-tool\.dsh-fam-read,[\s\S]{0,400}?border-left-color: var\(--dsh-fam\);/.test(
+        CONV_TOOL_CSS,
+      ) &&
+        /\.dsh-tool-chip\.dsh-fam-read,[\s\S]{0,400}?color: var\(--dsh-fam\);/.test(
+          CONV_TOOL_CSS,
+        ) &&
+        /\.dsh-tool-chip\.dsh-fam-other \{[\s\S]{0,200}?color: var\(--muted\);/.test(
+          CONV_TOOL_CSS,
+        ) &&
+        /\.fam-read \{ --dsh-fam: var\(--dsh-fam-read\); \}/.test(CSS_SRC) &&
+        /--dsh-fam-read: var\(--cyan\);/.test(CSS_SRC),
+      "[13] 对话那两条族类皮肤与轨迹取同一份 --dsh-fam-*（一族一色一处定义，不写死 hex）",
+    );
+  }
   ok(
     /"写入与编辑": "Write & edit"/.test(I18N_SRC) &&
       /"交互与计划": "Interaction & planning"/.test(I18N_SRC) &&

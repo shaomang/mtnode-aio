@@ -35,10 +35,10 @@ let MERGED_FAILED = false;
 
   const IDS = [
     /* 本轮需求：baOpen / baStop / baTakeover / baPolicy / baRefresh 与 baLiveModeBtn 已下架，
-       实况区改为只在独立窗口形态下出现的「收回」小键 #baLiveBack。 */
+       实况区那枚「用真窗口打开 / 收回」小键改为常态露出（#baLiveWin）：求助卡与询问卡同型之后，卡上不再有窗口按钮。 */
     "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
     "baFilter", "baAll", "baClear", "baFollow", "baListOn",
-    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveBack", "baLiveMode",
+    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveWin", "baLiveMode",
     "baLiveNote", "baLiveMask", "baLive",
   ];
 
@@ -276,7 +276,7 @@ let MERGED_FAILED = false;
   const IDS = [
     "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
     "baFilter", "baAll", "baClear", "baFollow",
-    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveBack", "baLiveMode",
+    "baList", "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveWin", "baLiveMode",
     "baLiveNote", "baLiveMask", "baLive",
   ];
 

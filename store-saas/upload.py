@@ -17,6 +17,9 @@ REMOTE_TMP = "/tmp/mtnode-store-upload"
 DEFAULT_SFTP = Path(r"E:\dev\tools\ssh\sftp-mtnode-store.json")
 UPLOAD_FILES = (
     "server.mjs",
+    # 热表拆分（relayUsage / rechargeLedger 的追加文件）—— server.mjs import 它，
+    # 漏传即 Cannot find module ./hot-store.mjs（本轮 1000 条目录优化，见 docs/reports/scale-1000-verification.md）
+    "hot-store.mjs",
     "sms-provider.mjs",
     "account-store.mjs",
     "migrate-accounts.mjs",

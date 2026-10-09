@@ -49,6 +49,44 @@ function eqStr(a, b, msg) {
   ok(String(a) === String(b), msg + (String(a) === String(b) ? "" : `（得到 ${JSON.stringify(a)}）`));
 }
 
+/* 从源码里按名字抠出顶层函数的完整函数体（与其它冒烟脚本同一套做法：不改动源文件，
+   把真实现拖进沙箱跑，而不是在测试里重抄一份口径）。 */
+function fnBody(src, name) {
+  const m = src.match(new RegExp("\\n(?:async\\s+)?function " + name + "\\s*\\(", "m"));
+  if (!m) throw new Error("找不到函数：" + name);
+  const at = m.index + 1;
+  const i = src.indexOf("{", at);
+  if (i < 0) throw new Error("找不到函数体：" + name);
+  let depth = 0;
+  let inStr = null;
+  for (let j = i; j < src.length; j++) {
+    const c = src[j];
+    const p = src[j - 1];
+    if (inStr) {
+      if (c === inStr && p !== "\\") inStr = null;
+      continue;
+    }
+    if (c === "/" && src[j + 1] === "/") {
+      j = src.indexOf("\n", j) - 1;
+      continue;
+    }
+    if (c === "/" && src[j + 1] === "*") {
+      j = src.indexOf("*/", j) + 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      inStr = c;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (!depth) return src.slice(at, j + 1);
+    }
+  }
+  throw new Error("函数体不完整：" + name);
+}
+
 console.log("smoke-asr：本地语音转写（官方本地 SenseVoice）链路\n");
 
 /* app-speech.js 的沙箱：假语音通道（认 16k 单声道 PCM16 WAV 契约）+ 假 WebAudio 解码 */
@@ -478,6 +516,7 @@ function makeSpeechBox(o) {
     ok(/function asrOpsButton/.test(asrSrc) && /function asrAppendNodeBody/.test(asrSrc), "音频节点侧有「转录」按钮与转录块");
     ok(/function asrEnsureForRun/.test(asrSrc), "有运行前闸门（文字节点点 ▶ 时替音频节点转）");
     ok(/function asrPurgeLegacyTranscripts/.test(asrSrc), "有旧字段清理（文字节点上的 asrTranscripts）");
+    ok(/function asrTranscriptOutValue/.test(asrSrc), "有「转写文字」输出端子取值（asrTranscriptOutValue）");
 
     /* ── 造一份「音频节点 + 文字节点」的现场：真 app-speech.js，只有通道是假的 ── */
     const toasts = [];
@@ -581,6 +620,14 @@ function makeSpeechBox(o) {
     };
     sandbox.window.window = sandbox.window;
     sandbox.window.document = sandbox.document;
+    /* app.js 的 mediaInputValueOf（音视频输入 0 号端子的值）按真实现抠进来验「端口 0」
+       那一头 —— 直接跑渲染层整份 app.js 太重（它装载期就要 DOM / S），这里只搬这一个函数
+       （连它依赖的 mediaFileUrlOf 一起，两个都是自足的纯函数）。 */
+    const appJsSrc = read("renderer/app.js");
+    sandbox.mediaInputValueOf = new Function(
+      "mediaFileUrlOf",
+      "return (" + fnBody(appJsSrc, "mediaInputValueOf") + ")",
+    )(new Function("return (" + fnBody(appJsSrc, "mediaFileUrlOf") + ")")());
     const ctx = vm.createContext(sandbox);
     /* 先 app-speech.js（提供 spStatus / spPhaseOf / spTranscribeFile…），再 app-asr.js ——
        与 index.html 的加载顺序一致 */
@@ -595,6 +642,84 @@ function makeSpeechBox(o) {
     const fresh = vm.runInContext("asrIsFresh", ctx);
     const appendBody = vm.runInContext("asrAppendNodeBody", ctx);
     const invalidate = vm.runInContext("asrInvalidateStatus", ctx);
+    const outValue = vm.runInContext("asrTranscriptOutValue", ctx);
+
+    /* ⓞ 音频节点的**转写文字输出端子**（端口 1）：有转写 → 该文本；没有 → 空文本。
+       端子形状与其它文本端子一致（{kind:"text", text}），下游 app.js 的 valueForInput
+       对端口 1 就取这个值、并按文本判型（不会当成音频文件）。 */
+    {
+      const noMedia = outValue({ id: "z1", kind: "input_audio", title: "音频" });
+      ok(
+        noMedia && noMedia.kind === "text" && noMedia.text === "",
+        "没选文件的音频节点：端口 1 输出空文本（不是 null、也不是文件 URL）",
+      );
+      const noTranscript = outValue({ id: "z2", kind: "input_audio", mediaAsset: audioPath });
+      ok(
+        noTranscript.kind === "text" && noTranscript.text === "",
+        "选了文件但还没转录：端口 1 仍然输出空文本（需求：无转写内容时输出为空文本）",
+      );
+      const withText = outValue({
+        id: "z3",
+        kind: "input_audio",
+        mediaAsset: audioPath,
+        asrTranscripts: [{ path: audioPath, text: "这段音频说的话。" }],
+      });
+      eqStr(withText.text, "这段音频说的话。", "有转写：端口 1 输出节点上那份文本");
+      /* 端口 1 与 0 是两个不同口径的端子：0 号照旧给文件的 file:/// URL */
+      const viaApp = sandbox.mediaInputValueOf;
+      eqStr(viaApp({ kind: "input_audio", mediaAsset: audioPath }).kind, "audio", "端口 0 照旧是音频（file:/// URL）");
+      /* 视频节点同样有两个端子（视频按音轨转写） */
+      const vid = outValue({ id: "z4", kind: "input_video", mediaAsset: audioPath });
+      ok(vid.kind === "text" && vid.text === "", "视频节点同样有转写文字端口（没转时给空文本）");
+      /* 旧存档里那段文本挂在别的路径上（文件换过 / 清空过转录）→ 同样回空文本 */
+      const other = outValue({
+        id: "z5",
+        kind: "input_audio",
+        mediaAsset: audioPath,
+        asrTranscripts: [{ path: "E:\\别处\\other.wav", text: "不是这条音频的" }],
+      });
+      eqStr(other.text, "", "节点上的转写属于另一条音频 → 端口 1 是空文本（不串文本）");
+      eqStr(
+        outValue({
+          id: "z6",
+          kind: "input_audio",
+          mediaAsset: audioPath,
+          asrTranscripts: [{ path: audioPath, text: "手改过的。" }],
+        }).text,
+        "手改过的。",
+        "人工修订过的文本照样从端口 1 出（与转录块、下游取文同一份数据）",
+      );
+      /* 接线那头的口径：app.js 的真实现（抠出来跑）对端口 1 走的正是这条取值。
+         valueForInput 开头那两问（isControlKind / isSuperLikeNode）与本例无关：
+         前者按真实现一起搬，后者给一个恒 false 的替身（音频节点既不是 super 也不是工具节点）。 */
+      const appIsControlKind = new Function(
+        "return (" + fnBody(appJsSrc, "isControlKind") + ")",
+      )();
+      const appValue = new Function(
+        "asrTranscriptOutValue",
+        "mediaInputValueOf",
+        "isControlKind",
+        "isSuperLikeNode",
+        fnBody(appJsSrc, "valueForInput") + "\nreturn valueForInput;",
+      )(outValue, viaApp, appIsControlKind, () => false);
+      const audioWithText = {
+        id: "z7",
+        kind: "input_audio",
+        mediaAsset: audioPath,
+        asrTranscripts: [{ path: audioPath, text: "接线取到的文字。" }],
+      };
+      eqStr(appValue(audioWithText, 1).text, "接线取到的文字。", "valueForInput(端口 1) = 转写文字");
+      eqStr(appValue(audioWithText, 0).kind, "audio", "valueForInput(端口 0) 照旧 = 音频文件");
+      eqStr(
+        appValue({ id: "z8", kind: "input_audio", mediaAsset: audioPath }, 1).text,
+        "",
+        "valueForInput(端口 1) 在没转写时给空文本（下游拿到真空文本，不是「没值」）",
+      );
+      ok(
+        fnBody(read("renderer/app.js"), "inferMediaFromSource").indexOf("fromIndex") >= 0,
+        "端口 1 一律按文本判型（inferMediaFromSource 认端子号，不再把文字当音频）",
+      );
+    }
 
     /* ① 模型没就绪：拦下本轮，并把下载跑起来（节点上写明原因） */
     let sR = await ensure(textNode);

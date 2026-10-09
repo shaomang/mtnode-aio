@@ -247,6 +247,31 @@ function assetScanCall() {
       return { ok: false, error: String((e && e.message) || e) };
     });
 }
+/** 摘要 → 条目绝对路径索引（assetId|itemId → absPath）。
+ *  媒体端子取值（assetItemAbsPath）是**同步**的，而摘要要等一次扫描才在；
+ *  索引只做「摘要里本来就有的事实」的一次投影，不额外读盘、不进画布存档，
+ *  让取值不必依赖「那一刻摘要已经在手上」。每次扫描重投影一遍。
+ *  放在 assetApplyScan 之前：本文件是普通脚本（函数声明会提升，const 不会），
+ *  顺序反了会在某些调用时序上踩 TDZ。 */
+const ASSET_ABS_INDEX = new Map();
+function assetLibAbsPathIndex(scan) {
+  ASSET_ABS_INDEX.clear();
+  const list = (scan && scan.assets) || [];
+  for (const a of list) {
+    if (!a || !a.id || !Array.isArray(a.items)) continue;
+    for (const it of a.items) {
+      if (!it || !it.id || it.missing || !it.absPath) continue;
+      ASSET_ABS_INDEX.set(String(a.id) + "|" + String(it.id), String(it.absPath));
+    }
+  }
+  return ASSET_ABS_INDEX.size;
+}
+/** 索引里那一条（没扫描过 / 库里没有 → ""） */
+function assetLibAbsPathOf(aid, iid) {
+  if (!aid || !iid) return "";
+  return ASSET_ABS_INDEX.get(String(aid) + "|" + String(iid)) || "";
+}
+
 /** 扫描结果落进界面状态（唯一入口：开框、刷新、静默校验都走这里） */
 function assetApplyScan(r) {
   ASSET_LIB.root = String((r && r.root) || ASSET_LIB.root || "");
@@ -254,6 +279,7 @@ function assetApplyScan(r) {
     (r && r.scan) || { tree: [], categories: [], assets: [] };
   ASSET_LIB.scanned = true;
   ASSET_LIB.noRoot = !(r && r.configured);
+  assetLibAbsPathIndex(ASSET_LIB.scan);
 }
 
 /* ════════════ 节点绑定 ↔ 素材库：失联判定与自动跟随 ════════════
@@ -1815,7 +1841,11 @@ function assetItemViewLoad(aid, iid) {
   const k = assetViewKey(aid, iid);
   if (!aid || !iid) return Promise.resolve();
   if (ASSET_ITEM_LOAD.has(k)) return ASSET_ITEM_LOAD.get(k);
-  if (ASSET_ITEM_VIEW.has(k) || ASSET_ITEM_BUSY.has(k)) return Promise.resolve();
+  if (ASSET_ITEM_BUSY.has(k)) return Promise.resolve();
+  /* 只「在飞 / 读失败」允许重读：缓存里已经有内容（含正文）的不再打 IPC ——
+     视作已就位的判据与别处同源，别在渲染热路径上反复读盘。 */
+  const cur = ASSET_ITEM_VIEW.get(k);
+  if (cur && !cur.missing && !cur.loading) return Promise.resolve();
   ASSET_ITEM_BUSY.add(k);
   assetItemViewSet(aid, iid, { loading: true });
   const p = window.api

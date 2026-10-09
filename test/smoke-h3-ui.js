@@ -528,6 +528,9 @@ function renderGpu(gpu) {
       broadcast: (ch, p) => (calls.bc = (calls.bc || []).concat([[ch, p]])),
       fetchBuffer,
       comfyVenvPython: () => (st.hasVenv ? "E:/venv/Scripts/python.exe" : ""),
+      /* 解释器口径（backend-python.js）：venv python.exe → pythonw.exe。抽出来的片段里那份真
+         comfyVenvPython 会用到它，这里只关心选轮子的逻辑，桩成恒等 ⇒ 夹具路径照旧是 python.exe */
+      quietPython: (p) => p,
       /* 报错总线的宿主包装（本轮把各失败出口接进 plugin-error-repair.js）：
          抽出来的片段会调它，沙箱不给桩就是 ReferenceError */
       reportErr: (code, msg, extra) =>

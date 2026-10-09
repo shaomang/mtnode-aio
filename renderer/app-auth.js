@@ -400,14 +400,13 @@
     var row = el("div", "acct-badges");
     if (SNAP.bindings.wechat) {
       var w = el("span", "acct-badge acct-badge-wechat");
-      w.title = T("已绑定微信");
+      /* 本轮提示去重：徽标只有一枚图标，title 与 aria-label 逐字相同 → 只留 aria-label */
       w.setAttribute("aria-label", T("已绑定微信"));
       w.appendChild(badgeIcon("wechat"));
       row.appendChild(w);
     }
     if (methodOn("sms") && SNAP.bindings.phone) {
       var p = el("span", "acct-badge acct-badge-phone");
-      p.title = T("已绑定手机");
       p.setAttribute("aria-label", T("已绑定手机"));
       p.appendChild(badgeIcon("phone"));
       row.appendChild(p);

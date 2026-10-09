@@ -398,8 +398,7 @@ function loadFileview(opts) {
       return Promise.resolve(confirmYes);
     },
   };
-  vm.createContext(sandbox);
-  if (o.withCodeedit) vm.runInContext(read("renderer/app-codeedit.js"), sandbox);
+  vm.createContext(sandbox);  if (o.withCodeedit) vm.runInContext(read("renderer/app-codeedit.js"), sandbox);
   if (o.yamlHook)
     vm.runInContext(
       "function highlightYamlLine(line){ return 'Y[' + line + ']'; }",
@@ -826,6 +825,27 @@ OUT.EV(
     "\n" +
     fnBody(ASSIST, "dshToolIsCustom") +
     "\n" +
+    /* 工具族那套（本次需求 · 会话-对话里「不同工具不同色，与轨迹一致」）：真函数体照抽，
+       族表按真壳的口径注入 —— 沙箱里没有 app-trajectory.js，就给它一个**迷你替身**
+       window.MTNodeTrajectory（familyOf = 真表里那几条代表性的族），证明会话侧确实
+       「不抄族表、按名去问轨迹那一份」，而不是自己猜一个族出来。 */
+    fnBody(ASSIST, "dshToolFamilyId") +
+    "\n" +
+    fnBody(ASSIST, "dshToolFamilyClass") +
+    "\n" +
+    fnBody(ASSIST, "dshToolFamilyLabel") +
+    "\n" +
+    fnBody(ASSIST, "dshToolFamClassOf") +
+    "\n" +
+    "window.MTNodeTrajectory = { familyOf: function(n){ n=String(n||'');" +
+    " if (/^(read|read_file|glob|grep|read_image)$/i.test(n)) return {id:'read',label:'读取'};" +
+    " if (/^(write|edit|str_replace_editor|apply_patch)$/i.test(n)) return {id:'write',label:'写入与编辑'};" +
+    " if (/^(pwsh|bash)$/i.test(n)) return {id:'run',label:'运行命令'};" +
+    " if (/^(ask_user_question|todo_write)$/i.test(n)) return {id:'talk',label:'交互与计划'};" +
+    " if (/^mtnode_/i.test(n)) return {id:'own',label:'画布与自家工具'};" +
+    " if (/^browser_/i.test(n)) return {id:'browser',label:'浏览器'};" +
+    " return {id:'other',label:'其它'}; }," +
+    " familyClassOf: function(id,pre){ return String(pre||'dsh-fam-')+String(id||'other'); } };\n" +
     fnBody(ASSIST, "dshToolStateOf") +
     "\n" +
     fnBody(ASSIST, "dshToolPrepText") +
@@ -897,7 +917,7 @@ OUT.EV(
   const det = OUT.EV("dshToolDetailsEl({name:'read',args:{file_path:'E:/s/deep/nested.js',offset:7},callId:'c1'},false,'s9')");
   const sum = det.children.find((c) => c.tagName === "summary");
   ok(!!sum, "dshToolDetailsEl 造出 details + summary");
-  EQS(sum.children[0].className, "dsh-tool-chip", "summary 的第一个孩子才是那颗「工具按钮」（药丸）—— 文件名不塞在它里面");
+  EQS(sum.children[0].className, "dsh-tool-chip dsh-fam-read", "summary 的第一个孩子才是那颗「工具按钮」（药丸）—— 文件名不塞在它里面；read 归「读取」族（本次需求 · 药丸带 dsh-fam-read）");
   EQS(sum.children[0].textContent, "🔧 读取", "药丸里是工具族的中文标题（本次需求对齐上游 tool.title.*：read → 读取），原始工具名留在 title / dataset 上");
   EQS(sum.children[0].dataset.toolName, "read", "药丸的 dataset.toolName 保留原始工具名（排查与自动化仍按真名找）");
   EQS(sum.children[1].className, "dsh-tool-file m-read", "文件名挂在按钮后方，仍是同一份徽标（class 与 [3] 一致）");
@@ -1127,19 +1147,27 @@ OUT.EV(
     );
     OUT.I18n.setLocale("zh");
   }
-  ok(sum2.children.length === 2 && sum2.children[0].className === "dsh-tool-chip", "非文件工具：按钮 + 命令正文，不多挂别的（没有文件徽标）");
+  ok(sum2.children.length === 2 && sum2.children[0].className.indexOf("dsh-tool-chip") === 0, "非文件工具：按钮 + 命令正文，不多挂别的（没有文件徽标）");
   /* 非 dsh 工具（本次需求）：同一个渲染函数里换成中文标签 + 专属色类 .t-custom，
-     原始工具名照旧留在 dataset 上（排查与自动化仍按真名找）。 */
+     原始工具名照旧留在 dataset 上（排查与自动化仍按真名找）。
+     本次需求再叠一层**工具族色类**（dsh-fam-*，与轨迹轴上的块 / 图例同源）：来源紫（.t-custom）
+     与族色各管一个维度 —— 族色按名去问轨迹那份族表，会话侧不抄第二份。 */
   {
     const dc = OUT.EV("dshToolDetailsEl({name:'ask_user_question',args:{},callId:'c9'},false,'s9')");
     const sc = dc.children.find((c) => c.tagName === "summary").children[0];
-    EQS(sc.className, "dsh-tool-chip t-custom", "非 dsh 工具的药丸带专属色类（青 = dsh 自带 / 紫 = MTNode 工具）");
+    EQS(sc.className, "dsh-tool-chip dsh-fam-talk t-custom", "非 dsh 工具的药丸带专属色类 + 工具族色类（来源紫叠交互与计划族）");
     EQS(sc.textContent, "🔧 询问用户", "非 dsh 工具显示中文标签（原来只能回落成「工具调用」再显英文原名）");
     EQS(sc.dataset.toolName, "ask_user_question", "中文标签之下仍保留原始工具名");
-    EQS(sc.title, "ask_user_question · 询问用户", "hover 给「原名 · 中文标签」");
+    EQS(sc.title, "ask_user_question · 询问用户 · 交互与计划", "hover 给「原名 · 中文标签 · 工具族名」（颜色对不上号时能问出这色是什么意思）");
     const dd = OUT.EV("dshToolDetailsEl({name:'read',args:{file_path:'E:/s/a.js'},callId:'c10'},false,'s9')");
     const sd = dd.children.find((c) => c.tagName === "summary").children[0];
-    EQS(sd.className, "dsh-tool-chip", "dsh 自带工具不挂专属色类（颜色只区分来源，不改 dsh 那一档）");
+    EQS(sd.className, "dsh-tool-chip dsh-fam-read", "dsh 自带工具不挂专属色类、但照挂工具族色类（颜色按「在干什么」分，不只按来源）");
+    const dm = OUT.EV("dshToolDetailsEl({name:'mtnode_canvas_get',args:{},callId:'c11'},false,'s9')");
+    const sm = dm.children.find((c) => c.tagName === "summary").children[0];
+    EQS(sm.className, "dsh-tool-chip dsh-fam-own t-custom", "MTNode 自有工具 = 画布与自家工具族 + 来源紫（两个维度各挂一件）");
+    const du = OUT.EV("dshToolDetailsEl({name:'some_unknown_tool',args:{},callId:'c12'},false,'s9')");
+    const su = du.children.find((c) => c.tagName === "summary").children[0];
+    EQS(su.className, "dsh-tool-chip dsh-fam-other", "族表认不出的工具落兜底「其它」族（灰），不猜一个族出来");
   }
   HAS(ASSIST, 'if (typeof dshToolFileBadges === "function")', "出口先探测符号（分块加载 / 切片跑测时不抛）");
   HAS(ASSIST, 'sum.className = "dsh-tool-sum"', "summary 不再是药丸本身（外框让给里面那颗按钮，两者不再同义）");
@@ -1536,10 +1564,11 @@ const host = () => PV.EV("document.getElementById('filePeek')");
     const extM = APP.match(/const MT_RELPATH_EXT =[\s\S]*?;\n/);
     ok(!!extM, "app.js 里有 MT_RELPATH_EXT 扩展名白名单（不是随手一个 \\.[a-z]+$ 就认）");
     vm.runInContext(extM[0], box);
-    /* 网址停止符表（中文 / 全角一律不进网址）：也来自真源，不抄一份 */
+    /* 网址停止符表（中文 / 全角一律不进网址）：也来自真源，不抄一份。
+       取不到就如实判失败并继续（别让这个 TypeError 把这一节剩下的行为断言全吞掉）。 */
     const stopM = APP.match(/const MT_URL_STOP =\n[\s\S]*?;\n/);
     ok(!!stopM, "app.js 里有 MT_URL_STOP 网址停止符表（中文与全角符号不进网址）");
-    vm.runInContext(stopM[0], box);
+    if (stopM) vm.runInContext(stopM[0], box);
     /* 这两个函数体里有正则字面量（含字符类里的 } ），fnBody 的花括号配平会被它骗到，
        所以按「行首 } 收尾」整段取（app.js 里这两个顶层函数就是这么排的）。 */
     const fnRaw = (name) => {

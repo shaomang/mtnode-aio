@@ -20,6 +20,7 @@ const { spawn, execFile } = require("child_process");
 const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+const { quietPython } = require("../backend-python.js");
 const uiBridge = require("./ui-bridge.js");
 
 const { mergeManagedProvider } = require("../config-providers.js");
@@ -34,6 +35,8 @@ let appRoot = null;
 let getDsh = null;
 let consoleWin = null;
 let consoleLogWin = null;
+/* 后端主动求助（ui-signal）留下的提示：不再自动弹窗，改由插件卡片角标 + 内嵌 console 呈现 */
+let pendingNotice = null;
 const LOG_PANEL_WIDTH = 440;
 let logPanelSyncHandler = null;
 let installing = false;
@@ -649,11 +652,14 @@ async function startBackend() {
     clearPidMeta();
   }
 
-  const py = join(installDir, ".venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) {
-    reportErr("no_venv", "llama.cpp 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+  const pyExe = join(installDir, ".venv", "Scripts", "python.exe");
+  if (!fs.existsSync(pyExe)) {
+    reportErr("no_venv", "llama.cpp 后端缺少 Python 环境（" + pyExe + "）", { phase: "start" });
     return { ok: false, error: "no_venv" };
   }
+  /* pythonw：GUI 子系统不分配控制台 —— Store 版 venv 的 python.exe 是再启动器 shim，
+     它再拉真解释器时会被 Windows 新分配一个控制台（Win11 = 多一只终端窗口），见 backend-python.js */
+  const py = quietPython(pyExe);
 
   syncPackToInstall(installDir);
   mk(path.dirname(consoleLogPath()));
@@ -1179,6 +1185,9 @@ async function statusForUi() {
     gpu,
     wantRunning: !!cfg.wantRunning,
     trayRunning: trayRunning(),
+    /* 后端求助提示（角标 / 状态行）：开窗或清掉后为空串 */
+    notice: pendingNotice ? pendingNotice.text : "",
+    noticeAt: pendingNotice ? pendingNotice.at : 0,
     consolePath: consoleLogPath(),
     localModelIds: readLocalModelIds(),
     localModels: readLocalModelsFromRegistry(),
@@ -1308,12 +1317,31 @@ function notifyConsoleChanged(open) {
   broadcast("llama:consoleChanged", { open: !!open, id: PLUGIN_ID });
 }
 
+/* ── 后端主动求助（ui-signal）不再自动弹出控制台窗 ────────────────────────────
+   用户口径：插件不许再自己「呼出独立的后端窗口」（用户会误关），后端要静默待在后台，
+   状态与 console 内容显示在插件界面里。所以这里只留一条提示：
+     ① 写进本插件 console 日志（用户看日志时能追到）；
+     ② 置 pendingNotice → statusForUi 带回插件卡片（角标 + 状态行一句）；
+     ③ 广播 llama:notice → 已经打开的插件对话框立刻刷出角标。
+   用户亲手点的入口（卡片「控制台」按钮 / 托盘菜单「打开控制台」）照旧开窗；开窗即清掉提示。 */
+function noteBackendNotice(text) {
+  const t = String(text || "").trim() || "llama 后端请求打开控制台";
+  pendingNotice = { text: t, at: Date.now() };
+  appendConsole("[notice] " + t + " —— 不再自动弹窗，请到顶栏「插件」的 llama.cpp 卡片看状态与日志");
+  broadcast("llama:notice", { id: PLUGIN_ID, text: t, at: pendingNotice.at });
+}
+function clearBackendNotice() {
+  if (!pendingNotice) return;
+  pendingNotice = null;
+  broadcast("llama:notice", { id: PLUGIN_ID, text: "", at: Date.now() });
+}
+
 function startUiSignalWatch() {
   if (uiSignalTimer) return;
   const dataDir = llamaRoot();
   uiSignalTimer = setInterval(() => {
     try {
-      if (uiBridge.consumeShowUiSignal(dataDir)) openConsoleWindow();
+      if (uiBridge.consumeShowUiSignal(dataDir)) noteBackendNotice("llama 后端请求打开控制台");
     } catch {}
   }, 400);
   if (uiSignalTimer.unref) uiSignalTimer.unref();
@@ -1329,6 +1357,8 @@ function stopUiSignalWatch() {
 function openConsoleWindow() {
   ensureUiRuntime();
   uiBridge.requestTrayHideUi(llamaRoot());
+  /* 用户亲手开窗 = 已经看到求助内容，角标与状态行提示到此为止 */
+  clearBackendNotice();
   if (consoleWin && !consoleWin.isDestroyed()) {
     consoleWin.show();
     consoleWin.focus();
@@ -1393,6 +1423,44 @@ function removePluginMetaOnly() {
     }
   } catch {}
   return { ok: true };
+}
+
+/**
+ * 显存释放钩子（给主进程 local-model-vram.js 的统一编排用，见该文件头部口径）：
+ *   · llama.cpp 的管理服务**没有卸载模型的接口** → 释放 = 停后端（杀进程树）把权重还回显存；
+ *   · 释放后保持「已停止」：下次要用本地大模型，由用户在插件卡片手动点「启动」
+ *     （llama 的模型加载是有意的人工动作，不跟着别人的任务自动拉起）。
+ */
+function vramHooks() {
+  return {
+    host: "llama",
+    port: DEFAULT_PORT,
+    isRunning: () => backendRunning(),
+    isLoaded: () => backendRunning(),
+    /* 安装 / 修复任务在跑时同样算忙：这时候杀后端会把安装链打断 */
+    isBusy: () => !!installing,
+    soft: async (reason) => {
+      appendConsole("[vram] 停 llama.cpp 管理服务释放显存（" + String(reason || "release") + "）—— 需要时请在插件卡片手动「启动」");
+      const r = await stopBackend();
+      return { ok: !!(r && r.ok), stopped: !!(r && r.stopped), mode: "stop_backend" };
+    },
+    hard: async (reason) => {
+      appendConsole("[vram] 强制结束 llama.cpp 后端进程树（" + String(reason || "release") + "）");
+      const meta = loadPidMeta();
+      const pid = (meta && meta.pid) || (backendProc && backendProc.pid);
+      if (backendProc) {
+        try {
+          backendProc.kill();
+        } catch {}
+        backendProc = null;
+      }
+      if (pid) await killPidTree(pid);
+      await killPortListener(Number(loadConfig().port) || DEFAULT_PORT);
+      clearPidMeta();
+      saveConfig({ wantRunning: false });
+      return { ok: true, mode: "kill_pid_tree" };
+    },
+  };
 }
 
 function shutdownLlamaUiOnly() {
@@ -1500,6 +1568,8 @@ function registerLlamaIpc(opts) {
 module.exports = {
   registerLlamaIpc,
   shutdownLlamaUiOnly,
+  /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
+  vramHooks,
   onLlamaDshEvent,
   PLUGIN_ID,
 };

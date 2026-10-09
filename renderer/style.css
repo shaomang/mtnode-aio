@@ -35,6 +35,9 @@
 @import url("./css/sidebar-files.css");
 /* 本地语音转写（官方本地 SenseVoice）：节点内转写区块 +「语音模型」窗（renderer/app-asr.js） */
 @import url("./css/asr.css");
+/* 音频节点现场录制：居中录音面板（实时声波 / 计时 / 两个出口）+ 节点录制态
+   （renderer/app-recaudio.js）；亮色覆盖在文件末尾。 */
+@import url("./css/recaudio.css");
 /* 全局搜索浮层（Ctrl+F · renderer/app-search.js + css/search.css） */
 @import url("./css/search.css");
 /* 输入框内查找条（焦点在输入框里按 Ctrl+F · renderer/app-find.js + css/find.css）；
@@ -65,3 +68,7 @@
 /* 全局语音输入：状态栏最左那枚话筒（三态循环）+ 跟随光标的转写浮窗 + 右键快捷菜单
    （renderer/app-voice.js 自包含模块）；只放 .sb-voice / .gv-* 这一块自己的皮。 */
 @import url("./css/voice.css");
+/* 系统资源面板（顶栏「性能」按钮 · renderer/app-perf.js · 主进程 perf-probe.js）：
+   .perf-* 总览条 / 每核格子 / 明细行；显存那一块仍用 layout.css 的 .vram-*
+   （同一个 vramRenderPanel 写进 .vram-slot）。亮色覆盖在文件末尾。 */
+@import url("./css/perf.css");

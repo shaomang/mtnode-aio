@@ -1999,18 +1999,6 @@ body.theme-light .n-chip.n-chip-lt {
 }
 .exec-play.disabled:hover { background: transparent; }
 .exec-play.disabled:active { transform: none; }
-/* 预备态：绿色背景 + 金色高亮播放键（第 2 次点击 = 执行） */
-.exec-play.armed {
-  background: linear-gradient(160deg, rgba(46, 160, 92, .85), rgba(36, 128, 74, .92));
-  border-color: rgba(110, 231, 144, .8);
-  box-shadow:
-    0 0 0 2px rgba(110, 231, 144, .28),
-    0 0 16px rgba(46, 160, 92, .5);
-}
-.exec-play.armed svg {
-  color: #ffd257;
-  filter: drop-shadow(0 0 5px rgba(255, 210, 87, .85));
-}
 .exec-play.running { opacity: .85; }
 .exec-play.running svg { animation: execPulse 1s ease-in-out infinite; }
 @keyframes execPulse {
@@ -4059,14 +4047,6 @@ body.theme-light .n-chip.n-chip-lt {
 
 .node-help-tip .node-help-tip-body {
   color: var(--ink);
-}
-
-.node-help-tip .node-help-tip-foot {
-  margin-top: 5px;
-  padding-top: 4px;
-  border-top: 1px solid var(--bd2, #3a4652);
-  font-size: 10px;
-  color: var(--muted, #8b93a3);
 }
 
 .in .n-title {

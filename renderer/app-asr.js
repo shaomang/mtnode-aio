@@ -21,7 +21,9 @@
  *     asrTextItemsOf（app.js 的 allTextItems / resolveRefs 调）。
  *
  * 与「图像 → 视觉模型」的分工一致：音频只被文字节点消费，转写产物是纯文本；
- * 音频节点自己的输出端子口径不变（照旧给该文件的 file:/// URL，视频节点仍是视频 URL）。
+ * 音频节点自己的输出端子是**固定两个**：**端口 0 = 音频输出**（该文件的 file:/// URL，
+ * 照旧，视频节点仍是视频 URL）· **端口 1 = 转写输出**（asrTranscriptOutValue，
+ * 没有转写内容时是空文本）—— 画布徽标 / 悬浮说明 / canvas_get 的 ports 表共用这套名字。
  *
  * 不再有的东西（随旧口径移除）：文字节点上的「本地语音转写」区块、asrPrepareForRun、
  * asrTaskAppendText（智能节点任务描述追加）与 node.asrTranscripts 的消费方假设。
@@ -90,6 +92,21 @@ function asrTranscriptTextOf(node) {
   if (!p) return "";
   const hit = asrTranscriptOf(node, p);
   return hit ? String(hit.text || "") : "";
+}
+/**
+ * 音频 / 视频输入节点**端口 1（转写输出端子）**的端子值。
+ *
+ * 需求：音频节点除了「该文件的 file:/// URL」（端口 0），还要有一个**转写文字输出**；
+ * 还没转 / 没转出内容时输出**空文本**（绝不给 null，也不给文件 URL）—— 下游拿到的
+ * 是一段真空文本，而不是「这个端子没值」。取的就是节点自己身上那份文本
+ * （asrTranscripts，跟指纹 / 人工修订一起随画布持久化），所以：
+ *   · 在音频节点上点「转录」或手工改错字，下游那一头立刻跟着变；
+ *   · 文件换了、旧转录被清掉 → 又回到空文本。
+ * 值的形状与其它文本端子一致：{ kind:"text", text }（见 app.js 的 valueForInput /
+ * inferMediaFromSource —— 端口 1 一律按文本判型，不会当成音频文件）。
+ */
+function asrTranscriptOutValue(node) {
+  return { kind: "text", text: asrTranscriptTextOf(node) };
 }
 /** 媒体文件指纹（路径 + 大小 + 修改时间）：拿不到大小 / 时间（文件没了）时只认路径 */
 async function asrStampOf(path) {

@@ -680,6 +680,43 @@ body.theme-light .dsh-tool-chip.t-custom:hover,
 body.theme-light .dsh-tool[open] .dsh-tool-chip.t-custom {
   background: rgba(199, 146, 234, .18);
 }
+/* 工具族那档（本次需求 · 会话-对话里「不同工具不同色，与轨迹一致」）的悬停底色与段轨：
+   族色本身是主题槽位 / 由槽位混出（亮暗同源），故这里只把「底色浓度」按浅底调一档，
+   与上面 `.t-custom` 同一条理由（暗色那支 alpha 在浅底上偏脏）。族色那组写在 `.t-custom`
+   **之后**：0,2,0 打平（`.dsh-tool[open]` 那支更高一档，不影响），来源紫照旧压过族色。 */
+body.theme-light .dsh-tool-chip.dsh-fam-read:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-write:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-run:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-web:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-sub:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-talk:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-own:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-browser:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-job:hover,
+body.theme-light .dsh-tool-chip.dsh-fam-other:hover,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-read,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-write,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-run,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-web,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-sub,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-talk,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-own,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-browser,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-job,
+body.theme-light .dsh-tool[open] .dsh-tool-chip.dsh-fam-other {
+  background: color-mix(in srgb, var(--dsh-fam, var(--muted)) 18%, transparent);
+}
+body.theme-light .dsh-seg-tool.dsh-fam-read,
+body.theme-light .dsh-seg-tool.dsh-fam-write,
+body.theme-light .dsh-seg-tool.dsh-fam-run,
+body.theme-light .dsh-seg-tool.dsh-fam-web,
+body.theme-light .dsh-seg-tool.dsh-fam-sub,
+body.theme-light .dsh-seg-tool.dsh-fam-talk,
+body.theme-light .dsh-seg-tool.dsh-fam-own,
+body.theme-light .dsh-seg-tool.dsh-fam-browser,
+body.theme-light .dsh-seg-tool.dsh-fam-job {
+  background: color-mix(in srgb, var(--dsh-fam) 9%, transparent);
+}
 body.theme-light .dsh-tool-body pre {
   background: var(--bg2);
 }
@@ -717,7 +754,17 @@ body.theme-light .dsh-think-pop-pane .dsh-xlate-md h3,
 body.theme-light .dsh-think-pop-pane .dsh-xlate-md h4,
 body.theme-light .dsh-think-pop-pane .dsh-xlate-md h5,
 body.theme-light .dsh-think-pop-pane .dsh-xlate-md h6 {
-  color: var(--cyan2);
+  /* 本轮口径：译文正文也用正文色读（青调只在译文块的边轨与底上），浅色下即 --ink */
+  color: var(--ink);
+}
+/* 思考弹窗上方的 tabs（本次需求）：浅底上的悬停 / 选中底色别沿用暗色的白叠加 */
+body.theme-light button.dsh-think-pop-tab:hover {
+  background: rgba(0, 0, 0, .05);
+}
+body.theme-light button.dsh-think-pop-tab.on {
+  background: rgba(0, 0, 0, .07);
+  border-color: var(--bd2);
+  border-bottom-color: transparent;
 }
 body.theme-light .dsh-msg-copy {
   background: rgba(0, 0, 0, .05);

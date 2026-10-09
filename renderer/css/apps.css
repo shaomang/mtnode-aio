@@ -7,7 +7,8 @@
    出口是正文顶部第 1 行最右的「返回 MTNode」与 Esc（Esc 由 app-apps.js 监听）。z-index 90 < #overlay 的 100，所以后打开的对话框（设置 /
    插件 / 工坊 / 确认框）一定压在本页之上，本页永不顶掉别人。
    **没有标题栏**：页名在左侧导航里（选中态即页名），正文顶部只有两行：第 1 行 =「搜索框 +
-   右上角返回 MTNode」（.apps-hub-toprow，nowrap —— 出口钉在第 1 行最右，不单占一行），
+   「刷新」图标按钮 + 右上角返回 MTNode」（.apps-hub-toprow，nowrap —— 出口钉在第 1 行最右，
+   不单占一行；「刷新」＝手动从云端重拉应用目录，见 app-apps.js 的 appsHubReloadNow），
    第 2 行 = 标签筛选（圆角长方形标签，不是胶囊）—— 那一块是壳的一部分（不随正文重绘重建，
    搜索框才不会失焦），且**只在「应用」/「库」两页出现：开发页不显示标签**
    （见 app-apps.js 的 appsHubTagsHidden）。
@@ -100,10 +101,6 @@
   word-break: break-all;
 }
 
-.apps-hub-footdim {
-  opacity: .8;
-}
-
 /* ── 右侧主区 ── */
 .apps-hub-main {
   flex: 1;
@@ -141,14 +138,41 @@
   gap: 6px 8px;
 }
 
-/* 正文顶部的搜索条（只有应用页出现搜索框；「刷新」按钮已去掉，手动重拉没必要：
-   目录在本页打开与每次下载结束时都会自动重拉） */
+/* 正文顶部的搜索条：第 1 行里是 [搜索框][「刷新」图标按钮] —— 「刷新」＝手动从云端
+   重拉目录（见 app-apps.js 的 appsHubReloadNow），它不是「不必要的重拉」：
+   目录在本页打开与每次下载结束时自动重拉的那条路走的是新鲜期，手动这一颗问的才是最新一份。
+   这一格首选 200px（flex-basis），挤不下只缩搜索框。 */
 .apps-hub-headacts {
   flex: 0 1 200px;
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
+}
+
+/* 「刷新」图标按钮（搜索框之后）：方框尺寸沿用 .apps-ico-btn（20×20），
+   但它属于顶部一行 —— 显式 flex:none + nowrap，窗口再窄也只压搜索框，
+   不让这颗按钮折行或被压成一条线（与 .apps-hub-close 同一口径）。 */
+.apps-hub-reload {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 刷新中：环形箭头自转（.on 由 appsHubReloadNow 加 / 去）；
+   同时在跑时按钮是 disabled，连点不会重复打网络。 */
+.apps-hub-reload.on svg {
+  animation: apps-hub-reload-spin .9s linear infinite;
+}
+
+.apps-hub-reload:disabled {
+  opacity: .7;
+  cursor: default;
+}
+
+@keyframes apps-hub-reload-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 首选 200px（= .apps-hub-headacts 的 flex-basis），挤不下才缩；下限 120px ——
@@ -300,11 +324,6 @@
 .apps-badge-upd {
   color: var(--orange2);
   border-color: var(--orange);
-}
-
-.apps-badge-bad {
-  color: var(--red);
-  border-color: var(--red);
 }
 
 /* 「我上架的」：作者自己的条目（docs/apps-market.md §七）在自己的列表里一眼可辨
@@ -769,6 +788,19 @@
   word-break: break-all;
 }
 
+/* ── 「内容没变就不重画」的栅栏标记（renderer/app-apps.js 的 appsPaintMark）─────────
+   每画完一屏正文就在末尾放一枚 0 高度、不参与布局与命中的空元素；下一次重绘前读它：
+   它还在正文里 = 上一次画的那一屏还在（摘要才有可比性），且摘要一致 → 这一轮什么都不做。
+   为什么不放在正文第一行：末尾那枚不影响任何既有选择器（.apps-hub-body > :first-child
+   之类）与空白间距，网格是绝对定位、更不受影响。 */
+.apps-paint-mark {
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+}
+
 /* ── 应用页 / 库页：16:9 封面卡网格（Microsoft Store 观感） ──────────────
    本轮需求：每张卡就是一块 16:9 圆角封面（背景图 = 云端缩略图，居中裁切铺满），
    标题与作者压在封面**左下角**（底部黑色渐变遮罩保证亮底截图上也看得清），
@@ -779,6 +811,34 @@
   grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
   gap: 12px;
   align-items: start;
+}
+
+/* ── 卡片网格的窗口化渲染（renderer/app-apps.js 的 appsVirtualGridMount） ──
+   目录上千条时不再一次建上千张卡：只渲染「可视区 + 上下各两行」，其余靠容器高度撑出
+   真实滚动条长度。所以容器自身**不滚动**（高度由脚本按行数算好），卡片绝对定位、
+   用 transform 摆到自己的格子里 —— 布局开销只落在可见的那几张上。 */
+.apps-vgrid {
+  position: relative;
+  width: 100%;
+  /* flex: none 是必需的：.apps-hub-body 是 column flex 容器，默认 flex-shrink: 1 会把这个
+     撑到四万像素的容器**压回一屏高**（滚动条就只有一屏，滚不动）。实测踩过。 */
+  flex: none;
+  overflow: hidden; /* 撑高的部分不参与滚动计算：滚动条长度只由 .apps-grid 的高度决定 */
+}
+
+.apps-grid-abs {
+  display: block; /* 窗口化时不用网格布局：位置由脚本算（见 appsVirtualGridMount 的几何注释） */
+  position: relative;
+  grid-template-columns: none;
+}
+
+.apps-grid-abs .apps-tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  /* 只含这几张卡：跳过离屏卡片的布局 / 绘制传播，滚动时更省 */
+  contain: layout paint style;
 }
 
 .apps-tile {
@@ -829,6 +889,36 @@
 .apps-tile:hover .apps-cover-img,
 .apps-tile:focus-visible .apps-cover-img {
   filter: brightness(1.08);
+}
+
+/* ── 「界面先出、图像一次到位」（本轮需求：首屏慢 / 反复刷新闪）─────────────────
+   封面图由 renderer/app-apps-img.js 先挂 1×1 透明占位，进视口才取；真图到位后它给元素
+   加上 .apps-img-in，这里只做**一次**淡入（180ms）—— 一批图同一个样式重算周期里一起加上
+   这个 class，于是同一帧、同一条曲线一起出现，不再是「一张张蹦出来」。
+   为什么放在 [data-apps-img] 上（而不是写死 .apps-cover-img）：详情头部那种本机 data URL
+   的封面没有「等网络」这一步，不该陪着一块等；只有真走延迟取图的图才有这段过渡。
+   .apps-cover-img 基态不设 opacity —— 没有本模块时（旧行为）图片照旧立即可见。 */
+.apps-cover-img[data-apps-img] {
+  opacity: 0;
+}
+.apps-cover-img[data-apps-img].apps-img-in {
+  opacity: 1;
+  animation: apps-img-in 0.18s ease-out 1 both;
+}
+@keyframes apps-img-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* 已经加载完的图（缓存命中 / 从别的卡换过来）不重放动画：只留那一帧的显形 */
+@media (prefers-reduced-motion: reduce) {
+  .apps-cover-img[data-apps-img].apps-img-in {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 /* 兜底底色层：没图 / 图拉不到时露出来（纯色底 + 左下标题仍然可读） */
@@ -1090,37 +1180,174 @@ button.mini.apps-ico-info {
   height: 100%;
 }
 
-/* 头部（本轮需求：封面缩小 + 左图右文横排）：320px 的小封面在左，标题与两行作者在右，
-   竖向只占封面那一行的高度，正文能多出一大截可见区。
-   旧的大封面竖排（整幅铺满、占掉半屏高度）已按用户口径改掉。 */
-.apps-detail-head {
+/* 头部（本轮需求版式：**左图 + 右信息**两栏；文字介绍另起一块排在它正下方，见 .apps-detail-desc）
+   左列 = 一张大图 + 正下方概览缩略图条（点缩略图切大图、点大图开灯箱）；右列 = 应用名 + 信息行。
+   320px 的小封面已按用户口径撤掉 —— 它与左列大图取的是同一张图（上架截图第 1 张）。
+   **窄窗降级**：容器是外面那层 .apps-detail-top（container-type: inline-size），
+   内容宽 < 720px 时改成上下堆叠（见下面的 @container 段）。 */
+.apps-detail-top {
   flex: none;
+  container-type: inline-size;
+}
+
+.apps-detail-head {
   display: flex;
   flex-direction: row;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 10px;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 10px 12px;
   border: 1px solid var(--bd);
   border-left: 3px solid var(--orange);
   border-radius: 4px;
   background: var(--panel2);
 }
 
-/* 小封面：固定 320px 宽（16:9 = 180px 高）；窗很窄时降到可用宽度，绝不溢出撑破头部。
-   放大取图口径（缓存令牌 / 本机兜底）在 app-apps.js 的 appsCoverEl({ big: true })。 */
-.apps-detail-head .apps-cover-big {
-  flex: none;
-  width: 320px;
-  max-width: 100%;
-}
-
-.apps-detail-who {
+/* 左列：大图 + 概览缩略图条（占满剩余宽度，图不撑破头部） */
+.apps-detail-media {
+  flex: 1 1 auto;
   min-width: 0;
-  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
 }
+
+/* 左列占位（条目一张上架截图都没有）：应用图标 + 一句话，与画廊同样的高度区间，
+   版面不会因为缺图而跳一下 */
+.apps-detail-ph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 180px;
+  padding: 18px;
+  border: 2px dashed var(--bd);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.apps-detail-ph .apps-detail-ph-ico,
+.apps-detail-ph .apps-tile-ph {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+  display: block;
+}
+
+.apps-detail-ph .apps-tile-ph {
+  font-size: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.apps-detail-ph-t {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 右列：应用名 + 信息行（额定 320px；缺字段的行直接不画，见 app-apps.js 的 appsDetailWhoEl）
+   ★ 宽度只准写 width / max-width，**不许写 flex: 0 0 320px**（2026-10 修「详情一大片空白」）：
+   这个类在详情窗里是 `.apps-detail-who-scroll`（外层，head 的 flex 行子项）的**子项**，
+   而那个外层是 `display:flex; flex-direction:column` —— flex 简写的第三段 flex-basis 这时
+   落在**纵轴**上，于是右列被钉成 320px 高（实测 hProp=320px，而内容只有 197px）；
+   外层（`align-self:auto`，在 head 的 `align-items:flex-start` 下按内容高算）就被这一项
+   顶到 380–396px，里面空出 140–220px —— 用户看到的就是「信息行下面一大片空白」。
+   改 width 之后高度回到内容高度（info 元数据全在，缺字段的行本来就不画）。 */
+.apps-detail-who {
+  width: 320px;
+  max-width: 320px;
+  min-width: 0;
+  /* 不被同行的左列（大图）拉高：高度恒等于内容高度 */
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.apps-detail-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.apps-detail-info .apps-detail-k {
+  width: 68px;
+}
+
+.apps-detail-info .apps-detail-v {
+  font-family: var(--mono);
+}
+
+/* 窄窗（内容宽 < 720px）：改成上下堆叠 —— 先大图 + 缩略图条，再信息列 */
+@container (max-width: 720px) {
+  .apps-detail-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* 上下堆叠时右列通栏、高度仍等于内容高度（align-self:stretch 只管宽度，纵轴上
+     `.apps-detail-who-scroll` 已 flex-basis:auto，不会再被钉成 320px 高） */
+  .apps-detail-who {
+    align-self: stretch;
+    width: auto;
+    max-width: none;
+  }
+}
+
+/* 文字介绍（本轮需求：紧跟头部正下方通栏；Markdown 渲染，容器带 .md 见 app-apps.js）：
+   空描述整块不画，所以这里不用考虑「空框」；长说明跟着正文一起滚，不会把下面挤没。 */
+.apps-detail-desc {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--code);
+}
+
+.apps-detail-md.md {
+  font-size: 11.5px;
+  line-height: 1.72;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.apps-detail-md.md > :first-child {
+  margin-top: 0;
+}
+
+.apps-detail-md.md > :last-child {
+  margin-bottom: 0;
+}
+
+.apps-detail-md.md h1,
+.apps-detail-md.md h2,
+.apps-detail-md.md h3,
+.apps-detail-md.md h4 {
+  font-size: 12.5px;
+  margin: 10px 0 4px;
+}
+
+.apps-detail-md.md img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.apps-detail-md.md table {
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.apps-detail-md.md th,
+.apps-detail-md.md td {
+  border: 1px solid var(--bd2);
+  padding: 3px 6px;
+}
+
+/* 小封面（.apps-cover-big）仍留给 appsCoverEl 的其它调用方（卡片路径 / 回归脚本），
+   详情头部不再用它。 */
 
 .apps-detail-name {
   font-size: 14px;
@@ -1131,21 +1358,21 @@ button.mini.apps-ico-info {
   white-space: nowrap;
 }
 
-/* ── 详情窗：上架截图画廊（大图 + 缩略图条，点缩略图切大图）──
-   本轮需求：服务端存多图 + 目录下发 shots[]，这一块把它们画出来；
+/* ── 详情窗：上架截图画廊（大图 + 概览缩略图条，点缩略图切大图）──
+   本轮需求：画廊整体搬进头部左列（.apps-detail-media），所以不再自己限宽（左列有多宽就多宽），
+   大图高度按窗口高度给上限；点大图 = 开全站灯箱（.img-previewable 给放大镜指针）。
    卡片封面仍只用第 1 张（thumb / icon），与本块互不影响。 */
 .apps-gallery {
   flex: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 10px;
-  max-width: 560px;
+  min-width: 0;
 }
 
 .apps-gallery-big {
   width: 100%;
-  max-height: 320px;
+  max-height: min(360px, 38vh);
   object-fit: contain;
   border: 2px solid var(--bd);
   border-radius: 8px;
@@ -2000,6 +2227,40 @@ body.theme-light .apps-dev-more-pop {
   word-break: break-word;
 }
 
+/* 预览里被禁 / 被拒的动作那条短提示（本轮需求：close / quit，以及「该应用已在独立窗口
+   运行 ⇒ 预览为只读」）。浮在预览区底部中央，3 秒自己消失，不挡操作、不抢焦点。 */
+.apps-dev-bridgenote {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  max-width: 84%;
+  padding: 7px 12px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .78);
+  color: #ffd08a;
+  font-size: 11.5px;
+  line-height: 1.6;
+  text-align: center;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.apps-dev-bridgenote[hidden] {
+  display: none !important;
+}
+
+/* 预览列头那颗「关掉独立窗口」：只在预览因独立窗口已开而只读时露出 */
+.apps-dev-bridgeclose {
+  flex: none;
+  margin-left: 6px;
+}
+
+.apps-dev-bridgeclose[hidden] {
+  display: none !important;
+}
+
 /* 右栏：会话正文（消息壳 / #agentList / 队列 / 计划 / 待办都是搬进来的原节点）。
    消息区是**唯一填充项**（与 base.css 的 ① 逐字同一条不变式）：#agentList 会被会话视图的
    ensureHistRail() 包进 .hist-scroll-wrap.is-flex-fill，那时它的父级是 .apps-dev-conv 而
@@ -2206,87 +2467,668 @@ body.theme-light .apps-dev-more-pop {
   line-height: 1.5;
 }
 
-/* ── 上架前体检（开发页工具栏那枚按钮 → 弹窗）
-   只读体检的回执：默认当前应用，可切「全部应用」；每个应用一行，出问题的那几行标红。
-   配色沿用本文件的口径（var(--bd/--bd2/--muted/--ink/--green/--red) + body.theme-light 覆盖）。 */
-.apps-audit-lead {
-  margin-bottom: 8px;
-}
-.apps-audit-tabs {
+
+/* ═════════════ 「我的应用」（第 4 页）· 编辑框 · 删除框（renderer/app-apps.js）═════════════
+   三块都在这里：列表页的一行工具条 / 卡片上的三枚作者动作（含危险色）/ 两只对话框的排版。
+   对话框尺寸只走 .overlay-box.apps-edit-box 这一个类（绝不内联改共享的 .overlay-box：
+   内联残留会让下一个弹窗继承尺寸，见 AGENTS.md 与 app-publish.css 同一坑）；
+   类的摘除由 renderer/app-apps.js 的 appsEditBoxCleanup 负责。 */
+
+/* ── 列表页工具条（刷新 / 加载更多）——「只看已下架」筛选片已按用户口径移除 ── */
+.apps-minebar {
   display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 2px 0 10px;
+}
+.apps-minebar-more {
+  justify-content: center;
+}
+
+/* ── 卡片上的危险动作（删除）：常态不抢眼，hover 才亮红 ── */
+.apps-cover-acts .apps-ico-btn.apps-ico-danger {
+  color: var(--red);
+}
+.apps-cover-acts .apps-ico-btn.apps-ico-danger:hover {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+}
+
+/* ── 详情窗里的「上架状态」提示（作者自己的应用看不到时才出现，见 app-apps.js 的
+   appsVisibilityNoticeOf）：一句话说清为什么商店里没有它 + 一枚「重新发布」。
+   配色只取既有语义变量（--red 弱化用；主题变量表里没有 --warn），不新增色板。 ── */
+.apps-detail-visnote {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--bd2));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+}
+.apps-detail-visnote-t {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+/* ── 详情窗里的作者动作行 ── */
+.apps-detail-mine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--bd2);
+}
+button.apps-del-btn {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 55%, var(--bd2));
+}
+button.apps-del-btn:hover:not(:disabled) {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
+button.apps-del-btn:disabled {
+  color: var(--muted);
+  border-color: var(--bd2);
+  opacity: 0.7;
+}
+
+/* ── 编辑 / 删除对话框 ── */
+.overlay-box.apps-edit-box {
+  width: min(760px, 92vw);
+  min-width: 50vw; /* 与详情窗 / 上架窗同一口径：最小宽 ≥50% */
+  max-width: 94vw;
+  max-height: calc(100vh - 60px);
+}
+.apps-edit-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.apps-edit-sec {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
-  margin-bottom: 8px;
+  padding: 10px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--code);
 }
-.apps-audit-tabs button.on {
-  border-color: #c792ea;
-  color: #c792ea;
+.apps-edit-t {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
 }
-.apps-audit-stat {
-  margin-bottom: 8px;
+.apps-edit-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.apps-edit-k {
+  flex: none;
+  width: 96px;
+  padding-top: 4px;
   font-size: 11.5px;
+  color: var(--ink2);
+}
+.apps-edit-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.apps-edit-input,
+.apps-edit-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--ink);
+  font-size: 12px;
+  font-family: inherit;
+}
+.apps-edit-textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+.apps-edit-input:focus,
+.apps-edit-textarea:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+.apps-edit-hint {
+  font-size: 10.5px;
+  line-height: 1.5;
   color: var(--muted);
 }
-.apps-audit-list {
+
+/* 描述框下的「预览」（本轮需求）：就地展开 Markdown 渲染结果，再点收起。
+   与详情窗的文字介绍（.apps-detail-desc / .apps-detail-md）**同一份 renderMarkdown**，
+   所以这里只给容器外观，正文排版沿用 canvas.css 的全局 .md 规则。 */
+.apps-desc-prevwrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.apps-desc-prevbody {
+  width: 100%;
+  box-sizing: border-box;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--code);
+}
+
+.apps-desc-prevmd.md {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.apps-desc-prevmd.md > :first-child {
+  margin-top: 0;
+}
+
+.apps-desc-prevmd.md > :last-child {
+  margin-bottom: 0;
+}
+.apps-edit-iconrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.apps-edit-iconprev {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+.apps-edit-iconbtns {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.apps-edit-decl {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--bg2);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink2);
+}
+.apps-edit-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+/* ── 截图条：缩略图 + 序号 + ✕；拖拽落点用前半 / 后半的竖线提示 ── */
+.apps-shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.apps-shot {
+  position: relative;
+  width: 132px;
+  height: 74px; /* 16:9 */
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg2);
+  cursor: grab;
+}
+.apps-shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.apps-shot.dragging {
+  opacity: 0.5;
+}
+.apps-shot.drop-before {
+  box-shadow: inset 3px 0 0 var(--orange);
+}
+.apps-shot.drop-after {
+  box-shadow: inset -3px 0 0 var(--orange);
+}
+.apps-shot-no {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10px;
+  line-height: 15px;
+}
+.apps-shot-del {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--bd2);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.apps-shot-del:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* ── 删除框：不可恢复的说明与清单 ── */
+.apps-del-root {
+  gap: 10px;
+}
+.apps-del-warn {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 55%, var(--bd2));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--ink);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.apps-del-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink2);
+}
+
+/* ═════════════════ 列表模式（类似 Steam：左列表 + 右内嵌详情）与内嵌详情面板 ═════════════════
+   本轮需求：应用 / 库 / 我的应用 三页都可切「列表」视图；点左列条目 → 右侧就地显示详情
+   （与详情窗同一份内容，见 renderer/app-apps-list.js 的注释）。
+   面板不是窗：它没有「关闭」，但底栏左侧同样摆下载 / 运行 / 二次开发 / 数据目录 / 卸载。 */
+
+/* 顶栏第 1 行的视图切换钮（刷新右边那一枚）：与其它图标按钮同一套方框（.apps-ico-btn） */
+.apps-hub-viewbtn[aria-pressed="true"] {
+  border-color: var(--acc);
+  color: var(--acc);
+}
+
+/* 根目录小菜单（库页左上角「应用目录」按钮弹出）：瞬时菜单，点外部即收 */
+.apps-hub-headacts {
+  position: relative; /* 菜单的定位锚（top:100% = 这一行下方） */
+}
+.apps-rootmenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 8px;
+  z-index: 30;
+  min-width: 220px;
+  max-width: min(520px, 60vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.apps-rootmenu-path {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  word-break: break-all;
+  max-height: 56px;
+  overflow: auto;
+}
+.apps-rootmenu .mini {
+  justify-content: flex-start;
+}
+
+/* ── 列表模式外壳：左列固定宽、右列剩余宽；两边各自滚动 ── */
+.apps-listmode {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 0;
+  /* 正文区（.apps-hub-body）本身就是滚动容器，列表模式自己再管两列的滚动：
+     给一个与可视区同高的框，免得内层滚动条把整页撑长 */
+  height: calc(100vh - 190px);
+  max-height: calc(100vh - 190px);
+}
+.apps-list-side {
+  flex: 0 0 280px;
+  max-width: 280px;
+  min-width: 0;
+  overflow: auto;
+  padding-right: 2px;
+  border-right: 1px solid var(--bd2);
+}
+.apps-panel-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+/* 虚拟列表容器（绝对定位的行 + 撑高的薄片） */
+.apps-vlist {
+  position: relative;
+  width: 100%;
+}
+.apps-vlist-item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  will-change: transform;
+}
+
+/* ── 左列的一行条目 ── */
+.apps-lrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.apps-lrow:hover {
+  background: var(--panel2);
+  border-color: var(--bd2);
+}
+.apps-lrow.on {
+  background: color-mix(in srgb, var(--acc) 16%, transparent);
+  border-color: var(--acc);
+}
+.apps-lrow-ico {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel2);
+}
+.apps-lrow-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.apps-lrow-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.apps-lrow-t {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apps-lrow-who {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apps-lrow-meta {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* ── 右列的内嵌详情面板（复用详情窗的 .apps-detail-* 元件） ── */
+.apps-panel-holder {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--bd);
+  border-left: 3px solid var(--orange);
+  border-radius: 4px;
+  background: var(--panel2);
+}
+.apps-panel-media {
+  flex: 1 1 380px;
+  min-width: 0;
+}
+.apps-panel-col {
+  flex: 1 1 320px;
+  max-width: 460px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.apps-audit-row {
-  padding: 7px 9px;
-  border: 1px solid var(--bd);
-  border-radius: 8px;
-  background: var(--panel2);
+.apps-panel-col .apps-detail-head {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
-.apps-audit-row.bad {
-  border-color: var(--red);
+.apps-panel-cmt {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd2);
 }
-.apps-audit-rowhead {
+.apps-panel-foot {
+  flex: 1 1 100%;
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd2);
 }
-.apps-audit-rowhead b {
-  font-size: 12px;
-  color: var(--ink);
-}
-.apps-audit-ver {
-  font-size: 10.5px;
-  color: var(--muted);
-}
-.apps-audit-state {
-  margin-left: auto;
-  font-size: 11px;
-}
-.apps-audit-state.ok {
-  color: var(--green);
-}
-.apps-audit-state.bad {
-  color: var(--red);
-}
-.apps-audit-count {
-  margin-top: 2px;
-  font-size: 10.5px;
-  color: var(--muted);
-}
-.apps-audit-files {
-  margin-top: 6px;
-}
-.apps-audit-files-t {
-  font-size: 11px;
-  color: var(--muted);
-}
-.apps-audit-files ul {
-  margin: 3px 0 0;
-  padding-left: 18px;
-  max-height: 180px;
-  overflow: auto;
-}
-.apps-audit-files li {
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.7;
-  color: var(--ink);
-  word-break: break-all;
+.apps-panel-foot-l,
+.apps-panel-foot-r {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
+/* ── 详情窗本轮版式的两处新件 ──
+   ① 右列（.apps-detail-who-scroll）自己滚：左图始终看得见，右列再长也不把图挤走；
+   ② 底栏左边那一串操作按钮（下载 / 启动 · 二次开发 · 数据目录 · 卸载），右边才是「关闭」。 */
+.apps-detail-who-scroll {
+  overflow: auto;
+  max-height: min(420px, 46vh);
+  padding-right: 2px;
+}
+.apps-detail-right {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* ── 「分支 / 版本」跳窗（renderer/app-apps.js 的 openAppsVersionDlg）──
+   本轮需求 4：版本相关的内容整体单独一只窗 —— 分支树 / 这一支的版本 / 本机回滚都在窗里，
+   窗内点行只**选中**（高亮），真正开始下载的是窗底那颗主按钮。 */
+.apps-verdlg-box {
+  width: min(720px, 92vw);
+  max-height: min(780px, 90vh);
+}
+.apps-verdlg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.apps-verdlg-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  max-height: min(560px, 62vh);
+  overflow: auto;
+  padding-right: 2px;
+}
+.apps-verdlg-roll:empty {
+  display: none;
+}
+/* 底栏横排：#ovFoot 本身是块级，主按钮那一列 + 「关闭」要落在同一行（类在关窗时摘掉） */
+.apps-verdlg-footwrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.apps-verdlg-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.apps-verdlg-note {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.apps-verdlg-close {
+  margin-left: auto;
+}
+
+/* 版本行改「选中式」：点行 = 选中（不再每行挂一颗下载按钮 —— 那正是搬进跳窗要解决的事） */
+.apps-vers-row.is-pick {
+  cursor: pointer;
+  border-radius: 3px;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.apps-vers-row.is-pick:hover {
+  background: var(--panel2);
+}
+.apps-vers-row.is-pick.is-sel {
+  border-left-color: var(--acc);
+  background: color-mix(in srgb, var(--acc) 10%, transparent);
+}
+.apps-vers-tick {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+}
+.apps-vers-row.is-sel .apps-vers-tick {
+  color: var(--acc);
+}
+
+/* 外面那行动作条（详情窗右列 / 列表面板头部，紧跟信息列的「版本」行）：
+   一行「作者 X · vY」+ 一枚按情况变形的主按钮 + 「选择版本…」 */
+.apps-pickbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 6px 0 2px;
+}
+.apps-pickbar-t {
+  min-width: 0;
+  /* 右列额定 320px：「作者 X · vY」与两枚按钮排不进同一行 —— 让文字独占一行，
+     按钮落到第二行（整齐两行，不会出现按钮被挤到角落） */
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apps-pickbar-go,
+.apps-pickbar-more {
+  flex: none;
+}
+.apps-detail-cmt {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+.apps-detail-footacts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-right: auto; /* 把「关闭」顶到最右 */
+}
+.apps-detail-close {
+  margin-left: auto;
+}
+
+/* 编辑窗底栏那颗危险按钮（下架并删除应用）：与保存 / 取消同排 */
+.apps-edit-del {
+  margin-right: auto;
+}
+
+/* 窄窗（列表模式）：右列挪到左列下方，两列各自仍可滚 */
+@media (max-width: 900px) {
+  .apps-listmode {
+    flex-direction: column;
+    height: auto;
+    max-height: none;
+  }
+  .apps-list-side {
+    flex: none;
+    max-width: none;
+    max-height: 40vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--bd2);
+  }
+  .apps-panel-scroll {
+    max-height: 60vh;
+  }
+}

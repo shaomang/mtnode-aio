@@ -150,7 +150,11 @@ function main() {
     !/MtTips\.metaEl\(cloudTarget/.test(apps) && !/MtTips\.buttonEl\(cloudTarget/.test(apps),
     "卡片上不再放打赏按钮与小字汇总（metaEl / buttonEl 调用已从卡片撤掉）",
   );
-  ok(/appsDetailEl\(spec, extra\)[\s\S]{0,400}detailTabsEl\(/.test(apps), "应用详情窗也有「应用 / 评论」页签");
+  ok(
+    /appsDetailBodyEl\(spec, \{ app: app \|\| undefined, noVers: true, head: true \}\)/.test(apps) &&
+      !/detailTabsEl\(\[appsT\("应用"\), appsT\("评论"\)\]/.test(apps),
+    "应用详情窗不再有「应用 / 评论」页签（本轮口径：tabs 移除，评论独占下方滚动区）",
+  );
   const forumHtml = read("forum/chat.html");
   ok(forumHtml.includes('id="tdTabComment"') && forumHtml.includes('id="topicComments"'), "讨论区话题详情页有「评论」页签与容器");
   ok(forumHtml.includes('src="../renderer/app-tips.js"') && forumHtml.includes('src="../renderer/app-comments.js"'), "讨论区复用同一份打赏 / 评论模块（不复制一份）");
@@ -373,7 +377,7 @@ function main() {
   ok(/classList\.add\("apps-ico-btn", "apps-ico-info"\)/.test(apps) && /b\.dataset\.appDetail = "1"/.test(apps),
     "详情按钮仍是同一元件（data-app-detail 不变），只是换成 ⓘ 图标 + 小方框样式");
   ok(/const text = label \? appsT\(label\) : "ⓘ";/.test(apps), "目录卡片上的详情按钮不再显示「详情」文案");
-  ok(/const acts = appsCoverActionsEl\(spec, \{ local: !!o\.local \}\);/.test(apps),
+  ok(/const acts = appsCoverActionsEl\(spec, \{ local: !!o\.local, mine: !!o\.mine \}\);/.test(apps),
     "图标行挂在封面卡上（与「点卡开详情」分开，不占标题区）");
   ok(/\.apps-cover-acts\s*\{/.test(read("renderer/css/apps.css")) &&
       /button\.mini\.apps-ico-btn\s*\{/.test(read("renderer/css/apps.css")),

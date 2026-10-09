@@ -440,8 +440,10 @@ section("[4] 消息保留改成按轮（agentTrimSessionMessages 真函数）");
 section("[5] 写入路径同源到同一个闸（不再有写死的 100 条）");
 {
   ok(
-    (DB.match(/agentTrimSessionMessages\(st\)/g) || []).length === 3,
-    "[5] app-db.js 三处写入路径（询问窗回答 / 轮末痕迹 / 求助痕迹）都走同一个闸",
+    (DB.match(/agentTrimSessionMessages\(st\)/g) || []).length === 2,
+    "[5] app-db.js 两处写入路径（询问窗 / 求助卡的「回答」 + 轮末痕迹）都走同一个闸"
+      + "（求助卡已与询问卡同源：答案走 ixCommitAnswerToSession 这一条，"
+      + "旧的那条「已回应」痕迹随本次改版下线）",
   );
   ok(
     !/if \(st\.messages\.length > 100\) st\.messages\.splice/.test(DB) &&

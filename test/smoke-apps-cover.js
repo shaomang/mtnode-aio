@@ -3,7 +3,8 @@
    口径（都是「会真炸」的那几条，不靠正则看源码，而是把真源码跑起来断言行为）：
      [1] MtTips.detailRecordEl：一次都没打赏 / 数据没取到 → null（整行不画）；
          有数字 → 一行「打赏记录 + 币数」，**整行不挂任何 click**（详情里不能再有第二个打赏入口）。
-     [2] appsThumbUrlOf：urls.thumb 优先；静态目录从 icon 推导同主干 .png；接口地址换成 /thumb；
+     [2] appsThumbUrlOf：urls.thumb 优先；目录下发的 thumb（封面源＝上架截图第 1 张，名字带 __shot）；
+         静态目录从 icon 推导同主干 .png；接口地址换成 /thumb；
          data: 与没图标一律回空串（调用方退回原图）。
      [3] appsCoverEl：缩略图 404 → 退回原图一次（data-fallback）；原图也 404 → 收起 img + .noimg
          兜底底色（封面不破图、标题仍在）。
@@ -212,7 +213,7 @@ function loadApps() {
   sandbox.window.clampAppsColsW = () => {};
   vm.runInContext(read("renderer/app-apps.js"), sandbox);
   vm.runInContext(
-    ";globalThis.__spies = { appsThumbUrlOf: appsThumbUrlOf, appsCoverEl: appsCoverEl, appsCoverActionsEl: appsCoverActionsEl, appsTileEl: appsTileEl, appsIconUrl: appsIconUrl, appsUrlWithToken: appsUrlWithToken, appsLocalCoverOf: appsLocalCoverOf };",
+    ";globalThis.__spies = { appsThumbUrlOf: appsThumbUrlOf, appsCoverEl: appsCoverEl, appsCoverCandidatesOf: appsCoverCandidatesOf, appsCoverIsShot: appsCoverIsShot, appsCoverActionsEl: appsCoverActionsEl, appsTileEl: appsTileEl, appsIconUrl: appsIconUrl, appsUrlWithToken: appsUrlWithToken, appsLocalCoverOf: appsLocalCoverOf, appsSpecPatchStoreUrls: appsSpecPatchStoreUrls, setCat: function (c) { APPS_ST.cat = c; } };",
     sandbox,
   );
   return { spies: sandbox.__spies, sandbox };
@@ -271,8 +272,93 @@ console.log("[2] appsThumbUrlOf：thumb 优先 / 静态推导 / 接口换路径 
   ok(spies.appsThumbUrlOf({}) === "" && spies.appsThumbUrlOf(null) === "", "没图标 → 空串");
 }
 
-console.log("[3] appsCoverEl：缩略图 404 → 退回原图 → 再 404 收图 + 兜底底色");
+console.log("[2b] 封面源 = 上架截图第 1 张（本轮修的 bug：截图传了却不当封面）");
 {
+  const { spies, sandbox } = loadApps();
+  const FEED = "https://mt-agent.com/mtnode/apps";
+  /* 静态目录：服务端下发 thumb = icons/<主干>__shot.png（__shot = 封面源是截图）+ coverSource */
+  const staticShot = {
+    id: "a",
+    icon: "icons/a__u1.jpg",
+    thumb: "icons/a__u1__shot.png",
+    coverSource: "shot",
+    coverVer: "1791474846",
+    shots: ["shots/a__u1/1.png", "shots/a__u1/2.png"],
+    source: "static",
+    urls: { icon: FEED + "/icons/a__u1.jpg" },
+  };
+  ok(spies.appsCoverIsShot(staticShot) === true, "coverSource=shot → 认得出封面源是截图");
+  ok(spies.appsCoverIsShot({ id: "a" }) === false, "老条目没有 coverSource → 不算截图（行为不变）");
+  ok(
+    spies.appsThumbUrlOf(staticShot) === FEED + "/icons/a__u1__shot.png",
+    "静态目录：用服务端下发的 __shot 缩略图，不再按 icon 推同名 .png：" + spies.appsThumbUrlOf(staticShot),
+  );
+  spies.setCat({ source: "static", sourceBase: FEED });
+  const chain = spies.appsCoverCandidatesOf(staticShot);
+  ok(chain[0] === FEED + "/icons/a__u1__shot.png", "备选链第 1 张 = 截图那条缩略图：" + chain[0]);
+  ok(chain.indexOf(FEED + "/icons/a__u1.png") > 0, "备选链里还有另一条缩略图（退到图标那条 16:9 图）");
+  ok(chain.indexOf(FEED + "/shots/a__u1/1.png") > chain.indexOf(FEED + "/icons/a__u1.png"), "封面源原图（第 1 张截图）排在图标原图之前");  ok(chain[chain.length - 1] === FEED + "/icons/a__u1.jpg", "最后一张才是图标原图（图标不当封面，只兜底）：" + chain[chain.length - 1]);
+  /* 卡片：缩略图 404 时必须退到**那张截图**的图，而不是一头退到图标（用户报的正是这个） */
+  const card = spies.appsCoverEl(staticShot, "演示应用", { withText: true });
+  const cimg = card.querySelector(".apps-cover-img");
+  ok(cimg.dataset.coverSource === "shot", "封面上标着 coverSource=shot（排查用）");
+  cimg.dispatch("error");
+  const second = String(cimg.src || "");
+  ok(/\/icons\/a__u1\.png|\/shots\/a__u1\/1\.png/.test(second), "截图缩略图 404 → 退到同源的另一张（不是直接没图）：" + second);
+  /* 接口目录：只有一条 /thumb（服务端自己决定源），封面源仍是截图 */
+  const apiShot = {
+    id: "a",
+    icon: "icons/a__u1.png",
+    thumb: "icons/a__u1__shot.png",
+    coverSource: "shot",
+    shots: ["shots/a__u1/1.png"],
+    source: "api",
+    urls: { icon: "https://s.example/api/apps/a/icon?owner=u1", thumb: "https://s.example/api/apps/a/thumb?owner=u1" },
+  };
+  spies.setCat({ source: "api", sourceBase: "https://s.example" });
+  const apiChain = spies.appsCoverCandidatesOf(apiShot);
+  ok(apiChain[0] === "https://s.example/api/apps/a/thumb?owner=u1", "接口目录第 1 张 = /thumb（服务端按截图现生成）：" + apiChain[0]);
+  ok(apiChain.indexOf("https://s.example/api/apps/a/shots/1") > 0, "退路里有第 1 张截图本身（封面源丢了也有图）");
+  /* 目录里没有 thumb 字段的老条目（老服务端）：仍按 icon 推导，行为与改动前一致 */
+  spies.setCat({ source: "static", sourceBase: FEED });
+  ok(
+    spies.appsThumbUrlOf({ id: "a", icon: "icons/a__u1.jpg", urls: { icon: FEED + "/icons/a__u1.jpg" } }) === FEED + "/icons/a__u1.png",
+    "老条目（没 thumb / 没 coverSource）→ 仍按 icon 推同主干 .png",
+  );
+}
+
+console.log("[2c] appsSpecPatchStoreUrls：接口来源的相对 thumb → /api/apps/<id>/thumb（不再直拼 404 地址）");
+{
+  const { spies } = loadApps();
+  const API = "https://www.mt-agent.com/mtnode/store-api";
+  const FEED = "https://mt-agent.com/mtnode/apps";
+  /* ① 接口目录：服务端下发的 thumb 是**静态目录的相对写法**，接口侧没有 icons/ 这条静态路由
+     （线上实测 …/store-api/icons/<主干>__shot.png = 404）→ 必须换成接口的 /thumb。 */
+  spies.setCat({ source: "api", sourceBase: API, sourceUrl: API + "/api/apps/catalog" });
+  const apiSpec = spies.appsSpecPatchStoreUrls({ id: "a", icon: "icons/a__u1.webp", thumb: "icons/a__u1__shot.png" });
+  ok(apiSpec.urls.icon === API + "/api/apps/a/icon", "接口来源：图标走 /api/apps/<id>/icon");
+  ok(
+    apiSpec.urls.thumb === API + "/api/apps/a/thumb",
+    "接口来源：封面缩略图走 /api/apps/<id>/thumb（不是 store-api/icons/…）：" + apiSpec.urls.thumb,
+  );
+  /* ② 缓存是从**静态目录**写下的（source=cache 但基址是静态目录）：相对写法直拼才对 ——
+     只看 source === "cache" 就换成接口路由，会把本来能用的封面换成 404。 */
+  spies.setCat({ source: "cache", sourceBase: FEED, sourceUrl: FEED + "/catalog.json" });
+  const cachedStatic = spies.appsSpecPatchStoreUrls({ id: "a", icon: "icons/a__u1.webp", thumb: "icons/a__u1__shot.png" });
+  ok(
+    cachedStatic.urls.thumb === FEED + "/icons/a__u1__shot.png",
+    "缓存来自静态目录：相对 thumb 仍直拼静态基址：" + cachedStatic.urls.thumb,
+  );
+  /* ③ 老服务端没有 thumb 字段：仍按 icon 推一条 /thumb（行为与改动前一致） */
+  spies.setCat({ source: "api", sourceBase: API, sourceUrl: API + "/api/apps/catalog" });
+  const legacy = spies.appsSpecPatchStoreUrls({ id: "a", icon: "icons/a__u1.webp" });
+  ok(legacy.urls.thumb === API + "/api/apps/a/thumb", "老服务端（没 thumb）→ 按 icon 推 /thumb：" + legacy.urls.thumb);
+  /* ④ 目录里给了绝对地址就原样用（防投毒口径由主进程负责，渲染层不改写绝对地址） */
+  const abs = spies.appsSpecPatchStoreUrls({ id: "a", icon: "icons/a__u1.webp", thumb: "https://cdn.example/x.png" });
+  ok(abs.urls.thumb === "https://cdn.example/x.png", "绝对 thumb 原样保留：" + abs.urls.thumb);
+}
+
+console.log("[3] appsCoverEl：缩略图 404 → 退回原图 → 再 404 收图 + 兜底底色");{
   const { spies } = loadApps();
   const FEED = "https://mt-agent.com/mtnode/apps";
   const cover = spies.appsCoverEl({ id: "a", icon: "icons/a.jpg", urls: { icon: FEED + "/icons/a.jpg" } }, "演示应用", {
@@ -300,18 +386,23 @@ console.log("[4] appsCoverActionsEl：卡上只留该有的那几枚图标，且
   const mk = (over) => spies.appsCoverActionsEl(Object.assign({ id: "a", title: "A" }, over), {});
   const notInstalled = mk({});
   let btns = notInstalled.children.filter((c) => c.tagName === "BUTTON");
-  ok(btns.length === 2, "未装 + 未上架云端 → 两枚（下载 + ⓘ），实际 " + btns.length);
+  ok(btns.length === 1, "未装 + 未上架云端 → 一枚（下载）：ⓘ 本轮已摘掉，实际 " + btns.length);
   ok(
-    classListOf(btns[0]).includes("apps-ico-download") && classListOf(btns[1]).includes("apps-ico-info"),
-    "顺序 = 下载、ⓘ：" + btns.map((b) => b.className).join(" | "),
+    classListOf(btns[0]).includes("apps-ico-download"),
+    "只剩下载那一枚：" + btns.map((b) => b.className).join(" | "),
   );
   ok(/<svg/.test(String(btns[0].innerHTML || "")), "下载那颗的内联 SVG 直接在按钮里（不是套一层 span）");
   const cloud = mk({ ownerId: "u1" });
   btns = cloud.children.filter((c) => c.tagName === "BUTTON");
-  ok(btns.length === 3 && classListOf(btns[2]).includes("apps-ico-coin"), "上架到云端 → 多一枚金币");
+  ok(btns.length === 2 && classListOf(btns[1]).includes("apps-ico-coin"), "上架到云端 → 多一枚金币");
+  ok(!cloud.querySelector(".apps-ico-info"), "上架到云端的卡片上也没有 ⓘ（点卡片本身就开详情窗）");
   const localRow = spies.appsCoverActionsEl({ id: "a", title: "A" }, { local: true });
   btns = localRow.children.filter((c) => c.tagName === "BUTTON");
-  ok(btns.length === 2 && classListOf(btns[0]).includes("apps-ico-play"), "库页：运行（play）+ ⓘ");
+  ok(btns.length === 1 && classListOf(btns[0]).includes("apps-ico-play"), "库页：只剩运行（play）");
+  ok(
+    !localRow.querySelector(".apps-ico-info"),
+    "库页封面上的 ⓘ 也摘掉了（点卡片就是开详情窗）",
+  );
   ok(
     btns[0].dataset.appRun === "1" && btns[0].id === "appsRunBtn-a",
     "运行那颗带 data-app-run + 稳定 id（打开态回贴靠它）：" + btns[0].id,
@@ -320,9 +411,7 @@ console.log("[4] appsCoverActionsEl：卡上只留该有的那几枚图标，且
   const card = makeEl("div");
   card.addEventListener("click", () => cardClicks++);
   card.appendChild(btns[0]);
-  card.appendChild(btns[1]);
   btns[0].dispatch("click");
-  btns[1].dispatch("click");
   ok(cardClicks === 0, "点图标不冒泡到卡片（不会连带打开详情）");
 }
 
@@ -334,6 +423,14 @@ console.log("[5] appsTileEl：点卡片开详情；点图标各自做自己的�
     opened.push(id);
     return true;
   };
+  const picks = [];
+  sandbox.window.openAppsVersionDlg = (id) => {
+    picks.push(id);
+    return true;
+  };
+  /* app-apps.js 里对它是**同文件裸调用**（openAppsVersionDlg(...)）：沙箱的全局对象是 sandbox
+     本身（sandbox.window 只是它的一个属性），所以 spy 要挂两份才被裸标识符取到。 */
+  sandbox.openAppsVersionDlg = sandbox.window.openAppsVersionDlg;
   const tipOpens = [];
   sandbox.window.MtTips = { coinIcon: () => makeEl("span"), open: (t) => tipOpens.push(t) };
   const card = spies.appsTileEl({ id: "sudoku", title: "数独", icon: "icons/s.png", ownerId: "u1" }, {});
@@ -342,12 +439,21 @@ console.log("[5] appsTileEl：点卡片开详情；点图标各自做自己的�
   ok(opened.length === 1 && opened[0] === "sudoku", "点卡片 → openAppsDetail(id)");
   const acts = card.querySelector(".apps-cover-acts");
   ok(!!acts, "卡片上有封面右下角那一排图标");
-  /* 这一排里只有 ⓘ 与金币「本来就该开详情」，所以拿它们验「不重复触发」；
+  /* ⓘ 本轮已摘掉（点卡片即开详情），所以这里改拿金币验「图标各做各的事、不冒泡」；
      下载那颗按设计点了就是开详情选分支（appsOpenDetailForPick），它开一次是对的。 */
-  const info = acts.querySelector(".apps-ico-info");
-  const before = opened.length;
-  info.dispatch("click");
-  ok(opened.length === before + 1, "点 ⓘ → 开详情一次（自己开，卡片那次不重复）");
+  ok(!acts.querySelector(".apps-ico-info"), "封面动作排里没有 ⓘ 了（用途与点卡片重复）");
+  const dl = acts.querySelector(".apps-ico-download");
+  if (dl) {
+    /* 本轮口径（需求 4）：卡片上的「下载 / 其他版本」**直接开「分支 / 版本」跳窗**
+       （appsOpenDetailForPick → openAppsVersionDlg），不再先开详情窗。 */
+    const n0 = opened.length;
+    const p0 = picks.length;
+    dl.dispatch("click");
+    ok(
+      picks.length === p0 + 1 && picks[picks.length - 1] === "sudoku" && opened.length === n0,
+      "点下载 → 直接开「分支 / 版本」跳窗一次（不再先开详情，也不是静默下载）",
+    );
+  }
   const coin = acts.querySelector(".apps-ico-coin");
   if (coin) {
     const n0 = opened.length;

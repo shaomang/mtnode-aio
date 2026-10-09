@@ -83,18 +83,9 @@
 
 <script>
 /* 与 app-assist.js 的 dshMsgBlock / dshHistSegEl 同构的一屏：
-   消息级时刻（.dsh-msg-side）+ 逐项时刻（.dsh-seg-has-time > .dsh-seg-time）两层都在。
+   逐项时刻（.dsh-seg-has-time > .dsh-seg-time）一层（最左侧那条「消息级时刻」已按本次需求移除）。
    时刻文案取**最长形态**：非今天的「M/D HH:MM:SS」+ 工具耗时「· 12.3s」。 */
 const LONG_TIME = "10/1 09:12:31";
-function side(txt) {
-  const s = document.createElement("div");
-  s.className = "dsh-msg-side";
-  const t = document.createElement("span");
-  t.className = "dsh-msg-time";
-  t.textContent = txt;
-  s.appendChild(t);
-  return s;
-}
 function segTime(txt, approx) {
   const s = document.createElement("span");
   s.className = "dsh-seg-time" + (approx ? " is-approx" : "");
@@ -110,7 +101,7 @@ function segRow(at, approx) {
 }
 function buildMsg(list) {
   const row = document.createElement("div");
-  row.className = "dsh-msg dsh-ai dsh-has-time";
+  row.className = "dsh-msg dsh-ai";
   row.dataset.mk = "msg";
   const head = document.createElement("div");
   head.className = "dsh-msg-head";
@@ -183,7 +174,7 @@ function buildMsg(list) {
   body.appendChild(ctx);
 
   row.appendChild(body);
-  row.appendChild(side(LONG_TIME));
+  /* 消息级时刻栏已移除（本次需求：去掉会话里最左侧那一列时间） */
   list.appendChild(row);
 }
 for (const list of document.querySelectorAll("[data-list]")) buildMsg(list);

@@ -225,8 +225,8 @@ async function A(body, msg, expect) {
   P('fileExtsOfType("text").indexOf("zzz") < 0', "fileExtsOfType：返回副本，改它不污染真源表");
   /* —— fileConsumerAccept —— */
   P(
-    'JSON.stringify(fileConsumerAccept("proc_text")) === JSON.stringify(["text"]) && JSON.stringify(fileConsumerAccept("proc_image")) === JSON.stringify(["image"])',
-    "fileConsumerAccept：proc_text 只吃 text、proc_image 只吃 image（kind 字符串入参）",
+    'JSON.stringify(fileConsumerAccept("proc_text")) === JSON.stringify(["text"]) && JSON.stringify(fileConsumerAccept("proc_image")) === JSON.stringify(["image", "text"])',
+    "fileConsumerAccept：proc_text 只吃 text、proc_image 吃 image + text（端口 0 是提示词 / 文本入口，图像节点本就能引用文本）",
   );
   P(
     'JSON.stringify(fileConsumerAccept({ kind: "video_gen" })) === JSON.stringify(["video", "image"]) && JSON.stringify(fileConsumerAccept({ kind: "tts_gen" })) === JSON.stringify(["audio"]) && JSON.stringify(fileConsumerAccept({ kind: "music_gen" })) === JSON.stringify(["audio", "text"])',
@@ -251,8 +251,8 @@ async function A(body, msg, expect) {
     "fileSupportDetail：未登记 kind（工具节点）→ supported true（不误卡）",
   );
   P(
-    'fileSupportDetail("proc_image", "a.png").supported === true && fileSupportDetail("proc_image", "a.txt").supported === false',
-    "fileSupportDetail：proc_image 收图拒文",
+    'fileSupportDetail("proc_image", "a.png").supported === true && fileSupportDetail("proc_image", "a.txt").supported === true && fileSupportDetail("proc_image", "a.md").supported === true && fileSupportDetail("proc_image", "a.docx").supported === false',
+    "fileSupportDetail：proc_image 收图 + 收文本类（.txt/.md…），非图非文（.docx）仍不支持（本轮修 bug：文本不再是「吃不下的文件」）",
   );
   P(
     'fileSupportDetail("video_gen", "a.mp4").supported === true && fileSupportDetail("video_gen", "a.png").supported === true && fileSupportDetail("video_gen", "a.docx").supported === false',
@@ -287,6 +287,38 @@ async function A(body, msg, expect) {
   exec('SRC1 = { id: "sf1", kind: "input_file", files: [] }; S.wf.nodes = [SRC1]; PORT_VALUES["sf1:0"] = { kind: "text", text: "C:/via/port.docx" };');
   P('wireSourceFiles({ from: "sf1", fromIndex: 0 })[0] === "C:/via/port.docx"', "wireSourceFiles：节点无文件字段时退回 valueForInput 的路径口径");
   P('wireConsumerNode({ toNode: { kind: "proc_text" } }).kind === "proc_text" && wireConsumerNode({ to: "sf1" }).id === "sf1"', "wireConsumerNode：优先 toNode，其次按 to id 查画布");
+
+  /* —— 来源 kind 白名单（本轮修 bug）：只有「携带文件的那一类节点」才有入线文件 ——
+     文本节点的正文（哪怕含「/」或形如路径）不是文件；图像 / 音频 / 视频输入各有既有专线
+     （图像 → proc_text 自动开视觉、音视频 → proc_text 走转写），一律不入工具构建判定。
+     端口值里的路径只有在该白名单内才认（上面 sf1 那条 input_file 正属此类）。 */
+  P(
+    'JSON.stringify(window.ToolBuild.fileSourceKinds()) === JSON.stringify(TOOLBUILD_FILE_SOURCE_KINDS) && window.ToolBuild.isFileSourceNode === toolBuildIsFileSourceNode',
+    "来源白名单与 app-nodes.js 连线拦截那一份同值同源（fileSourceKinds() === TOOLBUILD_FILE_SOURCE_KINDS），判定只有一处",
+  );
+  P(
+    'toolBuildIsFileSourceNode({ kind: "input_file" }) === true && toolBuildIsFileSourceNode({ kind: "input_text" }) === false && toolBuildIsFileSourceNode({ kind: "input_image" }) === false && toolBuildIsFileSourceNode({ kind: "proc_text" }) === false && toolBuildIsFileSourceNode({ kind: "" }) === false && toolBuildIsFileSourceNode(null) === false',
+    "isFileSourceNode：只认文件节点；文本 / 图像 / 处理节点与空 kind 一律不算（不误报）",
+  );
+  exec(`
+    TX1 = { id: "tx1", kind: "input_text", text: "风格：动漫/写实" };
+    TIMG = { id: "ti1", kind: "input_image", imagePath: "C:/i/a.png" };
+    S.wf.nodes = [TX1, TIMG];
+    PORT_VALUES["tx1:0"] = { kind: "text", text: "风格：动漫/写实" };
+    PORT_VALUES["ti1:0"] = { kind: "image", path: "C:/i/a.png" };
+  `);
+  P(
+    'wireSourceFiles({ from: "tx1", fromIndex: 0 }).length === 0 && wireSourceFiles({ fromNode: { kind: "input_text", text: "C:/x/a.txt" } }).length === 0',
+    "wireSourceFiles：文本节点的正文不算文件（含「/」、形如路径也不再被当成一个文件 —— 本轮修的假阳性）",
+  );
+  P(
+    'wireSourceFiles({ from: "ti1", fromIndex: 0 }).length === 0 && wireSourceFiles({ fromNode: { kind: "input_image", imagePath: "C:/i/a.png" } }).length === 0',
+    "wireSourceFiles：图像 / 音频 / 视频输入各有既有专线，不进工具构建的文件判定",
+  );
+  P(
+    'unsupportedFilesOf({ from: "tx1", toNode: { kind: "proc_image" }, fromIndex: 0 }).length === 0 && unsupportedFilesOf({ srcFiles: ["C:/x/a.docx"], toNode: { kind: "proc_text" } }).length === 1',
+    "unsupportedFilesOf：文本来源不再被判成「吃不下的文件」（显式 srcFiles 那条老口径逐字不变）",
+  );
 
   /* ═══════════════════ [2] 连线拦截：不支持文件给可识别错误 ═══════════════════ */
   console.log("\n[2] 连线拦截：不支持文件给可识别错误（点扩展名 + 工具构建出口）");
@@ -324,7 +356,17 @@ async function A(body, msg, expect) {
   );
   P(
     'fileWireSupportError(NFILE, 0, NIMG) !== null',
-    "fileWireSupportError：docx 接 proc_image 同样被拦（图像节点吃不下文本类）",
+    "fileWireSupportError：docx 接 proc_image 仍被拦（既不是图像也不是文本类）",
+  );
+  /* 本轮 bug 现场：文本输入 → 图像处理 不该冒「工具构建」；文本类文件接图像处理同样放行
+     （图像节点端口 0 = 提示词 / 文本入口，本就能引用文本）。 */
+  P(
+    'fileWireSupportError({ id: "ftx", kind: "input_text", text: "风格：动漫/写实" }, 0, NIMG) === null && fileWireSupportError({ id: "fmd", kind: "input_file", files: [{ path: "C:/x/说明.md" }] }, 0, NIMG) === null',
+    "fileWireSupportError：文本节点接图像处理不拦、文本类文件接图像处理放行（本轮口径：图像节点收 image + text）",
+  );
+  P(
+    'fileWireSupportError({ id: "fx", kind: "input_file", files: [{ path: "C:/x/a.xlsx" }] }, 0, NIMG) !== null',
+    "fileWireSupportError：图像节点只放行 image + text，xlsx 之类照旧给「工具构建」出口",
   );
   P(
     'fileWireSupportError({ id: "t1", kind: "proc_text", files: [{ path: "a.docx" }] }, 0, NPROC) === null && fileWireSupportError(NFILE, 0, null) === null',
@@ -544,6 +586,26 @@ async function A(body, msg, expect) {
     const i = read("renderer/app-canvas.js").indexOf("function openToolBuildDialog(node, opts) {");
     const seg = read("renderer/app-canvas.js").slice(i, i + 600);
     ok(i >= 0 && seg.indexOf("persistent: true") >= 0, "方案 / 进度对话框：openOverlay(…, { persistent:true })（有未提交输入，点外部不关）");
+  })();
+  /* 本轮收口：画布上的工具构建入口（节点 body / 头部那颗 🔧 卡）取入线文件只走
+     app-toolbuild.js 的 wireSourceFiles —— 与连线拦截同一份「携带文件的来源 kind」白名单，
+     自己不再判路径。少了这一条，就会出现「连线不拦、节点上却冒卡」的那种分叉。 */
+  (function () {
+    const canvas = read("renderer/app-canvas.js");
+    const seg = between(
+      canvas,
+      "/* 进这个节点的全部入线文件路径（去重，按连线顺序）",
+      "/* 入线里「这个处理节点吃不下」的文件明细",
+      "app-canvas.js 工具构建入口的入线文件统计",
+    );
+    ok(
+      seg.indexOf("wireSourceFiles(w)") >= 0 &&
+        seg.indexOf("携带文件的来源 kind") >= 0 &&
+        canvas.indexOf("function toolBuildUnsupportedList(node) {") >
+          canvas.indexOf("function toolBuildInboundFiles(node) {") &&
+        canvas.indexOf("imagePaths") < 0,
+      "画布入口只经 wireSourceFiles 取入线文件（与连线拦截同一份来源白名单，自己不判路径）",
+    );
   })();
   /* i18n：本功能全部中文文案在英文界面都有译文 */
   (function () {

@@ -76,6 +76,93 @@
   flex: none;
 }
 
+/* ---- Breeze（breeze_gen）的两个文本框：输入文本（需要念的）/ 参考文本（参考音频对应的文字） ----
+   这两格是**同一套 DOM**（renderer/app-nodes.js 的 breezeTextBoxesFor，.n-reftext-* 是它的
+   框体样式；类名沿用最初那版「参考文稿区块」的历史名，别按字面理解），卡片 body 与节点设置
+   跳窗共用一份实现，真源只有节点上的 srcText / refText 两个字段。
+   两个框同一条规则：端子有输入 → 只读回显（.n-reftext-state.locked，青色）；端子为空 →
+   可编辑。视觉沿用上面 .n-asr-* 的形态（虚线分隔 + 状态胶囊 + 文本区），只换青色系，
+   免得同一张画布上两种区块长得一样、分不清哪块是哪块的。 */
+/* host 只是两个框的容器（卡片 body 与设置窗各一份），外观全在内层 .n-reftext 上 */
+.n-reftext-host {
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+/* 两个框之间的间距（输入文本 / 参考文本） */
+.n-textslots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.n-reftext {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+}
+.n-reftext-host-card {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.14);
+}
+/* 设置跳窗里那一格：外层已是 .n-field，不再叠一条虚线 */
+.n-reftext-host-set .n-reftext {
+  margin-top: 2px;
+}
+.n-reftext-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+.n-reftext-lab {
+  font-weight: 600;
+}
+/* 状态胶囊：端子有输入（只读）走青色；端子为空（可编辑）走中性灰 */
+.n-reftext-state {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  opacity: 0.85;
+  font-size: 10px;
+}
+.n-reftext-state.locked {
+  background: rgba(94, 214, 223, 0.16);
+  color: #5ed6df;
+  opacity: 1;
+}
+.n-reftext .n-reftext-text {
+  min-height: 54px;
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* 只读回显（端子有输入，端子优先）时给一层弱化底色，一眼看出「这框现在不归你改」 */
+.n-reftext .n-reftext-text[readonly] {
+  opacity: 0.75;
+}
+.n-reftext-err {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #ff7b72;
+  word-break: break-word;
+}
+.n-reftext-hint {
+  font-size: 11px;
+  opacity: 0.72;
+  line-height: 1.5;
+}
+.n-reftext-ops {
+  display: flex;
+  gap: 6px;
+}
+.n-reftext-ops .mini {
+  flex: none;
+}
+
 /* ---- 「语音模型」窗：状态行 / 下载源 / 下载进度 ---- */
 .asr-set {
   display: flex;
@@ -118,6 +205,16 @@
 /* ---- 亮色主题覆盖 ---- */
 body.theme-light .n-asr {
   border-top-color: rgba(0, 0, 0, 0.14);
+}
+body.theme-light .n-reftext-host-card {
+  border-top-color: rgba(0, 0, 0, 0.14);
+}
+body.theme-light .n-reftext-state {
+  background: rgba(0, 0, 0, 0.06);
+}
+body.theme-light .n-reftext-state.locked {
+  background: rgba(20, 140, 150, 0.14);
+  color: #0e7c85;
 }
 body.theme-light .asr-set-row > select {
   background: #fff;

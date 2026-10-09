@@ -101,12 +101,20 @@
       <div class="pager" id="pgOrders"></div>
     </section>
 
-    <!-- 用户 -->
+    <!-- 用户：查询 + 逐账号应用存储上限（行内「改上限」）+ 图片库清理小工具（工具条右侧） -->
     <section id="view-users" class="view hidden">
       <div class="toolbar">
         <input id="fUserQuery" type="search" placeholder="用户名 / 昵称 / 账号ID / 手机号">
         <button id="btnUserSearch" class="btn">查询</button>
+        <span class="spacer"></span>
+        <button id="btnGcObjects" class="btn" title="清理没有任何应用记录引用的图片对象（正在被引用的绝不动）">清理无主图片</button>
       </div>
+      <div class="hint">
+        存储列 = 该账号云端应用包的「已用 / 上限」与「应用条数（N / M 个应用）」；上限写「不限」表示这一维度不设上限。
+        行内「改上限」给单个账号单独放宽或收紧：留空 = 回到全局默认，勾「不限」= 该账号不设上限。
+      </div>
+      <!-- 清理回执常驻一行（点「清理无主图片」后才有内容；未清理过时整行隐藏） -->
+      <div id="gcResult" class="hint q-gc-result hidden"></div>
       <div class="table-wrap"><table id="tblUsers"></table></div>
       <div class="pager" id="pgUsers"></div>
     </section>
@@ -259,13 +267,13 @@
         <button class="subtab" data-csub="audit">改动留痕</button>
       </nav>
 
-      <!-- ① 应用：全套操作（上架 / 下架、编辑条目、版本历史与删单版本、下载 zip、删除分支） -->
+      <!-- ① 应用：全套操作（编辑条目、版本历史与删单版本、下载 zip、删除分支） -->
       <div id="cview-app" class="csubview">
         <div class="toolbar">
-          <select id="fAppStatus" title="上架状态">
+          <select id="fAppStatus" title="状态">
             <option value="">全部状态</option>
-            <option value="published">已上架</option>
-            <option value="unpublished">已下架</option>
+            <option value="online">在线上</option>
+            <option value="deleted">已删除</option>
           </select>
           <input id="fAppAuthor" type="search" placeholder="作者账号 / uid（可留空）">
           <input id="fAppQ" type="search" placeholder="应用 id / 标题 / 简介 / 标签">

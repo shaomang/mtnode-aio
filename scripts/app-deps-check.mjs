@@ -335,13 +335,29 @@ if (MIRROR_ONLY) { console.log('[check] --mirror-only：跳过运行时守卫 �
 
 /* ── ④ runtimeBin 加载探针：网关真正 spawn 的那个进程，必须能加载 cordis.yml ──
    （协议冒烟只回显 60 字符 stderr，曾经因此漏掉 yaml/dist/doc 被误剪的事故） */
+/* 运行时入口按 dsh 0.2 的口径解析：`@deepseek-ai/dsh` 的 bin（lib/bin.js），
+   与 dsh/gateway/gateway.mjs 的 RUNTIME_BIN 同一份判定（manifest.bin.dsh）。
+   0.1 时代的 `dsh-sdk-jsonrpc-demo/lib/bin.js` 在 0.2 里已不存在 —— 写死旧路径
+   会让本守卫直接判失败并 bail，后面 ⑤⑥ 两道动态守卫（真跑 / 真 import）永远不执行。 */
+function resolveRuntimeBin(gatewayDir) {
+  const pkgDir = path.join(gatewayDir, 'node_modules', '@deepseek-ai', 'dsh')
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
+    const rel = typeof manifest.bin === 'object' && manifest.bin ? manifest.bin.dsh : manifest.bin
+    return rel ? path.join(pkgDir, rel) : ''
+  } catch {
+    return ''
+  }
+}
 function probeRuntime(gatewayDir, label) {
-  const bin = path.join(gatewayDir, 'node_modules', '@deepseek-ai', 'dsh-sdk-jsonrpc-demo', 'lib', 'bin.js')
+  const bin = resolveRuntimeBin(gatewayDir)
   const cfg = path.join(gatewayDir, 'cordis.yml')
-  if (!fs.existsSync(bin) || !fs.existsSync(cfg)) { console.error(`[check] ④ ${label}: 找不到 ${bin}`); return false }
+  if (!bin || !fs.existsSync(bin) || !fs.existsSync(cfg)) { console.error(`[check] ④ ${label}: 找不到 ${bin || '（@deepseek-ai/dsh 的 bin 未解析到）'}`); return false }
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-probe-home-'))
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-probe-ws-'))
-  const r = spawnSync(process.execPath, [bin, cfg], {
+  /* cordis.yml 按 SDK 的口径作 --patch 叠加层（@deepseek-ai/dsh-sdk-client 组参数
+     同样是 `--patch <path>`），不再像 0.1 那样当位置参数递给 demo bin。 */
+  const r = spawnSync(process.execPath, [bin, '--patch', cfg], {
     cwd: ws, input: '', timeout: 60000, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, DSH_HOME: home, DEEPSEEK_API_KEY: 'sk-bogus-for-load-probe' },
   })

@@ -183,6 +183,75 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       "控制面方法：status / open / stop / takeover（policy 随名单机制一起删掉）");
     ok(/p\.kind === 'browser'/.test(GATEWAY) && /browser-result/.test(GATEWAY),
       "interact 回执分流：browser 确认卡与 browser-result 工具结果不混用同一通道");
+    /* 本次需求 · 真 bug 修复（「答了卡却答不进去 / 模型白等」的根）：
+       这条分支曾用 bridgePending.get(p.id) 再取一次，而 p.kind 分派之前已经把这一条
+       从表里删掉了 → item 恒为 undefined → 每次回执都是 stale，答案被就地丢掉。
+       实证：2026-10-08 08:30:06 dsh.log `interact stale browser id=ea54e4fa…`。 */
+    {
+      const seg = GATEWAY.split("} else if (p.kind === 'browser') {")[1] || "";
+      const body = seg.slice(0, 3000);
+      ok(
+        body.length > 200 &&
+          /const item = pending\b/.test(body) &&
+          !/const item = bridgePending\.get\(p\.id\)/.test(body) &&
+          !/bridgePending\.delete\(p\.id\)/.test(body) &&
+          /item\.resolve\(\{ answers: p\.answers \}\)/.test(body),
+        "求助卡 / 确认卡的回应真的交到工具手里（复用分派前那一份 pending，不再二次取空 → stale）",
+      );
+      ok(/interact answered browser/.test(body), "回执送达留痕：interact answered browser（与 register / drop 配对可复核）");
+    }
+    /* 本次需求：「browser_help 只用于与浏览器有关的事」—— 网关侧硬拒 + 记账判据 */
+    {
+      const seg = GATEWAY.split("helpRefusal(key, sessionId) {")[1] || "";
+      const body = seg.slice(0, 1400);
+      ok(
+        body.length > 200 &&
+          /this\.usedRuns\.has\(reqId\)/.test(body) &&
+          /st\.running/.test(body) &&
+          /driver === sid/.test(body) &&
+          /driverHost === callerHost/.test(body),
+        "用途闸判据 = 本轮动过 browser_* 或本条会话正驱动着这只浏览器（别的会话开着不算）",
+      );
+      ok(
+        /ask_user_question/.test(body) && /与浏览器无关的询问请改用/.test(body),
+        "拒绝文本直接把模型引导到 ask_user_question（与浏览器无关的询问走询问卡）",
+      );
+      ok(
+        /noteBrowserUse\(key\)/.test(GATEWAY) && /op !== 'help' && op !== 'release' && op !== 'status'/.test(GATEWAY),
+        "记账口：除 help / release / status 外每个 op 都记「这一轮在浏览器上做过事」",
+      );
+      ok(
+        /this\.noteDriver\(key, sessionId\)/.test(GATEWAY) &&
+          /this\.driverHost = hostSessionTagOf\(sessionId\)/.test(GATEWAY),
+        "驱动归属按宿主会话号记下来（跨轮也认得出同一条会话，不靠运行时 session id）",
+      );
+      ok(
+        /const refuseWhy = this\.helpRefusal\(key, sessionId\)/.test(GATEWAY) &&
+          /if \(refuseWhy\) \{[\s\S]{0,200}throw new Error\(refuseWhy\)/.test(GATEWAY) &&
+          /help refused runKey=/.test(GATEWAY),
+        "求助分支先过用途闸：越界直接以错误文本收场（不弹卡）+ 留一行 diag",
+      );
+      /* 位置很要紧：闸必须在「按需自动拉起浏览器」之前 —— 一次越界的求助不该顺手
+         把一只浏览器拉起来（白开进程）。 */
+      ok(
+        (() => {
+          const gateAt = GATEWAY.indexOf("if (op === 'help') {");
+          const launchAt = GATEWAY.indexOf("除 launch / release 外都要浏览器已经起来");
+          return gateAt > 0 && launchAt > gateAt;
+        })(),
+        "用途闸排在「按需自动拉起浏览器」之前（越界的求助不会白拉一只浏览器起来）",
+      );
+    }
+    /* 本次需求：卡的生命周期全程可复核（回答没送达时能一眼看出断在哪一拍） */
+    ok(
+      /ask register kind=/.test(GATEWAY) &&
+        /pending-drop why=\$\{String\(why \|\| 'unknown'\)\}/.test(GATEWAY) &&
+        /pending-drop why=plugin-drop/.test(GATEWAY) &&
+        /abortBridgePending\(runKey, null, reqId, 'run-end'\)/.test(GATEWAY) &&
+        /abortBridgePending\(key, null, claimOf\(key\) && claimOf\(key\)\.reqId, 'close-bridge'\)/.test(GATEWAY) &&
+        /abortBridgePending\(key, s, '', 'socket-close'\)/.test(GATEWAY),
+      "pending 生命周期全程留痕：register / answered / drop（各删除点都写明是谁删的）",
+    );
     ok(/\|nb:' \+ \(noBrowserOn \? '1' : '0'\)/.test(GATEWAY), "runtime key 有 nb: 成分（可见集变了换台运行时，不打爆提示缓存）");
     ok(/env\.MTNODE_NO_BROWSER = '1'/.test(GATEWAY) && /delete env\.MTNODE_NO_BROWSER/.test(GATEWAY),
       "整档闸经 spawn env 下达（空值显式 delete，避免脏值传染）");
@@ -207,6 +276,14 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     ok(/exec\.agent\.id/.test(PLUGIN), "浏览器帧盖发起轮的章（agent.id = session id，归属不明一律 abort）");
     ok(/browser_help/.test(PLUGIN) && /kind:\s*\{[\s\S]{0,120}'login'/.test(PLUGIN),
       "browser_help 是模型侧求助入口（login / verify / choice / blocked / danger）");
+    /* 本次需求：工具描述写死用途边界（与网关的硬拒同口径，两处都不可省） */
+    ok(
+      /SCOPE \(hard rule, enforced by the gateway\)/.test(PLUGIN) &&
+        /use it ONLY when the ask is really about the browser/.test(PLUGIN) &&
+        /use ask_user_question/.test(PLUGIN) &&
+        /the gateway REFUSES the call/.test(PLUGIN),
+      "browser_help 的工具描述写死用途边界：只问浏览器相关的事，其它一律 ask_user_question（越界会被网关拒）",
+    );
     ok(/NEVER type passwords|绝不|不要输入密码/i.test(PLUGIN), "type 工具描述明文禁止代填凭据（密码由用户亲自输入）");
     ok(/只回结构化页面摘要，截图按需|browser_snapshot is enough/.test(PLUGIN), "模型所见口径写进工具描述：摘要为主、截图按需");
     /* defineTool 契约：output 必填（缺了它 defineTool 在 options.output.render 上抛
@@ -288,65 +365,102 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       && !/id="ba(Open|Stop|Takeover|Policy|Refresh|LiveModeBtn)"/.test(HTML) && !/class="ba-bar"/.test(HTML),
       "本轮需求：面板那排「打开浏览器 / 停止 / 接管 / 名单 / ↻」整行下架（接线、HTML 与容器都不再有；"
       + "落盘的 mtnode.baOpen 只是面板显隐记忆，与按钮无关）");
-    ok(/BA\.realWindow = async function/.test(APP_BROWSER) && /BA\.setTakeover = async function/.test(APP_BROWSER),
-      "真窗口与接管改由求助卡走 BA.realWindow / BA.setTakeover（能力没消失，只是换了入口）");
+    ok(/BA\.realWindow = async function/.test(APP_BROWSER) && /BA\.liveWindowToggle = function/.test(APP_BROWSER),
+      "真窗口收口到实况区头部那枚常态小键（BA.liveWindowToggle → BA.realWindow）；接管不再挂任何按钮");
+    ok(!/setTakeover\(true, sid\)/.test(APP_BROWSER),
+      "本次需求：点「用真窗口打开」不再顺手接管（接管只由登录类求助自动进入 —— 不留没出口的接管态）");
     ok(!/openPolicy/.test(APP_BROWSER) && !/approveDangerous/.test(APP_BROWSER) && /imageSmoothingQuality = "high"/.test(APP_BROWSER),
       "名单编辑浮层已删；实况绘制改用高质量降采样（清晰度那一半）");
     ok(/KIND_GROUP/.test(APP_BROWSER) && /GROUP_LABEL/.test(APP_BROWSER) && /g-browser/.test(CSS) && /g-shell/.test(CSS) && /g-file/.test(CSS),
       "活动流分类着色：浏览器 / 命令 / 文件一眼区分（源码分组 + 样式三色）");
     ok(/dshOnActivity/.test(APP_BROWSER) && /dshOnActivity/.test(PRELOAD), "活动流走全局事件订阅（reqId 空通道，preload 侧同源）");
-    /* 本轮需求：求助卡是真窗口与接管在界面上的**唯一**入口 —— 两枚键各管一件事，
-       且真窗口那枚不能用 ixMarkFirstSend 的一次性闸（用了会把「我已处理完」也闸掉）。 */
-    ok(/BrowserAct\.realWindow\(on, it\.data\.sessionId/.test(APP_DB) && /I18n\.t\("用真窗口打开"\)/.test(APP_DB),
-      "求助卡（登录 / 验证码类）给了「用真窗口打开 / 收回右栏」，走 BA.realWindow");
-    ok(/BrowserAct\.setTakeover\(want, it\.data\.sessionId/.test(APP_DB),
-      "求助卡上的接管 / 交还走 BA.setTakeover（面板那枚按钮下架后不许留死路）");
-    /* 本次需求（「答了卡、模型不往下走」）：接管切换失败不许照发回执 —— 原来不管成败
-       都发一帧，用户以为答过了、网关那边的接管态却没动；现在失败就停在卡上并写明原因。 */
-    ok(
-      /ok = !!\(window\.BrowserAct && \(await window\.BrowserAct\.setTakeover\(/.test(APP_DB) &&
-        /if \(!ok\) \{/.test(APP_DB),
-      "接管切换失败时不发回执（停在卡上写明原因，可以直接再点）",
-    );
+    /* 本次需求：求助卡 = **询问模式那张卡** —— 题面 / 选项 / 自定义回答 / 「回答」键与
+       提问卡共用同一份渲染器（ixRenderQuestions），专属按钮（接管 / 真窗口 / 我已处理 /
+       撤销这张卡）全部下架；答案按题采集、以 answers[] 走 kind:'browser' 回执。 */
     {
-      const winBlock = APP_DB.split('const win = document.createElement("button")')[1] || "";
-      ok(!/ixMarkFirstSend\(it\)/.test(winBlock.slice(0, 900)),
-        "真窗口那枚键不占一次性回执闸（否则同一张卡上的「我已处理完，交还控制权」会点不动）");
-    }    ok(/ix-browser-help/.test(APP_DB) && /ixAnswerBrowser/.test(APP_DB), "求助 / 确认卡有专属渲染与回执出口");
-    /* 本次需求（等待改为永久之后的可见凭据 + 无进展兜底 + 自动切真窗口）：
-       ① 卡还在 = 模型还在等：常驻一行「已等 N 秒（不会超时自动跳过）」；
-       ② 答完落一条会话内嵌记录 + 60 秒无新进展 → ⚠ 提示 + 「重发本轮 / 终止本轮」；
-       ③ 登录类求助卡一到，若那只没窗口就自动切真窗口（前提：没有别的会话正驱动它）。 */
+      const seg = APP_DB.split("function ixRenderQuestions(card, it, questions)")[1] || "";
+      ok(seg.length > 0 && /ix-opts/.test(seg.slice(0, 4000)) && /ix-custom/.test(seg.slice(0, 4000)),
+        "题面渲染器 ixRenderQuestions（选项行 + 第二行理由 + 自定义回答输入框）");
+      ok(/ixRenderQuestions\(card, it, d\.questions \|\| \[\]\)/.test(APP_DB) &&
+        /ixRenderQuestions\(card, it, \(it\.data && it\.data\.questions\) \|\| \[\]\)/.test(APP_DB),
+        "求助卡与询问卡共用同一份题面渲染（两族不再各写一套）");
+      ok(!/接管浏览器（我来操作）/.test(APP_DB) && !/我已处理完，交还控制权/.test(APP_DB) &&
+        !/撤销这张卡/.test(APP_DB) && !/BrowserAct\.realWindow\(on, it\.data\.sessionId/.test(APP_DB),
+        "求助卡专属按钮全部下架（卡上只剩 回答 / 稍后 / 中断）");
+      ok(/function ixAnswerChannelOf\(it\)/.test(APP_DB) && /ixIsHelpCard\(it\) \? "browser" : "question"/.test(APP_DB),
+        "「回答」按卡族选回执通道（求助帧 kind:'browser'，提问帧 kind:'question'）");
+      ok(/function ixHelpQuestionsOf\(d\)/.test(APP_DB) && /data\.questions = ixHelpQuestionsOf\(data\)/.test(APP_DB) &&
+        /我已处理，继续/.test(APP_DB),
+        "收卡时归一题面：没有题就按求助说明补一道，整卡一个选项都没有就补「我已处理，继续」");
+      ok(/function ixIsHelpCard\(it\)/.test(APP_DB) && /function ixEndedKindOf\(it\)/.test(APP_DB) &&
+        /if \(ixEndedKindOf\(it\)\) \{/.test(APP_DB),
+        "轮末收口按族走：求助卡与提问卡同族转「这一轮已经结束」态留住（不再当场撤卡）");
+    }
+    /* 本次需求：求助卡专属可见态下线 —— 「已等 N 秒」常驻行只剩危险动作确认卡有；
+       60 秒无进展看门狗（已回应记录 + 重发 / 终止横幅）整块撤掉。 */
     ok(
       /function ixWaitStart\(id, el, sig\)/.test(APP_DB) &&
-        /模型正在等你的回应 · 已等 \{n\} 秒（不会超时自动跳过）/.test(APP_DB) &&
         /ixWaitStart\(d\.id, waitEl, Number\(it\.at\) \|\| Date\.now\(\)\)/.test(APP_DB),
-      "求助卡常驻一行「模型正在等你的回应 · 已等 N 秒」（永久等待的可见凭据）",
+      "「模型正在等你的回应 · 已等 N 秒」常驻行仍在（现在只剩危险动作确认卡用它）",
     );
     ok(
-      /const IX_STALL_MS = 60 \* 1000;/.test(APP_DB) &&
-        /function ixNoteBrowserAnswer\(it\)/.test(APP_DB) &&
-        /已回应，模型继续中/.test(APP_DB) &&
-        /重发本轮/.test(APP_DB) &&
-        /终止本轮/.test(APP_DB),
-      "答完落会话内嵌记录，60 秒无新进展给「重发本轮 / 终止本轮」（不依赖卡上那一问，卡死了也能救）",
+      !/IX_STALL_MS/.test(APP_DB) && !/function ixNoteBrowserAnswer\(it\)/.test(APP_DB) &&
+        !/function ixStallBanner/.test(APP_DB) && !/function dshRunProgressTick/.test(APP_DB),
+      "已撤：求助卡的「已回应，模型继续中」+ 60 秒无进展看门狗（询问卡没有这两样）",
     );
     ok(
-      /_src === IX_BROWSER_NOTE_SRC/.test(APP_DB) &&
+      /const IX_BROWSER_NOTE_SRC = "ix-browser";/.test(APP_DB) &&
         /String\(m\._src \|\| ""\) === "ix-browser"\) continue;/.test(APP_DB),
-      "「已回应」记录落盘可见、但**不进模型上下文**（只给用户看的界面痕迹）",
+      "老会话里的「已回应」记录仍被挡在模型上下文之外（兼容老数据，不再新写）",
     );
+    ok(/ix-browser-help/.test(APP_DB) && /ixAnswerBrowser/.test(APP_DB),
+      "危险动作确认卡仍有专属渲染与一次性闸门回执（ixAnswerBrowser 只剩它这一族）");
     ok(
       /async function ixMaybeAutoRealWindow\(it, card\)/.test(APP_DB) &&
         /d\.helpKind !== "login"/.test(APP_DB) &&
-        /if \(!st\.headless\) return;/.test(APP_DB) &&
+        /if \(!st\.headless && !st\.parked\) return;/.test(APP_DB) &&
         /driver !== sid/.test(APP_DB) &&
+        !/if \(!st\.headless\) return;/.test(APP_DB) &&
         /await BA\.realWindow\(true, sid\)/.test(APP_DB),
-      "登录类求助卡自动切真窗口（仅那只没窗口、且没有别的会话正驱动它时才切）",
+      "登录类求助卡自动切真窗口（没窗口 / 已有窗口但被移出屏外两种都摆回来；接管由网关给）",
+    );
+    /* 本次需求（「求助了却没弹窗」的那条链）：链上每一处早退都要留下说法 ——
+       从前三处直接 return，用户看到的就是「它求助于我，却什么窗口都没出现」。 */
+    ok(
+      (APP_DB.split("async function ixMaybeAutoRealWindow(it, card) {")[1] || "")
+        .slice(0, 3000)
+        .split("ixCardNote(").length >= 5,
+      "真窗口链的每一处早退都写清原因（没确认到状态 / 别的会话在驱动 / 你收回过右栏 / 浏览器没在跑 / 切窗口失败）",
+    );
+    /* 本次需求：静默丢卡也要说清（发起轮已不在时卡片不显示，但会话里落一行痕迹 + 提示） */
+    ok(
+      /if \(deadRun\) \{/.test(APP_DB) &&
+        /有一张卡片没能弹出（发起这一轮已经结束）/.test(APP_DB),
+      "死卡不再无声无息地丢掉：留一行可复核的痕迹 + 一枚提示",
+    );
+    /* 本次需求（用户口径：卡必须在屏上、不处于底栏收起态，但不抢应用窗口焦点）：
+       新卡到达 → 取消收起态 + 夹回视口 + 闪一下头部（既有 ixRevealNewCard 那条路，钉住它）。 */
+    ok(
+      /if \(ixFreshCard\) \{/.test(APP_DB) &&
+        /ixRevealNewCard\(box, pulse\)/.test(APP_DB) &&
+        /el\.classList\.remove\("ix-docked"\)/.test(APP_DB) &&
+        /head\.classList\.add\("ix-attn"\)/.test(APP_DB) &&
+        !/window\.focus\(\)/.test(APP_DB.split("function ixRevealNewCard")[1].slice(0, 1200)),
+      "新卡到达必须回到眼前：取消底栏收起态 + 夹回视口 + 闪头部提醒（不抢应用窗口焦点）",
+    );
+    /* 本次需求 · 真 bug 修复：stale 不再一律说「这一轮已经结束」——发起轮还在跑时如实说，
+       并给「终止这一轮」的出口（模型正卡在这一问上）。 */
+    ok(
+      /const live = !!\(it\.runKey && S\._runCancels && S\._runCancels\[it\.runKey\]\)/.test(APP_DB) &&
+        /it\.endedLive = live;/.test(APP_DB) &&
+        /这一问没能送达（发起轮仍在跑）/.test(APP_DB) &&
+        /const live = !!it\.endedLive;/.test(APP_DB) &&
+        /停止[\s\S]{0,200}终止这一轮|终止这一轮/.test(APP_DB),
+      "stale 两态分清：发起轮仍在跑 → 如实说明 + 给「终止这一轮」出口；真的结束了才说「这一轮已经结束」",
     );
     ok(
       /DSH_IX_WAIT_TIMEOUT_MS = Number\.POSITIVE_INFINITY/.test(APP_DB) &&
-        /function dshRunProgressTick\(runKey\)/.test(APP_DB),
+        !/dshRunProgressTick/.test(APP_DB),
       "渲染层看门狗也不再给交互等待设上限（2 小时那一刀会砍掉「我明明答了」的轮次）",
     );
     ok(
@@ -524,13 +638,13 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
         "ensureBrowser 认 visible：缺省无窗口；要带窗口而当前是无窗口那只时 —— 先试显形，不行才温和关掉重开一只");
       ok(/headless: !!state\.headless/.test(HOST) && /if \(state\.headless\) \{[\s\S]{0,400}viewParked = true/.test(HOST),
         "viewStatus 带 headless；无窗口那只的 parkSessionWindow 直接算已让位（不读位姿、不标 fallback）");
-      ok(/这只是无窗口（后台）浏览器/.test(HOST) && /用真窗口打开/.test(HOST), "detachWindow 对无窗口那只给可执行的说法（去求助卡点「用真窗口打开」）");
+      ok(/这只是无窗口（后台）浏览器/.test(HOST) && /用真窗口打开/.test(HOST), "detachWindow 对无窗口那只给可执行的说法（去实况区点「用真窗口打开」）");
       const launchBranch2 = GATEWAY.split("if (op === 'launch')")[1] || "";
       ok(/visible: !!params\.visible/.test(launchBranch2.slice(0, 1600)),
         "网关 launch 分支按 visible 传给宿主（浏览器工具不传 = 无窗口）");
       ok(/async open\(opts\)[\s\S]{0,900}visible: wantVisible/.test(GATEWAY)
         && /visible: p\.visible !== false/.test(GATEWAY),
-        "求助卡「用真窗口打开」= 唯一带窗口的入口（visible 缺省 true）");
+        "实况区那枚「用真窗口打开 / 收回」= 唯一带窗口的入口（visible 缺省 true）");
       ok(/ensureBrowser\([\s\S]{0,1600}r\.reused === false[\s\S]{0,300}BrowserHost\.navigate/.test(GATEWAY),
         "无窗口 → 带窗口会重起进程：网关先记下当前页地址，重起后补一次导航（登录页不丢）");
       /* 本轮修：真窗口那次「温和关掉重开一只」要在活动流里说得明白（渲染层按 restartedForVisible 换 toast） */
@@ -539,16 +653,17 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       ok(/if \(op && op !== 'status'\) BrowserHost\.setLastAction\(op\)/.test(GATEWAY),
         "网关每次转发 op 前记下「刚才在跑什么动作」（异常退出留痕要带上它）");
       ok(/restartedForVisible/.test(APP_BROWSER)
-        && /已关掉那只无窗口的、重开为真窗口并接管：顺手操作即可；做完点「我已处理完，交还控制权」。/.test(APP_BROWSER),
+        && /已关掉那只无窗口的、重开为真窗口：顺手操作即可；做完在求助卡上点「回答」（登录类会自动交还控制权）。/.test(APP_BROWSER),
         "渲染层真窗口那条 toast 分「重开了一只」与「只是摆窗口」两种说法");
-      ok(/headlessNow/.test(APP_DB) && /点「用真窗口打开」会把当前这只无窗口的浏览器温和关掉、重开一只带窗口的/.test(APP_DB),
-        "求助卡上写明代价：无窗口那只点「用真窗口打开」= 温和关掉重开一只（不让用户以为浏览器崩了）");
-      ok(/BA\.headless/.test(APP_BROWSER) && /backBtn\.hidden = !BA\.running \|\| !detached/.test(APP_BROWSER),
-        "渲染层跟随形态与 headless：实况区「收回」小键只在真的在独立窗口时出现");
+      ok(/headless: false/.test(APP_BROWSER) &&
+        /用一只真实的浏览器窗口打开它（当前无窗口那只会被温和重开成带窗口的）：登录 \/ 验证码你自己输，密码不进对话/.test(HTML),
+        "真的无窗口那只的成本写在键的 tooltip 上：点「用真窗口打开」= 温和关掉重开一只（不让用户以为浏览器崩了）");
+      ok(/BA\.headless/.test(APP_BROWSER) && /winBtn\.hidden = !BA\.running/.test(APP_BROWSER),
+        "渲染层跟随形态与 headless：这枚小键只要浏览器在跑就常驻（键面随形态切「用真窗口打开 / 收回」）");
       ok(/visible: true/.test(APP_BROWSER) && /T\("无窗口运行"\)/.test(APP_BROWSER),
-        "求助卡那条显式要带窗口的一只，实况区文案切「无窗口运行」");
+        "去程显式要带窗口的那只，实况区文案切「无窗口运行」");
       ok(/无窗口运行/.test(I18N)
-        && /这只是无窗口（后台）浏览器，画面就在这里；想要真窗口请在会话里让它求助（登录 \/ 验证码卡上点「用真窗口打开」）。/.test(I18N),
+        && /这只是无窗口（后台）浏览器，画面就在这里；想要真窗口点上面那枚「用真窗口打开」（会温和重开成带窗口的）。/.test(I18N),
         "无窗口两句词条都在 i18n 里（实况区文案 + 说明才有中英）");
     }
     /* 本轮需求（清晰度）：实况帧的编码档。本机实测：质量 72 → 90 时单帧 9KB → 13KB；
@@ -577,9 +692,9 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       "主进程同一条 dsh:browser 透传并兜底（老网关不认 view 时回错误而不 reject）");
 
     /* 渲染层：默认 dock、可切独立窗口，且未被调用 / 未启动时整条不显示 */
-    ok(/id="baLive"/.test(HTML) && /id="baLiveCanvas"/.test(HTML) && /id="baLiveBack"/.test(HTML) && /id="baLivePause"/.test(HTML)
-      && !/baLiveModeBtn/.test(HTML),
-      "右栏实况区 DOM（画面 + 收回小键 + 暂停观察）在 index.html 里自带，「独立窗口」按钮已下架");
+    ok(/id="baLive"/.test(HTML) && /id="baLiveCanvas"/.test(HTML) && /id="baLiveWin"/.test(HTML) && /id="baLivePause"/.test(HTML)
+      && !/baLiveModeBtn/.test(HTML) && !/id="baLiveBack"/.test(HTML),
+      "右栏实况区 DOM（画面 + 「用真窗口打开 / 收回」小键 + 暂停观察）在 index.html 里自带，旧的只管回程的 #baLiveBack 已下线");
     ok(/id="baPanel" hidden/.test(HTML), "面板默认 hidden：没被调用 / 没启动浏览器时整条不显示");
     ok(/BA\.setOpen = function \(open, persist\)[\s\S]{0,700}classList\.toggle\("ba-open", on\)/.test(APP_BROWSER)
       && /if \(box\) box\.hidden = !on;/.test(APP_BROWSER),
@@ -604,26 +719,90 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       "画布上的指针 / 滚轮 / 键盘 / IME 都转发（按 CSS 像素 + 画布显示尺寸）");
     ok(/window\.api\.onBrowserFrame\(BA\.onFrame\)/.test(APP_BROWSER) && /BA\.onFrame = function/.test(APP_BROWSER),
       "帧订阅 + seq 去重（乱序 / 重放的旧帧直接丢）");
-    ok(/data-i18n="收回"/.test(HTML) && /id="baLiveBack"[^>]*hidden/.test(HTML),
-      "「收回」小键在实况区头部（静态 hidden：不是独立窗口形态时不出现）");
-    ok(/backBtn\.hidden = !BA\.running \|\| !detached/.test(APP_BROWSER),
-      "渲染层按真状态显隐这枚小键：#baLiveBack.hidden = !BA.running || !detached（未启动 / 已 docked＝不显示）");
+    ok(/id="baLiveWin"/.test(HTML) && /data-i18n-title="用一只真实的浏览器窗口打开它/.test(HTML),
+      "「用真窗口打开 / 收回」小键在实况区头部（常态露出，键面与 tooltip 由渲染层随形态写）");
+    ok(/winBtn\.hidden = !BA\.running/.test(APP_BROWSER) && /winBtn\.textContent = detached \? T\("收回"\) : T\("用真窗口打开"\)/.test(APP_BROWSER),
+      "渲染层按真状态画这枚小键：#baLiveWin.hidden = !BA.running（未启动才不显示），键面随形态切");
     ok(/\.ba-live-stage/.test(CSS) && /\.ba-live-mask/.test(CSS) && /\.ba-live-note/.test(CSS), "实况区样式（画面 / 等待遮罩 / 兜底说明）");
-    const pair = ["实况", "收回", "用真窗口打开", "收回右栏", "暂停观察", "等待浏览器画面…", "已在独立窗口"];
+    const pair = ["实况", "收回", "用真窗口打开", "暂停观察", "等待浏览器画面…", "已在独立窗口"];
     ok(pair.every((k) => I18N.includes('"' + k + '"')), "i18n 新词条齐备：" + pair.join(" / "));
     /* 本轮修：默认内部界面（toast / 失败兜底文案都有中英词条，否则切英文就露中文） */
-    ok(I18N.includes('"已用真窗口打开，且你已接管：顺手操作即可；做完点「我已处理完，交还控制权」。"')
+    ok(I18N.includes('"已用真窗口打开：顺手操作即可；做完在求助卡上点「回答」（登录类会自动交还控制权）。"')
       && I18N.includes('"没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。"'),
       "i18n 补上「默认内部界面」两条词条（就绪提示 + detached 没摆出来的兜底提示）");
-    /* 本轮修：真窗口那两条新文案也要中英成对（切英文不能露中文） */
-    ok(I18N.includes('"已关掉那只无窗口的、重开为真窗口并接管：顺手操作即可；做完点「我已处理完，交还控制权」。"')
-      && I18N.includes('"点「用真窗口打开」会把当前这只无窗口的浏览器温和关掉、重开一只带窗口的（当前页面地址会带回来；登录态在，不受影响）"'),
-      "i18n 补上本轮两条词条（「重开了一只带窗口的」toast + 求助卡上的代价说明）");
+    /* 本次需求：真窗口那两条新文案也要中英成对（切英文不能露中文） */
+    ok(I18N.includes('"已关掉那只无窗口的、重开为真窗口：顺手操作即可；做完在求助卡上点「回答」（登录类会自动交还控制权）。"')
+      && I18N.includes('"用一只真实的浏览器窗口打开它（当前无窗口那只会被温和重开成带窗口的）：登录 / 验证码你自己输，密码不进对话"'),
+      "i18n 补上本次两条词条（「重开了一只带窗口的」toast + 那枚小键的 tooltip）");
     /* 本轮修：会话列表上的被动标记（静默处理时用户扫一眼就知道哪条会话在用浏览器） */
     ok(/\.side-sess-ba/.test(require("fs").readFileSync(require("path").join(__dirname, "..", "renderer", "css", "dsh.css"), "utf8"))
       && /BA\.noteBrowserSession/.test(APP_BROWSER)
       && /side-sess-ba/.test(require("fs").readFileSync(require("path").join(__dirname, "..", "renderer", "app-assist.js"), "utf8")),
       "被动标记齐备：CSS .side-sess-ba + BA.noteBrowserSession + app-assist 会话行渲染");
+  }
+
+  /* ============ [7c] 求助卡 = 询问模式那张卡：契约真跑（纯函数） ============ */
+  console.log("\n[7c] 求助卡与询问卡同源：题面归一 / 答案回执（真跑源码里的纯函数）");
+  {
+    const gFrom = GATEWAY.indexOf("function helpOptionOf(o) {");
+    const gTo = GATEWAY.indexOf("/* 浏览器动作留痕 → 宿主事件");
+    ok(gFrom > 0 && gTo > gFrom, "抠到网关的 helpQuestionsOf / helpAnswersOf 真源码");
+    const gctx = { module: { exports: {} } };
+    vm.createContext(gctx);
+    vm.runInContext(
+      GATEWAY.slice(gFrom, gTo) + "\nmodule.exports = { helpQuestionsOf, helpAnswersOf };",
+      gctx,
+    );
+    const GH = gctx.module.exports;
+    const q1 = GH.helpQuestionsOf({
+      kind: "choice",
+      questions: [{ question: "选哪个账号？", options: [{ label: "A", description: "主号" }, "B"] }],
+    });
+    ok(
+      q1.length === 1 && q1[0].id === "q1" && q1[0].options.length === 2 &&
+        q1[0].options[0].description === "主号" && q1[0].options[1].label === "B",
+      "新契约：questions[] 收下（补 id + 字符串选项归一成 {label}）",
+    );
+    const q2 = GH.helpQuestionsOf({ kind: "login", message: "请登录后点回答", options: ["已登录"] });
+    ok(
+      q2.length === 1 && /请登录后点回答/.test(q2[0].question) && q2[0].options[0].label === "已登录",
+      "旧参数兼容：message + options 折成一道题（老调用不会失败）",
+    );
+    ok(GH.helpQuestionsOf({ kind: "blocked" }).length === 0, "什么都没有 → 空数组（由渲染层按卡上题面兜底）");
+    const an = GH.helpAnswersOf(
+      [{ id: "q1" }, { id: "q2" }],
+      [{ id: "q2", selected: ["B"] }, { id: "q9", selected: ["x"] }],
+    );
+    ok(
+      an.length === 3 && an[0].id === "q1" && an[0].selected.length === 0 && an[1].selected[0] === "B",
+      "回执与题面同序：每题 id + selected[]（题面里没列到的答案也不丢）",
+    );
+
+    const rFrom = APP_DB.indexOf("const IX_MULTI_RE =");
+    const rTo = APP_DB.indexOf("function ixPush(kind, data, runKey, src) {");
+    /* 抽取起点自带依赖（同一次孤立求值里的东西都得在片里）：ixHelpQuestionsOf 用
+       ixMultiOf 判多选，ixMultiOf 又用 IX_MULTI_RE 做文本兜底 —— 起点前移到那条常量，
+       否则这段一跑就 ReferenceError（假红，与浏览器这一族的行为无关）。 */
+    ok(
+      rFrom > 0 && rFrom < APP_DB.indexOf("function ixHelpQuestionsOf(d) {") && rTo > rFrom,
+      "抠到渲染层的 ixHelpQuestionsOf 真源码（抽取起点覆盖 ixMultiOf 的依赖 IX_MULTI_RE）",
+    );
+    const rctx = { I18n: { t: (s) => s }, module: { exports: {} } };
+    vm.createContext(rctx);
+    vm.runInContext(APP_DB.slice(rFrom, rTo) + "\nmodule.exports = { ixHelpQuestionsOf };", rctx);
+    const HQ = rctx.module.exports.ixHelpQuestionsOf;
+    const ha = HQ({ questions: [{ id: "q1", question: "选哪个？", options: [{ label: "A", description: "理由" }] }] });
+    ok(
+      ha.length === 1 && ha[0].id === "q1" && ha[0].options[0].description === "理由",
+      "新契约题面原样过（选项的第二行理由也在）",
+    );
+    const hb = HQ({ message: "请登录后点回答", options: [] });
+    ok(
+      hb.length === 1 && /请登录后点回答/.test(hb[0].question) && hb[0].options[0].label === "我已处理，继续",
+      "没有题目 / 一个选项都没有 → 补一道题 + 「我已处理，继续」出口（等价旧卡那枚按钮）",
+    );
+    const hc = HQ({ title: "需要你登录 / 处理页面验证" });
+    ok(hc.length === 1 && /需要你登录/.test(hc[0].question), "连 message 都没有 → 题面取卡上的标题（kind 语义）");
   }
 
   /* ============ [9] 打包与主进程接线 ============ */
@@ -820,11 +999,11 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
   }
 
   const IDS = [
-    /* 本轮需求：baOpen / baStop / baTakeover / baPolicy / baRefresh 与 baLiveModeBtn 已下架，
-       实况区新增一枚只在独立窗口形态下出现的「收回」小键（#baLiveBack）。 */
+    /* 本次需求：真窗口的去程与回程合成一枚**常态**小键（#baLiveWin）—— 求助卡与询问卡
+       同型之后卡上不再有窗口按钮，这里就是真窗口的唯一入口（旧 #baLiveBack 只管回程）。 */
     "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
     "baFilter", "baAll", "baClear", "baList",
-    "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveBack", "baLiveMode",
+    "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveWin", "baLiveMode",
     "baLiveNote", "baLiveMask", "baLive",
   ];
 
@@ -919,8 +1098,8 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       ok(BA.isOpen() === false && app.els.baPanel.hidden === true && !app.pane.classList.contains("ba-open"),
         "右栏默认收起（hidden + 无 .ba-open，旧两栏界面一字不差）");
       ok(app.calls.viewStart === 0, "没被调用就不开流（不占帧、不占解码成本）");
-      ok(app.els.baLiveBack.hidden === true,
-        "浏览器没开时「收回」小键不显示（形态切换只在真有一只在跑的浏览器时才有意义）");
+      ok(app.els.baLiveWin.hidden === true,
+        "浏览器没开时「用真窗口打开」小键不显示（形态切换只在真有一只在跑的浏览器时才有意义）");
     }
 
     /* ── [2] 会话一用浏览器 → 右栏出现 + 真开流 ──────────────────────────── */
@@ -940,8 +1119,8 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
         + " [viewStart=" + app.calls.viewStart + " on=" + app.BA.live.on + " running=" + app.BA.running
         + " open=" + app.BA.isOpen() + " stop=" + app.calls.viewStop + "]");
       ok(app.store["mtnode.baOpen"] === "1", "显隐照旧落 localStorage（可复核）");
-      ok(app.els.baLiveBack.hidden === true,
-        "浏览器在跑但形态是 docked：收回小键仍然不显示（只有真在独立窗口时才给它）");
+      ok(app.els.baLiveWin.hidden === false && app.els.baLiveWin.textContent === "用真窗口打开",
+        "浏览器在跑就常驻露出，键面 = 「用真窗口打开」（去程与回程同一枚键）");
     }
 
     /* ── [3] 用户亲手关过就不打扰 ─────────────────────────────────────────── */
@@ -1028,30 +1207,38 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     }
 
     /* ── [9] 控件引用的 API 真实存在：点下去真把形态切一圈 ────────────────── */
-    console.log("\n[9] #baLiveBack 的 onclick 真能把真窗口收回右栏（不是属性在、实现没了）");
+    console.log("\n[9] #baLiveWin 的 onclick 真能把真窗口切过去 / 收回（不是属性在、实现没了）");
     {
       const app = makeApp({ running: true });
       await tick(); await tick();
-      const btn = app.els.baLiveBack;
-      ok(typeof app.BA.liveSetMode === "function" && typeof app.BA.realWindow === "function",
-        "BA.liveSetMode / BA.realWindow 都是函数（控件与求助卡引用的成员真实存在）");
-      ok(!!btn.onclick, "#baLiveBack.onclick 被接上了（bindLive 认得这个 id）");
+      /* 键面由 BA.running 决定，而 running 的真源是网关状态：先开一次右栏（它顺带刷状态），
+         这才对得上真机路径（用户看得见这枚键时，状态早就刷过了）。 */
+      app.BA.setOpen(true);
+      await tick(); await tick();
+      const btn = app.els.baLiveWin;
+      ok(typeof app.BA.liveSetMode === "function" && typeof app.BA.realWindow === "function" &&
+        typeof app.BA.liveWindowToggle === "function",
+        "BA.liveSetMode / BA.realWindow / BA.liveWindowToggle 都是函数（控件引用的成员真实存在）");
+      ok(!!btn.onclick, "#baLiveWin.onclick 被接上了（bindLive 认得这个 id）");
       ok(app.BA.live.mode === "docked", "实况默认形态 = docked（右栏）");
-      ok(btn.hidden === true, "docked 形态下这枚小键不显示（它不是常驻按钮，只是回程）");
+      ok(btn.hidden === false && btn.textContent === "用真窗口打开",
+        "docked 形态下这枚小键就在（常驻入口），键面写「用真窗口打开」");
       await app.BA.liveSetMode("detached");
       await tick();
-      ok(app.BA.live.mode === "detached" && btn.hidden === false,
-        "切到真窗口后「收回」小键出现（不会把用户卡在真窗口上）");
+      ok(app.BA.live.mode === "detached" && btn.hidden === false && btn.textContent === "收回",
+        "切到真窗口后键面翻成「收回」（不会把用户卡在真窗口上）");
       let threw = "";
       try { await btn.onclick(); } catch (err) { threw = String((err && err.message) || err); }
       await tick();
-      ok(!threw && app.BA.live.mode === "docked" && btn.hidden === true,
+      ok(!threw && app.BA.live.mode === "docked" && btn.textContent === "用真窗口打开",
         "点一下 → 收回右栏（真调到了 BA 的实现，不是空转）"
         + " [mode=" + app.BA.live.mode + (threw ? " threw=" + threw : "") + "]");
-      /* 求助卡那枚：on=true 要一只带窗口的 + 接管 + 摆到眼前；on=false 收回。
-         用桩盯住「它真调了这三步」，别让卡片上的键变成只弹提示的空壳。 */
+      /* 去程：open(visible) → detached 两步真走；**不接管**（本次需求：接管只由
+         登录类求助自动进入，避免没有卡可答时留下没出口的接管态）。 */
       const acts = [];
       const origBrowser = app.BA.browser;
+      const origTakeover = app.BA.setTakeover;
+      app.BA.setTakeover = async () => { acts.push("takeover"); return true; };
       app.BA.browser = async (action, extra) => {
         acts.push(action);
         if (action === "open") { app.BA.applyStatus({ ok: true, running: true, headless: false, reused: false }); return { ok: true, running: true }; }
@@ -1059,13 +1246,14 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       };
       await app.BA.realWindow(true, "asX");
       await tick();
-      ok(acts.indexOf("open") >= 0 && acts.indexOf("takeover") >= 0 && app.BA.live.mode === "detached",
-        "求助卡「用真窗口打开」= open(visible) → takeover → detached 三步都真走了"
+      ok(acts.indexOf("open") >= 0 && acts.indexOf("takeover") < 0 && app.BA.live.mode === "detached",
+        "「用真窗口打开」= open(visible) → detached，且**不再顺手接管**"
         + " [calls=" + acts.join(",") + " mode=" + app.BA.live.mode + "]");
       await app.BA.realWindow(false, "asX");
       await tick();
       ok(app.BA.live.mode === "docked", "同一枚键再点 = 收回右栏（双向都通）");
       app.BA.browser = origBrowser;
+      app.BA.setTakeover = origTakeover;
     }
 
     /* ── [10] 静态扫描：每个 BA.<name> 引用都必须在 BA 上真实存在 ─────────── */
@@ -1127,8 +1315,8 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       ok(typeof on.pointerdown === "function" || (on.pointerdown || []).length > 0,
         "指针接线在（_bound 之后才挂的画布监听）");
       /* 桩一个会抛错的实现：真机换模型 / 网关卡死时就是这种抛错 */
-      app.BA.liveSetMode = function () { throw new Error("boom-live-mode"); };
-      const btn = app.els.baLiveBack;
+      app.BA.liveWindowToggle = function () { throw new Error("boom-live-window"); };
+      const btn = app.els.baLiveWin;
       let threw = "";
       try { btn.onclick(); } catch (err) { threw = String((err && err.message) || err); }
       ok(canvas._bound === true,

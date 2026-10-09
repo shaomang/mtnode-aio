@@ -69,6 +69,8 @@ def _ensure_multipart() -> None:
                 capture_output=True,
                 text=True,
                 timeout=180,
+                # 管理服务自己无控制台（宿主用 pythonw 拉起）：不加这个，pip 子进程会被 Windows 新建一只终端窗口
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
             )
             if r.returncode == 0:
                 import multipart  # noqa: F401

@@ -111,7 +111,11 @@ let MERGED_FAILED = false;
     ok(/apps-static: BAD/.test(sh) && /apps-file: BAD/.test(sh), "目录坏 JSON / 包 404 都会判 BAD（不只看状态码）");
     const srv = read("store-saas/server.mjs");
     ok(/MTNODE_APPS_WEB_DIR/.test(srv) && /function publishStaticApps/.test(srv), "server.mjs 有静态目录发布入口");
-    ok(/function appCatalogDoc/.test(srv) && /JSON\.stringify\(plan\.doc/.test(srv), "落盘的就是 appCatalogDoc()（单一真源）");
+    ok(
+      /function appCatalogDoc/.test(srv) &&
+        (/JSON\.stringify\(plan\.doc/.test(srv) || /encodeJsonDoc\(plan\.doc\)/.test(srv)),
+      "落盘的就是 appCatalogDoc()（单一真源；1000 条场景改为复用已编码 Buffer，见 encodeJsonDoc）",
+    );
   }
 
   /* ---------- [A] 服务端真跑 ---------- */

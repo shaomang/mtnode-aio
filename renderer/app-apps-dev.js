@@ -74,6 +74,16 @@ const DEVD = {
   previewStatEl: null, /* 中栏兜底提示层（拿不到目录 / 入口页时盖在 iframe 上） */
   previewStatTxt: null, /* 提示正文 */
   previewStatBtn: null, /* 「重试」按钮 */
+  /* ── 预览态宿主桥（本轮需求：预览状态下也能连入 MTNode）───────────────
+     bridge = 本页给中栏那一帧登记的预览租约（token → 主进程认「这一帧是哪个应用」）；
+     bridgeWatch = 本页的订阅集合（流式帧 / 通知 / 语音状态 / 窗口开关）；
+     bridgeWinMsg = 帧 → 本页那条 postMessage 监听（关页时摘掉）。 */
+  bridge: { token: "", appId: "", readOnly: false, ready: false },
+  bridgeWatch: null,
+  bridgeWinMsg: null,
+  bridgeCloseBtn: null, /* 预览列头那颗「关掉独立窗口」（只读时露出） */
+  bridgeNoticeEl: null, /* 预览区那条短提示（被禁 / 被拒的动作） */
+  bridgeNoticeTimer: 0,
   statEl: null, /* 预览状态一行 */
   urlEl: null, /* 预览 URL 一行 */
   headEl: null, /* 顶部菜单条（只允许一行） */
@@ -92,6 +102,10 @@ const DEVD = {
   grillEl: null, /* 「先拷问需求」复选框 */
   filter: "", /* 左栏搜索词 */
   draft: true, /* 首轮态：下一次输入 = 「开发」提交 */
+  /* 「用户点过＋、要开一条**新**会话」的意图位（见 appsDevNewRoundOn / Mark / Clear）。
+     与 draft 不是一回事：draft = 首轮态（也可能只是「切到这个应用顺手看一眼」），
+     newRound = 这个首轮态是**点＋点出来的**，不许被「落回该应用最近一条会话」的兜底顶掉。 */
+  newRound: false,
   sessionId: "", /* 非首轮时：右栏展示的会话 id */
   url: "", /* 预览 url（mtnode-preview://…） */
   /* ── 中栏预览「实时看到开发过程」（本轮需求）─────────────────────────────
@@ -154,6 +168,58 @@ function appsDevProjectDir(appId) {
   } catch (_) {
     return "";
   }
+}
+/* ── 该应用名下会话的工作区对齐（本轮需求 · 需求三）────────────────────────
+ *
+ * 口径（用户共识）：点左栏应用条目 / 切到该应用、打开开发页、每次开轮前，都按**同一判据**
+ * 走一遍 ——
+ *   · 会话没填过工作区（空）→ 写成该应用目录；
+ *   · 填过、但那个目录已经不存在（迁移旧布局留下的旧路径）→ 也改写成该应用目录；
+ *   · 填过且目录还在（用户自己选的地方）→ 一个字不动。
+ * 写入的是会话的 workspace（「手填」语义，与「手填 > 画布项目根 > 默认」这条既有解析链一致，
+ * 不新增第二种语义）；运行中的会话一律不动（开轮时锁定的工作区不能中途漂）。
+ * 结果由 renderAgentComposer 回显成底部那颗「工作区」芯片（显示末段目录名，悬浮给全路径）。 */
+async function appsDevAlignAppWorkspace(appId) {
+  const id = String(appId || DEVD.appId || "").trim();
+  if (!id) return 0;
+  const dir = appsDevProjectDir(id);
+  if (!dir) return 0;
+  const list = typeof appSessionsOf === "function" ? appSessionsOf(id) : [];
+  if (!list.length) return 0;
+  const seen = DEVD.wsSeen || (DEVD.wsSeen = new Map()); /* sid -> 已核对过的那个（存在的）目录值 */
+  let changed = 0;
+  for (const st of list) {
+    if (!st || appsDevSessionRunning(st)) continue;
+    const cur = String(st.workspace || "").trim();
+    if (cur && appsSamePath(cur, dir)) {
+      seen.set(String(st.id), cur);
+      continue;
+    }
+    if (cur) {
+      /* 非空且不是应用目录：只在「那个目录已经不在盘上」时改写。同一版核对过一次就记下来，
+         免得 1.2s 的轮询反复问主进程。 */
+      if (seen.get(String(st.id)) === cur) continue;
+      let isDir = false;
+      try {
+        isDir = !!(await window.api.fileIsDir(cur));
+      } catch (_) {
+        isDir = false;
+      }
+      seen.set(String(st.id), cur);
+      if (isDir) continue;
+    }
+    st.workspace = dir;
+    changed++;
+  }
+  if (changed) {
+    try {
+      if (typeof persistAgentSession === "function") await persistAgentSession();
+    } catch (_) {}
+    try {
+      if (typeof renderAgentComposer === "function") renderAgentComposer();
+    } catch (_) {}
+  }
+  return changed;
 }
 function appsDevHubOpen() {
   try {
@@ -225,7 +291,13 @@ function appsDevSidebarHost() {
     apps: apps,
     filter: DEVD.filter,
     active: DEVD.draft ? "" : String(DEVD.sessionId || ""),
-    onAppSelect: (id) => appsDevSelectApp(id),
+    onAppSelect: (id) => {
+      /* 点应用行身 = 「进这个应用（看它最近一条会话）」：与点行右端的「＋」（新建一条会话）
+         分得很清 —— 这里先把点＋ 立下的意图清掉，否则那个首轮态会一直挡着本页
+         自动落回该应用最近一条会话（见 DEVD.newRound 的说明）。 */
+      appsDevNewRoundClear();
+      appsDevSelectApp(id);
+    },
     onAppToggle: (id) => appsDevAppToggle(id),
     onAppNew: (id) => appsDevNewSessionFor(id),
   };
@@ -295,6 +367,66 @@ function appsDevMount() {
     else conv.appendChild(el);
   }
   DEVD.mounted = { body: body, saved: saved };
+  appsDevBridgeWatch();
+}
+/* ── 预览态宿主桥（本轮需求）：本页的订阅与拆除 ──
+ * 一处订阅就够：主进程把预览的流式帧（apps:hostStream）、被禁 / 被拒的通知与语音状态帧
+ * （dsh:event）都发到主窗口，本页按 appId 转给中栏那一帧。 */
+function appsDevBridgeWatch() {
+  if (DEVD.bridgeWatch) return;
+  const api = window.api || {};
+  const offs = [];
+  const keep = (off) => {
+    if (typeof off === "function") offs.push(off);
+  };
+  if (
+    typeof window !== "undefined" &&
+    !DEVD.bridgeWinMsg &&
+    typeof window.addEventListener === "function"
+  ) {
+    /* 帧 → 本页（postMessage）：只认中栏那一帧的来源 */
+    DEVD.bridgeWinMsg = (ev) => {
+      const frame = DEVD.frame;
+      if (!frame || ev.source !== frame.contentWindow) {
+        /* 不是中栏那一帧发来的（别的 iframe / 灯箱）→ 交给别的监听器 */
+        return;
+      }
+      appsDevBridgeOnFrameMsg(ev);
+    };
+    window.addEventListener("message", DEVD.bridgeWinMsg);
+  }
+  if (typeof api.onAppsHostStream === "function")
+    keep(api.onAppsHostStream((msg) => appsDevBridgeEvent(msg)));
+  if (typeof api.onSpeechState === "function")
+    keep(
+      api.onSpeechState((data) =>
+        appsDevBridgeEvent({ type: "speech-state", data: data || {} }),
+      ),
+    );
+  if (typeof api.dshOnEventAny === "function")
+    keep(api.dshOnEventAny((msg) => appsDevBridgeNoticeFromMain(msg)));
+  if (typeof api.onAppsWindowChanged === "function")
+    keep(api.onAppsWindowChanged(() => {
+      appsDevBridgeSyncWindow().catch(() => {});
+    }));
+  DEVD.bridgeWatch = { offs: offs };
+}
+function appsDevBridgeUnwatch() {
+  if (typeof window !== "undefined" && DEVD.bridgeWinMsg) {
+    try {
+      window.removeEventListener("message", DEVD.bridgeWinMsg);
+    } catch (_) {}
+  }
+  DEVD.bridgeWinMsg = null;
+  const w = DEVD.bridgeWatch;
+  DEVD.bridgeWatch = null;
+  if (w && Array.isArray(w.offs)) {
+    for (const off of w.offs) {
+      try {
+        off();
+      } catch (_) {}
+    }
+  }
 }
 /* 归还：按搬运时记下的顺序把节点放回 .agent-body（幂等，未搬运时什么都不做） */
 function appsDevUnmount() {
@@ -358,8 +490,11 @@ function appsDevEnsureCurrentSession() {
      那一下会按新会话的草稿重写输入框（renderAgentSession 的草稿回填），用户写了一半的
      首轮需求当场从眼前消失 —— 本轮需求：未输入完毕发送的内容必须留住。
      这一条同时挡住那只 1.2s 的轮询（appsDevTick 每次都先调本函数）：点「＋」开始写第一轮
-     时，应用下已有会话也不会被自动选走。框清空 / 发出去之后这条闸自动放开。 */
-  if (DEVD.draft && appsDevDraftPending()) return false;
+     时，应用下已有会话也不会被自动选走。框清空 / 发出去之后这条闸自动放开。
+     本轮补上另一半：**点过＋（DEVD.newRound）时框里必然还是空的**，只靠「框里有字」区分
+     不出来 —— 那一瞬（点＋ 之后还没开始打字）也会被这条兜底换成该应用最近一条会话，
+     表现就是「点了＋却建不出第二条会话」。所以意图位一起进这道闸。 */
+  if (DEVD.draft && (appsDevNewRoundOn() || appsDevDraftPending())) return false;
   if (!DEVD.draft && DEVD.sessionId) {
     /* 已经指着一条会话：它还在（agentSessionById）就什么都不做；已不在才往下补 */
     try {
@@ -377,7 +512,7 @@ function appsDevEnsureCurrentSession() {
   DEVD.sessionId = sess.id;
   DEVD.msgCount = Array.isArray(sess.messages) ? sess.messages.length : 0;
   try {
-    if (typeof persistAgentSession === "function") persistAgentSession();
+      if (typeof agentFlushSessionSaveQuiet === "function") agentFlushSessionSaveQuiet();
   } catch (_) {}
   appsDevRenderConv();
   return true;
@@ -413,6 +548,9 @@ function appsDevStopTimer() {
 function appsDevPageUnmount() {
   appsDevStopTimer();
   appsDevUnmount();
+  /* 预览态宿主桥：先撤租约（主进程据此不再认这一帧），再撤本页的订阅 */
+  appsDevBridgeRelease();
+  appsDevBridgeUnwatch();
   /* 借走的 DOM 已还回，撤掉本页的显示覆盖 → 会话页按它自己的选中项重绘 */
   appsDevViewClear();
   appsDevHeadTeardown();
@@ -431,6 +569,15 @@ function appsDevPageUnmount() {
   DEVD.previewStatTxt = null;
   DEVD.previewStatBtn = null;
   DEVD.statEl = null;
+  DEVD.bridgeCloseBtn = null;
+  DEVD.bridgeNoticeEl = null;
+  if (DEVD.bridgeNoticeTimer) {
+    try {
+      clearTimeout(DEVD.bridgeNoticeTimer);
+    } catch (_) {}
+  }
+  DEVD.bridgeNoticeTimer = 0;
+  DEVD.bridge = { token: "", appId: "", readOnly: false, ready: false };
   DEVD.urlEl = null;
   DEVD.turnEl = null;
   DEVD.colsEl = null;
@@ -658,6 +805,220 @@ function appsDevStateSave(appId, state) {
   DEVD.stateByApp.set(id, state);
 }
 
+/* ── 预览态宿主桥的中继（本轮需求：预览状态下也能连入 MTNode）────────────────────
+ *
+ * 预览页是 mtnode-preview:// 的一只 iframe，**没有 preload**，所以它自己拿不到 window.appHost。
+ * 主进程注入的那段小助手（apps-store.js 的 PREVIEW_BRIDGE）在 iframe 里拼出一座同形状的薄壳，
+ * 把每次调用 postMessage 给本页；本页按**来源帧**核对身份后，转调主窗口 preload 的
+ * apps:previewHost* 通道（主进程按 appId + token 认预览租约），再把结果 / 流式帧送回那一帧。
+ *
+ * 纪律：
+ *   · 只认「当前中栏那一帧」的来源（ev.source === frame.contentWindow）；
+ *   · 中继只在本页开着时存在（关页 / 重绘即撤 → 预览页拿不到回信，它会自己超时/降级）；
+ *   · 事件（文本 delta / 出图进度 / 语音状态）只转给 appId 相符的那一帧。 */
+const DEVD_BRIDGE_K = "__mtnodePreview";
+function appsDevBridgeToken() {
+  const t = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  DEVD.bridge = { token: t, appId: "", readOnly: false, ready: false };
+  return t;
+}
+/* 往中栏那一帧发一条协议消息（帧还没挂上就什么也不做） */
+function appsDevFramePost(msg) {
+  const frame = DEVD.frame;
+  if (!frame || !frame.contentWindow) return false;
+  try {
+    frame.contentWindow.postMessage(msg, "*");
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+/* 登记这一帧的预览租约：主进程据此认「这一帧是哪个应用」——
+   没有它，帧里的任何调用都会被回 not_preview（宁可不给，也不猜）。 */
+async function appsDevBridgeRegister() {
+  const api = window.api || {};
+  if (typeof api.appsPreviewRegister !== "function") {
+    appsDevPaintBridge("none");
+    return null;
+  }
+  const id = String(DEVD.appId || "").trim();
+  if (!id) {
+    appsDevPaintBridge("none");
+    return null;
+  }
+  const token = appsDevBridgeToken();
+  let r = null;
+  try {
+    r = await api.appsPreviewRegister({ appId: id, token: token });
+  } catch (_) {
+    r = null;
+  }
+  if (!r || r.ok === false) {
+    appsDevPaintBridge("none");
+    return null;
+  }
+  DEVD.bridge = { token: token, appId: String(r.id || id), readOnly: !!r.readOnly, ready: false };
+  appsDevPaintBridge("pending");
+  /* 只读态先告诉帧：它据此把写类能力与 localStorage 一起收住（不必等第一次调用才发现） */
+  appsDevFramePost({
+    [DEVD_BRIDGE_K]: 1,
+    op: "host-ready",
+    appId: DEVD.bridge.appId,
+    readOnly: DEVD.bridge.readOnly,
+  });
+  return r;
+}
+/* 撤销租约（切应用 / 关页 / 重绘前）：带 token，撤的只会是这一帧那一条 */
+function appsDevBridgeRelease() {
+  const api = window.api || {};
+  const b = DEVD.bridge || {};
+  DEVD.bridge = { token: "", appId: "", readOnly: false, ready: false };
+  if (!b.token || typeof api.appsPreviewRelease !== "function") return;
+  try {
+    api.appsPreviewRelease({ token: b.token });
+  } catch (_) {}
+}
+/* 中继一条调用：调主窗口 preload，再把回执送回那一帧（失败也回，别让帧白等） */
+async function appsDevBridgeCall(frameWin, msg) {
+  const api = window.api || {};
+  const id = String((msg && msg.id) || "");
+  const method = String((msg && msg.method) || "");
+  const send = (ok, result) => {
+    try {
+      if (frameWin && !frameWin.closed)
+        frameWin.postMessage(
+          { [DEVD_BRIDGE_K]: 1, op: "host-result", id: id, ok: !!ok, result: result || {} },
+          "*",
+        );
+    } catch (_) {}
+  };
+  if (typeof api.appsPreviewCall !== "function") {
+    send(false, { ok: false, code: "no_bridge", error: appsDevT("宿主桥未就绪") });
+    return;
+  }
+  let r = null;
+  try {
+    r = await api.appsPreviewCall({
+      token: String((DEVD.bridge || {}).token || ""),
+      method: method,
+      arg: msg && msg.arg != null ? msg.arg : {},
+    });
+  } catch (e) {
+    r = { ok: false, code: "bridge_failed", error: String((e && e.message) || e) };
+  }
+  send(r && r.ok !== false, r || { ok: false, code: "bridge_failed" });
+}
+/* 预览页发来的一条协议消息（只处理「当前中栏那一帧」发来的） */
+function appsDevBridgeOnFrameMsg(ev) {
+  const d = ev && ev.data;
+  if (!d || typeof d !== "object" || d[DEVD_BRIDGE_K] !== 1) return false;
+  const b = DEVD.bridge || {};
+  if (d.op === "host-ping") {
+    /* 帧里的桥已就位：把租约与只读态回给它（先登记再过桥，顺序不能反） */
+    if (b.token) {
+      appsDevFramePost({
+        [DEVD_BRIDGE_K]: 1,
+        op: "host-ready",
+        appId: String(b.appId || ""),
+        readOnly: !!b.readOnly,
+      });
+      DEVD.bridge.ready = true;
+      appsDevPaintBridge("ready");
+    }
+    return true;
+  }
+  if (d.op === "host-call") {
+    appsDevBridgeCall(ev.source, d).catch(() => {});
+    return true;
+  }
+  if (d.op === "host-notice") {
+    /* 预览里那些「被禁的动作」（close / quit）：在中栏浮一条短提示（与主进程那条通知同一口径） */
+    const code = String((d.notice && d.notice.code) || "");
+    if (code === "preview_no_window") appsDevBridgeNotice("preview_no_window");
+    return true;
+  }
+  if (d.op === "state") return false; /* 维持状态那条链路（另一个监听器） */
+  return false;
+}
+/* 预览区那条短提示（被禁 / 被拒的动作）：3 秒自动消失，不抢焦点 */
+function appsDevBridgeNotice(code, text) {
+  const wrap = DEVD.frameWrap;
+  if (!wrap) return;
+  let el = DEVD.bridgeNoticeEl;
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "apps-dev-bridgenote";
+    el.hidden = true;
+    wrap.appendChild(el);
+    DEVD.bridgeNoticeEl = el;
+  }
+  el.textContent =
+    text ||
+    (code === "readonly_preview"
+      ? appsDevT("该应用已在独立窗口运行，预览为只读")
+      : appsDevT("预览里没有可关闭的独立窗口（预览是开发页中栏的一只 iframe）"));
+  el.hidden = false;
+  if (DEVD.bridgeNoticeTimer) clearTimeout(DEVD.bridgeNoticeTimer);
+  DEVD.bridgeNoticeTimer = setTimeout(() => {
+    if (el) el.hidden = true;
+  }, 3000);
+}
+/* 状态行上的「预览已连入宿主 / 只读」+ 只读时那颗「关掉独立窗口」按钮 */
+function appsDevPaintBridge(kind) {
+  const b = DEVD.bridge || {};
+  if (kind === "none") DEVD.bridge = { token: "", appId: "", readOnly: false, ready: false };
+  appsDevStatRepaint();
+  const el = DEVD.statEl;
+  if (el)
+    el.title = appsDevT(
+      "预览里也能调用 MTNode 的宿主能力（模型 / 存储 / 账号 / 选图 / 语音）：应用不必退回浏览器本地存储",
+    ) + (b.appId ? "\n" + appsDevT("预览的应用：") + b.appId : "");
+  if (DEVD.bridgeCloseBtn) DEVD.bridgeCloseBtn.hidden = !DEVD.bridge.readOnly;
+}
+/* 独立窗口开了 / 关了：立刻改状态行，并把只读态发给预览页（不必等下一次重载） */
+async function appsDevBridgeSyncWindow() {
+  const api = window.api || {};
+  const b = DEVD.bridge || {};
+  if (!b.token || typeof api.appsPreviewState !== "function") return;
+  let r = null;
+  try {
+    r = await api.appsPreviewState();
+  } catch (_) {
+    return;
+  }
+  if (!r || r.ok === false) return;
+  if (String(r.id || "") && String(r.id) !== String(b.appId || "")) return; /* 租约已经不是这一帧的 */
+  const ro = !!r.readOnly;
+  if (ro === !!b.readOnly) {
+    appsDevPaintBridge(b.ready ? "ready" : "pending");
+    return;
+  }
+  DEVD.bridge.readOnly = ro;
+  appsDevFramePost({ [DEVD_BRIDGE_K]: 1, op: "host-state", readOnly: ro });
+  appsDevPaintBridge(b.ready ? "ready" : "pending");
+}
+/* 关掉这个应用的独立窗口（只读时那颗按钮）：走主进程按 id 关的那条通道
+   （apps:closeAppWindow → closeAppWindow，同一条「先请应用收尾、再关」的链）；
+   关完由主进程的窗口开关事件回来把只读态收掉。 */
+function appsDevCloseOwnWindow() {
+  const id = String(DEVD.appId || "").trim();
+  const api = window.api || {};
+  if (!id || typeof api.appsCloseApp !== "function") return;
+  api.appsCloseApp(id).catch(() => {});
+}
+/* 主进程推来的事件 → 转给中栏那一帧（按 appId 分流；语音状态是全局的，照转） */
+function appsDevBridgeEvent(msg) {
+  if (!msg) return;
+  const appId = String(msg.appId || "");
+  if (appId && appId !== String(DEVD.appId || "")) return;
+  appsDevFramePost({ [DEVD_BRIDGE_K]: 1, op: "host-event", event: msg });
+}
+function appsDevBridgeNoticeFromMain(msg) {
+  if (!msg || msg.type !== "preview-notice") return;
+  if (String(msg.appId || "") !== String(DEVD.appId || "")) return;
+  appsDevBridgeNotice(String(msg.code || ""), String(msg.error || ""));
+}
+
 /* ── 预览（iframe + 内容快照 + 维持状态） ── */
 
 async function appsDevPreviewInfo() {
@@ -671,11 +1032,13 @@ async function appsDevPreviewInfo() {
 }
 /* 只按 appId 就能拼出的兜底预览 url（入口页 = 应用默认 index.html）：
    拿不到 apps:devPreview 的 info 时也不让 iframe 停在 about:blank —— 协议层自己会把
-   index.html 当默认入口页发出来（apps-store.js），改过入口名的应用协议层再按目录兜底。 */
+   index.html 当默认入口页发出来（apps-store.js），改过入口名的应用协议层再按目录兜底。
+   带 _host=1：开发页中栏这一帧要**连入宿主**（协议层据此注入宿主桥小助手，
+   见 apps-store.js 的 PREVIEW_BRIDGE）；别的入口直接开这个 url 时不带它 = 纯静态预览。 */
 function appsDevPreviewUrlFallback(appId) {
   const sid = String(appId || "").trim();
   if (!sid) return "";
-  return "mtnode-preview://" + encodeURIComponent(sid) + "/index.html";
+  return "mtnode-preview://" + encodeURIComponent(sid) + "/index.html?_host=1";
 }
 /* 首次同步（还没拿到 info）时挂上去的 url：应用 id 一有就不留空 iframe */
 function appsDevUrlOf(appId) {
@@ -794,14 +1157,17 @@ async function appsDevReloadPreview() {
   const sep = DEVD.url.indexOf("?") >= 0 ? "&" : "?";
   /* 缓存戳 = 时间 + 单调序号：同一毫秒里连刷两次（实时刷新 + 用户点「刷新预览」）
      也要能各刷一版 —— 只发同一个 url 的话浏览器把「src 没变」当无事发生，
-     点了没反应（真机上是「刷新预览」这种密度才会碰到，但一样得挡住）。 */
+     点了没反应（真机上是「刷新预览」这种密度才会碰到，但一样得挡住）。
+     _host=1 = 这一帧要连入宿主（协议层据此注入宿主桥小助手；别的入口不带它 = 纯静态预览）。 */
   DEVD.reloadSeq = (Number(DEVD.reloadSeq) || 0) + 1;
-  frame.setAttribute("src", DEVD.url + sep + "_r=" + Date.now() + "-" + DEVD.reloadSeq);
+  frame.setAttribute(
+    "src",
+    DEVD.url + sep + "_host=1&_r=" + Date.now() + "-" + DEVD.reloadSeq,
+  );
   appsDevPreviewStatMsg("");
 }
-function appsDevPaintPreviewStat(kind) {
-  const el = DEVD.statEl;
-  if (!el) return;
+/* 快照那一段文字（文件数 / 体积 / 最近修改） */
+function appsDevStatSnapText() {
   const s = DEVD.snap || {};
   const bits = [];
   if (s.files != null) bits.push(s.files + appsDevT(" 个文件"));
@@ -809,15 +1175,39 @@ function appsDevPaintPreviewStat(kind) {
     bits.push(appsBytes(s.bytes));
   if (s.mtimeMs && typeof appsTime === "function")
     bits.push(appsDevT("最近修改 ") + appsTime(s.mtimeMs));
-  const head =
-    kind === "changed"
-      ? appsDevT("内容有改动 → 已重载预览")
-      : kind === "reload"
-        ? appsDevT("已重载预览")
-        : kind === "error"
-          ? appsDevT("预览不可用")
-          : appsDevT("预览已是最新");
-  el.textContent = head + (bits.length ? " · " + bits.join(" · ") : "");
+  return bits.join(" · ");
+}
+/* 宿主桥那一段文字（本轮需求：预览已连入宿主 / 只读） */
+function appsDevStatBridgeText() {
+  const b = DEVD.bridge || {};
+  if (!b.token && !b.appId) return appsDevT("预览未连入宿主");
+  if (b.readOnly) return appsDevT("预览已连入宿主 · 只读（该应用已在独立窗口运行）");
+  return b.ready ? appsDevT("预览已连入宿主") : appsDevT("预览正在连入宿主…");
+}
+/* 快照那一句（预览已是最新 / 有改动 → 已重载 / 不可用） */
+function appsDevStatHeadText(kind) {
+  return kind === "changed"
+    ? appsDevT("内容有改动 → 已重载预览")
+    : kind === "reload"
+      ? appsDevT("已重载预览")
+      : kind === "error"
+        ? appsDevT("预览不可用")
+        : appsDevT("预览已是最新");
+}
+/* 状态行 = 「那一句」+ 桥那一段 + 快照那一段 —— 两处各自刷新，谁也不许整行覆盖另一处 */
+function appsDevStatRepaint() {
+  const el = DEVD.statEl;
+  if (!el) return;
+  const bits = [appsDevStatHeadText(DEVD.statKind), appsDevStatBridgeText()];
+  const snap = appsDevStatSnapText();
+  if (snap) bits.push(snap);
+  el.textContent = bits.join(" · ");
+}
+function appsDevPaintPreviewStat(kind) {
+  const el = DEVD.statEl;
+  if (!el) return;
+  DEVD.statKind = kind;
+  appsDevStatRepaint();
 }
 function appsDevPaintUrl() {
   const el = DEVD.urlEl;
@@ -825,7 +1215,7 @@ function appsDevPaintUrl() {
   const info = DEVD.snap || {};
   el.textContent = String(DEVD.url || "");
   el.title =
-    appsDevT("静态预览：应用目录里的入口页（相对资源同源加载；不注入 window.appHost）") +
+    appsDevT("预览：应用目录里的入口页（相对资源同源加载；已注入宿主桥 → 预览里也能调用 MTNode 的能力）") +
     (info.entry ? "\n" + appsDevT("入口页：") + info.entry : "");
 }
 /* 内容快照比对：有变（或 force）才重载预览。
@@ -1099,10 +1489,17 @@ function appsDevSessionRunning(s) {
 }
 function appsDevTick() {
   if (!appsDevPageOpen()) return;
+  /* 预览桥的只读态跟着「独立窗口开没开」走：主进程的窗口开关事件到点就回来，
+     这条 1.2s 的轮询是兜底（事件缺席 / 漏一拍时状态也不会长期不一致）。 */
+  appsDevBridgeSyncWindow().catch(() => {});
   /* 先补一次「本页没有在显示的会话」：本页这条会话在页面活着的时候被删 / 被截断时，
      appsDevViewBind 会把本页清回首轮态，而首次绘制那次自动选中不会再重跑 —— 补上它，
      右栏才不会停在「仅有引导、正文全空」的状态（见 appsDevEnsureCurrentSession）。 */
   appsDevEnsureCurrentSession();
+  /* 会话工作区对齐（需求三）：每轮 tick 都按同一判据核一遍 ——
+     点应用条目 / 打开开发页那两处只是把结果提前，真正的兜底在这里（开轮前一定核过；
+     判据与写入口径见 appsDevAlignAppWorkspace）。 */
+  appsDevAlignAppWorkspace(DEVD.appId).catch(() => {});
   const list = typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId) : [];
   const running = list.some(appsDevSessionRunning);
   const st = DEVD.sessionId
@@ -1169,6 +1566,12 @@ function appsDevRenderConv() {
         （app-assist.js / app-plan.js 的 agentViewIs 判据）全部按它自己重绘。 */
   if (DEVD.draft || !DEVD.sessionId) {
     appsDevClearConvPanels();
+    /* 首轮态（该应用还没有会话）：底部那颗「工作区」芯片也要指着本页这个应用的目录 ——
+       用户接下来写的第一轮需求，文件落点就是它（见 appsDevStartDevSession）。 */
+    try {
+      if (typeof agentViewBlankWorkspaceSet === "function")
+        agentViewBlankWorkspaceSet(appsDevProjectDir());
+    } catch (_) {}
   }
   try {
     if (typeof renderAgentSession === "function") renderAgentSession();
@@ -1211,7 +1614,19 @@ function appsDevClearConvPanels() {
 /* app-boot.js 的 doSend 在「空闲 + 有文本」时问一次：返回 true = 这一发由开发页接管。
    只在首轮态（还没有本应用的开发会话 / 用户点了左栏应用行右端的「＋」）接管。 */
 function appsDevComposerSend(raw) {
-  if (!appsDevPageOpen() || !DEVD.draft) return false;
+  if (!appsDevPageOpen() || !DEVD.draft) {
+    /* 非首轮态（这一发是某条已有会话的普通一轮）：开轮前兜一道 —— 该会话没填过工作区就
+       立刻写成该应用目录（同步、不读盘）；「填过但目录没了」那一路由 tick 异步核。 */
+    try {
+      const st = DEVD.sessionId ? agentSessionById(DEVD.sessionId) : null;
+      const dir = appsDevProjectDir();
+      if (st && dir && !String(st.workspace || "").trim()) {
+        st.workspace = dir;
+        if (typeof persistAgentSession === "function") persistAgentSession().catch(() => {});
+      }
+    } catch (_) {}
+    return false;
+  }
   const text = String(raw == null ? "" : raw).trim();
   if (!text) return false;
   appsDevStartDevSession(text).catch(() => {});
@@ -1243,6 +1658,9 @@ function devStyleAskContract(appId) {
 async function appsDevStartDevSession(text) {
   const reqText = String(text == null ? "" : text).trim();
   if (!DEVD.appId || !reqText) return false;
+  /* 这一发就是那条新会话的首轮：点＋ 的意图到此兑现，不再挡「落回最近一条会话」的兜底
+     （失败那条路也不留悬着的意图 —— 框里的字仍由 appsDevDraftPending 这道闸护着）。 */
+  appsDevNewRoundClear();
   const node = await appsDevEnsureNode();
   if (!node) {
     appsDevToast(
@@ -1295,7 +1713,7 @@ async function appsDevStartDevSession(text) {
      会把上一轮的需求又摆回输入框（那是重复提交，不是保留草稿）。 */
   appsDevDraftClear(DEVD.appId);
   try {
-    await persistAgentSession();
+  await agentTouchSession();
   } catch (_) {}
   appsDevRenderConv();
   appsDevToast(
@@ -1324,12 +1742,38 @@ async function appsDevStartDevSession(text) {
   }
   return true;
 }
+/* ── 「＋ 新开发会话」的意图位（DEVD.newRound）───────────────────────────────
+ *
+ * 为什么需要单独记一位：「点＋」与「切到这个应用看一眼」在界面上落到**同一个状态**
+ * （draft = true / sessionId = ""），但意图相反 —— 前者要在这个应用下**开一条新会话**，
+ * 后者只是想看它最近一条会话。原先只靠「框里有没有字」（appsDevDraftPending）来区分，
+ * 而刚点完＋的那一瞬框必然还是空的：于是三处兜底（1.2s 轮询的 appsDevEnsureCurrentSession、
+ * 切应用的 appsDevSwitchAppRun、整页绘制的落点）都会当场把这个首轮态换成最近一条会话 ——
+ * 用户点了＋却写不进新需求，表现就是「建不出第二条会话」。
+ *
+ * 所以把意图显式记下来：点＋置位（appsDevNewRound），
+ *   ① 用户发出首轮（appsDevStartDevSession）即兑现 → 清除；
+ *   ② 用户自己挑了一条会话（左栏会话行）或点了别的应用行身 → 清除（那是「看」，不是「新建」）。
+ * 只在内存里，不进 config：重启 MTNode 后没有悬着的意图。
+ */
+function appsDevNewRoundOn() {
+  return DEVD.newRound === true;
+}
+function appsDevNewRoundMark() {
+  DEVD.newRound = true;
+}
+function appsDevNewRoundClear() {
+  DEVD.newRound = false;
+}
 /* 「新开发会话」：回到首轮态 —— 下一次输入就在本应用下新建一条绑定会话。
    两个入口都走这一处：左栏应用行右端的「＋」（本轮需求，每行一个）与工具栏那颗「＋」。
    给了 appId 且不是当前应用 → 先按正常的换应用路径切过去（原地换：预览与右栏一起换），
-   否则会出现「左栏指着 A、右栏却在 A 下建会话」的分家状态。 */
+   否则会出现「左栏指着 A、右栏却在 A 下建会话」的分家状态。
+   意图位必须**在切应用之前**立起来：换应用那条路的落点会看这一位，
+   否则它按老口径把刚点出来的首轮态换成该应用已有的最近一条会话。 */
 function appsDevNewRound(appId) {
   const id = String(appId || "").trim();
+  appsDevNewRoundMark();
   if (id && id !== String(DEVD.appId || "") && typeof appsDevSelectApp === "function") {
     appsDevSelectApp(id); /* 换应用：draft=true / 清 sessionId，随后原地切换（预览与右栏） */
     return;
@@ -1423,13 +1867,15 @@ async function appsDevRefreshHead() {
     );
     return;
   }
+  /* 只在这一个条件下报警：本机找不到这个应用的项目文件夹（会话工作区无从确定）。
+     开发节点的「项目文件夹」与该应用当前目录**不一致**不再提示（本轮需求：移除该提示）——
+     这条路上的会话工作区强制取应用目录（createDevSessionForNode 传 agentWorkspace），
+     所以 devPath 与之一致不一致都不影响本轮跑在哪，提示只会造成误导。 */
   const appDir = appsDevProjectDir();
   appsDevPaintWarn(
     !appDir
       ? appsDevT("找不到这个应用在本机的项目文件夹：会话无法确定工作区（先把它装回来或修好 app.json）")
-      : String(node.devPath || "").trim() && String(node.devPath).trim() !== appDir
-        ? appsDevT("开发节点的「项目文件夹」与该应用当前目录不一致：新建会话一律以应用目录为准")
-        : "",
+      : "",
   );
 }
 
@@ -1439,10 +1885,9 @@ async function appsDevRefreshHead() {
 const DEVD_STAT_MIN = 96;
 
 /* 应用根目录（这条工具栏里的紧凑版）：路径 + 更改…；点路径 = 在资源管理器中打开。
-   与库页那行（app-apps.js 的 appsRootLineEl）共用同一份动作函数，不写第二份逻辑。 */
-/* 应用根目录（这条工具栏里的紧凑版）：**两套根各一枚**（下载根 / 项目根）——
-   路径 + 更改…；点路径 = 在资源管理器中打开。
-   与库页那两行（app-apps.js 的 appsRootRowEl）共用同一份动作函数，不写第二份逻辑。 */
+   与库页共用同一份动作函数（app-apps.js 的 appsRootPickNow / appsRootFolderNow），不写第二份逻辑。
+   **只给「项目根」这一枚**（本轮需求：开发页不出现下载根 —— 下载根是「库」的事，
+   库页的下载根改成了左上角那枚「应用目录」按钮 + 小菜单；开发页关心的是自己开发的应用落在哪）。 */
 function appsDevRootChip(kind) {
   const roots = (typeof APPS_ST === "object" && APPS_ST && APPS_ST.list && APPS_ST.list.roots) || {};
   const root = roots[kind] || (kind === "down" ? (APPS_ST && APPS_ST.root) || {} : {}) || {};
@@ -1468,13 +1913,9 @@ function appsDevRootChip(kind) {
     if (typeof appsRootFolderNow === "function") appsRootFolderNow(kind);
   };
   box.appendChild(val);
-  if (!root.configured) {
-    const warn = document.createElement("span");
-    warn.className = "apps-badge apps-badge-bad";
-    warn.textContent = appsDevT("未设置");
-    warn.title = appsDevT("未设置：下载前会先让你选一个文件夹");
-    box.appendChild(warn);
-  }
+  /* 「未设置」红字 badge **已随本轮需求删除**：根目录默认就在画布所在的数据目录下
+     （<数据目录>/apps-dev），主进程列应用时把默认路径固化下来，这里永远有一个可用路径 ——
+     不再有「未设置：开发中的应用不会列出来」这个状态。 */
   box.appendChild(
     appsMiniBtn(appsDevT("更改…"), () => {
       if (typeof appsRootPickNow === "function") appsRootPickNow(kind);
@@ -1482,11 +1923,11 @@ function appsDevRootChip(kind) {
   );
   return box;
 }
+/* 这一组里只有项目根（下载根在库页，见 appsDevRootChip 注释） */
 function appsDevRootItem() {
   const box = document.createElement("span");
   box.className = "apps-dev-roots";
   box.appendChild(appsDevRootChip("dev"));
-  box.appendChild(appsDevRootChip("down"));
   return box;
 }
 
@@ -1649,6 +2090,9 @@ function appsDevPagePaint(body, seq) {
   if (switched) {
     /* 换应用 = 新的一页上下文：会话归属 / 预览 / 快照全部重来 */
     DEVD.appId = cur;
+    /* 点＋ 的意图只对「点它的那个应用」有效：这里是页面自己换了应用（当前选中不在名单里
+       之类的路），意图一并作废，别让下一个应用也被挡在「落回它最近一条会话」之外。 */
+    appsDevNewRoundClear();
     DEVD.draft = true;
     DEVD.sessionId = "";
     DEVD.msgCount = 0;
@@ -1662,6 +2106,8 @@ function appsDevPagePaint(body, seq) {
   if (cur) {
     DEVD.appId = cur;
     appsDevLastAppSave(cur);
+    /* 打开开发页那一下也按同一判据对齐工作区（需求三）：三处触发点之一。 */
+    appsDevAlignAppWorkspace(cur).catch(() => {});
   }
   DEVD.seq++;
   const mySeq = DEVD.seq;
@@ -1671,7 +2117,7 @@ function appsDevPagePaint(body, seq) {
 
   /* 顶部菜单条：**只允许一行**（.apps-dev-head 是 nowrap）。宽了主行多放，窄了自动把
      优先级最低的几项搬进「更多 ▾」——功能一个不少，只是位置随宽度变：
-     ＋新开发会话 / 启动 / 打开画布 / 卸载 / 刷新预览 / 应用根目录 / 数据目录 /
+     ＋新开发会话 / 启动 / 打开画布 / 卸载 / 刷新预览 / 项目根 / 数据目录 /
      换风格 / 先拷问需求 / 维持状态 / 预览状态 全在这一条上（appsDevFitHead 负责搬运）。
      本轮需求：「新开发会话」的主入口移到**左栏每个应用行右端的「＋」**（点哪一行就在
      哪个应用下新建会话）；这一条工具栏里那颗也改成同一枚「＋」图标 —— 当前应用的快捷
@@ -1717,36 +2163,31 @@ function appsDevPagePaint(body, seq) {
     /* 「上架」= 打开发布浮层（renderer/app-publish.js 的 window.openAppPublish）：
        pri 2.5 = 紧挨「启动」右边；一行放不下时从 pri 最大的开始往「更多 ▾」收，
        「启动」（pri 2）比它先留在主行。未加载该模块（旧版本）时点击给可读提示，
-       不在按钮层面藏功能 —— 用户看得见这条路，才知道能上架。 */
+       不在按钮层面藏功能 —— 用户看得见这条路，才知道能上架。
+       本轮需求：**应用上架统一叫「上架」**，新上传（云端新建一条）与更新（往云端已有那条
+       追加一版）都叫上架 —— 按钮不再按本机上架留痕切成「更新 / 上架」两套文案。
+       新建还是追加由服务端按 id + 作者 uid 判定，结果在发布浮层里如实写清（「新建应用」/
+       「追加版本」），按钮这一层不必替用户分辨。 */
     head.appendChild(
       addSlot(
         2.5,
-        appsMiniBtn(appsDevT("上架"), () => {
-          if (typeof window.openAppPublish !== "function") {
-            appsDevToast(
-              appsDevT("上架模块未就绪（renderer/app-publish.js 未加载）"),
-              "err",
-            );
-            return;
-          }
-          window.openAppPublish(DEVD.appId);
-        }),
+        (() => {
+          const b = appsMiniBtn(appsDevT("上架"), () => {
+            if (typeof window.openAppPublish !== "function") {
+              appsDevToast(
+                appsDevT("上架模块未就绪（renderer/app-publish.js 未加载）"),
+                "err",
+              );
+              return;
+            }
+            window.openAppPublish(DEVD.appId);
+          });
+          b.title = appsDevT("上架：把这个应用传到云端（已上架过就是给同一条追加一版）");
+          b.setAttribute("aria-label", appsDevT("上架"));
+          return b;
+        })(),
       ),
     );
-  }
-  /* 「上架前体检」：只读查「这个应用打成包会丢哪些文件」+「入口页引用了但目录里没有的文件」。
-     pri=2.6 = 紧挨「上架」（上架前的最后一道自查），一行放不下就收进「更多 ▾」。
-     病根就出在这件事上：旧的打包实现只打 app.json + 入口页 + assets/**，根目录多文件的应用
-     上架后下载者拿到的是空壳（见 apps-store.js 的 packAudit）。 */
-  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
-    const auditBtn = appsMiniBtn(appsDevT("上架前体检"), () => {
-      if (typeof window.appsPackAuditDialog === "function") window.appsPackAuditDialog(DEVD.appId);
-      else appsDevToast(appsDevT("体检模块未就绪（renderer/app-apps.js 未加载）"), "err");
-    });
-    auditBtn.title = appsDevT(
-      "检查这个应用打成包会丢哪些文件（只读：不打包、不上传、不写盘）",
-    );
-    head.appendChild(addSlot(2.6, auditBtn));
   }
   head.appendChild(
     addSlot(
@@ -1790,7 +2231,7 @@ function appsDevPagePaint(body, seq) {
       ),
     ),
   );
-  head.appendChild(addSlot(5, appsDevRootItem(), "应用根目录"));
+  head.appendChild(addSlot(5, appsDevRootItem(), "项目根"));
   /* 「数据目录」：打开**当前这个应用**的数据文件夹（默认 <数据目录>/apps-data/<id>/，
      用户改过数据文件夹则是他选的那个）—— 与库页每张卡片右侧那颗 📂 同一个动作
      （renderer/app-apps.js 的 appsDataOpenNow，路径只由主进程解析）。pri=5.5 = 紧挨
@@ -1988,6 +2429,9 @@ function appsDevPagePaint(body, seq) {
       const sidApp = st0 ? String(st0.appId || "") : "";
       if (sidApp && sidApp !== String(DEVD.appId || "")) {
         if (typeof appsDevSelectApp === "function") appsDevSelectApp(sidApp);
+        /* 用户点名了一条会话（哪怕是别的应用下的）= 他要看这条，不是要新建：
+           清掉点＋ 立下的意图位，别让它挡着本页落回这条会话。 */
+        appsDevNewRoundClear();
         DEVD.draft = false;
         DEVD.sessionId = sid;
         DEVD.msgCount =
@@ -1996,6 +2440,7 @@ function appsDevPagePaint(body, seq) {
         appsDevEnsureCurrentSession();
         return;
       }
+      appsDevNewRoundClear(); /* 同上：自己挑会话 = 不新建了 */
       DEVD.draft = false;
       DEVD.sessionId = sid;
       if (typeof agentSessionById === "function") {
@@ -2026,6 +2471,25 @@ function appsDevPagePaint(body, seq) {
   urlEl.className = "apps-dev-url";
   viewHead.appendChild(viewK);
   viewHead.appendChild(urlEl);
+  /* 「关掉独立窗口」（本轮需求）：只在预览因该应用已在独立窗口运行而**只读**时露出 ——
+     关掉它，预览立刻恢复可写（状态由主进程的窗口开关事件实时回来）。 */
+  const bridgeCloseBtn = document.createElement("button");
+  bridgeCloseBtn.type = "button";
+  bridgeCloseBtn.className = "mini apps-dev-bridgeclose";
+  bridgeCloseBtn.hidden = true;
+  bridgeCloseBtn.textContent = appsDevT("关掉独立窗口");
+  bridgeCloseBtn.title = appsDevT(
+    "该应用已在独立窗口运行，预览为只读 —— 点这里关掉它，预览就恢复可写",
+  );
+  bridgeCloseBtn.onclick = (ev) => {
+    if (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    appsDevCloseOwnWindow();
+  };
+  viewHead.appendChild(bridgeCloseBtn);
+  DEVD.bridgeCloseBtn = bridgeCloseBtn;
   view.appendChild(viewHead);
   DEVD.urlEl = urlEl;
   const frameWrap = document.createElement("div");
@@ -2050,6 +2514,9 @@ function appsDevPagePaint(body, seq) {
   frame.addEventListener("load", () => {
     /* 新页加载完成 = 收起切应用时露出的「正在加载…」（没露时是幂等空操作） */
     appsDevLoadingHide();
+    /* 这一帧换页了：先给新页登记预览租约（旧帧那条随之作废），再写回状态。
+       _host=1 由重载那条链带上；首帧挂的兜底 url 也带（见 appsDevPreviewUrlFallback）。 */
+    appsDevBridgeRegister().catch(() => {});
     const pending = DEVD.pendingState;
     DEVD.pendingState = null;
     if (!pending || !frame.contentWindow) return;
@@ -2108,6 +2575,9 @@ function appsDevPagePaint(body, seq) {
     e.className = "side-empty";
     e.textContent = appsDevT("本机还没有「开发中」的应用");
     sideList.appendChild(e);
+    /* 「项目根丢了 → 一键恢复候选目录」那一行**已随本轮需求删除**：根目录默认就在画布所在的
+       数据目录下（<数据目录>/apps-dev），主进程列应用时把默认路径固化下来，不存在「没配 =
+       整列消失」这个状态；真有应用躺在别处，走上面「项目根 … 更改…」指过去。 */
     appsDevPaintPreviewStat("error");
     appsDevPreviewStatMsg(
       appsDevT("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。"),
@@ -2158,17 +2628,20 @@ async function appsDevSyncAfterPaint(mySeq, seq) {
   }
   /* 首次进入（或换了应用）：右栏落到该应用最近一条会话；没有就是首轮态。
      框里还有没发出去的首轮草稿时不自动选 —— 那是用户正在写的开发需求，
-     换成会话就会把它从眼前顶掉（与 appsDevEnsureCurrentSession 同一道闸）。 */
-  if (DEVD.draft && !DEVD.sessionId && !appsDevDraftPending()) {
+     换成会话就会把它从眼前顶掉（与 appsDevEnsureCurrentSession 同一道闸）。
+     点过＋（DEVD.newRound）时同样不落：那个首轮态正是用户要的新会话。 */
+  if (DEVD.draft && !DEVD.sessionId && !appsDevNewRoundOn() && !appsDevDraftPending()) {
     const sess =
       typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId)[0] : null;
     if (sess) {
       DEVD.draft = false;
       DEVD.sessionId = sess.id;
       DEVD.msgCount = Array.isArray(sess.messages) ? sess.messages.length : 0;
-      /* 右栏要显示这条 = 由 appsDevRenderConv 的显示覆盖绑定，不动会话页的选中项 */
+      /* 右栏要显示这条 = 由 appsDevRenderConv 的显示覆盖绑定，不动会话页的选中项。
+         这里只是「看」它一眼（没有改任何东西）→ 走 quiet flush：绝不盖 updatedAt，
+         否则进一次开发页就把这条会话顶到左栏最前 + 行尾刷成「刚刚」。 */
       try {
-        await persistAgentSession();
+        if (typeof agentFlushSessionSaveQuiet === "function") await agentFlushSessionSaveQuiet();
       } catch (_) {}
     }
   }
@@ -2212,6 +2685,9 @@ function appsDevSelectApp(appId) {
      只有真换了一个应用才值得写盘，同值不重复落盘由 appsDevLastAppSave 自己挡。 */
   if (id) appsDevLastAppSave(id);
   DEVD.appId = id;
+  /* 切到该应用那一下就把工作区对齐（需求三）：该应用名下工作区为空 / 已失效的会话，
+     立刻改指该应用目录；目录还在的（用户自己选的）一个字不动。异步，不挡切换。 */
+  appsDevAlignAppWorkspace(id).catch(() => {});
   DEVD.draft = true;
   DEVD.sessionId = "";
   DEVD.msgCount = 0;
@@ -2273,8 +2749,10 @@ async function appsDevSwitchAppRun(prevId, id, seq) {
   appsDevStateSave(prevId, state);
   if (!appsDevSwitchAlive(id, seq)) return;
   /* ③ 右栏：落到新应用最近一条会话（没有则首轮态）。这一段不依赖预览 info，先做完，
-     免得右栏在上一个应用的会话内容上多停一次 IPC 的工夫。 */
-  if (DEVD.draft && !DEVD.sessionId && !appsDevDraftPending()) {
+     免得右栏在上一个应用的会话内容上多停一次 IPC 的工夫。
+     点过＋（DEVD.newRound）时不落 —— 那一趟是「去那个应用开一条新会话」，落到它已有的
+     最近一条就把刚点出来的首轮态顶掉了（与 appsDevEnsureCurrentSession 同一道闸）。 */
+  if (DEVD.draft && !DEVD.sessionId && !appsDevNewRoundOn() && !appsDevDraftPending()) {
     const sess =
       typeof appSessionsOf === "function" ? appSessionsOf(DEVD.appId)[0] : null;
     if (sess) {
@@ -2282,7 +2760,7 @@ async function appsDevSwitchAppRun(prevId, id, seq) {
       DEVD.sessionId = sess.id;
       DEVD.msgCount = Array.isArray(sess.messages) ? sess.messages.length : 0;
       try {
-        if (typeof persistAgentSession === "function") await persistAgentSession();
+        if (typeof agentFlushSessionSaveQuiet === "function") await agentFlushSessionSaveQuiet();
       } catch (_) {}
     }
   }

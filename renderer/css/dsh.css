@@ -4123,6 +4123,15 @@ body.theme-light #ixPanel {
   cursor: pointer
 }
 
+/* 多选题的告示行（本次开发需求）：选项渲染成勾选框（checkbox）时，在选项列表
+   顶上说明一句「这一题可以勾多项」—— 单选框与勾选框视觉差得不多，用户想全选时
+   最容易的误判就是「这是单选」。单选卡不出这一行。 */
+.ix-opt-multi {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--cyan2)
+}
+
 .ix-opt-label {
   display: flex;
   flex-direction: column;
@@ -4227,154 +4236,19 @@ body.theme-light #ixPanel {
   flex-wrap: wrap;
 }
 
-/* ── 消息左侧悬浮时刻（本次需求） ──
-   口径：时刻**不再单独占消息末尾一行**，改挂到每条消息左侧、悬浮在正文左边。
-   实现：app-assist.js 的 dshMsgBlock 给消息挂 .dsh-has-time 并插入 .dsh-msg-side
-   （内为 .dsh-msg-time）；这里把时刻栏从文档流里摘出来，绝对定位在消息左内边距那一块
-   —— 消息正文因此不会被压住（栏宽由 .dsh-msg-side 的 width 定死，见下）。
-   两条约束：
-   · 只在消息自带时刻栏（.dsh-has-time）时才留左侧余量 —— 没有时刻的老消息 / 系统行
-     一字不动，用户气泡的右对齐（align-items: flex-end）也不受影响。
-   · **时刻不折成两行**：栏宽按最长形态「M/D HH:MM:SS」（非今天）的实测字宽留够，
-     两种形态（今天 = HH:MM:SS / 更早 = M/D HH:MM:SS）都排得下一行。
-   档位**看容器宽度、不看窗口宽度**（容器查询，见下）：右栏会话在 1920 宽窗口里
-   可能只有 ~700px 宽 —— 按窗口宽度分档会让窄栏拿到宽档，时刻压住正文（正是首版的 bug）。
-   量测与判定：test/smoke-msg-time-side.js（真浏览器几何量测记录写在会话交付说明里）。
-   改这里先跑 node test/smoke-msg-time-side.js。 */
+/* ── 会话消息不再有「消息级时刻」栏（本次需求：移除会话中轮次的时间） ──
+   用户口径：会话里**最左侧那一列时间占用会话空间**，去掉。
+   历史：曾经每条消息在左侧挂一条悬浮时刻（app-assist.js 的 .dsh-msg-side + 给消息打
+   .dsh-has-time，CSS 在消息左内边距里预留 84px 定宽栏、窄栏四档容器查询收栏宽）。
+   本次整体移除：渲染不再插 .dsh-msg-side、消息不带 .dsh-has-time，
+   因此这里也不再有任何左侧预留 —— 消息正文从会话列的最左缘起排，右边多出约 84px。
+   **逐项时刻（.dsh-seg-has-time > .dsh-seg-time）保留不动**：它在消息正文内、位于上一版
+   消息级时刻栏的右侧一层，不属于「轮次的时间」；其栏宽与档位规则见本文件「逐项时刻」段。
+   下面两条容器查询声明保留（逐项时刻栏按**容器宽度**分档要它们，与窗口宽度无关）。 */
 .agent-body,
 .agent-conv,
 .ltg-conv {
   container-type: inline-size
-}
-
-.agent-list .dsh-msg.dsh-has-time,
-.agent-conv .dsh-msg.dsh-has-time,
-.ltg-conv .dsh-msg.dsh-has-time {
-  position: relative;
-  padding-left: 84px
-}
-
-.agent-list .dsh-msg-side,
-.agent-conv .dsh-msg-side,
-.ltg-conv .dsh-msg-side {
-  position: absolute;
-  left: 2px;
-  top: 3px;
-  width: 78px;
-  text-align: left;
-  pointer-events: auto;
-  user-select: none;
-  -webkit-user-select: none
-}
-
-.agent-list .dsh-msg-side .dsh-msg-time,
-.agent-conv .dsh-msg-side .dsh-msg-time,
-.ltg-conv .dsh-msg-side .dsh-msg-time {
-  display: block;
-  white-space: nowrap;
-  /* 等宽 + 表格数字（本仓既有 mono 栈）：时刻的**实际字宽在真浏览器里量过**，
-     栏宽就是照这组读数留的（刻度字符串「M/D HH:MM:SS」/「HH:MM:SS」）：
-       --mono @10px → 78.8 / 48.5    @9.5px → 74.7 / 45.9
-       --mono @ 9px → 71.2 / 43.8    @8.5px → 67.2 / 41.4
-     栏宽 = 该档 padding-left 减 4~6px，最长形态排得下一行、又不压到正文
-     （真浏览器量测：七档视口下时刻右缘与正文左缘恒有 3~5px 余量，见交付说明）。 */
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 10px;
-  line-height: 1.3;
-  opacity: .5;
-  transition: opacity .15s
-}
-
-/* 悬浮 / 键盘聚焦时点亮（时刻本身就是「悬浮在左侧」的那一行小字） */
-.agent-list .dsh-msg:hover .dsh-msg-side .dsh-msg-time,
-.agent-list .dsh-msg:focus-within .dsh-msg-side .dsh-msg-time,
-.agent-conv .dsh-msg:hover .dsh-msg-side .dsh-msg-time,
-.agent-conv .dsh-msg:focus-within .dsh-msg-side .dsh-msg-time,
-.ltg-conv .dsh-msg:hover .dsh-msg-side .dsh-msg-time,
-.ltg-conv .dsh-msg:focus-within .dsh-msg-side .dsh-msg-time {
-  opacity: 1
-}
-
-/* 窄栏四档（**容器宽度**，不是窗口宽度）：栏宽与字号同步收
-   （栏宽 = 该档字号下最长形态「M/D HH:MM:SS」的实测字宽 + 约 6px 余量），
-   保证「时刻左边悬浮、正文不被压、时刻不折两行」三条同时成立。 */
-@container (max-width: 1400px) {
-
-  .agent-list .dsh-msg.dsh-has-time,
-  .agent-conv .dsh-msg.dsh-has-time,
-  .ltg-conv .dsh-msg.dsh-has-time {
-    padding-left: 82px
-  }
-
-  .agent-list .dsh-msg-side,
-  .agent-conv .dsh-msg-side,
-  .ltg-conv .dsh-msg-side {
-    width: 76px
-  }
-
-  .agent-list .dsh-msg-side .dsh-msg-time,
-  .agent-conv .dsh-msg-side .dsh-msg-time,
-  .ltg-conv .dsh-msg-side .dsh-msg-time {
-    font-size: 9.5px
-  }
-}
-
-@container (max-width: 900px) {
-
-  .agent-list .dsh-msg.dsh-has-time,
-  .agent-conv .dsh-msg.dsh-has-time,
-  .ltg-conv .dsh-msg.dsh-has-time {
-    padding-left: 80px
-  }
-
-  .agent-list .dsh-msg-side,
-  .agent-conv .dsh-msg-side,
-  .ltg-conv .dsh-msg-side {
-    width: 74px
-  }
-
-  .agent-list .dsh-msg-side .dsh-msg-time,
-  .agent-conv .dsh-msg-side .dsh-msg-time,
-  .ltg-conv .dsh-msg-side .dsh-msg-time {
-    font-size: 9px
-  }
-}
-
-@container (max-width: 620px) {
-
-  .agent-list .dsh-msg.dsh-has-time,
-  .agent-conv .dsh-msg.dsh-has-time,
-  .ltg-conv .dsh-msg.dsh-has-time {
-    padding-left: 76px
-  }
-
-  .agent-list .dsh-msg-side,
-  .agent-conv .dsh-msg-side,
-  .ltg-conv .dsh-msg-side {
-    width: 70px
-  }
-}
-
-@container (max-width: 440px) {
-
-  .agent-list .dsh-msg.dsh-has-time,
-  .agent-conv .dsh-msg.dsh-has-time,
-  .ltg-conv .dsh-msg.dsh-has-time {
-    padding-left: 79px
-  }
-
-  .agent-list .dsh-msg-side,
-  .agent-conv .dsh-msg-side,
-  .ltg-conv .dsh-msg-side {
-    width: 73px
-  }
-
-  .agent-list .dsh-msg-side .dsh-msg-time,
-  .agent-conv .dsh-msg-side .dsh-msg-time,
-  .ltg-conv .dsh-msg-side .dsh-msg-time {
-    font-size: 8.5px
-  }
 }
 
 /* ── dsh 风格消息流(透明背景):会话与对话节点共用 ── */
@@ -4459,8 +4333,9 @@ body.theme-light #ixPanel {
   font-variant-numeric: tabular-nums;
 }
 
-/* 消息末尾剩下动作小按钮（「复制本条回复」/「回滚」）：靠左、不再带时刻
-   （时刻已上左侧悬浮时刻栏，见上方 .dsh-msg-side）；会话视图隐藏 head 时这些按钮仍可见 */
+/* 消息末尾剩下动作小按钮（「复制本条回复」）：靠左、不带任何时刻
+   （会话已无消息级时刻，见本文件「会话消息不再有『消息级时刻』栏」段）；
+   会话视图隐藏 head 时这些按钮仍可见 */
 .dsh-msg-tail {
   display: flex;
   justify-content: flex-start;
@@ -4735,19 +4610,108 @@ button.dsh-think-row:focus-visible {
   outline-offset: 1px;
 }
 
-.dsh-think-sum-txt {
+/* 思考强度进度条（本次需求 · 本轮密度减半 + 只有满格才到红）──────────────────
+   那一行原本是「◉ 思考 · N 字」：符号去掉，字数右侧补一条**小竖格**进度条，
+   像游戏里的电量格 —— 恒定 DSH_THINK_BAR_CELLS 格（20 → 200 → 100 → 本轮 **50 格**），
+   格数按**对数**由字数算：100 字 = 1 格、100000 字 = 满格，中间用 log10 在
+   100..100000 上插值（见 app-assist.js dshThinkCellsOf）。
+   形状与密度（本轮用户口径）：**格子再稀一半（100 → 50）· 每格更窄 · 格间缝加大 ·
+   去掉圆角做成尖角长方形** —— flex-basis 压到 4px、gap 加到 2px、cell 不设 border-radius
+   （格宽 4px : 格高 9px ≈ 1:2 的窄长条，缝比格还宽时要能被 flex 收窄，故 basis 走可缩的 0 1）。
+   上一版格子按 flex 均分（约 6.6px）且带 1px 圆角，看着像圆头小方块而不是刻度。
+   颜色（本轮用户口径）：**连续渐变 · 绿 → 橙 → 红，只有满格才是红** —— 端点色就是下面
+   这三只令牌（--think-bar-done-from/mid/to，取自主题的 --green / --orange / --red），
+   由 JS 算出颜色后写进格子自己的 background —— 亮段**顶端色由「条有多满」定**
+   （F = count / 格子总数 经平方压到三色渐变上：F=0.5 只到 0.25 的绿、F=0.9 到 0.81、
+   **只有满格 F=1 才是端点的红**），亮段内部再从端点绿插到该顶端色：
+   第 1 格恒绿、满格时末格正红、不满格时红只可能出现在最后那一点上
+   （见 app-assist.js dshThinkCellColor / dshThinkFillAt / dshThinkRampAt）。上一版把亮段从绿一直铺到红，
+   用户报「满格才是红色，而非任何字数都是绿到红」，故改口径。
+   旧的「四段 nth-child 跳变」规则已删 —— 它靠 1–5 / 6–10 / 11–15 / 16–20 四段硬边界
+   上色，格子多了既写不动，看着也仍像「四档」而不是一条刻度。
+   ⚠ 为什么颜色与填充都写在**格子自己**身上（上一轮的坑，别再改回去）：旧写法把颜色档类
+   tb-tN 贴在行 button 上、填充表却锚在 .dsh-think-meter 上，两边错位 ⇒ 填充表一条都没
+   命中，格子全落暗底，用户看到的就是「无论多少字都满格且灰」。现在 .on 与 background
+   同处一个元素（.dsh-think-meter-cell.on），锚点错位这一类故障不可能再发生。
+   性能：格子数与端点色令牌全是静态 CSS，JS 只在**格数变化**时写一次亮格那一段；
+   不挂 ResizeObserver、不量宽度（窄了只是格子变细）；整条 pointer-events: none（由 JS
+   写在元素上），鼠标事件仍归整行那个按钮，悬停在条上照样弹「点击开弹窗 + 刻度说明」。 */
+button.dsh-think-row {
+  --think-bar-dim: rgba(255, 255, 255, .07);
+  /* 渐变三只端点色（JS 逐格插值的输入，见 app-assist.js dshThinkBarRamp）：
+     只认主题令牌 —— 浅色主题换掉 --green/--orange/--red 时渐变跟着换，JS 不用改。 */
+  --think-bar-done-from: var(--green);
+  --think-bar-done-mid: var(--orange);
+  --think-bar-done-to: var(--red);
+}
+
+body.theme-light button.dsh-think-row {
+  --think-bar-dim: rgba(0, 0, 0, .10);
+}
+
+.dsh-think-meter {
   flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  /* 50 格（本轮密度再减半）：格间缝 2px —— 缝比上一版（1px）宽一倍，格子本身反而更窄
+     （4px，见下 .dsh-think-meter-cell），两者合起来才是用户要的「格更窄、间隔更空」。
+     整条的宽度仍只由 flex 分配，不写死条宽。 */
+  gap: 2px;
+  min-width: 0;
+  height: 9px;
+}
+
+.dsh-think-meter-cell {
+  flex: 0 1 4px;
+  min-width: 0;
+  height: 100%;
+  background: var(--think-bar-dim);
+  /* 一个小竖格：没点亮的格子是暗底轮廓，点亮的（.on，JS 按对数格数贴）铺该位置的渐变色
+     （background 由 JS 内联写，见 dshThinkBarPaint；这里只管暗底与排布）。
+     本轮形状口径（用户：每格更窄、去圆角成尖角长方形）：flex-basis 钉 4px（上一版是按
+     flex 均分的 6.6px 上下），**不写 border-radius** —— 圆角 1px 会让 4px 宽的格子看着像
+     圆头小方块；min-width 仍为 0（旧值 2px 已撤）：窄条里格子要能被 flex 继续收窄，
+     设了下限就会溢出条外；最窄时格子可能不足 1px，那是刻度的正常表现。 */
+}
+
+.dsh-think-sum-txt {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* ── 思考弹窗（#overlay 宿主 + .dsh-think-pop-box 外形 + 上下两框）───────────
+/* 修复（用户报「100 与 1000 会差一个文字导致上下不对齐」）：
+   字数是变长文本，它一变宽整条就跟着横移（量过：103.5px → 136.3px，四行逐行右移）。
+   所以把数字单独一层、**预留 4 位**（等宽数字 + 定宽 4.6em = 4 位数字位），
+   这样 5~6 位才刚好吃满、更少也不缩 —— 同一列里每一行的条都从同一条竖线起画。
+   另外（本轮用户口径）：字数后面那个「字」已去掉 —— 它是**全角**字符，会让
+   「思考 · 100 字」比「思考 · 1000 字」多占一个全角宽的尾部，尾部一变宽条又跟着漂。
+   宽度改动集中在 dshThinkNumEl（改口径先跑 test/smoke-think.js）。 */
+.dsh-think-num {
+  display: inline-block;
+  width: 4.6em;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
+
+/* 极窄栏（节点内会话那种窄框）：格与字挤在一块不如不要条 —— 只靠 420px 的
+   容器查询判据，不做 JS 宽度量测。改这里先跑 node test/smoke-think.js。 */
+@container (max-width: 420px) {
+  .dsh-think-meter {
+    display: none
+  }
+}
+
+/* ── 思考弹窗（#overlay 宿主 + .dsh-think-pop-box 外形 + 上方 tabs 切页）──────
    宽幅靠 .dsh-think-pop-box 这一个类（照 .overlay-box.wide 的口径，绝不用内联
    尺寸：内联残留会被下一个弹窗继承）。
-   本轮调整（用户口径）：窗里只有原文框；译文框**点了翻译才出现**，长在原文框下面，
-   译文本体写在译文框栏头下方的框里 —— 两个框各自滚动，互不牵连。 */
+   本轮调整（用户口径「出现上方一个 tabs 分别为原文和译文，而不是合并在一起」）：
+   窗里上方是一排 tabs（.dsh-think-pop-tabs）——两枚标签都常驻，**「译文」在左、
+   「原文」挨着它在右**（用户口径：「译文 tab 放在左侧原文（挨着）」）；页仍按需，
+   没译文时不建译文页（点「译文」也切不过去）。
+   一次只显示一页（.dsh-think-pop-col.on），两页各自独立滚动，不再上下叠两个框。 */
 .overlay-box.dsh-think-pop-box {
   width: min(1200px, 96vw);
   max-height: min(88vh, 900px);
@@ -4762,26 +4726,78 @@ button.dsh-think-row:focus-visible {
   padding: 2px 0 4px;
 }
 
-.dsh-think-pop-col {
+/* tabs 行：左端标签、右端工具位（复制 / 翻译），整行一条底边 */
+.dsh-think-pop-tabs {
   display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--bd);
+}
+
+button.dsh-think-pop-tab {
+  flex: 0 0 auto;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 3px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+button.dsh-think-pop-tab:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, .05);
+}
+
+/* 当前页的标签：底色 + 下边框（底下就是内容页，视觉上连成一体） */
+button.dsh-think-pop-tab.on {
+  color: var(--ink);
+  font-weight: 700;
+  background: rgba(255, 255, 255, .08);
+  border-color: var(--bd2);
+  border-bottom-color: transparent;
+}
+
+.dsh-think-pop-tabs-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* 一次只显示一页（本次需求）：两页都在 DOM 里，切页只切 .on，
+   滚动位置各由自己那个框保存，来回切不互相干扰。 */
+.dsh-think-pop-col {
+  display: none;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
 }
 
-/* 译文那一栏：跟着内容长，不跟原文抢高度（原文框留得住自己的滚动区） */
-.dsh-think-pop-col-xlate {
-  flex: 0 1 auto;
-  max-height: 60%;
+.dsh-think-pop-col.on {
+  display: flex;
 }
 
+/* 译文那一页：跟着内容长，别跟原文页抢高度 */
+.dsh-think-pop-col-xlate {
+  flex: 0 1 auto;
+  max-height: 100%;
+}
+
+/* 页里那一行栏头（标题 + 时刻）：tabs 行已经给过一条底边，这里不再画第二条，
+   只在文字与正文之间留一行间距。 */
 .dsh-think-pop-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 2px 6px;
-  border-bottom: 1px solid var(--bd);
+  padding: 2px;
   font-family: var(--mono);
   font-size: 10.5px;
   letter-spacing: .4px;
@@ -4826,9 +4842,12 @@ button.dsh-think-row:focus-visible {
   max-width: none;
   margin: 0;
   padding: 0;
-  color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.75;
+  /* 本轮用户口径：弹窗正文是「正常适合浏览的 markdown 阅读模式」——
+     用界面正文字体与正文色（旧口径的 --muted 灰调小字已撤），不再压对比。 */
+  font-family: var(--sans);
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.78;
 }
 
 .dsh-think-pop .md-viewer-doc h1,
@@ -4876,7 +4895,7 @@ button.dsh-think-row:focus-visible {
   margin: .35em 0;
 }
 
-/* 译文那一栏的正文位：**不套第二层虚线框** —— 译文块（.dsh-seg-xlate）自己就是那个框
+/* 译文那一页的正文位：**不套第二层虚线框** —— 译文块（.dsh-seg-xlate）自己就是那个框
    （用户口径「现在额外出了两个框」：一个译文只该占一个框）。 */
 .dsh-think-pop-pane-xlate {
   padding: 0;
@@ -4884,17 +4903,17 @@ button.dsh-think-row:focus-visible {
   border: 0;
 }
 
-/* 弹窗里的译文块：复用 .dsh-seg-xlate 那套青调（一眼区别于灰调原文），
-   只把作为「会话段」的外边距收掉，青轨与青底留着 —— 它就是译文的那一个框。 */
+/* 弹窗里的译文块：复用 .dsh-seg-xlate 那套青调（青轨 + 青底，一眼区别于原文页），
+   只把作为「会话段」的外边距收掉 —— 它就是译文的那一个框。 */
 .dsh-think-pop-pane .dsh-seg-xlate {
   margin: 0;
 }
 
-/* 译文正文（Markdown，本次需求「翻译也应当注意格式」）：青调 + 长译文自滚，
-   与上面原文的正文字号 / 行高同一档（只换色，不换版式）。 */
+/* 译文正文（Markdown，本次需求「翻译也应当注意格式」）：与原文页同一档版式 ——
+   正文用正文色读（青调只留在译文块的边轨与底上，不把整篇正文染成青色）。 */
 .dsh-think-pop-pane .dsh-xlate-md {
   margin: 4px 0 0;
-  color: var(--cyan2);
+  color: var(--ink);
 }
 
 .dsh-think-pop-pane .dsh-xlate-md h1,
@@ -4903,13 +4922,12 @@ button.dsh-think-row:focus-visible {
 .dsh-think-pop-pane .dsh-xlate-md h4,
 .dsh-think-pop-pane .dsh-xlate-md h5,
 .dsh-think-pop-pane .dsh-xlate-md h6 {
-  color: var(--cyan2);
+  color: var(--ink);
 }
 
-/* 翻译按钮（原来挂在折叠条最右端，现在在弹窗两栏的栏头） */
+/* 翻译按钮（原来挂在折叠条最右端，现在在弹窗 tabs 行右侧） */
 button.dsh-think-xlate {
   flex: 0 0 auto;
-  margin-left: auto;
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.5;
@@ -5040,8 +5058,10 @@ button.dsh-xlate-copy:hover {
    `.dsh-seg-has-time` 的话同权会被它们清成 7px / 6px，时刻直接压在正文上（真浏览器量到
    gap = −64px）。两段类名把这一条抬到同权之上，与文件里两条规则的先后顺序解耦
    （宿主与皮肤分家后这条已不会被踩，仍按两段写：防以后再长出「兼皮肤的时刻宿主」）。
-   与「消息级时刻」（.dsh-msg-side，整条消息左侧那一栏）是两层：
-   消息级看整条，逐项看每一项。改这里先跑 node test/smoke-msg-time-side.js。 */
+   **本层是会话里唯一的时刻**：曾经另有一层「消息级时刻」（.dsh-msg-side，整条消息左侧那一栏，
+   看整条消息），本次需求按用户口径已整体移除（去掉最左侧那一列时间、把会话空间还给正文）——
+   逐项时刻这一层保留：一项一个真实时刻，挂在**这一项自己的**左侧栏里。
+   改这里先跑 node test/smoke-msg-time-side.js。 */
 .dsh-seg.dsh-seg-has-time {
   position: relative;
   padding-left: var(--dsh-seg-time-w, 92px);
@@ -5132,6 +5152,34 @@ button.dsh-xlate-copy:hover {
   display: none
 }
 
+/* ── 工具段 / 药丸按**工具族**上色（本次需求 · 会话-对话里「不同工具不同色，与轨迹一致」）──
+   上面那条 `.dsh-seg-tool` 与下面那条 `.dsh-tool-chip` 保留原样：它们是**没有族类时的兜底
+   皮肤**（青轨 + 淡青底 = 「就是一次工具调用」），也是「青轨 / 青底确实长在内层盒上」这条
+   静态口径的锚点（test/smoke-session-markers.js [6]、test/smoke-trajectory-view.js [13]）。
+   族类由 renderer/app-assist.js 挂（dshToolFamClassOf → "dsh-fam-<族标识>"），族表与族色
+   **仍只有轨迹一处真源**（renderer/app-trajectory.js 的 TOOL_FAMILIES → css/dsh-tokens.css
+   的 --dsh-fam-* 一族一条）。挂上之后只把颜色两件（轨 / 底）与药丸三件（字 / 边 / 底）
+   换成族色，几何、字号、间距、圆角一律不碰 —— 换色不改版式。
+   `.dsh-fam-other` 单独列出：兜底族本来就是「认不出名字」的那一档，色取 --muted（灰），
+   与轨迹上「其它」那族同一副气色；其余九族引用族色令牌，亮暗两套主题都不用另写分片。 */
+.dsh-seg-tool.dsh-fam-read,
+.dsh-seg-tool.dsh-fam-write,
+.dsh-seg-tool.dsh-fam-run,
+.dsh-seg-tool.dsh-fam-web,
+.dsh-seg-tool.dsh-fam-sub,
+.dsh-seg-tool.dsh-fam-talk,
+.dsh-seg-tool.dsh-fam-own,
+.dsh-seg-tool.dsh-fam-browser,
+.dsh-seg-tool.dsh-fam-job {
+  border-left-color: var(--dsh-fam);
+  background: color-mix(in srgb, var(--dsh-fam) 7%, transparent);
+}
+
+.dsh-seg-tool.dsh-fam-other {
+  border-left-color: var(--muted);
+  background: rgba(128, 128, 128, .05);
+}
+
 /* 运行中会话思考区:折叠的 details,summary 常驻、正文 pre 自身限高滚动(点击才展开) */
 #agent-think {
   max-height: none;
@@ -5220,6 +5268,63 @@ button.dsh-xlate-copy:hover {
 .dsh-tool[open] .dsh-tool-chip.t-custom {
   background: rgba(199, 146, 234, .24);
   color: #d0a6ff;
+}
+
+/* ── 药丸按**工具族**上色（本次需求 · 会话-对话里「不同工具不同色，与轨迹一致」）──────
+   上面那条 `.dsh-tool-chip`（青）与 `.t-custom`（工具库紫）是**没挂族类时的兜底**：
+   前者 = 「就是一次 dsh 引擎工具调用」，后者 = 「这是 MTNode 自己的工具」。
+   挂上族类（renderer/app-assist.js 的 dshToolFamClassOf → "dsh-fam-<族标识>"）之后，
+   药丸的字色 / 边框 / 底色取族色 —— 族表与族色**只有轨迹一处真源**
+   （renderer/app-trajectory.js 的 TOOL_FAMILIES → css/dsh-tokens.css 的 --dsh-fam-* 一族一条），
+   轨迹轴上的块、图例、会话里的药丸与段轨因此同族同色，改一处三处一起变。
+   族色一律引用令牌（或由令牌混出淡底），亮暗两套主题都不用另写分片 —— 只有悬停底色在
+   亮色主题下另给一档，见 css/theme-light.css。
+   `.dsh-fam-other` 单列：兜底族 = 「名字认不出」的那一档，取 --muted（灰），
+   与轨迹上「其它」同一副气色。 */
+.dsh-tool-chip.dsh-fam-read,
+.dsh-tool-chip.dsh-fam-write,
+.dsh-tool-chip.dsh-fam-run,
+.dsh-tool-chip.dsh-fam-web,
+.dsh-tool-chip.dsh-fam-sub,
+.dsh-tool-chip.dsh-fam-talk,
+.dsh-tool-chip.dsh-fam-own,
+.dsh-tool-chip.dsh-fam-browser,
+.dsh-tool-chip.dsh-fam-job {
+  color: var(--dsh-fam);
+  border-color: color-mix(in srgb, var(--dsh-fam) 78%, transparent);
+  background: color-mix(in srgb, var(--dsh-fam) 9%, transparent);
+}
+
+.dsh-tool-chip.dsh-fam-other {
+  color: var(--muted);
+  border-color: var(--bd2);
+  background: rgba(128, 128, 128, .07);
+}
+
+/* 悬停 / 展开：族色那档只提亮自己那一片底（与上面两档同一件事）。
+   `.dsh-seg-tool.dsh-fam-*` 与 `.dsh-tool-chip.dsh-fam-*` 同为 0,2,0 —— 让 `.t-custom`
+   （紫）继续压过族色（来源这一维度不因换族色而丢），故族色那组写在 `.t-custom` 之后。 */
+.dsh-tool-chip.dsh-fam-read:hover,
+.dsh-tool-chip.dsh-fam-write:hover,
+.dsh-tool-chip.dsh-fam-run:hover,
+.dsh-tool-chip.dsh-fam-web:hover,
+.dsh-tool-chip.dsh-fam-sub:hover,
+.dsh-tool-chip.dsh-fam-talk:hover,
+.dsh-tool-chip.dsh-fam-own:hover,
+.dsh-tool-chip.dsh-fam-browser:hover,
+.dsh-tool-chip.dsh-fam-job:hover,
+.dsh-tool-chip.dsh-fam-other:hover,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-read,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-write,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-run,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-web,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-sub,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-talk,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-own,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-browser,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-job,
+.dsh-tool[open] .dsh-tool-chip.dsh-fam-other {
+  background: color-mix(in srgb, var(--dsh-fam, var(--muted)) 24%, transparent);
 }
 
 /* 出错时仍走统一的失败红（下面 .dsh-tool.err 那条**没有** .t-custom，两者特异性相同

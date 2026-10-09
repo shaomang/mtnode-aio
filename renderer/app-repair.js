@@ -62,6 +62,9 @@ const PLUGIN_REPAIR_SKILLS = {
   tts: "tts-local-install",
   "tts-local": "tts-local-install",
   "gpt-sovits": "tts-local-install",
+  breeze: "breeze-tts-local-install",
+  "breeze-tts": "breeze-tts-local-install",
+  "breeze-tts-local": "breeze-tts-local-install",
   llama: "llama-local-install",
   "llama-local": "llama-local-install",
 };
@@ -82,6 +85,9 @@ const PLUGIN_REPAIR_CONSOLE = {
   "h3-local": "h3Open",
   tts: "ttsOpen",
   "tts-local": "ttsOpen",
+  breeze: "breezeOpen",
+  "breeze-tts": "breezeOpen",
+  "breeze-tts-local": "breezeOpen",
   llama: "llamaOpen",
   "llama-local": "llamaOpen",
   remotion: "remotionOpen",
@@ -146,6 +152,17 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["tts-local"],
     results: [".tts-agent-result"],
   },
+  breeze: {
+    label: "Breeze TTS 2",
+    resident: true,
+    start: "breezeStart",
+    stop: "breezeStop",
+    status: "breezeStatus",
+    card: "refreshBreezePluginCard",
+    cards: ["breeze-tts-local"],
+    /* 宿主写的修复结果标记：Agent 保底安装/修复的结论落在这个文件里 */
+    results: [".breeze-agent-result"],
+  },
   llama: {
     label: "llama.cpp",
     resident: true,
@@ -182,6 +199,7 @@ const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService() {
     yue2: ["yue2", "yue", "yue2-local", "yue_gen"],
     sensenova: ["sensenova", "sensenova-local", "sensenova-u1", "sensenova_gen"],
     tts: ["tts", "tts-local", "gpt-sovits", "tts_gen"],
+    breeze: ["breeze", "breeze-tts", "breeze-tts-local", "breeze_gen"],
     llama: ["llama", "llama-local", "llama-cpp"],
     remotion: ["remotion", "remotion-video", "remotion-render"],
     pet: ["pet", "bongochat", "bongo-cat", "deskpet"],
@@ -1047,7 +1065,7 @@ function pluginRepairGotoSession(info) {
   try {
     if (typeof setView === "function" && typeof S === "object" && S.view !== "agent") setView("agent");
     S.agentActiveId = st.id;
-    if (typeof persistAgentSession === "function") persistAgentSession();
+    if (typeof agentFlushSessionSaveQuiet === "function") agentFlushSessionSaveQuiet();
     if (typeof renderAgentSession === "function") renderAgentSession();
     if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
   } catch (_) {}

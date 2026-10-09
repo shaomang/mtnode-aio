@@ -275,9 +275,13 @@ async function main() {
       return null
     }
   }
+  /* 比较按「行尾归一」口径：仓内是 LF，但 Windows 检出（core.autocrlf / .gitattributes）
+     会把它读成 CRLF —— 按字节比会在 Windows 上恒报「不一致」，把真正的契约漂移淹掉
+     （Linux / CI 上是绿的）。行尾不是契约的一部分；生成时依旧写 LF。 */
+  const same = (a, b) => a !== null && a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n')
   const drift = []
-  if (read(contractPath) !== nextContract) drift.push(path.relative(ROOT, contractPath))
-  if (read(schemasPath) !== nextSchemas) drift.push(path.relative(ROOT, schemasPath))
+  if (!same(read(contractPath), nextContract)) drift.push(path.relative(ROOT, contractPath))
+  if (!same(read(schemasPath), nextSchemas)) drift.push(path.relative(ROOT, schemasPath))
   if (check) {
     if (drift.length) {
       console.error('[mcp-contract] 契约与生成结果不一致：' + drift.join('、'))

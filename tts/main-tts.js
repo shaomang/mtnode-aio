@@ -23,6 +23,7 @@ const { mergeManagedProvider } = require("../config-providers.js");
 const uiBridge = require("./ui-bridge.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "tts-local";
 const TTS_PROVIDER_ID = "tts-local";
@@ -34,8 +35,13 @@ let getDataDir = null;
 let getMainWin = null;
 let appRoot = null;
 let getDsh = null;
+/** 画布资产目录解析（main.js 传入的 assetDirFor(wfId)）：调用方没给输出路径时产物直接落这里，
+ *  与 proc_image / sensenova 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
+let assetDirFor = null;
 let consoleWin = null;
 let consoleLogWin = null;
+/* 后端主动求助（ui-signal）留下的提示：不再自动弹窗，改由插件卡片角标 + 内嵌 console 呈现 */
+let pendingNotice = null;
 const LOG_PANEL_WIDTH = 440;
 let logPanelSyncHandler = null;
 let installing = false;
@@ -60,6 +66,40 @@ function mk(p) {
 }
 function ttsRoot() {
   return mk(join(getDataDir(), "tts"));
+}
+/** 托管输出临时区：调用方没给输出路径、又拿不到画布资产目录时的兜底落点（数据目录内，不是应用文件夹） */
+function ttsTempOutDir() {
+  return mk(join(ttsRoot(), "asset-tmp"));
+}
+/** 托管落点解析：优先画布资产目录 assetDirFor(wfId)，否则数据目录里的 asset-tmp。
+ *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同 sensenova）。 */
+function resolveManagedOutDir(wfId, askedFor) {
+  let dir = "";
+  const wf = String(wfId || "");
+  if (wf && typeof assetDirFor === "function") {
+    try {
+      dir = String(assetDirFor(wf) || "");
+    } catch {
+      dir = "";
+    }
+  }
+  if (!dir) dir = ttsTempOutDir();
+  mk(dir);
+  return {
+    dir,
+    warn:
+      "managed_output_dir: 调用方未指定 " + askedFor + "，产物落在应用托管目录（" + dir +
+      "），未写入应用文件夹；需要固定位置请显式传 " + askedFor + "。",
+  };
+}
+/** 托管兜底命名：<nodeId 尾 8 位>-<时间戳>.<ext>（重名再补 #N，绝不覆盖已有产物） */
+function managedOutFile(dir, nodeId, ext, tag) {
+  const tail = String(nodeId || "").slice(-8) || String(tag || "tts");
+  const e = /^\.[a-z0-9]+$/i.test(String(ext || "")) ? String(ext).toLowerCase() : ".wav";
+  const base = tail + "-" + Date.now();
+  let p = join(dir, base + e);
+  for (let i = 2; fs.existsSync(p) && i < 10000; i++) p = join(dir, base + "#" + i + e);
+  return p;
 }
 function configPath() {
   return join(ttsRoot(), "config.json");
@@ -731,11 +771,13 @@ async function startBackend() {
     clearPidMeta();
   }
 
-  const py = join(installDir, ".venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) {
-    reportErr("no_venv", "GPT-SoVITS 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+  const pyExe = join(installDir, ".venv", "Scripts", "python.exe");
+  if (!fs.existsSync(pyExe)) {
+    reportErr("no_venv", "GPT-SoVITS 后端缺少 Python 环境（" + pyExe + "）", { phase: "start" });
     return { ok: false, error: "no_venv" };
   }
+  /* pythonw：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会再拉真解释器并弹终端窗） */
+  const py = quietPython(pyExe);
 
   syncPackToInstall(installDir);
   mk(path.dirname(consoleLogPath()));
@@ -1234,6 +1276,9 @@ async function statusForUi() {
     gpu,
     wantRunning: !!cfg.wantRunning,
     trayRunning: trayRunning(),
+    /* 后端求助提示（角标 / 状态行）：开窗或清掉后为空串 */
+    notice: pendingNotice ? pendingNotice.text : "",
+    noticeAt: pendingNotice ? pendingNotice.at : 0,
     consolePath: consoleLogPath(),
   };
 }
@@ -1361,12 +1406,31 @@ function notifyConsoleChanged(open) {
   broadcast("tts:consoleChanged", { open: !!open, id: PLUGIN_ID });
 }
 
+/* ── 后端主动求助（ui-signal）不再自动弹出控制台窗 ────────────────────────────
+   用户口径：插件不许再自己「呼出独立的后端窗口」（用户会误关），后端要静默待在后台，
+   状态与 console 内容显示在插件界面里。所以这里只留一条提示：
+     ① 写进本插件 console 日志（用户看日志时能追到）；
+     ② 置 pendingNotice → statusForUi 带回插件卡片（角标 + 状态行一句）；
+     ③ 广播 tts:notice → 已经打开的插件对话框立刻刷出角标。
+   用户亲手点的入口（卡片「控制台」按钮 / 托盘菜单「打开控制台」）照旧开窗；开窗即清掉提示。 */
+function noteBackendNotice(text) {
+  const t = String(text || "").trim() || "TTS 后端请求打开控制台";
+  pendingNotice = { text: t, at: Date.now() };
+  appendConsole("[notice] " + t + " —— 不再自动弹窗，请到顶栏「插件」的 GPT-SoVITS 卡片看状态与日志");
+  broadcast("tts:notice", { id: PLUGIN_ID, text: t, at: pendingNotice.at });
+}
+function clearBackendNotice() {
+  if (!pendingNotice) return;
+  pendingNotice = null;
+  broadcast("tts:notice", { id: PLUGIN_ID, text: "", at: Date.now() });
+}
+
 function startUiSignalWatch() {
   if (uiSignalTimer) return;
   const dataDir = ttsRoot();
   uiSignalTimer = setInterval(() => {
     try {
-      if (uiBridge.consumeShowUiSignal(dataDir)) openConsoleWindow();
+      if (uiBridge.consumeShowUiSignal(dataDir)) noteBackendNotice("TTS 后端请求打开控制台");
     } catch {}
   }, 400);
   if (uiSignalTimer.unref) uiSignalTimer.unref();
@@ -1382,6 +1446,8 @@ function stopUiSignalWatch() {
 function openConsoleWindow() {
   ensureUiRuntime();
   uiBridge.requestTrayHideUi(ttsRoot());
+  /* 用户亲手开窗 = 已经看到求助内容，角标与状态行提示到此为止 */
+  clearBackendNotice();
   if (consoleWin && !consoleWin.isDestroyed()) {
     consoleWin.show();
     consoleWin.focus();
@@ -1641,10 +1707,18 @@ function generateTtsFile(params) {
   const text = String(params.text || "").trim();
   const voice = String(params.voice || "").trim();
   const speed = Number(params.speed) > 0 ? Number(params.speed) : 1;
-  const outputPath = String(params.outputPath || "").trim();
   const mediaType = String(params.response_format || "wav").toLowerCase();
   if (!text) return Promise.resolve({ ok: false, error: "text_required" });
-  if (!outputPath) return Promise.resolve({ ok: false, error: "no_output_path" });
+  /* 调用方（画布节点 / 助手 / 外部脚本）没给输出路径 → 宿主兜底落应用托管目录：
+     有 workflowId 落画布资产目录 assetDirFor(wfId)，否则落数据目录的 asset-tmp；
+     一律不写应用文件夹。显式传了 outputPath 的调用方走原路，一行不动。 */
+  let outputPath = String(params.outputPath || "").trim();
+  let managedWarn = "";
+  if (!outputPath) {
+    const m = resolveManagedOutDir(params.workflowId, "outputPath");
+    outputPath = managedOutFile(m.dir, params.nodeId, "." + (mediaType || "wav"), "tts");
+    managedWarn = m.warn;
+  }
   return apiKeyOr().then((key) => {
     if (!key) return { ok: false, error: "no_api_key" };
     const cfg = loadConfig();
@@ -1686,7 +1760,14 @@ function generateTtsFile(params) {
             try {
               mk(path.dirname(outputPath));
               fs.writeFileSync(outputPath, buf);
-              resolve({ ok: true, path: outputPath, bytes: buf.length, mime: String(res.headers["content-type"] || "audio/wav") });
+              if (managedWarn) appendConsole("[job] warn " + managedWarn);
+              resolve({
+                ok: true,
+                path: outputPath,
+                bytes: buf.length,
+                mime: String(res.headers["content-type"] || "audio/wav"),
+                warnings: managedWarn ? [managedWarn] : [],
+              });
             } catch (e) {
               resolve({ ok: false, error: "write_failed:" + String((e && e.message) || e) });
             }
@@ -1782,6 +1863,8 @@ function registerTtsIpc(opts) {
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot;
   getDsh = opts.getDsh || null;
+  /* 画布资产目录（托管兜底落点）：main.js 传入 assetDirFor(wfId) */
+  assetDirFor = typeof opts.assetDirFor === "function" ? opts.assetDirFor : null;
 
   /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口）。
      本宿主的自我修复是 selfRepairFromConsole 的等价实现（console 尾部 → agentRecoverInstall）。 */

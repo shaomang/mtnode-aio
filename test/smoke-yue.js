@@ -254,14 +254,15 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   ok(subAt > 0, "「音频生成」一级子菜单存在");
   const subBlock = appSrc.slice(subAt, appSrc.indexOf("]),", subAt));
   eqArr(
-    ["music_gen", "yue_gen", "tts_gen"].filter((k) => subBlock.indexOf('"' + k + '"') >= 0),
-    ["music_gen", "yue_gen", "tts_gen"],
-    "「音频生成」成员含 music_gen / yue_gen / tts_gen",
+    ["music_gen", "yue_gen", "tts_gen", "breeze_gen"].filter((k) => subBlock.indexOf('"' + k + '"') >= 0),
+    ["music_gen", "yue_gen", "tts_gen", "breeze_gen"],
+    "「音频生成」成员含 music_gen / yue_gen / tts_gen / breeze_gen",
   );
   ok(
     subBlock.indexOf('"music_gen"') < subBlock.indexOf('"yue_gen"') &&
-      subBlock.indexOf('"yue_gen"') < subBlock.indexOf('"tts_gen"'),
-    "YuE2 夹在 Minimax Music 3 与 SoVITS 语音之间（菜单顺序）",
+      subBlock.indexOf('"yue_gen"') < subBlock.indexOf('"tts_gen"') &&
+      subBlock.indexOf('"tts_gen"') < subBlock.indexOf('"breeze_gen"'),
+    "YuE2 夹在 Minimax Music 3 与 SoVITS 语音之间，Breeze 语音排在最后（菜单顺序）",
   );
   has(subBlock, 'I18n.t("YuE2（歌词→整曲 · 可编辑谱面）")', "菜单项文案带「歌词→整曲 · 可编辑谱面」");
   has(subBlock, 'addNode("yue_gen"', "点菜单项真实建 yue_gen");
@@ -287,6 +288,13 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(playBody, "kind: \"audio\"", "产出标记为音频内容输出（node.output.kind = audio）");
   has(playBody, "fireControlOutgoing", "完成后驱动控制输出端子");
   has(playBody, "yueGenCotOf", "下发生成请求前取思维链档位");
+  /* 歌词不再必填（本轮 bug：用户报「YuE2 音乐节点必须要歌词，没歌词直接拦下运行」）：
+     未接线 / 节点上留空 → 按纯器乐 [instrumental] 提交，与 Music 3 同一条约定；
+     「请连接歌词输入」那条拦截必须彻底消失，而不是只藏起提示。 */
+  has(playBody, "MUSIC_GEN_INSTRUMENTAL", "歌词缺省时回落到纯器乐占位常量");
+  hasnt(playBody, "请连接歌词输入", "旧的「歌词必填」拦截已删除（不再拦下运行）");
+  hasnt(playBody, "if (!lyrics)", "不再有 !lyrics 早退分支");
+  hasnt(i18nSrc, '"请连接歌词输入（端子 L），或直接在节点上填写歌词":', "词条侧也一并清掉（不留假口径）");
   for (const k of ["prompt", "lyrics", "abc", "cot", "seed"])
     has(playBody, k + ",", "生成载荷带 " + k + "（宿主按此接 Gradio）");
   for (const k of ["outputDir", "filename", "offload"])
@@ -311,8 +319,12 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(nodesSrc, 'return I18n.t("YuE2 音乐节点控制输入端子为端口 3");', "控制线连错端口 → 拒绝并指回端口 3");
   has(nodesSrc, "if (slot != null && (slot < 0 || slot > 2)) return I18n.t(\"无效的输入端子\");", "数据线只允许端口 0–2");
   has(nodesSrc, "nextFreeMediaDataSlot(to, from, fi)", "未指定端子时按空闲数据槽落点");
-  const ctrlDrop = nodesSrc.slice(nodesSrc.indexOf("if (fromN && isControlKind(fromN))"), nodesSrc.indexOf("if (fromN && isControlKind(fromN))") + 900);
-  has(ctrlDrop, "toN.kind === \"yue_gen\"", "addWire 自动落点认识 yue_gen");
+  /* addWire 里有两处 `if (fromN && isControlKind(fromN))`：第一处是通用控制口，第二处才是
+     「生成类节点固定控制端口」那张表。旧写法取**第一处** + 900 字窗口 —— 注释一长
+     （本轮那一段就长了一截）yue_gen 那几行就掉出窗口，变成假红。
+     改成按函数体取（fnBody），断言不再依赖字符窗口大小。 */
+  const ctrlDrop = fnBody(nodesSrc, "addWire");
+  has(ctrlDrop, 'toN.kind === "yue_gen"', "addWire 自动落点认识 yue_gen");
   has(ctrlDrop, "? 3", "yue_gen 的控制线自动落到端口 3");
 
   /* ===================== [4] app-canvas.js 设置表单与节点体 ===================== */
@@ -330,7 +342,11 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(fnBody(nodesSrc, "nsYueGenParamFields"), '"full"', "档位含 full");
   has(fnBody(nodesSrc, "nsYueGenParamFields"), '"melody"', "档位含 melody");
   has(fnBody(nodesSrc, "nsYueGenParamFields"), '"off"', "档位含 off");
-  has(canvasSrc, '(node.kind === "yue_gen" && i === 3)', "端子渲染：yue_gen 端口 3 上控制色");
+  /* 端子控制色已收口到共享真源 inPortIsControl（app.js）：app-canvas.js 不再内联
+     `(node.kind === "yue_gen" && i === 3)` 这类字面量。断言改钉两件事 ——
+     「渲染侧走共享判定」+「共享判定里 yue_gen 端口 3 仍是控制口」（行为不变）。 */
+  has(canvasSrc, "inPortIsControl(node, i)", "端子渲染走共享控制口判定（不再各写一份字面量）");
+  has(appSrc, 'if (node.kind === "yue_gen") return i === 3;', "共享判定里 yue_gen 端口 3 = 控制口");
   has(canvasSrc, 'appPluginInstalled("yue2-local")', "节点体按插件 id yue2-local 判未装警示条");
   has(canvasSrc, "appendYueGenSummaryBody(node, body)", "节点体画 yue_gen 参数摘要");
   has(canvasSrc, "node.yueStatus", "节点体有 yue_status 状态行");
@@ -345,7 +361,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   console.log("\n[6] IPC：preload 白名单 ⇄ 宿主 handle / 事件 一一成对");
   const handles = uniq([...hostSrc.matchAll(/ipcMain\.handle\("(yue:[^"]+)"/g)].map((m) => m[1]));
   const invokes = uniq([...preloadSrc.matchAll(/ipcRenderer\.invoke\('(yue:[^']+)'/g)].map((m) => m[1]));
-  eqNum(handles.length, 12, "宿主注册 12 个 yue: handle");
+  eqNum(handles.length, 13, "宿主注册 13 个 yue: handle（本轮新增 yue:consoleTail：插件界面内嵌 console 只读拉日志尾部）");
   eqArr(sorted(invokes), sorted(handles), "preload invoke 通道与宿主 handle 完全一致（不多不少）");
   const expectedHandles = [
     "yue:getStatus",
@@ -359,14 +375,15 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
     "yue:getLock",
     "yue:open",
     "yue:close",
+    "yue:consoleTail",
     "yue:removePluginMeta",
   ];
-  eqArr(sorted(handles), sorted(expectedHandles), "12 个通道名与冻结清单逐个对上");
+  eqArr(sorted(handles), sorted(expectedHandles), "13 个通道名与冻结清单逐个对上");
   const sends = uniq([...hostSrc.matchAll(/"yue:(progress|gpu|consoleChanged)"/g)].map((m) => "yue:" + m[1]));
   const ons = uniq([...preloadSrc.matchAll(/ipcRenderer\.on\('(yue:[^']+)'/g)].map((m) => m[1]));
   eqArr(sorted(sends), sorted(["yue:progress", "yue:gpu", "yue:consoleChanged"]), "宿主发 3 个事件通道");
   eqArr(sorted(ons), sorted(sends), "preload 订阅的事件与宿主发送的一一对应");
-  for (const m of ["yue2Status", "yue2Open", "yue2Close", "yue2Install", "yue2CancelInstall", "yue2Start", "yue2Stop", "yue2PickInstallDir", "yue2Generate", "yue2CancelGenerate", "yue2GetLock", "yue2RemovePluginMeta"])
+  for (const m of ["yue2Status", "yue2Open", "yue2Close", "yue2Install", "yue2CancelInstall", "yue2Start", "yue2Stop", "yue2PickInstallDir", "yue2Generate", "yue2CancelGenerate", "yue2GetLock", "yue2ConsoleTail", "yue2RemovePluginMeta"])
     has(preloadSrc, m + ":", "preload 暴露 " + m);
   for (const e of ["onYueProgress", "onYueConsoleChanged", "onYueGpu"])
     has(preloadSrc, e + ":", "preload 暴露 " + e + "（返回退订函数）");
@@ -433,7 +450,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
     "ABC",
     "ABC 谱",
     "风格提示词（曲风 / 人声 / 乐器 / 情绪）",
-    "歌词（含 [Verse]/[Chorus] 等结构标签）",
+    "歌词（可选：不接 / 留空则按纯器乐 [instrumental] 生成 · 含 [Verse]/[Chorus] 等结构标签）",
     "ABC 谱（可选：手工谱面，留空则由模型生成）",
     "思维链",
     "思维链档位",
@@ -448,7 +465,6 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
     "⚠ YuE2 插件未安装：请在「插件 · YuE2 本地音乐」中安装后使用本节点",
     "待生成（端子 P=风格提示词 · L=歌词 · ABC=谱面可选）",
     "请连接风格提示词输入（端子 P），或直接在节点上填写风格提示词",
-    "请连接歌词输入（端子 L），或直接在节点上填写歌词",
     "YuE2 音乐插件未就绪",
     "启动后端并生成…",
     "生成中…",
@@ -485,6 +501,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   ok(nodeIdx.ids.indexOf("yue_gen") >= 0, "yue_gen 已进节点指南索引");
   eqNum(nodeIdx.ids.indexOf("yue_gen"), nodeIdx.ids.indexOf("music_gen") + 1, "索引里 yue_gen 紧跟 music_gen");
   eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("yue_gen") + 1], "tts_gen", "索引里 tts_gen 紧跟 yue_gen（音频生成三类相邻）");
+  eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("tts_gen") + 1], "breeze_gen", "索引里 breeze_gen 紧跟 tts_gen（Breeze 语音进音频生成族）");
   const guideZh = read("guides/nodes/yue_gen.md");
   has(guideZh, "YuE2", "中文指南写明节点名");
   has(guideZh, "端口 3 = 控制输入", "中文指南写明控制输入端口");
@@ -629,7 +646,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   /* --- 10.5 IPC 面未变（未新增通道 → 无需 preload 同步） --- */
   hasnt(hostSrc, '"yue:repairDeps"', "未新增 yue:repairDeps 通道");
   hasnt(preloadSrc, "yue2RepairDeps", "preload 未出现无主的 yue2RepairDeps");
-  eqNum(uniq([...hostSrc.matchAll(/ipcMain\.handle\("(yue:[^"]+)"/g)].map((m) => m[1])).length, 12, "宿主 handle 仍为 12 个（[6] 成对断言基准不变）");
+  eqNum(uniq([...hostSrc.matchAll(/ipcMain\.handle\("(yue:[^"]+)"/g)].map((m) => m[1])).length, 13, "宿主 handle 为 13 个（[6] 成对断言基准随本轮 consoleTail 同步）");
   has(read("renderer/i18n.js"), "缺依赖 ", "渲染层有缺依赖文案词条（一键修复口径）");
 
   /* ===== [11] 注意力档位自修复（flash 无 kernel → 探针选档 / 报错指纹 / 安装链口径） ===== */

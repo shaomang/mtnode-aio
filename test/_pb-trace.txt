@@ -1,0 +1,252 @@
+function portBadgeText(node, dir, idx, opt) {
+  const o = opt && typeof opt === "object" ? opt : {};
+  const i = Math.max(0, Number(idx) || 0);
+  const isIn = dir === "in";
+  const fb = (isIn ? I18n.t("输入") : I18n.t("输出")) + (i + 1);
+  if (!node) return { badge: fb, title: "", zh: true };
+  /* isFnTNode / isANode / isDNode 由调用方先算好（它们要读 toolConfig / 素材条目 /
+     交付清单，逐个端子重算一遍没有意义）—— 没传就按节点自己判，保证单独调用也对。 */
+  const fnTool =
+    typeof o.fnTool === "boolean"
+      ? o.fnTool
+      : typeof isFnToolNode === "function" && isFnToolNode(node);
+  const asset =
+    typeof o.asset === "boolean"
+      ? o.asset
+      : typeof isAssetNode === "function" && isAssetNode(node);
+  const deliver =
+    typeof o.deliver === "boolean"
+      ? o.deliver
+      : node.kind === "deliver" && !!(window.LT && window.LT.deliverPortItem);
+  /* 这一颗端子本身就是控制端子（端子级）：只有它直接写「控制」 */
+  const ctrlPort =
+    typeof o.ctrlIsPort === "boolean"
+      ? o.ctrlIsPort
+      : isIn
+        ? portBadgeInIsCtrlPort(node, i)
+        : portBadgeOutIsCtrlPort(node, i);
+  if (ctrlPort) return { badge: I18n.t("控制"), title: "", zh: true };
+  /* 输出侧节点的控制语义（节点级）：给下面「其余控制类节点」那一档用 */
+  const ctrlOut =
+    typeof o.ctrl === "boolean" ? o.ctrl : portBadgeIsControlOut(node, i);
+
+  if (isIn) {
+    if (asset) {
+      const items = typeof assetItems === "function" ? assetItems(node) : [];
+      const it = items[i] || {};
+      const t = String(it.title || "").trim() || I18n.t("内容 ") + (i + 1);
+      return {
+        badge: t,
+        title: I18n.t("内容端子「") + t + I18n.t("」· 与同名输出端子一一对应"),
+        zh: true,
+      };
+    }
+    if (deliver && window.LT) {
+      const it = window.LT.deliverPortItem(node, i) || {};
+      const nm =
+        String(
+          (window.LT.deliverNameOf ? window.LT.deliverNameOf(it) : it.title) ||
+            "",
+        ).trim() || I18n.t("文件名待补");
+      return {
+        badge: nm,
+        title: I18n.t("待交付端子「") + nm + I18n.t("」（连入即视为已交）"),
+        zh: true,
+      };
+    }
+    if (fnTool) {
+      const pl = typeof fnToolParamList === "function" ? fnToolParamList(node, "in") : [];
+      if (i === 0) return { badge: I18n.t("控制"), title: "", zh: true };
+      const p = pl[i - 1] || {};
+      return {
+        badge: String(p.name || "").trim() || String(i + 1),
+        title: "",
+        zh: true,
+      };
+    }
+    switch (node.kind) {
+      case "gate":
+        /* 闸门 / 互斥的每一颗端子都是控制端子（inPortKindOf → control）：
+           调用方按端子号判定后会传 ctrlIsPort，这里只是抽不到 kind 时的兜底 */
+        return { badge: I18n.t("输入") + (i + 1), title: I18n.t("（需全部到达）"), zh: true };
+      case "mutex":
+        return { badge: I18n.t("输入") + (i + 1), title: I18n.t("（互斥）"), zh: true };
+      case "task":
+        return { badge: I18n.t("控制"), title: I18n.t("（激活内部起点）"), zh: true };
+      case "music_gen":
+        return {
+          badge: i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
+      case "yue_gen":
+        return {
+          badge:
+            i === 0
+              ? I18n.t("风格")
+              : i === 1
+                ? I18n.t("歌词")
+                : i === 2
+                  ? I18n.t("ABC")
+                  : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
+      case "sensenova_gen":
+        /* 与 proc_image 同一条泛用增量规则：端口 0 = 提示词，之后是数据槽 */
+        return {
+          badge: i === 0 ? I18n.t("提示词") : I18n.t("输入") + (i + 1),
+          title: i === 0 ? "" : I18n.t("（数据槽：可接文本 / 图像）"),
+          zh: true,
+        };
+      case "tts_gen":
+        return { badge: i === 0 ? I18n.t("文本") : I18n.t("控制"), title: "", zh: true };
+      /* Breeze 语音（bug 修复：它从前不在任何徽标白名单里，5 入 2 出全都没有标签）——
+         端口口径 = app.js 的 IN_PORT_DATA_KINDS.breeze_gen / inPortIsControl：
+         0 待合成文本 · 1 参考音频 · 2 参考文稿 · 3 指令 · 4 控制 */
+      case "breeze_gen":
+        return {
+          badge:
+            i === 0
+              ? I18n.t("文本")
+              : i === 1
+                ? I18n.t("参考音频")
+                : i === 2
+                  ? I18n.t("参考文稿")
+                  : i === 3
+                    ? I18n.t("指令")
+                    : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
+      case "video_gen": {
+        if (i === videoGenControlPort(node))
+          return { badge: I18n.t("控制"), title: "", zh: true };
+        const meta =
+          typeof videoGenPortMeta === "function" ? videoGenPortMeta(node, i) : null;
+        if (!meta) return { badge: I18n.t("输入") + (i + 1), title: "", zh: true };
+        if (meta.kind === "text") return { badge: I18n.t("提示词"), title: "", zh: true };
+        if (meta.kind === "image")
+          return {
+            badge:
+              meta.key === "first"
+                ? I18n.t("首帧")
+                : meta.key === "last"
+                  ? I18n.t("末帧")
+                  : I18n.t("参考图") + meta.label,
+            title: meta.label,
+            zh: true,
+          };
+        if (meta.kind === "video")
+          return {
+            badge:
+              meta.key === "chain" ? I18n.t("上一段") : I18n.t("参考视频") + meta.label,
+            title: meta.label,
+            zh: true,
+          };
+        return { badge: I18n.t("参考音频") + meta.label, title: meta.label, zh: true };
+      }
+      case "remotion":
+        return { badge: i === 0 ? I18n.t("控制") : I18n.t("描述"), title: "", zh: true };
+      case "net_send":
+        return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
+      default:
+        break;
+    }
+    /* 视频超分 / 补帧：0=控制 · 1=源视频 · 2+=可选素材 */
+    if (typeof isVideoPostKind === "function" && isVideoPostKind(node))
+      return {
+        badge:
+          i === 0
+            ? I18n.t("控制")
+            : i === 1
+              ? I18n.t("源视频")
+              : I18n.t("素材") + " " + (i - 1),
+        title: "",
+        zh: true,
+      };
+    /* 音频 / 视频输入：那唯一一颗入端子是**摆设**（内容取自节点自己选的文件，接上游无效）——
+       它没有专属名字，走下面的「输入N」兜底；有名字的是**输出侧**那两颗（见下）。 */
+    return { badge: fb, title: "", zh: true };
+  }
+
+  /* ── 输出侧 ── */
+  if (asset) {
+    const items = typeof assetItems === "function" ? assetItems(node) : [];
+    const it = items[i] || {};
+    const t = String(it.title || "").trim() || I18n.t("内容 ") + (i + 1);
+    return {
+      badge: t,
+      title: I18n.t("输出内容「") + t + I18n.t("」· 与同名输入端子一一对应"),
+      zh: true,
+    };
+  }
+  if (fnTool) {
+    const nOut =
+      typeof fnToolParamList === "function" ? fnToolParamList(node, "out").length : 0;
+    if (i >= nOut) return { badge: I18n.t("控制"), title: "", zh: true };
+    const pl = fnToolParamList(node, "out");
+    const p = pl[i] || {};
+    return { badge: String(p.name || "").trim() || String(i + 1), title: "", zh: true };
+  }
+  if (typeof isSaveNode === "function" && isSaveNode(node))
+    return { badge: I18n.t("保存结果"), title: "", zh: true };
+  /* 工具 / 函数节点的末位控制出（参数即端子：先于下面那批「控制类节点」判据） */
+  if (fnTool && ctrlOut) return { badge: I18n.t("控制"), title: "", zh: true };
+  /* 先给**有专属语义**的输出端子（是 / 否 · 成功 / 失败 · 序列N · 分发N …）——
+     它们都属于「控制类节点」，若先按 ctrlOut 一律写「控制」就把这些名字吃掉了。 */
+  switch (node.kind) {
+    case "judge":
+      return { badge: i === 0 ? I18n.t("是") : I18n.t("否"), title: "", zh: true };
+    case "task":
+      return { badge: i === 0 ? I18n.t("成功") : I18n.t("失败"), title: "", zh: true };
+    case "sequencer":
+      return { badge: I18n.t("序列") + (i + 1), title: "", zh: true };
+    case "splitter":
+      return { badge: I18n.t("分发") + (i + 1), title: "", zh: true };
+    case "net_recv":
+      return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
+    case "sensenova_gen":
+      /* 0 号出的是图，不叫「内容」—— 与 .img 端子配色同一说法 */
+      return { badge: i === 0 ? I18n.t("图像") : I18n.t("控制"), title: "", zh: true };
+    case "breeze_gen":
+      /* 0 号出的是合成好的语音（与 save / 下游媒体端子同族）· 1 号是控制出 */
+      return { badge: i === 0 ? I18n.t("音频") : I18n.t("控制"), title: "", zh: true };
+    default:
+      break;
+  }
+  /* 其余控制类节点（控制 / 起点终点 / 闸门 / 互斥 / 计数 / 延时 …）与壳层外侧控制端子 */
+  if (ctrlOut) return { badge: I18n.t("控制"), title: "", zh: true };
+  if (
+    node.kind === "music_gen" ||
+    node.kind === "yue_gen" ||
+    node.kind === "tts_gen" ||
+    node.kind === "video_gen" ||
+    node.kind === "remotion" ||
+    (typeof isVideoPostKind === "function" && isVideoPostKind(node))
+  )
+    return { badge: i === 0 ? I18n.t("内容") : I18n.t("控制"), title: "", zh: true };
+  /* 音频 / 视频输入：输出端子**固定两个**，徽标就写清是哪两个 ——
+     0 = 音频输出 / 视频输出（该文件的 file:/// URL）· 1 = 转写输出（该文件的转写文字，
+     本机 SenseVoice；值见 renderer/app-asr.js 的 asrTranscriptOutValue）。
+     与 app.js 的 outputCount / 端口 1 判型、app-nodes.js 的 editPortNameOf（agent 侧
+     ports 表）同一份端子命名口径。 */
+  if (node.kind === "input_audio" || node.kind === "input_video")
+    return {
+      badge: I18n.t(
+        i === 0 ? (node.kind === "input_audio" ? "音频输出" : "视频输出") : "转写输出",
+      ),
+      title: "",
+      zh: true,
+    };
+  return { badge: fb, title: "", zh: true };
+}
+
+=== judge call ===
+{"badge":"是","title":"","zh":true}
+{"badge":"是","title":"","zh":true}
+{"badge":"信息","title":"","zh":true}
+=== isControlKind judge / isSaveNode judge / portBadgeIsControlOut judge ===
+true false true
+=== 直接 vm.runInContext 调一次 ===
+{"badge":"是","title":"","zh":true}

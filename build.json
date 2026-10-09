@@ -16,16 +16,30 @@
     "preload.js",
     "preload-app.js",
     "config-providers.js",
+    /* 会话转写（agentSessions）从 config.json 拆出后的独立存储：main.js 会 require 它，
+       漏进白名单就是打包后 Cannot find module './agent-sessions-store.js'。 */
+    "agent-sessions-store.js",
     "dsh-agent-policy.js",
     "dsh-node.js",
     "auth-store.js",
     "tools-store.js",
     "assets-store.js",
+    "shots-cache.js",
     "apps-store.js",
     "apps-capabilities.js",
     "wechat-pc.js",
     "wechat-fastlogin.js",
     "media-gen-global-lock.js",
+    /* 本地模型显存释放编排器：main.js require 它，漏进白名单 = 打包后
+       Cannot find module './local-model-vram.js'（画布本地模型节点与顶栏释放按钮都会失效）。 */
+    "local-model-vram.js",
+    /* 系统资源探针（顶栏「性能」面板：CPU / 内存 / GPU / 磁盘 / 网速 / 连接数 / 端口监听）：
+       main.js require 它，漏进白名单 = 打包后 Cannot find module './perf-probe.js'
+       （面板只剩显存区块，资源检测整块失效）。 */
+    "perf-probe.js",
+    /* 本地后端解释器口径（pythonw 不弹控制台）：llama / tts / breeze / music3 / yue / sensenova / h3
+       七个插件宿主都 require 它，漏进白名单就是打包后 Cannot find module '../backend-python.js'。 */
+    "backend-python.js",
     "clipboard-images.js",
     "plugin-error-repair.js",
     "mtnode-agent-skills-lib.js",
@@ -55,6 +69,7 @@
     "h3/**",
     "llama/**",
     "tts/**",
+    "breeze/**",
     "sensenova/**",
     "remotion/**",
     "plugins/**",
@@ -220,6 +235,18 @@
         "app/**",
         "scripts/**",
         "requirements.txt",
+        "README.md",
+        "start_backend.cmd",
+        ".gitignore",
+        "manifest.json"
+      ]
+    },
+    {
+      "from": "breeze-pack",
+      "to": "breeze-pack",
+      "filter": [
+        "app/**",
+        "scripts/**",
         "README.md",
         "start_backend.cmd",
         ".gitignore",

@@ -506,6 +506,53 @@ await b.next((f) => f.t === 'abort' && f.id === 'c-r2', 1500, 'abort c-r2').catc
 await nextEvent((e) => e.reqId === RUN2 && e.type === 'done', 8000, 'done ' + RUN2)
 ok(diagHit(/reject .*origin=stale/), '[5] 收尾后仍有分类判据(上一轮的 session 已进 priorRunSessions)')
 
+/* [6] browser_help 的用途闸(本次需求):与浏览器无关的求助必须被拒、不弹卡、也不白拉浏览器。
+   实证来由:2026-10-08 那次开发会话里,模型把 browser_help 拿去发了与浏览器毫无关系的
+   共识确认卡(同一轮里它已经把 ask_user_question 用了 3 次),用户看到的是一张不该出现的
+   求助卡。口径(用户已确认):browser_help 只用于与浏览器 / 当前页面有关的事;判据 =
+   本轮调过任何 browser_* 工具,或本条会话正驱动着这只浏览器。 */
+const RUN3 = 'smoke-run-3'
+const TAG3 = 'smoke-gate-3'
+const spawnedBefore3 = spawned.length
+await req('run', {
+  reqId: RUN3, workspace: WS, input: '门控冒烟:浏览器求助的用途闸', model: 'deepseek-flash',
+  maxTokens: 4096, apiKey: 'smoke-not-a-real-key', baseUrl: 'http://127.0.0.1:9',
+  systemPrompt: '', dshHome: HOME, permissionPreset: 'mtnode-unattended', cancelTag: TAG3,
+})
+/* [5b] 的 cancel 已把那台 runtime 收掉,这一轮会新起一台桩运行时(它自带一份 prompts)
+   与一座新桥(旧的桥连接随 runtime 一起关了,所以要连新的那座端口)。 */
+const portsBefore3 = bridgePorts.length
+await waitFor(() => spawned.length > spawnedBefore3, '第三轮 spawn 的桩运行时')
+await waitFor(() => bridgePorts.length > portsBefore3, '第三轮的交互桥端口')
+const rt3 = spawned[spawned.length - 1]
+const b3 = await connectBridge(bridgePorts[bridgePorts.length - 1])
+const frame3 = (t, id, sessionId, extra) =>
+  b3.send(Object.assign({ t, id }, sessionId === undefined ? {} : { sessionId }, extra || {}))
+await waitFor(() => rt3.__smoke.prompts.length > 0, '第三轮的 session/prompt')
+const run3Session = rt3.__smoke.prompts[rt3.__smoke.prompts.length - 1].sessionId
+frame3('browser', 'h-refuse', run3Session, {
+  op: 'help', kind: 'verify',
+  questions: [{ id: 'final', question: '与浏览器无关的确认(本该走 ask_user_question)' }],
+})
+const refused = await b3.next((f) => f.t === 'browser-result' && f.id === 'h-refuse', 8000, 'browser-result h-refuse')
+ok(
+  refused.ok === false && /ask_user_question/.test(String(refused.error || '')),
+  '[6] 与本轮浏览器无关的 browser_help 被拒,并把模型引导到 ask_user_question',
+)
+await sleep(200)
+ok(!events.some(anyById('h-refuse')), '[6] 被拒的求助一张卡都不弹(渲染层收不到任何 browser 帧)')
+ok(
+  spawned.length === spawnedBefore3 + 1,
+  '[6] 越界的求助不会白拉一只浏览器起来(闸排在「按需自动拉起」之前:只多了一台桩运行时)',
+)
+ok(
+  diagHit(/help refused runKey=\S+ sid=session-\w+ why=not-browser-grounded/),
+  '[6] 拒绝留了一行可复核的 diag(help refused … why=not-browser-grounded)',
+)
+await req('cancel', { workspace: WS, cancelTag: TAG3 }).catch(() => {})
+await nextEvent((e) => e.reqId === RUN3 && e.type === 'done', 8000, 'done ' + RUN3).catch(() => {})
+b3.close()
+
 b.close()
 say('== PASS:' + passed + ' 项断言全部通过 ==')
 process.exit(0)

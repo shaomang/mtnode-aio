@@ -4181,9 +4181,9 @@ function ltReleaseAgentSession(run, path, pn, st, text) {
     : "⚠ " + ltT("环节未完成：") + ltStr(s.err || ltT("未知原因"), 400);
   st.messages = Array.isArray(st.messages) ? st.messages : [];
   st.messages.push({ role: "assistant", content: body, _src: "longtask", at: Date.now() });
-  st.updatedAt = Date.now();
-  if (typeof persistAgentSession === "function")
-    Promise.resolve(persistAgentSession()).catch(() => {});
+  /* 这一轮的产出（长任务环节补写的一条助手消息）：点名这条会话盖一次时间戳 */
+  if (typeof agentTouchSession === "function")
+    Promise.resolve(agentTouchSession(st)).catch(() => {});
   ltRefreshAgentSessionSidebar();
   /* 用户正看着这条绑定会话时，收尾内容立刻可见（不在当前视图则下次渲染自会带上）。 */
   if (typeof S !== "undefined" && S && S.agentActiveId === st.id && typeof renderAgentSession === "function") {

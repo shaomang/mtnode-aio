@@ -34,6 +34,11 @@ dsh-home-*/
 rebuild.log
 # 真渲染夹具（test/fixtures/**/*.html|js 入库，供复核）跑出来的截图只是本机证据，不入库
 test/fixtures/**/shot-*.png
+# 开发会话 / 助手的工作区落盘目录（应用自己写的运行期数据：聊天输入截图、探针输出），不入库
+# 说明：<工作区>/.mtnode-input/ 与 <数据目录>/chat-input|devnode-input/ 是应用运行期目录，
+#       见 main.js 的 CHAT_IMG_DIR_NAMES；.probe-timer/ 是一次性计时取证的输出目录。
+.mtnode-input/
+.probe-timer/
 
 # ===== 编辑器 / 操作系统杂项 =====
 .DS_Store

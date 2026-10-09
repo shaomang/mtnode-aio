@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from typing import Any
+
+
+def _no_window() -> int:
+    """Windows: 子进程别再新开控制台窗口（管理服务自己无控制台，子进程没得继承就会被新建一个窗口）。"""
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
 def query_gpu() -> dict[str, Any] | None:
@@ -17,6 +23,7 @@ def query_gpu() -> dict[str, Any] | None:
             text=True,
             errors="ignore",
             timeout=8,
+            creationflags=_no_window(),
         )
     except Exception:
         return None

@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-10-04T11:04:49.688Z",
+  "updatedAt": "2026-10-06T18:05:04.768Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -21,7 +21,7 @@
           "id": "app-dev",
           "name": "mtnode-app-dev",
           "title": "MTNode 应用开发",
-          "description": "开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不",
+          "description": "开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服",
           "path": "app/app-dev/SKILL.md",
           "version": ""
         }

@@ -2,7 +2,17 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from typing import Any
+
+
+def _no_window() -> int:
+    """Windows: 子进程别再新开控制台窗口。
+
+    管理服务是被宿主以「无控制台」方式拉起的（pythonw / CREATE_NO_WINDOW），子进程没有控制台可继承时
+    Windows 会给它新建一个 → 每探一次显存就在桌面上闪一只终端窗（Windows 11 上就是 Windows Terminal）。
+    """
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
 def query_gpu() -> dict[str, Any] | None:
@@ -15,6 +25,7 @@ def query_gpu() -> dict[str, Any] | None:
             ],
             text=True,
             timeout=5,
+            creationflags=_no_window(),
         )
         line = out.strip().splitlines()[0] if out.strip() else ""
         parts = [p.strip() for p in line.split(",")]

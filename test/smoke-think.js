@@ -34,6 +34,7 @@ let MERGED_FAILED = false;
 
   const ASSIST = read("renderer/app-assist.js");
   const APP = read("renderer/app.js");
+  const CANVAS = read("renderer/app-canvas.js");
   const MAIN = read("main.js");
   const DB = read("renderer/app-db.js");
   const DSS = read("renderer/css/dsh.css");
@@ -86,7 +87,10 @@ let MERGED_FAILED = false;
   /* 本次需求：不再有下拉开合 —— details / summary / 展开态键都不该再出现 */
   ok(
     ASSIST.indexOf("dshThinkTranslateAppend") < 0 &&
-      ASSIST.indexOf(".dsh-think-bar") < 0 &&
+      /* 注：旧折叠条最右端那颗按钮的类名是 `.dsh-think-bar`（带点、当选择器用）；
+         本轮新增的强度条元素类名是 `dsh-think-bar`（不带点）—— 这里挡的是前者。 */
+      ASSIST.indexOf('".dsh-think-bar"') < 0 &&
+      ASSIST.indexOf("dsh-think-bar > button") < 0 &&
       ASSIST.indexOf('S.openDshTools[oKey]') < 0,
     "旧的「下拉展开 + 折叠条最右端按钮」整套接线已删（同一处只剩一条交互口径）",
   );
@@ -95,24 +99,399 @@ let MERGED_FAILED = false;
       ASSIST.indexOf('rowBtn.querySelector(".dsh-think-sum-txt")') > 0,
     "摘要条文案单独一层 span（流式刷新字数只改这一层，不冲掉整行结构）",
   );
-  /* 本轮需求（用户口径）：窗里只有一个原文框，翻译按钮挂在它的栏头；译文框点了翻译才建，
-     译文本体写在译文框栏头下方的框里 —— 旧写法把译文框插进栏头、又在正文区画一次。 */
+  /* ── 本轮需求（用户口径 · 本轮形状与密度 + 只有满格才到红）：思考摘要行去掉开头的 ◉，
+     字数右侧补一条「小竖格」强度进度条（像游戏电量格）。本轮口径钉死：恒定 **50 格**
+     （历史：四档各 5 格 → 20 格 → 200 格 → 100 格 → 本轮用户口径「再减少一半的密度」= 50 格）；
+     **格数按对数算** —— 100 字 = 1 格、100000 字 = 50 格（满格），中间用 log10 线性插值；
+     形状（本轮用户口径「减少每个格子的宽度（略增加间隔空间），移除格子的圆角，使其完全是
+     尖角长方形」）：格子 flex-basis 4px（上一版按 flex 均分的约 6.6px）、格间缝 gap 2px
+     （上一版 1px）、cell 上**没有 border-radius** —— 几何只写在 css/dsh.css 里，
+     由下面那条形状断言钉住；
+     颜色**连续渐变 绿 → 橙 → 红，且只有满格才是红**（亮段顶端色跟「有多满」走
+     dshThinkFillAt(count,N) ∈ 绿 → 红：第 1 格恒绿、满格末格才红 ——
+     上一版「亮段内从绿铺到红」被用户判为「变色有误」）；
+     字数照旧写清、条本身不吃鼠标事件、流式刷新只在**格数变了**时改 DOM。 */
   ok(
-    ASSIST.indexOf("function dshThinkPopCol(") > 0 &&
+    ASSIST.indexOf("const DSH_THINK_BAR_CELLS = 50;") > 0 &&
+      /for \(let i = 0; i < DSH_THINK_BAR_CELLS; i\+\+\)/.test(ASSIST) &&
+      /c\.className = "dsh-think-meter-cell"/.test(ASSIST) &&
+      /bar\.className = "dsh-think-meter"/.test(ASSIST) &&
+      /dshThinkBarPaint\(bar, txt\.length\)/.test(ASSIST) &&
+      /bar\.style\.pointerEvents = "none"/.test(ASSIST),
+    "强度条恒定 50 个竖格（一次建好、宽度交给 flex，条本身不吃鼠标事件）",
+  );
+  ok(
+    /* 形状（本轮用户口径「每格更窄 · 间隔更空 · 尖角长方形」）：几何全在 css/dsh.css ——
+       .dsh-think-meter 的 gap 2px（比上一版 1px 宽一倍）、.dsh-think-meter-cell 的
+       flex-basis 4px（比按 flex 均分的约 6.6px 窄）、且 cell 里**不许出现 border-radius**
+       （上一版 1px 圆角在 4px 窄格上看着是圆头小方块）。这里连数字一起钉：
+       4px 格 + 2px 缝 —— 缝是格的一半宽，才叫「格更窄、间隔更明显」。 */
+    /\.dsh-think-meter \{[\s\S]{0,400}?gap: 2px;/.test(DSS) &&
+      /\.dsh-think-meter-cell \{[\s\S]{0,260}?flex: 0 1 4px;/.test(DSS) &&
+      !/\.dsh-think-meter-cell \{[\s\S]{0,200}?border-radius/.test(DSS) &&
+      !/\.dsh-think-meter-cell \{[\s\S]{0,200}?min-width: 2px/.test(DSS),
+    "格子形状：格宽 4px（更窄）+ 格间缝 2px（更空）+ 无 border-radius（尖角长方形）",
+  );
+  ok(
+    /* 对数分格（本轮用户口径）：100 字 = 1 格、100000 字 = 50 格（满格），中间用 log10
+       在 100..100000 上线性插值后四舍五入；旧的「四档各 5 格」阶梯（dshThinkTierOf）
+       整套已删 —— 那正是用户报的「档位错误」（字数差十倍格数只差 5 格、短思考就亮 1/4 条）。 */
+    /function dshThinkCellsOf\(n\)[\s\S]{0,240}?if \(v <= 100\) return 1;[\s\S]{0,140}?if \(v >= 100000\) return DSH_THINK_BAR_CELLS;[\s\S]{0,260}?Math\.log10\(v\)[\s\S]{0,220}?Math\.round\(1 \+ t \* \(DSH_THINK_BAR_CELLS - 1\)\)/.test(
+      ASSIST,
+    ) &&
+      ASSIST.indexOf("function dshThinkTierOf(") < 0 &&
+      !/tb-t\d/.test(ASSIST),
+    "格数按对数算（100 字 = 1 格、10 万字 = 满格），旧的「四档各 5 格」档位阶梯与 tb-tN 档类已删",
+  );
+  ok(
+    /* 颜色（本轮用户口径）= **连续渐变 · 绿 → 橙 → 红，且只有满格才是红**：三只端点色是
+       CSS 令牌 --think-bar-done-from / -mid / -to（取自主题的 --green / --orange / --red），
+       由 JS 按**格在整条上的绝对位置**（t = (i/(N-1)) × ((N-1)/count)）逐格插值后写进
+       格子自己的 background —— 不再是四段 nth-child 硬边界（那四条规则本轮已删），
+       也不是上一版「亮段内从绿铺到红」（用户报「满格才是红色，而非任何字数都是绿到红」）。 */
+    /button\.dsh-think-row \{[\s\S]{0,240}?--think-bar-done-from: var\(--green\);/.test(DSS) &&
+      /button\.dsh-think-row \{[\s\S]{0,240}?--think-bar-done-mid: var\(--orange\);/.test(DSS) &&
+      DSS.indexOf("--think-bar-done-to: var(--red);") > 0 &&
+      ASSIST.indexOf("function dshThinkCellColor(") > 0 &&
+      ASSIST.indexOf("function dshThinkMixRgb(") > 0 &&
+      /dshThinkRgbOf\(pick\(DSH_THINK_BAR_DONE\.from/.test(ASSIST) &&
+      !/cell\.on:nth-child/.test(DSS),
+    "颜色是连续渐变：端点色取主题令牌（绿 → 橙 → 红），JS 按格在整条上的位置逐格插值写进格子自己身上（旧的四段 nth-child 规则已删）",
+  );
+  /* ── 锚点纪律（上一轮的坑：用户报「思考无论多少字都满格且灰」）───────────────
+     实测真凶：颜色档类 tb-tN 贴在 **button** 上，填充表却锚在 `.dsh-think-meter` 上
+     ⇒ 一条都没命中，20 格全落暗底（真实 style.css + 真实 DOM 在 Chromium 里量：
+     修前每行 20 格 getComputedStyle 全等 = rgba(255,255,255,.07)、亮格 0）。
+     本轮换成 .on 之后，点名类与填充选择器**同在格子自己身上**
+     （`.dsh-think-meter-cell.on`），锚点错位这一类故障不可能再发生 —— 这条断言钉住它。 */
+  ok(
+    /const on = i < count;[\s\S]{0,80}?c\.classList\.toggle\("on", on\);/.test(ASSIST) &&
+      /if \(DSH_THINK_BAR_CELLS_ON\.get\(bar\) === count\) return;/.test(ASSIST) &&
+      /const DSH_THINK_BAR_CELLS_ON = new WeakMap\(\);/.test(ASSIST) &&
+      /* 行 / meter 上都不许再出现档位类：JS 与 CSS 里 tb-tN 只允许出现在历史注释中 */
+      !/tb-t\d/.test(ASSIST) &&
+      !/tb-t\d/.test(DSS) &&
+      /\.dsh-think-meter-cell \{[\s\S]{0,200}?min-width: 0;/.test(DSS) &&
+      /c\.style\.background = on \? dshThinkCellColor\(i, count, DSH_THINK_BAR_CELLS, ramp\) : "";/.test(
+        ASSIST,
+      ),
+    "点亮类 .on 贴在格子自己身上、且只在格数变了时写（行 / meter 上不得再出现档位类）",
+  );
+  ok(
+    !/--think-bar-lv/.test(DSS) &&
+      /button\.dsh-think-row \{\s*\n\s*--think-bar-dim: rgba\(255, 255, 255, \.07\);/.test(DSS) &&
+      !/\.dsh-think-meter \{[^}]*--think-bar-dim/.test(DSS) &&
+      /\.dsh-think-meter-cell \{[\s\S]{0,200}?background: var\(--think-bar-dim\);/.test(DSS),
+    "旧的「整条共用一个档位色」变量已撤：格子默认只有暗底，点亮才上段位色（变量只在行上声明）",
+  );
+  /* ── 本次修复（用户报「100 与 1000 差一个文字导致上下不对齐」）────────────
+     字数是变长文本，它一变宽整条就横移：实测 0/42/100/1000/10000/100000 六行条左边
+     从 103.48px 逐行漂到 136.25px。修法是数字单独成层 + 定宽（tabular-nums，4.6em = 4 位），
+     修完六行的条都从同一条竖线起画。 */
+  ok(
+    ASSIST.indexOf("function dshThinkNumEl(") > 0 &&
+      /num\.className = "dsh-think-num"/.test(ASSIST) &&
+      /labelEl\.appendChild\(dshThinkNumEl\(n\)\)/.test(ASSIST) &&
+      /dshThinkSumFill\(txtEl, txt\.length\)/.test(ASSIST),
+    "字数拆成「前缀 + 数字层 + 后缀」三段（数字单独一层，才谈得上定宽对齐）",
+  );
+  ok(
+    /\.dsh-think-num \{[\s\S]{0,160}?width: 4\.6em;[\s\S]{0,160}?font-variant-numeric: tabular-nums;/.test(
+      DSS,
+    ),
+    "数字层等宽 + 定宽 4 位（100 与 1000 不再差一个字符宽、右侧强度条对齐）",
+  );
+  ok(
+    /function dshThinkSumSet\(rowEl, n\)/.test(ASSIST) &&
+      /numEl\.textContent !== s/.test(ASSIST) &&
+      /if \(!dshThinkSumSet\(rowBtn, txt\.length\)\)/.test(ASSIST) &&
+      ASSIST.indexOf('sumTxt.textContent = dshThinkSumLabel(txt.length)') > 0,
+    "流式刷新只改数字那一层（同一个字数不重复写 DOM），拿不到数字层才回落整层重填",
+  );
+
+  ok(
+    /* 逐字刷新时同一格数直接 return（只比格数、不逐帧重建格子）；调用点不再传 row：
+       颜色与填充都只看格子自己，行只做布局。 */
+    /function dshThinkBarPaint\(bar, n\)[\s\S]{0,320}?if \(DSH_THINK_BAR_CELLS_ON\.get\(bar\) === count\) return;/.test(
+      ASSIST,
+    ) &&
+      /dshThinkBarPaint\(rowBtn\.querySelector\("\.dsh-think-meter"\), txt\.length\)/.test(ASSIST) &&
+      !/dshThinkBarPaint\(bar, txt\.length, btn\)/.test(ASSIST) &&
+      /const count = dshThinkCellsOf\(n\);[\s\S]{0,120}?const cells = bar\.children \|\| \[\];[\s\S]{0,60}?const ramp = dshThinkBarRamp\(bar\);/.test(
+        ASSIST,
+      ) &&
+      /c\.style\.background = on \? dshThinkCellColor\(i, count, DSH_THINK_BAR_CELLS, ramp\) : "";/.test(
+        ASSIST,
+      ),
+    "条只在点亮格数真的变了才动 DOM（长思考逐字刷新不重建格子、不整表重绘）",
+  );
+  /* 对数格数的**真函数**跑一遍（不是只读源码：静态断言可能被写法骗过，数字不会）。
+     取源码里的 DSH_THINK_BAR_CELLS 与 dshThinkCellsOf 原样求值，
+     钉住用户口径的四个端点 + 单调性 + 值域，以及「格号 → 颜色段」的边界。 */
+  {
+    const cellsNo = (ASSIST.match(/const DSH_THINK_BAR_CELLS = (\d+);/) || [])[1];
+    const i0 = ASSIST.indexOf("function dshThinkCellsOf(");
+    let src = "";
+    if (i0 > 0) {
+      let depth = 0;
+      for (let k = ASSIST.indexOf("{", i0); k < ASSIST.length; k++) {
+        if (ASSIST[k] === "{") depth++;
+        else if (ASSIST[k] === "}" && --depth === 0) {
+          src = ASSIST.slice(i0, k + 1);
+          break;
+        }
+      }
+    }
+    let fn = null;
+    try {
+      fn = new Function(
+        "const DSH_THINK_BAR_CELLS = " + cellsNo + ";\n" + src + "\nreturn dshThinkCellsOf;",
+      )();
+    } catch (_) {
+      fn = null;
+    }
+    const WANT = [
+      [0, 1],
+      [7, 1],
+      [100, 1],
+      [101, 1],
+      [300, 9],
+      [1000, 17],
+      [1200, 19],
+      [5000, 29],
+      [10000, 34],
+      [40000, 44],
+      [60000, 46],
+      [99999, 50],
+      [100000, 50],
+      [1000000, 50],
+    ];
+    const bad = [];
+    if (typeof fn !== "function") bad.push("拿不到 dshThinkCellsOf");
+    else if (cellsNo !== "50") bad.push("格子总数不是 50：" + cellsNo);
+    if (typeof fn === "function") {
+      WANT.forEach(([n, want]) => {
+        const got = fn(n);
+        if (got !== want) bad.push("n=" + n + " 格数 " + got + "≠" + want);
+      });
+      let prev = 0;
+      for (let n = 1; n <= 200000; n += 137) {
+        const c = fn(n);
+        if (!(c >= 1 && c <= 50)) bad.push("n=" + n + " 越界 " + c);
+        if (c < prev) bad.push("n=" + n + " 回退 " + prev + "→" + c);
+        prev = c;
+      }
+    }
+    ok(
+      bad.length === 0,
+      "对数格数实跑：100 字 = 1 格 / 1 千 = 17 格 / 1 万 = 34 格 / 10 万 = 50 格满，全程单调 1..50" +
+        (bad.length ? "（" + bad.slice(0, 4).join("；") + "）" : ""),
+    );
+  }
+  /* 渐变是**真函数**跑出来的（不是只读源码里的字符串）：从源码原样抽出
+     dshThinkCellColor / dshThinkFillAt / dshThinkRampAt / dshThinkMixRgb / dshThinkRgbOf
+     求值，喂三只端点色，按用户本轮口径钉死四件事：
+      ① 满格（count = N = 50）端点色：第 1 格 = 绿、正中（0 基 24）= 橙、末格 = 红；
+      ② 「满格才是红」：格数没到满格时，亮段里**一格红都不许有** ——
+         红端点 #ff5f56 的 G=95，而绿→橙这一段（含橙）恒有 G ≥ 143，
+         故不满格时每格都必须 G ≥ 120（红线取 95 与 143 的中点，留取整余量）；
+      ③ 亮段顶端色跟「有多满」走：末亮格 = 端点绿 → 端点红之间、按 dshThinkFillAt(count,N)
+         那一点取色（满格才到 1）；
+      ④ 单调：格数一路上涨时，末亮格的颜色只会越来越红（R 不降、G 不升）。 */
+  {
+    const grab = (name) => {
+      const i0 = ASSIST.indexOf("function " + name + "(");
+      if (i0 < 0) return "";
+      let depth = 0;
+      for (let k = ASSIST.indexOf("{", i0); k < ASSIST.length; k++) {
+        if (ASSIST[k] === "{") depth++;
+        else if (ASSIST[k] === "}" && --depth === 0) return ASSIST.slice(i0, k + 1);
+      }
+      return "";
+    };
+    const gsrc =
+      'const DSH_THINK_BAR_DONE = { fallback: { from: "#5fd68a", mid: "#ff8f2e", to: "#ff5f56" } };\n' +
+      grab("dshThinkRgbOf") +
+      "\n" +
+      grab("dshThinkMixRgb") +
+      "\n" +
+      grab("dshThinkRampAt") +
+      "\n" +
+      grab("dshThinkFillAt") +
+      "\n" +
+      grab("dshThinkCellColor") +
+      "\nreturn { cellColor: dshThinkCellColor, fillAt: dshThinkFillAt };";
+    let mod = null;
+    try {
+      mod = new Function(gsrc)();
+    } catch (_) {
+      mod = null;
+    }
+    const rgb = (s) => (String(s).match(/\d+/g) || []).map(Number);
+    const N = 50;
+    const ramp = { from: [95, 214, 138], mid: [255, 143, 46], to: [255, 95, 86] };
+    const bad = [];
+    if (!mod || typeof mod.cellColor !== "function") bad.push("拿不到 dshThinkCellColor");
+    else {
+      const cellColor = mod.cellColor;
+      const fillAt = typeof mod.fillAt === "function" ? mod.fillAt : null;
+      const at = (i, count, tot) => rgb(cellColor(i, count, tot === undefined ? N : tot, ramp));
+      const near = (c, want, tol) =>
+        Math.abs(c[0] - want[0]) <= tol && Math.abs(c[1] - want[1]) <= tol && Math.abs(c[2] - want[2]) <= tol;
+      /* 期望色：三色渐变在 t 处（与源码 dshThinkRampAt 同口径，测试自己算一遍做交叉核对） */
+      const rampRgb = (t) => {
+        const k = t < 0 ? 0 : t > 1 ? 1 : t;
+        const seg = k <= 0.5 ? [ramp.from, ramp.mid, k * 2] : [ramp.mid, ramp.to, (k - 0.5) * 2];
+        return seg[0].map((v, idx) => Math.round(v + (seg[1][idx] - v) * seg[2]));
+      };
+      /* ① 满格端点 */
+      const first = at(0, N);
+      const mid = at(24, N);
+      const last = at(49, N);
+      if (first.join() !== "95,214,138") bad.push("满格第 1 格 ≠ 端点绿：" + first);
+      if (last.join() !== "255,95,86") bad.push("满格末格 ≠ 端点红：" + last);
+      if (!near(mid, [255, 143, 46], 4))
+        bad.push("满格正中不是橙：" + mid + "（两段各取中点，正中那格允许与令牌差 ≤4）");
+      /* 满格时亮段逐格单调走红（不来回跳） */
+      for (let i = 0; i + 1 < N; i++) {
+        const a = at(i, N);
+        const b = at(i + 1, N);
+        if (!(b[0] >= a[0] && b[1] <= a[1])) bad.push("满格渐变不单调：i=" + i + " " + a + "→" + b);
+      }
+      /* ② 不满格 = 一格都不许取到**端点红**那一段：红端点 #ff5f56 的 G=95，橙是 143，
+         取 G=110 当「红线」——任何一格的 G 掉到 110 或以下，就算进了红段。
+         口径：整条只在**接近满格**时才允许触线（≥95% 格数），其余格数一律不许 ——
+         旧口径下 1500 字（count≈40）就已经掉到 G≈130 以下、5000 字直接见红，这里一定判死。 */
+      [1, 2, 5, 20, 34, 37, 50, 60, 80, 90, 95, 99].forEach((count) => {
+        const nearFull = count >= N * 0.95;
+        for (let i = 0; i < count; i++) {
+          const c = at(i, count);
+          /* i=0 恒为端点绿，单独判；其余格子：没到接近满格就不许进红段 */
+          const badCell =
+            i === 0 ? c.join() !== "95,214,138" : !nearFull && !(c[1] > 110);
+          if (badCell) bad.push("count=" + count + " 第 " + (i + 1) + " 格取到了红色段：" + c);
+        }
+        /* 第 1 格恒绿（任何格数下都不能变色） */
+        const head = at(0, count);
+        if (head.join() !== "95,214,138") bad.push("count=" + count + " 第 1 格不是绿：" + head);
+        /* 亮段内仍逐格插值（不是一整段纯色）：末格必须比首格更红。
+           count 很小时（≤5 格，整段才 0.25 不到的渐变位移）两格差异本来就在取整噪声里，
+           所以只在 ≥10 格时判「看得出渐变」 */
+        const tail = at(count - 1, count);
+        if (count >= 10 && !(tail[0] > head[0] && tail[1] < head[1]))
+          bad.push("count=" + count + " 亮段内没有渐变：" + head + " → " + tail);
+      });
+      /* ②b 反证：满格末格必须真的跨过那条线，否则「满格才是红」没实现 */
+      if (!(last[1] < last[0] && last[1] <= 110)) bad.push("满格末格没到红：" + last);
+      /* ②c 红线位置实算：G 掉到 110 的那一格（红线）只在满格的后段出现 ——
+         绿→橙段（t≤0.5）的 G 最低是 143，要走到 t≈0.79 才到 110，换算成「条有多满」
+         是 p≈0.89，故满格时红线只能落在整条的 85% 之后（实测第 43 格 / 共 50 格起） */
+      let firstRed = -1;
+      for (let i = 0; i < N; i++) {
+        if (at(i, N)[1] <= 110) {
+          firstRed = i;
+          break;
+        }
+      }
+      if (!(firstRed >= 0 && firstRed >= N * 0.75))
+        bad.push("满格时红线出现得太早（第 " + (firstRed + 1) + " 格 / 共 " + N + " 格）");
+      /* ③ 顶端色跟「有多满」走：末亮格 = 三色渐变在 dshThinkFillAt(count, N) 处 */
+      if (!fillAt) bad.push("拿不到 dshThinkFillAt");
+      else {
+        [1, 5, 10, 17, 25, 34, 40, 45, 49, 50].forEach((count) => {
+          const tail = at(count - 1, count);
+          if (!near(tail, rampRgb(fillAt(count, N)), 3))
+            bad.push(
+              "count=" + count + " 顶端色 " + tail + "≠渐变@" + fillAt(count, N).toFixed(3) + " " + rampRgb(fillAt(count, N)),
+            );
+        });
+        /* 只有满格才到 1（= 端点红） */
+        if (fillAt(N, N) !== 1) bad.push("满格没到 1：" + fillAt(N, N));
+        if (!(fillAt(N / 2, N) < 0.5)) bad.push("半满已过半程：" + fillAt(N / 2, N));
+      }
+      /* ④ 单调：格数变大时，末亮格一路走红、直到满格才落到端点红 */
+      let prevTail = null;
+      for (let count = 1; count <= N; count++) {
+        const tail = at(count - 1, count);
+        if (prevTail && !(tail[0] >= prevTail[0] && tail[1] <= prevTail[1]))
+          bad.push("count=" + count + " 末亮格回绿：" + prevTail + "→" + tail);
+        prevTail = tail;
+      }
+      if (prevTail.join() !== "255,95,86") bad.push("满格末亮格不是端点红：" + prevTail);
+      /* ④b 第三参缺省 = 按 count 兜底（即当成满格）：直调真函数（不经 at 的默认值），
+         兜底时第 25 格在 25 格里就是末格 → 端点红；真传 50 则只是条的中段 → 不许红 */
+      const asFull = rgb(cellColor(24, 25, undefined, ramp));
+      const asMid = at(24, 25, N);
+      if (!(asMid[1] > 110 && asFull.join() === "255,95,86"))
+        bad.push("第三参口径不对（缺省 = 当成满格）：" + asMid + " / " + asFull);
+    }
+    ok(
+      bad.length === 0,
+      "渐变实跑：满格时第 1 格绿（#5fd68a）/ 正中橙（#ff8f2e）/ 末格红（#ff5f56）；不满格时亮段里一格红都没有（满格才是红）" +
+        (bad.length ? "（" + bad.slice(0, 3).join("；") + "）" : ""),
+    );
+  }
+  ok(
+    ASSIST.indexOf('I18n.t("◉ 思考 · ")') < 0 &&
+      ASSIST.indexOf("I18n.t(DSH_THINK_SCALE_TIP)") > 0 &&
+      /* 本轮用户口径：字数后面那个全角「字」去掉（尾部宽度不再随字数变，条也就不漂） */
+      /function dshThinkSumLabel\(n\) \{\s*\n\s*return I18n\.t\("思考 · "\) \+ n;/.test(
+        ASSIST,
+      ) &&
+      ASSIST.indexOf('I18n.t(" 字")') < 0 &&
+      /* 弹窗标题与流式回落两处都走同一份文案函数 */
+      /openOverlay\(dshThinkSumLabel\(txt\.length\)\)/.test(ASSIST) &&
+      /sumTxt\.textContent = dshThinkSumLabel\(txt\.length\)/.test(ASSIST),
+    "◉ 符号去掉、字数后面的「字」也去掉（历史渲染 / 流式刷新 / 弹窗标题共用同一份文案函数）",
+  );
+  ok(
+    APP.indexOf('I18n.t("思考中")') > 0 &&
+      CANVAS.indexOf('I18n.t("思考中")') > 0 &&
+      APP.indexOf("◉ 思考") < 0 &&
+      CANVAS.indexOf("◉ 思考") < 0 &&
+      I18N_SRC.indexOf('"思考": "Thinking"') > 0 &&
+      I18N_SRC.indexOf('"思考中": "Thinking"') > 0,
+    "节点头部按钮（app.js / app-canvas.js 两处）只去 ◉ 符号，中英词条跟着改名",
+  );
+  /* 本轮需求（用户口径）：窗里**上方是一排 tabs：译文 / 原文**（译文在左、「原文」
+     挨着它在右，两枚都常驻），一次只显示一页；**页**仍按需 —— 没译文时只建原文页。 */
+  ok(
+    ASSIST.indexOf("function dshThinkPopTabsEl(") > 0 &&
+      /* 顺序就是 DOM 序：先「译文」后「原文」（译文挨着原文、在它左边） */
+      /bar\.appendChild\(dshThinkPopTabBtn\(root, "xlate", I18n\.t\("译文"\)\)\);\s*\n\s*bar\.appendChild\(dshThinkPopTabBtn\(root, "src", I18n\.t\("原文"\)\)\);/.test(
+        ASSIST,
+      ) &&
       /dshThinkPopCol\(root, "src", I18n\.t\("思考原文"\)\)/.test(ASSIST) &&
-      !/dshThinkPopCol\(root, "xlate"/.test(ASSIST),
-    "弹窗只建原文一栏（译文那一栏不预先建 → 未点翻译时看不到译文框）",
+      /* 原文页先建，译文页只在有译文时建（dshThinkPopPaintXlate 里那一处）；
+         只数调用（`dshThinkPopCol(root, "…"）——函数定义那一行不算 */
+      (ASSIST.match(/dshThinkPopCol\(root, "/g) || []).length === 2 &&
+      /dshThinkPopCol\(root, "xlate", I18n\.t\("译文"\)\)/.test(ASSIST) &&
+      /* 译文页按 DOM 序排在原文页之前（后建的要插到原文页锚点前面） */
+      /root\.insertBefore\(col, srcCol\)/.test(ASSIST),
+    "弹窗上方建 tabs（译文在左 · 原文挨着在右，两枚常驻），译文页仍按需建且排在原文页之前",
+  );
+  ok(
+    ASSIST.indexOf("function dshThinkPopApplyTab(") > 0 &&
+      /root\.dataset\.thinkTab = tab/.test(ASSIST) &&
+      /c\.classList\.toggle\("on", c\.dataset\.thinkPop === tab\)/.test(ASSIST) &&
+      ASSIST.indexOf("function dshThinkPopMarkUserTab(") > 0 &&
+      /root\.dataset\.thinkTabUser = "1"/.test(ASSIST),
+    "切页只切 .on（不给译文再画一层框），并记住「用户自己挑过页」以免译文刷新抢焦点",
   );
   ok(
     ASSIST.indexOf("function dshThinkTranslatePaint(") < 0 &&
-      /left\.tools\.appendChild\(cp\)/.test(ASSIST) &&
-      /left\.tools\.appendChild\(btn\)/.test(ASSIST),
-    "「复制」与「翻译」都挂原文栏头，旧的「往按钮后面插一行」那条路径已删",
+      /bar\.tools\.appendChild\(cp\)/.test(ASSIST) &&
+      /bar\.tools\.appendChild\(btn\)/.test(ASSIST),
+    "「复制」与「翻译」都挂 tabs 行右侧（两页共用一套操作），旧的「往按钮后面插一行」那条路径已删",
   );
   ok(
     /if \(!r\) \{[\s\S]{0,160}?removeChild\(col\)/.test(ASSIST) &&
-      /root\.appendChild\(col\); \/\* 原文框下面（不是右栏）\*\//.test(ASSIST),
-    "有译文才建译文框、并把正文写进它栏头下方的框（没译文就把整栏收掉）",
+      /const built = dshThinkPopCol\(root, "xlate", I18n\.t\("译文"\)\);/.test(ASSIST) &&
+      /* 本轮需求：那枚标签常驻在「原文」左边（dshThinkPopTabsEl 建），这里只剩兜底补建 ——
+         补也要插到「原文」之前，绝不排到 tabs 末尾 */
+      /const tb = dshThinkPopTabBtn\(root, "xlate", I18n\.t\("译文"\)\);/.test(ASSIST) &&
+      /if \(srcTab\) bar\.insertBefore\(tb, srcTab\);/.test(ASSIST),
+    "有译文才建译文页（没译文就把整页收掉）；「译文」标签常驻在「原文」左边，兜底补建也插在它前面",
   );
   ok(
     !/paneEl\.dataset\.xkey = XKEY/.test(ASSIST) && !/\bconst XKEY = /.test(ASSIST),
@@ -124,6 +503,43 @@ let MERGED_FAILED = false;
       ASSIST.indexOf("rvMarkdownHtml(esc)") > 0 &&
       ASSIST.indexOf("plainTextToLinkHtml(s)") > 0,
     "原文 / 译文都按 Markdown 渲染：先转义 HTML 再走应用唯一那份渲染入口，拿不到才回落纯文本",
+  );
+
+  /* ═══════════════════ [1b] 节点「思考内容」弹窗：Markdown 阅读模式 ═══════════════════
+     本次开发需求（用户口径）：「思考内容弹窗不要使用纯灰色字，应当使用正常适合浏览的
+     markdown 阅读模式」—— 文本节点 / 智能任务节点的思考弹窗与对话节点那条回复的思考弹窗
+     （app.js 的 showThinking / showMsgThinking）都不再写 <pre class="think-pre"> 纯文本，
+     改由 thinkDocEl() 建 .think-doc + .md-viewer-doc 的正文框、thinkMdHtml() 灌渲染结果。 */
+  section("[1b] 节点思考弹窗：Markdown 阅读模式（不再灰等宽小字）");
+  ok(
+    APP.indexOf("function thinkMdHtml(") > 0 &&
+      /pre\.innerHTML = thinkMdHtml\(/.test(APP) &&
+      (APP.match(/pre\.innerHTML = thinkMdHtml\(/g) || []).length === 3 &&
+      APP.indexOf("function thinkDocEl(") > 0 &&
+      APP.indexOf('doc.className = "think-doc md-viewer-doc"') > 0 &&
+      /* 旧的纯文本渲染路径整条撤掉：三个写入点（两个弹窗 + 流式刷新）都不再写 textContent */
+      APP.indexOf("think-pre") < 0 &&
+      !/pre\.textContent = (traceThinkDisplay|\(msg && msg\.reasoning\))/.test(APP),
+    "app.js：思考弹窗正文走 Markdown 渲染入口（两个弹窗 + 流式刷新三处同源），旧的 .think-pre 纯文本已撤",
+  );
+  ok(
+    APP.indexOf("if (typeof renderMarkdown === \"function\")") > 0 &&
+      /return escapeHtml\(s\)/.test(APP),
+    "渲染器拿不到（老构建 / 切片冒烟）就回落成转义纯文本（不白框、不把模型输出当 HTML）",
+  );
+  const COMP_CSS = read("renderer/css/components.css");
+  /* 注释里会提到旧类名（说明「已删」），所以先剥注释再判「旧规则真的没了」 */
+  const COMP_CSS_CODE = COMP_CSS.replace(/\/\*[\s\S]*?\*\//g, " ");
+  ok(
+    /\.think-doc\.think-doc\s*\{[\s\S]{0,400}?font-family: var\(--sans\)/.test(COMP_CSS) &&
+      /\.think-doc\.md-viewer-doc\s*\{[\s\S]{0,300}?color: var\(--ink\)/.test(COMP_CSS) &&
+      COMP_CSS_CODE.indexOf(".think-pre") < 0,
+    "components.css：思考弹窗正文用界面正文字体 + 正文色（--ink），旧的灰色等宽 .think-pre 规则已删",
+  );
+  ok(
+    DSS.indexOf("font-family: var(--sans);") > 0 &&
+      /\.dsh-think-pop \.md-viewer-doc \{[\s\S]{0,300}?color: var\(--ink\)/.test(DSS),
+    "dsh.css：会话思考弹窗的正文同口径（正文字体 + --ink，不再是 --muted 灰调小字）",
   );
 
   /* ═══════════════════ [2] 调用口径 ═══════════════════ */
@@ -1914,6 +2330,11 @@ let MERGED_FAILED = false;
       persistAgentSession: () => {
         calls.persist++;
       },
+      /* 本轮口径：会话落盘分两个入口（agentTouchSession 会盖时间戳）——
+         本测试只关心「开关态真的写进会话」，两个入口都记同一笔 */
+      agentTouchSession: () => {
+        calls.persist++;
+      },
       renderAgentComposer: () => {
         calls.composer++;
       },
@@ -2394,6 +2815,7 @@ let MERGED_FAILED = false;
       disabled: false,
       _text: "",
       _html: "",
+      _ev: {},
     };
     Object.defineProperty(el, "textContent", {
       get() {
@@ -2445,11 +2867,45 @@ let MERGED_FAILED = false;
       if (c) c.parentNode = null;
       return c;
     };
+    /* 插到某个兄弟之前（本轮需求：译文页要插到原文页前面，tabs 上「译文」也插在
+       「原文」之前 —— 两条路径都走 insertBefore，假 DOM 得跟上） */
+    el.insertBefore = (c, ref) => {
+      if (!c) return c;
+      if (ref == null) return el.appendChild(c);
+      if (c.parentNode) c.parentNode.removeChild(c);
+      const i = el._children.indexOf(ref);
+      if (i < 0) return el.appendChild(c);
+      c.parentNode = el;
+      el._children.splice(i, 0, c);
+      return c;
+    };
+    Object.defineProperty(el, "nextElementSibling", {
+      get() {
+        const p = el.parentNode;
+        if (!p) return null;
+        const i = p._children.indexOf(el);
+        return i >= 0 ? p._children[i + 1] || null : null;
+      },
+    });
     el.setAttribute = (k, v) => {
       el._attrs[k] = String(v);
     };
     el.getAttribute = (k) => (k in el._attrs ? el._attrs[k] : null);
-    el.addEventListener = () => {};
+    el.addEventListener = (type, fn) => {
+      const arr = el._ev[type] || (el._ev[type] = []);
+      if (typeof fn === "function") arr.push(fn);
+    };
+    /* 触发本元素上的某一类事件（[9] 切标签页那条用例靠它真点一次） */
+    el._fireClick = () => {
+      for (const fn of el._ev.click || []) {
+        fn({
+          target: el,
+          currentTarget: el,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+        });
+      }
+    };
     el.querySelectorAll = (sel) => {
       const out = [];
       const walk = (n) => {
@@ -2544,10 +3000,18 @@ let MERGED_FAILED = false;
         fnBody(ASSIST_SRC, "dshThinkMdHtml"),
         fnBody(ASSIST_SRC, "dshThinkTranslateRow"),
         fnBody(ASSIST_SRC, "dshThinkPopPaintXlate"),
+        fnBody(ASSIST_SRC, "dshThinkPopMarkUserTab"),
+        fnBody(ASSIST_SRC, "dshThinkPopApplyTab"),
+        fnBody(ASSIST_SRC, "dshThinkPopSwitchTab"),
+        fnBody(ASSIST_SRC, "dshThinkPopTabsEl"),
+        fnBody(ASSIST_SRC, "dshThinkPopTabBtn"),
         fnBody(ASSIST_SRC, "dshThinkPopCol"),
         fnBody(ASSIST_SRC, "dshThinkTranslateBtn"),
+        /* 弹窗标题走这一份文案函数（本轮需求：与会话那一行同一口径） */
+        fnBody(ASSIST_SRC, "dshThinkSumLabel"),
         fnBody(ASSIST_SRC, "openDshThinkPop"),
         "this.paintXlate = dshThinkPopPaintXlate;",
+        "this.switchTab = dshThinkPopSwitchTab;",
         "this.openPop = openDshThinkPop;",
       ].join("\n"),
       sb,
@@ -2555,39 +3019,63 @@ let MERGED_FAILED = false;
     );
     const cols = () => docRoot.querySelectorAll(".dsh-think-pop-col");
     const xlateCol = () => docRoot.querySelector('.dsh-think-pop-col[data-think-pop="xlate"]');
+    const tabs = () => docRoot.querySelectorAll(".dsh-think-pop-tab");
+    const onCol = () => docRoot.querySelector(".dsh-think-pop-col.on");
+    const onTab = () => docRoot.querySelector(".dsh-think-pop-tab.on");
 
-    /* ① 未点翻译：只有原文一栏，正文是 Markdown（转义后进渲染入口），栏头挂「复制」+「翻译」 */
+    /* ① 未点翻译：tabs 上两枚标签都在（译文在左、原文挨着在右），窗里只有原文一页，
+          正文是 Markdown（转义后进渲染入口），tabs 行右侧挂「复制」+「翻译」 */
     sb.openPop({ text: "看一看 <b>这段</b>\n## 小标题", scopeId: "s1", segKey: "k1" });
-    ok(cols().length === 1 && !xlateCol(), "[9] 未点翻译：窗里只有原文一栏（不显示译文框）");
+    ok(
+      cols().length === 1 &&
+        !xlateCol() &&
+        tabs().length === 2 &&
+        tabs()[0].dataset.thinkTab === "xlate" &&
+        tabs()[0].textContent === "译文" &&
+        tabs()[1].dataset.thinkTab === "src" &&
+        tabs()[1].textContent === "原文",
+      "[9] 未点翻译：tabs 上「译文 · 原文」两枚都在（译文在左、原文挨着在右），窗里只有原文一页（没有空译文框）",
+    );
     ok(
       docRoot.querySelectorAll(".dsh-think-pop-pane").length === 1 &&
-        !!docRoot.querySelector('.dsh-think-pop [data-think-pop="src"] .dsh-think-pop-md'),
-      "[9] 原文正文写在原文框里（.dsh-think-pop-md，Markdown 渲染）",
+        !!docRoot.querySelector('.dsh-think-pop [data-think-pop="src"] .dsh-think-pop-md') &&
+        onCol() &&
+        onCol().dataset.thinkPop === "src" &&
+        onTab().dataset.thinkTab === "src",
+      "[9] 原文页是默认页（.dsh-think-pop-col.on + 标签 .on），正文 .dsh-think-pop-md 走 Markdown 渲染",
     );
     ok(
       seenEsc.length === 1 && seenEsc[0].indexOf("&lt;b&gt;") > 0,
       "[9] 模型输出先转义再进 Markdown 渲染入口（不被当 HTML 执行）",
     );
     ok(
-      docRoot.querySelectorAll(".dsh-think-pop-tools .dsh-think-xlate").length === 2,
-      "[9] 原文栏头挂「复制」+「翻译」两枚按钮（没有第二处入口）",
+      docRoot.querySelectorAll(".dsh-think-pop-tabs-tools .dsh-think-xlate").length === 2,
+      "[9] tabs 行右侧挂「复制」+「翻译」两枚按钮（两页共用一套操作，没有第二处入口）",
     );
 
-    /* ② 点翻译（翻译中）：译文栏才建出来，长在原文框**下面**，正文写它栏头下方的框里 */
+    /* ② 点翻译（翻译中）：译文页才建出来（排在原文页之前，与 tabs 左右次序一致）；
+          先把页切回「原文」—— 翻译中绝不该抢页（用户还在读原文） */
     sb.S.thinkTrans["s1:k1"] = { status: "pending", text: "", model: "m1" };
+    sb.switchTab("s1", "k1", "src");
     sb.paintXlate("s1", "k1");
     const c2 = cols();
     ok(
-      c2.length === 2 && c2[0].dataset.thinkPop === "src" && c2[1].dataset.thinkPop === "xlate",
-      "[9] 点翻译后译文栏建在原文框下面（一上一下，不是左右分栏）",
+      c2.length === 2 &&
+        c2[0].dataset.thinkPop === "xlate" &&
+        c2[1].dataset.thinkPop === "src" &&
+        tabs().length === 2 &&
+        tabs()[0].dataset.thinkTab === "xlate" &&
+        tabs()[1].dataset.thinkTab === "src",
+      "[9] 点翻译后建出译文页（按 DOM 序排在原文页之前），tabs 上「译文 · 原文」次序不变",
     );
     ok(
       docRoot.querySelectorAll(".dsh-seg-xlate").length === 1 &&
+        docRoot.querySelector(".dsh-think-pop-col.on").dataset.thinkPop === "src" &&
         xlateCol().querySelector(".dsh-xlate-md").textContent.indexOf("翻译中…") >= 0,
-      "[9] 翻译中只占译文框那一个框的正文位（不再往栏头插一个框）",
+      "[9] 翻译中：正文只占译文页那一个框，页仍停在原文（翻完才切页）",
     );
 
-    /* ③ 翻完：译文也走同一个 Markdown 渲染入口，仍然只有一个译文框 */
+    /* ③ 翻完：自动切到「译文」页 + 译文也走同一个 Markdown 渲染入口，仍然只有一个译文框 */
     const escBefore = seenEsc.length;
     sb.S.thinkTrans["s1:k1"] = { status: "done", text: "## 标题\n- 一条", model: "m1" };
     sb.paintXlate("s1", "k1");
@@ -2600,7 +3088,25 @@ let MERGED_FAILED = false;
     ok(
       xlateCol().querySelector(".dsh-xlate-md").innerHTML.indexOf("<p>") === 0 &&
         xlateCol().querySelector(".dsh-xlate-copy").textContent === "复制",
-      "[9] 译文正文落在译文框栏头下方的正文位里（翻完才挂「复制译文」）",
+      "[9] 译文正文落在译文页栏头下方的正文位里（翻完才挂「复制译文」）",
+    );
+    ok(
+      docRoot.querySelector(".dsh-think-pop-col.on").dataset.thinkPop === "xlate" &&
+        docRoot.querySelector(".dsh-think-pop-tab.on").dataset.thinkTab === "xlate",
+      "[9] 翻完自动切到「译文」页（标签与页同时 .on，用户不用自己再点一次）",
+    );
+
+    /* ③b 用户自己点回「原文」：译文刷新不再抢页（用户挑过的页优先，不来回跳） */
+    docRoot.querySelector('.dsh-think-pop-tab[data-think-tab="src"]')._fireClick();
+    ok(
+      docRoot.querySelector(".dsh-think-pop-col.on").dataset.thinkPop === "src",
+      "[9] 点「原文」标签即切回原文页（一次只显示一页）",
+    );
+    sb.paintXlate("s1", "k1");
+    ok(
+      docRoot.querySelector(".dsh-think-pop-col.on").dataset.thinkPop === "src" &&
+        docRoot.querySelector(".dsh-think-pop-tab.on").dataset.thinkTab === "src",
+      "[9] 用户挑过页之后译文刷新不再把页切走（听用户的，不抢焦点）",
     );
 
     /* ④ 失败：栏头红字原因，正文留空 */
@@ -2643,10 +3149,35 @@ let MERGED_FAILED = false;
       "[9] 被拒返回先转义再进 Markdown 渲染入口，且不写进 it.text（失败态不当译文缓存）",
     );
 
-    /* ⑤ 没有译文项（切走 / 重跑）：整栏收掉，回到「只有原文框」 */
+    /* ⑤ 没有译文项（切走 / 重跑）：整页收掉，回到「只有原文页」——
+          tabs 上两枚标签仍在（次序不变：译文在左），只是译文页不存在 / 切不过去 */
     delete sb.S.thinkTrans["s1:k1"];
     sb.paintXlate("s1", "k1");
-    ok(cols().length === 1 && !xlateCol(), "[9] 译文项没了就把整栏收掉（回到未点翻译的形态）");
+    ok(
+      cols().length === 1 &&
+        !xlateCol() &&
+        tabs().length === 2 &&
+        tabs()[0].dataset.thinkTab === "xlate" &&
+        tabs()[1].dataset.thinkTab === "src",
+      "[9] 译文项没了就把译文页收掉（回到未点翻译的形态），tabs 次序不变（译文在左 · 原文挨着）",
+    );
+
+    /* ⑥ 缓存命中回窗：译文页与 tabs 那一枚标签照样在，且直接停在译文页。
+          这一条钉的是「root 还在手上时按 xkey 找窗找不到」那个坑 ——
+          建页的那一笔必须挂在 root 进文档之后（见 openDshThinkPop）。 */
+    sb.S.thinkTrans["s1:k1"] = { status: "done", text: "已翻好的一段", model: "m1" };
+    sb.openPop({ text: "再看一遍这段", scopeId: "s1", segKey: "k1" });
+    ok(
+      cols().length === 2 &&
+        cols()[0].dataset.thinkPop === "xlate" &&
+        cols()[1].dataset.thinkPop === "src" &&
+        tabs().length === 2 &&
+        tabs()[0].dataset.thinkTab === "xlate" &&
+        onCol().dataset.thinkPop === "xlate" &&
+        onTab().dataset.thinkTab === "xlate",
+      "[9] 缓存命中回窗：译文页建出来并停在译文页（译文在左 · 原文挨着在右）",
+    );
+    delete sb.S.thinkTrans["s1:k1"];
   } catch (e) {
     MERGED_FAILED = true;
     console.log("FAIL  [9] 弹窗 DOM 用例异常：" + (e && e.stack ? e.stack : e));

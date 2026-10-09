@@ -5,7 +5,7 @@
     · 台账（<应用目录>/installed.json 的 versions.{cur,prev}）只记**当前 + 上一版**
       两个版本号与各自的下载地址 / sha256；
     · 「回滚」= 按台账里那一版的来源**重新下载**再换进来（sha256 必须对上）；
-    · 拉不到来源（本机自建 / 云端已下架 / 老账本）→ 如实回 gone，**绝不静默降级**成装最新版。
+    · 拉不到来源（本机自建 / 云端条目已被作者删除 / 老账本）→ 如实回 gone，**绝不静默降级**成装最新版。
 
    这里真起一个本机 HTTP 目录（MTNODE_APPS_URL 指过去，白名单才认），真跑 installApp /
    rollbackApp / appsVersionPick，并用一份哨兵文件证明 storage/ 与本机改动不被回滚冲掉。
@@ -284,7 +284,7 @@ async function main() {
   );
   ok(fs.existsSync(path.join(appDir, "local-note.txt")), "回滚只覆盖包里的文件：本机手写的文件仍在");
 
-  /* ============ [6] 离线 / 云端下架：台账还在 → 回滚照旧能重下（直连地址） ============ */
+  /* ============ [6] 离线 / 云端条目已被删除：台账还在 → 回滚照旧能重下（直连地址） ============ */
   console.log("[6] 云端目录拿不到时，回滚仍按台账来源重下（不依赖目录）");
   {
     /* 换一份数据目录 = 目录缓存也空；只把台账与包从上一份目录搬过来 */
@@ -406,9 +406,11 @@ async function main() {
        ① appsDetailBuildShell 必须把 .apps-detail-root appendChild 进 body；
        ② 「本机版本」块替换必须打在它自己的父节点上（它是嵌在主体块里的，不是 scroll 的直接子节点）。
        本轮（分支树下才出现下载/覆盖）后，这块由 appsLocalRollbackEl 出、且「没有可回滚的上一版时整块不出现」，
-       所以断言跟着改成：replaceChild 仍打在父节点上 + 旧块与新块的增删分支都在。 */
+       所以断言跟着改成：replaceChild 仍打在父节点上 + 旧块与新块的增删分支都在。
+       间距上限放到 2400：壳里本轮又多了一层头部容器 .apps-detail-top（容器查询要它），
+       实测 1785 字符 —— 上限只是「别把 appendChild 甩到函数外」的保险，不是精确长度。 */
     ok(
-      /APPS_DETAIL\.dom\.root = root;[\s\S]{0,1600}?body\.appendChild\(root\);/.test(APPS),
+      /APPS_DETAIL\.dom\.root = root;[\s\S]{0,2400}?body\.appendChild\(root\);/.test(APPS),
       "壳建好后 .apps-detail-root 必须挂进 #ovBody（否则详情窗整片空白）",
     );
     ok(
@@ -431,23 +433,22 @@ async function main() {
     ok(APPS.indexOf('card.className = "apps-tile" + (') < 0, "卡片不再带 open 态（不因展开改高度）");
     ok(APPS.indexOf("收起详情") < 0 && APPS.indexOf("查看详情") < 0, "不再有「查看详情 / 收起详情」两态按钮");
     /* 本轮需求：卡片换成 16:9 封面卡，动作收进封面右下角那一排（appsCoverActionsEl）；
-       「详情」仍是同一个元件、同一个 data-app-detail，卡片与库页都从这一处出。 */
-    ok(/function appsCoverActionsEl\(spec, opts\)/.test(APPS) && /push\(appsDetailBtnEl\(spec && spec\.id\)\);/.test(APPS),
-      "卡片与库页的详情入口都从 appsCoverActionsEl 出（appsDetailBtnEl 同一元件）");
+       「详情」那一枚 ⓘ **本轮已按用户口径摘掉** —— 点卡片本身就是开详情窗，两者用途重复；
+       所以卡上只剩「下载 / 更新」与「打赏」，appsDetailBtnEl 这个元件本身保留（外部脚本按名字探测）。 */
+    ok(/function appsCoverActionsEl\(spec, opts\)/.test(APPS) && APPS.indexOf("push(appsDetailBtnEl(spec && spec.id));") < 0,
+      "卡片封面不再挂 ⓘ（详情入口只剩「点卡片」，与应用中心一致）");
     ok(
       /function appsDetailBtnEl\(id, label\) \{[\s\S]{0,300}const text = label \? appsT\(label\) : "ⓘ";/.test(APPS),
-      "卡片上的详情按钮显示 ⓘ 图标（不再显示「详情」文案）",
+      "appsDetailBtnEl 元件本身保留（ⓘ 文案与 data-app-detail 口径不变）",
     );
     ok(
       /classList\.add\("apps-ico-btn", "apps-ico-info"\)/.test(APPS) && /b\.dataset\.appDetail = "1"/.test(APPS),
       "详情按钮仍是同一元件：小方框样式 + data-app-detail 标记不变",
     );
     ok(
-      APPS.indexOf("push(appsRunIcoBtnEl(spec.id));") > 0 &&
-        APPS.indexOf("push(appsRunIcoBtnEl(spec.id));") < APPS.indexOf("push(appsDetailBtnEl(spec && spec.id))") &&
-        APPS.indexOf("push(appsDetailBtnEl(spec && spec.id))") > 0 &&
+      /push\(appsRunIcoBtnEl\(spec\.id[,)]/.test(APPS) &&
         /push\(\s*appsIcoBtnEl\(\s*"download",/.test(APPS.slice(APPS.indexOf("function appsCoverActionsEl("))),
-      "库页卡片：运行 / 更新 / ⓘ / 金币 同排在一处（封面右下角那一排）",
+      "库页卡片：运行 / 更新（有新版才有）/ 金币 同排在一处（封面右下角那一排）",
     );
     /* 开发页不挂（它自己就有一整块正文） */
     const DEV = read("renderer/app-apps-dev.js");
@@ -469,13 +470,19 @@ async function main() {
     ok(/appsT\("覆盖安装 v"\)/.test(APPS), "本机装的是别一支时给「覆盖安装」（数据不被覆盖）");
     ok(/appsT\("其他版本"\)/.test(APPS) && !/appsT\("看分支"\)/.test(APPS), "卡片上「看分支」换成「其他版本」");
     ok(
-      /appsDetailBodyEl\(spec, \{ app: app \|\| undefined, noVers: true \}\)/.test(APPS),
+      /* 本轮（详情版面改左图 + 右信息）多了一个 head:true —— 头部已经摊开了作者 / 版本 /
+         标签 / 二次开发自 与说明，正文不再重复画那一份（见 docs/apps-market.md §十三） */
+      /appsDetailBodyEl\(spec, \{ app: app \|\| undefined, noVers: true, head: true \}\)/.test(APPS),
       "详情主体在窗里跳过版本树（noVers），避免同一份表画两遍",
     );
-    ok(/const noVers = !!\(extra && extra\.noVers\);/.test(APPS), "appsDetailBodyEl 认 noVers 开关");
     ok(
-      /tabs\.panes\[0\]\.appendChild\(body\)/.test(APPS) && /window\.MtComments\.mount\(tabs\.panes\[1\]/.test(APPS),
-      "评论做成窗内页签（同一份 MtComments 组件）",
+      /const noVers = !!\(extra && extra\.noVers\);/.test(APPS) && /const head = !!\(extra && extra\.head\);/.test(APPS),
+      "appsDetailBodyEl 认 noVers 开关",
+    );
+    ok(
+      /APPS_DETAIL\.dom\.cmt/.test(APPS) && /window\.MtComments\.mount\(lower, cloud/.test(APPS) &&
+        !/detailTabsEl\(\[appsT\("应用"\), appsT\("评论"\)\]/.test(APPS),
+      "评论独占详情窗下方滚动区（「应用 / 评论」页签本轮已移除，仍是同一份 MtComments 组件）",
     );
     ok(/appsDevMetaEl\(devRows, \{ label: "安装包 sha256"/.test(APPS), "开发者信息与 sha256 仍走原来那套（默认折叠）");
     ok(/\.apps-detail-vers\s*\{/.test(CSS) && /\.apps-br-sel\s*\{/.test(CSS), "css：回滚块与「选中分支的版本块」都有样式");

@@ -361,6 +361,30 @@ async function main() {
   });
   const BASE = "http://127.0.0.1:" + port;
   const readDb = () => JSON.parse(fs.readFileSync(path.join(DATA, "db.json"), "utf8"));
+  /* 热表真源（commit a9839ec「云端热表拆分」起）：relayUsage / rechargeLedger 各自落一个
+     追加文件（JSONL，一行一条，见 store-saas/hot-store.mjs 的 HOT_FILES），db.json 里仍留
+     同键但**恒为空数组**（老代码读到空表不炸）。这两张表的断言一律读追加文件 —— 再读
+     db.json 只会读到 []，断言看起来「失败」其实是读错了地方。 */
+  const readHot = (name) => {
+    let raw = "";
+    try {
+      raw = fs.readFileSync(path.join(DATA, name), "utf8");
+    } catch {
+      return [];
+    }
+    return raw
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null; /* 半截行容错：只跳过这一条，不影响其余 */
+        }
+      })
+      .filter(Boolean);
+  };
+  const hotLedger = () => readHot("recharge-ledger.jsonl");
   const userOf = (id) => readDb().users.find((u) => u.id === id);
   /* 该账号在库里有没有挂明文中转票（退出登录 / 换账号后必须为 false）。 */
   const relayPlainInDb = (id) => {
@@ -576,7 +600,7 @@ async function main() {
     const charged1 = await waitFor(() => near(totalOf("u_relay_rich"), 0.995), 5000);
     const u1 = userOf("u_relay_rich");
     ok(charged1 && u1.balanceCents === 99 && near(u1.relaySubCents, 0.5), "第一笔扣 0.005 元：内部账 balanceCents 100 → 99、亚分零头 relaySubCents 0.5");
-    const led1 = readDb().rechargeLedger.filter((e) => e.type === "relay");
+    const led1 = hotLedger().filter((e) => e.type === "relay");
     ok(led1.length === 1 && led1[0].deltaCents === -1 && led1[0].balanceAfterCents === 99 && /中转扣费/.test(led1[0].note),
       "整数分那 1 分落成一条 relay 流水（管理台流水页能看到，备注写清模型与 token）");
 
@@ -613,7 +637,7 @@ async function main() {
     const chargedImg = await waitFor(() => near(totalOf("u_relay_rich"), 0.9836 - 0.21), 5000);
     const u3 = userOf("u_relay_rich");
     ok(chargedImg && near(totalOf("u_relay_rich"), 0.7736) && u3.balanceCents === 77 && near(u3.relaySubCents, 0.36), "一图扣 0.21 元（0.9836 → 0.7736）：图像按「张数 × 元/张」计费");
-    const led2 = readDb().rechargeLedger.filter((e) => e.type === "relay");
+    const led2 = hotLedger().filter((e) => e.type === "relay");
     ok(led2.length >= 2 && /1 张/.test(led2[led2.length - 1].note), "图像扣费流水备注写明张数");
 
     const boundary = "----smokeRelayBoundary";
@@ -672,8 +696,17 @@ async function main() {
     ok(usage.json.recent.every((r) => r.costYuan != null && r.chargedYuan != null && r.costCents === undefined),
       "明细每笔都给 costYuan / chargedYuan（元），不再下发内部的分字段");
     const dbNow = readDb();
-    ok(Array.isArray(dbNow.relayUsage) && dbNow.relayUsage.length >= 5, "用量明细落 db.json（重启后仍在）");
-    ok(dbNow.rechargeLedger.filter((e) => e.type === "relay").length >= 3, "relay 流水累计入账本，可与管理台流水对账");
+    /* db.json 里两个热键仍然存在、但按设计是空数组（老客户端读到空表不炸）——
+       这里同时钉住「热表已搬走」与「明细真的落了盘」两件事。 */
+    ok(
+      Array.isArray(dbNow.relayUsage) &&
+        dbNow.relayUsage.length === 0 &&
+        Array.isArray(dbNow.rechargeLedger) &&
+        dbNow.rechargeLedger.length === 0,
+      "热表已搬出 db.json（两键保留为空数组，老脚本读到空表不炸）",
+    );
+    ok(readHot("relay-usage.jsonl").length >= 5, "用量明细落 relay-usage.jsonl（追加文件 · 重启后仍在）");
+    ok(hotLedger().filter((e) => e.type === "relay").length >= 3, "relay 流水累计入 recharge-ledger.jsonl，可与管理台流水对账");
     ok(dbNow.users.find((u) => u.id === "u_relay_rich").relaySubCents != null, "亚分零头写在账户行上（内部存储仍按分，随账户后端一起落库）");
     const log = fs.readFileSync(logPath, "utf8");
     ok(/relay 中转站:/.test(log), "启动日志打出中转站状态（上游凭据就位与否 / 模型数 / 限流）");

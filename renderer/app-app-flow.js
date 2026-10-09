@@ -482,14 +482,9 @@ async function appsCreateApp(name, id, style, capabilities) {
     return null;
   }
   let res = null;
-  /* 应用根目录没配过：先让用户选一个（与「下载应用」同一前置 —— 绝不让新建的应用
-     落在用户没见过的默认目录里）。应用中心不在也照常跑：主进程用默认根目录。 */
-  try {
-    if (typeof appsEnsureRoot === "function") {
-      const rootOk = await appsEnsureRoot();
-      if (!rootOk) return null;
-    }
-  } catch (_) {}
+  /* 应用根目录**不再要求用户手选**（本轮需求）：新建的应用一律落主进程的项目根
+     （apps.projectDir，默认 <数据目录>/apps-dev —— 也就是画布所在的数据目录），
+     主进程在新建时顺手把默认路径固化进 config.json，所以这里没有「先选个文件夹」这一前置。 */
   try {
     res = await window.api.appsCreate(
       nm,

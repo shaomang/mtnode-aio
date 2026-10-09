@@ -2,7 +2,7 @@
 
 ![diagram](img/video_upscale.svg)
 
-Right-click the canvas → **Process › Video generation › Video upscale**. Upscales an **existing video** on its own: Real-ESRGAN enlarges each frame, then the result is scaled to the output long side. It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and upscaling runs separately when you ask for it. **Each run produces exactly one video file** (`.mp4`) written to the node's own `outputPath` — no separate save node needed.
+Right-click the canvas → **Process › Video generation › Video upscale**. Upscales an **existing video** on its own: Real-ESRGAN enlarges each frame, then the result is scaled to the output long side. It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and upscaling runs separately when you ask for it. **Each run produces exactly one video file** (`.mp4`) written to the node's own `outputPath`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: port 0 = control input (fixed) · port 1 = source video · port 2+ = optional material (grows as needed)
@@ -20,7 +20,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - **Tile (px)**: 0–1024 (default 512). The **tile size** of streaming upscale: VRAM depends only on it, and **512 suits a 16 GB machine**; 0 = backend default 512
 - **Low-VRAM safe tier (force per-frame)**: on by default; on = **tiled fp16 keeps VRAM low — a 16 GB machine can handle a 15-second clip**, off = batch by `per_batch` / larger tiles (faster, hungrier)
 - **Attempts**: repeated runs (1–10); multiple outputs are named `#1`, `#2` …
-- **Output path**: `.mp4` destination (relative to workspace / super subfolder)
+- **Output path**: `.mp4` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 
 ## RAM / VRAM guidance
 - **By default this runs a per-frame tiled streaming chain** (`h3-pack/post/stream_upscale.py`): the source is decoded sequentially with PyAV, upscaled tile by tile according to `tile`, and **each frame is encoded to disk as soon as it is done**. Resident memory depends only on one tile plus one output frame — **independent of clip length, resolution and ratio** — so **a 16 GB machine can finish an x2 / x4 upscale of a 15-second clip**. (The old path piled the whole clip's frame tensors plus a float32 copy into RAM — peak ≈ frames × source pixels × ratio², which a 15-second clip can blow past even with 64 GB — and is no longer the default.)

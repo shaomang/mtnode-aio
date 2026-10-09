@@ -105,12 +105,69 @@
     });
   paintLang();
 
-  /* ── 能力横幅：桥缺席 / 接口被裁剪时这里必须出现，而不是白屏 ── */
+  /* ── 能力横幅：桥缺席 / 接口被裁剪时这里必须出现，而不是白屏 ──
+     三种情形分开说（本轮共识：预览里也能连入宿主）：
+       ① 独立窗口（宿主桥在）→ 不显示横幅；
+       ② **预览态且已连入**（开发页中栏 iframe + 宿主桥小助手）→ 顶栏一行「预览」小标，
+          不说「未接入」；只读时（该应用已在独立窗口运行）明确写出来；
+       ③ 预览态但没连入 / 在浏览器里直接打开 → 老的降级横幅（便签只留在内存）。 */
+  function previewHostInfo() {
+    const mark = window.__mtnodePreviewHost || null;
+    const inFrame = (function () {
+      try {
+        return window.parent !== window;
+      } catch (_) {
+        return true; /* 跨源访问被拒 = 一定在 iframe 里 */
+      }
+    })();
+    return {
+      inFrame: inFrame,
+      appId: String((mark && mark.appId) || ""),
+      readOnly: !!(mark && mark.readOnly) || window.__mtnodePreviewReadOnly === true,
+      bridged: !!(window.appHost && inFrame),
+    };
+  }
+  function paintPreviewMark() {
+    const pv = previewHostInfo();
+    if (!pv.inFrame) return;
+    const host = $("previewMark") || (function () {
+      const el = document.createElement("div");
+      el.id = "previewMark";
+      el.className = "preview-mark";
+      try {
+        el.style.cssText =
+          "padding:4px 10px;font:11.5px/1.6 system-ui,'Microsoft YaHei',sans-serif;" +
+          "background:#152238;color:#9fd0ff;border-bottom:1px solid #2b3d5c";
+        const first = document.body && document.body.firstChild;
+        if (document.body) document.body.insertBefore(el, first || null);
+      } catch (_) {}
+      return el;
+    })();
+    if (!host) return;
+    host.textContent = pv.bridged
+      ? (pv.readOnly
+          ? "预览 · 已连入 MTNode 宿主（只读：该应用已在独立窗口运行）"
+          : "预览 · 已连入 MTNode 宿主") + (pv.appId ? "：" + pv.appId : "")
+      : "预览 · 未连入 MTNode 宿主（用开发页中栏的预览打开才有宿主）";
+  }
+  /* 桥就绪 / 只读态变化时刷新小标（预览桥小助手会派发这两个事件） */
+  try {
+    window.addEventListener("mtnode-preview-host", paintPreviewMark);
+    window.addEventListener("mtnode-preview-ready", paintPreviewMark);
+  } catch (_) {}
+  paintPreviewMark();
+
   function setCapBar() {
-    var bar = $("capBar");
-    var missing = [];
-    if (!H.cap.host) missing.push("宿主未接入（在浏览器里打开？）");
-    else {
+    const bar = $("capBar");
+    const pv = previewHostInfo();
+    const missing = [];
+    if (!H.cap.host) {
+      missing.push(
+        pv.inFrame
+          ? "预览未连入宿主（开发页中栏的预览里也会连上；直接用浏览器打开 / 别的宿主下才会这样）"
+          : "宿主未接入（在浏览器里打开？）",
+      );
+    } else {
       if (!H.cap.data) missing.push("数据读写接口缺失");
       if (!H.cap.account) missing.push("账号接口缺失");
       if (!H.cap.net) missing.push("服务端请求接口缺失");
@@ -126,6 +183,7 @@
   }
 
   function persistText() {
+    /* 预览里也走宿主落盘（本轮共识）：桥在 = 由宿主落盘，与独立窗口同一份数据。 */
     return H.cap.data ? "由宿主落盘（data.json）" : "内存（不保存）";
   }
 

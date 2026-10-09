@@ -794,10 +794,13 @@ async function main() {
     return Promise.resolve("ok");
   };
   let persisted = 0;
-  sbA.persistAgentSession = () => {
+  const persistedFn = () => {
     persisted++;
     return Promise.resolve();
   };
+  sbA.persistAgentSession = persistedFn;
+  /* 本轮口径：agentTouchSession = 盖时间戳 + 落盘；本文件的断言只关心「有没有落盘」 */
+  sbA.agentTouchSession = persistedFn;
   const A = mkSt("asA");
   LIST.push(A);
   const B = mkSt("asB");
@@ -942,6 +945,7 @@ async function main() {
     return Promise.resolve("ok");
   };
   sbQ.persistAgentSession = () => Promise.resolve();
+  sbQ.agentTouchSession = () => Promise.resolve();
   let offerRes = null;
   void sbQ
     .planOfferPush({
@@ -973,6 +977,7 @@ async function main() {
     return Promise.resolve("ok");
   };
   sbR.persistAgentSession = () => Promise.resolve();
+  sbR.agentTouchSession = () => Promise.resolve();
   void sbR.planOfferPush({
     kind: "session",
     st: K,
@@ -1115,10 +1120,12 @@ async function main() {
       cur: [],
     };
     let hPersist = 0;
-    sbH.persistAgentSession = () => {
+    const hPersistFn = () => {
       hPersist++;
       return Promise.resolve();
     };
+    sbH.persistAgentSession = hPersistFn;
+    sbH.agentTouchSession = hPersistFn;
     ok(sbH.planDrop(stH, "cancelled") === true, "作废：终止 / 清除统一收敛到 planDrop");
     ok(stH.plan === null && !stH._planExec, "作废：运行时计划与游标全清");
     ok(Number(stH._planDrops) >= 1, "作废：本会话作废计数 +1");
@@ -1155,6 +1162,7 @@ async function main() {
     sbQ3.agentSessionById = (id) => LISTQ.find((s) => s && s.id === id) || null;
     sbQ3.sessionIsRunning = () => false;
     sbQ3.persistAgentSession = () => Promise.resolve();
+  sbQ3.agentTouchSession = () => Promise.resolve();
     sbQ3.toast = () => {};
     sbQ3.updateRunQueuePanel = () => {};
     sbQ3.renderAgentQueueBar = () => {};

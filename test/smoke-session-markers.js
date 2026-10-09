@@ -518,10 +518,10 @@ ok(
   "[6] 旧的段尾「时刻 · 耗时」刻度（.dsh-chat-meta）整只撤掉（同一份时间不再两处显示）",
 );
 /* ── 本次需求：思考不再是 <details> 下拉，改成一行摘要条 + 点击开弹窗 ──────────
-   口径（拷问共识）：会话里只留一行「◉ 思考 · N 字」，整行可点；全文与译文在
-   居中 #overlay 弹窗里左右分栏看；旧的下拉展开逻辑、只服务于它的样式、以及
-   「详细 / 完全展开 = 思考落地即展开」那一位（expandThink）一并删掉 ——
-   同一处只留一条交互口径。 */
+   口径（拷问共识）：会话里只留一行「思考 · N 字」（本轮把开头的 ◉ 去掉，字数右侧
+   挂思考强度进度条），整行可点；全文与译文在居中 #overlay 弹窗里左右分栏看；
+   旧的下拉展开逻辑、只服务于它的样式、以及「详细 / 完全展开 = 思考落地即展开」
+   那一位（expandThink）一并删掉 —— 同一处只留一条交互口径。 */
 ok(
   /function dshThinkRowEl\(desc\)/.test(ASSIST) &&
     /function openDshThinkPop\(desc\)/.test(ASSIST) &&
@@ -538,10 +538,13 @@ ok(
   "[6] 思考不再建 <details>（点击开弹窗，没有「展开 / 收起」这一层）",
 );
 ok(
-  !/dshThinkTranslateAppend|dsh-think-bar|document\.getElementById\("agent-think-body"\)/.test(ASSIST) &&
+  /* 旧折叠条最右端那颗按钮用的是选择器 `.dsh-think-bar`（带点找元素）；
+     本轮新增的强度条元素类名是 dsh-think-meter（见 app-assist.js dshThinkBarEl）——
+     这里的判据只认带点的旧选择器，别把新元素一起挡了。 */
+  !/dshThinkTranslateAppend|"\.dsh-think-bar"|document\.getElementById\("agent-think-body"\)/.test(ASSIST) &&
     !/S\.openDshTools\[oKey\]/.test(ASSIST) &&
     !/S\._agentThinkOpen/.test(ASSIST),
-  "[6] 旧下拉的按钮挂载（dshThinkTranslateAppend / dsh-think-bar）与展开态键一并撤掉",
+  "[6] 旧下拉的按钮挂载（dshThinkTranslateAppend / .dsh-think-bar）与展开态键一并撤掉",
 );
 ok(
   !/\.dsh-seg-think>summary/.test(DSH_CSS) &&
@@ -558,11 +561,14 @@ ok(
   "[6] 弹窗宽幅靠专属类、原文与译文**上下两个框**各自独立滚动（避免文字滚动影响浏览）",
 );
 ok(
-  /openOverlay\(I18n\.t\("◉ 思考 · "\) \+ txt\.length/.test(ASSIST) &&
+  /openOverlay\(dshThinkSumLabel\(txt\.length\)\)/.test(ASSIST) &&
     /shell\.classList\.add\("dsh-think-pop-box"\)/.test(ASSIST) &&
     /dshThinkTranslateBtn\(txt, scopeId, segKey, txt\)/.test(ASSIST) &&
-    /left\.tools\.appendChild\(cp\)/.test(ASSIST),
-  "[6] 弹窗走 #overlay（近全屏 / 可最小化 / Esc 关），原文栏头挂「复制」+「翻译」",
+    /* 本轮需求：上方一排 tabs（原文 / 译文），「复制」+「翻译」挂在 tabs 行右侧（两页共用一套操作） */
+    /bar\.tools\.appendChild\(cp\)/.test(ASSIST) &&
+    /function dshThinkPopTabsEl\(/.test(ASSIST) &&
+    /function dshThinkPopApplyTab\(/.test(ASSIST),
+  "[6] 弹窗走 #overlay（近全屏 / Esc 关），上方原文 / 译文 tabs，tabs 行右侧挂「复制」+「翻译」",
 );
 ok(
   /function dshThinkPopPaintXlate\(scopeId, segKey\)/.test(ASSIST) &&
@@ -760,8 +766,25 @@ has(ASSIST, 'det.dataset.state = state;', "[7] 状态落在 data-state 上（DOM
 has(ASSIST, 'chip.dataset.toolName = String(t.name || "");', "[7] 原始工具名留在 dataset 上");
 /* 非 dsh 工具那一档的专属色（本次需求）：药丸挂 .t-custom → 工具库紫，悬停 / 展开同步，
    亮色主题另给浅一档紫底（暗色那支 alpha 在浅底上偏脏）。 */
-has(ASSIST, 'chip.className = "dsh-tool-chip" + (dshToolIsCustom(t) ? " t-custom" : "");', "[7] 药丸按 dshToolIsCustom 挂专属色类");
-has(ASSIST, "chip.title = String(t.name || \"\") + (title && title !== t.name ? \" · \" + title : \"\");", "[7] 中文标签与原名不同才补 hover 后缀（不再出现「询问用户 · 询问用户」）");
+ok(
+  /chip\.className =\s*\n\s*"dsh-tool-chip " \+\s*\n\s*dshToolFamClassOf\(t\) \+\s*\n\s*\(dshToolIsCustom\(t\) \? " t-custom" : ""\);/.test(
+    ASSIST,
+  ),
+  "[7] 药丸按 dshToolIsCustom 挂专属色类（前面还叠一件工具族色类，见 [7b]）",
+);
+/* [7] 旧的「中文标签与原名不同才补 hover 后缀（不再出现「询问用户 · 询问用户」）」那一句
+   指的就是下面这一条判据（写法现在多一行族名尾巴，口径一字未变）。 */
+ok(
+  /chip\.title =\s*\r?\n\s*String\(t\.name \|\| ""\) \+[\s\S]{0,200}?\(title && title !== t\.name \? " · " \+ title : ""\) \+/.test(
+    ASSIST,
+  ),
+  "[7] 中文标签与原名不同才补 hover 后缀（不再出现「询问用户 · 询问用户」）",
+);
+has(
+  ASSIST,
+  '(famLabel ? " · " + famLabel : "");',
+  "[7] hover 末尾补族名（工具族色之外的文字线索，见 [7b]）",
+);
 has(DSH_CSS, ".dsh-tool-chip.t-custom {", "[7] 专属色类在位（药丸本体）");
 has(DSH_CSS, ".dsh-tool-chip.t-custom:hover,", "[7] 专属色跟随悬停");
 has(DSH_CSS, ".dsh-tool[open] .dsh-tool-chip.t-custom {", "[7] 专属色跟随展开态");
@@ -790,6 +813,105 @@ ok(
   ),
   "[7] 关窗收口按选择框那一刻写盘",
 );
+/* ── [7b] 会话-对话里「不同工具不同色，与轨迹一致」（本次需求）────────────────────
+   口径：**族表与族色仍只有轨迹一处真源**（renderer/app-trajectory.js 的 TOOL_FAMILIES →
+   css/dsh-tokens.css 的 --dsh-fam-*），会话侧按名去问它（window.MTNodeTrajectory.familyOf /
+   familyClassOf），拿 "dsh-fam-" 前缀挂在药丸与工具段上；肤色两处都按族取色，一处一色不两说。
+   这一节只钉**接线与静态形态**：「同一个工具名在两处算出同一个族」由 smoke-trajectory-view
+   [13] 用真模块真函数跑（那一条才是颜色对得上号的证明）。 */
+{
+  const TRAJ = read("renderer/app-trajectory.js");
+  ok(
+    /familyOf: \(name\) => toolFamilyOf\(name\),/.test(TRAJ) &&
+      /familyClassOf: \(id, prefix\) => famClassOf\(id, prefix\),/.test(TRAJ) &&
+      /function famClassOf\(id, prefix\) \{/.test(TRAJ),
+    "[7b] 轨迹模块导出族查询（familyOf / familyClassOf）——会话侧唯一可问的那一处",
+  );
+  ok(
+    /function dshToolFamilyId\(t\) \{[\s\S]{0,700}?window\.MTNodeTrajectory[\s\S]{0,200}?familyOf\(nm\)/.test(
+      ASSIST,
+    ) &&
+      /function dshToolFamilyClass\(id\) \{[\s\S]{0,700}?window\.MTNodeTrajectory[\s\S]{0,200}?familyClassOf\(fam, "dsh-fam-"\)/.test(
+        ASSIST,
+      ) &&
+      /function dshToolFamilyLabel\(t\) \{[\s\S]{0,700}?f\.label\) return I18n\.t\(f\.label\)/.test(
+        ASSIST,
+      ) &&
+      /function dshToolFamClassOf\(t\) \{[\s\S]{0,200}?dshToolFamilyClass\(dshToolFamilyId\(t\)\)/.test(
+        ASSIST,
+      ),
+    "[7b] 会话侧**按名去问**轨迹那份族表（familyOf / familyClassOf 前缀 dsh-fam- / 族名走 i18n），不抄第二份族清单",
+  );
+  ok(
+    !/const TOOL_FAMILIES = \[/.test(ASSIST) &&
+      !/--dsh-fam-read/.test(ASSIST) &&
+      (ASSIST.match(/dshToolFamClassOf\(t\)/g) || []).length === 4 &&
+      /chip\.className =[\s\S]{0,60}?"dsh-tool-chip " \+/.test(ASSIST) &&
+      (ASSIST.match(/box\.classList\.add\(dshToolFamClassOf\(t\)\);/g) || []).length === 2,
+    "[7b] 会话侧不重复定义族表 / 族色：药丸 + 两条工具段路径（历史 / live）各挂一次族类，共三处",
+  );
+  ok(
+    /chip\.title =\s*\n\s*String\(t\.name \|\| ""\) \+[\s\S]{0,220}?\(famLabel \? " · " \+ famLabel : ""\)/.test(
+      ASSIST,
+    ) &&
+      /const famLabel = dshToolFamilyLabel\(t\);\s*\n\s*chip\.title/.test(ASSIST),
+    "[7b] 药丸 hover 末尾补族名（颜色之外的第二条线索：这色是哪一类工具）",
+  );
+  /* 皮肤：族类一族一条（10 个 dsh-fam-*，会话侧那一份），基础规则原样留着当兜底 ——
+     两条钉子合起来说明「挂族类才换色、没挂还是青轨青底」。 */
+  const CONV_FAMS = [
+    "read",
+    "write",
+    "run",
+    "web",
+    "sub",
+    "talk",
+    "own",
+    "browser",
+    "job",
+    "other",
+  ];
+  ok(
+    CONV_FAMS.every((id) => new RegExp("\\.dsh-fam-" + id + "\\b").test(DSH_CSS)) &&
+      /\.dsh-seg-tool\.dsh-fam-read[\s\S]{0,400}?border-left-color: var\(--dsh-fam\);/.test(DSH_CSS) &&
+      /\.dsh-tool-chip\.dsh-fam-read[\s\S]{0,400}?color: var\(--dsh-fam\);/.test(DSH_CSS) &&
+      /\.dsh-tool-chip\.dsh-fam-other \{[\s\S]{0,200}?color: var\(--muted\);/.test(DSH_CSS),
+    "[7b] 族类齐备（10 族）且取族色令牌（--dsh-fam）；段换轨 + 底、药丸换字 + 边 + 底；兜底族取 --muted 灰",
+  );
+  /* 变量绑定（本轮修 bug）：会话挂的是带前缀的 dsh-fam-*，族色就必须绑在**这一套**类名上。
+     只绑在轨迹那套 .fam-* 上时，dsh.css 里的 var(--dsh-fam) 是个无值变量 —— 字色 / 边框
+     回落成继承色与 currentColor、底色回落成透明，药丸看起来「掉成黑白的」（本次 bug 现场）。 */
+  ok(
+    CONV_FAMS.every((id) =>
+      new RegExp("\\.dsh-fam-" + id + " \\{ --dsh-fam: var\\(--dsh-fam-" + id + "\\); \\}").test(
+        TOKENS,
+      ),
+    ),
+    "[7b] 会话侧 10 个 dsh-fam-* 逐一在 css/dsh-tokens.css 里绑定 --dsh-fam（一族一条、与 .fam-* 取同一份族色令牌）",
+  );
+  ok(
+    /\.dsh-seg-tool \{[\s\S]{0,400}?border-left: 2px solid var\(--cyan\)/.test(DSH_CSS) &&
+      /\.dsh-tool-chip \{[\s\S]{0,300}?color: var\(--cyan2\);/.test(DSH_CSS) &&
+      /body\.theme-light \.dsh-seg-tool \{[\s\S]{0,200}?border-left-color: var\(--cyan\);/.test(LIGHT_CSS),
+    "[7b] 基础皮肤一字不动（青轨 / 青底 / 青字仍是「没挂族类」的兜底，旧口径的锚点不破）",
+  );
+  ok(
+    /body\.theme-light \.dsh-tool-chip\.dsh-fam-read:hover[\s\S]{0,1200}?background: color-mix\(in srgb, var\(--dsh-fam/.test(
+      LIGHT_CSS,
+    ) &&
+      /body\.theme-light \.dsh-seg-tool\.dsh-fam-read,[\s\S]{0,1400}?dsh-fam-job \{[\s\S]{0,200}?background: color-mix\(in srgb, var\(--dsh-fam\)/.test(
+        LIGHT_CSS,
+      ),
+    "[7b] 亮色主题按浅底调族色浓度（族色本身亮暗同源，只调底色浓度）",
+  );
+  ok(
+    /\.dsh-tool\.err \.dsh-tool-chip \{/.test(DSH_CSS) &&
+      /* 失败红那条的优先级不被族色抢走：族色那组写在 .t-custom 之后、但都比 0,2,1 低一档 */
+      DSH_CSS.indexOf(".dsh-tool-chip.dsh-fam-read,") > DSH_CSS.indexOf(".dsh-tool-chip.t-custom {") &&
+      DSH_CSS.indexOf(".dsh-tool.err .dsh-tool-chip {") > DSH_CSS.indexOf(".dsh-tool-chip.dsh-fam-read,"),
+    "[7b] 层叠次序钉住：族色写在 .t-custom 之后（同族同色压过来源紫 = 完全按工具族上色），失败红 0,2,1 照旧压过两者",
+  );
+}
 /* i18n：本轮新增串逐条有英文 */
 {
   const keys = [
@@ -883,7 +1005,7 @@ section("[8] 轨迹 View（本次需求 · 上游 conversation.view / ui-traject
     /st\.trajView = VIEWS\.indexOf\(String\(v\)\) > 0 \? String\(v\) : "";/.test(TRAJ),
     "[8] 视图选择落在会话语义上（st.trajView ∈ chat / trace / changes），非法值回对话（上游「绝不选第一个 View」同读法）",
   );
-  has(TRAJ, "if (typeof persistAgentSession === \"function\") persistAgentSession();", "[8] 选择随会话落盘（上游的持久化 View 偏好）");
+  has(TRAJ, "if (typeof agentFlushSessionSaveQuiet === \"function\") agentFlushSessionSaveQuiet();", "[8] 视图切换只落盘、不盖时间戳（本次需求：看轨迹不改会话时间）");
   ok(!/ba-open/.test(TRAJ), "[8] 不再借右栏 .ba-open 显隐（右栏回归浏览器活动 + 文件预览）");
   has(TRAJ, 'mainEl.id = "agentTraceMain";', "[8] 轨迹渲染在会话主区（不是第三栏）");
   /* 本轮（横轴：全轴 + 滑窗带）：列表里那条 sticky 吸顶轴、列表外的旧总轴写法都已撤 ——
@@ -1112,6 +1234,11 @@ console.log(
       persisted.push(Date.now());
       return Promise.resolve();
     },
+    /* 本轮口径：问答提交走 agentTouchSession（盖时间戳 + 落盘） */
+    agentTouchSession: () => {
+      persisted.push(Date.now());
+      return Promise.resolve();
+    },
     sessionIsRunning: () => false,
     agentViewIs: () => false,
     renderAgentSession: () => {},
@@ -1247,9 +1374,12 @@ console.log(
    * [4] 源码接线与词条
    * ===================================================================== */
   console.log("\n[4] 接线：提交成功才落库 / 追问不被 kick 覆盖 / 续跑兜底 / 词条");
+  /* 提交帧：提问卡与求助卡共用同一个出口（ixAnswerQuestion），通道名由 ixAnswerChannelOf
+     按卡族给（提问 = kind:'question'，求助 = kind:'browser'）—— 锚点跟着这次抽函数改。 */
+  const thenAnchor = '.dshInteract({ kind: ixAnswerChannelOf(it), id: it.data.id, answers })';
   const thenBlock = dbSrc.slice(
-    dbSrc.indexOf('.dshInteract({ kind: "question"'),
-    dbSrc.indexOf('.dshInteract({ kind: "question"') + 700,
+    dbSrc.indexOf(thenAnchor),
+    dbSrc.indexOf(thenAnchor) + 700,
   );
   has(thenBlock, "ixCommitAnswerToSession(it, answers)", "提问提交的 then 里落库（进上下文）");
   has(thenBlock, "res.stale", "stale（该询问已失效）先返回、不落库");

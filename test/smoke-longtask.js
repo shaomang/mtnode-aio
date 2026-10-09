@@ -1584,7 +1584,7 @@ async function main() {
     has(DB, "if (S.ltLiveNodes && S.ltLiveNodes[st.id]) return S.ltLiveNodes[st.id];", "liveNodeForSession 先认运行期注册表（伪节点不在任何画布 nodes 里，扫描扫不到）");
 
     /* ⑤ persistAgentSession 把 ltBound 落盘；app-boot 水合用 Object.assign 原样带回 */
-    has(ASSIST, "async function persistAgentSession()", "app-assist.js 有 persistAgentSession");
+    has(ASSIST, "async function persistAgentSession(opts)", "app-assist.js 有 persistAgentSession（带 opts：touch:false = 只 flush 不盖时间戳）");
     {
       const pStart = ASSIST.indexOf("async function persistAgentSession(");
       const pSeg = ASSIST.slice(pStart, ASSIST.indexOf("/* 会话发送队列", pStart) > 0 ? ASSIST.indexOf("/* 会话发送队列", pStart) : pStart + 6000);

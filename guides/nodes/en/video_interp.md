@@ -2,7 +2,7 @@
 
 ![diagram](img/video_interp.svg)
 
-Right-click the canvas → **Process › Video generation › Video interpolation**. Interpolates an **existing video** on its own: RIFE inserts frames by a multiplier and the frame rate is recomputed from it (2x / 4x). It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and interpolation runs separately when you ask for it. **Each run produces exactly one video file** (`.mp4`) written to the node's own `outputPath` — no separate save node needed.
+Right-click the canvas → **Process › Video generation › Video interpolation**. Interpolates an **existing video** on its own: RIFE inserts frames by a multiplier and the frame rate is recomputed from it (2x / 4x). It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and interpolation runs separately when you ask for it. **Each run produces exactly one video file** (`.mp4`) written to the node's own `outputPath`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: port 0 = control input (fixed) · port 1 = source video · port 2+ = optional material (grows as needed)
@@ -19,7 +19,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - **Scale factor**: RIFE's internal scale (default 1.0 = source resolution); it applies to the stream path too and never changes the output resolution
 - **Low-VRAM safe tier**: on by default; on = low-precision fp16 plus per-frame handling and a tiny cache interval for the lowest peak
 - **Attempts**: repeated runs (1–10); multiple outputs are named `#1`, `#2` …
-- **Output path**: `.mp4` destination (relative to workspace / super subfolder)
+- **Output path**: `.mp4` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 
 ## Memory / VRAM guidance
 - **The per-frame streaming path is the default** (`h3-pack/post/stream_interp.py`): the source is decoded sequentially with PyAV and only **two adjacent frames plus one intermediate frame** are held at a time,

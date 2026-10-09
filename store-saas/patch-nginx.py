@@ -1,173 +1,166 @@
 #!/usr/bin/env python3
-"""Ensure nginx locations for store-api and /mtnode/plugins/ exist before the OSS regex."""
+"""把 nginx 的 store-api 限位与 server.mjs 的常量对齐（幂等 · 只改指令行 · 改动前备份）。
+
+为什么需要它（2026-10-09 事故）：服务端早已把上架链路的请求体上限放宽到
+MAX_BODY_APP_UPLOAD(96MB)，线上 nginx 的 `location ^~ /mtnode/store-api/` 却还留着
+`client_max_body_size 40m` + `proxy_read_timeout 120s` —— 稍大的应用包在入口就被掐，
+客户端表现是「上传中卡住很久然后失败」。两边谁都没发现，直到用户报障。
+
+本脚本的纪律（上一版踩过坑，写在这里免得后人重犯）：
+  · **只在目标 location 块内部**逐行改「指令行」，绝不整块重写、绝不插入重复块 ——
+    上一版按整块替换，跑三次就长出三份 store-api（location 从 43 涨到 67），
+    而且 `location = /mtnode/admin {` 与 `location ^~ /mtnode/admin/ {` 只差几个字符，
+    子串匹配会把内容塞进 302 块里。这一版只认**顶层整行**（strip 后正好等于 `location … {`）。
+  · 目标值写死在 TARGETS 里，与 store-saas/server.mjs 的常量一一对应；
+    服务端启动时也会读这个文件做一次对账自检（nginxLimitAudit），两边互相钉住。
+  · 幂等：已经是对的指令就一个字节都不动；没有任何改动时不写文件、不打备份。
+
+在服务器上执行（通常由 upload.py / 人工部署时调用）：
+    python3 patch-nginx.py                  # 改 /etc/nginx/sites-available/mt-ai-router.conf
+    python3 patch-nginx.py --dry-run        # 只打印将要改的指令，不写任何文件
+之后务必人工确认：nginx -t && systemctl reload nginx
+"""
+import argparse
+import re
+import shutil
 from pathlib import Path
 
-path = Path("/etc/nginx/sites-available/mt-ai-router.conf")
-text = path.read_text(encoding="utf-8")
-changed = False
+DEFAULT_CONF = "/etc/nginx/sites-available/mt-ai-router.conf"
+# 目标 location（顶层整行，缩进会被 strip 掉后比较）
+SCOPE_HEAD = "location ^~ /mtnode/store-api/ {"
+# 指令 → 期望值。数值口径见 store-saas/server.mjs：
+#   client_max_body_size = MAX_BODY_APP_UPLOAD(96MB)
+#   proxy_read_timeout / proxy_send_timeout = 客户端上架超时 600s（renderer/app-publish.js 传 600000ms）
+#   client_body_timeout 放宽到 300s、关请求体缓冲：慢网上行不再被默认 60s 掐断、也不落磁盘中转
+TARGETS = [
+    ("client_max_body_size", "96m"),
+    ("client_body_timeout", "300s"),
+    ("proxy_request_buffering", "off"),
+    ("proxy_read_timeout", "600s"),
+    ("proxy_send_timeout", "600s"),
+]
+# 这些指令允许在缺失时自动插入（插在块首行之后，缩进沿用块内已有指令）
+INSERT_AFTER_OPEN = {"client_body_timeout", "proxy_request_buffering", "proxy_send_timeout"}
 
-STORE = """
-    # === MTNode 模板商店 API ===
-    location ^~ /mtnode/store-api/ {
-        client_max_body_size 40m;
-        proxy_pass http://127.0.0.1:8787/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Authorization $http_authorization;
-        proxy_read_timeout 120s;
-    }
 
-"""
+def read_conf(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
-RELAY = """
-    # === MTNode 中转站（内部测试：DeepSeek 文本/识图 + gpt-image-2.5 图像）===
-    # 与 store-api 同一进程（127.0.0.1:8787），但这一段必须比 /mtnode/store-api/ 更长前缀
-    # 才会被选中（^~ 取最长匹配），且要单独放宽超时并关掉缓冲：
-    #   · 流式 SSE 一旦被缓冲，客户端就看不到逐字输出（表现为「卡住不吐字」）；
-    #   · 图像单张 90-150s、4K 更久，沿用 store-api 的 120s 一定超时；
-    #   · 上游图像接口「客户端断开也计费」，超时掐断等于钱花了没结果。
-    location ^~ /mtnode/store-api/relay/ {
-        client_max_body_size 40m;
-        proxy_pass http://127.0.0.1:8787/relay/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Authorization $http_authorization;
-        proxy_set_header Connection "";
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_read_timeout 900s;
-        proxy_send_timeout 900s;
-        add_header X-Accel-Buffering no;
-    }
 
-"""
+def find_scope(lines, head):
+    """找到 `location … {` 这一行并定出它的块范围，返回 (行号, 缩进, 块结束行号)。
+    找不到就回 (-1, "", -1)，调用方**什么都不写**。
 
-PLUGINS = """
-    # === MTNode 应用插件目录（本地静态，覆盖 OSS 反代） ===
-    location ^~ /mtnode/plugins/ {
-        alias /var/www/mtnode/plugins/;
-        autoindex off;
-        add_header Access-Control-Allow-Origin *;
-        add_header Cache-Control "public, max-age=60";
-        types {
-            application/json json;
-            application/zip zip;
-        }
-        default_type application/octet-stream;
-    }
+    判据用「**缩进**」而不是全局花括号深度：nginx 配置里存在
+    `location = /mtnode/admin { return 302 …; }` 这种**一行写完**的块，也有 `types { … }`
+    这类嵌套块 —— 用「整行花括号计数」推进全局深度时，只要有一处数错（`}` 与 `;` 同行、
+    注释里带花括号…），后面所有 location 都会被判成「不在顶层」，整份配置一个字都改不动
+    （干跑时真撞到过：find_scope 恒回 -1，脚本只会说「还没接入」）。
+    缩进法只看一件事：块结束 = 之后第一条**缩进不大于它**且以 `}` 开头的行。"""
+    want = head.strip()
+    for idx, line in enumerate(lines):
+        if line.strip() != want:
+            continue
+        indent = line[: len(line) - len(line.lstrip())]
+        for j in range(idx + 1, len(lines)):
+            st = lines[j].strip()
+            if st.startswith("}") and len(lines[j]) - len(lines[j].lstrip()) <= len(indent):
+                return (idx, indent, j)
+        return (idx, indent, len(lines) - 1)
+    return (-1, "", -1)
 
-"""
 
-APPS = """
-    # === MTNode 应用目录（本机静态，覆盖 OSS 反代） ===
-    # 客户端读 /mtnode/apps/catalog.json；条目里的 zipUrl / icon 相对本目录。
-    location ^~ /mtnode/apps/ {
-        alias /var/www/mtnode/apps/;
-        autoindex off;
-        add_header Access-Control-Allow-Origin *;
-        add_header Cache-Control "public, max-age=60";
-        types {
-            application/json json;
-            application/zip zip;
-            image/png png;
-            image/jpeg jpg;
-        }
-        default_type application/octet-stream;
-    }
+def directive_line(line):
+    """这一行是不是「指令行」：`key value;`（忽略前导空白）。不是就回 None。"""
+    m = re.match(r"^\s*([a-z_]+)\s+([^;]+);", line)
+    if not m:
+        return None
+    return (m.group(1), m.group(2).strip())
 
-"""
 
-ADMIN = """
-    # === MTNode 充值管理台（独立界面 · 站点不设入口 · 仅白名单微信扫码登录）===
-    # 无斜杠必须 302 到带斜杠：页面里的 admin.css / admin.js 走相对路径，
-    # 停在 /mtnode/admin 上会被解析成 /mtnode/admin.css → 404，页面全白（本机复现过）。
-    location = /mtnode/admin {
-        return 302 /mtnode/admin/;
-    }
-    location ^~ /mtnode/admin/ {
-        alias /var/www/mtnode/admin/;
-        autoindex off;
-        add_header Cache-Control "no-store";
-        add_header X-Robots-Tag "noindex, nofollow, noarchive";
-        types {
-            text/html html;
-            text/css css;
-            application/javascript js;
-            image/svg+xml svg;
-        }
-        default_type application/octet-stream;
-    }
+def patch_scope(lines, head, targets):
+    """在目标块内逐行对齐指令值：存在就改值，允许插入的缺失项插在块首行之后。
+    返回 (新行数组, 改动说明数组)。"""
+    start, indent, end = find_scope(lines, head)
+    if start < 0:
+        # 找不到目标块时**一个字节都不写**（调用方据此直接收工）：
+        # 这一版只负责「把已有的 store-api 限位改对」，不负责建 location（那是新站接入的事）。
+        return (lines, ["找不到 " + head.strip() + "：这个站点可能还没接入 store-api（本脚本只改已存在的块，不新建）"])
+    out = list(lines)
+    changes = []
+    inner_indent = None
+    for j in range(start + 1, end):
+        got = directive_line(out[j])
+        if got:
+            inner_indent = out[j][: len(out[j]) - len(out[j].lstrip())]
+            break
+    if inner_indent is None:
+        inner_indent = indent + "    "
+    for key, want in targets:
+        hit = -1
+        for j in range(start + 1, end):
+            got = directive_line(out[j])
+            if got and got[0] == key:
+                hit = j
+                break
+        if hit >= 0:
+            got = directive_line(out[hit])
+            if got[1] == want:
+                continue
+            out[hit] = re.sub(
+                r"^(\s*" + re.escape(key) + r"\s+)[^;]+;",
+                lambda m: m.group(1) + want + ";",
+                out[hit],
+            )
+            changes.append(key + ": " + got[1] + " → " + want)
+        elif key in INSERT_AFTER_OPEN:
+            # 插在**块内最后一条指令之后**（不是紧跟块首行）：这样新指令与同类指令排在一起，
+            # 块首那条 `# === MTNode 模板商店 API ===` 注释仍然贴着 location 行，配置读起来不乱。
+            at = start + 1
+            for j in range(start + 1, end):
+                if directive_line(out[j]):
+                    at = j + 1
+            out.insert(at, inner_indent + key + " " + want + ";")
+            end += 1
+            changes.append(key + ": (缺) → " + want)
+        else:
+            changes.append(key + ": 块里没有这一行，且不自动插入（请人工确认）")
+    return (out, changes)
 
-"""
 
-PAYDONE = """
-    # === MTNode 支付同步跳回页（return_url）===
-    # 只有从支付宝收银台付完款跳回来才会被看到；站点任何地方都没有入口，也不被索引。
-    # 这一页不参与入账（入账只认服务端验签过的异步 notify 与 trade.query 轮询），
-    # 所以它 404 也不影响钱到账 —— 但会让用户看不到「支付完成」的确认，体验上要有。
-    location = /mtnode/pay-done {
-        return 302 /mtnode/pay-done/;
-    }
-    location ^~ /mtnode/pay-done/ {
-        alias /var/www/mtnode/pay-done/;
-        autoindex off;
-        add_header Cache-Control "no-store";
-        add_header X-Robots-Tag "noindex, nofollow, noarchive";
-        types {
-            text/html html;
-        }
-        default_type application/octet-stream;
-    }
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--conf", default=DEFAULT_CONF)
+    ap.add_argument("--dry-run", action="store_true", help="只打印将要改的指令，不写任何文件")
+    args = ap.parse_args()
+    path = Path(args.conf)
+    if not path.is_file():
+        raise SystemExit("找不到 nginx 配置：" + str(path))
+    lines = read_conf(path).split("\n")
+    new_lines, changes = patch_scope(lines, SCOPE_HEAD, TARGETS)
+    if not changes:
+        print("nginx 限位已与 server.mjs 同口径，无需改动：" + str(path))
+        return
+    # 找不到目标块（本站点还没接入 store-api）时**绝不写文件**：没有可改的东西，
+    # 写下去只会留下一个无意义的备份（上一版就在这里把「找不到」当成一次改动写盘了）。
+    if len(changes) == 1 and changes[0].startswith("找不到"):
+        print(changes[0])
+        return
+    print("改动明细：")
+    for c in changes:
+        print("  · " + c)
+    if args.dry_run:
+        print("（--dry-run：没有写任何文件）")
+        return
+    if new_lines == lines:
+        print("（内容没有实际变化，不写文件）")
+        return
+    backup = path.with_suffix(path.suffix + ".bak-limitpatch")
+    shutil.copyfile(str(path), str(backup))
+    path.write_text("\n".join(new_lines), encoding="utf-8")
+    print("已写入 " + str(path) + "（备份 " + str(backup) + "）")
+    print("接着必须人工确认：nginx -t && systemctl reload nginx")
 
-"""
 
-needle = "    # === MTNode AI编排器 下载页"
-if needle not in text:
-    raise SystemExit("nginx needle not found: MTNode AI编排器 下载页")
-
-insert = ""
-if "location ^~ /mtnode/store-api/" not in text:
-    insert += STORE
-if "location ^~ /mtnode/store-api/relay/" not in text:
-    insert += RELAY
-if "location ^~ /mtnode/plugins/" not in text:
-    insert += PLUGINS
-if "location ^~ /mtnode/admin/" not in text:
-    insert += ADMIN
-if "location ^~ /mtnode/pay-done/" not in text:
-    insert += PAYDONE
-if "location ^~ /mtnode/apps/" not in text:
-    insert += APPS
-if "location ^~ /mtnode/ext/" not in text:
-    insert += """
-    # === MTNode 扩展目录（插件 / 技能 / MCP） ===
-    location ^~ /mtnode/ext/ {
-        alias /var/www/mtnode/ext/;
-        autoindex off;
-        add_header Access-Control-Allow-Origin *;
-        add_header Cache-Control "public, max-age=60";
-        types {
-            application/json json;
-            application/gzip tgz;
-            text/markdown md;
-            text/plain txt;
-        }
-        default_type application/octet-stream;
-    }
-
-"""
-
-if not insert:
-    print("nginx store-api + relay + plugins + admin + apps locations already present")
-    raise SystemExit(0)
-
-backup = path.with_suffix(".conf.bak-plugins")
-backup.write_text(text, encoding="utf-8")
-path.write_text(text.replace(needle, insert + needle, 1), encoding="utf-8")
-print("inserted nginx locations; backup", backup)
+if __name__ == "__main__":
+    main()

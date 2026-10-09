@@ -749,7 +749,20 @@ async function main() {
       "落盘：db.json 的打赏记录仍是存量已撤销那条（撤销停用后不会再新增撤销标记）");
     ok(disk.comments.length >= 4 && disk.comments.some((c) => c.deleted === true && c.deletedBy),
       "落盘：软删除的评论仍在 comments 里（deleted:true + deletedBy 留档）");
-    const ledTypes = disk.rechargeLedger.map((e) => e.type);
+    /* 本轮 1000 条目录优化：rechargeLedger 已搬出 db.json，落 recharge-ledger.jsonl（追加文件，每条 fsync）。
+       断言口径不变（四类流水都要在盘上），只是取数要把追加文件一起读进来（见 store-saas/hot-store.mjs）。 */
+    const hotLedger = (() => {
+      try {
+        return fs
+          .readFileSync(path.join(DATA, "recharge-ledger.jsonl"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+      } catch (_) {
+        return [];
+      }
+    })();
+    const ledTypes = (disk.rechargeLedger || []).concat(hotLedger).map((e) => e.type);
     ok(ledTypes.includes("tip_out") && ledTypes.includes("tip_in") && ledTypes.includes("tip_revoke_out") && ledTypes.includes("tip_revoke_in"),
       "落盘：四类打赏流水都在（tip_out / tip_in 是本次真打赏，tip_revoke_* 是存量撤销留档）");
     ok(disk.rechargeLedger.filter((e) => e.type === "tip_out").every((e) => e.deltaCents < 0),

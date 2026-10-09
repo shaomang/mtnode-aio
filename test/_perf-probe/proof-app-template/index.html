@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>端到端证据应用</title>
+    <!-- 端到端证据台（test/_perf-probe/real-fix-proof.cjs 生成到临时应用目录里）：
+         把**真应用页**装进一只 iframe（它自己的 JS / 相对资源全按自己的目录解析），
+         外层只做计时与驱动 —— 于是 window.appHost 是那只真 preload-app.js 给的、
+         dataWrite 走的是真 apps-store 内核，量出来就是现场那笔账。 -->
+  </head>
+  <body style="margin:0;background:#0d1016">
+    <iframe id="game" style="width:100vw;height:100vh;border:0"></iframe>
+    <script>
+      (function () {
+        var url = "__GAME_URL__";
+        document.getElementById("game").src = url + (url.indexOf("?") >= 0 ? "&" : "?") + "mode=infinite&fresh=1&diff=expert&cb=" + Date.now();
+      })();
+    </script>
+  </body>
+</html>

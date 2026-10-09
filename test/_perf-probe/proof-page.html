@@ -1,0 +1,8 @@
+/* test/_perf-probe/proof-page.html 不是模板，真正的证据页由 real-fix-proof.cjs 生成：
+ *
+ *   把 games 目录整个复制成一只临时应用（<临时>/apps-dev/<id>/），再往里写一页
+ *   probe-entry.html（把真应用的 index.html 装进 iframe）+ app.json（entry = probe-entry.html）。
+ *   ⚠ 为什么不能用 iframe：preload 只在**顶层文档**注入，子框架拿不到 window.appHost。
+ *   所以真正的量测页必须在**顶层**跑。
+ */
+throw new Error("不要直接执行本文件；用 test/_perf-probe/real-fix-proof.cjs");

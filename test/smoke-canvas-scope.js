@@ -281,7 +281,7 @@ function makeSandbox(focus) {
     grabFunction(NODES, "snapshotDynamicPortRule"),
     grabFunction(NODES, "snapshotPortsOf"),
     grabFunction(NODES, "canvasSnapshot"),
-    "return { canvasSnapshot, snapshotScopeOf, scopeInfoBlock, scopedNodeIdSet, resolveScopeHost, superSubtreeIds, pointInScopeHost, snapshotWantsStaticRefs, attachSnapshotStaticRefs };",
+    "return { canvasSnapshot, snapshotScopeOf, scopeInfoBlock, scopedNodeIdSet, resolveScopeHost, superSubtreeIds, pointInScopeHost, snapshotWantsStaticRefs, attachSnapshotStaticRefs, snapshotPortsOf, nodePortList };",
     "})()",
   ].join("\n");
   const ctx = vm.createContext(sb);
@@ -309,7 +309,7 @@ if (process.env.SCOPE_DEBUG) {
 /* ══════════════════════ [1] 只读侧：scope 收窄 ══════════════════════ */
 function part1() {
   section("1 canvasSnapshot({scope}) 只回某一颗壳内部");
-  const { api } = makeSandbox("");
+  const { api, sb } = makeSandbox("");
   const all = api.canvasSnapshot({ scope: "global" });
   ok(
     sameSet(all, ["dev", "f1", "g1", "sib", "top"]),
@@ -394,6 +394,48 @@ function part1() {
     minSnap.nodes.every((n) => n.ports === undefined),
     "minimal 档不带 ports（节点索引每轮重发，端子表只在要接线时按需拉）",
   );
+  /* 音频 / 视频输入节点：输出端子**固定两个**，且徽标 / ports 表上的名字要写清是哪两个 ——
+     0 = 音频输出 / 视频输出（该文件的 file:/// URL）· 1 = 转写输出（该文件的转写文字，
+     没有转写内容时是空文本）。既然是固定端子就该进 ports 预检 —— 模型接线前看得见
+     「哪颗是文件、哪颗是文字」，不必先试连看 warnings 反推（名单真源是 app-nodes.js 的
+     SNAPSHOT_PORT_KINDS，本文件从源码抽出，不另抄一份）。 */
+  ok(
+    SNAPSHOT_PORT_KINDS.indexOf("input_audio") >= 0 && SNAPSHOT_PORT_KINDS.indexOf("input_video") >= 0,
+    "端子数固定的节点名单含音视频输入节点（两个固定出端子进 ports 预检）",
+  );
+  {
+    /* 沙箱的 outputCount 是「素材条目数」的替身：这里按真实口径补上音视频输入节点 */
+    const realOut = sb.outputCount;
+    sb.outputCount = (n) =>
+      n && (n.kind === "input_audio" || n.kind === "input_video") ? 2 : realOut(n);
+    const aPorts = api.snapshotPortsOf({
+      id: "a1",
+      kind: "input_audio",
+      title: "音频",
+      mediaAsset: "E:/素材/人声.wav",
+    });
+    const aOut0 = (aPorts || []).filter((p) => p.dir === "out" && p.index === 0)[0];
+    const aOut1 = (aPorts || []).filter((p) => p.dir === "out" && p.index === 1)[0];
+    ok(
+      !!aOut0 && aOut0.kind === "audio" && !!aOut1 && aOut1.kind === "text" &&
+        aOut0.name === "音频输出" && aOut1.name === "转写输出",
+      "音频输入节点的 ports：端口 0 = 音频输出（audio）· 端口 1 = 转写输出（text）",
+    );
+    const vPorts = api.snapshotPortsOf({
+      id: "v1",
+      kind: "input_video",
+      title: "视频",
+      mediaAsset: "E:/a.mp4",
+    });
+    const vOut0 = (vPorts || []).filter((p) => p.dir === "out" && p.index === 0)[0];
+    const vOut1 = (vPorts || []).filter((p) => p.dir === "out" && p.index === 1)[0];
+    ok(
+      !!vOut1 && vOut1.kind === "text" && vOut1.name === "转写输出" &&
+        !!vOut0 && vOut0.kind === "video" && vOut0.name === "视频输出",
+      "视频输入节点同样两个固定输出端子（0 = 视频输出 · 1 = 转写输出）",
+    );
+    sb.outputCount = realOut;
+  }
 }
 
 /* ══════════════════════ [2] 默认整图 + 当前位置提示 ══════════════════════ */

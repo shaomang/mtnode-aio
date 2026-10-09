@@ -208,8 +208,6 @@
      * 这是「超分把 64G 内存跑满、显存空着」那一档的正解开关，默认开 8G。 */
     const cacheGb = Math.max(0, Math.round(Number(st.optCacheRamGb) || 0));
     const map = [
-      /* CPU VAE 默认关：直接回显后端给的布尔值，不再用 !== false 兜成开 */
-      ["optCpuVae", !!st.cpuVae],
       ["optPinned", st.optDisablePinnedMemory !== false],
       ["optFp16", st.optFp16Intermediates !== false],
       ["optExpand", st.optExpandableSegments !== false],
@@ -289,7 +287,6 @@
     const threads = Math.max(0, Math.min(64, Math.round(Number(thEl && thEl.value) || 0)));
     if (thEl) thEl.value = String(threads);
     const r = await api.setLaunchOpts({
-      cpuVae: !!$("optCpuVae").checked,
       optDisablePinnedMemory: !!$("optPinned").checked,
       optFp16Intermediates: !!$("optFp16").checked,
       optExpandableSegments: !!$("optExpand").checked,

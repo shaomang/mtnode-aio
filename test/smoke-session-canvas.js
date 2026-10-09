@@ -127,7 +127,13 @@ function part1() {
 
   has(bodyOf(ASSIST, "agentSessionState", "app-assist.js"), "canvasWfId: currentVisibleWfId()", "兜底新建会话按用户此刻看到的画布绑定");
   has(bodyOf(ASSIST, "newAgentSession", "app-assist.js"), "canvasWfId: currentVisibleWfId()", "手动「新会话」同样绑定此刻的画布");
-  has(bodyOf(ASSIST, "persistAgentSession", "app-assist.js"), 'canvasWfId: s.canvasWfId || "",', "归属随会话落盘（重启后仍归它自己那张图）");
+  /* 落盘白名单本体（会话拆到 agent-sessions/ 后叫 agentSessionMetaForDisk）：
+     字段名与「谁落盘」变了，但要件不变 —— canvasWfId 必须在落盘对象里 */
+  has(
+    bodyOf(ASSIST, "agentSessionMetaForDisk", "app-assist.js"),
+    'canvasWfId: s.canvasWfId || "",',
+    "归属随会话落盘（重启后仍归它自己那张图）",
+  );
 
   ok(/canvasWfId:\s*""/.test(BOOT), "app-boot.js 载回归一的默认字段表带 canvasWfId（漏了 = 重启丢归属）");
   has(BOOT, 'typeof sess.canvasWfId === "string" ? sess.canvasWfId : ""', "载回时字符串原样保留，非字符串才清空");

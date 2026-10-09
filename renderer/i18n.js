@@ -248,7 +248,9 @@
     /* 交付放行（本轮需求）：交付物没全交齐也能继续，提醒不阻止 —— 确认窗、放行后的 toast、
        板身横幅与清单标签的文案同步到英文（中文侧真源在 app-longtask-ui.js / longtask-store.js）。 */
     "确认交付完成": "Confirm delivery complete",
-    "还有 ": "Still ",
+    /* 「还有 」这个片段键在全表只写一条（真源在下面 app-fileview.js 那一段）：本表是同名键后写
+       覆盖的扁平对象，同一键写两个英文值 = 后一条悄悄抢走前一条的译文（smoke-filepeek 有同名键
+       冲突断言）。长任务板这里的用法与文件徽标共用同一条译文。 */
     " 项必填没交齐：仍可继续，但这几项会被记成「未交付·已放行」":
       " required items are missing: you can still continue, but they will be recorded as “not delivered · released”",
     "必填项都交齐了：确认后任务继续往下跑": "All required items are delivered: confirming lets the task carry on",
@@ -2126,7 +2128,7 @@
     "【用户】": "[User]",
     "【助手】": "[Assistant]",
     "■ 终止": "■ Stop",
-    "◉ 思考": "◉ Thinking",
+    "思考": "Thinking",
     "✕ 删除": "✕ Delete",
     "保存节点": "Save Node",
     "保存（按输入自判）": "Save (infer from input)",
@@ -2150,7 +2152,7 @@
     "批次节点": "Batch Node",
     "未知节点类型": "Unknown node type",
     "文本处理（LLM）": "Text processing (LLM)",
-    "图像生成（文生图）": "Image generation (text-to-image)",
+    "图像生成（云端服务商）": "Image generation (cloud provider)",
     "拆分（批次 → 单项只读节点）": "Split (batch → per-item read-only nodes)",
     "合并（多节点 → 批次）": "Merge (multiple nodes → batch)",
     "保存（按输入自判文本 / 图像 / 音频 / 视频）":
@@ -2379,7 +2381,7 @@
     "[图像] ": "[Image] ",
     "＋ 添加源": "+ Add source",
     "◉ 处理中": "◉ Processing",
-    "◉ 思考中": "◉ Thinking",
+    "思考中": "Thinking",
     "✓ 批量 ": "✓ Batch ",
     "🐋 智能": "🐋 Agent",
     "操作失败：": "Operation failed: ",
@@ -2865,7 +2867,7 @@
     "\n\n【已连接图像输入】": "\n\n[Connected image inputs]",
     "（已完成，无文本输出）": "(Done, no text output)",
     "── 终端输出 ──\n": "── Terminal output ──\n",
-    "▶ 图像生成（文生图）": "▶ Image generation (text-to-image)",
+    "▶ 图像生成（云端服务商）": "▶ Image generation (cloud provider)",
     "▶ 文本处理（LLM）": "▶ Text processing (LLM)",
     "打开画布保存的文件夹": "Open canvas save folder",
     "发送消息（Enter）": "Send message (Enter)",
@@ -2906,6 +2908,7 @@
     "默认模型（智能能力使用）": "Default model (for agent capability)",
     "批量输入的处理方式切换：": "Switch how batch input is processed: ",
     "其他（自定义回答，选填）": "Other (custom reply, optional)",
+    "☑ 可多选：这一题能同时勾选多项": "☑ Multi-select: several options can be ticked here",
     "删除该组（连同内部节点）": "Delete this group (including inner nodes)",
     "删除节点（Delete）": "Delete node (Delete)",
     "图像保存节点需要图像来源": "Image save node needs an image source",
@@ -3142,8 +3145,23 @@
     "未设置路径": "path not set",
     "文件不存在（生成后将显示于此）": "File not found (will appear here after generate)",
     "目标文件已存在，改为保存为：": "File exists — saving as: ",
+    "托管目录 · 由保存节点落盘": "Managed folder · written by the downstream Save node",
+    /* 保存节点接媒体来源（生成节点的数据输出 / 音频输入 / 视频输入节点）时的空输入提示 */
+    "保存节点需要一个音频输入": "The Save node needs an audio input",
+    "保存节点需要一个视频输入": "The Save node needs a video input",
     "输出路径（必填）": "Output path (required)",
     "未设置输出路径时无法启动生成": "Generation cannot start until an output path is set",
+    /* 托管口径下的「输出路径」字段文案（app-nodes.js 的 nsMediaGenPathField / mediaGenPathActionButtons）：
+       数据输出接入保存节点后路径可留空，产物先落托管目录再由该保存节点落盘 */
+    "留空 = 交给下游保存节点落盘（":
+      "Leave empty = the downstream Save node writes it (",
+    "留空 = 交给下游保存节点落盘…": "Leave empty = the downstream Save node writes it…",
+    "输出路径可留空：数据输出已接入保存节点，留空时产物先落应用托管目录，再由该保存节点按自己的保存路径落盘。也可以自己填一个固定路径（填了就以这里为准）。":
+      "The output path may be left empty: this node's data output is wired to a Save node, so an empty path sends the artifact to the app managed folder and that Save node writes it to its own save path. You can also set a fixed path here — when set, it wins.",
+    "由保存节点落盘，本节点没有可打开的文件":
+      "Written by the Save node — this node has no file to open",
+    "产物由下游保存节点落盘：路径填在该保存节点自己的保存路径上":
+      "The downstream Save node writes the artifact: its location is that Save node's own save path",
     "请先在节点设置中指定输出路径（可用「浏览」选择）":
       "Set an output path in node settings first (use \"Browse\" to choose)",
     "输出路径（必须设置，": "Output path (required, ",
@@ -3295,7 +3313,7 @@
     "行内代码": "Inline code",
     "代码块": "Code block",
     "水平线": "Horizontal rule",
-    "编辑并保存此文件（Ctrl+S 保存）": "Edit and save this file (Ctrl+S to save)",
+    "编辑并保存此文件": "Edit and save this file",
     "退出编辑": "Exit editing",
     "回到预览（正文已实时保存，不会回退文件）":
       "Back to preview (the body is already saved live; the file is not reverted)",
@@ -3304,7 +3322,7 @@
     "Markdown 编辑器未就绪（app.js mdViewer）":
       "Markdown editor is not ready (app.js mdViewer)",
     "调用方未接受这次改动": "The caller did not accept this change",
-    "写回文件（Ctrl+S）": "Write back to file (Ctrl+S)",
+    "写回文件": "Write back to file",
     "放弃修改，回到预览": "Discard changes and return to preview",
     " 个标题": " headings",
     "用阅读器打开（Markdown / YAML · 可编辑保存）": "Open in reader (Markdown / YAML · editable)",
@@ -3735,20 +3753,17 @@
     "读活动流失败：": "Failed to read the activity log: ",
     "浏览器操作失败：": "Browser action failed: ",
     "复制这段思考原文到剪贴板": "Copy this thinking text to the clipboard",
-    "点击打开思考弹窗（原文按 Markdown 显示，译文点了翻译才出现）":
-      "Click to open the thinking dialog (original shown as Markdown; the translation pane appears only after you click Translate)",
+    "点击打开思考弹窗（上方为译文 / 原文两个标签页，原文按 Markdown 阅读模式显示）":
+      "Click to open the thinking dialog (top tabs: translation / original, both shown in Markdown reading mode)",
     "思考原文": "Thinking (original)",
+    "原文": "Original",
     "重发失败：": "Resend failed: ",
     "这条会话已经不在，无法重发": "This session no longer exists, cannot resend",
     "已终止本轮": "This round has been stopped",
     "终止本轮": "Stop this round",
     "重发本轮": "Resend this round",
-    "⚠ 已等 {n} 秒没有任何新进展：模型可能没能接着往下走。": "⚠ {n}s with no new progress: the model may not have continued.",
-    "已回应，模型继续中": "Replied — the model is continuing",
     "自动切真窗口没成功：可以在右栏实况里操作，或再点一次「用真窗口打开」。": "Auto-switching to a real window failed: operate it in the right panel live view, or click “Open a real window” again.",
     "浏览器此刻由另一条会话驱动，没有抢过来：点「用真窗口打开」可以把这只换成带窗口的。": "Another session is driving the browser right now, so it was not taken over: click “Open a real window” to replace it with a windowed one.",
-    "没能切换接管状态（浏览器可能已经关了）：请再点一次，或直接点「我已处理，继续」。": "Could not switch the takeover state (the browser may already be closed): click again, or just click “Done, continue”.",
-    "接管切换失败：": "Failed to switch takeover: ",
     "⏳ 模型正在等你的回应 · 已等 {n} 秒（不会超时自动跳过）": "⏳ The model is waiting for you · {n}s elapsed (no timeout, it will not skip ahead)",
     "当前外壳没有浏览器桥（老版本）": "This shell has no browser bridge (older build)",
     "没能把真实窗口摆出来：先在右栏实况里操作，或再点一次。": "Could not bring the real window up: operate it in the right panel live view, or click again.",
@@ -3757,10 +3772,9 @@
     "收回右栏：把这只会话浏览器放回这里的实况画面（真实窗口重新让位）": "Dock back: put this session's browser picture back into the live view here (the real window steps aside again)",
     "用真窗口打开": "Open in a real window",
     "收回右栏": "Dock back",
-    "用一只真实的浏览器窗口打开它，并顺手接管：登录 / 验证码你自己输，密码不进对话": "Open it in a real browser window and take over: you type the login / captcha yourself — the password never enters the chat",
-    "把这个浏览器收回会话右边栏的实况画面（真实窗口重新让位）": "Dock this browser back into the session's right panel live view (the real window steps aside again)",
-    "已用真窗口打开，且你已接管：顺手操作即可；做完点「我已处理完，交还控制权」。": "Opened in a real window and you are now driving: go ahead and operate it; when you are done click \"I'm done — hand control back\".",
-    "已关掉那只无窗口的、重开为真窗口并接管：顺手操作即可；做完点「我已处理完，交还控制权」。": "Closed the windowless browser and reopened it in a real window (you are now driving): go ahead and operate it; when you are done click \"I'm done — hand control back\".",
+    "用一只真实的浏览器窗口打开它（当前无窗口那只会被温和重开成带窗口的）：登录 / 验证码你自己输，密码不进对话": "Open it in a real browser window (the current windowless one is closed gently and reopened with a window): you type the login / captcha yourself — the password never enters the chat",
+    "已用真窗口打开：顺手操作即可；做完在求助卡上点「回答」（登录类会自动交还控制权）。": "Opened in a real window: go ahead and operate it; when you are done click \"Answer\" on the help card (a login card hands control back automatically).",
+    "已关掉那只无窗口的、重开为真窗口：顺手操作即可；做完在求助卡上点「回答」（登录类会自动交还控制权）。": "Closed the windowless browser and reopened it in a real window: go ahead and operate it; when you are done click \"Answer\" on the help card (a login card hands control back automatically).",
     "点「用真窗口打开」会把当前这只无窗口的浏览器温和关掉、重开一只带窗口的（当前页面地址会带回来；登录态在，不受影响）": "Clicking \"Open in a real window\" closes the current windowless browser gently and reopens one with a real window (the current page address is carried over; logins are unaffected).",
     "暂停观察": "Pause live view",
     "继续观察": "Resume live view",
@@ -3772,8 +3786,8 @@
     "已在独立窗口": "in its own window",
     /* 无窗口（headless）那只：会话自动拉起的默认形态（开发 / 会话过程中不弹真窗口） */
     "无窗口运行": "running windowless",
-    "这只是无窗口（后台）浏览器，画面就在这里；想要真窗口请在会话里让它求助（登录 / 验证码卡上点「用真窗口打开」）。":
-      "This browser runs windowless in the background — the picture is right here; to get a real window, let the session ask for help (click \"Open in a real window\" on the login / captcha card).",
+    "这只是无窗口（后台）浏览器，画面就在这里；想要真窗口点上面那枚「用真窗口打开」（会温和重开成带窗口的）。":
+      "This browser runs windowless in the background — the picture is right here; for a real window click \"Open in a real window\" above (it reopens with a window).",
     "已在独立窗口操作；点「收回」回到右栏。": "It is in its own window — operate it there, or click \"Dock back\" to return it to the right panel.",
     "暂停画面更新（重新打开即恢复）": "Pause the picture (resume by clicking again)",
     "已收回：画面回到会话右边栏。": "Docked back: the picture is in the session's right panel again.",
@@ -3799,14 +3813,10 @@
     "浏览器操作需要你确认": "A browser action needs your confirmation",
     "允许这一次": "Allow once",
     "拒绝": "Reject",
-    "接管浏览器（我来操作）": "Take over the browser (I'll do it)",
-    "我已处理完，交还控制权": "I'm done — hand control back",
     "我已处理，继续": "Done — continue",
-    "撤销这张卡": "Dismiss this card",
-    "这张卡已失效（发起轮已结束）": "This card is stale (its round already ended)",
     "⏹ 这一轮已经结束": "⏹ This round has ended",
     "⏹ 这一轮已经结束：上面那张卡已收口，模型不再等它了。": "⏹ This round has ended: that card was settled and the model is no longer waiting for it.",
-    "⏹ 这一轮已经结束：那张浏览器卡已收口，你的回应没能送达模型。": "⏹ This round has ended: that browser card was settled, so your response never reached the model.",
+    "⏹ 这一轮已经结束：那张浏览器确认卡已收口，你的回应没能送达模型。": "⏹ This round has ended: that browser confirmation card was settled, so your response never reached the model.",
     "⏹ 这一轮已经结束：那张卡已收口，你的回答没能送达模型（可把它作为新消息再发一次）。": "⏹ This round has ended: that card was settled, so your answer never reached the model (you can send it again as a new message).",
     "这一轮已经结束。要从头再跑一遍就点「重发本轮」。": "This round has ended. Click \"Resend this round\" to run it again from the top.",
     "发起这一问的那一轮已经结束，你的回答送不到模型了。": "The round that asked this question has ended; your answer cannot reach the model any more.",
@@ -4038,8 +4048,7 @@
     "转写中…": "Transcribing…",
     "模型未就绪": "Model not ready",
     /* 冷起窗口（提供者名单为空）：节点这条以前当场报「不可用」，现在与话筒同口径退避重试 */
-    "语音服务启动中": "Speech service starting",
-    "语音服务正在启动（首次约一两秒）：稍等一下再点运行":
+    "语音服务启动中": "Speech service starting",    "语音服务正在启动（首次约一两秒）：稍等一下再点运行":
       "The speech service is starting (about a second or two on first use): wait a moment and press run again",
     "语音服务不可用": "Speech service unavailable",
     "待转写": "Not transcribed yet",
@@ -4084,6 +4093,49 @@
     /* 插件卡片通用（SenseNova 等仍用；从前与 ASR 卡片共用同一段，ASR 摘除后留在这里） */
     "状态与设置": "Status & settings",
     "安装失败：": "Install failed: "
+  });
+  /* ── Breeze（breeze_gen）的两个文本框：renderer/app-nodes.js 的 breezeTextBoxesFor
+     （BREEZE_TEXT_BOXES 的 label / placeholder / title / tip 都在那儿）与设置窗那一格
+     （renderer/app-canvas.js）。口径：端子有输入 → 只读回显；端子为空 → 可编辑。
+     **本节点不做转录**：参考文本由用户填或从端口 2 接进来，所以这里没有 SenseVoice 词条。 */
+  Object.assign(EN, {
+    "输入文本（需要念的）": "Input text (the words to speak)",
+    "参考文本（参考音频对应的文字）": "Reference text (words of the reference audio)",
+    "（端口 0 有文本时这里只读回显；没有就写要念的文字）":
+      "(Read-only while port 0 has text; otherwise write the words to speak here)",
+    "（端口 2 有文本时这里只读回显；没有就写参考音频对应的文字）":
+      "(Read-only while port 2 has text; otherwise write the words of the reference audio here)",
+    "端子为空时，这个框里的文字就是本次要合成的内容":
+      "With the port empty, the text in this box is what gets synthesized",
+    "本次要用的参考文本：留空时若选了音色库音色，就用音色库自带的那份":
+      "The reference text for this run: left empty, a selected library voice falls back to its own transcript",
+    "端子优先：端口 0 有输入时这里只读":
+      "Ports win: this box is read-only while port 0 has input",
+    "端子优先：端口 2 有输入时这里只读":
+      "Ports win: this box is read-only while port 2 has input",
+    "来自端口 ": "From port ",
+    "（端子优先，本框只读）": " (ports win; this box is read-only)",
+    "端子为空 · 可编辑": "Port empty · editable",
+    "清掉这个框里的文字（端子有输入时这一格本来就不归你改）":
+      "Clear the text in this box (with a port wired, this box is not yours to edit anyway)",
+    "选了音色库音色：这个框留空时，合成用音色库自带的那份参考文本":
+      "Library voice selected: with this box empty, synthesis uses the transcript bundled with that voice",
+    "文本（端子有输入时只读，端子为空才可编辑）":
+      "Text (read-only while a port has input; editable only when the port is empty)",
+    "文本区块不可用（renderer/app-nodes.js 未加载）":
+      "Text block unavailable (renderer/app-nodes.js is not loaded)",
+    "文本区块未能加载（详见控制台）": "Text block failed to load (see the console)",
+    "待合成文本为空：请在「输入文本」框里填写，或从端口 0 接上文本来源":
+      "Text to synthesize is empty: fill in the “Input text” box, or wire a text source into port 0",
+    "参考音频走端口 1（端口 2 接音频 / 视频输入节点时也算参考音频）；端口为空时用设置里的音色":
+      "Reference audio comes in on port 1 (an audio/video input node wired to port 2 counts as reference audio too); with the ports empty the voice picked in settings is used",
+    "参考音频必须与参考文本成对提供（请在节点的「参考文本」框里填写，或把音频节点的「转写输出」接到端口 2）":
+      "Reference audio and reference text must be provided as a pair (fill in the node’s “Reference text” box, or wire the audio node’s “transcript output” into port 2)",
+    "参考音频端子（端口 2 的音频）": "Reference audio port (audio from port 2)",
+    "参考文稿口接的是音频 / 视频节点：先在它上面点「转录」，把它的转写输出接到本口就是参考文本（本节点不做转录）":
+      "Port 2 is wired to an audio/video node: click “Transcribe” on that node first, then wire its transcript output here to become the reference text (this node never transcribes by itself)",
+    "这个口上给的是音频 / 视频（不是文字，这里不会显示那串路径）：它会当本节点的参考音频用；参考文本请在框里填，或把音频节点的「转写输出」接到本口":
+      "This port carries audio/video, not text (the path is never shown here): it is used as this node’s reference audio, so provide the reference text by filling in the box or by wiring the audio node’s “transcript output” into this port",
   });
   Object.assign(EN, {
     "创意工坊": "Creative Workshop",
@@ -5477,7 +5529,6 @@
     "批次拆分已完成。是否进行 AI 重新排版？\n\n将由全局助手分析并调整节点位置，可能需要等待一段时间。":
       "Batch split done. Run AI re-layout?\n\nThe global assistant will analyze and adjust node positions; this may take a while.",
     "节点操作": "Node actions",
-    "关闭（Esc）": "Close (Esc)",
     /* ── 全局搜索浮层（Ctrl+F · renderer/app-search.js） ── */
     "搜索画布、会话、专家团、素材、工具、技能与文档…":
       "Search canvases, sessions, expert team, assets, tools, skills, and docs…",
@@ -5491,12 +5542,8 @@
     "↑↓ 选择 · Enter 打开 · Esc 关闭": "↑↓ select · Enter open · Esc close",
     /* ─ 输入框内查找条（Ctrl+F 焦点在输入框里 · renderer/app-find.js） ── */
     "在本输入框内查找": "Find in this field",
-    "查找（Ctrl+F）：焦点在输入框里时，在框内高亮并定位文字":
-      "Find (Ctrl+F): with focus inside an input, highlight and jump to text within that field",
     "上一个命中": "Previous match",
     "下一个命中": "Next match",
-    "上一个（Shift+Enter / ↑）": "Previous (Shift+Enter / ↑)",
-    "下一个（Enter / ↓）": "Next (Enter / ↓)",
     "关闭查找框": "Close the find bar",
     "无匹配": "No match",
     "Enter 下一个 · Shift+Enter 上一个 · Esc 关闭":
@@ -6056,8 +6103,6 @@
       "Plugins: cloud catalog; download the desktop pet and other add-ons on demand",
     "图片过大": "Image is too large",
     "正在拉取云端插件目录…": "Fetching the cloud plugin catalog…",
-    "插件列表来自云端，可不升级主程序获取新插件。":
-      "Plugin list is loaded from the cloud; new plugins can be added without upgrading the app.",
     "云端目录暂不可用，已显示上次缓存。": "Cloud catalog unavailable; showing the last cached list.",
     "云端目录暂不可用，已显示内置列表。": "Cloud catalog unavailable; showing the built-in list.",
     "刷新目录": "Refresh catalog",
@@ -6075,7 +6120,6 @@
     "插件已安装": "Plugin installed",
     "插件已更新": "Plugin updated",
     "插件已卸载": "Plugin uninstalled",
-    " · 已下架": " · retired",
     "卸载该插件？将删除已下载的运行时文件。":
       "Uninstall this plugin? Downloaded runtime files will be deleted.",
     "暂无插件": "No plugins",
@@ -6140,6 +6184,13 @@
       "Synthesize speech with the GPT-SoVITS backend",
     "打开 GPT-SoVITS 控制台": "Open GPT-SoVITS console",
     "打开 H3 控制台日志": "Open H3 console log",
+    /* video_gen（H3）参考素材跑前预检的报警文案：端口上有线却取不到值 —— 不再静默丢图 */
+    "参考素材取不到内容，本次不会带上：":
+      "Reference assets could not be loaded and will NOT be sent this run: ",
+    "该端子上有连线但没取到值（素材库未就绪 / 条目文件缺失），请检查后再跑":
+      "the port has a wire but no value was resolved (asset library not ready / item file missing) — check it before running again",
+    "参考图": "reference image",
+    "参考视频": "reference video",
     "打开 Music 3 控制台日志": "Open Music 3 console log",
     "⚠ GPT-SoVITS 插件未安装：请在「插件 · GPT-SoVITS 语音合成」中安装后使用本节点":
       "⚠ GPT-SoVITS plugin not installed: install it in Plugins · GPT-SoVITS Speech Synthesis before using this node",
@@ -6203,6 +6254,144 @@
       " (open the plugin console for logs; a 400 usually means the output format is unsupported)",
     "无法连接 GPT-SoVITS 后端（后端可能已退出，请重新执行本节点）":
       "Cannot reach the GPT-SoVITS backend (it may have exited — run this node again)",
+    /* breeze_gen：Breeze 语音生成（Breeze TTS 2 本机后端 · 音色克隆 / 设计 / 导演）
+       —— 类型骨架（菜单名 / 默认标题 / 端子） + 节点体 UI（音色 / 能力 / 指令 / cfg_scale / 格式 / 状态）
+       + 执行链与错误码（管理服务 8772 · 推理引擎 8773 按需拉起；错误文案与后端 code 一一对应）。 */
+    "Breeze 语音": "Breeze voice",
+    "Breeze 语音节点": "Breeze Voice Node",
+    "Breeze 语音生成（文本转语音 · Breeze TTS 2）":
+      "Breeze speech (text-to-speech · Breeze TTS 2)",
+    /* 节点用途文案（app.js 的 nodeKindPurposeKey）：拖线落点候选表的标签取自它，
+       少一条就会在英文界面露出中文（回归见 test/smoke-wire-drop-menu.js [7]） */
+    "Breeze 语音生成（文本转语音 · Breeze TTS 2 · 音色克隆 / 设计 / 导演）":
+      "Breeze speech (text-to-speech · Breeze TTS 2 · voice cloning / design / direction)",
+    "Breeze 语音 · Breeze TTS 2 本机后端 · 文本转语音":
+      "Breeze voice · Breeze TTS 2 local backend · text-to-speech",
+    "参考音频（音色片段）": "Reference audio (voice clip)",
+    "参考文稿（与参考音频逐字一致）":
+      "Reference transcript (word-for-word match with the reference audio)",
+    "指令（音色设计 / 导演）": "Instruction (voice design / direction)",
+    "Breeze 语音生成节点需要文本来源（待合成文本）":
+      "Breeze speech generation node needs a text source (text to synthesize)",
+    "Breeze 语音生成节点控制输入端子为端口 4":
+      "Breeze speech generation node's control input is port 4",
+    "调用 Breeze TTS 2 后端合成语音":
+      "Synthesize speech with the Breeze TTS 2 backend",
+    "打开 Breeze TTS 2 控制台": "Open Breeze TTS 2 console",
+    "⚠ Breeze TTS 2 插件未安装：请在「插件 · Breeze TTS 2 本地 TTS」中安装后使用本节点":
+      "⚠ Breeze TTS 2 plugin not installed: install it in Plugins · Breeze TTS 2 Local TTS before using this node",
+    "插件 · Breeze TTS 2 本地 TTS：设置安装目录 → 安装（需下载 torch / 引擎 / 权重，磁盘留 ≥20GB）":
+      "Plugins · Breeze TTS 2 Local TTS: set install folder → Install (downloads torch / engine / weights; keep ≥20 GB of disk free)",
+    "音色（空 = 用端子给的参考音频）":
+      "Voice (empty = use the reference audio wired into the port)",
+    "自动判定": "Auto-detect",
+    "音色克隆": "Voice clone",
+    "音色设计": "Voice design",
+    "音色导演": "Voice direction",
+    "指令 instruction": "Instruction",
+    "cfg_scale（默认 1；有 instruction 时官方建议 4）":
+      "cfg_scale (default 1; the official guidance is 4 when an instruction is set)",
+    "seed": "Seed",
+    "Breeze 语音生成中…": "Generating Breeze speech…",
+    "Breeze 语音已生成：": "Breeze speech saved: ",
+    "Breeze 语音插件未就绪": "Breeze speech plugin not ready",
+    "参考音频必须与参考文稿成对提供（请补上「参考文稿」端子，或在控制台音色库里给该音色补上文稿）":
+      "Reference audio must be provided together with its reference transcript (wire the reference transcript port, or add a transcript to that voice in the console voice library)",
+    "「音色克隆」需要参考音频（接端子或选一个音色）":
+      "“Voice clone” needs reference audio (wire the port or pick a voice)",
+    "「音色设计」不使用参考音频：音色来自 instruction，请改用「音色导演」或清掉参考音频":
+      "“Voice design” does not use reference audio: the voice comes from the instruction — switch to “Voice direction” or clear the reference audio",
+    "「音色导演」需要 instruction（描述语气、情绪、节奏）":
+      "“Voice direction” needs an instruction (describe tone, emotion, pacing)",
+    "引擎正忙（同一时刻只跑一个合成请求），请稍后重试":
+      "The engine is busy (only one synthesis request runs at a time) — try again shortly",
+    "推理引擎还在加载权重（首次需数十秒到数分钟），请稍后重试":
+      "The inference engine is still loading weights (the first load takes tens of seconds to minutes) — try again shortly",
+    "无法连接 Breeze TTS 2 推理引擎（请先点「加载模型」，或重新执行本节点）":
+      "Cannot reach the Breeze TTS 2 inference engine (click “Load model” first, or run this node again)",
+    "本机缺少 ffmpeg，无法转 mp3（请改用 wav / flac，或重装 Breeze TTS 2 后端）":
+      "ffmpeg is missing, so the audio cannot be converted to mp3 (switch to wav / flac, or reinstall the Breeze TTS 2 backend)",
+    "音频转码失败（请改用 wav / flac，或重装 Breeze TTS 2 后端）":
+      "Audio transcoding failed (switch to wav / flac, or reinstall the Breeze TTS 2 backend)",
+    "Breeze TTS 2 后端尚未安装或要件不全（请在「插件 · Breeze TTS 2 本地 TTS」中安装）":
+      "The Breeze TTS 2 backend is not installed or incomplete (install it in Plugins · Breeze TTS 2 Local TTS)",
+    "未找到 Breeze TTS 2 权重（请重新安装，或指定已有权重目录）":
+      "Breeze TTS 2 weights not found (reinstall, or point at an existing weights folder)",
+    "torch 看不到 CUDA（Breeze TTS 2 需要 NVIDIA GPU，eager 约 7.7GB 显存）":
+      "torch cannot see CUDA (Breeze TTS 2 needs an NVIDIA GPU; eager mode takes about 7.7 GB of VRAM)",
+    "Breeze TTS 2 音色不存在（请在控制台音色库里重新选择）":
+      "Breeze TTS 2 voice not found (pick it again in the console voice library)",
+    "Breeze TTS 2 后端未能在规定时间内就绪（可打开插件控制台查看启动日志）":
+      "The Breeze TTS 2 backend did not come up in time (open the plugin console for the startup log)",
+    "Breeze TTS 2 后端返回空音频（可换一个参考片段或调整 cfg_scale 后重试）":
+      "The Breeze TTS 2 backend returned empty audio (try another reference clip or adjust cfg_scale and retry)",
+    /* breeze_gen 其余 I18n.t 文案：端子诊断 / 节点体与设置面板提示 / 插件卡片与安装 toast */
+    "官方语义：有参考音频且无 instruction = 音色克隆；有 instruction = 音色导演；无参考音频 = 音色设计":
+      "Official semantics: reference audio without an instruction = voice clone; with an instruction = voice direction; no reference audio = voice design",
+    "参考音频": "Reference audio",
+    "参考文稿": "Reference transcript",
+    "指令": "Instruction",
+    "（只用端子）": "(ports only)",
+    "能力 ": "Capability ",
+    "参考音频端子": "Reference-audio port",
+    "音色库：": "Voice library: ",
+    "无参考音频（音色设计）": "No reference audio (voice design)",
+    "参考源：": "Reference source: ",
+    "参考源（端子优先）": "Reference source (ports first)",
+    "参考音频 / 参考文稿走端子（端口 1 / 2，必须成对）；端子为空时用设置里的音色":
+      "Reference audio / transcript come from the ports (port 1 / 2, always as a pair); when those ports are empty the voice picked in the settings is used",
+    "端口 1 / 2 接了参考音频与文稿时以端子为准；端子为空才用这里的音色（音色库 = 参考音频 + 逐字文稿）":
+      "When ports 1 / 2 carry reference audio and transcript the ports win; only when they are empty does this voice apply (a voice = reference audio + word-for-word transcript)",
+    "（不用音色库：只用端子的参考音频）":
+      "(no voice library: only the reference audio wired into the port)",
+    "（缺音频或文稿）": "(missing audio or transcript)",
+    "能力 / 音色 / 指令 / cfg_scale / 种子 / 输出格式 / 输出路径":
+      "Capability / voice / instruction / cfg_scale / seed / format / output path",
+    "指令 instruction（端子为空时用）":
+      "Instruction (used when the port is empty)",
+    "一位温柔自信的年轻女性，声音清晰，语气亲切（语言要与正文一致）":
+      "A gentle, confident young woman, clear voice, warm tone (match the language of the text)",
+    "自然语言指令；有 instruction 时官方建议 cfg_scale 用 4":
+      "A natural-language instruction; with an instruction the official guidance is cfg_scale 4",
+    "采样": "Sampling",
+    "指令跟随强度：默认 1；有 instruction 时官方建议 4":
+      "How strongly the instruction is followed: default 1; the official guidance is 4 when an instruction is set",
+    "采样种子（默认 42）：同种子同参考片段可复现同一段语音":
+      "Sampling seed (default 42): the same seed and reference clip reproduce the same speech",
+    "参考音频端子需要音频来源（音频节点 / 语音生成 / 音乐生成）":
+      "The reference-audio port needs an audio source (audio node / speech generation / music generation)",
+    "参考文稿端子需要文本来源":
+      "The reference-transcript port needs a text source",
+    "指令端子需要文本来源": "The instruction port needs a text source",
+    "Breeze TTS 2 服务密钥缺失（请先在「插件 · Breeze TTS 2 本地 TTS」启动一次后端）":
+      "Breeze TTS 2 service key missing (start the backend once in Plugins · Breeze TTS 2 Local TTS)",
+    "cfg_scale 必须大于 0（官方建议 instruction 场景用 4）":
+      "cfg_scale must be greater than 0 (the official guidance is 4 for instruction scenarios)",
+    "speed 需在 0.25 ~ 4.0 之间": "speed must be between 0.25 and 4.0",
+    "后端不支持该输出格式（可选 wav / flac / mp3）":
+      "The backend does not support this output format (choose wav / flac / mp3)",
+    "Breeze TTS 2 引擎拒绝了这次请求（详情见插件控制台日志）":
+      "The Breeze TTS 2 engine rejected this request (see the plugin console log for details)",
+    "Breeze TTS 2 引擎启动后退出（详情见插件控制台日志）":
+      "The Breeze TTS 2 engine exited after starting (see the plugin console log for details)",
+    "Breeze TTS 2 引擎未能在规定时间内就绪（可打开插件控制台查看启动日志）":
+      "The Breeze TTS 2 engine did not come up in time (open the plugin console for the startup log)",
+    "Breeze TTS 2 需要 Python 3.10+（请检查安装环境）":
+      "Breeze TTS 2 needs Python 3.10+ (check the install environment)",
+    "Breeze TTS 2 虚拟环境缺少 torch（请重新安装）":
+      "The Breeze TTS 2 virtual environment has no torch (reinstall it)",
+    "该音色缺少参考音频（请在控制台音色库里补上）":
+      "This voice has no reference clip (add one in the console voice library)",
+    "（请打开插件控制台查看日志）": " (open the plugin console for logs)",
+    "无法连接 Breeze TTS 2 后端（后端可能已退出，请重新执行本节点）":
+      "Cannot reach the Breeze TTS 2 backend (it may have exited — run this node again)",
+    "补装要件": "Install missing parts",
+    "请先在控制台里选择安装目录": "Choose an install folder in the console first",
+    "开始安装：需下载 torch / 引擎 / 权重（十几 GB）/ ffmpeg，请留意控制台进度…":
+      "Starting the install: it downloads torch / the engine / weights (tens of GB) / ffmpeg — watch the console progress…",
+    "安装完成": "Install finished",
+    "Breeze TTS 2（实时流式 · 音色克隆 / 设计 / 导演）：参考片段音色库、OpenAI 兼容 TTS API；画布「Breeze 语音」节点。权重仅限研究与非商用。":
+      "Breeze TTS 2 (streaming · voice clone / design / direction): reference-clip voice library, OpenAI-compatible TTS API; the canvas Breeze voice node. Weights are research / non-commercial only.",
     "提示词（Structured Caption）": "Prompt (Structured Caption)",
     "歌词（可选：不接则按纯器乐 [instrumental] 生成）":
       "Lyrics (optional: leave unwired for pure instrumental [instrumental])",
@@ -6257,8 +6446,8 @@
     "ABC 谱": "ABC score",
     "风格提示词（曲风 / 人声 / 乐器 / 情绪）":
       "Style prompt (genre / vocals / instruments / mood)",
-    "歌词（含 [Verse]/[Chorus] 等结构标签）":
-      "Lyrics (with [Verse]/[Chorus] structure tags)",
+    "歌词（可选：不接 / 留空则按纯器乐 [instrumental] 生成 · 含 [Verse]/[Chorus] 等结构标签）":
+      "Lyrics (optional: leave it unwired or empty for pure instrumental [instrumental] · [Verse]/[Chorus] structure tags welcome)",
     "ABC 谱（可选：手工谱面，留空则由模型生成）":
       "ABC score (optional hand-written score; leave empty and the model writes it)",
     /* yue_gen 设置：思维链档位 / 抽卡 / 种子 / 输出路径 / offload */
@@ -6283,8 +6472,7 @@
       "Waiting (ports: P=style prompt · L=lyrics · optional ABC score)",
     "请连接风格提示词输入（端子 P），或直接在节点上填写风格提示词":
       "Connect a style-prompt input (port P) or type the style prompt on the node",
-    "请连接歌词输入（端子 L），或直接在节点上填写歌词":
-      "Connect a lyrics input (port L) or type the lyrics on the node",
+    /* 歌词不再必填：未接 / 留空按纯器乐 [instrumental] 提交，旧的「请连接歌词输入」词条随拦截一并删除 */
     "YuE2 音乐插件未就绪": "YuE2 music plugin is not ready",
     "启动后端并生成…": "Starting backend and generating…",
     "生成中…": "Generating…",
@@ -6307,10 +6495,9 @@
     "YuE2 音乐节点控制输入端子为端口 3":
       "YuE2 music node control input is port 3",
     /* ── SenseNova 本地图像生成（sensenova_gen · 插件 sensenova-local）──
-       输出 0 = 图像端子，与云端文生图（proc_image）同语义，共用「图像」说法。 */
+       输出 0 = 图像端子，与云端图像生成（proc_image）同语义，共用「图像」说法。 */
     "SenseNova": "SenseNova",
     "SenseNova 图像节点": "SenseNova Image Node",
-    "文生图（云端服务商 · 图像生成）": "Text to image (cloud provider · image generation)",
     "SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT）":
       "SenseNova (local image generation · SenseNova-U1.5-8B-MoT)",
     "SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT · 官方 11 个分辨率桶 · 需 24G 显存）":
@@ -6491,6 +6678,50 @@
     "无法播放该音频（本机播放器不支持该格式）":
       "Cannot play this audio (the local player does not support this format)",
     "点击选择": "Click to select",
+    /* 音频节点现场录制（renderer/app-recaudio.js）：录音面板 / 两个出口 /
+       真 mp3 编码与落盘（record_{yyyymmddhhmmss}.mp3 → 工作目录 recordings/）*/
+    "录制": "Record",
+    "录制中": "Recording",
+    "录制中…": "Recording…",
+    "录制音频": "Record audio",
+    "正在录音…": "Recording…",
+    "正在取消…": "Cancelling…",
+    "正在生成 mp3…": "Generating mp3…",
+    "停止并保存": "Stop and save",
+    "取消这次录制？": "Cancel this recording?",
+    "继续录制": "Keep recording",
+    "丢弃并取消": "Discard and cancel",
+    "已经录到的内容会被丢弃，不会写盘。":
+      "What has already been recorded will be discarded and not written to disk.",
+    "已取消这次录制（未写盘）": "Recording cancelled (nothing was written)",
+    "录制中只占内存，停止后才会写盘：":
+      "While recording, data stays in memory — it is written to disk only after you stop: ",
+    "用系统默认麦克风采集；Esc 等同「取消」（会再问一次）":
+      "Captured from the system default microphone; Esc equals Cancel (it asks once more)",
+    "用麦克风现场录一段：录完落成 record_yyyymmddhhmmss.mp3 并绑定本节点":
+      "Record from the microphone: the take becomes record_yyyymmddhhmmss.mp3 and is bound to this node",
+    "这一次录制还没结束": "This recording has not finished yet",
+    "已经有一次录制在进行中": "A recording is already in progress",
+    "录制前请先在顶栏设置工作目录：录好的文件会落在那里的 recordings/ 目录":
+      "Set a workspace in the top bar first: the take lands in its recordings/ folder",
+    "工作目录就是应用目录：请先在顶栏换一个自己的工作目录再录制":
+      "The workspace is the app folder itself — pick your own workspace in the top bar before recording",
+    "本机不支持录音采集": "This machine cannot capture audio",
+    "录音启动失败": "Could not start recording",
+    "麦克风被拒绝：检查系统输入设备与权限":
+      "Microphone denied — check the system input device and permission",
+    "本机没有可用的麦克风输入设备": "No microphone input device is available",
+    "麦克风被其它程序占用（关掉占用它的程序再试）":
+      "The microphone is in use by another program (close it and try again)",
+    "录音数据没能编码成 mp3：这次录制未保存":
+      "The recording could not be encoded to mp3: this take was not saved",
+    "mp3 编码器未就绪（renderer/vendor/lame.min.js 没挂上）：这次录制未保存":
+      "The mp3 encoder is unavailable (renderer/vendor/lame.min.js not loaded): this take was not saved",
+    "mp3 编码器未就绪（renderer/vendor/lame.min.js 没挂上），暂不能录制":
+      "The mp3 encoder is unavailable (renderer/vendor/lame.min.js not loaded), so recording is off for now",
+    "录音写盘失败：": "Could not write the recording to disk: ",
+    "录音处理失败：": "Recording failed: ",
+    "已录成音频并绑定到该节点：": "Recorded and bound to this node: ",
     "已处理": "Done",
     "候选": "Option",
     " 个文件": " file(s)",
@@ -6697,12 +6928,12 @@
     /* 会话 / 助手栏【拷问模式】契约正文（app-assist.js 的 GRILL_CONTRACT，整段一条）：
        与开发节点任务书里那段【拷问模式】同一套纪律，只改两处 —— 允许只读地查现状、
        收尾不回写任何节点字段。 */
-    "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— 把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」—— 卡片会把它显示成标题行），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把这一段渲染进「📋 总结」区；选项只留两项：推荐项 = 明确同意开工（如「确认无歧义，开始实施（推荐）」），另一个 = 还要改（如「还要改，我补充」），措辞随交流语言。不要把总结挤进题面那一行，也不要拆成几张卡。":
-      "\n\n[Grill mode · ask first, then act] This session has “ask me first” switched on. In every round, first decide for yourself whether **this round looks like a requirement / development / change** (creating or modifying files, the canvas, nodes, config, features, plans). If it does, interrogate before acting; **if you are unsure, do not interrogate — just do the work** (ordinary Q&A, looking things up, explanations, small talk, and continuing already-confirmed work are not requirements).\nWhen you do interrogate: first load the built-in skill mtnode-grill-me with the skill tool and follow its discipline strictly — map this round's request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, asking that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description). Never list numbered questions in the reply body or make the user type answers into the input box; look facts up yourself with read-only tools (read code / files / the web) instead of asking the user about the environment. Until you get an explicit “no ambiguity — go ahead” through one final question dialog: **ask only, build nothing** — no implementation plan, no work started (and do not use a todo_write checklist as a substitute for an implementation plan); when genuinely needed you may look at the current state read-only (read files / read the canvas) to ask sharper questions.\nAfter the user answers, recompute the frontier and continue round by round; if they add new requirements mid-way, judge the new request again and interrogate afresh. Only start implementing after an explicit “no ambiguity — go ahead” (or after the user says “stop asking, just do it”). When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?” — the card renders it as the heading line), and everything after a blank line is the whole consensus summary written in Markdown (sub-headings, bullet lists, a table when needed), which the card renders inside its “📋 总结” block; keep only two options — the recommended one meaning “no ambiguity, start now” and one meaning “needs changes” (phrase them in the conversation's language). Do not squeeze the summary into the prompt line and do not split it across several cards.",
+    "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— 把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」—— 卡片会把它显示成标题行），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把这一段渲染进「📋 总结」区；选项只留两项：推荐项 = 明确同意开工（如「确认无歧义，开始实施（推荐）」），另一个 = 还要改（如「还要改，我补充」），措辞随交流语言。不要把总结挤进题面那一行，也不要拆成几张卡。":
+      "\n\n[Grill mode · ask first, then act] This session has “ask me first” switched on. In every round, first decide for yourself whether **this round looks like a requirement / development / change** (creating or modifying files, the canvas, nodes, config, features, plans). If it does, interrogate before acting; **if you are unsure, do not interrogate — just do the work** (ordinary Q&A, looking things up, explanations, small talk, and continuing already-confirmed work are not requirements).\nWhen you do interrogate: first load the built-in skill mtnode-grill-me with the skill tool and follow its discipline strictly — map this round's request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, asking that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description; when a question’s options can coexist / several can be picked, set `multi_select: true` on that question — the field name is the underscore one, and without it the card only offers single-choice). Never list numbered questions in the reply body or make the user type answers into the input box; look facts up yourself with read-only tools (read code / files / the web) instead of asking the user about the environment. Until you get an explicit “no ambiguity — go ahead” through one final question dialog: **ask only, build nothing** — no implementation plan, no work started (and do not use a todo_write checklist as a substitute for an implementation plan); when genuinely needed you may look at the current state read-only (read files / read the canvas) to ask sharper questions.\nAfter the user answers, recompute the frontier and continue round by round; if they add new requirements mid-way, judge the new request again and interrogate afresh. Only start implementing after an explicit “no ambiguity — go ahead” (or after the user says “stop asking, just do it”). When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?” — the card renders it as the heading line), and everything after a blank line is the whole consensus summary written in Markdown (sub-headings, bullet lists, a table when needed), which the card renders inside its “📋 总结” block; keep only two options — the recommended one meaning “no ambiguity, start now” and one meaning “needs changes” (phrase them in the conversation's language). Do not squeeze the summary into the prompt line and do not split it across several cards.",
     "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。":
       "On = this dev session first uses the built-in skill mtnode-grill-me to interrogate the requirements round by round, and only starts work once you confirm the shared understanding.",
-    "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；收尾那张确认卡按固定格式写：question 第一行只放一句话题面（如「以上共识是否无误？」），空行之后是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 卡片会把它渲染进「📋 总结」区；选项只留推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」两项，措辞随交流语言；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。":
-      "【Grill mode · ask this round, build nothing】This module block has “grill me first” switched on: load the built-in skill mtnode-grill-me with the skill tool and follow it strictly — map this request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, putting that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description); never list numbered questions in the reply body and make the user type answers into the input box. Look facts up yourself with read-only tools instead of asking the user about the environment. When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?”) and everything after a blank line is the whole consensus summary in Markdown (sub-headings, bullet lists, a table when needed) — the card renders it inside its “📋 总结” block; keep only two options: the recommended one (clearly agreeing to start) and one meaning “needs changes” (phrase them in the conversation's language). This round you must not modify any file, touch the canvas, write back note / devStatus / devFiles, produce an implementation plan or start work; recompute the frontier from each answer and continue round by round until it is empty, then use one final question dialog to get the user's explicit “no ambiguity — go ahead” before implementing, and at the end write back the overview (note), status (devStatus) and this module's core file list (devFiles) as this task brief requires.",
+    "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description；某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；收尾那张确认卡按固定格式写：question 第一行只放一句话题面（如「以上共识是否无误？」），空行之后是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 卡片会把它渲染进「📋 总结」区；选项只留推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」两项，措辞随交流语言；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。":
+      "【Grill mode · ask this round, build nothing】This module block has “grill me first” switched on: load the built-in skill mtnode-grill-me with the skill tool and follow it strictly — map this request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, putting that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description; when a question’s options can coexist / several can be picked, set `multi_select: true` on that question — the field name is the underscore one, and without it the card only offers single-choice); never list numbered questions in the reply body and make the user type answers into the input box. Look facts up yourself with read-only tools instead of asking the user about the environment. When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?”) and everything after a blank line is the whole consensus summary in Markdown (sub-headings, bullet lists, a table when needed) — the card renders it inside its “📋 总结” block; keep only two options: the recommended one (clearly agreeing to start) and one meaning “needs changes” (phrase them in the conversation's language). This round you must not modify any file, touch the canvas, write back note / devStatus / devFiles, produce an implementation plan or start work; recompute the frontier from each answer and continue round by round until it is empty, then use one final question dialog to get the user's explicit “no ambiguity — go ahead” before implementing, and at the end write back the overview (note), status (devStatus) and this module's core file list (devFiles) as this task brief requires.",
     "开始开发": "Start developing",
     /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */
     "已恢复上次未提交的内容": "Your unsent text from last time was restored",
@@ -7120,16 +7351,11 @@
     "绿": "Green",
     "棕": "Brown",
     "灰蓝": "Slate",
-    "点击预备执行（播放键变为绿色背景 · 金色高亮），再次点击执行该文件；或直接双击执行":
-      "Click to arm (play button turns green with a gold highlight), click again to run the file; or double-click to run directly",
-    "再次点击执行该文件（或双击直接执行）":
-      "Click again to run the file (or double-click to run directly)",
-    "点击播放执行 · 双击直接执行": "Click play to run · double-click to run directly",
+    /* 执行节点的取词只留「点一下即执行」这一套：旧的两段式预备态词条（点击预备执行 /
+       再次点击执行…）随实现一并删除，免得词条与「一键启动」的实际行为再打架。 */
     "先绑定可执行文件": "Bind an executable first",
     "执行：": "Run: ",
     "点击执行（或双击节点直接执行）": "Click to run (or double-click the node to run directly)",
-    "再次点击执行（或双击节点直接执行）":
-      "Click again to run (or double-click the node to run directly)",
     "正在启动…（按钮可继续点，启动过程不会中断）":
       "Launching… (the button stays clickable; launching is not interrupted)",
     "点击执行 · 双击节点也可执行":
@@ -7297,8 +7523,9 @@
   /* 分段渲染（段 = seg）：思考段 / 正文输出段 / 工具段的段头与提示文案。
      只增键，不删改上方既有键；段标签一律带尾随空格与「· 」分隔，便于后接字数。 */
   Object.assign(EN, {
-    "◉ 思考 · ": "◉ Thinking · ",
-    "◉ 思考中 · ": "◉ Thinking · ",
+    /* 思考摘要行去掉了开头的 ◉（本轮需求）：字数右侧改挂强度进度条，
+       这一条只留「思考 · N」的字面量（本轮用户口径：字数后面的「字」也去掉）。
+       旧键 "◉ 思考 · " 已无引用，不留在表里。 */
     "思考 · ": "Thinking · ",
     "输出 · ": "Output · ",
     "工具 · ": "Tool · ",
@@ -7313,6 +7540,10 @@
     "点击展开 / 收起本段思考": "Click to expand / collapse this thinking block",
     "点击查看本段思考": "Click to view this thinking block",
     "本段思考（模型内部推理，非回复）": "This block is the model's internal reasoning, not the reply",
+    /* 思考强度进度条（本轮需求 · 本轮改为对数分格）：条本身不写刻度数字，
+       含义放在 tooltip 里（键文案与 app-assist.js 的 DSH_THINK_SCALE_TIP 逐字一致） */
+    "刻度：100 · 1千 · 1万 · 10万（对数分格：100 字 = 1 格，10 万字 = 满格）":
+      "Scale: 100 · 1k · 10k · 100k (log scale: 100 chars = 1 cell, 100k chars = full)",
   });
 
   /* 「思考」翻译（右侧小按钮）：用该会话自己的模型（无思考）逐段翻译思考内容；
@@ -7613,8 +7844,8 @@
     视频: "Video",
     "音频节点（选择文件 · 输出 URL）": "Audio node (pick a file · outputs its URL)",
     "视频节点（选择文件 · 输出 URL）": "Video node (pick a file · outputs its URL)",
-    "音频输入（输出该文件的 URL）": "Audio input (outputs the file's URL)",
-    "视频输入（输出该文件的 URL）": "Video input (outputs the file's URL)",
+    "音频输入（音频输出 + 转写输出）": "Audio input (audio output + transcript output)",
+    "视频输入（视频输出 + 转写输出）": "Video input (video output + transcript output)",
     "选择音频（输入节点）": "Choose audio (input node)",
     "选择视频（输入节点）": "Choose video (input node)",
     选择音频: "Choose audio",
@@ -7632,10 +7863,20 @@
       "Click here to change the file; you can also drop a media file onto this node",
     "输出 URL": "outputs a URL",
     "输出该文件的 URL": "outputs this file's URL",
-    "音频输入 · 输出该文件的 URL": "Audio input · outputs the file's URL",
-    "视频输入 · 输出该文件的 URL": "Video input · outputs the file's URL",
-    "输出该文件的 URL（file:///… · 可连进媒体参考端子）":
-      "Outputs this file's URL (file:///… · wire it into a media reference slot)",
+    "音频输入 · 音频输出 + 转写输出": "Audio input · audio output + transcript output",
+    "视频输入 · 视频输出 + 转写输出": "Video input · video output + transcript output",
+    /* 音频 / 视频输入节点的**两个固定输出端子**：0 = 音频输出 / 视频输出（该文件的
+       file:/// URL）· 1 = 转写输出（该文件的转写文字，本机 SenseVoice；没有转写内容时
+       给空文本）。端子徽标 / 悬浮说明 / canvas_get 的 ports 表三处共用这几个词条。 */
+    "音频输出": "Audio output",
+    "视频输出": "Video output",
+    "转写输出": "Transcript output",
+    "音频输出：该文件的 URL（file:///… · 可连进媒体参考端子）":
+      "Audio output: this file's URL (file:///… · wire it into a media reference slot)",
+    "视频输出：该文件的 URL（file:///… · 可连进媒体参考端子）":
+      "Video output: this file's URL (file:///… · wire it into a media reference slot)",
+    "转写输出：该文件的转写文字（本机 SenseVoice 识别结果 · 没有转写时是空文本）":
+      "Transcript output: this file's transcript (local SenseVoice result · empty text when there is no transcript)",
     "选择并预览本机音视频文件：输出端子给出该文件的 file:/// URL，可连进媒体生成节点的参考端子":
       "Chooses and previews a local audio/video file: its output port gives the file's file:/// URL, wire it into a media-generation reference slot",
     "音频已载入输入节点": "Audio loaded into the input node",
@@ -8197,6 +8438,109 @@
     "缺少 runId": "runId is missing",
     "代码为空": "The code is empty",
   });
+  /* ── 本地模型显存释放（顶栏「性能」面板的「显存与本地模型」区块 · renderer/app-vram.js
+        · 主进程 local-model-vram.js）──
+     中文为真源，以下为英文档译文。文案出现在顶栏面板与运行前后的提示上。 */
+  Object.assign(EN, {
+    "本地模型显存": "Local model VRAM",
+    "显存": "VRAM",
+    "显存与本地模型": "VRAM & local models",
+    "本地模型显存（释放其他后端的显存 / 查看谁占着卡）":
+      "Local model VRAM (free other backends / see what holds the GPU)",
+    "本地模型显存释放不可用（宿主桥未就绪）":
+      "Local model VRAM release is unavailable (host bridge not ready)",
+    "没有空闲的本地模型后端需要释放": "No idle local model backend to release",
+    "正在释放本地模型显存…": "Freeing local model VRAM…",
+    "释放失败：": "Release failed: ",
+    "没有需要释放的本地模型后端": "No local model backend needed releasing",
+    "没有在跑的本地模型后端，无需释放": "No local model backend is running — nothing to release",
+    "已释放 ": "Released ",
+    "卸载": "unloaded",
+    "停进程": "process stopped",
+    "被占用（正在跑别的任务，等它跑完再释放）：":
+      "In use (running another job — release after it finishes): ",
+    "共腾出约 ": "freed about ",
+    "卸载模型 / 停空闲服务": "unloaded models / stopped the idle service",
+    "结束后端进程": "backend process ended",
+    "未在运行": "not running",
+    "正在跑别的任务，未释放": "running another job — not released",
+    "显存读数：量不到": "VRAM reading unavailable",
+    "腾出 ": "freed ",
+    "增加 ": "grew ",
+    "有问题": "with issues",
+    " · 已释放显存": " · VRAM released",
+    "有本地模型正在跑别的任务，本次先不释放它（显存可能不足，建议等它跑完再跑）":
+      "A local model is running another job, so it was left alone this time (VRAM may be tight — wait for it to finish)",
+    "显卡：": "GPU: ",
+    "已用 ": "in use ",
+    "显卡读数：量不到（nvidia-smi 不可用）—— 释放仍会保守执行":
+      "GPU reading unavailable (nvidia-smi missing) — release still runs conservatively",
+    "还没有本地模型后端登记释放能力": "No local model backend has registered release capability yet",
+    "释放全部空闲的本地模型显存": "Free VRAM of all idle local models",
+    "刷新": "Refresh",
+    "正在跑任务的后端不会被释放（不打断别人的活）；画布本地模型节点在运行前会自动释放其他后端，收尾再释放自己。":
+      "Backends running a job are never released (other work is not interrupted); canvas local-model nodes release the other backends before a run and release their own afterwards.",
+    "最近释放记录": "Recent releases",
+    "暂无记录": "No records yet",
+    "未运行": "not running",
+    "在跑任务中": "running a job",
+    "已就绪（空闲，可安全释放）": "ready (idle, safe to release)",
+    "关闭": "Close",
+  });
+  /* ── 系统资源面板（顶栏「性能」按钮 · renderer/app-perf.js · 主进程 perf-probe.js）──
+     中文为真源，以下为英文档译文。读数取不到时一律写「量不到」（不用假数字占位）。
+     撞键纪律：本文件别处已登记过的词条（「性能」「已用 」「剩余 」「核心」「显存 」
+     「温度」「数据目录」「应用目录」「网络」）这里**不再重复登记** —— 重复登记会让
+     后写的那条悄悄覆盖前一条。 */
+  Object.assign(EN, {
+    "性能总览": "Performance overview",
+    "正在采集系统读数…": "Collecting system readings…",
+    "正在采集磁盘读数…": "Collecting disk readings…",
+    "正在采集网络读数…": "Collecting network readings…",
+    "量不到": "unavailable",
+    "采样中…": "sampling…",
+    "读数更新于 ": "Readings updated at ",
+    "轻量项每 ": "light metrics every ",
+    " 秒、磁盘与网络每 ": "s, disk & network every ",
+    " 秒自动刷新；关闭本窗即停止采样。": "s — sampling stops when this window closes.",
+    "可用": "Available",
+    "总计": "Total",
+    "物理内存": "Physical memory",
+    /* 内存 / 磁盘的读数句不用别处已有的「已用 」「剩余 」（那两条在显存区块是
+       「in use / Remaining」）—— 这里另开两条，避免撞键把语义改掉 */
+    "占用 ": "used ",
+    "空闲 ": "free ",
+    "型号": "Model",
+    "逻辑处理器": "logical processors",
+    "每核占用": "Per-core usage",
+    "每核占用（只列出前 ": "Per-core usage (first ",
+    " 个逻辑核）": " logical cores only)",
+    "每核占用：需要两次采样，稍等 1～2 秒": "Per-core usage needs two samples — wait 1–2 s",
+    "GPU（显卡）": "GPU",
+    "显卡读数：量不到（nvidia-smi 不可用）":
+      "GPU reading unavailable (nvidia-smi missing)",
+    "利用率": "Utilization",
+    "功耗": "Power",
+    "风扇": "Fan",
+    "磁盘": "Disk",
+    "数据盘": "data drive",
+    "应用盘": "app drive",
+    "数据盘 / 应用盘": "data / app drive",
+    "磁盘读数：量不到": "Disk reading unavailable",
+    "查看数据目录占用明细…": "View data-folder usage breakdown…",
+    "明细与清理在「设置 · 存储占用与清理」里（这里不重做一份清理逻辑，避免误删正在用的文件）。":
+      "The breakdown and cleanup live in Settings · Storage usage & cleanup (cleanup is not reimplemented here, to avoid deleting files in use).",
+    "网卡读数：量不到": "Network adapter reading unavailable",
+    "本机 TCP 连接": "Local TCP connections",
+    "已建立 ": "established ",
+    "监听 ": "listening ",
+    "累计 ": "total ",
+    "本地后端端口": "Local backend ports",
+    "在监听": "listening",
+    "未监听": "not listening",
+    "本地模型后端未登记端口，暂不检测端口连接。":
+      "No local model backend has registered a port yet, so port reachability is not checked.",
+  });
   /* ── 素材库（顶栏按钮 · renderer/app-assets.js 左右栏对话框 · assets-store.js 主进程）──
      中文为真源，以下为英文档译文。 */
   Object.assign(EN, {
@@ -8682,6 +9026,9 @@
     "Sage 编译（需 Sage 且更慢更占显存）":
       "Sage compile (needs Sage; slower and uses more VRAM)",
     "取消生成请求": "Cancel the generation request",
+    /* 排队中的生成节点：那一颗 ■ 摘掉的是「还没起跑」的排队项（本轮：等待中不再点不动） */
+    "取消排队（这个任务还没起跑）": "Cancel the queued run (it has not started yet)",
+    "该节点没有正在运行或排队中的任务": "This node has no running or queued task",
     "停止运行（立即中止）": "Stop the run (abort immediately)",
     "待运行 · 点头部 ▶ · 头部「设置」窗口里改参数":
       "Queued · press ▶ in the header · edit parameters in the “Settings” window",
@@ -8888,6 +9235,12 @@
     "输出路径": "Output path",
     "输出文件路径；相对路径需先设顶栏工作目录。后缀由输出类型固定（语音跟随所选输出格式）。":
       "Output file path; a relative path needs a workspace folder in the top bar first. The extension is fixed by the output type (audio follows the chosen format).",
+    /* ── 保存节点托管口径（媒体生成节点的数据输出接到「保存」节点后，输出路径可以留空）──
+       实现：app.js 的 nodeFeedsSaveNode / resolveMediaGenExport(managed) + app-nodes.js 的
+       mediaGenManagedTag；产物先落应用托管目录，命名与落盘归保存节点与宿主。
+       这一套的界面文案（状态行的「托管目录 · 由保存节点落盘」、路径栏 placeholder / 说明、
+       动作按钮 tooltip 等）随各自实现就近登记：状态行那条见上面「未设置路径 / 托管目录」
+       那一段（输出路径一族），改文案时两边一起改。 */
     /* H3 分段衔接（长视频）：video_gen 设置窗「生成」段（app-canvas.js 的 section / nsCheck / nsNumber） */
     "分段衔接（长视频无缝衔接）": "Clip chaining (seamless long video)",
     "衔接上一段视频": "Chain from the previous clip",
@@ -8925,6 +9278,32 @@
     "关闭控制台": "Close console",
   });
 
+  /* ── 八个本地后端插件的卡片新语义 + 详情浮层内嵌 console（renderer/app-plugins.js）──
+     本轮共识：插件不再自己呼出独立的后端窗口 → 卡片主按钮 = 启动/停止后端、次按钮 = 控制台；
+     后端求助信号不再弹窗 → 卡片角标 + 状态行一句；状态与 console 内容显示在插件界面里。 */
+  Object.assign(EN, {
+    "启动": "Start",
+    "控制台": "Console",
+    "重装": "Reinstall",
+    "启动中…": "Starting…",
+    "更新中…": "Updating…",
+    "启动中…（点此停止）": "Starting… (click to stop)",
+    "启动中…（首次加载模型可能几分钟，可再点一次停止）":
+      "Starting… (the first model load can take minutes; click again to stop)",
+    "启动失败：": "Failed to start: ",
+    "停止后端失败：": "Failed to stop the backend: ",
+    "选择安装目录失败：": "Could not pick the install folder: ",
+    " —— 可点「控制台」看日志": " — click “Console” to read the log",
+    "后端提示": "Backend notice",
+    "后端运行中": "Backend running",
+    "后端未运行": "Backend stopped",
+    "已安装（无常驻后端）": "Installed (no resident backend)",
+    "托盘常驻": "tray resident",
+    "清屏": "Clear",
+    "已复制控制台内容": "Console content copied",
+    "复制失败：请手动选中日志": "Copy failed — select the log manually",
+  });
+
   /* ── SenseNova 本地图像生成：插件卡片与控制台入口（renderer/app-plugins.js · sensenova/ui） ──
      节点本体（sensenova_gen）的端子 / 状态 / 报错词条在任务 4 一并补，这里只登记卡片与安装提示文案。 */
   Object.assign(EN, {
@@ -8941,9 +9320,9 @@
     "SenseNova 图像生成": "SenseNova Image Generation",
   });
 
-  /* ── 顶栏入口快捷键（renderer/app-keys.js）：按钮 hover 提示里追加「 · 快捷键 X」 ──
-     快捷键本体与动作在 app-keys.js，键位写在 index.html 的 data-shortcut 上；
-     这里只负责把键位并进 data-i18n-title 生成的提示文案，切语言时自动跟着换。 */
+  /* ── 顶栏入口快捷键（renderer/app-keys.js）：键位真源 = index.html 的 data-shortcut ──
+     快捷键本体与动作在 app-keys.js；hover 提示不再拼接「 · 快捷键 X」，该词条留作
+     需要显式书写键位的调用点使用。 */
   Object.assign(EN, {
     "快捷键 {k}": "shortcut {k}",
   });
@@ -9156,10 +9535,8 @@
       var key = el.getAttribute("data-i18n-title");
       if (!key) return;
       var val = t(key);
-      /* data-shortcut（顶栏入口的全局快捷键，见 renderer/app-keys.js）：
-         hover 提示里同时给出键位，切语言后由这里重算，不会丢。 */
-      var sc = el.getAttribute("data-shortcut");
-      if (sc) val = val + " · " + t("快捷键 {k}", { k: sc });
+      /* 键位不再并进 hover 提示：顶栏图标按钮的可见文字已说明自身，键位只由
+         renderer/app-keys.js 读 index.html 的 data-shortcut 生效。 */
       /* 顶栏入口用 data-tip 做即时 hover 提示（原生 title 有延迟）：
          .btn-ico = 图标按钮，.tb-view = 画布 / 会话 / 专家团三颗视图按钮。 */
       if (
@@ -9880,8 +10257,6 @@
       "Failure end: the flow could not go through, so it ends as a failure.",
     "画布上的一个节点：把上游的内容按它的规则处理后交给下游。":
       "A node on the canvas: it handles what comes in from upstream by its own rule and passes it on.",
-    "鼠标移开 1 秒后自动关闭":
-      "Closes automatically 1 second after the mouse leaves",
     "节点说明：点击查看这个节点是干什么的":
       "Node help: click to see what this node does",
     "节点说明": "Node help",
@@ -10462,8 +10837,48 @@
           "App root folder · three-column dev bench · live preview",
         "搜索应用…": "Search apps…",
         "返回 MTNode": "Back to MTNode",
-        "返回 MTNode 界面（Esc 同效）": "Back to the MTNode interface (Esc works too)",
-        /* 搜索框 + 标签筛选（应用页顶部一行） */
+        "返回 MTNode 界面": "Back to the MTNode interface",
+        /* 本轮新增（列表模式 / 应用目录按钮 / 详情窗版式 / 下架改删除） */
+        "应用目录：更改下载根 / 在资源管理器中打开":
+          "App folder: change the download root / open it in Explorer",
+        "应用目录（下载到本机的应用都装在这里）":
+          "App folder (downloaded apps are installed here)",
+        "更改目录…":
+          "Change folder…",
+        "在资源管理器中打开":
+          "Open in Explorer",
+        "切换成列表视图（左列表 + 右详情）":
+          "Switch to the list view (list on the left, details on the right)",
+        "切回卡片网格视图":
+          "Switch back to the card grid view",
+        "已切换成列表视图":
+          "Switched to the list view",
+        "已切换成卡片视图":
+          "Switched back to the card grid view",
+        "运行":
+          "Run",
+        "下载到本机":
+          "Download to this computer",
+        "在独立窗口里看详情":
+          "Open the details in a separate window",
+        "同样的内容在一只可调宽高的窗口里打开":
+          "The same content, in a window you can resize freely",
+        "云端彻底删除，不可恢复。":
+          "Deleted from the cloud for good — this cannot be undone.",
+        "删除应用（云端彻底删除，不可恢复）":
+          "Delete the app (deleted from the cloud for good, cannot be undone)",
+        "云端彻底删除我这一条分支（不可恢复）":
+          "Delete my branch from the cloud for good (cannot be undone)",
+        "云端彻底删除：这条分支的记录 / 版本包 / 图标 / 上架截图一起删掉，不可恢复":
+          "Deleted from the cloud for good: this branch's record, version packages, icon and screenshots all go with it — cannot be undone",
+        /* 「这个应用不在商店目录里…」提示按用户口径整条移除（app-apps.js 的 appsVisibilityNoticeOf
+           已删）。 */
+        "正在读取评论…":
+          "Loading comments…",
+        "编辑：改描述 / 标题 / 图标 / 标签 / 上架截图":
+          "Edit: description / title / icon / tags / screenshots",
+
+/* 搜索框 + 标签筛选（应用页顶部一行） */
         "搜索…": "Search…",
         "标签": "Tags",
         "只看带这个标签的应用：": "Show only apps with this tag: ",
@@ -10491,19 +10906,31 @@
         /* 云端目录状态 */
         "正在拉取云端应用目录…": "Loading the cloud app catalog…",
         "正在读取本机应用…": "Reading local apps…",
-        "目录已更新": "Catalog updated",
-        "云端目录已更新（": "Cloud catalog updated (",
-        "云端接口目录（静态目录暂时不可用，已自动切换；": "Cloud API catalog (the static catalog is unavailable right now, switched automatically; ",
-        "云端目录暂时拉不到，显示的是本机缓存（":
-          "The cloud catalog is unreachable right now — showing the local cache (",
-        "云端目录暂时拉不到：显示的是本机缓存":
-          "The cloud catalog is unreachable right now — showing the local cache",
-        "云端目录为空或还没发布：可以先看看「库」里已下载的应用":
-          "The cloud catalog is empty or has not been published yet — you can look at downloaded apps under Library first",
+        /* 页头那条「目录来源 / 拉取时间」状态文字整条移除（2026-10，用户口径）：
+           原先这几条词条（「目录已更新」「云端目录已更新（」「云端接口目录（…」
+           「云端目录暂时拉不到，显示的是本机缓存（…）」）随之作废 —— 有目录就直接用，
+           界面不再解释目录是从哪儿来的、什么时候拉的。 */
+        /* 手动刷新（应用中心顶部第 1 行那颗环形箭头按钮 + F5 / Ctrl+R） */
+        "刷新云端应用目录": "Refresh the cloud app catalog",
+        "重新从云端拉取应用目录": "Fetch the app catalog from the cloud again",
+        "正在从云端刷新应用目录…": "Refreshing the app catalog from the cloud…",
+        "刷新失败：拉不到云端目录": "Refresh failed — the cloud catalog is unreachable",
+        /* 云端**答上了、就是 0 条**：连接没问题，别报「刷新失败」（用户 2026-10-09 报的
+           「仍然刷新失败」就是被这一句误导的 —— 他白查了一遍网络，而线上根本没有应用）。 */
+        "云端目前没有可上架的应用（目录为空，不是网络问题）":
+          "No apps are published in the cloud right now (the catalog is empty — not a network problem)",
+        /* 页头「云端答了、只是 0 条」那句（app-apps.js 的 APPS_CAT_EMPTY_HINT）随状态行一起移除：
+           「无内容」空态自己会说同一件事（appsPaintEmpty）。 */
         "云端目录里还没有应用：稍后重新进入本页会自动再拉一次。":
           "There are no apps in the cloud catalog yet — reopening this page will fetch it again.",
-        "拿不到应用目录：请检查网络，稍后重新进入本页再试。":
-          "Cannot get the app catalog: check your network, then reopen this page to retry.",
+        /* 应用页「目录拉不到」空态（renderer/app-apps.js 的 appsCatalogDown / appsCatalogKind /
+           appsPaintAppsPage）：用户口径：不要成因解释、不要诊断信息 ——
+           **连不上**（静态目录与云端接口都没成、本机也没有缓存）只说「无法连接」+ 一颗「重试」；
+           **云端答上了、只是 0 条**说「无内容」+ 一颗「刷新」（原来这里什么都不画，用户看到一片空白，
+           以为页面坏了 —— 「无内容时显示无内容，不该说无法连接」）。 */
+        "无法连接": "Cannot connect",
+        "无内容": "No content",
+        "刷新": "Refresh",
         "云端返回：": "Cloud returned: ",
         "没有匹配「": "No app matches “",
         "」的应用": "”",
@@ -10527,15 +10954,17 @@
           "Overwrite = replace only the app files installed last time (this app's own storage and canvas are kept); Rename = install into another folder, keeping both; Cancel = do nothing.",
         "（同名目录已存在，已改名安装）":
           " (a folder with the same name existed, so it was installed under a new name)",
-        "请先在设置里指定应用根目录": "Set the app root folder first",
-        "还没指定应用根目录：下载前要先选一个文件夹":
-          "No app root folder set yet: choose a folder before downloading",
         /* 主进程 apps-store.js 的失败码（appsErrText 按码出词，与 app-plugins.js 的
            pluginErrText 同一口径；码的真源是 installFailHint / uninstallApp / openAppWindow） */
-        "尚未指定应用安装根目录": "No app install root folder has been chosen yet",
         "该应用已有安装任务在跑": "This app already has an install running",
         "应用 id 不合法": "Invalid app id",
         "云端目录里找不到这个应用": "This app is not in the cloud catalog",
+        /* 云端目录里没有它（作者已删除）：与「没连上目录」分开说 ——
+           用户按这句话该去商店重新找一份，而不是查网络（appsErrText 的两个码）。 */
+        "云端目录里已经找不到这个应用（作者已删除），没法再从云端下载":
+          "This app is no longer in the cloud catalog (the author deleted it), so it cannot be downloaded from the cloud any more",
+        "这次没能连上云端目录：检查网络后重试；离线时只有本机已有的版本能在本机切换":
+          "The cloud catalog could not be reached: check your network and retry; offline, only versions already on this computer can be switched",
         "云端目录里该应用的下载地址不合法":
           "The download URL declared for this app in the cloud catalog is not allowed",
         "安装包校验失败（sha256 与云端目录声明不一致）":
@@ -10581,15 +11010,33 @@
           "Uploading… (3/3 uploading to the cloud, do not close this window)",
         "· 截图 ": " · screenshots: ",
         "· 含截图 ": " · with ",
+        /* 追加一版时的截图回执（服务端 shots:{added,total}）：截图是**保留旧图 + 去重追加**，
+           所以张数按服务端说的算，不说「本地带了几张」。见 renderer/app-publish.js。 */
+        "· 新增截图 ": " · new screenshots: ",
+        " 张（云端共 ": " (",
+        " 张）": " in the cloud)",
+        "· 截图已在云端（": " · screenshots already in the cloud (",
+        " 张，无重复落盘）": " — nothing was written twice)",
+        /* 同版本号覆盖（服务端 replaced === true，用户需求「更新时应当允许同版本更新」） */
+        "上传成功（已覆盖 v": "Uploaded (overwrote v",
+        "：这一版就地换成了新包，版本号不变）":
+          ": this version was replaced in place with the new package, the version number did not change)",
+        " · 已覆盖同号版本": " · same version overwritten",
+        /* 同号重传但**内容一模一样**（服务端 unchanged === true）：照旧算成功，只是如实说一句 */
+        "：这一版与线上那份内容一样，版本号不变）":
+          ": this version is byte-identical to the one in the cloud, the version number did not change)",
+        " · 内容未变": " · content unchanged",
+        /* 上架窗里「同一版已在线上 = 会就地覆盖」的两处提示（本轮改为不拦人） */
+        "将覆盖线上已有的 v": "Will overwrite the existing v",
+        "：这一版就地换成新包，版本号不变（原先那一版会被替换掉）":
+          ": this version is swapped in place, the version number stays the same (the previous build is replaced)",
+        "线上已有 v": "The cloud already has v",
+        "：这一版会就地换成新包（版本号不变）；要留一份旧版请先改成别的版本号再传。":
+          ": this upload replaces that build in place (the version number stays the same); if you want to keep the old build, change the version number before uploading.",
         "已设置：": " is set: ",
-        "下载根目录（从应用中心下载的）": "Download root folder (apps from the App Center)",
         "项目根目录（开发中的应用）": "Project root folder (apps you develop)",
         "选择下载根目录（从应用中心下载的）": "Choose the download root folder (apps from the App Center)",
         "选择项目根目录（开发中的应用）": "Choose the project root folder (apps you develop)",
-        "尚未指定下载根目录（从应用中心下载的）":
-          "The download root folder is not set yet (apps from the App Center)",
-        "尚未指定项目根目录（开发中的应用）":
-          "The project root folder is not set yet (apps you develop)",
         /* 旧布局显式迁移（只搬该在项目根却躺在下载根的应用 + 它那一棵数据） */
         "迁移旧布局…": "Migrate old layout…",
         "把「开发中的应用」与它们的数据搬到项目根（先给你看会动哪些目录，确认后才搬）":
@@ -10600,8 +11047,6 @@
           "The download root folder does not exist, so there is nothing to migrate",
         "目标目录已存在（同一个 id 在项目根里已有一份）：不覆盖，请自己核对后手动处理":
           "The destination already exists (same id already in the project root): nothing is overwritten — check it yourself",
-        "项目根目录还没设置：本轮会先落到默认项目根，之后可在「应用根目录」里改":
-          "The project root folder is not set: this run uses the default project root, which you can change later in App root folder",
         "开发中的应用搬进项目根": "Apps you develop move into the project root",
         "目标数据目录已存在：不覆盖（两边都留着，请自己核对后手动合并）":
           "The destination data folder already exists: nothing is overwritten (both are kept — merge them yourself)",
@@ -10630,22 +11075,19 @@
           "This app's folder is gone from this computer: the session workspace cannot be determined, so no session is created (files must not land in the default folder)",
         "找不到这个应用在本机的项目文件夹：会话无法确定工作区（先把它装回来或修好 app.json）":
           "Cannot find this app's project folder on this computer: the session workspace cannot be determined (bring the app back or fix app.json)",
-        "开发节点的「项目文件夹」与该应用当前目录不一致：新建会话一律以应用目录为准":
-          "The dev node's project folder differs from this app's current folder: new sessions always use the app folder",
         "已登记为开发中，但项目文件夹没能自动归位（项目根里可能已有一份同名目录）：位置未变，可稍后在「应用根目录」里手动迁移":
           "Registered as in-development, but the project folder could not be moved automatically (the project root may already hold a folder with the same name): nothing changed — migrate manually later from App root folder",
         "应用根目录": "App root folder",
         "应用根目录已设置：": "App root folder set: ",
         "未设置": "Not set",
-        "未设置：下载前会先让你选一个文件夹":
-          "Not set: you will be asked to choose a folder before the first download",
+        /* 开发页：根目录一律有可用路径（本轮需求：不再要求手选），只剩「下载根那一枚不再出现」 */
+        "开发中 ": "In development: ",
+        "所属应用的目录（开发页）": "This app's folder (Develop page)",
+        " 处记录已改指新目录": " recorded path(s) now point at the new folder",
         "更改…": "Change…",
         "设置失败：": "Setup failed: ",
-        "选择应用根目录失败：": "Choosing the app root folder failed: ",
         "还没设置应用根目录": "No app root folder set yet",
         "已下载": "Downloaded",
-        "已下载 ": "Downloaded ",
-        " 个应用": " app(s)",
         "还没有下载任何应用：到「应用」页挑一个下载，它会装进应用根目录。":
           "No app downloaded yet: pick one on the Apps page and it will be installed into the app root folder.",
         "去「应用」页看看": "Go to the Apps page",
@@ -10678,48 +11120,8 @@
         "换风格并重写入口页": "Change style and rewrite the page",
         "已经是这个风格了": "This is already the current style",
         "换风格失败：": "Could not change the style: ",
-        /* ── 上架前体检（开发页工具栏那枚按钮 + 弹窗；实现见 renderer/app-apps.js 的
-           appsPackAuditDialog 与主进程 apps-store.js 的 packAudit）──
-           查的是「打成包会丢哪些文件」：线上发生过只打包入口页、下载者拿到空壳的事故。 */
-        "上架前体检": "Pre-publish check",
-        "体检模块未就绪（renderer/app-apps.js 未加载）":
-          "Check module not ready (renderer/app-apps.js is not loaded)",
-        "检查这个应用打成包会丢哪些文件（只读：不打包、不上传、不写盘）":
-          "Check which files this app would lose when packed (read-only: nothing is packed, uploaded or written)",
-        "体检按上架口径真跑一遍打包：列出「目录里有、包里没有」的文件，并检查入口页引用的文件在不在（只读：不打包、不上传、不写盘）。":
-          "The check runs the packing rules used for publishing: it lists files that exist in the app folder but not in the package, and verifies that the files the entry page references exist (read-only: nothing is packed, uploaded or written).",
-        "当前应用": "This app",
-        "全部应用": "All apps",
-        "没有选中应用：从开发页当前应用点进来才有":
-          "No app selected: open it from the current app on the Develop page",
-        "正在体检…": "Checking…",
-        "没有可体检的应用": "No app to check",
-        "体检完成：": "Check finished: ",
-        " 个应用有问题（下面标红的几条）": " app(s) have problems (the red rows below)",
-        " 个应用都能打出完整的包": " app(s) all pack completely",
-        "体检失败：": "Check failed: ",
-        "通过：包是完整的": "Passed: the package is complete",
-        "这个应用不在本机了": "This app is no longer installed",
-        /* 体检一行的结论句（整句给词条：英文语序与中文不同，别拿「 个」这种碎片去拼） */
-        "缺文件": "Missing files",
-        "入口页缺引用": "Missing entry-page references",
-        "目录文件": "Files in folder",
-        "包内": "In package",
-        "会随包丢掉的文件": "Files that would be dropped from the package",
-        "本来就不随包的文件": "Files that intentionally never ship",
+        /* 「（另有 …」是通用碎片（开发页会话列表 app-devnode.js 也在用），不跟着体检词条删 */
         "（另有 ": " (plus ",
-        " 个同类文件已省略）": " more of the same kind, omitted)",
-        "入口页引用了但目录里没有": "Referenced by the entry page but missing",
-        "（入口页写的是：": " (entry page says: ",
-        "打包实现漏了这个文件（必须修）":
-          "The packer dropped this file (must be fixed)",
-        "本机生成物，本来就不随包（画布 / 旧包 / 安装账本）":
-          "Local generated file, never shipped (canvas / exported zip / install ledger)",
-        "应用自己的本机存档：上架包不带它（本地导出会保留）":
-          "The app's own local save data: not shipped in a published package (a local export keeps it)",
-        "应用缺少入口页（index.html）：打包会失败":
-          "The app has no entry page (index.html): packing will fail",
-        "打包这一步失败了": "The packing step failed",
 
         "已换成「": "Style changed to “",
         "」风格": "”",
@@ -10799,6 +11201,18 @@
         "大小": "Size",
         "占用": "On disk",
         "安装时间": "Installed",
+        /* 应用详情窗（本轮需求：左图 + 右信息 + 下方文字介绍）右列与介绍块的新词条 */
+        "更新时间": "Updated",
+        "云端 v": "Cloud v",
+        " · 本机 v": " · local v",
+        "本机 v": "Local v",
+        "作者还没有上传截图": "The author has not uploaded screenshots yet",
+        "第 {n} 张": "Image {n}",
+        /* 描述框的「预览」（编辑应用窗 / 上架窗共用，见 app-apps.js 的 appsDescPreviewEl） */
+        "收起预览": "Hide preview",
+        "按 Markdown 渲染这段说明（标题 / 列表 / 链接 / 代码都认）":
+          "Renders this description as Markdown (headings / lists / links / code are supported)",
+        "还没有写说明：先写几句再预览": "Nothing written yet: type a few lines first",
         "本机目录": "Local folder",
         "窗口尺寸": "Window size",
         "本机 ": "local ",
@@ -10851,6 +11265,168 @@
     })(),
   );
 
+  /* ── 预览态宿主桥（`docs/apps-market.md`；renderer/app-apps-dev.js 的状态行与提示、
+     主进程 apps-store.js 的拒绝文案）──
+     需求：开发页中栏那只预览 iframe 里也连入 MTNode —— 应用不再退回浏览器本地存储。
+     只读 = 该应用已在独立窗口运行（两处同时写同一份存档会互相覆盖）。 */
+  Object.assign(EN, {
+    "预览已连入宿主": "Preview is connected to the host",
+    "预览正在连入宿主…": "Preview is connecting to the host…",
+    "预览未连入宿主": "Preview is not connected to the host",
+    "预览已连入宿主 · 只读（该应用已在独立窗口运行）":
+      "Preview is connected to the host · read-only (this app is already running in its own window)",
+    "该应用已在独立窗口运行，预览为只读":
+      "This app is already running in its own window, so the preview is read-only",
+    "预览里没有可关闭的独立窗口（预览是开发页中栏的一只 iframe）":
+      "There is no separate window to close from the preview (the preview is the iframe in the middle column of the dev page)",
+    "关掉独立窗口": "Close the separate window",
+    "该应用已在独立窗口运行，预览为只读 —— 点这里关掉它，预览就恢复可写":
+      "This app is running in its own window, so the preview is read-only — close it here and the preview becomes writable again",
+    "预览里也能调用 MTNode 的宿主能力（模型 / 存储 / 账号 / 选图 / 语音）：应用不必退回浏览器本地存储":
+      "The preview can call MTNode host capabilities too (models / storage / account / file picking / speech): apps no longer have to fall back to browser-local storage",
+    "预览的应用：": "Preview app: ",
+    "预览：应用目录里的入口页（相对资源同源加载；已注入宿主桥 → 预览里也能调用 MTNode 的能力）":
+      "Preview: the entry page inside the app folder (relative resources resolve same-origin; the host bridge is injected, so the preview can call MTNode capabilities)",
+    "宿主桥未就绪": "The host bridge is not ready",
+  });
+
+  /* ── 「我的应用」（第 4 页）· 编辑框 · 删除框（renderer/app-apps.js + css/apps.css）──
+     这一页只列**我上架到云端的条目**：编辑基本信息（标题 / 描述 / 标签 / 图标 /
+     上架截图）、删除我自己那一条分支。 */
+  Object.assign(
+    EN,
+    (function () {
+      var add = {
+        "我的应用": "My apps",
+        "我上架到云端的应用：编辑信息 · 删除":
+          "Apps I published to the cloud: edit info · delete",
+        "搜索我的应用（标题 / 描述 / 标签）…": "Search my apps (title / description / tags)…",
+        /* 列表页 */
+        "正在读取你上架到云端的应用…": "Reading the apps you published to the cloud…",
+        "云端我上架的条目共 ": "You have ",
+        " 个（已载入 ": " app(s) in the cloud (loaded ",
+        "暂时拉不到你上架的条目：检查网络 / 登录状态后重进本页（先显示上一次的列表）":
+          "Cannot load your published apps right now: check your network / sign-in state and reopen this page (showing the last list for now)",
+        /* 空态一句话（用户口径「没有我的应用时只需显示无应用即可」）：这一页不再引导去别页、
+           也不再给「你还没上架过」的长句 —— 拉不到与确实没有都归这一句。 */
+        "无应用": "No apps",
+        "加载更多（已 ": "Load more (",
+        "这一页没拉到：检查网络后重试": "This page did not load: check your network and try again",
+        /* 卡片上的作者动作 */
+        "编辑：改描述 / 标题 / 图标 / 标签 / 上架截图":
+          "Edit: description / title / icon / tags / screenshots",
+        "删除：只删我这一条分支，其他作者的派生分支与包都不受影响（不可恢复）":
+          "Delete: removes only your branch; other authors' branches and packages are untouched (cannot be undone)",
+        "编辑…": "Edit…",
+        "删除…": "Delete…",
+        /* 编辑框 */
+        "编辑应用": "Edit app",
+        "这条应用不在「我的应用」列表里：先刷新一下再编辑":
+          "This app is not in your My Apps list: refresh first, then edit",
+        "① 基本信息（改完立刻对全站生效）": "① Basic info (takes effect for everyone right away)",
+        "标题": "Title",
+        "最多 ": "Up to ",
+        " 字：应用卡片 / 详情窗显示它": " characters: shown on the app card and detail window",
+        "描述": "Description",
+        " 字：用户在应用页看到的说明": " characters: the description users see on the App page",
+        "② 标签（逗号分隔，最多 ": "② Tags (comma separated, up to ",
+        " 个）": ")",
+        "空着 = 不写标签（老标签会保留，不会被清掉）":
+          "Leave empty to send no tags (existing tags are kept, never wiped)",
+        "③ 封面图标（png / jpeg / webp，≤500KB）": "③ Cover icon (png / jpeg / webp, ≤500KB)",
+        "选择图片…": "Choose image…",
+        "清除图标": "Clear icon",
+        "图标超过 500KB：": "The icon is larger than 500KB: ",
+        "（换一张更小的，或把它当截图）": " (pick a smaller one, or use it as a screenshot)",
+        "当前图标（不动它就保持不变）": "Current icon (kept as is unless you change it)",
+        "当前图标（不动它就保持不变；商店封面取自「上架截图」第 1 张）":
+          "Current icon (kept as is unless you change it; the store cover comes from the 1st screenshot)",
+        "已标记清除：保存后这条应用没有图标（退回底色卡）":
+          "Marked for removal: after saving this app has no icon (falls back to a plain card)",
+        "新图标": "New icon",
+        "④ 上架截图（最多 ": "④ Screenshots (up to ",
+        " 张，可拖动排序）": ", drag to reorder)",
+        "上架截图 ": "Screenshots ",
+        " 张 · 拖动能调整顺序 · 第 1 张同时用作封面来源":
+          " · drag to reorder · the first one is also used as the cover",
+        "最多 8 张，第 1 张同时当商店封面（卡片与详情头部都用它）与图标（没单独选图标时）。拍窗口前请先在开发页点「启动」。":
+          "Up to 8: the first one is both the store cover (used by the card and the detail header) and the icon (when no icon is picked separately). Start the app on the Dev page before capturing its window.",
+        "加一张截图：第 1 张就是商店里这张卡的封面。":
+          "Add a screenshot: the first one becomes this app's cover in the store.",
+        " 张 · 拖动能调整顺序 · 第 1 张同时用作商店封面":
+          " · drag to reorder · the first one is also used as the store cover",
+        "添加图片…": "Add image…",
+        "截图最多 ": "At most ",
+        " 张：先删掉一张再加": " screenshots: remove one first",
+        "拖动能调整顺序（第 1 张同时用作封面来源）":
+          "Drag to reorder (the first one is also used as the cover)",
+        "拖动能调整顺序（第 1 张同时用作商店封面）":
+          "Drag to reorder (the first one is also used as the store cover)",
+        "删掉这张截图（保存后云端不再有它）":
+          "Remove this screenshot (it disappears from the cloud after saving)",
+        "删除这张截图": "Remove this screenshot",
+        "⑤ 声明（必须勾选才能保存）": "⑤ Declaration (required before saving)",
+        "保存": "Save",
+        "标题不能为空": "The title cannot be empty",
+        "保存：改元数据（不发新版本，版本号不动）":
+          "Save: edits metadata only (no new version, the version number stays)",
+        "请先勾选「我已阅读并同意，责任由我承担」":
+          "Please tick “I have read and agree; the responsibility is mine” first",
+        "请先勾选声明「我已阅读并同意，责任由我承担」——未勾选不能保存":
+          "Tick the declaration “I have read and agree; the responsibility is mine” first — saving is blocked without it",
+        "编辑后同步本机": "Sync to this computer",
+        "保存成功后，标题 / 描述 / 标签会写回本机同 id 的副本（下载根 + 项目根）；图标不写本机文件。":
+          "After saving, the title / description / tags are written back to local copies with the same id (download root + project root); the icon is not written to local files.",
+        "已保存：": "Saved: ",
+        "（版本号不变，用户立刻看到新信息）":
+          " (version unchanged; users see the new info immediately)",
+        "截图没生效：云端服务端需要升级后才支持编辑截图（其余修改已保存）":
+          "Screenshots did not take effect: the cloud server must be upgraded before screenshots can be edited (your other changes were saved)",
+        "本机副本没同步上：": "Local copies were not synced: ",
+        "本机没有这个应用，未同步（只改了云端）":
+          "This app is not installed here, nothing to sync (only the cloud entry changed)",
+        "本机副本已同步：": "Local copies synced: ",
+        " 处 app.json": " app.json file(s)",
+        "本机副本没同步上（": "Local copies were not synced (",
+        " 处写入失败）：": " write failure(s)): ",
+        /* 删除框 */
+        "删除应用": "Delete app",
+        "这条应用不在「我的应用」列表里：先刷新一下再删除":
+          "This app is not in your My Apps list: refresh first, then delete",
+        "这个操作不可恢复：你这一条分支的记录、版本包、图标与上架截图会一起从云端下掉。":
+          "This cannot be undone: your branch's record, version packages, icon and screenshots are all removed from the cloud.",
+        "另有 ": "Another ",
+        " 位作者的派生分支会保留，不受影响（别人的版本包一个都不会动）。":
+          " author(s) have derived branches that will be kept and are not affected (none of their packages are touched).",
+        "这个应用在云端只有你这一条分支：删除后它就是彻底消失了。":
+          "This app has only your branch in the cloud: deleting it removes the app completely.",
+        "本机已下载的副本不会被删除（要删去「库」页卸载）。":
+          "The copy downloaded on this computer is not deleted (uninstall it on the Library page if you want it gone).",
+        "本机没有下载过这个应用，删除只影响云端。":
+          "This app was never downloaded here; deleting only affects the cloud.",
+        "保留的派生分支作者：": "Derived branches kept, by: ",
+        "未知作者": "Unknown author",
+        "输入应用标题确认": "Type the app title to confirm",
+        "必须一字不差地输入「": "Type “",
+        "」才能点删除": "” exactly to enable Delete",
+        "删除我这一条云端分支（不可恢复）":
+          "Delete my cloud branch (cannot be undone)",
+        "请先输入应用标题（一字不差）再删除":
+          "Type the app title exactly before deleting",
+        "标题不一致：请一字不差地输入应用标题":
+          "Title does not match: type the app title exactly",
+        "删除失败：": "Delete failed: ",
+        "已删除：": "Deleted: ",
+        "（只删了你这一条分支；本机副本没动）":
+          " (only your branch was deleted; local copies were left untouched)",
+      };
+      var out = {};
+      for (var k in add)
+        if (!Object.prototype.hasOwnProperty.call(EN, k)) out[k] = add[k];
+      return out;
+    })(),
+  );
+
   /* ── 上架应用 · 多版本 · 配额 · 声明（`docs/apps-market.md` §七）──
      客户端两侧都读这一份：应用中心的版本树 / 下架重发（renderer/app-apps.js）与
      上架窗（renderer/app-publish.js）。服务端的中文 error 由服务端自己回，不在这里。 */
@@ -10887,19 +11463,12 @@
     "云端目录里找不到这个版本（作者可能已删除该版本）":
       "This version is not in the cloud catalog (the author may have deleted it)",
     "我上架的": "Published by me",
-    "已下架（仅自己可见）": "Unpublished (only you can see it)",
-    "下架": "Unpublish",
     "重新发布": "Publish again",
-    "已下架：目录里不再显示，包与版本仍在云端":
-      "Unpublished: it no longer appears in the catalog, but the packages and versions stay in the cloud",
     "已重新发布，其他用户可再次看到这个应用":
       "Published again — other users can see this app once more",
-    "下架失败：": "Unpublish failed: ",
     "重新发布失败：": "Publishing again failed: ",
     "重新发布：其他用户又能看到并下载这个应用":
       "Publish again: other users can see and download this app once more",
-    "下架：目录里不再显示，包与版本仍留在云端（可随时重新发布）":
-      "Unpublish: it disappears from the catalog while the packages and versions stay in the cloud (you can publish it again anytime)",
     /* 上架窗（renderer/app-publish.js） */
     "元信息": "Metadata",
     "AI 生成": "Generate with AI",
@@ -10925,6 +11494,26 @@
     "追加版本": "Add a version",
     "本机版本": "Local version",
     "线上版本": "Cloud version",
+    /* ⑤ 线上版本区 · 删版本（本轮需求：删除结果常驻一行 + 空版本树不再画幻行 + 老单版记录也能删） */
+    "删除选中版本": "Delete selected version(s)",
+    "确定删除线上版本 ": "Delete the cloud version(s) ",
+    " 吗？包与版本记录会一起下掉，配额当场释放，不能撤销。":
+      "? Their packages and version records are removed together, the quota is freed immediately, and this cannot be undone.",
+    "已删除 ": "Deleted ",
+    "，配额已释放；线上版本区已按服务端重读刷新。":
+      ", the quota has been freed; the version list below was re-read from the server.",
+    "版本没删掉：": "Nothing was deleted: ",
+    " 个版本；还有没删掉的：": " version(s); these could not be deleted: ",
+    "部分版本没删掉": "Some versions could not be deleted",
+    "你的分支下还没有版本（或版本已被删光）：本次上传会是它的第一版。":
+      "Your branch has no versions yet (or they were all deleted): this upload becomes its first version.",
+    /* 删版本这条链的失败码（服务端 code → 中文解释，见 app-publish.js 的 pubErrText） */
+    "服务端说这一版不存在（可能已被删过，或界面上这一版不是服务端的真版本记录）：点「重新读取」刷一遍版本区":
+      "The server says this version does not exist (it may already be deleted, or the list is out of date): click “Reload” to refresh the version list",
+    "服务端未启用应用多版本（单版模式）：这一版删不掉，要彻底删掉这个应用请在「我的应用」里删除它":
+      "This server has app versions disabled (single-version mode): this version cannot be deleted here — to delete the app for good, delete it in My Apps",
+    "这个 id 下没有你这个账号的分支：删版本只作用于自己的分支":
+      "This id has no branch under your account: deleting versions only affects your own branch",
     /* ── 分支树（本轮需求：多层树 · 选好分支后才出下载/覆盖 · 卡片换「其他版本」）── */
     "这一支的版本": "Versions on this branch",
     "其他版本": "Other versions",
@@ -10959,6 +11548,131 @@
       "No app to publish yet: create or install one first",
     "这个应用的窗口还没打开：先点「启动」，再回来拍图":
       "This app's window is not open yet: click “Launch” first, then capture it",
+    /* ── 应用上架统一叫「上架」· 应用 id 锁定 · 截图只在点击时拍（本轮需求；
+          renderer/app-publish.js 与 renderer/app-apps-dev.js）──
+       ① **新上传与更新统一叫「上架」**：开发页那颗按钮、上架窗的窗标题 / 状态条 / 主按钮 /
+           成功提示都只写「上架」，不再按本机上架留痕切成「更新」那套文案；是新建一条还是
+           给已有那条追加一版，由结果里那句「（新建应用）/（追加版本）」如实标出；
+       ② 应用 id 默认锁定（首次上架也锁，标题不再改写 id），点「修改 id」要过一次二次确认 ——
+           改 id = 云端新建一个应用，不再追加版本；
+       ③ 截图**只在点「拍应用窗口」时才启动 / 才拍**：开窗不再自动启动应用、不再自动拍
+          （用户口径，2026-10 改），窗口没开或最小化时由那一发点击自动启动。 */
+    "上架应用": "Publish app",
+    "✓ 上架成功": "✓ Published",
+    "上架：当前线上 v": "Publish: currently v",
+    "上架：把这个应用传到云端（已上架过就是给同一条追加一版）":
+      "Publish: upload this app to the cloud (if it is already published, this adds a version to the same entry)",
+    /* 这两条补齐（以前只有中文键，英文界面会原样显示中文）：本轮改到这两行文案，顺手登记 */
+    "上传上架": "Upload and publish",
+    "上架成功": "Published",
+    "上传成功：": "Uploaded: ",
+    /* 应用商店侧：同版本号但判出**内容变了** → 「覆盖安装」（本轮用户需求：
+       作者就地重传同一版时，用户在商店也要能把新包覆盖装回本机） */
+    "覆盖安装 v": "Overwrite-install v",
+    /* 「分支 / 版本」跳窗（renderer/app-apps.js 的 openAppsVersionDlg，本轮需求 4）：
+       版本相关的内容整体单独一只窗，外面只留一行「作者 X · vY」+ 主按钮 + 「选择版本…」。 */
+    "作者 ": "by ",
+    "选择版本": "Choose a version",
+    "选择版本…": "Choose a version…",
+    "暂无可下载的版本": "No downloadable version",
+    "云端目录里没有这个应用的分支信息，暂时没有可选版本":
+      "The cloud catalog has no branch information for this app, so there is no version to pick right now",
+    "已选": "Selected",
+    "打开「分支 / 版本」窗口：切作者分支、挑版本、本机回滚都在里面":
+      "Open the branch / version window: switch author branches, pick a version, and see local rollback",
+    "打开「分支 / 版本」窗口（默认原作者最新版），选好后在窗里下载":
+      "Open the branch / version window (the original author's latest version is preselected) and download from there",
+    "装这一版到本机（会替换本机现有的那一份载荷；storage / 数据文件夹 / 画布保留）":
+      "Install this version here (it replaces the payload you have locally; storage / data folder / canvas are kept)",
+    "作者就地重传了同一版（v": "The author re-uploaded the same version in place (v",
+    "）：云端那份包内容已变，覆盖安装把新的换到本机（数据保留）":
+      "): the package in the cloud changed, overwrite-install swaps the new one in (your data is kept)",
+    "）：覆盖安装把云端那份新包换到本机":
+      "): overwrite-install brings the new cloud package to this machine",
+    /* 详情窗里的「上架状态」提示（作者自己的应用看不到时才出现） */
+    "重新发布（回到商店目录）": "Re-publish (back into the store catalog)",
+    /* 「这个应用不在商店目录里…」（长文案那条）同上：整条移除。 */
+    /* 应用 id：锁定 / 解锁 / 二次确认 */
+    "修改 id": "Change id",
+    "修改应用 id": "Change the app id",
+    "改应用 id 会在云端新建一个应用：这次不再追加到「":
+      "Changing the app id creates a NEW app in the cloud: this upload no longer appends to “",
+    "」名下，以后它就是另一条应用（也算新的一条配额）。确认要改 id 吗？":
+      "”, and from then on it is a separate app (counting as another app against your quota). Change the id?",
+    "已锁定": "Locked",
+    "已锁定（上架留痕）：本机目录名 ": "Locked (upload record); local folder name: ",
+    "已解锁：改回 ": "Unlocked: setting it back to ",
+    " 会自动恢复锁定": " locks it again",
+    "已改 id：本次会在云端新建一个应用": "id changed: this upload creates a new app in the cloud",
+    "id 默认锁定：要改先点右边「修改 id」（会二次确认）":
+      "The id is locked by default: click “Change id” on the right to unlock it (a confirmation follows)",
+    "已解锁：改完就是另一个应用（云端会新建一条，不再追加版本）":
+      "Unlocked: changing it makes a different app (a new cloud entry, no longer a new version)",
+    "已经解锁：直接改上面的 id（改回原值会自动恢复锁定）":
+      "Already unlocked: edit the id above (setting it back locks it again)",
+    "改 id = 在云端新建一个应用（点它先二次确认）":
+      "Changing the id creates a new app in the cloud (clicking asks for confirmation first)",
+    "2-64 位小写字母 / 数字 / . _ -，以字母或数字开头；不能是 con / nul / com1 这类 Windows 保留名。默认锁定为本机应用 id：点「修改 id」可以改，但改 id = 在云端新建一个应用（会先让你确认一次）。":
+      "2–64 lowercase letters / digits / . _ -, starting with a letter or digit; Windows reserved names such as con / nul / com1 are rejected. Locked to this machine's app id by default: “Change id” unlocks it, but changing the id creates a new app in the cloud (you are asked to confirm first).",
+    /* 截图：只在点「拍应用窗口」时才启动 / 才拍（窗口没开 / 最小化时那一发点击会先自动启动） */
+    "正在拍应用窗口…": "Capturing the app window…",
+    "拍应用窗口失败：": "Capture failed: ",
+    "正在启动这个应用（窗口没开或已最小化）…":
+      "Launching this app (its window is closed or minimised)…",
+    "启动这个应用": "Launch this app",
+    "已加入第 ": "Added #",
+    " 张（第 1 张是封面）。": " (the first one is the cover).",
+    "应用窗口": "App window",
+    "还没有截图。": "No screenshots yet.",
+    "加一张截图：第 1 张就是商店里这张卡的封面。":
+      "Add a screenshot: the first one is this card's cover in the store.",
+    "最多 8 张，第 1 张同时当商店封面（卡片与详情头部都用它）与图标（没单独选图标时）。开窗不会自动启动这个应用、也不会自动拍：点「拍应用窗口」才启动它并拍（窗口没开或最小化时会自动帮你启动）；一张都不加就上传的话，商店卡片会没有封面。":
+      "Up to 8; the first one doubles as the store cover (used by the card and the detail header) and the icon (when no icon is picked). Opening this window neither launches the app nor captures anything: click “Capture the app window” to launch and capture it (it launches the app for you when its window is closed or minimised). Uploading with no screenshot leaves the store card without a cover.",
+    /* 一张截图都没有就上传：拦一句，说清后果（不静默放过、也不硬拦） */
+    "还没有截图：商店卡片与详情头部会没有封面（没有单独选图标时，图标也取自第 1 张截图）。确定现在上传吗？":
+      "No screenshots yet: the store card and the detail header will have no cover (with no icon picked, the icon comes from the first screenshot too). Upload anyway?",
+    "还没有截图": "No screenshots yet",
+    "仍然上传": "Upload anyway",
+    "回去加一张": "Go back and add one",
+    "已停在「还没有截图」这一步：点「拍应用窗口」或「从本机选图…」加一张，再上传。":
+      "Stopped at “no screenshots yet”: click “Capture the app window” or “Pick images from this machine…”, then upload.",
+    "已取消上传：先加一张截图": "Upload cancelled: add a screenshot first",
+    "这条应用云端已有截图：它们不会被删，也不会换封面。":
+      "This app already has screenshots in the cloud: they are neither deleted nor replaced as the cover.",
+    /* ── 更新时自动带出云端已有截图（本轮需求：每次更新都带着截图，别让作者重加 / 别丢）── */
+    "云端已有截图 ": "In the cloud: ",
+    " 张（会带着上传，顺序照作者排的；删掉哪张就不再传哪张）。":
+      " screenshot(s) — carried into this upload in the author's order (delete one and it stops being sent).",
+    "云端已有 ": "In the cloud #",
+    "（云端已有）": " (in the cloud)",
+    "云端已有的截图这一轮只发内容指纹（不重传字节）：读取失败会把它换成"
+      : "Screenshots already in the cloud send only their content fingerprints this round (no bytes); one that fails to read gets replaced with an empty reference placeholder",
+    /* ── 图片放宽到 5MB + 内容寻址缓存（本轮需求）──
+       上架窗与编辑窗共用这一套：单张 ≤5MB、客户端先压、云端已有同一张图时只发内容指纹不发字节。 */
+    "云端已用": "Used in the cloud",
+    "云端存储已超上限：服务端会以 QUOTA_BYTES 拒绝，先在上面删掉旧版或多余的截图（已存的内容不会被删，只是不能再新增）。":
+      "Cloud storage is over the limit: the server will reject with QUOTA_BYTES. Delete old versions or extra screenshots above first (nothing already stored is deleted — you just cannot add more).",
+    "其中 ": "Of which ",
+    " 张截图云端已有：这次只发内容指纹，不再重传图片。":
+      " screenshots are already in the cloud: this upload sends only their content fingerprints, not the bytes again.",
+    "张截图云端已有：只发内容指纹，不再重传图片": "screenshots are already in the cloud: sending only their content fingerprints",
+    " 张（其中 ": " (of which ",
+    " 张云端已有，只发引用）": " are already in the cloud — sending references only)",
+    "云端已有：只发内容指纹": "Already in the cloud: fingerprint only",
+    "已压缩 ": "Compressed ",
+    "原样上传（已在档内）": "Uploaded as-is (already within limits)",
+    "云端没有那份缓存的图片：这次把图片一起重传一遍…": "The cloud does not have that cached image: re-uploading the images now…",
+    "截图 ": "Screenshot ",
+    " 压到长边 ": " compressed to edge ",
+    " 后仍有 ": " is still ",
+    "，超过单张 5MB 上限：请先裁切或转小再上传。": ", over the 5MB per-image limit: crop or shrink it before uploading.",
+    " 太大（超过 5MB）": " is too large (over 5MB)",
+    " 读不出来：删掉它或重新选一张再保存": " cannot be read: delete it or pick another one, then save",
+    " 张云端已有：只发内容指纹，不再重传图片": " are already in the cloud: sending only their content fingerprints, not the bytes",
+    "第 1 张截图当图标压不到 500KB：请用「图标」单独选一张小图，或换一张更简单的封面截图。":
+      "The first screenshot cannot be compressed below 500KB as an icon: pick a small image under “Icon”, or use a simpler cover screenshot.",
+    "云端没有那份缓存的图片：把 ": "The cloud does not have that cached image: re-uploading ",
+    " 张图一起重传一遍…": " image(s) with bytes…",
     /* ── 作者 · 开发中名单 · 校验值收纳 · 二次开发分支（`docs/apps-market.md` §八，本轮需求）──
        作者：云端条目取 owner（上架账号），本机取 app.json 的作者，空则回落当前登录账号；
        校验值：长哈希收进「ⓘ 校验」小按钮；fork：应用身份 = 应用 id + 作者 uid。 */
@@ -11052,8 +11766,8 @@
       "This app id is taken by another account: the upload should be declared as “built on that app” (creating your own branch under the same id). If the source dropdown got cleared, restore the app id and retry.",
     "你名下已经有这个 id 的应用：请直接追加版本（重新打开本窗会自动判断），不要新建分支。":
       "You already own an app with this id: append a version instead (reopening this window detects it); do not create a new branch.",
-    "你这条分支上已有这个版本号：请换一个版本号再上传。":
-      "Your branch already has this version number: pick another one before uploading.",
+    "云端服务端是旧版本（还不支持同版本号覆盖更新）：这一版没传上去。请把服务端升级到最新，或先换一个版本号上传。":
+      "The cloud server is an older build (same-version overwrite is not supported yet), so this version was not uploaded. Upgrade the server, or upload under a different version number.",
     "这个 id 下有多条作者分支：删版本请指明分支（本窗会自动带上你自己那条）。":
       "This id has several author branches: deleting a version needs an explicit branch (this window adds yours automatically).",
     "已装": "Installed",
@@ -11119,7 +11833,7 @@
     "回到这一版": "Go back to this version",
     "按台账里记的下载地址重新下载这一版并换成当前版本":
       "Re-download this version from the address recorded in the ledger and make it the current one",
-    "本机只留当前与上一版两份记录（不存历史包）：回到上一版要按来源重新下载一次，离线或云端已下架时会如实报错。":
+    "本机只留当前与上一版两份记录（不存历史包）：回到上一版要按来源重新下载一次，离线或云端已删除时会如实报错。":
       "Only the current and previous versions are recorded here (no historical packages kept): going back re-downloads it from its source, and will report an error honestly when offline or when the cloud no longer has that version.",
     "还没有可回滚的上一版（本机自建、或只装过这一版）。本机不存历史包，回滚要按来源重新下载，所以没有来源就没有回滚入口。":
       "There is no previous version to roll back to yet (either built here, or only this version was ever installed). No historical packages are kept, and rolling back needs a source to re-download from — no source means no rollback entry.",
@@ -11131,7 +11845,7 @@
     "切换并重新下载": "Switch and re-download",
     "已切回 v": "Switched back to v",
     "切换失败：": "Switch failed: ",
-    "本机没有这一版的下载来源：它可能是本机自建的那一版，或云端已下架（回滚需要按来源重下）":
+    "本机没有这一版的下载来源：它可能是本机自建的那一版，或云端已删除（回滚需要按来源重下）":
       "No download source for this version on this machine: it may be the locally built one, or the cloud no longer has it (rolling back needs a source to re-download from)",
     "这一版的下载地址不在允许的来源里（只认云端目录 / 云端接口）":
       "This version's download address is not from an allowed source (only the cloud catalog / cloud API are accepted)",
@@ -11289,6 +12003,71 @@
       "Ask before pasting a clipboard image (uncheck = don't ask again)",
     "取消勾选后：画布上按 Ctrl+V 若剪贴板里有图像，直接原样收进画布资产并创建图像输入节点（剪贴板里同时有最近复制的节点时仍优先粘贴节点）。":
       "Once unchecked: pressing Ctrl+V on the canvas with an image on the clipboard saves it into the canvas assets as-is and creates an Image Input node right away (when the clipboard also holds recently copied nodes, pasting those still wins).",
+
+    /* ── 「扩展能力管理 → 用户自建插件」面板（renderer/app-plugins.js：user-plugins 清单
+       导入 / 重扫 / 试运行 / 诊断 / 修复那一套）──
+       英文界面下这块曾整片回退中文：新增面板文案只写进 renderer，漏了这张表。补齐时
+       按 app-plugins.js 里的原字面量逐字做键（含前后空格 —— 有几条是拼接用的片段）。 */
+    "插件目录": "Plugin directory",
+    "版本区间": "Version range",
+    "带来什么": "What it brings",
+    "本插件需要更新的 MTNode（": "This plugin needs a newer MTNode (",
+    " 起）—— 请升级应用后重试": " or newer) — update the app and try again",
+    "本插件只支持到 MTNode ": "This plugin only supports MTNode up to ",
+    "（当前 ": " (current ",
+    "）—— 请联系插件作者更新清单": ") — ask the plugin author to update the manifest",
+    "后端（插件不托管 · 需自行启动）：": "Backend (not hosted by the plugin · start it yourself): ",
+    "试运行": "Dry run",
+    "按清单声明的默认参数真跑一次（本机 HTTP 类会打你本机的接口）":
+      "Runs once for real with the defaults declared in the manifest (an HTTP plugin calls an endpoint on this machine)",
+    "插件节点模块未加载": "Plugin node module is not loaded",
+    "试运行成功：": "Dry run succeeded: ",
+    "试运行失败：": "Dry run failed: ",
+    "启用（重扫）": "Enable (rescan)",
+    "已启用（重启应用后节点生效）": "Enabled (nodes take effect after restarting the app)",
+    "重扫目录": "Rescan directory",
+    "已重扫插件目录": "Plugin directory rescanned",
+    "修复": "Repair",
+    "修复完成：": "Repair finished: ",
+    "修复未通过：": "Repair did not pass: ",
+    "修复完成": "Repair finished",
+    "修复未通过": "Repair did not pass",
+    "重启应用以生效": "Restart the app to take effect",
+    "插件在应用启动时加载：现在重启 MTNode？":
+      "Plugins load when the app starts: restart MTNode now?",
+    "打开插件目录": "Open plugin directory",
+    "诊断导出": "Export diagnostics",
+    "诊断包已导出：": "Diagnostics bundle exported: ",
+    "交给 Agent 诊断": "Hand to an Agent to diagnose",
+    "修复会话不可用": "Repair session is unavailable",
+    "（版本区间不匹配）": " (version range mismatch)",
+    /* 以下七条是「提示冗余清理」那一轮压缩后的字面量（逐字重抄表单的字段速查 → 只列面板
+       没交代的几条；标题「清单格式说明（字段速查）」→「清单要点」），键与 app-plugins.js 逐字对齐 */
+    "清单要点": "List essentials",
+    "目录：<数据目录>/user-plugins/<插件id>/mtnode-plugin.json（另有 _example 模板可照抄）":
+      "Path: <data dir>/user-plugins/<plugin id>/mtnode-plugin.json (an _example template sits there to copy)",
+    "顶层键：id / title / version 见上方详情；另有 nodes[]（画布节点）、mcp[]（写进 cordis-user.yml）、skills[]（skills/<name>/SKILL.md 或内联 body）。":
+      "Top-level keys: id / title / version are shown in the detail panel above; there are also nodes[] (canvas nodes), mcp[] (written into cordis-user.yml) and skills[] (skills/<name>/SKILL.md or an inline body).",
+    "backend：{hint, healthUrl, startCommand} —— 后端由你自己启动，应用不托管":
+      "backend: {hint, healthUrl, startCommand} — you start the backend yourself; the app does not host it",
+    "模板占位符：{input:端口id} / {inputJson:端口id} / {text} / {param:参数id} / {node:title} / {plugin:id}":
+      "Template placeholders: {input:portId} / {inputJson:portId} / {text} / {param:paramId} / {node:title} / {plugin:id}",
+    "安全：插件目录里不允许任何会被执行的 JS —— 清单只是一份声明。":
+      "Safety: no JS that would be executed is allowed in a plugin directory — the manifest is only a declaration.",
+    "同名插件已存在，覆盖安装？": "A plugin with this name already exists. Overwrite it?",
+    "导入插件": "Import plugin",
+    "已导入插件：": "Plugin imported: ",
+    "（重启应用后节点生效）": " (nodes take effect after restarting the app)",
+    /* 这三条的键在提示清理那一轮改了字面量（去掉键位教导与冗词），译文沿用原口径 */
+    "选择插件目录或 .zip 包导入（导入后自动重扫）":
+      "Pick a plugin folder or .zip to import (it is rescanned automatically afterwards)",
+    "在文件管理器里打开该目录": "Open that directory in the file manager",
+    "自建插件":
+      "Own plugins (a folder + mtnode-plugin.json and it just works · survives upgrades · can declare canvas nodes / MCP / skills)",
+    "目录：": "Path: ",
+    "详情 / 修复 / 节点": "Details / Repair / Nodes",
+    "还没有自建插件。点下方「打开插件目录」，把插件文件夹（含 mtnode-plugin.json）放进去，再点「导入插件」或重启应用即可 —— 也可以照抄目录里的 _example 模板。":
+      "No own plugins yet. Click “Open plugin directory” below, put your plugin folder (with mtnode-plugin.json) inside, then click “Import plugin” or restart the app — you can also copy the _example template in that directory.",
   });
 
   function listJoin(arr) {

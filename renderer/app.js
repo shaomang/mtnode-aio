@@ -62,6 +62,11 @@ const S = {
   /* 被删画布【对象】的墓碑：同名画布之后被合法重建（default 最常见）时只解
      id 黑名单，旧对象引用依然写不进新画布，防 agent 拿残留引用串写。 */
   _deadWfObjs: typeof WeakSet === "function" ? new WeakSet() : null,
+  /* MCP 第三方连接的「首次连接授权」开关：由 renderer/mcp-bridge.js 在每一帧调用前后
+     同步开关（跑完 finally 复原原值），绝不常驻、不影响用户自己的会话。这里给一个显式
+     初值 —— 与 undefined 同为假，只是让这个状态在 S 上看得见（canvasOpNeedsConfirm /
+     ensureAgentTool 读的正是它：为真时不再逐笔弹画布确认框）。 */
+  _mcpAuthorized: false,
   /* 后台对非当前画布做 canvas 编辑时为 false，禁止 renderCanvas 闪到别的画布 */
   _canvasEditVisible: true,
   /* 前台画布唯一真源：用户当前看到的那个画布对象。只由用户可见的切换
@@ -261,6 +266,8 @@ const KIND_CLS = {
   sensenova_gen: "proc-img",
   /* SoVITS 语音生成：复用 .wf-node.tts 样式族（紫调，与音乐/视频同族不同色） */
   tts_gen: "tts",
+  /* Breeze 语音生成：与 SoVITS 同族同色（都是「文本 → 语音」），靠图标与类型名区分 */
+  breeze_gen: "tts",
   video_gen: "video",
   /* 视频后处理：超分 / 补帧从 H3 生成链里独立出来，复用视频族配色 */
   video_upscale: "video",
@@ -410,6 +417,9 @@ const KIND_ICON_SVG = {
   /* SoVITS 语音生成：喇叭 + 声波条（文本转语音） */
   tts_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.1 6.3h1.9L7.9 3.9v8.2L5 9.7H3.1a.7.7 0 0 1-.7-.7V7a.7.7 0 0 1 .7-.7z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M10.4 6.3v3.4M12.2 4.9v6.2M14 6.9v2.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
+  /* Breeze 语音生成：麦克风 + 底座（音色克隆 / 设计 / 导演），与 SoVITS 的喇叭一眼可辨 */
+  breeze_gen:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="6.1" y="1.9" width="3.8" height="8" rx="1.9" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.4 7.4v.7a4.6 4.6 0 0 0 9.2 0v-.7M8 12.7v1.5M5.6 14.2h4.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M8 4.3v3.2" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".75"/></svg>',
   /* 视频生成 */
   video_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.4" width="11.6" height="9.2" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M6.4 6.2l4.2 2.2-4.2 2.2V6.2z" fill="currentColor"/></svg>',
@@ -1386,6 +1396,34 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
+  /* Breeze 语音生成（Breeze TTS 2 本机后端 · 文本转语音 · 音色克隆 / 设计 / 导演）：
+     端子 —— 输入 端口0=待合成文本 · 端口1=参考音频 · 端口2=参考文稿 · 端口3=指令 instruction
+     · 端口4=控制输入；输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 tts_gen。
+     参考源优先级：端子优先，端子空了才用节点设置里选的音色（后端音色库 voices/<id>）。 */
+  breeze_gen: {
+    w: 380,
+    h: 400,
+    /* 一级菜单「音频生成」成员：新建节点默认标题用后端名 */
+    title: "Breeze 语音节点",
+    attempts: 1,
+    /* 两个文本框的真源（端子有输入时只读回显、端子为空才归用户改）：
+       srcText = 输入文本（需要念的，端口 0 优先）；refText = 参考文本（参考音频对应的文字，端口 2 优先） */
+    srcText: "",
+    refText: "",
+    voice: "", /* 音色库 id（空 = 只用端子给的参考音频） */
+    voiceMode: "auto", /* auto | clone | design | direction（能力；auto 按参数自动判定） */
+    instruction: "", /* 指令（音色设计 / 音色导演）；留空则用端子给的指令 */
+    cfgScale: 1, /* 指令跟随强度；有 instruction 时官方建议 4 */
+    seed: 42,
+    ttsFormat: "wav", /* 输出格式 wav | flac | mp3（mp3 需 ffmpeg） */
+    outputPath: "",
+    breezeStatus: "",
+    refSource: "", /* 状态行用：本次实际用了哪个参考源（端子 / 音色库） */
+    output: null,
+    error: null,
+    ranAt: 0,
+    running: false,
+  },
   video_gen: {
     w: 400,
     h: 340,
@@ -1904,6 +1942,8 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
   if (isControlKind(node)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (node.kind === "net_recv") return Number(portIndex || 0) >= 1;
+  /* Breeze 语音：输出 0=音频 · 1=控制 → 控制口从 1 起（端口 1 与端口 2+ 都是控制语义） */
+  if (node.kind === "breeze_gen") return Number(portIndex || 0) >= 1;
   /* 音乐 / 视频 / 语音 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
   if (
     node.kind === "music_gen" ||
@@ -2824,6 +2864,7 @@ function rewriteNodePathsForSuperContext(node) {
     (node.kind === "music_gen" ||
       node.kind === "yue_gen" ||
       node.kind === "tts_gen" ||
+      node.kind === "breeze_gen" ||
       node.kind === "video_gen" ||
       isVideoPostKind(node) ||
       node.kind === "remotion") &&
@@ -3234,6 +3275,56 @@ function isSaveNode(n) {
 function isPinnedWire(w) {
   return !!(w && w.pinned);
 }
+/* ── 保存路径真源：节点的数据输出是否接到保存节点 ──────────────────────────────
+   接到了 = 该节点的产物路径归**保存节点**（及宿主 / 主进程）管：节点自己不需要
+   outputPath，命名与落盘由下游决定（resolveMediaGenExport → managed）。
+   判定口径与 app-nodes.js 的 controlTargets 同源，两层：
+     ① 直接数据线（含同壳内线；控制源连入的指挥线不算，关系线不参与）；
+     ② 跨超级节点壳的隧穿 —— 内侧汇流（本节点 → 所属壳，toIndex = 壳的输出端子号）
+        接壳外侧同号输出线 superExternalOutWiresAll；外侧入线接壳内同号桥接线
+        superInternalBridgeWiresAll（壳里那颗下游若还是壳，最多再走 3 层，seen 兜环）。
+   控制输出端子不算数据（nodeEmitsControlOnPort 判控）：控制线是「去执行」，不是「内容」。 */
+function nodeFeedsSaveNode(node, wf) {
+  wf = wf || (typeof S !== "undefined" && S ? S.wf : null);
+  if (!node || !wf || !Array.isArray(wf.wires)) return false;
+  const pick = (id) => (wf.nodes || []).find((n) => n && n.id === id) || null;
+  const seen = new Set();
+  const walk = (cur, port, depth) => {
+    if (!cur || depth > 3) return false;
+    const p = Number(port || 0);
+    const key = cur.id + ":" + p;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (nodeEmitsControlOnPort(cur, p, wf, new Set())) return false;
+    /* 端口号沿隧穿可能改号（壳的输出端子号 ≠ 壳内节点的端子号）→ 精确匹配不上时回落数据口 0 */
+    const ports = p ? [p, 0] : [0];
+    for (const w of wf.wires) {
+      if (w.rel || w.from !== cur.id) continue;
+      if (ports.indexOf(Number(w.fromIndex || 0)) < 0) continue;
+      const to = pick(w.to);
+      if (!to) continue;
+      if (isSaveNode(to)) return true;
+      if (to.kind !== "super") continue;
+      if (nodeParentSuperId(cur) === to.id) {
+        /* 本节点在自己的壳里：顺壳外侧同号输出线走出壳外 */
+        for (const ow of superExternalOutWiresAll(to, wf)) {
+          if (Number(ow.fromIndex || 0) !== Number(w.toIndex || 0)) continue;
+          if (walk(pick(ow.to), Number(ow.toIndex || 0), depth + 1)) return true;
+        }
+      } else {
+        /* 本节点在壳外、线进壳：顺壳内同号桥接线找壳里的下游 */
+        for (const bw of superInternalBridgeWiresAll(to, wf)) {
+          if (Number(bw.fromIndex || 0) !== Number(w.toIndex || 0)) continue;
+          if (walk(pick(bw.to), Number(bw.toIndex || 0), depth + 1)) return true;
+        }
+      }
+    }
+    return false;
+  };
+  const outs = Math.max(1, Number(outputCount(node)) || 0);
+  for (let i = 0; i < outs; i++) if (walk(node, i, 0)) return true;
+  return false;
+}
 const BOUND_SAVE_GAP = 48;
 const SAVE_EXT = { text: ".md", image: ".png", audio: ".wav", video: ".mp4", pdf: ".pdf" };
 function saveExtForMedia(media) {
@@ -3598,7 +3689,10 @@ function assetItemSummary(node, itemId) {
     if (it && String(it.id) === String(itemId)) return it;
   return null;
 }
-/** 条目实体文件的绝对路径（缓存优先，其次库摘要）；库里没有 / 文件缺失 → "" */
+/** 条目实体文件的绝对路径（缓存优先，其次库摘要）；库里没有 / 文件缺失 → ""。
+ *  两条都拿不到时**再直接向库同步一次**（不依赖「素材库扫描摘要已经就位」）：
+ *  摘要要等一次 assets:scan 才有，而媒体节点的参考图取值是同步的 —— 只靠摘要时，
+ *  端口上明明有线却取到 null，下游会把「没读到」当成「这个槽是空的」静默把参考图丢掉。 */
 function assetItemAbsPath(node, it) {
   if (!node || !it) return "";
   const cached =
@@ -3607,8 +3701,23 @@ function assetItemAbsPath(node, it) {
   if (cached && !cached.missing && String(cached.absPath || ""))
     return String(cached.absPath);
   const s = assetItemSummary(node, it.id);
-  if (!s || s.missing) return "";
-  return String(s.absPath || "");
+  if (s && !s.missing && String(s.absPath || "")) return String(s.absPath);
+  /* 扫描摘要的同步投影（app-assets.js · ASSET_ABS_INDEX）：摘要还在时它必有同一份事实，
+     摘要被换掉 / 尚未就位时它仍能给出路径 —— 媒体端子是同步取值，不能等下一次扫描。 */
+  if (typeof assetLibAbsPathOf === "function") {
+    const p = assetLibAbsPathOf(node.assetId, it.id);
+    if (p) return p;
+  }
+  /* 到这里还没有 = 摘要没就位或读取一直没发过：补发一次读取（同一 key 只飞一次，
+     到货后落在 ASSET_ITEM_VIEW 里，下次取值直接命中；读不到则标 missing，不再重试）。
+     正在飞的（cached.loading）与已经读过且失败的（cached.missing）都不再补发。 */
+  const aid = String(node.assetId || "").trim();
+  const iid = String(it.id || "").trim();
+  const inFlight = !!(cached && cached.loading);
+  const failed = !!(cached && cached.missing);
+  if (aid && iid && !inFlight && !failed && typeof assetItemViewLoad === "function")
+    assetItemViewLoad(aid, iid);
+  return "";
 }
 /** 素材节点第 idx 个输出端子的值。库里内容还没读到时返回 null（＝端子未就绪，
  *  下游按「无输入」处理），同时把读取发出去 —— 到货后 body 会自己重画。 */
@@ -3743,16 +3852,20 @@ function assetDisplayValueOfPort(node, portIdx) {
    工具 / 函数节点按真正接出来的那个端子取实际值判断，其余节点仍只看 0 号端子（行为逐字不变）。 */
 function inferMediaFromSource(from, fromIndex) {
   if (!from) return "text";
-  if (from.kind === "music_gen" || from.kind === "yue_gen" || from.kind === "tts_gen")
+  if (from.kind === "music_gen" || from.kind === "yue_gen" || from.kind === "tts_gen" || from.kind === "breeze_gen")
     return "audio";
   if (from.kind === "video_gen" || isVideoPostKind(from) || from.kind === "remotion")
     return "video";
   if (from.kind === "input_image" || from.kind === "proc_image") return "image";
   /* SenseNova 本地图像生成：产物就是一张 PNG，与 proc_image 同口径 */
   if (from.kind === "sensenova_gen") return "image";
-  /* 音视频输入节点：输出的就是这个本机文件（值见 mediaInputValueOf），按文件类型判定 */
-  if (from.kind === "input_audio") return "audio";
-  if (from.kind === "input_video") return "video";
+  /* 音视频输入节点：输出端子固定两个 —— 端口 0 = 音频输出 / 视频输出（输出的就是这个本机
+     文件，值见 mediaInputValueOf），按文件类型判定；端口 1 = 转写输出（见 renderer/app-asr.js
+     的 asrTranscriptOutValue）→ 按文本判定。 */
+  if (from.kind === "input_audio")
+    return Number(fromIndex || 0) > 0 ? "text" : "audio";
+  if (from.kind === "input_video")
+    return Number(fromIndex || 0) > 0 ? "text" : "video";
   /* 保存节点：接出来的是「本次保存的那份内容」，媒体类型按保存节点自己的口径判
      （save_pdf 恒 text —— 它的内容是 PDF 落盘地址，缺这一支会被下面按输入值误判成 image，
      下游保存 / 预览就会报「图像保存需要图像来源」）。
@@ -3945,6 +4058,11 @@ function mediaGenOutputRaw(node) {
 function mediaGenExt(node) {
   if (node && node.kind === "tts_gen")
     return String(node.ttsFormat || "").toLowerCase() === "mp3" ? ".mp3" : ".wav";
+  /* Breeze 语音：三种格式都按节点所选（wav / flac / mp3） */
+  if (node && node.kind === "breeze_gen") {
+    const f = String(node.ttsFormat || "").toLowerCase();
+    return f === "mp3" ? ".mp3" : f === "flac" ? ".flac" : ".wav";
+  }
   /* SenseNova 图像生成：产物固定 PNG（后端就是存 PNG，不是可选格式） */
   if (node && node.kind === "sensenova_gen") return ".png";
   return saveExtForMedia(
@@ -3958,14 +4076,23 @@ function mediaGenExt(node) {
 }
 /**
  * Resolve music/video export to { ok, outputDir, filename, path }.
- * Path must be set on the node (no bound save). Relative paths need workspace.
+ * Path must be set on the node — unless its data output is wired to a Save node
+ * (managed, see nodeFeedsSaveNode). Relative paths need workspace.
+ * 例外：节点自己没配路径、但数据输出接了保存节点 → { ok:true, managed:true }，
+ * outputDir / filename / path 全留空（命名与落盘归保存节点与宿主，见 nodeFeedsSaveNode）。
  */
 function resolveMediaGenExport(node) {
   const ext = mediaGenExt(node);
   const combined = mediaGenOutputRaw(node);
-  if (!combined) return { ok: false, code: "empty", outputDir: "", filename: "" };
-  /* Legacy default "output" without a real filename → treat as unset */
-  if (/^output$/i.test(combined.replace(/\\/g, "/").replace(/^\.\//, ""))) {
+  /* 节点上没配自己的输出路径：空，或遗留占位 "output"（当没配处理） */
+  const unset =
+    !combined ||
+    /^output$/i.test(String(combined).replace(/\\/g, "/").replace(/^\.\//, ""));
+  if (unset) {
+    /* 数据输出接了保存节点 → 路径归保存节点 / 宿主管（managed）：不报错、不写节点状态行，
+       也不在渲染层拼路径（outputDir / filename / path 都留空，命名与落盘由宿主决定）。 */
+    if (nodeFeedsSaveNode(node))
+      return { ok: true, managed: true, outputDir: "", filename: "", path: "" };
     return { ok: false, code: "empty", outputDir: "", filename: "" };
   }
   const forced = forcePathExt(combined, ext);
@@ -3982,7 +4109,8 @@ function resolveMediaGenExport(node) {
 }
 function requireMediaGenExport(node, quiet) {
   const exp = resolveMediaGenExport(node);
-  if (exp && exp.ok) return exp;
+  /* managed（路径归保存节点管）同样是「有归宿」：不报错、不写节点状态行的错误文案 */
+  if (exp && (exp.ok || exp.managed)) return exp;
   const msg = savePathResolveError(exp && exp.code);
   if (!quiet) toast(msg, "warn");
   if (node) {
@@ -3990,10 +4118,18 @@ function requireMediaGenExport(node, quiet) {
     if (node.kind === "yue_gen") node.yueStatus = msg;
     if (node.kind === "sensenova_gen") node.sensenovaStatus = msg;
     if (node.kind === "tts_gen") node.ttsStatus = msg;
+    if (node.kind === "breeze_gen") node.breezeStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
     if (node.kind === "remotion") node.remotionStatus = msg;
   }
   return null;
+}
+/** managed 口径的显示文案：节点自己没配输出路径、数据输出接了保存节点
+ *  （resolveMediaGenExport → managed）—— 命名与落盘归保存节点 / 宿主。
+ *  节点体摘要与状态行统一用它，免得显示成「（未设置）」让人以为还得自己填路径。 */
+function mediaGenManagedHint(node) {
+  const exp = resolveMediaGenExport(node);
+  return exp && exp.managed ? I18n.t("托管目录 · 由保存节点落盘") : "";
 }
 async function pathExistsAbs(p) {
   const abs = String(p || "").trim();
@@ -4042,6 +4178,8 @@ function mediaGenRollSuffix(rollIndex) {
 function resolveMediaGenRollExport(node, rollIndex, totalRolls) {
   const exp = resolveMediaGenExport(node);
   if (!exp || !exp.ok) return exp;
+  /* managed：连抽卡的编号命名也归宿主（这里没有 outputDir 可拼） */
+  if (exp.managed) return exp;
   if (totalRolls <= 1) return exp;
   const ext = extOf(exp.filename) || mediaGenExt(node);
   const stem = stemOfFilename(exp.filename) || "out";
@@ -4057,6 +4195,9 @@ function resolveMediaGenRollExport(node, rollIndex, totalRolls) {
 async function prepareMediaGenRollExport(node, rollIndex, totalRolls) {
   let exp = resolveMediaGenRollExport(node, rollIndex, totalRolls);
   if (!exp || !exp.ok) return null;
+  /* managed（路径归保存节点 / 宿主管）：命名与去重撞名都由宿主决定，
+     这里跳过 allocateUniqueMediaExport —— 否则会拿空 outputDir 拼出「./文件名」这种假路径。 */
+  if (exp.managed) return exp;
   if (totalRolls <= 1 && rollIndex === 1) {
     exp = await allocateUniqueMediaExport(exp);
     if (!exp || !exp.ok) return null;
@@ -4117,20 +4258,31 @@ async function resolveMediaGenDisplayPath(node) {
   if (exp && exp.ok && exp.path && (await pathExistsAbs(exp.path))) return exp.path;
   return "";
 }
-/** Remove legacy media↔save pairs; migrate savePath → outputPath, then delete the save node. */
+/** Remove legacy media↔save pairs; migrate savePath → outputPath, then delete the save node.
+ *
+ *  ── 只认旧绑定标记（新口径的地基）──────────────────────────────────────────
+ *  迁移（删保存节点 + 把 savePath 搬进 gen.outputPath）只在下列旧档标记之一下发生：
+ *    ① gen.boundSaveId 指向的保存节点；
+ *    ② save.boundFromId === gen.id；
+ *    ③ gen → save 的 pinned 线（旧版本自动配对时打的固定标记；新版本界面从不写 pinned，
+ *       isPinnedWire 只对旧档为真）。
+ *  用户手连的 gen → save 线（没有 boundFromId / boundSaveId / pinned）**一律不动**：
+ *  它是 managed 口径的载体，加载时绝不拆掉。下面每个条件都显式写死这一点。 */
 function detachBoundMediaSaves(wf) {
   wf = wf || S.wf;
   if (!wf || !Array.isArray(wf.nodes)) return;
   const removeIds = new Set();
   for (const gen of wf.nodes) {
     if (!isMediaGenNode(gen)) continue;
+    /* ①② 字段级旧标记：gen.boundSaveId / save.boundFromId === gen.id */
     let sv =
       (gen.boundSaveId && wf.nodes.find((n) => n.id === gen.boundSaveId)) ||
       wf.nodes.find((n) => isSaveNode(n) && n.boundFromId === gen.id) ||
       null;
     if (!sv) {
+      /* ③ 旧 pinned 线：只认 wire.pinned —— 用户手连的普通线没有这个标记，绝不在此列 */
       const pinned = (wf.wires || []).find((w) => {
-        if (w.from !== gen.id || !w.pinned) return false;
+        if (w.from !== gen.id || !isPinnedWire(w)) return false;
         const t = wf.nodes.find((n) => n.id === w.to);
         return t && isSaveNode(t);
       });
@@ -4150,6 +4302,7 @@ function detachBoundMediaSaves(wf) {
     gen.boundSaveId = "";
   }
   for (const n of wf.nodes) {
+    /* 反向也只看旧 boundFromId：用户手连的 gen → save 线（保存节点没有 boundFromId）不迁移、不删 */
     if (!isSaveNode(n) || !n.boundFromId) continue;
     const g = wf.nodes.find((x) => x.id === n.boundFromId);
     if (g && isMediaGenNode(g)) {
@@ -4202,6 +4355,9 @@ function ensureBoundSaveForMedia() {
 }
 function outputCount(n) {
   if (!n) return 0;
+  /* 用户插件带来的节点（声明式定义，运行时注册）：端子数即清单里的出端口数 + 末位控制出 */
+  if (typeof isPluginKind === "function" && isPluginKind(n))
+    return pluginOutPortCount(n);
   /* 泛用文件节点：上传成具体输入节点后由那种节点出端子；只有「解析不出来 · 仅保留路径」
      的形态自己留 1 个输出端子（值 = 那段本机文件路径），还没有路径时 0 个端子。 */
   if (n.kind === "input_any")
@@ -4218,8 +4374,11 @@ function outputCount(n) {
   if (n.kind === "execute") return 0; /* 执行节点：独立工具 · 无输出 */
   /* 素材节点：输出端子 = 内容条目（第 i 出 = 第 i 个条目的内容），无控制输出端子 */
   if (n.kind === "asset") return assetItems(n).length;
-  /* 音频 / 视频输入：各 1 个数据输出端子，值是该本机文件的 file:/// URL（见 mediaInputValueOf） */
-  if (n.kind === "input_audio" || n.kind === "input_video") return 1;
+  /* 音频 / 视频输入：2 个数据输出端子 —— 端口 0 = 该本机文件的 file:/// URL
+     （见 mediaInputValueOf）· 端口 1 = 该文件的**转写文字**（本机 SenseVoice，写在节点自己的
+     asrTranscripts 上；还没转 / 没转出内容时给空文本，见 renderer/app-asr.js 的
+     asrTranscriptOutValue）。两个端子都是纯数据口，没有控制出。 */
+  if (n.kind === "input_audio" || n.kind === "input_video") return 2;
   /* 函数 / 工具节点：输出 0..n-1 = 各输出参数（数据），末位 = 控制输出（固定 1 控制出） */
   if (isFnToolNode(n)) return fnToolParamList(n, "out").length + 1;
   if (n.kind === "super") {
@@ -4244,6 +4403,7 @@ function outputCount(n) {
     n.kind === "yue_gen" ||
     n.kind === "sensenova_gen" ||
     n.kind === "tts_gen" ||
+    n.kind === "breeze_gen" ||
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
     n.kind === "remotion"
@@ -6424,6 +6584,7 @@ function inPortIsControl(node, idx) {
   if (node.kind === "music_gen") return i === 2;
   if (node.kind === "yue_gen") return i === 3;
   if (node.kind === "tts_gen") return i === 1;
+  if (node.kind === "breeze_gen") return i === 4; /* 端口4=控制输入 */
   if (node.kind === "video_gen") return i === videoGenControlPort(node);
   if (isVideoPostKind(node)) return i === 0;
   if (node.kind === "remotion") return i === 0;
@@ -6435,6 +6596,8 @@ const IN_PORT_DATA_KINDS = {
   music_gen: ["text", "text", "control"],
   yue_gen: ["text", "text", "text", "control"],
   tts_gen: ["text", "control"],
+  /* Breeze 语音：0=待合成文本 · 1=参考音频（音频文件 URL）· 2=参考文稿 · 3=指令 · 4=控制输入 */
+  breeze_gen: ["text", "audio", "text", "text", "control"],
   remotion: ["control", "text"],
 };
 /* 输入端子声明的类型：控制端子回 "control"；工具 / 函数节点的数据端子回参数声明的
@@ -6443,6 +6606,11 @@ const IN_PORT_DATA_KINDS = {
 function inPortKindOf(node, idx) {
   if (!node) return null;
   const i = Number(idx);
+  /* 用户插件节点：端子类型完全来自清单声明（控制语义不声明 → 不返回 "control"） */
+  if (typeof isPluginKind === "function" && isPluginKind(node)) {
+    const p = pluginPortMeta(node, "in", i);
+    return p ? p.kind : null;
+  }
   if (!isFinite(i) || i < 0) return null;
   if (isFnToolNode(node)) return i === 0 ? "control" : fnToolPortKind(node, "in", i);
   if (node.kind === "super") return superInPortIsControl(node, i) ? "control" : null;
@@ -6457,14 +6625,17 @@ function inPortKindOf(node, idx) {
 }
 
 function hasFixedInPorts(n) {
-  return !!(
-    n &&
-    (n.kind === "deliver" ||
+  if (!n) return false;
+  /* 用户插件节点：端子由清单声明，断线绝不重排端子号 */
+  if (typeof isPluginKind === "function" && isPluginKind(n)) return true;
+  return (
+    n.kind === "deliver" ||
       n.kind === "gate" ||
       n.kind === "mutex" ||
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
       n.kind === "tts_gen" ||
+      n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
       n.kind === "remotion" ||
@@ -6473,7 +6644,7 @@ function hasFixedInPorts(n) {
       n.kind === "net_send" ||
       /* 素材节点：端子号 = 内容条目序号，断一条线绝不能把后面的端子号左移（会串条目） */
       n.kind === "asset" ||
-      isFnToolNode(n))
+      isFnToolNode(n)
   );
 }
 /** 某个输入端子上现在挂了几条线（关系线不占端子；控制线算挂上）。
@@ -6532,6 +6703,8 @@ function wireFromIsControl(w, wf) {
   if (isControlKind(from)) return true;
   /* 网络·接收：端口1 为控制输出（收到消息时触发控制信号） */
   if (from.kind === "net_recv" && Number(w.fromIndex || 0) >= 1) return true;
+  /* Breeze 语音：输出 0=音频 · 1=控制 → 控制口从 1 起 */
+  if (from.kind === "breeze_gen" && Number(w.fromIndex || 0) >= 1) return true;
   /* 音乐 / 视频 / 语音 / Remotion：端口1 为控制输出（生成完成后触发下游控制目标） */
   if (
     (from.kind === "music_gen" ||
@@ -6599,6 +6772,7 @@ function isTextSource(n) {
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
     n.kind === "tts_gen" ||
+    n.kind === "breeze_gen" ||
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
     n.kind === "remotion" ||
@@ -6638,24 +6812,29 @@ function isImageWireFrom(n, fromIndex) {
 }
 function isAudioWireFrom(n, fromIndex) {
   if (!n) return false;
+  /* 音频 / 视频输入节点：端口 1 是转写文字（文本线），不按音频上色 */
+  if (n.kind === "input_audio")
+    return Number(fromIndex || 0) === 0;
   if (isFnToolNode(n) || isAssetNode(n))
     return wireSourceMediaType(n, fromIndex) === "audio";
   return (
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
     n.kind === "tts_gen" ||
-    n.kind === "input_audio"
+    n.kind === "breeze_gen"
   );
 }
 function isVideoWireFrom(n, fromIndex) {
   if (!n) return false;
+  /* 视频输入节点：端口 1 是转写文字（文本线），不按视频上色 */
+  if (n.kind === "input_video")
+    return Number(fromIndex || 0) === 0;
   if (isFnToolNode(n) || isAssetNode(n))
     return wireSourceMediaType(n, fromIndex) === "video";
   return (
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
-    n.kind === "remotion" ||
-    n.kind === "input_video"
+    n.kind === "remotion"
   );
 }
 
@@ -6737,7 +6916,9 @@ function fnToolFreePortIndex(host, dir, wantCtrl) {
   return null;
 }
 /** 子画布内侧端子（桥接 / 汇流）的徽标与提示：工具节点显示参数名 —— 参数名即端子名；
-    普通超级节点仍显示「端子 N」。dir = "in"（外侧输入 → 内侧桥接）/ "out"（内侧汇流 → 外侧输出）。 */
+ *  普通超级节点显示「输入N / 输出N」（与卡片外侧端子同一份口径，见 app-canvas.js 的
+ *  portBadgeText：桥接端子就是本壳的输入端子、汇流端子就是输出端子）。
+ *  dir = "in"（外侧输入 → 内侧桥接）/ "out"（内侧汇流 → 外侧输出）。 */
 function superInnerPortInfo(host, dir, i) {
   const idx = Number(i || 0);
   const n = idx + 1;
@@ -6768,8 +6949,13 @@ function superInnerPortInfo(host, dir, i) {
   return {
     ctrl: ctrl,
     img: pk === "image",
-    /* 徽标给完整参数名：原来的 clipStr(…,8) 会把名字切一半（截断交给 CSS .port-badge .pb-name，节点高亮时放开显示全名） */
-    badge: fixed ? (ctrl ? I18n.t("控制") : pname || String(n)) : "",
+    /* 徽标正文 = 卡片外侧端子标签同一个出口（有参数名写参数名 · 控制端子写「控制」·
+       普通超级节点的桥接 / 汇流端子写「输入N / 输出N」）；截断交给 CSS .port-badge .pb-name */
+    badge: String(
+      (typeof portBadgeText === "function"
+        ? portBadgeText(host, dir, idx, { fnTool: fixed, ctrl: ctrl }).badge
+        : pname || (ctrl ? I18n.t("控制") : String(n))) || "",
+    ),
     title:
       base +
       (pname ? I18n.t(" · 参数：") + pname : "") +
@@ -7542,6 +7728,9 @@ function globalChipKindCls(n) {
 }
 
 function inputCount(node) {
+  /* 用户插件节点：输入端子数 = 清单声明的入端口数（固定，不随连线增量） */
+  if (typeof isPluginKind === "function" && isPluginKind(node))
+    return pluginInPortCount(node);
   /* 只读 / 需求等待 / 定时 / 起点 / 执行：无输入端子
      泛用文件节点同理：它还没有任何内容，不该被连进来当数据接收方 */
   if (
@@ -7597,6 +7786,8 @@ function inputCount(node) {
      端口 0 = 提示词 / 文本入口，之后按已连线条数增量出数据槽（文本 / 图像都可接），
      不走任何固定端子分支，落到下面的通用动态端子（输出端子仍是图像 + 控制） */
   if (node.kind === "tts_gen") return 2; /* 端口0=待合成文本 · 端口1=控制输入 */
+  /* Breeze 语音：端口0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入（固定 5 个端子） */
+  if (node.kind === "breeze_gen") return 5;
   if (node.kind === "video_gen") return videoGenInputCount(node); /* 端口0=控制输入（固定）· 端口1+=数据槽 */
   if (isVideoPostKind(node)) return videoPostInputCount(node); /* 端口0=控制 · 端口1=源视频 · 端口2+=可选素材 */
   if (node.kind === "remotion") return 2; /* 端口0=控制输入（固定）· 端口1=描述文本输入 */
@@ -7865,6 +8056,9 @@ function minWFor(n) {
       return 340;
     case "tts_gen":
       return 320;
+    /* Breeze 语音：警示条 + 两行端子提示 + 摘要 + 后端面板 + 预览 + 状态行 → 比 tts_gen 略高 */
+    case "breeze_gen":
+      return 340;
     case "video_gen":
       return 340;
     case "video_upscale":
@@ -7909,6 +8103,8 @@ function minHFor(n) {
       return 240;
     case "tts_gen":
       return 220;
+    case "breeze_gen":
+      return 250;
     case "video_gen":
       return 260;
     case "video_upscale":
@@ -8056,6 +8252,7 @@ function nodeKindCls(node) {
 }
 function nodeKindLabel(node) {
   if (!node) return "";
+  if (typeof isPluginKind === "function" && isPluginKind(node)) return I18n.t("插件");
   if (node.kind === "proc_text" && node.agent) return I18n.t("智能");
   if (node.kind === "super" && node.dev && !node.db) return I18n.t("开发");
   /* 工具 / 函数节点：标签说清自己，不落到 map.super「超级节点」上 */
@@ -8103,6 +8300,8 @@ function nodeKindLabel(node) {
     video_upscale: "视频超分",
     video_interp: "视频补帧",
     tts_gen: "SoVITS 语音",
+    /* Breeze 语音生成（本机 Breeze TTS 2 后端） */
+    breeze_gen: "Breeze 语音",
     remotion: "Remotion 视频",
     net_recv: "接收",
     net_send: "发送",
@@ -8133,8 +8332,8 @@ function nodeKindPurposeKey(node) {
   const map = {
     input_text: "输入节点（仅输出）",
     input_image: "输入节点（仅输出）",
-    input_audio: "音频输入（输出该文件的 URL）",
-    input_video: "视频输入（输出该文件的 URL）",
+    input_audio: "音频输入（音频输出 + 转写输出）",
+    input_video: "视频输入（视频输出 + 转写输出）",
     asset: "素材节点（绑定素材库 · 内容条目即端子）",
     /* 泛用文件节点：右键菜单里唯一的输入入口（上传什么文件就变成哪种节点） */
     input_any: "文件节点（上传任意文件 · 自动转为对应节点）",
@@ -8144,7 +8343,9 @@ function nodeKindPurposeKey(node) {
     ltart: "产物节点（长周期任务 · 每件产物一颗 · 板身预览 · ✎ 编辑保存 · ⇢ 打开）",
     db_table: "表（读取文件 · agent 建表）",
     proc_text: "文本处理（LLM）",
-    proc_image: "图像生成（文生图）",
+    /* 节点类型名 = 图像生成（缺省标题见 NODE_DEFAULTS.proc_image）；
+       括号里只留稳定的区分字段「云端服务商」，与 SenseNova 本地节点区分 */
+    proc_image: "图像生成（云端服务商）",
     music_gen: "Minimax Music 3（音乐生成 · 提示词 + 歌词）",
     yue_gen: "YuE2（音乐生成 · 风格提示词 + 歌词 → 整曲 · 可编辑 ABC 谱面）",
     sensenova_gen:
@@ -8153,6 +8354,8 @@ function nodeKindPurposeKey(node) {
     video_upscale: "视频超分（Real-ESRGAN x4 / x2 超分 · 独立后处理）",
     video_interp: "视频补帧（RIFE 补帧 · 独立后处理）",
     tts_gen: "SoVITS 语音生成（文本转语音 · GPT-SoVITS）",
+    breeze_gen:
+      "Breeze 语音生成（文本转语音 · Breeze TTS 2 · 音色克隆 / 设计 / 导演）",
     remotion: "Remotion 视频（React 动效合成 · 本地渲染 mp4）",
     net_recv: "网络 · 接收（监听通道 · 异步转发收到的文本）",
     net_send: "网络 · 发送（把通道文本推送到远端）",
@@ -8311,6 +8514,10 @@ function collectRunQueue() {
     }
   }
   if (S.pendingRun) {
+    /* 「等待中」的唯一真源 = 真的还有队列 / 运行体在等它：进面板前先自愈一次
+       （幽灵 pending 会让节点永远显示「排队等待中…」且 ▶ 点不动，见
+       app-nodes.js 的 sweepOrphanPendingRuns）。 */
+    sweepOrphanPendingRuns();
     for (const id of S.pendingRun) {
       if (seen.has(id)) continue;
       const n = nodeById(id);
@@ -9154,7 +9361,7 @@ async function jumpRunQueueItem(it) {
     try {
       if (S.view !== "agent") setView("agent");
       S.agentActiveId = st.id;
-      await persistAgentSession();
+      await agentFlushSessionSaveQuiet();
       renderAgentSession();
       renderAgentSessionSidebar();
     } catch (_) {}
@@ -9523,9 +9730,7 @@ let overlayClosable = true;
    （关掉等于替用户做决定，出口只能走窗内按钮）。 */
 const OV_SHELL_HTML =
   '<div class="overlay-head"><b id="ovTitle"></b>' +
-  '<button type="button" class="ov-close-btn" title="' +
-  I18n.t("关闭") +
-  '" aria-label="' +
+  '<button type="button" class="ov-close-btn" aria-label="' +
   I18n.t("关闭") +
   '"><svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
   '<path fill="currentColor" d="M6.4 5.3 12 10.9l5.6-5.6 1.1 1.1L13.1 12l5.6 5.6-1.1 1.1L12 13.1l-5.6 5.6-1.1-1.1L10.9 12 5.3 6.4z"/></svg></button></div>' +
@@ -11914,7 +12119,6 @@ async function runExecuteNode(node) {
   if (!ex) {
     node.error = I18n.t("文件不存在：") + p;
     node.execStatus = node.error;
-    node._armed = false;
     scheduleSave();
     renderCanvas();
     toast(node.error, "warn");
@@ -11922,7 +12126,6 @@ async function runExecuteNode(node) {
   }
   node.error = null;
   node.running = true;
-  node._armed = false;
   node.execStatus = I18n.t("正在启动…");
   renderCanvas();
   let r = null;
@@ -12439,7 +12642,7 @@ async function refineDevNode(node) {
     sess.messages.unshift({ role: "user", content: visibleText, _src: "dev-node" });
   }
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  await agentTouchSession();
   scheduleSave(true);
   renderCanvas();
   /* 细化会话同样绑进该功能块：运行队列按「绑定会话」口径立刻重算一次 */
@@ -13986,9 +14189,15 @@ function valueForInput(src, idx, consumer, seen) {
     }
     return src.imageAsset ? { kind: "image", path: src.imageAsset } : null;
   }
-  /* 音频 / 视频输入：静态源，端子值 = 本机文件（path）+ file:/// URL（url / text）。
-     未选文件时返回 null → 端子显示未就绪，下游按「无输入」处理。 */
+  /* 音频 / 视频输入：静态源，输出端子固定两个 —— 端口 0 = 音频输出 / 视频输出（本机文件：
+     path + file:/// URL（url / text）），未选文件时返回 null → 端子显示未就绪，下游按
+     「无输入」处理；端口 1 = **转写输出**（该文件的转写文字，本机 SenseVoice 识别结果，
+     存在节点自己的 asrTranscripts 上）：没有转写内容时给**空文本**（不是 null）——
+     下游拿到的是一段真空文本，而不是「这个端子没值」。取值实现见 renderer/app-asr.js
+     的 asrTranscriptOutValue。 */
   if (src.kind === "input_audio" || src.kind === "input_video") {
+    if (Number(idx) > 0 && typeof asrTranscriptOutValue === "function")
+      return asrTranscriptOutValue(src);
     return mediaInputValueOf(src);
   }
   /* 泛用文件节点「仅保留路径」形态：静态源，唯一的输出端子给的就是那段本机文件路径
@@ -14029,7 +14238,12 @@ function valueForInput(src, idx, consumer, seen) {
       return po[key] || null;
     return r && r.output ? r.output : null;
   }
-  if (src.kind === "music_gen" || src.kind === "yue_gen" || src.kind === "tts_gen") {
+  if (
+    src.kind === "music_gen" ||
+    src.kind === "yue_gen" ||
+    src.kind === "tts_gen" ||
+    src.kind === "breeze_gen"
+  ) {
     const r = selResult(src);
     const p =
       (r && r.output && (r.output.path || r.output.text)) ||
@@ -14719,6 +14933,17 @@ function displayValueOf(src, consumer) {
     if (r && r.output && r.output.kind === "text") return { text: r.output.text };
     if (r && r.output && r.output.kind === "image" && r.output.path)
       return { image: r.output.path, title: src.title };
+    return null;
+  }
+  /* 用户插件节点：出端口的值存在 node.outputPaths（执行时写），第 i 出端口给第 i 个输出 */
+  if (typeof isPluginKind === "function" && isPluginKind(node)) {
+    const paths = node.outputPaths && typeof node.outputPaths === "object" ? node.outputPaths : {};
+    const list = (pluginNodeDef(node) || { outputs: [] }).outputs || [];
+    const port = list[Math.max(0, Number(idx) || 0)];
+    const raw = port ? paths[port.id] : "";
+    if (port && port.kind === "image" && raw) return { image: String(raw), title: node.title };
+    const txt = raw == null ? "" : String(raw);
+    if (txt) return { text: txt, title: node.title };
     return null;
   }
   return null;
@@ -18003,30 +18228,71 @@ function copiedSuperIdsOf(cps) {
      · 真有文字选区（画布之外的选区，或画布里的输入控件 / 可复制文本区 / 文字标注）→ 浏览器原生；
      · 焦点在画布之外的输入区（会话 / 弹窗 / 设置…）→ 同样交给浏览器；
      · 其余场合（画布焦点，或焦点就在画布节点的输入框里）→ 复制 / 粘贴节点与绘制。
-   粘贴再分一层：焦点在节点输入框里时，只有「最近一次复制的是节点」才粘贴节点，否则让编辑器
-   原生粘贴文字（nodeClipIsFresh）。 */
+   粘贴再分一层：焦点在节点输入框里时，只有「最近一次复制的是节点」（nodeClipPasteWanted：
+    标记还热乎 + 粘贴板里确有节点 / 绘制）才粘贴节点，否则让编辑器原生粘贴文字。
+    ⚠ 这一层曾经被写成「输入框里一律让给编辑器」，直接废掉「点节点 → Ctrl+C → Ctrl+V」——
+    点选节点本来就把焦点落进它的正文框，于是画布上的节点看起来根本没法复制（已回归的
+    bug，口径收口在 nodeClipPasteWanted，别再退回「inField 一律 return false」）。 */
 const SELECTABLE_TEXT_HOSTS =
   ".assist-list, .agent-list, .agent-body, .chat-list, .agent-conv, .n-out, " +
   ".app-docs-article, .app-docs-box, .md, .dsh-msg-body, .overlay, .mt-dialog";
+/* 可编辑控件选择器（输入框 / 文本域 / 富文本）：输入框内选区判定与 Ctrl+C / Ctrl+V 的归属判定
+   共用这一份，别再各写一遍 —— 少一处就退化成「在节点正文框里选中文字按 Ctrl+C 复制到的是节点」。
+   判据同 keydown 里的 inField（tagName input / textarea / select 或 contenteditable）。 */
+const EDITABLE_SEL =
+  'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]';
 /* 内部节点粘贴板是不是「用户最近一次复制的来源」。置真：画布拿走 Ctrl+C 复制了节点；
    置假：任何一次真正的文字复制（copy 事件 / 应用自己的「复制」出口 / 切走窗口）。
-   这样在节点的输入框里按 Ctrl+V 不会被节点粘贴板抢走文字粘贴。 */
+   这样在节点的输入框里按 Ctrl+V 不会被节点粘贴板抢走文字粘贴。
+   nodeClipAt = 置真的时刻（配合下面的 NODE_PASTE_WINDOW_MS 判「还热乎」）。 */
 let nodeClipIsFresh = false;
+let nodeClipAt = 0;
+/* 画布节点里的输入框（节点正文框 / 参数框）按 Ctrl+V 时的抢与不抢，只有这一个开关：
+   这次复制节点还算不算「用户刚做完的动作」。窗口内 → 画布拿走这次 Ctrl+V 粘节点；
+   超时 / 用户做过任何文字复制（markNodeClipStale）→ 让编辑器原生粘贴文字。
+   为什么要这个窗口：点选一颗节点会把焦点落进它自己的正文框（保「点文字就能直接打字」），
+   之后按 Ctrl+V 若一律让给编辑器，就等于「复制了节点却粘不出来」—— 本轮修的 bug 现场
+   （旧口径只在 inField 之外才粘节点）。窗口给足 2 分钟：复制完节点出去转一圈回来仍能粘；
+   而想往框里粘文字的场景，一次文字复制（copy 事件 / 应用自己的复制出口）就把标记清了。 */
+const NODE_PASTE_WINDOW_MS = 120000;
+function markNodeClipFresh() {
+  nodeClipIsFresh = true;
+  nodeClipAt = Date.now();
+}
+function markNodeClipStale() {
+  nodeClipIsFresh = false;
+  nodeClipAt = 0;
+}
+/* 这次 Ctrl+V 能不能粘节点（节点输入框里也照粘）：粘贴板来源是节点，且还热乎 */
+function nodeClipPasteWanted() {
+  const clip = nodeClipboard || {};
+  if (!((clip.nodes || []).length + (clip.marks || []).length)) return false;
+  if (!nodeClipIsFresh) return false;
+  return Date.now() - nodeClipAt <= NODE_PASTE_WINDOW_MS;
+}
 /* 页面上那段选区是不是「用户真想复制的文字」：
+   · 输入控件自己的选区最先算（下面 ①，window.getSelection 看不见它）；
    · 画布之外的选区一律算（画布点击会先把残留选区清掉，这里不再二次猜测）；
    · 画布之内只有输入控件 / 可复制文本区 / 文字标注（.mk-text）才算 ——
      画布本身 user-select:none，别处留下的陈旧选区不能挡住「复制节点」。 */
 function textSelectionWantsNativeCopy() {
+  /* ① 输入控件「自己」的选区：textarea / input 内部的选区不进 window.getSelection()，
+     只看后者必然漏判 —— 节点正文框是真 textarea，用户拖选一段按 Ctrl+C，复制到的是节点。
+     光标停在某处（selectionStart === selectionEnd）不算选区。 */
+  const ae = document.activeElement;
+  if (ae && typeof ae.closest === "function" && ae.closest(EDITABLE_SEL)) {
+    const s = Number(ae.selectionStart);
+    const e = Number(ae.selectionEnd);
+    if (Number.isFinite(s) && Number.isFinite(e) && s !== e) return true;
+  }
   const sel = window.getSelection && window.getSelection();
   if (!sel || sel.isCollapsed || !String(sel).length) return false;
-  const EDITABLE =
-    'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]';
   for (const raw of [sel.anchorNode, sel.focusNode]) {
     if (!raw) continue;
     const el = raw.nodeType === 1 ? raw : raw.parentElement;
     if (!el || typeof el.closest !== "function") continue;
     if (!el.closest(".fn-canvas")) return true;
-    if (el.closest(EDITABLE) || el.closest(".mk-text") || el.closest(SELECTABLE_TEXT_HOSTS))
+    if (el.closest(EDITABLE_SEL) || el.closest(".mk-text") || el.closest(SELECTABLE_TEXT_HOSTS))
       return true;
   }
   return false;
@@ -18040,7 +18306,7 @@ function textSelectionWantsNativeCopy() {
     if (cb && typeof cb.writeText === "function") {
       const orig = cb.writeText.bind(cb);
       cb.writeText = function (t) {
-        nodeClipIsFresh = false;
+        markNodeClipStale();
         return orig(t);
       };
     }
@@ -18050,7 +18316,7 @@ function textSelectionWantsNativeCopy() {
     if (a && typeof a.clipboardWriteText === "function") {
       const orig = a.clipboardWriteText.bind(a);
       a.clipboardWriteText = function (t) {
-        nodeClipIsFresh = false;
+        markNodeClipStale();
         return orig(t);
       };
     }
@@ -18073,24 +18339,31 @@ function canvasClipboardKey(ev, key, inField) {
   /* 焦点就在画布节点的输入框里也算「画布」—— 点节点本来就会把焦点落到它上面；
      画布上的文字标注（.mk-text 富文本）是纯文字编辑，不在此列，一律让给浏览器。 */
   const inCanvasField = closest(".fn-canvas") && !closest(".mk-text");
+  /* inFieldHere = 「这次按键就发生在输入框里」（事件目标是 input / textarea / select /
+     contenteditable，keydown 那边算好传进来）—— 与「焦点元素在不在画布上」是两件事：
+     画布重绘后 activeElement 常漂到 BODY，只看焦点会漏判（见下面 Ctrl+V 分支）。 */
+  const inFieldHere = !!inField;
   if (textSelectionWantsNativeCopy()) {
-    if (key === "c") nodeClipIsFresh = false; /* 用户复制的是文字 */
+    if (key === "c") markNodeClipStale(); /* 用户复制的是文字 */
     return false;
   }
-  if (inField && !inCanvasField) return false; /* 会话 / 弹窗 / 设置等输入区：原生复制粘贴 */
+  if (inFieldHere && !inCanvasField) return false; /* 会话 / 弹窗 / 设置等输入区：原生复制粘贴 */
   if (key === "v") {
-    /* 节点自己的输入框里：最近复制的是节点才粘贴节点，否则让编辑器粘贴文字。
-       输入框内一律不介入「剪贴板图像」询问 —— 那里的粘贴归原生 / 内嵌图片逻辑
-       （见 app-inline-img.js 与提示词胶囊），本功能只在画布非编辑区发生。 */
-    if (inField) {
-      if (!nodeClipIsFresh) return false;
-      const clip = nodeClipboard || {};
-      if (!((clip.nodes || []).length + (clip.marks || []).length)) return false;
+    /* ① 画布节点里的输入框（节点正文框 / 参数框）：**刚复制过节点就照粘节点**。
+       点选一颗节点会把焦点落进它自己的正文框（保「点文字就能直接打字」），旧口径在这里
+       一律 return false 交给编辑器 —— 于是「点节点 → Ctrl+C → Ctrl+V」粘不出来，画布上
+       的节点看起来根本没法复制（本轮修的 bug）。判据收口在 nodeClipPasteWanted：
+       粘贴板来源是节点 + 还在窗口内；用户做过任何一次文字复制（copy 事件 / 应用自己的
+       复制出口 / 拖选文字按 Ctrl+C）标记立刻转「陈旧」，这里就退回原生粘贴文字。
+       输入框里仍不介入「剪贴板图像」询问 —— 那条路归原生 / 内嵌图片逻辑
+       （见 app-inline-img.js 与提示词胶囊）。 */
+    if (inFieldHere) {
+      if (!inCanvasField || !nodeClipPasteWanted()) return false;
       ev.preventDefault();
       pasteNodesFromClipboard();
       return true;
     }
-    /* 画布焦点：一律消费这次按键，交给 canvasPasteFromClipboard 判定
+    /* ② 画布焦点：一律消费这次按键，交给 canvasPasteFromClipboard 判定
        （「剪贴板里有没有图像」要先读一次剪贴板，同步判不出来：
         有图像 → 询问窗 / 关掉询问时直接建节点；没有 → 粘节点 / 空提示）。 */
     ev.preventDefault();
@@ -18102,10 +18375,11 @@ function canvasClipboardKey(ev, key, inField) {
     ev.preventDefault();
     copyNodesToClipboard();
     const clip = nodeClipboard || {};
-    nodeClipIsFresh = !!((clip.nodes || []).length + (clip.marks || []).length);
+    if ((clip.nodes || []).length + (clip.marks || []).length) markNodeClipFresh();
+    else markNodeClipStale();
     return true;
   }
-  if (!inField) {
+  if (!inFieldHere) {
     ev.preventDefault();
     toast(I18n.t("请先选中节点或绘制"), "warn");
     return true;
@@ -18748,7 +19022,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "music_gen", "yue_gen", "tts_gen", "video_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "music_gen", "yue_gen", "tts_gen", "breeze_gen", "video_gen", "video_upscale", "video_interp", "remotion"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
@@ -18770,12 +19044,13 @@ const KIND_TAGS = {
   input_file: "文件",
   db_table: "表",
   proc_text: "LLM",
-  proc_image: "文生图",
-  /* SenseNova 本地图像生成：与云端文生图同标签，靠节点名区分 */
-  sensenova_gen: "文生图",
+  proc_image: "图像生成",
+  /* SenseNova 本地图像生成：与云端图像生成同标签，靠节点名区分 */
+  sensenova_gen: "图像生成",
   music_gen: "音乐",
   yue_gen: "音乐",
   tts_gen: "语音",
+  breeze_gen: "语音",
   video_gen: "视频",
   remotion: "视频",
   net_recv: "接收",
@@ -19348,10 +19623,16 @@ function canvasCreateMenuGroups(pt) {
     [
       I18n.t("输入节点（仅输出）"),
       [
-        /* 文本 / 图像 / 音频 / 视频四种输入节点不再各占一条菜单项：统一从一个「文件节点」
-           进去 —— 上传什么类型的文件，就把它就地转成那种节点（app.js convertAnyNodeTo）。
-           四类节点本体一律保留：老画布照旧能开、能跑、能连，拖文件进画布空白处也照旧按
-           类型直接建对应节点；这里只是不再要求新手先想清楚「我要哪种输入节点」。 */
+        /* 文本节点单列一条、排在「文件节点」之上：只想写一段文字 / 摘一条路径时，不必先建
+           文件节点再转类型（图像 / 音频 / 视频三类的 kind 本体照旧保留，只是不各占一条菜单项：
+           统一从一个「文件节点」进去 —— 上传什么类型的文件，就把它就地转成那种节点
+           （app.js convertAnyNodeTo）。老画布照旧能开、能跑、能连，拖文件进画布空白处也照旧
+           按类型直接建对应节点；这里只是不再要求新手先想清楚「我要哪种输入节点」。） */
+        ctxKindItem(
+          "input_text",
+          I18n.t("文本节点（直接写文字 / 路径）"),
+          () => addNode("input_text", pt.x, pt.y),
+        ),
         ctxKindItem(
           "input_any",
           I18n.t("文件节点（上传任意文件 · 自动转为对应节点）"),
@@ -19396,10 +19677,10 @@ function canvasCreateMenuGroups(pt) {
             addNode("save_pdf", pt.x, pt.y),
           ),
         ]),
-        /* 图像生成：云端文生图（proc_image）与本地图像生成（SenseNova）收成二级菜单，
+        /* 图像生成：云端图像生成（proc_image）与本地图像生成（SenseNova）收成二级菜单，
            与「文本生成 / 视频生成 / 音频生成」同族写法（成员按后端命名） */
         ctxSubmenu(I18n.t("图像生成"), "proc_image", "proc-img", [
-          ctxKindItem("proc_image", I18n.t("文生图（云端服务商 · 图像生成）"), () =>
+          ctxKindItem("proc_image", I18n.t("图像生成（云端服务商）"), () =>
             addNode("proc_image", pt.x, pt.y),
           ),
           ctxKindItem(
@@ -19454,6 +19735,11 @@ function canvasCreateMenuGroups(pt) {
             I18n.t("SoVITS 语音生成（文本转语音 · GPT-SoVITS）"),
             () => addNode("tts_gen", pt.x, pt.y),
           ),
+          ctxKindItem(
+            "breeze_gen",
+            I18n.t("Breeze 语音生成（文本转语音 · Breeze TTS 2）"),
+            () => addNode("breeze_gen", pt.x, pt.y),
+          ),
         ]),
       ],
     ],
@@ -19498,6 +19784,29 @@ function canvasCreateMenuGroups(pt) {
                     () => addNode("function", pt.x, pt.y),
                   ),
                 ],
+              ),
+            ],
+          ],
+        ]
+      : []),
+    /* 「插件」一级菜单：用户自建插件（<数据目录>/user-plugins）声明出来的画布节点。
+       **只列当前可用（状态正常）的插件** —— 插件没装 / 被停用 / 不兼容时这里直接不出现，
+       而不是给一个点了报错的死条目。建图安全：节点外观、端子、执行全按清单走，
+       见 renderer/app-nodeplugins.js。 */
+    ...(allowToolMenu && typeof pluginNodeDefs === "function" && pluginNodeDefs().length
+      ? [
+          [
+            "",
+            [
+              ctxSubmenu(
+                I18n.t("插件"),
+                "tool",
+                "proc",
+                pluginNodeDefs().map((d) =>
+                  ctxKindItem(d.kind, I18n.t(pluginLabelOf(d.title) || d.id), () =>
+                    addNode(d.kind, pt.x, pt.y),
+                  ),
+                ),
               ),
             ],
           ],
@@ -20215,7 +20524,7 @@ async function promptBuildWorkflow(pt, retryState) {
   const sess = createWfBuildSession(state.agent);
   if (!sess) return;
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  await agentTouchSession();
   renderAgentSessionSidebar();
   updateRunQueuePanel();
   toast(
@@ -21126,12 +21435,13 @@ function bindCanvas() {
   /* 允许浏览器原生全选（Ctrl+A）的容器 = 模块级 SELECTABLE_TEXT_HOSTS（输入框由 inField 放行），
      与 Ctrl+C / Ctrl+V 的归属判定同源，定义见 canvasClipboardKey 那一段。
      再补两条复位：任何一次真正的文字复制 / 切走窗口，都把「节点粘贴板就是最新一次复制」
-     这个标记清掉 —— Ctrl+V 在节点输入框里据此判「粘贴文字」还是「粘贴节点」。 */
+     这个标记清掉 —— Ctrl+V 在节点输入框里据此判「粘贴文字」还是「粘贴节点」
+     （复位收口在 markNodeClipStale，口径见 nodeClipPasteWanted）。 */
   document.addEventListener("copy", () => {
-    nodeClipIsFresh = false;
+    markNodeClipStale();
   });
   window.addEventListener("blur", () => {
-    nodeClipIsFresh = false;
+    markNodeClipStale();
   });
 
   window.addEventListener("keydown", (ev) => {
@@ -21510,6 +21820,7 @@ const WIRE_DROP_TARGETS = [
   { kind: "music_gen", g: "处理节点" },
   { kind: "yue_gen", g: "处理节点" },
   { kind: "tts_gen", g: "处理节点" },
+  { kind: "breeze_gen", g: "处理节点" },
   { kind: "video_gen", g: "处理节点" },
   { kind: "video_upscale", g: "处理节点" },
   { kind: "video_interp", g: "处理节点" },
@@ -21980,8 +22291,11 @@ function openImageLightbox(path, title, opts) {
     return;
   }
   /* 内存里的图（剪贴板截图预览）走 data URL：还没落盘也能看大图；opts.above 用于
-     从 #mtDialog 询问窗里开灯箱（它的 z-index 比弹窗低，得临时抬一层，见 .img-lb-top） */
+     从 #mtDialog 询问窗里开灯箱（它的 z-index 比弹窗低，得临时抬一层，见 .img-lb-top）。
+     http(s) 直通（本轮需求）：应用详情的大图是**云端上架截图**，过去一律走
+     fileUrlWithBust → pathToFileURL("https://…") 会拼成一个坏地址（图打不开）。 */
   const isData = /^data:image\//i.test(p);
+  const isRemote = /^https?:\/\//i.test(p);
   let el = $("#imgLightbox");
   if (!el) {
     el = document.createElement("div");
@@ -22048,8 +22362,8 @@ function openImageLightbox(path, title, opts) {
     body.appendChild(g);
   };
   body.appendChild(img);
-  /* 内存图（剪贴板截图预览）直接用 data URL，真文件仍走 file:// + bust */
-  if (isData) img.src = p;
+  /* 内存图 / 云端图直接用原样地址（data URL 或 http(s)），真文件仍走 file:// + bust */
+  if (isData || isRemote) img.src = p;
   else img.src = fileUrlWithBust(p, Date.now());
   if (img.complete) ready();
   const foot = el.querySelector("#imgLbFoot");
@@ -22080,8 +22394,9 @@ function openImageLightbox(path, title, opts) {
   tool(I18n.t("适应窗口"), "整图适应窗口", () => lbFitView(body));
   tool("1:1", "原始大小", () => lbSetZoom(body, 1, 0, 0, true));
   foot.appendChild(tools);
-  /* 路径与「另存为…」只对真文件有意义：内存图（data URL）没有路径可显示、也无从另存 */
-  if (!isData) {
+  /* 路径与「另存为…」只对真文件有意义：内存图（data URL）没有路径可显示、也无从另存，
+     云端图（http(s)，如应用详情的上架截图）本机没有文件、saveImageAs 那条本机路径也走不通 */
+  if (!isData && !isRemote) {
     const pathHint = document.createElement("span");
     pathHint.className = "img-lb-path";
     pathHint.textContent = p;
@@ -22155,6 +22470,18 @@ async function saveImageAs(p) {
 }
 
 function assignDefaultProvider(node) {
+  /* 用户插件节点：模型类默认跟随全局默认文本服务商与模型（与 proc_text 同源） */
+  if (typeof isPluginKind === "function" && isPluginKind(node)) {
+    const d = pluginNodeDef(node) || {};
+    if ((d.call || {}).kind === "model") {
+      const prov = apiProvidersForKind("proc_text")[0];
+      if (prov) {
+        node.providerId = prov.id;
+        node.model = modelsOfKind(S.config, prov, "text")[0] || "";
+      }
+    }
+    return;
+  }
   if (node.kind === "proc_text" || node.kind === "remotion") {
     const prov = apiProvidersForKind("proc_text")[0];
     if (prov) {
@@ -22719,6 +23046,7 @@ async function stopNode(node) {
     node.kind === "yue_gen" ||
     node.kind === "sensenova_gen" ||
     node.kind === "tts_gen" ||
+    node.kind === "breeze_gen" ||
     node.kind === "video_gen" ||
     node.kind === "remotion" ||
     /* 视频后处理（超分 / 补帧）：与 video_gen 同走后端与全局媒体锁，停止口径一致 */
@@ -22727,8 +23055,31 @@ async function stopNode(node) {
     /* 单节点停止也要：关监视器 + 作废排队 + 取消主进程在途任务（释放大锁）。
        旧实现只把 running 置 false，串行队列 / 后端任务照跑，稍后节点又回到运行队列。
        语音（tts_gen）例外于「取消主进程任务」：GPT-SoVITS 无取消接口，靠 bumpNodeStop
-       让在途合成在返回时被作废（不写产物、不驱动下游）。 */
-    if (!node.running && !mediaGenWaiters.has(node.id)) return;
+       让在途合成在返回时被作废（不写产物、不驱动下游）。
+       breeze_gen 亦无取消接口（breeze/main-breeze.js 只走一次 HTTP：/v1/audio/speech），
+       停止=渲染层作废 + 断链，在途那条合成完即丢弃，不写节点状态、不驱动下游。 */
+    const queuedOnly = mediaGenWaiters.has(node.id);
+    if (!node.running && !queuedOnly) {
+      /* 既没在跑、也不在串行链上排队 —— 但它还挂着「等待中」（幽灵 pending：
+         一次被作废的排队 / 早先留下的残标记）时，点 ■ 必须能把它摘掉：
+         旧写法在这里直接 return，于是节点头部那对键（▶ 显示「排队等待中…」且点不动、
+         ■ 又根本不渲染）全都失效，用户看到的就是一个关不掉的「等待中」节点。 */
+      const hadPending = !!(S.pendingRun && S.pendingRun.has(node.id));
+      /* 照旧打停止标记（运行体在下一个检查点自行退出），状态位按「什么都没跑」清 */
+      bumpNodeStop(node);
+      clearPendingRun([node.id], { force: true });
+      try {
+        if (typeof sweepOrphanPendingRuns === "function") sweepOrphanPendingRuns();
+      } catch (_) {}
+      node.running = false;
+      node.error = null;
+      renderCanvas();
+      renderStatus();
+      updateRunQueuePanel();
+      if (!hadPending)
+        toast(I18n.t("该节点没有正在运行或排队中的任务"), "warn");
+      return;
+    }
     if (mediaGenWaiters.has(node.id)) {
       mediaGenWaiters.delete(node.id);
       /* force：本节点是显式停止的，等待态必须立刻摘掉（默认会为「仍在串行链上排队」的
@@ -22744,6 +23095,7 @@ async function stopNode(node) {
     else if (node.kind === "yue_gen") node.yueStatus = I18n.t("已取消");
     else if (node.kind === "sensenova_gen") node.sensenovaStatus = I18n.t("已取消");
     else if (node.kind === "tts_gen") node.ttsStatus = I18n.t("已取消");
+    else if (node.kind === "breeze_gen") node.breezeStatus = I18n.t("已取消");
     else if (node.kind === "video_gen" || isVideoPostKind(node))
       node.videoStatus = I18n.t("已取消");
     else node.remotionStatus = I18n.t("已取消");
@@ -22758,11 +23110,13 @@ async function stopNode(node) {
               ? "已取消图像生成"
               : node.kind === "tts_gen"
                 ? "已取消语音合成"
-                : node.kind === "video_gen"
-                  ? "已取消视频生成"
-                  : isVideoPostKind(node)
-                    ? "已取消视频后处理"
-                    : "已取消 Remotion 渲染",
+                : node.kind === "breeze_gen"
+                  ? "已取消语音合成"
+                  : node.kind === "video_gen"
+                    ? "已取消视频生成"
+                    : isVideoPostKind(node)
+                      ? "已取消视频后处理"
+                      : "已取消 Remotion 渲染",
       ),
       "warn",
     );
@@ -22907,6 +23261,30 @@ function stripLinkTrailPunct(s) {
   );
 }
 
+/* 网址停止符（字符类片段）：空白与 <>& 之外，**中文（汉字 / 假名 / 谚文）与全角符号一律不进网址**。
+   会话正文里「网址后紧跟中文」或「中文括号里夹一条网址」太常见了：停止符缺了这一档，href 会把
+   后面那串中文一起吃进去，用户点开就是一条打不开的死链（结尾标点另有 stripLinkTrailPunct 剥）。
+   它是下面 linkifyEscapedText 里 URL 那一支的真源，别再往那个字符类里手抄一份。 */
+const MT_URL_STOP =
+  "\\s<>&\\u3000-\\u303f\\uff01-\\uff5e\\u4e00-\\u9fff\\u3400-\\u4dbf\\u3040-\\u30ff\\uac00-\\ud7af";
+
+/* 已经由 marked 解析出来的 <a>…</a> 先盖起来（换成占位符、原文存进 store），链接化只处理其余
+   文本，收尾由调用方回填 —— 否则 <a href="x">x</a> 里的裸网址会被兜底再包一层，产出嵌套的坏标签
+   （同一网址出现两次、点开行为也乱）。 */
+function maskAnchorsForLinkify(html, store) {
+  const s = String(html || "");
+  const re = /<a\b[^>]*>[\s\S]*?<\/a>/gi;
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(s))) {
+    out += s.slice(last, m.index) + "\u0000" + store.length + "\u0000";
+    store.push(m[0]);
+    last = m.index + m[0].length;
+  }
+  return out + s.slice(last);
+}
+
 /* 会话正文里的「相对文件路径」（renderer/app-fileview.js、dsh/DESIGN.md 这种）才做成链接：
    必须带一层以上目录 + 认得出的扩展名。两条都满足才认 —— 正文里光溜溜的 "app.js" 或
    "main" 太容易和普通词撞上，宁可不做，也不把满屏普通词变成链接。 */
@@ -22915,10 +23293,18 @@ const MT_RELPATH_EXT =
 
 /* 在已转义的纯文本片段中识别 URL / 本地路径 / 相对文件路径，包成可点击链接 */
 function linkifyEscapedText(text) {
-  const src = String(text || "");
+  let src = String(text || "");
   if (!src) return src;
-  const re =
-    /https?:\/\/[^\s<&]+|file:\/\/\/?[^\s<&]+|(?:[A-Za-z]:(?:\\|\/)|\\\\[^\\\s<&]+)[^\s<&|?*]+|(?<![\w.@~+$\-\\/])((?:[\w.@~+$-]+[\\/])+[\w.@~+$-]+\.[A-Za-z]\w{0,7})/g;
+  /* marked 已经解析出的 <a> 先盖起来，收尾原样回填（见 maskAnchorsForLinkify） */
+  const anchors = [];
+  if (src.indexOf("<a") !== -1) src = maskAnchorsForLinkify(src, anchors);
+  /* URL 那一支的字符类由 MT_URL_STOP 拼出来（中文 / 全角即止，见上），其余三支与原来一致 */
+  const re = new RegExp(
+    "https?:\\/\\/[^" +
+      MT_URL_STOP +
+      "]+|file:\\/\\/\\/?[^\\s<&]+|(?:[A-Za-z]:(?:\\\\|\\/)|\\\\\\\\[^\\\\\\s<&]+)[^\\s<&|?*]+|(?<![\\w.@~+$\\-\\\\/])((?:[\\w.@~+$-]+[\\\\/])+[\\w.@~+$-]+\\.[A-Za-z]\\w{0,7})",
+    "g",
+  );
   let out = "";
   let last = 0;
   let m;
@@ -22950,6 +23336,8 @@ function linkifyEscapedText(text) {
     last = m.index + m[0].length;
   }
   out += src.slice(last);
+  if (anchors.length)
+    out = out.replace(/\u0000(\d+)\u0000/g, (_m, n) => anchors[Number(n)]);
   return out;
 }
 
@@ -23283,13 +23671,13 @@ function applyYamlViewerChrome() {
     eb.textContent = _yamlViewerState.editing ? I18n.t("取消编辑") : I18n.t("编辑");
     eb.title = _yamlViewerState.editing
       ? I18n.t("放弃修改，回到预览")
-      : I18n.t("编辑并保存此文件（Ctrl+S 保存）");
+      : I18n.t("编辑并保存此文件");
     eb.classList.toggle("on", !!_yamlViewerState.editing);
   }
   const sb = host.querySelector("#yamlViewerSaveBtn");
   if (sb) {
     sb.textContent = I18n.t("保存");
-    sb.title = I18n.t("写回文件（Ctrl+S）");
+    sb.title = I18n.t("写回文件");
     sb.disabled = !_yamlViewerState.editing;
   }
 }
@@ -25301,6 +25689,11 @@ async function runBgRmSecondPass(node, spec, basePath, itemTitle, attemptT) {
   );
   if (!res || !res.ok || !res.path)
     throw new Error((res && res.error) || I18n.t("第 2 通道写入失败"));
+  /* 中转图像计费「按张」：第 2 通道是一次**真实调用**（中转服务端按 2 次计费），得跟第 1 通道
+     分开记一张 —— app-nodes.js 出图成功后那句 tokNoteImageCall 只记了第 1 通道那一张，
+     漏记这一张时台账里的图像张数与费用会比实际少一半。口径与 app-nodes.js:459 一致：
+     写盘成功才算一次调用。 */
+  tokNoteImageCall(node, spec, 1);
   return res.path;
 }
 /* 图像生成节点出图后的收尾：① 透明背景开启时内部自动补第 2 通道并抠图；
@@ -26946,7 +27339,7 @@ function refreshThinkingUI(nid) {
   if (icon) {
     icon.classList.toggle("show", !!has);
     icon.classList.toggle("live", !!has && !!node.running);
-    icon.textContent = node.running ? I18n.t("◉ 思考中") : I18n.t("◉ 思考");
+    icon.textContent = node.running ? I18n.t("思考中") : I18n.t("思考");
   }
   if (
     node &&
@@ -26966,7 +27359,8 @@ function refreshThinkingUI(nid) {
       const pre = document.getElementById("thinkPre");
       if (pre) {
         const pKey = "thinkPre:" + nid;
-        pre.textContent = traceThinkDisplay(nid, thinkingTextOf(node));
+        /* 正文按 Markdown 重绘（不再写纯文本）：复制仍读 textContent，字体没有符号变体问题 */
+        pre.innerHTML = thinkMdHtml(traceThinkDisplay(nid, thinkingTextOf(node)));
         /* 思考弹窗自身限高滚动：贴底才跟随最新内容，用户上翻后不再被拽回 */
         if (pre._convStickBound) stickScrollToBottom(pre);
         else restoreStickPos(pre, pKey);
@@ -26982,6 +27376,30 @@ function refreshThinkingUI(nid) {
   }
 }
 
+/* ── 思考内容弹窗的正文渲染（本次需求）───────────────────────────────────────
+   用户口径：思考弹窗**不再用纯灰色等宽小字**，改成正常的 Markdown 阅读模式 ——
+   标题 / 列表 / 代码块 / 表格按结构排版，正文字号与行高与别处的阅读区同一档。
+   走应用唯一那份 Markdown 渲染入口（app.js 的 renderMarkdown，含公式与安全过滤）；
+   渲染器拿不到（老构建 / 切片冒烟）就回落成转义后的纯文本，绝不白框。 */
+function thinkMdHtml(raw) {
+  const s = raw == null ? "" : String(raw);
+  if (!s.trim()) return "";
+  try {
+    if (typeof renderMarkdown === "function") {
+      const h = renderMarkdown(s);
+      if (h) return h;
+    }
+  } catch (_) {}
+  return escapeHtml(s);
+}
+/* 思考弹窗的正文框：.think-doc（皮肤）+ .md-viewer-doc（应用内阅读器同一套版式）。
+   正文走 innerHTML，复制按 textContent 取纯文本。 */
+function thinkDocEl() {
+  const doc = document.createElement("div");
+  doc.id = "thinkPre";
+  doc.className = "think-doc md-viewer-doc";
+  return doc;
+}
 /* 点击思考 icon：弹窗上半 = 「思考」（文本 / 智能任务节点是模型 reasoning，按步分段，
    不含工具行；本地图像节点 sensenova_gen 是出图前先写的规划文本 think，随生成回执取回），
    下半 = 「输出」（工具调用轨迹，走已有 #thinkTools 区） */
@@ -27015,10 +27433,8 @@ function showThinking(node) {
     ? I18n.t("思考 · 出图前的规划文本")
     : I18n.t("思考 · 模型 reasoning");
   bodyEl.appendChild(thinkTitle);
-  const pre = document.createElement("pre");
-  pre.id = "thinkPre";
-  pre.className = "think-pre";
-  pre.textContent = traceThinkDisplay(node.id, thinkingTextOf(node));
+  const pre = thinkDocEl();
+  pre.innerHTML = thinkMdHtml(traceThinkDisplay(node.id, thinkingTextOf(node)));
   bodyEl.appendChild(pre);
   /* 重开弹窗：搬回上次关掉时的阅读位置；首次打开无快照 → 按「跟随」贴底 */
   restoreStickPos(pre, "thinkPre:" + node.id);
@@ -27066,9 +27482,8 @@ function showMsgThinking(node, msg) {
   hint.textContent =
     I18n.t("以下为模型生成该条回复前的思考内容（随对话记录保存）。");
   bodyEl.appendChild(hint);
-  const pre = document.createElement("pre");
-  pre.className = "think-pre";
-  pre.textContent = (msg && msg.reasoning) || "";
+  const pre = thinkDocEl();
+  pre.innerHTML = thinkMdHtml((msg && msg.reasoning) || "");
   bodyEl.appendChild(pre);
   const foot = $("#ovFoot");
   const close = document.createElement("button");
@@ -30041,6 +30456,10 @@ function scheduleSave(immediate) {
 
 /* 窗口失焦 / 关闭前立即落盘：确保最后的输出/编辑一定写入存档 */
 function flushNow() {
+  /* 会话的 500 ms 合并窗口也在这一步收口（本次需求）：窗口失焦 / 关闭前一定要把
+     排队的会话改动写下去 —— 否则强退会丢掉最后一个窗口内的改动。放在画布那两行
+     之前，因为下面那句 `if (!S.wf) return` 在没打开画布时直接返回。 */
+  if (typeof agentFlushSessionSave === "function") Promise.resolve(agentFlushSessionSave()).catch(() => {});
   if (!S.wf) return;
   clearTimeout(S.saveTimer);
   persist();
@@ -30325,11 +30744,25 @@ function migrateWf(wf) {
       n.kind === "yue_gen" ||
       n.kind === "sensenova_gen" ||
       n.kind === "tts_gen" ||
+      n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
       n.kind === "remotion"
     ) {
       if (n.attempts == null) n.attempts = 1;
+    }
+    /* Breeze 语音节点：字段归一（能力档 / cfg_scale 区间 / 种子整数 / 输出格式 wav|flac|mp3） */
+    if (n.kind === "breeze_gen") {
+      const bm = String(n.voiceMode || "auto");
+      n.voiceMode = ["auto", "clone", "design", "direction"].indexOf(bm) >= 0 ? bm : "auto";
+      const bc = Number(n.cfgScale);
+      n.cfgScale = isFinite(bc) && bc > 0 ? Math.max(0.1, Math.min(10, bc)) : 1;
+      const bsd = Math.floor(Number(n.seed));
+      n.seed = isFinite(bsd) ? bsd : 42;
+      const bf = String(n.ttsFormat || "wav").toLowerCase();
+      n.ttsFormat = ["wav", "flac", "mp3"].indexOf(bf) >= 0 ? bf : "wav";
+      if (n.voice == null) n.voice = "";
+      if (n.instruction == null) n.instruction = "";
     }
     /* SenseNova 图像节点：字段归一（画幅只认官方 11 个训练桶 · 显存档位 / dtype / cfgNorm
        只认枚举值 · 数值全部夹到后端认可的区间），见 sensenovaNormalizeNode */
@@ -31113,11 +31546,21 @@ function openMetricsDistribution(metrics) {
     if (runCost) {
       const c = document.createElement("div");
       c.className = "tok-badge-meta metrics-cost-line tok-badge-cost";
-      c.textContent =
-        I18n.t("本次费用") +
-        ": ≈" +
-        (typeof fmtMoney === "function" ? fmtMoney(runCost.amount, runCost.currency) : "—") +
-        (runCost.estimated ? "*" : "");
+      /* 费用行走**节点版**（costMoneyEl，app-cost.js）：中转 / 币路由要带上鲸圆币图标 ——
+         文本版 fmtMoney 只给裸数字，跟上面三张表的 tokCostMarkEl 就不是一个口径了。
+         元件缺席（老包 / 沙箱）时退回原来的文本拼装，文案逐字不变。 */
+      if (typeof costMoneyEl === "function")
+        c.append(
+          I18n.t("本次费用") + ": ≈",
+          costMoneyEl(runCost.amount, runCost.currency),
+          runCost.estimated ? "*" : "",
+        );
+      else
+        c.textContent =
+          I18n.t("本次费用") +
+          ": ≈" +
+          (typeof fmtMoney === "function" ? fmtMoney(runCost.amount, runCost.currency) : "—") +
+          (runCost.estimated ? "*" : "");
       /* 「？」口径入口：为什么这里的估算会高于实际消费（app-cost.js costHelpEl） */
       const why = typeof costHelpEl === "function" ? costHelpEl() : null;
       if (why) c.appendChild(why);
@@ -31216,7 +31659,7 @@ async function forkAgentSession(id) {
   if (gIdx < 0) gIdx = 0;
   list.splice(gIdx, 0, copy);
   S.agentActiveId = copy.id;
-  await persistAgentSession();
+  await agentTouchSession();
   renderAgentSessionSidebar();
   renderAgentSession();
   toast(I18n.t("已分支新会话：") + copy.title, "ok");
@@ -31471,7 +31914,7 @@ function devNodeContractText(node, req, opts) {
   if (node && node.devGrill === true) {
     lines.push(
       I18n.t(
-        "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。",
+        "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description；某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；收尾那张确认卡按固定格式写：question 第一行只放一句话题面（如「以上共识是否无误？」），空行之后是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 卡片会把它渲染进「📋 总结」区；选项只留推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」两项，措辞随交流语言；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。",
       ),
     );
   }
@@ -31706,7 +32149,7 @@ async function openBoundDevSession(node) {
     return;
   }
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  await agentFlushSessionSaveQuiet();
   scheduleSave(true);
   setView("agent");
 }
@@ -31826,7 +32269,7 @@ async function startDevSessionWithText(node, text) {
   if (!sess) return;
   if (node.devStatus !== "done") node.devStatus = "wip";
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  await agentTouchSession();
   scheduleSave(true);
   renderCanvas();
   /* 功能块刚绑上这条开发会话：运行队列按「自身 / 绑定会话」口径立刻重算一次 */
@@ -31881,7 +32324,7 @@ async function startDevAskSession(node, question) {
     if (contract) sess._devContract = contract;
     sess.updatedAt = Date.now();
     S.agentActiveId = sess.id;
-    await persistAgentSession();
+    await agentTouchSession();
     scheduleSave(true);
     try {
       await agentSessionSend(q);
@@ -31919,7 +32362,7 @@ async function startDevAskSession(node, question) {
   list.unshift(sess);
   node.devAskSessionId = sess.id;
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  await agentTouchSession();
   scheduleSave(true);
   renderCanvas();
   /* 会话已开始运行：左下角运行队列立刻补上这一行（点行即可进会话看回答） */
@@ -31958,14 +32401,21 @@ async function expandAgentTaskToSession(node) {
   if (!sess) return;
   /* 运行中由 live 行展示思考/工具/正文,不把半成品写成已完成消息 */
   const r = selResult(node);
+  /* added = 这一次真往会话里补写了一条结果正文（实质内容）。去重命中 → 什么都不写
+     → 这次点开就只是「看一眼」：不盖时间戳、不把这条会话顶到左栏最前。 */
+  let added = false;
   if (!node.running && r && r.output && r.output.kind === "text") {
     const hasAi = sess.messages.some(
       (m) => m.role === "assistant" && m.content === r.output.text,
     );
-    if (!hasAi) sess.messages.push(assistantMsgFromNode(node, r.output.text));
+    if (!hasAi) {
+      sess.messages.push(assistantMsgFromNode(node, r.output.text));
+      added = true;
+    }
   }
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  if (added) await agentTouchSession();
+  else await agentFlushSessionSaveQuiet();
   scheduleSave(true);
   setView("agent");
   toast(I18n.t("已扩展为智能会话（内容完全同步）"), "ok");
@@ -31978,14 +32428,21 @@ async function openRemotionSession(node) {
   const sess = ensureAgentSessionForNode(node);
   if (!sess) return;
   const recap = remotionSessionRecapText(node);
+  /* added = 这一次真补写了一条生成记录（实质内容）；已经看过一遍再点开 —— 去重命中、
+     什么都不写 —— 就只是「看一眼」，绝不盖时间戳、不把这条会话顶到左栏最前。 */
+  let added = false;
   if (recap) {
     const hasAi = sess.messages.some(
       (m) => m.role === "assistant" && m.content === recap,
     );
-    if (!hasAi) sess.messages.push(assistantMsgFromNode(node, recap));
+    if (!hasAi) {
+      sess.messages.push(assistantMsgFromNode(node, recap));
+      added = true;
+    }
   }
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  if (added) await agentTouchSession();
+  else await agentFlushSessionSaveQuiet();
   scheduleSave(true);
   setView("agent");
   toast(I18n.t("已打开会话：可查看过程与编辑迭代"), "ok");
@@ -32062,7 +32519,7 @@ function syncAgentTaskToSession(node, input, output) {
   sess._pending = "";
   sess._liveTools = [];
   sess.updatedAt = Date.now();
-  persistAgentSession().catch(() => {});
+  agentTouchSession().catch(() => {});
 }
 function syncAgentTaskFromSession(sessionId) {
   if (!S.wf) return;

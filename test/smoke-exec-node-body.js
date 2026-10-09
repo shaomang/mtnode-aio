@@ -5,9 +5,11 @@
  * 本轮需求：执行节点绑定文件后，body 不再显示图标，执行按钮充满整个 body（原图标位让给按钮）。
  * 覆盖（真跑 app-canvas.js 的 buildBody 执行节点分支）：
  *   [1] 已绑定：body 无 .exec-title-row / .exec-body-icon / .exec-path-row，按钮一点即执行
- *   [2] 已绑定：按钮 tooltip 收着路径与结果（不再占 body 版面），两段式预备态仍在
+ *   [2] 已绑定：按钮 tooltip 收着路径与结果（不再占 body 版面），**一次点击就执行**
+ *       （本轮 bug：用户报「点击一次开始经常无效，需要点第二次」—— 旧的两段式预备态
+ *        `.armed` 已删除，第一下点击必须真的 runExecuteNode，不再只是染绿）
  *   [3] 未绑定：保留图标 + 绑定引导，按钮置灰不可点（不误执行）
- *   [4] 接线：app-canvas.js 分支与 canvas.css / i18n.js 词条齐备
+ *   [4] 接线：app-canvas.js 分支与 canvas.css / i18n.js 词条齐备（预备态词条已删除）
  */
 const fs = require("fs");
 const path = require("path");
@@ -173,17 +175,17 @@ ok(!!btn1 && btn1.title.indexOf("C:\\Tools\\run.bat") >= 0, "按钮 tooltip 收�
 
 ok(!!btn1 && btn1.className.indexOf("disabled") < 0, "已绑定 → 不带 disabled 类");
 
-console.log("\n[2] 已绑定：两段式预备态 / 运行中 / 状态行");
+console.log("\n[2] 已绑定：一次点击即执行 / 运行中 / 状态行");
 calls.run = 0;
 btn1.click();
-ok(calls.run === 0, "第一次点击不直接执行（预备态）");
+ok(calls.run === 1, "第一次点击就执行（runExecuteNode 被调用一次）");
+ok(btn1.title.indexOf("再次点击执行") < 0, "tooltip 不再提示「再次点击」（两段式已废）");
 const bodyArmed = build({ id: "e1", kind: "execute", execPath: "C:\\Tools\\run.bat", _armed: true });
 const btnArmed = all(bodyArmed).find((e) => e.className.indexOf("exec-play") >= 0);
-ok(!!btnArmed && btnArmed.className.indexOf("armed") >= 0, "预备态仍带 .armed（绿底金键）");
-ok(!!btnArmed && btnArmed.title.indexOf("再次点击执行") >= 0, "预备态 tooltip 提示再点一次");
+ok(!!btnArmed && btnArmed.className.indexOf("armed") < 0, "旧档残留的 _armed 不再渲染 .armed（老画布也一键执行）");
 calls.run = 0;
 btnArmed.click();
-ok(calls.run === 1, "预备态第二次点击 → 真执行 runExecuteNode");
+ok(calls.run === 1, "带 _armed 残留时同样一次点击执行");
 const bodyRun = build({ id: "e1", kind: "execute", execPath: "C:\\a.exe", running: true });
 const btnRun = all(bodyRun).find((e) => e.className.indexOf("exec-play") >= 0);
 ok(!!btnRun && btnRun.className.indexOf("running") >= 0 && btnRun.innerHTML === "…", "运行中按钮显示 … 且带 .running");
@@ -222,20 +224,24 @@ console.log("\n[4] 接线：源码 / 样式 / 英文词条");
 ok(CANVAS.indexOf("body.classList.add(bound ? \"exec-bound\" : \"exec-unbound\")") >= 0, "app-canvas.js：两态在 body 上盖章");
 ok(CANVAS.indexOf("const bound = !!String(node.execPath || \"\").trim();") >= 0, "app-canvas.js：按是否绑定文件分支");
 ok(CANVAS.indexOf("if (!bound) play.disabled = true;") >= 0, "app-canvas.js：未绑定置灰按钮");
+ok(CANVAS.indexOf("runExecuteNode(node);") >= 0 && CANVAS.indexOf("node._armed = true") < 0, "app-canvas.js：点击处理器直接 runExecuteNode（不再置 _armed）");
 const CSS = read("renderer/css/canvas.css");
 ok(CSS.indexOf(".n-body.exec-bound") >= 0, "canvas.css：.n-body.exec-bound 让按钮铺满 body");
 ok(CSS.indexOf(".exec-play.disabled") >= 0, "canvas.css：置灰态样式");
-ok(CSS.indexOf(".exec-play.armed") >= 0 && CSS.indexOf(".exec-body-icon") >= 0, "canvas.css：预备态与未绑定图标样式保留");
+ok(CSS.indexOf(".exec-play.armed") < 0 && CSS.indexOf(".exec-body-icon") >= 0, "canvas.css：预备态样式已删（未绑定图标样式保留）");
 const I18N = read("renderer/i18n.js");
 [
   "点击执行（或双击节点直接执行）",
-  "再次点击执行（或双击节点直接执行）",
   "点击执行 · 双击节点也可执行",
   "执行：",
   "正在启动…（按钮可继续点，启动过程不会中断）",
 ].forEach((k) => {
   const at = I18N.indexOf(JSON.stringify(k) + ":");
   ok(at >= 0, "i18n.js 有词条：" + k);
+});
+/* 预备态词条必须一并清掉：留着就是「词条说要点两下、实现只点一下」的假口径 */
+["再次点击执行（或双击节点直接执行）", "点击预备执行（播放键变为绿色背景 · 金色高亮），再次点击执行该文件；或直接双击执行"].forEach((k) => {
+  ok(I18N.indexOf(JSON.stringify(k) + ":") < 0, "i18n.js 已删除旧预备态词条：" + k);
 });
 
 console.log("\n" + (fails ? "FAILED " + fails + "/" + checks : "ALL PASS " + checks + " checks"));

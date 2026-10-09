@@ -228,6 +228,9 @@ const APP_FNS = [
   "nodeByIdIn",
   "isControlKind",
   "wireFromIsControl",
+  /* 控制判定的兜底分支在 nodeEmitsControlOnPort（app.js 定义在更前面）：漏抽它，
+     沙箱里 wireFromIsControl 一被执行就整只崩（ReferenceError，崩点之后全不跑）。 */
+  "nodeEmitsControlOnPort",
   /* 控制判定现在会问工具 / 函数节点的控制出端子 */
   "fnToolOutPortIsControl",
   "fnToolInPortIsControl",

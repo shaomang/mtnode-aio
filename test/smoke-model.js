@@ -172,6 +172,8 @@ let MERGED_FAILED = false;
       menuRef: menu,
       agentSessionState: () => st,
       persistAgentSession: () => {},
+      /* 本轮口径：会话落盘分两个入口（touch 会盖时间戳）—— 本测试只关心开关真的写进会话 */
+      agentTouchSession: () => {},
       renderAgentSession: () => {},
       renderAgentSessionSidebar: () => {},
       preferredAgentProviderRoute: () => "mtnode_a",

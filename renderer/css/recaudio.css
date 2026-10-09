@@ -1,0 +1,89 @@
+/* 音频节点「现场录制」样式 —— renderer/app-recaudio.js 专用
+   两块：① 居中录音面板（#ovBody 里的 .rec-*：实时声波 / 计时 / 落点 / 两个出口）；
+        ② 画布上那张节点的录制态（操作行那枚 .n-rec-btn + body 尾部的 .n-rec-badge）。
+   亮色覆盖在末尾。 */
+
+/* ---- ① 录音面板 ---- */
+.rec-wave {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: 160px;
+  margin: 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.28);
+}
+.rec-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 10px 0 2px;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums; /* 计时数字不跳宽 */
+}
+/* 录制中的红点：只做静态圆点（呼吸动画在部分主题下反而像卡住） */
+.rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff7b72;
+  box-shadow: 0 0 6px rgba(255, 123, 114, 0.7);
+}
+.rec-time {
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.rec-state {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.rec-dest {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  opacity: 0.72;
+  word-break: break-all;
+}
+.rec-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.6;
+  opacity: 0.6;
+}
+
+/* ---- ② 节点：录制按钮与录制中徽标 ---- */
+.wf-node.in-media .n-av-ops .n-rec-btn {
+  color: #ff9f9a;
+  border-color: rgba(255, 123, 114, 0.35);
+}
+.wf-node.in-media .n-av-ops .n-rec-btn:hover:not(:disabled) {
+  color: #ff7b72;
+  border-color: rgba(255, 123, 114, 0.62);
+}
+.wf-node.in-media .n-av-ops .n-rec-btn:disabled {
+  color: #ff7b72;
+  border-color: rgba(255, 123, 114, 0.45);
+  opacity: 0.9;
+}
+.n-rec-badge {
+  margin-top: 6px;
+  padding: 2px 8px;
+  align-self: flex-start;
+  border-radius: 9px;
+  background: rgba(255, 123, 114, 0.18);
+  color: #ff7b72;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 亮色主题覆盖 ---- */
+body.theme-light .rec-wave {
+  border-color: rgba(0, 0, 0, 0.14);
+  background: rgba(0, 0, 0, 0.05);
+}
+body.theme-light .n-rec-badge {
+  background: rgba(207, 34, 46, 0.12);
+  color: #cf222e;
+}

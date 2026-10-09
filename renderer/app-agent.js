@@ -1377,7 +1377,8 @@ function tokRoundTitleOf(text, opts) {
   return { title: s.length > n ? s.slice(0, n) : s, from: "input" };
 }
 
-/* 台账持久化：会话进 config.agentSessions，助手进 config.assistTokenReport，节点进工作流 */
+/* 台账持久化：会话走 agent-sessions/（persistAgentSession → session:save），
+   助手进 config.assistTokenReport，节点进工作流 */
 function tokPersist(owner) {
   if (!owner) return;
   try {

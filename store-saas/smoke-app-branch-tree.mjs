@@ -159,6 +159,8 @@ function makeZip(html) {
   return Buffer.concat([local, name, body, central, name, end]);
 }
 const ZIP_B64 = makeZip("<!doctype html><html><body>smoke</body></html>").toString("base64");
+/* 第二份**内容不同**的包：同版本号「就地覆盖」要能换掉旧包（新 sha256 ≠ 旧 sha256） */
+const ZIP2_B64 = makeZip("<!doctype html><html><body>smoke v2 fixed</body></html>").toString("base64");
 
 /* ── 服务端进程 ── */
 const srv = spawn(process.execPath, [path.join(HERE, "server.mjs")], {
@@ -345,6 +347,81 @@ async function main() {
   const sumFork = await req("GET", "/api/tips/summary?kind=app&ids=demo-fork-x");
   const forkCell = (sumFork.data.items || [])[0] || {};
   ok(Number(forkCell.count) === 2, "按它的 id 查打赏汇总：读到的仍是全族累计（2 次）");
+
+  /* ── [7] 目录可见性与「同版本就地覆盖」 ────────────────────────────────────────
+     现场：上传者把应用删到一版不剩（版本删光 = 彻底删除那条分支）之后又传了几版，
+     目录里却永远看不到它 —— 「上传成功、商店里没有」。
+     本轮口径：作者侧**没有下架这条路**了（unpublish / publish 路由已删除），
+     所以这一节钉的是「旧路径如实回 404 + 上传与可见性照常」。 */
+  section("[7] 目录可见性：作者侧下架已下线，上传与可见性照常");
+  const offA = await req("POST", "/api/apps/demoapp/unpublish", {}, ta);
+  ok(offA.status === 404, "旧路径 POST /unpublish 已下线（404）—— 作者没有「先撤下」这条退路");
+  const catOff = await req("GET", "/api/apps/catalog");
+  ok(
+    (catOff.data.apps || []).some((x) => x.id === "demoapp" && String(x.ownerId) === U.a.id),
+    "没下过架 → A 那一支照常在公开目录里",
+  );
+  /* A 追加一版（内容不同的包，版本号与线上相同 = 同号就地覆盖） */
+  const overWrite = await req(
+    "POST",
+    "/api/apps/demoapp/versions",
+    {
+      acceptDeclaration: true,
+      version: "1.0.0",
+      parentVersion: "1.0.0",
+      zipBase64: ZIP2_B64,
+      entry: "index.html",
+    },
+    ta,
+  );
+  ok(overWrite.status === 200 && overWrite.data.ok === true, "同号重传一版：服务端接受（不再 409）");
+  ok(overWrite.data.replaced === true, "回执 replaced = true（这一版是就地覆盖，版本号不变）");
+  ok(overWrite.data.unchanged === false, "回执 unchanged = false（这次的包与旧包内容不同）");
+  const catBack = await req("GET", "/api/apps/catalog");
+  const backRow = (catBack.data.apps || []).find((x) => x.id === "demoapp" && String(x.ownerId) === U.a.id);
+  ok(!!backRow, "公开目录里能看到 A 那一支（一直在，且版本跟着更新）");
+  ok(
+    !!backRow && String(backRow.sha256 || "") === String((overWrite.data.item || {}).sha256 || "") &&
+      String(backRow.sha256 || "") !== "",
+    "目录里那一版就是刚传的包（sha256 与回执一致）",
+  );
+  const staticDoc = JSON.parse(fs.readFileSync(path.join(WEB_DIR, "catalog.json"), "utf8"));
+  ok(
+    (staticDoc.apps || []).some((x) => x.id === "demoapp" && String(x.ownerId) === U.a.id),
+    "静态目录 catalog.json 也在同一份口径里（客户端首选的正是它）",
+  );
+  /* 同一份包再传一次：同号同内容也要**接受**（幂等），并如实回 unchanged=true */
+  const sameAgain = await req(
+    "POST",
+    "/api/apps/demoapp/versions",
+    { acceptDeclaration: true, version: "1.0.0", zipBase64: ZIP2_B64, entry: "index.html" },
+    ta,
+  );
+  ok(
+    sameAgain.status === 200 && sameAgain.data.replaced === true && sameAgain.data.unchanged === true,
+    "同一份包同号再传：照样接受，且回执 unchanged = true（内容一模一样，如实说）",
+  );
+  /* 只改元信息（不带包）的 PATCH：**不**碰可见性（它本来就一直在目录里） */
+  const offAgain = await req("POST", "/api/apps/demoapp/unpublish", {}, ta);
+  ok(offAgain.status === 404, "旧的 unpublish 路径仍然只回 404（没有第二条可见性开关）");
+  const metaOnly = await req("PATCH", "/api/apps/demoapp", { title: "演示应用（只改标题）", acceptDeclaration: true }, ta);
+  ok(metaOnly.status === 200 && metaOnly.data.ok === true, "只改标题的 PATCH 成功");
+  ok(
+    metaOnly.data.replaced === false,
+    "只改元信息：replaced = false（没带包，不算上传新包）",
+  );
+  const catMeta = await req("GET", "/api/apps/catalog");
+  ok(
+    (catMeta.data.apps || []).some((x) => x.id === "demoapp" && String(x.ownerId) === U.a.id),
+    "改标题不影响可见性：它仍在公开目录里",
+  );
+  const backA = await req("POST", "/api/apps/demoapp/publish", {}, ta);
+  ok(backA.status === 404, "旧的 publish 路径同样已下线（404）");
+  const catBack2 = await req("GET", "/api/apps/catalog");
+  ok(
+    (catBack2.data.apps || []).some((x) => x.id === "demoapp" && String(x.ownerId) === U.a.id),
+    "没被动过可见性 → 公开目录里一直有它（作者侧不再有「撤下 / 放回」两个开关）",
+  );
 
   console.log("\n" + (fail ? "✗ 失败 " + fail + " 项" : "✓ 全部通过") + "（通过 " + pass + " / 失败 " + fail + "）");
   return fail ? 1 : 0;

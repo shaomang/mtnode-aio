@@ -1,3 +1,4 @@
+import { hotAppendRows } from "./hot-store.mjs";
 "use strict";
 /**
  * MTNode 中转站（服务端 · 内部测试用）—— DeepSeek 文本/识图 + gpt-image-2.5 图像。
@@ -746,6 +747,14 @@ export function createRelay(deps) {
     const arr = usageList();
     arr.push(rec);
     if (arr.length > USAGE_KEEP) arr.splice(0, arr.length - USAGE_KEEP);
+    /* 用量明细**当场追加落盘 + fsync**：不再靠 saveDb 把整份 db.json 重写一遍
+       （见 store-saas/hot-store.mjs 顶部注释）。落盘失败只记日志，不影响这一次调用。 */
+    try {
+      const w = hotAppendRows("relayUsage", [rec]);
+      if (w && typeof w.catch === "function") w.catch(() => {});
+    } catch (e) {
+      console.error("[relay] 用量落盘失败：" + ((e && e.message) || String(e)));
+    }
   }
 
   /**

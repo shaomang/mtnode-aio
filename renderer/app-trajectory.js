@@ -166,6 +166,10 @@
  *   [8] **按工具族上色**：轴上的块 = 一次工具调用，块色取「工具族」（TOOL_FAMILIES 按
  *       工具名粗分 9 族 + 兜底「其它」，色令牌 --dsh-fam-*）；列表里那一行的工具名同族
  *       同色；失败压过族色（轴上块与列表行同一口径），运行中的呼吸也走本块族色。
+ *       本次需求（会话-对话里「不同工具不同色，与轨迹一致」）：**族表与族色仍只在这里一份**
+ *       —— 会话里的工具卡（renderer/app-assist.js 的 dshToolFamilyClass）经本模块导出的
+ *       MTNodeTrajectory.familyOf / familyClassOf 取族，拿 "dsh-fam-" 前缀挂在 `.dsh-tool-chip`
+ *       与 `.dsh-seg-tool` 上（皮肤见 css/dsh.css），于是对话里的工具色与轴上 / 图例同族同色。
  *   [9] **图例**：轴脚下第二行，只列本会话（不是本屏）出现过的族 + 调用次数，固定顺序、
  *       只读不可点。
  *   [10] **多行**：主流（非子代理调用）固定从第 1 轨起用「第一个空闲轨」；子代理调用
@@ -847,6 +851,21 @@
   }
   function familyLabel(f) {
     return T((f || FAM_OTHER).label);
+  }
+  /* 带前缀的族类名备忘（"前缀\u0000族标识" → 类名）：一次会话里同族工具成百上千次渲染，
+     每次都重新拼串不值当；轨迹自己用空前缀、会话用 "dsh-fam-"，两份各存各的键，互不串台。 */
+  const famClassCache = Object.create(null);
+  /* 「族标识 → 带前缀的类名」（"read" → prefix + "read"）：**本模块仍是族与族色的唯一真源**，
+     会话那侧不另抄族表 —— 对话里的工具色与轨迹轴上的块 / 图例因此永远同族同色。
+     前缀可选（缺省空串）：轨迹自己用空串（既有 fam-* 类一字不改），会话用 "dsh-fam-"。
+     拿不到表 / 传空名一律回兜底族「其它」，绝不抛。 */
+  function famClassOf(id, prefix) {
+    const pre = prefix == null ? "" : String(prefix);
+    const fam = String(id || FAM_OTHER.id);
+    const key = pre + "\u0000" + fam;
+    let v = famClassCache[key];
+    if (!v) v = famClassCache[key] = pre + fam;
+    return v;
   }
   function fmtMs(ms) {
     const n = Number(ms) || 0;
@@ -3920,6 +3939,14 @@
     devOn,
     viewOf,
     setView,
+    /** 工具族查询（本次需求 · 会话-对话里「不同工具不同色」与轨迹同源的那一处）：
+     *  (工具名) → { id, label, res } —— 族表 TOOL_FAMILIES / 兜底「其它」的唯一出口。
+     *  会话渲染（renderer/app-assist.js 的 dshToolFamilyClass / dshToolFamilyLabel）**不另抄
+     *  一份族表**，按名取这一份；拿不到这个全局就只回兜底族（颜色退成灰，绝不抛）。 */
+    familyOf: (name) => toolFamilyOf(name),
+    /** (族标识, 前缀) → 带前缀的族类名；轨迹自己用空前缀（fam-*），会话用 "dsh-fam-"
+     *  （dsh-fam-read）。族色在 css/dsh-tokens.css 的 --dsh-fam-* 一族一条，两边取同一份令牌。 */
+    familyClassOf: (id, prefix) => famClassOf(id, prefix),
     noteUsage: (st, data) => pushTokLine(st, data),
     /** 每步 token 计划表（本次需求 · 明细优先）：检查器要按**选中的那一段自己的轮号**
      *  精确取明细（同一会话里第 1 轮的 step 1 与第 2 轮的 step 1 不能串台），

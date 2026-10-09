@@ -2,7 +2,7 @@
 
 ![diagram](img/tts_gen.svg)
 
-Right-click the canvas → **Process › Audio generation › SoVITS speech**. Turns text into **speech**: the backend is the local OpenAI-compatible service started by the “GPT-SoVITS speech” plugin. **Each run produces exactly one audio file** (`.wav` / `.mp3`) written to the node's own `outputPath` — no separate save node needed.
+Right-click the canvas → **Process › Audio generation › SoVITS speech**. Turns text into **speech**: the backend is the local OpenAI-compatible service started by the “GPT-SoVITS speech” plugin. **Each run produces exactly one audio file** (`.wav` / `.mp3`) written to the node's own `outputPath`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: port 0 = text to speak · port 1 = control input
@@ -11,7 +11,7 @@ Right-click the canvas → **Process › Audio generation › SoVITS speech**. T
 ## Options
 Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
 
-- **Output path**: audio destination (relative to workspace / super subfolder)
+- **Output path**: audio destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 - **Voice**: a name from the GPT-SoVITS voice library; empty = whatever the backend defaults to
 - **Speed**: 0.5 – 2.0 (default 1.0)
 - **Format**: `.wav` / `.mp3`

@@ -9,12 +9,21 @@
  *     ② 可选「AI 生成」：素材 = 应用 app.json（fileReadText）+ 入口页可见文本 + 目录文件清单，
  *        提示词只让模型回一段 JSON，剥 ``` 围栏 + 容错解析；解析不出 / 没有服务商就留空让用户手填，
  *        **绝不伪造元信息**；
- *     ③ 用户核对 / 编辑：标题（必填）、应用 id（按英文标题自动 slug，可手改；本地校验 2-64 位
- *        [a-z0-9._-]、不以符号开头、非 Windows 保留名）、说明、版本号、版本说明、标签、图标；
- *     ④ 截图：拍应用自己的窗口（主进程 appsShotWindow；窗口没开就提示先点「启动」）或从本机选图
- *        （<input type=file> + FileReader，不依赖桥）；最多 8 张，可删 / 可上下排序，首张 = 封面；
- *        **本轮起 8 张全部上传**（body.shotsBase64[]，服务端统一压缩到长边 1280 / 单张 ≤500KB
- *        并整批落盘；第 1 张同时当 iconBase64 作封面）；旧口径「只发第 1 张」已废弃，
+ *     ③ 用户核对 / 编辑：标题（必填）、应用 id（**默认锁定**：本机应用 id，或有上架留痕时 =
+ *        留痕里的云端 id；要改必须点「修改 id」再过一道二次确认 —— 改 id = 云端会新建一个应用，
+ *        不再追加版本，见 pubIdEnsure / pubIdUnlock）、说明、版本号、版本说明、标签、图标；
+ *     ④ 截图：**只在点「拍应用窗口」时才启动 / 才拍**（用户口径，本轮改的正是这条）——
+ *        开窗不再自动启动应用、不再自动拍第 1 张；点「拍应用窗口」时窗口没开 / 最小化会先
+ *        自动启动再拍（pubShotCapture / pubShotWindow），不必回开发页点一次「启动」；
+ *        也可以「从本机选图」
+ *        （<input type=file> + FileReader，不依赖桥）；最多 8 张，可删 / 可上下排序，**首张 = 封面**；
+ *        **8 张全部上传**（body.shotsBase64[]，每项是 base64 字符串或 { sha } 内容引用；
+ *        客户端先压一道：长边 2560 / 单张 ≤5MB，超 1MB 转 WebP(0.9)、不行退 JPEG(88)；
+ *        服务端再统一收边到长边 2560 并整批落进**内容寻址对象库**（同一张图全站一份），
+ *        另出长边 1280 的列表小图；第 1 张同时当 iconBase64（没有显式图标时它就顶图标位，
+ *        并按图标口径压到 512 长边 / ≤500KB）；服务端把
+ *        **第 1 张当商店封面**（卡片缩略图 icons/<主干>__shot.png，见 appCatalogEntry 的 thumb），
+ *        所以「截图传了却不当封面」不再出现；旧口径「只发第 1 张」已废弃，
  *        客户端与服务端同时升级、不做兼容 —— 见 store-saas/server.mjs 的 decodeAppShots。
  *        服务端体检：GET /api/apps/<id>/shots-diag（收了没有 / 落了几个文件 / 静态目录同步没有）。
  *     ⑤ 声明：契约 §7.3 的声明正文逐字展示 + 「我已阅读并同意，责任由我承担」勾选，
@@ -23,7 +32,12 @@
  *        sha256 与上一步对不上就报错、不提交）→ POST /api/apps（新建）或
  *        POST /api/apps/<id>/versions（线上已有同 id 应用 = 追加版本，带 parentVersion）。
  *        进度只用按钮状态文字与禁用态表达（storeRequest 没有真进度，不做假进度条）。
- *   上传成功后**不自动关窗**：回显线上条目（标题 / 版本 / 官网目录条目）+ 「再传一版」按钮。
+ *   上传成功后**不自动关窗**：回显线上条目（标题 / 版本 / 官网目录条目）+ 「再传一版」按钮；
+ *   同时把「云端 id / 上架账号 / 时间 / 版本」写进本机 app.json 的 cloud 字段（apps:setMeta）——
+ *   那是下次默认锁定 id 与离线状态下线上回落判定的唯一依据（见 renderer/app-apps.js 的 appsPublishTraceOf）。
+ *   文案口径（本轮需求）：**应用上架统一叫「上架」** —— 新上传（云端新建一条）与更新（往云端已有那条
+ *   追加一版）都叫上架；窗标题、状态条、主按钮与成功提示一律写「上架」，只有结果里如实标出这一版
+ *   是「新建应用」还是「追加版本」（pubUpdateMode 仍用来分辨这两件事，但不再切成两套叫法）。
  *
  * 【依赖哪些桥（全部 window.api.*；本文件不碰文件系统、不直连网络）】
  *   appsList / appsExportZip / appsReadZipBase64 / appsShotWindow / appsOpenApp / appsDevPreview /
@@ -55,13 +69,32 @@ const PUB_DECLARATION =
 
 const PUB_MAX_SHOTS = 8; /* 截图最多 8 张 */
 const PUB_ICON_MAX_BYTES = 500 * 1024; /* 图标上限（契约 §一：png/jpeg/webp ≤500KB） */
+/* 截图（大图）口径 —— 与服务端 MAX_APP_SHOT_BYTES / APP_SHOT_MAX_EDGE / APP_SHOT_LIST_EDGE 同源：
+   · 单张 ≤5MB（原来是 500KB）：允许超过 1MB 的高清界面图；
+   · 提交前客户端先压一道（长边 2560；**超 1MB 转 WebP(0.9)**，转不了退 JPEG(88)）；
+   · 压完仍超 5MB → 再压一档（长边 1920 / 质量各降一档），仍超才拒（并直说「请先裁切/转小」）；
+   · 服务端另出长边 1280 的列表小图（懒生成），列表只下小图、详情才下 2560 原图。 */
+const PUB_SHOT_MAX_BYTES = 5 * 1024 * 1024;
+const PUB_SHOT_MAX_EDGE = 2560;
+const PUB_SHOT_RETRY_EDGE = 1920;
+const PUB_SHOT_WEBP_MIN_BYTES = 1024 * 1024; /* 超过这个体积的图才转 WebP（小图原样传，不白掉画质） */
+const PUB_ICON_EDGE = 512; /* 拿截图当图标时收到这个长边（服务端图标上限仍是 500KB） */
 const PUB_TITLE_MAX = 80;
 const PUB_DESC_MAX = 2000;
 const PUB_NOTE_MAX = 200;
 const PUB_TAGS_MAX = 200;
+/* 上架链路「一次请求最多能带多少字节」的兜底值（真源在服务端：storage.uploadLimitBytes，
+   见 server.mjs 的 MAX_BODY_APP_UPLOAD=96MB）。客户端只用它做**上传前预检** ——
+   超了就在本地停下并说清，不让用户盯着「上传中」等网关拒掉。 */
+const PUB_UPLOAD_LIMIT_FALLBACK = 96 * 1024 * 1024;
 const PUB_QUOTA_BYTES = 50 * 1024 * 1024; /* 契约 §7.5：MAX_ACCOUNT_APP_BYTES */
 const PUB_QUOTA_APPS = 5; /* 契约 §7.5：MAX_ACCOUNT_APPS */
 const PUB_ID_RE = /^[a-z0-9][a-z0-9._-]{1,63}$/; /* 2-64 位、不以符号开头 */
+/* 自动拍窗口截图的重试（本轮需求：不必再回开发页点「启动」）：
+   主进程 apps:openWindow 是 show 之后才画的（ready-to-show 才 show），刚开就拍会拿到空图 /
+   一张白页 —— 所以启动后按 PUB_SHOT_WAIT_MS 的间隔重拍，PUB_SHOT_TRIES 次都拿不到才认失败。 */
+const PUB_SHOT_TRIES = 8;
+const PUB_SHOT_WAIT_MS = 700;
 const PUB_VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$/; /* 服务端 normalizeVersion 同口径 */
 const PUB_ICON_TYPES = ["image/png", "image/jpeg", "image/webp"];
 const PUB_RESERVED_IDS = [
@@ -87,8 +120,16 @@ const PUB = {
      测试与将来的「上架前自查」都从这里等（见 window.__mtnodeAppPublish）。 */
   load: null,
   bridgeMiss: "", /* 关键桥缺失时的说明（storeRequest / appsExportZip …） */
-  online: null, /* {known, exists, mine, id, latestVersion, unpublished, versions:[], item} */
-  quota: null, /* {apps, bytes, at, error} */
+  online: null, /* {known, exists, mine, id, latestVersion, versions:[], item} */
+  quota: null, /* {apps, bytes, at, error, limitBytes, appsLimit, usedBytes} —— 上限取服务端回执，拿不到用默认 */
+  /* 这次见到过的「云端已有这张图」内容指纹（sha256 → 1）：同一张图第二次提交只发 { sha } 引用。
+     三处来源合并，判断错也有服务端的 OBJ_NOT_FOUND 兜住（那一轮自动改成发字节）：
+       · 服务端目录条目下发的 shotsSha（只覆盖「我的应用」）；
+       · 本机指纹索引 <数据目录>/store-imgfp.json（主进程按云端主机分桶 —— 跨会话复用）；
+       · 本次开窗时向服务端批量问过的（POST /api/apps/objects/exist —— 别人传过的同一张图也命中）。 */
+  shaSeen: null,
+  shaSeenPersist: null, /* 本机那份指纹集合（主进程读回来的，开窗时装载） */
+  shaSeenHost: "", /* 本机指纹按这个键分桶（云端主机，见 pubStoreHost） */
   shots: [], /* [{key, path, dataUrl, name, bytes, w, h, from}] */
   form: {
     title: "",
@@ -99,15 +140,28 @@ const PUB = {
     tags: "",
     icon: { dataUrl: "", bytes: 0, name: "" },
   },
-  idTouched: false, /* 用户手改过 id → 标题变化不再自动改写 */
-  idLocked: false, /* 线上已有同 id 应用 → id 锁定 */
+  idUnlocked: false, /* 本窗内已过二次确认、id 允许编辑（改回锁定值会自动恢复锁定） */
+  lockedId: "", /* 锁定的那个 id：有上架留痕 = 留痕里的云端 id，否则 = 本机应用 id */
+  localId: "", /* 本机应用的 id（安装目录名）—— 与 lockId 不同时界面明说，避免用户以为改错了 */
+  trace: null, /* 本机上架留痕（app.json 的 cloud，见 renderer/app-apps.js 的 appsPublishTraceOf） */
   verTouched: false, /* 用户手改过版本号 → 不再套用默认值 */
   tagsTouched: false, /* 用户手改过标签 → 线上状态回来时不再覆盖（见 pubHydrateTags） */
   aiBusy: false,
   aiDone: false,
   busy: false,
+  /* 上传这一轮的临时缓存（只活在本窗内，关窗即丢；本轮需求：失败重试不必重来）：
+     packRetry     = 已打好的 zip + 读回的 base64（打包要读全目录并逐文件 deflate，大应用几十秒）；
+     shotPrepRetry = 每张截图压缩后的结果与内容指纹（压 8 张 2560 长边 + 逐张 sha256 是最慢的一段）；
+     roundId       = 这一轮的编号：变了就整体重来，绝不跨轮串味；
+     retryReady    = 上一轮失败过 → 页脚给「重试上传」（不重打包、不重压图）。 */
+  packRetry: null,
+  shotPrepRetry: null,
+  roundId: 0,
+  retryReady: false,
+  shotsLocal: null, /* 最近一次本机截图缓存的写入回执（{saved,total,bytes}，仅供自查） */
   note: "", /* 页脚状态文字（上传进度 / 成功提示） */
   showNote: false, /* true = 页脚钉住上面那条结果（上传成功），直到用户改动表单或点「再传一版」 */
+  shotBusy: false, /* 正在拍（避免连点叠着拍） */
   dom: Object.create(null),
 };
 
@@ -229,6 +283,290 @@ function pubStripDataUrl(u) {
   return i >= 0 ? s.slice(i + 1) : s;
 }
 
+/* ── 图片压缩 + 内容指纹（本轮需求的客户端一半）────────────────────────────────
+ * 两件事：
+ *   ① **压**：单张放宽到 5MB 之后，客户端先自己收一道 —— 长边 2560；超 1MB 转 WebP(0.9)
+ *      （转不了退 JPEG(88)）；压完仍超 5MB 再压一档（长边 1920 + 质量降档），仍超才拒。
+ *      「原图本来就不大」时**原样返回、不重编码**（不白掉画质、也不白烧 CPU）。
+ *   ② **指纹**：算 sha256 = 服务端内容寻址图片库的对象名。同一张图第二次提交时只发
+ *      { sha } 引用、不发字节 —— 这就是「会缓存、避免反复占用云服务器流量」在客户端这一半。
+ * 全部走浏览器自带能力（Image + canvas + crypto.subtle），不引任何依赖，也不碰文件系统。
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/* data URL / file:// URL → Image（浏览器原生解码；能解 webp / png / jpeg） */
+function pubLoadImage(src) {
+  return new Promise((resolve) => {
+    const url = pubStr(src);
+    if (!url) {
+      resolve(null);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+/* 画到 canvas 并按指定格式编码：返回 {ok, dataUrl, bytes}；格式不被支持时 ok:false（调用方退一档） */
+function pubCanvasEncode(img, w, h, mime, quality) {
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = Math.max(1, Math.round(w));
+    cv.height = Math.max(1, Math.round(h));
+    const ctx = cv.getContext("2d");
+    if (!ctx) return { ok: false };
+    ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    const dataUrl = cv.toDataURL(mime, typeof quality === "number" ? quality : undefined);
+    /* 浏览器不认这个格式时会**静默回 PNG**：这时 bytes 会明显大于原图，靠字节数判定不靠谱，
+       所以再用前缀核对一次 —— 对不上就当这一档不可用，交给调用方退 JPEG。 */
+    if (dataUrl.indexOf("data:" + mime) !== 0) return { ok: false };
+    return { ok: true, dataUrl: dataUrl, bytes: pubDataUrlBytes(dataUrl), w: cv.width, h: cv.height };
+  } catch (_) {
+    return { ok: false };
+  }
+}
+/* 逐档收边：先长边 2560（WebP 0.9 → JPEG 88），还超 5MB 再 1920（WebP 0.85 → JPEG 80）。 */
+function pubEncodeShotFit(img, dataUrl, maxBytes, maxEdge, qualityDrop) {
+  const sw = Number(img.naturalWidth || img.width) || 0;
+  const sh = Number(img.naturalHeight || img.height) || 0;
+  const long = Math.max(sw, sh) || 0;
+  const scale = long > maxEdge ? maxEdge / long : 1;
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  const webpQ = Math.max(0.5, 0.9 - qualityDrop);
+  const jpgQ = Math.max(0.5, 0.88 - qualityDrop);
+  const tries = [
+    { mime: "image/webp", q: webpQ },
+    { mime: "image/jpeg", q: jpgQ },
+  ];
+  let best = null;
+  for (const t of tries) {
+    const one = pubCanvasEncode(img, w, h, t.mime, t.q);
+    if (!one.ok) continue;
+    if (!best || one.bytes < best.bytes) best = one;
+    if (one.bytes <= maxBytes) return one;
+  }
+  return best;
+}
+/* 一张截图 → 提交用的一版：{ dataUrl, bytes, w, h, changed, srcBytes, reason }。
+ * 返回 null 表示这张图连不上（读不出来）；压不下去时返回 { tooLarge:true, ... } 让调用方指名报错。 */
+async function pubPrepareShot(src, opts) {
+  const maxBytes = Number((opts && opts.maxBytes) || PUB_SHOT_MAX_BYTES);
+  const kind = pubStr(opts && opts.kind) || "shot";
+  const srcUrl = pubStr(src);
+  if (!srcUrl) return null;
+  const srcBytes = pubDataUrlBytes(srcUrl) || Number((opts && opts.srcBytes) || 0) || 0;
+  const img = await pubLoadImage(srcUrl);
+  if (!img) return null;
+  const sw = Number(img.naturalWidth || img.width) || 0;
+  const sh = Number(img.naturalHeight || img.height) || 0;
+  /* 图标（封面小图）：一律收到 512 长边内且 ≤500KB —— 与服务端图标口径一致。
+     为什么不能直接拿截图当图标：截图放宽到 5MB 之后，第一张图动辄几百 KB～几 MB，
+     直接顶图标位会被服务端按「图标 ≤500KB」拒掉（那正是原来「自动缩放」要解决的问题）。 */
+  if (kind === "icon") {
+    const scale = Math.min(1, PUB_ICON_EDGE / (Math.max(sw, sh) || 1));
+    const iw = Math.max(1, Math.round(sw * scale));
+    const ih = Math.max(1, Math.round(sh * scale));
+    let best = null;
+    for (const t of [{ mime: "image/webp", q: 0.9 }, { mime: "image/jpeg", q: 0.88 }]) {
+      const one = pubCanvasEncode(img, iw, ih, t.mime, t.q);
+      if (!one.ok) continue;
+      if (!best || one.bytes < best.bytes) best = one;
+      if (one.bytes <= maxBytes) return { dataUrl: one.dataUrl, bytes: one.bytes, w: one.w, h: one.h, changed: true, srcBytes: srcBytes, tooLarge: false };
+    }
+    if (!best) return { tooLarge: true, dataUrl: "", bytes: srcBytes, w: sw, h: sh, srcBytes: srcBytes };
+    return { dataUrl: best.dataUrl, bytes: best.bytes, w: best.w, h: best.h, changed: true, srcBytes: srcBytes, tooLarge: best.bytes > maxBytes };
+  }
+  /* 截图：本来就在档内（≤1MB 且长边 ≤2560）→ 原样传，不重编码 */
+  const long = Math.max(sw, sh) || 0;
+  if (srcBytes && srcBytes <= PUB_SHOT_WEBP_MIN_BYTES && long <= PUB_SHOT_MAX_EDGE) {
+    return { dataUrl: srcUrl, bytes: srcBytes, w: sw, h: sh, changed: false, srcBytes: srcBytes, tooLarge: srcBytes > maxBytes };
+  }
+  let best = pubEncodeShotFit(img, srcUrl, maxBytes, PUB_SHOT_MAX_EDGE, 0);
+  if ((!best || best.bytes > maxBytes)) {
+    const again = pubEncodeShotFit(img, srcUrl, maxBytes, PUB_SHOT_RETRY_EDGE, 0.05);
+    if (again && (!best || again.bytes < best.bytes)) best = again;
+  }
+  /* 编码反而更大（例如原图已是高压缩 JPEG）→ 用小的那一份 */
+  if (best && best.bytes >= srcBytes && srcBytes <= maxBytes) {
+    return { dataUrl: srcUrl, bytes: srcBytes, w: sw, h: sh, changed: false, srcBytes: srcBytes, tooLarge: false };
+  }
+  if (!best) return { dataUrl: srcUrl, bytes: srcBytes, w: sw, h: sh, changed: false, srcBytes: srcBytes, tooLarge: srcBytes > maxBytes };
+  return {
+    dataUrl: best.dataUrl,
+    bytes: best.bytes,
+    w: best.w,
+    h: best.h,
+    changed: true,
+    srcBytes: srcBytes,
+    tooLarge: best.bytes > maxBytes,
+  };
+}
+/* data URL → sha256（十六进制）。crypto.subtle 不可用（极老内核 / 非安全上下文）时回 ""，
+   调用方据此退回「每次都传字节」的老行为 —— 只是不省流量，绝不因此报错。 */
+async function pubSha256Of(dataUrl) {
+  try {
+    const b64 = pubStripDataUrl(dataUrl);
+    if (!b64) return "";
+    const bin = atob(b64.replace(/\s+/g, ""));
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    const sub = window.crypto && window.crypto.subtle;
+    if (!sub || typeof sub.digest !== "function") return "";
+    const d = await sub.digest("SHA-256", buf);
+    return Array.prototype.map.call(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (_) {
+    return "";
+  }
+}
+/* 本窗这次见到过的「云端已有这张图」指纹（会话级即可）：值 = 1。
+   来源三处：服务端回执里的 catalog.shotsSha / item.shotsSha、本次上传成功的那些，
+   以及主进程按云端主机存下来的本机指纹索引（跨会话复用，见 pubImgFpLoad）。 */
+function pubShaSeenOf() {
+  if (!PUB.shaSeen) PUB.shaSeen = Object.create(null);
+  return PUB.shaSeen;
+}
+/* 云端主机的短名（本机指纹索引按它分桶）：先问主进程（storeHost = 真实的 store 基址），
+   桥不可用就退回 default —— 分桶只是为了「换站不互相污染」，退回一个桶不影响功能。
+   结果缓存进 PUB.shaSeenHost（只为界面文字 / 调试可读，取主机的部分）。 */
+async function pubImgFpHost() {
+  if (PUB.shaSeenHost) return PUB.shaSeenHost;
+  let host = "";
+  try {
+    const api = window.api || {};
+    if (typeof api.storeHost === "function") {
+      const r = await api.storeHost();
+      const base = r && r.ok ? pubStr(r.host) : "";
+      if (base) host = String(new URL(base).host || base);
+    }
+  } catch (_) {}
+  PUB.shaSeenHost = host || "default";
+  return PUB.shaSeenHost;
+}
+/* 开窗时把本机那份指纹读回来（主进程按 host 分桶）。桥不可用 / 老主进程就安静跳过：
+   退化成纯会话级缓存，功能不受影响，只是下次开窗会多问一次服务端。 */
+async function pubImgFpLoad() {
+  const api = window.api || {};
+  PUB.shaSeenPersist = PUB.shaSeenPersist || Object.create(null);
+  if (typeof api.storeImgFpLoad !== "function") return 0;
+  const host = await pubImgFpHost();
+  try {
+    const r = await api.storeImgFpLoad({ host: host });
+    const list = r && r.ok && Array.isArray(r.shas) ? r.shas : [];
+    for (const h of list) {
+      const k = pubStr(h).toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(k)) PUB.shaSeenPersist[k] = 1;
+    }
+  } catch (_) {}
+  return Object.keys(PUB.shaSeenPersist).length;
+}
+/* 本机指纹写回（只追加、由主进程封顶 500 条）：失败不影响上架，只是下次还得多问一遍。 */
+function pubImgFpPut(list) {
+  const api = window.api || {};
+  const shas = (Array.isArray(list) ? list : [])
+    .map((h) => pubStr(h).toLowerCase())
+    .filter((k) => /^[0-9a-f]{64}$/.test(k));
+  if (!shas.length || typeof api.storeImgFpPut !== "function") return;
+  PUB.shaSeenPersist = PUB.shaSeenPersist || Object.create(null);
+  for (const k of shas) PUB.shaSeenPersist[k] = 1;
+  try {
+    Promise.resolve(
+      pubImgFpHost().then((host) => api.storeImgFpPut({ host: host, shas: shas })),
+    ).catch(() => {});
+  } catch (_) {}
+}
+function pubShaSeenAdd(list) {
+  const seen = pubShaSeenOf();
+  for (const h of Array.isArray(list) ? list : []) {
+    const k = pubStr(h).toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(k)) seen[k] = 1;
+  }
+}
+/* 「云端已有」判定：会话表 + 本机索引（同步读，调用点在提交循环里） */
+function pubShaSeenHas(h) {
+  const k = pubStr(h).toLowerCase();
+  if (!k) return false;
+  if (pubShaSeenOf()[k]) return true;
+  return !!(PUB.shaSeenPersist && PUB.shaSeenPersist[k]);
+}
+/* 把某个指纹从「云端已有」表里摘掉（服务端回了 OBJ_NOT_FOUND，说明它其实没有）。
+   本机那份只在本窗内先摘掉：主进程那份保留写入权限，删它得再开一条桥，不值得为这种罕见情况加通道。 */
+function pubShaSeenForget(h) {
+  const k = pubStr(h).toLowerCase();
+  if (!k) return;
+  delete pubShaSeenOf()[k];
+  if (PUB.shaSeenPersist) delete PUB.shaSeenPersist[k];
+}
+/* 提交前**一次**批量问服务端「这几张云端有没有」（POST /api/apps/objects/exist）：
+   命中的并进「云端已有」表 —— 别人传过的同一张图也能只发引用、不推字节。
+   这是省流量的**加速**手段：接口不存在（老服务端）/ 网络抖动都安静跳过，照旧发字节。 */
+async function pubServerHasShots(allShas) {
+  const api = window.api || {};
+  if (typeof api.storeRequest !== "function") return 0;
+  const want = [];
+  const seen = new Set();
+  for (const h of Array.isArray(allShas) ? allShas : []) {
+    const k = pubStr(h).toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(k) || seen.has(k) || pubShaSeenHas(k)) continue;
+    seen.add(k);
+    want.push(k);
+    if (want.length >= 64) break;
+  }
+  if (!want.length) return 0;
+  let r = null;
+  try {
+    r = await api.storeRequest({ method: "POST", path: "/api/apps/objects/exist", json: { shas: want }, timeoutMs: 20000 });
+  } catch (_) {
+    return 0;
+  }
+  const have = r && r.ok && r.data && Array.isArray(r.data.have) ? r.data.have : [];
+  const ok = have.map((h) => pubStr(h).toLowerCase()).filter((k) => /^[0-9a-f]{64}$/.test(k));
+  pubShaSeenAdd(ok);
+  return ok.length;
+}
+/* ── 上架体积预检（本轮需求：不再「上传中卡住半天才失败」）─────────────────────────
+ * 上架请求是一条 JSON：zipBase64 + iconBase64 + shotsBase64[]，base64 后约是原始体积的 1.34 倍。
+ * 服务端给出的那条上架链路上限（storage.uploadLimitBytes，默认 96MB）是**真源** ——
+ * 客户端拿它当闸门，超了就在本地停下并说清「包多大 / 上限多少 / 怎么办」，
+ * 绝不再让用户盯着「上传中」等网关把我们拒掉。
+ * 估算里对包宽放一档（已知体积 24MB 上限的旧服务端也走同一条路）：拿不到精确 zip 体积时
+ * 用 max(已知本机应用体积, 上一次打包体积) 兜。返回 { tooBig, text, estimate, limit }。 */
+function pubUploadLimitBytes() {
+  const n = Number(PUB.online && PUB.online.uploadLimitBytes);
+  return Number.isFinite(n) && n >= 1024 * 1024 ? n : PUB_UPLOAD_LIMIT_FALLBACK;
+}
+function pubPreflightSize(shotBytes, iconBytes) {
+  const est = (Number(shotBytes) || 0) + (Number(iconBytes) || 0);
+  if (!est) return { tooBig: false, estimate: 0, limit: pubUploadLimitBytes() };
+  const limit = pubUploadLimitBytes();
+  const projected = Math.round(est * 1.34) + Math.round(((Number(PUB.app && PUB.app.bytes) || 0) * 1.34));
+  /* 只对「明显超限」的情况拦（留 10% 余量）：不因为估算误差把本来能传的包挡回去 */
+  const tooBig = projected > limit * 0.9;
+  return {
+    tooBig: tooBig,
+    estimate: projected,
+    limit: limit,
+    text: tooBig
+      ? pubT("这一轮要传的内容约 ") + pubBytes(projected) + pubT("，超过上架链路的上限 ") + pubBytes(limit) +
+        pubT("：请先删掉几张截图、或把素材（图片 / 音频）压小后再上传。")
+      : "",
+  };
+}
+
+/* 给同窗其它模块用（renderer/app-apps.js 的「编辑」窗提交截图时走同一套压缩 + 指纹口径）：
+   它是 window 上的一颗只读入口，不改变本模块的任何状态。 */
+window.MTNodePublishImg = {
+  prepare: pubPrepareShot,
+  sha256Of: pubSha256Of,
+  addSeen: pubShaSeenAdd,
+  seenHas: pubShaSeenHas,
+  forget: pubShaSeenForget,
+  maxShotBytes: PUB_SHOT_MAX_BYTES,
+  maxEdge: PUB_SHOT_MAX_EDGE,
+  iconEdge: PUB_ICON_EDGE,
+  webpMinBytes: PUB_SHOT_WEBP_MIN_BYTES,
+};
+
 /* ───────────────── 共享 #overlay 窗壳：尺寸类 + 手柄 ───────────────── */
 
 function pubShellBox() {
@@ -323,19 +661,13 @@ function pubResizeBind(handle) {
   });
 }
 
-/* ───────────────── 纯计算：slug / 版本 / 地址 ───────────────── */
+/* ───────────────── 纯计算：版本 / 地址 ───────────────── */
 
-/* 标题 → 小写 slug（只留 [a-z0-9._-]，空白转 -）。中文标题一般得空串 → 调用方保留原 id。 */
-function pubSlug(title) {
-  const s = String(title == null ? "" : title).toLowerCase();
-  let out = "";
-  for (const ch of s) {
-    if (/[a-z0-9._-]/.test(ch)) out += ch;
-    else if (/\s/.test(ch) || ch === "\u3000") out += "-";
-  }
-  out = out.replace(/[._-]{2,}/g, "-").replace(/^[^a-z0-9]+/, "").replace(/[^a-z0-9]+$/, "");
-  return out.slice(0, 64);
-}
+/* 标题 → 应用 id 的 slug（pubSlug）本轮**已删**：用户口径是「任何状态下 id 都不再被标题改写」，
+   那两处调用（标题输入框、AI 生成回填）都去掉了，函数留着只会让人以为还有这条隐式联动。
+   「新建应用」对话框那条 slug（renderer/app-app-flow.js 的 appSlugFromTitle）是另一件事：
+   那里是在决定本机应用目录名，不属于上架窗，未动。 */
+
 /* 版本号小版本 +1：1.2.0 → 1.2.1（非 x.y.z 形态 → 原样返回，交给用户手改） */
 function pubBumpPatch(v) {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(pubStr(v));
@@ -353,6 +685,144 @@ function pubCheckBridges() {
   const miss = need.filter(([k]) => typeof api[k] !== "function").map(([, label]) => label);
   PUB.bridgeMiss = miss.length ? miss.join(" / ") : "";
   return !miss.length;
+}
+
+/* ───────────── 应用 id：默认锁定 + 「修改 id」二次确认（本轮需求）─────────────
+ * 用户口径（本轮共识）：
+ *   · id 就是云端那条应用的身份，也是别人本机的安装目录名 —— 默认一律锁定：
+ *     有上架留痕（app.json 的 cloud）就锁到**留痕里的云端 id**，没有就锁到**本机应用 id**；
+ *     首次上架同样锁（以前会由英文标题自动改写 id，那条联动本轮**彻底去掉**）。
+ *   · 要改只能点「修改 id」，先过一道二次确认（明说「会新建一个应用、以后就算两条了」），
+ *     确认后本窗内解锁可编辑；改回锁定值自动恢复锁定。
+ *   · id 真改了 = 另一个应用：版本号回 1.0.0、二次开发来源重算、线上状态按新 id 重新读
+ *     （pubIdCommit）。**本机应用目录名不动** —— 上架只是把包传到那个 id 下。 */
+
+/* 上架留痕：本机这一份是从哪个云端 id / 哪个账号上架上去的。唯一真源在 renderer/app-apps.js
+   （appsPublishTraceOf）；那里缺了（测试 / 老渲染层）就地按同一口径归一，绝不因此掀窗。 */
+function pubTrace(app) {
+  try {
+    if (typeof appsPublishTraceOf === "function") return appsPublishTraceOf(app) || null;
+  } catch (_) {}
+  const c = app && app.cloud;
+  if (!c || typeof c !== "object") return null;
+  const id = pubStr(c.id).toLowerCase();
+  if (!id) return null;
+  return {
+    id: id,
+    ownerId: pubStr(c.ownerId),
+    owner: pubStr(c.owner),
+    version: pubStr(c.version),
+    at: Number(c.at) || 0,
+  };
+}
+/* 这次提交是「云端新建一条」还是「往已有那条追加版本」—— 结果文案里标出（新建应用 / 追加版本）
+   的唯一判据；**不再用它切「上架 / 更新」两套叫法**（用户口径：都叫上架）：
+   · 线上读到结果：我名下已有这个 id → 追加版本；线上没有这个 id → 新建一条；
+   · 线上读不到（离线 / 未登录 / 接口异常）→ 退回本机留痕（pubTraceUpdate）。 */
+function pubUpdateMode() {
+  const o = PUB.online;
+  if (o && o.known !== false) return !!(o.exists && o.mine);
+  return pubTraceUpdate();
+}
+/* 线上读不到时的回落：留痕的云端 id = 本次 id，且账号对得上（**未登录不比账号** ——
+   用户口径：未登录也乐观认这条留痕，点下去先要求登录，进窗拿到账号后再收口）。 */
+function pubTraceUpdate() {
+  const t = PUB.trace;
+  if (!t) return false;
+  if (pubStr(PUB.form.id).toLowerCase() !== t.id) return false;
+  const u = PUB.user || {};
+  const myUid = pubStr(u.id);
+  const myName = pubStr(u.username || u.nickname).toLowerCase();
+  if (!PUB.loggedIn || (!myUid && !myName)) return true;
+  if (myUid && t.ownerId) return myUid === t.ownerId;
+  if (myName && t.owner) return myName === t.owner.toLowerCase();
+  return true; /* 留痕里没记账号（老数据）→ 认它 */
+}
+/* 开窗时定这一窗的 id 基线与锁定值（openAppPublish 调一次；appsList 的摘要是权威来源） */
+function pubIdEnsure(appId, app) {
+  PUB.localId = pubStr(appId).toLowerCase();
+  PUB.trace = pubTrace(app);
+  PUB.lockedId = PUB.trace && PUB.trace.id ? PUB.trace.id : PUB.localId;
+  PUB.form.id = PUB.lockedId;
+  PUB.idCommitted = PUB.lockedId;
+  PUB.idUnlocked = false;
+}
+/* 已经解锁、但用户把 id 改回了锁定值（或有留痕时的云端 id）→ 本次仍是更新，自动恢复锁定 */
+function pubIdRelockIfSame() {
+  if (!PUB.idUnlocked) return;
+  if (pubStr(PUB.form.id).toLowerCase() !== pubStr(PUB.lockedId).toLowerCase()) return;
+  PUB.idUnlocked = false;
+  PUB.form.id = PUB.lockedId;
+  if (PUB.dom.idIn) PUB.dom.idIn.value = PUB.lockedId;
+  pubPaintId();
+}
+/* 「修改 id」：二次确认（改 id = 云端新建一个应用，不再追加版本）→ 本窗内解锁 */
+async function pubIdUnlock() {
+  if (PUB.idUnlocked) return;
+  const ask =
+    pubT("改应用 id 会在云端新建一个应用：这次不再追加到「") +
+    pubStr(PUB.lockedId) +
+    pubT("」名下，以后它就是另一条应用（也算新的一条配额）。确认要改 id 吗？");
+  let go = true;
+  if (typeof confirmDialog === "function") {
+    try {
+      go = await confirmDialog(ask, {
+        title: pubT("修改应用 id"),
+        okText: pubT("修改 id"),
+        cancelText: pubT("取消"),
+      });
+    } catch (_) {
+      go = false;
+    }
+  }
+  if (!go || !PUB.dom.idIn || !document.contains(PUB.dom.idIn)) return;
+  PUB.idUnlocked = true;
+  pubPaintId();
+  try {
+    PUB.dom.idIn.focus();
+    PUB.dom.idIn.select();
+  } catch (_) {}
+}
+/* id 真的改了：按新 id 重算这一窗里一切「跟着 id 走」的东西（版本号 / 来源 / 线上状态）。
+   版本号回 1.0.0 是硬口径：新应用的第一版不该继承旧应用攒到 1.2.3 的号。 */
+function pubIdCommit() {
+  PUB.idCommitted = pubStr(PUB.form.id).toLowerCase();
+  PUB.verTouched = false;
+  PUB.form.version = "1.0.0";
+  if (PUB.dom.verIn) PUB.dom.verIn.value = "1.0.0";
+  PUB.online = null; /* 线上状态是照旧 id 读的：先清掉，免得旧结论被当成新 id 的 */
+  pubForkFill(); /* 二次开发来源按新 id 重算（同 id 已有条目 → 自动指向主干作者） */
+  pubPaintId();
+  pubPaintHead();
+  pubPaintFoot();
+  pubEdit();
+  pubLoadOnline().catch(() => {});
+}
+/* id 那一行的状态（锁定 / 已解锁 / 本机目录名提示）：任何改动 id 的路径都要重画它 */
+function pubPaintId() {
+  const idIn = PUB.dom.idIn;
+  const btn = PUB.dom.idBtn;
+  const hint = PUB.dom.idHint;
+  const lk = pubStr(PUB.lockedId);
+  const local = pubStr(PUB.localId);
+  const same = pubStr(PUB.form.id).toLowerCase() === lk.toLowerCase();
+  if (idIn) {
+    idIn.readOnly = !PUB.idUnlocked;
+    idIn.title = PUB.idUnlocked
+      ? pubT("已解锁：改完就是另一个应用（云端会新建一条，不再追加版本）")
+      : pubT("id 默认锁定：要改先点右边「修改 id」（会二次确认）");
+  }
+  if (btn) {
+    btn.disabled = !!PUB.idUnlocked;
+    btn.title = btn.disabled
+      ? pubT("已经解锁：直接改上面的 id（改回原值会自动恢复锁定）")
+      : pubT("改 id = 在云端新建一个应用（点它先二次确认）");
+  }
+  if (!hint) return;
+  if (PUB.idUnlocked && !same) hint.textContent = pubT("已改 id：本次会在云端新建一个应用");
+  else if (PUB.idUnlocked) hint.textContent = pubT("已解锁：改回 ") + lk + pubT(" 会自动恢复锁定");
+  else if (local && local !== lk) hint.textContent = pubT("已锁定（上架留痕）：本机目录名 ") + local;
+  else hint.textContent = pubT("已锁定");
 }
 
 /* ───────────────── 打开 / 关闭 ───────────────── */
@@ -412,14 +882,13 @@ async function openAppPublish(appId) {
   PUB.online = null;
   PUB.quota = null;
   PUB.shots = [];
-  PUB.idTouched = false;
-  PUB.idLocked = false;
   PUB.verTouched = false;
   PUB.tagsTouched = false;
   PUB.aiBusy = false;
   PUB.aiDone = false;
   PUB.busy = false;
   PUB.note = "";
+  PUB.shotBusy = false;
   PUB.dom = Object.create(null);
   PUB.form = {
     title: pubStr(app.title || app.name || id),
@@ -432,10 +901,18 @@ async function openAppPublish(appId) {
     /* 二次开发来源（fork，可选；契约见 docs/apps-market.md §八）：自动带出 + 可改 + 可清空 */
     forkOf: pubForkInit(app),
   };
+  /* 应用 id：默认锁定，锁定值 = 留痕里的云端 id（有上架留痕时）否则本机应用 id；
+     本机目录名另存一份，两者不同时界面明说（见 pubIdEnsure / pubPaintId）。 */
+  pubIdEnsure(id, app);
   /* 关键桥探测（缺 storeRequest / appsExportZip / appsReadZipBase64 时页脚直接说清楚，别等点了才炸） */
   pubCheckBridges();
 
-  openOverlay(pubT("上架应用") + " · " + pubStr(app.name || id), { persistent: true, min: true });
+  /* 标题口径（本轮需求）：上架统一叫「上架」—— 窗标题固定写「上架应用」，
+     是新建一条还是给已有那条追加一版，由窗内状态条与结果回显如实说明。 */
+  openOverlay(
+    pubT("上架应用") + " · " + pubStr(app.name || id),
+    { persistent: true, min: true },
+  );
   /* 尺寸类：先把当前窗上的残留摘掉，再挂自己的（近全屏 / 最小宽 50% 见 css/app-publish.css） */
   pubBoxClassOff();
   const box = pubShellBox();
@@ -450,6 +927,7 @@ async function openAppPublish(appId) {
   }
   pubBuildShell(body, foot);
   pubPaintHead();
+  pubPaintId();
   pubPaintShots();
   pubPaintOnline();
   pubPaintQuota();
@@ -458,18 +936,22 @@ async function openAppPublish(appId) {
   /* 异步：登录态（主进程账户契约）→ 线上状态 + 版本树 → 配额（按顺序，后一步要知道账号名）。
      这一串挂到 PUB.load 上：调用方（开发页按钮）照旧不等它，测试 / 自查可以 await 它。 */
   PUB.load = pubLoadAll(pubSeqNow()).catch(() => false);
+  /* 截图**不**在开窗时动手（本轮需求改口径：开窗不启动应用、不拍照）——
+     只有用户点「拍应用窗口」才走 pubShotWindow → pubShotCapture（窗口没开或最小化时它才自动启动）。 */
   return true;
 }
 
 /* 开窗后的读取顺序：先确认登录态，再读线上状态，最后统计配额（同一份 PUB.seq 守卫）。
    登录态没核到（未登录 / 服务器不认这个会话）时后面两步没有意义：线上状态与配额都要账号名，
-   读出来只会是「接口不可达」之类的次生错误，把真正的病根（登录态）盖掉。 */
+   读出来只会是「接口不可达」之类的次生错误，把真正的病根（登录态）盖掉。
+   末尾顺带把本机那份「云端已有这张图」的指纹索引读回来（与网络无关，失败也不影响上面三步）。 */
 async function pubLoadAll(seq) {
   const ok = await pubLoadAuth(seq).catch(() => false);
   if (!pubAlive(seq) || !ok) return;
   await pubLoadOnline().catch(() => {});
   if (!pubAlive(seq)) return;
   await pubLoadQuota().catch(() => {});
+  await pubImgFpLoad().catch(() => 0);
 }
 
 /* 当前窗的世代号（名字不用 mySeq：app-apps-dev.js 里有个同名的局部 const，别互相遮） */
@@ -589,7 +1071,7 @@ function pubFieldSec(host, title) {
 function pubBuildFormSec(host) {
   const sec = pubFieldSec(host, pubT("② 上架信息"));
 
-  /* 标题（必填） */
+  /* 标题（必填）—— 本轮起**标题不再改写应用 id**（见 pubApplyMeta 与 pubIdEnsure 的说明） */
   const titleIn = pubEl("input", "pub-in");
   titleIn.type = "text";
   titleIn.id = "pubTitle";
@@ -602,17 +1084,12 @@ function pubBuildFormSec(host) {
   titleIn.addEventListener("input", () => {
     PUB.form.title = titleIn.value;
     titleCount.textContent = titleIn.value.length + "/" + PUB_TITLE_MAX;
-    if (!PUB.idTouched && !PUB.idLocked) {
-      const s = pubSlug(titleIn.value);
-      if (s.length >= 2) {
-        PUB.form.id = s;
-        if (PUB.dom.idIn) PUB.dom.idIn.value = s;
-      }
-    }
     pubEdit();
   });
 
-  /* 应用 id */
+  /* 应用 id：默认锁定（本机应用 id / 上架留痕里的云端 id），要改必须点「修改 id」并过二次确认。
+     为什么锁：id 就是云端那条应用的身份（也是别人本机的安装目录名）—— 一次静默改名 = 云端多出
+     一个应用、以后每次「更新」都对不上，所以默认不给改，改了就得先确认自己知道后果。 */
   const idIn = pubEl("input", "pub-in");
   idIn.type = "text";
   idIn.id = "pubId";
@@ -622,21 +1099,58 @@ function pubBuildFormSec(host) {
   PUB.dom.idIn = idIn;
   const idHint = pubEl("span", "pub-count", "");
   PUB.dom.idHint = idHint;
-  sec.appendChild(pubField(pubT("应用 id（安装目录名）"), idIn, idHint, pubT("2-64 位小写字母 / 数字 / . _ -，以字母或数字开头；不能是 con / nul / com1 这类 Windows 保留名。标题是英文时会自动填，中文标题保留本机 id。")));
+  const idBtn = pubBtn(pubT("修改 id"), () => pubIdUnlock(), "mini");
+  PUB.dom.idBtn = idBtn;
+  const idField = pubEl("div", "pub-field");
+  const idLab = pubEl("label", "pub-lab", pubT("应用 id（安装目录名）"));
+  idLab.htmlFor = "pubId";
+  const idLine = pubEl("div", "pub-labline");
+  idLine.appendChild(idLab);
+  idLine.appendChild(idHint);
+  idField.appendChild(idLine);
+  const idRow = pubEl("div", "pub-id-row");
+  idRow.appendChild(idIn);
+  idRow.appendChild(idBtn);
+  idField.appendChild(idRow);
+  idField.appendChild(
+    pubEl(
+      "div",
+      "pub-hint",
+      pubT("2-64 位小写字母 / 数字 / . _ -，以字母或数字开头；不能是 con / nul / com1 这类 Windows 保留名。默认锁定为本机应用 id：点「修改 id」可以改，但改 id = 在云端新建一个应用（会先让你确认一次）。"),
+    ),
+  );
+  sec.appendChild(idField);
   idIn.addEventListener("input", () => {
-    PUB.idTouched = true;
+    /* 锁定态下的双保险：readOnly 本该挡住输入，真被输入进来了就退回锁定值，绝不接受静默改名 */
+    if (!PUB.idUnlocked) {
+      idIn.value = pubStr(PUB.lockedId);
+      PUB.form.id = idIn.value;
+      pubPaintId();
+      pubEdit();
+      return;
+    }
     idIn.value = idIn.value.toLowerCase();
     PUB.form.id = idIn.value;
+    pubIdRelockIfSame();
     pubEdit();
   });
   idIn.addEventListener("blur", () => {
+    if (!PUB.idUnlocked) {
+      idIn.value = pubStr(PUB.lockedId);
+      PUB.form.id = idIn.value;
+      pubPaintId();
+      pubEdit();
+      return;
+    }
     idIn.value = pubStr(idIn.value).toLowerCase();
     PUB.form.id = idIn.value;
-    /* id 改过 = 线上状态是照旧 id 读的：重读一次，别把「追加版本」打到别人的应用上 */
-    if (PUB.online && pubStr(PUB.online.id) && pubStr(PUB.online.id) !== idIn.value) {
-      pubLoadOnline().catch(() => {});
+    pubIdRelockIfSame();
+    /* id 真变了 = 这是另一个应用了：版本号 / 来源 / 线上状态一律按新 id 重算（见 pubIdCommit） */
+    if (pubStr(PUB.form.id) !== pubStr(PUB.idCommitted)) pubIdCommit();
+    else {
+      pubPaintId();
+      pubEdit();
     }
-    pubEdit();
   });
 
   /* 二次开发来源（可选，见 pubForkField）：放在「应用 id」之后 —— 两者一起构成应用的身份 */
@@ -652,6 +1166,11 @@ function pubBuildFormSec(host) {
   PUB.dom.descIn = descIn;
   const descCount = pubEl("span", "pub-count", descIn.value.length + "/" + PUB_DESC_MAX);
   sec.appendChild(pubField(pubT("说明"), descIn, descCount, pubT("≤2000 字")));
+  /* 说明框下的「预览」（本轮需求）：与「编辑应用」窗同一颗按钮、同一份 renderMarkdown，
+     点一下就地展开渲染结果、再点收起（helper 在 app-apps.js，按 typeof 探测调用）。 */
+  if (typeof appsDescPreviewEl === "function") {
+    sec.appendChild(appsDescPreviewEl({ text: () => PUB.form.description, t: pubT, toast: pubToast }));
+  }
   descIn.addEventListener("input", () => {
     PUB.form.description = descIn.value;
     descCount.textContent = descIn.value.length + "/" + PUB_DESC_MAX;
@@ -929,7 +1448,12 @@ function pubBuildShotSec(host) {
   bar.appendChild(pubBtn(pubT("拍应用窗口"), () => pubShotWindow(), "mini"));
   bar.appendChild(pubBtn(pubT("从本机选图…"), () => pubPickShots(), "mini"));
   sec.appendChild(bar);
-  const st = pubEl("div", "pub-hint", pubT("最多 8 张，第一张当封面（不上传整组图，只用第 1 张当图标）。拍窗口前请先在开发页点「启动」。"));
+  /* 常驻说明单独一行：pubShotStatus 会覆盖掉 PUB.dom.shotStatus 里的文字（状态行），
+     而「第 1 张就是商店封面」这条口径不该被状态消息顶掉 —— 它是本轮修的那个 bug 的唯一提示。 */
+  sec.appendChild(
+    pubEl("div", "pub-hint", pubT("最多 8 张，第 1 张同时当商店封面（卡片与详情头部都用它）与图标（没单独选图标时）。开窗不会自动启动这个应用、也不会自动拍：点「拍应用窗口」才启动它并拍（窗口没开或最小化时会自动帮你启动）；一张都不加就上传的话，商店卡片会没有封面。")),
+  );
+  const st = pubEl("div", "pub-hint", pubT("加一张截图：第 1 张就是商店里这张卡的封面。"));
   PUB.dom.shotStatus = st;
   sec.appendChild(st);
   const wrap = pubEl("div", "pub-shots");
@@ -977,7 +1501,30 @@ function pubBuildOnlineSec(host) {
   bar.appendChild(del);
   bar.appendChild(pubEl("div", "pub-hint", pubT("删旧版会同时下掉它的包与版本记录，配额当场释放（不能撤销）。")));
   sec.appendChild(bar);
+  /* 常驻结果行（本轮需求：删除结果不再只靠一闪而过的 toast）：
+     成功说清删了什么，失败留服务端原话 + 「重试」，重画版本区也不会把它冲掉。 */
+  const res = pubEl("div", "pub-hint pub-ver-result", "");
+  res.hidden = true;
+  PUB.dom.verResult = res;
+  sec.appendChild(res);
   host.appendChild(sec);
+}
+/* 版本区结果行：msg 为空 = 收起。retry 给了就补一颗「重试」按钮（失败时用）。 */
+function pubVerResult(msg, kind, retry) {
+  const el = PUB.dom.verResult;
+  const text = pubStr(msg);
+  if (!el) {
+    if (text) pubToast(text, kind);
+    return;
+  }
+  el.innerHTML = "";
+  el.hidden = !text;
+  el.className = "pub-hint pub-ver-result" + (kind ? " pub-" + kind : "");
+  el.textContent = text;
+  if (text && typeof retry === "function") {
+    el.appendChild(document.createTextNode(" "));
+    el.appendChild(pubBtn(pubT("重试"), retry, "mini"));
+  }
 }
 
 /* ── ⑥ 配额 ── */
@@ -1013,7 +1560,7 @@ function pubPaintHead() {
   if (!o) text = pubT("正在读取线上状态…");
   else if (o.known === false) text = pubT("线上状态未知（接口不可达）；上传时以服务端判断为准");
   else if (!o.exists) text = pubT("首次上架（线上还没有这个 id）");
-  else if (o.mine) text = pubT("已有线上应用") + " v" + pubStr(o.latestVersion || "") + pubT("（本次为追加版本）");
+  else if (o.mine) text = pubT("上架：当前线上 v") + pubStr(o.latestVersion || "");
   else if (o.myBranch) text = pubT("同 id 已有 ") + (Number(o.branches && o.branches.length) || 1) + pubT(" 条作者分支（本次为你的新版本）");
   else
     text =
@@ -1024,6 +1571,16 @@ function pubPaintHead() {
   chip.className =
     "pub-chip pub-chip-online" +
     (!o ? "" : o.known === false ? " pub-warn" : !o.exists ? " pub-new" : o.mine ? "" : " pub-warn");
+  pubPaintTitle();
+}
+/* 窗标题（本轮需求：统一叫「上架」）：openOverlay 开的那一只 #ovTitle 恒写「上架应用」。
+   线上状态读回来时照旧重画一次 —— 标题里的应用名可能刚跟着表单刷新。 */
+function pubPaintTitle() {
+  const el = document.getElementById("ovTitle");
+  const root = PUB.dom.root;
+  if (!el || !root || !document.contains(root)) return;
+  el.textContent =
+    pubT("上架应用") + " · " + pubStr(PUB.app && (PUB.app.name || PUB.app.id) || PUB.appId);
 }
 
 function pubPaintShots() {
@@ -1039,19 +1596,45 @@ function pubPaintShots() {
     const card = pubEl("div", "pub-shot");
     const img = pubEl("img", "pub-shot-img");
     img.alt = s.name || pubT("截图");
-    const src = s.dataUrl ? s.dataUrl : pubFileUrl(s.path);
-    if (src) img.src = src;
+    /* 云端带出来的那张（from: "cloud"）地址是服务端下发的 shots/<主干>/<n>，没有 dataUrl 也没有
+       本机路径 —— 预览直接用它（主机白名单见 index.html 的 CSP img-src）；拉不到就收起来，
+       别在列表里留一张破图（它照样会被带进上传体）。 */
+    const src = s.dataUrl ? s.dataUrl : s.url ? s.url : pubFileUrl(s.path);
+    if (src) {
+      img.src = src;
+      img.addEventListener("error", () => {
+        img.hidden = true;
+      });
+    }
     card.appendChild(img);
     if (i === 0) card.appendChild(pubEl("span", "pub-shot-cover", pubT("封面")));
     const meta = pubEl("div", "pub-shot-meta");
-    meta.appendChild(pubEl("div", "pub-shot-name", pubTrim(s.name || pubT("截图"), 18)));
+    meta.appendChild(
+      pubEl("div", "pub-shot-name", pubTrim(s.name || pubT("截图"), 18) + (s.from === "cloud" ? pubT("（云端已有）") : "")),
+    );
+    const prep = s.prepared || null;
+    const showBytes = prep && prep.bytes ? prep.bytes : s.bytes;
     meta.appendChild(
       pubEl(
         "div",
         "pub-shot-sub",
-        pubBytes(s.bytes) + (s.w && s.h ? " · " + s.w + "×" + s.h : ""),
+        showBytes ? pubBytes(showBytes) + (s.w && s.h ? " · " + s.w + "×" + s.h : "") : pubT("云端已有：只发内容指纹"),
       ),
     );
+    /* 这一轮实际会上传多少（压过 / 云端已有只发引用）：作者一眼看得出缓存有没有生效 */
+    if (prep) {
+      meta.appendChild(
+        pubEl(
+          "div",
+          "pub-shot-sub",
+          prep.reused
+            ? pubT("云端已有：只发内容指纹")
+            : prep.changed
+              ? pubT("已压缩 ") + pubBytes(Number(prep.srcBytes) || 0) + pubT(" → ") + pubBytes(prep.bytes || 0)
+              : pubT("原样上传（已在档内）"),
+        ),
+      );
+    }
     card.appendChild(meta);
     const acts = pubEl("div", "pub-shot-acts");
     const up = pubBtn("↑", () => pubMoveShot(i, -1), "mini");
@@ -1069,6 +1652,146 @@ function pubPaintShots() {
     wrap.appendChild(card);
   });
   pubEdit();
+}
+/* 云端已有截图 → 上架窗截图条目（**纯函数**：不碰 DOM、不碰 PUB）——口径的唯一一处。
+ * 入参：服务端条目 item（带 shots[] 与 shotsSha[]）+ 已经加过的那些图 stay（保持原位）。
+ * 出参：[{key,path,dataUrl,url,sha,name,bytes,from:"cloud"}]，超过 8 张的部分直接截掉。
+ * 为什么单独一个纯函数：这段「哪几张、什么顺序、带不带指纹」的判定是回归最该钉住的地方
+ * （test/smoke-app-publish.js [4.4] 把它与 app-apps.js 的 appsShotsUrlsOf 一起真跑），
+ * 也是本轮的 bug 本体（截图带不出来 = 每次更新都像丢了）。 */
+function pubCloudShotsOf(item, stay, local) {
+  const it = item || {};
+  const rels = Array.isArray(it.shots) ? it.shots.filter((x) => typeof x === "string" && x) : [];
+  if (!rels.length) return [];
+  const urls =
+    typeof appsShotsUrlsOf === "function" ? appsShotsUrlsOf(it) : [];
+  const shas = Array.isArray(it.shotsSha) ? it.shotsSha : [];
+  const keep = Array.isArray(stay) ? stay : [];
+  const loc = local && typeof local === "object" ? local : Object.create(null);
+  const room = Math.max(0, PUB_MAX_SHOTS - keep.length);
+  const out = [];
+  for (let i = 0; i < rels.length && out.length < room; i++) {
+    const url = pubStr(urls[i]);
+    if (!url) continue;
+    const sha = pubStr(shas[i]).toLowerCase();
+    /* 本机缓存里有同一张图（按内容指纹认）→ **带上本机字节**（本轮需求：截图本地保存）：
+       好处有三条 —— ① 云端对象被别人清掉、或作者删掉旧图想重传时，本机有字节能真重传；
+       ② 提交时按 sha 认出「云端已有」→ 只发 { sha } 引用，一个字节都不用推；
+       ③ 本机存的就是「压缩后上传的那一份」，重算 sha 还是它，不会因为再压一道而变内容。 */
+    const hit = sha && loc[sha];
+    if (hit) {
+      out.push({
+        key: "l" + i + "-" + sha.slice(0, 8),
+        path: "",
+        dataUrl: pubStr(hit.dataUrl),
+        url: url,
+        sha: sha,
+        name: pubT("本机已存 ") + (i + 1),
+        bytes: Number(hit.bytes) || 0,
+        from: "local",
+      });
+      continue;
+    }
+    out.push({
+      key: "c" + i + "-" + sha.slice(0, 8),
+      path: "",
+      dataUrl: "",
+      url: url,
+      sha: sha,
+      name: pubT("云端已有 ") + (i + 1),
+      bytes: 0,
+      from: "cloud",
+    });
+  }
+  return out;
+}
+
+/* 本机那份截图缓存（主进程 <数据目录>/shots-cache/ + store-shots.json 索引）：
+   读回 { sha: {dataUrl, bytes, ext, apps} }。桥不可用 / 读失败一律回空表 —— 这只是便利，
+   缺了照样能上架（退回老路：从云端 URL 把图带出来），绝不让它挡住主流程。 */
+async function pubShotsLocalLoad() {
+  const api = window.api || {};
+  if (typeof api.storeShotsList !== "function") return Object.create(null);
+  try {
+    const r = await api.storeShotsList({ withData: true });
+    const items = r && r.ok && Array.isArray(r.items) ? r.items : [];
+    const map = Object.create(null);
+    for (const it of items) {
+      const sha = pubStr(it && it.sha).toLowerCase();
+      if (!sha || !pubStr(it && it.dataUrl)) continue;
+      map[sha] = it;
+    }
+    return map;
+  } catch (_) {
+    return Object.create(null);
+  }
+}
+
+/* 上传成功后把这一批截图（**压缩后的字节**）存进本机缓存（本轮需求：截图本地保存）。
+   appId 用云端 id：彻底删除这个应用时按它回收只属于它的那些图（共用的留着）。 */
+async function pubShotsLocalSave(appId, list) {
+  const api = window.api || {};
+  if (typeof api.storeShotsPut !== "function") return null;
+  const items = (Array.isArray(list) ? list : [])
+    .filter((x) => x && x.sha && x.dataUrl)
+    .map((x) => ({ sha: x.sha, dataUrl: x.dataUrl, ext: x.ext || "", bytes: Number(x.bytes) || 0 }));
+  if (!items.length) return null;
+  try {
+    return await api.storeShotsPut({ appId: pubStr(appId), items: items });
+  } catch (_) {
+    return null;
+  }
+}
+
+/* 这个应用在云端被彻底删掉之后：回收它**只属于自己**的本地截图缓存
+   （被别的应用共用的那些留着 —— 与云端内容寻址对象库同一口径）。 */
+async function pubShotsLocalDropApp(appId) {
+  const api = window.api || {};
+  if (typeof api.storeShotsClear !== "function") return null;
+  try {
+    return await api.storeShotsClear({ appId: pubStr(appId) });
+  } catch (_) {
+    return null;
+  }
+}
+/* ── 更新时带出云端已有截图（本轮需求：上传应用要保留截图，每次更新都带着它）─────────────
+ * 为什么必须做：上架窗的截图列表**只从本机新加**（拍窗口 / 选本机图），云端已上架那一套根本
+ * 不在列表里。于是每次更新都会走到「还没有截图」那道确认框 —— 作者看着像是「截图没了」，
+ * 而上传体里也确实一张都不带（老服务端 / 只认 shots 的路径下那批图就真丢）。
+ * 口径（三条）：
+ *   ① **只在服务端说这条应用是我自己的**（mine.mine）时带出 —— 别人的分支轮不到我们改；
+ *   ② 带出来的每张都记下服务端下发的内容指纹 sha256（目录条目的 shotsSha[]）：提交时只发
+ *      { sha } 引用，**不重传字节**（与「新加的图云端已有只发引用」同一条口径）；
+ *   ③ **已经加过的图不动**（用户开窗后立刻加的图在前面保持原位），云端那批接在后面；
+ *      一张都没有时也不报错，只是照旧走「还没有截图」那道确认。
+ * 地址一律走 app-apps.js 的 appsShotsUrlsOf（静态目录 / 接口两条来源的**唯一**一处口径）——
+ * 它读 APPS_ST.cat 的来源基址，而开发页开窗时目录可能还没读过，所以先按需拉一次目录
+ * （appsCatalogLoad 自带 TTL 缓存，读过就是零成本）。失败一律静默跳过：带不出截图是缺便利，
+ * 不该让上架窗报错。 */
+async function pubShotsPrefillCloud(mine, seq) {
+  try {
+    const item = mine && mine.item;
+    if (!item || !mine.mine || !mine.exists) return 0;
+    if (typeof appsShotsUrlsOf !== "function" || typeof appsCatalogLoad !== "function") return 0;
+    try {
+      await appsCatalogLoad(false);
+    } catch (_) {}
+    if (!pubAlive(seq)) return 0;
+    const stay = PUB.shots.filter((s) => s && s.from !== "cloud" && s.from !== "local");
+    /* 本机缓存（可能没有）：有它就把「本机字节」一起带出来 —— 见 pubCloudShotsOf 的注释 */
+    const local = await pubShotsLocalLoad();
+    if (!pubAlive(seq)) return 0;
+    const list = pubCloudShotsOf(item, stay, local);
+    if (!list.length) return 0;
+    PUB.shots = stay.concat(list);
+    pubPaintShots(); /* 内部会重画页脚（pubEdit），卡片与「N/8」都跟着更新 */
+    pubShotStatus(
+      pubT("云端已有截图 ") + list.length + pubT(" 张（会带着上传，顺序照作者排的；删掉哪张就不再传哪张）。"),
+    );
+    return list.length;
+  } catch (_) {
+    return 0;
+  }
 }
 function pubMoveShot(i, dir) {
   const j = i + dir;
@@ -1175,8 +1898,14 @@ function pubPaintOnline() {
       wrap.appendChild(row);
     }
   } else if (myBranch) {
+    /* 我的分支一版都没有（版本树被删光，或这本来就是一条还没发过版的分支）：
+       老服务端没有版本树字段时照旧按「单版记录」说话。 */
     wrap.appendChild(
-      pubEl("div", "pub-hint", pubT("你的分支下还没有版本（或版本已被删光）：本次上传会是它的第一版。")),
+      pubEl(
+        "div",
+        "pub-hint",
+        pubT("你的分支下还没有版本（或版本已被删光）：本次上传会是它的第一版。"),
+      ),
     );
   }
   /* 其他作者的分支：只读，**不渲染勾选框、不渲染删除按钮**（q7） */
@@ -1213,11 +1942,9 @@ function pubPaintOnline() {
     }
     wrap.appendChild(box);
   }
-  if (!(myBranch && mineVs.length) && !others.length) {
-    wrap.appendChild(
-      pubEl("div", "pub-hint", pubT("线上已有这个应用（单版记录，没有版本树数据）：本次按追加版本处理。")),
-    );
-  }
+  /* 这一格原来还有一句「线上已有这个应用（单版记录，没有版本树数据）：本次按追加版本处理。」
+     —— 它与上面 `else if (myBranch)` 那一支完全同条件（我的分支一版都没有且没有别人的分支），
+     现在按「已下架 / 还没有版本」说得更准，故撤掉，避免两行提示叠在一起。 */
   /* 删除按钮：只有「我的分支有版本」时才显示（别人的分支一律不出现删除入口，q7） */
   if (PUB.dom.delVerBtn && !(myBranch && mineVs.length)) PUB.dom.delVerBtn.hidden = true;
   pubSyncDelBtn();
@@ -1238,10 +1965,13 @@ function pubNormBranches(raw) {
       ownerName: pubStr(b.ownerName),
       trunk: !!b.trunk,
       mine: !!b.mine,
-      unpublished: !!b.unpublished,
       createdAt: Number(b.createdAt) || 0,
-      latestVersion: pubStr(b.latestVersion || b.version),
-      versions: Array.isArray(b.versions) ? b.versions.slice() : [],
+      /* latestVersion / versions 都要留住「字段有没有」这一信息（空串 / 空数组 ≠ 没字段）：
+         · latestVersion 存在（哪怕空串）= 服务端说这一分支没有当前版了；
+         · versions 存在（哪怕空数组）= 版本树被删光。
+         老服务端没有这两个字段时，pubVersionsOfBranch / pubBranchLatest 才按单版字段合成。 */
+      latestVersion: b.latestVersion != null ? pubStr(b.latestVersion) : pubStr(b.version),
+      versions: Array.isArray(b.versions) ? b.versions.slice() : undefined,
     });
   }
   return out.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
@@ -1289,13 +2019,23 @@ function pubBranchShortOf(b) {
   const name = pubStr(b && b.owner);
   return pubIsPlaceholderName(name) ? "" : name.slice(-6);
 }
+/* 这一分支的「最新版」：服务端下发了 latestVersion 字段（哪怕空串）就以它为准 ——
+   空串 = 这一分支的版本**真被删光了**，绝不再退回 version 字段合成一行
+   （线上踩过：删版本成功、界面上那一版还在。服务端那边的同一条口径见 appCurrentVersionOf）。 */
 function pubBranchLatest(b) {
-  return pubStr((b && (b.latestVersion || b.version)) || "");
+  if (!b) return "";
+  if (b.latestVersion != null) return pubStr(b.latestVersion);
+  return pubStr(b.version || "");
 }
+/* 这一分支的版本行：**显式空数组**（服务端 versions 字段存在但已空）就是真的没有版本，
+   不合成幻行；只有老服务端压根没有 versions 字段时才按单版字段合成一行。 */
 function pubVersionsOfBranch(b) {
-  const vs = Array.isArray(b && b.versions) ? b.versions : [];
+  const hasField = Array.isArray(b && b.versions);
+  const vs = hasField ? b.versions : [];
   if (vs.length) return vs;
-  return pubBranchLatest(b) ? [{ version: pubBranchLatest(b), createdAt: 0, bytes: 0, note: "" }] : [];
+  if (hasField) return [];
+  const one = pubBranchLatest(b);
+  return one ? [{ version: one, createdAt: 0, bytes: 0, note: "" }] : [];
 }
 /* 我名下那条分支（同 id 同作者只有一条）：先按 uid 认，其次按账号名 */
 function pubMyBranchOf(o) {
@@ -1321,6 +2061,33 @@ function pubMyBranchLatestVersion() {
     if (x && (!best || pubVerCmp(x, best) > 0)) best = x;
   }
   return best;
+}
+/* 这一版号在我自己的分支上**已经存在**吗（版本行里有它，或它就是分支最新版）——
+   存在 = 本次上传会「就地覆盖」那一版（版本号不变），见 pubVersionLine 与 pubUpload。 */
+function pubVersionExistsOnline(ver) {
+  const o = PUB.online;
+  const want = pubStr(ver);
+  if (!o || !o.exists || o.known === false || !want) return false;
+  const b = o.myBranch || pubMyBranchOf(o);
+  if (!b) return false;
+  const vs = pubVersionsOfBranch(b);
+  if (vs.some((x) => pubStr(x.version) === want)) return true;
+  return pubStr(pubBranchLatest(b)) === want;
+}
+/* 版本行那一句提示（上架窗页脚上方）：同一版已在线上时**明说会覆盖**，不再拦人 ——
+   用户口径「应用更新时，同版本允许更新覆盖」；服务端就地换包并回 replaced=true。 */
+function pubVersionLine(append) {
+  const ver = pubStr(PUB.form.version);
+  if (append && pubVersionExistsOnline(ver)) {
+    return (
+      pubT("将覆盖线上已有的 v") +
+      ver +
+      pubT("：这一版就地换成新包，版本号不变（原先那一版会被替换掉）")
+    );
+  }
+  return append
+    ? pubT("将追加版本 v") + ver + pubT("（parentVersion = ") + pubStr(pubMyBranchLatestVersion()) + "）"
+    : pubT("将新建应用 v") + ver;
 }
 /* 版本号比较（与主进程 apps-store.js 的 verCmp 同一口径的精简版：够排 x.y.z 与后缀） */
 function pubVerCmp(x, y) {
@@ -1371,23 +2138,27 @@ function pubPaintQuota() {
   }
   const used = Number(q.bytes) || 0;
   const n = Number(q.apps) || 0;
-  const overB = used > PUB_QUOTA_BYTES;
-  const overA = n >= PUB_QUOTA_APPS;
+  /* 上限：服务端回执里的那一份优先（管理员可以在后台给单个用户调，客户端不能拿默认值硬顶），
+     拿不到（老服务端 / 还没上传过）才退回契约里的默认值。null = 服务端说不限。 */
+  const limB = q.limitBytes === null && q.limitBytes !== undefined ? -1 : Number(q.limitBytes) > 0 ? Number(q.limitBytes) : PUB_QUOTA_BYTES;
+  const limA = q.appsLimit === null && q.appsLimit !== undefined ? -1 : Number(q.appsLimit) > 0 ? Number(q.appsLimit) : PUB_QUOTA_APPS;
+  const overB = limB >= 0 && used > limB;
+  const overA = limA >= 0 && n >= limA;
   const line = pubEl("div", "pub-quota-line");
   line.appendChild(
     pubEl(
       "span",
       "pub-quota-k",
-      pubT("云端已用") + " " + pubBytes(used) + " / " + pubBytes(PUB_QUOTA_BYTES),
+      pubT("云端已用") + " " + pubBytes(used) + " / " + (limB < 0 ? pubT("不限") : pubBytes(limB)),
     ),
   );
   line.appendChild(
-    pubEl("span", "pub-quota-k", pubT("应用") + " " + n + " / " + PUB_QUOTA_APPS),
+    pubEl("span", "pub-quota-k", pubT("应用") + " " + n + " / " + (limA < 0 ? pubT("不限") : String(limA))),
   );
   wrap.appendChild(line);
   if (overB) {
     wrap.appendChild(
-      pubEl("div", "pub-hint pub-err", pubT("云端包总量已超上限：服务端会以 QUOTA_BYTES 拒绝，先在上面删掉旧版。")),
+      pubEl("div", "pub-hint pub-err", pubT("云端存储已超上限：服务端会以 QUOTA_BYTES 拒绝，先在上面删掉旧版或多余的截图（已存的内容不会被删，只是不能再新增）。")),
     );
   }
   if (overA) {
@@ -1395,10 +2166,27 @@ function pubPaintQuota() {
       pubEl("div", "pub-hint pub-err", pubT("应用数量已达上限（追加版本不计入）：服务端会以 QUOTA_APPS 拒绝，先删掉不用的应用。")),
     );
   }
+  /* 这次带上来的图里有多少张是「云端已有、只发引用」—— 说清楚，作者才知道缓存真的在省流量 */
+  const cached = (PUB.shots || []).filter((s) => s && s.prepared && s.prepared.reused).length;
+  if (cached) {
+    wrap.appendChild(
+      pubEl("div", "pub-hint", pubT("其中 ") + cached + pubT(" 张截图云端已有：这次只发内容指纹，不再重传图片。")),
+    );
+  }
 }
 
+/* 作者动过表单（标题 / 版本 / 标签 / 勾选 / 截图列表…）→ 上一次失败留下的那套缓存作废：
+   包的字节与压缩结果都对应「改动之前」那份内容，继续拿它重试就会把旧内容传上去。
+   调用点：所有会改变提交体的输入与截图增删排序、以及「再传一版」。
+   为什么放在 pubEdit 里：它就是本模块统一的「表单变了」收口（各输入处理都调它）。 */
+function pubDropRetryCaches() {
+  PUB.retryReady = false;
+  PUB.packRetry = null;
+  PUB.shotPrepRetry = null;
+}
 function pubEdit() {
   PUB.showNote = false;
+  pubDropRetryCaches();
   pubPaintFoot();
 }
 /* 页脚状态 + 上传按钮的可用性（唯一的禁用判据入口，改这里就够） */
@@ -1413,6 +2201,7 @@ function pubPaintFoot() {
       note.className = "pub-foot-note" + (kind ? " pub-" + kind : "");
     }
     btn.disabled = !enabled;
+    /* 主按钮的默认文案（本轮需求：统一叫「上架」）：新上传与追加版本都写「上传上架」 */
     btn.textContent = label || pubT("上传上架");
   };
   if (PUB.busy) {
@@ -1423,6 +2212,18 @@ function pubPaintFoot() {
      用户动一下表单、或点「再传一版」就回到常规提示。 */
   if (PUB.showNote && PUB.note) {
     set(PUB.note, "ok", false, pubT("已上传"));
+    return;
+  }
+  /* 上一轮上传失败、缓存还在（包与压缩结果都留着）→ 主按钮换成「重试上传」：
+     这一下**不重打包、不重压图**，直接把同一份东西再发一次（本轮需求：卡住/失败后能就地重试）。
+     失败原因写在页脚常驻行里；作者改一下表单（截图 / 标题…）就会走 listDirty 清掉缓存回到常态。 */
+  if (PUB.retryReady) {
+    set(
+      PUB.note || pubT("上次上传失败：已保留这一轮打好的包与压缩结果，可直接重试。"),
+      "warn",
+      true,
+      pubT("重试上传"),
+    );
     return;
   }
   if (PUB.bridgeMiss) {
@@ -1471,7 +2272,7 @@ function pubPaintFoot() {
   const newBranch = !!(PUB.online && PUB.online.exists && !append);
   set(
     (append
-      ? pubT("将追加版本 v") + pubStr(PUB.form.version) + pubT("（parentVersion = ") + pubStr(pubMyBranchLatestVersion()) + "）"
+      ? pubVersionLine(true) /* 同号已在线 → 那句「将覆盖线上已有的 vX」 */
       : newBranch
         ? pubT("将在同一个 id 下新建你的分支 v") + pubStr(PUB.form.version)
         : pubT("将新建应用 v") + pubStr(PUB.form.version)) +
@@ -1514,13 +2315,12 @@ function pubValidate() {
   }
   const o = PUB.online;
   /* 同 id 多分支（§十）：线上这个 id 被别人占着**不再是错** —— 本次上传会在同 id 下
-     新建我自己的一条分支（服务端按 forkOf 声明接受，见附录 §十）。只有版本号撞车才算错。 */
-  if (o && o.known !== false && o.exists && o.mine && Array.isArray(o.versions)) {
-    const myLatest = pubMyBranchLatestVersion();
-    const mineVs = pubVersionsOfBranch(o.myBranch || pubMyBranchOf(o) || {});
-    const dup = mineVs.some((x) => pubStr(x.version) === ver) || (!!myLatest && ver === myLatest);
-    if (dup) errors.push(pubT("你这条分支线上已有版本 v") + ver + pubT("：请换一个版本号"));
-  }
+     新建我自己的一条分支（服务端按 forkOf 声明接受，见附录 §十）。
+     **版本号与线上撞车同样不再是错**（用户口径「应用更新时，同版本允许更新覆盖」）：
+     同号 = 就地把那一版换成新包、版本号不变，服务端照原样接受并回 replaced=true
+     （见 store-saas/server.mjs 的 POST /versions / PATCH 注释）。原来这里回一句
+     「你这条分支线上已有版本 vX：请换一个版本号」，等于叫作者放弃他要的那次更新 ——
+     界面上改为由 pubVersionLine() 明说「将覆盖 vX」并照常上传。 */
   return {
     errors,
     payload: {
@@ -1763,8 +2563,8 @@ async function pubLoadOnline() {
       /* 显示名（昵称，服务端按 uid 实时解析）——「我这条分支」的标题读它 */
       mine.ownerName = pubStr(it.ownerName);
       mine.ownerId = pubStr(it.ownerId || (it.ownerUser && it.ownerUser.id) || "");
-      mine.latestVersion = pubStr(it.latestVersion || it.version);
-      mine.unpublished = !!it.unpublished;
+      /* 字段存在就以它为准（空串 = 版本被删光），没有字段才退回单版字段 —— 与 pubBranchLatest 同口径 */
+      mine.latestVersion = pubStr(it.latestVersion != null ? it.latestVersion : it.version);
       mine.item = it;
       /* 继承原版标签（本轮需求）：线上有标签、而用户还没动过这个框 → 填回来（见 pubHydrateTags） */
       pubHydrateTags(it);
@@ -1790,7 +2590,6 @@ async function pubLoadOnline() {
         /* 显示名（昵称）：条目接口没读到时用版本树接口那一份，别让「我的分支」退成「未知作者」 */
         if (!mine.ownerName && pubStr(d.ownerName)) mine.ownerName = pubStr(d.ownerName);
         if (pubStr(d.latestVersion)) mine.latestVersion = pubStr(d.latestVersion);
-        if (d.unpublished != null) mine.unpublished = !!d.unpublished;
         if (Array.isArray(d.versions)) mine.versions = d.versions.slice();
         const bs = pubNormBranches(d.branches);
         if (bs.length) mine.branches = bs;
@@ -1806,7 +2605,10 @@ async function pubLoadOnline() {
         owner: mine.owner,
         ownerName: mine.ownerName,
         latestVersion: mine.latestVersion,
-        versions: mine.versions.slice(),
+        /* 版本树那份读到了（item.versions，可能是空数组）才原样带过来；
+           一条都没读到就留 undefined —— 让 pubVersionsOfBranch 按单版字段合成，别把老服务端的
+           单版应用画成「没有版本」（那是「字段存在但为空」才该有的样子）。 */
+        versions: mine.versions.length ? mine.versions.slice() : undefined,
         trunk: true,
         mine: mine.mine,
       },
@@ -1818,18 +2620,12 @@ async function pubLoadOnline() {
   if (!known && !lost) mine.error = pubT("接口不可达或返回异常");
   if (!pubAlive(seq)) return;
   /* id / 版本默认值（同 id 多分支，§十）：
-     · id 只在**我名下已有这个 id** 时锁定（别人的同 id 不该挡我改 id —— 那正是取消自动分支的方式）；
+     · id 的锁定**不再由线上状态决定**（本轮需求：任何情况下都默认锁定，锁定值在 pubIdEnsure
+       里定好了）—— 这里只在「用户没解锁」时把框里与表单里的值钉回锁定值，防止别的路径改写它；
      · 版本号默认 = **我自己那条分支**的最新版小版本 +1（q10）；我还没有分支时用 1.0.0 / 模型给的版本。 */
-  PUB.idLocked = !!(mine.exists && mine.mine);
-  if (PUB.dom.idIn) {
-    PUB.dom.idIn.readOnly = PUB.idLocked;
-    PUB.dom.idIn.title = PUB.idLocked
-      ? pubT("线上已存在这个应用 id：本次是追加版本，id 不能改")
-      : "";
-  }
-  if (PUB.idLocked) {
-    PUB.form.id = id;
-    if (PUB.dom.idIn) PUB.dom.idIn.value = id;
+  if (!PUB.idUnlocked) {
+    PUB.form.id = pubStr(PUB.lockedId);
+    if (PUB.dom.idIn) PUB.dom.idIn.value = pubStr(PUB.lockedId);
   }
   const myLatest = pubMyBranchLatestVersion();
   if (mine.exists && !PUB.verTouched) {
@@ -1840,19 +2636,25 @@ async function pubLoadOnline() {
     }
   }
   if (PUB.dom.verHint) {
-    PUB.dom.verHint.textContent = mine.exists && mine.mine
-      ? pubT("你这条分支的最新版是 v") + pubStr(myLatest) + pubT("：这次会作为它的新版本追加（parentVersion = ") + pubStr(myLatest) + "）"
-      : mine.exists
-        ? pubT("这个 id 已有 ") + (Number(mine.branches.length) || 1) + pubT(" 条作者分支：本次会在同一个 id 下新建**你的分支**（版本号从 1.0.0 起算，各分支各算各的）。")
-        : pubT("首次上架默认 1.0.0；线上已有你自己这个 id 的分支时会自动取「你那条分支的最新版小版本 +1」。");
+    /* 同号已在线：这句提示与页脚那句（pubVersionLine）同一口径 —— 明说会就地覆盖，
+       不再叫用户换号（个人口径见 pubValidate 上方注释）。 */
+    PUB.dom.verHint.textContent =
+      mine.exists && mine.mine && pubVersionExistsOnline(pubStr(PUB.form.version))
+        ? pubT("线上已有 v") +
+          pubStr(PUB.form.version) +
+          pubT("：这一版会就地换成新包（版本号不变）；要留一份旧版请先改成别的版本号再传。")
+        : mine.exists && mine.mine
+          ? pubT("你这条分支的最新版是 v") + pubStr(myLatest) + pubT("：这次会作为它的新版本追加（parentVersion = ") + pubStr(myLatest) + "）"
+          : mine.exists
+            ? pubT("这个 id 已有 ") + (Number(mine.branches.length) || 1) + pubT(" 条作者分支：本次会在同一个 id 下新建**你的分支**（版本号从 1.0.0 起算，各分支各算各的）。")
+            : pubT("首次上架默认 1.0.0；线上已有你自己这个 id 的分支时会自动取「你那条分支的最新版小版本 +1」。");
   }
-  if (PUB.dom.idHint) {
-    PUB.dom.idHint.textContent = PUB.idLocked
-      ? pubT("已锁定为线上 id")
-      : pubStr(PUB.form.id).length + "/64";
-  }
+  pubPaintId();
   /* 自动二次开发声明跟着 id 重算（q8/q35）：同 id 已有条目 → 指向主干作者并锁定 */
   pubForkFill();
+  /* 云端已有那一套截图**带出来**（本轮需求；口径见 pubShotsPrefillCloud）。
+     放在线上状态读完、即将收口处：带出来之后 pubPaintShots（含页脚）与版本区都按新的状态重画。 */
+  await pubShotsPrefillCloud(mine, seq);
   pubPaintHead();
   pubPaintOnline();
   pubPaintFoot();
@@ -1861,7 +2663,8 @@ function pubUsername() {
   return pubStr((PUB.user && (PUB.user.username || PUB.user.nickname)) || "").toLowerCase();
 }
 
-/* 配额：GET /api/apps?owner=<我>&includeUnpublished=1（契约 §7.5 的用量口径） */
+/* 配额：GET /api/apps/storage（本轮需求：服务端回**用量 + 该用户的上限**，管理员在后台调过就按调过的走）
+   + GET /api/apps?owner=<我>（拿我名下条目里的版本字节，作为老服务端 / 接口缺失时的兜底口径）。 */
 async function pubLoadQuota() {
   const seq = PUB.seq;
   const api = window.api || {};
@@ -1871,36 +2674,84 @@ async function pubLoadQuota() {
     pubPaintQuota();
     return;
   }
-  let out = { apps: 0, bytes: 0, error: "" };
+  let out = { apps: 0, bytes: 0, error: "", limitBytes: null, appsLimit: null, uploadLimitBytes: 0, appZipLimitBytes: 0 };
+  let gotServer = false;
   try {
-    const r = await api.storeRequest({
-      method: "GET",
-      path: "/api/apps?owner=" + encodeURIComponent(me) + "&includeUnpublished=1&pageSize=50",
-    });
+    const r0 = await api.storeRequest({ method: "GET", path: "/api/apps/storage" });
     if (!pubAlive(seq)) return;
-    if (r && r.ok && r.data) {
-      const items = Array.isArray(r.data.items) ? r.data.items : Array.isArray(r.data.apps) ? r.data.apps : [];
-      out.apps = items.length;
-      for (const it of items) {
-        const vs = Array.isArray(it && it.versions) ? it.versions : null;
-        if (vs && vs.length) {
-          for (const v of vs) out.bytes += Number(v && v.bytes) || 0;
-        } else {
-          out.bytes += Number((it && it.bytes) || 0);
-        }
-      }
-    } else if (pubSessionLost(r, pubT("配额读不到：登录已失效，请重新登录"))) {
-      /* 会话在服务端已不认：这里只负责让界面收口，配额留空（别把 401 说成「接口不可达」） */
-      pubPaintQuota();
-      return;
-    } else {
-      out.error = pubStr((r && r.data && r.data.error) || (r && r.error) || pubT("接口不可达"));
+    const st = r0 && r0.ok && r0.data ? r0.data.storage : null;
+    if (st && typeof st === "object") {
+      gotServer = true;
+      out.bytes = Number(st.usedBytes) || 0;
+      out.apps = Number(st.apps) || 0;
+      out.limitBytes = st.limitBytes == null ? null : Number(st.limitBytes);
+      out.appsLimit = st.appsLimit == null ? null : Number(st.appsLimit);
+      out.defaultBytes = Number(st.defaultBytes) || 0;
+      out.defaultApps = Number(st.defaultApps) || 0;
+      /* 上架链路的两个上限（真源在服务端，客户端据此做上传前预检 —— 见 pubPreflightSize）：
+         uploadLimitBytes = 一次请求最多能带多少字节；appZipLimitBytes = 单个应用包上限。 */
+      out.uploadLimitBytes = Number(st.uploadLimitBytes) || 0;
+      out.appZipLimitBytes = Number(st.appZipLimitBytes) || 0;
+      PUB.online = PUB.online || {};
+      if (out.uploadLimitBytes) PUB.online.uploadLimitBytes = out.uploadLimitBytes;
+      if (out.appZipLimitBytes) PUB.online.appZipLimitBytes = out.appZipLimitBytes;
     }
-  } catch (err) {
-    out.error = pubStr((err && err.message) || err);
+  } catch (_) {}
+  if (!gotServer) {
+    /* 老服务端（没有 /api/apps/storage）：退回按我的条目自己加一遍（口径 = 各版本字节之和） */
+    try {
+      const r = await api.storeRequest({
+        method: "GET",
+        path: "/api/apps?owner=" + encodeURIComponent(me) + "&pageSize=50",
+      });
+      if (!pubAlive(seq)) return;
+      if (r && r.ok && r.data) {
+        const items = Array.isArray(r.data.items) ? r.data.items : Array.isArray(r.data.apps) ? r.data.apps : [];
+        out.apps = items.length;
+        out.bytes = 0;
+        for (const it of items) {
+          const vs = Array.isArray(it && it.versions) ? it.versions : null;
+          if (vs && vs.length) {
+            for (const v of vs) out.bytes += Number(v && v.bytes) || 0;
+          } else {
+            out.bytes += Number((it && it.bytes) || 0);
+          }
+        }
+      } else if (pubSessionLost(r, pubT("配额读不到：登录已失效，请重新登录"))) {
+        /* 会话在服务端已不认：这里只负责让界面收口，配额留空（别把 401 说成「接口不可达」） */
+        pubPaintQuota();
+        return;
+      } else {
+        out.error = pubStr((r && r.data && r.data.error) || (r && r.error) || pubT("接口不可达"));
+      }
+    } catch (err) {
+      out.error = pubStr((err && err.message) || err);
+    }
   }
   if (!pubAlive(seq)) return;
   PUB.quota = out;
+  pubPaintQuota();
+}
+/* 上传回执里带回来的用量与上限：就地更新配额行（不必再打一次接口）。 */
+function pubQuotaFromReply(storage) {
+  const st = storage && typeof storage === "object" ? storage : null;
+  if (!st) return;
+  const q = PUB.quota && typeof PUB.quota === "object" ? PUB.quota : { apps: 0, bytes: 0, error: "" };
+  q.bytes = Number(st.usedBytes) || 0;
+  q.apps = Number(st.apps) || 0;
+  q.limitBytes = st.limitBytes == null ? null : Number(st.limitBytes);
+  q.appsLimit = st.appsLimit == null ? null : Number(st.appsLimit);
+  q.defaultBytes = Number(st.defaultBytes) || 0;
+  q.defaultApps = Number(st.defaultApps) || 0;
+  q.uploadLimitBytes = Number(st.uploadLimitBytes) || Number(q.uploadLimitBytes) || 0;
+  q.appZipLimitBytes = Number(st.appZipLimitBytes) || Number(q.appZipLimitBytes) || 0;
+  q.error = "";
+  PUB.quota = q;
+  if (q.uploadLimitBytes) {
+    PUB.online = PUB.online || {};
+    PUB.online.uploadLimitBytes = q.uploadLimitBytes;
+    PUB.online.appZipLimitBytes = q.appZipLimitBytes;
+  }
   pubPaintQuota();
 }
 
@@ -1966,38 +2817,85 @@ function pubPaintIcon() {
       : pubT("未选图标：将用第 1 张截图当图标");
   }
 }
-/* 拍该应用自己的窗口（主进程 appsShotWindow） */
+/* 窗口没开 / 最小化 / 还没画好 —— 这三类的共同点：**再启动一次就能拍**（本轮需求）。
+   apps:openWindow 对已存在的窗口走 show() + focus()，最小化也会被它还原；
+   对没开的窗口走 ready-to-show 之后 show()，所以调用方要等一拍再重拍（见 pubShotCapture）。 */
+function pubShotNeedsBoot(r) {
+  const code = pubStr(r && r.code);
+  if (code === "not_open" || code === "minimized" || code === "empty_shot") return true;
+  return /启动|最小化|窗口|还没画|为空|空图/.test(pubStr(r && r.error));
+}
+function pubWait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+/* 拍一张应用窗口截图：窗口没开 / 最小化就先**自动启动这个应用**（不再要求用户回开发页点「启动」），
+   等窗口画出来再拍；最多 PUB_SHOT_TRIES 次。别的错（id 不合法 / 写盘失败）原样往回抛，不重试。 */
+async function pubShotCapture() {
+  const api = window.api || {};
+  const id = PUB.appId;
+  let booted = false;
+  let last = null;
+  for (let i = 0; i < PUB_SHOT_TRIES; i++) {
+    let r = null;
+    try {
+      r = await api.appsShotWindow(id);
+    } catch (err) {
+      r = { ok: false, error: pubStr((err && err.message) || err) };
+    }
+    if (r && r.ok !== false) return r;
+    last = r;
+    if (!pubShotNeedsBoot(r)) return r;
+    if (!booted) {
+      booted = true;
+      pubShotStatus(pubT("正在启动这个应用（窗口没开或已最小化）…"));
+      try {
+        if (typeof appsOpenApp === "function") await appsOpenApp(id);
+      } catch (_) {}
+    }
+    await pubWait(PUB_SHOT_WAIT_MS); /* 窗口是 show 之后才画的：等一拍再拍，别拍成空白页 */
+  }
+  return last || { ok: false, error: pubT("拍应用窗口失败") };
+}
+/* 拍该应用自己的窗口（主进程 appsShotWindow）：只由「拍应用窗口」按钮触发
+   （本轮需求：开窗时不再自动启动 / 不再自动拍）。 */
 async function pubShotWindow() {
   const api = window.api || {};
   const id = PUB.appId;
   if (typeof api.appsShotWindow !== "function") {
     pubShotStatus(pubT("宿主桥未就绪（appsShotWindow）：当前版本还不能拍应用窗口，请改用「从本机选图」。"), "err");
-    return;
+    return false;
   }
+  if (PUB.shotBusy) {
+    /* 正在拍：给一行状态，别让点击看起来没反应 */
+    pubShotStatus(pubT("正在拍应用窗口…"));
+    return false;
+  }
+  PUB.shotBusy = true;
+  const seq = PUB.seq;
   pubShotStatus(pubT("正在拍应用窗口…"));
   let r = null;
   try {
-    r = await api.appsShotWindow(id);
-  } catch (err) {
-    pubShotStatus(pubT("拍应用窗口失败：") + pubStr((err && err.message) || err), "err");
-    return;
+    r = await pubShotCapture();
+  } finally {
+    PUB.shotBusy = false;
   }
+  if (seq !== PUB.seq || !PUB.dom.root || !document.contains(PUB.dom.root)) return false;
   if (!r || r.ok === false) {
     const msg = pubStr((r && r.error) || pubT("拍应用窗口失败"));
     pubShotStatus(pubT("拍应用窗口失败：") + msg, "err");
-    /* 窗口没开 / 最小化 → 给一条「启动」的路（不替用户动他的窗口，只给按钮） */
+    /* 仍然没拍成（例如桥不通 / 应用目录出问题）→ 给一条手动重试的路，不替用户反复试 */
     const bar = PUB.dom.shotStatus;
-    if (bar && /启动|最小化|窗口/.test(msg) && typeof appsOpenApp === "function") {
+    if (bar && typeof appsOpenApp === "function") {
       bar.appendChild(document.createTextNode(" "));
-      bar.appendChild(
-        pubBtn(pubT("启动这个应用"), () => {
-          try {
-            appsOpenApp(id);
-          } catch (_) {}
-        }, "mini"),
-      );
+      bar.appendChild(pubBtn(pubT("启动这个应用"), () => {
+        try {
+          appsOpenApp(id);
+        } catch (_) {}
+      }, "mini"));
+      bar.appendChild(document.createTextNode(" "));
+      bar.appendChild(pubBtn(pubT("重试"), () => pubShotWindow().catch(() => {}), "mini"));
     }
-    return;
+    return false;
   }
   const ok = pubAddShot({
     key: "w" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -2009,8 +2907,15 @@ async function pubShotWindow() {
     h: Number(r.height) || 0,
     from: "window",
   });
-  if (ok) pubShotStatus(pubT("已加入第 ") + PUB.shots.length + pubT(" 张（第 1 张是封面）。"));
+  if (ok) {
+    pubShotStatus(
+      pubT("已加入第 ") + PUB.shots.length + pubT(" 张（第 1 张是封面）。"),
+    );
+  }
+  return ok;
 }
+/* 「开窗自动启动 + 自动拍第 1 张」（pubAutoShot / PUB.autoShotDone）本轮已按用户口径**整条撤掉**：
+   开窗不再启动应用、不再拍照；只有点「拍应用窗口」才启动（窗口没开或最小化时）并拍。 */
 /* 截图 → base64：本机选图直接用 data URL；拍窗口的图走 assetReadDataUrl 读回 */
 async function pubShotBase64(shot) {
   if (!shot) return "";
@@ -2205,13 +3110,8 @@ function pubApplyMeta(o) {
   if (title) {
     PUB.form.title = title;
     if (PUB.dom.titleIn) PUB.dom.titleIn.value = title;
-    if (!PUB.idTouched && !PUB.idLocked) {
-      const s = pubSlug(title);
-      if (s.length >= 2) {
-        PUB.form.id = s;
-        if (PUB.dom.idIn) PUB.dom.idIn.value = s;
-      }
-    }
+    /* 本轮起**不再**由标题改写应用 id（用户口径：任何状态下 id 都不再被标题改写）——
+       模型给的中文标题照样不会把 id 换成别的名字，要改 id 只能点「修改 id」+ 二次确认。 */
   }
   if (desc) {
     PUB.form.description = desc;
@@ -2257,9 +3157,17 @@ function pubErrText(r) {
     APP_EXISTS:
       "这个应用 id 已被其他账号占用：本次应自动声明为「基于该应用的二次开发」再上传（同一个 id 下建你自己的分支）。若来源下拉被清空了，请把应用 id 改回原 id 后重试。",
     BRANCH_EXISTS: "你名下已经有这个 id 的应用：请直接追加版本（重新打开本窗会自动判断），不要新建分支。",
-    VERSION_EXISTS: "你这条分支上已有这个版本号：请换一个版本号再上传。",
+    /* 老服务端才会回这个码（本轮起同版本号 = 就地把那一版换成新包，见 store-saas/server.mjs
+       的 POST /versions 注释）：原文案是「请换一个版本号再上传」——那等于叫作者放弃他要的更新。
+       这里如实说明这一发没上去的**原因**（服务端版本旧），并给出唯一的出路（换号先传）。 */
+    VERSION_EXISTS:
+      "云端服务端是旧版本（还不支持同版本号覆盖更新）：这一版没传上去。请把服务端升级到最新，或先换一个版本号上传。",
     BRANCH_REQUIRED: "这个 id 下有多条作者分支：删版本请指明分支（本窗会自动带上你自己那条）。",
     APP_TOO_LARGE: "应用包超过云端上限",
+    /* 删版本这条链的失败码（本轮需求：失败的**原因**要看得懂，不再只回一句「没删掉」） */
+    VERSION_NOT_FOUND: "服务端说这一版不存在（可能已被删过，或界面上这一版不是服务端的真版本记录）：点「重新读取」刷一遍版本区",
+    APP_VERSIONS_DISABLED: "服务端未启用应用多版本（单版模式）：这一版删不掉，要彻底删掉这个应用请在「我的应用」里删除它",
+    BRANCH_NOT_FOUND: "这个 id 下没有你这个账号的分支：删版本只作用于自己的分支",
   };
   if (code && CODE_TEXT[code]) return CODE_TEXT[code] + (msg ? "（" + msg + "）" : "");
   if (msg) return msg;
@@ -2274,6 +3182,16 @@ async function pubUpload() {
   if (PUB.busy) return;
   const seq = PUB.seq;
   const api = window.api || {};
+  /* 这一轮是「失败后的重试」还是「用户重新点的一次上传」？
+     判据：上一轮失败过且还留着缓存（retryReady）→ 沿用这一轮的包与压缩结果（同 roundId）；
+     否则开新的一轮（roundId+1），旧缓存整体作废。
+     为什么用 roundId 而不是直接复用对象：截图列表可能被作者改过（删掉一张 / 换个顺序），
+     同一轮重试的前提是「列表一个字都没动」—— 改动会走 pubPaintShots → pubFormChanged 清掉缓存。 */
+  if (!PUB.retryReady) {
+    PUB.roundId++;
+    PUB.packRetry = null;
+    PUB.shotPrepRetry = null;
+  }
   /* ① 表单里的 id 与线上状态快照不一致（用户改过 id）→ 先按新 id 重读线上状态，
         再决定走 POST /api/apps 还是 /api/apps/<id>/versions（绝不照旧快照乱打） */
   if (
@@ -2297,6 +3215,34 @@ async function pubUpload() {
     pubToast(pubT("请先勾选「我已阅读并同意，责任由我承担」"), "warn");
     return;
   }
+  /* 一张截图都没有就上传（本轮需求：撤掉「开窗自动拍第 1 张」之后，这条路会真的走到）：
+     商店卡片与详情头部都会没有封面（没单独选图标时，图标本来也取自第 1 张截图）。
+     不静默放过、也不硬拦 —— 说清后果，用户确认了才传。
+     本轮补一句口径：**已经上架过**（云端有我这条分支）时，这一轮本来就不带截图字段，
+     云端那一套原样留着（见下面 shotsBase64 的注释），既不会丢也不会被清空。 */
+  if (!PUB.shots.length) {
+    PUB.busy = true; /* 先占住按钮：确认框开着时别让第二次点击又走一遍 */
+    const hasCloud = !!(PUB.online && PUB.online.exists && PUB.online.mine);
+    let go = true;
+    if (typeof confirmDialog === "function") {
+      try {
+        go = await confirmDialog(
+          pubT("还没有截图：商店卡片与详情头部会没有封面（没有单独选图标时，图标也取自第 1 张截图）。确定现在上传吗？") +
+            (hasCloud ? pubT("这条应用云端已有截图：它们不会被删，也不会换封面。") : ""),
+          { title: pubT("还没有截图"), okText: pubT("仍然上传"), cancelText: pubT("回去加一张") },
+        );
+      } catch (_) {
+        go = false;
+      }
+    }
+    PUB.busy = false;
+    if (!pubAlive(seq)) return;
+    if (!go) {
+      pubSetNote(pubT("已停在「还没有截图」这一步：点「拍应用窗口」或「从本机选图…」加一张，再上传。"));
+      pubToast(pubT("已取消上传：先加一张截图"), "warn");
+      return;
+    }
+  }
   /* 桥再探一次（用户可能刚升级 / 重启过主进程），缺了就如实说，不硬调 undefined */
   pubCheckBridges();
   if (PUB.bridgeMiss) {
@@ -2310,12 +3256,33 @@ async function pubUpload() {
     return;
   }
   PUB.busy = true;
+  /* 上传体积预检（本轮需求）：先把「这一轮要传的东西」摆上台面 ——
+     应用包 + 图标 + 截图（截图与包都按 base64 后约 1.34 倍算），
+     超过服务端那条上架链路的请求体上限时**在这里就停下并说清楚**，
+     不要等打包、压缩、算指纹全跑完再让服务端/网关把我们拒掉（用户看到的是「上传中卡住」）。
+     上限真源在服务端（回执里下发的 storage.uploadLimitBytes）；没读到就用兜底常量。 */
+  const shotEstimate = PUB.shots.reduce((n, x) => n + (Number(x && x.bytes) || 0), 0);
+  const pre = pubPreflightSize(shotEstimate, Number(plan.bytes) || 0);
+  if (pre && pre.tooBig) {
+    PUB.busy = false;
+    pubSetNote(pre.text);
+    pubToast(pubT("应用包太大，先减小素材再上传"), "warn");
+    return;
+  }
+  const zipSig = PUB.user && PUB.user.id ? pubStr(PUB.appId) : pubStr(PUB.appId);
   pubSetNote(pubT("上传中…（① 正在打包应用）"));
   let pack = null;
-  try {
-    pack = await api.appsExportZip(PUB.appId);
-  } catch (err) {
-    pack = { ok: false, error: pubStr((err && err.message) || err) };
+  /* 这一轮已经打好包、上次只是没传上去（超时 / 网络断）→ **直接复用那份 zip**，
+     不再重打一遍（打包要读全目录并逐文件 deflate，大应用上是几秒到几十秒的等待）。 */
+  if (PUB.packRetry && PUB.packRetry.sig === zipSig && PUB.packRetry.pack && PUB.packRetry.read) {
+    pack = PUB.packRetry.pack;
+    pubSetNote(pubT("上传中…（① 打包：沿用上一次已打好的包）"));
+  } else {
+    try {
+      pack = await api.appsExportZip(PUB.appId);
+    } catch (err) {
+      pack = { ok: false, error: pubStr((err && err.message) || err) };
+    }
   }
   if (!pack || pack.ok === false) {
     PUB.busy = false;
@@ -2323,7 +3290,7 @@ async function pubUpload() {
     const EXTRA = {
       missing: "该应用不在本机（可能在别处被删了）",
       missing_entry: "应用缺少入口页：这个应用目录里没有 app.json 声明的入口页",
-      need_root: "尚未指定应用安装根目录",
+      /* need_root 已随「不再要求手选应用根目录」（本轮需求）下线：主进程不再回这个码 */
       bad_id: "应用 id 不合法",
     };
     const why = EXTRA[code] || pubStr((pack && pack.error) || pubT("未知错误"));
@@ -2333,48 +3300,147 @@ async function pubUpload() {
   }
   pubSetNote(pubT("上传中…（② 正在读回应用包）"));
   let read = null;
-  try {
-    read = await api.appsReadZipBase64(PUB.appId);
-  } catch (err) {
-    read = { ok: false, error: pubStr((err && err.message) || err) };
+  if (PUB.packRetry && PUB.packRetry.sig === zipSig && PUB.packRetry.pack === pack && PUB.packRetry.read) {
+    read = PUB.packRetry.read;
+  } else {
+    try {
+      read = await api.appsReadZipBase64(PUB.appId);
+    } catch (err) {
+      read = { ok: false, error: pubStr((err && err.message) || err) };
+    }
   }
   if (!read || read.ok === false || !read.base64) {
     PUB.busy = false;
     pubSetNote(pubT("读回应用包失败：") + pubStr((read && read.error) || pubT("未知错误")));
     return;
   }
+  /* 记下这一轮打好的包与读回的 base64：万一后面上传失败（超时 / 断网 / 服务端 5xx），
+     用户点「重试」时直接用它们重发，不再重打包、不再重读 —— 见 pubUploadRetryLast。 */
+  PUB.packRetry = { sig: zipSig, appId: pubStr(PUB.appId), pack: pack, read: read, at: Date.now() };
   if (pack.sha256 && read.sha256 && pubStr(pack.sha256) !== pubStr(read.sha256)) {
     PUB.busy = false;
     pubSetNote(pubT("校验失败：打包与读回的应用包 sha256 不一致，已停止上传（请重试一次）"));
     pubToast(pubT("应用包校验失败：sha256 不一致，未提交"), "err");
     return;
   }
-  /* 图标（封面，一张）：显式图标优先，否则第 1 张截图 */
+  /* 图标（封面，一张）：显式图标优先，否则第 1 张截图（**压到 512 长边 + ≤500KB**）。 */
   let iconBase64 = "";
   if (plan.kind === "icon") {
     iconBase64 = pubStripDataUrl(PUB.form.icon.dataUrl);
   } else if (plan.kind === "shot") {
-    iconBase64 = await pubShotBase64(PUB.shots[0]);
-    if (!iconBase64) {
+    const rawIcon = await pubShotBase64(PUB.shots[0]);
+    if (!rawIcon) {
       pubSetNote(pubT("读取第 1 张截图失败：请改用「图标」选一张本机图片，或重新拍一次窗口"));
       PUB.busy = false;
       return;
     }
-  }
-  /* 上架截图（本轮需求：**8 张全部上传**，不做兼容）：逐张读成 base64 放进 shotsBase64[]，
-     服务端统一压缩 + 整批落盘（任何一张读不出来就整批停下，并指名第几张 —— 绝不静默少传）。 */
-  const shotsBase64 = [];
-  for (let i = 0; i < PUB.shots.length; i++) {
-    const one = await pubShotBase64(PUB.shots[i]);
-    if (!one) {
-      pubSetNote(
-        pubT("第 ") + (i + 1) + pubT(" 张截图读不出来（文件可能已被移走）：删掉它或重新拍一张再上传"),
-      );
+    const iconShot = await pubPrepareShot("data:image/*;base64," + rawIcon, { kind: "icon", maxBytes: PUB_ICON_MAX_BYTES });
+    if (!iconShot || iconShot.tooLarge || !iconShot.dataUrl) {
+      pubSetNote(pubT("第 1 张截图当图标压不到 500KB：请用「图标」单独选一张小图，或换一张更简单的封面截图。"));
       PUB.busy = false;
       return;
     }
-    shotsBase64.push(one);
+    iconBase64 = pubStripDataUrl(iconShot.dataUrl);
   }
+  /* 上架截图（8 张全部上传）：逐张**先压一道**（长边 2560 / 单张 ≤5MB，见 pubPrepareShot），
+     算出内容指纹（sha256）后判断「云端是不是已经有这张图」：
+       · 已经有 → 只发 { sha } 引用，**不发字节**（省云服务器流量，就是这次要做的事）；
+       · 没算出来（crypto 不可用）→ 老实发字节。
+     压缩与算指纹这一趟**一张都不能少**（sha256 是压缩后字节的哈希，跳过压缩就算不出指纹），
+     但省下的是**上传字节**：8 张 5MB 的图若云端已有，这一轮推上去的就只有引用。
+     判定两趟：先用本机索引 / 服务端目录下发的指纹（同步，免一次网络往返），
+     再把剩下没认出来的**一次**批量问服务端（别人传过的同一张图也命中）。
+     任何一张读不出来 / 压不下去都整批停下并指名第几张 —— 绝不静默少传。
+     唯一的例外是**云端带出来、服务端又没给指纹**的老条目（from:"cloud" && 没有 sha）：
+     它本来就在云端、这一轮一个字节都不用发，**直接不带进 body**（带了也只能是空引用，
+     两个路由对空引用的处理还不一样：追加路会当成「读不出来」整批拒；不带反而语义正确
+     —— 服务端的追加式写入本来就保留旧图、不重排）。它照旧显示在列表里。 */
+  const shotsBase64 = [];
+  const shotShaByIndex = [];
+  const shotPrepByIndex = [];
+  /* 每一项对应 PUB.shots 里的第几个（云端没指纹那些会被跳掉 → 下标不再一一对应）：
+     回填 prepared / 重试要按它找回「这张图是哪一张」，否则会标错卡片。 */
+  const shotSrcIndex = [];
+  PUB.showNote = false;
+  for (let i = 0; i < PUB.shots.length; i++) {
+    /* 只有「云端带出来、本机又没字节」的那些直接发引用（见上面的例外说明）；
+       本机缓存带出来的（from:"local"，有 dataUrl）照常走压缩 + 指纹那一趟 ——
+       它的字节就是当初上传的那一份，算出来的 sha 与云端一致，于是同样只发引用。 */
+    if (PUB.shots[i] && PUB.shots[i].from === "cloud" && !pubStr(PUB.shots[i].dataUrl)) {
+      const csha = pubStr(PUB.shots[i].sha).toLowerCase();
+      if (!csha) continue; /* 老条目没指纹：不带（见上）；服务端那条路本来就不动它 */
+      shotShaByIndex.push(csha);
+      shotPrepByIndex.push({ bytes: 0, w: 0, h: 0, changed: false, reused: true });
+      shotSrcIndex.push(i);
+      shotsBase64.push({ sha: csha });
+      continue;
+    }
+    /* 这一轮已经压好 / 算好指纹的那一份（失败重试时直接复用）：
+       压 8 张 2560 长边的图 + 逐张算 sha256 是这条链路上最慢的一段，
+       上次只是没传上去（超时 / 断网）时不该让用户再等一遍 —— 见 PUB.shotPrepRetry。 */
+    const cachedPrep = PUB.shotPrepRetry && PUB.shotPrepRetry.round === PUB.roundId ? PUB.shotPrepRetry.byIndex[i] : null;
+    if (cachedPrep && cachedPrep.prep && cachedPrep.sha) {
+      shotShaByIndex.push(cachedPrep.sha);
+      shotPrepByIndex.push(cachedPrep.prep);
+      shotSrcIndex.push(i);
+      shotsBase64.push(pubStripDataUrl(cachedPrep.prep.dataUrl));
+      continue;
+    }
+    const raw = await pubShotBase64(PUB.shots[i]);
+    if (!raw) {
+      pubSetNote(pubT("第 ") + (i + 1) + pubT(" 张截图读不出来（文件可能已被移走）：删掉它或重新拍一张再上传"));
+      PUB.busy = false;
+      return;
+    }
+    const prep = await pubPrepareShot("data:image/*;base64," + raw, { kind: "shot", srcBytes: Number(PUB.shots[i].bytes) || 0 });
+    if (!prep || !prep.dataUrl) {
+      pubSetNote(pubT("第 ") + (i + 1) + pubT(" 张截图读不出来（文件可能已被移走）：删掉它或重新拍一张再上传"));
+      PUB.busy = false;
+      return;
+    }
+    if (prep.tooLarge) {
+      pubSetNote(
+        pubT("截图 ") + (i + 1) + pubT(" 压到长边 ") + PUB_SHOT_RETRY_EDGE +
+          pubT(" 后仍有 ") + pubBytes(prep.bytes) + pubT("，超过单张 5MB 上限：请先裁切或转小再上传。"),
+      );
+      pubToast(pubT("截图 ") + (i + 1) + pubT(" 太大（超过 5MB）"), "warn");
+      PUB.busy = false;
+      return;
+    }
+    const sha = await pubSha256Of(prep.dataUrl);
+    shotShaByIndex.push(sha);
+    shotPrepByIndex.push(prep);
+    shotSrcIndex.push(i);
+    shotsBase64.push(pubStripDataUrl(prep.dataUrl));
+    /* 记下这一张的结果（重试复用）；round 一变就整体重来，绝不跨轮串味 */
+    if (!PUB.shotPrepRetry || PUB.shotPrepRetry.round !== PUB.roundId) PUB.shotPrepRetry = { round: PUB.roundId, byIndex: {} };
+    PUB.shotPrepRetry.byIndex[i] = { prep: prep, sha: sha };
+  }
+  /* 批量查存（一次请求）：命中的改成 { sha } 引用 —— 只影响省不省流量，失败照旧发字节。 */
+  try {
+    await pubServerHasShots(shotShaByIndex);
+  } catch (_) {}
+  for (let i = 0; i < shotsBase64.length; i++) {
+    const sha = pubStr(shotShaByIndex[i]).toLowerCase();
+    const skipUpload = !!sha && pubShaSeenHas(sha);
+    const prep = shotPrepByIndex[i] || {};
+    /* 已经有 { sha } 的（云端带出来那一项）保持引用；新图算出指纹且云端已有 → 也换成引用。 */
+    if (!(shotsBase64[i] && typeof shotsBase64[i] === "object") && skipUpload) shotsBase64[i] = { sha: sha };
+    /* 卡片上如实标一句这张图这一轮压了多少（作者能自己判断画质够不够）——
+       下标走 shotSrcIndex（云端没指纹那些没进 body，不能按 i 直接对 PUB.shots 取）。 */
+    const src = shotSrcIndex[i];
+    if (PUB.shots[src]) {
+      PUB.shots[src].prepared = {
+        bytes: Number(prep.bytes) || 0,
+        w: Number(prep.w) || 0,
+        h: Number(prep.h) || 0,
+        changed: !!prep.changed,
+        sha: sha,
+        reused: !!sha && (skipUpload || (PUB.shots[src] && PUB.shots[src].from === "cloud")),
+      };
+    }
+  }
+  pubPaintShots();
   /* 追加还是新建（同 id 多分支，§十）：
      · 我名下已有这个 id 的分支 → 追加到**我那条**（parentVersion = 我那条的最新版）；
      · 这个 id 只在别人名下 → 走 POST /api/apps 新建**我自己**的分支（body 里带 forkOf 声明）；
@@ -2412,15 +3478,41 @@ async function pubUpload() {
   } else {
     body.id = v.payload.id;
   }
+  const sentBytes = shotsBase64.filter((x) => typeof x === "string").length;
+  const refBytes = shotsBase64.length - sentBytes;
   pubSetNote(
     pubT("上传中…（③ 正在上传到云端，请勿关闭窗口）") +
-      (shotsBase64.length ? pubT("· 截图 ") + shotsBase64.length + pubT(" 张") : ""),
+      (shotsBase64.length
+        ? pubT("· 截图 ") + shotsBase64.length + pubT(" 张") +
+          (refBytes ? pubT("（其中 ") + refBytes + pubT(" 张云端已有，只发引用）") : "")
+        : ""),
   );
   let r = null;
   try {
     r = await api.storeRequest({ method: "POST", path: path, json: body, timeoutMs: 600000 });
   } catch (err) {
     r = { ok: false, error: pubStr((err && err.message) || err) };
+  }
+  /* 服务端说「这个引用云端没有」（OBJ_NOT_FOUND：本机记住了、云端其实清过）：
+     **把这一批发成字节重试一次**（只重试一次，避免死循环），并直接告诉用户发生了什么。 */
+  if (r && r.ok === false && pubStr(r.data && r.data.code) === "OBJ_NOT_FOUND" && refBytes) {
+    for (let i = 0; i < shotsBase64.length; i++) {
+      const sha = pubStr(shotShaByIndex[i]).toLowerCase();
+      if (sha) delete pubShaSeenOf()[sha];
+      const shot = PUB.shots[shotSrcIndex[i]];
+      /* 云端带出来那种没有本机字节（dataUrl / path 都没有）→ 重传不了，只能让它那边回错误 */
+      const raw = await pubShotBase64(shot);
+      if (!raw) continue;
+      const prep = await pubPrepareShot("data:image/*;base64," + raw, { kind: "shot" });
+      if (prep && prep.dataUrl) shotsBase64[i] = pubStripDataUrl(prep.dataUrl);
+    }
+    body.shotsBase64 = shotsBase64;
+    pubSetNote(pubT("云端没有那份缓存的图片：这次把图片一起重传一遍…"));
+    try {
+      r = await api.storeRequest({ method: "POST", path: path, json: body, timeoutMs: 600000 });
+    } catch (err) {
+      r = { ok: false, error: pubStr((err && err.message) || err) };
+    }
   }
   PUB.busy = false;
   if (!r || r.ok === false) {
@@ -2429,33 +3521,119 @@ async function pubUpload() {
        （auth:me 会清掉本机凭据并广播登录态变化），本窗与顶栏一起变成「未登录」，
        页脚立刻给「去登录」，不再留着「明明已登录」的假象。 */
     if (!pubSessionLost(r, msg)) {
-      pubSetNote(pubT("上传失败：") + msg);
+      /* 失败时**保留**这一轮已经打好的包与压好的截图：用户点「重试」直接重发，
+         不再重打包（读全目录 + 逐文件 deflate）、不再重压 8 张图并逐张算 sha256。
+         这两件事正是「卡在上传中」时用户白等的那部分。缓存只活在本窗内，关窗即丢。 */
+      PUB.retryReady = true;
+      const code = pubStr(r && r.data && r.data.code);
+      const hint = code === "BODY_TOO_LARGE"
+        ? pubT("（内容超过云端一次请求的上限：删掉几张截图或压小素材后再试）")
+        : code === "OBJ_NOT_FOUND"
+          ? pubT("（云端没有那份图片缓存，且本机也没有这张图的字节能重传：请重新加一遍那几张截图）")
+          : pubT("");
+      pubSetNote(pubT("上传失败：") + msg + hint + pubT("　已保留这一轮打好的包与压缩结果，点「重试上传」即可直接重发，不必重来。"));
       pubToast(pubT("上传失败：") + msg, "err");
+      pubPaintFoot();
     }
     return;
   }
+  /* 成功了：这一轮的临时缓存（包 / 压缩结果 / 重试标记）立刻作废，别让下一轮用上旧的 */
+  PUB.packRetry = null;
+  PUB.shotPrepRetry = null;
+  PUB.retryReady = false;
   const data = r.data || {};
+  pubShaSeenAdd(shotShaByIndex);
+  pubShaSeenAdd(data.item && data.item.shotsSha ? data.item.shotsSha : null);
+  pubShaSeenAdd(data.catalog && data.catalog.shotsSha ? data.catalog.shotsSha : null);
+  /* 截图**本地保存**（本轮需求：上传过的截图下次更新自动带上、且只发引用）：
+     存的就是这一轮真正传上去的那份压缩字节（按 sha 内容寻址，同图跨应用只存一份）。
+     失败不报错、不影响上架结果 —— 缓存只是便利，下次开窗没有它照样能从云端 URL 带出截图。 */
+  try {
+    const localItems = [];
+    for (let i = 0; i < shotsBase64.length; i++) {
+      const sha = pubStr(shotShaByIndex[i]).toLowerCase();
+      if (!sha) continue;
+      const prep = shotPrepByIndex[i] || {};
+      const src = PUB.shots[shotSrcIndex[i]];
+      let dataUrl = pubStr(prep.dataUrl);
+      if (!dataUrl) {
+        /* 没有 prep（云端带出来的那一项）→ 用本机字节（若这一项本身就是本机缓存来的） */
+        dataUrl = pubStr(src && src.dataUrl);
+      }
+      if (!dataUrl) continue;
+      const extM = /^data:image\/([a-z0-9.+-]+);/i.exec(dataUrl);
+      localItems.push({ sha: sha, dataUrl: dataUrl, ext: extM ? extM[1] : "", bytes: Number(prep.bytes) || 0 });
+    }
+    const saved = await pubShotsLocalSave(pubStr(data.item && data.item.id) || pubStr(v.payload.id), localItems);
+    if (saved && saved.ok) PUB.shotsLocal = saved;
+  } catch (_) {}
+  /* 本机指纹落一份（主进程按云端主机分桶）：下次开窗就知道这几张云端已经有的，连问服务端都省了 */
+  pubImgFpPut(shotShaByIndex);
+  pubImgFpPut(data.item && data.item.shotsSha ? data.item.shotsSha : null);
+  /* 截图张数按**服务端回执**说话（它才知道有没有去重）：服务端从本轮起回 shots:{added,total}
+     —— 追加一版时截图是「保留旧图 + 去重后追加」，本地那个 shotsBase64.length 只是本次带了几张。
+     老服务端没有这个字段就退回本地张数（不假装知道）。 */
+  const shotsReply = data.shots && typeof data.shots === "object" ? data.shots : null;
+  const shotsText = shotsReply
+    ? (Number(shotsReply.added) || 0) > 0
+      ? pubT("· 新增截图 ") + (Number(shotsReply.added) || 0) + pubT(" 张（云端共 ") + (Number(shotsReply.total) || 0) + pubT(" 张）")
+      : shotsBase64.length
+        ? pubT("· 截图已在云端（") + (Number(shotsReply.total) || 0) + pubT(" 张，无重复落盘）")
+        : ""
+    : shotsBase64.length
+      ? pubT("· 含截图 ") + shotsBase64.length + pubT(" 张")
+      : "";
   PUB.showNote = true;
   pubSetNote(
     pubT("上传成功：") +
       pubStr((data.item && (data.item.latestVersion || data.item.version)) || v.payload.version) +
-      (shotsBase64.length ? pubT("· 含截图 ") + shotsBase64.length + pubT(" 张") : ""),
+      shotsText,
   );
   pubShowResult(data, append ? "version" : "create");
-  pubToast(pubT("上架成功"), "ok");
+  /* 覆盖了同号版本（服务端 replaced === true，用户口径「同版本允许覆盖」）：
+     必须说出来 —— 作者以为传的是「新的一版」，实际是把 vX 换掉了，版本树上看不到新版号。 */
+  const replaced = data.replaced === true;
+  /* unchanged:true = 这次带的包与线上那一版**内容一模一样**（sha256 相同）：
+     照旧算成功（同号重传一律接受），但如实说一句，别让人以为换了新包。 */
+  const unchanged = replaced && data.unchanged === true;
+  if (replaced) {
+    pubSetNote(
+      pubT("上传成功（已覆盖 v") +
+        pubStr(v.payload.version) +
+        pubT(unchanged
+          ? "：这一版与线上那份内容一样，版本号不变）"
+          : "：这一版就地换成了新包，版本号不变）") +
+        shotsText,
+    );
+  }
+  /* 本轮口径：上传成功的提示就是「上传成功 + 版本号」那一句（见上面 pubSetNote）——
+     服务端不再有目录可见性开关（应用只有两态：在线上 / 已被彻底删除），
+     也就没有「重新上架」这回执位要额外说一句（data.republished 已随之删除）。 */
+  pubToast(
+    pubT("上架成功") +
+      (replaced ? pubT(" · 已覆盖同号版本") : "") +
+      (unchanged ? pubT(" · 内容未变") : ""),
+    "ok",
+  );
   /* 本机也记一份（契约 §八）：author = 当前登录账号（云端条目只用 owner 显示作者，本机写
-     app.json.author）；forkOf = 本次声明的二次开发来源（随包走 + 本机留档，下次上架自动带回）。 */
-  pubWriteLocalMeta().catch(() => {});
-  /* 刷新线上状态与配额（版本树 / 用量都要跟着动） */
+     app.json.author）；forkOf = 本次声明的二次开发来源；cloud = 上架留痕（本轮需求：
+     云端 id / 账号 / 时间 / 版本 —— 下次开窗的默认锁定 id 与离线回落判据都读它）。
+     三者都随包走 + 本机留档，下次上架自动带回。 */
+  pubWriteLocalMeta(v.payload.id, v.payload.version).catch(() => {});
+  /* 刷新线上状态与配额（版本树 / 用量都要跟着动）。回执里带了 storage 就先用它把配额行
+     刷成服务端的真实数字（少一次往返），再照旧拉一遍兜底。 */
+  pubQuotaFromReply(data.storage);
   pubLoadOnline().catch(() => {});
   pubLoadQuota().catch(() => {});
   try {
     if (typeof window.api.appsCatalog === "function") window.api.appsCatalog(true).catch(() => {});
   } catch (_) {}
 }
-/* 上架成功后把作者与二次开发来源写回本机 app.json（主进程 apps:setMeta，渲染层不碰文件）。
-   写失败不影响上架结果 —— 下次上架时表单照旧会带出来自目录的那一份。 */
-async function pubWriteLocalMeta() {
+/* 上架成功后把作者 / 二次开发来源 / 上架留痕写回本机 app.json（主进程 apps:setMeta，
+   渲染层不碰文件）。写失败不影响上架结果 —— 下次上架时表单照旧会带出来自目录的那一份，
+   只是这次上架的云端 id 没落盘（下次开窗的默认锁定 id 会退回本机应用 id）。
+   publishedId / publishedVersion 省略时取表单里那一份（服务端已按它落库）。 */
+async function pubWriteLocalMeta(publishedId, publishedVersion) {
   const api = window.api || {};
   if (typeof api.appsSetMeta !== "function") return;
   const id = pubStr(PUB.appId);
@@ -2467,14 +3645,43 @@ async function pubWriteLocalMeta() {
   patch.forkOf = pubStr(fork.id)
     ? { id: pubStr(fork.id), ownerId: pubStr(fork.ownerId), owner: pubStr(fork.owner) }
     : null;
+  /* 上架留痕（本轮需求）：云端 id + 上架账号（uid 为准、账号名只作显示）+ 版本 + 时间。
+     下次开窗的默认锁定 id 与离线时的线上回落都读它（见 pubIdEnsure / pubTraceUpdate）。
+     写 null 的场景不存在（上传成功必然有 id）；真拿不到 id 就不写这一项，绝不落半条脏数据。 */
+  const cloudId = pubStr(publishedId) || pubStr(PUB.form.id);
+  const u = PUB.user || {};
+  if (cloudId) {
+    patch.cloud = {
+      id: cloudId,
+      ownerId: pubStr(u.id),
+      owner: pubStr(u.username),
+      version: pubStr(publishedVersion) || pubStr(PUB.form.version),
+      at: Date.now(),
+    };
+  }
   try {
     await api.appsSetMeta(id, patch);
   } catch (_) {}
+  /* 本机留痕也跟着更新（同一窗内接着传下一版 / 改 id 时判据要跟手，不等下一次开窗）：
+     这一发成功后，云端那个 id 就是这个应用的身份了 —— 锁定值换成它，并**恢复锁定**
+     （用户口径：改 id 只是这一次的显式动作，传完就该回到「默认锁定」的常态）。 */
+  if (patch.cloud) {
+    PUB.trace = pubTrace({ cloud: patch.cloud });
+    PUB.lockedId = patch.cloud.id;
+    PUB.idCommitted = patch.cloud.id;
+    PUB.idUnlocked = false;
+    if (PUB.dom.idIn) PUB.dom.idIn.value = pubStr(PUB.form.id);
+    pubPaintId();
+    pubPaintTitle();
+    pubPaintFoot();
+  }
   try {
     if (typeof appsListLoad === "function") await appsListLoad(true);
   } catch (_) {}
 }
-/* 成功回显（不自动关窗；给「再传一版」） */function pubShowResult(data, mode) {
+/* 成功回显（不自动关窗；给「再传一版」）。mode = "version"（追加到已有那条）| "create"（新建一条）：
+   本轮起两种都写「✓ 上架成功」，只用括号里那一句如实标出这次是新建还是追加。 */
+function pubShowResult(data, mode) {
   const wrap = PUB.dom.result;
   if (!wrap) return;
   wrap.innerHTML = "";
@@ -2483,7 +3690,11 @@ async function pubWriteLocalMeta() {
   const cat = (data && data.catalog) || {};
   const head = pubEl("div", "pub-res-head");
   head.appendChild(
-    pubEl("span", "pub-res-t", pubT("✓ 上架成功") + (mode === "version" ? pubT("（追加版本）") : pubT("（新建应用）"))),
+    pubEl(
+      "span",
+      "pub-res-t",
+      pubT("✓ 上架成功") + (mode === "version" ? pubT("（追加版本）") : pubT("（新建应用）")),
+    ),
   );
   head.appendChild(
     pubBtn(pubT("再传一版"), () => pubPrepareNext(), "mini primary"),
@@ -2545,16 +3756,26 @@ function pubPrepareNext() {
 
 /* ───────────────── 删除旧版本（契约 §7.4 DELETE /api/apps/<id>/versions/<v>） ───────────────── */
 
-async function pubDeleteVersions() {
+/* pickedOverride：重试时用上一次那份勾选（重画版本区会把勾选框清掉，而重试按钮要能原样再来一遍）。 */
+async function pubDeleteVersions(pickedOverride) {
   const api = window.api || {};
   const id = pubStr(PUB.form.id) || PUB.appId;
-  const picked = pubPickedVersions();
+  const picked = Array.isArray(pickedOverride) && pickedOverride.length ? pickedOverride.slice() : pubPickedVersions();
   if (!picked.length) return;
   if (typeof api.storeRequest !== "function") {
     pubToast(pubT("上传接口未就绪，无法删除版本"), "err");
     return;
   }
-  const ask = pubT("确定删除线上版本 ") + picked.map((v) => "v" + v).join(" / ") + pubT(" 吗？包与版本记录会一起下掉，配额当场释放，不能撤销。");
+  /* 删的是不是最后一版：是就把后果写进确认框（删完云端就彻底没有这个应用了）。 */
+  const online = PUB.online || {};
+  const myBranch = online.myBranch || pubMyBranchOf(online);
+  const myVs = myBranch ? pubVersionsOfBranch(myBranch) : [];
+  const allGone = myVs.length > 0 && myVs.every((v) => picked.indexOf(pubStr(v.version)) >= 0);
+  const ask =
+    pubT("确定删除线上版本 ") + picked.map((v) => "v" + v).join(" / ") + pubT(" 吗？包与版本记录会一起下掉，配额当场释放，不能撤销。") +
+    (allGone
+      ? pubT(" 这是最后一版：删完这个应用就在云端彻底不存在了（记录 / 包 / 图标 / 截图一并清掉，不可恢复）。")
+      : "");
   let go = false;
   if (typeof confirmDialog === "function") {
     try {
@@ -2566,7 +3787,11 @@ async function pubDeleteVersions() {
     go = true; /* 没有确认框模块时不让流程卡住（勾选 + 点按钮本身就是显式动作） */
   }
   if (!go) return;
+  if (PUB.dom.delVerBtn) PUB.dom.delVerBtn.disabled = true;
   const fails = [];
+  let done = 0;
+  /* 服务端回 deleted:true = 这一版是最后一版，整条分支（记录 + 文件）已经没了 */
+  let branchDeleted = false;
   /* 同 id 多分支（§十）：删版本必须点明分支（?owner=），只删我自己那条（服务端也只允许自己的） */
   const myOwner = pubStr((PUB.online && PUB.online.myBranch && PUB.online.myBranch.ownerId) || (PUB.user && PUB.user.id) || "");
   for (const v of picked) {
@@ -2578,14 +3803,67 @@ async function pubDeleteVersions() {
           (myOwner ? "?owner=" + encodeURIComponent(myOwner) : ""),
       });
       if (!r || r.ok === false) fails.push("v" + v + "：" + pubErrText(r));
+      else {
+        done++;
+        if (r.data && r.data.deleted === true) branchDeleted = true;
+      }
     } catch (err) {
       fails.push("v" + v + "：" + pubStr((err && err.message) || err));
     }
   }
-  if (fails.length) pubToast(pubT("部分版本没删掉：") + fails.join("；"), "err");
-  else pubToast(pubT("已删除选中的线上版本"), "ok");
+  /* 成败都写进常驻结果行（本轮需求：不再只靠 toast），失败再留服务端原话 + 重试。 */
+  if (fails.length) {
+    pubVerResult(
+      (done ? pubT("已删除 ") + done + pubT(" 个版本；还有没删掉的：") : pubT("版本没删掉：")) + fails.join("；"),
+      "err",
+      () => pubDeleteVersions(picked).catch(() => {}),
+    );
+    pubToast(pubT("部分版本没删掉"), "err");
+  } else if (branchDeleted) {
+    /* 删光最后一个版本 = **云端彻底删除**（服务端回 deleted:true）：如实说出后果，
+       并把手头这些「现在指向空气」的本机痕迹一起收掉 —— 本机上架留痕（app.json 的 cloud）
+       与这个应用的本地截图缓存。留着它们，下次开窗会以为「还能更新这个应用」。 */
+    pubVerResult(
+      pubT("已删除 ") + picked.map((v) => "v" + v).join(" / ") +
+        pubT("：那是最后一个版本，这个应用已在云端**彻底删除**（记录 / 包 / 图标 / 截图都没了，不可恢复）。"),
+      "ok",
+    );
+    pubToast(pubT("已彻底删除：云端不再有这个应用"), "ok");
+    try {
+      await pubClearLocalTrace();
+    } catch (_) {}
+  } else {
+    pubVerResult(pubT("已删除 ") + picked.map((v) => "v" + v).join(" / ") + pubT("，配额已释放；线上版本区已按服务端重读刷新。"), "ok");
+    pubToast(pubT("已删除选中的线上版本"), "ok");
+  }
   await pubLoadOnline().catch(() => {});
   await pubLoadQuota().catch(() => {});
+}
+
+/* ───────────────── 云端应用被彻底删除后的本机收尾 ───────────────── */
+/* 作者在云端把这个应用删干净之后，本机这两样东西就成了「指向空气的痕迹」：
+   ① app.json 的 cloud（上架留痕）—— 留着它，下次开窗会把「线上没有这个应用」说成
+      「更新一个已不存在的应用」，默认 id 也锁在那个已经不存在的云端 id 上；
+   ② 本地截图缓存里只属于这个应用的那些图 —— 留着白占磁盘，而且下次上架别的应用也用不上。
+   两件都只动本机数据（write null / 按 appId 回收），云端不再发任何请求。 */
+async function pubClearLocalTrace() {
+  const api = window.api || {};
+  const appId = pubStr(PUB.appId) || pubStr(PUB.form.id) || pubStr(PUB.lockedId);
+  /* ① 清上架留痕（apps:setMeta 的 patch.cloud = null 就是「清掉这一项」，见 app-apps.js 的口径） */
+  if (typeof api.appsSetMeta === "function" && appId) {
+    try {
+      await api.appsSetMeta(appId, { cloud: null });
+      PUB.trace = null;
+      /* 立即回落到常态：锁定值换回本机 id（上架文案统一，不再需要跟着切按钮文案） */
+      PUB.lockedId = pubStr(PUB.localId) || appId;
+      pubPaintId();
+      pubPaintTitle();
+    } catch (_) {}
+  }
+  /* ② 本地截图缓存：只回收「只属于这个应用」的那些（被别的应用共用的留着） */
+  const cloudId = pubStr((PUB.online && PUB.online.id) || appId);
+  await pubShotsLocalDropApp(cloudId);
+  if (cloudId !== appId) await pubShotsLocalDropApp(appId);
 }
 
 /* ───────────────── 入口别名 ───────────────── */

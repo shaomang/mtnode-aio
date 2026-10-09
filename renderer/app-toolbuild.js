@@ -75,11 +75,14 @@ const TOOLBUILD_EXT_TYPE = (() => {
    · 未出现在表里的 kind 一律「不设限」（fileKindSupported 直接 true），
      避免本模块给智能节点 / 工具节点 / 保存节点等无关节点乱设卡；
    · 影视音生成节点的「吃媒体」口径：video_gen 的参考视频与首末帧（图片）、
-     tts_gen 的参考音频、music_gen 的参考音频与歌词文本。 */
+     tts_gen 的参考音频、music_gen 的参考音频与歌词文本；
+   · proc_image 收 image **与 text**（本轮修 bug）：图像节点的端口 0 就是提示词 / 文本入口，
+     该节点本来就能引用文本（app.js 的 proc_image 提示词口与 @ 引用都是这条口径），
+     所以文本类文件连进来不该被当成「吃不下的文件」而弹「工具构建」。 */
 const TOOLBUILD_CONSUMER_ACCEPT = {
   proc_text: ["text"],
   db_table: ["text"],
-  proc_image: ["image"],
+  proc_image: ["image", "text"],
   video_gen: ["video", "image"],
   tts_gen: ["audio"],
   music_gen: ["audio", "text"],
@@ -217,8 +220,44 @@ function wireConsumerNode(wire) {
   return nodes.find((n) => n && String(n.id || "") === String(id)) || null;
 }
 
+/* ── 「会携带文件的来源节点 kind」白名单（本轮修 bug · 唯一判定入口）──────────────
+   本模块的入线文件判定（连线拦截 unsupportedFilesOf 与画布上的工具构建入口
+   app-canvas.js toolBuildInboundFiles）**只能**从这几类来源取文件：
+     · input_file（数据库「文件节点」）—— 它能装任意类型的文件，正是本机制要接的那一类；
+     · input_image / input_audio / input_video 各有既有专线（图像 → proc_text 自动开视觉、
+       音频 / 视频 → proc_text 走节点侧转写、媒体 → 生成节点的参考槽），一律不由工具构建处理；
+     · 其余节点（文本节点 / 处理节点 / 智能 / 工具 / 保存 / 素材…）身上「没有文件」——
+       它们的端口值哪怕长得像路径（一段含「/」的提示词、一句结尾带 .txt 的正文）也不是文件。
+   真源沿用 app-nodes.js 那条连线拦截白名单 TOOLBUILD_FILE_SOURCE_KINDS（同名同值），
+   本文件只在它不可用（源码切片沙箱 / 加载失败）时回落到同一份字面量 ——
+   于是「连线时拦不拦」与「节点上画不画工具构建卡」永远是同一口径。 */
+const TOOLBUILD_FILE_SRC_KINDS = ["input_file"];
+function toolBuildFileSourceKinds() {
+  try {
+    if (
+      typeof TOOLBUILD_FILE_SOURCE_KINDS !== "undefined" &&
+      Array.isArray(TOOLBUILD_FILE_SOURCE_KINDS) &&
+      TOOLBUILD_FILE_SOURCE_KINDS.length
+    )
+      return TOOLBUILD_FILE_SOURCE_KINDS.slice();
+  } catch (_) {
+    /* 该全局还在 TDZ / 未声明 → 回落到本文件这份同值兜底 */
+  }
+  return TOOLBUILD_FILE_SRC_KINDS.slice();
+}
+/* 这个来源节点是不是「携带文件的那一类」（kind 空 = 认不出 → 不算，不误报） */
+function toolBuildIsFileSourceNode(node) {
+  if (!node || typeof node !== "object") return false;
+  const kind = String(node.kind || "");
+  if (!kind) return false;
+  return toolBuildFileSourceKinds().indexOf(kind) >= 0;
+}
+
 /* 线的源侧文件清单（纯读，尽力而为）：
-   1) wire.srcFiles / wire.files 显式给了就用它；
+   0) 来源必须是「携带文件的 kind」（见上）—— 文本节点 / 处理节点的端口值一律不算文件，
+      不能因为正文里带个「/」就被当成一个路径去判支持（本轮修的假阳性：
+      文本输入 → 图像处理 原本会冒出「工具构建」卡）；
+   1) wire.srcFiles / wire.files 显式给了就用它（调用方点名了文件，不再问来源 kind）；
    2) 输入类节点读它自己的文件字段（input_image.imagePath(s) / input_* 的 files）；
    3) 其余节点在调用期取 valueForInput(node, fromIndex) 里的 path。
    取不到 → []（判定链会当成「无文件」，不误报）。 */
@@ -239,6 +278,8 @@ function wireSourceFiles(wire) {
         })()
       : null);
   if (!src) return [];
+  /* 来源不是「携带文件的 kind」→ 这个节点身上没有文件（文本节点的正文不在其列） */
+  if (src.kind && !toolBuildIsFileSourceNode(src)) return [];
   if (Array.isArray(src.imagePaths) && src.imagePaths.length)
     return filePathsOf(src.imagePaths);
   if (src.imagePath) return filePathsOf(src.imagePath);
@@ -627,6 +668,9 @@ if (typeof window === "object" && window)
     unsupportedFilesOf,
     wireConsumerNode,
     wireSourceFiles,
+    /* 「会携带文件的来源 kind」白名单与判定（连线拦截 / 画布入口共用同一份口径） */
+    fileSourceKinds: toolBuildFileSourceKinds,
+    isFileSourceNode: toolBuildIsFileSourceNode,
     ensureToolBuildState,
     toolBuildStateOf,
     toolBuildBegin,
@@ -1471,7 +1515,7 @@ function createToolBuildSessionForNode(node, req, filePath, route) {
    推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description；
    环境事实自己用只读工具查，不拿环境问题问用户。 */
 const TOOLBUILD_GRILL_DIRECTIVE =
-  "【工具构建 · 实现问询（第一件事）】你这一轮的任务不是先写代码：请先用 skill 工具加载内置技能 mtnode-grill-me 并遵守它的提问纪律，然后**只就「怎么实现这个转换工具」问满一轮**：把实现上的取舍映射成决策树（例如解析方式 / 是否调用本机外部程序或库 / 输出文本还是图像 / 中间结果放哪 / 失败时返回错误文本还是抛异常 / 参数与端子的命名），用 ask_user_question 把这一轮的全部问题**一次问完**（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；需求本身已由用户在工具构建窗里写定，不要重问需求是什么；环境事实（本机有没有某程序 / 某个库、文件长什么样）自己用只读工具查，不要拿环境问题问用户。\n收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 询问窗会把它渲染进「📋 总结」区；选项只留两项：推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」，措辞随交流语言。\n用户答完、且你用最后一次询问窗得到「确认无歧义」之后，才能开始搭建这个工具节点的内部子图与参数。"
+  "【工具构建 · 实现问询（第一件事）】你这一轮的任务不是先写代码：请先用 skill 工具加载内置技能 mtnode-grill-me 并遵守它的提问纪律，然后**只就「怎么实现这个转换工具」问满一轮**：把实现上的取舍映射成决策树（例如解析方式 / 是否调用本机外部程序或库 / 输出文本还是图像 / 中间结果放哪 / 失败时返回错误文本还是抛异常 / 参数与端子的命名），用 ask_user_question 把这一轮的全部问题**一次问完**（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description；某题的候选能同时选多项时给该题加 multi_select: true，漏了询问窗只给单选框）；需求本身已由用户在工具构建窗里写定，不要重问需求是什么；环境事实（本机有没有某程序 / 某个库、文件长什么样）自己用只读工具查，不要拿环境问题问用户。\n收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 询问窗会把它渲染进「📋 总结」区；选项只留两项：推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」，措辞随交流语言。\n用户答完、且你用最后一次询问窗得到「确认无歧义」之后，才能开始搭建这个工具节点的内部子图与参数。"
 
 function toolBuildContractText(node, req, filePath, plan) {
   const base =

@@ -46,6 +46,7 @@ const {
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "yue";
 /* 随包脚手架 / 云端 runtime 包的 manifest.json id（≠ 插件 kind "yue"）：校验时用这个口径 */
@@ -69,6 +70,9 @@ let getDataDir = null;
 let getMainWin = null;
 let appRoot = null;
 let getDsh = null;
+/** 画布资产目录解析（main.js 传入的 assetDirFor(wfId)）：调用方没给输出路径时产物直接落这里，
+ *  与 proc_image / sensenova 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
+let assetDirFor = null;
 let consoleWin = null;
 let installing = false;
 let installCancel = false;
@@ -116,6 +120,36 @@ function sleep(ms) {
 }
 function yueRoot() {
   return mk(join(getDataDir(), "yue"));
+}
+/** 托管输出临时区：调用方没给输出路径、又拿不到画布资产目录时的兜底落点（数据目录内，不是应用文件夹） */
+function yueTempOutDir() {
+  return mk(join(yueRoot(), "asset-tmp"));
+}
+/** 托管落点解析：优先画布资产目录 assetDirFor(wfId)，否则数据目录里的 asset-tmp。
+ *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同 sensenova）。 */
+function resolveManagedOutDir(wfId, askedFor) {
+  let dir = "";
+  const wf = String(wfId || "");
+  if (wf && typeof assetDirFor === "function") {
+    try {
+      dir = String(assetDirFor(wf) || "");
+    } catch {
+      dir = "";
+    }
+  }
+  if (!dir) dir = yueTempOutDir();
+  mk(dir);
+  return {
+    dir,
+    warn:
+      "managed_output_dir: 调用方未指定 " + askedFor + "，产物落在应用托管目录（" + dir +
+      "），未写入应用文件夹；需要固定位置请显式传 " + askedFor + "。",
+  };
+}
+/** 托管兜底命名主干：<nodeId 尾 8 位>-<时间戳>（扩展名交给本宿主已有的 uniqueFileInDir 补 / 查重） */
+function managedOutBaseName(nodeId, tag) {
+  const tail = String(nodeId || "").slice(-8) || String(tag || "yue");
+  return tail + "-" + Date.now();
 }
 function configPath() {
   return join(yueRoot(), "config.json");
@@ -1636,6 +1670,35 @@ async function stopBackend() {
   return { ok: true };
 }
 
+/** 占着端口的孤儿进程（台账丢了 pid 但服务还在的情形）：查监听者 → 杀掉进程树。
+ *  只给硬释放（killPortListener 同口径的本地实现）用，正常运行链一个字没动。 */
+function findListeningPid(listenPort) {
+  return new Promise((resolve) => {
+    const p = Number(listenPort);
+    if (!p || process.platform !== "win32") return resolve(0);
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `(Get-NetTCPConnection -LocalPort ${p} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)`,
+      ],
+      { windowsHide: true, timeout: 8000 },
+      (err, stdout) => {
+        if (err) return resolve(0);
+        const n = parseInt(String(stdout || "").trim(), 10);
+        resolve(Number.isFinite(n) && n > 0 ? n : 0);
+      },
+    );
+  });
+}
+
+async function killPortListener(listenPort) {
+  const pid = await findListeningPid(listenPort);
+  if (pid) await killPidTree(pid);
+  return pid;
+}
+
 /** 任务用：确保 Gradio 可用（已在跑则复用；否则启动并等到可探测） */
 async function ensureBackendReadyForJob() {
   /* 依赖自检前置：缺包先补，仍缺就直接走 missing_dep（startBackend 里再探一次也已节流） */
@@ -1737,11 +1800,13 @@ async function startBackend(depRepairTried) {
     backendProc = null;
   }
 
-  const py = join(installDir, ".venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) {
-    reportErr("no_venv", "Yue 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+  const pyExe = join(installDir, ".venv", "Scripts", "python.exe");
+  if (!fs.existsSync(pyExe)) {
+    reportErr("no_venv", "Yue 后端缺少 Python 环境（" + pyExe + "）", { phase: "start" });
     return { ok: false, error: "no_venv" };
   }
+  /* pythonw：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会再拉真解释器并弹终端窗） */
+  const py = quietPython(pyExe);
 
   syncPackAppToInstall(installDir);
 
@@ -2316,7 +2381,7 @@ function venvPython(installDir) {
   const root = String(installDir || cfg.installDir || "").trim();
   if (!root) return "";
   const py = join(root, ".venv", "Scripts", "python.exe");
-  return fs.existsSync(py) ? py : "";
+  return fs.existsSync(py) ? quietPython(py) : "";
 }
 
 function runExe(exe, args, opts) {
@@ -2554,7 +2619,19 @@ async function callGradioGenerate(params, runStartedAt) {
   const cfg = loadConfig();
   const installDir = cfg.installDir;
   const modelPath = yueModelPath(installDir);
-  const userOutputDir = String(params.outputDir || "").trim();
+  /* 调用方没给 outputDir → 宿主兜底落应用托管目录：有 workflowId 落画布资产目录
+     assetDirFor(wfId)，否则落数据目录的 asset-tmp，并真的把产物**复制**进去（不再只回
+     install output 暂存路径）；一律不写应用文件夹。显式传了 outputDir 的调用方一行不动。 */
+  let userOutputDir = String(params.outputDir || "").trim();
+  let managedWarn = "";
+  let managedName = "";
+  if (!userOutputDir) {
+    const m = resolveManagedOutDir(params.workflowId, "outputDir");
+    userOutputDir = m.dir;
+    managedWarn = m.warn;
+    managedName = managedOutBaseName(params.nodeId, "yue") + ".wav";
+    appendConsole("[job] warn " + managedWarn);
+  }
   const stagingDir = join(installDir, "output");
   mk(stagingDir);
   let stagingName = String(params.filename || "").trim();
@@ -2639,8 +2716,14 @@ async function callGradioGenerate(params, runStartedAt) {
         appendConsole("[convert] soundfile/librosa 直写失败 → 保留原音频：" + (conv.error || ""));
       }
     }
-    const finalPath = finalizeYueOutputFile(materialized, userOutputDir, stagingName);
-    return { path: finalPath, message: msg.replace(staged, finalPath), staged, converted: materialized !== staged };
+    const finalPath = finalizeYueOutputFile(materialized, userOutputDir, managedName || stagingName);
+    return {
+      path: finalPath,
+      message: msg.replace(staged, finalPath),
+      staged,
+      converted: materialized !== staged,
+      warnings: managedWarn ? [managedWarn] : [],
+    };
   } catch (e) {
     lastErr = String((e && e.message) || e);
     if (lastErr === "cancelled" || lastErr === "backend_not_running" || lastErr === "gradio_timeout") throw e;
@@ -2717,6 +2800,7 @@ async function generateYue(params) {
       seed: gacha.seed,
       nextSeed: gacha.nextSeed,
       staged: result.staged || "",
+      warnings: Array.isArray(result.warnings) ? result.warnings : [],
     };
   } catch (e) {
     const err = String((e && e.message) || e);
@@ -2887,6 +2971,8 @@ function registerYueIpc(opts) {
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
   getDsh = opts.getDsh || null;
+  /* 画布资产目录（托管兜底落点）：main.js 传入 assetDirFor(wfId) */
+  assetDirFor = typeof opts.assetDirFor === "function" ? opts.assetDirFor : null;
 
   /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口），
      之后各失败出口的 reportErr 才有归属与上下文。 */
@@ -2930,6 +3016,9 @@ function registerYueIpc(opts) {
   ipcMain.handle("yue:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("yue:open", async () => openConsoleWindow());
   ipcMain.handle("yue:close", async () => closeConsoleWindow());
+  /* 插件界面内嵌 console 用（与 music3 / h3 / llama / tts / breeze / remotion 同名同义）：
+     只读日志尾部；此前只有 getStatus 里带 consoleTail，插件卡每 2s 轮询会连带 probe + nvidia-smi。 */
+  ipcMain.handle("yue:consoleTail", async (e, n) => consoleTail(n));
   ipcMain.handle("yue:removePluginMeta", async () => removePluginMetaOnly());
 }
 
@@ -2942,9 +3031,52 @@ function shutdownYueUiOnly() {
   stopGpuPolling();
 }
 
+/**
+ * 显存释放钩子（给主进程 local-model-vram.js 的统一编排用，见该文件头部口径）：
+ *   · YuE2 是 Gradio 后端，**没有卸载模型的 HTTP 口**（后端内部自行释放显存）——
+ *     最轻的释放就是停服务（stopBackend）；
+ *   · hard = 停服务 + 清占端口进程（软释放没生效时由编排器升级）；
+ *   · 释放不改「用户按启动」的语义：下次生成由 ensureBackendReadyForJob 自行拉起。
+ */
+function vramHooks() {
+  return {
+    host: "yue",
+    port: DEFAULT_PORT,
+    isRunning: () => backendRunning(),
+    isLoaded: () => backendRunning(),
+    isBusy: () => !!activeGenerate || !!refreshStaleLock(),
+    soft: async (reason) => {
+      appendConsole("[vram] 停 YuE2 后端释放显存（" + String(reason || "release") + "）—— 下次生成会自动重新拉起");
+      const r = await stopBackend();
+      return { ok: !!(r && r.ok), mode: "stop_backend" };
+    },
+    hard: async (reason) => {
+      appendConsole("[vram] 强制结束 YuE2 后端进程树（" + String(reason || "release") + "）");
+      const port = backendPort();
+      const meta = loadPidMeta();
+      const pid = (meta && meta.pid) || (backendProc && backendProc.pid);
+      if (backendProc) {
+        try {
+          backendProc.kill();
+        } catch {}
+        backendProc = null;
+      }
+      if (pid) await killPidTree(pid);
+      await killPortListener(port);
+      clearPidMeta();
+      clearLock();
+      activeGenerate = null;
+      saveConfig({ wantRunning: false });
+      return { ok: true, mode: "kill_pid_tree" };
+    },
+  };
+}
+
 module.exports = {
   registerYueIpc,
   shutdownYueUiOnly,
+  /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
+  vramHooks,
   onYueDshEvent,
   statusForUi,
   updatePluginRuntime,

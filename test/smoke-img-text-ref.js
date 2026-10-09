@@ -258,6 +258,9 @@ const APP_FNS = [
   "inPortKindOf",
   "videoGenControlPort",
   "wireFromIsControl",
+  /* 控制判定的兜底分支在 nodeEmitsControlOnPort（app.js 定义在更前面）：漏抽它，
+     沙箱里 wireFromIsControl 一被执行就整只崩（ReferenceError，崩点之后全不跑）。 */
+  "nodeEmitsControlOnPort",
   "fnToolOutPortIsControl",
   "fnToolInPortIsControl",
   "isFnToolNode",

@@ -171,9 +171,10 @@ function agentSessionUserHistory(st, msg) {  try {
     for (let i = list.length - 1; i >= 0 && out.length < 6; i--) {
       const m = list[i];
       if (!m || m.role !== "user") continue;
-      /* 只算用户真正说过的话：浏览器求助的「已回应，模型继续中」是界面痕迹（本次需求），
-         既不是用户的输入，也不该参与「这轮与画布有关吗」的判据；
-         「这一轮已经结束」（轮次收尾时卡片收口的痕迹）同理 */
+      /* 只算用户真正说过的话：求助卡专属的界面痕迹都不算用户输入 ——
+         `_src:'ix-browser'`（老会话里的「已回应，模型继续中」，本次改版已下线，
+         这里继续挡着是为了老数据）与 `_src:'ix-round-end'`（轮次收尾时卡片收口的
+         痕迹）都不该参与「这轮与画布有关吗」的判据 */
       if (String(m._src || "") === "ix-browser") continue;
       if (String(m._src || "") === "ix-round-end") continue;
       const c = String(m.content || "").trim();
@@ -225,6 +226,7 @@ const GRILL_CONTRACT =
   "要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— " +
   "把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完" +
   "（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；" +
+  "某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上；" +
   "禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；" +
   "到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工" +
   "（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n" +
@@ -374,6 +376,7 @@ function canvasProjectRoot(wf) {
 /* 生效工作区的来源标签（tooltip 用） */
 function workspaceSourceLabel(src) {
   if (src === "manual") return I18n.t("手填指定");
+  if (src === "app") return I18n.t("所属应用的目录（开发页）");
   if (src === "project") return I18n.t("画布项目根（开发节点 devPath）");
   if (src === "canvas") return I18n.t("画布工作目录");
   if (src === "default") return I18n.t("应用默认目录");
@@ -437,6 +440,12 @@ function sessionCanvasWf(st) {
 }
 
 function agentWorkspaceInfo(st) {
+  /* 应用开发页的首轮态（占位空会话，见 agentViewBlankWorkspaceSet）：目录已经按该应用写好了，
+     来源如实说「所属应用的目录」，别再显示成「手填指定」（用户根本没填过）。 */
+  if (st && st._appDirWorkspace) {
+    const p = String(st.workspace || "").trim();
+    if (p) return { path: p, source: "app", root: null };
+  }
   const manual = String((st && st.workspace) || "").trim();
   if (manual) return { path: manual, source: "manual", root: null };
   const root = canvasProjectRoot(sessionCanvasWf(st));
@@ -568,8 +577,8 @@ function applyAutoSessionTitle(st, raw, srcKind) {
     if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
   } catch (_) {}
   try {
-    if (typeof persistAgentSession === "function")
-      Promise.resolve(persistAgentSession()).catch(() => {});
+    if (typeof agentTouchSession === "function")
+      Promise.resolve(agentTouchSession()).catch(() => {});
   } catch (_) {}
   return true;
 }
@@ -1711,9 +1720,11 @@ function canvasWfIdForNode(node) {
      · 关键结论必须带证据（来源 URL / 命令输出 / 截图路径），无证据不下断言；
      · 长任务不空转；跨重启（要数小时 / 要断点续跑）的活，建议用户提升为长周期任务图。
    浏览器一侧的纪律（接管期间停手、凭据不进对话、危险动作先问）写在 browser_help /
-   browser_type 的工具描述里，此处不重复。 */
+   browser_type 的工具描述里，此处不重复。**问用户的入口边界**（本次需求 · 拷问共识）
+   与工具描述同源，这里只重复一句行为纪律：与浏览器无关的询问一律走 ask_user_question。 */
 const SELF_CHECK_DISCIPLINE =
   "\n\n【自检与长时纪律】\n" +
+  "· 问用户只有两个入口：**与浏览器 / 当前页面有关的**用 browser_help（登录墙、验证码、页面上的验证与选择、被网站拦住、页面上的危险动作）；**其它一切询问**（共识确认、方案与范围选择、补充信息、可否开工）一律用 ask_user_question —— 网关会拒绝与浏览器无关的 browser_help，那张求助卡不接通用询问。\n" +
   "· 自检分两道：每完成一个阶段 / 大步骤做一次阶段自检（这一阶段的产出对不对、证据齐不齐、下一步是什么），交付前做一次全检（对照最初的目标逐条核，漏项与猜测都算不合格）。\n" +
   "· 用 todo_write 记的清单要随手收口：每完成一条立刻标 completed（不要攒到最后一起标），交付前再写一次整份清单把每条状态写死；**绝不许把没做完的条目留在模糊状态收尾** —— 会话结束时清单里剩下的条目会被标成「未确认」，用户看到的就是一串「?」，等于这份清单白记了。\n" +
   "· 自检发现输出与原目标不符、或关键结论无证据时：先自己回去修好 / 补证据并重跑那一步，不要把它当定稿往后带，也不要在这种时候先来问用户；修不好（缺权限 / 缺信息 / 被网站拦住）才带着「试过什么、卡在哪、需要什么」来问。\n" +
@@ -1722,7 +1733,9 @@ const SELF_CHECK_DISCIPLINE =
   "· 要数小时才能做完、或需要跨重启接着跑的活：主动建议用户把它提升为「长周期任务图」（图上带阶段与断点），但不要自行替用户改图 —— 等用户确认后再动手。\n" +
   "· 浏览器工作要留下痕迹：改动前后的页面状态、下载与截图路径、跑过的命令，都写进交付说明里，让用户能自己复核。";
 
-/* 会话列表:全部持久化于 config.agentSessions,活动会话由 agentActiveId 指定 */
+/* 会话列表：**索引**从主进程 agent-sessions/index.json 载回（app-boot.js 的启动链），
+   正文按需读回（懒加载，见下面 agentEnsureSessionBody 那一段）；活动会话由
+   config.agentActiveId 指定（随设置文件走，与会话正文无关）。 */
 function agentSessions() {
   if (!Array.isArray(S.agentSessions)) S.agentSessions = [];
   /* 所属画布水合：历史存档没有 canvasWfId → 规范成空串（表示「未绑定」）。
@@ -1771,6 +1784,11 @@ function agentSessions() {
      「没写过 = 默认开」同一口径）；用户点过关掉的会话是布尔 false，原样留着。 */
   for (const s of S.agentSessions)
     if (s && typeof s.grill !== "boolean") s.grill = true;
+  /* 懒加载钩子：眼前这条会话若只有索引（正文还在盘上），就地发起一次读回 ——
+     读回来会重画一帧。这是**唯一**的自动加载点，其余读正文的入口显式 ensure
+     （轨迹·改动栏 / 全局搜索 / 续跑），所以「什么会被读进内存」是可预期的。
+     无副作用：不新建会话、不动 activeId（agentEnsureViewSessionBody 只查表）。 */
+  agentEnsureViewSessionBody();
   return S.agentSessions;
 }
 /* 旧版开发 / 细化会话迁移：首条 _src:"dev-node" 消息里是整份任务书 →
@@ -1813,6 +1831,153 @@ function devContractHydrateSession(s) {
   s._devContract = body;
   first.content = visible;
 }
+/* ── 会话正文的懒加载（本次需求 · 用户已确认口径）────────────────────────────
+   agentSessions 已从 config.json 拆到 agent-sessions/：启动只读**索引**（左栏字段），
+   正文按需读回。读正文的入口只有这四处，全部收在这里：
+     · 选中 / 渲染一条会话（含开发页覆盖态、搜索跳转、续跑）→ agentEnsureSessionBody
+     · 全局搜索接会话内容 → agentEnsureAllSessionBodies（后台批量，齐了再出结果）
+     · 轨迹 / 改动栏 → 它渲染的就是当前会话，由上面那条覆盖
+     · 续跑 / 发送 → agentSessionSend 起轮前 ensure + flush
+   没加载的会话在内存里只有索引字段（messages = []），界面按空会话渲染 ——
+   所以任何**新读正文**的地方都必须先 ensure，这也是「本轮只改读正文的调用点」的落点。 */
+const AGENT_BODY_BATCH = 4; /* 后台批量读的每次请求条数：一份 5 MB 的会话解析要几十毫秒，
+                               4 条一批 + 让出一帧，界面不会因为加载会话而卡顿 */
+S._sessionBodyWait = S._sessionBodyWait instanceof Map ? S._sessionBodyWait : new Map();
+/* 读回一条会话的正文并原地合并（保留数组里的对象引用：别处的 st 变量不会失效）。
+   返回 true = 现在可以读 messages 了。 */
+async function agentEnsureSessionBody(st) {
+  if (!st || !st.id) return false;
+  if (st._lcLoaded) return true;
+  const api = window.api && window.api.sessionBody;
+  if (!api) return false; /* 老壳：没有会话通道，正文只能按空处理 */
+  if (st._lcMissing) {
+    st._lcLoaded = true; /* 主进程说盘上没有这一份（损坏 / 手删）：按空会话继续，不反复问 */
+    return true;
+  }
+  const id = String(st.id);
+  if (S._sessionBodyWait.has(id)) {
+    await S._sessionBodyWait.get(id);
+    return !!st._lcLoaded;
+  }
+  const p = (async () => {
+    let res = null;
+    try {
+      res = await api([id]);
+    } catch (_) {
+      res = null;
+    }
+    const got = res && Array.isArray(res.sessions) ? res.sessions.find((x) => x && x.id === id) : null;
+    if (got) {
+      /* 原地合并：索引里的元数据 + 正文（正文优先，索引那份只是同一份数据的旧快照） */
+      Object.assign(st, got);
+      st._lcLoaded = true;
+    } else {
+      /* 读不到（坏档已改名留痕 / 文件不在）：标 missing，按空会话继续并留一条日志口径 */
+      st._lcLoaded = true;
+      st._lcMissing = true;
+      st.messages = Array.isArray(st.messages) ? st.messages : [];
+    }
+    if (typeof planHydrateSession === "function") planHydrateSession(st);
+    if (typeof devContractHydrateSession === "function") devContractHydrateSession(st);
+    return !!st._lcLoaded;
+  })();
+  S._sessionBodyWait.set(id, p);
+  try {
+    await p;
+  } finally {
+    S._sessionBodyWait.delete(id);
+  }
+  return !!st._lcLoaded;
+}
+/* 把全部会话正文读回来（全局搜索要遍历所有会话的 messages）、到位后按批让出一帧。 */
+async function agentEnsureAllSessionBodies() {
+  const pending = agentSessions().filter((s) => s && s.id && !s._lcLoaded && !s._lcMissing);
+  for (let i = 0; i < pending.length; i += AGENT_BODY_BATCH) {
+    const batch = pending.slice(i, i + AGENT_BODY_BATCH);
+    await Promise.all(batch.map((s) => agentEnsureSessionBody(s)));
+    await new Promise((r) => setTimeout(r, 0)); /* 让出一帧：4 份会话的 parse 分批摊开 */
+  }
+  return pending.length;
+}
+/* 后台空闲补读（用户已确认口径：「用到才读」+「批量读齐」两条都保留）——
+   首屏画完后的空闲时段把还没读回来的会话正文分批读一遍，每批 4 条、批间让出一帧。
+   为什么要有它：会话已拆到 agent-sessions/（启动只读索引），于是「用到才读」这条路上
+   首次打开一条老会话要现读它那份文件（最大的一条约 5 MB，几十毫秒）。补读把这份等待
+   挪到用户没在看的时候；它只是**提前**读，不改变任何语义：
+     · 界面早已按索引画好（不阻塞首屏）；
+     · 用户在跑一轮会话 / 正在打字时不抢（bodyBusy 判据：任一会话 running 就等下一轮）；
+     · 页面不可见（窗口最小化）时不读，回到前台再补。
+   即便它完全没跑成（用户秒开秒切），懒加载的按需路径仍然保证功能正确。 */
+function agentBodyWorkBusy() {
+  try {
+    if (document.hidden) return true;
+    if (S._agentRenderedSessionId && typeof sessionIsRunning === "function") {
+      const cur = (Array.isArray(S.agentSessions) ? S.agentSessions : []).find(
+        (s) => s && s.id === S._agentRenderedSessionId,
+      );
+      if (cur && sessionIsRunning(cur)) return true;
+    }
+    if (Array.isArray(S.agentSessions) && S.agentSessions.some((s) => s && s.running)) return true;
+  } catch (_) {}
+  return false;
+}
+async function agentBackfillSessionBodies() {
+  if (S._bodyBackfillRunning) return 0;
+  S._bodyBackfillRunning = true;
+  let done = 0;
+  try {
+    for (;;) {
+      const pending = (Array.isArray(S.agentSessions) ? S.agentSessions : []).filter(
+        (s) => s && s.id && !s._lcLoaded && !s._lcMissing,
+      );
+      if (!pending.length) break;
+      if (agentBodyWorkBusy()) break; /* 忙就收手：下一次可见性变化 / 空闲再补 */
+      const batch = pending.slice(0, AGENT_BODY_BATCH);
+      await Promise.all(batch.map((s) => agentEnsureSessionBody(s)));
+      done += batch.length;
+      await new Promise((r) => setTimeout(r, 16)); /* 让出一帧：别把 parse 堆成一坨 */
+    }
+  } catch (_) {
+  } finally {
+    S._bodyBackfillRunning = false;
+  }
+  return done;
+}
+/* 开机后挂一次：空闲时补读 + 回到前台时接着补。幂等（S._bodyBackfillWired）。 */
+function agentWireBodyBackfill() {
+  if (S._bodyBackfillWired) return;
+  S._bodyBackfillWired = true;
+  const kick = () => {
+    Promise.resolve(agentBackfillSessionBodies()).catch(() => {});
+  };
+  try {
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 800));
+    idle(() => setTimeout(kick, 600));
+  } catch (_) {
+    setTimeout(kick, 1500);
+  }
+  try {
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) setTimeout(kick, 1200);
+    });
+  } catch (_) {}
+}
+/* 「眼前这条会话」的正文就位（渲染 / 切换 / 发送都先过它）：到位后重画一帧。
+   注意这里**不能**走 agentSessionState()（它会新建会话 / 动 activeId），
+   只按 id 查表 —— 本函数是从 agentSessions() 的入口钩子调进来的，必须无副作用。 */
+function agentEnsureViewSessionBody() {
+  /* S.agentSessions 在本文件里既是数据（数组）又有一个同名函数 agentSessions()；
+     冒烟沙箱可能只摆了数据、没摆函数，所以这里一律先判数组再动它（不许 assume 函数存在） */
+  const list = Array.isArray(S.agentSessions) ? S.agentSessions : [];
+  const st = list.find((x) => x && x.id === S.agentActiveId);
+  if (!st || !st.id || st._lcLoaded || st._lcMissing) return false;
+  if (!(window.api && window.api.sessionBody)) return false; /* 没有会话通道（老壳 / 冒烟）→ 不折腾 */
+  agentEnsureSessionBody(st).then(() => {
+    if (typeof renderAgentSession === "function") renderAgentSession();
+  });
+  return false;
+}
+
 function activeAgentId() {
   const list = agentSessions();
   if (!list.some((s) => s.id === S.agentActiveId)) {
@@ -1881,6 +2046,23 @@ function agentViewBlankSt() {
   };
   return AGENT_VIEW_BLANK;
 }
+/* 应用开发页首轮态（还没有该应用的会话）的「工作区」写入点（本轮需求 · 需求三）：
+   开发页把本页那个应用的本机目录写进来，底部会话对话框的「工作区」芯片就指着用户接下来
+   文件真正要落的目录（芯片显示末段目录名，悬浮说明给全路径 + 来源「所属应用的目录」）。
+   _appDirWorkspace = 这份目录是「跟着应用来的」，不是用户手填的（见 agentWorkspaceInfo）；
+   真正建会话时另有一处强制（app-apps-dev.js 的 appsDevStartDevSession 传 agentWorkspace）。 */
+function agentViewBlankWorkspaceSet(dir) {
+  const st = agentViewBlankSt();
+  const p = String(dir || "").trim();
+  if (p) {
+    st.workspace = p;
+    st._appDirWorkspace = true;
+  } else {
+    st.workspace = "";
+    delete st._appDirWorkspace;
+  }
+  return st.workspace;
+}
 /* 视图会话 id：覆盖态 = 覆盖值（空串 = 空态 / 那条会话已不在）；否则 = 用户选中的 */
 function agentViewId() {
   if (!agentViewOverrideOn()) return activeAgentId();
@@ -1941,6 +2123,8 @@ function agentSessionState() {
       (viewId ? list.find((s) => s.id === viewId) : null) || agentViewBlankSt();
     if (st0.provider == null) st0.provider = "deepseek-official";
     if (st0._draft == null) st0._draft = st0.draft || "";
+    /* 占位空会话（本页还没有会话）标 loaded：它本来就没有正文可读，别让渲染层等它 */
+    if (!st0.id) st0._lcLoaded = true;
     return st0;
   }
   let st = list.find((s) => s.id === activeAgentId());
@@ -1959,6 +2143,9 @@ function agentSessionState() {
       messages: [],
       archived: false,
       updatedAt: Date.now(),
+      /* 正文就在内存里（还没落盘）：标 loaded + 脏，索引与文件都会在合并窗口里补上 */
+      _lcLoaded: true,
+      _lcDirty: true,
     };
     list.unshift(st);
     S.agentActiveId = st.id;
@@ -2000,10 +2187,94 @@ function agentTrimSessionMessages(st) {
   st.messages.splice(0, cut);
   return cut;
 }
-async function persistAgentSession() {
+/* ── 会话落盘：懒加载 + 合并写盘（本次需求 · 用户已确认口径）──────────────────
+   背景：会话正文（agentSessions）原本跟着 config.json 一起落盘 —— 本机实测
+   75.8 MB，其中会话 56.1 MB / 74%，于是**每次保存设置**都要整份读写 + 备份
+   （探针实测单次主进程同步 775 ms、窗口被拖住 p95 821 ms），而 persistAgentSession
+   在渲染层有 180+ 调用点（会话运行中每写一条消息就一次）。
+   现在拆成三层：
+     ① agent-sessions/<id>.json 每会话一份 + index.json 索引（主进程
+        agent-sessions-store.js，三条硬口径见那边文件头）；
+     ② 本函数 = **500 ms 合并窗口**：窗口内的连续落盘合并成一次，只送被改动的会话；
+        切会话 / 关窗 / 跑画布 / 配置即时保存前立即 flush（见 agentFlushSessionSave）；
+     ③ 懒加载：正文没读回来的会话**只更新索引**（送 body: undefined），别的什么都不碰。
+   本文档里的 180+ 调用点一个字都不用改：它们只要求「这次改动最终会落盘」。 */
+const AGENT_SAVE_MS = 500; /* 合并窗口（用户已确认：500 ms，切会话 / 关窗 / 跑画布前立即 flush） */
+S._sessionDirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();
+/* 记一次「这条会话改了」：等窗口过去或有人 flush 时一起落盘。 */
+function agentMarkSessionDirty(id) {
+  if (!id) return;
+  S._sessionDirty.add(String(id));
+  if (S._sessionSaveTimer) clearTimeout(S._sessionSaveTimer);
+  S._sessionSaveTimer = setTimeout(() => {
+    S._sessionSaveTimer = null;
+    Promise.resolve(agentWriteAgentSessions()).catch(() => {});
+  }, AGENT_SAVE_MS);
+}
+/* 立即把排队的会话改动写下去（调用方 await 它就等于「已经落盘」）。 */
+function agentFlushSessionSave() {
+  if (S._sessionSaveTimer) {
+    clearTimeout(S._sessionSaveTimer);
+    S._sessionSaveTimer = null;
+  }
+  return Promise.resolve(agentWriteAgentSessions()).catch(() => {});
+}
+/* 真正落盘：送「脏会话的完整持久化对象 + 索引元数据」，未加载的只有元数据。 */
+async function agentWriteAgentSessions() {
+  const dirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();
   const list = agentSessions();
-  if (list.length > 60) list.splice(60);
-  S.config.agentSessions = list.map((s) => ({
+  /* 60 条截断（原样口径：只留最近 60 条）：被截掉的会话**文件**也从盘上删掉
+     （drop），否则 agent-sessions/ 会一直长；索引里由主进程同步移除。 */
+  const dropped = [];
+  if (list.length > 60) {
+    for (const s of list.slice(60)) {
+      if (!s || !s.id) continue;
+      dirty.add(String(s.id));
+      dropped.push(String(s.id));
+    }
+    list.splice(60);
+  }
+  const payloadSessions = [];
+  for (const s of list) {
+    if (!s || !s.id) continue;
+    const isDirty = dirty.has(String(s.id));
+    /* 既没脏、正文也还在盘上：本进程完全没动过它 —— 一条都不用送，
+       索引里那份（连同它记的 size/mtime 签名）保持原样。 */
+    if (!isDirty && !s._lcLoaded) continue;
+    const meta = agentSessionMetaForDisk(s);
+    if (isDirty && s._lcLoaded) {
+      /* 脏 + 正文在内存：送完整持久化对象（主进程逐字比对后才真写盘） */
+      payloadSessions.push(Object.assign({}, meta, { body: agentSessionBodyForDisk(s) }));
+      agentTrimSessionMessages(s); /* 与原口径一致：内存里也裁到保留上限 */
+    } else if (isDirty) {
+      /* 脏但正文不在内存（只有索引里的元数据被改过：改名 / 归档 / 拖序…）：
+         只更新索引条目 —— 主进程见到 body 缺省就绝不碰会话文件。 */
+      payloadSessions.push(Object.assign({}, meta, { loaded: false }));
+    } else {
+      /* 正文在内存、这次没改过：只送元数据，让索引（含它记的签名）与原样文件对齐 */
+      payloadSessions.push(meta);
+    }
+    s._lcDirty = false;
+  }
+  const activeId = String(activeAgentId() || "");
+  if (!payloadSessions.length && !dropped.length && S._agentActiveIdSynced === activeId) {
+    return; /* 没有任何改动、活动会话也没换：一次 IPC 都不发 */
+  }
+  S._agentActiveIdSynced = activeId;
+  dirty.clear();
+  const api = window.api && window.api.sessionSave;
+  if (!api) return; /* 老壳（没有会话通道）静默跳过，不影响其它功能 */
+  let res = null;
+  try {
+    res = await api({ activeId: activeId, sessions: payloadSessions, drop: dropped });
+  } catch (_) {
+    res = null;
+  }
+  return res;
+}
+/* 索引条目 = 左栏要用的全部元数据（与主进程 META_KEYS 同步：漏一个键界面就少一块） */
+function agentSessionMetaForDisk(s) {
+  return {
     id: s.id,
     title: s.title || I18n.t("新会话"),
     /* 标题真源标记：titleAuto = 这条已被引擎首轮自动命名（节点改名不再刷回模块名）；
@@ -2021,33 +2292,17 @@ async function persistAgentSession() {
     model: s.model || "",
     effort: s.effort || "high",
     pure: !!s.pure,
-    /* 「先拷问需求（grill-me）」会话级开关（本次需求 · 会话窗口模式菜单里那一枚）：
-       缺省开 —— 只有用户亲口关掉（布尔 false）才落 false；载回时归一（见 agentSessions）。 */
+    /* 「先拷问需求（grill-me）」会话级开关：缺省开 —— 只有用户亲口关掉才落 false */
     grill: s.grill !== false,
-    /* 「显示思考」开关（本次需求：原四档「工作步骤展示」在会话里收回成一枚开关）：
-       只落「这条会话自己点过的那一态」（true / false），null = 没点过 ——
-       跟随全局默认档（设置 · 智能能力 的 dsh.transcriptView）。
-       重启后这条会话显不显示思考，仍由它自己说了算。 */
+    /* 「显示思考」：只落这条会话自己点过的那一态（null = 跟随全局默认档） */
     showThink: typeof s.showThink === "boolean" ? s.showThink : null,
-    /* 会话头部的「对话 / 轨迹 / 改动」View 选择（本次需求 · 上游把 View 选择做成持久化偏好）：
-       只落「选了轨迹 / 选了改动」这两种非默认态，空串 = 对话（默认）。
-       判据与 app-trajectory.js 的 VIEWS 同一份口径 —— 改动栏就是本轮新增的第三栏。 */
     trajView: s.trajView === "trace" || s.trajView === "changes" ? s.trajView : "",
-    /* 开发绑定会话「不读画布」标记：必须随会话落盘 —— 重启后若丢了这一位，本轮可见集
-       就与那份 session 的历史前缀不一致（网关 hx: 指纹变了 → 换 runtime 冷起 → 续跑
-       撞 id 只能整轮重发），所以它与 pure 同级持久化。 */
+    /* 开发绑定会话「不读画布」标记：必须随会话落盘（丢了可见集漂移 → 换 runtime 冷起） */
     noCanvasRead: !!s.noCanvasRead,
-    /* 「与画布无关」开关同样随会话落盘：丢了这一位，重启后可见集就与那份 session
-       的历史前缀不一致（网关 nc: / hx: 指纹变化 → 换 runtime 冷起）。 */
     canvasFree: !!s.canvasFree,
-    /* 「本会话不走普通会话计划这条线」：长周期任务新建窗的引导建图会话由
-       app-longtask-guide.js 置位 —— 它的产物只能是长周期任务状态机图，
-       宿主不再给它注入「任务流程 / 交计划块」指令，它回复里的计划块也不弹计划窗
-       （判据见 app-plan.js 的 planFlowExemptSession）。随会话落盘，重启后仍豁免。 */
+    /* 「不走普通会话计划这条线」：长任务新建窗的引导建图会话由 app-longtask-guide.js 置位 */
     noPlanFlow: !!s.noPlanFlow,
-    /* 长任务环节绑定标记（app-longtask.js 的 ltBindAgentSession 写）：{wfId,runId,path}
-       指向这条会话是哪个 run 的哪个环节的运行档案。与 canvasFree 同级落盘 —— 重启后
-       仍认得出「这条会话归长任务所有」。缺省 null = 普通会话。 */
+    /* 长任务环节绑定标记（app-longtask.js 的 ltBindAgentSession 写）：{wfId,runId,path} */
     ltBound:
       s.ltBound && typeof s.ltBound === "object"
         ? {
@@ -2057,6 +2312,45 @@ async function persistAgentSession() {
           }
         : null,
     draft: s._draft || "",
+    archived: !!s.archived,
+    /* 时间戳：索引的排序基准（正文没读回来时左栏按它排；读回来也不改口径） */
+    updatedAt: sessionLastAt(s) || Number(s.updatedAt) || 0,
+    createdAt: Number(s.createdAt) || 0,
+    /* 会话发送队列 + 任务清单（Todo）：重启后仍在 */
+    outbox: (s.outbox || []).slice(-20).map((x) => ({
+      id: x.id,
+      text: String(x.text || "").slice(0, 4000),
+      at: x.at || 0,
+      _planExec: !!x._planExec || undefined,
+      planRunId: x.planRunId != null ? String(x.planRunId) : undefined,
+      sessionId: x.sessionId != null ? String(x.sessionId) : undefined,
+    })),
+    todos: (s.todos || []).slice(-80).map((x) => ({
+      content: String(x.content || "").slice(0, 400),
+      status: x.status || "pending",
+      at: x.at || 0,
+    })),
+    todoHidden: (s.todoHidden || []).slice(-80).map(String),
+    todosCollapsed: !!s.todosCollapsed,
+    /* 已确认的计划清单（逐项状态 + 进度指针）：重启后「计划」面板仍在 */
+    plan:
+      typeof planSanitize === "function"
+        ? planSanitize(s.plan)
+        : s.plan && Array.isArray(s.plan.steps) && s.plan.steps.length
+          ? s.plan
+          : null,
+    planDelivered: !!(s._planDelivered || s.planDelivered),
+    planCollapsed: !!s.planCollapsed,
+    /* 作废计数：终止 / 清除 / 归档 / 用户改口后随会话一起落盘（重启后不点亮续跑入口） */
+    planDrops: Math.max(0, Number(s._planDrops) || 0),
+    tokenReport: s.tokenReport || null,
+    /* 开发 / 细化绑定会话的任务书契约：随会话持久化，重启后仍按契约运行 */
+    devContract: s._devContract || "",
+  };
+}
+/* 会话正文 = 落盘白名单里「除索引元数据以外」的那一份（与原 config.agentSessions 逐字同构） */
+function agentSessionBodyForDisk(s) {
+  return Object.assign({}, agentSessionMetaForDisk(s), {
     /* 整对象落盘（含 reasoning / tools / segments），条数走**按轮保留**的那一个闸
        （见 agentTrimSessionMessages：至少留住最近 AGENT_MIN_KEEP_PER_ROUND 轮，
        过去的 messages.slice(-100) 会在一轮 8～15 条消息时把最早的助手消息挤掉 ——
@@ -2075,51 +2369,47 @@ async function persistAgentSession() {
         return m;
       }
     }),
-    archived: !!s.archived,
-    updatedAt: s.updatedAt || 0,
-    /* 会话发送队列 + 任务清单（Todo）：重启后仍在 */
-    outbox: (s.outbox || []).slice(-20).map((x) => ({
-      id: x.id,
-      text: String(x.text || "").slice(0, 4000),
-      at: x.at || 0,
-      /* 计划执行残留的元数据随条目持久化：重启后排水仍按原归属校验，
-         已作废的计划任务不会因重启就退化成普通消息被自动发出 */
-      _planExec: !!x._planExec || undefined,
-      planRunId: x.planRunId != null ? String(x.planRunId) : undefined,
-      sessionId: x.sessionId != null ? String(x.sessionId) : undefined,
-    })),
-    todos: (s.todos || []).slice(-80).map((x) => ({
-      content: String(x.content || "").slice(0, 400),
-      status: x.status || "pending",
-      at: x.at || 0,
-    })),
-    todoHidden: (s.todoHidden || []).slice(-80).map(String),
-    todosCollapsed: !!s.todosCollapsed,
-    /* 会话时间区间（本次需求）不落盘：第一条 / 最后一条消息的时刻都从消息历史现推
-       （agentRoundRange），重启后自然复原，无需持久键。 */
-    /* 已确认的计划清单（逐项状态 + 进度指针）：重启后「计划」面板仍在，
-       未完成项可从那一台会话继续跑，而不是随弹窗一起消失 */
-    plan:
-      typeof planSanitize === "function"
-        ? planSanitize(s.plan)
-        : s.plan && Array.isArray(s.plan.steps) && s.plan.steps.length
-          ? s.plan
-          : null,
-    planDelivered: !!(s._planDelivered || s.planDelivered),
-    planCollapsed: !!s.planCollapsed,
-    /* 作废计数：终止 / 清除 / 归档 / 用户改口后随会话一起落盘；
-       重启载回后这份会话不再点亮任何续跑入口（崩溃 / 落盘失败的窗口也不复活旧计划） */
-    planDrops: Math.max(0, Number(s._planDrops) || 0),
-    /* Token 消耗累计报告（按模型分别累计 + 时间），会话末尾 Badge 用它渲染 */
-    tokenReport: s.tokenReport || null,
-    /* 开发 / 细化绑定会话的任务书契约：发送时注入系统提示（不占用户消息位，
-       首条消息只显示用户关键输入）；随会话持久化，重启后仍按契约运行 */
-    devContract: s._devContract || "",
-  }));
-  S.config.agentActiveId = activeAgentId();
-  try {
-    await window.api.configSave(S.config);
-  } catch {}
+    _lcLoaded: undefined,
+    _lcDirty: undefined,
+  });
+}
+/* 会话落盘入口（本文档 110+ 处调用点只用它的「会有一次落盘」语义）：
+   改动进 500 ms 合并窗口，窗口过去或有人 flush 时一起写；新会话在 newAgentSession
+   里直接标脏（索引要立刻带上它，左栏才不会少一行）。
+   **它自己一律不动时间戳**（本轮口径 · 用户已确认）：时间戳只由 agentTouchSession
+   盖 —— 也就是「用户真发了消息」与「AI 这一轮真有产出」两件事。
+   改内容却只调本函数 = 会话排序不会更新（缺一次 touch）；只是看一眼却调
+   agentTouchSession = 把这条会话凭空顶到最前（用户报过的 bug）。 */
+async function persistAgentSession() {
+  /* 活动会话之外的改动由各自的调用点先 markDirty（标题自动命名 / 计划面板 / 归档…）；
+     这里只把窗口推出去：同一窗口内的所有改动最终合并成一次 session:save。 */
+  return agentWriteAgentSessions();
+}
+/* 「这条会话真的有新内容了」——**全仓唯一**会盖 updatedAt 的入口：
+   · 用户把自己的一句话发出去（发送 / 排队 / 插话 / 继续）；
+   · AI 这一轮真的产出了东西（整轮收尾刷一次；写清单 / 问答提交这类轮内产出）。
+   左栏排序与行尾相对时长都以 sessionLastAt（updatedAt / 消息 / outbox 取最大）为基准，
+   所以只有这两类动作才该让一条会话往上走。调用它 = 盖时间戳 + 让这次改动进
+   500 ms 合并窗口（与 persistAgentSession 的落盘语义相同，只是多盖了一次时间）。
+   owner：要盖的那条会话，缺省 = 当前活动会话。并行计划 / 节点绑定会话这类
+   **跑的不是眼前这条**的调用点必须显式传 owner，否则会盖错人。 */
+function agentTouchSession(owner) {
+  const st = owner && owner.id ? owner : agentSessionState();
+  if (st && st.id) {
+    st.updatedAt = Date.now();
+    /* 会话对象上直接标脏（索引条目要带上这个新时间）；再沿原口径把「活动会话」
+       一并标一次并推窗口 —— 重复标脏是幂等的。 */
+    agentMarkSessionDirty(st.id);
+  }
+  return persistAgentSession();
+}
+/* 立即落盘，但**不动任何时间戳**。左栏排序基准（app-assist.js 的 sessionLastAt：
+   updatedAt / 消息 / outbox 取最大，renderAgentSessionSidebar 的 byNewest 用它）——
+   所以凡是「用户只是点了/切了一下/跳到某条会话看内容」的路径必须走这个入口：
+   否则点一下就把该会话顶到最前 + 行尾相对时长刷成「刚刚」（用户报的
+   「点击会话后立刻就更新了时间，导致左侧栏重新排序」）。 */
+function agentFlushSessionSaveQuiet() {
+  return persistAgentSession().catch(() => {});
 }
 function newAgentSession() {
   const cur = agentSessionState();
@@ -2141,9 +2431,14 @@ function newAgentSession() {
     messages: [],
     archived: false,
     updatedAt: Date.now(),
+    /* 新会话的正文就在内存里（没有正文要读回）；直接标脏，让索引立刻带上它 ——
+       否则左栏在 500 ms 合并窗口内会少一行（用户点了「新会话」却看不到它）。 */
+    _lcLoaded: true,
+    _lcDirty: true,
   };
   list.unshift(st);
   S.agentActiveId = st.id;
+  agentMarkSessionDirty(st.id);
   return st;
 }
 /* ── 契约会话通用装配（开发 / 细化 / 问询 / 工具·函数开发 / 长任务引导共用）──
@@ -2186,7 +2481,7 @@ function agentContractSession(opts) {
 async function agentContractRound(st, opts) {
   opts = opts || {};
   if (!st || !st.id) return null;
-  await persistAgentSession();
+  await agentTouchSession();
   return agentSessionSend(
     "",
     Object.assign({ _devContract: true, sessionId: st.id }, opts.send || {}),
@@ -2206,6 +2501,10 @@ async function archiveAgentSession(id, archived) {
   )
     return;
   s.archived = archived;
+  /* 归档 = 用户主动改会话本身：盖它的时间戳（不是「当前活动会话」那条 —— 归档完
+     活动会话可能已经换人，别把别人顶到最前）。 */
+  s.updatedAt = Date.now();
+  agentMarkSessionDirty(s.id);
   /* 归档 = 这条会话不再接活：它那份计划就地作废（弹窗里就是这么承诺的），
      恢复会话后不会再冒出一份「可以继续跑」的旧清单。 */
   if (archived && s.plan) {
@@ -2292,6 +2591,8 @@ async function deleteAgentSessionCore(id) {
   detachSessionsFromNodes([id]);
   list.splice(at, 1);
   if (S.agentActiveId === id) S.agentActiveId = (list[0] && list[0].id) || "";
+  /* 删除是用户主动操作，但被删的那条已经不在列表里：这里只把改动推下去，
+     不盖任何存活会话的时间戳（谁也不该因为「别人被删了」而顶到最前）。 */
   await persistAgentSession();
   /* 会话没了 = 它的内嵌图失去最后一处引用（还有别处引用就保留）：去抖回收 */
   if (imgCands.length && typeof chatImgGcSoon === "function") chatImgGcSoon(imgCands);
@@ -2507,7 +2808,7 @@ function buildAgentModelMenu() {
         if (g.id !== cur) {
           st.provider = g.id;
           st.model = (g.models && g.models[0]) || "";
-          persistAgentSession();
+  agentTouchSession();
           renderAgentSession();
           renderAgentSessionSidebar();
         }
@@ -2529,7 +2830,7 @@ function buildAgentModelMenu() {
         '<span class="agent-menu-check">' + (curPreset === p.id ? "✓" : "") + "</span>";
       opt.querySelector(".agent-menu-option-name").textContent = I18n.t(p.labelKey);
       if (p.hint) opt.title = I18n.t(p.hint);
-      opt.onclick = () => { st.preset = p.id; persistAgentSession(); closeAgentMenus(); renderAgentSession(); renderAgentSessionSidebar(); };
+      opt.onclick = () => { st.preset = p.id; agentFlushSessionSaveQuiet(); closeAgentMenus(); renderAgentSession(); renderAgentSessionSidebar(); };
       menu.appendChild(opt);
     }
     return;
@@ -2564,7 +2865,7 @@ function buildAgentModelMenu() {
       opt.querySelector(".agent-menu-option-name").textContent = m;
       opt.onclick = () => {
         st.model = m;
-        persistAgentSession();
+  agentTouchSession();
         closeAgentMenus();
         renderAgentSession();
         renderAgentSessionSidebar();
@@ -2590,7 +2891,7 @@ function buildAgentModelMenu() {
         '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
         '<span class="agent-menu-check">' + (cur === v ? "✓" : "") + "</span>";
       opt.querySelector(".agent-menu-option-name").textContent = agentEffortLabelOf(v);
-      opt.onclick = () => { st.effort = v; persistAgentSession(); closeAgentMenus(); renderAgentSession(); };
+      opt.onclick = () => { st.effort = v; agentFlushSessionSaveQuiet(); closeAgentMenus(); renderAgentSession(); };
       menu.appendChild(opt);
     }
   }
@@ -2915,7 +3216,7 @@ function agentModeEntryOf(key) {
       on,
       toggle: () => {
         st.grill = st.grill === false;
-        persistAgentSession();
+  agentTouchSession();
         renderAgentComposer();
         if (typeof renderAgentSession === "function") renderAgentSession();
       },
@@ -2933,7 +3234,7 @@ function agentModeEntryOf(key) {
         : "纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；该会话不再读写文件 / 改画布，省 token",
       toggle: () => {
         st.pure = !st.pure;
-        persistAgentSession();
+  agentTouchSession();
         renderAgentComposer();
         if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();
       },
@@ -2965,7 +3266,7 @@ function agentModeEntryOf(key) {
       set(on) {
         const s = agentSessionState() || st;
         s.showThink = !!on;
-        persistAgentSession();
+  agentTouchSession();
         renderAgentComposer();
         /* 开关当场生效：会话视图整体重绘一次（历史与 live 同一判据） */
         if (typeof renderAgentSession === "function") renderAgentSession();
@@ -3617,6 +3918,11 @@ function dshToolHintSkipPath(hintEl) {
  *   · 摘要复用本仓既有的命令正文（dshToolCmdEl）与检索摘要（dshToolGrepEl）；
  *   · 后面跟 diff 统计（+N / -M，hover 才着色）与失败 / 停止摘要（上游 errorSummary /
  *     stoppedSummary 用 error / warn 语义色）。
+ *   · 颜色（本次需求 · 会话-对话里「不同工具不同色，与轨迹一致」）：药丸与工具段的 2px 左轨 /
+ *     淡底按**工具族**上色（读取青 / 写入与编辑橙 / 运行命令绿 / 联网黄 / 子代理紫 /
+ *     交互与计划橙紫 / 画布与自家工具青紫 / 浏览器青绿 / 后台任务绿黄 / 其它灰），
+ *     族表与族色**只有轨迹一处真源**（renderer/app-trajectory.js 的 TOOL_FAMILIES →
+ *     css/dsh-tokens.css 的 --dsh-fam-*），本文件按名去问（见 dshToolFamilyId 那一段的说明）。
  * 生命周期状态（上游 ToolRowState = preparing | running | ok | error | stopped）：
  *   · preparing：工具参数还在流进来（网关的 tool-preparing，见 gateway.mjs 的 toolPrepAcc），
  *     标题旁显示「正在准备内容 N KB」（上游 write/edit 准备态同款文案）；
@@ -3701,6 +4007,61 @@ function dshToolIsCustom(t) {
   for (const re of DSH_CUSTOM_TOOL_RES) if (re.test(nm)) return true;
   return false;
 }
+/* ── 工具族（本次需求 · 会话-对话里「不同工具不同色，与轨迹一致」）────────────────
+   颜色只区分来源（dsh 自带青 / MTNode 工具紫）不够用：一次会话里 read / pwsh / grep /
+   子代理全是一个青，扫一眼分不出这行在干什么。这里把**轨迹视图那套工具族**（9 族 + 兜底
+   「其它」，族表与族色见 renderer/app-trajectory.js 的 TOOL_FAMILIES 与 css/dsh-tokens.css
+   的 --dsh-fam-*）搬到对话里的工具卡上：族标识 → 类名 "dsh-fam-<族>"，挂在
+   `.dsh-tool-chip`（药丸）与 `.dsh-seg-tool`（段的 2px 左轨 + 淡底）两处，
+   一族一色、与轨迹轴上的块 / 图例同源。
+   族表**不在这里抄第二份**：按名去问 window.MTNodeTrajectory.familyOf（本模块加载早于
+   app-trajectory.js，故一律**调用时**取全局）。拿不到那个全局（分块加载 / 切片冒烟 /
+   老壳）→ 回兜底族 "other"，颜色退成灰：绝不抛，也绝不自作主张猜一个族出来。 */
+function dshToolFamilyId(t) {
+  const nm = String((t && t.name) || "").trim();
+  if (!nm) return "other";
+  try {
+    const api = typeof window !== "undefined" ? window.MTNodeTrajectory : null;
+    if (api && typeof api.familyOf === "function") {
+      const f = api.familyOf(nm);
+      if (f && f.id) return String(f.id);
+    }
+  } catch (_) {}
+  return "other";
+}
+/* 族标识 → 挂在药丸 / 段上的类名（前缀 "dsh-fam-"）：**按前缀取类名也只有轨迹一处**，
+   真正拼串还是走它导出的 familyClassOf（拿不到就本地拼一份同形的串，行为一致）。 */
+function dshToolFamilyClass(id) {
+  const fam = String(id || "other");
+  try {
+    const api = typeof window !== "undefined" ? window.MTNodeTrajectory : null;
+    if (api && typeof api.familyClassOf === "function") {
+      const c = api.familyClassOf(fam, "dsh-fam-");
+      if (c) return String(c);
+    }
+  } catch (_) {}
+  return "dsh-fam-" + fam;
+}
+/* 族名（读取 / 写入与编辑 / 运行命令 / 联网 / 子代理 / 交互与计划 / 画布与自家工具 /
+   浏览器 / 后台任务 / 其它）—— 补进药丸的 hover：颜色对不上号时，一句话能问出颜色是什么意思。
+   词条与轨迹图例同一份（app-trajectory.js 的 familyLabel → i18n）。 */
+function dshToolFamilyLabel(t) {
+  const nm = String((t && t.name) || "").trim();
+  if (!nm) return "";
+  try {
+    const api = typeof window !== "undefined" ? window.MTNodeTrajectory : null;
+    if (api && typeof api.familyOf === "function") {
+      const f = api.familyOf(nm);
+      if (f && f.label) return I18n.t(f.label);
+    }
+  } catch (_) {}
+  return "";
+}
+/* 一次工具调用 → 它的族色类名（药丸与段共用一份判据，两处颜色因此不会各走各的）。 */
+function dshToolFamClassOf(t) {
+  return dshToolFamilyClass(dshToolFamilyId(t));
+}
+
 /* 状态：error 优先（结果带 error），其次 stopped（本条被终止），再次 preparing（参数仍在流）、
    running（已派发未回结果）、否则 ok。 */
 function dshToolStateOf(t, live) {
@@ -3993,13 +4354,26 @@ function dshToolDetailsEl(t, live, nodeId, opts) {
      与青色那批 dsh 引擎工具一眼分家（判据 = dshToolIsCustom）。
      文件名同样不塞进药丸里（药丸一撑大就像「工具叫 read/x.js」），而是跟在按钮后方。 */
   const chip = document.createElement("span");
-  chip.className = "dsh-tool-chip" + (dshToolIsCustom(t) ? " t-custom" : "");
+  /* 药丸的颜色：**工具族**（本次需求 · 与轨迹轴上的块 / 图例同一份族表与族色）——
+     读取青 / 写入编辑橙 / 运行命令绿 / 联网黄 / 子代理紫 / 交互与计划橙紫 / 画布与自家工具
+     青紫 / 浏览器青绿 / 后台任务绿黄 / 其它灰，见 css/dsh.css 的 .dsh-tool-chip.dsh-fam-*。
+     再叠 .t-custom（非 dsh 工具 = 工具库紫）：那是「来源」这一维度，写在族色之后故仍生效。 */
+  chip.className =
+    "dsh-tool-chip " +
+    dshToolFamClassOf(t) +
+    (dshToolIsCustom(t) ? " t-custom" : "");
   const title = dshToolTitleOf(t);
   const shown = title && title !== I18n.t("工具调用") ? title : t.name;
   chip.textContent = (live ? "◌ " : "🔧 ") + shown;
   /* 药丸里的标题是「这一步在干什么」，原始工具名留在 hover 与 dataset 上（排查时仍可读）。
-     中文标签与原名不同才补一句，避免 hover 出现「询问用户 · 询问用户」。 */
-  chip.title = String(t.name || "") + (title && title !== t.name ? " · " + title : "");
+     中文标签与原名不同才补一句，避免 hover 出现「询问用户 · 询问用户」。
+     末尾再补族名（读取 / 运行命令 / 画布与自家工具…）—— 颜色区分之外的第二条线索，
+     颜色对不上号时 hover 一句就能问出「这块色是什么意思」。 */
+  const famLabel = dshToolFamilyLabel(t);
+  chip.title =
+    String(t.name || "") +
+    (title && title !== t.name ? " · " + title : "") +
+    (famLabel ? " · " + famLabel : "");
   chip.dataset.toolName = String(t.name || "");
   sum.appendChild(chip);
   /* pwsh / bash：按钮后面直接跟命令正文（绿色，长命令截断）；grep / glob：跟「路径 … · 目标 … · 参数」。
@@ -4662,8 +5036,9 @@ function agentChatSegItems(st) {
     回归口径：test/smoke-session-markers.js [6]。
    落法：时刻栏是该项元素的**第一只子节点**（.dsh-seg-time），CSS 按 .dsh-seg-has-time
    给这一项留出左侧一条定宽栏（--dsh-seg-time-w），因此正文一个字都不会被压住。
-   与「消息级时刻」（.dsh-msg-side，挂在整条消息左侧）是两层：用户口径两层都留 ——
-   用户消息只有消息级那一层，AI 消息里每一项另有自己那一层。 */
+   曾经还有一层「消息级时刻」（.dsh-msg-side，挂在整条消息左侧）：本次需求按用户口径
+   「移除会话中轮次的时间（最左侧的时间，因为占用了会话空间）」已整体移除，
+   会话里**只剩逐项时刻这一层** —— 用户消息没有时刻，AI 消息里每一项各有一枚。 */
 function dshSegDurText(at, doneAt) {
   const a = Number(at) || 0;
   const b = Number(doneAt) || 0;
@@ -5726,7 +6101,9 @@ async function dshTranslateThinking(btn, scopeId, segKey, text, sig) {
   }
   if (store[key] === it) {
     paint(it);
-    /* 思考弹窗也画着同一条译文：翻完就把它那一栏就地换掉（弹窗可能已被重画，按 DOM 找） */
+    /* 翻完切到「译文」标签页（本次需求：上方 tabs，原文 / 译文各占一页，不再上下两框叠着看） */
+    if (it.status === "done") dshThinkPopSwitchTab(scopeId, segKey, "xlate");
+    /* 弹窗也画着同一条译文：把它那一页就地换掉（弹窗可能已被重画，按 DOM 找） */
     try {
       dshThinkPopPaintXlate(scopeId, segKey);
     } catch (_) {}
@@ -5762,11 +6139,11 @@ function dshThinkTranslateBtn(text, scopeId, segKey, sig) {
   });
   return b;
 }
-/* 译文一变就刷新弹窗里的译文框（翻译是异步的：发起后弹窗可能已经被重画过，
-   所以刷新走 DOM 查找、不 captured 元素引用）。
-   口径（本次需求）：**未点翻译时不显示译文框**，所以这一栏是按需建 / 按需收的 ——
-   点过翻译（翻译中 / 已成 / 失败）才在原文框**下面**建出这一栏，正文只往它栏头下方的
-   框里写；没有译文项就把整栏收掉。 */
+/* 译文那一页：译文块（.dsh-seg-xlate 自己就是那个框）写在栏头下方的正文位里。
+   一次只画一页（本次需求）：页由 dshThinkPopPaintXlate 按需建 / 按需收，
+   建完切页由 dshThinkPopApplyTab 收口（用户正在看原文时翻译悄悄翻完也不抢焦点，
+   是用户自己点了「翻译」才切过去 —— 见 dshTranslateThinking）。
+   译文页按 DOM 序排在原文页**之前**（与 tabs 上「译文 · 原文」的排法一致）。 */
 function dshThinkPopPaintXlate(scopeId, segKey) {
   const root = document.querySelector(
     '.dsh-think-pop[data-xkey="' + String(dshThinkTransKey(scopeId, segKey)) + '"]',
@@ -5776,37 +6153,94 @@ function dshThinkPopPaintXlate(scopeId, segKey) {
   const r = dshThinkTranslateRow(scopeId, segKey);
   if (!r) {
     if (col && col.parentNode) col.parentNode.removeChild(col);
+    dshThinkPopApplyTab(root, "src");
     return null;
   }
   if (!col) {
-    col = document.createElement("div");
-    col.className = "dsh-think-pop-col dsh-think-pop-col-xlate";
-    col.dataset.thinkPop = "xlate";
-    const paneEl = document.createElement("div");
-    paneEl.className = "dsh-think-pop-pane dsh-think-pop-pane-xlate";
-    paneEl.dataset.thinkPop = "xlate";
-    col.appendChild(paneEl);
-    root.appendChild(col); /* 原文框下面（不是右栏）*/
+    /* 建译文页 + 兜底补 tabs 上那一枚「译文」标签（正常路径上它由 dshThinkPopTabsEl
+       常驻建在「原文」左边；这里只在别处漏建时补，且一律插到「原文」之前，不排到后面去） */
+    const built = dshThinkPopCol(root, "xlate", I18n.t("译文"));
+    col = built.col;
+    /* 页一律插到原文页**之前**：tabs 与页的左右次序要一致（译文在左）。
+       锚点取原文页（不用「译文页的后一个兄弟」——刚 append 出来的译文页后面没东西，
+       那种写法在「原文页还没建」时会把次序留在后面）。 */
+    const srcCol = root.querySelector('.dsh-think-pop-col[data-think-pop="src"]');
+    if (srcCol) root.insertBefore(col, srcCol);
+    const bar = root.querySelector(".dsh-think-pop-tabs");
+    if (bar && !bar.querySelector('[data-think-tab="xlate"]')) {
+      const srcTab = bar.querySelector('[data-think-tab="src"]');
+      const tb = dshThinkPopTabBtn(root, "xlate", I18n.t("译文"));
+      if (srcTab) bar.insertBefore(tb, srcTab);
+      else bar.appendChild(tb);
+    }
   }
   const paneEl = col.querySelector(".dsh-think-pop-pane");
-  if (!paneEl) return col;
+  if (!paneEl) {
+    dshThinkPopApplyTab(root, "src");
+    return col;
+  }
   paneEl.textContent = "";
   paneEl.appendChild(r);
+  /* 页建 / 换之后定页：用户自己挑过页（root.dataset.thinkTabUser）就听用户的，
+     否则译文已成形就直接把用户带到译文页（不用再自己点一次标签） */
+  const it = dshThinkTransItem(scopeId, segKey);
+  const want =
+    root.dataset.thinkTabUser === "1"
+      ? root.dataset.thinkTab === "xlate"
+        ? "xlate"
+        : "src"
+      : it && it.status === "done"
+        ? "xlate"
+        : "src";
+  dshThinkPopApplyTab(root, want);
   return col;
+}
+/* 用户自己点了某一枚标签：记下来，之后译文刷新不再把页抢走 */
+function dshThinkPopMarkUserTab(root) {
+  if (root) root.dataset.thinkTabUser = "1";
+}
+/* 弹窗当前在哪一页（原文 / 译文）。切页 = 只动 class 与 .on，
+   每一页的滚动位置各由自己那个框保存，来回切不互相干扰。 */
+function dshThinkPopApplyTab(root, which) {
+  if (!root) return "";
+  const tab = which === "xlate" && root.querySelector('.dsh-think-pop-col[data-think-pop="xlate"]')
+    ? "xlate"
+    : "src";
+  root.dataset.thinkTab = tab;
+  const cols = root.querySelectorAll(".dsh-think-pop-col");
+  for (const c of cols) c.classList.toggle("on", c.dataset.thinkPop === tab);
+  const tabs = root.querySelectorAll(".dsh-think-pop-tab");
+  for (const b of tabs) b.classList.toggle("on", b.dataset.thinkTab === tab);
+  return tab;
+}
+/* 翻完就地切到译文页（没有译文页时留在原文页，不硬切到空白） */
+function dshThinkPopSwitchTab(scopeId, segKey, which) {
+  const root = document.querySelector(
+    '.dsh-think-pop[data-xkey="' + String(dshThinkTransKey(scopeId, segKey)) + '"]',
+  );
+  if (!root) return "";
+  return dshThinkPopApplyTab(root, which);
 }
 
 /* ── 思考弹窗（本次需求 · 拷问共识 + 本轮调整）──────────────────────────────
    原来会话里的思考段是 <details> 下拉：展开后正文被限高框在自己的小滚动区里，
    会话本身也跟着被顶长 —— 用户口径「移除思考下拉，改为点击思考条目弹窗，
    避免文字滚动影响浏览」。
-   现在的形态：会话里只留一行摘要条（◉ 思考 · N 字），点它开一只**居中弹窗**
+   现在的形态：会话里只留一行摘要条（思考 · N 字 + 强度进度条），点它开一只**居中弹窗**
    （应用现有 #overlay：近全屏宽幅、正文区各自独立滚动、✕ / Esc 关；最小化已下线）。
    本轮调整（用户口径，别再改回去）：
-     · 窗里**只有一个原文框**（Markdown 渲染），翻译按钮挂在它的栏头（复制旁边）；
-     · **未点翻译时不显示译文框**：译文那一栏由 dshThinkPopPaintXlate 按需建出来，
-       点过翻译才出现在原文框**下面**，正文写在译文框栏头下方的框里 ——
+     · 窗里**上方是一排 tabs：译文 / 原文**，一次只显示一页，两页各自独立滚动 ——
+       不再把译文框叠在原文框下面（用户口径：「出现上方一个 tabs 分别为原文和译文，
+       而不是合并在一起」）；
+     · **「译文」那枚排在左端、「原文」挨着它在右**（本轮用户口径：「译文 tab 放在
+       左侧原文（挨着）」）：两枚标签都常驻（窗一开就是「译文 原文」，用户还没点翻译
+       也看得见译文页在哪）；**译文页**仍按需建 —— 没译文时不建页、标签点了也切不过去
+       （dshThinkPopPaintXlate 按需建 / 按需收），正文写在译文页栏头下方的框里 ——
        旧写法把译文框插进栏头、又在正文区画一次，用户看到的是多出来的两个框；
-     · 翻译仍走该会话自己的模型 + 按段缓存 + 译文校验那套，状态一并留在弹窗里。
+     · 「复制 / 翻译」挂在 tabs 行右侧（两页共用一套操作）；
+     · 翻译仍走该会话自己的模型 + 按段缓存 + 译文校验那套，状态一并留在弹窗里；
+       **点「翻译」翻完即自动切到「译文」页**（本轮用户口径），用户自己挑过页之后
+       不再抢焦点。
    每次只开一个（#overlay 是全应用独一份的宿主）；不记忆用户拖改的尺寸。 */
 let _dshThinkPop = null;
 function dshThinkPopClose() {
@@ -5815,7 +6249,8 @@ function dshThinkPopClose() {
     if (typeof closeOverlay === "function") closeOverlay();
   } catch (_) {}
 }
-/* 一栏 = 栏头（标题 + 工具位）+ 正文框（自己滚）。译文那一栏只在有译文时建。 */
+/* 一页 = 栏头（标题 + 工具位）+ 正文框（自己滚）。译文那一页只在有译文时建
+   （按 DOM 序排在原文页之前）；原文页是 tabstrip 上「原文」那一枚标签对应的页，默认显示。 */
 function dshThinkPopCol(root, which, label) {
   const col = document.createElement("div");
   col.className = "dsh-think-pop-col dsh-think-pop-col-" + which;
@@ -5837,6 +6272,40 @@ function dshThinkPopCol(root, which, label) {
   root.appendChild(col);
   return { col, tools, paneEl };
 }
+/* 上方 tabs（本次需求）：译文 / 原文各占一页，不再把译文框叠在原文框下面。
+   结构：.dsh-think-pop-tabs（tabs + 右侧工具位，复制 / 翻译挂这里 —— 两页共用一套操作）
+          └─ button.dsh-think-pop-tab[data-think-tab="xlate|src"]
+   本轮口径（用户口径，别再改回去）：**「译文」那枚在左、「原文」挨着它在右**
+   （两枚都常驻：窗一开就是「译文 原文」的排法，用户点翻译前就看得见译文页在哪）。 */
+/* tabs 上那一枚「译文」标签：常驻左端。按钮本身不认「有没有译文」——
+   页的建 / 收由 dshThinkPopPaintXlate 管（没译文就不建页，标签点了也只是不出页）。 */
+function dshThinkPopTabBtn(root, which, label) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "dsh-think-pop-tab";
+  b.dataset.thinkTab = which;
+  b.textContent = label;
+  b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  b.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    dshThinkPopMarkUserTab(root);
+    dshThinkPopApplyTab(root, which);
+  });
+  return b;
+}
+function dshThinkPopTabsEl(root) {
+  const bar = document.createElement("div");
+  bar.className = "dsh-think-pop-tabs";
+  /* 顺序就是 DOM 序：先「译文」后「原文」（译文挨着原文，且在它左边） */
+  bar.appendChild(dshThinkPopTabBtn(root, "xlate", I18n.t("译文")));
+  bar.appendChild(dshThinkPopTabBtn(root, "src", I18n.t("原文")));
+  const tools = document.createElement("span");
+  tools.className = "dsh-think-pop-tabs-tools";
+  bar.appendChild(tools);
+  root.appendChild(bar);
+  return { bar, tools };
+}
 function openDshThinkPop(desc) {
   const d = desc || {};
   const txt = String(d.text || "");
@@ -5844,7 +6313,7 @@ function openDshThinkPop(desc) {
   const scopeId = String(d.scopeId || "");
   const segKey = d.segKey == null ? "" : String(d.segKey);
   if (typeof openOverlay !== "function") return;
-  openOverlay(I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字"));
+  openOverlay(dshThinkSumLabel(txt.length));
   const box = document.getElementById("overlay");
   const shell = box ? box.querySelector(".overlay-box") : null;
   if (shell) shell.classList.add("dsh-think-pop-box");
@@ -5854,8 +6323,17 @@ function openDshThinkPop(desc) {
   const root = document.createElement("div");
   root.className = "dsh-think-pop";
   root.dataset.xkey = dshThinkTransKey(scopeId, segKey);
+  /* 本次需求：窗是「原文 / 译文两页」的形态 —— 把上一只窗（上一段思考）留下的
+     「用户自己挑过页 / 当前在哪一页」清干净，新窗一律先落在原文页 */
+  root.dataset.thinkTabUser = "0";
+  root.dataset.thinkTab = "src";
 
-  /* 原文框：栏头 = 「思考原文」+ 时刻 + 复制 + 翻译；正文 = Markdown，自己滚 */
+  /* 上方 tabs（本次需求）：译文 / 原文各占一页 —— tabs 上「译文」在左、「原文」挨着它
+     在右，两枚都常驻（本轮用户口径）；页仍按需 —— 原文页是默认页，没译文时窗里
+     只有原文一页。复制 / 翻译两枚操作挂在 tabs 行右侧（两页共用一套，不再分别挂各自栏头）。 */
+  const bar = dshThinkPopTabsEl(root);
+
+  /* 原文页：栏头 = 「思考原文」+ 时刻；正文 = Markdown，自己滚 */
   const left = dshThinkPopCol(root, "src", I18n.t("思考原文"));
   const md = document.createElement("div");
   md.className = "dsh-think-pop-md md-viewer-doc";
@@ -5885,20 +6363,25 @@ function openDshThinkPop(desc) {
       .then((r) => (r && r.ok === false ? toast(I18n.t("复制失败"), "err") : done()))
       .catch(() => toast(I18n.t("复制失败"), "err"));
   };
-  left.tools.appendChild(cp);
+  bar.tools.appendChild(cp);
 
-  /* 翻译按钮也挂在原文栏头（译文框按需长在下面，未点翻译时窗里就只有这一个框） */
+  /* 翻译按钮同一行：点它翻完由 dshTranslateThinking 自动切到「译文」页
+     （那枚标签常驻在左，页由 dshThinkPopPaintXlate 在那时建出来） */
   const first = dshTranslateModel(scopeId);
   const btn = dshThinkTranslateBtn(txt, scopeId, segKey, txt);
   if (!first || !first.prov) {
     btn.disabled = true;
     btn.title = I18n.t("未找到可用文本服务商（请在设置 · API/配置中配置并填写 API Key）");
   }
-  left.tools.appendChild(btn);
-  /* 已经翻过（缓存命中 / 正在翻）：译文框照原样建出来 */
-  dshThinkPopPaintXlate(scopeId, segKey);
+  bar.tools.appendChild(btn);
 
   body.appendChild(root);
+  /* 已经翻过（缓存命中 / 正在翻）：译文页照原样建出来；译文已成形就直接停在译文页，
+     否则停在原文页。这一笔必须挂在 **root 进文档之后** —— dshThinkPopPaintXlate 是按
+     `.dsh-think-pop[data-xkey=…]` 从文档里找回这只窗的，root 还捏在手上时它找不到窗
+     （旧写法就在这里白调一次：缓存命中回窗时译文页始终建不出来，定页由这一次 paint
+     末尾的 dshThinkPopApplyTab 收口，见 dshThinkPopPaintXlate）。 */
+  dshThinkPopPaintXlate(scopeId, segKey);
   const foot = document.getElementById("ovFoot");
   if (foot) {
     const close = document.createElement("button");
@@ -5910,8 +6393,208 @@ function openDshThinkPop(desc) {
   _dshThinkPop = { scopeId: scopeId, segKey: segKey, text: txt };
 }
 
+/* ── 思考强度进度条（本次需求 · 本轮密度减半 + 只有满格到红）────────────────────
+   会话那一行原本写「◉ 思考 · N 字」：符号去掉，字数右侧补一条**小竖格**进度条
+   （像游戏里的电量格），用格数与颜色表达这段思考有多长。
+   格数口径（别再改回去）：按**对数**算 —— 100 字 = 1 格、100000 字 = 满格，
+   log10 在 100..100000 上线性插值后四舍五入。旧写法是「四档各 5 格」的阶梯（用户报
+   「档位错误」：字数差十倍格数却只差 5 格、短思考一上来就亮掉 1/4 条），上一版已改成
+   20 格对数；上一版再 ×10 到 200 格；**本轮用户口径：降低一倍的格子密度 → 100 格**
+   （只动密度，对数分格口径一个字没动），每格 3px 上下，仍比 20 格细 ——
+   相邻档字数看得出差别（脚本 test/smoke-think.js 有实跑断言：格数 ∈ 1..100、随字数单调不减）。
+   颜色口径（本轮用户口径）：**连续渐变 · 绿 → 橙 → 红，且只有满格才到红**。旧口径是四段跳变
+   （1–5 绿 / 6–10 黄 / 11–15 橙 / 16–20 红），段与段是硬边界，看着像「四档」而不是
+   一条刻度；上一版改成「按**亮格在亮段里的位置**插值」—— 用户随即报「变色有误，满格才是
+   红色，而非任何字数都是绿到红」：亮段从绿一直铺到红，几百字也顶着一截红，颜色就不像刻度了。
+   现在的口径：**亮段顶端色由「条有多满」定**（F = count / 格子总数 经**平方**压到三色渐变上：
+   F=0.5 只到 0.25、F=0.9 到 0.81、**只有 F=1 才到端点的红**），
+   亮段内部再按亮格自己的相对位置（i/(count-1) × 顶端比例）从端点绿插到该顶端色 ——
+   ⇒ 第 1 格恒绿、满格时末格正红、不满格时红只可能出现在最后那一点上。
+   三只端点色**只认主题令牌**（--think-bar-done-from/mid/to，真值写在 css/dsh.css 的
+   .dsh-think-meter 上），JS 运行时读回来做 sRGB 插值 —— 深浅两套主题各取自己那一份，
+   JS 里没有一个硬编码色值（fallback 只兜「样式还没上 / 元素不在文档里」这一种情况）。
+   刻度数字不写在条上（那一行只有 10.5px 高，节点内会话更窄），含义放在 tooltip 里。
+   性能口径（用户明确要求「不要因为这个改动占用系统资源」）：
+    · 格子数**恒定 DSH_THINK_BAR_CELLS**、一次建好，宽度交给 flex —— 不挂 ResizeObserver、
+      不算宽度、也不量格子宽度（50 格只是一次 appendChild 循环）；
+    · 流式刷新只在**格数变了**时才动 DOM（dshThinkBarPaint 里先比再写）：一次写亮格的
+      .on 与 background，格数没变就地 return —— 逐字刷新不重建格子、不整表重绘；
+    · 字数文字照旧每次刷新（那本来就要改一个 textContent）。
+   历史（别再踩）：上一版把颜色档类 tb-tN 贴在**行** button 上、填充表却锚在
+   .dsh-think-meter 上，两边错位 ⇒ 填充表一条都没命中，格子全落暗底，用户看到的是
+   「无论多少字都满格且灰」。现在 .on 与渐变色都写在格子自己身上，锚点错位不可能再发生。 */
+const DSH_THINK_BAR_CELLS = 50;
+/* 渐变三只端点色（绿 → 橙 → 红）的令牌名：真值在 css/dsh.css 的 .dsh-think-meter 上 */
+const DSH_THINK_BAR_DONE = {
+  from: "--think-bar-done-from",
+  mid: "--think-bar-done-mid",
+  to: "--think-bar-done-to",
+  fallback: { from: "#5fd68a", mid: "#ff8f2e", to: "#ff5f56" },
+};
+/* 颜色文本 → [r,g,b]：认 #rgb / #rrggbb / rgb()·rgba()，认不出就回落 fallback（不抛、不留空色） */
+function dshThinkRgbOf(raw, fallback) {
+  const s = String(raw || "").trim();
+  let m = /^#([0-9a-f]{3})$/i.exec(s);
+  if (m)
+    return [
+      parseInt(m[1][0] + m[1][0], 16),
+      parseInt(m[1][1] + m[1][1], 16),
+      parseInt(m[1][2] + m[1][2], 16),
+    ];
+  m = /^#([0-9a-f]{6})$/i.exec(s);
+  if (m)
+    return [
+      parseInt(m[1].slice(0, 2), 16),
+      parseInt(m[1].slice(2, 4), 16),
+      parseInt(m[1].slice(4, 6), 16),
+    ];
+  m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(s);
+  if (m) return [Math.round(+m[1]), Math.round(+m[2]), Math.round(+m[3])];
+  return dshThinkRgbOf(fallback, "#5fd68a");
+}
+/* 通道级线性插值（a→b，t 夹在 0..1），拼回 "rgb(r,g,b)"；四舍五入保证 t=1 原样落到端点色
+   （0.5 向上取，不然 86.5 会被截成 86、与令牌写下的 #ff5f56 差 1） */
+function dshThinkMixRgb(a, b, t) {
+  const k = t < 0 ? 0 : t > 1 ? 1 : t;
+  const mix = (i) => Math.floor(a[i] + (b[i] - a[i]) * k + 0.5);
+  return "rgb(" + mix(0) + "," + mix(1) + "," + mix(2) + ")";
+}
+/* 三只端点色之间的渐变取色：t ∈ 0..1，绿 → 橙（t=0.5）→ 红（t=1） */
+function dshThinkRampAt(t, m) {
+  const k = t < 0 ? 0 : t > 1 ? 1 : t;
+  return k <= 0.5
+    ? dshThinkMixRgb(m.from, m.mid, k * 2)
+    : dshThinkMixRgb(m.mid, m.to, (k - 0.5) * 2);
+}
+/* 第 i 格（0 基）在**已点亮 count 格**里的颜色 —— 本轮用户口径「满格才是红色」：
+   ① 亮段**顶端**（第 count 格）的颜色 = 三色渐变里「条有多满」对应的那一点，
+      由 dshThinkFillAt(count, 总数) 给出 —— 满格 F=1 → 正好端点红，
+      半满只到渐变的 0.25（绿）、九成满到 0.81（偏橙红），
+      几百字的短思考整段都在绿→橙之间，不会顶着红；
+   ② 亮段内部按亮格自己所在的比例（i/(count-1) × 顶端比例）从绿插到该顶端色 ——
+      不满格时**不可能有哪一格等于端点红**（顶端色本身就不是端点红）。
+   ⇒ 第 1 格恒绿；只有 count 顶满 DSH_THINK_BAR_CELLS 时末格才落到端点红。 */
+function dshThinkFillAt(count, total) {
+  const cnt = count > 0 ? count : 1;
+  const tot = total > 0 ? total : cnt;
+  let f = cnt / tot;
+  if (f > 1) f = 1;
+  /* 平方：把「有多满」压慢，红线只留在最右端（满格才到 1，九成满才 0.81） */
+  return Math.pow(f, 2);
+}
+function dshThinkCellColor(i, count, n, m) {
+  const cnt = count > 0 ? count : 1;
+  const tot = n > 1 ? n : cnt;
+  const peak = dshThinkFillAt(cnt, tot);
+  const span = cnt > 1 ? cnt - 1 : 1;
+  const pos = (i <= 0 ? 0 : i / span) * peak;
+  return dshThinkRampAt(pos > peak ? peak : pos, m);
+}
+/* 条上三只端点色的真值：从 .dsh-think-meter 读回（深浅主题各取各的）；
+   读不到就用 fallback —— 渐变照旧画得出来，不会出现「满格无色」。 */
+function dshThinkBarRamp(bar) {
+  const fb = DSH_THINK_BAR_DONE.fallback;
+  let cs = null;
+  try {
+    cs = typeof getComputedStyle === "function" ? getComputedStyle(bar) : null;
+  } catch (_) {
+    cs = null;
+  }
+  const pick = (name, back) => (cs && cs.getPropertyValue ? cs.getPropertyValue(name) : "") || back;
+  return {
+    from: dshThinkRgbOf(pick(DSH_THINK_BAR_DONE.from, ""), fb.from),
+    mid: dshThinkRgbOf(pick(DSH_THINK_BAR_DONE.mid, ""), fb.mid),
+    to: dshThinkRgbOf(pick(DSH_THINK_BAR_DONE.to, ""), fb.to),
+  };
+}
+/* 记已点亮的格数：没记过（undefined）或与本次不同才动 DOM（首绘必然写一次） */
+const DSH_THINK_BAR_CELLS_ON = new WeakMap();
+function dshThinkBarEl() {
+  const bar = document.createElement("span");
+  /* 类名用 meter（不是 bar）：旧的折叠条最右端按钮用过 `.dsh-think-bar` 这个选择器，
+     回归里有一条「旧下拉整套已删」就钉着它 —— 新元素别去撞那个名字。 */
+  bar.className = "dsh-think-meter";
+  bar.setAttribute("aria-hidden", "true");
+  /* 条本身不接鼠标：整行仍是「点一下开弹窗」，落在这里就不会抢走点击 */
+  bar.style.pointerEvents = "none";
+  for (let i = 0; i < DSH_THINK_BAR_CELLS; i++) {
+    const c = document.createElement("i");
+    c.className = "dsh-think-meter-cell";
+    bar.appendChild(c);
+  }
+  return bar;
+}
+/* 字数 → 对数格数（1..DSH_THINK_BAR_CELLS）：100 字 = 1 格、100000 字 = 满格（50 格）；
+   中间按 log10 在 100..100000（即 log 2..5）上线性插值后四舍五入 —— 本轮 50 格（密度再减半），
+   1 格 ≈ 1.20 倍字数，长思考不会被早早顶满、短思考也不会一上来就亮掉 1/3 条。
+   边界口径：≤100 一律 1 格（有思考就亮一格，不出现空条）、≥100000 直接满格
+   （不引「+」号等新文案）。 */
+function dshThinkCellsOf(n) {
+  const v = Number(n) > 0 ? Number(n) : 0;
+  if (v <= 100) return 1;
+  if (v >= 100000) return DSH_THINK_BAR_CELLS;
+  const t = (Math.log10(v) - 2) / 3;
+  const cells = Math.round(1 + t * (DSH_THINK_BAR_CELLS - 1));
+  return Math.max(1, Math.min(DSH_THINK_BAR_CELLS, cells));
+}
+/* 点亮前 count 格并给它们按位置铺渐变（绿 → 橙 → 红，只有满格到红），其余压回暗底；
+   同一个格数重复调用直接 return —— 长思考逐字刷新时格数只变几十次，
+   每次也只写亮格那一小段的 .on 与 background（不重建格子、不整表重绘）。 */
+function dshThinkBarPaint(bar, n) {
+  if (!bar || !bar.classList) return;
+  const count = dshThinkCellsOf(n);
+  if (DSH_THINK_BAR_CELLS_ON.get(bar) === count) return;
+  DSH_THINK_BAR_CELLS_ON.set(bar, count);
+  const cells = bar.children || [];
+  const ramp = dshThinkBarRamp(bar);
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (!c || !c.classList) continue;
+    const on = i < count;
+    c.classList.toggle("on", on);
+    c.style.background = on ? dshThinkCellColor(i, count, DSH_THINK_BAR_CELLS, ramp) : "";
+  }
+}
+/* 那一行刻度（对数分格的读法）：条上不写数字，含义放在 tooltip 里 */
+const DSH_THINK_SCALE_TIP = "刻度：100 · 1千 · 1万 · 10万（对数分格：100 字 = 1 格，10 万字 = 满格）";
+/* 摘要行的字数文案（历史渲染 / 流式就地刷新 / 弹窗标题三处同一份）
+   本轮用户口径：字数后面那个「字」去掉 —— 它是全角字符，会让尾部宽度随字数变化，
+   条也跟着漂（与「数字单独定宽」同一个目的：把这一行的宽度全部钉死）。 */
+function dshThinkSumLabel(n) {
+  return I18n.t("思考 · ") + n;
+}
+/* 字数的数字那一层（本次修复「上下不对齐」）：独立成一层并用 CSS 定宽（.dsh-think-num），
+   否则 100 与 1000 差一个字符宽，右侧强度条就跟着横移一个字符位、逐行参差。
+   宽度口径只写在 renderer/css/dsh.css 的 .dsh-think-num 里。 */
+function dshThinkNumEl(n) {
+  const num = document.createElement("span");
+  num.className = "dsh-think-num";
+  num.textContent = String(n);
+  return num;
+}
+/* 摘要条文案装进容器：前缀 + 定宽数字（后缀「字」本轮已去掉 —— 见 dshThinkSumLabel） */
+function dshThinkSumFill(labelEl, n) {
+  if (!labelEl) return;
+  labelEl.textContent = "";
+  labelEl.appendChild(document.createTextNode(I18n.t("思考 · ")));
+  labelEl.appendChild(dshThinkNumEl(n));
+}
+/* 就地刷新用：能拿到定宽数字层就只改它，拿不到（老结构 / 被换过）才回落整层重填 */
+function dshThinkSumSet(rowEl, n) {
+  const labelEl = rowEl ? rowEl.querySelector(".dsh-think-sum-txt") : null;
+  if (!labelEl) return false;
+  const numEl = labelEl.querySelector(".dsh-think-num");
+  if (numEl) {
+    const s = String(n);
+    /* 同一个字数别重复写 textContent（流式刷新的每一帧都会走到这里） */
+    if (numEl.textContent !== s) numEl.textContent = s;
+    return true;
+  }
+  dshThinkSumFill(labelEl, n);
+  return true;
+}
 /* 会话里那一行思考摘要条（历史消息与运行中同一形态）：
-   ◉ 思考 · N 字 + 右端时刻，整行可点 → 弹窗；hover 出「点击打开」的提示。 */
+   思考 · N 字 + 强度进度条 + 左端时刻，整行可点 → 弹窗；hover 出「点击打开」的提示。 */
 function dshThinkRowEl(desc) {
   const d = desc || {};
   const txt = String(d.text || "");
@@ -5919,11 +6602,17 @@ function dshThinkRowEl(desc) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "dsh-seg dsh-seg-think dsh-think-row";
-  btn.title = I18n.t("点击打开思考弹窗（原文按 Markdown 显示，译文点了翻译才出现）");
+  btn.title =
+    I18n.t("点击打开思考弹窗（上方为译文 / 原文两个标签页，原文按 Markdown 阅读模式显示）") +
+    " · " +
+    I18n.t(DSH_THINK_SCALE_TIP);
   const txtEl = document.createElement("span");
   txtEl.className = "dsh-think-sum-txt";
-  txtEl.textContent = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
+  dshThinkSumFill(txtEl, txt.length);
   btn.appendChild(txtEl);
+  const bar = dshThinkBarEl();
+  dshThinkBarPaint(bar, txt.length);
+  btn.appendChild(bar);
   btn.addEventListener("mousedown", (ev) => ev.stopPropagation());
   btn.addEventListener("click", (ev) => {
     ev.preventDefault();
@@ -6057,6 +6746,10 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy) {
        宿主兼皮肤时这个起点在时刻栏**左边**，于是颜色把时刻一起裹了进去。 */
     const box = document.createElement("div");
     box.className = "dsh-seg dsh-seg-tool";
+    /* 段的 2px 左轨与淡底按**工具族**上色（本次需求 · 与轨迹轴上的块同源）：
+       青轨 / 淡青底仍是 css/dsh.css 里 `.dsh-seg-tool` 那一条（没族类时的兜底皮肤），
+       族类在它之后（src 顺序）把 `--dsh-fam` 说清，于是这一段的轨与底随族换色。 */
+    box.classList.add(dshToolFamClassOf(t));
     const chips = document.createElement("div");
     chips.className = "dsh-tools";
     chips.appendChild(dshToolDetailsEl(t, false, nodeId, { expand: !!(pol && pol.expandProcess) }));
@@ -6171,6 +6864,8 @@ function agentLiveSegsEl(row, st, live, items) {
          内层 .dsh-seg-tool 才是青轨 + 淡青底的视觉盒 —— 颜色不裹住左侧时刻。 */
       const box = document.createElement("div");
       box.className = "dsh-seg dsh-seg-tool";
+      /* 运行中的这一段同样按工具族上色（与上面历史路径同一份判据，见 dshToolFamClassOf） */
+      box.classList.add(dshToolFamClassOf(t));
       const chips = document.createElement("div");
       chips.className = "dsh-tools";
       chips.appendChild(dshToolDetailsEl(t, true, nodeId, { expand: expandProcess }));
@@ -6244,13 +6939,16 @@ function updateAgentLiveThink(st) {
       return;
     }
     const txt = String(seg.text || "");
-    /* 只改摘要条里的文案 span（本次需求后那一行不再有按钮，但仍按 span 就地改：
-       整条 textContent 会连带把行内结构与 id / dataset 一起冲掉） */
-    const sumTxt =
-      rowBtn.querySelector(".dsh-think-sum-txt") || rowBtn.firstElementChild;
-    const label = I18n.t("◉ 思考 · ") + txt.length + I18n.t(" 字");
-    if (sumTxt) sumTxt.textContent = label;
-    else rowBtn.textContent = label;
+    /* 只改摘要条里的**数字那一层**（本次修复「上下不对齐」后，字数 = 前缀 + 定宽数字 + 后缀）：
+       整条 textContent 会连带把行内结构与 id / dataset 一起冲掉，而重建整层又会让定宽布局
+       每帧重排。强度条只在**点亮格数变了**时动 DOM（逐字重建 200 个格子 = 长思考时白烧 CPU）。 */
+    if (!dshThinkSumSet(rowBtn, txt.length)) {
+      const sumTxt =
+        rowBtn.querySelector(".dsh-think-sum-txt") || rowBtn.firstElementChild;
+      if (sumTxt) sumTxt.textContent = dshThinkSumLabel(txt.length);
+      else rowBtn.textContent = dshThinkSumLabel(txt.length);
+    }
+    dshThinkBarPaint(rowBtn.querySelector(".dsh-think-meter"), txt.length);
     /* 全文只在弹窗里读：弹窗若正开着这一段，正文跟着长（见 openDshThinkPop 的 live 分支）。
        正文按 Markdown 渲染（本次需求），所以这里也走 dshThinkMdHtml 这同一个入口。 */
     const popMd = document.querySelector(
@@ -6604,17 +7302,12 @@ function bindDshUserImgOpen(body) {
 function dshMsgBlock(m, nodeId, idx, opts) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
-  /* 浏览器求助的「已回应 / 等模型继续」内嵌记录（app-db.js 的 ixNoteBrowserAnswer）：
-     标记出来 —— ① 行内提示样式（不是用户手打的正文）② 无进展看门狗按这个
-     data-ix-bnote 找回这一行就地补「重发本轮 / 终止本轮」。 */
-  if (m && m._src === "ix-browser") {
-    row.classList.add("dsh-msg-bnote");
-    row.dataset.ixBnote = String(Number(m.at) || 0);
-  }
   /* 「这一轮已经结束」痕迹（app-db.js 的 ixRoundEndTrace：轮次收尾时卡片收口后落的
-     一行界面痕迹 —— 落盘、重开可见、不进模型上下文）。与上面那条同族，另外自带
-     一枚「重发本轮」出口（落点是 app-db.js 的 ixRoundEndPaint，与无进展提示同源；
-     它在函数末尾才挂 —— 出口要排在正文气泡之后，不能跑到上面去）。 */
+     一行界面痕迹 —— 落盘、重开可见、不进模型上下文）。自带一枚「重发本轮」出口
+     （落点是 app-db.js 的 ixRoundEndPaint；它在函数末尾才挂 —— 出口要排在正文气泡
+     之后，不能跑到上面去）。
+     老会话里可能还留着「已回应，模型继续中」记录（_src:'ix-browser'，求助卡专属的
+     界面痕迹，本次改版已下线）：那类记录不再有专属样式，按普通用户行渲染即可。 */
   if (m && m._src === "ix-round-end") {
     row.classList.add("dsh-msg-bnote");
     row.dataset.ixRnote = String(Number(m.at) || 0);
@@ -6753,25 +7446,14 @@ function dshMsgBlock(m, nodeId, idx, opts) {
       } catch (_) {}
     }
   }
-  /* 消息时刻（本次需求）：**不再单独占消息末尾一行**，改挂到消息左侧的悬浮时刻栏
-     （.dsh-msg-side，绝对定位在消息左内边距里，见 css/dsh.css 同名规则）：
-     用户口径 = 时刻恒在正文左侧、悬浮显示，别在第二行再压一行时间。
-     渲染改成给 dsh-msg 加上 .dsh-has-time，左侧留出时刻栏的宽度（否则会压住正文），
-     时刻仍是 formatMsgTimeSec（精确到秒，非今天带日期），title 仍是完整时间戳。 */
-  const endTxt = formatMsgTimeSec(m.at || m.createdAt || m.ts);
-  if (endTxt) {
-    const side = document.createElement("div");
-    side.className = "dsh-msg-side";
-    const tEl = document.createElement("span");
-    tEl.className = "dsh-msg-time";
-    tEl.textContent = endTxt;
-    tEl.title = formatMsgStamp(m.at || m.createdAt || m.ts);
-    side.appendChild(tEl);
-    row.appendChild(side);
-    row.classList.add("dsh-has-time");
-  }
-  /* 消息末尾：AI 回复带「复制本条回复」小按钮（没有按钮就不挂这一行，不留空行）。
-     时刻已上左侧时刻栏，这里只剩按钮。 */
+  /* 消息级时刻已移除（本次需求 · 用户口径「移除会话中轮次的时间（最左侧的时间），因为占用了
+     会话空间」）：以前这里给每条消息在左侧挂一格 .dsh-msg-side 悬浮时刻（并给 row 打
+     .dsh-has-time，CSS 据此在消息左侧预留 84px 定宽栏）。
+     现在**整条消息不再挂任何时刻**，消息正文从会话列最左缘起排（CSS 侧对应规则已一并删掉，
+     见 css/dsh.css「会话消息不再有『消息级时刻』栏」段）。
+     消息内部**逐项**的时刻（.dsh-seg-time，思考 / 工具 / 正文各自那一条）是另一层、照旧保留；
+     会话列表卡片上的「最后对话：」相对时间（formatMsgStamp）也不受影响。 */
+  /* 消息末尾：AI 回复带「复制本条回复」小按钮（没有按钮就不挂这一行，不留空行）。 */
   if (m.role === "assistant") {
     const tail = document.createElement("div");
     tail.className = "dsh-msg-tail";
@@ -6936,11 +7618,18 @@ function agentDraftTick() {
 }
 function renderAgentSession(opts) {
   const st = agentSessionState();
+  /* 懒加载：这条会话只有索引（正文还在 agent-sessions/ 里）→ 先读回来，等它到位再画。
+     **不能在这里 return**：会话视图的「当前视图键 / 草稿存回」等收尾动作也在本函数末尾，
+     提前返回就会把那一步一起跳过（冒烟 smoke-session-draft-keep 的「切走时把上一只框的
+     字存回它名下」就是这么挂掉的）。所以这一支只跳过「画对话区」，收尾照常走。 */
+  const bodyPending = !!(st && st.id && !st._lcLoaded && !st._lcMissing && !st.running);
+  if (bodyPending) agentEnsureViewSessionBody();
   /* 右边栏（浏览器活动）跟着当前会话走：这一帧渲染的是哪条会话，那栏就显示哪条会话的
      活动；本会话没有浏览器就整条收起（见 app-browser.js 的 BA.setSession）。 */
   agentNotifyBrowserSession();
   const list = $("#agentList");
   if (!list) return;
+  if (!bodyPending) {
   /* 切换会话 = 新的阅读上下文：清掉上一个会话遗留的「用户已上翻」状态，
      直接定位到新会话底部；同一会话内则完全尊重用户自己的滚动位置 */
   const switched = S._agentRenderedSessionId && S._agentRenderedSessionId !== st.id;
@@ -7065,6 +7754,7 @@ function renderAgentSession(opts) {
   if (typeof requestAnimationFrame === "function") {
     requestAnimationFrame(() => restoreConvStick(list, stickCap));
   }
+  } /* ← !bodyPending 的收口：正文没读回来时只跳过上面这段「画对话区」 */
   const ws = $("#agentWsInput");
   /* 回填「生效工作区」（与运行同一真源），📂 打开的也就是文件真正落的目录 */
   if (ws && document.activeElement !== ws) ws.value = sessionWorkspaceShown(st) || "";
@@ -7150,7 +7840,7 @@ function renderAgentSession(opts) {
     if (![...provSel.options].some((o) => o.value === curProv)) {
       curProv = preferredAgentProviderRoute();
       st.provider = curProv;
-      persistAgentSession();
+      agentFlushSessionSaveQuiet();
     }
     provSel.value = curProv;
     const modelsFor = (prov) => {
@@ -7180,13 +7870,13 @@ function renderAgentSession(opts) {
       st.provider = provSel.value;
       const first = modelsFor(provSel.value)[0];
       st.model = first ? first.id : "";
-      persistAgentSession();
+      agentFlushSessionSaveQuiet();
       fillModels(provSel.value);
       renderAgentSessionSidebar();
     };
     modelSel.onchange = () => {
       st.model = modelSel.value;
-      persistAgentSession();
+      agentFlushSessionSaveQuiet();
     };
   }
   const effortSel = $("#agentEffortSel");
@@ -7358,6 +8048,12 @@ function startSessionTitleEdit(s, nameEl) {
         }
       }
       if (touched) scheduleSave();
+      /* 改名 = 这条会话（可能未加载）的**索引元数据**变了：标脏 → 合并窗口里只更新
+         索引条目，主进程不会碰它的会话文件（正文原样留在盘上）。
+         用户亲口改名算「改了会谈本身」→ 连带盖一次它自己的时间戳（回退分支
+         —— 按 Esc 没改 —— 上面那个 if 整段不跑，一个字都不刷新）。 */
+      s.updatedAt = Date.now();
+      agentMarkSessionDirty(s.id);
       persistAgentSession().catch(() => {});
     }
     renderAgentSessionSidebar();
@@ -7607,7 +8303,12 @@ function renderAgentSessionSidebar() {
     row.onclick = async () => {
       /* 开发页开着时点行 = 切「本页显示的会话」（不动会话页的选中项） */
       agentSelectSession(s.id);
-      await persistAgentSession();
+      /* 切会话 = 用户已确认的 flush 点之一：上一条会话排队的改动立即落盘，
+         再开始读这一条的正文（renderAgentSession 里按懒加载读回）。
+         **点一下不改任何东西**：这里走 quiet flush（不盖 updatedAt），
+         左栏的排序基准（sessionLastAt）与行尾「x 分钟前」都不动 ——
+         原先是 await persistAgentSession()，点谁就把谁顶到最前（用户报的 bug）。 */
+      await agentFlushSessionSaveQuiet();
       renderAgentSession();
       renderAgentSessionSidebar();
     };
@@ -7821,8 +8522,8 @@ async function agentCompact() {
 async function agentCompactRun(st) {
   /* 历史存档里曾被回滚的轮次消息不参与压缩：它们已不在上下文里，摘要也不该复述它们。
      构造口径收进 agentHistoryEntries（同文去重 + 整段限长 + 把只给用户看的界面痕迹
-     `_src:'dev-node'` / `_src:'ix-browser'` 挡在外面）—— 压缩摘要不该把浏览器求助的
-     「已回应，模型继续中」当成用户说过的话抄进去。 */
+     `_src:'dev-node'` / `_src:'ix-browser'`（老会话里求助卡的「已回应」记录）挡在外面）
+     —— 压缩摘要不该把界面痕迹当成用户说过的话抄进去。 */
   const rbSrc = activeSessionMessages(st.messages);
   const hist = agentHistoryEntries({ messages: rbSrc }, { maxChars: 40000, skipLast: false })
     .map((r) => (r.role === "user" ? "用户：" : "助手：") + r.text)
@@ -7850,14 +8551,14 @@ async function agentCompactRun(st) {
   } catch (e) {
     toast(I18n.t("压缩失败：") + (e.message || String(e)), "err");
   }
-  await persistAgentSession();
+  await agentTouchSession();
   renderAgentSession();
 }
 /* 规划模式开关（/plan 命令入口，会话「规划」按钮已按需求移除），文案口径保持一致 */
 async function setPlanMode(st, on) {
   st.planNext = !!on;
   if (!st.planNext) st._planDelivered = false;
-  await persistAgentSession();
+  await agentTouchSession();
   renderAgentComposer();
   toast(
     st.planNext
@@ -7880,7 +8581,7 @@ async function agentExecutePlan() {
   }
   st.planNext = false;
   st._planDelivered = false;
-  await persistAgentSession();
+  await agentTouchSession();
   renderAgentComposer();
   await agentSessionSend(
     I18n.t(
@@ -7921,7 +8622,7 @@ async function agentEnqueueMessage(st, text, opts) {
     sessionId: o.sessionId != null ? String(o.sessionId) : String(st.id || ""),
   });
   st.updatedAt = Date.now();
-  await persistAgentSession();
+  await agentTouchSession();
   if (agentViewIs(st)) {
     renderAgentQueueBar(st);
     $("#agentInput") && $("#agentInput").focus();
@@ -7937,13 +8638,13 @@ async function agentEnqueueMessage(st, text, opts) {
 async function agentRemoveQueued(st, id) {
   if (!st || !Array.isArray(st.outbox)) return;
   st.outbox = st.outbox.filter((x) => x.id !== id);
-  await persistAgentSession();
+  await agentTouchSession();
   if (agentViewIs(st)) renderAgentQueueBar(st);
 }
 async function agentClearQueue(st) {
   if (!st || !Array.isArray(st.outbox) || !st.outbox.length) return;
   st.outbox = [];
-  await persistAgentSession();
+  await agentTouchSession();
   if (agentViewIs(st)) renderAgentQueueBar(st);
 }
 
@@ -8035,7 +8736,7 @@ async function agentSteerNow(st, text) {
       _steerState: "sent",
     });
     st.updatedAt = Date.now();
-    await persistAgentSession();
+    await agentTouchSession();
     if (agentViewIs(st)) renderAgentSession();
     else renderAgentSessionSidebar();
     try {
@@ -8185,7 +8886,7 @@ async function agentResumePaused(st) {
   const sid = agentLiveRunSid(st);
   st.paused = false;
   st._pausePending = false;
-  await persistAgentSession();
+  await agentTouchSession();
   if (agentViewIs(st)) {
     paintAgentSendState();
     renderAgentPausedBar(st);
@@ -8254,7 +8955,7 @@ async function agentDrainQueue(st) {
           break;
         }
         const item = st.outbox.shift();
-        await persistAgentSession();
+        await agentTouchSession();
         if (agentViewIs(st)) renderAgentQueueBar(st);
         /* 出队发送：队列少一条、这条会话即将接下一轮运行 → 左下角同步一次 */
         updateRunQueuePanel();
@@ -8617,7 +9318,7 @@ function agentApplyTodoWrite(st, args) {
     })
     .filter((x) => !hidden.has(x.content));
   st.todosAt = Date.now();
-  persistAgentSession().catch(() => {});
+  agentTouchSession().catch(() => {});
   if (agentViewIs(st)) renderAgentTodoPanel(st);
   return true;
 }
@@ -8636,7 +9337,7 @@ function agentFinalizeTodos(st, outcome) {
     changed = true;
   }
   if (!changed) return;
-  persistAgentSession().catch(() => {});
+  agentTouchSession().catch(() => {});
   if (agentViewIs(st)) renderAgentTodoPanel(st);
 }
 async function agentTodoRemove(st, content) {
@@ -8644,7 +9345,7 @@ async function agentTodoRemove(st, content) {
   st.todos = st.todos.filter((t) => t.content !== content);
   st.todoHidden = st.todoHidden || [];
   if (!st.todoHidden.includes(content)) st.todoHidden.push(content);
-  await persistAgentSession();
+  await agentTouchSession();
   renderAgentTodoPanel(st);
 }
 async function agentTodoClear(st) {
@@ -8654,7 +9355,7 @@ async function agentTodoClear(st) {
     if (!st.todoHidden.includes(t.content)) st.todoHidden.push(t.content);
   }
   st.todos = [];
-  await persistAgentSession();
+  await agentTouchSession();
   renderAgentTodoPanel(st);
 }
 const TODO_ICON = { done: "✓", active: "◐", pending: "○", failed: "✕", unknown: "?" };
@@ -8702,7 +9403,7 @@ function renderAgentTodoPanel(st) {
   fold.title = I18n.t("展开 / 收起任务清单");
   fold.onclick = () => {
     st.todosCollapsed = !st.todosCollapsed;
-    persistAgentSession().catch(() => {});
+    agentFlushSessionSaveQuiet();
     renderAgentTodoPanel(st);
   };
   head.appendChild(fold);
@@ -8788,6 +9489,13 @@ async function agentSessionSend(text, opts) {
   } else {
     st = agentSessionState();
   }
+  /* 懒加载：这一轮的上下文就是 st.messages —— 正文还在盘上时先读回来再开轮
+     （离屏 / 重启后接着跑的会话，第 2 处读正文的入口；另两处是渲染与全局搜索）。
+     读回来是原地合并，st 引用不变；读不到（坏档 / 手删）按空会话继续开轮。 */
+  if (st && !st._lcLoaded && !st._lcMissing) await agentEnsureSessionBody(st);
+  /* 开轮前把排队的会话改动落盘（与「切会话 / 关窗 / 跑画布」同口径）：本轮的新消息
+     之前那几笔改动先落定，重启后若崩在轮中也不会只落半截。 */
+  await agentFlushSessionSave();
   /* 用户亲口发的一轮 = 新任务：把上一条任务留下的「自动续跑」记账清干净 ——
      清单同步的按批配额（_todoSyncTries / _todoSyncUnknownSet）与跨批总闸（_todoSyncRounds）
      都只在一次任务内有效，跨任务累计会把新任务的第一次同步轮直接掐掉
@@ -8851,7 +9559,7 @@ async function agentSessionSend(text, opts) {
     const arg = sp.slice(1).join(" ").trim();
     if (cmd === "/new") {
       newAgentSession();
-      await persistAgentSession();
+      await agentFlushSessionSaveQuiet();
       renderAgentSession();
       toast(I18n.t("已新建会话"), "ok");
     } else if (cmd === "/compact") {
@@ -8884,7 +9592,7 @@ async function agentSessionSend(text, opts) {
         scheduleSave(true);
         renderCanvas();
       }
-      await persistAgentSession();
+      await agentFlushSessionSaveQuiet();
       renderAgentSession();
       renderAgentSessionSidebar();
       toast(I18n.t("会话已重命名:") + st.title, "ok");
@@ -9024,7 +9732,7 @@ async function agentSessionSend(text, opts) {
   beginSaveNodeHold();
   if (!S.thinking) S.thinking = {};
   S.thinking["agent:" + st.id] = [""];
-  await persistAgentSession();
+  await agentFlushSessionSaveQuiet();
   if (agentViewIs(st)) renderAgentSession({ forceStick: true });
   else renderAgentSessionSidebar();
   /* 历史存档里曾被回滚的轮次消息不进上下文（activeSessionMessages 无标记时直接复用
@@ -9569,9 +10277,10 @@ async function agentSessionSend(text, opts) {
         agentFinalizeTodos(st, outcome);
     } catch (_) {}
     if (S.thinking) delete S.thinking["agent:" + st.id];
-    /* 本轮结束 → 刷新「最后对话时间」，侧边栏相对时长随之更新 */
-    st.updatedAt = Date.now();
-    await persistAgentSession();
+    /* 本轮结束 = AI 这一轮真有产出：在这里收口刷一次「最后对话时间」
+       （本轮跑的过程中工具事件 / 流式片段一律不刷，左栏不会一边跑一边翻），
+       侧边栏相对时长随之更新。 */
+    await agentTouchSession();
     renderAgentSessionSidebar();
     /* 只在当前查看本会话时重绘会话区;否则仅刷新侧边栏运行状态,不打扰其他会话视图 */
     if (agentViewIs(st)) renderAgentSession();

@@ -2,7 +2,7 @@
 
 把复杂 AI 工作流收束到一张可视化画布上的 Windows 桌面工具：文本 / 图像输入、LLM 文本处理与图像生成、音乐 / 视频生成、批量处理、任务控制流、AI Agent 会话，都以节点自由编排。
 
-**永久免费开源**（MIT License）：无收费、无订阅，随版本提供源码包；工作流可导出为 `.mtnodes` 包无损分享。当前版本 **1.4.0**（版本号唯一真源是仓库根的 `version` 文件）。
+**永久免费开源**（MIT License）：无收费、无订阅，随版本提供源码包；工作流可导出为 `.mtnodes` 包无损分享。当前版本 **1.5.0**（版本号唯一真源是仓库根的 `version` 文件）。
 
 - **下载页面**：[http://mt-agent.com/mtnode](http://mt-agent.com/mtnode)（Windows 安装包与源码包）
 - **应用内手册**（右上角「文档」，源码在 [`guides/manual/`](guides/manual/)，目录见 [`index.json`](guides/manual/index.json)）

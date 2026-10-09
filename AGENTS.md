@@ -1,6 +1,6 @@
 # AGENTS.md
 
-MTNode AI编排器（mtnode-ai-orchestrator）v1.4.0 — Electron 39 桌面端 AI 工作流编排器。MIT 开源，用户数据全部留在本机 `%APPDATA%\pipeline-console`，**任何数据都不允许保存在应用文件夹**（`app.getAppPath()` / exe 同目录；升级 / 卸载会带走或覆盖）。本文件是所有开发 / 细化 / 建议会话共享的核心共识：**新文件按「目录约定」放置，「不要修改」清单内路径一律不改**。Agent 工作区 = 项目根目录。
+MTNode AI编排器（mtnode-ai-orchestrator）v1.5.0 — Electron 39 桌面端 AI 工作流编排器。MIT 开源，用户数据全部留在本机 `%APPDATA%\pipeline-console`，**任何数据都不允许保存在应用文件夹**（`app.getAppPath()` / exe 同目录；升级 / 卸载会带走或覆盖）。本文件是所有开发 / 细化 / 建议会话共享的核心共识：**新文件按「目录约定」放置，「不要修改」清单内路径一律不改**。Agent 工作区 = 项目根目录。
 
 ## 目录约定
 

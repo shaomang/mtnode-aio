@@ -2321,19 +2321,90 @@ body.theme-light .n-rl-ico {
   font-weight: 700
 }
 
-/* ===== 思考内容弹窗 ===== */
-.think-pre {
-  max-height: 60vh;
+/* ===== 思考内容弹窗（本次需求：不再用纯灰等宽小字，改 Markdown 阅读模式）=====
+   正文框 = .think-doc + .md-viewer-doc（应用内阅读器同一套版式），由 app.js 的
+   thinkDocEl() 建出来、thinkMdHtml() 灌 Markdown 渲染结果（公式 / 表格 / 列表都按结构排）。
+   旧的 .think-pre（等宽 + 纯灰 + pre-wrap）已删 —— 用户口径：「不要使用纯灰色字，
+   应当使用正常适合浏览的 markdown 阅读模式」。
+   这里只补两块：① 字号 / 行高 / 底色（阅读版，不靠 --muted 压对比，浅色主题走 --ink）；
+   ② 长思考的外层限高（限高挂在框上，贴底跟随 / 上翻不被拽回仍由 app.js 那套 sticky 管）。 */
+/* 内边距写在与 .md-viewer-doc 同权重再叠一层的选择器上：阅读器那份
+   （assist.css 的 .md-viewer-doc，整页文档才用的 22px 30px 48px 大留白）
+   按加载顺序在本文件之后，同级会把它盖回来 —— 弹窗里必须收成框内留白。 */
+.think-doc.think-doc {
+  max-height: 62vh;
   overflow: auto;
+  padding: 12px 14px;
   background: var(--code);
   border: 1px solid var(--bd);
-  color: var(--cyan2);
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 10px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.7;
+  border-radius: 3px;
+  /* 正文不再是等宽小字：跟随界面无衬线正文字体（--sans，见 css/base.css） */
+  font-family: var(--sans);
+}
+
+.think-doc.md-viewer-doc {
+  /* 阅读器版式在弹窗里收紧：不照搬整页文档的居中页宽与大留白 */
+  max-width: none;
+  margin: 0;
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.78;
+}
+
+/* 阅读器版式在弹窗里收紧：页宽与首行留白不照搬整页文档那套 */
+.think-doc.md-viewer-doc> :first-child {
+  margin-top: 0;
+}
+
+.think-doc.md-viewer-doc> :last-child {
+  margin-bottom: 0;
+}
+
+.think-doc.md-viewer-doc h1,
+.think-doc.md-viewer-doc h2,
+.think-doc.md-viewer-doc h3,
+.think-doc.md-viewer-doc h4,
+.think-doc.md-viewer-doc h5,
+.think-doc.md-viewer-doc h6 {
+  color: var(--ink);
+  margin: 1em 0 .45em;
+}
+
+.think-doc.md-viewer-doc h1 {
+  font-size: 19px;
+}
+
+.think-doc.md-viewer-doc h2 {
+  font-size: 17px;
+}
+
+.think-doc.md-viewer-doc h3 {
+  font-size: 15px;
+}
+
+.think-doc.md-viewer-doc p,
+.think-doc.md-viewer-doc li {
+  margin: .45em 0;
+}
+
+.think-doc.md-viewer-doc pre {
+  max-height: 320px;
+  overflow: auto;
+  margin: .6em 0;
+  border: 1px solid var(--bd2);
+}
+
+.think-doc.md-viewer-doc blockquote {
+  margin: .6em 0;
+}
+
+body.theme-light .think-doc {
+  background: var(--bg2);
+  border-color: var(--bd);
+}
+
+body.theme-light .think-doc.md-viewer-doc {
+  color: var(--ink);
 }
 
 /* 节点内联设置面板 .n-api-panel 已随「设置统一走跳窗」删除：

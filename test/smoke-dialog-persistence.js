@@ -463,7 +463,17 @@ console.log("\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "�
   console.log("[1] 静态接线（index.html / app.js / css / i18n）");
   {
     ok(html.indexOf('class="ov-close-btn"') > 0, "index.html 初始窗壳标题栏里有 .ov-close-btn");
-    ok(/class="ov-close-btn"[^>]*title="关闭"[^>]*aria-label="关闭"/.test(html), "✕ 带「关闭」title / aria-label（可读、可点）");
+    ok(
+      /class="ov-close-btn"[^>]*aria-label="关闭"/.test(html) &&
+        !/class="ov-close-btn"[^>]*title=/.test(html),
+      "✕ 只有一处可读名（aria-label=关闭）—— title 与它逐字相同，按提示去重口径已删",
+    );
+    ok(
+      /class="ov-close-btn"[^>]*aria-label/.test(
+        require("fs").readFileSync(require("path").join(__dirname, "..", "renderer", "app.js"), "utf8"),
+      ) && !/ov-close-btn" title=/.test(require("fs").readFileSync(require("path").join(__dirname, "..", "renderer", "app.js"), "utf8")),
+      "app.js 的 OV_SHELL_HTML 同口径（动态补壳的 ✕ 也不重复 title）",
+    );
     ok(html.indexOf('class="ov-min-btn"') < 0, "✕ 是标题行里唯一一颗按钮（最小化那颗已随本轮需求移除）");
     ok(html.indexOf('id="ovTitle">设置</b><button type="button" class="ov-close-btn"') > 0, "标题 → ✕ 的结构没被拆散");
     const closeBlocks = // 把 .ov-close-btn 的规则块逐条取出来（不能拿全文正则会误伤注释）

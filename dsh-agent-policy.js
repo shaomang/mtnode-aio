@@ -82,32 +82,44 @@ function policyFromConfig(cfg) {
   return normalizePolicy(raw);
 }
 
+/** 这段文本用的是哪种换行：CRLF 的文件别插出裸 LF。
+ *  混行之后「关掉再打开」就回不到逐字相同的出货文本（每次保存都判 changed、写一次盘，
+ *  而且安装目录那份与出货版永久不再一致）。所有按行改写都走这里取换行符。 */
+function eolOf(text) {
+  return /\r\n/.test(String(text == null ? "" : text)) ? "\r\n" : "\n";
+}
+
 /** 改写一行的 `disabled:`（有就替换整行，没有就补在 name 行之后）。 */
 function setDisabled(block, off) {
   const want = "  disabled: " + (off ? "true" : PLATFORM_DISABLED);
-  if (/^\s*disabled:.*$/m.test(block)) return block.replace(/^\s*disabled:.*$/m, want);
-  return block.replace(/^(\s*name:.*)$/m, (m0) => m0 + "\n" + want);
+  /* 行内容一律用 [^\r\n]* 匹配：`.` 会把行尾的 \r 一起吃进来，替换 / 插行后行尾
+     就变成裸 LF（CRLF 文件上不再幂等）。 */
+  if (/^\s*disabled:[^\r\n]*/m.test(block))
+    return block.replace(/^\s*disabled:[^\r\n]*/m, want);
+  return block.replace(/^(\s*name:[^\r\n]*)$/m, (m0) => m0 + eolOf(block) + want);
 }
 
 /** 改写 / 补写 config 块里的一个标量（有就替换整行，没有就插在已知锚点行之后）。 */
 function setConfigValue(block, key, value) {
   const line = "    " + key + ": " + value;
-  const re = new RegExp("^\\s*" + key + ":.*$", "m");
+  const re = new RegExp("^\\s*" + key + ":[^\\r\\n]*", "m");
   if (re.test(block)) return block.replace(re, line);
   /* 插在 config 块内最后一个已知键之后；都不在就插在 `config:` 之后。
-     锚点按「越靠后越优先」试，保证新键留在 config 块内部（不会被下一行的 - id 截走）。 */
+     锚点按「越靠后越优先」试，保证新键留在 config 块内部（不会被下一行的 - id 截走）。
+     插进去的那一行用本块自己的换行（eolOf）—— 插裸 LF 会让 CRLF 文件从此不再幂等。 */
+  const eol = eolOf(block);
   const anchors = ["backgroundMode", "toolName", "provider"];
   for (let i = 0; i < anchors.length; i++) {
-    const ar = new RegExp("^([ \\t]*)" + anchors[i] + ":.*$", "m");
-    if (ar.test(block)) return block.replace(ar, (m0) => m0 + "\n" + line);
+    const ar = new RegExp("^([ \\t]*)" + anchors[i] + ":[^\\r\\n]*", "m");
+    if (ar.test(block)) return block.replace(ar, (m0) => m0 + eol + line);
   }
-  return block.replace(/^(\s*config:\s*)$/m, (m0) => m0 + "\n" + line);
+  return block.replace(/^(\s*config:[^\r\n]*)$/m, (m0) => m0 + eol + line);
 }
 
 /** 删掉 config 块里的一个标量行（连同换行），没有就原样返回 —— 用来把「默认值」还原成
  *  「出货文件里本来没有这一行」的状态，保证关掉再打开能逐字回到原文件。 */
 function delConfigValue(block, key) {
-  const re = new RegExp("^[ \\t]*" + key + ":.*\\n?", "m");
+  const re = new RegExp("^[ \\t]*" + key + ":[^\\r\\n]*(\\r?\\n)?", "m");
   return re.test(block) ? block.replace(re, "") : block;
 }
 

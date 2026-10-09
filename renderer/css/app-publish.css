@@ -192,6 +192,29 @@
   gap: 8px;
 }
 
+/* 应用 id 那一行（本轮需求）：输入框 + 「修改 id」按钮 —— 默认锁定时输入框只读，
+   按钮是唯一的解锁入口（点它先二次确认）。按钮不抢宽度：输入框吃掉剩下的全部空间。 */
+.pub-id-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pub-id-row .pub-in {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pub-id-row .mini {
+  flex: 0 0 auto;
+}
+
+.pub-id-row .pub-in[readonly] {
+  color: var(--muted);
+  cursor: default;
+}
+
 @media (max-width: 620px) {
   .pub-row {
     grid-template-columns: minmax(0, 1fr);
@@ -407,6 +430,32 @@
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 8px;
+}
+
+/* 删版本的常驻结果行（本轮需求：成功 / 失败都留在这里，不再只靠一闪而过的 toast）：
+   淡底 + 左侧色条，跟着 .pub-ok / .pub-err / .pub-warn 换颜色；「重试」按钮跟在文字后面。 */
+.pub-ver-result {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-left: 2px solid var(--bd2);
+  border-radius: 3px;
+  background: var(--bg2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pub-ver-result.pub-ok {
+  border-left-color: var(--green);
+}
+
+.pub-ver-result.pub-err {
+  border-left-color: var(--red);
+}
+
+.pub-ver-result.pub-warn {
+  border-left-color: var(--yellow);
 }
 
 /* ── 同 id 多分支（docs/apps-market.md §十，本轮）──

@@ -121,6 +121,23 @@
       }
     },
     {
+      "id": "breeze-tts-local",
+      "kind": "breeze",
+      "handler": "breeze",
+      "order": 62,
+      "version": "1.0.0",
+      "minAppVersion": "1.4.0",
+      "icon": "breeze-tts-local.png",
+      "title": {
+        "zh": "Breeze TTS 2 本地 TTS",
+        "en": "Breeze TTS 2 Local TTS"
+      },
+      "subtitle": {
+        "zh": "Breeze TTS 2（实时流式 · 音色克隆 / 设计 / 导演）：参考片段音色库、OpenAI 兼容 TTS API（API Key 鉴权）；画布「Breeze 语音」节点。服务不随 MTNode 退出，托盘可手动关闭。权重仅限研究与非商用。",
+        "en": "Breeze TTS 2 (real-time streaming · voice clone / design / direction): reference-clip voice library, OpenAI-compatible TTS API; adds a canvas Breeze voice node. Service survives MTNode exit. Weights are research / non-commercial only."
+      }
+    },
+    {
       "id": "remotion",
       "kind": "remotion",
       "handler": "remotion",

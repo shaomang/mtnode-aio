@@ -64,6 +64,9 @@ const {
 } = require("./updater.js");
 const { registerPetIpc, shutdownPet } = require("./pet/main-pet.js");
 const { registerAppPluginsIpc, shutdownAppPlugins, openWindowPlugin } = require("./plugins/main-app-plugins.js");
+/* 用户自建插件（声明式 · <数据目录>/user-plugins + mtnode-plugin.json）：扫目录即出画布节点 /
+   MCP / 技能，不碰源码、升级不失效；一键修复与诊断导出也在这里（见 plugins/user-plugins.js） */
+const { registerUserPluginsIpc, runStartupHealth: runUserPluginsHealth } = require("./plugins/user-plugins.js");
 const { registerMusic3Ipc, shutdownMusic3UiOnly } = require("./music3/main-music3.js");
 /* 本地音乐生成后端（YuE2）：与 Music3 同族，后端单例独立于 MTNode 生命周期 */
 const { registerYueIpc, shutdownYueUiOnly } = require("./yue/main-yue.js");
@@ -73,6 +76,8 @@ const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lo
 const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
+/* 本地 TTS 后端（Breeze TTS 2）：与 tts-local 并列的第二套语音后端，管理服务单例不随 MTNode 退出 */
+const { registerBreezeIpc, shutdownBreezeUiOnly } = require("./breeze/main-breeze.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
 /* 本地语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）：主进程只留「转写缓存 +
    音频读盘」这条小内核，识别本身走 dsh:speech 通道（见 speech-store.js 头部口径） */
@@ -109,6 +114,13 @@ const {
 } = require("./apps-store.js");
 /* 全局音视频互斥锁（本地大模型一张卡只跑一个）：应用通道列图像后端 / 出图前先看它 */
 const mediaGenLock = require("./media-gen-global-lock.js");
+/* 本地模型显存释放编排器（h3 / music3 / yue / sensenova / llama 共用一套口径）：
+   运行前先释放别人的、收尾再释放自己的，治好「显存没还回去 → 下一个后端卡死」（见 local-model-vram.js） */
+const vramRelease = require("./local-model-vram.js");
+/* 系统资源探针（顶栏「性能」面板的数据真源：CPU / 内存 / GPU / 磁盘 / 网速 / 连接数 /
+   后端端口监听）。采样要 spawn nvidia-smi / PowerShell / netstat，且重查询必须缓存，
+   所以统一收在主进程一处，渲染层只拉读数（见 perf-probe.js 顶部口径）。 */
+const perfProbe = require("./perf-probe.js");
 /* 长周期任务系统：运行态 checkpoint / 交付目录 / 长期记忆（SQLite+FTS5），全在数据目录 */
 const { registerLongtaskIpc } = require("./longtask-store.js");
 /* AI 事实库（每张画布一份的极简条例库）：固定文件 <画布文件夹>/团队事实库/AI/ai-facts.json
@@ -125,9 +137,10 @@ const clipImages = require("./clipboard-images.js");
    all-done.wav 下线，完成音只走渲染层 WebAudio（见 renderer/app-db.js）。 */
 let dshAdapter = null;
 function dshConfig() {
-  /* 只为取 cfg.dsh 下 6 个标量，原本却把整份 config.json（实测几十 MB，91% 是
-     agentSessions 转写）读进来 parse 一遍。改走与 config:load 同一份缓存：
-     启动链上 dsh:config / config:load / localeFromDisk 三次全量读合并成一次。 */
+  /* 只为取 cfg.dsh 下 6 个标量，原本却把整份 config.json（当时本机 75.8 MB，其中
+     agentSessions 转写 56.1 MB）读进来 parse 一遍。改走与 config:load 同一份缓存：
+     启动链上 dsh:config / config:load / localeFromDisk 三次全量读合并成一次；
+     会话拆到 agent-sessions/ 之后这份文件常态只有几百 KB。 */
   const c = loadConfigText(join(DATA(), "config.json"));
   const cfg = (c && c.obj) || {};
   const d = cfg.dsh || {};
@@ -208,6 +221,10 @@ function dsh() {
           if (typeof onTtsDshEvent === "function") onTtsDshEvent(ev);
         } catch {}
         try {
+          const { onBreezeDshEvent } = require("./breeze/main-breeze.js");
+          if (typeof onBreezeDshEvent === "function") onBreezeDshEvent(ev);
+        } catch {}
+        try {
           const { onSensenovaDshEvent } = require("./sensenova/main-sensenova.js");
           if (typeof onSensenovaDshEvent === "function") onSensenovaDshEvent(ev);
         } catch {}
@@ -248,6 +265,21 @@ const mk = (p) => {
   fs.mkdirSync(p, { recursive: true });
   return p;
 };
+
+/** 取某本地后端宿主登记的显存释放钩子（h3 / music3 / yue / sensenova / llama）。
+ *  宿主只 export 一个 vramHooks()，模块加载失败或没接这一钩子时返回 {} ——
+ *  那个后端就不参与释放，绝不影响其余的（也不影响启动）。 */
+function vramHooksOf(host) {
+  try {
+    const mod = require("./" + host + "/main-" + host + ".js");
+    if (mod && typeof mod.vramHooks === "function") return mod.vramHooks() || {};
+  } catch (e) {
+    try {
+      console.log("[vram] hooks unavailable for " + host + ": " + ((e && e.message) || e));
+    } catch {}
+  }
+  return {};
+}
 const join = (...a) => path.join(...a);
 
 /* 默认 userData 固定在 appData/pipeline-console；可配置的「配置数据目录」
@@ -338,13 +370,18 @@ function writeJson(p, v) {
 }
 
 /* ── config.json 的读取缓存 + 「内容没变就不落盘」（性能，不改语义）────────────
-   config.json 是「一切设置 + agentSessions 全量转写」的单一文件：本机实测 57.8 MB，
-   其中 91% 是 agentSessions。一次 config:save 原本要走「copyFileSync 整份备份 +
-   读整份 + JSON.parse 整份 + JSON.stringify 整份 + 写整份」≈ 5 趟全量 I/O，全在
-   主进程（它同时还在服务别的 IPC 与 dsh stdio）；启动链上 localeFromDisk /
-   dsh:config / config:load 又把同一份文件整读 + parse 了 3 次。
+   历史：config.json 曾是「一切设置 + agentSessions 全量转写」的单一文件，本机实测
+   75.8 MB（其中 agentSessions 56.1 MB / 74%）。一次 config:save 就要走「copyFileSync
+   整份备份 + 读整份 + JSON.parse 整份 + JSON.stringify 整份 + 写整份」≈ 5 趟全量 I/O，
+   全在主进程（它同时还在服务别的 IPC 与 dsh stdio）：探针实测单次同步 775 ms、
+   窗口侧被拖住 p95 821 ms；启动链上 localeFromDisk / dsh:config / config:load 又把同一份
+   文件整读 + parse 多次。
 
-   两档处理，都不改变任何返回值与落盘字节：
+   现在 agentSessions 已拆到 agent-sessions/（见 agent-sessions-store.js），这份文件
+   常态只有几百 KB —— 下面两档里的「小文件」那一档成为常驻路径（命中缓存 = 保存时
+   不读盘、不 parse），超大档保留着给「用户从旧版本升上来、还没来得及迁移」的中间态兜底。
+
+   两档处理，都不改变任何返回值：
    · 小文件（≤ CFG_CACHE_MAX_BYTES）：按 (mtimeMs, size) 记住「我们上一次写进去的那一份」
      的对象与文本 → 后续读全盘命中，合并时不再读盘 + parse，写前还能直接比对新旧文本。
    · 超大文件：不常驻（一份 55 MB 的 config 常驻 = 文本 ~101 MB + 对象图 ~83 MB 堆，
@@ -403,9 +440,10 @@ function loadConfigText(p) {
   return got ? { obj: got.obj, text: got.text } : null;
 }
 /* 异步读盘版（config:load 专用）：命中缓存（小文件）直接交对象；未命中就异步读 + parse。
-   本机 config.json 实测 36.4MB（大于缓存上限，见上），一次 readFileSync 约占 80ms —— 那是
-   主进程事件循环上的硬阻塞。改异步后这 80ms 不再卡住主进程；JSON.parse（约 60ms）仍在主
-   线程，这是 JS 的边界。返回值与同步路径同口径：读不到 / 坏档 / 非对象一律 null，交调用方
+   会话拆出后 config.json 常态只有几百 KB（命中缓存即零 I/O）；这一路仍然保留异步读 ——
+   它兜的是「用户从旧版本升上来、会话还没迁移」的那一次大文件读（本机曾 75 MB，
+   一次 readFileSync 约占 150ms，是主进程事件循环上的硬阻塞）。JSON.parse 仍在主线程，
+   这是 JS 的边界。返回值与同步路径同口径：读不到 / 坏档 / 非对象一律 null，交调用方
    按原路径（readJson 兜底）处理。 */
 async function loadConfigTextAsync(p) {
   const st = statOf(p);
@@ -438,6 +476,76 @@ function rememberConfigWritten(p, obj, text) {
     st && st.size <= CFG_CACHE_MAX_BYTES
       ? { mtimeMs: st.mtimeMs, size: st.size, obj, text }
       : null;
+}
+
+/* ── config.json 的主进程写盘串行闸门 ────────────────────────────────────────
+   同一份 config.json 有三个主进程写入方：config:save（渲染层全量）、
+   config:patchProviders（插件同步）、写中转真票的 writeRelayKeyToConfig；
+   启动链上还有一次性迁移。它们原本各写各的：A 读到旧内容 → B 写盘 → A 拿旧内容
+   写回，B 那次改动就静默没了（现在靠「深合并 + 内容比对」尽量避，但没有真正串行）。
+   这里给所有写入点一条 promise 链：任一时刻只有一次「读 → 合并 → 写」在跑，
+   排队顺序即调用顺序。所有写盘本身都是同步的，链上不会有真正的等待。 */
+let cfgWriteChain = Promise.resolve();
+function queueCfgWrite(fn) {
+  const run = cfgWriteChain.then(
+    () => {
+      try {
+        return Promise.resolve(fn());
+      } catch (e) {
+        errLog("[config] 写盘失败：" + String((e && e.message) || e));
+        return null;
+      }
+    },
+    () => {
+      try {
+        return Promise.resolve(fn());
+      } catch (e) {
+        errLog("[config] 写盘失败：" + String((e && e.message) || e));
+        return null;
+      }
+    },
+  );
+  cfgWriteChain = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+/* 「读 → 改 → 内容变了才备份 + 原子写回」的最小写入口：
+   config:patchProviders / 迁移后清旧键 / 中转 Key 都用它，免得每个调用点各写一遍。 */
+function mutateConfigFile(fp, fn) {
+  const c = loadConfigText(fp);
+  const existing = (c && c.obj) || {};
+  const next = Object.assign({}, existing);
+  fn(next);
+  const text = JSON.stringify(next);
+  if (c && c.text === text) return true; /* 逐字没变：一次磁盘都不碰（同 config:save 口径） */
+  backupConfigFile(fp);
+  mk(path.dirname(fp));
+  const tmp = fp + ".tmp" + process.pid;
+  fs.writeFileSync(tmp, text, "utf8");
+  fs.renameSync(tmp, fp);
+  rememberConfigWritten(fp, next, text);
+  return true;
+}
+
+/* ── 会话转写（agentSessions）：从 config.json 拆到独立的 agent-sessions/ ──────
+   背景与三条硬口径（懒加载 / 不写未加载的会话 / 写序先会话体后索引）写在
+   agent-sessions-store.js 文件头。这里只负责把它接到 IPC 与启动链上。 */
+const { createAgentSessionsStore } = require("./agent-sessions-store.js");
+let _sessionsStore = null;
+function sessionStore() {
+  if (!_sessionsStore) {
+    _sessionsStore = createAgentSessionsStore({
+      dataDir: () => DATA(),
+      cfgFile: () => join(DATA(), "config.json"),
+      log: (m) => errLog(String(m)),
+      backup: (fp) => backupConfigFile(fp),
+      /* 迁移收尾清理旧键：与其它写入点共用串行闸门 + 同一份「变了才写」实现 */
+      mutateConfig: (fp, fn) => queueCfgWrite(() => mutateConfigFile(fp, fn)),
+    });
+  }
+  return _sessionsStore;
 }
 
 function backupConfigFile(configPath) {
@@ -766,12 +874,46 @@ ipcMain.handle("config:load", () =>
     });
   })(),
 );
-ipcMain.handle("config:save", (e, cfg) => {
+/* 是不是一个「可以逐键合并」的配置对象（纯对象；数组 / null / 类实例都不算） */
+function cfgPlainObj(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+/* 渲染层整份写回 config 时的合并口径：顶层浅合并（老行为）+ **主进程也会写的那几段做深合并**。
+ *
+ * 为什么必须有这一段（真事故）：应用根目录（config.json 的 apps.installDir / apps.projectDir）
+ * 只由主进程写（apps-store.js 的 setRoot），而渲染层手里那份 S.config 是**启动时读的旧副本**
+ * —— 用户改完根目录后，任何一次 configSave(S.config)（点开发页左栏的应用条目、拖三栏宽度、
+ * 存会话……几十处调用点）都会用旧副本里那个 apps 对象把主进程刚写进去的键盖掉。
+ * 本机现场：config-backups 里 23:34 那份快照还有 "projectDir": "<项目根>"，下一份起就没了，
+ * 于是 rootPathOf("dev") 回退到下载根（空目录），应用开发页预览报「该应用不在本机」。
+ * 深合并只针对 apps（providers 数组另有专门保护，见下面那段），其它顶层键维持原语义。 */
+const CONFIG_DEEP_MERGE_KEYS = ["apps"];
+function mergeConfigForSave(existing, incoming) {
+  const next = Object.assign({}, existing, incoming);
+  for (const key of CONFIG_DEEP_MERGE_KEYS) {
+    const a = existing ? existing[key] : null;
+    const b = incoming ? incoming[key] : null;
+    if (cfgPlainObj(a) && cfgPlainObj(b)) next[key] = Object.assign({}, a, b);
+  }
+  /* agentSessions 现在是 agent-sessions/ 里的独立文件，config.json 只留一个空壳。
+     老渲染层（还没升级的那一份）手里是「启动时读到的会话数组」，它整份写回时会拿旧
+     会话把盘上那份空壳又填回来 —— 那份会话没经过 session:save，等于凭空多出一堆
+     「只有配置里有、目录里没有」的会话。这里只认「盘上本来就是空壳」时的空数组覆盖，
+     其它情况（迁移前的真实会话）一律沿用盘上那份，与 providers 的保护同一口径。 */
+  if (Array.isArray(incoming.agentSessions)) {
+    const diskHas =
+      Array.isArray(existing && existing.agentSessions) && existing.agentSessions.length > 0;
+    if (diskHas && !incoming.agentSessions.length) next.agentSessions = existing.agentSessions;
+  }
+  return next;
+}
+ipcMain.handle("config:save", (e, cfg) =>
+  queueCfgWrite(() => {
   const fp = join(DATA(), "config.json");
   const incoming = cfg || {};
   const c = loadConfigText(fp);
   const existing = (c && c.obj) || {};
-  const next = Object.assign({}, existing, incoming);
+  const next = mergeConfigForSave(existing, incoming);
   if (Array.isArray(incoming.providers)) {
     const managed = (existing.providers || []).filter(
       (p) =>
@@ -806,10 +948,14 @@ ipcMain.handle("config:save", (e, cfg) => {
     }
     next.providers = saved;
   }
-  const text = JSON.stringify(next, null, 2);
+  /* 紧凑 JSON（原为 stringify(next, null, 2)）：这份文件是本机设置（几百 KB 级），
+     缩进只是给人看的，而它每次保存都要整份重新序列化 + 写盘 —— 实测缩进比紧凑多花
+     约 70 ms、多写约三成字节（见 test/_perf-probe/cfg-save-cost.cjs）。会话正文另有
+     独立文件，这里不再需要「肉眼可读」这个性质；要看得舒服用编辑器格式化即可。 */
+  const text = JSON.stringify(next);
   /* 与同仓 config-providers.js 的 `if (changed) { backup; write }` 同一口径：
      落盘字节逐字没变（这类「事件顺手存一下 config」的调用不少）就一次磁盘都不碰 ——
-     再复制一份与现网完全相同的几十 MB 快照没有任何恢复价值，只把 config-backups
+     再复制一份与现网完全相同的快照没有任何恢复价值，只把 config-backups
      撑成 GB（本机实测 30 份 = 1.65 GB）。文件读不到 / 坏档时 c 为空，被别处改过时
      读到的就是那一份新内容、比对必然不等：两种情况都照旧备份 + 落盘。 */
   if (!(c && c.text === text)) {
@@ -823,11 +969,20 @@ ipcMain.handle("config:save", (e, cfg) => {
   if (next && (next.locale === "en" || next.locale === "zh")) applyMainLocale(next.locale);
   /* 子代理策略随配置一起落进 cordis.yml（不返回给渲染层，失败只进 dsh.log） */
   syncSubagentPolicy(next);
-  return { ok: true };
-});
-ipcMain.handle("config:patchProviders", (e, opts) =>
-  patchProviders(join(DATA(), "config.json"), opts || {}),
+  return { ok: true, bytes: Buffer.byteLength(text) };
+  }),
 );
+ipcMain.handle("config:patchProviders", (e, opts) =>
+  queueCfgWrite(() => patchProviders(join(DATA(), "config.json"), opts || {})),
+);
+
+/* ── 会话通道（agentSessions 从 config.json 拆出后的读写口）──────────────────
+   session:load = 索引（左栏字段，绝不含正文）；session:save = 只写脏会话 + 刷索引；
+   session:body = 按需读正文（懒加载）。三条都由 agent-sessions-store.js 实现。 */
+ipcMain.handle("session:load", () => sessionStore().readIndex());
+ipcMain.handle("session:save", (e, payload) => sessionStore().saveSessions(payload || {}));
+ipcMain.handle("session:body", (e, ids) => sessionStore().loadSessions(ids));
+
 
 /* save/<id>.json 的「列表元数据」缓存：workflow:list 只需要 id / name / 节点数三个字段，
    原本每次调用都把每张画布整读 + JSON.parse 一遍（本机实测 32 张 / 6.3 MB，最大一张
@@ -4386,19 +4541,101 @@ async function storeRequest(opts) {
        论坛发帖等所有 POST 全部受影响）。 */
     let url = STORE_BASE + p;
     /* 超时默认 120s；上架应用（约 32MB base64 的 POST）这类大请求由调用方给更长的 timeoutMs
-       （renderer/app-publish.js 传 600000）—— clamp 到 10s–600s，别让渲染层写个 0 就变成永不超时。 */
+       （renderer/app-publish.js 传 600000）—— clamp 到 10s–600s，别让渲染层写个 0 就变成永不超时。
+       空闲口径（本轮需求，用户报「上传中卡住」）：超时按**数据流动**重置 ——
+       只要响应体还在往外吐字节就不算超时；连续 timeoutMs 没有任何新字节才自断。
+       为什么改成这样：原来的 `AbortSignal.timeout(timeoutMs)` 是**整个请求**的硬上限，
+       慢网下传一个几十 MB 的包很容易顶到它，客户端表现为「上传中」然后莫名失败，
+       而真正的病根（服务端没回 / nginx 提前断了）被这个笼统的错误盖掉。
+       现在断开一定回一条说清「等了多少毫秒没等到数据」的错误文本，界面据此复位并给重试。 */
     const timeoutMs = Math.min(600000, Math.max(10000, Number(o.timeoutMs) || 120000));
     let res;
     for (let hop = 0; hop <= 3; hop++) {
-      res = await fetch(url, {
-        method,
-        headers,
-        body,
-        redirect: "manual",
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      const ctl = new AbortController();
+      let idleTimer = null;
+      const armIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          idleTimer = null;
+          try {
+            ctl.abort(new Error("__idle_timeout__"));
+          } catch (_) {
+            try { ctl.abort(); } catch (_) {}
+          }
+        }, timeoutMs);
+      };
+      armIdle();
+      try {
+        res = await fetch(url, {
+          method,
+          headers,
+          body,
+          redirect: "manual",
+          signal: ctl.signal,
+        });
+      } catch (err) {
+        if (idleTimer) clearTimeout(idleTimer);
+        const aborted = !!(err && (err.name === "AbortError" || String(err.message || "").includes("abort")));
+        if (aborted) {
+          return {
+            ok: false,
+            code: "TIMEOUT",
+            error: I18n.t("等 " ) + Math.round(timeoutMs / 1000) + I18n.t(" 秒没有任何响应（连接可能被中断）：请重试一次；仍失败请检查网络或云端服务"),
+          };
+        }
+        return { ok: false, code: "NETWORK", error: String((err && err.message) || err) };
+      }
+      /* 读体期间每来一块就重置空闲计时（见上面的口径）；读完再清掉。 */
       const st = res.status;
-      if (st !== 301 && st !== 302 && st !== 303 && st !== 307 && st !== 308) break;
+      if (st !== 301 && st !== 302 && st !== 303 && st !== 307 && st !== 308) {
+        const ctNow = String(res.headers.get("content-type") || "");
+        if (ctNow.includes("application/json")) {
+          let text = "";
+          try {
+            if (res.body && typeof res.body.getReader === "function") {
+              const reader = res.body.getReader();
+              const dec = new TextDecoder();
+              for (;;) {
+                const step = await reader.read();
+                if (step.done) break;
+                armIdle();
+                text += dec.decode(step.value, { stream: true });
+              }
+              text += dec.decode();
+            } else {
+              text = await res.text();
+            }
+          } catch (err) {
+            if (idleTimer) clearTimeout(idleTimer);
+            const aborted = !!(err && (err.name === "AbortError" || String(err.message || "").includes("abort")));
+            return {
+              ok: false,
+              code: aborted ? "TIMEOUT" : "NETWORK",
+              error: aborted
+                ? I18n.t("读回执超时（") + Math.round(timeoutMs / 1000) + I18n.t(" 秒没有数据）：请重试一次")
+                : String((err && err.message) || err),
+            };
+          }
+          if (idleTimer) clearTimeout(idleTimer);
+          let data = null;
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch (_) {
+            return { ok: false, status: res.status, code: "BAD_JSON", error: I18n.t("服务端回了不是 JSON 的内容（可能是网关错误页）") + "：" + text.slice(0, 200) };
+          }
+          return { ok: !!res.ok && data && data.ok !== false, status: res.status, data };
+        }
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (idleTimer) clearTimeout(idleTimer);
+        return {
+          ok: res.ok,
+          status: res.status,
+          base64: buf.toString("base64"),
+          contentType: ctNow,
+          bytes: buf.length,
+        };
+      }
+      if (idleTimer) clearTimeout(idleTimer);
       if (hop === 3) return { ok: false, error: I18n.t("重定向次数过多") };
       const loc = String(res.headers.get("location") || "");
       if (!loc) return { ok: false, error: "HTTP " + st };
@@ -4414,19 +4651,7 @@ async function storeRequest(opts) {
       if (!/^https?:\/\//i.test(next)) return { ok: false, error: I18n.t("非法 URL") };
       url = next;
     }
-    const ct = String(res.headers.get("content-type") || "");
-    if (ct.includes("application/json")) {
-      const data = await res.json();
-      return { ok: !!res.ok && data && data.ok !== false, status: res.status, data };
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
-    return {
-      ok: res.ok,
-      status: res.status,
-      base64: buf.toString("base64"),
-      contentType: ct,
-      bytes: buf.length,
-    };
+    return { ok: false, error: I18n.t("重定向次数过多") };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -4532,7 +4757,10 @@ function writeRelayKeyToConfig(key, expiresAt, rotate, opts) {
     };
   }
   list[i] = Object.assign({}, card, { apiKey: k, relay: nextRelay });
-  const text = JSON.stringify(got.obj, null, 2);
+  /* 紧凑 JSON（原为 stringify(got.obj, null, 2)）+ 与 config:save 共用同一份
+     「变了才备份、原子替换」实现：中转请求路径上每次换票都会走到这里，
+     缩进与重复实现都没必要（口径见 config:save 那段注释）。 */
+  const text = JSON.stringify(got.obj);
   if (got.text === text) return true;
   try {
     backupConfigFile(file);
@@ -5533,6 +5761,143 @@ ipcMain.handle("store:cacheHas", (e, id) => {
     return { ok: true, has: fs.existsSync(storeCachePath(String(id || ""))) };
   } catch {
     return { ok: true, has: false };
+  }
+});
+
+/* ---------------- 云端图片内容指纹（上架省流量）----------------
+   客户端上架窗在提交截图前要知道「这张图云端有没有」：命中就只发 { sha256 } 引用、不推字节。
+   服务端会下发每个应用条目的 shotsSha，但那只覆盖「我的应用」，所以本机再留一份**自己见过的**
+   指纹索引 —— 跨会话复用（重开上传窗也知道），下次上架同一张图不必再问一遍服务端。
+   位置：<数据目录>/store-imgfp.json，**按云端主机分桶**（换自建站 / 测试站不互相污染）。
+   只影响「省不省流量」：指纹判断错了有服务端的 OBJ_NOT_FOUND 兜住（那一轮会自动改成发字节）。 */
+const STORE_IMGFP_FILE = () => join(DATA(), "store-imgfp.json");
+const STORE_IMGFP_PER_HOST = 500;
+const STORE_IMGFP_HOSTS_MAX = 20;
+let storeImgFpCache = null;
+
+function storeImgFpHostKey(host) {
+  const raw = String(host == null ? "" : host).trim().toLowerCase();
+  const key = raw.replace(/[^a-z0-9._-]/g, "_").slice(0, 120);
+  return key || "default";
+}
+
+function storeImgFpRead() {
+  if (storeImgFpCache) return storeImgFpCache;
+  const cur = readJson(STORE_IMGFP_FILE(), {}) || {};
+  const hosts = cur && typeof cur.hosts === "object" && cur.hosts ? cur.hosts : {};
+  storeImgFpCache = { ver: 1, hosts: hosts };
+  return storeImgFpCache;
+}
+
+function storeImgFpWrite() {
+  const db = storeImgFpRead();
+  /* 条数封顶：每个主机最多 STORE_IMGFP_PER_HOST 条（最近见过的在前），主机数也封顶 —— 这本索引
+     只是「省流量」的加速表，让它无限长大换不来任何功能。 */
+  for (const k of Object.keys(db.hosts)) {
+    const e = db.hosts[k];
+    if (!e || !Array.isArray(e.shas)) {
+      delete db.hosts[k];
+      continue;
+    }
+    if (e.shas.length > STORE_IMGFP_PER_HOST) e.shas = e.shas.slice(0, STORE_IMGFP_PER_HOST);
+  }
+  const keys = Object.keys(db.hosts);
+  if (keys.length > STORE_IMGFP_HOSTS_MAX) {
+    keys
+      .sort((a, b) => Number(db.hosts[b].at || 0) - Number(db.hosts[a].at || 0))
+      .slice(STORE_IMGFP_HOSTS_MAX)
+      .forEach((k) => {
+        delete db.hosts[k];
+      });
+  }
+  writeJson(STORE_IMGFP_FILE(), db);
+}
+
+const IMGFP_RE = /^[0-9a-f]{64}$/;
+
+ipcMain.handle("store:host", () => {
+  try {
+    return { ok: true, host: STORE_BASE };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:imgFpLoad", (e, opts) => {
+  try {
+    const host = storeImgFpHostKey(opts && opts.host);
+    const db = storeImgFpRead();
+    const e0 = db.hosts[host];
+    const shas = e0 && Array.isArray(e0.shas) ? e0.shas.filter((x) => IMGFP_RE.test(String(x || ""))) : [];
+    return { ok: true, shas: shas };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:imgFpPut", (e, opts) => {
+  try {
+    const o = opts || {};
+    const host = storeImgFpHostKey(o.host);
+    const db = storeImgFpRead();
+    const prev = db.hosts[host] && Array.isArray(db.hosts[host].shas) ? db.hosts[host].shas : [];
+    const out = [];
+    const seen = new Set();
+    for (const x of [].concat(o.shas || [], prev)) {
+      const k = String(x == null ? "" : x).trim().toLowerCase();
+      if (!IMGFP_RE.test(k) || seen.has(k)) continue;
+      seen.add(k);
+      out.push(k);
+      if (out.length >= STORE_IMGFP_PER_HOST) break;
+    }
+    db.hosts[host] = { shas: out, at: Date.now() };
+    storeImgFpWrite();
+    return { ok: true, host: host, total: out.length };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+/* ---------------- 上架截图的**本机缓存**（本轮需求：截图本地保存，下次更新自动带上）-------
+   背景：上架窗原来只在本机留「云端已有这张图」的指纹索引（store-imgfp.json，只有 sha、
+   没有字节）。于是云端对象一旦被别人清掉（服务端回 OBJ_NOT_FOUND），本机根本重传不了 ——
+   只能报错；而作者每次更新都得重新拍 / 重新选图。
+   口径（与用户确认过）：
+     · 存**压缩后那一份**（长边 2560 / 单张 ≤5MB，即真正传上云的那批字节），
+       与服务端落盘字节完全一致 → 重传时 sha 一致、直接命中云端对象库，不重复占空间；
+     · **按内容寻址**：文件名就是 sha256（<数据目录>/shots-cache/<sha>.<ext>），
+       同一张图在多个应用之间只存一份；
+     · 只有作者的图片会进来（上传成功后由渲染层把这一批交上来），不主动抓任何东西。
+   索引（<数据目录>/store-shots.json）记「哪些 sha 有本地字节 + 归属哪些应用」：
+   删除应用时按应用引用回收（被别的应用共用的那些留着 —— 与云端对象库同一口径）。
+   本机数据一律落 <数据目录>（%APPDATA%），绝不落应用文件夹（AGENTS.md 的硬约定）。 */
+/* 截图缓存的内核抽在根目录 shots-cache.js（内容寻址 + 引用回收 + 淘汰）：那套行为是本需求的
+   核心，独立成模块才能在 test/smoke-app-shots-cache.js 里**真跑**（两个应用共用一张图、
+   删一个留一个、清空、淘汰），不必为它起 Electron。这里只把三个动作挂到 IPC 上。 */
+const shotsCache = require("./shots-cache").createShotsCache({ dataDir: DATA() });
+
+ipcMain.handle("store:shotsPut", (e, opts) => {
+  try {
+    const o = opts || {};
+    return shotsCache.put(String(o.appId || ""), o.items);
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:shotsList", (e, opts) => {
+  try {
+    return shotsCache.list(!!(opts && opts.withData));
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
+  }
+});
+
+ipcMain.handle("store:shotsClear", (e, opts) => {
+  try {
+    return shotsCache.clear(String((opts && opts.appId) || ""));
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || String(err) };
   }
 });
 
@@ -8122,6 +8487,18 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   migrateLegacyWorkflows();
   migrateLegacyStoreAuth();
+  /* 会话转写（agentSessions）从 config.json 拆到 agent-sessions/：首次进入时迁移
+     （config.json 那种几十 MB 的会话已确认拆出后，dshConfig / localeFromDisk /
+     config:load 读的都只剩设置），迁移失败什么都保留原样（见 store 文件头）。
+     对账也在这一步：一次把索引与磁盘对齐，之后靠 .reconciled.json 跳过重扫。
+     全同步 —— 迁移要读那份旧 config.json（本机 75 MB），放这里才能保证渲染层第一次
+     config:load 拿到的就已经是拆完的形态（与 migrateLegacyStoreAuth 同口径）。 */
+  try {
+    const sr = sessionStore().ensureReady(true);
+    if (sr && sr.migrated) errLog("[sessions] 启动迁移完成");
+  } catch (e) {
+    errLog("[sessions] 确保会话存储失败：" + String((e && e.message) || e));
+  }
   /* 首启（数据目录里一张画布都没有）放一张随包的「快速开始」示例画布：
      它写盘后 mtime 最新 → 渲染层 ensureWorkflow 自然把它当默认画布打开；
      已有画布的用户（含升级）什么都不做。全同步、失败只记日志，不阻塞启动。
@@ -8238,6 +8615,15 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getAppVersion: () => app.getVersion(),
   });
+  registerUserPluginsIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getAppVersion: () => app.getVersion(),
+  });
+  /* 用户自建插件的启动体检（只读扫目录）：哪些插件没被加载、为什么，写进日志；
+     有问题的插件同时上报插件报错总线（弹窗 + 会话修复）—— 见 plugins/user-plugins.js */
+  try { runUserPluginsHealth(); } catch (e) { console.log("[user-plugins] health failed:", (e && e.message) || e); }
   /* Music3 / H3 后端不随 MTNode 退出；此处只注册 IPC / 控制台窗 */
   /* 报错总线先 init：宿主模块在各自 register 里 registerPluginHost，之后失败即上报主窗 */
   initPluginErrorBus({ getMainWin: () => mainWin });
@@ -8246,18 +8632,25 @@ app.whenReady().then(() => {
     getMainWin: () => mainWin,
     appRoot: __dirname,
     getDsh: () => dsh(),
+    /* 画布节点产物落应用资产目录（%APPDATA%\pipeline-console\assets\<wfId>，与 proc_image / sensenova 同一去处）：
+       调用方没给输出路径时由宿主兜底复进这里，显式传路径的调用方不受影响 */
+    assetDirFor: (wfId) => assetDir(wfId),
   });
   registerYueIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
     appRoot: __dirname,
     getDsh: () => dsh(),
+    /* 同上：YuE2 音乐节点的托管兜底落点 */
+    assetDirFor: (wfId) => assetDir(wfId),
   });
   registerH3Ipc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
     appRoot: __dirname,
     getDsh: () => dsh(),
+    /* 同上：视频生成 / 超分补帧节点的托管兜底落点 */
+    assetDirFor: (wfId) => assetDir(wfId),
   });
   registerLlamaIpc({
     getDataDir: DATA,
@@ -8270,6 +8663,17 @@ app.whenReady().then(() => {
     getMainWin: () => mainWin,
     appRoot: __dirname,
     getDsh: () => dsh(),
+    /* 同上：文转语音节点的托管兜底落点 */
+    assetDirFor: (wfId) => assetDir(wfId),
+  });
+  /* Breeze TTS 2 本地语音后端（与 tts-local 并列的第二套）：管理服务单例不随 MTNode 退出（见 breeze/main-breeze.js） */
+  registerBreezeIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getDsh: () => dsh(),
+    /* 同上：Breeze 语音节点的托管兜底落点 */
+    assetDirFor: (wfId) => assetDir(wfId),
   });
   registerRemotionIpc({
     getDataDir: DATA,
@@ -8290,7 +8694,48 @@ app.whenReady().then(() => {
        显式传 outputDir 的插件控制台「试生成」不受影响 */
     assetDirFor: (wfId) => assetDir(wfId),
   });
-  /* 工具库：跨画布可复用工具包（<数据目录>/tools/*.json 完整工具包落盘） */
+  /* ── 本地模型显存释放（local-model-vram.js）─────────────────────────────
+     把各后端宿主登记的释放回调收进**一张表**：画布本地模型节点 / 应用出图入口走
+     「运行前先释放别人的、收尾再释放自己的」，顶栏那枚按钮也走同一张表。
+     宿主只 export vramHooks（自己认识自己的 stopBackend / POST /free），编排与
+     日志口径只在本模块一处 —— 宿主之间不互相 require（避免循环依赖）。 */
+  vramRelease.setVramContext({
+    getDataDir: DATA,
+    log: (line) => console.log(line),
+  });
+  /* 登记 = 展示名 + 子目录（控制台日志）+ 宿主给的能力回调（isRunning / isBusy / soft / hard） */
+  for (const def of [
+    Object.assign({ id: "h3", label: "H3（ComfyUI 视频）", host: "h3", subdir: "h3" }, vramHooksOf("h3")),
+    Object.assign({ id: "music3", label: "Music3（音乐）", host: "music3", subdir: "music3" }, vramHooksOf("music3")),
+    Object.assign({ id: "yue", label: "YuE2（音乐）", host: "yue", subdir: "yue" }, vramHooksOf("yue")),
+    Object.assign({ id: "sensenova", label: "SenseNova（本机出图）", host: "sensenova", subdir: "sensenova" }, vramHooksOf("sensenova")),
+    Object.assign({ id: "llama", label: "llama.cpp（本地大模型）", host: "llama", subdir: "llama" }, vramHooksOf("llama")),
+  ]) {
+    if (typeof def.isRunning !== "function") continue; /* 宿主没接这一钩子 = 不参与释放，不影响其余后端 */
+    vramRelease.vramRegister(def);
+  }
+  /* 只接线一次：vram:snapshot / vram:listBackends / vram:release */
+  vramRelease.registerVramIpc({
+    getDataDir: DATA,
+    log: (line) => console.log(line),
+    readJobLock: () => mediaGenLock.refreshStaleLock(),
+    onReleased: (receipt) => {
+      /* 释放回执推给主窗口（顶栏面板 / 画布节点提示用）；窗口没起来时静默丢弃 */
+      try {
+        if (mainWin && !mainWin.isDestroyed())
+          mainWin.webContents.send("vram:released", receipt);
+      } catch {}
+    },
+  });
+  /* ── 系统资源探针（perf-probe.js）：顶栏「性能」面板的读数口 ────────────────
+     perf:statics（静态事实）/ perf:sample（轻量：CPU + 内存 + GPU）/ perf:system
+     （慢项：磁盘剩余 + 网卡与实时网速 + TCP 连接数 + 后端端口监听）/ perf:ports。
+     端口表取各本地后端登记时填的 port（拿不到就不探，不编造端口号）。 */
+  perfProbe.registerPerfIpc({
+    getDataDir: DATA,
+    getAppDir: () => APP_DIRS[0] || "",
+    getBackendPorts: () => vramRelease.vramPorts(),
+  });
   registerToolsIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
   /* 存储占用与清理（设置里的「存储占用与清理」小节）：分类统计 + 按类清理 */
   registerStorageIpc({ getDataDir: DATA, t: (s) => I18n.t(s) });
@@ -8375,6 +8820,9 @@ app.on("before-quit", () => {
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}
   try { shutdownTtsUiOnly(); } catch {}
+  /* 本地 TTS 后端（Breeze TTS 2）与 tts-local 同口径：管理服务与推理引擎是常驻单例（权重加载要几十秒到几分钟），
+     这里只关它的控制台窗；要停服务/释放显存走插件「停止」或托盘「停止服务并退出」。 */
+  try { shutdownBreezeUiOnly(); } catch {}
   try { shutdownRemotionUiOnly(); } catch {}
   /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
      这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */

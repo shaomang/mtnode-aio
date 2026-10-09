@@ -107,11 +107,13 @@ async function reloadConfigProvidersFromDisk() {
 
 /* ── 设置改动即时生效 ─────────────────────────────────────────────────
    设置窗不再有「保存并关闭」：任一设置项一改，立刻写进 S.config、该重绘的立刻重绘，
-   然后落盘。configSave 是「全量写 config.json」，主进程每次写前还要备份一份快照
-   （config-backups 只留最近 30 份），逐键写盘会把快照刷成一堆垃圾 —— 所以打字类改动
-   （服务商名称 / 接口地址 / API Key / 端口 / 网格间距）走防抖合并写，下拉、勾选、
-   增删与排序这类离散动作直接写。子对话框（服务商配置卡）与关窗路径一律先 flush。
-   状态回显走窗底那一行小字（settingsSaveStampEl），不再用 toast 打扰用户。 */
+   然后落盘。configSave 是「全量写 config.json」——会话正文已拆到 agent-sessions/
+   （见主进程 agent-sessions-store.js），这份文件现在只有几百 KB（本机实测 75.8 MB →
+   0.38 MB），落盘从「单次主进程同步 775 ms」降到约 6 ms；主进程每次写前仍会备份一份
+   快照（config-backups 只留最近 30 份），逐键写盘依旧只会把快照刷成一堆垃圾 —— 所以
+   打字类改动（服务商名称 / 接口地址 / API Key / 端口 / 网格间距）走防抖合并写，
+   下拉、勾选、增删与排序这类离散动作直接写。子对话框（服务商配置卡）与关窗路径一律
+   先 flush。状态回显走窗底那一行小字（settingsSaveStampEl），不再用 toast 打扰用户。 */
 let settingsSaveTimer = null;
 let settingsSaveStampEl = null;
 
@@ -815,6 +817,8 @@ function openSettingsBody() {
   {
     const sec = document.createElement("div");
     sec.className = "settings-sec";
+    /* id = 顶栏「性能」面板「查看数据目录占用明细…」的滚动落点（openSettings({section:"storage"})） */
+    sec.id = "setStorageSec";
     const secTitle = document.createElement("div");
     secTitle.className = "settings-sec-title";
     secTitle.textContent = I18n.t("存储占用与清理");
@@ -2143,11 +2147,17 @@ function openSettingsBody() {
   foot.appendChild(stamp);
   foot.appendChild(closeBtn);
 
-  /* 请求过的落点（顶栏红色警示 → 「配置数据目录」）：整页挂完后再滚，只消费一次。
-     小节是沉底的，不滚的话用户进来只看到最上面的提供商配置，找不到那一段。 */
-  if (settingsFocusSection === "data") {
+  /* 请求过的落点（顶栏红色警示 → 「配置数据目录」；顶栏「性能」面板 → 「存储占用与清理」）：
+     整页挂完后再滚，只消费一次。小节是沉底的，不滚的话用户进来只看到最上面的提供商配置。 */
+  const focusId =
+    settingsFocusSection === "data"
+      ? "setDataRootSec"
+      : settingsFocusSection === "storage"
+        ? "setStorageSec"
+        : "";
+  if (focusId) {
     settingsFocusSection = "";
-    const tgt = $("#setDataRootSec");
+    const tgt = $("#" + focusId);
     if (tgt) {
       try {
         tgt.scrollIntoView({ block: "center", behavior: "auto" });

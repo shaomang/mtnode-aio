@@ -7,12 +7,14 @@
  *   [4] 半透明 PNG 的 alpha 不被拉黑；
  *   [5] **真 JPEG / 真 PNG 夹具**（thumb-fixtures/ 里那几张，由 Electron canvas 产出 = 上架链路同款编码器）
  *       解码后的颜色、方位都对，且能缩出 640×360；
- *   [6] 只缩不放、垃圾字节、空 buffer、渐进 JPEG 一律优雅回 null（调用方回源图，绝不 500）。
+ *   [6] **独立解码**（本轮新增，防「编码 + 解码一起错」的自证）：只借 Node zlib + 照 PNG 规范另写一份
+ *       反滤波，读自家缩略图与截图压缩产物，像素与 alpha 必须全对；
+ *   [7] 只缩不放、垃圾字节、空 buffer、渐进 JPEG 一律优雅回 null（调用方回源图，绝不 500）。
  *
  * 失败即非零退出。改动 thumb.mjs 后请跑一遍；夹具要改就重跑 thumb-fixtures/make-fixtures.cjs。 */
 import fs from "node:fs";
 import zlib from "node:zlib";
-import { makeAppThumb, decodeImage, lastDecodeError, THUMB_W, THUMB_H } from "./thumb.mjs";
+import { makeAppThumb, makeAppShot, decodeImage, lastDecodeError, THUMB_W, THUMB_H } from "./thumb.mjs";
 
 let fails = 0;
 const ok = (cond, msg) => {
@@ -196,7 +198,119 @@ console.log("[5] 真夹具（thumb-fixtures/，由 Electron canvas 产出 = 上�
   }
 }
 
-console.log("[6] 只缩不放 + 认不出的格式一律回 null（调用方回源图）");
+console.log("[6] 独立解码：产出的 PNG 交给「另写一份的规范解码器」读，像素必须与源逐字节相同");
+/* 为什么要另写一份：本文件的 makeAppThumb → decodeImage 闭环是**自证**——
+   2026-10 的乱图事故就是编码与解码把 Paeth 的实参顺序一起套错（写成 (左上,左,上)），
+   两边「自洽」所以这一节以前全绿，而 Chrome / PIL 读出来是一片乱图、alpha 也不对
+   （线上表现：应用封面缩略图与上架截图列表小图全是乱图）。所以这里故意**不复用本文件的
+   解码器**：只借 Node 自带 zlib 解压，再照 PNG 规范 §9 自己反滤波一遍。 */
+function specUnfilter(raw, w, h, bpp) {
+  const stride = w * bpp;
+  const out = Buffer.alloc(stride * h);
+  const paeth = (Left, Above, UpperLeft) => {
+    const p = Left + Above - UpperLeft;
+    const pa = Math.abs(p - Left);
+    const pb = Math.abs(p - Above);
+    const pc = Math.abs(p - UpperLeft);
+    if (pa <= pb && pa <= pc) return Left;
+    return pb <= pc ? Above : UpperLeft;
+  };
+  let rp = 0;
+  for (let y = 0; y < h; y++) {
+    const ft = raw[rp++];
+    if (ft > 4) return null;
+    for (let x = 0; x < stride; x++) {
+      const Left = x >= bpp ? out[y * stride + x - bpp] : 0;
+      const Above = y > 0 ? out[(y - 1) * stride + x] : 0;
+      const UpperLeft = y > 0 && x >= bpp ? out[(y - 1) * stride + x - bpp] : 0;
+      let v = raw[rp + x];
+      if (ft === 1) v += Left;
+      else if (ft === 2) v += Above;
+      else if (ft === 3) v += (Left + Above) >> 1;
+      else if (ft === 4) v += paeth(Left, Above, UpperLeft);
+      out[y * stride + x] = v & 0xff;
+    }
+    rp += stride;
+  }
+  return out;
+}
+/** 独立解一份 PNG → { w, h, bpp, pixels }（只认 8 位非隔行的灰度/RGB/RGBA，够验自家产出）。 */
+function specDecodePng(buf) {
+  if (!buf || buf.length < 12 || buf[0] !== 0x89 || buf[1] !== 0x50) return null;
+  let p = 8;
+  let w = 0;
+  let h = 0;
+  let depth = 0;
+  let ct = 0;
+  const idat = [];
+  while (p + 8 <= buf.length) {
+    const len = buf.readUInt32BE(p);
+    const type = buf.toString("latin1", p + 4, p + 8);
+    const data = buf.subarray(p + 8, p + 8 + len);
+    if (type === "IHDR") {
+      w = data.readUInt32BE(0);
+      h = data.readUInt32BE(4);
+      depth = data[8];
+      ct = data[9];
+    } else if (type === "IDAT") idat.push(data);
+    else if (type === "IEND") break;
+    p += 12 + len;
+  }
+  if (!w || !h || depth !== 8 || idat.length === 0) return null;
+  const bpp = ct === 0 ? 1 : ct === 2 ? 3 : ct === 6 ? 4 : 0;
+  if (!bpp) return null;
+  let raw = null;
+  try {
+    raw = zlib.inflateSync(Buffer.concat(idat));
+  } catch (e) {
+    return null;
+  }
+  const pixels = specUnfilter(raw, w, h, bpp);
+  return pixels ? { w: w, h: h, bpp: bpp, pixels: pixels } : null;
+}
+{
+  /* ① 自家缩略图：源是 4 象限色块，独立解码后取四分点验颜色与 alpha */
+  const src = makePng(1600, 1000, (x, y) => (x < 800 ? (y < 500 ? [224, 31, 33, 255] : [32, 33, 225, 255]) : y < 500 ? [32, 192, 32, 255] : [240, 240, 240, 255]));
+  const out = makeAppThumb(src, { width: 640, height: 360 });
+  const dec = out ? specDecodePng(out) : null;
+  ok(!!dec && dec.w === 640 && dec.h === 360 && dec.bpp === 4, "独立解码自家缩略图：" + (dec ? dec.w + "×" + dec.h + " bpp=" + dec.bpp : "null"));
+  if (dec) {
+    const px = (x, y) => {
+      const o = (y * dec.w + x) * 4;
+      return [dec.pixels[o], dec.pixels[o + 1], dec.pixels[o + 2], dec.pixels[o + 3]];
+    };
+    const tl = px(100, 40);
+    const tr = px(540, 40);
+    const bl = px(100, 320);
+    const br = px(540, 320);
+    /* 源 1600×1000（1.6）比 16:9 更方 → 左右各裁一点；四分点仍在 (800,500) → 缩略图 (320,180) */
+    ok(tl[0] > 180 && tl[1] < 80, "独立解码：左上仍是红（" + tl.join(",") + "）");
+    ok(tr[1] > 150 && tr[0] < 100, "独立解码：右上仍是绿（" + tr.join(",") + "）");
+    ok(bl[2] > 180 && bl[0] < 100, "独立解码：左下仍是蓝（" + bl.join(",") + "）");
+    ok(br[0] > 180 && br[1] > 180, "独立解码：右下仍是白（" + br.join(",") + "）");
+    let bad = 0;
+    for (let i = 3; i < dec.pixels.length; i += 4) if (dec.pixels[i] !== 255) bad++;
+    ok(bad === 0, "独立解码：全图 alpha 都是 255（不是被错滤波读成 253/252）：坏像素 " + bad);
+  }
+  /* ② 上架截图那条（makeAppShot / fitResize）：整幅构图 + alpha 也要对 */
+  const shot = makeAppShot(src, { maxEdge: 640 });
+  const sdec = shot && shot.buf ? specDecodePng(shot.buf) : null;
+  ok(!!sdec, "独立解码上架截图压缩产物：" + (sdec ? sdec.w + "×" + sdec.h : "null"));
+  if (sdec) {
+    let bad = 0;
+    for (let i = 3; i < sdec.pixels.length; i += 4) if (sdec.pixels[i] !== 255) bad++;
+    /* 左缘取**上下两段**各一点：源是四象限，fitResize 不裁切，所以上半仍是红、下半仍是蓝 */
+    const at = (x, y) => {
+      const o = (y * sdec.w + x) * 4;
+      return [sdec.pixels[o], sdec.pixels[o + 1], sdec.pixels[o + 2]];
+    };
+    const up = at(4, 8);
+    const lo = at(4, sdec.h - 8);
+    ok(bad === 0 && up[0] === 224 && lo[2] === 225, "独立解码：截图压缩后 alpha 全 255、上红下蓝仍在（" + up.join(",") + " / " + lo.join(",") + "）");
+  }
+}
+
+console.log("[7] 只缩不放 + 认不出的格式一律回 null（调用方回源图）");
 ok(makeAppThumb(makePng(100, 100, () => [1, 2, 3, 255]), { width: 640, height: 360 }) === null, "小图不放大：回 null");
 ok(makeAppThumb(Buffer.from("not an image at all"), {}) === null, "垃圾字节：回 null");
 ok(makeAppThumb(Buffer.alloc(0), {}) === null, "空 buffer：回 null");

@@ -566,9 +566,13 @@ async function main() {
     2,
     "两条出图路径都接上统一收尾（透明背景之后按同一矩形裁回）",
   );
+  /* 收尾链现在是三步：抠图（上面那段）→ 裁回 → 蒙版回贴（maskRestickOutput）。
+     断言按现行实现钉顺序，不再钉中间那一步的字面量形态（那只是「后面又加了一步」）。 */
   ok(
-    appSrc.indexOf("return cropRatioLockOutput(node, spec, out, itemTitle, attemptT);") > 0,
-    "裁回排在抠图之后：顺序不能反（抠图在补边画幅上做，裁回落在最终图上）",
+    /out = await cropRatioLockOutput\(node, spec, out, itemTitle, attemptT\);\s*\n\s*return maskRestickOutput\(node, spec, out, itemTitle, attemptT\);/.test(
+      appSrc,
+    ),
+    "裁回排在抠图之后、蒙版回贴之前：顺序不能反（抠图在补边画幅上做，裁回落在最终图上，回贴落在交付图上）",
   );
   ok(
     canvasSrc.indexOf("head.appendChild(bgRmButtonEl(node));") <

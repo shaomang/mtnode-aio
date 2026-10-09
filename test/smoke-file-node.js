@@ -601,7 +601,7 @@ const reset = () => {
     n.kind = "input_text";
     eqNum(G("outputCount")(n), 1, "转成文本节点后有一个输出端子");
     n.kind = "input_audio";
-    eqNum(G("outputCount")(n), 1, "音频输入仍有 1 个输出端子（回归护栏）");
+    eqNum(G("outputCount")(n), 2, "音频输入有 2 个输出端子（0=文件 URL · 1=转写文字）");
   }
 
   /* ============ [5b] 只保留路径 = 下游只拿到路径 ============ */

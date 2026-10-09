@@ -310,6 +310,20 @@ td .actions { display: flex; gap: 6px; }
 .dlg-body .row-acts { justify-content: flex-end; }
 .dlg-body .table-wrap { overflow: auto; max-height: 46vh; }
 
+/* ---------- 用户页：逐账号存储上限（.q-* 前缀，只新增不改旧类） ---------- */
+/* 存储列的第二行（应用条数）小字 */
+.q-sub { font-size: 12px; color: var(--muted); }
+/* 数值输入 + 「不限」并排的一行（标签沿用 .dlg-body label 的上下版式，勾选行自己用 div，
+   因为 .dlg-body label 是 grid，套 checkbox 会把它摆成独占一行的大方块） */
+.q-num { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.q-num input[type="number"] { width: 170px; }
+.q-check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.q-check input[type="checkbox"] { width: 15px; height: 15px; padding: 0; margin: 0; accent-color: var(--accent); }
+/* 就地校验 / 服务端原文报错（提交前拦截的非法值、接口回的 error 都写这里） */
+.q-err { color: var(--bad); font-size: 12.5px; }
+/* 清理无主图片的回执：一整句中文，允许折行 */
+.q-gc-result { white-space: pre-wrap; }
+
 /* Toast */
 .toast {
   position: fixed;

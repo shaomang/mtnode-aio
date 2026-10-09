@@ -2051,7 +2051,7 @@ async function developFunctionNode(node) {
   const sess = createFnDevSessionForNode(node, body);
   if (!sess) return;
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  await agentTouchSession();
   scheduleSave(true);
   renderCanvas();
   /* 运行队列按「绑定会话」口径立刻重算一次 */
@@ -2333,7 +2333,7 @@ async function developToolNode(node) {
   const sess = createToolDevSessionForNode(node, body);
   if (!sess) return;
   S.agentActiveId = sess.id;
-  await persistAgentSession();
+  await agentTouchSession();
   scheduleSave(true);
   renderCanvas();
   if (typeof updateRunQueuePanel === "function") updateRunQueuePanel();

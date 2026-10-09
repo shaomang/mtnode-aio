@@ -7,7 +7,8 @@
  *   [1] 页签位置与页内二级页签：系统资源监控紧跟「概览」、内容管理排最后；四个二级页签用
  *       data-csub（**不占**「中转服务」那套 data-sub，否则 relay 那只回归会被带崩）
  *   [2] 默认停在「应用」，打 /api/admin/content?kind=app&page=1&pageSize=20，表渲染 + 页签角标
- *   [3] 上架 / 下架：POST /api/admin/content/publish（unpublish 真假分明）
+ *   [3] 可见性：界面上**没有**上下架这条路 —— 应用表不摆状态列 / 上下架按钮，状态下拉只剩
+ *       全部 / 在线上 / 已删除（值原样以 status= 下发）
  *   [4] 编辑：弹窗字段（标题 / 简介 / 标签 / 应用另有图标文件）→ POST /api/admin/content/update
  *   [5] 版本历史：GET /api/admin/content/versions → 弹窗列表；「删除此版本」先二次确认再 POST delete-version
  *   [6] 删除：二次确认弹窗写明「删哪条、含几个版本」→ POST /api/admin/content/delete
@@ -138,12 +139,13 @@ const APP_ROWS = [
   {
     kind: "app", id: "cool-app", ownerId: "u_author", ownerName: "authora", title: "很酷的应用", desc: "一个应用",
     tags: ["工具"], version: "1.0.1", versionCount: 2, bytes: 2048, downloads: 3, likes: 1, entry: "index.html",
-    sha256: "aa", hasIcon: true, unpublished: false, unpublishedAt: 0, branchCount: 1, createdAt: 1, updatedAt: 2,
+    sha256: "aa", hasIcon: true, branchCount: 1, createdAt: 1, updatedAt: 2,
   },
   {
-    kind: "app", id: "old-app", ownerId: "u_other", ownerName: "authorb", title: "下架过的应用", desc: "x",
+    /* 本轮两态口径（在线上 / 彻底删除）：服务端回执里已经没有可见性位了 —— 夹具不再带那个字段 */
+    kind: "app", id: "old-app", ownerId: "u_other", ownerName: "authorb", title: "别人早年的应用", desc: "x",
     tags: [], version: "0.9.0", versionCount: 1, bytes: 512, downloads: 0, likes: 0, entry: "index.html",
-    sha256: "bb", hasIcon: false, unpublished: true, unpublishedAt: 5, branchCount: 1, createdAt: 1, updatedAt: 3,
+    sha256: "bb", hasIcon: false, branchCount: 1, createdAt: 1, updatedAt: 3,
   },
 ];
 const TPL_ROWS = [
@@ -161,7 +163,7 @@ const SKILL_ROWS = [
 ];
 const VERSIONS = {
   ok: true, id: "cool-app", ownerId: "u_author", ownerName: "authora", title: "很酷的应用",
-  latestVersion: "1.0.1", unpublished: false, versionsOn: true,
+  latestVersion: "1.0.1", versionsOn: true,
   items: [
     { version: "1.0.1", parentVersion: "1.0.0", bytes: 2048, sha256: "aa", entry: "index.html", createdAt: 20, current: true, hasFile: true },
     { version: "1.0.0", parentVersion: "", bytes: 1024, sha256: "a0", entry: "index.html", createdAt: 10, current: false, hasFile: true },
@@ -171,7 +173,7 @@ const AUDIT = {
   ok: true,
   items: [
     { id: "ca_2", at: 1730000000000, userId: "u_admin", username: "ms2308", action: "update", kind: "app", targetId: "cool-app", targetOwnerId: "u_author", targetTitle: "很酷的应用", detail: "改了标题 / 标签" },
-    { id: "ca_1", at: 1729000000000, userId: "u_admin", username: "ms2308", action: "unpublish", kind: "app", targetId: "cool-app", targetOwnerId: "u_author", targetTitle: "很酷的应用", detail: "管理台下架" },
+    { id: "ca_1", at: 1729000000000, userId: "u_admin", username: "ms2308", action: "delete-version", kind: "app", targetId: "cool-app", targetOwnerId: "u_author", targetTitle: "很酷的应用", detail: "删版本 1.0.0" },
   ],
 };
 
@@ -192,7 +194,8 @@ const fetchStub = async (url, opt) => {
   if (u.includes("/api/admin/content/versions")) return json(VERSIONS);
   if (u.includes("/api/admin/content/audit")) return json(AUDIT);
   if (u.includes("/api/admin/content/update")) return json({ ok: true, changed: ["标题"] });
-  if (u.includes("/api/admin/content/publish")) return json({ ok: true });
+  /* 注意：**没有** /api/admin/content/publish 这一档 —— 界面上已经没有上下架这条路了
+     （若哪次改动又把它接回来，[3] 的「一个请求都不该发」会红）。 */
   if (u.includes("/api/admin/content/delete-version")) return json({ ok: true, remaining: 1 });
   if (u.includes("/api/admin/content/delete")) return json({ ok: true });
   if (u.includes("/api/admin/content/republish")) {
@@ -202,7 +205,7 @@ const fetchStub = async (url, opt) => {
   if (u.includes("/api/admin/content?")) {
     const kind = /kind=([a-z]+)/.exec(u)[1];
     const items = kind === "app" ? APP_ROWS : kind === "template" ? TPL_ROWS : SKILL_ROWS;
-    return json({ ok: true, kind: kind, page: 1, pageSize: 20, total: items.length, items: items, counts: { app: 2, appUnpublished: 1, template: 1, skill: 1, skillOfficial: 0 } });
+    return json({ ok: true, kind: kind, page: 1, pageSize: 20, total: items.length, items: items, counts: { app: 2, template: 1, skill: 1, skillOfficial: 0 } });
   }
   if (u.includes("/api/apps/pub")) {
     return json({ ok: true, dir: "/tmp/apps", dbApps: 2, diskApps: 2, fallback: false, last: { reason: "启动", ok: true, apps: 2, files: 3 } });
@@ -276,12 +279,14 @@ const dlgText = () => byId.get("dlgBody").text();
     byId.get("cview-skill").classList.contains("hidden") && byId.get("cview-audit").classList.contains("hidden"),
     "默认只显示「应用」，其余三个子视图收起来");
   const appTbl = byId.get("tblApps").text();
-  ok(/应用 id/.test(appTbl) && /当前版本/.test(appTbl) && /状态/.test(appTbl) && /操作/.test(appTbl),
-    "应用表列齐：应用 id / 标题 / 作者 / 当前版本 / 大小 / 下载 赞 / 状态 / 更新时间 / 操作");
+  /* 本轮口径：应用表**去掉「状态」列**（两态收敛后没有第三个可见性位可显示）。 */
+  ok(/应用 id/.test(appTbl) && /当前版本/.test(appTbl) && /更新时间/.test(appTbl) && /操作/.test(appTbl) &&
+    !/状态/.test(appTbl),
+    "应用表列：应用 id / 标题 / 作者 / 当前版本 / 大小 / 下载 赞 / 更新时间 / 操作（没有「状态」列）");
   ok(/cool-app/.test(appTbl) && /很酷的应用/.test(appTbl) && /authora/.test(appTbl) && /v1\.0\.1（共 2 版）/.test(appTbl),
     "行内容渲染出来（id / 标题 / 作者 / 版本数）");
-  ok(/已上架/.test(appTbl) && /已下架/.test(appTbl) && /重新上架/.test(appTbl) && /删除/.test(appTbl),
-    "状态徽标与行内操作按钮都在（下架的那条显示「重新上架」）");
+  ok(!/已上架|已下架|重新上架/.test(appTbl) && /删除/.test(appTbl),
+    "表里不再有上架 / 下架徽标与那两枚行内按钮（行内操作清单见 [3]）");
   ok(/应用（2）/.test(cSubTabEls.find((b) => b.dataset.csub === "app").textContent) &&
     /模板（1）/.test(cSubTabEls.find((b) => b.dataset.csub === "template").textContent) &&
     /技能（1）/.test(cSubTabEls.find((b) => b.dataset.csub === "skill").textContent),
@@ -289,18 +294,43 @@ const dlgText = () => byId.get("dlgBody").text();
   ok(/静态目录：正常/.test(byId.get("appPubMeta").textContent) && /库 2 条 \/ 盘 2 条/.test(byId.get("appPubMeta").textContent),
     "静态目录体检文案：" + JSON.stringify(byId.get("appPubMeta").textContent));
 
-  console.log("[3] 上架 / 下架：POST /api/admin/content/publish");
+  console.log("[3] 可见性：界面没有上下架这条路（状态下拉 = 全部 / 在线上 / 已删除）");
   const rowBtn = (tableId, label) => {
     const rows = byId.get(tableId).children.filter((c) => c.tagName === "TBODY")[0].children;
     const btns = rows[0].children[rows[0].children.length - 1].children[0].children;
     return btns.find((b) => b.textContent === label);
   };
-  fire(rowBtn("tblApps", "下架"), "click");
-  await new Promise((r) => setTimeout(r, 40));
-  let pub = postCall("/api/admin/content/publish");
-  ok(!!pub && pub.body.id === "cool-app" && pub.body.ownerId === "u_author" && pub.body.unpublish === true,
-    "点「下架」→ POST publish { unpublic:true }（带上 ownerId 指明分支）：" + JSON.stringify(pub && pub.body));
-  ok(!!pub && pub.auth === "Bearer adm_test_token", "管理台请求都带 adm_ 票");
+  const rowBtnTexts = (tableId) => {
+    const rows = byId.get(tableId).children.filter((c) => c.tagName === "TBODY")[0].children;
+    return rows[0].children[rows[0].children.length - 1].children[0].children.map((b) => String(b.textContent || ""));
+  };
+  ok(
+    JSON.stringify(rowBtnTexts("tblApps")) === JSON.stringify(["编辑", "版本历史", "下载 zip", "删除"]),
+    "应用行的操作只剩 编辑 / 版本历史 / 下载 zip / 删除（没有「下架 / 重新上架」）：实得 " + JSON.stringify(rowBtnTexts("tblApps")),
+  );
+  /* 状态列与那两枚按钮在源码里也不该留下痕迹（表单下拉是另一回事，见下一条）。 */
+  ok(!/已上架|已下架|重新上架/.test(js + html), "管理台源码里不再有「已上架 / 已下架 / 重新上架」的徽标与按钮（状态列与上下架一起删了）");
+  /* 表单里的状态下拉按新口径只剩两项，值原样以 status= 下发给服务端（该过滤归服务端）。 */
+  const appStatusHtml = /<select id="fAppStatus"[\s\S]*?<\/select>/.exec(html);
+  ok(!!appStatusHtml, "应用子页仍有状态下拉（fAppStatus）");
+  ok(
+    !!appStatusHtml && /value=""/.test(appStatusHtml[0]) && /value="online"/.test(appStatusHtml[0]) && /value="deleted"/.test(appStatusHtml[0]) &&
+      !/published|unpublished/.test(appStatusHtml[0]),
+    "下拉选项 = 全部 / 在线上（online）/ 已删除（deleted）—— 旧的上架 / 下架两档已去掉：" +
+      JSON.stringify(((appStatusHtml || [""])[0].match(/value="[a-z]*"/g) || []).join(" ")),
+  );
+  byId.get("fAppStatus").value = "online";
+  fire(byId.get("fAppStatus"), "change");
+  await new Promise((r) => setTimeout(r, 60));
+  ok(
+    /[?&]status=online/.test((lastContentCall("app") || {}).url || ""),
+    "选「在线上」→ 请求原样带 status=online（过滤口径归服务端）：" + ((lastContentCall("app") || {}).url || "（没有请求）"),
+  );
+  byId.get("fAppStatus").value = "";
+  ok(
+    !calls.some((c) => c.method === "POST" && c.url.includes("/api/admin/content/publish")),
+    "整页跑下来一个 POST /api/admin/content/publish 都没有发（那条路已下线）",
+  );
 
   console.log("[4] 编辑：弹窗字段 + POST /api/admin/content/update");
   fire(rowBtn("tblApps", "编辑"), "click");
@@ -344,7 +374,9 @@ const dlgText = () => byId.get("dlgBody").text();
   const delText = dlgText();
   ok(dlgOpen() && /将要删除：应用分支「很酷的应用」/.test(delText) && /含 2 个版本的 zip/.test(delText),
     "确认文案写明删哪条、含几个版本：" + JSON.stringify(delText.slice(0, 120)));
-  ok(/不可撤销/.test(delText) && /改动留痕/.test(delText), "并写明不可撤销 + 会留痕");
+  /* 文案跟着 admin.js 的 DELETE_CONFIRM_NOTE 走（三类内容共用同一句）：
+     「云端彻底移除、不可恢复；…本条元信息留在审计。」 */
+  ok(/不可恢复/.test(delText) && /留在审计/.test(delText), "并写明不可恢复 + 会留痕");
   fire(byId.get("dlgOk"), "click");
   await new Promise((r) => setTimeout(r, 60));
   const del = postCall("/api/admin/content/delete");
@@ -390,8 +422,9 @@ const dlgText = () => byId.get("dlgBody").text();
   ok(!!auditCall && /limit=100/.test(auditCall.url), "GET /api/admin/content/audit?limit=100");
   const auditTbl = byId.get("tblContentAudit").text();
   ok(/管理员/.test(auditTbl) && /动作/.test(auditTbl) && /对象/.test(auditTbl) && /ms2308/.test(auditTbl) &&
-    /编辑/.test(auditTbl) && /下架/.test(auditTbl) && /改了标题 \/ 标签/.test(auditTbl),
-    "留痕表列齐并渲染出「谁 / 何时 / 动作 / 类型 / 对象 / 说明」");
+    /编辑/.test(auditTbl) && /删版本/.test(auditTbl) && /改了标题 \/ 标签/.test(auditTbl) &&
+    !/下架/.test(auditTbl),
+    "留痕表列齐并渲染出「谁 / 何时 / 动作 / 类型 / 对象 / 说明」（动作 = 编辑 / 删版本，没有上下架那两档）");
   ok(/最近 2 条/.test(byId.get("cAuditMeta").textContent), "表头写明条数与留存上限：" + JSON.stringify(byId.get("cAuditMeta").textContent));
 
   console.log("[9] 重发静态目录（应用子页顶部的修复按钮）");

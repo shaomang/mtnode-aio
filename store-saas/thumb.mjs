@@ -44,7 +44,13 @@ function pngChunks(buf) {
   return out;
 }
 
-/** Paeth 预测（PNG 过滤类型 4）；b = 左，c = 上，a = 左上。 */
+/** Paeth 预测（PNG 规范 §9.4 的 PaethPredictor）。
+ *  **参数序是规范定死的：paeth(Left, Above, UpperLeft)** —— 套错顺序不会报错，
+ *  只会静默算出另一个预测值，产出的 PNG 与解出的像素就全歪（2026-10 踩过：
+ *  编码与解码都按 (左上, 左, 上) 调用，两边「自洽」所以自测全绿，
+ *  而 Chrome / PIL / 任何真解码器读出来是一片乱图、alpha 也不对）。
+ *  改这里务必同时改 encodePng / unfilterPng 的调用点，并跑 thumb-selftest 的
+ *  「独立解码」一节（那段故意不复用本文件的解码器）。 */
 function paeth(a, b, c) {
   const p = a + b - c;
   const pa = Math.abs(p - a);
@@ -65,14 +71,16 @@ function unfilterPng(raw, w, h, bpp) {
     const cur = out.subarray(y * stride, (y + 1) * stride);
     const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null;
     for (let x = 0; x < stride; x++) {
-      const b = x >= bpp ? cur[x - bpp] : 0;
-      const c = prev ? prev[x] : 0;
-      const a = prev && x >= bpp ? prev[x - bpp] : 0;
+      /* 规范里的三个邻居（名字照规范：Left / Above / UpperLeft）——
+         Paeth 的实参顺序必须是 (Left, Above, UpperLeft)，见 paeth() 的注释。 */
+      const left = x >= bpp ? cur[x - bpp] : 0;
+      const above = prev ? prev[x] : 0;
+      const upperLeft = prev && x >= bpp ? prev[x - bpp] : 0;
       let v = raw[rp + x];
-      if (ft === 1) v += b;
-      else if (ft === 2) v += c;
-      else if (ft === 3) v += (b + c) >> 1;
-      else if (ft === 4) v += paeth(a, b, c);
+      if (ft === 1) v += left;
+      else if (ft === 2) v += above;
+      else if (ft === 3) v += (left + above) >> 1;
+      else if (ft === 4) v += paeth(left, above, upperLeft);
       cur[x] = v & 0xff;
     }
     rp += stride;
@@ -571,10 +579,14 @@ function encodePng(img) {
     const cur = rgba.subarray(y * stride, (y + 1) * stride);
     const prev = y > 0 ? rgba.subarray((y - 1) * stride, y * stride) : null;
     for (let x = 0; x < stride; x++) {
-      const b = x >= 4 ? cur[x - 4] : 0;
-      const c = prev ? prev[x] : 0;
-      const a = prev && x >= 4 ? prev[x - 4] : 0;
-      raw[ro + 1 + x] = (cur[x] - paeth(a, b, c)) & 0xff;
+      /* 邻居名照规范：Left = 本行左一字节，Above = 上一行同列，UpperLeft = 上一行左一字节。
+         Paeth 的实参顺序必须是 (Left, Above, UpperLeft)，与 unfilterPng 的读法严格互为逆运算；
+         顺序套错时「编码 + 解码」仍自洽，但任何真解码器（Chrome / PIL）读出来就是乱图 ——
+         见 paeth() 的注释。 */
+      const left = x >= 4 ? cur[x - 4] : 0;
+      const above = prev ? prev[x] : 0;
+      const upperLeft = prev && x >= 4 ? prev[x - 4] : 0;
+      raw[ro + 1 + x] = (cur[x] - paeth(left, above, upperLeft)) & 0xff;
     }
   }
   const ihdr = Buffer.alloc(13);

@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Breeze TTS 2 本地 TTS</title>
+<style>
+:root{--bg:#14161c;--card:#1b1e26;--card2:#20242e;--line:#2c3140;--fg:#e6e9f2;--dim:#9aa3b8;--accent:#7ee0c0;--accent2:#3aa88a;--danger:#e0605f;--warn:#e0b25f;--ok:#63c98a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--fg);font:13px/1.55 "Microsoft YaHei",system-ui,sans-serif;overflow-y:auto}
+.wrap{display:flex;flex-direction:column;gap:10px;padding:12px}
+.top{display:flex;align-items:center;gap:8px}
+.top h1{font-size:15px;margin:0;font-weight:600}
+.spacer{flex:1}
+button{background:var(--card2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
+button:hover:not(:disabled){border-color:var(--accent2);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--accent2);border-color:var(--accent2);color:#08110e;font-weight:600}
+button.primary:hover:not(:disabled){background:var(--accent);border-color:var(--accent)}
+button.danger{border-color:#5a2f2f;color:#f0b3b3}
+button.danger:hover:not(:disabled){background:#3a1f1f;border-color:var(--danger)}
+button.mini{padding:3px 8px;font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:8px}
+.card h2{font-size:12px;margin:0;color:var(--dim);font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+.row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.path{font-family:Consolas,monospace;font-size:11px;color:var(--dim);word-break:break-all;flex:1;min-width:0}
+input[type=text],input[type=number],textarea,select{background:#12141a;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 7px;font:inherit;min-width:0}
+input[type=text]:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent2)}
+textarea{resize:vertical;font-family:inherit}
+.badge{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
+.badge.on{border-color:var(--ok);color:var(--ok)}
+.badge.off{border-color:#4a3a3a;color:#c8938f}
+.badge.load{border-color:var(--warn);color:var(--warn)}
+.bar{height:6px;background:#12141a;border-radius:99px;overflow:hidden;border:1px solid var(--line)}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .25s}
+.meta{font-size:11px;color:var(--dim)}
+.warnbox{border:1px solid #6b5320;background:#241d0f;border-radius:6px;padding:8px;font-size:11px;color:#e8cd93;line-height:1.6}
+.warnbox b{color:#ffdf9e}
+.list{display:flex;flex-direction:column;gap:5px;overflow-y:auto}
+.item{display:flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:5px 7px}
+.item.sel{border-color:var(--accent2)}
+.item .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .sub{font-size:11px;color:var(--dim);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{font-size:11px;color:var(--dim);padding:6px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dim)}
+audio{width:100%;height:32px}
+#log,#engLog{font-family:Consolas,monospace;font-size:11px;color:#b9c2d6;background:#0f1116;border:1px solid var(--line);border-radius:6px;padding:6px;height:150px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+#engLog{height:120px}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--accent2);border-top-color:transparent;border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.hide{display:none !important}
+.kv{display:flex;gap:6px;font-size:11px}
+.kv b{color:var(--dim);font-weight:400;min-width:64px}
+.kv span{font-family:Consolas,monospace;word-break:break-all}
+.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#2a2f3d;border:1px solid var(--line);border-radius:8px;padding:7px 14px;font-size:12px;box-shadow:0 6px 22px rgba(0,0,0,.5);z-index:99;max-width:90%}
+.toast.err{border-color:var(--danger);color:#ffc9c7}
+.toast.ok{border-color:var(--ok);color:#bdf0cf}
+.toast.warn{border-color:var(--warn);color:#ffe3b3}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <h1>Breeze TTS 2</h1>
+    <span class="badge" id="verBadge">v1.0.0</span>
+    <span class="spacer"></span>
+    <button class="mini" id="btnLogPanel" title="并排打开日志窗">日志窗</button>
+    <button class="mini" id="btnRefresh" title="刷新状态">刷新</button>
+  </div>
+
+  <div class="warnbox">
+    <b>许可提醒：</b>推理代码为 Apache-2.0；<b>模型权重、衍生模型与自托管输出受 BreezeBlue Research and Non-Commercial License 约束，仅限研究与「非商用」用途</b>（Apache-2.0 不授予商用权；付费订阅只覆盖 breezeblue.ai 托管平台的输出，不覆盖本机自托管结果）。请自行确认对参考音频、声音与生成内容拥有合法权利，禁止未授权的语音克隆与冒用。
+  </div>
+
+  <div class="card">
+    <h2>安装</h2>
+    <div class="row">
+      <span class="path" id="installDir">未选择安装目录</span>
+      <button class="mini" id="btnPickDir">目录</button>
+      <button class="mini primary" id="btnInstall">安装</button>
+      <button class="mini" id="btnSelfRepair" title="读取最近 console 日志，由 Agent 对症修复（与 music3 / h3 控制台同口径）">自我修复</button>
+      <button class="mini danger hide" id="btnCancelInstall">取消</button>
+    </div>
+    <div class="row">
+      <span class="path" id="weightsDir">权重：随安装下载（可指定已有目录）</span>
+      <button class="mini" id="btnPickWeights">已有权重</button>
+      <button class="mini" id="btnClearWeights">清除</button>
+    </div>
+    <div id="installProgress" class="hide">
+      <div class="meta" id="installStep"><span class="spin"></span> <span id="installStepTxt">准备安装…</span></div>
+      <div class="bar" style="margin-top:5px"><i id="installBar"></i></div>
+    </div>
+    <div class="meta" id="installHint">安装要装 torch（约 3GB）+ 引擎源码 + 权重（十几 GB）+ 便携 ffmpeg，磁盘请留 ≥20GB。</div>
+  </div>
+
+  <div class="card">
+    <h2>服务</h2>
+    <div class="row">
+      <span class="badge off" id="svcBadge">未运行</span>
+      <span class="badge" id="engBadge">引擎未知</span>
+      <span class="spacer"></span>
+      <button class="mini primary" id="btnStart">启用</button>
+      <button class="mini danger" id="btnStop">停止</button>
+    </div>
+    <div class="row">
+      <button class="mini" id="btnEngineStart">加载模型</button>
+      <button class="mini" id="btnEngineStop">卸载模型</button>
+      <label class="meta" title="CUDA Graph 加速路径：延迟更低，但首次冷启动更久、也更吃显存（需另行实测）。默认关闭。">
+        <input type="checkbox" id="fastAll" /> fast 路径（实验）
+      </label>
+    </div>
+    <div class="kv"><b>管理服务</b><span id="apiBase">—</span></div>
+    <div class="kv"><b>API Key</b><span id="apiKey">—</span></div>
+    <div class="kv"><b>推理引擎</b><span id="engineInfo">—</span></div>
+    <div class="kv"><b>显存</b><span id="gpuInfo">—</span></div>
+    <div class="row">
+      <button class="mini" id="btnEngLog" title="引擎进程的最近日志：权重加载进度与报错现场">引擎日志</button>
+      <span class="meta" id="engHint">引擎按需加载：点「加载模型」，或直接合成 —— 第一次合成会自动拉起引擎。</span>
+    </div>
+    <div id="engLogBox" class="hide"><div id="engLog"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>音色库（参考片段 + 文稿）</h2>
+    <div class="list" id="voiceList" style="max-height:150px"><div class="empty">还没有音色。音色 = 一段干净的参考音频 + 它的准确文稿。</div></div>
+    <div class="grid2">
+      <label class="f">音色名<input type="text" id="newVoiceId" placeholder="例如：播音 / 温柔女声" /></label>
+      <label class="f">参考音频<button class="mini" id="btnPickRef">选择文件…</button></label>
+    </div>
+    <label class="f">参考文稿（与音频内容逐字一致，含重复与语气词）
+      <textarea id="newVoiceText" rows="2" placeholder="这段参考音频里到底说了什么，就写什么"></textarea>
+    </label>
+    <div class="row">
+      <span class="meta" id="refAudioName">未选择文件</span>
+      <span class="spacer"></span>
+      <button class="mini" id="btnVoicePreview">试听参考</button>
+      <button class="mini primary" id="btnVoiceAdd">保存音色</button>
+    </div>
+    <audio id="refAudio" controls class="hide"></audio>
+  </div>
+
+  <div class="card">
+    <h2>试听合成</h2>
+    <div class="grid3">
+      <label class="f">能力
+        <select id="mode">
+          <option value="auto">自动判定</option>
+          <option value="clone">音色克隆</option>
+          <option value="design">音色设计</option>
+          <option value="direction">音色导演</option>
+        </select>
+      </label>
+      <label class="f">音色<select id="voiceSel"><option value="">（不用音色库）</option></select></label>
+      <label class="f">格式
+        <select id="fmt"><option value="wav">wav</option><option value="flac">flac</option><option value="mp3">mp3</option></select>
+      </label>
+    </div>
+    <label class="f">正文（中文内联事件用方括号：[笑] [咳嗽] [清嗓子] [叹气]；英文用圆括号：(laugh) …）
+      <textarea id="ttsText" rows="3" placeholder="[叹气] 没想到过了这么久，你还记得我的声音。"></textarea>
+    </label>
+    <label class="f">instruction（音色设计 / 音色导演用；语言要与正文一致）
+      <textarea id="ttsInstr" rows="2" placeholder="一位温柔自信的年轻女性，声音清晰，语气亲切，表达轻快而富有感染力。"></textarea>
+    </label>
+    <div class="grid2">
+      <label class="f">cfg_scale（默认 1；有 instruction 时官方建议 4）
+        <input type="number" id="cfgScale" value="1" min="0.1" max="10" step="0.5" />
+      </label>
+      <label class="f">seed（同种子可复现）<input type="number" id="seed" value="42" step="1" /></label>
+    </div>
+    <div class="row">
+      <button class="mini primary" id="btnSynth">合成试听</button>
+      <span class="meta" id="synthInfo">—</span>
+    </div>
+    <audio id="outAudio" controls></audio>
+  </div>
+
+  <div class="card">
+    <h2>Console</h2>
+    <div id="log"></div>
+    <div class="row">
+      <button class="mini" id="btnClearLog">清空显示</button>
+      <span class="meta" id="logPath">—</span>
+    </div>
+  </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -641,6 +641,11 @@ def _next_port() -> int:
     return port
 
 
+def _no_window() -> int:
+    """Windows: 子进程别再新开控制台窗口（管理服务自己无控制台，子进程没得继承就会被新建一个窗口）。"""
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
 def _is_alive(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
@@ -651,6 +656,7 @@ def _is_alive(pid: int | None) -> bool:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 errors="ignore",
+                creationflags=_no_window(),
             )
             return str(pid) in out and "No tasks" not in out
         except Exception:
@@ -726,6 +732,7 @@ def _kill_pid(pid: int) -> None:
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=_no_window(),
         )
     else:
         try:

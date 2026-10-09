@@ -1,0 +1,29 @@
+{
+  "id": "breeze-tts-local",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "title": {
+    "zh": "Breeze TTS 2 本地 TTS",
+    "en": "Breeze TTS 2 Local TTS"
+  },
+  "subtitle": {
+    "zh": "Breeze TTS 2（实时流式、音色克隆 / 音色设计 / 音色导演）：参考片段音色库、OpenAI 兼容 TTS API（API Key 鉴权）。服务不随 MTNode 退出，托盘可手动关闭。",
+    "en": "Breeze TTS 2 (real-time streaming, voice clone / design / direction): reference-clip voice library, OpenAI-compatible TTS API with API key auth. Service survives MTNode exit; close via tray."
+  },
+  "diskHintGb": 20,
+  "apiPort": 8772,
+  "engine": {
+    "repo": "https://github.com/breezeblue-ai/breeze-tts",
+    "mirror": "https://ghproxy.com/https://github.com/breezeblue-ai/breeze-tts",
+    "weightsRepo": "BreezeBlue/breeze-tts-2",
+    "weightsEnv": "BREEZE_WEIGHTS_REPO"
+  },
+  "license": {
+    "code": "Apache-2.0",
+    "weights": "BreezeBlue Research and Non-Commercial License",
+    "note": {
+      "zh": "推理代码为 Apache-2.0；模型权重、衍生模型与自托管输出仅限研究与**非商用**用途（Apache-2.0 不授予商用权）。",
+      "en": "Inference code is Apache-2.0. Model weights, derivative models and self-hosted outputs are for research and NON-COMMERCIAL use only."
+    }
+  }
+}

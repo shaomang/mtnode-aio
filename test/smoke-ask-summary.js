@@ -89,17 +89,26 @@ no(DB, 'r.textContent = detailText;', "旧的纯文本 .ix-detail 写法已撤�
 has(DB, 'm.appendChild(ixMdBlock(String(d.message || ""), "ix-help-md"));', "浏览器求助卡正文同源渲染");
 no(DB, 'm.textContent = String(d.message || "");', "求助正文不再走 textContent");
 
-/* 选项文本：行内子集 */
-has(DB, "txt.innerHTML = ixInlineMd(o.label);", "选项 label 走行内 Markdown");
-has(DB, "d.innerHTML = ixInlineMd(o.description);", "选项 description 走行内 Markdown");
-has(DB, "lab.title = o.description;", "hover 仍是纯文本原文（不改语义）");
-has(DB, "cb.value = o.label;", "回传值仍是原文（渲染只影响显示，不影响答案）");
+/* 选项文本：行内子集（题面渲染器现由提问卡与求助卡共用，见 ixRenderQuestions） */
+has(DB, "txt.innerHTML = ixInlineMd(label);", "选项 label 走行内 Markdown");
+has(DB, "sp.innerHTML = ixInlineMd(desc);", "选项 description 走行内 Markdown");
+has(DB, "lab.title = desc;", "hover 仍是纯文本原文（不改语义）");
+has(DB, "cb.value = label;", "回传值仍是原文（渲染只影响显示，不影响答案）");
+has(DB, "function ixRenderQuestions(card, it, questions) {", "题面渲染器抽成一份（提问卡 / 求助卡共用）");
 has(DB, "cb.dataset.qid = q.id;", "题号绑定口径不变");
 
 /* ── [2]/[3]/[4] 真跑：抠出真源码在 vm 里跑 ─────────────────────────────── */
 const FROM = DB.indexOf("function ixSummarySplit(text) {");
 const TO = DB.indexOf("function renderIxPanel() {");
 ok(FROM > 0 && TO > FROM, "摘到本次新增的询问卡渲染段真源码");
+
+/* 题面渲染器还读「这题能不能多选」的判据（见 smoke-ask-multi：ixMultiOf 段就在
+   ixSummarySplit 之前、求助卡题面归一那一块里）。生产里它们是同一个模块作用域，
+   抠代码跑时得把这一段一并喂进上下文，否则渲染器里那行 ixMultiOf(q) 会 ReferenceError。 */
+const MULTI_TO = DB.indexOf("function ixPush(kind, data, runKey, src) {");
+const MULTI_FROM = DB.indexOf("const IX_MULTI_RE =");
+ok(MULTI_FROM > 0 && MULTI_TO > MULTI_FROM && MULTI_TO < FROM, "摘到多选判据段（渲染器的前置依赖）");
+const MULTI_SRC = DB.slice(MULTI_FROM, MULTI_TO);
 
 /* 与 app.js 同源的 escapeHtml（真实实现，保证转义口径一致） */
 const ESC = read("renderer/app.js").match(/function escapeHtml\(text\) \{[\s\S]*?\n\}/)[0];
@@ -324,6 +333,7 @@ function renderCard(questionText) {
   };
   const ctx = vm.createContext(c);
   vm.runInContext(ESC, ctx);
+  vm.runInContext(MULTI_SRC, ctx);
   vm.runInContext(DB.slice(FROM_PANEL, TO_PANEL_END) + "\n;renderIxPanel();", ctx);
   return doc;
 }

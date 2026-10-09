@@ -10,7 +10,7 @@
  *   [2] GET /api/admin/sysinfo：CPU / 内存 / Swap / 磁盘 / 进程 / 主机字段齐，且**真采了两次快照**；
  *       只读 —— 不留历史、不写任何东西（contentAudit 不增）
  *   [3] 内容管理列表：三类内容（应用 / 模板 / 技能）+ 关键词 / 状态 / 作者筛选 + 分页 + 全量 counts
- *   [4] 应用：编辑元信息 → 落库 + 静态目录跟着变；上架 / 下架 → 公开列表可见性跟着变
+ *   [4] 应用：编辑元信息 → 落库 + 静态目录跟着变；**上下架那条接口已下线**（旧路径如实回 404）
  *   [5] 版本：版本历史 / 删单版本（删完自动指向剩余最高版）
  *   [6] 下载：应用 zip / 模板 .mtnodes / 技能包内文件都能取到，且**不计作者下载量**
  *   [7] 技能：官方标记可改（管理员专属）
@@ -180,10 +180,17 @@ async function freePort() {
   ok(src.includes('p === "/api/admin/sysinfo"') && /function sysinfoSnapshot/.test(src) && /import os from "node:os"/.test(src),
     "server.mjs 引入 node:os 并实现 GET /api/admin/sysinfo（sysinfoSnapshot）");
   ["/api/admin/content", "/api/admin/content/versions", "/api/admin/content/audit", "/api/admin/content/download",
-    "/api/admin/content/preview", "/api/admin/content/publish", "/api/admin/content/update", "/api/admin/content/delete",
+    "/api/admin/content/preview", "/api/admin/content/update", "/api/admin/content/delete",
     "/api/admin/content/delete-version", "/api/admin/content/republish"].forEach((p) => {
     ok(src.includes('p === "' + p + '"'), "接了 " + p);
   });
+  /* 本轮两态口径（在线上 / 彻底删除）：管理台的内容可见性开关整体下线 ——
+     /api/admin/content/publish 不再是一条「能用的」路由，只剩一条如实回 404 的挡板
+     （鉴权照旧先过 requireAdmin）。 */
+  ok(
+    /if \(method === "POST" && p === "\/api\/admin\/content\/publish"\) \{\s*const a = requireAdmin\(req, res\);\s*if \(!a\) return;\s*return send\(res, 404, \{ ok: false, code: "NOT_FOUND", error: "该接口已下线" \}\);/m.test(src),
+    "/api/admin/content/publish 只剩一条「已下线」挡板（先过 requireAdmin，再如实回 404）",
+  );
   ok(/const CONTENT_AUDIT_MAX = 200/.test(src) && /contentAudit: \[\]/.test(src) && /if \(!Array\.isArray\(d\.contentAudit\)\) d\.contentAudit = \[\]/.test(src),
     "留痕存 db.contentAudit（上限 200，旧库读入时补默认值）");
 
@@ -295,15 +302,21 @@ async function freePort() {
   ok((await admPost("/api/admin/content/update", { kind: "skill", id: "sk_1", version: "不是版本号" })).status === 400,
     "技能版本号不合法 → 400");
 
-  console.log("[6] 上架 / 下架：公开列表可见性跟着变");
-  r = await admPost("/api/admin/content/publish", { id: "adm-app", ownerId: AUTHOR, unpublish: true });
-  ok(r.status === 200 && r.json.item.unpublished === true && appDb().unpublished === true, "管理台下架 → db 标记 unpublished");
-  const pubList = () => api("/api/apps").then((x) => x.json);
-  ok(!(await pubList()).items.some((a) => a.id === "adm-app"), "公开 /api/apps 列表里看不到它了");
-  ok(!catalogOnDisk().apps.some((a) => a.id === "adm-app"), "静态目录里也下掉了");
-  r = await admPost("/api/admin/content/publish", { id: "adm-app", ownerId: AUTHOR, unpublish: false });
-  ok(r.status === 200 && r.json.item.unpublished === false && (await pubList()).items.some((a) => a.id === "adm-app"),
-    "重新上架 → 公开列表又看得到");
+  console.log("[6] 上下架那条接口已下线：旧路径如实回 404，可见性由「在不在库里」唯一决定");
+  {
+    const off = await admPost("/api/admin/content/publish", { id: "adm-app", ownerId: AUTHOR, unpublish: true });
+    ok(off.status === 404 && off.json.code === "NOT_FOUND" && /已下线/.test(String(off.json.error)),
+      "POST /api/admin/content/publish → 404「该接口已下线」（不是静默成功）：" + off.status + " " + JSON.stringify(off.json));
+    const offNoAuth = await api("/api/admin/content/publish", { method: "POST", json: { id: "adm-app", unpublish: true } });
+    ok(offNoAuth.status === 401, "挡板照旧先过 requireAdmin：无管理票打它 → 401（不是 404）");
+    /* 两态口径的正面证据：没删过 → 公开列表 + 静态目录里都在。 */
+    const pubList = () => api("/api/apps").then((x) => x.json);
+    ok((await pubList()).items.some((a) => a.id === "adm-app"), "没删过它 → 公开 /api/apps 列表里看得到（没有第二条可见性开关）");
+    ok(catalogOnDisk().apps.some((a) => a.id === "adm-app"), "静态目录里也在");
+    const listed = (await adm("/api/admin/content?kind=app&status=online")).json;
+    ok(listed.total === 1 && listed.items[0].id === "adm-app" && !("unpublished" in listed.items[0]),
+      "管理台列表回执里已经没有可见性位（unpublished）：" + JSON.stringify(Object.keys(listed.items[0]).join(",")));
+  }
 
   console.log("[7] 版本历史 / 删单版本");
   const zip2 = appZip("v101");
@@ -355,8 +368,7 @@ async function freePort() {
   });
   ok(r.status === 200, "作者B声明二次开发后在同一 id 下开了自己的分支");
   ok((await adm("/api/admin/content?kind=app")).json.total === 2, "同一 id 的两条分支各占一行（管理台看得到两条）");
-  ok((await admPost("/api/admin/content/publish", { id: "adm-app", unpublish: true })).status === 400,
-    "不指 ownerId 直接下架 → 400（BRANCH_REQUIRED）");
+  /* 分支寻址的挡板只剩删除 / 删版本两条路要验：上下架那条接口已整条下线（见 [6]）。 */
   ok((await admPost("/api/admin/content/delete", { kind: "app", id: "adm-app" })).status === 400,
     "不指 ownerId 直接删除 → 400");
   const br = (await admPost("/api/admin/content/delete", { kind: "app", id: "adm-app" })).json;
@@ -380,14 +392,21 @@ async function freePort() {
   console.log("[12] 改动留痕：谁 / 何时 / 对哪条做了什么");
   const au = (await adm("/api/admin/content/audit?limit=100")).json;
   const acts = au.items.map((x) => x.action);
-  ok(au.ok && au.items.length >= 8, "留痕条数：" + au.items.length + " 条");
+  /* 条数下限跟着本轮真实动作走：[5] 编辑应用 1 笔、[9]/[10] 技能标记 2 笔、
+     [11] 删模板 / 删技能 / 删应用分支 3 笔，共 6 笔。上下架那两笔已随接口下线（见 [6]），
+     这里不能再摁着老条数（旧口径 8 条里有两笔是 publish / unpublish）。 */
+  ok(au.ok && au.items.length >= 6, "留痕条数：" + au.items.length + " 条（≥ 6 = 本轮真实动作的笔数）");
   ok(au.items.every((x) => x.username === "ms2308" && x.at > 0 && x.kind && x.targetId), "每条都带管理员账号 / 时间 / 类型 / 对象 id");
-  ["update", "publish", "delete"].forEach((a) => {
+  ["update", "delete"].forEach((a) => {
     ok(acts.includes(a), "留痕里有「" + a + "」这一笔");
   });
+  /* 本轮口径：上下架那条动作已随接口一起下线 —— 留痕里不该再出现 publish / unpublish
+     （真实动作只剩 编辑 / 删除 / 删版本 / 重发目录 四类）。 */
+  ok(!acts.includes("publish") && !acts.includes("unpublish"),
+    "留痕里不再有上下架那两档动作（实得：" + JSON.stringify([...new Set(acts)]) + "）");
   ok(au.items.some((x) => x.action === "update" && /改了标题/.test(x.detail)) &&
-    au.items.some((x) => x.action === "unpublish" && x.targetId === "adm-app"),
-    "留痕写明改了哪些字段、对哪条动手");
+    au.items.some((x) => x.action === "delete" && x.targetId === "adm-app" && /删整条分支/.test(x.detail)),
+    "留痕写明改了哪些字段、对哪条动手（删除那条写明删的是整条分支）");
   ok((await adm("/api/admin/content/audit?limit=100")).json.items.length <= 200, "留痕上限 200 条（不无限长）");
 
   console.log("[13] 重发静态目录：库与盘一致");

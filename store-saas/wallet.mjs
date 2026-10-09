@@ -187,6 +187,8 @@ function toCsv(rows, columns) {
  * @param {() => Promise<void>|void} deps.saveDb     原子落盘
  * @param {(id:string, patch:object) => Promise<object|null>} deps.applyUserPatch  账户行写穿
  */
+import { hotAppendRows, hotMarkDirty } from "./hot-store.mjs";
+
 export function createWallet(deps) {
   const d = deps || {};
   const db = d.db;
@@ -233,7 +235,7 @@ export function createWallet(deps) {
     return updated;
   }
 
-  /** 追加一条流水（不落盘，落盘由调用方在整笔操作结束时统一 saveDb）。 */
+  /** 追加一条流水：**立刻**追加进 hot-store 的追加文件并 fsync（不等调用方的 saveDb）。 */
   function pushLedger(entry) {
     const e = Object.assign(
       {
@@ -252,10 +254,26 @@ export function createWallet(deps) {
       entry || {},
     );
     ledger().push(e);
+    /* 钱相关：这一条**当场落盘 + fsync**（不再等整笔结束时的 saveDb 全量重写 db.json） */
+    e.__flushed = hotAppendRows("rechargeLedger", [e]) || null;
+    hotMarkDirty("rechargeLedger");
+    return e;
+  }
+
+  /** 等某条流水真正落盘（调用方要「回执即已落盘」时用；没有 __flushed 就立即返回）。 */
+  async function flushLedgerEntry(e) {
+    if (e && e.__flushed && typeof e.__flushed.then === "function") {
+      try {
+        await e.__flushed;
+      } catch (_) {}
+    }
     return e;
   }
 
   function popLedger(entry) {
+    /* 回滚一条流水 = 追加文件里那一行要作废：内存里删掉，并标脏让 saveDb 把库写实
+       （追加文件本身只增不减，回滚靠重写一次 rotate 路径收敛，见 hot-store 的 rotate）。 */
+    hotMarkDirty("rechargeLedger");
     const arr = ledger();
     const i = arr.findIndex((x) => x.id === entry.id);
     if (i >= 0) arr.splice(i, 1);
@@ -852,6 +870,7 @@ export function createWallet(deps) {
     refundOrder,
     adjustBalance,
     chargeRelayUsage,
+  flushLedgerEntry,
     writeRelaySub,
     listOrders,
     listLedger,

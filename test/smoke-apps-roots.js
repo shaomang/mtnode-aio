@@ -200,6 +200,103 @@ console.log("\n[6] 迁移冲突不覆盖");
   ok(fs.existsSync(path.join(DL, "clashapp")), "源目录原样留着（不静默删）");
   ok(run.skipped.length === 0 && run.conflicts.length >= 1, "回执如实带 conflicts");
 }
+
+/* ---------- [7] 默认根固化：不再要求手选（本轮需求） ---------- */
+console.log("\n[7] 默认根固化（不要求手选 / 不覆盖已选 / 列应用即固化）");
+{
+  /* 现场：只配了下载根，项目根一个字都没有 —— 旧实现会拦人「先选一个文件夹」（下载 / 新建前
+     弹系统选目录框）并给开发页打「未设置」红字。本轮口径：直接用默认根（**画布所在的数据目录**
+     下的 apps-dev），由主进程在「列应用 / 下载 / 新建」时把默认路径固化进 config.json。 */
+  writeCfg({ apps: { installDir: DL } });
+  const roots = store.rootsInfo();
+  ok(roots.dev.configured === false, "固化之前：项目根 configured=false（只读快照不改配置）");
+  ok(
+    path.resolve(roots.dev.path) === path.resolve(path.join(DATA, "apps-dev")),
+    "未配置 = 默认 apps-dev（数据目录下，不再回退下载根）",
+  );
+  ok(path.resolve(roots.dev.path) !== path.resolve(DL), "解析结果不等于下载根（静默回退已删）");
+  ok(roots.dev.fallback !== true, "回执里不再有 fallback 这一说");
+
+  /* 「首次真正要用到它时」才写盘 —— ensureRootPersisted 就是那一刻 */
+  const ready = store.ensureRootPersisted("dev");
+  ok(
+    path.resolve(ready.root) === path.resolve(path.join(DATA, "apps-dev")) &&
+      ready.persisted === true &&
+      ready.configured === true,
+    "ensureRootPersisted：没配过就用默认根并真写进 config.json",
+  );
+  ok(
+    path.resolve(readCfg().apps.projectDir) === path.resolve(path.join(DATA, "apps-dev")),
+    "config.json 里落成 apps.projectDir = 默认根",
+  );
+  ok(fs.existsSync(path.join(DATA, "apps-dev")), "默认根目录被自动建出来（需要时创建）");
+  ok(store.ensureRootPersisted("dev").persisted === false, "固化过之后第二次不再写盘（幂等）");
+
+  /* 已手选过的根一律保留（老机器行为一个字都不变） */
+  store.setRoot(DEV, "dev");
+  ok(
+    path.resolve(store.ensureRootPersisted("dev").root) === path.resolve(DEV) &&
+      path.resolve(readCfg().apps.projectDir) === path.resolve(DEV),
+    "已手选过的项目根不被默认值覆盖",
+  );
+
+  /* 列应用 = 「真正要用到根」的第一处：一次把两套根都固化下来（库页 / 开发页一打开就有明确路径） */
+  writeCfg({ apps: {} });
+  const list7 = store.listApps();
+  const cfg7 = readCfg().apps || {};
+  ok(
+    path.resolve(cfg7.installDir) === path.resolve(path.join(DATA, "apps")) &&
+      path.resolve(cfg7.projectDir) === path.resolve(path.join(DATA, "apps-dev")),
+    "listApps 把两套根都固化到数据目录下的 apps / apps-dev",
+  );
+  ok(
+    path.resolve(list7.roots.down.path) === path.resolve(path.join(DATA, "apps")) &&
+      path.resolve(list7.roots.dev.path) === path.resolve(path.join(DATA, "apps-dev")),
+    "列表回执里的两套根 = 刚固化的默认根",
+  );
+  ok(
+    !list7.apps.some((x) => x.id === "clashapp"),
+    "原来配在别处的应用不会被错认到默认根里（文件仍在原处）",
+  );
+
+  /* 下载根的老键名仍认：那是**同一个根的旧键名**，不是跨目录回落（删了才会让老配置丢下载根） */
+  writeCfg({ appsInstallDir: DL });
+  ok(
+    path.resolve(store.rootsInfo().down.path) === path.resolve(DL),
+    "下载根老键名 appsInstallDir 仍然认",
+  );
+  ok(store.ensureRootPersisted("down").persisted === false, "老键名也算「已配过」：不覆盖");
+  writeCfg({ apps: { installDir: DL } });
+
+  /* 已选的根所在盘 / 目录不存在了（换盘、手动删了目录）：**继续用它并自动重建**，
+     绝不静默回落到默认根（换根会让原来那个盘上的应用整列消失，比报错更难解释）。 */
+  const GONE_ROOT = path.join(TMP, "盘上还没有的应用根");
+  store.setRoot(GONE_ROOT, "dev");
+  fs.rmSync(GONE_ROOT, { recursive: true, force: true }); /* 盘上那份没了（换盘 / 用户手动删） */
+  ok(!fs.existsSync(GONE_ROOT), "现场：手选的项目根目录当前不在盘上");
+  const recreated = store.createApp({ name: "重建验证", id: "recreateapp" });
+  ok(
+    recreated.ok === true && fs.existsSync(path.join(GONE_ROOT, "recreateapp", "app.json")),
+    "根目录不在盘上也自动重建，新建照样成功",
+  );
+  ok(
+    path.resolve(readCfg().apps.projectDir) === path.resolve(GONE_ROOT),
+    "没有静默换根：config.json 里还是用户选的那个路径",
+  );
+
+  /* 真建不出来（父级是个文件）：如实报错，同样不换根 */
+  const BLOCKER = path.join(TMP, "not-a-folder");
+  fs.writeFileSync(BLOCKER, "x", "utf8");
+  const BROKEN_ROOT = path.join(BLOCKER, "sub");
+  writeCfg({ apps: { installDir: DL, projectDir: BROKEN_ROOT } });
+  const broken = store.createApp({ name: "建不出来的根", id: "brokenrootapp" });
+  ok(broken.ok === false && !!String(broken.error || ""), "根目录建不出来时如实报错（不假装成功）");
+  ok(
+    path.resolve(readCfg().apps.projectDir) === path.resolve(BROKEN_ROOT),
+    "报错之后也没有偷偷换根（用户选的路径原样留着）",
+  );
+  writeCfg({ apps: { installDir: DL, projectDir: DEV } });
+}
 }
 
 section3()

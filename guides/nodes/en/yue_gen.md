@@ -2,20 +2,20 @@
 
 ![diagram](img/yue_gen.svg)
 
-Right-click the canvas → **Process › Audio generation › YuE2**. Local YuE2 backend (the “YuE2 Local Music” plugin, ported after the open-source [YuE](https://github.com/multimodal-art-projection/YuE) project). **Each run produces exactly one audio file** (`.wav`) written to the node's own `outputPath` — no separate save node needed.
+Right-click the canvas → **Process › Audio generation › YuE2**. Local YuE2 backend (the “YuE2 Local Music” plugin, ported after the open-source [YuE](https://github.com/multimodal-art-projection/YuE) project). **Each run produces exactly one audio file** (`.wav`) written to the node's own `outputPath`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
-YuE2 takes the “lyrics → full song” route: give it a **style prompt** and **lyrics** and it sings the whole song, optionally producing an **ABC score** as well; you can also hand-write the score and feed it in (port 2 / the node's own field).
+YuE2 takes the “lyrics → full song” route: give it a **style prompt** and **lyrics** and it sings the whole song, optionally producing an **ABC score** as well; you can also hand-write the score and feed it in (port 2 / the node's own field). **Lyrics are optional**: leave port 1 unwired and the node's own lyrics field empty and it submits pure instrumental `[instrumental]` (the same convention as Minimax Music 3), so you still get a track.
 
 ## Ports
-- **Input**: port 0 = style prompt · port 1 = lyrics · port 2 = ABC score (optional) · port 3 = control input
+- **Input**: port 0 = style prompt · port 1 = lyrics (optional: leave it unwired / empty for pure instrumental `[instrumental]`) · port 2 = ABC score (optional) · port 3 = control input
 - **Output**: port 0 = audio (play / save downstream) · port 1 = control output
 
-When ports 0 / 1 / 2 are not wired, the node reads the style prompt / lyrics / ABC score typed on the node itself.
+When ports 0 / 1 / 2 are not wired, the node reads the style prompt / lyrics / ABC score typed on the node itself — only the **style prompt (port 0) is required**; that is the one whose absence blocks a run.
 
 ## Options
 Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
 
-- **Output path**: `.wav` destination (relative to workspace / super subfolder)
+- **Output path**: `.wav` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 - **Chain-of-thought tier**: `full` (full CoT, best quality) · `melody` (melody guidance, faster) · `off` (no CoT, prompt only)
 - **Attempts**: gacha rolls (1–10), one file per roll, named `#1`, `#2` …
 - **Seed**: a fixed seed reproduces; with **reroll** on, each roll bumps the seed by +1

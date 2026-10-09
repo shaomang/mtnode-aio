@@ -103,10 +103,14 @@ has(DB, "if (items.indexOf(x) < 0 && x.data && x.data.id) ixDraftDropCard(x.data
   ok(iSave > 0 && iWipe > iSave, "renderIxPanel：抄草稿排在整窗清空之前（顺序即正确性）");
   ok(iFocusSave > 0 && iWipe > iFocusSave, "renderIxPanel：抄光标也排在清空之前");
   ok(iRestore > iWipe, "renderIxPanel：清空并重建之后才放回光标");
-  ok(rp.indexOf("ixRestoreQuestionDraft(card, q, custom, optInputs, onCustomInput);") > 0, "每题的正文框接上回填（在字段构好之后）");
-  const iRestoreCall = rp.indexOf("ixRestoreQuestionDraft(card, q, custom, optInputs, onCustomInput);");
-  const iAppendCustom = rp.indexOf("card.appendChild(custom);");
+  /* 题面渲染器抽成一份之后（提问卡与求助卡共用，见 ixRenderQuestions），
+     「每题构字段 + 挂上回填」整段搬进了那个函数：回填仍必须排在该题字段全部挂好之后。 */
+  const rq = fnSrc(DB, "ixRenderQuestions");
+  const iRestoreCall = rq.indexOf("ixRestoreQuestionDraft(card, q, custom, optInputs, onCustomInput);");
+  const iAppendCustom = rq.indexOf("card.appendChild(custom);");
+  ok(iRestoreCall > 0, "每题的正文框接上回填（ixRenderQuestions 里，字段构好之后）");
   ok(iAppendCustom > 0 && iRestoreCall > iAppendCustom, "回填排在该题字段全部挂好之后（勾选与手填同帧对上）");
+  ok(rp.indexOf("ixRenderQuestions(card, it,") > 0, "renderIxPanel 两族卡片都调同一份题面渲染器");
 }
 {
   const band = fnSrc(DB, "ixRestoreQuestionDraft");

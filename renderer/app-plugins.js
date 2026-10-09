@@ -1,6 +1,8 @@
 "use strict";
 /* ============ 顶栏「插件」：可选组件（桌宠等） ============ */
 let _petProgressOff = null;
+/* 用户自建插件（<数据目录>/user-plugins）的清单缓存：卡片与详情面板都按 id 从这里取 */
+let _userPluginItems = [];
 const PLUGIN_ACT_SVG = {
   play:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2l8 4.8-8 4.8z" fill="currentColor"/></svg>',
@@ -13,6 +15,9 @@ const PLUGIN_ACT_SVG = {
   /* 设置 / 状态入口（ASR 卡片用；此前缺失 → 按钮渲染成空白方块）= 齿轮 */
   gear:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 1.3v1.9M8 12.8v1.9M1.3 8h1.9M12.8 8h1.9M3.3 3.3l1.3 1.3M11.4 11.4l1.3 1.3M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
+  /* 显式入口「控制台」（本轮新增：插件不再自己弹窗，开窗只能由用户点这里或托盘菜单） */
+  console:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.9 6.6l1.9 1.7-1.9 1.7M8.4 10.2h2.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 function pluginIconName(item) {
   const raw = String((item && item.icon) || (item && item.id ? item.id + ".png" : "")).replace(/\\/g, "/");
@@ -93,11 +98,13 @@ function mkPluginActBtn(kind, title, onClick, opts) {
   return b;
 }
 function closePluginPop(wrap, pop) {
+  /* 浮层一关就停掉内嵌 console 的轮询（不留后台空转） */
+  stopPluginPopConsole();
   if (!wrap) return;
   wrap.querySelectorAll(".plugin-tile.sel").forEach((el) => el.classList.remove("sel"));
   wrap.classList.remove("has-pop");
   if (pop) {
-    pop.classList.remove("on", "flip");
+    pop.classList.remove("on", "flip", "has-console");
     pop.innerHTML = "";
   }
 }
@@ -121,12 +128,172 @@ function positionPluginPop(wrap, pop, card) {
   pop.style.left = left + "px";
   pop.style.top = top + "px";
 }
+/* ════════════ 详情浮层里的内嵌 console（只读）════════════════════════════════
+   本轮共识：后端状态与 console 内容显示在插件界面里 —— 点插件卡片弹出的详情浮层
+   （.plugin-pop）内嵌一块日志区：
+     · 状态行：运行中 / 端口 / 安装或启动进度 / 显存（每 ~16s 刷一次，避免频繁探针）；
+     · 日志区：后端 stdout 日志尾部（每 2s 拉一次、按增量拼接；「清屏」= 只看此刻之后的新行）；
+     · 只读：启停 / 安装仍走卡片按钮与控制台窗，这里不放写操作（本轮共识，避免两套 UI 并存）。
+   浮层关掉（点同一张卡 / 点简介行 / 换插件）即停轮询，不留后台空转。 */
+const POP_CONSOLE_TAIL_BYTES = 64 * 1024;
+const POP_CONSOLE_MAX_CHARS = 200000;
+let _popConsoleTimer = null;
+let _popConsoleTeardown = null;
+function stopPluginPopConsole() {
+  if (_popConsoleTimer) {
+    clearInterval(_popConsoleTimer);
+    _popConsoleTimer = null;
+  }
+  if (_popConsoleTeardown) {
+    try {
+      _popConsoleTeardown();
+    } catch {}
+    _popConsoleTeardown = null;
+  }
+}
+function stripAnsiText(s) {
+  return String(s || "").replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
+}
+/* 状态行文字：只列得出来的事实，缺项就不写（Remotion 没有常驻后端，不说「后端未运行」） */
+function backendStatusLineText(st, spec) {
+  const parts = [];
+  if (spec && spec.hasService === false) {
+    parts.push(st.installed ? I18n.t("已安装（无常驻后端）") : I18n.t("未安装"));
+  } else {
+    parts.push(st.running ? I18n.t("后端运行中") : I18n.t("后端未运行"));
+  }
+  if (st.port) parts.push(I18n.t("端口") + " " + st.port);
+  if (st.installing) parts.push(I18n.t("安装中…"));
+  else if (_popConsoleStarting(st)) parts.push(I18n.t("启动中…"));
+  const gpu = st.gpu || null;
+  if (gpu && (gpu.name || gpu.memUsedMb || gpu.memTotalMb)) {
+    const name = String(gpu.name || "").trim();
+    const mem =
+      gpu.memUsedMb && gpu.memTotalMb
+        ? Math.round(Number(gpu.memUsedMb) / 1024) + "/" + Math.round(Number(gpu.memTotalMb) / 1024) + "GB"
+        : "";
+    parts.push([name, mem].filter(Boolean).join(" "));
+  }
+  if (st.trayRunning) parts.push(I18n.t("托盘常驻"));
+  return parts.join(" · ");
+}
+function _popConsoleStarting(st) {
+  return !!(st && st.wantRunning && !st.running);
+}
+/* 把 console 区块挂进详情浮层（只有本地后端插件才有；桌宠 / 窗口插件不受影响） */
+function mountPluginPopConsole(pop, item) {
+  const spec = backendSpecOf(item);
+  if (!spec || !pluginApiFn(spec.api + "Status")) return false;
+  const tailFn = pluginApiFn(spec.api + "ConsoleTail");
+  pop.classList.add("has-console");
+  const box = document.createElement("div");
+  box.className = "plugin-console";
+  box.innerHTML =
+    '<div class="plugin-console-head">' +
+    '<span class="plugin-console-title"></span>' +
+    '<span class="plugin-console-acts">' +
+    '<button type="button" class="mini plugin-console-btn" data-console-copy></button>' +
+    '<button type="button" class="mini plugin-console-btn" data-console-clear></button>' +
+    "</span>" +
+    "</div>" +
+    '<div class="plugin-console-status"></div>' +
+    '<pre class="plugin-console-log" tabindex="0"></pre>';
+  box.querySelector(".plugin-console-title").textContent = I18n.t("控制台");
+  const copyBtn = box.querySelector("[data-console-copy]");
+  const clearBtn = box.querySelector("[data-console-clear]");
+  copyBtn.textContent = I18n.t("复制");
+  clearBtn.textContent = I18n.t("清屏");
+  const statusEl = box.querySelector(".plugin-console-status");
+  const logEl = box.querySelector(".plugin-console-log");
+  pop.appendChild(box);
+  /* 打开详情浮层 = 用户已经看到提示：本地收掉这张卡的角标（宿主那份在开控制台窗时清） */
+  let shown = "";
+  let lastTail = "";
+  let tick = 0;
+  const render = () => {
+    if (shown.length > POP_CONSOLE_MAX_CHARS) shown = shown.slice(shown.length - POP_CONSOLE_MAX_CHARS);
+    const nearBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24;
+    logEl.textContent = shown;
+    if (nearBottom) logEl.scrollTop = logEl.scrollHeight;
+  };
+  const feedTail = (text) => {
+    const t = stripAnsiText(text);
+    if (t === lastTail) return;
+    if (lastTail && t.startsWith(lastTail)) shown += t.slice(lastTail.length);
+    else shown = t; /* 日志被轮转 / 截断：整篇重来 */
+    lastTail = t;
+    render();
+  };
+  const pullTail = async () => {
+    if (!tailFn) return;
+    try {
+      const r = await tailFn(POP_CONSOLE_TAIL_BYTES);
+      feedTail((r && r.text) || "");
+    } catch {}
+  };
+  const pullStatus = async () => {
+    const statusFn = pluginApiFn(spec.api + "Status");
+    if (!statusFn) return;
+    try {
+      const st = (await statusFn()) || {};
+      statusEl.textContent = backendStatusLineText(st, spec);
+      statusEl.title = st.consolePath ? String(st.consolePath) : "";
+      const notice = String(st.notice || "");
+      /* 求助提示同时落在日志区顶部一行（宿主也写进了日志文件；这里保证没写日志的实现也看得见），
+         并把这枚提示记成「已看过」——卡片角标从此收起，直到后端再发一条新的提示。 */
+      if (notice) {
+        _backendNoticeSeen.set(spec.key, notice);
+        /* 宿主也把这行写进了日志文件 → 已经在 tail 里就别重复贴一遍 */
+        if (statusEl.dataset.notice !== notice && String(lastTail).indexOf("[notice] " + notice) < 0) {
+          statusEl.dataset.notice = notice;
+          shown += (shown && !shown.endsWith("\n") ? "\n" : "") + "[notice] " + notice + "\n";
+          render();
+        }
+      }
+    } catch {}
+  };
+  copyBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    try {
+      navigator.clipboard.writeText(logEl.textContent || "");
+      toast(I18n.t("已复制控制台内容"), "ok");
+    } catch {
+      toast(I18n.t("复制失败：请手动选中日志"), "warn");
+    }
+  };
+  clearBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    /* 清屏 = 只看此刻之后的新行（日志文件本身不动，尾部内容仍在「控制台」窗里） */
+    shown = "";
+    render();
+  };
+  /* 浮层内滚轮 / 点击不要穿透到浮层外（浮层本身已 stopPropagation） */
+  logEl.addEventListener("wheel", (ev) => ev.stopPropagation(), { passive: true });
+  void pullStatus();
+  void pullTail();
+  const timer = setInterval(() => {
+    tick++;
+    void pullTail();
+    if (tick % 8 === 0) void pullStatus(); /* 状态每 ~16s 一次：别每 2s 去 spawn 一次 nvidia-smi */
+  }, 2000);
+  _popConsoleTimer = timer;
+  _popConsoleTeardown = () => clearInterval(timer);
+  return true;
+}
 function openPluginPop(wrap, pop, card, item) {
   const already = card.classList.contains("sel");
   closePluginPop(wrap, pop);
   if (already) return;
   card.classList.add("sel");
   wrap.classList.add("has-pop");
+  pop.setAttribute("data-np-for", item.id);
+  /* 用户自建插件：详情面板换成状态 / 节点试运行 / 修复那一套（见 renderUserPluginPanel） */
+  if (item && item.handler === "userplugin") {
+    renderUserPluginPanel(pop, item);
+    pop.classList.add("on");
+    requestAnimationFrame(() => positionPluginPop(wrap, pop, card));
+    return;
+  }
   const title = document.createElement("div");
   title.className = "plugin-pop-title";
   title.textContent = pluginLoc(item, "title") || item.id;
@@ -135,6 +302,9 @@ function openPluginPop(wrap, pop, card, item) {
   desc.textContent = pluginLoc(item, "subtitle") || I18n.t("暂无描述");
   pop.appendChild(title);
   pop.appendChild(desc);
+  /* 本地后端插件：详情浮层里内嵌只读 console（状态行 + 后端日志尾部），见 mountPluginPopConsole */
+  const consoleMounted = mountPluginPopConsole(pop, item);
+  if (consoleMounted) setPluginNotice(card, ""); /* 角标当场收起（用户已经看到详情里的日志区） */
   pop.classList.add("on");
   requestAnimationFrame(() => positionPluginPop(wrap, pop, card));
 }
@@ -352,32 +522,168 @@ async function refreshPetPluginCard(root) {
     extras.innerHTML = "";
   }
 }
-async function refreshMusic3PluginCard(root) {
-  if (!root || !window.api || !window.api.music3Status) return;
-  const st = await window.api.music3Status();
+/* ════════════ 本地后端插件（8 个）的统一卡片 + 内嵌 console ════════════════════
+   本轮共识（需求：插件不再呼出独立的后端窗口、避免用户误关、静默后台拉起、状态与
+   console 内容显示在插件界面的 console 里）：
+     · 卡片主按钮 = 启动 / 停止后端（host 的 <kind>:start / <kind>:stop）—— 点「启动」只是
+       静默把后端拉起来（后端进程本来就是 windowsHide，stdout 落日志文件），不再开窗；
+       未安装时主按钮 = 「安装」（先弹系统目录选择框选安装目录，仍然不打开插件窗）；
+       启动中主按钮显示「启动中…」，再点一次 = 停止（首次加载模型可能几分钟）。
+     · 次按钮 = 「控制台」（<kind>:open）：那只独立窗仍保留（安装 / 卸载 / H3 工作流编辑器
+       等重功能还在里面），但只由用户显式打开 —— 卡片按钮或托盘的「打开控制台」。
+     · 后端求助信号（llama / TTS / Breeze 的 ui-signal）不再自动弹窗：卡片角标 + 状态行一句
+       + 详情浮层里内嵌的 console（宿主 statusForUi 的 notice 字段）。
+     · 关掉控制台窗不影响后端（后端单例不随 MTNode 退出）；Remotion 没有常驻后端
+       （无 start / stop IPC），所以它只给「安装 / 重装」+「控制台」。
+   桥的名字一一对应 preload.js：<api>Status / Start / Stop / Install / CancelInstall /
+   PickInstallDir / Open / Close / ConsoleTail / UpdateRuntime。 */
+const BACKEND_PLUGIN_SPECS = {
+  music3: { key: "music3", api: "music3", hasService: true, update: true },
+  yue2: { key: "yue2", api: "yue2", hasService: true, update: true },
+  sensenova: { key: "sensenova", api: "sensenova", hasService: true },
+  h3: { key: "h3", api: "h3", hasService: true, update: true },
+  llama: { key: "llama", api: "llama", hasService: true },
+  tts: { key: "tts", api: "tts", hasService: true },
+  breeze: { key: "breeze", api: "breeze", hasService: true },
+  remotion: { key: "remotion", api: "remotion", hasService: false },
+};
+function backendSpecOf(item) {
+  const k = item && (item.kind || item.handler);
+  return (k && BACKEND_PLUGIN_SPECS[k]) || null;
+}
+function pluginApiFn(name) {
+  return window.api && typeof window.api[name] === "function" ? window.api[name].bind(window.api) : null;
+}
+/* 正在启动的插件：主按钮显示「启动中…」；再点 = 停止 */
+const _backendStarting = new Set();
+/* 已在详情浮层里看过提示的插件（kind → 看过的提示原文）：本地收掉角标 */
+const _backendNoticeSeen = new Map();
+/* 最近一次启动 / 安装的失败原因：卡片状态行要看得见（失败不静默、也不弹窗） */
+const _backendLastErr = new Map();
+function pluginErrLine(prefix, r) {
+  return prefix + ((r && (r.message || r.error)) || I18n.t("未知错误"));
+}
+/* 卡片上的求助角标（后端 ui-signal 留下的提示）；空串 = 收起 */
+function setPluginNotice(root, text) {
+  const el = root && root.querySelector("[data-plugin-notice]");
+  if (!el) return;
+  const t = String(text || "").trim();
+  el.hidden = !t;
+  el.textContent = t ? I18n.t("后端提示") : "";
+  el.title = t;
+}
+/* 卡片状态行：安装 / 更新 > 启动中 > 失败原因 > 后端求助提示（同一行只显示最要紧的那条） */
+function backendCardLine(st, spec) {
+  if (st.installing) return I18n.t("安装中…");
+  if (st.updating) return I18n.t("更新中…");
+  if (_backendStarting.has(spec.key)) return I18n.t("启动中…（首次加载模型可能几分钟，可再点一次停止）");
+  const err = _backendLastErr.get(spec.key);
+  if (err) return err;
+  const notice = String(st.notice || "");
+  if (notice && _backendNoticeSeen.get(spec.key) !== notice) return notice;
+  return "";
+}
+/* 本轮 8 个插件共用的卡片重绘 —— 各自的 refresh<Name>PluginCard 只是薄壳（保留函数名给冒烟用） */
+async function refreshBackendPluginCard(root, spec, opts) {
+  const o = opts || {};
+  const statusFn = pluginApiFn(spec.api + "Status");
+  if (!root || !statusFn) return;
+  const st = (await statusFn()) || {};
   const actions = root.querySelector("[data-plugin-actions]");
   const prog = root.querySelector("[data-plugin-progress]");
   const progTxt = root.querySelector("[data-plugin-progress-txt]");
   if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: true });
+  setPluginVer(root, { version: st.version, installed: !!st.installed });
+  /* 真在跑 = 上一条失败提示已过期，清掉（免得卡片一直挂着旧错误） */
+  if (st.running) _backendLastErr.delete(spec.key);
+  setPluginNotice(root, _backendNoticeSeen.get(spec.key) === String(st.notice || "") ? "" : st.notice);
   actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
+  const addBtn = (kind, title, onClick, btnOpts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, btnOpts));
   };
-  /* 列表仅保留控制台 运行/停止 互斥开关；后端启停在控制台窗口内操作，避免 play+stop 并存 */
-  if (st.consoleOpen) {
-    addBtn("stop", I18n.t("停止"), async () => {
-      if (window.api.music3Close) await window.api.music3Close();
-      refreshMusic3PluginCard(root);
+  const repaint = () => refreshBackendPluginCard(root, spec, o);
+  const openConsole = async () => {
+    const fn = pluginApiFn(spec.api + "Open");
+    if (!fn) return;
+    _backendLastErr.delete(spec.key);
+    const r = await fn();
+    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+    repaint();
+  };
+  const stopBackend = async () => {
+    const fn = pluginApiFn(spec.api + "Stop");
+    _backendStarting.delete(spec.key);
+    _backendLastErr.delete(spec.key);
+    repaint();
+    if (!fn) return;
+    const r = await fn();
+    if (!r || !r.ok) _backendLastErr.set(spec.key, pluginErrLine(I18n.t("停止后端失败："), r));
+    repaint();
+  };
+  const startBackend = async () => {
+    const fn = pluginApiFn(spec.api + "Start");
+    if (!fn) return;
+    _backendLastErr.delete(spec.key);
+    _backendStarting.add(spec.key);
+    repaint();
+    let r = null;
+    try {
+      r = await fn();
+    } catch (e) {
+      r = { ok: false, error: (e && e.message) || String(e) };
+    }
+    _backendStarting.delete(spec.key);
+    /* 失败不静默、也不弹窗：写进卡片状态行（点开卡片还能在内嵌 console 里看后端日志） */
+    if (!r || !r.ok) _backendLastErr.set(spec.key, pluginErrLine(I18n.t("启动失败："), r) + I18n.t(" —— 可点「控制台」看日志"));
+    repaint();
+  };
+  const installBackend = async () => {
+    const installFn = pluginApiFn(spec.api + "Install");
+    const pickFn = pluginApiFn(spec.api + "PickInstallDir");
+    if (!installFn) return;
+    _backendLastErr.delete(spec.key);
+    /* 还没选过安装目录：先弹系统目录选择框（不是插件窗），取消就什么都不做 */
+    if (!st.installDir && pickFn) {
+      const p = await pickFn();
+      if (!p || !p.ok) {
+        if (p && p.error) toast(pluginErrLine(I18n.t("选择安装目录失败："), p), "err");
+        return;
+      }
+      repaint();
+    }
+    const r = await installFn({});
+    if (!r || !r.ok) {
+      _backendLastErr.set(spec.key, pluginErrLine(I18n.t("安装失败："), r) + I18n.t(" —— 可点「控制台」看日志"));
+      toast(pluginErrLine(I18n.t("安装失败："), r), "err");
+    } else {
+      toast(I18n.t("安装完成"), "ok");
+    }
+    repaint();
+  };
+  const installing = !!st.installing || !!st.updating;
+  const starting = _backendStarting.has(spec.key);
+  const running = !!(st.running || st.wantRunning);
+  if (installing) {
+    addBtn("download", st.updating ? I18n.t("更新中…") : I18n.t("安装中…"), () => {}, {
+      disabled: true,
+      primary: true,
     });
+  } else if (spec.hasService && starting) {
+    addBtn("stop", I18n.t("启动中…（点此停止）"), stopBackend, { primary: true, on: true });
+  } else if (spec.hasService && running) {
+    addBtn("stop", I18n.t("停止"), stopBackend);
+  } else if (!st.installed) {
+    const lab = typeof o.installLabel === "function" ? o.installLabel(st) : o.installLabel;
+    addBtn("download", lab || I18n.t("安装"), installBackend, { primary: true });
+  } else if (spec.hasService) {
+    addBtn("play", I18n.t("启动"), startBackend, { primary: true });
   } else {
-    addBtn("play", I18n.t("运行"), async () => {
-      const r = await window.api.music3Open();
-      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      refreshMusic3PluginCard(root);
-    }, { primary: true });
+    const lab = typeof o.reinstallLabel === "function" ? o.reinstallLabel(st) : o.reinstallLabel;
+    addBtn("download", lab || I18n.t("重装"), installBackend);
   }
-  if (st.updateAvailable && window.api.music3UpdateRuntime) {
+  /* 显式入口：那只控制台窗（安装 / 卸载 / 工作流编辑器等重功能仍在窗里） */
+  addBtn("console", I18n.t("控制台"), openConsole);
+  if (spec.update && st.updateAvailable && pluginApiFn(spec.api + "UpdateRuntime")) {
     addBtn(
       "update",
       I18n.t("更新") + (st.latestVersion || st.feedVersion ? " → v" + (st.feedVersion || st.latestVersion) : ""),
@@ -387,29 +693,40 @@ async function refreshMusic3PluginCard(root) {
           progTxt.style.display = "block";
           progTxt.textContent = I18n.t("准备下载…");
         }
+        /* 更新会换掉控制台窗的 ui 资源：用户开着就先关掉，更新后按原样替他开回来
+           （这是用户早就亲手开过的窗，不算「插件自己弹窗」）。 */
         const wasOpen = !!st.consoleOpen;
-        if (wasOpen && window.api.music3Close) await window.api.music3Close();
-        const r = await window.api.music3UpdateRuntime();
-        if (prog) prog.style.display = "none";
-        if (progTxt) progTxt.style.display = "none";
-        if (r && r.ok) {
-          toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
-          if (wasOpen && window.api.music3Open) await window.api.music3Open();
-        } else {
-          toast(I18n.t("安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+        const closeFn = pluginApiFn(spec.api + "Close");
+        if (wasOpen && closeFn) await closeFn();
+        const r = await window.api[spec.api + "UpdateRuntime"]();
+        if (r && r.ok) toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
+        else toast(pluginErrLine(I18n.t("安装失败："), r), "err");
+        if (wasOpen && r && r.ok) {
+          const openFn = pluginApiFn(spec.api + "Open");
+          if (openFn) await openFn();
         }
-        refreshMusic3PluginCard(root);
+        repaint();
       },
-      { disabled: !!st.updating || !!st.installing },
+      { disabled: installing },
     );
   }
-  if (prog && (st.installing || st.updating)) {
-    prog.style.display = "block";
-    if (progTxt) {
+  /* 本轮共识：卡片不再挂 hint 说明行（此前 Breeze 的权重许可、SenseNova 的磁盘 / 权重说明、
+     Remotion 的安装口径各占一行小字）—— 卡片上只剩图标 + 标题 + 动作按钮，
+     状态行（安装中 / 启动失败原因 / 后端提示）仍照 backendCardLine 显示，失败不静默。 */
+  const line = backendCardLine(st, spec);
+  if (progTxt) {
+    if (line) {
       progTxt.style.display = "block";
-      progTxt.textContent = st.updating ? I18n.t("更新中…") : I18n.t("安装中…");
+      progTxt.textContent = line;
+    } else if (!installing) {
+      progTxt.style.display = "none";
+      progTxt.textContent = "";
     }
   }
+  if (prog) prog.style.display = installing || starting || st.rendering ? "block" : "none";
+}
+async function refreshMusic3PluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.music3);
 }
 function bindMusic3Progress(host) {
   if (!window.api || !window.api.onMusic3Progress) return null;
@@ -440,65 +757,9 @@ function bindMusic3Progress(host) {
     }
   });
 }
-/* ── YuE2 本地音乐（应用插件 kind yue2）：与 Music3 同族，安装/启停在插件控制台窗内完成 ── */
+/* ── YuE2 本地音乐（应用插件 kind yue2）：与 Music3 同族，卡片 = 启动/停止后端 + 控制台 ── */
 async function refreshYuePluginCard(root) {
-  if (!root || !window.api || !window.api.yue2Status) return;
-  const st = await window.api.yue2Status();
-  const actions = root.querySelector("[data-plugin-actions]");
-  const prog = root.querySelector("[data-plugin-progress]");
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
-  if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: true });
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
-  };
-  /* 列表仅保留控制台 运行/停止 互斥开关；后端启停在控制台窗口内操作，避免 play+stop 并存 */
-  if (st.consoleOpen) {
-    addBtn("stop", I18n.t("停止"), async () => {
-      if (window.api.yue2Close) await window.api.yue2Close();
-      refreshYuePluginCard(root);
-    });
-  } else {
-    addBtn("play", I18n.t("运行"), async () => {
-      const r = await window.api.yue2Open();
-      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      refreshYuePluginCard(root);
-    }, { primary: true });
-  }
-  if (st.updateAvailable && window.api.yue2UpdateRuntime) {
-    addBtn(
-      "update",
-      I18n.t("更新") + (st.latestVersion || st.feedVersion ? " → v" + (st.feedVersion || st.latestVersion) : ""),
-      async () => {
-        if (prog) prog.style.display = "block";
-        if (progTxt) {
-          progTxt.style.display = "block";
-          progTxt.textContent = I18n.t("准备下载…");
-        }
-        const wasOpen = !!st.consoleOpen;
-        if (wasOpen && window.api.yue2Close) await window.api.yue2Close();
-        const r = await window.api.yue2UpdateRuntime();
-        if (prog) prog.style.display = "none";
-        if (progTxt) progTxt.style.display = "none";
-        if (r && r.ok) {
-          toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
-          if (wasOpen && window.api.yue2Open) await window.api.yue2Open();
-        } else {
-          toast(I18n.t("安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-        }
-        refreshYuePluginCard(root);
-      },
-      { disabled: !!st.updating || !!st.installing },
-    );
-  }
-  if (prog && (st.installing || st.updating)) {
-    prog.style.display = "block";
-    if (progTxt) {
-      progTxt.style.display = "block";
-      progTxt.textContent = st.updating ? I18n.t("更新中…") : I18n.t("安装中…");
-    }
-  }
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.yue2);
 }
 function bindYueProgress(host) {
   if (!window.api || !window.api.onYueProgress) return null;
@@ -530,63 +791,7 @@ function bindYueProgress(host) {
   });
 }
 async function refreshH3PluginCard(root) {
-  if (!root || !window.api || !window.api.h3Status) return;
-  const st = await window.api.h3Status();
-  const actions = root.querySelector("[data-plugin-actions]");
-  const prog = root.querySelector("[data-plugin-progress]");
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
-  if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: true });
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
-  };
-  /* 列表仅保留控制台 运行/停止 互斥开关；后端启停在控制台窗口内操作，避免 play+stop 并存 */
-  if (st.consoleOpen) {
-    addBtn("stop", I18n.t("停止"), async () => {
-      if (window.api.h3Close) await window.api.h3Close();
-      refreshH3PluginCard(root);
-    });
-  } else {
-    addBtn("play", I18n.t("运行"), async () => {
-      const r = await window.api.h3Open();
-      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      refreshH3PluginCard(root);
-    }, { primary: true });
-  }
-  if (st.updateAvailable && window.api.h3UpdateRuntime) {
-    addBtn(
-      "update",
-      I18n.t("更新") + (st.latestVersion || st.feedVersion ? " → v" + (st.feedVersion || st.latestVersion) : ""),
-      async () => {
-        if (prog) prog.style.display = "block";
-        if (progTxt) {
-          progTxt.style.display = "block";
-          progTxt.textContent = I18n.t("准备下载…");
-        }
-        const wasOpen = !!st.consoleOpen;
-        if (wasOpen && window.api.h3Close) await window.api.h3Close();
-        const r = await window.api.h3UpdateRuntime();
-        if (prog) prog.style.display = "none";
-        if (progTxt) progTxt.style.display = "none";
-        if (r && r.ok) {
-          toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
-          if (wasOpen && window.api.h3Open) await window.api.h3Open();
-        } else {
-          toast(I18n.t("安装失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-        }
-        refreshH3PluginCard(root);
-      },
-      { disabled: !!st.updating || !!st.installing },
-    );
-  }
-  if (prog && (st.installing || st.updating)) {
-    prog.style.display = "block";
-    if (progTxt) {
-      progTxt.style.display = "block";
-      progTxt.textContent = st.updating ? I18n.t("更新中…") : I18n.t("安装中…");
-    }
-  }
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.h3);
 }
 function bindH3Progress(host) {
   if (!window.api || !window.api.onH3Progress) return null;
@@ -622,59 +827,10 @@ function bindH3Progress(host) {
    安装流程在插件控制台窗内完成（设置目录 → 复制 remotion-pack → npm install），
    卡片只做状态展示与入口：未安装 → 「打开控制台安装」；已安装 → 运行/停止控制台。 */
 async function refreshRemotionPluginCard(root) {
-  if (!root || !window.api || !window.api.remotionStatus) return;
-  const st = await window.api.remotionStatus();
-  const actions = root.querySelector("[data-plugin-actions]");
-  const prog = root.querySelector("[data-plugin-progress]");
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
-  if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: !!st.installed });
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
-  };
-  const openConsole = async () => {
-    const r = await window.api.remotionOpen();
-    if (!r || !r.ok) {
-      toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-    }
-  };
-  if (!st.installed) {
-    addBtn("download", I18n.t("打开控制台安装"), openConsole, {
-      primary: true,
-      disabled: !!st.installing,
-    });
-    const hint = document.createElement("div");
-    hint.className = "plugin-progress-txt";
-    hint.style.display = "block";
-    hint.textContent = I18n.t("在控制台窗中设置安装目录并安装（npm install，需联网）");
-    actions.appendChild(hint);
-  } else {
-    if (st.consoleOpen) {
-      addBtn("stop", I18n.t("停止"), async () => {
-        if (window.api.remotionClose) await window.api.remotionClose();
-        refreshRemotionPluginCard(root);
-      });
-    } else {
-      addBtn("play", I18n.t("运行"), openConsole, { primary: true });
-    }
-  }
-  if (st.installed && st.installDir) {
-    const dirHint = document.createElement("div");
-    dirHint.className = "plugin-progress-txt";
-    dirHint.style.display = "block";
-    dirHint.textContent = st.installDir;
-    actions.appendChild(dirHint);
-  }
-  if (prog && (st.installing || st.rendering)) {
-    prog.style.display = "block";
-    if (progTxt) {
-      progTxt.style.display = "block";
-      progTxt.textContent = st.installing
-        ? I18n.t("安装中…")
-        : I18n.t("渲染中 ") + Math.round(st.renderState ? st.renderState.pct || 0 : 0) + "%";
-    }
-  }
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.remotion, {
+    /* 它没有常驻后端（无 start/stop）：未装 = 「安装」，已装 = 「重装」——安装走 npm install */
+    reinstallLabel: I18n.t("重装"),
+  });
 }
 function bindRemotionProgress(host) {
   if (!window.api || !window.api.onRemotionProgress) return null;
@@ -708,36 +864,7 @@ function bindRemotionProgress(host) {
   });
 }
 async function refreshLlamaPluginCard(root) {
-  if (!root || !window.api || !window.api.llamaStatus) return;
-  const st = await window.api.llamaStatus();
-  const actions = root.querySelector("[data-plugin-actions]");
-  const prog = root.querySelector("[data-plugin-progress]");
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
-  if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: true });
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
-  };
-  if (st.consoleOpen) {
-    addBtn("stop", I18n.t("停止"), async () => {
-      if (window.api.llamaClose) await window.api.llamaClose();
-      refreshLlamaPluginCard(root);
-    });
-  } else {
-    addBtn("play", I18n.t("运行"), async () => {
-      const r = await window.api.llamaOpen();
-      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      refreshLlamaPluginCard(root);
-    }, { primary: true });
-  }
-  if (prog && st.installing) {
-    prog.style.display = "block";
-    if (progTxt) {
-      progTxt.style.display = "block";
-      progTxt.textContent = I18n.t("安装中…");
-    }
-  }
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.llama);
 }
 function bindLlamaProgress(host) {
   if (!window.api || !window.api.onLlamaProgress) return null;
@@ -769,36 +896,7 @@ function bindLlamaProgress(host) {
   });
 }
 async function refreshTtsPluginCard(root) {
-  if (!root || !window.api || !window.api.ttsStatus) return;
-  const st = await window.api.ttsStatus();
-  const actions = root.querySelector("[data-plugin-actions]");
-  const prog = root.querySelector("[data-plugin-progress]");
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
-  if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: true });
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
-  };
-  if (st.consoleOpen) {
-    addBtn("stop", I18n.t("停止"), async () => {
-      if (window.api.ttsClose) await window.api.ttsClose();
-      refreshTtsPluginCard(root);
-    });
-  } else {
-    addBtn("play", I18n.t("运行"), async () => {
-      const r = await window.api.ttsOpen();
-      if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-      refreshTtsPluginCard(root);
-    }, { primary: true });
-  }
-  if (prog && st.installing) {
-    prog.style.display = "block";
-    if (progTxt) {
-      progTxt.style.display = "block";
-      progTxt.textContent = I18n.t("安装中…");
-    }
-  }
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.tts);
 }
 function bindTtsProgress(host) {
   if (!window.api || !window.api.onTtsProgress) return null;
@@ -829,6 +927,46 @@ function bindTtsProgress(host) {
     }
   });
 }
+/* ---- Breeze TTS 2 本地 TTS（与 tts-local 并列的第二套语音后端，breeze/main-breeze.js）
+   卡片口径（本轮共识）：主按钮 = 启动 / 停止后端（不再开窗），未装 / 要件不全时 = 「安装」
+   （先弹系统目录选择框选安装目录，再装，脚本走国内镜像）；次按钮 = 「控制台」显式开窗。
+   图标一律取 PLUGIN_ACT_SVG 里的 play / stop / download / update / console，不自创 action kind。 */
+async function refreshBreezePluginCard(root) {
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.breeze, {
+    installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
+    /* 权重许可那行小字已从卡片移除（许可正文仍在控制台 / 安装脚本 / 指南里告知） */
+  });
+}
+function bindBreezeProgress(host) {
+  if (!window.api || !window.api.onBreezeProgress) return null;
+  const prog = host.querySelector("[data-plugin-progress]");
+  const progTxt = host.querySelector("[data-plugin-progress-txt]");
+  return window.api.onBreezeProgress((data) => {
+    if (!data || (data.id && data.id !== "breeze-tts-local")) return;
+    if (data.phase !== "install" && data.phase !== "dsh") return;
+    if (prog) prog.style.display = "block";
+    if (progTxt) progTxt.style.display = "block";
+    const pct = Math.max(0, Math.min(100, Number(data.pct) || 0));
+    const bar = prog && prog.querySelector("i");
+    if (bar) bar.style.width = pct + "%";
+    if (progTxt) {
+      progTxt.textContent =
+        (data.stepLabel || data.step || I18n.t("安装中…")) +
+        (data.message ? " — " + data.message : "") +
+        " " +
+        pct +
+        "%";
+    }
+    if (data.step === "done" || data.error) {
+      setTimeout(() => {
+        if (prog) prog.style.display = "none";
+        if (progTxt) progTxt.style.display = "none";
+        refreshBreezePluginCard(host);
+      }, 600);
+    }
+  });
+}
+
 /* ---- 本地语音转写：卡片已随「统一到 dsh 官方本地 SenseVoice」整块移除 ----
    从前这里有一张本地语音转写插件卡片（安装 / 控制台 / 补依赖 / 自我修复）。现在语音识别
    不再是本地 Python 后端，而是 dsh 运行时的官方 SenseVoice（模型权重由运行时自己下），
@@ -837,58 +975,16 @@ function bindTtsProgress(host) {
    它走 renderer/app-speech.js 那条通道。 */
 
 /* ---- 本地图像生成（SenseNova-U1.5-8B-MoT）：插件卡片状态 + 控制台入口（sensenova/main-sensenova.js）
-   卡片动作只有「打开控制台 / 关闭控制台」两态（与 yue2 同族：安装 / 启停 / 试生成都在控制台窗里做）。
-   额外给两枚：未安装时的「安装」（脚本快路径，失败再由宿主交棒 Agent）、以及运行中显示当前显存档位。
-   注：新 kind 的按钮图标一律复用 PLUGIN_ACT_SVG 已有的 play / stop / download / gear —— 表里没有的
-   kind 会渲染成无图标的空方块（AGENTS.md 硬约定），所以这里不要自创 action kind。 */
+   卡片口径（本轮共识）：主按钮 = 启动 / 停止后端（点「启动」静默后台拉起，不再自动开窗），
+   未装 / 权重没齐时 = 「安装（国内镜像）」（先弹系统目录选择框选安装目录，脚本快路径，
+   失败再由宿主交棒 Agent）；次按钮 = 「控制台」（原来的「状态与设置」并进它，避免两颗按钮开同一只窗）。
+   注：新 kind 的按钮图标一律取自 PLUGIN_ACT_SVG（play / stop / download / update / console），
+   表里没有的 kind 会渲染成无图标的空方块（AGENTS.md 硬约定），不要自创 action kind。 */
 async function refreshSensenovaPluginCard(root) {
-  if (!root || !window.api || !window.api.sensenovaStatus) return;
-  const st = await window.api.sensenovaStatus();
-  const actions = root.querySelector("[data-plugin-actions]");
-  const prog = root.querySelector("[data-plugin-progress]");
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
-  if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: true });
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, opts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
-  };
-  const openConsole = async () => {
-    const r = window.api.sensenovaOpen ? await window.api.sensenovaOpen() : { ok: false, error: "no_api" };
-    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-    refreshSensenovaPluginCard(root);
-  };
-  const closeConsole = async () => {
-    if (window.api.sensenovaClose) await window.api.sensenovaClose();
-    refreshSensenovaPluginCard(root);
-  };
-  if (st.consoleOpen) {
-    addBtn("stop", I18n.t("关闭控制台"), closeConsole, { primary: true });
-  } else {
-    addBtn("play", I18n.t("打开控制台"), openConsole, { primary: true });
-  }
-  /* 未装 / 权重没齐：卡片上直接给一键安装（脚本走国内镜像），不必先开控制台 */
-  if (!st.installed || !(st.project && st.project.models)) {
-    addBtn("download", st.installed ? I18n.t("补装权重") : I18n.t("安装（国内镜像）"), async () => {
-      toast(I18n.t("开始安装：权重约 32.66GB，请留意控制台进度…"), "ok");
-      openConsole();
-      const r = window.api.sensenovaInstall ? await window.api.sensenovaInstall({}) : { ok: false, error: "no_api" };
-      if (!r || !r.ok) {
-        const msg = (r && (r.message || r.error)) || "unknown";
-        toast(String(msg).slice(0, 160), "err");
-      }
-      refreshSensenovaPluginCard(root);
-    });
-  }
-  /* 状态入口：显存 / 权重 / 空闲释放一眼可见 */
-  addBtn("gear", I18n.t("状态与设置"), openConsole);
-  if (prog && st.installing) {
-    prog.style.display = "block";
-    if (progTxt) {
-      progTxt.style.display = "block";
-      progTxt.textContent = I18n.t("安装中…");
-    }
-  }
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.sensenova, {
+    installLabel: (st) => (st.installed ? I18n.t("补装权重") : I18n.t("安装（国内镜像）")),
+    /* 权重体积 / 磁盘建议那行小字已从卡片移除（磁盘不足时安装会在状态行报错，控制台另有权重状态） */
+  });
 }
 function bindSensenovaProgress(host) {
   if (!window.api || !window.api.onSensenovaProgress) return null;
@@ -929,7 +1025,9 @@ function pluginLoc(p, key) {  const v = p && p[key];
 }
 function pluginCatalogHint(cat) {
   const src = cat && cat.source;
-  if (src === "remote") return I18n.t("插件列表来自云端，可不升级主程序获取新插件。");
+  /* 云端目录正常时不提示（列表本来就是云端的，再写一行说明纯属冗余）；
+     只有云端不可用（缓存 / 内置兜底）时才给一句。 */
+  if (src === "remote") return "";
   if (src === "cache") {
     return (
       I18n.t("云端目录暂不可用，已显示上次缓存。") +
@@ -955,6 +1053,379 @@ function pluginErrText(err) {
   if (s === "busy") return I18n.t("正在安装…");
   return s || I18n.t("未知错误");
 }
+/* ============ 用户自建插件卡片（<数据目录>/user-plugins · 声明式） ============
+   与上面的内置插件卡片同一套壳（.plugin-tile + 右侧 .plugin-pop 详情面板），但四态不同：
+   正常 / 已停用 / 与当前版本不兼容 / 有错误 —— 状态一律来自主进程扫描结果（唯一真源），
+   这里只负责显示与动作。动作全部走 window.api.userPlugins*（见 plugins/user-plugins.js）。 */
+const USER_PLUGIN_STATE_TEXT = {
+  normal: "正常",
+  disabled: "已停用",
+  incompatible: "与当前版本不兼容",
+  error: "有错误",
+};
+const USER_PLUGIN_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" width="56" height="56"><path d="M9 4h6a1.2 1.2 0 0 1 1.2 1.2v2.1h2.1A1.2 1.2 0 0 1 19.5 8.5v2.1h1.1a1 1 0 0 1 1 1v2.6a1 1 0 0 1-1 1h-1.1v2.1a1.2 1.2 0 0 1-1.2 1.2h-2.6v-1.1a1 1 0 0 0-1-1h-2.6a1 1 0 0 0-1 1v1.1H5.4a1.2 1.2 0 0 1-1.2-1.2v-6.4h1.1a1 1 0 0 0 1-1V8.5a1 1 0 0 0-1-1H4.2V5.2A1.2 1.2 0 0 1 5.4 4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+
+async function loadUserPluginItems() {
+  if (!window.api || !window.api.userPluginsList) return [];
+  try {
+    const r = await window.api.userPluginsList(true);
+    const list = (r && r.plugins) || [];
+    return list.map((p) => ({
+      id: "user-plugin:" + p.id,
+      kind: "userplugin",
+      handler: "userplugin",
+      userPlugin: p,
+      title: p.title || { zh: p.id, en: p.id },
+      subtitle: p.subtitle || { zh: "", en: "" },
+    }));
+  } catch (e) {
+    return [];
+  }
+}
+function userPluginById(id) {
+  const key = String(id || "").replace(/^user-plugin:/, "");
+  return _userPluginItems.find((x) => x.userPlugin && x.userPlugin.id === key) || null;
+}
+function userPluginStateCls(p) {
+  return (
+    { normal: "np-ok", disabled: "np-off", incompatible: "np-warn", error: "np-err" }[p.state] ||
+    "np-err"
+  );
+}
+/** 主进程回来的原始插件对象 → 面板要用的形状（少了字段就按默认，绝不抛） */
+function userPluginPanelModel(p) {
+  const nodes = p.nodes || [];
+  return {
+    id: p.id,
+    state: p.state,
+    stateText: USER_PLUGIN_STATE_TEXT[p.state] || p.state,
+    version: p.version || "",
+    minAppVersion: p.minAppVersion || "",
+    maxAppVersion: p.maxAppVersion || "",
+    appVersion: p.appVersion || "",
+    incompatible: p.incompatible || "",
+    dir: p.dir || "",
+    manifestPath: p.manifestPath || "",
+    readmePath: p.readmePath || "",
+    errors: p.errors || [],
+    warnings: p.warnings || [],
+    unknownKeys: p.unknownKeys || [],
+    backend: p.backend || null,
+    mcp: p.mcp || [],
+    skills: p.skills || [],
+    nodes: nodes,
+  };
+}
+/** 详情面板：状态 / 版本区间 / 这个插件带来什么 / 字段说明 / 动作 */
+function renderUserPluginPanel(pop, item) {
+  const p = userPluginPanelModel(item.userPlugin || {});
+  pop.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "plugin-pop-title";
+  head.textContent = pluginLoc(item, "title") || p.id;
+  pop.appendChild(head);
+  const badge = document.createElement("div");
+  badge.className = "np-badge " + userPluginStateCls(p);
+  badge.textContent = I18n.t(p.stateText) + (p.version ? " · v" + p.version : "");
+  pop.appendChild(badge);
+  const sub = document.createElement("div");
+  sub.className = "plugin-pop-desc";
+  sub.textContent = pluginLoc(item, "subtitle") || "";
+  pop.appendChild(sub);
+  const row = (label, value) => {
+    const d = document.createElement("div");
+    d.className = "np-row";
+    const l = document.createElement("span");
+    l.className = "np-row-l";
+    l.textContent = label;
+    const v = document.createElement("span");
+    v.className = "np-row-v";
+    v.textContent = value;
+    v.title = value;
+    d.appendChild(l);
+    d.appendChild(v);
+    pop.appendChild(d);
+  };
+  row(I18n.t("插件目录"), p.dir);
+  if (p.minAppVersion || p.maxAppVersion) {
+    row(
+      I18n.t("版本区间"),
+      (p.minAppVersion || "—") + " ~ " + (p.maxAppVersion || "—") + " · " + I18n.t("当前 ") + p.appVersion,
+    );
+  }
+  row(
+    I18n.t("带来什么"),
+    I18n.t("节点 ") + p.nodes.length + " · MCP " + p.mcp.length + " · " + I18n.t("技能 ") + p.skills.length,
+  );
+  if (p.incompatible) {
+    const warn = document.createElement("div");
+    warn.className = "np-warn-line";
+    warn.textContent =
+      p.incompatible === "min"
+        ? I18n.t("本插件需要更新的 MTNode（") + p.minAppVersion + I18n.t(" 起）—— 请升级应用后重试")
+        : I18n.t("本插件只支持到 MTNode ") + p.maxAppVersion + I18n.t("（当前 ") + p.appVersion + I18n.t("）—— 请联系插件作者更新清单");
+    pop.appendChild(warn);
+  }
+  for (const e of p.errors) {
+    const d = document.createElement("div");
+    d.className = "np-err-line";
+    d.textContent = "✕ " + e;
+    pop.appendChild(d);
+  }
+  for (const w of p.warnings) {
+    const d = document.createElement("div");
+    d.className = "np-warn-line";
+    d.textContent = "! " + w;
+    pop.appendChild(d);
+  }
+  if (p.backend && (p.backend.hint || p.backend.healthUrl)) {
+    const b = document.createElement("div");
+    b.className = "np-backend";
+    b.textContent =
+      I18n.t("后端（插件不托管 · 需自行启动）：") +
+      (p.backend.healthUrl ? " " + p.backend.healthUrl : "") +
+      (pluginLocObj(p.backend.hint) ? " · " + pluginLocObj(p.backend.hint) : "");
+    pop.appendChild(b);
+  }
+  /* 试运行此节点：每个节点一行（验证链路，不必先摆到画布上） */
+  if (p.nodes.length) {
+    const list = document.createElement("div");
+    list.className = "np-nodes";
+    for (const n of p.nodes) {
+      const line = document.createElement("div");
+      line.className = "np-node-line";
+      const nm = document.createElement("span");
+      nm.className = "np-node-name";
+      nm.textContent = pluginLocObj(n.title) || n.kind;
+      nm.title = n.kind;
+      line.appendChild(nm);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mini";
+      btn.textContent = I18n.t("试运行");
+      btn.title = I18n.t("按清单声明的默认参数真跑一次（本机 HTTP 类会打你本机的接口）");
+      btn.onclick = async (ev) => {
+        ev.stopPropagation();
+        btn.disabled = true;
+        btn.textContent = I18n.t("运行中…");
+        const r = await (typeof tryRunPluginNode === "function"
+          ? tryRunPluginNode(n.kind)
+          : Promise.resolve({ ok: false, error: I18n.t("插件节点模块未加载") }));
+        btn.disabled = false;
+        btn.textContent = I18n.t("试运行");
+        if (r && r.ok) toast(I18n.t("试运行成功：") + String(r.output || "").slice(0, 120), "ok");
+        else toast(I18n.t("试运行失败：") + ((r && r.error) || ""), "err");
+      };
+      line.appendChild(btn);
+      list.appendChild(line);
+    }
+    pop.appendChild(list);
+  }
+  /* 字段说明（内置 · 可展开）：面板上没有的几条（目录 / 顶层键 / 占位符 / 安全） */
+  const det = document.createElement("details");
+  det.className = "np-help";
+  const sum = document.createElement("summary");
+  sum.textContent = I18n.t("清单要点");
+  det.appendChild(sum);
+  const pre = document.createElement("pre");
+  pre.className = "np-help-pre";
+  pre.textContent = userPluginManifestHelp();
+  det.appendChild(pre);
+  pop.appendChild(det);
+  /* 动作区 */
+  const acts = document.createElement("div");
+  acts.className = "np-acts";
+  const mk = (label, fn, opts) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mini" + (opts && opts.primary ? " primary" : "");
+    b.textContent = label;
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      b.disabled = true;
+      try {
+        await fn();
+      } finally {
+        b.disabled = false;
+      }
+    };
+    acts.appendChild(b);
+    return b;
+  };
+  mk(
+    p.disabled ? I18n.t("启用（重扫）") : I18n.t("停用"),
+    async () => {
+      const r = await window.api.userPluginsSetEnabled(p.id, !p.disabled);
+      if (!r || !r.ok) toast(I18n.t("操作失败：") + pluginErrText(r && r.error), "err");
+      else {
+        if (typeof loadPluginNodes === "function") await loadPluginNodes(true);
+        await refreshUserPluginCard(item, true);
+        toast(p.disabled ? I18n.t("已启用（重启应用后节点生效）") : I18n.t("已停用"), "ok");
+      }
+    },
+    { primary: true },
+  );
+  mk(I18n.t("重扫目录"), async () => {
+    await window.api.userPluginsRescan();
+    if (typeof loadPluginNodes === "function") await loadPluginNodes(true);
+    await refreshUserPluginCard(item, true);
+    toast(I18n.t("已重扫插件目录"), "ok");
+  });
+  mk(I18n.t("修复"), async () => {
+    const r = await window.api.userPluginsRepair(p.id);
+    const lines = ((r && r.steps) || []).map(
+      (s) => (s.ok === false ? "✕ " : "✓ ") + s.step + (s.note ? " · " + s.note : "") + (s.error ? " · " + s.error : ""),
+    );
+    if (r && r.ok) toast(I18n.t("修复完成：") + lines.join(" | ").slice(0, 200), "ok");
+    else toast(I18n.t("修复未通过：") + lines.join(" | ").slice(0, 200), "warn");
+    if (typeof loadPluginNodes === "function") await loadPluginNodes(true);
+    await refreshUserPluginCard(item, true);
+  });
+  mk(I18n.t("重启应用以生效"), async () => {
+    if (typeof confirmDialog === "function") {
+      const yes = await confirmDialog(I18n.t("插件在应用启动时加载：现在重启 MTNode？"), {
+        title: I18n.t("重启应用"),
+        okText: I18n.t("立即重启"),
+      });
+      if (!yes) return;
+    }
+    await window.api.userPluginsRelaunch();
+  });
+  mk(I18n.t("打开插件目录"), async () => {
+    await window.api.userPluginsOpenFolder(p.id);
+  });
+  mk(I18n.t("诊断导出"), async () => {
+    const r = await window.api.userPluginsExport(p.id);
+    if (r && r.ok) toast(I18n.t("诊断包已导出：") + r.path, "ok");
+    else toast(I18n.t("导出失败"), "err");
+  });
+  if (p.state === "error" || p.state === "incompatible") {
+    mk(I18n.t("交给 Agent 诊断"), async () => {
+      if (typeof pluginRepairHandleError !== "function") {
+        toast(I18n.t("修复会话不可用"), "warn");
+        return;
+      }
+      await pluginRepairHandleError({
+        pluginId: p.id,
+        pluginName: pluginLoc(item, "title") || p.id,
+        kind: "userplugin",
+        installDir: p.dir,
+        code: p.state === "incompatible" ? "incompatible_version" : "manifest_invalid",
+        message: (p.errors[0] || "") + (p.incompatible ? I18n.t("（版本区间不匹配）") : ""),
+        log: p.errors.concat(p.warnings).join("\n"),
+        repairable: true,
+      });
+    });
+  }
+  pop.appendChild(acts);
+}
+function pluginLocObj(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "object") return String(v.zh || v.en || "");
+  return String(v);
+}
+/** 清单要点（与 plugins/user-plugins.js 的 README_TEMPLATE 同一份口径）：只列面板上没交代的几条，
+    字段本身在详情面板逐项回显，不在这里再抄一遍 */
+function userPluginManifestHelp() {
+  return [
+    I18n.t("目录：<数据目录>/user-plugins/<插件id>/mtnode-plugin.json（另有 _example 模板可照抄）"),
+    "",
+    I18n.t("顶层键：id / title / version 见上方详情；另有 nodes[]（画布节点）、mcp[]（写进 cordis-user.yml）、skills[]（skills/<name>/SKILL.md 或内联 body）。"),
+    I18n.t("backend：{hint, healthUrl, startCommand} —— 后端由你自己启动，应用不托管"),
+    "",
+    I18n.t("模板占位符：{input:端口id} / {inputJson:端口id} / {text} / {param:参数id} / {node:title} / {plugin:id}"),
+    I18n.t("安全：插件目录里不允许任何会被执行的 JS —— 清单只是一份声明。"),
+  ].join("\n");
+}
+async function refreshUserPluginCard(item, forceReload) {
+  const r = await window.api.userPluginsList(true);
+  const list = (r && r.plugins) || [];
+  const p = list.find((x) => x.id === item.userPlugin.id) || null;
+  if (!p) return;
+  item.userPlugin = p;
+  item.title = p.title || item.title;
+  item.subtitle = p.subtitle || item.subtitle;
+  _userPluginItems = _userPluginItems.map((x) =>
+    x.id === item.id ? Object.assign({}, x, { userPlugin: p, title: item.title, subtitle: item.subtitle }) : x,
+  );
+  const host = document.querySelector('.plugin-tile[data-plugin-id="' + item.id + '"]');
+  if (!host) return;
+  host._pluginItem = item;
+  setPluginVer(host, { version: p.version });
+  const badge = host.querySelector(".np-state");
+  if (badge) {
+    badge.className = "np-state " + userPluginStateCls(p);
+    badge.textContent = I18n.t(USER_PLUGIN_STATE_TEXT[p.state] || p.state);
+  }
+  const sum = host.querySelector(".np-sum");
+  if (sum)
+    sum.textContent =
+      I18n.t("节点 ") + (p.nodes || []).length + " · MCP " + (p.mcp || []).length + " · " + I18n.t("技能 ") + (p.skills || []).length;
+  const pop = document.querySelector("#overlay > .plugin-pop");
+  const tile = pop && pop.querySelector("[data-np-for]");
+  if (pop && tile && tile.getAttribute("data-np-for") === item.id) renderUserPluginPanel(pop, item);
+  if (forceReload && typeof loadPluginNodes === "function") await loadPluginNodes(true);
+}
+function mkUserPluginCard(item) {
+  const p = item.userPlugin || {};
+  const card = document.createElement("div");
+  card.className = "plugin-tile np-tile";
+  card.setAttribute("data-plugin-id", item.id);
+  card.setAttribute("role", "button");
+  card.tabIndex = 0;
+  if (p.version) card.dataset.catalogVer = String(p.version);
+  card.innerHTML =
+    '<div class="plugin-tile-cover np-cover">' + USER_PLUGIN_SVG + "</div>" +
+    '<div class="plugin-tile-title"></div>' +
+    '<div class="plugin-tile-ver" data-plugin-ver></div>' +
+    '<div class="np-sum"></div>' +
+    '<div class="np-state"></div>' +
+    '<div class="plugin-tile-actions" data-plugin-actions></div>';
+  card.querySelector(".plugin-tile-title").textContent = pluginLoc(item, "title") || p.id;
+  card.querySelector("[data-plugin-ver]").textContent = p.version ? "v" + p.version : "";
+  card.querySelector(".np-sum").textContent =
+    I18n.t("节点 ") + (p.nodes || []).length + " · MCP " + (p.mcp || []).length + " · " + I18n.t("技能 ") + (p.skills || []).length;
+  const badge = card.querySelector(".np-state");
+  badge.className = "np-state " + userPluginStateCls(p);
+  badge.textContent = I18n.t(USER_PLUGIN_STATE_TEXT[p.state] || p.state);
+  return card;
+}
+async function refreshUserPluginItemDlgCount() {
+  try {
+    const r = await window.api.userPluginsList(false);
+    return ((r && r.plugins) || []).length;
+  } catch {
+    return 0;
+  }
+}
+/* 顶栏「插件」对话框：自建插件区的工具条动作（导入 / 打开目录 / 重扫并重启提示） */
+async function openUserPluginsImport() {
+  const r = await window.api.userPluginsImport({});
+  if (!r || !r.ok) {
+    if (r && r.needOverwrite) {
+      const yes =
+        typeof confirmDialog === "function"
+          ? await confirmDialog(I18n.t("同名插件已存在，覆盖安装？") + " " + r.id, {
+              title: I18n.t("导入插件"),
+              okText: I18n.t("覆盖"),
+            })
+          : false;
+      if (!yes) return;
+      const r2 = await window.api.userPluginsImport({ path: r.path, overwrite: true });
+      if (r2 && r2.ok) toast(I18n.t("已导入插件：") + r2.id, "ok");
+      else toast(I18n.t("导入失败：") + pluginErrText(r2 && r2.error), "err");
+    } else if (r && r.error !== "cancelled") {
+      toast(I18n.t("导入失败：") + pluginErrText(r && r.error), "err");
+    }
+    if (typeof loadPluginNodes === "function") await loadPluginNodes(true);
+    return;
+  }
+  if (typeof loadPluginNodes === "function") await loadPluginNodes(true);
+  toast(I18n.t("已导入插件：") + r.id + I18n.t("（重启应用后节点生效）"), "ok");
+}
+
 function bindPluginProgress(host, pluginId, isPet) {
   const prog = host.querySelector("[data-plugin-progress]");
   const progTxt = host.querySelector("[data-plugin-progress-txt]");
@@ -1068,6 +1539,8 @@ function mkPluginCardShell(item) {
     "</div>" +
     '<div class="plugin-tile-title"></div>' +
     '<div class="plugin-tile-ver" data-plugin-ver></div>' +
+    /* 后端求助角标（本轮：ui-signal 不再自动弹窗 → 卡片上给一枚可见提示，见 setPluginNotice） */
+    '<div class="plugin-tile-notice" data-plugin-notice hidden></div>' +
     '<div class="plugin-tile-actions" data-plugin-actions data-pet-actions></div>' +
     '<div class="plugin-progress" data-plugin-progress data-pet-progress style="display:none"><i></i></div>' +
     '<div class="plugin-progress-txt" data-plugin-progress-txt data-pet-progress-txt style="display:none"></div>';
@@ -1113,7 +1586,24 @@ async function openAppPluginsDialog() {
   refreshBtn.className = "mini";
   refreshBtn.textContent = I18n.t("刷新目录");
   refreshBtn.onclick = () => openAppPluginsDialog();
+  /* 用户自建插件区的两个入口：导入（zip / 目录）与打开插件目录。
+     与卡片上的动作同一套 IPC，不另开界面。 */
+  const importBtn = document.createElement("button");
+  importBtn.className = "mini";
+  importBtn.textContent = I18n.t("导入插件");
+  importBtn.title = I18n.t("选择插件目录或 .zip 包导入（导入后自动重扫）");
+  importBtn.onclick = async () => {
+    await openUserPluginsImport();
+    openAppPluginsDialog();
+  };
+  const dirBtn = document.createElement("button");
+  dirBtn.className = "mini";
+  dirBtn.textContent = I18n.t("打开插件目录");
+  dirBtn.title = I18n.t("在文件管理器里打开该目录");
+  dirBtn.onclick = () => window.api.userPluginsOpenFolder();
   foot.appendChild(closeBtn);
+  foot.appendChild(importBtn);
+  foot.appendChild(dirBtn);
   foot.appendChild(refreshBtn);
 
   let cat = { ok: true, source: "fallback", plugins: [] };
@@ -1124,6 +1614,7 @@ async function openAppPluginsDialog() {
     cat.remoteError = (e && e.message) || String(e);
   }
   intro.textContent = pluginCatalogHint(cat);
+  intro.hidden = !intro.textContent; /* 云端目录正常时没有说明 → 不留一个空占位 */
   const list = (
     Array.isArray(cat.plugins) && cat.plugins.length
       ? cat.plugins
@@ -1162,6 +1653,20 @@ async function openAppPluginsDialog() {
             subtitle: {
               zh: I18n.t("基于 GPT-SoVITS 的本地文本转语音：指定目录安装、参考音频音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。"),
               en: "GPT-SoVITS local TTS: custom install dir, reference-audio voice manager, OpenAI-compatible TTS API.",
+            },
+            compatible: true,
+            installed: true,
+          },
+          {
+            id: "breeze-tts-local",
+            kind: "breeze",
+            handler: "breeze",
+            icon: "breeze-tts-local.png",
+            version: "1.0.0",
+            title: { zh: "Breeze TTS 2 本地 TTS", en: "Breeze TTS 2 Local TTS" },
+            subtitle: {
+              zh: I18n.t("Breeze TTS 2（实时流式 · 音色克隆 / 设计 / 导演）：参考片段音色库、OpenAI 兼容 TTS API；画布「Breeze 语音」节点。权重仅限研究与非商用。"),
+              en: "Breeze TTS 2 (streaming · clone / design / direction): reference-clip voice library, OpenAI-compatible TTS API; canvas Breeze voice node. Weights are research / non-commercial only.",
             },
             compatible: true,
             installed: true,
@@ -1259,12 +1764,29 @@ async function openAppPluginsDialog() {
       if (window.api && window.api.onLlamaConsoleChanged) {
         offs.push(window.api.onLlamaConsoleChanged(() => refreshLlamaPluginCard(card)));
       }
+      /* 后端求助（ui-signal）不再自动弹窗：收到 llama:notice 就重绘卡片（角标 + 状态行） */
+      if (window.api && window.api.onLlamaNotice) {
+        offs.push(window.api.onLlamaNotice(() => refreshLlamaPluginCard(card)));
+      }
       refreshLlamaPluginCard(card);
+    } else if (item.kind === "breeze" || item.handler === "breeze") {
+      const off = bindBreezeProgress(card);
+      if (off) offs.push(off);
+      if (window.api && window.api.onBreezeConsoleChanged) {
+        offs.push(window.api.onBreezeConsoleChanged(() => refreshBreezePluginCard(card)));
+      }
+      if (window.api && window.api.onBreezeNotice) {
+        offs.push(window.api.onBreezeNotice(() => refreshBreezePluginCard(card)));
+      }
+      refreshBreezePluginCard(card);
     } else if (item.kind === "tts" || item.handler === "tts") {
       const off = bindTtsProgress(card);
       if (off) offs.push(off);
       if (window.api && window.api.onTtsConsoleChanged) {
         offs.push(window.api.onTtsConsoleChanged(() => refreshTtsPluginCard(card)));
+      }
+      if (window.api && window.api.onTtsNotice) {
+        offs.push(window.api.onTtsNotice(() => refreshTtsPluginCard(card)));
       }
       refreshTtsPluginCard(card);
     } else {
@@ -1291,6 +1813,76 @@ async function openAppPluginsDialog() {
     empty.className = "settings-hint";
     empty.textContent = I18n.t("暂无插件");
     body.appendChild(empty);
+  }
+  /* ── 用户自建插件（<数据目录>/user-plugins）──
+     与上面的商店插件同一套卡片壳，单独一段：它们是用户自己放进目录的声明式插件，
+     不随版本更新失效，坏了一键修复。段头只留位置，写法在卡片详情里看。 */
+  _userPluginItems = await loadUserPluginItems();
+  const sep = document.createElement("div");
+  sep.className = "settings-hint np-sep";
+  sep.textContent = I18n.t("自建插件") + " · " + I18n.t("目录：") + "user-plugins";
+  body.appendChild(sep);
+  if (_userPluginItems.length) {
+    const grid2 = document.createElement("div");
+    grid2.className = "plugin-grid";
+    body.appendChild(grid2);
+    for (const item of _userPluginItems) {
+      const card = mkUserPluginCard(item);
+      card._pluginItem = item;
+      const openPop = () => openPluginPop(wrap, pop, card, item);
+      card.addEventListener("click", (ev) => {
+        if (ev.target.closest(".plugin-tile-actions")) return;
+        openPop();
+      });
+      card.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        ev.preventDefault();
+        openPop();
+      });
+      grid2.appendChild(card);
+      /* 卡片上的快捷动作：正常/停用 = 启停；异常 = 修复（详情面板里有全套） */
+      const actions = card.querySelector("[data-plugin-actions]");
+      if (actions) {
+        const p = item.userPlugin || {};
+        const btn = (kind, title, fn, opts) => {
+          const b = mkPluginActBtn(kind, title, fn, opts);
+          actions.appendChild(b);
+          return b;
+        };
+        if (p.state === "normal" || p.state === "disabled") {
+          btn(
+            p.state === "normal" ? "stop" : "play",
+            p.state === "normal" ? I18n.t("停用") : I18n.t("启用"),
+            async () => {
+              await window.api.userPluginsSetEnabled(p.id, p.state === "normal");
+              if (typeof loadPluginNodes === "function") await loadPluginNodes(true);
+              await refreshUserPluginCard(item, true);
+            },
+            { on: p.state === "normal" },
+          );
+        } else {
+          btn(
+            "gear",
+            I18n.t("修复"),
+            async () => {
+              const r = await window.api.userPluginsRepair(p.id);
+              toast(
+                (r && r.ok ? I18n.t("修复完成") : I18n.t("修复未通过")) +
+                  "：" +
+                  (((r && r.steps) || [])
+                    .map((s) => (s.ok === false ? "✕" : "✓") + s.step)
+                    .join(" ")),
+                r && r.ok ? "ok" : "warn",
+              );
+              if (typeof loadPluginNodes === "function") await loadPluginNodes(true);
+              await refreshUserPluginCard(item, true);
+            },
+            { primary: true },
+          );
+        }
+        btn("gear", I18n.t("详情 / 修复 / 节点"), openPop);
+      }
+    }
   }
 }
 

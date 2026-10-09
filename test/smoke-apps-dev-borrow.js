@@ -276,6 +276,7 @@ if (fails) {
 }
 
 /* ==================== 已并入：test/smoke-apps-cloud.js ==================== */
+let CLOUD_DONE = null; /* 并入块是异步的（真起 http 服务 + 真 require 主进程模块）：收尾要等它 */
 (function () {
   const __dirname = TEST_DIR;
   const __filename = TEST_DIR + "/" + "smoke-apps-cloud.js";
@@ -325,6 +326,13 @@ if (fails) {
           desc: "冒烟用",
           description: "冒烟用",
           icon: "icons/" + APP_ID + ".png",
+          /* 封面缩略图：服务端**两种来源下发同一个字段**、且都是静态目录的相对写法
+             （icons/<主干>__shot.png，见 store-saas/server.mjs 的 appCatalogEntry）。
+             接口侧没有 icons/ 这条静态路由 —— 主进程必须把它换成 /api/apps/<id>/thumb，
+             直拼（…/store-api/icons/…）线上是 404，卡片就等于拿不到封面。 */
+          thumb: "icons/" + APP_ID + "__shot.png",
+          coverSource: "shot",
+          coverVer: "1791495394",
           zipUrl: APP_ID + ".zip",
           url: APP_ID + ".zip",
           sha256: ZIP_SHA,
@@ -527,6 +535,10 @@ if (fails) {
       ok(urls.zip === STORE + "/api/apps/" + APP_ID + "/file?version=1.2.0&format=raw", "接口来源：下载地址走 /api/apps/<id>/file：" + urls.zip);
       ok(urls.versions["1.0.0"] === STORE + "/api/apps/" + APP_ID + "/file?version=1.0.0&format=raw", "接口来源：多版本每一版都有接口下载地址");
       ok(urls.icon === STORE + "/api/apps/" + APP_ID + "/icon", "接口来源：图标走 /api/apps/<id>/icon");
+      ok(
+        urls.thumb === STORE + "/api/apps/" + APP_ID + "/thumb",
+        "接口来源：封面缩略图走 /api/apps/<id>/thumb（**不是** store-api/icons/… 那个 404 地址）：" + urls.thumb,
+      );
       ok(cat.remoteError && /empty_catalog/.test(cat.remoteError), "回执里留下静态目录为空的原因：" + cat.remoteError);
     }
 
@@ -555,6 +567,10 @@ if (fails) {
       ok(urls.zip === FEED + "/" + APP_ID + ".zip", "静态来源：下载地址 = FEED + <id>.zip：" + urls.zip);
       ok(urls.versions["1.0.0"] === FEED + "/" + APP_ID + "/1.0.0.zip", "静态来源：多版本走 <id>/<ver>.zip");
       ok(urls.icon === FEED + "/icons/" + APP_ID + ".png", "静态来源：图标走 icons/<id>.<ext>");
+      ok(
+        urls.thumb === FEED + "/icons/" + APP_ID + "__shot.png",
+        "静态来源：封面缩略图 = FEED + 服务端下发的相对写法（原样解析，不改名）：" + urls.thumb,
+      );
     }
 
     /* ---- [4] 全断 → 本机缓存；缓存也没有 → empty（不抛错，交给渲染层提示） ---- */
@@ -579,6 +595,10 @@ if (fails) {
       ok(String(cached.sourceBase) === STORE, "缓存记住来源基址（图标 / 下载仍能解析）");
       const urls = store.zipUrlsOf(cached.apps[0]);
       ok(urls.icon === STORE + "/api/apps/" + APP_ID + "/icon", "缓存来源是接口 → 图标仍走接口 URL");
+      ok(
+        urls.thumb === STORE + "/api/apps/" + APP_ID + "/thumb",
+        "缓存来源是接口 → 封面缩略图也仍走接口 URL：" + urls.thumb,
+      );
     }
 
     /* ---- [5] 防投毒白名单仍然生效（接口目录不能把下载源指到别的站） ---- */
@@ -614,7 +634,7 @@ if (fails) {
     if (fails ? 1 : 0) MERGED_FAILED = true;
   }
 
-  main().catch((e) => {
+  CLOUD_DONE = main().catch((e) => {
     console.error("smoke-apps-cloud 崩了：" + ((e && e.stack) || e));
     try { server.close(); } catch {}
     if (1) MERGED_FAILED = true;
@@ -627,6 +647,10 @@ if (fails) {
   if (fails) console.log("  ── 已并入块 smoke-apps-cloud.js：" + fails + " / " + checks + " 项失败");
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+/* 收尾：正文与并入块任一失败都算这只红；退出码**只在全部跑完之后**才定 ——
+   并入块是异步的，早先这里同步 process.exit() 会在它跑完之前就把进程杀掉，
+   于是「smoke-apps-cloud 这一块从来没跑过、却回了 PASS」（本轮补封面断言时才发现）。 */
+Promise.resolve(CLOUD_DONE).then(() => {
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+  process.exit(MERGED_FAILED ? 1 : 0);
+});

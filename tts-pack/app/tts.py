@@ -754,6 +754,11 @@ def apply_language_guard() -> dict[str, Any]:
     return {"ok": True, "applied": applied, "engineRestarted": restarted}
 
 
+def _no_window() -> int:
+    """Windows: 子进程别再新开控制台窗口（管理服务自己无控制台，子进程没得继承就会被新建一个窗口）。"""
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
 def _is_alive(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
@@ -764,6 +769,7 @@ def _is_alive(pid: int | None) -> bool:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 errors="ignore",
+                creationflags=_no_window(),
             )
             return str(pid) in out and "No tasks" not in out
         except Exception:
@@ -821,6 +827,7 @@ def _kill_pid(pid: int) -> None:
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=_no_window(),
         )
     else:
         try:
@@ -926,6 +933,7 @@ def stop_engine() -> dict[str, Any]:
                 text=True,
                 errors="ignore",
                 timeout=10,
+                creationflags=_no_window(),
             )
             pid = int(str(out or "").strip())
             if pid:
@@ -1385,7 +1393,7 @@ def _transcode_audio(data: bytes, fmt: str) -> dict[str, Any]:
     else:
         return {"ok": False, "error": "unsupported_media_type: %s" % fmt, "errorCode": "unsupported_media_type"}
     try:
-        proc = subprocess.run(cmd, input=data, capture_output=True, timeout=300)
+        proc = subprocess.run(cmd, input=data, capture_output=True, timeout=300, creationflags=_no_window())
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": "transcode_failed: %s" % e, "errorCode": "transcode_failed"}
     if proc.returncode != 0 or not proc.stdout:

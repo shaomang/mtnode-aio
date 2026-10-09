@@ -100,6 +100,7 @@ function implInjection() {
       "I18n",
       "agentSessionState",
       "persistAgentSession",
+      "agentTouchSession",
       "renderAgentComposer",
       "updateRunQueuePanel",
       code,
@@ -110,7 +111,12 @@ function implInjection() {
   return (
     "window.__modeImpl=(function(){\n" +
     "  function agentSessionState(){ return window.__probeSession; }\n" +
-    "  function persistAgentSession(){} function renderAgentComposer(){}\n" +
+    /* 模式开关的落盘语义（本模块本轮）：agentTouchSession = 盖时间戳 + 落盘，
+       quiet = 只把排队的改动推下去、不盖时间戳 —— 本测试只关心「开关真的开了」，
+       两个入口都按 no-op 桩注入（缺一个页面里就 ReferenceError）。 */
+    "  function persistAgentSession(){} function agentTouchSession(){}\n" +
+    "  function agentFlushSessionSaveQuiet(){}\n" +
+    "  function renderAgentComposer(){}\n" +
     "  function updateRunQueuePanel(){}\n" +
     code +
     "\n})();\n!!window.__modeImpl;"

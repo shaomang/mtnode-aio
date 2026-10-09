@@ -55,6 +55,7 @@ const {
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+const { quietPython } = require("../backend-python.js");
 
 /** 报错总线 / 插件卡片 / 修复表用的插件 id（与 plugins/catalog.default.json 的卡 id 一致） */
 const PLUGIN_ID = "sensenova-local";
@@ -546,7 +547,7 @@ function venvPython(installDir) {
   const root = String(installDir || loadConfig().installDir || "").trim();
   if (!root) return "";
   const py = join(root, ".venv", "Scripts", "python.exe");
-  return fs.existsSync(py) ? py : "";
+  return fs.existsSync(py) ? quietPython(py) : "";
 }
 
 function projectSignals(dir) {
@@ -2484,9 +2485,52 @@ function shutdownSensenovaUiOnly() {
   clearIdleTimer();
 }
 
+/**
+ * 显存释放钩子（给主进程 local-model-vram.js 的统一编排用，见该文件头部口径）：
+ *   · soft = 走**后端自带的 POST /shutdown** 停服务（32.66GB 权重与主内存一起还回去，
+ *     这是本后端最轻的释放手段 —— 它没有「只卸模型不退出」的接口）；
+ *   · hard = 停服务 + 杀进程树 / 占端口进程（软释放超时或没生效时由编排器升级）。
+ * 释放不改用户的启动意图之外的东西：下次出图由 ensureReady 自行拉起。
+ */
+function vramHooks() {
+  return {
+    host: "sensenova",
+    port: DEFAULT_PORT,
+    isRunning: () => backendRunning(),
+    isLoaded: () => backendRunning(),
+    isBusy: () => !!activeGenerate,
+    soft: async (reason) => {
+      appendConsole("[vram] 停止图像后端释放显存与主内存（" + String(reason || "release") + "）—— 下次出图会自动重新拉起");
+      const r = await stopBackend({ reason: "vram_" + String(reason || "release") });
+      return { ok: !!(r && r.ok), stopped: !!(r && r.stopped), mode: "api_shutdown" };
+    },
+    hard: async (reason) => {
+      appendConsole("[vram] 强制结束图像后端进程树（" + String(reason || "release") + "）");
+      const p = port();
+      const meta = loadPidMeta();
+      const pid = (meta && meta.pid) || (backendProc && backendProc.pid);
+      if (backendProc) {
+        try {
+          backendProc.kill();
+        } catch {}
+        backendProc = null;
+      }
+      if (pid) await killPidTree(pid);
+      const orphan = await killPortListener(p);
+      if (orphan) appendConsole("[vram] killed port listener pid=" + orphan);
+      clearPidMeta();
+      invalidateHealth();
+      saveConfig({ wantRunning: false });
+      return { ok: true, mode: "kill_pid_tree" };
+    },
+  };
+}
+
 module.exports = {
   registerSensenovaIpc,
   shutdownSensenovaUiOnly,
+  /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
+  vramHooks,
   /* 应用通道（appHost.imageGen 的本机那一路）用的轻量现况：见 imageHostInfo 头部 */
   imageHostInfo,
   onSensenovaDshEvent,

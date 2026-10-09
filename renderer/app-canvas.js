@@ -15,6 +15,39 @@ const MARK_DEFAULTS = {
   text: { w: 200, h: 44, text: "说明文字", color: "#38d6ff", fontSize: 16 },
 };
 
+/* 「未选中 = 浏览态」的 kind 集合（判定逻辑见文件后半的「节点浏览态」区块）。
+   ⚠ 必须**声明在本文件最前面**：本文件的装载期（顶层执行）一旦被打断 —— 例如上一支脚本
+   （app.js）在顶层就触发了 renderCanvas，或本文件后面的顶层代码抛错 —— 这条 const 会停在
+   TDZ（暂时性死区），此刻任何 renderCanvas / mountNodeEl 走到 nodeBrowseKind 都抛
+   「Cannot access 'NODE_BROWSE_KINDS' before initialization」，画布上**所有**节点都画不出来。
+   放在最前面 + nodeBrowseKind 里的兜底 try/catch，两处一起保证「画布渲染永远不会被它炸掉」。
+   同理的还有紧随其后的 NODE_BROWSE_BODY（浏览态 body 登记表）：装载期被打断时它是同一个
+   事故的第二个受害者（本文件顶层引用了后加载文件的绑定 → 顶层在 4582 中断 → 7495 的 const
+   停在 TDZ → 每次渲染报「Cannot access 'NODE_BROWSE_BODY' before initialization」）。
+   由此定死两条口径：① 本文件顶层**不得引用**后加载文件（index.html 里排在后面的文件）的
+   绑定，要取就在调用期取（如 `summary: (node) => helper(node)`）；② 下面这两条声明一律
+   留在文件最前面，并各自带兜底 try/catch。
+   回归口径见 test/smoke-canvas-boot-tdz.js。 */
+const NODE_BROWSE_KINDS = new Set([
+  "input_text",
+  "input_image",
+  "proc_text",
+  "proc_image",
+  "agent_task",
+  "save",
+  /* 函数节点：未选中只读显示代码正文，点选即出可编辑代码块（工具节点是 super 变体，不参与） */
+  "function",
+  /* 素材节点：未选中只列「素材名 + 每条内容标题 + 类型」（轻量摘要，见
+     NODE_BROWSE_BODY.asset）。焦点态（选中）才逐条渲染正文 / 缩略图 / 播放器。 */
+  "asset",
+]);
+
+/* 浏览态 body 渲染器的登记表（kind 键 → function(node, body)，登记点见文件后半
+   「浏览态 body 渲染器」区块；旧别名 save_text / save_image 走 nodeBrowseKindKey 归一）。
+   与上面的 kind 集合同一个理由**必须声明在本文件最前面**：它是 buildBrowseBody 每次渲染
+   都要取的表，一旦停在 TDZ 就是整张画布画不出来（见上面 NODE_BROWSE_KINDS 的注释）。 */
+const NODE_BROWSE_BODY = {};
+
 function marksOf() {
   if (!S.wf) return [];
   if (!Array.isArray(S.wf.marks)) S.wf.marks = [];
@@ -4553,16 +4586,590 @@ registerNodeSettingsForm("tts_gen", {
   },
 });
 
-/* 端子徽标正文：一律写「完整名称」，绝不在这里切字（原来 clipStr(name,8) 把参数名 /
-   素材条目标题切成「referenc…」，再被节点板 44px 溢出通道硬裁半截，看着像坏了）。
-   截断交给 CSS：.port-badge .pb-name 平时按 max-width 出省略号，节点高亮
-   （选中 / 悬停）时放开 → 完整端子名称一眼可见，且同时放开溢出通道，绝不再被裁。
-   名称单独包一层 <i>，数组端子的槽位点（.fn-arr-slots）留在徽标本体里，不参与裁切。 */
+/* 节点「设置」跳窗里的一个小占位（排在本文件后面的 app-nodes.js 没加载 / 该区块抛错时用）：
+   Breeze 的两个文本框（输入文本 / 参考文本）—— breezeTextBoxesFor 在 app-nodes.js 里，
+   装载期取不到，只能调用期取；卡片 body 与设置窗共用那一份实现。 */
+function breezeTextBoxPlaceholder(msg) {
+  const d = document.createElement("div");
+  d.className = "n-reftext-hint";
+  d.textContent = String(msg || "");
+  return d;
+}
+
+/* ── breeze_gen：能力 / 音色 / 指令 / cfg_scale / 种子 / 输出格式 / 输出路径 / 抽卡 ──
+   参考源优先级（用户已确认）：端子的参考音频 / 参考文本优先，端子空了才用这里的音色；
+   本次实际用了哪个源写在节点状态行上（见 app-nodes.js 的 breezeResolveRef）。 */
+registerNodeSettingsForm("breeze_gen", {
+  gearTitle: () => I18n.t("能力 / 音色 / 指令 / cfg_scale / 种子 / 输出格式 / 输出路径"),
+  /* 调用期取：breezeGenParamSummaryText 在 app-nodes.js（本文件之后加载），顶层直接写
+     标识符会让本文件的装载期在这里中断 —— 见文件开头 NODE_BROWSE_KINDS 处注释 */
+  summary: (node) => breezeGenParamSummaryText(node),
+  build: (ctx) => {
+    const node = ctx.node;
+    ctx.section(I18n.t("参考源（端子优先）"));
+    /* 音色：后端就绪时给下拉（列表随状态刷新），没就绪 / 没装插件时退回手填 */
+    const voiceBox = document.createElement("span");
+    voiceBox.className = "nsf-ctl";
+    const voiceSel = document.createElement("select");
+    voiceSel.id = nodeSettingsCtlId("breezevoice", node.id);
+    const voiceInp = document.createElement("input");
+    voiceInp.type = "text";
+    voiceInp.id = nodeSettingsCtlId("breezevoiceinp", node.id);
+    voiceInp.placeholder = I18n.t("音色名（后端未就绪时可手填）");
+    voiceInp.value = String(node.voice || "");
+    voiceSel.style.display = "none";
+    voiceInp.style.display = "none";
+    const paintVoice = (vs) => {
+      if (!voiceSel.isConnected) return;
+      voiceSel.textContent = "";
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = I18n.t("（不用音色库：只用端子的参考音频）");
+      voiceSel.appendChild(none);
+      if (vs && vs.length) {
+        const cur = String(node.voice || "").trim();
+        let found = !cur;
+        for (const v of vs) {
+          const o = document.createElement("option");
+          o.value = v.id;
+          o.textContent = v.name + (v.ready ? "" : I18n.t("（缺音频或文稿）"));
+          if (cur && cur === v.id) {
+            o.selected = true;
+            found = true;
+          }
+          voiceSel.appendChild(o);
+        }
+        if (cur && !found) {
+          const o = document.createElement("option");
+          o.value = cur;
+          o.textContent = cur;
+          o.selected = true;
+          voiceSel.appendChild(o);
+        }
+        voiceSel.style.display = "";
+        voiceInp.style.display = "none";
+      } else {
+        voiceSel.style.display = "";
+        voiceInp.style.display = "";
+      }
+    };
+    const commitVoice = (v) => {
+      node.voice = String(v || "").trim();
+      syncNodeSettingsValue(node, "breezevoice", node.voice || I18n.t("（只用端子）"));
+      ctx.commit({ history: true });
+    };
+    voiceSel.addEventListener("change", () => {
+      voiceInp.value = voiceSel.value;
+      commitVoice(voiceSel.value);
+    });
+    voiceInp.addEventListener("change", () => {
+      commitVoice(voiceInp.value);
+    });
+    const voiceRef = document.createElement("button");
+    voiceRef.className = "mini";
+    voiceRef.textContent = "↻";
+    voiceRef.title = I18n.t("刷新音色列表");
+    const loadVoices = async () => {
+      if (!window.api || !window.api.breezeStatus) return paintVoice([]);
+      try {
+        const st = await window.api.breezeStatus();
+        const vs = (st && st.apiStatus && st.apiStatus.voices) || [];
+        paintVoice(vs);
+      } catch (_) {
+        paintVoice([]);
+      }
+    };
+    voiceRef.onclick = (ev) => {
+      ev.stopPropagation();
+      loadVoices();
+    };
+    voiceBox.appendChild(voiceSel);
+    voiceBox.appendChild(voiceInp);
+    voiceBox.appendChild(voiceRef);
+    ctx.field(I18n.t("音色"), null, { span: true }).appendChild(voiceBox);
+    paintVoice([]);
+    loadVoices();
+    ctx.hint(
+      I18n.t("端口 1 / 2 接了参考音频与文稿时以端子为准；端子为空才用这里的音色（音色库 = 参考音频 + 逐字文稿）"),
+    );
+    nsSelect(
+      ctx,
+      I18n.t("能力"),
+      [
+        ["auto", I18n.t("自动判定")],
+        ["clone", I18n.t("音色克隆")],
+        ["design", I18n.t("音色设计")],
+        ["direction", I18n.t("音色导演")],
+      ],
+      breezeModeOf(node),
+      (v) => {
+        node.voiceMode = v;
+        syncNodeSettingsValue(node, "breezemode", breezeModeLabel(v));
+      },
+      {
+        id: nodeSettingsCtlId("breezemode", node.id),
+        title: I18n.t(
+          "官方语义：有参考音频且无 instruction = 音色克隆；有 instruction = 音色导演；无参考音频 = 音色设计",
+        ),
+        commit: { history: true },
+      },
+    );
+    /* 两个文本框（输入文本 / 参考文本）：与卡片 body 上那一组同源（app-nodes.js 的
+       breezeTextBoxesFor，调用期取；端子 0 / 2 有输入时自动切只读回显）。本节点不做转录。 */
+    {
+      const lab = document.createElement("label");
+      lab.className = "n-field nsf-span nsf-reftext";
+      const cap = document.createElement("span");
+      cap.textContent = I18n.t("文本（端子有输入时只读，端子为空才可编辑）");
+      lab.appendChild(cap);
+      if (typeof breezeTextBoxesFor === "function") {
+        try {
+          lab.appendChild(breezeTextBoxesFor(node, {}));
+        } catch (_) {
+          lab.appendChild(breezeTextBoxPlaceholder(I18n.t("文本区块未能加载（详见控制台）")));
+        }
+      } else {
+        lab.appendChild(
+          breezeTextBoxPlaceholder(I18n.t("文本区块不可用（renderer/app-nodes.js 未加载）")),
+        );
+      }
+      ctx.root.appendChild(lab);
+    }
+    nsText(
+      ctx,
+      I18n.t("指令 instruction（端子为空时用）"),
+      String(node.instruction || ""),
+      {
+        id: nodeSettingsCtlId("breezeinstr", node.id),
+        span: true,
+        live: true,
+        placeholder: I18n.t("一位温柔自信的年轻女性，声音清晰，语气亲切（语言要与正文一致）"),
+        title: I18n.t("自然语言指令；有 instruction 时官方建议 cfg_scale 用 4"),
+        commit: { history: true },
+      },
+      (v) => {
+        node.instruction = String(v || "");
+      },
+    );
+    ctx.section(I18n.t("采样"));
+    nsNumber(
+      ctx,
+      "cfg_scale",
+      breezeCfgScaleOf(node),
+      {
+        id: nodeSettingsCtlId("breezecfg", node.id),
+        min: 0.1,
+        max: 10,
+        step: 0.5,
+        fallback: 1,
+        title: I18n.t("指令跟随强度：默认 1；有 instruction 时官方建议 4"),
+      },
+      (v) => {
+        node.cfgScale = Math.max(0.1, Math.min(10, v || 1));
+      },
+    );
+    nsNumber(
+      ctx,
+      I18n.t("种子"),
+      breezeSeedOf(node),
+      {
+        id: nodeSettingsCtlId("mgseed", node.id),
+        min: 0,
+        max: 2147483647,
+        step: 1,
+        fallback: 42,
+        title: I18n.t("采样种子（默认 42）：同种子同参考片段可复现同一段语音"),
+      },
+      (v) => {
+        node.seed = Math.max(0, Math.floor(v || 0));
+      },
+    );
+    ctx.section(I18n.t("输出"));
+    nsNumber(
+      ctx,
+      I18n.t("抽卡次数"),
+      attemptCount(node),
+      {
+        id: nodeSettingsCtlId("mgrolls", node.id),
+        min: 1,
+        max: 10,
+        step: 1,
+        fallback: 1,
+        title: I18n.t("连续生成次数（1–10）；多次时输出命名为 #1、#2 …"),
+      },
+      (v) => {
+        node.attempts = attemptCount({ attempts: v });
+        syncNodeSettingsValue(node, "mgrolls", String(node.attempts));
+      },
+    );
+    nsSelect(
+      ctx,
+      I18n.t("输出格式"),
+      [
+        ["wav", "wav"],
+        ["flac", "flac"],
+        ["mp3", "mp3（需 ffmpeg）"],
+      ],
+      breezeFormatOf(node),
+      (v) => {
+        node.ttsFormat = v;
+        if (String(node.outputPath || "").trim())
+          applyMediaGenConfiguredPath(node, node.outputPath, "audio");
+        syncNodeSettingsValue(
+          node,
+          "mgpath",
+          mediaGenOutputRaw(node) || String(node.outputPath || ""),
+        );
+      },
+      { commit: { history: true, rerender: true } },
+    );
+    nsMediaGenPathField(ctx, node, "audio");
+  },
+});
+
+/* ═══════════ 端子标签（徽标正文 + 悬停提示）唯一真源 ═══════════
+ * 需求：节点端子的输入 / 输出标签分别落在端子左侧与右侧（CSS .port.in>.port-badge
+ *   right:100% · .port.out>.port-badge left:100% 已经钉住位置，这里只负责给文字）。
+ * 口径（画布上所有节点一致，不再按节点 kind 列白名单）：
+ *   · 有语义名的端子写名字（提示词 / 歌词 / 控制 / 首帧图像 / 素材条目标题 /
+ *     保存结果 / Breeze 的参考音频…），**不加序号**；
+ *   · 没名字的端子写「输入N」/「输出N」（左右各自从 1 起数，空端子同样有标签）；
+ *   · 名字来自各节点自己的真源：inPortIsControl（控制口）、IN_PORT_DATA_KINDS
+ *     与各 kind 的固定端口表（与 body / 接线校验同一份口径，绝不在这里另编一套），
+ *     能挂信息就用，挂不上才退回序号。
+ * 返回 { badge, title, zh }：badge = 徽标正文；title = 端子悬停提示（没给语义名时
+ *   与 badge 同源，解决「悬停说一个名、板上没有字」或两者对不上的问题）；
+ *   zh = 正文是中文（走 .zh-label 字体，与从前按节点 kind 打标的做法同效）。
+ * setPortBadgeName 只负责把正文塞进节点板外侧那一颗 <i class="pb-name">。 */
 function setPortBadgeName(badge, text) {
   const s = document.createElement("i");
   s.className = "pb-name";
   s.textContent = String(text == null ? "" : text);
   badge.appendChild(s);
+}
+
+/* 端子标签正文：见上方注释块（画布上每一个端子都要有，按 dir 决定「输入N / 输出N」）。
+ * ⚠ inPortIsControl / portBadgeIsControlOut 是**节点级**判断（控制类节点的每一颗端子都算
+ *   「控制端子」，那是给 .ctrl 配色用的），而端子名是**端子级**语义（判断节点 0 号出叫
+ *   「是」不叫「控制」）—— 所以这里只在 opt.ctrlIsPort（调用方按端子号判定的真控制口）
+ *   为真时直接写「控制」，控制类节点的其它端子继续往下走各自的语义名。 */
+function portBadgeText(node, dir, idx, opt) {
+  const o = opt && typeof opt === "object" ? opt : {};
+  const i = Math.max(0, Number(idx) || 0);
+  const isIn = dir === "in";
+  const fb = (isIn ? I18n.t("输入") : I18n.t("输出")) + (i + 1);
+  if (!node) return { badge: fb, title: "", zh: true };
+  /* isFnTNode / isANode / isDNode 由调用方先算好（它们要读 toolConfig / 素材条目 /
+     交付清单，逐个端子重算一遍没有意义）—— 没传就按节点自己判，保证单独调用也对。 */
+  const fnTool =
+    typeof o.fnTool === "boolean"
+      ? o.fnTool
+      : typeof isFnToolNode === "function" && isFnToolNode(node);
+  const asset =
+    typeof o.asset === "boolean"
+      ? o.asset
+      : typeof isAssetNode === "function" && isAssetNode(node);
+  const deliver =
+    typeof o.deliver === "boolean"
+      ? o.deliver
+      : node.kind === "deliver" && !!(window.LT && window.LT.deliverPortItem);
+  /* 这一颗端子本身就是控制端子（端子级）：只有它直接写「控制」 */
+  const ctrlPort =
+    typeof o.ctrlIsPort === "boolean"
+      ? o.ctrlIsPort
+      : isIn
+        ? portBadgeInIsCtrlPort(node, i)
+        : portBadgeOutIsCtrlPort(node, i);
+  if (ctrlPort) return { badge: I18n.t("控制"), title: "", zh: true };
+  /* 输出侧节点的控制语义（节点级）：给下面「其余控制类节点」那一档用 */
+  const ctrlOut =
+    typeof o.ctrl === "boolean" ? o.ctrl : portBadgeIsControlOut(node, i);
+
+  if (isIn) {
+    if (asset) {
+      const items = typeof assetItems === "function" ? assetItems(node) : [];
+      const it = items[i] || {};
+      const t = String(it.title || "").trim() || I18n.t("内容 ") + (i + 1);
+      return {
+        badge: t,
+        title: I18n.t("内容端子「") + t + I18n.t("」· 与同名输出端子一一对应"),
+        zh: true,
+      };
+    }
+    if (deliver && window.LT) {
+      const it = window.LT.deliverPortItem(node, i) || {};
+      const nm =
+        String(
+          (window.LT.deliverNameOf ? window.LT.deliverNameOf(it) : it.title) ||
+            "",
+        ).trim() || I18n.t("文件名待补");
+      return {
+        badge: nm,
+        title: I18n.t("待交付端子「") + nm + I18n.t("」（连入即视为已交）"),
+        zh: true,
+      };
+    }
+    if (fnTool) {
+      const pl = typeof fnToolParamList === "function" ? fnToolParamList(node, "in") : [];
+      if (i === 0) return { badge: I18n.t("控制"), title: "", zh: true };
+      const p = pl[i - 1] || {};
+      return {
+        badge: String(p.name || "").trim() || String(i + 1),
+        title: "",
+        zh: true,
+      };
+    }
+    switch (node.kind) {
+      case "gate":
+        /* 闸门 / 互斥的每一颗端子都是控制端子（inPortKindOf → control）：
+           调用方按端子号判定后会传 ctrlIsPort，这里只是抽不到 kind 时的兜底 */
+        return { badge: I18n.t("输入") + (i + 1), title: I18n.t("（需全部到达）"), zh: true };
+      case "mutex":
+        return { badge: I18n.t("输入") + (i + 1), title: I18n.t("（互斥）"), zh: true };
+      case "task":
+        return { badge: I18n.t("控制"), title: I18n.t("（激活内部起点）"), zh: true };
+      case "music_gen":
+        return {
+          badge: i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
+      case "yue_gen":
+        return {
+          badge:
+            i === 0
+              ? I18n.t("风格")
+              : i === 1
+                ? I18n.t("歌词")
+                : i === 2
+                  ? I18n.t("ABC")
+                  : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
+      case "sensenova_gen":
+        /* 与 proc_image 同一条泛用增量规则：端口 0 = 提示词，之后是数据槽 */
+        return {
+          badge: i === 0 ? I18n.t("提示词") : I18n.t("输入") + (i + 1),
+          title: i === 0 ? "" : I18n.t("（数据槽：可接文本 / 图像）"),
+          zh: true,
+        };
+      case "tts_gen":
+        return { badge: i === 0 ? I18n.t("文本") : I18n.t("控制"), title: "", zh: true };
+      /* Breeze 语音（bug 修复：它从前不在任何徽标白名单里，5 入 2 出全都没有标签）——
+         端口口径 = app.js 的 IN_PORT_DATA_KINDS.breeze_gen / inPortIsControl：
+         0 待合成文本 · 1 参考音频 · 2 参考文稿 · 3 指令 · 4 控制 */
+      case "breeze_gen":
+        return {
+          badge:
+            i === 0
+              ? I18n.t("文本")
+              : i === 1
+                ? I18n.t("参考音频")
+                : i === 2
+                  ? I18n.t("参考文稿")
+                  : i === 3
+                    ? I18n.t("指令")
+                    : I18n.t("控制"),
+          title: "",
+          zh: true,
+        };
+      case "video_gen": {
+        if (i === videoGenControlPort(node))
+          return { badge: I18n.t("控制"), title: "", zh: true };
+        const meta =
+          typeof videoGenPortMeta === "function" ? videoGenPortMeta(node, i) : null;
+        if (!meta) return { badge: I18n.t("输入") + (i + 1), title: "", zh: true };
+        if (meta.kind === "text") return { badge: I18n.t("提示词"), title: "", zh: true };
+        if (meta.kind === "image")
+          return {
+            badge:
+              meta.key === "first"
+                ? I18n.t("首帧")
+                : meta.key === "last"
+                  ? I18n.t("末帧")
+                  : I18n.t("参考图") + meta.label,
+            title: meta.label,
+            zh: true,
+          };
+        if (meta.kind === "video")
+          return {
+            badge:
+              meta.key === "chain" ? I18n.t("上一段") : I18n.t("参考视频") + meta.label,
+            title: meta.label,
+            zh: true,
+          };
+        return { badge: I18n.t("参考音频") + meta.label, title: meta.label, zh: true };
+      }
+      case "remotion":
+        return { badge: i === 0 ? I18n.t("控制") : I18n.t("描述"), title: "", zh: true };
+      case "net_send":
+        return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
+      default:
+        break;
+    }
+    /* 视频超分 / 补帧：0=控制 · 1=源视频 · 2+=可选素材 */
+    if (typeof isVideoPostKind === "function" && isVideoPostKind(node))
+      return {
+        badge:
+          i === 0
+            ? I18n.t("控制")
+            : i === 1
+              ? I18n.t("源视频")
+              : I18n.t("素材") + " " + (i - 1),
+        title: "",
+        zh: true,
+      };
+    /* 音频 / 视频输入：那唯一一颗入端子是**摆设**（内容取自节点自己选的文件，接上游无效）——
+       它没有专属名字，走下面的「输入N」兜底；有名字的是**输出侧**那两颗（见下）。 */
+    return { badge: fb, title: "", zh: true };
+  }
+
+  /* ── 输出侧 ── */
+  if (asset) {
+    const items = typeof assetItems === "function" ? assetItems(node) : [];
+    const it = items[i] || {};
+    const t = String(it.title || "").trim() || I18n.t("内容 ") + (i + 1);
+    return {
+      badge: t,
+      title: I18n.t("输出内容「") + t + I18n.t("」· 与同名输入端子一一对应"),
+      zh: true,
+    };
+  }
+  if (fnTool) {
+    const nOut =
+      typeof fnToolParamList === "function" ? fnToolParamList(node, "out").length : 0;
+    if (i >= nOut) return { badge: I18n.t("控制"), title: "", zh: true };
+    const pl = fnToolParamList(node, "out");
+    const p = pl[i] || {};
+    return { badge: String(p.name || "").trim() || String(i + 1), title: "", zh: true };
+  }
+  if (typeof isSaveNode === "function" && isSaveNode(node))
+    return { badge: I18n.t("保存结果"), title: "", zh: true };
+  /* 工具 / 函数节点的末位控制出（参数即端子：先于下面那批「控制类节点」判据） */
+  if (fnTool && ctrlOut) return { badge: I18n.t("控制"), title: "", zh: true };
+  /* 先给**有专属语义**的输出端子（是 / 否 · 成功 / 失败 · 序列N · 分发N …）——
+     它们都属于「控制类节点」，若先按 ctrlOut 一律写「控制」就把这些名字吃掉了。 */
+  switch (node.kind) {
+    case "judge":
+      return { badge: i === 0 ? I18n.t("是") : I18n.t("否"), title: "", zh: true };
+    case "task":
+      return { badge: i === 0 ? I18n.t("成功") : I18n.t("失败"), title: "", zh: true };
+    case "sequencer":
+      return { badge: I18n.t("序列") + (i + 1), title: "", zh: true };
+    case "splitter":
+      return { badge: I18n.t("分发") + (i + 1), title: "", zh: true };
+    case "net_recv":
+      return { badge: i === 0 ? I18n.t("信息") : I18n.t("控制"), title: "", zh: true };
+    case "sensenova_gen":
+      /* 0 号出的是图，不叫「内容」—— 与 .img 端子配色同一说法 */
+      return { badge: i === 0 ? I18n.t("图像") : I18n.t("控制"), title: "", zh: true };
+    case "breeze_gen":
+      /* 0 号出的是合成好的语音（与 save / 下游媒体端子同族）· 1 号是控制出 */
+      return { badge: i === 0 ? I18n.t("音频") : I18n.t("控制"), title: "", zh: true };
+    default:
+      break;
+  }
+  /* 其余控制类节点（控制 / 起点终点 / 闸门 / 互斥 / 计数 / 延时 …）与壳层外侧控制端子 */
+  if (ctrlOut) return { badge: I18n.t("控制"), title: "", zh: true };
+  if (
+    node.kind === "music_gen" ||
+    node.kind === "yue_gen" ||
+    node.kind === "tts_gen" ||
+    node.kind === "video_gen" ||
+    node.kind === "remotion" ||
+    (typeof isVideoPostKind === "function" && isVideoPostKind(node))
+  )
+    return { badge: i === 0 ? I18n.t("内容") : I18n.t("控制"), title: "", zh: true };
+  /* 音频 / 视频输入：输出端子**固定两个**，徽标就写清是哪两个 ——
+     0 = 音频输出 / 视频输出（该文件的 file:/// URL）· 1 = 转写输出（该文件的转写文字，
+     本机 SenseVoice；值见 renderer/app-asr.js 的 asrTranscriptOutValue）。
+     与 app.js 的 outputCount / 端口 1 判型、app-nodes.js 的 editPortNameOf（agent 侧
+     ports 表）同一份端子命名口径。 */
+  if (node.kind === "input_audio" || node.kind === "input_video")
+    return {
+      badge: I18n.t(
+        i === 0 ? (node.kind === "input_audio" ? "音频输出" : "视频输出") : "转写输出",
+      ),
+      title: "",
+      zh: true,
+    };
+  return { badge: fb, title: "", zh: true };
+}
+
+/* 输出端子是不是「控制端子」：控制类节点、工具 / 函数节点的末位控制出、壳层外侧控制端子。
+   判不出来一律当数据端子（与从前「不列白名单就不给徽标」的保守口径同向）。 */
+function portBadgeIsControlOut(node, idx) {
+  const i = Math.max(0, Number(idx) || 0);
+  if (!node) return false;
+  if (typeof isControlKind === "function" && isControlKind(node)) return true;
+  if (typeof isFnToolNode === "function" && isFnToolNode(node))
+    return (
+      i >=
+      (typeof fnToolParamList === "function" ? fnToolParamList(node, "out").length : 0)
+    );
+  if (node.kind === "super" && typeof superOutPortIsControl === "function")
+    return !!superOutPortIsControl(node, i);
+  return false;
+}
+
+/* 输出端子的**标签**是不是就该写「控制」：只有「端子本体就是控制口」（工具 / 函数节点的
+   末位控制出、壳层外侧控制端子）才直接写控制；控制类节点（判断 / 任务 / 序列 / 分发 /
+   闸门…）的出端子各有语义名（是 / 否 · 成功 / 失败 · 序列N · 分发N），一个一个走自己的名字，
+   绝不被一律写成「控制」——这也是「上色判据」与「命名判据」分开的唯一原因。 */
+function portBadgeOutIsCtrlPort(node, idx) {
+  const i = Math.max(0, Number(idx) || 0);
+  if (!node) return false;
+  if (typeof isFnToolNode === "function" && isFnToolNode(node))
+    return (
+      i >=
+      (typeof fnToolParamList === "function" ? fnToolParamList(node, "out").length : 0)
+    );
+  if (node.kind === "super")
+    return typeof superOutPortIsControl === "function"
+      ? !!superOutPortIsControl(node, i)
+      : false;
+  return false;
+}
+
+/* 输入端子的**标签**是不是就该写「控制」：固定声明的控制输入口（音乐 / 语音 / 视频 /
+   Breeze 的控制口）与纯控制流节点的入线口。与 inPortIsControl 的区别同上一节：
+   后者是节点级（给 .ctrl 配色用），这里只在「这颗端子本身没有别的语义」时才写「控制」。 */
+function portBadgeInIsCtrlPort(node, idx) {
+  const i = Math.max(0, Number(idx) || 0);
+  if (!node) return false;
+  if (typeof isFnToolNode === "function" && isFnToolNode(node)) return i === 0;
+  switch (node.kind) {
+    case "input_any":
+    case "wait_file":
+    case "timer":
+    case "delayer":
+    case "counter":
+    case "gate":
+    case "mutex":
+    case "judge":
+    case "task":
+      return true; /* 这些节点的入线口本身就是控制流（与 inPortKindOf → control 一致） */
+    case "music_gen":
+      return i === 2;
+    case "yue_gen":
+      return i === 3;
+    case "tts_gen":
+      return i === 1;
+    case "breeze_gen":
+      return i === 4;
+    case "video_gen":
+      return (
+        typeof videoGenControlPort === "function" && i === videoGenControlPort(node)
+      );
+    case "video_upscale":
+    case "video_interp":
+      return i === 0;
+    case "remotion":
+      return i === 0;
+    default:
+      return false;
+  }
 }
 
 function nodeElement(node) {
@@ -4926,7 +5533,7 @@ function nodeElement(node) {
         "n-think" +
         (hasThink ? " show" : "") +
         (node.running && hasThink ? " live" : "");
-      th.textContent = node.running ? I18n.t("◉ 思考中") : I18n.t("◉ 思考");
+      th.textContent = node.running ? I18n.t("思考中") : I18n.t("思考");
       th.title = I18n.t("点击查看模型思考与工具调用过程（流式显示）");
       th.onclick = (ev) => {
         ev.stopPropagation();
@@ -4997,36 +5604,19 @@ function nodeElement(node) {
         head.appendChild(ib);
       }
     }
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = pending
-      ? I18n.t("排队等待中…")
-      : node.kind === "agent_task"
-        ? I18n.t("运行智能任务：模型可读文件 / 联网 / 执行命令后完成")
+    /* ▶ + ■ 那一对键：与生成族同一只实现（排队中同样给 ■） */
+    appendNodePlayBtns(
+      head,
+      node,
+      node.kind === "agent_task"
+        ? "运行智能任务：模型可读文件 / 联网 / 执行命令后完成"
         : node.kind === "proc_text"
           ? node.agent
-            ? I18n.t("运行智能任务：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成")
-            : I18n.t("运行：基于提示词与输入内容调用文本模型")
-          : I18n.t("运行：基于提示词与输入内容生成图像");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("停止运行（立即中止模型请求）");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+            ? "运行智能任务：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成"
+            : "运行：基于提示词与输入内容调用文本模型"
+          : "运行：基于提示词与输入内容生成图像",
+      { stopTitle: "停止运行（立即中止模型请求）" },
+    );
   }
   if (node.kind === "task") {
     const chip = document.createElement("span");
@@ -5049,30 +5639,9 @@ function nodeElement(node) {
       enterTask(node);
     };
     head.appendChild(enter);
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = pending
-      ? I18n.t("排队等待中…")
-      : I18n.t("按序执行：从起点沿控制流跑到成功/失败终点");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("停止运行");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendNodePlayBtns(head, node, "按序执行：从起点沿控制流跑到成功/失败终点", {
+      stopTitle: "停止运行",
+    });
   }
   if (node.kind === "super") {
     const nChild = superChildrenOf(node.id).filter(
@@ -5312,30 +5881,8 @@ function nodeElement(node) {
     if (saveMediaKind(node) === "pdf") head.appendChild(savePdfOpenButtonEl(node));
   }
   if (node.kind === "wait_file") {
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = pending
-      ? I18n.t("排队等待中…")
-      : I18n.t("开始监视文件");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("停止等待");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    /* ▶ + ■ 那一对键：与生成族同一只实现（排队中同样给 ■，见 app-nodes.js 的说明） */
+    appendNodePlayBtns(head, node, "开始监视文件", { stopTitle: "停止等待" });
   }
   if (node.kind === "timer") {
     const chip = document.createElement("span");
@@ -5518,28 +6065,9 @@ function nodeElement(node) {
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t("调用 Minimax Music 3 后端生成");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("取消生成请求");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    /* ▶ + ■ 那一对键的唯一实现（见 app-nodes.js 的 appendMediaPlayBtns）：
+       排队中同样给 ■ —— 否则排队的节点既起不了跑也停不掉 */
+    appendMediaPlayBtns(head, node, "调用 Minimax Music 3 后端生成");
   }
   if (node.kind === "yue_gen") {
     const chip = document.createElement("span");
@@ -5552,28 +6080,7 @@ function nodeElement(node) {
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t("调用 YuE2 本地后端生成音乐");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("取消生成请求");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendMediaPlayBtns(head, node, "调用 YuE2 本地后端生成音乐");
   }
   /* SenseNova 本地图像生成：头部与音乐 / 语音节点同构（状态 chip + ◎ 探活 + ▤ 控制台 + ▶/✕）。
      chip 文案取 sensenovaStatus（后端状态机写的），没有就退到一行画幅摘要 ——
@@ -5588,28 +6095,7 @@ function nodeElement(node) {
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t("调用 SenseNova 本地后端生成图像");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("取消生成请求");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendMediaPlayBtns(head, node, "调用 SenseNova 本地后端生成图像");
   }
   if (node.kind === "video_gen") {
     const chip = document.createElement("span");
@@ -5620,28 +6106,7 @@ function nodeElement(node) {
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
     /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t("调用 Minimax H3 后端生成");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("取消生成请求");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendMediaPlayBtns(head, node, "调用 Minimax H3 后端生成");
   }
   /* 视频后处理（超分 / 补帧）：与 video_gen 同一套头部动作（探活 / 控制台 / ▶ / ✕），
      但后处理独立于生成 —— 只在用户点 ▶ 或上游控制线触发时才跑。 */
@@ -5654,28 +6119,9 @@ function nodeElement(node) {
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t(isUpscale ? "运行视频超分后处理" : "运行视频补帧后处理");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("取消后处理请求");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendMediaPlayBtns(head, node, isUpscale ? "运行视频超分后处理" : "运行视频补帧后处理", {
+      stopTitle: "取消后处理请求",
+    });
   }
   if (node.kind === "tts_gen") {
     const chip = document.createElement("span");
@@ -5685,28 +6131,17 @@ function nodeElement(node) {
     head.appendChild(chip);
     appendBackendProbeBtn(head, node);
     appendMediaConsoleBtn(head, node);
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t("调用 GPT-SoVITS 后端合成语音");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("取消生成请求");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendMediaPlayBtns(head, node, "调用 GPT-SoVITS 后端合成语音");
+  }
+  if (node.kind === "breeze_gen") {
+    const chip = document.createElement("span");
+    chip.className = "n-chip" + (node.running ? " on" : "");
+    chip.textContent = I18n.t("语音");
+    chip.title = I18n.t("Breeze 语音 · Breeze TTS 2 本机后端 · 文本转语音");
+    head.appendChild(chip);
+    appendBackendProbeBtn(head, node);
+    appendMediaConsoleBtn(head, node);
+    appendMediaPlayBtns(head, node, "调用 Breeze TTS 2 后端合成语音");
   }
   if (node.kind === "remotion") {
     const chip = document.createElement("span");
@@ -5725,28 +6160,7 @@ function nodeElement(node) {
     };
     head.appendChild(sessionBtn);
     /* 原「设置」就地展开按钮已由统一 ⚙（跳窗）取代 —— 见 NODE_SETTINGS_FORMS */
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t("生成动效代码并本地渲染视频");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("取消生成请求");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendMediaPlayBtns(head, node, "生成动效代码并本地渲染视频");
   }
   if (isFnToolNode(node)) {
     const isTool = isToolNode(node);
@@ -5804,30 +6218,12 @@ function nodeElement(node) {
       };
       head.appendChild(testBtn);
     }
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = isTool
-      ? I18n.t("运行工具（引擎按 tool 契约执行）")
-      : I18n.t("运行函数：执行 JS 代码");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playUserNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("停止运行（立即中止）");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    appendNodePlayBtns(
+      head,
+      node,
+      isTool ? "运行工具（引擎按 tool 契约执行）" : "运行函数：执行 JS 代码",
+      { stopTitle: "停止运行（立即中止）" },
+    );
   }
   if (node.kind === "control") {
     const role = ctrlRoleOf(node);
@@ -5896,34 +6292,22 @@ function nodeElement(node) {
       renderCanvas();
     };
     head.appendChild(fillBtn);
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = pending
-      ? I18n.t("排队等待中…")
-      : node.ctrlAction === "clear"
-        ? I18n.t("运行：清空所有已连接节点的输出")
+    /* ▶ + ■ 那一对键：与其它节点同一只实现（排队中同样给 ■）；
+       控制节点起跑 / 停止走自己的 playControlNode / stopControlNode */
+    appendNodePlayBtns(
+      head,
+      node,
+      node.ctrlAction === "clear"
+        ? "运行：清空所有已连接节点的输出"
         : node.ctrlFillOnly
-          ? I18n.t("运行：仅补跑尚无输出的已连接节点")
-          : I18n.t("运行：执行已连接节点（有依赖先上游，并行同时跑）");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playControlNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("停止运行（立即中止模型请求）");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopControlNode(node);
-      };
-      head.appendChild(stop);
-    }
+          ? "运行：仅补跑尚无输出的已连接节点"
+          : "运行：执行已连接节点（有依赖先上游，并行同时跑）",
+      {
+        stopTitle: "停止运行（立即中止模型请求）",
+        playFn: () => playControlNode(node),
+        stopFn: () => stopControlNode(node),
+      },
+    );
     }
   }
   if (node.kind === "judge") {
@@ -5937,28 +6321,12 @@ function nodeElement(node) {
           : I18n.t("判断");
     chip.title = I18n.t("用模型判断目标是否达成，是/否走不同控制路径");
     head.appendChild(chip);
-    const b = document.createElement("button");
-    const pending = isNodePending(node);
-    b.className =
-      "n-play" +
-      (node.running ? " running" : pending ? " pending" : node.error ? " error" : "");
-    b.textContent = node.running || pending ? "…" : "▶";
-    b.title = I18n.t("运行判断：由模型裁决是 / 否");
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      playJudgeNode(node);
-    };
-    head.appendChild(b);
-    if (node.running) {
-      const stop = document.createElement("button");
-      stop.className = "n-play n-stop";
-      stop.title = I18n.t("停止运行");
-      stop.onclick = (ev) => {
-        ev.stopPropagation();
-        stopNode(node);
-      };
-      head.appendChild(stop);
-    }
+    /* ▶ + ■ 那一对键：与其它节点同一只实现（排队中同样给 ■）；
+       判断节点起跑走自己的 playJudgeNode */
+    appendNodePlayBtns(head, node, "运行判断：由模型裁决是 / 否", {
+      stopTitle: "停止运行",
+      playFn: () => playJudgeNode(node),
+    });
   }
   /* 素材节点：头部一颗「素材」徽标（未绑定 / 失联时一眼看得出来）＋ ⚙ 设置入口。
      素材的设置对着素材库改（显示名 / 描述 / 内容条目），不是画布字段表单，
@@ -6118,6 +6486,8 @@ function nodeElement(node) {
         : isDNode
           ? (window.LT.deliverPortItem(node, i) || {}).kind
           : null;
+    /* 工具 / 函数节点的控制入固定在 0 号端子（fnToolPortKind 对控制口返回 null） */
+    const fnOnlyCtrl = isFnTNode && i === 0;
     p.className =
       "port in" +
       (spare ? " spare" : "") +
@@ -6200,12 +6570,25 @@ function nodeElement(node) {
         i === 0
           ? I18n.t("风格提示词（曲风 / 人声 / 乐器 / 情绪）")
           : i === 1
-            ? I18n.t("歌词（含 [Verse]/[Chorus] 等结构标签）")
+            ? I18n.t("歌词（可选：不接 / 留空则按纯器乐 [instrumental] 生成 · 含 [Verse]/[Chorus] 等结构标签）")
             : i === 2
               ? I18n.t("ABC 谱（可选：手工谱面，留空则由模型生成）")
               : I18n.t("控制输入（触发生成）");
     else if (node.kind === "tts_gen")
       inTitle = i === 0 ? I18n.t("待合成文本（语音内容）") : I18n.t("控制输入（触发生成）");
+    else if (node.kind === "breeze_gen")
+      /* Breeze 语音（端口口径 = app.js 的 IN_PORT_DATA_KINDS.breeze_gen）：
+         0 待合成文本 · 1 参考音频 · 2 参考文稿 · 3 指令 · 4 控制输入 */
+      inTitle =
+        i === 0
+          ? I18n.t("待合成文本（语音内容 · 端子为空时才用设置里的音色）")
+          : i === 1
+            ? I18n.t("参考音频（音色克隆用 · 与参考文稿成对）")
+            : i === 2
+              ? I18n.t("参考文稿（与参考音频逐字对齐）")
+              : i === 3
+                ? I18n.t("指令（风格 / 情绪 / 语速等要求）")
+                : I18n.t("控制输入（触发生成）");
     else if (node.kind === "sensenova_gen")
       /* 输入端子与「图像节点」proc_image 同一条泛用增量规则：端口 0 = 提示词，
          端口 1+ 是按已连线条数增量出的数据槽（文本 / 图像引用都可接） */
@@ -6254,138 +6637,79 @@ function nodeElement(node) {
     p.title = linkedIn.length ? inTitle : inTitle;
     p.style.top = inPortY(node, i, ic) - PORT_R + "px";
     p.style.left = (PORT_OFF - PORT_R) + "px";
-    if (isANode || isDNode || isFnTNode || node.kind === "gate" || node.kind === "mutex" || node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || isVideoPostKind(node) || node.kind === "remotion" || node.kind === "task") {
+    /* 端子标签：**每一个输入端子都有**（需求：输入标签落在端子左侧）——正文口径
+       全走 portBadgeText（语义名优先，没名字写「输入N」），不再按节点 kind 列白名单。
+       控制 / 函数 / 素材 / 交付 / 视频这些分支原先各自拼一份名字，现已全部收进那一个函数。 */
+    {
+      const pb = portBadgeText(node, "in", i, {
+        fnTool: isFnTNode,
+        asset: isANode,
+        deliver: isDNode,
+        /* 控制端口按**端子号**判：inPortKindOf 对控制类节点会把每一颗端子都说成 control，
+           拿它当名字判据会把闸门 / 互斥 / 判断的入线口一律写成「控制」。 */
+        ctrlIsPort: fnOnlyCtrl
+          ? i === 0
+          : !isANode && !isDNode && inPortKindOf(node, i) === "control",
+      });
       const badge = document.createElement("span");
-      badge.className = "port-badge";
-      if (isANode) {
-        /* 素材节点输入端子徽标 = 内容条目标题（与 body 里那一行同名，肉眼即可对上） */
-        badge.classList.add("zh-label");
-        setPortBadgeName(badge, aItems[i].title);
-      } else if (isDNode) {
-        /* 交付节点：徽标 = 该端子对应的待交付文件名（端子标签就是文件名；
-           没有带后缀的文件名时显式标「文件名待补」，与 bindPortTip 同一份取名口径） */
-        badge.classList.add("zh-label");
-        const it0 = window.LT.deliverPortItem(node, i) || {};
-        setPortBadgeName(badge, String((window.LT.deliverNameOf ? window.LT.deliverNameOf(it0) : it0.title) || i + 1));
-      } else if (isFnTNode) {
-        const pl = fnToolParamList(node, "in");
-        badge.classList.add("zh-label");
-        if (i === 0) setPortBadgeName(badge, I18n.t("控制"));
-        else {
-          /* 数组端子徽标：参数名 + 一条线一个槽（渐进槽位端子组，如 参考图[1][2][3]＋）。
-             引擎仍按「同一个端子号收多条数据线」取数（JS 拿到数组）——这里只改视觉：
-             挂几条线就亮几个槽点，末尾留一个可接新线的空槽；点空槽 = 再拖一条进本端子。 */
-          setPortBadgeName(badge, (pl[i - 1] && pl[i - 1].name) || String(i));
-          if (fnInIsArr) {
-            const slots = document.createElement("span");
-            slots.className = "fn-arr-slots";
-            slots.style.cssText =
-              "display:inline-flex;gap:2px;margin-left:4px;align-items:center;vertical-align:middle";
-            for (let s = 0; s < fnInWires; s++) {
-              const dot = document.createElement("span");
-              dot.className = "fn-arr-slot-dot";
-              /* 每条已挂数据线一个槽：悬停/右键可单独断开这一条（stopPropagation，
-                 不触发端口级的「断全部」）。来源标题能取到就点名。 */
-              let srcTitle = "";
-              const w0 = fnToolInPortWireAt(node, i, s);
-              if (w0) {
-                const src0 = nodeById(w0.from);
-                if (src0) srcTitle = String(src0.title || "");
-              }
-              dot.title =
-                I18n.t("第 {n} 条输入", { n: s + 1 }) +
-                (srcTitle ? I18n.t(" · 来源：") + srcTitle : "") +
-                I18n.t("（右键断开这一条）");
-              dot.addEventListener("contextmenu", (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                pushHistory();
-                if (fnToolInPortWireRemoveAt(node, i, s)) {
-                  clearDownstream(node.id);
-                  scheduleSave(true);
-                  renderCanvas();
-                  renderStatus();
-                  toast(I18n.t("已断开该槽位对应的数据线"), "ok");
-                } else {
-                  toast(I18n.t("该槽位没有连线"), "warn");
-                }
-              });
-              dot.addEventListener("mousedown", (ev) => {
-                ev.stopPropagation();
-                ev.preventDefault();
-                hidePortTip();
-                startWireDrag(node.id, ev, i, { fromInput: true });
-              });
-              slots.appendChild(dot);
+      badge.className = "port-badge" + (pb.zh ? " zh-label" : "");
+      setPortBadgeName(badge, pb.badge);
+      if (fnInIsArr) {
+        /* 数组端子徽标：参数名 + 一条线一个槽（渐进槽位端子组，如 参考图[1][2][3]＋）。
+           引擎仍按「同一个端子号收多条数据线」取数（JS 拿到数组）——这里只改视觉：
+           挂几条线就亮几个槽点，末尾留一个可接新线的空槽；点空槽 = 再拖一条进本端子。 */
+        const slots = document.createElement("span");
+        slots.className = "fn-arr-slots";
+        slots.style.cssText =
+          "display:inline-flex;gap:2px;margin-left:4px;align-items:center;vertical-align:middle";
+        for (let s = 0; s < fnInWires; s++) {
+          const dot = document.createElement("span");
+          dot.className = "fn-arr-slot-dot";
+          /* 每条已挂数据线一个槽：悬停/右键可单独断开这一条（stopPropagation，
+             不触发端口级的「断全部」）。来源标题能取到就点名。 */
+          let srcTitle = "";
+          const w0 = fnToolInPortWireAt(node, i, s);
+          if (w0) {
+            const src0 = nodeById(w0.from);
+            if (src0) srcTitle = String(src0.title || "");
+          }
+          dot.title =
+            I18n.t("第 {n} 条输入", { n: s + 1 }) +
+            (srcTitle ? I18n.t(" · 来源：") + srcTitle : "") +
+            I18n.t("（右键断开这一条）");
+          dot.addEventListener("contextmenu", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            pushHistory();
+            if (fnToolInPortWireRemoveAt(node, i, s)) {
+              clearDownstream(node.id);
+              scheduleSave(true);
+              renderCanvas();
+              renderStatus();
+              toast(I18n.t("已断开该槽位对应的数据线"), "ok");
+            } else {
+              toast(I18n.t("该槽位没有连线"), "warn");
             }
-            const add = document.createElement("span");
-            add.className = "fn-arr-slot-add";
-            add.title = I18n.t("空槽：再拖一条数据线进本端子（可无限接）");
-            add.addEventListener("mousedown", (ev) => {
-              ev.stopPropagation();
-              ev.preventDefault();
-              hidePortTip();
-              startWireDrag(node.id, ev, i, { fromInput: true });
-            });
-            slots.appendChild(add);
-            badge.appendChild(slots);
-          }
+          });
+          dot.addEventListener("mousedown", (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            hidePortTip();
+            startWireDrag(node.id, ev, i, { fromInput: true });
+          });
+          slots.appendChild(dot);
         }
-      } else if (node.kind === "music_gen") {
-        badge.classList.add("zh-label");
-        setPortBadgeName(badge, i === 0 ? I18n.t("提示词") : i === 1 ? I18n.t("歌词") : I18n.t("控制"));
-      } else if (node.kind === "yue_gen") {
-        badge.classList.add("zh-label");
-        setPortBadgeName(
-          badge,
-          i === 0
-            ? I18n.t("风格")
-            : i === 1
-              ? I18n.t("歌词")
-              : i === 2
-                ? I18n.t("ABC")
-                : I18n.t("控制"),
-        );
-      } else if (node.kind === "sensenova_gen") {
-        badge.classList.add("zh-label");
-        setPortBadgeName(badge, i === 0 ? I18n.t("提示词") : String(i + 1));
-      } else if (node.kind === "tts_gen") {
-        badge.classList.add("zh-label");
-        setPortBadgeName(badge, i === 0 ? I18n.t("文本") : I18n.t("控制"));
-      } else if (node.kind === "video_gen") {
-        if (i === videoGenControlPort(node)) {
-          badge.classList.add("zh-label");
-          setPortBadgeName(badge, I18n.t("控制"));
-        } else {
-          const meta = videoGenPortMeta(node, i);
-          if (!meta) {
-            setPortBadgeName(badge, String(i + 1));
-          } else if (meta.kind === "text") {
-            badge.classList.add("zh-label");
-            setPortBadgeName(badge, I18n.t("提示词"));
-          } else {
-            setPortBadgeName(badge, meta.label);
-          }
-        }
-      } else if (isVideoPostKind(node)) {
-        if (i === 0) {
-          badge.classList.add("zh-label");
-          setPortBadgeName(badge, I18n.t("控制"));
-        } else if (i === 1) {
-          badge.classList.add("zh-label");
-          setPortBadgeName(badge, I18n.t("源视频"));
-        } else {
-          badge.classList.add("zh-label");
-          setPortBadgeName(badge, I18n.t("素材") + " " + (i - 1));
-        }
-      } else if (node.kind === "remotion") {
-        badge.classList.add("zh-label");
-        setPortBadgeName(badge, i === 0 ? I18n.t("控制") : I18n.t("描述"));
-      } else if (node.kind === "task") {
-        badge.classList.add("zh-label");
-        setPortBadgeName(badge, I18n.t("控制"));
-      } else {
-        setPortBadgeName(badge, String(i + 1));
+        const add = document.createElement("span");
+        add.className = "fn-arr-slot-add";
+        add.title = I18n.t("空槽：再拖一条数据线进本端子（可无限接）");
+        add.addEventListener("mousedown", (ev) => {
+          ev.stopPropagation();
+          ev.preventDefault();
+          hidePortTip();
+          startWireDrag(node.id, ev, i, { fromInput: true });
+        });
+        slots.appendChild(add);
+        badge.appendChild(slots);
       }
       p.appendChild(badge);
     }
@@ -6438,6 +6762,12 @@ function nodeElement(node) {
       : isANode
         ? aItems[oi].type
         : null;
+    /* 输出端子是不是「控制端子」：**一个判据**同时喂给端子配色（.ctrl）与端子标签，
+       避免「涂成控制色、标签却写内容」这类错位（工具末位控制出走同一个问法）。 */
+    const outIsCtrl =
+      isControlKind(node) ||
+      nodeEmitsControlOnPort(node, oi) ||
+      (node.kind === "super" && superOutPortIsControl(node, oi));
     if (isFnTNode) {
       if (oi >= outDataN) outCls += " ctrl";
       else if (outKind === "image") outCls += " img";
@@ -6452,12 +6782,7 @@ function nodeElement(node) {
          连线配色同源）：涂上 .img，用户一眼看得懂「这根线喂给 save_image / 预览」。
          端口1 仍走下面的控制色（nodeEmitsControlOnPort）。 */
       outCls += " img";
-    else if (
-      isControlKind(node) ||
-      nodeEmitsControlOnPort(node, oi) ||
-      (node.kind === "super" && superOutPortIsControl(node, oi))
-    )
-      outCls += " ctrl";
+    else if (outIsCtrl) outCls += " ctrl";
     p.className = outCls;
     p.dataset.node = node.id;
     p.dataset.fromIndex = String(oi);
@@ -6493,6 +6818,12 @@ function nodeElement(node) {
             ? I18n.t("输出端子（本节点生成的图像 · 可直接连图像保存 / 预览）")
             : I18n.t("输出端子（输出本节点内容）")
           : I18n.t("控制输出（生成完成后触发下游控制目标）");
+    /* Breeze 语音（本轮修的命名 bug）：0 号出的是合成好的语音，1 号是控制出 */
+    else if (node.kind === "breeze_gen")
+      outTitle =
+        oi === 0
+          ? I18n.t("输出端子（本节点合成的语音 · 可直接连语音保存 / 播放）")
+          : I18n.t("控制输出（生成完成后触发下游控制目标）");
     /* 素材节点：输出端子标题 = 内容条目标题；值按类型给（文本 → 字符串，
        图像 / 音频 / 视频 → 该条目的 file:/// URL，与 input_audio / video 同一口径） */
     else if (isANode)
@@ -6502,9 +6833,18 @@ function nodeElement(node) {
         "」（" +
         assetItemTypeLabel(aItems[oi].type) +
         I18n.t("）· 文本给字符串 · 图像 / 音频 / 视频给 file:/// URL");
-    /* 音频 / 视频输入：唯一的输出端子给的就是这个本机文件的 file:/// URL */
+    /* 音频 / 视频输入：输出端子固定两个 —— 0 号=音频输出 / 视频输出（这个本机文件的
+       file:/// URL）· 1 号=转写输出（它的转写文字，本机 SenseVoice，没有转写时是空文本；
+       值见 renderer/app-asr.js 的 asrTranscriptOutValue） */
     else if (node.kind === "input_audio" || node.kind === "input_video")
-      outTitle = I18n.t("输出该文件的 URL（file:///… · 可连进媒体参考端子）");
+      outTitle =
+        oi === 0
+          ? I18n.t(
+              node.kind === "input_audio"
+                ? "音频输出：该文件的 URL（file:///… · 可连进媒体参考端子）"
+                : "视频输出：该文件的 URL（file:///… · 可连进媒体参考端子）",
+            )
+          : I18n.t("转写输出：该文件的转写文字（本机 SenseVoice 识别结果 · 没有转写时是空文本）");
     /* 保存节点：唯一输出端子 = 本次保存的那份内容（保存什么就给下游什么） */
     else if (isSaveNode(node))
       outTitle = I18n.t("输出端子（本次保存的内容 · 与落盘内容一致）");
@@ -6514,71 +6854,19 @@ function nodeElement(node) {
     p.title = linkedOut.length ? outTitle : outTitle;
     p.style.top = outPortY(node, oi, oc) - PORT_R + "px";
     p.style.right = (PORT_OFF - PORT_R) + "px";
-    if (
-      isANode ||
-      isFnTNode ||
-      isSaveNode(node) ||
-      node.kind === "sequencer" ||
-      node.kind === "splitter" ||
-      node.kind === "task" ||
-      node.kind === "music_gen" ||
-      node.kind === "yue_gen" ||
-      node.kind === "sensenova_gen" ||
-      node.kind === "tts_gen" ||
-      node.kind === "video_gen" ||
-      isVideoPostKind(node) ||
-      node.kind === "remotion"
-    ) {
+    /* 端子标签：**每一个输出端子都有**（需求：输出标签落在端子右侧）——与输入侧
+       共用 portBadgeText 这一个真源（有名字写名字，没名字写「输出N」）。 */
+    {
+      const pb = portBadgeText(node, "out", oi, {
+        fnTool: isFnTNode,
+        asset: isANode,
+        deliver: isDNode,
+        /* 只有「端子本体就是控制口」才写「控制」：判断 / 任务 / 序列 / 分发的出端子各有名字 */
+        ctrlIsPort: portBadgeOutIsCtrlPort(node, oi),
+      });
       const badge = document.createElement("span");
-      badge.className =
-        "port-badge" +
-        (isANode ||
-        isFnTNode ||
-        isSaveNode(node) ||
-        node.kind === "task" ||
-        node.kind === "music_gen" ||
-        node.kind === "yue_gen" ||
-        node.kind === "sensenova_gen" ||
-        node.kind === "tts_gen" ||
-        node.kind === "video_gen" ||
-        isVideoPostKind(node) ||
-        node.kind === "remotion"
-          ? " zh-label"
-          : "");
-      if (isANode) {
-        /* 素材节点输出端子徽标 = 内容条目标题（与左侧输入端子、body 那一行同名） */
-        setPortBadgeName(badge, aItems[oi].title);
-      } else if (isFnTNode) {
-        const pl = fnToolParamList(node, "out");
-        if (oi >= outDataN) setPortBadgeName(badge, I18n.t("控制"));
-        else setPortBadgeName(badge, (pl[oi] && pl[oi].name) || String(oi + 1));
-      } else if (isSaveNode(node)) {
-        /* 保存节点：唯一输出端子徽标 —— 与媒体生成节点的「内容 / 控制」区分开，
-           一眼看得出这根线给的是「刚保存的那份结果」 */
-        setPortBadgeName(badge, I18n.t("保存结果"));
-      } else
-        setPortBadgeName(
-          badge,
-          node.kind === "task"
-            ? oi === 0
-              ? I18n.t("成功")
-              : I18n.t("失败")
-            : node.kind === "sensenova_gen"
-              ? /* 0 号出的是图，不叫「内容」—— 与 .img 端子配色同一说法 */
-                oi === 0
-                ? I18n.t("图像")
-                : I18n.t("控制")
-              : node.kind === "music_gen" ||
-                  node.kind === "yue_gen" ||
-                  node.kind === "tts_gen" ||
-                  node.kind === "video_gen" ||
-                  isVideoPostKind(node) ||
-                  node.kind === "remotion"
-                ? oi === 0
-                  ? I18n.t("内容")
-                  : I18n.t("控制")
-                : String(oi + 1),
-        );
+      badge.className = "port-badge" + (pb.zh ? " zh-label" : "");
+      setPortBadgeName(badge, pb.badge);
       p.appendChild(badge);
     }
     bindPortTip(p, node, "out", oi);
@@ -7196,21 +7484,9 @@ function readonlyBatchRows(items, list, isImage) {
      .n-view-empty；图像为 .n-img.bare），由 app-nodeview.js 生成。
      浏览态只渲染展示型元素，不挂任何 onclick —— 可交互元素只保留节点头部那一排小按钮。
    · 形态与选中必须同步：全量重绘由 renderCanvas 走 nodeElement；就地改 class 的场合
-     （如 .n-resize 的 mousedown）一律走 setNodeSelClass，否则会出现「已选中却还是浏览态」。 */
-
-const NODE_BROWSE_KINDS = new Set([
-  "input_text",
-  "input_image",
-  "proc_text",
-  "proc_image",
-  "agent_task",
-  "save",
-  /* 函数节点：未选中只读显示代码正文，点选即出可编辑代码块（工具节点是 super 变体，不参与） */
-  "function",
-  /* 素材节点：未选中只列「素材名 + 每条内容标题 + 类型」（轻量摘要，见
-     NODE_BROWSE_BODY.asset）。焦点态（选中）才逐条渲染正文 / 缩略图 / 播放器。 */
-  "asset",
-]);
+     （如 .n-resize 的 mousedown）一律走 setNodeSelClass，否则会出现「已选中却还是浏览态」。
+   · kind 集合 NODE_BROWSE_KINDS 声明在**本文件最前面**（装载期安全，见那里的注释与
+     test/smoke-canvas-boot-tdz.js），别挪回本区块。 */
 
 /* 浏览态分流用的 kind 键：旧 save_text / save_image 别名归一到 save */
 function nodeBrowseKindKey(n) {
@@ -7219,9 +7495,15 @@ function nodeBrowseKindKey(n) {
   return n.kind;
 }
 
-/* 该节点是否参与「未选中 = 浏览态」 */
+/* 该节点是否参与「未选中 = 浏览态」。
+   兜底：装载期（NODE_BROWSE_KINDS 还在 TDZ）被别处的重绘调到时，宁可退回编辑形态，
+   也绝不让 ReferenceError 冒出去把整张画布的渲染打断。 */
 function nodeBrowseKind(n) {
-  return NODE_BROWSE_KINDS.has(nodeBrowseKindKey(n));
+  try {
+    return NODE_BROWSE_KINDS.has(nodeBrowseKindKey(n));
+  } catch (_) {
+    return false;
+  }
 }
 
 /* 选中语义：S.selSet（多选）与 S.sel（主选中）都认，兼容只改 S.sel 的调用方 */
@@ -7237,12 +7519,21 @@ function nodeBrowseMode(n) {
 }
 
 /* 各 kind 的浏览态 body 渲染器（kind 键 → function(node, body)）；
-   未登记 = 该 kind 尚无浏览形态 → buildBody 回落到编辑态渲染（与今天一致） */
-const NODE_BROWSE_BODY = {};
+   未登记 = 该 kind 尚无浏览形态 → buildBody 回落到编辑态渲染（与今天一致）。
+   ⚠ 登记表本体（const NODE_BROWSE_BODY）声明在**本文件最前面**，别搬回这里 ——
+   装载期（顶层执行）一旦被打断，放在这里就是整张画布画不出来的 TDZ 事故，
+   见文件开头 NODE_BROWSE_KINDS 处那份注释与 test/smoke-canvas-boot-tdz.js。 */
 
-/* 浏览态 body 入口：body 传入时为空，handler 填满并返回真值；失败则清空后回落编辑态 */
+/* 浏览态 body 入口：body 传入时为空，handler 填满并返回真值；失败则清空后回落编辑态。
+   取表带兜底：装载期（登记表还在 TDZ）或任何取值异常一律当「没登记」放行编辑态渲染 ——
+   宁可少一层浏览态，也绝不让异常冒出去把 renderCanvas 炸掉。 */
 function buildBrowseBody(node, body) {
-  const fn = NODE_BROWSE_BODY[nodeBrowseKindKey(node)];
+  let fn = null;
+  try {
+    fn = NODE_BROWSE_BODY[nodeBrowseKindKey(node)];
+  } catch (_) {
+    return false;
+  }
   if (typeof fn !== "function") return false;
   let ok = false;
   try {
@@ -9687,7 +9978,11 @@ function toolBuildRecordOf(node) {
   };
 }
 
-/* 进这个节点的全部入线文件路径（去重，按连线顺序） */
+/* 进这个节点的全部入线文件路径（去重，按连线顺序）
+   取文件这一步走 app-toolbuild.js 的 wireSourceFiles —— 它只认「携带文件的来源 kind」
+   （input_file 那一类白名单），文本节点 / 处理节点的端口值一律不算文件：
+   于是这里与连线拦截（app-nodes.js fileWireSupportError）同一口径，不会出现
+   「连线不拦、节点上却冒工具构建卡」（本轮修 bug：文本输入 → 图像处理）。 */
 function toolBuildInboundFiles(node) {
   const out = [];
   const seen = Object.create(null);
@@ -11126,6 +11421,13 @@ function buildBody(node, body) {
       renderCanvas();
     };
     ops.appendChild(b1);
+    /* 「录制」按钮（renderer/app-recaudio.js）：只有**音频**节点能现场录 —— 录完在那张节点上
+       就地绑定新文件（record_{yyyymmddhhmmss}.mp3）。视频节点不给（本轮口径）。 */
+    if (!isVid && typeof recOpsButton === "function") {
+      try {
+        ops.appendChild(recOpsButton(node));
+      } catch (e) {}
+    }
     ops.appendChild(b2);
     /* 「转录」按钮（renderer/app-asr.js）：点一下展开 / 收起源文件的转写文本区，
        还没有转写时就地转一次（本机 SenseVoice 模型，与话筒听写同一份）。 */
@@ -11139,14 +11441,21 @@ function buildBody(node, body) {
     const note = document.createElement("div");
     note.className = "n-av-note";
     note.textContent = isVid
-      ? I18n.t("视频输入 · 输出该文件的 URL")
-      : I18n.t("音频输入 · 输出该文件的 URL");
+      ? I18n.t("视频输入 · 视频输出 + 转写输出")
+      : I18n.t("音频输入 · 音频输出 + 转写输出");
     body.appendChild(note);
     /* 转写块（renderer/app-asr.js）：音频 / 视频节点自己的转写文本（可编辑、可重转）。
        接进文字节点时，文字节点运行前就取这里备好的文字（见 app-nodes.js 的运行前闸门）。 */
     if (typeof asrAppendNodeBody === "function") {
       try {
         asrAppendNodeBody(node, body);
+      } catch (e) {}
+    }
+    /* 录制态徽标（renderer/app-recaudio.js）：这张节点正在录时，body 尾部叠一条
+       「● 录制中 00:12」；没在录则一个元素都不加（由该模块自己判定与刷新文本）。 */
+    if (!isVid && typeof recAppendNodeBadge === "function") {
+      try {
+        recAppendNodeBadge(node, body);
       } catch (e) {}
     }
   } else if (node.kind === "input_file") {
@@ -12643,6 +12952,63 @@ function buildBody(node, body) {
       st.textContent = node.error || node.ttsStatus;
       body.appendChild(st);
     }
+  } else if (node.kind === "breeze_gen") {
+    /* 未安装警示条（Breeze TTS 2 插件 id = breeze-tts-local；安装后 S.plugins 缓存刷新自动消失） */
+    if (!appPluginInstalled("breeze-tts-local")) {
+      const warn = document.createElement("div");
+      warn.className = "n-empty n-plugin-warn";
+      warn.textContent = I18n.t("⚠ Breeze TTS 2 插件未安装：请在「插件 · Breeze TTS 2 本地 TTS」中安装后使用本节点");
+      warn.title = I18n.t("插件 · Breeze TTS 2 本地 TTS：设置安装目录 → 安装（需下载 torch / 引擎 / 权重，磁盘留 ≥20GB）");
+      body.appendChild(warn);
+    }
+    /* 参考源口径一句话；两个文本框（输入文本 / 参考文本）由 appendBreezeGenSummaryBody
+       末尾的 appendBreezeTextBoxesBody 挂上（端子有输入时只读回显、端子为空时可编辑） */
+    const refHint = document.createElement("div");
+    refHint.className = "n-empty";
+    refHint.textContent = I18n.t(
+      "参考音频走端口 1（端口 2 接音频 / 视频输入节点时也算参考音频）；端口为空时用设置里的音色",
+    );
+    body.appendChild(refHint);
+    /* 音色 / 能力 / 指令 / cfg_scale / seed / 输出格式 / 输出路径 → ⚙ 跳窗；body 留摘要行 */
+    appendBreezeGenSummaryBody(node, body, "audio");
+    /* 后端面板（◎ 探测 / 状态 / 进度） */
+    appendMediaBackendPanel(body, node);
+    /* 试听播放条 */
+    const prev = document.createElement("div");
+    prev.className = "sv-prev mg-prev";
+    const aud = wavePreviewCreate("mgaud-" + node.id);
+    prev.appendChild(aud);
+    const empty = document.createElement("div");
+    empty.className = "sv-empty";
+    empty.id = "mgempty-" + node.id;
+    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
+    prev.appendChild(empty);
+    const nameEl = document.createElement("div");
+    nameEl.className = "n-text";
+    nameEl.id = "mgname-" + node.id;
+    nameEl.style.maxHeight = "36px";
+    nameEl.style.overflow = "hidden";
+    nameEl.style.cursor = "pointer";
+    nameEl.title = I18n.t("在文件夹中显示");
+    {
+      const hint =
+        (node.output && (node.output.path || node.output.text)) ||
+        mediaGenOutputRaw(node) ||
+        "";
+      if (hint) nameEl.textContent = fileName(hint);
+    }
+    prev.appendChild(nameEl);
+    body.appendChild(prev);
+    /* 状态行：breezeStatus（含本次实际用的参考源）+ 进度标记 */
+    if (node.breezeStatus || node.error) {
+      const st = document.createElement("div");
+      st.className =
+        "n-status" +
+        (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+      st.textContent = node.error || node.breezeStatus;
+      if (node.refSource) st.title = I18n.t("参考源：") + String(node.refSource);
+      body.appendChild(st);
+    }
   } else if (node.kind === "video_gen") {
     const meta = document.createElement("div");
     meta.className = "n-empty";
@@ -12708,6 +13074,8 @@ function buildBody(node, body) {
           value:
             mediaGenOutputRaw(node) ||
             String(node.outputPath || "").trim() ||
+            /* 托管口径（输出接保存节点、节点自己没配路径）：别显示「（未设置）」 */
+            (typeof mediaGenManagedHint === "function" ? mediaGenManagedHint(node) : "") ||
             I18n.t("（未设置）"),
         },
       ],
@@ -13011,8 +13379,11 @@ function buildBody(node, body) {
           文件路径 / 执行结果都收进按钮 tooltip（或按钮下方状态行），点一下即执行；
        ② 未绑定（.exec-unbound）：留图标 + 绑定引导（路径行与「绑定…」按钮），
           执行按钮置灰不可点，避免误点。
-       两态都保留两段式预备态（.armed 绿底金键）与运行中脉冲（.running）。
-       标题已显示在节点头部，body 不重复显示标题。 */
+       **一次点击就执行**（本轮 bug：用户报「点击一次开始经常无效，需要点第二次」）——
+       旧实现是两段式预备态，第一下只把播放键染绿（.armed）、第二下才真跑，与这个节点的
+       卖点（一键启动）和节点说明「点一下，就打开这个节点绑定的程序」都相反；误点想反悔的
+       出口本来就另有两条：节点右键菜单的「执行」与 body 上那枚置灰态（未绑定不可点）。
+       body 只保留运行中脉冲（.running）。标题显示在节点头部，body 不重复显示标题。 */
     const bound = !!String(node.execPath || "").trim();
     const p = String(node.execPath || "").trim();
     body.classList.add(bound ? "exec-bound" : "exec-unbound");
@@ -13030,10 +13401,7 @@ function buildBody(node, body) {
     const play = document.createElement("button");
     play.type = "button";
     play.className =
-      "exec-play" +
-      (node._armed ? " armed" : "") +
-      (node.running ? " running" : "") +
-      (bound ? "" : " disabled");
+      "exec-play" + (node.running ? " running" : "") + (bound ? "" : " disabled");
     play.innerHTML = node.running
       ? "…"
       : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.2l6.5 4.8-6.5 4.8V3.2z" fill="currentColor"/></svg>';
@@ -13045,9 +13413,7 @@ function buildBody(node, body) {
         (statusTip ? statusTip + "\n" : "") +
         (node.running
           ? I18n.t("正在启动…（按钮可继续点，启动过程不会中断）")
-          : node._armed
-            ? I18n.t("再次点击执行（或双击节点直接执行）")
-            : I18n.t("点击执行（或双击节点直接执行）"));
+          : I18n.t("点击执行（或双击节点直接执行）"));
     play.setAttribute("aria-label", play.title);
     if (!bound) play.disabled = true;
     play.onclick = (ev) => {
@@ -13056,13 +13422,8 @@ function buildBody(node, body) {
         toast(I18n.t("尚未绑定可执行文件：请先右键节点「绑定可执行文件」"), "warn");
         return;
       }
-      if (node._armed) {
-        node._armed = false;
-        runExecuteNode(node);
-      } else {
-        node._armed = true;
-        renderCanvas();
-      }
+      /* 一次点击 = 一次执行：不再有「第一下只预备」的中间态（见本分支顶部注释）。 */
+      runExecuteNode(node);
     };
     body.appendChild(play);
 
@@ -13099,7 +13460,67 @@ function buildBody(node, body) {
         : I18n.t("先绑定可执行文件");
     if (node.error) st.title = node.error;
     body.appendChild(st);
+  } else if (typeof isPluginKind === "function" && isPluginKind(node)) {
+    buildPluginNodeBody(node, body);
   }
+}
+
+/* 用户自建插件节点（声明式定义，见 renderer/app-nodeplugins.js）的 body：
+   插件名 + 出端口内容 + 状态行。参数与模型在 ⚙ 跳窗里（表单由插件模块按清单注册）。 */
+function buildPluginNodeBody(node, body) {
+  const d = typeof pluginNodeDef === "function" ? pluginNodeDef(node) : null;
+  if (!d) {
+    const st = document.createElement("div");
+    st.className = "n-status err";
+    st.textContent = I18n.t("插件未启用（节点定义不可用 · 可去「插件」里修复或启用）");
+    body.appendChild(st);
+    return;
+  }
+  const plug = document.createElement("div");
+  plug.className = "n-empty";
+  plug.textContent = "🔌 " + (pluginLabelOf(d.pluginTitle) || d.pluginId || "");
+  body.appendChild(plug);
+  if (pluginLabelOf(d.desc)) {
+    const note = document.createElement("div");
+    note.className = "n-empty plugin-node-note";
+    note.textContent = pluginLabelOf(d.desc);
+    body.appendChild(note);
+  }
+  const paths = node.outputPaths && typeof node.outputPaths === "object" ? node.outputPaths : {};
+  let shown = 0;
+  for (const o of d.outputs || []) {
+    const v = paths[o.id] == null ? "" : String(paths[o.id]);
+    if (!v) continue;
+    if (o.kind === "image") {
+      const wrap = document.createElement("div");
+      wrap.className = "n-img";
+      const img = document.createElement("img");
+      img.src = fileUrlWithBust(v, node.ranAt || 0);
+      if (typeof bindImagePreview === "function") bindImagePreview(img, v, node.title || o.id);
+      wrap.appendChild(img);
+      body.appendChild(wrap);
+      shown++;
+    } else {
+      const ta = document.createElement("textarea");
+      ta.className = "n-text";
+      ta.readOnly = true;
+      ta.value = v.length > 2000 ? v.slice(0, 2000) + " …" : v;
+      body.appendChild(ta);
+      shown++;
+    }
+  }
+  if (!shown) {
+    const empty = document.createElement("div");
+    empty.className = "n-empty";
+    empty.textContent = I18n.t("（点 ▶ 运行本插件节点）");
+    body.appendChild(empty);
+  }
+  const st = document.createElement("div");
+  st.className =
+    "n-status" + (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
+  st.textContent = node.error || node.pluginStatus || I18n.t("由插件提供 · 点 ▶ 运行");
+  if (node.error) st.title = node.error;
+  body.appendChild(st);
 }
 
 function fillImageArea(node, wrap) {

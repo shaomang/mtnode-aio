@@ -1,0 +1,14 @@
+# 安装期产物：venv / 引擎源码 / 权重 / ffmpeg / 用户数据 —— 都不提交
+.venv/
+engine/
+checkpoints/
+tools/
+voices/
+logs/
+out/
+.install-ok
+.scaffold-ref
+*.log
+__pycache__/
+*.pyc
+_probe_*.py

@@ -951,7 +951,10 @@ const imgBucket = ctx.tokViewModels(imgOwner)[0];
 const imgCost = ctx.tokModelCostOf(imgBucket, imgOwner);
 near(imgCost.amount, 31.5, "3 张 × ¥0.21 = ¥0.63 = 31.5 币（元 → 币 ×50）");
 ok(imgCost.currency === "COIN", "中转图像费用币种是 COIN（鲸圆币）");
-ok(ctx.tokCostMark(imgCost) === "31.5 币", "展示口径 = 31.5 币（不是 ¥）");
+/* 展示口径（本轮改过，别再钉旧字面量）：中文界面的币值**不写「币」字** —— 单位由鲸圆币
+   图标承担（见 app-cost.js costCoinUnit 的注释与 costMoneyEl）。这里是纯文本函数、
+   沙箱里也没有 MtCoin，所以就是裸数字；带图标那一路由 smoke-recharge [4] 对着源码钉。 */
+ok(ctx.tokCostMark(imgCost) === "31.5", "展示口径 = 31.5（币值不带「币」字，单位交给鲸圆币图标）");
 near(ctx.tokCostOf(imgOwner).amount, 31.5, "合计也按币算同一笔");
 ok(
   ctx.tokBadgeSummary(imgOwner.tokenReport, imgTotals, false, imgOwner).indexOf("张图") >= 0,
@@ -961,7 +964,10 @@ ok(ctx.tokReportPlain(imgOwner).indexOf("图像 3 张") >= 0, "纯文本报告�
 const badge10 = ctx.tokBadgeEl(imgOwner);
 const row10 = findEl(badge10, (c) => c.tag === "tr" && c.className === "tok-model-row");
 ok(!!row10 && row10.children[6].textContent === "3 张", "明细表「图像」列显示 3 张（第 7 格 = 计费输入/缓存读/命中/输出/推理 之后的「图像」列）");
-ok(!!row10 && /币/.test(row10.children[10].textContent || ""), "明细行费用按币显示（末列）：" + (row10 && row10.children[10].textContent));
+ok(
+  !!row10 && /^31\.5/.test(row10.children[10].textContent || "") && !/¥/.test(row10.children[10].textContent || ""),
+  "明细行费用按币显示（末列，单位是图标而不是「币」字）：" + (row10 && row10.children[10].textContent),
+);
 
 console.log(fails ? "\n✗ " + fails + " 项失败" : "\n✓ 全部通过");
 process.exit(fails ? 1 : 0);

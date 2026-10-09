@@ -538,6 +538,112 @@ button:disabled {
   color: var(--cyan2)
 }
 
+/* 顶栏「性能」（renderer/app-perf.js 的 openPerfPanel；显存那一块仍走 app-vram.js）：
+   暖橙红 —— 与工具库紫 / 素材库青 / 工坊橙一眼分家；尺寸 / 写法照上面几枚（14px 线性图标） */
+.topbar .btn-perf {
+  color: #ff8a65
+}
+
+.topbar .btn-perf:hover,
+.topbar .btn-perf.on {
+  border-color: #ff8a65;
+  color: #ffab91
+}
+
+/* 顶栏「性能」面板里的「显存与本地模型」区块（renderer/app-vram.js 的 vramRenderPanel
+   把内容写进 .perf-vram-card 的 .vram-slot）：现况（谁在跑 / 谁占着 + 显卡读数）
+   + 一键释放 + 最近释放日志 */
+.vram-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px
+}
+
+.vram-gpu {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5
+}
+
+.vram-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px
+}
+
+.vram-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px
+}
+
+.vram-row .vram-name {
+  font-weight: 600
+}
+
+.vram-row .vram-state {
+  color: var(--muted);
+  flex: 1
+}
+
+.vram-row .vram-port {
+  color: var(--muted);
+  font-size: 11px
+}
+
+.vram-row .vram-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto
+}
+
+.vram-row.idle .vram-dot {
+  background: #4ade80
+}
+
+.vram-row.busy .vram-dot {
+  background: #ffab40
+}
+
+.vram-actions {
+  display: flex;
+  gap: 8px
+}
+
+.vram-note,
+.vram-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6
+}
+
+.vram-log {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+  max-height: 180px;
+  overflow: auto;
+  word-break: break-all
+}
+
+.vram-log b {
+  display: block;
+  color: var(--ink);
+  margin-bottom: 4px
+}
+
 .topbar .btn-store:hover {
   border-color: var(--orange);
   color: var(--orange2)
@@ -850,6 +956,84 @@ button:disabled {
   font-size: 12px;
   color: var(--ink);
   line-height: 1.55
+}
+
+/* ── 本地后端插件的详情浮层内嵌 console（本轮：状态与 console 内容显示在插件界面里）──
+   只读展示：状态行 + 后端 stdout 日志尾部（复制 / 清屏两颗小键），启停与安装仍走卡片按钮。 */
+.plugin-pop.has-console {
+  width: 320px
+}
+
+.plugin-console {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd2)
+}
+
+.plugin-console-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px
+}
+
+.plugin-console-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--ink)
+}
+
+.plugin-console-acts {
+  display: flex;
+  gap: 6px
+}
+
+.plugin-console-btn {
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.6
+}
+
+.plugin-console-status {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  word-break: break-all
+}
+
+.plugin-console-log {
+  margin: 6px 0 0;
+  height: 200px;
+  overflow: auto;
+  padding: 6px 8px;
+  background: #0a0d12;
+  border: 1px solid var(--bd);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #cfe3f5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text
+}
+
+/* 卡片上的后端求助角标（ui-signal 不再自动弹窗 → 卡片角标 + 状态行一句） */
+.plugin-tile-notice {
+  display: block;
+  margin: 0 auto;
+  padding: 1px 7px;
+  border: 1px solid rgba(226, 179, 60, .5);
+  color: #e2b33c;
+  font-size: 10.5px;
+  line-height: 1.6;
+  letter-spacing: .5px
+}
+
+.plugin-tile-notice[hidden] {
+  display: none
 }
 
 .plugin-card-actions {
@@ -2180,3 +2364,184 @@ button.mini.btn-sq.ws-browse svg {
   color: var(--red)
 }
 
+
+/* ══════════ 用户自建插件卡片与详情面板（renderer/app-plugins.js · .np-*） ══════════
+   与商店插件卡片同一个壳（.plugin-tile / #overlay > .plugin-pop），这里只加四态徽标、
+   摘要行、字段说明与动作区。配色沿用页面既有的 --ok/--warn/--red 变量，不新造色板。 */
+.plugin-tile.np-tile .np-cover {
+  color: #4dd0c4;
+  opacity: .95
+}
+
+.plugin-tile.np-tile .np-sum {
+  font-size: 11px;
+  opacity: .62;
+  margin-top: 2px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.plugin-tile.np-tile .np-state {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 10.5px;
+  line-height: 16px;
+  border: 1px solid transparent;
+  opacity: .95
+}
+
+.plugin-tile.np-tile .np-state.np-ok {
+  color: #4dd0c4;
+  border-color: rgba(77, 208, 196, .45);
+  background: rgba(77, 208, 196, .10)
+}
+
+.plugin-tile.np-tile .np-state.np-off {
+  color: #9aa4b2;
+  border-color: rgba(154, 164, 178, .4);
+  background: rgba(154, 164, 178, .10)
+}
+
+.plugin-tile.np-tile .np-state.np-warn {
+  color: #e2b33c;
+  border-color: rgba(226, 179, 60, .45);
+  background: rgba(226, 179, 60, .12)
+}
+
+.plugin-tile.np-tile .np-state.np-err {
+  color: var(--red, #ff6b6b);
+  border-color: rgba(255, 107, 107, .5);
+  background: rgba(255, 107, 107, .12)
+}
+
+.np-sep {
+  margin: 16px 0 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, .10)
+}
+
+.plugin-pop .np-badge {
+  display: inline-block;
+  margin: 2px 0 6px;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  border: 1px solid transparent
+}
+
+.plugin-pop .np-badge.np-ok { color: #4dd0c4; border-color: rgba(77, 208, 196, .45) }
+.plugin-pop .np-badge.np-off { color: #9aa4b2; border-color: rgba(154, 164, 178, .4) }
+.plugin-pop .np-badge.np-warn { color: #e2b33c; border-color: rgba(226, 179, 60, .45) }
+.plugin-pop .np-badge.np-err { color: var(--red, #ff6b6b); border-color: rgba(255, 107, 107, .5) }
+
+.plugin-pop .np-row {
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+  margin-top: 3px
+}
+
+.plugin-pop .np-row-l {
+  flex: 0 0 74px;
+  opacity: .60
+}
+
+.plugin-pop .np-row-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.plugin-pop .np-warn-line {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: #e2b33c;
+  line-height: 1.5
+}
+
+.plugin-pop .np-err-line {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--red, #ff6b6b);
+  line-height: 1.5
+}
+
+.plugin-pop .np-backend {
+  margin-top: 6px;
+  font-size: 11px;
+  opacity: .72;
+  line-height: 1.5
+}
+
+.plugin-pop .np-nodes {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px
+}
+
+.plugin-pop .np-node-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px
+}
+
+.plugin-pop .np-node-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis
+}
+
+.plugin-pop .np-help {
+  margin-top: 10px;
+  font-size: 11.5px
+}
+
+.plugin-pop .np-help summary {
+  cursor: pointer;
+  opacity: .8
+}
+
+.plugin-pop .np-help-pre {
+  margin: 6px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11px;
+  line-height: 1.55;
+  background: rgba(255, 255, 255, .04);
+  border-radius: 6px;
+  padding: 8px
+}
+
+.plugin-pop .np-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px
+}
+
+/* 插件节点在画布上的统一配色（KIND_CLS 里的 "up" 一族）：与内置各族一眼可分 */
+.wf-node.up {
+  border-color: #4dd0c4
+}
+
+.wf-node.up.sel,
+.wf-node.up:hover {
+  border-color: #6ee6da
+}
+
+.wf-node.up .n-status.plugin-node-note,
+.wf-node.up .plugin-node-note {
+  opacity: .66;
+  font-size: 11px
+}

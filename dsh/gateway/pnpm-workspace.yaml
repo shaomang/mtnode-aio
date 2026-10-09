@@ -295,3 +295,12 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-workspace-changes@0.2.0-rc.2'
   - '@deepseek-ai/dsh-workspace@0.2.0-rc.2'
   - '@deepseek-ai/dsh@0.2.0-rc.2'
+
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  bufferutil: true
+  koffi: true
+  node-pty: true
+  protobufjs: true
+  utf-8-validate: true

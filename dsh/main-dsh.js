@@ -35,6 +35,7 @@ const INSTALL_SKILL_SOURCES = {
   'minimax-h3-install': path.join(__dirname, '..', 'skills', 'minimax-h3-install', 'SKILL.md'),
   'minimax-music3-install': path.join(__dirname, '..', 'skills', 'minimax-music3-install', 'SKILL.md'),
   'tts-local-install': path.join(__dirname, '..', 'skills', 'tts-local-install', 'SKILL.md'),
+  'breeze-tts-local-install': path.join(__dirname, '..', 'skills', 'breeze-tts-local-install', 'SKILL.md'),
   'llama-local-install': path.join(__dirname, '..', 'skills', 'llama-local-install', 'SKILL.md'),
   'sensenova-local-install': path.join(__dirname, '..', 'skills', 'sensenova-local-install', 'SKILL.md'),
   'office-local-install': path.join(__dirname, '..', 'skills', 'office-local-install', 'SKILL.md'),

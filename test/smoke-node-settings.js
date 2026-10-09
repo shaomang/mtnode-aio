@@ -134,7 +134,7 @@ const BUILD_BODY = between(
 const FORM_KINDS = [
   "proc_text", "proc_image", "agent_task", "remotion", "music_gen", "yue_gen", "video_gen",
   "video_upscale", "video_interp",
-  "tts_gen", "sensenova_gen", "save", "save_pdf", "wait_file", "timer", "delayer", "sequencer", "gate",
+  "tts_gen", "breeze_gen", "sensenova_gen", "save", "save_pdf", "wait_file", "timer", "delayer", "sequencer", "gate",
   "splitter", "counter", "mutex", "net_recv", "net_send", "control", "function", "tool",
 ];
 /* 「确实没有可设项」的 kind：逐条给理由。两者之和要盖住 app.js 的 kind 全集，
@@ -185,6 +185,8 @@ const EXPECT_FIELDS = {
   video_upscale: ["targetLongSide", "perBatch", "tile", "lowVram", "attempts", "outputPath"],
   video_interp: ["multiplier", "clearCacheEvery", "batchSize", "scaleFactor", "lowVram", "attempts", "outputPath"],
   tts_gen: ["voice", "speed", "ttsFormat", "outputPath"],
+  /* Breeze 语音（Breeze TTS 2 本机后端）：能力档 / 音色 / 指令 / cfg_scale / 种子 / 抽卡 / 格式 / 路径 */
+  breeze_gen: ["voiceMode", "voice", "instruction", "cfgScale", "seed", "attempts", "ttsFormat", "outputPath"],
   /* SenseNova 本地图像生成：画幅只能取官方 11 个训练桶（ratioBucket 连带写 width / height），
      采样 / CFG / 显存档位 / 精度 / think 各自写回；**没有「输出路径」项** ——
      产物由主进程落应用托管目录（与 proc_image 同一资产链）后回传绝对路径。 */
@@ -374,6 +376,20 @@ function appendDurationFields(parent, sec, onChange) {
   parent.appendChild(inp);
 }
 function attemptCount(n) { return Math.max(1, Math.min(10, Number(n && n.attempts) || 1)); }
+/* 「输出接了保存节点 → 路径可留空」的托管判定：本节只验表单链路，不验连线真源，
+   所以给最简口径（接了保存节点 = 托管）。真源与逐例回归在 smoke-media-gen-menu.js [8]。
+   注意：媒体节点的路径字段（nsMediaGenPathField）真源会问这三个函数，
+   缺一个整张表单就渲染失败、字段也写不回去。 */
+function nodeFeedsSaveNode(n) {
+  return !!(n && S.wf && (S.wf.wires || []).some(function (w) {
+    return w && !w.rel && w.from === n.id && (S.wf.nodes || []).some(function (t) {
+      return t && t.id === w.to && String(t.kind || "").indexOf("save") === 0;
+    });
+  }));
+}
+function mediaGenPathManaged(n) {
+  return !!(n && !String(n.outputPath || "").trim() && nodeFeedsSaveNode(n));
+}
 function isCustomVideoGen(n) { return !!(n && n.workflowId); }
 function mediaGenOutputRaw(n) { return String((n && n.outputPath) || ""); }
 function mediaGenDurValue(n) { return Number(n && n.duration) || 5; }
@@ -528,6 +544,14 @@ vm.runInContext(
     fnBody(NODES, "sensenovaBackendInfo"),
     fnBody(NODES, "nsSensenovaGenParamFields"),
     fnBody(NODES, "sensenovaGenParamSummaryText"),
+    /* Breeze 语音节点（breeze_gen）表单：能力档 / cfg / 种子 / 摘要一律用 app-nodes.js 真源 */
+    fnBody(NODES, "breezeModeOf"),
+    fnBody(NODES, "breezeFormatOf"),
+    fnBody(NODES, "breezeCfgScaleOf"),
+    fnBody(NODES, "breezeSeedOf"),
+    fnBody(NODES, "breezeModeLabel"),
+    fnBody(NODES, "breezeGenParamSummaryText"),
+    fnBody(NODES, "appendBreezeGenSummaryBody"),
   ].join("\n"),
   SB,
 );
@@ -648,6 +672,7 @@ console.log("\n[2] body 侧不再内联设置：.n-api-panel 与 buildFnToolSett
     control: 'node.kind === "control"',
     music_gen: 'node.kind === "music_gen"',
     tts_gen: 'node.kind === "tts_gen"',
+    breeze_gen: 'node.kind === "breeze_gen"',
     video_gen: 'node.kind === "video_gen"',
     /* 超分 / 补帧共用一个 body 分支（isVideoPostKind 判两类），只画摘要行 */
     video_upscale: "isVideoPostKind(node)",
@@ -1020,7 +1045,7 @@ console.log("\n[6] i18n：跳窗中文串中英双向齐（真模块逐条验）
     return set;
   };
   /* 设置面的构成要素（body 状态行 / 动作按钮的文案不算：它们不是「设置」） */
-  const OTHER_FILE_HELPERS = ["nsMediaGenParamFields", "nsMediaGenPathField", "nsNetFields", "netSettingsSummary", "mediaGenParamSummaryText", "mediaGenSeedSlotText", "appendMediaGenSummaryBody", "appendVideoGenWorkflowControls", "buildFnToolSettings", "fnToolIoSummaryLine", "nsPathModeHint", "nodeSettingsGearButton", "nsSensenovaGenParamFields", "sensenovaGenParamSummaryText"];
+  const OTHER_FILE_HELPERS = ["nsMediaGenParamFields", "nsMediaGenPathField", "nsNetFields", "netSettingsSummary", "mediaGenParamSummaryText", "mediaGenSeedSlotText", "appendMediaGenSummaryBody", "appendVideoGenWorkflowControls", "buildFnToolSettings", "fnToolIoSummaryLine", "nsPathModeHint", "nodeSettingsGearButton", "nsSensenovaGenParamFields", "sensenovaGenParamSummaryText", "breezeModeOf", "breezeFormatOf", "breezeCfgScaleOf", "breezeSeedOf", "breezeModeLabel", "breezeGenParamSummaryText", "appendBreezeGenSummaryBody"];
   const slices = { 跳窗整块: SETTINGS_REGION };
   OTHER_FILE_HELPERS.forEach((h) => { slices[h] = fnBody(CANVAS, h) || fnBody(NODES, h); });
   let keys = new Set();
@@ -2050,7 +2075,10 @@ console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "AL
     ok(tip.hidden === false, "点一下「?」→ 小窗打开");
     ok(textOf(tip._children[0]) === "图片节点", "小窗标题 = 节点标题");
     ok(/让 AI 画图/.test(textOf(tip._children[1])), "小窗正文 = 该节点类型的最简说明");
-    ok(/自动关闭/.test(textOf(tip._children[2])), "小窗底部提示「移开 1 秒后自动关闭」");
+    ok(
+      tip._children.length === 2 || !/自动关闭/.test(textOf(tip._children[tip._children.length - 1] || "")),
+      "小窗不再有讲自己怎么消失的脚注（提示冗余清理口径）",
+    );
 
     timers.length = 0;
     btn._handlers.mouseleave.forEach((fn) => fn());
@@ -2231,8 +2259,11 @@ console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "AL
     const tag = at >= 0 ? HTML.slice(HTML.lastIndexOf("<button", at), HTML.indexOf(">", at) + 1) : "";
     has(tag, 'class="corner mini btn-ico"', "沿用顶栏既有范式（.corner.mini.btn-ico）");
     has(tag, 'aria-label="复制"', "aria-label = 复制");
-    has(tag, "Ctrl+D", "标题写明快捷键 Ctrl+D");
-    ok(/data-i18n-title="复制节点（Ctrl\+D）/.test(tag), "data-i18n-title 是 hover 提示真源");
+    ok(
+      tag.indexOf("data-i18n-title") < 0 && tag.indexOf("data-tip") < 0 && tag.indexOf("title=") < 0,
+      "按钮不再挂 title / data-i18n-title / data-tip（可见文字「复制」已说明自身，气泡是冗余）",
+    );
+    hasnt(tag, "Ctrl+D", "提示文案里不再写 Ctrl+D（键位不进提示）");
     hasnt(tag, "data-shortcut=", "不挂 data-shortcut（避免与「隐藏线」的 D 单键冲突）");
     has(HTML, '<span class="btn-ico-txt" data-i18n="复制">复制</span>', "按钮文字 = 复制（可切语言）");
     const redoAt = HTML.indexOf('id="btnRedo"');

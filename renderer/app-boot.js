@@ -600,31 +600,44 @@ async function init() {
   if (!Array.isArray(S.config.onlineRepos)) S.config.onlineRepos = [];
   /* 旧版商店 / 论坛会话字段已废弃（统一走主进程 auth-store）。 */
   S.config.storeAuth = null;
-  /* 会话列表迁移:旧版单会话(agentSession)→ 多会话数组 */
-  if (!Array.isArray(S.config.agentSessions)) {
-    const legacy = S.config.agentSession;
-    S.config.agentSessions = [];
-    if (legacy && Array.isArray(legacy.messages) && legacy.messages.length) {
-      S.config.agentSessions.push({
-        id: uid("as"),
-        title: I18n.t("历史会话"),
-        workspace: legacy.workspace || "",
-        preset: legacy.preset || AGENT_PRESET_DEFAULT,
-        model: legacy.model || "",
-        effort: normalizeAgentEffort(legacy.effort || "high"),
-        messages: legacy.messages,
-        archived: false,
-        updatedAt: Date.now(),
-      });
-    }
-    delete S.config.agentSession;
+  /* 会话列表：**索引**来自主进程 agent-sessions/（不再从 S.config.agentSessions 读）。
+     旧版单会话（agentSession）→ 多会话数组的迁移已搬到主进程（agent-sessions-store.js
+     的 migrateFromConfig），这里只留一句兜底：老渲染层残留的键直接清掉，免得它又被整份
+     写回 config.json（主进程那边也有对应的保护，见 main.js 的 mergeConfigForSave）。 */
+  S.config.agentSessions = [];
+  delete S.config.agentSession;
+  /* 索引只带左栏字段（title / appId / canvasWfId / updatedAt…），**不含正文**：
+     正文按需读回（懒加载），标记 _lcLoaded = false；只在真要读 messages 的三处加载
+     —— 选中会话、全局搜索接会话内容、续跑 / 轨迹·改动栏。见 app-assist.js 的
+     agentEnsureSessionBody / agentEnsureAllSessionBodies。 */
+  let sessIndex = null;
+  try {
+    sessIndex = window.api && window.api.sessionLoad ? await window.api.sessionLoad() : null;
+  } catch (_) {
+    sessIndex = null;
   }
+  const idxList = sessIndex && Array.isArray(sessIndex.sessions) ? sessIndex.sessions : [];
+  S.config.agentActiveId = (sessIndex && sessIndex.activeId) || S.config.agentActiveId || "";
   /* 会话档位白名单归一：值在词汇表内（high/max 等）原样保留 —— 不迁移不重置已存档位；
      旧档/非法值 → high 兜底默认 */
-  S.agentSessions = S.config.agentSessions.map((s) => {
+  S.agentSessions = idxList.map((s) => {
     const sess = Object.assign(
-      { title: I18n.t("新会话"), canvasWfId: "", preset: AGENT_PRESET_DEFAULT, model: "", effort: "high", draft: "", archived: false, updatedAt: 0 },
+      {
+        title: I18n.t("新会话"),
+        canvasWfId: "",
+        preset: AGENT_PRESET_DEFAULT,
+        model: "",
+        effort: "high",
+        draft: "",
+        archived: false,
+        updatedAt: 0,
+        /* 懒加载状态位：正文（messages / segments…）还没有从 agent-sessions/ 读回来。
+           _lcDirty = 本地改过、还没落盘（500 ms 合并窗口里排着队）。 */
+        _lcLoaded: false,
+        _lcDirty: false,
+      },
       s,
+      { _lcLoaded: false, _lcDirty: false, messages: [] },
     );
     sess.effort = normalizeAgentEffort(sess.effort);
     /* 所属画布 id：带回来就是带回来（旧存档没有 → 空串，开轮时补绑一次） */
@@ -708,6 +721,14 @@ async function init() {
   if (vr && vr.ok) S.appVersion = vr.version || "0.0.0";
   applyLogoSub();
   ensureDefaultProviders();
+  /* 用户自建插件（<数据目录>/user-plugins）声明的画布节点：必须在首绘之前注册，
+     否则画布上已有的插件节点会被当成未知 kind（拿不到端子 / 配色 / body）。
+     它只是读一份 JSON，失败也不拦启动（loadPluginNodes 内部自己吞异常）。 */
+  if (typeof loadPluginNodes === "function") {
+    try {
+      await loadPluginNodes();
+    } catch (_) {}
+  }
   await ensureWorkflow();
   renderWfTabs();
   /* 供应商目录懒加载(pi-ai + DeepSeek 官方)：目录只补「模型可选清单」，不给画布内容 ——
@@ -743,6 +764,11 @@ async function init() {
   /* 顶栏「素材库」＝跨画布的本机素材仓库（首次使用会先引导指定根目录）；
      左右栏对话框与全部库操作在 app-assets.js，素材节点「绑定」选择器复用同一份组件 */
   if ($("#btnAssets")) $("#btnAssets").onclick = () => openAssetsLibrary();
+  /* 顶栏「性能」＝系统资源面板（renderer/app-perf.js + 主进程 perf-probe.js）：
+     性能总览 + 「显存与本地模型」区块（就是原来的显存释放内容，渲染仍走
+     renderer/app-vram.js 的 vramRenderPanel）+ CPU / 内存 / GPU / 磁盘 / 网络明细。
+     画布本地模型节点运行前后的释放钩子在 app-nodes.js 的 runMediaGenSerial 包装里。 */
+  if ($("#btnPerf") && typeof openPerfPanel === "function") $("#btnPerf").onclick = () => openPerfPanel();
   if ($("#btnDocs"))
     $("#btnDocs").onclick = () => {
       const host = document.getElementById("appDocsDlg");
@@ -1218,6 +1244,15 @@ async function init() {
   renderAll();
   bootPaintDeferred = false;
   ensureTimerScheduler();
+  /* 会话正文的后台空闲补读（懒加载的第二条腿，见 app-assist.js agentWireBodyBackfill）：
+     首屏已经按索引画完了，这一步只是趁空闲把还没读回来的会话分批读进内存 ——
+     这样「用到才读」的首次打开不再现读一份几 MB 的文件，全局搜索也不必等它。
+     幂等、可失败：读不到就当没这回事，按需路径仍然保证功能正确。 */
+  if (typeof agentWireBodyBackfill === "function") {
+    try {
+      agentWireBodyBackfill();
+    } catch (_) {}
+  }
   /* 中转凭据提示（renderer/app-relay-auth.js）：登录态一就绪就按主进程的凭据状态
      决定要不要亮顶部那条横幅（凭据解不开 / 存不住、快到期时亮）——
      没有它，用户会在「看起来还登录着」的状态下反复撞「缺少或已失效的中转 Key」401。

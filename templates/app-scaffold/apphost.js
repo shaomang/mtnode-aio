@@ -1,6 +1,6 @@
 /* apphost.js — 宿主桥探测与优雅降级（**跟应用源码一起走，不是运行期依赖**）
  *
- * MTNode 里「应用」有两种窗口宿主，window 上暴露的名字不同：
+ * MTNode 里「应用」有三种窗口宿主，window 上暴露的名字不同：
  *   ① 应用中心窗口（apps-store.js + preload-app.js）→ window.appHost
  *        close / quit / onWillClose · dataDirGet / dataDirPick / dataDirOpen ·
  *        dataRead / dataWrite · storageGet / Set / All / Remove · account ·
@@ -9,8 +9,17 @@
  *   ② 插件窗口（plugins/preload-window.js）→ window.pluginApi（= window.forumApi）
  *        close · dataGet / dataSet · authGetState / authMe · storeRequest ·
  *        onShown / onAuthChanged · pickImage / compressImage / cacheImage …
+ *   ③ **开发页中栏的预览 iframe**（mtnode-preview:// + 主进程注入的宿主桥小助手，
+ *      见 apps-store.js 的 PREVIEW_BRIDGE）→ 也是 window.appHost，接口与 ① 逐字同形状：
+ *      本轮共识「预览里也连入 MTNode」，所以预览里走的是①那一套（数据落该应用自己的
+ *      数据文件夹）；差别只有两处：
+ *        · close() / quit() 在预览里回 code:"preview_no_window"（预览里没有「自己的窗口」）；
+ *        · 该应用已在独立窗口运行时预览**只读**：写类调用回 code:"readonly_preview"
+ *          （window.__mtnodePreviewHost.readOnly === true 可同步判），
+ *          此时 localStorage / sessionStorage 已被换成内存态（不写浏览器存档）。
+ *      只读那一位的应用侧判据：window.__mtnodePreviewHost / __mtnodePreviewReadOnly。
  *
- * 本文件把两套都探测出来，统一成一套 window.AppHost：
+ * 本文件把两套（①③ 与 ②）都探测出来，统一成一套 window.AppHost：
  *   · 桥缺席（浏览器直接打开 index.html、旧版宿主、桥被裁剪）时**照样启动**，
  *     能力全 false，落盘退回内存态 —— 界面必须提示「不会保存」，绝不允许白屏或抛异常；
  *   · 只调用 `typeof host.x === "function"` 判过的能力，不发明接口。

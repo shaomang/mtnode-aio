@@ -33,6 +33,7 @@ const {
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "minimax-music3";
 const MUSIC3_FEED =
@@ -47,6 +48,9 @@ let getDataDir = null;
 let getMainWin = null;
 let appRoot = null;
 let getDsh = null;
+/** 画布资产目录解析（main.js 传入的 assetDirFor(wfId)）：调用方没给输出路径时产物直接落这里，
+ *  与 proc_image / sensenova 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
+let assetDirFor = null;
 let consoleWin = null;
 let installing = false;
 let installCancel = false;
@@ -93,6 +97,36 @@ function mk(p) {
 }
 function music3Root() {
   return mk(join(getDataDir(), "music3"));
+}
+/** 托管输出临时区：调用方没给输出路径、又拿不到画布资产目录时的兜底落点（数据目录内，不是应用文件夹） */
+function music3TempOutDir() {
+  return mk(join(music3Root(), "asset-tmp"));
+}
+/** 托管落点解析：优先画布资产目录 assetDirFor(wfId)，否则数据目录里的 asset-tmp。
+ *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同 sensenova）。 */
+function resolveManagedOutDir(wfId, askedFor) {
+  let dir = "";
+  const wf = String(wfId || "");
+  if (wf && typeof assetDirFor === "function") {
+    try {
+      dir = String(assetDirFor(wf) || "");
+    } catch {
+      dir = "";
+    }
+  }
+  if (!dir) dir = music3TempOutDir();
+  mk(dir);
+  return {
+    dir,
+    warn:
+      "managed_output_dir: 调用方未指定 " + askedFor + "，产物落在应用托管目录（" + dir +
+      "），未写入应用文件夹；需要固定位置请显式传 " + askedFor + "。",
+  };
+}
+/** 托管兜底命名主干：<nodeId 尾 8 位>-<时间戳>（扩展名交给本宿主已有的 uniqueFileInDir 补 / 查重） */
+function managedOutBaseName(nodeId, tag) {
+  const tail = String(nodeId || "").slice(-8) || String(tag || "music3");
+  return tail + "-" + Date.now();
 }
 function configPath() {
   return join(music3Root(), "config.json");
@@ -1420,6 +1454,35 @@ async function stopBackend() {
   return { ok: true };
 }
 
+/** 占着端口的孤儿进程（台账丢了 pid 但服务还在的情形）：查监听者 → 杀掉进程树。
+ *  只给硬释放（killPortListener 同口径的本地实现）用，正常运行链一个字没动。 */
+function findListeningPid(listenPort) {
+  return new Promise((resolve) => {
+    const p = Number(listenPort);
+    if (!p || process.platform !== "win32") return resolve(0);
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `(Get-NetTCPConnection -LocalPort ${p} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)`,
+      ],
+      { windowsHide: true, timeout: 8000 },
+      (err, stdout) => {
+        if (err) return resolve(0);
+        const n = parseInt(String(stdout || "").trim(), 10);
+        resolve(Number.isFinite(n) && n > 0 ? n : 0);
+      },
+    );
+  });
+}
+
+async function killPortListener(listenPort) {
+  const pid = await findListeningPid(listenPort);
+  if (pid) await killPidTree(pid);
+  return pid;
+}
+
 /** 任务用：确保 Gradio 可用（已在跑则复用；否则启动并等到可探测） */
 async function ensureBackendReadyForJob() {
   const started = await startBackend();
@@ -1508,11 +1571,13 @@ async function startBackend() {
     backendProc = null;
   }
 
-  const py = join(installDir, ".venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) {
-    reportErr("no_venv", "Music3 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+  const pyExe = join(installDir, ".venv", "Scripts", "python.exe");
+  if (!fs.existsSync(pyExe)) {
+    reportErr("no_venv", "Music3 后端缺少 Python 环境（" + pyExe + "）", { phase: "start" });
     return { ok: false, error: "no_venv" };
   }
+  /* pythonw：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会再拉真解释器并弹终端窗） */
+  const py = quietPython(pyExe);
 
   syncPackAppToInstall(installDir);
 
@@ -1812,7 +1877,19 @@ async function callGradioGenerate(params) {
   const base = `http://127.0.0.1:${port}`;
   const installDir = cfg.installDir;
   const modelPath = join(installDir, "models", "MiniMax-Music3");
-  const userOutputDir = String(params.outputDir || "").trim();
+  /* 调用方没给 outputDir → 宿主兜底落应用托管目录：有 workflowId 落画布资产目录
+     assetDirFor(wfId)，否则落数据目录的 asset-tmp，并真的把产物**复制**进去（不再只回
+     install output 暂存路径）；一律不写应用文件夹。显式传了 outputDir 的调用方一行不动。 */
+  let userOutputDir = String(params.outputDir || "").trim();
+  let managedWarn = "";
+  let managedName = "";
+  if (!userOutputDir) {
+    const m = resolveManagedOutDir(params.workflowId, "outputDir");
+    userOutputDir = m.dir;
+    managedWarn = m.warn;
+    managedName = managedOutBaseName(params.nodeId, "music3") + ".wav";
+    appendConsole("[job] warn " + managedWarn);
+  }
   const stagingDir = join(installDir, "output");
   mk(stagingDir);
   let stagingName = String(params.filename || "").trim();
@@ -1888,8 +1965,12 @@ async function callGradioGenerate(params) {
         "",
       );
       if (!staged) throw new Error("audio_output_missing_or_corrupt");
-      const finalPath = finalizeMusicOutputFile(staged, userOutputDir, stagingName);
-      return { path: finalPath, message: msg.replace(staged, finalPath) };
+      const finalPath = finalizeMusicOutputFile(staged, userOutputDir, managedName || stagingName);
+      return {
+        path: finalPath,
+        message: msg.replace(staged, finalPath),
+        warnings: managedWarn ? [managedWarn] : [],
+      };
     } catch (e) {
       lastErr = String((e && e.message) || e);
       if (lastErr === "cancelled" || lastErr === "backend_not_running" || lastErr === "gradio_timeout")
@@ -1974,7 +2055,13 @@ async function generateMusic(params) {
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: "完成", pct: 100, done: true });
     appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
-    resultPayload = { ok: true, path: outPath, message: msg, bytes: sz };
+    resultPayload = {
+      ok: true,
+      path: outPath,
+      message: msg,
+      bytes: sz,
+      warnings: Array.isArray(result.warnings) ? result.warnings : [],
+    };
     return resultPayload;
   } catch (e) {
     const err = String((e && e.message) || e);
@@ -2144,6 +2231,8 @@ function registerMusic3Ipc(opts) {
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
   getDsh = opts.getDsh || null;
+  /* 画布资产目录（托管兜底落点）：main.js 传入 assetDirFor(wfId) */
+  assetDirFor = typeof opts.assetDirFor === "function" ? opts.assetDirFor : null;
 
   /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口），
      之后各失败出口的 reportErr 才有归属与上下文。 */
@@ -2230,9 +2319,52 @@ function shutdownMusic3UiOnly() {
   stopGpuPolling();
 }
 
+/**
+ * 显存释放钩子（给主进程 local-model-vram.js 的统一编排用，见该文件头部口径）：
+ *   · Gradio 后端**没有卸载模型的 HTTP 口**（只在生成本身收尾时内部 release_vram）——
+ *     所以本后端最轻的释放就是停服务（stopBackend，不杀用户别的进程）；
+ *   · hard = 停服务 + 清占端口进程（软释放没生效时由编排器升级）；
+ *   · 释放不改「用户按启动」的语义：下次生成由 ensureBackendReadyForJob 自行拉起。
+ */
+function vramHooks() {
+  return {
+    host: "music3",
+    port: DEFAULT_PORT,
+    isRunning: () => backendRunning(),
+    isLoaded: () => backendRunning(),
+    isBusy: () => !!activeGenerate || !!refreshStaleLock(),
+    soft: async (reason) => {
+      appendConsole("[vram] 停 Music3 后端释放显存（" + String(reason || "release") + "）—— 下次生成会自动重新拉起");
+      const r = await stopBackend();
+      return { ok: !!(r && r.ok), mode: "stop_backend" };
+    },
+    hard: async (reason) => {
+      appendConsole("[vram] 强制结束 Music3 后端进程树（" + String(reason || "release") + "）");
+      const port = Number(loadConfig().port) || DEFAULT_PORT;
+      const meta = loadPidMeta();
+      const pid = (meta && meta.pid) || (backendProc && backendProc.pid);
+      if (backendProc) {
+        try {
+          backendProc.kill();
+        } catch {}
+        backendProc = null;
+      }
+      if (pid) await killPidTree(pid);
+      await killPortListener(port);
+      clearPidMeta();
+      clearLock();
+      activeGenerate = null;
+      saveConfig({ wantRunning: false });
+      return { ok: true, mode: "kill_pid_tree" };
+    },
+  };
+}
+
 module.exports = {
   registerMusic3Ipc,
   shutdownMusic3UiOnly,
+  /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
+  vramHooks,
   onMusic3DshEvent,
   statusForUi,
   PLUGIN_ID,

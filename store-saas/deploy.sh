@@ -9,6 +9,10 @@ mkdir -p /opt/mtnode-store/data/app-thumbs
 mkdir -p /var/www/mtnode/plugins
 mkdir -p /var/www/mtnode/apps/icons
 install -m 644 "$SRC/server.mjs" /opt/mtnode-store/server.mjs
+# 热表拆分（relayUsage / rechargeLedger 的追加文件）：server.mjs import 它，**漏装即服务起不来**。
+# 2026-10-09 上线当场踩到：upload.py 的 UPLOAD_FILES 里一直有 hot-store.mjs（文件确实传上来了），
+# 但 deploy.sh 缺这一步 install —— 服务重启后 ERR_MODULE_NOT_FOUND 反复重启、线上整站 502。
+install -m 644 "$SRC/hot-store.mjs" /opt/mtnode-store/hot-store.mjs
 install -m 644 "$SRC/sms-provider.mjs" /opt/mtnode-store/sms-provider.mjs
 install -m 644 "$SRC/account-store.mjs" /opt/mtnode-store/account-store.mjs
 install -m 644 "$SRC/migrate-accounts.mjs" /opt/mtnode-store/migrate-accounts.mjs
@@ -111,6 +115,20 @@ done
 shopt -u nullglob
 python3 "$SRC/patch-nginx.py"
 nginx -t
+# 上线前静态闸：server.mjs 里 import 的每个本地模块都必须在 /opt/mtnode-store 存在。
+# 为什么必须有这一道：漏装一个模块 = 重启后 ERR_MODULE_NOT_FOUND 反复重启、线上整站 502
+# （2026-10-09 就是漏装 hot-store.mjs 造成的一次真实宕机，自检里全是 502 才被发现）。
+# 只读校验、不启动服务；命中就直接退出，别把起不来的版本推上线。
+_mods=$( { grep -oE 'from "\./[A-Za-z0-9_.-]+\.mjs"' /opt/mtnode-store/server.mjs || true; } | sed -E 's/.*"\.\///; s/"$//' | sort -u )
+_miss=""
+for _m in $_mods; do
+  [ -f "/opt/mtnode-store/$_m" ] || _miss="$_miss $_m"
+done
+if [ -n "$_miss" ]; then
+  echo "modules-gate: BAD（server.mjs import 的本地模块在 /opt/mtnode-store 不存在：$_miss）→ 先补 deploy.sh 的 install 再重启，否则服务起不来（2026-10-09 宕机现场）"
+  exit 1
+fi
+echo "modules-gate: ok（server.mjs import 的本地模块齐备：$(echo $_mods | tr '\n' ' ')）"
 systemctl daemon-reload
 systemctl enable mtnode-store
 systemctl restart mtnode-store

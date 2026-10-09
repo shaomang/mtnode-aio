@@ -184,12 +184,19 @@ try {
     HOSTS_SRC +
     "\n" +
     EDITABLE_SRC +
-    "\nlet nodeClipboard = null;\nlet nodeClipIsFresh = false;\n" +
+    "\nlet nodeClipboard = null;\nlet nodeClipIsFresh = false;\nlet nodeClipAt = 0;\n" +
+    "\nconst NODE_PASTE_WINDOW_MS = 120000;\n" +
     /* S 只保留 canvasPasteFromClipboard 读的那一个字段（视图闸门） */
     "\nlet S = { view: \"workflow\" };\n";
   vm.runInContext(PRELUDE, ctx, { filename: "prelude.js" });
   vm.runInContext(
-    fnBody(APP, "textSelectionWantsNativeCopy") +
+    fnBody(APP, "markNodeClipFresh") +
+      "\n" +
+      fnBody(APP, "markNodeClipStale") +
+      "\n" +
+      fnBody(APP, "nodeClipPasteWanted") +
+      "\n" +
+      fnBody(APP, "textSelectionWantsNativeCopy") +
       "\n" +
       fnBody(APP, "canvasClipboardKey") +
       "\n" +
@@ -202,9 +209,12 @@ try {
       "  clipKey: canvasClipboardKey,\n" +
       "  release: canvasPointerReleaseFocus,\n" +
       "  paste: canvasPasteFromClipboard,\n" +
+      "  pasteWanted: nodeClipPasteWanted,\n" +
+      "  markStale: markNodeClipStale,\n" +
       "  setSel: (a) => { selection = a; },\n" +
       "  setClip: (c) => { nodeClipboard = c; },\n" +
-      "  setFresh: (v) => { nodeClipIsFresh = v; },\n" +
+      "  setFresh: (v) => { nodeClipIsFresh = v; if (v) nodeClipAt = Date.now(); },\n" +
+      "  ageClip: (ms) => { nodeClipAt = Date.now() - Number(ms || 0); },\n" +
       "  fresh: () => nodeClipIsFresh,\n" +
       "};",
     ctx,
@@ -332,6 +342,25 @@ console.log("── [1] 接线：Ctrl+C / Ctrl+V 的判定必须先于「输入�
   has(APP, 'document.addEventListener("copy", () => {', "文字复制（copy 事件）会复位节点粘贴板标记");
   has(APP, 'window.addEventListener("blur", () => {', "切走窗口会复位节点粘贴板标记");
   has(APP, "function watchTextCopyOutlets()", "应用自己的「复制文字」出口被包了一层（writeText 不触发 copy 事件）");
+  /* 本轮修的 bug：输入框里「一律让给编辑器」废掉了「点节点 → Ctrl+C → Ctrl+V」。
+     口径收口在 nodeClipPasteWanted（标记热乎 + 粘贴板里确有节点 / 绘制）。 */
+  has(APP, "function nodeClipPasteWanted()", "粘贴归属收口在 nodeClipPasteWanted（节点粘贴板是不是刚复制的节点）");
+  has(APP, "function markNodeClipFresh()", "复制节点成功即打「热乎」标记（含时刻）");
+  has(APP, "function markNodeClipStale()", "文字复制 / 切窗口把标记打陈旧（唯一的复位口）");
+  has(
+    APP,
+    "if (!inCanvasField || !nodeClipPasteWanted()) return false;",
+    "节点输入框里 Ctrl+V：只有「刚复制过节点」才粘节点，否则归原生粘贴文字",
+  );
+  hasnt(
+    APP,
+    "    if (inFieldHere) return false;",
+    "旧的「输入框里一律让给编辑器」判据已删除（那正是复制完粘不出来的成因）",
+  );
+  ok(
+    (APP.match(/\n\s*nodeClipIsFresh = false;/g) || []).length === 1,
+    "「标记转陈旧」只剩 markNodeClipStale 里那一处赋值（其余全部走它，别各写一遍）",
+  );
   has(
     APP,
     'document.addEventListener("mousedown", canvasPointerReleaseFocus, true);',
@@ -456,8 +485,9 @@ if (API) {
     "判定前不抢着粘节点、也不抢先报「粘贴板为空」（都移到 canvasPasteFromClipboard 里）",
   );
 
-  /* Ctrl+V：节点输入框里 → 一律归浏览器原生粘贴（本轮改的口径：画布不再把「最近复制过节点」
-     当成要粘节点的信号；复制的节点只在画布非编辑区 Ctrl+V 时粘贴） */
+  /* Ctrl+V：节点输入框里 —— 刚复制过节点（标记热乎）就照粘节点。
+     点选节点会把焦点落进它自己的正文框，旧口径在这里一律让给编辑器 ⇒「点节点 → Ctrl+C →
+     Ctrl+V」粘不出来（本轮修的 bug）。 */
   resetState();
   API.setClip({ nodes: [{ id: "n1" }], marks: [] });
   API.setFresh(true);
@@ -465,11 +495,47 @@ if (API) {
   ev = keyEvent(nodeField);
   consumed = API.clipKey(ev, "v", true);
   ok(
-    consumed === false && pasteCalls === 0 && canvasPasteCalls === 0,
-    "节点输入框里按 Ctrl+V：归浏览器原生粘贴纯文本（不再抢去粘节点）",
+    consumed === true && ev.prevented === true && pasteCalls === 1,
+    "节点输入框里 Ctrl+V：最近复制的是节点 → 粘节点（本轮修的 bug：复制完粘不出来）",
   );
 
-  /* Ctrl+V：焦点漂到 BODY（画布重绘后常见）但事件目标是输入框 → 仍要归原生粘贴 */
+  /* 同一场合但标记已陈旧（用户随后复制过文字 / 超时）→ 归浏览器原生粘贴纯文本 */
+  resetState();
+  API.setClip({ nodes: [{ id: "n1" }], marks: [] });
+  API.setFresh(true);
+  API.ageClip(200000);
+  ctx.document.activeElement = nodeField;
+  ev = keyEvent(nodeField);
+  consumed = API.clipKey(ev, "v", true);
+  ok(
+    consumed === false && pasteCalls === 0,
+    "节点输入框里 Ctrl+V：复制节点已超时（>2 分钟）→ 归浏览器原生粘贴文字",
+  );
+
+  resetState();
+  API.setClip({ nodes: [{ id: "n1" }], marks: [] });
+  API.markStale();
+  ctx.document.activeElement = nodeField;
+  ev = keyEvent(nodeField);
+  consumed = API.clipKey(ev, "v", true);
+  ok(
+    consumed === false && pasteCalls === 0,
+    "节点输入框里 Ctrl+V：标记被文字复制打陈旧后 → 原生粘贴文字",
+  );
+
+  /* 画布文字标注（.mk-text 富文本）里一律不粘节点 */
+  resetState();
+  API.setClip({ nodes: [{ id: "n1" }], marks: [] });
+  API.setFresh(true);
+  ctx.document.activeElement = mkText;
+  ev = keyEvent(mkText);
+  consumed = API.clipKey(ev, "v", true);
+  ok(
+    consumed === false && pasteCalls === 0,
+    "画布文字标注（.mk-text）里 Ctrl+V：不粘节点（纯文字编辑）",
+  );
+
+  /* Ctrl+V：焦点漂到 BODY（画布重绘后常见）但事件目标是节点输入框 + 标记热乎 → 仍要粘节点 */
   resetState();
   API.setClip({ nodes: [{ id: "n1" }], marks: [] });
   API.setFresh(true);
@@ -477,8 +543,20 @@ if (API) {
   ev = keyEvent(nodeField);
   consumed = API.clipKey(ev, "v", true);
   ok(
-    consumed === false && pasteCalls === 0 && canvasPasteCalls === 0,
-    "焦点漂到 BODY 时在输入框里 Ctrl+V：不再被画布吃掉（本轮修的 bug）",
+    consumed === true && pasteCalls === 1,
+    "焦点漂到 BODY 时在节点输入框里 Ctrl+V：照粘节点（inCanvasField 判据不看 activeElement）",
+  );
+
+  /* Ctrl+V：焦点漂到 BODY 但事件目标是画布之外的输入框 → 归原生 */
+  resetState();
+  API.setClip({ nodes: [{ id: "n1" }], marks: [] });
+  API.setFresh(true);
+  ctx.document.activeElement = body;
+  ev = keyEvent(foreign);
+  consumed = API.clipKey(ev, "v", true);
+  ok(
+    consumed === false && pasteCalls === 0,
+    "画布之外的输入框（ev.target 是它）Ctrl+V：归原生粘贴，不被画布吃掉",
   );
 
   /* Ctrl+C：焦点漂到 BODY（画布重绘后常见）但页面上没有输入焦点 → 画布仍要复制节点，
@@ -518,6 +596,18 @@ if (API) {
     consumed === true && canvasPasteCalls === 1,
     "画布焦点按 Ctrl+V：交给入口（剪贴板里没图像时由它粘贴节点）",
   );
+
+  /* nodeClipPasteWanted 本体：标记热乎 + 粘贴板非空才算「该粘节点」 */
+  resetState();
+  API.setClip({ nodes: [{ id: "n1" }], marks: [] });
+  ok(API.pasteWanted() === false, "只有粘贴板、标记不热乎 → 不算要粘节点");
+  API.setFresh(true);
+  ok(API.pasteWanted() === true, "粘贴板有节点 + 刚复制过 → 要粘节点");
+  API.markStale();
+  ok(API.pasteWanted() === false, "标记被打陈旧后立刻不算要粘节点");
+  API.setClip({ nodes: [], marks: [] });
+  API.setFresh(true);
+  ok(API.pasteWanted() === false, "粘贴板里没有节点 / 绘制 → 不算要粘节点（空粘贴板不报错）");
 }
 
 console.log("── [4] canvasPointerReleaseFocus：画布按下鼠标要把旧的输入焦点 / 残留选区放下");
@@ -567,8 +657,13 @@ if (API) {
   );
   has(
     BOOT,
-    'if (bootView === "agent" || bootView === "team") setView(bootView);',
-    "agent / team 的 boot 仍走 setView（视图切换收口不变，画布视图不多跑一遍 renderCanvas）",
+    'const bootToAgentOrTeam = bootView === "agent" || bootView === "team";',
+    "agent / team 的 boot 判据收口成 bootToAgentOrTeam（视图切换仍由 setView 负责）",
+  );
+  has(
+    BOOT,
+    "if (bootToAgentOrTeam && S._bootSeen) setView(bootView);",
+    "agent / team 的 boot 仍走 setView（启动首绘期不重复拆建 DOM，画布视图不调 setView）",
   );
   has(
     APP,

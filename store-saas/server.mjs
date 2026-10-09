@@ -9,6 +9,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { sendSmsCode, smsProviderStatus, SMS_CODE_TTL_MS } from "./sms-provider.mjs";
@@ -25,7 +26,7 @@ import {
 } from "./alipay-provider.mjs";
 import { qrDataUrl } from "./qr-encode.mjs";
 import { createRelay } from "./relay.mjs";
-import { makeAppThumb, makeAppShot, THUMB_W, THUMB_H } from "./thumb.mjs";
+import { makeAppThumb, makeAppShot, decodeImage, THUMB_W, THUMB_H } from "./thumb.mjs";
 import { createTips, TIP_TARGET_KINDS } from "./tips.mjs";
 import { createComments } from "./comments.mjs";
 import { createNotifications } from "./notifications.mjs";
@@ -40,6 +41,7 @@ import {
   RECHARGE_MAX_CENTS,
   rechargeTiersYuan,
 } from "./wallet.mjs";
+import { hotStoreInit, hotAppendRows, hotDirty, hotClearDirty, hotFlushAll, hotStats, hotDbForDisk } from "./hot-store.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
@@ -53,14 +55,33 @@ const APP_DIR = path.join(DATA_DIR, "apps");
 const APP_ICON_DIR = path.join(DATA_DIR, "app-icons");
 // 应用封面缩略图缓存（640×360 PNG，首次请求时由 thumb.mjs 现生成，见 appThumbOf）
 const APP_THUMB_DIR = path.join(DATA_DIR, "app-thumbs");
-/* 上架截图（本轮需求：**多图落盘**）：
-   · 目录：<DATA_DIR>/app-shots/<主干>/<序号>.png（主干 = <id>__<作者uid>，与图标同一套命名）
-   · 上限：每个分支最多 8 张、单张 ≤ 500KB、长边压到 1280（服务端统一压缩，见 makeAppShot）
-   · 下发：目录条目带 shots[]（相对静态目录的 icons|shots 地址），客户端详情窗拿它画多图 */
+/* 上架截图（多图落盘）+ **内容寻址图片缓存**（本轮需求：图片放宽到单张 5MB，但同一张图
+   绝不在云端存第二份、也绝不反复重传占带宽）：
+   · 对象库：<DATA_DIR>/images/objects/<sha256>.<ext> —— 全站同一张图只落一份，
+     跨版本 / 跨分支 / 跨用户复用（内容寻址，文件名即内容哈希）。
+   · 引用：<DATA_DIR>/images/refs/<sha256>.<ext> —— 指向对象的硬链接（跨卷 / 权限不允许时
+     退回复制），每个被引用的内容一份，用来「按内容认领」（客户端说这张图传过了）。
+   · 截图本体：<DATA_DIR>/app-shots/<主干>/<序号>.<ext>（主干 = <id>__<作者uid>）——
+     也是指向同一对象的硬链接。人可读、可排序，静态目录与既有读取链一个字都不用改。
+     为什么要平铺而不是塞进一个子目录：实测本机（Windows + 沙箱过滤器）**父目录的 readdir
+     看不到子目录里的条目**，fs.readdirSync / cmd dir / opendir 三条路都看不到（Get-ChildItem
+     -Recurse 才看得到）。平铺就没有这个坑，代价只是多一层 images/refs。
+   · 上限：每个分支最多 8 张、单张 ≤ 5MB；落盘前把长边收到 APP_SHOT_MAX_EDGE（2560，只缩不放，
+     与客户端的压缩口径一致），列表用的小图另出 APP_SHOT_LIST_EDGE（1280，懒生成 + 落盘缓存）。
+   · 下发：目录条目带 shots[]（原图，详情用）/ shotsThumb[]（列表小图）/ shotsSha[]（内容指纹）。 */
 const APP_SHOT_DIR = path.join(DATA_DIR, "app-shots");
+const IMG_OBJ_DIR = path.join(DATA_DIR, "images", "objects");
+const IMG_REF_DIR = path.join(DATA_DIR, "images", "refs");
 const MAX_APP_SHOTS = 8;
-const MAX_APP_SHOT_BYTES = 500 * 1024;
-const APP_SHOT_MAX_EDGE = 1280;
+const MAX_APP_SHOT_BYTES = 5 * 1024 * 1024;
+const APP_SHOT_MAX_EDGE = 2560;
+const APP_SHOT_LIST_EDGE = 1280;
+/* 列表用小图的后缀：`<sha256>` → `<sha256>.l1280`（拼在扩展名之前：`<sha256>.l1280.webp`）。 */
+const SHOT_LIST_SUFFIX = ".l" + APP_SHOT_LIST_EDGE;
+/* 上传请求体上限：上架接口要一次收下「最多 8 张 5MB 图 + 24MB 包」（base64 后约 77MB），
+   所以 **只给上架链路的写接口**放宽到 96MB；其它接口仍守 MAX_BODY（40MB）。
+   同步口径：nginx 的 client_max_body_size（store-saas/patch-nginx.py 里那两行）。 */
+const MAX_BODY_APP_UPLOAD = 96 * 1024 * 1024;
 // 应用市场静态目录（客户端唯一入口：<MTNODE_APPS_URL>/catalog.json）：
 // 线上 = nginx 直发的 /var/www/mtnode/apps，本机开发 = DATA_DIR/apps-web。
 // 接口一有应用变更就把 appCatalogDoc() 与 zip / 图标按静态布局落这里（单一真源，见 publishStaticApps）。
@@ -104,8 +125,10 @@ const APP_VERSIONS_ENV = String(process.env.MTNODE_APP_VERSIONS || "").trim().to
 const APP_VERSIONS_OFF = new Set(["0", "false", "no", "off"]);
 // 账号配额（服务端强制，落盘之前校验）：云端已存包总量 = 名下所有应用所有版本 bytes 之和；
 // 应用条数上限只算「新建」，给已有应用追加版本不计入。
-const MAX_ACCOUNT_APP_BYTES = 50 * 1024 * 1024;
-const MAX_ACCOUNT_APPS = 5;
+const MAX_ACCOUNT_APP_BYTES = Math.max(1024 * 1024, Number(process.env.MTNODE_MAX_ACCOUNT_APP_BYTES || 50 * 1024 * 1024) || 50 * 1024 * 1024);
+/* 每账号应用条数上限：默认 5（线上口径不变）；隔离沙箱要用 env 抬高它来造 1000 条目录
+   （见 scripts/scale-1000-sandbox.mjs）。只影响「新上架」这一条校验，其它口径一字未动。 */
+const MAX_ACCOUNT_APPS = Math.max(1, Number(process.env.MTNODE_MAX_ACCOUNT_APPS || 5) || 5);
 const MAX_VERSION_NOTE = 200;
 /* 打赏概述（GET /api/tips/summary）一次最多问多少个对象：列表页一页的量级（应用条目
    同 id 多分支也各占一条），够整页一次问齐，又挡住「一条超长 ids」把服务端拖住。 */
@@ -177,6 +200,10 @@ const ADMIN_LOGIN_IP_HOURLY_MAX = 30;
 const ADMIN_POLL_IP_HOURLY_MAX = 600;
 const RECHARGE_CREATE_IP_HOURLY_MAX = 60;
 const WALLET_REFRESH_IP_HOURLY_MAX = 120;
+// 图片内容指纹批量查存（客户端上传前问「这几张云端有没有」）：只读、免登录，但会被上架链路反复调用，
+// 所以按单 IP 每小时封顶 600 次（一次能问最多 64 张，正常上架远不到这个数）。
+const OBJ_EXIST_IP_HOURLY_MAX = 600;
+const OBJ_EXIST_MAX = 64;
 // 微信归属映射：`unionid:username` 或 `unionid:userId`，多条用逗号 / 分号 / 空白分隔。
 // 用途：未登录扫码且该 unionid 无人占用时，命中映射就直接绑到旧账号并登录它，
 // 不再新建一个只有微信身份的临时 uid（「同一个人两个账号」的根因）。
@@ -251,8 +278,11 @@ function emptyDb() {
     relayConfig: null,
     // 中转配置改动留痕（谁 / 何时 / 改了哪一项）
     relayAudit: [],
-    // 内容管理改动留痕（管理台上架 / 下架 / 编辑 / 删除 应用·模板·技能，谁 / 何时 / 对哪条做了什么）
+    // 内容管理改动留痕（管理台编辑 / 删除 / 删版本 / 重发目录 应用·模板·技能，谁 / 何时 / 对哪条做了什么）
     contentAudit: [],
+    // 已删除留痕（本轮需求）：彻底删除一条应用分支、且同一 id 下还有别的作者分支时，
+    // 留一条最小元信息（见 appDeletedLedgerPush）—— 别的分支的「分支来源」指着它
+    appDeletedLedger: [],
   };
 }
 
@@ -288,6 +318,7 @@ function loadDb() {
     if (!Array.isArray(d.relayUsage)) d.relayUsage = [];
     if (!Array.isArray(d.relayAudit)) d.relayAudit = [];
     if (!Array.isArray(d.contentAudit)) d.contentAudit = [];
+    if (!Array.isArray(d.appDeletedLedger)) d.appDeletedLedger = [];
     if (!d.relayConfig || typeof d.relayConfig !== "object") d.relayConfig = null;
     return d;
   } catch {
@@ -298,15 +329,71 @@ function loadDb() {
 let db = loadDb();
 let saving = Promise.resolve();
 
+/* 目录文档进程内记忆的两个状态位：**声明必须早于 saveDb**（口径与失效判据见 appCatalogDoc 上方注释）。
+   踩过一次真坑（2026-10-09 上线当场）：saveDb() → bumpAppCatalog() 会读 appCatalogBump，而本模块中段
+   有一处 top-level await（bootstrapAccountStore，Tablestore 冷启 ~20s），模块求值在那里挂起时事件循环
+   照跑 —— 启动迁移那条 setImmediate 就会在 `let appCatalogBump` 求值之前调进 saveDb，撞 TDZ
+   「Cannot access 'appCatalogBump' before initialization」：db.json 剪除失败，每次启动把 2000+ 条热表
+   重迁一遍。声明位置在这件事上就是语义的一部分，别把它搬回中段。 */
+let appCatalogBump = 0;
+let _catalogMemo = { at: 0, bump: -1, doc: null };
+
+/* 盘上那份 db.json 里是否还背着热表（**必须在 hotStoreInit 合并追加文件之前看**）。
+   剪除闸不能只看「本轮迁入了几条」：迁移成功一次之后，后续每次启动 migrated 恒为 0
+   （行已经在追加文件里、按 id 去重后没有新行可迁），只看 migrated 就永远不剪 ——
+   db.json 会一直带着那两张表（实测 1.36MB / 3300+ 条）不缩，与 §热表拆分的设计口径相反。
+   现场（2026-10-09）：第一次迁移撞 TDZ、剪除失败，第二次启动 migrated=0 → 剪除被整段跳过。 */
+const DB_HAD_HOT_ROWS =
+  (Array.isArray(db.relayUsage) && db.relayUsage.length > 0) ||
+  (Array.isArray(db.rechargeLedger) && db.rechargeLedger.length > 0);
+
 function saveDb() {
+  bumpAppCatalog();
+  /* 只改了热表（中转用量 / 钱包流水）时**不写 db.json**：那两张表的内容已经在各自的追加文件里
+     落盘了，再全量重写一次 1MB+ 的库纯属白烧 —— 这正是本轮要拆掉的瓶颈（条目越多越慢、
+     还把事件循环按住）。真正的库改动（应用 / 用户 / 评论 / 配置…）照旧全量原子落盘。 */
+  if (hotDirty() && !saving.__hotOnly) {
+    /* 这里刻意**保守**：只要还有别的改动要写库，就照旧全量写（不因为热表脏就跳过），
+       避免「某个调用方忘了标脏就把改动吞掉」。热表自己已经落过盘，多写一次只是慢一点。 */
+  }
   saving = saving.then(() => {
     const tmp = DB_PATH + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(db));
+    fs.writeFileSync(tmp, JSON.stringify(hotDbForDisk(db)));
     fs.renameSync(tmp, DB_PATH);
   }).catch((e) => {
     console.error("[store] save failed", e);
   });
+  hotClearDirty();
   return saving;
+}
+
+/* 两张只增不减的热表（relayUsage / rechargeLedger）搬出 db.json，各落一个追加文件
+   （每条 fsync）。为什么与口径见 store-saas/hot-store.mjs 顶部注释与
+   docs/reports/scale-1000-verification.md。启动时把 db.json 里残留的旧记录迁进新文件并剪除，
+   之后 db.json 不再随用量 / 流水条数膨胀；内存里那两张表照旧全量可读（读路径一行没改）。 */
+const HOT_DIR = process.env.MTNODE_HOT_DIR || DATA_DIR;
+const HOT_LOAD = hotStoreInit(db, HOT_DIR);
+console.log(
+  "[mtnode-store] hot tables: relayUsage=加载 " + HOT_LOAD.loaded.relayUsage.loaded + " 条（迁入 " +
+    HOT_LOAD.loaded.relayUsage.migrated + "） · rechargeLedger=加载 " + HOT_LOAD.loaded.rechargeLedger.loaded +
+    " 条（迁入 " + HOT_LOAD.loaded.rechargeLedger.migrated + "） · 目录 " + HOT_DIR,
+);
+
+/* 只要「盘上还带着热表」或「本轮真迁入了行」就把剪除落到 db.json：否则盘上仍背着那两张表，
+   与热表拆分的设计口径相反（判据与现场见 DB_HAD_HOT_ROWS 上方注释）。
+   setImmediate —— 此刻 saveDb / publishStaticApps 还没定义，等这一圈事件循环跑完再调。 */
+if (
+  HOT_LOAD.loaded.relayUsage.migrated ||
+  HOT_LOAD.loaded.rechargeLedger.migrated ||
+  DB_HAD_HOT_ROWS
+) {
+  setImmediate(() => {
+    try {
+      saveDb().then(() => console.log("[mtnode-store] hot tables: db.json 已剪除这两张表（盘上只留空数组占位）")).catch(() => {});
+    } catch (e) {
+      console.warn("[mtnode-store] hot tables: db.json 剪除失败（盘上仍背着热表，下次启动会再试一次）：" + ((e && e.message) || e));
+    }
+  });
 }
 
 // 首次读到旧结构：清空遗留字段（loadDb 已删）与 forum-images 目录里的旧图，并立即落盘。
@@ -323,6 +410,15 @@ function purgeLegacyForum() {
   saveDb();
 }
 purgeLegacyForum();
+
+/* 关停 / 异常退出前把热表的追加等完（每条本来就 fsync 过，这里只是等队列排空）。 */
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    hotFlushAll()
+      .catch(() => {})
+      .then(() => process.exit(0));
+  });
+}
 
 // 启动即从账户存储把 users / sessions / identities 载入内存缓存（见 bootstrapAccountStore）。
 await bootstrapAccountStore();
@@ -1673,6 +1769,101 @@ function send(res, status, obj, extraHeaders) {
   res.end(body);
 }
 
+/**
+ * 目录类 JSON 的响应出口（本轮需求：1000 条目录下「上线不故障」）：
+ *   · gzip：catalog.json 在 1000 条时约 1.5MB，gzip 后约 1/4；gzip 结果按内容哈希缓存，
+ *     同一份目录只压一次（不是每个请求压一次 —— 那是把 CPU 换成带宽的最差换法）；
+ *   · ETag：内容哈希做校验和，客户端（apps-store.js 的本机缓存）带 If-None-Match 时回 304；
+ *   · Cache-Control: public, max-age=60 + stale-while-revalidate：发布后 1 分钟内可见，
+ *     期间重复进入应用中心不再全量传目录。
+ * 只给「目录类」用；写接口 / 鉴权回执仍然走 send（不缓存）。
+ */
+const JSON_GZIP_CACHE = new Map(); // hash -> gzip Buffer（只留最近 8 份）
+/* 目录文档的「已编码」附属信息：WeakMap<doc, {body, hash, etag, gz}>。
+   doc 在 250ms 记忆窗口内是同一个对象，所以同一份目录只 stringify / sha1 / gzip 一次。 */
+const JSON_ENC = new WeakMap();
+function encodeJsonDoc(obj) {
+  const hit = JSON_ENC.get(obj);
+  if (hit) return hit;
+  const body = Buffer.from(JSON.stringify(obj));
+  const hash = crypto.createHash("sha1").update(body).digest("hex");
+  const rec = { body: body, hash: hash, etag: '"' + hash.slice(0, 32) + '"', gz: null };
+  JSON_ENC.set(obj, rec);
+  return rec;
+}
+const JSON_CACHE_MAX = 8;
+function sendCatalogJson(req, res, obj, opts) {
+  const o = opts || {};
+  const enc = encodeJsonDoc(obj);
+  const body = enc.body;
+  const hash = enc.hash;
+  const etag = enc.etag;
+  const headers = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+    ETag: etag,
+    "Cache-Control": o.cache || "public, max-age=60, stale-while-revalidate=300",
+    Vary: "Accept-Encoding",
+  };
+  const inm = String((req && req.headers && req.headers["if-none-match"]) || "");
+  if (inm && inm.split(",").some((t) => t.trim() === etag)) {
+    res.writeHead(304, Object.assign({}, headers, { "Content-Length": 0 }));
+    res.end();
+    return;
+  }
+  const acceptsGzip = /gzip/i.test(String((req && req.headers && req.headers["accept-encoding"]) || ""));
+  let out = body;
+  if (acceptsGzip && body.length >= 1024) {
+    let gz = enc.gz || JSON_GZIP_CACHE.get(hash);
+    if (!gz) {
+      try {
+        gz = zlib.gzipSync(body, { level: o.level || 6 });
+      } catch (_) {
+        gz = null;
+      }
+      if (gz) {
+        enc.gz = gz; // 挂在这份文档上：同一份目录后续请求不再压
+        JSON_GZIP_CACHE.set(hash, gz);
+        while (JSON_GZIP_CACHE.size > JSON_CACHE_MAX) JSON_GZIP_CACHE.delete(JSON_GZIP_CACHE.keys().next().value);
+      }
+    }
+    if (gz) {
+      out = gz;
+      headers["Content-Encoding"] = "gzip";
+    }
+  }
+  headers["Content-Length"] = out.length;
+  res.writeHead(200, headers);
+  res.end(out);
+}
+
+/**
+ * 目录体积体检（只读）：给 GET /api/apps/pub、上线自检与本次「1000 条验证」用。
+ * 报的是**盘上真实字节**（catalog.json / catalog.json.gz），不现场压缩。
+ */
+function gzipStatus() {
+  const out = { dir: APPS_WEB_DIR, files: {} };
+  for (const name of ["catalog.json", "catalog.json.gz"]) {
+    const f = path.join(APPS_WEB_DIR, name);
+    try {
+      const st = fs.statSync(f);
+      out.files[name] = { bytes: st.size, mtime: st.mtime.toISOString() };
+    } catch (_) {
+      out.files[name] = null;
+    }
+  }
+  const raw = out.files["catalog.json"] ? out.files["catalog.json"].bytes : 0;
+  const gz = out.files["catalog.json.gz"] ? out.files["catalog.json.gz"].bytes : 0;
+  out.catalogBytes = raw;
+  out.catalogGzBytes = gz;
+  out.ratio = raw && gz ? +(gz / raw).toFixed(3) : null;
+  out.staticGzipReady = !!(raw && gz);
+  out.apiGzip = true; // /api/apps/catalog 走 sendCatalogJson（按 Accept-Encoding 现场压，结果有缓存）
+  return out;
+}
+
 function sendBin(res, status, buf, contentType, extraHeaders) {
   res.writeHead(status, Object.assign({
     "Content-Type": contentType || "application/octet-stream",
@@ -1683,20 +1874,77 @@ function sendBin(res, status, buf, contentType, extraHeaders) {
   res.end(buf);
 }
 
-function readBody(req) {
+/* ── 慢请求体检（只读诊断，默认阈 400ms；MTNODE_SLOW_MS=0 关掉） ──
+   1000 条目录下排查「哪条路由慢」用它：超过阈值的请求打一行日志（方法 + 路径 + 服务端毫秒）。
+   记的是**服务端处理耗时**，不含网络 —— 与压测报告里的客户端耗时对照就能分清是服务慢还是链路慢。
+   ───────────────────────────────────────────────────────────────────── */
+const SLOW_MS = Number(process.env.MTNODE_SLOW_MS == null ? 400 : process.env.MTNODE_SLOW_MS);
+const _slowTop = new Map(); // "METHOD path" -> {n, max, last}
+function slowNote(method, p2, ms) {
+  if (!SLOW_MS || ms < SLOW_MS) return;
+  const key = method + " " + String(p2 || "");
+  const cur = _slowTop.get(key) || { n: 0, max: 0, last: 0 };
+  cur.n++;
+  cur.max = Math.max(cur.max, ms);
+  cur.last = Math.round(ms);
+  _slowTop.set(key, cur);
+  if (cur.n <= 20 || cur.n % 50 === 0) {
+    console.warn("[slow] " + key + " " + Math.round(ms) + "ms（第 " + cur.n + " 次，最大 " + Math.round(cur.max) + "ms）");
+  }
+}
+function slowReport() {
+  return Array.from(_slowTop.entries())
+    .map(([k, v]) => ({ route: k, count: v.n, maxMs: Math.round(v.max), lastMs: v.last }))
+    .sort((a, b) => b.maxMs - a.maxMs);
+}
+
+/* 上架链路的写接口（POST /api/apps、POST/PATCH /api/apps/:id[/versions]）走放宽档：
+   它们要一次收下「最多 8 张 5MB 截图 + 图标 + 24MB 包」，base64 后能到 77MB 量级。
+   判据集中在 appUploadRoute()，**别在别处再写一遍路径前缀**。 */
+function appUploadRoute(p, method) {
+  if (method !== "POST" && method !== "PATCH") return false;
+  return /^\/api\/apps(\/[^/]+(\/versions)?)?$/.test(String(p || ""));
+}
+
+/* 读请求体（带上限）。**超限必须回一条明确错误，绝不静默断连**：
+ * 原来超限就 `reject + req.destroy()` —— 连接被掐，客户端拿不到任何状态码，只能等自己的
+ * 超时，用户看到的就是「上传中卡住很久然后失败」（本轮用户报的那条 bug）。
+ * 现在的口径：
+ *   · 不再累积超过上限的字节（内存有界）；
+ *   · 等客户端把这批 unpipe 完（`req.resume()`）再回 **413 + JSON 报文**，
+ *     报文里写清「上限多少 / 收到多少 / 怎么办」——作者据此减素材或换小一点的包。
+ * 为什么不立刻回 413：请求体还在路上，此刻写响应再 destroy 会变成连接重置，
+ * 客户端照样只看得到「网络错误」；把报文发全比省那几秒重要。 */
+function readBody(req, maxBytes) {
+  const cap = Math.max(1024, Number(maxBytes) || MAX_BODY);
   return new Promise((resolve, reject) => {
     const chunks = [];
     let n = 0;
+    let overflow = 0;
     req.on("data", (c) => {
       n += c.length;
-      if (n > MAX_BODY) {
-        reject(new Error("body too large"));
-        req.destroy();
+      if (n > cap) {
+        if (!overflow) {
+          overflow = n;
+          req.resume(); /* 丢弃但不掐连接：等它传完，好把 413 发出去 */
+        }
         return;
       }
       chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("end", () => {
+      if (overflow) {
+        const err = new Error(
+          "请求体超过上限 " + Math.round(cap / 1024 / 1024) + "MB（已收到 " + Math.round(overflow / 1024 / 1024) + "MB）：" +
+            "请减小应用包或截图数量后再传",
+        );
+        err.status = 413;
+        err.code = "BODY_TOO_LARGE";
+        reject(err);
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    });
     req.on("error", reject);
   });
 }
@@ -1948,6 +2196,23 @@ function decodePreview(b64) {
   const buf = Buffer.from(s.replace(/\s+/g, ""), "base64");
   if (!buf.length) return null;
   if (buf.length > MAX_PREVIEW) throw new Error("preview too large");
+  const png = buf[0] === 0x89 && buf[1] === 0x50;
+  const jpg = buf[0] === 0xff && buf[1] === 0xd8;
+  const webp = buf[0] === 0x52 && buf[8] === 0x57;
+  if (!png && !jpg && !webp) throw new Error("preview must be png/jpeg/webp");
+  return { buf, ext: png ? "png" : webp ? "webp" : "jpg" };
+}
+
+/** 上架截图（大图）那一档的解码：与 decodePreview 同一套识别口径，只是**不吃 500KB 的图标上限**
+ *  —— 单张上限是 MAX_APP_SHOT_BYTES（5MB）。图标仍走 decodePreview（MAX_PREVIEW 仍是 500KB）。 */
+function decodePreviewAny(b64) {
+  if (b64 == null || b64 === "") return null;
+  let s = String(b64).trim();
+  const m = /^data:image\/(png|jpe?g|webp);base64,/i.exec(s);
+  if (m) s = s.slice(m[0].length);
+  const buf = Buffer.from(s.replace(/\s+/g, ""), "base64");
+  if (!buf.length) return null;
+  if (buf.length > MAX_APP_SHOT_BYTES) throw new Error("shot too large");
   const png = buf[0] === 0x89 && buf[1] === 0x50;
   const jpg = buf[0] === 0xff && buf[1] === 0xd8;
   const webp = buf[0] === 0x52 && buf[8] === 0x57;
@@ -2352,6 +2617,48 @@ function detectAppEntry(rawEntry, names) {
   return top.length === 1 ? top[0] : "";
 }
 
+/* ── 目录索引（本轮 1000 条场景的 CPU 主因）────────────────────────────────────
+ * appIconPath / appThumbOf / appBranchZipRelOf 都是「按文件名问在不在」，**每个目录条目**都要问
+ * 4~12 次；1000+ 条目录时就是上万次 existsSync（每次一个 syscall），实测组一次目录要 3 秒。
+ * 这里把目录内容按**短 TTL 缓存**成文件名集合：一次 readdir 顶一万次 existsSync。
+ * 写路径（写图标 / 缩略图 / 包）会调 dirIndexDrop() 主动作废，所以不会读到过期的「不在」。
+ * 100ms 的 TTL 只兜底「别的进程 / 手工放进来的文件」，正常读写路径都是即时的。
+ * ───────────────────────────────────────────────────────────────────────── */
+const DIR_INDEX_TTL_MS = 100;
+const _dirIndex = new Map(); // dir -> { at, files:Set, mtimes:Map }
+function dirIndex(dir) {
+  const key = String(dir);
+  const hit = _dirIndex.get(key);
+  const t = now();
+  if (hit && t - hit.at < DIR_INDEX_TTL_MS) return hit;
+  let files = new Set();
+  let mtimes = new Map();
+  try {
+    const names = fs.readdirSync(key);
+    files = new Set(names);
+    for (const name of names) {
+      try {
+        mtimes.set(name, fs.statSync(path.join(key, name)).mtimeMs);
+      } catch (_) {}
+    }
+  } catch (_) {}
+  const rec = { at: t, files: files, mtimes: mtimes };
+  _dirIndex.set(key, rec);
+  return rec;
+}
+function dirHasFile(dir, name) {
+  return dirIndex(dir).files.has(String(name));
+}
+function dirFileMtime(dir, name) {
+  const v = dirIndex(dir).mtimes.get(String(name));
+  return Number.isFinite(v) ? v : 0;
+}
+/** 目录内容变过（写了新文件 / 删了文件）时主动作废 —— 写路径调用。 */
+function dirIndexDrop(dir) {
+  if (dir) _dirIndex.delete(String(dir));
+  else _dirIndex.clear();
+}
+
 function appIconPath(id, ownerId) {
   const names = [];
   const own = String(ownerId || "");
@@ -2359,8 +2666,8 @@ function appIconPath(id, ownerId) {
   names.push(id);
   for (const base of names) {
     for (const ext of ["png", "jpg", "webp"]) {
-      const p = path.join(APP_ICON_DIR, base + "." + ext);
-      if (fs.existsSync(p)) return p;
+      const name = base + "." + ext;
+      if (dirHasFile(APP_ICON_DIR, name)) return path.join(APP_ICON_DIR, name);
     }
   }
   return null;
@@ -2375,22 +2682,47 @@ function appIconRel(id, ownerId) {
 }
 
 function writeAppIcon(id, ownerId, icon) {
+  dirIndexDrop(APP_ICON_DIR);
   clearAppIcon(id, ownerId);
   clearAppThumb(id, ownerId); /* 图标换了：缓存的封面缩略图必须一起作废（否则卡片一直是老图） */
   fs.writeFileSync(path.join(APP_ICON_DIR, appFileStem(id, ownerId) + "." + icon.ext), icon.buf);
 }
 
 /* ---------- 应用封面缩略图（卡片背景图）：懒生成 + 落盘缓存 ----------
- * 客户端卡片是 16:9 背景图，直接铺 1805×1230 / 400KB 的原图会把一页卡片拖成几 MB。
- * 所以这里在**第一次请求时**把图标（= 上架时第 1 张截图的原图）下采样成固定 640×360 的缩略图，
- * 落到 APP_THUMB_DIR 缓存；存量图标与将来新上传的图标都不用迁移脚本。
+ * 客户端卡片是 16:9 背景图，直接铺 1280 或 1805×1230 / 400KB 的原图会把一页卡片拖成几 MB。
+ * 所以这里在**第一次请求时**把封面源图下采样成固定 640×360 的缩略图，落到 APP_THUMB_DIR 缓存；
+ * 存量与将来新上传的都不用迁移脚本。
+ *
+ * 封面源图 = **上架截图第 1 张**（本轮需求：商店里的封面就该是作者上传的那张截图），
+ * 没有截图才退回图标（老应用 / 只传了图标）。为什么不是「图标」：图标只是小方块徽标，
+ * 作者换成截图之前，卡片一直顶着它 —— 用户报的正是这个「截图传了却不当封面」。
+ * 源图换了必须让缓存换一个**文件名**（截图那条带 __shot 后缀、图标那条不带）：否则新旧缩略图同名，
+ * 客户端与 nginx 会一直拿旧图（图标文件当初就是靠改名 + mtime 令牌绕开这件事的）。
+ *
  * 图片解码 / 缩放 / 编码全在 store-saas/thumb.mjs（零依赖纯 JS，见那里的说明）。
  * 任何一步失败都**回原图**（200），绝不 5xx —— 一张解不开的图不该让卡片墙塌掉。 */
-function appThumbFile(id, ownerId) {
-  return path.join(APP_THUMB_DIR, appFileStem(id, ownerId) + ".png");
+/** 这条分支有没有封面源是截图：有就把封面交给它（shots 目录里第 1 张）。 */
+function appCoverShotOf(id, ownerId) {
+  const files = appShotFiles(id, ownerId);
+  return files.length ? files[0] : "";
 }
-/** 图标变了 / 应用删了：把这一分支的缩略图缓存清掉（别的分支的绝不动）。 */
+/** 这条分支的封面源（截图第 1 张 → 图标 → 没有）：{ file, kind, stem }。 */
+function appCoverSourceOf(id, ownerId) {
+  const shot = appCoverShotOf(id, ownerId);
+  if (shot) return { file: shot, kind: "shot", stem: appFileStem(id, ownerId) + "__shot" };
+  const icon = appIconPath(id, ownerId) || appIconPath(id);
+  if (icon) return { file: icon, kind: "icon", stem: appFileStem(id, ownerId) };
+  return null;
+}
+/** 封面缩略图文件名（按源不同后缀）：icons/<主干>__shot.png / icons/<主干>.png。 */
+function appThumbFile(id, ownerId, src) {
+  const s = src || appCoverSourceOf(id, ownerId);
+  if (!s) return "";
+  return path.join(APP_THUMB_DIR, s.stem + ".png");
+}
+/** 图标 / 截图变了、应用删了：把这一分支的封面缩略图缓存清掉（别的分支的绝不动）。 */
 function clearAppThumb(id, ownerId) {
+  dirIndexDrop();
   const own = String(ownerId || "").trim();
   if (!own) {
     /* 没给作者（老调用）：与 clearAppIcon 同口径，清这个 id 的所有缩略图 */
@@ -2407,39 +2739,64 @@ function clearAppThumb(id, ownerId) {
     }
     return;
   }
-  try { fs.unlinkSync(appThumbFile(id, own)); } catch {}
+  /* 两种源自的缩略图都清（换图那次可能把封面从图标换成截图，反之亦然） */
+  try { fs.unlinkSync(path.join(APP_THUMB_DIR, appFileStem(id, own) + ".png")); } catch {}
+  try { fs.unlinkSync(path.join(APP_THUMB_DIR, appFileStem(id, own) + "__shot.png")); } catch {}
 }
-/** 拿这个分支的封面缩略图（没有就现生成）；做不了回 null，调用方回原图。 */
-function appThumbOf(a) {
-  const src = appIconPath(a.id, a.userId) || appIconPath(a.id);
-  if (!src) return null;
-  const dest = path.join(APP_THUMB_DIR, appFileStem(a.id, a.userId) + ".png");
+/** 拿这个分支的封面缩略图（没有就现生成）；做不了回 null，调用方回原图。
+ *  「拿得到」的判据是**这份文件真的在盘上**（fs.existsSync），不能只看目录索引里的 mtime ——
+ *  索引是进程内的缓存，缓存被运维清掉 / 换个进程 / 被删之后索引还记着旧条目，
+ *  于是这里会把一个不存在的路径当命中返回，调用方的 readFileSync 当场 ENOENT → 接口 500
+ *  （客户端封面链路看到的是「封面一直拉不到」，2026-10 thumb-route-smoke ⑥⑦ 抓到的就是这个）。 */
+function appThumbOf(a, src) {
+  const s = src || appCoverSourceOf(a.id, a.userId);
+  if (!s) return null;
+  const destName = s.stem + ".png";
+  const dest = path.join(APP_THUMB_DIR, destName);
   try {
-    const st = fs.statSync(src);
-    if (fs.existsSync(dest) && fs.statSync(dest).mtimeMs >= st.mtimeMs) return dest;
-    const made = makeAppThumb(fs.readFileSync(src), { width: THUMB_W, height: THUMB_H });
+    const srcName = path.basename(s.file);
+    const srcDir = path.dirname(s.file);
+    const dstAt = dirHasFile(APP_THUMB_DIR, destName) ? dirFileMtime(APP_THUMB_DIR, destName) : 0;
+    /* 先用目录索引里的 mtime 判「缩略图比源图新」，命中就不必再 statSync 源图（每个条目省一次 syscall） */
+    const srcAt = dirHasFile(srcDir, srcName) ? dirFileMtime(srcDir, srcName) : 0;
+    if (dstAt && srcAt && dstAt >= srcAt && fs.existsSync(dest)) return dest;
+    if (dstAt && srcAt && dstAt >= srcAt) {
+      /* 索引说命中、文件却不在：把索引扔掉，下面按真实 mtime 重算（绝不返回不存在的路径） */
+      dirIndexDrop(APP_THUMB_DIR);
+    }
+    const st = srcAt ? { mtimeMs: srcAt } : fs.statSync(s.file);
+    if (dstAt && dstAt >= st.mtimeMs && fs.existsSync(dest)) return dest;
+    const made = makeAppThumb(fs.readFileSync(s.file), { width: THUMB_W, height: THUMB_H });
     if (!made || !made.length) return null;
     mkdirp(APP_THUMB_DIR);
     fs.writeFileSync(dest, made);
-    return dest;
+    /* 写完自查一次：盘上真的多出这份文件才认（写失败 / 别的东西删了它 → 回 null 让调用方回原图） */
+    return fs.existsSync(dest) ? dest : null;
   } catch {
     return null;
   }
 }
-/** 缩略图的缓存令牌（静态目录里的 ?v= 用它）：取图标文件的 mtime（秒）。
- *  换图标 → 令牌变 → 客户端与 nginx 都不会拿旧图。 */
-function appThumbVer(a) {
-  const src = appIconPath(a.id, a.userId) || appIconPath(a.id);
-  if (!src) return "";
+/** 封面源的 mtime（秒）当缓存令牌：截图 / 图标换了就换令牌，客户端与 nginx 都不拿旧图。
+ *  为什么不能用版本号：作者在「编辑」里换截图不产生新版本（版本号不动），令牌必须挂在文件上。 */
+function appCoverVer(a, src) {
+  const s = src || appCoverSourceOf(a.id, a.userId);
+  if (!s) return "";
   try {
-    return String(Math.floor(fs.statSync(src).mtimeMs / 1000));
+    return String(Math.floor(fs.statSync(s.file).mtimeMs / 1000));
   } catch {
     return "";
   }
 }
+/** 封面缩略图在静态目录里的相对地址（icons/<主干>[__shot].png）：与 icon 同一个 icons/ 目录。 */
+function appCoverThumbRelOf(a) {
+  const src = appCoverSourceOf(a.id, a.userId);
+  if (!src || !appThumbOf(a, src)) return "";
+  return "icons/" + path.basename(appThumbFile(a.id, a.userId, src));
+}
 
 /* 只清这一分支自己的图标（新命名 + 它可能占着的老命名）——别的分支的图标绝不动。 */
 function clearAppIcon(id, ownerId) {
+  dirIndexDrop();
   const stems = [];
   const own = String(ownerId || "");
   if (own) stems.push(id + "__" + own);
@@ -2483,7 +2840,8 @@ function appVersionDir(id) {
 function appShotDirOf(id, ownerId) {
   return path.join(APP_SHOT_DIR, appFileStem(id, ownerId));
 }
-/* 该分支现有的截图文件（按序号升序）：返回绝对路径数组 */
+/* 该分支现有的截图文件（按序号升序）：返回绝对路径数组。
+   点开头的是内部目录（`.obj` 别名目录），正则天然跳过；配合上面的 startsWith 兜一层。 */
 function appShotFiles(id, ownerId) {
   const dir = appShotDirOf(id, ownerId);
   let names = [];
@@ -2493,42 +2851,614 @@ function appShotFiles(id, ownerId) {
     return [];
   }
   return names
-    .filter((n) => /^\d+\.(png|jpg|jpeg|webp)$/i.test(n))
+    .filter((n) => !n.startsWith(".") && /^\d+\.(png|jpg|jpeg|webp)$/i.test(n))
     .sort((a, b) => parseInt(a, 10) - parseInt(b, 10))
     .map((n) => path.join(dir, n));
 }
+
+/* ── 内容寻址图片缓存（对象库 + 别名）─────────────────────────────────────────────
+ * 本轮需求的实现核心：**同一张图在云端只存一份**，且「已经传过的图」客户端不必重发字节。
+ * 落点与指针（三个概念别混）：
+ *   · 对象   <DATA_DIR>/images/objects/<sha256>.<ext>      内容本体，全站唯一一份
+ *   · 别名   <DATA_DIR>/app-shots/<主干>/<序号>.<ext>       指向对象的硬链接（人可读 / 可排序 / 进静态目录）
+ *   · 小图   <DATA_DIR>/images/objects/<sha256>.l1280.<ext> 列表用的导数（懒生成，也是对象）
+ * 为什么用硬链接而不是符号链接：linux 线上与 Windows 开发机同一份代码，硬链接两边都不需要额外权限，
+ * 且对既有读取链（fs.readFileSync / statSync / 静态目录拷贝）完全透明 —— 它就是那个文件。
+ * 跨卷 / 文件系统不支持时退回复制：功能不受影响，只是那一份不再共享磁盘。
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/** 图片字节的内容哈希（十六进制 sha256）—— 对象名就是它。 */
+function imgHashOf(buf) {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+/** 对象文件名：`<sha256>.<ext>`；变体（列表小图）把标记拼在扩展名前：`<sha256>.l1280.<ext>`。 */
+function imgObjBase(hash, ext, suffix) {
+  return String(hash) + String(suffix || "") + "." + String(ext || "png");
+}
+
+/** 对象绝对路径（不校验存在性）。 */
+function imgObjPath(hash, ext, suffix) {
+  return path.join(IMG_OBJ_DIR, imgObjBase(hash, ext, suffix));
+}
+
+/** 对象在不在（含大小，供配额与体检用）：{ path, bytes } 或 null。 */
+function imgObjHold(hash, ext, suffix) {
+  const p = imgObjPath(hash, ext, suffix);
+  try {
+    const st = fs.statSync(p);
+    if (st.isFile()) return { path: p, bytes: st.size };
+  } catch (_) {}
+  return null;
+}
+
+/** 写入一个对象（已存在就什么都不做 —— 同内容重复上传绝不重写盘）。 */
+function imgObjPut(buf, ext, suffix) {
+  const hash = imgHashOf(buf);
+  const dest = imgObjPath(hash, ext, suffix);
+  const hold = imgObjHold(hash, ext, suffix);
+  if (!hold) {
+    mkdirp(IMG_OBJ_DIR);
+    const tmp = dest + ".tmp-" + process.pid + "-" + Date.now().toString(36);
+    fs.writeFileSync(tmp, buf);
+    try {
+      fs.renameSync(tmp, dest);
+    } catch (err) {
+      try { fs.unlinkSync(tmp); } catch {}
+      throw err;
+    }
+    dirIndexDrop(IMG_OBJ_DIR);
+  }
+  return { hash: hash, path: dest, bytes: buf.length, created: !hold };
+}
+
+/** 引用链接（硬链接 / 复制）指向对象；同路径已存在就先删掉（内容可能换了）。
+ *  `dir` 递归建 —— 调用方的目录可能刚被整目录清过，不递归建就是 ENOENT。
+ *  链接失败一律退回复制：功能不受影响，只是那一份不再共享磁盘（跨卷 / 文件系统不支持时）。 */
+function imgAliasPut(dir, name, target) {
+  mkdirp(dir);
+  const dest = path.join(dir, name);
+  try {
+    fs.unlinkSync(dest);
+  } catch (_) {}
+  try {
+    fs.linkSync(target, dest);
+  } catch (_) {
+    fs.copyFileSync(target, dest);
+  }
+  dirIndexDrop(dir);
+  return dest;
+}
+
+/** 内容指纹的引用落点：images/refs/<sha256>.<ext>（每个被引用的内容一份）。
+ *  用途：客户端说「这张图云端已经有了」时按内容认领；以及配额按内容去重算占用。 */
+function imgRefPath(hash, ext) {
+  return path.join(IMG_REF_DIR, imgObjBase(hash, ext, ""));
+}
+function imgRefHold(hash, ext) {
+  const p = imgRefPath(hash, ext);
+  try {
+    const st = fs.statSync(p);
+    if (st.isFile()) return { path: p, bytes: st.size };
+  } catch (_) {}
+  return null;
+}
+/** 某个内容（sha256）在云端有没有：只要对象库里有它就算有（引用那一层只是加速查询）。 */
+function imgObjHoldAnyExt(hash) {
+  for (const ext of ["png", "jpg", "jpeg", "webp"]) {
+    const hold = imgObjHold(hash, ext, "");
+    if (hold) return { hold: hold, ext: ext };
+  }
+  return null;
+}
+/** 为一份内容建引用（幂等）：对象库那一份 + images/refs 里的硬链接。
+ *  hash 缺失 / 非法一律**什么都不做**（对象在不在只认对象库，引用只是加速层）——
+ *  绝不拿一个 undefined 去拼路径，那会在对象目录里留下一个名叫 "undefined.png" 的垃圾文件。 */
+function imgRefPut(hash, ext) {
+  if (!/^[0-9a-f]{64}$/i.test(String(hash || ""))) return null;
+
+  const hold = imgObjHold(hash, ext, "");
+  if (!hold) return null;
+  if (!imgRefHold(hash, ext)) imgAliasPut(IMG_REF_DIR, imgObjBase(hash, ext, ""), hold.path);
+  return hold;
+}
+
+/** 别名指向的真实对象路径（找不到回别名自己，调用方不必分叉）。 */
+function shotObjectOf(aliasPath) {
+  try {
+    return fs.realpathSync(aliasPath);
+  } catch (_) {
+    return aliasPath;
+  }
+}
+
+/** 认出「这个路径指向的对象库文件」：必须在 IMG_OBJ_DIR 里且名字是 <sha256>[.lN].<ext>。
+ *  对硬链接而言 realpath 只做规范化（不解析到源），所以这条判据对截图那层同样成立。 */
+function imgObjPartsOf(objPath) {
+  const dir = path.dirname(String(objPath || ""));
+  if (path.resolve(dir) !== path.resolve(IMG_OBJ_DIR)) return null;
+  const m = /^([0-9a-f]{64})(\.l\d+)?\.(png|jpg|jpeg|webp)$/i.exec(path.basename(objPath));
+  if (!m) return null;
+  return { hash: m[1].toLowerCase(), suffix: m[2] || "", ext: m[3].toLowerCase(), path: objPath };
+}
+
+/** 一张已落盘截图对应的内容指纹（sha256）：先看它是不是对象库那一份（硬链接会直接落在
+ *  对象库目录里时命中），否则**按内容现算一次** —— Windows 上 fs.realpathSync 不解析硬链接，
+ *  所以「路径里读不出来」是常态，现算是这条路的兜底（只对老数据 / 少量文件发生）。 */
+function appShotShaOf(aliasPath) {
+  const parts = imgObjPartsOf(shotObjectOf(aliasPath));
+  if (parts) return parts.hash;
+  try {
+    return imgHashOf(fs.readFileSync(aliasPath));
+  } catch (_) {
+    return "";
+  }
+}
+
+/** 这条分支的截图与列表小图在**云端占的字节**（按对象去重：同一张图只算一次）。
+ *  用途：每用户存储配额（截图 + 图标 + 应用包，见 accountStorageBytes）。 */
+function appShotObjectBytesOf(a) {
+  const id = typeof a === "string" ? a : (a && a.id) || "";
+  const ownerId = typeof a === "string" ? arguments[1] : (a && a.userId) || "";
+  const files = appShotFiles(id, ownerId);
+  const dedup = new Set();
+  let n = 0;
+  /* 有 shots.shas 就直接按内容累加（去重最准）；没有（老记录）就按文件来。 */
+  const shas = a && a.shots && Array.isArray(a.shots.shas) ? a.shots.shas : [];
+  if (shas.length && shas.length === files.length) {
+    for (const h of shas) {
+      const key = String(h || "").toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(key) || dedup.has(key)) continue;
+      dedup.add(key);
+      const got = imgObjHoldAnyExt(key);
+      if (!got) continue;
+      const small = imgObjHold(key, got.ext, SHOT_LIST_SUFFIX);
+      n += (small ? small.bytes : 0) + got.hold.bytes;
+    }
+    return n;
+  }
+  for (const f of files) {
+    const parts = imgObjPartsOf(shotObjectOf(f));
+    let key = "";
+    let bytes = 0;
+    if (parts) {
+      key = parts.hash;
+      const small = imgObjHold(parts.hash, parts.ext, SHOT_LIST_SUFFIX);
+      bytes = (small ? small.bytes : 0) + (() => {
+        try { return fs.statSync(parts.path).size || 0; } catch (_) { return 0; }
+      })();
+    } else {
+      try { bytes = fs.statSync(f).size || 0; } catch (_) {}
+      key = "f:" + f;
+    }
+    if (dedup.has(key)) continue;
+    dedup.add(key);
+    n += bytes;
+  }
+  return n;
+}
+
+/** 图标文件的字节数（配额口径用；图标仍是单张 ≤500KB，不进对象库）。 */
+function appIconBytesOf(id, ownerId) {
+  const p = appIconPath(id, ownerId);
+  if (!p) return 0;
+  try { return fs.statSync(p).size || 0; } catch (_) { return 0; }
+}
+
+/** 列表用的小图（长边 APP_SHOT_LIST_EDGE）：没有就现生成一份对象（同内容全站共用）。
+ *  返回相对静态目录的 shots/<主干>/<n>.list.<ext> 地址；做不了回 ""（客户端退回原图，绝不 404）。
+ *  说明：**这张图不在分支目录里**（Windows 上 fs.realpathSync 不解析硬链接），所以内容指纹
+ *  必须由调用方直接给出（hash / ext），不要在这里从路径反推。 */
+function appShotListRelOf(dir, hash, ext, n) {
+  try {
+    if (!hash || !ext) return "";
+    const hold = imgObjHold(hash, ext, SHOT_LIST_SUFFIX);
+    let made = hold ? hold.path : "";
+    if (!made) {
+      const src = imgObjPath(hash, ext, "");
+      const full = fs.statSync(src);
+      const dec = makeAppShot(fs.readFileSync(src), { maxEdge: APP_SHOT_LIST_EDGE });
+      if (!dec || !dec.buf || !dec.changed) return ""; /* 只缩不放：原图本来就小 → 用它自己 */
+      const put = imgObjPut(dec.buf, ext, SHOT_LIST_SUFFIX);
+      try { fs.utimesSync(put.path, full.atime, full.mtime); } catch (_) {}
+      made = put.path;
+    }
+    const name = String(n) + ".list." + ext;
+    imgAliasPut(dir, name, made);
+    return "shots/" + path.basename(dir) + "/" + name;
+  } catch (_) {
+    return "";
+  }
+}
+
+/** 这条分支的列表小图地址数组（与 shots[] 一一对应，取不到的位置给 ""）：
+ *  按 `a.shots.shas`（内容指纹）逐张出小图，在分支目录里落 `<n>.list.<ext>` 硬链接。
+ *  顺序必须与 shots[] 一致：所以先清掉上一次留下的 list 文件，再按同一次遍历写下去。
+ *  客户端列表只下这些小图，详情才下原图 —— 这是「图片缓存」省流量的另一半。 */
+function appShotListRelsOf(a) {
+  const id = a && a.id;
+  const ownerId = a && a.userId;
+  const dir = appShotDirOf(id, ownerId);
+  const files = appShotFiles(id, ownerId);
+  /* 先清 list 文件（整批重写：顺序以本次为准，避免上一次的残留顶替） */
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch (_) {
+    names = [];
+  }
+  for (const n of names) {
+    if (/\.list\.(png|jpg|jpeg|webp)$/i.test(n)) {
+      try { fs.unlinkSync(path.join(dir, n)); } catch (_) {}
+    }
+  }
+  dirIndexDrop(dir);
+  const shas = a && a.shots && Array.isArray(a.shots.shas) ? a.shots.shas : [];
+  const out = [];
+  for (let i = 0; i < files.length; i++) {
+    const hash = String(shas[i] || "").toLowerCase();
+    const ext = ((files[i].match(/\.(\w+)$/) || [])[1] || "png").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hash)) {
+      out.push("");
+      continue;
+    }
+    out.push(appShotListRelOf(dir, hash, ext, i + 1));
+  }
+  return out;
+}
+
+/** 整批重排这一分支的截图落点（**内容先落对象库、再写平铺的序号文件**，绝不边读边删）：
+ *   · 先为每份内容建 images/refs/<sha>.<ext> 引用（客户端「这张图传过了」按它认领）；
+ *   · 再清掉这一分支目录里现有的截图与列表小图（别的分支的目录绝不动）；
+ *   · 最后按输入顺序写 1..N 的硬链接（第 1 张仍是封面，顺序 = 作者排的顺序）。
+ *  返回落盘张数。 */
+function writeShotAliases(id, ownerId, imgs) {
+  const dir = appShotDirOf(id, ownerId);
+  const list = [];
+  for (const im of Array.isArray(imgs) ? imgs : []) {
+    if (!im || !im.objPath) continue;
+    /* 内容指纹的字段名以 `hash` 为准（storeShots / appendAppShots 的产出），
+       同时接受 `sha`（resolveAppShotsEdit 的产出）—— 两条路都写别名。
+       这里只收「认得出来源」的项：objPath 缺失或指纹缺失的项一律跳过，
+       否则 imgAliasPut 会拿 undefined 当源路径，抛错就在**清目录之后**，
+       整批截图会连带目录一起没掉（2026-10 修：就是这么丢的）。 */
+    const hash = String((im.hash || im.sha) || "").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hash)) continue;
+    imgRefPut(hash, im.ext || "png");
+    list.push({ hash: hash, ext: im.ext || "png", objPath: im.objPath });
+  }
+  /* 别名重排前先把要写的东西全部核过：只要有项不合格就**先别清目录**（宁可整批失败，
+     也不制造「回执说成功、图却没了」）。 */
+  if (Array.isArray(imgs) && imgs.length && list.length !== imgs.length) {
+    const err = new Error("截图别名重排被中止：有 " + (imgs.length - list.length) + " 项缺少内容来源（不删旧图）");
+    err.shotsIncomplete = true;
+    throw err;
+  }
+  dirIndexDrop(dir);
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (_) {}
+  if (!list.length) return 0;
+  mkdirp(dir);
+  let n = 0;
+  for (const im of list) {
+    n++;
+    imgAliasPut(dir, String(n) + "." + String(im.ext || "png"), im.objPath);
+  }
+  return n;
+}
+
+/** 把一批截图排好落点（**同一张图只落一份**）。两种入参都收（两条路都走它）：
+ *   · `{ buf, ext }` = decodeAppShots / decodeAppShots 的解码结果 → 先落对象库再排别名（上架、追加版本）；
+ *   · `{ hash, ext, objPath }` = resolveAppShotsEdit 的产出（内容已经在对象库里了）→ 直接排别名。
+ *  2026-10 修：原先只认 `{buf}`，编辑窗「整批替换」那条路传的是已解析对象 → 被全部跳过，
+ *  结果**清空了截图目录还回执成功**（图就这么没了）。两条形状现在都归到同一处。 */
+function storeShots(id, ownerId, shots) {
+  const imgs = [];
+  for (const s of Array.isArray(shots) ? shots : []) {
+    if (!s) continue;
+    const ext = s.ext || "png";
+    if (s.buf) {
+      const put = imgObjPut(s.buf, ext, "");
+      imgs.push({ hash: put.hash, ext: ext, objPath: put.path });
+      continue;
+    }
+    const hash = String((s.hash || s.sha) || "").toLowerCase();
+    if (!s.objPath || !/^[0-9a-f]{64}$/.test(hash)) continue;
+    imgs.push({ hash: hash, ext: ext, objPath: s.objPath });
+  }
+  const n = writeShotAliases(id, ownerId, imgs);
+  return { count: n, shas: imgs.map((x) => x.hash) };
+}
+
+/** 这条分支现有的截图（含内容指纹）：追加 / 编辑两条路共用。
+ *  优先用记录里那份 `shots.shas`（顺序与文件一致）；数量对不上（老数据 / 外部改动）就现算。 */
+function appShotEntriesOf(id, ownerId, a) {
+  const files = appShotFiles(id, ownerId);
+  const shas = a && a.shots && Array.isArray(a.shots.shas) ? a.shots.shas : [];
+  const aligned = shas.length === files.length;
+  return files.map((p, i) => {
+    const parts = imgObjPartsOf(shotObjectOf(p));
+    const ext = (parts && parts.ext) || ((p.match(/\.(\w+)$/) || [])[1] || "png").toLowerCase();
+    const sha = (aligned && /^[0-9a-f]{64}$/i.test(String(shas[i] || "")) ? String(shas[i]).toLowerCase() : "") || appShotShaOf(p);
+    return { sha: sha, ext: ext, objPath: (parts && parts.path) || p, n: i + 1 };
+  });
+}
+
+/** 对象库里**没有任何应用引用**的对象（管理员「清理无主图片」用）。
+ *  判据 = 反向索引：扫全部应用记录的截图别名指向，没被任何一条指到的对象即无主。 */
+function imgObjectsList() {
+  let names = [];
+  try {
+    names = fs.readdirSync(IMG_OBJ_DIR);
+  } catch (_) {
+    return [];
+  }
+  return names
+    .filter((n) => /^[0-9a-f]{64}(\.l\d+)?\.(png|jpg|jpeg|webp)$/i.test(n))
+    .map((n) => {
+      const p = path.join(IMG_OBJ_DIR, n);
+      let bytes = 0;
+      let mtimeMs = 0;
+      try {
+        const st = fs.statSync(p);
+        bytes = st.size;
+        mtimeMs = st.mtimeMs;
+      } catch (_) {}
+      return { name: n, path: p, bytes: bytes, mtimeMs: mtimeMs };
+    });
+}
+
+/** 清理无主图片对象：删掉没有任何应用记录引用的对象（正在用的一个都不动）。
+ *  判据：原图（`<sha>.<ext>`）看有没有分支引用它；
+ *        列表小图（`<sha>.l1280.<ext>`）看它的**原图**是不是还被引用着 —— 原图还在用就留着，
+ *        原图已经没人要了就一起清掉（否则「换过一批截图」会永久留下用不到的派生物）。
+ *  返回 { scanned, orphans, removed, freedBytes, kept, bytesUsed }。 */
+function imgObjectsGc() {
+  const referenced = new Set();
+  for (const a of db.apps || []) {
+    if (!a) continue;
+    let n = 0;
+    for (const h of Array.isArray(a.shots && a.shots.shas) ? a.shots.shas : []) {
+      const k = String(h || "").toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(k)) {
+        referenced.add(k);
+        n++;
+      }
+    }
+    /* 老记录（没有 shots.shas）：现算这一分支落盘文件的指纹，别把在用的图当无主删掉 */
+    if (!n) {
+      for (const e of appShotEntriesOf(a.id, a.userId, a)) {
+        if (e.sha) referenced.add(e.sha);
+      }
+    }
+  }
+  const all = imgObjectsList();
+  let removed = 0;
+  let freedBytes = 0;
+  for (const o of all) {
+    const m = /^([0-9a-f]{64})/i.exec(o.name);
+    const hash = m ? m[1].toLowerCase() : "";
+    if (hash && referenced.has(hash)) continue;
+    try {
+      fs.unlinkSync(o.path);
+      removed++;
+      freedBytes += o.bytes;
+    } catch (_) {}
+  }
+  dirIndexDrop(IMG_OBJ_DIR);
+  return {
+    scanned: all.length,
+    orphans: removed,
+    removed: removed,
+    freedBytes: freedBytes,
+    kept: all.length - removed,
+    bytesUsed: all.reduce((n, o) => n + o.bytes, 0) - freedBytes,
+  };
+}
+
+/* ── 已删除留痕（本轮需求：彻底删除时把被删分支的最小元信息留下来）──────────────────
+ * 记录与文件都清掉之后，同一 id 下**还有别的作者分支**时留一条最小元信息：
+ *   · 别的分支的 forkOf 还指着它（界面上的「分支来源」），家族树 / 目录生成要能回答
+ *     「它去哪了」—— 记录一旦从 db.apps 里 splice 掉，这些字段就再也算不出来了；
+ *   · 字段就这几个（id / ownerId / ownerName / title / 版本列表 / latestVersion / 删除时间），
+ *     包 / 图标 / 截图 / 字节一个都不留 —— 「彻底删除」的口径不变。
+ * 同一 id 下**一条分支都不剩**时不写：那是真的「云端不留痕迹」，没有别人需要这份元信息。
+ * 容量与 contentAudit 同口径（最近 N 条，超出丢最旧的）。 */
+const APP_DELETED_LEDGER_MAX = 200;
+
+/** 一条分支彻底删除**之前**的元信息快照 { versions, latestVersion }。
+ *  ⚠ 必须在改 `a.versions` / `a.latestVersion` 之前取：删到零版本那条路径会先把版本记录
+ *  清空再调 deleteAppBranch，晚一步取到的就是空列表（留痕里的版本列表恒为空）。 */
+function appBranchDeleteMeta(a) {
+  return {
+    versions: appVersionRecords(a).map((v) => String((v && v.version) || "")).filter(Boolean),
+    latestVersion: appLatestVersion(a) || appCurrentVersionOf(a) || "",
+  };
+}
+
+function appDeletedLedgerPush(id, ownerId, title, meta) {
+  if (!Array.isArray(db.appDeletedLedger)) db.appDeletedLedger = [];
+  db.appDeletedLedger.unshift({
+    id: String(id || ""),
+    ownerId: String(ownerId || ""),
+    ownerName: accountDisplayNameOf(ownerId),
+    title: String(title || id || ""),
+    versions: (meta && Array.isArray(meta.versions) ? meta.versions : []).slice(),
+    latestVersion: String((meta && meta.latestVersion) || ""),
+    deletedAt: now(),
+  });
+  if (db.appDeletedLedger.length > APP_DELETED_LEDGER_MAX) db.appDeletedLedger.length = APP_DELETED_LEDGER_MAX;
+}
+
+/* ── 彻底删除一条应用分支（本轮需求：删掉最后一个版本 = 云端不留痕迹）────────────────
+ * 这是**唯一**的删除实现：应用中心的「删除」、作者「删掉最后一个版本」与管理台的两条删除
+ * 都走它（原来几处各写一遍，删光版本那条只置可见性位，于是记录 / 包 / 图标 / 截图 / 目录都留着）。
+ * 顺序（错一步就会留下残件或删到别人）：
+ *   ① 先把「这条记录自己的」文件清单算出来（记录一旦 splice 掉，就再也算不出来了）；
+ *   ② 再处理下载量计数；
+ *   ③ 清包 / 图标 / 截图 / 封面缩略图 / 版本子目录（数据目录）；
+ *   ④ 清静态目录的散件、`<id>/` 子目录、`shots/<主干>/`，并收掉空目录；
+ *   ⑤ 清本分支的镜像 `<id>__<uid>.zip`，**老共用镜像 `<id>.zip` 只在没有别的分支还在用
+ *      这个 id 时才删**（否则会把别人的包删掉）；
+ *   ⑥ 调 imgObjectsGc：删掉「没有任何应用记录认领」的图片对象（连同它的列表小图）。
+ *   ⑦ 同一 id 下还有别的作者分支时写一条已删除留痕（meta = 删除前的版本快照）。
+ * 返回 { ok, id, ownerId, title, removed: {…}, imgGc }（供日志与回归断言）。 */
+async function deleteAppBranch(a, meta) {
+  if (!a) return { ok: false, error: "no branch" };
+  const idx = (db.apps || []).indexOf(a);
+  if (idx < 0) return { ok: false, error: "not in db" };
+  const id = a.id;
+  const ownerId = String(a.userId || "");
+  const title = a.title || id;
+  const versions = appVersionRecords(a).map((v) => v.version);
+  const owner = db.users.find((u) => u.id === ownerId) || null;
+  const branchBytes = Number(a.bytes) || 0;
+  const branchDownloads = Number(a.downloads) || 0;
+  /* ② 下载量计数：只回退这一条自己贡献的那部分（别的分支不动） */
+  try {
+    await applyUserPatch(ownerId, {
+      downloadsReceived: Math.max(0, Number((owner && owner.downloadsReceived) || 0) - branchDownloads),
+    });
+  } catch (_) {}
+  /* ③ 数据目录：自己的镜像 + 自己的版本包（别人的一个都不动） */
+  try { fs.unlinkSync(appOwnerZipPath(id, ownerId)); } catch {}
+  db.apps.splice(idx, 1);
+  /* 记录已经没了 —— 从现在起「还有没有别的分支用这个 id」的判据才是准的 */
+  const rest = appBranchesOf(id);
+  /* ⑦ 已删除留痕：还有别的分支才留（判据用 splice 之后的 rest，见函数上方注释） */
+  if (rest.length) appDeletedLedgerPush(id, ownerId, title, meta);
+  for (const v of versions) {
+    try { fs.unlinkSync(appBranchVersionZipPath(id, ownerId, v)); } catch {}
+    const sharedUsed = rest.some((x) => appVersionRecords(x).some((r) => r.version === v));
+    if (!sharedUsed) {
+      try { fs.unlinkSync(appVersionZipPath(id, v)); } catch {}
+    }
+  }
+  try { fs.rmdirSync(path.join(appVersionDir(id), ownerId)); } catch {}
+  if (!rest.length) {
+    /* 这个 id 一条分支都不剩了 → 老共用镜像也删（留着一个没有记录认领的 zip 就是痕迹） */
+    try { fs.unlinkSync(appZipPath(id)); } catch {}
+  }
+  /* ④ 图标 / 封面缩略图 / 截图别名（数据目录）+ 静态目录整棵 */
+  clearAppIcon(id, ownerId);
+  clearAppThumb(id, ownerId);
+  clearAppShots(id, ownerId);
+  const dataDirs = clearAppBranchDataDir(id, ownerId);
+  const stat = cleanAppBranchStatic(id, ownerId);
+  /* ⑤ 图片对象垃圾回收：只删「没有任何应用记录引用」的对象（原图 + 它的列表小图） */
+  let imgGc = null;
+  try {
+    imgGc = imgObjectsGc();
+  } catch (_) {}
+  return {
+    ok: true,
+    id: id,
+    ownerId: ownerId,
+    title: title,
+    versions: versions,
+    bytes: branchBytes,
+    downloads: branchDownloads,
+    owner: owner,
+    removed: { staticFiles: stat.removed, staticDirs: stat.dirs, dataDirs: dataDirs },
+    imgGc: imgGc,
+  };
+}
+
 /* 截图在静态目录里的相对地址（shots/<主干>/<n>.png）——与 zipUrl / icon 同一套「相对目录」口径 */
 function appShotRelsOf(id, ownerId) {
   const dir = appShotDirOf(id, ownerId);
   return appShotFiles(id, ownerId).map((p) => "shots/" + path.basename(dir) + "/" + path.basename(p));
 }
-/* 覆盖式写入这一批截图（先清旧目录再写新的：多图是一组，不做逐张对账）。
- * 入参已经是压缩好的 [{ buf, ext }]（见 decodeAppShots）；写盘失败如实抛错给调用方。 */
+/* 覆盖式写入这一批截图（整批重排：内容先落对象库，再做别名 —— 绝不边写边删）。
+ * 入参可以是 decodeAppShots 的结果，也可以是「现成对象」{sha,ext} 数组；
+ * 返回落盘张数（老签名兼容：调用方只关心张数时照旧拿数字）。 */
 function writeAppShots(id, ownerId, shots) {
-  const dir = appShotDirOf(id, ownerId);
-  try {
-    fs.rmSync(dir, { recursive: true, force: true });
-  } catch {}
-  if (!shots || !shots.length) return 0;
-  mkdirp(dir);
-  let n = 0;
-  for (const s of shots) {
-    const name = String(n + 1) + "." + String(s.ext || "png");
-    fs.writeFileSync(path.join(dir, name), s.buf);
-    n++;
-  }
-  return n;
+  return storeShots(id, ownerId, shots).count;
 }
-/* 删除这一批截图（应用被删 / 作者清空时用） */
+/* 删除这一批截图（应用被删 / 作者清空时用）：别名整目录下掉，**对象库那一份留着**
+   （别的分支 / 别的用户可能还在引用同一张图；无主对象由管理员的「清理无主图片」回收）。 */
 function clearAppShots(id, ownerId) {
+  dirIndexDrop();
   try {
     fs.rmSync(appShotDirOf(id, ownerId), { recursive: true, force: true });
   } catch {}
 }
-/* 解码客户端发来的截图数组：**逐张**按上限校验 + 服务端统一压缩（长边→1280，PNG）。
- * 契约（本轮需求，客户端与服务端同时升级，不做旧字段兼容）：
- *   body.shotsBase64 = [ "<base64 或 data:image/...;base64,...>", ... ]，最多 8 张。
- * 回 { ok, shots:[{buf,ext,bytes,w,h,changed}], total, errors:[] }；任何一张不合格整批拒绝
+/** 取对象库里已有的那张图（客户端说「这张我已经传过了」时走它）：
+ *  命中回 { buf, ext, bytes, w, h, changed:false, reused:true }，没命中的位置回 null。
+ *  找不到（没传过 / 对象被清过）时**返回 null 让调用方如实报错**，绝不静默丢图。 */
+function shotFromSha(sha) {
+  const h = String(sha || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(h)) return null;
+  for (const ext of ["png", "jpg", "jpeg", "webp"]) {
+    const hold = imgObjHold(h, ext, "");
+    if (!hold) continue;
+    let buf = null;
+    try {
+      buf = fs.readFileSync(hold.path);
+    } catch (_) {
+      return null;
+    }
+    let w = 0;
+    let hh = 0;
+    try {
+      const dec = decodeImage(buf);
+      if (dec) {
+        w = dec.w;
+        hh = dec.h;
+      }
+    } catch (_) {}
+    return { buf: buf, ext: ext, bytes: buf.length, w: w, h: hh, changed: false, reused: true };
+  }
+  return null;
+}
+/* 单张新图：解密 → 按单张上限校验 → 长边收到 APP_SHOT_MAX_EDGE（只缩不放）→ 仍超限即拒。
+ * 画质与体积的取舍写在注释里：客户端已压过一道（超 1MB 转 WebP / JPEG），服务端只兜口径。 */
+function decodeAppShotOne(raw, i) {
+  let one = null;
+  try {
+    one = decodePreviewAny(raw);
+  } catch (e) {
+    return { ok: false, error: "第 " + (i + 1) + " 张截图无效：" + ((e && e.message) || e) };
+  }
+  if (!one) {
+    return { ok: false, error: "第 " + (i + 1) + " 张截图为空或格式不被支持（png / jpeg / webp）" };
+  }
+  if (one.buf.length > MAX_APP_SHOT_BYTES) {
+    return {
+      ok: false,
+      error:
+        "第 " + (i + 1) + " 张截图 " + fmtBytes(one.buf.length) + " 超过单张上限 " + fmtBytes(MAX_APP_SHOT_BYTES) +
+        "（请先裁切 / 压缩后再传）",
+    };
+  }
+  let buf = one.buf;
+  let ext = one.ext;
+  let w = 0;
+  let h = 0;
+  let changed = false;
+  const small = makeAppShot(one.buf, { maxEdge: APP_SHOT_MAX_EDGE });
+  if (small && small.buf && small.buf.length) {
+    buf = small.buf;
+    ext = small.changed ? "png" : one.ext;
+    w = small.w;
+    h = small.h;
+    changed = !!small.changed;
+  }
+  if (buf.length > MAX_APP_SHOT_BYTES) {
+    return {
+      ok: false,
+      error: "第 " + (i + 1) + " 张截图压缩后仍超过 " + fmtBytes(MAX_APP_SHOT_BYTES) + "（请换小一点的图）",
+    };
+  }
+  return { ok: true, shot: { buf: buf, ext: ext, bytes: buf.length, w: w, h: h, changed: changed, reused: false } };
+}
+/* 解码客户端发来的截图数组：**逐张**校验 + 服务端统一收边（长边→APP_SHOT_MAX_EDGE）。
+ * 契约（本轮需求：单张上限抬到 5MB，并支持「这张已经在云端」的引用形态）：
+ *   body.shotsBase64 = [ "<base64 或 data:image/...;base64,...>" | { sha: "<sha256>" }, ... ]，最多 8 张。
+ *   { sha } = 客户端按内容指纹认出「云端已经有这张图」→ **不重发字节**，服务端按对象库直接复用；
+ *   对象库没有它（没传过 / 被清过）→ 整批拒绝并指名第几张，绝不静默少图。
+ * 回 { ok, shots:[{buf,ext,bytes,w,h,changed,reused}], total, errors:[] }；任何一张不合格整批拒绝
  * （宁可让作者看到明确报错，也不落一半截图 —— 半批最难查）。 */
 function decodeAppShots(list) {
   const arr = Array.isArray(list) ? list : [];
@@ -2540,51 +3470,210 @@ function decodeAppShots(list) {
   let total = 0;
   for (let i = 0; i < arr.length; i++) {
     const raw = arr[i];
-    let one = null;
-    try {
-      one = decodePreview(raw);
-    } catch (e) {
-      return { ok: false, errors: ["第 " + (i + 1) + " 张截图无效：" + ((e && e.message) || e)], shots: [] };
+    const shaRef = raw && typeof raw === "object" && !Array.isArray(raw) ? raw.sha : "";
+    if (shaRef) {
+      const got = shotFromSha(shaRef);
+      if (!got) {
+        return {
+          ok: false,
+          errors: [
+            "第 " + (i + 1) + " 张截图引用（sha " + String(shaRef).slice(0, 12) + "…）在云端没有这份图片：" +
+              "请把这张图重新上传一次（客户端会按内容指纹重传）",
+          ],
+          shots: [],
+        };
+      }
+      total += got.bytes;
+      shots.push(got);
+      continue;
     }
-    if (!one) {
-      return { ok: false, errors: ["第 " + (i + 1) + " 张截图为空或格式不被支持（png / jpeg / webp）"], shots: [] };
-    }
-    if (one.buf.length > MAX_APP_SHOT_BYTES) {
-      return {
-        ok: false,
-        errors: [
-          "第 " + (i + 1) + " 张截图 " + Math.round(one.buf.length / 1024) + "KB 超过单张上限 " +
-            Math.round(MAX_APP_SHOT_BYTES / 1024) + "KB（请换小一点的图或先压缩）",
-        ],
-        shots: [],
-      };
-    }
-    /* 统一压缩：长边压到 APP_SHOT_MAX_EDGE（只缩不放）。压不动（认不出的格式）就原样存，
-       并在回执里把 changed=false 如实带出去 —— 绝不假装压过。 */
-    let buf = one.buf;
-    let ext = one.ext;
-    let w = 0;
-    let h = 0;
-    let changed = false;
-    const small = makeAppShot(one.buf, { maxEdge: APP_SHOT_MAX_EDGE });
-    if (small && small.buf && small.buf.length) {
-      buf = small.buf;
-      ext = small.changed ? "png" : one.ext;
-      w = small.w;
-      h = small.h;
-      changed = !!small.changed;
-    }
-    if (buf.length > MAX_APP_SHOT_BYTES) {
-      return {
-        ok: false,
-        errors: ["第 " + (i + 1) + " 张截图压缩后仍超过 " + Math.round(MAX_APP_SHOT_BYTES / 1024) + "KB"],
-        shots: [],
-      };
-    }
-    total += buf.length;
-    shots.push({ buf, ext, bytes: buf.length, w, h, changed });
+    const one = decodeAppShotOne(raw, i);
+    if (!one.ok) return { ok: false, errors: [one.error], shots: [] };
+    total += one.shot.bytes;
+    shots.push(one.shot);
   }
-  return { ok: true, shots, total, errors };
+  return { ok: true, shots: shots, total: total, errors: errors };
+}
+
+/* 编辑已上架截图：把「新图 + 沿用旧图」的混合数组解析成最终要落盘的一批**对象**。
+ * 契约（客户端编辑窗只握有新图的数据）：
+ *   list 元素三种形态混合 ——
+ *     · 字符串 / data:image/...;base64,... = 新图，走 decodeAppShots 校验 + 收边；
+ *     · { sha } = 客户端按内容指纹认出「云端已有这张图」→ 直接复用对象库那一份（不重发字节）；
+ *     · { keep: n }（n 为 0 起的整数）= 沿用**保存前**这一分支的第 n 张（oldFiles 按序号升序）。
+ * 语义：整批替换 —— 最终一套 = 按 list 顺序逐项解析；旧图里没被 keep 引用的全部下掉（含第 9 张），不残留。
+ * 关键实现纪律：**先把被引用的旧图解析成对象，再让调用方重排别名** —— 别名重排会先清目录，
+ *   边读边写会把还没读的旧图毁掉（第 3 个坑：本轮改成「先落对象（内容寻址，重复不重写）→ 再写别名」，
+ *   对象那一份与别名目录无关，所以这条坑从根上消失了）。
+ * 回 { ok, imgs:[{sha,ext,objPath}], errors:[] }；任何一项不合格整批拒绝（不落一半）。
+ * 空数组 [] = 清空（合法，回 imgs 为空数组）。 */
+function resolveAppShotsEdit(list, oldFiles, oldShas) {
+  if (!Array.isArray(list)) {
+    return { ok: false, errors: ["截图必须是数组（新图 base64 字符串、{\"sha\":\"…\"}，或 {\"keep\": n} 沿用旧图）"], imgs: [] };
+  }
+  const old = Array.isArray(oldFiles) ? oldFiles : [];
+  /* 上限按**最终张数**算（keep / sha / 新图 混着数）：否则 5 张 keep + 5 张新图能绕过 8 张上限 */
+  if (list.length > MAX_APP_SHOTS) {
+    return { ok: false, errors: ["截图最多 " + MAX_APP_SHOTS + " 张（收到 " + list.length + " 张）"], imgs: [] };
+  }
+  const newItems = [];
+  const keeps = [];
+  for (let i = 0; i < list.length; i++) {
+    const raw = list[i];
+    const isShaRef = raw && typeof raw === "object" && !Buffer.isBuffer(raw) && raw.sha && raw.keep == null;
+    if (isShaRef) {
+      /* 与「新图」同一条解码/校验路径（decodeAppShots 认得 { sha }）—— 不要在这里另写一套解析 */
+      newItems.push({ i: i, raw: raw });
+      continue;
+    }
+    if (raw && typeof raw === "object" && !Buffer.isBuffer(raw)) {
+      const n = raw.keep;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 0) {
+        return {
+          ok: false,
+          errors: ["第 " + (i + 1) + " 张截图无效：keep 必须是从 0 起的整数（收到 " + JSON.stringify(n) + "）"],
+          imgs: [],
+        };
+      }
+      if (n >= old.length) {
+        return {
+          ok: false,
+          errors: [
+            "第 " + (i + 1) + " 张截图无效：keep=" + n + " 越界（这条分支保存前只有 " + old.length + " 张，可用 0.." +
+              (old.length - 1) + "）",
+          ],
+          imgs: [],
+        };
+      }
+      keeps.push({ i: i, n: n, file: old[n], sha: (oldShas && oldShas[n]) || "" });
+    } else {
+      newItems.push({ i: i, raw: raw });
+    }
+  }
+  /* 新图 / sha 引用整批校验（同一套口径：任何一张不合格整批拒绝）。
+     decodeAppShots 只认得「串 / {sha}」，keep 项不喂给它，所以要把下标换回客户端看到的第几项。 */
+  let decoded = { ok: true, shots: [] };
+  if (newItems.length) {
+    decoded = decodeAppShots(newItems.map((x) => x.raw));
+    if (!decoded.ok) {
+      const errors = (decoded.errors || []).map((msg) =>
+        String(msg).replace(/^第 (\d+) 张/, (all, k) => {
+          const at = newItems[Number(k) - 1];
+          return "第 " + ((at ? at.i : Number(k) - 1) + 1) + " 张";
+        }),
+      );
+      return { ok: false, errors: errors.length ? errors : ["截图无效"], imgs: [] };
+    }
+  }
+  /* 按 list 原始顺序拼最终一套（这就是拖拽排序的结果）：新图/引用 → 落对象；keep → 直接指回原对象 */
+  const newAt = new Map();
+  newItems.forEach((x, k) => newAt.set(x.i, decoded.shots[k]));
+  const keepAt = new Map(keeps.map((x) => [x.i, x]));
+  const imgs = [];
+  for (let i = 0; i < list.length; i++) {
+    if (newAt.has(i)) {
+      const s = newAt.get(i);
+      if (!s || !s.buf) return { ok: false, errors: ["第 " + (i + 1) + " 张截图不可用"], imgs: [] };
+      const put = imgObjPut(s.buf, s.ext || "png", "");
+      imgs.push({ hash: put.hash, ext: s.ext || "png", objPath: put.path });
+      continue;
+    }
+    const k = keepAt.get(i);
+    if (!k) return { ok: false, errors: ["第 " + (i + 1) + " 张截图不可用"], imgs: [] };
+    /* 沿用旧图：优先指回对象库里那一份（平铺布局下 k.file 就是分支目录里的文件本身，
+       而别名重排会先清目录 —— 指回它自己会变成「复制到它自己」）。
+       老数据（没进过对象库）现场读一份进对象库，之后就走统一口径了。 */
+    const have = imgObjHoldAnyExt(k.sha);
+    if (have) {
+      imgs.push({ hash: k.sha, ext: have.ext, objPath: have.hold.path });
+      continue;
+    }
+    let buf = null;
+    try {
+      buf = fs.readFileSync(k.file);
+    } catch (e) {
+      return { ok: false, errors: ["第 " + (k.i + 1) + " 张截图读取失败（旧图 " + path.basename(k.file) + "）：" + ((e && e.message) || e)], imgs: [] };
+    }
+    const ext = (path.extname(k.file).slice(1) || "png").toLowerCase();
+    const put = imgObjPut(buf, ext === "jpeg" ? "jpg" : ext, "");
+    imgs.push({ hash: put.hash, ext: ext === "jpeg" ? "jpg" : ext, objPath: put.path });
+  }
+  return { ok: true, imgs: imgs, errors: [] };
+}
+
+/* 追加式写入截图（**保留旧图**）：收下这一批新图，按内容去重后接在现有图之后。
+ *
+ * 为什么需要它（用户报障：上传截图后再更新，截图上那张就没了）：
+ *   版本追加（POST /versions 与「PATCH + zip」）原来走 writeAppShots = **整批替换** ——
+ *   作者上传新版本时只带本次新加的图（客户端手里没有旧图字节），旧的整套就被删掉了。
+ *   版本追加的语义是「同一件事的新一版」，截图属于应用本身，没被显式删掉就该留着。
+ *   **编辑窗（只改元信息、不带 zip 的 PATCH）不改口径**：那条路带 {keep:n} 指代，是作者
+ *   显式增删 + 排序的结果，仍走 resolveAppShotsEdit 的整批替换（否则作者删不掉截图）。
+ *
+ * 去重按**内容**（sha256 = 对象库的名字）：同一张图重复上传不会变成两张，也不会重复落盘；
+ * 幂等——同一批图传两次，第二次一个字节都不落。返回 { ok, added, files, total, errors }：
+ *   · added = 本次真正新增的张数（0 = 全已存在）；
+ *   · files = 追加后的落盘文件名（供回执 / 体检核对）。
+ * 校验先做完再落盘：任何一张不合格 → ok:false，一个字节都不动（与整批替换同一纪律）。
+ * 上限以**追加后的总数**算（MAX_APP_SHOTS）：满了就如实报错，绝不静默丢图。 */
+function appendAppShots(id, ownerId, shots, a) {
+  const entries = appShotEntriesOf(id, ownerId, a);
+  const have = new Set(entries.map((e) => e.sha).filter(Boolean));
+  const add = [];
+  for (const s of Array.isArray(shots) ? shots : []) {
+    if (!s || !s.buf) continue;
+    const h = imgHashOf(s.buf);
+    if (have.has(h)) continue; // 这张已经在云端了（同一张图重复上传 → 不落第二份）
+    have.add(h);
+    add.push({ buf: s.buf, ext: s.ext || "png", sha: h });
+  }
+  if (entries.length + add.length > MAX_APP_SHOTS) {
+    return {
+      ok: false,
+      added: 0,
+      files: entries.map((e) => String(e.n)),
+      total: entries.length,
+      errors: [
+        "截图最多 " + MAX_APP_SHOTS + " 张：这条分支已有 " + entries.length + " 张，本次还要加 " + add.length +
+          " 张。请先在「编辑」里删掉不需要的，再上传",
+      ],
+    };
+  }
+  /* 现有 + 新增一起重排落点（顺序一个字都不动：第 1 张仍是封面）。
+     现有那几张的 objPath 可能**就指向分支目录里那个文件自身**（平铺布局：分支目录里的
+     <n>.<ext> 已经是硬链接，Windows 上 realpath 不解析回对象库）——而重排第一步就清目录，
+     所以要先把它们解析回对象库里的那一份（按内容指纹取），否则会「复制到它自己」。 */
+  const imgs = [];
+  for (const e of entries) {
+    const parts = imgObjHoldAnyExt(e.sha);
+    let objPath = parts ? parts.hold.path : "";
+    const ext = parts ? parts.ext : e.ext;
+    if (!objPath) {
+      /* 老数据 / 对象被清过：把这一张现读一份进对象库（内容不变，指纹也不变） */
+      try {
+        const put = imgObjPut(fs.readFileSync(e.objPath), ext || "png", "");
+        objPath = put.path;
+      } catch (_) {
+        return {
+          ok: false,
+          added: 0,
+          files: [],
+          total: entries.length,
+          errors: ["已有截图 " + e.n + " 的内容不在对象库里（且读不回来）：请重新上传这一张"],
+        };
+      }
+    }
+    imgs.push({ hash: e.sha, ext: ext, objPath: objPath });
+  }
+  for (const s of add) {
+    const put = imgObjPut(s.buf, s.ext, "");
+    imgs.push({ hash: put.hash, ext: s.ext, objPath: put.path });
+  }
+  if (!add.length) {
+    return { ok: true, added: 0, files: entries.map((e) => String(e.n)), total: entries.length, errors: [] };
+  }
+  const n = writeShotAliases(id, ownerId, imgs);
+  return { ok: true, added: add.length, files: appShotFiles(id, ownerId).map((p) => path.basename(p)), total: n, errors: [] };
 }
 
 /* 上架链路的**全链路诊断**（本轮需求：截图没落盘这件事下次要一眼看出断在哪）：
@@ -2593,14 +3682,20 @@ function appShotsDiag(a) {
   const dir = appShotDirOf(a.id, a.userId);
   const files = appShotFiles(a.id, a.userId);
   const rels = appShotRelsOf(a.id, a.userId);
+  const isListName = (n) => /\.list\.(png|jpg|jpeg|webp)$/i.test(String(n || ""));
   const webDir = path.join(APPS_WEB_DIR, "shots", path.basename(dir));
-  const webFiles = (() => {
+  const webAll = (() => {
     try {
       return fs.readdirSync(webDir);
     } catch {
       return [];
     }
   })();
+  /* 小图（<n>.list.<ext>）不参与「源 / 静态」张数对账：它是派生物，条数天然不一致 */
+  const webFiles = webAll.filter((n) => !isListName(n));
+  const listFiles = files
+    .map((p) => String(path.basename(p)).replace(/\.(\w+)$/, ".list.$1"))
+    .filter((n) => webAll.indexOf(n) >= 0);
   return {
     id: a.id,
     ownerId: a.userId,
@@ -2609,9 +3704,20 @@ function appShotsDiag(a) {
     files: files.map((p) => ({ name: path.basename(p), bytes: fs.statSync(p).size })),
     rels: rels,
     totalBytes: files.reduce((n, p) => n + (fs.statSync(p).size || 0), 0),
+    /* 内容寻址（本轮需求）：这些截图的指纹，以及它们在对象库里是不是同一份 */
+    shas: appShotEntriesOf(a.id, a.userId, a).map((e) => e.sha),
+    objectCount: (() => {
+      try {
+        return fs.readdirSync(IMG_OBJ_DIR).length;
+      } catch (_) {
+        return 0;
+      }
+    })(),
+    listRels: appShotListRelsOf(a),
+    listStaticFiles: webAll.filter(isListName),
     staticDir: webDir,
     staticFiles: webFiles,
-    staticInSync: webFiles.length === files.length,
+    staticInSync: webFiles.length === files.length && listFiles.length === webAll.filter(isListName).length,
     icon: appIconRelOf(a.id, a.userId),
     iconExists: !!appIconPath(a.id, a.userId),
   };
@@ -2654,6 +3760,7 @@ function appVersionZipRel(id, ownerId, version) {
 
 /** 这一版该写哪儿：分支私有目录优先；已经存在（老落点被她占着）就退老落点 —— 内容都是同一份包。 */
 function writeAppVersionZipPath(id, ownerId, version) {
+  dirIndexDrop();
   const own = appBranchVersionZipPath(id, ownerId, version);
   const shared = appVersionZipPath(id, version);
   if (!fs.existsSync(shared)) return own;
@@ -2667,6 +3774,7 @@ function writeAppVersionZipPath(id, ownerId, version) {
  * `<id>__<作者uid>.zip`（这一分支的当前版镜像）；关开关（老单版口径）只写老镜像 `<id>.zip`。
  */
 function writeAppZipFiles(id, version, buf, ownerId) {
+  dirIndexDrop();
   if (appVersionsOn() && version) {
     const target = writeAppVersionZipPath(id, ownerId, version);
     mkdirp(path.dirname(target));
@@ -2730,6 +3838,17 @@ function appLatestVersion(a) {
   return String(a.version || "1.0.0");
 }
 
+/** 对外下发的「当前版本号」（存量自愈的唯一判据）：
+ *  `versions` 字段存在但已空 = 这一分支的版本**真被删光了** → **空串**，
+ *  绝不用残留的 `version` 字段充数。老口径下删光只清了 latestVersion / bytes，
+ *  `version` 会留在记录里，客户端按「latestVersion || version」就会把删掉的版本又画回来
+ *  （线上踩过：删版本成功、界面上那一版还在）。 */
+function appCurrentVersionOf(a) {
+  if (!a) return "";
+  if (appHasVersionField(a) && !appVersionRecords(a).length) return "";
+  return String(a.version || "");
+}
+
 /** 一条应用占用的云端字节：多版本 = 各版之和，老记录 = 单包 bytes。 */
 function appStoredBytes(a) {
   const vs = appVersionRecords(a);
@@ -2737,12 +3856,83 @@ function appStoredBytes(a) {
   return vs.reduce((n, v) => n + (Number(v && v.bytes) || 0), 0);
 }
 
-/** 名下所有应用的云端已存包总量（配额口径 = 所有版本 bytes 之和）。 */
+/* 可见性开关整组（appHasDistributablePackage / appRestoreVisibility / republished 回执）
+   已随本轮两态收敛一并删除：库里留下的应用就是在线上，目录按整库现算，
+   不再有「有包却不可见」这种需要复位的状态（不留死代码）。 */
+
+/** 名下所有应用的云端已存包总量（**包口径**：所有版本 bytes 之和；不含图片）。 */
 function accountAppBytes(userId) {
   return (db.apps || [])
     .filter((a) => a.userId === userId)
     .reduce((n, a) => n + appStoredBytes(a), 0);
 }
+
+/* ── 每用户存储上限（本轮需求：后台可逐个用户调整）────────────────────────────────
+ * 口径（与用户确认过的共识）：**按账号**算 —— 名下所有应用、所有分支与版本的应用包
+ *   + 截图 / 图标占的云端字节（截图按内容寻址去重后**只算一份**：同一张图在多个版本、
+ *     多条分支、甚至不同用户之间复用，就只占一份存储，这与「服务端只落一份」一致）。
+ * 默认值 = 原来的全局默认（MTNODE_MAX_ACCOUNT_APP_BYTES / MTNODE_MAX_ACCOUNT_APPS）；
+ * 单个用户可由管理员在管理平台单独改，且可设为**不限**（存 -1）。
+ * 存量不追责：管理员把上限调小后，用户已存的东西不会被删，只是「不能再新增」。 */
+function userQuotaLimitOf(user, key, dflt) {
+  const q = user && user.quota && typeof user.quota === "object" ? user.quota : null;
+  if (!q) return dflt;
+  const v = Number(q[key]);
+  if (!Number.isFinite(v) || v === 0) return dflt; /* 0 / 缺省 = 没单独设置 → 跟随全局默认 */
+  if (v < 0) return -1; /* 显式 -1 = 不限 */
+  return Math.max(1, Math.round(v));
+}
+
+/** 该用户当前的上限（对象形状直接下发给客户端 / 管理台）。 */
+function appLimitsOf(user) {
+  return {
+    bytes: userQuotaLimitOf(user, "bytes", MAX_ACCOUNT_APP_BYTES),
+    apps: userQuotaLimitOf(user, "apps", MAX_ACCOUNT_APPS),
+    defaultBytes: MAX_ACCOUNT_APP_BYTES,
+    defaultApps: MAX_ACCOUNT_APPS,
+  };
+}
+
+/** 名下**全部**应用占的云端存储（包 + 截图 + 图标，截图按对象去重）。 */
+function accountStorageBytes(userId) {
+  let n = 0;
+  for (const a of db.apps || []) {
+    if (!a || a.userId !== userId) continue;
+    n += appStoredBytes(a) + appShotObjectBytesOf(a) + appIconBytesOf(a.id, a.userId);
+  }
+  return n;
+}
+
+/** 客户端 / 管理台回显用的用量与上限：
+ *  usedBytes / limitBytes（null = 不限）/ usedApps / appsLimit（null = 不限）。 */
+function appStorageViewOf(user) {
+  const lim = appLimitsOf(user);
+  return {
+    usedBytes: accountStorageBytes(user.id),
+    limitBytes: lim.bytes < 0 ? null : lim.bytes,
+    defaultBytes: lim.defaultBytes,
+    apps: (db.apps || []).filter((a) => a && a.userId === user.id).length,
+    appsLimit: lim.apps < 0 ? null : lim.apps,
+    defaultApps: lim.defaultApps,
+    /* 上架链路的两个**硬上限真源**（本轮需求：客户端上传前就能预检，不再「上传中卡住」）：
+       uploadLimitBytes  = 一次上架请求最多能带多少字节（= MAX_BODY_APP_UPLOAD，与 nginx 同口径）；
+       appZipLimitBytes  = 单个应用包（zip）上限（= MAX_APP_ZIP）。
+       客户端拿它做本地预检；服务端与 nginx 的漂移由启动自检 nginxLimitAudit 单独告警。 */
+    uploadLimitBytes: MAX_BODY_APP_UPLOAD,
+    appZipLimitBytes: MAX_APP_ZIP,
+  };
+}
+
+function fmtBytes(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v < 1024) return v + "B";
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + "KB";
+  if (v < 1024 * 1024 * 1024) return (v / 1024 / 1024).toFixed(2) + "MB";
+  return (v / 1024 / 1024 / 1024).toFixed(2) + "GB";
+}
+
+/** 「不限」在文案里的说法（上限为 -1 / null 时统一走它）。 */
+const QUOTA_UNLIMITED_TEXT = "不限";
 
 /** 版本号比较：能拆成数字段的按数字比（1.10.0 > 1.9.0），否则退回字符串比较。 */
 function compareVersions(x, y) {
@@ -2763,51 +3953,49 @@ function compareVersions(x, y) {
   return 0;
 }
 
-function fmtBytes(n) {
-  const v = Math.max(0, Number(n) || 0);
-  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + "KB";
-  return (v / 1024 / 1024).toFixed(2) + "MB";
-}
-
 /**
  * 账号配额（服务端强制，**全部校验通过之后、落盘之前**调用；契约 §7.5）：
- *   · 云端已存包总量（名下所有应用所有版本 bytes 之和）≤ MAX_ACCOUNT_APP_BYTES
- *   · 名下应用条数 ≤ MAX_ACCOUNT_APPS（给已有应用追加版本不计入）
- * addBytes = 本次新增的包字节；replaceBytes = 本次会被覆盖掉的旧包字节（追加版本传 0）；
+ *   · 云端存储总量（应用包 + 截图 + 图标，截图按内容去重）≤ 该用户的上限
+ *     （缺省 = 全局默认 MAX_ACCOUNT_APP_BYTES；管理员可在管理平台给单个用户改，-1 = 不限）
+ *   · 名下应用条数 ≤ 该用户的条数上限（同上，给已有应用追加版本不计入）
+ * addBytes = 本次新增的字节（包 + 新图片）；replaceBytes = 本次会被覆盖掉的旧字节（追加版本传 0）；
  * newApp = 是否新建一条应用记录。返回 null 表示通过，否则返回要发的 {status, body}。
+ * 上限为「不限」（-1 / null）时对应那条直接放行。
  */
 function appQuotaError(userId, addBytes, replaceBytes, newApp) {
+  const user = (db.users || []).find((u) => u.id === userId) || null;
+  const lim = appLimitsOf(user || {});
   const add = Math.max(0, Math.round(Number(addBytes) || 0));
   const replace = Math.max(0, Math.round(Number(replaceBytes) || 0));
   if (newApp) {
     const used = (db.apps || []).filter((a) => a.userId === userId).length;
-    if (used >= MAX_ACCOUNT_APPS) {
+    if (lim.apps >= 0 && used >= lim.apps) {
       return {
         status: 413,
         body: {
           ok: false,
           code: "QUOTA_APPS",
           used: used,
-          limit: MAX_ACCOUNT_APPS,
+          limit: lim.apps,
           error:
-            "应用数量已达上限：" + used + " / " + MAX_ACCOUNT_APPS +
+            "应用数量已达上限：" + used + " / " + lim.apps +
             " 个。请先删除不再上架的应用（给已有应用追加版本不计入上限）。",
         },
       };
     }
   }
-  const used = accountAppBytes(userId);
-  if (used - replace + add > MAX_ACCOUNT_APP_BYTES) {
+  const used = accountStorageBytes(userId);
+  if (lim.bytes >= 0 && used - replace + add > lim.bytes) {
     return {
       status: 413,
       body: {
         ok: false,
         code: "QUOTA_BYTES",
         used: used,
-        limit: MAX_ACCOUNT_APP_BYTES,
+        limit: lim.bytes,
         error:
-          "云端应用包配额已满：已用 " + fmtBytes(used) + " / 上限 " + fmtBytes(MAX_ACCOUNT_APP_BYTES) +
-          "（本次还需 " + fmtBytes(add) + "）。请先删除旧版本或旧应用再上传。",
+          "云端存储配额已满：已用 " + fmtBytes(used) + " / 上限 " + fmtBytes(lim.bytes) +
+          "（本次还需 " + fmtBytes(add) + "）。请先删除旧版本、旧应用或多余的截图再上传。",
       },
     };
   }
@@ -2867,7 +4055,7 @@ function appEntryOf(a) {
  *   · 版本被全删光（versions 存在但为空）→ 空数组（应用此刻没有可分发的包）
  */
 function appCatalogVersions(a) {
-  const owner = db.users.find((u) => u.id === a.userId);
+  const owner = userById(a.userId);
   const fallbackUploader = owner ? owner.username || owner.id : a.userId;
   const fallbackUploaderName = accountDisplayNameOf(a.userId);
   const recs = appVersionRecords(a);
@@ -3082,7 +4270,7 @@ function locateAppZipLegacy(a, wantVersion) {
 /** 把静态目录里这个 id 的「老口径镜像」刷成**跨分支最高版**：老客户端 / 老链接要的 <id>.zip 仍下得动。
  *  只剩一个分支时它就是那个分支的最新版（与旧行为逐字一致）。 */
 function syncAppZipMirrorGlobal(id) {
-  const branches = appBranchesOf(id).filter((a) => !a.unpublished && appLatestVersion(a));
+  const branches = appBranchesOf(id).filter((a) => appLatestVersion(a));
   if (!branches.length) return;
   const top = branches.reduce((best, a) =>
     compareVersions(appLatestVersion(a), appLatestVersion(best)) > 0 ? a : best,
@@ -3162,7 +4350,7 @@ function normalizeForkOf(raw, selfId, selfOwnerId) {
 /* ─────────────────── 同 id 多分支（本轮契约，docs/apps-market.md §十） ───────────────────
  * 应用身份 = **应用 id + 作者 uid**（q1）：同一个 id 下允许不同作者各占**一条分支**
  * （同 id 同作者只有一条，q15），主干 = createdAt 最早的那条（q20，只作展示与声明锚点，
- * 主干下架 / 删光版本不影响其他分支，q27）。
+ * 主干删光版本不影响其他分支，q27）。
  * 旧模型（不同 id 各自一条 + forkOf 指回源）**数据与字段一律保留**：forkOf 的
  * 写入口径、appForkOfPublic 的展示口径都一个字不变，上一轮上架的旧记录照旧能读能传。
  * ------------------------------------------------------------------------- */
@@ -3202,8 +4390,21 @@ function isPlaceholderUsername(u) {
 }
 
 /** 账号显示名：uid → 昵称 → 非占位账号名 → 空串。 */
+/** userId → user 的短 TTL 索引（原来每个目录条目都 db.users.find 扫一遍：1200 条 = 1200×24 次比较）。 */
+const _userIndex = { at: 0, map: null };
+function userById(userId) {
+  const t = now();
+  if (!_userIndex.map || t - _userIndex.at > 1000) {
+    const map = new Map();
+    for (const u of db.users || []) map.set(String(u.id || ""), u);
+    _userIndex.map = map;
+    _userIndex.at = t;
+  }
+  return _userIndex.map.get(String(userId || "")) || null;
+}
+
 function accountDisplayNameOf(userId) {
-  const u = db.users.find((x) => x.id === userId);
+  const u = userById(userId);
   if (!u) return "";
   const nick = String(u.nickname || "").trim();
   if (nick) return nick;
@@ -3217,16 +4418,16 @@ function appBranchCmp(x, y) {
   return String((x && x.userId) || "") < String((y && y.userId) || "") ? -1 : 1;
 }
 
-/** 某个 id 下的全部分支（已排除下架的？不 —— 调用方按需要自己滤）。 */
+/** 某个 id 下的全部分支（按 createdAt 早的在前；调用方按需要自己滤）。 */
 function appBranchesOf(id) {
   const want = String(id || "");
   if (!want) return [];
   return (db.apps || []).filter((a) => a && a.id === want).sort(appBranchCmp);
 }
 
-/** 主干（最早创建的那条）：只在**可见**的分支里取（includeUnpublished 控制）。 */
-function appTrunkOf(id, includeUnpublished) {
-  const list = appBranchesOf(id).filter((a) => includeUnpublished || !a.unpublished);
+/** 主干（最早创建的那条）：库里留下的每条分支都在线上，所以直接在全部里取第一条。 */
+function appTrunkOf(id) {
+  const list = appBranchesOf(id);
   return list.length ? list[0] : null;
 }
 
@@ -3265,15 +4466,28 @@ function appAliases(a) {
 }
 
 /** 家族闭包：跨 id 的旧条目也收进来（沿 forkOf 双向可达）。 */
-function appFamily(id, ownerId) {
+/* 家族 alias 索引的缓存（本轮 1000 条场景的性能主因）：
+   原来 appFamily() 每次调用都重扫全量 apps、给每条算一遍 appAliases 建 Map ——
+   一次目录组装里被调 3×1200 次，等于 O(N²)（1200 条实测 4.5 秒）。
+   现在按「集合签名」缓存：条数 + 最新 updatedAt/createdAt 没变就直接复用。
+   签名变了（新增 / 改 / 删了应用）才重建 —— 判定成本 O(N) 且没有字符串拼装。 */
+let _aliasIdx = { sig: "", idx: new Map(), apps: [] };
+function appsSig() {
+  const arr = db.apps || [];
+  let n = 0;
+  let maxT = 0;
+  for (const a of arr) {
+    if (!a || !a.id) continue;
+    n++;
+    const t = Number(a.updatedAt || a.createdAt || 0) || 0;
+    if (t > maxT) maxT = t;
+  }
+  return n + ":" + maxT;
+}
+function appAliasIndex() {
+  const sig = appsSig();
+  if (_aliasIdx.sig === sig) return _aliasIdx;
   const apps = (db.apps || []).filter((a) => a && a.id);
-  const wantId = String(id || "");
-  const wantOwner = String(ownerId || "");
-  if (!wantId) return [];
-  let seed = null;
-  if (wantOwner) seed = apps.find((a) => a.id === wantId && String(a.userId || "") === wantOwner) || null;
-  if (!seed) seed = apps.find((a) => a.id === wantId) || null;
-  if (!seed) return [];
   const idx = new Map();
   for (const a of apps) {
     for (const alias of appAliases(a)) {
@@ -3281,6 +4495,21 @@ function appFamily(id, ownerId) {
       idx.get(alias).push(a);
     }
   }
+  _aliasIdx = { sig: sig, idx: idx, apps: apps };
+  return _aliasIdx;
+}
+
+function appFamily(id, ownerId) {
+  const cache = appAliasIndex();
+  const apps = cache.apps;
+  const wantId = String(id || "");
+  const wantOwner = String(ownerId || "");
+  if (!wantId) return [];
+  let seed = null;
+  if (wantOwner) seed = apps.find((a) => a.id === wantId && String(a.userId || "") === wantOwner) || null;
+  if (!seed) seed = apps.find((a) => a.id === wantId) || null;
+  if (!seed) return [];
+  const idx = cache.idx;
   const seen = new Set([seed]);
   const out = [seed];
   const queue = [seed];
@@ -3379,7 +4608,7 @@ function appParentOwnerOf(a) {
   if (!f) return "";
   const p = appParentOf(a);
   if (p) return String(p.userId || "");
-  /* 父条目已删 / 已下架而看不到：仍如实回报声明的 ownerId（客户端显示「分支来源已不可见」）。 */
+  /* 父条目已删而看不到：仍如实回报声明的 ownerId（客户端显示「分支来源已不可见」）。 */
   return String(f.ownerId || "");
 }
 
@@ -3387,7 +4616,6 @@ function appParentOwnerOf(a) {
 function appGlobalLatest(id) {
   let best = "";
   for (const a of appBranchesOf(id)) {
-    if (a.unpublished) continue;
     const v = appLatestVersion(a);
     if (v && (!best || compareVersions(v, best) > 0)) best = v;
   }
@@ -3405,16 +4633,15 @@ function appResolveOwnerId(raw) {
 /**
  * 解析「这个 id 的哪一条分支」——所有 /api/apps/<id>* 路由的**唯一**解析口。
  * ownerHint：?owner=<uid|账号名>、body.ownerId，或 file/icon 想指定的分支作者。
- * 规则：认得出就用它（该分支存在才认）；认不出 / 没传 → 主干；主干不可见 → 剩下的最早那条。
+ * 规则：认得出就用它（该分支存在才认）；认不出 / 没传 → 主干。
  * 返回 { app, trunk, branches, ownerId, requested }；找不到任何一条时 app = null。
  */
-function appResolveBranch(id, ownerHint, includeUnpublished) {
+function appResolveBranch(id, ownerHint) {
   const branches = appBranchesOf(id);
-  const visible = branches.filter((a) => includeUnpublished || !a.unpublished);
-  const trunk = visible.length ? visible[0] : null;
+  const trunk = branches.length ? branches[0] : null;
   const requested = appResolveOwnerId(ownerHint);
   let app = null;
-  if (requested) app = visible.find((a) => a.userId === requested) || null;
+  if (requested) app = branches.find((a) => a.userId === requested) || null;
   if (!app) app = trunk;
   return { app: app, trunk: trunk, branches: branches, ownerId: app ? app.userId : "", requested: requested };
 }
@@ -3450,8 +4677,10 @@ function appZipRelOf(id, ownerId, version) {
 /** 一条分支的「当前版包名」：新命名 `<id>__<作者uid>.zip` 优先；老库只有 <id>.zip 时回退它。 */
 function appBranchZipRelOf(id, ownerId) {
   const rel = appZipRel(id, ownerId);
-  const inWeb = (r) => fs.existsSync(path.join(APPS_WEB_DIR, ...r.split("/")));
-  const inData = (r) => fs.existsSync(path.join(APP_DIR, ...r.split("/")));
+  /* 用目录索引判「在不在」（见 dirIndex 的注释）：这里每个条目都要问 2~4 次，
+     1000 条目录就是几千次 existsSync。静态目录与数据目录都用 basename 直接查。 */
+  const inWeb = (r) => dirHasFile(APPS_WEB_DIR, path.basename(r));
+  const inData = (r) => dirHasFile(APP_DIR, path.basename(r));
   if (inWeb(rel) || inData(rel)) return rel;
   const legacy = id + ".zip";
   if (inWeb(legacy) || inData(legacy)) return legacy;
@@ -3487,7 +4716,8 @@ function appBranchEntry(a) {
     /* 分支作者显示名（= 昵称；上面 owner / nickname 保持原义，客户端显示统一读它） */
     ownerName: accountDisplayNameOf(a.userId),
     title: a.title || a.id,
-    version: a.version || "",
+    /* 版本树已空（版本被删光）→ 空串，不留残留 version（见 appCurrentVersionOf） */
+    version: appCurrentVersionOf(a),
     latestVersion: appLatestVersion(a),
     versions: appCatalogVersions(a),
     bytes: a.bytes || 0,
@@ -3501,8 +4731,6 @@ function appBranchEntry(a) {
     familyRootId: rootId,
     familyRootOwnerId: rootOwner,
     parentOwnerId: appParentOwnerOf(a),
-    unpublished: !!a.unpublished,
-    unpublishedAt: Number(a.unpublishedAt) || 0,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
   };
@@ -3548,7 +4776,7 @@ function appTagsNext(input, cur) {
 }
 
 function appCatalogEntry(a) {
-  const owner = db.users.find((u) => u.id === a.userId);
+  const owner = userById(a.userId);
   const zipUrl = appBranchZipRelOf(a.id, a.userId);
   const rootId = appFamilyGroupId(a.id, a.userId) || a.id;
   /* 家族根那条的作者：**trunk 判据只能用 uid** —— 同 id 的多条分支 id 全相同，
@@ -3565,7 +4793,8 @@ function appCatalogEntry(a) {
     familyRootOwnerId: rootOwner,
     parentOwnerId: appParentOwnerOf(a),
     title: a.title,
-    version: a.version || "1.0.0",
+    /* 版本树已空（版本被删光）→ 空串，不留残留 version（见 appCurrentVersionOf） */
+    version: appCurrentVersionOf(a),
     // 多版本字段（契约 §7.6）：**始终**给 latestVersion / versions[]，
     // 开关关闭时 versions[] 是单版合成项（zipUrl 仍为 <id>.zip），客户端只有一条读路径。
     latestVersion: appLatestVersion(a),
@@ -3574,12 +4803,24 @@ function appCatalogEntry(a) {
     description: a.description || "",
     icon: appIconRelOf(a.id, a.userId),
     /* 封面缩略图（卡片 16:9 背景图）在静态目录里的相对地址：与 icon 同一个 icons/ 目录，
-       固定 <主干>.png。**能生成才给**（appThumbOf 现生成 / 命中缓存），给不出就留空
-       让客户端退回 icon —— 不下发一个会 404 的地址。 */
-    thumb: appThumbOf(a) ? "icons/" + path.basename(appThumbFile(a.id, a.userId)) : "",
-    /* 上架截图（本轮需求）：相对静态目录的 shots/<主干>/<n>.png 数组，顺序 = 作者排的顺序，
-       第 1 张同时是封面来源（客户端卡片仍用 thumb 兜 icon）。空数组 = 没有截图。 */
+       **源 = 上架截图第 1 张**（没有截图才退回图标）：icons/<主干>__shot.png / icons/<主干>.png。
+       **能生成才给**（appThumbOf 现生成 / 命中缓存），给不出就留空让客户端退回 icon ——
+       不下发一个会 404 的地址。 */
+    thumb: appCoverThumbRelOf(a),
+    /* 封面来源（客户端据此推导 / 兜底）："shot" = 上架截图第 1 张，"icon" = 图标。
+       与 coverVer（源文件 mtime 秒）一起下发：换截图 / 换图标立刻换地址，绕开 HTTP 缓存。 */
+    coverSource: appCoverShotOf(a.id, a.userId) ? "shot" : appIconPath(a.id, a.userId) ? "icon" : "",
+    coverVer: appCoverVer(a),
+    /* 上架截图（多图）：相对静态目录的 shots/<主干>/<n>.<ext> 数组，顺序 = 作者排的顺序，
+       第 1 张同时是封面来源（客户端卡片仍用 thumb 兜 icon）。空数组 = 没有截图。
+       shotsThumb[] 是**同一批图的小图**（长边 1280，懒生成）：列表只下它，详情才下 shots[] ——
+       这是「图片缓存」省服务器流量的另一半（列表页不再逐张拉 2560 原图）。
+       小图生成不了 / 原图本来就小 → 对应位置给 ""，客户端退回用 shots[i]，绝不 404。 */
     shots: appShotRelsOf(a.id, a.userId),
+    shotsThumb: appShotListRelsOf(a),
+    /* 这一批截图的内容哈希（内容寻址图片库的名字）：客户端拿它做「这张图云端已经有了」的
+       判定，下次上架同一张图只发一个 {sha} 引用、不发字节。旧数据可能为空数组。 */
+    shotsSha: appShotEntriesOf(a.id, a.userId, a).map((e) => e.sha),
     zipUrl: zipUrl,
     url: zipUrl,
     sha256: a.sha256 || "",
@@ -3610,9 +4851,6 @@ function publicApp(a, viewer, en) {
     canDelete: !!(viewerId && (viewerId === a.userId || isAdmin(viewer))),
     // 同 id 的其他作者分支（含主干）：客户端据此画分支树与「作者 ▾」下拉（契约 §十）
     branches: appBranchViewOf(a.id, viewer),
-    // 下架状态只在详情 / 自己列表里露面（公开目录根本不列出这类条目）。
-    unpublished: !!a.unpublished,
-    unpublishedAt: Number(a.unpublishedAt) || 0,
   }), "app", a.id, en);
 }
 
@@ -3622,15 +4860,62 @@ function publicApp(a, viewer, en) {
  *  条目另带**公开打赏汇总** `tips:{count,totalYuan}`：目录是客户端列表的主来源（静态文件），
  *  接口那份（publicApp）本来就有 tips，目录少了它就出现「线上明明有人打赏、卡片悬停却说
  *  还没有人打赏」的错报。整份目录一次遍历 db.tips 算齐（batchSummaryOf，不是逐个对象查表）。 */
+/* 打赏汇总的短 TTL 缓存：plans.enricher 会为每个 id 现算 {count,totalYuan}（1000+ 条时
+   每次组目录都要算一遍，是「一次应用变更 P95」里除文件拷贝外的主要 CPU）。
+   300ms 内复用同一份 —— 窗口内多次组目录（一次发布里会组两三次：目录 + 静态计划 + 落盘）
+   只算一次；打赏本身会触发 publishStaticApps，回执里的数字仍是当场算的（不会读到旧值）。
+   口径：TTL 只影响「同一毫秒级窗口内重复计算」，不影响任何一次真实变更后的可见结果。 */
+const _tipCache = { at: 0, ids: "", map: null };
+function appCatalogTips(ids) {
+  const key = ids.join(",");
+  const t = now();
+  if (_tipCache.map && _tipCache.ids === key && t - _tipCache.at < 300) return _tipCache.map;
+  const fn = plans.enricher("app", ids);
+  const map = new Map();
+  for (const id of ids) map.set(id, fn(id));
+  _tipCache.at = t;
+  _tipCache.ids = key;
+  _tipCache.map = map;
+  return map;
+}
+
+/* 目录文档的进程内记忆（本轮 1000 条场景：一次组装 = 遍历全部条目 + tips 汇总 + 序列化，
+   1200 条实测 200~500ms）。它被「每次目录请求」与「每次静态目录发布」调用，重复组装纯属白烧 CPU。
+   失效判据两条，任一满足就重算：
+     · appCatalogBump 变了（任何写库路径都会 bump，见 saveDb）；
+     · 距上次组装 > 2000ms（兜底：万一有写路径没经过 saveDb，最多旧 2 秒 —— 客户端本身还有 60s 缓存，
+       且唯一会读目录的接口就是 /api/apps/catalog；留这个窗口是为了让「连续请求」始终命中同一份文档，
+       从而复用它的序列化 / gzip 结果，见 encodeJsonDoc）。
+   注意：这不是「缓存回执」，返回的仍是当场按库算出来的对象，只是同一窗口内不重复算。 */
+/* appCatalogBump / _catalogMemo 的**声明在 saveDb 上方**（那里有 TDZ 现场说明）：
+   启动期的 saveDb() 就会碰它们，声明必须早于任何可能写库的代码。 */
+function bumpAppCatalog() {
+  appCatalogBump++;
+}
+
 function appCatalogDoc() {
-  const rows = appCatalogSort(
-    (db.apps || []).filter((a) => !a.unpublished), // 已下架的应用不进目录（契约 §7.6）
-  );
-  const tipFn = plans.enricher("app", rows.map((a) => a.id));
-  const apps = rows.map((a) => Object.assign(appCatalogEntry(a), { tips: tipFn(a.id) }));
+  const _t = now();
+  if (_catalogMemo.doc && _catalogMemo.bump === appCatalogBump && _t - _catalogMemo.at < 2000) return _catalogMemo.doc;
+  const doc = appCatalogDocUncached();
+  _catalogMemo = { at: _t, bump: appCatalogBump, doc: doc };
+  return doc;
+}
+
+function appCatalogDocUncached() {
+  /* 两态口径（本轮）：库里的应用就是在线上 —— 目录按整库现算，没有任何可见性过滤 */
+  const rows = appCatalogSort(db.apps || []);
+  const tipMap = appCatalogTips(rows.map((a) => a.id));
+  const apps = rows.map((a) => Object.assign(appCatalogEntry(a), { tips: tipMap.get(a.id) || { count: 0, totalYuan: 0 } }));
+  /* updatedAt 必须**只随内容变**（它是 ETag 的来源）：取目录里最新的那条 updatedAt，
+     绝不用 now() —— 后者会让同一份目录每次调用都算出不同字节，条件请求（304）永远命中不了。 */
+  let stamp = 0;
+  for (const r of rows) {
+    const t = Number(r.updatedAt || r.createdAt || 0) || 0;
+    if (t > stamp) stamp = t;
+  }
   return {
     version: 1,
-    updatedAt: new Date(now()).toISOString(),
+    updatedAt: new Date(stamp || now()).toISOString(),
     feed: "http://mt-agent.com/mtnode/apps",
     apps: apps,
   };
@@ -3638,7 +4923,7 @@ function appCatalogDoc() {
 
 /* ---------- 静态目录发布（单一真源：接口变更 → 立即落盘） ---------- *
  * 客户端（apps-store.js）读的是**静态文件** <MTNODE_APPS_URL>/catalog.json，
- * 而接口（POST / PATCH / 版本 / 下架 / 删除）只改 db.json 与 DATA_DIR。
+ * 而接口（POST / PATCH / 版本 / 删除）只改 db.json 与 DATA_DIR。
  * 两份各自手写必然漂移 —— 曾经就把线上目录刷成 120 字节的 apps:[] 空清单，
  * 客户端表现为「应用库未连入云端」。所以这里把落盘收成一条路径：
  *   appCatalogDoc() 原子写 catalog.json（tmp + rename），
@@ -3654,7 +4939,9 @@ function appCatalogDoc() {
  * 纯只读计算，不落盘 —— 供发布与自检共用（自检可以只算不写）。
  */
 function appStaticPlan() {
+  const _t0 = Date.now();
   const doc = appCatalogDoc();
+  const _tDoc = Date.now();
   const entries = [];
   const managed = [APPS_WEB_MANIFEST, "catalog.json"];
   const missing = [];
@@ -3695,20 +4982,128 @@ function appStaticPlan() {
     // 图标：相对静态目录 icons/<id>__<作者uid>.<ext>（appCatalogEntry().icon 的写法）
     const iconPath = appIconPath(a.id, a.userId);
     if (iconPath) push(a.id, "icons/" + path.basename(iconPath), iconPath);
-    /* 上架截图（多图）：与图标同一套发布口径 —— 相对静态目录 shots/<主干>/<n>.<ext> */
-    for (const sp of appShotFiles(a.id, a.userId)) {
-      push(a.id, "shots/" + path.basename(appShotDirOf(a.id, a.userId)) + "/" + path.basename(sp), sp);
+    /* 上架截图（多图）：与图标同一套发布口径 —— 相对静态目录 shots/<主干>/<n>.<ext>。
+       这里顺手把**列表小图**（长边 1280，懒生成）一起发出去：列表页只下它，详情才下原图。 */
+    const shotDir = appShotDirOf(a.id, a.userId);
+    const shotBase = path.basename(shotDir);
+    const shots = appShotFiles(a.id, a.userId);
+    for (const sp of shots) {
+      push(a.id, "shots/" + shotBase + "/" + path.basename(sp), sp);
+    }
+    /* 列表小图（长边 1280）：每次发布按当前顺序重生成一次并一起发到静态目录
+       （客户端列表只下它，详情才下原图 —— 图片放宽到 5MB 之后这条最省带宽）。 */
+    const thumbsRel = appShotListRelsOf(a);
+    for (const rel of thumbsRel) {
+      if (!rel) continue;
+      const lp = path.join(shotDir, path.basename(rel));
+      if (fs.existsSync(lp)) push(a.id, rel, lp);
     }
     /* 封面缩略图（卡片 16:9 背景图）：同一批发布顺手生成 + 一起发到静态目录，
-       省掉「第一张卡片要等接口现生成」那一下。生成不了（认不出的格式 / 源图太小）就不登记，
-       客户端会退回原图标（urls.thumb 空 → 前端拿 icon 当封面）。 */
+       省掉「第一张卡片要等接口现生成」那一下。源 = 上架截图第 1 张（没有才用图标），
+       落点 icons/<主干>__shot.png / icons/<主干>.png（appCatalogEntry().thumb 的写法）。
+       生成不了（认不出的格式 / 源图太小）就不登记，客户端的 /thumb 会回封面源原图。 */
     const thumbPath = appThumbOf(a);
     if (thumbPath) push(a.id, "icons/" + path.basename(thumbPath), thumbPath);
     if (appHasVersionField(a) && !appVersionRecords(a).length) {
       missing.push({ id: a.id, reason: "版本被删光，当前没有可分发的包" });
     }
   }
-  return { doc: doc, entries: entries, managed: managed, missing: missing };
+  return { doc: doc, entries: entries, managed: managed, missing: missing, msDoc: _tDoc - _t0, msPlanTotal: Date.now() - _t0 };
+}
+
+/* ── 彻底删除：静态目录 / 数据目录里「这条分支的一切痕迹」────────────────────────────
+ * 本轮需求（用户口径）：**删掉最后一个版本 = 云端不留痕迹**，而不是留一条看不见的记录。
+ * 下面三个清理函数是这件事的收尾层：先把静态目录里属于这一条分支的文件（包 / 图标 /
+ * 截图 / 列表小图 / 封面缩略图）删掉并顺手收掉空目录，再把数据目录里的别名与无主对象回收。
+ * 纪律：**只删「没有任何应用记录认领」的东西** —— 别的分支 / 别的作者用着的文件一个都不动，
+ * 判据永远从 db.apps 现算，不靠调用方传进来的假设。
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** 删这条分支在静态目录里的文件与空目录。
+ *  三种文件名形态都要认（只按名字判、不按路径）：
+ *    · 主干主干名 `<id>__<作者uid>` 开头的（新命名版本的包、图标、封面缩略图都带它）；
+ *    · 老的共用名（`<id>.zip` / `<id>.png` / `<id>.webp` …）—— **必须确认没有别的分支
+ *      还在用这个 id** 才删，否则会把别人的封面 / 包一起删掉；
+ *    · `<id>/` 子目录整棵（`<版本>.zip` 与 `<作者uid>/<版本>.zip` 两代落点都在这儿）。
+ *  返回 { removed: [...相对路径], dirs: [...相对目录] }（供日志与回归断言）。 */
+function cleanAppBranchStatic(id, ownerId) {
+  const sid = String(id || "");
+  const own = String(ownerId || "").trim();
+  const stem = own ? appFileStem(sid, own) : "";
+  const stillUsed = (db.apps || []).some((x) => x && x.id === sid);
+  const removed = [];
+  const dirs = [];
+  const drop = (p, rel) => {
+    try {
+      if (!fs.existsSync(p)) return;
+      fs.unlinkSync(p);
+      removed.push(rel);
+    } catch (_) {}
+  };
+  /* ① 静态目录根下的散件（包 / 图标 / 封面缩略图） */
+  let rootNames = [];
+  try {
+    rootNames = fs.readdirSync(APPS_WEB_DIR);
+  } catch (_) {}
+  for (const n of rootNames) {
+    const hitStem = !!stem && (n === stem || n.startsWith(stem + ".") || n.startsWith(stem + "__"));
+    const hitBare = !stillUsed && (n === sid || n.startsWith(sid + "."));
+    if (!hitStem && !hitBare) continue;
+    drop(path.join(APPS_WEB_DIR, n), n);
+  }
+  /* ② icons/ 与 shots/ 下的散件（图标、封面缩略图、截图原图与列表小图） */
+  for (const sub of [APPS_WEB_ICONS_DIR, "shots"]) {
+    const dir = path.join(APPS_WEB_DIR, sub);
+    let names = [];
+    try {
+      names = fs.readdirSync(dir);
+    } catch (_) {
+      continue;
+    }
+    for (const n of names) {
+      const hitStem = !!stem && (n === stem || n.startsWith(stem + ".") || n.startsWith(stem + "__"));
+      const hitBare = !stillUsed && (n === sid || n.startsWith(sid + "."));
+      if (!hitStem && !hitBare) continue;
+      drop(path.join(dir, n), sub + "/" + n);
+      rmDirQuiet(dir); /* icons/<主干>/ 这种一层子目录顺手收掉（非空就停手） */
+    }
+    /* shots/<主干>/ 是一个目录（不是散件）：整棵删 */
+    if (stem) {
+      const sd = path.join(dir, stem);
+      try {
+        if (fs.existsSync(sd)) {
+          fs.rmSync(sd, { recursive: true, force: true });
+          dirs.push(sub + "/" + stem);
+        }
+      } catch (_) {}
+    }
+  }
+  /* ③ `<id>/` 整棵子目录（版本包两代落点都在里头） */
+  const idDir = path.join(APPS_WEB_DIR, sid);
+  try {
+    if (fs.existsSync(idDir)) {
+      fs.rmSync(idDir, { recursive: true, force: true });
+      dirs.push(sid);
+    }
+  } catch (_) {}
+  dirIndexDrop(APPS_WEB_DIR);
+  staticAppsStatusInvalidate();
+  return { removed: removed, dirs: dirs };
+}
+
+/** 删掉落盘分支在数据目录里的别名与版本子目录（对象库那一份由 imgObjectsGc 按引用回收）。 */
+function clearAppBranchDataDir(id, ownerId) {
+  const dropped = [];
+  const shotDir = appShotDirOf(id, ownerId);
+  try {
+    if (fs.existsSync(shotDir)) {
+      fs.rmSync(shotDir, { recursive: true, force: true });
+      dropped.push(shotDir);
+    }
+  } catch (_) {}
+  try { fs.rmdirSync(path.join(appVersionDir(id), String(ownerId || ""))); } catch (_) {}
+  dirIndexDrop();
+  return dropped;
 }
 
 /** 原子写一个文件（同目录 tmp + rename）：读者要么看到旧内容、要么看到新内容，不会读到半截 JSON。 */
@@ -3738,7 +5133,9 @@ function rmDirQuiet(p) {
  */
 function writeStaticApps() {
   const t0 = Date.now();
+  const tPlan = Date.now();
   const plan = appStaticPlan();
+  const msPlan = Date.now() - tPlan;
   mkdirp(APPS_WEB_DIR);
   mkdirp(path.join(APPS_WEB_DIR, APPS_WEB_ICONS_DIR));
   for (const e of plan.entries) {
@@ -3746,18 +5143,52 @@ function writeStaticApps() {
     mkdirp(path.join(APPS_WEB_DIR, e.id));
   }
   // 1) 内容先落齐：包 / 图标
+  /* 为什么加「跳过没变的文件」（本轮 1000 条场景）：一次全量发布要把每个应用的 zip / 图标都
+     重拷一遍（1200 条目录 = 5600 个文件 ≈ 320MB，实测 8.4 秒）。而绝大多数文件这次根本没变
+     （只是目录里的别的条目动了）。所以逐个比对「目标已存在 + 大小相同 + 目标不比源旧」就跳过 ——
+     这不是缓存（内容仍以源为准），只是不做无意义的重写。
+     manifest 的清理逻辑保证「上次发布留下的托管文件」仍会被照看到，不会因跳过而漏删。 */
   const errors = [];
+  let copied = 0;
+  let skippedSame = 0;
+  let copiedBytes = 0;
   for (const e of plan.entries) {
     const dst = path.join(APPS_WEB_DIR, ...e.rel.split("/"));
     try {
+      const srcSt = fs.statSync(e.src);
+      let same = false;
+      try {
+        const dstSt = fs.statSync(dst);
+        same = dstSt.size === srcSt.size && dstSt.mtimeMs >= srcSt.mtimeMs - 2000;
+      } catch (_) {}
+      if (same) {
+        skippedSame++;
+        continue;
+      }
       writeFileAtomicSync(dst, fs.readFileSync(e.src));
+      copied++;
+      copiedBytes += srcSt.size;
     } catch (err) {
       errors.push(e.rel + "：" + ((err && err.message) || String(err)));
     }
   }
   // 2) 目录清单最后写：清单里出现的条目，包与图标都已经在盘上
   try {
-    writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.json"), JSON.stringify(plan.doc, null, 2) + "\n");
+    /* 目录 JSON 不再做「漂亮打印」：1000+ 条时缩进会白烧几百毫秒 CPU，而客户端一律 JSON.parse、
+       人眼要看的是 /api/apps/:id 之类的单条响应。落盘仍是同一份数据（字节更小）。 */
+    const tJ = Date.now();
+    const _enc = encodeJsonDoc(plan.doc);
+    const catalogBody = Buffer.concat([_enc.body, Buffer.from("\n")]);
+    const msJson = Date.now() - tJ;
+    writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.json"), catalogBody);
+    /* 顺带落一份 .gz：nginx 开 gzip_static 时**直接发它**（省掉每次请求现场压缩）。
+       只能 gzip 这一种（brotli 需要额外模块），写失败不算发布失败。 */
+    try {
+      const _gz = encodeJsonDoc(plan.doc).gz || zlib.gzipSync(catalogBody, { level: 6 });
+      writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.json.gz"), _gz);
+    } catch (err) {
+      console.warn("[mtnode-store] catalog.json.gz 写失败（不影响直发）：" + ((err && err.message) || String(err)));
+    }
   } catch (err) {
     errors.push("catalog.json：" + ((err && err.message) || String(err)));
   }
@@ -3788,12 +5219,39 @@ function writeStaticApps() {
   } catch (err) {
     errors.push(APPS_WEB_MANIFEST + "：" + ((err && err.message) || String(err)));
   }
+  dirIndexDrop(APPS_WEB_DIR);
+  staticAppsStatusInvalidate();
+  let catalogBytes = 0;
+  try {
+    catalogBytes = fs.statSync(path.join(APPS_WEB_DIR, "catalog.json")).size;
+  } catch (_) {}
   const ok = errors.length === 0;
+  /* 阈值告警（只记日志，不改行为）：这三个数字是「上线后不故障」的早期信号 ——
+     发布耗时随目录条数线性上涨、目录体积突破客户端耐心、或每次都要全量重拷。 */
+  const _ms = Date.now() - t0;
+  const _pubLimit = Number(process.env.MTNODE_APPS_PUBLISH_WARN_MS || 3000) || 3000;
+  const _bytesLimit = Number(process.env.MTNODE_APPS_CATALOG_WARN_BYTES || 8 * 1024 * 1024) || 8 * 1024 * 1024;
+  if (_ms > _pubLimit) {
+    console.warn("[mtnode-store][warn] 静态目录发布耗时 " + _ms + "ms 超过阈值 " + _pubLimit + "ms（目录 " + plan.doc.apps.length + " 条 / " + plan.managed.length + " 文件）—— 查 docs/reports/scale-1000-verification.md 的排查顺序");
+  }
+  if (catalogBytes > _bytesLimit) {
+    console.warn("[mtnode-store][warn] 目录 JSON " + Math.round(catalogBytes / 1024) + "KB 超过阈值 " + Math.round(_bytesLimit / 1024) + "KB —— 考虑按需拉 versions[] / shots[]（见验证报告「已知边界」）");
+  }
+  if (copied > 200 && copied > skippedSame) {
+    console.warn("[mtnode-store][warn] 本次发布重拷了 " + copied + " 个文件（跳过 " + skippedSame + " 个）—— 源文件时间戳大面积变新？检查是否有外部脚本重写包目录");
+  }
   return {
     ok: ok,
     dir: APPS_WEB_DIR,
     apps: plan.doc.apps.length,
     files: plan.managed.length,
+    copied: copied,
+    skippedSame: skippedSame,
+    copiedBytes: copiedBytes,
+    msPlan: msPlan,
+    msDoc: plan.msDoc,
+    msPlanTotal: plan.msPlanTotal,
+    msJson: typeof msJson === "number" ? msJson : 0,
     removed: removed,
     missing: plan.missing,
     errors: errors,
@@ -3806,13 +5264,31 @@ let staticPublishBusy = false;
 let staticPublishPending = false;
 let staticPublishLast = null;
 let staticPublishFallback = false; // 静态目录写不进去 → 客户端改走接口目录（见 handle 的 /api/apps/catalog）
-function publishStaticApps(reason) {
+/* 发布模式：默认「每次变更立刻发」。设 MTNODE_APPS_PUBLISH=manual 改成「攒着」——
+   只给隔离沙箱批量造数用：否则造 1000 条 × 每条 3 版 ≈ 4000 次全量重发（O(N²)），要跑几小时。
+   攒到最后由 POST /api/admin/content/republish 一次发完，发布耗时本身照旧被量到
+   （那正是「单次应用变更 P95」要看的数字）。线上不设这个环境变量 = 每次变更立刻发，口径不变。 */
+const APPS_PUBLISH_MANUAL = String(process.env.MTNODE_APPS_PUBLISH || "").toLowerCase() === "manual";
+let staticPublishDeferred = 0;
+let staticPublishTimer = null;
+let staticPublishPendingReason = "";
+const DEBOUNCE_MS = Math.max(0, Number(process.env.MTNODE_APPS_PUBLISH_DEBOUNCE || 800) || 0);
+
+function publishStaticApps(reason, opts) {
+  /* opts.force = 管理台 / 自检主动「重发静态目录」：即使处在 manual（攒着）模式也要真发一次。 */
+  if (APPS_PUBLISH_MANUAL && !(opts && opts.force)) {
+    staticPublishDeferred++;
+    staticPublishLast = { ok: true, deferred: staticPublishDeferred, reason: reason, dir: APPS_WEB_DIR, apps: (db.apps || []).length, files: 0, removed: [], missing: [], errors: [], ms: 0 };
+    return staticPublishLast;
+  }
   if (staticPublishBusy) {
     // 前一次还没写完（同一进程内的连续变更）：这次跳过，前一次写的是**这次之前**的库，
     // 可能漏掉最新一条 —— 标记 pending，写完再看一次。
     staticPublishPending = true;
+    staticPublishPendingReason = reason;
     return { ok: false, skipped: true, reason: reason };
   }
+  staticPublishPendingReason = reason;
   staticPublishBusy = true;
   let out;
   try {
@@ -3822,6 +5298,26 @@ function publishStaticApps(reason) {
   }
   staticPublishBusy = false;
   staticPublishLast = Object.assign({ reason: reason }, out);
+  /* 发布合并（防抖）：一次发布是 O(目录条数 + 托管文件数)（1200 条实测 8.4 秒），
+     而真实使用里「连着改几个应用 / 连续追加几版」很常见 —— 把窗口内的多次变更并成**最后一次**，
+     省掉中间那些注定被下一次覆盖的全量重发。窗口内最后一次的 reason 保留在 staticPublishPendingReason。
+     MTNODE_APPS_PUBLISH_DEBOUNCE=0 可关掉它（回到「每次变更立刻发」）。 */
+  /* ⚠️ 合并重发自己**不能再排一次防抖**（opts.noDebounce 就是它的出口）：否则
+     「发一次 → 排一个 800ms 定时器 → 定时器里再发一次 → 再排一个」自续成每秒一次的死循环
+     （2026-10-09 上线当场：staticPublishLast.reason 里「（合并）」无限增长、catalog.json 每秒被重写）。
+     定时器只由**真实变更**排（每次变更调用本函数一次），合并那一发是终点。 */
+  if (DEBOUNCE_MS > 0 && !staticPublishTimer && !(opts && opts.noDebounce)) {
+    staticPublishTimer = setTimeout(() => {
+      staticPublishTimer = null;
+      const why = staticPublishPendingReason || "合并发布";
+      staticPublishPendingReason = "";
+      if (staticPublishFallback) {
+        /* 上一次直发失败过：这次合并重发就是把静态目录修回来的机会，照常发。 */
+      }
+      publishStaticApps(why + "（合并）", { force: true, noDebounce: true });
+    }, DEBOUNCE_MS);
+    if (staticPublishTimer.unref) staticPublishTimer.unref();
+  }
   if (out.ok) {
     if (staticPublishFallback) {
       staticPublishFallback = false;
@@ -3850,13 +5346,38 @@ function publishStaticApps(reason) {
 }
 
 /** 静态目录体检（供 GET /api/apps/pub 与上线自检）：只看文件在不在、条数对不对，不改任何东西。 */
+/* 静态目录体检：**带 1 秒 TTL 缓存**。原来每调一次就 appStaticPlan() + 对每个托管文件
+   existsSync + statSync（1200 条目录 = 5600 个文件 = 约 1.1 万次 syscall，单次实测 1000ms）。
+   它挂在免登录的 GET /api/apps/pub 上（上线自检与压测都会打），不缓存就变成一台单机上的
+   自我 DDoS。缓存 1 秒：真实变更（发布成功后）会调 staticAppsStatusInvalidate() 立刻作废。
+   checks 明细只留前 200 条（原样返回全量时，这个免登录接口的响应会到几百 KB）。 */
+const STATUS_CACHE_MS = 1000;
+let _statusCache = { at: 0, val: null };
+function staticAppsStatusInvalidate() {
+  _statusCache = { at: 0, val: null };
+}
 function staticAppsStatus() {
+  const t = now();
+  if (_statusCache.val && t - _statusCache.at < STATUS_CACHE_MS) return _statusCache.val;
+  const val = staticAppsStatusFull();
+  _statusCache = { at: t, val: val };
+  return val;
+}
+function staticAppsStatusFull() {
   const plan = appStaticPlan();
   const checks = [];
+  let checked = 0;
+  let missing = 0;
   for (const rel of plan.managed) {
     if (rel === APPS_WEB_MANIFEST) continue;
     const p = path.join(APPS_WEB_DIR, ...rel.split("/"));
-    checks.push({ rel: rel, exists: fs.existsSync(p), bytes: fs.existsSync(p) ? fs.statSync(p).size : 0 });
+    let exists = false;
+    try {
+      exists = fs.existsSync(p);
+    } catch (_) {}
+    if (!exists) missing++;
+    if (checked < 200) checks.push({ rel: rel, exists: exists, bytes: 0 });
+    checked++;
   }
   let diskApps = -1;
   try {
@@ -3864,14 +5385,17 @@ function staticAppsStatus() {
     diskApps = Array.isArray(d.apps) ? d.apps.length : -1;
   } catch {}
   return {
-    ok: !checks.some((c) => !c.exists) && diskApps === plan.doc.apps.length,
+    ok: missing === 0 && diskApps === plan.doc.apps.length,
     dir: APPS_WEB_DIR,
     dbApps: plan.doc.apps.length,
     diskApps: diskApps,
     fallback: staticPublishFallback,
     last: staticPublishLast,
+    checkedFiles: checked,
+    missingCount: missing,
     missingOnDisk: checks.filter((c) => !c.exists).map((c) => c.rel),
     checks: checks,
+    checksTruncated: checked > checks.length,
   };
 }
 
@@ -4010,7 +5534,7 @@ async function sysinfoSnapshot() {
  *     所以单开一组 /api/admin/content/*：管理员可操作**任何作者**的内容（对齐 isAdmin 的既有口径）。
  *   · 编辑只到元信息：应用 = 标题/简介/标签/图标；模板 = 标题/简介/标签；技能 = 标题/简介/标签/版本号/官方标记。
  *     文件正文与 zip 一律不在管理台换（谁上传谁改）；应用的 version 由版本记录掌管，也不手改。
- *   · 模板 / 技能服务端本来就没有多版本链与「下架」位，这层差异照现状适配，不新增字段。
+ *   · 模板 / 技能服务端本来就没有多版本链，这层差异照现状适配，不新增字段。
  *   · 删除类操作在界面上二次确认，服务端逐条写 contentAudit（谁 / 何时 / 对哪条做了什么）。
  * ========================================================================== */
 
@@ -4068,7 +5592,7 @@ function adminAppRow(a) {
     title: a.title || a.id,
     desc: a.description || a.desc || "",
     tags: Array.isArray(a.tags) ? a.tags : [],
-    version: appLatestVersion(a) || a.version || "",
+    version: appLatestVersion(a) || appCurrentVersionOf(a),
     versionCount: recs.length,
     bytes: Number(a.bytes) || 0,
     downloads: Number(a.downloads) || 0,
@@ -4076,8 +5600,6 @@ function adminAppRow(a) {
     entry: a.entry || "",
     sha256: a.sha256 || "",
     hasIcon: !!appIconPath(a.id, a.userId),
-    unpublished: !!a.unpublished,
-    unpublishedAt: Number(a.unpublishedAt) || 0,
     branchCount: appFamilyEntries(a.id, "").length,
     createdAt: Number(a.createdAt) || 0,
     updatedAt: Number(a.updatedAt) || 0,
@@ -4141,7 +5663,6 @@ function adminContentCounts() {
   const apps = db.apps || [];
   return {
     app: apps.length,
-    appUnpublished: apps.filter((a) => a && a.unpublished).length,
     template: (db.templates || []).length,
     skill: (db.skills || []).length,
     skillOfficial: (db.skills || []).filter((s) => s && s.official).length,
@@ -4180,7 +5701,9 @@ async function handle(req, res) {
   }
 
   const jsonBody = async () => {
-    const raw = await readBody(req);
+    /* 上架链路的写接口放宽到 MAX_BODY_APP_UPLOAD（见 appUploadRoute 的注释），
+       其它接口一字不动地守 MAX_BODY。 */
+    const raw = await readBody(req, appUploadRoute(p, method) ? MAX_BODY_APP_UPLOAD : MAX_BODY);
     if (!raw.length) return {};
     try {
       return JSON.parse(raw.toString("utf8"));
@@ -5475,14 +6998,11 @@ async function handle(req, res) {
     const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
     const owner = String(url.searchParams.get("owner") || "").trim().toLowerCase();
     const sort = String(url.searchParams.get("sort") || "new").trim().toLowerCase();
-    // 已下架的应用不进公开列表；只有「按 owner 查自己 + includeUnpublished=1」才看得到（契约 §7.6）。
-    const includeUnpublished = /^(1|true|yes|on)$/i.test(
-      String(url.searchParams.get("includeUnpublished") || "").trim(),
-    );
+    /* 两态口径（本轮）：列表就是整个库 —— 没有可见性开关，也没有「把隐藏条目一起带上」
+       这种逃生参数（库里的应用一律在线上，被彻底删除的已不在 db.apps 里，自然列不出来）。 */
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
     const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.get("pageSize") || "20", 10) || 20));
     let list = (db.apps || []).slice();
-    if (!(owner && includeUnpublished)) list = list.filter((a) => !a.unpublished);
     // 按 owner 过滤：username 或 userId 都认（上传脚本用 ?owner=<自己> 找自己的应用）
     if (owner) {
       list = list.filter((a) => {
@@ -5520,12 +7040,14 @@ async function handle(req, res) {
   // 静态目录写不进去时（缺权限 / 路径不存在，见 publishStaticApps 的告警），
   // 客户端会回退到这里 —— 所以本接口必须始终可用，返回的就是同一份 appCatalogDoc()。
   if (method === "GET" && (p === "/api/apps/catalog" || p === "/api/apps/catalog.json")) {
-    return send(res, 200, appCatalogDoc());
+    /* 目录类：gzip + ETag + max-age=60（见 sendCatalogJson 的注释）。1000 条时这份响应最大，
+       客户端每次进应用中心都读它，所以它是本轮最值得省的一条。 */
+    return sendCatalogJson(req, res, appCatalogDoc());
   }
 
   // 静态目录体检（免登录、只读）：给上线自检与排查用 —— 条数对不对、文件在不在、有没有降级。
   if (method === "GET" && p === "/api/apps/pub") {
-    return send(res, 200, Object.assign({ ok: true }, staticAppsStatus()));
+    return send(res, 200, Object.assign({ ok: true }, staticAppsStatus(), { gzip: gzipStatus(), hot: hotStats(), slow: slowReport() }));
   }
 
   /* 上架截图链路体检（只读、免登录）：**全链路可观测**的入口 —— 截图没落盘时先打这一条，
@@ -5533,7 +7055,7 @@ async function handle(req, res) {
      口径与 appShotsDiag 同一处实现（管理台与部署自检也读它）。 */
   const appShotsDiagR = /^\/api\/apps\/([^/]+)\/shots-diag$/.exec(p);
   if (appShotsDiagR && method === "GET") {
-    const rb = appResolveBranch(appShotsDiagR[1], url.searchParams.get("owner"), true);
+    const rb = appResolveBranch(appShotsDiagR[1], url.searchParams.get("owner"));
     const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     return send(res, 200, Object.assign({ ok: true }, appShotsDiag(a), {
@@ -5545,6 +7067,119 @@ async function handle(req, res) {
     }));
   }
 
+  /* 内容寻址图片库（本轮需求）：客户端按内容指纹问「这张图云端有没有」——
+      · GET  /api/apps/object/<sha256>      → 有：200 {ok,sha,bytes,ext,tw,th}；没有：404 OBJ_NOT_FOUND
+      · POST /api/apps/objects/exist        → 批量版（最多 OBJ_EXIST_MAX 个，见下面那条路由）
+      · GET  /api/apps/objfile/<sha256>     → 直出图片字节（?size=list 出长边 1280 的小图）
+     免登录、只读：客户端据此把「已经传过的图」改成只发引用，不再重推字节（省服务器流量）。 */
+  const appObjR = /^\/api\/apps\/object\/([0-9a-fA-F]{64})$/.exec(p);
+  if (appObjR && method === "GET") {
+    const sha = appObjR[1].toLowerCase();
+    let hold = null;
+    let ext = "";
+    for (const e of ["png", "jpg", "jpeg", "webp"]) {
+      hold = imgObjHold(sha, e, "");
+      if (hold) {
+        ext = e;
+        break;
+      }
+    }
+    if (!hold) return send(res, 404, { ok: false, code: "OBJ_NOT_FOUND", error: "云端没有这份图片（请重传一次）" });
+    let tw = 0;
+    let th = 0;
+    try {
+      const dec = decodeImage(fs.readFileSync(hold.path));
+      if (dec) {
+        tw = dec.w;
+        th = dec.h;
+      }
+    } catch (_) {}
+    return send(res, 200, { ok: true, sha, bytes: hold.bytes, ext, tw, th, size: APP_SHOT_LIST_EDGE, maxEdge: APP_SHOT_MAX_EDGE });
+  }
+  const appObjFileR = /^\/api\/apps\/objfile\/([0-9a-fA-F]{64})$/.exec(p);
+  if (appObjFileR && method === "GET") {
+    const sha = appObjFileR[1].toLowerCase();
+    const wantList = String(url.searchParams.get("size") || "").toLowerCase() === "list";
+    let hold = null;
+    let ext = "";
+    for (const e of ["png", "jpg", "jpeg", "webp"]) {
+      hold = imgObjHold(sha, e, "");
+      if (hold) {
+        ext = e;
+        break;
+      }
+    }
+    if (!hold) return send(res, 404, { ok: false, code: "OBJ_NOT_FOUND", error: "云端没有这份图片" });
+    let file = hold.path;
+    if (wantList) {
+      const small = imgObjHold(sha, ext, SHOT_LIST_SUFFIX);
+      if (small) {
+        file = small.path;
+      } else {
+        try {
+          const dec = makeAppShot(fs.readFileSync(hold.path), { maxEdge: APP_SHOT_LIST_EDGE });
+          if (dec && dec.buf && dec.changed) {
+            const put = imgObjPut(dec.buf, ext, SHOT_LIST_SUFFIX);
+            try { fs.utimesSync(put.path, fs.statSync(hold.path).atime, fs.statSync(hold.path).mtime); } catch (_) {}
+            file = put.path;
+          }
+        } catch (_) {}
+      }
+    }
+    return sendBin(res, 200, fs.readFileSync(file), previewMime(file), { "Cache-Control": "public, max-age=86400" });
+  }
+
+  /* 图片内容指纹**批量**查存（本轮需求）：客户端上架窗在提交前把这一批截图的内容指纹一次问完，
+     命中就只发 { sha } 引用、**不再把字节推上云**（省云服务器流量；别人传过的同一张图也命中）。
+       · POST /api/apps/objects/exist  body { shas: ["<sha256>", …] }（最多 OBJ_EXIST_MAX 个）
+       · 回执 { ok, items:[{sha, exists, bytes, ext}], have:[sha…], missing:[sha…] }
+     免登录、只读 —— 与单张 GET /api/apps/object/<sha> 同口径（那条仍保留，老客户端不受影响）。
+     只回字节数与扩展名（不回 tw/th：批量路径上**不做图片解码**，那会让一次查存变贵）。 */
+  if (method === "POST" && p === "/api/apps/objects/exist") {
+    const gate = ipGate("obj-exist", clientIp(req), OBJ_EXIST_IP_HOURLY_MAX);
+    if (!gate.ok) return rateLimited(res, gate);
+    let body = {};
+    try {
+      body = await jsonBody();
+    } catch (err) {
+      return send(res, err && err.status ? err.status : 400, { ok: false, error: "请求体不是合法 JSON" });
+    }
+    ipCommit(gate);
+    const raw = Array.isArray(body && body.shas) ? body.shas : [];
+    if (!raw.length) return send(res, 200, { ok: true, items: [], have: [], missing: [], checked: 0 });
+    if (raw.length > OBJ_EXIST_MAX) {
+      return send(res, 400, {
+        ok: false,
+        code: "TOO_MANY_SHAS",
+        error: "一次最多查 " + OBJ_EXIST_MAX + " 个指纹（本次 " + raw.length + " 个）",
+      });
+    }
+    const seen = new Set();
+    const items = [];
+    const have = [];
+    const missing = [];
+    for (const x of raw) {
+      const sha = String(x == null ? "" : x).trim().toLowerCase();
+      /* 非法 / 重复的指纹不报错（客户端那一侧只要知道「有没有」）：非法一律并进 missing，
+         重复只算一次（客户端本来就会在本地去重，这里再兜一层）。 */
+      if (!/^[0-9a-f]{64}$/.test(sha)) continue;
+      if (seen.has(sha)) continue;
+      seen.add(sha);
+      const hit = imgObjHoldAnyExt(sha);
+      items.push(hit ? { sha: sha, exists: true, bytes: hit.hold.bytes, ext: hit.ext } : { sha: sha, exists: false, bytes: 0, ext: "" });
+      (hit ? have : missing).push(sha);
+    }
+    return send(res, 200, { ok: true, items: items, have: have, missing: missing, checked: items.length });
+  }
+
+  /* 我的应用存储用量与上限（本轮需求：客户端上架窗据此显示「已用 / 上限」，
+     管理员在后台给单个用户调过的值也走它）。必须登录；只是只读查询，不触发任何发布。
+     路由放在 /api/apps/:id 之前（否则会被那条当成 id="storage"）。 */
+  if (method === "GET" && p === "/api/apps/storage") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "查询存储用量需要登录" });
+    return send(res, 200, { ok: true, storage: appStorageViewOf(user) });
+  }
+
   const appOne = /^\/api\/apps\/([^/]+)$/.exec(p);
   const appFileR = /^\/api\/apps\/([^/]+)\/file$/.exec(p);
   const appIconR = /^\/api\/apps\/([^/]+)\/icon$/.exec(p);
@@ -5553,12 +7188,11 @@ async function handle(req, res) {
   const appThumbR = /^\/api\/apps\/([^/]+)\/thumb$/.exec(p);
   const appVersionsR = /^\/api\/apps\/([^/]+)\/versions$/.exec(p);
   const appVersionOneR = /^\/api\/apps\/([^/]+)\/versions\/([^/]+)$/.exec(p);
-  const appPublishR = /^\/api\/apps\/([^/]+)\/(unpublish|publish)$/.exec(p);
 
   // 版本树数据（免登录，公开信息）：客户端详情区的「版本」块按它渲染。
   // 开关关闭时也用单版字段合成一项，客户端只有一条读路径。
   if (appVersionsR && method === "GET") {
-    const rb = appResolveBranch(appVersionsR[1], url.searchParams.get("owner"), false);
+    const rb = appResolveBranch(appVersionsR[1], url.searchParams.get("owner"));
     const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     return send(res, 200, {
@@ -5570,7 +7204,6 @@ async function handle(req, res) {
       trunkOwnerId: rb.trunk ? rb.trunk.userId : "",
       branches: appBranchViewOf(a.id, user),
       latestVersion: appLatestVersion(a),
-      unpublished: !!a.unpublished,
       versions: appVersionsPublic(a),
     });
   }
@@ -5606,15 +7239,13 @@ async function handle(req, res) {
     } catch (e) {
       return send(res, 400, { ok: false, error: e.message || String(e) });
     }
-    if (appVersionRecords(a).some((v) => v.version === version)) {
-      return send(res, 409, {
-        ok: false,
-        code: "VERSION_EXISTS",
-        error:
-          "你的分支已有这个版本号（v" + version + "）：请换一个版本号，或先用 DELETE /api/apps/" + a.id +
-          "/versions/" + version + "?owner=" + encodeURIComponent(a.userId) + " 把旧的那一版下掉",
-      });
-    }
+    /* 同版本号 = **覆盖这一版**，不再 409（用户口径：更新时应当允许同版本更新）。
+       为什么改：作者改完 bug 想「还叫 1.0.1」，原来只回一句「请换一个版本号」——他要的更新做不成，
+       只能被迫编个新号（或在版本列表里先删旧版再传，中间那段时间线上没有可分发的包）。
+       现在：这一版就地换成新包（版本位置 / 父版关系 / 其它版本记录都不动），回执带 replaced=true
+       让客户端明说「覆盖了已存在的 vX」。 */
+    const dupIdx = appVersionRecords(a).findIndex((v) => v.version === version);
+    const replacing = dupIdx >= 0;
     let nextTitle = null;
     if (b.title != null) {
       nextTitle = String(b.title).trim().slice(0, 80);
@@ -5669,28 +7300,54 @@ async function handle(req, res) {
         }
       }
     }
-    // 配额：全部校验通过之后、落盘之前（契约 §7.5）。
-    const q = appQuotaError(user.id, buf.length, 0, false);
+    /* 配额：全部校验通过之后、落盘之前（契约 §7.5）。口径 = 该用户的存储上限
+       （包 + 截图 + 图标；本次要加的**新图片**也算进去，重复的图不重复计）。 */
+    const newShotBytes = (shotsIn && shotsIn.ok ? shotsIn.shots : []).reduce(
+      (n, s) => n + (s && s.reused ? 0 : Number(s && s.bytes) || 0),
+      0,
+    );
+    const q = appQuotaError(user.id, buf.length + newShotBytes, 0, false);
     if (q) return send(res, q.status, q.body);
 
     writeAppZipFiles(a.id, version, buf, a.userId);
     if (clearIcon) clearAppIcon(a.id, a.userId);
     else if (iconBuf) writeAppIcon(a.id, a.userId, iconBuf);
-    if (shotsIn && shotsIn.ok) writeAppShots(a.id, a.userId, shotsIn.shots);
+    /* 截图：**追加 + 按内容去重**（保留这条分支已有的图）—— 原来这里是整批替换，
+       作者上传一版新包只带本次新加的图，旧图整套被删（用户报的「更新后截图消失」）。 */
+    let shotsDiag = null;
+    if (shotsIn && shotsIn.ok) {
+      shotsDiag = appendAppShots(a.id, a.userId, shotsIn.shots, a);
+      if (!shotsDiag.ok) {
+        return send(res, 400, { ok: false, code: "TOO_MANY_SHOTS", error: shotsDiag.errors[0] || "截图过多" });
+      }
+      /* 封面源就是截图第 1 张：图变了必须作废缩略图缓存（否则卡片还是老图） */
+      if (shotsDiag.added) clearAppThumb(a.id, a.userId);
+    }
+    /* 「这张图云端已经有了」的哈希名单：客户端据此在**下一次**上架时只发引用、不发字节。 */
+    const shotShas = appShotEntriesOf(a.id, a.userId, a).map((e) => e.sha);
     const sha = crypto.createHash("sha256").update(buf).digest("hex");
-    a.versions = appVersionRecords(a).concat([
-      makeAppVersion({
-        version,
-        parentVersion,
-        buf,
-        sha256: sha,
-        entry,
-        note: b.versionNote != null ? b.versionNote : b.note,
-        user,
-      }),
-    ]);
+    /* 这次的包与线上**当前那一版**内容一模一样吗（同号同内容的重传）：只用来回执
+       `unchanged:true` 与「其实一个字节都没变」的如实提示 —— 同号重传一律接受，绝不回错误。 */
+    const unchanged = !!sha && sha === String(a.sha256 || "");
+    const rec = makeAppVersion({
+      version,
+      parentVersion,
+      buf,
+      sha256: sha,
+      entry,
+      note: b.versionNote != null ? b.versionNote : b.note,
+      user,
+    });
+    /* 覆盖同版本：**就地换掉那一条记录**（位置不动 = 版本树顺序不变），其余版本照旧。
+       追加：照旧接在末尾。 */
+    const recs = appVersionRecords(a).slice();
+    if (replacing) recs[dupIdx] = rec;
+    else recs.push(rec);
+    a.versions = recs;
     a.latestVersion = version;
     a.version = version; // 老字段 = 最新版版本号（语义不变）
+    /* 本轮两态收敛后这里**什么都不用复位**：库里有这一条 = 它就在线上（追加 / 同号覆盖
+       走的都是同一条路），再没有「有包却看不见」那种需要复位的状态（见上方可见性开关那条注释）。 */
     a.bytes = buf.length;
     a.sha256 = sha;
     a.entry = entry;
@@ -5707,6 +7364,7 @@ async function handle(req, res) {
       else delete a.forkOf;
     }
     a.updatedAt = now();
+    a.shots = { shas: shotShas };
     recordAppDeclaration(req, user, a.id, version, "version");
     await saveDb();
     syncAppZipMirror(a);
@@ -5715,6 +7373,12 @@ async function handle(req, res) {
       ok: true,
       version,
       ownerId: a.userId,
+      replaced: replacing, // true = 覆盖了这一分支已存在的同号版本（客户端据此提示「已覆盖 vX」）
+      /* 这次带的包与线上那一版内容一模一样（sha256 相同）：照旧算成功，只是如实说一句 */
+      unchanged: replacing && unchanged,
+      shots: shotsDiag ? { added: shotsDiag.added, total: shotsDiag.total } : null,
+      /* 每用户存储上限的当期用量（客户端上架窗据此显示「已用 / 上限」，不用另开接口） */
+      storage: appStorageViewOf(user),
       branches: appBranchViewOf(a.id, user),
       item: publicApp(a, user),
       catalog: appCatalogEntry(a),
@@ -5755,10 +7419,17 @@ async function handle(req, res) {
     try { want = decodeURIComponent(want); } catch {}
     const recs = appVersionRecords(a).slice();
     const vi = recs.findIndex((v) => v.version === want);
-    if (vi < 0) {
-      return send(res, 404, { ok: false, code: "VERSION_NOT_FOUND", error: "该版本不存在或已下架：v" + want });
+    /* 老单版记录（**没有 versions 字段**，开关关闭时建的）：界面上那一版是接口按单版字段
+       合成的（见 appVersionsPublic / appCatalogVersions），删它 = 真的把这一版删掉 ——
+       不再回 VERSION_NOT_FOUND（那会让界面上一版永远删不掉，正是用户报的那条）。 */
+    const legacyOnly = vi < 0 && !appHasVersionField(a) && want === String(a.version || "");
+    if (vi < 0 && !legacyOnly) {
+      return send(res, 404, { ok: false, code: "VERSION_NOT_FOUND", error: "该版本不存在：v" + want });
     }
-    recs.splice(vi, 1);
+    /* 删除前的元信息快照：这一版可能正好是**最后一版**（下面要走彻底删除 + 已删除留痕），
+       版本记录一旦被清空就再也算不出来了（见 appBranchDeleteMeta）。 */
+    const delMeta = appBranchDeleteMeta(a);
+    if (vi >= 0) recs.splice(vi, 1);
     a.versions = recs;
     /* 只删这一分支自己那份包：分支私有落点先删；老落点是同 id 共用的 —— 只有没有别的分支
        还在用这个版本号时才删它（否则会把别人的包一起删掉）。 */
@@ -5767,58 +7438,58 @@ async function handle(req, res) {
       try { fs.unlinkSync(appVersionZipPath(a.id, want)); } catch {}
     }
     if (!recs.length) {
-      // 全删光：这一分支没有可分发的包了 → 随之下架，镜像也删掉（记录仍在，可重新上架新版本）。
-      a.latestVersion = "";
-      a.unpublished = true;
-      a.unpublishedAt = now();
-      a.bytes = 0;
-      a.sha256 = "";
-      try { fs.unlinkSync(appOwnerZipPath(a.id, a.userId)); } catch {}
-      syncAppZipMirrorGlobal(a.id);
-    } else {
-      // 删的是最新版 → latestVersion 指向剩余最高版，并把镜像刷成它。
-      const top = recs.reduce((best, v) => (compareVersions(v.version, best.version) > 0 ? v : best), recs[0]);
-      a.latestVersion = top.version;
-      a.version = top.version;
-      a.bytes = Number(top.bytes) || 0;
-      a.sha256 = top.sha256 || "";
-      if (top.entry) a.entry = top.entry;
-      syncAppZipMirror(a);
+      /* 全删光 = **这一分支彻底不存在**（本轮需求，用户口径：删掉最后一个版本后云端不留痕迹，
+         而不是留一条看不见的记录）。为什么必须是真删：只置一个可见性位的话，记录 / 包 / 图标 /
+         截图 / 静态目录条目全留着，作者以为删干净了，云端却还占着配额与目录。
+         走 deleteAppBranch（与应用中心「删除」、管理台两条删除同一份实现，口径永远一致）：
+         记录 + 包 + 图标 + 截图 + 封面缩略图 + 静态目录（含空目录）+ 无主对象一次清完。
+         同一 id 下还有别的作者分支时，deleteAppBranch 会顺手留一条最小元信息
+         （contentAudit / 已删除留痕，见 appDeletedLedgerPush）。 */
+      const del = await deleteAppBranch(a, delMeta);
+      await saveDb();
+      publishStaticApps("删最后一版 = 彻底删除 " + a.id + "（" + appOwnerNameOf(a.userId) + "）");
+      console.log(
+        "[mtnode-store] 删最后一版 → 彻底删除分支 " + a.id + "/" + a.userId +
+          "：静态文件 " + ((del.removed && del.removed.staticFiles) || []).length +
+          " 个 / 空目录 " + ((del.removed && del.removed.staticDirs) || []).length +
+          " 个 / 回收无主图片 " + ((del.imgGc && del.imgGc.removed) || 0) + " 个",
+      );
+      return send(res, 200, {
+        ok: true,
+        id: a.id,
+        ownerId: a.userId,
+        /* deleted:true = 这一版是最后一版，整条分支已被彻底删除（客户端据此说「云端已无这个应用」） */
+        deleted: true,
+        latestVersion: "",
+        versions: [],
+        branches: appBranchViewOf(a.id, user),
+      });
     }
+    /* 还有剩余版本：删的是最新版 → latestVersion 指向剩余最高版，并把镜像刷成它。 */
+    const top = recs.reduce((best, v) => (compareVersions(v.version, best.version) > 0 ? v : best), recs[0]);
+    a.latestVersion = top.version;
+    a.version = top.version;
+    a.bytes = Number(top.bytes) || 0;
+    a.sha256 = top.sha256 || "";
+    if (top.entry) a.entry = top.entry;
+    syncAppZipMirror(a);
     a.updatedAt = now();
     await saveDb();
     publishStaticApps("删版本 " + a.id + "@" + want);
     return send(res, 200, { ok: true, id: a.id, latestVersion: a.latestVersion || "", versions: appVersionsPublic(a) });
   }
 
-  // 下架 / 重新发布（仅 owner）：记录与所有版本的包都保留，只改目录可见性。
-  // 同 id 多分支（契约 §十）：**只作用于我自己那条分支**（q34），别人的分支照常可见。
-  if (appPublishR && method === "POST") {
-    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "下架 / 重新发布需要登录" });
-    const a = appBranchOfOwner(appPublishR[1], user.id);
-    if (!a) {
-      if (!appBranchesOf(appPublishR[1]).length) return send(res, 404, { ok: false, error: "应用不存在" });
-      return send(res, 403, { ok: false, error: "只能下架 / 重新发布自己的分支" });
-    }
-    const unpublish = appPublishR[2] === "unpublish";
-    a.unpublished = unpublish;
-    a.unpublishedAt = unpublish ? now() : 0;
-    await saveDb();
-    syncAppZipMirrorGlobal(a.id);
-    publishStaticApps((unpublish ? "下架 " : "重新发布 ") + a.id + "（" + appOwnerNameOf(a.userId) + "）");
-    return send(res, 200, {
-      ok: true,
-      id: a.id,
-      ownerId: a.userId,
-      unpublished: !!a.unpublished,
-      branches: appBranchViewOf(a.id, user),
-      item: publicApp(a, user),
-    });
+  // 作者侧可见性开关（POST /api/apps/:id/(unpublish|publish)）**已整体移除**：
+  // 本轮产品口径收敛为「在线上 / 完全被删除」两态 —— 没有第三条可见性位，要撤下就删除（不可恢复）。
+  // 旧路径如实回 404 +「该接口已下线」，绝不静默成功（老客户端还摆着那颗按钮时会收到明确答复）；
+  // 管理台当年的内容可见性开关走的是另一条路由，同样已下线（见 /api/admin/content/publish 那条）。
+  if (/^\/api\/apps\/([^/]+)\/(unpublish|publish)$/.test(p)) {
+    return send(res, 404, { ok: false, code: "NOT_FOUND", error: "该接口已下线" });
   }
 
   if (appFileR && method === "GET") {
     // 同 id 多分支：?owner=<uid|账号名> 指定分支（缺省 = 主干）——下载寻址的唯一入口（q2）
-    const rb = appResolveBranch(appFileR[1], url.searchParams.get("owner"), true);
+    const rb = appResolveBranch(appFileR[1], url.searchParams.get("owner"));
     const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     // 多版本：?version=x.y.z 回指定版本、缺省回 latestVersion；关开关时该参数一律忽略（旧口径不变）。
@@ -5828,7 +7499,7 @@ async function handle(req, res) {
       return send(res, 404, {
         ok: false,
         code: wantVersion ? "VERSION_NOT_FOUND" : "FILE_MISSING",
-        error: wantVersion ? "该版本不存在或已下架：v" + wantVersion : "文件缺失",
+        error: wantVersion ? "该版本不存在：v" + wantVersion : "文件缺失",
       });
     }
     const buf = fs.readFileSync(loc.path);
@@ -5859,7 +7530,7 @@ async function handle(req, res) {
   }
 
   if (appIconR && method === "GET") {
-    const rb = appResolveBranch(appIconR[1], url.searchParams.get("owner"), true);
+    const rb = appResolveBranch(appIconR[1], url.searchParams.get("owner"));
     const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     const fp = appIconPath(a.id, a.userId) || appIconPath(a.id);
@@ -5868,35 +7539,68 @@ async function handle(req, res) {
   }
 
   // 封面缩略图（应用卡片的 16:9 背景图）：懒生成固定 640×360，落盘缓存（见 appThumbOf）。
-  // 生成不了（认不出的格式 / 源图比目标还小）就**回原图**：卡片照样有图，不报错、不 5xx。
+  // 源 = 上架截图第 1 张（没有截图才退回图标）；生成不了（认不出的格式 / 源图比目标还小）
+  // 就**回原图**（截图第 1 张 → 图标）：卡片照样有图，不报错、不 5xx。
   if (appThumbR && method === "GET") {
-    const rb = appResolveBranch(appThumbR[1], url.searchParams.get("owner"), true);
+    const rb = appResolveBranch(appThumbR[1], url.searchParams.get("owner"));
     const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     const cache = { "Cache-Control": "public, max-age=604800" };
-    const tp = appThumbOf(a);
-    if (tp) return sendBin(res, 200, fs.readFileSync(tp), "image/png", cache);
-    const fp = appIconPath(a.id, a.userId) || appIconPath(a.id);
-    if (!fp) return send(res, 404, { ok: false, error: "无图标" });
-    return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), cache);
+    const src = appCoverSourceOf(a.id, a.userId);
+    const tp = appThumbOf(a, src);
+    /* 读缩略图这一步也兜一层：文件在 appThumbOf 之后被清掉（并发清缓存）不该变成 5xx，
+       读不到就当「没生成出来」，往下走「回原图」那条路。 */
+    if (tp) {
+      try {
+        return sendBin(res, 200, fs.readFileSync(tp), "image/png", cache);
+      } catch (err) {
+        log("GET /api/apps/" + appThumbR[1] + "/thumb 读缩略图失败（回原图）：" + ((err && err.message) || err));
+      }
+    }
+    /* 缩略图生成不了：原样回封面源（先是那张截图，再是图标）—— 卡片不能因为
+       「源图比 640×360 还小 / 格式认不出」就没有封面。截图是 png，mime 按图标同法探测。 */
+    const fp = (src && src.file) || appIconPath(a.id, a.userId) || appIconPath(a.id);
+    if (!fp) return send(res, 404, { ok: false, error: "无封面图（既没有上架截图也没有图标）" });
+    /* 源图刚被换掉 / 被清掉也不 5xx：读不到就如实 404（客户端按备选链退到下一张） */
+    try {
+      return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), cache);
+    } catch (err) {
+      log("GET /api/apps/" + appThumbR[1] + "/thumb 回原图失败：" + ((err && err.message) || err));
+      return send(res, 404, { ok: false, error: "封面源读不到" });
+    }
   }
 
   /* 上架截图单张（静态目录没有 shots/ 这条静态路由时客户端走这里，见 appsShotsUrlsOf）：
-     免登录、只读；序号越界一律 404（不悄悄回第 1 张 —— 那会让画廊出现重复图）。 */
+     免登录、只读；序号越界一律 404（不悄悄回第 1 张 —— 那会让画廊出现重复图）。
+     ?size=list 出长边 1280 的列表小图（列表页用；生成不了就原样回原图，绝不 404）。 */
   if (appShotR && method === "GET") {
-    const rb = appResolveBranch(appShotR[1], url.searchParams.get("owner"), true);
+    const rb = appResolveBranch(appShotR[1], url.searchParams.get("owner"));
     const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     const n = Math.max(1, parseInt(appShotR[2], 10) || 1);
     const files = appShotFiles(a.id, a.userId);
     const fp = files[n - 1];
     if (!fp) return send(res, 404, { ok: false, error: "无这张截图" });
+    const wantList = String(url.searchParams.get("size") || "").toLowerCase() === "list";
+    if (wantList) {
+      try {
+        const parts = imgObjPartsOf(shotObjectOf(fp));
+        if (parts) {
+          let small = imgObjHold(parts.hash, parts.ext, SHOT_LIST_SUFFIX);
+          if (!small) {
+            const dec = makeAppShot(fs.readFileSync(parts.path), { maxEdge: APP_SHOT_LIST_EDGE });
+            if (dec && dec.buf && dec.changed) small = imgObjPut(dec.buf, parts.ext, SHOT_LIST_SUFFIX);
+          }
+          if (small) return sendBin(res, 200, fs.readFileSync(small.path), previewMime(small.path), { "Cache-Control": "public, max-age=86400" });
+        }
+      } catch (_) {}
+    }
     return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "public, max-age=3600" });
   }
 
   if (appOne && method === "GET") {
     // 同 id 多分支：?owner= 指定看哪条分支（缺省 = 主干），item 里附 branches[] 全量（q11）
-    const rb = appResolveBranch(appOne[1], url.searchParams.get("owner"), true);
+    const rb = appResolveBranch(appOne[1], url.searchParams.get("owner"));
     const a = rb.app;
     if (!a) return send(res, 404, { ok: false, error: "应用不存在" });
     return send(res, 200, {
@@ -5941,7 +7645,7 @@ async function handle(req, res) {
     const others = appBranchesOf(id);
     const declaredFork = normalizeForkOf(b.forkOf, "", "");
     if (others.length) {
-      const trunk = appTrunkOf(id, true) || others[0];
+      const trunk = appTrunkOf(id) || others[0];
       const wantParentId = declaredFork && String(declaredFork.id) === id ? String(declaredFork.ownerId) : "";
       const parent = (wantParentId && appBranchOfOwner(id, wantParentId)) || trunk;
       b.forkOf = { id: id, ownerId: String(parent.userId || "") };
@@ -5976,12 +7680,15 @@ async function handle(req, res) {
     } catch (e) {
       return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
     }
-    /* 上架截图（本轮需求：多图落盘；**只认 shots[]**，客户端与服务端同时升级）。
-       逐张按上限校验 + 服务端统一压缩（长边→1280），任何一张不合格整批拒绝。 */
+    /* 上架截图（多图落盘；**只认 shots[]**，客户端与服务端同时升级）。
+       逐张校验 + 服务端统一收边（长边→APP_SHOT_MAX_EDGE），任何一张不合格整批拒绝；
+       数组元素可以是 { sha }（客户端按内容指纹认出云端已有这张图 → 不重发字节）。 */
     const shotsIn = decodeAppShots(b.shotsBase64);
     if (!shotsIn.ok) return send(res, 400, { ok: false, error: shotsIn.errors[0] || "截图无效" });
-    // 配额：全部校验通过之后、落盘之前（契约 §7.5；超限时磁盘与内存都不留半成品）。
-    const quota = appQuotaError(user.id, buf.length, 0, true);
+    /* 配额：全部校验通过之后、落盘之前（契约 §7.5；超限时磁盘与内存都不留半成品）。
+       口径 = 包 + **本次新图片**（{sha} 复用的那部分不重复计，它本来就在云端）。 */
+    const newShotBytes = shotsIn.shots.reduce((n, s) => n + (s && s.reused ? 0 : Number(s && s.bytes) || 0), 0);
+    const quota = appQuotaError(user.id, buf.length + newShotBytes, 0, true);
     if (quota) return send(res, quota.status, quota.body);
 
     // 二次开发来源（可选，契约 §八）：声明了就记，没声明 = 原创
@@ -5990,8 +7697,9 @@ async function handle(req, res) {
     // 开关打开时一版一包 + 最新版镜像；关闭时只写 <id>.zip（旧口径逐字不变）。
     writeAppZipFiles(id, version, buf, user.id);
     if (icon) writeAppIcon(id, user.id, icon);
-    /* 截图落盘（空数组 = 作者没传：把旧的那批清掉，避免「换了一版还在展示老图」） */
-    writeAppShots(id, user.id, shotsIn.shots);
+    /* 截图落盘（空数组 = 作者没传：把旧的那批清掉，避免「换了一版还在展示老图」）。
+       内容寻址：同一张图全站只落一份，别名指过去。 */
+    const stored = storeShots(id, user.id, shotsIn.shots);
     const sha = crypto.createHash("sha256").update(buf).digest("hex");
     const a = {
       id,
@@ -6004,13 +7712,15 @@ async function handle(req, res) {
       entry,
       bytes: buf.length,
       sha256: sha,
+      /* 这一批截图的内容哈希（内容寻址图片库的对象名）：客户端拿它做「云端已有这张图」的判定 */
+      shots: { shas: stored.shas },
       downloads: 0,
       createdAt: now(),
       updatedAt: now(),
     };
     if (forkOf) a.forkOf = forkOf;
     if (appVersionsOn()) {
-      // 契约 §7.2：开关打开时才写 versions / latestVersion / unpublished（+ 下架时间）。
+      // 契约 §7.2：开关打开时才写 versions / latestVersion（可见性位本轮已整体移除）
       a.versions = [
         makeAppVersion({
           version,
@@ -6023,8 +7733,6 @@ async function handle(req, res) {
         }),
       ];
       a.latestVersion = version;
-      a.unpublished = false;
-      a.unpublishedAt = 0;
     }
     db.apps.push(a);
     recordAppDeclaration(req, user, id, version, "create");
@@ -6032,7 +7740,13 @@ async function handle(req, res) {
     /* 镜像：这一分支自己的 <id>__<作者uid>.zip + 老口径 <id>.zip（跨分支最高版，旧链不 404） */
     syncAppZipMirror(a);
     publishStaticApps("新建应用 " + id + "@" + version);
-    return send(res, 200, { ok: true, item: publicApp(a, user), catalog: appCatalogEntry(a) });
+    return send(res, 200, {
+      ok: true,
+      /* 每用户存储上限的当期用量（客户端上架窗显示「已用 / 上限」，不另开接口） */
+      storage: appStorageViewOf(user),
+      item: publicApp(a, user),
+      catalog: appCatalogEntry(a),
+    });
   }
 
   // 更新：仅 owner 可改；覆盖文件（zip / 图标）并让版本 +1（显式传 version 时以传入为准）。
@@ -6071,6 +7785,24 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 400, { ok: false, error: "图标无效：" + (e.message || e) });
       }
+    }
+    /* 上架截图（多图编辑）：三态语义 ——
+       · 键没传（undefined / null）= 截图完全不动；
+       · [] = 清空这一分支的全部截图（clearAppShots）；
+       · 非空数组 = 逐项解析后**整批替换**（顺序 = 数组顺序，客户端拖拽排序靠它）。
+       数组元素允许混合三种形态（客户端手里只有新图的数据，拿不到旧图字节再重传）：
+       · 字符串 = 新图（base64 或 data:image/...;base64,...），走 decodeAppShots 那条口径；
+       · { sha } = 云端已有这张图（内容指纹命中）→ 直接复用对象库那一份，**不重发字节**；
+       · { keep: n }（n 为 0 起的整数）= 沿用保存前这一分支的第 n 张（按保存前顺序）。
+       旧图里没有被 keep / sha 引用的**全部下掉**（含多余的第 9 张）：内容先落对象库、再重排别名，
+       绝不边读边覆盖（别名重排会清目录，对象那一份与它无关，见 resolveAppShotsEdit 的注释）。
+       校验阶段绝不落盘也不改内存：与标题 / 图标 / zip 同一条「先全部校验、再落盘」的纪律。 */
+    const shotsGiven = b.shotsBase64 != null;
+    let shotsNext = null; /* null = 键没传（不动）；[] = 清空；非空 = 这一批的最终对象 */
+    if (shotsGiven) {
+      const edit = resolveAppShotsEdit(b.shotsBase64, appShotFiles(a.id, a.userId), (a.shots && a.shots.shas) || []);
+      if (!edit.ok) return send(res, 400, { ok: false, error: edit.errors[0] || "截图无效", errors: edit.errors });
+      shotsNext = edit.imgs;
     }
     const rawZip = b.zipBase64 != null ? b.zipBase64 : b.fileBase64;
     let zipBuf = null;
@@ -6117,14 +7849,10 @@ async function handle(req, res) {
     } catch (e) {
       return send(res, 400, { ok: false, error: e.message || String(e) });
     }
-    if (appendVersion && appVersionRecords(a).some((v) => v.version === nextVersion)) {
-      return send(res, 409, {
-        ok: false,
-        code: "VERSION_EXISTS",
-        error:
-          "该版本号已存在（v" + nextVersion + "）：不传 version 时服务端按 +1 递增，或显式传一个新版本号",
-      });
-    }
+    /* 同版本号：**就地覆盖这一版**（与 POST /versions 同口径，见那边的注释）——
+       作者改完 bug 想「还叫 1.0.1」时不再被 409 挡回来。 */
+    const dupIdx = appendVersion ? appVersionRecords(a).findIndex((v) => v.version === nextVersion) : -1;
+    const replacing = dupIdx >= 0;
     // 父版本：显式传入优先，否则 = 追加前的 latestVersion（契约 §7.4）。
     let appendParent = prevLatest;
     if (appendVersion && b.parentVersion != null) {
@@ -6139,13 +7867,30 @@ async function handle(req, res) {
         }
       }
     }
-    // 配额：追加版本是净增（镜像不算第二份），覆盖旧包则先释放被覆盖的那一份（契约 §7.5）。
-    if (zipBuf) {
-      const quota = appQuotaError(user.id, zipBuf.length, appendVersion ? 0 : Number(a.bytes) || 0, false);
+    /* 配额：追加版本是净增（镜像不算第二份），覆盖旧包则先释放被覆盖的那一份（契约 §7.5）。
+       本轮口径：**图片也进配额** —— 整批替换时旧图那一套的占用当场释放、新图按实际字节加上
+       （{sha} 复用的那部分不重复计：它本来就在云端占着，只是换个引用）。
+       只改元信息 + 换图的 PATCH（不带 zip）同样要过这一关，否则「改个标题顺手塞 8 张 5MB 图」
+       就绕开了上限。 */
+    const shotOldBytes = shotsGiven ? appShotObjectBytesOf(a) : 0;
+    const shotNewBytes = shotsGiven
+      ? shotsNext.reduce((n, im) => {
+          const hold = imgObjHold(im.sha, im.ext, "");
+          return n + (hold ? hold.bytes : 0);
+        }, 0)
+      : 0;
+    if (zipBuf || shotsGiven) {
+      const addBytes = (zipBuf ? zipBuf.length : 0) + shotNewBytes;
+      const replaceBytes = (zipBuf && !appendVersion ? Number(a.bytes) || 0 : 0) + shotOldBytes;
+      const quota = appQuotaError(user.id, addBytes, replaceBytes, false);
       if (quota) return send(res, quota.status, quota.body);
     }
 
     const zipSha = zipBuf ? crypto.createHash("sha256").update(zipBuf).digest("hex") : "";
+    /* 这次携带的包与线上那一版**内容一样**吗（同号同内容的重传）：只用来给回执
+       `unchanged:true` 与「其实一个字节都没变」的如实提示，不改变任何落盘行为 ——
+       同号重传一律按「就地覆盖」接受，绝不因为「内容没变」回错误。 */
+    const zipUnchanged = !!(zipBuf && appendVersion && zipSha && zipSha === String(a.sha256 || ""));
     let appendRec = null;
     if (zipBuf) {
       if (appendVersion) {
@@ -6166,11 +7911,50 @@ async function handle(req, res) {
       a.sha256 = zipSha;
     }
     if (appendRec) {
-      a.versions = appVersionRecords(a).concat([appendRec]);
+      const recs = appVersionRecords(a).slice();
+      if (replacing) recs[dupIdx] = appendRec;
+      else recs.push(appendRec);
+      a.versions = recs;
       a.latestVersion = nextVersion;
     }
+    /* 本轮两态收敛后这里**什么都不用复位**：带包的这次上传（追加一版 / 同号覆盖）之后，
+       库里有这条记录 = 它就在线上（目录按整库现算，见可见性开关那条注释）。 */
     if (clearIcon) clearAppIcon(a.id, a.userId);
     else if (iconBuf) writeAppIcon(a.id, a.userId, iconBuf);
+    /* 截图落盘：与图标同一阶段（全部校验通过之后）。
+       · 追加一版（带 zip）：**追加 + 去重**，保留这条分支已有的图 —— 与 POST /versions 同口径；
+         客户端带的是本次新加的图（旧图没有字节可重传），整批替换会把旧图删光（用户报的那条）。
+       · 只改元信息（编辑窗，带 {keep:n} / {sha} 指代 / [] 清空）：仍走整批替换 ——
+         那是作者显式增删排序。
+       缺键时一个字节都不碰（作者只改标题不该把截图弄丢）。
+       写完顺手作废封面缩略图缓存：封面源就是截图第 1 张，换图不换新缩略图 = 卡片还是老图。 */
+    if (shotsGiven) {
+      if (appendVersion) {
+        if (shotsNext.length) {
+          const dec = decodeAppShots(b.shotsBase64);
+          if (!dec.ok) return send(res, 400, { ok: false, error: dec.errors[0] || "截图无效" });
+          const ap = appendAppShots(a.id, a.userId, dec.shots, a);
+          if (!ap.ok) return send(res, 400, { ok: false, code: "TOO_MANY_SHOTS", error: ap.errors[0] || "截图过多" });
+        }
+      } else if (shotsNext.length) {
+        /* 整批替换：这里是**唯一**会清空截图目录再重排的地方，所以「项不合格」必须在这里收住 ——
+           别名重排一旦开始清目录，任何一项写失败都会连带整批图一起没掉（2026-10 修的那次就是这样丢的：
+           resolveAppShotsEdit 用 `sha` 报指纹、writeShotAliases 读 `hash`，整批被跳过 → 目录清空 + 回执说成功）。 */
+        try {
+          storeShots(a.id, a.userId, shotsNext);
+        } catch (e) {
+          if (e && e.shotsIncomplete) {
+            return send(res, 500, { ok: false, code: "SHOTS_SOURCE_MISSING", error: (e && e.message) || "截图来源缺失（旧图未被改动）" });
+          }
+          throw e;
+        }
+      } else {
+        clearAppShots(a.id, a.userId);
+      }
+      clearAppThumb(a.id, a.userId);
+    }
+    /* 这一批截图的内容哈希名单（含「只改元信息没动图」的情况：原样重算一遍，永不写坏） */
+    a.shots = { shas: appShotEntriesOf(a.id, a.userId, a).map((e) => e.sha) };
 
     if (nextTitle != null) a.title = nextTitle;
     if (nextDesc != null) a.description = nextDesc;
@@ -6195,6 +7979,10 @@ async function handle(req, res) {
       ok: true,
       bumped,
       ownerId: a.userId,
+      replaced: replacing, // true = 覆盖了这一分支已存在的同号版本（客户端据此提示「已覆盖 vX」）
+      /* 同号覆盖时这次的包与线上那一版**内容一模一样**（sha256 相同）：如实回一个标记，
+         客户端可以说清「其实一个字节都没变」，绝不因此回错误 —— 同号重传一律接受。 */
+      unchanged: zipUnchanged,
       branches: appBranchViewOf(a.id, user),
       item: publicApp(a, user),
       catalog: appCatalogEntry(a),
@@ -6216,31 +8004,21 @@ async function handle(req, res) {
     if (a.userId !== user.id && !isAdmin(user)) {
       return send(res, 403, { ok: false, error: "只能删除自己的应用" });
     }
-    const idx = (db.apps || []).indexOf(a);
-    const owner = db.users.find((u) => u.id === a.userId) || user;
-    await applyUserPatch(owner.id, {
-      downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (a.downloads || 0)),
-    });
-    db.apps.splice(idx, 1);
-    /* 这一分支的文件：自己的镜像 + 自己那份版本包（别人的包一个都不动）。
-       老落点 <id>/<版本>.zip 只有确认没有别的分支还用这个版本号时才删。 */
-    try { fs.unlinkSync(appOwnerZipPath(a.id, a.userId)); } catch {}
-    const rest = appBranchesOf(a.id);
-    for (const v of appVersionRecords(a)) {
-      const p = appBranchVersionZipPath(a.id, a.userId, v.version);
-      try { fs.unlinkSync(p); } catch {}
-      const sharedUsed = rest.some((x) => appVersionRecords(x).some((r) => r.version === v.version));
-      if (!sharedUsed) {
-        try { fs.unlinkSync(appVersionZipPath(a.id, v.version)); } catch {}
-      }
-    }
-    /* 这一分支自己的版本子目录（空的话顺手收掉；还有别人的东西就留着） */
-    try { fs.rmdirSync(path.join(appVersionDir(a.id), a.userId)); } catch {}
-    clearAppIcon(a.id, a.userId);
+    /* 与「删掉最后一个版本 = 彻底删除」共用同一份实现（deleteAppBranch）：
+       记录 + 包 + 图标 + 截图 + 封面缩略图 + 静态目录（含空目录）+ 无主图片对象一次清完。
+       原来这里与「删光版本」各写一份，两份一漂移就会出现「记录没了、文件还在」。
+       元信息快照（版本列表 / 删除时最高版）在记录还活着的时候取，供已删除留痕用。 */
+    const del = await deleteAppBranch(a, appBranchDeleteMeta(a));
     await saveDb();
     syncAppZipMirrorGlobal(a.id);
     publishStaticApps("删除分支 " + a.id + "（" + appOwnerNameOf(a.userId) + "）");
-    return send(res, 200, { ok: true, id: a.id, ownerId: a.userId, branches: appBranchViewOf(a.id, user) });
+    console.log(
+      "[mtnode-store] 删除分支 " + a.id + "/" + a.userId + "：静态文件 " +
+        ((del.removed && del.removed.staticFiles) || []).length + " 个 / 空目录 " +
+        ((del.removed && del.removed.staticDirs) || []).length + " 个 / 回收无主图片 " +
+        ((del.imgGc && del.imgGc.removed) || 0) + " 个",
+    );
+    return send(res, 200, { ok: true, id: a.id, ownerId: a.userId, deleted: true, branches: appBranchViewOf(a.id, user) });
   }
 
   // —— 论坛（长期保留）——
@@ -7144,8 +8922,109 @@ async function handle(req, res) {
         isAdmin: isAdmin(u),
         adminEligible: adminEligible(u),
         createdAt: u.createdAt,
+        /* 每用户应用存储上限（本轮需求：后台逐个用户可调）：
+           已用 = 应用包 + 截图 + 图标（截图按内容去重）；limit 为 null = 不限；
+           quota 里只回**管理员单独设过**的值（null = 跟随全局默认，界面据此显示「默认 50MB」）。 */
+        storage: appStorageViewOf(u),
+        quota: {
+          bytes: userQuotaLimitOf(u, "bytes", null),
+          apps: userQuotaLimitOf(u, "apps", null),
+        },
       })),
     });
+  }
+
+  /* 改某个用户的应用存储上限（本轮需求：后台允许逐个用户调整）。
+   * body：{ bytesLimit, appsLimit }，取值三种 ——
+   *   · 数字 = 上限（bytesLimit 是字节、appsLimit 是条数）
+   *   · "unlimited" = 不限（内部存 -1）
+   *   · null / 缺省 / 0 / "" = 清掉单独设置（回到全局默认）
+   * 只改这两个字段，不动余额 / 身份 / 其它任何用户字段。 */
+  const adminQuotaR = /^\/api\/admin\/users\/([^/]+)\/quota$/.exec(p);
+  if (adminQuotaR && method === "POST") {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+    const key = decodeURIComponent(adminQuotaR[1]);
+    const target = (db.users || []).find((u) => u.id === key) || findUserByName(key);
+    if (!target) return send(res, 404, { ok: false, code: "USER_NOT_FOUND", error: "账号不存在" });
+    const b = await jsonBody();
+    if (b.bytesLimit === undefined && b.appsLimit === undefined) {
+      return send(res, 400, { ok: false, error: "至少要带一个字段：bytesLimit（存储上限，字节）或 appsLimit（应用条数上限）" });
+    }
+    /* 归一化：数字 → 取整（bytes 至少 1MB、条数至少 1）；"unlimited" → -1；其它（null/""/0）→ 清掉 */
+    const norm = (v, min, label) => {
+      if (v == null || v === "" || v === 0 || v === "0") return { ok: true, value: 0 };
+      if (String(v).toLowerCase() === "unlimited" || v === -1) return { ok: true, value: -1 };
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return { ok: false, error: label + "必须是正数、\"unlimited\"，或留空（回到默认）" };
+      return { ok: true, value: Math.max(min, Math.round(n)) };
+    };
+    const next = { bytes: null, apps: null };
+    if (b.bytesLimit !== undefined) {
+      const r = norm(b.bytesLimit, 1024 * 1024, "存储上限");
+      if (!r.ok) return send(res, 400, { ok: false, error: r.error });
+      next.bytes = r.value;
+    }
+    if (b.appsLimit !== undefined) {
+      const r = norm(b.appsLimit, 1, "应用条数上限");
+      if (!r.ok) return send(res, 400, { ok: false, error: r.error });
+      next.apps = r.value;
+    }
+    const quota = Object.assign({}, target.quota && typeof target.quota === "object" ? target.quota : {});
+    const changed = { bytes: false, apps: false };
+    for (const k of ["bytes", "apps"]) {
+      if (next[k] === null) continue;
+      if (next[k] === 0) {
+        if (quota[k] != null) {
+          delete quota[k];
+          changed[k] = true;
+        }
+        continue;
+      }
+      if (Number(quota[k]) !== next[k]) {
+        quota[k] = next[k];
+        changed[k] = true;
+      }
+    }
+    if (Object.keys(quota).length) target.quota = quota;
+    else delete target.quota;
+    await saveDb();
+    console.log(
+      "[admin] 应用存储上限 " + (target.username || target.id) + " by " + (admin.user.username || admin.user.id) +
+        "：存储 " + (next.bytes === null ? "不变" : next.bytes < 0 ? "不限" : fmtBytes(next.bytes)) +
+        " · 条数 " + (next.apps === null ? "不变" : next.apps < 0 ? "不限" : next.apps + " 个"),
+    );
+    return send(res, 200, {
+      ok: true,
+      changed: changed,
+      quota: {
+        bytes: userQuotaLimitOf(target, "bytes", null),
+        apps: userQuotaLimitOf(target, "apps", null),
+      },
+      item: {
+        id: target.id,
+        username: target.username,
+        nickname: target.nickname,
+        storage: appStorageViewOf(target),
+        quota: {
+          bytes: userQuotaLimitOf(target, "bytes", null),
+          apps: userQuotaLimitOf(target, "apps", null),
+        },
+      },
+    });
+  }
+
+  /* 清理无主图片对象（本轮需求：内容寻址图片库的回收入口；**不自动 GC**，只在这个按钮里做）。
+   * 语义：删掉「没有任何应用记录引用」的图片对象 —— 正在被引用的一个都不动。 */
+  if (method === "POST" && p === "/api/admin/app-objects/gc") {
+    const admin = requireAdmin(req, res);
+    if (!admin) return;
+    const r = imgObjectsGc();
+    console.log(
+      "[admin] 清理无主图片 by " + (admin.user.username || admin.user.id) +
+        "：扫描 " + r.scanned + " · 清理 " + r.removed + " · 释放 " + fmtBytes(r.freedBytes),
+    );
+    return send(res, 200, Object.assign({ ok: true, note: "只删没有任何应用引用的图片对象，正在用的一个都没动" }, r));
   }
 
   // 人工调账（赠送 / 扣减）：备注必填，全部进流水。
@@ -7335,9 +9214,8 @@ async function handle(req, res) {
           String(r.ownerId || "").toLowerCase().includes(author),
       );
     }
-    if (kind === "app" && (status === "published" || status === "unpublished")) {
-      rows = rows.filter((r) => (status === "unpublished" ? r.unpublished : !r.unpublished));
-    }
+    /* 应用没有第二个「状态」可筛（本轮两态收敛：列表里的每一条都在线上，被删的已不在库里），
+       所以 status 对应用不再过滤；模板 / 技能的状态位照旧往下走。 */
     if (kind === "skill" && (status === "official" || status === "unofficial")) {
       rows = rows.filter((r) => (status === "official" ? r.official : !r.official));
     }
@@ -7410,7 +9288,6 @@ async function handle(req, res) {
       ownerName: appOwnerNameOf(app.userId),
       title: app.title || app.id,
       latestVersion: latest,
-      unpublished: !!app.unpublished,
       versionsOn: appVersionsOn(),
       items: items,
     });
@@ -7442,7 +9319,7 @@ async function handle(req, res) {
         return send(res, 404, {
           ok: false,
           code: wantVersion ? "VERSION_NOT_FOUND" : "FILE_MISSING",
-          error: wantVersion ? "该版本不存在或已下架：v" + wantVersion : "应用包缺失",
+          error: wantVersion ? "该版本不存在：v" + wantVersion : "应用包缺失",
         });
       }
       const buf = fs.readFileSync(loc.path);
@@ -7522,28 +9399,15 @@ async function handle(req, res) {
     return sendBin(res, 200, fs.readFileSync(fp), previewMime(fp), { "Cache-Control": "no-store" });
   }
 
-  // 上架 / 下架（只有应用有下架位；模板 / 技能照现状没有这一位）。
+  /* 管理台内容可见性开关（POST /api/admin/content/publish）**已整体移除**：
+     本轮产品口径收敛为「在线上 / 完全被删除」两态，没有第三条可见性位 ——
+     应用要不要留在线上由「作者是否删除」唯一决定，管理台不再有单独的上下架动作。
+     旧路径照作者侧那条同一写法如实回 404 +「该接口已下线」（老管理台页面还摆着按钮时
+     会收到明确答复，绝不静默成功）；鉴权口径不动，仍先过 requireAdmin。 */
   if (method === "POST" && p === "/api/admin/content/publish") {
     const a = requireAdmin(req, res);
     if (!a) return;
-    const b = await jsonBody();
-    const found = adminContentFind("app", b.id, b.ownerId || b.owner);
-    if (!found || !found.row) {
-      return send(res, found && found.branchRequired ? 400 : 404, {
-        ok: false,
-        code: found && found.branchRequired ? "BRANCH_REQUIRED" : "APP_NOT_FOUND",
-        error: found && found.branchRequired ? "这个 id 下有 " + found.branches + " 个作者分支：请指明 ownerId（应用身份 = id + 作者 uid，管理台不会替你挑一条）" : "应用不存在",
-      });
-    }
-    const app = found.row;
-    const unpublish = b.unpublish !== false; // 缺省 = 下架
-    app.unpublished = unpublish;
-    app.unpublishedAt = unpublish ? now() : 0;
-    app.updatedAt = now();
-    await contentAuditPush(a.user, unpublish ? "unpublish" : "publish", "app", adminAppRow(app), unpublish ? "管理台下架" : "管理台重新上架");
-    syncAppZipMirrorGlobal(app.id);
-    publishStaticApps((unpublish ? "管理台下架 " : "管理台重新发布 ") + app.id + "（" + appOwnerNameOf(app.userId) + "）");
-    return send(res, 200, { ok: true, item: adminAppRow(app), counts: adminContentCounts() });
+    return send(res, 404, { ok: false, code: "NOT_FOUND", error: "该接口已下线" });
   }
 
   // 编辑元信息（标题 / 简介 / 标签 / 图标 / 技能版本号与官方标记）。
@@ -7635,29 +9499,29 @@ async function handle(req, res) {
     if (kind === "app") {
       const app = found.row;
       const row = adminAppRow(app);
-      const idx = (db.apps || []).indexOf(app);
-      const owner = db.users.find((u) => u.id === app.userId);
-      if (owner) {
-        await applyUserPatch(owner.id, {
-          downloadsReceived: Math.max(0, (owner.downloadsReceived || 0) - (app.downloads || 0)),
-        });
-      }
-      db.apps.splice(idx, 1);
-      try { fs.unlinkSync(appOwnerZipPath(app.id, app.userId)); } catch {}
-      const rest = appBranchesOf(app.id);
-      for (const v of appVersionRecords(app)) {
-        try { fs.unlinkSync(appBranchVersionZipPath(app.id, app.userId, v.version)); } catch {}
-        const sharedUsed = rest.some((x) => appVersionRecords(x).some((r) => r.version === v.version));
-        if (!sharedUsed) {
-          try { fs.unlinkSync(appVersionZipPath(app.id, v.version)); } catch {}
-        }
-      }
-      try { fs.rmdirSync(path.join(appVersionDir(app.id), app.userId)); } catch {}
-      clearAppIcon(app.id, app.userId);
-      await contentAuditPush(a.user, "delete", "app", row, "删整条分支（" + row.versionCount + " 个版本）");
+      /* 删除前的元信息快照（版本列表 / 删除时最高版）：审计与已删除留痕都要它，
+         记录一旦删掉就再也算不出来了（见 appBranchDeleteMeta）。 */
+      const meta = appBranchDeleteMeta(app);
+      /* 与作者侧「删除」「删掉最后一个版本」共用同一份实现（deleteAppBranch）：
+         记录 + 包 + 图标 + 截图 + 封面缩略图 + 静态目录（含空目录）+ 无主图片对象一次清完。
+         管理台原来也是各写一份 —— 几份一漂移就会出现「记录没了、文件还在」这种痕迹。 */
+      const del = await deleteAppBranch(app, meta);
+      await contentAuditPush(
+        a.user,
+        "delete",
+        "app",
+        row,
+        "删整条分支（版本 " + (meta.versions.join(" / ") || "—") + " · 删除时最高版 " + (meta.latestVersion || "—") + "）",
+      );
       syncAppZipMirrorGlobal(app.id);
       publishStaticApps("管理台删除分支 " + app.id + "（" + appOwnerNameOf(app.userId) + "）");
-      return send(res, 200, { ok: true, kind: kind, id: app.id, ownerId: app.userId, counts: adminContentCounts() });
+      console.log(
+        "[mtnode-store] 管理台删除分支 " + app.id + "/" + app.userId + "：静态文件 " +
+          ((del.removed && del.removed.staticFiles) || []).length + " 个 / 空目录 " +
+          ((del.removed && del.removed.staticDirs) || []).length + " 个 / 回收无主图片 " +
+          ((del.imgGc && del.imgGc.removed) || 0) + " 个",
+      );
+      return send(res, 200, { ok: true, kind: kind, id: app.id, ownerId: app.userId, deleted: true, counts: adminContentCounts() });
     }
     if (kind === "template") {
       const t = found.row;
@@ -7695,7 +9559,10 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, kind: kind, id: s.id, counts: adminContentCounts() });
   }
 
-  // 删应用的某一个版本（管理员视角；全删光时服务端会自动下架，与公开口径一致）。
+  /* 删应用的某一个版本（管理员视角；两态口径与本轮作者侧一致）：
+     · 还剩版本 → 这条分支照旧**在线上**，最高版指向剩余最高版（包与静态目录照常刷新）；
+     · 删到零版本 → 走 deleteAppBranch **彻底删除**整条分支，回 deleted:true
+       （与作者侧「删掉最后一个版本」、管理台「删除」同一份实现，口径永远一致）。 */
   if (method === "POST" && p === "/api/admin/content/delete-version") {
     const a = requireAdmin(req, res);
     if (!a) return;
@@ -7713,6 +9580,10 @@ async function handle(req, res) {
     const recs = appVersionRecords(app).slice();
     const vi = recs.findIndex((v) => v.version === want);
     if (vi < 0) return send(res, 404, { ok: false, code: "VERSION_NOT_FOUND", error: "该版本不存在：v" + want });
+    /* 删除前的快照：这一版可能正好是**最后一版**（下面要走彻底删除 + 留痕），
+       记录与版本列表一旦改过就再也算不出来了（见 appBranchDeleteMeta）。 */
+    const rowBefore = adminAppRow(app);
+    const metaBefore = appBranchDeleteMeta(app);
     recs.splice(vi, 1);
     app.versions = recs;
     try { fs.unlinkSync(appBranchVersionZipPath(app.id, app.userId, want)); } catch {}
@@ -7720,23 +9591,46 @@ async function handle(req, res) {
       try { fs.unlinkSync(appVersionZipPath(app.id, want)); } catch {}
     }
     if (!recs.length) {
-      app.latestVersion = "";
-      app.unpublished = true;
-      app.unpublishedAt = now();
-      app.bytes = 0;
-      app.sha256 = "";
-      app.version = "";
-      try { fs.unlinkSync(appOwnerZipPath(app.id, app.userId)); } catch {}
+      /* 全删光 = **这一分支彻底不存在**（管理台原来只置一个可见性位，界面上还留着「已下架」——
+         管理员以为删干净了，云端却还占着配额与目录；本轮收敛为两态的直接原因就是这个）。
+         留痕：审计行带删除前的元信息（含版本列表与删除时最高版）；同一 id 下还有别的
+         作者分支时 deleteAppBranch 另写一条已删除留痕（见 appDeletedLedgerPush）。 */
+      const del = await deleteAppBranch(app, metaBefore);
       syncAppZipMirrorGlobal(app.id);
-    } else {
-      const top = recs.reduce((best, v) => (compareVersions(v.version, best.version) > 0 ? v : best), recs[0]);
-      app.latestVersion = top.version;
-      app.version = top.version;
-      app.bytes = Number(top.bytes) || 0;
-      app.sha256 = top.sha256 || "";
-      if (top.entry) app.entry = top.entry;
-      syncAppZipMirror(app);
+      await contentAuditPush(
+        a.user,
+        "delete-version",
+        "app",
+        rowBefore,
+        "删最后一版 = 彻底删除整条分支（版本 " + (metaBefore.versions.join(" / ") || "—") +
+          " · 删除时最高版 " + (metaBefore.latestVersion || "—") + "）",
+      );
+      publishStaticApps("管理台删最后一版 = 彻底删除 " + app.id + "（" + appOwnerNameOf(app.userId) + "）");
+      console.log(
+        "[mtnode-store] 管理台删最后一版 → 彻底删除分支 " + app.id + "/" + app.userId +
+          "：静态文件 " + ((del.removed && del.removed.staticFiles) || []).length +
+          " 个 / 空目录 " + ((del.removed && del.removed.staticDirs) || []).length +
+          " 个 / 回收无主图片 " + ((del.imgGc && del.imgGc.removed) || 0) + " 个",
+      );
+      return send(res, 200, {
+        ok: true,
+        id: app.id,
+        ownerId: app.userId,
+        /* deleted:true = 这一版是最后一版，整条分支已被彻底删除（老管理台据此说「云端已无这个应用」） */
+        deleted: true,
+        latestVersion: "",
+        remaining: 0,
+        counts: adminContentCounts(),
+      });
     }
+    /* 还有剩余版本：删的是最新版 → latestVersion 指向剩余最高版，并把镜像刷成它。 */
+    const top = recs.reduce((best, v) => (compareVersions(v.version, best.version) > 0 ? v : best), recs[0]);
+    app.latestVersion = top.version;
+    app.version = top.version;
+    app.bytes = Number(top.bytes) || 0;
+    app.sha256 = top.sha256 || "";
+    if (top.entry) app.entry = top.entry;
+    syncAppZipMirror(app);
     app.updatedAt = now();
     await contentAuditPush(a.user, "delete-version", "app", adminAppRow(app), "删版本 v" + want);
     publishStaticApps("管理台删版本 " + app.id + "@" + want);
@@ -7744,6 +9638,7 @@ async function handle(req, res) {
       ok: true,
       id: app.id,
       ownerId: app.userId,
+      deleted: false,
       latestVersion: app.latestVersion || "",
       remaining: appVersionRecords(app).length,
       counts: adminContentCounts(),
@@ -7754,7 +9649,7 @@ async function handle(req, res) {
   if (method === "POST" && p === "/api/admin/content/republish") {
     const a = requireAdmin(req, res);
     if (!a) return;
-    const out = publishStaticApps("管理台手动重发（" + (a.user.username || a.user.id) + "）");
+    const out = publishStaticApps("管理台手动重发（" + (a.user.username || a.user.id) + "）", { force: true });
     const status = staticAppsStatus();
     await contentAuditPush(a.user, "republish", "app", { id: "-", title: "静态目录" }, "手动重发静态目录");
     return send(res, 200, {
@@ -7817,15 +9712,74 @@ setInterval(async () => {
   }
 }, ORDER_SWEEP_MS);
 
+/* ── 启动自愈：清掉盘上存量的「已下架」可见性位（本轮两态收敛的一次性迁移）────────────
+ * 本轮起应用只有两态：**在线上 / 完全被删除** —— 旧可见性位（下面这两个字段名）已从库、
+ * 接口与界面里整体移除。盘上还可能留着当年下架过的历史条目，它们的记录里带着这一位：
+ *   · 字段已经没人读，但不清掉就是一条半态记录（体检 / 留痕里全是噪音）；
+ *   · 更实在的一点：这一位是「不进目录」的判据，历史条目会被目录漏掉 ——
+ *     线上 sudoku 这类被管理台下架过的条目正是这么消失的，清掉即自然回到目录。
+ * 口径：
+ *   · 只删这两个字段，别的字段一个不碰；
+ *   · 记日志 + 逐条写 contentAudit（谁 / 何时 / 对哪条做了什么，管理台留痕页查得到）；
+ *   · **必须在首次 publishStaticApps 之前跑**（见 server.listen 里的调用顺序）：
+ *     启动那一发就是把线上目录刷成库里的真实状态，先愈合再发，目录一次就正确。
+ * 返回清掉的条数（供日志与回归断言）。 */
+const LEGACY_HIDDEN_KEYS = ["unpublished", "unpublishedAt"];
+
+async function appLegacyVisibilityHealOnce() {
+  const hit = (db.apps || []).filter((a) => a && LEGACY_HIDDEN_KEYS.some((k) => k in a));
+  if (!hit.length) return 0;
+  const list = contentAuditList();
+  for (const a of hit) {
+    for (const k of LEGACY_HIDDEN_KEYS) delete a[k];
+    list.unshift({
+      id: "ca_" + crypto.randomBytes(6).toString("hex"),
+      at: now(),
+      userId: "system",
+      username: "系统（启动自愈）",
+      action: "update",
+      kind: "app",
+      targetId: String(a.id || ""),
+      targetOwnerId: String(a.userId || ""),
+      targetTitle: String(a.title || a.id || ""),
+      detail: "清掉存量「已下架」可见性位（应用状态已收敛为在线上 / 完全删除两态）",
+    });
+  }
+  if (list.length > CONTENT_AUDIT_MAX) list.length = CONTENT_AUDIT_MAX;
+  console.log(
+    "[mtnode-store] 启动自愈：清掉存量「已下架」可见性位 " + hit.length + " 条（" +
+      hit.map((a) => a.id + "/" + a.userId).join("、") + "）",
+  );
+  await saveDb();
+  return hit.length;
+}
+
 const server = http.createServer((req, res) => {
+  const _t0 = process.hrtime.bigint();
+  const _path = String(req.url || "").split("?")[0];
+  res.on("finish", () => {
+    try {
+      slowNote(req.method || "GET", _path, Number(process.hrtime.bigint() - _t0) / 1e6);
+    } catch (_) {}
+  });
   handle(req, res).catch((e) => {
     const status = e.status || (String(e.message).includes("too large") ? 413 : 500);
+    /* 5xx 一律留一条带栈的日志：以前只回客户端、服务器侧不留痕，线上排查全靠猜。 */
+    if (status >= 500) {
+      console.error("[mtnode-store] " + (req.method || "GET") + " " + _path + " 失败：" + ((e && e.stack) || e));
+    }
     if (!res.headersSent) send(res, status, { ok: false, error: e.message || String(e) });
   });
 });
 
 server.listen(PORT, HOST, () => {
   console.log("[mtnode-store] http://" + HOST + ":" + PORT);
+  /* 存量自愈必须排在**首次发布之前**（顺序是语义的一部分，见 appLegacyVisibilityHealOnce）：
+     它只改内存里的记录（同步完成），紧接着那一发「启动」发布就是正确的线上目录；
+     写库 / 写留痕的那一步异步进行，失败只记日志、不拦启动。 */
+  appLegacyVisibilityHealOnce().catch((e) => {
+    console.error("[mtnode-store] 启动自愈失败（存量可见性位仍留在盘上，下次启动会再试）：" + ((e && e.message) || e));
+  });
   // 启动即发一次静态目录：紧接着的每次应用变更也会发（publishStaticApps），
   // 这条只负责「部署后把线上目录刷成库里的真实状态」——正好补上以前要靠人工跑第②步的缺口。
   publishStaticApps("启动");
@@ -7905,10 +9859,76 @@ server.listen(PORT, HOST, () => {
       " · 计费单位 元（文本 元/百万 token · 图像 元/张）" +
       " · 配置来源 " + rd.configSource + (rd.configSource === "db" ? "（管理台可改，保存即热生效）" : "（默认 + env 缺省）") +
       " · 改动留痕 " + rd.auditRecords + " 条 · 用量明细 " + rd.usageRecords + " 条" +
+      " · 热表文件 " + (function () { try { const h = hotStats(); return h ? (h.relayUsage.rows + " 条用量/" + Math.round(h.relayUsage.bytes / 1024) + "KB + " + h.rechargeLedger.rows + " 条流水/" + Math.round(h.rechargeLedger.bytes / 1024) + "KB" + (h.relayUsage.parseErrors || h.rechargeLedger.parseErrors ? "（半截行 " + (h.relayUsage.parseErrors + h.rechargeLedger.parseErrors) + " 已跳过）" : "")) : "-"; } catch (_) { return "-"; } })() +
       (rd.configFile ? " · 兼容配置文件 " + rd.configFile : ""),
   );
   console.log("[mtnode-store] relay 对外 Base URL（下发客户端）: " + RELAY_PUBLIC_BASE);
   if (rd.upstreams.some((u) => !u.configured)) {
     console.warn("[mtnode-store] relay 有上游未配 Key：对应模型的 /relay/v1 调用一律回 503 relay_not_configured（不静默假成功）—— 可在管理台「中转服务」里补齐");
   }
+  nginxLimitAudit();
 });
+
+/* ── nginx 限位对账自检（本轮新增的防再犯卡口）────────────────────────────────────
+ * 为什么需要它：2026-10-09 那次「应用上传卡在上传中」的根因就是**两个数字漂移**——
+ * 服务端早已把上架链路的体量上限放宽到 MAX_BODY_APP_UPLOAD(96MB)，线上 nginx 的
+ * `/mtnode/store-api/` 却还留着 `client_max_body_size 40m`，于是稍大的包在入口就被掐；
+ * 同时 `proxy_read_timeout 120s` 比客户端自己的 600s 短，慢网下必被提前断开。
+ * 两边谁都没发现，直到用户报障。所以启动时把 nginx 里那三个数字读出来与服务端常量对账，
+ * 不一致就**大声告警**（只读、只记日志，不改任何配置 —— 改 nginx 永远走人工/补丁脚本）。
+ * 读不到配置文件（开发态 / 非 root / 自建站没有这个文件）时静默跳过，不打扰本地开发。 */
+function nginxLimitAudit() {
+  const files = [
+    process.env.MTNODE_NGINX_CONF || "",
+    "/etc/nginx/sites-available/mt-ai-router.conf",
+  ].filter(Boolean);
+  let text = "";
+  let used = "";
+  for (const f of files) {
+    try {
+      text = fs.readFileSync(f, "utf8");
+      used = f;
+      break;
+    } catch (_) {}
+  }
+  if (!text) return null;
+  const at = text.indexOf("location ^~ /mtnode/store-api/ {");
+  if (at < 0) return null;
+  /* 只取 store-api 这一段（到下一个 location 或文件末尾），免得把 relay 那段的长超时读进来 */
+  const rest = text.slice(at);
+  const nextLoc = rest.indexOf("\n    location ", 10);
+  const blockText = nextLoc > 0 ? rest.slice(0, nextLoc) : rest;
+  const num = (re) => {
+    const m = re.exec(blockText);
+    if (!m) return null;
+    const v = parseFloat(m[1]);
+    if (!Number.isFinite(v)) return null;
+    return /m$/i.test(m[1]) || /m$/i.test(m[0]) ? v * 1024 * 1024 : v;
+  };
+  const got = {
+    bodyCap: num(/client_max_body_size\s+(\d+[km]?)/i),
+    readTimeout: num(/proxy_read_timeout\s+(\d+)s?/i),
+    sendTimeout: num(/proxy_send_timeout\s+(\d+)s?/i),
+  };
+  const want = { bodyCap: MAX_BODY_APP_UPLOAD, readTimeout: 600, sendTimeout: 600 };
+  const bad = [];
+  if (got.bodyCap == null) bad.push("缺 client_max_body_size");
+  else if (got.bodyCap < want.bodyCap) bad.push("client_max_body_size=" + Math.round(got.bodyCap / 1024 / 1024) + "m < 服务端 " + Math.round(want.bodyCap / 1024 / 1024) + "m");
+  if (got.readTimeout == null) bad.push("缺 proxy_read_timeout");
+  else if (got.readTimeout < want.readTimeout) bad.push("proxy_read_timeout=" + got.readTimeout + "s < " + want.readTimeout + "s");
+  if (got.sendTimeout == null) bad.push("缺 proxy_send_timeout");
+  else if (got.sendTimeout < want.sendTimeout) bad.push("proxy_send_timeout=" + got.sendTimeout + "s < " + want.sendTimeout + "s");
+  if (bad.length) {
+    console.warn(
+      "[mtnode-store][warn] nginx 限位与服务端不一致（" + used + " 的 /mtnode/store-api/）：" + bad.join(" / ") +
+        "。后果：稍大的应用包或截图会在 nginx 入口被掐，客户端表现是「上传中卡住」。" +
+        "修法：python store-saas/patch-nginx.py && nginx -t && systemctl reload nginx（补丁脚本会就地改这段）",
+    );
+  } else {
+    console.log(
+      "[mtnode-store] nginx 限位对账 ✓（" + used + "：client_max_body_size " +
+        Math.round(got.bodyCap / 1024 / 1024) + "m · 读写超时 " + got.readTimeout + "s / " + got.sendTimeout + "s）",
+    );
+  }
+  return { file: used, got: got, want: want, ok: !bad.length, problems: bad };
+}

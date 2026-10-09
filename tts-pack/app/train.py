@@ -308,6 +308,7 @@ def _audio_duration(path: Path) -> float:
                 "-of", "default=noprint_wrappers=1:nokey=1", str(path),
             ],
             capture_output=True, text=True, timeout=30,
+            creationflags=_proc_flags(),
         )
         if r.returncode == 0:
             try:
@@ -462,7 +463,7 @@ def _has_nvidia_gpu() -> bool:
         if not p:
             continue
         try:
-            r = subprocess.run([p], capture_output=True, timeout=10)
+            r = subprocess.run([p], capture_output=True, timeout=10, creationflags=_proc_flags())
             return r.returncode == 0
         except Exception:
             return False
@@ -627,6 +628,7 @@ def _ensure_train_deps() -> None:
         return subprocess.run(
             [sys.executable, "-m", "pip", "install", "--target", str(_PYLIBS)] + args,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
+            creationflags=_proc_flags(),
         )
 
     if not torch_ok:
@@ -752,6 +754,7 @@ def _kill_tree(proc: subprocess.Popen | None) -> None:
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_proc_flags(),
         )
     else:
         try:
@@ -2766,6 +2769,7 @@ def _convert_to_wav(src: Path, dst: Path, sr: int = TARGET_SR) -> None:
     r = subprocess.run(
         [ff, "-y", "-i", str(src), "-ar", str(int(sr)), "-ac", "1", str(dst)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=_proc_flags(),
     )
     if r.returncode != 0 or not dst.is_file():
         raise RuntimeError(f"ffmpeg convert failed: {src.name}")

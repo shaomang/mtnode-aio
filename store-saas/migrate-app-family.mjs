@@ -210,7 +210,7 @@ function main() {
       updatedAt: new Date().toISOString(),
       feed: "http://mt-agent.com/mtnode/apps",
       apps: apps
-        .filter((a) => a && !a.unpublished)
+        .filter((a) => a)
         .sort((x, y) => {
           const d = String(x.id || "").localeCompare(String(y.id || ""), "en");
           if (d) return d;

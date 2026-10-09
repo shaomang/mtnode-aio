@@ -134,13 +134,14 @@ function fdPaintLabels() {
   const ui = FD_BAR.ui;
   if (!ui) return;
   ui.input.placeholder = I18n.t("在本输入框内查找");
-  ui.input.title = I18n.t("在本输入框内查找");
-  ui.bar.title = I18n.t("查找（Ctrl+F）：焦点在输入框里时，在框内高亮并定位文字");
-  ui.prev.title = I18n.t("上一个（Shift+Enter / ↑）");
+  /* 本轮提示去重：输入框的 placeholder 已经把用途说清，不再另挂逐字相同的 title；
+     框身的 title 改与输入框同一句「在本输入框内查找」（键位只在脚注讲一次）。 */
+  ui.bar.title = I18n.t("在本输入框内查找");
+  ui.prev.title = I18n.t("上一个");
   ui.prev.setAttribute("aria-label", I18n.t("上一个命中"));
-  ui.next.title = I18n.t("下一个（Enter / ↓）");
+  ui.next.title = I18n.t("下一个");
   ui.next.setAttribute("aria-label", I18n.t("下一个命中"));
-  ui.close.title = I18n.t("关闭（Esc）");
+  ui.close.title = I18n.t("关闭");
   ui.close.setAttribute("aria-label", I18n.t("关闭查找框"));
   ui.foot.textContent = I18n.t("Enter 下一个 · Shift+Enter 上一个 · Esc 关闭");
 }

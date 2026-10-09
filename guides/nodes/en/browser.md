@@ -19,13 +19,14 @@ Manual entry points (no commands needed): the **Browser activity** button in the
 | `browser_screenshot` | Save a screenshot (use only when needed — **the model reads summaries by default**) | `fullPage` |
 | `browser_tabs` | List / switch / open / close tabs | `action`, `targetId` |
 | `browser_network` | Inspect page requests (method / status / URL) to debug failing calls | `limit` |
-| `browser_help` | **Ask the user for help** (login / verify / choice / blocked / danger) | `kind`, `message`, `url`, `options` |
+| `browser_help` | **Ask the user for help** (login / verify / choice / blocked / danger). **Browser-related asks only** — anything unrelated to the browser goes through `ask_user_question` (the gateway REFUSES an out-of-scope call; nothing pops up) | `kind`, `questions[]` (legacy `message` + `options` still accepted, folded into one question), `screenshotPath`, `note` |
 | `browser_release` | Hand the driver back (at the end of a stretch of work) | — |
 
 ## Calling conventions (the discipline written for the session itself)
 
 - **Start with `browser_snapshot`**: read pages through the structured summary; do not screenshot first (screenshots are expensive and only worth it when "what does it look like" really matters).
 - **Credentials never enter the chat**: for logins, captchas or payments, call `browser_help` (`kind:"login"`) and let the user act themselves; **never** fill a password with `browser_type`. By default this browser is docked in the session's right panel (the window gives way and the panel is operable); it becomes a window of its own only when the user pops it out — either way the user does the typing.
+- **Only ask about the browser**: `browser_help` is for things that are really about the browser / the current page (a login wall, a captcha, verifying a page result, choosing between page options, a site that blocks you, a dangerous page action). Plan/spec confirmations, scope or code choices, missing information and "may I go ahead" go through `ask_user_question` — the gateway refuses out-of-scope `browser_help` calls (the tool fails with a guidance error and **no card pops up**). The judge is "did this round call any `browser_*` tool, or is this session driving the browser".
 - **Ask before dangerous actions**: submit / pay / delete / send / publish clicks raise a confirmation card automatically; if rejected, stop and change approach — never retry the same click another way.
 - **Stand down while the user drives**: when the user is working in the window, your browser actions are **refused** (not queued) — on a refusal, use `browser_help` to say what you need, or wait for control to come back.
 - **Leave a trail**: every action and result goes into the activity stream (the session's right-hand "Browser activity" panel + local activity store) and into your delivery notes (page state, download and screenshot paths, commands run), so the user can check the work.

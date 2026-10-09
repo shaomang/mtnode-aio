@@ -21,6 +21,8 @@
 
 import { createConnection } from 'node:net'
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { hiddenToolsFromEnv } from './tool-visibility.mjs'
 
@@ -36,6 +38,44 @@ const KINDS = [
   /* 工具节点（＝super + tool:true 变体）/ 函数节点：右键「工具」菜单的两种计算节点 */
   'tool', 'function',
 ]
+
+/* ── 用户自建插件带来的节点 kind（声明式，见 plugins/user-plugins.js）──
+ * 插件目录是 <数据目录>/user-plugins，kind 是 `up_<插件id>_<节点id>`。主进程每次扫描后把
+ * 当前**可用**的节点定义写进 <dshHome>/user-plugin-kinds.json；这里在插件加载时读一次，
+ * 把 kind 并进 enum、并把「端口与用法」一句话附进工具描述 —— 这样会话/助手也能建插件节点，
+ * 且知道每个端子吃什么（不读该文件时行为与从前完全一致：只是少几个 enum 值）。 */
+function userPluginKinds() {
+  const home = String(process.env.DSH_HOME || '').trim()
+  if (!home) return []
+  try {
+    const doc = JSON.parse(readFileSync(join(home, 'user-plugin-kinds.json'), 'utf8'))
+    return Array.isArray(doc && doc.nodes) ? doc.nodes : []
+  } catch {
+    return []
+  }
+}
+const USER_NODES = userPluginKinds()
+for (const n of USER_NODES) {
+  if (n && typeof n.kind === 'string' && n.kind && !KINDS.includes(n.kind)) KINDS.push(n.kind)
+}
+
+/** 插件节点的端口与用法摘要（进工具描述；没有插件时是空串） */
+const USER_NODE_HINT = (() => {
+  if (!USER_NODES.length) return ''
+  const short = (v) => String((v && (v.zh || v.en)) || v || '').slice(0, 40)
+  const lines = USER_NODES.slice(0, 40).map((n) => {
+    const ins = (n.inputs || []).map((p) => p.id + ':' + p.kind).join(',') || '无'
+    const outs = (n.outputs || []).map((p) => p.id + ':' + p.kind).join(',') || '无'
+    return `- ${n.kind}：${short(n.title)}（插件 ${n.pluginId}）· 入 [${ins}] · 出 [${outs}]`
+  })
+  return (
+    '\n\n【用户自建插件节点】以下 kind 由用户放在 <数据目录>/user-plugins 的插件声明，' +
+    '端子即清单里的入/出端口（端口值按 id 对应），执行由该插件负责（模型或本机 HTTP）：\n' +
+    lines.join('\n') +
+    '\n（插件被停用 / 不兼容时这些 kind 会从本表消失；插件缺失时建节点会失败，别硬建。）'
+  )
+})()
+
 
 const NODE_LOCK =
   'CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\n'
@@ -142,7 +182,7 @@ create.kind 枚举见 schema（生成族含 sensenova_gen 本机图像）。端�
 - batchMode "batch" 每条一次运行、每次只看该条：严禁把整批 N 条再灌进每次运行（≈N² 调用）；一次看全部用 "agg"。
 - 绝不删除或与正在运行本任务的节点重叠；改完告诉用户可编辑输入并用 control ▶ 重跑。
 
-完整硬规则见技能 mtnode-canvas-edit-rules（save 与 wait_file、批次、task 三端、@引用、数据库 / 开发 / 排版 / scope）：建图 / 连线 / 批量 / 媒体前先加载它。`
+完整硬规则见技能 mtnode-canvas-edit-rules（save 与 wait_file、批次、task 三端、@引用、数据库 / 开发 / 排版 / scope）：建图 / 连线 / 批量 / 媒体前先加载它。` + USER_NODE_HINT
 
 /* 绘制（mark）字段表：createMarks 用这份表；updateMarks 与旧别名 marks 只指回它，不重复序列化。
    around 的旧别名 nodes 仍被渲染层接受，但不再写进 schema。 */

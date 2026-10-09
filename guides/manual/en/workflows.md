@@ -27,3 +27,13 @@ Chains ①②③④ are simple single-chain examples generated entirely by MTNod
 3. The assistant creates the nodes, the wires and the layout directly on this canvas; you only change the inputs and click the control node ▶.
 4. Unless you explicitly ask otherwise, it only adds, and never touches the nodes you already have; `Ctrl+Z` undoes anything you dislike.
 5. Workflow generation has no size limit — it can even be used to decompose a novel.
+
+## Several canvases: switching tabs in the tab bar keeps where you were
+
+With more than one canvas open, switching tabs in the tab bar keeps **where you were** on each canvas and restores it when you come back — no more landing on the root canvas and hunting for that spot again:
+
+- What is remembered is "which layer you had drilled into (a super-node shell / a task subgraph) + where the camera was"; coming back puts you on that very screen.
+- What is remembered is **position, not content**: switching tabs writes neither the canvas JSON nor the config (the camera changes every frame — writing it to disk would turn interaction into disk I/O), so after restarting the app you start from the root canvas.
+- Restoring never re-centres or re-layouts the nodes; if that layer is gone (node deleted / shell collapsed) it falls back to the last layer that is still alive.
+- The "canvas" button on the breadcrumb is still the explicit way back to the root canvas, so you can always come out.
+- Background work on another canvas (for example the global assistant editing a different diagram for you) never touches the view of the canvas you are looking at.

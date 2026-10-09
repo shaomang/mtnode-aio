@@ -81,6 +81,13 @@
             "zh": "长周期任务（状态机 · 人在环）",
             "en": "Long-running tasks (state machine, human in the loop)"
           }
+        },
+        {
+          "id": "mcp-server",
+          "title": {
+            "zh": "MCP 服务端（第三方接进来）",
+            "en": "MCP server (external clients)"
+          }
         }
       ]
     },

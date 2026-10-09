@@ -396,8 +396,9 @@ const N = (state, id) => state.wf.nodes.filter((n) => n.id === id)[0];
     const missing = keys.filter((k) => I18n.t(k) === k);
     ok(missing.length === 0, "新增词条中英齐备，缺：" + (missing.join(" / ") || "无"));
     ok(
-      HTML.indexOf("选中单个超级节点时再点一次 = 拆开它") >= 0,
-      "index.html：#btnWrapSuper 的 tooltip 写明二次点击 = 拆开",
+      !/data-i18n-title="超节点：将选中节点合并为展开的超级节点/.test(HTML) &&
+        !/data-i18n-title="超节点[^"]*拆开/.test(HTML),
+      "index.html：#btnWrapSuper 不再挂「合并 / 拆开」长 tooltip（可见文字「超节点」已说明自身）",
     );
     ok(
       !/data-i18n-title="超节点：将选中节点合并为展开的超级节点（覆盖选区范围）"/.test(HTML),

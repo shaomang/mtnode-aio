@@ -568,11 +568,12 @@ ok(
   "CSS：节点高亮（选中 / 悬停）时放开裁切 → 完整端子名称可见且不被截断",
 );
 ok(
-  (canvasSrc.match(/setPortBadgeName\(/g) || []).length >= 15 &&
+  (canvasSrc.match(/setPortBadgeName\(/g) || []).length >= 5 &&
+    canvasSrc.indexOf("function portBadgeText(") > 0 &&
     canvasSrc.indexOf("clipStr(aItems") < 0 &&
     canvasSrc.indexOf("clipStr((pl[") < 0 &&
     appSrc.indexOf("clipStr(pname") < 0,
-  "DOM：外侧与内侧端子徽标一律写完整名称（徽标处不再有 clipStr 切字）",
+  "DOM：外侧与内侧端子徽标一律写完整名称（徽标处不再有 clipStr 切字 · 正文只出 portBadgeText 一处）",
 );
 ok(
   execCss.indexOf("n-port-label") < 0,
@@ -604,6 +605,402 @@ ok(
     "真跑：名称为空也不抛错（给一个空的 .pb-name）",
   );
 }
+
+/* ---- 端子标签（本轮需求：输入 / 输出标签分别落在端子左右两侧，所有节点都要有）----
+   真跑 app-canvas.js 的 portBadgeText：它是画布端子标签的唯一真源（外侧输入 / 输出与
+   子画布内侧桥接 / 汇流四处都问它）。这里按 kind 逐条钉住语义名与「输入N / 输出N」兜底。 */
+{
+  const canvasOnly = read("renderer/app-canvas.js");
+  const I18n = { t: (s, p) => String(s).replace(/\{(\w+)\}/g, (m, k) => (p && p[k] != null ? p[k] : m)) };
+  const pbNames = [
+    "portBadgeText",
+    "portBadgeIsControlOut",
+    "portBadgeOutIsCtrlPort",
+    "portBadgeInIsCtrlPort",
+    "inPortIsControl",
+    "inPortKindOf",
+    "IN_PORT_DATA_KINDS",
+    "isFnToolNode",
+    "isFunctionNode",
+    "isToolNode",
+    "fnToolParamList",
+    "fnToolPortKind",
+    "fnToolInPortIsControl",
+    "isAssetNode",
+    "assetItems",
+    "ASSET_ITEM_TYPES",
+    "isSaveNode",
+    "isSaveKind",
+    "isControlKind",
+    "isVideoPostKind",
+    "videoGenControlPort",
+    "videoGenPortMeta",
+    "videoGenIsDataPort",
+    "videoGenDataSlotsTotal",
+    "videoGenSlotOfPort",
+    "videoGenPortOfSlot",
+    "videoGenSlotMeta",
+    "videoGenSlotOccupied",
+    "videoGenProgressiveCount",
+    "customWfSlotMeta",
+    "videoGenWfFileParams",
+    "videoGenWfTextParam",
+    "customWfInputCount",
+    "clipStr",
+    "wireFromIsControl",
+    "videoGenMode",
+    "videoGenMaxImages",
+    "videoGenMaxVideos",
+    "videoGenMaxAudios",
+    "videoGenMaxChains",
+    "videoGenChainSlotIndex",
+    "isCustomVideoGen",
+    "superInPortIsControl",
+    "superOutPortIsControl",
+    "nodeEmitsControlOnPort",
+    "assetItemTypeLabel",
+  ];
+  /* 本地稳健抽取：先剥注释与字符串再配对花括号 —— 共用 extract() 按引号猜边界，
+     碰上带撇号的注释 / 正则会把函数体截断（抽 portBadgeText 时实测会发生）。 */
+  const stripForBrace = (src) => {
+    /* 等长剥离：注释 / 正则 / 字符串（含模板串）内容一律换成空格，换行原样保留 ——
+       剥离版与原文偏移一一对应，花括号配对于是只看真代码（正则里的引号、注释里的花括号
+       都不会再骗过扫描；共用 extract() 正是栽在这两处）。 */
+    const out = src.split("");
+    const blank = (i) => {
+      if (out[i] !== "\n" && out[i] !== "\r") out[i] = " ";
+    };
+    let prev = "";
+    for (let i = 0; i < src.length; ) {
+      const c = src[i];
+      const n = src[i + 1];
+      if (c === "/" && n === "/") {
+        while (i < src.length && src[i] !== "\n") blank(i++);
+        continue;
+      }
+      if (c === "/" && n === "*") {
+        blank(i);
+        blank(i + 1);
+        i += 2;
+        while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) blank(i++);
+        blank(i);
+        blank(i + 1);
+        i++;
+        continue;
+      }
+      if (c === "/" && !/[A-Za-z0-9_$)\]}"'`]/.test(prev)) {
+        /* 正则字面量：前一个有效字符不可能是「值」的结尾（= ( , : 等之后才是正则） */
+        i++;
+        let inCls = false;
+        while (i < src.length) {
+          const ch = src[i];
+          if (ch === "\\") {
+            blank(i);
+            i++;
+            blank(i);
+            i++;
+            continue;
+          }
+          if (ch === "[") inCls = true;
+          else if (ch === "]") inCls = false;
+          else if (ch === "/" && !inCls) {
+            i++;
+            break;
+          } else if (ch === "\n") break;
+          blank(i);
+          i++;
+        }
+        while (i < src.length && /[a-z]/i.test(src[i])) i++;
+        prev = "/";
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") {
+        const q = c;
+        blank(i);
+        i++;
+        while (i < src.length && src[i] !== q) {
+          if (src[i] === "\\") {
+            blank(i);
+            i++;
+            blank(i);
+            i++;
+            continue;
+          }
+          blank(i);
+          i++;
+        }
+        blank(i);
+        i++;
+        prev = q;
+        continue;
+      }
+      if (!/\s/.test(c)) prev = c;
+      i++;
+    }
+    return out.join("");
+  };
+  const grabFn = null; /* 已由下面内联的「按剥离源码定边界」取代，不再使用 */
+  let pbSrc = "";
+  for (const nm of pbNames) {
+    try {
+      /* 先在整份「剥过注释与字符串内容」的源码上定边界，再回到原文取该段：
+         两边偏移一一对应（剥离只保留引号本身、换行原样），不会错位截断。 */
+      const pbAll = appSrc + "\n" + canvasOnly;
+      const mFn = new RegExp("\\nfunction " + nm + "\\s*\\(").exec(pbAll);
+      const mConst = new RegExp("\\n(?:const|var|let) " + nm + "\\s*=").exec(pbAll);
+      if (mFn) {
+        const at = mFn.index + 1;
+        const open = pbAll.indexOf("{", at);
+        const s = stripForBrace(pbAll);
+        let depth = 0;
+        for (let i = open; i < s.length; i++) {
+          if (s[i] === "{") depth++;
+          else if (s[i] === "}") {
+            depth--;
+            if (!depth) {
+              pbSrc += pbAll.slice(at, i + 1) + "\n";
+              break;
+            }
+          }
+        }
+      } else if (mConst) {
+        const at = mConst.index + 1;
+        const s = stripForBrace(pbAll);
+        let depth = 0;
+        for (let i = at; i < s.length; i++) {
+          const c = s[i];
+          if (c === "{" || c === "(" || c === "[") depth++;
+          else if (c === "}" || c === ")" || c === "]") depth--;
+          else if (c === ";" && depth === 0) {
+            pbSrc += pbAll.slice(at, i + 1) + "\n";
+            break;
+          }
+        }
+      }
+    } catch (_) {
+      /* 抽不出来的（依赖上游符号链）就跳过，下面用桩补齐它这一层语义 */
+    }
+  }
+  const LT = {
+    deliverPortItem: (n, i) => (n.deliverItems || [])[i] || null,
+    deliverNameOf: (it) => (it && it.fileName) || "",
+  };
+  const wf = { id: "pb", nodes: [], wires: [], marks: [] };
+  const pbCtx = vm.createContext({
+    I18n,
+    window: { LT: LT, LT: LT },
+    S: { wf: wf },
+    /* 壳层那两个节点自带 {superOpen:true, internalNodes:[]}，走 inner 分支就容易踩到
+       这两个上游函数（本块不测它们）—— 给空实现，别让测试自己炸。 */
+    superInPortIsControl: () => false,
+    superOutPortIsControl: () => false,
+    superExternalInWiresAll: () => [],
+    superExternalOutWiresAll: () => [],
+    superInternalBridgeWiresAll: () => [],
+    superInternalOutFeedsAll: () => [],
+    console,
+    Math,
+    String,
+    Number,
+    Array,
+    Object,
+    JSON,
+    RegExp,
+    Set,
+    Map,
+    Infinity,
+    isFinite,
+  });
+  vm.runInContext(pbSrc, pbCtx, { filename: "port-badge-extract.js" });
+  const pbMissing = [
+    "portBadgeText",
+    "portBadgeIsControlOut",
+    "inPortIsControl",
+    "inPortKindOf",
+    "isFnToolNode",
+    "isAssetNode",
+    "isSaveNode",
+    "isControlKind",
+    "isVideoPostKind",
+    "videoGenControlPort",
+  ].filter((k) => typeof pbCtx[k] === "undefined");
+  ok(
+    pbMissing.length === 0,
+    "抽取齐全：端子标签真源所需符号都已就位（缺：" + (pbMissing.join(", ") || "无") + "）",
+  );
+  const pb = (node, dir, i, opt) => vm.runInContext("portBadgeText", pbCtx)(node, dir, i, opt);
+  fs.writeFileSync(
+    path.join(__dirname, "_pb-trace.txt"),
+    String(pbCtx.portBadgeText) +
+      "\n\n=== judge call ===\n" +
+      JSON.stringify(pb({ kind: "judge" }, "out", 0)) +
+      "\n" +
+      JSON.stringify(pb({ kind: "judge" }, "out", 0, { ctrl: false })) +
+      "\n" +
+      JSON.stringify(pb({ kind: "net_recv" }, "out", 0)) +
+      "\n=== isControlKind judge / isSaveNode judge / portBadgeIsControlOut judge ===\n" +
+      String(pbCtx.isControlKind({ kind: "judge" })) +
+      " " +
+      String(pbCtx.isSaveNode({ kind: "judge" })) +
+      " " +
+      String(pbCtx.portBadgeIsControlOut({ kind: "judge" }, 0)) +
+      "\n=== 直接 vm.runInContext 调一次 ===\n" +
+      JSON.stringify(vm.runInContext('portBadgeText({kind:"judge"},"out",0)', pbCtx)) +
+      "\n",
+  );
+  console.log(
+    "DEBUG2 " +
+      JSON.stringify([
+        ["judge out0", pb({ kind: "judge" }, "out", 0)],
+        ["judge out1", pb({ kind: "judge" }, "out", 1)],
+        ["task out0", pb({ kind: "task" }, "out", 0)],
+        ["save out0", pb({ kind: "save_text" }, "out", 0)],
+        ["seq out2", pb({ kind: "sequencer" }, "out", 2)],
+        ["split out1", pb({ kind: "splitter" }, "out", 1)],
+        ["net_recv out0", pb({ kind: "net_recv" }, "out", 0)],
+        ["hasSwitch", /case "judge"/.test(pbSrc)],
+        ["hasSaveResult", /保存结果/.test(pbSrc)],
+        ["pbSrcLen", pbSrc.length],
+        ["isSaveNodeJudge", pbCtx.isSaveNode({ kind: "judge" })],
+        ["ctrlJudge", pbCtx.portBadgeIsControlOut({ kind: "judge" }, 0)],
+        ["ctrlSeq", pbCtx.portBadgeIsControlOut({ kind: "sequencer" }, 2)],
+        ["pbSrcTail", pbSrc.slice(0, 40) + " …… " + pbSrc.slice(-420)],
+        ["fnFromCtx", String(pbCtx.portBadgeText).slice(-500)],
+        ["fnHasJudgeCase", /case "judge"/.test(String(pbCtx.portBadgeText))],
+        ["fnLen", String(pbCtx.portBadgeText).length],
+      ]),
+  );
+  const badgeOf = (node, dir, i, opt) => {
+    const r = pb(node, dir, i, opt);
+    return r && r.badge == null ? "" : String(r.badge);
+  };
+  const HAS_FN = pbCtx.portBadgeText && pbCtx.inPortIsControl && pbCtx.isFnToolNode;
+  ok(
+    typeof pbCtx.portBadgeText === "function" && typeof pbCtx.inPortIsControl === "function",
+    "真跑：portBadgeText / inPortIsControl 已就位（端子标签唯一真源的抽取没问题）",
+  );
+  if (HAS_FN) {
+    const procText = { id: "n1", kind: "proc_text", w: 360, h: 140, prompt: "hi" };
+    ok(
+      badgeOf(procText, "in", 0) === "输入1" && badgeOf(procText, "out", 0) === "输出1",
+      "真跑：普通节点（文本）端子标签 = 输入1 / 输出1（左右各自从 1 起，空端子也有标签）",
+    );
+    /* 音频 / 视频输入：输出端子**固定两个**，徽标写清是哪两个 —— 0 号是那份媒体文件
+       （音频输出 / 视频输出）· 1 号是它的转写文字（转写输出）。入端子是摆设（内容取自
+       节点自己选的文件），没有专属名字 → 走「输入N」兜底，别把输出名字挂到入端子上。 */
+    ok(
+      badgeOf({ id: "a1", kind: "input_audio" }, "out", 0) === "音频输出" &&
+        badgeOf({ id: "a1", kind: "input_audio" }, "out", 1) === "转写输出" &&
+        badgeOf({ id: "v1", kind: "input_video" }, "out", 0) === "视频输出" &&
+        badgeOf({ id: "v1", kind: "input_video" }, "out", 1) === "转写输出",
+      "真跑：音频 / 视频输入节点的两颗固定出端子 = 音频输出 / 视频输出 + 转写输出",
+    );
+    ok(
+      badgeOf({ id: "a1", kind: "input_audio" }, "in", 0) === "输入1" &&
+        badgeOf({ id: "v1", kind: "input_video" }, "in", 0) === "输入1",
+      "真跑：音视频输入节点的入端子仍是「输入1」（摆设端子不冒用输出侧的名字）",
+    );
+    /* 所有节点都补：逐 kind 把「这颗端子该有标签」跑一遍（防止再漏 breeze 那种）。
+       端子数按各节点真源抄在这里（app.js 的 inputCount / outputCount + 各 kind 的固定端子表），
+       逐个端子都按它自己的 dir 问 portBadgeText —— 标签为空 = 又漏了。 */
+    const PORTS = {
+      proc_text: [1, 1], proc_image: [1, 1], agent_task: [1, 1],
+      input_text: [1, 1], input_image: [1, 1], input_audio: [1, 2], input_video: [1, 2],
+      merge: [2, 1], split: [1, 2], super: [2, 2], global: [0, 1],
+      judge: [1, 2], task: [1, 2], gate: [2, 1], mutex: [2, 1],
+      sequencer: [1, 3], splitter: [1, 3], counter: [1, 1], delayer: [1, 1],
+      timer: [0, 1], control: [1, 1], net_send: [2, 0], net_recv: [0, 2],
+      save_text: [1, 1], save_image: [1, 1], save_pdf: [1, 1],
+      asset: [2, 2], deliver: [1, 0],
+      music_gen: [3, 2], yue_gen: [4, 2], sensenova_gen: [2, 2], tts_gen: [2, 2],
+      breeze_gen: [5, 2], video_gen: [3, 2], video_upscale: [2, 2], video_interp: [2, 2],
+      remotion: [2, 2], function: [2, 2], tool: [2, 2], execute: [0, 0],
+    };
+    let blanks = [];
+    for (const k of Object.keys(PORTS)) {
+      const n = { id: "k_" + k, kind: k, w: 320, h: 200 };
+      if (k === "asset")
+        n.items = [
+          { id: "a1", title: "封面", type: "image" },
+          { id: "a2", title: "正文", type: "text" },
+        ];
+      if (k === "deliver") n.deliverItems = [{ id: "d1", fileName: "成片.mp4" }];
+      if (k === "function") n.inputs = [{ name: "文本入" }], n.outputs = [{ name: "文本出" }];
+      if (k === "tool")
+        n.toolConfig = { inputs: [{ name: "参数入" }], outputs: [{ name: "参数出" }] };
+      const opt = { fnTool: k === "function" || k === "tool", asset: k === "asset", deliver: k === "deliver" };
+      for (const dir of ["in", "out"]) {
+        const total = PORTS[k][dir === "in" ? 0 : 1];
+        for (let i = 0; i < total; i++) {
+          const r = pb(n, dir, i, opt);
+          const b = String((r && r.badge) || "");
+          if (!b) blanks.push(k + "/" + dir + i);
+          /* 无名端子必须是「输入N / 输出N」，不能是空白、也不能是裸序号 */
+          if (b && /^\d+$/.test(b)) blanks.push(k + "/" + dir + i + "=" + b);
+        }
+      }
+    }
+    ok(
+      blanks.length === 0,
+      "真跑：所有节点 kind 的每一颗端子都有标签（缺的：" + (blanks.join(" · ") || "无") + "）",
+    );
+    ok(
+      badgeOf({ kind: "breeze_gen" }, "in", 4) === "控制" &&
+        badgeOf({ kind: "breeze_gen" }, "in", 1) === "参考音频" &&
+        badgeOf({ kind: "breeze_gen" }, "in", 2) === "参考文稿" &&
+        badgeOf({ kind: "breeze_gen" }, "in", 3) === "指令" &&
+        badgeOf({ kind: "breeze_gen" }, "out", 0) === "音频" &&
+        badgeOf({ kind: "breeze_gen" }, "out", 1) === "控制",
+      "真跑：Breeze 语音命名 bug —— 入 0=文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制，出 0=音频 · 1=控制",
+    );
+    ok(
+      badgeOf({ kind: "music_gen" }, "in", 0) === "提示词" &&
+        badgeOf({ kind: "music_gen" }, "in", 1) === "歌词" &&
+        badgeOf({ kind: "music_gen" }, "in", 2) === "控制" &&
+        badgeOf({ kind: "music_gen" }, "out", 0) === "内容" &&
+        badgeOf({ kind: "music_gen" }, "out", 1) === "控制",
+      "真跑：音乐节点入/出语义名与从前一致（提示词 / 歌词 / 控制 · 内容 / 控制）",
+    );
+    ok(
+      badgeOf({ kind: "tts_gen" }, "in", 0) === "文本" &&
+        badgeOf({ kind: "tts_gen" }, "in", 1) === "控制" &&
+        badgeOf({ kind: "tts_gen" }, "out", 0) === "内容",
+      "真跑：语音节点沿用「文本 / 控制」与「内容」",
+    );
+    ok(
+      badgeOf({ kind: "judge" }, "out", 0) === "是" &&
+        badgeOf({ kind: "judge" }, "out", 1) === "否" &&
+        badgeOf({ kind: "task" }, "out", 0) === "成功" &&
+        badgeOf({ kind: "task" }, "out", 1) === "失败",
+      "真跑：判断 / 任务节点的结果端子仍是「是 / 否」「成功 / 失败」",
+    );
+    ok(
+      badgeOf({ kind: "save_text" }, "out", 0) === "保存结果" &&
+        badgeOf({ kind: "sequencer" }, "out", 2) === "序列3" &&
+        badgeOf({ kind: "splitter" }, "out", 1) === "分发2",
+      "真跑：保存 / 序列 / 分发节点的标签不受共用函数影响",
+    );
+    const asset = { kind: "asset", items: [{ id: "a1", title: "封面", type: "image" }] };
+    ok(
+      badgeOf(asset, "in", 0) === "封面" && badgeOf(asset, "out", 0) === "封面",
+      "真跑：素材节点左右端子写同一条目标题（与 body 那一行同名）",
+    );
+    const tool = { kind: "tool", toolConfig: { inputs: [{ name: "素材路径" }], outputs: [{ name: "结果" }] } };
+    ok(
+      badgeOf(tool, "in", 0, { fnTool: true, ctrl: true }) === "控制" &&
+        badgeOf(tool, "in", 1, { fnTool: true, ctrl: false }) === "素材路径" &&
+        badgeOf(tool, "out", 0, { fnTool: true, ctrl: false }) === "结果" &&
+        badgeOf(tool, "out", 1, { fnTool: true, ctrl: true }) === "控制",
+      "真跑：工具节点参数即端子名（0 号控制入 / 末位控制出仍是「控制」）",
+    );
+    const dv = { kind: "deliver", deliverItems: [{ id: "d1", fileName: "成片.mp4" }] };
+    ok(
+      badgeOf(dv, "in", 0, { deliver: true }) === "成片.mp4",
+      "真跑：交付节点端子标签是待交付文件名",
+    );
+  }
+}
+
 
 /* ===================== [1] 排版用边 ===================== */
 console.log("\n[1] layoutEdgeSets：定向与破环");

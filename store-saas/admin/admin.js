@@ -1284,6 +1284,20 @@
           },
           { title: "余额", cls: "num", get: (u) => money(u.balanceYuan) },
           {
+            /* 存储：云端应用包「已用 / 上限」+「应用条数」两行（上限 null = 不限，服务端口径）。
+               服务端没下发 storage（老接口 / 老库）时如实写「—」，不假装 0。 */
+            title: "存储",
+            render: (td, u) => {
+              if (!u.storage) {
+                td.textContent = "—";
+                return;
+              }
+              const lines = storageLines(u.storage);
+              td.appendChild(el("div", "", lines[0]));
+              td.appendChild(el("div", "q-sub", lines[1]));
+            },
+          },
+          {
             title: "身份",
             render: (td, u) => {
               td.appendChild(el("span", "badge " + (u.adminEligible ? "ok" : ""), u.adminEligible ? "管理员" : "普通用户"));
@@ -1295,6 +1309,7 @@
             render: (td, u) => {
               const box = el("div", "actions");
               box.appendChild(actBtn("调账", () => adjustDialog(u)));
+              box.appendChild(actBtn("改上限", () => quotaDialog(u)));
               box.appendChild(
                 actBtn("看流水", () => {
                   $("fLedgerUser").value = u.id;
@@ -1317,6 +1332,7 @@
   $("fUserQuery").addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadUsers(1);
   });
+  $("btnGcObjects").addEventListener("click", () => cleanOrphanObjects());
 
   function adjustDialog(u) {
     openDialog(
@@ -1347,6 +1363,219 @@
         }
       },
       "确认调账",
+    );
+  }
+
+  /* ==========================================================================
+   * 用户 · 应用存储上限（逐账号配额）与图片库清理
+   *   · 接口形状由服务端冻结，前端照着调、不改形状：
+   *     GET  /api/admin/users → item.storage{usedBytes,limitBytes,defaultBytes,apps,appsLimit,defaultApps}
+   *                              item.quota{bytes,apps}：null = 没单独设置（走全局默认）、正数 = 管理员设的上限、
+   *                                                   负数（服务端存 -1）= 单独设成不限
+   *     POST /api/admin/users/:key/quota  body{ bytesLimit: 数字|"unlimited"|null, appsLimit: 同左 }
+   *           回执 { ok, item:{id,storage,quota}, changed:{bytes,apps} }；失败 400 / 404 USER_NOT_FOUND / 403
+   *     POST /api/admin/app-objects/gc    （无 body）清掉「没有任何应用记录引用」的图片对象
+   *           回执 { ok, scanned, orphans, removed, freedBytes, kept, note, bytesUsed }
+   *   · 体积格式化复用系统资源监控页已有的 sizeText（同一个 IIFE 内的 const，定义在文件后段；
+   *     下面这些函数只在交互时被调用，那时整段脚本早已求值完毕）——不再另造第二套体积格式化。
+   *   · 对话框沿用 #dlg 这一套 persistent 写法（与「人工调账」窗完全同一套：点外部 / 点遮罩都不关，
+   *     只有窗内「取消 / 保存」、标题栏 ✕ 与 Esc 关）。
+   * ========================================================================== */
+
+  const MB = 1024 * 1024;
+  const intOr0 = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n) : 0;
+  };
+  /** 上限文案（条数维度）：null / undefined 一律「不限」（服务端用 null 表示不限）。 */
+  const limitText = (v) => (v === null || v === undefined ? "不限" : String(v));
+  /** 上限文案（字节维度）：null / undefined → 「不限」，否则按人类可读体积显示。 */
+  const limitBytesText = (v) => (v === null || v === undefined ? "不限" : sizeText(intOr0(v)));
+  /** 字节 → MB 文本（只用于输入框回填，不做任何换算决策）。 */
+  const mbText = (bytes) => String(Math.round(((Number(bytes) || 0) / MB) * 100) / 100);
+
+  /** 单独设置的回读口径 → { set, unlimited, bytes }；null / 缺省 = 没单独设置（走全局默认）。
+   *  服务端「不限」在 quota 里回 -1（也接受 "unlimited" 写法），数字 = 管理员设的上限。 */
+  function readQuotaSet(v) {
+    if (typeof v === "string" && v.toLowerCase() === "unlimited") return { set: true, unlimited: true, bytes: 0 };
+    if (typeof v === "number" && Number.isFinite(v)) {
+      if (v < 0) return { set: true, unlimited: true, bytes: 0 };
+      if (v > 0) return { set: true, unlimited: false, bytes: v };
+    }
+    return { set: false, unlimited: false, bytes: 0 };
+  }
+
+  /** 存储列与对话框共用的一套文案：[「已用 / 上限」, 「N / M 个应用」]。 */
+  function storageLines(st) {
+    const s = st || {};
+    return [
+      sizeText(intOr0(s.usedBytes)) + " / " + limitBytesText(s.limitBytes),
+      intOr0(s.apps) + " / " + limitText(s.appsLimit) + " 个应用",
+    ];
+  }
+
+  /** 「不限」勾选行：自己建 div（.dlg-body label 是 grid 版式，套 checkbox 会摆成独占一行的大方块）。 */
+  function checkRow(parent, text, checked) {
+    const row = el("div", "q-check");
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = !!checked;
+    row.appendChild(box);
+    row.appendChild(el("span", "", text));
+    parent.appendChild(row);
+    return box;
+  }
+
+  /**
+   * 逐账号存储上限对话框（persistent）。
+   * 两项语义（与接口 body 一致）：留空 = null（清掉单独设置、回到全局默认）；
+   * 勾「不限」= "unlimited"；填数字 = 该维度的单独上限（存储按 MB 输入，换算成字节提交）。
+   */
+  function quotaDialog(u) {
+    const st = u.storage || {};
+    const q = u.quota || {};
+    const qBytes = readQuotaSet(q.bytes);
+    const qApps = readQuotaSet(q.apps);
+    const defBytes = st.defaultBytes === null || st.defaultBytes === undefined ? null : intOr0(st.defaultBytes);
+    const defApps = st.defaultApps === null || st.defaultApps === undefined ? null : intOr0(st.defaultApps);
+    const lines = storageLines(st);
+
+    // openDialog 先立起 persistent 的壳（通用 ✕ / Esc / 取消 / 保存都在），再把自定义 DOM 换进 dlgBody
+    openDialog("应用存储上限 · " + (u.username || u.id), [{ kind: "note", text: "" }], null, "保存");
+    const body = $("dlgBody");
+    body.textContent = "";
+    body.appendChild(el("div", "hint", "账号：" + (u.username || "—") + "（" + u.id + "）· 昵称：" + (u.nickname || "—")));
+    body.appendChild(el("div", "hint", "当前生效：" + lines[0] + " · " + lines[1]));
+    body.appendChild(
+      el(
+        "div",
+        "hint",
+        "全局默认：" + (defBytes === null ? "不限" : sizeText(defBytes)) + " / " + (defApps === null ? "不限" : defApps + " 个应用") +
+          "。留空 = 回到全局默认；勾「不限」= 这个账号在该维度上不设上限。",
+      ),
+    );
+
+    // ① 存储上限（MB）
+    const bytesRow = el("div", "q-num");
+    const bytesLab = el("label", "", "存储上限（MB，最小 1）");
+    const bytesInp = el("input");
+    bytesInp.type = "number";
+    bytesInp.min = "0";
+    bytesInp.step = "1";
+    bytesInp.placeholder = defBytes === null ? "留空 = 用默认（不限）" : "留空 = 用默认 " + mbText(defBytes) + " MB";
+    if (qBytes.set && !qBytes.unlimited) bytesInp.value = mbText(qBytes.bytes);
+    bytesLab.appendChild(bytesInp);
+    bytesRow.appendChild(bytesLab);
+    const bytesChk = checkRow(bytesRow, "不限", qBytes.set && qBytes.unlimited);
+    body.appendChild(bytesRow);
+
+    // ② 应用条数上限
+    const appsRow = el("div", "q-num");
+    const appsLab = el("label", "", "应用条数上限");
+    const appsInp = el("input");
+    appsInp.type = "number";
+    appsInp.min = "0";
+    appsInp.step = "1";
+    appsInp.placeholder = defApps === null ? "留空 = 用默认（不限）" : "留空 = 用默认 " + defApps + " 个";
+    if (qApps.set && !qApps.unlimited) appsInp.value = String(qApps.bytes);
+    appsLab.appendChild(appsInp);
+    appsRow.appendChild(appsLab);
+    const appsChk = checkRow(appsRow, "不限", qApps.set && qApps.unlimited);
+    body.appendChild(appsRow);
+
+    const syncDisabled = () => {
+      bytesInp.disabled = bytesChk.checked;
+      appsInp.disabled = appsChk.checked;
+    };
+    bytesChk.addEventListener("change", syncDisabled);
+    appsChk.addEventListener("change", syncDisabled);
+    syncDisabled();
+
+    // 就地报错行：提交前拦截的非法值、服务端回的 error 原文都写这里（不吞错）
+    const errLine = el("div", "q-err hidden");
+    body.appendChild(errLine);
+    const showErr = (msg) => {
+      errLine.textContent = String(msg);
+      errLine.classList.remove("hidden");
+    };
+    const clearErr = () => {
+      errLine.textContent = "";
+      errLine.classList.add("hidden");
+    };
+    if (typeof bytesInp.focus === "function") bytesInp.focus();
+
+    dlgOk = async () => {
+      clearErr();
+      /* 校验一律在提交前做完：非法就地报错、不发请求 */
+      let bytesLimit = null;
+      if (bytesChk.checked) bytesLimit = "unlimited";
+      else if (bytesInp.value.trim() !== "") {
+        const mb = Number(bytesInp.value.trim());
+        if (!Number.isFinite(mb) || mb <= 0) {
+          showErr("存储上限必须是正数（MB）：要用默认请留空，要不限请勾「不限」。");
+          return;
+        }
+        /* 服务端自己的下限是 1MB（小于它的数会被抬到 1MB），这里就地拦下，避免「填 0.5 得 1」的静默改动 */
+        if (mb < 1) {
+          showErr("存储上限最小 1 MB（要更小的值没有意义：服务端同样按 1 MB 生效）。");
+          return;
+        }
+        bytesLimit = Math.round(mb * MB);
+      }
+      let appsLimit = null;
+      if (appsChk.checked) appsLimit = "unlimited";
+      else if (appsInp.value.trim() !== "") {
+        const n = Number(appsInp.value.trim());
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+          showErr("应用条数上限必须是正整数：要用默认请留空，要不限请勾「不限」。");
+          return;
+        }
+        appsLimit = n;
+      }
+      $("dlgOk").disabled = true;
+      try {
+        const r = await api("POST", "/api/admin/users/" + encodeURIComponent(u.id) + "/quota", { bytesLimit: bytesLimit, appsLimit: appsLimit });
+        const item = r.item || {};
+        const changed = r.changed || {};
+        const next = storageLines(item.storage || {});
+        const what = [changed.bytes ? "存储 " + next[0] : "", changed.apps ? "应用条数 " + next[1] : ""].filter(Boolean).join(" · ");
+        toast("上限已更新（" + (u.username || u.id) + "）：" + (what || "无变化"), "ok");
+        closeDialog();
+        loadUsers(usersPage); // 重拉当前页：行内数值以服务端回执为准
+      } catch (e) {
+        const msg = (e && e.message) || "保存失败";
+        showErr("保存失败：" + msg);
+        toast("保存失败：" + msg, "err");
+        $("dlgOk").disabled = false;
+      }
+    };
+  }
+
+  /**
+   * 「清理无主图片」：点按钮先一次确认（写清只删什么、正在用的绝不动），
+   * 确认后调接口，把回执的 scanned / orphans / removed / freedBytes 如实写成中文贴在页上。
+   * 失败由 api() 抛错 → 确认窗的 onOk 抛出 → toast 里带服务端 error 原文（窗不关，可重试）。
+   */
+  function cleanOrphanObjects() {
+    openDialog(
+      "清理无主图片",
+      [
+        { kind: "note", text: "只删「没有任何应用记录引用」的图片对象（内容寻址图片库里已不被引用的 sha256 对象）。" },
+        { kind: "note", text: "正在被应用引用的图片绝不动；同一张图全站只存一份，清理只影响没人再引用的那些。" },
+        { kind: "note", text: "清理不可撤销，确认无误点「确认清理」。" },
+      ],
+      async () => {
+        const r = await api("POST", "/api/admin/app-objects/gc");
+        const text =
+          "扫描 " + intOr0(r.scanned) + " 个对象，发现无主 " + intOr0(r.orphans) + " 个，已清理 " + intOr0(r.removed) +
+          " 个，释放 " + sizeText(r.freedBytes) + "（保留 " + intOr0(r.kept) + " 个在用对象 · 清理后占用 " + sizeText(r.bytesUsed) + "）";
+        toast(text, "ok");
+        const line = $("gcResult");
+        line.textContent = text + (r.note ? " · " + String(r.note) : "") + "（" + ts(Date.now()) + "）";
+        line.classList.remove("hidden");
+        return false; // 关窗
+      },
+      "确认清理",
     );
   }
 
@@ -1684,13 +1913,11 @@
       { title: "当前版本", get: (r) => "v" + (r.version || "—") + (r.versionCount > 1 ? "（共 " + r.versionCount + " 版）" : "") },
       { title: "大小", get: (r) => sizeText(r.bytes) },
       { title: "下载 / 赞", get: (r) => r.downloads + " / " + r.likes },
-      { title: "状态", render: (td, r) => td.appendChild(el("span", "badge " + (r.unpublished ? "bad" : "ok"), r.unpublished ? "已下架" : "已上架")) },
       { title: "更新时间", get: (r) => ts(r.updatedAt) },
       {
         title: "操作",
         render: (td, r) =>
           acts(td, [
-            [r.unpublished ? "重新上架" : "下架", "", () => contentPublish(r, !r.unpublished)],
             ["编辑", "", () => contentEdit(r)],
             ["版本历史", "", () => contentVersions(r)],
             ["下载 zip", "", () => contentDownload(r)],
@@ -1829,17 +2056,6 @@
     }
   }
 
-  async function contentPublish(row, unpublish) {
-    try {
-      await api("POST", "/api/admin/content/publish", { id: row.id, ownerId: row.ownerId, unpublish: unpublish });
-      toast((unpublish ? "已下架 " : "已重新上架 ") + row.title, "ok");
-      loadContent("app", cPages.app);
-      loadAppPub();
-    } catch (e) {
-      toast((e && e.message) || "操作失败", "err");
-    }
-  }
-
   function contentEdit(row) {
     const fields = [
       { kind: "note", text: "只改元信息：文件正文与 zip 不在管理台替换（谁上传谁改）。" },
@@ -1878,6 +2094,10 @@
     }
   }
 
+  /* 删除确认口径（本轮两态收敛：只剩「在线上 / 完全删除」，没有「先撤下、以后还能恢复」那条退路）：
+     三类内容共用同一句后果文案。 */
+  const DELETE_CONFIRM_NOTE = "云端彻底移除、不可恢复；同一 id 下其它作者分支不受影响，本条元信息留在审计。";
+
   function contentDelete(row) {
     const what =
       row.kind === "app"
@@ -1887,7 +2107,7 @@
     openDialog(
       "删除" + KIND_TEXT[row.kind],
       [
-        { kind: "note", text: "将要删除：" + what + "。" + (row.kind === "app" ? "删除后会自动重发静态目录（客户端立刻看不到）。" : "") + "此操作不可撤销，并会写入改动留痕。" },
+        { kind: "note", text: "将要删除：" + what + "。" + DELETE_CONFIRM_NOTE },
         { kind: "note", text: "确认无误点「确认删除」。" },
       ],
       async () => {
@@ -1914,7 +2134,7 @@
         el(
           "div",
           "hint",
-          "应用 " + r.id + " · 作者 " + r.ownerName + " · 当前 v" + (r.latestVersion || "—") + (r.unpublished ? "（已下架）" : "") +
+          "应用 " + r.id + " · 作者 " + r.ownerName + " · 当前 v" + (r.latestVersion || "—") +
             " · 共 " + items.length + " 个版本" + (r.versionsOn ? "" : "（服务端未启用多版本：只有当前这一版）"),
         ),
       );
@@ -1952,7 +2172,7 @@
       "删除版本",
       [
         { kind: "note", text: "将要删除：" + row.title + " 的 v" + v.version + "（" + sizeText(v.bytes) + (v.current ? " · 这是当前版本" : "") + "）。该版本的包会一并删除，删完不可撤销，并写入改动留痕。" },
-        { kind: "note", text: "全删光时服务端会自动把这条分支下架（与公开口径一致）。" },
+        { kind: "note", text: "全删光时：" + DELETE_CONFIRM_NOTE },
       ],
       async () => {
         await api("POST", "/api/admin/content/delete-version", { id: row.id, ownerId: row.ownerId, version: v.version });

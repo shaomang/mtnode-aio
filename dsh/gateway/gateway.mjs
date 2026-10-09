@@ -1083,12 +1083,18 @@ function releaseClaim(key, reqId, tag) {
    都会撞上「交互已失效」→ 卡永远撤不掉(就是「弹窗选项全都没反应」的直接成因)。
    因此每撤一条都补发 ix-drop。ownerReqId 由调用方在解除占用**之前**取好,
    卡片才能挂回它所属那一轮;确实没有归属时发 reqId:'' 的全局撤卡帧,渲染层按 id 兜底撤卡。 */
-function abortBridgePending(key, socket, ownerReqId) {
+function abortBridgePending(key, socket, ownerReqId, why) {
   const reqId = String(ownerReqId || (claimOf(key) && claimOf(key).reqId) || '')
   for (const [id, p] of bridgePending) {
     if (p.key !== key) continue
     if (socket && p.socket !== socket) continue
     bridgePending.delete(id)
+    /* 每一次撤问都留一行可复核的痕迹（本次需求）：与 ask register / interact answered
+       配对，dsh.log 里按 id 一查就知道这一问是被谁、在哪一拍收掉的。 */
+    diag(
+      `pending-drop why=${String(why || 'unknown')} id=${id} kind=${String(p.kind || '')} ` +
+      `runKey=${shortKey(key)} reqId=${reqId || '(无)'} sid=${String(p.sessionId || '(无)')}`,
+    )
     try { p.socket.write(JSON.stringify({ t: 'abort', id }) + '\n') } catch {}
     /* 撤卡通知不能反过来掀掉调用方:关闭流程里 stdout 可能已经断了 */
     try {
@@ -1101,7 +1107,7 @@ function closeBridge(key) {
   const b = bridgeServers.get(key)
   forgetKey(key)
   /* 撤在途交互要赶在解除占用之前:那时 reqId 还在,ix-drop 才能挂到本轮头上 */
-  abortBridgePending(key, null, claimOf(key) && claimOf(key).reqId)
+  abortBridgePending(key, null, claimOf(key) && claimOf(key).reqId, 'close-bridge')
   if (!b) return
   bridgeServers.delete(key)
   keyToReqId.delete(key)
@@ -1136,9 +1142,58 @@ function out(msg) {
 const BrowserCtl = {
   /* 最近一次 browser 帧的发起会话（活动流盖归属章用，见 push()） */
   lastSessionId: '',
+  /* ── 「这个求助到底跟浏览器有没有关系」的记账（本次需求 · 拷问共识）──────────
+     用户口径：browser_help 只用于与本会话正在使用的浏览器有关的事 ——
+     会话里那次「browser_help 被拿去发与浏览器无关的共识确认卡」就是这条被踩穿。
+     判据 = **本轮动过 browser_* 或本条会话正驱动着这只浏览器**（两者取或）：
+       · usedRuns：reqId（= 每一次运行）→ 记账时刻。换轮即失效，绝不因为「这条
+         会话昨天用过浏览器」就永久放宽；条目按 6 小时窗口惰性清理，不会无限长。
+       · driverHost：本条会话拿到驱动锁时记下的**宿主会话号**（as…）。浏览器的驱动
+         锁按运行时 session id（session-…）记，跨轮就认不出是同一条会话了 ——
+         所以在 claim 的一刻把它翻成宿主会话号存下来（见 hostSessionTagOf）。 */
+  usedRuns: new Map(),
+  driverHost: '',
   /* 浏览器进程 / 标签 / 驱动锁的只读快照（活动流面板与求助卡的真窗口通道共用） */
   status() {
     return { ...BrowserHost.statusOf(), takeover: BrowserHost.takeoverOf(), ok: true }
+  },
+  /* 记「这一轮真的在浏览器上做过事」：handle() 里除 help / release / status 外
+     每个 op 都记一次。**失败也记** —— 失败说明它确实在试着用浏览器，
+     那时候把求助一起拦住只会让它更卡。 */
+  noteBrowserUse(key) {
+    const claim = claimOf(key)
+    const reqId = String((claim && claim.reqId) || '')
+    if (!reqId) return
+    const now = Date.now()
+    this.usedRuns.set(reqId, now)
+    if (this.usedRuns.size > 200) {
+      for (const [k, at] of this.usedRuns) if (now - at > 6 * 3600 * 1000) this.usedRuns.delete(k)
+    }
+  },
+  /* claim 成功的一刻记下「谁在驱动」的宿主会话号（翻不出来就记空串，绝不留旧值
+     去误认别人 —— 判据宁严不松）。 */
+  noteDriver(key, sessionId) {
+    const claim = claimOf(key)
+    this.driverHost = hostSessionTagOf(sessionId) || String((claim && claim.host) || '')
+  },
+  /* 求助前的用途闸：'' = 放行；非空 = 拒绝原因（作为错误文本回给模型）。 */
+  helpRefusal(key, sessionId) {
+    const claim = claimOf(key)
+    const reqId = String((claim && claim.reqId) || '')
+    if (reqId && this.usedRuns.has(reqId)) return ''
+    const st = BrowserHost.statusOf()
+    if (st && st.running) {
+      const driver = String(st.driver || '')
+      const sid = String(sessionId || '')
+      const callerHost = hostSessionTagOf(sid) || String((claim && claim.host) || '')
+      const driverHost = String(this.driverHost || hostSessionTagOf(driver) || '')
+      if (driver && (driver === sid || (callerHost && driverHost === callerHost))) return ''
+    }
+    return (
+      'browser_help 只用于与本会话正在使用的浏览器有关的事（登录墙 / 验证码 / 页面上的验证与选择 / 被网站拦住 / 页面上的危险动作）。' +
+      '这一次你既没有调用过任何 browser_* 工具，本条会话也没有在驱动浏览器 —— ' +
+      '这类与浏览器无关的询问请改用 ask_user_question（通用询问卡才是它的入口），不要占用浏览器求助这张卡。'
+    )
   },
   /* 宿主主动拉起浏览器（**本轮需求后唯一的调用方**：求助卡上的「用真窗口打开」）：
      不启动任何任务、不占驱动锁。这是唯一会带窗口的一只（用户口径：开发 / 会话过程中
@@ -1239,7 +1294,7 @@ const BrowserCtl = {
   async gate(op, params) {
     if (BrowserHost.isTakeover()) {
       const who = BrowserHost.takeoverOf().sessionId
-      return { ask: false, deny: `浏览器此刻由用户接管${who ? '（' + who.slice(0, 12) + '…）' : ''}：Agent 动作一律暂停。请等用户交还控制权（browser_help 或求助卡上的「交还控制权」），或先用 browser_help 说明你需要什么。` }
+      return { ask: false, deny: `浏览器此刻由用户接管${who ? '（' + who.slice(0, 12) + '…）' : ''}：Agent 动作一律暂停。请等用户答完那张求助卡（作答即交还控制权），或先用 browser_help 说明你需要什么。` }
     }
     if (op === 'click' && APPROVE_DANGEROUS) {
       const d = dangerOfClick(params && params.label, params && params.text)
@@ -1291,6 +1346,13 @@ const BrowserCtl = {
         resolve: (v) => resolve(v || 'cancelled'),
         reject: () => resolve('cancelled'),
       })
+      /* 卡的生命周期从这一刻起可复核（本次需求：回答没送达时能一眼看出是哪一拍丢的）：
+         register 这一行与 interact answered / pending-drop / abortBridgePending 的
+         那几行配对，dsh.log 里按 id 串起来就是完整链路。 */
+      diag(
+        `ask register kind=${String((askData && askData.kind) || '')} id=${id} ` +
+        `runKey=${shortKey(key)} reqId=${reqId || '(无)'} sid=${sessionId || '(无)'}`,
+      )
       out({ event: { reqId, type: 'browser', data: { ...askData, id, sessionId } } })
     })
   },
@@ -1335,13 +1397,31 @@ const BrowserCtl = {
     const dsh = dshHomeDir()
     /* 记下发起会话：BrowserCtl.push() 给活动流条目盖归属章用（面板默认按会话过滤） */
     if (sessionId) this.lastSessionId = sessionId
+    /* 用途记账（本次需求）：除 help / release / status 外的任何 op 都算「这一轮在
+       浏览器上做过事」—— browser_help 的用途闸只认这份记账（见 helpRefusal）。 */
+    if (op && op !== 'help' && op !== 'release' && op !== 'status') this.noteBrowserUse(key)
 
     if (op === 'status') return { ok: true, result: this.status() }
+
+    /* ── 用途闸（本次需求 · 拷问共识）───────────────────────────────────────
+       browser_help 只用于与浏览器 / 当前页面有关的事：与浏览器无关的求助在这里就拦下。
+       位置很要紧 —— 放在下面「按需自动拉起」之前：一次越界的求助不该顺手把一只浏览器
+       拉起来（白开一个进程），也不该发出任何卡。拒绝时把引导文本作为工具错误回给模型，
+       它随即改用 ask_user_question（用户看到的就是正常的询问卡）。判据见 helpRefusal。 */
+    if (op === 'help') {
+      const refuseWhy = this.helpRefusal(key, sessionId)
+      if (refuseWhy) {
+        diag(`help refused runKey=${shortKey(key)} sid=${sessionId || '(无)'} why=not-browser-grounded`)
+        throw new Error(refuseWhy)
+      }
+    }
 
     /* 申请驱动（串行化）：一条会话独占浏览器，避免两个会话抢同一个页面 */
     if (op !== 'release') {
       const claim = BrowserHost.claimDriver(sessionId)
       if (!claim.ok) throw new Error(claim.reason)
+      /* 拿到驱动 = 本条会话正在用这只浏览器：把宿主会话号记下来（跨轮也认得出） */
+      this.noteDriver(key, sessionId)
     }
 
     if (op === 'launch') {
@@ -1400,9 +1480,15 @@ const BrowserCtl = {
     }
 
     if (op === 'help') {
-      /* 浏览器求助卡：登录墙 / 待验证 / 需补充信息 / 卡住 / 危险动作。
-         登录类默认进入「用户接管」，用户交还后本工具以 released 收场。 */
+      /* 浏览器求助：登录墙 / 待验证 / 需补充信息 / 卡住 / 危险动作。
+         **与询问模式（ask_user_question 的询问卡）完全同一套**（用户已确认的口径）：
+         参数收 questions[]（旧参数 message + options 折成一道题）、卡片就是那张询问卡、
+         回执就是 answers[]。kind 只作语义与标题，并决定登录类是否自动进入接管。
+         登录类：这一问开始时接管（他的动作优先，Agent 动作一律被拒），用户作答即交还
+         —— 卡上不再有「接管 / 交还」按钮，所以「回答」就是「我处理完了」。 */
+      /* 用途闸已在 handle() 开头过掉（那里拦是为了不白拉起浏览器），这里直接发问。 */
       const kind = String(params.kind || 'blocked')
+      const questions = helpQuestionsOf(params)
       const askData = {
         kind: 'help',
         helpKind: kind,
@@ -1411,6 +1497,8 @@ const BrowserCtl = {
             : kind === 'choice' ? '需要你补充信息或做选择'
               : kind === 'danger' ? '危险动作需要你确认'
                 : '会话卡住了，需要你帮忙',
+        /* 与询问卡同一份题面：拿不到任何题时渲染层按题面兜底（题面 = 求助说明 + 默认选项） */
+        questions,
         message: String(params.message || ''),
         options: Array.isArray(params.options) ? params.options.map((x) => String(x).slice(0, 120)).slice(0, 8) : [],
         screenshotPath: String(params.screenshotPath || ''),
@@ -1420,29 +1508,97 @@ const BrowserCtl = {
         url: await this.currentUrl().catch(() => ''),
         takeover: kind === 'login',
       }
-      this.push({ kind: 'help', text: `${askData.title}：${askData.message.slice(0, 200)}` })
+      this.push({ kind: 'help', text: `${askData.title}：${(askData.message || questions.map((q) => q.question).join(' / ')).slice(0, 200)}` })
       /* 登录类求助：接管（他的动作优先，Agent 动作一律被拒），但**形态仍是内部界面**
          —— 用户口径：接管 / 登录也走右栏实况区，不再为了「看见窗口」把真窗口抬出来
-         （bringToFront 是「又开出一个窗口」的第二条来源）。他从求助卡点「用真窗口打开」才是例外。
-         接管期间画面照常出帧，所以登录 / 验证码在实况区里就能操作。 */
+         （bringToFront 是「又开出一个窗口」的第二条来源）。真窗口改由右栏实况区那枚
+         「用真窗口打开」小键给（见 BrowserCtl.open）。 */
       if (kind === 'login') BrowserHost.setTakeover(true, sessionId)
       const outcome = await this.ask(key, sessionId, askData)
       if (kind === 'login') BrowserHost.setTakeover(false, sessionId)
-      const res = {
-        outcome: outcome === 'rejected' ? 'cancelled' : outcome,
-        takeover: kind === 'login',
-        takeoverReleased: kind === 'login',
-        hint: kind === 'login'
-          ? '用户已交还控制权；下一步请用 browser_snapshot 看当前页面状态再继续。'
-          : kind === 'choice'
-            ? '用户的回答在上面的 answer 字段里；若为空说明用户撤下了这张卡。'
-            : '用户已回应；用 browser_snapshot 确认页面现状后继续。',
+      /* 中断 / 稍后 / 撤卡：用户没答这一问 —— 与 ask_user_question 同口径，工具以失败收场
+         （绝不回一份空答案把模型骗过去）。本轮被终止时工具调用本来就会被 abort，这里兜住
+         网关自己 resolve 成 cancelled 的那几条路（桥不在 / 撤卡帧）。 */
+      const answers = outcome && typeof outcome === 'object' && Array.isArray(outcome.answers) ? outcome.answers : null
+      if (!answers)
+        throw new Error(
+          'browser_help 在用户作答前被中断（这一轮已终止或卡片已被撤下）：用户没有回应，请勿把它当成默认同意；等他下一条消息，或稍后重新求助。',
+        )
+      return {
+        ok: true,
+        result: {
+          answers: helpAnswersOf(questions, answers),
+          takeover: kind === 'login',
+        },
       }
-      if (typeof outcome === 'object' && outcome) Object.assign(res, outcome)
-      return { ok: true, result: res }
     }
     throw new Error('未知的浏览器操作：' + op)
   },
+}
+
+/* ── browser_help 的题面 / 答案归一（本次需求：求助卡 = 询问模式那张卡）──────────
+   题面（helpQuestionsOf）：
+     · 新形状 questions[]：逐题裁长、补 id（q1 / q2 …）、选项同时收字符串与
+       {label, description}（询问卡把 description 渲染成选项下的第二行）；
+     · 旧形状 message（+ options）：折成**一道题** —— 老提示词、老会话续跑照旧弹得出卡；
+     · 两者都没有：回空数组，由渲染层按卡上的题面兜底（题面 = 求助说明 + 默认「我已处理，继续」）。
+   答案（helpAnswersOf）：与题面同一顺序回 answers[]（每题 id + selected[]），
+   题面里没列到的答案也不丢 —— 模型拿到的形状与 ask_user_question 一模一样。 */
+function helpOptionOf(o) {
+  if (o && typeof o === 'object') {
+    const label = String(o.label || o.title || '').trim().slice(0, 200)
+    if (!label) return null
+    const desc = String(o.description || o.desc || '').trim().slice(0, 400)
+    return desc ? { label, description: desc } : { label }
+  }
+  const label = String(o == null ? '' : o).trim().slice(0, 200)
+  return label ? { label } : null
+}
+function helpQuestionsOf(params) {
+  const p = params && typeof params === 'object' ? params : {}
+  const raw = Array.isArray(p.questions) ? p.questions : []
+  const out = []
+  for (const q of raw) {
+    if (!q || typeof q !== 'object') continue
+    const question = String(q.question || q.header || '').trim().slice(0, 8000)
+    if (!question) continue
+    const id = String(q.id || '').trim().slice(0, 60) || 'q' + (out.length + 1)
+    const opts = (Array.isArray(q.options) ? q.options : []).map(helpOptionOf).filter(Boolean).slice(0, 8)
+    out.push({
+      id,
+      question,
+      ...(q.header ? { header: String(q.header).slice(0, 120) } : {}),
+      ...(q.detail ? { detail: String(q.detail).slice(0, 2000) } : {}),
+      ...(opts.length ? { options: opts } : {}),
+      ...(q.multiSelect ? { multiSelect: true } : {}),
+    })
+    if (out.length >= 8) break
+  }
+  if (out.length) return out
+  const msg = String(p.message || '').trim().slice(0, 8000)
+  const opts = (Array.isArray(p.options) ? p.options : []).map(helpOptionOf).filter(Boolean).slice(0, 8)
+  if (!msg && !opts.length) return []
+  const one = { id: 'q1', question: msg || '需要你帮忙（模型没有写说明）' }
+  if (opts.length) one.options = opts
+  return [one]
+}
+function helpAnswersOf(questions, answers) {
+  const byId = new Map()
+  for (const a of Array.isArray(answers) ? answers : []) {
+    if (!a || a.id == null) continue
+    const sel = (Array.isArray(a.selected) ? a.selected : [])
+      .map((x) => String(x == null ? '' : x).slice(0, 500))
+      .filter((x) => x.trim())
+    byId.set(String(a.id), sel)
+  }
+  const out = []
+  for (const q of Array.isArray(questions) ? questions : []) {
+    const id = String((q && q.id) || '')
+    out.push({ id, selected: byId.get(id) || [] })
+    byId.delete(id)
+  }
+  for (const [id, selected] of byId) out.push({ id, selected })
+  return out
 }
 
 /* 浏览器动作留痕 → 宿主事件（活动流面板实时显示 + 宿主落库） */
@@ -1849,7 +2005,7 @@ async function getRuntime(workspace, model, maxTokens, provider, apiKey, baseUrl
         bridgeState.sockets.delete(s)
         socketToKey.delete(s)
         if (isSpeech) unregisterSpeechSocket(key, s)
-        else abortBridgePending(key, s)
+        else abortBridgePending(key, s, '', 'socket-close')
       })
     })
     server.on('error', (err) => {
@@ -2085,7 +2241,14 @@ function onBridgeFrame(key, m, socket) {
   if (!m || typeof m !== 'object') return
   if (typeof m.id !== 'string') return
   if (m.t === 'drop') {
+    const dropped = bridgePending.get(m.id)
     bridgePending.delete(m.id)
+    /* 插件自己放弃这一帧（工具被 abort / 运行时主动撤）也要留痕：这是「卡还在屏上、
+       网关侧却已经没人接」的第二条来路，与 abortBridgePending 的痕迹配对。 */
+    diag(
+      `pending-drop why=plugin-drop id=${m.id} kind=${String((dropped && dropped.kind) || '')} ` +
+      `runKey=${shortKey(key)} sid=${String((dropped && dropped.sessionId) || '(无)')}`,
+    )
     /* 运行时已放弃这条交互(提问被中止 / 审批被取消):光删 pending 会让卡片留在界面上
        变幽灵。无条件推 ix-drop,渲染层据此撤卡;没有在途 run 时 reqId 为空,
        渲染层按 id 全局兜底撤卡。老渲染层忽略未知事件类型,不影响既有链路。 */
@@ -3119,7 +3282,7 @@ async function handleRun(params) {
       /* 只有自己仍占着这台时才清桥:已被下一轮接手的，不能拆它的交互桥 */
       const owns = releaseClaim(runKey, reqId, runTag)
       /* reqId 显式传进去:占用登记刚被清掉,不传就没人知道这些卡属于哪一轮了 */
-      if (owns) abortBridgePending(runKey, null, reqId)
+      if (owns) abortBridgePending(runKey, null, reqId, 'run-end')
       /* 失败轮收尾:解除占用后打「续跑候选」保活标记(空闲 runtime 才需要保活;
          有在途 claim 的本就被 keyToReqId 护着,LRU 从不碰)。下一轮正常占用这台时
          claimRuntime 会摘掉标记,时限到也会自动清,不会永久占着豁免名额 */
@@ -4572,18 +4735,36 @@ rl.on('line', (line) => {
             } catch {}
           } else if (p.kind === 'browser') {
             /* 浏览器确认框 / 求助卡的回应（browser_* 工具面的问答通道）：
-               outcome = allowed-once | rejected | released（求助类：用户已交还控制权）
-                        | cancelled；answer 只在求助卡里带用户填的文字 / 选项。
+               · 求助卡（本次需求：与询问模式同一套）= answers[] —— 与 ask_user_question
+                 的答案同一形状，逐题 id + selected[]；
+               · 危险动作确认卡仍是一次性闸门：outcome = allowed-once | rejected。
                注意这里**不能**回 {t:'browser-result'} —— 那是工具调用的结果通道；
                这条交互只是浏览器动作闸门里的一次问答，结果由 BrowserCtl.handle 自己
-               写回同一枚 id 的 browser-result。 */
-            const item = bridgePending.get(p.id)
-            if (!item || typeof item.resolve !== 'function') {
+               写回同一枚 id 的 browser-result。
+               ★ 本次需求 · bug 修复：这条分支曾用 bridgePending.get(p.id) **再取一次** ——
+               而上面 p.kind 分派之前那一行已经把这一条从表里删掉了，于是 item 恒为
+               undefined，每一次回执都是 {ok:true, stale:true}：用户点了求助卡上的「回答」，
+               答案被就地丢掉、模型侧那个工具调用一直挂着不动
+               （实证 2026-10-08 08:30:06 dsh.log 的 `interact stale browser id=ea54e4fa…`
+               —— 卡在、pending 也在，模型却白等到 08:39 被暂停，工具回执是
+               `Error: 浏览器操作已取消`）。
+               修法：直接用上面已经取到的那一份（pending），删表只删一次。 */
+            const item = pending
+            if (typeof item.resolve !== 'function') {
               reply({ ok: true, stale: true })
               diag(`interact stale browser id=${String(p.id || '')}`)
               break
             }
-            bridgePending.delete(p.id)
+            /* 回答真的交到了工具手里（与 ask register / pending-drop 配对，便于复核
+               「用户答了但没有送达」到底断在哪一拍）。 */
+            diag(
+              `interact answered browser id=${String(p.id || '')} runKey=${shortKey(String(item.key || ''))} ` +
+              `reqId=${String(item.reqId || '(无)')} sid=${String(item.sessionId || '(无)')}`,
+            )
+            if (Array.isArray(p.answers)) {
+              item.resolve({ answers: p.answers })
+              break
+            }
             const outcome = String(p.outcome || p.answer || 'allowed-once')
             if (p.answerText || p.answer || p.selected) {
               item.resolve({ outcome: outcome === 'rejected' ? 'cancelled' : outcome, answer: p.answerText || p.answer || '', selected: p.selected || [] })

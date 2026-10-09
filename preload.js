@@ -52,6 +52,14 @@ contextBridge.exposeInMainWorld('api', {
   configLoad: () => ipcRenderer.invoke('config:load'),
   configSave: (c) => ipcRenderer.invoke('config:save', c),
 
+  /* 会话转写（agentSessions）从 config.json 拆到 agent-sessions/ 之后的读写口：
+     sessionLoad = 索引（左栏字段，绝不含正文）；sessionSave = 只写脏会话 + 刷索引；
+     sessionBody = 按需读正文（懒加载：选中会话 / 轨迹·改动 / 全局搜索 / 续跑时）。
+     实现与三条硬口径见主进程 agent-sessions-store.js 文件头。 */
+  sessionLoad: () => ipcRenderer.invoke('session:load'),
+  sessionSave: (payload) => ipcRenderer.invoke('session:save', payload),
+  sessionBody: (ids) => ipcRenderer.invoke('session:body', ids),
+
   wfList: () => ipcRenderer.invoke('workflow:list'),
   wfLoad: (id) => ipcRenderer.invoke('workflow:load', id),
   wfSave: (id, data) => ipcRenderer.invoke('workflow:save', { id, data }),
@@ -237,6 +245,18 @@ contextBridge.exposeInMainWorld('api', {
   storeCachePut: (opts) => ipcRenderer.invoke('store:cachePut', opts),
   storeCacheDelete: (id) => ipcRenderer.invoke('store:cacheDelete', id),
   storeCacheHas: (id) => ipcRenderer.invoke('store:cacheHas', id),
+  /* 云端图片内容指纹索引（上架省流量）：主进程按云端主机分桶存一份见过的 sha256，
+     客户端上架窗开窗时读它、上传成功后写它 —— 命中就只发 { sha } 引用、不推字节。 */
+  storeHost: () => ipcRenderer.invoke('store:host'),
+  storeImgFpLoad: (opts) => ipcRenderer.invoke('store:imgFpLoad', opts || {}),
+  storeImgFpPut: (opts) => ipcRenderer.invoke('store:imgFpPut', opts || {}),
+  /* 上架截图的**本机缓存**（本轮需求：截图本地保存，下次更新自动带上）：
+     存的是压缩后真正传上云的那份字节，按 sha 内容寻址（同图跨应用只存一份）。
+     shotsPut = 上传成功后把这一批存下来；shotsList(带 withData) = 开窗预填时读回；
+     shotsClear({appId}) = 彻底删除该应用时回收只属于它的那些图。 */
+  storeShotsPut: (opts) => ipcRenderer.invoke('store:shotsPut', opts || {}),
+  storeShotsList: (opts) => ipcRenderer.invoke('store:shotsList', opts || {}),
+  storeShotsClear: (opts) => ipcRenderer.invoke('store:shotsClear', opts || {}),
   /* 账户与登录：token 由主进程 auth-store 持有，渲染层只拿账号摘要（不暴露任意 URL 请求） */
   authState: () => ipcRenderer.invoke('auth:state'),
   authLoginPassword: (opts) => ipcRenderer.invoke('auth:loginPassword', opts || {}),
@@ -278,6 +298,28 @@ contextBridge.exposeInMainWorld('api', {
   appPluginsOpen: (id) => ipcRenderer.invoke('appPlugins:open', id),
   appPluginsClose: (id) => ipcRenderer.invoke('appPlugins:closeById', id),
   appPluginsIsOpen: (id) => ipcRenderer.invoke('appPlugins:isOpen', id),
+  /* ── 用户自建插件（声明式 · <数据目录>/user-plugins，主进程 plugins/user-plugins.js）
+     这是「不碰源码加插件」那一条路：目录 + mtnode-plugin.json 即插即用。
+       list(deep)   ：插件清单（deep=true 连节点定义一起回；false 只回摘要 + 节点名）
+       rescan()     ：重扫目录并重建登记（顺带把 MCP / 技能对齐一遍，幂等）
+       nodes()      ：当前可用的插件节点定义（渲染层注册 kind 用）
+       setEnabled(id, disabled)：启停（停用会撤掉它声明的 MCP / 技能）
+       repair(id)   ：一键修复（补缺字段 → 重扫 → 重应用 MCP/技能 → 探后端健康检查）
+       importPlugin(payload)：导入 zip / 目录（不传 path 时主进程弹系统选择框）
+       exportDiag(id)：诊断导出到 <数据目录>/exports/
+       http(payload)：通用本机 HTTP（**只允许 127.0.0.1 / localhost**）
+       openFolder(id) / relaunch()：打开插件目录 / 重启应用以生效 */
+  userPluginsList: (deep) => ipcRenderer.invoke('userPlugins:list', deep),
+  userPluginsRescan: () => ipcRenderer.invoke('userPlugins:rescan'),
+  userPluginsNodes: () => ipcRenderer.invoke('userPlugins:nodes'),
+  userPluginsSetEnabled: (id, disabled) => ipcRenderer.invoke('userPlugins:setEnabled', id, disabled),
+  userPluginsRepair: (id) => ipcRenderer.invoke('userPlugins:repair', id),
+  userPluginsImport: (payload) => ipcRenderer.invoke('userPlugins:import', payload),
+  userPluginsExport: (id) => ipcRenderer.invoke('userPlugins:export', id),
+  userPluginsHttp: (payload) => ipcRenderer.invoke('userPlugins:http', payload),
+  userPluginsHealth: () => ipcRenderer.invoke('userPlugins:health'),
+  userPluginsOpenFolder: (id) => ipcRenderer.invoke('userPlugins:openFolder', id),
+  userPluginsRelaunch: () => ipcRenderer.invoke('userPlugins:relaunch'),
   onAppPluginsProgress: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -356,7 +398,32 @@ contextBridge.exposeInMainWorld('api', {
   music3CancelGenerate: (nodeId) => ipcRenderer.invoke('music3:cancelGenerate', nodeId),
   music3ForceKillBackend: () => ipcRenderer.invoke('music3:forceKillBackend'),
   music3GetLock: () => ipcRenderer.invoke('music3:getLock'),
+  /* 插件界面内嵌 console 用：读本插件后端日志尾部（宿主 consoleTail 按字节读文件尾部） */
+  music3ConsoleTail: (n) => ipcRenderer.invoke('music3:consoleTail', n),
   mediaGenGetLock: () => ipcRenderer.invoke('mediaGen:getLock'),
+  /* ── 本地模型显存释放（主进程 local-model-vram.js）：顶栏按钮 / 画布节点运行前后钩子 ──
+     vramSnapshot  = 现况（各后端在跑没 / 忙没 + nvidia-smi 读数 + 最近释放日志）
+     vramListBackends = 参与释放的后端清单
+     vramRelease   = 真释放：{ except, ids, phase, jobNodeId, triggeredBy } → 回执 steps[] */
+  vramSnapshot: () => ipcRenderer.invoke('vram:snapshot'),
+  vramListBackends: () => ipcRenderer.invoke('vram:listBackends'),
+  vramRelease: (payload) => ipcRenderer.invoke('vram:release', payload || {}),
+  onVramReleased: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('vram:released', handler);
+    return () => ipcRenderer.removeListener('vram:released', handler);
+  },
+  /* ── 系统资源探针（主进程 perf-probe.js）：顶栏「性能」面板的读数口 ──
+     perfStatics = 静态事实（CPU 型号 / 核心数 / 平台 / 数据目录 / 应用目录，面板开一次采一次）
+     perfSample  = 轻量读数（CPU 总体与每核 / 内存 / GPU：利用率 · 显存 · 温度 · 功耗 · 风扇）
+     perfSystem  = 慢项（数据盘与应用盘剩余 + 网卡名单与累计收发 / 实时网速 + TCP 连接数 + 端口监听）
+     perfPorts   = 只探端口（手动刷新用） */
+  perfStatics: () => ipcRenderer.invoke('perf:statics'),
+  perfSample: () => ipcRenderer.invoke('perf:sample'),
+  perfSystem: (payload) => ipcRenderer.invoke('perf:system', payload || {}),
+  perfPorts: (payload) => ipcRenderer.invoke('perf:ports', payload || {}),
   music3RemovePluginMeta: () => ipcRenderer.invoke('music3:removePluginMeta'),
   onMusic3Progress: (cb) => {
     const handler = (_e, data) => {
@@ -392,6 +459,8 @@ contextBridge.exposeInMainWorld('api', {
   yue2Generate: (params) => ipcRenderer.invoke('yue:generate', params || {}),
   yue2CancelGenerate: (nodeId) => ipcRenderer.invoke('yue:cancelGenerate', nodeId),
   yue2GetLock: () => ipcRenderer.invoke('yue:getLock'),
+  /* 插件界面内嵌 console 用：读本插件后端日志尾部（只读，不再连带 probe + nvidia-smi） */
+  yue2ConsoleTail: (n) => ipcRenderer.invoke('yue:consoleTail', n),
   yue2RemovePluginMeta: () => ipcRenderer.invoke('yue:removePluginMeta'),
   onYueProgress: (cb) => {
     const handler = (_e, data) => {
@@ -437,6 +506,8 @@ contextBridge.exposeInMainWorld('api', {
   h3WorkflowTemplateExport: (mode) => ipcRenderer.invoke('h3:wfTemplateExport', mode),
   h3ForceKillBackend: () => ipcRenderer.invoke('h3:forceKillBackend'),
   h3GetLock: () => ipcRenderer.invoke('h3:getLock'),
+  /* 插件界面内嵌 console 用：读本插件后端日志尾部 */
+  h3ConsoleTail: (n) => ipcRenderer.invoke('h3:consoleTail', n),
   h3RemovePluginMeta: () => ipcRenderer.invoke('h3:removePluginMeta'),
   onH3Progress: (cb) => {
     const handler = (_e, data) => {
@@ -469,6 +540,15 @@ contextBridge.exposeInMainWorld('api', {
   llamaStop: () => ipcRenderer.invoke('llama:stop'),
   llamaPickInstallDir: () => ipcRenderer.invoke('llama:pickInstallDir'),
   llamaRemovePluginMeta: () => ipcRenderer.invoke('llama:removePluginMeta'),
+  /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
+  llamaConsoleTail: (n) => ipcRenderer.invoke('llama:consoleTail', n),
+  onLlamaNotice: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('llama:notice', handler);
+    return () => ipcRenderer.removeListener('llama:notice', handler);
+  },
   onLlamaProgress: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -502,6 +582,15 @@ contextBridge.exposeInMainWorld('api', {
   ttsRemovePluginMeta: () => ipcRenderer.invoke('tts:removePluginMeta'),
   ttsApiFetch: (opts) => ipcRenderer.invoke('tts:apiFetch', opts || {}),
   ttsGenerate: (opts) => ipcRenderer.invoke('tts:generate', opts || {}),
+  /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
+  ttsConsoleTail: (n) => ipcRenderer.invoke('tts:consoleTail', n),
+  onTtsNotice: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('tts:notice', handler);
+    return () => ipcRenderer.removeListener('tts:notice', handler);
+  },
   onTtsProgress: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -522,6 +611,43 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('tts:providerSynced', handler);
     return () => ipcRenderer.removeListener('tts:providerSynced', handler);
+  },
+
+  /* ── Breeze TTS 2 本地 TTS（第二套语音后端，见 breeze/main-breeze.js）──
+     画布节点 breeze_gen 走 breezeGenerate；插件卡片的启停 / 安装走其余通道。 */
+  breezeStatus: () => ipcRenderer.invoke('breeze:getStatus'),
+  breezeOpen: () => ipcRenderer.invoke('breeze:open'),
+  breezeClose: () => ipcRenderer.invoke('breeze:close'),
+  breezeInstall: (opts) => ipcRenderer.invoke('breeze:install', opts || {}),
+  breezeCancelInstall: () => ipcRenderer.invoke('breeze:cancelInstall'),
+  breezeStart: () => ipcRenderer.invoke('breeze:start'),
+  breezeStop: () => ipcRenderer.invoke('breeze:stop'),
+  breezePickInstallDir: () => ipcRenderer.invoke('breeze:pickInstallDir'),
+  breezeRemovePluginMeta: () => ipcRenderer.invoke('breeze:removePluginMeta'),
+  breezeApiFetch: (opts) => ipcRenderer.invoke('breeze:apiFetch', opts || {}),
+  breezeGenerate: (opts) => ipcRenderer.invoke('breeze:generate', opts || {}),
+  /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
+  breezeConsoleTail: (n) => ipcRenderer.invoke('breeze:consoleTail', n),
+  onBreezeNotice: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('breeze:notice', handler);
+    return () => ipcRenderer.removeListener('breeze:notice', handler);
+  },
+  onBreezeProgress: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('breeze:progress', handler);
+    return () => ipcRenderer.removeListener('breeze:progress', handler);
+  },
+  onBreezeConsoleChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('breeze:consoleChanged', handler);
+    return () => ipcRenderer.removeListener('breeze:consoleChanged', handler);
   },
   /* ── 本地语音转写：不再有独立后端 ──
      识别统一走 dsh 运行时的官方本地 SenseVoice（见上面的 dshSpeech / dshSpeechState /
@@ -579,6 +705,10 @@ contextBridge.exposeInMainWorld('api', {
   remotionGenerate: (params) => ipcRenderer.invoke('remotion:render', params || {}),
   remotionCancel: (nodeId) => ipcRenderer.invoke('remotion:cancelRender', nodeId),
   remotionRemovePluginMeta: () => ipcRenderer.invoke('remotion:removePluginMeta'),
+  /* 卡片「安装 / 重装」用：先选安装目录（系统选择框，不开插件窗），装不装得下由用户定 */
+  remotionPickInstallDir: () => ipcRenderer.invoke('remotion:pickInstallDir'),
+  /* 插件界面内嵌 console 用：读本插件后端日志尾部 */
+  remotionConsoleTail: (n) => ipcRenderer.invoke('remotion:consoleTail', n),
   onRemotionProgress: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -813,9 +943,12 @@ contextBridge.exposeInMainWorld('api', {
 
   /* ── 应用宿主（apps-store.js）：用户自建应用的根目录 / 云端目录 / 安装·更新·卸载 /
         导出 zip / 变更探测 / 独立窗口。
-        **两套根**（本次需求：下载的应用与开发的应用严格分开，删一个不误删另一个）：
+        **两套根**（下载的应用与开发的应用严格分开，删一个不误删另一个）：
           · kind='down' 下载根 → config.json 的 apps.installDir（老键名沿用）
           · kind='dev'  项目根 → config.json 的 apps.projectDir
+        **不再要求用户手动指定（本轮需求）**：没配过时主进程直接用默认根（画布所在的数据目录下
+        的 apps / apps-dev），并在列应用 / 下载 / 新建时把默认路径固化进 config.json；
+        界面只在用户主动点「更改目录…」时才走 appsRootSet / appsRootPick。
         不给 kind 一律按下载根（老调用点 / 老渲染层逐字不变）；解析结果落在应用目录内一律拒绝。
         应用窗口**内部**的桥另有一份：preload-app.js 的 window.appHost（无画布 / 无文件系统 /
         无账号 token），与本表互不重叠。 */
@@ -838,6 +971,12 @@ contextBridge.exposeInMainWorld('api', {
      dev = 开发中（新建 / 二次开发）；author = 作者；forkOf = 二次开发来源 { id, ownerId }。
      省略的键保持原样；回 { ok, id, patched, app }。 */
   appsSetMeta: (id, patch) => ipcRenderer.invoke('apps:setMeta', Object.assign({ id }, patch || {})),
+  /* 云端条目元数据 → 本机**所有同 id 副本**（下载根 + 项目根两边都写；与 appsSetMeta 是两条
+     独立通道，语义不重叠）：meta = { title?, description?, tags? } —— 只写传了的键，
+     title 同一个值同时进 app.json 的 title 与 name；icon / dev / forkOf / capabilities / version
+     一律不写（本机自己的事）。回 { ok, id, synced, missing, patched, results:[{ dir, kind, ok, error? }] }
+     —— 单条写失败不抛（记进该条 error），全失败仍 ok:true，由渲染层按 results 提示。 */
+  appsSyncCloudMeta: (id, meta) => ipcRenderer.invoke('apps:syncCloudMeta', Object.assign({ id }, meta || {})),
   /* 设计风格（新建时选 / 开发页换）：styles() 回清单（含预览图 data URL）+ 默认项，
      setStyle 按所选风格重写应用目录的入口页（契约见 templates/app-default/STYLES.md）。
      不传 preview:false 时带预览图；渲染层只在真开浮层时才要它。 */
@@ -874,12 +1013,6 @@ contextBridge.exposeInMainWorld('api', {
   appsVersions: (id) => ipcRenderer.invoke('apps:versions', { id }),
   appsRollback: (id, version) => ipcRenderer.invoke('apps:rollback', { id, version: version || '' }),
   appsExportZip: (id) => ipcRenderer.invoke('apps:exportZip', { id }),
-  /* 上架前体检（开发页那枚按钮）：**只读** —— 回 { ok, root, checkedAt, apps:[{ id, name,
-     version, files, packed, droppedCount, dropped:[{ rel, reason }], refsMissing:[{ ref, rel,
-     from }], ok }] }。reason：generated（本机生成物：画布 / 旧包 / 安装账本）/ storage
-     （应用自己的本机存档：上架包不带它）/ unknown（打包实现漏了它 —— 正是要报的那一类）。
-     id 非空 = 只查这一个应用；不传 = 全部本机应用。 */
-  appsPackAudit: (id) => ipcRenderer.invoke('apps:packAudit', { id: id || '' }),
   /* 上架窗（renderer/app-publish.js）：拍该应用自己的窗口（回 { ok, path, bytes, width, height }）；
      再把**现打的一份** zip 读回 base64（回 { ok, base64, sha256, bytes, version, name, path }）。
      两者都只回回执，渲染层不碰文件系统、不自己拼路径。 */
@@ -892,9 +1025,41 @@ contextBridge.exposeInMainWorld('api', {
      快照（文件数 / 字节 / 最新 mtime）供每轮开发结束后判断要不要重载预览。 */
   appsDevPreview: (id) => ipcRenderer.invoke('apps:devPreview', { id }),
   appsOpenWindow: (id) => ipcRenderer.invoke('apps:openWindow', { id }),
+  /* 按 id 关掉某个应用的独立窗口（主窗口侧也能关）：开发页在「预览因独立窗口已开而只读」
+     时给一颗「关掉独立窗口」，走它（同一条「先请应用收尾、再关」的链）。 */
+  appsCloseApp: (id) => ipcRenderer.invoke('apps:closeAppWindow', { id: id || '' }),
   /* 关掉**发起这次调用**窗口所属的应用（应用窗口里的 appHost.close 走同一通道） */
   appsCloseWindow: () => ipcRenderer.invoke('apps:closeWindow'),
   appsIsOpen: (id) => ipcRenderer.invoke('apps:isOpen', { id }),
+  /* ── 预览态宿主桥（本轮需求：开发页中栏的预览 iframe 也能连入 MTNode）──
+     预览页没有 preload（window.appHost 本来是 undefined），所以那座桥是**三层**：
+     预览页里的注入小助手（apps-store.js 的 PREVIEW_BRIDGE）↔ 开发页中继 ↔ 这里这几条通道。
+     主进程按「预览租约」（appId + 每帧一枚 token）认应用，走**与独立窗口逐字同一条**宿主实现；
+     只有主窗口能登记租约（应用窗口 / 别处一律 not_main）。 */
+  appsPreviewRegister: (arg) => ipcRenderer.invoke('apps:previewRegister', arg || {}),
+  appsPreviewRelease: (arg) => ipcRenderer.invoke('apps:previewRelease', arg || {}),
+  appsPreviewCall: (arg) => ipcRenderer.invoke('apps:previewCall', arg || {}),
+  /* 预览现况（当前租约 + 是不是只读）：开发页用它把「应用已在独立窗口运行 ⇒ 预览只读」
+     实时写进状态行并发给预览页（窗口开关事件到点时问一次）。 */
+  appsPreviewState: () => ipcRenderer.invoke('apps:previewState'),
+  /* 预览态流式事件（文本 delta / 出图进度 / 语音状态）：与独立窗口的 apps:hostStream
+     同一条事件，多带一个 appId（开发页按它把事件转给中栏那一帧）。 */
+  onAppsHostStream: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('apps:hostStream', handler);
+    return () => ipcRenderer.removeListener('apps:hostStream', handler);
+  },
+  /* dsh:event 的通用订阅（开发页用它接住预览里被禁 / 被拒调用发的 preview-notice 帧
+     与语音状态帧；其余类型的帧它自己忽略）。 */
+  dshOnEventAny: (cb) => {
+    const handler = (_e, msg) => {
+      try { cb(msg); } catch (_) {}
+    };
+    ipcRenderer.on('dsh:event', handler);
+    return () => ipcRenderer.removeListener('dsh:event', handler);
+  },
   /* 应用数据目录（应用中心库页 / 开发页）：打开这个应用的数据文件夹
      （默认 <数据目录>/apps-data/<id>/，用户改过数据文件夹则是他选的那个）——
      库 / 开发页每张卡片右侧那颗 📂 走它；回 { ok, dir } 或一句失败。

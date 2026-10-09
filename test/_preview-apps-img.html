@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>应用中心封面「界面先出 · 图像一次到位」真浏览器验证台（test/_preview-apps-img.html）</title>
+<!-- 验证台口径（人工跑；配套服务端 test/_verify-apps-img.cjs）：
+     这里只挂**仓库里真实的那两份**（renderer/app-apps-img.js + renderer/css/apps.css），
+     不抄逻辑、不改参数。量三件事：
+       [1] 建卡那一刻：24 张封面**一张请求都不发**（全是 1×1 透明占位）——「先出界面」；
+       [2] 滚动时：图按「进视口」才取（懒加载真的在省请求，不是一次全拉）；
+       [3] 到图那一刻：同一批（进视口时间相近）的图**同一帧一起显形** ——「一次性出现」。
+     服务端 /img?d=300 故意慢 300ms、每张再按序号叠 0~120ms 抖动：
+     模拟「图一张张到」的真实网络 —— 正好用来验模块把同一批合成一次显形。
+     判定：按显形时刻聚类，看**组内首末相隔**是否 ≤ 1 帧（16.7ms）；组数越少越接近一次到位。 -->
+<link rel="stylesheet" href="/renderer/css/apps.css">
+<style>
+  html, body { margin: 0; background: #0d1016; color: #d8dee8; font: 13px/1.6 system-ui, "Segoe UI", sans-serif; }
+  .bar { position: sticky; top: 0; z-index: 5; padding: 8px 14px; background: #161b25; border-bottom: 1px solid #2a3342; font-family: Consolas, monospace; font-size: 12px; }
+  .bar b { color: #ff8f2e; }
+  .bar .ok { color: #5fd68a; }
+  .bar .bad { color: #ff5f56; }
+  .apps-hub-body { padding: 14px; }
+  .note { color: #7f8a9c; font-size: 12px; padding: 0 14px 10px; }
+  /* 自适应列数：窗口宽度决定每行几张（固定 4 列时窄窗口第 4 列会被横向裁掉、永远不进视口 ——
+     验证台自己的坑，实测踩过：那一列停在占位） */
+  .apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; max-width: 1200px; }
+</style>
+</head>
+<body>
+<div class="bar" id="bar">准备中…</div>
+<div class="note">24 张 16:9 封面，每张服务端故意慢 <b>300ms + 0~120ms 抖动</b>；页面会自己从顶部滚到底部（分批进视口）。</div>
+<div class="apps-hub-body" id="body"><div class="apps-grid" id="grid"></div></div>
+
+<script src="/renderer/app-apps-img.js"></script>
+<script>
+(function () {
+  var N = 24;
+  var DELAY = 300;
+  var grid = document.getElementById("grid");
+  var bar = document.getElementById("bar");
+  var imgs = [];
+  var revealAt = [];
+  var t0 = performance.now();
+
+  /* 卡片结构照真应用（.apps-tile > .apps-cover > .apps-cover-img + 兜底底 + 左下标题），
+     省略与本验证无关的图标按钮。 */
+  for (var i = 0; i < N; i++) {
+    var tile = document.createElement("div");
+    tile.className = "apps-tile";
+    var cover = document.createElement("div");
+    cover.className = "apps-cover";
+    var jitter = (i * 37) % 121;
+    var img = appAppsImgDefer("apps-cover-img", "/img?d=" + (DELAY + jitter) + "&i=" + i, false);
+    imgs.push(img);
+    cover.appendChild(img);
+    var fb = document.createElement("div");
+    fb.className = "apps-cover-fb";
+    cover.appendChild(fb);
+    var cap = document.createElement("div");
+    cap.className = "apps-cover-cap";
+    var nm = document.createElement("div");
+    nm.className = "apps-cover-name";
+    nm.textContent = "演示应用 " + (i + 1);
+    cap.appendChild(nm);
+    cover.appendChild(cap);
+    tile.appendChild(cover);
+    grid.appendChild(tile);
+  }
+
+  /* [1] 建完立刻量：全是占位（data: URI）、一个 /img 请求都没发出 */
+  var placeholders = imgs.filter(function (im) { return /^data:image\//.test(String(im.src)); }).length;
+  var holds = imgs.filter(function (im) { return im.dataset.appsImg === "hold"; }).length;
+  var netAtBuild = performance.getEntriesByType("resource").filter(function (r) { return r.name.indexOf("/img?") >= 0; }).length;
+
+  /* 显形时刻：MutationObserver 盯 class（真浏览器里显形 = 加上 .apps-img-in） */
+  var mo = new MutationObserver(function (muts) {
+    muts.forEach(function (m) {
+      if (m.target.classList && m.target.classList.contains("apps-img-in")) {
+        revealAt.push({ at: performance.now(), el: m.target });
+      }
+    });
+  });
+  imgs.forEach(function (im) { mo.observe(im, { attributes: true, attributeFilter: ["class"] }); });
+
+  /* [2] 自己滚一遍：让图分批进视口（模拟用户滚到列表下方） */
+  var steps = [];
+  for (var y = 0; y <= document.body.scrollHeight; y += 160) steps.push(y);
+  var si = 0;
+  (function step() {
+    if (si >= steps.length) return wait();
+    window.scrollTo(0, steps[si++]);
+    setTimeout(step, 90);
+  })();
+
+  function wait() {
+    var t = performance.now();
+    var timer = setInterval(function () {
+      if (revealAt.length < N && performance.now() - t < 8000) return;
+      clearInterval(timer);
+      finish();
+    }, 16);
+  }
+
+  function finish() {
+    var ts = revealAt.map(function (r) { return r.at; }).sort(function (a, b) { return a - b; });
+    /* 按 1 帧（16.7ms）把显形时刻聚成组：组内 = 同一帧一起出现 */
+    var groups = [];
+    ts.forEach(function (t) {
+      var g = groups[groups.length - 1];
+      if (g && t - g.last <= 17) {
+        g.last = t;
+        g.n++;
+      } else {
+        groups.push({ first: t, last: t, n: 1 });
+      }
+    });
+    var worst = 0;
+    groups.forEach(function (g) { worst = Math.max(worst, g.last - g.first); });
+    var net = performance.getEntriesByType("resource").filter(function (r) { return r.name.indexOf("/img?") >= 0; });
+    var ends = net.map(function (r) { return r.responseEnd; });
+    var res = {
+      n: N,
+      placeholdersAtBuild: placeholders,
+      holdsAtBuild: holds,
+      netAtBuild: netAtBuild,
+      requested: net.length,
+      revealed: ts.length,
+      groups: groups.length,
+      groupSizes: groups.map(function (g) { return g.n; }),
+      worstSpreadMs: Math.round(worst * 10) / 10,
+      worstSpreadFrames: Math.round((worst / 16.7) * 100) / 100,
+      netSpreadMs: ends.length ? Math.round(Math.max.apply(null, ends) - Math.min.apply(null, ends)) : -1,
+      firstRevealAtMs: ts.length ? Math.round(ts[0]) : -1,
+      verdict:
+        netAtBuild === 0 && placeholders === N && ts.length === N && worst <= 17
+          ? "once"
+          : netAtBuild === 0 && ts.length === N
+            ? "batched"
+            : "bad",
+    };
+    window.__APPS_IMG_RESULT = res;
+    bar.innerHTML =
+      "建卡即请求：<b>" + res.netAtBuild + "</b> 张（应为 0，全是占位）· 滚动后请求 <b>" + res.requested + "</b> 张" +
+      " · 显形 <b>" + res.revealed + "/" + N + "</b> · 分 <b>" + res.groups + "</b> 组（" + res.groupSizes.join("+") + "）" +
+      " · 组内首末相差 <b>" + res.worstSpreadMs + "ms</b>（" + res.worstSpreadFrames + " 帧）" +
+      " · 网络首末相差 " + res.netSpreadMs + "ms" +
+      " · 判定 <b class='" + (res.verdict === "bad" ? "bad" : "ok") + "'>" +
+      (res.verdict === "once" ? "一次到位" : res.verdict === "batched" ? "分批但同帧" : "有问题") + "</b>";
+  }
+})();
+</script>
+</body>
+</html>

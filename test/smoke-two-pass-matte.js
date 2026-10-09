@@ -226,6 +226,12 @@ const sandbox = {
       },
     },
   },
+  /* 台账登记口（app-nodes.js）：runBgRmSecondPass 成功后会调它记「中转图像多一次调用」。
+     这里只记录，不问实现 —— 抽出来的函数少了它就会 ReferenceError 整段崩。 */
+  imgCalls: [],
+  tokNoteImageCall(node, spec, n) {
+    sandbox.imgCalls.push({ node, spec, n });
+  },
 };
 vm.createContext(sandbox);
 
@@ -1233,6 +1239,7 @@ async function secondPassContract() {
     "锚定能力判定：只有能把基准图下发的两条通路算数",
   );
   sandbox.calls.length = 0;
+  sandbox.imgCalls.length = 0;
   const ret = await G("runBgRmSecondPass")(node0, spec, basePath, "柴犬", 0);
   eqNum(sandbox.calls.length, 1, "第 2 通道只发一次请求");
   const s2 = sandbox.calls[0];
@@ -1246,6 +1253,9 @@ async function secondPassContract() {
   eqStr(s2.model, spec.model, "沿用同一个模型");
   eqStr(s2.provider, spec.provider, "沿用同一个服务商");
   ok(typeof ret === "string" && ret.indexOf(".png") > 0, "第 2 通道图按 png 落盘并返回路径");
+  /* 中转图像按张计费：第 2 通道是一次真实调用，得单独记一张（否则台账少一半） */
+  eqNum(sandbox.imgCalls.length, 1, "第 2 通道成功后记一次「按张」台账（中转按 2 次调用计费）");
+  eqNum(sandbox.imgCalls[0] && sandbox.imgCalls[0].n, 1, "记的就是 1 张");
   eqArr(spec.images, [userRef], "第 1 请求的规格不被就地改写");
   /* 锚不上就抛错，绝不另画一张；缺基准图同样直接失败 */
   const bad = {
@@ -1322,7 +1332,10 @@ console.log("\n[14] 透明背景（直出 Alpha）与蒙版局部重绘：参数
   eqStr(form.quality, "high", "quality 直传 multipart");
   eqStr(form.background, "transparent", "background 直传 multipart");
   eqStr(form.output_format, "png", "background=transparent 强制 output_format=png（配 jpeg 会 400）");
-  eqStr(form.mask, maskP, "mask 进 multipart（透明区 = 允许重绘）");
+  /* mask 按**对象**下发（main.js apiMaskSizeFor / 归一那段要用 base 把蒙版与 image[0]
+     重采样成同一尺寸）：path = 蒙版文件，base = 首张参考图。 */
+  eqStr(form.mask && form.mask.path, maskP, "mask 进 multipart（透明区 = 允许重绘）");
+  eqStr(form.mask && form.mask.base, ref, "mask 带上 base（= 首张参考图，主进程据它把蒙版与图片归一成同尺寸）");
   eqStr(req.nativeRefImage, true, "带蒙版时参考图原尺寸下发：蒙版按原图像素画，缩过就与原图对不上");
   /* 文生图（无参考图）：没有原图就没有 mask，其余参数照发 */
   const gen = M("buildRequestSpec")(
@@ -1358,8 +1371,12 @@ console.log("\n[14] 透明背景（直出 Alpha）与蒙版局部重绘：参数
   };
   eqStr(maskReq({ w: 1280, h: 848 }, "1280x544").size, "1280x848", "带蒙版：size 钉成原图像素（节点自己选的 1280x544 不生效）");
   eqStr(maskReq({ w: 2048, h: 1360 }, "1280x544").size, "2048x1360", "带蒙版：命中自定义尺寸约束 → 按原图像素原样出图");
-  eqStr(maskReq({ w: 1000, h: 1000 }, "1280x1280").size, "auto", "带蒙版：原图像素命中不了约束 → 退回 auto（宁可 auto 也不错位）");
-  eqStr(maskReq({ w: 4000, h: 1000 }, "1280x720").size, "auto", "带蒙版：原图尺寸不满足约束（4000 非 16 倍数）→ auto");
+  /* 现行口径（main.js apiMaskSizeFor + gptImageLegalDims，2026-09-12 起）：原图像素落不进
+     合法档时**不再退回 auto**，而是就近归一到最近的合法档（16 倍数 / 长边 ≤3840 / 长宽比
+     ≤3:1 / 总像素在区间内），蒙版与 image[0] 一起按同一档重采样 —— 宁可归一也不错位
+     （退回 auto 时「图」与「蒙版」由服务端各自缩放，蒙版边界会漂）。 */
+  eqStr(maskReq({ w: 1000, h: 1000 }, "1280x1280").size, "1008x1008", "带蒙版：原图 1000×1000 不是合法档 → 就近归一到 1008×1008（不退回 auto）");
+  eqStr(maskReq({ w: 4000, h: 1000 }, "1280x720").size, "3456x1152", "带蒙版：原图 4000×1000 超长边 / 比例越界 → 归一到 3456×1152");
   eqStr(maskReq({ w: 3840, h: 2160 }, "1280x720").size, "3840x2160", "带蒙版：正好卡在约束边界（3840 / 8294400）也算命中");
   mctx._dims = null;
   eqStr(maskReq(null, "1280x544").size, "auto", "带蒙版：读不出原图尺寸 → auto");

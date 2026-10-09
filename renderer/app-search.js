@@ -240,7 +240,8 @@ function gsPaintLabels() {
   const closeBtn = layer.querySelector("#gsClose");
   const foot = layer.querySelector("#gsFootHint");
   if (input) input.placeholder = I18n.t("搜索画布、会话、专家团、素材、工具、技能与文档…");
-  if (closeBtn) closeBtn.title = I18n.t("关闭（Esc）");
+  /* 键位只在脚注里讲一次（↑↓ 选择 · Enter 打开 · Esc 关闭），关闭键不再重复 */
+  if (closeBtn) closeBtn.title = I18n.t("关闭");
   if (foot)
     foot.textContent =
       I18n.t("↑↓ 选择 · Enter 打开 · Esc 关闭") +
@@ -546,7 +547,13 @@ async function gsRun(keepShown) {
   };
   const jobs = [
     gsCollectCanvas(terms, push),
-    gsCollectSessions(terms, push),
+    /* 会话正文是懒加载的（agentSessions 拆到 agent-sessions/，见 app-assist.js）：
+       全局搜索要连历史消息一起搜，所以先把还没读回来的正文后台批量读齐再收集 ——
+       这一格（标题命中）会等它，其余类目照常先出（每类落地各自重绘）。
+       用户已确认口径：读齐后一次给全，宁可慢一点也不能出现「搜不到历史消息」。 */
+    (typeof agentEnsureAllSessionBodies === "function"
+      ? agentEnsureAllSessionBodies().then(() => gsCollectSessions(terms, push))
+      : gsCollectSessions(terms, push)),
     gsCollectTeam(terms, push),
     gsCollectAssets(terms, push),
     gsCollectTools(terms, push),
@@ -1138,7 +1145,7 @@ function gsDocSections(cat) {
 const GS_GUIDES = [
   "input_text", "input_image", "input_audio", "input_video", "input_any", "input_file",
   "proc_text", "proc_image", "agent_task", "db_table", "remotion",
-  "music_gen", "tts_gen", "video_gen", "save", "save_pdf", "control", "judge", "task",
+  "music_gen", "tts_gen", "breeze_gen", "video_gen", "save", "save_pdf", "control", "judge", "task",
   "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter",
   "mutex", "split", "merge", "super", "db_replica", "global", "execute",
   "tool", "function", "net_recv", "net_send",
@@ -1395,7 +1402,7 @@ async function gsGotoSession(g) {
   }
   if (typeof setView === "function" && S.view !== "agent") setView("agent");
   S.agentActiveId = st.id;
-  if (typeof persistAgentSession === "function") await persistAgentSession();
+  if (typeof agentFlushSessionSaveQuiet === "function") await agentFlushSessionSaveQuiet();
   if (typeof renderAgentSession === "function") renderAgentSession();
   if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
   if (g.msgIndex >= 0) {

@@ -130,7 +130,7 @@ You can also save a built-in FL2VA / R2V chain into the library with "save built
 
 - Parameters: every field "promoted to a node parameter" becomes a port — **port 1 = text · port 2+ = material**. Any third-party node pack a graph uses must be installed in your own ComfyUI; MTNode no longer ships any third-party node pack.
 - **Limitation**: MTNode only sends `/prompt` to ComfyUI and does **not** load third-party packs' UI or server routes.
-- Prerequisite: every node used by the graph must already exist in your ComfyUI, and **do not enable "CPU VAE"** — VideoVAE decode raises a dtype error under CPU VAE.
+- Prerequisite: every node used by the graph must already exist in your ComfyUI, and CPU VAE stays off (VideoVAE decode raises a dtype error under CPU VAE) — don't add `--cpu-vae` yourself when starting the backend manually either.
 
 ### Key parameters
 

@@ -21,6 +21,13 @@ Two host flavours expose different bridge names (the scaffold detects both, so y
 
 ### Where it lives, where it runs
 
+**You never have to pick the app root folder**: by default it sits under the **data folder your canvases
+use** — downloaded apps in `<data dir>\apps`, apps you develop in `<data dir>\apps-dev`, app data in
+`<data dir>\apps-data\<downloaded|dev>\<id>`. The first time a root is really needed (listing apps /
+downloading / creating), MTNode writes those two default paths into `config.json`
+(`apps.installDir` / `apps.projectDir`); to move them elsewhere use the "App folder" button menu on the
+Library page (download root) or "Project root … Change…" on the Development page.
+
 | Location | Contents |
 | --- | --- |
 | App install root `<id>\` | the app's static files (**update / uninstall replaces the whole folder — never write data here**) |
@@ -30,7 +37,8 @@ Two host flavours expose different bridge names (the scaffold detects both, so y
 
 ## The Library and Development pages
 
-The App Center has three pages: **Apps** (cloud catalog), **Library** (installed here, not in development yet) and
+The App Center has four pages: **Apps** (cloud catalog), **My apps** (what I published to the cloud — edit info /
+unpublish / delete, see `app-publish.md`), **Library** (installed here, not in development yet) and
 **Development** (apps being built). The two lists never overlap — the line between them is one flag in the app's own `app.json`:
 
 | State | Source of truth | Appears on | How to enter / leave |

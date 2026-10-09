@@ -1617,7 +1617,7 @@ function planTouch(st) {
   } catch (_) {}
   try {
     if (typeof persistAgentSession === "function")
-      persistAgentSession().catch(() => {});
+      agentTouchSession().catch(() => {});
   } catch (_) {}
   try {
     if (planViewIs(st)) renderAgentPlanPanel(st);
@@ -1708,7 +1708,7 @@ function planDrop(st, reason) {
   } catch (_) {}
   try {
     if (typeof persistAgentSession === "function")
-      persistAgentSession().catch(() => {});
+      agentTouchSession().catch(() => {});
   } catch (_) {}
   try {
     if (planViewIs(st)) renderAgentPlanPanel(st);
@@ -2014,7 +2014,8 @@ async function planRunParallel(st, tasks) {
     at: Date.now(),
   });
   try {
-    await persistAgentSession();
+    /* 点名这条会话：并行组里每个 owner 各有自己的会话，缺省会盖到眼前那条身上 */
+    await agentTouchSession(owner);
   } catch (_) {}
   try {
     renderAgentSessionSidebar();
@@ -2266,7 +2267,8 @@ async function planOfferDrain() {
               at: Date.now(),
             });
             try {
-              await persistAgentSession();
+              /* 点名这条会话：并行计划里每个 item 各有自己的会话，缺省会盖到眼前那条身上 */
+              await agentTouchSession(item.st);
             } catch (_) {}
             try {
               if (planViewIs(item.st)) renderAgentSession();

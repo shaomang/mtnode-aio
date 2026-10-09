@@ -48,7 +48,12 @@ const CATALOG = {
       entry: "index.html",
       bytes: 18455,
       createdAt: 1,
-      updatedAt: 2,
+      /* 与线上目录同一份：这条应用有一张上架截图（原图 + 列表小图），updatedAt 是真时间戳 ——
+         详情窗的「左图 + 概览缩略图条」与右列「更新时间」都要靠它俩才量得出来
+         （占位值 0/1/2 已按本轮口径当「没有这个值」，见 docs/apps-market.md §十三）。 */
+      shots: ["shots/sudoku__u_b33738db79310ff5/1.png"],
+      shotsThumb: ["shots/sudoku__u_b33738db79310ff5/1.list.png"],
+      updatedAt: 1791505561835,
       tips: { count: 3, totalYuan: 120 },
       trunk: true,
       installed: true,
@@ -153,7 +158,14 @@ window.__geom = null;
   const box = function (el) {
     if (!el) return null;
     const r = el.getBoundingClientRect();
-    return { w: Math.round(r.width), h: Math.round(r.height), ar: +(r.width / (r.height || 1)).toFixed(3) };
+    /* x / y 也要（本轮版面是「左图 + 右信息」两栏：光有宽高看不出谁在左谁在右） */
+    return {
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      ar: +(r.width / (r.height || 1)).toFixed(3),
+    };
   };
   const go = async function () {
     /* ① 库页（本机已下载）：与本机条目一起验「运行 + ⓘ」那排图标与封面 */
@@ -204,7 +216,34 @@ window.__geom = null;
     });
     out.detailOpened = window.openAppsDetail("sudoku");
     await new Promise((r) => setTimeout(r, 2500));
-    out.detailCover = box(document.querySelector(".apps-detail-head .apps-cover-big"));
+    /* 本轮版面（docs/apps-market.md §十三）：头部 = 左图（大图 + 概览缩略图条）+ 右信息两栏，
+       文字介绍紧跟头部下方通栏 —— 小封面 .apps-cover-big 已从头部撤掉，这里量它的缺席。 */
+    const head = document.querySelector(".apps-detail-head");
+    out.detailHead = head
+      ? { dir: getComputedStyle(head).flexDirection, container: getComputedStyle(head).containerType }
+      : null;
+    out.detailMedia = box(document.querySelector(".apps-detail-head .apps-detail-media"));
+    out.detailBig = box(document.querySelector(".apps-gallery-big"));
+    out.detailStripThumbs = document.querySelectorAll(".apps-gallery-thumb").length;
+    out.detailWho = box(document.querySelector(".apps-detail-head .apps-detail-who"));
+    out.detailInfoRows = [].slice
+      .call(document.querySelectorAll(".apps-detail-head .apps-detail-info .apps-detail-row"))
+      .map(function (r) {
+        const k = r.querySelector(".apps-detail-k"), v = r.querySelector(".apps-detail-v");
+        return { k: k ? k.textContent : "", v: v ? v.textContent : "" };
+      });
+    const sc = document.querySelector(".apps-detail-scroll");
+    out.detailScrollFirst = sc && sc.firstElementChild ? sc.firstElementChild.className : "";
+    const dm = document.querySelector(".apps-detail-desc .apps-detail-md");
+    out.detailDescIsMd = !!(dm && dm.classList.contains("md"));
+    out.detailDesc = dm ? dm.textContent.replace(/\s+/g, " ").slice(0, 120) : null;
+    out.detailHeadCoverBig = document.querySelectorAll(".apps-detail-head .apps-cover-big").length;
+    out.detailBodyRowKeys = [].slice
+      .call(document.querySelectorAll(".apps-detail-scroll .apps-detail-rows .apps-detail-row"))
+      .map(function (r) { const k = r.querySelector(".apps-detail-k"); return k ? k.textContent : ""; });
+    /* 窄窗那一档**不在这里量**：它要把容器压到 640px，量完这一页就不是「宽窗」的样子了，
+       而主进程的宽窗截图还要用这一版 DOM（见文件末尾那段：先宽窗截图 → 再压窄 → 再截图）。 */
+    out.detailHeadCoverBigNone = document.querySelectorAll(".apps-detail-head .apps-cover-big").length;
     out.tipbarCount = document.querySelectorAll(".apps-detail-tipbar").length;
     out.tipRecordCount = document.querySelectorAll(".apps-detail-tipbar.tip-record").length;
     out.tipButtonCount = document.querySelectorAll(".apps-detail-tipbar .tip-btn").length;
@@ -264,5 +303,23 @@ app.whenReady().then(async () => {
     geo = await readGeom();
   }
   console.log("GEOM", JSON.stringify(geo, null, 2));
+  /* 窄窗那一档：把头部**容器**（.apps-detail-top）压到 640px（< 720px）→ 应当上下堆叠
+     （先大图 + 缩略图条，再信息列）。放最后做，因为改完这一页就不是宽窗的样子了。 */
+  const narrow = JSON.parse(
+    await win.webContents.executeJavaScript(
+      '(function(){var d=document.getElementById("f").contentWindow.document,' +
+        't=d.querySelector(".apps-detail-top"),h=d.querySelector(".apps-detail-head"),w=d.querySelector(".apps-detail-who"),m=d.querySelector(".apps-detail-media");' +
+        'if(t){t.style.maxWidth="640px";}' +
+        'var r=w?w.getBoundingClientRect():null,rm=m?m.getBoundingClientRect():null;' +
+        'return JSON.stringify({dir:h?getComputedStyle(h).flexDirection:null,' +
+        'whoX:r?Math.round(r.left):null,whoY:r?Math.round(r.top):null,whoWidth:r?Math.round(r.width):null,' +
+        'mediaBottom:rm?Math.round(rm.bottom):null});})()',
+      true,
+    ),
+  );
+  console.log("NARROW", JSON.stringify(narrow));
+  await new Promise((r) => setTimeout(r, 600));
+  fs.writeFileSync(path.join(OUT, "app-detail-narrow.png"), (await win.webContents.capturePage()).toPNG());
+  console.log("SHOT", path.join(OUT, "app-detail-narrow.png"));
   app.exit(0);
 });

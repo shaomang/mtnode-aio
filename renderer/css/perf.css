@@ -1,0 +1,227 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   顶栏「性能」面板（renderer/app-perf.js · 主进程 perf-probe.js）
+
+   本次需求：「显存」按钮改名「性能」，面板 = 性能总览 + 「显存与本地模型」（原内容）
+   + CPU / 内存 / GPU / 磁盘 / 网络明细。本文件只放 .perf-* 这一块自己的皮：
+   显存区块沿用 layout.css 的 .vram-*（同一个 vramRenderPanel 写进 .vram-slot），
+   按钮沿用 layout.css 的 .btn-perf（暖橙红，与工具库紫 / 素材库青 / 工坊橙区分）。
+   配色一律用 base.css 的主题变量，亮色主题覆盖在文件末尾。
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.perf-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px
+}
+
+.perf-data {
+  display: flex;
+  flex-direction: column;
+  gap: 10px
+}
+
+.perf-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px
+}
+
+.perf-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: .3px
+}
+
+.perf-empty {
+  color: var(--muted);
+  font-size: 12px
+}
+
+.perf-foot {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5
+}
+
+.perf-sub {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px
+}
+
+/* 占用条：标签 + 轨道 + 数值（读不到时 .na，轨道空着、数值写「量不到」） */
+.perf-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px
+}
+
+.perf-bar-label {
+  flex: 0 0 auto;
+  min-width: 52px;
+  font-weight: 600;
+  color: var(--ink)
+}
+
+.perf-bar-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden
+}
+
+.perf-bar-track i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: #4ade80;
+  transition: width .3s ease
+}
+
+/* 半载暖橙、近满红：与显存面板的状态点同一套语义色 */
+.perf-bar.mid .perf-bar-track i {
+  background: #ffab40
+}
+
+.perf-bar.hi .perf-bar-track i {
+  background: #ef5350
+}
+
+.perf-bar.na .perf-bar-track i {
+  background: var(--muted)
+}
+
+.perf-bar-value {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+/* 明细行：名称 → 值（可带一句补充） */
+.perf-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px
+}
+
+.perf-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px
+}
+
+.perf-row-name {
+  flex: 0 0 auto;
+  min-width: 52px;
+  color: var(--muted)
+}
+
+.perf-row-val {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.perf-row-extra {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+.perf-row.up .perf-row-val {
+  color: #4ade80
+}
+
+.perf-row.down .perf-row-val {
+  color: var(--muted)
+}
+
+/* 每核占用：一列小柱子（高度 = 该核占用率） */
+.perf-cores {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  flex-wrap: wrap;
+  min-height: 34px
+}
+
+.perf-core {
+  flex: 1 1 auto;
+  min-width: 6px;
+  max-width: 22px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden
+}
+
+.perf-core i {
+  display: block;
+  width: 100%;
+  /* 父级是 flex 列且 align-items:flex-end（子项不拉伸），所以这里要显式给 100% 高：
+     内联 style.height = 占用率% 才有可解析的基准，否则柱子永远是 0 高 */
+  height: 100%;
+  background: #4ade80;
+  transition: height .3s ease
+}
+
+.perf-core.mid i {
+  background: #ffab40
+}
+
+.perf-core.hi i {
+  background: #ef5350
+}
+
+.perf-core.na i {
+  background: transparent
+}
+
+/* 面板内的小动作行（查看数据目录占用明细…） */
+.perf-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap
+}
+
+/* 显存区块的宿主槽：内容由 renderer/app-vram.js 写进来（样式仍在 layout.css 的 .vram-*） */
+.perf-vram-card .vram-slot {
+  display: block
+}
+
+/* ── 分组壳：概览的占用条组 / 每张显卡一组 / 网卡行一组 ─────────────────────
+   面板改成「结构骨架 + keyed 补丁」后，这几处需要一个稳定的父节点把同一组行圈起来
+   （否则每个 tick 重排兄弟节点）。只做版式，不加配色。 */
+.perf-pairs,
+.perf-gpu-one,
+.perf-ifaces {
+  display: flex;
+  flex-direction: column;
+  gap: 6px
+}
+
+/* ── 亮色主题 ───────────────────────────────────────────────────────────── */
+body.theme-light .perf-bar-track {
+  background: rgba(0, 0, 0, .12)
+}
+
+body.theme-light .perf-core {
+  border-color: rgba(0, 0, 0, .14)
+}

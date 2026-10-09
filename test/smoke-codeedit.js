@@ -702,7 +702,7 @@ HAS(DEV, 'devDraftTextareaOpts(node, "fnDev"', "草稿复用 devDraftTextareaOpt
 HAS(DEV, 'devDraftSet(node, "fnDev", t)', "边写边留存：取消 / Esc / 被顶掉都不丢");
 HAS(DEV, 'devDraftSet(node, "fnDev", "")', "提交后清草稿（不重复带上次内容）");
 HAS(DEV, "agentSessions().unshift(sess)", "新会话进会话列表");
-HAS(DEV, "await persistAgentSession()", "会话落盘");
+HAS(DEV, "await agentTouchSession()", "会话落盘（本轮口径：touch = 盖时间戳 + 落盘）");
 HAS(DEV, "scheduleSave(true)", "节点上的 fnDevSessionIds 立即存盘");
 HAS(DEV, "renderCanvas()", "重绘卡片（按钮 title 的会话数随之更新）");
 HAS(DEV, "updateRunQueuePanel()", "运行队列面板按绑定会话口径重算");

@@ -76,8 +76,6 @@ fs.writeFileSync(
         downloads: 0,
         createdAt: 1,
         updatedAt: 1,
-        unpublished: false,
-        unpublishedAt: 0,
       },
     ],
     notifications: [],
@@ -128,6 +126,24 @@ try {
   ok(b1.length > 1024 && b1.length < fixture.length, "① 缩略图 " + b1.length + " 字节（源图 " + fixture.length + "，变小了）");
   const img = decodeImage(b1);
   ok(!!img && img.w === 640 && img.h === 360, "② 解回来是 640×360：" + (img ? img.w + "×" + img.h : "null"));
+  /* ⑦ 像素也要对（用户报的「缩略图有误」= 一片彩噪，尺寸却完全正常）：
+     夹具是四象限（左上红 / 右上绿 / 左下蓝 / 右下白），缩略图各象限中心必须还是那四种颜色 ——
+     只看尺寸的话，PNG 滤波写错那种 bug（写出来自洽、真解码器读成乱图）照样全绿。
+     判据用「哪个通道最大」而不是精确值：面积平均下采样后颜色会略偏，但色相关系不会变。 */
+  const at = (x, y) => {
+    const o = (Math.round(y) * img.w + Math.round(x)) * 4;
+    return { r: img.rgba[o], g: img.rgba[o + 1], b: img.rgba[o + 2] };
+  };
+  if (img) {
+    const tl = at(img.w * 0.25, img.h * 0.25);
+    const tr = at(img.w * 0.75, img.h * 0.25);
+    const bl = at(img.w * 0.25, img.h * 0.75);
+    const br = at(img.w * 0.75, img.h * 0.75);
+    ok(tl.r > tl.g + 60 && tl.r > tl.b + 60, "⑦ 左上象限还是红：rgb(" + tl.r + "," + tl.g + "," + tl.b + ")");
+    ok(tr.g > tr.r + 60 && tr.g > tr.b + 60, "⑦ 右上象限还是绿：rgb(" + tr.r + "," + tr.g + "," + tr.b + ")");
+    ok(bl.b > bl.r + 60 && bl.b > bl.g + 60, "⑦ 左下象限还是蓝：rgb(" + bl.r + "," + bl.g + "," + bl.b + ")");
+    ok(br.r > 200 && br.g > 200 && br.b > 200, "⑦ 右下象限还是白：rgb(" + br.r + "," + br.g + "," + br.b + ")");
+  }
   ok(fs.existsSync(path.join(dataDir, "app-thumbs", APP_ID + "__" + OWNER + ".png")), "④ 缓存落到 data/app-thumbs/<id>__<作者>.png");
 
   const r2 = await fetch(url);

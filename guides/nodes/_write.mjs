@@ -367,7 +367,7 @@ const guides = {
   },
   music_gen: {
     title: "Minimax Music 3（音乐生成）",
-    body: `画布右键 → **处理节点 › 音频生成 › Minimax Music 3**。本地 MiniMax Music 3 后端（Gradio）。**每次运行只生成一个音频文件**（\`.wav\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+    body: `画布右键 → **处理节点 › 音频生成 › Minimax Music 3**。本地 MiniMax Music 3 后端（Gradio）。**每次运行只生成一个音频文件**（\`.wav\`），写入节点自带的 \`outputPath\`。**输出路径也可以留空**：把它的**数据输出**接到下游的「保存」节点，路径就归那个保存节点管 —— 产物先落**应用托管目录**（应用数据目录下的画布资产 / 临时区），再由那个保存节点落盘到你填的保存路径。
 
 ## 端子
 - **输入**：端口 0 = 提示词 · 端口 1 = 歌词（可选，不接则按纯器乐 `[instrumental]` 生成）· 端口 2 = 控制输入
@@ -376,7 +376,7 @@ const guides = {
 ## 参数
 点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
 
-- **输出路径**：\`.wav\` 保存位置（相对工作目录 / 超级节点子文件夹）
+- **输出路径**：\`.wav\` 保存位置（相对工作目录 / 超级节点子文件夹）；**接了保存节点就可以留空** —— 那时路径归那个保存节点管，产物先落应用托管目录、再由它落盘（见「保存」节点指南）。没接保存节点时必填，留空点 ▶ 会提示「未设置输出路径时无法启动生成」。
 - **抽卡次数**：多次尝试（1–10），取其中一次结果
 - **种子**：固定种子可复现；每次抽卡种子 +1
 
@@ -387,7 +387,7 @@ const guides = {
   },
   tts_gen: {
     title: "SoVITS 语音生成（GPT-SoVITS）",
-    body: `画布右键 → **处理节点 › 音频生成 › SoVITS 语音生成**。把文本合成成**语音**：后端是插件「GPT-SoVITS 语音合成」在本机拉起的 OpenAI 兼容服务。**每次运行只生成一个音频文件**（\`.wav\` / \`.mp3\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+    body: `画布右键 → **处理节点 › 音频生成 › SoVITS 语音生成**。把文本合成成**语音**：后端是插件「GPT-SoVITS 语音合成」在本机拉起的 OpenAI 兼容服务。**每次运行只生成一个音频文件**（\`.wav\` / \`.mp3\`），写入节点自带的 \`outputPath\`。**输出路径也可以留空**：把它的**数据输出**接到下游的「保存」节点，路径就归那个保存节点管 —— 产物先落**应用托管目录**（应用数据目录下的画布资产 / 临时区），再由那个保存节点落盘到你填的保存路径。
 
 ## 端子
 - **输入**：端口 0 = 待合成文本 · 端口 1 = 控制输入
@@ -396,7 +396,7 @@ const guides = {
 ## 参数
 点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
 
-- **输出路径**：音频保存位置（相对工作目录 / 超级节点子文件夹）
+- **输出路径**：音频保存位置（相对工作目录 / 超级节点子文件夹）；**接了保存节点就可以留空** —— 那时路径归那个保存节点管，产物先落应用托管目录、再由它落盘（见「保存」节点指南）。没接保存节点时必填，留空点 ▶ 会提示「未设置输出路径时无法启动生成」。
 - **音色**：GPT-SoVITS 音色库里的音色名，留空则交给后端默认音色
 - **语速**：0.5 – 2.0（默认 1.0）
 - **输出格式**：\`.wav\` / \`.mp3\`
@@ -409,7 +409,7 @@ const guides = {
   },
   video_gen: {
     title: "Minimax H3（视频生成）",
-    body: `画布右键 → **处理节点 › 视频生成 › Minimax H3**。本地 MiniMax H3 后端（ComfyUI）。**每次运行只生成一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+    body: `画布右键 → **处理节点 › 视频生成 › Minimax H3**。本地 MiniMax H3 后端（ComfyUI）。**每次运行只生成一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`。**输出路径也可以留空**：把它的**数据输出**接到下游的「保存」节点，路径就归那个保存节点管 —— 产物先落**应用托管目录**（应用数据目录下的画布资产 / 临时区），再由那个保存节点落盘到你填的保存路径。
 
 ## 端子
 - **输入**：**端口 0 = 控制输入（固定放在第一个端子，与视频超分 / 补帧 / Remotion 同构）** · **提示词 = 端口 1** · **R2V** 模式：端口 2–10 = 参考图 I1–I9、端口 11–13 = 参考视频 V1–V3、端口 14–16 = 参考音频 A1–A3（三组端子一次排全）· **FL2VA** 模式：端口 2–3 = 首帧 F / 末帧 L。数据端口号与面板 / 文档里的「端子 N」（数据槽号）**完全同号**，与后端 \`ref_image_0..8\` / \`ref_video_0..2\` / \`ref_audio_0..2\` 一一对应；数据线连端口 0 会被挡下（那颗是控制开关）
@@ -418,7 +418,7 @@ const guides = {
 ## 参数
 点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
 
-- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）
+- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）；**接了保存节点就可以留空** —— 那时路径归那个保存节点管，产物先落应用托管目录、再由它落盘（见「保存」节点指南）。没接保存节点时必填，留空点 ▶ 会提示「未设置输出路径时无法启动生成」。
 - **生成模式**：\`fl2va\` = 首末帧（默认）；\`r2v\` = 多参考图
 - **时长**：4–15 秒（默认 5）
 - **分辨率**：auto（按比例默认）/ 480p / 720p / 1080p（显存不足自动降档）
@@ -446,7 +446,7 @@ const guides = {
   },
   video_upscale: {
     title: "视频超分（Real-ESRGAN x4 / x2 · 独立后处理）",
-    body: `画布右键 → **处理节点 › 视频生成 › 视频超分**。给一段**已有视频**单独做超分：Real-ESRGAN 逐帧放大，再缩放到输出长边。它**不再跟着 Minimax H3 生成一起跑**——H3 只出原生片，超分按需单独运行。**每次运行只出一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+    body: `画布右键 → **处理节点 › 视频生成 › 视频超分**。给一段**已有视频**单独做超分：Real-ESRGAN 逐帧放大，再缩放到输出长边。它**不再跟着 Minimax H3 生成一起跑**——H3 只出原生片，超分按需单独运行。**每次运行只出一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`。**输出路径也可以留空**：把它的**数据输出**接到下游的「保存」节点，路径就归那个保存节点管 —— 产物先落**应用托管目录**（应用数据目录下的画布资产 / 临时区），再由那个保存节点落盘到你填的保存路径。
 
 ## 端子
 - **输入**：端口 0 = 控制输入（固定）· 端口 1 = 源视频 · 端口 2+ = 可选素材（渐进展开）
@@ -464,7 +464,7 @@ const guides = {
 - **分块 tile（像素）**：0–1024（默认 512）。流式超分的**分块大小**：显存只跟它有关，**512 适合 16G 机器**；0 = 后端默认 512
 - **低显存安全档（强制逐帧）**：默认开；开 = **分块 fp16 省显存，16G 机器也能跑 15 秒片**，关 = 按上面的 \`per_batch\` 批量 / 更大分块（更快但更吃显存）
 - **抽卡次数**：多次处理（1–10），多次时输出命名为 \`#1\`、\`#2\` …
-- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）
+- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）；**接了保存节点就可以留空** —— 那时路径归那个保存节点管，产物先落应用托管目录、再由它落盘（见「保存」节点指南）。没接保存节点时必填，留空点 ▶ 会提示「未设置输出路径时无法启动生成」。
 
 ## 内存 / 显存使用建议
 - **默认走逐帧分块流式链**（\`h3-pack/post/stream_upscale.py\`）：源视频用 PyAV 顺序解码，按 \`tile\` 分块过 Real-ESRGAN，
@@ -489,7 +489,7 @@ const guides = {
   },
   video_interp: {
     title: "视频补帧（RIFE · 独立后处理）",
-    body: `画布右键 → **处理节点 › 视频生成 › 视频补帧**。给一段**已有视频**单独补帧：RIFE VFI 按倍数插帧，帧率按倍数重算（2x / 4x）。它**不再跟着 Minimax H3 生成一起跑**——H3 只出原生片，补帧按需单独运行。**每次运行只出一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`，不需要再挂保存节点。
+    body: `画布右键 → **处理节点 › 视频生成 › 视频补帧**。给一段**已有视频**单独补帧：RIFE VFI 按倍数插帧，帧率按倍数重算（2x / 4x）。它**不再跟着 Minimax H3 生成一起跑**——H3 只出原生片，补帧按需单独运行。**每次运行只出一个视频文件**（\`.mp4\`），写入节点自带的 \`outputPath\`。**输出路径也可以留空**：把它的**数据输出**接到下游的「保存」节点，路径就归那个保存节点管 —— 产物先落**应用托管目录**（应用数据目录下的画布资产 / 临时区），再由那个保存节点落盘到你填的保存路径。
 
 ## 端子
 - **输入**：端口 0 = 控制输入（固定）· 端口 1 = 源视频 · 端口 2+ = 可选素材（渐进展开）
@@ -506,7 +506,7 @@ const guides = {
 - **缩放系数 scale_factor**：RIFE 内部缩放系数（默认 1.0 = 原分辨率）；流式档同样生效，不改变输出分辨率
 - **低显存安全档**：默认开；开 = 低精度 fp16 + 逐帧 + 极小缓存清理间隔，峰值最低
 - **抽卡次数**：多次处理（1–10），多次时输出命名为 \`#1\`、\`#2\` …
-- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）
+- **输出路径**：\`.mp4\` 保存位置（相对工作目录 / 超级节点子文件夹）；**接了保存节点就可以留空** —— 那时路径归那个保存节点管，产物先落应用托管目录、再由它落盘（见「保存」节点指南）。没接保存节点时必填，留空点 ▶ 会提示「未设置输出路径时无法启动生成」。
 
 ## 内存 / 显存使用建议
 - **默认走逐帧流式链**（\`h3-pack/post/stream_interp.py\`）：源视频用 PyAV 顺序解码，同一时刻只持有**相邻两帧 + 一张中间帧**，
@@ -828,7 +828,7 @@ const en = {
 - Stores the file's **original absolute path** only (nothing is copied into the workflow assets, video can be large). Move the file away and you need to pick it again.
 - Playback uses the built-in player; an unsupported codec shows a hint instead.
 - To **generate** video: live-action style via “Video gen › Minimax H3”, motion graphics via “Video gen › Remotion video”.` },
-  music_gen: { title: "Minimax Music 3 (music generation)", body: `Right-click the canvas → **Process › Audio generation › Minimax Music 3**. Local MiniMax Music 3 backend (Gradio). **Each run produces exactly one audio file** (\`.wav\`) written to the node's own \`outputPath\` — no separate save node needed.
+  music_gen: { title: "Minimax Music 3 (music generation)", body: `Right-click the canvas → **Process › Audio generation › Minimax Music 3**. Local MiniMax Music 3 backend (Gradio). **Each run produces exactly one audio file** (\`.wav\`) written to the node's own \`outputPath\`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: port 0 = prompt · port 1 = lyrics (optional — leave it unwired to generate pure instrumental `[instrumental]`) · port 2 = control input
@@ -837,7 +837,7 @@ const en = {
 ## Options
 Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
 
-- **Output path**: \`.wav\` destination (relative to workspace / super subfolder)
+- **Output path**: \`.wav\` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 - **Attempts**: gacha rolls (1–10); keep one result
 - **Seed**: fixed seed reproduces; each roll bumps the seed by +1
 
@@ -845,7 +845,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive); other tasks queue.
 - One backend instance per plugin; multiple music nodes share it.
 - Lyrics and style-prompt conventions live in the **built-in skills** \`minimax-music-lyrics\` (port 1) / \`minimax-music-prompt\` (port 0) — both ship with the app, **no Creative Workshop download needed**; type \`/minimax-music-prompt <your idea>\` in a session to use them. A style prompt is delivered as **one English paragraph of six sentences**: style + mood → tempo & groove → instruments → vocals → structure & contrast → production.` },
-  tts_gen: { title: "SoVITS speech (GPT-SoVITS)", body: `Right-click the canvas → **Process › Audio generation › SoVITS speech**. Turns text into **speech**: the backend is the local OpenAI-compatible service started by the “GPT-SoVITS speech” plugin. **Each run produces exactly one audio file** (\`.wav\` / \`.mp3\`) written to the node's own \`outputPath\` — no separate save node needed.
+  tts_gen: { title: "SoVITS speech (GPT-SoVITS)", body: `Right-click the canvas → **Process › Audio generation › SoVITS speech**. Turns text into **speech**: the backend is the local OpenAI-compatible service started by the “GPT-SoVITS speech” plugin. **Each run produces exactly one audio file** (\`.wav\` / \`.mp3\`) written to the node's own \`outputPath\`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: port 0 = text to speak · port 1 = control input
@@ -854,7 +854,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 ## Options
 Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
 
-- **Output path**: audio destination (relative to workspace / super subfolder)
+- **Output path**: audio destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 - **Voice**: a name from the GPT-SoVITS voice library; empty = whatever the backend defaults to
 - **Speed**: 0.5 – 2.0 (default 1.0)
 - **Format**: \`.wav\` / \`.mp3\`
@@ -864,7 +864,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - If the backend is missing or stopped the node starts it and waits for it to come online (up to 3 minutes); failures are written on the node's status line as an actionable hint. Installing the backend and preparing voices happens in **Plugins › GPT-SoVITS speech**.
 - Speech runs on the same **serial chain** as music / video (one generation task at a time), but SoVITS is a separate process and does **not** hold the app's audio/video global lock — its VRAM is its own budget.
 - One text is enough: feed port 0 from a text input / text process node, or with an \`@\` reference.` },
-  video_gen: { title: "Minimax H3 (video generation)", body: `Right-click the canvas → **Process › Video generation › Minimax H3**. Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\` — no separate save node needed.
+  video_gen: { title: "Minimax H3 (video generation)", body: `Right-click the canvas → **Process › Video generation › Minimax H3**. Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: **port 0 = control input (pinned first, same shape as video upscale / interpolation / Remotion)** · port 1 = prompt · data ports 2+ = data slots (R2V images 2–10, videos 11–13, audios 14–16; FL2VA first/last frame 2–3). Data port numbers are **identical to the "terminal N" numbers** shown in the panel / docs (and to the backend \`ref_image_0..8\` / \`ref_video_0..2\` / \`ref_audio_0..2\`); a data wire on port 0 is rejected — that one is the control switch
@@ -873,7 +873,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 ## Options
 Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
 
-- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder)
+- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 - **Mode**: \`fl2va\` = first/last frame (default); \`r2v\` = multiple reference images
 - **Duration**: 4–15 s (default 5)
 - **Resolution**: auto (proportional) / 480p / 720p / 1080p (auto-downscaled when VRAM is low)
@@ -899,7 +899,7 @@ By default the node runs the built-in H3 chain (first/last frame or multi-refere
 - 24G VRAM caps the resolution tiers; upscale / interpolation VRAM guidance lives in their own node guides.
 - Reference images / audio / video can come straight from an **image / audio / video input** node: media ports carry a \`file:///…\` URL and this node normalizes it back to a local path.
 - **Sage Attention** (optional speed tier, about 1.5–2×) needs \`triton-windows\` *and* a prebuilt \`sageattention\` wheel matching this venv — one without the other counts as missing. **Nothing breaks when they are absent**: the plugin probes the venv before every run and simply leaves the Sage node out (just slower). Probe and install are one click in the **H3 plugin window → the \`Sage 加速\` button** (it picks the wheel for your Python / torch / CUDA and re-verifies right after).` },
-  video_upscale: { title: "Video upscale (Real-ESRGAN x4 / x2 · standalone post-process)", body: `Right-click the canvas → **Process › Video generation › Video upscale**. Upscales an **existing video** on its own: Real-ESRGAN enlarges each frame, then the result is scaled to the output long side. It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and upscaling runs separately when you ask for it. **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\` — no separate save node needed.
+  video_upscale: { title: "Video upscale (Real-ESRGAN x4 / x2 · standalone post-process)", body: `Right-click the canvas → **Process › Video generation › Video upscale**. Upscales an **existing video** on its own: Real-ESRGAN enlarges each frame, then the result is scaled to the output long side. It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and upscaling runs separately when you ask for it. **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: port 0 = control input (fixed) · port 1 = source video · port 2+ = optional material (grows as needed)
@@ -917,7 +917,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - **Tile (px)**: 0–1024 (default 512). The **tile size** of streaming upscale: VRAM depends only on it, and **512 suits a 16 GB machine**; 0 = backend default 512
 - **Low-VRAM safe tier (force per-frame)**: on by default; on = **tiled fp16 keeps VRAM low — a 16 GB machine can handle a 15-second clip**, off = batch by \`per_batch\` / larger tiles (faster, hungrier)
 - **Attempts**: repeated runs (1–10); multiple outputs are named \`#1\`, \`#2\` …
-- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder)
+- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 
 ## RAM / VRAM guidance
 - **By default this runs a per-frame tiled streaming chain** (\`h3-pack/post/stream_upscale.py\`): the source is decoded sequentially with PyAV, upscaled tile by tile according to \`tile\`, and **each frame is encoded to disk as soon as it is done**. Resident memory depends only on one tile plus one output frame — **independent of clip length, resolution and ratio** — so **a 16 GB machine can finish an x2 / x4 upscale of a 15-second clip**. (The old path piled the whole clip's frame tensors plus a float32 copy into RAM — peak ≈ frames × source pixels × ratio², which a 15-second clip can blow past even with 64 GB — and is no longer the default.)
@@ -932,7 +932,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - Upscale and interpolation are two **independent** nodes — use either alone, or chain them: **H3 → Video upscale → Video interpolation**.
 - If the backend is down the node starts the H3 backend and waits for it to come online; failures are written on the node's status line as an actionable hint.
 - It shares the backend and the media mutex with H3 generation; before submitting, post-processing frees the generation models so the two never stack in VRAM.` },
-  video_interp: { title: "Video interpolation (RIFE · standalone post-process)", body: `Right-click the canvas → **Process › Video generation › Video interpolation**. Interpolates an **existing video** on its own: RIFE VFI inserts frames by a multiplier and the frame rate is recomputed from it (2x / 4x). It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and interpolation runs separately when you ask for it. **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\` — no separate save node needed.
+  video_interp: { title: "Video interpolation (RIFE · standalone post-process)", body: `Right-click the canvas → **Process › Video generation › Video interpolation**. Interpolates an **existing video** on its own: RIFE VFI inserts frames by a multiplier and the frame rate is recomputed from it (2x / 4x). It **no longer runs together with Minimax H3 generation** — H3 only outputs the native clip, and interpolation runs separately when you ask for it. **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
 - **Input**: port 0 = control input (fixed) · port 1 = source video · port 2+ = optional material (grows as needed)
@@ -949,7 +949,7 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - **Scale factor**: RIFE's internal scale (default 1.0 = source resolution); it applies to the stream path too and never changes the output resolution
 - **Low-VRAM safe tier**: on by default; on = low-precision fp16 plus per-frame handling and a tiny cache interval for the lowest peak
 - **Attempts**: repeated runs (1–10); multiple outputs are named \`#1\`, \`#2\` …
-- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder)
+- **Output path**: \`.mp4\` destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
 
 ## Memory / VRAM guidance
 - **The per-frame streaming path is the default** (\`h3-pack/post/stream_interp.py\`): the source is decoded sequentially with PyAV and only **two adjacent frames plus one intermediate frame** are held at a time,

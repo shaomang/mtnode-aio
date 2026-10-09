@@ -445,6 +445,9 @@ console.log("smoke-apps-tips：打赏概述接口 + 版本标签继承 + 渲染�
     "DataView", "TextEncoder", "TextDecoder", "Blob", "File", "FormData", "Headers", "Request",
     "Response", "AbortController", "Image", "Audio", "Event", "CustomEvent", "IntersectionObserver",
     "ResizeObserver", "DOMParser", "XMLSerializer", "OffscreenCanvas", "SpeechSynthesisUtterance",
+    /* 1000 条目录的窗口化渲染（appsVirtualGridMount）用到的：getComputedStyle 是浏览器 API，
+       translate 出现在 CSS 字符串里（"translate(…)" 被扫描当成函数调用）。 */
+    "getComputedStyle", "translate",
     "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURIComponent", "decodeURIComponent",
     "encodeURI", "decodeURI", "setTimeout", "clearTimeout", "setInterval", "clearInterval",
     "requestAnimationFrame", "cancelAnimationFrame", "structuredClone", "queueMicrotask",

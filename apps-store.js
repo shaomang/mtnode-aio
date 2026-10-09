@@ -9,7 +9,8 @@
  * 根目录（所有应用都装在它的下一层）：
  *   <root>/<id>/                     id = 文件夹名（app id 合法化见 safeAppId）
  *     app.json                       应用清单（可迁移：id / name / version / entry / description / icon
- *                                    + 本机状态：author 作者 / dev 开发中 / forkOf 二次开发来源）
+ *                                    + 本机状态：author 作者 / dev 开发中 / forkOf 二次开发来源 /
+ *                                      cloud 上架留痕）
  *     index.html                     入口页（zip 里带；缺失时补一份最小脚手架）
  *     assets/** 与任意其它文件        应用自己的文件（**整目录随包**，子目录递归 —— 根目录
  *                                    放 game.js / style.css 这类多文件应用照样能上架；
@@ -24,7 +25,10 @@
  * 根目录设置（沿用 installDir 口径的键名，**写在本机 config.json，不写应用目录**）：
  *   <数据目录>/config.json → { "apps": { "installDir": "<绝对路径>" } }
  *   兼容读 appInstallDir / appsInstallDir / appsRoot（老写法 / 手改过的配置）；
- *   用户没指定时默认 <数据目录>/apps（默认落在 %APPDATA%，绝不落应用目录）。
+ *   **不再要求用户手动指定**（本轮口径）：没人配过时直接用默认根 <数据目录>/apps（下载）与
+ *   <数据目录>/apps-dev（开发）—— 也就是画布所在的那个数据文件夹，不弹选目录框、不打「未设置」；
+ *   真正要用到根时（列应用 / 下载 / 新建）由 ensureRootPersisted 把默认路径固化进 config.json。
+ *   默认落在 %APPDATA%，绝不落应用目录。
  *   路径守卫（与 main.js isInsideAppDir 同口径）：解析结果等于或位于 app.getAppPath() /
  *   exe 同目录之下一律拒绝 —— 那里升级 / 卸载会带走或覆盖用户的应用。
  *
@@ -56,9 +60,8 @@
  *
  * IPC（主窗口侧，preload.js 的 api.apps* 转发；本文件只注册通道，方法名见 registerAppsIpc）：
  *   apps:rootGet / rootSet / rootPick · apps:list · apps:create · apps:catalog · apps:install / uninstall
- *   apps:setMeta（本机状态字段 dev / author / forkOf 的唯一写入口，渲染层不碰文件系统）
- *   apps:exportZip · apps:packAudit（上架前体检：打包会丢哪些文件 + 入口页引用了但不存在的
- *   文件，只读）· apps:probeChanges · apps:openWindow / closeWindow / isOpen
+ *   apps:setMeta（本机状态字段 dev / author / forkOf / cloud 的唯一写入口，渲染层不碰文件系统）
+ *   apps:exportZip · apps:probeChanges · apps:openWindow / closeWindow / isOpen
  *   apps:shotWindow · apps:readZipBase64（上架窗用：拍应用自己的窗口 + 现打包读回 base64，
  *   契约见 docs/apps-market.md §七；渲染层不碰文件系统与网络）
  *   apps:devPreview（开发页预览：iframe url = mtnode-preview://<appId>/<entry> + 内容快照；
@@ -335,6 +338,7 @@ const PREVIEW_MIME = {
 /* 注入进预览页的状态小助手（与开发页用 postMessage 通信，跨源安全）：
    {op:'save',token} → 回 {op:'state',token,state}（滚动位置 + 表单值）；
    {op:'restore',state} → 写回。键名 __mtnodePreview 只为不撞应用自己的消息。 */
+const PREVIEW_K = "__mtnodePreview";
 const PREVIEW_AGENT = [
   "(function(){",
   "if (window.__mtnodePreviewAgent) return; window.__mtnodePreviewAgent = 1;",
@@ -357,6 +361,169 @@ function injectPreviewAgent(html) {
   if (/<\/body>/i.test(src)) return src.replace(/<\/body>/i, tag + "</body>");
   if (/<\/html>/i.test(src)) return src.replace(/<\/html>/i, tag + "</html>");
   return src + tag;
+}
+
+/* ── 预览页的宿主桥小助手（本轮需求：预览状态下也能连入 MTNode）──────────────────
+ *
+ * 预览页是**一只 iframe**，没有 preload，所以 window.appHost 本来是 undefined，应用只能退回
+ * localStorage。这一段在页面**最前面**跑，拼出与 preload-app.js **同形状**的 window.appHost：
+ *   · 每个能力都是薄壳：调用 → postMessage 给开发页（父窗口）→ 开发页按来源帧校验后调
+ *     主窗口 preload 的 apps:previewHost* 通道 → 主进程按「预览租约」认应用 →
+ *     走**与独立窗口逐字同一条**宿主实现；
+ *   · 同步判据（cap / hostName / id / readOnly）是本地布尔量，所以应用里
+ *     `if (AppHost.cap.host)`、`AppHost.cap.text` 这类写法照常成立；
+ *   · 只读（应用已被开在独立窗口里）时，写类能力**同步拒**（回 readonly_preview），
+ *     不让应用白等一趟往返；
+ *   · localStorage / sessionStorage 在「宿主可用 + 只读」时换成内存态：
+ *     应用照旧读写不报错，但绝不悄悄写进浏览器存档（换窗口 / 清缓存会丢的那种）。
+ *
+ * 与页面里既有的 AppHost 门面（templates/app-scaffold/apphost.js）的关系：
+ * 本文件必须**先跑**（它是 inline 脚本里最靠前的一段），门面再读到的就是这座桥，
+ * 于是「预览里也有宿主」这件事对应用是透明的：三件基础设施（落盘 / 数据文件夹 / 正确关闭）
+ * 一处都不用改。 */
+const PREVIEW_BRIDGE = [
+  "(function(){",
+  "if (window.__mtnodePreviewHost) return;",
+  "if (window.parent === window) return; /* 不在 iframe 里：不是预览 */",
+  "var K='" + PREVIEW_K + "';",
+  "var seq=0; var pending={}; var streams=[];",
+  /* 写类能力（只读时同步拒）：与主进程 previewWriteBlock 的那一份清单同源 */
+  "var WRITE={dataWrite:1,storageSet:1,storageRemove:1,hostSetModel:1,hostImageSetModel:1,image:1,imageEdit:1,dataDirPick:1,dataDirReset:1};",
+  "function mkErr(o){ var e=new Error(String((o&&o.error)||'preview bridge error')); e.code=String((o&&o.code)||''); if(o&&o.previewReadOnly) e.previewReadOnly=true; return e; }",
+  "function post(msg){ try{ window.parent.postMessage(msg,'*'); }catch(e){} }",
+  "var CALL_MS=20000; /* 中继没了（切走 / 关页 / 宿主重绘）时别让应用的 await 永远挂着 */",
+  "function call(method,arg){",
+  "  if (state.readOnly && WRITE[method]) return Promise.reject(mkErr({code:'readonly_preview',error:'该应用已在独立窗口运行，预览为只读',previewReadOnly:true}));",
+  "  return new Promise(function(res,rej){",
+  "    var id='c'+(++seq).toString(36)+Math.random().toString(36).slice(2,7);",
+  "    var timer=setTimeout(function(){ if(!pending[id]) return; delete pending[id]; rej(mkErr({code:'host_unreachable',error:'预览宿主没有回应（中继已断开或这一帧已失效）'})); },CALL_MS);",
+  "    pending[id]={res:res,rej:rej,at:Date.now(),timer:timer};",
+  "    post({[K]:1,op:'host-call',id:id,method:String(method||''),arg:(arg===undefined?null:arg)});",
+  "  });",
+  "}",
+  /* 流式订阅：cb 收 delta / progress / done / error（与独立窗口的 cb 同一形状）。
+     事件按 reqId 分流：同一个预览页里可能同时开着文本流与出图。 */
+  "function stream(method,arg,cb){",
+  "  var o=arg||{}; var reqId=String(o.reqId||('r'+(++seq).toString(36)+Math.random().toString(36).slice(2,7)));",
+  "  o.reqId=reqId;",
+  "  var handler=null;",
+  "  if (typeof cb==='function'){",
+  "    handler=function(msg){ if(String(msg.reqId||'')!==reqId) return; try{ cb(msg); }catch(e){} };",
+  "    streams.push(handler);",
+  "  }",
+  "  var p=call(method,o);",
+  "  var drop=function(){ if(!handler) return; var i=streams.indexOf(handler); if(i>=0) streams.splice(i,1); };",
+  "  p.then(drop,drop);",
+  "  return p;",
+  "}",
+  "var state={id:'',readOnly:false,ready:false};",
+  "function applyReady(d){ state.id=String((d&&d.appId)||''); state.readOnly=!!(d&&d.readOnly); state.ready=true; var o={appId:state.id,readOnly:state.readOnly}; window.__mtnodePreviewHost=o; try{ window.dispatchEvent(new CustomEvent('mtnode-preview-host',{detail:o})); }catch(e){} applyStorage(); }",
+  "window.addEventListener('message',function(ev){",
+  "  var d=ev&&ev.data; if(!d||d[K]!==1) return;",
+  "  if(d.op==='host-ready'){ applyReady(d); return; }",
+  "  if(d.op==='host-state'){ state.readOnly=!!d.readOnly; if(window.__mtnodePreviewHost) window.__mtnodePreviewHost.readOnly=state.readOnly; applyStorage(); return; }",
+  "  if(d.op==='host-result'){ var p=pending[d.id]; if(!p) return; delete pending[d.id]; if(p.timer) clearTimeout(p.timer); if(d.ok) p.res(d.result); else p.rej(mkErr(d.result||{})); return; }",
+  "  if(d.op==='host-event'){ var msg=d.event||{}; for(var i=0;i<streams.length;i++){ try{ streams[i](msg); }catch(e){} } try{ window.dispatchEvent(new CustomEvent('mtnode-preview-event',{detail:msg})); }catch(e){} return; }",
+  "  if(d.op==='host-notice'){ try{ window.dispatchEvent(new CustomEvent('mtnode-preview-notice',{detail:d.notice||{}})); }catch(e){} return; }",
+  "});",
+  /* 这一帧要走了（换页 / 关页）：把在飞的调用立刻作废，别让应用白等到超时 */
+  "try{ window.addEventListener('pagehide',function(){ for(var k in pending){ var p=pending[k]; if(!p) continue; if(p.timer) clearTimeout(p.timer); p.rej(mkErr({code:'host_unreachable',error:'预览宿主已断开'})); } pending={}; },{once:true}); }catch(e){}",
+  /* 只读时的 localStorage 兜底：内存态（真窗口里绝不会有这一段 —— 那段只在预览注入） */
+  "function memStore(){ var m={}; return {getItem:function(k){ k=String(k); return Object.prototype.hasOwnProperty.call(m,k)?m[k]:null; }, setItem:function(k,v){ m[String(k)]=String(v); }, removeItem:function(k){ delete m[String(k)]; }, clear:function(){ m={}; }, key:function(i){ var ks=Object.keys(m); return i<ks.length?ks[i]:null; }, get length(){ return Object.keys(m).length; }}; }",
+  "function applyReady(d){ state.id=String((d&&d.appId)||''); state.readOnly=!!(d&&d.readOnly); state.ready=true; var o={appId:state.id,readOnly:state.readOnly}; window.__mtnodePreviewHost=o; try{ window.dispatchEvent(new CustomEvent('mtnode-preview-host',{detail:o})); }catch(e){} applyStorage(); }",
+  "var memL=memStore(), memS=memStore();",
+  "function applyStorage(){",
+  "  try{ window.__mtnodePreviewReadOnly=!!state.readOnly; }catch(e){}",
+  "  if(!state.readOnly) return;",
+  "  try{ Object.defineProperty(window,'localStorage',{configurable:true,get:function(){ return memL; }}); }catch(e){}",
+  "  try{ Object.defineProperty(window,'sessionStorage',{configurable:true,get:function(){ return memS; }}); }catch(e){}",
+  "}",
+  /* ── window.appHost：与 preload-app.js 同形状的薄壳 ── */
+  "var api={",
+  "  textGenStream:function(opts,cb){ return stream('textGenStream',opts,cb); },",
+  "  imageGen:function(opts,cb){ return stream('imageGen',opts,cb); },",
+  "  imageEdit:function(opts,cb){ return stream('imageEdit',opts,cb); },",
+  "  imageGenCancel:function(reqId){ return call('imageGenCancel',{reqId:String(reqId||'')}); },",
+  "  hostImageModels:function(){ return call('hostImageModels'); },",
+  "  hostImageModel:function(){ return call('hostImageModel'); },",
+  "  hostImageSetModel:function(model){ return call('hostImageSetModel',{model:model}); },",
+  "  hostModels:function(){ return call('hostModels'); },",
+  "  hostModel:function(){ return call('hostModel'); },",
+  "  hostSetModel:function(model){ return call('hostSetModel',{model:model}); },",
+  "  pickImage:function(){ return call('pickImage'); },",
+  "  pickAudio:function(){ return call('pickAudio'); },",
+  "  transcribe:function(opts){ return call('transcribe',opts||{}); },",
+  "  transcribeWav:function(b64,opts){ var o={}; for(var k in (opts||{})) o[k]=opts[k]; o.base64=String(b64||''); return call('transcribe',o); },",
+  "  asrStatus:function(){ return call('asrStatus'); },",
+  "  asrPrepare:function(opts){ return call('asrPrepare',opts||{}); },",
+  "  asrMic:function(){ return call('asrMic'); },",
+  "  onSpeechState:function(cb){",
+  "    if(typeof cb!=='function') return function(){};",
+  "    var fn=function(ev){ var d=ev&&ev.detail; if(d&&d.type==='speech-state'){ try{ cb(d.data||{}); }catch(e){} } };",
+  "    try{ window.addEventListener('mtnode-preview-event',fn); }catch(e){}",
+  "    return function(){ try{ window.removeEventListener('mtnode-preview-event',fn); }catch(e){} };",
+  "  },",
+  "  storageGet:function(key){ return call('storageGet',{key:key}); },",
+  "  storageSet:function(key,value){ return call('storageSet',{key:key,value:value}); },",
+  "  storageAll:function(){ return call('storageAll'); },",
+  "  storageRemove:function(key){ return call('storageRemove',{key:key}); },",
+  "  dataDirGet:function(){ return call('dataDirGet'); },",
+  "  dataDirPick:function(){ return call('dataDirPick',{q:true}); },",
+  "  dataDirOpen:function(){ return call('dataDirOpen'); },",
+  "  dataDirReset:function(){ return call('dataDirReset'); },",
+  "  dataRead:function(opts){ return call('dataRead',opts||{}); },",
+  "  dataWrite:function(data,opts){ var o={}; for(var k in (opts||{})) o[k]=opts[k]; o.data=data; return call('dataWrite',o); },",
+  "  account:function(){ return call('account'); },",
+  /* close / quit：预览里没有「自己的窗口」——同步回可读错误码，并请开发页在预览区浮一条提示 */
+  "  close:function(){ post({[K]:1,op:'host-notice',notice:{code:'preview_no_window'}}); return Promise.reject(mkErr({code:'preview_no_window',preview:true,error:'预览里没有可关闭的独立窗口（预览是开发页中栏的一只 iframe）'})); },",
+  "  quit:function(){ post({[K]:1,op:'host-notice',notice:{code:'preview_no_window'}}); return Promise.reject(mkErr({code:'preview_no_window',preview:true,error:'预览里没有可退出的独立窗口（预览是开发页中栏的一只 iframe）'})); },",
+  /* 关窗收尾钩子：预览里没有关窗动作可钩，登记即空转（不假装能收尾） */
+  "  onWillClose:function(){ return function(){}; }",
+  "};",
+  "function shapecap(cap){",
+  "  var out={};",
+  "  for(var k in cap){ out[k]=cap[k]; }",
+  "  return out;",
+  "}",
+  "function readonlycap(cap){",
+  "  var out=shapecap(cap);",
+  "  out.host=(window.parent!==window);",
+  "  if(!state.readOnly) return out;",
+  "  var W={data:1,storage:1,dataDir:1,dataDirPick:1,dataDirReset:1,image:1,imageModels:1,models:1};",
+  "  for(var k in W){ if(out[k]) out[k]=false; }",
+  "  return out;",
+  "}",
+  "var CAP={host:true,hostName:'preview',id:false,close:false,quit:false,data:true,dataDir:true,dataDirPick:true,dataDirOpen:true,dataDirReset:true,willClose:false,storage:true,account:true,net:false,image:true,imageModels:true,imageCancel:true,text:true,json:true,models:true,pick:true,shown:false,speech:true,speechFile:true,speechStatus:true,speechPrepare:true,speechEvents:true};",
+  "try{ Object.defineProperty(window,'__mtnodePreviewHostCap',{configurable:true,get:function(){ return readonlycap(CAP); }}); }catch(e){}",
+  "try{",
+  "  window.appHost=api;",
+  "  /* 门面（templates/app-scaffold/apphost.js）读的是 dataRead/dataWrite 这些老名字：",
+  "     这里补一层等价别名，让老写法在预览里也照常命中（没列的键仍然是 undefined）。 */",
+  "  api.dataGet=api.dataRead; api.dataSet=api.dataWrite;",
+  "}catch(e){}",
+  /* 桥就绪：等开发页回 host-ready（拿到 appId 与只读态）后再广播给应用侧
+     （app-speech-ui.js 的听写条就是靠 'mtnode-apphost' 这一条自挂的） */
+  "function announce(){",
+  "  try{ window.dispatchEvent(new CustomEvent('mtnode-apphost',{detail:{host:api}})); }catch(e){}",
+  "}",
+  "function boot(){",
+  "  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){ setTimeout(announce,0); },{once:true});",
+  "  else setTimeout(announce,0);",
+  "}",
+  "post({[K]:1,op:'host-ping'});",
+  "boot();",
+  "})();",
+].join("\n");
+
+/* 注入宿主桥小助手：**必须插在页面最前面**（在其他 <script> 之前），
+   这样应用里的 window.AppHost 门面一跑就读到这座桥。 */
+function injectPreviewBridge(html) {
+  const src = String(html || "");
+  const tag =
+    '<script data-mtnode-preview-bridge="1">' + PREVIEW_BRIDGE + "</scr" + "ipt>";
+  if (/<head[^>]*>/i.test(src)) return src.replace(/<head[^>]*>/i, (m) => m + tag);
+  if (/<html[^>]*>/i.test(src)) return src.replace(/<html[^>]*>/i, (m) => m + tag);
+  return tag + src;
 }
 
 /* 请求是不是「页面导航」（地址栏 / iframe 首帧那种）：
@@ -410,8 +577,11 @@ function previewNotFoundText(rel) {
    app.json 缺 entry 或入口页被删，预览也始终落到应用的默认界面。
    资源请求（app.js / x.png）只认它自己那一个文件，缺了照常 404 ——
    绝不能把一份 HTML 塞给 <script src> 或 <img src>（页面会悄悄变成另一份 HTML）。
-   HTML 一律注入页面状态小助手（刷新预览的「维持状态」靠它）。 */
-function previewFileResponse(dir, rel, req) {
+   HTML 一律注入页面状态小助手（刷新预览的「维持状态」靠它）。
+   带 _host=1 的那条路（开发页中栏那只 iframe）**额外**在最前面注入宿主桥小助手
+   （PREVIEW_BRIDGE）：预览里也就有了 window.appHost。别的入口（直接开这个 url、
+   上架前的静态预览截图之类）不带这个参数 → 逐字还是老的纯静态预览。 */
+function previewFileResponse(dir, rel, req, injectHost) {
   const man = manifestOf(dir, path.basename(dir));
   const entry = safeEntry(man && man.entry) || SUB.index;
   const chain = [];
@@ -431,11 +601,21 @@ function previewFileResponse(dir, rel, req) {
       let html = fs.readFileSync(abs, "utf8");
       /* 走到备用页（不是请求的那一页）= 请求的入口页缺失：顶上挂一条可读提示 */
       if (p !== rel) html = previewFallbackHtml(html, rel, p);
+      if (injectHost) html = injectPreviewBridge(html);
       return new Response(injectPreviewAgent(html), { headers: headers });
     }
     return new Response(fs.readFileSync(abs), { headers: headers });
   }
   return null;
+}
+/* 这次预览请求要不要注入宿主桥：开发页的 iframe url 带 _host=1。
+   不带 = 直接开 url / 静态预览：逐字还是老的纯静态预览（不假装有宿主）。 */
+function previewWantsHost(u) {
+  try {
+    return String(u.searchParams.get("_host") || "") === "1";
+  } catch {
+    return false;
+  }
 }
 
 let previewProtocolReady = false;
@@ -458,9 +638,11 @@ function registerPreviewProtocol() {
       const dir = previewDirOf(decodeURIComponent(String(u.hostname || "")));
       if (!dir) return plain(t("应用目录不存在"), 404);
       const rel = decodeURIComponent(String(u.pathname || "")).replace(/^\/+/, "");
+      /* 带 _host=1 = 开发页中栏那只 iframe：除了状态小助手，还要注入宿主桥小助手 */
+      const withHost = previewWantsHost(u);
       /* 一次读文件：请求的那一页不在时，按 app.json 入口页 → 默认 index.html 兜底，
          预览始终落到应用的默认界面（详细口径见 previewFileResponse） */
-      const hit = previewFileResponse(dir, rel, req);
+      const hit = previewFileResponse(dir, rel, req, withHost);
       if (hit) return hit;
       /* 兜底链走完都没有：导航请求回「入口页 + 一条可读提示」，资源请求照常 404 */
       const man = manifestOf(dir, path.basename(dir));
@@ -468,11 +650,12 @@ function registerPreviewProtocol() {
       if (previewWantsHtml(req)) {
         const abs = resolveInside(dir, entry);
         if (abs && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
-          const html = previewFallbackHtml(
+          let html = previewFallbackHtml(
             fs.readFileSync(abs, "utf8"),
             rel && rel !== entry ? rel : "",
             entry,
           );
+          if (withHost) html = injectPreviewBridge(html);
           return new Response(injectPreviewAgent(html), {
             headers: {
               "content-type": "text/html; charset=utf-8",
@@ -696,6 +879,10 @@ function isInsideAppDir(p) {
  *     配置键 `apps.projectDir`，默认 <数据目录>/apps-dev。
  * 「这个应用算哪一类」只由 app.json 的 dev 标记决定（见 kindOfManifest），根目录也按类型取：
  * rootPathOf(kind) / appDirOf(kind, id) / appDataRootPath(id)。
+ *
+ * **不再要求用户手动指定（本轮口径）**：默认根就在**画布所在的数据目录**下，没人配过时
+ * 直接用默认，不再弹系统选目录框、不再打「未设置」。真正要用到这个根时由 ensureRootPersisted
+ * 把默认路径固化进 config.json（见它那段注释）；已手选的根一律保留。
  * 旧布局搬家见 migrateAppsLayout()（显式入口，绝不自动搬）。 */
 
 const configPath = () => path.join(String(getDataDir() || ""), "config.json");
@@ -724,10 +911,15 @@ function defaultRoot(kind) {
 }
 /* 老写法（手改过配置 / 迁移中途）：下载根的老键名们，按老顺序认 */
 const LEGACY_DOWN_ROOT_KEYS = ["appsInstallDir", "appInstallDir", "appsRoot"];
-/* 只读：某一类应用的根目录（没配就回默认路径，configured=false 由渲染层走引导框）。
-   dev 根没配时**回落下载根**：老用户在项目根出现之前建的应用都躺在下载根里，
-   不回落就等于升级后它们全部「不在本机」（用户什么也没干却丢了一屏应用）。
-   回落是**只为读**：新建 / 安装各写各的根，绝不把新东西塞进另一边。 */
+/* 只读：某一类应用的根目录（没配就回**默认根**，见 defaultRoot）。
+   **dev 根没配时不再回落下载根**（用户口径：老写法在项目根未配置时把开发的应用当成躺在
+   下载根里，本意是兼容升级，实际制造了一个隐蔽的坑 —— 项目根一旦丢配置（历史上渲染层整份
+   回写 config 会抹掉主进程写的 apps.projectDir，见 main.js 的 mergeConfigForSave），界面上
+   什么都看不出来，只是「开发中的应用」整列消失、预览报「该应用不在本机」）。
+   现在：没配 = 用**默认根**（<数据目录>/apps-dev），不再回退下载根，也**不再要求用户手选**；
+   真正要用到根的地方（list / install / create）走 ensureRootPersisted 把默认路径固化下来。
+   注意：下载根的老键名（appsInstallDir / appInstallDir / appsRoot）仍然认 —— 那是**同一个
+   根的旧键名**，不是跨目录回落，删了才会让老配置丢下载根。 */
 function rootPathOf(kind) {
   const k = kindOfRoot(kind);
   const cfg = readJson(configPath(), {}) || {};
@@ -738,13 +930,7 @@ function rootPathOf(kind) {
   };
   const own = pick(apps[KIND_CFG_KEY[k]]);
   if (own) return { root: own, configured: true, kind: k, fallback: false };
-  if (k === APP_KIND_DEV) {
-    for (const key of LEGACY_DOWN_ROOT_KEYS.concat(["installDir"])) {
-      const abs = pick(key === "installDir" ? apps.installDir : cfg[key]);
-      if (abs)
-        return { root: abs, configured: false, kind: k, fallback: true, legacyKey: key };
-    }
-  } else {
+  if (k === APP_KIND_DOWN) {
     for (const key of LEGACY_DOWN_ROOT_KEYS) {
       const abs = pick(cfg[key]);
       if (abs) return { root: abs, configured: true, kind: k, fallback: false, legacyKey: key };
@@ -755,6 +941,53 @@ function rootPathOf(kind) {
 /* 兼容别名：老调用点（下载 / 安装 / 列表）逐字走下载根 */
 function rootPath() {
   return rootPathOf(APP_KIND_DOWN);
+}
+/* ── 默认根的固化（本轮需求：不再要求用户手动指定文件夹） ─────────────────────
+ *
+ * 用户口径：不再让用户手选文件夹 —— 默认就用**画布所在的数据目录**（画布存档
+ * <数据目录>/save/<id>.json，config.json / 会话 / 素材也都在那儿）下的三个子目录：
+ *   apps（下载根）/ apps-dev（项目根）/ apps-data（应用数据，见 appDataRootPath）。
+ * 其中应用数据本来就不需要手选（默认就在数据目录下），只有两套根以前会拦人。
+ *
+ * **什么时候写进 config.json**（用户口径「首次真正要用到它时」）：只有下面三处会调它 ——
+ *   · listApps（库页 / 开发页「列本机应用」）
+ *   · installApp（下载 / 更新 / 回滚）
+ *   · createApp（新建应用）
+ * 不用到就不写，config.json 保持干净；光启动应用不改用户的配置。
+ *
+ * 已经手选过的根一律保留（own 键在就直接返回，绝不覆盖）——老机器行为一个字都不变。
+ * 写盘失败（目录只读 / 配置被占）**照样把默认根当可用**返回：本轮口径是「不再拦人」，
+ * 没固化成配置只是下次再试一次，绝不能因此让用户又回到「先选个文件夹」。
+ * 返回与 rootPathOf 同形，另带 persisted（本次是否真写了盘）/ writeFailed。 */
+function ensureRootPersisted(kind) {
+  const k = kindOfRoot(kind);
+  const cur = rootPathOf(k);
+  /* 已配过（手选的 / 已固化过的 / 老键名）：原样返回，一个字都不写盘 */
+  if (cur.configured) return Object.assign({}, cur, { persisted: false, writeFailed: false });
+  const def = String(cur.root || "");
+  let persisted = false;
+  try {
+    /* 默认根永远在数据目录下（defaultRoot），落进应用目录只可能是数据目录本身被手改坏了 ——
+       那种情况不写盘，只把默认根当可用（与 checkRoot 同一条守卫口径）。 */
+    if (def && !isInsideAppDir(def)) {
+      mk(def);
+      const cfg = readJson(configPath(), {}) || {};
+      const apps = isObj(cfg.apps) ? Object.assign({}, cfg.apps) : {};
+      apps[KIND_CFG_KEY[k]] = def;
+      writeJson(configPath(), Object.assign({}, cfg, { apps: apps }));
+      persisted = true;
+    }
+  } catch (_) {
+    persisted = false;
+  }
+  return {
+    root: def,
+    configured: persisted,
+    kind: k,
+    fallback: false,
+    persisted: persisted,
+    writeFailed: !persisted,
+  };
 }
 /* 两套根的只读快照（渲染层一次拿到两个根：库页页脚两行、设置里两条） */
 function rootsInfo() {
@@ -940,6 +1173,26 @@ function forkKeyOf(f) {
   if (!x) return "";
   return x.id + "|" + (x.ownerId || x.owner || "");
 }
+/* ── 上架留痕（本机状态字段，本轮需求）──────────────────────────────────────
+ * 应用上架成功之后，把「云端 id / 上架账号 / 时间 / 版本」写进 app.json 的 cloud 字段：
+ * 上架窗据此在离线时也知道这次是对着同一条提交，并定下次开窗的默认锁定 id。
+ * 判定一律用 ownerId（uid）比对当前登录账号，与 forkOf 同一口径：uid 是身份，username 只作显示。
+ * 为什么写在 app.json：与 author / forkOf 同一先例（它们就是本机状态字段、随包走）；
+ * 下载者拿到这一份也不会被误判成「我上架的」—— 渲染层还要比账号（见 renderer/app-apps.js 的
+ * appsPublishTraceOf）。
+ * 空 / 非法一律当「没有留痕」，绝不因此让条目读不出来。 */
+function normCloudPub(v) {
+  if (!isObj(v)) return null;
+  const id = safeAppId(v.id);
+  if (!id) return null;
+  return {
+    id: id,
+    ownerId: String(v.ownerId == null ? "" : v.ownerId).trim(),
+    owner: String(v.owner == null ? "" : v.owner).trim(),
+    version: String(v.version == null ? "" : v.version).trim(),
+    at: Number(v.at) || 0,
+  };
+}
 function manifestPath(dir) {
   return path.join(dir, SUB.manifest);
 }
@@ -1111,8 +1364,8 @@ function readAppData(id, name) {
 /* 老数据自动迁移：<应用安装目录>/<id>/storage/store.json → <默认数据根>/data.json（旧文件保留）。
  *  只在还没有 data.json 时才搬，且只用默认数据根（绝不动用户另选过的文件夹）。 */
 function migrateLegacyStorage(id) {
-  const { root, configured } = rootPathOf(diskKindOf(id));
-  if (!configured) return { ok: true, moved: false };
+  /* 根目录永远有（没配过就是默认根）：老 storage 只要真躺在那儿就迁，不再看「配没配过」 */
+  const { root } = rootPathOf(diskKindOf(id));
   const dir = appDirOf(root, id);
   if (!dir) return { ok: true, moved: false };
   const old = storageFile(dir);
@@ -1241,6 +1494,8 @@ function manifestOf(dir, id) {
     dev: j.dev === true,
     /* 二次开发来源（可选；原创为空）：{ id, ownerId, owner }，见 normForkOf */
     forkOf: normForkOf(j.forkOf),
+    /* 上架留痕（可选；没上架过为空）：{ id, ownerId, owner, version, at }，见 normCloudPub */
+    cloud: normCloudPub(j.cloud),
     /* 设计风格（见本文件顶部 APP_STYLES）：缺字段的老应用 / 云端包一律按默认风格看待，
        写回只发生在部署时给显式风格值的那一条路径上。
        回显走 normStoredAppStyle —— 「自定义」是一个要留给界面与查询记住的值（见该函数） */
@@ -1303,6 +1558,9 @@ function writeManifest(dir, spec, prevManifest) {
        退回「库」页；forkOf 抹掉 = 分支关系在重新下载后丢失）。 */
     dev: spec.dev === true ? true : spec.dev === false ? false : prev.dev === true,
     forkOf: normForkOf(spec.forkOf) || normForkOf(prev.forkOf),
+    /* 上架留痕（本轮需求）：同上 —— 只由显式参数改写，缺省继承目录里已有的那份
+       （一次安装 / 更新绝不能把「我上架过这个应用」这件事抹掉）。 */
+    cloud: normCloudPub(spec.cloud) || normCloudPub(prev.cloud),
     /* 应用能力位（textInput / imageGen）：只由显式参数改写，缺省继承目录里已有的那份；
        从没声明过的一律 false（存量应用按「不携带语音」处理）—— 见 apps-capabilities.js */
     capabilities: normCapabilities(spec.capabilities == null ? prev.capabilities : spec.capabilities),
@@ -1468,6 +1726,10 @@ function appSummary(root, id, kindHint) {
     })(),
     /* 二次开发来源（可选）：{ id, ownerId, owner } */
     forkOf: man.forkOf,
+    /* 上架留痕（可选）：{ id（云端 id）, ownerId, owner, version, at } ——
+       上架窗的默认锁定 id 与离线回落判定都读它（见 renderer/app-apps.js 的
+       appsPublishTraceOf / renderer/app-publish.js 的 pubTraceUpdate）。 */
+    cloud: man.cloud,
     /* 能力位（app.json 的 capabilities）：卡片小标与「应用能力…」对话框都读这一份 */
     capabilities: normCapabilities(man.capabilities),
     capabilityBadges: capabilityBadges(man.capabilities, appLocale()),
@@ -1489,6 +1751,7 @@ function appSummary(root, id, kindHint) {
     bytes: stat.bytes,
     mtimeMs: stat.mtimeMs,
     installedAt: Number(led.installedAt) || 0,
+    lastRunAt: Number(led.lastRunAt) || 0,
     source: String(led.source || ""),
     sha256: String(led.sha256 || ""),
     /* 本机多版本台账（§九）：cur = 本机这一版的来源（下载地址 / sha256），
@@ -1514,6 +1777,21 @@ function appSummary(root, id, kindHint) {
       }
     })(),
     broken: !readManifest(dir),
+    /* 应用目录里那个打包 zip（<名称>.zip）的 sha256：同版本号「作者重传了同一版」要靠它判
+       「本机这份到底是不是云端那份」（渲染层 appsVersionContentDiffers）。
+       台账（installed.json）记着 sha256 的应用用台账那份；**没有台账**的应用（自己新建 / 二次开发）
+       从来没有 sha256 可比 —— 这时包就在自己目录里，算一次即可（包不大，且只在渲染层问到时算）。
+       算不出来（没有 zip / 读不动）回空串：宁可少一个更新入口，也绝不拿猜的判据说话。 */
+    zipSha256: (() => {
+      try {
+        if (led && led.sha256) return String(led.sha256);
+        const zp = zipPathOf(dir, man.name);
+        if (!zp || !fs.existsSync(zp)) return "";
+        return sha256(fs.readFileSync(zp));
+      } catch (_) {
+        return "";
+      }
+    })(),
   };
 }
 /* 存量回填（一次性 · 幂等）：本机**没有 installed.json 安装账本**的应用 = 自己新建的
@@ -1532,7 +1810,8 @@ function devBackfillOnce(root, id) {
   } catch (_) {}
 }
 /* 应用清单里那几个**本机状态字段**的唯一写入口（渲染层不碰文件系统）：
-   dev（开发中）/ author（作者）/ forkOf（二次开发来源）。省略的键保持原样，绝不整份重写。 */
+   dev（开发中）/ author（作者）/ forkOf（二次开发来源）/ cloud（上架留痕）。
+   省略的键保持原样，绝不整份重写。 */
 function setAppMeta(arg) {
   const a = isObj(arg) ? arg : {};
   const id = safeAppId(a.id);
@@ -1550,6 +1829,8 @@ function setAppMeta(arg) {
   if (typeof a.dev === "boolean") patch.dev = a.dev;
   if (a.author !== undefined) patch.author = String(a.author == null ? "" : a.author).trim();
   if (a.forkOf !== undefined) patch.forkOf = normForkOf(a.forkOf);
+  /* 上架留痕（本轮需求）：传 null / 空对象 = 抹掉（留痕可以被清掉，绝不留半条脏数据） */
+  if (a.cloud !== undefined) patch.cloud = normCloudPub(a.cloud);
   if (!Object.keys(patch).length) return bad(t("没有要写入的字段"), "no_fields");
   try {
     writeJson(manifestPath(dir), Object.assign({}, raw, patch));
@@ -1567,9 +1848,120 @@ function setAppMeta(arg) {
     app: appSummary(path.dirname(dir), id, nowKind),
   };
 }
+/* ── 云端条目元数据 → 本机副本（apps:syncCloudMeta 的唯一实现）────────────────────
+ * 用途：应用中心里改过的**云端条目**（标题 / 简介 / 标签）要落到本机所有同 id 副本上，
+ * 免得本机列表还显示老标题、搜索还按老标签命中。
+ *
+ * 与 setAppMeta 的分工（**语义不重叠，绝不合流**）：
+ *   · setAppMeta  = 本机状态字段（dev / author / forkOf），只写 dirOfApp 那**一处**；
+ *   · 本函数     = 云端条目字段（title / description / tags），写**两套根下的每一份同 id 副本**。
+ *
+ * 可写字段白名单（只写传进来的那几个键，缺省的键一律不动）：
+ *   title       字符串（同一个值**同时**写进 app.json 的 title 与 name —— 本机列表、窗口标题、
+ *               画布文件名都读 name，只改 title 会出现「界面新标题、文件名还是老的」）；
+ *   description 字符串（原样，不 trim —— 简介里的换行与缩进由作者自己定）；
+ *   tags        字符串数组（逐项去空白、丢空项、去重且保持原顺序；传 [] = 清空）。
+ * 明确**不写**（这些是本机自己的事，云端条目说了不算）：icon / dev / forkOf / cloud / capabilities /
+ * style / entry / version / createdAt / updatedAt —— 冒烟按这份清单逐键比对面（见 [2]）。
+ *
+ * 两套根**都扫**：同一个 id 完全可能在下载根与项目根各有一份（用户口径：两边都要跟上），
+ * 所以绝不能只写 dirOfApp(id) 那一处；rootsInfo() 里两套根配成同一个目录时只扫一次。
+ *
+ * 回执形状（**单条失败不抛**，写不动的副本记进该条 error 后继续写其余副本；
+ * 全失败仍然 ok:true —— 由渲染层按 results 里的 error 单独提示）：
+ *   { ok:true, id, synced:<写成功条数>, missing:<本机一份都没有时为 true>,
+ *     results:[{ dir, kind, ok, error? }] }
+ * 本机没有该应用不是错误：{ ok:true, id, synced:0, missing:true, results:[] }。
+ * kind 口径：app.json 显式写过 dev 标记就用它；没写过按「扫到它的那一套根」归位。 */
+function syncArrayOfTags(v) {
+  const out = [];
+  const seen = new Set();
+  for (const x of v) {
+    const s = String(x == null ? "" : x).trim();
+    if (!s) continue;
+    const key = s.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+function syncCloudMetaToLocal(arg) {
+  const a = isObj(arg) ? arg : {};
+  const id = safeAppId(a.id);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  /* 只认白名单里的三个键；title 交上来了就必须是非空字符串（绝不把空标题写进清单） */
+  const patch = {};
+  if (a.title !== undefined) {
+    const title = typeof a.title === "string" ? a.title.trim() : "";
+    if (!title) return bad(t("标题不能为空"), "empty_title");
+    patch.title = title;
+    patch.name = title;
+  }
+  if (a.description !== undefined) patch.description = String(a.description == null ? "" : a.description);
+  if (a.tags !== undefined) patch.tags = syncArrayOfTags(Array.isArray(a.tags) ? a.tags : []);
+  if (!Object.keys(patch).length) return bad(t("没有要写入的字段"), "no_fields");
+
+  let roots = {};
+  try {
+    roots = rootsInfo();
+  } catch (_) {
+    roots = {};
+  }
+  const results = [];
+  const seenRoot = new Set();
+  let synced = 0;
+  for (const k of APP_KINDS) {
+    const root = String(((roots || {})[k] || {}).path || "");
+    if (!root) continue;
+    /* 两套根配成同一个目录（用户还没分开）= 只扫一次，绝不重复写同一个 app.json */
+    const key = cmpPath(root);
+    if (!key || seenRoot.has(key)) continue;
+    seenRoot.add(key);
+    const dir = appDirOf(root, id);
+    if (!dir || !fs.existsSync(dir)) continue; /* 这一边没有这个 id：不是错误 */
+    let raw = null;
+    let broken = "";
+    try {
+      raw = readManifest(dir);
+    } catch (err) {
+      raw = null;
+      broken = String((err && err.message) || err);
+    }
+    if (!raw) {
+      /* 清单损坏（读不出 / 不是对象）：这一条记 error，接着写别的副本 */
+      results.push({
+        dir: dir,
+        kind: k,
+        ok: false,
+        error: t("应用清单损坏（app.json 读不出来）：") + (broken || t("内容不是 JSON 对象")),
+      });
+      continue;
+    }
+    try {
+      writeJson(manifestPath(dir), Object.assign({}, raw, patch));
+      synced++;
+      results.push({ dir: dir, kind: k, ok: true });
+    } catch (err) {
+      results.push({ dir: dir, kind: k, ok: false, error: String((err && err.message) || err) });
+    }
+  }
+  return {
+    ok: true,
+    id: id,
+    kind: a.kind ? kindOfRoot(a.kind) : diskKindOf(id),
+    synced: synced,
+    missing: results.length === 0,
+    patched: Object.keys(patch),
+    results: results,
+  };
+}
 /* 本机应用列表：**两套根都扫**（下载的 + 开发的），每条带自己的 kind / 根 / 数据目录。
- * 两套根配成同一个目录时（用户还没分开）只扫一次，按各应用自己的 dev 标记归位。 */
+ * 两套根配成同一个目录时（用户还没分开）只扫一次，按各应用自己的 dev 标记归位。
+ * **列应用 = 「真正要用到根」的第一处**：没配过时在这里把默认根固化进 config.json
+ * （见 ensureRootPersisted），所以库页 / 开发页一打开，两个根就是明确可用的路径。 */
 function listApps() {
+  for (const k of APP_KINDS) ensureRootPersisted(k);
   const roots = rootsInfo();
   const apps = [];
   const seen = new Set();
@@ -1651,8 +2043,9 @@ function createApp(arg) {
   let root = "";
   try {
     /* 新建应用 = 开发的应用：一律落在**项目根**（apps.projectDir，默认 <数据目录>/apps-dev），
-       绝不再往下载根里塞（用户口径：下载的与开发的严格分开） */
-    root = rootPathOf(APP_KIND_DEV).root;
+       绝不再往下载根里塞（用户口径：下载的与开发的严格分开）。
+       没配过项目根不再拦人（也不弹选目录框）：用默认根并当场固化（本轮口径）。 */
+    root = ensureRootPersisted(APP_KIND_DEV).root;
   } catch (err) {
     return fail(err);
   }
@@ -1950,6 +2343,27 @@ function zipUrlsOf(spec) {
           : resolveZipUrl(rel, base);
     } else out.icon = resolveZipUrl(raw, base);
   }
+  /* 封面缩略图（卡片 16:9 背景图）：服务端条目下发 `thumb`（相对静态目录 icons/<主干>[__shot].png，
+     源 = 上架截图第 1 张，见 store-saas/server.mjs 的 appCatalogEntry）。**服务端两种来源下发的是
+     同一个字段**（同一份 appCatalogEntry），文件名后缀代表封面源（截图 / 图标），所以：
+       · 静态目录：原样解析成 FEED + 它；
+       · 接口目录：本地写法在接口侧**不存在**（icons/ 属于静态目录），接口只有
+         /api/apps/<id>/thumb 一条路由（它自己知道封面源）—— 与 icon 完全同一套写法。
+         以前这里按 base 直拼（…/store-api/icons/<主干>__shot.png），线上是 404：
+         封面先白跑两次请求，再一路退到「原图 → 图标」，卡片上就等于拿不到封面。
+     老目录没有这个字段时留空，渲染层仍会退回 icon（appsThumbUrlOf 那条既有链路）。 */
+  const rawThumb = String((spec && spec.thumb) || "").trim();
+  if (rawThumb) {
+    if (/^data:image\//i.test(rawThumb)) out.thumb = rawThumb;
+    else if (/^https?:\/\//i.test(rawThumb)) out.thumb = resolveZipUrl(rawThumb, base);
+    else if (api) {
+      const relT = rawThumb.replace(/^\.\//, "");
+      out.thumb =
+        relT.indexOf("/") <= 0 || relT.startsWith("icons/")
+          ? base + "/api/apps/" + encodeURIComponent(id) + "/thumb" + q(ownQ)
+          : resolveZipUrl(relT, base);
+    } else out.thumb = resolveZipUrl(rawThumb, base);
+  }
   return out;
 }
 
@@ -2031,6 +2445,9 @@ function normSpec(raw) {
     sha256: String(s.sha256 || "").trim().toLowerCase(),
     bytes: Number(s.bytes) || 0,
   };
+  /* 封面来源：只认 shot / icon 两个值，别的一律当"没声明"（老目录） */
+  const rawCover = String(s.coverSource || "").trim();
+  const coverSource = rawCover === "shot" || rawCover === "icon" ? rawCover : "";
   return {
     id: id,
     title: title,
@@ -2046,11 +2463,30 @@ function normSpec(raw) {
     zipUrl: String(s.zipUrl || "").trim(),
     sha256: String(s.sha256 || "").trim().toLowerCase(),
     icon: String(s.icon || "").trim(),
-    /* 上架截图（本轮需求 · 多图）：目录条目下发的相对静态目录写法数组（shots/<主干>/<n>.<ext>）。
-       渲染层拿它画详情窗的多图画廊；老目录没有这个字段 = 空数组（画廊不出现，其余一切照旧）。 */
+    /* 上架截图（多图）：目录条目下发的相对静态目录写法数组（shots/<主干>/<n>.<ext>）。
+       渲染层拿它画详情窗的多图画廊；老目录没有这个字段 = 空数组（画廊不出现，其余一切照旧）。
+       shotsThumb[] = **同一批图的列表小图**（长边 1280，服务端懒生成）：列表页只下它，
+       详情才下 shots[] —— 图片放宽到 5MB 之后，这条是列表页不把带宽吃光的关键。
+       位置对不上 / 老目录没有 → 空串，渲染层退回原图地址（绝不 404）。
+       shotsSha[] = 每张图的内容哈希（服务端内容寻址图片库的对象名）：客户端据此判断
+       「云端已经有这张图」，重复提交时只发引用不发字节。 */
     shots: (Array.isArray(s.shots) ? s.shots : [])
       .map((x) => String(x == null ? "" : x).trim())
       .filter(Boolean),
+    shotsThumb: (Array.isArray(s.shotsThumb) ? s.shotsThumb : []).map((x) =>
+      String(x == null ? "" : x).trim(),
+    ),
+    shotsSha: (Array.isArray(s.shotsSha) ? s.shotsSha : [])
+      .map((x) => String(x == null ? "" : x).trim().toLowerCase())
+      .filter((x) => /^[0-9a-f]{64}$/.test(x)),
+    /* 封面（卡片 16:9 背景图，本轮需求）：服务端下发**封面源就是上架截图第 1 张**——
+       thumb = 缩略图相对地址（icons/<主干>__shot.png / 没有截图才 icons/<主干>.png）；
+       coverSource = "shot" | "icon"（没有封面图 = 空串）；coverVer = 封面源文件 mtime（秒），
+       换图后立刻换地址、绕开 HTTP 缓存（作者在「编辑」里换截图不产生新版本号，版本号当令牌不够用）。
+       老目录没有这三项：thumb 空 → 渲染层退回按 icon 推导，行为与以前完全一致。 */
+    thumb: String(s.thumb || "").trim(),
+    coverSource: coverSource,
+    coverVer: String(s.coverVer || "").trim(),
     window: isObj(s.window) ? s.window : {},
     /* 多版本（§七）：latestVersion 缺省 = version；versions[] 缺省 = 就这一版 */
     owner: String(s.owner || "").trim(),
@@ -2073,7 +2509,28 @@ function normSpec(raw) {
     parentOwnerId: String(s.parentOwnerId || "").trim(),
     latestVersion: String(s.latestVersion || version).trim() || version,
     versions: normVersionsOf(s, single),
+    /* 条目最后更新时间（本轮需求：应用详情右列要显示「更新时间」）：
+       服务端目录条目本来就下发 updatedAt（store-saas/server.mjs 的 appCatalogEntry），
+       但这里过去没有透传 → 渲染层的目录条目根本没有这个字段（只有「我的应用」那条
+       路径靠 appsSpecFromMine 留着）。**数字串 / ISO 串都收**（手写静态目录常写 ISO），
+       认不出来就是 0 = 「没有这个字段」，由渲染层决定退不退版本时间、画不画这一行。 */
+    updatedAt: normStamp(s.updatedAt),
   };
+}
+/* 目录里的时间戳归一：数字 / 数字串 / ISO 串 → 毫秒；认不出回 0（绝不编造时间）。
+   口径与渲染层 appsStampOf（renderer/app-apps.js）一致：**2000-01-01 之前的值当没有** ——
+   手写清单里塞 0 / 1 / 2 这类占位值很常见，放过去界面就会显示「1970/1/1」。 */
+const NORM_STAMP_MIN = 946684800000;
+function normStamp(v) {
+  if (typeof v === "number") return isFinite(v) && v >= NORM_STAMP_MIN ? v : 0;
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return 0;
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    return isFinite(n) && n >= NORM_STAMP_MIN ? n : 0;
+  }
+  const t = Date.parse(s);
+  return isFinite(t) && t >= NORM_STAMP_MIN ? t : 0;
 }
 function parseCatalogDoc(doc, base, kind) {
   const d = isObj(doc) ? doc : {};
@@ -2141,6 +2598,35 @@ function catalogFromCache(c, remoteError) {
     remoteError: remoteError,
   };
 }
+/* 「云端**答了**、只是 0 条」与「连不上」必须分得开：前者不是错误 —— 客户端不该拿它说
+   「请检查网络」（用户实际白查一遍网络，2026-10-09 报的那句就是这么来的）。
+   空目录本身仍按失败处理（见 fetchRemoteCatalog 的注释：要回退下一层），
+   但失败码认得出（EMPTY_CATALOG），loadCatalog 据此在结果里记一个 answered 交给渲染层。 */
+function emptyCatalogErr(what) {
+  const e = new Error("empty_catalog（" + what + " 0 条）");
+  e.code = "EMPTY_CATALOG";
+  return e;
+}
+function isEmptyCatalogErr(err) {
+  return !!(err && err.code === "EMPTY_CATALOG");
+}
+/* 「一层都没成」时的结果对象（纯函数，冒烟直接真跑）：
+   errors = 各层失败原文（只进日志 / 排查），answered = 云端真答过（哪怕 0 条）。
+   渲染层只认 source + answered 两个字段：answered=true 时它一个字都不说（0 条不是错误），
+   false 才说一句「无法连接」（见 renderer/app-apps.js 的 appsCatalogDown）。 */
+function emptyCatalogResult(errors, answered) {
+  return {
+    ok: true,
+    source: "empty",
+    fetchedAt: 0,
+    sourceUrl: catalogUrl(),
+    sourceBase: FEED,
+    apps: [],
+    appVersion: String(getAppVersion() || ""),
+    remoteError: (errors || []).join(" · "),
+    answered: answered === true,
+  };
+}
 /* 静态目录（首选入口）：拉不到 / 是空目录都算失败 —— 空目录正是「部署链把线上目录刷空」
    那类事故的样子，必须让调用方回退接口目录，而不是把「一条应用都没有」当结论。 */
 async function fetchRemoteCatalog() {
@@ -2148,7 +2634,7 @@ async function fetchRemoteCatalog() {
   const doc = JSON.parse(buf.toString("utf8"));
   if (!isObj(doc) || !(Array.isArray(doc.apps) || Array.isArray(doc.list))) throw new Error("bad_catalog");
   const parsed = parseCatalogDoc(doc, FEED, "static");
-  if (!parsed.apps.length) throw new Error("empty_catalog（静态目录 0 条）");
+  if (!parsed.apps.length) throw emptyCatalogErr("静态目录");
   writeCatalogCache(catalogUrl(), doc, FEED, "static");
   return parsed;
 }
@@ -2162,9 +2648,13 @@ async function fetchApiCatalog() {
   return parsed;
 }
 /* 云端目录：静态 → 接口 → 本机缓存 → 空列表。
-   每一层都记进日志（source / remoteError），排查「应用库没连上云端」时一眼能看出断在哪一层。 */
+   每一层都记进日志（source / remoteError），排查「应用库没连上云端」时一眼能看出断在哪一层。
+   结果里的 answered = 「云端确实回了一份目录（哪怕 0 条）」——渲染层只对 answered=false 的
+   那种空目录说「无法连接」，云端就是没应用时不再误导用户去查网络（见 app-apps.js 的
+   appsCatalogDown）。 */
 async function loadCatalog() {
   const errors = [];
+  let answered = false;
   try {
     const remote = await fetchRemoteCatalog();
     return {
@@ -2177,6 +2667,7 @@ async function loadCatalog() {
       appVersion: String(getAppVersion() || ""),
     };
   } catch (err) {
+    if (isEmptyCatalogErr(err)) answered = true;
     errors.push("static: " + ((err && err.message) || err));
   }
   try {
@@ -2191,13 +2682,14 @@ async function loadCatalog() {
       appVersion: String(getAppVersion() || ""),
       remoteError: errors.join(" · "),
     };
-    if (!out.apps.length) throw new Error("empty_catalog（接口目录 0 条）");
+    if (!out.apps.length) throw emptyCatalogErr("接口目录");
     console.log(
       "[apps-store] 静态目录不可用（" + errors.join(" · ") + "）→ 已回退云端接口目录：" +
         storeCatalogUrl() + "（" + out.apps.length + " 个应用）",
     );
     return out;
   } catch (err) {
+    if (isEmptyCatalogErr(err)) answered = true;
     errors.push("api: " + ((err && err.message) || err));
   }
   const c = readCatalogCache();
@@ -2207,34 +2699,50 @@ async function loadCatalog() {
     return out;
   }
   console.warn("[apps-store] 云端目录拉不到、本机也没有缓存：" + errors.join(" · "));
-  return {
-    ok: true,
-    source: "empty",
-    fetchedAt: 0,
-    sourceUrl: catalogUrl(),
-    sourceBase: FEED,
-    apps: [],
-    appVersion: String(getAppVersion() || ""),
-    remoteError: errors.join(" · "),
-  };
+  /* answered 见 emptyCatalogResult 的注释：两层都是 empty_catalog → true（云端就是没应用），
+     两层都真的没连上 → false。渲染层据此决定说不说「无法连接」。 */
+  return emptyCatalogResult(errors, answered);
 }
 /* 找一个目录条目：先缓存、再远端（安装时云端刚更新过也能装上）。
    同 id 多分支（docs/apps-market.md §十）：同一个 id 下每个作者一条，**必须按 ownerId 区分** ——
-   传了 ownerId 就只认那一条；不传则回主干（目录里同 id 的第一条，服务端也是这个缺省语义）。 */
-async function findSpec(id, ownerId) {
+   传了 ownerId 就只认那一条；不传则回主干（目录里同 id 的第一条，服务端也是这个缺省语义）。
+   返回 { spec, reachable }：spec = 命中的条目（没有 = null）；reachable =「云端目录这次到过」。
+   安装路径靠 reachable 把「云端确实没有它（下架 / 已删）」与「这次没连上云端」分开报，
+   两者的出路完全不同（见 apps-store.js 的 installCatalogMiss 与 renderer 的 appsErrText）。 */
+async function findSpecHit(id, ownerId) {
   const want = String(ownerId || "").trim();
   const pick = (list) => {
     const arr = Array.isArray(list) ? list : [];
     if (want) return arr.find((a) => a && a.id === id && String(a.ownerId || "") === want) || null;
     return arr.find((a) => a && a.id === id) || null;
   };
-  const c = readCatalogCache();
-  if (c && c.doc) {
-    const hit = pick(parseCatalogDoc(c.doc, c.sourceBase, c.sourceKind).apps);
-    if (hit) return hit;
-  }
+  /* ① 本机缓存的最快路径（命中就直接用，不走网络 —— 老行为不变）。
+     只认**当前目录地址**下的那一份缓存：缓存可能是上一次会话 / 另一台实例 / 另一个目录基址
+     留下的（catalogCachePath 只有一份），照它解析出来的下载地址是那个旧基址的，
+     拿到今天的客户端上就是连不上旧实例 / 打到别人的包 —— 那类缓存在这里直接不用。
+     命中的条目按**当前**来源基址重新解析地址（tagSourceBase 就是这么挂的）：
+     缓存里存的相对路径（<id>__<作者uid>.zip、<id>/<版本>.zip）今天还按同一个基址取。 */
+  const cached = readCatalogCache();
+  const cachedFresh =
+    !!cached &&
+    !!cached.doc &&
+    String(cached.sourceUrl || "") === catalogUrl() &&
+    String(cached.sourceKind || "static") === "static";
+  const cachedHit = cachedFresh ? pick(parseCatalogDoc(cached.doc, cached.sourceBase, cached.sourceKind).apps) : null;
+  if (cachedHit) return { spec: tagSourceBase(cachedHit, FEED, "static"), reachable: true };
+  /* ② 缓存里没有它 → 真的问一次目录（loadCatalog 自带 静态 → 接口 → 缓存 → 空 的降级链） */
   const cat = await loadCatalog();
-  return pick(cat.apps);
+  const hit = pick(cat && cat.apps);
+  if (hit) return { spec: hit, reachable: true };
+  /* ③ 没命中：只有「云端真答了一份目录」才算到过 —— remote / api 是当场答的，
+     cache 是上一份真目录（里面没有它就是真没有），空目录 / 一层都没拉通 = 没到过。 */
+  const source = String((cat && cat.source) || "");
+  return { spec: null, reachable: source === "remote" || source === "api" || source === "cache" };
+}
+/* 兼容旧调用点：只要条目（安装路径要的 reachable 走 findSpecHit）。 */
+async function findSpec(id, ownerId) {
+  const hit = await findSpecHit(id, ownerId);
+  return hit.spec;
 }
 
 /* ---------------- zip：解包（安装）与打包（导出 zip） ---------------- */
@@ -2376,15 +2884,46 @@ function installFailHint(code) {
   if (/^too_large/.test(s)) return "安装包超过允许体积上限";
   if (/^ECONN|^ENOTFOUND|^EAI|^EHOST/.test(s)) return "连接应用目录失败（" + s + "）";
   if (/^bad_zip_url/.test(s)) return "云端目录里该应用的下载地址不合法（只允许同源 http/https）";
+  /* 这一条必须在 ^not_in_catalog 之前（否则被那条前缀先接走）：云端目录里没有它
+     （作者已删除），拿不到要装的那一版的下载地址（见 installCatalogMiss）。
+     措辞对两种人都要成立：本机装过的（重下没了来源）与**从没装过的**（别人分享的 id /
+     本机缓存里的旧卡片）—— 原来那句「本机这一份没法再重新下载」在后一种人那儿是句
+     没头没脑的话，他本机根本没有这一份。 */
+  if (/^not_in_catalog_removed/.test(s)) return "云端目录里已经找不到这个应用（作者已删除），没法再从云端下载";
+  if (/^catalog_unreachable/.test(s)) return "这次没能连上云端目录：检查网络后重试；离线时只有本机已有的版本能在本机切换";
   if (/^not_in_catalog/.test(s)) return "云端目录里找不到这个应用";
   if (/^version_not_in_catalog/.test(s)) return "云端目录里找不到这个版本（作者可能已删除该版本）";
   if (/^need_app_update/.test(s)) return "该应用要求的 MTNode 版本高于当前版本";
   if (/^pack_missing_entry/.test(s)) return "安装包解压后缺少入口 HTML（云端包结构不对）";
   if (/zip truncated|unsupported zip method/.test(s)) return "安装包损坏或压缩方式不受支持";
   if (/^bad_id/.test(s)) return "应用 id 不合法";
-  if (/^need_root/.test(s)) return "尚未指定应用安装根目录";
   if (/^EACCES|^EPERM|^ENOENT|^ENOSPC/.test(s)) return "写入应用目录失败（" + s + "）";
   return "";
+}
+/**
+ * 「这一步其实是云端目录里没有它」的判据（安装路径专用）。
+ *
+ * 现场（用户报「上传应用后，其他用户下载时显示下载失败：云端目录里找不到」）：
+ * 这一步原先会报 bad_zip_url，用户看到的是「云端目录里该应用的下载地址不合法」——
+ * 与真实原因（云端没有它：已下架 / 已删除）完全对不上，照着这句话也修不了。
+ * 现在主路径已经在 throw 之前就把两种情形分开报（见 installApp 里那段注释与
+ * findSpecHit 的 reachable），这里留作**兜底**：只要走到「要下它、却拿不到下载地址」，
+ * 就按这一条说清楚，而不是回一句把人引向错误方向的「地址不合法」。
+ *
+ * 判据只看 spec 有没有**云端身份**：没有 zipUrl、也没有 versions[] / ownerId 的，一定是
+ * 本机那份清单（app.json 只写展示与状态字段）或半截条目 —— 那不是「地址坏了」，是「没地址」。
+ * 有 zipUrl / versions / ownerId 就说明它是真目录条目，那空地址就是真的坏地址，仍报 bad_zip_url。
+ * 返回失败码或 ""（"" = 不归这条管，调用方照旧报 bad_zip_url）。
+ *
+ * catReachable 决定措辞：目录这次到过 = 云端确实没有它（多半被删 / 下架，not_in_catalog_removed）；
+ * 没到过 = 离线 / 弱网（catalog_unreachable）—— 两种情形用户该做的事不一样。
+ */
+function installCatalogMiss(spec, catReachable) {
+  if (!spec) return "";
+  if (String(spec.zipUrl || "").trim()) return "";
+  if (Array.isArray(spec.versions) && spec.versions.length) return "";
+  if (String(spec.ownerId || "").trim()) return "";
+  return catReachable === false ? "catalog_unreachable" : "not_in_catalog_removed";
 }
 /* 只删「上次装进去的那批载荷」：账本在就按账本删，不在也只删标准三样；
    storage/ 与 <AppName>.mtnodes 绝不碰（更新安装不该弄丢用户数据）。 */
@@ -2419,9 +2958,9 @@ async function installApp(arg) {
   const a = isObj(arg) ? arg : { id: arg };
   const id = safeAppId(a.id);
   if (!id) return bad(t("应用 id 不合法"), "bad_id");
-  /* 安装 = **只动下载根**（云端目录下来的东西绝不进项目根；用户口径：两套根严格分开） */
-  const { root, configured } = rootPathOf(APP_KIND_DOWN);
-  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DOWN)), { needRoot: true });
+  /* 安装 = **只动下载根**（云端目录下来的东西绝不进项目根；用户口径：两套根严格分开）。
+     没配过根目录不再拦人：用默认根（<数据目录>/apps）并当场固化（本轮口径，见 ensureRootPersisted）。 */
+  const { root } = ensureRootPersisted(APP_KIND_DOWN);
   if (installing[id]) return Object.assign(bad(t("该应用已有安装任务在跑"), "busy"), { busy: true });
   installing[id] = true;
   const mode = String(a.mode || "").trim();
@@ -2431,28 +2970,52 @@ async function installApp(arg) {
     /* 直连地址（本机多版本回滚走这条）：台账里记着那一版**那次真正的下载地址**，
        云端目录可能已经改版 / 下架，找不到那一版就按台账直连 —— 但守卫一条不少：
        地址仍要过 resolveZipUrl 白名单，sha256 仍要校验（见 §九）。 */
-    const directUrl = String(a.directUrl || "").trim();
-    const directRaw = String(a.sha256 || a.directSha || "").trim();
+    let directUrl = String(a.directUrl || "").trim();
+    let directRaw = String(a.sha256 || a.directSha || "").trim();
     /* 覆盖安装 / 更新前先读一把**本机**清单与安装账本：dev（开发中）/ forkOf（来源）/
        本机多版本台账都只存在于本机目录里，云端包与目录都没有 —— 必须在 removePayload
        抹掉 app.json 之前取到（否则一次更新就会让应用从「开发」页退回「库」页）。 */
     const keepMan = readManifest(appDirOf(root, id) || "") || {};
     const oldLedger = readInstalled(appDirOf(root, id) || "") || {};
     let spec = null;
+    /* 目录**到过**没有（findSpecHit 的 reachable）：用来分开「云端确实没有这个应用」与
+       「这次没连上云端」—— 两种情形的失败码与提示都不一样（见下面那段的注释）。 */
+    let catReachable = false;
+    /* 要装哪一版（渲染层点版本树里的某一版；空 = 当前版）—— 目录兜底与台账兜底都要用，先定。 */
+    let wantVersion = String(a.version || "").trim();
     if (!directUrl) {
       /* 同 id 多分支：ownerId 指明要装哪条分支（不传 = 主干），见 docs/apps-market.md §十 */
-      spec = await findSpec(id, a.ownerId);
-      /* 目录拉不到（离线 / 那一版已下架）但本机装着它时，退回本机清单装「同一版」——
-         这样在两个已下过的版本之间来回切换不需要网络；否则如实报 not_in_catalog。 */
-      if (!spec && keepMan) spec = Object.assign({ id: id }, keepMan);
-      if (!spec) throw new Error("not_in_catalog");
+      const hit = await findSpecHit(id, a.ownerId);
+      spec = hit.spec;
+      catReachable = hit.reachable;
+      /* 目录里没有它：**分两种情形说**，别混着报（现场：用户看到的那句话与真实原因对不上）——
+         ① 目录这次到过（云端确实没有它：已下架 / 已删除）→ not_in_catalog_removed；
+         ② 目录这次没到过（离线 / 弱网）→ catalog_unreachable —— 「作者下架」与「你没连上网」
+            是两件事，报错了用户按哪句话修都不一样。
+         两种情形都先看本机台账：installed.json 里记着这一版**那次真正的下载地址**
+         （versions.cur，回滚那条路维护）→ 按台账直连重下，离线时的版本切换 / 重装照样走得通。
+         **不拿本机 app.json（keepMan）当下载依据**：它没有 zipUrl / sha256（writeManifest 只写
+         展示与状态字段），照它拼出来的地址必然是空的 —— 那就是「云端目录里该应用的下载地址
+         不合法」那句错报的来路。 */
+      if (!spec && (catReachable || String(oldLedger.source || "").trim())) {
+        const ledCur = ledgerSlot(isObj(oldLedger.versions) ? oldLedger.versions.cur : null);
+        const src = String(oldLedger.source || (ledCur && ledCur.source) || "").trim();
+        if (src) {
+          directUrl = src;
+          directRaw = String(oldLedger.sha256 || (ledCur && ledCur.sha256) || "") || directRaw;
+          if (!wantVersion) wantVersion = String(oldLedger.version || (ledCur && ledCur.version) || "").trim();
+        }
+      }
+      if (!spec && !directUrl) {
+        const code = catReachable === true ? "not_in_catalog_removed" : "catalog_unreachable";
+        throw new Error(code);
+      }
     }
     /* 下载地址按**来源**解析（静态目录 = FEED + 相对路径；接口目录 = <store>/api/apps/<id>/file|icon）。
        必须在选版**之前**算：接口目录的 versions[].zipUrl 是静态写法，静态目录里并不存在那个文件。 */
     const urls = spec ? zipUrlsOf(spec) : { zip: "", versions: {} };
     /* 选版下载（§七）：渲染层点了版本树里的某一版 → 只换 zipUrl / sha256 / version，
        其余（entry / window / tags…）仍取应用条目；目录里没有那一版就如实报错。 */
-    const wantVersion = String(a.version || "").trim();
     if (directUrl) {
       if (!wantVersion) throw new Error("bad_version");
       spec = {
@@ -2482,7 +3045,7 @@ async function installApp(arg) {
     }
     if (spec.compatible === false) throw new Error("need_app_update");
     const zipUrl = directUrl || resolveZipUrl(spec.zipUrl, specBaseOf(spec));
-    if (!zipUrl) throw new Error("bad_zip_url");
+    if (!zipUrl) throw new Error(installCatalogMiss(spec, catReachable) || "bad_zip_url");
     const exists = fs.existsSync(path.join(root, id));
     let targetId = id;
     if (exists && mode === "rename") targetId = uniqueAppId(root, id);
@@ -2569,7 +3132,9 @@ async function installApp(arg) {
         keepPrev = sameVerSlot(prevSlot, { version: oldVer }) ? prevSlot : verRecord(oldVer, zipUrl, "", 0, 0);
       }
       const curSlot = verRecord(man.version, zipUrl, sha, zipBuf.length, Number(spec.uploadedAt || spec.createdAt || 0));
-      writeJson(installedPath(targetDir), {
+      /* 账本在原地补字段：老账本里的 lastRunAt（最后一次运行时间，库页排序用）要保住 ——
+         整份重写会把它抹掉，用户会看到「刚跑过的应用在列表里排到最后」。 */
+      writeJson(installedPath(targetDir), Object.assign({}, oldLedger, {
         schema: SCHEMA,
         id: targetId,
         version: man.version,
@@ -2582,7 +3147,7 @@ async function installApp(arg) {
         files: ledger,
         installedAt: now,
         versions: { cur: curSlot || null, prev: keepPrev || null },
-      });
+      }));
       sendProgress({ id: id, phase: "done", percent: 100, version: man.version });
       return {
         ok: true,
@@ -2619,10 +3184,9 @@ async function installApp(arg) {
 function appsVersionPick(id) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  /* 台账属于**本机那一边**：按该应用实际所在的类型取根 */
+  /* 台账属于**本机那一边**：按该应用实际所在的类型取根（没配过就用默认根并固化） */
   const k = diskKindOf(sid);
-  const { root, configured } = rootPathOf(k);
-  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(k)), { needRoot: true });
+  const { root } = ensureRootPersisted(k);
   const dir = appDirOf(root, sid);
   const app = dir && fs.existsSync(dir) ? appSummary(root, sid, k) : null;
   const led = dir ? readInstalled(dir) || {} : {};
@@ -2662,8 +3226,7 @@ async function rollbackApp(arg) {
   const target = String(a.version || "").trim();
   if (!target) return bad(t("没有指定要回滚到哪一版"), "bad_version");
   const k = diskKindOf(id);
-  const { root, configured } = rootPathOf(k);
-  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(k)), { needRoot: true });
+  const { root } = ensureRootPersisted(k);
   const dir = appDirOf(root, id);
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: id });
   const man = readManifest(dir);
@@ -2692,7 +3255,7 @@ async function rollbackApp(arg) {
   }
   if (!hit || !hit.source)
     return Object.assign(
-      bad(t("本机没有这一版的下载来源：它可能是本机自建的那一版，或云端已下架（回滚需要按来源重下）")),
+      bad(t("本机没有这一版的下载来源：它可能是本机自建的那一版，或云端已删除（回滚需要按来源重下）")),
       { gone: true, id: id, version: target },
     );
   /* 台账里的地址一样要过白名单（只认允许基址；绝对地址 host 必须命中）——
@@ -2723,8 +3286,7 @@ async function uninstallApp(id, opts) {
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
   const k = diskKindOf(sid);
   if (k === APP_KIND_DEV) return unregisterApp(sid, opts);
-  const { root, configured } = rootPathOf(APP_KIND_DOWN);
-  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DOWN)), { needRoot: true });
+  const { root } = ensureRootPersisted(APP_KIND_DOWN);
   const dir = appDirOf(root, sid);
   if (!dir) return bad(t("非法路径"), "bad_id");
   if (!fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
@@ -2833,10 +3395,15 @@ function migrateAppsLayout(arg) {
   /* 只搬一个应用（「二次开发」刚把某个下载的应用改成开发中时用它就地归位）；
      不给 id 就是全量迁移。 */
   const onlyId = safeAppId(a.id);
+  /* 搬家要用到两个根：**真搬的时候**（非 dryRun）没配过就固化默认根 —— 本轮口径：不再要求
+     用户手选（见 ensureRootPersisted）。dryRun 是「只看不动」，一行配置都不写。 */
+  if (!dryRun) {
+    ensureRootPersisted(APP_KIND_DOWN);
+    ensureRootPersisted(APP_KIND_DEV);
+  }
   const roots = rootsInfo();
   const downRoot = String((roots[APP_KIND_DOWN] || {}).path || "");
   const devRoot = String((roots[APP_KIND_DEV] || {}).path || "");
-  const devConfigured = !!(roots[APP_KIND_DEV] || {}).configured;
   const sameRoot = !!downRoot && cmpPath(downRoot) === cmpPath(devRoot);
   const moves = [];
   const conflicts = [];
@@ -2876,9 +3443,6 @@ function migrateAppsLayout(arg) {
           reason: t("目标目录已存在（同一个 id 在项目根里已有一份）：不覆盖，请自己核对后手动处理"),
         });
         continue;
-      }
-      if (!devConfigured) {
-        note.push(t("项目根目录还没设置：本轮会先落到默认项目根，之后可在「应用根目录」里改"));
       }
       moves.push({ kind: "app", id: id, from: from, to: to, action: "move", reason: t("开发中的应用搬进项目根") });
     }
@@ -2999,7 +3563,7 @@ function migrateAppsLayout(arg) {
    **app.json 不在这里**：包里那份 app.json 是 packEntriesOf 现读现写的（去掉 dev 标记），
    列进来会让包缺清单（下载方认不出应用）。
    尾参 opts.excludeExtra 是「打包口径」的显式注入点：正常路径不传；冒烟用它模拟
-   「打包实现漏了一类应用文件」，验证体检真能把丢件报成 unknown（而不是只看自己那份名单）。 */
+   「打包实现漏了一类应用文件」，验证包内清单真的少那一条（而不是只看自己那份名单）。 */
 function packExcludedFiles(dir, man, opts) {
   const name = safeBaseName((man && man.name) || path.basename(dir), "app");
   const out = [SUB.installed, name + CANVAS_EXT, name + ZIP_EXT];
@@ -3007,7 +3571,7 @@ function packExcludedFiles(dir, man, opts) {
   for (const rel of extra) out.push(String(rel || ""));
   return out.filter((v, i) => v && out.indexOf(v) === i);
 }
-/* 应用目录 → 包里的文件清单（顺序稳定：按相对路径字典序；唯一读取实现，导出与体检共用）。
+/* 应用目录 → 包里的文件清单（顺序稳定：按相对路径字典序；唯一读取实现，导出与上架包共用）。
    回 [{ name, data }]。 */
 function packEntriesOf(dir, sid, opts) {
   const o = isObj(opts) ? opts : {};
@@ -3158,156 +3722,6 @@ function readPackBase64(id) {
   }
 }
 
-/* ---------------- 上架前体检：这个应用打成包会丢哪些文件（只读，不写盘不上传） ----------------
- *
- * 病根就是这里查出来的那件事：**目录里的应用文件没进包**（历史实现只打 app.json + 入口页 +
- * assets/**，根目录里的 game.js / style.css 这类脚本与样式一律丢，下载者拿到的是一个跑不起来的
- * 空壳）。体检按**上架口径**（forUpload）真跑一遍打包实现 packEntriesOf，再把「目录里有、包里
- * 没有」的文件列出来；顺带按入口页里写的 src / href 报出「引用了但目录里不存在」的文件
- * （statically 只查入口页那一份 HTML，不跟 js 里的二次引用）。
- * 只读：不写 zip、不装、不上传。 */
-
-/* 入口页里的本机相对引用（./x.js、assets/y.css…）：外链 / 锚点 / data: / 协议前缀一律不算 */
-const AUDIT_REF_RE = /(?:src|href)\s*=\s*["']([^"']+)["']/gi;
-function isLocalRef(u) {
-  const v = String(u || "").trim();
-  if (!v) return false;
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(v)) return false; /* http(s): / data: / mailto: / #anchor */
-  return true;
-}
-/* 相对入口页所在目录解析成应用目录内的相对路径；越界（.. / 绝对路径 / 盘符）回 "" */
-function refRelOf(entry, ref) {
-  const raw = String(ref || "").split("#")[0].split("?")[0].replace(/\\/g, "/").trim();
-  /* 只认「像文件路径」的引用：$(...) / {{...}} / 纯文字这类模板残渣不误报 */
-  if (!raw || raw.startsWith("/")) return "";
-  if (raw.indexOf("$") >= 0 || raw.indexOf("{") >= 0 || raw.indexOf("}") >= 0) return "";
-  const parts = String(entry || "").split("/").slice(0, -1);
-  for (const seg of raw.split("/")) {
-    if (!seg || seg === ".") continue;
-    if (seg === "..") {
-      if (!parts.length) return "";
-      parts.pop();
-    } else parts.push(seg);
-  }
-  return parts.join("/");
-}
-/* 入口页引用检查：报「入口页里写了、应用目录里没有」的文件（相对入口页所在目录） */
-function auditEntryRefs(dir, entryAbs, entry) {
-  const out = [];
-  let html = "";
-  try {
-    html = fs.readFileSync(entryAbs, "utf8");
-  } catch (_) {
-    return out;
-  }
-  const seen = Object.create(null);
-  AUDIT_REF_RE.lastIndex = 0;
-  let m = null;
-  while ((m = AUDIT_REF_RE.exec(html)) !== null) {
-    const raw = String(m[1] || "").trim();
-    if (!isLocalRef(raw)) continue;
-    const rel = refRelOf(entry, raw);
-    if (!rel || seen[rel]) continue;
-    seen[rel] = true;
-    const abs = resolveInside(dir, rel);
-    if (!abs || !fs.existsSync(abs)) out.push({ ref: raw, rel: rel, from: entry });
-  }
-  return out;
-}
-/* 上架前体检：id 非空 = 只查这一个应用；否则查全部本机应用 */
-function packAudit(arg) {
-  const a = isObj(arg) ? arg : { id: arg };
-  /* 体检覆盖**两套根**（下载的 + 开发的）：上架前体检查的往往就是开发者自己那一份 */
-  const roots = rootsInfo();
-  const root = String((roots[APP_KIND_DOWN] || {}).path || "");
-  const configured =
-    !!(roots[APP_KIND_DOWN] || {}).configured || !!(roots[APP_KIND_DEV] || {}).configured;
-  if (!configured) return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DOWN)), { needRoot: true });
-  const wantId = safeAppId(a.id);
-  const ids = [];
-  if (wantId) ids.push(wantId);
-  else {
-    for (const k of APP_KINDS) {
-      const r = String((roots[k] || {}).path || "");
-      let ents = [];
-      try {
-        ents = r && fs.existsSync(r) ? fs.readdirSync(r, { withFileTypes: true }) : [];
-      } catch {}
-      for (const ent of ents) {
-        if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
-        const id = safeAppId(ent.name);
-        if (id && ids.indexOf(id) < 0) ids.push(id);
-      }
-    }
-  }
-  const checkedAt = Date.now();
-  const results = [];
-  for (const id of ids) {
-    const dir = dirOfApp(id);
-    if (!dir || !fs.existsSync(dir)) {
-      results.push({ id: id, name: id, missing: true, files: 0, packed: 0, dropped: [], refsMissing: [], ok: false });
-      continue;
-    }
-    const man = manifestOf(dir, id);
-    const row = {
-      id: id,
-      name: man.name,
-      version: man.version,
-      more: 0,
-      files: 0,
-      packed: 0,
-      droppedCount: 0,
-      droppedUnknown: 0,
-      entry: man.entry,
-      dropped: [],
-      refsMissing: [],
-      ok: false,
-    };
-    try {
-      const packOpts = { forUpload: true };
-      if (Array.isArray(a.excludeExtra)) packOpts.excludeExtra = a.excludeExtra;
-      const built = packEntriesOf(dir, id, packOpts);
-      const packRel = Object.create(null);
-      if (built.ok === false) row.dropped.push({ rel: "", reason: built.reason || "pack_failed" });
-      else {
-        for (const ent of built.entries) packRel[ent.name] = true;
-        row.packed = built.entries.length;
-      }
-      /* 目录里（含子目录）的文件：包里没有的那些就是丢件。walkFiles 会跳过 .staging。
-         droppedCount = 全部不随包的文件数（含生成物与本机存档，如实计数）；
-         droppedUnknown = 打包实现**漏掉**的应用文件数 —— 这一位才是「包不完整」，
-         ok 只看它（生成物 / storage 本来就不该进包，不该把体检判成失败）。 */
-      const all = walkFiles(dir, "", []).sort();
-      row.files = all.length;
-      for (const rel of all) {
-        if (packRel[rel]) continue;
-        row.droppedCount++;
-        const reason = auditDropReason(dir, man, rel, a.excludeExtra);
-        if (reason === "unknown") row.droppedUnknown++;
-        if (row.dropped.length >= 60) {
-          row.more++;
-          continue;
-        }
-        row.dropped.push({ rel: rel, reason: reason });
-      }
-      const entryAbs = resolveInside(dir, man.entry);
-      if (entryAbs && fs.existsSync(entryAbs)) row.refsMissing = auditEntryRefs(dir, entryAbs, man.entry);
-      row.ok = built.ok !== false && row.droppedUnknown === 0 && row.refsMissing.length === 0;
-    } catch (err) {
-      row.error = String((err && err.message) || err);
-      row.ok = false;
-    }
-    results.push(row);
-  }
-  return { ok: true, root: root, roots: roots, checkedAt: checkedAt, apps: results };
-}
-/* 丢件原因：生成物 / 本机存档 / 上架包口径剔除 / 未知（未知 = 打包实现漏了它，必须报出来） */
-function auditDropReason(dir, man, rel, excludeExtra) {
-  if (packExcludedFiles(dir, man, { excludeExtra: excludeExtra }).indexOf(rel) >= 0) return "generated";
-  if (rel === SUB.storage || rel.indexOf(SUB.storage + "/") === 0) return "storage";
-  return "unknown";
-}
-
 /* ---------------- 变更探测（mtime 快照比对：预览刷新 + 重打包） ---------------- */
 
 const snapshotPath = () => path.join(cacheDir(), "snapshot.json");
@@ -3426,13 +3840,9 @@ function previewDirOf(id) {
 function devPreview(id) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  const roots = rootsInfo();
-  const configured =
-    !!(roots[APP_KIND_DOWN] || {}).configured || !!(roots[APP_KIND_DEV] || {}).configured;
-  if (!configured)
-    return Object.assign(bad(t("尚未指定") + kindLabel(APP_KIND_DEV)), {
-      needRoot: true,
-    });
+  /* 根目录永远有（没配过就是默认根，见 ensureRootPersisted）：这里不再有「尚未指定项目根」
+     这条拦人分支 —— 本轮口径是不再要求用户手选；真不在本机由 previewDirOf 回 missing。 */
+  ensureRootPersisted(APP_KIND_DEV);
   const dir = previewDirOf(sid);
   if (!dir)
     return Object.assign(bad(t("该应用不在本机"), "missing"), {
@@ -3483,6 +3893,10 @@ function closeAppWindow(id) {
     return false;
   }
   if (appCloseWait.has(sid)) return true;
+  /* 关窗前先把「合并窗里还没落盘的那一发」落到盘上：数据落盘是异步合并的，
+     窗口一关（甚至 MTNode 一起退）压着的那一份就没了 —— 应用看到的「最后一步没保存」
+     就是这么来的。落盘是同步的，这里当场就完事。 */
+  dataWriteFlushApp(sid);
   const wc = w.webContents;
   const fin = (why) => {
     appCloseWait.delete(sid);
@@ -3523,6 +3937,142 @@ function notifyWindowChanged(id, open) {
     if (mw && !mw.isDestroyed()) mw.webContents.send("apps:windowChanged", { id: String(id || ""), open: !!open });
   } catch {}
 }
+
+/* ---------------- 预览态宿主桥（开发页中栏 iframe 也能连入 MTNode） ----------------
+ *
+ * 为什么有这一段：开发页中栏的实时预览是 renderer 里的一只 iframe（url = mtnode-preview://…），
+ * **没有 preload**，所以页面里 window.appHost 是 undefined —— 应用只能退回 localStorage，
+ * 并在界面上弹「未接入 MTNode 数据桥」。用户口径（本轮共识）：预览里也要连入 MTNode，
+ * 能力与独立窗口一致。
+ *
+ * 机制（三层，不改任何既有白名单）：
+ *   ① 预览协议给 HTML 多注入一段「宿主桥小助手」（PREVIEW_BRIDGE）：它在 iframe 里
+ *      拼出 **与 preload-app.js 同形状**的 window.appHost（薄壳，全部走 postMessage）；
+ *   ② 开发页（renderer/app-apps-dev.js）当**中继**：按来源帧校验 → 调主窗口 preload 上
+ *      新开的那一组 apps:previewHost* 通道；
+ *   ③ 主进程这一层：**复用与独立窗口完全相同的宿主函数**，只换「认应用」的方式 ——
+ *      独立窗口按发送方窗口认（wcToAppId），预览按**租约**认（appId + 每帧一枚 token，
+ *      由主窗口登记，见 registerPreviewLease）。
+ *
+ * 纪律（都不许放宽）：
+ *   · 只有主窗口（MTNode 自己的 renderer）能登记租约：应用窗口 / 别处一律拒（not_main）；
+ *   · 租约只认**本机真实存在的应用目录**，且同时只允许一条（登记新的 = 上一帧作废）；
+ *   · 预览里 close() / quit() 一律禁用（没有「自己的窗口」可关）：回 preview_no_window；
+ *   · 应用已在独立窗口开着时，预览**只读**（拒绝一切写：数据 / 存储 / 模型与图像后端选择 /
+ *     出图与图像编辑），回 readonly_preview —— 两处同时写同一份存档会互相覆盖；
+ *   · 其余能力（读、文本生成、转写、账号、选图）与独立窗口逐字同一条实现。 */
+const previewLeases = { active: null, byToken: new Map() };
+/* 登记的租约是不是属于这个发送方（主窗口校验）：认 webContents 本身 */
+function previewLeaseOf(e, token) {
+  const l = previewLeases.byToken.get(String(token || ""));
+  if (!l || !e || !e.sender) return null;
+  try {
+    const mw = getMainWin && getMainWin();
+    if (!mw || mw.isDestroyed() || mw.webContents !== e.sender) return null;
+  } catch {
+    return null;
+  }
+  return l;
+}
+function previewAppIdOf(e, arg) {
+  const a = isObj(arg) ? arg : {};
+  const l = previewLeaseOf(e, a.token);
+  return l ? String(l.id || "") : "";
+}
+/* 拒绝文案与错误码（应用侧据此区分「预览只读」与其他失败；渲染层据此在预览区浮提示） */
+function previewReadOnlyError() {
+  return Object.assign(bad(t("该应用已在独立窗口运行，预览为只读"), "readonly_preview"), {
+    previewReadOnly: true,
+  });
+}
+function previewNoWindowError() {
+  return Object.assign(bad(t("预览里没有可关闭的独立窗口（预览是开发页中栏的一只 iframe）"), "preview_no_window"), {
+    preview: true,
+  });
+}
+/* 写类调用进门前先过这一关：预览 + 独立窗口开着 = 拒（回结构化错误码 + 在预览区浮一条提示）。
+   返回 null = 放行（独立窗口的调用 / 预览但不处于只读）。 */
+function previewWriteBlock(e, arg) {
+  const id = previewAppIdOf(e, arg);
+  if (!id || !isAppWindowOpen(id)) return null;
+  emitPreviewNotice(id, "readonly_preview", t("该应用已在独立窗口运行，预览为只读"));
+  return previewReadOnlyError();
+}
+/* 预览里被禁 / 被拒的调用：让开发页能在预览区浮一条短提示（事件挂在主窗口的 dsh:event 通道上，
+   与流式事件同一条 → 渲染层一处订阅就够） */
+function emitPreviewNotice(appId, code, error) {
+  try {
+    const mw = getMainWin && getMainWin();
+    if (!mw || mw.isDestroyed()) return;
+    mw.webContents.send("dsh:event", {
+      type: "preview-notice",
+      appId: String(appId || ""),
+      code: String(code || ""),
+      error: String(error || ""),
+    });
+  } catch {}
+}
+/* 登记一条预览租约（dev page 调；旧帧作废）。id 必须是本机真实存在的应用目录 */
+function registerPreviewLease(e, arg) {
+  const a = isObj(arg) ? arg : {};
+  const sid = safeAppId(a.appId);
+  if (!sid) return bad(t("应用 id 不合法"), "bad_id");
+  let mw = null;
+  try {
+    mw = getMainWin && getMainWin();
+  } catch {}
+  if (!mw || mw.isDestroyed() || !e || e.sender !== mw.webContents)
+    return bad(t("只有主窗口能登记预览会话"), "not_main");
+  const dir = previewDirOf(sid);
+  if (!dir) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
+  const token = String(a.token || "").slice(0, 64);
+  if (!token) return bad(t("缺少预览会话标识"), "bad_token");
+  if (previewLeases.active) previewLeases.byToken.delete(previewLeases.active.token);
+  const lease = { id: sid, token: token, at: Date.now() };
+  previewLeases.active = lease;
+  previewLeases.byToken.set(token, lease);
+  return { ok: true, id: sid, token: token, readOnly: isAppWindowOpen(sid), dir: dir };
+}
+/* 撤掉租约（切应用 / 关页 / iframe 换页时调）。不带 token = 撤当前那条 */
+function releasePreviewLease(e, arg) {
+  const a = isObj(arg) ? arg : {};
+  const token = String(a.token || "");
+  let mw = null;
+  try {
+    mw = getMainWin && getMainWin();
+  } catch {}
+  if (!mw || mw.isDestroyed() || !e || e.sender !== mw.webContents) return bad(t("不是主窗口"), "not_main");
+  if (token) {
+    const l = previewLeases.byToken.get(token);
+    if (l) {
+      previewLeases.byToken.delete(token);
+      if (previewLeases.active === l) previewLeases.active = null;
+    }
+    return { ok: true, id: l ? l.id : "", released: !!l };
+  }
+  if (previewLeases.active) previewLeases.byToken.delete(previewLeases.active.token);
+  previewLeases.active = null;
+  return { ok: true, released: true };
+}
+/* 预览租约的现况（开发页状态行 / 只读实时化用；不需要租约也能问，只回计数与开关） */
+function previewLeaseState() {
+  const l = previewLeases.active;
+  return {
+    ok: true,
+    id: l ? l.id : "",
+    active: !!l,
+    readOnly: !!(l && isAppWindowOpen(l.id)),
+  };
+}
+/* 预览态的流式事件（文本 / 图像进度 / 语音状态）：e.sender 是**主窗口**（预览中继在渲染层），
+   所以事件要发给主窗口；带 appId —— 开发页按它把事件转给中栏那一帧（同机可能开着多个应用）。 */
+function emitHostStreamFor(e, arg, payload) {
+  const msg = Object.assign({ appId: previewAppIdOf(e, arg) }, payload || {});
+  /* 独立窗口那条路逐字不变：谁调的发给谁（app 窗口或主窗口都一样是 e.sender） */
+  try {
+    if (e && e.sender && !e.sender.isDestroyed()) e.sender.send("apps:hostStream", msg);
+  } catch {}
+}
 function winBounds(spec) {
   const d = screen.getPrimaryDisplay();
   const wa = d.workArea;
@@ -3546,6 +4096,7 @@ function openAppWindow(id) {
       existing.show();
       existing.focus();
     } catch {}
+    noteAppRun(sid); /* 把窗口调到前台也算「用了一次」（库页按最近运行排序） */
     notifyWindowChanged(sid, true);
     return { ok: true, id: sid, open: true, reused: true };
   }
@@ -3666,6 +4217,7 @@ function openAppWindow(id) {
     }
   });
   w.on("closed", () => {
+    dataWriteFlushApp(sid); /* 兜底：任何路径关掉的窗口，压着的那一发也要落下 */
     appWins.delete(sid);
     const st = appCloseWait.get(sid);
     if (st) {
@@ -3675,7 +4227,34 @@ function openAppWindow(id) {
     notifyWindowChanged(sid, false);
   });
   notifyWindowChanged(sid, true);
+  noteAppRun(sid);
   return { ok: true, id: sid, open: true, reused: false, title: winTitle, version: man.version };
+}
+
+/* 记一笔「这个应用刚被运行」（本轮需求：库页列表按最后一次运行时间倒序）。
+ * 落在该应用的安装账本 installed.json 里（与 installedAt / sha256 同一份文件，随应用目录走）。
+ * 纪律：
+ *   · **失败绝不能影响开窗** —— 账本读不动 / 写不动就静默跳过（这只是排序用的时间戳）；
+ *   · 本机自建（没有 installed.json）的应用也照写一份最小账本？不 —— 那种应用的可运行副本
+ *     本来就不是「下载来的」，给它凭空造一份账本会让 kindOfManifest 的兜底分类误判成
+ *     「从云端下载的」（apps-store.js:1056 的口径）。所以只在账本已存在时更新它。
+ *   · 写进的是绝对时间毫秒；老账本没有这个字段 = 0（界面按「还没运行过」排到末尾）。 */
+function noteAppRun(id) {
+  const sid = safeAppId(id);
+  if (!sid) return 0;
+  try {
+    const dir = dirOfApp(sid);
+    if (!dir || !fs.existsSync(dir)) return 0;
+    const p = installedPath(dir);
+    const led = readInstalled(dir);
+    if (!led) return 0; /* 没有账本 = 本机自建 / 二次开发，不硬造一份（见上） */
+    const at = Date.now();
+    led.lastRunAt = at;
+    writeJson(p, led);
+    return at;
+  } catch (_) {
+    return 0;
+  }
 }
 function closeSenderAppWindow(e) {
   const id = wcToAppId.get(e.sender) || "";
@@ -3692,8 +4271,11 @@ function closeSenderAppWindow(e) {
 }
 function shutdownApps() {
   /* 逐个走 closeAppWindow（= 先请应用收尾、再关）；每个窗口最多等 WILL_CLOSE_MS，
-     到点自己会关，所以这里不需要等 —— before-quit 也没法等 Promise。 */
+     到点自己会关，所以这里不需要等 —— before-quit 也没法等 Promise。
+     closeAppWindow 里已带「把在飞的合并写落下」。 */
   for (const id of [...appWins.keys()]) closeAppWindow(id);
+  /* 非应用窗口那条路（预览租约 / 已关窗但写还在飞）也兜一次：退出前数据不能丢 */
+  dataWriteFlushAll();
 }
 /* 「关掉 MTNode 本身」的那条路（应用窗口里的 appHost.quit）：
  * 先让每个应用窗口走一遍收尾，再请主进程退出；收尾与退出都不由应用侧插手。 */
@@ -3721,13 +4303,22 @@ function appIdOfSender(e) {
 }
 /* 发送方窗口所属应用的目录。**认 id 不认目录**：数据落盘与关窗收尾都不依赖
  * 「应用安装根目录已设置 / 应用还在本机」——那两样只影响装载与静态文件（见 openAppWindow）。
- * dir 取得到时顺手回一份（老调用方 hostSpec 等不用改）。 */
-function senderAppDir(e) {
-  const id = appIdOfSender(e);
+ * dir 取得到时顺手回一份（老调用方 hostSpec 等不用改）。
+ * 预览态（本轮需求）：调用方是**主窗口**时，按 arg.token 认那条预览租约 →
+ * 回同一个 { id, dir } 形状。于是独立窗口那二三十个宿主函数一行都不用改，
+ * 预览与独立窗口走**逐字同一条实现**（白名单、上限、错误码全同源）。 */
+function senderAppDir(e, arg) {
+  const ownId = appIdOfSender(e);
+  const pvId = ownId ? "" : previewAppIdOf(e, arg);
+  const id = ownId || pvId;
   if (!id) return null;
   const k = diskKindOf(id);
-  const { root, configured } = rootPathOf(k);
-  const dir = configured ? appDirOf(root, id) : "";
+  /* 根目录永远有（没配过就是默认根）：应用在默认根里也照常认出来，不再受「配没配过」影响 */
+  const { root } = rootPathOf(k);
+  const direct = appDirOf(root, id);
+  /* 预览态下 appDirOf 认不出（应用刚被二次开发、根目录指向变了）时退回预览目录解析：
+     预览协议本来就是按 previewDirOf 找目录的，两处口径必须一致。 */
+  const dir = direct && fs.existsSync(direct) ? direct : pvId ? previewDirOf(id) : "";
   return { id: id, dir: dir && fs.existsSync(dir) ? dir : "" };
 }
 
@@ -3749,8 +4340,8 @@ let getAppDataDirForSpeech = null;
 /** 每个应用 id 记住用户在系统框里亲选过的音频路径（规范化小写） */
 const pickedAudioByApp = new Map();
 
-async function pickAudioForApp(e) {
-  const own = senderAppDir(e);
+async function pickAudioForApp(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const parent = BrowserWindow.fromWebContents(e.sender) || getMainWin();
   const r = await dialog.showOpenDialog(parent || undefined, {
@@ -3881,8 +4472,8 @@ async function speechCallForApp(appId, payload, timeoutNote) {
   }
   return raw;
 }
-async function hostAsrStatus(e) {
-  const own = senderAppDir(e);
+async function hostAsrStatus(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   if (typeof getDshForSpeech !== "function") return bad(t("语音服务不可用"), "no_dsh");
   /* 探活不挂死界面：网关那侧「运行时冷起 + 等语音通道」最多约 8 秒，
@@ -3895,7 +4486,7 @@ async function hostAsrStatus(e) {
   return speechStatusForApp(raw);
 }
 async function hostAsrPrepare(e, opts) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, opts);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   if (typeof getDshForSpeech !== "function") return bad(t("语音服务不可用"), "no_dsh");
   const raw = await speechCallForApp(own.id, {
@@ -3907,7 +4498,7 @@ async function hostAsrPrepare(e, opts) {
   return speechStatusForApp(raw);
 }
 async function hostAsrTranscribe(e, opts) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, opts);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   if (typeof getDshForSpeech !== "function") return bad(t("语音服务不可用"), "no_dsh");
   const o = isObj(opts) ? opts : {};
@@ -4087,8 +4678,8 @@ function resolveModelFor(appId, providerDefaultId, modelId, hasImages) {
   return { modelId: hit.id, providerId: hit.providerId, auto: false };
 }
 /* 可选模型清单（首项 = 跟随 MTNode 默认）：无可用服务商也照常回，由应用决定怎么提示 */
-function hostModelsPayload(e) {
-  const own = senderAppDir(e);
+function hostModelsPayload(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const models = listTextModels();
   const saved = readModelSelection(own.id);
@@ -4107,15 +4698,15 @@ function hostModelsPayload(e) {
  * 只在声明了 showDictate 时才注入（默认隐藏：能力位缺省 false = 不注入，宿主侧也就没有那条条）。
  * **不是权限闸**：桥上的语音 / 图像接口始终可调，这里只回答「这个应用声明的界面能力里有没有
  * 让他把听写条显示出来」。认不出应用回 ok:false。 */
-function hostCapabilities(e) {
-  const own = senderAppDir(e);
+function hostCapabilities(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const man = manifestOf(own.dir || "", own.id) || {};
   const caps = normCapabilities(man.capabilities);
   return { ok: true, id: own.id, capabilities: caps };
 }
-function hostModelGet(e) {
-  const own = senderAppDir(e);
+function hostModelGet(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const models = listTextModels();
   const saved = readModelSelection(own.id);
@@ -4129,14 +4720,16 @@ function hostModelGet(e) {
   };
 }
 function hostModelSet(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blocked = previewWriteBlock(e, arg, "hostSetModel");
+  if (blocked) return blocked;
   const want = String((isObj(arg) && arg.model) || "").trim();
   if (!want) return bad(t("缺少模型 id"), "bad_model");
   if (want !== MODEL_AUTO && !listTextModels().some((m) => m.id === want))
     return bad(t("该模型不在 MTNode 已配置的模型清单里"), "bad_model");
   writeModelSelection(own.id, want);
-  return hostModelGet(e);
+  return hostModelGet(e, arg);
 }
 
 /* ---------------- appHost：多模态消息（文本 + 图像） ----------------
@@ -4519,8 +5112,8 @@ function resolveImagePick(appId, modelId) {
   if (!hit) return { error: "bad_model" };
   return Object.assign({ auto: false }, hit);
 }
-function imageModelsPayload(e) {
-  const own = senderAppDir(e);
+function imageModelsPayload(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const cloud = listCloudImageModels();
   const local = localImageBackend();
@@ -4539,21 +5132,23 @@ function imageModelsPayload(e) {
     busy: !!(readMediaLock() || {}).nodeId,
   };
 }
-function hostImageModelGet(e) {
-  const p = imageModelsPayload(e);
+function hostImageModelGet(e, arg) {
+  const p = imageModelsPayload(e, arg);
   if (p.ok !== true) return p;
   delete p.models;
   return p;
 }
 function hostImageModelSet(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blocked = previewWriteBlock(e, arg, "hostImageSetModel");
+  if (blocked) return blocked;
   const want = String((isObj(arg) && arg.model) || "").trim();
   if (!want) return bad(t("缺少模型 id"), "bad_model");
   if (want !== MODEL_AUTO && resolveImagePick(own.id, want).error)
     return bad(t("该图像模型不在 MTNode 已配置的清单里"), "bad_model");
   writeImageSelection(own.id, want);
-  return hostImageModelGet(e);
+  return hostImageModelGet(e, arg);
 }
 /* 参考图（图生图 / 图像编辑）：dataURL 或本机绝对路径，逐张读盘 / 解码 / 缩放到长边 ≤1080，
    页面拿不到任何文件内容（与多模态消息同一条纪律）。回 { images:[dataURL], warnings:[] }。 */
@@ -4766,15 +5361,14 @@ async function generateCloudImage(pick, built, emit) {
   };
 }
 async function hostImageStream(e, opts) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, opts);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blockedIn = previewWriteBlock(e, opts, "imageGen");
+  if (blockedIn) return blockedIn;
   const o = isObj(opts) ? opts : {};
   const reqId = String(o.reqId || "");
-  const wc = e.sender;
   const emit = (type, data) => {
-    try {
-      if (!wc.isDestroyed()) wc.send("apps:hostStream", Object.assign({ reqId: reqId, type: type }, data || {}));
-    } catch {}
+    emitHostStreamFor(e, opts, Object.assign({ reqId: reqId, type: type }, data || {}));
   };
   try {
     if (!String(o.prompt || "").trim()) return bad(t("缺少提示词"), "no_prompt");
@@ -4800,8 +5394,10 @@ async function hostImageStream(e, opts) {
 /* 显式图生图 / 图像编辑（appHost.imageEdit）：参考图**必填**，其余与 hostImageStream 同一份实现。
    没有参考图不是「降级成文生图」，而是明确回错 —— 与产品「宁可报错也不偷偷换路」的口径一致。 */
 async function hostImageEdit(e, opts) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, opts);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blockedIn = previewWriteBlock(e, opts, "imageEdit");
+  if (blockedIn) return blockedIn;
   const o = isObj(opts) ? opts : {};
   const refs = []
     .concat(
@@ -4849,7 +5445,7 @@ async function hostImageGenerate(arg) {
 /* 取消：应用侧按 reqId 请求取消（本地后端在下一个采样步边界停下；云端请求不中断，
    只把登记撤掉，结果由调用方自己忽略）。 */
 function hostImageCancel(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const reqId = String((isObj(arg) && (arg.reqId || arg.id)) || "");
   const req = reqId ? imageReqs.get(reqId) : null;
@@ -4871,16 +5467,14 @@ async function hostText(e, opts) {
   }
 }
 async function hostTextStream(e, opts) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, opts);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const built = hostSpec(own.id, "text", opts);
   if (built.error) return bad(built.error, built.code || "no_provider");
   const wc = e.sender;
   const reqId = String((isObj(opts) && opts.reqId) || "");
   const emit = (type, data) => {
-    try {
-      if (!wc.isDestroyed()) wc.send("apps:hostStream", Object.assign({ reqId: reqId, type: type }, data || {}));
-    } catch {}
+    emitHostStreamFor(e, opts, Object.assign({ reqId: reqId, type: type }, data || {}));
   };
   const model = String((built.spec && built.spec.model) || "");
   if (typeof aiCallStream !== "function") {
@@ -4920,7 +5514,44 @@ function readDataFile(target) {
   const j = readJson(target.file, null);
   return isObj(j) ? j : {};
 }
-/* 整份替换写盘：先量体积再原子写（写坏 = 没有，绝不半截） */
+/* ── 合并写（本次修复：应用「启动后卡顿、预览却顺」的真差异）────────────────────────
+ *
+ * 现场：应用在**独立窗口**里每次操作都会 store.set(整份 state) → 防抖 400ms → dataWrite；
+ * 预览帧那条路在「同一应用已开在独立窗口」时是**只读**的（写类能力同步拒），
+ * 所以预览一条盘都不写 —— 这就是「预览顺、启动后卡」的来源，不是渲染也不是画布。
+ *
+ * 代价的实测口径（test/_perf-probe/disk-write-cost.cjs，本机）：
+ *   · 主进程 writeJson 一发：3KB ≈ 0.8ms · 0.5MB ≈ 12ms · 2MB ≈ 45ms · 8MB ≈ 240ms
+ *   · 走完整链路（渲染层 invoke → 主进程写盘 → 回包，含结构化克隆）：
+ *     3KB ≈ 1.8ms · 0.5MB ≈ 94ms · 2MB ≈ 372ms      ← 每次操作都付这一笔
+ *   应用存档常见的是「已探索格子的整盘快照」，玩得越久越大，于是越玩越卡。
+ *
+ * 对策（不动应用、不改协议、不丢数据）：
+ *   · 同一次「写风暴」里只把**最后一次**落盘（新状态全量覆盖旧状态，中间态没有价值）；
+ *   · 合并窗口 120ms + 上限 1.5s（连续写不停也不会把数据无限期压着不落）；
+ *   · 越过 20 发就**当场落盘**并把窗口顺延 —— 上一次卡 2MB 同步写的教训：宁可少写，
+ *     也不能让主进程一发接一发地同步写盘（那会把整个应用窗口的输入一起拖住）。
+ *   · 同时开着的**不同文件**各自独立，互不合并；读盘仍以盘上为准（读之前先把在飞的落下）。 */
+const DATA_WRITE_COALESCE_MS = 120; /* 合并窗口：同文件这段时间内的多次写只落最后一次 */
+const DATA_WRITE_MAX_DELAY_MS = 1500; /* 上限：连续写不停时，最多压这么久就必须落一次 */
+const DATA_WRITE_BURST = 20; /* 连发上限：跨过去就当场落一次并把窗口顺延 */
+const dataWritePending = new Map(); /* file → { data, timer, firstAt, burst } */
+function dataWriteFlushAll() {
+  const out = [];
+  for (const file of [...dataWritePending.keys()]) {
+    const p = dataWritePending.get(file);
+    if (!p) continue;
+    if (p.timer) clearTimeout(p.timer);
+    dataWritePending.delete(file);
+    try {
+      writeDataFile({ dir: path.dirname(file), file: file, name: path.basename(file) }, p.data);
+      out.push({ file: file });
+    } catch (err) {
+      console.warn("[apps] 应用数据落盘失败：" + ((err && err.message) || err));
+    }
+  }
+  return out;
+}
 function writeDataFile(target, data) {
   const body = JSON.stringify(isObj(data) ? data : {});
   if (body.length > MAX_DATA_FILE) return bad(t("应用数据超出上限（2MB）"), "storage_full");
@@ -4928,8 +5559,87 @@ function writeDataFile(target, data) {
   writeJson(target.file, isObj(data) ? data : {});
   return { ok: true, file: target.file, dir: target.dir, bytes: body.length };
 }
+/* 应用侧 dataWrite 的真正落点：能合并就合并，合并窗到点（或连发过头）才真写。
+   返回值语义与 writeDataFile 一致（ok/bytes/file），只是「什么时候真落盘」变了。 */
+function queueDataWrite(target, data) {
+  const body = JSON.stringify(isObj(data) ? data : {});
+  if (body.length > MAX_DATA_FILE) return bad(t("应用数据超出上限（2MB）"), "storage_full");
+  const now = Date.now();
+  const prev = dataWritePending.get(target.file);
+  if (prev) {
+    /* 连发过头：先把压着的那一发落下去（一次同步写，2MB ≈ 45ms），
+       新的一份重新起一个合并窗，避免把 20+ 次整份写挤在同一个 tick 里连着同步写。 */
+    if (prev.burst >= DATA_WRITE_BURST) {
+      if (prev.timer) clearTimeout(prev.timer);
+      dataWritePending.delete(target.file);
+      try {
+        writeDataFile(target, prev.data);
+      } catch (err) {
+        console.warn("[apps] 应用数据落盘失败：" + ((err && err.message) || err));
+      }
+    } else if (prev.timer) {
+      clearTimeout(prev.timer);
+    }
+  }
+  const cur = dataWritePending.get(target.file);
+  const firstAt = cur && cur.data ? cur.firstAt : now;
+  const burst = (cur && cur.burst) || 0;
+  const wait = Math.min(
+    DATA_WRITE_COALESCE_MS,
+    Math.max(0, DATA_WRITE_MAX_DELAY_MS - (now - firstAt)),
+  );
+  if (cur && cur.timer) clearTimeout(cur.timer);
+  const rec = { data: isObj(data) ? data : {}, firstAt: firstAt, burst: burst + 1, timer: null };
+  rec.timer = setTimeout(() => {
+    const p = dataWritePending.get(target.file);
+    if (!p || p !== rec) return;
+    dataWritePending.delete(target.file);
+    try {
+      writeDataFile(target, rec.data);
+    } catch (err) {
+      console.warn("[apps] 应用数据落盘失败：" + ((err && err.message) || err));
+    }
+  }, wait);
+  try {
+    if (rec.timer && typeof rec.timer.unref === "function") rec.timer.unref();
+  } catch {}
+  dataWritePending.set(target.file, rec);
+  return { ok: true, file: target.file, dir: target.dir, bytes: body.length, coalesced: true };
+}
+/* 读之前先把「这个应用名下所有在飞的合并写」落到盘上：
+   dataWrite 是整份替换，若读到的还是旧的那一份，应用会以为自己的写丢了。
+   顺带把关窗 / 退出也走这里（关窗前必须把最后一发落下）。
+   认「这个应用的文件」走**目录精确比对**（默认数据文件夹 + 用户选过的那个），
+   不用写白名单反查 —— 两个应用把数据文件夹指到同一处时，白名单会互相串。 */
+function dataWriteFlushApp(id) {
+  const sid = safeAppId(id);
+  if (!sid || !dataWritePending.size) return;
+  const dirs = [];
+  try {
+    dirs.push(appDataRootPath(sid));
+  } catch (err) {
+    /* 数据目录还没就绪：这一发落不了盘，但绝不因为 flush 失败把调用方（关窗 / 读盘）带崩 */
+    return;
+  }
+  const ptr = readDataDirPointer(sid);
+  if (ptr && ptr.dir) dirs.push(path.resolve(ptr.dir));
+  const want = dirs.filter(Boolean).map((d) => path.resolve(d).toLowerCase());
+  for (const file of [...dataWritePending.keys()]) {
+    const dir = path.resolve(path.dirname(file)).toLowerCase();
+    if (want.indexOf(dir) < 0) continue;
+    const p = dataWritePending.get(file);
+    if (p.timer) clearTimeout(p.timer);
+    dataWritePending.delete(file);
+    try {
+      writeDataFile({ dir: path.dirname(file), file: file, name: path.basename(file) }, p.data);
+    } catch (err) {
+      console.warn("[apps] 关窗前的应用数据落盘失败：" + ((err && err.message) || err));
+    }
+  }
+}
 /* 老 storage 那组用的「内部 kv」：读 → 迁老档 → 取 obj.kv；写 → 整份替回去 */
 function readKvOf(id) {
+  dataWriteFlushApp(id); /* 读之前先落盘：合并窗里压着的那一份不能被读漏 */
   const r = readAppData(id, DATA_FILE);
   const data = isObj(r.data) ? r.data : {};
   return { data: data, kv: isObj(data.kv) ? data.kv : {}, file: r.file, migrated: !!r.migrated };
@@ -5033,8 +5743,8 @@ function syncSpeechFiles(dir, caps) {
   }
   return wrote;
 }
-function hostDataDirGet(e) {
-  const own = senderAppDir(e);
+function hostDataDirGet(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   try {
     const dir = appDataDirOf(own.id);
@@ -5056,21 +5766,27 @@ function hostDataDirGet(e) {
   }
 }
 async function hostDataDirPick(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  /* 数据文件夹那一组里真正会改东西的两条（换落点 / 回默认）：预览只读时一并拒 ——
+     预览里点开系统选择框改掉落点，独立窗口那边下次落盘就换地方了，这属于「写」。 */
+  const blocked = previewWriteBlock(e, arg, "dataDirPick");
+  if (blocked) return blocked;
   const r = await pickAppDataDir(own.id, isObj(arg) ? arg : {});
   if (!r || !r.ok) return r || bad(t("选择数据文件夹失败"), "pick_failed");
   return Object.assign({}, r, { exists: fs.existsSync(r.dir) });
 }
-async function hostDataDirOpen(e) {
-  const own = senderAppDir(e);
+async function hostDataDirOpen(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   return openAppDataDir(own.id);
 }
 /* 回到默认数据文件夹：只删「用户选过」的指针，原目录里的数据原样留着 */
-function hostDataDirReset(e) {
-  const own = senderAppDir(e);
+function hostDataDirReset(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blocked = previewWriteBlock(e, arg, "dataDirReset");
+  if (blocked) return blocked;
   try {
     const r = clearDataDirPointer(own.id);
     return Object.assign({}, r, { exists: fs.existsSync(r.dir) });
@@ -5079,19 +5795,22 @@ function hostDataDirReset(e) {
   }
 }
 function hostDataRead(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const name = (isObj(arg) && arg.file) || DATA_FILE;
+  dataWriteFlushApp(own.id); /* 读之前先把合并窗里压着的那一份落下（整份替换语义） */
   const r = readAppData(own.id, name);
   return { ok: true, data: r.data, file: r.file, migrated: r.migrated, dir: appDataDirOf(own.id) };
 }
 function hostDataWrite(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blocked = previewWriteBlock(e, arg, "dataWrite");
+  if (blocked) return blocked;
   const a = isObj(arg) ? arg : {};
   const target = resolveDataTarget(own.id, a.file);
   if (!target) return bad(t("数据文件名不合法"), "bad_file");
-  return writeDataFile(target, a.data);
+  return queueDataWrite(target, a.data);
 }
 
 /* ---------------- appHost：老存储通道（内部 kv，走同一个 data.json） ---------------- */
@@ -5102,7 +5821,7 @@ function normStorageKey(key) {
   return k;
 }
 function hostStorageGet(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const key = normStorageKey(isObj(arg) ? arg.key : arg);
   if (!key) return bad(t("存储键不合法"), "bad_key");
@@ -5110,8 +5829,10 @@ function hostStorageGet(e, arg) {
   return { ok: true, key: key, value: Object.prototype.hasOwnProperty.call(r.kv, key) ? r.kv[key] : null };
 }
 function hostStorageSet(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blocked = previewWriteBlock(e, arg, "storageSet");
+  if (blocked) return blocked;
   const a = isObj(arg) ? arg : {};
   const key = normStorageKey(a.key);
   if (!key) return bad(t("存储键不合法"), "bad_key");
@@ -5122,18 +5843,20 @@ function hostStorageSet(e, arg) {
   const kv = Object.assign({}, r.kv);
   kv[key] = a.value == null ? null : a.value;
   data.kv = kv;
-  const w = writeDataFile(target, data);
+  const w = queueDataWrite(target, data);
   if (!w.ok) return w;
   return { ok: true, bytes: w.bytes, file: w.file };
 }
-function hostStorageAll(e) {
-  const own = senderAppDir(e);
+function hostStorageAll(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   return { ok: true, kv: readKvOf(own.id).kv };
 }
 function hostStorageRemove(e, arg) {
-  const own = senderAppDir(e);
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
+  const blocked = previewWriteBlock(e, arg, "storageRemove");
+  if (blocked) return blocked;
   const key = normStorageKey(isObj(arg) ? arg.key : arg);
   if (!key) return bad(t("存储键不合法"), "bad_key");
   const target = resolveDataTarget(own.id, DATA_FILE);
@@ -5143,7 +5866,7 @@ function hostStorageRemove(e, arg) {
   const kv = Object.assign({}, r.kv);
   delete kv[key];
   data.kv = kv;
-  const w = writeDataFile(target, data);
+  const w = queueDataWrite(target, data);
   if (!w) return bad(t("写入失败"), "write_failed");
   return w;
 }
@@ -5151,20 +5874,48 @@ function hostStorageRemove(e, arg) {
 /* ---------------- appHost：账号摘要 ---------------- */
 
 /* 账号摘要：直接回 auth-store 的 state（本来就不含 token）；应用窗口只看得到「有没有登录 + 谁」 */
-function hostAccount(e) {
-  const own = senderAppDir(e);
+function hostAccount(e, arg) {
+  const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   try {
     const st = authState() || {};
     return {
       ok: true,
       loggedIn: !!st.loggedIn,
-      user: st.user || null,
+      /* 只回 PublicUser 白名单字段：token / 加密材料一律不出这一层 ——
+         authState() 的 user 是**主进程内部那份**（可能带 token），把它原样交出去
+         等于把登录凭据发给应用页（本轮做预览桥时发现的既有越界，一并收住）。 */
+      user: publicUserOf(st.user),
       encryption: String(st.encryption || ""),
     };
   } catch (err) {
     return fail(err);
   }
+}
+/* 账号摘要里允许出主进程的那几个字段（其余一律丢掉）：
+   口径 = auth-store.js 的 USER_FIELDS / sanitizeUser（PublicUser 白名单，见 docs/auth-design.md）。
+   这里不 require 那份实现（apps-store 不该反向依赖 auth-store），照抄同一张表并在这里说明同源；
+   表变了要一起改（两处都写着这一句）。 */
+const PUBLIC_USER_FIELDS = [
+  "id",
+  "username",
+  "nickname",
+  "avatar",
+  "phone",
+  "phoneVerified",
+  "hasPassword",
+  "bindings",
+  "downloadsReceived",
+  "likesReceived",
+  "balanceYuan",
+  "createdAt",
+  "isAdmin",
+];
+function publicUserOf(u) {
+  if (!u || typeof u !== "object") return null;
+  const out = {};
+  for (const k of PUBLIC_USER_FIELDS) if (u[k] !== undefined) out[k] = u[k];
+  return out;
 }
 /* ---------------- IPC 注册 ---------------- */
 
@@ -5249,6 +6000,9 @@ function registerAppsIpc(opts) {
   /* 本机状态字段写入口（渲染层不碰文件系统）：{ id, dev?, author?, forkOf? } ——
      二次开发（dev:true + 作者）、上架成功后写作者与二次开发来源都走这一条。 */
   ipcMain.handle("apps:setMeta", guard((e, arg) => setAppMeta(arg)));
+  /* 云端条目元数据 → 本机**所有**同 id 副本（两套根都扫；见 syncCloudMetaToLocal 头部）。
+     与 apps:setMeta 是两条独立通道，语义不重叠：这一条只写 title / description / tags。 */
+  ipcMain.handle("apps:syncCloudMeta", guard((e, arg) => syncCloudMetaToLocal(arg)));
   /* 应用能力位（app.json 的 capabilities）：文字输入 / 图像生成 —— 卡片小标、脚手架起步文件、
      宿主听写条注入都读它。设 textInput 时按模板重生成入口页（与「换风格」同一口径）。 */
   ipcMain.handle("apps:capabilitiesGet", guard((e, arg) => appCapabilitiesGet(arg)));
@@ -5297,8 +6051,6 @@ function registerAppsIpc(opts) {
     }
   });
   ipcMain.handle("apps:exportZip", guard((e, arg) => exportZip(isObj(arg) ? arg.id : arg)));
-  /* 上架前体检（开发页那枚按钮）：只读，查「打包会丢哪些文件」+「入口页引用了但不存在」 */
-  ipcMain.handle("apps:packAudit", guard((e, arg) => packAudit(isObj(arg) ? arg : { id: arg })));
   /* 上架（§七）：拍应用自己的窗口 + 现打包读回 base64（上架窗只拿回执，不碰文件系统） */
   ipcMain.handle("apps:shotWindow", async (e, arg) => shotAppWindow(isObj(arg) ? arg.id : arg));
   ipcMain.handle("apps:readZipBase64", guard((e, arg) => readPackBase64(isObj(arg) ? arg.id : arg)));
@@ -5312,6 +6064,15 @@ function registerAppsIpc(opts) {
   ipcMain.handle("apps:devPreview", guard((e, arg) => devPreview(isObj(arg) ? arg.id : arg)));
 
   ipcMain.handle("apps:openWindow", guard((e, arg) => openAppWindow(isObj(arg) ? arg.id : arg)));
+  /* 按 id 关掉某个应用的独立窗口（主窗口侧也能关）：开发页那条「预览因独立窗口已开而只读」
+     的提示旁边那颗「关掉独立窗口」用它 —— 不然用户得自己切到库页去找那个窗口。
+     走的还是同一条「先请应用收尾、再关」的链（closeAppWindow）。 */
+  ipcMain.handle("apps:closeAppWindow", guard((e, arg) => {
+    const id = safeAppId(isObj(arg) ? arg.id : arg);
+    if (!id) return bad(t("应用 id 不合法"), "bad_id");
+    const closed = closeAppWindow(id);
+    return { ok: true, id: id, closed: !!closed };
+  }));
   ipcMain.handle("apps:closeWindow", guard((e) => closeSenderAppWindow(e)));
   ipcMain.handle("apps:isOpen", guard((e, arg) => {
     const id = safeAppId(isObj(arg) ? arg.id : arg);
@@ -5354,15 +6115,15 @@ function registerAppsIpc(opts) {
     }
   });
   /* 图像后端清单与选择（与文字模型那套同构：默认 auto + 按应用 id 持久化） */
-  ipcMain.handle("apps:hostImageModels", guard((e) => imageModelsPayload(e)));
-  ipcMain.handle("apps:hostImageModel", guard((e) => hostImageModelGet(e)));
+  ipcMain.handle("apps:hostImageModels", guard((e, arg) => imageModelsPayload(e, arg)));
+  ipcMain.handle("apps:hostImageModel", guard((e, arg) => hostImageModelGet(e, arg)));
   ipcMain.handle("apps:hostImageSetModel", guard((e, arg) => hostImageModelSet(e, arg)));
   /* 模型继承（列清单 / 读选择 / 改选择）：应用窗口不能在已配置清单之外挑模型，
      服务商与 Key 一律不回传（见 hostModelsPayload 一节）。 */
   ipcMain.handle("apps:hostModels", guard((e) => hostModelsPayload(e)));
   /* 应用自报能力位：preload 据此决定要不要注入听写条（没声明 = 不注入） */
-  ipcMain.handle("apps:hostCapabilities", guard((e) => hostCapabilities(e)));
-  ipcMain.handle("apps:hostModel", guard((e) => hostModelGet(e)));
+  ipcMain.handle("apps:hostCapabilities", guard((e, arg) => hostCapabilities(e, arg)));
+  ipcMain.handle("apps:hostModel", guard((e, arg) => hostModelGet(e, arg)));
   ipcMain.handle("apps:hostSetModel", guard((e, arg) => hostModelSet(e, arg)));
   /* 宿主选图（多模态输入里的「选一张本机图」）：只回路径，读盘 / 缩放留在主进程 */
   ipcMain.handle("apps:hostPickImage", async (e) => {
@@ -5376,11 +6137,11 @@ function registerAppsIpc(opts) {
   });
   ipcMain.handle("apps:hostStorageGet", guard((e, arg) => hostStorageGet(e, arg)));
   ipcMain.handle("apps:hostStorageSet", guard((e, arg) => hostStorageSet(e, arg)));
-  ipcMain.handle("apps:hostStorageAll", guard((e) => hostStorageAll(e)));
+  ipcMain.handle("apps:hostStorageAll", guard((e, arg) => hostStorageAll(e, arg)));
   ipcMain.handle("apps:hostStorageRemove", guard((e, arg) => hostStorageRemove(e, arg)));
-  ipcMain.handle("apps:hostAccount", guard((e) => hostAccount(e)));
+  ipcMain.handle("apps:hostAccount", guard((e, arg) => hostAccount(e, arg)));
   /* 数据落盘（默认数据根 / 可改的数据文件夹）+ 关窗收尾回包 */
-  ipcMain.handle("apps:hostDataDirGet", guard((e) => hostDataDirGet(e)));
+  ipcMain.handle("apps:hostDataDirGet", guard((e, arg) => hostDataDirGet(e, arg)));
   ipcMain.handle("apps:hostDataDirPick", async (e, arg) => {
     try {
       return await hostDataDirPick(e, arg);
@@ -5432,11 +6193,94 @@ function registerAppsIpc(opts) {
   });
   /* 应用窗口的麦克风可用性：只回「宿主放没放行 + 是不是应用窗口」，
      真正的 getUserMedia 在应用页里（权限由 main.js 给 app 窗口的会话挂 handler 放行）。 */
-  ipcMain.handle("apps:hostAsrMic", guard((e) => {
-    const own = senderAppDir(e);
+  ipcMain.handle("apps:hostAsrMic", guard((e, arg) => {
+    const own = senderAppDir(e, arg);
     if (!own) return bad(t("不是应用窗口"), "not_app");
     return { ok: true, mic: true, note: "getUserMedia 在应用页里直接调用（宿主已放行 media 权限）" };
   }));
+
+  /* ── 预览态宿主桥（本轮需求：预览里也连入 MTNode）─────────────────────────────
+     三条通道：登记 / 撤销预览租约、以及**一条总入口** apps:previewCall 把预览页的调用
+     分派到与独立窗口**逐字同一条**宿主实现上。认应用靠租约（主窗口 + token），
+     所以这里只做三件事：查表、白名单分派、把结果 / 流式帧 / 被拒通知送回主窗口。 */
+  ipcMain.handle("apps:previewRegister", guard((e, arg) => registerPreviewLease(e, arg)));
+  ipcMain.handle("apps:previewRelease", guard((e, arg) => releasePreviewLease(e, arg)));
+  /* 预览桥的现况（开发页状态行：当前租约 + 是不是只读） */
+  ipcMain.handle("apps:previewState", guard(() => previewLeaseState()));
+  ipcMain.handle("apps:previewCall", async (e, arg) => {
+    const a = isObj(arg) ? arg : {};
+    const id = previewAppIdOf(e, a);
+    if (!id) return bad(t("不是预览会话"), "not_preview");
+    const method = String(a.method || "");
+    const val = a.arg == null ? {} : a.arg;
+    const pvArg = Object.assign({}, isObj(val) ? val : { param: val }, { token: String(a.token || "") });
+    try {
+      switch (method) {
+        case "textGenStream":
+          return await hostTextStream(e, pvArg);
+        case "imageGen":
+          return await hostImageStream(e, pvArg);
+        case "imageEdit":
+          return await hostImageEdit(e, pvArg);
+        case "imageGenCancel":
+          return hostImageCancel(e, pvArg);
+        case "hostImageModels":
+          return imageModelsPayload(e, pvArg);
+        case "hostImageModel":
+          return hostImageModelGet(e, pvArg);
+        case "hostImageSetModel":
+          return hostImageModelSet(e, pvArg);
+        case "hostModels":
+          return hostModelsPayload(e, pvArg);
+        case "hostModel":
+          return hostModelGet(e, pvArg);
+        case "hostSetModel":
+          return hostModelSet(e, pvArg);
+        case "pickImage":
+          return await pickImageForApp(getMainWin());
+        case "pickAudio":
+          return await pickAudioForApp(e, pvArg);
+        case "transcribe":
+          return await hostAsrTranscribe(e, pvArg);
+        case "asrStatus":
+          return await hostAsrStatus(e, pvArg);
+        case "asrPrepare":
+          return await hostAsrPrepare(e, pvArg);
+        case "asrMic":
+          return { ok: true, mic: true, note: "getUserMedia 在预览页里直接调用（宿主已放行 media 权限）" };
+        case "storageGet":
+          return hostStorageGet(e, pvArg);
+        case "storageSet":
+          return hostStorageSet(e, pvArg);
+        case "storageAll":
+          return hostStorageAll(e, pvArg);
+        case "storageRemove":
+          return hostStorageRemove(e, pvArg);
+        case "dataDirGet":
+          return hostDataDirGet(e, pvArg);
+        case "dataDirPick":
+          return await hostDataDirPick(e, pvArg);
+        case "dataDirOpen":
+          return await hostDataDirOpen(e, pvArg);
+        case "dataDirReset":
+          return hostDataDirReset(e, pvArg);
+        case "dataRead":
+          return hostDataRead(e, pvArg);
+        case "dataWrite":
+          return hostDataWrite(e, pvArg);
+        case "account":
+          return hostAccount(e, pvArg);
+        case "close":
+        case "quit":
+          emitPreviewNotice(id, "preview_no_window", previewNoWindowError().error);
+          return previewNoWindowError();
+        default:
+          return bad(t("预览桥不认识这个方法：") + method, "bad_method");
+      }
+    } catch (err) {
+      return fail(err);
+    }
+  });
 
   /* ── 应用数据（主窗口 / 应用中心侧）：只留「打开数据目录」这一件事 ──
      数据目录用 app id 管理（默认数据根 <数据目录>/apps-data/<id>/，用户改过则是他选的那个），
@@ -5462,6 +6306,9 @@ module.exports = {
   listApps,
   createApp,
   setAppMeta,
+  /* 云端条目元数据同步（title / description / tags → 本机所有同 id 副本）：纯函数段 + 真文件读写，
+     冒烟用临时目录直接真跑（见 test/smoke-apps-sync-meta.js） */
+  syncCloudMetaToLocal,
   /* 设计风格：清单真源 + 换风格（渲染层只经 IPC 用，smoke 直接断言这两条真源） */
   APP_STYLES,
   APP_STYLE_IDS,
@@ -5485,11 +6332,14 @@ module.exports = {
      冒烟直接真跑（载荷不落盘，所以回滚必须真的走一次下载 + sha256 校验）。 */
   appsVersionPick,
   rollbackApp,
-  /* 上架前体检（开发页那枚按钮走的是同一份实现：真读目录 + 真跑打包口径） */
+  /* 打包实现（导出 zip 与上架包共用一份：真读目录 + 真跑上架口径，冒烟直接真跑） */
   packEntriesOf,
-  packAudit,
   /* 目录双源（静态目录 / 云端接口）：解析与来源判定是纯函数段，冒烟直接真跑 */
   parseCatalogDoc,
+  /* 「云端答了 0 条」的失败码（loadCatalog 靠它记 answered，渲染层靠答案决定说不说「无法连接」） */
+  emptyCatalogErr,
+  isEmptyCatalogErr,
+  emptyCatalogResult,
   resolveZipUrl,
   zipUrlsOf,
   specBaseOf,
@@ -5582,6 +6432,8 @@ module.exports = {
   appDataRootPath,
   legacyDataRoot,
   migrateAppsLayout,
+  /* 默认根的固化（本轮需求：不再要求手动指定）：冒烟直接真跑它 */
+  ensureRootPersisted,
   unregisterApp,
   buildMessages,
   imagePartUrl,

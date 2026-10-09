@@ -159,9 +159,15 @@ console.log("\n[5] 仓库接线");
   );
   const saveSeg = mainJs.slice(mainJs.indexOf('ipcMain.handle("config:save"'));
   ok(
-    /syncSubagentPolicy\(next\);\s*\n\s*return \{ ok: true \};/.test(saveSeg.slice(0, 6000)),
+    /* config:save 现在包在 queueCfgWrite(...) 里（config.json 的写盘串行闸门），
+       回执也多带了 bytes —— 判据放宽到「同一段里 syncSubagentPolicy(next) 紧跟 return」 */
+    /syncSubagentPolicy\(next\);\s*\n\s*return \{ ok: true[^}]*\};/.test(saveSeg.slice(0, 6000)),
     "config:save 之后调一次（设置改完立刻落进组合）",
   );
+  ok(
+    /queueCfgWrite\(\(\) => \{[\s\S]{0,200}?const fp = join\(DATA\(\), "config\.json"\)/.test(saveSeg),
+    "config:save 走 config.json 的串行写盘闸门（queueCfgWrite）",
+  )
   const bootSeg = mainJs.slice(mainJs.indexOf("dsh().ensureStarted()") - 900);
   ok(
     /syncSubagentPolicy\(readJson\(path\.join\(DATA\(\), "config\.json"\), \{\}\)\)/.test(bootSeg),

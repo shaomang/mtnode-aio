@@ -836,7 +836,7 @@
     const close = document.createElement("button");
     close.type = "button";
     close.className = "dev-model-close";
-    close.title = I18n.t("关闭");
+    /* 本轮提示去重：title 与 aria-label 逐字相同（都是「关闭」）→ 只留 aria-label */
     close.setAttribute("aria-label", I18n.t("关闭"));
     close.innerHTML =
       '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +
@@ -1228,7 +1228,7 @@
     /* 与开发节点「Agent 设定」弹层同一颗：内联 SVG 关闭图标（不带通用 .mini ——
        它在场会把钮内 svg 的宽度压成 0；字符 ✕ 在 20×20 方钮里字形还偏高 0.5px，
        见 app-devnode.js devModelPopEl 与 css/components.css 的注释）。 */
-    close.title = I18n.t("关闭");
+    /* 本轮提示去重：title 与 aria-label 逐字相同（都是「关闭」）→ 只留 aria-label */
     close.setAttribute("aria-label", I18n.t("关闭"));
     close.innerHTML =
       '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">' +

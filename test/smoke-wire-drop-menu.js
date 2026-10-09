@@ -533,19 +533,30 @@ ok(
 );
 
 /* ===================== [9] 音频 / 视频输入节点开始输出 ===================== */
-console.log("\n[9] 音频 / 视频输入节点：开始输出 URL，但仍然是纯输入节点");
+console.log("\n[9] 音频 / 视频输入节点：开始输出 URL + 转写文字，但仍然是纯输入节点");
 fixture();
 S.wf.nodes.push(
   { id: "ain", kind: "input_audio", title: "音频节点", x: 0, y: 0, mediaAsset: "E:/素材/人声 1.wav" },
   { id: "vin", kind: "input_video", title: "视频节点", x: 0, y: 0, mediaAsset: "E:/clips/demo.mp4" },
 );
-eqNum(F.outputCount(F.nodeById("ain")), 1, "音频输入有 1 个数据输出端子");
-eqNum(F.outputCount(F.nodeById("vin")), 1, "视频输入有 1 个数据输出端子");
+eqNum(F.outputCount(F.nodeById("ain")), 2, "音频输入有 2 个数据输出端子（0=文件 URL · 1=转写文字）");
+eqNum(F.outputCount(F.nodeById("vin")), 2, "视频输入有 2 个数据输出端子（0=文件 URL · 1=转写文字）");
+/* 端口 1 是**文本**端子：按文本判型（不再当成音频 / 视频文件），拖线候选与保存选型都据此走 */
+ok(F.wireSourceMediaType(F.nodeById("ain"), 1) === "text", "音频输入端口 1 按文本判型（转写文字）");
+ok(F.wireSourceMediaType(F.nodeById("vin"), 1) === "text", "视频输入端口 1 按文本判型（转写文字）");
+ok(F.wireSourceMediaType(F.nodeById("ain"), 0) === "audio", "端口 0 照旧是音频文件");
+ok(F.wireSourceMediaType(F.nodeById("vin"), 0) === "video", "端口 0 照旧是视频文件");
 const fromAudio = F.wireDropMenuGroups(F.nodeById("ain"), 0, { x: 900, y: 500 });
 ok(
   kindsOf(fromAudio).every((k) => k.indexOf("input_audio|") !== 0 && k.indexOf("input_video|") !== 0),
   "从音频输入端子上拉出来，候选里也不会再让你建输入节点",
 );
+/* 端口 1（转写文字）拖出去：候选按**文本**来源给 —— 文本处理 / 音乐 / 语音在列，
+   而只吃音频文件的 H3 参考音频槽不会出现（拖线菜单与端子判型同一份 wireSourceMediaType）。 */
+const fromTranscript = F.wireDropMenuGroups(F.nodeById("ain"), 1, { x: 900, y: 500 });
+ok(hasKind(fromTranscript, "proc_text"), "端口 1 拖出去：文本处理在列（转写文字是纯文本）");
+ok(hasKind(fromTranscript, "music_gen"), "端口 1 拖出去：Minimax Music 3 在列（吃文本）");
+ok(hasKind(fromTranscript, "save"), "端口 1 拖出去：保存在列（按文本落盘）");
 const dropKinds = F.WIRE_DROP_TARGETS.map((s) => s.kind);
 ok(dropKinds.indexOf("input_audio") < 0, "拖线候选表白名单不收音频输入节点（它只往外给）");
 ok(dropKinds.indexOf("input_video") < 0, "拖线候选表白名单不收视频输入节点（它只往外给）");

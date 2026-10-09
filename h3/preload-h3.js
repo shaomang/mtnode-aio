@@ -22,7 +22,6 @@ const api = {
   /* 右上角一键打开 ComfyUI 工作流编辑界面（opts.start = true 时先拉起后端） */
   openComfyUI: (opts) => ipcRenderer.invoke("h3:openComfyUI", opts || {}),
   freeDisk: () => ipcRenderer.invoke("h3:freeDisk"),
-  setCpuVae: (v) => ipcRenderer.invoke("h3:setCpuVae", v),
   setLaunchOpts: (opts) => ipcRenderer.invoke("h3:setLaunchOpts", opts || {}),
   /* 独立后处理（超分 / 补帧）：与生成解耦，管理窗 / 画布后处理节点单独调用 */
   postProcess: (params) => ipcRenderer.invoke("h3:postProcess", params || {}),

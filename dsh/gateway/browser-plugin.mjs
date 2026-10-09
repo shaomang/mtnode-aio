@@ -72,15 +72,64 @@ const TABS_DESC = `Manage tabs in the session browser: action "list" (default) /
 
 const NET_DESC = `Read the recent network activity of the current page: method, status and URL of the last requests (default 20, max 60). Use it to verify that a fetch/save actually reached the server, or to find the API endpoint behind a page.`
 
-const HELP_DESC = `Ask the user for help IN the app — the reason you exist as a coworker rather than a script. Use it when you cannot safely continue alone:
-- kind:"login" — a login wall / captcha / 2FA / anything that needs a human to interact with the page. The user takes the wheel (you are refused until they hand control back); do NOT type credentials yourself.
+/* 求助这件事与 ask_user_question 的**询问模式**完全同一套（用户已确认的口径）：
+   同一个询问窗、同一张卡的形状（题面 + 选项 + 自定义回答 + 「回答」键）、同一份
+   questions[] 参数与 answers[] 回执，唯一多出来的是浏览器侧的上下文（kind 标题、
+   当前 URL、页面截图）。所以参数表就是 ask_user_question 那份：
+   一次可问多题（questions[]），每题可给选项（{label, description}）与是否多选。
+   kind 只作语义与标题（并决定 login 类是否自动进入接管），不再是「卡型开关」。
+   旧参数（message + options）仍收：会被折成一道题，老调用不会失败。 */
+const HELP_DESC = `Ask the user for help with the SESSION'S BROWSER — the reason you exist as a coworker rather than a script.
+SCOPE (hard rule, enforced by the gateway): use it ONLY when the ask is really about the browser / the page you are working on — a login wall, a captcha, a page result that needs the user's eyes, a page-level choice, a site that blocks you, a dangerous page action. When neither you nor this session has touched the browser in this round, the gateway REFUSES the call and tells you so. For everything else — plan/spec confirmations, code or scope choices, information only the user has, "may I go ahead" — use ask_user_question: that is the general asking entry, and it is the SAME card on screen (same question window, same questions[]/answers[] shape, plus a Markdown summary block).
+Use it when you cannot safely continue alone:
+- kind:"login" — a login wall / captcha / 2FA / anything that needs a human to interact with the page. The user drives (you are refused until this card is answered; it is auto-released when they answer); do NOT type credentials yourself.
 - kind:"verify" — you produced a result and it must be confirmed by the user before you treat it as final or act on it.
 - kind:"choice" — you need information or a decision only the user has (scope, target site, which of two results is right).
 - kind:"blocked" — you are stuck and cannot proceed; explain exactly what you tried.
 - kind:"danger" — an irreversible action needs an explicit go-ahead.
-Pass a short message, and optionally options (array of short strings) when you are asking the user to choose, screenshotPath when a picture helps, and note when the answer must carry data. Returns {outcome:'released'|'answered'|'cancelled', answer?, takeover:true} — takeover:true means the user now drives. Wait for kind:"choice" answers in the returned text; for kind:"login" call browser_snapshot again once the user hands control back.`
+
+The card is the SAME question card as ask_user_question, so ask with \`questions\` exactly like that tool:
+  questions: [{ id, question, header?, detail?, options?: [{label, description?}], multiSelect? }]
+One question is often enough: put the headline in \`question\` (the first line becomes the card title line; leave a blank line and the rest is rendered as a Markdown summary block); give 2-4 \`options\` when you are asking the user to choose, and leave them out when the user must type something.
+Also useful: \`message\` (short prose shown as the help body; also accepted on its own — it is folded into one question), \`screenshotPath\` (absolute path of a picture that helps them decide) and \`note\` (extra context for the activity log); the current page URL is attached automatically.
+Returns {answers:[{id, selected:[...]}], takeover?:true} — takeover:true means the card was a login one and the user now drives; when there is nothing to choose the answers carry what the user typed (an empty selected means they just acknowledged the card). If the user defers/aborts this round the tool FAILS with an error (they did not answer) — do not treat that as consent; wait for their next message or ask again later. After a login the takeover is released automatically: call browser_snapshot again to see the page as it is now.`
 
 const RELEASE_DESC = `Give the browser back when you are done with it: closes nothing, only releases the driving lock so another session (or the user) can use the browser. Logins and tabs stay as they are.`
+
+/* browser_help 的 questions[]（与 ask_user_question 的题面同形：id / question / header /
+   detail / options[{label, description}] / multiSelect）。网关侧还会做一次归一
+   （补 id、裁长、上限 8 题），模型写歪了也不至于弹不出卡。 */
+const QUESTIONS_SPEC = {
+  type: 'array',
+  description:
+    'Same shape as ask_user_question: [{id, question, header?, detail?, options?:[{label, description?}], multiSelect?}]. The first line of `question` becomes the card title line; a blank line starts a Markdown summary block.',
+  items: {
+    type: 'object',
+    additionalProperties: true,
+    properties: {
+      id: { type: 'string', description: 'Stable short id echoed back in answers (q1, q2 …).' },
+      question: {
+        type: 'string',
+        description: 'The question itself. First line = one-sentence headline; blank line then Markdown = summary block.',
+      },
+      header: { type: 'string', description: 'Short heading shown before the headline (e.g. 确认 / 取舍).' },
+      detail: { type: 'string', description: 'One extra line of context under the headline.' },
+      options: {
+        type: 'array',
+        description: 'Short choices; put the recommended one first and append "（推荐）" to its label.',
+        items: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            label: { type: 'string', description: 'Option label (one line; inline Markdown allowed).' },
+            description: { type: 'string', description: 'One sentence under the label explaining the tradeoff.' },
+          },
+        },
+      },
+      multiSelect: { type: 'boolean', description: 'Allow picking several options instead of one.' },
+    },
+  },
+}
 
 export function apply(ctx) {
   const port = Number(process.env.MTNODE_BRIDGE_PORT || 0)
@@ -310,9 +359,10 @@ export function apply(ctx) {
     name: 'browser_help',
     description: HELP_DESC,
     parameters: {
-      kind: { type: 'string', enum: ['login', 'verify', 'choice', 'blocked', 'danger'], description: 'Why you need the user.' },
-      message: { type: 'string', description: 'What you need from the user, in their language, one or two sentences.' },
-      options: { type: 'array', items: { type: 'string' }, description: 'Short choices when kind is "choice".' },
+      kind: { type: 'string', enum: ['login', 'verify', 'choice', 'blocked', 'danger'], description: 'Why you need the user (semantics + card title; "login" also takes the wheel for them).' },
+      questions: QUESTIONS_SPEC,
+      message: { type: 'string', description: 'Short prose shown as the help body, in the user\'s language. Optional when `questions` already says everything (folded into one question when used alone).' },
+      options: { type: 'array', items: { type: 'string' }, description: 'Legacy short choices used together with `message` (folded into one question). Prefer options inside `questions`.', },
       screenshotPath: { type: 'string', description: 'Absolute path of a screenshot that helps the user decide.' },
       note: { type: 'string', description: 'Extra context recorded in the activity log.' },
     },

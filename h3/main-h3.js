@@ -37,6 +37,7 @@ const {
 const h3wf = require("./h3-workflows.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "minimax-h3";
 const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
@@ -746,12 +747,14 @@ function resolveUpscaleRamPlan(opts, sourceW, sourceH) {
  * 脚本取 h3-pack 整目录随包（build.json extraResources）——打包态从 process.resourcesPath
  * 拿（同 bundledPackRoot() 口径），再兜运行时更新包 packRoot()。 */
 
-/** 流式超分用的解释器路径：<ComfyUI 目录>/venv/Scripts/python.exe（不判存在，缺件时供日志指认；
- *  注意与 installDir 口径的 comfyVenvPython() 区分——这里吃的是 comfyDir() 的结果） */
+/** 流式超分用的解释器路径：<ComfyUI 目录>/venv/Scripts/pythonw.exe（不判存在，缺件时供日志指认；
+ *  注意与 installDir 口径的 comfyVenvPython() 区分——这里吃的是 comfyDir() 的结果）。
+ *  pythonw 而非 python.exe：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会弹终端窗），
+ *  管道 stdout/stderr 照常写，见 backend-python.js */
 function streamVenvPython(comfy) {
   const c = String(comfy || "");
   if (!c) return "";
-  return join(c, "venv", "Scripts", "python.exe");
+  return quietPython(join(c, "venv", "Scripts", "python.exe"));
 }
 
 /** 流式超分脚本路径（不保证存在；取不到时返回首选候选，供控制台把缺件说清楚） */
@@ -1346,6 +1349,9 @@ let getDataDir = null;
 let getMainWin = null;
 let appRoot = null;
 let getDsh = null;
+/** 画布资产目录解析（main.js 传入的 assetDirFor(wfId)）：调用方没给输出路径时产物直接落这里，
+ *  与 proc_image / sensenova 同一去处（%APPDATA%\pipeline-console\assets\<wfId>） */
+let assetDirFor = null;
 let consoleWin = null;
 let loadedUiStamp = ""; /* 管理窗当前已加载的 UI 指纹，变了就该 reload 而不是继续显示旧页面 */
 /** Console 停靠面板：consolePaneW = 页面报来的面板宽度（0 = 收起），
@@ -1360,8 +1366,6 @@ let gpuTimer = null;
 let backendProc = null;
 /** @type {{ nodeId: string, abort?: boolean, promptId?: string, req?: import('http').ClientRequest|null }|null} */
 let activeGenerate = null;
-/** 本次进程内是否已为「带 --cpu-vae 启动失败」记过那条指回技能的提示（关闭 CPU VAE 后重新武装）。 */
-let cpuVaeFailHinted = false;
 
 /** dsh.run 鉴权：复用 MTNode 设置里的模型 API Key（非环境变量 / 非强制 deepseek-official）。 */
 function h3DshAuthOrError() {
@@ -1390,6 +1394,37 @@ function mk(p) {
 }
 function h3Root() {
   return mk(join(getDataDir(), "h3"));
+}
+/** 托管输出临时区：调用方没给输出路径、又拿不到画布资产目录时的兜底落点（数据目录内，不是应用文件夹） */
+function h3TempOutDir() {
+  return mk(join(h3Root(), "asset-tmp"));
+}
+/** 托管落点解析：优先画布资产目录 assetDirFor(wfId)，否则数据目录里的 asset-tmp。
+ *  返回 { dir, warn }；warn 非空即回执要带的 managed_output_dir 说明（口径同 sensenova）。
+ *  注意：只有调用方**没给** outputDir 时才调用本函数 —— 显式传路径的分支一行不动。 */
+function resolveManagedOutDir(wfId, askedFor) {
+  let dir = "";
+  const wf = String(wfId || "");
+  if (wf && typeof assetDirFor === "function") {
+    try {
+      dir = String(assetDirFor(wf) || "");
+    } catch {
+      dir = "";
+    }
+  }
+  if (!dir) dir = h3TempOutDir();
+  mk(dir);
+  return {
+    dir,
+    warn:
+      "managed_output_dir: 调用方未指定 " + askedFor + "，产物落在应用托管目录（" + dir +
+      "），未写入应用文件夹；需要固定位置请显式传 " + askedFor + "。",
+  };
+}
+/** 托管兜底命名主干：<nodeId 尾 8 位>-<时间戳>（扩展名交给本宿主已有的 uniqueFileInDir 补 / 查重） */
+function managedOutBaseName(nodeId, tag) {
+  const tail = String(nodeId || "").slice(-8) || String(tag || "h3");
+  return tail + "-" + Date.now();
 }
 function configPath() {
   return join(h3Root(), "config.json");
@@ -1457,10 +1492,6 @@ function defaultConfig() {
     cudaPython: "",
     wantRunning: false,
     /* 24G 启动优化：默认开，可在插件控制台关闭 */
-    /** CPU VAE 默认关：开启会让 VideoVAE 解码 dtype 崩（float != c10::Half），生成链起不来。
-     *  真源见技能 skills/minimax-h3-install/SKILL.md「启动参数」。老用户 config.json 里显式存过的
-     *  true 由 loadConfig 的合并保持原值，升级不静默翻转。 */
-    cpuVae: false,
     optDisablePinnedMemory: true,
     optFp16Intermediates: true,
     optExpandableSegments: true,
@@ -2236,8 +2267,6 @@ async function statusForUi() {
     lock,
     gpu,
     wantRunning: !!cfg.wantRunning,
-    /* 与 defaultConfig 同口径：默认关，只回显显式配置值（老用户存过 true 仍是 true） */
-    cpuVae: !!cfg.cpuVae,
     optDisablePinnedMemory: cfg.optDisablePinnedMemory !== false,
     optFp16Intermediates: cfg.optFp16Intermediates !== false,
     optExpandableSegments: cfg.optExpandableSegments !== false,
@@ -2682,7 +2711,7 @@ function extractConsoleForAgent(logText) {
 
 function comfyVenvPython(installDir) {
   const py = join(String(installDir || ""), "ComfyUI", "venv", "Scripts", "python.exe");
-  return fs.existsSync(py) ? py : "";
+  return fs.existsSync(py) ? quietPython(py) : "";
 }
 
 function runVenvPy(py, code) {
@@ -2967,20 +2996,6 @@ async function ensureBackendReadyForJob() {
   };
 }
 
-/** 带 --cpu-vae 启动失败：在 console 记一条指回技能的提示（同一次进程只记一次，
- *  关掉 CPU VAE 后重新武装）。默认已关，会走到这里说明是老配置显式开了它。 */
-function noteCpuVaeLaunchFailure(why) {
-  if (cpuVaeFailHinted) return;
-  cpuVaeFailHinted = true;
-  appendConsole(
-    "[warn] 本次后端启动带了 --cpu-vae 且未能就绪" +
-      (why ? "（" + why + "）" : "") +
-      "。CPU VAE 开启会让 VideoVAE 解码 dtype 崩（expected m1 and m2 to have the same dtype, " +
-      "but got: float != struct c10::Half），视频解码阶段直接失败。" +
-      "请在控制台「24G 启动优化」区取消勾选 CPU VAE 再重启后端；口径见技能 minimax-h3-install「启动参数」。"
-  );
-}
-
 async function startBackend() {
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
@@ -3034,18 +3049,18 @@ async function startBackend() {
   }
 
   const comfy = comfyDir(installDir);
-  const py = join(comfy, "venv", "Scripts", "python.exe");
-  if (!fs.existsSync(py)) {
-    reportErr("no_venv", "H3 后端缺少 Python 环境（" + py + "）", { phase: "start" });
+  const pyExe = join(comfy, "venv", "Scripts", "python.exe");
+  if (!fs.existsSync(pyExe)) {
+    reportErr("no_venv", "H3 后端缺少 Python 环境（" + pyExe + "）", { phase: "start" });
     return { ok: false, error: "no_venv" };
   }
+  /* pythonw：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会再拉真解释器并弹终端窗） */
+  const py = quietPython(pyExe);
 
   mk(path.dirname(consoleLogPath()));
   appendConsole("starting ComfyUI…");
   const outFd = fs.openSync(consoleLogPath(), "a");
   const args = ["main.py", "--listen", "127.0.0.1", "--port", String(port)];
-  const launchCpuVae = !!cfg.cpuVae;
-  if (launchCpuVae) args.push("--cpu-vae");
   if (cfg.optDisablePinnedMemory !== false) args.push("--disable-pinned-memory");
   if (cfg.optFp16Intermediates !== false) args.push("--fp16-intermediates");
   const reserveGb = Number(cfg.optReserveVramGb);
@@ -3110,7 +3125,6 @@ async function startBackend() {
       clearPidMeta();
       const snip = lastConsoleErrorSnippet(1800);
       appendConsole("[start] backend exited early");
-      if (launchCpuVae) noteCpuVaeLaunchFailure("ComfyUI 进程启动后退出");
       reportErr("backend_exited", "ComfyUI 进程启动后退出" + (snip ? "：\n" + snip : ""), { phase: "start" });
       return {
         ok: false,
@@ -3122,7 +3136,6 @@ async function startBackend() {
     }
   }
   const snip = lastConsoleErrorSnippet(1200);
-  if (launchCpuVae) noteCpuVaeLaunchFailure("等待就绪超时");
   reportErr("backend_start_timeout", "等待 ComfyUI 就绪超时" + (snip ? "；最近日志：\n" + snip : ""), {
     phase: "start",
   });
@@ -4143,14 +4156,23 @@ async function postProcessVideo(params) {
     let outPath = "";
     let meta = null;
     let lastErr = null;
+    /* 调用方没给 outputDir → 兜底复进应用托管目录（画布资产目录 / 数据目录 asset-tmp）：
+       下面三条出片链（流式超分 / 流式补帧 / 图链）共用这个落点；显式传了 outputDir 的
+       调用方走原路，一行不动（managedWarn 只在兜底分支非空）。 */
+    const askedOutputDir = String(req.outputDir || "").trim();
+    const managedOut = askedOutputDir ? null : resolveManagedOutDir(req.canvasWorkflowId, "outputDir");
+    const exportDir = askedOutputDir || managedOut.dir;
+    const managedWarn = managedOut ? managedOut.warn : "";
+    if (managedWarn) appendConsole("[post] warn " + managedWarn);
 
     /* ── 流式超分：不吃 ComfyUI 图，直接由 venv python 逐帧出片（内存与时长无关） ── */
     if (kind === "upscale" && opts.engine === "stream") {
       const streamPy = streamVenvPython(comfy);
       const streamScript = streamUpscaleScriptPath();
-      const exportDirEarly = String(req.outputDir || "").trim();
+      const exportDirEarly = exportDir;
       const preferredEarly = ensureVideoExt(
-        String(req.filename || "").trim() || "post_" + kind + "_" + Date.now(),
+        String(req.filename || "").trim() ||
+          (managedWarn ? managedOutBaseName(nodeId, "h3") : "post_" + kind + "_" + Date.now()),
       );
       const dst = exportDirEarly
         ? uniqueFileInDir(exportDirEarly, preferredEarly, ".mp4").path
@@ -4235,9 +4257,10 @@ async function postProcessVideo(params) {
       const streamPy = streamVenvPython(comfy);
       const streamScript = streamInterpScriptPath();
       const weightsPath = streamInterpWeightsPath(comfy);
-      const exportDirEarly = String(req.outputDir || "").trim();
+      const exportDirEarly = exportDir;
       const preferredEarly = ensureVideoExt(
-        String(req.filename || "").trim() || "post_" + kind + "_" + Date.now(),
+        String(req.filename || "").trim() ||
+          (managedWarn ? managedOutBaseName(nodeId, "h3") : "post_" + kind + "_" + Date.now()),
       );
       const dst = exportDirEarly
         ? uniqueFileInDir(exportDirEarly, preferredEarly, ".mp4").path
@@ -4363,9 +4386,13 @@ async function postProcessVideo(params) {
       if (!meta) throw lastErr || new Error("post_failed");
 
       outPath = comfyOutputPath(comfy, meta.filename, meta.subfolder || "");
-      const exportDir = String(req.outputDir || "").trim();
-      if (exportDir) {
-        const preferred = String(req.filename || "").trim() || meta.filename;
+      /* 图链出片：落点 = 调用方给的 outputDir，或上面的托管兜底 exportDir（此时真的复制进去） */
+      {
+        const preferred =
+          String(req.filename || "").trim() ||
+          (managedWarn
+            ? managedOutBaseName(nodeId, "h3") + (path.extname(meta.filename) || ".mp4")
+            : meta.filename);
         outPath = await copyOutputToDir(
           comfy,
           meta.filename,
@@ -4428,7 +4455,13 @@ async function postProcessVideo(params) {
     );
     appendPostRamReport(memWatch, true);
     memWatch = null;
-    return { ok: true, path: outPath, message: "Saved: " + outPath, bytes: sz };
+    return {
+      ok: true,
+      path: outPath,
+      message: "Saved: " + outPath,
+      bytes: sz,
+      warnings: managedWarn ? [managedWarn] : [],
+    };
   } catch (e) {
     const err = String((e && (e.detail || e.message)) || e);
     appendConsole("[post] error: " + err);
@@ -5251,7 +5284,7 @@ const COMFY_SIGNATURE_HINTS = Object.freeze([
   },
   {
     re: /expected m1 and m2 to have the same dtype/i,
-    hint: "建议关闭 CPU VAE（后端设置里的 --cpu-vae），或改回内置模板的 VAE 组合",
+    hint: "建议改回内置模板的 VAE 组合，或检查工作流里 VAE 相关节点的 dtype（fp16 / fp32 混用会报这个错）",
   },
   {
     re: /value_not_in_list|Value not in list/i,
@@ -5799,9 +5832,22 @@ async function generateVideo(params) {
     });
 
     let outPath = comfyOutputPath(comfy, finalVideoMeta.filename, finalVideoMeta.subfolder || "");
-    const exportDir = String(params.outputDir || "").trim();
+    /* 调用方没给 outputDir → 兜底复进应用托管目录（画布资产目录 assetDirFor(canvasWorkflowId)，
+       拿不到就落数据目录的 asset-tmp）；一律不写应用文件夹。显式传了 outputDir 的调用方一行不动。 */
+    let managedWarn = "";
+    let exportDir = String(params.outputDir || "").trim();
+    if (!exportDir) {
+      const m = resolveManagedOutDir(params.canvasWorkflowId, "outputDir");
+      exportDir = m.dir;
+      managedWarn = m.warn;
+      appendConsole("[job] warn " + managedWarn);
+    }
     if (exportDir) {
-      const preferred = String(params.filename || "").trim() || finalVideoMeta.filename;
+      const preferred =
+        String(params.filename || "").trim() ||
+        (managedWarn
+          ? managedOutBaseName(nodeId, "h3") + (path.extname(finalVideoMeta.filename) || ".mp4")
+          : finalVideoMeta.filename);
       outPath = await copyOutputToDir(
         comfy,
         finalVideoMeta.filename,
@@ -5825,7 +5871,13 @@ async function generateVideo(params) {
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: "完成", pct: 100, done: true });
     appendConsole("[job] ok path=" + outPath + " bytes=" + sz);
-    return { ok: true, path: outPath, message: "Saved: " + outPath, bytes: sz };
+    return {
+      ok: true,
+      path: outPath,
+      message: "Saved: " + outPath,
+      bytes: sz,
+      warnings: managedWarn ? [managedWarn] : [],
+    };
   } catch (e) {
     const err = String((e && (e.detail || e.message)) || e);
     appendConsole("[job] error: " + err);
@@ -6174,6 +6226,54 @@ async function forceKillBackend(reason) {
     forceKilled: true,
   });
   return { ok: true, killed: true, reason: why };
+}
+
+/**
+ * 显存释放钩子（给主进程 local-model-vram.js 的统一编排用，见该文件头部口径）：
+ *   · soft = **只卸模型、保留 ComfyUI 常驻** —— abort 在途生成 + 清中断 / 队列残留 +
+ *     POST /free {unload_models, free_memory}，下一单直接复用服务（加载最快）；
+ *   · hard = 停后端进程树（预留：软释放后显存仍被占着时由编排器升级）。
+ * 这两步都绕开 wantRunning —— 释放不等于用户按了「停止」，下次任务 ensureBackendReadyForJob 自行拉起。
+ */
+function vramHooks() {
+  const curPort = () => Number(loadConfig().port) || DEFAULT_PORT;
+  return {
+    host: "h3",
+    port: DEFAULT_PORT,
+    isRunning: () => backendRunning() || comfyHostAlive(),
+    isLoaded: () => backendRunning() || comfyHostAlive(),
+    isBusy: () => !!activeGenerate || !!refreshStaleLock(),
+    soft: async (reason) => {
+      const port = curPort();
+      appendConsole("[vram] 释放 ComfyUI 显存（" + String(reason || "release") + "）：中断残留 + 卸载全部模型，服务保留");
+      if (activeGenerate) activeGenerate.abort = true;
+      destroyActiveGenerateReq();
+      await interruptComfy(port, "");
+      await comfyFreeModels(port);
+      return { ok: true, mode: "comfy_free" };
+    },
+    hard: async (reason) => {
+      appendConsole("[vram] 停 H3 后端进程（" + String(reason || "release") + "）后由下次任务自行拉起");
+      await stopBackend();
+      return { ok: true, mode: "stop_backend" };
+    },
+  };
+}
+
+/* ComfyUI 服务是否在应答（外置 / 复用进程也算在跑）：释放前用它兜住「pid 台账为空但服务在」的情况 */
+async function comfyHostAlive() {
+  try {
+    return await probeComfy(curPortSafe());
+  } catch {
+    return false;
+  }
+}
+function curPortSafe() {
+  try {
+    return Number(loadConfig().port) || DEFAULT_PORT;
+  } catch {
+    return DEFAULT_PORT;
+  }
 }
 
 function cancelGenerate(nodeId) {
@@ -6711,6 +6811,8 @@ function registerH3Ipc(opts) {
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
   getDsh = opts.getDsh || null;
+  /* 画布资产目录（托管兜底落点）：main.js 传入 assetDirFor(wfId) */
+  assetDirFor = typeof opts.assetDirFor === "function" ? opts.assetDirFor : null;
 
   /* 报错总线：注册宿主（安装目录 / 日志尾部 / 自我修复 / 重启四个能力入口），
      之后各失败出口的 reportErr 才有归属与上下文。 */
@@ -6904,19 +7006,9 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:open", async () => openConsoleWindow());
   ipcMain.handle("h3:close", async () => closeConsoleWindow());
   ipcMain.handle("h3:removePluginMeta", async () => removePluginMetaOnly());
-  ipcMain.handle("h3:setCpuVae", async (e, v) => {
-    saveConfig({ cpuVae: !!v });
-    /* 关掉 CPU VAE 后重新武装启动失败提示 */
-    if (!v) cpuVaeFailHinted = false;
-    return { ok: true, cpuVae: !!loadConfig().cpuVae };
-  });
   ipcMain.handle("h3:setLaunchOpts", async (e, opts) => {
     opts = opts || {};
     const patch = {};
-    if (opts.cpuVae != null) {
-      patch.cpuVae = !!opts.cpuVae;
-      if (!patch.cpuVae) cpuVaeFailHinted = false;
-    }
     if (opts.optDisablePinnedMemory != null) {
       patch.optDisablePinnedMemory = !!opts.optDisablePinnedMemory;
     }
@@ -6948,7 +7040,6 @@ function registerH3Ipc(opts) {
     const cfg = loadConfig();
     return {
       ok: true,
-      cpuVae: !!cfg.cpuVae,
       optDisablePinnedMemory: cfg.optDisablePinnedMemory !== false,
       optFp16Intermediates: cfg.optFp16Intermediates !== false,
       optExpandableSegments: cfg.optExpandableSegments !== false,
@@ -6980,6 +7071,8 @@ module.exports = {
   registerH3Ipc,
   shutdownH3UiOnly,
   statusForUi,
+  /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
+  vramHooks,
   PLUGIN_ID,
   DISK_HINT_GB,
 };

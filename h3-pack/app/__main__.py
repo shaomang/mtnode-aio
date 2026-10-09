@@ -52,6 +52,8 @@ def main() -> int:
                 [str(venv_py), "-c", "import torch; print('1' if torch.cuda.is_available() else '0')"],
                 text=True,
                 timeout=60,
+                # 本进程是被宿主以「无控制台」方式拉起的：子进程没控制台可继承就会被 Windows 新建一个窗口
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
             ).strip()
             report["cuda"] = out == "1"
         except Exception as exc:  # noqa: BLE001

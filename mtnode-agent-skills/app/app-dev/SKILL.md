@@ -1,7 +1,7 @@
 ---
 name: mtnode-app-dev
 title: MTNode 应用开发
-description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不显示（默认隐藏）、imageGen 声明出图；是静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
+description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不显示（默认隐藏）、imageGen 声明出图；是静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
 ---
 
 # MTNode 应用开发
@@ -182,7 +182,19 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
 ```
 
 **本地开发目录建议**：直接把应用源码放在一个普通文件夹里（如 `apps/<id>/`），目录名与 `app.json` 的 `id` 保持一致；
-应用中心「开发」页可以直接把这个目录当预览源（`mtnode-preview://<id>/<entry>`），改完刷新即见。
+应用中心「开发」页可以直接把这个目录当预览源（`mtnode-preview://<id>/<entry>?_host=1`），改完刷新即见。
+
+**预览里也有宿主桥（本轮共识）**：开发页中栏那只预览 iframe 里 `window.appHost` **是有的**
+（主进程按 `_host=1` 往页面最前面注入「宿主桥小助手」，接口与独立窗口逐字同形状；
+不带 `_host=1` 直接开那个 url 才是纯静态预览）。写应用时按「有宿主」写就行，不必为预览单独降级；
+两条差别要知道：
+
+- 预览里 `close()` / `quit()` 回 `code:"preview_no_window"`（预览没有「自己的窗口」）；
+- **该应用已在独立窗口运行时，预览为只读**：`dataWrite` / `storageSet` / `storageRemove` /
+  `hostSetModel` / `hostImageSetModel` / `imageGen` / `imageEdit` / `dataDirPick` / `dataDirReset`
+  回 `code:"readonly_preview"`（回执另带 `previewReadOnly:true`），读、文本生成、转写、账号、选图照常；
+  应用侧同步判据：`window.__mtnodePreviewHost.readOnly`（真时 `localStorage` / `sessionStorage`
+  已被换成内存态，不会悄悄写进浏览器存档）。
 
 ---
 
@@ -308,7 +320,7 @@ else use(j.data);                              // 已经解析好的对象
 | 自己拼数据文件路径 / 想写别的文件名 | 宿主白名单只认 `data.json`（+ 兼容 `store.json`），越界一律拒绝 | 走 `dataDirGet()` 拿路径显示，写入交给宿主（固定文件名 + 原子写） |
 | 应用自己传一个目录当数据文件夹 | 宿主不认（路径只能来自用户在系统目录框里亲自选的那一次） | 让用户点「更改」→ `dataDirPick()`；应用只显示 `dataDirGet()` 的结果 |
 | 以为改数据文件夹会顺手搬数据 | 走神：**不搬**（新目录当场生效，旧文件原样留着） | 需要搬就在切换前自己读出来、切完写回去（脚手架示范：先 `flush()` 再切） |
-| 把宿主对象传进 `<iframe>` / 子框架 | iframe 里 **没有** appHost（桥只注入顶层文档） | 别跨框架传引用：由顶层调 appHost，再把结果 `postMessage` 给 iframe |
+| 把宿主对象传进 `<iframe>` / 子框架 | 自造的子框架里 **没有** appHost（桥只注入顶层文档） | 别跨框架传引用：由顶层调 appHost，再把结果 `postMessage` 给 iframe（**开发页中栏的预览 iframe 是唯一例外**：宿主自己往那一帧注入桥，见第四节「预览里也有宿主桥」） |
 | 忘了探能力就 `await host.dataWrite(...)` | appHost 缺席时抛异常 / 白屏 | 一律 `typeof host.x === "function"` 先判，缺能力走降级分支 |
 | 用 `fetch('./data.json')`、XHR 读本地文件 | `file://` 下被拦，读不到 | 静态数据直接写进 JS（`const DATA = {...}`）或做成 `<script>` 引入 |
 | 资源写成绝对路径 / `<base href="/">` | 换机器、打包后 404 | 全部相对路径（`./app.js`、`./assets/a.png`） |
@@ -328,6 +340,7 @@ else use(j.data);                              // 已经解析好的对象
 | 以为应用通道默认开思考（或传了 `thinking:"enable"` 这种错值） | 默认其实是**关**；非法值回 `bad_thinking`（不静默降级） | 要思考显式传 `off / on(=high) / low / high / max`；不确定就不传 |
 | 把 `pickImage` 的 `cancelled` 当报错弹红字 | 用户每次取消都看到一条错误 | `code === "cancelled"` 只恢复按钮，不提示 |
 | 忘了默认建 `AGENTS.md`（或反过来覆盖了已有的那份） | 下个会话没有共识、或冲掉用户自己写的约定 | 从 `templates/app-agents/AGENTS.md` 复制过去（**默认就建、不必询问**）；已存在则保留只补 |
+| 以为「预览里没有宿主、只能退回 localStorage」 | 白写一套预览专用降级分支，用户在开发页中栏看到的还是「进度暂存在浏览器本地」 | 开发页中栏的预览 iframe **有** `window.appHost`（见第四节）；按「有宿主」写，只额外处理 `close`/`quit` 的 `preview_no_window` 与只读时的 `readonly_preview` |
 
 ---
 
@@ -336,6 +349,8 @@ else use(j.data);                              // 已经解析好的对象
 - [ ] 目录：`<id>/index.html` + `apphost.js` + `app-model.js` + `model.css` + `store.js` + `close.js` + `app.js` + `style.css` + `app.json`（从 `templates/app-scaffold/` 复制后替换占位符）
 - [ ] **`AGENTS.md` 已默认生成**（从 `templates/app-agents/AGENTS.md` 复制到应用根；已有则不覆盖），并按其「目录约定」放置新文件
 - [ ] 契约：**无 appHost 也能跑**（`window.appHost` / `window.pluginApi` 都缺时降级分支可达：内存态 + 界面明确提示）
+- [ ] 预览态：开发页中栏预览里照常能用宿主（数据落该应用自己的数据文件夹）；`close` / `quit` 的
+      `preview_no_window` 与只读时的 `readonly_preview` 都有可读提示，不假装成功
 - [ ] 资源全相对路径；静态数据内联；`frame:false` 时自带关闭按钮接 `close()`
 - [ ] **正确关闭**：写盘 + 退订挂进 `AppClose.on(cb)`（宿主 `apps:willClose` 等它跑完，上限 1.5s）
 - [ ] **内容落盘**：数据只走 `store.js` / `dataWrite`（默认数据根 `apps-data/<id>/data.json`），不用 localStorage、不写应用目录

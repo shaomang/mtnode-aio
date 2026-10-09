@@ -954,6 +954,23 @@
 .fam-job { --dsh-fam: var(--dsh-fam-job); }
 .fam-other { --dsh-fam: var(--dsh-fam-other); }
 
+/* 同一批族类的**会话侧类名**（前缀 dsh-fam-，renderer/app-assist.js 挂在会话-对话的工具药丸
+   与工具段上）。上面那十条只是轨迹自己的类名（fam-*）——会话挂的是带前缀的这一套，少了这十条，
+   `.dsh-tool-chip.dsh-fam-*` / `.dsh-seg-tool.dsh-fam-*`（css/dsh.css）里的 `var(--dsh-fam)`
+   就是个没有值的变量：字色 / 边框回落成继承色与 currentColor、底色回落成透明，药丸看起来
+   「掉成黑白的」（本轮修的就是这一条）。一族一条、与上面取**同一份** --dsh-fam-* 族色令牌：
+   两套前缀（轨迹 fam-* / 会话 dsh-fam-*）、一处色值，改色仍只改上面那份令牌。 */
+.dsh-fam-read { --dsh-fam: var(--dsh-fam-read); }
+.dsh-fam-write { --dsh-fam: var(--dsh-fam-write); }
+.dsh-fam-run { --dsh-fam: var(--dsh-fam-run); }
+.dsh-fam-web { --dsh-fam: var(--dsh-fam-web); }
+.dsh-fam-sub { --dsh-fam: var(--dsh-fam-sub); }
+.dsh-fam-talk { --dsh-fam: var(--dsh-fam-talk); }
+.dsh-fam-own { --dsh-fam: var(--dsh-fam-own); }
+.dsh-fam-browser { --dsh-fam: var(--dsh-fam-browser); }
+.dsh-fam-job { --dsh-fam: var(--dsh-fam-job); }
+.dsh-fam-other { --dsh-fam: var(--dsh-fam-other); }
+
 /* 失败的调用压过族色（轴上的块与列表里的行同一口径，写在族色之后）：
    错误是本视图最该被看见的一件事，不能被族色淡化成「就是一次普通读取」。 */
 .dsh-trace-mark.err {

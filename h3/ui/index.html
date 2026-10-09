@@ -103,10 +103,6 @@
       color: #ffe8a3; border-color: #8a6a1a; background: #3a3018;
       margin-left: 6px; vertical-align: middle;
     }
-    .notice {
-      background: #2a2414; border: 1px solid #6b5418; border-radius: 10px;
-      padding: 8px 10px; color: #f0d27a; font-size: 12px; line-height: 1.45;
-    }
     .warn { color: var(--warn); }
     .modal-bg {
       position: fixed; inset: 0; background: rgba(0,0,0,.55);
@@ -184,9 +180,7 @@
       <button id="btnConsolePane" type="button" title="在窗口左侧展开 / 收起 Console 面板（窗口往左变宽，主界面一格不动）">Console<span class="cbadge" id="cbadge" hidden>0</span></button>
       <button id="btnOpenComfy" type="button" title="用浏览器打开 ComfyUI 工作流编辑界面（后端没跑时会先问你是否启动）">ComfyUI 编辑界面</button>
     </div>
-    <div class="notice">
-      <b>插件测试中</b> · 画布节点执行时会<strong>自动启动后端 → 生成 → 确认文件 → 关闭后端</strong>，无需手动启停。卡死时可点「强制释放显存」。安装复杂，可能会失败。
-    </div>
+
     <div>
       <h1>Minimax H3 <span class="badge test">插件测试中</span> <span class="badge off" id="svcBadge">服务关闭</span></h1>
       <div class="sub">本地 24G 视频方案 · 建议预留磁盘 <b>≥70GB</b>（模型约 42–65GB）</div>
@@ -231,18 +225,13 @@
           <button id="btnWfTemplate" title="把内置 FL2VA / R2V 图另存为库里的自定义工作流，可自由编辑">内置图另存</button>
         </div>
       </div>
-      <div class="meta" style="color:var(--muted)">
-        画布 video_gen 节点选「自建工作流」即可使用；参数映射在节点面板里编辑。格式自动识别：API 格式（{节点id:{class_type,inputs}}）或 UI 格式（nodes/links）。<br />
-        「打开」= 在本窗口内嵌的 ComfyUI 里编辑这一条：<strong>不会覆盖库里这条模板</strong>，改完想收回库只能「导出 JSON → 导入 JSON」（导入是唯一入口）。
-      </div>
+
       <div id="wfList" style="display:flex; flex-direction:column; gap:6px; max-height:300px; overflow:auto"></div>
     </div>
 
     <div class="card" id="launchOptsCard">
-      <div class="meta">24G 启动优化（除 CPU VAE 外默认开 · 下次启动后端生效）</div>
-      <label class="meta" title="开启会让 VideoVAE 解码 dtype 崩（expected m1 and m2 to have the same dtype, but got: float != struct c10::Half），视频解码阶段必失败。口径见技能 minimax-h3-install「启动参数」。">
-        <input type="checkbox" id="optCpuVae" /> CPU VAE（默认关：开启会让 VideoVAE 解码 dtype 崩、生成必失败）
-      </label>
+      <div class="meta">24G 启动优化（默认全开 · 下次启动后端生效）</div>
+
       <label class="meta"><input type="checkbox" id="optPinned" checked /> --disable-pinned-memory（允许 CPU offload）</label>
       <label class="meta"><input type="checkbox" id="optFp16" checked /> --fp16-intermediates</label>
       <label class="meta"><input type="checkbox" id="optExpand" checked /> expandable_segments（防碎片 OOM）</label>

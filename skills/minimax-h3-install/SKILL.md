@@ -128,7 +128,7 @@ python main.py --listen 127.0.0.1 --port 8188
 > （【系统内存缓存保留下限】，置 0 = 不加该参数）。超分提交前插件还会按容器里的真实帧数估峰值，
 > 超预算先压目标长边、仍放不下就**进超分前预缩放源帧**（控制台会写明取舍）——排查这类问题先看那条日志。
 
-> **`--cpu-vae` 默认关闭，并且不要打开**（脚手架 `start_backend.cmd` 不带它；H3 后端设置里的「CPU VAE」开关同样按关闭口径处理，若发现自己环境启动参数里有它，一律关掉再复测）。**开启必致 dtype 崩**：VideoVAE 解码报 `expected m1 and m2 to have the same dtype, but got: float != struct c10::Half` —— 采样跑得完、解码阶段挂掉，**任何 H3 生成链（内置与自建）都出不了片**。所以见到这条 dtype 报错，第一件事是核对插件 Console 的 `[launch] flags=…` 里**有没有** `--cpu-vae`，而不是去改工作流的 VAE 组合。
+> **`--cpu-vae` 默认关闭，并且不要打开**（脚手架 `start_backend.cmd` 不带它；插件控制台里这个开关**已整体移除**，宿主启动参数里也永远不会出现它，若发现自己环境手动带了它，去掉再复测）。**开启必致 dtype 崩**：VideoVAE 解码报 `expected m1 and m2 to have the same dtype, but got: float != struct c10::Half` —— 采样跑得完、解码阶段挂掉，**任何 H3 生成链（内置与自建）都出不了片**。所以见到这条 dtype 报错，第一件事是核对插件 Console 的 `[launch] flags=…` 里**有没有** `--cpu-vae`，而不是去改工作流的 VAE 组合。
 > 显存峰值靠下面的 `VRAM_Debug` 屏障（先卸 DiT 再解码）压，不靠把 VAE 搬到 CPU。
 > `--disable-pinned-memory` 与 `--lowvram` 同开冲突；不要用 `--lowvram`。
 
@@ -313,7 +313,7 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 
 把 CONSOLE 交给 Agent：**自行根据最近失败焦点分析并修复**；已知故障仅在证据匹配时参考。模型已齐勿重下。勿启动 ComfyUI；勿删 output。
 
-**不要把「档位」当故障修**：EasyCache `0.08/0.30/0.90`、24G 红线钳制（Console 打 `分辨率超 24G 安全上限，钳制为 WxH`）、`--cpu-vae` 关闭、生成链不含超分/补帧——这四样都是实测安全档，真源在 `h3/main-h3.js`（`EASY_SAFE` / `VRAM_SAFE_MAX_DIM` / `VRAM_SAFE_MAX_MP` / `POST_SAFE_DEFAULTS`）。把它们改回「官方默认」或「一次性出 4K」正是历史上的坏档，改回去会让用户重新踩坑；只有用户明确要求实验时才临时改，并在结论里说明偏离了安全档。
+**不要把「档位」当故障修**：EasyCache `0.08/0.30/0.90`、24G 红线钳制（Console 打 `分辨率超 24G 安全上限，钳制为 WxH`）、`--cpu-vae` 彻底移除（控制台已无此开关，宿主也不下发）、生成链不含超分/补帧——这四样都是实测安全档，真源在 `h3/main-h3.js`（`EASY_SAFE` / `VRAM_SAFE_MAX_DIM` / `VRAM_SAFE_MAX_MP` / `POST_SAFE_DEFAULTS`）。把它们改回「官方默认」或「一次性出 4K」正是历史上的坏档，改回去会让用户重新踩坑；只有用户明确要求实验时才临时改，并在结论里说明偏离了安全档。
 
 ## 约束
 

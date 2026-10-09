@@ -20,7 +20,7 @@
  *   [6] 弹窗 persistent：本模块两只窗都不挂「点外部即关」（与 test/smoke-dialog-persistence.js 同口径）
  *   [7] 修复提示词与「修完重启」服务表：skill 名 + INSTALL_DIR + 纪律 + repair_ok；重启入口指向真存在的桥；
  *       服务表按插件目录逐张卡片覆盖（含桌宠 / Remotion 这类无常驻服务的）
- *   [8] H3 安装链按当前方案：交付要件（soundfile / 后处理权重 / cu130 / Sage）+ 健康检查收尾 + CPU VAE 默认关；
+ *   [8] H3 安装链按当前方案：交付要件（soundfile / 后处理权重 / cu130 / Sage）+ 健康检查收尾 + CPU VAE 选项已整体移除；
  *       且不随包附带任何第三方节点包（南风包与南风工作流模板已整体移除，回归见「南风链已移除」那组）
  *   [9] i18n：app-repair.js 的 I18n.t 字面量 + 主进程「为什么按不动」指路文案，在英文档逐条命中（不得回落中文）
  *  [10] 文档收口：docs/plugin-auto-repair.md、手册中英段、节点指南中英同步、节点指南不被生成器回滚
@@ -87,6 +87,8 @@ const HOSTS = [
   { file: "h3/main-h3.js", id: "minimax-h3", skill: "minimax-h3-install", fn: "syncH3InstallSkill", selfRepair: true, restart: true, reports: 20 },
   { file: "music3/main-music3.js", id: "minimax-music3", skill: "minimax-music3-install", fn: "syncMusic3InstallSkill", selfRepair: true, restart: true, reports: 15 },
   { file: "tts/main-tts.js", id: "tts-local", skill: "tts-local-install", fn: "syncTtsInstallSkill", selfRepair: true, restart: true, reports: 8 },
+  /* Breeze TTS 2（Breeze TTS 2 本地 TTS）：同构（skill 名走宿主内常量，兜底同步一份到 dshHome） */
+  { file: "breeze/main-breeze.js", id: "breeze-tts-local", skill: "breeze-tts-local-install", fn: "syncInstallSkill", selfRepair: true, restart: true, reports: 6, skillConst: true },
   { file: "llama/main-llama.js", id: "llama-local", skill: "llama-local-install", fn: "syncLlamaInstallSkill", selfRepair: true, restart: true, reports: 8 },
   /* YuE2：skill 名走常量（宿主内 INSTALL_SKILL），注册形态与 h3 / music3 同构 */
   { file: "yue/main-yue.js", id: "yue", skill: "yue2-local-install", fn: "", selfRepair: true, restart: true, reports: 20, skillConst: true },
@@ -101,6 +103,7 @@ const INSTALL_SKILLS = [
   "minimax-h3-install",
   "minimax-music3-install",
   "tts-local-install",
+  "breeze-tts-local-install",
   "llama-local-install",
   "sensenova-local-install",
 ];
@@ -162,7 +165,7 @@ for (const h of HOSTS) {
 
   ok(music3.indexOf("emitProgress") > 0, "music3 保留原进度广播（上报是并行加的一层，不替换旧口径）");
   /* tts / llama 原本只有 agentRecoverInstall：自我修复要等价实现 */
-  for (const f of ["tts/main-tts.js", "llama/main-llama.js"]) {
+  for (const f of ["tts/main-tts.js", "llama/main-llama.js", "breeze/main-breeze.js"]) {
     const src = read(f);
     ok(src.indexOf("function selfRepairFromConsole") > 0, f + " 补了 selfRepairFromConsole（控制台尾部 → Agent 恢复安装）");
     ok(/selfRepairFromConsole[\s\S]{0,1200}(agentRecoverInstall|recoverInstall)/.test(src), f + " 的自我修复复用既有 Agent 恢复安装链");
@@ -654,18 +657,19 @@ function groupTail() {
     ok(h3.indexOf("deliverable_missing") > 0 && h3.indexOf("health_check_failed") > 0, "收尾两条失败路径各有 reason");
     ok(/installComplete[\s\S]{0,1600}healthCheckInstall/.test(h3), "成功判定：要件齐了才跑健康检查（只看 .install-ok 不再算成功）");
     ok(h3.indexOf("failWith") > 0 && h3.indexOf(".h3-agent-result") > 0, "失败也回写结果文件（ok=false + reason=）并取消 Agent 会话");
-    ok(h3.indexOf("noteCpuVaeLaunchFailure") > 0 && h3.indexOf("cpuVaeFailHinted") > 0, "带 --cpu-vae 启动失败时记一条指回技能的提示（进程内一次）");
-    ok(/function defaultConfig[\s\S]{0,1400}cpuVae: false/.test(h3), "defaultConfig().cpuVae = false（与技能口径一致）");
-    ok(h3.indexOf("!!cfg.cpuVae") > 0 || h3.indexOf("launchCpuVae") > 0, "启动参数按实际值决定，不再「默认兜成开」");
+    ok(h3.indexOf("noteCpuVaeLaunchFailure") < 0 && h3.indexOf("cpuVaeFailHinted") < 0, "CPU VAE 启动失败提示整条移除（选项已不存在，不再有这条指路）");
+    ok(h3.indexOf("--cpu-vae") < 0 && h3.indexOf("cpuVae") < 0, "h3 宿主永不向 ComfyUI 下发 --cpu-vae（选项连同配置位 / IPC / 状态字段一起删净）");
     const uiHtml = read("h3/ui/index.html");
-    ok(/<input[^>]*id="optCpuVae"[^>]*>/.test(uiHtml) && !/<input[^>]*id="optCpuVae"[^>]*checked/.test(uiHtml), "控制台 #optCpuVae 不再默认勾选");
-    ok(uiHtml.indexOf("dtype") > 0 && uiHtml.indexOf("VideoVAE") > 0, "该选项文案写明开了会怎样（dtype 崩 / 生成必失败）");
-    ok(read("h3/ui/ui.js").indexOf("!!st.cpuVae") > 0, "ui.js 回显口径与后端一致");
+    ok(uiHtml.indexOf("optCpuVae") < 0 && uiHtml.indexOf("CPU VAE") < 0, "控制台「24G 启动优化」区不再有 CPU VAE 选项");
+    ok(read("h3/ui/ui.js").indexOf("cpuVae") < 0, "ui.js 不再回显 / 回写 CPU VAE");
+    ok(h3.indexOf("除 CPU VAE 外默认开") < 0, "启动优化卡片标题不再提 CPU VAE");
+    const rendNodes = read("renderer/app-nodes.js");
+    ok(rendNodes.indexOf("cpuVae") < 0 && rendNodes.indexOf("CPU VAE") < 0, "画布 video_gen 面板不再提示「CPU VAE 已启用」");
 
     ok(skillH3.indexOf("EASY_SAFE") > 0 && skillH3.indexOf("0.08") > 0 && skillH3.indexOf("0.30") > 0 && skillH3.indexOf("0.90") > 0, "技能 EasyCache 档 = 实现真源口径并指向 EASY_SAFE");
     ok(skillH3.indexOf("0.95") > 0 && skillH3.indexOf("官方默认") > 0, "技能说明官方默认档为何在 H3 20 步下会坏（别改回去）");
     ok(skillH3.indexOf("h3:postProcess") > 0 && skillH3.indexOf("VHS_VideoCombine") > 0 && skillH3.indexOf("per_batch") > 0, "技能把 4K 后处理写成独立通道（生成链不再内联 VHS）");
-    ok(skillH3.indexOf("--cpu-vae") > 0 && skillH3.indexOf("默认关") > 0, "技能：--cpu-vae 默认关闭，开启必致 dtype 崩");
+    ok(skillH3.indexOf("--cpu-vae") > 0 && skillH3.indexOf("默认关") > 0 && /开关[\s\S]{0,20}(已整体移除|已移除)/.test(skillH3), "技能：--cpu-vae 默认关 + 控制台开关已移除（开启必致 dtype 崩）");
     ok(skillH3.indexOf("VRAM_SAFE_MAX_DIM") > 0 && skillH3.indexOf("1280") > 0 && skillH3.indexOf("0.98") > 0, "技能写清 24G 分辨率红线（超限是自动钳制，不是故障）");
     ok(skillH3.indexOf("chainDenoise") > 0 && skillH3.indexOf("chainFrames") > 0, "技能记内置 fl2va 分段衔接子图契约");
     ok(skillH3.indexOf("outputRes") > 0, "技能说明 outputRes 档位与红线的先后");

@@ -546,7 +546,7 @@ function cleanStaleProfileLocks(profileDir) {
  *
  *  窗口模式由 opts.visible 决定（缺省 = 无窗口，见 launchArgs 顶部那一节）：
  *   · 缺省 / visible:false → **无窗口**起（会话自动拉起的那条路）；
- *   · visible:true → 带窗口起（只有求助卡上的「用真窗口打开」才走）。
+ *   · visible:true → 带窗口起（只有用户在右栏实况区点「用真窗口打开」才走）。
  *  本轮修：重起之前先探活复用 —— 本进程手里那只还活着就直接用；本进程手里没有、profile 里
  *  那只还在跑（网关重启留下的孤儿 / 另一个应用实例在跑的那只）→ **接管**，绝不 spawn 第二只
  *  （同 profile 的第二只实测会立刻退出、端口永远起不来，观感就是「关掉又起来一只」）。 */
@@ -655,6 +655,16 @@ export async function ensureBrowser(opts) {
         ' · 存活 ' + Math.round(upMs / 1000) + 's · 上一次动作 ' + (la.op || '—') +
         (la.at ? '（' + Math.round((at - la.at) / 1000) + 's 前）' : '') + '）'
       note('browser', why + '：下次用到浏览器时会自动重起（用户口径：不设重起上限）')
+      /* 本次需求：刚为「看得见的窗口」重开的那只很快退了 = 求助卡上那一步（登录 / 验证码
+         要用户亲自操作）实际没成，而用户此刻只看到「没有窗口」。这类必须单独说清：
+         实测 2026-10-08 08:38 那只带窗口 Edge 只活了 4 秒。 */
+      if (state.visibleRestart && upMs < 8000) {
+        note(
+          'browser',
+          '刚为「看得见的窗口」重开的那只很快就退了（存活 ' + Math.round(upMs / 1000) +
+          's）：真窗口这一下没成 —— 再点一次「用真窗口打开」，或先在右栏实况里操作。',
+        )
+      }
       try { console.error('[browser] ' + why + ' pid=' + (proc.pid || 0) + ' port=' + port) } catch { /* stdout 已断 */ }
     }
     clearMarker(profileDir, proc.pid)

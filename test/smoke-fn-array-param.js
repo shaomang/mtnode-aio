@@ -109,6 +109,15 @@ const SRC_WIREHELP = between(
   "/* ── 工具节点 / 函数节点：单一真源判定与参数模型",
   "app.js isControlKind / hasFixedInPorts / wireFromIsControl / wiresTo / allWiresTo / hasOutput / isTextSource / isImageSource",
 );
+/* wireFromIsControl 的兜底分支会落到 nodeEmitsControlOnPort（app.js:6622 一带）——
+   它定义在文件更前面（isControlKind 之前），SRC_WIREHELP 的区间刚好不含它：
+   不单独抽进来，沙箱里一执行就 `nodeEmitsControlOnPort is not defined`。 */
+const SRC_CTRLPORT = between(
+  APP,
+  "function nodeEmitsControlOnPort(node, portIndex, wf, seen) {",
+  "function superInPortIsControl(superNode, portIndex, wf) {",
+  "app.js nodeEmitsControlOnPort（控制输出判定 · 带 seen 兜环）",
+);
 const SRC_EXTIN = between(
   APP,
   "function superExternalInWiresAll(superNode, wf) {",
@@ -240,6 +249,7 @@ vm.runInContext(
     SRC_ASSET,
     SRC_MEDIA,
     SRC_WIREHELP,
+    SRC_CTRLPORT,
     SRC_EXTIN,
     ARR_SRC,
     FN_CORE,
@@ -621,7 +631,7 @@ console.log("\n[8] 设置面板勾选 · 端子徽标 · 脚手架 · Agent 契�
   );
   HAS(
     CANVAS,
-    "setPortBadgeName(badge, (pl[i - 1] && pl[i - 1].name) || String(i));",
+    'badge: String(p.name || "").trim() || String(i + 1),',
     "数组端子徽标 = 参数名全文（切字交给 CSS .pb-name，节点高亮时看完整；条数用槽位端子组表达，不挤在名字后标 ×N）",
   );
   HAS(
