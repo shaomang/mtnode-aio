@@ -1044,6 +1044,54 @@ function appsDevPreviewUrlFallback(appId) {
 function appsDevUrlOf(appId) {
   return appsDevPreviewUrlFallback(appId);
 }
+/* ── 「应用文件夹」（本轮需求）：预览列头那一枚文件夹按钮 ─────────────────────────
+ * 点它 = 在系统资源管理器里打开**当前这个应用的文件夹**（应用目录：index.html / app.json
+ * 所在的那个，开发中在项目根 apps-dev/<id>、下载的在下载根 apps/<id>）。
+ * 路径真源只有主进程，渲染层不拼：
+ *   ① 先走 appsLocalList 那条摘要里的 dir（appsDevProjectDir，路径最权威）；
+ *   ② 摘要还没回来（应用刚建 / 列表是上一帧的）时，回落到预览 info 的 dir（apps:devPreview
+ *      同一个 previewDirOf 解析）；两条都拿不到 = 明确提示，绝不去猜路径。
+ * 打开动作走 preload 早就白名单好的通用出口 window.api.shellOpenPath（主进程 shell:openPath
+ * → shell.openPath），不新增 IPC；失败按中文可读话术弹 toast。 */
+function appsDevFolderBtnEl() {
+  const b = appsMiniBtn(appsDevT("📂 应用文件夹"), () => appsDevOpenAppFolder());
+  b.classList.add("apps-dev-folderbtn");
+  b.title = appsDevT("在资源管理器里打开这个应用的文件夹（入口页 index.html 所在的那个目录）");
+  b.setAttribute("aria-label", appsDevT("打开应用文件夹"));
+  return b;
+}
+async function appsDevOpenAppFolder() {
+  const id = String(DEVD.appId || "").trim();
+  if (!id) {
+    appsDevToast(appsDevT("先在左栏选一个应用"), "warn");
+    return;
+  }
+  const api = window.api || {};
+  if (typeof api.shellOpenPath !== "function") {
+    appsDevToast(appsDevT("无法打开文件夹：宿主桥未就绪"), "err");
+    return;
+  }
+  let dir = appsDevProjectDir(id);
+  if (!dir) {
+    const info = await appsDevPreviewInfo();
+    dir = String((info && info.dir) || "").trim();
+  }
+  if (!dir) {
+    appsDevToast(appsDevT("读不到该应用文件夹（可能在别处被删了）"), "warn");
+    return;
+  }
+  let r = null;
+  try {
+    r = await api.shellOpenPath(dir);
+  } catch (e) {
+    r = { ok: false, error: (e && e.message) || String(e) };
+  }
+  if (!r || r.ok === false) {
+    appsDevToast(appsDevT("无法打开文件夹：") + String((r && r.error) || ""), "err");
+    return;
+  }
+  appsDevToast(appsDevT("已打开应用文件夹：") + dir, "ok");
+}
 /* 中栏兜底层：拿不到应用目录 / 入口页时盖在 iframe 上给可读提示 + 「重试」，
    不再只留白底。消息为空 = 收起（iframe 正常显示）。 */
 function appsDevPreviewStatMsg(msg, retry) {
@@ -2490,6 +2538,9 @@ function appsDevPagePaint(body, seq) {
   };
   viewHead.appendChild(bridgeCloseBtn);
   DEVD.bridgeCloseBtn = bridgeCloseBtn;
+  /* 文件夹按钮（本轮需求）：预览列头最右那一枚 —— 点它进这个应用的文件夹（应用目录）。
+     常驻不藏（没选中应用时点了给一句提示），与「关掉独立窗口」同一处右端对齐。 */
+  viewHead.appendChild(appsDevFolderBtnEl());
   view.appendChild(viewHead);
   DEVD.urlEl = urlEl;
   const frameWrap = document.createElement("div");

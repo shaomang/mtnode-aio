@@ -5206,6 +5206,15 @@
     "、{m} 个绘制": ", {m} mark(s)",
     " 项绘制": " mark(s)",
     "在资源管理器中打开该文件夹": "Open this folder in Explorer",
+    "📂 应用文件夹": "📂 App folder",
+    "打开应用文件夹": "Open the app folder",
+    "在资源管理器里打开这个应用的文件夹（入口页 index.html 所在的那个目录）":
+      "Open this app's folder in Explorer (the directory holding the entry page index.html)",
+    "先在左栏选一个应用": "Pick an app in the left column first",
+    "读不到该应用文件夹（可能在别处被删了）":
+      "Cannot read this app's folder (it may have been deleted elsewhere)",
+    "已打开应用文件夹：": "Opened the app folder: ",
+    "无法打开文件夹：宿主桥未就绪": "Cannot open the folder: the host bridge is not ready",
     "尚未设置工作目录": "No working directory set",
     "无法打开文件夹": "Cannot open folder",
     "无法打开文件夹：": "Cannot open folder: ",
@@ -11002,12 +11011,10 @@
           "Uninstalling removes only its own folder under the download root and its own data tree; the project root and dev data are untouched",
         "下载根": "Download root",
         "项目根": "Project root",
-        "读取第 1 张截图失败：请改用「图标」选一张本机图片，或重新拍一次窗口":
-          "Reading the first screenshot failed: pick a local image under Icon, or take the window shot again",
         " 张截图读不出来（文件可能已被移走）：删掉它或重新拍一张再上传":
           " screenshot(s) could not be read (the file may have been moved): delete it or take it again before uploading",
-        "上传中…（③ 正在上传到云端，请勿关闭窗口）":
-          "Uploading… (3/3 uploading to the cloud, do not close this window)",
+        "上传中…（② 正在上传到云端，请勿关闭窗口）":
+          "Uploading… (2/2 uploading to the cloud, do not close this window)",
         "· 截图 ": " · screenshots: ",
         "· 含截图 ": " · with ",
         /* 追加一版时的截图回执（服务端 shots:{added,total}）：截图是**保留旧图 + 去重追加**，
@@ -11566,6 +11573,21 @@
     "上传上架": "Upload and publish",
     "上架成功": "Published",
     "上传成功：": "Uploaded: ",
+    /* 上架结果块：「已排除 N 个开发文件」+ 可展开清单（本轮需求：打包排掉的中途产物可核对，
+       见 apps-store.js 的 APP_PACK_EXCLUDE 与 renderer/app-publish.js 的 pubDevExcludedCell） */
+    "开发文件": "Dev files",
+    "已排除 ": "Excluded ",
+    " 个开发文件": " dev file(s)",
+    "展开清单": "Show list",
+    "收起清单": "Hide list",
+    "开发期产物不随包上传（开发目录里的原件一个都不动）；应用自己的文件照旧随包。":
+      "Development-time artifacts are not packed (the originals in the app folder are left untouched); the app's own files ship as before.",
+    "这些文件只存在于开发过程中（AI 协作笔记 / 开发脚本与探针 / 临时残留 / 画布与长任务图 / 粘贴图临时目录 / 本机调试数据），打包时不随包发给别人；开发目录里的原件一个都不动。":
+      "These files only exist during development (AI notes / dev scripts and probes / temp leftovers / canvas and long-task graphs / the paste-image temp folder / local debugging data). They are not packed or sent to anyone, and the originals in the app folder are left untouched.",
+    "（清单过长，这里不列）": "(the list is very long — not shown here)",
+    "…只列前 ": "…showing the first ",
+    " 条（共 ": " entry/entries (of ",
+    " 条）": ")",
     /* 应用商店侧：同版本号但判出**内容变了** → 「覆盖安装」（本轮用户需求：
        作者就地重传同一版时，用户在商店也要能把新包覆盖装回本机） */
     "覆盖安装 v": "Overwrite-install v",

@@ -61,9 +61,11 @@
  * IPC（主窗口侧，preload.js 的 api.apps* 转发；本文件只注册通道，方法名见 registerAppsIpc）：
  *   apps:rootGet / rootSet / rootPick · apps:list · apps:create · apps:catalog · apps:install / uninstall
  *   apps:setMeta（本机状态字段 dev / author / forkOf / cloud 的唯一写入口，渲染层不碰文件系统）
- *   apps:exportZip · apps:probeChanges · apps:openWindow / closeWindow / isOpen
- *   apps:shotWindow · apps:readZipBase64（上架窗用：拍应用自己的窗口 + 现打包读回 base64，
+ *   apps:probeChanges · apps:openWindow / closeWindow / isOpen
+ *   apps:shotWindow · apps:readZipBase64（上架窗用：拍应用自己的窗口 + **一趟**现打包读回 base64，
  *   契约见 docs/apps-market.md §七；渲染层不碰文件系统与网络）
+ *   （apps:exportZip 已随「上架只打一趟包」下线：上架窗改用 apps:readZipBase64 一次拿到
+ *     base64 + sha256，见 exportZip 段与 readPackBase64 的注释）
  *   apps:devPreview（开发页预览：iframe url = mtnode-preview://<appId>/<entry> + 内容快照；
  *   该协议在本文件顶层登记为 standard/secure，响应给 HTML 注入页面状态小助手，
  *   供开发页重载预览时存 / 恢复滚动与表单值 —— 只有这一路注入，独立窗口不受影响）
@@ -2790,18 +2792,21 @@ function crc32(buf) {
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ -1) >>> 0;
 }
-function dosStamp(d) {
-  const dt = d instanceof Date ? d : new Date();
-  const year = Math.max(1980, dt.getFullYear());
-  return {
-    time: (dt.getHours() << 11) | (dt.getMinutes() << 5) | Math.floor(dt.getSeconds() / 2),
-    date: ((year - 1980) << 9) | ((dt.getMonth() + 1) << 5) | dt.getDate(),
-  };
-}
+/* 包内条目的时间戳**固定**（1980-01-01 00:00:00，DOS 时间戳下界）——本轮需求：
+   「同一个应用打两次包 = 字节完全一样」（目录内容不变时）。
+   以前每个条目写的是**打包那一刻**（`new Date()`，DOS 时间戳 2 秒粒度），于是同一份目录、
+   同一个口径连打两次也会换 sha256：客户端「打包 → 读回」比对随机失败（用户报的那个错的一半），
+   服务端「这次带的包与线上那一版内容一模一样」判定（store-saas/server.mjs 的
+   `zipSha === a.sha256`）也永远不成立。
+   代价只有一处、且无害：解压出来的文件时间显示为这个固定值 —— 安装解压实现（unzipBuffer）
+   根本不读包内时间字段，应用运行也不依赖它。 */
+const ZIP_FIXED_STAMP = { time: 0, date: (1 << 5) | 1 };
 /* 最小 zip 打包器（deflateRaw 优先，压不动就 store）：只打我们自己挑好的文件，
-   不引第三方依赖。UTF-8 名字置 flag 0x0800（中文 <AppName> 也能被解压工具认。） */
+   不引第三方依赖。UTF-8 名字置 flag 0x0800（中文 <AppName> 也能被解压工具认。）
+   **字节可复现**：条目顺序由调用方固定（packEntriesOf 按相对路径字典序），时间戳走
+   ZIP_FIXED_STAMP，deflate 对同一份输入确定 —— 同内容 ⇒ 同字节 ⇒ 同 sha256。 */
 function zipBuffer(entries) {
-  const now = dosStamp(new Date());
+  const now = ZIP_FIXED_STAMP;
   const locals = [];
   const centrals = [];
   let offset = 0;
@@ -3551,17 +3556,119 @@ function migrateAppsLayout(arg) {
 /* ---------------- 导出 zip（应用目录里的应用文件全部随包，不含画布 / 本机态） ---------------- *
  *
  * 打包范围：**整目录**（子目录递归）—— 应用怎么写都行（根目录多份 js / css、lib/、media/…）。
- * 只排除生成物与本机态（见 packExcludedFiles）：<AppName>.zip（导出的包自己）、
- * <AppName>.mtnodes（该应用的画布）、installed.json（本机安装账本）、.staging/（解包中转）。
- * storage/ 是应用自己的本机存档：**本地「导出 zip」保留**（换机搬家连存档一起走），
- * **上架包剔除**（opts.forUpload，绝不把作者本机存档发给下载者）。
+ * 排除分两半（见 packExcludedFiles）：
+ *   ① **应用目录里的中途产物**（开发期才存在的那些东西 / 本机生成物，见 APP_PACK_EXCLUDE 段，
+ *      上架包与本机导出 zip **同一套规则**）；
+ *   ② **app 自己的本机存档**（storage/，只有 opts.forUpload = true = 上架包才剔）。
  * 包里那份 app.json 去掉本机的「开发中」标记 dev（本机状态，跟包跑出去会让下载者把这个
- * 应用当成「正在开发」而不列进「库」）；author 与 forkOf 照常随包走 —— 契约见 docs/apps-market.md §八。 */
+ * 应用当成「正在开发」而不列进「库」）；author 与 forkOf 照常随包走 —— 契约见 docs/apps-market.md §八。
+ * 回执带 excluded / excludedCount（排除清单与条数，封顶 APP_PACK_EXCLUDE_REPORT_MAX），
+ * 上架窗据此显示「已排除 N 个开发文件」—— 作者能自己核对，不必猜文件为什么没上去。
+ *
+ * 调用方（本轮需求后）：**上架不再调它** —— 上架链路只走 readPackBase64（一趟 = 上架口径 +
+ * base64 + sha256）。本函数仍是打包唯一实现（readPackBase64 与冒烟直接调它），并保留
+ * 默认口径（保留 storage/）=「本机导出 zip」那一套语义，只是那条界面入口早已下线。 */
 
-/* 本机自己生成 / 与包无关的文件（相对应用目录，"/" 分隔）：打包一律不带它们。
-   名字口径跟着清单走：画布与导出包分别是 <AppName>.mtnodes / <AppName>.zip。
-   **app.json 不在这里**：包里那份 app.json 是 packEntriesOf 现读现写的（去掉 dev 标记），
-   列进来会让包缺清单（下载方认不出应用）。
+/* ── 打包排除规则（本轮需求：应用开发过程中在应用目录里产生的中途内容与数据，
+      不再随包（上架包 + 本机导出 zip 同一套）发给别人）─────────────────────────────
+ *
+ * 现场（真机开发根实测，`<apps.projectDir>/<id>`）：AI 开发会话把工作区就设成应用目录，
+ * 于是 AGENTS.md / DELIVERY.md、dev-server.mjs / dev-verify.mjs / smoke-out.txt、*.orig 备份、
+ * tools/*.cjs 探针与截图、.mtnode-input/ 粘贴图、改了名的第二份 *.mtnodes、storage/.dbg-profile/
+ * （整套 Edge 调试 profile）都躺在应用目录里；旧实现是**整目录打包**，它们全都随上架包上去了。
+ *
+ * 口径（用户共识，逐条对应）：
+ *   · 只做**打包过滤**，开发目录一个文件都不动（不删、不移、不新增目录约定）；
+ *   · 规则是**代码里的固定表**（就是下面这几行），没有配置文件、没有逐项勾选；
+ *   · 只排**应用根目录那一层**的脚本与残留 —— 子目录一律豁免，避免误伤 assets/ 下的
+ *     运行期数据（如 assets/gen/manifest.js 是 sprite.js 要读的名单、assets/fonts/OFL.txt
+ *     是随包许可文件）；**不排 tools/ 整目录**（assets/tools 之类可能被运行期读）；
+ *   · **不排任意 *.md**：只排下面那几个开发笔记名；应用写给用户的 README.md 照旧随包；
+ *   · *.mtnodes 排**任意层级**（第二份 / 改了名的画布同样是开发期产物：里面有 devPath 绝对
+ *     路径、会话 id 与开发笔记）；storage/.dbg-profile/ 排**任意层级**（Edge 调试 profile）；
+ *   · storage/ 其余内容保留（数据表 / 构建脚本 / 存档照常随包，作者换机拿到的是完整工程）。
+ *
+ * 入口页优先：万一某条规则碰到 app.json 声明的入口页，**保留它**并在 warnings 里报一句 ——
+ * 包缺入口页会整包打不出来（服务端校验会拒），这比多带一个文件严重得多。 */
+const APP_PACK_EXCLUDE = {
+  /* 任意层级：后缀（小写比较） */
+  extAny: [".mtnodes", ".orig", ".bak", ".tmp", ".log"],
+  /* 任意层级：相对路径前缀（目录） */
+  dirAny: [".mtnode-input/"],
+  /* 任意层级：路径里出现任一段即排（调试 / 中转目录） */
+  segAny: [SUB.staging, ".dbg-profile"],
+  /* 仅应用根目录那一层：精确文件名（小写比较） */
+  rootNames: ["agents.md", "delivery.md", "product.md", "notes.md", "todo.md"],
+  /* 仅应用根目录那一层：通配（* = 除 "/" 外任意串；匹配小写化后的名字） */
+  rootGlobs: [
+    "dev-*.js",
+    "dev-*.mjs",
+    "dev-*.cjs",
+    "verify-*.mjs",
+    "*-audit.*",
+    "smoke*.*",
+    "*-probe.*",
+    "*-notes.md",
+    "*-out.txt",
+    "longtask-*.json",
+  ],
+  /* 仅在 storage/ 之下：通配（Windows 下 storage 名大小写不敏感，命中判断先小写化） */
+  storageGlobs: ["probe-*.txt"],
+  /* 上架包另剔：app 自己的本机存档（本地导出 zip 保留 —— 换机搬家连存档一起走） */
+  uploadOnlyDirs: [SUB.storage],
+};
+/* excluded 清单回执的条数上限：上架是 IPC 传 JSON，几百条路径会把回执撑大；
+   条数另给 excludedCount（永远是真值），界面上写清「只列前 N 条」。 */
+const APP_PACK_EXCLUDE_REPORT_MAX = 200;
+
+/* 应用根目录那一层的通配匹配（整串匹配，大小写不敏感；只吃单段名字，不含 "/"） */
+function packNameGlobHit(name, glob) {
+  const g = String(glob || "").toLowerCase();
+  if (!g) return false;
+  const rx = g.replace(/[.+^${}()|[\]\\?]/g, "\\$&").replace(/\*/g, "[^/]*");
+  return new RegExp("^" + rx + "$").test(String(name || "").toLowerCase());
+}
+/* 名字只在 storage/ 之下才判的通配（同上，只是作用域不同；storage 段大小写不敏感） */
+function packStorageGlobHit(rel, name) {
+  return APP_PACK_EXCLUDE.storageGlobs.some((g) => {
+    if (!packNameGlobHit(name, g)) return false;
+    const parts = rel.split("/");
+    return parts.length >= 2 && String(parts[0] || "").toLowerCase() === SUB.storage;
+  });
+}
+/* 这一条相对路径是不是「打包不该带的中途产物」（相对应用目录，"/" 分隔）。
+   o.forUpload = true 时另剔 app 自己的本机存档（storage/）。 */
+function packExcludedRel(rel, opts) {
+  const r = String(rel == null ? "" : rel).replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!r) return false;
+  const o = isObj(opts) ? opts : {};
+  const lower = r.toLowerCase();
+  const slash = r.lastIndexOf("/");
+  const inRoot = slash < 0;
+  const name = inRoot ? r : r.slice(slash + 1);
+  const nameLower = name.toLowerCase();
+  const segs = r.split("/").map((x) => x.toLowerCase());
+  /* 上架包另剔：app 自己的本机存档（见 uploadOnlyDirs） */
+  if (o.forUpload === true) {
+    for (const d of APP_PACK_EXCLUDE.uploadOnlyDirs) {
+      const dl = String(d).toLowerCase();
+      if (lower === dl || lower.indexOf(dl + "/") === 0) return true;
+    }
+  }
+  for (const d of APP_PACK_EXCLUDE.dirAny) if (lower.indexOf(String(d).toLowerCase()) === 0) return true;
+  /* 路径里出现任一段即排（Windows 下 storage / .staging 等大小写不敏感，比较先小写化） */
+  for (const d of APP_PACK_EXCLUDE.segAny) if (segs.indexOf(String(d).toLowerCase()) >= 0) return true;
+  for (const e of APP_PACK_EXCLUDE.extAny) if (nameLower.endsWith(e)) return true;
+  if (inRoot) {
+    if (APP_PACK_EXCLUDE.rootNames.indexOf(nameLower) >= 0) return true;
+    if (APP_PACK_EXCLUDE.rootGlobs.some((g) => packNameGlobHit(name, g))) return true;
+  }
+  if (packStorageGlobHit(r, name)) return true;
+  return false;
+}
+/* 本机自己生成 / 与包无关的文件：打包一律不带它们（名字口径跟着清单走：画布与导出包分别是
+   <AppName>.mtnodes / <AppName>.zip）。**app.json 不在这里**：包里那份是 packEntriesOf
+   现读现写的（去掉 dev 标记），列进来会让包缺清单（下载方认不出应用）。
    尾参 opts.excludeExtra 是「打包口径」的显式注入点：正常路径不传；冒烟用它模拟
    「打包实现漏了一类应用文件」，验证包内清单真的少那一条（而不是只看自己那份名单）。 */
 function packExcludedFiles(dir, man, opts) {
@@ -3572,18 +3679,29 @@ function packExcludedFiles(dir, man, opts) {
   return out.filter((v, i) => v && out.indexOf(v) === i);
 }
 /* 应用目录 → 包里的文件清单（顺序稳定：按相对路径字典序；唯一读取实现，导出与上架包共用）。
-   回 [{ name, data }]。 */
+   回 [{ name, data }] + excluded（被排除的中途产物，见 APP_PACK_EXCLUDE）+ excludedCount。 */
 function packEntriesOf(dir, sid, opts) {
   const o = isObj(opts) ? opts : {};
   const man = manifestOf(dir, sid);
   const entry = safeEntry(man.entry) || SUB.index;
   const skip = packExcludedFiles(dir, man, o);
-  const inStorage = (rel) => rel === SUB.storage || rel.indexOf(SUB.storage + "/") === 0;
+  const excluded = [];
+  const warnings = [];
+  /* 中途产物（规则表）命中即排；命中入口页则**保留**（宁可不排，也不让包因为缺入口页整包打不出来） */
+  const devLeftover = (rel) => {
+    if (!packExcludedRel(rel, o)) return false;
+    if (rel === entry) {
+      warnings.push(t("这个文件看起来是开发期产物，但它是 app.json 声明的入口页，已保留：") + rel);
+      return false;
+    }
+    excluded.push(rel);
+    return true;
+  };
   const files = walkFiles(dir, "", [])
     .filter((rel) => {
+      /* excludeExtra 是显式注入点：它说了就排（连入口页也不豁免）—— 冒烟靠它验「真少了一条」 */
       if (skip.indexOf(rel) >= 0) return false;
-      /* 上架包不带本机存档（作者自己的未完成一局 / 统计不该发给下载者） */
-      if (o.forUpload === true && inStorage(rel)) return false;
+      if (devLeftover(rel)) return false;
       return true;
     })
     .sort();
@@ -3602,7 +3720,17 @@ function packEntriesOf(dir, sid, opts) {
     entries.push({ name: rel, data: data });
   }
   if (!entries.some((e) => e.name === entry)) return { ok: false, error: t("应用缺少入口页"), reason: "missing_entry" };
-  return { ok: true, entries: entries, man: man, entry: entry };
+  /* 排除清单按相对路径字典序（与包内清单同序，界面上读起来稳），条数封顶、另给真值计数 */
+  excluded.sort();
+  return {
+    ok: true,
+    entries: entries,
+    man: man,
+    entry: entry,
+    excluded: excluded.slice(0, APP_PACK_EXCLUDE_REPORT_MAX),
+    excludedCount: excluded.length,
+    warnings: warnings,
+  };
 }
 
 function exportZip(id, opts) {
@@ -3630,6 +3758,11 @@ function exportZip(id, opts) {
       sha256: sha256(buf),
       files: entries.length,
       version: man.version,
+      /* 被排除的中途产物（开发期产物 / 本机生成物，见 APP_PACK_EXCLUDE）：
+         上架窗拿它显示「已排除 N 个开发文件」并可展开清单（本条需求 · 可核对）。 */
+      excluded: built.excluded || [],
+      excludedCount: Number(built.excludedCount) || 0,
+      warnings: built.warnings || [],
     };
   } catch (err) {
     return fail(err);
@@ -3699,7 +3832,12 @@ async function shotAppWindow(id) {
 }
 
 /* 上架用：**现打一份** zip 再读回 base64（与 exportZip 同一份打包实现：应用目录里的应用文件
-   全部随包，不含画布与本机存档）。现打现读 = 绝不会把上一轮导出的旧包传上去。 */
+   全部随包，不含画布、本机存档与开发期产物）。现打现读 = 绝不会把上一轮导出的旧包传上去。
+   回执把 exportZip 的排除清单（excluded / excludedCount）原样带出来 —— 与 zip 同一趟打包算的，
+   不会出现「界面说排了 5 个、实际排了 7 个」。
+   **这是上架链路的唯一一趟打包**（本轮需求）：同一次调用既给要上传的 base64，也给这份字节的
+   sha256 —— 两者出自同一份 buffer，天生自洽，不存在「两趟包 sha 对不上」的失败模式
+   （旧实现先 exportZip 打一份默认口径的包、再在这里打一份上架口径的包，两趟文件集必然不同）。 */
 function readPackBase64(id) {
   const r = exportZip(id, { forUpload: true });
   if (!r || r.ok === false) return r || bad(t("打包失败"), "pack_failed");
@@ -3716,6 +3854,9 @@ function readPackBase64(id) {
       bytes: buf.length,
       sha256: sha256(buf),
       base64: buf.toString("base64"),
+      excluded: r.excluded || [],
+      excludedCount: Number(r.excludedCount) || 0,
+      warnings: r.warnings || [],
     };
   } catch (err) {
     return fail(err);
@@ -6050,8 +6191,9 @@ function registerAppsIpc(opts) {
       return fail(err);
     }
   });
-  ipcMain.handle("apps:exportZip", guard((e, arg) => exportZip(isObj(arg) ? arg.id : arg)));
-  /* 上架（§七）：拍应用自己的窗口 + 现打包读回 base64（上架窗只拿回执，不碰文件系统） */
+  /* 上架（§七）：拍应用自己的窗口 + 现打包读回 base64（上架窗只拿回执，不碰文件系统）。
+     **不再暴露 apps:exportZip**：上架只打一趟包（apps:readZipBase64），本机「导出 zip」那条
+     界面入口早已下线，留着就是一只没人调的桥（exportZip 本身仍是打包唯一实现，内部照用）。 */
   ipcMain.handle("apps:shotWindow", async (e, arg) => shotAppWindow(isObj(arg) ? arg.id : arg));
   ipcMain.handle("apps:readZipBase64", guard((e, arg) => readPackBase64(isObj(arg) ? arg.id : arg)));
   ipcMain.handle("apps:probeChanges", guard(() => probeChanges()));

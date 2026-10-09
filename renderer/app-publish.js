@@ -28,9 +28,12 @@
  *        服务端体检：GET /api/apps/<id>/shots-diag（收了没有 / 落了几个文件 / 静态目录同步没有）。
  *     ⑤ 声明：契约 §7.3 的声明正文逐字展示 + 「我已阅读并同意，责任由我承担」勾选，
  *        未勾选时上传按钮禁用并在页脚说明原因；
- *     ⑥ 上传：appsExportZip（现打一份包，不含画布）→ appsReadZipBase64（同一份包读回 base64，
- *        sha256 与上一步对不上就报错、不提交）→ POST /api/apps（新建）或
+ *     ⑥ 上传：appsReadZipBase64（**一趟**现打一份包：上架口径 = 本机存档 storage/ 不入包，
+ *        同一次调用既给要上传的 base64、也给这份字节的 sha256）→ POST /api/apps（新建）或
  *        POST /api/apps/<id>/versions（线上已有同 id 应用 = 追加版本，带 parentVersion）。
+ *        旧实现打两趟包（exportZip 默认口径 + readZipBase64 上架口径）再比对 sha256，
+ *        两趟文件集必然不同 ⇒ 每次上架都被那道校验拦下（用户报的 bug）；那趟多余的包、
+ *        那道校验闸与 appsExportZip 桥已一并下线，见 pubUploadNow 里的注释。
  *        进度只用按钮状态文字与禁用态表达（storeRequest 没有真进度，不做假进度条）。
  *   上传成功后**不自动关窗**：回显线上条目（标题 / 版本 / 官网目录条目）+ 「再传一版」按钮；
  *   同时把「云端 id / 上架账号 / 时间 / 版本」写进本机 app.json 的 cloud 字段（apps:setMeta）——
@@ -40,7 +43,7 @@
  *   是「新建应用」还是「追加版本」（pubUpdateMode 仍用来分辨这两件事，但不再切成两套叫法）。
  *
  * 【依赖哪些桥（全部 window.api.*；本文件不碰文件系统、不直连网络）】
- *   appsList / appsExportZip / appsReadZipBase64 / appsShotWindow / appsOpenApp / appsDevPreview /
+ *   appsList / appsReadZipBase64 / appsShotWindow / appsOpenApp / appsDevPreview /
  *   appsCatalog / fileReadText（读 app.json 与入口页，拿不到就跳过）/ fileListDir（目录清单，可缺）/
  *   assetReadDataUrl（截图 → base64）/ storeRequest（主进程自动带 Bearer token；上传 timeoutMs 600000）。
  *   模型调用：apiCallTextStream（renderer/app-nodes.js），provider 取自 S.config.providers，
@@ -119,7 +122,7 @@ const PUB = {
      渲染层平时不需要它，但没有它就只能靠 setTimeout 猜「读完没有」——
      测试与将来的「上架前自查」都从这里等（见 window.__mtnodeAppPublish）。 */
   load: null,
-  bridgeMiss: "", /* 关键桥缺失时的说明（storeRequest / appsExportZip …） */
+  bridgeMiss: "", /* 关键桥缺失时的说明（storeRequest / appsReadZipBase64 …） */
   online: null, /* {known, exists, mine, id, latestVersion, versions:[], item} */
   quota: null, /* {apps, bytes, at, error, limitBytes, appsLimit, usedBytes} —— 上限取服务端回执，拿不到用默认 */
   /* 这次见到过的「云端已有这张图」内容指纹（sha256 → 1）：同一张图第二次提交只发 { sha } 引用。
@@ -150,7 +153,8 @@ const PUB = {
   aiDone: false,
   busy: false,
   /* 上传这一轮的临时缓存（只活在本窗内，关窗即丢；本轮需求：失败重试不必重来）：
-     packRetry     = 已打好的 zip + 读回的 base64（打包要读全目录并逐文件 deflate，大应用几十秒）；
+     packRetry     = **那一趟**已打好的包（base64 + sha256 + 排除清单；打包要读全目录并逐文件
+                     deflate，大应用几十秒）；
      shotPrepRetry = 每张截图压缩后的结果与内容指纹（压 8 张 2560 长边 + 逐张 sha256 是最慢的一段）；
      roundId       = 这一轮的编号：变了就整体重来，绝不跨轮串味；
      retryReady    = 上一轮失败过 → 页脚给「重试上传」（不重打包、不重压图）。 */
@@ -158,6 +162,11 @@ const PUB = {
   shotPrepRetry: null,
   roundId: 0,
   retryReady: false,
+  /* 这一趟打包排掉的开发期产物（本轮需求 · 可核对）：清单 / 条数 / warnings 都由打包实现回执给出
+     （与这一趟 zip 同一份算法），上架成功后画在结果块里，作者能自己核对哪些开发文件没上去。 */
+  excluded: [],
+  excludedCount: 0,
+  warnings: [],
   shotsLocal: null, /* 最近一次本机截图缓存的写入回执（{saved,total,bytes}，仅供自查） */
   note: "", /* 页脚状态文字（上传进度 / 成功提示） */
   showNote: false, /* true = 页脚钉住上面那条结果（上传成功），直到用户改动表单或点「再传一版」 */
@@ -679,8 +688,7 @@ function pubCheckBridges() {
   const api = window.api || {};
   const need = [
     ["storeRequest", "上传接口"],
-    ["appsExportZip", "应用打包"],
-    ["appsReadZipBase64", "应用包读回 base64"],
+    ["appsReadZipBase64", "应用打包（一趟：base64 + sha256）"],
   ];
   const miss = need.filter(([k]) => typeof api[k] !== "function").map(([, label]) => label);
   PUB.bridgeMiss = miss.length ? miss.join(" / ") : "";
@@ -888,6 +896,10 @@ async function openAppPublish(appId) {
   PUB.aiDone = false;
   PUB.busy = false;
   PUB.note = "";
+  /* 上一窗那一趟打包的排除清单不能留到这一窗（结果块属于上一次上架；没重新打包前不许显示旧清单） */
+  PUB.excluded = [];
+  PUB.excludedCount = 0;
+  PUB.warnings = [];
   PUB.shotBusy = false;
   PUB.dom = Object.create(null);
   PUB.form = {
@@ -904,7 +916,7 @@ async function openAppPublish(appId) {
   /* 应用 id：默认锁定，锁定值 = 留痕里的云端 id（有上架留痕时）否则本机应用 id；
      本机目录名另存一份，两者不同时界面明说（见 pubIdEnsure / pubPaintId）。 */
   pubIdEnsure(id, app);
-  /* 关键桥探测（缺 storeRequest / appsExportZip / appsReadZipBase64 时页脚直接说清楚，别等点了才炸） */
+  /* 关键桥探测（缺 storeRequest / appsReadZipBase64 时页脚直接说清楚，别等点了才炸） */
   pubCheckBridges();
 
   /* 标题口径（本轮需求）：上架统一叫「上架」—— 窗标题固定写「上架应用」，
@@ -1704,6 +1716,29 @@ function pubCloudShotsOf(item, stay, local) {
     });
   }
   return out;
+}
+
+/* 这一张截图**云端已经有了**吗？（纯函数 · 不碰 DOM / 不碰 PUB —— 回归真跑它，见
+   test/smoke-app-publish.js 的 4.4。）
+   判据是 pubCloudShotsOf 打上去的两个来源标记，二者都表示「云端那份图还在」：
+     · from:"cloud" = 从云端目录带出来，本机只有内容指纹（sha）、没有字节；
+     · from:"local" = 从云端带出来，本机截图缓存里还留着当初上传的那一份字节。
+   为什么要单独一个纯函数：这是「更新一版时要不要再传这张图的字节 / 要不要因为读不到它
+   把整次上传拦下来」的唯一判据 —— 用户报的那句「读取第 1 张截图失败：请改用「图标」…或
+   重新拍一次窗口」，根因就是第一张截图只有云端那一份、本机没有字节。
+   兜底再认一次 url + sha（老路径 / 手工构造的条目也能认出来）：本机新加的图两样都没有。 */
+function pubShotCloudKnown(shot) {
+  const s = shot && typeof shot === "object" ? shot : null;
+  if (!s) return false;
+  if (s.from === "cloud" || s.from === "local") return true;
+  return !!(pubStr(s.sha) && pubStr(s.url));
+}
+/* 云端这条条目**当前有没有图标**（服务端下发的 icon 相对地址，空串 = 没有）：
+   追加一版时「不带 iconBase64」就等于不动它（store-saas/server.mjs 的 POST /versions），
+   所以只要云端已经有图标，就不必为了「第 1 张截图当图标」再推一遍图标字节。 */
+function pubCloudIconRel() {
+  const it = PUB.online && PUB.online.item ? PUB.online.item : null;
+  return pubStr(it && it.icon);
 }
 
 /* 本机那份截图缓存（主进程 <数据目录>/shots-cache/ + store-shots.json 索引）：
@@ -2897,7 +2932,7 @@ async function pubShotWindow() {
     }
     return false;
   }
-  const ok = pubAddShot({
+  const item = {
     key: "w" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     path: pubStr(r.path),
     dataUrl: "",
@@ -2906,13 +2941,20 @@ async function pubShotWindow() {
     w: Number(r.width) || 0,
     h: Number(r.height) || 0,
     from: "window",
-  });
-  if (ok) {
-    pubShotStatus(
-      pubT("已加入第 ") + PUB.shots.length + pubT(" 张（第 1 张是封面）。"),
-    );
+  };
+  const ok = pubAddShot(item);
+  if (!ok) return false;
+  /* 拍下来的字节**当场读进内存**（本轮需求：截图要留住）——
+     captures/ 是缓存类目录，被清掉就只剩一个读不出来的路径（见 pubShotAbsorbBytes）。 */
+  if (await pubShotAbsorbBytes(item)) {
+    pubPaintShots(); /* 有了 dataUrl：截图条立刻出预览 */
+    /* 读回来时这一张已经被删掉 / 换过顺序了？按 key 找回它现在的位置 */
+    const at = PUB.shots.indexOf(item);
+    if (at >= 0) pubShotStatus(pubT("已加入第 ") + (at + 1) + pubT(" 张（第 1 张是封面）。"));
+    return true;
   }
-  return ok;
+  pubShotStatus(pubT("已加入第 ") + PUB.shots.length + pubT(" 张（第 1 张是封面）。"));
+  return true;
 }
 /* 「开窗自动启动 + 自动拍第 1 张」（pubAutoShot / PUB.autoShotDone）本轮已按用户口径**整条撤掉**：
    开窗不再启动应用、不再拍照；只有点「拍应用窗口」才启动（窗口没开或最小化时）并拍。 */
@@ -2929,6 +2971,27 @@ async function pubShotBase64(shot) {
     } catch (_) {}
   }
   return "";
+}
+/* 把一张**刚拍下来**的本机截图读进内存（本轮需求：截图要留住）。
+   为什么必须做：拍窗口的图落在 <数据目录>/captures/，而那个目录在「设置 · 存储占用与清理」里
+   属于**缓存**类（storage-clean.js 的 CACHE_SUBDIRS），用户点一下「清空缓存」就没了 ——
+   只留路径的话，这张图到提交那一刻就变成「读不出来」（用户报的「截图好像丢了」）。
+   读回 dataUrl 之后：① 清缓存也不影响这一轮上架；② 截图条立刻有预览，不必等读盘。
+   失败静默（退回「只有路径」的老行为 —— 文件还在时照样能读）。 */
+async function pubShotAbsorbBytes(shot) {
+  if (!shot || shot.dataUrl || !pubStr(shot.path)) return false;
+  const api = window.api || {};
+  if (typeof api.assetReadDataUrl !== "function") return false;
+  try {
+    const r = await api.assetReadDataUrl(shot.path);
+    const u = pubStr(r && r.dataUrl);
+    if (!u) return false;
+    shot.dataUrl = u;
+    if (!Number(shot.bytes)) shot.bytes = pubDataUrlBytes(u);
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /* ───────────────── AI 生成元信息 ───────────────── */
@@ -3271,20 +3334,28 @@ async function pubUpload() {
   }
   const zipSig = PUB.user && PUB.user.id ? pubStr(PUB.appId) : pubStr(PUB.appId);
   pubSetNote(pubT("上传中…（① 正在打包应用）"));
+  /* **一趟打包**（本轮需求 · 用户报的 bug 的根因就在旧实现的「两趟」上）：
+     上架链路只打一份包 —— appsReadZipBase64 现打现回：上架口径（forUpload:true，本机存档
+     storage/ 不入包）+ 同一份 buffer 的 base64 与 sha256。旧实现先调 appsExportZip 打一份
+     **默认口径**的包（保留 storage/），再调它打一份上架口径的包，然后比对两份 sha256 ——
+     两趟的文件集必然不同（开发中的应用几乎都有 storage/），于是每次上架都被拦下并报
+     「应用包校验失败：sha256 不一致，未提交」；那道闸、那趟多余的包与 appsExportZip 桥
+     一并下线（用户口径：从本地从零上传，没有必要为它留一道校验闸）。 */
   let pack = null;
-  /* 这一轮已经打好包、上次只是没传上去（超时 / 网络断）→ **直接复用那份 zip**，
+  /* 这一轮已经打好包、上次只是没传上去（超时 / 网络断）→ **直接复用那一趟包**，
      不再重打一遍（打包要读全目录并逐文件 deflate，大应用上是几秒到几十秒的等待）。 */
-  if (PUB.packRetry && PUB.packRetry.sig === zipSig && PUB.packRetry.pack && PUB.packRetry.read) {
+  if (PUB.packRetry && PUB.packRetry.sig === zipSig && PUB.packRetry.pack) {
+    /* 沿用上一趟那一份包（回执里带着它的 base64、sha256 与排除清单，不必再存第二份） */
     pack = PUB.packRetry.pack;
     pubSetNote(pubT("上传中…（① 打包：沿用上一次已打好的包）"));
   } else {
     try {
-      pack = await api.appsExportZip(PUB.appId);
+      pack = await api.appsReadZipBase64(PUB.appId);
     } catch (err) {
       pack = { ok: false, error: pubStr((err && err.message) || err) };
     }
   }
-  if (!pack || pack.ok === false) {
+  if (!pack || pack.ok === false || !pack.base64) {
     PUB.busy = false;
     const code = pubStr(pack && pack.error).split(":")[0].trim();
     const EXTRA = {
@@ -3292,55 +3363,73 @@ async function pubUpload() {
       missing_entry: "应用缺少入口页：这个应用目录里没有 app.json 声明的入口页",
       /* need_root 已随「不再要求手选应用根目录」（本轮需求）下线：主进程不再回这个码 */
       bad_id: "应用 id 不合法",
+      pack_failed: "打包没成功：应用目录可能读不到或入口页缺失",
     };
     const why = EXTRA[code] || pubStr((pack && pack.error) || pubT("未知错误"));
     pubSetNote(pubT("打包失败：") + why);
     pubToast(pubT("打包失败：") + why, "err");
     return;
   }
-  pubSetNote(pubT("上传中…（② 正在读回应用包）"));
-  let read = null;
-  if (PUB.packRetry && PUB.packRetry.sig === zipSig && PUB.packRetry.pack === pack && PUB.packRetry.read) {
-    read = PUB.packRetry.read;
-  } else {
-    try {
-      read = await api.appsReadZipBase64(PUB.appId);
-    } catch (err) {
-      read = { ok: false, error: pubStr((err && err.message) || err) };
-    }
-  }
-  if (!read || read.ok === false || !read.base64) {
-    PUB.busy = false;
-    pubSetNote(pubT("读回应用包失败：") + pubStr((read && read.error) || pubT("未知错误")));
-    return;
-  }
-  /* 记下这一轮打好的包与读回的 base64：万一后面上传失败（超时 / 断网 / 服务端 5xx），
-     用户点「重试」时直接用它们重发，不再重打包、不再重读 —— 见 pubUploadRetryLast。 */
-  PUB.packRetry = { sig: zipSig, appId: pubStr(PUB.appId), pack: pack, read: read, at: Date.now() };
-  if (pack.sha256 && read.sha256 && pubStr(pack.sha256) !== pubStr(read.sha256)) {
-    PUB.busy = false;
-    pubSetNote(pubT("校验失败：打包与读回的应用包 sha256 不一致，已停止上传（请重试一次）"));
-    pubToast(pubT("应用包校验失败：sha256 不一致，未提交"), "err");
-    return;
-  }
-  /* 图标（封面，一张）：显式图标优先，否则第 1 张截图（**压到 512 长边 + ≤500KB**）。 */
+  /* 记下这一趟打好的包：万一后面上传失败（超时 / 断网 / 服务端 5xx），页脚会给「重试上传」
+     （retryReady），点它就是拿这一份包重发 —— 不再重打包、也不再读第二趟。 */
+  PUB.packRetry = {
+    sig: zipSig,
+    appId: pubStr(PUB.appId),
+    pack: pack,
+    /* 这一趟的排除清单一起存：重试（沿用这份包）时照旧能如实显示「已排除 N 个开发文件」 */
+    excluded: Array.isArray(pack.excluded) ? pack.excluded.slice() : [],
+    excludedCount: Number(pack.excludedCount) || 0,
+    warnings: Array.isArray(pack.warnings) ? pack.warnings.slice() : [],
+    at: Date.now(),
+  };
+  /* 这一趟打包排掉了哪些开发期产物（本轮需求）：清单与条数取**打包实现的原话**（同一趟 zip 算的，
+     界面不自己猜），上传成功后在结果块里显示，作者能自己核对。 */
+  PUB.excluded = Array.isArray(pack.excluded) ? pack.excluded.slice() : [];
+  PUB.excludedCount = Number(pack.excludedCount) || PUB.excluded.length;
+  PUB.warnings = Array.isArray(pack.warnings) ? pack.warnings.slice() : [];
+  /* 入口页被规则碰到时打包侧会保留它并报一条 warning —— 照实说出来（否则作者会以为规则没生效）。 */
+  if (PUB.warnings.length) pubToast(pubStr(PUB.warnings[0]), "warn");
+  /* 图标（封面，一张）：显式图标优先，否则第 1 张截图（**压到 512 长边 + ≤500KB**）。
+     第 1 张截图这条路上有两条口径（本轮需求 · 都是用户报的那个 bug 的根因）：
+       ① **云端已经有这张图**（更新一版时从云端带出来的那张，见 pubShotsPrefillCloud /
+          pubShotCloudKnown）→ 这一轮既不重传它的字节，也**绝不**因为「本机读不到这张图」
+          把整次上传拦下来。旧行为是这里直接 pubSetNote 报「读取第 1 张截图失败：请改用
+          「图标」选一张本机图片，或重新拍一次窗口」并中止 —— 更新一版的人一脸懵：
+          截图明明在云端，怎么就「读不到」了。
+       ② 云端**已经有图标**、而第 1 张又是云端那份 → 一个字节都不发：追加一版不带
+          iconBase64 就是「不动它」（store-saas/server.mjs 的 POST /versions），而封面本来就
+          取自截图第 1 张 —— 什么都不会丢，也没有任何东西需要重新上传。
+     云端没有图标、而本机恰好有这张图的字节（截图缓存里那一份）时，照旧补一次图标 ——
+     那是「让这张卡有个小徽标」，只会在第一次发生（之后云端就有了）。
+     真正读不出来（本机新加的图被移走 / 缓存被清）就**不在这里报错**：下面那趟逐张截图会
+     按第几张指名报「第 N 张截图读不出来（文件可能已被移走）」，比这里的一句笼统话准确。 */
   let iconBase64 = "";
   if (plan.kind === "icon") {
     iconBase64 = pubStripDataUrl(PUB.form.icon.dataUrl);
   } else if (plan.kind === "shot") {
-    const rawIcon = await pubShotBase64(PUB.shots[0]);
-    if (!rawIcon) {
-      pubSetNote(pubT("读取第 1 张截图失败：请改用「图标」选一张本机图片，或重新拍一次窗口"));
-      PUB.busy = false;
-      return;
+    const firstShot = PUB.shots[0];
+    const inCloud = pubShotCloudKnown(firstShot);
+    /* 云端已有这张图 + 云端已有图标 → 这一轮图标整个跳过（不重传、也不报错） */
+    const reuseCloudIcon = inCloud && !!pubCloudIconRel();
+    if (!reuseCloudIcon) {
+      const rawIcon = await pubShotBase64(firstShot);
+      if (rawIcon) {
+        const iconShot = await pubPrepareShot("data:image/*;base64," + rawIcon, { kind: "icon", maxBytes: PUB_ICON_MAX_BYTES });
+        if (!iconShot || iconShot.tooLarge || !iconShot.dataUrl) {
+          if (!inCloud) {
+            pubSetNote(pubT("第 1 张截图当图标压不到 500KB：请用「图标」单独选一张小图，或换一张更简单的封面截图。"));
+            PUB.busy = false;
+            return;
+          }
+          /* 云端那一份还在（封面照旧取自截图第 1 张）：这一轮不发图标，别把更新拦下来 */
+        } else {
+          iconBase64 = pubStripDataUrl(iconShot.dataUrl);
+        }
+      }
+      /* 本机拿不到这张图的字节（截图缓存被清 / 文件被移走）：云端已经有它就什么都不用发
+         （封面照旧取自云端那张）；云端也没有它也不在这里报错 —— 下面逐张截图那一趟会按
+         「第 N 张截图读不出来（文件可能已被移走）」指名报出来，比这里笼统一句准确。 */
     }
-    const iconShot = await pubPrepareShot("data:image/*;base64," + rawIcon, { kind: "icon", maxBytes: PUB_ICON_MAX_BYTES });
-    if (!iconShot || iconShot.tooLarge || !iconShot.dataUrl) {
-      pubSetNote(pubT("第 1 张截图当图标压不到 500KB：请用「图标」单独选一张小图，或换一张更简单的封面截图。"));
-      PUB.busy = false;
-      return;
-    }
-    iconBase64 = pubStripDataUrl(iconShot.dataUrl);
   }
   /* 上架截图（8 张全部上传）：逐张**先压一道**（长边 2560 / 单张 ≤5MB，见 pubPrepareShot），
      算出内容指纹（sha256）后判断「云端是不是已经有这张图」：
@@ -3450,7 +3539,7 @@ async function pubUpload() {
   const append = !!(online.exists && myBranch);
   const body = {
     acceptDeclaration: true,
-    zipBase64: String(read.base64),
+    zipBase64: String(pack.base64),
     version: v.payload.version,
     entry: v.payload.entry,
     title: v.payload.title,
@@ -3481,7 +3570,7 @@ async function pubUpload() {
   const sentBytes = shotsBase64.filter((x) => typeof x === "string").length;
   const refBytes = shotsBase64.length - sentBytes;
   pubSetNote(
-    pubT("上传中…（③ 正在上传到云端，请勿关闭窗口）") +
+    pubT("上传中…（② 正在上传到云端，请勿关闭窗口）") +
       (shotsBase64.length
         ? pubT("· 截图 ") + shotsBase64.length + pubT(" 张") +
           (refBytes ? pubT("（其中 ") + refBytes + pubT(" 张云端已有，只发引用）") : "")
@@ -3712,6 +3801,16 @@ function pubShowResult(data, mode) {
     row.appendChild(pubEl("span", "pub-res-v", v || "—"));
     wrap.appendChild(row);
   }
+  /* 「已排除 N 个开发文件」（本轮需求 · 可核对）：打包实现把排除清单原样回执（pack.excluded /
+     pack.excludedCount，与这一趟 zip 同一份算法），这里只负责画出来 —— 作者能自己核对
+     「哪些开发期产物没上去」，不必猜文件为什么没随包。默认收起，点一下展开清单。 */
+  const exCount = Number(PUB.excludedCount) || 0;
+  if (exCount > 0) {
+    const row = pubEl("div", "pub-res-row");
+    row.appendChild(pubEl("span", "pub-res-k", pubT("开发文件")));
+    row.appendChild(pubDevExcludedCell());
+    wrap.appendChild(row);
+  }
   /* 校验值收进「ⓘ 复制校验值」小按钮（长哈希对普通用户没有意义；本轮：点一下直接进剪贴板，不再开小窗） */
   const shaVal = pubStr(cat.sha256 || item.sha256);
   if (shaVal) {
@@ -3731,6 +3830,39 @@ function pubShowResult(data, mode) {
     ),
   );
 }
+/* 排除清单单元格（只画，不算）：一行小字 + 「展开清单」。
+   条数按真值写（excluded 清单本身在打包侧封顶 200 条，超了如实说「只列前 N 条」）。 */
+function pubDevExcludedCell() {
+  const box = pubEl("span", "pub-res-v pub-excl");
+  const count = Number(PUB.excludedCount) || 0;
+  const list = Array.isArray(PUB.excluded) ? PUB.excluded : [];
+  const head = pubEl("span", "pub-excl-head");
+  head.appendChild(pubEl("span", "pub-excl-t", pubT("已排除 ") + count + pubT(" 个开发文件")));
+  const btn = pubBtn(pubT("展开清单"), () => {
+    const details = box.querySelector(".pub-excl-list");
+    if (!details) return;
+    details.hidden = !details.hidden;
+    btn.textContent = details.hidden ? pubT("展开清单") : pubT("收起清单");
+  }, "mini");
+  btn.title = pubT("这些文件只存在于开发过程中（AI 协作笔记 / 开发脚本与探针 / 临时残留 / 画布与长任务图 / 粘贴图临时目录 / 本机调试数据），打包时不随包发给别人；开发目录里的原件一个都不动。");
+  head.appendChild(btn);
+  box.appendChild(head);
+  box.appendChild(
+    pubEl("div", "pub-hint", pubT("开发期产物不随包上传（开发目录里的原件一个都不动）；应用自己的文件照旧随包。")),
+  );
+  const details = pubEl("div", "pub-excl-list");
+  details.hidden = true;
+  if (!list.length) {
+    details.appendChild(pubEl("div", "pub-excl-row", pubT("（清单过长，这里不列）")));
+  } else {
+    for (const rel of list) details.appendChild(pubEl("div", "pub-excl-row", pubStr(rel)));
+  }
+  if (count > list.length) {
+    details.appendChild(pubEl("div", "pub-excl-row", pubT("…只列前 ") + list.length + pubT(" 条（共 ") + count + pubT(" 条）")));
+  }
+  box.appendChild(details);
+  return box;
+}
 /* 「再传一版」：清结果块、按新的线上最新版重算默认版本号，其余表单内容留着 */
 function pubPrepareNext() {
   if (PUB.dom.result) {
@@ -3748,6 +3880,10 @@ function pubPrepareNext() {
   if (PUB.dom.noteIn) PUB.dom.noteIn.value = "";
   PUB.note = "";
   PUB.showNote = false;
+  /* 结果块清掉了 → 上一趟的排除清单也一起清（下次上传会重新打包并填新的一份） */
+  PUB.excluded = [];
+  PUB.excludedCount = 0;
+  PUB.warnings = [];
   pubPaintFoot();
   try {
     if (PUB.dom.root && PUB.dom.root.scrollIntoView) PUB.dom.root.scrollIntoView({ block: "start" });

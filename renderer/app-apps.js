@@ -37,8 +37,9 @@
  *   appsDataOpen(id)（在资源管理器里打开该应用的数据目录，见下方「数据目录」一节）/
  *   onAppsProgress(cb) / onAppsWindowChanged(cb)
  * 渲染层不直连网络、不拼应用目录路径、不自己做 zip / sha256 —— 那些只留主进程。
- * （appsExportZip / appsProbeChanges 仍在 preload 白名单里，走它们的是上架流程
- *   renderer/app-publish.js 与主进程 apps-store.js；本页本轮不再有这两个入口。）
+ * （appsReadZipBase64 / appsProbeChanges 仍在 preload 白名单里，走它们的是上架流程
+ *   renderer/app-publish.js 与主进程 apps-store.js；本页本轮不再有这两个入口。
+ *   appsExportZip 已随「上架只打一趟包」下线，preload 里没有它了。）
  *
  * 顶栏入口 #btnApps 对**所有已登录账号**露出（原白名单常量已去掉）：登录态唯一来源
  * = window.MTNodeAuth.state()（统一账户模块 app-auth.js）；本文件按调用期探测订阅，

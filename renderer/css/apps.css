@@ -1998,6 +1998,7 @@ body.theme-light .apps-dev-more-pop {
 
 .apps-dev-url {
   min-width: 0;
+  flex: 1 1 auto;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--muted);
@@ -2259,6 +2260,17 @@ body.theme-light .apps-dev-more-pop {
 
 .apps-dev-bridgeclose[hidden] {
   display: none !important;
+}
+
+/* 预览列头右端那一枚「📂 应用文件夹」（本轮需求）：与「关掉独立窗口」同处右端 ——
+   URL 是唯一的弹性项（flex:1）负责把这两枚推到右边；自己只占内容宽，不参与伸缩。
+   固定条高下不让它把标题条撑高（内边距 / 字号都收住）。 */
+.apps-dev-folderbtn {
+  flex: none;
+  margin-left: 6px;
+  padding: 0 6px;
+  line-height: 18px;
+  white-space: nowrap;
 }
 
 /* 右栏：会话正文（消息壳 / #agentList / 队列 / 计划 / 待办都是搬进来的原节点）。

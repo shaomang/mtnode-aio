@@ -558,6 +558,41 @@
   word-break: break-all;
 }
 
+/* 「已排除 N 个开发文件」+ 可展开清单（本轮需求 · 打包排掉的中途产物，见 apps-store.js 的
+   APP_PACK_EXCLUDE）。这一格是 flex 列：第一行小字 + 展开按钮，清单在下面整宽铺开。 */
+.pub-excl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pub-excl-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pub-excl-t {
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.pub-excl-list {
+  max-height: 168px;
+  overflow: auto;
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  padding: 4px 6px;
+  background: var(--code);
+}
+
+.pub-excl-row {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+  word-break: break-all;
+}
+
 /* ── 页脚（#ovFoot 里的状态行 + 取消 / 上传） ── */
 .pub-foot-note {
   margin-right: auto;

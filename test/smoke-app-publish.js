@@ -239,7 +239,7 @@ async function main() {
   await partMain(store);
   partContract();
   partRenderer();
-  partPublishWindow();
+  await partPublishWindow(); /* 4.5 里有 await（pubShotAbsorbBytes 真跑），所以它自己也成了 async */
   await partE2E(store);
   await partVersionsDefault(store);
 
@@ -287,6 +287,40 @@ async function partMain(store) {
   ok(!/\.mtnodes/.test(buf.toString("latin1").slice(0, 2000)) || true, "包内容读得到（不含画布由 exportZip 保证）");
   const missing = store.readPackBase64("no-such-app");
   ok(missing && missing.ok === false, "不在本机的应用：readPackBase64 如实失败（不造空包）");
+
+  /* 1.4b 上架只打**一趟**包（本轮需求 · 用户报的「应用包校验失败：sha256 不一致，未提交」）：
+     旧实现先 exportZip 打一份**默认口径**的包（保留 storage/）、再 readPackBase64 打一份**上架口径**
+     的包（剔 storage/），然后比对两份 sha256 —— 开发中的应用几乎都有 storage/，两趟文件集必然
+     不同 ⇒ 每次上架都被那道闸拦下。这里真造一个带 storage/ 的开发中应用，把三件事钉死：
+       ① 两个口径的包内清单确实不同（storage/ 只在默认口径里）；
+       ② 因此那两趟 sha256 必然不一致（这就是旧 bug 的复现）；
+       ③ 上架那一趟（readPackBase64）自洽：sha256 == base64 解码后自身的哈希。 */
+  const devDir = path.join(DATA, "apps-dev", "dev-pack-app");
+  fs.mkdirSync(path.join(devDir, "storage"), { recursive: true });
+  fs.writeFileSync(
+    path.join(devDir, "app.json"),
+    JSON.stringify({ name: "带存档的开发应用", id: "dev-pack-app", version: "1.0.0", entry: "index.html", dev: true }, null, 2),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(devDir, "index.html"), "<!doctype html><title>dev</title>", "utf8");
+  fs.writeFileSync(path.join(devDir, "storage", "build.mjs"), "// 本机存档：上架包剔、本机导出留\n", "utf8");
+  const outEntries = store.packEntriesOf(devDir, "dev-pack-app", {}).entries;
+  const upEntries = store.packEntriesOf(devDir, "dev-pack-app", { forUpload: true }).entries;
+  const namesOut = outEntries.map((e) => e.name);
+  const namesUp = upEntries.map((e) => e.name);
+  ok(namesOut.some((n) => /^storage\//.test(n)), "默认口径（本机导出）的包内清单带 storage/（换机搬家连存档一起走）");
+  ok(!namesUp.some((n) => /^storage\//.test(n)), "上架口径的包内清单没有 storage/（本机存档不上云）");
+  ok(sha(store.zipBuffer(outEntries)) !== sha(store.zipBuffer(upEntries)), "同一次上架的两个口径 sha256 必然不同（旧实现被拦下的根因，已成断言）");
+  const one = store.readPackBase64("dev-pack-app");
+  ok(one && one.ok && sha(Buffer.from(one.base64, "base64")) === one.sha256, "上架那一趟包自洽：sha256 == base64 解码后自身（同一份 buffer，不会互相打架）");
+  ok(one && one.ok && !/storage\//.test(Buffer.from(one.base64, "base64").toString("latin1")), "真要上传的那份包字节里没有 storage/（口径落到实际载荷上）");
+  const repOut = store.exportZip("dev-pack-app");
+  ok(repOut && repOut.ok && repOut.sha256 === sha(store.zipBuffer(outEntries)), "默认口径的包与同一清单现算的字节一致（同一口径 ⇒ 同字节）");
+  /* 1.4c 打包字节可复现（本轮需求 · zipBuffer 固定时间戳）：同一份目录、同一个口径，跨 2 秒边界
+     再打一次也必须字节相同 —— 否则服务端「与线上内容一模一样」的 unchanged 判定永远不成立。 */
+  await new Promise((r) => setTimeout(r, 2100));
+  const repUp = store.readPackBase64("dev-pack-app");
+  ok(repUp && repUp.ok && repUp.sha256 === one.sha256, "上架口径跨 2 秒边界再打一次：sha256 不变（旧实现会换 sha，服务端 unchanged 判定永远不成立）");
 
   /* 1.5 拍应用窗口：窗口没开要说清、开了就把 PNG 落进数据目录的 captures/ */
   const noWin = await store.shotAppWindow("ver-app");
@@ -484,7 +518,7 @@ function runPubCloudBox(pub) {
     "\nreturn { pubCloudShotsOf: pubCloudShotsOf, setCat: (c) => { APPS_ST.cat = c; } };";
   return new Function(code)();
 }
-function partPublishWindow() {
+async function partPublishWindow() {
   console.log("[4] 上架窗 renderer/app-publish.js + 开发页「上架」入口");
   if (!exists("renderer/app-publish.js")) {
     ok(false, "renderer/app-publish.js 存在（上架窗模块）");
@@ -551,17 +585,25 @@ function partPublishWindow() {
     ok(miss.length === 0, "新增的拼接词条都在 i18n 里（缺：" + JSON.stringify(miss) + "）");
   }
   ok(/appsReadZipBase64|appsShotWindow/.test(pub), "用主进程两个新桥（打包读回 base64 / 拍应用窗口）");
+  /* 本轮需求 · 一趟打包：上架窗不再调 appsExportZip，也再没有「打包 → 读回」的 sha256 比对闸
+     （旧实现两趟口径不同 ⇒ 每次上架都报「应用包校验失败：sha256 不一致，未提交」）。 */
+  ok(pub.indexOf("api.appsExportZip") < 0 && pub.indexOf("api.appsReadZipBase64") >= 0, "上架窗只打一趟包：走 appsReadZipBase64，不再调 appsExportZip");
+  ok(pub.indexOf("已停止上传") < 0 && pub.indexOf("读回应用包失败") < 0, "上架窗没有「打包与读回 sha256 不一致」的中止路径与它的两条文案");
+  ok(/PUB\.packRetry\s*=\s*\{\s*\n\s*sig[\s\S]{0,400}?pack:\s*pack,/.test(pub) && !/read:\s*read,/.test(pub), "重试缓存只存那一趟包（不再缓存 pack + read 两份）");
   ok(/storeRequest/.test(pub), "上传走 storeRequest（主进程统一带登录 token）");
   ok(!/ev\.target === host|document\.addEventListener\("click"/.test(pub), "浮层没有「点外部关闭」（AGENTS.md 持久化纪律）");
   const pre = read("preload.js");
   ok(/appsShotWindow/.test(pre) && /apps:\/\/|apps:shotWindow/.test(pre), "preload.js 暴露 appsShotWindow");
   ok(/appsReadZipBase64/.test(pre) && /apps:readZipBase64/.test(pre), "preload.js 暴露 appsReadZipBase64");
+  ok(!/^\s*appsExportZip:/m.test(pre) && pre.indexOf("invoke('apps:exportZip'") < 0, "preload.js 里没有 appsExportZip 桥（随一趟打包下线）");
   ok(/appsInstall: \(id, mode, version, ownerId\)/.test(pre), "preload.js 的 appsInstall 收第四参 ownerId（分支，§十）");
   const main = read("main.js");
   ok(/timeoutMs/.test(main), "storeRequest 支持 timeoutMs（大包上传不按 120s 掐断）");
   const st = read("apps-store.js");
   ok(/ipcMain\.handle\("apps:shotWindow"/.test(st), "apps-store.js 注册 apps:shotWindow");
   ok(/ipcMain\.handle\("apps:readZipBase64"/.test(st), "apps-store.js 注册 apps:readZipBase64");
+  ok(!/ipcMain\.handle\("apps:exportZip"/.test(st), "apps-store.js 不再注册 apps:exportZip（没有死桥）");
+  ok(/ZIP_FIXED_STAMP/.test(st) && st.indexOf("dosStamp") < 0, "zipBuffer 走固定时间戳（同内容 ⇒ 同字节），不再写打包那一刻");
   const html = read("renderer/index.html");
   ok(/app-publish\.js/.test(html), "index.html 挂载 app-publish.js");
   ok(/app-publish\.css/.test(html), "index.html 挂载 app-publish.css");
@@ -674,6 +716,97 @@ function partPublishWindow() {
     ok(
       /s\.dataUrl \? s\.dataUrl : s\.url \? s\.url : pubFileUrl\(s\.path\)/.test(pub),
       "截图条预览认 url（云端带出来的那张也有预览）",
+    );
+  }
+
+  /* 4.5 「第 1 张截图当图标」这条路（本轮用户需求 · 报的就是这条）：
+     已上架的应用再更新一版时，第 1 张截图往往只有**云端那一份**（本机缓存里没有它的字节）——
+     旧代码在这里硬拦：「读取第 1 张截图失败：请改用「图标」选一张本机图片，或重新拍一次窗口」。
+     新口径两条：① 云端已经有这张图 → 不重传、也绝不因此把上传拦下来（封面照旧取自云端那张）；
+     ② 云端已经有图标 → 追加一版连图标字节都不发（不带 iconBase64 = 服务端不动它）。
+     判据函数 pubShotCloudKnown 真跑；提交那一趟要 DOM / 桥起不来，用源码级钉子防改回去。 */
+  {
+    const box3 = runPubFnBox(pub, ["pubStr", "pubShotCloudKnown"]);
+    const sha64 = "aa" + "a".repeat(62);
+    ok(
+      box3.pubShotCloudKnown({ from: "cloud", url: "https://s.example/x/shots/1", sha: sha64 }) === true,
+      "从云端带出来、本机没有字节的那张（from:cloud）→ 认作「云端已有」",
+    );
+    ok(
+      box3.pubShotCloudKnown({ from: "local", dataUrl: "data:image/png;base64,QUJD", sha: sha64, url: "u" }) === true,
+      "从云端带出来、本机缓存里还有字节的那张（from:local）→ 同样「云端已有」",
+    );
+    ok(
+      box3.pubShotCloudKnown({ from: "file", dataUrl: "data:image/png;base64,QUJD", bytes: 3 }) === false,
+      "本机新选进来的图（from:file，没有 url / sha）→ 不是云端已有（照旧压成图标上传）",
+    );
+    ok(
+      box3.pubShotCloudKnown({ from: "window", path: "C:/data/captures/app-x.png" }) === false,
+      "本机刚拍的窗口图（from:window）→ 不是云端已有",
+    );
+    ok(
+      box3.pubShotCloudKnown({ url: "https://s.example/x.png", sha: sha64 }) === true,
+      "没有 from 标记但有 url + sha（老条目）→ 也认作云端已有",
+    );
+    ok(
+      box3.pubShotCloudKnown(null) === false && box3.pubShotCloudKnown("x") === false && box3.pubShotCloudKnown({}) === false,
+      "空值 / 非对象 / 空对象 → false（不抛）",
+    );
+
+    ok(
+      /const inCloud = pubShotCloudKnown\(firstShot\);/.test(pub) &&
+        /const reuseCloudIcon = inCloud && !!pubCloudIconRel\(\);/.test(pub),
+      "图标那一段按 pubShotCloudKnown + pubCloudIconRel 决定发不发（源码级钉子）",
+    );
+    ok(
+      !/pubT\("读取第 1 张截图失败/.test(pub),
+      "旧那句「读取第 1 张截图失败：请改用「图标」…」整条撤掉（更新一版不再被它拦下）",
+    );
+    ok(
+      /pubSetNote\(pubT\("第 1 张截图当图标压不到 500KB/.test(pub) && /if \(!inCloud\) \{/.test(pub),
+      "「当图标压不到 500KB」只对**本机新加的图**报；云端已有那张不再把上传拦下来",
+    );
+    ok(
+      !/读取第 1 张截图失败/.test(read("renderer/i18n.js")),
+      "i18n 里那条死词条一起清掉（不再有调用点）",
+    );
+
+    /* 拍下来的窗口截图**当场读进内存**：captures/ 在「存储占用与清理」里属缓存类，
+       用户点一下「清空缓存」就没了 —— 只留路径的话，这张图到提交那一刻就是「读不出来」。 */
+    ok(
+      /async function pubShotAbsorbBytes\(shot\)/.test(pub) && /await pubShotAbsorbBytes\(item\)/.test(pub),
+      "拍窗口的图当场读进 dataUrl（截图要留住：captures/ 是可清理的缓存目录）",
+    );
+    const absorbSrc = () => "async " + pubSliceFn(pub, "pubShotAbsorbBytes");
+    /* 抠出来的这一只只依赖 pubStr / pubDataUrlBytes + window.api 的读图桥（真源码真跑） */
+    const absorbBox = (api) =>
+      new Function(
+        "window",
+        pubSliceFn(pub, "pubStr") +
+          "\n" +
+          pubSliceFn(pub, "pubDataUrlBytes") +
+          "\n" +
+          absorbSrc() +
+          "\nreturn { pubShotAbsorbBytes: pubShotAbsorbBytes };",
+      )({ api: api });
+    const box4 = absorbBox({ assetReadDataUrl: async () => ({ ok: true, dataUrl: "data:image/png;base64,QUJD" }) });
+    const shot = { path: "C:/data/captures/app-x.png", dataUrl: "", bytes: 0 };
+    ok(
+      (await box4.pubShotAbsorbBytes(shot)) === true && shot.dataUrl === "data:image/png;base64,QUJD" && shot.bytes === 3,
+      "pubShotAbsorbBytes 真跑：读回 dataUrl 并补上字节数（" + shot.dataUrl + " / " + shot.bytes + "B）",
+    );
+    ok((await box4.pubShotAbsorbBytes({ path: "", dataUrl: "" })) === false, "没有路径的条目 → 不动它（回 false）");
+    ok(
+      (await absorbBox({
+        assetReadDataUrl: async () => {
+          throw new Error("ENOENT");
+        },
+      }).pubShotAbsorbBytes({ path: "C:/gone.png", dataUrl: "" })) === false,
+      "文件已经不在（桥抛错）→ 安静回 false，不把上架拦下来",
+    );
+    ok(
+      (await box4.pubShotAbsorbBytes({ path: "C:/x.png", dataUrl: "data:image/png;base64,QUJD" })) === false,
+      "已经有字节的条目 → 一个字节都不重读（回 false）",
     );
   }
 }

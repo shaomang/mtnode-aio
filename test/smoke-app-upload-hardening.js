@@ -190,8 +190,8 @@ ok(/function pubPreflightSize\(shotBytes, iconBytes\)/.test(PUB), "上传前预�
 ok(/const pre = pubPreflightSize\(shotEstimate, Number\(plan\.bytes\) \|\| 0\);/.test(PUB), "打包之前就跑预检（不等压缩 / 算指纹全做完）");
 ok(/超过上架链路的上限/.test(PUB), "预检命中时给出可执行文案（删截图 / 压素材 + 上限）");
 ok(/PUB\.packRetry/.test(PUB) && /PUB\.shotPrepRetry/.test(PUB), "失败后保留「已打包 zip」与「已压缩截图」缓存");
-ok(/if \(PUB\.packRetry && PUB\.packRetry\.sig === zipSig && PUB\.packRetry\.pack && PUB\.packRetry\.read\)/.test(PUB),
-  "重试直接复用上一轮打好的包（不重打包、不重读）");
+ok(/if \(PUB\.packRetry && PUB\.packRetry\.sig === zipSig && PUB\.packRetry\.pack\)/.test(PUB),
+  "重试直接复用上一轮打好的**那一趟**包（不重打包；本轮需求后上架只有一趟包，不再有 read 那一份）");
 ok(/const cachedPrep = PUB\.shotPrepRetry && PUB\.shotPrepRetry\.round === PUB\.roundId/.test(PUB),
   "重试直接复用每张截图的压缩结果与指纹");
 ok(/function pubDropRetryCaches\(\)/.test(PUB) && /pubDropRetryCaches\(\);\n/.test(PUB.replace(/\r\n/g, "\n")),

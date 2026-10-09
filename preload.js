@@ -1012,10 +1012,11 @@ contextBridge.exposeInMainWorld('api', {
        bad_source（地址不在允许来源）等码，绝不静默降级成装最新版。 */
   appsVersions: (id) => ipcRenderer.invoke('apps:versions', { id }),
   appsRollback: (id, version) => ipcRenderer.invoke('apps:rollback', { id, version: version || '' }),
-  appsExportZip: (id) => ipcRenderer.invoke('apps:exportZip', { id }),
   /* 上架窗（renderer/app-publish.js）：拍该应用自己的窗口（回 { ok, path, bytes, width, height }）；
-     再把**现打的一份** zip 读回 base64（回 { ok, base64, sha256, bytes, version, name, path }）。
-     两者都只回回执，渲染层不碰文件系统、不自己拼路径。 */
+     再把**现打的一份** zip 读回 base64（回 { ok, base64, sha256, bytes, version, name, path, excluded }）。
+     两者都只回回执，渲染层不碰文件系统、不自己拼路径。
+     （appsExportZip 已下线：上架只打这**一趟**包 —— 同一份 buffer 既转 base64 又算 sha256，
+       不会再出现「两趟包 sha256 不一致」的中止；见 apps-store.js 的 readPackBase64。） */
   appsShotWindow: (id) => ipcRenderer.invoke('apps:shotWindow', { id }),
   appsReadZipBase64: (id) => ipcRenderer.invoke('apps:readZipBase64', { id }),
   appsProbeChanges: () => ipcRenderer.invoke('apps:probeChanges'),

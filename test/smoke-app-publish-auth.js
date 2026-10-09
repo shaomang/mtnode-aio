@@ -1,5 +1,5 @@
 "use strict";
-/* 上架窗的登录态收口 —— 真跑 renderer/app-publish.js 的 openAppPublish（纯 Node + 迷你 DOM）
+/* 上架窗的登录态收口 + 「更新一版时第 1 张截图只有云端那一份」这条路
  *   node test/smoke-app-publish-auth.js
  *
  * 这一份钉住的是一个真实故障：「已经登录，上架窗却显示『未登录：先登录再上传』」。
@@ -10,8 +10,13 @@
  * 现在判据走主进程的账户契约 window.api.authMe（401 时它会清凭据 + 广播），失败分三档：
  *   未登录（本机无凭据）/ 登录态没核到（有凭据但这次没核到，给「重试读取登录态」）/ 已登录。
  *
- * 被测对象是真源码：用 vm 在迷你 DOM 里**真跑** openAppPublish 与本窗的绘制函数，
- * 四个场景各自断言「页脚说了什么、上传按钮能不能点、动作按钮是哪一颗」。
+ * [7] 是本轮新加的另一条：**已上架的应用再更新一版**时，第 1 张截图往往只有云端那一份
+ * （本机缓存里没有它的字节）—— 旧代码在那里硬拦「读取第 1 张截图失败：请改用「图标」选一张
+ * 本机图片，或重新拍一次窗口」。现在：云端已经有这张图 → 不重传字节、也绝不拦下这一次上传。
+ *
+ * 被测对象是真源码：用 vm 在迷你 DOM 里**真跑** openAppPublish 与本窗的绘制函数 /
+ * 上传函数（pubUpload 点「上传」真跑，POST 的 body 由桩记下来给断言看），
+ * 前面几个场景各自断言「页脚说了什么、上传按钮能不能点、动作按钮是哪一颗」。
  */
 const fs = require("fs");
 const path = require("path");
@@ -207,6 +212,11 @@ function boot(opts) {
     authMeResult: o.authMeResult || { ok: true, user: { id: "u1", username: "smoke", nickname: "冒烟" } },
     authMeCalls: 0,
     storeCalls: [],
+    /* 真跑 pubUpload 用：POST 的 body 原样记下来（[7] 断言「图标 / 截图字节有没有重复上传」）
+       + 云端条目的图标（item.icon，空串 = 云端还没有图标） */
+    storePosts: [],
+    postResult: null,
+    itemIcon: String(o.itemIcon || ""),
     toasts: [],
     opened: 0,
   };
@@ -264,8 +274,14 @@ function boot(opts) {
         return r;
       },
       storeRequest: async (req) => {
-        state.storeCalls.push(String(req && req.path));
         const p = String((req && req.path) || "");
+        state.storeCalls.push(p);
+        /* POST（上架 / 追加版本、批量查存）→ 记下 body 并按 state.postResult 回（[7] 用） */
+        if (String((req && req.method) || "").toUpperCase() === "POST") {
+          state.storePosts.push({ path: p, json: (req && req.json) || null });
+          if (state.postResult) return state.postResult;
+          if (/objects\/exist/.test(p)) return { ok: true, status: 200, data: { have: [] } };
+        }
         /* 线上状态：这个 id 本机账号自己已上架过（mine）→ 页脚会算「将追加版本」；
            版本树 / 配额：够用就好（这一份测的是登录态，不是多版本） */
         if (/\/versions/.test(p)) {
@@ -276,12 +292,20 @@ function boot(opts) {
           return {
             ok: true,
             status: 200,
-            data: { item: { id: "demo-app", owner: "smoke", mine: true, latestVersion: "1.0.0", versions: [{ version: "1.0.0" }] } },
+            data: {
+              item: {
+                id: "demo-app",
+                owner: "smoke",
+                mine: true,
+                latestVersion: "1.0.0",
+                versions: [{ version: "1.0.0" }],
+                icon: state.itemIcon,
+              },
+            },
           };
         }
         return { ok: false, status: 404, data: { ok: false, code: "NOT_FOUND", error: "not found" } };
       },
-      appsExportZip: async () => ({ ok: true, sha256: "x", bytes: 1 }),
       appsReadZipBase64: async () => ({ ok: true, base64: "AA==", sha256: "x" }),
     },
     toast: (msg, kind) => state.toasts.push({ msg: String(msg), kind: String(kind || "") }),
@@ -345,6 +369,20 @@ async function openAndSettle(win) {
   const p = PUB.load;
   if (p && typeof p.then === "function") await p;
   return PUB;
+}
+
+/* 点页脚那颗「上传（上架）」并等这一趟走完（busy 由 pubUpload 自己起落）——
+   与真界面同一条路：按钮 onclick → pubUpload()。回 false = 按钮不存在 / 不可点。 */
+async function clickUpload(win, doc) {
+  const up = doc
+    .getElementById("ovFoot")
+    .children.find((c) => c.tagName === "BUTTON" && c.classList.contains("primary"));
+  if (!up || up.disabled) return false;
+  up.click();
+  const PUB = win.__mtnodeAppPublish;
+  for (let i = 0; i < 400 && PUB.busy; i++) await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  return true;
 }
 
 /* ───────── 断言 ───────── */
@@ -460,7 +498,60 @@ async function main() {
     ok(state.authMeCalls === 2, "为收口又问了一次账户契约 authMe（开窗 1 次 + 收口 1 次）");
   }
 
-  console.log("[7] 源码接线：判据走账户契约、401 收口、i18n 词条齐");
+  console.log("[7] 更新一版：第 1 张截图只有云端那一份 → 不报「读取第 1 张截图失败」、也不重传");
+  {
+    const sha = "aa".repeat(32);
+    /* 两档各跑一遍完整的上传：① 云端已有图标（老应用最常见）② 云端没有图标。
+       两档都必须「上传走到云端」且 body 里没有任何图标字节 —— 这就是用户要的那条：
+       「截图应当保留，并且如果云端已存在则不重新上传」。 */
+    for (const cloudIcon of ["icons/demo-app__smoke.png", ""]) {
+      const { win, doc, state } = boot({
+        user: { id: "u1", username: "smoke", nickname: "冒烟" },
+        itemIcon: cloudIcon,
+      });
+      await openAndSettle(win);
+      tickDecl(doc);
+      const PUB = win.__mtnodeAppPublish;
+      /* 与真界面完全一样：这一张是 pubCloudShotsOf 从云端目录带出来的（只有 url + sha，
+         本机截图缓存里没有它的字节 —— 老应用 / 换过机器 / 清过缓存时都是这样） */
+      PUB.shots = [
+        {
+          key: "c0-aaaaaaaa",
+          path: "",
+          dataUrl: "",
+          url: "https://s.example/api/apps/demo-app/shots/1",
+          sha: sha,
+          name: "云端已有 1",
+          bytes: 0,
+          from: "cloud",
+        },
+      ];
+      win.pubPaintShots();
+      /* POST 那一步就停下（这一份看的是「发出去的 body 里有什么」，不是成功后的结果块） */
+      state.postResult = { ok: false, status: 500, data: { ok: false, error: "冒烟：到此为止" } };
+      ok(await clickUpload(win, doc), "上传按钮点了（这一档：云端图标 = " + (cloudIcon || "（无）") + "）");
+      const post = state.storePosts.find((x) => /\/versions$/.test(x.path));
+      ok(!!post, "上传真的走到了 POST /api/apps/demo-app/versions（没被第 1 张截图拦在本地）");
+      ok(
+        !!post && post.json && !("iconBase64" in post.json),
+        (cloudIcon
+          ? "云端已有图标 + 这张图云端已有 → 一个图标字节都不发（服务端不带就不动它）"
+          : "云端已有这张图、本机没有字节 → 也不发图标、更不报错") + "（图标：" + JSON.stringify(post && post.json && post.json.iconBase64) + "）",
+      );
+      ok(
+        !!post && Array.isArray(post.json.shotsBase64) && post.json.shotsBase64.length === 1 &&
+          typeof post.json.shotsBase64[0] === "object" && post.json.shotsBase64[0].sha === sha,
+        "截图只发 { sha } 引用（云端那份一个字节都不重传）",
+      );
+      const note = footOf(doc).note;
+      ok(
+        !/读取第 1 张截图失败/.test(note) && !/第 1 张截图读不出来/.test(note),
+        "页脚没有那句「读取第 1 张截图失败…」：" + note,
+      );
+    }
+  }
+
+  console.log("[8] 源码接线：判据走账户契约、401 收口、i18n 词条齐");
   {
     const src = read("renderer/app-publish.js");
     ok(/api\.authMe\(\)/.test(src), "登录态判据走 window.api.authMe（主进程契约，401 会清凭据 + 广播）");

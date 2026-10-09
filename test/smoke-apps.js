@@ -600,6 +600,124 @@ async function main() {
     "上架包同样带上根目录脚本与子目录",
   );
 
+  /* 本轮需求：应用开发过程中在应用目录里产生的**中途内容与数据**不再随包（上架包 + 本机导出 zip
+     同一套规则）—— 现场实测的那些产物（AGENTS.md / dev-*.mjs / *.orig / smoke-out.txt / tools 探针 /
+     .mtnode-input 粘贴图 / 改了名的第二份 *.mtnodes / storage/.dbg-profile 调试 profile）逐条真跑。 */
+  origWrite(path.join(dir, "AGENTS.md"), "# 共识", "utf8");
+  origWrite(path.join(dir, "DELIVERY.md"), "# 交付", "utf8");
+  origWrite(path.join(dir, "PRODUCT.md"), "# 产品", "utf8");
+  origWrite(path.join(dir, "NOTES.md"), "草稿", "utf8");
+  origWrite(path.join(dir, "team-notes.md"), "草稿", "utf8");
+  origWrite(path.join(dir, "README.md"), "# 应用说明（应用自己的文档，应随包）", "utf8");
+  origWrite(path.join(dir, "index.html.orig"), "<html>旧版</html>", "utf8");
+  origWrite(path.join(dir, "app.json.bak"), "{}", "utf8");
+  origWrite(path.join(dir, "rebuild.log"), "log", "utf8");
+  origWrite(path.join(dir, "smoke-out.txt"), "out", "utf8");
+  origWrite(path.join(dir, "dev-server.mjs"), "// dev only", "utf8");
+  origWrite(path.join(dir, "dev-verify.mjs"), "// dev only", "utf8");
+  origWrite(path.join(dir, "verify-something.mjs"), "// dev only", "utf8");
+  origWrite(path.join(dir, "css-audit.mjs"), "// dev only", "utf8");
+  origWrite(path.join(dir, "ui-probe.mjs"), "// dev only", "utf8");
+  origWrite(path.join(dir, "longtask-art-pipeline.json"), "{\"kind\":\"mtnode-longtask-graph\"}", "utf8");
+  origWrite(path.join(dir, "第二份画布.mtnodes"), "{\"nodes\":[]}", "utf8");
+  fs.mkdirSync(path.join(dir, ".mtnode-input"), { recursive: true });
+  origWrite(path.join(dir, ".mtnode-input", "paste-1.png"), "PNG", "utf8");
+  origWrite(path.join(dir, "storage", "probe-before.txt"), "probe out", "utf8");
+  fs.mkdirSync(path.join(dir, "storage", ".dbg-profile", "Default"), { recursive: true });
+  origWrite(path.join(dir, "storage", ".dbg-profile", "Default", "History"), "binary", "utf8");
+  fs.mkdirSync(path.join(dir, "storage", "shots"), { recursive: true });
+  origWrite(path.join(dir, "storage", "shots", "1.png"), "PNG", "utf8");
+  origWrite(path.join(dir, "storage", "build.mjs"), "// build script", "utf8");
+  /* 子目录一律豁免（运行期要读的东西不许被规则碰到）：tools/ 只排「根目录那一层」，
+     assets/ 下的生成名单与许可文件照旧随包 */
+  fs.mkdirSync(path.join(dir, "tools"), { recursive: true });
+  origWrite(path.join(dir, "tools", "visual-check.cjs"), "// dev probe", "utf8");
+  fs.mkdirSync(path.join(dir, "assets", "gen"), { recursive: true });
+  origWrite(path.join(dir, "assets", "gen", "manifest.js"), "window.M={};", "utf8");
+  origWrite(path.join(dir, "assets", "gen", "hero.png"), "PNG", "utf8");
+  fs.mkdirSync(path.join(dir, "assets", "tools"), { recursive: true });
+  origWrite(path.join(dir, "assets", "tools", "keep.js"), "// runtime asset", "utf8");
+  const ex2 = store.exportZip("smoke-app");
+  ok(ex2 && ex2.ok, "加了中途产物的目录照旧导得出来");
+  store.unzipBuffer(fs.readFileSync(ex2.path), path.join(TMP, "exported2"));
+  const n2 = [];
+  (function walk2(d, pfx) {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const rel = pfx ? pfx + "/" + ent.name : ent.name;
+      if (ent.isDirectory()) walk2(path.join(d, ent.name), rel);
+      else n2.push(rel);
+    }
+  })(path.join(TMP, "exported2"), "");
+  const has2 = (p) => n2.indexOf(p) >= 0;
+  /* ① 根目录的开发笔记名（只排这几个名字，应用自己的 README.md 照旧） */
+  for (const p of ["AGENTS.md", "DELIVERY.md", "PRODUCT.md", "NOTES.md", "team-notes.md"]) {
+    ok(!has2(p), "本地导出不含开发笔记 " + p);
+  }
+  ok(has2("README.md"), "应用自己的 README.md 照旧随包（不排任意 *.md）");
+  /* ② 根目录的开发脚本与临时残留 */
+  for (const p of [
+    "index.html.orig", "app.json.bak", "rebuild.log", "smoke-out.txt",
+    "dev-server.mjs", "dev-verify.mjs", "verify-something.mjs", "css-audit.mjs", "ui-probe.mjs",
+  ]) {
+    ok(!has2(p), "本地导出不含开发期脚本 / 临时残留 " + p);
+  }
+  /* ③ 画布（任意 *.mtnodes，不止与文件夹同名那份）与长任务图 */
+  ok(!n2.some((p) => /\.mtnodes$/.test(p)), "本地导出不含**任何** .mtnodes（改了名的第二份同样排）");
+  ok(!has2("longtask-art-pipeline.json"), "本地导出不含 longtask-*.json（长任务图）");
+  /* ④ 输入框粘贴图的临时目录 */
+  ok(!n2.some((p) => p.indexOf(".mtnode-input/") === 0), "本地导出不含 .mtnode-input/**（粘贴图临时目录）");
+  /* ⑤ storage：本机垃圾排掉，存档 / 数据表 / 构建脚本与 shots/ 保留 */
+  ok(!n2.some((p) => p.indexOf("storage/.dbg-profile/") === 0), "本地导出排掉 storage/.dbg-profile/**（Edge 调试 profile）");
+  ok(!has2("storage/probe-before.txt"), "本地导出排掉 storage/ 下的 probe-*.txt");
+  ok(has2("storage/store.json") && has2("storage/build.mjs") && has2("storage/shots/1.png"),
+    "本地导出保留 storage/ 里的存档 / 脚本 / shots（换机搬家拿到的是完整工程）");
+  /* ⑥ 子目录豁免：tools/ 只在「根目录那一层」被排（assets/tools 与 assets/gen 不动） */
+  ok(has2("tools/visual-check.cjs"), "子目录 tools/ 不被排（规则只作用于应用根目录那一层）");
+  ok(has2("assets/gen/manifest.js") && has2("assets/gen/hero.png") && has2("assets/tools/keep.js"),
+    "assets/** 一个都不动（运行期要读的名单 / 生成图 / 许可文件照旧随包）");
+  /* ⑦ 回执带排除清单 + 条数（上架窗据此显示「已排除 N 个开发文件」） */
+  ok(Array.isArray(ex2.excluded) && ex2.excludedCount === ex2.excluded.length && ex2.excludedCount > 0,
+    "导出回执带 excluded / excludedCount（" + ex2.excludedCount + " 条）");
+  ok(ex2.excluded.indexOf("AGENTS.md") >= 0 && ex2.excluded.indexOf("dev-server.mjs") >= 0 &&
+    ex2.excluded.indexOf("storage/.dbg-profile/Default/History") >= 0,
+    "排除清单里点得到具体条目（AGENTS.md / dev-server.mjs / .dbg-profile）");
+  /* ⑧ 上架包：storage/ 整目录仍另剔（作者本机存档不发给下载者），本地包才留 */
+  const up2 = store.exportZip("smoke-app", { forUpload: true });
+  ok(up2 && up2.ok, "上架包（forUpload）照旧打得出来");
+  store.unzipBuffer(fs.readFileSync(up2.path), path.join(TMP, "exported-up2"));
+  const upRoot = path.join(TMP, "exported-up2");
+  ok(!fs.existsSync(path.join(upRoot, "storage")), "上架包整目录不含 storage/（作者本机存档不外流，与既有口径一致）");
+  ok(up2.excludedCount !== ex2.excludedCount, "上架包与本地导出的差异只有 storage/ 那一类（条数必然不同）");
+  ok(
+    ["AGENTS.md", "dev-server.mjs", "index.html.orig", ".mtnode-input/paste-1.png", "第二份画布.mtnodes"].every(
+      (p) => up2.excluded.indexOf(p) >= 0 && ex2.excluded.indexOf(p) >= 0,
+    ),
+    "上与不上都排同一批中途产物（上架包与本地导出**同一套规则**）",
+  );
+  ok(up2.excluded.indexOf("storage/store.json") >= 0 && ex2.excluded.indexOf("storage/store.json") < 0,
+    "storage/ 存档只在上架包被排（本地导出照旧留）");
+  ok(fs.existsSync(path.join(upRoot, "README.md")) && fs.existsSync(path.join(upRoot, "assets", "gen", "manifest.js")),
+    "上架包照旧带上应用自己的文件（README.md / assets/gen/manifest.js）");
+  /* ⑨ 反证：入口页撞上规则时必须**保留入口页**（缺入口页 = 整包打不出来），并把这件事报出来 */
+  const entryDir = path.join(APPS_DEV_ROOT, "entry-guard");
+  fs.mkdirSync(entryDir, { recursive: true });
+  origWrite(
+    path.join(entryDir, "app.json"),
+    JSON.stringify({ schema: 1, id: "entry-guard", name: "入口守卫", version: "1.0.0", entry: "smoke.html", dev: true }, null, 2),
+    "utf8",
+  );
+  origWrite(path.join(entryDir, "smoke.html"), "<html>入口页</html>", "utf8");
+  origWrite(path.join(entryDir, "dev-other.mjs"), "// dev only", "utf8");
+  const exG = store.exportZip("entry-guard");
+  ok(exG && exG.ok, "入口页叫 smoke.html（命中 smoke*.*）时照旧打得出包");
+  const gz = path.join(TMP, "exported-entry");
+  store.unzipBuffer(fs.readFileSync(exG.path), gz);
+  ok(fs.existsSync(path.join(gz, "smoke.html")), "入口页命中排除规则时被保留（不让包缺入口页）");
+  ok(exG.excluded.indexOf("smoke.html") < 0 && exG.excluded.indexOf("dev-other.mjs") >= 0,
+    "入口页不进排除清单，其余开发期文件照排");
+  ok(Array.isArray(exG.warnings) && exG.warnings.some((w) => w.indexOf("smoke.html") >= 0),
+    "回执 warnings 如实报出「这个文件看着像开发期产物但是入口页，已保留」");
+
   /* 上架前体检已整条下线（本次需求：移除 上架前体检）—— 主进程实现 / IPC / 桥 / 渲染层弹窗 /
      开发页按钮 / 样式 / 词条一处都不许留。打包口径本身（exportZip 与它的 excludeExtra 注入点）
      仍在，下面继续真跑，确认移除没有连带伤到打包实现。 */
@@ -618,7 +736,9 @@ async function main() {
   ok(typeof store.packAudit === "undefined", "apps-store 不再导出 packAudit（主进程实现已删）");
   ok(read("preload.js").indexOf("apps:packAudit") < 0, "preload 不再暴露 apps:packAudit 桥");
   const exX = store.exportZip("smoke-app", { excludeExtra: ["app.js"] });
-  ok(exX && exX.ok && exX.files === ex.files - 1, "打包口径的 excludeExtra 注入点真的作用在实现上（导出口径未受影响）");
+  ok(exX && exX.ok && exX.files === ex2.files - 1, "打包口径的 excludeExtra 注入点真的作用在实现上（导出口径未受影响）");
+  ok(exX.excludedCount === ex2.excludedCount && exX.excluded.indexOf("app.js") < 0,
+    "excludeExtra 只减少包内文件，不混进「开发期产物」排除清单（两者语义不同）");
 
   /* 落盘守卫：镜像 / 导出 / 配置一律不写进应用目录（app.getAppPath() = 仓库根） */
   const insideApp = written.filter((p) => store.isInsideAppDir(p));
