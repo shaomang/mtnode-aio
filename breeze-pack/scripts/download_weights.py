@@ -1,11 +1,11 @@
-"""Breeze TTS 2 权重下载：ModelScope（魔搭）优先 → hf-mirror 回退 → HF 官方兜底。
+"""Breeze TTS 2 weight download: ModelScope first -> hf-mirror fallback -> official HF as a last resort.
 
-用法：
-    python scripts/download_weights.py --repo BreezeBlue/breeze-tts-2 --dest <安装目录>/checkpoints/breeze-tts-2
+Usage:
+    python scripts/download_weights.py --repo BreezeBlue/breeze-tts-2 --dest <install dir>/checkpoints/breeze-tts-2
 
-进度口径：打印 "progress: NN.N"（安装脚本按它换算进度条）。
-许可提示：Breeze TTS 2 权重受 BreezeBlue Research and Non-Commercial License 约束，
-         仅限研究与**非商用**用途；推理代码本身是 Apache-2.0。
+Progress contract: prints "progress: NN.N" (the installer script turns it into a progress bar).
+License note: the Breeze TTS 2 weights are bound by the BreezeBlue Research and Non-Commercial License
+         and are for research and **non-commercial** use only; the inference code itself is Apache-2.0.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def log_progress(pct: float) -> None:
 
 
 def _report_downloaded(dest: Path) -> bool:
-    """粗判权重是否齐：config.json + 至少一个权重文件。"""
+    """Rough check that the weights are complete: config.json plus at least one weight file."""
     if not dest.is_dir():
         return False
     has_cfg = any(dest.glob("config.json"))
@@ -39,15 +39,15 @@ def try_modelscope(repo: str, dest: Path) -> bool:
     try:
         from modelscope.hub.snapshot_download import snapshot_download  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        log(f"ModelScope SDK 不可用（{exc}）")
+        log(f"ModelScope SDK unavailable ({exc})")
         return False
     try:
-        log(f"ModelScope 下载 {repo} → {dest}")
+        log(f"ModelScope downloading {repo} -> {dest}")
         snapshot_download(repo, local_dir=str(dest), repo_type="model")
         log_progress(100)
         return _report_downloaded(dest)
     except Exception as exc:  # noqa: BLE001
-        log(f"ModelScope 失败：{exc}")
+        log(f"ModelScope failed: {exc}")
         return False
 
 
@@ -55,10 +55,10 @@ def try_hf(repo: str, dest: Path, endpoint: str, revision: str | None) -> bool:
     try:
         from huggingface_hub import snapshot_download  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        log(f"huggingface_hub 不可用（{exc}）")
+        log(f"huggingface_hub unavailable ({exc})")
         return False
     try:
-        log(f"{endpoint} 下载 {repo} → {dest}")
+        log(f"{endpoint} downloading {repo} -> {dest}")
         kwargs: dict = {
             "repo_id": repo,
             "local_dir": str(dest),
@@ -70,12 +70,12 @@ def try_hf(repo: str, dest: Path, endpoint: str, revision: str | None) -> bool:
         log_progress(100)
         return _report_downloaded(dest)
     except Exception as exc:  # noqa: BLE001
-        log(f"{endpoint} 失败：{exc}")
+        log(f"{endpoint} failed: {exc}")
         return False
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="下载 Breeze TTS 2 权重")
+    ap = argparse.ArgumentParser(description="download the Breeze TTS 2 weights")
     ap.add_argument("--repo", default="BreezeBlue/breeze-tts-2")
     ap.add_argument("--dest", required=True)
     ap.add_argument("--revision", default=os.environ.get("BREEZE_WEIGHTS_REVISION") or None)
@@ -85,29 +85,29 @@ def main() -> int:
     dest.mkdir(parents=True, exist_ok=True)
 
     if _report_downloaded(dest):
-        log(f"权重已在 {dest}，跳过")
+        log(f"weights are already in {dest}, skipping")
         log_progress(100)
         return 0
 
-    log("权重许可：BreezeBlue Research and Non-Commercial License（仅限研究 / 非商用）")
+    log("weight license: BreezeBlue Research and Non-Commercial License (research / non-commercial only)")
 
-    # 1) ModelScope 优先（国内直连）
+    # 1) ModelScope first (direct connection inside China)
     if try_modelscope(args.repo, dest):
-        log(f"完成（ModelScope）：{dest}")
+        log(f"done (ModelScope): {dest}")
         return 0
 
-    # 2) hf-mirror 回退
+    # 2) hf-mirror fallback
     if try_hf(args.repo, dest, "https://hf-mirror.com", args.revision):
-        log(f"完成（hf-mirror）：{dest}")
+        log(f"done (hf-mirror): {dest}")
         return 0
 
-    # 3) HF 官方兜底（有代理时才可能通）
+    # 3) official HF as a last resort (only reachable behind a proxy)
     if try_hf(args.repo, dest, "https://huggingface.co", args.revision):
-        log(f"完成（huggingface.co）：{dest}")
+        log(f"done (huggingface.co): {dest}")
         return 0
 
-    log("三条通道都失败。请手工下载权重到该目录，或设置 BREEZE_WEIGHTS_DIR 指向已有权重目录后重跑安装。")
-    log(f"目标目录：{dest}")
+    log("all three channels failed. Download the weights into that directory by hand, or set BREEZE_WEIGHTS_DIR to an existing weights directory and rerun the installer.")
+    log(f"target directory: {dest}")
     return 2
 
 

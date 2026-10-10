@@ -1,5 +1,11 @@
 @echo off
 setlocal
+REM Manual launcher. Forces UTF-8 output so the backend log (ComfyUI prints its
+REM own Chinese messages) does not turn into mojibake in the console or in the
+REM MTNode plugin console, which decodes this process output as UTF-8.
+chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUNBUFFERED=1"
 cd /d "%~dp0.."
 if not exist "ComfyUI\main.py" (
   echo [ERROR] ComfyUI missing. Run scripts\setup_env.ps1 first.

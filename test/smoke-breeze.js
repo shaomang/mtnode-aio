@@ -1859,7 +1859,8 @@ function scene(nodes, wires) {
   );
   has(hostSrc, "GEN_NO_REPORT", "纯输入类错误（缺文本 / 缺参考文稿…）不进总线，免得弹无意义的修复窗");
   /* 冒烟闸门：与 tts / llama 的 throw、sensenova 的 ok=false 同口径 */
-  has(installPs1, "冒烟不过就不算装好", "安装脚本写明冒烟闸门口径");
+  /* 本轮「安装脚本零中文」后，判据串改成脚本里的英文原句（脚本注释/消息全 ASCII 英文） */
+  has(installPs1, "a failed smoke test means not installed", "安装脚本写明冒烟闸门口径");
   has(installPs1, "$smokeRc = $LASTEXITCODE", "安装脚本记下冒烟退出码");
   has(installPs1, 'Write-Verdict "false" "smoke_failed"', "import 失败 → 写裁决 smoke_failed（交 Agent 修）");
   has(installPs1, 'Write-Verdict "false" "no_cuda"', "CUDA 不可用 → 写裁决 no_cuda（只指路，不烧 AI 修复）");
@@ -1871,7 +1872,7 @@ function scene(nodes, wires) {
   has(installPs1, "BREEZE_SKIP_CUDA_CHECK", "无卡机器留了显式逃生阀（默认闸门关着）");
   hasnt(
     installPs1,
-    'if ($LASTEXITCODE -ne 0) { Say "冒烟 import 失败',
+    'if ($LASTEXITCODE -ne 0) { Say "smoke import failed',
     "老的「只打印一行仍写 .install-ok」已删除",
   );
   /* 控制台手动修复入口：把 preload 里那座死桥接上 */
@@ -2020,7 +2021,7 @@ function scene(nodes, wires) {
       ].join("\r\n") + "\r\n",
       "utf8",
     );
-    const at = installPs1.indexOf("# —— 6. 冒烟 & 落标记".replace("——", "──"));
+    const at = installPs1.indexOf("# -- 6. Smoke test & markers");
     ok(at > 0, "能在安装脚本里定位闸门段");
     const harness = path.join(tmp, "gate.ps1");
     fs.writeFileSync(

@@ -11,12 +11,18 @@ param(
     [string]$CudaPython = ""
 )
 
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $ErrorActionPreference = "Stop"
 Write-Host "============================================================"
-Write-Host "[h3-setup] 国内镜像说明（必须，本机位于中国大陆网络时尤其重要）："
-Write-Host "  · Python 库：默认使用清华镜像 pypi.tuna.tsinghua.edu.cn（或中科院 USTC mirrors.ustc.edu.cn，可用 MT_H3_PIP_INDEX 覆盖）"
-Write-Host "  · torch cu130：优先官方 download.pytorch.org，失败自动回退阿里云镜像 mirrors.aliyun.com/pytorch-wheels/cu130（MT_H3_TORCH_INDEX 可覆盖）"
-Write-Host "  · 权重优先 ModelScope(魔搭)，git clone 失败回退 ghproxy 镜像"
+Write-Host "[h3-setup] China mirror notes (required, especially when this machine sits on a mainland-China network):"
+Write-Host "  - Python packages: Tsinghua mirror pypi.tuna.tsinghua.edu.cn by default (or USTC mirrors.ustc.edu.cn; override with MT_H3_PIP_INDEX)"
+Write-Host "  - torch cu130: official download.pytorch.org first, automatically falling back to the Aliyun mirror mirrors.aliyun.com/pytorch-wheels/cu130 (override with MT_H3_TORCH_INDEX)"
+Write-Host "  - Weights come from ModelScope first; if git clone fails, fall back to a ghproxy mirror"
 Write-Host "============================================================"
 $Root = Split-Path -Parent $PSScriptRoot
 $ComfyRoot = Join-Path $Root "ComfyUI"
@@ -108,39 +114,39 @@ if (-not (Test-Path $VenvPy)) {
     if (-not $basePy) {
         throw "Need a Python with CUDA torch. Pass -CudaPython <path> or set MT_H3_CUDA_PYTHON."
     }
-    # 禁止 --system-site-packages：否则会继承 conda 旧版 torch，
-    # 与 ComfyUI 自带的 comfy_kitchen（list[int] 注解）冲突导致启动即崩溃。
+    # Do NOT use --system-site-packages: it would inherit the old conda torch and
+    # clash with the comfy_kitchen shipped by ComfyUI (list[int] annotations), which crashes on startup.
     Write-Host "Creating isolated ComfyUI venv from $basePy (no system-site-packages)..."
     & $basePy -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
     Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
 }
 
-# 避免坏掉的 PIP_EXTRA_INDEX_URL（如 pypi.ngc.nvidia.com）干扰：--isolated 忽略机器 pip 配置
+# Avoid interference from a broken PIP_EXTRA_INDEX_URL (e.g. pypi.ngc.nvidia.com): --isolated ignores machine pip config
 $env:PIP_EXTRA_INDEX_URL = ""
-# 国内镜像：默认清华（或中科院 USTC），可用 MT_H3_PIP_INDEX 覆盖
+# China mirror: Tsinghua by default (or USTC); override with MT_H3_PIP_INDEX
 $env:PIP_INDEX_URL = if ($env:MT_H3_PIP_INDEX) { $env:MT_H3_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
 
 Write-Host "Installing helper requirements (repo root)..."
 & $VenvPy -m pip install --isolated -U pip
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 
-# 先在 venv 内安装带 CUDA 的 torch，避免再用系统 site-packages 里的旧 torch。
-# H3 量化算子需要 cu130 的优化 CUDA 算子；cu124/cu126 会“能启动但首步卡死”。
+# Install CUDA torch inside the venv first, so the old torch in system site-packages is never reused.
+# The H3 quantized kernels need the optimized CUDA kernels from cu130; cu124/cu126 "start up but hang on the first step".
 Write-Host "Installing CUDA torch (cu130) into venv (required for comfy_kitchen)..."
 $torchIdx = if ($env:MT_H3_TORCH_INDEX) { $env:MT_H3_TORCH_INDEX } else { "https://download.pytorch.org/whl/cu130" }
 $torchIdxMirror = "https://mirrors.aliyun.com/pytorch-wheels/cu130"
 $torchPkgs = @("torch==2.9.1+cu130", "torchvision==0.24.1+cu130", "torchaudio==2.9.1+cu130")
 & $VenvPy -m pip install --isolated --index-url $torchIdx @torchPkgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "torch cu130 direct index failed; retrying with aliyun mirror (国内镜像)..."
+    Write-Host "torch cu130 direct index failed; retrying with aliyun mirror (China mirror)..."
     & $VenvPy -m pip install --isolated --index-url $torchIdxMirror @torchPkgs
     if ($LASTEXITCODE -ne 0) {
         throw "torch cu130 install failed (direct + aliyun mirror). Please update the NVIDIA driver to one that supports CUDA 13.0, then retry."
     }
 }
 
-# 校验驱动足够新：torch.cuda.is_available() 为假 => 驱动不支持 CUDA 13.0
+# Verify the driver is new enough: torch.cuda.is_available() false => the driver does not support CUDA 13.0
 $cudaOk = (& $VenvPy -c "import torch; print('y' if torch.cuda.is_available() else 'n')" 2>$null).Trim()
 if ($cudaOk -ne "y") {
     throw "torch cu130 loaded but torch.cuda.is_available()=False. NVIDIA driver too old for CUDA 13.0. Update the driver (>= CUDA 13.0 support) and rerun."
@@ -158,11 +164,11 @@ if (Test-Path $req) {
 
 Ensure-CustomNode -Name "ComfyUI-MiniMaxH3-TeaCache" -Url "https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache.git"
 Ensure-CustomNode -Name "ComfyUI-KJNodes" -Url "https://github.com/kijai/ComfyUI-KJNodes.git"
-# 4K 超分补帧后处理：RIFE VFI 补帧节点（rife 模型 + RealESRGAN 权重由 download_models.ps1 拉取）
+# 4K upscale / frame-interpolation post-processing: the RIFE VFI interpolation node (the rife model + RealESRGAN weights are fetched by download_models.ps1)
 Ensure-CustomNode -Name "ComfyUI-Frame-Interpolation" -Url "https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git"
 
-# 幂等：ComfyUI 新版 MiniMaxH3ReferenceToVideo 用 io.Autogrow 嵌套 refs，而插件发扁平键，
-# 需给 execute 加 **legacy_refs 折叠扁平键，否则抛 comfy_execution_error。
+# Idempotent: the newer ComfyUI MiniMaxH3ReferenceToVideo uses io.Autogrow nested refs while the plugin sends
+# flat keys, so execute needs **legacy_refs to fold flat keys, otherwise it throws comfy_execution_error.
 $RefsPatch = Join-Path $PSScriptRoot "patch_h3_autogrow_refs.py"
 if (Test-Path -LiteralPath $RefsPatch) {
     Write-Host "Patching MiniMaxH3ReferenceToVideo to fold flat ref keys..."
@@ -191,9 +197,11 @@ except Exception as e:
 "@
 if ($LASTEXITCODE -ne 0) { throw "CUDA / comfy_kitchen smoke failed" }
 
-# 可选的 Sage Attention 加速**故意不在这里装**：Windows 上 triton-windows 与 sageattention 预编译
-# wheel 必须成对，且要按本机 Python / torch / CUDA 大版本挑轮子（PyPI 只有老的 sageattention 1.0.6）。
-# 口径见 skill「minimax-h3-install · 可选依赖」；MTNode 侧由 H3 插件窗「Sage 加速」按钮
-# （h3/main-h3.js → installSageAttention）按需补装并立刻自检，缺包时生成自动跳过 Sage。
+# The optional Sage Attention acceleration is **deliberately not installed here**: on Windows triton-windows and
+# the prebuilt sageattention wheel must come as a pair, and the wheel must be picked to match this machine's
+# Python / torch / CUDA major versions (PyPI only carries the old sageattention 1.0.6).
+# See the skill "minimax-h3-install - optional dependencies"; on the MTNode side the H3 plugin window's
+# "Sage acceleration" button (h3/main-h3.js -> installSageAttention) installs it on demand and re-checks itself
+# right away; when the package is missing, generation skips Sage automatically.
 
 Write-Host "Setup complete. Next: .\scripts\download_models.ps1"

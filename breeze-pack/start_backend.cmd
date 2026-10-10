@@ -1,7 +1,8 @@
 @echo off
-REM Breeze TTS 2 本地管理服务（手工启动用；MTNode 插件走同一个入口）
-REM 端口默认 8772，可用第一个参数覆盖：start_backend.cmd 8773
+REM Breeze TTS 2 local management service (for manual start; the MTNode plugin uses the same entry point)
+REM Default port is 8772, override it with the first argument: start_backend.cmd 8773
 setlocal
+chcp 65001 >nul
 cd /d "%~dp0"
 set PYTHONUNBUFFERED=1
 set PYTHONIOENCODING=utf-8

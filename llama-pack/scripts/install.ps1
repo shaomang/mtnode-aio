@@ -2,14 +2,20 @@ param(
   [string]$InstallDir = (Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent)
 )
 
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $ErrorActionPreference = "Stop"
 Set-Location $InstallDir
 
 Write-Host "[llama-install] ============================================================"
-Write-Host "[llama-install] 国内镜像说明（必须，本机位于中国大陆网络时尤其重要）："
-Write-Host "[llama-install]   · Python 库：使用清华镜像 pypi.tuna.tsinghua.edu.cn（或中科院 USTC mirrors.ustc.edu.cn）"
-Write-Host "[llama-install]   · llama.cpp 二进制来自 GitHub Releases，国内可能无法直连：自动回退 ghproxy 镜像下载"
-Write-Host "[llama-install]   · 模型 GGUF：HuggingFace 无法直连，走 hf-mirror.com（可用 HF_ENDPOINT 覆盖）"
+Write-Host "[llama-install] About the China mirrors (required; especially important when this machine is on a mainland China network):"
+Write-Host "[llama-install]   - Python packages: use the Tsinghua mirror pypi.tuna.tsinghua.edu.cn (or the CAS USTC mirror mirrors.ustc.edu.cn)"
+Write-Host "[llama-install]   - llama.cpp binaries come from GitHub Releases, which may not be reachable directly from mainland China: we automatically fall back to the ghproxy mirror"
+Write-Host "[llama-install]   - Model GGUF files: huggingface.co cannot be reached directly, so we go through hf-mirror.com (override with HF_ENDPOINT)"
 Write-Host "[llama-install] ============================================================"
 Write-Host "[llama-install] install dir: $InstallDir"
 Write-Host "[llama-install] progress: 8"
@@ -70,7 +76,7 @@ $cudaVariants = @("cuda-12.4", "cuda-13.3")
 $zipPath = Join-Path $env:TEMP "llama-$release-bin.zip"
 $downloaded = $false
 
-# GitHub 直连失败时自动回退 ghproxy 镜像（国内网络）
+# Fall back to the ghproxy mirror automatically when GitHub is not reachable directly (mainland China networks)
 function Invoke-Download {
   param([string]$Url, [string]$Out)
   try {
@@ -104,7 +110,7 @@ if (-not $downloaded) {
   $zipName = "llama-$release-bin-win-cpu-x64.zip"
   $url = "https://github.com/ggml-org/llama.cpp/releases/download/$release/$zipName"
   if (-not (Invoke-Download -Url $url -Out $zipPath)) {
-    throw "llama.cpp binary download failed (direct + ghproxy). 请确认网络可访问 GitHub/ghproxy 镜像。"
+    throw "llama.cpp binary download failed (direct + ghproxy). Please make sure GitHub / the ghproxy mirror is reachable from this network."
   }
 }
 

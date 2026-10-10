@@ -90,7 +90,7 @@ nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv
 | 物理内存 **< 32GB** | **拒绝**：`reason=ram_too_low`。分层卸载把 32.66GB 权重放进**主内存**，内存不够装得上跑不动；建议 ≥40GB |
 | 驱动主版本 **< 570** | 不拒绝：脚本自动降档装 `cu126`（`cu128` 需要 570+）。降档后仍 `cuda.is_available()=False` → `reason=torch_no_cuda`，提示升级驱动 |
 | 磁盘剩余 **< 50GB** | **警告后可继续**（结论里注明）：权重 32.66GB + venv 约 12GB + 产物，**建议预留 ≥60GB** |
-| 找不到 Python 3.10–3.13 | 见「Python 选择」：先试 uv；都没有 → `reason=python_not_found` 给指引 |
+| 找不到 Python 3.10–3.13 | 见「Python 选择」：先试 uv；都没有 → `reason=python_not_found` 给指引（控制台原话：`Neither uv nor a local Python 3.10-3.13 is available. ...`） |
 
 **拒绝时必须一并给出的替代方案**：
 
@@ -156,7 +156,29 @@ nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv
 - 权重下载**可续传**：已存在且非空的分片自动跳过；中断就重跑脚本。
 - **ModelScope 与 HF 的 id 大小写不同**（`SenseNova/…` vs `sensenova/…`），结论文本里写清最终实际用到的源与 id。
 - Windows PowerShell 5.1 下载前必须开 TLS1.2：`[Net.ServicePointManager]::SecurityProtocol = … -bor [Net.SecurityProtocolType]::Tls12`，否则 pip 装得上、tarball 下不动。
-- 全程 `PYTHONIOENCODING=utf-8`（GBK 控制台打进度会崩）。
+- 全程 UTF-8：`PYTHONIOENCODING=utf-8` + `install.ps1` / `start_backend.cmd` 里的 `chcp 65001`（GBK 控制台打进度会崩）；脚本自身是纯 ASCII 英文，中文只来自 Python 后端与原生工具（见「脚本语言与编码」）。
+
+## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
+
+> 宿主用 `powershell.exe`（Windows PowerShell 5.1）跑 `scripts\*.ps1`。而 **UTF-8 无 BOM 的 `.ps1` 在中文 Windows 上会被按 GBK(cp936) 解码** —— 中文变成乱码字节，还会吞掉紧跟的 `}` / `'` / `"`，脚本**直接语法崩**（本轮改前实测：breeze 10 处、sensenova 113 处、yue 42 处、tts 15 处、llama 3 处、h3 download_models 6 处 + repair_torch_kitchen 1 处语法错），控制台同时一片乱码。
+
+- `scripts\*.ps1` / `scripts\*.cmd` 与安装期辅助 `*.py`（如 `download_weights.py` / `probe_attention.py`）**一律纯 ASCII 英文**：注释、消息、异常文本全英文；不许有中文、全角标点、`——`、制表线 `─`、emoji。
+- `.ps1` 开头（param 块之后）必须钉死编码三行，`.cmd` 在 `setlocal` 后加两行：
+
+  ```powershell
+  try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+  $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+  $env:PYTHONIOENCODING = 'utf-8'
+  ```
+
+  ```bat
+  chcp 65001 >nul
+  set "PYTHONIOENCODING=utf-8"
+  ```
+
+  这样脚本自身与 pip / git / python 的输出都按 UTF-8 出去，宿主（用 UTF-8 解码 stdout，并按 `[sensenova-install] progress:` 抓进度）看到的就是正常文本。
+- 改脚本后跑 `node test/smoke-install-scripts.js`：钉住「零非 ASCII + GBK 解码后 PowerShell 解析零错 + 进度前缀 / `reason=` 等 ASCII 契约仍在」。
+- Python **后端**（`app/*.py` 的启动横幅与日志）本轮不做零中文，仍是中文，靠上面的 UTF-8 钉死正确显示。
 
 ## 安装步骤（按序；括号内是脚本打印的 `progress:` 值）
 
@@ -255,7 +277,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -InstallDir . -Sk
 | 符号链接 | `ln -s` | Windows 建 symlink 要开发者模式：`-ModelDir` 复用与缓存一律 `New-Item -ItemType Junction`（目录联接）或复制 |
 | 多卡 / 分布式 | — | 本包**只做单卡**：不接多机 / 张量并行，省显存全靠 `vram_mode` 分层卸载 |
 | 进程终止 | `kill <pid>` / SIGTERM | 无 SIGTERM：优先 `POST /shutdown`，兜底 `Stop-Process -Id <pid> -Force`；确认端口释放（`Get-NetTCPConnection -LocalPort 8774`）后再重启 |
-| 控制台编码 | UTF-8 | GBK 会打崩进度条：`PYTHONIOENCODING=utf-8` + `PYTHONUNBUFFERED=1` |
+| 控制台编码 | UTF-8 | GBK 会打崩进度条：`PYTHONIOENCODING=utf-8` + `PYTHONUNBUFFERED=1`，并把控制台切到 UTF-8 码页（`chcp 65001`，脚本与 `start_backend.cmd` 已设） |
 | 路径 | `/` 无盘符 | 统一 `\` 与绝对路径；`INSTALL_DIR` **不要含中文 / 空格 / 超长路径**（32GB 分片 + 深目录易炸 260 字符限制） |
 | 官方文档口径 | `docs/installation_CN.md` 的 pip 兼容安装段：从仓库源码装 + `--no-deps` | 本包照此实现（tag 归档 tarball 代替 clone，`--no-deps` 保留），再叠加国内镜像与单卡分层卸载 |
 
@@ -292,7 +314,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -InstallDir . -Sk
 | `/cancel` 返回 200 但没有产物 | 设计口径：取消在采样步边界生效、中止不落产物；`/progress` 会变 `cancelled` |
 | 首次 `/generate` 极慢、看着像死掉 | 懒加载 32.66GB + 分层卸载，数分钟级属正常；`/health` `loaded:false` 且 `/progress` 有推进就不是死。**冷启动第一两项采样步尤其慢**（offload 上下文首进、pinned host cache、cudnn 预热），实测 12 步那次的头一两步就吃掉几分钟，`/progress` 会停在 `sample 15%` —— 看 `step`/`totalSteps`，别只看 `percent` |
 | 第二张图比第一张快很多 | **正常且符合预期**：模型常驻，第二次不再加载（实测 2048²/4 步：62.9s → 23.8s）。不要为此改配置 |
-| 控制台一打进度就崩 / 乱码 | GBK：设 `PYTHONIOENCODING=utf-8`（脚本与 `start_backend.cmd` 已设，自己起进程时也要设） |
+| 控制台一打进度就崩 / 乱码 | 编码没钉死：脚本自身是纯 ASCII 英文（不会乱码）；中文只来自 Python 后端与原生工具，须 `PYTHONIOENCODING=utf-8` 且控制台为 UTF-8 码页（`chcp 65001`）—— `install.ps1` 与 `start_backend.cmd` 都已设，自己起进程时也要设 |
 | 产物写不出 / `save_failed` | `outputDir` 不存在且无权限、路径含中文、磁盘满；产物目录属用户数据，**不要**写进应用安装目录 |
 
 ## marker 约定
@@ -335,7 +357,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -InstallDir . -Sk
 - **不装 flash-attn、不做多卡 / 分布式、不引入 conda。**
 - 磁盘不足先警告再继续（权重 32.66GB + venv 约 12GB + 产物：**建议预留 ≥60GB**）。
 - 无 N 卡 / 显存 <20GB / 内存 <32GB → **如实拒绝**并给替代方案，不硬装、不伪造成功。
-- 所有脚本输出、日志、注释与文档都用**中文**。
+- 脚本（`scripts\*.ps1` / `*.cmd` / 安装期辅助 `*.py`）**零中文、纯 ASCII 英文**（见「脚本语言与编码」一节）；Python 后端的日志、API `message` 与本文档仍用中文。
 
 ## 成功标准
 

@@ -113,6 +113,28 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
    - 下载中断可重跑续传；已存在且非空的权重**自动跳过**，不重下。
 4. **GitHub（如需克隆官方仓库 / 自定义算子）**：直连失败用 `ghproxy.com` / `ghfast.top` 前缀镜像。
 
+## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
+
+> 宿主用 `powershell.exe`（Windows PowerShell 5.1）跑 `scripts\*.ps1`。而 **UTF-8 无 BOM 的 `.ps1` 在中文 Windows 上会被按 GBK(cp936) 解码** —— 中文变成乱码字节，还会吞掉紧跟的 `}` / `'` / `"`，脚本**直接语法崩**（本轮改前实测：breeze 10 处、sensenova 113 处、yue 42 处、tts 15 处、llama 3 处、h3 download_models 6 处 + repair_torch_kitchen 1 处语法错），控制台同时一片乱码。
+
+- `scripts\*.ps1` / `scripts\*.cmd` 与安装期辅助 `*.py`（如 `download_weights.py` / `probe_attention.py`）**一律纯 ASCII 英文**：注释、消息、异常文本全英文；不许有中文、全角标点、`——`、制表线 `─`、emoji。
+- `.ps1` 开头（param 块之后）必须钉死编码三行，`.cmd` 在 `setlocal` 后加两行：
+
+  ```powershell
+  try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+  $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+  $env:PYTHONIOENCODING = 'utf-8'
+  ```
+
+  ```bat
+  chcp 65001 >nul
+  set "PYTHONIOENCODING=utf-8"
+  ```
+
+  这样脚本自身与 pip / git / python 的输出都按 UTF-8 出去，宿主（用 UTF-8 解码 stdout，并按 `[yue2-install] progress:` 抓进度）看到的就是正常文本。
+- 改脚本后跑 `node test/smoke-install-scripts.js`：钉住「零非 ASCII + GBK 解码后 PowerShell 解析零错 + 进度前缀 / `reason=` 等 ASCII 契约仍在」。
+- Python **后端**（`app/*.py` 的启动横幅与日志）本轮不做零中文，仍是中文，靠上面的 UTF-8 钉死正确显示。
+
 ## torch 与驱动档位（按 `driver_version` 自动匹配）
 
 `nvidia-smi --query-gpu=driver_version --format=csv,noheader` 取主版本，按下表**优先高档、失败逐档降级**：
@@ -276,7 +298,7 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 - **禁止** `--system-site-packages` 的 venv。
 - 磁盘不足先警告：3B 权重 + VAE + torch/cu + 依赖，建议预留 **≥25GB** 空闲（按实际文件大小估算，别凭感觉）。
 - 无 NVIDIA GPU / 显存 <24G / 无 Python 3.12 → **如实拒绝**并给替代方案，不硬装、不伪造成功。
-- 所有脚本输出、日志、注释与文档都用**中文**。
+- 脚本（`scripts\*.ps1` / `*.cmd` / 安装期辅助 `*.py`）**零中文、纯 ASCII 英文**（见「脚本语言与编码」一节）；Python 后端的日志、API `message` 与本文档仍用中文。
 
 ## 成功标准
 

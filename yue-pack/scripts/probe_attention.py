@@ -1,22 +1,22 @@
-"""探针：本机 torch 到底支持哪些注意力后端（Windows 移植口径必须实测，不能靠 hasattr 猜）。
+"""Probe: which attention backends this machine's torch really supports (the Windows port must measure, not guess via hasattr).
 
-背景：yue2 的 ``cuda_graph.py`` 用
-``hasattr(torch.ops.aten, "_flash_attention_forward")`` + schema 判断 flash 可用，
-本机 torch 2.10.0+cu130（Windows）**schema 在、CUDA kernel 没编进来**，
-于是 attention_backend 被误判成 "flash"，真实生成时报
+Background: yue2's ``cuda_graph.py`` decides flash availability with
+``hasattr(torch.ops.aten, "_flash_attention_forward")`` plus the schema, but the local
+``torch 2.10.0+cu130`` (Windows) has **the schema present and the CUDA kernel not compiled in**,
+so attention_backend is mis-detected as "flash" and the real generation reports
 ``USE_FLASH_ATTENTION was not enabled for build.``
 
-本脚本对 flash / cudnn / sdpa 三条路径各跑一次极小的真实前向，打印各档 PASS/FAIL 与推荐档，
-并把同一份结果写进 ``<INSTALL_DIR>\\.attention-backend``（`app/windows_patch.py` 落盘）。
-探针实现**只有一处**：``app/windows_patch.py``；本脚本只是它的命令行门面，
-因此安装脚本（``scripts\\install.ps1``）、宿主与人工排查看到的口径完全一致。
+This script runs one tiny real forward pass per path (flash / cudnn / sdpa), prints PASS/FAIL for
+each tier plus the recommendation, and writes the same result to ``<INSTALL_DIR>\\.attention-backend``
+(written by ``app/windows_patch.py``). The probe implementation lives in **exactly one place**:
+``app/windows_patch.py``; this script is only its command-line front end, so the install script (``scripts\install.ps1``), the host and manual debugging all see one identical contract.
 
-用法::
+Usage::
 
     <INSTALL_DIR>\\.venv\\Scripts\\python.exe scripts\\probe_attention.py
     <INSTALL_DIR>\\.venv\\Scripts\\python.exe scripts\\probe_attention.py --json
 
-退出码：0 = 有可用档（并给出推荐）· 2 = 无 CUDA / 无 torch（跳过）· 3 = 三档全失败。
+Exit codes: 0 = a usable tier exists (with a recommendation) / 2 = no CUDA / no torch (skipped) / 3 = all three tiers failed.
 """
 
 from __future__ import annotations
@@ -26,15 +26,15 @@ import json
 import sys
 from pathlib import Path
 
-# app 包就在 <INSTALL_DIR>\app：从本脚本位置反推安装根，保证任何 cwd 都能导入
+# the app package sits in <INSTALL_DIR>\app: derive the install root from this script's path so any cwd can import it
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
     from app import windows_patch as wp
-except Exception as exc:  # noqa: BLE001 - 包不在 / 包坏了都要给一行人话
-    print(f"[probe] 无法导入 app.windows_patch（{ROOT}）：{exc}", flush=True)
+except Exception as exc:  # noqa: BLE001 - a missing / broken package must still print one human-readable line
+    print(f"[probe] cannot import app.windows_patch ({ROOT}): {exc}", flush=True)
     sys.exit(3)
 
 _ORDER = ("flash", "cudnn", "sdpa")
@@ -45,7 +45,7 @@ def _torch_info() -> dict:
     try:
         import torch
     except Exception as exc:  # noqa: BLE001
-        info["error"] = f"torch 不可导入：{str(exc)[:160]}"
+        info["error"] = f"torch is not importable: {str(exc)[:160]}"
         return info
     info["torch"] = str(torch.__version__)
     info["cuda"] = str(getattr(torch.version, "cuda", "") or "")
@@ -56,13 +56,13 @@ def _torch_info() -> dict:
         except Exception:  # noqa: BLE001
             info["device"] = "cuda"
     else:
-        info["error"] = "CUDA 不可用"
+        info["error"] = "CUDA unavailable"
     return info
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="实测本机可用的注意力后端（flash / cudnn / sdpa）")
-    ap.add_argument("--json", action="store_true", help="只输出一份 JSON（供安装脚本 / 宿主解析）")
+    ap = argparse.ArgumentParser(description="measure which attention backends are usable on this machine (flash / cudnn / sdpa)")
+    ap.add_argument("--json", action="store_true", help="print a single JSON document only (for the install script / host to parse)")
     args = ap.parse_args(argv)
 
     forced = wp.forced_backend()
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             "cacheFile": cache,
             "torch": info["torch"],
             "device": "",
-            "reason": info["error"] or "CUDA 不可用",
+            "reason": info["error"] or "CUDA unavailable",
         }
         _emit(payload, args.json, skip_note=payload["reason"])
         return 2
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         "torch": info["torch"],
         "cudaVersion": info["cuda"],
         "device": info["device"],
-        "reason": "" if recommended else "flash / cudnn / sdpa 实测全部失败",
+        "reason": "" if recommended else "flash / cudnn / sdpa all failed in the real probes",
     }
 
     if args.json:
@@ -106,14 +106,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[probe] torch={info['torch']}+cu{info['cuda']} device={info['device']}", flush=True)
         for name in _ORDER:
             p = probes[name]
-            print(f"[probe] {'PASS' if p['ok'] else 'FAIL'} {p['label']} — {p['detail']}", flush=True)
+            print(f"[probe] {'PASS' if p['ok'] else 'FAIL'} {p['label']} - {p['detail']}", flush=True)
         if recommended:
-            print(f"[probe] 结论：推荐档位 = {recommended}（GraphAR attention_backend）", flush=True)
+            print(f"[probe] conclusion: recommended tier = {recommended} (GraphAR attention_backend)", flush=True)
         else:
-            print("[probe] 结论：没有可用档位（生成会以短码 attention_backend_unsupported 失败）", flush=True)
+            print("[probe] conclusion: no usable tier (generation fails with the short code attention_backend_unsupported)", flush=True)
         print(
-            f"[probe] 覆盖：YUE2_ATTENTION_BACKEND=auto|flash|cudnn|sdpa（当前 {forced}，"
-            f"auto = 上面这套探针）；探针记录：{cache}",
+            f"[probe] override: YUE2_ATTENTION_BACKEND=auto|flash|cudnn|sdpa (currently {forced},"
+            f"auto = the probe set above); probe record: {cache}",
             flush=True,
         )
     return 0 if recommended else 3
@@ -123,7 +123,7 @@ def _emit(payload: dict, as_json: bool, skip_note: str) -> None:
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
     else:
-        print(f"[probe] 跳过（{skip_note}）：没有 CUDA 时无需探针，yue2 用 sdpa", flush=True)
+        print(f"[probe] skipped ({skip_note}): no CUDA means no probe is needed, yue2 uses sdpa", flush=True)
 
 
 if __name__ == "__main__":

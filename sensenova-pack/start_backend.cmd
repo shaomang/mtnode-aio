@@ -1,27 +1,28 @@
 @echo off
 REM ===========================================================================
-REM SenseNova（SenseNova-U1.5-8B-MoT）本地图像生成后端 —— 手工启动入口
-REM   正常由 MTNode 负责启停，本脚本只用于自查 / 契约冒烟，**不要常驻**。
+REM SenseNova (SenseNova-U1.5-8B-MoT) local image generation backend -- manual start entry
+REM   MTNode normally starts/stops it; this script is for self-check / contract smoke tests only. **Do not keep it running.**
 REM
-REM   用法（本目录下）：start_backend.cmd           -> 默认端口 8774
-REM                     start_backend.cmd 8899      -> 指定端口
+REM   Usage (from this directory): start_backend.cmd           -> default port 8774
+REM                                start_backend.cmd 8899      -> explicit port
 REM
-REM   首次使用请先安装（全程国内镜像）：
+REM   Install first (domestic mirrors throughout):
 REM     powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -InstallDir .
 REM
-REM   常用环境变量（都在命令行里设，或直接改本文件）：
-REM     SENSENOVA_PORT          端口（默认 8774）
-REM     SENSENOVA_MODEL_DIR     权重目录（默认自动探测 .\models\SenseNova__SenseNova-U1.5-8B-MoT）
-REM     SENSENOVA_VRAM_MODE     fast（默认，24G 卡档）/ balanced / low / full（需 48G+）
-REM     SENSENOVA_DTYPE         bfloat16（默认）/ float16 / float32
-REM     SENSENOVA_ATTN_BACKEND  sdpa（默认，Windows 无 flash-attn 轮子）/ auto / flash
-REM     SENSENOVA_DEVICE        cuda / cuda:0 / cpu（空 = 自动）
-REM     MTNODE_SENSENOVA_MOCK   1 = 不加载模型、只造占位 PNG（联调用）
+REM   Common environment variables (set them on the command line, or edit this file):
+REM     SENSENOVA_PORT          port (default 8774)
+REM     SENSENOVA_MODEL_DIR     weights dir (default: auto-detected .\models\SenseNova__SenseNova-U1.5-8B-MoT)
+REM     SENSENOVA_VRAM_MODE     fast (default, 24G card tier) / balanced / low / full (needs 48G+)
+REM     SENSENOVA_DTYPE         bfloat16 (default) / float16 / float32
+REM     SENSENOVA_ATTN_BACKEND  sdpa (default; no flash-attn wheel on Windows) / auto / flash
+REM     SENSENOVA_DEVICE        cuda / cuda:0 / cpu (empty = auto)
+REM     MTNODE_SENSENOVA_MOCK   1 = do not load the model, write a placeholder PNG only (integration testing)
 REM
-REM   显存不够时的降档顺序（真实故障排查口径，详见 SKILL: sensenova-local-install）：
-REM     fast -> balanced -> low；再不够就先关掉 H3 / Music3 等占显存的后端。
+REM   Step-down order when VRAM is short (the real troubleshooting order; see SKILL: sensenova-local-install):
+REM     fast -> balanced -> low; still short: shut down the other VRAM-hungry backends first (H3 / Music3 ...).
 REM ===========================================================================
 setlocal EnableExtensions
+chcp 65001 >nul
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
@@ -55,7 +56,7 @@ echo   default out: %CD%\outputs
 echo.
 echo   smoke: curl -X POST http://127.0.0.1:8774/generate -H "Content-Type: application/json" ^
 echo          -d "{\"prompt\":\"a red cube\",\"width\":2048,\"height\":2048,\"numSteps\":50}"
-echo          （首次含权重加载，24G 卡上要等几分钟，客户端超时要放到 10 分钟级）
+echo          (the first call loads the weights: expect minutes on a 24G card, so set the client timeout to 10 minutes)
 echo.
 
 ".venv\Scripts\python.exe" -m app %*
@@ -63,8 +64,8 @@ set "ERR=%ERRORLEVEL%"
 if not "%ERR%"=="0" (
   echo.
   echo [ERROR] Backend exited with code %ERR%
-  echo   2 = 端口被占用：换端口（start_backend.cmd 8899）或杀掉占用 8774 的进程
-  echo   其它 = 看上面的 traceback / 跑 scripts\install.ps1 的自检段
+  echo   2 = port already in use: use another port ^(start_backend.cmd 8899^) or kill the process holding 8774
+  echo   other = see the traceback above / run the self-check part of scripts\install.ps1
   pause
 )
 exit /b %ERR%

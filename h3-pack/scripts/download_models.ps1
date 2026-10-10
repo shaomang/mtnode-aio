@@ -5,10 +5,16 @@
 [CmdletBinding()]
 param()
 
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $ErrorActionPreference = "Stop"
 Write-Host "============================================================"
-Write-Host "[h3-download] 国内镜像说明（必须）：HuggingFace 国内无法直连，本脚本优先从 ModelScope(魔搭) 下载权重；"
-Write-Host "  ModelScope 失败时回退 hf-mirror.com（不会直连 huggingface.co）。"
+Write-Host "[h3-download] China mirror notes (required): HuggingFace cannot be reached directly from mainland China, so this script downloads weights from ModelScope first;"
+Write-Host "  when ModelScope fails it falls back to hf-mirror.com (it never connects straight to huggingface.co)."
 Write-Host "============================================================"
 $Root = Split-Path -Parent $PSScriptRoot
 $ComfyRoot = Join-Path $Root "ComfyUI"
@@ -85,20 +91,23 @@ except Exception as e1:
 Write-Host "100% app weights ready"
 Write-Host "Models under: $ModelsRoot"
 
-# ---- 4K 超分补帧后处理权重 ----
-# RealESRGAN x4 超分模型 → ComfyUI/models/upscale_models/（核心节点 UpscaleModelLoader 读取）
-# RealESRGAN x2 超分模型 → 同一目录；**可选**（超分节点选 x2 倍率时优先用它：中间张量只有 x4 的 1/4，
-#   峰值系统内存直接降一档；拉不到不影响安装与 x2 倍率 —— 此时用 x4 权重 + 输出端缩到 2 倍）
-# rife47.pth 补帧模型 → ComfyUI-Frame-Interpolation/ckpts/rife/（RIFE VFI 节点读取；
-#   节点本身会尝试从 GitHub 自动下载，国内网络下这里预先放好避免卡住）
+# ---- 4K upscale / frame-interpolation post-processing weights ----
+# RealESRGAN x4 upscale model -> ComfyUI/models/upscale_models/ (read by the core node UpscaleModelLoader)
+# RealESRGAN x2 upscale model -> same directory; **optional** (the upscale node prefers it when the x2 ratio is
+#   selected: intermediate tensors are only 1/4 the size of x4, so peak system memory drops a whole step; being
+#   unable to fetch it does not affect the install or the x2 ratio -- in that case the x4 weights are used and
+#   the output is downscaled to 2x)
+# rife47.pth interpolation model -> ComfyUI-Frame-Interpolation/ckpts/rife/ (read by the RIFE VFI node;
+#   the node itself tries to auto-download from GitHub, so pre-placing it here keeps China networks from stalling)
 $postFiles = @(
     @{
         Repo = "licyk/sd-upscaler-models"; Rel = "RealESRGAN/RealESRGAN_x4plus.pth";
         DstDir = $ModelsRoot; Out = "upscale_models\RealESRGAN_x4plus.pth"
     },
     @{
-        # 官方 Real-ESRGAN x2plus 权重（ai-forever 的 PyTorch 移植版，state_dict 与 x2plus 同架构 →
-        # ComfyUI 的 UpscaleModelLoader 按 state dict 认架构，改名放进 combo 即可用）
+        # Official Real-ESRGAN x2plus weights (ai-forever's PyTorch port; its state_dict has the same
+        # architecture as x2plus -> ComfyUI's UpscaleModelLoader identifies the architecture from the state
+        # dict, so renaming it into the combo list is all it takes)
         Repo = "ai-forever/Real-ESRGAN"; Rel = "RealESRGAN_x2.pth";
         DstDir = $ModelsRoot; Out = "upscale_models\RealESRGAN_x2plus.pth"; Optional = $true
     },
@@ -118,7 +127,7 @@ foreach ($f in $postFiles) {
         continue
     }
     Write-Host "[download post] $($f.Out) ..."
-    # 下载到临时子目录（modelscope/hf 会按 repo 内部路径展开），再移动到目标文件名
+    # Download into a temporary subdirectory (modelscope/hf expand the repo-internal path), then move it to the target filename
     $tmpDir = Join-Path (Split-Path -Parent $dest) "_post_tmp_$PID"
     New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     $tmpEsc = $tmpDir.Replace("\", "\\")
@@ -141,17 +150,17 @@ print('saved', p)
     if ($LASTEXITCODE -ne 0) {
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         if ($f.Optional) {
-            Write-Host "[warn] optional post weight skipped: $($f.Out)（不影响安装与 x2 倍率：缺 x2 权重时用 x4 权重 + 输出端缩到 2 倍）"
+            Write-Host "[warn] optional post weight skipped: $($f.Out) (does not affect the install or the x2 ratio: without the x2 weights the x4 weights are used and the output is downscaled to 2x)"
             continue
         }
         throw "Failed to download post $($f.Out)"
     }
-    # 把下载文件挪到最终路径（下载可能带 repo 内相对目录）
+    # Move the downloaded file to its final path (the download may carry the repo-relative directory)
     $downloaded = Get-ChildItem -LiteralPath $tmpDir -Recurse -File | Where-Object { $_.Length -gt 1MB } | Select-Object -First 1
     if (-not $downloaded) {
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         if ($f.Optional) {
-            Write-Host "[warn] optional post weight empty: $($f.Out)（同上，不影响安装）"
+            Write-Host "[warn] optional post weight empty: $($f.Out) (same as above, does not affect the install)"
             continue
         }
         throw "post download empty: $($f.Out)"
@@ -161,11 +170,11 @@ print('saved', p)
     if (-not ((Get-Item -LiteralPath $dest).Length -gt 1MB)) {
         if ($f.Optional) {
             Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
-            Write-Host "[warn] optional post weight too small: $($f.Out)（已丢弃，不影响安装）"
+            Write-Host "[warn] optional post weight too small: $($f.Out) (discarded, does not affect the install)"
             continue
         }
         throw "post file too small: $($f.Out)"
     }
 }
 
-Write-Host "100% post-processing weights ready (RealESRGAN_x4plus + RealESRGAN_x2plus(可选) + rife47)"
+Write-Host "100% post-processing weights ready (RealESRGAN_x4plus + RealESRGAN_x2plus(optional) + rife47)"

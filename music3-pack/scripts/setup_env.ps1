@@ -11,13 +11,19 @@ param(
     [string]$CudaPython = ""
 )
 
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $ErrorActionPreference = "Stop"
 
 Write-Host "============================================================"
-Write-Host "[music3-setup] 国内镜像说明（必须，本机位于中国大陆网络时尤其重要）："
-Write-Host "  · Python 库：默认使用清华镜像 pypi.tuna.tsinghua.edu.cn（或中科院 USTC mirrors.ustc.edu.cn，可用 MT_MUSIC_PIP_INDEX 覆盖）"
-Write-Host "  · diffusers 依赖来自 GitHub：直连失败自动用 ghproxy 镜像前缀重试"
-Write-Host "  · 模型权重：HuggingFace 无法直连，走 hf-mirror.com；Comfy 权重优先 ModelScope(魔搭)"
+Write-Host "[music3-setup] About the China mirrors (required; especially important when this machine is on a mainland China network):"
+Write-Host "  - Python packages: uses the Tsinghua mirror pypi.tuna.tsinghua.edu.cn by default (or the CAS USTC mirror mirrors.ustc.edu.cn; override with MT_MUSIC_PIP_INDEX)"
+Write-Host "  - The diffusers dependency comes from GitHub: if the direct connection fails we retry with the ghproxy mirror prefix"
+Write-Host "  - Model weights: huggingface.co is not reachable directly, so we go through hf-mirror.com; Comfy weights prefer ModelScope"
 Write-Host "============================================================"
 $Root = Split-Path -Parent $PSScriptRoot
 $VenvDir = Join-Path $Root ".venv"
@@ -89,14 +95,14 @@ if (-not (Test-Path $VenvPy)) {
     Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
 }
 
-# 国内镜像：默认清华（或中科院 USTC），可用 MT_MUSIC_PIP_INDEX 覆盖
+# China mirrors: Tsinghua by default (or the CAS USTC mirror); override with MT_MUSIC_PIP_INDEX
 $env:PIP_INDEX_URL = if ($env:MT_MUSIC_PIP_INDEX) { $env:MT_MUSIC_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
 Write-Host "Installing requirements..."
 & $VenvPy -m pip install -U pip
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 & $VenvPy -m pip install -r (Join-Path $Root "requirements.txt")
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "requirements install failed (direct); retrying with ghproxy git mirror (国内镜像)..."
+    Write-Host "requirements install failed (direct); retrying with the ghproxy git mirror (China mirror)..."
     $req = Join-Path $Root "requirements.txt"
     $reqMirror = Join-Path $env:TEMP "music3-requirements-mirror.txt"
     (Get-Content -LiteralPath $req -Raw) -replace "git\+https://github\.com/", "git+https://ghproxy.com/https://github.com/" | Set-Content -LiteralPath $reqMirror -Encoding utf8

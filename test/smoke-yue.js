@@ -700,7 +700,8 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(installPs1, ".attention-backend", "install.ps1 把档位写 <INSTALL_DIR>\\.attention-backend");
   has(installPs1, "attention_backend_unsupported", "无可用档记 reason=attention_backend_unsupported");
   has(installPs1, "app\\windows_patch.py", "工程文件清单含 app\\windows_patch.py");
-  has(installPs1, "必须**同时**存在", "清单提示 windows_patch 与 engine 必须同时存在（防 sync 覆盖）");
+  /* 本轮「安装脚本零中文」后，判据串改成脚本里的英文原句（脚本注释/消息全 ASCII 英文） */
+  has(installPs1, "must **coexist**", "清单提示 windows_patch 与 engine 必须同时存在（防 sync 覆盖）");
 
   /* --- 11.5 SKILL.md：纠正「缺 flash_attn 不是故障」旧口径 --- */
   hasnt(skill, "只慢，不算失败", "旧口径「只慢，不算失败」已删除");

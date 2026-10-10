@@ -68,6 +68,28 @@ description: 在用户指定目录安装 Breeze TTS 2（breezeblue-ai/breeze-tts
 - GitHub（引擎源码）：直连失败用 `ghproxy.com` 前缀镜像，或改下 `archive/refs/heads/main.zip`
 - ffmpeg：`https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip`（失败回退 `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip`）
 
+## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
+
+> 宿主用 `powershell.exe`（Windows PowerShell 5.1）跑 `scripts\*.ps1`。而 **UTF-8 无 BOM 的 `.ps1` 在中文 Windows 上会被按 GBK(cp936) 解码** —— 中文变成乱码字节，还会吞掉紧跟的 `}` / `'` / `"`，脚本**直接语法崩**（本轮改前实测：breeze 10 处、sensenova 113 处、yue 42 处、tts 15 处、llama 3 处、h3 download_models 6 处 + repair_torch_kitchen 1 处语法错），控制台同时一片乱码。
+
+- `scripts\*.ps1` / `scripts\*.cmd` 与安装期辅助 `*.py`（`download_weights.py` 等）**一律纯 ASCII 英文**：注释、消息、异常文本全英文；不许有中文、全角标点、`——`、制表线 `─`、emoji。
+- `.ps1` 开头（param 块之后）必须钉死编码三行，`.cmd` 在 `setlocal` 后加两行：
+
+  ```powershell
+  try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+  $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+  $env:PYTHONIOENCODING = 'utf-8'
+  ```
+
+  ```bat
+  chcp 65001 >nul
+  set "PYTHONIOENCODING=utf-8"
+  ```
+
+  这样脚本自身与 pip / git / python 的输出都按 UTF-8 出去，宿主（用 UTF-8 解码 stdout，并按 `[breeze-install] progress:` 抓进度）看到的就是正常文本。
+- 改脚本后跑 `node test/smoke-install-scripts.js`：钉住「零非 ASCII + GBK 解码后 PowerShell 解析零错 + 进度前缀 / `reason=` 等 ASCII 契约仍在」。
+- Python **后端**（`app/*.py` 的启动横幅与日志）本轮不做零中文，仍是中文，靠上面的 UTF-8 钉死正确显示。
+
 ## 安装步骤（按序）
 
 1. **前置检查**：Python ≥ 3.10（`python -c "import sys;print(sys.version_info[:2])"`）；NVIDIA 驱动可见（`nvidia-smi`）。

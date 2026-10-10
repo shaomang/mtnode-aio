@@ -30,13 +30,20 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
 Write-Host "============================================================"
-Write-Host "[music3-download] 国内镜像说明（必须，本机位于中国大陆网络时尤其重要）："
-Write-Host "  · HuggingFace 国内无法直连：Comfy 权重优先从 ModelScope(魔搭) Comfy-Org/MiniMax-Music-3 下载"
-Write-Host "  · App(Diffusers) 权重经 hf-mirror.com 下载（HF_ENDPOINT 已设，不会直连 huggingface.co）"
-Write-Host "  · 如需 App 权重也走 ModelScope，可设 MUSIC3_MODELSCOPE_REPO 指向你的魔搭仓库"
+Write-Host "[music3-download] About the China mirrors (required; especially important when this machine is on a mainland China network):"
+Write-Host "  - huggingface.co cannot be reached directly from mainland China: Comfy weights are downloaded from ModelScope Comfy-Org/MiniMax-Music-3 first"
+Write-Host "  - App (Diffusers) weights are downloaded through hf-mirror.com (HF_ENDPOINT is already set, so we never hit huggingface.co directly)"
+Write-Host "  - To make the App weights go through ModelScope too, set MUSIC3_MODELSCOPE_REPO to your own ModelScope repository"
 Write-Host "============================================================"
 
 # China-friendly defaults (override by setting env before calling)
@@ -101,7 +108,7 @@ function Download-ComfyWeights {
             continue
         }
         Write-Host "[download] $inc"
-        # 1) ModelScope(魔搭) 国内直连优先
+        # 1) ModelScope first: reachable directly from mainland China
         $msUrl = "https://www.modelscope.cn/models/$repo/resolve/master/$($inc -replace '\\','/')"
         $msOk = $false
         try {
@@ -111,7 +118,7 @@ function Download-ComfyWeights {
         } catch {
             Write-Host "[modelscope failed, fallback hf-mirror] $inc : $($_.Exception.Message)"
         }
-        # 2) hf-mirror 兜底
+        # 2) hf-mirror fallback
         if (-not $msOk) {
             & $py -c @"
 import os

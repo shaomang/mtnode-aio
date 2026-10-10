@@ -2,15 +2,21 @@ param(
   [string]$InstallDir = (Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent)
 )
 
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $ErrorActionPreference = "Stop"
 Set-Location $InstallDir
 
 Write-Host "[tts-install] ============================================================"
-Write-Host "[tts-install] 国内镜像说明（必须，本机位于中国大陆网络时尤其重要）："
-Write-Host "[tts-install]   · Python 库：使用清华镜像 pypi.tuna.tsinghua.edu.cn（或中科院 USTC mirrors.ustc.edu.cn）"
-Write-Host "[tts-install]   · HuggingFace 国内无法直连：预训练权重优先从 ModelScope(魔搭) 下载，失败自动回退 hf-mirror.com"
-Write-Host "[tts-install]     （可用环境变量 TTS_MODELSCOPE_REPO 指定你的 ModelScope 仓库，默认 lj1995/GPT-SoVITS）"
-Write-Host "[tts-install]   · GitHub 克隆失败自动回退 ghproxy 镜像"
+Write-Host "[tts-install] About the China mirrors (required; especially important when this machine is on a mainland China network):"
+Write-Host "[tts-install]   - Python packages: use the Tsinghua mirror pypi.tuna.tsinghua.edu.cn (or the CAS USTC mirror mirrors.ustc.edu.cn)"
+Write-Host "[tts-install]   - huggingface.co cannot be reached directly from mainland China: pretrained weights are downloaded from ModelScope first, with an automatic fallback to hf-mirror.com"
+Write-Host "[tts-install]     (set the env var TTS_MODELSCOPE_REPO to point at your own ModelScope repository; default is lj1995/GPT-SoVITS)"
+Write-Host "[tts-install]   - If the GitHub clone fails we automatically fall back to the ghproxy mirror"
 Write-Host "[tts-install] ============================================================"
 Write-Host "[tts-install] install dir: $InstallDir"
 Write-Host "[tts-install] progress: 5"
@@ -54,7 +60,7 @@ Write-Host "[tts-install] progress: 28"
 & $venvPy -m pip install -r requirements.txt -i $pipIndex --trusted-host $pipHost
 Write-Host "[tts-install] progress: 38"
 
-# ---- GPT-SoVITS 引擎：克隆源码 ----
+# ---- GPT-SoVITS engine: clone the source tree ----
 $engineDir = Join-Path $InstallDir "engine"
 New-Item -ItemType Directory -Force -Path $engineDir | Out-Null
 $apiV2 = Join-Path $engineDir "api_v2.py"
@@ -72,11 +78,11 @@ if (-not (Test-Path $apiV2)) {
       if ($LASTEXITCODE -ne 0 -or -not (Test-Path $apiV2)) { throw "GPT-SoVITS clone failed (no git or network)" }
     }
   } else {
-    throw "git not found — cannot clone GPT-SoVITS"
+    throw "git not found - cannot clone GPT-SoVITS"
   }
 }
 
-# ---- GPT-SoVITS 引擎训练依赖（torch + 引擎 requirements，国内镜像）----
+# ---- GPT-SoVITS engine training deps (torch + engine requirements, China mirrors) ----
 $engineReq = Join-Path $engineDir "requirements.txt"
 if (Test-Path $engineReq) {
   Write-Host "[tts-install] installing engine training deps (torch + GPT-SoVITS requirements)..."
@@ -100,13 +106,13 @@ if (Test-Path $engineReq) {
   # x_transformers>=2.28 hard-requires torch-einops-utils / einx / loguru; list
   # them explicitly so a partial --target install can never leave the package
   # body missing (semantic phase crash).
-  # onnxruntime = g2pw 拼音推理必需（上面的过滤把它去掉了，这里补回 CPU 版）；
-  # faster-whisper = 长音频自动切分后的逐段 ASR 转写必需。
+  # onnxruntime = required for g2pw pinyin inference (the filter above drops it, so add the CPU build back here);
+  # faster-whisper = required for segment-by-segment ASR transcription after long audio is auto-split.
   Add-Content -Encoding UTF8 $trainReq "pandas`nmatplotlib`ntorch-einops-utils`neinx`nloguru`nonnxruntime`nfaster-whisper"
   & $venvPy -m pip install -r $trainReq -i $pipIndex --trusted-host $pipHost
   if ($LASTEXITCODE -ne 0) { Write-Host "[tts-install] warn: engine deps install failed (training may not work)" }
 } else {
-  Write-Host "[tts-install] warn: engine requirements.txt not found — skipping engine deps"
+  Write-Host "[tts-install] warn: engine requirements.txt not found - skipping engine deps"
 }
 
 $pretrained = Join-Path $engineDir "GPT_SoVITS\pretrained_models"
@@ -138,7 +144,7 @@ foreach ($w in $weights) {
   $pct = 58 + [int]($i / $total * 22)
   Write-Host "[tts-install] progress: $pct"
   $relSlash = $w.rel -replace "\\", "/"
-  # 1) ModelScope(魔搭) 国内直连优先
+  # 1) ModelScope first: reachable directly from mainland China
   $msUrl = "https://www.modelscope.cn/models/$msRepo/resolve/master/$relSlash"
   $msOk = $false
   try {
@@ -148,7 +154,7 @@ foreach ($w in $weights) {
   } catch {
     Write-Host "[tts-install] modelscope failed, fallback hf-mirror: $($w.out)"
   }
-  # 2) hf-mirror 兜底
+  # 2) hf-mirror fallback
   if (-not $msOk) {
     try {
       & $venvPy -c "from huggingface_hub import hf_hub_download; p=hf_hub_download(repo_id='lj1995/GPT-SoVITS', filename='$relSlash', local_dir=r'$engineDir'); print('ok', p)"

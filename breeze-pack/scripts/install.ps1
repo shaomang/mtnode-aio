@@ -1,38 +1,45 @@
-# Breeze TTS 2 本地 TTS —— 安装脚本（Windows 原生）
+# Breeze TTS 2 local TTS -- installer script (native Windows)
 #
-# 干四件事：
-#   1. 建 .venv 并按国内镜像装依赖（torch 走 aliyun 的 pytorch-wheels 镜像）
-#   2. 克隆 breeze-tts 推理引擎到 engine/（官方 clone 失败回退 ghproxy 镜像）
-#   3. 下载 Breeze TTS 2 权重到 checkpoints/breeze-tts-2/（ModelScope 优先 → hf-mirror 回退 → 手填本地目录）
-#   4. 下载便携 ffmpeg 到 tools/ffmpeg/（mp3 输出用；缺失不影响 wav/flac）
+# Does four things:
+#   1. Create .venv and install dependencies from China mirrors (torch comes from the aliyun pytorch-wheels mirror)
+#   2. Clone the breeze-tts inference engine into engine/ (falls back to the ghproxy mirror when the official clone fails)
+#   3. Download the Breeze TTS 2 weights into checkpoints/breeze-tts-2/ (ModelScope first -> hf-mirror fallback -> hand-filled local directory)
+#   4. Download a portable ffmpeg into tools/ffmpeg/ (used for mp3 output; missing it does not affect wav/flac)
 #
-# 进度口径：[breeze-install] progress: NN  —— 宿主主进程按这个正则抓进度条。
+# Progress contract: [breeze-install] progress: NN  -- the host main process scrapes the progress bar with this regex.
 #
-# 用法：
+# Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallDir "D:\mtnode\breeze"
-# 可覆盖的环境变量：
-#   BREEZE_WEIGHTS_DIR   已有本地权重目录（非空则跳过下载，直接软链/复制引用）
-#   BREEZE_WEIGHTS_REPO  ModelScope / HF 权重仓库名（默认 BreezeBlue/breeze-tts-2）
-#   BREEZE_SKIP_TORCH=1  跳过 torch 安装（调试用）
-#   BREEZE_SKIP_FFMPEG=1 跳过 ffmpeg 下载
+# Overridable environment variables:
+#   BREEZE_WEIGHTS_DIR   existing local weights directory (when non-empty the download is skipped and it is referenced by link/copy)
+#   BREEZE_WEIGHTS_REPO  ModelScope / HF weights repo name (default BreezeBlue/breeze-tts-2)
+#   BREEZE_SKIP_TORCH=1  skip the torch install (for debugging)
+#   BREEZE_SKIP_FFMPEG=1 skip the ffmpeg download
 param(
   [Parameter(Mandatory = $true)][string]$InstallDir
 )
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
 $ErrorActionPreference = "Stop"
 $InstallDir = (Resolve-Path -LiteralPath $InstallDir).Path
 $script:Step = 0
 
 function Say([string]$msg) { Write-Host "[breeze-install] $msg" }
 function Progress([double]$pct) { Write-Host ("[breeze-install] progress: {0:N1}" -f $pct) }
-function Step([string]$msg, [double]$pct) { $script:Step++; Say "── ($($script:Step)) $msg"; Progress $pct }
+function Step([string]$msg, [double]$pct) { $script:Step++; Say "- ($($script:Step)) $msg"; Progress $pct }
 
-# 原生命令（git / pip / python）会把正常信息写 stderr，配合 $ErrorActionPreference="Stop"
-# 会把「正常的输出」当成错误直接中断脚本（实测：git clone 成功、进度正常，脚本却在这一行挂掉）。
-# 所以凡是调外部程序一律走这个包装：临时放行 stderr，命令自身失败仍按 $LASTEXITCODE 判定。
+# Native commands (git / pip / python) write their normal information to stderr, and combined with
+# $ErrorActionPreference="Stop" that turns "normal output" into an error that aborts the script
+# (measured: git clone succeeds, progress looks fine, yet the script dies on that very line).
+# So every external program call goes through this wrapper: stderr is let through for the duration
+# of the call, and a real command failure is still decided by $LASTEXITCODE.
 function Invoke-Native([string]$exe, [string[]]$cmdArgs) {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
-  # 顺手把 pip.ini 里可能挂着的那条不可达 extra-index 摘掉（每次调用都做，幂等）
+  # Also strip that unreachable extra-index which pip.ini may carry (done on every call, idempotent)
   Remove-Item Env:\PIP_EXTRA_INDEX_URL -ErrorAction SilentlyContinue
   try {
     & $exe @cmdArgs 2>&1 | ForEach-Object { Say ("  " + $_) }
@@ -45,7 +52,7 @@ function Invoke-Native([string]$exe, [string[]]$cmdArgs) {
 $PIP_MIRROR  = "https://pypi.tuna.tsinghua.edu.cn/simple"
 $PIP_FALLBACK= "https://mirrors.ustc.edu.cn/pypi/simple/"
 $TORCH_INDEX = if ($env:BREEZE_TORCH_INDEX) { $env:BREEZE_TORCH_INDEX } else { "https://download.pytorch.org/whl/cu128" }
-# torch 轮子按顺序试：官方索引（版本最全）→ 阿里云镜像（国内快，但常慢一版）
+# torch wheels are tried in order: official index (most complete versions) -> aliyun mirror (fast in China, but usually one version behind)
 $TORCH_INDICES = @(
   $TORCH_INDEX,
   "https://mirrors.aliyun.com/pytorch-wheels/cu128",
@@ -60,12 +67,12 @@ $VENV_PY     = Join-Path $VENV "Scripts\python.exe"
 $TOOLS_DIR   = Join-Path $InstallDir "tools"
 
 Say "InstallDir = $InstallDir"
-Say "权重仓库   = $WEIGHTS_REPO"
-Say "torch 镜像 = $TORCH_INDEX"
-Say "许可提示   = 代码 Apache-2.0；权重与自托管输出仅限研究 / 非商用（BreezeBlue Research and Non-Commercial License）"
+Say "weights repo = $WEIGHTS_REPO"
+Say "torch index  = $TORCH_INDEX"
+Say "license      = code Apache-2.0; weights and self-hosted output are research / non-commercial only (BreezeBlue Research and Non-Commercial License)"
 
-# ── 0. 前置：Python ────────────────────────────────────────────────
-Step "检查 Python（需要 3.10+）" 1
+# -- 0. Prerequisite: Python ----------------------------------------------
+Step "checking Python (3.10+ required)" 1
 $pyExe = $null
 foreach ($cand in @("python", "python3", "py")) {
   try {
@@ -73,18 +80,18 @@ foreach ($cand in @("python", "python3", "py")) {
     if ($LASTEXITCODE -eq 0 -and $v) {
       $parts = $v.Trim().Split(".")
       if ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 10) { $pyExe = $cand; Say "python = $cand ($v)"; break }
-      else { Say "跳过 $cand（版本 $v < 3.10）" }
+      else { Say "skipping $cand (version $v < 3.10)" }
     }
   } catch { }
 }
-if (-not $pyExe) { throw "找不到 Python 3.10+。请先安装 Python 3.10 / 3.11 / 3.12 并勾选 Add to PATH，然后重试。" }
+if (-not $pyExe) { throw "Python 3.10+ not found. Install Python 3.10 / 3.11 / 3.12 first, tick Add to PATH, then retry." }
 
-# ── 1. venv ───────────────────────────────────────────────────────
-Step "创建虚拟环境 .venv" 5
+# -- 1. venv --------------------------------------------------------------
+Step "creating the virtual environment .venv" 5
 if (-not (Test-Path -LiteralPath $VENV_PY)) {
   & $pyExe -m venv $VENV 2>&1 | ForEach-Object { Say ("  " + $_) }
-  if (-not (Test-Path -LiteralPath $VENV_PY)) { throw "venv 创建失败：$VENV_PY 不存在" }
-} else { Say "复用已有 .venv" }
+  if (-not (Test-Path -LiteralPath $VENV_PY)) { throw "venv creation failed: $VENV_PY does not exist" }
+} else { Say "reusing the existing .venv" }
 $prevEapPip = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
@@ -92,11 +99,11 @@ try {
 } finally { $ErrorActionPreference = $prevEapPip }
 Progress 10
 
-# ── 2. 引擎源码 ────────────────────────────────────────────────────
-Step "获取 Breeze TTS 推理引擎（breeze-tts）" 14
+# -- 2. Engine source -----------------------------------------------------
+Step "fetching the Breeze TTS inference engine (breeze-tts)" 14
 $engineOk = Test-Path -LiteralPath (Join-Path $ENGINE_DIR "infer.py")
 if ($engineOk) {
-  Say "engine/ 已在，跳过克隆"
+  Say "engine/ is already there, skipping the clone"
 } else {
   New-Item -ItemType Directory -Force -Path $ENGINE_DIR | Out-Null
   $cloned = $false
@@ -108,13 +115,13 @@ if ($engineOk) {
       if (Test-Path -LiteralPath $ENGINE_DIR) { Remove-Item -Recurse -Force -LiteralPath $ENGINE_DIR -ErrorAction SilentlyContinue }
       New-Item -ItemType Directory -Force -Path $ENGINE_DIR | Out-Null
     }
-  } else { Say "未找到 git，改用 zip 下载" }
+  } else { Say "git not found, falling back to a zip download" }
   if (-not $cloned) {
     foreach ($zip in @("https://ghproxy.com/https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip",
                        "https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip")) {
       $tmp = Join-Path $env:TEMP ("breeze-tts-" + [guid]::NewGuid().ToString("N") + ".zip")
       try {
-        Say "下载 $zip"
+        Say "downloading $zip"
         Invoke-WebRequest -Uri $zip -OutFile $tmp -UseBasicParsing -TimeoutSec 300
         $ex = Join-Path $env:TEMP ("breeze-tts-x-" + [guid]::NewGuid().ToString("N"))
         Expand-Archive -LiteralPath $tmp -DestinationPath $ex -Force
@@ -122,65 +129,67 @@ if ($engineOk) {
         if ($inner) { Copy-Item -Path (Join-Path $inner.FullName "*") -Destination $ENGINE_DIR -Recurse -Force }
         Remove-Item -Recurse -Force $ex, $tmp -ErrorAction SilentlyContinue
         if (Test-Path -LiteralPath (Join-Path $ENGINE_DIR "infer.py")) { $cloned = $true; break }
-      } catch { Say "  失败：$($_.Exception.Message)" }
+      } catch { Say "  failed: $($_.Exception.Message)" }
     }
   }
-  if (-not $cloned) { throw "引擎源码获取失败：请检查网络，或手工把 breeze-tts 仓库内容放到 $ENGINE_DIR" }
+  if (-not $cloned) { throw "could not obtain the engine source: check the network, or copy the breeze-tts repository contents into $ENGINE_DIR by hand" }
 }
 Progress 20
 
-# ── 3. Python 依赖 ─────────────────────────────────────────────────
-Step "安装 Python 依赖（国内镜像）" 24
+# -- 3. Python dependencies ----------------------------------------------
+Step "installing the Python dependencies (China mirrors)" 24
 $reqFile = Join-Path $ENGINE_DIR "requirements.txt"
 if (Test-Path -LiteralPath $reqFile) {
-  # 掉测试/静态检查类依赖：pytest / ruff 不必装
+  # Drop test / static-check dependencies: pytest / ruff are not needed
   $filtered = Join-Path $InstallDir "requirements.breeze.txt"
   Get-Content -LiteralPath $reqFile |
     Where-Object { $_ -notmatch '^\s*(pytest|ruff)' } |
     Set-Content -LiteralPath $filtered -Encoding UTF8
-  Say "依赖清单 = $filtered"
-} else { throw "缺少 engine/requirements.txt（引擎源码不完整）" }
+  Say "requirements list = $filtered"
+} else { throw "engine/requirements.txt is missing (the engine source is incomplete)" }
 
 if ($env:BREEZE_SKIP_TORCH -ne "1") {
-  Say "装 torch / torchaudio（CUDA 版；按顺序试 $($TORCH_INDICES -join ' → ')）"
+  Say "installing torch / torchaudio (CUDA build; indices tried in order: $($TORCH_INDICES -join ' -> '))"
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   $torchRc = 1
   try {
     foreach ($idx in $TORCH_INDICES) {
-      Say "torch 索引：$idx"
+      Say "torch index: $idx"
       $torchRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "torch==2.9.1", "torchaudio==2.9.1", "--index-url", $idx)
-      if ($torchRc -eq 0) { Say "torch 装好了（$idx）"; break }
-      Say "该索引没成功（exit $torchRc），换下一个"
+      if ($torchRc -eq 0) { Say "torch installed ($idx)"; break }
+      Say "that index did not work (exit $torchRc), trying the next one"
     }
   } finally { $ErrorActionPreference = $prevEap }
   if ($torchRc -ne 0) {
-    throw "torch 安装失败（试过的索引：$($TORCH_INDICES -join ' / ')）——见上方 pip 输出；也可用 BREEZE_TORCH_INDEX 指定自己的镜像后重跑"
+    throw "torch installation failed (indices tried: $($TORCH_INDICES -join ' / ')) -- see the pip output above; you can also point BREEZE_TORCH_INDEX at your own mirror and rerun"
   }
-} else { Say "BREEZE_SKIP_TORCH=1：跳过 torch" }
+} else { Say "BREEZE_SKIP_TORCH=1: skipping torch" }
 Progress 54
 
-Step "安装其余依赖" 56
-# gradio 是 qwen-tts 的间接依赖且没钉版本：pip 会在 6.17~6.29 之间反复回溯，每轮都要下一个
-# 31MB 的轮子（实测能磨十几分钟）。这里先按固定版本把它装上（--no-deps 绕开回溯），
-# 再让 pip 按 requirements 收尾 —— 结果一致，时间从十几分钟压到一两分钟。
+Step "installing the remaining dependencies" 56
+# gradio is an indirect dependency of qwen-tts with no pinned version: pip keeps backtracking
+# between 6.17 and 6.29 and has to fetch a 31MB wheel on every round (measured: it can grind for
+# over ten minutes). So install it first at a fixed version (--no-deps sidesteps the backtracking)
+# and then let pip finish from the requirements -- same result, and the time drops from over ten
+# minutes to one or two.
 $TORCH_INDEX_ARG = ($TORCH_INDICES | Select-Object -First 1)
 $prevEapG = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
-  Say "预装 gradio==6.29.1（避免 pip 对它反复回溯）"
+  Say "pre-installing gradio==6.29.1 (keeps pip from backtracking on it)"
   Invoke-Native $VENV_PY @("-m", "pip", "install", "--index-url", $PIP_MIRROR, "--no-deps", "gradio==6.29.1", "gradio-client==2.7.2") | Out-Null
   $depsRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "-r", $filtered, "--index-url", $PIP_MIRROR, "--extra-index-url", $TORCH_INDEX_ARG)
   if ($depsRc -ne 0) {
-    Say "清华镜像失败（exit $depsRc），回退 $PIP_FALLBACK"
+    Say "tsinghua mirror failed (exit $depsRc), falling back to $PIP_FALLBACK"
     $depsRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "-r", $filtered, "--index-url", $PIP_FALLBACK, "--extra-index-url", $TORCH_INDEX_ARG)
   }
 } finally { $ErrorActionPreference = $prevEapG }
-if ($depsRc -ne 0) { throw "Python 依赖安装失败（见上方 pip 输出）" }
+if ($depsRc -ne 0) { throw "Python dependency installation failed (see the pip output above)" }
 Progress 78
 
-# ── 4. 权重 ────────────────────────────────────────────────────────
-Step "准备 Breeze TTS 2 权重" 80
+# -- 4. Weights -----------------------------------------------------------
+Step "preparing the Breeze TTS 2 weights" 80
 New-Item -ItemType Directory -Force -Path $CKPT_DIR | Out-Null
 $localWeights = if ($env:BREEZE_WEIGHTS_DIR) { $env:BREEZE_WEIGHTS_DIR } else { "" }
 function Test-Ckpt([string]$dir) {
@@ -191,18 +200,18 @@ function Test-Ckpt([string]$dir) {
   return ($hasCfg -and $hasWts)
 }
 if (Test-Ckpt $CKPT_DIR) {
-  Say "权重已在 $CKPT_DIR，跳过下载"
+  Say "weights are already in $CKPT_DIR, skipping the download"
 } elseif ($localWeights -and (Test-Ckpt $localWeights)) {
-  Say "使用 BREEZE_WEIGHTS_DIR 指定的本地权重：$localWeights"
+  Say "using the local weights pointed to by BREEZE_WEIGHTS_DIR: $localWeights"
   $marker = Join-Path $CKPT_DIR "USE_LOCAL_WEIGHTS.txt"
   Set-Content -LiteralPath $marker -Value $localWeights -Encoding UTF8
 } else {
-  if ($localWeights) { Say "BREEZE_WEIGHTS_DIR 指向的目录不完整（缺 config.json 或权重文件），改为下载" }
+  if ($localWeights) { Say "the directory BREEZE_WEIGHTS_DIR points to is incomplete (missing config.json or weight files), downloading instead" }
   Invoke-Native $VENV_PY @("-m", "pip", "install", "--quiet", "--index-url", $PIP_MIRROR, "huggingface_hub") | Out-Null
   $dl = Join-Path $InstallDir "scripts\download_weights.py"
   $src = Join-Path $PSScriptRoot "download_weights.py"
   if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $dl -Force }
-  if (-not (Test-Path -LiteralPath $dl)) { throw "缺少 scripts/download_weights.py（安装脚本被拆散）" }
+  if (-not (Test-Path -LiteralPath $dl)) { throw "scripts/download_weights.py is missing (the installer script has been split apart)" }
   $dlArgs = @($dl, "--repo", $WEIGHTS_REPO, "--dest", $CKPT_DIR)
   if ($env:BREEZE_WEIGHTS_REVISION) { $dlArgs += @("--revision", $env:BREEZE_WEIGHTS_REVISION) }
   $prevEap3 = $ErrorActionPreference
@@ -213,18 +222,18 @@ if (Test-Ckpt $CKPT_DIR) {
     $dlRc = $LASTEXITCODE
   } finally { $ErrorActionPreference = $prevEap3 }
   if ($dlRc -ne 0 -or -not (Test-Ckpt $CKPT_DIR)) {
-    throw "权重下载失败。可手工下载 $WEIGHTS_REPO 全部文件到 $CKPT_DIR，或设置 BREEZE_WEIGHTS_DIR 指向已有目录后重跑。"
+    throw "weight download failed. You can download every file of $WEIGHTS_REPO into $CKPT_DIR by hand, or set BREEZE_WEIGHTS_DIR to an existing directory and rerun."
   }
 }
 Progress 95
 
-# ── 5. 便携 ffmpeg（mp3 用） ───────────────────────────────────────
+# -- 5. Portable ffmpeg (for mp3) -----------------------------------------
 if ($env:BREEZE_SKIP_FFMPEG -ne "1") {
-  Step "准备便携 ffmpeg（mp3 输出用）" 96
+  Step "preparing a portable ffmpeg (for mp3 output)" 96
   $ffDir = Join-Path $TOOLS_DIR "ffmpeg"
   $ffExe = Join-Path $ffDir "ffmpeg.exe"
   if (Test-Path -LiteralPath $ffExe) {
-    Say "ffmpeg 已在 $ffExe"
+    Say "ffmpeg is already at $ffExe"
   } else {
     New-Item -ItemType Directory -Force -Path $ffDir | Out-Null
     $ok = $false
@@ -232,7 +241,7 @@ if ($env:BREEZE_SKIP_FFMPEG -ne "1") {
                        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip")) {
       $tmp = Join-Path $env:TEMP ("ffmpeg-" + [guid]::NewGuid().ToString("N") + ".zip")
       try {
-        Say "下载 $url"
+        Say "downloading $url"
         Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 600
         $ex = Join-Path $env:TEMP ("ffmpeg-x-" + [guid]::NewGuid().ToString("N"))
         Expand-Archive -LiteralPath $tmp -DestinationPath $ex -Force
@@ -240,34 +249,39 @@ if ($env:BREEZE_SKIP_FFMPEG -ne "1") {
         if ($found) { Copy-Item -LiteralPath $found.FullName -Destination $ffExe -Force; $ok = $true }
         Remove-Item -Recurse -Force $ex, $tmp -ErrorAction SilentlyContinue
         if ($ok) { break }
-      } catch { Say "  失败：$($_.Exception.Message)" }
+      } catch { Say "  failed: $($_.Exception.Message)" }
     }
-    if ($ok) { Say "ffmpeg 就绪：$ffExe" }
-    else { Say "ffmpeg 下载失败：不影响 wav / flac，mp3 输出会提示缺少 ffmpeg（可手工把 ffmpeg.exe 放到 $ffDir）" }
+    if ($ok) { Say "ffmpeg ready: $ffExe" }
+    else { Say "ffmpeg download failed: wav / flac are unaffected, mp3 output will report a missing ffmpeg (you can drop ffmpeg.exe into $ffDir by hand)" }
   }
-} else { Say "BREEZE_SKIP_FFMPEG=1：跳过 ffmpeg" }
+} else { Say "BREEZE_SKIP_FFMPEG=1: skipping ffmpeg" }
 
-# ── 6. 冒烟 & 落标记（闸门：冒烟不过就不算装好） ─────────────────────
-#   为什么必须是闸门：以前这里失败只打印一行，随后照样写 .install-ok —— 宿主据此认定「装好」，
-#   用户点启用才炸（依赖没装全 / CPU 版 torch），而安装链的 Agent 保底（脚本非 0 退出才触发）
-#   永远等不到，报错总线也收不到事件。结果就是「安装完成但用不了，而且没有任何自愈」。
-#   口径与兄弟后端一致：tts / llama 是 throw，sensenova 是冒烟不过不写 .install-ok 并写 ok=false。
-Step "冒烟校验（import torch / soundfile / fastapi）" 98
+# -- 6. Smoke test & markers (gate: a failed smoke test means not installed) ----
+#   Why it has to be a gate: this used to only print one line on failure and still write .install-ok --
+#   the host took that as "installed", the user hit the wall when clicking enable (dependencies not fully
+#   installed / CPU-only torch), while the installer chain's Agent safety net (only triggered by a
+#   non-zero script exit) never fired and the error bus never received an event either. The result was
+#   "the install finished but is unusable, and nothing self-heals".
+#   Same contract as the sibling backends: tts / llama throw, sensenova skips writing .install-ok
+#   when the smoke test fails and writes ok=false.
+Step "smoke check (import torch / soundfile / fastapi)" 98
 $smoke = @"
 import sys
 import soundfile, fastapi, uvicorn
 import torch
 print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.version.cuda)
 if not torch.cuda.is_available():
-    print('WARN: torch 看不到 CUDA —— Breeze TTS 2 需要 NVIDIA GPU（约 7.7GB 显存）')
+    print('WARN: torch cannot see CUDA -- Breeze TTS 2 needs an NVIDIA GPU (about 7.7GB of VRAM)')
 "@
 $smokeFile = Join-Path $InstallDir "scripts\_smoke_breeze.py"
 Set-Content -LiteralPath $smokeFile -Value $smoke -Encoding UTF8
 & $VENV_PY $smokeFile 2>&1 | ForEach-Object { Say ("  " + $_) }
 $smokeRc = $LASTEXITCODE
 
-# CUDA 可用性单独判：引擎需要 NVIDIA 显卡 + CUDA 版 torch（约 7.7GB 显存）。
-# 这一条「Agent 再跑一遍也不会变好」（它变不出显卡），所以不交给 AI 修复，只写裁决给用户指路。
+# CUDA availability is judged separately: the engine needs an NVIDIA card plus a CUDA build of torch
+# (about 7.7GB of VRAM). This one will not get any better no matter how many times an Agent reruns it
+# (it cannot conjure a GPU), so it is not handed to the AI for repair -- we only write a verdict that
+# points the user in the right direction.
 $cudaRc = 0
 if ($smokeRc -eq 0) {
   & $VENV_PY -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 3)" 2>&1 | ForEach-Object { Say ("  " + $_) }
@@ -276,7 +290,8 @@ if ($smokeRc -eq 0) {
 
 $installOk = Join-Path $InstallDir ".install-ok"
 $resultMarker = Join-Path $InstallDir ".breeze-agent-result"
-# 旧标记先撤：失败的重装 / 补装绝不能靠上一次的 .install-ok 冒充装好（宿主认它 + 要件）
+# Drop stale markers first: a failed reinstall / repair must never pass itself off as a good install
+# via the previous .install-ok (the host trusts it plus the prerequisites)
 Remove-Item -Force $installOk -ErrorAction SilentlyContinue
 
 function Write-Verdict([string]$okFlag, [string]$reason) {
@@ -289,21 +304,21 @@ function Write-Verdict([string]$okFlag, [string]$reason) {
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "voices"), (Join-Path $InstallDir "logs"), (Join-Path $InstallDir "out") | Out-Null
 
 if ($smokeRc -ne 0) {
-  Say "冒烟 import 失败（exit $smokeRc）——依赖可能没装全，安装未完成，不写 .install-ok。"
+  Say "smoke import failed (exit $smokeRc): deps may be incomplete, install unfinished, no .install-ok."
   Write-Verdict "false" "smoke_failed"
-  Say "已交回宿主：会自动转 Agent 按 skill 修复（不用你来读这些日志）。"
+  Say "handed back to the host for skill-based Agent repair (no need to read logs)."
   exit 1
 }
 if ($cudaRc -ne 0 -and $env:BREEZE_SKIP_CUDA_CHECK -ne "1") {
-  Say "torch 看不到 CUDA —— Breeze TTS 2 需要 NVIDIA 显卡与可用的 CUDA 版 torch（约 7.7GB 显存），安装未完成。"
-  Say "指路：确认本机有 NVIDIA 显卡且驱动可用；确需在无卡机器上做静态排查，可设 BREEZE_SKIP_CUDA_CHECK=1 后重跑。"
+  Say "torch cannot see CUDA -- Breeze TTS 2 needs an NVIDIA GPU and a working CUDA build of torch (about 7.7GB of VRAM), the install did not finish."
+  Say "guidance: make sure this machine has an NVIDIA GPU with a working driver; if you really need static troubleshooting on a machine without a GPU, set BREEZE_SKIP_CUDA_CHECK=1 and rerun."
   Write-Verdict "false" "no_cuda"
   exit 1
 }
-if ($cudaRc -ne 0) { Say "BREEZE_SKIP_CUDA_CHECK=1：跳过 CUDA 闸门，照常落标记（仅供无卡机器静态排查）。" }
+if ($cudaRc -ne 0) { Say "BREEZE_SKIP_CUDA_CHECK=1: skipping the CUDA gate, writing the markers as usual (only for static troubleshooting on machines without a GPU)." }
 
 Set-Content -LiteralPath $installOk -Value (Get-Date -Format o) -Encoding UTF8
 Write-Verdict "true" ""
 Progress 100
-Say "安装完成。用「插件 · Breeze TTS 2 本地 TTS」的「开始」拉起后端（首次启动加载约 7.7GB 权重，需要一会儿）。"
+Say "install complete. Use Start on the plugin 'Breeze TTS 2 local TTS' to launch the backend (the first start loads about 7.7GB of weights and takes a while)."
 exit 0

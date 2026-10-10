@@ -8,6 +8,12 @@ Typical console error:
 [CmdletBinding()]
 param()
 
+# Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
+# and every native tool we spawn (pip / git / python) agree on one encoding.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $ComfyRoot = Join-Path $Root "ComfyUI"
@@ -30,7 +36,7 @@ Write-Host "venv python: $VenvPy"
 Write-Host "include-system-site-packages: $usesSystem"
 
 if ($usesSystem) {
-    Write-Host "Detected system-site-packages venv — recreating isolated venv (keeps ComfyUI tree)..."
+    Write-Host "Detected system-site-packages venv - recreating isolated venv (keeps ComfyUI tree)..."
     $basePy = $null
     $dot = Join-Path $Root ".cuda-python"
     if (Test-Path -LiteralPath $dot) {
@@ -52,13 +58,13 @@ if ($usesSystem) {
     Set-Content -Path $dot -Value $basePy -Encoding utf8
 }
 
-# 避免坏掉的 PIP_EXTRA_INDEX_URL（如不可解析的 pypi.ngc.nvidia.com）
+# Avoid a broken PIP_EXTRA_INDEX_URL (e.g. an unresolvable pypi.ngc.nvidia.com)
 $env:PIP_EXTRA_INDEX_URL = ""
 $env:PIP_INDEX_URL = if ($env:MT_H3_PIP_INDEX) { $env:MT_H3_PIP_INDEX } else { "https://pypi.org/simple" }
 
 Write-Host "Upgrading pip + ensuring CUDA torch in venv..."
 & $VenvPy -m pip install --isolated -U pip
-# H3 量化算子需要 cu130；勿退回 cu124/cu121（会导致首步 forward 卡死）.
+# The H3 quantized kernels need cu130; do not fall back to cu124/cu121 (it hangs the first forward step).
 $torchIdx = if ($env:MT_H3_TORCH_INDEX) { $env:MT_H3_TORCH_INDEX } else { "https://download.pytorch.org/whl/cu130" }
 & $VenvPy -m pip install --isolated --index-url $torchIdx "torch==2.9.1+cu130" "torchvision==0.24.1+cu130" "torchaudio==2.9.1+cu130"
 if ($LASTEXITCODE -ne 0) {
@@ -77,7 +83,7 @@ if (Test-Path -LiteralPath $helper) {
     & $VenvPy -m pip install --isolated -r $helper
 }
 
-# 即使 venv 内 torch 已隔离，torch 2.6 infer_schema 仍可能拒 list[int] —— 必须打补丁
+# Even though torch is isolated inside the venv, torch 2.6 infer_schema can still reject list[int] -- the patch is mandatory
 if (Test-Path -LiteralPath $PatchPy) {
     Write-Host "Patching comfy_kitchen typing for torch.infer_schema..."
     & $VenvPy $PatchPy
