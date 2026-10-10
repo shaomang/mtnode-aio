@@ -41,7 +41,58 @@ const electronStub = {
     getPath: () => "C:\\mtnode-fake-exe\\app.exe",
     isPackaged: false,
   },
-  BrowserWindow: class {},
+  BrowserWindow: class {
+    /* 开窗链真要用的那几样（用户报障那条链现在会被真正走通）：
+       setMenu / webContents（含重载，本轮新增）/ once / on / show / focus / isDestroyed。
+       位置只记「最近一次 show 的是哪个 id」，够断言「复用同一只窗口」了。 */
+    constructor(opts) {
+      this.opts = opts || {};
+      this.__shown = 0;
+      this.__reloads = 0;
+      this.__closed = false;
+      this.webContents = {
+        on() {},
+        send() {},
+        isDestroyed: () => false,
+        setWindowOpenHandler() {},
+        /* 应用窗口按窗口补一份媒体权限 handler（apps-store 里那段）：桩给齐，别在开窗链上炸 */
+        session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
+        reloadIgnoringCache: () => {
+          this.__reloads++;
+        },
+        reload: () => {
+          this.__reloads++;
+        },
+      };
+    }
+    loadFile() {
+      return Promise.resolve();
+    }
+    once(ev, cb) {
+      if (ev === "ready-to-show") cb();
+    }
+    on() {}
+    setMenu() {}
+    setAlwaysOnTop() {}
+    show() {
+      this.__shown++;
+    }
+    focus() {
+      this.__focused = true;
+    }
+    isDestroyed() {
+      return !!this.__closed;
+    }
+    isMinimized() {
+      return false;
+    }
+    close() {
+      this.__closed = true;
+    }
+    getURL() {
+      return "";
+    }
+  },
   ipcMain: {
     handle(name, fn) {
       handlers[name] = fn;
@@ -194,13 +245,35 @@ async function main() {
     const dlMan = JSON.parse(fs.readFileSync(path.join(dlDir, "app.json"), "utf8"));
     ok(devMan.capabilities && devMan.capabilities.imageGen === true, "能力位写进**项目根**那份 app.json");
     ok(!(dlMan.capabilities && dlMan.capabilities.imageGen === true), "下载那份 app.json 一个字节没动");
-    /* 打开窗口：只给项目根那份放入口页 → 能走到入口检查的就一定是项目根那份 */
+    /* 打开窗口（本轮口径更新）：点名 dev 就开**项目根**那份 —— 窗口真开起来了，
+       回执带实际目录 / 来源根 / 版本号（启动留痕）；标题也给开发根那一份加尾巴。
+       「缺省仍解析下载那份」这条老口径由 dirOfApp/diskKindOf 与 apps:versions 那几条钉着
+       （窗口那条不能再用它验：点开一次之后同 id 的窗口已被复用，缺省请求也会走复用分支）。 */
     const saved = fs.readFileSync(path.join(dlDir, "index.html"), "utf8");
     fs.unlinkSync(path.join(dlDir, "index.html"));
     const winDev = await call("apps:openWindow", { id: ID, kind: "dev" });
-    ok(winDev.ok === false && winDev.reason !== "missing_entry", "apps:openWindow(dev) 解析到项目根那份（不是 missing_entry）");
+    ok(
+      winDev.ok === true && path.resolve(String(winDev.dir)) === path.resolve(devDir) && winDev.kind === "dev",
+      "apps:openWindow(dev) 真开窗并落在项目根那份（回执带 dir / kind）",
+    );
+    ok(/开发目录 v1\.1\.0/.test(String(winDev.title || "")), "窗口标题带开发根留痕（(开发目录 v版本号)）");
+    /* 复用已开窗口这条（本轮修的用户报障：改完代码点「启动 / 运行」还是旧版本）：
+       同 id 两边各有一份时，复用的回执必须仍然指着**项目根**那一份，且当场重载、跳过缓存。 */
+    const winAgain = await call("apps:openWindow", { id: ID, kind: "dev" });
+    ok(winAgain.reused === true, "同一 id 再开一次 = 复用已开窗口（不叠窗口）");
+    ok(
+      winAgain.reloaded === true && winAgain.kind === "dev" &&
+        path.resolve(String(winAgain.dir)) === path.resolve(devDir),
+      "复用时重载并跳过缓存（reloaded=true），回执仍指项目根那份（kind=dev）",
+    );
+    /* 缺省（不点名）这一次：窗口已被上面那次占住 → 走复用分支，**同样落回项目根那份**
+       （这正是用户报障的现场：他点的是不点名的入口，却拿到下载副本的旧代码）。 */
     const winDef = await call("apps:openWindow", { id: ID });
-    ok(winDef.ok === false && winDef.reason === "missing_entry", "apps:openWindow 缺省解析下载那份（它的入口页确实不在）");
+    ok(
+      winDef.reused === true && winDef.reloaded === true && winDef.kind === "dev" &&
+        path.resolve(String(winDef.dir)) === path.resolve(devDir),
+      "缺省入口点开的是同一个窗口、同一份代码（复用 + 重载 + 项目根），拿到的不是下载副本",
+    );
     fs.writeFileSync(path.join(dlDir, "index.html"), saved, "utf8");
   }
 

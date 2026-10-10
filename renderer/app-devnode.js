@@ -9,8 +9,8 @@
  * 完成后自动跳窗重弹方案清单；Esc 在调研中同样只「返回」、不会停止生成）：
  *   1) mtDialogForm 确认框：显示现状（类型 / 状态 / 项目根 / 子元素 / 历史会话 /
  *      上次建议），可选填「本轮关注点」→「确认生成建议」
- *   2) 只读调研中：实时显示 Agent 的工具调用（read/grep/git status…）与耗时，
- *      期间绝不写文件、不改画布（系统提示按规划模式的禁令约束）
+ *   2) 只读调研中：实时显示 Agent 的工具调用（read/grep/node --check…）与耗时，
+ *      期间绝不写文件、不改画布、不碰 git（系统提示按规划模式的禁令约束）
  *   3) 方案清单：4 条（可多选 · 数字键 1-4 快速勾选）+ AI 评估摘要 + 真实证据
  *      +「补充说明」输入框 + 按钮「取消 / 换一批 / 开发」
  * 「开发」→ startDevSessionWithText()：与「开发」按钮完全同一条路径（新建绑定
@@ -670,8 +670,9 @@ function devSuggestContextText(node, focus) {
 function devSuggestSystemPrompt() {
   return [
     "你是 MTNode「开发节点」的进度评估器：只做只读调研并给出方案，绝不实施。",
-    "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、git commit/checkout、重启服务、清理目录）；调用 mtnode_canvas_edit / mtnode_app 的修改类动作；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。",
-    "允许并鼓励只读调研：read、glob、grep、只读命令（git status / git log / git diff --stat / node --check / ls）、mtnode_canvas_get、web_search。",
+    "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、重启服务、清理目录）；调用 mtnode_canvas_edit / mtnode_app 的修改类动作；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。",
+    "禁止使用任何 git 命令（含 git status / diff / log 这类只读子命令）：git 不保留每次更新信息（agent 不会每改一次就 git add），它的状态与真实改动不一致 —— 要看改动请重读文件、跑冒烟，或看会话的「改动」面板。",
+    "允许并鼓励只读调研：read、glob、grep、只读命令（node --check / ls）、mtnode_canvas_get、web_search。",
     "纪律：结论必须来自你真实读到的代码，引用具体文件路径（能带行号更好）；查不到就直说，禁止臆测或用通用最佳实践凑数。",
     "共识：若项目根目录存在 AGENTS.md（Agent 共识文件），先读它并严格遵守其中的「目录约定」与「不要修改」清单；任何方案都不得触碰清单内路径。",
     "输出纪律：最后一条消息只输出一个 JSON 对象，前后不要任何文字、解释或 markdown 代码块。",
@@ -2130,8 +2131,9 @@ async function suggestDevNode(node) {
 function devAskSystemPrompt() {
   return [
     "本会话是 MTNode「开发节点」的**问询会话**：只读地回答用户关于本功能块（模块）的问题——职责、代码结构、真实完成度、接口与数据流、下一步建议等。",
-    "整个过程**严格只读**：禁止创建 / 修改 / 删除任何文件（write、edit、str_replace_editor、文件保存类动作）；禁止执行任何有副作用的命令（安装 / 删除 / 移动 / 复制 / 构建 / git commit 与 checkout / 重启服务 / 清理目录）；禁止调用 mtnode_canvas_edit / mtnode_app 的修改类动作；禁止用 todo_write 登记执行清单；禁止用 create_goal 立执行目标；禁止用 subagent 派生实现工作。",
-    "允许并鼓励只读调研：read、glob、grep、只读命令（git status / git log / git diff --stat / node --check / ls）、mtnode_canvas_get、mtnode_db 查询、web_search、加载技能。",
+    "整个过程**严格只读**：禁止创建 / 修改 / 删除任何文件（write、edit、str_replace_editor、文件保存类动作）；禁止执行任何有副作用的命令（安装 / 删除 / 移动 / 复制 / 构建 / 重启服务 / 清理目录）；禁止调用 mtnode_canvas_edit / mtnode_app 的修改类动作；禁止用 todo_write 登记执行清单；禁止用 create_goal 立执行目标；禁止用 subagent 派生实现工作。",
+    "禁止使用任何 git 命令（含 git status / diff / log 这类只读子命令）：git 不保留每次更新信息（agent 不会每改一次就 git add），它的状态与真实改动不一致 —— 要看改动请重读文件、跑冒烟，或看会话的「改动」面板。",
+    "允许并鼓励只读调研：read、glob、grep、只读命令（node --check / ls）、mtnode_canvas_get、mtnode_db 查询、web_search、加载技能。",
     "纪律：回答必须来自你真实读到的代码与画布信息，引用具体文件路径（能带行号更好）；查不到就直说「代码里没找到」，禁止臆测或用通用最佳实践凑数。",
     "共识：若项目根目录存在 AGENTS.md（Agent 共识文件），先读它并遵守其中的「目录约定」与「不要修改」清单；回答中涉及路径时按约定表述，绝不建议触碰清单内路径。",
     "若用户的问题本质上是「请帮我改 / 实现 / 重构」，先礼貌说明问询是只读的、不会改动任何文件，再给出实现思路或修改方案概要，并建议用户点击该功能块的「开发」按钮正式开工。",

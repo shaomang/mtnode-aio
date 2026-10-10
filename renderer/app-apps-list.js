@@ -362,7 +362,13 @@
         if (st.cmt && cur && cur.id && typeof appsCommentsMountInto === "function") {
           var cmtTarget = typeof appsCommentTarget === "function" ? appsCommentTarget(cur) : null;
           if (cmtTarget) {
+            /* 挂载本身会整块重画（切分支 = 换成那一支的评论）并保住草稿；
+               宿主被别处清过时靠 appsCommentsMountInto 的 DOM 判据自己补挂回来。 */
             appsCommentsMountInto(st.cmt, cmtTarget, { title: st.title || "" }, selKey || st.ownerId || cmtTarget.ownerId);
+          } else if (typeof appsCommentsClearHost === "function") {
+            /* 本机自建 / 还没上架（云端没有这条）→ 不挂评论区：
+               清场必须走它（DOM 与记账一起清），否则换到有云端的应用时记账会拦下重挂。 */
+            appsCommentsClearHost(st.cmt);
           } else {
             st.cmt.innerHTML = "";
           }

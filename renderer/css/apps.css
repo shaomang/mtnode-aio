@@ -1103,7 +1103,7 @@
   white-space: nowrap;
 }
 
-/* 右下角那排图标按钮（下载/更新、ⓘ、金币）：压在封面上，底色半透明才看得清 */
+/* 右下角那排图标按钮（本轮只剩「下载 / 更新」、「我的应用」卡的编辑）：压在封面上，底色半透明才看得清 */
 .apps-cover-acts {
   position: absolute;
   right: 8px;
@@ -1222,6 +1222,12 @@ button.mini.apps-ico-btn {
 
 button.mini.apps-ico-coin {
   color: var(--orange2);
+}
+
+/* 详情打赏条里那一枚（renderer/app-apps.js 的 appsTipBtnEl）：靠右收尾，
+   与左边只读的「打赏记录 N 币」拉开（那条 flex 条见 css/tips.css 的 .apps-detail-tipbar）。 */
+.apps-detail-tipbar .apps-ico-coin {
+  margin-left: auto;
 }
 
 button.mini.apps-ico-coin:hover {
@@ -1548,10 +1554,10 @@ button.mini.apps-ico-info {
   font-family: var(--mono);
 }
 
-/* ── 详情正文里那行只读的「打赏记录 N 币」（本轮需求：详情不再有第二个打赏入口） ──
-   形态：橙色左边条的小条 + 「打赏记录」+ 币数（单位是鲸圆币图标）。
-   **整行不可点**（不挂 clickable / cursor:pointer）：悬停只出 title 里的总次数；
-   一次都没被打赏过时这一行根本不画（见 app-tips.js 的 detailRecordEl）。 */
+/* ── 详情正文里的打赏条（本轮需求：打赏入口从卡片封面搬到这里） ──
+   形态：橙色左边条的小条 + 左边只读的「打赏记录」+ 币数（单位是鲸圆币图标）+ 右侧一枚打赏 icon 按钮。
+   记录那一行**整行不可点**（不挂 clickable / cursor:pointer）：悬停只出 title 里的总次数；
+   一次都没被打赏过时记录不画，只留右边那枚按钮（见 app-tips.js 的 detailRecordEl）。 */
 .apps-detail-tipbar.tip-record {
   cursor: default;
   gap: 6px;

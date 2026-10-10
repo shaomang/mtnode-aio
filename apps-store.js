@@ -82,6 +82,12 @@ const zlib = require("zlib");
 const http = require("http");
 const https = require("https");
 const { app, BrowserWindow, ipcMain, dialog, shell, screen, protocol, session } = require("electron");
+/* 真 ipcMain 的模块级别名：registerAppsIpc 里会用**同名局部代理**包住它 —— 该函数 67 处
+   ipcMain.handle 注册调用点（通道名一律 apps: 开头）一个字不改（多处冒烟按那个字面量静态
+   扫通道名），但任何一条注册抛错只记日志、后面的照常注册。2026-10-10 的事故：注入段一处
+   TDZ（引用未初始化的 const canvasOps）让 registerAppsIpc 一进门就抛，整块应用 IPC 全没
+   注册，界面表现 =「应用中心 / 开发页 / 应用会话全空」。 */
+const ipcMainReal = ipcMain;
 const { readJson, writeJson } = require("./config-providers.js");
 /* 应用能力清单（app.json 的 capabilities）：纯计算模块，见文件头 */
 const {
@@ -4372,6 +4378,33 @@ function winBounds(spec) {
     y: Math.max(wa.y, wa.y + Math.round((wa.height - height) / 2)),
   };
 }
+/* 这次开窗**实际加载的是哪一套根下的那一份**：kind 点名了就认它，否则拿解析出来的目录
+   与两套根逐一对（长的根优先，兼容根目录嵌套；Windows 盘符与路径大小写不敏感）。
+   只用于「启动留痕」那一行日志与回执，不改变任何解析口径（缺省仍是 diskKindOf 的下载优先）。 */
+function openAppDirKindOf(id, kind, dir) {
+  if (kind) return kindOfRoot(kind);
+  const target = String(dir || "").replace(/[\\/]+$/, "");
+  if (!target) return APP_KIND_DOWN;
+  const low = target.toLowerCase();
+  let best = "";
+  let bestLen = -1;
+  for (const k of APP_KINDS) {
+    let root = "";
+    try {
+      root = String(rootPathOf(k).root || "").replace(/[\\/]+$/, "");
+    } catch (_) {
+      root = "";
+    }
+    if (!root) continue;
+    const rl = root.toLowerCase();
+    if ((low === rl || low.indexOf(rl + "\\") === 0 || low.indexOf(rl + "/") === 0) && rl.length > bestLen) {
+      best = k;
+      bestLen = rl.length;
+    }
+  }
+  return best || APP_KIND_DOWN;
+}
+
 /* 应用窗口：preload-app.js（window.appHost）· loadFile 应用 index.html ·
    will-navigate 一律 preventDefault（外链交 shell.openExternal）· 新窗口一律 deny。
    kind（"dev" / "down"，可选）＝**开哪一套根下的那一份**：同 id 两边各有一份时，
@@ -4381,17 +4414,53 @@ function openAppWindow(id, kind) {
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
   const existing = appWins.get(sid);
   if (existing && !existing.isDestroyed()) {
+    /* 复用已开的那只窗口（不叠窗口），但**先重载一次**：用户报障「改完代码点启动还是旧版本」
+       的一半就出在这里 —— 老写法只 show/focus，窗口里跑的仍是上一次 loadFile 时那份代码，
+       得自己关窗重开才看得见改动。重载强制跳过缓存（file:// 也会吃资源缓存），
+       口径与开发页预览的 no-store 一致：看代码就该看磁盘上刚写下的那一版。
+       reload 失败（窗口正在关 / 替身窗口没有这个方法）绝不影响把窗口调到前台。 */
+    let reloaded = false;
+    try {
+      const wc = existing.webContents;
+      if (wc && typeof wc.reloadIgnoringCache === "function") {
+        wc.reloadIgnoringCache();
+        reloaded = true;
+      } else if (wc && typeof wc.reload === "function") {
+        wc.reload();
+        reloaded = true;
+      }
+    } catch (_) {
+      reloaded = false;
+    }
     try {
       existing.show();
       existing.focus();
     } catch {}
     noteAppRun(sid); /* 把窗口调到前台也算「用了一次」（库页按最近运行排序） */
     notifyWindowChanged(sid, true);
-    return { ok: true, id: sid, open: true, reused: true };
+    /* 与开新窗同一条留痕：复用这条也要说清「重载了哪一份」（用户报障正是「点了没变化」） */
+    const rdir = String(existing.__mtnodeAppDir || "") || dirOfApp(sid, kind ? kindOfRoot(kind) : "");
+    try {
+      console.log(
+        "[apps] 复用已开窗口 " + sid + "（" + (reloaded ? "已重载并跳过缓存" : "重载不可用，仅调到前台") +
+          " · " + (rdir || "目录未解析") + "）",
+      );
+    } catch (_) {}
+    return {
+      ok: true,
+      id: sid,
+      open: true,
+      reused: true,
+      reloaded: reloaded,
+      dir: rdir,
+      kind: existing.__mtnodeAppKind || openAppDirKindOf(sid, kind, rdir),
+    };
   }
   /* 应用可能在哪一边（下载根 / 项目根）：点名了类型就取那一边，否则按本机实际所在的那一类取 */
   const dir = dirOfApp(sid, kind ? kindOfRoot(kind) : "");
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
+  /* 实际加载的是哪一套根（标题留痕 / 启动日志 / 回执都用它，按**解析出来的目录**判，不靠猜） */
+  const dirKind = openAppDirKindOf(sid, kind, dir);
   const man = manifestOf(dir, sid);
   const entry = safeEntry(man.entry) || SUB.index;
   const html = resolveInside(dir, entry);
@@ -4405,8 +4474,13 @@ function openAppWindow(id, kind) {
   } catch {}
   const pos = winBounds(winSpec);
   /* 窗口标题取 app.json 的 title（缺了退回 name）；图标一律用内置默认图标 ——
-     应用不能自带图标文件指定给窗口（icon 字段只进卡片封面，不喂 BrowserWindow）。 */
-  const winTitle = String(man.title || man.name || sid);
+     应用不能自带图标文件指定给窗口（icon 字段只进卡片封面，不喂 BrowserWindow）。
+     **开发根那一份加一个可辨认的尾巴**（用户报障：开发中启动看到的却是下载根那份旧代码，
+     两边窗口长得一模一样、看不出看的是哪一份）：标题带上「(开发目录 v版本号)」——
+     启动留痕的可见那一半，另一半是同一次开窗写进主进程日志的「实际加载目录 + 版本」。 */
+  const winTitle =
+    String(man.title || man.name || sid) +
+    (dirKind === APP_KIND_DEV ? " (开发目录 v" + String(man.version || "0.0.0") + ")" : "");
   const defaultIcon = path.join(__dirname, "build", "icon.png");
   /* 窗口外观认目录条目 window 里的 frame / transparent / alwaysOnTop / skipTaskbar（与插件目录词条
      同口径）；没写就是普通可缩放窗口。位置固定在主显示器工作区居中，应用不能指定坐标。 */
@@ -4467,6 +4541,12 @@ function openAppWindow(id, kind) {
   });
   wcToAppId.set(w.webContents, sid);
   appWins.set(sid, w);
+  /* 窗口上记下**这一次真正加载的是哪一份**（目录 + 来自哪套根）：复用分支与回执都读它，
+     免得同 id 两边各有一份时按 id 重算成下载根、说错自己跑的是哪份代码。 */
+  try {
+    w.__mtnodeAppDir = dir;
+    w.__mtnodeAppKind = dirKind;
+  } catch (_) {}
   /* 麦克风权限（需求：应用里也能用内置 ASR 听写）：Electron 默认拒绝一切权限请求，
      而主窗口那条 handler 只挂在**主窗口自己的会话**上，应用窗口拿不到 —— 这里按窗口补一份。
      口径与主窗口一致且更窄：只放行 media 一类，只认本机页（file: / mtnode-preview:），
@@ -4497,6 +4577,14 @@ function openAppWindow(id, kind) {
     }
   }
   w.loadFile(html);
+  /* 启动留痕（用户报障：开发中启动却是旧版本，看不出看的是哪一份代码）：
+     每一次开窗都在主进程日志留下一行「实际加载目录 + 这一份 app.json 的版本 + 来自哪套根」，
+     配合标题里那个「(开发目录 v版本号)」，下次一眼就能对上。 */
+  console.log(
+    "[apps] 启动 " + sid + " ← " + html +
+      "（app.json v" + String(man.version || "0.0.0") + " · " +
+      (dirKind === APP_KIND_DEV ? "项目根（开发中）" : "下载根") + "）",
+  );
   w.once("ready-to-show", () => {
     if (!w.isDestroyed()) {
       try {
@@ -4517,7 +4605,19 @@ function openAppWindow(id, kind) {
   });
   notifyWindowChanged(sid, true);
   noteAppRun(sid);
-  return { ok: true, id: sid, open: true, reused: false, title: winTitle, version: man.version };
+  /* 回执带**实际加载的目录与来源根 + 这一份的版本号**：调用方（开发页 / 库页）与日志、
+     窗口标题三处同源，用户报障时不必再猜「跑的是哪一份」。 */
+  return {
+    ok: true,
+    id: sid,
+    open: true,
+    reused: false,
+    reloaded: false,
+    title: winTitle,
+    dir: dir,
+    kind: dirKind,
+    version: man.version,
+  };
 }
 
 /* 记一笔「这个应用刚被运行」（本轮需求：库页列表按最后一次运行时间倒序）。
@@ -6212,36 +6312,39 @@ function publicUserOf(u) {
 
 function registerAppsIpc(opts) {
   opts = opts || {};
-  if (typeof opts.getDataDir === "function") getDataDir = opts.getDataDir;
-  if (typeof opts.getMainWin === "function") getMainWin = opts.getMainWin;
-  if (typeof opts.getAppVersion === "function") getAppVersion = opts.getAppVersion;
-  if (typeof opts.t === "function") t = opts.t;
-  if (typeof opts.authState === "function") authState = opts.authState;
-  if (typeof opts.aiCall === "function") aiCall = opts.aiCall;
-  if (typeof opts.aiCallStream === "function") aiCallStream = opts.aiCallStream;
-  /* 图像缩放内核（main.js 的 shrinkImageBuffer）：应用侧多模态消息与画布节点同一份口径
-     （长边 ≤ 1080 等比缩），不在这儿另写一套。 */
-  if (typeof opts.shrinkImage === "function") shrinkImage = opts.shrinkImage;
-  if (typeof opts.getProviderCatalog === "function") providerCatalog = opts.getProviderCatalog;
-  /* 语音转写（appHost.asr*）：dsh 适配器与「本应用数据文件夹」两个来源都由 main.js 注入 ——
-     apps-store 不认识 dsh，也不自己拼数据目录（路径只走 appDataDirOf 这一处口径）。 */
-  if (typeof opts.getDsh === "function") getDshForSpeech = opts.getDsh;
-  /* 本机图像后端（SenseNova）：四项都由 main.js 注入 —— 探测（装了没 / 相位）、出图、取消、
-     进度快照。apps-store 不认识它的内部结构（与 getDsh 同一条纪律）。 */
-  if (typeof opts.localImageHost === "function") localImageHost = opts.localImageHost;
-  if (typeof opts.localImageGenerate === "function") localImageGenerate = opts.localImageGenerate;
-  if (typeof opts.localImageCancel === "function") localImageCancel = opts.localImageCancel;
-  if (typeof opts.localImageSnapshot === "function") localImageSnapshot = opts.localImageSnapshot;
-  /* 全局音视频互斥锁快照（media-gen-global-lock.js 的 refreshStaleLock） */
-  if (typeof opts.readMediaLock === "function") readMediaLock = opts.readMediaLock;
-  if (typeof opts.locale === "function") hostLocale = opts.locale;
-  /* 画布层四件事（完全替换用）：由 main.js 注入（回收站 / 画布落盘 / .mtnodes 物化都要
-     DATA() 与资产目录，只有主进程知道那些落点）。缺省是上面那份「安全缺省」。 */
-  if (isObj(opts.canvasOps)) {
-    for (const k of Object.keys(canvasOps)) {
-      if (typeof opts.canvasOps[k] === "function") canvasOps[k] = opts.canvasOps[k];
-    }
+  /* 参数注入段整段自带护栏：这一段里任何一句抛错（历史上是 references-before-init 的 TDZ）
+     都不该让下面 67 条 IPC 注册整块消失 —— 失败按安全缺省继续注册，并把原因写进日志。
+     为什么段级而不是函数级：注册在下面逐条注册，函数级 try/catch 会从抛错处直接跳出，
+     照样丢掉后面全部通道（2026-10-10 事故就是这个形态）。 */
+  try {
+    if (typeof opts.getDataDir === "function") getDataDir = opts.getDataDir;
+    if (typeof opts.getMainWin === "function") getMainWin = opts.getMainWin;
+    if (typeof opts.getAppVersion === "function") getAppVersion = opts.getAppVersion;
+    if (typeof opts.t === "function") t = opts.t;
+    if (typeof opts.authState === "function") authState = opts.authState;
+    if (typeof opts.aiCall === "function") aiCall = opts.aiCall;
+    if (typeof opts.aiCallStream === "function") aiCallStream = opts.aiCallStream;
+    /* 图像缩放内核（main.js 的 shrinkImageBuffer）：应用侧多模态消息与画布节点同一份口径
+       （长边 ≤ 1080 等比缩），不在这儿另写一套。 */
+    if (typeof opts.shrinkImage === "function") shrinkImage = opts.shrinkImage;
+    if (typeof opts.getProviderCatalog === "function") providerCatalog = opts.getProviderCatalog;
+    /* 语音转写（appHost.asr*）：dsh 适配器与「本应用数据文件夹」两个来源都由 main.js 注入 ——
+       apps-store 不认识 dsh，也不自己拼数据目录（路径只走 appDataDirOf 这一处口径）。 */
+    if (typeof opts.getDsh === "function") getDshForSpeech = opts.getDsh;
+    /* 本机图像后端（SenseNova）：四项都由 main.js 注入 —— 探测（装了没 / 相位）、出图、取消、
+       进度快照。apps-store 不认识它的内部结构（与 getDsh 同一条纪律）。 */
+    if (typeof opts.localImageHost === "function") localImageHost = opts.localImageHost;
+    if (typeof opts.localImageGenerate === "function") localImageGenerate = opts.localImageGenerate;
+    if (typeof opts.localImageCancel === "function") localImageCancel = opts.localImageCancel;
+    if (typeof opts.localImageSnapshot === "function") localImageSnapshot = opts.localImageSnapshot;
+    /* 全局音视频互斥锁快照（media-gen-global-lock.js 的 refreshStaleLock） */
+    if (typeof opts.readMediaLock === "function") readMediaLock = opts.readMediaLock;
+    if (typeof opts.locale === "function") hostLocale = opts.locale;
+  } catch (err) {
+    console.warn("[apps] IPC 参数注入失败（按安全缺省继续注册，界面功能可能降级）：" + ((err && err.message) || err));
   }
+  /* 画布层四件事（完全替换用）的注入覆盖**不在这里** —— 它必须排在下面 const canvasOps
+     声明之后（2026-10-10 事故：写在声明之前引用它 = TDZ，整块应用 IPC 全没注册）。 */
   getAppDataDirForSpeech = (id) => {
     try {
       return appDataDirOf(String(id || ""), diskKindOf(String(id || "")));
@@ -6256,6 +6359,20 @@ function registerAppsIpc(opts) {
     } catch (err) {
       return fail(err);
     }
+  };
+
+  /* ── 注册护栏（每条通道相互隔离）───────────────────────────────────────────────
+     本函数里 67 处 ipcMain.handle 注册调用点（通道名一律 apps: 开头）保持原样 —— 多处冒烟
+     按那个字面量静态扫通道名，这里用一层同名局部代理包住真 ipcMain：某一条注册抛错只记
+     日志，后面的照常注册。事故复盘见模块顶部 ipcMainReal 的注释。 */
+  const ipcMain = {
+    handle(channel, fn) {
+      try {
+        ipcMainReal.handle(channel, fn);
+      } catch (err) {
+        console.warn("[apps] IPC 注册失败 " + channel + "：" + ((err && err.message) || err));
+      }
+    },
   };
 
   /* 根目录：get / set / pick（set 与 pick 都是主进程写 config.json，渲染层不管路径）。
@@ -6301,6 +6418,16 @@ function registerAppsIpc(opts) {
     emptyCanvas: () => null,
     writeCanvas: noCanvasOps,
   };
+  /* 画布层四件事（完全替换用）的注入覆盖：由 main.js 注入（回收站 / 画布落盘 / .mtnodes
+     物化都要 DATA() 与资产目录，只有主进程知道那些落点）。**必须排在 const canvasOps
+     之后**：2026-10-10 的事故就是这一段写在声明之前（TDZ 引用未初始化变量），
+     registerAppsIpc 一进门抛错、67 条 IPC 全没注册。只覆盖表里已有的键 —— 调用方笔误
+     不会悄悄多出字段。 */
+  if (isObj(opts.canvasOps)) {
+    for (const k of Object.keys(canvasOps)) {
+      if (typeof opts.canvasOps[k] === "function") canvasOps[k] = opts.canvasOps[k];
+    }
+  }
   /* ── 应用版本「完全替换」（本轮需求 · 用户共识）─────────────────────────────────
      与合并并列的第二条路，区别只有一处：**不经过 Agent**。口径见 app-branch-replace.js
      文件头（删什么 / 留什么 / 退路 / 新画布 / 登记）。这里只注入本文件的实现 + main.js

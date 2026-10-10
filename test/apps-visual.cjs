@@ -247,6 +247,8 @@ window.__geom = null;
     out.tipbarCount = document.querySelectorAll(".apps-detail-tipbar").length;
     out.tipRecordCount = document.querySelectorAll(".apps-detail-tipbar.tip-record").length;
     out.tipButtonCount = document.querySelectorAll(".apps-detail-tipbar .tip-btn").length;
+    /* 本轮需求：打赏入口从卡片封面搬进详情打赏条 —— 条里那枚是 .apps-ico-coin（appsTipBtnEl） */
+    out.tipCoinCount = document.querySelectorAll(".apps-detail-tipbar .apps-ico-coin").length;
     const rec = document.querySelector(".apps-detail-tipbar.tip-record");
     out.tipRecord = rec ? { html: rec.outerHTML.replace(/\\s+/g, " "), title: rec.title, cursor: getComputedStyle(rec).cursor } : null;
     out.detailLocalActions = [].slice.call(document.querySelectorAll(".apps-detail-local .apps-detail-local-row button")).map(function (b) { return b.textContent; });

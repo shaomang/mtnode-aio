@@ -485,6 +485,21 @@ function normalizePresetId(preset) {
    否则提示缓存从变化的那个 schema 起整段失效 —— 省字符反而赔缓存）。 */
 const HIDE_TOOLS_ENV = 'MTNODE_HIDE_TOOLS'
 
+/* 全局约束（用户口径 2026-10-10）：agent 运行期间**不得使用任何 git 命令**。
+   唯一真源就是这一段，随每次运行拼在预设文本之后（见 handleRun 的 presetTextGit /
+   presetTextAll）—— 覆盖全部 agent 运行：会话 / 助手 / 画布智能节点 / 开发节点 /
+   计划模式 / 子代理 / 长任务环节。为什么写在网关而不是各渲染层系统提示：只有这里对
+   每一台运行时、每一种入口都必然下发；渲染层那几处只作用于会话与助手（它们的文本里
+   已同步删掉「允许 git status / diff」的旧例外句，见 renderer/app-assist.js、
+   app-devnode.js、app-nodes.js）。纪律内容 = 一句禁令 + 一句理由 + 替代做法 +
+   发版链的归属；预设文本为空的轮次（纯净模式 / 桌宠对话）不拼，与 LEAN_TOOLS_NOTE /
+   hiddenText 同一条纪律。 */
+const GIT_BAN_NOTE =
+  '\n\n【全局约束 · 不使用 git】本次运行期间不得调用任何 git 命令，含 git status / diff / log 这类' +
+  '只读子命令 —— 不要用 git 去判断「改了什么」。理由：git 不保留每次更新信息（agent 不会每改一次' +
+  '就 git add），它的状态与真实改动不一致。要看改动请重读文件、跑冒烟，或看会话的「改动」面板；' +
+  '发版链里的 git（scripts/release-git.mjs，随 npm run release）由用户手动跑，你不要主动发版。'
+
 /* 精简工具负载的下达说明：本轮真的裁掉了工具时，才拼到预设文本后面一句。
    为什么需要这句：被裁的工具是整个不注册（模型看不见），但人设与技能里还写着
    「用 mtnode_app 改画布名 / 用 mtnode_vision 识图」——不补一句就会去撞不存在的
@@ -2860,6 +2875,10 @@ async function handleRun(params) {
     /* 本轮裁掉了工具 → 预设文本后补一句「这些工具不存在」（人设为空的轮次不补，
        见 LEAN_TOOLS_NOTE 注释：没有工具可裁的桌宠 / 纯净轮不该多出这一段） */
     const presetText = leanFlag && presetBase ? presetBase + LEAN_TOOLS_NOTE : presetBase
+    /* 全局约束（用户口径 2026-10-10）：agent 不许用 git —— 唯一真源见 GIT_BAN_NOTE。
+       人设为空的轮次（纯净模式 pure / 桌宠 bongochat）不拼，与上面那句同一条纪律；
+       文本对同一档每轮逐字相同 → 照样进稳定前缀，不打爆提示缓存。 */
+    const presetTextGit = presetText ? presetText + GIT_BAN_NOTE : presetText
     /* 名单通道（hideTools）同样补一句：这些工具整份 schema 都不下发（MTNode 自有的不
        注册、引擎自带的由 restrict 摘除），而人设 / 技能里可能还写着它们。名单已由网关
        归一成规范串，同一档每轮逐字相同 → 这句话照样进得了稳定前缀，不会打爆缓存。 */
@@ -2869,7 +2888,7 @@ async function handleRun(params) {
         ? '\n\n【本轮不注册的工具】' + hiddenNames.join(' / ') +
           '：这些工具在本轮不存在，调用即失败；缺少它们的能力请改用工具列表里还在的入口。'
         : ''
-    const presetTextAll = presetText + hiddenText
+    const presetTextAll = presetTextGit + hiddenText
     const sys = [presetTextAll, systemPrompt]
       .filter((s) => s && String(s).trim())
       .join('\n\n')

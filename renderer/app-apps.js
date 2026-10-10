@@ -343,8 +343,8 @@ function appsRunBtnEl(id, label, onclick) {
    只把文字换成 play 图标 —— 库页的「窗口已开着」回贴与离屏重画都按 data-app-run 找得到它。
    窗口化渲染后卡片是滚动时才建的，所以打开态必须**画卡的时候就带上**（open=true），
    不能再靠画完之后逐张回贴。 */
-function appsRunIcoBtnEl(id, open) {
-  const b = appsRunBtnEl(id, "", () => appsOpenApp(id));
+function appsRunIcoBtnEl(id, open, kind) {
+  const b = appsRunBtnEl(id, "", () => appsOpenApp(id, kind || appsOpenKindOf(id)));
   b.textContent = "";
   b.classList.add("apps-ico-btn", "apps-ico-play");
   appsIcoInto(b, "play");
@@ -356,8 +356,9 @@ function appsRunIcoBtnEl(id, open) {
   return b;
 }
 
-/* ─────────── 封面右下角那一排小图标按钮（本轮需求：卡上只留三枚小图标）───────────
- * 卡片的动作行收掉之后，卡上只剩这三枚：下载/更新、ⓘ 详细、金币打赏。
+/* ─────────── 卡片封面右下角那一排小图标按钮（本轮需求：卡上只剩「下载 / 更新」）───────────
+ * 卡片的动作行收掉之后，卡上只剩下载 / 更新那一枚（「我的应用」卡是编辑）；
+ * ⓘ 详细早已摘掉，**打赏那一枚本轮也搬进详情正文**（用户口径：封面右下角不再有打赏按钮）。
  * 图标一律取这里的 APPS_ICO_SVG（内联 SVG，stroke=currentColor 跟着主题走），与顶栏那批
  * 线性图标同一风格；**不带文案**，用途全在 title / aria-label 上。 */
 const APPS_ICO_SVG = {
@@ -421,7 +422,8 @@ function appsDetailBtnEl(id, label) {
   return b;
 }
 
-/* 卡片上的图标入口（下载更新 / 打赏）现在是封面右下角那一排，见 appsCoverActionsEl。 */
+/* 卡片上的图标入口（本轮只剩「下载 / 更新」）排在封面右下角，见 appsCoverActionsEl；
+   打赏 icon 按钮已搬进详情正文（appsTipBtnEl）。 */
 /* 悬停文案的数据来源：先问本轮拉到的公开汇总（GET /api/tips/summary，见 appsTipsLoad），
    退回目录条目自带的 tips（tips 有值时就是原地走 MtTips.tipSumTitle(tips)），
    再退回「还没有人打赏」—— 三种状态各有各的话：
@@ -452,9 +454,16 @@ function appsBridgeMissing() {
    先认失败码，认不出再用主进程给的归类 hint，最后才是原始串）。失败码的单一真源在
    主进程 apps-store.js 的 installFailHint / uninstallApp / openAppWindow。
    匹配按**前缀**（与 installFailHint 的 /^code/ 同源）：主进程会在码后补上下文
-   （如 not_in_catalog_removed），整串精确比对会漏认，用户就会看到英文码本身。 */
+   （如 not_in_catalog_removed），整串精确比对会漏认，用户就会看到英文码本身。
+   **云端接口的失败要说云端那句话**：主进程 storeRequest 把服务端的 JSON 整块放在 `r.data`
+   （`{ ok:false, status, data:{ ok:false, code, error } }`），`r.error` 只装它自己那一层
+   （进程 / 网络）的失败。只读 `r.error` 的话，服务端每一条拒绝（400 声明缺失 / 403 只能更新
+   自己的分支 / 400 截图无效 / 配额超限…）在界面上都塌成「保存失败：未知错误」，用户拿着这句话
+   什么也做不了 —— 与 app-store.js 的 tplErr / app-publish.js 的 pubErrText 同一条顺序：
+   码表 → 服务端原文 → hint → 原始串。 */
 function appsErrText(r) {
   const raw = String((r && r.error) || "").trim();
+  const srv = String((r && r.data && r.data.error) || "").trim();
   const code = raw.split(":")[0].trim();
   const CODE_TEXT = {
     /* need_root 已随「不再要求手选应用根目录」下线（本轮需求）：主进程不再回这个码 */
@@ -483,6 +492,7 @@ function appsErrText(r) {
     .filter((k) => code === k || code.indexOf(k + "_") === 0)
     .sort((x, y) => y.length - x.length)[0];
   if (hit) return appsT(CODE_TEXT[hit]);
+  if (srv) return srv;
   const hint = String((r && r.hint) || "").trim();
   if (hint) return hint + (raw ? "（" + raw + "）" : "");
   return raw || appsT("未知错误");
@@ -1352,7 +1362,7 @@ function appsBranchTreeVerSelEl(id, branch, opts) {
     dl.disabled = busy || specObj.compatible === false;
     acts.appendChild(dl);
   } else if (sameBranch && localVer === latest) {
-    const run = appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id));
+    const run = appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id, appsLocalRootKind(local)));
     run.className += " apps-br-main";
     acts.appendChild(run);
   } else if (sameBranch) {
@@ -3009,12 +3019,17 @@ async function appsDownload(id, mode, version, ownerId) {
   APPS_ST.busy[id] = false;
   delete APPS_ST.progress[id];
   if (r && r.ok) {
+    /* 下载 / 更新 / 覆盖**一律只动库里的那一份**（主进程把安装写死在下载根，见 apps-store.js
+       的 installApp）：与「开发中」的项目文件夹毫无关系，也不弹任何与开发相关的确认。
+       同一 id 两边各有一份时（我开发的那份还在项目根），这句话必须写进 toast ——
+       以前只报「已更新：X v1.1.0」，用户会以为自己的开发版被覆盖了（用户报障原话）。 */
     const verb = r.updated ? "已更新：" : "已下载：";
     appsToast(
       appsT(verb) +
         String(r.name || id) +
         (r.version ? " v" + r.version : "") +
-        (r.renamed ? appsT("（同名目录已存在，已改名安装）") : ""),
+        (r.renamed ? appsT("（同名目录已存在，已改名安装）") : "") +
+        appsT(r.updated ? "（只更新了库里的那一份，开发中的项目文件夹未动）" : "（只装进库里，开发中的项目文件夹未动）"),
       "ok",
     );
     APPS_ST.list = null;
@@ -3029,17 +3044,28 @@ async function appsDownload(id, mode, version, ownerId) {
 }
 
 /* 打开（独立窗口运行）/ 更新 / 卸载 */
-/* kind（"dev" / "down"，可选）＝**打开哪一套根下的那一份**：同一个 id 两边各有一份时
-   （下载的 + 我开发中的），开发页必须显式给 "dev"，否则主进程按老口径先解析到下载副本。 */
+/* kind（"dev" / "down"，可选）＝**打开哪一套根下的那一份**：点名了就开点名的那一套。
+   不点名时的口径（本轮修的用户报障：应用中心点「启动 / 运行」开出来是旧版本）：
+   **只要本机还留着我开发中的那一份（项目根），就开项目根那份** —— 同一个 id 在下载根
+   与项目根各有一份时，主进程缺省口径是「下载根优先」（apps-store.js 的 diskKindOf，
+   那条口径是给库页 / 台账 / 安装链用的），而用户点「启动」想看的是**自己刚改完的代码**；
+   只有在项目根没有这一份时才落到下载那份（纯下载的应用行为一字不变）。
+   开发页一直是显式传 "dev" 的，这里不影响它。 */
+function appsOpenKindOf(id) {
+  const sid = String(id || "");
+  const dev = sid ? appsLocalById(sid, "dev") : null;
+  return dev ? "dev" : "down";
+}
 async function appsOpenApp(id, kind) {
   const api = window.api || {};
   if (typeof api.appsOpenWindow !== "function") {
     appsBridgeMissing();
     return;
   }
+  const k = kind ? String(kind) : appsOpenKindOf(id);
   let r = null;
   try {
-    r = await api.appsOpenWindow(id, kind || "");
+    r = await api.appsOpenWindow(id, k);
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
@@ -3189,8 +3215,10 @@ function appsFillCatalogActions(acts, spec) {
       : appsT("打开「分支 / 版本」窗口（默认原作者最新版），选好后在窗里下载");
     acts.appendChild(dl);
   } else {
-    /* 已装 = 启动（与库页 / 开发页同一个入口：appsOpenApp → 独立窗口） */
-    acts.appendChild(appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id)));
+    /* 已装 = 启动（与库页 / 开发页同一个入口：appsOpenApp → 独立窗口）。
+       点名「这张卡对应的本机那一份来自哪套根」：同 id 两边各有一份时，
+       不点名会按主进程缺省口径落到下载那份（用户报障的旧版本就是这么来的）。 */
+    acts.appendChild(appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id, appsOpenKindOf(id))));
     /* 开发中的应用：**更新不再整目录覆盖**，改成「拉取 → 交给 Agent 合并」（本轮需求）。
        入口常驻（只要这个应用有别的作者分支、或我自己的云端分支就露出），不再拿版本号比大小 ——
        合并后本机版本号不再跟着动，跨作者比大小会把入口弄没。 */
@@ -3227,7 +3255,7 @@ function appsFillCatalogActions(acts, spec) {
      · 「详细」不再占动作行 —— 而且卡片封面那枚 ⓘ 也摘掉了（点卡片本身就开详情窗）；
      · 卡片上也不再放「评论」入口：评论改为**详情窗下方那一片**（tabs 已移除），
        单独再弹一只评论窗与它内容重复。
-     所以这里到函数末尾一个动作都不再追加；打赏入口仍在封面右下角那枚金币 icon 上。 */
+     所以这里到函数末尾一个动作都不再追加；打赏入口本轮也已从封面右下角搬进详情正文。 */
 }
 
 /** 「更新」按钮的目标：**本机已装那一支的作者**的最新版（本机没装 → null）。
@@ -3383,7 +3411,8 @@ function appsCatalogBadges(spec) {
  * 需求口径（本轮，参考微软商店）：
  *   · 整张卡就是一块 16:9 圆角封面（背景图固定长宽比、居中裁切），标题与作者压在封面**左下角**，
  *     底部一条黑色渐变遮罩保证亮底截图上也看得清；悬停封面轻微提亮 + 描边加重。
- *   · 卡上只留三枚小图标（下载/更新、ⓘ 详细、金币打赏）排在封面**右下角**；其余动作全进详情窗。
+ *   · 卡上只留「下载 / 更新」那一枚小图标排在封面**右下角**（「我的应用」卡是编辑）；其余动作全进详情窗
+ *     —— 打赏那一枚按本轮需求搬进详情正文的打赏条（见 appsTipBtnEl / appsDetailBodyEl）。
  *   · 点封面空白处 = 打开应用详情窗（图标按钮各自 stopPropagation，不误触）。
  *   · 「已安装 / 可更新」不加徽标，靠那颗动作图标的形态与提示区分（用户口径）。 */
 
@@ -3707,11 +3736,42 @@ function appsDangerIcoBtnEl(kind, title, onclick) {
   return b;
 }
 
+/* 打赏入口那一枚金币图标按钮（打赏 icon，同一套小方框 .apps-ico-btn）：
+ *  **唯一落点是详情正文的打赏条**（见 appsDetailBodyEl —— 挂在「打赏记录 N 币」的右侧）。
+ *  本轮需求：卡片封面右下角那枚金币已移除（封面上不再有打赏入口）；
+ *  本函数留着是为了详情条与将来其它位置都从同一处出按钮，不再各写一套。 */
+function appsTipBtnEl(spec) {
+  const cloudTarget = appsCloudTarget(spec);
+  if (!cloudTarget || !window.MtTips) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mini apps-ico-btn apps-ico-coin";
+  btn.dataset.appTip = "1";
+  btn.appendChild(window.MtTips.coinIcon("sm"));
+  btn.title = appsTipsTitleEl(spec);
+  btn.setAttribute("aria-label", appsT("打赏作者（鲸圆币）"));
+  btn.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    window.MtTips.open(cloudTarget, {
+      tips: appsSpecWithTips(spec).tips,
+      /* 打赏成功（或窗里刷新过）→ 立刻重拉这一页的汇总并重绘：刚打赏完回来看到的数字必须是新的 */
+      onDone: () => {
+        appsTipsRefreshNow();
+        appsHubPaint();
+      },
+    });
+  };
+  return btn;
+}
+
 /* 封面右下角那一排图标按钮（同一套小方框 .apps-ico-btn）。返回 null = 这一张卡一个入口都没有。
- * 目录卡：下载（未装）/ 更新（已装且有新版本）/ ⓘ / 金币；
- * 库页卡：运行 / 更新（有新版才有）/ ⓘ / 金币 —— 卸载、数据目录、二次开发、其他版本全在详情窗里；
+ * 目录卡：下载（未装）/ 更新（已装且有新版本）；
+ * 库页卡：运行 / 更新（有新版才有）—— 卸载、数据目录、二次开发、其他版本全在详情窗里；
  * 「我的应用」卡（o.mine）：编辑（删除收进编辑窗）—— 这一页就是作者的自管页，
- *   卡片上直接摆编辑那一枚（点卡本身仍是开详情窗）。 */
+ *   卡片上直接摆编辑那一枚（点卡本身仍是开详情窗）。
+ * ★ 本轮需求：**打赏那一枚不在这里了**（封面上不再有打赏入口，它搬进详情正文的打赏条，
+ *   见 appsTipBtnEl / appsDetailBodyEl）。 */
 function appsCoverActionsEl(spec, opts) {
   const o = opts || {};
   const row = document.createElement("div");
@@ -3735,7 +3795,7 @@ function appsCoverActionsEl(spec, opts) {
     return n ? row : null;
   }
   if (o.local) {
-    push(appsRunIcoBtnEl(spec.id, !!spec.windowOpen));
+    push(appsRunIcoBtnEl(spec.id, !!spec.windowOpen, appsOpenKindOf(spec.id)));
     /* 开发中的应用：这颗图标改成「拉取 vX 交给 Agent 合并」（与卡片同一口径：
        更新不再整目录覆盖、入口常驻、不比版本号大小）。 */
     const mergeTgt = appsCardMergeTargetOf(spec);
@@ -3795,31 +3855,8 @@ function appsCoverActionsEl(spec, opts) {
       }
     }
   }
-  /* ⓘ「详细」图标本轮已摘掉（点卡片本身就是开详情窗，两处用途重复）：
-     卡片动作只剩「下载 / 更新」与「打赏」。 */
-  const cloudTarget = appsCloudTarget(spec);
-  if (cloudTarget && window.MtTips) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "mini apps-ico-btn apps-ico-coin";
-    btn.dataset.appTip = "1";
-    btn.appendChild(window.MtTips.coinIcon("sm"));
-    btn.title = appsTipsTitleEl(spec);
-    btn.setAttribute("aria-label", appsT("打赏作者（鲸圆币）"));
-    btn.onclick = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      window.MtTips.open(cloudTarget, {
-        tips: appsSpecWithTips(spec).tips,
-        /* 打赏成功（或窗里刷新过）→ 立刻重拉这一页的汇总并重绘：刚打赏完回来看到的数字必须是新的 */
-        onDone: () => {
-          appsTipsRefreshNow();
-          appsHubPaint();
-        },
-      });
-    };
-    push(btn);
-  }
+  /* ⓘ「详细」图标本轮已摘掉（点卡片本身就是开详情窗，两处用途重复）；
+     打赏那一枚按本轮需求也搬走了 —— 卡片动作只剩「下载 / 更新」（+「我的应用」卡的编辑）。 */
   return n ? row : null;
 }
 
@@ -3908,6 +3945,24 @@ function appsCommentsStashDraft(host) {
   if (id) APPS_CMT_DRAFT[id] = text;
   return text;
 }
+/** 清空评论区那一格 —— **DOM 与记账一起清**（调用方请一律走这里，别自己写 host.innerHTML = ""）。
+ *
+ *  为什么必须成对：appsCommentsMountInto 的「已经挂过了」判据是 host.dataset 上的三个键
+ *  （appsCmtKey / appsCmtOn / appsCmtId）。只清 DOM 不记账 → 宿主是空的、标记却说「挂过了」，
+ *  下一次挂载被整段跳过 —— 用户报的「应用详情下方评论区一片空白」就是这么来的：
+ *  开详情窗时挂过一次，随后 appsDetailWarmTips / 打赏汇总回来触发 appsDetailRefresh →
+ *  appsDetailPaint 先 `lower.innerHTML = ""` 再挂，第二步被跳过。 */
+function appsCommentsClearHost(host) {
+  if (!host) return;
+  try {
+    host.innerHTML = "";
+  } catch (_) {}
+  if (host.dataset) {
+    delete host.dataset.appsCmtKey;
+    delete host.dataset.appsCmtOn;
+    delete host.dataset.appsCmtId;
+  }
+}
 /**
  * 把评论区挂进 host（切分支时重挂，草稿保留）。
  * @param {HTMLElement} host
@@ -3921,13 +3976,26 @@ function appsCommentsMountInto(host, target, opts, branchKey) {
   const sid = String(target.id || "");
   const key = sid + "\u0000" + String(branchKey || target.ownerId || "");
   appsCommentsStashDraft(host);
-  if (host.dataset && host.dataset.appsCmtKey === key && host.dataset.appsCmtOn === "1") return true;
+  /* ★ 判据必须**两条都成立**才敢跳过：数据集里的 key 对上，且评论区 DOM 真的还在宿主里。
+     只信 dataset 就会踩上面 appsCommentsClearHost 注释里那个坑（宿主被清过、标记还在）。 */
+  if (
+    host.dataset &&
+    host.dataset.appsCmtKey === key &&
+    host.dataset.appsCmtOn === "1" &&
+    host.querySelector &&
+    host.querySelector(".cmt-root")
+  ) {
+    return true;
+  }
   if (!window.MtComments || typeof window.MtComments.mount !== "function") return false;
   try {
     window.MtComments.mount(host, target, opts || {});
   } catch (_) {
     return false;
   }
+  /* 没挂出 .cmt-root 就不要留下「挂过了」的记账 —— 下一次调用还能重试，
+     而不是被自己的标记永久挡住（mount 半路抛时也一样）。 */
+  if (host.querySelector && !host.querySelector(".cmt-root")) return false;
   if (host.dataset) {
     host.dataset.appsCmtKey = key;
     host.dataset.appsCmtOn = "1";
@@ -4034,20 +4102,27 @@ function appsDetailBodyEl(spec, extra) {
     table.appendChild(row);
   }
   if (rows.length) box.appendChild(table);
-  /* ② 打赏记录一行（**历史口径：修「详细里打赏反复全套了两次」**）：
-     原来这里塞了两块 —— `MtTips.metaEl` 的只读汇总 + `MtTips.buttonEl` 打赏按钮，
-     而那颗按钮内部又原样印了一遍「N [币] · M 次」（app-tips.js 的 buttonEl），
-     于是同一个窗口里同一份数字出现两遍、且两处都能点开打赏窗。
-     现在只留**一行**：「打赏记录 N 币」（币数走鲸圆币图标）。整行**不可点**，
-     鼠标悬停才出「累计打赏 N 币（M 次）」；一次都没被打赏过（N = 0 / 数据没取到）**整行不显示**。
-     打赏入口只留在卡片右下角那枚金币图标上（见 appsCoverActionsEl）。 */
-  const tipTarget = appsCloudTarget(spec);
-  if (tipTarget && window.MtTips) {
+  /* ② 打赏条（**本轮需求：打赏入口从卡片封面搬到详情里**）：
+     形态 = 一行「打赏记录 N 币」（币数走鲸圆币图标）+ **右侧一枚打赏 icon 按钮**，
+     两者同一个 .apps-detail-tipbar 条里（见 app-tips.js 的 detailRecordEl 与
+     app-apps.js 的 appsTipBtnEl）。
+     历史口径（修「详细里打赏反复全套了两次」）仍然成立：记录那一行**只读、不可点**，
+     也没有第二份小字汇总；能开打赏窗的只有右边这一枚按钮。
+     一次都没被打赏过 / 汇总没取到 → 只画按钮（不写「0 币」的假数字）。 */
+  const tipBtn = appsTipBtnEl(spec);
+  if (tipBtn) {
     /* 详情窗是按 id 取条目的（appsDetailSpecOf 不走 appsSpecListAll 那条挂汇总的路），
        同一份汇总只有从这条口径拿才与卡片一致（appsTipsOf = 唯一取数口径）。 */
-    const tips = appsTipsOf(spec);
-    const bar = window.MtTips.detailRecordEl(tipTarget, tips);
-    if (bar) box.appendChild(bar);
+    const tipTarget = appsCloudTarget(spec);
+    const bar = window.MtTips.detailRecordEl(tipTarget, appsTipsOf(spec));
+    /* 打赏 icon 按钮排在「打赏记录」的右侧：挂进那一条里（同一条 .apps-detail-tipbar）；
+       记录行没画（还没人打赏 / 汇总没取到）时它自己单独占一条，位置与有记录时一致。 */
+    if (bar) {
+      box.appendChild(bar);
+      bar.appendChild(tipBtn);
+    } else {
+      box.appendChild(tipBtn);
+    }
   }
   /* ③ 能力小标（app.json 的 capabilities，主进程已算好文案与 tooltip）：
      用一句话说清这个应用带不带语音 / 出图。 */
@@ -4091,7 +4166,7 @@ function appsDetailBodyEl(spec, extra) {
 
 /* 详情窗里「本机应用」的管理动作区（本轮需求：库页卡上收掉的那三个入口搬到这里）：
    运行 / 📂 数据目录 / 二次开发 / 卸载。只在本机装了时出现，且只在详情正文里出现一次
-   —— 与卡片右下角那排图标不重复（打赏 / 详细 / 下载更新仍在卡上）。 */
+   —— 与卡片右下角那排图标不重复（卡上只剩运行 / 下载更新；打赏在本正文的打赏条里）。 */
 function appsDetailLocalActionsEl(spec, local) {
   const id = String((spec && spec.id) || (local && local.id) || "");
   if (!id) return null;
@@ -4103,7 +4178,7 @@ function appsDetailLocalActionsEl(spec, local) {
   wrap.appendChild(head);
   const row = document.createElement("div");
   row.className = "apps-detail-local-row";
-  row.appendChild(appsMiniBtn(appsT("运行"), () => appsOpenApp(id), true));
+  row.appendChild(appsMiniBtn(appsT("运行"), () => appsOpenApp(id, appsOpenKindOf(id)), true));
   /* 数据目录（用 app id 管理，默认 <数据目录>/apps-data/<id>/）：路径只由主进程解析 */
   const dirBtn = appsMiniBtn("📂 " + appsT("数据目录"), () => appsDataOpenNow(id));
   dirBtn.title = appsT("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
@@ -4651,8 +4726,8 @@ function appsPaintTileActions(card, spec, local) {
 }
 
 /* 库页卡片 = **与应用中心同一套 16:9 封面卡**（用户口径：库页一起统一）：本机这一份的作者 / 版本 /
-   占用 / 路径 / 能力标全部收进详情窗（封面上只留标题 + 作者 +「本机 vX」），卡上只留两枚图标
-   （运行、金币）；卸载 / 数据目录 / 二次开发三个入口在详情窗底栏左下角。
+   占用 / 路径 / 能力标全部收进详情窗（封面上只留标题 + 作者 +「本机 vX」），卡上只留运行那一枚图标
+   （金币打赏本轮已搬进详情正文的打赏条）；卸载 / 数据目录 / 二次开发三个入口在详情窗底栏左下角。
    本机条目 → 卡片 / 详情用得上的合并条目：显示名走本机 app.json 的 name（用户自己改过的那个），
    封面图 / 作者 / 打赏口径走云端目录条目（那条有 ownerId / ownerName / icon）。
    云端条目暂时拉不到（离线 / 还没上架）时退回本机 app.json 的作者，绝不因此不显示封面。 */
@@ -5596,7 +5671,7 @@ function appsPickRun(id, act) {
   const sid = String(id || "");
   if (!act || act.kind === "none" || act.disabled) return;
   if (act.kind === "start") {
-    appsOpenApp(sid);
+    appsOpenApp(sid, appsOpenKindOf(sid));
     return;
   }
   appsDownload(sid, act.mode || "", act.ver || "", act.ownerId || "");
@@ -6427,9 +6502,11 @@ function appsDetailPaint() {
      有选中分支时的版本 / 下载动作与回滚块都在**右列**（见 appsDetailRightColEl 与下面的
      appsDetailRollSlotEl），这里不再重复第二份。 */
   if (lower) {
-    /* 草稿先记下来再清场（清场会把写了一半的评论框一起拆掉，见 appsCommentsStashDraft） */
+    /* 草稿先记下来再清场（清场会把写了一半的评论框一起拆掉，见 appsCommentsStashDraft）；
+       清场走 appsCommentsClearHost —— **DOM 与记账一起清**：只清 DOM 会让
+       appsCommentsMountInto 的「已经挂过了」判据失真，评论区从此不再出现（见该函数注释）。 */
     appsCommentsStashDraft(lower);
-    lower.innerHTML = "";
+    appsCommentsClearHost(lower);
     /* 评论目标 = **当前选中的那条分支**（本轮需求 4）：切分支后这一块整块换成那一支的评论；
        打赏仍按家族根统一（appsCloudTarget），两者刻意分开。 */
     const cmtTarget = spec ? appsCommentTarget(spec) : null;
@@ -6454,10 +6531,13 @@ function appsDetailPaint() {
 function appsDetailFootActsPaint(id, host) {
   host.innerHTML = "";
   const sid = String(id || "");
-  const local = appsLocalById(sid);
+  /* 本机这一份：**开发中的那份优先**（用户口径：开发中看的就是自己改的代码）——
+     同一个 id 在下载根与项目根各有一份时，缺省 appsLocalById(sid) 给的是下载那份，
+     于是「打开 / 启动」与「移除登记 / 卸载」全指到下载副本上。这里一次定准。 */
+  const local = appsLocalById(sid, "dev") || appsLocalById(sid);
   if (!local) return;
   host.appendChild(
-    appsMiniBtn(local.dev === true ? appsT("打开") : appsT("启动"), () => appsOpenApp(sid), true),
+    appsMiniBtn(local.dev === true ? appsT("打开") : appsT("启动"), () => appsOpenApp(sid, appsLocalRootKind(local)), true),
   );
   const dirBtn = appsMiniBtn("📂 " + appsT("数据目录"), () => appsDataOpenNow(sid));
   dirBtn.title = appsT("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
@@ -6837,11 +6917,41 @@ function appsMineSpecs() {
   );
   return out;
 }
-/** 编辑 / 删除对话框要的那一条（找不到回 null：调用方给一句「先刷新一下」，不猜） */
+/** 这一页（分页缓存里的）那一条，找不到回 null（作者动作的取数入口见下面的 appsMineEditSpecOf） */
 function appsMineSpecOf(id) {
   const want = String(id || "");
   if (!want) return null;
   return appsMineSpecs().find((s) => String(s.id) === want) || null;
+}
+/* 「编辑 / 删除」要的那一条 —— 三层回坠，找不到才回 null：
+ *   ① 当前已载入的「我的应用」页条目（appsMineSpecOf，字段最全）；
+ *   ② 我的线上条目本身（APPS_ST.mine.byId：应用页的目录合并也读它，未必与这一页同时载入）；
+ *   ③ 目录池里那一条并按我的线上条目合并（appsSpecPoolAll 的 appsSpecWithMine）。
+ *
+ * 为什么要 ②③（用户报的现场：**详情窗点「编辑…」弹「这条应用不在「我的应用」列表里：先刷新
+ * 一下再编辑」，可那条应用明明是我自己的**）：
+ *   详情窗 / 列表模式那一列的「编辑…」入口是按**合并后的 spec**（appsSpecWithMine → mine:true）
+ * 画出来的，而这一页的分页列表（APPS_ST.minePage）与目录合并（APPS_ST.mine）是**两条各自取数、
+ * 各自记新鲜期**的链：翻到第 2 页之后重画、或目录合并那次请求成了而这一页那次没成（断网 / 登录
+ * 态过期 / 5 分钟新鲜期内只重拉了目录），都会出现「卡片上有编辑按钮、按 id 却在那一页里查不到」。
+ * 这时按 id 从 ②③ 拿到的**还是我自己那一条**，不该拿一句「先刷新」把作者挡在门外、更不该让他重进
+ * 页面（列表重拉一次也不改这两条链的新鲜期口径）。 */
+function appsMineEditSpecOf(id) {
+  const want = String(id || "");
+  if (!want) return null;
+  const page = appsMineSpecOf(want);
+  if (page) return page;
+  const raw = appsMineOf(want);
+  if (raw) {
+    const spec = appsSpecFromMine(raw);
+    if (spec) return spec;
+  }
+  const inPool = (appsSpecPoolAll() || []).find((s) => String((s && s.id) || "") === want);
+  if (!inPool) return null;
+  /* 目录里同 id 可能有好几条（多作者分支）：只认**合并后仍是我的那一条** —— 别人的分支
+     既没有线上条目，也不该出现「编辑 / 删除」入口（与 appsSpecWithMine 同一判据）。 */
+  const merged = appsSpecWithMine(inPool);
+  return merged && merged.mine === true ? merged : null;
 }
 /** 本地筛选：只按搜索词过滤（标题 / 描述 / id / 标签）。
  *  以前这里还有一颗「只看已下架」开关 —— 已按用户口径整条移除（连同 APPS_ST.mineOfflineOnly），
@@ -7217,9 +7327,14 @@ function openAppEdit(id) {
     appsToast(appsT("窗口模块未就绪（openOverlay 不存在）"), "err");
     return false;
   }
-  const spec = appsMineSpecOf(sid);
+  const spec = appsMineEditSpecOf(sid);
   if (!spec) {
-    appsToast(appsT("这条应用不在「我的应用」列表里：先刷新一下再编辑"), "err");
+    /* 真找不到（云端确实没有我这条分支 / 这一页与目录都没载入）：按 id 重拉一次「我的应用」
+       列表再试一次，仍不成才如实提示 —— 不猜字段。这是最后一道兜底，正常路径走不到。 */
+    appsMinePageLoad(true).then(() => {
+      if (appsMineEditSpecOf(sid)) openAppEdit(sid);
+      else appsToast(appsT("这条应用的云端条目没载入：确认已登录并在「我的应用」页刷新后重试"), "err");
+    });
     return false;
   }
   const cloudShots = appsShotsUrlsOf(spec);
@@ -7629,9 +7744,14 @@ async function appsEditSave() {  const api = window.api || {};
     "/api/apps/" + encodeURIComponent(String(spec.id || "")) + (ownerId ? "?owner=" + encodeURIComponent(ownerId) : "");
   const dom = APPS_EDIT.dom;
   if (dom.save) dom.save.disabled = true;
+  /* 请求体字段名必须是 **json**：主进程 `store:request` 只认 `opts.json`
+     （main.js storeRequest：`if (o.json != null) { … body = JSON.stringify(o.json) }`），
+     写成 `body` / `payload` 会被静默丢掉 —— 正文一个字节都不发，服务端读到空 body 就当
+     acceptDeclaration 缺失，回 400，界面表现 =「编辑完点保存必失败」。保存与「引用失效重发」
+     两条路都走这一条口径。 */
   let r = null;
   try {
-    r = await api.storeRequest({ method: "PATCH", path: path, body: body });
+    r = await api.storeRequest({ method: "PATCH", path: path, json: body });
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
@@ -7652,7 +7772,7 @@ async function appsEditSave() {  const api = window.api || {};
     if (replaced) {
       appsToast(appsT("云端没有那份缓存的图片：把 ") + replaced + appsT(" 张图一起重传一遍…"), "ok");
       try {
-        r = await api.storeRequest({ method: "PATCH", path: path, body: body });
+        r = await api.storeRequest({ method: "PATCH", path: path, json: body });
       } catch (e) {
         r = { ok: false, error: (e && e.message) || String(e) };
       }
@@ -7760,9 +7880,12 @@ function openAppDelete(id) {
     appsToast(appsT("窗口模块未就绪（openOverlay 不存在）"), "err");
     return false;
   }
-  const spec = appsMineSpecOf(sid);
-  if (!spec) {
-    appsToast(appsT("这条应用不在「我的应用」列表里：先刷新一下再删除"), "err");
+  /* 与「编辑…」同一口径回坠取那一条（见 appsMineEditSpecOf）。**危险动作多一道闸**：
+     回坠回来的那一条必须确实是我自己的（mine 为真；别人的分支一概不进来）——
+     删除是云端不可恢复的动作，宁可停在「没载入」，也绝不去删别人的分支。 */
+  const spec = appsMineEditSpecOf(sid);
+  if (!spec || spec.mine !== true) {
+    appsToast(appsT("这条应用的云端条目没载入：确认已登录并在「我的应用」页刷新后重试"), "err");
     return false;
   }
   APPS_DEL.id = sid;

@@ -434,7 +434,8 @@ async function main() {
     ok(APPS.indexOf("收起详情") < 0 && APPS.indexOf("查看详情") < 0, "不再有「查看详情 / 收起详情」两态按钮");
     /* 本轮需求：卡片换成 16:9 封面卡，动作收进封面右下角那一排（appsCoverActionsEl）；
        「详情」那一枚 ⓘ **本轮已按用户口径摘掉** —— 点卡片本身就是开详情窗，两者用途重复；
-       所以卡上只剩「下载 / 更新」与「打赏」，appsDetailBtnEl 这个元件本身保留（外部脚本按名字探测）。 */
+       金币打赏那一枚也已搬进详情正文的打赏条（appsTipBtnEl）—— 所以卡上只剩「下载 / 更新」
+       （库页是运行、我的应用是编辑），appsDetailBtnEl 这个元件本身保留（外部脚本按名字探测）。 */
     ok(/function appsCoverActionsEl\(spec, opts\)/.test(APPS) && APPS.indexOf("push(appsDetailBtnEl(spec && spec.id));") < 0,
       "卡片封面不再挂 ⓘ（详情入口只剩「点卡片」，与应用中心一致）");
     ok(
@@ -448,7 +449,7 @@ async function main() {
     ok(
       /push\(appsRunIcoBtnEl\(spec\.id[,)]/.test(APPS) &&
         /push\(\s*appsIcoBtnEl\(\s*"download",/.test(APPS.slice(APPS.indexOf("function appsCoverActionsEl("))),
-      "库页卡片：运行 / 更新（有新版才有）/ 金币 同排在一处（封面右下角那一排）",
+      "库页卡片：运行 / 更新（有新版才有）同排在一处（封面右下角那一排）",
     );
     /* 开发页不挂（它自己就有一整块正文） */
     const DEV = read("renderer/app-apps-dev.js");

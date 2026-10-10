@@ -10061,7 +10061,8 @@
     "正在读取打赏数据…": "Loading tip totals…",
     "打赏数据暂未取到": "Tip totals unavailable right now",
     "打赏名单": "Tip list",
-    /* 详情正文里那行只读记录（app-tips.js 的 detailRecordEl）：整行不可点，悬停才出总次数 */
+    /* 详情正文打赏条里那行只读记录（app-tips.js 的 detailRecordEl）：整行不可点，悬停才出总次数；
+       它右侧那枚打赏 icon 按钮的 tooltip 走下面的「累计打赏 {v}（{n} 次）」/「还没有人打赏」 */
     "打赏记录": "Tips received",
     /* 非作者视角的记录区（只看得到自己打赏出去的那几笔，见 app-tips.js 的 paintList）；
        撤销口已停用，但存量已撤销记录仍要标出来。 */
@@ -10963,6 +10964,13 @@
           "Overwrite = replace only the app files installed last time (this app's own storage and canvas are kept); Rename = install into another folder, keeping both; Cancel = do nothing.",
         "（同名目录已存在，已改名安装）":
           " (a folder with the same name existed, so it was installed under a new name)",
+        /* 下载 / 更新只动库里那一份（用户口径：库中的应用与开发中的应用彻底隔离；
+           合并 / 完全替换只在「二次开发」那条入口里出现，见 app-branch-merge.js /
+           app-branch-replace.js）—— toast 里必须把这件事说出来。 */
+        "（只更新了库里的那一份，开发中的项目文件夹未动）":
+          " (only the copy in the library was updated; your project folder was left untouched)",
+        "（只装进库里，开发中的项目文件夹未动）":
+          " (installed into the library only; your project folder was left untouched)",
         /* 主进程 apps-store.js 的失败码（appsErrText 按码出词，与 app-plugins.js 的
            pluginErrText 同一口径；码的真源是 installFailHint / uninstallApp / openAppWindow） */
         "该应用已有安装任务在跑": "This app already has an install running",
@@ -11328,8 +11336,8 @@
         "删除…": "Delete…",
         /* 编辑框 */
         "编辑应用": "Edit app",
-        "这条应用不在「我的应用」列表里：先刷新一下再编辑":
-          "This app is not in your My Apps list: refresh first, then edit",
+        "这条应用的云端条目没载入：确认已登录并在「我的应用」页刷新后重试":
+          "This app's cloud entry is not loaded yet: make sure you are signed in and refresh the My Apps page, then retry",
         "① 基本信息（改完立刻对全站生效）": "① Basic info (takes effect for everyone right away)",
         "标题": "Title",
         "最多 ": "Up to ",
@@ -11398,8 +11406,6 @@
         " 处写入失败）：": " write failure(s)): ",
         /* 删除框 */
         "删除应用": "Delete app",
-        "这条应用不在「我的应用」列表里：先刷新一下再删除":
-          "This app is not in your My Apps list: refresh first, then delete",
         "这个操作不可恢复：你这一条分支的记录、版本包、图标与上架截图会一起从云端下掉。":
           "This cannot be undone: your branch's record, version packages, icon and screenshots are all removed from the cloud.",
         "另有 ": "Another ",

@@ -39,49 +39,21 @@
   ];
 
   const $ = (id) => document.getElementById(id);
-  /* ── 适配层：讨论区与主应用共用打赏 / 评论两个模块（renderer/app-tips.js · app-comments.js）
+  /* ── 适配层：讨论区与主应用共用「评论」模块（renderer/app-comments.js）
      本窗只有 window.forumApi / pluginApi（能力与主应用的 window.api 同名同义），
-     也没有主应用的 I18n 与 MTNodeAuth —— 这里按两个模块**期待的形状**补最小适配：
+     也没有主应用的 I18n 与 MTNodeAuth —— 这里按该模块**期待的形状**补最小适配：
        · window.api.storeRequest → 本窗的 storeRequest（同一 IPC，token 仍只在主进程）
        · window.I18n.t           → 讨论区自己的语言选择（英文界面走下面那张小表）
        · window.MTNodeAuth       → state / open / logout / refresh / onChange 五个入口
-     适配只做「转发」，不重复实现任何业务：两个模块仍打同一批 /api/tips 与 /api/comments。 */
+     适配只做「转发」，不重复实现任何业务：模块仍打同一批 /api/comments。
+     打赏（renderer/app-tips.js）已从讨论区整体撤掉：本窗不再加载该模块、也不再画打赏入口，
+     这条通道只剩工坊与应用中心两处（服务端 /api/tips 与既有打赏记录一律未动）。 */
   const SHARED_EN = {
-    "登录后可打赏": "Sign in to tip",
-    "正在读取打赏信息…": "Loading tip info…",
-    "今天已打赏过，明天再来": "Already tipped today — come back tomorrow",
-    "本月打赏额度已用完（每月 1 日重置）": "Monthly tip quota used up (resets on the 1st)",
-    "余额不足，去充值": "Not enough coins — top up",
-    "本月剩余额度不足最小档位（每月 1 日重置）": "Remaining monthly quota is below the smallest tier (resets on the 1st)",
-    "打赏作者": "Tip the author",
-    "打赏所得可用于作者调用 MTNode 中转模型":
-      "What the author receives can be spent on calling MTNode relay models",
-    "还没有人打赏": "No tips yet",
-    "打赏": "Tip",
-    "打赏作者（鲸圆币）": "Tip the author (whale coins)",
-    "账号服务未就绪": "Account service is not ready",
+    /* 讨论区英文界面的小表：只留共享「评论」模块真的会取的那些键（打赏那二十来条随入口一起撤了）。
+       口径与改动前一致 —— 表里没有的键回中文，不新增翻译面。 */
+    "账户服务未就绪": "Account service is not ready",
     "网络请求失败": "Network request failed",
     "请先登录": "Please sign in first",
-    "币": "coins",
-    "累计": "Total",
-    "打赏名单": "Tip list",
-    /* 本轮口径：币数后面跟**鲸圆币图标**，中文界面不再写「币」字 —— 讨论区这个英文小表
-       也同步（这几条的英文由 renderer/i18n.js 统一出，这里只留讨论区自己用到的那些）。 */
-    "累计被打赏": "Total tipped",
-    "· {n} 次": "· {n} times",
-    "按作者分配（这一个条目有多个作者）": "Split between authors (this entry has several authors)",
-    "每位作者右侧填币数：合计不得超过 {v}，最后一个作者自动补齐剩余": "Enter coins for each author: the total may not exceed {v}, and the last author fills in the remainder",
-    "作者": "Author",
-    "（你自己）": " (you)",
-    "不能给自己打赏：你那一份固定为 0": "You cannot tip yourself — your share is fixed at 0",
-    "自动补齐：这一份 = 总额 − 其他作者的份数": "Auto-filled: this share = the total minus the other authors' shares",
-    "总数不能超过你按的 {v}，已按上限调整": "The total cannot exceed {v} — clamped to the limit",
-    "分账之和必须等于你按的 {v}": "The split must add up to exactly {v}",
-    "分账金额不合法：请让合计正好等于你按的数额，且作者都在这一组里": "Invalid split: make it add up exactly, using authors from this group",
-    "打赏金额": "Tip amount",
-    "确认打赏": "Confirm tip",
-    "正在打赏…": "Sending…",
-    "打赏成功，感谢支持！": "Tip sent — thank you!",
     "关闭": "Close",
     "匿名用户": "Anonymous",
     "评论": "Comments",
@@ -122,7 +94,7 @@
   const moreBar = $("moreBar");
   const btnMore = $("btnMore");
   const btnBack = $("btnBack");
-  /* 打赏 / 评论（与主应用共用模块；页签条与评论容器见 chat.html 的话题详情页） */
+  /* 评论（与主应用共用模块；页签条与评论容器见 chat.html 的话题详情页） */
   const tdTabReply = $("tdTabReply");
   const tdTabComment = $("tdTabComment");
   const topicComments = $("topicComments");
@@ -293,7 +265,7 @@
     paintAccount();
     return auth;
   }
-  /* 打赏 / 评论两个共享模块眼里的「登录态提供者」：主应用是 window.MTNodeAuth，
+  /* 评论共享模块眼里的「登录态提供者」：主应用是 window.MTNodeAuth，
      本窗由上面那几个函数顶替（state 从 auth 变量现算，open 拉起本窗登录卡）。 */
   window.MTNodeAuth = window.MTNodeAuth || {
     state: () => {
@@ -860,33 +832,16 @@
     viewTopic.hidden = name !== "topic";
     hintBar.hidden = signedIn() || name !== "list";
   }
-  /* ---------------- 打赏 / 评论（与主应用共用模块） ----------------
-     话题与回复都能被打赏（targetKind = forum_topic / forum_reply），话题另有「评论」页签
+  /* ---------------- 评论（与主应用共用模块） ----------------
+     话题与回复都能被评论（targetKind = forum_topic / forum_reply），话题在详情页占一个「评论」页签
      （评论带互回，但**不带星级** —— 评分只属于条目评论，见 app-comments.js 的 RATED_KINDS）。
-     两个模块自带档位 / 名单 / 限频等全部业务逻辑，本窗只放入口。 */
-  function tipTargetOfTopic() {
+     评论模块自带互回 / 分页 / 限频等全部业务逻辑，本窗只放入口。
+     打赏入口（话题与回复两处的小金币按钮）已按本轮需求整体移除：讨论区不再有打赏通道。 */
+  function cmtTargetOfTopic() {
     return detail && detail.item ? { kind: "forum_topic", id: detail.item.id } : null;
   }
-  function tipTargetOfReply(rp) {
+  function cmtTargetOfReply(rp) {
     return rp && rp.id ? { kind: "forum_reply", id: rp.id } : null;
-  }
-  function tipBtnEl(target, compact, tips) {
-    if (!target || !window.MtTips) return null;
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "tip-btn" + (compact ? " compact" : "");
-    b.title = t("打赏作者（鲸圆币）", "Tip the author (whale coins)");
-    const ico = document.createElement("span");
-    ico.className = "tip-btn-ico";
-    ico.textContent = "🪙";
-    b.appendChild(ico);
-    const lab = document.createElement("span");
-    lab.className = "tip-btn-t";
-    lab.textContent = t("打赏", "Tip");
-    b.appendChild(lab);
-    /* 带上服务端公开投影的累计总额：打赏窗里那行「累计被打赏」**人人可见**（名单仍仅作者与管理员） */
-    b.onclick = () => window.MtTips.open(target, { tips: tips });
-    return b;
   }
   function commentBtnEl(target, count) {
     if (!target || !window.MtComments) return null;
@@ -932,7 +887,7 @@
     tdTabComment.classList.toggle("on", isCmt);
     if (isCmt && !cmtMounted && window.MtComments && detail && detail.item) {
       cmtMounted = true;
-      cmtPane = window.MtComments.mount(topicComments, { kind: "forum_topic", id: detail.item.id }, {
+      cmtPane = window.MtComments.mount(topicComments, cmtTargetOfTopic(), {
         title: detail.item.title || "",
         onChanged: () => paintDetailTabLabels(),
       });
@@ -960,18 +915,8 @@
     } else {
       statusSel.hidden = true;
     }
-    paintDetailTipBtn();
     paintDetailTabLabels();
     setDetailTab(detailTab);
-  }
-  /* 话题的打赏按钮（详情页头一行，与状态选择同期刷新） */
-  function paintDetailTipBtn() {
-    const host = document.querySelector('.tdmeta');
-    if (!host) return;
-    const old = host.querySelector('.tip-btn');
-    if (old) old.remove();
-    const b = tipBtnEl(tipTargetOfTopic(), true, detail && detail.item ? detail.item.tips : null);
-    if (b) host.appendChild(b);
   }
   function renderReplies() {
     replyList.innerHTML = "";
@@ -1003,15 +948,6 @@
       head.appendChild(nm);
       head.appendChild(tm);
       head.appendChild(sp);
-      /* 回复也能被打赏（targetKind=forum_reply）：汇总行与主应用卡片同一个元件；
-         没人打赏过时它返回 null，这一行只出不占位。 */
-      let repTips = null;
-      if (window.MtTips && rp.tips && rp.tips.count) {
-        repTips = window.MtTips.metaEl(tipTargetOfReply(rp), rp.tips, { clickable: false });
-        if (repTips) head.appendChild(repTips);
-      }
-      const rtip = tipBtnEl(tipTargetOfReply(rp), true, rp.tips);
-      if (rtip) head.appendChild(rtip);
       head.appendChild(btn);
       box.appendChild(head);
       /* 二级回复：平铺引用（不做树） */
@@ -1030,7 +966,7 @@
       body.className = "rbody md";
       box.appendChild(body);
       /* 这条回复自己的评论（与话题评论同一套模块；点开独立小窗） */
-      const rcmt = commentBtnEl(tipTargetOfReply(rp), rp.comments || 0);
+      const rcmt = commentBtnEl(cmtTargetOfReply(rp), rp.comments || 0);
       if (rcmt) {
         const foot = document.createElement("div");
         foot.className = "racts";

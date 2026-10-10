@@ -62,9 +62,10 @@ Bringing a minimal reproduction is far more useful than pasting a whole log.
 
 ## Tipping and comments
 
-### Tipping (support an author with W coins)
+### Tipping (support an author with W coins — not available in the forum)
 
-- You can tip: workshop templates and skills, **published** apps in the App Center, and forum topics and replies (all four share the same entry: a **W-coin icon** button on the card and another one inside the detail view).
+- You can tip: workshop templates and skills, and **published** apps in the App Center (the same entry everywhere: a **W-coin icon** button). The workshop puts one in the detail view; the **App Center keeps it only in the detail view**, on the right of the "Tips received" row — the app card cover has no tip button.
+- **The forum has no tipping**: neither a topic's detail nor a reply row carries a tip button or an accumulated-tips line — the forum only has the **Comments** tab (see below). The server-side tipping channel and the historical forum tip records stay in the database (the back office can still read them) — the UI just no longer offers an entry.
 - The money comes out of **your own W-coin balance** and goes straight to the author. There is no "top up first" step: when the balance is too low the button says "not enough W coins — top up" and opens the top-up window in one click.
 - Three fixed tiers: **100 / 500 / 1000 W coins** — you cannot type your own amount. The tip window shows **W coins only** (never a yuan equivalent); what a coin is worth is shown in the top-up window.
 - Amounts are shown as **a number followed by the W-coin icon** (the official DeepSeek logo inside a gold ring) — in the Chinese UI the word "币" is gone; hover the icon to see "鲸圆币". The wallet, the relay balance in Settings, cost read-outs and the tip window all use this one icon.
@@ -81,7 +82,7 @@ Bringing a minimal reproduction is far more useful than pasting a whole log.
 
 ### Comments (ratings and discussion)
 
-- Comments live in four places: a workshop entry's detail window (**Comments** tab), an app's detail (**Comments** tab), a forum topic's detail (**Comments** tab), and each reply's own comment window.
+- Comments live in four places: a workshop entry's detail window (**Comments** tab), an app's detail (**Comments** tab), a forum topic's detail (**Comments** tab), and each reply's own comment window. **The forum's only interaction is commenting** (its tipping entry has been removed).
 - **Anyone can read comments; posting one requires a sign-in**; you can **reply to a comment** (parent-child quote), the same shape as forum replies.
 - **Only item comments (template / skill / app) carry a five-star rating**, and it is **optional** — skip it and it is left out of the average. Comments on forum topics and replies have no stars. For one item you only keep your latest star.
 - Cards and detail views show the **average star (one decimal) + comment count** and the accumulated tips; when nobody has rated, no fake score is shown.

@@ -32,6 +32,9 @@ function ok(cond, msg, extra) {
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
 const has = (rel, needle) => read(rel).includes(needle);
 const no = (rel, needle) => !read(rel).includes(needle);
+/* 源码里「提到某个名字」的注释不算残留死代码：按需剥掉注释再断言（JS 块注释 / 行注释 + HTML 注释） */
+const stripComment = (s) =>
+  s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\S]*?-->/g, "").replace(/^\s*\/\/.*$/gm, "");
 
 function main() {
   /* ── [1] 模块与加载顺序 ─────────────────────────────────────── */
@@ -78,7 +81,6 @@ function main() {
 
   /* ── [2] 弹窗纪律 ─────────────────────────────────────────── */
   console.log("\n[2] 弹窗纪律（不许动 #overlay）");
-  const stripComment = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const tipsCode = stripComment(tips);
   const cmtsCode = stripComment(cmts);
   ok(!/openOverlay\s*\(/.test(tipsCode), "app-tips.js 不调用 openOverlay（注释里说明原因，代码里不许出现）");
@@ -143,14 +145,19 @@ function main() {
   ok(store.includes("item.rating") && store.includes("item.comments") && store.includes("item.tips"), "工坊卡片读公开投影的 rating / comments / tips");
   const apps = read("renderer/app-apps.js");
   ok(apps.includes("appsCloudTarget("), "应用中心只给**已上架**应用挂打赏与评论（本机自建在云端不存在）");
-  /* 应用卡片（本轮需求）：卡上只留三枚图标（下载/更新、ⓘ 详细、金币打赏），
-     排在**封面右下角**（.apps-cover-acts）；汇总进 tooltip。 */
+  /* 应用卡片（本轮需求）：卡上只剩「下载 / 更新」（ⓘ 早已摘掉），**打赏那一枚也搬进详情**了
+     （用户口径：移除封面右下角的打赏按钮）；详情正文的打赏条里才有那枚打赏 icon。 */
   ok(
-    /appsCoverActionsEl\(spec/.test(apps) &&
+    /function appsTipBtnEl\(spec\)/.test(apps) &&
       /MtTips\.coinIcon\("sm"\)/.test(apps) &&
       /MtTips\.tipSumTitle\(tips\)/.test(apps) &&
       /MtTips\.open\(cloudTarget/.test(apps),
-    "应用卡片接「下载/更新 + ⓘ 详细 + 金币打赏」三枚图标（汇总收进 tooltip）",
+    "打赏 icon 按钮由 appsTipBtnEl 出（金币 icon + tooltip 汇总 + 开打赏窗）",
+  );
+  const coverBody = apps.slice(apps.indexOf("function appsCoverActionsEl("), apps.indexOf("function appsTileEl("));
+  ok(
+    !!coverBody && coverBody.length > 200 && !/apps-ico-coin|appsTipBtnEl/.test(coverBody),
+    "卡片封面右下角那一排（appsCoverActionsEl）里不再有金币打赏按钮",
   );
   ok(
     !/MtTips\.metaEl\(cloudTarget/.test(apps) && !/MtTips\.buttonEl\(cloudTarget/.test(apps),
@@ -163,14 +170,20 @@ function main() {
   );
   const forumHtml = read("forum/chat.html");
   ok(forumHtml.includes('id="tdTabComment"') && forumHtml.includes('id="topicComments"'), "讨论区话题详情页有「评论」页签与容器");
-  ok(forumHtml.includes('src="../renderer/app-tips.js"') && forumHtml.includes('src="../renderer/app-comments.js"'), "讨论区复用同一份打赏 / 评论模块（不复制一份）");
-  ok(forumHtml.includes('href="../renderer/css/tips.css"') && forumHtml.includes('href="../renderer/css/comments.css"'), "讨论区链接同一份样式");
+  /* 本轮需求：**移除讨论区这条打赏通道**（只撤讨论区，工坊 / 应用中心与整个服务端未动）。
+     讨论区不再加载打赏模块与它的样式，也不再画任何打赏入口；评论照旧共用同一份模块。 */
+  ok(forumHtml.includes('src="../renderer/app-comments.js"'), "讨论区仍复用同一份评论模块（不复制一份）");
+  ok(!/app-tips\.js|tips\.css|app-whalecoin\.js/.test(stripComment(forumHtml)),
+    "讨论区不再加载打赏模块 / 打赏样式 / 鲸圆币元件（打赏通道整条撤掉）");
+  ok(forumHtml.includes('href="../renderer/css/comments.css"'), "讨论区链接同一份评论样式");
   ok(has("forum/forum.css", "--ink: var(--tx)") && has("forum/forum.css", "--muted: var(--tx2)"), "讨论区把主应用的语义槽位名映射到自己的调色板（--ink / --muted）");
   const chat = read("forum/chat.js");
   ok(chat.includes("window.MTNodeAuth = window.MTNodeAuth ||"), "讨论区给共享模块补了 MTNodeAuth 适配");
   ok(chat.includes("window.I18n.t = "), "讨论区给共享模块补了 I18n.t 适配");
-  ok(/setDetailTab\(/.test(chat) && /tipBtnEl\(/.test(chat), "讨论区接页签与打赏按钮");
-  ok(chat.includes("forum_topic") && chat.includes("forum_reply"), "讨论区打赏对象用 forum_topic / forum_reply");
+  ok(/setDetailTab\(/.test(chat) && /MtComments\.mount\(|MtComments\.open\(/.test(chat), "讨论区接评论页签与评论入口");
+  ok(chat.includes("forum_topic") && chat.includes("forum_reply"), "讨论区评论对象仍用 forum_topic / forum_reply");
+  ok(!/MtTips|[Tt]ipBtnEl|tipTargetOf/.test(chat), "讨论区源码里不再有打赏入口（MtTips / tipBtnEl / tipTargetOf 全清）");
+  ok(!/tip-btn|tip-meta/.test(stripComment(read("forum/forum.css"))), "forum.css 里的打赏样式随之删掉（不留死样式）");
 
   /* ── [5] i18n 真跑 ───────────────────────────────────────── */
   console.log("\n[5] i18n 真跑（en locale）");
@@ -243,8 +256,8 @@ function main() {
        chat.js 那侧的小表也不再留旧键 —— 见到它就说明有一处没跟着改。 */
     ok(!has(rel, '"余额不足，去充值鲸圆币":'), rel + " 的表里不再留旧键「余额不足，去充值鲸圆币」");
   }
-  ok(has("forum/chat.js", '"打赏所得可用于作者调用 MTNode 中转模型"'),
-    "讨论区英文小表补了新那句用途文案（英文界面不打回中文）");
+  ok(has("forum/chat.js", '"账户服务未就绪"'),
+    "讨论区英文小表只留共享评论模块要用的词条（打赏那批已随入口撤掉）");
   /* 本轮需求「打赏不要显示元，显示鲸圆币」的第二道防线：消息中心（打赏通知的落地处）。
      正文由服务端打赏时写死落库，历史那批老正文里写着「2.00 元」——渲染层必须兜底。 */
   const msgs = stripTip(read("renderer/app-messages.js"));
@@ -300,24 +313,33 @@ function main() {
   ok(/\/api\/tips\/authors\?targetKind=/.test(tipsUI), "作者名单走 GET /api/tips/authors");
   ok(/function loadAuthors\(target\)[\s\S]{0,400}\.catch\(function \(\) \{\s*return null;/.test(tipsUI),
     "作者接口不可用时静默退回单作者口径（不弹红、不阻断打赏）");
-  /* 详情里那行**只读**的「打赏记录 N 币」（本轮需求：修「打赏反复全套两次」）：
-     元素由 MtTips.detailRecordEl 产（不可点、0 则不画），详情正文只在取到数据后挂它一次。 */
-  ok(/MtTips\.detailRecordEl\(tipTarget, tips\)/.test(apps),
-    "应用详情底部有打赏记录一行（放在正文下方，不占头部左上角）");
-  ok(/appsDetailBodyEl\(spec, extra\)[\s\S]*?detailRecordEl\(tipTarget, tips\)/.test(apps),
+  /* 详情里的打赏条（本轮需求：打赏入口从卡片封面搬到这里）：
+     左边是 MtTips.detailRecordEl 产的**只读**「打赏记录 N 币」（不可点、0 则不画），
+     右边是 appsTipBtnEl 产的打赏 icon 按钮（挂进同一条 .apps-detail-tipbar 里）。 */
+  ok(/MtTips\.detailRecordEl\(tipTarget, appsTipsOf\(spec\)\)/.test(apps),
+    "应用详情有打赏记录一行（只读，走唯一取数口径 appsTipsOf）");
+  ok(/appsDetailBodyEl\(spec, extra\)[\s\S]*?detailRecordEl\(tipTarget, appsTipsOf\(spec\)\)/.test(apps),
     "打赏记录挂在详情正文里（与应用详情窗同一份渲染）");
   ok(/function detailRecordEl\(target, tips\)/.test(tipsUI) &&
       /if \(!n\) return null;/.test(tipsUI.slice(tipsUI.indexOf("function detailRecordEl"), tipsUI.indexOf("function detailRecordEl") + 500)) &&
       /row\.title = tipSumTitle\(tips\)/.test(tipsUI) &&
       !/openTipDialog|addEventListener\("click"/.test(tipsUI.slice(tipsUI.indexOf("function detailRecordEl"), tipsUI.indexOf("function detailRecordEl") + 500)),
     "detailRecordEl：0 币整行不画、hover 才出总次数、**不可点**（不开打赏窗）");
+  ok(/const tipBtn = appsTipBtnEl\(spec\);[\s\S]{0,600}bar\.appendChild\(tipBtn\)/.test(apps),
+    "打赏 icon 按钮挂进「打赏记录」那一条里（记录右侧，同一条 .apps-detail-tipbar）");
+  /* 注释里也写着 appsTipBtnEl(spec)，所以先把注释剥掉再数代码里的出现次数 */
+  const appsCode = stripComment(apps);
+  const barCode = appsCode.slice(appsCode.indexOf("function appsDetailBodyEl("));
+  ok(/const tipBtn = appsTipBtnEl\(spec\);/.test(appsCode) &&
+      barCode.indexOf("appsTipBtnEl(spec)") === barCode.lastIndexOf("appsTipBtnEl(spec)"),
+    "打赏按钮只在详情正文这一处出（不放回卡片，也不会在详情里出两份）");
   ok(!/apps-detail-tipbar[\s\S]{0,400}MtTips\.buttonEl/.test(apps),
-    "详情里不再有第二块打赏入口（buttonEl 已从详情撤掉，全套两次的根因）");
-  /* 工坊 / 讨论区的打赏入口也把服务端公开投影的累计总额递进窗里 —— 四个入口同一口径：总额人人可见，名单不给 */
+    "详情里没有 MtTips.buttonEl 那份带小字汇总的第二块入口（全套两次的根因）");
+  /* 工坊 / 讨论区的打赏入口也把服务端公开投影的累计总额递进窗里 —— 入口同一口径：总额人人可见，名单不给。
+     本轮需求：**讨论区那处入口已整条移除**（源码里不再有 MtTips 调用），只留工坊这一处。 */
   ok(/MtTips\.open\(tplTipsTarget\(item\), \{ onDone: \(\) => paint\(\), tips: item\.tips \}\)/.test(read("renderer/app-store.js")),
     "工坊打赏窗带公开总额（tips: item.tips）");
-  ok(/b\.onclick = \(\) => window\.MtTips\.open\(target, \{ tips: tips \}\);/.test(read("forum/chat.js")),
-    "讨论区打赏窗带公开总额（tips: tips）");
+  ok(!/MtTips/.test(read("forum/chat.js")), "讨论区不再调用 MtTips（打赏通道已移除，工坊与应用中心未动）");
 
   /* ── [9] 本轮需求（应用 bug 修复）─────────────────────────────
      ① 界面不再显示「本月剩余额度」（服务端闸门仍在）
@@ -378,8 +400,11 @@ function main() {
   const tipCols = adminS.slice(adminS.indexOf("function tipColumns"), adminS.indexOf("function paintTipCards"));
   ok(tipCols.length > 200 && !/title: "操作"/.test(tipCols) && !/actBtn\(/.test(tipCols),
     "打赏表格不再生成「操作」列（存量已撤销记录仍由「状态」列标出）");
-  /* ④ 封面右下角那一排图标：下载/更新 + ⓘ + 金币（同一套小方框，汇总进 tooltip） */
+  /* ④ 封面右下角那一排图标（本轮只剩「下载 / 更新」，打赏已搬进详情）；
+        详情打赏条里那枚打赏 icon 靠右收尾（与左边只读的「打赏记录」分开）。 */
   ok(/function appsCoverActionsEl\(spec, opts\)/.test(apps), "应用卡片有封面右下角的图标行 appsCoverActionsEl");
+  ok(/\.apps-detail-tipbar \.apps-ico-coin\s*\{/.test(read("renderer/css/apps.css")),
+    "css：详情打赏条里的打赏 icon 靠右收尾（.apps-detail-tipbar .apps-ico-coin）");
   ok(/classList\.add\("apps-ico-btn", "apps-ico-info"\)/.test(apps) && /b\.dataset\.appDetail = "1"/.test(apps),
     "详情按钮仍是同一元件（data-app-detail 不变），只是换成 ⓘ 图标 + 小方框样式");
   ok(/const text = label \? appsT\(label\) : "ⓘ";/.test(apps), "目录卡片上的详情按钮不再显示「详情」文案");

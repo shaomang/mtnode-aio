@@ -76,6 +76,15 @@ function fakeWebContents() {
       if (ev === "apps:willClose" && wc.__rec) wc.__rec.willCloseSeen = true;
     },
     isDestroyed: () => false,
+    /* 「复用已开窗口」现在会先重载（用户报障：改完代码点启动还是旧版本）——
+       替身窗口记一笔，供 [2] 断言「重载了、且跳过缓存」。 */
+    reloadIgnoringCache: () => {
+      wc.__reloads = (wc.__reloads || 0) + 1;
+      wc.__reloadIgnoringCache = true;
+    },
+    reload: () => {
+      wc.__reloads = (wc.__reloads || 0) + 1;
+    },
   };
   wcCalls.push(wc);
   return wc;
@@ -206,6 +215,23 @@ fs.renameSync = function (a, b) {
 const store = require("../apps-store.js");
 /* 模型内核的桩：把「宿主真正下发的 spec」记下来（[3b] 钉 thinking / maxTokens 口径） */
 const aiSpecs = [];
+/* 画布层注入桩（本轮回归 · 2026-10-10 事故）：registerAppsIpc 收下 main.js 的画布层四件事。
+   旧实现的覆盖循环写在 `const canvasOps` 声明之前（TDZ 引用未初始化变量）→ registerAppsIpc
+   一进门就抛 → 该函数里 67 条 IPC 全没注册，界面表现 =「应用中心 / 开发页 / 应用会话全空」。
+   这里传真的 canvasOps，并用 getter 记下覆盖循环逐个读了哪些键：改动前这一行必抛
+   ReferenceError（用例当场红），改动后既能跑通、又能钉住 5 个键一个都没漏。 */
+const canvasOpsRead = [];
+const canvasOpsStub = {};
+for (const k of ["canvasInfo", "wipeCanvas", "prepareCanvas", "emptyCanvas", "writeCanvas"]) {
+  Object.defineProperty(canvasOpsStub, k, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      canvasOpsRead.push(k);
+      return () => null;
+    },
+  });
+}
 store.registerAppsIpc({
   getDataDir: () => DATA,
   getMainWin: () => null,
@@ -221,6 +247,8 @@ store.registerAppsIpc({
     /* 故意回 finish_reason=length：宿主回执必须把「被输出上限截断」这一位带给应用（[3b] 断言） */
     return { text: "x", reasoning: "y", finishReason: "length" };
   },
+  /* 画布层四件事（完全替换用）：注入真值 —— 见上面 canvasOpsStub 的注释 */
+  canvasOps: canvasOpsStub,
 });
 const APPS_SRC = read("apps-store.js");
 /* 关窗现在是「先请应用收尾、再关」（apps:willClose → 回包 / WILL_CLOSE_MS 超时）。
@@ -825,9 +853,11 @@ async function main() {
     "图标 = 内置默认图标（build/icon.png）",
   );
   ok(
-    APPS_SRC.indexOf("const winTitle = String(man.title || man.name || sid)") >= 0 &&
-      APPS_SRC.indexOf("title: winTitle") >= 0,
-    "窗口标题取 app.json 的 title（缺了退回 name）",
+    APPS_SRC.indexOf("String(man.title || man.name || sid) +") >= 0 &&
+      APPS_SRC.indexOf("title: winTitle") >= 0 &&
+      APPS_SRC.indexOf('" (开发目录 v" + String(man.version || "0.0.0") + ")"') >= 0 &&
+      APPS_SRC.indexOf("dirKind === APP_KIND_DEV") >= 0,
+    "窗口标题取 app.json 的 title（缺了退回 name），开发根那一份再缀上「(开发目录 v版本号)」",
   );
   ok(
     APPS_SRC.indexOf("function manifestTitle(j, fb)") >= 0 && APPS_SRC.indexOf("v.zh || v.en") >= 0,
@@ -853,6 +883,34 @@ async function main() {
   ok(APPS_SRC.indexOf("appWins.set(sid, w)") >= 0 && APPS_SRC.indexOf("function shutdownApps") >= 0, "窗口登记在案 + shutdownApps 随 MTNode 退出关闭");
   ok(APPS_SRC.indexOf("closeAppWindow(targetId)") >= 0 && APPS_SRC.indexOf("closeAppWindow(sid)") >= 0, "覆盖安装 / 卸载前先关掉该应用的窗口");
   ok(APPS_SRC.indexOf('ipcMain.handle("apps:openWindow"') >= 0 && APPS_SRC.indexOf('ipcMain.handle("apps:closeWindow"') >= 0, "IPC：apps:openWindow / closeWindow 已注册");
+  /* ── 本轮回归（2026-10-10 事故）：canvasOps 注入必须排在 const canvasOps 声明之后 ──
+     ① registerAppsIpc 收下 canvasOps 不抛错（上面的调用就是复现用例）；
+     ② 覆盖循环按表里的 5 个键逐个读取（getter 记序；每个键读两次 = typeof 判一次、赋值取
+        一次），一个都没漏；
+     ③ 注入段之后的通道照常注册 —— 最后一枚 apps:dataOpen（函数末尾）必须在，计数也对得上。 */
+  const canvasOpsSeq = canvasOpsRead.filter((k, i) => canvasOpsRead[i - 1] !== k);
+  ok(
+    canvasOpsSeq.join(",") === "canvasInfo,wipeCanvas,prepareCanvas,emptyCanvas,writeCanvas",
+    "canvasOps 注入覆盖按声明里的 5 个键逐个读取（顺序一致，一个都没漏）",
+  );
+  const appsChannels = Object.keys(ipcMainMock.__h || {}).filter((c) => c.indexOf("apps:") === 0);
+  ok(
+    appsChannels.length >= 60 &&
+      appsChannels.includes("apps:dataOpen") &&
+      appsChannels.includes("apps:openWindow") &&
+      appsChannels.includes("apps:hostStorageSet"),
+    "canvasOps 注入之后 apps:* 通道全部注册（含函数末尾的 apps:dataOpen，实测 " + appsChannels.length + " 条）",
+  );
+  ok(
+    (APPS_SRC.match(/ipcMain\.handle\("apps:[A-Za-z0-9_]+"/g) || []).length === appsChannels.length,
+    "静态扫到的 apps:* 注册点与真注册的通道数一致（没有静默漏注册：" + appsChannels.length + "）",
+  );
+  ok(
+    APPS_SRC.indexOf("const ipcMainReal = ipcMain") >= 0 &&
+      APPS_SRC.indexOf("const ipcMain = {") >= 0 &&
+      APPS_SRC.indexOf("[apps] IPC 注册失败") >= 0,
+    "每条注册自带护栏（同名局部代理包住真 ipcMain，失败只记日志）",
+  );
   ok(read("main.js").indexOf("shutdownApps()") >= 0, "main.js before-quit 调 shutdownApps()");
 
   /* 真开一次窗口（FakeBrowserWindow 收选项与 loadFile 落点）：
@@ -862,7 +920,10 @@ async function main() {
   ok(opened && opened.ok && opened.open === true, "openAppWindow 成功开窗（app id = smoke-app）");
   const rec = winCalls[winCalls.length - 1] || {};
   const o = rec.opts || {};
-  ok(String(o.title || "") === "冒烟应用", "窗口标题 = app.json 的 name/title（冒烟应用），不是 id");
+  ok(
+    String(o.title || "") === "冒烟应用 (开发目录 v1.0.0)",
+    "窗口标题 = app.json 的 name/title（冒烟应用）+ **开发根留痕**（(开发目录 v版本号)：用户报障「看不出跑的是哪一份」）",
+  );
   ok(String(o.icon || "").replace(/\\/g, "/").endsWith("build/icon.png"), "窗口图标 = 内置默认图标 build/icon.png");
   ok(
     String((o.webPreferences || {}).preload || "").replace(/\\/g, "/").endsWith("preload-app.js"),
@@ -875,7 +936,26 @@ async function main() {
   ok(Array.isArray((o.webPreferences || {}).additionalArguments) && (o.webPreferences || {}).additionalArguments[0] === "--mtnode-app-id=smoke-app", "应用 id 随 additionalArguments 下发");
   ok(o.show === false && rec.shown === true, "先 show:false，ready-to-show 再显示（不闪白窗）");
   ok(store.isAppWindowOpen("smoke-app") === true, "窗口登记在案（isAppWindowOpen=true）");
-  ok(store.openAppWindow("smoke-app").reused === true, "重复「运行」= 复用已开窗口（不叠窗口）");
+  /* 启动留痕（本轮需求）：新窗回执要带**实际加载的目录 + 来自哪套根**，日志同源 */
+  ok(
+    path.resolve(String(opened.dir || "")) === path.resolve(dir) && opened.kind === "dev",
+    "开窗回执带实际目录与来源根（dir = 项目根那份，kind = dev）",
+  );
+  ok(opened.reloaded === false, "新开窗不算重载（reloaded=false）");
+  ok(
+    APPS_SRC.indexOf('"[apps] 启动 " + sid + " ← " + html') >= 0,
+    "开窗写一行启动留痕日志（实际加载目录 + app.json 版本 + 来自哪套根）",
+  );
+  /* 复用已开窗口 = 先重载（跳过缓存）再调到前台：老写法只 show/focus，改完代码点了没变化 */
+  const wc0 = wcCalls[wcCalls.length - 1] || null;
+  const reusedR = store.openAppWindow("smoke-app");
+  ok(reusedR.reused === true, "重复「运行」= 复用已开窗口（不叠窗口）");
+  ok(reusedR.reloaded === true, "复用时**重载页面**（改完代码点启动就能看到新一版）");
+  ok(wc0 && wc0.__reloadIgnoringCache === true, "重载走 reloadIgnoringCache（跳过 file:// 资源缓存）");
+  ok(
+    path.resolve(String(reusedR.dir || "")) === path.resolve(dir) && reusedR.kind === "dev",
+    "复用的回执同样带实际目录与来源根（对得上用户看到的那一份）",
+  );
   await closeWindowNow("smoke-app");
   ok(store.isAppWindowOpen("smoke-app") === false, "关掉后登记也清了（收尾握手完成后真的关）");
 
@@ -886,7 +966,10 @@ async function main() {
   origWrite(manPath, JSON.stringify(manObj, null, 2), "utf8");
   winCalls.length = 0;
   store.openAppWindow("smoke-app");
-  ok(String(((winCalls[winCalls.length - 1] || {}).opts || {}).title || "") === "中文标题", "app.json 的 title={zh,en} 时窗口标题取 zh");
+  ok(
+    String(((winCalls[winCalls.length - 1] || {}).opts || {}).title || "") === "中文标题 (开发目录 v1.0.0)",
+    "app.json 的 title={zh,en} 时窗口标题取 zh（开发根那份再缀上开发目录留痕）",
+  );
   await closeWindowNow("smoke-app");
 }
 
@@ -1151,20 +1234,20 @@ async function main() {
   ok(R.indexOf('b.id = "appsRunBtn-" + String(id || "")') >= 0, "按钮 id 稳定可寻：appsRunBtn-<appId>");
   ok(R.indexOf('b.dataset.appRun = "1"') >= 0, "按钮带 data-app-run 标记（打开态回贴按它定位）");
   ok(R.indexOf('b.title = appsT("在独立窗口里运行这个应用")') >= 0, "按钮 title 说明它是独立窗口运行");
-  ok(R.indexOf('b.className = primary ? "mini primary" : "mini"') >= 0 && /function appsRunIcoBtnEl\(id, open\)/.test(R) && R.indexOf("appsRunBtnEl(id, \"\", () => appsOpenApp(id))") >= 0, "库页卡片：「运行」→ appsOpenApp(id)（同一个 appsRunBtnEl，封面卡上换成 play 图标形态；open 参数 = 画卡时带上窗口打开态）");
+  ok(R.indexOf('b.className = primary ? "mini primary" : "mini"') >= 0 && /function appsRunIcoBtnEl\(id, open, kind\)/.test(R) && R.indexOf("appsRunBtnEl(id, \"\", () => appsOpenApp(id, kind || appsOpenKindOf(id)))") >= 0, "库页卡片：「运行」→ appsOpenApp(id, kind)（同一个 appsRunBtnEl，封面卡上换成 play 图标形态；open 参数 = 画卡时带上窗口打开态，kind = 这张卡对应哪套根那一份）");
   ok(
     R.indexOf('appsRunBtnEl("dev"') < 0 &&
       DEV4.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
     "开发页的运行入口只剩三栏工具栏的「启动」（页脚工具区那一颗随整块移除）",
   );
   ok(
-      /appsRunIcoBtnEl\(spec\.id, !!spec\.windowOpen\)/.test(R) &&
+      /appsRunIcoBtnEl\(spec\.id, !!spec\.windowOpen, appsOpenKindOf\(spec\.id\)\)/.test(R) &&
         R.indexOf("async function appsOpenIdsOf(") >= 0 &&
         R.indexOf("const openIds = await appsOpenIdsOf(list)") >= 0 &&
         /if \(open\) \{/.test(R),
       "库页打开态：一次问齐（appsOpenIdsOf）→ 画卡时就带上（窗口化渲染下离屏卡不在 DOM，逐张回贴贴不到）",
     );
-  ok(R.indexOf("async function appsOpenApp(id, kind)") >= 0 && R.indexOf("await api.appsOpenWindow(id, kind || \"\")") >= 0, "appsOpenApp → window.api.appsOpenWindow(id, kind)（主进程开窗；kind 点名哪一套根的那一份）");
+  ok(R.indexOf("async function appsOpenApp(id, kind)") >= 0 && R.indexOf("const k = kind ? String(kind) : appsOpenKindOf(id)") >= 0 && R.indexOf("await api.appsOpenWindow(id, k)") >= 0, "appsOpenApp → window.api.appsOpenWindow(id, kind)（主进程开窗；不点名时按 appsOpenKindOf = 有开发那份就优先它，用户报障「启动是旧版本」）");
   ok(R.indexOf("appsBridgeMissing()") >= 0, "桥缺席（非 Electron / 未接入）时明确报错，不静默失败");
   ok(read("renderer/css/apps.css").length > 0, "css/apps.css 存在（.apps-row-acts 样式随文件走）");
 
@@ -2328,7 +2411,7 @@ async function previewSections() {
   ok(
     DEV.indexOf("function appsDevStartApp()") >= 0 &&
       DEV.indexOf('if (typeof appsOpenApp === "function") appsOpenApp(id, "dev");') >= 0,
-    "开发页「启动」→ appsOpenApp(id)（与库页「运行」同一条链）",
+    "开发页「启动」→ appsOpenApp(id, \"dev\")（与库页「运行」同一条链，点名项目根那一份）",
   );
   ok(
     DEV.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
@@ -2904,7 +2987,7 @@ async function previewSections() {
     "「应用」页卡片与详情头部不再挂任何 chip 徽标（本轮口径：连「开发中」在内全部去掉）",
   );
   ok(
-    RENDERER.indexOf('appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id))') >= 0 &&
+    RENDERER.indexOf('appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id, appsOpenKindOf(id)))') >= 0 &&
       RENDERER.indexOf('appsMiniBtn(busy ? appsT("下载中…") : appsT("下载"), () => appsOpenDetailForPick(id))') >= 0,
     "已装 = 启动（不再显示下载）；未装 = 下载（点了先开详情选分支与版本）",
   );
@@ -5201,8 +5284,14 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
       "说明排在右列（信息行之后、分支树 / 打赏 / 开发者信息之前）",
     );
     ok(
-      /lower\.innerHTML = "";/.test(paint) && !/detailTabsEl\(/.test(paint) && !/\.apps-detail-scroll/.test(paint),
-      "下方只剩评论（tabs 与 .apps-detail-scroll 通栏都撤了）",
+      /* 清场改走 appsCommentsClearHost（DOM + dataset 记账一起清，见 app-apps.js 的注释与
+         test/smoke-apps-comments-mount.js）—— 旧的裸写 `lower.innerHTML = ""` 会把记账留下，
+         下一次挂载被跳过、评论区从此不再出现。 */
+      /appsCommentsClearHost\(lower\);/.test(paint) &&
+        !/lower\.innerHTML = "";/.test(paint) &&
+        !/detailTabsEl\(/.test(paint) &&
+        !/\.apps-detail-scroll/.test(paint),
+      "下方只剩评论（tabs 与 .apps-detail-scroll 通栏都撤了；清场走 appsCommentsClearHost）",
     );
     ok(/\.apps-detail-desc\s*\{/.test(CSS) && /\.apps-detail-md\.md\s*\{/.test(CSS), "css：介绍块与 Markdown 容器都有样式");
   }
@@ -5442,9 +5531,9 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
     "apps-store.js：noteAppRun 把「刚跑过」写进安装账本（失败静默，绝不影响开窗）");
   ok(
     STORE.indexOf("noteAppRun(sid)") > 0 &&
-      /if \(existing && !existing\.isDestroyed\(\)\)[\s\S]{0,300}noteAppRun\(sid\);/.test(STORE) &&
-      /notifyWindowChanged\(sid, true\);\s*\n?\s*noteAppRun\(sid\);/.test(STORE),
-    "两条成功路径都记：复用已有窗口（调到前台）+ 新建窗口成功后",
+      /if \(existing && !existing\.isDestroyed\(\)\)[\s\S]{0,2400}noteAppRun\(sid\);/.test(STORE) &&
+      /notifyWindowChanged\(sid, true\);[\s\S]{0,900}noteAppRun\(sid\);/.test(STORE),
+    "两条成功路径都记：复用已有窗口（调到前台，中间是重载 + 启动留痕）+ 新建窗口成功后",
   );
   ok(/lastRunAt: Number\(led\.lastRunAt\) \|\| 0,/.test(STORE), "appSummary 把 lastRunAt 透传给渲染层");
   ok(/lastRunAt: Number\(\(app && app\.lastRunAt\) \|\| 0\) \|\| 0,/.test(APPS),

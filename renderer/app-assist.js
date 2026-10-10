@@ -8597,8 +8597,9 @@ async function agentExecutePlan() {
    模型面向的指令文本，与其他注入说明一致保持中文 */
 const PLAN_MODE_USER_DIRECTIVE =
   "【规划模式 · 本轮只出计划】本轮的唯一交付物是一份可照做的计划，绝不是改动。\n" +
-  "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、git commit/checkout、重启服务、清理目录）；调用 mtnode_canvas_edit 或 mtnode_app 的修改类动作（宿主会直接拒绝并返回错误）；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。\n" +
-  "允许并鼓励只读调研：read、glob、grep、只读命令（node --check、git status、git diff）、mtnode_canvas_get（带 detail:\"standard\"）、mtnode_db 查询、web_search、加载技能。\n" +
+  "禁止：创建 / 修改 / 删除任何文件（write、edit、str_replace_editor）；执行任何有副作用的命令（安装、删除、移动、复制、构建、重启服务、清理目录）；调用 mtnode_canvas_edit 或 mtnode_app 的修改类动作（宿主会直接拒绝并返回错误）；用 todo_write 登记执行清单；用 create_goal 立执行目标；用 subagent 派生实现工作。\n" +
+  "禁止使用任何 git 命令（含 git status / diff / log 这类只读子命令）：git 不保留每次更新信息（agent 不会每改一次就 git add），它的状态与真实改动不一致 —— 要看改动请重读文件、跑冒烟，或看本会话的「改动」面板。\n" +
+  "允许并鼓励只读调研：read、glob、grep、只读命令（node --check）、mtnode_canvas_get（带 detail:\"standard\"）、mtnode_db 查询、web_search、加载技能。\n" +
   "输出要求：以 # 一级标题开头，依次给出 ① 目标与验收标准 ② 现状与关键约束（引用具体文件与行号）③ 分步实施清单（每步写明文件、改动要点、为什么）④ 验证方法 ⑤ 风险与回滚；步骤要具体到无需二次决策。\n" +
   "写完计划立即结束本轮：不要开始实施，也不要追问「是否可以执行」——用户会点击输入区的「执行计划」进入实施。\n\n";
 

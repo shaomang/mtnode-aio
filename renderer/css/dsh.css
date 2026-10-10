@@ -591,6 +591,14 @@
   opacity: .75
 }
 
+/* 卡片动作行（renderer/app-store.js 的 cardEl）：非本人条目恒 5 枚（预览 / 下载 / 点赞 / 打赏 / 评论），
+   **必须挤在一排里**。工坊弹窗宽 = calc(100% - 24px)，栅格是 repeat(auto-fill, minmax(128px, 1fr)) ——
+   自动填充的列把剩余宽度摊平，所以卡片内宽总在 128px 上下（真 Electron 逐宽度实测：窗口 1024 /
+   1152 / 1280 / 1366 / 1440 / 1600 / 1920 / 2560 / 3440 下卡片内宽 128–135px）。5 × 22px + 4 × 3px
+   = 122px 正好溢出 → 折成「4+1」两排（上面这些宽度里除 1920 外全折）。这里按应用中心那一套
+   （apps.css 的 button.mini.apps-ico-btn）把小方框收到 20px → 5 枚 = 112px，128px 的卡片也留得住一排。
+   flex-wrap 保留 wrap：本人条目会多出「编辑 / 删除」= 7 枚，让它们老实折到第二排（实测 5+2），
+   不把第一排的 5 枚压瘦。 */
 .tpl-card-actions {
   display: flex;
   gap: 3px;
@@ -600,9 +608,9 @@
 }
 
 button.mini.btn-sq.tpl-ico {
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
   padding: 0;
   margin: 0;
   display: inline-flex;

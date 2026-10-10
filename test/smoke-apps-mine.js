@@ -8,10 +8,13 @@
    [3] appsEditTagsOf / appsOtherBranchesOf：标签解析、派生分支计数
    [4] 卡片只剩一枚作者动作（编辑）；危险色只在删除那枚上（删除在编辑窗底栏）；
        **窗口化渲染不得把 mine 标记丢掉**（曾经丢过：整页自管按钮消失、还多出一枚「下载」）
-   [5] openAppEdit 真开一次 + 保存：声明未勾不给保存、PATCH body 形态（keep 指代 / 标签数组 /
-       acceptDeclaration）、本机同步的调用参数
+   [5] openAppEdit 真开一次 + 保存：声明未勾不给保存、PATCH 请求形态（正文走 json —— 主进程
+       只读 opts.json；keep 指代 / 标签数组 / acceptDeclaration）、本机同步的调用参数
    [6] 保存后截图没生效（老服务端静默忽略）必须如实告警，不许假装成功
-   [7] 删除框：未输入标题不给删、输入对得上才发 DELETE（只删我这条分支） */
+   [7] 删除框：未输入标题不给删、输入对得上才发 DELETE（只删我这条分支）
+   [8] 回坠取数 / [9] owner 参数 / [10] 详情窗「编辑…」
+   [11] 云端拒绝时把**服务端那句话**说给用户（不许塌成「未知错误」）+ store:request 的
+        正文口径静态钉住（主进程只读 opts.json；渲染层不许写成 body） */
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -251,6 +254,7 @@ function loadApps(opts) {
   vm.runInContext(
     ";globalThis.__spies = { APPS_ST: APPS_ST, APPS_NAV: APPS_NAV, APPS_EDIT: APPS_EDIT, APPS_DEL: APPS_DEL," +
       " appsMineSpecs: appsMineSpecs, appsMineFiltered: appsMineFiltered, appsMineSpecOf: appsMineSpecOf," +
+      " appsMineEditSpecOf: appsMineEditSpecOf, appsSpecWithMine: appsSpecWithMine, appsSpecPoolAll: appsSpecPoolAll," +
       " appsMineFetchPage: appsMineFetchPage, appsMinePageLoad: appsMinePageLoad, appsMinePageMore: appsMinePageMore," +
       " appsPaintMinePage: appsPaintMinePage," +
       " appsEditTagsOf: appsEditTagsOf, appsOtherBranchesOf: appsOtherBranchesOf," +
@@ -321,7 +325,10 @@ console.log("[1] 接线卡口：导航第 4 页 / PATCH 元数据 / 只删自己
   ok(navIds.indexOf("mine") >= 0, "左导航有「我的应用」页：" + JSON.stringify(navIds));
   ok(navIds.indexOf("mine") === 1, "它紧跟「应用」页（库 / 开发 在后）：" + navIds.join("/"));
   ok(/appsPaintMinePage\(body, seq\)/.test(SRC_APPS), "appsHubPaint 分发到 appsPaintMinePage");
-  ok(/method: "PATCH", path: path, body: body/.test(SRC_APPS), "编辑走 PATCH /api/apps/<id>?owner=<我>");
+  /* 这条原来钉的是 `… , body: body`（把 bug 一起钉住了）：主进程 store:request 只读 opts.json，
+     正文写成 body 会被静默丢掉 —— 服务端读到空 body 就按「没勾声明」回 400，界面表现为
+     「编辑完点保存必失败」。口径见 [5] 的行为断言与 [11] 的跨文件静态钉。 */
+  ok(/method: "PATCH", path: path, json: body/.test(SRC_APPS), "编辑走 PATCH /api/apps/<id>?owner=<我>（正文放 json）");
   ok(/acceptDeclaration: true/.test(SRC_APPS), "保存带 acceptDeclaration:true（服务端强制）");
   ok(/method: "DELETE", path: path/.test(SRC_APPS), "删除走 DELETE /api/apps/<id>?owner=<我>");
   ok(
@@ -609,15 +616,22 @@ const run = async () => {
     ok(patchSeen && String(patchSeen.method) === "PATCH", "发出了一次 PATCH");
     ok(/\?owner=u-1$/.test(String(patchSeen.path)), "PATCH 路径点明我这条分支（?owner=）：" + patchSeen.path);
     ok(String(patchSeen.path).indexOf("/api/apps/sudoku") === 0, "PATCH 目标是这个应用：" + patchSeen.path);
-    ok(patchSeen.body.acceptDeclaration === true, "body 带 acceptDeclaration:true");
-    ok(String(patchSeen.body.title) === "数独（改名后）", "body 带新标题：" + patchSeen.body.title);
-    ok(Array.isArray(patchSeen.body.tags) && patchSeen.body.tags[0] === "游戏", "标签以数组发出：" + JSON.stringify(patchSeen.body.tags));
-    ok(!("zipBase64" in patchSeen.body) && !("fileBase64" in patchSeen.body), "不带 zip（只改元数据 → 服务端不动版本号）");
+    /* 请求体字段名 = **json**：主进程 store:request 只读 opts.json（main.js 的
+       `if (o.json != null) { … body = JSON.stringify(o.json) }`）。写成 body 会被静默丢掉 ——
+       正文一个字节都不发，服务端按「没勾声明」回 400，界面上就是「编辑完点保存必失败」。
+       下面这一串断言一律读 patchSeen.json（以前读 patchSeen.body，等于把 bug 一起钉住了）。 */
+    ok(!!patchSeen.json && typeof patchSeen.json === "object", "请求体走 json（主进程认的那个字段）");
+    ok(!("body" in patchSeen), "请求体不带 body 字段（主进程不读它，带了等于正文没发出去）");
+    const sent = (patchSeen && patchSeen.json) || {};
+    ok(sent.acceptDeclaration === true, "body 带 acceptDeclaration:true");
+    ok(String(sent.title) === "数独（改名后）", "body 带新标题：" + sent.title);
+    ok(Array.isArray(sent.tags) && sent.tags[0] === "游戏", "标签以数组发出：" + JSON.stringify(sent.tags));
+    ok(!("zipBase64" in sent) && !("fileBase64" in sent), "不带 zip（只改元数据 → 服务端不动版本号）");
     ok(
-      JSON.stringify(patchSeen.body.shotsBase64) === JSON.stringify([{ keep: 0 }]),
-      "截图整批提交 = [{keep:0}]（删了第 2 张、第 1 张沿用）：" + JSON.stringify(patchSeen.body.shotsBase64),
+      JSON.stringify(sent.shotsBase64) === JSON.stringify([{ keep: 0 }]),
+      "截图整批提交 = [{keep:0}]（删了第 2 张、第 1 张沿用）：" + JSON.stringify(sent.shotsBase64),
     );
-    ok(typeof patchSeen.body.iconBase64 === "undefined", "没动图标就不带 iconBase64（服务端按「不动」处理）");
+    ok(typeof sent.iconBase64 === "undefined", "没动图标就不带 iconBase64（服务端按「不动」处理）");
     ok(calls.sync.length === 1, "保存成功后调了一次 appsSyncCloudMeta：" + calls.sync.length);
     const sync = calls.sync[0];
     ok(sync.id === "sudoku", "同步的是这个应用：" + sync.id);
@@ -755,6 +769,175 @@ const run = async () => {
     await withUid.spies.appsMinePageLoad(true);
     ok(/\?owner=u-9/.test(seenUid[0] || ""), "有 uid → 发 uid，不发账号名：" + seenUid[0]);
     ok(!/owner=renamed/.test(seenUid[0] || ""), "账号名不再进 owner 参数");
+  }
+
+  console.log("[10] 详情窗的「编辑…」入口：这一页没载入那条时也必须能开（用户报的现场）");
+  {
+    /* 现场：我自己的应用在**目录合并**里是有的（详情窗 / 列表那一列的「编辑…」正是按它画的），
+       但「我的应用」这一页的分页列表那一刻是空的 / 只载入了别的页 —— 按 id 在那一页里查不到，
+       于是点编辑弹「这条应用不在「我的应用」列表里：先刷新一下再编辑」，作者被自己那条挡在门外。
+       口径：取数按「当前页 → 我的线上条目 → 目录池合并」三层回坠，三层都没有才如实提示。 */
+    const myCloudEntry = {
+      id: "sudoku",
+      title: "数独",
+      description: "经典数独",
+      tags: ["游戏"],
+      latestVersion: "1.2.0",
+      versions: [{ version: "1.2.0" }],
+      ownerId: "u-1",
+      owner: "tester",
+      ownerName: "测试员",
+      icon: "icons/sudoku__u-1.png",
+      thumb: "icons/sudoku__u-1.png",
+      shots: ["shots/sudoku__u-1/1.png"],
+      branches: [{ ownerId: "u-1" }, { ownerId: "u-2", ownerName: "别人" }],
+    };
+    /* ① 这一页空（首屏还没载入 / 那一次请求没成），目录里有我这一条 */
+    const a = loadApps({
+      onStore: (req) => {
+        const p = String(req.path || "");
+        if (p.indexOf("/api/apps?owner=") === 0) return { ok: true, data: { items: [myCloudEntry], total: 1, page: 1 } };
+        if (p.indexOf("/api/apps/catalog") === 0) {
+          return { ok: true, data: { apps: [myCloudEntry], source: "api", sourceBase: "http://x" } };
+        }
+        return { ok: true, data: {} };
+      },
+    });
+    a.spies.APPS_ST.minePage = { ok: true, at: Date.now(), page: 1, pageSize: 50, total: 0, items: [] };
+    a.spies.APPS_ST.mine = { ok: true, at: Date.now(), byId: { sudoku: myCloudEntry } };
+    REG.overlay = makeEl("div");
+    REG.ovBody = makeEl("div");
+    REG.ovFoot = makeEl("div");
+    ok(a.spies.appsMineSpecOf("sudoku") === null, "前提：这一页那一条确实查不到（复现现场）");
+    ok(!!a.spies.appsMineEditSpecOf("sudoku"), "回坠查得到（按 id 从目录池合并出我这条分支）");
+    ok(a.spies.openAppEdit("sudoku") === true, "详情窗那颗「编辑…」当场就能开（不再弹「不在列表里」）");
+    ok(
+      a.calls.overlay.length === 1 && /编辑应用/.test(String(a.calls.overlay[0].title)),
+      "窗口标题带「编辑应用」：" + String((a.calls.overlay[0] || {}).title),
+    );
+    const titleIn = walkEls(REG.ovBody).filter((e) => e.tagName === "INPUT").find((e) => e.value === "数独");
+    ok(!!titleIn, "标题输入框预填云端那条的标题（字段没丢）");
+    ok(
+      !!a.spies.APPS_EDIT.form && a.spies.APPS_EDIT.form.shots.length === 1,
+      "上架截图从回坠那条带过来：" + String(a.spies.APPS_EDIT.form && a.spies.APPS_EDIT.form.shots.length),
+    );
+    ok(
+      !a.calls.toast.some((t) => /没载入|先刷新/.test(t.msg)),
+      "这一路一句错误提示都不该有：" + JSON.stringify(a.calls.toast.map((t) => t.msg)),
+    );
+    ok(a.spies.openAppDelete("sudoku") === true, "删除框同一口径也能开（都是「我的应用」这一页的作者动作）");
+
+    /* ② 目录里那条是**别人**的分支（同 id 不同 ownerId）：一律不给编辑入口 */
+    const b = loadApps({
+      onStore: (req) => {
+        const p = String(req.path || "");
+        if (p.indexOf("/api/apps?owner=") === 0) return { ok: true, data: { items: [myCloudEntry], total: 1, page: 1 } };
+        if (p.indexOf("/api/apps/catalog") === 0) {
+          return {
+            ok: true,
+            data: {
+              apps: [Object.assign({}, myCloudEntry, { ownerId: "u-2", owner: "other", ownerName: "别人" })],
+              source: "api",
+              sourceBase: "http://x",
+            },
+          };
+        }
+        return { ok: true, data: {} };
+      },
+    });
+    b.spies.APPS_ST.mine = null; /* 连我的线上条目也还没载入 */
+    b.spies.APPS_ST.minePage = { ok: true, at: Date.now(), page: 1, pageSize: 50, total: 0, items: [] };
+    ok(b.spies.appsMineEditSpecOf("sudoku") === null, "别人的分支不认（回坠也不会把别人的条目当成我的）");
+    ok(b.spies.openAppDelete("sudoku") === false, "删除是危险动作：取不到那一条就停下，绝不误删别人分支");
+    ok(b.calls.toast.some((t) => /没载入/.test(t.msg)), "给的是如实提示（不是静默失败）");
+
+    /* ③ 三层都没有（云端确实没我这条分支 / 界面上的 id 已经过期）：重拉一次这一页，仍不成才提示 */
+    const c = loadApps({
+      onStore: (req) => {
+        const p = String(req.path || "");
+        if (p.indexOf("/api/apps?owner=") === 0) return { ok: true, data: { items: [], total: 0, page: 1 } };
+        if (p.indexOf("/api/apps/catalog") === 0) return { ok: true, data: { apps: [], source: "api", sourceBase: "http://x" } };
+        return { ok: true, data: {} };
+      },
+    });
+    c.spies.APPS_ST.mine = null;
+    c.spies.APPS_ST.minePage = null;
+    REG.overlay = makeEl("div");
+    REG.ovBody = makeEl("div");
+    REG.ovFoot = makeEl("div");
+    ok(c.spies.openAppEdit("nope") === false, "取不到那一条：当场返回 false（不假装打开）");
+    await flush();
+    ok(
+      c.calls.store.some((r) => String(r.path).indexOf("/api/apps?owner=") === 0),
+      "按 id 重拉了一次「我的应用」列表再试（自愈那一步真的发了请求）",
+    );
+    ok(c.calls.overlay.length === 0, "重拉后仍然没有 → 不打开空窗");
+    ok(c.calls.toast.some((t) => /没载入/.test(t.msg)), "如实提示「云端条目没载入」：" + JSON.stringify(c.calls.toast.map((t) => t.msg)));
+  }
+
+  console.log("[11] 云端拒绝时把服务端那句话说出来（不许塌成「未知错误」）+ store:request 正文口径钉住");
+  {
+    /* 用户报的现场：编辑应用 → 点保存 → 界面只说「保存失败」。根因两条：
+       ① 正文写进了 `body`（主进程 storeRequest 只读 `opts.json`）→ 服务端收到空 body → 400；
+       ② appsErrText 只读 `r.error`，而主进程把服务端 JSON 整块放在 `r.data` → 服务端那句
+          「必须勾选并接受声明」被丢掉，界面剩「未知错误」，用户拿到这句话什么也做不了。
+       [11] 钉住 ② 的可见结果（① 的行为断言在 [5]，静态口径在下面）。 */
+    const SERVER_SAY = "上架 / 更新应用前必须勾选并接受声明（acceptDeclaration:true）";
+    const { spies, calls } = loadApps({
+      onStore: mineHost(() => ({
+        ok: false,
+        status: 400,
+        data: { ok: false, code: "DECLARATION_REQUIRED", error: SERVER_SAY },
+      })),
+    });
+    spies.APPS_ST.minePage = { ok: true, at: Date.now(), page: 1, pageSize: 50, total: 1, items: [mineItem({})] };
+    REG.overlay = makeEl("div");
+    REG.ovBody = makeEl("div");
+    REG.ovFoot = makeEl("div");
+    ok(spies.openAppEdit("sudoku") === true, "编辑窗照常打开");
+    const decl = walkEls(REG.ovBody).filter((e) => e.tagName === "INPUT" && e.type === "checkbox")[0];
+    decl.checked = true;
+    decl.dispatch("change");
+    spies.APPS_EDIT.dom.save.dispatch("click");
+    await flush();
+    const errToast = calls.toast.filter((t) => /保存失败/.test(t.msg)).map((t) => t.msg);
+    ok(errToast.length === 1, "云端拒绝 → 一条「保存失败」提示：" + JSON.stringify(errToast));
+    ok(
+      errToast.length === 1 && errToast[0].indexOf(SERVER_SAY) >= 0,
+      "提示里带服务端原文（用户知道下一步做什么）：" + JSON.stringify(errToast[0] || ""),
+    );
+    ok(
+      !calls.toast.some((t) => /未知错误/.test(t.msg)),
+      "不再是「保存失败：未知错误」：" + JSON.stringify(calls.toast.map((t) => t.msg)),
+    );
+    ok(String(spies.APPS_EDIT.id) === "sudoku", "失败后编辑窗不收（改过的内容还在，能重试）");
+    ok(!calls.toast.some((t) => /已保存/.test(t.msg)), "失败不误报已保存");
+  }
+
+  /* ── store:request 的正文口径（跨文件契约，静态钉） ──
+     渲染层给 window.api.storeRequest 的正文必须放在 **json** 字段里：主进程那一段只读 opts.json，
+     写成 body / payload 会被静默丢掉（正文一个字节都不发）。这条口径没法从行为侧全量覆盖
+     （每条调用各自不同），所以这里对源码扫一遍，防它再回来。 */
+  {
+    const MAIN = read("main.js").replace(/\r\n/g, "\n"); /* 归一化换行：仓库里这份是 CRLF */
+    const mStart = MAIN.indexOf("async function storeRequest(opts)");
+    const mEnd = mStart < 0 ? -1 : MAIN.indexOf("\n}\n", mStart);
+    const storeFn = mStart >= 0 && mEnd > mStart ? MAIN.slice(mStart, mEnd) : "";
+    ok(storeFn.length > 200, "取到主进程 storeRequest 的实现（正文口径的真源）");
+    ok(/if \(o\.json != null\)/.test(storeFn), "主进程只认 opts.json 当正文");
+    ok(!/\bo\.body\b|\bopts\.body\b/.test(storeFn), "主进程不读 opts.body（写了等于没发）");
+
+    const anti = /storeRequest\(\{[^}]*\bbody\s*:/;
+    const bad = fs
+      .readdirSync(path.join(ROOT, "renderer"))
+      .filter((f) => f.endsWith(".js"))
+      .filter((f) => {
+        const src = read("renderer/" + f)
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/^\s*\/\/.*$/gm, "");
+        return anti.test(src);
+      });
+    ok(bad.length === 0, "渲染层没有把正文写成 body 的 storeRequest 调用（违例：" + JSON.stringify(bad) + "）");
   }
 
   console.log(fails ? "\nFAIL " + fails + " 项" : "\nALL PASS");

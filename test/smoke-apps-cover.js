@@ -8,8 +8,8 @@
          data: 与没图标一律回空串（调用方退回原图）。
      [3] appsCoverEl：缩略图 404 → 退回原图一次（data-fallback）；原图也 404 → 收起 img + .noimg
          兜底底色（封面不破图、标题仍在）。
-     [4] appsCoverActionsEl：未装 = 下载 + ⓘ（上架到云端才多一枚金币）；库页 = 运行(play) + ⓘ；
-         点图标**不冒泡**（卡片主点击 = 开详情，不能被图标连带触发）。
+     [4] appsCoverActionsEl：未装 = 下载（ⓘ 早已摘掉，打赏本轮也搬进详情 → 卡上不再有金币）；
+         库页 = 运行(play)；点图标**不冒泡**（卡片主点击 = 开详情，不能被图标连带触发）。
      [5] appsTileEl：点卡片 → openAppsDetail(id)；卡片 role=button。
    这里只造它们真正用到的最小 DOM —— 但**语义要对齐真 DOM**（on* 句柄赋值即挂监听、
    element.id 与 setAttribute("id") 等价），否则量到的是假现场。 */
@@ -213,7 +213,7 @@ function loadApps() {
   sandbox.window.clampAppsColsW = () => {};
   vm.runInContext(read("renderer/app-apps.js"), sandbox);
   vm.runInContext(
-    ";globalThis.__spies = { appsThumbUrlOf: appsThumbUrlOf, appsCoverEl: appsCoverEl, appsCoverCandidatesOf: appsCoverCandidatesOf, appsCoverIsShot: appsCoverIsShot, appsCoverActionsEl: appsCoverActionsEl, appsTileEl: appsTileEl, appsIconUrl: appsIconUrl, appsUrlWithToken: appsUrlWithToken, appsLocalCoverOf: appsLocalCoverOf, appsSpecPatchStoreUrls: appsSpecPatchStoreUrls, setCat: function (c) { APPS_ST.cat = c; } };",
+    ";globalThis.__spies = { appsThumbUrlOf: appsThumbUrlOf, appsCoverEl: appsCoverEl, appsCoverCandidatesOf: appsCoverCandidatesOf, appsCoverIsShot: appsCoverIsShot, appsCoverActionsEl: appsCoverActionsEl, appsTipBtnEl: appsTipBtnEl, appsDetailBodyEl: appsDetailBodyEl, appsTileEl: appsTileEl, appsIconUrl: appsIconUrl, appsUrlWithToken: appsUrlWithToken, appsLocalCoverOf: appsLocalCoverOf, appsSpecPatchStoreUrls: appsSpecPatchStoreUrls, setCat: function (c) { APPS_ST.cat = c; } };",
     sandbox,
   );
   return { spies: sandbox.__spies, sandbox };
@@ -394,7 +394,8 @@ console.log("[4] appsCoverActionsEl：卡上只留该有的那几枚图标，且
   ok(/<svg/.test(String(btns[0].innerHTML || "")), "下载那颗的内联 SVG 直接在按钮里（不是套一层 span）");
   const cloud = mk({ ownerId: "u1" });
   btns = cloud.children.filter((c) => c.tagName === "BUTTON");
-  ok(btns.length === 2 && classListOf(btns[1]).includes("apps-ico-coin"), "上架到云端 → 多一枚金币");
+  /* 本轮需求：卡片封面右下角不再有打赏按钮（上架到云端也一样只有下载那一枚） */
+  ok(btns.length === 1 && !cloud.querySelector(".apps-ico-coin"), "上架到云端也不再有金币打赏那一枚（本轮搬到详情里）");
   ok(!cloud.querySelector(".apps-ico-info"), "上架到云端的卡片上也没有 ⓘ（点卡片本身就开详情窗）");
   const localRow = spies.appsCoverActionsEl({ id: "a", title: "A" }, { local: true });
   btns = localRow.children.filter((c) => c.tagName === "BUTTON");
@@ -431,17 +432,17 @@ console.log("[5] appsTileEl：点卡片开详情；点图标各自做自己的�
   /* app-apps.js 里对它是**同文件裸调用**（openAppsVersionDlg(...)）：沙箱的全局对象是 sandbox
      本身（sandbox.window 只是它的一个属性），所以 spy 要挂两份才被裸标识符取到。 */
   sandbox.openAppsVersionDlg = sandbox.window.openAppsVersionDlg;
-  const tipOpens = [];
-  sandbox.window.MtTips = { coinIcon: () => makeEl("span"), open: (t) => tipOpens.push(t) };
+  sandbox.window.MtTips = { coinIcon: () => makeEl("span"), open: () => {} };
   const card = spies.appsTileEl({ id: "sudoku", title: "数独", icon: "icons/s.png", ownerId: "u1" }, {});
   ok(card.attrs.role === "button", "卡片带 role=button（可键盘触发）");
   card.dispatch("click");
   ok(opened.length === 1 && opened[0] === "sudoku", "点卡片 → openAppsDetail(id)");
   const acts = card.querySelector(".apps-cover-acts");
   ok(!!acts, "卡片上有封面右下角那一排图标");
-  /* ⓘ 本轮已摘掉（点卡片即开详情），所以这里改拿金币验「图标各做各的事、不冒泡」；
-     下载那颗按设计点了就是开详情选分支（appsOpenDetailForPick），它开一次是对的。 */
+  /* ⓘ 本轮已摘掉（点卡片即开详情），打赏那枚也搬进详情了，所以这里拿下载那一枚
+     验「图标各做各的事、不冒泡」（它按设计点了就是开「分支 / 版本」跳窗）。 */
   ok(!acts.querySelector(".apps-ico-info"), "封面动作排里没有 ⓘ 了（用途与点卡片重复）");
+  ok(!acts.querySelector(".apps-ico-coin"), "封面动作排里也没有金币打赏了（本轮搬进详情打赏条）");
   const dl = acts.querySelector(".apps-ico-download");
   if (dl) {
     /* 本轮口径（需求 4）：卡片上的「下载 / 其他版本」**直接开「分支 / 版本」跳窗**
@@ -453,13 +454,6 @@ console.log("[5] appsTileEl：点卡片开详情；点图标各自做自己的�
       picks.length === p0 + 1 && picks[picks.length - 1] === "sudoku" && opened.length === n0,
       "点下载 → 直接开「分支 / 版本」跳窗一次（不再先开详情，也不是静默下载）",
     );
-  }
-  const coin = acts.querySelector(".apps-ico-coin");
-  if (coin) {
-    const n0 = opened.length;
-    coin.dispatch("click");
-    ok(opened.length === n0, "点金币 → 只开打赏窗，不开详情（不冒泡）");
-    ok(tipOpens.length === 1 && tipOpens[0] && tipOpens[0].kind === "app", "点金币 → MtTips.open({kind:'app'}) 一次");
   }
 }
 
@@ -522,6 +516,71 @@ console.log("[6] 详情头部封面：缓存令牌（新图立刻可见）+ 本�
   ok(cimg.src === STORE + "/api/apps/a/icon" && cimg.dataset.localTried === undefined, "卡片退回的是云端原图，**没去读本机封面**");
   cimg.dispatch("error");
   ok(cimg.hidden === true && classListOf(card).includes("noimg"), "两张云端图都拉不到 → 直接兜底底色（不读本机封面）");
+}
+
+console.log("[7] 详情里的打赏 icon 按钮（本轮需求：打赏入口从卡片封面搬进详情）");
+{
+  const { spies, sandbox } = loadApps();
+  const tipOpens = [];
+  /* detailRecordEl 用**最小桩**（同形状：一条 .apps-detail-tipbar.tip-record + 只读标签 + 币数）；
+     真实现与它的「0 则不画 / 不可点」口径由 loadTips 那一档（[1]）钉住 —— 两个模块各在自己的
+     沙箱里造 DOM，混用会量到跨 context 的假现场。 */
+  sandbox.window.MtTips = {
+    coinIcon: () => makeEl("span"),
+    detailRecordEl: (target, tips) => {
+      if (!tips || !Number(tips.count || 0)) return null;
+      const row = makeEl("div");
+      row.className = "apps-detail-tipbar tip-record";
+      const k = makeEl("span");
+      k.className = "tip-record-k";
+      k.textContent = "打赏记录";
+      row.appendChild(k);
+      row.appendChild(makeEl("span")); /* 币数（数字 + 鲸圆币图标） */
+      return row;
+    },
+    open: (t, o) => tipOpens.push([t, o]),
+  };
+  ok(spies.appsTipBtnEl({ id: "a", title: "A" }) === null, "没上架云端（没有云端目标）→ 不出按钮");
+  const btn = spies.appsTipBtnEl({ id: "a", title: "A", ownerId: "u1" });
+  ok(!!btn && classListOf(btn).includes("apps-ico-coin"), "上架到云端 → 一枚金币（打赏 icon）按钮：" + (btn && btn.className));
+  ok(btn.dataset.appTip === "1", "按钮带 data-app-tip 标记");
+  ok(!!btn.onclick, "按钮挂了 onclick（开打赏窗）");
+
+  /* 详情正文：有打赏记录 → 按钮挂在同一条 .apps-detail-tipbar 里（「打赏记录」的右侧）；
+     没有记录（0 币）→ 记录那行不画，按钮照旧在（详情里必须有打赏入口）。 */
+  const detail = spies.appsDetailBodyEl({ id: "a", title: "A", ownerId: "u1" }, {});
+  const coin = detail.querySelector(".apps-ico-coin");
+  ok(!!coin, "详情正文里有打赏 icon 按钮");
+  ok(coin.parentNode === detail, "0 币（记录行不画）时按钮自己占一条，仍在详情正文里");
+  ok(!detail.querySelector(".apps-detail-tipbar.tip-record"), "0 币时「打赏记录」那一行不画（不谎报数字）");
+
+  /* 点它只开打赏窗、不冒泡到卡片（卡片主点击 = 开详情） */
+  let cardClicks = 0;
+  const card = makeEl("div");
+  card.addEventListener("click", () => cardClicks++);
+  card.appendChild(coin);
+  coin.dispatch("click");
+  ok(cardClicks === 0, "点打赏按钮不冒泡到卡片（不会连带打开详情）");
+  ok(
+    tipOpens.length === 1 && tipOpens[0][0] && tipOpens[0][0].kind === "app" && tipOpens[0][0].id === "a",
+    "点打赏按钮 → MtTips.open({kind:'app'}) 一次",
+  );
+
+  /* 有打赏记录时：按钮挂进记录那一条里，且排在记录文字之后（= 右侧）。
+     汇总走**唯一取数口径** appsTipsOf —— 这里就用目录条目自带的汇总（spec.tips）喂它。 */
+  const withTips = { id: "a", title: "A", ownerId: "u1", tips: { count: 3, totalYuan: 120 } };
+  const detail2 = spies.appsDetailBodyEl(withTips, {});
+  const bar = detail2.querySelector(".tip-record");
+  ok(
+    !!bar && classListOf(bar).includes("apps-detail-tipbar") && classListOf(bar).includes("tip-record"),
+    "有打赏时画出「打赏记录」那一条（.apps-detail-tipbar.tip-record）：" + (bar && bar.className),
+  );
+  const barCoin = bar && bar.querySelector(".apps-ico-coin");
+  ok(!!barCoin && barCoin.parentNode === bar, "打赏按钮挂在记录那一条里（同一行）");
+  ok(
+    !!barCoin && bar.children.indexOf(barCoin) === bar.children.length - 1 && bar.children.length >= 3,
+    "按钮排在记录文字之后（「打赏记录」+ 币数 → 按钮）：" + (bar && bar.children.length) + " 个子元素",
+  );
 }
 
 console.log(fails ? "\n[" + fails + " 项失败]" : "\n全部通过");

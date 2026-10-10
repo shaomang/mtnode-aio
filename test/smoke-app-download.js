@@ -403,11 +403,15 @@ async function main() {
   }
   /* 真跑一把 appsErrText：把源码里的这个函数抽出来执行（它只依赖 appsT，喂一个原样返回的桩）。
      只扫源码字面量是不够的 —— 这一族里有互为前缀的码（not_in_catalog / not_in_catalog_removed），
-     键序 find 会先撞上短的，用户在界面上看到的就还是那句泛泛的「云端目录里找不到这个应用」。 */
-  const fnStart = appsSrc.indexOf("function appsErrText(r) {");
-  const fnEnd = appsSrc.indexOf("\n}\n", fnStart);
+     键序 find 会先撞上短的，用户在界面上看到的就还是那句泛泛的「云端目录里找不到这个应用」。
+     抽源码前**先把换行归一化**：renderer/app-apps.js 是 CRLF（app.js / i18n.js 同），
+     找 `\n}\n` 这种 LF 写法在 CRLF 文件里永远不匹配 —— 以前这一条就因此红着（报「抽不到
+     appsErrText 的源码」），而它恰恰是本模块唯一会真跑出词链的断言。 */
+  const appsSrcLF = appsSrc.replace(/\r\n/g, "\n");
+  const fnStart = appsSrcLF.indexOf("function appsErrText(r) {");
+  const fnEnd = appsSrcLF.indexOf("\n}\n", fnStart);
   ok(fnStart >= 0 && fnEnd > fnStart, "抽得到 appsErrText 的源码（渲染层出词入口）");
-  const appsErrText = new Function("appsT", appsSrc.slice(fnStart, fnEnd + 2) + "\nreturn appsErrText;")(
+  const appsErrText = new Function("appsT", appsSrcLF.slice(fnStart, fnEnd + 2) + "\nreturn appsErrText;")(
     (s) => String(s),
   );
   ok(appsErrText({ error: "not_in_catalog_removed" }) === NEW_TEXT[0], "码 not_in_catalog_removed → 说「作者已删除」这一句（不被 not_in_catalog 抢先接走）");
