@@ -9,6 +9,22 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
+
+# 步骤协议（安装窗按它列步骤 / 定位失败步）：真源是包内 scripts/step.ps1
+$stepLib = Join-Path $PSScriptRoot "step.ps1"
+if (Test-Path $stepLib) { . $stepLib }
+else {
+  function Write-MTStepJson { param([string]$Id,[string]$Title,[string]$Status,[object]$Pct,[string]$Message)
+    $o = [ordered]@{ mtnodeStep = 1; id = $Id; title = $Title; status = $Status }
+    if ("$Pct" -ne "") { $n = 0; if ([int]::TryParse("$Pct",[ref]$n)) { $o.pct = $n } }
+    if ($Message) { $o.message = $Message }
+    Write-Host ($o | ConvertTo-Json -Compress -Depth 3)
+  }
+  function Step-Begin { param([string]$Id,[string]$Title,[object]$Pct,[string]$Message) Write-MTStepJson $Id $Title "run" $Pct $Message }
+  function Step-Ok { param([string]$Id,[object]$Pct,[string]$Message) Write-MTStepJson $Id "" "ok" $Pct $Message }
+  function Step-Fail { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "fail" "" $Message }
+  function Step-Skip { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "skip" "" $Message }
+}
 Set-Location $InstallDir
 
 Write-Host "[tts-install] ============================================================"
@@ -36,12 +52,16 @@ function Find-Python {
   throw "Python 3.10+ not found"
 }
 
+Step-Begin "python" "检查 Python 3.10+" 3
 $pyInfo = Find-Python
 $py = $pyInfo.exe
 $pyArgs = $pyInfo.args
+Write-Host "[tts-install] python: $py $($pyArgs -join ' ')"
+Step-Ok "python" 5
 
 Write-Host "[tts-install] creating venv..."
 Write-Host "[tts-install] progress: 10"
+Step-Begin "venv" "创建虚拟环境 .venv" 7
 if ($py -eq "py") {
   & py @pyArgs -m venv .venv
 } else {
@@ -49,21 +69,32 @@ if ($py -eq "py") {
 }
 
 $venvPy = Join-Path $InstallDir ".venv\Scripts\python.exe"
-if (-not (Test-Path $venvPy)) { throw "venv creation failed" }
+if (-not (Test-Path $venvPy)) {
+  Step-Fail "venv" "venv 创建失败（$venvPy 不存在）。确认磁盘可写、Python 安装完整（含 venv 模块）后重跑。"
+  throw "venv creation failed"
+}
+Step-Ok "venv" 10
 
 $pipIndex = "https://pypi.tuna.tsinghua.edu.cn/simple"
 $pipHost = "pypi.tuna.tsinghua.edu.cn"
 Write-Host "[tts-install] pip install requirements..."
 Write-Host "[tts-install] progress: 18"
+Step-Begin "pip" "安装 Python 依赖（清华镜像）" 12
 & $venvPy -m pip install --upgrade pip -i $pipIndex --trusted-host $pipHost
 Write-Host "[tts-install] progress: 28"
 & $venvPy -m pip install -r requirements.txt -i $pipIndex --trusted-host $pipHost
+if ($LASTEXITCODE -ne 0) {
+  Step-Fail "pip" "pip 安装 requirements.txt 失败（退出码 $LASTEXITCODE）。确认能访问 pypi.tuna.tsinghua.edu.cn 后重跑，已装好的包不会重装。"
+  throw "pip install failed"
+}
 Write-Host "[tts-install] progress: 38"
+Step-Ok "pip" 30
 
 # ---- GPT-SoVITS engine: clone the source tree ----
 $engineDir = Join-Path $InstallDir "engine"
 New-Item -ItemType Directory -Force -Path $engineDir | Out-Null
 $apiV2 = Join-Path $engineDir "api_v2.py"
+Step-Begin "engine" "克隆 GPT-SoVITS 推理引擎" 33
 if (-not (Test-Path $apiV2)) {
   Write-Host "[tts-install] cloning GPT-SoVITS (shallow)..."
   Write-Host "[tts-install] progress: 48"
@@ -75,18 +106,24 @@ if (-not (Test-Path $apiV2)) {
       Remove-Item -Recurse -Force $engineDir -ErrorAction SilentlyContinue
       New-Item -ItemType Directory -Force -Path $engineDir | Out-Null
       & git clone --depth 1 https://ghproxy.com/https://github.com/RVC-Boss/GPT-SoVITS.git $engineDir 2>&1 | Out-Host
-      if ($LASTEXITCODE -ne 0 -or -not (Test-Path $apiV2)) { throw "GPT-SoVITS clone failed (no git or network)" }
+      if ($LASTEXITCODE -ne 0 -or -not (Test-Path $apiV2)) {
+        Step-Fail "engine" "克隆 GPT-SoVITS 失败：GitHub 直连与 ghproxy 镜像都不通（或本机没装 git）。装上 git 并确认网络后重跑。"
+        throw "GPT-SoVITS clone failed (no git or network)"
+      }
     }
   } else {
+    Step-Fail "engine" "本机找不到 git，无法克隆 GPT-SoVITS。请安装 git 并保证它在 PATH 里后重跑。"
     throw "git not found - cannot clone GPT-SoVITS"
   }
 }
+Step-Ok "engine" 45
 
 # ---- GPT-SoVITS engine training deps (torch + engine requirements, China mirrors) ----
 $engineReq = Join-Path $engineDir "requirements.txt"
 if (Test-Path $engineReq) {
   Write-Host "[tts-install] installing engine training deps (torch + GPT-SoVITS requirements)..."
   Write-Host "[tts-install] progress: 50"
+  Step-Begin "torch" "安装 CUDA torch 与训练依赖" 48
   # torch (CUDA build; tsinghua mirror only carries CPU wheels, use aliyun cu126)
   & $venvPy -m pip install "torch==2.6.0" "torchaudio==2.6.0" --index-url https://mirrors.aliyun.com/pytorch-wheels/cu126
   if ($LASTEXITCODE -ne 0) {
@@ -110,9 +147,14 @@ if (Test-Path $engineReq) {
   # faster-whisper = required for segment-by-segment ASR transcription after long audio is auto-split.
   Add-Content -Encoding UTF8 $trainReq "pandas`nmatplotlib`ntorch-einops-utils`neinx`nloguru`nonnxruntime`nfaster-whisper"
   & $venvPy -m pip install -r $trainReq -i $pipIndex --trusted-host $pipHost
-  if ($LASTEXITCODE -ne 0) { Write-Host "[tts-install] warn: engine deps install failed (training may not work)" }
+  if ($LASTEXITCODE -ne 0) {
+    Step-Fail "torch" "训练依赖安装失败（退出码 $LASTEXITCODE）。看这一步日志：多为 torch / CUDA 档位与本机驱动不匹配。纯推理可先跳过训练依赖，或装对应 CUDA 档位后重跑。"
+    throw "engine deps install failed"
+  }
+  Step-Ok "torch" 55
 } else {
   Write-Host "[tts-install] warn: engine requirements.txt not found - skipping engine deps"
+  Step-Skip "torch" "引擎仓库里没有 requirements.txt：跳过训练依赖"
 }
 
 $pretrained = Join-Path $engineDir "GPT_SoVITS\pretrained_models"
@@ -123,6 +165,7 @@ $msRepo = if ($env:TTS_MODELSCOPE_REPO) { $env:TTS_MODELSCOPE_REPO } else { "lj1
 
 Write-Host "[tts-install] downloading pretrained weights (ModelScope -> hf-mirror fallback)..."
 Write-Host "[tts-install] progress: 58"
+Step-Begin "weights" "下载预训练权重" 58
 
 $weights = @(
   @{ rel = "GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"; out = "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt" },
@@ -135,6 +178,7 @@ $weights = @(
 
 $total = $weights.Count
 $i = 0
+$weightFails = @()
 foreach ($w in $weights) {
   $i++
   $dest = Join-Path $pretrained $w.out
@@ -158,18 +202,30 @@ foreach ($w in $weights) {
   if (-not $msOk) {
     try {
       & $venvPy -c "from huggingface_hub import hf_hub_download; p=hf_hub_download(repo_id='lj1995/GPT-SoVITS', filename='$relSlash', local_dir=r'$engineDir'); print('ok', p)"
-      if ($LASTEXITCODE -ne 0) { Write-Host "[tts-install] warn: failed $($w.out) (continue)" }
+      if ($LASTEXITCODE -ne 0) { Write-Host "[tts-install] warn: failed $($w.out) (continue)"; $weightFails += $w.out }
     } catch {
       Write-Host "[tts-install] warn: $($_.Exception.Message)"
+      $weightFails += $w.out
     }
   }
 }
 
+if ($weightFails.Count) {
+  Step-Fail "weights" ("预训练权重下载失败：" + ($weightFails -join " / ") + "。ModelScope 与 hf-mirror 都不通或文件名变了：确认网络后重跑（已下载的会跳过）。")
+  throw "weights download failed: $($weightFails -join ', ')"
+}
+Step-Ok "weights" 80
+
 Write-Host "[tts-install] smoke test import..."
 Write-Host "[tts-install] progress: 90"
+Step-Begin "smoke" "冒烟导入检查" 88
 & $venvPy -m pip uninstall -y uvloop 2>$null | Out-Null
 & $venvPy -c "import fastapi; from app import server, tts; print('ok')"
-if ($LASTEXITCODE -ne 0) { throw "smoke import failed" }
+if ($LASTEXITCODE -ne 0) {
+  Step-Fail "smoke" "冒烟导入失败：venv 里的 fastapi 或 app.server / app.tts 导不进来（依赖装了一半）。看这一步日志后重跑安装。"
+  throw "smoke import failed"
+}
+Step-Ok "smoke" 100
 
 New-Item -ItemType File -Force -Path (Join-Path $InstallDir ".install-ok") | Out-Null
 Write-Host "[tts-install] progress: 100"

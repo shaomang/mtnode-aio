@@ -17,6 +17,9 @@ const api = {
   authLoginPassword: (opts) => ipcRenderer.invoke("auth:loginPassword", opts || {}),
   authChangePassword: (opts) => ipcRenderer.invoke("auth:changePassword", opts || {}),
   authLogout: () => ipcRenderer.invoke("auth:logout"),
+  /* 插件窗（含内置讨论区）请求把主窗口调到前台：讨论区不再自带登录入口，
+     登录态失效时它关窗后要用这一条把「右上角那唯一的登录按钮」亮到用户面前。 */
+  mainFocus: () => ipcRenderer.invoke("forum:mainFocus"),
   onAuthChanged: (cb) => {
     const handler = (_e, st) => {
       try {

@@ -68,10 +68,47 @@ if (-not $InstallDir) {
   $InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent
 }
 
+# 步骤协议（安装窗按它列步骤 / 定位失败步）：真源是包内 scripts/step.ps1。
+# 本脚本的安装/修复流程一行没重排：下面用一张「进度门槛 → 步骤 id」映射表，
+# 把脚本原有的 Write-Progress-Line 数字翻译成结构化步骤行（见 Step-Progress）。
+$stepLib = Join-Path $PSScriptRoot "step.ps1"
+if (Test-Path $stepLib) { . $stepLib }
+else {
+  function Write-MTStepJson { param([string]$Id,[string]$Title,[string]$Status,[object]$Pct,[string]$Message)
+    $o = [ordered]@{ mtnodeStep = 1; id = $Id; title = $Title; status = $Status }
+    if ("$Pct" -ne "") { $n = 0; if ([int]::TryParse("$Pct",[ref]$n)) { $o.pct = $n } }
+    if ($Message) { $o.message = $Message }
+    Write-Host ($o | ConvertTo-Json -Compress -Depth 3)
+  }
+  function Step-Begin { param([string]$Id,[string]$Title,[object]$Pct,[string]$Message) Write-MTStepJson $Id $Title "run" $Pct $Message }
+  function Step-Ok { param([string]$Id,[object]$Pct,[string]$Message) Write-MTStepJson $Id "" "ok" $Pct $Message }
+  function Step-Fail { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "fail" "" $Message }
+  function Step-Skip { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "skip" "" $Message }
+  function Step-ProgressMap { param([object[]]$Map) }
+  function Step-Progress { param([object]$Pct,[string]$Fail,[string]$Skip) }
+}
+
+# 步骤门槛 → 步骤 id（与同目录 steps.json 一致）。脚本原有进度数字的语义一字未改。
+Step-ProgressMap @(
+  @{ at = 4;   id = "nvidia";  title = "检测 NVIDIA 显卡 / 驱动 / 显存" },
+  @{ at = 6;   id = "env";     title = "检测内存与磁盘余量" },
+  @{ at = 10;  id = "python";  title = "选择 Python（uv 3.11 优先）" },
+  @{ at = 12;  id = "venv";    title = "创建虚拟环境 .venv" },
+  @{ at = 22;  id = "torch";   title = "安装 CUDA torch 2.8.0" },
+  @{ at = 30;  id = "torch_ok";title = "验证 torch cuda.is_available()" },
+  @{ at = 34;  id = "reqs";    title = "安装 requirements.txt" },
+  @{ at = 44;  id = "pkg";     title = "安装 sensenova_u1 推理包（源码）" },
+  @{ at = 58;  id = "weights"; title = "下载权重 SenseNova-U1.5-8B-MoT" },
+  @{ at = 82;  id = "files";   title = "校验项目文件清单" },
+  @{ at = 86;  id = "smoke";   title = "mock 冒烟（起服务 → /health → 出图 → 并发 429）" },
+  @{ at = 96;  id = "markers"; title = "写安装标记" }
+)
+
 # ---------------------------------------------------------------- output and result markers
 function Write-Progress-Line([int]$Pct, [string]$Msg) {
   Write-Host "[sensenova-install] progress: $Pct"
   if ($Msg) { Write-Host "[sensenova-install] $Msg" }
+  Step-Progress $Pct
 }
 
 function Write-AgentResult([string]$Ok, [string]$Reason) {
@@ -89,6 +126,10 @@ function Fail-Install([string]$Reason, [string]$Advice) {
   Write-Host "[sensenova-install] error: install did not finish reason=$Reason"
   if ($Advice) { Write-Host "[sensenova-install] action: $Advice" }
   Write-Host "[sensenova-install] progress: 100"
+  # 安装窗要把失败停在**正确那一步**：这里把当前步骤标 fail，并把脚本给的处置建议带上去
+  $msg = "install failed: $Reason"
+  if ($Advice) { $msg = "$msg`n建议：$Advice" }
+  Step-Progress -Fail $msg
   Write-AgentResult "false" $Reason
   exit 1
 }

@@ -55,6 +55,10 @@ const {
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例，见 plugins/main-install.js）：安装脚本的步骤行上报给它，
+   窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
+const installHost = require("../plugins/main-install.js");
+const stepReporter = require("../plugins/install-step-reporter.js");
 const { quietPython } = require("../backend-python.js");
 
 /** 报错总线 / 插件卡片 / 修复表用的插件 id（与 plugins/catalog.default.json 的卡 id 一致） */
@@ -1202,6 +1206,13 @@ function runPs(scriptPath, args, opts) {
         env: Object.assign({}, process.env, { PYTHONIOENCODING: "utf-8" }),
       },
     );
+    /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
+    const rep = stepReporter.attach({
+      pluginId: PLUGIN_ID,
+      child,
+      onEvent: (ev) => installHost.reportPluginStep(ev),
+    });
+
     let out = "";
     let lastPct = 0;
     const onData = (d) => {
@@ -1228,9 +1239,18 @@ function runPs(scriptPath, args, opts) {
     };
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
-    child.on("error", reject);
+    child.on("error", (e) => {
+      rep.finish({ ok: false, error: String((e && e.message) || e) });
+      reject(e);
+    });
     child.on("close", (code) => {
-      if (installCancel) return reject(new Error("cancelled"));
+      const cancelled = !!installCancel;
+      rep.finish(
+        cancelled
+          ? { ok: false, cancelled: true, error: "cancelled" }
+          : { ok: code === 0, error: code === 0 ? "" : "exit " + code },
+      );
+      if (cancelled) return reject(new Error("cancelled"));
       if (code !== 0) reject(new Error("exit " + code + ": " + out.slice(-1200)));
       else resolve(out);
     });
@@ -1318,6 +1338,7 @@ async function installScriptBody(installDir, opts) {
 
   installing = true;
   installCancel = false;
+  /* 安装窗的会话由 sensenova:install 入口先开（见 registerSensenovaIpc），这里只管跑安装并上报步骤行 */
   for (const f of [join(installDir, ".install-ok"), join(installDir, ".sensenova-agent-result")]) {
     try {
       if (fs.existsSync(f)) fs.unlinkSync(f);
@@ -1354,6 +1375,7 @@ async function installScriptBody(installDir, opts) {
     installing = false;
     emitProgress({ phase: "install", step: "done", message: "安装完成", pct: 100 });
     appendConsole("[install] script path success");
+    installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
     return { ok: true, installDir, via: "script", installedByAgent: false, project: sig };
   } catch (e) {
     installing = false;
@@ -1363,18 +1385,15 @@ async function installScriptBody(installDir, opts) {
       phase: "install",
       installDir,
     });
-    if (msg === "cancelled" || opts.noAgentFallback) return { ok: false, error: msg, via: "script" };
-    /* 快路径挂了 → 交棒 Agent（脚本已下好的权重 / venv 都在，Agent 按 skill 只做缺的那几步） */
-    appendConsole("[install] script path failed → hand over to Agent: " + msg.slice(0, 300));
-    emitProgress({
-      phase: "install",
-      step: "agent_recover",
-      stepLabel: "Agent 保底修复",
-      message: "脚本安装失败，正在交给 Agent 继续修…",
-      pct: 50,
+    /* 本轮口径：脚本失败**不再自动交棒 Agent**（看不见过程正是要消掉的东西）。
+       失败停在安装窗的失败步上，用户点「交给 mtnode 会话修复」才新建可见会话。 */
+    installHost.finishPluginInstall({
+      id: PLUGIN_ID,
+      ok: false,
+      error: msg === "cancelled" ? "安装已取消" : msg.slice(0, 500),
+      hint: msg === "cancelled" ? "" : stepReporter.hintFor(msg + "\n" + String((consoleTail(8 * 1024) || {}).text || "")),
     });
-    const r = await installByAgent({ mode: "recover", error: "【脚本安装失败现场】\n" + msg });
-    return Object.assign({}, r || {}, { via: "script+agent", scriptError: msg });
+    return { ok: false, error: msg, via: "script" };
   }
 }
 
@@ -2400,6 +2419,22 @@ function registerSensenovaIpc(opts) {
       return startBackend({});
     },
   });
+  /* 安装窗登记：卡片「安装 / 重装」与控制台窗内的「安装」都开这只窗
+     （步骤真源 = 该包 steps.json，脚本按协议逐步上报） */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: "sensenova",
+    name: "SenseNova 本地图像生成",
+    skill: INSTALL_SKILL,
+    kindLabel: "本地后端",
+    packRoots: [bundledPackRoot()],
+    getInstallDir: () => loadConfig().installDir || "",
+    cancel: () => {
+      installCancel = true;
+      return { ok: true };
+    },
+  });
+
 
   ensureUiRuntime();
   refreshStaleLock();
@@ -2445,7 +2480,15 @@ function registerSensenovaIpc(opts) {
     if (next.idleMinutes != null) armIdleTimer();
     return { ok: true, config: cfg };
   });
-  ipcMain.handle("sensenova:install", async (e, o) => installProject(o || {}));
+  /* 安装窗入口（两处共用）：卡片与控制台窗都走它 */
+  ipcMain.handle("sensenova:install", async (e, o) => {
+    installHost.beginPluginInstall({
+      id: PLUGIN_ID,
+      action: o && o.action === "update" ? "update" : "install",
+      installDir: loadConfig().installDir || "",
+    });
+    return installProject(o || {});
+  });
   ipcMain.handle("sensenova:agentInstall", async (e, o) => installByAgent(o || {}));
   ipcMain.handle("sensenova:agentRecoverInstall", async (e, o) => agentRecoverInstall(o || {}));
   ipcMain.handle("sensenova:selfRepair", async (e, o) => selfRepairFromConsole(o || {}));

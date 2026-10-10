@@ -234,7 +234,15 @@ const TAIL_BRIDGE = {
     }
   }
   has(pluginsSrc, "pluginApiFn(spec.api + \"PickInstallDir\")", "「安装」前先弹系统目录选择框（不开插件窗）");
-  has(pluginsSrc, "pluginApiFn(spec.api + \"Install\")", "安装仍可只在卡片上完成");
+  /* 本轮共识：安装不再在卡片上静默跑，一律开那只独立安装窗（逐步骤 + 失败定位 + 会话修复）。
+     桥仍在（安装窗经 mtnodeInstall:api 白名单转调它们），所以这里钉的是**入口口径**。 */
+  has(
+    pluginsSrc,
+    "await openPluginInstallWindow({ id, action: \"install\" })",
+    "卡片「安装 / 重装」改为开独立安装窗（不再卡片内静默安装）",
+  );
+  has(pluginsSrc, "BACKEND_INSTALL_IDS", "卡片知道每个后端插件在安装窗里的 id（id 与 kind 分开维护）");
+  has(preloadSrc, "mtnodeInstallOpen:", "preload 暴露安装窗入口 mtnodeInstallOpen");
   hasnt(preloadSrc, "remotionStart:", "Remotion 没有 remotionStart（它没有常驻后端）");
   hasnt(preloadSrc, "remotionStop:", "Remotion 没有 remotionStop（它没有常驻后端）");
   has(pluginsSrc, 'I18n.t("重装")', "Remotion 已装时主按钮 = 「重装」");

@@ -33,6 +33,10 @@ const {
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例，见 plugins/main-install.js）：安装脚本的步骤行上报给它，
+   窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
+const installHost = require("../plugins/main-install.js");
+const stepReporter = require("../plugins/install-step-reporter.js");
 const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "minimax-music3";
@@ -1020,6 +1024,13 @@ function runPs(scriptPath, args, opts) {
       windowsHide: true,
       env: Object.assign({}, process.env, opts.env || {}),
     });
+    /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
+    const rep = stepReporter.attach({
+      pluginId: PLUGIN_ID,
+      child,
+      onEvent: (ev) => installHost.reportPluginStep(ev),
+    });
+
     let out = "";
     child.stdout.on("data", (d) => {
       const s = d.toString();
@@ -1039,9 +1050,18 @@ function runPs(scriptPath, args, opts) {
       }
       if (opts.onLine) opts.onLine(s);
     });
-    child.on("error", reject);
+    child.on("error", (e) => {
+      rep.finish({ ok: false, error: String((e && e.message) || e) });
+      reject(e);
+    });
     child.on("close", (code) => {
-      if (installCancel) return reject(new Error("cancelled"));
+      const cancelled = !!installCancel;
+      rep.finish(
+        cancelled
+          ? { ok: false, cancelled: true, error: "cancelled" }
+          : { ok: code === 0, error: code === 0 ? "" : "exit " + code },
+      );
+      if (cancelled) return reject(new Error("cancelled"));
       if (code !== 0) reject(new Error(`exit ${code}: ${out.slice(-800)}`));
       else resolve(out);
     });
@@ -1063,6 +1083,7 @@ async function installProject(opts) {
 
   installing = true;
   installCancel = false;
+  /* 安装窗的会话由 music3:install 入口先开（见 registerMusic3Ipc），这里只管跑安装并上报步骤行 */
   try {
     emitProgress({
       phase: "install",
@@ -1073,9 +1094,19 @@ async function installProject(opts) {
     });
     const free = await freeDiskGb(installDir);
     if (free != null && free < DISK_HINT_GB && !opts.force) {
-      installing = false;
       reportErr("low_disk", `磁盘剩余约 ${free}GB，建议预留 ≥${DISK_HINT_GB}GB（模型约 53GB）`, {
         phase: "install",
+      });
+      installHost.failStep(
+        PLUGIN_ID,
+        "disk",
+        `磁盘剩余约 ${free}GB，低于建议的 ${DISK_HINT_GB}GB（官方权重约 53GB）。清理磁盘或换一个剩余空间足够的安装目录后重试。`,
+      );
+      installHost.finishPluginInstall({
+        id: PLUGIN_ID,
+        ok: false,
+        error: "low_disk",
+        hint: "磁盘剩余空间不足：重装只会再失败一次。清理磁盘，或在插件控制台换一个剩余空间足够的安装目录。",
       });
       return {
         ok: false,
@@ -1087,16 +1118,54 @@ async function installProject(opts) {
       };
     }
     appendConsole(`disk free≈${free}GB (hint ≥${DISK_HINT_GB}GB)`);
-    appendConsole("[install] primary path = Agent（脚手架仅作参考）");
-    installing = false;
-    return await agentInstallByAgent({ mode: "install" });
+    /* 本轮口径：安装改由**包内 install.ps1 逐步骤主导**（setup_env + download_models 合成，
+       每步一条结构化步骤行）；Agent 只在用户点「交给 mtnode 会话修复」时接手。 */
+    syncScaffoldToInstall(installDir);
+    writeScaffoldRef(installDir);
+    syncMusic3InstallSkill();
+    const script = join(installDir, "scripts", "install.ps1");
+    appendConsole("[install] script = " + script);
+    await runPs(script, ["-InstallDir", installDir, "-DiskHintGb", String(DISK_HINT_GB)], {
+      cwd: installDir,
+      env: {
+        PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple",
+        HF_ENDPOINT: "https://hf-mirror.com",
+        HF_HUB_DISABLE_XET: "1",
+      },
+      onPct: (pct) =>
+        emitProgress({
+          phase: "install",
+          step: "script",
+          stepLabel: "逐步骤安装（venv / torch / 权重）",
+          pct: 5 + pct * 0.9,
+        }),
+    });
+    if (!fs.existsSync(join(installDir, ".install-ok"))) throw new Error("install_incomplete_after_script");
+    const man = readManifest();
+    writeJson(installedMetaPath(), {
+      ok: true,
+      version: (man && man.version) || "1.0.0",
+      installDir,
+      installedAt: new Date().toISOString(),
+    });
+    emitProgress({ phase: "install", step: "done", pct: 100, done: true });
+    appendConsole("[install] script complete");
+    installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
+    return { ok: true, installDir };
   } catch (e) {
-    installing = false;
     const msg = String((e && e.message) || e);
     appendConsole("install failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
-    reportErr(msg, msg, { phase: "install" });
-    return { ok: false, error: msg, agentRecoverable: msg !== "cancelled" && msg !== "busy" };
+    /* 不再自动转 Agent 兜底：失败停在安装窗的失败步上，等用户点「交给 mtnode 会话修复」 */
+    installHost.finishPluginInstall({
+      id: PLUGIN_ID,
+      ok: false,
+      error: msg === "cancelled" ? "安装已取消" : msg,
+      hint: msg === "cancelled" ? "" : stepReporter.hintFor(msg + "\n" + String((consoleTail(8 * 1024) || {}).text || "")),
+    });
+    return { ok: false, error: msg };
+  } finally {
+    installing = false;
   }
 }
 
@@ -2248,6 +2317,22 @@ function registerMusic3Ipc(opts) {
       return startBackend();
     },
   });
+  /* 安装窗登记：卡片「安装 / 重装」与控制台窗内的「安装」都开这只窗
+     （步骤真源 = 该包 steps.json，脚本按协议逐步上报） */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: "music3",
+    name: "Minimax Music 3",
+    skill: "minimax-music3-install",
+    kindLabel: "本地后端",
+    packRoots: [bundledPackRoot()],
+    getInstallDir: () => loadConfig().installDir || "",
+    cancel: () => {
+      installCancel = true;
+      return { ok: true };
+    },
+  });
+
 
   ensureUiRuntime();
   refreshStaleLock();
@@ -2283,7 +2368,15 @@ function registerMusic3Ipc(opts) {
     }
     return { ok: true, installDir: safe.path, project: sig };
   });
-  ipcMain.handle("music3:install", async (e, opts) => installProject(opts || {}));
+  /* 安装窗入口（两处共用）：卡片与控制台窗都走它 */
+  ipcMain.handle("music3:install", async (e, opts) => {
+    installHost.beginPluginInstall({
+      id: PLUGIN_ID,
+      action: opts && opts.action === "update" ? "update" : "install",
+      installDir: loadConfig().installDir || "",
+    });
+    return installProject(opts || {});
+  });
   ipcMain.handle("music3:agentRecoverInstall", async (e, opts) => agentRecoverInstall(opts || {}));
   ipcMain.handle("music3:selfRepair", async (e, opts) => selfRepairFromConsole(opts || {}));
   ipcMain.handle("music3:cancelInstall", async () => {

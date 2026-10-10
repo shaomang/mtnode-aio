@@ -679,6 +679,13 @@ button:disabled {
   display: none !important;
 }
 
+/* 顶栏「讨论」＝只在已登录时显示（renderer/app-auth.js 的 paintEntry 按登录态切 hidden）。
+   同理：.btn-stack 的 display:flex 会盖掉浏览器默认的 [hidden]{display:none}，不在这里压一次，
+   JS 设了 hidden 按钮照样常驻 —— 未登录（含刚退出）也会看见那只进不去的入口。 */
+.topbar .btn-forum[hidden] {
+  display: none !important;
+}
+
 .btn-update {
   box-sizing: border-box;
   min-width: 58px;

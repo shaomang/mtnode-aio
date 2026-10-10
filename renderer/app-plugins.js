@@ -551,6 +551,44 @@ function backendSpecOf(item) {
   const k = item && (item.kind || item.handler);
   return (k && BACKEND_PLUGIN_SPECS[k]) || null;
 }
+/* 按插件 id 反查 spec（安装窗「打开插件控制台」用；id 与 kind 的对应表只有这里一份） */
+function backendSpecById(id) {
+  const s = String(id || "");
+  if (!s) return null;
+  const byKey = BACKEND_PLUGIN_SPECS[s];
+  if (byKey) return byKey;
+  /* 目录 / 报错总线里的 id 带 -local 后缀（llama-local / sensenova-local …），与 spec 的短名对不上 */
+  const short = s.replace(/-local$/, "");
+  if (BACKEND_PLUGIN_SPECS[short]) return BACKEND_PLUGIN_SPECS[short];
+  const prefix = s.split("-")[0];
+  return BACKEND_PLUGIN_SPECS[prefix] || null;
+}
+/* 安装窗的插件 id：与主进程 installHost 的 registry key 同源。
+   后端插件：spec.key 加 -local（llama-local / sensenova-local / tts-local / breeze-tts-local /
+   minimax-h3 / minimax-music3 / yue2-local / remotion）—— 由 installTargetIdOf 统一给出；
+   窗口插件与桌宠：直接用它们自己的 id。 */
+const BACKEND_INSTALL_IDS = {
+  music3: "minimax-music3",
+  yue2: "yue2-local",
+  sensenova: "sensenova-local",
+  h3: "minimax-h3",
+  llama: "llama-local",
+  tts: "tts-local",
+  breeze: "breeze-tts-local",
+  remotion: "remotion",
+};
+/** 开这只插件的安装窗：**唯一入口**（卡片「安装 / 重装」与控制台窗内的「安装」都走它）。 */
+async function openPluginInstallWindow(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const fn = pluginApiFn("mtnodeInstallOpen");
+  if (!fn) {
+    toast(I18n.t("当前版本不支持安装窗"), "err");
+    return { ok: false, error: "no_install_window" };
+  }
+  const r = await fn(Object.assign({}, p, { action: p.action || "install" }));
+  if (!r || !r.ok) toast(I18n.t("打开安装窗失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+  return r || { ok: false };
+}
 function pluginApiFn(name) {
   return window.api && typeof window.api[name] === "function" ? window.api[name].bind(window.api) : null;
 }
@@ -637,32 +675,29 @@ async function refreshBackendPluginCard(root, spec, opts) {
     if (!r || !r.ok) _backendLastErr.set(spec.key, pluginErrLine(I18n.t("启动失败："), r) + I18n.t(" —— 可点「控制台」看日志"));
     repaint();
   };
-  const installBackend = async () => {
-    const installFn = pluginApiFn(spec.api + "Install");
-    const pickFn = pluginApiFn(spec.api + "PickInstallDir");
-    if (!installFn) return;
-    _backendLastErr.delete(spec.key);
-    /* 还没选过安装目录：先弹系统目录选择框（不是插件窗），取消就什么都不做 */
-    if (!st.installDir && pickFn) {
-      const p = await pickFn();
-      if (!p || !p.ok) {
-        if (p && p.error) toast(pluginErrLine(I18n.t("选择安装目录失败："), p), "err");
-        return;
-      }
-      repaint();
-    }
-    const r = await installFn({});
-    if (!r || !r.ok) {
-      _backendLastErr.set(spec.key, pluginErrLine(I18n.t("安装失败："), r) + I18n.t(" —— 可点「控制台」看日志"));
-      toast(pluginErrLine(I18n.t("安装失败："), r), "err");
-    } else {
-      toast(I18n.t("安装完成"), "ok");
-    }
-    repaint();
-  };
   const installing = !!st.installing || !!st.updating;
   const starting = _backendStarting.has(spec.key);
   const running = !!(st.running || st.wantRunning);
+  /* 本轮共识：安装**不再在卡片上静默跑**，一律开那只安装窗（逐步骤 + 失败定位 + 会话修复）。
+     卡片主按钮仍是启停后端；未装 / 要重装时这里是「安装 / 重装」= 开安装窗。 */
+  const installBackend = async () => {
+    _backendLastErr.delete(spec.key);
+    const id = BACKEND_INSTALL_IDS[spec.key] || spec.key;
+    /* 还没选过安装目录：先弹系统目录选择框（不是插件窗），取消就什么都不做 */
+    if (!st.installDir) {
+      const pickFn = pluginApiFn(spec.api + "PickInstallDir");
+      if (pickFn) {
+        const p = await pickFn();
+        if (!p || !p.ok) {
+          if (p && p.error) toast(pluginErrLine(I18n.t("选择安装目录失败："), p), "err");
+          return;
+        }
+        repaint();
+      }
+    }
+    await openPluginInstallWindow({ id, action: "install" });
+    repaint();
+  };
   if (installing) {
     addBtn("download", st.updating ? I18n.t("更新中…") : I18n.t("安装中…"), () => {}, {
       disabled: true,
@@ -1481,9 +1516,14 @@ async function refreshWindowPluginCard(host, item) {
   }
   if (!st.installed) {
     addBtn("download", I18n.t("下载安装"), async () => {
-      const r = await window.api.appPluginsInstall(st.id);
-      if (r && r.ok) toast(I18n.t("插件已安装") + (r.version ? " v" + r.version : ""), "ok");
-      else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
+      /* 窗口插件的下载 / 校验 / 解压也走同一只安装窗（本轮共识）：窗内触发 appPlugins:install，
+         主进程把 phase 翻成步骤上报；卡片只重绘状态。 */
+      await openPluginInstallWindow({
+        id: st.id,
+        name: pluginLoc(st, "title") || st.id,
+        action: "install",
+        kind: "window",
+      });
       const cat = await window.api.appPluginsCatalog();
       const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
       if (next) host._pluginItem = next;
@@ -1512,9 +1552,12 @@ async function refreshWindowPluginCard(host, item) {
   }
   if (st.updateAvailable) {
     addBtn("update", I18n.t("更新"), async () => {
-      const r = await window.api.appPluginsInstall(st.id);
-      if (r && r.ok) toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
-      else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
+      await openPluginInstallWindow({
+        id: st.id,
+        name: pluginLoc(st, "title") || st.id,
+        action: "update",
+        kind: "window",
+      });
       const cat = await window.api.appPluginsCatalog();
       const next = ((cat && cat.plugins) || []).find((p) => p.id === st.id);
       if (next) host._pluginItem = next;

@@ -2388,8 +2388,25 @@ function forumAuthor(userId) {
   };
 }
 
+/* 删帖权限（本轮需求）：话题 = 作者本人 / 管理员；回复 = 回复作者 / 话题作者 / 管理员。
+   与模板 / 应用的 canDelete（作者 或 isAdmin）同源，也与评论区的「作者 / 对象作者 / 管理员」一脉；
+   判定只在服务端做，客户端一律读投影里的 canDelete 位，不自己判 isAdmin。 */
+function forumTopicCanDelete(t, viewer) {
+  return !!(viewer && t && (viewer.id === t.userId || isAdmin(viewer)));
+}
+function forumReplyCanDelete(r, t, viewer) {
+  if (!viewer || !r) return false;
+  if (viewer.id === r.userId) return true;
+  if (t && viewer.id === t.userId) return true; /* 话题作者可清理自己楼里的回复 */
+  return isAdmin(viewer);
+}
+/* 软删除的操作人留痕：与 comments.mjs 的 deletedBy 同口径（用户名优先，回落 id）。 */
+function forumOperatorName(user) {
+  return String((user && (user.username || user.id)) || "system");
+}
+
 // 列表投影：只有标题与元数据，绝不带正文（懒加载关键）。
-function publicForumTopicSummary(t, en) {
+function publicForumTopicSummary(t, en, viewer) {
   return withEnrich({
     id: t.id,
     title: t.title || "",
@@ -2401,17 +2418,20 @@ function publicForumTopicSummary(t, en) {
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
     lastReplyAt: t.lastReplyAt || t.createdAt,
+    canDelete: forumTopicCanDelete(t, viewer),
   }, "forum_topic", t.id, en);
 }
 
 function publicForumTopic(t, viewer, en) {
-  return Object.assign(publicForumTopicSummary(t, en), {
+  return Object.assign(publicForumTopicSummary(t, en, viewer), {
     content: t.content || "",
     mine: !!(viewer && viewer.id === t.userId),
+    canDelete: forumTopicCanDelete(t, viewer),
   });
 }
 
-function publicForumReply(r, en) {
+function publicForumReply(r, en, viewer, topicOwnerId) {
+  const topic = topicOwnerId ? { userId: topicOwnerId } : null;
   return withEnrich({
     id: r.id,
     topicId: r.topicId,
@@ -2420,6 +2440,7 @@ function publicForumReply(r, en) {
     userId: r.userId,
     author: forumAuthor(r.userId),
     createdAt: r.createdAt,
+    canDelete: forumReplyCanDelete(r, topic, viewer),
   }, "forum_reply", r.id, en);
 }
 
@@ -8057,6 +8078,7 @@ async function handle(req, res) {
     const { page, pageSize, skip } = forumPageArgs(url, "page", "pageSize");
     const list = (db.forumTopics || []).filter((t) => {
       if (!t) return false;
+      if (t.deleted) return false; /* 软删除的帖子不出现在任何列表 */
       if (status && t.status !== status) return false;
       if (q) {
         const hit = String(t.title || "").toLowerCase().includes(q) || String(t.content || "").toLowerCase().includes(q);
@@ -8071,20 +8093,20 @@ async function handle(req, res) {
     );
     const pageItems = list.slice(skip, skip + pageSize);
     const en = enrichOf("forum_topic", pageItems.map((t) => t.id));
-    const items = pageItems.map((t) => publicForumTopicSummary(t, en(t.id)));
+    const items = pageItems.map((t) => publicForumTopicSummary(t, en(t.id), user));
     return send(res, 200, { ok: true, sort, page, pageSize, total: list.length, items });
   }
 
-  // 详情：免登录，正文 + 回复分页（replyPage / replyPageSize）。
+  // 详情：免登录，正文 + 回复分页（replyPage / replyPageSize）。已删话题与已删回复都不出现。
   if (method === "GET" && p === "/api/forum/topic") {
     const id = String(url.searchParams.get("id") || "").trim();
     const t = (db.forumTopics || []).find((x) => x.id === id);
-    if (!t) return send(res, 404, { ok: false, error: "话题不存在" });
+    if (!t || t.deleted) return send(res, 404, { ok: false, error: "话题不存在" });
     const { page, pageSize, skip } = forumPageArgs(url, "replyPage", "replyPageSize");
     const all = (db.forumReplies || [])
-      .filter((r) => r && r.topicId === t.id)
+      .filter((r) => r && r.topicId === t.id && !r.deleted)
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-    const replies = all.slice(skip, skip + pageSize).map(publicForumReply);
+    const replies = all.slice(skip, skip + pageSize).map((r) => publicForumReply(r, null, user, t.userId));
     return send(res, 200, {
       ok: true,
       topic: publicForumTopic(t, user),
@@ -8144,7 +8166,7 @@ async function handle(req, res) {
     const b = await jsonBody();
     const topicId = String(b.topicId || "").trim();
     const t = (db.forumTopics || []).find((x) => x.id === topicId);
-    if (!t) return send(res, 404, { ok: false, error: "话题不存在" });
+    if (!t || t.deleted) return send(res, 404, { ok: false, error: "话题不存在" });
     const content = String(b.content || "").trim();
     if (!content) return send(res, 400, { ok: false, error: "请填写回复内容" });
     if (content.length > MAX_FORUM_REPLY) {
@@ -8159,11 +8181,11 @@ async function handle(req, res) {
     const at = now();
     const reply = { id: uid("fr_"), topicId, content, imageIds, userId: user.id, createdAt: at };
     db.forumReplies.push(reply);
-    t.replyCount = (t.replyCount || 0) + 1;
+    t.replyCount = (db.forumReplies || []).filter((r) => r && r.topicId === t.id && !r.deleted).length;
     t.lastReplyAt = at;
     t.updatedAt = at;
     await saveDb();
-    return send(res, 200, { ok: true, item: publicForumReply(reply) });
+    return send(res, 200, { ok: true, item: publicForumReply(reply, null, user, t.userId) });
   }
 
   // 改状态：需登录，仅话题作者可改（含标记「已解决」）。
@@ -8172,7 +8194,7 @@ async function handle(req, res) {
     const b = await jsonBody();
     const id = String(b.id || "").trim();
     const t = (db.forumTopics || []).find((x) => x.id === id);
-    if (!t) return send(res, 404, { ok: false, error: "话题不存在" });
+    if (!t || t.deleted) return send(res, 404, { ok: false, error: "话题不存在" });
     if (t.userId !== user.id) {
       return send(res, 403, { ok: false, error: "只能修改自己的话题" });
     }
@@ -8182,6 +8204,74 @@ async function handle(req, res) {
     t.updatedAt = now();
     await saveDb();
     return send(res, 200, { ok: true, item: publicForumTopic(t, user) });
+  }
+
+  /* 删帖（本轮需求）：**软删除** —— 记录留库并记 deleted / deletedAt / deletedBy，界面不再出现
+     （列表、详情、计数一律按未删记录算；不留墓碑，直链落到客户端的「话题不存在或已删除」）。
+     · 话题：作者本人 / 管理员可删；连带把它的回复一并软删，并把话题与各回复的评论一并软删
+       （复用 comments.removeByTarget，与「目标被删时清评论」同一口径）。
+     · 回复：回复作者 / 话题作者 / 管理员可删；连带软删这条回复自己的评论。
+     · 打赏账本与评分记录保留不动（钱已入账，删帖不改账）；图片对象不回收（留档便于人工恢复）。
+     · 删除不限流（人手点的低频动作）。
+     权限只在服务端判定：客户端一律读投影里的 canDelete 位，不自己判 isAdmin。 */
+  if (method === "DELETE" && p === "/api/forum/topic") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const id = String(b.id || "").trim();
+    const t = (db.forumTopics || []).find((x) => x.id === id);
+    if (!t || t.deleted) return send(res, 404, { ok: false, error: "话题不存在" });
+    if (!forumTopicCanDelete(t, user)) {
+      return send(res, 403, { ok: false, error: "只有作者本人与管理员可以删除话题" });
+    }
+    const at = now();
+    const by = forumOperatorName(user);
+    t.deleted = true;
+    t.deletedAt = at;
+    t.deletedBy = by;
+    let replies = 0;
+    for (const r of db.forumReplies || []) {
+      if (!r || r.topicId !== t.id || r.deleted) continue;
+      r.deleted = true;
+      r.deletedAt = at;
+      r.deletedBy = by;
+      await comments.removeByTarget("forum_reply", r.id, by);
+      replies++;
+    }
+    await comments.removeByTarget("forum_topic", t.id, by);
+    /* 计数只算未删记录（话题已被隐藏，这里只为数据自洽） */
+    t.replyCount = (db.forumReplies || []).filter((r) => r && r.topicId === t.id && !r.deleted).length;
+    t.lastReplyAt = 0;
+    t.updatedAt = at;
+    await saveDb();
+    return send(res, 200, { ok: true, id: t.id, deleted: true, replies, item: publicForumTopic(t, user) });
+  }
+
+  // 删回复：需登录，回复作者 / 话题作者 / 管理员；写回话题的回复计数与最后回复时间。
+  if (method === "DELETE" && p === "/api/forum/replies") {
+    if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
+    const b = await jsonBody();
+    const id = String(b.id || "").trim();
+    const r = (db.forumReplies || []).find((x) => x.id === id);
+    if (!r || r.deleted) return send(res, 404, { ok: false, error: "回复不存在" });
+    const t = (db.forumTopics || []).find((x) => x.id === r.topicId) || null;
+    if (t && t.deleted) return send(res, 404, { ok: false, error: "回复不存在" });
+    if (!forumReplyCanDelete(r, t, user)) {
+      return send(res, 403, { ok: false, error: "只有回复作者、话题作者与管理员可以删除回复" });
+    }
+    const at = now();
+    const by = forumOperatorName(user);
+    r.deleted = true;
+    r.deletedAt = at;
+    r.deletedBy = by;
+    await comments.removeByTarget("forum_reply", r.id, by);
+    if (t) {
+      const live = (db.forumReplies || []).filter((x) => x && x.topicId === t.id && !x.deleted);
+      t.replyCount = live.length;
+      t.lastReplyAt = live.reduce((mx, x) => Math.max(mx, Number(x.createdAt) || 0), 0);
+      t.updatedAt = at;
+    }
+    await saveDb();
+    return send(res, 200, { ok: true, id: r.id, deleted: true, item: publicForumReply(r, null, user, t && t.userId) });
   }
 
   // 图片上传：需登录（编辑期先传图拿 imageId，正文再写 ![](forum:<imageId>)）。

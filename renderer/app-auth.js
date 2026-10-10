@@ -322,6 +322,11 @@
       btn.title = T("账户：登录 / 绑定 / 退出");
       btn.setAttribute("aria-label", T("账户"));
     }
+    /* 顶栏「讨论」入口：**只在已登录时显示**（口径见本轮需求 —— 讨论区不再有登录入口，
+       未登录时连入口都不给，退出登录即隐）。写在这里是因为登录态唯一真源是本模块的
+       SNAP：登录成功、退出登录、换账号都会走到 paintEntry，按钮跟着同一拍变。 */
+    var forumBtn = $id("btnForum");
+    if (forumBtn) forumBtn.hidden = !signed;
   }
 
   /* ───────────────────────── 账户菜单（persistent） ───────────────────────── */

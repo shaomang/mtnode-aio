@@ -15,6 +15,10 @@ const https = require("https");
 const zlib = require("zlib");
 /* 插件报错总线：窗口插件没有各自的主进程宿主，失败出口统一往这里报 */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例）：窗口插件的下载 / 校验 / 解压也进那只窗，逐步骤可见。
+   步骤表（prepare / download / verify / extract / done）的真源在 plugins/main-install.js
+   的 WINDOW_PLUGIN_MANIFEST，本模块只负责把 appPlugins:progress 翻成步骤事件。 */
+const installHost = require("./main-install.js");
 
 const PLUGIN_FEED =
   process.env.MTNODE_PLUGIN_URL || "http://mt-agent.com/mtnode/plugins";
@@ -421,6 +425,80 @@ function sendProgress(data) {
     const w = getMainWin && getMainWin();
     if (w && !w.isDestroyed()) w.webContents.send("appPlugins:progress", data);
   } catch {}
+  /* 同一份进度也进安装窗（步骤行 + 逐步日志）：卡片 / 控制台状态行仍照旧收 appPlugins:progress */
+  try {
+    reportInstallProgress(data || {});
+  } catch {}
+}
+
+/** 把窗口插件的下载 / 校验 / 解压进度翻成安装步骤事件（安装窗的步骤表口径）。 */
+function reportInstallProgress(d) {
+  const id = String(d.id || "");
+  if (!id) return;
+  const pct = Math.max(0, Math.min(100, Math.round(Number(d.percent) || 0)));
+  const phase = String(d.phase || "");
+  const step = (sid, status, message) =>
+    installHost.reportPluginStep({
+      pluginId: id,
+      kind: "step",
+      step: Object.assign({ id: sid, status, pct }, message ? { message: String(message).slice(0, 500) } : {}),
+    });
+  if (phase === "start") {
+    step("prepare", "run", d.version ? "目标版本 " + d.version : "");
+    return;
+  }
+  if (phase === "download") {
+    if (d.got != null && d.total) {
+      step("download", "run", `${Math.round((d.got / d.total) * 100)}%（${fmtMb(d.got)} / ${fmtMb(d.total)}）`);
+    } else {
+      step("download", "run");
+    }
+    /* 下载阶段每一步的百分比都当日志行留档（安装窗右侧看得见进度数字） */
+    installHost.reportPluginStep({
+      pluginId: id,
+      kind: "log",
+      stepId: "download",
+      line: `download ${pct}%` + (d.total ? ` (${fmtMb(d.got)} / ${fmtMb(d.total)})` : ""),
+      stream: "host",
+    });
+    return;
+  }
+  if (phase === "extract") {
+    step("download", "ok");
+    step("verify", "ok");
+    step("extract", "run");
+    return;
+  }
+  if (phase === "done") {
+    step("extract", "ok");
+    step("done", "ok");
+    installHost.finishPluginInstall({ id, ok: true });
+    return;
+  }
+  if (phase === "error") {
+    const msg = String(d.error || "install failed");
+    /* 停在哪一步：能认出来的（sha256_mismatch / pack_missing_entry / HTTP xxx）停在对应步 */
+    const sid = /sha256/i.test(msg)
+      ? "verify"
+      : /pack_missing|entry/i.test(msg)
+        ? "extract"
+        : /^HTTP|timeout|ECONN|ENOTFOUND|EAI|too_large|bad_zip_url|need_app_update|not_window_plugin/i.test(msg)
+          ? "download"
+          : "download";
+    step(sid, "fail", msg);
+    installHost.finishPluginInstall({
+      id,
+      ok: false,
+      error: msg,
+      hint: installFailHint(msg) || "看这一步的日志；重下一次仍失败就把日志交给会话修复。",
+    });
+  }
+}
+
+function fmtMb(bytes) {
+  const n = Number(bytes) || 0;
+  if (!n) return "0MB";
+  return (n / (1024 * 1024)).toFixed(1) + "MB";
 }
 
 function catalogUrl() {
@@ -607,6 +685,8 @@ async function installWindowPlugin(id) {
   installing[id] = true;
   /* 已经装过再点一次就是「更新」：报告按实际动作分类，用户看到的是「更新失败」而不是「安装失败」 */
   const ctx = { phase: isWindowInstalled(id) ? "update" : "install" };
+  /* 安装窗：开一次会话（步骤表由 plugins/main-install.js 的兜底表给出 —— 窗口插件没有 steps.json） */
+  installHost.beginPluginInstall({ id, action: ctx.phase, installDir: pluginDir(id) });
   sendProgress({ id, phase: "start", percent: 0 });
   try {
     let spec = findCatalogPlugin(id);

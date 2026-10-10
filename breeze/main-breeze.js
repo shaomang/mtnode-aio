@@ -19,6 +19,10 @@ const { resolveDshRunAuth } = require("../dsh/mtnode-llm-creds.js");
 const uiBridge = require("./ui-bridge.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例，见 plugins/main-install.js）：安装脚本的步骤行上报给它，
+   窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
+const installHost = require("../plugins/main-install.js");
+const stepReporter = require("../plugins/install-step-reporter.js");
 const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "breeze-tts-local";
@@ -982,6 +986,13 @@ function runPs(scriptPath, args, opts) {
       windowsHide: true,
       env: Object.assign({}, process.env, opts.env || {}),
     });
+    /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
+    const rep = stepReporter.attach({
+      pluginId: PLUGIN_ID,
+      child,
+      onEvent: (ev) => installHost.reportPluginStep(ev),
+    });
+
     let out = "";
     let tail = "";
     child.stdout.on("data", (d) => {
@@ -1002,9 +1013,18 @@ function runPs(scriptPath, args, opts) {
         if (line.trim()) appendConsole("[err] " + line);
       }
     });
-    child.on("error", reject);
+    child.on("error", (e) => {
+      rep.finish({ ok: false, error: String((e && e.message) || e) });
+      reject(e);
+    });
     child.on("close", (code) => {
-      if (installCancel) return reject(new Error("cancelled"));
+      const cancelled = !!installCancel;
+      rep.finish(
+        cancelled
+          ? { ok: false, cancelled: true, error: "cancelled" }
+          : { ok: code === 0, error: code === 0 ? "" : "exit " + code },
+      );
+      if (cancelled) return reject(new Error("cancelled"));
       if (code !== 0) {
         const err = new Error("exit " + code + ": " + (tail || out.slice(-800)));
         err.tail = tail;
@@ -1281,6 +1301,7 @@ async function installProjectInner(opts) {
   installing = true;
   installCancel = false;
   appendConsole("[install] begin · pip 国内镜像优先");
+  /* 安装窗的会话由 breeze:install 入口先开（见 registerBreezeIpc），这里只管跑安装并上报步骤行 */
   /* 上一次的失败裁决先清掉：否则这次脚本没写新裁决时会被旧裁决误读（见 readInstallVerdict）。 */
   try {
     const stale = join(installDir, ".breeze-agent-result");
@@ -1330,6 +1351,7 @@ async function installProjectInner(opts) {
     });
     emitProgress({ phase: "install", step: "done", pct: 100, done: true });
     appendConsole("[install] script complete");
+    installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
     return { ok: true, installDir, via: "script" };
   } catch (e) {
     const msg = String((e && e.message) || e);
@@ -1337,24 +1359,16 @@ async function installProjectInner(opts) {
     emitProgress({
       phase: "install",
       step: "script_failed",
-      stepLabel: "脚本失败，转 Agent 保底",
+      stepLabel: "安装脚本失败",
       message: msg,
       pct: 18,
     });
-    if (msg === "cancelled" || msg === "busy") {
-      emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
-      reportErr(msg, msg === "busy" ? "已有安装任务在跑" : "安装已取消", { phase: "install" });
-      return { ok: false, error: msg, agentRecoverable: false };
-    }
-    installing = false;
-    const tail = consoleTail(48 * 1024);
-    /* 脚本自己给出的失败裁决（.breeze-agent-result: ok=false + reason=…）优先于「一律交给 Agent」：
-       no_cuda / no_nvidia_gpu 这类「Agent 再跑一遍也不会变好」的，直接按总线的不修清单给用户指路，
-       不白烧一次修复会话；smoke_failed 才是 Agent 该接的活。判定真源在 plugin-error-repair.js。 */
+    /* 本轮口径：脚本失败**不再自动转 Agent 兜底**（看不见过程正是要消掉的东西）。
+       失败停在安装窗的失败步上；脚本自己给出的失败裁决（.breeze-agent-result: ok=false + reason）
+       仍照旧上报（no_cuda 这类要指路，不弹自动修复）。 */
     const verdict = readInstallVerdict(installDir);
-    let verdictJudged = null;
     if (verdict) {
-      verdictJudged = pluginErrors.judgeRepairability(
+      const judged = pluginErrors.judgeRepairability(
         {
           id: PLUGIN_ID,
           getInstallDir: () => installDir,
@@ -1363,28 +1377,20 @@ async function installProjectInner(opts) {
         verdict.reason,
         "",
       );
+      appendConsole("[install] 脚本裁决：" + verdict.reason + (judged && !judged.repairable ? "（不可修，只指路）" : ""));
     }
-    if (verdict && verdictJudged && !verdictJudged.repairable) {
-      reportErr(verdict.reason, "Breeze TTS 2 安装脚本判定失败：" + verdict.reason, {
-        phase: "install",
-        console: String((tail && tail.text) || "").slice(-4000),
-      });
-      emitProgress({ phase: "install", step: "error", message: verdict.reason, pct: 0, error: true });
-      return { ok: false, error: verdict.reason, agentRecoverable: false };
-    }
-    if (verdict) appendConsole("[install] 冒烟未通过（" + verdict.reason + "）→ 交 Agent 修复");
-    /* 保底链自己也可能抛（它同样要解析脚手架）：再兜一层，绝不让 IPC 裸 reject。 */
-    let agent;
-    try {
-      agent = await agentRecoverInstall({
-        error:
-          "脚本安装失败: " + msg + "\n\n=== console 尾部 ===\n" + String((tail && tail.text) || "").slice(-12000),
-      });
-    } catch (e2) {
-      emitProgress({ phase: "install", step: "error", message: String((e2 && e2.message) || e2), pct: 0, error: true });
-      return { ok: false, error: hostError("install-fallback", e2) };
-    }
-    return agent;
+    installHost.finishPluginInstall({
+      id: PLUGIN_ID,
+      ok: false,
+      error: msg === "cancelled" ? "安装已取消" : (verdict && verdict.reason) || msg,
+      hint:
+        msg === "cancelled"
+          ? ""
+          : stepReporter.hintFor(
+              ((verdict && verdict.reason) || "") + "\n" + msg + "\n" + String((consoleTail(8 * 1024) || {}).text || ""),
+            ),
+    });
+    return { ok: false, error: msg };
   } finally {
     installing = false;
   }
@@ -1980,6 +1986,22 @@ function registerBreezeIpc(opts) {
       return startBackend();
     },
   });
+  /* 安装窗登记：卡片「安装 / 重装」与控制台窗内的「安装」都开这只窗
+     （步骤真源 = 该包 steps.json，脚本按协议逐步上报） */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: "breeze",
+    name: PLUGIN_NAME,
+    skill: INSTALL_SKILL,
+    kindLabel: "本地后端",
+    packRoots: [bundledPackRoot()],
+    getInstallDir: () => loadConfig().installDir || "",
+    cancel: () => {
+      installCancel = true;
+      return { ok: true };
+    },
+  });
+
 
   ensureUiRuntime();
   startConsoleLogWatch();
@@ -2014,7 +2036,15 @@ function registerBreezeIpc(opts) {
     saveConfig({ weightsDir: abs });
     return { ok: true, weightsDir: abs };
   });
-  ipcMain.handle("breeze:install", async (e, o) => installProject(o || {}));
+  /* 安装窗入口（两处共用）：卡片与控制台窗都走它 */
+  ipcMain.handle("breeze:install", async (e, o) => {
+    installHost.beginPluginInstall({
+      id: PLUGIN_ID,
+      action: o && o.action === "update" ? "update" : "install",
+      installDir: loadConfig().installDir || "",
+    });
+    return installProject(o || {});
+  });
   ipcMain.handle("breeze:agentRecoverInstall", async (e, o) => agentRecoverInstall(o || {}));
   ipcMain.handle("breeze:cancelInstall", async () => {
     installCancel = true;

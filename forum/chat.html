@@ -16,9 +16,11 @@
 <body>
   <div class="panel">
     <div class="head">
-      <span class="title">MTNode 讨论区<span class="who" id="who"></span></span>
+      <!-- 标题栏不再显示当前账号，也没有「退出登录」：登录态唯一入口是顶栏右上角的账户按钮，
+           本窗只在登录后才打得开（renderer/app-boot.js 的 #btnForum 按登录态显隐），
+           登录一失效本窗就自行关闭（见 chat.js 的 closeForAuthLoss）。 -->
+      <span class="title">MTNode 讨论区</span>
       <div class="btns">
-        <button type="button" id="btnOut" title="退出登录" hidden>退</button>
         <button type="button" id="btnClose" title="关闭">×</button>
       </div>
     </div>
@@ -31,10 +33,6 @@
         <button type="button" id="btnNew" class="primary">发起话题</button>
       </div>
       <div class="chips" id="chips"></div>
-      <div class="hintbar" id="hintBar" hidden>
-        <span id="hintTxt">登录后可发帖</span>
-        <button type="button" id="hintLogin" class="linkbtn">登录</button>
-      </div>
       <div class="scroll" id="topicList"></div>
       <div class="morebar" id="moreBar" hidden><button type="button" id="btnMore">加载更多</button></div>
     </section>
@@ -48,6 +46,9 @@
           <span class="badge" id="tBadge"></span>
           <span class="tdtime" id="tTime"></span>
           <select id="statusSel" hidden title="切换状态"></select>
+          <!-- 删帖（本轮需求）：软删除。只有服务端投影 canDelete=true（作者本人 / 管理员）时显示，
+               二次确认走 window.confirm，与评论区删除同一套交互。 -->
+          <button type="button" id="btnDelTopic" class="danger" hidden title="删除这条话题">删除</button>
         </div>
       </div>
       <div class="tdtabs" id="tdTabs">
@@ -75,24 +76,9 @@
       </div>
     </section>
 
-    <!-- ③ 登录（复用原有登录表单，浏览不受影响） -->
-    <div class="auth" id="auth">
-      <h3 id="authTitle">登录后即可发帖</h3>
-      <p id="authHint">与创意工坊共用同一账户，token 只保存在本机主进程。</p>
-      <div class="modes">
-        <button type="button" class="on" id="modeLogin">登录</button>
-        <button type="button" id="modePass">修改密码</button>
-      </div>
-      <div class="err" id="authErr"></div>
-      <input id="authUser" type="text" maxlength="24" placeholder="用户名（3-24 位字母、数字或下划线）">
-      <input id="authPass" type="password" maxlength="72" placeholder="密码（6-72 位）">
-      <input id="authPassNew" type="password" maxlength="72" placeholder="新密码（6-72 位）" hidden>
-      <input id="authPassNew2" type="password" maxlength="72" placeholder="再次输入新密码" hidden>
-      <div class="modes">
-        <button type="button" class="ghost" id="authCancel">继续浏览</button>
-        <button type="button" class="go" id="authGo">登录</button>
-      </div>
-    </div>
+    <!-- 本窗不再有登录卡（本轮需求）：全 MTNode 唯一登录入口是顶栏右上角「账户」按钮。
+         未登录时连讨论区入口都不显示（renderer/app-boot.js），因此这里既不需要登录表单，
+         也不需要「免登录浏览」的提示条；登录态失效时由 chat.js 关窗并把主窗口调到前台。 -->
 
     <!-- 发起话题 -->
     <div class="modal" id="compose" hidden>

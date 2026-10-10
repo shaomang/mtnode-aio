@@ -24,6 +24,8 @@ const { pathToFileURL } = require("url");
 const { spawn } = require("child_process");
 /* 插件报错总线：桌宠（BongoChat）宿主也走同一份上报 / 修复入口 */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例）：桌宠形象包下载也进那只窗，逐步骤可见（见 plugins/main-install.js） */
+const installHost = require("../plugins/main-install.js");
 
 const PLUGIN_ID = "bongochat";
 const PET_FEED =
@@ -563,16 +565,20 @@ async function installFromRemote() {
 async function installPet() {
   if (installing) return { ok: false, error: "busy" };
   installing = true;
+  /* 安装窗：开一次会话（桌宠是「下载形象包」型，步骤表由 plugins/main-install.js 的兜底表给出） */
+  installHost.beginPluginInstall({ id: PLUGIN_ID, action: "install", installDir: petInstallDir() });
   sendProgress({ phase: "start", percent: 0 });
   try {
     try {
       const r = await installFromRemote();
       installing = false;
+      installHost.finishPluginInstall({ id: PLUGIN_ID, ok: !!(r && r.ok), error: (r && r.error) || "" });
       return r;
     } catch (remoteErr) {
       const local = await installFromLocalPack();
       if (local.ok) {
         installing = false;
+        installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
         return {
           ok: true,
           version: local.version,
@@ -584,6 +590,12 @@ async function installPet() {
       const remoteMsg = String((remoteErr && remoteErr.message) || remoteErr);
       /* 远程失败 + 离线包也没有 → 真正的安装失败出口（bad_manifest / sha256_mismatch / 下载错误都落在这） */
       reportErr(downloadErrCode(remoteMsg), remoteMsg);
+      installHost.finishPluginInstall({
+        id: PLUGIN_ID,
+        ok: false,
+        error: remoteMsg,
+        hint: "桌宠形象包下载 / 校验失败：确认网络可达下载源，或改用随包离线形象包后重试。",
+      });
       return {
         ok: false,
         error: remoteMsg,
@@ -598,7 +610,17 @@ async function installPet() {
       percent: 0,
       error: msg,
     });
+    installHost.finishPluginInstall({ id: PLUGIN_ID, ok: false, error: msg });
     return { ok: false, error: msg };
+  }
+}
+
+/** 桌宠安装目录（= 修复会话的可写工作区；报错总线注册与安装窗登记共用一份口径） */
+function petInstallDir() {
+  try {
+    return getDataDir ? join(getDataDir(), "pet", "runtime") : "";
+  } catch {
+    return "";
   }
 }
 
@@ -1128,14 +1150,18 @@ function registerPetIpc(opts) {
   pluginErrors.registerPluginHost({
     id: PLUGIN_ID,
     name: "BongoChat",
-    getInstallDir: () => {
-      try {
-        return getDataDir ? join(getDataDir(), "pet", "runtime") : "";
-      } catch {
-        return "";
-      }
-    },
+    getInstallDir: () => petInstallDir(),
     tailConsole: () => ({ ok: true, text: "" }),
+  });
+
+  /* 安装窗登记：卡片「下载安装」开这只窗（步骤表用兜底表，桌宠没有 steps.json） */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: "pet",
+    name: "BongoChat 桌宠",
+    skill: "",
+    kindLabel: "桌宠",
+    getInstallDir: () => petInstallDir(),
   });
 
   ipcMain.handle("pet:status", () => statusForUi());

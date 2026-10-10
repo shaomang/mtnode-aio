@@ -31,6 +31,25 @@ function Say([string]$msg) { Write-Host "[breeze-install] $msg" }
 function Progress([double]$pct) { Write-Host ("[breeze-install] progress: {0:N1}" -f $pct) }
 function Step([string]$msg, [double]$pct) { $script:Step++; Say "- ($($script:Step)) $msg"; Progress $pct }
 
+# 步骤协议（安装窗按它列步骤 / 定位失败步）：真源是包内 scripts/step.ps1。
+# 这里不重排脚本流程，只把已有的 Progress 翻译成结构化步骤行（映射表见下方 Step-ProgressMap）。
+$stepLib = Join-Path $PSScriptRoot "step.ps1"
+if (Test-Path $stepLib) { . $stepLib }
+else {
+  function Write-MTStepJson { param([string]$Id,[string]$Title,[string]$Status,[object]$Pct,[string]$Message)
+    $o = [ordered]@{ mtnodeStep = 1; id = $Id; title = $Title; status = $Status }
+    if ("$Pct" -ne "") { $n = 0; if ([int]::TryParse("$Pct",[ref]$n)) { $o.pct = $n } }
+    if ($Message) { $o.message = $Message }
+    Write-Host ($o | ConvertTo-Json -Compress -Depth 3)
+  }
+  function Step-Begin { param([string]$Id,[string]$Title,[object]$Pct,[string]$Message) Write-MTStepJson $Id $Title "run" $Pct $Message }
+  function Step-Ok { param([string]$Id,[object]$Pct,[string]$Message) Write-MTStepJson $Id "" "ok" $Pct $Message }
+  function Step-Fail { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "fail" "" $Message }
+  function Step-Skip { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "skip" "" $Message }
+  function Step-ProgressMap { param([object[]]$Map) }
+  function Step-Progress { param([object]$Pct,[string]$Fail,[string]$Skip) }
+}
+
 # Native commands (git / pip / python) write their normal information to stderr, and combined with
 # $ErrorActionPreference="Stop" that turns "normal output" into an error that aborts the script
 # (measured: git clone succeeds, progress looks fine, yet the script dies on that very line).
@@ -60,6 +79,27 @@ $TORCH_INDICES = @(
   "https://mirrors.aliyun.com/pytorch-wheels/cu126"
 ) | Select-Object -Unique
 $WEIGHTS_REPO = if ($env:BREEZE_WEIGHTS_REPO) { $env:BREEZE_WEIGHTS_REPO } else { "BreezeBlue/breeze-tts-2" }
+
+# 步骤门槛 → 步骤 id（与同目录 steps.json 一致）：脚本里原有的进度数字不改成新语义，
+# 这一层只把「进度到哪」翻译成「到哪一步」。
+Step-ProgressMap @(
+  @{ at = 4;   id = "python";  title = "检查 Python 3.10+" },
+  @{ at = 10;  id = "venv";    title = "创建虚拟环境 .venv" },
+  @{ at = 20;  id = "engine";  title = "克隆 breeze-tts 推理引擎" },
+  @{ at = 30;  id = "deps";    title = "安装依赖（锁定 gradio 版本）" },
+  @{ at = 54;  id = "torch";   title = "安装 CUDA torch" },
+  @{ at = 78;  id = "weights"; title = "下载 Breeze TTS 2 权重" },
+  @{ at = 96;  id = "ffmpeg";  title = "下载便携 ffmpeg（可选）" },
+  @{ at = 98;  id = "smoke";   title = "冒烟：导入引擎并写安装标记" }
+)
+Say "步骤协议就绪（安装窗按 steps.json 列步骤）"
+
+# 原有 Progress 调用点（脚本自己打的阶段进度）在映射表就绪后自动带上步骤行：
+# 定义一次覆盖函数，脚本其余部分一行不用改。
+function Progress([double]$pct) {
+  Write-Host ("[breeze-install] progress: {0:N1}" -f $pct)
+  Step-Progress $pct
+}
 $ENGINE_DIR  = Join-Path $InstallDir "engine"
 $CKPT_DIR    = Join-Path $InstallDir "checkpoints\breeze-tts-2"
 $VENV        = Join-Path $InstallDir ".venv"
@@ -305,6 +345,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "voices"), (Joi
 
 if ($smokeRc -ne 0) {
   Say "smoke import failed (exit $smokeRc): deps may be incomplete, install unfinished, no .install-ok."
+  Step-Progress -Fail "冒烟导入失败（退出码 $smokeRc）：依赖装了一半或与本机 torch 不匹配。看这一步日志，重跑安装脚本补齐；反复失败就把日志交给会话修复。"
   Write-Verdict "false" "smoke_failed"
   Say "handed back to the host for skill-based Agent repair (no need to read logs)."
   exit 1
@@ -312,6 +353,7 @@ if ($smokeRc -ne 0) {
 if ($cudaRc -ne 0 -and $env:BREEZE_SKIP_CUDA_CHECK -ne "1") {
   Say "torch cannot see CUDA -- Breeze TTS 2 needs an NVIDIA GPU and a working CUDA build of torch (about 7.7GB of VRAM), the install did not finish."
   Say "guidance: make sure this machine has an NVIDIA GPU with a working driver; if you really need static troubleshooting on a machine without a GPU, set BREEZE_SKIP_CUDA_CHECK=1 and rerun."
+  Step-Progress -Fail "torch 装上了但看不到 CUDA：本机没有可用的 NVIDIA 显卡 / 驱动，或装的是 CPU 版 torch。装的是 CUDA 版依赖，缺卡装不上——换有 N 卡的机器，或按需设 BREEZE_SKIP_CUDA_CHECK=1 只做静态排查。"
   Write-Verdict "false" "no_cuda"
   exit 1
 }

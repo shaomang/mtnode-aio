@@ -9,11 +9,14 @@
  *   GET  /api/forum/topic?id=<topicId>                            → 正文 + 回复
  *   POST /api/forum/topics        { title, content, status }      → 新建话题
  *   POST /api/forum/replies       { topicId, content, replyToId? } → 回复（二级回复＝平铺引用）
- *   POST /api/forum/topic/status  { id, status }                  → 作者改状态
+ *   PATCH /api/forum/topic        { id, status }                  → 作者改状态
+ *   DELETE /api/forum/topic       { id }                          → 删话题（软删；连带隐藏回复、软删评论）
+ *   DELETE /api/forum/replies     { id }                          → 删回复（软删；连带软删它的评论）
  *   POST /api/forum/images        { base64, mime }                → 返回 imageId
  *   GET  /api/forum/images/<imageId>                              → 图片（公开可读）
- * 列表项：{ id, title, status, user{id,username,nickname}, createdAt, updatedAt, replyCount }
- * 详情：  { item:{…列表项, body}, replies:[{ id, body, user, createdAt, replyToId, replyTo?{user,excerpt} }] }
+ * 列表项：{ id, title, status, user{id,username,nickname}, createdAt, updatedAt, replyCount, canDelete }
+ * 详情：  { item:{…列表项, body, canDelete}, replies:[{ id, body, user, createdAt, replyToId?, replyTo?, canDelete }] }
+ * 删帖权限位（canDelete）由服务端算：话题 = 作者 / 管理员；回复 = 回复作者 / 话题作者 / 管理员。
  * 状态枚举：general（一般）/ help（求助中）/ idea（建议）/ bug / solved（已解决）
  */
 (function () {
@@ -78,8 +81,6 @@
     return String(s).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
   };
   window.api = window.api || { storeRequest: (opts) => api.storeRequest(opts) };
-  const whoEl = $("who");
-  const btnOut = $("btnOut");
   const btnClose = $("btnClose");
   const viewList = $("viewList");
   const viewTopic = $("viewTopic");
@@ -87,9 +88,6 @@
   const sortSel = $("sort");
   const btnNew = $("btnNew");
   const chipsEl = $("chips");
-  const hintBar = $("hintBar");
-  const hintTxt = $("hintTxt");
-  const hintLogin = $("hintLogin");
   const topicList = $("topicList");
   const moreBar = $("moreBar");
   const btnMore = $("btnMore");
@@ -102,6 +100,7 @@
   const tBadge = $("tBadge");
   const tTime = $("tTime");
   const statusSel = $("statusSel");
+  const btnDelTopic = $("btnDelTopic");
   const topicScroll = $("topicScroll");
   const tBody = $("tBody");
   const replyList = $("replyList");
@@ -110,16 +109,6 @@
   const replyToClear = $("replyToClear");
   const replyErr = $("replyErr");
   const btnReply = $("btnReply");
-  const authEl = $("auth");
-  const authErr = $("authErr");
-  const authUser = $("authUser");
-  const authPass = $("authPass");
-  const authPassNew = $("authPassNew");
-  const authPassNew2 = $("authPassNew2");
-  const authGo = $("authGo");
-  const authCancel = $("authCancel");
-  const modeLogin = $("modeLogin");
-  const modePass = $("modePass");
   const composeEl = $("compose");
   const cTitleBar = $("cTitleBar");
   const cTitle = $("cTitle");
@@ -134,8 +123,7 @@
   let locale = "zh";
   let auth = null;
   let view = "list";
-  let authMode = "login";
-  let pendingIntent = null;
+  let closing = false; /* 已开始关窗：401 / 登出后的收尾只走一次 */
   let detail = null; /* { item, replies } */
   let detailTab = "reply"; /* reply | comment：话题详情页的页签 */
   let replyTo = null;
@@ -145,6 +133,7 @@
   let listSeq = 0;
   let detailSeq = 0;
   let postBusy = false;
+  let delBusy = false; /* 删帖 / 删回复进行中：防连点重复提交 */
   let toastTimer = null;
   const imgUrl = Object.create(null);
   const imgPending = Object.create(null);
@@ -262,18 +251,17 @@
     auth = u
       ? { userId: u.id || u.userId || "", username: u.username || "", nickname: u.nickname || "" }
       : null;
-    paintAccount();
     return auth;
   }
-  /* 评论共享模块眼里的「登录态提供者」：主应用是 window.MTNodeAuth，
-     本窗由上面那几个函数顶替（state 从 auth 变量现算，open 拉起本窗登录卡）。 */
   window.MTNodeAuth = window.MTNodeAuth || {
     state: () => {
       if (!auth) return { signedIn: false, user: null };
       return { signedIn: true, user: { id: auth.userId, username: auth.username, nickname: auth.nickname } };
     },
-    open: () => openLogin(),
-    logout: () => signOut(),
+    /* 本窗不提供登录：「重新登录」这个动作一律落到主窗口的账户按钮上
+       （关窗 + 把主窗调前台，与登录失效时的收尾同一条路径）。 */
+    open: () => closeForAuthLoss(),
+    logout: () => closeForAuthLoss(),
     refresh: () => refreshAuth(),
     onChange: (cb) => {
       if (typeof api.onAuthChanged !== "function") return () => {};
@@ -284,91 +272,16 @@
       });
     },
   };
-  function paintAccount() {
-    const on = signedIn();
-    whoEl.textContent = on ? " · " + displayName(auth) : "";
-    btnOut.hidden = !on;
-    hintBar.hidden = on || view !== "list";
+  async function closeForAuthLoss() {
+    if (closing) return;
+    closing = true;
+    try { await api.mainFocus(); } catch (_) {}
+    try { api.close(); } catch (_) {}
   }
-  async function signOut() {
-    try { await api.authLogout(); } catch (_) {}
+  function handle401() {
     auth = null;
-    paintAccount();
-    renderDetailHeader();
-  }
-  function openLogin() {
-    authErr.textContent = "";
-    authEl.classList.add("open");
-    setAuthMode("login");
-    setTimeout(() => authUser.focus(), 30);
-  }
-  function closeLogin() {
-    authEl.classList.remove("open");
-    pendingIntent = null;
-    authPass.value = "";
-    authPassNew.value = "";
-    authPassNew2.value = "";
-  }
-  function needLogin(fn) {
-    if (signedIn()) {
-      if (fn) fn();
-      return true;
-    }
-    pendingIntent = fn || null;
-    openLogin();
-    return false;
-  }
-  function setAuthMode(mode) {
-    authMode = mode === "passwd" ? "passwd" : "login";
-    modeLogin.classList.toggle("on", authMode === "login");
-    modePass.classList.toggle("on", authMode === "passwd");
-    authPassNew.hidden = authMode !== "passwd";
-    authPassNew2.hidden = authMode !== "passwd";
-    authPass.placeholder = authMode === "passwd"
-      ? t("旧密码", "Current password")
-      : t("密码（6-72 位）", "Password (6-72 characters)");
-    authGo.textContent = authMode === "passwd" ? t("修改密码", "Change password") : t("登录", "Sign in");
-    $("authTitle").textContent = authMode === "passwd" ? t("修改密码", "Change password") : t("登录后即可发帖", "Sign in to post");
-  }
-  async function doAuth() {
-    authErr.textContent = "";
-    authGo.disabled = true;
-    try {
-      if (authMode === "passwd") {
-        const oldPassword = authPass.value;
-        const newPassword = authPassNew.value;
-        if (newPassword !== authPassNew2.value) {
-          authErr.textContent = t("两次输入的新密码不一致", "New passwords do not match");
-          return;
-        }
-        if (oldPassword === newPassword) {
-          authErr.textContent = t("新密码不能与旧密码相同", "New password must differ from the current one");
-          return;
-        }
-        const r = await api.authChangePassword({ username: authUser.value.trim(), oldPassword, newPassword });
-        if (!r || !r.ok) {
-          authErr.textContent = (r && r.error) || apiErr(r);
-          return;
-        }
-      } else {
-        const r = await api.authLoginPassword({ username: authUser.value.trim(), password: authPass.value });
-        if (!r || !r.ok) {
-          authErr.textContent = (r && r.error) || apiErr(r);
-          return;
-        }
-      }
-      authPass.value = "";
-      authPassNew.value = "";
-      authPassNew2.value = "";
-      closeLogin();
-      await refreshAuth();
-      const go = pendingIntent;
-      pendingIntent = null;
-      renderDetailHeader();
-      if (go) go();
-    } finally {
-      authGo.disabled = false;
-    }
+    toast(t("登录已失效，请在主窗口右上角重新登录", "Session expired — sign in again from the account button at the top right of the main window"), true);
+    closeForAuthLoss();
   }
 
   /* ---------------- 图片：ensureImage（带鉴权） / 上传 ---------------- */
@@ -406,7 +319,7 @@
       json: { base64, mime: mime || "image/jpeg" },
     });
     if (r && r.status === 401) {
-      await signOut();
+      handle401();
       toast(t("登录已失效，请重新登录", "Session expired, please sign in again"), true);
       return "";
     }
@@ -567,11 +480,7 @@
       replaceRange(s, e, text);
     }
     async function pickAndInsertImage() {
-      if (!signedIn()) {
-        pendingIntent = () => pickAndInsertImage();
-        openLogin();
-        return;
-      }
+      if (!signedIn()) return handle401();
       const r = await api.pickImage();
       if (!r || !r.ok) {
         if (r && r.error && r.error !== "cancelled") setMsg(r.error, true);
@@ -656,11 +565,7 @@
       for (const it of items) {
         if (it.kind === "file" && String(it.type || "").startsWith("image/")) {
           ev.preventDefault();
-          if (!signedIn()) {
-            pendingIntent = () => pickAndInsertImage();
-            openLogin();
-            return;
-          }
+          if (!signedIn()) return handle401();
           const f = it.getAsFile();
           if (!f) return;
           const buf = await f.arrayBuffer();
@@ -802,7 +707,7 @@
     btnMore.disabled = false;
     if (!r || !r.ok) {
       if (r && r.status === 401) {
-        await signOut();
+        handle401();
         toast(t("登录已失效，请重新登录", "Session expired, please sign in again"), true);
       }
       if (reset) {
@@ -830,7 +735,6 @@
     view = name;
     viewList.hidden = name !== "list";
     viewTopic.hidden = name !== "topic";
-    hintBar.hidden = signedIn() || name !== "list";
   }
   /* ---------------- 评论（与主应用共用模块） ----------------
      话题与回复都能被评论（targetKind = forum_topic / forum_reply），话题在详情页占一个「评论」页签
@@ -915,6 +819,11 @@
     } else {
       statusSel.hidden = true;
     }
+    /* 删除按钮只看服务端投影的 canDelete（作者本人 / 管理员），前端不自己判 isAdmin */
+    if (btnDelTopic) {
+      btnDelTopic.hidden = !it.canDelete;
+      btnDelTopic.disabled = !!delBusy;
+    }
     paintDetailTabLabels();
     setDetailTab(detailTab);
   }
@@ -949,6 +858,16 @@
       head.appendChild(tm);
       head.appendChild(sp);
       head.appendChild(btn);
+      /* 删回复：服务端投影 canDelete（回复作者 / 话题作者 / 管理员）为真才给入口 */
+      if (rp.canDelete) {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "linkbtn danger";
+        del.textContent = t("删除", "Delete");
+        del.title = t("删除这条回复（软删除：它下面的评论一并隐藏）", "Delete this reply (soft delete: its comments are hidden too)");
+        del.onclick = () => deleteReply(rp);
+        head.appendChild(del);
+      }
       box.appendChild(head);
       /* 二级回复：平铺引用（不做树） */
       const target = rp.replyTo && typeof rp.replyTo === "object"
@@ -986,14 +905,7 @@
     }
     replyToBar.hidden = false;
     replyToTxt.textContent = t("回复 ", "Replying to ") + displayName(replyTo.user) + "：" + excerptOf(replyTo.body, 60);
-    if (!signedIn()) {
-      pendingIntent = () => {
-        setReplyTo(rp);
-        replyEditor.focus();
-      };
-      openLogin();
-      return;
-    }
+    if (!signedIn()) return handle401();
     replyEditor.focus();
   }
   async function openTopic(id) {
@@ -1010,6 +922,7 @@
     tBadge.dataset.s = "general";
     tTime.textContent = "";
     statusSel.hidden = true;
+    if (btnDelTopic) btnDelTopic.hidden = true;
     tBody.innerHTML = '<div class="empty">' + esc(t("加载中…", "Loading…")) + "</div>";
     replyList.innerHTML = "";
     topicScroll.scrollTop = 0;
@@ -1046,7 +959,7 @@
     });
     statusSel.disabled = false;
     if (r && r.status === 401) {
-      await signOut();
+      handle401();
       toast(t("登录已失效，请重新登录", "Session expired, please sign in again"), true);
       return;
     }
@@ -1066,6 +979,80 @@
     }
     toast(t("状态已更新", "Status updated"), false);
   }
+  /* ---------------- 删帖（软删除） ----------------
+     本轮共识：话题与回复都能删；话题 = 作者本人 / 管理员，回复 = 回复作者 / 话题作者 / 管理员；
+     软删除（记录留档，界面不再出现）；二次确认走 window.confirm，与评论区删除同款；
+     删后回列表并 toast；删除不限流。权限位一律来自服务端投影 canDelete。 */
+  async function deleteTopic() {
+    if (!detail || !detail.item || delBusy) return;
+    const it = detail.item;
+    if (!window.confirm(t("确定删除这个话题？删除后话题与它下面的回复都不再显示。", "Delete this topic? The topic and its replies will no longer be shown."))) return;
+    delBusy = true;
+    if (btnDelTopic) btnDelTopic.disabled = true;
+    const r = await api.storeRequest({ method: "DELETE", path: "/api/forum/topic", json: { id: it.id } });
+    delBusy = false;
+    if (btnDelTopic) btnDelTopic.disabled = false;
+    if (r && r.status === 401) {
+      handle401();
+      toast(t("登录已失效，请重新登录", "Session expired, please sign in again"), true);
+      return;
+    }
+    if (!r || !r.ok) {
+      toast(apiErr(r), true);
+      return;
+    }
+    state.items = state.items.filter((x) => x.id !== it.id);
+    detail = null;
+    replyTo = null;
+    replyToBar.hidden = true;
+    showView("list");
+    renderList(true);
+    window.setTimeout(() => { topicScroll.scrollTop = 0; }, 0);
+    toast(t("已删除", "Deleted"), false);
+  }
+  async function deleteReply(rp) {
+    if (!detail || !detail.item || !rp || delBusy) return;
+    if (!window.confirm(t("确定删除这条回复？它下面的评论也会一并隐藏。", "Delete this reply? Its comments will be hidden too."))) return;
+    delBusy = true;
+    const r = await api.storeRequest({ method: "DELETE", path: "/api/forum/replies", json: { id: rp.id } });
+    delBusy = false;
+    if (r && r.status === 401) {
+      handle401();
+      toast(t("登录已失效，请重新登录", "Session expired, please sign in again"), true);
+      return;
+    }
+    if (!r || !r.ok) {
+      toast(apiErr(r), true);
+      return;
+    }
+    detail.replies = (detail.replies || []).filter((x) => x.id !== rp.id);
+    /* 计数只算未删记录：详情页与列表行一起按减一处理（与 service 端 replyCount 同口径） */
+    detail.item.replyCount = Math.max(0, replyCountOf(detail.item) - 1);
+    const row = state.items.find((x) => x.id === detail.item.id);
+    if (row) row.replyCount = detail.item.replyCount;
+    if (replyTo && replyTo.id === rp.id) setReplyTo(null);
+    renderReplies();
+    paintDetailTabLabels();
+    toast(t("已删除", "Deleted"), false);
+  }
+  /* 登录态变化后重算权限位：detail 里的 canDelete 是打开话题时服务端按当时的 viewer 算的，
+     登录 / 退出后必须重拉一次，否则作者登录后仍看不到删除按钮（不重开会话，replyEditor 里的草稿不受影响）。 */
+  async function refreshPermissions() {
+    if (view !== "topic" || !detail || !detail.item) return;
+    const id = detail.item.id;
+    const r = await api.storeRequest({ method: "GET", path: "/api/forum/topic?id=" + encodeURIComponent(id) });
+    if (!r || !r.ok) return;
+    if (!detail || !detail.item || detail.item.id !== id) return; /* 期间已切话题 */
+    const item = pickItem(r.data);
+    if (item) detail.item.canDelete = !!item.canDelete;
+    const byId = new Map(pickReplies(r.data).map((x) => [x.id, x]));
+    (detail.replies || []).forEach((x) => {
+      const f = byId.get(x.id);
+      if (f) x.canDelete = !!f.canDelete;
+    });
+    renderDetailHeader();
+    renderReplies();
+  }
   async function submitReply() {
     if (!detail || !detail.item || postBusy) return;
     const body = String(replyEditor.value() || "").trim();
@@ -1073,11 +1060,7 @@
       replyErr.textContent = t("回复内容不能为空", "Reply cannot be empty");
       return;
     }
-    if (!signedIn()) {
-      pendingIntent = () => submitReply();
-      openLogin();
-      return;
-    }
+    if (!signedIn()) return handle401();
     postBusy = true;
     btnReply.disabled = true;
     replyErr.textContent = "";
@@ -1089,7 +1072,7 @@
     postBusy = false;
     btnReply.disabled = false;
     if (r && r.status === 401) {
-      await signOut();
+      handle401();
       replyErr.textContent = t("登录已失效，请重新登录", "Session expired, please sign in again");
       return;
     }
@@ -1152,10 +1135,8 @@
     postBusy = false;
     cPost.disabled = false;
     if (r && r.status === 401) {
-      await signOut();
       closeCompose();
-      openLogin();
-      return;
+      return handle401();
     }
     if (!r || !r.ok) {
       cErr.textContent = apiErr(r);
@@ -1180,60 +1161,43 @@
     sortSel.title = t("排序", "Sort");
     btnNew.textContent = t("发起话题", "New topic");
     btnMore.textContent = t("加载更多", "Load more");
-    hintTxt.textContent = t("登录后可发帖", "Sign in to post");
-    hintLogin.textContent = t("登录", "Sign in");
     btnBack.textContent = "← " + t("返回", "Back");
     btnReply.textContent = t("回复", "Reply");
-    btnOut.title = t("退出登录", "Sign out");
+    if (btnDelTopic) {
+      btnDelTopic.textContent = t("删除", "Delete");
+      btnDelTopic.title = t("删除这条话题（软删除：记录留档，界面不再显示）", "Delete this topic (soft delete: kept on record, hidden from the UI)");
+    }
     btnClose.title = t("关闭", "Close");
     replyToClear.textContent = t("取消", "Cancel");
     cTitleBar.textContent = t("发起话题", "New topic");
     cTitle.placeholder = t("标题（2-120 字）", "Title (2-120 chars)");
     cCancel.textContent = t("取消", "Cancel");
     cPost.textContent = t("发布", "Post");
-    $("authHint").textContent = t(
-      "与创意工坊共用同一账户；登录态与 token 由主进程保管，浏览器层不接触 token。",
-      "Same account as Creative Workshop. Auth/token are held by the main process; the renderer never sees the token.",
-    );
-    authUser.placeholder = t("用户名（3-24 位字母、数字或下划线）", "Username (3-24 letters, digits, or _)");
-    authPass.placeholder = t("密码（6-72 位）", "Password (6-72 characters)");
-    authPassNew.placeholder = t("新密码（6-72 位）", "New password (6-72 characters)");
-    authPassNew2.placeholder = t("再次输入新密码", "Confirm new password");
-    authCancel.textContent = t("继续浏览", "Browse anyway");
-    modeLogin.textContent = t("登录", "Sign in");
-    modePass.textContent = t("修改密码", "Change password");
     paintSort();
     paintChips();
-    setAuthMode(authMode);
-    paintAccount();
   }
 
   const replyEditor = createMdEditor($("replyHost"));
   const composeEditor = createMdEditor($("composeHost"));
 
   btnClose.onclick = () => api.close();
-  btnOut.onclick = () => signOut();
   btnBack.onclick = () => {
     showView("list");
     window.setTimeout(() => { topicScroll.scrollTop = 0; }, 0);
   };
-  btnNew.onclick = () => needLogin(() => openCompose());
-  hintLogin.onclick = () => openLogin();
+  btnNew.onclick = () => openCompose();
   btnMore.onclick = () => loadTopics(false);
   cCancel.onclick = closeCompose;
   cPost.onclick = postTopic;
-  authGo.onclick = doAuth;
-  authCancel.onclick = closeLogin;
-  modeLogin.onclick = () => setAuthMode("login");
-  modePass.onclick = () => setAuthMode("passwd");
-  btnReply.onclick = () => needLogin(() => submitReply());
+  btnReply.onclick = () => submitReply();
+  if (btnDelTopic) btnDelTopic.onclick = () => deleteTopic();
   replyToClear.onclick = () => setReplyTo(null);
   lightbox.onclick = closeLightbox;
   statusSel.onchange = () => {
     const next = statusSel.value;
     if (!signedIn()) {
       statusSel.value = statusMeta(detail && detail.item ? detail.item.status : "general").id;
-      needLogin(() => changeStatus(next));
+      handle401();
       return;
     }
     changeStatus(next);
@@ -1262,16 +1226,10 @@
     if (!state.hasMore || listBusy) return;
     if (topicList.scrollHeight - topicList.scrollTop - topicList.clientHeight < 120) loadTopics(false);
   });
-  [authPass, authPassNew, authPassNew2].forEach((el) => {
-    el.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") doAuth();
-    });
-  });
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
     if (!lightbox.hidden) return closeLightbox();
     if (!composeEl.hidden) return closeCompose();
-    if (authEl.classList.contains("open")) return closeLogin();
   });
   /* 内容区里的链接：一律走系统浏览器打开，不在窗口内导航 */
   document.addEventListener("click", (ev) => {
@@ -1289,10 +1247,16 @@
     await refreshAuth();
     showView("list");
     await loadTopics(true);
+    /* 登录态变化（顶栏账户按钮里登录 / 登出）：
+       本窗随顶栏一起收（未登录就不再显示讨论区入口，窗自然也不该继续挂着），
+       已登录（换账号）才重算权限位。 */
     if (api && typeof api.onAuthChanged === "function") {
       api.onAuthChanged(async () => {
+        const wasSignedIn = !!auth;
         await refreshAuth();
+        if (!auth && wasSignedIn) return closeForAuthLoss();
         renderDetailHeader();
+        refreshPermissions();
       });
     }
     if (api && typeof api.onShown === "function") {

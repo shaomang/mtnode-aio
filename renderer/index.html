@@ -90,7 +90,12 @@
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 2.6h7.4A1.4 1.4 0 0 1 12.2 4v9.2H4.6A1.2 1.2 0 0 1 3.4 12V2.6z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M12.2 13.2h.8V4.4A1.4 1.4 0 0 0 11.6 3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/><path d="M5.6 5.2h4.2M5.6 7.4h4.2M5.6 9.6h2.6" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg>
         <span class="btn-stack-txt" data-i18n="文档">文档</span>
       </button>
-      <button type="button" id="btnForum" class="corner mini btn-stack btn-forum" data-i18n-title="MTNode 讨论区：免登录浏览话题与回复；与创意工坊同一账户，登录后可发话题、回帖并改状态" title="MTNode 讨论区：免登录浏览话题与回复；与创意工坊同一账户，登录后可发话题、回帖并改状态" aria-label="讨论区">
+      <!-- 讨论区入口：只在**已登录**时显示（renderer/app-auth.js 的 paintEntry 按登录态切 hidden），
+           未登录时连入口都不给 —— 讨论区不再有登录入口，全 MTNode 唯一登录 = 上面的账户按钮。
+           初值 hidden：首绘（登录态还没回来）不闪一下未登录态的入口。
+           hidden 要真收得起来：css/layout.css 的 .topbar .btn-forum[hidden] 必须压回 display:none
+           （.btn-stack 的 display:flex 会盖掉浏览器默认 [hidden]，同 .btn-apps / .btn-account）。 -->
+      <button type="button" id="btnForum" class="corner mini btn-stack btn-forum" hidden data-i18n-title="MTNode 讨论区：登录后可浏览话题与回复、发话题、回帖并改状态（与创意工坊同一账户）" title="MTNode 讨论区：登录后可浏览话题与回复、发话题、回帖并改状态（与创意工坊同一账户）" aria-label="讨论区">
         <svg class="btn-stack-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 3.4h7.2c.8 0 1.4.6 1.4 1.4v4c0 .8-.6 1.4-1.4 1.4H7.2L4.6 12.6V10.2H3.2c-.8 0-1.4-.6-1.4-1.4v-4c0-.8.6-1.4 1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M9.4 6.8h3.4c.6 0 1.1.5 1.1 1.1v3.2c0 .6-.5 1.1-1.1 1.1h-.8v1.6L10.4 12.2H9.4" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" opacity=".85"/></svg>
         <span class="btn-stack-txt" data-i18n="讨论">讨论</span>
       </button>

@@ -46,6 +46,10 @@ const {
 } = require("../media-gen-global-lock.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例，见 plugins/main-install.js）：安装脚本的步骤行上报给它，
+   窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
+const installHost = require("../plugins/main-install.js");
+const stepReporter = require("../plugins/install-step-reporter.js");
 const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "yue";
@@ -1930,6 +1934,7 @@ async function installProject(opts) {
   installing = true;
   installCancel = false;
   const hint = diskHintGb();
+  /* 安装窗的会话由 yue:install 入口先开（见 registerYueIpc），这里只管跑安装并上报步骤行 */
   try {
     emitProgress({
       phase: "install",
@@ -1940,8 +1945,18 @@ async function installProject(opts) {
     });
     const free = await freeDiskGb(installDir);
     if (free != null && free < hint && !opts.force) {
-      installing = false;
       reportErr("low_disk", `磁盘剩余约 ${free}GB，建议预留 ≥${hint}GB`, { phase: "install" });
+      installHost.failStep(
+        PLUGIN_ID,
+        "disk",
+        `磁盘剩余约 ${free}GB，低于建议的 ${hint}GB。清理磁盘或换一个剩余空间足够的安装目录后重试。`,
+      );
+      installHost.finishPluginInstall({
+        id: PLUGIN_ID,
+        ok: false,
+        error: "low_disk",
+        hint: "磁盘剩余空间不足：重装只会再失败一次。清理磁盘，或在插件控制台换一个剩余空间足够的安装目录。",
+      });
       return {
         ok: false,
         error: "low_disk",
@@ -1952,17 +1967,113 @@ async function installProject(opts) {
       };
     }
     appendConsole(`disk free≈${free}GB (hint ≥${hint}GB)`);
-    appendConsole("[install] primary path = Agent（脚手架仅作参考）");
-    installing = false;
-    return await agentInstallByAgent({ mode: "install" });
+    /* 本轮口径：安装改由**包内 install.ps1 逐步骤主导**（每步一条结构化步骤行）；
+       Agent 只在用户点「交给 mtnode 会话修复」时接手（不再静默兜底）。 */
+    syncScaffoldToInstall(installDir);
+    writeScaffoldRef(installDir);
+    syncYueInstallSkill();
+    const script = join(installDir, "scripts", "install.ps1");
+    appendConsole("[install] script = " + script);
+    await runInstallScript(script, installDir, hint);
+    if (!fs.existsSync(join(installDir, ".install-ok"))) throw new Error("install_incomplete_after_script");
+    const man = readManifest();
+    writeJson(installedMetaPath(), {
+      ok: true,
+      version: (man && man.version) || "1.0.0",
+      installDir,
+      installedAt: new Date().toISOString(),
+    });
+    emitProgress({ phase: "install", step: "done", pct: 100, done: true });
+    appendConsole("[install] script complete");
+    installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
+    return { ok: true, installDir };
   } catch (e) {
-    installing = false;
     const msg = String((e && e.message) || e);
     appendConsole("install failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
-    reportErr(msg, msg, { phase: "install" });
-    return { ok: false, error: msg, agentRecoverable: msg !== "cancelled" && msg !== "busy" };
+    /* 不再自动转 Agent 兜底：失败停在安装窗的失败步上，等用户点「交给 mtnode 会话修复」 */
+    installHost.finishPluginInstall({
+      id: PLUGIN_ID,
+      ok: false,
+      error: msg === "cancelled" ? "安装已取消" : msg,
+      hint: msg === "cancelled" ? "" : stepReporter.hintFor(msg + "\n" + String((consoleTail(8 * 1024) || {}).text || "")),
+    });
+    return { ok: false, error: msg };
+  } finally {
+    installing = false;
   }
+}
+
+/**
+ * 跑 yue-pack 的 install.ps1（本宿主原先没有 PowerShell 运行口：安装一律交给 Agent）。
+ * 与兄弟宿主的 runPs 同一口径：stdout 每行进 console（并交给步骤上报器认步骤行），
+ * stderr 标 [err]，取消 = installCancel，退出码非 0 一律 reject。
+ */
+function runInstallScript(scriptPath, installDir, diskHintGb) {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(scriptPath)) {
+      reject(new Error("script_missing: " + scriptPath));
+      return;
+    }
+    const psArgs = [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      scriptPath,
+      "-InstallDir",
+      installDir,
+      "-DiskHintGb",
+      String(diskHintGb),
+    ];
+    appendConsole("$ powershell " + psArgs.join(" "));
+    const child = spawn("powershell.exe", psArgs, {
+      cwd: installDir,
+      windowsHide: true,
+      env: Object.assign({}, process.env, {
+        PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple",
+        HF_ENDPOINT: "https://hf-mirror.com",
+        HF_HUB_DISABLE_XET: "1",
+      }),
+    });
+    const rep = stepReporter.attach({
+      pluginId: PLUGIN_ID,
+      child,
+      onEvent: (ev) => installHost.reportPluginStep(ev),
+    });
+    let out = "";
+    child.stdout.on("data", (d) => {
+      const s = d.toString();
+      out += s;
+      for (const line of s.split(/\r?\n/)) {
+        if (line.trim()) appendConsole(line);
+      }
+      const m = s.match(/\[yue2-install\]\s*progress:\s*(\d+(?:\.\d+)?)/i) || s.match(/(\d+(?:\.\d+)?)\s*%/);
+      if (m) emitProgress({ phase: "install", step: "script", stepLabel: "逐步骤安装", pct: 5 + Number(m[1]) * 0.9 });
+    });
+    child.stderr.on("data", (d) => {
+      const s = d.toString();
+      out += s;
+      for (const line of s.split(/\r?\n/)) {
+        if (line.trim()) appendConsole("[err] " + line);
+      }
+    });
+    child.on("error", (e) => {
+      rep.finish({ ok: false, error: String((e && e.message) || e) });
+      reject(e);
+    });
+    child.on("close", (code) => {
+      const cancelled = !!installCancel;
+      rep.finish(
+        cancelled
+          ? { ok: false, cancelled: true, error: "cancelled" }
+          : { ok: code === 0, error: code === 0 ? "" : "exit " + code },
+      );
+      if (cancelled) return reject(new Error("cancelled"));
+      if (code !== 0) reject(new Error(`exit ${code}: ${out.slice(-800)}`));
+      else resolve(out);
+    });
+  });
 }
 
 function writeScaffoldRef(installDir) {
@@ -2988,6 +3099,22 @@ function registerYueIpc(opts) {
       return startBackend();
     },
   });
+  /* 安装窗登记：卡片「安装 / 重装」与控制台窗内的「安装」都开这只窗
+     （步骤真源 = 该包 steps.json，脚本按协议逐步上报） */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: "yue",
+    name: "YuE 音乐生成",
+    skill: INSTALL_SKILL,
+    kindLabel: "本地后端",
+    packRoots: [bundledPackRoot()],
+    getInstallDir: () => loadConfig().installDir || "",
+    cancel: () => {
+      installCancel = true;
+      return { ok: true };
+    },
+  });
+
 
   ensureUiRuntime();
   refreshStaleLock();
@@ -3004,7 +3131,15 @@ function registerYueIpc(opts) {
 
   ipcMain.handle("yue:getStatus", async () => statusForUi());
   ipcMain.handle("yue:pickInstallDir", async () => pickInstallDir());
-  ipcMain.handle("yue:install", async (e, o) => installProject(o || {}));
+  /* 安装窗入口（两处共用）：卡片与控制台窗都走它 */
+  ipcMain.handle("yue:install", async (e, o) => {
+    installHost.beginPluginInstall({
+      id: PLUGIN_ID,
+      action: o && o.action === "update" ? "update" : "install",
+      installDir: loadConfig().installDir || "",
+    });
+    return installProject(o || {});
+  });
   ipcMain.handle("yue:cancelInstall", async () => {
     installCancel = true;
     return { ok: true };

@@ -67,6 +67,9 @@
     "activity-store.js",
     "mtnode-agent-skills/**",
     "renderer/**",
+    /* 插件安装窗（独立 BrowserWindow，plugins/main-install.js 加载 install/index.html）：
+       漏进白名单 = 打包后点「安装」打不开窗（loadFile ENOENT）。 */
+    "install/**",
     "pet/main-pet.js",
     "pet/standalone-main.js",
     "pet/pet-provider.js",
@@ -124,7 +127,7 @@
     "!node_modules/uiohook-napi/libuiohook/**",
     "!node_modules/uiohook-napi/src/**",
     "!node_modules/**/*.{map,lib,iobj,ipdb,tlog,exp,recipe,vcxproj,vcxproj.filters,sln,gyp,gypi,Makefile2,lastbuildstate}",
-    "!node_modules/**/*.d.{ts,cts,mts}",
+    "!node_modules/**/*.d.{ts,cts,mts}"
   ],
   "asar": true,
   "asarUnpack": [
@@ -192,6 +195,9 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
+           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
+        "steps.json",
         "manifest.json"
       ]
     },
@@ -205,6 +211,9 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
+           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
+        "steps.json",
         "manifest.json"
       ]
     },
@@ -219,6 +228,9 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
+           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
+        "steps.json",
         "manifest.json"
       ]
     },
@@ -233,6 +245,9 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
+           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
+        "steps.json",
         "manifest.json"
       ]
     },
@@ -246,6 +261,9 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
+           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
+        "steps.json",
         "manifest.json"
       ]
     },
@@ -258,6 +276,9 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
+           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
+        "steps.json",
         "manifest.json"
       ]
     },
@@ -271,6 +292,7 @@
         "src/**",
         "render.mjs",
         "install.cmd",
+        "steps.json",
         "README.md",
         ".gitignore"
       ]
@@ -285,6 +307,9 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
+           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
+        "steps.json",
         "manifest.json"
       ]
     }

@@ -24,6 +24,10 @@ const fs = require("fs");
 const { spawn, execFile } = require("child_process");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 指路），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例，见 plugins/main-install.js）：包内 install.ps1 的步骤行上报给它，
+   窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」 */
+const installHost = require("../plugins/main-install.js");
+const stepReporter = require("../plugins/install-step-reporter.js");
 const {
   refreshStaleLock,
   tryAcquireLock,
@@ -482,6 +486,7 @@ async function installProject(opts) {
 
   installing = true;
   installCancel = false;
+  /* 安装窗的会话由 remotion:install 入口先开（见 registerRemotionIpc），这里只管跑安装并上报步骤行 */
   try {
     /* 建目录本身也可能失败（只读盘 / 权限）：放进 try 里，否则异常直接冒出 IPC，报告都不会有一份 */
     mk(installDir);
@@ -499,6 +504,12 @@ async function installProject(opts) {
         `磁盘剩余约 ${free}GB，建议预留 ≥${DISK_HINT_GB}GB（remotion 依赖 + 渲染器）`,
         installReportCtx(opts),
       );
+      installHost.finishPluginInstall({
+        id: PLUGIN_ID,
+        ok: false,
+        error: `磁盘剩余约 ${free}GB，建议预留 ≥${DISK_HINT_GB}GB`,
+        hint: "磁盘剩余空间不足：清理磁盘，或在插件控制台换一个剩余空间足够的安装目录后重装。",
+      });
       return {
         ok: false,
         error: "low_disk",
@@ -525,7 +536,9 @@ async function installProject(opts) {
     copyDirRecursive(pack, installDir, ["node_modules", ".git", "out", "output"]);
     appendConsole("[install] pack copied");
 
-    /* 2) npm install（进度事件） */
+    /* 2) 包内 install.ps1 逐步骤装依赖（node / npm → npm install → 校验），
+       每一步一条结构化步骤行；卡片与安装窗都按它显示。原来的 runNpmInstall 保留给
+       「运行时更新」等旧路径用，不再由安装链调用。 */
     emitProgress({
       phase: "install",
       step: "npm",
@@ -533,7 +546,9 @@ async function installProject(opts) {
       message: "npm install（remotion / react / @remotion/renderer）…",
       pct: 15,
     });
-    await runNpmInstall(installDir, opts.nodeId || "");
+    const script = join(installDir, "scripts", "install.ps1");
+    if (!fs.existsSync(script)) throw new Error("script_missing: " + script);
+    await runInstallScript(script, installDir, !!opts.mirror);
 
     /* 3) 校验 runtimeReady + 版本 */
     emitProgress({
@@ -556,16 +571,89 @@ async function installProject(opts) {
     });
     appendConsole("[install] ok version=" + version + " dir=" + installDir);
     emitProgress({ phase: "install", step: "done", stepLabel: "完成", pct: 100 });
+    installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
     return { ok: true, installDir, version };
   } catch (e) {
     const msg = String((e && e.message) || e);
     appendConsole("[install] failed: " + msg);
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
+    /* 本轮口径：脚本失败**不再自动转 Agent 兜底**（那正是「看不见过程」的来源）。
+       失败停在安装窗的失败步上，用户点「交给 mtnode 会话修复」才新建可见会话。 */
+    /* 失败停在安装窗的失败步上；主窗口报错窗那一路仍照旧上报（remotion 没有 Agent 安装链） */
+    installHost.finishPluginInstall({
+      id: PLUGIN_ID,
+      ok: false,
+      error: msg === "cancelled" ? "安装已取消" : msg,
+      hint: msg === "cancelled" ? "" : stepReporter.hintFor(msg),
+    });
     reportErr(msg, msg, installReportCtx(opts));
     return { ok: false, error: msg };
   } finally {
     installing = false;
   }
+}
+
+/**
+ * 跑 remotion-pack 的 install.ps1（本轮新增：原先安装链是宿主自己 spawn npm）。
+ * 与兄弟宿主的 runPs 同一口径：stdout 每行进 console 并交给步骤上报器，取消 = installCancel。
+ */
+function runInstallScript(scriptPath, installDir, mirror) {
+  return new Promise((resolve, reject) => {
+    const psArgs = [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      scriptPath,
+      "-InstallDir",
+      installDir,
+      "-SkipCopy",
+    ];
+    if (mirror) psArgs.push("-Mirror");
+    appendConsole("$ powershell " + psArgs.join(" "));
+    const child = spawn("powershell.exe", psArgs, {
+      cwd: installDir,
+      windowsHide: true,
+      env: Object.assign({}, process.env),
+    });
+    const rep = stepReporter.attach({
+      pluginId: PLUGIN_ID,
+      child,
+      onEvent: (ev) => installHost.reportPluginStep(ev),
+    });
+    let out = "";
+    child.stdout.on("data", (d) => {
+      const s = d.toString();
+      out += s;
+      for (const line of s.split(/\r?\n/)) {
+        if (line.trim()) appendConsole(line);
+      }
+      const m = s.match(/(\d+(?:\.\d+)?)\s*%/);
+      if (m) emitProgress({ phase: "install", step: "npm", stepLabel: "安装依赖", pct: 15 + Number(m[1]) * 0.7 });
+    });
+    child.stderr.on("data", (d) => {
+      const s = d.toString();
+      out += s;
+      for (const line of s.split(/\r?\n/)) {
+        if (line.trim()) appendConsole("[err] " + line);
+      }
+    });
+    child.on("error", (e) => {
+      rep.finish({ ok: false, error: String((e && e.message) || e) });
+      reject(e);
+    });
+    child.on("close", (code) => {
+      const cancelled = !!installCancel;
+      rep.finish(
+        cancelled
+          ? { ok: false, cancelled: true, error: "cancelled" }
+          : { ok: code === 0, error: code === 0 ? "" : "exit " + code },
+      );
+      if (cancelled) return reject(new Error("cancelled"));
+      if (code !== 0) reject(new Error(`exit ${code}: ${out.slice(-800)}`));
+      else resolve(out);
+    });
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1274,6 +1362,22 @@ function registerRemotionIpc(opts) {
     getInstallDir: () => usableInstallDir(),
     tailConsole: (n) => consoleTail(n),
   });
+  /* 安装窗登记：卡片「安装 / 重装」与控制台窗内的「安装」都开这只窗
+     （步骤真源 = 该包 steps.json，脚本按协议逐步上报） */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: "remotion",
+    name: "Remotion 动效视频",
+    skill: "",
+    kindLabel: "本地后端",
+    packRoots: [bundledPackRoot()],
+    getInstallDir: () => loadConfig().installDir || "",
+    cancel: () => {
+      installCancel = true;
+      return { ok: true };
+    },
+  });
+
   /* installDir 可得性核对：目录不可得时报告只剩日志尾部一个现场，先记一行说清现状 */
   auditReportBusSources();
 
@@ -1295,7 +1399,15 @@ function registerRemotionIpc(opts) {
     }
     return { ok: true, installDir: safe.path, runtimeReady: ready };
   });
-  ipcMain.handle("remotion:install", async (e, opts) => installProject(opts || {}));
+  /* 安装窗入口（两处共用）：卡片与控制台窗都走它 */
+  ipcMain.handle("remotion:install", async (e, opts) => {
+    installHost.beginPluginInstall({
+      id: PLUGIN_ID,
+      action: opts && opts.action === "update" ? "update" : "install",
+      installDir: loadConfig().installDir || "",
+    });
+    return installProject(opts || {});
+  });
   ipcMain.handle("remotion:cancelInstall", async () => {
     installCancel = true;
     return { ok: true };

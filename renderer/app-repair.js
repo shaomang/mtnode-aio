@@ -1336,6 +1336,141 @@ function pluginRepairHandleError(raw) {
   openPluginRepairDialog(info);
 }
 
+/* ==================== 安装窗：把安装窗的请求接成「看得见的会话」与「控制台窗」 ====================
+   安装窗（独立 BrowserWindow，见 plugins/main-install.js）自己不做会话，也不自己开控制台窗：
+   它把两件事推给主窗口 ——
+     · mtnodeInstall:session     ：某一步失败，用户点了「交给 mtnode 会话修复」→ 这里新建会话；
+     · mtnodeInstall:openConsole ：用户点了「打开插件控制台」→ 这里按 pluginId 开那只窗。
+   口径与本文件的修复会话完全一致（工作区 = 安装目录、与画布无关档、标题锁死）。 */
+
+/** 安装失败的提示词：只给可复核的现场（失败步骤 + 该步日志），根因交给会话按 skill 判断。 */
+function pluginInstallFixPromptText(info) {
+  const L = [];
+  L.push(
+    info.skill
+      ? I18n.t("请使用 skill「") + info.skill + I18n.t("」的【自我修复】模式。")
+      : I18n.t("该插件没有配套的内置 skill：请按日志证据自行判断根因并修复，不要套用不匹配的旧故障剧本。"),
+  );
+  L.push(I18n.t("当前工作区（可写）= INSTALL_DIR=") + info.installDir);
+  L.push(I18n.t("插件：") + (info.name || info.id) + (info.id ? "（id=" + info.id + "）" : ""));
+  if (info.action) L.push(I18n.t("本次动作：") + info.action);
+  if (info.stepTitle || info.stepId) {
+    L.push(
+      I18n.t("失败步骤：") + (info.stepTitle || info.stepId) + (info.stepId ? "（id=" + info.stepId + "）" : ""),
+    );
+  }
+  if (info.message) L.push(I18n.t("失败原因：") + "\n```\n" + String(info.message).slice(0, 4000) + "\n```");
+  if (info.hint) L.push(I18n.t("安装窗给的处置建议：") + String(info.hint).slice(0, 2000));
+  if (info.log)
+    L.push(
+      I18n.t("=== 该步骤日志尾部（更多上下文）===") + "\n```\n" + String(info.log).slice(0, 12000) + "\n```",
+    );
+  L.push(
+    "\n" +
+      I18n.t(
+        "纪律（一律遵守）：只允许修改 INSTALL_DIR 内的文件（工作区之外一律不碰）；不要启动后端服务 / ComfyUI / 模型进程；不要删除用户产物目录（output/ 等）；模型与权重已就绪则勿重复下载，只补缺项；先修依赖 / 脚本 / 配置，再考虑重装。",
+      ),
+  );
+  L.push(
+    I18n.t("完成后：在 INSTALL_DIR 根下写出结果文件（首行 ok=true，可附 reason= 简要根因），并在本会话回复里给出 repair_ok=1 与简要根因。"),
+  );
+  L.push(I18n.t("修不动：结果文件写 ok=false 与 reason=<哪一条没交付 + 具体报错>，并说清还需要用户做什么。"));
+  return L.join("\n");
+}
+
+/** 新建一条修复会话并起轮（与安装窗那颗按钮一一对应）。 */
+async function pluginInstallFixSession(info) {
+  if (typeof newAgentSession !== "function" || typeof agentSessionSend !== "function") {
+    toast(I18n.t("会话能力尚未就绪，请稍后再试"), "err");
+    return { ok: false, error: "no_session_capability" };
+  }
+  if (!String(info.installDir || "").trim()) {
+    toast(I18n.t("该插件还没有安装目录，会话没有可写的工作区"), "err");
+    return { ok: false, error: "no_install_dir" };
+  }
+  const st = newAgentSession();
+  st.title = I18n.t("插件安装修复") + " · " + (info.name || info.id);
+  st.titleLocked = true;
+  st.titleAuto = false;
+  st.workspace = info.installDir;
+  st.canvasFree = true;
+  try {
+    if (typeof persistAgentSession === "function") await persistAgentSession();
+  } catch (_) {}
+  try {
+    if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+    if (typeof setView === "function") setView("agent");
+  } catch (_) {}
+  const prompt = pluginInstallFixPromptText(info);
+  /* 不 await 整轮：安装窗那边只是「请开一条会话」，本轮跑多久不该卡住它的按钮 */
+  agentSessionSend(prompt, { sessionId: st.id }).catch((e) => {
+    toast(I18n.t("修复会话起轮失败：") + ((e && e.message) || String(e)), "err");
+  });
+  return { ok: true, sessionId: st.id };
+}
+
+/** 开该插件自己的控制台窗（映射表就在本文件：后端插件 spec + 窗口插件 id）。 */
+async function pluginInstallOpenConsole(pluginId) {
+  const id = String(pluginId || "").trim();
+  if (!id) return { ok: false, error: "bad_id" };
+  let spec = null;
+  try {
+    spec = typeof backendSpecById === "function" ? backendSpecById(id) : null;
+  } catch (_) {}
+  if (spec) {
+    const fn = pluginApiFn(spec.api + "Open");
+    if (!fn) return { ok: false, error: "no_console" };
+    const r = await fn();
+    return r && typeof r === "object" ? r : { ok: !!r };
+  }
+  /* 桌宠没有控制台窗；窗口类插件走 appPlugins:open */
+  const api = window.api || {};
+  if (typeof api.appPluginsOpen === "function") {
+    try {
+      const r = await api.appPluginsOpen(id);
+      return r && typeof r === "object" ? r : { ok: !!r };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  }
+  return { ok: false, error: "no_console" };
+}
+
+(function pluginInstallBridgeInit() {
+  if (typeof window === "undefined") return;
+  try {
+    window.pluginInstallFixSession = pluginInstallFixSession;
+    window.pluginInstallOpenConsole = pluginInstallOpenConsole;
+    if (window.api && typeof window.api.onMtnodeInstallSession === "function") {
+      window.api.onMtnodeInstallSession((payload) => {
+        const p = payload && typeof payload === "object" ? payload : {};
+        pluginInstallFixSession({
+          id: String(p.id || ""),
+          name: String(p.name || p.id || ""),
+          skill: String(p.skill || ""),
+          installDir: String(p.installDir || ""),
+          action: String(p.action || ""),
+          stepId: String(p.stepId || ""),
+          stepTitle: String(p.stepTitle || ""),
+          message: String(p.message || ""),
+          hint: String(p.hint || ""),
+          log: String(p.log || ""),
+        });
+      });
+    }
+    if (window.api && typeof window.api.onMtnodeInstallOpenConsole === "function") {
+      window.api.onMtnodeInstallOpenConsole((payload) => {
+        const p = payload && typeof payload === "object" ? payload : {};
+        pluginInstallOpenConsole(p.id).then((r) => {
+          if (!r || !r.ok) toast(I18n.t("打开插件控制台失败：") + ((r && (r.error || r.message)) || ""), "err");
+        });
+      });
+    }
+  } catch (e) {
+    console.error("pluginInstall bridge init failed:", e);
+  }
+})();
+
 /* 全局监听：不等插件对话框打开 —— 启动即订阅，报错来自哪个插件、哪条链都接得住 */
 (function pluginRepairInit() {
   if (typeof window === "undefined") return;

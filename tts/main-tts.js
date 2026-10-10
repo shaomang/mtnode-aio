@@ -23,6 +23,10 @@ const { mergeManagedProvider } = require("../config-providers.js");
 const uiBridge = require("./ui-bridge.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 一键自我修复），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
+/* 安装窗编排（主进程单例，见 plugins/main-install.js）：安装脚本的步骤行上报给它，
+   窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
+const installHost = require("../plugins/main-install.js");
+const stepReporter = require("../plugins/install-step-reporter.js");
 const { quietPython } = require("../backend-python.js");
 
 const PLUGIN_ID = "tts-local";
@@ -892,6 +896,12 @@ function runPs(scriptPath, args, opts) {
       windowsHide: true,
       env: Object.assign({}, process.env, opts.env || {}),
     });
+    /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
+    const rep = stepReporter.attach({
+      pluginId: PLUGIN_ID,
+      child,
+      onEvent: (ev) => installHost.reportPluginStep(ev),
+    });
     let out = "";
     child.stdout.on("data", (d) => {
       const s = d.toString();
@@ -911,9 +921,18 @@ function runPs(scriptPath, args, opts) {
         if (line.trim()) appendConsole("[err] " + line);
       }
     });
-    child.on("error", reject);
+    child.on("error", (e) => {
+      rep.finish({ ok: false, error: String((e && e.message) || e) });
+      reject(e);
+    });
     child.on("close", (code) => {
-      if (installCancel) return reject(new Error("cancelled"));
+      const cancelled = !!installCancel;
+      rep.finish(
+        cancelled
+          ? { ok: false, cancelled: true, error: "cancelled" }
+          : { ok: code === 0, error: code === 0 ? "" : "exit " + code },
+      );
+      if (cancelled) return reject(new Error("cancelled"));
       if (code !== 0) reject(new Error("exit " + code + ": " + out.slice(-800)));
       else resolve(out);
     });
@@ -1172,6 +1191,7 @@ async function installProject(opts) {
   installing = true;
   installCancel = false;
   appendConsole("[install] begin · pip 国内镜像优先");
+  /* 安装窗的会话由 tts:install 入口先开（见 registerTtsIpc），这里只管跑安装并上报步骤行 */
   try {
     emitProgress({ phase: "install", step: "scaffold", stepLabel: "复制脚手架", pct: 5 });
     syncPackToInstall(installDir);
@@ -1215,6 +1235,7 @@ async function installProject(opts) {
     });
     emitProgress({ phase: "install", step: "done", pct: 100, done: true });
     appendConsole("[install] script complete");
+    installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
     return { ok: true, installDir };
   } catch (e) {
     const msg = String((e && e.message) || e);
@@ -1222,21 +1243,19 @@ async function installProject(opts) {
     emitProgress({
       phase: "install",
       step: "script_failed",
-      stepLabel: "脚本失败，转 Agent 保底",
+      stepLabel: "安装脚本失败",
       message: msg,
       pct: 18,
     });
-    if (msg === "cancelled" || msg === "busy") {
-      emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
-      reportErr(msg, msg === "busy" ? "已有安装任务在跑" : "安装已取消", { phase: "install" });
-      return { ok: false, error: msg, agentRecoverable: false };
-    }
-    installing = false;
-    const tail = consoleTail(48 * 1024);
-    const agent = await agentRecoverInstall({
-      error: "脚本安装失败: " + msg + "\n\n=== console 尾部 ===\n" + String((tail && tail.text) || "").slice(-12000),
+    /* 本轮口径：脚本失败**不再自动转 Agent 兜底**（看不见过程正是要消掉的东西）。
+       失败停在安装窗的失败步上，用户点「交给 mtnode 会话修复」才新建可见会话。 */
+    installHost.finishPluginInstall({
+      id: PLUGIN_ID,
+      ok: false,
+      error: msg === "cancelled" ? "安装已取消" : msg,
+      hint: msg === "cancelled" ? "" : stepReporter.hintFor(msg + "\n" + String((consoleTail(8 * 1024) || {}).text || "")),
     });
-    return agent;
+    return { ok: false, error: msg };
   } finally {
     installing = false;
   }
@@ -1881,6 +1900,21 @@ function registerTtsIpc(opts) {
     },
   });
 
+  /* 安装窗登记：卡片「安装 / 重装」与控制台窗内的「安装」都开这只窗（步骤真源 = tts-pack/steps.json） */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: "tts",
+    name: "GPT-SoVITS 本地 TTS",
+    skill: "tts-local-install",
+    kindLabel: "本地后端",
+    packRoots: [bundledPackRoot()],
+    getInstallDir: () => loadConfig().installDir || "",
+    cancel: () => {
+      installCancel = true;
+      return { ok: true };
+    },
+  });
+
   ensureUiRuntime();
   startConsoleLogWatch();
   startUiSignalWatch();
@@ -1904,7 +1938,15 @@ function registerTtsIpc(opts) {
     saveConfig({ installDir: safe.path });
     return { ok: true, installDir: safe.path, project: projectSignals(safe.path) };
   });
-  ipcMain.handle("tts:install", async (e, opts) => installProject(opts || {}));
+  /* 安装窗入口（两处共用）：卡片与控制台窗都走它 */
+  ipcMain.handle("tts:install", async (e, opts) => {
+    installHost.beginPluginInstall({
+      id: PLUGIN_ID,
+      action: opts && opts.action === "update" ? "update" : "install",
+      installDir: loadConfig().installDir || "",
+    });
+    return installProject(opts || {});
+  });
   ipcMain.handle("tts:agentRecoverInstall", async (e, opts) => agentRecoverInstall(opts || {}));
   ipcMain.handle("tts:cancelInstall", async () => {
     installCancel = true;

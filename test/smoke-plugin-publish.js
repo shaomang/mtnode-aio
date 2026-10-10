@@ -98,8 +98,8 @@ const findForum = (doc) => pluginsOf(doc).find((p) => p && (p.id === "forum" || 
   ok(
     /window\.forumApi\s*\|\|\s*window\.pluginApi/.test(chatJs) &&
       /api\.authGetState\(\)/.test(chatJs) &&
-      /api\.authLogout\(\)/.test(chatJs),
-    "forum/chat.js 经 window.forumApi/pluginApi 走统一账户（authGetState / authLogout）",
+      /api\.mainFocus\(\)/.test(chatJs),
+    "forum/chat.js 经 window.forumApi/pluginApi 取统一账户（authGetState）与主窗前置（mainFocus）",
   );
 
   /* ③ 发布链不再产出讨论区包，且不因缺 forum 条目失败 */

@@ -25,6 +25,7 @@ const SERVER = read(path.join(ROOT, "store-saas", "server.mjs"));
 const SMOKE_PY = read(path.join(ROOT, "store-saas", "smoke-api.py"));
 const CHAT_JS = read(path.join(ROOT, "forum", "chat.js"));
 const CHAT_HTML = read(path.join(ROOT, "forum", "chat.html"));
+const FORUM_CSS = read(path.join(ROOT, "forum", "forum.css"));
 const MAIN = read(path.join(ROOT, "main.js"));
 
 let fails = 0;
@@ -103,8 +104,8 @@ const slice = (src, from, to) => {
   ok(listHandler.length > 0 && !/if \(!user\)/.test(listHandler), "GET 列表免登录（handler 内无 !user 401 分支）");
   /* 列表仍**逐条走 publicForumTopicSummary**（懒加载：只出标题与元数据、不展开正文）；
      签名多了第三个参数 en = 本页批量算好的打赏 / 评分 / 评论数（先收本页 ids 再算，避免 N²）。 */
-  ok(/publicForumTopicSummary\(t, en\(t\.id\)\)/.test(listHandler), "列表逐条走 publicForumTopicSummary（只出标题与元数据）");
-  ok(/\.map\(\(t\) => publicForumTopicSummary\(t, en\(t\.id\)\)\)/.test(SERVER), "列表映射逐条走 publicForumTopicSummary（不展开完整话题对象）");
+  ok(/publicForumTopicSummary\(t, en\(t\.id\), user\)/.test(listHandler), "列表逐条走 publicForumTopicSummary（只出标题与元数据）");
+  ok(/\.map\(\(t\) => publicForumTopicSummary\(t, en\(t\.id\), user\)\)/.test(SERVER), "列表映射逐条走 publicForumTopicSummary（不展开完整话题对象）");
   ok(/enrichOf\("forum_topic", pageItems\.map\(\(t\) => t\.id\)\)/.test(listHandler), "打赏 / 评分 / 评论数按本页 ids 批量算（不在循环里逐个算）");
   const summary = slice(SERVER, "function publicForumTopicSummary", "function publicForumTopic");
   ok(summary.length > 0 && !/\bcontent\b/.test(summary), "publicForumTopicSummary 不含 content 字段");
@@ -131,7 +132,7 @@ const slice = (src, from, to) => {
   ok(/status=help/.test(SMOKE_PY) && /q=markdown/.test(SMOKE_PY) && /"status":\s*"solved"/.test(SMOKE_PY), "smoke-api.py 覆盖状态筛选 / 关键词搜索 / 标记已解决");
   ok(/assert all\("content" not in x/.test(SMOKE_PY), "smoke-api.py 断言列表不含正文（懒加载）");
 
-  console.log("\n[5] 插件窗口 chat.js：懒加载 + 免登录浏览 + 发帖 / 回复需登录");
+  console.log("\n[5] 插件窗口 chat.js：懒加载 + 发帖 / 回复需登录（登录入口只在顶栏账户按钮）");
   ok(CHAT_JS.length > 0 && /window\.forumApi \|\| window\.pluginApi/.test(CHAT_JS), "forum/chat.js 经 forumApi / pluginApi 取能力");
   const listLoader = slice(CHAT_JS, "async function loadTopics", "/* ---------------- ② 详情页");
   ok(listLoader.length > 0, "loadTopics 列表加载器存在");
@@ -143,9 +144,9 @@ const slice = (src, from, to) => {
   ok(/\/api\/forum\/topic\?id=/.test(topicLoader), "点标题才 GET /api/forum/topic 拉正文（懒加载）");
   ok(/renderMarkdownInto\(tBody, item\.body \|\| item\.content/.test(CHAT_JS), "正文仅在详情页渲染");
   ok(/listSeq/.test(CHAT_JS) && /detailSeq/.test(CHAT_JS), "列表 / 详情请求带序号丢弃过期响应");
-  ok(/登录后可发帖/.test(CHAT_JS) && /hintLogin/.test(CHAT_JS), "未登录显示「登录后可发帖」（免登录浏览分支）");
-  ok(/if \(!signedIn\(\)\) \{[\s\S]{0,120}?openLogin\(\)/.test(CHAT_JS), "发帖 / 回复前未登录即弹登录（需登录分支）");
-  ok(/pendingIntent/.test(CHAT_JS), "登录成功后自动续跑被拦下的动作");
+  ok(!/登录后可发帖|hintLogin/.test(CHAT_JS), "chat.js 已无「登录后可发帖」提示条（论坛不再有登录入口）");
+  ok(!/openLogin|pendingIntent|authLoginPassword|authChangePassword/.test(CHAT_JS), "chat.js 已无本窗登录卡 / 改密码 / 登录后续跑逻辑");
+  ok(/if \(!signedIn\(\)\) return handle401\(\)/.test(CHAT_JS), "发帖 / 回复 / 改状态前未登录即走 handle401（关窗 + 主窗前置）");
   const statusIds = CHAT_JS.match(/id: "general"[\s\S]{0,400}/);
   ok(!!statusIds && /id: "help"/.test(statusIds[0]) && /id: "bug"/.test(statusIds[0]) && /id: "solved"/.test(statusIds[0]), "前端状态枚举含 general / help / bug / solved");
   ok(!/rooms|综合区|Bug 提交区|功能改进区/.test(CHAT_JS), "chat.js 已无房间 / 日期条聊天室口径");
@@ -177,10 +178,74 @@ const slice = (src, from, to) => {
   ok(!!catDoc && !(catDoc.plugins || []).some((p) => p && p.id === "forum"), "catalog.default.json 无 id=forum 条目（讨论区不再是可下载插件）");
   const PRE = read(path.join(ROOT, "plugins", "preload-window.js"));
   ok(
-    /exposeInMainWorld\(\s*"forumApi"/.test(PRE) && /authGetState/.test(PRE) && /authLogout/.test(PRE) && /onAuthChanged/.test(PRE),
-    "preload-window.js 暴露 forumApi 与统一账户三件套",
+    /exposeInMainWorld\(\s*"forumApi"/.test(PRE) && /authGetState/.test(PRE) && /mainFocus/.test(PRE) && /onAuthChanged/.test(PRE),
+    "preload-window.js 暴露 forumApi 与统一账户只读通道（authGetState / mainFocus / onAuthChanged）",
   );
-  ok(/api\.authGetState\(\)/.test(CHAT_JS) && /api\.authLogout\(\)/.test(CHAT_JS), "chat.js 登录态走 authGetState / authLogout（与顶栏同源）");
+  ok(/api\.authGetState\(\)/.test(CHAT_JS) && /api\.mainFocus\(\)/.test(CHAT_JS), "chat.js 登录态走 authGetState、失效时经 mainFocus 把主窗调前台（与顶栏同源）");
+
+  console.log("\n[9] 删帖（本轮需求）：软删除 · 权限 · 连带处理");
+  const delTopic = slice(SERVER, 'method === "DELETE" && p === "/api/forum/topic"', 'method === "DELETE" && p === "/api/forum/replies"');
+  const delReply = slice(SERVER, 'method === "DELETE" && p === "/api/forum/replies"', "// 图片上传");
+  ok(delTopic.length > 0, "存在 DELETE /api/forum/topic（删话题）");
+  ok(delReply.length > 0, "存在 DELETE /api/forum/replies（删回复）");
+  ok(
+    /if \(!user\) return send\(res, 401/.test(delTopic) && /if \(!user\) return send\(res, 401/.test(delReply),
+    "两个删除端点都需登录（未登录 401）",
+  );
+  ok(/t\.deleted = true/.test(delTopic) && /t\.deletedAt = at/.test(delTopic) && /t\.deletedBy = by/.test(delTopic), "话题走软删除（deleted / deletedAt / deletedBy 留档）");
+  ok(/r\.deleted = true/.test(delReply) && /r\.deletedAt = at/.test(delReply), "回复走软删除");
+  ok(
+    /forumTopicCanDelete\(t, user\)/.test(delTopic) && /forumReplyCanDelete\(r, t, user\)/.test(delReply),
+    "权限判定只走 forumTopicCanDelete / forumReplyCanDelete（服务端唯一真源）",
+  );
+  const perm = slice(SERVER, "function forumTopicCanDelete", "// 列表投影");
+  ok(/viewer\.id === t\.userId \|\| isAdmin\(viewer\)/.test(perm), "话题：作者本人 或 管理员");
+  ok(
+    /viewer\.id === r\.userId/.test(perm) && /viewer\.id === t\.userId/.test(perm) && /isAdmin\(viewer\)/.test(perm),
+    "回复：回复作者 / 话题作者 / 管理员",
+  );
+  ok(/return send\(res, 403/.test(delTopic) && /return send\(res, 403/.test(delReply), "无权限回 403");
+  ok(!/forumRateOk/.test(delTopic) && !/forumRateOk/.test(delReply), "删除不限流（本轮共识：低频人工动作）");
+  ok(
+    /comments\.removeByTarget\("forum_topic", t\.id, by\)/.test(delTopic) && /comments\.removeByTarget\("forum_reply", r\.id, by\)/.test(delTopic),
+    "删话题连带软删话题与各回复的评论（复用 comments.removeByTarget）",
+  );
+  ok(/comments\.removeByTarget\("forum_reply", r\.id, by\)/.test(delReply), "删回复连带软删这条回复的评论");
+  ok(
+    /t\.replyCount = live\.length/.test(delReply) && /t\.lastReplyAt = live\.reduce/.test(delReply),
+    "删回复后重算 replyCount / lastReplyAt（列表 sort=active 不悬空）",
+  );
+  ok(!/rmSync|unlink|deleteForumImage/.test(delTopic) && /图片对象不回收/.test(SERVER), "图片对象不回收（留档便于人工恢复）");
+  ok(/if \(t\.deleted\) return false;/.test(SERVER), "列表过滤已删话题");
+  ok(/if \(!t \|\| t\.deleted\) return send\(res, 404/.test(SERVER), "详情 / 发帖 / 改状态对已删话题一律 404");
+  ok(/r\.topicId === t\.id && !r\.deleted/.test(SERVER), "详情回复列表过滤已删回复");
+  ok(
+    /canDelete: forumTopicCanDelete\(t, viewer\)/.test(SERVER) && /canDelete: forumReplyCanDelete\(r, topic, viewer\)/.test(SERVER),
+    "投影带 canDelete 位（前端不自己判 isAdmin）",
+  );
+
+  console.log("\n[10] 客户端：详情页删除入口（按钮 + confirm + 回列表）");
+  ok(/id="btnDelTopic"/.test(CHAT_HTML), "chat.html 有话题删除按钮 #btnDelTopic");
+  ok(/id="btnDelTopic"[^>]*hidden/.test(CHAT_HTML), "删除按钮默认隐藏（由服务端 canDelete 控制）");
+  const delTopicFn = slice(CHAT_JS, "async function deleteTopic", "async function deleteReply");
+  ok(/method: "DELETE"/.test(delTopicFn) && /path: "\/api\/forum\/topic"/.test(delTopicFn), "deleteTopic 打 DELETE /api/forum/topic");
+  ok(/window\.confirm/.test(delTopicFn), "删话题二次确认走 window.confirm（与评论区删除同款）");
+  ok(/showView\("list"\)/.test(delTopicFn) && /toast\(t\("已删除"/.test(delTopicFn), "删后回列表并 toast「已删除」");
+  const delReplyFn = slice(CHAT_JS, "async function deleteReply", "async function refreshPermissions");
+  ok(/method: "DELETE"/.test(delReplyFn) && /\/api\/forum\/replies/.test(delReplyFn), "deleteReply 打 DELETE /api/forum/replies");
+  ok(/rp\.canDelete/.test(CHAT_JS), "回复行删除入口只看投影 canDelete");
+  ok(/refreshPermissions/.test(CHAT_JS) && /btnDelTopic\.hidden = !it\.canDelete/.test(CHAT_JS), "登录态变化后重拉权限位；按钮显隐只看 canDelete");
+  ok(
+    /button\.linkbtn\.danger/.test(FORUM_CSS) && /button\.danger:hover/.test(FORUM_CSS) && /--red/.test(FORUM_CSS),
+    "forum.css 给危险动作补 danger 样式（走既有 --red，不新造颜色）",
+  );
+
+  console.log("\n[11] 运行时回归：删帖全流程真有脚本跑");
+  ok(/"DELETE"/.test(SMOKE_PY) && /\/api\/forum\/topic/.test(SMOKE_PY), "smoke-api.py 覆盖删话题 / 删回复（DELETE）");
+  ok(
+    fs.existsSync(path.join(ROOT, "store-saas", "smoke-forum-delete.mjs")),
+    "store-saas/smoke-forum-delete.mjs 存在（自起服务 + 临时数据目录的删帖全流程）",
+  );
 
   console.log(
     fails

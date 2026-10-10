@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-import json, urllib.request, urllib.error, base64
+# 对着一个**本机 dev 服务**跑一遍接口全流程（需先自己起 server.mjs；默认 http://127.0.0.1:8787）。
+# 换端口 / 换实例：SMOKE_BASE=http://127.0.0.1:18888 py -3 store-saas/smoke-api.py
+# 注意：本脚本会往目标实例里写 smoke 数据，别对着线上库跑。
+# 不需要 dev 服务的删帖全流程（权限矩阵 / 管理员 / 评论连带 / 留档）见 store-saas/smoke-forum-delete.mjs。
+import json, os, urllib.request, urllib.error, base64
 
-base = "http://127.0.0.1:8787"
+base = os.environ.get("SMOKE_BASE", "http://127.0.0.1:8787")
+# 本机 dev 服务绝不该走系统代理：Windows 上 urllib 会读注册表里的代理设置（本机实测
+# http://127.0.0.1:8400 会把每个请求变成 503 空体），而 proxy_bypass("127.0.0.1") 又不成立。
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 
 def call(method, path, body=None, token=None, expect=True):
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -146,4 +153,28 @@ assert any(x.get("id") == topic_id for x in sea.get("items") or [])
 solved = call("PATCH", "/api/forum/topic", {"id": topic_id, "status": "solved"}, token=token)["item"]
 assert solved["status"] == "solved"
 call("GET", "/api/forum/images/" + topic["imageIds"][0])
+
+# —— 删帖（本轮需求）：软删除 + 连带回复 ——
+# 线上口径的轻量校验：作者能删自己的回复与话题，删完列表 / 详情都不可达，未登录一律被拒。
+# 权限矩阵（非作者 403 / 话题作者删别人的回复 / 管理员删任意帖 / 评论连带 / 留档字段）由
+# store-saas/smoke-forum-delete.mjs 自起服务跑全，那边不依赖线上数据。
+del_topic = call("POST", "/api/forum/topics", {
+    "title": "smoke delete topic",
+    "content": "将被删除的话题",
+    "status": "general",
+}, token=token)["item"]
+del_reply = call("POST", "/api/forum/replies", {"topicId": del_topic["id"], "content": "将被删除的回复"}, token=token)["item"]
+gone_reply = call("DELETE", "/api/forum/replies", {"id": del_reply["id"]}, token=token)
+assert gone_reply.get("deleted") is True, gone_reply
+det_after_reply = call("GET", "/api/forum/topic?id=" + del_topic["id"])
+assert not any(r.get("id") == del_reply["id"] for r in det_after_reply["replies"]["items"]), "删掉的回复不该还在详情里"
+assert int(det_after_reply["topic"]["replyCount"]) == 0, "删回复后 replyCount 归零（计数按未删记录重算）"
+anon_del = call("DELETE", "/api/forum/topic", {"id": del_topic["id"]}, expect=False)
+assert not anon_del.get("ok"), "未登录删帖必须被拒"
+gone_topic = call("DELETE", "/api/forum/topic", {"id": del_topic["id"]}, token=token)
+assert gone_topic.get("deleted") is True, gone_topic
+after_del = call("GET", "/api/forum/topics?q=smoke%20delete%20topic")
+assert not any(x.get("id") == del_topic["id"] for x in after_del.get("items") or []), "已删话题不该还在列表里"
+det_404 = call("GET", "/api/forum/topic?id=" + del_topic["id"], expect=False)
+assert not det_404.get("ok"), "已删话题的详情必须 404"
 print("SMOKE_OK")

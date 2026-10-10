@@ -6089,8 +6089,10 @@
       "Try “Why won’t the gate open?” or “How do I set an API Key?”. Answers use the left-hand manual only.",
     "讨论区": "Forum",
     "MTNode 讨论区": "MTNode Forum",
-    "MTNode 讨论区：免登录浏览话题与回复；与创意工坊同一账户，登录后可发话题、回帖并改状态":
-      "MTNode Forum: browse topics and replies without signing in; same account as Creative Workshop — sign in to post topics, reply and set status",
+    "MTNode 讨论区：登录后可浏览话题与回复、发话题、回帖并改状态（与创意工坊同一账户）":
+      "MTNode Forum: sign in first — then browse topics and replies, post topics, reply and set status (same account as Creative Workshop)",
+    "讨论区：登录后可浏览话题与回复、发话题、回帖并改状态（与创意工坊同一账户）":
+      "Forum: sign in first — then browse topics and replies, post topics, reply and set status (same account as Creative Workshop)",
     "工作目录（必填）": "Working directory (required)",
     "请选择已存在的文件夹…": "Choose an existing folder…",
     "新建画布必须指定工作目录。智能节点与相对保存路径都相对该目录，缺少目录会导致读写失败。":
@@ -6101,8 +6103,8 @@
     "已内置": "Built-in",
     "内置组件可直接打开；桌宠等可选组件按需下载，不随主程序安装包分发。":
       "Optional add-ons such as the forum and desktop pet are downloaded on demand and are not in the installer.",
-    "讨论区窗口，与创意工坊共用账户。免登录即可浏览话题与回复；登录后可发话题、回帖并改状态，话题长期保留。":
-      "A forum window sharing the Creative Workshop account. Topics and replies are browsable without signing in; sign in to post a topic, reply and set status. Topics are kept long-term.",
+    "讨论区窗口，与创意工坊共用账户。登录后可浏览话题与回复、发话题、回帖并改状态，话题长期保留。":
+      "A forum window sharing the Creative Workshop account. Sign in first, then browse topics and replies, post a topic, reply and set status. Topics are kept long-term.",
     "插件：可选组件（桌宠等），按需下载安装": "Plugins: optional components (desktop pet, etc.), download on demand",
     "插件：讨论区等内置组件，以及可下载的桌宠":
       "Plugins: downloadable forum, desktop pet, and other add-ons",
@@ -10375,6 +10377,28 @@
       "The app judged this error not auto-repairable (another agent pass would not change anything) — handle it per the log above.",
     "新建一条左侧栏会话，把日志与上下文交给它修复（工作区 = INSTALL_DIR）":
       "Create a session in the left sidebar and hand it the log plus context (workspace = INSTALL_DIR)",
+    /* 安装窗「交给 mtnode 会话修复」那一轮的首轮提示词（install/app.js 按钮 → 本文件上方
+       pluginInstallFixPromptText 生成）：词条必须齐，否则英文界面里这一轮提示词会回落中文 */
+    "该插件没有配套的内置 skill：请按日志证据自行判断根因并修复，不要套用不匹配的旧故障剧本。":
+      "This plugin ships no matching built-in skill: judge the root cause from the log evidence yourself and fix it — do not apply an unrelated old failure script.",
+    "本次动作：": "This action: ",
+    "失败步骤：": "Failed step: ",
+    "失败原因：": "Failure reason: ",
+    "安装窗给的处置建议：": "Advice from the install window: ",
+    "=== 该步骤日志尾部（更多上下文）===": "=== Tail of that step's log (more context) ===",
+    "纪律（一律遵守）：只允许修改 INSTALL_DIR 内的文件（工作区之外一律不碰）；不要启动后端服务 / ComfyUI / 模型进程；不要删除用户产物目录（output/ 等）；模型与权重已就绪则勿重复下载，只补缺项；先修依赖 / 脚本 / 配置，再考虑重装。":
+      "Discipline (always): only modify files under INSTALL_DIR (never touch anything outside the workspace); do not start backend services / ComfyUI / model processes; do not delete user output folders (output/ etc.); do not re-download ready models or weights — fill in only what is missing; fix dependencies / scripts / config first and consider a reinstall last.",
+    "完成后：在 INSTALL_DIR 根下写出结果文件（首行 ok=true，可附 reason= 简要根因），并在本会话回复里给出 repair_ok=1 与简要根因。":
+      "When done: write the result file under the INSTALL_DIR root (first line ok=true, optionally reason=<brief root cause>) and reply in this session with repair_ok=1 plus the brief root cause.",
+    "修不动：结果文件写 ok=false 与 reason=<哪一条没交付 + 具体报错>，并说清还需要用户做什么。":
+      "If you cannot fix it: write ok=false and reason=<what was not delivered + the concrete error> into the result file, and state clearly what the user still has to do.",
+    "该插件还没有安装目录，会话没有可写的工作区":
+      "This plugin has no install dir yet, so a session would have no writable workspace",
+    "插件安装修复": "Plugin install repair",
+    "修复会话起轮失败：": "Could not start the repair session turn: ",
+    "打开插件控制台失败：": "Could not open the plugin console: ",
+    "当前版本不支持安装窗": "This build does not support the install window",
+    "打开安装窗失败：": "Could not open the install window: ",
     "这条错误已经交给自动修复会话": "This error has already been handed to an auto-repair session",
     "自动修复": "Auto-repair",
     "本条错误的自动修复已经用过一次，请对照修复结果与日志手动处理":

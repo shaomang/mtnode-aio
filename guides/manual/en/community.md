@@ -1,6 +1,6 @@
 # Workshop & forum
 
-> In one sentence: make good use of the community's two lines — browse and download (and, once signed in, upload and manage) other people's public template canvases and skills in the Creative Workshop, and browse the forum without signing in, post topics and reply once signed in — and know the scrubbing and safety etiquette that come before sharing.
+> In one sentence: make good use of the community's two lines — browse and download (and, once signed in, upload and manage) other people's public template canvases and skills in the Creative Workshop, and browse / post in the forum once signed in — and know the scrubbing and safety etiquette that come before sharing.
 
 ## Community overview
 
@@ -9,7 +9,7 @@
 MTNode's community has two parts, both reached from the top bar:
 
 - **创意工坊 (Creative Workshop)** (top bar): browse / download other people's public template canvases and skills (Skill); once signed in you can upload and manage your own entries.
-- **讨论区 (Forum)** (top right): topics and replies; browsing needs no sign-in, and once signed in you can post a topic, reply and change its status.
+- **讨论区 (Forum)** (top right): topics and replies; **this entry only appears once you are signed in** — then you can browse, post a topic, reply and change its status.
 
 Both share the same MTNode account (WeChat QR sign-in; an old account can sign in with a password and link it up afterwards). The account entry is **账户 (Account)** at the top right.
 
@@ -43,12 +43,12 @@ A public catalog: template canvases (whole workflows) and skills (Skill, a SKILL
 
 MTNode's official forum, for asking questions, getting help with errors, sharing work and suggesting features.
 
-Entry: **讨论区 (Forum)** at the top right. It is an on-demand component, not part of the installer, so the first click offers to download it.
+Entry: **讨论区 (Forum)** at the top right — it **only appears once you are signed in** (while signed out the top bar has no such button; the one and only sign-in entry in MTNode is the **账户 (Account)** button at the top right). It is a built-in component shipped with the app, so there is nothing to download.
 
 ### How to use it
 
-- Topics and replies are browsable without signing in.
-- It shares the same account as the Creative Workshop; once signed in you can post a topic, reply and set topic status.
+- It shares the same account as the Creative Workshop (sign in with the **Account** button at the top right); once signed in you can browse topics and replies, and also post a topic, reply and set topic status.
+- Signing out hides the forum entry again, and closes any forum window you still have open, bringing the main window back to the front.
 - Topics are kept long-term, so the same pitfall can be found later.
 
 ### Question template
@@ -83,7 +83,7 @@ Bringing a minimal reproduction is far more useful than pasting a whole log.
 ### Comments (ratings and discussion)
 
 - Comments live in four places: a workshop entry's detail window (**Comments** tab), an app's detail (**Comments** tab), a forum topic's detail (**Comments** tab), and each reply's own comment window. **The forum's only interaction is commenting** (its tipping entry has been removed).
-- **Anyone can read comments; posting one requires a sign-in**; you can **reply to a comment** (parent-child quote), the same shape as forum replies.
+- **Comments are readable without signing in** (the Comments tabs of workshop entries and app details are not gated); **posting one requires a sign-in**. You can **reply to a comment** (parent-child quote), the same shape as forum replies. Comments on forum topics are only reachable by signed-in users, since the forum itself only opens once you are signed in.
 - **Only item comments (template / skill / app) carry a five-star rating**, and it is **optional** — skip it and it is left out of the average. Comments on forum topics and replies have no stars. For one item you only keep your latest star.
 - Cards and detail views show the **average star (one decimal) + comment count** and the accumulated tips; when nobody has rated, no fake score is shown.
 - Deleting: a comment's author can delete their own, an entry / topic author can delete comments under their own item, and an admin can delete anywhere. **Deleting a comment also drops its star**, and the average is recalculated right away.
@@ -101,7 +101,7 @@ Bringing a minimal reproduction is far more useful than pasting a whole log.
 
 1. Preview and confirm in the workshop, then click **下载到本机 / 下载 (Download to this machine / Download)**.
    - **Template** → imported as a new canvas; **skill** → written into your local skills directory and called by agent nodes with `/`.
-   - Components such as plugins and the forum are **downloaded on demand**, not in the installer; installing one restarts the engine, so let any running task finish first.
+   - Components such as plugins are **downloaded on demand**, not in the installer (the forum is **built in**, so it needs no download); installing one restarts the engine, so let any running task finish first.
 2. After importing someone else's canvas, check item by item: providers and models, save paths, and whether any node needs a local backend (H3 / Music 3 / TTS / llama).
    - When the canvas references a provider / model your machine does not have, nothing pops up: those nodes silently become **No model** (the node header names the missing one), and pressing ▶ is what prompts you to pick a provider and model again.
 3. A node missing a plugin or a backend will not run — read the node notes before pressing ▶.

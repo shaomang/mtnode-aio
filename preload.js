@@ -291,6 +291,27 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('auth:changed', handler);
   },
   forumOpen: () => ipcRenderer.invoke('forum:open'),
+  /* ── 插件安装窗（主进程 plugins/main-install.js）：安装一律在这只窗里逐步骤跑
+       open({id,name?,skill?,installDir?,action?})：开窗（同 id 已开就切过去）
+       close(id) / cancel(id)：关窗 / 请宿主取消正在跑的安装
+       fix(id)：交给 mtnode 会话修复（新建可见会话，工作区 = 安装目录）
+       openConsole(id)：开该插件自己的控制台窗（映射表在渲染层 app-plugins.js）
+       事件：mtnodeInstall:session（请新建修复会话）、mtnodeInstall:openConsole（请开控制台） */
+  mtnodeInstallOpen: (payload) => ipcRenderer.invoke('mtnodeInstall:open', payload || {}),
+  mtnodeInstallClose: (id) => ipcRenderer.invoke('mtnodeInstall:close', { id: id || '' }),
+  mtnodeInstallCancel: (id) => ipcRenderer.invoke('mtnodeInstall:cancel', { id: id || '' }),
+  mtnodeInstallFix: (id) => ipcRenderer.invoke('mtnodeInstall:fix', { id: id || '' }),
+  mtnodeInstallState: (id) => ipcRenderer.invoke('mtnodeInstall:state', { id: id || '' }),
+  onMtnodeInstallSession: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on('mtnodeInstall:session', handler);
+    return () => ipcRenderer.removeListener('mtnodeInstall:session', handler);
+  },
+  onMtnodeInstallOpenConsole: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on('mtnodeInstall:openConsole', handler);
+    return () => ipcRenderer.removeListener('mtnodeInstall:openConsole', handler);
+  },
   appPluginsCatalog: () => ipcRenderer.invoke('appPlugins:catalog'),
   appPluginsIcon: (name) => ipcRenderer.invoke('appPlugins:icon', name),
   appPluginsInstall: (id) => ipcRenderer.invoke('appPlugins:install', id),

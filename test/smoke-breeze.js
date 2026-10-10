@@ -1838,14 +1838,27 @@ function scene(nodes, wires) {
     "启用兜底 → hostError('start')（不再裸 reject IPC）",
   );
   has(hostSrc, 'hostError("agent-install-pre", e)', "Agent 保底链的前置阶段也收口");
-  has(hostSrc, 'hostError("install-fallback", e2)', "Agent 保底调用本身也兜底");
+  /* 本轮共识：脚本失败**不再静默转 Agent 兜底**（看不见过程正是要消掉的东西）——失败停在
+     安装窗的失败步上，用户点「交给 mtnode 会话修复」才新建可见会话。
+     所以这里钉的是「安装入口里没有兜底调用」+「失败如实报给安装窗」。 */
+  ok(
+    !/async function installProjectInner\([\s\S]{0,4000}?agentRecoverInstall\(/.test(hostSrc),
+    "安装入口不再静默转 Agent 兜底（交给安装窗那颗按钮才起会话）",
+  );
+  has(hostSrc, "installHost.beginPluginInstall(", "安装入口先开安装窗的会话（步骤表立刻可见）");
+  has(hostSrc, "installHost.finishPluginInstall(", "安装终局如实报给安装窗（成功 / 失败都报）");
   has(hostSrc, "async function installProjectInner(", "安装入口也拆出 inner（外层可兜底）");
   has(hostSrc, 'hostError("install", e)', "安装入口的护栏 / mk 目录抛错 → hostError('install')");
   has(hostSrc, "async function agentInstallByAgentInner(", "Agent 保底链也拆出 inner");
   has(hostSrc, 'hostError("agent-install", e)', "Agent 保底链取网关 / mk 目录抛错 → hostError('agent-install')");
   has(hostSrc, "function readInstallVerdict(", "有失败裁决读取（脚本 → 宿主同口径）");
   has(hostSrc, "pluginErrors.judgeRepairability(", "「修不了」的判定复用总线真源，不在宿主里另抄一份");
-  has(hostSrc, "agentRecoverable: false", "不可修裁决的回执里标明不进 Agent 修复");
+  has(hostSrc, "readInstallVerdict(installDir)", "脚本失败时按脚本自己的裁决取原因（no_cuda 这类要指路）");
+  /* 本轮口径：可修与否只影响「提示与指路」，不再有 agentRecoverable 回执字段（兜底链已删） */
+  ok(
+    !/installHost\.finishPluginInstall\(\{[\s\S]{0,400}?agentRecoverable/.test(hostSrc),
+    "安装窗失败回执里不再有 agentRecoverable（没有兜底链了）",
+  );
   has(hostSrc, "function engineControl(", "引擎加载 / 卸载失败进总线");
   has(
     hostSrc,
@@ -1862,12 +1875,18 @@ function scene(nodes, wires) {
   /* 本轮「安装脚本零中文」后，判据串改成脚本里的英文原句（脚本注释/消息全 ASCII 英文） */
   has(installPs1, "a failed smoke test means not installed", "安装脚本写明冒烟闸门口径");
   has(installPs1, "$smokeRc = $LASTEXITCODE", "安装脚本记下冒烟退出码");
-  has(installPs1, 'Write-Verdict "false" "smoke_failed"', "import 失败 → 写裁决 smoke_failed（交 Agent 修）");
+  has(installPs1, 'Write-Verdict "false" "smoke_failed"', "import 失败 → 写裁决 smoke_failed（宿主据此给原因）");
   has(installPs1, 'Write-Verdict "false" "no_cuda"', "CUDA 不可用 → 写裁决 no_cuda（只指路，不烧 AI 修复）");
   has(installPs1, "Remove-Item -Force $installOk", "旧 .install-ok 先撤（失败的重装不能冒充装好）");
   ok(
-    /if \(\$smokeRc -ne 0\)[\s\S]{0,240}exit 1/.test(installPs1),
-    "冒烟失败以非 0 退出（宿主的 Agent 保底链才会被触发）",
+    /* 冒烟失败块里现在先打一条步骤行（Step-Progress -Fail）再写裁决，窗口给到 400 字符 */
+    /if \(\$smokeRc -ne 0\)[\s\S]{0,400}exit 1/.test(installPs1),
+    "冒烟失败以非 0 退出（安装窗据此停在失败步）",
+  );
+  has(
+    installPs1,
+    'Step-Progress -Fail "冒烟导入失败',
+    "冒烟失败在安装窗里停在「冒烟」这一步并给出原因",
   );
   has(installPs1, "BREEZE_SKIP_CUDA_CHECK", "无卡机器留了显式逃生阀（默认闸门关着）");
   hasnt(
@@ -2034,6 +2053,15 @@ function scene(nodes, wires) {
         'function Say([string]$m) { Write-Host ("[say] " + $m) }',
         "function Step([string]$m, [double]$p) { Say $m }",
         "function Progress([double]$p) { }",
+        /* 步骤协议桩：闸门段现在会打步骤行（Step-Progress / Step-Fail），
+           真源在 pack-steps/step.ps1 —— 这里只让它不炸，并把步骤行原样打进 stdout */
+        "function Write-MTStepJson { param([string]$Id,[string]$Title,[string]$Status,[object]$Pct,[string]$Message)",
+        '  Write-Host ("[step] " + $Id + " " + $Status + " " + $Message) }',
+        "function Step-Begin { param([string]$Id,[string]$Title,[object]$Pct,[string]$Message) Write-MTStepJson $Id $Title 'run' $Pct $Message }",
+        "function Step-Ok { param([string]$Id,[object]$Pct,[string]$Message) Write-MTStepJson $Id '' 'ok' $Pct $Message }",
+        "function Step-Fail { param([string]$Id,[string]$Message) Write-MTStepJson $Id '' 'fail' '' $Message }",
+        "function Step-Skip { param([string]$Id,[string]$Message) Write-MTStepJson $Id '' 'skip' '' $Message }",
+        "function Step-Progress { param([object]$Pct,[string]$Fail,[string]$Skip) if ($Fail) { Step-Fail 'smoke' $Fail } }",
         installPs1.slice(at),
       ].join("\r\n"),
       "utf8",
@@ -2058,8 +2086,8 @@ function scene(nodes, wires) {
       };
     };
     const a = runGate(1, 0);
-    eqNum(a.code, 1, "冒烟 import 失败 → 非 0 退出（宿主保底链才会被触发）");
-    has(a.verdict, "reason=smoke_failed", "冒烟失败写裁决 smoke_failed");
+    eqNum(a.code, 1, "冒烟 import 失败 → 非 0 退出（安装窗据此停在失败步）");
+    has(a.verdict, "reason=smoke_failed", "冒烟失败写裁决 smoke_failed（宿主据此报失败原因）");
     ok(!a.marked, "冒烟失败不写 .install-ok（不再假成功）");
     const b = runGate(0, 3);
     eqNum(b.code, 1, "CUDA 不可用 → 非 0 退出");

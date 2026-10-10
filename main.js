@@ -74,6 +74,9 @@ const { registerH3Ipc, shutdownH3UiOnly } = require("./h3/main-h3.js");
 const { refreshStaleLock: refreshMediaGenLock } = require("./media-gen-global-lock.js");
 /* 插件报错总线：各本地后端宿主的失败统一上报；init 推弹窗 + 会话修复，resetDebounce 供修复回执清窗（见 plugin-error-repair.js） */
 const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js");
+/* 插件**安装窗**编排：8 个后端宿主 + 窗口插件 + 桌宠的安装链统一在这只窗里逐步骤显示；
+   各宿主把安装脚本的步骤行上报到这里，失败停在失败步并给「交给 mtnode 会话修复」（见 plugins/main-install.js） */
+const installHost = require("./plugins/main-install.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
 const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
 /* 本地 TTS 后端（Breeze TTS 2）：与 tts-local 并列的第二套语音后端，管理服务单例不随 MTNode 退出 */
@@ -8463,6 +8466,22 @@ ipcMain.handle("forum:close", (e) => {
   }
   return { ok: true };
 });
+ipcMain.handle("forum:mainFocus", () => {
+  /* 插件窗（内置讨论区）请求把主窗口亮出来：讨论区已不再自带登录入口（全 MTNode 唯一
+     登录入口是顶栏右上角 #btnAccount 的账户对话框），所以登录态失效时它关掉自己之后，
+     得由主进程把主窗口还原 / 前置 / 聚焦，用户才看得到那个唯一的登录按钮。
+     只做窗口层级的事：不打开任何对话框、不碰登录态，也不回传窗口内部信息。 */
+  try {
+    const mw = mainWin;
+    if (!mw || mw.isDestroyed()) return { ok: false, error: "no_main_window" };
+    if (mw.isMinimized()) mw.restore();
+    if (!mw.isVisible()) mw.show();
+    mw.focus();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
 ipcMain.handle("forum:getAuth", () => {
   /* 登录态统一来自 auth-store（与顶栏 / 商店同源）；config.storeAuth 已废弃。 */
   /* 只为拿一个 locale 字段，没必要再整份读 + parse 几十 MB：走 config 缓存 */
@@ -8850,6 +8869,14 @@ app.whenReady().then(() => {
   /* Music3 / H3 后端不随 MTNode 退出；此处只注册 IPC / 控制台窗 */
   /* 报错总线先 init：宿主模块在各自 register 里 registerPluginHost，之后失败即上报主窗 */
   initPluginErrorBus({ getMainWin: () => mainWin });
+  /* 安装窗编排先 init：各宿主在自己 register 里 registerInstallTarget + 把步骤行上报到这里；
+     主窗口渲染层收到 mtnodeInstall:session / mtnodeInstall:openConsole 后新建修复会话 / 开控制台 */
+  installHost.initInstallHost({
+    getMainWin: () => mainWin,
+    getDataDir: () => DATA,
+    appRoot: __dirname,
+    log: (line) => console.log(line),
+  });
   registerMusic3Ipc({
     getDataDir: DATA,
     getMainWin: () => mainWin,

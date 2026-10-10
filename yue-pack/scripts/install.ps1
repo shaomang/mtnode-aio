@@ -48,14 +48,51 @@ $InferWhlName = "yue2_infer-0.1.5-py3-none-any.whl"
 $ModelRepo = "m-a-p/YuE2-3B"
 $VaeRepo = "m-a-p/YuE2-Vae"
 
+# 步骤协议（安装窗按它列步骤 / 定位失败步）：真源是包内 scripts/step.ps1。
+# 本脚本流程一行没重排：下面用一张「进度门槛 → 步骤 id」映射表，把脚本原有的
+# Write-Progress-Line 数字翻译成结构化步骤行（见 Step-Progress）。
+$stepLib = Join-Path $PSScriptRoot "step.ps1"
+if (Test-Path $stepLib) { . $stepLib }
+else {
+  function Write-MTStepJson { param([string]$Id,[string]$Title,[string]$Status,[object]$Pct,[string]$Message)
+    $o = [ordered]@{ mtnodeStep = 1; id = $Id; title = $Title; status = $Status }
+    if ("$Pct" -ne "") { $n = 0; if ([int]::TryParse("$Pct",[ref]$n)) { $o.pct = $n } }
+    if ($Message) { $o.message = $Message }
+    Write-Host ($o | ConvertTo-Json -Compress -Depth 3)
+  }
+  function Step-Begin { param([string]$Id,[string]$Title,[object]$Pct,[string]$Message) Write-MTStepJson $Id $Title "run" $Pct $Message }
+  function Step-Ok { param([string]$Id,[object]$Pct,[string]$Message) Write-MTStepJson $Id "" "ok" $Pct $Message }
+  function Step-Fail { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "fail" "" $Message }
+  function Step-Skip { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "skip" "" $Message }
+  function Step-ProgressMap { param([object[]]$Map) }
+  function Step-Progress { param([object]$Pct,[string]$Fail,[string]$Skip) }
+}
+
+# 步骤门槛 → 步骤 id（与同目录 steps.json 一致）。
+Step-ProgressMap @(
+  @{ at = 4;   id = "gpu";     title = "探测 NVIDIA 显卡与驱动" },
+  @{ at = 8;   id = "python";  title = "创建 Python 3.12 虚拟环境" },
+  @{ at = 20;  id = "deps";    title = "安装 requirements.txt（含 gradio）" },
+  @{ at = 30;  id = "torch";   title = "安装 CUDA torch / torchaudio" },
+  @{ at = 38;  id = "attn";    title = "探测 attention 后端" },
+  @{ at = 42;  id = "pkg";     title = "安装 yue2 推理包" },
+  @{ at = 58;  id = "weights"; title = "下载权重 YuE2-3B + YuE2-Vae" },
+  @{ at = 82;  id = "files";   title = "校验项目文件清单与 app.ui 导入" },
+  @{ at = 88;  id = "smoke";   title = "mock 冒烟（/health → 生成 → 收尾）" },
+  @{ at = 96;  id = "markers"; title = "写安装标记" }
+)
+
 function Write-Progress-Line([int]$Pct, [string]$Msg) {
   Write-Host "[yue2-install] progress: $Pct"
   if ($Msg) { Write-Host "[yue2-install] $Msg" }
+  Step-Progress $Pct
 }
 
 function Write-AgentResult([string]$Ok, [string]$Reason) {
   $body = "ok=$Ok"
   if ($Reason) { $body = "$body`nreason=$Reason" }
+  # 失败出口：把当前步骤标 fail（成功路径的 "true" 由进度 100 收尾，且重复标记无副作用）
+  if ("$Ok" -ne "true") { Step-Progress -Fail "install failed: $Reason" }
   Set-Content -Path (Join-Path $InstallDir ".yue2-agent-result") -Value $body -Encoding UTF8
 }
 
