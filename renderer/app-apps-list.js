@@ -275,7 +275,7 @@
     var o = opts || {};
     var id = String((spec && spec.id) || "");
     if (!host || !id) return null;
-    var st = { id: id, spec: spec, ver: null, verSeq: 0, cmtMounted: false, right: null, ownerId: "" };
+    var st = { id: id, spec: spec, ver: null, verSeq: 0, right: null, ownerId: "" };
     var holder = document.createElement("div");
     holder.className = "apps-panel-holder";
     host.appendChild(holder);
@@ -307,32 +307,48 @@
       /* 右列的各块（描述 / 分支树 / 打赏 / 本机版本回滚 / 上架状态 / 开发者信息）与详情窗
          **同一份实现**（app-apps.js 的 appsDetailRightColEl）：面板与窗里永远一致。
          把 current 指针挂上去是为了分支树点选能回画这一格（见 app-apps.js 的 APPS_DETAIL_CTX）。 */
+      /* 当前选中的那条分支：与详情窗同源 —— 「分支 / 版本」跳窗里选过就记在
+         appsPickOf（APPS_PICK）里，没选过回原作者。面板自己那一次点选（st.ownerId）兜底。 */
+      var selKey = "";
+      try {
+        selKey = typeof appsPickOf === "function" ? appsPickOf(st.id).key || "" : "";
+      } catch (_) {}
       var ctx = {
         id: st.id,
+        /* ★ panel: st —— appsDetailSelKey 会读 ctx.panel.ownerId，于是下面的
+           appsDetailSpecOf(id) 回的就是**面板里选中的那条分支**（左列截图 / 作者行 / 说明 /
+           评论区都跟着它走）。少了这一项，面板永远画主干那份 spec —— 用户报的
+           「切到别的作者分支，截图还是老那位作者的」正是这里。 */
+        panel: st,
+        branchOwnerId: selKey || String(st.ownerId || ""),
         setBranch: function (key) {
           st.ownerId = String(key || "");
+          st.paint();
         },
         repaint: function () {
-          appsPanelPatchRoll(st);
+          st.paint();
         },
       };
       var prev = window.APPS_DETAIL_CTX || null;
       window.APPS_DETAIL_CTX = ctx;
+      /* 当前选中的那条分支条目（拿不到就退回调用方给的 spec） */
+      var cur = st.spec;
       try {
+        if (typeof appsDetailSpecOf === "function") cur = appsDetailSpecOf(st.id) || st.spec;
         if (typeof appsDetailMediaEl === "function") {
           media.innerHTML = "";
-          media.appendChild(appsDetailMediaEl(st.spec, typeof appsLocalById === "function" ? appsLocalById(st.id) : null, st.title || ""));
+          media.appendChild(appsDetailMediaEl(cur, typeof appsLocalById === "function" ? appsLocalById(st.id) : null, st.title || ""));
         }
         head.innerHTML = "";
         right.innerHTML = "";
         var local = typeof appsLocalById === "function" ? appsLocalById(st.id) : null;
-        var name = st.title || String((st.spec && (st.spec.name || st.spec.id)) || "");
+        var name = st.title || String((cur && (cur.name || cur.id)) || "");
         right.appendChild(appsDetailNameEl(name));
-        right.appendChild(appsDetailInfoRowsEl(st.spec, local));
+        right.appendChild(appsDetailInfoRowsEl(cur, local));
         /* 说明 / 分支树 / 打赏 / 编辑 / 开发者信息：与详情窗**同一份实现**
            （app-apps.js 的 appsDetailBodyEl 的 head 路径）—— 面板与窗里永远一致。 */
         if (typeof appsDetailBodyEl === "function") {
-          var body = appsDetailBodyEl(st.spec, { app: local || undefined, noVers: true, head: true });
+          var body = appsDetailBodyEl(cur, { app: local || undefined, noVers: true, head: true });
           if (body) right.appendChild(body);
         }
         /* 回滚那一格的占位：台账回来时就地替换它，不整块重画右列（否则刚写了一半的评论框会被拆掉） */
@@ -340,19 +356,21 @@
         roll.className = "apps-panel-roll";
         right.appendChild(roll);
         st.roll = roll;
+        /* 评论区：目标 = **当前选中的那条分支**（app-apps.js 的 appsCommentTarget）——
+           切分支整块换成那一支的评论，草稿由 appsCommentsMountInto 原样保住。
+           以前只挂一次（st.cmtMounted），切分支后整个评论区不动，评论也就分不开。 */
+        if (st.cmt && cur && cur.id && typeof appsCommentsMountInto === "function") {
+          var cmtTarget = typeof appsCommentTarget === "function" ? appsCommentTarget(cur) : null;
+          if (cmtTarget) {
+            appsCommentsMountInto(st.cmt, cmtTarget, { title: st.title || "" }, selKey || st.ownerId || cmtTarget.ownerId);
+          } else {
+            st.cmt.innerHTML = "";
+          }
+        }
       } finally {
         window.APPS_DETAIL_CTX = prev || null;
       }
       appsPanelPatchRoll(st);
-      if (!st.cmtMounted && st.spec && st.spec.id) {
-        st.cmtMounted = true;
-        var cloud = typeof appsCloudTarget === "function" ? appsCloudTarget(st.spec) : null;
-        if (cloud && window.MtComments && typeof window.MtComments.mount === "function") {
-          try {
-            window.MtComments.mount(st.cmt, cloud, { title: st.title || "" });
-          } catch (_) {}
-        }
-      }
       appsPanelPaintFoot(st);
       return st;
     };
@@ -377,7 +395,10 @@
     var prev = window.APPS_DETAIL_CTX || null;
     window.APPS_DETAIL_CTX = {
       id: st.id,
+      /* 与 st.paint 同一份口径（选中分支 / 面板归属）：回滚那一块也按选中的那一支画 */
+      panel: st,
       ver: st.ver,
+      branchOwnerId: String(st.ownerId || ""),
       setBranch: function () {},
       repaint: function () {
         appsPanelPatchRoll(st);

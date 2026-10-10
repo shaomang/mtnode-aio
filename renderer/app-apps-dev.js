@@ -137,8 +137,35 @@ const DEVD = {
 
 /* ── 小工具 ── */
 
-function appsDevT(s) {
-  return window.I18n && I18n.t ? I18n.t(s) : String(s == null ? "" : s);
+/* vars = 占位符替换表（I18n.t 第二参）：与 app-apps.js 的 appsT 同一纪律 ——
+   少传这一位，带 {author} / {version} 的整句（合并会话标题、那条关键输入）就原样带着
+   花括号显示给用户（用户报的「author 和 version 都并未正确填充」）。 */
+function appsDevT(s, vars) {
+  return window.I18n && typeof I18n.t === "function"
+    ? I18n.t(s, vars)
+    : String(s == null ? "" : s);
+}
+/** 带占位符的整句：填一遍 + **填不干净就当场报错**。
+ *  判据两层：① 整句里点名的占位符，vars 必须给出非空值（I18n.t 会把缺失的键填成空串，
+ *  只把整句变成「合并  v 的差异」，不报错 —— 静默少字，只有显式检查拦得住）；
+ *  ② 填完还残留 {\w+} 也算漏（键名写错时是这种形态）。 */
+function appsDevTpl(key, vars) {
+  const v = vars && typeof vars === "object" ? vars : {};
+  const need = [];
+  String(key).replace(/\{(\w+)\}/g, (_, k) => {
+    if (need.indexOf(k) < 0) need.push(k);
+    return _;
+  });
+  const empty = need.filter((k) => String(v[k] == null ? "" : v[k]).trim() === "");
+  const out = String(appsDevT(key, vars));
+  const miss = out.match(/\{\w+\}/g) || [];
+  if (empty.length || miss.length) {
+    throw new Error(
+      "appsDevTpl 少给占位符：" + key + (empty.length ? " → 空值：" + empty.join(",") : "") +
+        (miss.length ? " → 未替换：" + miss.join(",") : ""),
+    );
+  }
+  return out;
 }
 function appsDevToast(msg, kind) {
   if (typeof toast === "function") toast(msg, kind || "ok");
@@ -152,7 +179,7 @@ function appsDevStartApp() {
     appsDevToast(appsDevT("先新建或安装一个应用，再启动"), "warn");
     return;
   }
-  if (typeof appsOpenApp === "function") appsOpenApp(id);
+  if (typeof appsOpenApp === "function") appsOpenApp(id, "dev");
 }
 /* 该应用在本机的项目文件夹（开发页一切「项目文件夹」口径的唯一取数点）：
    appsLocalList 的那条记录里的 dir（apps-store 按类型解析好的绝对路径），取不到就回空串。
@@ -163,7 +190,7 @@ function appsDevProjectDir(appId) {
   if (!id) return "";
   try {
     const hit =
-      typeof appsLocalById === "function" ? appsLocalById(id) : null;
+      typeof appsLocalById === "function" ? appsLocalById(id, "dev") : null;
     return String((hit && hit.dir) || "").trim();
   } catch (_) {
     return "";
@@ -234,11 +261,19 @@ function appsDevPageOpen() {
   if (!appsDevHubOpen()) return false;
   return String(APPS_ST && APPS_ST.nav) === "dev";
 }
-/* 「开发中」的应用（本机列表顺序 = 安装时间新→旧，左栏照原样用；只列 dev:true 的，
-   与库页相反 —— 开发中的应用不从库页进，入口就是这一列 + 顶栏那条菜单）。 */
+/* 「开发中」的应用（本机列表顺序 = 安装时间新→旧，左栏照原样用；**只列躺在项目根下的**，
+   与库页相反 —— 开发中的应用不从库页进，入口就是这一列 + 顶栏那条菜单）。
+   判据是「哪一套根」而不是 app.json 的 dev 标记：同一个 id 在下载根与项目根各有一份时
+   （用户看对方那一版时装了一份同 id 的进下载根），两边共用同一份清单字段，只看 dev 标记
+   会把下载那份也列进来 —— 见 renderer/app-apps.js 的 appsLocalRootKind、
+   apps-store.js 的 listApps / appSummary（rootAuthority）。 */
 function appsDevApps() {
   const all = typeof appsLocalList === "function" ? appsLocalList() : [];
-  return all.filter((a) => a && a.dev === true);
+  return all.filter(
+    (a) =>
+      a &&
+      (typeof appsLocalRootKind === "function" ? appsLocalRootKind(a) === "dev" : a.dev === true),
+  );
 }
 /* 左栏应用行的展开态：没记过 = 当前应用默认展开，其余收起（点箭头才写这张表，会话级记忆） */
 function appsDevAppExpanded(appId) {
@@ -1693,7 +1728,7 @@ function appsDevComposerSend(raw) {
 function devStyleAskContract(appId) {
   const id = String(appId || "").trim();
   const app =
-    id && typeof appsLocalById === "function" ? appsLocalById(id) : null;
+    id && typeof appsLocalById === "function" ? appsLocalById(id, "dev") : null;
   const style = String((app && app.style) || "")
     .trim()
     .toLowerCase();
@@ -1790,6 +1825,156 @@ async function appsDevStartDevSession(text) {
   }
   return true;
 }
+
+/* ── 版本合并会话（本轮需求）：主进程拉好的那一版 → 新建一条会话交给 Agent ─────────────
+ *
+ * 入口在应用中心那两处（renderer/app-apps.js 的 appsMergeStart 调这里，拉取成功之后）：
+ *   ① 该应用有画布开发节点 → 走 createDevSessionForNode（与「开发」会话同一套归属：
+ *      左栏该应用分组、工作区 = 应用目录、任务书随系统提示注入）；
+ *   ② 没有开发节点 → 退成一条普通契约会话（agentContractSession）：工作区仍是应用目录，
+ *      只把 appId 标上，左栏照样归到那个应用下。
+ * 契约正文 = appsMergeContractText(pull)：两边的绝对路径 + 文件级差异清单 + 硬规则
+ * （先 grill-me 拷问、用户确认前不动任何文件、不改版本号、app.json 只经结束声明、
+ *  不自动上架、不做额外改动）。差异清单最多列 APPS_MERGE_LIST_MAX 条，其余只说个数 ——
+ * 免得几百个文件把系统提示撑爆（清单只是索引，真要核自己扫目录）。
+ */
+const APPS_MERGE_LIST_MAX = 200;
+
+/** 合并会话契约正文（整份随系统提示注入；用户消息位只留那一句关键输入）。 */
+function appsMergeContractText(pull, appDir) {
+  const p = pull || {};
+  const their = p.their || {};
+  const counts = p.counts || {};
+  const author = String(their.author || "").trim() || appsDevT("对方");
+  const lines = [];
+  lines.push(appsDevT("【版本合并 · 这个会话干什么】把对方那一版合进本机开发目录：先对比差异，再用拷问逐项问过我，然后按我的选择改文件。合并**不修改版本号**（每位作者各算各的），也**不会自动上架**。"));
+  lines.push(appsDevT("· 本机开发目录（要改的就是它）：") + String(appDir || p.dir || ""));
+  lines.push(appsDevT("· 对方那一版（只读，一个字都不要改它）：") + String(p.srcDir || p.staging || ""));
+  lines.push(
+    appsDevT("· 对方：") + author + " · v" + String(their.version || "") +
+      (String(their.note || "").trim() ? appsDevT(" · 版本说明：") + String(their.note) : ""),
+  );
+  lines.push(appsDevT("· 本机版本号（**这次不会改它**）：") + String(p.myVersion || ""));
+  if (String(p.backupDir || "")) {
+    lines.push(appsDevT("· 合并前整目录备份（要回滚就把它拷回开发目录）：") + String(p.backupDir));
+  }
+  lines.push(
+    appsDevT("· 文件级差异清单（主进程已比过；add = 对方新增，diff = 两边都有但内容不同，same = 一致，local = 只有我有）：") +
+      " 共 " + String(counts.add || 0) + " add / " + String(counts.diff || 0) + " diff / " +
+      String(counts.local || 0) + " local / " + String(counts.same || 0) + " same",
+  );
+  const rows = (Array.isArray(p.files) ? p.files : []).filter((f) => f.kind === "add" || f.kind === "diff");
+  for (const f of rows.slice(0, APPS_MERGE_LIST_MAX)) {
+    lines.push("  - " + String(f.kind) + " " + String(f.rel) + (f.binary ? appsDevT("（二进制）") : ""));
+  }
+  if (rows.length > APPS_MERGE_LIST_MAX) {
+    lines.push("  " + appsDevT("（另有 ") + (rows.length - APPS_MERGE_LIST_MAX) + appsDevT(" 个要处理的文件没列在这里，自己扫两边目录补齐）"));
+  }
+  lines.push("");
+  lines.push(appsDevT("【必须按这个顺序来】① 先用 skill 工具加载内置技能 mtnode-app-merge，并严格照它执行；② 再加载 mtnode-grill-me，用 ask_user_question 一次问满整个前沿：每个 add / diff 都要问到「怎么覆盖」，外加一问「我这一版要不要跟着动」（默认不动）；③ **用户确认之前，不许改任何文件**；④ 确认之后自己改开发目录（文本用文件工具改，二进制与新增文件用 shell 拷贝）。"));
+  lines.push(appsDevT("【硬规则】只按拷问结果覆盖差异，不做任何额外改动；「只有我有」的文件一律保留、不用问；不动 storage/、data.json、*.mtnodes 与备份目录；**不许直接改 app.json、不许改版本号**。"));
+  lines.push(
+    appsDevT("【收尾】把这次采纳的清单写进这个文件：") +
+      String(p.staging || "") + "/.merge-done.json" +
+      appsDevT("（形如 {\"done\":true,\"files\":[\"index.html\"],\"version\":\"\"}）。主进程见到它就补一条合并留痕并清掉暂存目录。version 留空 = 版本号不动；只有我在拷问里明确要「跟着动」时才填我要的新版本号。"),
+  );
+  lines.push(appsDevT("【不许做的事】不自动上架、不改画布、不动备份目录、不改对方那一版；合并结束前不要删暂存目录。"));
+  return lines.join("\n");
+}
+
+/** 把这条合并会话摆到用户眼前：切到开发页 + 选中那个应用 + 右栏显示这条会话。 */
+function appsDevShowMergeSession(appId, sess) {
+  const id = String(appId || "");
+  if (!id || !sess) return;
+  try {
+    if (typeof APPS_ST === "object" && APPS_ST) APPS_ST.nav = "dev";
+    if (typeof appsDevSelectApp === "function") appsDevSelectApp(id);
+    appsDevNewRoundClear();
+    DEVD.draft = false;
+    DEVD.sessionId = String(sess.id || "");
+    DEVD.msgCount = Array.isArray(sess.messages) ? sess.messages.length : 0;
+    appsDevRenderConv();
+  } catch (_) {}
+}
+
+/** 拉取好的那一版 → 新建一条合并会话并立刻起轮（返回会话对象；建不起来回 null）。 */
+async function appsDevStartMergeSession(pull, label) {
+  const p = pull || {};
+  const appId = String(p.appId || "").trim();
+  if (!appId) return null;
+  const appDir =
+    String(p.dir || "") ||
+    (typeof appsDevProjectDir === "function" ? String(appsDevProjectDir(appId) || "") : "");
+  if (!appDir) return null;
+  const their = p.their || {};
+  const author = String(their.author || "").trim() || appsDevT("对方");
+  const ver = String(their.version || "");
+  /* 标题与「关键输入」都用**拉取回执里对方那一版**的作者 / 版本号（不是目录条目上的猜测值）：
+     契约正文、暂存目录、差异清单、这条输入四份必须同源 —— 用户按这条输入核对的就是「合的是谁的那一版」。 */
+  const title = appsDevTpl("合并 {author} v{version} 的差异", { author: author, version: ver });
+  const kick = appsDevTpl("把 {author} v{version} 的差异按我逐项确认的结果合进本机", {
+    author: author,
+    version: ver,
+  });
+  const contract = appsMergeContractText(p, appDir);
+  /* 该应用的画布与开发节点：与 appsDevEnsureNode 同一条链，但**不动 DEVD 的选中态** ——
+     合并能从应用中心直接发起，此刻用户可能根本没停在开发页。 */
+  let wf = null;
+  let node = null;
+  try {
+    if (typeof wfOfCanvasIdForRun === "function") wf = await wfOfCanvasIdForRun(appId);
+    if (wf && typeof appsDevNodeOfWf === "function") node = appsDevNodeOfWf(wf);
+  } catch (_) {
+    wf = null;
+    node = null;
+  }
+  let sess = null;
+  if (node && typeof createDevSessionForNode === "function") {
+    /* agentWorkspace = 应用目录（dshWorkspaceOf 的 manual 分支优先）；建完再显式钉一次
+       workspace —— 合并会话的文件落点只认「该应用在本机的那份目录」。 */
+    sess = createDevSessionForNode(
+      Object.assign({}, node, { agentWorkspace: appDir }),
+      "dev",
+      kick,
+      contract,
+    );
+    if (sess) {
+      sess.workspace = appDir;
+      sess.title = title;
+      sess.titleLocked = true;
+      sess.titleAuto = false;
+      sess.appId = appId;
+      /* 会话 id 写进了节点（devSessionIds）→ 该应用的画布落盘（未必是前台那张） */
+      if (wf) {
+        try {
+          if (typeof persistWf === "function") persistWf(wf);
+        } catch (_) {}
+      }
+    }
+  }
+  if (!sess && typeof agentContractSession === "function") {
+    sess = agentContractSession({
+      title: title,
+      contract: contract,
+      kick: kick,
+      workspace: appDir,
+      allowCanvas: false,
+      canvasWfId: wf ? String(wf.id || "") : "",
+    });
+    if (sess) sess.appId = appId;
+  }
+  if (!sess) return null;
+  appsDevShowMergeSession(appId, sess);
+  try {
+    if (typeof agentTouchSession === "function") await agentTouchSession();
+  } catch (_) {}
+  try {
+    if (typeof agentContractRound === "function") await agentContractRound(sess);
+  } catch (_) {}
+  void label;
+  return sess;
+}
+
 /* ── 「＋ 新开发会话」的意图位（DEVD.newRound）───────────────────────────────
  *
  * 为什么需要单独记一位：「点＋」与「切到这个应用看一眼」在界面上落到**同一个状态**
@@ -2129,7 +2314,9 @@ function appsDevPagePaint(body, seq) {
      DOM 上摘掉，所以这里不能只依赖 appsHubPaint 的卸载钩子） */
   appsDevUnmount();
   const apps = (typeof appsLocalList === "function" ? appsLocalList() : []).filter(
-    (a) => a && a.dev === true,
+    (a) =>
+      a &&
+      (typeof appsLocalRootKind === "function" ? appsLocalRootKind(a) === "dev" : a.dev === true),
   );
   /* 进开发页时选哪个应用：appsDevPickApp（本页当前选中的 > 上次打开过的 > 名单第一个）。
      这样从别处回开发页不会出现「没选中应用」的空页。 */
@@ -2255,7 +2442,7 @@ function appsDevPagePaint(body, seq) {
       (() => {
         const un = appsMiniBtn(appsDevT("卸载"), () => {
           const app =
-            typeof appsLocalById === "function" ? appsLocalById(DEVD.appId) : null;
+            typeof appsLocalById === "function" ? appsLocalById(DEVD.appId, "dev") : null;
           if (!app) {
             appsDevToast(appsDevT("这个应用不在本机了"), "warn");
             return;
@@ -2286,7 +2473,7 @@ function appsDevPagePaint(body, seq) {
      应用根目录；没有选中的本机应用时不给点。 */
   if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
     const dirBtn = appsMiniBtn(appsDevT("数据目录"), () => {
-      if (typeof appsDataOpenNow === "function") appsDataOpenNow(DEVD.appId);
+      if (typeof appsDataOpenNow === "function") appsDataOpenNow(DEVD.appId, "dev");
     });
     dirBtn.title = appsDevT("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
     head.appendChild(addSlot(5.5, dirBtn, "数据目录"));
@@ -2301,7 +2488,7 @@ function appsDevPagePaint(body, seq) {
       addSlot(
         9,
         appsMiniBtn(appsDevT("换风格…"), () => {
-          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId) : null;
+          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId, "dev") : null;
           if (typeof appStyleSwapDialog === "function")
             appStyleSwapDialog(
               DEVD.appId,
@@ -2320,11 +2507,13 @@ function appsDevPagePaint(body, seq) {
       addSlot(
         9.5,
         appsMiniBtn(appsDevT("应用能力…"), () => {
-          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId) : null;
+          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId, "dev") : null;
           if (typeof appCapabilitiesDialog === "function")
             appCapabilitiesDialog(
               DEVD.appId,
               String((app && app.name) || DEVD.appId || ""),
+              /* kind=dev：改的是**项目根那一份**的能力位（同 id 在下载根也有时别写错副本） */
+              { kind: "dev" },
             );
         }),
         "应用能力",
@@ -2871,3 +3060,5 @@ window.appsDevPagePaint = appsDevPagePaint;
 window.appsDevPageUnmount = appsDevPageUnmount;
 /* 左栏应用行「＋」/ 工具栏「＋」两个入口共用（app-assist.js 经宿主 onAppNew 取） */
 window.appsDevNewSessionFor = appsDevNewSessionFor;
+/* 版本合并会话：应用中心那两处入口拉到对方那一版之后调它（见 appsDevStartMergeSession） */
+window.appsDevStartMergeSession = appsDevStartMergeSession;

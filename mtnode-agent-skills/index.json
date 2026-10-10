@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-10-06T18:05:04.768Z",
+  "updatedAt": "2026-10-09T23:10:57.941Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -23,6 +23,14 @@
           "title": "MTNode 应用开发",
           "description": "开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服",
           "path": "app/app-dev/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "app-merge",
+          "name": "mtnode-app-merge",
+          "title": "MTNode 应用版本合并",
+          "description": "把云端「对方那一版」合进本机应用开发目录的一次合并会话怎么做：读会话契约给的两边目录与文件级差异清单 → 先 grill-me 拷问（每个 add / diff 怎么覆盖 + 我这一版要不要跟着动）→ 用户确认后才动文件 → 收尾写 .merge-done.json 声明结束。合并**不修改版本号**（每位作者各算各的）、**不自动上架**、不做任何额外改动。MTNode 应用中心点「拉取 vX 交给 Agent 合并」（或分支树那颗按钮）之后，主进程会新建一条带本技能名的合并会话。",
+          "path": "app/app-merge/SKILL.md",
           "version": ""
         }
       ]

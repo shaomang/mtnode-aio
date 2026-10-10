@@ -124,6 +124,9 @@ const PUB = {
   load: null,
   bridgeMiss: "", /* 关键桥缺失时的说明（storeRequest / appsReadZipBase64 …） */
   online: null, /* {known, exists, mine, id, latestVersion, versions:[], item} */
+  /* 线上分支树里「点选查看」的那一条（本轮需求 1：那棵树上可点的行要有手型指针 + 悬停高亮）。
+     只是**看**哪一支：不影响本次上传的目标（上传永远只会动你自己那条分支）。 */
+  treeOwnerId: "",
   quota: null, /* {apps, bytes, at, error, limitBytes, appsLimit, usedBytes} —— 上限取服务端回执，拿不到用默认 */
   /* 这次见到过的「云端已有这张图」内容指纹（sha256 → 1）：同一张图第二次提交只发 { sha } 引用。
      三处来源合并，判断错也有服务端的 OBJ_NOT_FOUND 兜住（那一轮自动改成发字节）：
@@ -1884,11 +1887,30 @@ function pubPaintOnline() {
   const others = branches.filter((b) => b !== myBranch);
   /* 分支树（多于一条分支才画）：主干最左、其余向右延伸，每行带作者与本机已装情况 */
   if (branches.length > 1 && typeof appsBranchTreeEl === "function") {
+    const pickedKey = pubStr(PUB.treeOwnerId);
     const tree = appsBranchTreeEl(o.id, {
       branches: branches.map((b) => Object.assign({}, b, { id: o.id })),
-      selectedOwnerId: pubStr(myBranch && (myBranch.ownerId || myBranch.owner)),
+      selectedOwnerId: pickedKey || pubStr(myBranch && (myBranch.ownerId || myBranch.owner)),
+      /* 本轮需求 1：分支行要能看出「可点」。这一窗只作查看，所以点一下**只做选中高亮**
+         （onSelect 自己收，绝不写应用详情的选中态、也不在这儿长出下载按钮）。 */
+      clickable: true,
+      onSelect: (b) => {
+        PUB.treeOwnerId = pubStr(b && (b.ownerId || b.owner));
+        pubPaintOnline();
+      },
     });
     if (tree) wrap.appendChild(tree);
+    /* 点了哪一支要说清楚（用户口径：这里只是看清结构；上传永远只动你自己那条分支） */
+    const look = pickedKey ? branches.find((b) => pubStr(b && (b.ownerId || b.owner)) === pickedKey) || null : null;
+    if (look) {
+      wrap.appendChild(
+        pubEl(
+          "div",
+          "pub-hint",
+          pubT("已选：") + pubBranchLabel(look, branches) + pubT("（这里只作查看，本次上传只会新增 / 更新你自己那条分支）"),
+        ),
+      );
+    }
   }
   if (!myBranch) {
     /* 这个 id 是别人先占的：本次上传 = 在同 id 下新建**我自己**的分支（q3，自动二次开发） */

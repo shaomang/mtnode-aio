@@ -10,8 +10,10 @@
 
 - **impeccable** — Impeccable（前端设计规范）：Use when the user wants to design, redesign, shape, critique, audit, polish, clarify, distill, harden, optimize, adapt, animate, colorize, extract, or otherwise improve a frontend interface. Covers websites, landing pages, dashboards, product UI, app shells, components, forms, settings, onboarding, and empty states. Handles UX review, visual hierarchy, information architecture, cognitive load, acc
   - 文件：`app/impeccable/SKILL.md`
-- **mtnode-app-dev** — MTNode 应用开发：开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不
+- **mtnode-app-dev** — MTNode 应用开发：开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服
   - 文件：`app/app-dev/SKILL.md`
+- **mtnode-app-merge** — MTNode 应用版本合并：把云端「对方那一版」合进本机应用开发目录的一次合并会话怎么做：读会话契约给的两边目录与文件级差异清单 → 先 grill-me 拷问（每个 add / diff 怎么覆盖 + 我这一版要不要跟着动）→ 用户确认后才动文件 → 收尾写 .merge-done.json 声明结束。合并**不修改版本号**（每位作者各算各的）、**不自动上架**、不做任何额外改动。MTNode 应用中心点「拉取 vX 交给 Agent 合并」（或分支树那颗按钮）之后，主进程会新建一条带本技能名的合并会话。
+  - 文件：`app/app-merge/SKILL.md`
 
 ## MTNode 产品与画布
 

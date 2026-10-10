@@ -393,6 +393,26 @@
   padding-bottom: 3px;
 }
 
+/* 分支行可点时的「交互」反馈（本轮需求 1：选分支没有交互指针）：
+   is-pick = 那一行真能点（应用详情 / 「分支 / 版本」跳窗的 withSel，或上架窗的 clickable）。
+   口径与版本行 .apps-vers-row.is-pick 一致：手型指针 + 悬停底色 + 悬停时作者名提亮；
+   不可点的行（宿主没给 withSel / clickable）一律不加 —— 指针只出现在真能点的地方。 */
+.apps-br-branch.is-pick {
+  border-radius: 4px;
+}
+
+.apps-br-branch.is-pick > .apps-br-line {
+  cursor: pointer;
+}
+
+.apps-br-branch.is-pick:hover {
+  background: var(--panel2);
+}
+
+.apps-br-branch.is-pick:hover .apps-br-who {
+  color: var(--acc);
+}
+
 .apps-br-line {
   display: flex;
   align-items: center;
@@ -568,6 +588,113 @@
 /* 树上选中的那一支（点整行切换） */
 .apps-br-branch.on .apps-br-who {
   color: var(--orange2);
+}
+
+/* ── 版本合并入口（拉取对方那一版 → 两条路二选一：AI 逐项合并 / 完全替换）───────────
+   .apps-br-merge 是分支树下那块入口（本机开发目录里真有这个应用时才出现）；
+   .apps-merge-entry 是那颗按钮（分支树 / 卡片动作行 / 列表行图标共用一处文案）。
+   旧的「差异预演窗」已下线（差异不再由脚本预演，改由会话里的 Agent 逐项问过用户再落），
+   取而代之的是 .apps-merge-pick-*（二选一那张卡，见 app-apps.js 的 appsMergeChoice）：
+   左卡 = AI 逐项合并（走会话），右卡 = 完全替换（主进程一次做完，不经过 Agent）。 */
+.apps-br-merge {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--bd);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.apps-br-merge-btn {
+  align-self: flex-start;
+  font-weight: 600;
+}
+
+.apps-br-merge-note {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.apps-merge-entry {
+  font-weight: 600;
+}
+
+.apps-merge-entry:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 二选一（本轮需求）：两条路的后果并排摆开，一眼能比。
+   卡片的边框色 = 这条路是「稳」还是「险」：普通 = AI 逐项合并（可逆），
+   danger = 完全替换（当场删掉本机旧版本与画布）。 */
+.apps-merge-pick-head {
+  font-size: 13px;
+  color: var(--fg, var(--text, inherit));
+  margin-bottom: 10px;
+}
+
+.apps-merge-pick {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.apps-merge-pick-card {
+  flex: 1 1 260px;
+  min-width: 240px;
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.apps-merge-pick-card.primary {
+  border-color: var(--cyan);
+}
+
+.apps-merge-pick-card.danger {
+  border-color: var(--red);
+}
+
+.apps-merge-pick-title {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.apps-merge-pick-card.danger .apps-merge-pick-title {
+  color: var(--red);
+}
+
+.apps-merge-pick-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.apps-merge-pick-list {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.apps-merge-pick-btn {
+  align-self: flex-start;
+  margin-top: auto;
+  font-weight: 600;
+}
+
+.apps-merge-pick-note {
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.6;
+  word-break: break-all;
 }
 
 .apps-detail-branchbar {

@@ -545,7 +545,7 @@ async function main() {
     "/api/health 的 recharge 自检块补了 tips / comments 条数");
   ok(/stats: Object\.assign\(wallet\.stats\(\), \{ tips: plans\.adminStats\(\) \}\)/.test(srv),
     "/api/admin/overview 的 stats 里附 tips:{count,totalYuan}（plans.adminStats()）");
-  ok(/function withEnrich\(obj, kind, id, en\)/.test(srv) && srv.includes("enrichOf(\"template\", pageItems.map((t) => t.id))"),
+  ok(/function withEnrich\(obj, kind, id, en(, ownerId)?\)/.test(srv) && srv.includes("enrichOf(\"template\", pageItems.map((t) => t.id))"),
     "列表接口先收本页 ids 再批量算（不在循环里逐个算 → 不是 N²）");
   const dep = read("store-saas/deploy.sh");
   ok(dep.includes('install -m 644 "$SRC/tips.mjs" /opt/mtnode-store/tips.mjs') &&

@@ -3653,9 +3653,10 @@ function packMtNodes(wf) {
    idPrefix 缺省 "imp_"（用户导入的画布）；首启注入「快速开始」时传 "wf_" ——
    id 与资产目录必须**同一次**定下来：资产路径是按 id 算出来的，写盘后再改 id
    会让路径指向一个不存在的目录（首启注入踩过这个坑）。 */
-function materializeImport(manifest, files, idPrefix) {
+function materializeImport(manifest, files, idPrefix, opts) {
   const wf = manifest.workflow || {};
-  const newId = (idPrefix || "imp_") + Date.now().toString(36);
+  const wantId = String((opts && opts.id) || "").trim();
+  const newId = wantId || (idPrefix || "imp_") + Date.now().toString(36);
   const dir = assetDir(newId);
   const used = new Set();
   const map = new Map();
@@ -3720,6 +3721,228 @@ function unpackMtNodes(buf) {
   return { manifest, files };
 }
 
+/* ── 应用版本「完全替换」的画布层（本轮需求）─────────────────────────────
+   主进程侧实现，口径见 app-branch-replace.js 的文件头（用户共识）：
+     · canvasInfo  = 备份前先看清「旧画布长什么样」（画布 json 与它的资产目录在哪）；
+     · wipeCanvas  = 旧画布与它的资产**进本机回收站**（与 workflow:delete 同一口径，
+                     不物理删）+ 清掉画布列表缓存；
+     · prepareCanvas = 把对方包里的 .mtnodes 物化成 assets/<appId>/ 下的资产 + 重映射后
+                     的绝对路径 + 画布元信息改写（id / appId / workspace）—— **必须在删本机
+                     应用目录之前做**（资产目录此刻还在，失败也还没动本机）；
+     · writeCanvas = 新画布落盘（数据目录那份是真源）+ 顺手写 <AppName>.mtnodes 镜像。
+   缺 .mtnodes（或坏档）都由调用方退回 emptyCanvas，绝不因此让整次替换失败。 */
+
+/* 画布层要用的画布 id 白名单（与 workflow:* 同一口径，见 wfIdOk） */
+function replaceCanvasIdOk(id) {
+  const s = String(id || "");
+  return !!s && s.length <= 120 && !/[\\/:*?"<>|\u0000-\u001f]/.test(s) && s !== "." && s !== "..";
+}
+/* 画布列表缓存摘人（画布被换掉后，左栏列表不能还挂着旧的那一条；下次 workflow:list 重扫） */
+function forgetWfListEntry(id) {
+  try {
+    const p = path.resolve(wfPath(String(id || "")));
+    wfListMeta.delete(p);
+  } catch {}
+}
+
+function replaceCanvasInfo(id) {
+  const sid = String(id || "");
+  if (!sid) return null;
+  const file = wfPath(sid);
+  let json = null;
+  let nodes = 0;
+  try {
+    if (fs.existsSync(file)) {
+      json = JSON.parse(fs.readFileSync(file, "utf8"));
+      nodes = Array.isArray(json && json.nodes) ? json.nodes.length : 0;
+    }
+  } catch {
+    json = null;
+  }
+  const assetsDir = assetDirPath(sid);
+  return {
+    id: sid,
+    canvasFile: fs.existsSync(file) ? file : "",
+    exists: fs.existsSync(file),
+    assetsDir: fs.existsSync(assetsDir) ? assetsDir : "",
+    nodes: nodes,
+    name: String((json && json.name) || ""),
+    appId: String((json && json.appId) || ""),
+  };
+}
+
+/* 旧画布 + 它的资产 → 本机回收站（trash/<时间戳>__<id>/，与 workflow:delete 同一落点与命名）。
+   画布本来就不存在 → 视为「无事可做」（noop），不是失败。 */
+function replaceWipeCanvas(id) {
+  const sid = String(id || "");
+  if (!replaceCanvasIdOk(sid)) return { ok: false, error: I18n.t("非法工作流 id"), code: "wf_bad_id" };
+  const saveRoot = path.resolve(join(DATA(), "save"));
+  const assetsRoot = path.resolve(join(DATA(), "assets"));
+  const srcFile = path.resolve(wfPath(sid));
+  const srcAssets = path.resolve(assetDirPath(sid));
+  if (!pathStrictlyUnder(saveRoot, srcFile) || !pathStrictlyUnder(assetsRoot, srcAssets)) {
+    return { ok: false, error: I18n.t("删除目标不在画布数据目录内，已拒绝"), code: "wf_path_escape" };
+  }
+  const hadFile = fs.existsSync(srcFile);
+  if (!hadFile) {
+    forgetWfListEntry(sid);
+    return { ok: true, id: sid, noop: true, canvasFile: "", assetsDir: "", trashPath: "" };
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const trashRoot = path.resolve(TRASH_DIR());
+  const entry = path.resolve(join(trashRoot, stamp + "__" + sid));
+  if (!pathStrictlyUnder(trashRoot, entry)) {
+    return { ok: false, error: I18n.t("回收站目标路径越界，已拒绝"), code: "wf_path_escape" };
+  }
+  try {
+    fs.mkdirSync(entry, { recursive: true });
+  } catch (err) {
+    return {
+      ok: false,
+      error: I18n.t("无法创建回收站目录，画布未删除：") + ((err && err.message) || String(err)),
+      code: "wf_trash_failed",
+    };
+  }
+  /* 先搬资产、再搬画布 json：任一步失败都把资产放回去，绝不留下半份画布 */
+  let hadAssets = false;
+  let assetsDest = null;
+  try {
+    hadAssets = fs.statSync(srcAssets).isDirectory();
+  } catch {}
+  if (hadAssets) {
+    const r = trashMove(srcAssets, join(entry, "assets"));
+    if (!r.ok) return { ok: false, error: r.error, code: r.code || "wf_move_failed", trashPath: entry };
+    assetsDest = r.dest;
+  }
+  const rJson = trashMove(srcFile, join(entry, sid + ".json"));
+  if (!rJson.ok) {
+    if (assetsDest) {
+      try {
+        fs.mkdirSync(path.dirname(srcAssets), { recursive: true });
+        fs.renameSync(assetsDest, srcAssets);
+      } catch {}
+    }
+    return { ok: false, error: rJson.error, code: rJson.code || "wf_move_failed", trashPath: entry };
+  }
+  forgetWfListEntry(sid);
+  return {
+    ok: true,
+    id: sid,
+    noop: false,
+    canvasFile: srcFile,
+    assetsDir: srcAssets,
+    assets: hadAssets,
+    trashPath: entry,
+  };
+}
+
+/* 把对方包里的 .mtnodes 物化成这台机器上「这个应用的画布」：
+     · 资产写进 assets/<appId>/、画布里的 "@asset/<i>" 占位重映射成绝对路径
+       （与用户手动导入一次同一口径）；
+     · 画布 id / appId = 应用 id，workspace = 应用目录（顶栏「工作目录」口径）；
+     · name 只在这一版没名字时兜底（有名字就用他自己的）。
+   包里有多个 .mtnodes（含应用目录里那份镜像）时**只认根目录里唯一那个**：多于一个就
+   只认与包内清单 name 同名的那份，仍认不出就按「没有画布」处理（宁可让调用方建空画布，
+   也不猜哪一份是他的开发画布）。 */
+function replacePrepareCanvas(id, srcDir, appName) {
+  const sid = String(id || "");
+  if (!replaceCanvasIdOk(sid)) return { ok: false, error: I18n.t("非法工作流 id"), code: "wf_bad_id" };
+  const dir = String(srcDir || "");
+  if (!dir || !fs.existsSync(dir)) return { ok: false, error: I18n.t("对方那一版不在暂存目录里了"), code: "no_source" };
+  let cands = [];
+  try {
+    cands = fs.readdirSync(dir).filter((f) => /\.mtnodes$/i.test(f));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), code: "read_failed" };
+  }
+  if (!cands.length) return { ok: false, error: "no_canvas", code: "no_canvas" };
+  let pick = "";
+  if (cands.length === 1) pick = cands[0];
+  else {
+    const want = (String(appName || "") + CANVAS_EXT).toLowerCase();
+    const hit = cands.find((f) => String(f).toLowerCase() === want);
+    if (!hit) {
+      return { ok: false, error: I18n.t("对方包里有多份画布（认不出哪一份是他的）"), code: "canvas_ambiguous" };
+    }
+    pick = hit;
+  }
+  const abs = path.join(dir, pick);
+  let unpacked = null;
+  try {
+    unpacked = unpackMtNodes(fs.readFileSync(abs));
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), code: "canvas_bad" };
+  }
+  const manifest = unpacked.manifest || {};
+  const files = unpacked.files || [];
+  const before = assetDirPath(sid);
+  let workflow = null;
+  try {
+    workflow = materializeImport(manifest, files, "", { id: sid });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), code: "materialize_failed" };
+  }
+  workflow.id = sid;
+  workflow.appId = sid;
+  workflow.workspace = replaceAppDirOf(sid) || "";
+  if (!String(workflow.name || "").trim()) workflow.name = String(appName || sid);
+  return {
+    ok: true,
+    workflow: workflow,
+    assets: files.length,
+    from: pick,
+    sha256: "",
+    warnings: [],
+    /* 物化失败时那半个资产目录由调用方按这个路径清掉（成功时它就是要用的目录，别动） */
+    assetsDir: before,
+  };
+}
+
+/* 新画布的兜底形态：与「新建应用 / 二次开发」同一口径（appCanvasWf 的字段），
+   只是**不复用渲染层那个构造函数**（它在渲染层）—— 字段一字不差地在这儿再写一遍，
+   改字段时两处要一起改（app-app-flow.js 的 appCanvasWf）。 */
+function replaceEmptyCanvas(id, appName) {
+  const sid = String(id || "");
+  const ws = replaceAppDirOf(sid) || "";
+  return {
+    id: sid,
+    name: String(appName || sid),
+    appId: sid,
+    workspace: ws,
+    nodes: [],
+    wires: [],
+    groups: [],
+    marks: [],
+  };
+}
+/* 应用目录（项目根下那一个）：画布 workspace 就取它 */
+function replaceAppDirOf(id) {
+  try {
+    const root = String((rootPath("dev") || {}).root || "");
+    return String(appDirOf(root, String(id || "")) || "");
+  } catch {
+    return "";
+  }
+}
+/* 新画布落盘 + <AppName>.mtnodes 镜像（镜像走既有 mirrorAppCanvas，best-effort） */
+function replaceWriteCanvas(id, wf) {
+  const sid = String(id || "");
+  if (!replaceCanvasIdOk(sid)) return { ok: false, error: I18n.t("非法工作流 id"), code: "wf_bad_id" };
+  if (!wf || typeof wf !== "object") return { ok: false, error: I18n.t("画布内容为空"), code: "bad_canvas" };
+  const obj = JSON.parse(JSON.stringify(wf));
+  obj.id = sid;
+  obj.appId = sid;
+  try {
+    const r = writeWorkflowJson(wfPath(sid), obj);
+    forgetWfListEntry(sid);
+    return { ok: !(r && r.ok === false), path: wfPath(sid), error: (r && r.error) || "" };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), code: "canvas_save_failed" };
+  }
+}
+const CANVAS_EXT = ".mtnodes";
+
+/* 模板上传：去掉本机工作目录，避免把路径泄漏给下载方 */
 /* 模板上传：去掉本机工作目录，避免把路径泄漏给下载方 */
 function stripWorkspacesFromWf(wf) {
   if (!wf || typeof wf !== "object") return wf;
@@ -8791,6 +9014,15 @@ app.whenReady().then(() => {
     /* 全局音视频互斥锁快照（应用侧据此提示「已有图像 / 视频任务在跑」） */
     readMediaLock: () => mediaGenLock.refreshStaleLock(),
     /* 应用侧展示语言（卡片能力小标 / 能力对话框文案） */
+    /* 完全替换的画布层（本轮需求）：画布信息 / 旧画布进回收站 / .mtnodes 物化 / 兜底空画布 /
+       新画布落盘。实现都在本文件上方那一段，口径见 app-branch-replace.js 的文件头。 */
+    canvasOps: {
+      canvasInfo: (id) => replaceCanvasInfo(id),
+      wipeCanvas: (id) => replaceWipeCanvas(id),
+      prepareCanvas: (id, srcDir, name) => replacePrepareCanvas(id, srcDir, name),
+      emptyCanvas: (id, name) => replaceEmptyCanvas(id, name),
+      writeCanvas: (id, wf) => replaceWriteCanvas(id, wf),
+    },
     locale: () => I18n.getLocale(),
   });
   /* 应用窗口里的 appHost.quit()：先把该应用收尾关掉，再请主进程走正常退出流程

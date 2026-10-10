@@ -86,6 +86,14 @@ export function createComments(deps) {
     d.notifications && typeof d.notifications.create === "function" ? d.notifications : null;
   /** 家族口径（可选注入；缺省 = 只统计完全等于该 id 的记录）。 */
   const tips = d.tips && typeof d.tips.idSetOf === "function" ? d.tips : null;
+  /** 应用分支口径（可选注入，本轮需求 4：**应用的评论跟着作者走**）：
+   *    ownerOf(id, hint)   —— 把「?owner=<uid|账号名>」解析成那一条分支的作者 uid（认不出回 ""）；
+   *    trunkOwnerOf(id)    —— 这个 id 的主干（原作者那条）的作者 uid；认不出回 ""。
+   *  注入后：app 的评论与评分按「应用 id + 分支作者」各存各的 —— 写入时记进 targetOwnerId，
+   *  读取时只在同一个池里挑；**老评论（没有 targetOwnerId）一律归主干**那一支。
+   *  缺省（老宿主 / 纯函数冒烟）时退回本轮之前的口径：整族共用一池评论与评分（行为逐字不变）。 */
+  const branch = d.branch && typeof d.branch.trunkOwnerOf === "function" ? d.branch : null;
+  const branchOwnerOf = branch && typeof branch.ownerOf === "function" ? branch.ownerOf : null;
 
   function comments() {
     if (!Array.isArray(db.comments)) db.comments = [];
@@ -110,9 +118,10 @@ export function createComments(deps) {
   /* ---------- 对象解析 ---------- */
 
   /**
-   * 这个对象该统计哪些 targetId（评论与评分的**读取口径**）。
-   * app 走 tips.idSetOf —— 同一应用族（同 id 的各作者分支 + 迁移前跨 id 的 fork 条目）的评论
-   * 与评分算在一起（用户口径：按根应用统一）；其它类型集合就是它自己。
+   * 这个对象该统计哪些 targetId（评论与评分的**家族 id 集合**）。
+   * app 走 tips.idSetOf —— 同一应用族（同 id 的各作者分支 + 迁移前跨 id 的 fork 条目）的**记录**
+   * 都可能挂在这个对象名下；谁归谁的**分支池**由 resolveScope / inScope 判（本轮需求 4）。
+   * 其它类型集合就是它自己。
    * 写入时 targetId 仍记**用户实际评论的那一条**（谁被评论看得出来），不影响这层聚合。
    * @returns {Set<string>}
    */
@@ -126,19 +135,83 @@ export function createComments(deps) {
     return out;
   }
 
+  /* ---------- 应用分支池（本轮需求 4） ---------- */
+
+  /** 一条记录属于哪个评论池：非 app / 没注入分支口径 → ""（与老行为逐字一致）；
+   *  app：写入时的 targetOwnerId（本轮起）→ 没有（老评论）就归**主干**那一支。 */
+  function recordScope(c) {
+    if (!branch || String((c && c.targetKind) || "") !== "app") return "";
+    const explicit = String(c.targetOwnerId || "").trim();
+    if (explicit) return explicit;
+    return String(branch.trunkOwnerOf(String(c.targetId || "")) || "");
+  }
+  /** 一条记录的「对象作者」（通知收件人 / 可删判定）：它那条分支的作者；认不出回 ""。 */
+  function recordOwnerHint(c) {
+    if (!branch) return "";
+    return String((c && c.targetOwnerId) || "").trim() || recordScope(c);
+  }
+  /**
+   * 这次请求读 / 写哪个池：
+   *   · 非 app / 没注入分支口径 → { ok:true, scope:"" }（整族一池，老口径）；
+   *   · app 指了作者 → 解析成那条分支的作者 uid；**指了一条不存在的分支 → ok:false**
+   *     （绝不静默落到主干 —— 那会把评论写到别人那条分支名下）；
+   *   · app 没指作者 → 主干（老评论 / 缺省都在这一池）。
+   */
+  function resolveScope(kind, id, ownerHint) {
+    const k = String(kind || "");
+    if (!branch || k !== "app") return { ok: true, scope: "" };
+    const hint = String(ownerHint == null ? "" : ownerHint).trim();
+    if (hint) {
+      const uid = String((branchOwnerOf ? branchOwnerOf(String(id || ""), hint) : "") || "").trim();
+      if (uid) return { ok: true, scope: uid };
+      return { ok: false, error: "这个应用没有该作者的分支" };
+    }
+    return { ok: true, scope: String(branch.trunkOwnerOf(String(id || "")) || "") };
+  }
+  /** 这条记录在不在指定的池里（kind 已单独比过；id 集合由调用方按家族展开）。 */
+  function inScope(c, kind, scope) {
+    if (!branch || String(kind || "") !== "app") return true;
+    return recordScope(c) === String(scope || "");
+  }
+  /** 批量汇总的键：id + 池 —— 同一个 id 下的不同作者分支靠它分开算。 */
+  function poolKey(id, scope) {
+    return String(id || "") + "\u0000" + String(scope || "");
+  }
+  /** 批量请求的归一化：字符串 = 只给 id（缺省池 = 主干）；对象 = { id, ownerId } 指名分支。 */
+  function normWant(list) {
+    const out = [];
+    for (const x of Array.isArray(list) ? list : []) {
+      if (x == null) continue;
+      if (typeof x === "object") {
+        const id = String(x.id || "");
+        if (id) out.push({ id: id, ownerId: String(x.ownerId || x.owner || "") });
+        continue;
+      }
+      const id = String(x);
+      if (id) out.push({ id: id, ownerId: "" });
+    }
+    return out;
+  }
+
   /**
    * 解析评论对象（存在性 + 对象作者 + 展示名）。
+   * ownerHint（本轮需求 4）：app 指了分支作者（uid / 账号名）时，对象就是**那一条分支**——
+   * 「对象作者」跟着那一条走（通知收件人、可删判定都按它）；没指 / 认不出 = 老口径（同 id 第一条）。
    * @returns {{ok:true, kind, id, ownerId, label, record, topicId?} | {ok:false, code, error}}
    */
-  function resolveTarget(kindRaw, idRaw) {
+  function resolveTarget(kindRaw, idRaw, ownerHint) {
     const kind = String(kindRaw || "").trim().toLowerCase();
     const id = String(idRaw || "").trim();
     if (!KINDS.has(kind) || !id) return err("COMMENT_INVALID_TARGET", "评论对象类型或 ID 无效");
     let rec = null;
     if (kind === "template") rec = (db.templates || []).find((x) => x && x.id === id) || null;
     else if (kind === "skill") rec = (db.skills || []).find((x) => x && x.id === id) || null;
-    else if (kind === "app") rec = (db.apps || []).find((x) => x && x.id === id) || null;
-    else if (kind === "forum_topic") rec = (db.forumTopics || []).find((x) => x && x.id === id) || null;
+    else if (kind === "app") {
+      const list = (db.apps || []).filter((x) => x && x.id === id);
+      const hint = String(ownerHint == null ? "" : ownerHint).trim();
+      const uid = hint && branchOwnerOf ? String(branchOwnerOf(id, hint) || "").trim() : "";
+      rec = (uid && list.find((x) => String(x.userId) === uid)) || list[0] || null;
+    } else if (kind === "forum_topic") rec = (db.forumTopics || []).find((x) => x && x.id === id) || null;
     else if (kind === "forum_reply") rec = (db.forumReplies || []).find((x) => x && x.id === id) || null;
     if (!rec) return err("COMMENT_TARGET_NOT_FOUND", "评论对象不存在");
     let ownerId = String(rec.userId || "");
@@ -173,13 +246,16 @@ export function createComments(deps) {
 
   /** 把内部记录转成对外评论（label / userId / author / mine / canDelete 一起给全）。 */
   function publicComment(c, viewer) {
-    const rt = resolveTarget(c.targetKind, c.targetId);
+    /* 对象作者按**这条记录所在的那条分支**解析（本轮需求 4：老记录没有 targetOwnerId → 主干） */
+    const rt = resolveTarget(c.targetKind, c.targetId, recordOwnerHint(c));
     const ownerId = rt.ok ? rt.ownerId : "";
     const viewerId = viewer && viewer.id ? String(viewer.id) : "";
     return {
       id: c.id,
       targetKind: c.targetKind,
       targetId: c.targetId,
+      /* 这条评论属于哪条分支的作者（app；其它类型恒为空串）—— 客户端切分支时按它分池 */
+      targetOwnerId: String(c.targetOwnerId || ""),
       parentId: c.parentId || "",
       content: c.content || "",
       rating: Number.isFinite(Number(c.rating)) && Number(c.rating) > 0 ? Math.round(Number(c.rating)) : 0,
@@ -195,89 +271,59 @@ export function createComments(deps) {
 
   /* ---------- 评分 / 汇总（实时算；批量版给列表接口用） ---------- */
 
-  /** 单个对象的评分：`{avg, count}`（count = 有星且未删除的条数；app 按家族根统一）。 */
-  function ratingOf(kind, id) {
-    const k = String(kind || "");
-    const set = idSetOf(k, id);
-    const ratings = [];
-    for (const c of comments()) {
-      if (!c || c.deleted) continue;
-      if (String(c.targetKind || "") !== k || !set.has(String(c.targetId || ""))) continue;
-      const r = Number(c.rating);
-      if (Number.isFinite(r) && r >= 1 && r <= 5) ratings.push(r);
-    }
-    return { avg: avgOf(ratings), count: ratings.length };
+  /** 单个对象的评分：`{avg, count}`（count = 有星且未删除的条数）。
+   *  ownerHint（本轮需求 4）：app 指了分支作者（uid / 账号名）就只算**那一条分支**的星；
+   *  不传 / 认不出 = 主干那一池（老评论都在它名下）。 */
+  function ratingOf(kind, id, ownerHint) {
+    return summaryOf(kind, id, ownerHint).rating;
   }
 
   /**
    * 批量评分（一次遍历 db.comments 出整页对象的 `{avg,count}`）。
    * 列表接口必须先收本页 ids 再调这里，别在循环里逐个 ratingOf（那是 N×整表）。
-   * app 按家族根统一（见 idSetOf）。
+   * 键与 batchSummary 同一套（`poolKey(id, 池)`）；app 不指分支 = 主干那一池。
    * @returns {Map<string,{avg:number,count:number}>}
    */
-  function batchRating(kind, ids) {
-    const k = String(kind || "");
-    const want = new Set((Array.isArray(ids) ? ids : []).map((x) => String(x || "")).filter(Boolean));
+  function batchRating(kind, list) {
     const map = new Map();
-    if (!want.size) return map;
-    for (const id of want) map.set(id, { sum: 0, count: 0 });
-    const ownerOfId = new Map();
-    for (const id of want) for (const m of idSetOf(k, id)) if (!ownerOfId.has(m)) ownerOfId.set(m, id);
-    for (const c of comments()) {
-      if (!c || c.deleted) continue;
-      if (String(c.targetKind || "") !== k) continue;
-      const owner = ownerOfId.get(String(c.targetId || ""));
-      if (owner == null) continue;
-      const cell = map.get(owner);
-      if (!cell) continue;
-      const r = Number(c.rating);
-      if (Number.isFinite(r) && r >= 1 && r <= 5) {
-        cell.sum += r;
-        cell.count++;
-      }
-    }
-    for (const cell of map.values()) {
-      // 1 位小数（与 ratingOf 同一口径：无人评分 → 0）
-      cell.avg = cell.count ? Math.round((cell.sum / cell.count) * 10) / 10 : 0;
-      delete cell.sum;
-    }
+    for (const [key, cell] of batchSummary(kind, list)) map.set(key, cell.rating);
     return map;
   }
 
-  /** 评论数（未删除）：契约里的 `comments` 字段就是它（app 按家族根统一）。 */
-  function countOf(kind, id) {
-    const k = String(kind || "");
-    const set = idSetOf(k, id);
-    let n = 0;
-    for (const c of comments()) {
-      if (!c || c.deleted) continue;
-      if (String(c.targetKind || "") === k && set.has(String(c.targetId || ""))) n++;
-    }
-    return n;
+  /** 评论数（未删除）：契约里的 `comments` 字段就是它（app 按分支池各算各的）。 */
+  function countOf(kind, id, ownerHint) {
+    return summaryOf(kind, id, ownerHint).comments;
   }
-
   /**
    * 批量汇总：`{rating:{avg,count}, comments:n}` —— 公开投影要的那四个字段一次算齐。
+   * 请求表里可以是 id 字符串（缺省池 = 主干），也可以是 `{ id, ownerId }`（**指名分支**，
+   * 本轮需求 4：同一个应用下不同作者的评论 / 评分各算各的）。
+   * 键 = `poolKey(id, 池)`：不指分支的那一条就是主干池的键。
    * @returns {Map<string,{rating:{avg:number,count:number}, comments:number}>}
    */
-  function batchSummary(kind, ids) {
+  function batchSummary(kind, list) {
     const k = String(kind || "");
-    const want = new Set((Array.isArray(ids) ? ids : []).map((x) => String(x || "")).filter(Boolean));
+    const want = normWant(list);
     const map = new Map();
-    if (!want.size) return map;
-    for (const id of want) map.set(id, { sum: 0, rc: 0, comments: 0 });
-    /* 按根应用统一（本轮需求）：族里每条记录的 id 都折进同一个目标 ——
-       app 走 tips.idSetOf（家族展开），其它类型就是它自己。 */
-    const ownerOfId = new Map();
-    for (const id of want) {
-      for (const m of idSetOf(k, id)) if (!ownerOfId.has(m)) ownerOfId.set(m, id);
+    if (!want.length) return map;
+    const reqKeyOfTarget = new Map(); /* targetId → 请求的键（家族展开后同一个键吃掉一族 id） */
+    const scopeOfKey = new Map(); /* 键 → 池 */
+    for (const w of want) {
+      const sc = resolveScope(k, w.id, w.ownerId);
+      /* 指名了一条不存在的分支：给它一个不可能命中的池（结果是零值，绝不落到主干） */
+      const scope = sc.ok ? sc.scope : "\u0000none";
+      const key = poolKey(w.id, scope);
+      if (!map.has(key)) map.set(key, { sum: 0, rc: 0, comments: 0 });
+      scopeOfKey.set(key, scope);
+      for (const m of idSetOf(k, w.id)) if (!reqKeyOfTarget.has(m)) reqKeyOfTarget.set(m, key);
     }
     for (const c of comments()) {
       if (!c || c.deleted) continue;
       if (String(c.targetKind || "") !== k) continue;
-      const owner = ownerOfId.get(String(c.targetId || ""));
-      if (owner == null) continue;
-      const cell = map.get(owner);
+      const key = reqKeyOfTarget.get(String(c.targetId || ""));
+      if (key == null) continue;
+      if (!inScope(c, k, scopeOfKey.get(key))) continue;
+      const cell = map.get(key);
       if (!cell) continue;
       cell.comments++;
       const r = Number(c.rating);
@@ -287,11 +333,11 @@ export function createComments(deps) {
       }
     }
     const out = new Map();
-    for (const [id, cell] of map) {
-      // 请求了但一条评论都没有的 id **不进 map**（回 undefined 而不是全零对象：
+    for (const [key, cell] of map) {
+      // 请求了但一条评论都没有的键 **不进 map**（回 undefined 而不是全零对象：
       // 「查无此对象」与「有对象但零评论」是两件事，别让调用方把零值当实体）
       if (!cell.comments && !cell.rc) continue;
-      out.set(id, {
+      out.set(key, {
         rating: { avg: cell.rc ? Math.round((cell.sum / cell.rc) * 10) / 10 : 0, count: cell.rc },
         comments: cell.comments,
       });
@@ -299,18 +345,25 @@ export function createComments(deps) {
     return out;
   }
 
-  /** 单个对象的完整汇总（`{rating, comments}`）。 */
-  function summaryOf(kind, id) {
-    const cell = batchSummary(kind, [id]).get(String(id || ""));
+  /** 单个对象的完整汇总（`{rating, comments}`）；ownerHint 口径见 ratingOf。 */
+  function summaryOf(kind, id, ownerHint) {
+    const sc = resolveScope(kind, id, ownerHint);
+    const key = poolKey(id, sc.ok ? sc.scope : "\u0000none");
+    const cell = batchSummary(kind, [{ id: String(id || ""), ownerId: ownerHint == null ? "" : ownerHint }]).get(key);
     return cell || { rating: { avg: 0, count: 0 }, comments: 0 };
   }
 
-  /** 给列表接口用的便捷包装：查不到的 id 返回零值。 */
-  function enricher(kind, ids) {
-    const map = batchSummary(kind, ids);
-    return (id) => map.get(String(id || "")) || { rating: { avg: 0, count: 0 }, comments: 0 };
+  /** 给列表接口用的便捷包装：查不到的 id / 池返回零值。
+   *  list 里可以是 id 或 `{ id, ownerId }`；取用时按 (id, ownerId) 取。 */
+  function enricher(kind, list) {
+    const map = batchSummary(kind, list);
+    return (id, ownerHint) => {
+      const sc = resolveScope(kind, id, ownerHint);
+      return (
+        map.get(poolKey(id, sc.ok ? sc.scope : "\u0000none")) || { rating: { avg: 0, count: 0 }, comments: 0 }
+      );
+    };
   }
-
   /* ---------- 限频（内存态，重启清零 —— 与论坛 / 短信同一口径） ---------- */
 
   /** 单账号最近若干次发评论的时间戳；判定只保留窗口内的。 */
@@ -340,16 +393,21 @@ export function createComments(deps) {
 
   /**
    * 列表（免登录可读）。口径见文件头 1：**平铺**，按 createdAt 升序，带 parentId。
-   * @param {{targetKind:string, targetId:string, page?:number, pageSize?:number,
+   * owner（本轮需求 4）：app 指了分支作者（uid / 账号名）就只列**那一条分支**的评论；
+   * 没有分支标记的老评论只在主干那一池里；指了一条不存在的分支 → COMMENT_INVALID_TARGET。
+   * @param {{targetKind:string, targetId:string, owner?:string, page?:number, pageSize?:number,
    *          parentId?:string, viewer?:object}} p
    */
-  function list({ targetKind, targetId, page, pageSize, parentId, viewer } = {}) {
-    const rt = resolveTarget(targetKind, targetId);
+  function list({ targetKind, targetId, owner, page, pageSize, parentId, viewer } = {}) {
+    const rt = resolveTarget(targetKind, targetId, owner);
     if (!rt.ok) return err(rt.code, rt.error);
+    const sc = resolveScope(targetKind, targetId, owner);
+    if (!sc.ok) return err("COMMENT_INVALID_TARGET", sc.error);
     const pageSizeN = Math.min(100, Math.max(1, Math.round(Number(pageSize)) || 20));
     const pageN = Math.max(1, Math.round(Number(page)) || 1);
     const parent = parentId == null ? null : String(parentId);
-    /* app 按家族根统一（本轮需求）：整个应用族的评论都列出来，不再只列完全等于该 id 的那几条 */
+    /* 家族 id 集合（app 跨 id 的旧 fork 条目也算）+ **分支池**（本轮需求 4）：
+       同一个应用下不同作者的评论互相看不见，老评论（没有 targetOwnerId）只归主干那一池。 */
     const set = idSetOf(rt.kind, rt.id);
     const all = comments()
       .filter(
@@ -358,11 +416,12 @@ export function createComments(deps) {
           !c.deleted &&
           String(c.targetKind || "") === rt.kind &&
           set.has(String(c.targetId || "")) &&
+          inScope(c, rt.kind, sc.scope) &&
           (parent == null || String(c.parentId || "") === parent),
       )
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     const start = (pageN - 1) * pageSizeN;
-    const sum = summaryOf(rt.kind, rt.id);
+    const sum = summaryOf(rt.kind, rt.id, owner);
     return {
       ok: true,
       page: pageN,
@@ -373,21 +432,26 @@ export function createComments(deps) {
       comments: sum.comments,
       targetKind: rt.kind,
       targetId: rt.id,
+      /* 这次列的是哪条分支的池（客户端据此校对自己算的那一份） */
+      targetOwnerId: sc.scope,
       items: all.slice(start, start + pageSizeN).map((c) => publicComment(c, viewer)),
     };
   }
-
   /* ---------- 写 ---------- */
 
   /**
    * 发表评论 / 回复。
+   * owner（本轮需求 4）：app 指了分支作者 → 这条评论就落在**那一条分支**的池里
+   * （记录写 targetOwnerId）；不指 = 主干那一池。
    * @returns {Promise<{ok:true, item:object, record:object, rating:object}
    *                  |{ok:false, code:string, error:string}>}
    */
-  async function create(user, { targetKind, targetId, content, rating, parentId } = {}) {
+  async function create(user, { targetKind, targetId, owner, content, rating, parentId } = {}) {
     if (!user || !user.id) return err("UNAUTHORIZED", "未登录");
-    const rt = resolveTarget(targetKind, targetId);
+    const rt = resolveTarget(targetKind, targetId, owner);
     if (!rt.ok) return err(rt.code, rt.error);
+    const sc = resolveScope(targetKind, targetId, owner);
+    if (!sc.ok) return err("COMMENT_INVALID_TARGET", sc.error);
     const text = String(content == null ? "" : content).trim();
     if (!text) return err("COMMENT_EMPTY", "评论内容不能为空");
     if (text.length > COMMENT_MAX_LEN) {
@@ -400,13 +464,18 @@ export function createComments(deps) {
       if (!Number.isFinite(r) || r < 1 || r > 5) return err("COMMENT_BAD_RATING", "评分必须是 1–5 的整数");
       star = Math.round(r);
     }
-    // 回复：父评论必须存在、属于同一对象、且未删除
+    // 回复：父评论必须存在、属于**同一个对象、同一条分支池**、且未删除
+    const famIds = idSetOf(rt.kind, rt.id);
     let parent = "";
     if (parentId != null && String(parentId) !== "") {
       parent = String(parentId);
       const p = comments().find((c) => c && c.id === parent && !c.deleted);
       if (!p) return err("COMMENT_NOT_FOUND", "要回复的评论不存在");
-      if (String(p.targetKind || "") !== rt.kind || String(p.targetId || "") !== rt.id) {
+      if (
+        String(p.targetKind || "") !== rt.kind ||
+        !famIds.has(String(p.targetId || "")) ||
+        !inScope(p, rt.kind, sc.scope)
+      ) {
         return err("COMMENT_INVALID_TARGET", "回复的父评论不属于同一对象");
       }
     }
@@ -418,6 +487,9 @@ export function createComments(deps) {
       id,
       targetKind: rt.kind,
       targetId: rt.id,
+      /* 这条评论属于哪条分支（本轮需求 4：应用的评论跟着作者走）。
+         非 app / 老宿主没注入分支口径 = 空串 —— 与老记录同形，读的时候归主干那一池。 */
+      targetOwnerId: rt.kind === "app" ? String(sc.scope || "") : "",
       parentId: parent,
       content: text,
       rating: star,
@@ -428,11 +500,12 @@ export function createComments(deps) {
       deletedAt: 0,
       deletedBy: "",
     };
-    // 同一个人对同一对象只保留最新一颗星：先清掉本人旧评论上的星（契约「评分规则」）
-    if (star) clearOtherRatings(rt.kind, rt.id, user.id, id);
+    // 同一个人对同一对象（同一条分支池）只保留最新一颗星：先清掉本人旧评论上的星（契约「评分规则」）
+    if (star) clearOtherRatings(rt.kind, rt.id, user.id, id, sc.scope);
     comments().push(rec);
     /* 消息（通知）：旁路，不参与上面的任何校验 / 限频判定。
        收件人：回复 → 父评论作者（被回复的人）；评论 → 对象作者（被打扰的是内容的主人）。
+       本轮起「对象作者」= **这条分支的作者**（rt.ownerId 已按 owner 解析过）。
        自己对自己的动作由 notifications.create 静默跳过（收件人不存在同样跳过）。 */
     if (notifications) {
       const parentRec = parent ? comments().find((c) => c && c.id === parent) : null;
@@ -457,15 +530,16 @@ export function createComments(deps) {
       ok: true,
       record: rec,
       item: publicComment(rec, user),
-      rating: ratingOf(rt.kind, rt.id),
-      comments: countOf(rt.kind, rt.id),
+      rating: ratingOf(rt.kind, rt.id, sc.scope),
+      comments: countOf(rt.kind, rt.id, sc.scope),
     };
   }
-
-  function clearOtherRatings(kind, id, userId, keepId) {
+  /** 清掉本人旧星：只在**同一个对象 + 同一条分支池**里清（本轮需求 4）。 */
+  function clearOtherRatings(kind, id, userId, keepId, scope) {
     for (const c of comments()) {
       if (!c || c.deleted) continue;
       if (String(c.targetKind || "") !== String(kind) || String(c.targetId || "") !== String(id)) continue;
+      if (!inScope(c, kind, scope)) continue;
       if (String(c.userId || "") !== String(userId) || c.id === keepId) continue;
       if (Number(c.rating) > 0) {
         c.rating = 0;
@@ -475,7 +549,7 @@ export function createComments(deps) {
   }
 
   /**
-   * 改星（只本人、只条目评论）。
+   * 改星（只本人、只条目评论）。评分跟着评论的分支池走：改完只回**这一池**的新平均星。
    * @returns {Promise<{ok:true, item:object, rating:object}|{ok:false, code:string, error:string}>}
    */
   async function setRating(user, { id, rating } = {}) {
@@ -488,39 +562,39 @@ export function createComments(deps) {
     }
     const r = Number(rating);
     if (!Number.isFinite(r) || r < 1 || r > 5) return err("COMMENT_BAD_RATING", "评分必须是 1–5 的整数");
+    const scope = recordScope(c);
     c.rating = Math.round(r);
     c.updatedAt = now();
-    clearOtherRatings(c.targetKind, c.targetId, user.id, c.id);
+    clearOtherRatings(c.targetKind, c.targetId, user.id, c.id, scope);
     await saveDb();
     return {
       ok: true,
       record: c,
       item: publicComment(c, user),
-      rating: ratingOf(c.targetKind, c.targetId),
-      comments: countOf(c.targetKind, c.targetId),
+      rating: ratingOf(c.targetKind, c.targetId, scope),
+      comments: countOf(c.targetKind, c.targetId, scope),
     };
   }
-
   /**
    * 软删除（作者 / 对象作者 / 管理员）：记录留在库里（`deleted:true` + 时间 + 操作人），
-   * 只是不再出现在列表、不计分、不计入评论数。
+   * 只是不再出现在列表、不计分、不计入评论数。回执里的星 / 条数只算**这条记录所在的池**。
    */
   async function remove(user, { id } = {}) {
     if (!user || !user.id) return err("UNAUTHORIZED", "未登录");
     const c = comments().find((x) => x && x.id === String(id || ""));
     if (!c || c.deleted) return err("COMMENT_NOT_FOUND", "评论不存在");
-    const rt = resolveTarget(c.targetKind, c.targetId);
+    const rt = resolveTarget(c.targetKind, c.targetId, recordOwnerHint(c));
     const ownerId = rt.ok ? rt.ownerId : "";
     if (!canDeleteComment(c, user, ownerId)) {
       return err("COMMENT_FORBIDDEN", "只有评论作者、对象作者与管理员可以删除");
     }
+    const scope = recordScope(c);
     c.deleted = true;
     c.deletedAt = now();
     c.deletedBy = String(user.username || user.id || "");
     await saveDb();
-    return { ok: true, record: c, rating: ratingOf(c.targetKind, c.targetId), comments: countOf(c.targetKind, c.targetId) };
+    return { ok: true, record: c, rating: ratingOf(c.targetKind, c.targetId, scope), comments: countOf(c.targetKind, c.targetId, scope) };
   }
-
   /** 目标被删掉时顺手清掉它的评论（软删除，留档）：管理台删条目 / 删话题时调用。 */
   async function removeByTarget(kind, id, operator) {
     const k = String(kind || "");

@@ -27,6 +27,14 @@
     "shots-cache.js",
     "apps-store.js",
     "apps-capabilities.js",
+    /* 应用分支合并（他人分支 → 我本机开发中的那一支）：apps-store.js require 它，
+       漏进白名单 = 打包后 Cannot find module './app-branch-merge.js'
+       （应用中心「选择版本…」里的「合并到我的分支」直接报错）。 */
+    "app-branch-merge.js",
+    /* 应用版本「完全替换」（对方那一版整份接替本机开发分支，不经过 Agent）：apps-store.js
+       require 它，漏进白名单 = 打包后 Cannot find module './app-branch-replace.js'
+       （应用中心那条「怎么用别人这一版？」→「直接完全替换」会直接报错）。 */
+    "app-branch-replace.js",
     "wechat-pc.js",
     "wechat-fastlogin.js",
     "media-gen-global-lock.js",

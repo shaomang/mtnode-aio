@@ -984,8 +984,11 @@ contextBridge.exposeInMainWorld('api', {
   appsSetStyle: (id, style) => ipcRenderer.invoke('apps:setStyle', { id, style }),
   /* 应用能力位（app.json 的 capabilities：textInput 文字输入 / imageGen 图像生成）：
      get 回 { ok, capabilities, list }；set 整份替换并（默认）按模板重生成入口页
-     —— 换 `textInput` 会补 / 撤应用目录里的 speech.js + speech.css。 */
-  appsCapabilitiesGet: (id) => ipcRenderer.invoke('apps:capabilitiesGet', { id }),
+     —— 换 `textInput` 会补 / 撤应用目录里的 speech.js + speech.css。
+     kind（'dev' / 'down'，可选）＝**改哪一套根下那一份**：同 id 在下载根与项目根各有一份时，
+     开发页要点名 dev（否则能力位写到下载副本上）。 */
+  appsCapabilitiesGet: (id, kind) =>
+    ipcRenderer.invoke('apps:capabilitiesGet', kind ? { id, kind } : { id }),
   appsCapabilitiesSet: (id, capabilities, opts) =>
     ipcRenderer.invoke('apps:capabilitiesSet', Object.assign({ id, capabilities }, opts || {})),
   appsCatalog: () => ipcRenderer.invoke('apps:catalog'),
@@ -1001,8 +1004,8 @@ contextBridge.exposeInMainWorld('api', {
        <数据目录>/apps-data/downloaded/<id>/；项目根与 apps-data/dev/ 一个字节都不动。
      · 开发的（kind='dev'）：**只移除登记**，必须显式传 force:'dev_remove'，否则回 dev_keep_files；
        磁盘上的项目文件夹原样保留（要删文件由用户自己在资源管理器里删）。 */
-  appsUninstall: (id, force) =>
-    ipcRenderer.invoke('apps:uninstall', { id, force: force || '' }),
+  appsUninstall: (id, force, kind) =>
+    ipcRenderer.invoke('apps:uninstall', { id, force: force || '', kind: kind || '' }),
   /* 本机多版本（docs/apps-market.md §九；应用详情对话窗的「本机版本」块走这两个）：
      versions = 只读台账 —— 回 { ok, id, installed, dev, version, source, installedAt,
        versions:[{ version, source, sha256, bytes, slot:'cur'|'prev', current }], canRollback, prev }；
@@ -1010,8 +1013,58 @@ contextBridge.exposeInMainWorld('api', {
      rollback = 把目标那一版**按台账来源重新下载**并换进来（地址过白名单 + sha256 校验；
        进度仍走 onAppsProgress 的 apps:progress 事件）。失败如实回 gone（本机自建 / 云端已下架）/
        bad_source（地址不在允许来源）等码，绝不静默降级成装最新版。 */
-  appsVersions: (id) => ipcRenderer.invoke('apps:versions', { id }),
+  appsVersions: (id, kind) => ipcRenderer.invoke('apps:versions', { id, kind: kind || '' }),
   appsRollback: (id, version) => ipcRenderer.invoke('apps:rollback', { id, version: version || '' }),
+  /* 应用版本合并（对方那一版 → 我本机开发中的那一支；口径见 app-branch-merge.js 的文件头）：
+     mergeInfo = 这个 id 在不在本机开发目录 → { ok, dev, dir, version, pending }（入口露不露读它，
+       pending = 上次拉取留下的暂存目录，界面据此提示「会先清掉它」）；
+     mergePull = 拉对方那一版到暂存目录 + 合并前整目录备份 + 文件级差异清单（**不写开发目录**）→
+       { ok, appId, dir, staging, myVersion, their:{ownerId,author,version,note}, files:[{rel,kind,binary,…}],
+         counts, backupDir, backupFiles }；
+     mergeNote = app.json 的唯一写者（补一条 merges 留痕；版本号默认不动）；
+     mergeEnd  = 收尾检查（Agent 写了 .merge-done.json 才落留痕 + 清暂存，否则什么都不做）。
+     四个都只回回执：渲染层不下载、不解包、不碰文件系统。 */
+  appsMergeInfo: (id) => ipcRenderer.invoke('apps:mergeInfo', { id }),
+  appsMergePull: (id, ownerId, version) =>
+    ipcRenderer.invoke('apps:mergePull', { id, ownerId: ownerId || '', version: version || '' }),
+  appsMergeNote: (arg) => ipcRenderer.invoke('apps:mergeNote', arg || {}),
+  appsMergeEnd: (id, staging) =>
+    ipcRenderer.invoke('apps:mergeEnd', { id: id || '', staging: staging || '' }),
+  /* 合并收尾（主进程的看门狗看到 Agent 的结束声明后推）：{ appId, declared, removed, their, files, version } */
+  /* 应用版本「完全替换」（本轮需求 · 与合并并列的第二条路，**不经过 Agent**）：
+     replaceInfo = 本机这一份的现状 + 这次要删什么 / 留什么（界面照它写后果文案）→
+       { ok, dev, dir, myVersion, staging, pending, keeps:["apps-data"], deletes:[...], appWindowOpen }；
+     replaceWithBranch = 真做：先请那个应用的独立窗口退出（关不掉就中止、什么都不动）→
+       备份（旧应用目录 + 旧画布 + 资产）→ 旧画布进本机回收站 → 整目录换成对方那一版 →
+       铺新画布（对方包里的 .mtnodes；缺档 / 坏档则建同名空画布）→ 清合并尾巴 →
+       { ok, version, backupDir, canvas:{kind:"theirs"|"empty"}, purged, … }。
+     两个都只回回执：渲染层不下载、不解包、不碰文件系统。口径见 app-branch-replace.js。 */
+  appsReplaceInfo: (id, staging) =>
+    ipcRenderer.invoke('apps:replaceInfo', { id, staging: staging || '' }),
+  appsReplaceWithBranch: (id, staging, ownerId, version) =>
+    ipcRenderer.invoke('apps:replaceWithBranch', {
+      id,
+      staging: staging || '',
+      ownerId: ownerId || '',
+      version: version || '',
+    }),
+  /* 完全替换做完（主进程推）：{ id, wfId, version, canvas:"theirs"|"empty" }。
+     主窗口若正开着这个应用的画布，内存里那份已经作废（画布被整份换掉了）——
+     渲染层据此重载它，免得下一次保存把新画布盖回旧内容。 */
+  onAppsReplaced: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('apps:replaced', handler);
+    return () => ipcRenderer.removeListener('apps:replaced', handler);
+  },
+  onAppsMergeDone: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('apps:mergeDone', handler);
+    return () => ipcRenderer.removeListener('apps:mergeDone', handler);
+  },
   /* 上架窗（renderer/app-publish.js）：拍该应用自己的窗口（回 { ok, path, bytes, width, height }）；
      再把**现打的一份** zip 读回 base64（回 { ok, base64, sha256, bytes, version, name, path, excluded }）。
      两者都只回回执，渲染层不碰文件系统、不自己拼路径。
@@ -1025,7 +1078,8 @@ contextBridge.exposeInMainWorld('api', {
      响应给 HTML 注入页面状态小助手，供重载预览时存 / 恢复页面状态）；
      快照（文件数 / 字节 / 最新 mtime）供每轮开发结束后判断要不要重载预览。 */
   appsDevPreview: (id) => ipcRenderer.invoke('apps:devPreview', { id }),
-  appsOpenWindow: (id) => ipcRenderer.invoke('apps:openWindow', { id }),
+  appsOpenWindow: (id, kind) =>
+    ipcRenderer.invoke('apps:openWindow', kind ? { id, kind } : { id }),
   /* 按 id 关掉某个应用的独立窗口（主窗口侧也能关）：开发页在「预览因独立窗口已开而只读」
      时给一颗「关掉独立窗口」，走它（同一条「先请应用收尾、再关」的链）。 */
   appsCloseApp: (id) => ipcRenderer.invoke('apps:closeAppWindow', { id: id || '' }),
@@ -1066,7 +1120,7 @@ contextBridge.exposeInMainWorld('api', {
      库 / 开发页每张卡片右侧那颗 📂 走它；回 { ok, dir } 或一句失败。
      改数据文件夹位置仍只在应用窗口里：preload-app.js 的 appHost.dataDirGet / dataDirPick /
      dataDirOpen / dataDirReset（主进程 apps:hostDataDir*）。 */
-  appsDataOpen: (id) => ipcRenderer.invoke('apps:dataOpen', { id }),
+  appsDataOpen: (id, kind) => ipcRenderer.invoke('apps:dataOpen', { id, kind: kind || '' }),
   /* 安装进度：{ id, phase:'start'|'download'|'extract'|'conflict'|'done'|'error', percent, got?, total?, version?, error? } */
   onAppsProgress: (cb) => {
     const handler = (_e, data) => {

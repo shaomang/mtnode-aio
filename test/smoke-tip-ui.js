@@ -47,6 +47,12 @@ function main() {
   ["mount", "open", "cardEl", "buttonEl", "ratingText", "commentsText", "rated"].forEach((k) =>
     ok(new RegExp(k + "\\s*:").test(cmts), "MtComments 导出 " + k),
   );
+  /* 本轮需求 4：应用的评论跟着作者走 —— 目标带 ownerId（分支作者），读与写都把它带上；
+     服务端按「应用 id + 分支作者」分池，不传 = 主干那一池。 */
+  ok(/target\.ownerId \? "&owner=" \+ encodeURIComponent\(target\.ownerId\) : ""/.test(cmts),
+    "app-comments.js：列表请求带上分支作者（&owner=<uid>）");
+  ok(/if \(target\.ownerId\) body\.owner = target\.ownerId;/.test(cmts),
+    "app-comments.js：发评论 / 回复带上分支作者（body.owner）");
   /* 服务端契约字段名：客户端只能读它们，不能自己改名。
      本轮需求：界面不再显示「本月剩余额度」→ 渲染层**不再引用 config.quota**
      （服务端仍下发该字段、月闸门仍在；真超额由提交后的 TIP_MONTH_LIMIT 回执说清）。 */

@@ -1164,7 +1164,7 @@ async function main() {
         /if \(open\) \{/.test(R),
       "库页打开态：一次问齐（appsOpenIdsOf）→ 画卡时就带上（窗口化渲染下离屏卡不在 DOM，逐张回贴贴不到）",
     );
-  ok(R.indexOf("async function appsOpenApp(id)") >= 0 && R.indexOf("await api.appsOpenWindow(id)") >= 0, "appsOpenApp → window.api.appsOpenWindow(id)（主进程开窗）");
+  ok(R.indexOf("async function appsOpenApp(id, kind)") >= 0 && R.indexOf("await api.appsOpenWindow(id, kind || \"\")") >= 0, "appsOpenApp → window.api.appsOpenWindow(id, kind)（主进程开窗；kind 点名哪一套根的那一份）");
   ok(R.indexOf("appsBridgeMissing()") >= 0, "桥缺席（非 Electron / 未接入）时明确报错，不静默失败");
   ok(read("renderer/css/apps.css").length > 0, "css/apps.css 存在（.apps-row-acts 样式随文件走）");
 
@@ -2048,10 +2048,10 @@ async function previewSections() {
   /* ⑨ 渲染层与词条：库 / 开发页都能进「数据目录」（每张卡片右侧的 📂），
      数据目录用 app id 管理、路径只由主进程解析 —— 库里不再单列「应用数据文件夹」那一条 */
   ok(
-    R.indexOf("async function appsDataOpenNow(id)") >= 0 &&
-      R.indexOf("api.appsDataOpen(appId)") >= 0 &&
+    R.indexOf("async function appsDataOpenNow(id, kind)") >= 0 &&
+      R.indexOf("api.appsDataOpen(appId, kind || \"\")") >= 0 &&
       R.indexOf("appsDataOpenNow(id)") >= 0,
-    "库页每张卡片右侧 📂 打开该应用的数据目录（appsDataOpenNow → apps:dataOpen）",
+    "库页每张卡片右侧 📂 打开该应用的数据目录（appsDataOpenNow → apps:dataOpen；kind 点名哪一套根）",
   );
   ok(
     R.indexOf("function appsDataLineEl") < 0 &&
@@ -2067,9 +2067,10 @@ async function previewSections() {
   );
   ok(
     MAINPRE.indexOf("'apps:dataOpen'") >= 0 &&
-      MAINPRE.indexOf("appsDataOpen: (id)") >= 0 &&
-      APPS_SRC.indexOf('ipcMain.handle("apps:dataOpen"') >= 0,
-    "主窗口桥 + 主进程：apps:dataOpen（app id 进、既有的 appDataDirOf 解析路径）",
+      MAINPRE.indexOf("appsDataOpen: (id, kind)") >= 0 &&
+      APPS_SRC.indexOf('ipcMain.handle("apps:dataOpen"') >= 0 &&
+      MAINPRE.indexOf("kind: kind || ''") >= 0,
+    "主窗口桥 + 主进程：apps:dataOpen（app id + kind 进、既有的 appDataDirOf 解析路径）",
   );
   ok(
     I18N.indexOf('"二次开发": "Build on it"') >= 0 &&
@@ -2326,7 +2327,7 @@ async function previewSections() {
   /* ④ 开发页「启动」= 等同在库中运行（同一入口 appsOpenApp），没有应用就不出现 */
   ok(
     DEV.indexOf("function appsDevStartApp()") >= 0 &&
-      DEV.indexOf('if (typeof appsOpenApp === "function") appsOpenApp(id);') >= 0,
+      DEV.indexOf('if (typeof appsOpenApp === "function") appsOpenApp(id, "dev");') >= 0,
     "开发页「启动」→ appsOpenApp(id)（与库页「运行」同一条链）",
   );
   ok(
@@ -3056,8 +3057,8 @@ async function previewSections() {
   /* ⑧ 库 / 开发两页名单分工 + 二次开发入口（在每张卡片右侧，不再是页顶一行） */
   ok(
     RENDERER.indexOf("function appsLibList()") >= 0 &&
-      RENDERER.indexOf("return appsLocalList().filter((a) => !(a && a.dev === true));") >= 0,
-    "库页只列非开发中的应用",
+      RENDERER.indexOf('return appsLocalList().filter((a) => a && appsLocalRootKind(a) !== "dev");') >= 0,
+    "库页只列**下载根**那份（同 id 两边各有一份时另一份在开发页）",
   );
   ok(
     RENDERER.indexOf("function appsMigrateRowEl(") < 0 &&
@@ -3067,14 +3068,14 @@ async function previewSections() {
     "「二次开发」不再独占页顶一行，改挂在本机应用的详情动作区（库页卡上收掉了）",
   );
   ok(
-    DEV.indexOf('appsDevT("数据目录")') >= 0 && DEV.indexOf("appsDataOpenNow(DEVD.appId)") >= 0,
-    "开发页菜单条也能进「数据目录」（当前选中应用）",
+    DEV.indexOf('appsDevT("数据目录")') >= 0 && DEV.indexOf('appsDataOpenNow(DEVD.appId, "dev")') >= 0,
+    "开发页菜单条也能进「数据目录」（当前选中应用；点名 dev = 项目根那份的数据树）",
   );
   ok(RENDERER.indexOf("appsCreateButtonEl") < 0, "库页不再挂「＋新建应用」（只留开发页）");
   ok(RENDERER.indexOf("开发绑定：已绑定") < 0, "库页去掉「开发绑定」徽标（绑定信息移到开发页）");
   ok(
-    DEV.indexOf("(a) => a && a.dev === true") >= 0 && DEV.indexOf("const apps = (typeof appsLocalList") >= 0,
-    "开发页只列开发中的应用",
+    DEV.indexOf('appsLocalRootKind(a) === "dev"') >= 0 && DEV.indexOf("const apps = (typeof appsLocalList") >= 0,
+    "开发页只列**项目根**那份（同 id 两边各有一份时按根判，不看共用的 dev 标记）",
   );
   ok(
     DEV.indexOf('appsDevT("卸载")') >= 0 && DEV.indexOf("appsUninstallApp(app)") >= 0,
@@ -4407,10 +4408,19 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
   ok(/appsT\("原作者 "\) \+ author/.test(APPS) && /appsT\(" · 当前版本作者 "\) \+ localAuthor/.test(APPS),
     "卡片作者行 = 原作者 + 本机已装那一支的作者");
   ok(
-    /* 源码里写作多行拼接（appsT("原作者 ") +\n rootAuthor + …），所以按 \s* 放宽匹配 */
-    /appsT\("原作者 "\) \+\s*rootAuthor/.test(APPS) &&
-      /appsT\(" · 当前版本作者 "\) \+\s*curAuthor/.test(APPS),
-    "详情头部 = 原作者 + 当前选中分支的作者",
+    /* 本轮需求 2：详情 / 面板右列**两行**（原作者 = 家族主干那条；作者 = 当前选中的那条分支），
+       主干作者认不出来时显示「未知作者」，**不再回落成当前作者**（那正是用户报的
+       「原作者显示的是现作者」）。 */
+    /appsDetailInfoRow\(appsT\("原作者"\), rootAuthor \|\| appsT\("未知作者"\), authorTitle\)/.test(APPS) &&
+      /appsDetailInfoRow\(appsT\("作者"\), curAuthor,/.test(APPS),
+    "详情头部 = 两行「原作者」+「作者」（原作者与当前分支无关）",
+  );
+  ok(
+    /* 原作者被「我」的身份覆盖掉的老 bug：appsSpecWithMine 以前只按 id 合并（同 id 下别人的分支
+       也套上我的 owner/ownerName/ownerId）。现在只有**这一条就是我自己的分支**才合并。 */
+    /const mineOwnerId = String\(mine\.ownerId \|\| \(mine\.ownerUser && mine\.ownerUser\.id\) \|\| ""\)\.trim\(\);/.test(APPS) &&
+      /if \(mineOwnerId && specOwnerId && mineOwnerId !== specOwnerId\) return spec;/.test(APPS),
+    "appsSpecWithMine 只在同一分支（uid 相同）时合并我的线上条目（别人分支不再被我的身份覆盖）",
   );
   ok(!/appsT\("命中分支/.test(APPS) && !/命中分支：/.test(APPS), "不再有「命中分支」这个叫法（只留注释里的历史说明）");
 
@@ -4423,15 +4433,40 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
     "只有开了 withSel 的调用方（应用详情）才有选中态与下载入口；上架窗复用同一棵树不受影响");
   ok(/withSel: true,/.test(APPS), "详情把 withSel 传进去（点分支 → 下方出现版本与下载）");
   ok(
-    /appsBranchTreeSelect\(id, b, o\.onSelect\)/.test(APPS) &&
+    /* 本轮需求 1：可点的行才有手型指针 + 悬停高亮（is-pick）—— withSel（详情 / 跳窗）与
+       o.clickable（上架窗「只看结构、点一下选中」）两种；点了走 onSelect，没给才回落详情那套。 */
+    /const clickable = withSel \|\| !!o\.clickable;/.test(APPS) &&
+      /\(clickable \? " is-pick" : ""\)/.test(APPS) &&
+      /if \(typeof o\.onSelect === "function"\) o\.onSelect\(b\);/.test(APPS) &&
       /appsDetailSetSelKey\(key\)/.test(APPS) &&
       /APPS_DETAIL\.branchOwnerId = String\(key \|\| ""\)/.test(APPS),
     "点分支 = 记进当前详情目标（窗 / 列表面板各一份）并就地重绘（保持滚动位置）",
   );
+  ok(/\.apps-br-branch\.is-pick > \.apps-br-line \{\s*cursor: pointer;/.test(CSS) &&
+    /\.apps-br-branch\.is-pick:hover \{\s*background: var\(--panel2\);/.test(CSS),
+    "CSS：分支行可点时有手型指针 + 悬停底色（与版本行 .apps-vers-row.is-pick 同一口径）");
   const treeFn = APPS.slice(APPS.indexOf("function appsBranchTreeEl("), APPS.indexOf("function appsBranchTreeSelect("));
   ok(treeFn.indexOf("appsDetailSelKey()") >= 0 && treeFn.indexOf("tree.trunk") >= 0,
     "树的默认选中 = 原作者（主干），与「本机装的是哪一支」无关");
   ok(/appsT\("已选："\)/.test(APPS) && /appsT\("原作者"\)/.test(APPS), "树上标出「原作者」与「已选：…」");
+
+  /* ③ 本轮需求 3：截图按**这一条的作者**取 —— 接口目录必须带上 ?owner=，
+     否则服务端 appResolveBranch(id, undefined) 一律回主干（用户报的「切到别的作者还是老截图」）。 */
+  ok(/function appsBranchOwnerOf\(spec\)/.test(APPS) &&
+    /if \(ownerId\) q\.push\("owner=" \+ encodeURIComponent\(ownerId\)\);/.test(APPS),
+    "截图地址带 ?owner=<分支作者>（服务端 /api/apps/<id>/shots/<n> 认它，缺省回主干）");
+  /* ④ 本轮需求 4：评论目标 = 当前选中的那条分支（与打赏的家族根目标刻意分开） */
+  ok(/function appsCommentTarget\(spec\)/.test(APPS) &&
+    /return \{ kind: "app", id: id, ownerId: ownerId \};/.test(APPS) &&
+    /appsCommentsMountInto\(lower, cmtTarget, \{ title: appsDetailTitleOf\(id\) \}, appsDetailSelKey\(\) \|\| cmtTarget\.ownerId\)/.test(APPS),
+    "评论目标 = 当前选中的那条分支（appsCommentTarget）—— 切分支整块换成那一支的评论");
+  ok(/const APPS_CMT_DRAFT = Object\.create\(null\);/.test(APPS) &&
+    /function appsCommentsStashDraft\(host\)/.test(APPS) &&
+    /function appsCommentsMountInto\(host, target, opts, branchKey\)/.test(APPS),
+    "切分支重挂评论区时保留已输入草稿（appsCommentsStashDraft / appsCommentsMountInto）");
+  ok(/const cmtTarget = spec \? appsCommentTarget\(spec\) : null;/.test(APPS) &&
+    APPS.indexOf('const cloudTarget = appsCloudTarget(spec);') >= 0,
+    "打赏仍走 appsCloudTarget（家族根统一），评论走 appsCommentTarget（按分支）—— 两条链不混用");
   ok(/for \(const b of tree\.list\) \{[\s\S]{0,220}walk\(b, 0, true, ""\)/.test(APPS),
     "脏数据（父键指不到 / 成环）时其余分支平铺在末尾 —— 任何一条分支都不会从树上消失");
 
@@ -5366,10 +5401,15 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
   ok(/MODES = \{ apps: 1, lib: 1, mine: 1 \}/.test(LIST), "三页各记各的（按页分别记住）");
 
   /* ④ 右列面板 = 与详情窗同一份实现（说明 / 分支 / 打赏 / 开发者信息） */
-  ok(/appsDetailBodyEl\(st\.spec, \{ app: local \|\| undefined, noVers: true, head: true \}\)/.test(LIST),
+  ok(/appsDetailBodyEl\(cur, \{ app: local \|\| undefined, noVers: true, head: true \}\)/.test(LIST),
     "面板右列直接复用 appsDetailBodyEl（head 路径）—— 面板与窗的内容永远一致");
-  ok(/window\.MtComments\.mount\(st\.cmt, cloud/.test(LIST),
-    "面板下方挂同一份评论区（MtComments.mount，评论独占下方）");
+  ok(/appsCommentsMountInto\(st\.cmt, cmtTarget, \{ title: st\.title \|\| "" \}, selKey \|\| st\.ownerId \|\| cmtTarget\.ownerId\)/.test(LIST),
+    "面板下方挂同一份评论区（appsCommentsMountInto，评论独占下方，切分支整块换）");
+  /* 本轮需求 3 / 4：面板按**选中的那条分支**取 spec（截图 / 作者行 / 评论区都跟着它走） */
+  ok(/panel: st,/.test(LIST) && /branchOwnerId: selKey \|\| String\(st\.ownerId \|\| ""\),/.test(LIST) &&
+    /if \(typeof appsDetailSpecOf === "function"\) cur = appsDetailSpecOf\(st\.id\) \|\| st\.spec;/.test(LIST) &&
+    /appsDetailMediaEl\(cur, /.test(LIST),
+    "面板按选中分支取 spec（ctx.panel + appsDetailSpecOf）—— 切分支后截图 / 作者行 / 评论一起换");
   ok(/appsPanelPaintFoot\(st\)/.test(LIST) && /appsTr\("运行"\)/.test(LIST) && /appsTr\("数据目录"\)/.test(LIST) &&
     /appsTr\(isDev \? "移除登记" : "卸载"\)/.test(LIST),
     "面板底栏左下角：运行 / 数据目录 / 二次开发 / 卸载（与详情窗底栏同一套动作）");

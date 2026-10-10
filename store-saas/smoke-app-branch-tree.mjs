@@ -309,26 +309,49 @@ async function main() {
   const todayKey = String((tip1.data.tip || {}).targetKey || "");
   ok(todayKey === "app:demoapp", "打赏记录的 targetKey 落在家族根 id 上（app:demoapp）");
 
-  section("[5] 评论与评分按根应用统一");
+  section("[5] 评论与评分**按分支（作者）分离**（打赏仍按根统一）");
+  /* 本轮需求 4：同一个应用下每个作者的评论 / 评分各存各的 —— owner = 那一条分支的作者。
+     不传 owner = 主干（原作者那条）那一池：没有分支标记的老评论都在它名下。 */
   const c1 = await req(
     "POST",
     "/api/comments",
-    { targetKind: "app", targetId: "demoapp", content: "A 的分支下留一条评论", rating: 5 },
+    { targetKind: "app", targetId: "demoapp", owner: U.a.id, content: "A 的分支下留一条评论", rating: 5 },
     tb,
   );
-  ok(c1.status === 200 && c1.data.ok === true, "在 demoapp 下发评论 + 5 星成功");
+  ok(c1.status === 200 && c1.data.ok === true, "在 A 那条分支下发评论 + 5 星成功");
+  ok(
+    String((c1.data.item || {}).targetOwnerId) === U.a.id,
+    "记录带上了分支作者（targetOwnerId = A 的 uid）：实得 " + String((c1.data.item || {}).targetOwnerId),
+  );
   const c2 = await req(
     "POST",
     "/api/comments",
-    { targetKind: "app", targetId: "demoapp", content: "C 的分支下再留一条", rating: 3 },
+    { targetKind: "app", targetId: "demoapp", owner: U.b.id, content: "B 的分支下再留一条", rating: 3 },
     ta,
   );
-  ok(c2.status === 200 && c2.data.ok === true, "同一个 id 再发一条评论成功");
-  const listC = await req("GET", "/api/comments?targetKind=app&targetId=demoapp");
-  ok(Number(listC.data.comments) === 2, "评论数按根统一 = 2，实得 " + listC.data.comments);
+  ok(c2.status === 200 && c2.data.ok === true, "同一个 id 的 B 分支下再发一条评论成功");
+  const listA = await req("GET", "/api/comments?targetKind=app&targetId=demoapp&owner=" + U.a.id);
+  const listB = await req("GET", "/api/comments?targetKind=app&targetId=demoapp&owner=" + U.b.id);
+  ok(Number(listA.data.comments) === 1 && Number(listB.data.comments) === 1, "评论按分支各算各的（A 1 条 / B 1 条）");
   ok(
-    listC.data.rating && Number(listC.data.rating.count) === 2 && Number(listC.data.rating.avg) === 4,
-    "评分按根统一：2 人平均 4.0，实得 " + JSON.stringify(listC.data.rating),
+    listA.data.rating && Number(listA.data.rating.count) === 1 && Number(listA.data.rating.avg) === 5 &&
+      Number(listB.data.rating.avg) === 3,
+    "评分跟着评论走：A 支 5.0 / B 支 3.0，实得 " + JSON.stringify(listA.data.rating) + " / " + JSON.stringify(listB.data.rating),
+  );
+  ok(
+    Array.isArray(listA.data.items) && listA.data.items.length === 1 &&
+      String(listA.data.items[0].content) === "A 的分支下留一条评论",
+    "A 那一池里看不到 B 分支的评论（互相分离）",
+  );
+  const listNoOwner = await req("GET", "/api/comments?targetKind=app&targetId=demoapp");
+  ok(
+    Number(listNoOwner.data.comments) === 1 && Number(listNoOwner.data.rating.avg) === 5,
+    "不传 owner = 主干那一池（与 A 那条一致）：实得 " + listNoOwner.data.comments,
+  );
+  const badOwner = await req("GET", "/api/comments?targetKind=app&targetId=demoapp&owner=u_nobody");
+  ok(
+    badOwner.status === 400 && String(badOwner.data.code) === "COMMENT_INVALID_TARGET",
+    "指了一条不存在的分支：400 COMMENT_INVALID_TARGET（不静默落到主干）",
   );
 
   section("[6] 老数据兼容：跨 id 的 fork 条目也收进同一个家族");

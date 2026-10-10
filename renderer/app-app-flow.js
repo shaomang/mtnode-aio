@@ -850,7 +850,9 @@ async function appCapabilitiesDialog(appId, appName, opts) {
   let box = null;
   const read = (async () => {
     try {
-      return await window.api.appsCapabilitiesGet(id);
+      /* opts.kind = 改**哪一套根下那一份**（"dev" / "down"）：开发页传 dev ——
+         同 id 在下载根也有一份时，能力位写错副本等于改了个用户看不见的文件。 */
+      return await window.api.appsCapabilitiesGet(id, (o && o.kind) || "");
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }
@@ -909,7 +911,10 @@ async function appCapabilitiesDialog(appId, appName, opts) {
     ok.disabled = true;
     let r = null;
     try {
-      r = await window.api.appsCapabilitiesSet(id, next, { regenEntry: o.canRegen !== false });
+      r = await window.api.appsCapabilitiesSet(id, next, {
+        regenEntry: o.canRegen !== false,
+        kind: (o && o.kind) || "",
+      });
     } catch (err) {
       r = { ok: false, error: (err && err.message) || String(err) };
     }

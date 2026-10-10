@@ -513,6 +513,8 @@ function runPubCloudBox(pub) {
     pubSliceFn(pub, "pubStr") +
     "\nconst APPS_ST = { cat: null };\n" +
     pubSliceFn(read("renderer/app-apps.js"), "appsShotsUrlsOf") +
+    /* 本轮需求 3：截图地址要按**这一条分支的作者**取（appsShotsUrlsOf 内部读它拼 ?owner=） */
+    pubSliceFn(read("renderer/app-apps.js"), "appsBranchOwnerOf") +
     "\nconst PUB_MAX_SHOTS = 8;\nconst pubT = (s) => String(s == null ? '' : s);\n" +
     pubSliceFn(pub, "pubCloudShotsOf") +
     "\nreturn { pubCloudShotsOf: pubCloudShotsOf, setCat: (c) => { APPS_ST.cat = c; } };";
@@ -608,8 +610,10 @@ async function partPublishWindow() {
   ok(/app-publish\.js/.test(html), "index.html 挂载 app-publish.js");
   ok(/app-publish\.css/.test(html), "index.html 挂载 app-publish.css");
   const dev = read("renderer/app-apps-dev.js");
-  const iPub = dev.indexOf("上架");
-  const iRun = dev.indexOf('appsDevT("启动")');
+  /* 认**菜单条上那两颗按钮本尊**（不是全文件里第一次出现「上架」两个字）：
+     版本合并会话的契约正文里也写着「不自动上架」，按整文件 indexOf 会误判成「上架在启动之前」。 */
+  const iPub = dev.indexOf('appsMiniBtn(appsDevT("上架")');
+  const iRun = dev.indexOf('appsRunBtnEl("dev", appsDevT("启动")');
   ok(iPub >= 0 && iRun >= 0 && iPub > iRun, "开发页「上架」出现在「启动」之后（同一行菜单条）");
   ok(/openAppPublish/.test(dev), "「上架」按钮调 openAppPublish");
   const i18n = read("renderer/i18n.js");
@@ -640,6 +644,14 @@ async function partPublishWindow() {
   );
   ok(/还没有截图：商店卡片与详情头部会没有封面/.test(pub), "零截图上传前拦一句（说清没有封面）");
   ok(/"还没有截图：商店卡片与详情头部会没有封面/.test(i18n), "本轮新词条进 i18n（零截图拦截 + 删版本结果行）");
+  /* 本轮需求 1：上架窗那棵分支树也可点（只能选中查看 —— 指针与悬停高亮加在可点的行上）。
+     绝不写应用详情的选中态、也绝不在这一窗长出下载按钮（onSelect 自己收，只改 PUB.treeOwnerId）。 */
+  ok(/clickable: true,/.test(pub) && /PUB\.treeOwnerId = pubStr\(b && \(b\.ownerId \|\| b\.owner\)\);/.test(pub) &&
+    /selectedOwnerId: pickedKey \|\| pubStr\(myBranch && \(myBranch\.ownerId \|\| myBranch\.owner\)\),/.test(pub),
+    "上架窗分支树：可点（clickable + onSelect 只记选中并重画这一块）");
+  ok(/已选：/.test(pub) && /（这里只作查看，本次上传只会新增 \/ 更新你自己那条分支）/.test(pub),
+    "上架窗选中某支后写清「只作查看」（上传只动你自己那条分支）");
+  ok(/（这里只作查看，本次上传只会新增 \/ 更新你自己那条分支）/.test(i18n), "该提示的中英词条齐备");
 
   /* ── 上一轮已落地的 id 锁定 + 本轮需求「应用上架统一叫『上架』」（新上传与更新同一说法）── */
   ok(/idIn\.readOnly = !PUB\.idUnlocked/.test(pub), "应用 id 默认锁定：输入框 readOnly 跟着 idUnlocked 走");
@@ -698,6 +710,18 @@ async function partPublishWindow() {
     ok(
       apiShots[0].url === "https://s.example/store-api/api/apps/shots-app/shots/1",
       "云端截图带出来：接口来源走 /api/apps/<id>/shots/<n>（" + (apiShots[0] && apiShots[0].url) + "）",
+    );
+    /* ②b 本轮需求 3：条目带作者（同 id 多分支）时接口地址必须带 ?owner= ——
+       不传服务端 appResolveBranch(id, undefined) 一律回主干，切到别的作者分支还是老截图。 */
+    const ownShots = box2.pubCloudShotsOf(Object.assign({}, item, { ownerId: "u_b" }), []);
+    ok(
+      ownShots[0].url === "https://s.example/store-api/api/apps/shots-app/shots/1?owner=u_b",
+      "接口来源带 ?owner=<分支作者>（" + (ownShots[0] && ownShots[0].url) + "）",
+    );
+    const ownList = box2.pubCloudShotsOf(Object.assign({}, item, { ownerId: "u_b" }), [], { size: "list" });
+    ok(
+      !ownList.length || ownList[0].url.indexOf("owner=u_b") > 0,
+      "列表小图那条也带 owner（两个查询参数并存）" + (ownList[0] ? "：" + ownList[0].url : "")
     );
     ok(apiShots[1].sha === "bb" + "b".repeat(62), "每张都带上服务端下发的内容指纹（提交时只发 { sha } 引用）");
     ok(apiShots.every((s) => s.from === "cloud"), "带出来的每张都标 from:cloud（提交时按它走引用、不读本机字节）");

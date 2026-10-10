@@ -11526,6 +11526,13 @@
     "其他版本": "Other versions",
     "原作者": "Original author",
     "原作者 ": "Original author ",
+    /* 本轮需求 2：详情 / 面板右列**两行** —— 「原作者」= 家族主干那条（第一次上架的那位），
+       「作者」= 当前选中的那条分支（在「分支 / 版本」窗里切分支就跟着变）。 */
+    "当前选中的这条分支的作者": "Author of the branch selected above",
+    "点这一支：选中查看它（这里只作查看，上传只会动你自己那条分支）":
+      "Click a branch to select it for viewing (read-only here: uploading only ever touches your own branch)",
+    "（这里只作查看，本次上传只会新增 / 更新你自己那条分支）":
+      " (read-only here: this upload only adds or updates your own branch)",
     "当前版本作者 ": "Current version by ",
     "已选：": "Selected: ",
     "（下方是这一支的版本与下载）": " (its versions and download are below)",
@@ -11551,6 +11558,158 @@
     "原作者（主干）": "Original author (trunk)",
     "这个应用共有 ": "This app has ",
     " 条分支（原作者在最左，其余向右逐级展开）": " branches (the original author is leftmost, others unfold to the right)",
+    /* ── 版本合并（拉取对方那一版 → 交给 Agent 在会话里逐项确认后合进本机；本轮需求）──
+       口径与产物见 app-branch-merge.js 的文件头；入口与文案在 renderer/app-apps.js，
+       会话与契约正文在 renderer/app-apps-dev.js，词条只此一份。
+       上半段 = 主进程（app-branch-merge.js）的失败回执原文，下半段 = 界面与会话契约。 */
+    "应用 id 不合法": "Invalid app id",
+    "要合并的是哪一条分支（缺作者）": "Which branch to merge (author missing)",
+    "这个应用不在本机开发目录里（先把它放到开发目录再合并）":
+      "This app is not in my local dev folder (put it there first, then merge)",
+    "这个应用不在本机开发目录里": "This app is not in my local dev folder",
+    "云端目录里没有这一条分支（作者可能已删除）":
+      "The cloud catalog has no such branch (the author may have deleted it)",
+    "拉不到云端目录（检查网络后重试）": "Cannot reach the cloud catalog (check the network and retry)",
+    "这一版没有可用的下载地址": "This version has no usable download URL",
+    "下载对方那一版失败：": "Failed to download that version: ",
+    "对方那一版的 sha256 与云端目录声明不一致（不敢合）":
+      "That version's sha256 does not match the cloud catalog (refusing to merge)",
+    "合并前备份失败（没敢动任何东西）：": "Backup before merging failed (nothing was touched): ",
+    "暂存目录不可用：": "Staging folder unavailable: ",
+    "解包对方那一版失败：": "Failed to unpack that version: ",
+    "比对两版差异失败：": "Failed to compare the two versions: ",
+    "写暂存元信息失败：": "Failed to write the staging metadata: ",
+    "写 app.json 失败：": "Failed to write app.json: ",
+    "暂存目录不在合并暂存根下（拒绝删除）": "The staging folder is not under the merge staging root (refusing to delete)",
+    "暂存目录与这个应用对不上": "The staging folder does not belong to this app",
+    /* 界面：入口 / 提示 / 收尾 */
+    "拉取 v": "Fetch v",
+    " 交给 Agent 合并": " — merge with AI or replace outright",
+    "拉取这一版交给 Agent 合并": "Fetch this version, then merge with AI or replace outright",
+    "：拉取到暂存目录，然后二选一：AI 逐项合并，或完全替换（只写本机）":
+      ": fetch it into a staging folder, then pick one of two paths: merge with AI, or replace outright (local only)",
+    "拉取这一版到本机暂存目录，然后二选一：AI 逐项合并（新建会话，对比差异后逐项确认）或完全替换（删掉本机这一版含画布，直接用对方这一版继续）。都不会自动上架。":
+      "Fetch this version into a local staging folder, then pick one of two paths: merge with AI item by item (a new session compares the differences and I confirm each one) or replace outright (my local copy including its canvas is deleted and this version continues). Neither ever auto-publishes.",
+    /* 旧词条保留（本轮把入口改成了「二选一」的弹窗，这三句界面已不再引用；
+       字典是词条真源，冒烟按它核英文覆盖率 —— 删掉等于把历史词条一并抹了，所以留着）。 */
+    "：拉取到暂存目录，新建会话对比差异、逐项确认后合进开发目录（只写本机）":
+      ": fetch it into a staging folder, open a new session to compare the differences, then merge into my dev folder after I confirm each one (local only)",
+    "拉取这一版到本机暂存目录，新建一条会话对比差异、逐项确认后合进开发目录（只写本机，不会自动上架）":
+      "Fetch this version into a local staging folder, then open a new session that compares the differences and merges into my dev folder after I confirm each one (local only, never auto-published)",
+    "合并在一条新会话里进行：Agent 对比两版差异、逐项问过你之后才写入本机开发目录；不会自动上架。":
+      "The merge runs in a new session: the Agent compares the two versions and only writes to my local dev folder after asking me about each item; nothing is ever auto-published.",    "这个应用已有一次合并在进行（在开发页那条会话里）":
+      "A merge for this app is already in progress (in that session on the Dev page)",
+    "上次留下的暂存目录还在：这次拉取会先把它清掉。拉取后你再二选一：AI 逐项合并，或完全替换。":
+      "The staging folder from last time is still there: this fetch clears it first. After fetching you pick one of the two paths: merge with AI, or replace outright.",
+    "两条路二选一：AI 逐项合并（新建一条会话，Agent 对比差异、逐项问过你才写入本机）或完全替换（删掉本机这一版含画布，直接用对方那一版继续）。都不会自动上架。":
+      "Two options: merge item by item with AI (a new session where the Agent compares the differences and only writes after asking me about each one), or replace outright (delete my local copy including its canvas and continue from that version). Neither ever auto-publishes.",
+    "合并能力尚未就绪（请重启 MTNode）": "Merge support is not ready yet (restart MTNode)",
+    "拉取失败：": "Fetch failed: ",
+    "已清掉上次留下的暂存目录，重新拉取了对方这一版":
+      "Cleared the staging folder left by the previous merge and fetched that version again",
+    "已经拉到对方那一版（暂存：": "That version has been fetched (staging: ",
+    "），但没能建起合并会话：在开发页手动开一条会话并把暂存目录交给它。":
+      "), but the merge session could not be created: open a session manually on the Dev page and hand it that staging folder.",
+    "已拉取 ": "Fetched ",
+    "：合并会话已开跑（差异 ": ": the merge session has started (",
+    " 个文件）": " files differ)",
+    "合并收尾：已按你的确认写入本机（对方 v": "Merge wrapped up: written to my machine as you confirmed (their v",
+    "），暂存目录已清理": "); the staging folder has been cleaned up",
+    "已清掉上次留下的暂存目录，重新拉取了对方这一版但还没选路":
+      "Cleared the staging folder from last time and re-fetched that version (path not chosen yet)",
+    "两条路都不会自动上架。完全替换不可逆：删掉的本机旧版本只能从备份目录或回收站里自己找回来（界面不提供回滚入口）。":
+      "Neither path ever auto-publishes. Replacing outright cannot be undone: the local copy it deletes can only be recovered by hand from the backup folder or the trash (there is no roll-back button).",
+    "完全替换：这张画布在盘上已经是新的一份（当前内存里这份内容相同）":
+      "Replaced outright: the canvas on disk is already the new one (what is in memory is identical)",
+    "完全替换：这张画布已被换成 ": "Replaced outright: this canvas has been swapped for ",
+    "的新画布，内存里这份已作废；盘上那份才是新的（改完注意别把它覆盖回去）":
+      "'s new canvas; the copy in memory is stale while the one on disk is new (mind not to overwrite it back)",
+    /* 完全替换 · 主进程侧的守卫与失败文案（app-branch-replace.js / apps-store.js） */
+    "读不到本机开发目录": "Cannot read the local dev folder",
+    "这个应用不在本机开发目录里（先把它放到开发目录再替换）":
+      "This app is not in the local dev folder (move it there before replacing)",
+    "对方那一版不在暂存目录里了（重新拉取一次）":
+      "That version is no longer in the staging folder (fetch it again)",
+    "暂存目录不在合并暂存根下（拒绝替换）":
+      "The staging folder is not under the merge staging root (refusing to replace)",
+    "暂存目录与这个应用对不上（先重新拉取一次）":
+      "The staging folder does not belong to this app (fetch it again)",
+    "这次替换没有对应的暂存目录（先重新拉取一次）":
+      "This replacement has no matching staging folder (fetch it again)",
+    "旧画布没能移入回收站（替换已中止，什么都没动）：":
+      "The old canvas could not be moved to the trash (replacement aborted, nothing was touched): ",
+    "那个应用的独立窗口没能关掉（可能正在忙），已中止替换：请先手动关掉它再试":
+      "That app's standalone window could not be closed (it may be busy); replacement aborted — close it by hand and try again",
+    "删不掉旧版本的应用目录（可能被别的程序占用）：":
+      "Cannot delete the old version's app folder (it may be locked by another program): ",
+    "替换前备份失败（没敢动任何东西）：": "Backup before replacing failed (nothing was touched): ",
+    "替换失败，已回滚到原来的那一份：": "Replacement failed and was rolled back to the previous copy: ",
+    /* 二选一（本轮需求）：AI 逐项合并 / 完全替换（不需要 Agent） */
+    "怎么用别人这一版？": "How should this version be applied?",
+    "（差异 ": " (",
+    " 个文件；本机现在是 v": " files differ; my local copy is v",
+    "AI 逐项合并": "Merge item by item with AI",
+    "新建一条会话：Agent 对比两版差异、逐项问过你之后才改本机（不自动上架）":
+      "Opens a new session: the Agent compares the two versions and only changes my machine after asking me about each item (never auto-published)",
+    "本机代码：只改你确认过的那些文件（其余原样）": "My code: only the files you confirm are changed (everything else stays as is)",
+    "开发画布：保留（合并不动画布 / storage / 数据文件）":
+      "Dev canvas: kept (a merge never touches the canvas, storage or data files)",
+    "版本号：默认不动": "Version number: unchanged by default",
+    "需要 Agent：是（在开发页那条会话里跑）": "Needs the Agent: yes (it runs in that session on the Dev page)",
+    "用 AI 合并": "Merge with AI",
+    "完全替换": "Replace outright",
+    "删掉本机这一版（含开发画布），直接用对方那一版继续开发；不需要 Agent":
+      "Delete my local copy (including its dev canvas) and continue development straight from that version; no Agent involved",
+    "本机代码：整目录换成对方那一版，你在代码上的改动会丢":
+      "My code: the whole folder becomes that version — your code changes are lost",
+    "开发画布：删掉，改用对方包里的画布；对方包里没有就建一张同名空画布":
+      "Dev canvas: deleted, replaced by the canvas inside their package; if the package has none, an empty canvas of the same name is created",
+    "数据文件：保留（storage / data.json / 素材）": "Data files: kept (storage / data.json / assets)",
+    "版本号：采用对方那一版的 v": "Version number: adopts their v",
+    "退路：替换前做整目录备份，旧画布进本机回收站（界面不提供回滚入口）":
+      "Way back: a whole-folder backup is taken first and the old canvas goes to the local trash (no roll-back button in the UI)",
+    "应用窗口：替换前会自动关掉它": "App window: closed automatically before replacing",
+    "直接完全替换": "Replace outright",
+    "两条路都先把对方那一版拉到本机暂存目录（已完成：差异 ":
+      "Both paths first fetch that version into the local staging folder (done: ",
+    " 个文件，暂存：": " files differ, staging: ",
+    "）。两条路都不会自动上架。": "). Neither path ever auto-publishes.",
+    "完全替换能力尚未就绪（请重启 MTNode）": "Replace-outright support is not ready yet (restart MTNode)",
+    "完全替换失败：": "Replace outright failed: ",
+    "完全替换完成：已用 ": "Replaced outright: ",
+    " 接替本机这一份（画布：": " now takes over my local copy (canvas: ",
+    "沿用对方包里那一张": "kept theirs from the package",
+    "新建同名空画布": "new empty canvas with the same name",
+    "；备份：": "; backup: ",
+    "对方": "the other author",
+    /* 会话契约正文（整份随系统提示注入；用户消息位只留一句关键输入） */
+    "合并 {author} v{version} 的差异": "Merge {author} v{version} differences",
+    "把 {author} v{version} 的差异按我逐项确认的结果合进本机":
+      "Merge {author} v{version} differences into my machine as I confirm each item",
+    "【版本合并 · 这个会话干什么】把对方那一版合进本机开发目录：先对比差异，再用拷问逐项问过我，然后按我的选择改文件。合并**不修改版本号**（每位作者各算各的），也**不会自动上架**。":
+      "[Version merge · what this session does] Merge that version into my local dev folder: first compare the differences, then ask me about every item (grill me), then change files the way I chose. A merge **never changes the version number** (every author keeps their own) and **never auto-publishes**.",
+    "· 本机开发目录（要改的就是它）：": "· My local dev folder (this is what gets changed): ",
+    "· 对方那一版（只读，一个字都不要改它）：": "· That version (read-only — do not change a single byte of it): ",
+    "· 对方：": "· Their side: ",
+    " · 版本说明：": " · release notes: ",
+    "· 本机版本号（**这次不会改它**）：": "· My local version (**not changed this time**): ",
+    "· 合并前整目录备份（要回滚就把它拷回开发目录）：":
+      "· Whole-folder backup taken before merging (to roll back, copy it over the dev folder): ",
+    "· 文件级差异清单（主进程已比过；add = 对方新增，diff = 两边都有但内容不同，same = 一致，local = 只有我有）：":
+      "· File-level difference list (already computed by the main process; add = new on their side, diff = present on both sides with different content, same = identical, local = only mine): ",
+    "（二进制）": " (binary)",
+    "（另有 ": "(",
+    " 个要处理的文件没列在这里，自己扫两边目录补齐）":
+      " more files to handle are not listed here — scan both folders to fill the gap)",
+    "【必须按这个顺序来】① 先用 skill 工具加载内置技能 mtnode-app-merge，并严格照它执行；② 再加载 mtnode-grill-me，用 ask_user_question 一次问满整个前沿：每个 add / diff 都要问到「怎么覆盖」，外加一问「我这一版要不要跟着动」（默认不动）；③ **用户确认之前，不许改任何文件**；④ 确认之后自己改开发目录（文本用文件工具改，二进制与新增文件用 shell 拷贝）。":
+      "[Follow this order] ① Load the bundled skill mtnode-app-merge with the skill tool and follow it strictly; ② then load mtnode-grill-me and use ask_user_question to ask the whole frontier at once: every add / diff needs a “how to apply it” decision, plus one question about whether my own version should move (default: it does not); ③ **do not change any file before the user confirms**; ④ after confirmation, change the dev folder yourself (text with your file tools, binaries and new files by copying them from a shell).",
+    "【硬规则】只按拷问结果覆盖差异，不做任何额外改动；「只有我有」的文件一律保留、不用问；不动 storage/、data.json、*.mtnodes 与备份目录；**不许直接改 app.json、不许改版本号**。":
+      "[Hard rules] Apply differences only as the grilling decided — make no other change; files that are “only mine” are always kept (no need to ask); never touch storage/, data.json, *.mtnodes or the backup folder; **never edit app.json directly and never change the version number**.",
+    "【收尾】把这次采纳的清单写进这个文件：": "[Wrap up] Write the list of what you applied into this file: ",
+    "（形如 {\"done\":true,\"files\":[\"index.html\"],\"version\":\"\"}）。主进程见到它就补一条合并留痕并清掉暂存目录。version 留空 = 版本号不动；只有我在拷问里明确要「跟着动」时才填我要的新版本号。":
+      " (shape: {\"done\":true,\"files\":[\"index.html\"],\"version\":\"\"}). When the main process sees it, it appends a merge record and deletes the staging folder. Leave version empty = the version number stays; fill in the new version I asked for only when I explicitly said in the grilling that my own version should move.",
+    "【不许做的事】不自动上架、不改画布、不动备份目录、不改对方那一版；合并结束前不要删暂存目录。":
+      "[Never do] No auto-publishing, no canvas edits, no touching the backup folder, no changing that version; do not delete the staging folder before the merge is over.",
     "还没有可上架的应用：先新建或安装一个应用":
       "No app to publish yet: create or install one first",
     "这个应用的窗口还没打开：先点「启动」，再回来拍图":

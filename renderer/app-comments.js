@@ -6,6 +6,10 @@
  *
  * 二、口径（真源 store-saas/comments.mjs + docs/tips-comments-design.md）
  *   · 目标类型：template / skill / app / forum_topic / forum_reply；评论支持 parentId 互回。
+ *   · **应用条目多一个「分支作者」维度**（本轮需求 4：应用的评论跟着作者走）：
+ *     target.ownerId = 当前选中那条分支的作者 uid（见 app-apps.js 的 appsCommentTarget）——
+ *     服务端按「应用 id + 分支作者」各存各的，同一应用不同作者的评论与评分互相分离；
+ *     不传 ownerId = 服务端按**主干**那一支算（没有分支标记的老评论都归它）。
  *   · **只有条目评论能打分**（template / skill / app）：论坛话题与回复的评论不参与评分，
  *     界面上也不出星星（传了 rating 服务端也会忽略）。
  *   · 评分选填；同一个人对同一个对象只保留最新一颗星（服务端在打分时清旧的，本模块只发起）。
@@ -349,6 +353,7 @@
       var q =
         "/api/comments?targetKind=" + encodeURIComponent(target.kind) +
         "&targetId=" + encodeURIComponent(target.id) +
+        (target.ownerId ? "&owner=" + encodeURIComponent(target.ownerId) : "") +
         "&page=" + state.page + "&pageSize=" + pageSize;
       return api("GET", q).then(function (r) {
         if (!r || !r.ok || !r.data) {
@@ -388,6 +393,8 @@
         return;
       }
       var body = { targetKind: target.kind, targetId: target.id, content: text };
+      /* 应用分支（本轮需求 4）：写进**这一条分支**的评论池 —— 不同作者的评论各自分离 */
+      if (target.ownerId) body.owner = target.ownerId;
       if (state.replyTo) body.parentId = state.replyTo;
       if (rated(target.kind) && stars && stars.getValue()) body.rating = stars.getValue();
       send.disabled = true;

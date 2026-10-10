@@ -582,32 +582,36 @@ function publicUser(u) {
 function tipEnrich(kind, ids) {
   return plans.enricher(kind, ids);
 }
-function commentEnrich(kind, ids) {
-  return comments.enricher(kind, ids);
+function commentEnrich(kind, list) {
+  return comments.enricher(kind, list);
 }
-/** 打赏 + 评论一次收齐（列表接口两个 Map 都建好了再逐行投影）。 */
-function enrichOf(kind, ids) {
+/** 打赏 + 评论一次收齐（列表接口两个 Map 都建好了再逐行投影）。
+ *  `list` 里可以是 id（模板 / 技能），也可以是 `{ id, ownerId }`（**应用按分支**，本轮需求 4）——
+ *  取用时按 (id, ownerId) 取；打赏那边只吃 id（打赏仍按家族根统一，不跟着分支走）。 */
+function enrichOf(kind, list) {
+  const ids = (Array.isArray(list) ? list : []).map((x) =>
+    x && typeof x === "object" ? String(x.id || "") : String(x || ""),
+  );
   const tipsFn = tipEnrich(kind, ids);
-  const cmtFn = commentEnrich(kind, ids);
-  return (id) => {
-    const c = cmtFn(id);
+  const cmtFn = commentEnrich(kind, list);
+  return (id, ownerId) => {
+    const c = cmtFn(id, ownerId);
     return { tips: tipsFn(id), rating: c.rating, comments: c.comments };
   };
 }
-/** 单条对象的三块（详情 / 新建返回用）。 */
-function enrichOne(kind, id) {
+/** 单条对象的三块（详情 / 新建返回用）。app 传 ownerId = 那一条分支的作者（本轮需求 4）。 */
+function enrichOne(kind, id, ownerId) {
   return {
     tips: plans.summaryOf(kind, id),
-    rating: comments.ratingOf(kind, id),
-    comments: comments.countOf(kind, id),
+    rating: comments.ratingOf(kind, id, ownerId),
+    comments: comments.countOf(kind, id, ownerId),
   };
 }
 /** 把三块并进投影（site 与缺省口径都在这里，别在各处重复拼字段名）。 */
-function withEnrich(obj, kind, id, en) {
-  const e = en || enrichOne(kind, id);
+function withEnrich(obj, kind, id, en, ownerId) {
+  const e = en || enrichOne(kind, id, ownerId);
   return Object.assign(obj, { tips: e.tips, rating: e.rating, comments: e.comments });
 }
-
 function publicTemplate(t, viewer, en) {
   const viewerId = viewer && viewer.id;
   const owner = db.users.find((u) => u.id === t.userId);
@@ -1072,6 +1076,8 @@ const wallet = createWallet({ db, saveDb, applyUserPatch });
  * 这里只做接线与鉴权）
  *   · tips          —— 打赏只能经 wallet.adjustBalance 动钱（铁律①），本层不自己写余额；
  *   · comments      —— 评论 / 五星评分 / 软删除，实时算平均星与评论数；
+ *                      **应用的评论与评分按「应用 id + 分支作者」分池**（本轮需求 4：
+ *                      评论跟着作者走），打赏仍按家族根统一 —— 两者刻意分开；
  *   · notifications —— 消息（打赏 / 评论 / 回复），只落 db.notifications，**绝不碰钱包**。
  * 消息实例先建（tips / comments 都把它当可选依赖注入，只用于旁路记消息），
  * 实例化顺序：wallet → notifications → tips / comments。
@@ -1093,9 +1099,11 @@ const plans = createTips({
   now,
   notifications: alerts,
   ledger: () => db.rechargeLedger,
-  /* 应用家族口径（本轮需求：分支树统一 + 打赏/评论按根应用统一）：
+  /* 应用家族口径（分支树统一；**打赏**按根应用统一）：
      groupIdOf = 家族归组 id（根条目的 id）；entriesOf = 族里全部记录。
-     传下去让 tips 的统计、分账作者名单与评论的聚合都走同一份口径。 */
+     传下去让 tips 的统计、分账作者名单与分支树都走同一份口径。
+     ⚠ 评论 / 评分**本轮起按分支分开**（见下面 comments 的 branch 注入）：comments 只用 tips
+     的 idSetOf 拿「同族 id 集合」，池的归属由「应用 id + 分支作者」决定。 */
   family: {
     groupIdOf: (id, ownerId) => appFamilyGroupId(id, ownerId),
     entriesOf: (id, ownerId) => appFamilyEntries(id, ownerId),
@@ -1110,8 +1118,22 @@ const comments = createComments({
   now,
   notifications: alerts,
   tips: plans,
+  /* 应用分支口径（本轮需求 4：**应用的评论跟着作者走**）：
+     ownerOf      = 把 ?owner=<uid|账号名> 解析成**那一条分支**的作者 uid
+                    （那条分支必须真存在，认不出回 "" —— server 侧不静默落到主干）；
+     trunkOwnerOf = 这个 id 的主干（原作者那条）作者 uid：没有分支标记的老评论都归它。 */
+  branch: {
+    ownerOf: (id, hint) => {
+      const key = String(appResolveOwnerId(hint) || hint || "").trim();
+      if (!key) return "";
+      const hit = appBranchesOf(String(id || "")).find(
+        (a) => String((a && a.userId) || "") === key || String((a && a.userId) || "") === String(hint || "").trim(),
+      );
+      return hit ? String(hit.userId || "") : "";
+    },
+    trunkOwnerOf: (id) => String(appFamilyRootOwnerId(String(id || ""), "") || ""),
+  },
 });
-
 /* ========================================================================== *
  * 中转站（内部测试用）：DeepSeek 文本/识图 + gpt-image-2.5 图像，鉴权 = 账号登录 token，
  * 门禁 = 可用余额 > 0，计费 = 按用量扣（亚分精度，见 relay.mjs 文件头）。逻辑全在 relay.mjs，
@@ -4851,7 +4873,7 @@ function publicApp(a, viewer, en) {
     canDelete: !!(viewerId && (viewerId === a.userId || isAdmin(viewer))),
     // 同 id 的其他作者分支（含主干）：客户端据此画分支树与「作者 ▾」下拉（契约 §十）
     branches: appBranchViewOf(a.id, viewer),
-  }), "app", a.id, en);
+  }), "app", a.id, en, a.userId);
 }
 
 /** 静态目录文档：把这份 JSON 原样写到 /var/www/mtnode/apps/catalog.json 即是线上目录。
@@ -7030,8 +7052,10 @@ async function handle(req, res) {
     }
     const total = list.length;
     const pageItems = list.slice((page - 1) * pageSize, page * pageSize);
-    const en = enrichOf("app", pageItems.map((a) => a.id));
-    const items = pageItems.map((a) => publicApp(a, user, en(a.id)));
+    /* 评论 / 评分**按分支**（本轮需求 4）：请求表带 { id, ownerId }，同一个 id 下每个作者各算各的；
+       打赏仍按家族根统一（enrichOf 内部只把 id 交给 tips）。 */
+    const en = enrichOf("app", pageItems.map((a) => ({ id: a.id, ownerId: a.userId })));
+    const items = pageItems.map((a) => publicApp(a, user, en(a.id, a.userId)));
     return send(res, 200, { ok: true, items, total, page, pageSize });
   }
 
@@ -8304,10 +8328,13 @@ async function handle(req, res) {
   }
 
   // 评论列表：免登录可看（平铺 + parentId 引用，口径见 comments.mjs 文件头）。
+  // app 的 ?owner=<uid|账号名> = 列哪一条作者分支的评论（本轮需求 4）；不传 / 认不出 = 主干。
   if (method === "GET" && p === "/api/comments") {
     const r = comments.list({
       targetKind: url.searchParams.get("targetKind") || "",
       targetId: url.searchParams.get("targetId") || "",
+      /* 应用分支（本轮需求 4）：?owner=<uid|账号名> = 列哪一条作者分支的评论；不传 = 主干 */
+      owner: url.searchParams.get("owner") || url.searchParams.get("ownerId") || "",
       page: Number(url.searchParams.get("page")) || 1,
       pageSize: Number(url.searchParams.get("pageSize")) || 20,
       parentId: url.searchParams.get("parentId"),
@@ -8321,12 +8348,15 @@ async function handle(req, res) {
   }
 
   // 发评论 / 回复：需登录；限频 1 条/分钟 + 50 条/天；条目评论可带五星。
+  // app 的 body.owner = 这条评论写给哪一条作者分支（本轮需求 4：评论跟着作者走）；不传 = 主干。
   if (method === "POST" && p === "/api/comments") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
     const b = await jsonBody();
     const r = await comments.create(user, {
       targetKind: b.targetKind,
       targetId: b.targetId,
+      /* 应用分支（本轮需求 4）：body.owner = 这条评论写给哪一条作者分支；不传 = 主干 */
+      owner: b.owner != null ? b.owner : b.ownerId,
       content: b.content,
       rating: b.rating,
       parentId: b.parentId,

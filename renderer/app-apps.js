@@ -285,9 +285,12 @@ function appsHubFootGapHook() {
     });
   } catch (_) {}
 }
-/* 与 I18n 未就绪时同一口径：拿不到模块就原样回显中文（不报错、不缺字） */
-function appsT(s) {
-  return window.I18n && window.I18n.t ? window.I18n.t(s) : String(s == null ? "" : s);
+/* 与 I18n 未就绪时同一口径：拿不到模块就原样回显中文（不报错、不缺字）。
+   vars = 占位符替换表（I18n.t 第二参，如 { author, version }）：**必须照传** ——
+   带 {作者}/{版本} 的整句（合并入口文案 / 合并会话标题与关键输入）少传这一位就会把
+   「把 {author} v{version} 的差异…」原样甩到界面上（2026-xx 用户报的现场）。 */
+function appsT(s, vars) {
+  return window.I18n && window.I18n.t ? window.I18n.t(s, vars) : String(s == null ? "" : s);
 }
 function appsEscape(s) {
   return typeof esc === "function" ? esc(s) : String(s == null ? "" : s);
@@ -683,8 +686,28 @@ function appsSpecListAll() {
 function appsSpecPoolRaw() {
   return appsSpecPoolAll();
 }
+/* 本机这条摘要来自**哪一套根**（主进程 apps:list 的回执字段 listKind；老回执 / 缺字段按 kind
+   回落成 down|dev）。用户报的「合并分支后开发会话里这个项目消失」根因链的最后一环：
+   同一个 id 在下载根与项目根各有一份时（他看对方那一版时装了一份同 id 的进下载根），
+   只按 id 找就会拿到下载那份 → 开发页的 dev:true 判定全落空（列表过滤、预览、数据目录、台账）。
+   所以本机取值一律先问「我要的是哪一套根」。 */
+function appsLocalRootKind(a) {
+  if (!a) return "";
+  const lk = String(a.listKind || "");
+  if (lk) return lk;
+  return a.dev === true || a.kind === "dev" ? "dev" : "down";
+}
 function appsLocalList() {
   return (APPS_ST.list && Array.isArray(APPS_ST.list.apps) ? APPS_ST.list.apps : []).slice();
+}
+/* 本机某一条：缺省 = 老口径（列表里第一条同 id 的，通常就是下载那份）；
+   传 kind（"dev" / "down"）就只要**那一套根**下的那一份 —— 开发页一律传 dev。 */
+function appsLocalById(id, kind) {
+  const sid = String(id == null ? "" : id);
+  const list = appsLocalList();
+  const k = kind ? String(kind).toLowerCase() : "";
+  if (k) return list.find((a) => a && a.id === sid && appsLocalRootKind(a) === k) || null;
+  return list.find((a) => a && a.id === sid) || null;
 }
 function appsSpecById(id) {
   /* 同 id 多分支（§十）：缺省给主干那条（目录里同 id 的第一条 = 服务端的缺省口径）；
@@ -698,9 +721,6 @@ function appsSpecById(id) {
      所以这一支**自己查表**（与 appsSpecOfBranch 的「没指定作者」口径逐字同源），不绕回去。 */
   const list = appsSpecPoolAll().filter((s) => appsBranchIdOf(s) === String(id || ""));
   return list[0] || null;
-}
-function appsLocalById(id) {
-  return appsLocalList().find((a) => a && a.id === id) || null;
 }
 /* 目录条目的本地化标题 / 副标题：云端可给 { zh, en } 两份（apps-store.js 的 loc()） */
 function appsSpecTitle(spec) {
@@ -1056,6 +1076,11 @@ function appsBranchTreeEl(id, opts) {
      「选择好分支后，下方才出现下载/覆盖等信息」说的是**应用详情**）。
      没开开关时不读 APPS_DETAIL（上架窗与详情窗共用同一份模块状态，读了会显示错分支的详情）。 */
   const withSel = !!o.withSel;
+  /* 行可不可点（本轮需求 1）：withSel（应用详情 / 「分支 / 版本」跳窗，点行 = 选中并出下载）
+     与 o.clickable（上架窗那种「只看结构、点一下选中高亮」的宿主）。
+     可点的行才有手型指针 + 悬停底色 —— 用户报的「选择分支时没有交互指针」就是这行
+     原先只有 click、CSS 里既没 cursor 也没 :hover（见 css/apps.css 的 .apps-br-branch.is-pick）。 */
+  const clickable = withSel || !!o.clickable;
   const want = withSel
     ? String(o.selectedOwnerId || appsDetailSelKey() || "")
     : String(o.selectedOwnerId || "");
@@ -1107,6 +1132,7 @@ function appsBranchTreeEl(id, opts) {
       "apps-br-branch" +
       (isTrunk ? " is-trunk" : "") +
       (isLocal ? " is-local" : "") +
+      (clickable ? " is-pick" : "") +
       (on ? " on" : "");
     row.dataset.depth = String(r.depth);
     row.dataset.branchKey = key;
@@ -1157,13 +1183,17 @@ function appsBranchTreeEl(id, opts) {
     line.appendChild(info);
 
     /* 点整行 = 选中这一支（与点作者名同效）；选中后下方才出现版本与下载/覆盖/启动 —— 用户口径。
-       没开 withSel 的调用方（上架窗）点了不做事：那边不是「选择分支去下载」的场景。 */
-    if (withSel) {
+       没开开关的调用方（上架窗）要么点了不做事（连 o.clickable 都不给），要么走 o.onSelect
+       自己收（那边只做「选中高亮 + 一句说明」，绝不写 APPS_DETAIL、也绝不出下载按钮）。 */
+    if (clickable) {
       line.addEventListener("click", (ev) => {
         if (ev && ev.target && ev.target.closest && ev.target.closest("button")) return;
-        appsBranchTreeSelect(id, b, o.onSelect);
+        if (typeof o.onSelect === "function") o.onSelect(b);
+        else appsBranchTreeSelect(id, b, null);
       });
-      line.title = appsT("点这一支：下方出现它的版本与下载 / 覆盖入口");
+      line.title = withSel
+        ? appsT("点这一支：下方出现它的版本与下载 / 覆盖入口")
+        : appsT("点这一支：选中查看它（这里只作查看，上传只会动你自己那条分支）");
     }
     row.appendChild(line);
     rowsWrap.appendChild(row);
@@ -1177,6 +1207,11 @@ function appsBranchTreeEl(id, opts) {
     hint.textContent =
       appsT("已选：") + appsBranchLabelOf(sel, tree.list) + appsT("（下方是这一支的版本与下载）");
     box.appendChild(hint);
+    /* 分支合并入口（本轮需求）：选中**别人的**分支、且这个应用已在本机开发目录里时才露出。
+       露出条件由主进程答（apps:mergeInfo = 开发目录里真有 <id> 这一份），这里先问一次、
+       答到了再补按钮 —— 答不到就不补（宁可晚一帧出现，也不给一个点了报错的按钮）。 */
+    const merge = appsMergeBtnEl(id, sel, tree.list);
+    if (merge) box.appendChild(merge);
     /* opts.noVers：「分支 / 版本」跳窗（openAppsVersionDlg）用它 —— 树下面那半截（这一支的
        版本列表 + 下载 / 覆盖按钮）由跳窗自己按「点行选中、底部一颗主按钮」的画法排
        （见 appsVersionPickListEl），这里不画第二份。 */
@@ -1729,6 +1764,19 @@ function appsTipsEnsure(list, force) {
 function appsSpecWithMine(spec) {
   const mine = appsMineOf(spec && spec.id);
   if (!mine) return spec;
+  /* 同 id 多分支：**只有「这一条就是我自己的那条分支」才把我的线上条目并进来**。
+     以前只按 id 查就合并 → 同一个 id 下别人（含真正主干）的条目统统被我的
+     owner / ownerName / ownerId 顶掉，界面上的表现正是用户报的
+     「原作者显示的是现作者」（主干对象还是主干，作者字段却已经换成我）。
+     判据用 uid（身份）；老目录只有账号名时按账号名兜一层；两者都拿不到才照旧合并。 */
+  const mineOwnerId = String(mine.ownerId || (mine.ownerUser && mine.ownerUser.id) || "").trim();
+  const specOwnerId = String((spec && spec.ownerId) || "").trim();
+  if (mineOwnerId && specOwnerId && mineOwnerId !== specOwnerId) return spec;
+  if (!specOwnerId) {
+    const mineOwnerName = String(mine.owner || "").trim();
+    const specOwnerName = String((spec && spec.owner) || "").trim();
+    if (mineOwnerName && specOwnerName && mineOwnerName !== specOwnerName) return spec;
+  }
   const versions =
     Array.isArray(mine.versions) && mine.versions.length ? mine.versions : spec.versions;
   const out = Object.assign({}, spec, {
@@ -2777,6 +2825,8 @@ function openAppsHub(nav) {
   const btn = document.getElementById("btnApps");
   if (btn) btn.classList.add("on");
   appsHubProgressWatch(true);
+  /* 合并收尾的推送（主进程看门狗看到 Agent 的结束声明就发）：只订阅一次，与进度订阅同一处开关 */
+  appsMergeDoneBind();
   appsHubPaint();
   /* 首次打开：先把数据拉齐再画一次（先画壳，用户立刻看到反馈） */
   Promise.all([appsCatalogLoad(false), appsListLoad(false), appsRootLoad()]).then(() => {
@@ -2979,7 +3029,9 @@ async function appsDownload(id, mode, version, ownerId) {
 }
 
 /* 打开（独立窗口运行）/ 更新 / 卸载 */
-async function appsOpenApp(id) {
+/* kind（"dev" / "down"，可选）＝**打开哪一套根下的那一份**：同一个 id 两边各有一份时
+   （下载的 + 我开发中的），开发页必须显式给 "dev"，否则主进程按老口径先解析到下载副本。 */
+async function appsOpenApp(id, kind) {
   const api = window.api || {};
   if (typeof api.appsOpenWindow !== "function") {
     appsBridgeMissing();
@@ -2987,7 +3039,7 @@ async function appsOpenApp(id) {
   }
   let r = null;
   try {
-    r = await api.appsOpenWindow(id);
+    r = await api.appsOpenWindow(id, kind || "");
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
@@ -3003,8 +3055,10 @@ async function appsUninstallApp(app) {
   const binding = appsDevBindingOf(app);
   /* **按类型两种语义**（用户口径：删一个绝不误删另一个）：
      · 开发的（dev）→ 只「移除登记」，磁盘上的项目文件夹一个字节都不动（源码不能被我们删）；
-     · 下载的（down）→ 真删自己在下载根下的子文件夹 + 它自己那一棵数据（主进程按类型收口）。 */
-  const isDev = !!(app && (app.dev === true || app.kind === "dev"));
+     · 下载的（down）→ 真删自己在下载根下的子文件夹 + 它自己那一棵数据（主进程按类型收口）。
+     类型判据是**这条摘要来自哪一套根**（appsLocalRootKind）：同 id 两边各有一份时只有它分得清
+     「我要摘的是项目根那份还是下载那份」，也不能让主进程再按 id 猜（它会先拿到下载那份）。 */
+  const isDev = appsLocalRootKind(app) === "dev";
   const ok = await new Promise((resolve) => {
     if (typeof confirmDialog !== "function") {
       resolve(true);
@@ -3033,7 +3087,7 @@ async function appsUninstallApp(app) {
   }
   let r = null;
   try {
-    r = await api.appsUninstall(id, isDev ? "dev_remove" : "");
+    r = await api.appsUninstall(id, isDev ? "dev_remove" : "", isDev ? "dev" : "down");
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
@@ -3137,18 +3191,30 @@ function appsFillCatalogActions(acts, spec) {
   } else {
     /* 已装 = 启动（与库页 / 开发页同一个入口：appsOpenApp → 独立窗口） */
     acts.appendChild(appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id)));
-    const up = appsCardUpdateTargetOf(spec);
-    if (up) {
-      const btn = appsMiniBtn(
-        appsUpdateBtnLabel(up),
-        () => appsCatalogUpdate(spec, up.ownerId, up.version),
+    /* 开发中的应用：**更新不再整目录覆盖**，改成「拉取 → 交给 Agent 合并」（本轮需求）。
+       入口常驻（只要这个应用有别的作者分支、或我自己的云端分支就露出），不再拿版本号比大小 ——
+       合并后本机版本号不再跟着动，跨作者比大小会把入口弄没。 */
+    const mergeTgt = appsCardMergeTargetOf(spec);
+    if (mergeTgt) {
+      acts.appendChild(
+        appsMergeEntryBtn(id, mergeTgt.version, () =>
+          appsMergeStart(id, mergeTgt.ownerId, mergeTgt.version, mergeTgt.label),
+        ),
       );
-      btn.disabled = busy;
-      btn.title =
-        up.reason === "same-version"
-          ? appsT("作者就地重传了同一版（v") + up.version + appsT("）：云端那份包内容已变，覆盖安装把新的换到本机（数据保留）")
-          : appsT("更新到本机已装那一支的作者最新版");
-      acts.appendChild(btn);
+    } else {
+      const up = appsCardUpdateTargetOf(spec);
+      if (up) {
+        const btn = appsMiniBtn(
+          appsUpdateBtnLabel(up),
+          () => appsCatalogUpdate(spec, up.ownerId, up.version),
+        );
+        btn.disabled = busy;
+        btn.title =
+          up.reason === "same-version"
+            ? appsT("作者就地重传了同一版（v") + up.version + appsT("）：云端那份包内容已变，覆盖安装把新的换到本机（数据保留）")
+            : appsT("更新到本机已装那一支的作者最新版");
+        acts.appendChild(btn);
+      }
     }
     if (appsHasOtherVersions(spec)) {
       const btn = appsMiniBtn(appsT("其他版本"), () => appsOpenDetailForPick(id));
@@ -3193,6 +3259,33 @@ function appsCardUpdateTargetOf(spec) {
     return { ownerId: ownerId, version: latest, reason: "same-version", same: true };
   }
   return null;
+}
+
+/** **开发中**的应用（本机这一份带 dev 标记）的「拉取并交给 Agent 合并」目标：
+ *  本机已装那一支的作者那一支（我还没上过架时退回家族根 = 原作者）。
+ *
+ *  与 appsCardUpdateTargetOf 的区别只有一处（本轮需求）：**不比版本号大小**。
+ *  合并后本机版本号不再跟着动（每位作者各算各的），跨作者比大小会出现「我号更大 → 入口消失」，
+ *  所以这里只要那一支还有版本（云端目录里这一条）就给入口 —— 入口常驻。
+ *  @returns {?{ownerId:string, version:string, label:string}} */
+function appsCardMergeTargetOf(spec) {
+  const id = String((spec && spec.id) || "");
+  const local = appsLocalById(id);
+  if (!local || local.dev !== true) return null;
+  const fam = appsFamilyEntriesOf(spec);
+  const localOwnerId = String(local.ownerId || "").trim();
+  let mine = localOwnerId
+    ? fam.find((b) => String((b && b.ownerId) || "") === localOwnerId) || null
+    : null;
+  if (!mine) mine = appsFamilyRootOf(spec) || spec;
+  if (!mine) return null;
+  const version = String(appsBranchVersionOf(mine) || "");
+  if (!version) return null;
+  return {
+    ownerId: String(mine.ownerId || ""),
+    version: version,
+    label: appsBranchLabelOf(mine, fam),
+  };
 }
 
 /** 本机装的那一版与云端那一版的**包内容**对不上吗（同号覆盖的判据）。
@@ -3333,12 +3426,21 @@ function appsThumbUrlOf(spec) {
 }
 
 /* 上架截图的可用地址（**唯一一处**，与图标同一套来源口径）：
- *   · 静态目录：条目里的 shots[] 是相对静态目录的写法（shots/<主干>/<n>.png）→ sourceBase + 它；
- *   · 接口目录：源站没有 /shots 静态路由时走 /api/apps/<id>/shots/<n>（见 store-saas/server.mjs）。
+ *   · 静态目录：条目里的 shots[] 是相对静态目录的写法（shots/<主干>/<n>.png，主干 = <id>__<作者uid>）
+ *     → sourceBase + 它（**每条分支各自一份**，喂对 spec 就是对的那位作者的图）；
+ *   · 接口目录：源站没有 /shots 静态路由时走 /api/apps/<id>/shots/<n>（见 store-saas/server.mjs）
+ *     —— 这条路由认 `?owner=<uid|账号名>`，**必须带上这一条的作者**，否则服务端一律回主干，
+ *     用户看到的就是「切到别的作者分支，截图还是老那位作者的」（本轮修的 bug 3）。
  * 一律带上限大小的图；拿不到就回空数组（详情窗不画画廊，绝不画一堆破图）。
  * `opts.size === "list"` = 要**列表小图**（服务端另出的长边 1280 那一档，见 shotsThumb[]）：
  *   列表页只下小图，详情才下原图 —— 这是「图片缓存」省服务器流量的另一半。
  *   shotsThumb 缺席 / 对应位置为空 / 老服务端没有这个字段 → 原样退回原图地址（绝不 404）。 */
+/** 一条条目的**分支作者**（「按分支取」的接口要的 ?owner= 值）：uid 优先（身份），
+ *  老目录只有账号名时才退账号名；两者都没有 = 空串（服务端按主干处理）。 */
+function appsBranchOwnerOf(spec) {
+  const s = spec || {};
+  return String(s.ownerId || s.userId || "").trim() || String(s.owner || "").trim();
+}
 function appsShotsUrlsOf(spec, opts) {
   const s = spec || {};
   const wantList = String((opts && opts.size) || "") === "list";
@@ -3348,6 +3450,7 @@ function appsShotsUrlsOf(spec, opts) {
   const st = APPS_ST.cat || {};
   const base = String(st.sourceBase || "").trim();
   const id = String(s.id || "");
+  const ownerId = appsBranchOwnerOf(s);
   const isApi = st.source === "api" || st.source === "cache";
   const out = [];
   for (let i = 0; i < rels.length; i++) {
@@ -3358,9 +3461,10 @@ function appsShotsUrlsOf(spec, opts) {
       continue;
     }
     if (isApi && id) {
-      out.push(
-        base + "/api/apps/" + encodeURIComponent(id) + "/shots/" + (i + 1) + (useList ? "?size=list" : ""),
-      );
+      const q = [];
+      if (useList) q.push("size=list");
+      if (ownerId) q.push("owner=" + encodeURIComponent(ownerId));
+      out.push(base + "/api/apps/" + encodeURIComponent(id) + "/shots/" + (i + 1) + (q.length ? "?" + q.join("&") : ""));
       continue;
     }
     out.push(base ? base.replace(/\/+$/, "") + "/" + rel.replace(/^\/+/, "") : rel);
@@ -3632,15 +3736,28 @@ function appsCoverActionsEl(spec, opts) {
   }
   if (o.local) {
     push(appsRunIcoBtnEl(spec.id, !!spec.windowOpen));
-    const upTarget = appsCardUpdateTargetOf(spec);
-    if (upTarget) {
+    /* 开发中的应用：这颗图标改成「拉取 vX 交给 Agent 合并」（与卡片同一口径：
+       更新不再整目录覆盖、入口常驻、不比版本号大小）。 */
+    const mergeTgt = appsCardMergeTargetOf(spec);
+    if (mergeTgt) {
       push(
         appsIcoBtnEl(
           "download",
-          appsT("更新到本机已装那一支的作者最新版（v") + upTarget.version + "）",
-          () => appsCatalogUpdate(spec, upTarget.ownerId, upTarget.version),
+          appsMergeEntryLabel(mergeTgt.version) + appsT("：拉取到暂存目录，然后二选一：AI 逐项合并，或完全替换（只写本机）"),
+          () => appsMergeStart(spec.id, mergeTgt.ownerId, mergeTgt.version, mergeTgt.label),
         ),
       );
+    } else {
+      const upTarget = appsCardUpdateTargetOf(spec);
+      if (upTarget) {
+        push(
+          appsIcoBtnEl(
+            "download",
+            appsT("更新到本机已装那一支的作者最新版（v") + upTarget.version + "）",
+            () => appsCatalogUpdate(spec, upTarget.ownerId, upTarget.version),
+          ),
+        );
+      }
     }
   } else if (!spec.installed) {
     const dl = appsIcoBtnEl(
@@ -3653,18 +3770,29 @@ function appsCoverActionsEl(spec, opts) {
     dl.disabled = !!APPS_ST.busy[spec.id] || spec.compatible === false;
     push(dl);
   } else {
-    /* 已装：卡上不再放「启动」（点卡就进详情，详情里有运行入口），只在有新版本时给更新 */
-    const up = appsCardUpdateTargetOf(spec);
-    if (up) {
+    /* 已装：卡上不再放「启动」（点卡就进详情，详情里有运行入口），只在有新版本时给更新。
+       开发中的那一种走「拉取 → 交给 Agent 合并」（与卡片、分支树同一口径）。 */
+    const mergeTgt = appsCardMergeTargetOf(spec);
+    if (mergeTgt) {
       const b = appsIcoBtnEl(
         "download",
-        up.reason === "same-version"
-          ? appsT("作者就地重传了同一版（v") + up.version + appsT("）：覆盖安装把云端那份新包换到本机")
-          : appsT("更新到本机已装那一支的作者最新版（v") + up.version + "）",
-        () => appsCatalogUpdate(spec, up.ownerId, up.version),
+        appsMergeEntryLabel(mergeTgt.version) + appsT("：拉取到暂存目录，然后二选一：AI 逐项合并，或完全替换（只写本机）"),
+        () => appsMergeStart(spec.id, mergeTgt.ownerId, mergeTgt.version, mergeTgt.label),
       );
-      b.disabled = !!APPS_ST.busy[spec.id];
       push(b);
+    } else {
+      const up = appsCardUpdateTargetOf(spec);
+      if (up) {
+        const b = appsIcoBtnEl(
+          "download",
+          up.reason === "same-version"
+            ? appsT("作者就地重传了同一版（v") + up.version + appsT("）：覆盖安装把云端那份新包换到本机")
+            : appsT("更新到本机已装那一支的作者最新版（v") + up.version + "）",
+          () => appsCatalogUpdate(spec, up.ownerId, up.version),
+        );
+        b.disabled = !!APPS_ST.busy[spec.id];
+        push(b);
+      }
     }
   }
   /* ⓘ「详细」图标本轮已摘掉（点卡片本身就是开详情窗，两处用途重复）：
@@ -3739,14 +3867,84 @@ function appsTileEl(spec, opts) {
    在云端不存在，打赏与评论都无处可挂 —— 那种情况下一律不显示这两个入口，不弹空窗）。
    判据用「有没有云端作者身份」（ownerId / owner），与 appsSpecFromMine / catalog 条目同源。 */
 function appsCloudTarget(spec) {
-  /* 本轮口径：打赏 / 评论的目标 = **家族根条目的 id**（同一应用族的各作者分支共用一份累计；
+  /* 口径：**打赏**的目标 = 家族根条目的 id（同一应用族的各作者分支共用一份累计；
      服务端按家族根统计，见 store-saas/tips.mjs 的 idSetOf）。根条目在云端不存在（本机自建、
-     还没上架）时返回 null —— 调用方不放入口，不弹空窗。 */
+     还没上架）时返回 null —— 调用方不放入口，不弹空窗。
+     ⚠ 评论**不再走这里**（本轮需求 4：评论跟着作者走，目标 = 当前选中的那条分支，
+     见 appsCommentTarget）—— 两者刻意分开，别把这条又接回评论区。 */
   const root = appsFamilyRootOf(spec) || spec || {};
   const id = String(root.id || (spec && spec.id) || "");
   if (!id) return null;
   const cloud = !!(root.ownerId || root.owner);
   return cloud ? { kind: "app", id: id } : null;
+}
+
+/* 评论的对象标识（本轮需求 4：**应用的评论跟着作者走**）：
+ *   目标 = **当前选中的那条分支**（同 id + 分支作者）——服务端按「应用 id + 分支作者」各存各的，
+ *   切到哪一支就只显示那一支的评论、发评论也只发给那一支；老评论（没有分支标记）归主干。
+ *   与打赏**刻意分开**：打赏仍是 appsCloudTarget 的家族根 id（全局统一，用户口径）。
+ *   返回 null = 这一条在云端没有分支身份（本机自建还没上架 / 老目录连账号名都没有）→ 不挂评论区。
+ * @returns {{kind:string, id:string, ownerId:string}|null} */
+function appsCommentTarget(spec) {
+  const s = spec || {};
+  const id = String(s.id || "").trim();
+  const ownerId = String(s.ownerId || s.owner || "").trim();
+  if (!id || !ownerId) return null;
+  return { kind: "app", id: id, ownerId: ownerId };
+}
+
+/* ── 评论区挂载（详情窗 / 列表面板**共用这一处**，本轮需求 4） ────────────────────
+ *   · 目标 = 当前选中的那条分支（appsCommentTarget）→ 切分支 = 整块换成那一支的评论；
+ *   · **草稿保护**：整块重挂会把 .cmt-input 拆掉，所以先按应用 id 把已输入的文字记下来，
+ *     挂好后原样塞回去（用户口径：在详情/面板里切分支，不丢还没发出去的评论草稿）；
+ *   · 同一支且已挂好 → 原地不动（不白拆一次输入框）。 */
+const APPS_CMT_DRAFT = Object.create(null);
+/** 拆掉评论区之前先把草稿记下来（调用方在 host.innerHTML = "" 之前调它） */
+function appsCommentsStashDraft(host) {
+  const ta = host && host.querySelector ? host.querySelector(".cmt-input") : null;
+  if (!ta) return "";
+  const id = String((host.dataset && host.dataset.appsCmtId) || "");
+  const text = String(ta.value || "");
+  if (id) APPS_CMT_DRAFT[id] = text;
+  return text;
+}
+/**
+ * 把评论区挂进 host（切分支时重挂，草稿保留）。
+ * @param {HTMLElement} host
+ * @param {object} target appsCommentTarget 的结果
+ * @param {object} [opts] 交给 window.MtComments.mount 的选项（title 等）
+ * @param {string} [branchKey] 分支键（变了就重挂）；缺省用 target.ownerId
+ * @returns {boolean} 挂上了（或本来就挂着）回 true
+ */
+function appsCommentsMountInto(host, target, opts, branchKey) {
+  if (!host || !target) return false;
+  const sid = String(target.id || "");
+  const key = sid + "\u0000" + String(branchKey || target.ownerId || "");
+  appsCommentsStashDraft(host);
+  if (host.dataset && host.dataset.appsCmtKey === key && host.dataset.appsCmtOn === "1") return true;
+  if (!window.MtComments || typeof window.MtComments.mount !== "function") return false;
+  try {
+    window.MtComments.mount(host, target, opts || {});
+  } catch (_) {
+    return false;
+  }
+  if (host.dataset) {
+    host.dataset.appsCmtKey = key;
+    host.dataset.appsCmtOn = "1";
+    host.dataset.appsCmtId = sid;
+  }
+  const draft = APPS_CMT_DRAFT[sid] || "";
+  if (draft) {
+    const ta = host.querySelector ? host.querySelector(".cmt-input") : null;
+    if (ta) {
+      ta.value = draft;
+      /* 让模块自己的字数计数器与「发表」按钮跟着更新（它监听 input 事件） */
+      try {
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      } catch (_) {}
+    }
+  }
+  return true;
 }
 
 /* 「应用 / 评论」页签那一版详情（appsDetailEl）**本轮已整体删除**（用户口径：移除下方 tab，
@@ -4553,7 +4751,10 @@ function appsSamePath(a, b) {
  *   数据目录用 app id 管理：默认 <数据目录>/apps-data/<id>/（用户改过数据文件夹则是他选的那个），
  *   路径只由主进程解析（apps:dataOpen），渲染层不拼路径、不写路径。
  *   这两个动作以前一个散在库页顶部的下拉行、一个散在「二次开发」独占行，现在都收进卡片右侧按钮。 */
-async function appsDataOpenNow(id) {
+/* kind（"dev" / "down"，可选）＝打开**哪一套根那个副本**的数据目录：数据根本来就按类型分两棵
+   （apps-data/dev/<id> 与 apps-data/downloaded/<id>），同 id 两边各有一份时，
+   开发页必须点名 dev，否则打开的是下载副本那一棵。不给 kind 仍按本机实际所在的那一边（老口径）。 */
+async function appsDataOpenNow(id, kind) {
   const appId = String(id || "").trim();
   if (!appId) {
     appsToast(appsT("先在列表里选一个应用"), "warn");
@@ -4566,7 +4767,7 @@ async function appsDataOpenNow(id) {
   }
   let r = null;
   try {
-    r = await api.appsDataOpen(appId);
+    r = await api.appsDataOpen(appId, kind || "");
   } catch (e) {
     r = { ok: false, error: (e && e.message) || String(e) };
   }
@@ -4617,9 +4818,11 @@ async function appsSecondaryDevRun(id) {
   appsToast(appsT("已进入二次开发：") + (String(r.name || "") || r.id), "ok");
 }
 
-/* 库页可显示的应用：本机装了、还没带「开发中」标记的（已经开发中的不在库页，去开发页）。 */
+/* 库页可显示的应用：本机装了、**那条躺在下载根下**的（开发中的应用在项目根，去开发页）。
+ * 判据用「哪一套根」（appsLocalRootKind），不是 app.json 的 dev 标记：同 id 两边各有一份时
+ * 两边共用同一份清单字段，只看 dev 标记会把项目根那份也列进库页（同一张卡出现两次）。 */
 function appsLibList() {
-  return appsLocalList().filter((a) => !(a && a.dev === true));
+  return appsLocalList().filter((a) => a && appsLocalRootKind(a) !== "dev");
 }
 
 async function appsPaintLibPage(body, seq) {
@@ -4728,7 +4931,9 @@ function appsDetailShellBox() {
 function appsDetailBoxCleanup() {
   try {
     document
-      .querySelectorAll("#overlay > .overlay-box.apps-detail-box, #overlay > .overlay-box.apps-verdlg-box")
+      .querySelectorAll(
+        "#overlay > .overlay-box.apps-detail-box, #overlay > .overlay-box.apps-verdlg-box",
+      )
       .forEach((b) => {
         b.classList.remove("apps-detail-box");
         b.classList.remove("apps-verdlg-box");
@@ -5152,16 +5357,22 @@ function appsDetailWhoEl(spec, app, name) {
   who.appendChild(h);
   const rows = document.createElement("div");
   rows.className = "apps-detail-info";
-  /* 作者 */
+  /* 作者（本轮需求 2：**分两行**）
+     · 原作者 = 家族主干那条的作者（这个应用第一次上架的那位），与「当前选中哪条分支」
+       「本机装的是哪一支」都无关；
+     · 作者   = **当前选中的那条分支**的作者（在「分支 / 版本」窗里切了分支就跟着变，
+       与左列截图、下面的评论区同源）。
+     以前挤成一行「原作者 X · 当前版本作者 Y」：一旦主干条目被我的身份覆盖
+     （见 appsSpecWithMine），这行就只剩「原作者 <现作者>」—— 分开两行 + 不再覆盖身份，
+     两个问题一起收掉；主干作者认不出来时显示「未知作者」，**不再回落成当前作者**。 */
   const fam = appsFamilyEntriesOf(seed);
   const root = appsFamilyRootOf(seed);
   const curAuthor = appsAuthorOf(seed) || appsT("未知作者");
-  const rootAuthor = (root && appsAuthorOf(root)) || curAuthor;
-  const authorText =
-    appsT("原作者 ") + rootAuthor + (curAuthor && curAuthor !== rootAuthor ? appsT(" · 当前版本作者 ") + curAuthor : "");
+  const rootAuthor = (root && appsAuthorOf(root)) || "";
   const authorTitle =
     fam.length > 1 ? appsT("这个应用共有 ") + fam.length + appsT(" 条分支（原作者在最左，其余向右逐级展开）") : "";
-  rows.appendChild(appsDetailInfoRow(appsT("作者"), authorText, authorTitle));
+  rows.appendChild(appsDetailInfoRow(appsT("原作者"), rootAuthor || appsT("未知作者"), authorTitle));
+  rows.appendChild(appsDetailInfoRow(appsT("作者"), curAuthor, appsT("当前选中的这条分支的作者")));
   /* 更新时间（云端条目 updatedAt；兜底链见 appsUpdatedAtOf） */
   const at = appsUpdatedAtOf(seed);
   if (at) rows.appendChild(appsDetailInfoRow(appsT("更新时间"), appsTime(at)));
@@ -5623,6 +5834,10 @@ function appsVdlgPaint() {
     repaint: () => appsVdlgPaint(),
   };
   try {
+    /* 重画会整块换掉分支树：先把滚动位置记下来，画完贴回去 —— 分支多的时候，
+       任何一次重画（点分支、「合并到我的分支」按钮晚一帧补进来）都不该把用户甩回顶部。 */
+    const scrollEl = dom.root && dom.root.closest ? dom.root.closest(".apps-verdlg-scroll") : null;
+    const keepTop = scrollEl ? scrollEl.scrollTop : 0;
     dom.branch.innerHTML = "";
     const tree = appsBranchTreeEl(sid, {
       branches: list,
@@ -5641,6 +5856,7 @@ function appsVdlgPaint() {
     dom.roll.innerHTML = "";
     const roll = appsLocalRollbackEl(sid);
     if (roll) dom.roll.appendChild(roll);
+    if (scrollEl && keepTop) scrollEl.scrollTop = keepTop;
   } finally {
     window.APPS_DETAIL_CTX = prev || null;
   }
@@ -5713,7 +5929,452 @@ function closeAppsVersionDlg() {
   if (typeof closeOverlay === "function") closeOverlay();
 }
 
-/* 本机回滚（原「本机版本（可回滚）」块的入口形态）：只留一句说明 + 一颗按钮，
+/* ─────────── 版本合并：拉取对方那一版 → 新建会话交给 Agent（本轮需求） ───────────
+ * 用户口径（与 app-branch-merge.js 的文件头是同一份）：
+ *   · 入口两处 = 应用中心「选择版本…」跳窗的分支树上 + 开发中应用的卡片/详情/列表行按钮；
+ *   · 主进程只**拉取**（对方那一版 → 暂存目录）+ **合并前整目录备份** + 一份**文件级差异清单**，
+ *     不写开发目录、也不改版本号；
+ *   · 差异怎么覆盖由用户在**新建的那条会话里**逐项定（Agent 按内置技能 mtnode-app-merge 对比 +
+ *     mtnode-grill-me 拷问），确认后由 Agent 自己改开发目录；app.json 只有主进程的 mergeNote 写
+ *     （补一条 merges 留痕；版本号默认不动）；
+ *   · Agent 用 .merge-done.json 宣布结束后，主进程才清暂存目录、入口解禁（没宣布就留着，
+ *     下一次同一应用拉取时先清旧的）；**绝不自动上架**。
+ * 开发态与「上次留下的暂存」按 id 缓存（一次问答管一段会话）：分支树每选一次分支都会重画，
+ * 每次都问一遍主进程纯属白跑 IPC。 */
+const APPS_MERGE = {
+  dev: Object.create(null),  /* id → apps:mergeInfo 回执（dev / version / pending） */
+  run: Object.create(null),  /* id → { staging, sessionId }：本次运行里已拉取、会话正在跟 */
+  busy: Object.create(null), /* id → true：正在拉取（防连点） */
+  replace: Object.create(null), /* id → true：完全替换正在跑（与 busy 一起置灰入口） */
+  doneBound: false,          /* 收尾事件只订阅一次 */
+};
+
+/** 这个 id 在不在本机开发目录（缓存；force=true 重问）。 */
+async function appsMergeEnsureInfo(id, force) {
+  const sid = String(id || "");
+  if (!sid) return null;
+  if (!force && APPS_MERGE.dev[sid]) return APPS_MERGE.dev[sid];
+  const api = window.api || {};
+  if (typeof api.appsMergeInfo !== "function") return null;
+  try {
+    const r = await api.appsMergeInfo(sid);
+    if (r && r.ok) {
+      APPS_MERGE.dev[sid] = r;
+      return r;
+    }
+  } catch (_) {}
+  return null;
+}
+/* 主进程的收尾事件（看门狗看到 Agent 的结束声明就推）：解禁入口 + 刷新 + 说明收尾结果。 */
+function appsMergeDoneBind() {
+  const api = window.api || {};
+  if (APPS_MERGE.doneBound) return;
+  APPS_MERGE.doneBound = true;
+  /* 完全替换做完（本轮需求）：画布被整份换掉了 —— 主窗口若正开着这个应用的画布，
+     内存里那份已经作废（再一保存就会把新画布盖回旧内容）：能安全重载就重载，
+     不能（自动重载会先把内存那份落盘）就明确提示用户重开这张画布。 */
+  if (typeof api.onAppsReplaced === "function") {
+    api.onAppsReplaced((r) => {
+      const sid = String((r && r.id) || "");
+      if (!sid) return;
+      delete APPS_MERGE.dev[sid];
+      delete APPS_MERGE.replace[sid];
+      appsMergeRepaint(sid);
+      const wfId = String((r && r.wfId) || sid);
+      /* 画布层真的换了（kind 有值）才谈「内存里那份作废」：主进程没换画布时这里什么都不做。
+         判据用节点 id 表：内存里那份还是旧的那一批 id = 用户看到的仍是旧画布，
+         而盘上已经是新的 —— 这种时候**不自动重载**（重载会先把内存里那份落盘，反而把新画布
+         盖回旧内容），而是明确告诉用户「关掉这张画布再打开」。 */
+      const kind = String((r && r.canvas) || "");
+      if (!kind) return;
+      let cur = null;
+      try {
+        cur = (typeof S !== "undefined" && S.wf && String(S.wf.id) === wfId) ? S.wf : null;
+      } catch (_) {}
+      if (!cur) return;
+      const want = Array.isArray(r && r.nodeIds) ? r.nodeIds.map(String).join(",") : "";
+      const have = (((cur || {}).nodes) || []).map((n) => String((n && n.id) || "")).join(",");
+      if (want && want === have) {
+        appsToast(appsT("完全替换：这张画布在盘上已经是新的一份（当前内存里这份内容相同）"), "ok");
+        return;
+      }
+      appsToast(
+        appsT("完全替换：这张画布已被换成 " ) +
+          (String((r && r.version) || "") ? "v" + String(r.version || "") + " " : "") +
+          appsT("的新画布，内存里这份已作废；盘上那份才是新的（改完注意别把它覆盖回去）"),
+        "warn",
+      );
+    });
+  }
+  if (typeof api.onAppsMergeDone !== "function") return;
+  api.onAppsMergeDone((r) => {
+    const sid = String((r && r.appId) || "");
+    if (!sid) return;
+    delete APPS_MERGE.run[sid];
+    delete APPS_MERGE.dev[sid];
+    const their = (r && r.their) || {};
+    if (r && r.declared) {
+      appsToast(
+        appsT("合并收尾：已按你的确认写入本机（对方 v") +
+          String(their.version || "") +
+          appsT("），暂存目录已清理"),
+        "ok",
+      );
+    }
+    appsMergeRepaint(sid);
+  });
+}
+/** 入口气泡（分支树 / 卡片 / 列表行共用一处文案）。
+ *  拿不到版本号（极少数：那一支还没版本）时只说「拉取这一版」—— 绝不拼出「拉取 v 交给…」这种半截话。 */
+function appsMergeEntryLabel(version) {
+  const v = String(version || "");
+  return v ? appsT("拉取 v") + v + appsT(" 交给 Agent 合并") : appsT("拉取这一版交给 Agent 合并");
+}
+/** 这个应用的合并入口要不要置灰：本次运行里已经拉取过（会话还在跑）或正在拉取。
+ *  会话被终止 / 收了尾（收尾事件清了 run）→ 不算进行中，允许再点（点了会先清旧暂存）。 */
+function appsMergeLockedOf(id) {
+  const sid = String(id || "");
+  if (!sid) return false;
+  if (APPS_MERGE.busy[sid] || APPS_MERGE.replace[sid]) return true;
+  const run = APPS_MERGE.run[sid];
+  if (!run) return false;
+  if (typeof agentSessionById !== "function") return true;
+  const st = agentSessionById(run.sessionId);
+  if (!st) return false;
+  return typeof appsDevSessionRunning === "function" ? !!appsDevSessionRunning(st) : true;
+}
+/** 合并入口按钮（分支树、卡片动作行、列表行图标共用）。
+ *  进行中：置灰 + 说明「这个应用已有一次合并在进行」。 */
+function appsMergeEntryBtn(appId, version, onGo, extraClass) {
+  const sid = String(appId || "");
+  const btn = appsMiniBtn(appsMergeEntryLabel(version), onGo);
+  btn.className += " apps-merge-entry" + (extraClass ? " " + extraClass : "");
+  const locked = appsMergeLockedOf(sid);
+  btn.disabled = locked;
+  btn.title = locked
+    ? appsT("这个应用已有一次合并在进行（在开发页那条会话里）")
+    : appsT("拉取这一版到本机暂存目录，然后二选一：AI 逐项合并（新建会话，对比差异后逐项确认）或完全替换（删掉本机这一版含画布，直接用对方这一版继续）。都不会自动上架。");
+  btn.setAttribute("aria-label", btn.title);
+  return btn;
+}
+
+/** 重画当前停留的那一面（分支/版本窗 > 详情窗 > 列表）。 */
+function appsMergeRepaint(id) {
+  const sid = String(id || "");
+  try {
+    if (APPS_VDLG.id && String(APPS_VDLG.id) === sid && typeof appsVdlgPaint === "function") {
+      appsVdlgPaint();
+      return;
+    }
+  } catch (_) {}
+  try {
+    if (appsDetailRefresh()) return;
+  } catch (_) {}
+  try {
+    if (typeof appsListLoad === "function") appsListLoad(true);
+  } catch (_) {}
+  try {
+    appsHubPaint();
+  } catch (_) {}
+}
+
+/** 分支树上那一块合并入口（不满足前置条件回 null = 整块不出现）。
+ *  **自己的分支也露**（把自己的云端那一版拉回来合进本机开发目录）；入口常驻、不拿版本号比大小。 */
+function appsMergeBtnEl(id, sel, all) {
+  const api = window.api || {};
+  if (typeof api.appsMergeInfo !== "function" || typeof api.appsMergePull !== "function") return null;
+  const sid = String(id || "");
+  const ownerId = String((sel && sel.ownerId) || "").trim();
+  if (!sid || !ownerId) return null;
+  const box = document.createElement("div");
+  box.className = "apps-br-merge";
+  const info = APPS_MERGE.dev[sid];
+  if (!info) {
+    /* 还没问到答案：先问一次，答到了再把这块补进来（整块重画由调用方负责） */
+    appsMergeEnsureInfo(sid).then((r) => {
+      if (!r || !r.dev) return;
+      if (APPS_VDLG.id !== sid && APPS_DETAIL.id !== sid) return;
+      appsMergeRepaint(sid);
+    });
+    return null;
+  }
+  if (!info.dev) return null;
+  const ver = String((sel && sel.latestVersion) || (sel && sel.version) || "");
+  const btn = appsMergeEntryBtn(sid, ver, () =>
+    appsMergeStart(sid, ownerId, ver, appsBranchLabelOf(sel, all)),
+    "apps-br-merge-btn",
+  );
+  box.appendChild(btn);
+  const note = document.createElement("div");
+  note.className = "apps-br-merge-note";
+  note.textContent = info.pending
+    ? appsT("上次留下的暂存目录还在：这次拉取会先把它清掉。拉取后你再二选一：AI 逐项合并，或完全替换。")
+    : appsT("两条路二选一：AI 逐项合并（新建一条会话，Agent 对比差异、逐项问过你才写入本机）或完全替换（删掉本机这一版含画布，直接用对方那一版继续）。都不会自动上架。");
+  box.appendChild(note);
+  return box;
+}
+
+/** 点下入口：拉取 → 建会话交给 Agent（拉取失败就到此为止，绝不建半条会话）。 */
+async function appsMergeStart(id, ownerId, version, label) {
+  const api = window.api || {};
+  const sid = String(id || "");
+  const own = String(ownerId || "").trim();
+  if (!sid || !own) return false;
+  if (typeof api.appsMergePull !== "function") {
+    appsToast(appsT("合并能力尚未就绪（请重启 MTNode）"), "err");
+    return false;
+  }
+  if (appsMergeLockedOf(sid)) {
+    appsToast(appsT("这个应用已有一次合并在进行（在开发页那条会话里）"), "warn");
+    return false;
+  }
+  const info = APPS_MERGE.dev[sid];
+  APPS_MERGE.busy[sid] = true;
+  appsMergeRepaint(sid);
+  let pull = null;
+  try {
+    pull = await api.appsMergePull(sid, own, version);
+  } catch (e) {
+    pull = { ok: false, error: (e && e.message) || String(e) };
+  }
+  APPS_MERGE.busy[sid] = false;
+  delete APPS_MERGE.dev[sid];
+  if (!pull || pull.ok === false) {
+    appsToast(appsT("拉取失败：") + appsErrText(pull || {}), "err");
+    appsMergeRepaint(sid);
+    return false;
+  }
+  if (info && info.pending) {
+    /* 用户口径：上次没宣布结束的暂存由这一次拉取清掉（主进程已做），这里只说清发生过什么 */
+    appsToast(appsT("已清掉上次留下的暂存目录，重新拉取了对方这一版"));
+  }
+  /* 两条路二选一（本轮需求）：先把对方那一版拉到暂存目录，再问用户走哪条 ——
+     ① AI 逐项合并（新建会话，Agent 对比 + 拷问 + 按确认落地）；
+     ② 完全替换（删掉本机旧版本含画布，直接用对方这一版继续开发，**不需要 Agent**）。
+     两条路的拉取产物是**同一份暂存目录**，所以拉取只做一次；用户取消 = 暂存留着，
+     下次点这个入口会先清掉它（主进程口径）。 */
+  const how = await appsMergeChoice(sid, pull, label);
+  if (how === "replace") return appsMergeDoReplace(sid, pull, label);
+  if (how !== "agent") {
+    appsMergeRepaint(sid);
+    return false;
+  }
+  return appsMergeDoAgent(sid, pull, label);
+}
+
+/** 二选一（本轮需求）：弹一只窗问「怎么用对方这一版」。
+ *  两条都写清后果 —— 合并是逐项确认后由 Agent 改文件，完全替换是当场删掉本机旧版本
+ *  （含开发画布）再整份接替；**不做回滚入口**（退路只在备份与回收站里，文案里讲明）。
+ *  返回 "agent" / "replace" / ""（取消或关窗）。 */
+function appsMergeChoice(appId, pull, label) {
+  const sid = String(appId || "");
+  const their = (pull && pull.their) || {};
+  const ver = String(their.version || "");
+  const todo = Number(((pull && pull.counts) || {}).todo) || 0;
+  const myVer = String((pull && pull.myVersion) || "") || "—";
+  const info = appsMergeNowInfo(sid, pull, label);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      if (typeof closeOverlay === "function") closeOverlay();
+      resolve(v);
+    };
+    if (typeof openOverlay !== "function") return done("");
+    openOverlay(appsT("怎么用别人这一版？"), { persistent: true });
+    const body = document.getElementById("ovBody");
+    const foot = document.getElementById("ovFoot");
+    if (!body || !foot) return done("");
+    /* ✕ / Esc 关窗也要把 Promise 结掉（settled 兜底去重，closeOverlay 是幂等的） */
+    foot.addEventListener("click", (ev) => {
+      const t = ev.target;
+      if (t && t.closest && t.closest(".ov-close-btn")) done("");
+    });
+    const head = document.createElement("div");
+    head.className = "apps-merge-pick-head";
+    head.textContent =
+      (String(their.author || "") || appsT("对方")) +
+      " v" +
+      ver +
+      appsT("（差异 ") +
+      todo +
+      appsT(" 个文件；本机现在是 v") +
+      myVer +
+      appsT("）");
+    body.appendChild(head);
+    const wrap = document.createElement("div");
+    wrap.className = "apps-merge-pick";
+    wrap.appendChild(
+      appsMergePickCard({
+        title: appsT("AI 逐项合并"),
+        sub: appsT("新建一条会话：Agent 对比两版差异、逐项问过你之后才改本机（不自动上架）"),
+        lines: [
+          appsT("本机代码：只改你确认过的那些文件（其余原样）"),
+          appsT("开发画布：保留（合并不动画布 / storage / 数据文件）"),
+          appsT("版本号：默认不动"),
+          appsT("需要 Agent：是（在开发页那条会话里跑）"),
+        ],
+        action: appsT("用 AI 合并"),
+        primary: false,
+        onPick: () => done("agent"),
+      }),
+    );
+    wrap.appendChild(
+      appsMergePickCard({
+        title: appsT("完全替换"),
+        sub: appsT("删掉本机这一版（含开发画布），直接用对方那一版继续开发；不需要 Agent"),
+        lines: [
+          appsT("本机代码：整目录换成对方那一版，你在代码上的改动会丢"),
+          appsT("开发画布：删掉，改用对方包里的画布；对方包里没有就建一张同名空画布"),
+          appsT("数据文件：保留（storage / data.json / 素材）"),
+          appsT("版本号：采用对方那一版的 v") + ver,
+          appsT("退路：替换前做整目录备份，旧画布进本机回收站（界面不提供回滚入口）"),
+          info.appWindowOpen ? appsT("应用窗口：替换前会自动关掉它") : "",
+        ].filter(Boolean),
+        action: appsT("直接完全替换"),
+        primary: true,
+        danger: true,
+        onPick: () => done("replace"),
+      }),
+    );
+    body.appendChild(wrap);
+    /* 底部一句收尾：**两条路都不可自动上架**，且完全替换不可逆 —— 这两件事不藏在卡片里，
+       写在窗底让用户在点之前一定看到。 */
+    const note = document.createElement("div");
+    note.className = "apps-merge-pick-note";
+    note.textContent = appsT(
+      "两条路都不会自动上架。完全替换不可逆：删掉的本机旧版本只能从备份目录或回收站里自己找回来（界面不提供回滚入口）。",
+    );
+    body.appendChild(note);
+    const cancel = appsMiniBtn(appsT("取消"), () => done(""));
+    foot.appendChild(cancel);
+  });
+}
+
+/** 二选一里的一张卡（纯 DOM，样式见 css/apps.css 的 .apps-merge-pick-*） */
+function appsMergePickCard(o) {
+  const card = document.createElement("div");
+  card.className = "apps-merge-pick-card" + (o.primary ? " primary" : "") + (o.danger ? " danger" : "");
+  const h = document.createElement("div");
+  h.className = "apps-merge-pick-title";
+  h.textContent = String(o.title || "");
+  card.appendChild(h);
+  if (o.sub) {
+    const sub = document.createElement("div");
+    sub.className = "apps-merge-pick-sub";
+    sub.textContent = String(o.sub);
+    card.appendChild(sub);
+  }
+  const ul = document.createElement("ul");
+  ul.className = "apps-merge-pick-list";
+  for (const line of o.lines || []) {
+    const li = document.createElement("li");
+    li.textContent = String(line);
+    ul.appendChild(li);
+  }
+  card.appendChild(ul);
+  const btn = appsMiniBtn(String(o.action || ""), () => {
+    if (typeof o.onPick === "function") o.onPick();
+  }, !!o.primary);
+  btn.className += " apps-merge-pick-btn";
+  card.appendChild(btn);
+  return card;
+}
+
+/** 完全替换那一路的现状（主进程答；答不到就用拉取回执兜底，绝不编造字段）：
+ *  @returns {myVersion, dir, deletes, keeps, appWindowOpen} */
+async function appsMergeNowInfo(id, pull, label) {
+  const api = window.api || {};
+  const sid = String(id || "");
+  const fb = {
+    myVersion: String((pull && pull.myVersion) || ""),
+    dir: String((pull && pull.dir) || ""),
+    staging: String((pull && pull.staging) || ""),
+    deletes: ["app-dir", "canvas", "merge-leftovers"],
+    keeps: ["apps-data"],
+    appWindowOpen: false,
+  };
+  if (typeof api.appsReplaceInfo !== "function") return fb;
+  try {
+    const r = await api.appsReplaceInfo(sid, String((pull && pull.staging) || ""));
+    if (r && r.ok) return Object.assign({}, fb, r);
+  } catch (_) {}
+  return fb;
+}
+
+/** 路 ①：交给 Agent（会话带「对比 + 拷问 + 按确认落地」的整份契约，见 app-apps-dev.js）。 */
+async function appsMergeDoAgent(id, pull, label) {
+  const sid = String(id || "");
+  let sess = null;
+  try {
+    if (typeof appsDevStartMergeSession === "function") sess = await appsDevStartMergeSession(pull, label);
+  } catch (e) {
+    sess = null;
+  }
+  if (!sess) {
+    appsToast(
+      appsT("已经拉到对方那一版（暂存：") + String(pull.staging || "") + appsT("），但没能建起合并会话：在开发页手动开一条会话并把暂存目录交给它。"),
+      "warn",
+    );
+    appsMergeRepaint(sid);
+    return false;
+  }
+  APPS_MERGE.run[sid] = { staging: String(pull.staging || ""), sessionId: String(sess.id || "") };
+  appsToast(
+    appsT("已拉取 ") +
+      (String((pull.their && pull.their.author) || "") || appsT("对方")) +
+      " v" + String((pull.their && pull.their.version) || "") +
+      appsT("：合并会话已开跑（差异 ") + String((pull.counts && pull.counts.todo) || 0) + appsT(" 个文件）"),
+    "ok",
+  );
+  appsMergeRepaint(sid);
+  return true;
+}
+
+/** 路 ②：完全替换（本轮需求）—— 主进程一次做完，**不建会话、不经过 Agent**。
+ *  顺序与后果见 app-branch-replace.js；这里只负责发起 + 把回执讲成人话 + 刷新界面。 */
+async function appsMergeDoReplace(id, pull, label) {
+  const api = window.api || {};
+  const sid = String(id || "");
+  if (typeof api.appsReplaceWithBranch !== "function") {
+    appsToast(appsT("完全替换能力尚未就绪（请重启 MTNode）"), "err");
+    return false;
+  }
+  const their = (pull && pull.their) || {};
+  const ver = String(their.version || "");
+  APPS_MERGE.replace[sid] = true;
+  APPS_MERGE.dev[sid] = { dev: true, dir: String(pull.dir || ""), version: String(pull.myVersion || ""), pending: null };
+  appsMergeRepaint(sid);
+  let r = null;
+  try {
+    r = await api.appsReplaceWithBranch(sid, String(pull.staging || ""), String(their.ownerId || ""), ver);
+  } catch (e) {
+    r = { ok: false, error: (e && e.message) || String(e) };
+  }
+  delete APPS_MERGE.replace[sid];
+  delete APPS_MERGE.dev[sid];
+  APPS_ST.list = null;
+  try {
+    await appsListLoad(true);
+  } catch (_) {}
+  appsMergeRepaint(sid);
+  if (!r || r.ok === false) {
+    appsToast(appsT("完全替换失败：") + appsErrText(r || {}), "err");
+    return false;
+  }
+  const canvas = (r && r.canvas) || {};
+  appsToast(
+    appsT("完全替换完成：已用 ") +
+      (String(r.author || "") || appsT("对方")) +
+      " v" + String(r.version || "") +
+      appsT(" 接替本机这一份（画布：") +
+      (canvas.kind === "theirs" ? appsT("沿用对方包里那一张") : appsT("新建同名空画布")) +
+      appsT("；备份：") + String(r.backupDir || "") + appsT("）"),
+    "ok",
+  );
+  return true;
+}/* 本机回滚（原「本机版本（可回滚）」块的入口形态）：只留一句说明 + 一颗按钮，
  * 没有可回滚的上一版时**整块不出现**（不编造来源）。
  * 台账（apps:versions）有两份来源：详情窗读 APPS_DETAIL.ver，列表模式的面板读它自己那一格
  * （绘制期间挂在 APPS_DETAIL_CTX 上，见 appsDetailCtx）。*/
@@ -5766,21 +6427,19 @@ function appsDetailPaint() {
      有选中分支时的版本 / 下载动作与回滚块都在**右列**（见 appsDetailRightColEl 与下面的
      appsDetailRollSlotEl），这里不再重复第二份。 */
   if (lower) {
+    /* 草稿先记下来再清场（清场会把写了一半的评论框一起拆掉，见 appsCommentsStashDraft） */
+    appsCommentsStashDraft(lower);
     lower.innerHTML = "";
-    const cloud = spec ? appsCloudTarget(spec) : null;
-    if (cloud) {
-      const mount = () => {
-        if (!window.MtComments) return;
-        try {
-          window.MtComments.mount(lower, cloud, { title: appsDetailTitleOf(id) });
-        } catch (_) {}
-      };
+    /* 评论目标 = **当前选中的那条分支**（本轮需求 4）：切分支后这一块整块换成那一支的评论；
+       打赏仍按家族根统一（appsCloudTarget），两者刻意分开。 */
+    const cmtTarget = spec ? appsCommentTarget(spec) : null;
+    if (cmtTarget) {
       /* 评论走网络：先画个壳再说一句实话，回来再挂（失败也不把窗卡住） */
       const wait = document.createElement("div");
       wait.className = "apps-empty";
       wait.textContent = appsT("正在读取评论…");
       lower.appendChild(wait);
-      mount();
+      appsCommentsMountInto(lower, cmtTarget, { title: appsDetailTitleOf(id) }, appsDetailSelKey() || cmtTarget.ownerId);
     }
   }
   /* 回滚块：台账（apps:versions）回来才画 —— 先摆好槽位，回来就地替换（保住右列滚动位置） */

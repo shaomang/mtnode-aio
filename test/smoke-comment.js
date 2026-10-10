@@ -4,6 +4,8 @@
  * 需求口径见 docs/tips-comments-design.md 第二节 / 第三节 / 第五节。两段：
  *   [1..6] comments.mjs 真跑（内存库 + 假时钟）：创建 / 长度 / 五星范围 / 平均星实时重算 /
  *          软删除留档 / 权限（本人 · 对象作者 · 他人 · 管理员）/ 论坛两类不带评分 / 批量汇总
+ *   [6b]   应用分支池（注入 branch 口径）：评论与评分按「应用 id + 分支作者」各存各的，
+ *          老评论（没有 targetOwnerId）归主干那一池（本轮需求 4：应用的评论跟着作者走）
  *   [7..9] **真起一次 server.mjs**（临时 DATA_DIR + 控制台短信验证码登录）用 fetch 打接口：
  *          新路由不 404、鉴权与错误码、公开投影四字段、管理台入口、CSV 出口、落盘
  *
@@ -209,11 +211,14 @@ async function main() {
   ok((await comments.remove(ADMIN, { id: admComment.record.id })).code === "COMMENT_NOT_FOUND", "重复删除：COMMENT_NOT_FOUND");
 
   console.log("[6] 批量汇总（列表接口用，避免 N²）");
+  /* 本轮需求 4：批量表的键 = `id + "\u0000" + 池`（同一个 id 下每个作者分支各占一个键，
+     池 = 分支作者 uid）。这个自检实例**没有注入分支口径** → 池恒为空串，键就是 id + "\u0000"。 */
   const batch = comments.batchSummary("template", ["t1", "s1", "nope"]);
+  const t1Key = "t1\u0000";
   const t1Sum = comments.summaryOf("template", "t1");
-  ok(batch.get("t1").rating.avg === t1Sum.rating.avg && batch.get("t1").comments === t1Sum.comments,
+  ok(batch.get(t1Key).rating.avg === t1Sum.rating.avg && batch.get(t1Key).comments === t1Sum.comments,
     "批量汇总与单个汇总同口径（t1：avg " + t1Sum.rating.avg + " / " + t1Sum.comments + " 条）");
-  ok(batch.get("nope") === undefined, "批量汇总里没有请求的 id 就不造条目（get 回 undefined）");
+  ok(batch.get("nope\u0000") === undefined, "批量汇总里没有请求的 id 就不造条目（get 回 undefined）");
   const zeroCell = comments.enricher("template", ["t1"])("zzz");
   ok(zeroCell.comments === 0 && zeroCell.rating.avg === 0 && zeroCell.rating.count === 0,
     "查不到的 id：enricher 回零值 {rating:{avg:0,count:0}, comments:0}：实得 " + JSON.stringify(zeroCell));
@@ -223,6 +228,69 @@ async function main() {
   const after = comments.summaryOf("template", "t1");
   ok(before.comments === 5 && after.comments === 0 && after.rating.count === 0,
     "removeByTarget 把整对象的评论一批软删除（对象被删时用）：5 → 0");
+
+  console.log("[6b] 应用分支池：评论与评分按「应用 id + 分支作者」各存各的（本轮需求 4）");
+  {
+    /* 注入分支口径的第二个实例：app 的评论池 = 分支作者 uid；没有 targetOwnerId 的老评论归主干。 */
+    let clock2 = Date.UTC(2026, 6, 1, 4, 0, 0);
+    const db2 = {
+      users: [
+        { id: "u_a", username: "branch-a", nickname: "甲" },
+        { id: "u_b", username: "branch-b", nickname: "乙" },
+        { id: "u_x", username: "visitor", nickname: "访客" },
+      ],
+      apps: [
+        { id: "app1", title: "多分支应用", userId: "u_a" },
+        { id: "app1", title: "多分支应用", userId: "u_b" },
+      ],
+      comments: [
+        /* 老评论（本轮之前写的，没有 targetOwnerId）→ 只能归主干（u_a） */
+        {
+          id: "cm_legacy", targetKind: "app", targetId: "app1", parentId: "", content: "老评论", rating: 4,
+          userId: "u_x", createdAt: 1, updatedAt: 1, deleted: false,
+        },
+      ],
+    };
+    const branchOf = { app1: ["u_a", "u_b"] };
+    const comments2 = C.createComments({
+      db: db2,
+      users: () => db2.users,
+      now: () => (clock2 += 61000),
+      branch: {
+        ownerOf: (id, hint) => {
+          const list = branchOf[String(id)] || [];
+          const hit = db2.users.find((u) => u.username === String(hint));
+          const uid = list.includes(String(hint)) ? String(hint) : hit && list.includes(hit.id) ? hit.id : "";
+          return uid || "";
+        },
+        trunkOwnerOf: (id) => (branchOf[String(id)] || [])[0] || "",
+      },
+    });
+    const X2 = db2.users[2];
+    const rB = await comments2.create(X2, { targetKind: "app", targetId: "app1", owner: "u_b", content: "乙的池", rating: 5 });
+    const rA = await comments2.create(X2, { targetKind: "app", targetId: "app1", owner: "u_a", content: "甲的池", rating: 3 });
+    ok(rB.ok && rB.record.targetOwnerId === "u_b" && rA.ok && rA.record.targetOwnerId === "u_a",
+      "写入记下分支作者（targetOwnerId）：乙 u_b / 甲 u_a");
+    const badBranch = await comments2.create(X2, { targetKind: "app", targetId: "app1", owner: "u_nobody", content: "x" });
+    ok(!badBranch.ok && badBranch.code === "COMMENT_INVALID_TARGET",
+      "指了一条不存在的分支：COMMENT_INVALID_TARGET（绝不静默落到主干）");
+    const lA = comments2.list({ targetKind: "app", targetId: "app1", owner: "u_a" });
+    const lB = comments2.list({ targetKind: "app", targetId: "app1", owner: "u_b" });
+    const l0 = comments2.list({ targetKind: "app", targetId: "app1" });
+    ok(lA.total === 2 && lB.total === 1, "两池互不串：甲池 2 条（老评论也归它）/ 乙池 1 条");
+    /* 甲池里那位访客的老 4 星被本人的新星按契约清掉 → 均星 = 3（同时也是「老评论在甲池」的旁证） */
+    ok(lA.rating.avg === 3 && lA.rating.count === 1 && lB.rating.avg === 5, "评分跟着评论走：甲 3.0 / 乙 5.0");
+    ok(l0.total === 2 && l0.rating.avg === 3, "不传 owner = 主干那一池（与甲一致）");
+    ok(lA.targetOwnerId === "u_a" && lB.targetOwnerId === "u_b", "回执里写明这次列的是哪条分支的池");
+    ok(comments2.countOf("app", "app1", "u_b") === 1 && comments2.countOf("app", "app1", "u_a") === 2,
+      "countOf 按池算（列表 / 详情的评论数不再全族共用一份）");
+    ok(comments2.enricher("app", [{ id: "app1", ownerId: "u_b" }])("app1", "u_b").comments === 1,
+      "批量 enricher 支持 { id, ownerId }（app 列表按分支出评论数）");
+    const replyCross = await comments2.create(X2, {
+      targetKind: "app", targetId: "app1", owner: "u_b", content: "跨池回复", parentId: rA.record.id,
+    });
+    ok(!replyCross.ok && replyCross.code === "COMMENT_INVALID_TARGET", "不能回复另一条分支池里的评论");
+  }
 
   /* ═══════════════════ 第二段：真起 server.mjs 打接口 ═══════════════════ */
 

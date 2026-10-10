@@ -137,7 +137,9 @@ function toCsv(rows, columns) {
  *        本模块的打赏 / 额度 / 记账行为一字不变（消息是旁路，绝不参与钱的判定）。
  * @param {object} [deps.family] 应用家族口径（**本轮新增，可选注入**，由 server.mjs 提供）：
  *        `{ groupIdOf(id, ownerId), entriesOf(id, ownerId) }`。
- *        · groupIdOf = 家族归组 id（根条目的 id）：打赏 / 评论一律按它统计（用户口径「打赏全局统一」）；
+ *        · groupIdOf = 家族归组 id（根条目的 id）：**打赏**一律按它统计（用户口径「打赏全局统一」）；
+ *          评论 / 评分本轮起**按分支**分开（见 comments.mjs 的 branch 注入），只借 entriesOf / idSetOf
+ *          拿「同族的 id 集合」，不再整族共用一池；
  *        · entriesOf = 家族里的全部记录（同 id 的各作者分支 + 跨 id 但 forkOf 指回本族的旧条目），
  *          分账作者名单与分支树都按它算。
  *        缺省（没注入）时退回本文件原来的同 `forkOf.id` 扫描口径 —— 行为与老版本逐字一致。
@@ -480,7 +482,8 @@ export function createTips(deps) {
     for (const a of fam) if (a && a.id) out.add(String(a.id));
     return out;
   }
-  /** 对象的**规范 id**：app 一律归到家族根条目的 id（打赏 / 评论都按它落库与统计）。 */
+  /** 对象的**规范 id**：app 一律归到家族根条目的 id（**打赏**按它落库与统计；
+   *  评论 / 评分本轮起按「应用 id + 分支作者」分池，不走这里）。 */
   function canonicalIdOf(kindRaw, idRaw, ownerRaw) {
     const id = String(idRaw || "");
     if (String(kindRaw || "") !== "app" || !family || !id) return id;

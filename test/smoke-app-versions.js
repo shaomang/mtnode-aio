@@ -480,7 +480,7 @@ async function main() {
       "appsDetailBodyEl 认 noVers 开关",
     );
     ok(
-      /APPS_DETAIL\.dom\.cmt/.test(APPS) && /window\.MtComments\.mount\(lower, cloud/.test(APPS) &&
+      /APPS_DETAIL\.dom\.cmt/.test(APPS) && /appsCommentsMountInto\(lower, cmtTarget/.test(APPS) &&
         !/detailTabsEl\(\[appsT\("应用"\), appsT\("评论"\)\]/.test(APPS),
       "评论独占详情窗下方滚动区（「应用 / 评论」页签本轮已移除，仍是同一份 MtComments 组件）",
     );
@@ -515,7 +515,7 @@ async function main() {
       /appsRollback: \(id, version\) => ipcRenderer\.invoke\('apps:rollback', \{ id, version: version \|\| '' \}\)/.test(PRELOAD),
       "preload 白名单里有 appsRollback",
     );
-    ok(/appsVersions: \(id\) => ipcRenderer\.invoke\('apps:versions', \{ id \}\)/.test(PRELOAD), "preload 白名单里有 appsVersions");
+    ok(/appsVersions: \(id, kind\) => ipcRenderer\.invoke\('apps:versions', \{ id, kind: kind \|\| '' \}\)/.test(PRELOAD), "preload 白名单里有 appsVersions（id + kind：同 id 两套根各一份时点名看哪一份的台账）");
   }
 
   /* ============ [13] 契约与词条（文档 / i18n / 打包白名单） ============ */

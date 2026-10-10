@@ -94,6 +94,12 @@ const {
    画布节点共用同一份纯函数段 —— 应用侧的「可用图像后端」不再只看服务商 type 是否 image_*，
    否则把图像模型挂在 text_openai 卡上（本机最常见的一种配法）时应用永远出不了图。 */
 const { providerHasKind, modelKindOf, providerForRequest } = require("./renderer/app-model-kind.js");
+/* 应用版本合并（对方那一版 → 我本机开发中的那一支）：纯逻辑 + 依赖注入，见 app-branch-merge.js 的
+   文件头（口径、范围、产物都在那儿）。依赖在文件后段注入（那些实现都定义在后面）。 */
+const { createBranchMerge } = require("./app-branch-merge.js");
+/* 应用版本「完全替换」（对方那一版 → 整份接替本机的开发分支，不经过 Agent）：同样纯逻辑 +
+   依赖注入，见 app-branch-replace.js 的文件头。画布层的四个动作由 main.js 注入。 */
+const { createBranchReplace } = require("./app-branch-replace.js");
 
 /* ---------------- 常量 ---------------- */
 
@@ -636,12 +642,16 @@ function registerPreviewProtocol() {
       });
     try {
       const u = new URL(String((req && req.url) || ""));
+      /* 带 _host=1 = 开发页中栏那只 iframe（见 previewWantsHost）：**开发页预览的永远是项目根
+         那一份**（用户在改的就是它）—— 同 id 在下载根也有一份时，按 id 猜会预览到下载副本。 */
+      const withHost = previewWantsHost(u);
       /* URL 的 host 会被规范成小写，所以按大小写不敏感找目录 */
-      const dir = previewDirOf(decodeURIComponent(String(u.hostname || "")));
+      const dir = previewDirOf(
+        decodeURIComponent(String(u.hostname || "")),
+        withHost ? APP_KIND_DEV : "",
+      );
       if (!dir) return plain(t("应用目录不存在"), 404);
       const rel = decodeURIComponent(String(u.pathname || "")).replace(/^\/+/, "");
-      /* 带 _host=1 = 开发页中栏那只 iframe：除了状态小助手，还要注入宿主桥小助手 */
-      const withHost = previewWantsHost(u);
       /* 一次读文件：请求的那一页不在时，按 app.json 入口页 → 默认 index.html 兜底，
          预览始终落到应用的默认界面（详细口径见 previewFileResponse） */
       const hit = previewFileResponse(dir, rel, req, withHost);
@@ -1114,11 +1124,16 @@ function kindOfManifest(raw, dir) {
   } catch (_) {}
   return APP_KIND_DEV;
 }
-/* 该 id 在本机算哪一类（两套根都看一眼；都不在 = 下载那一类，调用方多半会报 missing） */
-function diskKindOf(id) {
+/* 该 id 在本机算哪一类（两套根都看一眼；都不在 = 下载那一类，调用方多半会报 missing）。
+   kind 给了就**只看那一套根**（开发页那几条通道要的就是项目根那一份，见 dirOfApp）。
+   **两边各有一份时算「下载的」**（清单里那份 dev:true 是上架包两边共用的字段，不能当判据 ——
+   否则缺省口径会飘到项目根那份上，库页 / 台账 / 安装那条链全跟着乱）。 */
+function diskKindOf(id, kind) {
   const sid = safeAppId(id);
-  if (!sid) return APP_KIND_DOWN;
-  for (const k of APP_KINDS) {
+  if (!sid) return kind ? kindOfRoot(kind) : APP_KIND_DOWN;
+  const order = kind ? [kindOfRoot(kind)] : APP_KINDS;
+  let first = "";
+  for (const k of order) {
     let dir = "";
     try {
       dir = appDirOf(rootPathOf(k).root, sid);
@@ -1126,9 +1141,15 @@ function diskKindOf(id) {
       dir = "";
     }
     if (!dir || !fs.existsSync(dir)) continue;
-    return kindOfManifest(rawManifestOf(dir), dir);
+    /* 两套根分开时，**先扫到的那一套根说了算**（下载根优先 = 与 listApps 的排序、渲染层
+       「取第一条」同口径）：清单里那份 dev:true 是上架包两边共用的字段，只看它会让缺省口径
+       飘到项目根那份上（库页 / 台账 / 安装那条链跟着乱）。kind 显式给了时 order 只有一项，
+       自然就是那一套根说了算。 */
+    first = k;
+    break;
   }
-  return APP_KIND_DOWN;
+  if (!first) return kind ? kindOfRoot(kind) : APP_KIND_DOWN;
+  return first;
 }
 /* 该应用在某一类根下的目录（不给类型就按本机实际所在的那一边取） */
 function dirOfKind(kind, id) {
@@ -1140,10 +1161,18 @@ function dirOfKind(kind, id) {
 }
 /* 该应用在本机的目录：**先按类型取（新布局两边各一份），取不到再两套根都找一遍** ——
    老布局 / 手放进来的应用（文件与类型不一致）也要能打开，绝不因为「哪一边」猜错就打不开。
-   两处都没有时回「按类型算出的那一个」（调用方多半会如实报 missing）。 */
-function dirOfApp(id) {
+   两处都没有时回「按类型算出的那一个」（调用方多半会如实报 missing）。
+   **kind 给了就只看那一套根**（缺省 = 两套根都看，逐字不变）：同一个 id 在两边各有一份时，
+   缺省会先拿下载根那一份 —— 开发页（项目根那份才是用户在改的）必须显式传 dev，
+   否则「打开 / 预览 / 数据目录 / 台账」全指到下载副本上。 */
+function dirOfApp(id, kind) {
   const sid = safeAppId(id);
   if (!sid) return "";
+  if (kind) {
+    const k = kindOfRoot(kind);
+    const d = dirOfKind(k, sid);
+    return d && fs.existsSync(d) ? d : d || "";
+  }
   const byKind = dirOfKind(diskKindOf(sid), sid);
   if (byKind && fs.existsSync(byKind)) return byKind;
   for (const k of APP_KINDS) {
@@ -1385,9 +1414,11 @@ function migrateLegacyStorage(id) {
   }
   return { ok: true, moved: true, from: old, to: target };
 }
-/* 打开该应用的数据文件夹（不存在先建出来，否则资源管理器会报错） */
-async function openAppDataDir(id) {
-  const dir = appDataDirOf(id);
+/* 打开该应用的数据文件夹（不存在先建出来，否则资源管理器会报错）。
+   kind（"dev" / "down"，可选）＝哪一套根那个副本的数据目录：数据根本来就按类型分两棵
+   （apps-data/dev/<id> 与 apps-data/downloaded/<id>），同 id 两边各有一份时开发页要点名 dev。 */
+async function openAppDataDir(id, kind) {
+  const dir = appDataDirOf(id, kind ? kindOfRoot(kind) : undefined);
   try {
     mk(dir);
   } catch (err) {
@@ -1688,7 +1719,12 @@ function dirStatOf(dir) {
   }
   return { files: files.length, bytes: bytes, mtimeMs: mtimeMs };
 }
-/* 目录 → 渲染层用的摘要（列表 / 冲突提示 / 变更探测共用同一份口径） */
+/* 目录 → 渲染层用的摘要（列表 / 冲突提示 / 变更探测共用同一份口径）。
+ * 这里**只看 app.json 的 dev 标记**（唯一真源）：同一个 id 在下载根与项目根各有一份时，
+ * 两份常常写着同一份清单字段（用户看对方那一版时把同 id 的装进下载根），于是两边都算「开发中」
+ * —— 库页过滤不掉、开发页又会先拿到下载那份（它新、排序在前），用户报的「合并分支后开发项目
+ * 在开发会话里消失」就是这么来的。**那一处的裁决在 listApps 的第二遍**（只有同 id 出现两份时
+ * 才按「根即身份」改判 kind / dev），这里保持单份口径逐字不变，别把裁决抄第二份。 */
 function appSummary(root, id, kindHint) {
   const dir = appDirOf(root, id);
   if (!dir || !fs.existsSync(dir)) return null;
@@ -1706,8 +1742,9 @@ function appSummary(root, id, kindHint) {
     /* 下载的 / 开发的（见 kindOfManifest）：根目录、数据目录、删除范围都按它分 */
     kind: kind,
     kindLabel: kindLabel(kind),
-    /* 这次是在哪一边的根下扫到它的（"down" / "dev"）：与 kind 不一致 = 该走一次显式迁移 */
+    /* 这次是在哪一边的根下扫到它的（"down" / "dev"） */
     listKind: listKind,
+    /* 清单说它是开发的、却躺在下载根里（两边各有一份时最常见）：如实标出来 */
     kindMismatch: !!listKind && listKind !== kind,
     name: man.name,
     version: man.version,
@@ -1960,33 +1997,75 @@ function syncCloudMetaToLocal(arg) {
 }
 /* 本机应用列表：**两套根都扫**（下载的 + 开发的），每条带自己的 kind / 根 / 数据目录。
  * 两套根配成同一个目录时（用户还没分开）只扫一次，按各应用自己的 dev 标记归位。
+ * **按「根」去重，绝不按 id 去重**（用户报的 bug：同 id 在下载根与项目根各有一份时，
+ * 先扫的下载根把项目根那一份吞掉，而那条 `dev:true` 清单字段两边共用 —— 结果是**两边都不像**
+ * 开发中的应用：库页过滤不掉它，开发页又只看得到下载那份 → 开发会话里「合并分支后项目消失」。
+ * 判据：同一个 id 出现在**两套不同的根**下 = 两份互不相同的应用（下载的那份 + 我开发的那份），
+ * 两份都列；只有两套根指向同一个目录时才按 id 去重（那就是同一份文件，列两次纯属重复）。
  * **列应用 = 「真正要用到根」的第一处**：没配过时在这里把默认根固化进 config.json
  * （见 ensureRootPersisted），所以库页 / 开发页一打开，两个根就是明确可用的路径。 */
 function listApps() {
   for (const k of APP_KINDS) ensureRootPersisted(k);
   const roots = rootsInfo();
-  const apps = [];
-  const seen = new Set();
-  for (const k of APP_KINDS) {
+  /* 两套根配成同一个目录 → 只扫一遍（按 id 去重）；两套根不同 → 每一边独立按 id 去重，
+     同 id 的两份都列（哪一份算 dev 见下面第二遍）。 */
+  const sameRoot = (() => {
+    const a = cmpPath(String((roots[APP_KIND_DOWN] || {}).path || ""));
+    const b = cmpPath(String((roots[APP_KIND_DEV] || {}).path || ""));
+    return !!a && a === b;
+  })();
+  /* 第一遍：**只看清单**（老口径逐字不变）—— 一份应用算哪一类仍由 app.json 的 dev 标记说话。 */
+  const seenId = new Set();
+  const perRoot = APP_KINDS.map((k) => {
     const root = String((roots[k] || {}).path || "");
-    if (!root || !fs.existsSync(root)) continue;
+    const out = [];
+    if (!root || !fs.existsSync(root)) return out;
     let ents = [];
     try {
       ents = fs.readdirSync(root, { withFileTypes: true });
     } catch {}
+    const seenHere = new Set();
     for (const ent of ents) {
       if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
       const id = safeAppId(ent.name);
       if (!id) continue;
       const key = String(id).toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (seenHere.has(key)) continue;
+      seenHere.add(key);
+      if (sameRoot && seenId.has(key)) continue;
+      seenId.add(key);
       devBackfillOnce(root, id);
-      const s = appSummary(root, id, k);
-      if (!s) continue;
       /* 已经登记为「移除过」的开发应用不再列（用户主动摘掉的登记，不自动回来） */
       if (rawManifestOf(path.join(root, id))?.removed === true) continue;
-      apps.push(s);
+      const s = appSummary(root, id, k);
+      if (s) out.push(s);
+    }
+    return out;
+  });
+  const apps = [].concat(...perRoot);
+  /* 第二遍：**只有「同一个 id 在另一套根里也有一份」时才让根说话**（本轮修的 bug）——
+     两份文件的 app.json 常常是同一份（用户看别人那一版时把同 id 的装进下载根），只看清单的话
+     两边都算「开发中」：库页过滤不掉、开发页又会先拿到下载那份（它新、排序在前）→ 用户报的
+     「合并分支后开发项目在开发会话里消失」。这时按「根即身份」把下载根那份改判成 down
+     （清单与根不一致的事实由 kindMismatch 如实标出），项目根那份留作 dev。
+     **只有一份的应用一律不动**（老口径逐字不变：清单说开发就是开发，哪怕它躺在下载根里）。 */
+  if (!sameRoot) {
+    const cnt = Object.create(null);
+    for (const s of apps) {
+      const key = String(s.id).toLowerCase();
+      cnt[key] = (cnt[key] || 0) + 1;
+    }
+    for (const s of apps) {
+      if (cnt[String(s.id).toLowerCase()] < 2) continue;
+      if (s.listKind === APP_KIND_DOWN) {
+        s.kind = APP_KIND_DOWN;
+        s.kindLabel = kindLabel(APP_KIND_DOWN);
+        s.dev = false;
+      } else if (s.listKind === APP_KIND_DEV) {
+        s.kind = APP_KIND_DEV;
+        s.kindLabel = kindLabel(APP_KIND_DEV);
+        s.dev = true;
+      }
     }
   }
   apps.sort((a, b) => (b.installedAt || b.mtimeMs) - (a.installedAt || a.mtimeMs));
@@ -2517,6 +2596,11 @@ function normSpec(raw) {
        路径靠 appsSpecFromMine 留着）。**数字串 / ISO 串都收**（手写静态目录常写 ISO），
        认不出来就是 0 = 「没有这个字段」，由渲染层决定退不退版本时间、画不画这一行。 */
     updatedAt: normStamp(s.updatedAt),
+    /* createdAt（本轮补透传，服务端 appCatalogEntry 一直有它）：渲染层按「createdAt 最早」
+       挑家族主干（原作者那条，见 renderer/app-apps.js 的 appsFamilyRootOf），过去这里没透传 →
+       客户端所有条目的 createdAt 都是「没有」＝ MAX_SAFE_INTEGER，择优退化成「取列表第一个」，
+       原作者就可能指到别人那条分支；分支行上的时间也跟着永远空着。 */
+    createdAt: normStamp(s.createdAt),
   };
 }
 /* 目录里的时间戳归一：数字 / 数字串 / ISO 串 → 毫秒；认不出回 0（绝不编造时间）。
@@ -3185,12 +3269,15 @@ async function installApp(arg) {
  * **重新下载**再换进来。所以源不可达（离线 / 云端已下架那一版）时必须如实报错，
  * 绝不静默降级成「装最新版」。 */
 
-/* 台账（本机装过的那一版从哪来）—— 渲染层据此画「本机版本」块 */
-function appsVersionPick(id) {
+/* 台账（本机装过的那一版从哪来）—— 渲染层据此画「本机版本」块。
+   kind（"dev" / "down"，可选）：点名了就看那一套根下的那一份 —— 同 id 在下载根与项目根各有一份时，
+   开发页那扇「选择版本…」窗要的是项目根那份的台账（下载副本另有一条账，见 uninstallApp 同一口径）。 */
+function appsVersionPick(id, kind) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  /* 台账属于**本机那一边**：按该应用实际所在的类型取根（没配过就用默认根并固化） */
-  const k = diskKindOf(sid);
+  /* 台账属于**本机那一边**：调用方点名了类型就用它，否则按该应用实际所在的类型取根
+     （没配过就用默认根并固化） */
+  const k = kind ? kindOfRoot(kind) : diskKindOf(sid);
   const { root } = ensureRootPersisted(k);
   const dir = appDirOf(root, sid);
   const app = dir && fs.existsSync(dir) ? appSummary(root, sid, k) : null;
@@ -3289,7 +3376,10 @@ async function rollbackApp(arg) {
 async function uninstallApp(id, opts) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
-  const k = diskKindOf(sid);
+  /* 类型：**调用方点名了就用它**（开发页点「卸载」时传 dev，同 id 在下载根也有一份时
+     只有它分得清要摘的是哪一份），没点名仍按本机实际所在的那一边（老口径）。 */
+  const o = isObj(opts) ? opts : {};
+  const k = o.kind ? kindOfRoot(o.kind) : diskKindOf(sid);
   if (k === APP_KIND_DEV) return unregisterApp(sid, opts);
   const { root } = ensureRootPersisted(APP_KIND_DOWN);
   const dir = appDirOf(root, sid);
@@ -3357,7 +3447,8 @@ async function unregisterApp(id, opts) {
   const o = isObj(opts) ? opts : {};
   if (o.force !== "dev_remove")
     return bad(t("开发中的应用不能卸载（源码就在项目文件夹里）：只能「移除登记」"), "dev_keep_files");
-  const dir = dirOfApp(sid);
+  /* 目录：**按调用方点名的类型取**（开发页传 dev），没点名才两套根都看一眼 */
+  const dir = dirOfApp(sid, o.kind ? kindOfRoot(o.kind) : "");
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
   const raw = readManifest(dir);
   if (!raw) return bad(t("应用清单损坏（app.json 读不出来）：先修好它再移除登记"), "broken_manifest");
@@ -3462,13 +3553,32 @@ function migrateAppsLayout(arg) {
     dataEnts = [];
   }
   const kindById = new Map();
-  for (const app of (listApps().apps || [])) kindById.set(String(app.id), app.kind);
+  for (const app of listApps().apps || []) {
+    const sid = String(app.id);
+    /* 归位按 **app.json 的 dev 标记**（唯一真源，与上面「开发中的应用搬进项目根」同源）：
+       listApps 的 kind 是「哪一套根扫到它」，对旧布局里还没搬家的开发应用（清单 dev:true、
+       却还躺在下载根）会算成 down —— 它的老数据该归 apps-data/dev/<id>，所以这里看清单的 dev 位
+       （app.dev 已被「根即身份」覆盖过，不能当清单真源用）。同一个 id 两边各有一份时开发优先。 */
+    let manDev = false;
+    try {
+      const d = dirOfApp(sid, app.kind);
+      const raw = d ? rawManifestOf(d) : null;
+      manDev = !!raw && raw.dev === true;
+    } catch (_) {
+      manDev = false;
+    }
+    const k = manDev ? APP_KIND_DEV : app.kind;
+    if (k === APP_KIND_DEV || !kindById.has(sid)) kindById.set(sid, k);
+  }
   for (const ent of dataEnts) {
     if (!ent.isDirectory()) continue;
     const id = safeAppId(ent.name);
     if (!id) continue; /* dev / downloaded 这两棵自己会被跳过（不是合法 app id 的除外） */
     if (onlyId && id !== onlyId) continue;
     const from = path.join(dataRoot, ent.name);
+    /* 数据归位：老数据目录（apps-data/<id>/）是升级前的样子，它属于谁看 app.json 的 dev 标记
+       （**唯一真源**，与「开发中的应用搬进项目根」那条同源）—— 不按「哪一套根扫到它」判，
+       否则旧布局里一个还没搬家的开发应用，数据会被错归到 downloaded 那棵。 */
     const k = kindById.get(id) || kindOfManifest(rawManifestOf(dirOfApp(id)), dirOfApp(id));
     const to = path.join(dataRoot, DATA_SUB[k], id);
     if (cmpPath(from) === cmpPath(to)) continue;
@@ -3950,10 +4060,29 @@ function probeChanges() {
 
 /* 预览协议路由用：按 app id 找应用目录。大小写不敏感 —— URL 的 host 会被规范成小写，
    而 Windows 之外的盘上目录名可能带大写。 */
-function previewDirOf(id) {
+function previewDirOf(id, kind) {
   const sid = safeAppId(id);
   if (!sid) return "";
-  /* 两套根都找：开发的应用在项目根、下载的在下载根（大小写不敏感，URL 的 host 会被规范化） */
+  /* 两套根都找：开发的应用在项目根、下载的在下载根（大小写不敏感，URL 的 host 会被规范化）。
+     kind 给了就看**那一套根**（缺省按 listApps 的口径，见下）。 */
+  const want = kind ? kindOfRoot(kind) : "";
+  if (want) {
+    const d = dirOfApp(sid, want);
+    if (d && fs.existsSync(d)) return d;
+  }
+  /* **按 listApps 的回执取**（不是重新按目录猜）：同一个 id 在下载根与项目根各有一份时
+     （用户在「选择版本…」里看对方那一版时装了一份同 id 的进下载根），老写法先扫下载根 =
+     开发页预览的一直是**下载副本**、代码改完预览纹丝不动 —— 与「开发会话里项目不对」
+     同一根源。listApps 已按根去重且每条带 kind，取第一条就是「下载优先」的稳定口径。 */
+  let list = null;
+  try {
+    list = listApps();
+  } catch (_) {
+    list = null;
+  }
+  const hit = list && Array.isArray(list.apps) ? list.apps.find((a) => a && a.id === sid) : null;
+  if (hit && hit.dir && fs.existsSync(hit.dir)) return String(hit.dir);
+  /* 回执里没有（列表读不动 / 目录刚被搬走）：退回老口径 —— 两套根顺序找一遍。 */
   for (const k of APP_KINDS) {
     let root = "";
     try {
@@ -3984,7 +4113,8 @@ function devPreview(id) {
   /* 根目录永远有（没配过就是默认根，见 ensureRootPersisted）：这里不再有「尚未指定项目根」
      这条拦人分支 —— 本轮口径是不再要求用户手选；真不在本机由 previewDirOf 回 missing。 */
   ensureRootPersisted(APP_KIND_DEV);
-  const dir = previewDirOf(sid);
+  /* **项目根那一份**（不是按 id 猜的那一份）：同 id 在下载根也有时，开发页要的是用户在改的这一份 */
+  const dir = previewDirOf(sid, APP_KIND_DEV);
   if (!dir)
     return Object.assign(bad(t("该应用不在本机"), "missing"), {
       missing: true,
@@ -4071,6 +4201,22 @@ function ackAppClose(e) {
 function isAppWindowOpen(id) {
   const w = appWins.get(String(id || ""));
   return !!(w && !w.isDestroyed());
+}
+/* 等应用窗口真退干净（完全替换要删它整个应用目录，文件被占就删不掉）：
+   关闭链路本身有上限（WILL_CLOSE_MS，应用回过包 / 超时都会走 close()），这里再等一小段。
+   返回 true = 已经不在了；false = 到点还在（调用方据此中止替换，什么都不动）。 */
+const REPLACE_CLOSE_WAIT_MS = 3000;
+function waitAppWindowClosed(id) {
+  const sid = String(id || "");
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (!isAppWindowOpen(sid)) return resolve(true);
+      if (Date.now() - started >= REPLACE_CLOSE_WAIT_MS) return resolve(false);
+      setTimeout(tick, 120);
+    };
+    tick();
+  });
 }
 function notifyWindowChanged(id, open) {
   try {
@@ -4227,8 +4373,10 @@ function winBounds(spec) {
   };
 }
 /* 应用窗口：preload-app.js（window.appHost）· loadFile 应用 index.html ·
-   will-navigate 一律 preventDefault（外链交 shell.openExternal）· 新窗口一律 deny。 */
-function openAppWindow(id) {
+   will-navigate 一律 preventDefault（外链交 shell.openExternal）· 新窗口一律 deny。
+   kind（"dev" / "down"，可选）＝**开哪一套根下的那一份**：同 id 两边各有一份时，
+   开发页点「启动 / 打开」要的是项目根那份（源码在改的那份），不能按 id 猜。 */
+function openAppWindow(id, kind) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
   const existing = appWins.get(sid);
@@ -4241,8 +4389,8 @@ function openAppWindow(id) {
     notifyWindowChanged(sid, true);
     return { ok: true, id: sid, open: true, reused: true };
   }
-  /* 应用可能在哪一边（下载根 / 项目根）：按本机实际所在的那一类取目录 */
-  const dir = dirOfApp(sid);
+  /* 应用可能在哪一边（下载根 / 项目根）：点名了类型就取那一边，否则按本机实际所在的那一类取 */
+  const dir = dirOfApp(sid, kind ? kindOfRoot(kind) : "");
   if (!dir || !fs.existsSync(dir)) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
   const man = manifestOf(dir, sid);
   const entry = safeEntry(man.entry) || SUB.index;
@@ -5805,17 +5953,19 @@ function readKvOf(id) {
  *        · showDictate 打开 / 关掉 → 只影响入口页里那份 dict.js 内联（宿主注入侧看同一个位）；
  *        · regenEntry=false 时只写声明、不碰文件（给「我自己写的入口页」留出口）。
  * ─────────────────────────────────────────────────────────────────────── */
-function appCapById(id) {
+function appCapById(id, kind) {
   const sid = safeAppId(id);
   if (!sid) return { error: bad(t("应用 id 不合法"), "bad_id") };
-  const dir = dirOfApp(sid);
+  /* 类型：调用方点名了就取那一边（开发页传 dev —— 同 id 在下载根也有一份时，
+     能力位写到别的副本上等于改了个用户看不见的文件） */
+  const dir = dirOfApp(sid, kind ? kindOfRoot(kind) : "");
   if (!dir || !fs.existsSync(dir)) return { error: Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid }) };
   /* root = 它所在的那一套根（下载根 / 项目根）：语音文件同步等下游按它拼路径 */
   return { id: sid, dir: dir, root: path.dirname(dir) };
 }
 function appCapabilitiesGet(arg) {
   const a = isObj(arg) ? arg : {};
-  const hit = appCapById(a.id);
+  const hit = appCapById(a.id, a.kind);
   if (hit.error) return hit.error;
   const man = manifestOf(hit.dir, hit.id) || {};
   const caps = normCapabilities(man.capabilities);
@@ -5823,7 +5973,7 @@ function appCapabilitiesGet(arg) {
 }
 function appCapabilitiesSet(arg) {
   const a = isObj(arg) ? arg : {};
-  const hit = appCapById(a.id);
+  const hit = appCapById(a.id, a.kind);
   if (hit.error) return hit.error;
   const prev = manifestOf(hit.dir, hit.id) || {};
   const caps = normCapabilities(a.capabilities);
@@ -6085,6 +6235,13 @@ function registerAppsIpc(opts) {
   /* 全局音视频互斥锁快照（media-gen-global-lock.js 的 refreshStaleLock） */
   if (typeof opts.readMediaLock === "function") readMediaLock = opts.readMediaLock;
   if (typeof opts.locale === "function") hostLocale = opts.locale;
+  /* 画布层四件事（完全替换用）：由 main.js 注入（回收站 / 画布落盘 / .mtnodes 物化都要
+     DATA() 与资产目录，只有主进程知道那些落点）。缺省是上面那份「安全缺省」。 */
+  if (isObj(opts.canvasOps)) {
+    for (const k of Object.keys(canvasOps)) {
+      if (typeof opts.canvasOps[k] === "function") canvasOps[k] = opts.canvasOps[k];
+    }
+  }
   getAppDataDirForSpeech = (id) => {
     try {
       return appDataDirOf(String(id || ""), diskKindOf(String(id || "")));
@@ -6104,6 +6261,185 @@ function registerAppsIpc(opts) {
   /* 根目录：get / set / pick（set 与 pick 都是主进程写 config.json，渲染层不管路径）。
      **两套根**：kind = "down"（下载根，老键名 apps.installDir）/ "dev"（项目根，apps.projectDir）；
      不给 kind 一律按下载根走（老调用点 / 老渲染层逐字不变）。 */
+  /* ── 应用版本合并（对方那一版 → 我本机开发中的那一支）────────────────────────────
+     口径与产物见 app-branch-merge.js 的文件头（用户本轮共识）：合并不再是脚本式 / 类 git 的
+     行级合并 —— 主进程只**拉取那一版到暂存目录 + 合并前整目录备份 + 比一份文件级差异清单**，
+     然后把差异交给 Agent（新建一条会话、内置技能 mtnode-app-merge + mtnode-grill-me 拷问，
+     由 Agent 直接改开发目录）；合并**不修改版本号**（每位作者各算各的），app.json 只由
+     mergeNote 补一条 merges 留痕；Agent 用 .merge-done.json 宣布结束后主进程才清暂存。
+     **绝不自动上架**。依赖在这里注入（这些实现都定义在本文件里）。 */
+  const branchMerge = createBranchMerge({
+    t: (s) => t(s),
+    appRootOf: (kind) => String(rootPathOf(kind).root || ""),
+    dataDir: () => String(getDataDir() || ""),
+    /* 暂存根（合并用）：优先落在**数据目录**下的 runtime-tmp（与「用户数据不落应用
+       文件夹」同一条口径），拿不到数据目录才退系统临时目录。 */
+    tmpRoot: () => {
+      const d = String(getDataDir() || "");
+      const root = d ? path.join(d, "runtime-tmp") : path.join(require("os").tmpdir(), "mtnode-apps");
+      mk(root);
+      return root;
+    },
+    findSpecHit: (id, ownerId) => findSpecHit(id, ownerId),
+    zipUrlsOf: (spec) => zipUrlsOf(spec),
+    fetchBuffer: (url, onProgress) => fetchBuffer(url, onProgress),
+    sha256: (buf) => sha256(buf),
+    unzipBuffer: (buf, dest) => unzipBuffer(buf, dest),
+    rmDirRecursive: (dir) => rmDirRecursive(dir),
+    mk: (p) => mk(p),
+    readJson: (p, fb) => readJson(p, fb),
+    writeJson: (p, obj) => writeJson(p, obj),
+    readManifest: (dir) => readManifest(dir),
+  });
+  /* 画布层四件事（回收站 / 画布落盘 / .mtnodes 物化）的安全缺省：没注入时一律回
+     画布层未就绪 —— 完全替换是整目录删除，宁可不做也不能在缺注入时删掉东西。 */
+  const noCanvasOps = () => ({ ok: false, error: t("画布层未就绪（请重启 MTNode）"), code: "canvas_unavailable" });
+  const canvasOps = {
+    canvasInfo: () => null,
+    wipeCanvas: noCanvasOps,
+    prepareCanvas: noCanvasOps,
+    emptyCanvas: () => null,
+    writeCanvas: noCanvasOps,
+  };
+  /* ── 应用版本「完全替换」（本轮需求 · 用户共识）─────────────────────────────────
+     与合并并列的第二条路，区别只有一处：**不经过 Agent**。口径见 app-branch-replace.js
+     文件头（删什么 / 留什么 / 退路 / 新画布 / 登记）。这里只注入本文件的实现 + main.js
+     注入的画布层四件事（canvasInfo / wipeCanvas / prepareCanvas / emptyCanvas / writeCanvas）。 */
+  const branchReplace = createBranchReplace({
+    t: (s) => t(s),
+    dataDir: () => String(getDataDir() || ""),
+    /* 与合并同一处暂存根：只认合并拉下来的暂存目录（merge.json 认这个 appId）。 */
+    stagingRoot: () => branchMerge.stagingRoot(),
+    metaName: "merge.json",
+    devInfo: (id) => branchMerge.devInfoFor(id),
+    rmDirRecursive: (dir) => rmDirRecursive(dir),
+    readManifest: (dir) => readManifest(dir),
+    writeJson: (p, obj) => writeJson(p, obj),
+    canvasInfo: (id) => canvasOps.canvasInfo(id),
+    wipeCanvas: (id) => canvasOps.wipeCanvas(id),
+    prepareCanvas: (id, srcDir, name) => canvasOps.prepareCanvas(id, srcDir, name),
+    emptyCanvas: (id, name) => canvasOps.emptyCanvas(id, name),
+    writeCanvas: (id, wf) => canvasOps.writeCanvas(id, wf),
+  });
+  /* ── 完全替换的执行体（IPC 那段只是壳）：关窗 → 干跑守卫 → 执行 → 通知画布层刷新 ──
+     干跑守卫（dialog:false）是**按用户口径先做一遍前置检查**：这个应用在不在本机开发目录、
+     暂存目录对不对得上、对方包在不在；任何一条不成立就什么都不动、如实回错误码。 */
+  async function replaceAppWithBranch(arg) {
+    const a = isObj(arg) ? arg : {};
+    const id = String(a.id || "").trim();
+    if (!id) return bad(t("应用 id 不合法"), "bad_id");
+    if (installing[id]) return bad(t("该应用已有安装任务在跑"), "busy");
+    if (a.dialog === false) {
+      const local = branchMerge.devInfoFor(id);
+      if (!local || local.ok === false) return local || bad(t("读不到本机开发目录"), "not_dev_app");
+      if (!local.dev) return bad(t("这个应用不在本机开发目录里"), "not_dev_app");
+      const staging = String(a.staging || "").trim();
+      const sroot = path.resolve(String(branchMerge.stagingRoot() || ""));
+      const abs = path.resolve(staging);
+      if (!staging || !sroot || abs.indexOf(sroot + path.sep) !== 0) {
+        return bad(t("暂存目录不在合并暂存根下（拒绝替换）"), "bad_staging");
+      }
+      if (!fs.existsSync(path.join(abs, "merge.json"))) {
+        return bad(t("这次替换没有对应的暂存目录（先重新拉取一次）"), "staging_mismatch");
+      }
+      return { ok: true, dryRun: true, appId: id, dir: local.dir, myVersion: String(local.version || "") };
+    }
+    /* ① 关窗：先请那个应用的窗口退出（文件被占会删不掉）；关不干净就中止，什么都不动 */
+    let windowClosed = false;
+    if (isAppWindowOpen(id)) {
+      closeAppWindow(id);
+      windowClosed = await waitAppWindowClosed(id);
+      if (!windowClosed) {
+        return bad(t("那个应用的独立窗口没能关掉（可能正在忙），已中止替换：请先手动关掉它再试"), "window_busy");
+      }
+    }
+    installing[id] = true;
+    sendProgress({ id: id, phase: "start", percent: 0 });
+    let r = null;
+    try {
+      r = await branchReplace.replaceWithBranch(Object.assign({}, a, { id: id, windowClosed: windowClosed }));
+    } finally {
+      installing[id] = false;
+      sendProgress({ id: id, phase: "done", percent: 100 });
+    }
+    if (r && r.ok) {
+      /* 画布被整份换了：主窗口若正开着这个应用的画布，内存里那份已经是旧的（再一保存就会
+         把新画布盖回旧内容）—— 推一条事件让渲染层自己重载（见 app-apps.js 的订阅）。 */
+      try {
+        const w = getMainWin && getMainWin();
+        if (w && !w.isDestroyed()) {
+          w.webContents.send("apps:replaced", {
+            id: id,
+            wfId: id,
+            nodeIds: (((r.canvas || {}).nodeIds) || []).slice(0, 500),
+            version: String(r.version || ""),
+            canvas: String((r.canvas && r.canvas.kind) || ""),
+          });
+        }
+      } catch {}
+    }
+    return r;
+  }
+
+  /* 这个应用在不在本机开发目录（渲染层据此决定分支树上露不露合并入口；pending = 上次留下的暂存） */
+  ipcMain.handle("apps:mergeInfo", guard((e, arg) => branchMerge.devInfo(isObj(arg) ? arg.id : arg)));
+  /* 拉取：对方那一版 → 暂存目录 + 整目录备份 + 文件级差异清单（**不写开发目录**）。
+     回执里只有文件名与计数，不带正文。 */
+  ipcMain.handle("apps:mergePull", async (e, arg) => {
+    try {
+      const a = isObj(arg) ? arg : {};
+      const r = await branchMerge.mergePull(a);
+      if (!r || r.ok === false) return r;
+      /* 挂看门狗：Agent 写了结束声明（.merge-done.json）就落 app.json 留痕 + 清暂存，
+         并通知界面解禁入口。会话自己开在渲染层（它才知道会话 id）。 */
+      branchMerge.watchStaging(r.appId, r.staging, (done) => {
+        try {
+          const w = getMainWin && getMainWin();
+          if (w && !w.isDestroyed()) w.webContents.send("apps:mergeDone", done);
+        } catch {}
+      });
+      return r;
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  /* app.json 的唯一写者：补一条 merges 留痕（版本号默认不动，只有会话里选过才跟着动） */
+  ipcMain.handle("apps:mergeNote", guard((e, arg) => branchMerge.mergeNote(isObj(arg) ? arg : {})));
+  /* 收尾检查：Agent 宣布结束才落留痕 + 删暂存；没宣布就什么都不做（暂存留着，下次拉取时清） */
+  ipcMain.handle("apps:mergeEnd", guard((e, arg) => branchMerge.mergeEnd(isObj(arg) ? arg : {})));
+  ipcMain.handle("apps:replaceInfo", guard((e, arg) => {
+    const a = isObj(arg) ? arg : {};
+    const id = String((isObj(arg) ? a.id : arg) || "").trim();
+    if (!id) return bad(t("应用 id 不合法"), "bad_id");
+    const local = branchMerge.devInfoFor(id);
+    if (!local || local.ok === false) return local || bad(t("读不到本机开发目录"), "not_dev_app");
+    if (!local.dev) return { ok: true, dev: false, dir: "", myVersion: "", pending: null };
+    const staging = String(a.staging || (local.pending && local.pending.staging) || "");
+    /* 用户口径：这一步要**说清要删什么**，所以把本机这一份的现状一并回报（界面用来写后果）；
+       数据文件「保留」那一档也写在回执里 —— 完全替换的口径只在一处：app-branch-replace.js
+       的文件头 + 这里这两行（界面照它写文案，不自己另立一份说明）。 */
+    return {
+      ok: true,
+      dev: true,
+      dir: String(local.dir || ""),
+      myVersion: String(local.version || ""),
+      staging: staging,
+      pending: local.pending || null,
+      keeps: ["apps-data"],
+      deletes: ["app-dir", "canvas", "merge-leftovers"],
+      appWindowOpen: isAppWindowOpen(id),
+    };
+  }));  /* **完全替换**（本轮需求）：删本机旧版本（应用目录 + 开发画布）+ 铺对方那一版 + 接续开发，
+     全程不建会话、不经过 Agent。前置：这个应用先在**本机开发目录**里（dev），且暂存目录是
+     合并那条路拉的（merge.json 认这个 appId）。顺序见下面那段注释。 */
+  ipcMain.handle("apps:replaceWithBranch", async (e, arg) => {
+    try {
+      return await replaceAppWithBranch(isObj(arg) ? arg : {});
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
   ipcMain.handle("apps:rootGet", guard((e, arg) => {
     const roots = rootsInfo();
     const k = kindOfRoot(isObj(arg) ? arg.kind : arg);
@@ -6183,7 +6519,7 @@ function registerAppsIpc(opts) {
   });
   /* 本机多版本（§九）：versions = 只读台账（当前版 + 上一版，回滚入口据此显隐）；
      rollback = 把目标那一版按台账来源重新下载并换进来（进度仍走 apps:progress）。 */
-  ipcMain.handle("apps:versions", guard((e, arg) => appsVersionPick(isObj(arg) ? arg.id : arg)));
+  ipcMain.handle("apps:versions", guard((e, arg) => appsVersionPick(isObj(arg) ? arg.id : arg, isObj(arg) ? arg.kind : "")));
   ipcMain.handle("apps:rollback", async (e, arg) => {
     try {
       return await rollbackApp(arg);
@@ -6205,7 +6541,7 @@ function registerAppsIpc(opts) {
   }
   ipcMain.handle("apps:devPreview", guard((e, arg) => devPreview(isObj(arg) ? arg.id : arg)));
 
-  ipcMain.handle("apps:openWindow", guard((e, arg) => openAppWindow(isObj(arg) ? arg.id : arg)));
+  ipcMain.handle("apps:openWindow", guard((e, arg) => openAppWindow(isObj(arg) ? arg.id : arg, isObj(arg) ? arg.kind : "")));
   /* 按 id 关掉某个应用的独立窗口（主窗口侧也能关）：开发页那条「预览因独立窗口已开而只读」
      的提示旁边那颗「关掉独立窗口」用它 —— 不然用户得自己切到库页去找那个窗口。
      走的还是同一条「先请应用收尾、再关」的链（closeAppWindow）。 */
@@ -6430,9 +6766,10 @@ function registerAppsIpc(opts) {
      改数据文件夹位置仍只在应用窗口里（preload-app.js 的 appHost.dataDir* → apps:hostDataDir*）。 */
   ipcMain.handle("apps:dataOpen", async (e, arg) => {
     try {
-      const id = safeAppId(isObj(arg) ? arg.id : arg);
+      const o = isObj(arg) ? arg : { id: arg };
+      const id = safeAppId(o.id);
       if (!id) return bad(t("应用 id 不合法"), "bad_id");
-      return await openAppDataDir(id);
+      return await openAppDataDir(id, o.kind);
     } catch (err) {
       return fail(err);
     }
