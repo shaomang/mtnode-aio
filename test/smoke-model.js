@@ -744,7 +744,6 @@ let MERGED_FAILED = false;
       "hy3",
       "ZHIPU/GLM-5.3-Flash",
       "aoi",
-      "gpt-sovits",
     ];
     bad = [];
     for (const id of TEXT_IDS) if (MK.inferModelKind(id) !== "text") bad.push(id);

@@ -7,7 +7,7 @@
  * 锁住的需求（本模块共识，逐条对应）：
  *   1. 插件标识：id=breeze-tts-local · kind/handler=breeze · 目录 breeze/ · pack breeze-pack/
  *   2. 原生 Windows 直接跑：安装脚本走 aliyun pytorch 轮子镜像 + ModelScope/hf-mirror 权重，不启 fast 路径
- *   3. 独立节点 breeze_gen（不动 tts_gen）：4 数据入 + 控制入 端口4 · 出 0=音频 / 1=控制
+ *   3. 独立节点 breeze_gen（本机唯一的语音节点；tts_gen 已随 GPT-SoVITS 插件移除）：4 数据入 + 控制入 端口4 · 出 0=音频 / 1=控制
  *   4. 参考源优先级：端子优先，端子空了才用节点设置里的音色；参考音频与文稿必须成对
  *   5. 能力语义：clone / design / direction / auto（auto 按参数推导）
  *   6. 输出格式 wav / flac / mp3（mp3 需 ffmpeg，缺了给明确中文指路）
@@ -630,7 +630,7 @@ function scene(nodes, wires) {
   ok(!!entry, "catalog.default.json 有 breeze-tts-local 词条");
   eqStr(entry.kind, "breeze", "catalog kind = breeze");
   eqStr(entry.handler, "breeze", "catalog handler = breeze");
-  eqNum(entry.order, 62, "catalog order = 62（紧挨 tts-local=60 之后）");
+  eqNum(entry.order, 62, "catalog order = 62（本机语音后端的排位，tts-local 那条已移除）");
   eqStr(entry.version, "1.0.0", "catalog 版本 = 1.0.0");
   eqStr(entry.minAppVersion, "1.4.0", "catalog minAppVersion = 1.4.0");
   eqStr(entry.icon, "breeze-tts-local.png", "catalog 图标 = breeze-tts-local.png");
@@ -859,7 +859,7 @@ function scene(nodes, wires) {
   has(hostSrc, "writeFileSync(outputPath, buf)", "音频字节由主进程写盘（渲染层不碰二进制）");
   has(hostSrc, "function shutdownBreezeUiOnly(", "宿主只关控制台窗（后端常驻）");
   hasnt(hostSrc, "shutdownBreezeUiOnly() {\n  stopBackend", "退出时不杀后端（与常驻口径一致）");
-  has(lockSrc, "tts_gen", "全局锁模块认识语音类节点（忙时提示按「语音」说）");
+  has(lockSrc, 'kind === "breeze_gen"', "全局锁模块认识语音类节点（忙时提示按「语音」说）");
 
   /* ═════════════ [4] 节点端子契约 ═════════════ */
   console.log("\n[4] breeze_gen 端子：5 入（文本/参考音频/参考文稿/指令/控制）· 2 出（音频/控制）");
@@ -1668,14 +1668,13 @@ function scene(nodes, wires) {
     has(headLive.children[0].className, "running", "在跑的 ▶ 带 running 态");
     eqStr(headLive.children[1].title, "取消生成请求", "在跑的 ■ 仍是「取消生成请求」");
 
-    /* ⑤ 静态钉住：8 个生成族节点头部共用这一只实现（不再各抄一遍，
+    /* ⑤ 静态钉住：7 个生成族节点头部共用这一只实现（不再各抄一遍，
           否则「排队中不给 ■」这种漏改会再次发生）；收尾与停止链里的自愈调用也要在 */
     for (const kw of [
       "调用 Minimax Music 3 后端生成",
       "调用 YuE2 本地后端生成音乐",
       "调用 SenseNova 本地后端生成图像",
       "调用 Minimax H3 后端生成",
-      "调用 GPT-SoVITS 后端合成语音",
       "调用 Breeze TTS 2 后端合成语音",
       "生成动效代码并本地渲染视频",
     ])
@@ -1758,9 +1757,9 @@ function scene(nodes, wires) {
   const nodeIdx = JSON.parse(read("guides/nodes/index.json"));
   ok(nodeIdx.ids.indexOf("breeze_gen") >= 0, "breeze_gen 已进节点指南索引");
   eqStr(
-    nodeIdx.ids[nodeIdx.ids.indexOf("tts_gen") + 1],
+    nodeIdx.ids[nodeIdx.ids.indexOf("yue_gen") + 1],
     "breeze_gen",
-    "索引里 breeze_gen 紧跟 tts_gen（音频生成四类相邻）",
+    "索引里 breeze_gen 紧跟 yue_gen（音频生成三类相邻；tts_gen 已随 GPT-SoVITS 插件移除）",
   );
   const guideZh = read("guides/nodes/breeze_gen.md");
   const guideEn = read("guides/nodes/en/breeze_gen.md");

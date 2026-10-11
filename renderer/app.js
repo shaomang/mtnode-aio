@@ -264,9 +264,7 @@ const KIND_CLS = {
   /* SenseNova 图像生成（本机 SenseNova-U1.5-8B-MoT 后端）：复用图像生成族配色，
      它的端子语义与 proc_image 一致（出图 = image 端子），下游 save_image / 预览直接复用 */
   sensenova_gen: "proc-img",
-  /* SoVITS 语音生成：复用 .wf-node.tts 样式族（紫调，与音乐/视频同族不同色） */
-  tts_gen: "tts",
-  /* Breeze 语音生成：与 SoVITS 同族同色（都是「文本 → 语音」），靠图标与类型名区分 */
+  /* Breeze 语音生成：文本 → 语音的**唯一**本机后端，复用 .wf-node.tts 样式族（紫调） */
   breeze_gen: "tts",
   video_gen: "video",
   /* 视频后处理：超分 / 补帧从 H3 生成链里独立出来，复用视频族配色 */
@@ -414,10 +412,7 @@ const KIND_ICON_SVG = {
      与云端 proc_image 同族但一眼可辨 —— 引脚表示「跑在自己电脑上」 */
   sensenova_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.4" y="2.4" width="11.2" height="8.2" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.6 9.1l2.5-2.7 1.7 1.6 1.4-1.3 1.8 2.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/><circle cx="11.5" cy="4.6" r=".95" fill="currentColor"/><path d="M5.2 12.4h5.6M4.4 10.6v1.8M11.6 10.6v1.8M6.6 12.4v1.9M9.4 12.4v1.9" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
-  /* SoVITS 语音生成：喇叭 + 声波条（文本转语音） */
-  tts_gen:
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.1 6.3h1.9L7.9 3.9v8.2L5 9.7H3.1a.7.7 0 0 1-.7-.7V7a.7.7 0 0 1 .7-.7z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M10.4 6.3v3.4M12.2 4.9v6.2M14 6.9v2.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
-  /* Breeze 语音生成：麦克风 + 底座（音色克隆 / 设计 / 导演），与 SoVITS 的喇叭一眼可辨 */
+  /* Breeze 语音生成：麦克风 + 底座（音色克隆 / 设计 / 导演） */
   breeze_gen:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="6.1" y="1.9" width="3.8" height="8" rx="1.9" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M3.4 7.4v.7a4.6 4.6 0 0 0 9.2 0v-.7M8 12.7v1.5M5.6 14.2h4.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><path d="M8 4.3v3.2" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity=".75"/></svg>',
   /* 视频生成 */
@@ -1377,28 +1372,9 @@ const NODE_DEFAULTS = {
     ranAt: 0,
     running: false,
   },
-  /* SoVITS 语音生成（GPT-SoVITS 本机后端 · 文本转语音）：
-     端子与音乐节点同构 —— 输入 端口0=待合成文本 · 端口1=控制输入；
-     输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 music_gen。 */
-  tts_gen: {
-    w: 360,
-    h: 300,
-    /* 一级菜单「音频生成」成员：新建节点默认标题用后端名 */
-    title: "SoVITS 语音节点",
-    attempts: 1,
-    voice: "", /* 音色（GPT-SoVITS 音色库名，空 = 用后端默认） */
-    speed: 1.0, /* 语速倍率（0.5–2.0） */
-    ttsFormat: "wav", /* 输出格式 wav | mp3 */
-    outputPath: "",
-    ttsStatus: "",
-    output: null,
-    error: null,
-    ranAt: 0,
-    running: false,
-  },
   /* Breeze 语音生成（Breeze TTS 2 本机后端 · 文本转语音 · 音色克隆 / 设计 / 导演）：
      端子 —— 输入 端口0=待合成文本 · 端口1=参考音频 · 端口2=参考文稿 · 端口3=指令 instruction
-     · 端口4=控制输入；输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 tts_gen。
+     · 端口4=控制输入；输出 端口0=音频内容 · 端口1=控制输出。尺寸参照 music_gen。
      参考源优先级：端子优先，端子空了才用节点设置里选的音色（后端音色库 voices/<id>）。 */
   breeze_gen: {
     w: 380,
@@ -1949,7 +1925,6 @@ function nodeEmitsControlOnPort(node, portIndex, wf, seen) {
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
     node.kind === "sensenova_gen" ||
-    node.kind === "tts_gen" ||
     node.kind === "video_gen" ||
     isVideoPostKind(node) ||
     node.kind === "remotion"
@@ -2863,7 +2838,6 @@ function rewriteNodePathsForSuperContext(node) {
   if (
     (node.kind === "music_gen" ||
       node.kind === "yue_gen" ||
-      node.kind === "tts_gen" ||
       node.kind === "breeze_gen" ||
       node.kind === "video_gen" ||
       isVideoPostKind(node) ||
@@ -3852,7 +3826,7 @@ function assetDisplayValueOfPort(node, portIdx) {
    工具 / 函数节点按真正接出来的那个端子取实际值判断，其余节点仍只看 0 号端子（行为逐字不变）。 */
 function inferMediaFromSource(from, fromIndex) {
   if (!from) return "text";
-  if (from.kind === "music_gen" || from.kind === "yue_gen" || from.kind === "tts_gen" || from.kind === "breeze_gen")
+  if (from.kind === "music_gen" || from.kind === "yue_gen" || from.kind === "breeze_gen")
     return "audio";
   if (from.kind === "video_gen" || isVideoPostKind(from) || from.kind === "remotion")
     return "video";
@@ -4056,9 +4030,7 @@ function mediaGenOutputRaw(node) {
   return raw;
 }
 function mediaGenExt(node) {
-  if (node && node.kind === "tts_gen")
-    return String(node.ttsFormat || "").toLowerCase() === "mp3" ? ".mp3" : ".wav";
-  /* Breeze 语音：三种格式都按节点所选（wav / flac / mp3） */
+  /* Breeze 语音（本机唯一的语音节点）：三种格式都按节点所选（wav / flac / mp3） */
   if (node && node.kind === "breeze_gen") {
     const f = String(node.ttsFormat || "").toLowerCase();
     return f === "mp3" ? ".mp3" : f === "flac" ? ".flac" : ".wav";
@@ -4117,7 +4089,6 @@ function requireMediaGenExport(node, quiet) {
     if (node.kind === "music_gen") node.musicStatus = msg;
     if (node.kind === "yue_gen") node.yueStatus = msg;
     if (node.kind === "sensenova_gen") node.sensenovaStatus = msg;
-    if (node.kind === "tts_gen") node.ttsStatus = msg;
     if (node.kind === "breeze_gen") node.breezeStatus = msg;
     if (node.kind === "video_gen") node.videoStatus = msg;
     if (node.kind === "remotion") node.remotionStatus = msg;
@@ -4402,7 +4373,6 @@ function outputCount(n) {
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
     n.kind === "sensenova_gen" ||
-    n.kind === "tts_gen" ||
     n.kind === "breeze_gen" ||
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
@@ -6583,7 +6553,6 @@ function inPortIsControl(node, idx) {
   if (node.kind === "net_send") return i === 1; /* 端口0=信息 · 端口1=控制输入 */
   if (node.kind === "music_gen") return i === 2;
   if (node.kind === "yue_gen") return i === 3;
-  if (node.kind === "tts_gen") return i === 1;
   if (node.kind === "breeze_gen") return i === 4; /* 端口4=控制输入 */
   if (node.kind === "video_gen") return i === videoGenControlPort(node);
   if (isVideoPostKind(node)) return i === 0;
@@ -6595,7 +6564,6 @@ const IN_PORT_DATA_KINDS = {
   net_send: ["text", "control"],
   music_gen: ["text", "text", "control"],
   yue_gen: ["text", "text", "text", "control"],
-  tts_gen: ["text", "control"],
   /* Breeze 语音：0=待合成文本 · 1=参考音频（音频文件 URL）· 2=参考文稿 · 3=指令 · 4=控制输入 */
   breeze_gen: ["text", "audio", "text", "text", "control"],
   remotion: ["control", "text"],
@@ -6634,7 +6602,6 @@ function hasFixedInPorts(n) {
       n.kind === "mutex" ||
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
-      n.kind === "tts_gen" ||
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
@@ -6710,7 +6677,6 @@ function wireFromIsControl(w, wf) {
     (from.kind === "music_gen" ||
       from.kind === "yue_gen" ||
       from.kind === "sensenova_gen" ||
-      from.kind === "tts_gen" ||
       from.kind === "video_gen" ||
       isVideoPostKind(from) ||
       from.kind === "remotion") &&
@@ -6771,7 +6737,6 @@ function isTextSource(n) {
     n.kind === "input_video" ||
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
-    n.kind === "tts_gen" ||
     n.kind === "breeze_gen" ||
     n.kind === "video_gen" ||
     isVideoPostKind(n) ||
@@ -6820,7 +6785,6 @@ function isAudioWireFrom(n, fromIndex) {
   return (
     n.kind === "music_gen" ||
     n.kind === "yue_gen" ||
-    n.kind === "tts_gen" ||
     n.kind === "breeze_gen"
   );
 }
@@ -7785,7 +7749,6 @@ function inputCount(node) {
   /* SenseNova 图像生成：输入端子与「图像节点」proc_image 同一泛用增量规则 ——
      端口 0 = 提示词 / 文本入口，之后按已连线条数增量出数据槽（文本 / 图像都可接），
      不走任何固定端子分支，落到下面的通用动态端子（输出端子仍是图像 + 控制） */
-  if (node.kind === "tts_gen") return 2; /* 端口0=待合成文本 · 端口1=控制输入 */
   /* Breeze 语音：端口0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入（固定 5 个端子） */
   if (node.kind === "breeze_gen") return 5;
   if (node.kind === "video_gen") return videoGenInputCount(node); /* 端口0=控制输入（固定）· 端口1+=数据槽 */
@@ -8054,9 +8017,7 @@ function minWFor(n) {
     /* SenseNova 图像生成：与音乐 / 语音节点同尺寸族（body 里有参数摘要 + 预览） */
     case "sensenova_gen":
       return 340;
-    case "tts_gen":
-      return 320;
-    /* Breeze 语音：警示条 + 两行端子提示 + 摘要 + 后端面板 + 预览 + 状态行 → 比 tts_gen 略高 */
+    /* Breeze 语音：警示条 + 两行端子提示 + 摘要 + 后端面板 + 预览 + 状态行，要得比音乐节点高 */
     case "breeze_gen":
       return 340;
     case "video_gen":
@@ -8101,8 +8062,6 @@ function minHFor(n) {
     /* SenseNova 图像生成：参数摘要 + 后端面板 + 图像预览，留够高度 */
     case "sensenova_gen":
       return 240;
-    case "tts_gen":
-      return 220;
     case "breeze_gen":
       return 250;
     case "video_gen":
@@ -8299,8 +8258,7 @@ function nodeKindLabel(node) {
     video_gen: "Minimax H3",
     video_upscale: "视频超分",
     video_interp: "视频补帧",
-    tts_gen: "SoVITS 语音",
-    /* Breeze 语音生成（本机 Breeze TTS 2 后端） */
+    /* Breeze 语音生成（本机唯一的语音后端：Breeze TTS 2） */
     breeze_gen: "Breeze 语音",
     remotion: "Remotion 视频",
     net_recv: "接收",
@@ -8353,7 +8311,6 @@ function nodeKindPurposeKey(node) {
     video_gen: "Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）",
     video_upscale: "视频超分（Real-ESRGAN x4 / x2 超分 · 独立后处理）",
     video_interp: "视频补帧（RIFE 补帧 · 独立后处理）",
-    tts_gen: "SoVITS 语音生成（文本转语音 · GPT-SoVITS）",
     breeze_gen:
       "Breeze 语音生成（文本转语音 · Breeze TTS 2 · 音色克隆 / 设计 / 导演）",
     remotion: "Remotion 视频（React 动效合成 · 本地渲染 mp4）",
@@ -14241,7 +14198,6 @@ function valueForInput(src, idx, consumer, seen) {
   if (
     src.kind === "music_gen" ||
     src.kind === "yue_gen" ||
-    src.kind === "tts_gen" ||
     src.kind === "breeze_gen"
   ) {
     const r = selResult(src);
@@ -19022,7 +18978,7 @@ function sideCatMatches(n, kinds) {
 const SIDE_CATS = [
   ["输入节点", ["input_text", "input_image", "input_audio", "input_video", "input_any", "input_file", "db_table"]],
   ["全局节点", ["global"]],
-  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "music_gen", "yue_gen", "tts_gen", "breeze_gen", "video_gen", "video_upscale", "video_interp", "remotion"]],
+  ["处理节点", ["proc_text", "proc_image", "sensenova_gen", "music_gen", "yue_gen", "breeze_gen", "video_gen", "video_upscale", "video_interp", "remotion"]],
   ["保存节点", ["save", "save_pdf"]],
   ["工具节点", ["split", "merge", "function", "tool"]],
   ["网络节点", ["net_recv", "net_send"]],
@@ -19049,7 +19005,6 @@ const KIND_TAGS = {
   sensenova_gen: "图像生成",
   music_gen: "音乐",
   yue_gen: "音乐",
-  tts_gen: "语音",
   breeze_gen: "语音",
   video_gen: "视频",
   remotion: "视频",
@@ -19729,11 +19684,6 @@ function canvasCreateMenuGroups(pt) {
             "yue_gen",
             I18n.t("YuE2（歌词→整曲 · 可编辑谱面）"),
             () => addNode("yue_gen", pt.x, pt.y),
-          ),
-          ctxKindItem(
-            "tts_gen",
-            I18n.t("SoVITS 语音生成（文本转语音 · GPT-SoVITS）"),
-            () => addNode("tts_gen", pt.x, pt.y),
           ),
           ctxKindItem(
             "breeze_gen",
@@ -21819,7 +21769,6 @@ const WIRE_DROP_TARGETS = [
   { kind: "sensenova_gen", g: "处理节点" },
   { kind: "music_gen", g: "处理节点" },
   { kind: "yue_gen", g: "处理节点" },
-  { kind: "tts_gen", g: "处理节点" },
   { kind: "breeze_gen", g: "处理节点" },
   { kind: "video_gen", g: "处理节点" },
   { kind: "video_upscale", g: "处理节点" },
@@ -23045,7 +22994,6 @@ async function stopNode(node) {
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
     node.kind === "sensenova_gen" ||
-    node.kind === "tts_gen" ||
     node.kind === "breeze_gen" ||
     node.kind === "video_gen" ||
     node.kind === "remotion" ||
@@ -23054,9 +23002,8 @@ async function stopNode(node) {
   ) {
     /* 单节点停止也要：关监视器 + 作废排队 + 取消主进程在途任务（释放大锁）。
        旧实现只把 running 置 false，串行队列 / 后端任务照跑，稍后节点又回到运行队列。
-       语音（tts_gen）例外于「取消主进程任务」：GPT-SoVITS 无取消接口，靠 bumpNodeStop
-       让在途合成在返回时被作废（不写产物、不驱动下游）。
-       breeze_gen 亦无取消接口（breeze/main-breeze.js 只走一次 HTTP：/v1/audio/speech），
+       语音（breeze_gen）例外于「取消主进程任务」：它没有取消接口
+       （breeze/main-breeze.js 只走一次 HTTP：/v1/audio/speech），
        停止=渲染层作废 + 断链，在途那条合成完即丢弃，不写节点状态、不驱动下游。 */
     const queuedOnly = mediaGenWaiters.has(node.id);
     if (!node.running && !queuedOnly) {
@@ -23094,7 +23041,6 @@ async function stopNode(node) {
     if (node.kind === "music_gen") node.musicStatus = I18n.t("已取消");
     else if (node.kind === "yue_gen") node.yueStatus = I18n.t("已取消");
     else if (node.kind === "sensenova_gen") node.sensenovaStatus = I18n.t("已取消");
-    else if (node.kind === "tts_gen") node.ttsStatus = I18n.t("已取消");
     else if (node.kind === "breeze_gen") node.breezeStatus = I18n.t("已取消");
     else if (node.kind === "video_gen" || isVideoPostKind(node))
       node.videoStatus = I18n.t("已取消");
@@ -23108,15 +23054,13 @@ async function stopNode(node) {
             ? "已取消音乐生成"
             : node.kind === "sensenova_gen"
               ? "已取消图像生成"
-              : node.kind === "tts_gen"
+              : node.kind === "breeze_gen"
                 ? "已取消语音合成"
-                : node.kind === "breeze_gen"
-                  ? "已取消语音合成"
-                  : node.kind === "video_gen"
-                    ? "已取消视频生成"
-                    : isVideoPostKind(node)
-                      ? "已取消视频后处理"
-                      : "已取消 Remotion 渲染",
+                : node.kind === "video_gen"
+                  ? "已取消视频生成"
+                  : isVideoPostKind(node)
+                    ? "已取消视频后处理"
+                    : "已取消 Remotion 渲染",
       ),
       "warn",
     );
@@ -30743,7 +30687,6 @@ function migrateWf(wf) {
       n.kind === "music_gen" ||
       n.kind === "yue_gen" ||
       n.kind === "sensenova_gen" ||
-      n.kind === "tts_gen" ||
       n.kind === "breeze_gen" ||
       n.kind === "video_gen" ||
       isVideoPostKind(n) ||
@@ -30767,15 +30710,6 @@ function migrateWf(wf) {
     /* SenseNova 图像节点：字段归一（画幅只认官方 11 个训练桶 · 显存档位 / dtype / cfgNorm
        只认枚举值 · 数值全部夹到后端认可的区间），见 sensenovaNormalizeNode */
     if (n.kind === "sensenova_gen") sensenovaNormalizeNode(n);
-    /* SoVITS 语音节点：字段归一（语速 0.5–2.0，输出格式 wav|mp3） */
-    if (n.kind === "tts_gen") {
-      if (typeof n.voice !== "string") n.voice = "";
-      if (n.ttsFormat !== "mp3") n.ttsFormat = "wav";
-      if (typeof n.ttsStatus !== "string") n.ttsStatus = "";
-      if (typeof n.outputPath !== "string") n.outputPath = "";
-      const sp = Number(n.speed);
-      n.speed = sp > 0 ? Math.max(0.5, Math.min(2, sp)) : 1;
-    }
     if (n.kind === "task") {
       normalizeTaskSteps(n);
       n.running = false;

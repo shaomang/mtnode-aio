@@ -1145,7 +1145,7 @@ function gsDocSections(cat) {
 const GS_GUIDES = [
   "input_text", "input_image", "input_audio", "input_video", "input_any", "input_file",
   "proc_text", "proc_image", "agent_task", "db_table", "remotion",
-  "music_gen", "tts_gen", "breeze_gen", "video_gen", "save", "save_pdf", "control", "judge", "task",
+  "music_gen", "breeze_gen", "video_gen", "save", "save_pdf", "control", "judge", "task",
   "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter",
   "mutex", "split", "merge", "super", "db_replica", "global", "execute",
   "tool", "function", "net_recv", "net_send",

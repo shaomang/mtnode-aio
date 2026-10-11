@@ -17,6 +17,10 @@ const PLUGIN_ACT_SVG = {
   /* 设置 / 状态入口（ASR 卡片用；此前缺失 → 按钮渲染成空白方块）= 齿轮 */
   gear:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M8 1.3v1.9M8 12.8v1.9M1.3 8h1.9M12.8 8h1.9M3.3 3.3l1.3 1.3M11.4 11.4l1.3 1.3M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>',
+  /* 「启用 / 停用」= 同一条启停后端动作的两种显示（此前借用 play / stop 两颗图标，
+     本轮卡片固定三颗按钮后，启停这一颗用电源图标：开 = 已启用、关 = 未启用） */
+  power:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.9v5.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M11.9 3.9a5.3 5.3 0 1 1-7.8 0" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/></svg>',
   /* 显式入口「控制台」（本轮新增：插件不再自己弹窗，开窗只能由用户点这里或托盘菜单） */
   console:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.9 6.6l1.9 1.7-1.9 1.7M8.4 10.2h2.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -322,128 +326,13 @@ function openPluginPop(wrap, pop, card, item) {
   /* 本地后端插件：详情浮层里内嵌只读 console（状态行 + 后端日志尾部），见 mountPluginPopConsole */
   const consoleMounted = mountPluginPopConsole(pop, item);
   if (consoleMounted) setPluginNotice(card, ""); /* 角标当场收起（用户已经看到详情里的日志区） */
-  /* 安装目录行（本轮需求：插件里仍允许单独更换安装目录）：
-     插件自己设过的目录 = 现用目录，带「恢复默认」；没设过 = 根目录 + 默认子目录名。 */
-  if (consoleMounted) void mountPluginPopDir(pop, item);
+  /* 安装目录**不在插件界面里显示**（本轮需求）：目录由安装窗统一显示与修改
+     （底栏那一行 + 「选择安装目录」）。这里不再挂目录 / 路径这类只读文字。 */
   pop.classList.add("on");
   requestAnimationFrame(() => positionPluginPop(wrap, pop, card));
 }
 
-/* ════════════ 详情浮层里的「安装目录」一行 ══════════════════════════════════════
-   显示。本行只做三件事：把当前目录写清楚（本地 / 默认两种来源）、能打开、能恢复默认。
-   单独的「换目录」入口仍在安装窗 / 控制台里（本轮不动），这里不重复造一个。
-   本轮共识：后端正在运行时「恢复默认」置灰（先停后端再改目录，避免中途换目录找不到环境）。 */
-async function mountPluginPopDir(pop, item) {
-  const spec = backendSpecOf(item);
-  if (!spec) return false;
-  const id = BACKEND_INSTALL_IDS[spec.key] || spec.key;
-  const mod = await plugInstallDir(id);
-  const own = String((mod && mod.own) || "");
-  const def = String((mod && mod.defaultDir) || (mod && mod.ok && mod.dir) || "");
-  const defByRoot = !!(mod && mod.ok && mod.source === "root");
-  const rootInfo = await plugRootInfo();
-  const sub = String((mod && mod.subDir) || "");
-  const cur = own || def;
-  const box = document.createElement("div");
-  box.className = "plugin-pop-dir";
-  const head = document.createElement("div");
-  head.className = "plugin-pop-dir-head";
-  head.textContent = I18n.t("安装目录");
-  const pathEl = document.createElement("div");
-  pathEl.className = "plugin-pop-dir-path" + (cur ? "" : " unset");
-  pathEl.textContent = cur
-    ? cur
-    : I18n.t("未设置（先在上面设置插件根目录）") + (sub ? " — " + I18n.t("默认子目录名：") + sub : "");
-  if (cur) pathEl.title = cur;
-  const src = document.createElement("div");
-  src.className = "plugin-pop-dir-src";
-  if (own) {
-    src.textContent = I18n.t("插件自己设置的目录（仍可在安装窗 / 控制台里更换）");
-  } else if (defByRoot) {
-    src.textContent = I18n.t("默认：插件根目录 + 子目录名「") + sub + I18n.t("」");
-  } else {
-    src.textContent = rootInfo && rootInfo.inferred
-      ? I18n.t("还没设置插件根目录（可先设成推断出来的：") + rootInfo.inferred + "）"
-      : I18n.t("还没设置插件根目录");
-  }
-  const acts = document.createElement("div");
-  acts.className = "plugin-pop-dir-acts";
-  const openBtn = document.createElement("button");
-  openBtn.type = "button";
-  openBtn.className = "mini";
-  openBtn.textContent = I18n.t("打开目录");
-  openBtn.disabled = !cur;
-  openBtn.onclick = (ev) => {
-    ev.stopPropagation();
-    if (cur) void openPathInExplorer(cur);
-  };
-  const defBtn = document.createElement("button");
-  defBtn.type = "button";
-  defBtn.className = "mini";
-  defBtn.textContent = I18n.t("恢复默认");
-  const setBtnState = (running) => {
-    defBtn.disabled = !!running || !cur || !sub;
-    defBtn.title = running
-      ? I18n.t("后端正在运行：先停止后端再改目录")
-      : I18n.t("清掉该插件自己的目录设置，之后用 插件根目录 + 子目录名");
-  };
-  setBtnState(false);
-  try {
-    const statusFn = pluginApiFn(spec.api + "Status");
-    if (statusFn) {
-      const st = (await statusFn()) || {};
-      setBtnState(!!(st.running || st.wantRunning));
-    }
-  } catch {}
-  defBtn.onclick = async (ev) => {
-    ev.stopPropagation();
-    const fn = pluginApiFn("appPluginsPluginInstallDir");
-    if (!fn) return;
-    let r = null;
-    try {
-      r = await fn({ id, default: true });
-    } catch (e) {
-      r = { ok: false, error: (e && e.message) || String(e) };
-    }
-    if (r && r.ok) {
-      _plugRoots.delete(id);
-      toast(I18n.t("已恢复默认安装目录：") + (r.installDir || ""), "ok");
-      defBtn.disabled = true;
-      /* 目录变了，卡片状态与详情里的目录行都重画一次 */
-      const card = pop && pop.getAttribute("data-np-for")
-        ? document.querySelector('.plugin-tile[data-plugin-id="' + pop.getAttribute("data-np-for") + '"]')
-        : null;
-      if (card) repaintPluginCard(card, card._pluginItem || item);
-      pop.querySelectorAll(".plugin-pop-dir").forEach((el) => el.remove());
-      void mountPluginPopDir(pop, item);
-    } else if (r && (r.error === "need_root" || r.error === "not_dir_plugin")) {
-      plugRootWarn((r && r.message) || I18n.t("先设置插件根目录再恢复默认。"));
-    } else {
-      toast(I18n.t("恢复默认失败：") + ((r && (r.message || r.error)) || I18n.t("未知错误")), "err");
-    }
-  };
-  acts.appendChild(openBtn);
-  acts.appendChild(defBtn);
-  box.appendChild(head);
-  box.appendChild(pathEl);
-  box.appendChild(src);
-  box.appendChild(acts);
-  /* 目录行放在详情最前（标题 / 描述之后、console 之前），滚动可见性最好 */
-  const anchor = pop.querySelector(".plugin-console");
-  if (anchor) pop.insertBefore(box, anchor);
-  else pop.appendChild(box);
-  return true;
-}
-/* 在文件管理器里打开一个目录（不存在就尽量建出来；失败不静默） */
-async function openPathInExplorer(dir) {
-  const fn = pluginApiFn("appPluginsOpenPath");
-  if (fn) {
-    const r = await fn(dir);
-    if (!r || !r.ok) toast(I18n.t("打开目录失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
-    return;
-  }
-  toast(I18n.t("当前版本不支持在文件管理器里打开目录"), "warn");
-}
+/* ════════════ 桌宠卡片的附加项（勾选 / 缩放 / 形象 / 导入） ══════════════════════ */
 function ensurePetExtras(root) {
   let extras = root.querySelector("[data-pet-extras]");
   if (extras) return extras;
@@ -816,19 +705,19 @@ function plugRootWarn(msg) {
     setTimeout(() => bar.classList.remove("warn"), 1600);
   }
 }
-/* ════════════ 本地后端插件（8 个）的统一卡片 + 内嵌 console ════════════════════
+/* ════════════ 本地后端插件（7 个）的统一卡片 + 内嵌 console ════════════════════
    本轮共识（需求：插件不再呼出独立的后端窗口、避免用户误关、静默后台拉起、状态与
    console 内容显示在插件界面的 console 里）：
-     · 卡片主按钮 = 启动 / 停止后端（host 的 <kind>:start / <kind>:stop）—— 点「启动」只是
-       静默把后端拉起来（后端进程本来就是 windowsHide，stdout 落日志文件），不再开窗；
-       未安装时主按钮 = 「安装」（先弹系统目录选择框选安装目录，仍然不打开插件窗）；
-       启动中主按钮显示「启动中…」，再点一次 = 停止（首次加载模型可能几分钟）。
-     · 次按钮 = 「控制台」（<kind>:open）：那只独立窗仍保留（安装 / 卸载 / H3 工作流编辑器
+     · 卡片三颗按钮 = 安装 / 启用 / 控制台（本轮需求）：「安装」常驻（已装时是「重装」）= 开那只
+       安装窗；「启用」只在已安装时出现（host 的 <kind>:start / <kind>:stop）—— 点它只是把后端
+       静默拉起来（后端进程本来就是 windowsHide，stdout 落日志文件），运行中显示「停用」，
+       未安装时卡片上只有「安装」+「控制台」两颗。
+     · 「控制台」（<kind>:open）常驻：那只独立窗仍保留（安装 / 卸载 / H3 工作流编辑器
        等重功能还在里面），但只由用户显式打开 —— 卡片按钮或托盘的「打开控制台」。
-     · 后端求助信号（llama / TTS / Breeze 的 ui-signal）不再自动弹窗：卡片角标 + 状态行一句
+     · 后端求助信号（llama / Breeze 的 ui-signal）不再自动弹窗：卡片角标 + 状态行一句
        + 详情浮层里内嵌的 console（宿主 statusForUi 的 notice 字段）。
      · 关掉控制台窗不影响后端（后端单例不随 MTNode 退出）；Remotion 没有常驻后端
-       （无 start / stop IPC），所以它只给「安装 / 重装」+「控制台」。
+       （无 start / stop IPC），所以它只有「安装 / 重装」+「控制台」，没有「启用」。
    桥的名字一一对应 preload.js：<api>Status / Start / Stop / Install / CancelInstall /
    PickInstallDir / Open / Close / ConsoleTail / UpdateRuntime。 */
 const BACKEND_PLUGIN_SPECS = {
@@ -837,7 +726,6 @@ const BACKEND_PLUGIN_SPECS = {
   sensenova: { key: "sensenova", api: "sensenova", hasService: true },
   h3: { key: "h3", api: "h3", hasService: true, update: true },
   llama: { key: "llama", api: "llama", hasService: true },
-  tts: { key: "tts", api: "tts", hasService: true },
   breeze: { key: "breeze", api: "breeze", hasService: true },
   remotion: { key: "remotion", api: "remotion", hasService: false },
 };
@@ -858,7 +746,7 @@ function backendSpecById(id) {
   return BACKEND_PLUGIN_SPECS[prefix] || null;
 }
 /* 安装窗的插件 id：与主进程 installHost 的 registry key 同源。
-   后端插件：spec.key 加 -local（llama-local / sensenova-local / tts-local / breeze-tts-local /
+   后端插件：spec.key 加 -local（llama-local / sensenova-local / breeze-tts-local /
    minimax-h3 / minimax-music3 / yue2-local / remotion）—— 由 installTargetIdOf 统一给出；
    窗口插件与桌宠：直接用它们自己的 id。 */
 const BACKEND_INSTALL_IDS = {
@@ -867,7 +755,6 @@ const BACKEND_INSTALL_IDS = {
   sensenova: "sensenova-local",
   h3: "minimax-h3",
   llama: "llama-local",
-  tts: "tts-local",
   breeze: "breeze-tts-local",
   remotion: "remotion",
 };
@@ -886,8 +773,9 @@ async function openPluginInstallWindow(payload) {
 function pluginApiFn(name) {
   return window.api && typeof window.api[name] === "function" ? window.api[name].bind(window.api) : null;
 }
-/* 正在启动的插件：主按钮显示「启动中…」；再点 = 停止 */
+/* 正在启动 / 正在停止的插件：「启用」那一颗当场置灰并用 tooltip 说明状态（跨重绘保留） */
 const _backendStarting = new Set();
+const _backendStopping = new Set();
 /* 已在详情浮层里看过提示的插件（kind → 看过的提示原文）：本地收掉角标 */
 const _backendNoticeSeen = new Map();
 /* 最近一次启动 / 安装的失败原因：卡片状态行要看得见（失败不静默、也不弹窗） */
@@ -904,19 +792,16 @@ function setPluginNotice(root, text) {
   el.textContent = t ? I18n.t("后端提示") : "";
   el.title = t;
 }
-/* 卡片状态行：启动中 > 失败原因 > 后端求助提示（同一行只显示最要紧的那条）。
-   安装 / 更新的进度与「安装中…」不再上卡片 —— 那属于独立安装窗（逐步骤 + 失败定位 + 重试）。 */
+/* 卡片状态行：启用中 > 失败原因 > 后端求助提示（同一行只显示最要紧的那条）。
+   安装 / 更新的进度与「安装中…」不再上卡片 —— 那属于独立安装窗（逐步骤 + 失败定位 + 重试）。
+   **安装目录不上卡片**（本轮需求）：目录在安装窗里显示与修改（底栏一行 + 「选择安装目录」），
+   卡片只留标题 / 三颗按钮 / 这几条真实状态。 */
 function backendCardLine(st, spec) {
-  if (_backendStarting.has(spec.key)) return I18n.t("启动中…（首次加载模型可能几分钟，可再点一次停止）");
+  if (_backendStarting.has(spec.key)) return I18n.t("启用中…（首次加载模型可能几分钟，按钮已置灰）");
   const err = _backendLastErr.get(spec.key);
   if (err) return err;
   const notice = String(st.notice || "");
   if (notice && _backendNoticeSeen.get(spec.key) !== notice) return notice;
-  /* 装到哪要看得见：插件自己设过目录就显示它，没设过显示「根目录 + 子目录名」这条默认值。
-     这一行是纯展示，取不到就不显示（不改任何卡片按钮与既有状态口径）。 */
-  const target = _plugRoots.get(BACKEND_INSTALL_IDS[spec.key] || spec.key);
-  const dir = target && (target.own || (target.ok ? target.dir : ""));
-  if (dir) return I18n.t("安装目录：") + dir;
   return "";
 }
 /* 本轮 8 个插件共用的卡片重绘 —— 各自的 refresh<Name>PluginCard 只是薄壳（保留函数名给冒烟用） */
@@ -926,7 +811,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
   if (!root || !statusFn) return;
   const st = (await statusFn()) || {};
   const actions = root.querySelector("[data-plugin-actions]");
-  /* 卡片上只剩「状态文字行」：启动中 / 失败原因 / 后端提示。
+  /* 卡片上只剩「状态文字行」：启用中 / 失败原因 / 后端提示。
      安装 / 更新的进度条与百分比一律不再上卡片 —— 那些只属于独立安装窗。 */
   const progTxt = root.querySelector("[data-plugin-progress-txt]");
   if (!actions) return;
@@ -950,10 +835,15 @@ async function refreshBackendPluginCard(root, spec, opts) {
   const stopBackend = async () => {
     const fn = pluginApiFn(spec.api + "Stop");
     _backendStarting.delete(spec.key);
+    _backendStopping.add(spec.key);
     _backendLastErr.delete(spec.key);
     repaint();
-    if (!fn) return;
+    if (!fn) {
+      _backendStopping.delete(spec.key);
+      return;
+    }
     const r = await fn();
+    _backendStopping.delete(spec.key);
     if (!r || !r.ok) _backendLastErr.set(spec.key, pluginErrLine(I18n.t("停止后端失败："), r));
     repaint();
   };
@@ -976,6 +866,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
   };
   const installing = !!st.installing || !!st.updating;
   const starting = _backendStarting.has(spec.key);
+  const stopping = _backendStopping.has(spec.key);
   const running = !!(st.running || st.wantRunning);
   /* 本轮共识：安装**不再在卡片上静默跑**，一律开那只安装窗（逐步骤 + 失败定位 + 会话修复）。
      卡片主按钮仍是启停后端；未装 / 要重装时这里是「安装 / 重装」= 开安装窗。 */
@@ -1004,21 +895,34 @@ async function refreshBackendPluginCard(root, spec, opts) {
     _plugRoots.delete(id);
     repaint();
   };
-  /* 本轮共识：安装 / 更新的**显示**一律不在卡片上（进度条、百分比、「安装中…」都已移除），
-     卡片主按钮只做入口与启停：安装窗开着就显示为「安装中…（打开安装窗）」这类入口按钮也一并去掉，
-     未装 / 要重装 = 「安装 / 重装」→ 开安装窗；装了之后 = 启停后端。 */
-  if (spec.hasService && starting) {
-    addBtn("stop", I18n.t("启动中…（点此停止）"), stopBackend, { primary: true, on: true });
-  } else if (spec.hasService && running) {
-    addBtn("stop", I18n.t("停止"), stopBackend);
-  } else if (!st.installed) {
-    const lab = typeof o.installLabel === "function" ? o.installLabel(st) : o.installLabel;
-    addBtn("download", lab || I18n.t("安装"), installBackend, { primary: true });
-  } else if (spec.hasService) {
-    addBtn("play", I18n.t("启动"), startBackend, { primary: true });
+  /* 卡片按钮口径（本轮需求：插件界面三颗按钮 = 安装 / 启用 / 控制台）：
+       · 「安装」**常驻**：未装 = 主按钮「安装」，已装 / 要重装 = 次按钮「重装」——两者都只是那只安装窗的入口；
+         Remotion 没有常驻后端（hasService:false），它的按钮就止于此 + 控制台。
+       · 「启用」**只在已安装时出现**（未安装时这颗按钮整颗不建）：点它 = 启用（静默后台拉起后端），
+         运行中显示「停用」且高亮（on），再点一次 = 停用；启停过程中置灰并在 tooltip 里说明为什么不可点
+         （首次加载模型可能几分钟，卡片状态行也写着同一句）。
+       · 「控制台」常驻（这只窗只由用户亲手打开）。安装 / 更新的**显示**一律不在卡片上
+         （进度条、百分比、「安装中…」都已移除），进度只在安装窗里。 */
+  const installingLabel = typeof o.installLabel === "function" ? o.installLabel(st) : o.installLabel;
+  const reinstallLabel = typeof o.reinstallLabel === "function" ? o.reinstallLabel(st) : o.reinstallLabel;
+  if (!st.installed) {
+    addBtn("download", installingLabel || I18n.t("安装"), installBackend, { primary: true });
   } else {
-    const lab = typeof o.reinstallLabel === "function" ? o.reinstallLabel(st) : o.reinstallLabel;
-    addBtn("download", lab || I18n.t("重装"), installBackend);
+    addBtn("download", reinstallLabel || I18n.t("重装"), installBackend);
+  }
+  if (st.installed && spec.hasService) {
+    const title = stopping
+      ? I18n.t("停用中…")
+      : starting
+        ? I18n.t("启用中…（首次加载模型可能几分钟）")
+        : running
+          ? I18n.t("停用")
+          : I18n.t("启用");
+    addBtn("power", title, running ? stopBackend : startBackend, {
+      primary: !running,
+      on: running,
+      disabled: starting || stopping,
+    });
   }
   /* 显式入口：那只控制台窗（卸载 / 工作流编辑器等重功能仍在窗里） */
   addBtn("console", I18n.t("控制台"), openConsole);
@@ -1061,7 +965,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
 async function refreshMusic3PluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.music3);
 }
-/* ── YuE2 本地音乐（应用插件 kind yue2）：与 Music3 同族，卡片 = 启动/停止后端 + 控制台 ── */
+/* ── YuE2 本地音乐（应用插件 kind yue2）：与 Music3 同族，卡片 = 安装 / 启用 / 控制台 ── */
 async function refreshYuePluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.yue2);
 }
@@ -1071,7 +975,7 @@ async function refreshH3PluginCard(root) {
 
 /* ── Remotion 动效视频（应用插件 kind remotion） ──
    安装走那只独立安装窗（设置目录 → 复制 remotion-pack → npm install 的步骤都在窗里显示），
-   卡片只做状态展示与入口：未装 = 「安装」，已装 = 运行 / 停止 + 「重装」。 */
+   卡片只做状态展示与入口：未装 = 「安装」，已装 = 「重装」+「控制台」（它没有常驻后端，所以没有「启用」）。 */
 async function refreshRemotionPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.remotion, {
     /* 它没有常驻后端（无 start/stop）：未装 = 「安装」，已装 = 「重装」——安装走 npm install */
@@ -1081,14 +985,11 @@ async function refreshRemotionPluginCard(root) {
 async function refreshLlamaPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.llama);
 }
-async function refreshTtsPluginCard(root) {
-  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.tts);
-}
-/* ---- Breeze TTS 2 本地 TTS（与 tts-local 并列的第二套语音后端，breeze/main-breeze.js）
-   卡片口径：主按钮 = 启动 / 停止后端（不再开窗），未装 / 要件不全时 = 「安装」
-   （先弹系统目录选择框选安装目录，再开安装窗，脚本走国内镜像）；次按钮 = 「控制台」显式开窗。
+/* ---- Breeze TTS 2 本地 TTS（本机唯一的本地语音后端，breeze/main-breeze.js）
+   卡片口径：三颗按钮 = 安装 / 启用 / 控制台 —— 「安装」（未装 / 要件不全）只开安装窗，
+   「启用」只在已安装时出现（启停后端，不再开窗），「控制台」常驻（显式开窗）。
    安装 / 更新的过程与进度只显示在安装窗，卡片上不再有进度条与状态行小字。
-   图标一律取 PLUGIN_ACT_SVG 里的 play / stop / download / update / console，不自创 action kind。 */
+   图标一律取 PLUGIN_ACT_SVG 里的 download / power / update / console，不自创 action kind。 */
 async function refreshBreezePluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.breeze, {
     installLabel: (st) => (st.installed ? I18n.t("补装要件") : I18n.t("安装（国内镜像）")),
@@ -1103,11 +1004,11 @@ async function refreshBreezePluginCard(root) {
    它走 renderer/app-speech.js 那条通道。 */
 
 /* ---- 本地图像生成（SenseNova-U1.5-8B-MoT）：插件卡片状态 + 控制台入口（sensenova/main-sensenova.js）
-   卡片口径：主按钮 = 启动 / 停止后端（点「启动」静默后台拉起，不再自动开窗），
-   未装 / 权重没齐时 = 「安装（国内镜像）」（先弹系统目录选择框选安装目录，再开安装窗；
-   脚本失败就在窗里手动重试或交会话修复，安装过程不再上卡片）；
-   次按钮 = 「控制台」（原来的「状态与设置」并进它，避免两颗按钮开同一只窗）。
-   注：新 kind 的按钮图标一律取自 PLUGIN_ACT_SVG（play / stop / download / update / console），
+   卡片口径：三颗按钮 = 安装 / 启用 / 控制台 —— 未装 / 权重没齐时「安装（国内镜像）」只是
+   开那只安装窗（脚本失败就在窗里手动重试或交会话修复，安装过程不再上卡片）；
+   「启用」只在已安装时出现（点它静默后台拉起后端，不再自动开窗）；
+   「控制台」常驻（原来的「状态与设置」并进它，避免两颗按钮开同一只窗）。
+   注：新 kind 的按钮图标一律取自 PLUGIN_ACT_SVG（download / power / update / console），
    表里没有的 kind 会渲染成无图标的空方块（AGENTS.md 硬约定），不要自创 action kind。 */
 async function refreshSensenovaPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.sensenova, {
@@ -1541,7 +1442,6 @@ function repaintPluginCard(card, item) {
     remotion: refreshRemotionPluginCard,
     llama: refreshLlamaPluginCard,
     breeze: refreshBreezePluginCard,
-    tts: refreshTtsPluginCard,
   };
   const fn = map[k];
   if (fn) return fn(card);
@@ -1762,20 +1662,6 @@ async function openAppPluginsDialog() {
             installed: true,
           },
           {
-            id: "tts-local",
-            kind: "tts",
-            handler: "tts",
-            icon: "tts-local.png",
-            version: "1.0.0",
-            title: { zh: "GPT-SoVITS 本地 TTS", en: "GPT-SoVITS Local TTS" },
-            subtitle: {
-              zh: I18n.t("基于 GPT-SoVITS 的本地文本转语音：指定目录安装、参考音频音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。"),
-              en: "GPT-SoVITS local TTS: custom install dir, reference-audio voice manager, OpenAI-compatible TTS API.",
-            },
-            compatible: true,
-            installed: true,
-          },
-          {
             id: "breeze-tts-local",
             kind: "breeze",
             handler: "breeze",
@@ -1882,14 +1768,6 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onBreezeNotice(() => refreshBreezePluginCard(card)));
       }
       refreshBreezePluginCard(card);
-    } else if (item.kind === "tts" || item.handler === "tts") {
-      if (window.api && window.api.onTtsConsoleChanged) {
-        offs.push(window.api.onTtsConsoleChanged(() => refreshTtsPluginCard(card)));
-      }
-      if (window.api && window.api.onTtsNotice) {
-        offs.push(window.api.onTtsNotice(() => refreshTtsPluginCard(card)));
-      }
-      refreshTtsPluginCard(card);
     } else {
       if (window.api && window.api.onAppPluginsWindowChanged) {
         offs.push(

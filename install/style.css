@@ -79,15 +79,35 @@ body { display: flex; flex-direction: column; }
   font: 12px/1.55 Consolas, "Cascadia Mono", monospace; color: #cfd6e4; background: #10131a;
 }
 
+/* 底栏：目录 / 卸载确认 / 门槛开关 / 动作按钮。
+   卸载确认要占满整宽（清单可能有好几行），所以底栏改成竖排，上面那一行才是「目录 + 开关 + 按钮」。 */
 .ins-foot {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 8px 14px; border-top: 1px solid var(--ins-line); background: var(--ins-panel);
 }
+.ins-foot-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ins-dir {
   color: var(--ins-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  direction: rtl; text-align: left;
+  direction: rtl; text-align: left; flex: 1; min-width: 0;
 }
 .ins-actions { display: flex; gap: 8px; flex: none; }
+/* 卸载确认块：删什么 / 留什么摆清楚，确认前不动盘 */
+.ins-unin {
+  display: flex; flex-direction: column; gap: 5px;
+  border: 1px solid #6b3a3a; border-radius: 8px; background: #1d1a1f; padding: 8px 10px;
+}
+.ins-unin[hidden] { display: none; }
+.ins-unin-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ins-unin-head > b { color: #ff9c94; font-size: 12px; flex: none; }
+.ins-unin-head > span {
+  color: var(--ins-dim); font: 11px/1.4 Consolas, "Cascadia Mono", monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+.ins-unin-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ins-unin-list li {
+  font: 11px/1.5 Consolas, "Cascadia Mono", monospace; color: #cfd6e4; word-break: break-all;
+}
+.ins-unin-note { color: var(--ins-dim); font-size: 11px; white-space: pre-wrap; word-break: break-all; }
 /* 硬件门槛逃生阀（原在 sensenova 控制台窗里，控制台去安装化后搬到这里） */
 .ins-force {
   display: inline-flex; align-items: center; gap: 5px; flex: none;

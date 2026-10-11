@@ -613,7 +613,7 @@ main();
       proc_image: [360, 200],
       video_gen: [400, 340],
       music_gen: [360, 300],
-      tts_gen: [360, 300],
+      breeze_gen: [340, 400],
       control: [240, 140],
     };
     const sandbox = {
@@ -979,7 +979,7 @@ main();
       run.graph.nodes.find((n) => n.id === "a1").cfg.genTypes = ["image", "video", "tts", "music"];
       LTSH.presetGen(run, "a1");
       const kinds = gens().map((n) => n.kind).sort().join(",");
-      eqNum(kinds, "music_gen,proc_image,tts_gen,video_gen", "四种类型各建一个节点（平行，不串成一条链）");
+      eqNum(kinds, "breeze_gen,music_gen,proc_image,video_gen", "四种类型各建一个节点（tts 档 = Breeze 语音；平行，不串成一条链）");
       ok(
         gens().every((n) => String(n.parentSuperId) === String(step.id)),
         "四种生成节点都摆在同一颗环节子壳里",
@@ -1085,7 +1085,7 @@ main();
     eqNum(LTSH.genTypesOf({ genTypes: ["video", "bogus", "video"] }).join(","), "video", "非法值丢掉、去重");
     eqNum(LTSH.needsGen({}), true, "needsGen 缺省 = 勾上（未设过即 true）");
     eqNum(LTSH.needsGen({ needsGen: false }), false, "显式 false 才是关");
-    ok(LTSH.GEN_KINDS.image === "proc_image" && LTSH.GEN_KINDS.video === "video_gen" && LTSH.GEN_KINDS.music === "music_gen" && LTSH.GEN_KINDS.tts === "tts_gen", "四种生成类型的 kind 映射齐备");
+    ok(LTSH.GEN_KINDS.image === "proc_image" && LTSH.GEN_KINDS.video === "video_gen" && LTSH.GEN_KINDS.music === "music_gen" && LTSH.GEN_KINDS.tts === "breeze_gen", "四种生成类型的 kind 映射齐备（tts 档 = Breeze 语音）");
     {
       /* 删任务：壳与壳内内容保留，只清掉绑定字段 */
       const before = S.wf.nodes.length;

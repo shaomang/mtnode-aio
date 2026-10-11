@@ -7,7 +7,7 @@
  *
  * 锁住的需求（YuE2 节点移植）：
  *   1. 渲染层节点注册点齐全：KIND_CLS / KIND_ICON_SVG / NODE_DEFAULTS / 端子 4 入 2 出
- *   2. 右键「音频生成」子菜单里有 YuE2（夹在 Minimax Music 3 与 SoVITS 语音之间）
+ *   2. 右键「音频生成」子菜单里有 YuE2（夹在 Minimax Music 3 与 Breeze 语音之间）
  *   3. 执行链：playYueGenNode + 媒体串行链 + 全局音视频锁 + 抽卡种子 + 取消 + 音频输出
  *   4. 端子契约：端口 0/1/2 = 风格 / 歌词 / ABC（只吃文本来源）· 端口 3 = 控制输入
  *   5. 设置表单：思维链档位 / 抽卡 / 种子 / 摇数 / 输出路径 / offload
@@ -254,15 +254,14 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   ok(subAt > 0, "「音频生成」一级子菜单存在");
   const subBlock = appSrc.slice(subAt, appSrc.indexOf("]),", subAt));
   eqArr(
-    ["music_gen", "yue_gen", "tts_gen", "breeze_gen"].filter((k) => subBlock.indexOf('"' + k + '"') >= 0),
-    ["music_gen", "yue_gen", "tts_gen", "breeze_gen"],
-    "「音频生成」成员含 music_gen / yue_gen / tts_gen / breeze_gen",
+    ["music_gen", "yue_gen", "breeze_gen"].filter((k) => subBlock.indexOf('"' + k + '"') >= 0),
+    ["music_gen", "yue_gen", "breeze_gen"],
+    "「音频生成」成员含 music_gen / yue_gen / breeze_gen（tts_gen 已随 GPT-SoVITS 插件移除）",
   );
   ok(
     subBlock.indexOf('"music_gen"') < subBlock.indexOf('"yue_gen"') &&
-      subBlock.indexOf('"yue_gen"') < subBlock.indexOf('"tts_gen"') &&
-      subBlock.indexOf('"tts_gen"') < subBlock.indexOf('"breeze_gen"'),
-    "YuE2 夹在 Minimax Music 3 与 SoVITS 语音之间，Breeze 语音排在最后（菜单顺序）",
+      subBlock.indexOf('"yue_gen"') < subBlock.indexOf('"breeze_gen"'),
+    "YuE2 夹在 Minimax Music 3 与 Breeze 语音之间（菜单顺序）",
   );
   has(subBlock, 'I18n.t("YuE2（歌词→整曲 · 可编辑谱面）")', "菜单项文案带「歌词→整曲 · 可编辑谱面」");
   has(subBlock, 'addNode("yue_gen"', "点菜单项真实建 yue_gen");
@@ -503,8 +502,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
     ok(exists(p), "节点指南文件存在：" + p);
   ok(nodeIdx.ids.indexOf("yue_gen") >= 0, "yue_gen 已进节点指南索引");
   eqNum(nodeIdx.ids.indexOf("yue_gen"), nodeIdx.ids.indexOf("music_gen") + 1, "索引里 yue_gen 紧跟 music_gen");
-  eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("yue_gen") + 1], "tts_gen", "索引里 tts_gen 紧跟 yue_gen（音频生成三类相邻）");
-  eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("tts_gen") + 1], "breeze_gen", "索引里 breeze_gen 紧跟 tts_gen（Breeze 语音进音频生成族）");
+  eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("yue_gen") + 1], "breeze_gen", "索引里 breeze_gen 紧跟 yue_gen（音频生成三类相邻；tts_gen 已移除）");
   const guideZh = read("guides/nodes/yue_gen.md");
   has(guideZh, "YuE2", "中文指南写明节点名");
   has(guideZh, "端口 3 = 控制输入", "中文指南写明控制输入端口");
@@ -533,9 +531,50 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
     has(dataBlock, token, "Gradio data 槽含 " + token);
   eqNum((dataBlock.match(/\n\s+[^\s\]]/g) || []).length, 8, "Gradio data 恰好 8 槽（前后端调用面冻结）");
   has(hostSrc, 'LOCK_KIND = "yue_gen"', "宿主锁 kind = yue_gen（与节点 kind 同名）");
-  has(hostSrc, 'PLUGIN_ID = "yue"', "宿主插件 id = yue");
+  has(hostSrc, 'PLUGIN_ID = "yue2-local"', "宿主插件 id = 卡片 id yue2-local（安装窗事件按它对齐）");
   for (const p of ["yue/main-yue.js", "yue/preload-yue.js", "yue/ui/index.html", "yue/ui/ui.js"])
     ok(exists(p), "宿主文件存在：" + p);
+
+  /* --- 9b 插件 id 一致性（真事故回归）─────────────────────────────────────────
+     现场：安装窗的会话快照与步骤表都是按**卡片 id** 建的（renderer/app-plugins.js 的
+     BACKEND_INSTALL_IDS.yue2 → 主进程 beginPluginInstall），事件流却带着**上报方**的 id 回来，
+     窗里 `if (ev.id !== snap.pluginId) return;` 逐条比对 —— 宿主常量一旦写成短名 "yue"，
+     步骤行与日志会被**全部丢掉**：窗里只剩开窗那一帧的「待执行」步骤表，点「开始安装」看起来
+     毫无反应（其实脚本在跑，输出只落在插件控制台），点「取消安装」也杀不掉脚本（取消口按错 id
+     查不到登记的子进程）。下面这些断言把「三个 id 必须逐字相同」钉住，防日后再漂。 */
+  const pluginIdOf = /const PLUGIN_ID = "([^"]+)"/.exec(hostSrc);
+  ok(!!pluginIdOf, "宿主有 PLUGIN_ID 常量（安装窗 / 报错总线 / 取消口共用它）");
+  const hostPluginId = pluginIdOf ? pluginIdOf[1] : "";
+  eqStr(hostPluginId, "yue2-local", "宿主 PLUGIN_ID = 卡片 id（与下面三条断言同源）");
+  eqNum((hostSrc.match(/const PLUGIN_ID = "/g) || []).length, 1, "宿主只声明一份 PLUGIN_ID（不留第二个 id 的活路径）");
+  const regAt = hostSrc.indexOf("installHost.registerInstallTarget({");
+  ok(regAt >= 0, "宿主在开始时登记安装目标");
+  const regBlock = regAt >= 0 ? hostSrc.slice(regAt, regAt + 400) : "";
+  has(regBlock, "id: PLUGIN_ID,", "安装目标注册的 id 用的就是这个常量（= 卡片 id）");
+  has(regBlock, 'key: "yue",', "key 仍是通道前缀 yue（安装窗按 key 反查 id，两套命名各司其职）");
+  has(hostSrc, "pluginId: PLUGIN_ID,", "步骤上报器按这个 id 上报（窗按它配对，丢掉即界面不动）");
+  has(hostSrc, "installKill.track(PLUGIN_ID, child)", "安装子进程按这个 id 登记（取消口才找得到它）");
+  has(hostSrc, "installKill.cancelInstall(PLUGIN_ID)", "取消口按同一个 id 查登记表");
+  has(hostSrc, "pluginErrors.registerPluginHost({\n    id: PLUGIN_ID,", "报错总线注册 id = 安装窗 id（同一份现场给会话修复用）");
+  /* 卡片侧：BACKEND_INSTALL_IDS.yue2 + 安装窗触发的桥 + 主进程白名单通道，三者与上面的 id 对齐 */
+  has(appPluginsSrc, 'yue2: "yue2-local"', "卡片 id 映射 yue2 → yue2-local");
+  has(read("install/app.js"), '"yue2-local": "yue2Install"', "安装窗按卡片 id 分派到 yue2Install 桥");
+  has(read("plugins/main-install.js"), 'yue2Install: "yue:install"', "yue2Install 桥 → yue:install 通道（key 仍是短名）");
+  /* 目录口径：三个别名必须落同一个子目录 / 同一份配置，收口后它们只为旧现场兼容而留 */
+  {
+    const pluginRoot = require(path.join(ROOT, "plugins", "plugin-root.js"));
+    const mod = pluginRoot.createPluginRoot({
+      getDataDir: () => path.join(ROOT, "test"),
+      getAppDirs: () => [],
+    });
+    for (const alias of ["yue2-local", "yue2", "yue"]) {
+      eqStr(mod.subDir(alias), "yue2", "别名 " + alias + " → 子目录 yue2（三个 id 同一份落点）");
+      ok(mod.needsDir(alias) === true, "别名 " + alias + " 认得出「这个插件要安装目录」");
+    }
+    const cfgPaths = ["yue2-local", "yue2", "yue"].map((a) => pluginRoot.configOf(ROOT, a));
+    eqNum(uniq(cfgPaths).length, 1, "三个别名指向同一份配置文件（" + show(cfgPaths[0]) + "）");
+    has(pluginRoot.PLUGIN_CFG["yue"], "yue/config.json", "旧别名 yue 仍在配置表里（老机器认路）");
+  }
 
   /* ===== [10] 缺依赖自修复（app/ui.py 守卫 · 宿主补装与报错指纹 · 安装链同步） ===== */
   console.log("\n[10] 缺依赖自修复：入口守卫 / 自动补装 / 报错指纹 / 安装脚本与技能");
@@ -804,7 +843,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(hostSrc, "lastPackChoiceKey", "生效包口径只在变化时打一行");
   has(hostSrc, 'const PACK_ID = "yue2-local";', "manifest 期望 id 常量为 yue2-local（噪声告警消失）");
   has(hostSrc, 'out.problems.push("manifest.id=" + man.id + "（期望 " + PACK_ID + "）")', "validatePackManifest 期望值改用 PACK_ID");
-  has(hostSrc, 'PLUGIN_ID = "yue"', "插件 kind 仍为 yue（与 PACK_ID 区分，未串味）");
+  has(hostSrc, 'PLUGIN_ID = "yue2-local"', "插件 id 与 PACK_ID 同值但不互相替代（各自语义写在常量注释里）");
 
   console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");
   if (fails) {

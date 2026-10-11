@@ -25,7 +25,7 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
-const { quietPython } = require("../backend-python.js");
+const { quietPython, pythonHealth, silentEnv } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
 
@@ -295,6 +295,9 @@ function packFingerprint() {
       }
     };
     walk(join(pack, "app"), "app");
+    /* shims/（sitecustomize 静默垫片）也进指纹：它决定「后端拉起的子进程弹不弹终端窗」，
+       漏在指纹外就会出现「升级后照旧带着旧口径跑」——正是这个指纹当初要治的问题。 */
+    if (fs.existsSync(join(pack, "shims"))) walk(join(pack, "shims"), "shims");
     if (fs.existsSync(join(pack, "manifest.json"))) rels.push("manifest.json");
     if (!rels.length) return "";
     const h = crypto.createHash("sha1");
@@ -874,6 +877,15 @@ async function startBackendInner() {
   }
   /* pythonw：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会再拉真解释器并弹终端窗） */
   const py = quietPython(pyExe);
+  /* 起进程前体检（backend-python.js 的真源）：venv 的 pythonw.exe 只是重定向器，基座解释器被删
+     （手工删 conda 环境那类）之后它每次都弹一只「Python Launcher … No Python at …」的消息框 ——
+     坏了就报错、绝不 spawn。 */
+  const pyBad = pythonHealth(py);
+  if (!pyBad.ok) {
+    reportErr("stale_python", pyBad.message, { phase: "start" });
+    appendConsole("[start] " + pyBad.message);
+    return { ok: false, error: "stale_python", detail: pyBad.base || py };
+  }
 
   syncPackToInstall(installDir);
   mk(path.dirname(consoleLogPath()));
@@ -892,12 +904,14 @@ async function startBackendInner() {
   }
   if (cfg.fastAll) env.BREEZE_FAST_ALL = "1";
 
+  /* silentEnv：PYTHONPATH 最前挂 <installDir>/shims ⇒ 后端与它拉起的整条子树默认不弹控制台窗
+     （机制与实测见 backend-python.js / docs/plugin-console-silence.md） */
   const child = spawn(py, ["-m", "app", String(port)], {
     cwd: installDir,
     detached: true,
     windowsHide: true,
     stdio: "ignore",
-    env,
+    env: silentEnv(installDir, env),
   });
   child.unref();
   backendProc = child;

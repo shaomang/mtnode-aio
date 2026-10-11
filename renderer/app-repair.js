@@ -1,6 +1,6 @@
 "use strict";
 /* ============ 插件报错 → 看得见的一条会话在修（自动修复） ============
- * 插件（本地后端宿主 music3 / h3 / tts / llama / asr / remotion 与窗口插件）运行期报错时，
+ * 插件（本地后端宿主 music3 / h3 / llama / asr / remotion 与窗口插件）运行期报错时，
  * 不再只在插件窗里藏一个看不见的 dsh 任务：主进程把错误推给渲染层，这里弹一只**错误报告窗**
  * （错误码 / 错误正文 / 可折叠日志尾部 / 出问题的节点与画布），用户点「🤖 自动修复」→
  * 在左侧栏新建一条**看得见的会话**（标题「自动修复 · <插件名>」，工作区 = 该插件 INSTALL_DIR，
@@ -31,7 +31,7 @@
  * 修完之后的收尾（本文件后半段 pluginRepairJudge / pluginRepairRestartService）：等那次会话本轮
  * 结束 → 读末条 assistant 正文按 repair_ok=1 / ok=true 判定，正文没给结论再兜底读 INSTALL_DIR 下的
  * 结果文件（兼容各宿主自己约定的 .h3-agent-result 式命名）。判成成功就按 pluginId 调该服务自己的
- * 重启入口（h3Start / music3Start / ttsStart / llamaStart / asrStart；remotion 无常驻服务 → 改成
+ * 重启入口（h3Start / music3Start / llamaStart / breezeStart / asrStart；remotion 无常驻服务 → 改成
  * 重跑报错那个节点，拿不到节点就只提示可直接重新生成），toast「<插件> 服务已重启」并刷新插件卡片
  * 与该节点状态；判成失败 / 被终止就**再弹一次**报告窗（附修复结论与 reason）。
  * 两条收敛线缺一不可：同一 repairToken 只允许领到一次自动修复额度、也只允许弹一次二次报告窗，
@@ -59,9 +59,6 @@ const PLUGIN_REPAIR_SKILLS = {
   h3: "minimax-h3-install",
   "minimax-h3": "minimax-h3-install",
   "h3-local": "minimax-h3-install",
-  tts: "tts-local-install",
-  "tts-local": "tts-local-install",
-  "gpt-sovits": "tts-local-install",
   breeze: "breeze-tts-local-install",
   "breeze-tts": "breeze-tts-local-install",
   "breeze-tts-local": "breeze-tts-local-install",
@@ -83,8 +80,6 @@ const PLUGIN_REPAIR_CONSOLE = {
   h3: "h3Open",
   "minimax-h3": "h3Open",
   "h3-local": "h3Open",
-  tts: "ttsOpen",
-  "tts-local": "ttsOpen",
   breeze: "breezeOpen",
   "breeze-tts": "breezeOpen",
   "breeze-tts-local": "breezeOpen",
@@ -142,16 +137,6 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["sensenova-local"],
     results: [".sensenova-agent-result"],
   },
-  tts: {
-    label: "GPT-SoVITS TTS",
-    resident: true,
-    start: "ttsStart",
-    stop: "ttsStop",
-    status: "ttsStatus",
-    card: "refreshTtsPluginCard",
-    cards: ["tts-local"],
-    results: [".tts-agent-result"],
-  },
   breeze: {
     label: "Breeze TTS 2",
     resident: true,
@@ -198,7 +183,6 @@ const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService() {
     music3: ["music3", "minimax-music3", "minimax-music-3", "music3-local", "music_gen"],
     yue2: ["yue2", "yue", "yue2-local", "yue_gen"],
     sensenova: ["sensenova", "sensenova-local", "sensenova-u1", "sensenova_gen"],
-    tts: ["tts", "tts-local", "gpt-sovits", "tts_gen"],
     breeze: ["breeze", "breeze-tts", "breeze-tts-local", "breeze_gen"],
     llama: ["llama", "llama-local", "llama-cpp"],
     remotion: ["remotion", "remotion-video", "remotion-render"],

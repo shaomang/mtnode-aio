@@ -75,7 +75,7 @@ const TOOLBUILD_EXT_TYPE = (() => {
    · 未出现在表里的 kind 一律「不设限」（fileKindSupported 直接 true），
      避免本模块给智能节点 / 工具节点 / 保存节点等无关节点乱设卡；
    · 影视音生成节点的「吃媒体」口径：video_gen 的参考视频与首末帧（图片）、
-     tts_gen 的参考音频、music_gen 的参考音频与歌词文本；
+     breeze_gen 的参考音频、music_gen 的参考音频与歌词文本；
    · proc_image 收 image **与 text**（本轮修 bug）：图像节点的端口 0 就是提示词 / 文本入口，
      该节点本来就能引用文本（app.js 的 proc_image 提示词口与 @ 引用都是这条口径），
      所以文本类文件连进来不该被当成「吃不下的文件」而弹「工具构建」。 */
@@ -84,10 +84,9 @@ const TOOLBUILD_CONSUMER_ACCEPT = {
   db_table: ["text"],
   proc_image: ["image", "text"],
   video_gen: ["video", "image"],
-  tts_gen: ["audio"],
+  breeze_gen: ["audio"],
   music_gen: ["audio", "text"],
 };
-
 /* 路径 / 文件名 → 小写扩展名（不含点）；没有后缀、或只有隐藏名（如 ".gitignore"）返回 ""。 */
 function fileExtOf(pathOrName) {
   const s = String(pathOrName == null ? "" : pathOrName).trim();

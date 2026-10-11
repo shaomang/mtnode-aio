@@ -9,11 +9,6 @@ if (process.argv.includes("--mtnode-llama-tray")) {
   require("./llama/tray-main.js");
   return;
 }
-/* GPT-SoVITS TTS 托盘独立进程：不随 MTNode 退出 */
-if (process.argv.includes("--mtnode-tts-tray")) {
-  require("./tts/tray-main.js");
-  return;
-}
 
 const {
   app,
@@ -78,8 +73,7 @@ const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js"
    各宿主把安装脚本的步骤行上报到这里，失败停在失败步并给「交给 mtnode 会话修复」（见 plugins/main-install.js） */
 const installHost = require("./plugins/main-install.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
-const { registerTtsIpc, shutdownTtsUiOnly } = require("./tts/main-tts.js");
-/* 本地 TTS 后端（Breeze TTS 2）：与 tts-local 并列的第二套语音后端，管理服务单例不随 MTNode 退出 */
+/* 本地 TTS 后端（Breeze TTS 2）：管理服务单例不随 MTNode 退出 */
 const { registerBreezeIpc, shutdownBreezeUiOnly } = require("./breeze/main-breeze.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
 /* 本地语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）：主进程只留「转写缓存 +
@@ -218,10 +212,6 @@ function dsh() {
         try {
           const { onLlamaDshEvent } = require("./llama/main-llama.js");
           if (typeof onLlamaDshEvent === "function") onLlamaDshEvent(ev);
-        } catch {}
-        try {
-          const { onTtsDshEvent } = require("./tts/main-tts.js");
-          if (typeof onTtsDshEvent === "function") onTtsDshEvent(ev);
         } catch {}
         try {
           const { onBreezeDshEvent } = require("./breeze/main-breeze.js");
@@ -918,13 +908,11 @@ ipcMain.handle("config:save", (e, cfg) =>
   const existing = (c && c.obj) || {};
   const next = mergeConfigForSave(existing, incoming);
   if (Array.isArray(incoming.providers)) {
+    /* 受保护条目 = 由**主进程**自己往配置里写的服务商（渲染层手上那份可能还没有 / 还是空值，
+       拿它覆盖会把盘上那条真配置抹掉）。llama 的 GGUF 服务由 llama/main-llama.js 注入；
+       原先并列的 tts-plugin（GPT-SoVITS）随该插件一并移除，条目不再由谁注入、也不再保护。 */
     const managed = (existing.providers || []).filter(
-      (p) =>
-        p &&
-        (p.source === "llama-plugin" ||
-          p.id === "llama-local" ||
-          p.source === "tts-plugin" ||
-          p.id === "tts-local"),
+      (p) => p && (p.source === "llama-plugin" || p.id === "llama-local"),
     );
     const saved = incoming.providers.slice();
     const savedIds = new Set(saved.map((p) => String(p.id || "")));
@@ -8875,7 +8863,11 @@ app.whenReady().then(() => {
      主窗口渲染层收到 mtnodeInstall:session / mtnodeInstall:openConsole 后新建修复会话 / 开控制台 */
   installHost.initInstallHost({
     getMainWin: () => mainWin,
-    getDataDir: () => DATA,
+    /* DATA **本身就是**取数据目录的函数（const DATA = () => RESOLVED_DATA_DIR），这里必须原样传它。
+       真事故：写成 `getDataDir: () => DATA` 时，主进程拿到的「数据目录」是那个函数的**源码字符串**
+       （"() => RESOLVED_DATA_DIR"），于是 plugins/plugin-root.js 去读一个不存在的相对路径
+       config.json → 插件根目录一律读成「没设」→ 安装时宿主报一句 empty_dir。别再加那一层箭头。 */
+    getDataDir: DATA,
     appRoot: __dirname,
     log: (line) => console.log(line),
   });
@@ -8910,15 +8902,6 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
-  registerTtsIpc({
-    getDataDir: DATA,
-    getMainWin: () => mainWin,
-    appRoot: __dirname,
-    getDsh: () => dsh(),
-    /* 同上：文转语音节点的托管兜底落点 */
-    assetDirFor: (wfId) => assetDir(wfId),
-  });
-  /* Breeze TTS 2 本地语音后端（与 tts-local 并列的第二套）：管理服务单例不随 MTNode 退出（见 breeze/main-breeze.js） */
   registerBreezeIpc({
     getDataDir: DATA,
     getMainWin: () => mainWin,
@@ -9080,8 +9063,7 @@ app.on("before-quit", () => {
   try { shutdownYueUiOnly(); } catch {}
   try { shutdownH3UiOnly(); } catch {}
   try { shutdownLlamaUiOnly(); } catch {}
-  try { shutdownTtsUiOnly(); } catch {}
-  /* 本地 TTS 后端（Breeze TTS 2）与 tts-local 同口径：管理服务与推理引擎是常驻单例（权重加载要几十秒到几分钟），
+  /* 本地 TTS 后端（Breeze TTS 2）：管理服务与推理引擎是常驻单例（权重加载要几十秒到几分钟），
      这里只关它的控制台窗；要停服务/释放显存走插件「停止」或托盘「停止服务并退出」。 */
   try { shutdownBreezeUiOnly(); } catch {}
   try { shutdownRemotionUiOnly(); } catch {}

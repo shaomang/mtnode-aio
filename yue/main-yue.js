@@ -54,12 +54,21 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
-const { quietPython } = require("../backend-python.js");
+const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
 
-const PLUGIN_ID = "yue";
-/* 随包脚手架 / 云端 runtime 包的 manifest.json id（≠ 插件 kind "yue"）：校验时用这个口径 */
+/* 插件 id = 卡片 id（catalog.default.json 的 "yue2-local" / renderer/app-plugins.js 的
+   BACKEND_INSTALL_IDS.yue2 / 安装窗 registerInstallTarget 的 id）——**三者必须逐字相同**。
+   为什么不能再写短名 "yue"：安装窗的会话快照按卡片 id 建（beginPluginInstall），事件流却带着
+   上报方的 id 回来，窗里 `if (ev.id !== snap.pluginId) return;` 一条不差地比 —— 短名会让
+   步骤行与日志**全部被丢掉**：窗里只剩开窗那一帧的「待执行」步骤表，点「开始安装」后看起来
+   毫无反应，而脚本其实在跑（输出只落在插件控制台里）；点「取消安装」也因为取消口按错 id 找
+   不到登记的子进程而杀不掉脚本。六个兄弟宿主都写卡片 id，只有这里曾是短名。
+   IPC 通道名（yue:install / yue:getStatus …）与数据目录（<数据目录>/yue）仍走短名，与此常量无关。 */
+const PLUGIN_ID = "yue2-local";
+/* 随包脚手架 / 云端 runtime 包的 manifest.json id（与上面的插件 id 同值，但语义不同）：
+   它指的是**包**的身份，校验随包 manifest 时用这个口径；两者同值不等于可互相替代。 */
 const PACK_ID = "yue2-local";
 const YUE_FEED = process.env.MTNODE_YUE_URL || "http://mt-agent.com/mtnode/yue";
 /** 避开 Music3 的 7860：两个宿主共存时端口不撞车 */
@@ -623,6 +632,9 @@ function syncScaffoldToInstall(installDir) {
         fs.copyFileSync(s, join(root, name));
       }
     }
+    /* 静默垫片：后端 spawn 时把 <installDir>/shims 挂在 PYTHONPATH 最前（silentEnv），
+       所以这里必须把 pack 的 shims/ 一并同步 —— 本宿主只挑着拷 app/*.py，不显式拷就会漏。 */
+    syncShims(pack, root);
     appendConsole("[sync] scaffold → " + root);
     return { ok: true };
   } catch (e) {
@@ -1831,6 +1843,14 @@ async function startBackend(depRepairTried) {
   }
   /* pythonw：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会再拉真解释器并弹终端窗） */
   const py = quietPython(pyExe);
+  /* 起进程前体检（backend-python.js 的真源）：基座解释器被删（手工删 conda 环境那类）时，venv 的
+     pythonw.exe 每次 spawn 都弹一只「Python Launcher … No Python at …」的消息框 —— 绝不 spawn。 */
+  const pyBad = pythonHealth(py);
+  if (!pyBad.ok) {
+    reportErr("stale_python", pyBad.message, { phase: "start" });
+    appendConsole("[start] " + pyBad.message);
+    return { ok: false, error: "stale_python", detail: pyBad.base || py };
+  }
 
   syncPackAppToInstall(installDir);
 
@@ -1855,28 +1875,33 @@ async function startBackend(depRepairTried) {
     detached: true,
     windowsHide: true,
     stdio: ["ignore", outFd, outFd],
-    env: (() => {
-      const env = Object.assign({}, process.env, {
-        HF_ENDPOINT: process.env.HF_ENDPOINT || mirrors.HF_ENDPOINT,
-        HF_HUB_DISABLE_XET: "1",
-        PYTHONUNBUFFERED: "1",
-        YUE_MEMORY_RESERVE_MARGIN: process.env.YUE_MEMORY_RESERVE_MARGIN || "6GB",
-        /* 探哪个端口就让后端听哪个端口（Gradio 认 GRADIO_SERVER_PORT；YUE_PORT 给脚手架自读） */
-        GRADIO_SERVER_PORT: String(port),
-        YUE_PORT: String(port),
-      });
-      /* 注意力档位：探针实测结果下发给后端（windows_patch.py 认这个环境变量） */
-      const att = attentionBackendForEnv();
-      if (att) {
-        env.YUE2_ATTENTION_BACKEND = att;
-        appendConsole("[attention] env YUE2_ATTENTION_BACKEND=" + att);
-      }
-      const prev = String(env.PYTORCH_CUDA_ALLOC_CONF || "").trim();
-      if (!/expandable_segments/i.test(prev)) {
-        env.PYTORCH_CUDA_ALLOC_CONF = prev ? prev + ",expandable_segments:True" : "expandable_segments:True";
-      }
-      return env;
-    })(),
+    /* silentEnv：PYTHONPATH 最前挂 <installDir>/shims ⇒ 后端与它拉起的整条子树默认不弹控制台窗
+       （机制与实测见 backend-python.js / docs/plugin-console-silence.md） */
+    env: silentEnv(
+      installDir,
+      (() => {
+        const env = Object.assign({}, process.env, {
+          HF_ENDPOINT: process.env.HF_ENDPOINT || mirrors.HF_ENDPOINT,
+          HF_HUB_DISABLE_XET: "1",
+          PYTHONUNBUFFERED: "1",
+          YUE_MEMORY_RESERVE_MARGIN: process.env.YUE_MEMORY_RESERVE_MARGIN || "6GB",
+          /* 探哪个端口就让后端听哪个端口（Gradio 认 GRADIO_SERVER_PORT；YUE_PORT 给脚手架自读） */
+          GRADIO_SERVER_PORT: String(port),
+          YUE_PORT: String(port),
+        });
+        /* 注意力档位：探针实测结果下发给后端（windows_patch.py 认这个环境变量） */
+        const att = attentionBackendForEnv();
+        if (att) {
+          env.YUE2_ATTENTION_BACKEND = att;
+          appendConsole("[attention] env YUE2_ATTENTION_BACKEND=" + att);
+        }
+        const prev = String(env.PYTORCH_CUDA_ALLOC_CONF || "").trim();
+        if (!/expandable_segments/i.test(prev)) {
+          env.PYTORCH_CUDA_ALLOC_CONF = prev ? prev + ",expandable_segments:True" : "expandable_segments:True";
+        }
+        return env;
+      })(),
+    ),
   });
   fs.closeSync(outFd);
   child.unref();
@@ -2520,6 +2545,10 @@ function venvPython(installDir) {
 function runExe(exe, args, opts) {
   opts = opts || {};
   return new Promise((resolve) => {
+    /* 体检（backend-python.js）：坏解释器（venv 基座被删）一 spawn 就弹 Python Launcher 消息框，
+       这里直接结算成一次「起不来」，探针 / 转码这些路径同样不弹框 */
+    const bad = pythonHealth(exe);
+    if (!bad.ok) return resolve({ ok: false, code: 1, stdout: "", stderr: bad.message, error: bad.message });
     execFile(
       exe,
       args,

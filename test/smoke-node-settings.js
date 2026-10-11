@@ -134,7 +134,7 @@ const BUILD_BODY = between(
 const FORM_KINDS = [
   "proc_text", "proc_image", "agent_task", "remotion", "music_gen", "yue_gen", "video_gen",
   "video_upscale", "video_interp",
-  "tts_gen", "breeze_gen", "sensenova_gen", "save", "save_pdf", "wait_file", "timer", "delayer", "sequencer", "gate",
+  "breeze_gen", "sensenova_gen", "save", "save_pdf", "wait_file", "timer", "delayer", "sequencer", "gate",
   "splitter", "counter", "mutex", "net_recv", "net_send", "control", "function", "tool",
 ];
 /* 「确实没有可设项」的 kind：逐条给理由。两者之和要盖住 app.js 的 kind 全集，
@@ -184,8 +184,7 @@ const EXPECT_FIELDS = {
      逐控件触发不会产生变更），真源断言改走 [3] 的源码级 HAS，这里只钉会写回的字段。 */
   video_upscale: ["targetLongSide", "perBatch", "tile", "lowVram", "attempts", "outputPath"],
   video_interp: ["multiplier", "clearCacheEvery", "batchSize", "scaleFactor", "lowVram", "attempts", "outputPath"],
-  tts_gen: ["voice", "speed", "ttsFormat", "outputPath"],
-  /* Breeze 语音（Breeze TTS 2 本机后端）：能力档 / 音色 / 指令 / cfg_scale / 种子 / 抽卡 / 格式 / 路径 */
+  /* Breeze 语音（Breeze TTS 2 本机后端，本机唯一的语音节点）：能力档 / 音色 / 指令 / cfg_scale / 种子 / 抽卡 / 格式 / 路径 */
   breeze_gen: ["voiceMode", "voice", "instruction", "cfgScale", "seed", "attempts", "ttsFormat", "outputPath"],
   /* SenseNova 本地图像生成：画幅只能取官方 11 个训练桶（ratioBucket 连带写 width / height），
      采样 / CFG / 显存档位 / 精度 / think 各自写回；**没有「输出路径」项** ——
@@ -671,7 +670,6 @@ console.log("\n[2] body 侧不再内联设置：.n-api-panel 与 buildFnToolSett
     mutex: 'node.kind === "mutex"',
     control: 'node.kind === "control"',
     music_gen: 'node.kind === "music_gen"',
-    tts_gen: 'node.kind === "tts_gen"',
     breeze_gen: 'node.kind === "breeze_gen"',
     video_gen: 'node.kind === "video_gen"',
     /* 超分 / 补帧共用一个 body 分支（isVideoPostKind 判两类），只画摘要行 */
@@ -905,7 +903,6 @@ console.log("\n[5] 跳窗真跑：开窗 → 逐控件触发 → 关窗（假 DO
     video_gen: { id: "p6", kind: "video_gen", title: "视频", attempts: 1, duration: 5, seed: 0, outputPath: "a.mp4", videoMode: "fl2va", ratio: "16:9", outputRes: "auto", steps: 20, optEasyCache: true },
     video_upscale: { id: "p6u", kind: "video_upscale", title: "超分", model: "RealESRGAN_x4plus", targetLongSide: 2560, perBatch: 2, tile: 0, lowVram: false, attempts: 1, outputPath: "up.mp4" },
     video_interp: { id: "p6i", kind: "video_interp", title: "补帧", multiplier: 2, clearCacheEvery: 2, batchSize: 1, scaleFactor: 1, lowVram: false, attempts: 1, outputPath: "in.mp4" },
-    tts_gen: { id: "p7", kind: "tts_gen", title: "语音", voice: "v", speed: 1, ttsFormat: "wav", outputPath: "b.wav" },
     sensenova_gen: { id: "p5s", kind: "sensenova_gen", title: "SenseNova", prompt: "a", ratioBucket: "1:1", width: 2048, height: 2048, numSteps: 30, cfgScale: 4, cfgNorm: "none", timestepShift: 3, seed: 0, rerollSeed: true, attempts: 1, vramMode: "fast", dtype: "bfloat16", think: false },
     save: { id: "p8", kind: "save", title: "保存", savePath: "out/a.yaml", auto: true },
     wait_file: { id: "p9", kind: "wait_file", title: "等待", waitPath: "out/x.json", waitIntervalSec: 3 },
@@ -1091,7 +1088,7 @@ console.log("\n[6] i18n：跳窗中文串中英双向齐（真模块逐条验）
 /* ═══════════════════════ [7] 指南 / 文档 ═══════════════════════ */
 console.log("\n[7] 指南与文档口径：不再是「展开设置面板 / 在节点内填写」");
 {
-  const GUIDE_IDS = ["function", "tool", "proc_text", "proc_image", "agent_task", "music_gen", "yue_gen", "video_gen", "video_upscale", "video_interp", "tts_gen", "sensenova_gen", "remotion", "save", "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex", "net_recv", "net_send", "control"];
+  const GUIDE_IDS = ["function", "tool", "proc_text", "proc_image", "agent_task", "music_gen", "yue_gen", "video_gen", "video_upscale", "video_interp", "sensenova_gen", "remotion", "save", "wait_file", "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex", "net_recv", "net_send", "control"];
   const staleZh = [], staleEn = [], noZh = [], noEn = [];
   GUIDE_IDS.forEach((id) => {
     const zh = read("guides/nodes/" + id + ".md");
@@ -1992,7 +1989,7 @@ console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "AL
 
   const KINDS = [
     "input_text", "input_image", "input_audio", "input_video", "asset", "input_file",
-    "db_table", "proc_text", "proc_image", "music_gen", "video_gen", "tts_gen",
+    "db_table", "proc_text", "proc_image", "music_gen", "video_gen", "breeze_gen",
     "remotion", "net_recv", "net_send", "execute", "function", "save", "save_text",
     "save_image", "split", "merge", "agent_task", "task", "super", "wait_file",
     "timer", "delayer", "sequencer", "gate", "splitter", "counter", "mutex",

@@ -307,7 +307,6 @@ console.log("[4] 服务端本体：起停 / 回环 / 令牌落点");
     const known = new Set([
       "更新中…",
       "基于 llama.cpp 的本地 GGUF 模型管理：指定目录安装、国内镜像、多模型显存管理、OpenAI 兼容 API。",
-      "基于 GPT-SoVITS 的本地文本转语音：指定目录安装、参考音频音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。",
       "移除技能",
       "服务器名",
       "添加服务器",

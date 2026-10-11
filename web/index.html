@@ -269,7 +269,7 @@ html[lang="en"] h2{letter-spacing:1px}
       </div>
       <div class="card">
         <h3><span class="ico">🎬</span><span data-i18n="c.media.h">音视频生成节点</span></h3>
-        <p data-i18n="c.media">本地后端：MiniMax Music 3 音乐、SoVITS 语音、MiniMax H3 视频、Remotion 视频。每次运行产出一个文件并写入节点自带输出路径；支持抽卡次数与分辨率档位，全局同一时刻仅 1 个音视频任务。</p>
+        <p data-i18n="c.media">本地后端：MiniMax Music 3 音乐、YuE2 音乐、Breeze TTS 2 语音、MiniMax H3 视频、Remotion 视频。每次运行产出一个文件并写入节点自带输出路径；支持抽卡次数与分辨率档位，全局同一时刻仅 1 个音视频任务。</p>
       </div>
       <div class="card">
         <h3><span class="ico">🖼</span><span data-i18n="c.vision.h">图像输入 + 视觉模型</span></h3>
@@ -315,7 +315,7 @@ html[lang="en"] h2{letter-spacing:1px}
       <li data-i18n="feat.7" data-i18n-html="1"><b class="hl">任务节点与控制流</b>：任务内部为「起点 → 工作 / 子任务 / 判断 → 成功 / 失败终点」，另有需求等待、定时触发器、延时器、序列器、闸门、分发、计数、互斥、判断。</li>
       <li data-i18n="feat.8" data-i18n-html="1"><b class="hl">开发节点</b>：软件项目架构画布（模块 → 文件 → 类 / 接口 / 枚举），绑定项目根目录；「建议 / 开发 / 细化」三按钮由 AI 推进，细化按深度逐层下钻。</li>
       <li data-i18n="feat.9" data-i18n-html="1"><b class="hl">数据库节点</b>：事实收纳 → ⚙ 编译出数据库副本；智能节点接入后一切事实走 mtnode_db，断言带 [记录id · 标题]，查不到即答「数据库中没有该信息」。</li>
-      <li data-i18n="feat.10" data-i18n-html="1"><b class="hl">音视频生成节点</b>：MiniMax Music 3 / SoVITS / MiniMax H3 / Remotion 本地后端，每次运行产出一个文件并写入节点自带输出路径。</li>
+      <li data-i18n="feat.10" data-i18n-html="1"><b class="hl">音视频生成节点</b>：MiniMax Music 3 / YuE2 / Breeze TTS 2 / MiniMax H3 / Remotion 本地后端，每次运行产出一个文件并写入节点自带输出路径。</li>
       <li data-i18n="feat.11" data-i18n-html="1"><b class="hl">网络与执行节点</b>：net_recv 监听 host:port 通道转发文本，net_send 推送数据到目标通道（TCP / UDP）；执行节点绑定 .exe / .bat / .lnk 一键启动。</li>
       <li data-i18n="feat.12" data-i18n-html="1"><b class="hl">全局节点</b>：只连入不连出，把文本 / 图像源广播给多个消费者；消费者需开启引用（globalRefs）并在提示词写 @源标题。</li>
       <li data-i18n="feat.13" data-i18n-html="1"><b class="hl">对话节点</b>：dsh 风格消息流（角色行 + 思考折叠 + 工具 chips），对话记录随工作流保存，可输出整段对话记录；可开「智能助手」走 Agent 引擎。</li>
@@ -429,7 +429,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "c.db.h": "数据库节点",
       "c.db": "事实收纳（文件批量导入 + Agent 建表）→ ⚙ 编译生成数据库副本；智能节点接入副本后用 mtnode_db 查询，断言带 [记录id · 标题] 溯源，查不到就答「数据库中没有该信息」。（设置 · 测试版本开启后可用）",
       "c.media.h": "音视频生成节点",
-      "c.media": "本地后端：MiniMax Music 3 音乐、SoVITS 语音、MiniMax H3 视频、Remotion 视频。每次运行产出一个文件并写入节点自带输出路径；支持抽卡次数与分辨率档位，全局同一时刻仅 1 个音视频任务。",
+      "c.media": "本地后端：MiniMax Music 3 音乐、YuE2 音乐、Breeze TTS 2 语音、MiniMax H3 视频、Remotion 视频。每次运行产出一个文件并写入节点自带输出路径；支持抽卡次数与分辨率档位，全局同一时刻仅 1 个音视频任务。",
       "c.vision.h": "图像输入 + 视觉模型",
       "c.vision": "图像节点点击选择或直接拖入文件；智能任务接上图像节点后出现「图」徽标，用 @标题 引用。当前模型不支持识图时列出视觉模型候选，确认后记住选择。",
       "c.flow.h": "任务节点与控制流",
@@ -454,7 +454,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "feat.7": "<b class=\"hl\">任务节点与控制流</b>：任务内部为「起点 → 工作 / 子任务 / 判断 → 成功 / 失败终点」，另有需求等待、定时触发器、延时器、序列器、闸门、分发、计数、互斥、判断。",
       "feat.8": "<b class=\"hl\">开发节点</b>：软件项目架构画布（模块 → 文件 → 类 / 接口 / 枚举），绑定项目根目录；「建议 / 开发 / 细化」三按钮由 AI 推进，细化按深度逐层下钻。",
       "feat.9": "<b class=\"hl\">数据库节点</b>：事实收纳 → ⚙ 编译出数据库副本；智能节点接入后一切事实走 mtnode_db，断言带 [记录id · 标题]，查不到即答「数据库中没有该信息」。",
-      "feat.10": "<b class=\"hl\">音视频生成节点</b>：MiniMax Music 3 / SoVITS / MiniMax H3 / Remotion 本地后端，每次运行产出一个文件并写入节点自带输出路径。",
+      "feat.10": "<b class=\"hl\">音视频生成节点</b>：MiniMax Music 3 / YuE2 / Breeze TTS 2 / MiniMax H3 / Remotion 本地后端，每次运行产出一个文件并写入节点自带输出路径。",
       "feat.11": "<b class=\"hl\">网络与执行节点</b>：net_recv 监听 host:port 通道转发文本，net_send 推送数据到目标通道（TCP / UDP）；执行节点绑定 .exe / .bat / .lnk 一键启动。",
       "feat.12": "<b class=\"hl\">全局节点</b>：只连入不连出，把文本 / 图像源广播给多个消费者；消费者需开启引用（globalRefs）并在提示词写 @源标题。",
       "feat.13": "<b class=\"hl\">对话节点</b>：dsh 风格消息流（角色行 + 思考折叠 + 工具 chips），对话记录随工作流保存，可输出整段对话记录；可开「智能助手」走 Agent 引擎。",
@@ -519,7 +519,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "c.db.h": "Database nodes",
       "c.db": "Collect facts (bulk file import + agent-built tables) → ⚙ compile a database replica; agent nodes wired to it answer only from mtnode_db, citing [record id · title], and say “the database does not contain that information” when it is absent. (Available after enabling Test features in Settings.)",
       "c.media.h": "Media generation nodes",
-      "c.media": "Local backends: MiniMax Music 3, SoVITS speech, MiniMax H3 video, Remotion video. Each run writes one file to the node's own output path; attempts and resolution presets are supported, and only one audio/video task runs at a time.",
+      "c.media": "Local backends: MiniMax Music 3, YuE2, Breeze TTS 2 speech, MiniMax H3 video, Remotion video. Each run writes one file to the node's own output path; attempts and resolution presets are supported, and only one audio/video task runs at a time.",
       "c.vision.h": "Image input + vision models",
       "c.vision": "Image nodes take a click-selected or dropped file; wire one into an agent task to get an Img badge and cite it with @title. If the current model cannot see images, vision candidates are listed and remembered after you confirm.",
       "c.flow.h": "Task node & control flow",
@@ -544,7 +544,7 @@ html[lang="en"] h2{letter-spacing:1px}
       "feat.7": "<b class=\"hl\">Task node & control flow</b>: a task runs start → work / subtask / judge → success or failure end, plus wait-for-requirement, timer, delay, sequencer, gate, splitter, counter, mutex and judge nodes.",
       "feat.8": "<b class=\"hl\">Dev nodes</b>: a software-architecture canvas (module → file → class / interface / enum) bound to a project root; the Suggest / Develop / Refine buttons drive AI, and Refine drills down by depth.",
       "feat.9": "<b class=\"hl\">Database nodes</b>: collect facts → ⚙ compile a database replica; agent nodes wired to it answer only from mtnode_db, citing [record id · title], and say “the database does not contain that information” when it is absent.",
-      "feat.10": "<b class=\"hl\">Media generation nodes</b>: MiniMax Music 3 / SoVITS / MiniMax H3 / Remotion local backends, each run writing one file to the node's own output path.",
+      "feat.10": "<b class=\"hl\">Media generation nodes</b>: MiniMax Music 3 / YuE2 / Breeze TTS 2 / MiniMax H3 / Remotion local backends, each run writing one file to the node's own output path.",
       "feat.11": "<b class=\"hl\">Network & execute nodes</b>: net_recv listens on a host:port channel and forwards text, net_send pushes to a target channel (TCP / UDP); execute nodes bind a .exe / .bat / .lnk and launch it in one click.",
       "feat.12": "<b class=\"hl\">Global nodes</b>: input-only, broadcasting a text / image source to many consumers; consumers enable refs (globalRefs) and write @source title in the prompt.",
       "feat.13": "<b class=\"hl\">Chat node</b>: dsh-style message stream (role row + folded thinking + tool chips). History is saved with the workflow and the output port emits the full transcript; switch on Agent assistant to use the engine.",

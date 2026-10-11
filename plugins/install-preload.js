@@ -18,6 +18,20 @@ contextBridge.exposeInMainWorld("mtnodeInstall", {
   fix: (id) => ipcRenderer.invoke("mtnodeInstall:fix", { id: id || "" }),
   /** 打开该插件自己的控制台窗（映射表在主窗口渲染层，安装窗不重造一份） */
   openConsole: (id) => ipcRenderer.invoke("mtnodeInstall:openConsole", { id: id || "" }),
+  /* ── 安装开始时把默认安装目录落地（本轮需求）：
+      按「插件根目录 + 默认子目录名」建目录（连根目录一起，已存在就直接复用）并写回该插件
+      自己的 installDir —— 用户设过插件根目录后不必再去系统框里手建一个文件夹。
+      回执 { ok, dir, source:"plugin"|"root"|"legacy", created, wrote, needs, cfgPath, error, message }：
+        · dir 非空 = 这次安装就装到它（snap.installDir 同步刷新）；
+        · dir 空串 = 没给目录：needs=false 是窗口插件 / 桌宠的老口径（照旧往下走），
+          needs=true 则是「本该给它建目录却没建出来」→ 调用方当场如实报错，
+          别再往下走、让宿主报一句 empty_dir；
+        · ok:false（need_root 除外）= 建 / 写失败，如实报错并把「选择安装目录」留作兜底。 ── */
+  ensureDir: (id) => ipcRenderer.invoke("mtnodeInstall:ensureDir", { id: id || "" }),
+  /* ── 卸载（本窗底栏那一颗「卸载」）：{ action: "preview"|"run"|"cancel", id }
+       preview = 只读地给出「删什么 / 留什么」；run = 真删（先停后端，进度走 onEvent）；cancel = 停手。
+       删除范围由主进程的路由表决定（自定义卸载口的插件交给它自己，其余删该插件的安装目录）。 ── */
+  uninstall: (payload) => ipcRenderer.invoke("mtnodeInstall:uninstall", payload || {}),
   /* ── 安装脚本本身仍由主窗口渲染层按插件调用（桥名与主窗口 preload 完全同名）：
      安装窗只负责「看得见」，不自己再造一套安装实现（见 install/app.js 的 runInstall）。 ── */
   api: (name, args) => ipcRenderer.invoke("mtnodeInstall:api", { name: String(name || ""), args: args || [] }),

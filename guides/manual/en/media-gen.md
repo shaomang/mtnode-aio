@@ -60,18 +60,18 @@ No "Save" node is needed: the audio is written straight out through the node's o
 
 ### What speech synthesis is
 
-Speech synthesis turns text into speech with the local GPT-SoVITS backend, outputting `.wav` audio.
+Speech synthesis turns text into speech with the local Breeze TTS 2 backend, outputting `.wav` audio.
 
 ### Key parameters
 
-- **Voice**: a voice name already in the local voice library; prepare / train it in advance.
-- **Speed**: 0.5–2.0, where 1.0 is the original speed.
+- **Voice**: a reference clip already in the local voice library (or wire a reference audio into port 1).
+- **Speed**: described through the instruction, e.g. “faster pace, upbeat tone”.
 - **Output path**: the node can write the file directly.
 - **Attempts**: roll the same passage a few times and keep the most natural one.
 
 ### Prerequisites
 
-Install and start the GPT-SoVITS backend first; the voice has to be prepared in the voice library ahead of time (you can train it from the audio you provide).
+Install and start the Breeze TTS 2 backend first; voices can be cloned on the spot (give it one reference clip), or stored in the voice library from a reference clip beforehand.
 
 ### Suggestion
 
@@ -81,7 +81,7 @@ For everyday work it is usually worth using a free tool such as Bilibili's Bijia
 
 - **Use 1 · short-video narration**: wire a script written in a text node upstream into speech synthesis.
 - **Use 2 · multi-voice dialogue**: split the script by character and feed separate speech nodes with different voices to get a question-and-answer audio track.
-- **Use 3 · fine-tuning the speed**: 1.1–1.2 is livelier for explainers and marketing; 0.9 is easier on the ear for lyrical narration.
+- **Use 3 · fine-tuning the delivery**: 1.1–1.2 is livelier for explainers and marketing; 0.9 is easier on the ear for lyrical narration — phrase it in the instruction, e.g. “pace 1.15, confident tone”.
 - **Use 4 · rewrite before voicing**: have a text node rewrite the words into short, read-aloud-friendly sentences first — the phrasing comes out far more natural.
 
 **Note 1**: it shares the same mutex with music / video generation, so only one runs at a time.
@@ -98,14 +98,14 @@ text (lines) → speech synthesis → audio file (the node's own "output path")
 
 ### Parameter reference
 
-- **Voice**: a voice name already in the local voice library (empty = default)
-- **Speed**: 0.5–2.0 (1.0–1.2 for narration, 0.9 for lyrical passages)
-- **Output**: `…/assets/tts/segment-01.wav` (`.wav` / `.mp3`)
-- **Backend**: local GPT-SoVITS TTS — install it and prepare voices first
+- **Voice**: a voice id already in the local voice library (empty = use the reference audio on the port)
+- **Instruction**: put tone / pace changes here (voice design / direction)
+- **Output**: `…/assets/tts/segment-01.wav` (`.wav` / `.flac` / `.mp3`)
+- **Backend**: local Breeze TTS 2 — install it first; voices can be cloned on the spot
 
 ### Troubleshooting
 
-- Thin or broken sound → change voice or lower the speed
+- Thin or broken sound → change the reference clip or adjust the instruction
 - A long text stalls → split it and synthesize piece by piece
 - Backend not started → start the TTS backend in settings first
 

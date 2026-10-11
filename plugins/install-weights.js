@@ -10,7 +10,7 @@
  *   · 目标目录撞上同名文件 → **用源文件覆盖**（以用户手动下载的那份为准）。
  *
  * 就位判定交给各插件自己的安装脚本：它们本来就会跳过已存在的权重、只补缺的
- * （h3 / tts 有显式文件清单，sensenova / yue / music3 / breeze 看 .ok 或文件是否齐），
+ * （h3 有显式文件清单，sensenova / yue / music3 / breeze 看 .ok 或文件是否齐），
  * 所以这里只保证「把文件搬到脚本期望的位置」，搬完由用户点安装窗里的「重试」继续。
  *
  * 目标目录表为什么在这里：8 个宿主各自 hardcode 了路径（ComfyUI\models、models\MiniMax-Music3 …），
@@ -102,22 +102,6 @@ const WEIGHTS_SPECS = {
           "SenseNova__SenseNova-U1.5-8B-MoT",
         ],
         fileRe: [/^model-\d+-of-\d+\.safetensors$/i, /^config\.json$/i, /^.*\.safetensors$/i],
-      },
-    ],
-  },
-  "tts-local": {
-    label: "GPT-SoVITS 预训练权重",
-    slots: [
-      {
-        id: "pretrained",
-        label: "pretrained_models",
-        rel: ["engine", "GPT_SoVITS", "pretrained_models"],
-        accepts: ["pretrained_models"],
-        keepAccepts: ["chinese-hubert-base", "chinese-roberta-wwm-ext-large"],
-        /* 落单的 SoVITS 底模：s2G488k 是 v1（bundled 配置指向它），s2G2333k 是 v2；
-           s2G233k 是插件早期写错的名字，留着只为了让那时候装下的目录还能被认出来。 */
-        fileNames: ["s2G488k.pth", "s2G2333k.pth", "s2G233k.pth"],
-        fileRe: [/^s1bert25hz.*\.ckpt$/i],
       },
     ],
   },

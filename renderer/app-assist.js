@@ -1422,7 +1422,7 @@ async function assistSend(text) {
     "  · 图像参考节点用 kind input_image，把本机绝对路径写进 imagePath（应用会复制进画布资产），已知路径就不要让用户再拖拽；多图 batch:true + imagePaths。\n" +
     "  · 改节点模型：create/update 传 model，文本 / 图像节点配 providerId（服务商 id 或唯一名称），智能任务配 provider（deepseek-official 或 mtnode_<id> / 名称）。\n" +
     "  · 工具回执（created[] / updated[] / hasImage / warnings）才是事实依据：没出现在回执里的结果，不要向用户声称已完成。\n" +
-    "  · 音 / 视频生成节点（music_gen / tts_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；写 music_gen / yue_gen 的风格提示词与歌词先加载内置技能 minimax-music-prompt / minimax-music-lyrics（提示词 = 一段六句英文散文，不是标签堆）；批次与文生图的防 N² 细则见技能 mtnode-canvas-edit-rules（细则再进 mtnode-canvas-batch-safety）。\n";
+    "  · 音 / 视频生成节点（music_gen / breeze_gen / video_gen / remotion）的后端、outputPath、抽卡与显存互斥口径见技能 mtnode-media-gen-nodes；写 music_gen / yue_gen 的风格提示词与歌词先加载内置技能 minimax-music-prompt / minimax-music-lyrics（提示词 = 一段六句英文散文，不是标签堆）；批次与文生图的防 N² 细则见技能 mtnode-canvas-edit-rules（细则再进 mtnode-canvas-batch-safety）。\n";
   /* @引用、save / wait_file、端子与批次规则已由技能 mtnode-canvas-edit-rules 承载
      （mtnode_canvas_edit 只留卡口与一句指向）；这里只留助手侧的排版动作。 */
   const layoutRules = assistCanvasFree
@@ -4756,6 +4756,196 @@ function updateHistRail(list) {
   }
 }
 
+/* ── 一轮折叠时保留最后的总结回应（本次需求 · 拷问共识）─────────────────────────
+   用户口径：一轮完成折叠时不要把整条消息都折进去 —— **该轮最后一段正文（最终答复）
+   全文保留**，把它的「过程」（思考 / 工具 / 上下文注入 / 更早的中间说明）折成一行可点的
+   摘要条（.hist-proc-bar），摘要条排在最终答复**上方**（过程原位）。
+   落点：对话 / 助手栏 / 节点内联对话三处共用 applyHistoryCollapse（renderer/app.js 的
+   节点会话也走它），判据一份、三处同形。
+   轮的边界 = **一条用户消息 + 它后面连续的 AI 行**（一次发送 = 一轮）；
+   该轮**最后一条 AI 行**就是「结论那一行」（见 histRoundTailSet 上的说明）。
+   其余照旧：同一轮里更早的 AI 回复仍按老口径裁 2 行；**没有过程可折的行整条全显**
+   （不再裁 2 行）；末行 / live 行前一行 / 用户行 / 记过展开的行走老口径直接跳过。
+   回归口径见 test/smoke-hist-fold.js。 */
+
+/* 这一段消息的「过程」账（步数 / 工具调用次数 / 思考字数 / 用时）：
+   数从消息自己的段与工具记录里现算（只在渲染层，**不进存档、不进模型上下文**）；
+   拿不到的项就是 0，摘要条上不出现（宁可少写一项，也不给假数）。
+   为什么算在建行时：applyHistoryCollapse 只拿得到 DOM，账在 dshMsgBlock 建行时写进
+   row.dataset（procSteps / procTools / procThink / procMs）。 */
+function histProcStatsOf(m) {
+  const segs = Array.isArray(m && m.segments) ? m.segments : [];
+  const tools = Array.isArray(m && m.tools) ? m.tools : [];
+  const steps = new Set();
+  const ats = [];
+  let toolN = 0;
+  let think = 0;
+  const noteStep = (v) => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) steps.add(n);
+  };
+  const noteAt = (v) => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) ats.push(n);
+  };
+  for (const s of segs) {
+    if (!s) continue;
+    noteStep(s.step);
+    noteAt(s.at);
+    if (s.k === "tool") toolN += 1;
+    else if (s.k === "think") think += String(s.text || "").length;
+  }
+  for (const t of tools) {
+    if (!t) continue;
+    noteStep(t.step);
+    noteAt(t.at);
+    noteAt(t.doneAt);
+  }
+  /* 段里一个工具段都没有（老存档 / 退回整条渲染的消息）→ 退回工具记录条数 */
+  if (!toolN) toolN = tools.length;
+  if (!think && m && m.reasoning) think = String(m.reasoning || "").length;
+  /* 用时 = 该轮首段时刻 → 消息落定时刻（消息没有更晚的时刻时才用末段时刻）；
+     只有一个时刻（或一个都没有）就不编用时。 */
+  let ms = 0;
+  if (ats.length) {
+    const lo = Math.min.apply(null, ats);
+    let hi = Math.max.apply(null, ats);
+    const mAt = Number(m && m.at);
+    if (Number.isFinite(mAt) && mAt > hi) hi = mAt;
+    if (hi > lo) ms = hi - lo;
+  }
+  return { steps: steps.size, tools: toolN, think: think, ms: ms };
+}
+/* 用时读法：<1 分钟给秒（小于 10s 带一位小数），再长给「Xm Ys」 */
+function histProcDurText(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const s = n / 1000;
+  if (s < 10) return s.toFixed(1) + "s";
+  if (s < 60) return Math.round(s) + "s";
+  const m = Math.floor(s / 60);
+  const r = Math.round(s - m * 60);
+  return m + "m" + (r > 0 ? r + "s" : "");
+}
+/* 摘要条文案：前缀「过程」+ 拿得到的项（都拿不到就只留「过程」） */
+function histProcLabelOf(row) {
+  const ds = (row && row.dataset) || {};
+  const steps = Number(ds.procSteps) || 0;
+  const tools = Number(ds.procTools) || 0;
+  const think = Number(ds.procThink) || 0;
+  const dur = histProcDurText(Number(ds.procMs) || 0);
+  const parts = [];
+  if (steps > 0) parts.push(I18n.t("{n} 步", { n: steps }));
+  if (tools > 0) parts.push(I18n.t("{n} 次工具调用", { n: tools }));
+  if (think > 0) parts.push(I18n.t("思考 {n} 字", { n: think }));
+  if (dur) parts.push(I18n.t("用时 {n}", { n: dur }));
+  parts.unshift(I18n.t("过程"));
+  return parts.join(" · ");
+}
+/* 「过程 ⇄ 最终答复」的切分（只在 DOM 上做，两种形状）：
+   ① 分段消息（.dsh-msg-body.dsh-msg-segs）：正文段 = .dsh-seg-say；**最后一个正文段 =
+      该轮最终答复**，它前面的所有子块（思考 / 工具 / 上下文注入 / 更早的中间说明）= 过程。
+   ② 老渲染（无分段）：正文整块（.md）就是最终答复，过程挂在行级 —— 思考摘要条 / 工具 chips。
+   没有过程（找不到切点 / 切点前面什么都没有）→ 返回空数组：这一行不折，整条全显。 */
+function histProcSplitOf(row, body) {
+  if (!row || !body) return [];
+  const kids = Array.from(body.children || []);
+  if (body.classList && body.classList.contains("dsh-msg-segs")) {
+    let last = null;
+    for (const c of kids) {
+      if (c && c.classList && c.classList.contains("dsh-seg-say")) last = c;
+    }
+    if (!last) return [];
+    const proc = [];
+    for (const c of kids) {
+      if (c === last) break;
+      proc.push(c);
+    }
+    return proc;
+  }
+  const out = [];
+  for (const c of Array.from(row.children || [])) {
+    if (!c || c === body || !c.classList) continue;
+    if (c.classList.contains("dsh-tools") || c.classList.contains("dsh-seg-think-wrap"))
+      out.push(c);
+  }
+  return out;
+}
+/* 过程复原（DOM 面）：摘掉折叠类、收起摘要条、清掉过程块上的标记。
+   折叠一律发生在**刚重建的 DOM** 上，所以复位只为了让「同一个列表被折叠两遍」不叠出
+   两条摘要条（幂等）；展开记忆不在这里碰。 */
+function histProcUnfold(row) {
+  if (!row) return;
+  row.classList.remove("hist-proc-folded");
+  const bar = row.querySelector ? row.querySelector(".hist-proc-bar") : null;
+  if (bar && bar.remove) bar.remove();
+  const marks = row.querySelectorAll ? row.querySelectorAll(".hist-proc") : [];
+  for (const el of Array.from(marks)) el.classList.remove("hist-proc");
+}
+/* 摘要条本体：一行可点的按钮，插在 .dsh-msg-body **之前**（过程被隐藏后它就落在
+   最终答复正上方）；点它 = 展开过程（单向，不提供再收起 —— 与既有折叠口径一致：
+   点开就摊平，避免打断选中 / 复制）。 */
+function histProcBarEl(row) {
+  const bar = document.createElement("button");
+  bar.type = "button";
+  bar.className = "hist-proc-bar";
+  bar.title = I18n.t("点击展开过程");
+  const chev = document.createElement("span");
+  chev.className = "hist-proc-chev";
+  chev.textContent = "▸";
+  bar.appendChild(chev);
+  const txt = document.createElement("span");
+  txt.className = "hist-proc-txt";
+  txt.textContent = histProcLabelOf(row);
+  bar.appendChild(txt);
+  /* 会话里的按钮一律自己吃掉这一次点击（节点内联会话里的点击否则会去选节点，
+     与 dshThinkRowEl 同一口径）。 */
+  bar.addEventListener("mousedown", (ev) => {
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+  });
+  bar.addEventListener("click", (ev) => {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    histProcExpandRow(row);
+  });
+  return bar;
+}
+/* 展开过程：记进既有的展开记忆（重绘后不再折回去）+ 复原 DOM + 刷一次右侧轮次轨。
+   最终答复本来就在外面，全程不动。 */
+function histProcExpandRow(row) {
+  if (!row) return;
+  const key = row.dataset ? row.dataset.histKey || "" : "";
+  S.histExpanded = S.histExpanded || {};
+  if (key) S.histExpanded[key] = true;
+  histProcUnfold(row);
+  if (row.parentNode && typeof updateHistRail === "function") updateHistRail(row.parentNode);
+}
+/* 每轮的「结论那一行」：一轮 = **一条用户消息 + 它后面连续的 AI 行**（用户口径「一轮」=
+   一次发送，与轨迹视图文档里的轮号口径一致），取这一轮里**最后一条 AI 行**。
+   列表开头那一串没有用户消息的 AI 行（「显示更早内容」把窗口起点裁在轮中间时）算作一轮，
+   同样取其中最后一条。
+   ⚠ 别改用 histAssignRounds 的 marks：它给一条用户消息后面**第 2 条起**的 AI 行各自
+   再进一轮号（右侧轮次轨的编号口径），那样一轮里更早的回复也会被当成「结论那一行」，
+   与用户口径「一轮多条 AI 消息时只有最后一条的最终答复全显」不符。 */
+function histRoundTailSet(rows) {
+  const tail = new Set();
+  let lastAi = null;
+  const flush = () => {
+    if (lastAi) tail.add(lastAi);
+    lastAi = null;
+  };
+  for (const el of rows || []) {
+    if (!el || !el.classList) continue;
+    if (el.classList.contains("dsh-user")) {
+      flush();
+      continue;
+    }
+    lastAi = el;
+  }
+  flush();
+  return tail;
+}
+
 function applyHistoryCollapse(list) {
   if (!list) return;
   const rows = histCollectRows(list);
@@ -4768,8 +4958,12 @@ function applyHistoryCollapse(list) {
     lastRow.querySelector(".dsh-role.live")
   );
   S.histExpanded = S.histExpanded || {};
+  /* 结论那一行（见上方「一轮折叠时保留最后的总结回应」那一段） */
+  const tailRows = histRoundTailSet(rows);
   rows.forEach((el, i) => {
     const body = el.querySelector(".dsh-msg-body");
+    /* 先复位上一趟或许留下的过程折叠痕迹（幂等，不碰展开记忆） */
+    histProcUnfold(el);
     el.classList.remove("hist-collapsed");
     if (body) body.style.maxHeight = "";
     const isLast = i === rows.length - 1;
@@ -4785,6 +4979,28 @@ function applyHistoryCollapse(list) {
     if (key && S.histExpanded[key]) {
       /* 已展开的消息保持展开:折叠为单向(点击只展开),不再提示点击收起 */
       el.classList.add("hist-expanded");
+      el.removeAttribute("title");
+      return;
+    }
+    /* 结论那一行：过程收成一行摘要条，最终答复全文留在条下方；
+       没有过程可折（只有一段答复 / 短消息 / 无分段结构的老存档）→ 整条全显、不裁。 */
+    if (tailRows.has(el)) {
+      const proc = body ? histProcSplitOf(el, body) : [];
+      if (proc.length) {
+        for (const p of proc) p.classList.add("hist-proc");
+        el.classList.add("hist-proc-folded");
+        el.insertBefore(histProcBarEl(el), body);
+        el.removeAttribute("title");
+        return;
+      }
+      el.classList.remove("hist-expanded");
+      el.removeAttribute("title");
+      return;
+    }
+    /* 同一轮里更早的 AI 回复：老口径照旧（超 2 行裁 2 行）；没有过程可折的行整条全显
+       —— 裁它只会把这一轮的中间说明裁掉半截，且它本来也没有可折的过程。 */
+    if (body && !histProcSplitOf(el, body).length) {
+      el.classList.remove("hist-expanded");
       el.removeAttribute("title");
       return;
     }
@@ -7313,6 +7529,18 @@ function dshMsgBlock(m, nodeId, idx, opts) {
     row.dataset.ixRnote = String(Number(m.at) || 0);
   }
   if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
+  /* 这一行的「过程」账（步数 / 工具调用次数 / 思考字数 / 用时）：折叠时摘要条直接读它 ——
+     applyHistoryCollapse 只拿得到 DOM，账在这里按消息自己的段与工具记录算好（见
+     histProcStatsOf）。additive：老会话照算，算不出的项是 0，摘要条上就不出现。 */
+  if (m.role === "assistant") {
+    try {
+      const ps = histProcStatsOf(m);
+      row.dataset.procSteps = String(ps.steps || 0);
+      row.dataset.procTools = String(ps.tools || 0);
+      row.dataset.procThink = String(ps.think || 0);
+      row.dataset.procMs = String(Math.round(ps.ms || 0));
+    } catch (_) {}
+  }
   /* 有分段轨迹（且正文拼接与 content 一致）就按段渲染，否则走旧渲染 */
   const segsView = dshMsgSegsViewable(m);
   /* 会话「显示思考」开关：按这条消息属于哪条会话取判据（见 dshThinkShownFor）；

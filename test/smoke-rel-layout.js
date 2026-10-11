@@ -912,7 +912,7 @@ ok(
       timer: [0, 1], control: [1, 1], net_send: [2, 0], net_recv: [0, 2],
       save_text: [1, 1], save_image: [1, 1], save_pdf: [1, 1],
       asset: [2, 2], deliver: [1, 0],
-      music_gen: [3, 2], yue_gen: [4, 2], sensenova_gen: [2, 2], tts_gen: [2, 2],
+      music_gen: [3, 2], yue_gen: [4, 2], sensenova_gen: [2, 2],
       breeze_gen: [5, 2], video_gen: [3, 2], video_upscale: [2, 2], video_interp: [2, 2],
       remotion: [2, 2], function: [2, 2], tool: [2, 2], execute: [0, 0],
     };
@@ -962,10 +962,10 @@ ok(
       "真跑：音乐节点入/出语义名与从前一致（提示词 / 歌词 / 控制 · 内容 / 控制）",
     );
     ok(
-      badgeOf({ kind: "tts_gen" }, "in", 0) === "文本" &&
-        badgeOf({ kind: "tts_gen" }, "in", 1) === "控制" &&
-        badgeOf({ kind: "tts_gen" }, "out", 0) === "内容",
-      "真跑：语音节点沿用「文本 / 控制」与「内容」",
+      badgeOf({ kind: "breeze_gen" }, "in", 0) === "文本" &&
+        badgeOf({ kind: "breeze_gen" }, "in", 4) === "控制" &&
+        badgeOf({ kind: "breeze_gen" }, "out", 0) === "音频",
+      "真跑：语音节点（Breeze）沿用「文本 / 控制」与「音频」",
     );
     ok(
       badgeOf({ kind: "judge" }, "out", 0) === "是" &&

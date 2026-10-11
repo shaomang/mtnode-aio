@@ -4447,144 +4447,6 @@ registerNodeSettingsForm("control", {
   },
 });
 
-/* ── tts_gen：音色 / 语速 / 输出格式 / 输出路径 ── */
-function ttsSettingsSummary(node) {
-  return (
-    I18n.t("音色 ") +
-    (String(node.voice || "").trim() || I18n.t("（默认）")) +
-    " · " +
-    I18n.t("语速 ") +
-    ttsSpeedOf(node) +
-    " · " +
-    ttsFormatOf(node)
-  );
-}
-registerNodeSettingsForm("tts_gen", {
-  gearTitle: () => I18n.t("音色 / 语速 / 输出格式 / 输出路径"),
-  summary: ttsSettingsSummary,
-  build: (ctx) => {
-    const node = ctx.node;
-    /* 音色：后端就绪时给下拉（列表随状态刷新），没就绪 / 没装插件时退回手填 */
-    const voiceBox = document.createElement("span");
-    voiceBox.className = "nsf-ctl";
-    const voiceSel = document.createElement("select");
-    voiceSel.id = nodeSettingsCtlId("ttsvoice", node.id);
-    const voiceInp = document.createElement("input");
-    voiceInp.type = "text";
-    voiceInp.id = nodeSettingsCtlId("ttsvoiceinp", node.id);
-    voiceInp.placeholder = I18n.t("音色名（后端未就绪时可手填）");
-    voiceInp.value = String(node.voice || "");
-    voiceSel.style.display = "none";
-    voiceInp.style.display = "none";
-    const paintVoice = (vs) => {
-      if (!voiceSel.isConnected) return;
-      voiceSel.textContent = "";
-      if (vs && vs.length) {
-        const cur = String(node.voice || "").trim();
-        let found = false;
-        for (const v of vs) {
-          const o = document.createElement("option");
-          o.value = v.id;
-          o.textContent = v.name;
-          if (cur && cur === v.id) {
-            o.selected = true;
-            found = true;
-          }
-          voiceSel.appendChild(o);
-        }
-        if (cur && !found) {
-          const o = document.createElement("option");
-          o.value = cur;
-          o.textContent = cur;
-          o.selected = true;
-          voiceSel.appendChild(o);
-        }
-        voiceSel.style.display = "";
-        voiceInp.style.display = "none";
-      } else {
-        voiceSel.style.display = "none";
-        voiceInp.style.display = "";
-        if (document.activeElement !== voiceInp)
-          voiceInp.value = String(node.voice || "");
-      }
-    };
-    const loadVoices = async () => {
-      let vs = [];
-      try {
-        const st = await fetchMediaBackendStatus(node);
-        vs = ttsVoicesFromStatus(st);
-      } catch {
-        vs = [];
-      }
-      paintVoice(vs);
-    };
-    voiceSel.addEventListener("change", () => {
-      node.voice = voiceSel.value;
-      syncNodeSettingsValue(node, "ttsvoice", node.voice || I18n.t("（默认）"));
-      ctx.commit({ history: true });
-    });
-    voiceInp.addEventListener("change", () => {
-      node.voice = String(voiceInp.value || "").trim();
-      syncNodeSettingsValue(node, "ttsvoice", node.voice || I18n.t("（默认）"));
-      ctx.commit({ history: true });
-    });
-    const voiceRef = document.createElement("button");
-    voiceRef.className = "mini";
-    voiceRef.textContent = "↻";
-    voiceRef.title = I18n.t("刷新音色列表");
-    voiceRef.onclick = (ev) => {
-      ev.stopPropagation();
-      loadVoices();
-    };
-    voiceBox.appendChild(voiceSel);
-    voiceBox.appendChild(voiceInp);
-    voiceBox.appendChild(voiceRef);
-    ctx.field(I18n.t("音色"), null, { span: true }).appendChild(voiceBox);
-    /* 已有值先顶上（可能是后端还没起来时手填的），再异步换成真实列表 */
-    paintVoice(
-      String(node.voice || "").trim()
-        ? [{ id: String(node.voice).trim(), name: String(node.voice).trim() }]
-        : [],
-    );
-    loadVoices();
-    nsNumber(
-      ctx,
-      I18n.t("语速（0.5–2.0）"),
-      ttsSpeedOf(node),
-      {
-        min: 0.5,
-        max: 2,
-        step: 0.1,
-        fallback: 1,
-        title: I18n.t("语速倍率（0.5–2.0）"),
-      },
-      (v) => {
-        node.speed = v;
-      },
-    );
-    nsSelect(
-      ctx,
-      I18n.t("输出格式"),
-      [
-        ["wav", "wav"],
-        ["mp3", "mp3"],
-      ],
-      ttsFormatOf(node),
-      (v) => {
-        node.ttsFormat = v;
-        if (String(node.outputPath || "").trim())
-          applyMediaGenConfiguredPath(node, node.outputPath, "audio");
-        syncNodeSettingsValue(
-          node,
-          "mgpath",
-          mediaGenOutputRaw(node) || String(node.outputPath || ""),
-        );
-      },
-      { commit: { history: true, rerender: true } },
-    );
-    nsMediaGenPathField(ctx, node, "audio");
-  },
-});
 
 /* 节点「设置」跳窗里的一个小占位（排在本文件后面的 app-nodes.js 没加载 / 该区块抛错时用）：
    Breeze 的两个文本框（输入文本 / 参考文本）—— breezeTextBoxesFor 在 app-nodes.js 里，
@@ -4954,8 +4816,6 @@ function portBadgeText(node, dir, idx, opt) {
           title: i === 0 ? "" : I18n.t("（数据槽：可接文本 / 图像）"),
           zh: true,
         };
-      case "tts_gen":
-        return { badge: i === 0 ? I18n.t("文本") : I18n.t("控制"), title: "", zh: true };
       /* Breeze 语音（bug 修复：它从前不在任何徽标白名单里，5 入 2 出全都没有标签）——
          端口口径 = app.js 的 IN_PORT_DATA_KINDS.breeze_gen / inPortIsControl：
          0 待合成文本 · 1 参考音频 · 2 参考文稿 · 3 指令 · 4 控制 */
@@ -5075,7 +4935,6 @@ function portBadgeText(node, dir, idx, opt) {
   if (
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
-    node.kind === "tts_gen" ||
     node.kind === "video_gen" ||
     node.kind === "remotion" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(node))
@@ -5154,8 +5013,6 @@ function portBadgeInIsCtrlPort(node, idx) {
       return i === 2;
     case "yue_gen":
       return i === 3;
-    case "tts_gen":
-      return i === 1;
     case "breeze_gen":
       return i === 4;
     case "video_gen":
@@ -6123,16 +5980,6 @@ function nodeElement(node) {
       stopTitle: "取消后处理请求",
     });
   }
-  if (node.kind === "tts_gen") {
-    const chip = document.createElement("span");
-    chip.className = "n-chip" + (node.running ? " on" : "");
-    chip.textContent = I18n.t("语音");
-    chip.title = I18n.t("SoVITS 语音 · GPT-SoVITS 本机后端 · 文本转语音");
-    head.appendChild(chip);
-    appendBackendProbeBtn(head, node);
-    appendMediaConsoleBtn(head, node);
-    appendMediaPlayBtns(head, node, "调用 GPT-SoVITS 后端合成语音");
-  }
   if (node.kind === "breeze_gen") {
     const chip = document.createElement("span");
     chip.className = "n-chip" + (node.running ? " on" : "");
@@ -6574,8 +6421,6 @@ function nodeElement(node) {
             : i === 2
               ? I18n.t("ABC 谱（可选：手工谱面，留空则由模型生成）")
               : I18n.t("控制输入（触发生成）");
-    else if (node.kind === "tts_gen")
-      inTitle = i === 0 ? I18n.t("待合成文本（语音内容）") : I18n.t("控制输入（触发生成）");
     else if (node.kind === "breeze_gen")
       /* Breeze 语音（端口口径 = app.js 的 IN_PORT_DATA_KINDS.breeze_gen）：
          0 待合成文本 · 1 参考音频 · 2 参考文稿 · 3 指令 · 4 控制输入 */
@@ -6811,7 +6656,7 @@ function nodeElement(node) {
       outTitle = I18n.t("分发输出 ") + (oi + 1);
     else if (node.kind === "net_recv")
       outTitle = oi === 0 ? I18n.t("信息输出（收到的文本）") : I18n.t("控制输出（收到消息时触发）");
-    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "tts_gen" || node.kind === "video_gen" || isVideoPostKind(node) || node.kind === "remotion")
+    else if (node.kind === "music_gen" || node.kind === "yue_gen" || node.kind === "sensenova_gen" || node.kind === "video_gen" || isVideoPostKind(node) || node.kind === "remotion")
       outTitle =
         oi === 0
           ? node.kind === "sensenova_gen"
@@ -12897,60 +12742,6 @@ function buildBody(node, body) {
         (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
       stt.textContent = node.error || node.sensenovaStatus;
       body.appendChild(stt);
-    }
-  } else if (node.kind === "tts_gen") {
-    /* 未安装警示条（GPT-SoVITS 插件 id = tts-local；安装后 S.plugins 缓存刷新自动消失） */
-    if (!appPluginInstalled("tts-local")) {
-      const warn = document.createElement("div");
-      warn.className = "n-empty n-plugin-warn";
-      warn.textContent = I18n.t("⚠ GPT-SoVITS 插件未安装：请在「插件 · GPT-SoVITS 语音合成」中安装后使用本节点");
-      warn.title = I18n.t("插件 · GPT-SoVITS 语音合成：设置安装目录 → 安装");
-      body.appendChild(warn);
-    }
-    /* 文本来源提示（端子 T） */
-    const srcHint = document.createElement("div");
-    srcHint.className = "n-empty";
-    srcHint.textContent = I18n.t("待合成文本走端子 T（连接上游文本节点）");
-    body.appendChild(srcHint);
-    /* 音色 / 语速 / 输出格式 / 输出路径 → ⚙ 跳窗；body 留一行参数摘要 +
-       一行输出路径（浏览 / 位置 / 打开是动作，留在摘要行上） */
-    appendMediaGenSummaryBody(node, body, "audio");
-    /* 后端面板（◎ 探测 / 状态 / 进度） */
-    appendMediaBackendPanel(body, node);
-    /* 试听播放条 */
-    const prev = document.createElement("div");
-    prev.className = "sv-prev mg-prev";
-    const aud = wavePreviewCreate("mgaud-" + node.id);
-    prev.appendChild(aud);
-    const empty = document.createElement("div");
-    empty.className = "sv-empty";
-    empty.id = "mgempty-" + node.id;
-    empty.textContent = I18n.t("文件不存在（生成后将显示于此）");
-    prev.appendChild(empty);
-    const nameEl = document.createElement("div");
-    nameEl.className = "n-text";
-    nameEl.id = "mgname-" + node.id;
-    nameEl.style.maxHeight = "36px";
-    nameEl.style.overflow = "hidden";
-    nameEl.style.cursor = "pointer";
-    nameEl.title = I18n.t("在文件夹中显示");
-    {
-      const hint =
-        (node.output && (node.output.path || node.output.text)) ||
-        mediaGenOutputRaw(node) ||
-        "";
-      if (hint) nameEl.textContent = fileName(hint);
-    }
-    prev.appendChild(nameEl);
-    body.appendChild(prev);
-    /* 状态行：ttsStatus + 进度标记 */
-    if (node.ttsStatus || node.error) {
-      const st = document.createElement("div");
-      st.className =
-        "n-status" +
-        (node.running ? " run" : node.error ? " err" : node.ranAt ? " done" : "");
-      st.textContent = node.error || node.ttsStatus;
-      body.appendChild(st);
     }
   } else if (node.kind === "breeze_gen") {
     /* 未安装警示条（Breeze TTS 2 插件 id = breeze-tts-local；安装后 S.plugins 缓存刷新自动消失） */

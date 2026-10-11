@@ -1,16 +1,16 @@
 "use strict";
 /* 插件报错 → 弹窗报告 → 交给可见会话自动修复 → 修完重启服务 —— 冒烟测试（纯 Node，无 Electron / 无 DOM）
  *   node test/smoke-plugin-repair.js
- * 需求：① 任何插件（需要第三方安装的本地后端 H3 / Music3 / YuE2 / TTS / llama.cpp / ASR / Remotion，
+ * 需求：① 任何插件（需要第三方安装的本地后端 H3 / Music3 / YuE2 / Breeze TTS 2 / llama.cpp / Remotion，
  *          以及桌宠 BongoChat 与顶栏「插件」里的可下载安装插件）报错时，主窗口必须弹一只**错误报告窗**
  *          （错误码 / 正文 / 日志尾部 / 出问题的节点），并问用户要不要
  *          「自动修复」；点了就在左侧栏**新建一条看得见的会话**（工作区 = 该插件 INSTALL_DIR）按
  *          skill 的【自我修复】模式修，修完**自动重启该插件对应的服务**（无常驻服务则重跑报错节点）。
- *       ② 安装链路的技能真源必须唯一：Agent 拿到的 minimax-h3-install（及 music3 / tts / llama / sensenova）
+ *       ② 安装链路的技能真源必须唯一：Agent 拿到的 minimax-h3-install（及 music3 / breeze / llama / sensenova）
  *          正文只能来自仓库根 `skills/<name>/SKILL.md`，宿主目录不留副本。
  * 覆盖：
  *   [1] 宿主注册表：所有插件都注册进报错总线（id / skillName / 日志 / 自我修复 / 重启）且接了上报点
- *       —— 七个后端宿主（H3 / Music3 / YuE2 / TTS / llama / ASR / Remotion）+ 桌宠（BongoChat）
+ *       —— 六个后端宿主（H3 / Music3 / YuE2 / Breeze TTS 2 / llama / Remotion）+ 桌宠（BongoChat）
  *          + 窗口插件安装链（plugins/main-app-plugins.js）
  *   [2] 技能真源单一：INSTALL_SKILL_SOURCES ↔ 宿主 sync 指向同一份真源、.install-only 语义、旧副本目录已删
  *   [3] 打包与入口：plugin-error-repair.js 在 build.json files 白名单里、main.js 先 init 再注册宿主 IPC、
@@ -86,12 +86,12 @@ function fnBody(src, name) {
 const HOSTS = [
   { file: "h3/main-h3.js", id: "minimax-h3", skill: "minimax-h3-install", fn: "syncH3InstallSkill", selfRepair: true, restart: true, reports: 20 },
   { file: "music3/main-music3.js", id: "minimax-music3", skill: "minimax-music3-install", fn: "syncMusic3InstallSkill", selfRepair: true, restart: true, reports: 15 },
-  { file: "tts/main-tts.js", id: "tts-local", skill: "tts-local-install", fn: "syncTtsInstallSkill", selfRepair: true, restart: true, reports: 8 },
   /* Breeze TTS 2（Breeze TTS 2 本地 TTS）：同构（skill 名走宿主内常量，兜底同步一份到 dshHome） */
   { file: "breeze/main-breeze.js", id: "breeze-tts-local", skill: "breeze-tts-local-install", fn: "syncInstallSkill", selfRepair: true, restart: true, reports: 6, skillConst: true },
   { file: "llama/main-llama.js", id: "llama-local", skill: "llama-local-install", fn: "syncLlamaInstallSkill", selfRepair: true, restart: true, reports: 8 },
-  /* YuE2：skill 名走常量（宿主内 INSTALL_SKILL），注册形态与 h3 / music3 同构 */
-  { file: "yue/main-yue.js", id: "yue", skill: "yue2-local-install", fn: "", selfRepair: true, restart: true, reports: 20, skillConst: true },
+  /* YuE2：skill 名走常量（宿主内 INSTALL_SKILL），注册形态与 h3 / music3 同构；
+     插件 id 用**卡片 id**（曾写成短名 "yue"，安装窗按卡片 id 配对会话 → 步骤与日志被整条丢掉） */
+  { file: "yue/main-yue.js", id: "yue2-local", skill: "yue2-local-install", fn: "", selfRepair: true, restart: true, reports: 20, skillConst: true },
   /* SenseNova 本地图像生成：同构（skill 名走宿主内 INSTALL_SKILL，兜底同步同步一份到 dshHome） */
   { file: "sensenova/main-sensenova.js", id: "sensenova-local", skill: "sensenova-local-install", fn: "syncSensenovaInstallSkill", selfRepair: true, restart: true, reports: 20, skillConst: true },
   /* Remotion 走 npm 安装、没有 Agent 安装链：只注册「取可用目录 + 取日志」，可修性靠会话修复那条路 */
@@ -102,7 +102,6 @@ const HOSTS = [
 const INSTALL_SKILLS = [
   "minimax-h3-install",
   "minimax-music3-install",
-  "tts-local-install",
   "breeze-tts-local-install",
   "llama-local-install",
   "sensenova-local-install",
@@ -164,8 +163,8 @@ for (const h of HOSTS) {
   ok(count(h3, /\bnodeId\b/g) >= 6, "h3 的上报点带得出「出问题的节点」（nodeId 多处出现）");
 
   ok(music3.indexOf("emitProgress") > 0, "music3 保留原进度广播（上报是并行加的一层，不替换旧口径）");
-  /* tts / llama 原本只有 agentRecoverInstall：自我修复要等价实现 */
-  for (const f of ["tts/main-tts.js", "llama/main-llama.js", "breeze/main-breeze.js"]) {
+  /* llama / breeze 原本只有 agentRecoverInstall：自我修复要等价实现 */
+  for (const f of ["llama/main-llama.js", "breeze/main-breeze.js"]) {
     const src = read(f);
     ok(src.indexOf("function selfRepairFromConsole") > 0, f + " 补了 selfRepairFromConsole（控制台尾部 → Agent 恢复安装）");
     ok(/selfRepairFromConsole[\s\S]{0,1200}(agentRecoverInstall|recoverInstall)/.test(src), f + " 的自我修复复用既有 Agent 恢复安装链");
@@ -266,14 +265,14 @@ console.log("\n[3] 打包白名单与主进程入口");
   ok(count(filesBlock, /^\s*"!\w/gm) > 5, "build.json files 读到了（含取反规则）");
   ok(filesBlock.indexOf('"plugin-error-repair.js"') > 0, "files 含 plugin-error-repair.js（漏了 = 打包后 Cannot find module）");
   ok(filesBlock.indexOf('"pet/main-pet.js"') > 0 && filesBlock.indexOf('"plugins/**"') > 0, "files 覆盖新接线的 pet/main-pet.js 与 plugins/**");
-  for (const need of ["skills/**", "renderer/**", "h3/**", "music3/**", "tts/**", "llama/**", "remotion/**", "sensenova/**"]) {
+  for (const need of ["skills/**", "renderer/**", "h3/**", "music3/**", "llama/**", "remotion/**", "sensenova/**"]) {
     ok(filesBlock.indexOf('"' + need + '"') > 0, "files 含 " + need);
   }
   ok(mainJs.indexOf('require("./plugin-error-repair.js")') > 0, "main.js 引用总线模块");
   const at = mainJs.indexOf("initPluginErrorBus({");
   ok(at > 0, "main.js 调 initPluginErrorBus（注入主窗 getter）");
   ok(mainJs.indexOf("getMainWin: () => mainWin") > 0, "init 时给的是主窗口 getter（错误只送主窗一处）");
-  for (const fn of ["registerMusic3Ipc(", "registerYueIpc(", "registerH3Ipc(", "registerLlamaIpc(", "registerTtsIpc(", "registerRemotionIpc(", "registerSensenovaIpc("]) {
+  for (const fn of ["registerMusic3Ipc(", "registerYueIpc(", "registerH3Ipc(", "registerLlamaIpc(", "registerBreezeIpc(", "registerRemotionIpc(", "registerSensenovaIpc("]) {
     ok(mainJs.indexOf(fn) > at, fn.replace("(", "") + " 排在总线 init 之后（后端宿主注册不丢第一批错误）");
   }
   /* 桌宠与插件安装链排在 init 之前：宿主表是模块级 Map，注册不丢；
@@ -560,10 +559,10 @@ function groupTail() {
     for (const h of HOSTS) if (h.skill) ok(skillTable.indexOf('"' + h.skill + '"') > 0, "PLUGIN_REPAIR_SKILLS 覆盖 " + h.skill);
     const svcTable = seg(repair, "const PLUGIN_REPAIR_SERVICE_BASE = {", "\n};");
     ok(/remotion:\s*\{[\s\S]{0,220}resident: false/.test(svcTable), "Remotion 标 resident:false（无常驻服务 → 改成重跑节点）");
-    for (const fn of ["h3Start", "h3Stop", "h3Status", "music3Start", "music3Stop", "music3Status", "yue2Start", "yue2Stop", "yue2Status", "ttsStart", "ttsStop", "ttsStatus", "llamaStart", "llamaStop", "llamaStatus"]) {
+    for (const fn of ["h3Start", "h3Stop", "h3Status", "music3Start", "music3Stop", "music3Status", "yue2Start", "yue2Stop", "yue2Status", "breezeStart", "breezeStop", "breezeStatus", "llamaStart", "llamaStop", "llamaStatus"]) {
       ok(svcTable.indexOf('"' + fn + '"') > 0 && new RegExp("\\n\\s*" + fn + ":").test(preload), "重启表里的 " + fn + " 在 preload 真有这个桥");
     }
-    for (const fn of ["refreshH3PluginCard", "refreshMusic3PluginCard", "refreshYuePluginCard", "refreshTtsPluginCard", "refreshLlamaPluginCard", "refreshRemotionPluginCard", "refreshPetPluginCard"]) {
+    for (const fn of ["refreshH3PluginCard", "refreshMusic3PluginCard", "refreshYuePluginCard", "refreshBreezePluginCard", "refreshLlamaPluginCard", "refreshRemotionPluginCard", "refreshPetPluginCard"]) {
       ok(read("renderer/app-plugins.js").indexOf("async function " + fn) > 0, "卡片刷新口 " + fn + " 存在（修完就地刷那张卡）");
     }
     /* 「所有插件都接了自我修复」的硬口径：插件目录里每张卡片都要在渲染层服务表查得到条目 */
@@ -739,15 +738,15 @@ function groupTail() {
     ok(en.indexOf("## Plugin error dialogs and auto-repair") > 0, "英文手册补同名一节");
     ok(/服务已重启/.test(zh) && /restart/i.test(en), "两版都写了「修完自动重启该服务」");
     ok(zh.indexOf("INSTALL_DIR") > 0 && en.indexOf("INSTALL_DIR") > 0, "两版都写了修复会话的工作区 = INSTALL_DIR");
-    for (const f of ["guides/nodes/video_gen.md", "guides/nodes/music_gen.md", "guides/nodes/tts_gen.md"]) {
+    for (const f of ["guides/nodes/video_gen.md", "guides/nodes/music_gen.md"]) {
       ok(read(f).indexOf("插件报错弹窗") > 0, f + " 的错误提示同步（指向报错弹窗与自动修复）");
     }
-    for (const f of ["guides/nodes/en/video_gen.md", "guides/nodes/en/music_gen.md", "guides/nodes/en/tts_gen.md"]) {
+    for (const f of ["guides/nodes/en/video_gen.md", "guides/nodes/en/music_gen.md"]) {
       ok(read(f).indexOf("Plugin error dialog") > 0, f + " 同步英文版");
     }
     /* 节点指南由 guides/nodes/_write.mjs 生成：磁盘正文已比内嵌模板新 → 必须进 diskOwned，否则重生成会覆盖回去 */
     const owned = seg(read("guides/nodes/_write.mjs"), "const diskOwned = new Set([", "])");
-    for (const id of ["video_gen", "music_gen", "tts_gen"]) {
+    for (const id of ["video_gen", "music_gen"]) {
       ok(owned.indexOf('"' + id + '"') > 0, "diskOwned 含 " + id + "（本轮同步的段落不会被生成器回滚）");
     }
     /* 南风链（第三方多参节点包 + 随包工作流模板）已整体移除：契约真源不再挂在已删的文档上，

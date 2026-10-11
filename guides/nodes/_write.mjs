@@ -96,16 +96,6 @@ const diagrams = {
     box(350, 98, 130, 40, "控制下游", GOLD, FILL_C),
     `  <text x="250" y="152" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">自带输出路径 · 全局仅 1 个音视频任务</text>`,
   ].join("\n"), 520, 180),
-  "tts_gen": diagram("tts_gen", [
-    box(20, 56, 90, 44, "文本", CYAN, FILL_D),
-    arrow(110, 78, 156, 78, CYAN),
-    box(156, 44, 140, 68, "SoVITS 语音", "#ff8fa3", "#1a1014"),
-    arrow(296, 62, 350, 44, GRN),
-    arrow(296, 96, 350, 112, GOLD),
-    box(350, 24, 130, 40, "语音 · wav", GRN, "#101610"),
-    box(350, 94, 130, 40, "控制下游", GOLD, FILL_C),
-    `  <text x="250" y="152" text-anchor="middle" fill="#5a6472" font-size="11" font-family="Segoe UI,sans-serif">本地 GPT-SoVITS · 端口0=文本 · 端口1=控制</text>`,
-  ].join("\n"), 520, 180),
   "video_gen": diagram("video_gen", [
     box(20, 30, 90, 36, "脉冲", GOLD, FILL_C),
     box(20, 76, 90, 36, "文本", CYAN, FILL_D),
@@ -345,7 +335,7 @@ const guides = {
 ## 说明
 - 只记录文件的**原始绝对路径**（不复制进工作流资产，音频可能很大）；文件被移走后要重新选一次
 - 拖错类型（比如视频）会提示，不会改节点内容
-- 要**生成**音频：语音用「音频生成 › SoVITS 语音」，音乐用「音频生成 › Minimax Music 3」`,
+- 要**生成**音频：语音用「音频生成 › Breeze 语音」，音乐用「音频生成 › Minimax Music 3」`,
   },
   input_video: {
     title: "视频输入（选择文件 · 输出 URL）",
@@ -384,28 +374,6 @@ const guides = {
 - 全局同一时刻只允许 **1 个音视频任务**（音乐 / 视频互斥），其它任务会排队等待。
 - 每个后端实例全局只有一个，多个音乐节点共享同一后端。
 - 歌词与风格提示词的写法见**内置技能** \`minimax-music-lyrics\`（端口 1）/ \`minimax-music-prompt\`（端口 0）——两份随应用一起发版，**不用再去创意工坊下载**，在会话里打 \`/minimax-music-prompt 你的想法\` 就能直接用。风格提示词的产出形态固定为**一段六句英文散文**：曲风+情绪 → 速度与律动 → 乐器 → 人声 → 段落对比 → 制作混音。`,
-  },
-  tts_gen: {
-    title: "SoVITS 语音生成（GPT-SoVITS）",
-    body: `画布右键 → **处理节点 › 音频生成 › SoVITS 语音生成**。把文本合成成**语音**：后端是插件「GPT-SoVITS 语音合成」在本机拉起的 OpenAI 兼容服务。**每次运行只生成一个音频文件**（\`.wav\` / \`.mp3\`），写入节点自带的 \`outputPath\`。**输出路径也可以留空**：把它的**数据输出**接到下游的「保存」节点，路径就归那个保存节点管 —— 产物先落**应用托管目录**（应用数据目录下的画布资产 / 临时区），再由那个保存节点落盘到你填的保存路径。
-
-## 端子
-- **输入**：端口 0 = 待合成文本 · 端口 1 = 控制输入
-- **输出**：端口 0 = 语音音频（下游可试听 / 保存）· 端口 1 = 控制输出
-
-## 参数
-点节点头部 **⚙ 设置** 打开设置窗口来改；改完即时生效，节点卡片上只显示一行当前摘要。
-
-- **输出路径**：音频保存位置（相对工作目录 / 超级节点子文件夹）；**接了保存节点就可以留空** —— 那时路径归那个保存节点管，产物先落应用托管目录、再由它落盘（见「保存」节点指南）。没接保存节点时必填，留空点 ▶ 会提示「未设置输出路径时无法启动生成」。
-- **音色**：GPT-SoVITS 音色库里的音色名，留空则交给后端默认音色
-- **语速**：0.5 – 2.0（默认 1.0）
-- **输出格式**：\`.wav\` / \`.mp3\`
-- **抽卡次数**：多次尝试（1–10），取其中一次结果
-
-## 注意
-- 后端没装 / 没起时节点会先尝试拉起并等待在线（最长 3 分钟），失败会把可照着做的提示写在节点状态行上；安装与音色准备都在 **插件 › GPT-SoVITS 语音合成** 里完成。
-- 与音乐 / 视频走同一条**串行链**（同一时刻只跑一个生成任务），但 SoVITS 是独立进程、**不占主进程的音视频全局锁**，显存另算。
-- 只要一段文本就能出声：文本可以来自文本输入 / 文本处理节点，也可以 \`@\` 引用。`,
   },
   video_gen: {
     title: "Minimax H3（视频生成）",
@@ -812,7 +780,7 @@ const en = {
 ## Notes
 - Stores the file's **original absolute path** only (nothing is copied into the workflow assets, audio can be large). Move the file away and you need to pick it again.
 - Dropping the wrong media type is refused with a hint.
-- To **generate** audio: speech via “Audio gen › SoVITS speech”, music via “Audio gen › Minimax Music 3”.` },
+- To **generate** audio: speech via “Audio gen › Breeze speech”, music via “Audio gen › Minimax Music 3”.` },
   input_video: { title: "Video input (pick a file · outputs a URL)", body: `Hold a local video file as **material**: click “Pick video”, or drop an mp4 / webm / mov / mkv / avi file onto the node.
 
 ## Ports
@@ -845,25 +813,6 @@ Click **⚙ Settings** in the node header to open the settings window; changes a
 - Only **1 audio/video task** is allowed globally at a time (music and video are mutually exclusive); other tasks queue.
 - One backend instance per plugin; multiple music nodes share it.
 - Lyrics and style-prompt conventions live in the **built-in skills** \`minimax-music-lyrics\` (port 1) / \`minimax-music-prompt\` (port 0) — both ship with the app, **no Creative Workshop download needed**; type \`/minimax-music-prompt <your idea>\` in a session to use them. A style prompt is delivered as **one English paragraph of six sentences**: style + mood → tempo & groove → instruments → vocals → structure & contrast → production.` },
-  tts_gen: { title: "SoVITS speech (GPT-SoVITS)", body: `Right-click the canvas → **Process › Audio generation › SoVITS speech**. Turns text into **speech**: the backend is the local OpenAI-compatible service started by the “GPT-SoVITS speech” plugin. **Each run produces exactly one audio file** (\`.wav\` / \`.mp3\`) written to the node's own \`outputPath\`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
-
-## Ports
-- **Input**: port 0 = text to speak · port 1 = control input
-- **Output**: port 0 = speech audio (play / save downstream) · port 1 = control output
-
-## Options
-Click **⚙ Settings** in the node header to open the settings window; changes apply immediately and the card itself keeps showing just a one-line summary.
-
-- **Output path**: audio destination (relative to workspace / super subfolder). **Empty is fine once a Save node is wired** — the path then belongs to that Save node: the file lands in the app-managed folder first and the Save node writes it (see the Save node guide). Without a Save node it is required, and ▶ warns “Generation cannot start until an output path is set”.
-- **Voice**: a name from the GPT-SoVITS voice library; empty = whatever the backend defaults to
-- **Speed**: 0.5 – 2.0 (default 1.0)
-- **Format**: \`.wav\` / \`.mp3\`
-- **Attempts**: gacha rolls (1–10); keep one result
-
-## Notes
-- If the backend is missing or stopped the node starts it and waits for it to come online (up to 3 minutes); failures are written on the node's status line as an actionable hint. Installing the backend and preparing voices happens in **Plugins › GPT-SoVITS speech**.
-- Speech runs on the same **serial chain** as music / video (one generation task at a time), but SoVITS is a separate process and does **not** hold the app's audio/video global lock — its VRAM is its own budget.
-- One text is enough: feed port 0 from a text input / text process node, or with an \`@\` reference.` },
   video_gen: { title: "Minimax H3 (video generation)", body: `Right-click the canvas → **Process › Video generation › Minimax H3**. Local MiniMax H3 backend (ComfyUI). **Each run produces exactly one video file** (\`.mp4\`) written to the node's own \`outputPath\`. **The output path may be left empty too**: wire its **data output** into a downstream **Save** node and the path becomes that node's job — the file lands in the **app-managed folder** (the canvas-asset / temp area under the app data directory) first, and that Save node then writes it to the save path you set.
 
 ## Ports
@@ -1114,12 +1063,13 @@ In a task control flow, an incoming pulse waits until the **next** scheduled tim
 /* 已随发布版同步的节点指南以磁盘 md 为准（正文比这里的内嵌模板新，
    例如「图像生成」的双通道抠图段、「保存」的超级节点路径段）：
    再生成时不要把它们覆盖回旧内容。 diagrams 仍会刷新。
-   video_gen / music_gen / tts_gen：磁盘两版都补了「分段衔接 / 后处理独立节点 /
+   video_gen / music_gen：磁盘两版都补了「分段衔接 / 后处理独立节点 /
    插件报错弹窗与自动修复」这些新口径，内嵌模板还没跟上 → 一并交给磁盘。 */
-const diskOwned = new Set(["proc_image", "save", "video_gen", "music_gen", "tts_gen"]);
+const diskOwned = new Set(["proc_image", "save", "video_gen", "music_gen"]);
 
-/* 已移除的节点 kind：清单里不再出现（旧 md 由本次运行后手工删除） */
-const removedKinds = new Set(["chat"]);
+/* 已移除的节点 kind：清单里不再出现（旧 md 由本次运行后手工删除）。
+   tts_gen（SoVITS 语音）已随 GPT-SoVITS 插件整块移除，中英 md 与 img/tts_gen.svg 已删。 */
+const removedKinds = new Set(["chat", "tts_gen"]);
 
 const indexFile = path.join(root, "index.json");
 let prevIds = [];

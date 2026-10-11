@@ -1,7 +1,7 @@
 ---
 name: mtnode-media-gen-nodes
 title: 音乐/语音/视频生成节点
-description: MTNode music_gen / tts_gen / video_gen 节点：MiniMax Music 3、SoVITS 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, tts_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
+description: MTNode music_gen / yue_gen / breeze_gen / video_gen 节点：MiniMax Music 3、YuE2、Breeze TTS 2 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, yue_gen, breeze_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
 ---
 
 # 音乐 / 语音 / 视频生成节点
@@ -11,8 +11,12 @@ description: MTNode music_gen / tts_gen / video_gen 节点：MiniMax Music 3、S
 | kind | 后端 | 输入 |
 |------|------|------|
 | `music_gen` | MiniMax Music 3（Gradio） | P=提示词，L=歌词 |
-| `tts_gen` | SoVITS 语音（GPT-SoVITS 本机插件 · 文本转语音） | 端口0=待合成文本（端口1=控制输入）；`voice`=音色、`speed`=语速 0.5–2.0、`ttsFormat`=wav/mp3 |
+| `yue_gen` | YuE2（歌词 → 整曲） | 0=风格提示词 · 1=歌词 · 2=ABC 谱（可选）· 3=控制输入 |
+| `breeze_gen` | Breeze TTS 2（本机语音后端 · 文本转语音） | 0=待合成文本 · 1=参考音频 · 2=参考文稿 · 3=指令 · 4=控制输入；`voice`=音色库 id、`ttsFormat`=wav/flac/mp3 |
 | `video_gen` | MiniMax H3（ComfyUI） | **端口 0 = 控制输入（固定在第一个端子）**；端口 1 = 提示词，2+ = 可选图 / 音 / 视频参考（端口号 ≡「端子 N」）|
+
+> `tts_gen`（SoVITS 语音）已随 GPT-SoVITS 本地插件整块移除：画布上不再有这个 kind，
+> 老画布里的 `tts_gen` 节点不渲染、也不报错（重建/改用 `breeze_gen`）。
 
 ## 媒体端子口径（URL）
 
@@ -31,7 +35,7 @@ description: MTNode music_gen / tts_gen / video_gen 节点：MiniMax Music 3、S
 
 ## 输出
 
-- 在节点 **设置** 中配置 `outputPath`（及可选文件名）：`music_gen` / `tts_gen` 写音频（.wav，tts 可选 .mp3），`video_gen` 写视频（.mp4）
+- 在节点 **设置** 中配置 `outputPath`（及可选文件名）：`music_gen` / `yue_gen` / `breeze_gen` 写音频（.wav，breeze 可选 .flac / .mp3），`video_gen` 写视频（.mp4）
 - 抽卡 `attempts` 1–10：多轮生成，文件名 `#1`、`#2`…（目标文件已存在时同样按 `#1`、`#2` 递增，绝不叠加 `_1`）
 - **不要**再接 `save_*` 节点
 
@@ -44,7 +48,7 @@ description: MTNode music_gen / tts_gen / video_gen 节点：MiniMax Music 3、S
 - 全应用 **同时只允许 1 个** 音乐或视频生成任务
 - 另一节点启动会被拒绝并提示占用中的节点
 - 抽卡连跑为 **串行**，每轮结束释放锁后再占
-- `tts_gen`（SoVITS 语音）**不持这条全局锁**：GPT-SoVITS 是独立进程、显存另算
+- `breeze_gen`（Breeze TTS 2 语音）**持这条全局锁**：引擎 eager 就要约 7.7GB 显存，与音乐 / 视频抢同一张卡
 
 ## 图像尺寸策略
 

@@ -25,6 +25,7 @@
   let follow = true;        /* 日志是否自动滚到最新 */
   let running = false;      /* 是否还在跑（决定「取消」还是「完成」按钮） */
   let cancelling = false;   /* 已发出取消、进程树还在死：按钮显示「正在停止…」并置灰 */
+  let autoCreatedDir = "";  /* 这次安装的目录是本窗**自动建出来**的（本轮需求）：顶部副行加一句回执，换插件即作废 */
 
   /* ── 日志的「真实输出顺序」 ──────────────────────────────────────────────
      主进程按**步骤分桶**存日志（snap.logs[stepId]），分桶本身不带顺序信息。窗里自己维护一份
@@ -111,7 +112,6 @@
      真正开跑由窗内按钮发起 —— 用户点了才跑，不会出现「窗还没开安装已经在跑」。 */
   const BACKEND_INSTALL_API = {
     "llama-local": "llamaInstall",
-    "tts-local": "ttsInstall",
     "breeze-tts-local": "breezeInstall",
     "sensenova-local": "sensenovaInstall",
     "minimax-h3": "h3Install",
@@ -148,13 +148,186 @@
     pollTimer = null;
   }
 
+  /* ── 卸载（「卸载」按钮 → 确认清单 → 真删） ───────────────────────────────
+     口径：卸载是破坏性动作，先展开一份「删什么 / 留什么」的清单，用户点「确认卸载」才开跑；
+     删除范围由主进程的路由表决定（自定义卸载口的插件交给它自己，其余删该插件的安装目录），
+     本窗只说「卸载这个插件」，自己不算目录、不拼删除清单。 */
+  let uninPrev = null;      /* 最近一次卸载预览（主进程给的：targets / note / keepHint） */
+  let uninConfirm = false;  /* 确认块是否展开（点「卸载」展开，取消 / 换插件收起） */
+  let uninRunning = false;  /* 已发出卸载、正在跑（按钮置灰，避免重复点） */
+  let injErr = null;        /* 卸载预览失败原因（展开不了清单时如实说，别装作没事） */
+
+  function isUninstall() {
+    return !!snap && (snap.mode === "uninstall" || snap.action === "uninstall");
+  }
+  /** 现在是「卸载这条线」吗：快照是卸载那一次，或者这一趟卸载正跑着 / 确认清单还开着。 */
+  function inUninstallFlow() {
+    return uninRunning || uninConfirm || isUninstall();
+  }
+
+  /** 打开确认块：先问主进程「这一趟会删什么」。取不到就如实报错，不盲删。 */
+  async function openUninstall() {
+    uninConfirm = true;
+    injErr = null;
+    uninPrev = null;
+    /* 卸载也要「先认得出目录」：目录为空 = 主进程读不到该插件的安装目录（配置被清 / 换过
+       数据目录），清单只能是空的、真删也无从下手 —— 先把目录落地那一拍走一遍（本轮共识：
+       安装 / 权重 / 卸载三条链共用同一份口径）。窗口插件 / 桌宠空目录是正常的老口径。 */
+    if (snap) await ensureDirFor(snap.pluginId, {});
+    renderUninstall();
+    renderActions();
+    const r = await api.uninstall({ action: "preview", id: snap ? snap.pluginId : "" }).catch(() => null);
+    if (r && r.ok) uninPrev = r;
+    else injErr = (r && (r.message || r.error)) || T("取不到卸载清单", "cannot get the uninstall list");
+    /* 预览里带回来的安装目录跟着刷新（目录由本窗统一显示） */
+    if (r && r.ok && r.installDir && snap) {
+      snap.installDir = String(r.installDir);
+      renderHead();
+    }
+    renderUninstall();
+    renderActions();
+    return r;
+  }
+
+  function closeUninstall() {
+    uninConfirm = false;
+    uninRunning = false;
+    uninPrev = null;
+    injErr = null;
+    renderUninstall();
+    renderActions();
+  }
+
+  async function runUninstall(opts) {
+    if (!snap || uninRunning) return;
+    /* 还没确认过（「重试」是失败后再来一次，不再问一遍）：先展开清单让用户确认 */
+    if (!(opts && opts.confirmed)) {
+      await openUninstall();
+      return;
+    }
+    const id = snap.pluginId;
+    uninRunning = true;
+    injErr = null;
+    renderActions();
+    toast(T("卸载已开始", "uninstall started"));
+    startPolling(id);
+    const r = await api.uninstall({ action: "run", id }).catch(() => null);
+    /* run 立刻回执（真删在后台异步跑），终局走 finish 事件；失败时这里当场如实说 */
+    if (!r || !r.ok) {
+      uninRunning = false;
+      stopPolling();
+      toast(T("卸载失败：", "uninstall failed: ") + ((r && (r.message || r.error)) || ""), "err");
+      renderActions();
+      return;
+    }
+    if (r.installDir === "" || r.started) uninConfirm = false;
+    renderUninstall();
+    renderActions();
+  }
+
+  function renderUninstall() {
+    const box = $("insUnin");
+    if (!box) return;
+    /* 确认清单在「确认块展开」与「卸载正跑着」两种时候都留着：跑的时候它是这一趟的
+       删除范围现场（进度与结果同时写进右侧日志区），跑完就不该再占地方。 */
+    const show = !!snap && (uninConfirm || uninRunning);
+    box.hidden = !show;
+    if (!show) return;
+    const p = uninPrev || {};
+    $("insUninTitle").textContent = T("确认卸载", "Confirm uninstall") + (p.label ? "：" + p.label : "");
+    $("insUninDir").textContent = p.installDir || (snap && snap.installDir) || "";
+    $("insUninDir").title = $("insUninDir").textContent;
+    const list = $("insUninList");
+    list.innerHTML = "";
+    const li = (text) => {
+      const el = document.createElement("li");
+      el.textContent = text;
+      list.appendChild(el);
+    };
+    if (injErr) {
+      li(T("· 取不到卸载清单：", "· cannot get the uninstall list: ") + injErr);
+    } else if (!uninPrev) {
+      li(T("· 正在读取要删除的内容…", "· reading what will be deleted…"));
+    } else {
+      for (const t of p.targets || []) {
+        const rel = String(t.rel || "");
+        li("· " + T("删除 ", "delete ") + (rel ? rel + " — " : "") + String(t.path || "") + (t.note && !rel ? "（" + t.note + "）" : ""));
+      }
+      if (!(p.targets || []).length) li("· " + T("删除该插件自己管理的运行时文件", "delete the runtime files this plugin manages"));
+      for (const it of (p.items || []).slice(0, 12)) li("    · " + String(it.name || "") + (it.note ? "（" + it.note + "）" : ""));
+      if ((p.items || []).length > 12) li("    · " + T("…目录里还有更多条目", "…more entries inside"));
+    }
+    const noteBits = [];
+    if (uninPrev && uninPrev.warning) noteBits.push(uninPrev.warning);
+    if (uninPrev && uninPrev.note) noteBits.push(uninPrev.note);
+    if (uninPrev && uninPrev.keepHint) noteBits.push(T("保留：", "kept: ") + uninPrev.keepHint);
+    if (!noteBits.length) noteBits.push(T("确认前不会动任何文件。", "Nothing is touched before you confirm."));
+    $("insUninNote").textContent = noteBits.join("\n");
+  }
+
+  /* ── 「动手之前先把目录落地」这一拍（安装 / 权重 / 卸载三条链共用一份口径） ────────────
+     需求：设过插件根目录之后，安装时目录该被自动建出来，不必再去系统框里手建一个。
+     主进程口径在 plugins/main-install.js 的 ensureInstallDirFor → plugin-root.js 的 ensureDir。
+     这里的职责只有三件：调它、把结果同步进快照、把失败**当场说清**（返回 true = 别往下走）。
+     为什么要兜「有目录位的插件却回了空目录」：那是主进程与安装窗对不上（配置文件读不到 /
+     换过数据目录 / 认不出这个 id），从前会一路走到宿主，报一句用户看不懂的 empty_dir ——
+     本轮共识：这里就如实报错，并把「选择安装目录」留作手动兜底。 */
+  async function ensureDirFor(id, opts) {
+    const o = opts || {};
+    const btn = o.button || null;
+    const ens = typeof api.ensureDir === "function" ? await api.ensureDir(id).catch(() => null) : null;
+    const needDir = !!(ens && ens.ok && ens.needs);
+    if (ens && ens.ok && ens.dir) {
+      const prevDir = String((snap && snap.installDir) || "");
+      /* 「已自动创建」的回执写进顶部副行（不用 toast：它会被下面那句「安装已开始」当场顶掉） */
+      autoCreatedDir = ens.created ? String(ens.dir) : "";
+      if (snap) snap.installDir = String(ens.dir);
+      if (prevDir !== String(ens.dir) || ens.created) renderHead();
+      return false;
+    }
+    if (ens && !ens.ok && ens.error) {
+      /* need_root 不算故障：老口径照旧（下面会弹系统目录框让用户选一处） */
+      if (ens.error === "need_root") return false;
+      if (btn) btn.disabled = false;
+      toast(
+        T("创建默认安装目录失败：", "could not create the default install dir: ") +
+          ((ens && (ens.message || ens.error)) || "") +
+          T("（可用「选择安装目录」手动选一处）", " (pick one with “Choose install dir”)"),
+        "err",
+      );
+      return true;
+    }
+    if (needDir) {
+      /* 主进程说「本该给它建目录」，却没回目录：如实拦下，别把「目录为空」传成宿主的 empty_dir */
+      if (btn) btn.disabled = false;
+      toast(
+        T(
+          "取不到这个插件的安装目录（插件配置里没有，主进程也没能推出来）：可用「选择安装目录」手动选一处，或先在插件界面设好插件根目录。",
+          "could not resolve this plugin's install dir (not in its config, and the main process could not derive one): pick one with “Choose install dir”, or set the plugin root folder first.",
+        ),
+        "err",
+      );
+      return true;
+    }
+    return false;
+  }
+
   async function runInstall() {
     if (!snap) return;
     const id = snap.pluginId;
+    /* 卸载那一次：同一只窗、同一份快照，只是「动手」那条桥换成卸载（重试也走这里）。 */
+    if (isUninstall()) return runUninstall({ confirmed: false });
     const m = installApiOf(id);
-    const dir = snap.installDir || "";
+    let dir = snap.installDir || "";
     const btn = $("insRunBtn");
     if (btn) btn.disabled = true;
+    /* ── 目录在**安装真正开始时**才落地（本轮需求）──────────────────────────────
+       用户设过插件根目录后，目录其实就算得出来（根目录 + 默认子目录名），只是从前没人建、
+       也没人写回插件自己的配置 —— 于是用户只能点「选择安装目录」再在系统框里手建一个。
+       这里让主进程把目录建出来（连根目录一起，已存在就直接复用）并写进该插件自己的
+       installDir：7 个宿主的安装函数读的就是它。窗口插件 / 桌宠回 dir:"" ，老口径不变。 */
+    if (await ensureDirFor(id, { button: btn })) return;
+    dir = (snap && snap.installDir) || dir;
     /* 还没选目录：先弹系统目录选择框（不是插件窗），取消就什么都不做 */
     if (!dir && m.pick) {
       const p = await api.api(m.pick, []);
@@ -325,6 +498,11 @@
     el.className = "ins-state is-" + (snap ? snap.state : "");
     const sub = [];
     if (snap && snap.installDir) sub.push(T("安装目录：", "dir: ") + snap.installDir);
+    /* 自动建出来的目录：副行给一句回执（用户设过插件根目录就不必自己建文件夹了）。
+       只认与当前快照同一个目录的那一次 —— 换了插件 / 换了目录，这句话当场作废。 */
+    if (snap && snap.installDir && autoCreatedDir && snap.installDir === autoCreatedDir) {
+      sub.push(T("已自动创建（插件根目录 + 默认子目录名）", "auto-created (plugin root + default subfolder)"));
+    }
     if (snap && snap.skillName) sub.push(T("修复技能：", "skill: ") + snap.skillName);
     $("insSub").textContent = sub.join("  ·  ");
     $("insDir").textContent = snap && snap.installDir ? snap.installDir : T("尚未确定安装目录", "no install dir yet");
@@ -456,6 +634,13 @@
     /* 硬件门槛逃生阀只对带这道门槛的插件显示（见 FORCE_HW_IDS） */
     const forceBox = $("insForceHwBox");
     if (forceBox) forceBox.hidden = FORCE_HW_IDS.indexOf(id) < 0;
+    /* 卸载那一次：同一只窗，按钮换成「确认卸载 / 取消 / 重试」。
+       判据除了快照的 mode，还要算上「确认块已展开」—— 点「卸载」是先展开清单、由用户点
+       「确认卸载」才走 mode=uninstall 的那份快照，这中间那一拍也得按卸载那组按钮画。 */
+    if (inUninstallFlow()) {
+      renderUninstallActions(box, id);
+      return;
+    }
     /* idle（窗开了、安装还没跑）= 用户点「开始安装」才开跑；
        done（上一次跑完了）= 给「重新安装」。两者都是「可以发起安装」的状态。 */
     if (idle) {
@@ -546,8 +731,56 @@
         ),
       );
     }
+    /* 「卸载」：本窗内唯一的破坏性动作 —— 点它先展开确认清单（删什么 / 留什么），
+       确认后才真删。没会话（没开过安装窗）时不显示；正在跑安装 / 卸载时也不显示。 */
+    if (!running && !uninRunning) {
+      box.appendChild(
+        mkBtn(T("卸载", "Uninstall"), "", () => (uninConfirm ? closeUninstall() : openUninstall()), {
+          title: T("删掉该插件装在本机的东西（会先给出清单让你确认）", "remove what this plugin installed on this machine (you confirm a list first)"),
+        }),
+      );
+    }
+    /* 安装态：上面那些路径都要以「复制日志 / 完成并关闭」收尾（卸载态已在上面的
+       renderUninstallActions 里自己收尾并 return 了）。 */
     box.appendChild(mkBtn(T("复制日志", "Copy log"), "", copyLog));
     box.appendChild(mkBtn(running ? T("关闭", "Close") : T("完成并关闭", "Done"), "", () => api.close(id)));
+  }
+
+  /** 卸载态的动作按钮：确认 / 取消 / 重试。与安装态共用同一只窗与同一份快照。 */
+  function renderUninstallActions(box, id) {
+    if (uninRunning) {
+      box.appendChild(
+        mkBtn(T("正在卸载…", "uninstalling…"), "", async () => {
+          const r = await api.uninstall({ action: "cancel", id }).catch(() => null);
+          if (!r || !r.ok) toast((r && (r.message || r.error)) || T("取消失败", "cancel failed"), "err");
+          else toast(T("已请求取消：正在停手（已删掉的不恢复）", "cancel requested: stopping (files already deleted stay deleted)"));
+        }, { title: T("停手：已经删掉的不会恢复", "stop: files already deleted stay deleted") }),
+      );
+    } else if (uninConfirm) {
+      box.appendChild(mkBtn(T("取消", "Cancel"), "", () => closeUninstall()));
+      const ok = mkBtn(T("确认卸载", "Uninstall now"), "primary", () => runUninstall({ confirmed: true }), {
+        title: T("按上面清单删除（先停后端，再删文件）", "delete the list above (stop the backend, then remove files)"),
+      });
+      if (snap.state === "running" || injErr) ok.disabled = true;
+      box.appendChild(ok);
+    } else {
+      if (snap.state === "failed" || snap.state === "cancelled") {
+        box.appendChild(mkBtn(T("重试", "Retry"), "primary", () => runUninstall({ confirmed: true }), {
+          title: T("再跑一次卸载（已经删掉的那些不再处理）", "run the uninstall again (already deleted items are skipped)"),
+        }));
+      }
+      box.appendChild(mkBtn(T("卸载", "Uninstall"), snap.state === "done" ? "primary" : "", () => openUninstall(), {
+        title: T("删掉该插件装在本机的东西（会先给出清单让你确认）", "remove what this plugin installed on this machine (you confirm a list first)"),
+      }));
+      if (snap.state === "failed") {
+        box.appendChild(mkBtn(T("打开插件控制台", "Open plugin console"), "", async () => {
+          const r = await api.openConsole(id);
+          if (!r || !r.ok) toast((r && (r.message || r.error)) || T("打开失败", "open failed"), "err");
+        }));
+      }
+    }
+    box.appendChild(mkBtn(T("复制日志", "Copy log"), "", copyLog));
+    box.appendChild(mkBtn(T("完成并关闭", "Done"), "", () => api.close(id)));
   }
 
   function renderAll() {
@@ -561,6 +794,7 @@
       foot.hidden = true;
       renderHead();
       renderWeights();
+      renderUninstall();
       return;
     }
     main.hidden = false;
@@ -571,6 +805,7 @@
     renderLog(true);
     renderActions();
     renderWeights();
+    renderUninstall();
   }
 
   /* ── 权重指路：指定已手动下载的位置 → 移动就位（只移动、不复制） ──
@@ -707,6 +942,9 @@
 
   async function weightsAction(action, extra) {
     if (!snap) return null;
+    /* 「移动到就位」要先有落点：目录为空时搬运只会在宿主机那侧报错，这里先把目录落地那一拍
+       走一遍（本轮共识：安装 / 权重 / 卸载三条链共用同一份口径）。 */
+    if (action === "move" && (await ensureDirFor(snap.pluginId, {}))) return null;
     const r = await api
       .weights(Object.assign({ action, id: snap.pluginId }, extra || {}))
       .catch(() => null);
@@ -796,12 +1034,25 @@
 
   /* ── 事件 ── */
   function adopt(next) {
-    if (!next || next.empty) { snap = null; cancelling = false; resetLogOrder(); renderAll(); return; }
+    if (!next || next.empty) {
+      snap = null;
+      cancelling = false;
+      autoCreatedDir = "";
+      uninRunning = false;
+      uninConfirm = false;
+      uninPrev = null;
+      injErr = null;
+      resetLogOrder();
+      renderAll();
+      return;
+    }
     const prevId = adopt._id;
     snap = next;
     if (!snap.logs) snap.logs = {};
     /* 快照落成终局（done / failed / cancelled）＝ 这次取消已经有了结果，按钮不再停在「正在停止…」 */
     if (snap.state !== "running") cancelling = false;
+    /* 卸载那一次同理：终局 = 这一趟跑完了，动作按钮回到「卸载 / 重试」那一组 */
+    if (snap.state !== "running") uninRunning = false;
     /* 换插件（或重开窗）时把选区与日志序号表归零：「全部」视图默认摆给用户看；
        权重现场也当场作废 —— 先清再画，免得新插件头上还挂着上一个插件的权重区块
        （真实回执带 id，回来后自己会补上）。 */
@@ -809,9 +1060,15 @@
     if (switched) {
       adopt._id = snap.pluginId;
       selected = "";
+      autoCreatedDir = "";
       weightsPreview = null;
       weightsInfo = null;
       weightsOpen = false;
+      /* 卸载确认块也当场作废：新插件头上不该挂着上一个插件的卸载清单 */
+      uninConfirm = false;
+      uninPrev = null;
+      injErr = null;
+      uninRunning = false;
       resetLogOrder();
     }
     syncLogOrderFromSnap();

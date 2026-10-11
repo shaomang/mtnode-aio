@@ -3577,6 +3577,14 @@
     "，用时 ": ", took ",
     "{n} 次工具调用": "{n} tool calls",
     "展开 / 收起这一轮的过程（思考与工具调用）": "Expand / collapse this round's process (thinking and tool calls)",
+    /* 过程折叠条（本次需求 · 一轮折叠时保留最后的总结回应，见 app-assist.js 的 histProc*）：
+       一轮的结论那一行折叠时，过程收成这一行摘要条，最终答复全文留在条下方。
+       数字项各自一句词条（拿不到的项整句不出现），逗号那一枚「 · 」表内已有。 */
+    "过程": "Process",
+    "{n} 步": "{n} steps",
+    "思考 {n} 字": "Thinking: {n} chars",
+    "用时 {n}": "Took {n}",
+    "点击展开过程": "Click to expand the process",
     /* 输入区标记（本次需求 · 上游 ContextMeter 与 QueueDock 的两段分区） */
     "剩余 ": "Remaining ",
     " tok（点开看用量分布）": " tok (click for the usage breakdown)",
@@ -6176,24 +6184,10 @@
     "Minimax Music 3 节点": "Minimax Music 3 Node",
     "Minimax Music 3（音乐生成 · 提示词 + 歌词）":
       "Minimax Music 3 (music · prompt + lyrics)",
-    /* 一级子菜单「音频生成」成员：SoVITS 语音生成（GPT-SoVITS 本机后端） */
-    "SoVITS 语音": "SoVITS voice",
-    "SoVITS 语音生成（文本转语音 · GPT-SoVITS）":
-      "SoVITS speech (text-to-speech · GPT-SoVITS)",
-    /* tts_gen 类型骨架：侧栏标注、新建默认标题与端子口径 */
-    "SoVITS 语音节点": "SoVITS Voice Node",
+    /* 一级子菜单「音频生成」成员：Breeze 语音生成（Breeze TTS 2 本机后端） */
     "语音": "Voice",
-    "待合成文本（语音内容）": "Text to synthesize (speech content)",
     "语音生成节点需要文本来源（待合成文本）":
       "Speech generation node needs a text source (text to synthesize)",
-    "语音生成节点控制输入端子为端口 1":
-      "Speech generation node's control input is port 1",
-    /* tts_gen 节点体 UI（音色 / 语速 / 格式 / 路径 / 试听 / 状态） */
-    "SoVITS 语音 · GPT-SoVITS 本机后端 · 文本转语音":
-      "SoVITS voice · GPT-SoVITS local backend · text-to-speech",
-    "调用 GPT-SoVITS 后端合成语音":
-      "Synthesize speech with the GPT-SoVITS backend",
-    "打开 GPT-SoVITS 控制台": "Open GPT-SoVITS console",
     "打开 H3 控制台日志": "Open H3 console log",
     /* video_gen（H3）参考素材跑前预检的报警文案：端口上有线却取不到值 —— 不再静默丢图 */
     "参考素材取不到内容，本次不会带上：":
@@ -6203,68 +6197,17 @@
     "参考图": "reference image",
     "参考视频": "reference video",
     "打开 Music 3 控制台日志": "Open Music 3 console log",
-    "⚠ GPT-SoVITS 插件未安装：请在「插件 · GPT-SoVITS 语音合成」中安装后使用本节点":
-      "⚠ GPT-SoVITS plugin not installed: install it in Plugins · GPT-SoVITS Speech Synthesis before using this node",
-    "插件 · GPT-SoVITS 语音合成：设置安装目录 → 安装":
-      "Plugins · GPT-SoVITS Speech Synthesis: set install folder → Install",
-    "待合成文本走端子 T（连接上游文本节点）":
-      "Text to synthesize comes in on port T (connect an upstream text node)",
     "音色": "Voice",
     "音色名（后端未就绪时可手填）":
       "Voice id (type it manually when the backend is down)",
     "刷新音色列表": "Refresh voice list",
-    "语速": "Speed",
-    "语速倍率（0.5–2.0）": "Speed rate (0.5–2.0)",
     "输出格式": "Output format",
-    /* SoVITS 语音生成 · 执行链（GPT-SoVITS 插件） */
-    "语音合成插件未就绪": "Speech synthesis plugin not ready",
-    "请连接文本来源（待合成文本 · 端子 T）":
-      "Connect a text source (text to synthesize · port T)",
+    /* Breeze 语音生成 · 执行链（Breeze TTS 2 插件） */
     "启动后端并合成…": "Starting backend and synthesizing…",
-    "语音合成中…": "Synthesizing speech…",
-    "语音已生成：": "Speech saved: ",
     "已取消语音合成": "Speech synthesis cancelled",
     "待合成文本为空": "Text to synthesize is empty",
     "未设置输出路径": "No output path set",
     "合成失败": "Synthesis failed",
-    "GPT-SoVITS 服务密钥缺失（请先在「插件 · GPT-SoVITS 语音合成」启动一次后端）":
-      "GPT-SoVITS service key missing (start the backend once in Plugins · GPT-SoVITS Speech Synthesis)",
-    "后端返回空音频（请检查该音色的参考音频）":
-      "Backend returned empty audio (check this voice's reference clip)",
-    "GPT-SoVITS 后端尚未安装（请在「插件 · GPT-SoVITS 语音合成」中安装）":
-      "GPT-SoVITS backend is not installed (install it in Plugins · GPT-SoVITS Speech Synthesis)",
-    "GPT-SoVITS 后端缺少 Python 环境（请在「插件 · GPT-SoVITS 语音合成」中重新安装）":
-      "GPT-SoVITS backend has no Python environment (reinstall it in Plugins · GPT-SoVITS Speech Synthesis)",
-    "GPT-SoVITS 后端安装目录未设置或不合法（请在「插件」中重新选择目录）":
-      "GPT-SoVITS backend install folder is unset or invalid (choose it again in Plugins)",
-    "GPT-SoVITS 后端未能在规定时间内就绪（可打开插件控制台查看启动日志）":
-      "GPT-SoVITS backend did not come up in time (open the plugin console for the startup log)",
-    "后端没有可用音色（请先在插件里添加参考音频音色）":
-      "No voice available on the backend (add a reference-audio voice in Plugins first)",
-    "音色不存在（请重新选择音色）": "Voice not found (pick the voice again)",
-    "语种被后端策略拒绝（请在插件里调整语种策略或换文本）":
-      "Language rejected by the backend policy (adjust the language policy in Plugins or change the text)",
-    "音频写盘失败（请检查输出路径是否可写）":
-      "Failed to write the audio file (check whether the output path is writable)",
-    "后端不支持该输出格式（请打开插件控制台更新语音后端）":
-      "The backend does not support this output format (open the plugin console and update the speech backend)",
-    "本机缺少 ffmpeg，无法把音频转成 mp3 / flac（请改用 wav 输出，或重新安装语音后端）":
-      "ffmpeg is missing, so the audio cannot be converted to mp3 / flac (switch the output to wav or reinstall the speech backend)",
-    "音频转码失败（请改用 wav 输出，或重新安装语音后端）":
-      "Audio transcoding failed (switch the output to wav or reinstall the speech backend)",
-    "音色缺少参考音频（请在插件里重新添加该音色的参考音频）":
-      "The voice has no reference clip (re-add this voice's reference audio in Plugins)",
-    "后端语种参数无效（请在插件里调整语种策略）":
-      "Invalid language parameter for the backend (adjust the language policy in Plugins)",
-    "后端参考文本语种无效（请在插件里重新添加该音色）":
-      "Invalid reference-text language for the backend (re-add this voice in Plugins)",
-    "后端不接受该文本切分方式（请更新语音后端）":
-      "The backend rejects this text-splitting method (update the speech backend)",
-    "后端返回 HTTP 错误：": "Backend returned an HTTP error: ",
-    "（请打开插件控制台查看日志；若为 400，多为输出格式不被后端支持）":
-      " (open the plugin console for logs; a 400 usually means the output format is unsupported)",
-    "无法连接 GPT-SoVITS 后端（后端可能已退出，请重新执行本节点）":
-      "Cannot reach the GPT-SoVITS backend (it may have exited — run this node again)",
     /* breeze_gen：Breeze 语音生成（Breeze TTS 2 本机后端 · 音色克隆 / 设计 / 导演）
        —— 类型骨架（菜单名 / 默认标题 / 端子） + 节点体 UI（音色 / 能力 / 指令 / cfg_scale / 格式 / 状态）
        + 执行链与错误码（管理服务 8772 · 推理引擎 8773 按需拉起；错误文案与后端 code 一一对应）。 */
@@ -8993,7 +8936,6 @@
     "监听端口 / 通道 / 协议": "Listen port / channel / protocol",
     "目标地址 / 端口 / 通道 / 协议": "Target address / port / channel / protocol",
     "动作 / 补缺 / 固定": "Action / fill gaps / pinned",
-    "音色 / 语速 / 输出格式 / 输出路径": "Voice / speed / output format / output path",
 
     /* 生成类窗内小节与选项（含从内联 .n-api-panel 搬进来的档位） */
     "渲染": "Render",
@@ -9231,10 +9173,8 @@
     "开": "on",
     "关": "off",
 
-    /* 媒体生成（tts / music / video / remotion）参数与摘要 */
+    /* 媒体生成（music / video / remotion / breeze 语音）参数与摘要 */
     "音色 ": "Voice ",
-    "语速 ": "Speed ",
-    "语速（0.5–2.0）": "Speed (0.5–2.0)",
     "时长（秒）": "Duration (seconds)",
     "时长 ": "Duration ",
     "摇数（每次执行种子 +1）": "Reroll (seed +1 on every run)",
@@ -9290,17 +9230,20 @@
   });
 
   /* ── 八个本地后端插件的卡片新语义 + 详情浮层内嵌 console（renderer/app-plugins.js）──
-     本轮共识：插件不再自己呼出独立的后端窗口 → 卡片主按钮 = 启动/停止后端、次按钮 = 控制台；
+     本轮共识：插件不再自己呼出独立的后端窗口 → 卡片三颗按钮 = 安装 / 启用 / 控制台（启用只在已装时出现）；
      后端求助信号不再弹窗 → 卡片角标 + 状态行一句；状态与 console 内容显示在插件界面里。 */
   Object.assign(EN, {
     "启动": "Start",
+    "启用": "Enable",
+    "停用": "Disable",
+    "启用中…（首次加载模型可能几分钟）": "Enabling… (the first model load can take minutes)",
+    "启用中…（首次加载模型可能几分钟，按钮已置灰）":
+      "Enabling… (the first model load can take minutes; the button is disabled)",
+    "停用中…": "Disabling…",
     "控制台": "Console",
     "重装": "Reinstall",
     "启动中…": "Starting…",
     "更新中…": "Updating…",
-    "启动中…（点此停止）": "Starting… (click to stop)",
-    "启动中…（首次加载模型可能几分钟，可再点一次停止）":
-      "Starting… (the first model load can take minutes; click again to stop)",
     "启动失败：": "Failed to start: ",
     "停止后端失败：": "Failed to stop the backend: ",
     "选择安装目录失败：": "Could not pick the install folder: ",
@@ -12303,23 +12246,9 @@
     "」子目录。": "” subdirectory by default.",
     "取不到这个插件的安装目录，请重开插件界面后再试。":
       "Cannot resolve this plugin's install directory — reopen the plugins dialog and try again.",
-    "当前版本不支持在文件管理器里打开目录": "This version cannot open directories in the file manager",
-    "打开目录失败：": "Failed to open the directory: ",
-    "安装目录：": "Install directory: ",
-    "安装目录": "Install directory",
-    "未设置（先在上面设置插件根目录）": "Not set (set the plugin root directory above first)",
+    /* 安装目录一行（详情浮层里的目录 / 打开目录 / 恢复默认）已按需求整块摘除：
+       目录只在安装窗里显示与修改，插件界面不再写路径，故这几个词条一并删掉。 */
     "默认子目录名：": " default subdirectory: ",
-    "插件自己设置的目录（仍可在安装窗 / 控制台里更换）":
-      "Directory set by the plugin itself (still changeable in its install window / console)",
-    "默认：插件根目录 + 子目录名「": "Default: plugin root + subdirectory “",
-    "还没设置插件根目录（可先设成推断出来的：": "No plugin root directory yet (you can use the inferred one: ",
-    "还没设置插件根目录": "No plugin root directory yet",
-    "后端正在运行：先停止后端再改目录": "The backend is running: stop it before changing the directory",
-    "清掉该插件自己的目录设置，之后用 插件根目录 + 子目录名":
-      "Clear this plugin's own directory setting and use plugin root + subdirectory instead",
-    "已恢复默认安装目录：": "Restored the default install directory: ",
-    "先设置插件根目录再恢复默认。": "Set the plugin root directory before restoring the default.",
-    "恢复默认失败：": "Failed to restore the default: ",
     /* 桌宠卡片上这两条中文在英文界面里原先没对译（英文档回落到中文）—— 顺手补上 */
     "桌宠": "Desktop pet",
     "启动桌宠失败：": "Failed to start the desktop pet: ",

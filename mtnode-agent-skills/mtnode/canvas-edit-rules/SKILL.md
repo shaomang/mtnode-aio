@@ -25,7 +25,7 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 - tool / function 节点：参数表就是端子表——输入端子 0 = 控制入、1..N = 按顺序的各入参；输出端子 0..M-1 = 各出参、末位 = 控制出。fromIndex / toIndex 按这份表数（目标的 toIndex 0 = 控制入）；数组端子看参数的 list 说明；传 inputs / outputs = 整体替换该表，删参数会让已连的端子改指别的参数，改完提醒用户复核连线。
 - @引用：连线源在 prompt/task 里写 @标题；引用全局广播须同时 (1) 源接进 kind "global"、(2) 消费节点 globalRefs:true、(3) prompt/task 里 @源标题——只有被明文 @ 命中的才注入；@标签名 注入带该标签的全部节点内容。为节点写 prompt/task 而要用别的节点的内容时，一律写 @标题（连线源），不要粘贴正文——粘贴的不随上游重跑更新。素材节点本身不是 @ 候选：写它的内容条目标题（＝端子名）只引那一条，且只有已连线接进本节点的端子条目可引。
 - 智能节点（agent_task、开了 agent 的 proc_text）自己会写文件：其后绝不接 save（会把会话噪声落盘），也别当数据输入连给别人——让它写文档，再用 wait_file 以控制线挡住下游（它无输入端子、不输出值，别往它连线），后续节点自己读约定路径。
-- save 只接在普通（非智能）proc_text / proc_image / sensenova_gen 之后（sensenova_gen 的图像从输出端口 0 出，可直连 save 落 .png）；music_gen / tts_gen / video_gen 由节点自己的 outputPath 直接写出音 / 视频，不配 save；remotion 例外：无 outputPath，mp4 由下游 save 落盘（.mp4 结尾）。**保存类节点（save / save_pdf）本身有 1 个数据输出端子＝本次保存的那份内容**（与落盘内容一致），可继续往下游接、也能被 @ 引用；详见下面「保存类节点」。
+- save 只接在普通（非智能）proc_text / proc_image / sensenova_gen 之后（sensenova_gen 的图像从输出端口 0 出，可直连 save 落 .png）；music_gen / yue_gen / breeze_gen / video_gen 由节点自己的 outputPath 直接写出音 / 视频，不配 save；remotion 例外：无 outputPath，mp4 由下游 save 落盘（.mp4 结尾）。**保存类节点（save / save_pdf）本身有 1 个数据输出端子＝本次保存的那份内容**（与落盘内容一致），可继续往下游接、也能被 @ 引用；详见下面「保存类节点」。
 - 图像生成节点（proc_image / sensenova_gen）每次运行只出 1 张图：要多图就一条批量项出一张、或用多个节点、或 attempts N。
 - proc_image（图像处理/生成）节点可开透明背景：用户要透明底成品（贴纸 / 图标 / 精灵 / 立绘 / 抠好的主体）时，把该 proc_image 节点的 bgRmOn 置 true 即可——正常写主体提示词，内部先出纯黑基准、再严格复刻纯白并差分出 Alpha（带透明 PNG）；约 2 倍 Token，且只有能把基准图当参考图下发的服务商（OpenAI 兼容 / Stability 生图）才会抠图，其余自动跳过。不需要透明底或换回单张就置 false。
 - batchMode "batch" = 每条一次运行、每次只看该条：严禁把整批 N 条又全部塞进每次运行（≈N² 次调用）；只处理其中一项先接 split，要一次看全部才用 "agg"。逐条批量优先普通 proc_text / proc_image（智能节点只用于 agg）。细则见技能 mtnode-canvas-batch-safety。
@@ -43,7 +43,7 @@ create.kind 速查：输入 input_text / input_image / input_audio / input_video
 - **端口 0 = 提示词 / 文本入口 · 端口 1+ = 数据槽**：连一条数据线就多一个槽，**文本与图像引用都收**；参考图（图生图 / 图像编辑）就接端口 1+，**不要接端口 0**。输出 端口 0 = 内容 · 末尾 = 控制输出。
 - `ports` / `portRule.now` 只列**当下真实存在**的端子：没连线的节点只有「端口 0」，**据此断定「这个节点没有图像参考端子」是错的**；那条「端子怎么长」的规则就在 `portRule` 里。
 - **不要用「先试连一条线、再看回执 warnings」的办法反推接法**：一次读图就读全了，试连既多一轮往返又可能真接错线。
-- 控制类 / 固定端口类（control / wait_file / timer / gate / judge / task / video_gen / remotion / tts_gen / super / tool / function / 素材）端子由结构或参数钉死，按 `ports` 读即可。
+- 控制类 / 固定端口类（control / wait_file / timer / gate / judge / task / video_gen / remotion / breeze_gen / super / tool / function / 素材）端子由结构或参数钉死，按 `ports` 读即可。
 
 ## 保存类节点（save / save_pdf）
 
@@ -74,4 +74,4 @@ SenseNova-U1.5-8B-MoT 跑在用户本机的 Python 后端（插件 sensenova-loc
 - **全局互斥**：图像生成与音乐 / 视频生成共用一把全局锁，24G 卡上三者不能同时跑；并排跑时第二个节点报「已有媒体任务在跑」是设计行为，不是故障。
 - **耗时预期**：首次运行要加载权重（分钟级），之后常驻；不要因为没立刻出图就重复点 ▶ 或重跑同一节点。
 
-生成类节点的共同口径（music_gen / tts_gen / video_gen 的 outputPath、抽卡 + seed、全局锁、媒体输入走 file:///）另见技能 mtnode-media-gen-nodes。
+生成类节点的共同口径（music_gen / yue_gen / breeze_gen / video_gen 的 outputPath、抽卡 + seed、全局锁、媒体输入走 file:///）另见技能 mtnode-media-gen-nodes。

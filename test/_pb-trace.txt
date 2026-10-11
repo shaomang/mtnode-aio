@@ -99,8 +99,6 @@ function portBadgeText(node, dir, idx, opt) {
           title: i === 0 ? "" : I18n.t("（数据槽：可接文本 / 图像）"),
           zh: true,
         };
-      case "tts_gen":
-        return { badge: i === 0 ? I18n.t("文本") : I18n.t("控制"), title: "", zh: true };
       /* Breeze 语音（bug 修复：它从前不在任何徽标白名单里，5 入 2 出全都没有标签）——
          端口口径 = app.js 的 IN_PORT_DATA_KINDS.breeze_gen / inPortIsControl：
          0 待合成文本 · 1 参考音频 · 2 参考文稿 · 3 指令 · 4 控制 */
@@ -220,7 +218,6 @@ function portBadgeText(node, dir, idx, opt) {
   if (
     node.kind === "music_gen" ||
     node.kind === "yue_gen" ||
-    node.kind === "tts_gen" ||
     node.kind === "video_gen" ||
     node.kind === "remotion" ||
     (typeof isVideoPostKind === "function" && isVideoPostKind(node))

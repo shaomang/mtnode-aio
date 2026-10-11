@@ -3,10 +3,10 @@
  * 安装窗（插件安装步骤对话）回归 —— 本轮新增能力的唯一冒烟入口。
  *
  * 口径（与实现一一对应）：
- *   · 步骤协议真源 pack-steps/step.ps1（一行一条 JSON）→ 8 个包各一份副本必须逐字节一致；
+ *   · 步骤协议真源 pack-steps/step.ps1（一行一条 JSON）→ 7 个包各一份副本必须逐字节一致；
  *   · 每个包一份 steps.json（开窗即列全表），步骤 id 必须与包脚本里打的一致；
  *   · 解析与状态机在 plugins/install-steps.js（纯函数，本文件真跑它）；
- *   · 8 个后端宿主 + 窗口插件 + 桌宠都要在安装窗登记（registerInstallTarget）；
+ *   · 7 个后端宿主 + 窗口插件 + 桌宠都要在安装窗登记（registerInstallTarget）；
  *   · 取消 = 按进程树强杀 + 落 state="cancelled"（真进程证据在 test/smoke-install-cancel.js）；
  *   · 失败处置：脚本失败后**不再静默转 Agent 兜底**，一律停在安装窗的失败步，
  *     由用户点「交给 mtnode 会话修复」新建可见会话（工作区 = 安装目录）。
@@ -61,10 +61,9 @@ function fnBody(src, name) {
   return src.slice(at);
 }
 
-/* 8 个后端插件：包目录 / 宿主文件 / 安装窗 id / steps.json */
+/* 7 个后端插件：包目录 / 宿主文件 / 安装窗 id / steps.json */
 const PACKS = [
   { pack: "llama-pack", host: "llama/main-llama.js", id: "llama-local", skill: "llama-local-install", steps: 5 },
-  { pack: "tts-pack", host: "tts/main-tts.js", id: "tts-local", skill: "tts-local-install", steps: 7 },
   { pack: "breeze-pack", host: "breeze/main-breeze.js", id: "breeze-tts-local", skill: "breeze-tts-local-install", steps: 8 },
   { pack: "sensenova-pack", host: "sensenova/main-sensenova.js", id: "sensenova-local", skill: "sensenova-local-install", steps: 11 },
   { pack: "h3-pack", host: "h3/main-h3.js", id: "minimax-h3", skill: "minimax-h3-install", steps: 6 },
@@ -73,8 +72,8 @@ const PACKS = [
   { pack: "remotion-pack", host: "remotion/main-remotion.js", id: "remotion", skill: "", steps: 4 },
 ];
 
-/* ═════════════ [1] 步骤协议：真源一份，8 个包逐字节一致 ═════════════ */
-console.log("\n[1] 步骤协议真源 pack-steps/step.ps1 与 8 个包内的副本");
+/* ═════════════ [1] 步骤协议：真源一份，7 个包逐字节一致 ═════════════ */
+console.log("\n[1] 步骤协议真源 pack-steps/step.ps1 与 7 个包内的副本");
 const protoSrc = read("pack-steps/step.ps1");
 ok(exists("pack-steps/step.ps1"), "协议真源在 pack-steps/step.ps1");
 for (const p of PACKS) {
@@ -301,8 +300,40 @@ has(preloadWin, "contextBridge.exposeInMainWorld", "窗桥走 contextBridge 白�
 has(preloadWin, "onState", "窗订阅状态帧");
 has(preloadWin, "onEvent", "窗订阅事件流（步骤 / 日志 / 终局）");
 
+/* ═════════════ [6b] 卸载（本轮需求：安装界面增加卸载功能） ═════════════ */
+console.log("\n[6b] 安装窗的「卸载」：预览清单 → 确认 → 先停后端再删目录");
+has(hostInstSrc, "mtnodeInstall:uninstall", "主进程有卸载通道 mtnodeInstall:uninstall（安装窗唯一入口）");
+has(hostInstSrc, "function uninstallPreviewFor(", "有卸载预览（这一趟删什么 / 留什么，只看不动盘）");
+has(hostInstSrc, "function startUninstall(", "有真删口 startUninstall（异步跑，进度推给窗）");
+has(hostInstSrc, "UNINSTALL_SPECS", "卸载路由表在主进程（窗只说「卸载这个插件」，删除范围不由窗决定）");
+has(hostInstSrc, "function uninstallGuard(", "有卸载安全守卫");
+has(hostInstSrc, "mod.rejectReason(n)", "守卫不吃用户给的路径：走 plugin-root 的 rejectReason（盘根 / 应用目录 / 数据目录一律拒）");
+has(hostInstSrc, "refuse_plugin_root", "安装目录 = 插件根目录本身时拒绝（不删整根）");
+has(hostInstSrc, 'error: "not_installed"', "目录不存在时如实回 not_installed（不装作删过）");
+has(hostInstSrc, 'error: "busy"', "同时只允许一次卸载（再来一次回 busy）");
+has(hostInstSrc, "if (spec.stop) {", "通用卸载先停后端（DLL / EXE 被占用时删不掉）");
+has(hostInstSrc, 'invokeChannelFor(spec.custom.preview', "自定义卸载口的插件（Music3 / H3）先问它自己的预览");
+has(hostInstSrc, 'invokeChannelFor(spec.custom.run', "自定义卸载口的插件交给它自己删（output 保留口径由它决定）");
+has(hostInstSrc, '"pet:uninstall"', "桌宠走它自己的卸载口（自启登记一并撤）");
+has(hostInstSrc, "maxRetries: 3", "删除用 fs.rmSync(force + maxRetries)（Windows 上占用的文件有重试机会）");
+hasnt(hostInstSrc, "fs.rmSync(dir, { recursive: true, force: true });", "不裸删：目录删除一律带 maxRetries");
+has(hostInstSrc, 'snap.mode = "uninstall"', "beginPluginInstall 给卸载那一次打 mode=uninstall（窗据此认出这是卸载）");
+has(hostInstSrc, "UNINSTALL_STEPS", "卸载有自己的兜底步骤表（自定义路由的插件也有一行「卸载并清理文件」）");
+has(preloadWin, "uninstall: (payload)", "窗桥暴露 mtnodeInstall:uninstall");
+has(pageJs, "function isUninstall(", "窗认得出「这是卸载那一次」");
+has(pageJs, 'api.uninstall({ action: "preview"', "点「卸载」先拉预览清单（确认前不动盘）");
+has(pageJs, 'api.uninstall({ action: "run"', "点「确认卸载」才真删");
+has(pageJs, 'api.uninstall({ action: "cancel"', "卸载中可停手（已删掉的不恢复）");
+has(pageJs, "function renderUninstall(", "窗画卸载确认清单（删什么 / 留什么）");
+has(pageJs, 'T("确认卸载", "Uninstall now")', "破坏性动作要显式确认（不是点一下就走）");
+has(pageJs, 'T("保留：", "kept: ")', "清单里写明保留什么（别让用户以为卸载 = 全清）");
+has(pageSrc, 'id="insUnin"', "窗页面有卸载确认块");
+has(pageSrc, 'id="insUninList"', "确认块里有清单容器");
+has(pageJs, 'T("卸载", "Uninstall")', "底栏有「卸载」按钮");
+has(pageJs, "uninRunning", "卸载进行中置灰（避免连点两次）");
+
 /* ═════════════ [7] 宿主接线：登记 + 上报 + 入口先开窗 ═════════════ */
-console.log("\n[7] 8 个后端宿主：登记安装窗 / 上报步骤 / 安装入口先开会话");
+console.log("\n[7] 7 个后端宿主：登记安装窗 / 上报步骤 / 安装入口先开会话");
 for (const p of PACKS) {
   const src = read(p.host);
   has(src, 'require("../plugins/main-install.js")', p.host + " require 安装窗编排模块");
@@ -351,9 +382,9 @@ for (const p of PACKS) {
   );
   if (src.indexOf("installHost.failStep(") >= 0) failStepHosts++;
 }
-/* 「不再静默兜底」这句口径注释：本轮改到安装链的四个宿主（llama / tts / breeze / remotion）
+/* 「不再静默兜底」这句口径注释：本轮改到安装链的三个宿主（llama / breeze / remotion）
    都写在 catch 里；h3 / music3 / yue 的说明写在 install.ps1 的编排注释里。 */
-for (const rel of ["llama/main-llama.js", "tts/main-tts.js", "breeze/main-breeze.js", "remotion/main-remotion.js"]) {
+for (const rel of ["llama/main-llama.js", "breeze/main-breeze.js", "remotion/main-remotion.js"]) {
   const src = read(rel);
   ok(
     src.indexOf("不再自动转 Agent 兜底") >= 0 || src.indexOf("不再自动重跑 / 静默兜底") >= 0,
@@ -466,7 +497,7 @@ hasnt(read("plugins/main-install.js"), 'join(getDataDir(), "install"', "安装�
 /* ═════════════ [12] 权重指路：安装窗侧的接线（行为另见 smoke-install-weights.js） ═════════════ */
 console.log("\n[12] 权重指路 → 移动就位：主进程 IPC + 目标表接线");
 const weightsMod = require(path.join(ROOT, "plugins/install-weights.js"));
-const W_IDS = ["minimax-h3", "minimax-music3", "yue2-local", "sensenova-local", "tts-local", "breeze-tts-local"];
+const W_IDS = ["minimax-h3", "minimax-music3", "yue2-local", "sensenova-local", "breeze-tts-local"];
 for (const id of W_IDS) {
   ok(weightsMod.supports(id) === true, id + " 在权重目标表里");
 }
@@ -491,7 +522,6 @@ const W_HOST = {
   "minimax-music3": "music3/main-music3.js",
   "yue2-local": "yue/main-yue.js",
   "sensenova-local": "sensenova/main-sensenova.js",
-  "tts-local": "tts/main-tts.js",
   "breeze-tts-local": "breeze/main-breeze.js",
 };
 for (const [id, host] of Object.entries(W_HOST)) {

@@ -45,10 +45,10 @@
        main.js require 它，漏进白名单 = 打包后 Cannot find module './perf-probe.js'
        （面板只剩显存区块，资源检测整块失效）。 */
     "perf-probe.js",
-    /* 本地后端解释器口径（pythonw 不弹控制台）：llama / tts / breeze / music3 / yue / sensenova / h3
-       七个插件宿主都 require 它，漏进白名单就是打包后 Cannot find module '../backend-python.js'。 */
+    /* 本地后端解释器口径（pythonw 不弹控制台）：llama / breeze / music3 / yue / sensenova / h3
+       六个插件宿主都 require 它，漏进白名单就是打包后 Cannot find module '../backend-python.js'。 */
     "backend-python.js",
-    /* 国内镜像源单一真源：8 个插件宿主（breeze / tts / llama / h3 / music3 / yue /
+    /* 国内镜像源单一真源：7 个插件宿主（breeze / llama / h3 / music3 / yue /
        sensenova / remotion）与网关都 require 它，漏进白名单就是打包后
        Cannot find module '../cn-mirrors.js' —— 安装链会退回官方源。 */
     "cn-mirrors.js",
@@ -83,7 +83,6 @@
     "yue/**",
     "h3/**",
     "llama/**",
-    "tts/**",
     "breeze/**",
     "sensenova/**",
     "remotion/**",
@@ -199,6 +198,13 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 静默垫片（真源 pack-shims/sitecustomize.py）：后端 spawn 时挂在 PYTHONPATH 最前，
+           进程级给 subprocess / os.system 补 CREATE_NO_WINDOW；漏进白名单 = 打包后装出来的
+           目录里没有它，训练 / 推理里的 ffmpeg 之类又会逐个弹终端窗。 */
+        "shims/**",
+        /* 开发机上跑过一次 python 就会留下 __pycache__：别打进安装包（宿主拷贝侧 copyDirRecursive
+           本来就跳过它，这里把打包侧也对齐）。 */
+        "!**/__pycache__/**",
         /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",
@@ -215,6 +221,13 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 静默垫片（真源 pack-shims/sitecustomize.py）：后端 spawn 时挂在 PYTHONPATH 最前，
+           进程级给 subprocess / os.system 补 CREATE_NO_WINDOW；漏进白名单 = 打包后装出来的
+           目录里没有它，推理 / 切片里的 ffmpeg 之类又会逐个弹终端窗。 */
+        "shims/**",
+        /* 开发机上跑过一次 python 就会留下 __pycache__：别打进安装包（宿主拷贝侧 copyDirRecursive
+           本来就跳过它，这里把打包侧也对齐）。 */
+        "!**/__pycache__/**",
         /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",
@@ -232,6 +245,12 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 静默垫片（真源 pack-shims/sitecustomize.py）：ComfyUI 与它拉起的整条子树（自定义节点
+           装依赖 / pip / ffmpeg）靠它默认不弹控制台窗；漏进白名单 = 打包后装出来的目录里没有它。 */
+        "shims/**",
+        /* 开发机上跑过一次 python 就会留下 __pycache__：别打进安装包（宿主拷贝侧 copyDirRecursive
+           本来就跳过它，这里把打包侧也对齐）。 */
+        "!**/__pycache__/**",
         /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",
@@ -249,37 +268,16 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 静默垫片（真源 pack-shims/sitecustomize.py）：后端与它拉起的整条子树靠它默认不弹
+           控制台窗；漏进白名单 = 打包后装出来的目录里没有它。 */
+        "shims/**",
+        /* 开发机上跑过一次 python 就会留下 __pycache__：别打进安装包（宿主拷贝侧 copyDirRecursive
+           本来就跳过它，这里把打包侧也对齐）。 */
+        "!**/__pycache__/**",
         /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",
         "manifest.json"
-      ]
-    },
-    {
-      "from": "tts-pack",
-      "to": "tts-pack",
-      "filter": [
-        "app/**",
-        "scripts/**",
-        "requirements.txt",
-        "README.md",
-        "start_backend.cmd",
-        ".gitignore",
-        /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
-           漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
-        "steps.json",
-        "manifest.json",
-        /* 需求清单（唯一真源，见 tts-pack/reqs-fixups.json）：install.ps1 的 torch 步骤从
-           $InstallDir 读它，读不到就直接 Step-Fail 抛 "reqs-fixups.json not found"（进度停在 50）；
-           app/train.py 的训练自愈读同一份。漏进白名单 = 打包后的安装目录里没有它，
-           用户重装时卡在 torch 步 —— 实测过 E:\mtnode-test\tts（脚手架里没有它）。 */
-        "reqs-fixups.json",
-        /* 本地垫片（清单一里 jieba_fast -> null 靠它落地；推理 / 训练子进程把 shims 摆在
-           PYTHONPATH 最前）：缺了它 install.ps1 末尾的 smoke 步会失败（jieba_fast 导不进），
-           gradio 桩缺失则引擎 import 阶段崩。__pycache__ 是开发机上 py3.10 留下的字节码缓存，
-           别打进安装包（拷贝侧 copyDirRecursive 本来就跳过它）。 */
-        "shims/**",
-        "!**/__pycache__/**"
       ]
     },
     {
@@ -291,6 +289,12 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 静默垫片（真源 pack-shims/sitecustomize.py）：后端与它拉起的整条子树靠它默认不弹
+           控制台窗；漏进白名单 = 打包后装出来的目录里没有它。 */
+        "shims/**",
+        /* 开发机上跑过一次 python 就会留下 __pycache__：别打进安装包（宿主拷贝侧 copyDirRecursive
+           本来就跳过它，这里把打包侧也对齐）。 */
+        "!**/__pycache__/**",
         /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",
@@ -322,6 +326,12 @@
         "README.md",
         "start_backend.cmd",
         ".gitignore",
+        /* 静默垫片（真源 pack-shims/sitecustomize.py）：后端与它拉起的整条子树靠它默认不弹
+           控制台窗；漏进白名单 = 打包后装出来的目录里没有它。 */
+        "shims/**",
+        /* 开发机上跑过一次 python 就会留下 __pycache__：别打进安装包（宿主拷贝侧 copyDirRecursive
+           本来就跳过它，这里把打包侧也对齐）。 */
+        "!**/__pycache__/**",
         /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",

@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /* ══════════════════════════════════════════════════════════════════════
  * 长周期任务 · 条带 UI（画布 tabs 与顶部菜单条之间的细线 handler）
  * ----------------------------------------------------------------------
@@ -3933,7 +3933,7 @@ function ltNodeInspector(box, wf, task, run, path) {
       { value: "image", label: ltT("图像生成"), hint: "proc_image" },
       { value: "video", label: ltT("视频生成"), hint: "video_gen" },
       { value: "music", label: ltT("音乐生成"), hint: "music_gen" },
-      { value: "tts", label: ltT("语音合成"), hint: "tts_gen" },
+      { value: "tts", label: ltT("语音合成"), hint: "breeze_gen" },
     ];
     const curTypes =
       window.LTSHELL && typeof window.LTSHELL.genTypesOf === "function"

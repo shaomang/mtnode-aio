@@ -22,7 +22,7 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.5.0 — Electron 39 桌面端 A
 - `.commandcode/`。
 - **版本号唯一真源**：根目录 `version` 文件（x.y.z）与 `package.json` 的 `version` 字段不要手改。
 - 密钥/凭据类文件只进本机 `%APPDATA%`，一律不入库、不提交。
-- 各 `*-pack/` 的依赖锁文件、Python venv 产物与探针脚本（如 `tts-pack/_probe_*.py`）不要提交。
+- 各 `*-pack/` 的依赖锁文件、Python venv 产物与探针脚本（如 `llama-pack/_probe_*.py`）不要提交。
 ## Agent 运行时约束
 - **Agent 运行期间不得使用任何 git 命令**。
 ## 协作约定

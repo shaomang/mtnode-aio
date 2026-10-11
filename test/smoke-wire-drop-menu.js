@@ -380,7 +380,7 @@ ok(!hasKind(groups, "music_gen"), "Minimax Music 3 不在列：真实规则要�
 ok(!hasKind(groups, "task"), "任务节点不在列：只接受控制信号");
 ok(!hasKind(groups, "input_audio"), "音频输入不在列：纯输入节点不进拖线候选表");
 ok(!hasKind(groups, "input_video"), "视频输入不在列：纯输入节点不进拖线候选表");
-ok(!hasKind(groups, "tts_gen"), "SoVITS 语音不在列：只吃文本的端子不收图像");
+ok(!hasKind(groups, "breeze_gen"), "Breeze 语音不在列：只吃文本的端子不收图像");
 eqNum(titlesOf(groups).length, new Set(titlesOf(groups)).size, "同一分组标题只出现一次");
 
 /* ===================== [2] 文本来源 ===================== */
@@ -389,7 +389,7 @@ fixture();
 groups = F.wireDropMenuGroups(F.nodeById("txt"), 0, { x: 900, y: 500 });
 ok(hasKind(groups, "proc_image"), "图像生成在列（文本提示词驱动文生图）");
 ok(hasKind(groups, "music_gen"), "Minimax Music 3 在列（提示词 / 歌词端子）");
-ok(hasKind(groups, "tts_gen"), "SoVITS 语音在列（待合成文本端子）");
+ok(hasKind(groups, "breeze_gen"), "Breeze 语音在列（待合成文本端子）");
 ok(hasKind(groups, "remotion"), "Remotion 在列（插件已装）");
 ok(hasKind(groups, "save"), "保存在列（按文本保存）");
 ok(!hasKind(groups, "task"), "任务节点仍不在列（数据线连不进任务）");
@@ -560,7 +560,7 @@ ok(hasKind(fromTranscript, "save"), "端口 1 拖出去：保存在列（按文�
 const dropKinds = F.WIRE_DROP_TARGETS.map((s) => s.kind);
 ok(dropKinds.indexOf("input_audio") < 0, "拖线候选表白名单不收音频输入节点（它只往外给）");
 ok(dropKinds.indexOf("input_video") < 0, "拖线候选表白名单不收视频输入节点（它只往外给）");
-ok(dropKinds.indexOf("tts_gen") >= 0, "SoVITS 语音已进拖线候选表（文本 → 语音）");
+ok(dropKinds.indexOf("breeze_gen") >= 0, "Breeze 语音已进拖线候选表（文本 → 语音）");
 ok(dropKinds.indexOf("music_gen") >= 0 && dropKinds.indexOf("video_gen") >= 0, "两类生成节点仍在候选表（改名不动 kind）");
 
 console.log("\n———— " + (checks - fails) + "/" + checks + " 通过 ————");

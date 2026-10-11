@@ -1,4 +1,4 @@
-﻿---
+---
 name: mtnode-plugin-dev
 title: MTNode 插件开发规范
 description: MTNode 应用插件（catalog 窗口插件 / builtin / 本地后端插件）的开发规范：插件类型与边界、后端插件三层结构（主进程宿主 · 预加载桥 · 控制台 UI）、主进程与渲染层接线点、build.json 打包白名单、画布节点与 i18n / 指南 / 冒烟交付清单、报错总线与自我修复、数据目录纪律，含最小骨架与常见坑。新建或改造 MTNode 插件（顶栏「插件」对话框里那个东西）时按需加载。
@@ -36,7 +36,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 | `sensenova-local` | sensenova | `sensenova/main-sensenova.js` | `sensenova/ui/` | `sensenova_gen` | `sensenova-pack/` |
 | `minimax-h3` | h3 | `h3/main-h3.js` | `h3/ui/` | `video_gen` | `h3-pack/` |
 | `llama-local` | llama | `llama/main-llama.js` | `llama/ui/console.html` | （做模型服务，无媒体节点） | `llama-pack/` |
-| `tts-local` | tts | `tts/main-tts.js` | `tts/ui/console.html` | `tts_gen` | `tts-pack/` |
+| `breeze-tts-local` | breeze | `breeze/main-breeze.js` | `breeze/ui/console.html` | `breeze_gen` | `breeze-pack/` |
 | `remotion` | remotion | `remotion/main-remotion.js` | `remotion/ui/index.html` | `remotion` | `remotion-pack/` |
 | `bongochat` | pet | `pet/main-pet.js` | 独立宠物进程 `--mtnode-pet` | — | `pet-pack/` |
 | `forum` | builtin(window) | `plugins/main-app-plugins.js` 的 `BUILTIN_WINDOW_PLUGINS` | 应用内 `forum/chat.html` | — | `forum/**` 直接打包 |
@@ -101,7 +101,7 @@ MTNode 里「扩展能力」有**四种完全不同的东西**，别混为一谈
 
 ## 六、画布节点接线
 
-- 节点类型在 `renderer/app-nodes.js` 里实现，命名用 kind 短名（`music_gen` / `yue_gen` / `tts_gen` / `video_gen` / `remotion` / `sensenova_gen`）。
+- 节点类型在 `renderer/app-nodes.js` 里实现，命名用 kind 短名（`music_gen` / `yue_gen` / `breeze_gen` / `video_gen` / `remotion` / `sensenova_gen`）。
 - **节点运行前先判插件就绪**：后端没装 / 没起时给明确中文指路（去顶栏「插件」装或起），不要只报「生成失败」。
 - 宿主返回的错误码要在节点状态行 + 插件卡片 + 报错报告三处口径一致（同一串 code，渲染层按串匹配文案）。
 - 关联回归：`test/smoke-media-gen-menu.js`（菜单与节点归属）、`test/smoke-tools.js`、`test/smoke-plugin-repair.js`。

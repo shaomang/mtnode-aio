@@ -175,7 +175,7 @@ diagrams["mtnode-flow-02-flow"] = {
     ar(126, 68, 168, 68, CYAN),
     ar(126, 122, 168, 122, ORNG),
     bx(168, 46, 120, 44, "音乐生成\nMusic 3", PUR, FILL_U),
-    bx(168, 100, 120, 44, "语音合成\nSoVITS", PUR, FILL_U),
+    bx(168, 100, 120, 44, "语音合成\nBreeze TTS 2", PUR, FILL_U),
     bx(168, 154, 120, 44, "视频生成\nH3", PUR, FILL_U),
     ar(288, 68, 330, 68, PUR),
     ar(288, 122, 330, 122, PUR),

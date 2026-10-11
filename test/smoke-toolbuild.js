@@ -229,8 +229,8 @@ async function A(body, msg, expect) {
     "fileConsumerAccept：proc_text 只吃 text、proc_image 吃 image + text（端口 0 是提示词 / 文本入口，图像节点本就能引用文本）",
   );
   P(
-    'JSON.stringify(fileConsumerAccept({ kind: "video_gen" })) === JSON.stringify(["video", "image"]) && JSON.stringify(fileConsumerAccept({ kind: "tts_gen" })) === JSON.stringify(["audio"]) && JSON.stringify(fileConsumerAccept({ kind: "music_gen" })) === JSON.stringify(["audio", "text"])',
-    "fileConsumerAccept：媒体生成节点吃各自媒体（video 参考帧/视频 · tts 音频 · music 音频+歌词）",
+    'JSON.stringify(fileConsumerAccept({ kind: "video_gen" })) === JSON.stringify(["video", "image"]) && JSON.stringify(fileConsumerAccept({ kind: "breeze_gen" })) === JSON.stringify(["audio"]) && JSON.stringify(fileConsumerAccept({ kind: "music_gen" })) === JSON.stringify(["audio", "text"])',
+    "fileConsumerAccept：媒体生成节点吃各自媒体（video 参考帧/视频 · breeze 参考音频 · music 音频+歌词）",
   );
   P('fileConsumerAccept({ kind: "super" }) === null && fileConsumerAccept({ kind: "proc_image" }) !== null', "fileConsumerAccept：未登记 kind（如工具节点 super）返回 null = 不设限");
   /* —— fileSupportDetail 逐条 —— */
@@ -259,8 +259,8 @@ async function A(body, msg, expect) {
     "fileSupportDetail：video_gen 收视频与图像参考帧，拒 docx",
   );
   P(
-    'fileSupportDetail("tts_gen", "a.wav").supported === true && fileSupportDetail("tts_gen", "a.png").supported === false && fileSupportDetail("music_gen", "a.mp3").supported === true && fileSupportDetail("music_gen", "a.txt").supported === true',
-    "fileSupportDetail：tts_gen 只吃音频；music_gen 吃音频与歌词文本",
+    'fileSupportDetail("breeze_gen", "a.wav").supported === true && fileSupportDetail("breeze_gen", "a.png").supported === false && fileSupportDetail("music_gen", "a.mp3").supported === true && fileSupportDetail("music_gen", "a.txt").supported === true',
+    "fileSupportDetail：breeze_gen 只吃音频；music_gen 吃音频与歌词文本",
   );
   /* —— fileKindSupported —— */
   P(

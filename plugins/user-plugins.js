@@ -47,6 +47,8 @@ const RESERVED_KINDS = new Set([
   "gate", "splitter", "counter", "mutex", "global", "function", "tool", "super", "super_io",
   "execute", "deliver", "ltout", "ltart", "split", "merge", "net_recv", "net_send",
   "music_gen", "yue_gen", "sensenova_gen", "tts_gen", "breeze_gen", "video_gen",
+  /* tts_gen（SoVITS 语音）已随该插件移除、不再是可选节点类型，但**保留这个保留字**：
+     老画布的 .mtnodes 里还存着这类节点，留着它可保证没有插件的 id 能撞上这个名字。 */
   "video_upscale", "video_interp", "remotion",
 ]);
 

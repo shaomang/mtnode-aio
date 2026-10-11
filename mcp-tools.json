@@ -8,7 +8,7 @@
   "tools": [
     {
       "name": "mtnode_canvas_get",
-      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nRead the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\nDEFAULTS TO THE CHEAPEST FORM — detail \"minimal\": one index line per node (only title / note / kind 标题 / 描述 / 类别) + workflow identity and scopeInfo; no config fields, no bodies, no wire / mark / group / tree block. Ask for more only when needed:\n- \"standard\": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:[\"refs\"]。\n- \"full\": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:[\"nodes\",\"wires\"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / tts_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows port 0 = prompt only), and port 1+ accepts text AND image references (connect reference images to port 1+, never port 0). Never infer \"this node has no image-reference port\" from a short ports list, and never test-wire just to read the warnings.\nscopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\nWhen the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。",
+      "description": "CRITICAL — These canvas tools are ONLY for the global assistant (✦) and the agent-session view. When the run is a canvas AGENT NODE (kind agent_task, or proc_text with agent:true), the host REJECTS mtnode_canvas_get / mtnode_canvas_edit / mtnode_app. Do not call them from a node; read and write workspace files instead.\n\nRead the canvas this run belongs to: workflow identity + the nodes in the current task / super scope, plus marks / wires / groups / trees / app references when asked. Always read before editing.\nDEFAULTS TO THE CHEAPEST FORM — detail \"minimal\": one index line per node (only title / note / kind 标题 / 描述 / 类别) + workflow identity and scopeInfo; no config fields, no bodies, no wire / mark / group / tree block. Ask for more only when needed:\n- \"standard\": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:[\"refs\"]。\n- \"full\": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:[\"nodes\",\"wires\"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows port 0 = prompt only), and port 1+ accepts text AND image references (connect reference images to port 1+, never port 0). Never infer \"this node has no image-reference port\" from a short ports list, and never test-wire just to read the warnings.\nscopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\nWhen the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。",
       "family": "canvas",
       "source": "dsh/gateway/canvas-plugin.mjs",
       "inputSchema": {
@@ -175,7 +175,6 @@
                     "proc_text",
                     "proc_image",
                     "music_gen",
-                    "tts_gen",
                     "video_gen",
                     "video_upscale",
                     "video_interp",
@@ -670,15 +669,11 @@
                 },
                 "outputPath": {
                   "type": "string",
-                  "description": "video_gen / music_gen / tts_gen 输出路径（.mp4 / .wav / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。"
+                  "description": "video_gen / music_gen / breeze_gen 输出路径（.mp4 / .wav / .flac / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。"
                 },
                 "voice": {
                   "type": "string",
-                  "description": "tts_gen 音色（留空 = 默认，勿编造）。"
-                },
-                "speed": {
-                  "type": "number",
-                  "description": "tts_gen 语速 0.5–2.0。"
+                  "description": "breeze_gen 音色（音色库 id，留空 = 用端子给的参考音频，勿编造）。"
                 },
                 "videoMode": {
                   "type": "string",

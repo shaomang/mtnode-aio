@@ -1032,47 +1032,6 @@ button:disabled {
   color: var(--red);
 }
 
-/* ── 详情浮层里的「安装目录」一行：当前目录 / 来源说明 / 打开目录 / 恢复默认 ── */
-.plugin-pop-dir {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--bd2);
-}
-
-.plugin-pop-dir-head {
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: .5px;
-  color: var(--ink);
-}
-
-.plugin-pop-dir-path {
-  margin-top: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink);
-  word-break: break-all;
-  line-height: 1.5;
-}
-
-.plugin-pop-dir-path.unset {
-  color: var(--red);
-  font-family: inherit;
-}
-
-.plugin-pop-dir-src {
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-
-.plugin-pop-dir-acts {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
 /* ── 本地后端插件的详情浮层内嵌 console（本轮：状态与 console 内容显示在插件界面里）──
    只读展示：状态行 + 后端 stdout 日志尾部（复制 / 清屏两颗小键），启停与安装仍走卡片按钮。 */
 .plugin-pop.has-console {

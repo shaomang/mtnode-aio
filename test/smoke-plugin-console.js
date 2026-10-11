@@ -2,13 +2,14 @@
 /* 插件界面内嵌 console + 「插件不再呼出独立的后端窗口」的回归
  *   node test/smoke-plugin-console.js
  *
- * 锁住本轮共识（8 个本地后端插件一次改齐：music3 / yue2 / sensenova / h3 / llama / tts /
+ * 锁住本轮共识（7 个本地后端插件一次改齐：music3 / yue2 / sensenova / h3 / llama /
  * breeze / remotion）：
- *   1. 卡片主按钮 = 启动 / 停止后端（<api>Start / <api>Stop）—— 点「启动」只是静默后台拉起后端
- *      （后端进程本来就 windowsHide，stdout 落日志文件），不再打开那只独立窗；
- *      未安装时主按钮 = 「安装」（先弹系统目录选择框，仍然不开插件窗）；启动中显示「启动中…」
- *      且再点一次 = 停止。
- *   2. 次按钮 = 「控制台」（<api>Open）：那只独立窗仍保留（安装 / 卸载 / H3 工作流编辑器等重功能
+ *   1. 卡片三颗按钮 = 安装 / 启用 / 控制台（本轮需求）：
+ *      · 「安装」常驻 —— 未装 = 「安装」，已装 = 「重装」，两者都只是那只安装窗的入口；
+ *      · 「启用」**只在已安装时出现**（<api>Start / <api>Stop）—— 点「启用」只是静默后台拉起后端
+ *        （后端进程本来就 windowsHide，stdout 落日志文件），运行中那颗按钮显示「停用」，再点一次 = 停用；
+ *        未安装时卡片上只有「安装」+「控制台」两颗。
+ *   2. 「控制台」常驻（<api>Open）：那只独立窗仍保留（安装 / 卸载 / H3 工作流编辑器等重功能
  *      还在里面），但只由用户显式打开（卡片按钮 / 托盘菜单）。
  *   3. 卡片详情浮层内嵌**只读** console：状态行（运行中 / 端口 / 进度 / 显存）+ 后端 stdout
  *      日志尾部（2s 增量轮询；可复制 / 清屏；关浮层即停）。
@@ -71,14 +72,117 @@ function fnBody(src, name) {
   throw new Error("函数体不闭合：" + name);
 }
 
-/* 8 个本地后端插件：kind → { api 前缀, 宿主文件, 宿主 IPC 前缀 } */
+/* 顶层 const 的对象字面量（PLUGIN_ACT_SVG / BACKEND_PLUGIN_SPECS 这类「表」）按名字抠出来 */
+function constBlock(src, name) {
+  const at = src.indexOf("const " + name + " = {");
+  if (at < 0) throw new Error("找不到常量：" + name);
+  return src.slice(at, src.indexOf("\n};", at) + 3);
+}
+/* 迷你 DOM（与 smoke-trajectory-view.js 同思路：只实现卡片真用到的那几个方法） */
+function mkCardEl(tag) {
+  const el = {
+    tagName: String(tag || "div").toUpperCase(),
+    children: [],
+    style: {},
+    dataset: {},
+    attrs: {},
+    _cls: "",
+    _text: "",
+    _html: "",
+    title: "",
+    disabled: false,
+    parentNode: null,
+    addEventListener() {},
+    setAttribute(k, v) { el.attrs[k] = String(v); },
+    getAttribute(k) { return el.attrs[k]; },
+    appendChild(c) { c.parentNode = el; el.children.push(c); return c; },
+    querySelector(sel) {
+      const want = String(sel).replace(/^\[|\]$/g, "");
+      const walk = (n) => {
+        for (const c of n.children) {
+          if (want === c.className || (c.attrs && c.attrs[want] !== undefined)) return c;
+          const hit = walk(c);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      return walk(el);
+    },
+  };
+  Object.defineProperty(el, "className", { get: () => el._cls, set: (v) => { el._cls = String(v); } });
+  Object.defineProperty(el, "textContent", { get: () => el._text, set: (v) => { el._text = String(v); el.children.length = 0; } });
+  Object.defineProperty(el, "innerHTML", { get: () => el._html, set: (v) => { el._html = String(v); } });
+  return el;
+}
+/* ═══════ 真跑一遍共用卡片：把 refreshBackendPluginCard 拉进沙箱（配最小 DOM 与桥桩）═══════
+   卡片的按钮口径（本轮需求：三颗按钮 = 安装 / 启用 / 控制台）靠「按状态建哪几颗」说话：
+   光扫源码字符串看不出「未安装时到底建没建启用那颗」，所以这里真跑 —— async 函数 +
+   await statusFn，断言看得见按钮清单本身（文案 / 置灰 / 图标）。 */
+async function runBackendCard(st, spec, opts, sets) {
+  const src = read("renderer/app-plugins.js");
+  const code =
+    constBlock(src, "PLUGIN_ACT_SVG") + "\n" +
+    constBlock(src, "BACKEND_PLUGIN_SPECS") + "\n" +
+    constBlock(src, "BACKEND_INSTALL_IDS") + "\n" +
+    fnBody(src, "mkPluginActBtn") + "\n" +
+    fnBody(src, "pluginErrLine") + "\n" +
+    fnBody(src, "setPluginNotice") + "\n" +
+    fnBody(src, "setPluginVer") + "\n" +
+    fnBody(src, "pluginVerLabel") + "\n" +
+    fnBody(src, "backendCardLine") + "\n" +
+    fnBody(src, "pluginApiFn") + "\n" +
+    fnBody(src, "pluginLoc") + "\n" +
+    fnBody(src, "refreshBackendPluginCard");
+  const api = {};
+  api[spec.api + "Status"] = async () => st;
+  api[spec.api + "Start"] = async () => ({ ok: true });
+  api[spec.api + "Stop"] = async () => ({ ok: true });
+  api[spec.api + "Open"] = async () => ({ ok: true });
+  const windowStub = { api };
+  const documentStub = { createElement: (t) => mkCardEl(t) };
+  const i18nStub = { t: (s) => String(s) };
+  const fn = new Function(
+    "window,document,I18n,toast,_backendStarting,_backendStopping,_backendNoticeSeen,_backendLastErr,_plugRoots,plugRootWarn,plugInstallDir,openPluginInstallWindow",
+    code + "\nreturn refreshBackendPluginCard;",
+  )(
+    windowStub,
+    documentStub,
+    i18nStub,
+    () => {},
+    sets.starting,
+    sets.stopping,
+    new Map(),
+    new Map(),
+    new Map(),
+    () => {},
+    async () => ({ ok: true, dir: "C:\\x", sub: "s" }),
+    async () => ({ ok: true }),
+  );
+  const root = mkCardEl("div");
+  const actions = mkCardEl("div");
+  actions.className = "plugin-tile-actions";
+  actions.setAttribute("data-plugin-actions", "1");
+  const prog = mkCardEl("div");
+  prog.setAttribute("data-plugin-progress-txt", "1");
+  root.appendChild(actions);
+  root.appendChild(prog);
+  await fn(root, spec, opts || {});
+  const btns = actions.children.map((b) => ({
+    title: b.title,
+    disabled: !!b.disabled,
+    hasIcon: !!b.innerHTML,
+    cls: b.className,
+  }));
+  return { btns, labels: btns.map((b) => b.title + (b.disabled ? "（置灰）" : "")), icons: btns.map((b) => b.hasIcon) };
+}
+
+/* 7 个本地后端插件：kind → { api 前缀, 宿主文件, 宿主 IPC 前缀 } */
 const PLUGINS = {
   music3: { api: "music3", host: "music3/main-music3.js", ipc: "music3" },
   yue2: { api: "yue2", host: "yue/main-yue.js", ipc: "yue" },
   sensenova: { api: "sensenova", host: "sensenova/main-sensenova.js", ipc: "sensenova" },
   h3: { api: "h3", host: "h3/main-h3.js", ipc: "h3" },
   llama: { api: "llama", host: "llama/main-llama.js", ipc: "llama" },
-  tts: { api: "tts", host: "tts/main-tts.js", ipc: "tts" },
   breeze: { api: "breeze", host: "breeze/main-breeze.js", ipc: "breeze" },
   remotion: { api: "remotion", host: "remotion/main-remotion.js", ipc: "remotion" },
 };
@@ -89,7 +193,6 @@ const BRIDGE = {
   sensenova: ["Start", "Stop", "Install", "PickInstallDir", "Open", "ConsoleTail"],
   h3: ["Start", "Stop", "Install", "PickInstallDir", "Open", "ConsoleTail"],
   llama: ["Start", "Stop", "Install", "PickInstallDir", "Open", "ConsoleTail"],
-  tts: ["Start", "Stop", "Install", "PickInstallDir", "Open", "ConsoleTail"],
   breeze: ["Start", "Stop", "Install", "PickInstallDir", "Open", "ConsoleTail"],
   remotion: ["Install", "PickInstallDir", "Open", "ConsoleTail"],
 };
@@ -99,7 +202,6 @@ const TAIL_BRIDGE = {
   sensenova: "sensenovaConsoleTail",
   h3: "h3ConsoleTail",
   llama: "llamaConsoleTail",
-  tts: "ttsConsoleTail",
   breeze: "breezeConsoleTail",
   remotion: "remotionConsoleTail",
 };
@@ -138,6 +240,8 @@ const TAIL_BRIDGE = {
     pluginsSrc.indexOf("};", pluginsSrc.indexOf("const PLUGIN_ACT_SVG = {")),
   );
   has(svgTable, "console:", "PLUGIN_ACT_SVG 新增「控制台」图标（不复用 gear，避免与设置混同）");
+  /* 本轮需求：卡片三颗按钮 = 安装 / 启用 / 控制台 —— 启停那一颗改用电源图标（open = 已启用） */
+  has(svgTable, "power:", "PLUGIN_ACT_SVG 有「启用 / 停用」共用的电源图标 power");
   const usedKinds = [...new Set([...backendCard.matchAll(/addBtn\("([a-z]+)"/g)].map((m) => m[1]))];
   ok(
     usedKinds.length > 0 && usedKinds.every((k) => svgTable.indexOf(k + ":") >= 0),
@@ -146,13 +250,21 @@ const TAIL_BRIDGE = {
   has(backendCard, 'pluginApiFn(spec.api + "Start")', "主按钮调 <api>Start（静默后台拉起后端）");
   has(backendCard, 'pluginApiFn(spec.api + "Stop")', "主按钮调 <api>Stop（停止 = 停后端）");
   has(backendCard, 'pluginApiFn(spec.api + "Open")', "次按钮调 <api>Open（控制台 = 显式开窗）");
-  has(backendCard, 'I18n.t("启动")', "主按钮文案「启动」");
-  has(backendCard, 'I18n.t("停止")', "主按钮文案「停止」");
-  has(backendCard, 'I18n.t("控制台")', "次按钮文案「控制台」");
-  has(backendCard, 'I18n.t("启动中…（点此停止）")', "启动中按钮可点 = 停止");
+  has(backendCard, 'I18n.t("启用")', "启用那一颗按钮文案「启用」");
+  has(backendCard, 'I18n.t("停用")', "已启用时同一颗按钮显示「停用」");
+  has(backendCard, 'I18n.t("控制台")', "第三颗按钮文案「控制台」");
+  has(backendCard, 'I18n.t("启用中…（首次加载模型可能几分钟）")', "启用中那颗按钮置灰并说明原因");
+  has(backendCard, 'I18n.t("停用中…")', "停用过程同样在按钮上写明状态");
   hasnt(backendCard, 'I18n.t("运行")', "共用卡片里不再有「运行 = 开窗」那套文案");
   hasnt(backendCard, 'I18n.t("打开控制台")', "共用卡片里不再有「打开控制台」当主按钮");
+  /* 本轮需求：三颗按钮的建法 —— 安装常驻、启用只在已安装时建、控制台常驻 */
+  has(backendCard, 'if (!st.installed) {', "安装常驻：未装 = 主按钮「安装」");
+  has(backendCard, 'addBtn("download", reinstallLabel || I18n.t("重装"), installBackend);', "已装时那颗按钮变「重装」（仍是安装窗入口）");
+  has(backendCard, 'if (st.installed && spec.hasService) {', "「启用」只在已安装（且有常驻后端）时出现 —— 未安装时整颗不建");
+  has(backendCard, 'addBtn("power", title, running ? stopBackend : startBackend, {', "启停是同一颗按钮：未启用点它 = 启用，运行中点它 = 停用");
+  has(backendCard, "disabled: starting || stopping", "启停过程中那颗按钮置灰（免得连点出第二次启停）");
   has(backendCard, "_backendStarting", "启动中状态按插件记账（跨重绘保留）");
+  has(backendCard, "_backendStopping", "停止中状态同样按插件记账（按钮据此置灰）");
   has(backendCard, "_backendLastErr", "启动 / 安装失败写进卡片状态行（不静默、不弹窗）");
   has(pluginsSrc, "function setPluginNotice(", "有卡片角标绘制 setPluginNotice");
   has(
@@ -161,6 +273,13 @@ const TAIL_BRIDGE = {
     "卡片壳里带角标元素",
   );
   has(pluginsSrc, "function backendCardLine(", "卡片状态行统一口径 backendCardLine");
+  /* 本轮需求：插件界面不写安装目录 —— 卡片状态行不许再回目录路径（目录只在安装窗里显示与修改） */
+  hasnt(backendCard, 'I18n.t("安装目录：")', "卡片状态行不再写「安装目录：<路径>」");
+  ok(
+    !/_plugRoots|安装目录/.test(fnBody(pluginsSrc, "backendCardLine")),
+    "状态行源码里既没有目录缓存也没有「安装目录」字样（目录只在安装窗里显示与修改）",
+  );
+
   has(pluginsSrc, 'I18n.t(" —— 可点「控制台」看日志")', "失败时指向「控制台」看日志");
   has(pluginsSrc, "function pluginApiFn(", "桥调用统一走 pluginApiFn（缺桥不炸）");
 
@@ -198,8 +317,7 @@ const TAIL_BRIDGE = {
     "bindBreezeProgress",
     "bindTtsProgress",
     "bindPluginProgress",
-  ]) {
-    hasnt(pluginsSrc, "function " + name + "(", "app-plugins.js 不再有 " + name + "（安装进度不上卡片）");
+  ]) {    hasnt(pluginsSrc, "function " + name + "(", "app-plugins.js 不再有 " + name + "（安装进度不上卡片）");
   }
   has(pluginsSrc, "function repaintPluginCard(", "有统一的卡片重画入口（安装跑完重画用）");
   has(pluginsSrc, "onMtnodeInstallFinished", "插件对话框订阅「安装窗跑完」事件并重画卡片");
@@ -231,8 +349,8 @@ const TAIL_BRIDGE = {
     );
     has(hostSrc, '"' + p.ipc + ':consoleCleared"', p.host + " 广播 " + p.ipc + ":consoleCleared（打开着的日志窗就地清空）");
   }
-  /* 求助通知：只有带 ui-signal 的三个宿主有这条事件通道 */
-  for (const [k, api] of [["llama", "llama"], ["tts", "tts"], ["breeze", "breeze"]]) {
+  /* 求助通知：只有带 ui-signal 的两个宿主有这条事件通道（tts 已随该插件移除） */
+  for (const [k, api] of [["llama", "llama"], ["breeze", "breeze"]]) {
     const p = PLUGINS[k];
     has(preloadSrc, "on" + api[0].toUpperCase() + api.slice(1) + "Notice:", "preload 暴露 on" + api[0].toUpperCase() + api.slice(1) + "Notice");
     has(read(p.host), 'broadcast("' + api + ':notice"', p.host + " 广播 " + api + ":notice");
@@ -240,9 +358,9 @@ const TAIL_BRIDGE = {
   }
   hasnt(preloadSrc, "llamaNoticeRaw:", "没有多余的 llama notice 旁路桥");
 
-  /* ═════════ [4] 三个宿主：ui-signal 不再自动开窗 ═════════ */
-  console.log("\n[4] llama / tts / breeze：后端求助不再自动弹出控制台窗");
-  for (const [k, api] of [["llama", "llama"], ["tts", "tts"], ["breeze", "breeze"]]) {
+  /* ═════════ [4] 两个宿主：ui-signal 不再自动开窗 ═════════ */
+  console.log("\n[4] llama / breeze：后端求助不再自动弹出控制台窗");
+  for (const [k, api] of [["llama", "llama"], ["breeze", "breeze"]]) {
     const src = read(PLUGINS[k].host);
     const watch = src.slice(
       src.indexOf("function startUiSignalWatch()"),
@@ -314,13 +432,17 @@ const TAIL_BRIDGE = {
   console.log("\n[7] i18n 中英词条 + 样式 + 指南同步");
   for (const [zh, en] of [
     ["启动", "Start"],
+    ["启用", "Enable"],
+    ["启用", "Enable"],
+    ["停用", "Disable"],
+    ["启用中…（首次加载模型可能几分钟）", "Enabling… (the first model load can take minutes)"],
+    ["停用中…", "Disabling…"],
     ["控制台", "Console"],
     ["重装", "Reinstall"],
     ["后端提示", "Backend notice"],
     ["后端运行中", "Backend running"],
     ["后端未运行", "Backend stopped"],
     ["清屏", "Clear"],
-    ["启动中…（点此停止）", "Starting… (click to stop)"],
   ]) {
     has(i18nSrc, '"' + zh + '": "' + en + '"', "i18n 中英词条：" + zh);
   }
@@ -336,7 +458,11 @@ const TAIL_BRIDGE = {
   console.log("\n[8] 后端解释器口径：venv 的 python.exe → pythonw.exe");
   const bpSrc = read("backend-python.js");
   has(bpSrc, "function quietPython(", "backend-python.js 提供 quietPython");
-  has(bpSrc, "module.exports = { quietPython }", "backend-python.js 导出 quietPython");
+  has(
+    bpSrc,
+    "module.exports = { quietPython, pythonHealth, pyvenvCfgPath, shimsDir, silentEnv, syncShims }",
+    "backend-python.js 导出 quietPython + pythonHealth + 静默三项（shimsDir / silentEnv / syncShims）",
+  );
   has(
     read("build.json"),
     '"backend-python.js"',
@@ -364,10 +490,9 @@ const TAIL_BRIDGE = {
   ok(quietPython(nodeExe) === nodeExe, "非 python*.exe 原样返回（不误改解释器）");
   ok(quietPython(pywReal) === pywReal, "已经是 pythonw.exe 不再追加 w");
   ok(quietPython("") === "", "空路径原样返回");
-  /* 7 个起 python 后端的宿主：都走统一口径 */
+  /* 6 个起 python 后端的宿主：都走统一口径（tts 已随该插件移除） */
   const PY_WIRING = {
     "llama/main-llama.js": ['const py = quietPython(pyExe);'],
-    "tts/main-tts.js": ['const py = quietPython(pyExe);'],
     "breeze/main-breeze.js": ['const py = quietPython(pyExe);'],
     "music3/main-music3.js": ['const py = quietPython(pyExe);'],
     "yue/main-yue.js": ['const py = quietPython(pyExe);', 'return fs.existsSync(py) ? quietPython(py) : "";'],
@@ -408,10 +533,6 @@ const TAIL_BRIDGE = {
     "h3-pack/app/__main__.py",
     "llama-pack/app/gpu.py",
     "llama-pack/app/models.py",
-    "tts-pack/app/gpu.py",
-    "tts-pack/app/server.py",
-    "tts-pack/app/tts.py",
-    "tts-pack/app/train.py",
   ];
   const packBad = [];
   for (const f of PACK_PY) {
@@ -429,6 +550,202 @@ const TAIL_BRIDGE = {
     packBad.length === 0,
     "包内 subprocess 一律带 creationflags（无控制台的父进程别让子进程新建控制台）" +
       (packBad.length ? "（漏：" + packBad.join("、") + "）" : ""),
+  );
+
+  /* ═════════ [9] 整条子进程子树的静默：sitecustomize 垫片 + PYTHONPATH ═════════
+     [8] 只管住「后端自己那只解释器」；引擎里的第三方调用（ffmpeg-python / uvr5
+     的 os.system、ComfyUI 装依赖）我们改不了源码，只能在进程级补默认标志。真枚举窗口的断言在
+     test/smoke-console-silent.js（那条要真跑 pythonw），这里钉接线与随包口径。 */
+  console.log("\n[9] 整条子树静默：pack-shims/sitecustomize.py + 宿主 PYTHONPATH");
+  const SHIM_SRC = "pack-shims/sitecustomize.py";
+  has(read(SHIM_SRC), "_CREATE_NO_WINDOW = 0x08000000", "垫片真源定义 CREATE_NO_WINDOW");
+  has(read(SHIM_SRC), 'sys.platform == "win32"', "垫片只在 win32 生效");
+  const { silentEnv, shimsDir, syncShims } = require("../backend-python.js");
+  ok(
+    silentEnv("C:/x/tts", { PYTHONPATH: "C:/old" }).PYTHONPATH === shimsDir("C:/x/tts") + path.delimiter + "C:/old",
+    "silentEnv 把 <installDir>/shims 挂在 PYTHONPATH 最前（不动原有值）",
+  );
+  ok(silentEnv("", {}).PYTHONPATH === undefined, "installDir 为空时不乱塞 PYTHONPATH");
+  const smTmp = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-sync-shims-"));
+  fs.mkdirSync(path.join(smTmp, "pack", "shims"), { recursive: true });
+  fs.writeFileSync(path.join(smTmp, "pack", "shims", "sitecustomize.py"), "stub");
+  fs.mkdirSync(path.join(smTmp, "install"), { recursive: true });
+  const smRes = syncShims(path.join(smTmp, "pack"), path.join(smTmp, "install"));
+  ok(
+    smRes.ok && smRes.copied === 1 && fs.existsSync(path.join(smTmp, "install", "shims", "sitecustomize.py")),
+    "syncShims 真把 pack 的 shims/ 拷进安装目录（h3 / music3 / yue 只挑着拷 app/*.py，靠这一句补齐）",
+  );
+  const SILENT_WIRING = {
+    "h3/main-h3.js": true,
+    "music3/main-music3.js": true,
+    "yue/main-yue.js": true,
+    "breeze/main-breeze.js": true,
+    "llama/main-llama.js": true,
+    "sensenova/main-sensenova.js": true,
+  };
+  for (const f of Object.keys(SILENT_WIRING)) {
+    const src = read(f);
+    has(src, "silentEnv(", f + " 起后端时把 shims 挂上 PYTHONPATH（整条子树静默）");
+    has(src, "silentEnv", f + " 从 backend-python.js 取静默口径（不各写一份）");
+  }
+  /* pack 副本必须与真源逐字节一致（同 pack-steps/step.ps1 的「真源 + 各包副本」约定） */
+  const ROOTDIR = path.join(__dirname, "..");
+  const shimBytes = fs.readFileSync(path.join(ROOTDIR, SHIM_SRC));
+  const shimDiff = [];
+  for (const rel of ["h3-pack", "music3-pack", "yue-pack", "breeze-pack", "llama-pack", "sensenova-pack"]) {
+    const p = path.join(ROOTDIR, rel, "shims", "sitecustomize.py");
+    if (!fs.existsSync(p) || !fs.readFileSync(p).equals(shimBytes)) shimDiff.push(rel);
+  }
+  ok(shimDiff.length === 0, "6 个 pack 的 shims/sitecustomize.py 与真源逐字节一致" + (shimDiff.length ? "（不一致：" + shimDiff.join("、") + "）" : ""));
+  has(read("build.json"), '"shims/**"', "build.json 的 pack 白名单里有 shims/**（随包分发，否则打包后垫片不到位）");
+  has(read("guides/manual/media-gen.md"), "sitecustomize", "手册写明整条子树静默的机制（sitecustomize 垫片）");
+  has(read("backend-python.js"), "pythonw", "解释器口径真源写明 pythonw（安装链 / 运行期同一条链）");
+
+  /* ═════════ [9.2] 安装链静默：宿主起安装 PowerShell 时不许弹出控制台窗 ═════════
+     宿主直接创建的那只 powershell.exe 靠 spawn 的 windowsHide: true（= CREATE_NO_WINDOW）压住；
+     它拉起的子孙（pip / git / py）继承宿主给的那份 env（含 PYTHONPATH 上的 shims），
+     由垫片在解释器启动时再补 CREATE_NO_WINDOW —— 整条安装链同样不冒窗口。
+     口径真源见 docs/plugin-install-window.md；此处只钉「每个 Python 宿主都走 runPs + windowsHide」。 */
+  const RUNPS_HOSTS = [
+    "llama/main-llama.js",
+    "breeze/main-breeze.js",
+    "h3/main-h3.js",
+    "music3/main-music3.js",
+    "sensenova/main-sensenova.js",
+  ];
+  for (const rel of RUNPS_HOSTS) {
+    const src = read(rel);
+    has(src, "function runPs(", rel + " 有统一的安装脚本 spawn 路径 runPs");
+    const at = src.indexOf("function runPs(");
+    const seg = src.slice(at, at + 900);
+    has(seg, "windowsHide: true", rel + " 的 runPs 用 windowsHide 起 powershell（宿主自己那只不留窗）");
+  }
+  for (const rel of ["breeze-pack", "sensenova-pack", "yue-pack", "h3-pack", "music3-pack", "llama-pack"]) {
+    has(
+      read(rel + "/scripts/install.ps1"),
+      ".install-ok",
+      rel + "/scripts/install.ps1 只在整链跑通后才写 .install-ok（失败项自己 Step-Fail）",
+    );
+  }
+
+  /* ═════════ [10] 解释器体检：基座被删的 venv 不许 spawn（否则弹「Python Launcher … No Python at …」） ═════════
+     现场：用户手工删掉 conda 环境（C:\ProgramData\miniconda3\envs\seg）后，用它的基座建的 venv
+     （music / video(ComfyUI) / yue2）里那只 pythonw.exe 只是 venv 重定向器 —— 每次 spawn 都按
+     pyvenv.cfg 找基座，找不到就弹一只模态消息框（GUI 子系统 ⇒ MessageBox）。体检 = 起进程前的唯一闸门。 */
+  console.log("\n[10] 解释器体检：venv 基座被删不许 spawn（Python Launcher 消息框）");
+  const { pythonHealth } = require("../backend-python.js");
+  const hpTmp = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-python-health-"));
+  const mkPy = (p) => {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, "stub"); /* 268KB 重定向器只要「小文件」，内容无关 */
+    return p;
+  };
+  const mkVenv = (name, home, opts) => {
+    const o = opts || {};
+    const venv = path.join(hpTmp, name);
+    const exe = mkPy(path.join(venv, "Scripts", "pythonw.exe"));
+    fs.writeFileSync(
+      path.join(venv, "pyvenv.cfg"),
+      "home = " + home + "\r\ninclude-system-site-packages = false\r\nversion = 3.10.16\r\n",
+    );
+    if (o.copy) fs.writeFileSync(exe, Buffer.alloc(2 * 1024 * 1024, 32)); /* --copies 的真解释器副本 */
+    return exe;
+  };
+  /* 正常 venv：基座还在 → 放行 */
+  const goodBase = path.join(hpTmp, "base-ok");
+  mkPy(path.join(goodBase, "pythonw.exe"));
+  const goodVenv = mkVenv("venv-ok", goodBase);
+  ok(pythonHealth(goodVenv).ok === true, "基座还在的 venv → 放行（bad=null 不拦）");
+  /* 基座被删（正是本次现场）→ 判死，且报出那个不存在的基座路径 */
+  const goneBase = path.join(hpTmp, "conda-envs", "seg");
+  const deadVenv = mkVenv("venv-stale", goneBase);
+  const dead = pythonHealth(deadVenv);
+  ok(dead.ok === false && dead.code === "stale_venv", "基座被删的 venv → stale_venv（不再 spawn）");
+  ok(
+    dead.base === path.join(goneBase, "pythonw.exe"),
+    "报出的就是重定向器要找的那个基座（与消息框里 No Python at '…' 同路径）",
+  );
+  has(dead.message, "重装", "话术给出可执行出路（在插件安装窗重装）");
+  /* 解释器本身没了 */
+  ok(pythonHealth(path.join(hpTmp, "nope", "pythonw.exe")).code === "missing", "解释器文件不存在 → missing");
+  /* 真解释器副本（--copies）：基座没了也照样能跑 ⇒ 不许误判 */
+  const copyVenv = mkVenv("venv-copies", goneBase, { copy: true });
+  ok(pythonHealth(copyVenv).ok === true, ">1MB 的真解释器副本（--copies）不按重定向器判死");
+  /* 非 venv 布局 / PATH 裸名 / 空值：一律放行（体检只拦「一定会弹框」那一种） */
+  const plainPy = mkPy(path.join(hpTmp, "plain", "python.exe"));
+  ok(pythonHealth(plainPy).ok === true, "没有 pyvenv.cfg 的解释器 → 放行");
+  ok(pythonHealth("pythonw").ok === true, "PATH 裸名（python / pythonw）→ 放行（不查 PATH 猜存在）");
+  ok(pythonHealth("").ok === true, "空路径 → 放行（上游自己处理空值）");
+  /* 接线：7 个起后端的宿主都在 spawn 前体检 */
+  for (const f of Object.keys(SILENT_WIRING)) {
+    const src = read(f);
+    has(src, "pythonHealth", f + " 取到体检真源（backend-python.js）");
+    has(src, 'const pyBad = pythonHealth(py);', f + " 起后端前先体检（坏了不 spawn）");
+    has(src, '"stale_python"', f + " 体检失败以 stale_python 上报（不 spawn、不弹框）");
+  }
+  const h3Src = read("h3/main-h3.js");
+  const h3Guards = (h3Src.match(/pythonHealth\(/g) || []).length;
+  ok(
+    h3Guards >= 6,
+    "h3 的每条起 python 的路都挂上体检（健康检查 / Sage 探针 / pip 补装 / 后处理超分补帧 / 起 ComfyUI，实到 " +
+      h3Guards +
+      " 处)",
+  );
+  has(h3Src, "stale_python", "h3 的 Sage 缺包话术认得 stale_python 并指向重装");
+  has(read("yue/main-yue.js"), "const bad = pythonHealth(exe);", "yue 探针 / 转码（runExe）先体检");
+  has(read("sensenova/main-sensenova.js"), "const bad = pythonHealth(exe);", "sensenova 依赖自检（runExe）先体检");
+  has(
+    read("backend-python.js"),
+    "Python Launcher",
+    "根因口径记下 venv 重定向器那只消息框（与终端窗同一份「静默」口径）",
+  );
+
+  /* ═════════ [11] 三颗按钮的建法真跑一遍（安装 / 启用 / 控制台） ═════════
+     本轮需求：插件界面三颗按钮 —— 安装常驻、启用只在已安装时出现、控制台常驻。
+     这里不只是扫源码：把 refreshBackendPluginCard 拉进沙箱真跑（最小 DOM + 桥桩），
+     断言看得见按钮清单本身（建了几颗 / 文案 / 置灰 / 图标），见 runBackendCard。 */
+  console.log("\n[11] 卡片三颗按钮：未装 = 安装+控制台，装好才出现「启用」");
+  const LLAMA_SPEC = { key: "llama", api: "llama", hasService: true };
+  const REMOTION_SPEC = { key: "remotion", api: "remotion", hasService: false };
+  const mkSets = () => ({ starting: new Set(), stopping: new Set() });
+
+  let card = await runBackendCard({ installed: false, running: false, wantRunning: false }, LLAMA_SPEC, {}, mkSets());
+  ok(
+    card.labels.length === 2 && card.labels[0] === "安装" && card.labels[1] === "控制台",
+    "未安装：只有「安装」+「控制台」（实到 " + JSON.stringify(card.labels) + "）",
+  );
+  ok(card.labels.join("|").indexOf("启用") < 0, "未安装：「启用」整颗不建");
+  ok(card.icons.every(Boolean), "未安装那两颗都有图标（取自 PLUGIN_ACT_SVG）");
+
+  card = await runBackendCard({ installed: true, running: false, wantRunning: false }, LLAMA_SPEC, {}, mkSets());
+  ok(
+    card.labels.length === 3 && card.labels[0] === "重装" && card.labels[1] === "启用" && card.labels[2] === "控制台",
+    "已安装：三颗 = 安装(重装) / 启用 / 控制台（实到 " + JSON.stringify(card.labels) + "）",
+  );
+  ok(card.icons.every(Boolean), "三颗按钮都有图标");
+  ok(/plugin-act/.test(card.btns[1].cls) && / primary/.test(card.btns[1].cls), "未启用时「启用」是主按钮");
+
+  card = await runBackendCard({ installed: true, running: true, wantRunning: true }, LLAMA_SPEC, {}, mkSets());
+  ok(card.labels[1] === "停用", "运行中：同一颗按钮显示「停用」（实到 " + JSON.stringify(card.labels) + "）");
+  ok(/\bon\b/.test(card.btns[1].cls), "运行中：「停用」高亮（on）");
+
+  const setsStop = mkSets();
+  setsStop.stopping.add("llama");
+  card = await runBackendCard({ installed: true, running: true, wantRunning: true }, LLAMA_SPEC, {}, setsStop);
+  ok(card.labels[1] === "停用中…（置灰）", "停用过程：「停用中…」那颗置灰（实到 " + JSON.stringify(card.labels) + "）");
+
+  const setsStart = mkSets();
+  setsStart.starting.add("llama");
+  card = await runBackendCard({ installed: true, running: false, wantRunning: false }, LLAMA_SPEC, {}, setsStart);
+  ok(
+    card.labels[1] === "启用中…（首次加载模型可能几分钟）（置灰）",
+    "启用过程：「启用中…」那颗置灰并说明原因（实到 " + JSON.stringify(card.labels) + "）",
+  );
+
+  card = await runBackendCard({ installed: true }, REMOTION_SPEC, { reinstallLabel: "重装" }, mkSets());
+  ok(
+    card.labels.length === 2 && card.labels.join("|").indexOf("启用") < 0,
+    "Remotion（无常驻后端）：只有「重装」+「控制台」，没有「启用」（实到 " + JSON.stringify(card.labels) + "）",
   );
 
   console.log(

@@ -50,7 +50,7 @@ const sandbox = {
   nodeById: (id) => S.wf.nodes.find((n) => n.id === id) || null,
   wiresTo: (id) => S.wf.wires.filter((w) => w.to === id),
   isControlKind: (n) => !!(n && n.kind === "control"),
-  isMediaGenNode: (n) => !!(n && ["music_gen", "tts_gen", "video_gen", "remotion"].includes(n.kind)),
+  isMediaGenNode: (n) => !!(n && ["music_gen", "yue_gen", "breeze_gen", "video_gen", "remotion"].includes(n.kind)),
   wfWorkspace: () => "E:/proj",
   resolveSavePath: (p) => ({ ok: true, path: String(p || "") }),
   applySuperRelToPath: (n, p) => p,

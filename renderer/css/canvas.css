@@ -4987,7 +4987,7 @@ body.theme-light .n-chip.n-chip-lt {
   font-family: var(--mono)
 }
 
-/* SoVITS 语音节点（tts_gen）：音色下拉 / 手填 + 刷新、输出格式 select 的宽度约束 */
+/* 生成类节点设置窗里的下拉 / 手填控件宽度约束（Breeze 语音等） */
 .mg-param select {
   max-width: 104px;
   min-width: 0;
@@ -4997,27 +4997,6 @@ body.theme-light .n-chip.n-chip-lt {
   border-radius: 3px;
   padding: 4px 4px;
   font-size: 11.5px;
-}
-.mg-voice-box {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  max-width: 140px;
-}
-.mg-voice-box select,
-.mg-voice-box input[type="text"] {
-  width: 100%;
-  max-width: 132px;
-  min-width: 0;
-}
-.mg-voice-box input[type="text"] {
-  background: var(--code);
-  color: var(--ink);
-  border: 1px solid var(--bd2);
-  border-radius: 3px;
-  padding: 4px 6px;
-  font-size: 11.5px;
-  font-family: var(--mono);
 }
 .mg-param-voice .mini {
   flex: none;

@@ -48,8 +48,8 @@ function exists(p) {
   return fs.existsSync(p);
 }
 
-console.log("[1] 目标目录表：6 个插件，路径按安装目录推导");
-const IDS = ["minimax-h3", "minimax-music3", "yue2-local", "sensenova-local", "tts-local", "breeze-tts-local"];
+console.log("[1] 目标目录表：5 个插件，路径按安装目录推导");
+const IDS = ["minimax-h3", "minimax-music3", "yue2-local", "sensenova-local", "breeze-tts-local"];
 for (const id of IDS) {
   ok(W.supports(id) === true, id + " 支持权重指路");
   const info = W.weightsInfo(id, "D:\\install\\" + id);
@@ -61,13 +61,12 @@ for (const id of IDS) {
 }
 eq(W.supports("llama-local"), false, "llama 不参与权重指路（GGUF 是运行期在控制台里下的）");
 eq(W.supports("remotion"), false, "remotion 不参与（没有权重）");
+/* GPT-SoVITS（tts-local）已随本版移除：不再有它的权重槽位，指路入口也不该认它 */
+eq(W.supports("tts-local"), false, "tts-local 已移除 → 不再支持权重指路");
+eq(W.weightsInfo("tts-local", "C:\\x"), null, "tts-local 的槽位表已删（回 null）");
 const im = W.weightsInfo("minimax-h3", "C:\\x");
 eq(im.slots.length, 3, "h3 三个槽位（diffusion_models / text_encoders / vae）");
 ok(im.slots[0].dir.endsWith(path.join("ComfyUI", "models", "diffusion_models")), "h3 扩散模型目标 = ComfyUI\\models\\diffusion_models");
-ok(
-  W.weightsInfo("tts-local", "C:\\x").slots[0].dir.endsWith(path.join("engine", "GPT_SoVITS", "pretrained_models")),
-  "tts 目标 = engine\\GPT_SoVITS\\pretrained_models",
-);
 ok(
   W.weightsInfo("breeze-tts-local", "C:\\x").slots[0].dir.endsWith(path.join("checkpoints", "breeze-tts-2")),
   "breeze 目标 = checkpoints\\breeze-tts-2",
@@ -110,29 +109,6 @@ eq(plan.total.count, 2, "music3：单槽位兜底认出 2 个文件");
 ok(
   plan.moves.some((m) => m.dst.endsWith(path.join("models", "MiniMax-Music3", "transformer", "diffusion_pytorch_model.safetensors"))),
   "music3：子目录结构照原样保留（transformer\\…safetensors）",
-);
-
-/* tts：keepAccepts（chinese-hubert-base 要连名字一起搬）+ 落单文件名命中 */
-const ttssrc = path.join(tmpRoot, "ttsdl");
-write(path.join(ttssrc, "s2G488k.pth"), "T1");
-write(path.join(ttssrc, "s2G2333k.pth"), "T1b");
-write(path.join(ttssrc, "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"), "T2");
-write(path.join(ttssrc, "chinese-hubert-base", "config.json"), "{}");
-write(path.join(ttssrc, "chinese-hubert-base", "pytorch_model.bin"), "T3");
-const ttsinst = mkdirp(path.join(tmpRoot, "ttsinst"));
-plan = W.planMove({ pluginId: "tts-local", installDir: ttsinst, sources: [ttssrc] });
-eq(plan.total.count, 5, "tts：认出 5 个文件（2 个落单 SoVITS 底模 + 1 个 GPT 底模 + hubert 两个）");
-ok(
-  plan.moves.some((m) => m.dst.endsWith(path.join("pretrained_models", "chinese-hubert-base", "config.json"))),
-  "tts：chinese-hubert-base 连目录名一起搬进 pretrained_models",
-);
-ok(
-  plan.moves.some((m) => m.dst.endsWith(path.join("pretrained_models", "s2G488k.pth"))),
-  "tts：落单的 v1 底模 s2G488k.pth 落到 pretrained_models 根部",
-);
-ok(
-  plan.moves.some((m) => m.dst.endsWith(path.join("pretrained_models", "s2G2333k.pth"))),
-  "tts：落单的 v2 底模 s2G2333k.pth 也认（旧代码只认写错的 s2G233k）",
 );
 
 /* yue：两个槽位靠目录名区分 */

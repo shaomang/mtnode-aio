@@ -455,7 +455,7 @@ function renderGpu(gpu) {
       { py: "3.10", torch: "2.9.1+cu130", cuda: "13.0", sm: "sm89", triton: "", sage: "", hasVenv: true, backendUp: false },
       o || {},
     );
-    const calls = { pips: [], venvPy: [], fetch: [], wrote: [] };
+    const calls = { pips: [], venvPy: [], fetch: [], wrote: [], spawns: [] };
     const probeJson = () => {
       const why = [];
       if (!st.triton) why.push("triton:ModuleNotFoundError");
@@ -467,6 +467,7 @@ function renderGpu(gpu) {
     };
     const EE = require("events").EventEmitter;
     const spawn = (_cmd, args) => {
+      calls.spawns.push(String(_cmd));
       const child = new EE();
       child.stdout = new EE();
       child.stderr = new EE();
@@ -531,6 +532,14 @@ function renderGpu(gpu) {
       /* 解释器口径（backend-python.js）：venv python.exe → pythonw.exe。抽出来的片段里那份真
          comfyVenvPython 会用到它，这里只关心选轮子的逻辑，桩成恒等 ⇒ 夹具路径照旧是 python.exe */
       quietPython: (p) => p,
+      /* 解释器体检（backend-python.js）：起进程前判断 venv 基座还在不在（基座被删时真机会弹
+         Python Launcher 消息框，真源见 test/smoke-plugin-console.js [10]）。默认桩成「可用」，
+         要验「坏了不 spawn」那条用例时由 st.pythonHealth 覆盖 */
+      pythonHealth: () => st.pythonHealth || { ok: true },
+      /* 整条子树静默（backend-python.js）：抽出来的 runVenvPip 会给 pip 子进程的 PYTHONPATH
+         最前挂 <installDir>/shims（sitecustomize 垫片）；这里只关心 pip 参数与镜像 env，
+         桩成恒等即可（真行为在 test/smoke-console-silent.js 里真跑） */
+      silentEnv: (_dir, env) => env,
       /* 国内镜像源单一真源（cn-mirrors.js）：抽出来的 runVenvPip 会用 mirrors.installEnv()
          下发 PIP_* 三件套（压掉机器级 pip.ini 里不可达的 extra-index）；沙箱里给真模块即可 */
       mirrors: require("../cn-mirrors.js"),
@@ -632,6 +641,29 @@ function renderGpu(gpu) {
     "没有 venv → disabled（照旧）");
   ok((await makeSageHost({}).resolveSageModeForGenerate("disabled", "E:/x", true)) === "disabled",
     "用户本来关了 Sage → 连探测都省了");
+
+  /* 基座解释器被删（用户手工删 conda 环境那一类）：venv 的 pythonw.exe 一 spawn 就弹
+     「Python Launcher … No Python at …」模态框 —— 体检拦下，探针一次都不起进程 */
+  const staleHost = makeSageHost({
+    pythonHealth: {
+      ok: false,
+      code: "stale_venv",
+      base: "C:\\ProgramData\\miniconda3\\envs\\seg\\pythonw.exe",
+      message: "后端 Python 环境已失效：… 请在该插件卡片的安装窗里重装，重建 Python 环境。",
+    },
+  });
+  const staleVal = await staleHost.ensureSageProbe("E:/mtnode-plugins/video");
+  ok(
+    staleHost.calls.spawns.length === 0,
+    "基座被删（stale_venv）→ Sage 探针一次都不 spawn（不再弹 Python Launcher 消息框；实到 " +
+      staleHost.calls.spawns.length +
+      " 次）",
+  );
+  ok(/stale_python/.test(staleVal.why), "回执 why 带 stale_python 标记（落在 parseSageProbe 保留的末 160 字符里）");
+  ok(
+    /重装/.test(staleHost.sageMissingHint(staleVal)),
+    "缺包话术改成「解释器已失效 → 安装窗重装」（得到 " + show(staleHost.sageMissingHint(staleVal)) + "）",
+  );
 
   /* 一键补装真函数：缺包 → 装 triton → 挑轮子 → 装 wheel → 复检；已就绪 → 一次 pip 都不发 */
   h8 = makeSageHost({});

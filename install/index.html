@@ -67,12 +67,21 @@
   </section>
 
   <footer class="ins-foot" id="insFoot" hidden>
-    <div class="ins-dir" id="insDir" title=""></div>
-    <label class="ins-force" id="insForceHwBox" hidden title="只有该类后端有这个门槛；勾了才透传 forceHardware（明知不够也继续装）">
-      <input type="checkbox" id="insForceHw" />
-      <span>忽略硬件门槛（显存 / 内存不够也继续装）</span>
-    </label>
-    <div class="ins-actions" id="insActions"></div>
+    <!-- 卸载确认（点底栏「卸载」才展开）：删什么 / 留什么都列在这里，确认前不动盘。
+         卸载是破坏性动作，所以不做成「点一下就走」——先把清单摆出来，用户点「确认卸载」才开跑。 -->
+    <section class="ins-unin" id="insUnin" hidden>
+      <div class="ins-unin-head"><b id="insUninTitle">确认卸载</b><span id="insUninDir" title=""></span></div>
+      <ul class="ins-unin-list" id="insUninList"></ul>
+      <div class="ins-unin-note" id="insUninNote"></div>
+    </section>
+    <div class="ins-foot-row">
+      <div class="ins-dir" id="insDir" title=""></div>
+      <label class="ins-force" id="insForceHwBox" hidden title="只有该类后端有这个门槛；勾了才透传 forceHardware（明知不够也继续装）">
+        <input type="checkbox" id="insForceHw" />
+        <span>忽略硬件门槛（显存 / 内存不够也继续装）</span>
+      </label>
+      <div class="ins-actions" id="insActions"></div>
+    </div>
   </footer>
 
   <div class="ins-toast" id="insToast" hidden></div>

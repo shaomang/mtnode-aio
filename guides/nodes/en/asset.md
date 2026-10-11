@@ -30,7 +30,7 @@ Create: right-click an empty canvas → **Input nodes** → **Asset node (binds 
 |---|---|---|
 | Text | a string | Text process, agent task, Save (text) |
 | Image | the file’s `file:///` URL | Image generation (reference image), Save (image) |
-| Audio | the file’s `file:///` URL | Music generation, SoVITS reference audio, Save (audio) |
+| Audio | the file’s `file:///` URL | Music generation, Breeze voice reference audio, Save (audio) |
 | Video | the file’s `file:///` URL | Video generation reference, Save (video) |
 
 A downstream node receives whatever is wired in as a **connected input** (the same mechanism an input node uses).

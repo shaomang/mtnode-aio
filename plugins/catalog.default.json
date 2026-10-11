@@ -104,23 +104,6 @@
       }
     },
     {
-      "id": "tts-local",
-      "kind": "tts",
-      "handler": "tts",
-      "order": 60,
-      "version": "1.0.2",
-      "minAppVersion": "1.1.26",
-      "icon": "tts-local.png",
-      "title": {
-        "zh": "GPT-SoVITS 本地 TTS",
-        "en": "GPT-SoVITS Local TTS"
-      },
-      "subtitle": {
-        "zh": "基于 GPT-SoVITS 的本地文本转语音：指定目录安装、参考音频音色管理、OpenAI 兼容 TTS API（API Key 鉴权）。服务不随 MTNode 退出，托盘可手动关闭。",
-        "en": "GPT-SoVITS local TTS: custom install dir, reference-audio voice manager, OpenAI-compatible TTS API with API key auth. Service survives MTNode exit; close via tray."
-      }
-    },
-    {
       "id": "breeze-tts-local",
       "kind": "breeze",
       "handler": "breeze",

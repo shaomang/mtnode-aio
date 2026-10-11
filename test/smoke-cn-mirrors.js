@@ -122,10 +122,9 @@ console.log("\n[2] 打包白名单");
 has(read("build.json"), '"cn-mirrors.js"', "build.json files 含 cn-mirrors.js（漏了就是打包后 Cannot find module）");
 
 /* ---------------- [3] 插件宿主 ---------------- */
-console.log("\n[3] 8 个插件宿主的安装环境");
+console.log("\n[3] 7 个插件宿主的安装环境");
 const HOSTS = [
   ["breeze", "breeze/main-breeze.js"],
-  ["tts", "tts/main-tts.js"],
   ["llama", "llama/main-llama.js"],
   ["h3", "h3/main-h3.js"],
   ["music3", "music3/main-music3.js"],
@@ -146,10 +145,9 @@ for (const [id, rel] of HOSTS) {
 }
 
 /* ---------------- [4] 随包安装脚本 ---------------- */
-console.log("\n[4] 8 个随包安装脚本的源口径");
+console.log("\n[4] 7 个随包安装脚本的源口径");
 const PACKS = [
   { id: "breeze", rel: "breeze-pack/scripts/install.ps1", pip: true, torch: true, weights: "breeze-pack/scripts/download_weights.py", modelscope: true, ghChain: true },
-  { id: "tts", rel: "tts-pack/scripts/install.ps1", pip: true, torch: true, weights: "tts-pack/scripts/install.ps1", modelscope: true, ghChain: true },
   { id: "llama", rel: "llama-pack/scripts/install.ps1", pip: true, torch: false, weights: "llama-pack/scripts/install.ps1", modelscope: false, ghChain: true },
   { id: "h3", rel: "h3-pack/scripts/setup_env.ps1", pip: true, torch: true, weights: "h3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false },
   { id: "music3", rel: "music3-pack/scripts/setup_env.ps1", pip: true, torch: false, weights: "music3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false },
@@ -287,7 +285,6 @@ const SKILLS = [
   "skills/sensenova-local-install/SKILL.md",
   "skills/minimax-h3-install/SKILL.md",
   "skills/breeze-tts-local-install/SKILL.md",
-  "skills/tts-local-install/SKILL.md",
   "skills/llama-local-install/SKILL.md",
   "skills/yue2-local-install/SKILL.md",
 ];

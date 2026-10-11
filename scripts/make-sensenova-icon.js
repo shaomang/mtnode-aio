@@ -2,7 +2,7 @@
 /* 生成 SenseNova 插件封面图标：plugins/icons/sensenova-local.png（1:1 · 512×512）
  *
  * 设计（简单、小尺寸可辨）：深色圆角方底 + 青→紫渐变的**六叶光圈**（快门叶片 + 镜筒外环
- * + 中心镜片高光）= 「本地图像生成」。与 asr-local / bongochat / tts-local 等封面同为
+ * + 中心镜片高光）= 「本地图像生成」。与 asr-local / bongochat / breeze-tts-local 等封面同为
  * 插件网格图标，由 plugins/main-app-plugins.js 的 iconSearchDirs() 读取，
  * 也随 scripts/stage-plugins.mjs 发布。
  *

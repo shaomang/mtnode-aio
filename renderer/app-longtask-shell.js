@@ -8,7 +8,7 @@
  *   父壳  kind "super" · ltShellTask = 任务 uid ── 主画布层，壳名 = 「长任务 · <任务名>」
  *     └ 环节子壳 kind "super" · parentSuperId = 父壳 id · ltShellPath = 环节路径
  *        ├ 控制节点（control · ctrlRole "start" · 靠上）—— 用户在这里点 ▶ 触发生成
- *        ├ 生成节点（proc_image / video_gen / music_gen / tts_gen · 靠下 · 按 cfg.genTypes 平行摆）
+ *        ├ 生成节点（proc_image / video_gen / music_gen / breeze_gen · 靠下 · 按 cfg.genTypes 平行摆）
  *        ├ 产出节点 ltout（引擎回写正文，见 app-longtask.js 的 ltOutputCreateNode）
  *        └ 产物节点 ltart（本环节跑出来的文件，见 app-longtask-artifacts.js）
  *
@@ -223,12 +223,14 @@ function ltsStepTitle(run, path) {
   const seg = String(path || "").split("/").filter(Boolean).pop() || "";
   return seg.split("@")[0] || ltsT("环节");
 }
-/* 生成类型 → 建哪种节点（类型清单是本模块与 cfg.genTypes 的共同词汇表） */
+/* 生成类型 → 建哪种节点（类型清单是本模块与 cfg.genTypes 的共同词汇表）。
+   tts 这一档 = 本机语音合成，节点用 Breeze 语音（breeze_gen）—— SoVITS（tts_gen）
+   已随该插件移除，词汇表里的键名与长任务图存量配置（cfg.genTypes: ["tts"]）保持不变。 */
 const LT_SHELL_GEN_KINDS = {
   image: "proc_image",
   video: "video_gen",
   music: "music_gen",
-  tts: "tts_gen",
+  tts: "breeze_gen",
 };
 const LT_SHELL_GEN_TYPES = ["image", "video", "music", "tts"];
 function ltsGenLabel(t) {

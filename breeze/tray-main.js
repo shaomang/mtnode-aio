@@ -39,10 +39,7 @@ function uiEntry() {
 }
 
 function trayIcon() {
-  const candidates = [
-    join(__dirname, "..", "plugins", "icons", "breeze-tts-local.png"),
-    join(__dirname, "..", "plugins", "icons", "tts-local.png"),
-  ];
+  const candidates = [join(__dirname, "..", "plugins", "icons", "breeze-tts-local.png")];
   for (const p of candidates) {
     if (fs.existsSync(p)) return nativeImage.createFromPath(p).resize({ width: 16, height: 16 });
   }

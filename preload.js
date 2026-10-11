@@ -627,51 +627,7 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('llama:providerSynced', handler);
   },
 
-  ttsStatus: () => ipcRenderer.invoke('tts:getStatus'),
-  ttsOpen: () => ipcRenderer.invoke('tts:open'),
-  ttsClose: () => ipcRenderer.invoke('tts:close'),
-  ttsInstall: (opts) => ipcRenderer.invoke('tts:install', opts || {}),
-  ttsCancelInstall: () => ipcRenderer.invoke('tts:cancelInstall'),
-  ttsStart: () => ipcRenderer.invoke('tts:start'),
-  ttsStop: () => ipcRenderer.invoke('tts:stop'),
-  ttsPickInstallDir: () => ipcRenderer.invoke('tts:pickInstallDir'),
-  ttsRemovePluginMeta: () => ipcRenderer.invoke('tts:removePluginMeta'),
-  ttsApiFetch: (opts) => ipcRenderer.invoke('tts:apiFetch', opts || {}),
-  ttsGenerate: (opts) => ipcRenderer.invoke('tts:generate', opts || {}),
-  /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
-  ttsConsoleTail: (n) => ipcRenderer.invoke('tts:consoleTail', n),
-  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
-  ttsConsoleClear: () => ipcRenderer.invoke('tts:consoleClear'),
-  onTtsNotice: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('tts:notice', handler);
-    return () => ipcRenderer.removeListener('tts:notice', handler);
-  },
-  onTtsProgress: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('tts:progress', handler);
-    return () => ipcRenderer.removeListener('tts:progress', handler);
-  },
-  onTtsConsoleChanged: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('tts:consoleChanged', handler);
-    return () => ipcRenderer.removeListener('tts:consoleChanged', handler);
-  },
-  onTtsProviderSynced: (cb) => {
-    const handler = (_e, data) => {
-      try { cb(data); } catch (_) {}
-    };
-    ipcRenderer.on('tts:providerSynced', handler);
-    return () => ipcRenderer.removeListener('tts:providerSynced', handler);
-  },
-
-  /* ── Breeze TTS 2 本地 TTS（第二套语音后端，见 breeze/main-breeze.js）──
+  /* ── Breeze TTS 2 本地 TTS（见 breeze/main-breeze.js）──
      画布节点 breeze_gen 走 breezeGenerate；插件卡片的启停 / 安装走其余通道。 */
   breezeStatus: () => ipcRenderer.invoke('breeze:getStatus'),
   breezeOpen: () => ipcRenderer.invoke('breeze:open'),

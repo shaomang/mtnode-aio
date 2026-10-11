@@ -5897,6 +5897,70 @@ button.dsh-xlate-copy:hover {
   border-color: var(--cyan)
 }
 
+/* ── 过程折叠条（本次需求 · 一轮折叠时保留最后的总结回应）───────────────────────
+   口径（拷问共识，见 renderer/app-assist.js 的 histProc* 那一段）：一轮里**最后一条 AI
+   消息**折叠时，只把「过程」（思考 / 工具 / 上下文注入 / 更早的中间说明）折起来 ——
+   折成这一行可点的摘要条（button.hist-proc-bar），该轮的**最终答复全文保留**在条下方。
+   结构：.dsh-msg.hist-proc-folded（折叠态，行级）
+           ├─ button.hist-proc-bar（摘要条：▸ + 文案；挂在 .dsh-msg-body **之前**）
+           └─ .dsh-msg-body（过程块都挂了 .hist-proc → 隐藏；最后一段正文照旧全显）
+   与老口径（.hist-collapsed = 整条超 2 行裁 2 行）并存：同一轮里更早的 AI 回复仍走老口径，
+   没有过程可折的行整条全显、两个类都不加。回归见 test/smoke-hist-fold.js。 */
+.dsh-msg.hist-proc-folded .hist-proc {
+  display: none
+}
+
+button.hist-proc-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  /* 行内间距交给 .dsh-msg 的 flex gap（5px），这里不再叠外边距 */
+  margin: 0;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .4px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, .025);
+  border: 0;
+  border-left: 2px solid var(--bd2);
+  border-radius: 0 3px 3px 0;
+  padding: 3px 8px 4px;
+  cursor: pointer
+}
+
+button.hist-proc-bar:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, .06)
+}
+
+button.hist-proc-bar:focus-visible {
+  outline: 1px solid var(--cyan2);
+  outline-offset: 1px
+}
+
+.hist-proc-chev {
+  flex: none;
+  opacity: .75
+}
+
+.hist-proc-txt {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+body.theme-light button.hist-proc-bar {
+  background: rgba(0, 0, 0, .03)
+}
+
+body.theme-light button.hist-proc-bar:hover {
+  background: rgba(0, 0, 0, .06)
+}
+
 .dsh-msg.hist-collapsed {
   cursor: pointer
 }

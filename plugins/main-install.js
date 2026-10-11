@@ -23,6 +23,8 @@
  *   invoke `mtnodeInstall:state`   { id? }                                   → { ok, session|null, sessions:[…] }
  *   invoke `mtnodeInstall:cancel`  { id }                                     → 转发宿主自己的取消口
  *   invoke `mtnodeInstall:fix`     { id }                                     → 请主窗口新建修复会话（delegate:"session" 事件）
+ *   invoke `mtnodeInstall:ensureDir` { id }                                    → 安装开始时把「根目录 + 默认子目录名」建出来并落到该插件配置（本轮需求）
+ *   invoke `mtnodeInstall:uninstall` { action:"preview"|"run"|"cancel", id }    → 卸载预览 / 真删（先停后端）/ 停手
  *   send   `mtnodeInstall:session` { id, installDir, skill, name, action, code, message, hint, log } → 主窗口
  *   send   `mtnodeInstall:state`   (session)  → 安装窗（快照）
  *   send   `mtnodeInstall:event`   ({ id, kind, … }) → 安装窗（步骤 / 日志 / 终结）
@@ -32,6 +34,8 @@ const fs = require("fs");
 const { BrowserWindow, ipcMain, screen, dialog } = require("electron");
 const steps = require("./install-steps.js");
 const weights = require("./install-weights.js");
+/* plugin-root 的纯函数（normDir）：卸载守卫要把用户给的目录归一后再判危险目录 */
+const { normDir: rootNormDir } = require("./plugin-root.js");
 
 /** 窗单例：同一时刻只开一只安装窗（切插件 = 原地换内容，不叠窗）。 */
 let installWin = null;
@@ -58,6 +62,17 @@ const weightsSel = new Map();
 let weightsJob = null;
 /** pluginId → 最近一次搬运结果（关窗重开仍看得到结论）。 */
 const weightsLast = new Map();
+/** 正在跑的卸载作业（同一时刻只允许一个）：{ id, done, cancelled }。 */
+let uninstallJob = null;
+/** 卸载的步骤 id 与兜底步骤表（自定义路由的插件也用它，安装窗里就是一行「卸载并清理文件」）。 */
+const UNINSTALL_STEP_ID = "uninstall";
+const UNINSTALL_STEPS = [
+  {
+    id: UNINSTALL_STEP_ID,
+    title: "卸载并清理文件",
+    hint: "删不掉多为文件被占用：关掉该插件的后端 / 控制台 / 资源管理器里打开的那个目录后重试。",
+  },
+];
 
 function log(line) {
   try {
@@ -201,7 +216,9 @@ function installDirOf(id) {
     const own = t && typeof t.getInstallDir === "function" ? String(t.getInstallDir() || "") : "";
     if (own) return own;
     const mod = getPluginRootMod();
-    if (mod && mod.needsDir(sid)) return mod.defaultDir(sid) || "";
+    /* 子目录名走 mod.subDir（显式表 + 「有自己配置的插件」推导，见 plugins/plugin-root.js）——
+       别在这里写 subDirNameOf：那条老路径认不出云端 / 遗留插件，会把它当窗口插件回空串。 */
+    if (mod && mod.needsDir(sid)) return mod.defaultDir(sid, mod.subDir(sid)) || "";
     const host = plugins.get(sid);
     const viaHost = host && typeof host.getInstallDir === "function" ? String(host.getInstallDir() || "") : "";
     if (viaHost) return viaHost;
@@ -229,23 +246,121 @@ function getPluginRootMod() {
   }
   return pluginRootMod;
 }
+/**
+ * 数据目录（插件根目录的真源就在它下面的 config.json）。
+ * 防御：注入进来的取目录函数**又返回一个函数**时（main.js 曾经写成 `getDataDir: () => DATA`，
+ * 而 DATA 自己就是取目录的函数）也照样取到真目录 —— 否则这里会拿到那个函数的源码字符串，
+ * 于是插件根目录一律读成「没设」，安装时宿主报一句用户看不懂的 empty_dir（本轮真事故）。
+ * 非绝对路径一律记一行并当**不可用**处理：宁可当场说清，也不把空目录一路传下去。
+ */
 function dataDirOf() {
   try {
-    return typeof getDataDir === "function" ? String(getDataDir() || "") : "";
+    let v = typeof getDataDir === "function" ? getDataDir() : "";
+    if (typeof v === "function") v = v();
+    return String(v || "");
   } catch {
     return "";
   }
 }
+/** 数据目录可用吗：空的放行（老行为不变 —— 由调用方决定怎么报），非空但**不是绝对路径** = 不可用。 */
+function dataDirUsable(d) {
+  const s = String(d || "");
+  if (!s) return true;
+  try {
+    return path.isAbsolute(s);
+  } catch {
+    return false;
+  }
+}
+
 function appDirsOf() {
   const out = [];
   try {
     const root = String(appRoot || "");
-    if (root) {
-      out.push(root);
-      out.push(path.join(root, ".."));
-    }
+    /* 只把**应用目录本身**算危险区。这里**不**连带父级：appRoot = app.getAppPath()，
+       开发态就是项目根，把项目根的父级（整个开发盘）一并拒掉会让守卫本身变成误伤
+       （正常安装目录常在项目同一块盘上，比如 E:\mtnode-plugins）。 */
+    if (root) out.push(root);
   } catch {}
   return out.filter(Boolean);
+}
+
+/**
+ * 「这次安装真正要落到哪个目录」——并在**安装开始时把它建出来**（本轮需求）。
+ *
+ * 为什么必须有这一步：7 个后端宿主的安装函数只读**自己配置里的 installDir**（空串 =
+ * isSafeInstallDir 回 empty_dir，安装根本起不来）。用户设过插件根目录之后，目录其实
+ * 早就算得出来（根目录 + 默认子目录名，见 plugins/plugin-root.js），但从没人把它建出来、
+ * 也没人写回插件自己的配置 —— 用户只能去安装窗点「选择安装目录」，再在系统框里手建一个。
+ * 这里把这一步补上：口径全在 plugin-root.js 的 ensureDir 里（插件自己设过目录 → 原样返回；
+ * 需目录的插件 → mkdir -p + 写回 installDir；窗口插件 / 桌宠 → 不建不写），本函数只负责
+ * 「调它 + 把结果同步进快照 + 记一行日志」。
+ *
+ * 只在安装路径上调（安装窗的「开始安装 / 重试」）：只读入口（installDirOf / status）不许建目录。
+ *
+ * 回执比 plugin-root 多带一层语义给安装窗用：needs = 「这个插件本该有安装目录」。
+ * 安装窗据此判「回执说成功、却没给出目录」= 真故障（如实报错），
+ * 而不是继续往下走、让宿主报一句 empty_dir（本轮共识）。
+ */
+function ensureInstallDirFor(id) {
+  const sid = String(id || "").trim();
+  if (!sid) return { ok: false, error: "bad_id", dir: "", source: "", created: false, wrote: false };
+  /* 数据目录不可用（不是绝对路径：注入的取目录函数被多包了一层之类）时当场说清，
+     别让它退化成一个读不到的 config.json → 插件根目录读成「没设」→ 宿主报 empty_dir。 */
+  const dd = dataDirOf();
+  if (!dataDirUsable(dd)) {
+    log("[install] ensure dir 中止：数据目录不可用 id=" + sid + " dataDir=" + dd);
+    return {
+      ok: false,
+      error: "bad_data_dir",
+      dir: "",
+      source: "root",
+      created: false,
+      wrote: false,
+      needs: true,
+      cfgPath: "",
+      message: "数据目录不可用（" + dd + "）：插件根目录读不出来，请重启应用后再试。",
+    };
+  }
+  const mod = getPluginRootMod();
+  if (!mod || typeof mod.ensureDir !== "function") {
+    /* 真源取不到（老行为不变）：不建也不写，宿主自己会照旧报「安装目录不合法」 */
+    return { ok: true, dir: "", source: "no_module", created: false, wrote: false, needs: false, cfgPath: "" };
+  }
+  let r = null;
+  try {
+    r = mod.ensureDir(sid);
+  } catch (e) {
+    return {
+      ok: false,
+      error: "ensure_failed",
+      dir: "",
+      source: "root",
+      created: false,
+      wrote: false,
+      message: String((e && e.message) || e),
+    };
+  }
+  /* 快照里的安装目录跟着刷新：安装窗顶部那一行与后续宿主上报看的是同一份现场 */
+  try {
+    const snap = sessions.get(sid);
+    if (r && r.ok && r.dir && snap) snap.installDir = String(r.dir);
+  } catch {}
+  if (r && r.ok && r.dir) {
+    log(
+      "[install] ensure dir id=" +
+        sid +
+        " dir=" +
+        r.dir +
+        " created=" +
+        !!r.created +
+        " cfg=" +
+        String(r.cfgPath || ""),
+    );
+  } else if (r && !r.ok) {
+    log("[install] ensure dir failed id=" + sid + " err=" + String(r.error || "") + " " + String(r.message || ""));
+  }
+  return r;
 }
 
 function manifestOf(t) {
@@ -305,6 +420,9 @@ function beginPluginInstall(opts) {
     startedAt: Date.now(),
   });
   sessions.set(id, snap);
+  /* 卸载这一次走的是同一只窗、同一份快照模型：mode 让窗认出「这是卸载，不是安装」
+     （按钮文案 / 「重试」该调哪条桥都由它决定）。安装场景不写这个字段，老口径不变。 */
+  if (String(o.action || "") === "uninstall") snap.mode = "uninstall";
   currentId = id;
   ensureWindow();
   sendToWin("mtnodeInstall:state", snap);
@@ -486,8 +604,6 @@ const INSTALL_API_CHANNELS = {
   h3PickInstallDir: "h3:pickInstallDir",
   llamaInstall: "llama:install",
   llamaPickInstallDir: "llama:pickInstallDir",
-  ttsInstall: "tts:install",
-  ttsPickInstallDir: "tts:pickInstallDir",
   breezeInstall: "breeze:install",
   breezePickInstallDir: "breeze:pickInstallDir",
   sensenovaInstall: "sensenova:install",
@@ -501,6 +617,22 @@ const INSTALL_API_CHANNELS = {
      放进这张白名单表 = 安装窗只多了一条**既有**通道的使用权，不新开 IPC 面。 */
   clipboardWriteText: "clipboard:writeText",
 };
+
+/**
+ * 安装通道（"yue:install" 这类后端安装桥）→ 该插件登记进本模块的 id。
+ * 用**登记表反查**（宿主注册时的 key = 通道前缀），别在别处再抄一份 id 表；
+ * 窗口插件 / 桌宠 / 不在表里的通道 → 空串（不参与「先落目录」这道双保险）。
+ */
+function installPluginIdOfChannel(channel) {
+  const m = /^([a-z0-9_-]+):install$/i.exec(String(channel || ""));
+  if (!m) return "";
+  const key = m[1].toLowerCase();
+  for (const [id, t] of plugins.entries()) {
+    if (!t) continue;
+    if (String(t.key || "").toLowerCase() === key || String(id).toLowerCase() === key) return String(id);
+  }
+  return "";
+}
 
 /**
  * 把一次安装窗调用转发给已注册的 IPC handler。
@@ -823,6 +955,354 @@ async function cancelInstall(id) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 卸载（安装窗内那一颗「卸载」）                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 卸载路由表（**主进程唯一一份**：安装窗只说「卸载这个插件」，删什么由这里决定）。
+ *   id       → 安装窗给出的插件 id（后端 / 桌宠 id、窗口插件的目录名）
+ *   label    → 预览标题里的中文名（认不出时用登记的 name / id）
+ *   stop     → 卸载前先停后端（本地后端各自那条 `<kind>:stop`；没有常驻后端的插件不写）
+ *   custom   → 该插件自己的卸载口（{ preview, run } 两条 IPC 通道名）：
+ *              有了就交给它（它更懂自己的产物，如 Music3 / H3 的 output 保留口径、桌宠的自启登记）；
+ *              没有就走通用口径 —— 删它自己的安装目录。
+ *   keepHint → 明确不会删的东西（写进预览，别让用户以为「卸载 = 全清」）。
+ */
+const UNINSTALL_SPECS = {
+  "llama-local": { label: "llama.cpp 本地模型", stop: "llama:stop", keepHint: "你下载的 GGUF 模型文件按你自己的选择保留（模型列表在控制台里维护）。" },
+  /* GPT-SoVITS 插件已随本版移除、没有安装入口了：这条留给**已装机器**当卸载出口
+     （`stop` 那条 IPC 已随宿主删掉，所以这里不再写 stop；删安装目录这条通用口径照跑）。
+     安装目录靠 plugins/plugin-root.js 的 PLUGIN_CFG（tts/config.json）认路。 */
+  "tts-local": { label: "GPT-SoVITS 语音合成" },
+  "breeze-tts-local": { label: "Breeze TTS 2 本地 TTS", stop: "breeze:stop" },
+  "sensenova-local": { label: "SenseNova 本地图像生成", stop: "sensenova:stop" },
+  "yue2-local": { label: "YuE2 本地音乐", stop: "yue:stop" },
+  "minimax-music3": { label: "MiniMax Music 3", stop: "music3:stop", custom: { preview: "music3:uninstallPreview", run: "music3:uninstall" }, keepHint: "output/ 里的音频输出保留。" },
+  "minimax-h3": { label: "MiniMax H3 视频生成", stop: "h3:stop", custom: { preview: "h3:uninstallPreview", run: "h3:uninstall" }, keepHint: "output/ 里的渲染产物保留。" },
+  remotion: { label: "Remotion 动效视频" },
+  pet: { label: "桌宠", custom: { preview: "", run: "pet:uninstall" }, keepHint: "桌面上的桌宠窗口会先关掉。" },
+  bongochat: { label: "桌宠", custom: { preview: "", run: "pet:uninstall" }, keepHint: "桌面上的桌宠窗口会先关掉。" },
+};
+/** 窗口类插件（kind=window）：删之前先把它那只窗关掉 —— 走它自己的卸载口，不裸删目录。
+ *  注意 `appPlugins:uninstall` 的签名收的是**插件 id 字符串**（传对象会被 String() 成
+ *  "[object Object]" → bad_id，与 `appPlugins:install` 同一个坑），所以标 idArgs 让它只收 id。 */
+const WINDOW_PLUGIN_UNINSTALL = {
+  custom: { preview: "", run: "appPlugins:uninstall", idArgs: true },
+  keepHint: "它在插件界面上的入口与缓存一并移除。",
+};
+/** 后端短名（卡片 kind）→ 安装窗用的插件 id（与 renderer/app-plugins.js 的 BACKEND_INSTALL_IDS 同源）。 */
+const BACKEND_ID_ALIASES = {
+  music3: "minimax-music3",
+  yue: "yue2-local",
+  yue2: "yue2-local",
+  sensenova: "sensenova-local",
+  h3: "minimax-h3",
+  llama: "llama-local",
+  tts: "tts-local",
+  breeze: "breeze-tts-local",
+  remotion: "remotion",
+};
+
+/** 认得出是不是「需目录的本地后端插件」（认不出 = 窗口插件 / 未知 id）。 */
+function isBackendPluginId(id) {
+  const sid = String(id || "");
+  const mod = getPluginRootMod();
+  return !!(mod && mod.needsDir(sid)) || !!UNINSTALL_SPECS[sid] || !!BACKEND_ID_ALIASES[sid];
+}
+
+function uninstallSpecOf(id) {
+  const sid = String(id || "");
+  if (UNINSTALL_SPECS[sid]) return UNINSTALL_SPECS[sid];
+  const alias = BACKEND_ID_ALIASES[sid];
+  if (alias && UNINSTALL_SPECS[alias]) return UNINSTALL_SPECS[alias];
+  const t = targetOf(sid);
+  /* 窗口类插件的 id 来自云端目录（装之前不知道有哪些），所以不逐个进表：
+     认不出、但取得到它自己的安装目录，就按窗口插件那条走（它自己的卸载口先关窗再删）。 */
+  if (!isBackendPluginId(sid) && installDirForUninstall(sid)) {
+    return Object.assign({ label: (t && t.name) || sid }, WINDOW_PLUGIN_UNINSTALL);
+  }
+  /* 认不出、也没有目录：不给卸载入口（宁可没有，也不猜着删） */
+  return null;
+}
+
+/** 该插件当前的安装目录（宿主自己的口径优先，其次插件配置里设过的那个）。
+ *  **不在这里推默认值**：插件根目录 + 子目录名只是「没设过时该装到哪」，那个目录还没装过东西 ——
+ *  把它当卸载目标会去删一个可能装了别的东西的目录（卸载只删「这个插件真正的安装目录」）。 */
+function installDirForUninstall(id) {
+  const sid = String(id || "");
+  const t = targetOf(sid);
+  const own = t && typeof t.getInstallDir === "function" ? String(t.getInstallDir() || "") : "";
+  if (own) return own;
+  const mod = getPluginRootMod();
+  if (mod) {
+    const cfg = mod.pluginDir(sid);
+    if (cfg) return cfg;
+  }
+  return "";
+}
+
+/** 目录是否真的存在（卸载守卫与预览都用它；statSync 失败一律当不存在）。 */
+function existsDir(p) {
+  try {
+    return !!p && fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** 目录归一：plugin-root 的 normDir 只挂在模块导出上（实例上没有），所以这里直接用模块级那份。 */
+function normalizeDir(dir) {
+  try {
+    return rootNormDir(dir) || String(dir || "");
+  } catch {
+    return String(dir || "");
+  }
+}
+
+/** 卸载安全守卫：空目录 / 盘根 / 应用目录 / 数据目录 / 插件根目录本身一律拒删；
+ *  目录不存在也拒（不装作「删过了」）。过了这一关才允许删。 */
+function uninstallGuard(id, dir) {
+  const mod = getPluginRootMod();
+  const n = normalizeDir(dir);
+  if (!n) return { ok: false, error: "no_install_dir", message: "取不到该插件的安装目录，无法卸载。" };
+  if (mod) {
+    const bad = mod.rejectReason(n);
+    if (bad) {
+      return {
+        ok: false,
+        error: bad,
+        message:
+          bad === "refuse_root"
+            ? "安装目录落在盘根上，拒绝卸载（太危险）。"
+            : "安装目录落在应用目录 / 数据目录里，拒绝卸载。",
+      };
+    }
+    const root = normalizeDir(mod.get());
+    if (root && root === n) {
+      return { ok: false, error: "refuse_plugin_root", message: "安装目录就是「插件根目录」本身：拒绝卸载整个根目录。" };
+    }
+  }
+  if (!existsDir(n)) return { ok: false, error: "not_installed", message: "该插件的安装目录不存在（可能已经卸载过）。" };
+  return { ok: true, dir: n };
+}
+
+function fmtGB(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024 * 1024) return Math.max(0, Math.round(n / 1024)) + " KB";
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+  return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+function dirSizeSync(dir) {  let total = 0;
+  let stack = [String(dir || "")];
+  while (stack.length) {
+    const cur = stack.pop();
+    let list = [];
+    try {
+      list = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of list) {
+      const p = path.join(cur, e.name);
+      try {
+        if (e.isDirectory() && !e.isSymbolicLink()) stack.push(p);
+        else total += fs.statSync(p).size || 0;
+      } catch {}
+    }
+  }
+  return total;
+}
+
+/** 目录里的头几项（预览用：别把几万个文件全列出来）。 */
+function topEntriesSync(dir, limit) {
+  const out = [];
+  let list = [];
+  try {
+    list = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  const max = Math.max(1, Number(limit) || 20);
+  for (const e of list) {
+    if (out.length >= max) break;
+    const p = path.join(dir, e.name);
+    let note = e.isDirectory() ? "目录" : "文件";
+    try {
+      note = e.isDirectory() ? "目录" : fmtGB(fs.statSync(p).size);
+    } catch {}
+    out.push({ name: e.name, path: p, note });
+  }
+  return out;
+}
+
+/**
+ * 卸载预览：这一趟会删掉什么、保留什么。
+ * 只读，不动盘。custom 路由的插件先问它自己的预览口（拿不到就退回「删安装目录」这一句）。
+ */
+async function uninstallPreviewFor(id) {
+  const sid = String(id || "");
+  const spec = uninstallSpecOf(sid);
+  if (!spec) {
+    return { ok: false, error: "unknown_plugin", message: "认不出这个插件，无法卸载。" };
+  }
+  const label = String(spec.label || (targetOf(sid) && targetOf(sid).name) || sid);
+  if (spec.custom && spec.custom.preview) {
+    const r = await invokeChannelFor(spec.custom.preview, [], mainWebContents());
+    if (r && r.ok) {
+      return {
+        ok: true,
+        id: sid,
+        label,
+        route: "custom",
+        installDir: String(r.installDir || installDirForUninstall(sid) || ""),
+        targets: Array.isArray(r.targets) ? r.targets : [],
+        note: String(r.note || ""),
+        keepHint: String(spec.keepHint || ""),
+      };
+    }
+    return {
+      ok: false,
+      error: (r && (r.error || r.message)) || "preview_failed",
+      message: "取不到该插件的卸载清单：" + ((r && (r.error || r.message)) || "未知错误"),
+    };
+  }
+  if (spec.custom && spec.custom.run) {
+    /* 有卸载口但没预览口（桌宠 / 窗口类插件）：说清「会删什么」。顺手用守卫把它自己的安装目录
+       也过一遍 —— 目录在就列进清单（用户看得见删的是哪儿），不在就当场说要重装（别等确认完才报错）。 */
+    const g = uninstallGuard(sid, installDirForUninstall(sid));
+    return {
+      ok: true,
+      id: sid,
+      label,
+      route: "custom",
+      installDir: g.ok ? g.dir : installDirForUninstall(sid),
+      targets: g.ok ? [{ path: g.dir, rel: "", note: "该插件自己的运行时文件（由它自己的卸载实现删除）" }] : [],
+      note: g.ok
+        ? "删除范围由该插件自己的卸载实现决定（先关掉它的窗口 / 进程再删）。"
+        : "卸载该插件自己管理的运行时文件。",
+      keepHint: String(spec.keepHint || ""),
+      warning: g.ok ? "" : String(g.message || ""),
+    };
+  }
+  const g = uninstallGuard(sid, installDirForUninstall(sid));
+  if (!g.ok) return Object.assign({ ok: false, id: sid, label }, g);
+  const items = topEntriesSync(g.dir, 20);
+  return {
+    ok: true,
+    id: sid,
+    label,
+    route: "root",
+    installDir: g.dir,
+    targets: [{ path: g.dir, rel: "", note: "整个安装目录（含虚拟环境 / 模型 / 脚手架）" }],
+    items,
+    note: "只删这一个插件的安装目录；插件自己的目录设置保留，重装时会再装回同一处。",
+    keepHint: String(spec.keepHint || (items.length >= 20 ? "目录里还有更多条目（未逐一列出）。" : "")),
+  };
+}
+
+/** 通用卸载现场（异步跑，进度与日志边跑边推给安装窗）。 */
+function startUninstall(id) {
+  const sid = String(id || "");
+  const spec = uninstallSpecOf(sid);
+  if (!spec) return { ok: false, error: "unknown_plugin", message: "认不出这个插件，无法卸载。" };
+  if (uninstallJob && !uninstallJob.done) {
+    return { ok: false, error: "busy", message: "已经有一次卸载在跑，等它结束再试。" };
+  }
+  const useCustom = !!(spec.custom && spec.custom.run);
+  let dir = "";
+  if (!useCustom) {
+    const g = uninstallGuard(sid, installDirForUninstall(sid));
+    if (!g.ok) return g;
+    dir = g.dir;
+  }
+  const snap = beginPluginInstall({ id: sid, action: "uninstall", installDir: dir, steps: UNINSTALL_STEPS });
+  uninstallJob = { id: sid, done: false, cancelled: false };
+  const job = uninstallJob;
+  log("[install] uninstall begin id=" + sid + " dir=" + dir + " route=" + (useCustom ? "custom" : "root"));
+  void (async () => {
+    const emit = (ev) => reportPluginStep(Object.assign({ pluginId: sid }, ev));
+    const line = (text) => emit({ kind: "log", stepId: UNINSTALL_STEP_ID, line: text });
+    const fail = (error, message, hint) => {
+      job.done = true;
+      line("✕ " + message);
+      emit({ kind: "finish", ok: false, error: error, hint: hint || "" });
+    };
+    try {
+      emit({ kind: "step", step: { id: UNINSTALL_STEP_ID, title: "卸载并清理文件", status: "run" } });
+      /* ① 停后端：让后端自己回收进程树（DLL / EXE 被占用时文件删不掉） */
+      if (spec.stop) {
+        line("停止后端（" + spec.stop + "）…");
+        try {
+          await invokeChannelFor(spec.stop, [], mainWebContents());
+          line("后端已停止。");
+        } catch (e) {
+          line("停止后端时出错（继续卸载）：" + String((e && e.message) || e));
+        }
+      }
+      /* ② 删除 */
+      if (useCustom) {
+        const args = spec.custom.idArgs ? [sid] : [{ confirm: true, action: "uninstall" }];
+        const r = await invokeChannelFor(spec.custom.run, args, mainWebContents());
+        if (!r || !r.ok) {
+          return fail((r && (r.error || r.message)) || "uninstall_failed", "卸载失败：" + ((r && (r.error || r.message)) || "未知错误"));
+        }
+        if (Array.isArray(r.errors) && r.errors.length) {
+          line("有 " + r.errors.length + " 项没能删除（多被占用）：");
+          for (const e of r.errors.slice(0, 8)) line("  " + String((e && e.path) || "") + " :: " + String((e && e.error) || ""));
+          return fail("uninstall_partial", "卸载未完成：" + r.errors.length + " 项没能删除（后端可能还在占用）。");
+        }
+        line("已删除 " + ((r.deleted || []).length || 0) + " 项。");
+      } else {
+        let total = 0;
+        const sub = topEntriesSync(dir, 200);
+        line("删除安装目录：" + dir + (sub.length ? "（" + sub.length + " 个条目）" : ""));
+        for (const e of sub) {
+          if (job.cancelled) {
+            job.done = true;
+            return emit({ kind: "finish", ok: false, error: "cancelled", hint: "" });
+          }
+          const bytes = dirSizeSync(e.path);
+          try {
+            fs.rmSync(e.path, { recursive: true, force: true, maxRetries: 3 });
+            total += bytes;
+            line("已删除 " + e.name + (bytes ? "（" + fmtGB(bytes) + "）" : ""));
+          } catch (err) {
+            return fail("uninstall_locked", "删不掉 " + e.path + "：" + String((err && err.message) || err), "关掉占用该目录的后端 / 编辑器后重试一次。");
+          }
+        }
+        /* 剩下的（隐藏文件 / 空壳）一并清掉，然后目录本身 */
+        try {
+          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+        } catch (err) {
+          return fail("uninstall_locked", "删不掉 " + dir + "：" + String((err && err.message) || err));
+        }
+        line("已释放约 " + fmtGB(total) + "。");
+      }
+      /* ③ 收口：快照的安装目录清空（它已经不存在了） */
+      if (snap) snap.installDir = "";
+      job.done = true;
+      emit({ kind: "step", step: { id: UNINSTALL_STEP_ID, title: "卸载并清理文件", status: "ok", pct: 100 } });
+      emit({ kind: "finish", ok: true });
+      log("[install] uninstall done id=" + sid);
+    } catch (e) {
+      job.done = true;
+      fail("uninstall_error", "卸载出错：" + String((e && e.message) || e));
+    }
+  })();
+  return { ok: true, started: true, id: sid, installDir: dir, route: useCustom ? "custom" : "root" };
+}
+
+function mainWebContents() {
+  try {
+    const w = getMainWin && getMainWin();
+    return w && !w.isDestroyed() ? w.webContents : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* IPC                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -873,6 +1353,12 @@ function initInstallHost(opts) {
       const p = payload && typeof payload === "object" ? payload : {};
       return requestSessionFix(p.id || currentId);
     });
+    /* 安装开始时把「插件根目录 + 默认子目录名」落地（本轮需求）：见 ensureInstallDirFor。
+       安装窗在调安装桥**之前**问一次；窗口插件 / 桌宠不受影响（回 dir:"" 的老口径）。 */
+    ipcMain.handle("mtnodeInstall:ensureDir", async (e, payload) => {
+      const p = payload && typeof payload === "object" ? payload : {};
+      return ensureInstallDirFor(String(p.id || currentId || ""));
+    });
     ipcMain.handle("mtnodeInstall:openConsole", async (e, payload) => {
       const p = payload && typeof payload === "object" ? payload : {};
       return requestOpenConsole(p.id || currentId);
@@ -895,6 +1381,20 @@ function initInstallHost(opts) {
       }
       return { ok: false, error: "bad_action", message: "安装窗不允许该权重操作：" + action };
     });
+    /* 卸载（安装窗里那一颗「卸载」）：{ action: "preview"|"run", id }
+       preview 只读地给出「删什么 / 留什么」；run 才真删（先停后端）。 */
+    ipcMain.handle("mtnodeInstall:uninstall", async (e, payload) => {
+      const p = payload && typeof payload === "object" ? payload : {};
+      const id = String(p.id || currentId || "");
+      const action = String(p.action || "preview");
+      if (action === "preview") return await uninstallPreviewFor(id);
+      if (action === "run") return startUninstall(id);
+      if (action === "cancel") {
+        if (uninstallJob && !uninstallJob.done) uninstallJob.cancelled = true;
+        return { ok: true };
+      }
+      return { ok: false, error: "bad_action", message: "安装窗不允许该卸载操作：" + action };
+    });
     /* 白名单透传：安装窗要用主窗口 preload 上那几个「安装 / 选安装目录」桥。
        只放行 INSTALL_API_CHANNELS 里的名字，别的名字一律拒绝 —— 安装窗没有任意调用
        主进程能力的权限（这些通道本来就在主窗口 preload 里对渲染层开放）。 */
@@ -904,6 +1404,23 @@ function initInstallHost(opts) {
       const channel = INSTALL_API_CHANNELS[name];
       if (!channel) {
         return { ok: false, error: "api_not_allowed", message: "安装窗不允许调用该接口：" + name };
+      }
+      /* 后端安装桥：转发前先在主进程把「插件根目录 + 默认子目录名」落地 ——
+         与安装窗里那一拍（mtnodeInstall:ensureDir）**同源的双保险**。安装窗那一步被跳过、
+         或它问到的口径与宿主不一致时，这里也绝不把「目录为空」往下传，让用户只看到一句
+         宿主报的 empty_dir（本轮真事故的出口）。窗口插件 / 桌宠不在表里，老口径不变。 */
+      const preflightId = installPluginIdOfChannel(channel);
+      if (preflightId) {
+        const ens = ensureInstallDirFor(preflightId);
+        if (ens && ens.needs && !ens.dir) {
+          return {
+            ok: false,
+            error: ens.error || "no_install_dir",
+            message:
+              ens.message ||
+              "取不到这个插件的安装目录：先在插件界面顶部设好插件根目录，或用「选择安装目录」手动选一处。",
+          };
+        }
       }
       const mainWc = (() => {
         try {
@@ -942,6 +1459,7 @@ function debugState() {
       last: [...weightsLast.entries()].map(([id, r]) => ({ id, ok: r.ok, moved: r.moved })),
       job: weightsJob ? { id: weightsJob.id, cancelled: weightsJob.cancelled } : null,
     },
+    uninstall: uninstallJob ? { id: uninstallJob.id, done: uninstallJob.done, cancelled: uninstallJob.cancelled } : null,
   };
 }
 
@@ -968,5 +1486,13 @@ module.exports = {
   scanWeights,
   startWeightsMove,
   cancelWeightsMove,
+  /* 卸载（安装窗内那一颗「卸载」；冒烟直接调纯主进程函数） */
+  uninstallPreviewFor,
+  startUninstall,
+  uninstallGuard,
+  uninstallSpecOf,
+  installDirForUninstall,
+  isBackendPluginId,
+  UNINSTALL_SPECS,
   debugState,
 };

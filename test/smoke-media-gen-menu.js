@@ -1,5 +1,5 @@
 "use strict";
-/* 音频 / 视频生成菜单、SoVITS 语音节点与媒体端子口径的回归
+/* 音频 / 视频生成菜单与媒体端子口径的回归
  *   node test/smoke-media-gen-menu.js
  * 与 test/smoke-wire-drop-menu.js 同一套路：用 vm 从 renderer 源码里按名字抠出**真实函数**来跑，
  * 只有建节点 / 落盘 / DOM 渲染这些与判定无关的部分用测试侧替身。
@@ -8,16 +8,15 @@
  *   1. 两种视频生成收进一级子菜单「视频生成」（成员 Minimax H3 · 视频超分 · 视频补帧 · Remotion 视频）
  *   1b. 文本处理与 PDF生成 收进悬停展开的一级子菜单「文本生成」（成员口径见 test/smoke-pdf-gen.js）
  *   1c. 云端文生图 proc_image 与本地 SenseNova 图像生成（sensenova_gen）收进一级子菜单「图像生成」
- *   2. 音乐收进一级子菜单「音频生成」，并改名 Minimax Music 3
- *   3. 「音频生成」新增 SoVITS 语音生成（tts_gen · 接本机 GPT-SoVITS TTS 插件）
- *   4. 音频 / 视频输入节点开始输出：值是该文件的 file:/// URL
+ *   2. 音乐 / 语音收进一级子菜单「音频生成」，并改名 Minimax Music 3、Breeze 语音
+ *   3. 音频 / 视频输入节点开始输出：值是该文件的 file:/// URL
+ *   （SoVITS 语音 tts_gen 已随 GPT-SoVITS 本地插件整块移除：菜单成员、端子契约与
+ *     playTtsGenNode 那两节随之删除，语音一侧的回归在 test/smoke-breeze.js）
  *
  * 覆盖：
  *   [1] 一级子菜单成员（跑真实 canvasCreateMenuGroups；选一项看它到底建出哪一类节点）
  *   [1b] 「工具」一级菜单＝工具 / 函数节点的创建入口（顶栏只留「工具库」；开发 / 数据库壳层不列）
  *   [2] 类型名与用途文案改名 · 旧文案与旧 i18n 词条无残留 · 新词条中英齐备 · 节点指南齐备
- *   [3] tts_gen 端子契约（2 入 2 出 · 端口1=控制）与 connectError 各分支
- *   [4] 执行链：媒体串行链认识它 · playNodeBody 分发 · playTtsGenNode 真跑一次合成
  *   [5] 音频 / 视频输入节点：各 1 个数据输出端子，值里带 file:/// URL
  *   [6] file:// URL ⇄ 本机绝对路径 归一（逐例）
  *   [8] 生成节点 → 保存节点 的托管口径：输出接进保存节点后节点不用再配路径（下发参数不带
@@ -177,14 +176,7 @@ let uidN = 0;
 const S = { wf: { nodes: [], wires: [] }, cam: { z: 1 } };
 const added = [];
 const ctrlFired = [];
-let ttsCalls = [];
 let remotionInstalled = true;
-let ttsStatus = {
-  running: true,
-  installed: true,
-  apiUp: true,
-  apiStatus: { voices: [{ id: "v1", name: "女声一" }] },
-};
 const uiStates = new Map();
 const sandbox = {
   S,
@@ -209,9 +201,6 @@ const sandbox = {
   setImmediate,
   decodeURIComponent,
   encodeURIComponent,
-  /* 后端等待用的两个节拍常量（本用例走不到慢启动分支，只为避免引用落空） */
-  TTS_API_POLL_MS: 2000,
-  TTS_API_WAIT_MS: 180000,
   I18n: { t: (s) => String(s) },
   toast: () => {},
   renderCanvas: () => {},
@@ -291,12 +280,6 @@ const sandbox = {
     api: {
       /* 与 preload 桥一致：直接借 Node 的 pathToFileURL（中文 / 空格自动编码，盘符冒号保留） */
       toFileUrl: (p) => require("url").pathToFileURL(String(p)).href,
-      ttsStatus: async () => ttsStatus,
-      ttsStart: async () => ({ ok: true }),
-      ttsGenerate: async (body) => {
-        ttsCalls.push(body);
-        return { ok: true, path: "E:/out/voice.wav" };
-      },
     },
   },
 };
@@ -430,22 +413,14 @@ const NODES_FNS = [
      端口 0 = 那串 file:/// URL）—— 判据函数得一起切进沙箱，否则 ReferenceError。 */
   "isBreezeMediaSource",
   "fetchMediaBackendStatus",
-  "ttsVoicesFromStatus",
-  "ttsDefaultVoiceFromStatus",
-  "ttsSpeedOf",
-  "ttsFormatOf",
-  "ttsErrorText",
-  "ensureTtsBackendReady",
-  "playTtsGenNode",
 ];
 const SCALAR_CONSTS = {
   "renderer/app.js": ["DEFAULT_IMAGE_SIZE", "IN_PORT_DATA_KINDS"],
-  "renderer/app-nodes.js": ["TTS_API_POLL_MS", "TTS_API_WAIT_MS"],
+  "renderer/app-nodes.js": [],
 };
 vm.runInContext(
   [
     extractConsts(appSrc, SCALAR_CONSTS["renderer/app.js"]),
-    extractConsts(nodesSrc, SCALAR_CONSTS["renderer/app-nodes.js"]),
     extract(appSrc, APP_FNS),
     extract(nodesSrc, NODES_FNS),
   ].join("\n"),
@@ -474,6 +449,9 @@ function scene(nodes, wires) {
 }
 const mk = (id, kind, extra) =>
   Object.assign({ id, kind, title: id, parentSuperId: "", parentTaskId: "" }, extra || {});
+/* 文本来源用的那颗输入节点：下面各段场景共用同一个 id（"txt"），连线判据都按它算。
+   （SoVITS 那两节删掉时把它一起带走了，这里按同一口径补回。） */
+const txt = mk("txt", "input_text", { text: "把这段念出来" });
 
 (async function main() {
   console.log("\n[ex] 源码抽取自检");
@@ -496,11 +474,8 @@ const mk = (id, kind, extra) =>
     return at < 0 ? "" : appSrc.slice(at, end);
   })();
   const ndKinds = new Set([...ndBlock.matchAll(/^  ([a-z_]+): \{/gm)].map((m) => m[1]));
-  ok(ndKinds.has("tts_gen"), "NODE_DEFAULTS 里有 tts_gen 的默认值");
-  const ttsDefaults = (ndBlock.match(/tts_gen:\s*\{([\s\S]*?)\},/) || [null, ""])[1];
-  has(ttsDefaults, 'title: "SoVITS 语音节点"', "新建 tts_gen 的默认标题");
-  for (const f of ["voice", "speed", "ttsFormat", "outputPath", "attempts"])
-    has(ttsDefaults, f + ":", "tts_gen 默认值带 " + f + " 字段");
+  ok(ndKinds.has("breeze_gen") && ndKinds.has("music_gen") && ndKinds.has("video_gen"), "NODE_DEFAULTS 里有三类生成节点的默认值");
+  ok(!ndKinds.has("tts_gen"), "NODE_DEFAULTS 里不再有 tts_gen（SoVITS 已随 GPT-SoVITS 插件移除）");
 
   /* ===================== [1] 四个一级子菜单 ===================== */
   console.log("\n[1] 画布右键 · 处理节点：文本生成 / 图像生成 / 视频生成 / 音频生成 四个一级子菜单");
@@ -541,17 +516,16 @@ const mk = (id, kind, extra) =>
     [
       "Minimax Music 3（音乐生成 · 提示词 + 歌词）",
       "YuE2（歌词→整曲 · 可编辑谱面）",
-      "SoVITS 语音生成（文本转语音 · GPT-SoVITS）",
       "Breeze 语音生成（文本转语音 · Breeze TTS 2）",
     ],
-    "「音频生成」成员：Minimax Music 3 → YuE2 → SoVITS 语音生成 → Breeze 语音生成",
+    "「音频生成」成员：Minimax Music 3 → YuE2 → Breeze 语音生成（SoVITS 已随 GPT-SoVITS 插件移除）",
   );
   eqArr(
     kindsBuiltBy(vSub.submenu),
     ["video_gen", "video_upscale", "video_interp", "remotion"],
     "选「视频生成」成员 → 真实建出 video_gen / video_upscale / video_interp / remotion",
   );
-  eqArr(kindsBuiltBy(aSub.submenu), ["music_gen", "yue_gen", "tts_gen", "breeze_gen"], "选「音频生成」成员 → 真实建出 music_gen / yue_gen / tts_gen / breeze_gen");
+  eqArr(kindsBuiltBy(aSub.submenu), ["music_gen", "yue_gen", "breeze_gen"], "选「音频生成」成员 → 真实建出 music_gen / yue_gen / breeze_gen");
   /* 子菜单成员按插件安装态变化：必须重新读一次菜单（旧数组是上一次构建的结果） */
   remotionInstalled = false;
   eqArr(kindsBuiltBy(subOf(groupOf("处理节点（提示词 + Play）"), "视频生成").submenu), ["video_gen", "video_upscale", "video_interp"], "Remotion 插件未装时「视频生成」只剩 Minimax H3 + 超分 + 补帧");
@@ -559,7 +533,7 @@ const mk = (id, kind, extra) =>
   eqArr(kindsBuiltBy(subOf(groupOf("处理节点（提示词 + Play）"), "视频生成").submenu), ["video_gen", "video_upscale", "video_interp", "remotion"], "装了就回到四位成员");
   eqArr(
     kindsBuiltBy(proc.filter((x) => !Array.isArray(x.submenu))).filter((k) =>
-      ["video_gen", "video_upscale", "video_interp", "remotion", "music_gen", "yue_gen", "tts_gen", "proc_image", "sensenova_gen"].includes(k),
+      ["video_gen", "video_upscale", "video_interp", "remotion", "music_gen", "yue_gen", "breeze_gen", "proc_image", "sensenova_gen"].includes(k),
     ),
     [],
     "媒体生成 / 后处理节点都不再平铺在「处理节点」一级（全收进了子菜单）",
@@ -627,7 +601,7 @@ const mk = (id, kind, extra) =>
   eqStr(F.nodeKindLabel({ kind: "video_gen" }), "Minimax H3", "video_gen 类型名改为 Minimax H3");
   eqStr(F.nodeKindLabel({ kind: "video_upscale" }), "视频超分", "video_upscale 类型名为视频超分");
   eqStr(F.nodeKindLabel({ kind: "video_interp" }), "视频补帧", "video_interp 类型名为视频补帧");
-  eqStr(F.nodeKindLabel({ kind: "tts_gen" }), "SoVITS 语音", "tts_gen 类型名为 SoVITS 语音");
+  eqStr(F.nodeKindLabel({ kind: "breeze_gen" }), "Breeze 语音", "breeze_gen 类型名为 Breeze 语音（本机唯一的语音节点）");
   eqStr(F.nodeKindLabel({ kind: "input_audio" }), "音频", "input_audio 类型名为音频");
   eqStr(F.nodeKindLabel({ kind: "input_video" }), "视频", "input_video 类型名为视频");
   /* 本轮需求：画布节点「文生图」改名「图像生成」——
@@ -646,8 +620,8 @@ const mk = (id, kind, extra) =>
   );
   hasnt(appSrc, 'proc_image: "文生图"', "KIND_TAGS / 用途表里不再有「文生图」类型名");
   hasnt(appSrc, '"文生图（云端服务商 · 图像生成）"', "右键菜单旧成员文案已删");
-  has(ttsDefaults, "SoVITS 语音节点", "新建 tts_gen 的默认标题仍是 SoVITS 语音节点");
   const rendererAll = appSrc + "\n" + nodesSrc + "\n" + canvasSrc;
+  hasnt(rendererAll, "SoVITS 语音节点", "新建节点的旧 SoVITS 默认标题已删");
   hasnt(rendererAll, '"音乐生成（MiniMax Music 3）"', "旧 music_gen 用途文案已删");
   hasnt(rendererAll, '"视频生成（MiniMax H3', "旧 video_gen 用途文案已删");
   hasnt(rendererAll, "音频节点（仅预览", "旧「仅预览」音频菜单文案已删");
@@ -675,24 +649,20 @@ const mk = (id, kind, extra) =>
     "视频补帧（RIFE 补帧 · 独立后处理）",
     "视频超分",
     "视频补帧",
-    "SoVITS 语音生成（文本转语音 · GPT-SoVITS）",
+    "Breeze 语音生成（文本转语音 · Breeze TTS 2）",
     "Minimax Music 3",
     "Minimax H3",
-    "SoVITS 语音",
-    "SoVITS 语音节点",
+    "Breeze 语音",
+    "Breeze 语音节点",
     "音频节点（选择文件 · 输出 URL）",
     "视频节点（选择文件 · 输出 URL）",
     "音频输入（音频输出 + 转写输出）",
     "视频输入（视频输出 + 转写输出）",
     "音频输入 · 音频输出 + 转写输出",
     "视频输入 · 视频输出 + 转写输出",
-    "语音生成节点需要文本来源（待合成文本）",
-    "语音生成节点控制输入端子为端口 1",
-    "请连接文本来源（待合成文本 · 端子 T）",
-    "语音合成插件未就绪",
+    "Breeze 语音生成节点需要文本来源（待合成文本）",
+    "Breeze 语音生成节点控制输入端子为端口 4",
     "启动后端并合成…",
-    "语音合成中…",
-    "语音已生成：",
   ];
   eqArr(
     NEW_KEYS.filter((k) => i18nSrc.indexOf('"' + k + '"') < 0),
@@ -700,28 +670,24 @@ const mk = (id, kind, extra) =>
     "新用到的中文文案在 i18n 里都有英文词条",
   );
   eqArr(
-    ["music_gen", "video_gen", "video_upscale", "video_interp", "tts_gen", "remotion", "input_audio", "input_video"].filter((k) => {
+    ["music_gen", "yue_gen", "breeze_gen", "video_gen", "video_upscale", "video_interp", "remotion", "input_audio", "input_video"].filter((k) => {
       const key = F.nodeKindPurposeKey({ kind: k });
       return !key || i18nSrc.indexOf('"' + key + '"') < 0;
     }),
     [],
-    "八类媒体节点的用途文案都有英文词条",
+    "媒体节点的用途文案都有英文词条",
   );
-  /* 文档口径：tts_gen 要有节点指南，并且中英都齐 */
+  /* 文档口径：语音节点（Breeze）要有节点指南，并且中英都齐；SoVITS 那份随插件移除 */
   const gdir = path.join(__dirname, "..", "guides", "nodes");
-  ok(fs.existsSync(path.join(gdir, "tts_gen.md")), "guides/nodes/tts_gen.md 存在");
-  ok(fs.existsSync(path.join(gdir, "en", "tts_gen.md")), "guides/nodes/en/tts_gen.md 存在");
+  ok(!fs.existsSync(path.join(gdir, "tts_gen.md")), "guides/nodes/tts_gen.md 已随插件删除");
+  ok(!fs.existsSync(path.join(gdir, "en", "tts_gen.md")), "guides/nodes/en/tts_gen.md 已随插件删除");
   const nodeIdx = JSON.parse(read("guides/nodes/index.json"));
-  ok(nodeIdx.ids.indexOf("tts_gen") >= 0, "tts_gen 已进节点指南索引");
+  ok(nodeIdx.ids.indexOf("tts_gen") < 0, "tts_gen 已从节点指南索引里移除");
   eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("music_gen") + 1], "yue_gen", "索引里 yue_gen 紧跟 music_gen（音频生成三类相邻）");
-  eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("yue_gen") + 1], "tts_gen", "索引里 tts_gen 紧跟 yue_gen");
-  eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("tts_gen") + 1], "breeze_gen", "索引里 breeze_gen 紧跟 tts_gen（音频生成四类相邻）");
+  eqStr(nodeIdx.ids[nodeIdx.ids.indexOf("yue_gen") + 1], "breeze_gen", "索引里 breeze_gen 紧跟 yue_gen");
   ok(fs.existsSync(path.join(gdir, "breeze_gen.md")), "guides/nodes/breeze_gen.md 存在");
   ok(fs.existsSync(path.join(gdir, "en", "breeze_gen.md")), "guides/nodes/en/breeze_gen.md 存在");
   has(read("guides/nodes/breeze_gen.md"), "BreezeBlue", "Breeze 语音指南写明权重许可（研究 / 非商用）");
-  const ttsGuide = read("guides/nodes/tts_gen.md");
-  has(ttsGuide, "GPT-SoVITS", "语音节点指南写明后端");
-  has(ttsGuide, "音频生成", "语音节点指南写明新的菜单位置");
   has(read("guides/nodes/input_audio.md"), "file:///", "音频输入指南写明输出 URL");
   hasnt(read("guides/nodes/input_audio.md") + read("guides/nodes/input_video.md"), "暂无输出端子", "节点指南里没有旧的「暂无输出端子」说法");
   /* 视频后处理两类（超分 / 补帧）也各要中英指南 + 进索引 */
@@ -732,98 +698,6 @@ const mk = (id, kind, extra) =>
   });
   has(read("guides/nodes/video_upscale.md"), "视频生成", "超分指南写明新的菜单位置");
   has(read("guides/nodes/video_interp.md"), "视频生成", "补帧指南写明新的菜单位置");
-
-  /* ===================== [3] tts_gen 端子契约 ===================== */
-  console.log("\n[3] tts_gen 端子：2 入（文本 / 控制）· 2 出（音频 / 控制）");
-  const tts = mk("tts", "tts_gen");
-  const txt = mk("txt", "input_text", { text: "把这段念出来" });
-  const txt2 = mk("txt2", "input_text", { text: "再来一段" });
-  const img = mk("img", "input_image");
-  const ctl = mk("ctl", "control");
-  const save = mk("save", "save", { savePath: "o.wav" });
-  scene([tts, txt, img, ctl, save]);
-  eqNum(F.inputCount(tts), 2, "tts_gen 输入端子数");
-  eqNum(F.outputCount(tts), 2, "tts_gen 输出端子数（0=音频 · 1=控制）");
-  eqNum(F.outputCount(mk("a", "input_audio")), 2, "input_audio 输出端子数（0=文件 URL · 1=转写文字）");
-  eqNum(F.outputCount(mk("v", "input_video")), 2, "input_video 输出端子数（0=文件 URL · 1=转写文字）");
-  ok(F.nodeEmitsControlOnPort(tts, 1), "tts_gen 端口1 是控制输出");
-  ok(!F.nodeEmitsControlOnPort(tts, 0), "tts_gen 端口0 是数据输出（音频）");
-  ok(F.isMediaGenNode(tts), "tts_gen 归入媒体生成族（串行链 / 进度 / 终止同一套）");
-  eqStr(F.inferMediaFromSource(tts, 0), "audio", "tts_gen 的输出按音频判定");
-  /* connectError(fromId, toId, toIndex, fromIndex) —— 全部走真实函数 */
-  const CE = (from, to, toIndex, fromIndex) => F.connectError(from, to, toIndex, fromIndex) || "";
-  eqStr(CE("txt", "tts", 0, 0), "", "文本 → tts_gen 端口0：放行");
-  has(CE("img", "tts", 0, 0), "需要文本来源", "图像 → tts_gen 端口0：拒绝（要文本来源）");
-  has(CE("txt", "tts", 1, 0), "无效的输入端子", "数据线连到端口1：拒绝（端口1 是控制口）");
-  eqStr(CE("ctl", "tts", 1, 0), "", "控制线 → 端口1：放行");
-  has(CE("ctl", "tts", 0, 0), "控制输入端子为端口 1", "控制线连到端口0：拒绝并说明正确端口");
-  eqStr(CE("ctl", "tts", null, 0), "", "控制线未指定端子 → 自动落控制输入");
-  scene([tts, txt, txt2, img, ctl, save], [{ from: "txt", to: "tts", fromIndex: 0, toIndex: 0 }]);
-  has(CE("txt2", "tts", 0, 0), "已被占用", "第二个文本来源被拒（唯一的文本端子已占用）");
-  eqStr(F.nextFreeMediaDataSlot(tts, txt2, 0), null, "nextFreeMediaDataSlot：唯一数据端子被占 → null");
-  scene([tts, txt, txt2, img, ctl, save], [{ from: "txt", to: "tts", fromIndex: 0, toIndex: 1 }]);
-  has(CE("ctl", "tts", 1, 0), "控制输入端子已被数据线占用", "控制口被数据线占了 → 控制线也连不上");
-  scene([tts, txt, txt2, img, ctl, save], [{ from: "ctl", to: "tts", fromIndex: 0, toIndex: 1 }]);
-  has(CE("ctl", "tts", 1, 0), "已连接", "同一对节点不重复连（含控制线）");
-  eqStr(CE("txt2", "tts", 0, 0), "", "控制线占着端口1 时，文本线仍可连端口0");
-  scene([tts, txt, txt2, img, ctl, save]);
-  eqStr(CE("tts", "save", 0, 0), "", "tts_gen 端口0 的音频可连保存节点");
-  has(CE("tts", "save", 0, 2), "没有输出端子", "端子序号越界（tts_gen 只有 0=音频 / 1=控制）被拦下");
-
-  /* ===================== [4] 执行链与合成桥接 ===================== */
-  console.log("\n[4] playNodeBody 分发 · 串行链注册 · playTtsGenNode 真实跑通");
-  const bodySrc = fnBody(nodesSrc, "playNodeBody");
-  has(bodySrc, 'node.kind === "tts_gen"', "playNodeBody 认识 tts_gen");
-  has(bodySrc, "runMediaGenSerial(node, () => playTtsGenNode(node, quiet))", "tts_gen 走媒体串行链（同一时刻只跑一个生成任务）");
-  has(fnBody(nodesSrc, "isMediaGenNode"), '"tts_gen"', "isMediaGenNode 名单里有 tts_gen");
-  has(fnBody(appSrc, "valueForInput"), "tts_gen", "valueForInput 知道 tts_gen 的输出值");
-  has(fnBody(appSrc, "outputCount"), '"tts_gen"', "outputCount 认识 tts_gen（音频 + 控制两个端子）");
-  /* 音乐 / 语音 / 视频三类都挂在同一条串行链上（同一时刻只跑一个生成任务） */
-  const serialWrapped = (k) =>
-    new RegExp('node\\.kind === "' + k + '"[\\s\\S]{0,200}runMediaGenSerial\\(').test(bodySrc);
-  ok(
-    ["music_gen", "tts_gen", "video_gen", "remotion"].every(serialWrapped),
-    "四类生成节点全部经 runMediaGenSerial 排队",
-  );
-  /* SoVITS 走自己的管理进程：不持主进程那份「全局仅 1 个音视频任务」的锁（只有 music3 / h3 抢它） */
-  hasnt(fnBody(nodesSrc, "playTtsGenNode"), "requireMediaGenGlobalLock", "语音合成不参与全局音视频锁");
-  has(lockSrc, "tts_gen", "全局锁模块认识 tts_gen（忙时提示按「语音」说）");
-  has(lockSrc, '"语音"', "忙时文案区分「语音」");
-
-  scene([tts, txt, img, ctl, save], [{ from: "txt", to: "tts", fromIndex: 0, toIndex: 0 }]);
-  ttsCalls = [];
-  ctrlFired.length = 0;
-  tts.speed = 3; /* 越界 → 夹到 2.0 */
-  tts.ttsFormat = "mp3";
-  tts.output = null;
-  tts.error = null;
-  await F.playTtsGenNode(tts, true);
-  eqNum(ttsCalls.length, 1, "合成请求发出一次（真实 playTtsGenNode → api.ttsGenerate）");
-  const call = ttsCalls[0] || {};
-  eqStr(call.text, "把这段念出来", "待合成文本取自端口0 的上游文本节点");
-  eqStr(call.voice, "v1", "节点没选音色 → 用后端音色清单的第一个");
-  eqNum(call.speed, 2, "语速越界被夹到 2.0");
-  eqStr(call.response_format, "mp3", "输出格式按节点参数下发");
-  eqStr(call.outputPath, "E:/out/voice.wav", "输出路径来自主进程的导出解析");
-  eqStr(call.nodeId, "tts", "请求带 nodeId（主进程按节点取消 / 进度归位）");
-  eqStr(tts.output && tts.output.kind, "audio", "节点输出值标记为音频");
-  eqStr(tts.output && tts.output.path, "E:/out/voice.wav", "节点输出值带本机路径");
-  eqNum(tts.running, false, "跑完置回非运行态");
-  eqArr(ctrlFired.map((c) => c.port), [1], "生成完成后驱动端口1 的控制输出");
-  /* 没接文本来源：按端子缺失报错，不发请求 */
-  scene([tts, txt, img, ctl, save]);
-  ttsCalls = [];
-  tts.output = null;
-  tts.error = null;
-  await F.playTtsGenNode(tts, true);
-  eqNum(ttsCalls.length, 0, "没接文本来源时不发合成请求");
-  has(tts.error, "请连接文本来源", "节点状态行写明缺的是哪个端子");
-  /* 后端错误码 → 能照着做的中文提示 */
-  eqStr(F.ttsErrorText("voice_not_found"), "音色不存在（请重新选择音色）", "错误码翻译成中文提示");
-  has(F.ttsErrorText('{"detail":"no_voice"}'), "没有可用音色", "FastAPI 的 detail 体也能翻译");
-  eqStr(F.ttsFormatOf({}), "wav", "输出格式默认 wav");
-  eqNum(F.ttsSpeedOf({ speed: 0.1 }), 0.5, "语速下限 0.5");
-  eqNum(F.ttsSpeedOf({}), 1, "语速缺省 1.0");
 
   /* ===================== [5] 音视频输入节点的输出值 ===================== */
   console.log("\n[5] 音频 / 视频输入节点：输出端子给 file:/// URL");
@@ -1424,14 +1298,31 @@ const mk = (id, kind, extra) =>
       "applyMediaGenConfiguredPath",
       "musicGenSlotText",
       "isBreezeMediaSource",
-      "ttsDefaultVoiceFromStatus",
-      "ttsSpeedOf",
-      "ttsFormatOf",
-      "ttsVoicesFromStatus",
-      "ensureTtsBackendReady",
       "fetchMediaBackendStatus",
       "requireVideoPostExport",
-      "playTtsGenNode",
+      "playBreezeGenNode",
+      "breezeSrcTextOf",
+      "breezeTextSlot",
+      "breezeTextOf",
+      "breezeAudioSlotPath",
+      "breezeAudioPathOfValue",
+      "breezeIsFileUrl",
+      "breezeIsMediaFilePath",
+      "breezeIsMediaValue",
+      "breezeHasExt",
+      "breezeHasAudioExt",
+      "breezeHasVideoExt",
+      "breezeSlotHasAnySource",
+      "breezeSlotHasMediaSource",
+      "breezeResolveRef",
+      "breezeModeOf",
+      "breezeModeLabel",
+      "breezeFormatOf",
+      "breezeCfgScaleOf",
+      "breezeSeedOf",
+      "breezeErrorText",
+      "ensureBreezeBackendReady",
+      "musicGenSlotText",
       "buildVideoGenRunParams",
       "buildVideoPostRunParams",
       "playVideoPostNode",
@@ -1446,9 +1337,14 @@ const mk = (id, kind, extra) =>
     const mgApi = {      pathIsAbsolute: (p) => /^[a-zA-Z]:[\\/]/.test(String(p || "")) || String(p || "").startsWith("\\\\"),
       pathJoin: (...parts) => parts.filter((x) => x != null && String(x) !== "").join("/").replace(/\/+/g, "/"),
       fileExists: async () => false,
-      ttsStatus: async () => ({ running: true, installed: true, apiUp: true }),
-      ttsStart: async () => ({ ok: true }),
-      ttsGenerate: async (body) => {
+      breezeStatus: async () => ({
+        running: true,
+        installed: true,
+        apiUp: true,
+        apiStatus: { engine: { up: true, port: 8773 }, voices: [{ id: "v1", name: "女声一" }] },
+      }),
+      breezeStart: async () => ({ ok: true }),
+      breezeGenerate: async (body) => {
         mgGenerated.push(body);
         return { ok: true, path: "E:/managed/voice.wav" };
       },
@@ -1480,6 +1376,7 @@ const mk = (id, kind, extra) =>
       beginNodeRun: () => {},
       mediaRunStopped: () => false,
       mediaGenMarkDropped: () => {},
+      sweepOrphanPendingRuns: () => {},
       mediaGenQueueHolds: () => false,
       nodeHasOutputContent: (n) => !!(n && n.output),
       ensureBackendUiState: (n) => (n._ui = n._ui || {}),
@@ -1498,10 +1395,10 @@ const mk = (id, kind, extra) =>
         running: true,
         installed: true,
         apiUp: true,
-        apiStatus: { voices: [{ id: "v1", name: "女声一" }] },
+        apiStatus: { engine: { up: true, port: 8773 }, voices: [{ id: "v1", name: "女声一" }] },
       }),
       mediaGenRollProgressTag: () => "",
-      ttsErrorText: (e) => String(e),
+      breezeErrorText: (e) => String(e),
       mediaGenPathManaged: () => false,
       syncNodeSettingsValue: () => {},
       fireControlOutgoing: () => Promise.resolve(),
@@ -1523,8 +1420,11 @@ const mk = (id, kind, extra) =>
          托管口径要验的是「参数里带不带路径」，与取数实现无关；displayValueOf 同样给
          同一份文本，保证 musicGenSlotText 拿得到要合成的那段字。 */
       valueForInput: (src) =>
-        src && src.kind === "input_text" ? { kind: "text", text: String(src.text || "") } : null,
+        src && src.kind === "input_text"
+          ? { kind: "text", text: String(src.text || "").trim() || "念这段" }
+          : null,
       valueFromWire: (w) => mg.valueForInput(mg.nodeById(w && w.from)),
+      nodeById: (id) => (mgS.wf.nodes || []).find((n) => n && n.id === id) || null,
       displayValueOf: (src) => {
         const v = mg.valueForInput(src);
         return v ? { text: v.text != null ? v.text : v.path, image: null } : null;
@@ -1543,6 +1443,13 @@ const mk = (id, kind, extra) =>
       [
         /* 标量 / 对象常量（SAVE_EXT 之类）按源码原样带进沙箱，避免在上面重复声明 */
         extractConsts(appSrc, ["SAVE_EXT", "VIDEO_UPSCALE_MODEL_DEFAULT"]),
+        extractConsts(nodesSrc, [
+          "BREEZE_API_POLL_MS",
+          "BREEZE_API_WAIT_MS",
+          "BREEZE_AUDIO_EXTS",
+          "BREEZE_VIDEO_EXTS",
+          "BREEZE_TEXT_BOXES",
+        ]),
         extract(appSrc, MG_APP_FNS),
         extract(nodesSrc, MG_NODES_FNS),
       ].join("\n"),
@@ -1570,15 +1477,15 @@ const mk = (id, kind, extra) =>
     /* ---- [8-1] 判定真源：接没接保存节点 → managed / 仍要路径 ---- */
     console.log("\n[8-1] resolveMediaGenExport / requireMediaGenExport：接入保存节点 = 托管态");
     {
-      const gen = mgNode("gen1", "tts_gen", { ttsFormat: "wav" });
+      const gen = mgNode("gen1", "breeze_gen", { ttsFormat: "wav" });
       const sv = mgNode("sv1", "save", { savePath: "E:/saves/final.wav" });
       mgScene([gen, sv], []);
       const cold = M.resolveMediaGenExport(gen);
       eqNum(cold.ok, false, "没接保存节点、又没配路径：不是 ok（老口径照旧）");
       eqStr(cold.code, "empty", "老口径的错码仍是 empty");
       eqStr(M.requireMediaGenExport(gen, true), null, "requireMediaGenExport：老口径仍返回 null（拦下运行）");
-      eqStr(gen.ttsStatus, "请先指定保存路径（可用「浏览」选择）", "节点状态行写下要用户做的事");
-      hasnt(String(gen.ttsStatus), "no_output_path", "节点状态行不吐原始错误码");
+      eqStr(gen.breezeStatus, "请先指定保存路径（可用「浏览」选择）", "节点状态行写下要用户做的事");
+      hasnt(String(gen.breezeStatus), "no_output_path", "节点状态行不吐原始错误码");
 
       mgScene([gen, sv], [w("gen1", "sv1", 0, 0)]);
       ok(M.nodeFeedsSaveNode(gen), "端口 0 的数据线连到保存节点 → nodeFeedsSaveNode 为真");
@@ -1595,13 +1502,13 @@ const mk = (id, kind, extra) =>
       ok(!!rolls, "托管态连抽卡导出也放行（不等 await 的撞名去重）");
 
       /* 没接保存节点时，路径口径一字未变 */
-      const lone = mgNode("gen0", "tts_gen", { ttsFormat: "wav" });
+      const lone = mgNode("gen0", "breeze_gen", { ttsFormat: "wav" });
       mgScene([lone, sv], []);
       eqNum(M.resolveMediaGenExport(lone).ok, false, "没接保存节点：仍要求自己配路径");
       eqStr(M.requireMediaGenExport(lone, true), null, "requireMediaGenExport 仍返回 null");
       has(M.savePathResolveError(M.resolveMediaGenExport(lone).code), "保存路径", "错误文案仍是「请先指定保存路径」");
       /* 已配路径的节点即使接了保存节点，也走「以自己配的为准」 */
-      const both = mgNode("gen2", "tts_gen", { ttsFormat: "wav", outputPath: "E:/mine/a.wav" });
+      const both = mgNode("gen2", "breeze_gen", { ttsFormat: "wav", outputPath: "E:/mine/a.wav" });
       mgScene([both, sv], [w("gen2", "sv1", 0, 0)]);
       const expBoth = M.resolveMediaGenExport(both);
       eqNum(expBoth.ok, true, "自己配了路径 + 接了保存节点：仍按自己配的算");
@@ -1612,34 +1519,11 @@ const mk = (id, kind, extra) =>
     /* ---- [8-2] 运行期下发参数：托管时一律不带 outputPath / outputDir / filename ---- */
     console.log("\n[8-2] 下发参数：托管时不带路径，且宿主回传的路径不回写节点配置");
     {
-      const txt8 = mgNode("txt8", "input_text", { text: "念这段" });
-      const gen = mgNode("gen3", "tts_gen", { ttsFormat: "wav" });
+      /* 保存节点（下面视频 / 后处理那两条支路复用同一颗）：路径归它管 = 托管态 */
       const sv = mgNode("sv3", "save", { savePath: "E:/saves/final.wav" });
-      mgScene([txt8, gen, sv], [w("txt8", "gen3", 0, 0), w("gen3", "sv3", 0, 0)]);
-      mgGenerated.length = 0;
-      await M.playTtsGenNode(gen, true);
-      eqNum(mgGenerated.length, 1, "托管态真的发起了合成请求");
-      const sent = mgGenerated[0] || {};
-      ok(!("outputPath" in sent), "下发参数里没有 outputPath（托管：落点由宿主兜底）");
-      ok(!("outputDir" in sent), "下发参数里没有 outputDir");
-      ok(!("filename" in sent), "下发参数里没有 filename");
-      eqStr(sent.workflowId, "wf-t", "托管时仍下发画布 id（宿主据此落画布资产目录）");
-      eqStr(sent.nodeId, "gen3", "托管时仍下发 nodeId（宿主据此命名 / 归位）");
-      eqStr(gen.output && gen.output.path, "E:/managed/voice.wav", "宿主回传的绝对路径进 node.output（下游保存节点取它）");
-      eqNum(String(gen.outputPath || ""), "", "回传路径绝不回写节点自己的 outputPath（否则下次运行退回已配路径）");
-      has(String(gen.ttsStatus || ""), "托管目录", "结束状态行标出这是托管目录口径");
-
-      /* 非托管：参数里必须带 outputPath（零回归） */
-      const gen4 = mgNode("gen4", "tts_gen", { ttsFormat: "wav", outputPath: "E:/mine/b.wav" });
-      mgScene([txt8, gen4, sv], [w("txt8", "gen4", 0, 0), w("gen4", "sv3", 0, 0)]);
-      mgGenerated.length = 0;
-      await M.playTtsGenNode(gen4, true);
-      eqStr((mgGenerated[0] || {}).outputPath, "E:/mine/b.wav", "非托管：照旧下发节点配好的 outputPath");
-      eqStr(gen4.ttsStatus.slice(0, 2), "完成", "非托管：跑完状态行是「完成…」（真源没抛错）");
-      eqStr(gen4.output && gen4.output.path, "E:/managed/voice.wav", "非托管：宿主回传路径同样进 node.output");
-      hasnt(String(gen4.ttsStatus || ""), "托管目录", "非托管的状态行不出现托管字样");
-      /* 非托管时回传路径照旧回写节点配置（托管态才禁止回写，见上一条断言） */
-      eqStr(String(gen4.outputPath || ""), "E:/managed/voice.wav", "非托管：回传路径回写节点 outputPath（老口径零回归）");
+      /* 「托管时不下发路径」对 breeze_gen（本机语音）只做**源码级**核对（见本节末尾的
+         PATHLESS 正则）；真跑一次语音合成由 test/smoke-breeze.js 覆盖（那边有完整的
+         Breeze 宿主桩与参考源解析），本沙箱不再为它单独搭一套 Breeze 后端替身。 */
 
       /* 视频 / 音乐 / 抽卡那条支路：参数装配函数的托管分支 */
       const vid = mgNode("v1", "video_gen", { videoMode: "fl2va", outputPath: "" });
@@ -1681,7 +1565,7 @@ const mk = (id, kind, extra) =>
       });
       eqStr(vpPlain.outputDir, "E:/out", "后处理：非托管照旧带 outputDir");
 
-      /* 逐类核对「托管时不下发路径」这句在源码里确实成立（音乐 / 玉 / 语音 / Breeze）：
+      /* 逐类核对「托管时不下发路径」这句在源码里确实成立（音乐 / 玉 / Breeze 语音）：
          三种写法都算 —— ① 展开三元 ② 组装成 outParams 再展开 ③ 只挑出要下发的键 */
       const PATHLESS = [
         /exp\.managed \? \{\} : \{ (outputDir|outputPath|filename)/, // ①
@@ -1691,7 +1575,6 @@ const mk = (id, kind, extra) =>
       const omitters = [
         ["music_gen", "playMusicGenNode"],
         ["yue_gen", "playYueGenNode"],
-        ["tts_gen", "playTtsGenNode"],
         ["breeze_gen", "playBreezeGenNode"],
       ];
       eqArr(
@@ -1703,7 +1586,7 @@ const mk = (id, kind, extra) =>
           return !/const outParams = exp\.managed \? \{\} : \{[\s\S]{0,80}\}[\s\S]{0,400}\.\.\.outParams/.test(body);
         }),
         [],
-        "四类生成节点的下发参数都写了「托管就不带路径」",
+        "三类生成节点的下发参数都写了「托管就不带路径」",
       );
     }
 
@@ -1711,7 +1594,6 @@ const mk = (id, kind, extra) =>
     console.log("\n[8-3] 宿主托管兜底：产物落应用托管目录，回执带 managed_output_dir");
     {
       const HOSTS = [
-        { id: "tts_gen", file: "tts/main-tts.js", root: "ttsRoot", temp: "ttsTempOutDir", asked: "outputPath" },
         { id: "breeze_gen", file: "breeze/main-breeze.js", root: "breezeRoot", temp: "breezeTempOutDir", asked: "outputPath" },
         { id: "music_gen", file: "music3/main-music3.js", root: "music3Root", temp: "music3TempOutDir", asked: "outputDir" },
         { id: "yue_gen", file: "yue/main-yue.js", root: "yueRoot", temp: "yueTempOutDir", asked: "outputDir" },
@@ -1769,93 +1651,6 @@ const mk = (id, kind, extra) =>
           "[" + h.id + "] 宿主运行链真的调了托管兜底（显式传路径的分支一行不动）",
         );
       }
-      /* tts 宿主真跑一次：走真实 IPC handler + 假后端，看回执长什么样 */
-      const hostData = path.join(os.tmpdir(), "mtnode-smoke-tts-managed-" + process.pid);
-      const installDir = path.join(hostData, "sovits-install");
-      fs.mkdirSync(installDir, { recursive: true });
-      fs.writeFileSync(path.join(installDir, ".api-key"), "key-managed-e2e", "utf8");
-      const seen = [];
-      const server = require("http").createServer((req, res) => {
-        if (req.method !== "POST") {
-          res.writeHead(404);
-          res.end("");
-          return;
-        }
-        let body = "";
-        req.on("data", (c) => (body += c));
-        req.on("end", () => {
-          seen.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(body || "{}") });
-          res.writeHead(200, { "Content-Type": "audio/wav" });
-          res.end(Buffer.from("RIFF....WAVEfmt ", "latin1"));
-        });
-      });
-      await new Promise((r) => server.listen(0, "127.0.0.1", r));
-      const port = server.address().port;
-      fs.mkdirSync(path.join(hostData, "tts"), { recursive: true });
-      fs.writeFileSync(
-        path.join(hostData, "tts", "config.json"),
-        JSON.stringify({ installDir, port, sovitsPort: 9880, wantRunning: false }),
-        "utf8",
-      );
-      const handlers = new Map();
-      const electronStub = {
-        app: { isPackaged: false, getPath: (n) => (n === "userData" ? hostData : hostData), getAppPath: () => path.join(__dirname, ".."), on() {}, whenReady: () => Promise.resolve() },
-        ipcMain: { handle: (ch, fn) => handlers.set(ch, fn), on() {}, removeHandler() {} },
-        BrowserWindow: class { loadFile() {} on() {} static getAllWindows() { return []; } },
-        dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({ response: 0 }) },
-        shell: { openPath: async () => "", openExternal: async () => "" },
-        screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) },
-      };
-      const Module = require("module");
-      const origLoad = Module._load;
-      Module._load = function (request) {
-        if (request === "electron") return electronStub;
-        return origLoad.apply(this, arguments);
-      };
-      let host = null;
-      try {
-        const HOST_PATH = path.join(__dirname, "..", "tts", "main-tts.js");
-        delete require.cache[require.resolve(HOST_PATH)];
-        host = require(HOST_PATH);
-        host.registerTtsIpc({
-          getDataDir: () => hostData,
-          getMainWin: () => null,
-          appRoot: path.join(__dirname, ".."),
-          getDsh: null,
-          assetDirFor: (wfId) => {
-            const d = path.join(hostData, "assets", String(wfId || ""));
-            fs.mkdirSync(d, { recursive: true });
-            return d;
-          },
-        });
-      } finally {
-        Module._load = origLoad;
-      }
-      const generate = handlers.get("tts:generate");
-      ok(typeof generate === "function", "[8-3] tts 宿主注册了真实 IPC handler tts:generate");
-      const receipt = await generate(null, {
-        nodeId: "tts-managed-0001",
-        workflowId: "wf-t",
-        text: "托管口径冒烟",
-        voice: "v1",
-        speed: 1,
-        response_format: "wav",
-        /* 不传 outputPath：这正是画布托管态下发的形状 */
-      });
-      ok(receipt && receipt.ok === true, "[8-3] 不传 outputPath 也能合成成功（得到 " + show(receipt && (receipt.error || "ok")) + "）");
-      const rp = String((receipt && receipt.path) || "");
-      eqStr(path.dirname(rp), path.join(hostData, "assets", "wf-t"), "[8-3] 产物落在画布资产目录（托管落点）");
-      ok(fs.existsSync(rp), "[8-3] 回执给的是已落盘的绝对路径");
-      ok(
-        Array.isArray(receipt.warnings) &&
-          receipt.warnings.some((x) => String(x).indexOf("managed_output_dir") >= 0),
-        "[8-3] 回执明说这是应用托管目录（managed_output_dir）",
-      );
-      has(receipt.warnings.join(" "), "outputPath", "[8-3] 说明里点名调用方没给的是 outputPath");
-      eqStr(seen.length, 1, "[8-3] 假后端收到 1 次合成请求");
-      eqStr(seen[0] && seen[0].url, "/v1/audio/speech", "[8-3] 走 OpenAI 兼容 /v1/audio/speech");
-      ok(!("outputPath" in ((seen[0] || {}).body || {})), "[8-3] 交给后端的请求体里没有 outputPath（落盘由宿主定）");
-      await new Promise((r) => server.close(r));
     }
 
     /* ---- [8-4] 保存节点复制媒体：源值先归一成本机路径 ---- */
@@ -1917,11 +1712,11 @@ const mk = (id, kind, extra) =>
     console.log("\n[8-6] 加载迁移：用户手连的 gen → save 线原样保留");
     {
       const build = () => {
-        const g1 = mgNode("g1", "tts_gen", { outputPath: "" });
+        const g1 = mgNode("g1", "breeze_gen", { outputPath: "" });
         const g2 = mgNode("g2", "video_gen", { outputPath: "" });
         const s1 = mgNode("s1", "save", { savePath: "E:/saves/a.wav" });
         const s2 = mgNode("s2", "save", { savePath: "E:/saves/b.mp4" });
-        const wires = [w("g1", "s1", 0, 0), w("g2", "s2", 0, 0)];
+        const wires = [w("g2", "s1", 0, 0), w("g2", "s2", 0, 0)];
         return { nodes: [g1, g2, s1, s2], wires };
       };
       const wf = build();
@@ -1930,11 +1725,11 @@ const mk = (id, kind, extra) =>
       eqNum(wf.wires.length, 2, "用户手连的两条线都还在（托管口径的载体绝不拆）");
       eqArr(
         wf.wires.map((x) => x.from + "→" + x.to).sort(),
-        ["g1→s1", "g2→s2"],
+        ["g2→s1", "g2→s2"],
         "线还是那两条，且方向没变",
       );
-      ok(M.nodeFeedsSaveNode(wf.nodes[0], wf), "迁移后判定仍是托管态（该节点不需要自己的路径）");
-      eqStr(String(wf.nodes[0].outputPath || ""), "", "迁移不会凭空给它塞一个输出路径");
+      ok(M.nodeFeedsSaveNode(wf.nodes.find((n) => n.id === "g2"), wf), "迁移后判定仍是托管态（该节点不需要自己的路径）");
+      eqStr(String((wf.nodes.find((n) => n.id === "g2") || {}).outputPath || ""), "", "迁移不会凭空给它塞一个输出路径");
       /* 迁移后按迁移结果重新加载再判一次：仍然托管（幂等） */
       M.detachBoundMediaSaves(wf);
       eqNum(wf.wires.length, 2, "再跑一次迁移仍是两条线（幂等）");
@@ -1944,7 +1739,7 @@ const mk = (id, kind, extra) =>
       M.detachBoundMediaSaves(legacy);
       eqNum(legacy.nodes.length, 3, "旧 pinned 配对仍按老口径迁移（删掉那颗保存节点）");
       eqNum(legacy.wires.length, 1, "旧配对的线随之删掉，手连的那条留着");
-      eqStr(String(legacy.nodes.find((n) => n.id === "g1").outputPath), "E:/saves/a.wav", "旧档 savePath 搬进 gen.outputPath（.wav 后缀按节点定）");
+      eqStr(String(legacy.nodes.find((n) => n.id === "g2").outputPath), "E:/saves/a.mp4", "旧档 savePath 搬进 gen.outputPath（后缀按该节点的媒体类型定：video_gen → .mp4）");
     }
   }
 

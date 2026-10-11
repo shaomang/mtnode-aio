@@ -30,7 +30,7 @@ export const name = 'mtnode-canvas'
 export const inject = ['tools']
 
 const KINDS = [
-  'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'tts_gen', 'video_gen', 'video_upscale', 'video_interp', 'remotion', 'sensenova_gen',
+  'input_text', 'input_image', 'input_audio', 'input_video', 'input_file', 'db_table', 'proc_text', 'proc_image', 'music_gen', 'video_gen', 'video_upscale', 'video_interp', 'remotion', 'sensenova_gen',
   'save', 'save_text', 'save_image', 'save_pdf', 'split', 'merge', 'global', 'wait_file', 'timer',
   'delayer', 'sequencer', 'gate', 'splitter', 'counter', 'mutex',
   'agent_task', 'task', 'super', 'db_replica',
@@ -138,7 +138,7 @@ const GET_DESC =
   '- "standard": + all per-kind config fields (provider / model / size / savePath / waitPath / timer / net / control / dev*, db_table rows, input_file files, task steps, 素材节点的绑定与条目清单), body *lengths* (no body text) and the build references (markColors, devFuncColors 功能色卡, cam / view) — 不含 kinds / imageSizes / defaultImageSize；要这三张静态表显式传 sections:["refs"]。\n' +
   '- "full": everything incl. body text (text, prompt, task, goal, jscode, 素材条目正文), rows, files, steps — ask explicitly, best with ids:[...] so only those nodes come back heavy.\n' +
   '- Narrow with ids / scope + scopeDepth / bodies / bodyLimit, or sections = whitelist of heavy blocks (nodes, marks, wires, groups, and the trees / tagCatalog / workflows / selection). 只查连线用 sections:["nodes","wires"]（minimal 档也认）。素材节点（kind asset）也回读：assetItems = 绑定与条目清单 items:[{index, id, title, type}]（条目即端子：第 i 入 ↔ 第 i 出，端子名 = 条目标题）；text/body 档每条再带 text（文本正文）或 path / url（本机文件）。\n' +
-  '- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / tts_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
+  '- ports (standard / full): fixed-port nodes (proc_image / sensenova_gen / video_gen / remotion / judge / tool·function / super / asset) carry ports:[{dir,index,name,kind,connectedTo}] — read before connecting, not after a connect error.\n' +
   '- portRule (standard / full): nodes whose input ports GROW WITH WIRES (proc_text / proc_image / sensenova_gen / input_* …) carry portRule {note,input,output,now,hint} instead: ports only lists the slots that exist right now (an unconnected node shows port 0 = prompt only), and port 1+ accepts text AND image references (connect reference images to port 1+, never port 0). Never infer "this node has no image-reference port" from a short ports list, and never test-wire just to read the warnings.\n' +
   'scopeInfo is always returned（这次读的是整图还是某一颗壳内部）; every result carries a sizeHint with its cost.\n\n' +
   'When the run is locked to its own canvas（会话所属画布）, workflows lists ONLY that canvas. 建图 / 连线 / 排版的完整硬规则（task 端点、super 边界端子、tool/function 参数即端子、@引用三条件、save 与 wait_file、批次与文生图）只写在技能 mtnode-canvas-edit-rules（按需加载），此处不重复。'
@@ -321,9 +321,8 @@ const NODE_PROPS = {
   remotionSize: { type: 'string', description: 'remotion 分辨率（宽x高）。' },
   fps: { type: 'number', description: 'remotion 帧率 1–60。' },
   attempts: { type: 'number', description: '抽卡次数 1–10（生成类节点）。' },
-  outputPath: { type: 'string', description: 'video_gen / music_gen / tts_gen 输出路径（.mp4 / .wav / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。' },
-  voice: { type: 'string', description: 'tts_gen 音色（留空 = 默认，勿编造）。' },
-  speed: { type: 'number', description: 'tts_gen 语速 0.5–2.0。' },
+  outputPath: { type: 'string', description: 'video_gen / music_gen / breeze_gen 输出路径（.mp4 / .wav / .flac / .mp3）。sensenova_gen 没有这个字段：结果自动落应用资产目录，从输出端口 0 交出去，不要写路径。' },
+  voice: { type: 'string', description: 'breeze_gen 音色（音色库 id，留空 = 用端子给的参考音频，勿编造）。' },
   videoMode: { type: 'string', enum: ['r2v', 'fl2va'], description: 'video_gen：fl2va 首末帧（默认）/ r2v 多参考。输入端子（**控制输入恒为端口 0 = 第一个端子**，数据端口从 1 起且与「端子号 / 数据槽号」同号）：fl2va = 控制（0）· 提示词（1）· 首帧（2）· 末帧（3）；r2v = 控制（0）· 提示词（1）· 参考图 I1–I9（2–10）· 参考视频 V1–V3（11–13）· 参考音频 A1–A3（14–16）；自建工作流 = 控制（0）· 文本（1）· 素材（2+）。connect 的 toIndex / fromIndex 用 0 起始端口下标，等于上面括号里的号。' },
   duration: { type: 'number', description: '时长秒：video_gen 4–15，remotion 1–60。' },
   outputRes: { type: 'string', enum: ['auto', '480p', '720p', '1080p'] },

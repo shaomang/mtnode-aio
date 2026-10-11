@@ -63,7 +63,7 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
-const { quietPython } = require("../backend-python.js");
+const { quietPython, pythonHealth, silentEnv } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
 
@@ -819,6 +819,10 @@ async function killPortListener(listenPort) {
 function runExe(exe, args, opts) {
   opts = opts || {};
   return new Promise((resolve) => {
+    /* 体检（backend-python.js）：坏解释器（venv 基座被删）一 spawn 就弹 Python Launcher 消息框，
+       这里直接结算成一次「起不来」，依赖自检 / 探针这些路径同样不弹框 */
+    const bad = pythonHealth(exe);
+    if (!bad.ok) return resolve({ ok: false, code: 1, stdout: "", stderr: bad.message, error: bad.message });
     execFile(
       exe,
       args,
@@ -1108,6 +1112,14 @@ async function startBackend(opts) {
 
   const py = venvPython(installDir);
   if (!py) return { ok: false, error: "no_venv" };
+  /* 起进程前体检（backend-python.js 的真源）：基座解释器被删（手工删 conda 环境那类）时，venv 的
+     pythonw.exe 每次 spawn 都弹一只「Python Launcher … No Python at …」的消息框 —— 绝不 spawn。 */
+  const pyBad = pythonHealth(py);
+  if (!pyBad.ok) {
+    reportErr("stale_python", pyBad.message, { phase: "start", installDir });
+    appendConsole("[start] " + pyBad.message);
+    return { ok: false, error: "stale_python", detail: pyBad.base || py };
+  }
 
   /* 启动前补一次脚手架（覆盖旧 server.py / engine.py），再做依赖自检 —— 缺包先补，补不上就别 spawn */
   syncPackToInstall(installDir);
@@ -1153,7 +1165,9 @@ async function startBackend(opts) {
     detached: true,
     windowsHide: true,
     stdio: ["ignore", outFd, outFd],
-    env,
+    /* silentEnv：PYTHONPATH 最前挂 <installDir>/shims ⇒ 后端与它拉起的整条子树默认不弹控制台窗
+       （机制与实测见 backend-python.js / docs/plugin-console-silence.md） */
+    env: silentEnv(installDir, env),
   });
   fs.closeSync(outFd);
   try {

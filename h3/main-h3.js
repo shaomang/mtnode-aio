@@ -43,7 +43,7 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
-const { quietPython } = require("../backend-python.js");
+const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
 
@@ -943,6 +943,14 @@ function runStreamUpscaleJob(job) {
     if (Number(j.fps) > 0) args.push("--fps", String(Number(j.fps)));
     appendConsole("[post] $ " + [String(j.py), ...args].join(" "));
 
+    /* 体检（backend-python.js 的真源）：坏解释器（venv 基座被删）一 spawn 就弹 Python Launcher
+       消息框，这里直接把这次后处理判失败，不弹框 */
+    const bad = pythonHealth(String(j.py));
+    if (!bad.ok) {
+      reject(new Error(bad.message));
+      return;
+    }
+
     const env = Object.assign({}, process.env, {
       PYTHONIOENCODING: "utf-8",
       PYTHONUNBUFFERED: "1",
@@ -1170,6 +1178,14 @@ function runStreamInterpJob(job) {
     if (j.comfyRoot) args.push("--comfy-root", String(j.comfyRoot));
     if (Number(j.fps) > 0) args.push("--fps", String(Number(j.fps)));
     appendConsole("[post] $ " + [String(j.py), ...args].join(" "));
+
+    /* 体检（backend-python.js 的真源）：坏解释器（venv 基座被删）一 spawn 就弹 Python Launcher
+       消息框，这里直接把这次后处理判失败，不弹框 */
+    const bad = pythonHealth(String(j.py));
+    if (!bad.ok) {
+      reject(new Error(bad.message));
+      return;
+    }
 
     const env = Object.assign({}, process.env, {
       PYTHONIOENCODING: "utf-8",
@@ -1569,6 +1585,9 @@ function syncScaffoldToInstall(installDir) {
       const s = join(pack, name);
       if (fs.existsSync(s) && fs.statSync(s).isFile()) fs.copyFileSync(s, join(root, name));
     }
+    /* 静默垫片：后端 spawn 时把 <installDir>/shims 挂在 PYTHONPATH 最前（silentEnv），
+       所以这里必须把 pack 的 shims/ 一并同步 —— 本宿主只挑着拷 app/*.py，不显式拷就会漏。 */
+    syncShims(pack, root);
     appendConsole("[sync] scaffold → " + root);
     return { ok: true };
   } catch (e) {
@@ -2794,6 +2813,16 @@ function comfyVenvPython(installDir) {
 
 function runVenvPy(py, code) {
   return new Promise((resolve) => {
+    /* 体检（backend-python.js 的真源）：基座解释器被删的 venv（手工删 conda 环境那类）一 spawn
+       就弹一只「Python Launcher … No Python at …」的消息框（Sage 探针 / 冒烟每轮都走这里）——
+       直接结算成一次失败的探测，不弹框。stale_python 会被 parseSageProbe / sageMissingHint 认出来。 */
+    const bad = pythonHealth(py);
+    if (!bad.ok) {
+      /* 正文进控制台（人要读全），回执只留「标记 + 基座路径」—— parseSageProbe 只保留末 160 字符，
+         标记必须落在末尾那一截里，sageMissingHint 才认得出并指向「重装」 */
+      appendConsole("[probe] " + bad.message);
+      return resolve({ code: 1, out: "stale_python: " + (bad.base || py) });
+    }
     const child = spawn(py, ["-c", code], { windowsHide: true });
     let out = "";
     child.stdout.on("data", (d) => {
@@ -2826,12 +2855,17 @@ function healthCheckInstall(installDir, timeoutMs) {
       } catch {}
     }
     if (!py) py = "python";
+    /* 体检（backend-python.js 的真源）：坏解释器（venv 基座被删）一 spawn 就弹 Python Launcher
+       消息框，这里直接判这次健康检查失败（原因里带上那个基座路径，便于自我修复判因）。 */
+    const bad = pythonHealth(py);
+    if (!bad.ok) return resolve({ ok: false, reason: "stale_python: " + (bad.base || py), out: bad.message });
     const ms = Math.max(30000, Number(timeoutMs) || 300000);
     let out = "";
     let settled = false;
     let child;
     try {
-      child = spawn(py, ["-m", "app"], { cwd: root, windowsHide: true });
+      /* silentEnv：健康检查脚本自己也会调外部命令（venv 探针 / torch 探测），同一份静默口径 */
+      child = spawn(py, ["-m", "app"], { cwd: root, windowsHide: true, env: silentEnv(root, process.env) });
     } catch (e) {
       return resolve({ ok: false, reason: "health_check_spawn_failed: " + String((e && e.message) || e), out: "" });
     }
@@ -3134,6 +3168,15 @@ async function startBackend() {
   }
   /* pythonw：GUI 子系统不分配控制台（Store 版 venv 的 python.exe shim 会再拉真解释器并弹终端窗） */
   const py = quietPython(pyExe);
+  /* 起进程前体检（backend-python.js 的真源）：venv 的 pythonw.exe 只是重定向器，基座解释器被删
+     （手工删 conda 环境那类）之后它每次都弹一只「Python Launcher … No Python at …」的消息框 ——
+     坏了就报错、绝不 spawn。 */
+  const pyBad = pythonHealth(py);
+  if (!pyBad.ok) {
+    reportErr("stale_python", pyBad.message, { phase: "start" });
+    appendConsole("[start] " + pyBad.message);
+    return { ok: false, error: "stale_python", detail: pyBad.base || py };
+  }
 
   mk(path.dirname(consoleLogPath()));
   appendConsole("starting ComfyUI…");
@@ -3183,7 +3226,9 @@ async function startBackend() {
     detached: true,
     windowsHide: true,
     stdio: ["ignore", outFd, outFd],
-    env,
+    /* silentEnv：PYTHONPATH 最前挂 <installDir>/shims ⇒ ComfyUI 与它拉起的整条子树（自定义节点
+       装依赖 / pip / ffmpeg …）默认不弹控制台窗，见 backend-python.js / docs/plugin-console-silence.md */
+    env: silentEnv(installDir, env),
   });
   fs.closeSync(outFd);
   child.unref();
@@ -4928,6 +4973,8 @@ function sageMissingHint(probe) {
   const why = probe && probe.why ? String(probe.why) : "";
   if (/^arch:/.test(why)) return "（本机 GPU " + why.slice(5) + " 不在 Sage 支持列表，这一档优化跳过）";
   if (/no_venv/.test(why)) return "（venv 还没装好：先在插件卡片的安装窗里把后端装好）";
+  if (/stale_python/.test(why))
+    return "（解释器已失效：venv 的基座 Python 被删 / 搬走了，这个环境起不来 —— 在插件卡片的安装窗里重装可重建）";
   if (/^probe_failed/.test(why)) return "（自检没跑通：" + why.slice(0, 120) + "）";
   let need = "加速包";
   const miss = [];
@@ -4986,7 +5033,12 @@ function runVenvPip(py, args, opts) {
     );
     const full = ["-m", "pip", "install", ...args];
     appendConsole("$ venv pip install " + args.join(" "));
-    const child = spawn(py, full, { windowsHide: true, env });
+    /* 体检（backend-python.js 的真源）：坏解释器一 spawn 就弹 Python Launcher 消息框；补装前先拦 */
+    const bad = pythonHealth(py);
+    if (!bad.ok) return resolve({ code: 1, out: "stale_python: " + (bad.base || py) + " —— " + bad.message });
+    /* silentEnv：pip 自己的构建子进程（ninja / cl.exe / python setup.py）也要静默 ——
+       py 是 pythonw（无控制台），不挂垫片时它们每个都会新建一只终端窗 */
+    const child = spawn(py, full, { windowsHide: true, env: silentEnv(opts.installDir, env) });
     let out = "";
     const onData = (d) => {
       const s = d.toString();
@@ -5065,10 +5117,10 @@ async function installSageAttention(opts) {
     } else {
       const spec = tritonWindowsSpec(want.torch);
       say("pip install " + spec + " …", 26);
-      let r = await runVenvPip(py, [spec]);
+      let r = await runVenvPip(py, [spec], { installDir });
       if (r.code !== 0 && spec !== "triton-windows") {
         appendConsole("[sage] pinned triton-windows failed → retry latest");
-        r = await runVenvPip(py, ["triton-windows"]);
+        r = await runVenvPip(py, ["triton-windows"], { installDir });
       }
       if (r.code !== 0) throw new Error("triton-windows 安装失败：" + pipFailTail(r.out));
     }
@@ -5110,7 +5162,7 @@ async function installSageAttention(opts) {
     const wheelPath = join(tmpDir, picked.file);
     fs.writeFileSync(wheelPath, buf);
     say("pip 安装 sageattention " + picked.pkgVer + "（" + picked.cu + " · torch" + picked.torchRaw + "）…", 80);
-    const r2 = await runVenvPip(py, ["--no-deps", "--force-reinstall", wheelPath]);
+    const r2 = await runVenvPip(py, ["--no-deps", "--force-reinstall", wheelPath], { installDir });
     if (r2.code !== 0) throw new Error("sageattention 安装失败：" + pipFailTail(r2.out));
     /* 3) 自检：先按生成期同一口径探一遍，再真跑一次小 kernel（能 import ≠ 能算） */
     say("自检：import + 小尺寸 kernel 试跑…", 92);
