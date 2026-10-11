@@ -29,16 +29,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 export const ROOT = path.resolve(HERE, '..')
 const GATEWAY = path.join(ROOT, 'dsh', 'gateway')
 
-/** 参与导出的插件（顺序 = 契约里的展示顺序）；不在这张表里的插件一律不导出。 */
+/** 参与导出的插件（顺序 = 契约里的展示顺序）；不在这张表里的插件一律不导出。
+ *  gui-plugin.mjs 是唯一的「主进程执行」族（其余五份都由渲染层执行）：它给外部 MCP
+ *  客户端提供 GUI 点击 / 截图能力（实现在根目录 mcp-gui-agent.js），参数表仍写在这里。 */
 export const MCP_PLUGIN_FILES = [
   'canvas-plugin.mjs',
   'db-plugin.mjs',
   'ai-facts-plugin.mjs',
   'longtask-plugin.mjs',
   'assets-plugin.mjs',
+  'gui-plugin.mjs',
 ]
 
-/** 每个工具归到哪一族（渲染层按族分派 op；见 renderer/mcp-bridge.js 的 MCP_TOOL_OPS）。 */
+/** 每个工具归到哪一族（渲染层按族分派 op；见 renderer/mcp-bridge.js 的 MCP_TOOL_OPS）。
+ *  family "gui" = 例外：由**主进程**执行（只有它拿得到 BrowserWindow 与 webContents），
+ *  不推给渲染层 —— 见 mcp-server.js 的 TOOL_OPS.local 与 mcp-gui-agent.js。 */
 export const TOOL_FAMILY = {
   mtnode_canvas_get: 'canvas',
   mtnode_canvas_edit: 'canvas',
@@ -48,6 +53,7 @@ export const TOOL_FAMILY = {
   mtnode_facts: 'facts',
   lt_state: 'lt',
   mtnode_assets: 'asset',
+  mtnode_gui: 'gui',
 }
 
 /* ── 从插件源码里抽 defineTool 规格（真跑 register，不解析对象字面量）──────────── */

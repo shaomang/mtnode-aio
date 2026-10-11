@@ -23,13 +23,32 @@ $ErrorActionPreference = "Stop"
 # variables below overrides index / extra-index / trusted-host inside this process and every
 # child (pip / git / npm inherit them). Do NOT add `pip --isolated`: it ignores environment
 # variables, which lets that unreachable extra-index back in.
-$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+#
+# pip index fallback chain, same order as cn-mirrors.js pipIndexChain():
+# Tsinghua -> aliyun -> USTC -> official PyPI (official is the last resort only).
+# A mirror that has not synced one sub-package (2026-10 real case:
+# comfyui-workflow-templates-media-assets-02==0.1.11 was missing on both Tsinghua and USTC)
+# otherwise fails this whole script on a single "No matching distribution found" line.
+$PipIndexChain = @(
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple/",
+    "https://mirrors.ustc.edu.cn/pypi/simple/",
+    "https://pypi.org/simple"
+)
+$PipTrustedHostChain = @(
+    "pypi.tuna.tsinghua.edu.cn",
+    "mirrors.aliyun.com",
+    "mirrors.ustc.edu.cn",
+    "pypi.org"
+)
+$PipChainStart = 0
+$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { $PipIndexChain[0] }
 $env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
 $env:PIP_TRUSTED_HOST    = "pypi.tuna.tsinghua.edu.cn"
 if (-not $env:HF_ENDPOINT)         { $env:HF_ENDPOINT = "https://hf-mirror.com" }
 if (-not $env:HF_HUB_DISABLE_XET)  { $env:HF_HUB_DISABLE_XET = "1" }
 if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
-Write-Host "[h3-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
+Write-Host "[h3-install] mirrors: pip=$env:PIP_INDEX_URL (pip chain Tsinghua -> aliyun -> USTC -> official; one index=N/4 line per attempt) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $ComfyRoot = Join-Path $Root "ComfyUI"
@@ -37,6 +56,49 @@ $VenvDir = Join-Path $ComfyRoot "venv"
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
 $Cfg = Join-Path $VenvDir "pyvenv.cfg"
 $PatchPy = Join-Path $PSScriptRoot "patch_comfy_kitchen_typing.py"
+
+# Run one pip install against the index chain above: Tsinghua, then aliyun, then USTC,
+# official PyPI last. First success wins; when every index fails, name the missing
+# distribution so the console says what is really wrong.
+function Install-PipWithFallback {
+    param([string[]]$PipArgs)
+    $last = 0
+    $tail = @()
+    for ($i = $PipChainStart; $i -lt $PipIndexChain.Count; $i++) {
+        $idx = $PipIndexChain[$i]
+        $host_ = $PipTrustedHostChain[$i]
+        $n = $i + 1
+        Write-Host "[h3-repair] pip index=$n/$($PipIndexChain.Count) host=$host_"
+        $env:PIP_INDEX_URL = $idx
+        $env:PIP_EXTRA_INDEX_URL = $idx
+        $env:PIP_TRUSTED_HOST = $host_
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $out = @(& $VenvPy -m pip install @PipArgs 2>&1)
+            $last = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        foreach ($l in $out) { Write-Host ([string]$l) }
+        $tail = @($out | Select-Object -Last 30)
+        if ($last -eq 0) { return }
+        if ($n -lt $PipIndexChain.Count) {
+            Write-Host "[h3-repair] pip index=$n/$($PipIndexChain.Count) host=$host_ failed (exit $last); falling back to the next index..."
+        }
+    }
+    $miss = ""
+    foreach ($l in $tail) {
+        if (([string]$l) -match "(?i)No matching distribution found for\s+([^\s\(]+)") { $miss = $Matches[1] }
+    }
+    $tried = ($PipIndexChain -join " -> ")
+    if ($miss) {
+        throw "pip install failed: no matching distribution found for $miss. All pip indexes were tried ($tried). That mirror has not synced this package yet; retry and the script walks to the next index."
+    }
+    $t = (@($tail | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }) -join " / ")
+    if ($t.Length -gt 400) { $t = $t.Substring($t.Length - 400) }
+    throw "pip install failed on every index ($tried). Last pip output: $t"
+}
 
 if (-not (Test-Path -LiteralPath $VenvPy)) {
     throw "ComfyUI venv missing. Run .\scripts\setup_env.ps1 first."
@@ -74,14 +136,15 @@ if ($usesSystem) {
     Set-Content -Path $dot -Value $basePy -Encoding utf8
 }
 
-# Explicit override for this package stays on top of the pinned defaults at the top of this script
+# Explicit override for this package stays on top of the pinned defaults at the top of this
+# script: it replaces the FIRST index of the chain, the remaining fallbacks stay in place.
 if ($env:MT_H3_PIP_INDEX) {
-    $env:PIP_INDEX_URL = $env:MT_H3_PIP_INDEX
-    $env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+    $PipIndexChain[0] = $env:MT_H3_PIP_INDEX
+    Write-Host "[h3-repair] pip chain start overridden by MT_H3_PIP_INDEX: $($PipIndexChain[0])"
 }
 
 Write-Host "Upgrading pip + ensuring CUDA torch in venv..."
-& $VenvPy -m pip install -U pip -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
+try { Install-PipWithFallback -PipArgs @("-U", "pip") } catch { throw "pip upgrade failed: $($_.Exception.Message)" }
 # The H3 quantized kernels need cu130; do not fall back to cu124/cu121 (it hangs the first forward step).
 # Domestic mirror first, the pytorch.org official index only as the last resort (override with MT_H3_TORCH_INDEX).
 $torchIdx = if ($env:MT_H3_TORCH_INDEX) { $env:MT_H3_TORCH_INDEX } else { "https://mirrors.aliyun.com/pytorch-wheels/cu130" }
@@ -98,13 +161,13 @@ if ($LASTEXITCODE -ne 0) {
 $req = Join-Path $ComfyRoot "requirements.txt"
 if (Test-Path -LiteralPath $req) {
     Write-Host "Reinstalling ComfyUI requirements..."
-    & $VenvPy -m pip install -r $req -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
-    if ($LASTEXITCODE -ne 0) { throw "ComfyUI requirements failed" }
+    try { Install-PipWithFallback -PipArgs @("-r", $req) }
+    catch { throw "ComfyUI requirements failed: $($_.Exception.Message)" }
 }
 
 $helper = Join-Path $Root "requirements.txt"
 if (Test-Path -LiteralPath $helper) {
-    & $VenvPy -m pip install -r $helper -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
+    Install-PipWithFallback -PipArgs @("-r", $helper)
 }
 
 # Even though torch is isolated inside the venv, torch 2.6 infer_schema can still reject list[int] -- the patch is mandatory

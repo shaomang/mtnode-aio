@@ -50,8 +50,11 @@ const EXCLUDED_TOOLS = Object.freeze([
   },
 ]);
 
-/** 工具 → 渲染层 op 的接线表。参数原样透传；除 canvas_* 的 canvas / baseHash 两个
- *  MCP 侧路由参数外，不增删任何字段（插件参数表仍是唯一真源）。 */
+/** 工具 → 执行接线表。参数原样透传；除 canvas_* 的 canvas / baseHash 两个
+ *  MCP 侧路由参数外，不增删任何字段（插件参数表仍是唯一真源）。
+ *  local:true = 这一族**不在渲染层执行**，由主进程自己干（目前只有 gui：只有主进程
+ *  拿得到 BrowserWindow 与 webContents，能往任意窗口注入脚本、能 capturePage 截图）。
+ *  执行器由 main.js 注入（o.gui），见 mcp-gui-agent.js。 */
 const TOOL_OPS = {
   mtnode_canvas_get: { op: "get", family: "canvas", write: false },
   mtnode_canvas_edit: { op: "edit", family: "canvas", write: true },
@@ -61,6 +64,7 @@ const TOOL_OPS = {
   mtnode_facts: { op: "facts", family: "facts", write: true },
   lt_state: { op: "lt", family: "lt", write: true },
   mtnode_assets: { op: "asset", family: "asset", write: false },
+  mtnode_gui: { op: "gui", family: "gui", local: true, write: true },
 };
 
 /** MCP 侧路由参数：从 args 里摘出来，不下发给渲染层的插件处理函数。 */
@@ -141,6 +145,9 @@ function checkArgs(schema, args) {
  *   stdio 桥脚本随包发在 resources/mcp-stdio.js，**不在 asar 里** —— 外部 MCP 客户端用系统
  *   Node 拉起它，而 asar 内路径外部 Node 读不了。缺省回退 appRoot（开发态两者同义）。
  * @param {(ev:object)=>void} o.sendToRenderer  推帧给渲染层
+ * @param {(action:string, params:object)=>Promise<any>} [o.gui]  GUI 族（family "gui"）的执行器：
+ *   这一族不在渲染层跑，由主进程直接操作窗口（main.js 注入 mcp-gui-agent.js 的 run）。
+ *   没注入时 gui 族会明确报错，而不是静默失败。
  * @param {(line:string)=>void} [o.log]
  */
 function createMcpHost(o) {
@@ -148,6 +155,7 @@ function createMcpHost(o) {
   const appRoot = o.appRoot;
   const resourcesDir = o.resourcesDir || o.appRoot;
   const sendToRenderer = o.sendToRenderer;
+  const guiRun = typeof o.gui === "function" ? o.gui : null;
   const log = typeof o.log === "function" ? o.log : () => {};
   const statePath = path.join(dataDir, "mcp-server.json");
   const auditDir = path.join(dataDir, "mcp-audit");
@@ -457,6 +465,26 @@ function createMcpHost(o) {
       if (op.family === "canvas") {
         if (target) params.canvas = target;
         if (op.write && baseHash) params.baseHash = baseHash;
+      }
+      /* 主进程自执行的族（gui）：执行器是 main.js 注入的 mcp-gui-agent.js。
+         这里不做 canvas / baseHash 那套路由 —— GUI 动作的作用域是「哪只窗 + 哪个元素」。 */
+      if (op.local) {
+        if (!guiRun) throw mcpFail(-32603, "GUI 执行器不可用（主进程没有注入 mcp-gui-agent）");
+        const action = String(params.action || "").trim();
+        if (!action) throw mcpFail(-32602, "mtnode_gui 需要 action");
+        const started = Date.now();
+        const result = await Promise.race([
+          guiRun(action, params),
+          new Promise((_, rej) => {
+            const t = setTimeout(
+              () => rej(new Error("GUI 动作超时（" + Math.round(TOOL_TIMEOUT_MS / 1000) + "s）：" + action)),
+              TOOL_TIMEOUT_MS,
+            );
+            if (t && typeof t.unref === "function") t.unref();
+          }),
+        ]);
+        log("[mcp] gui " + action + " " + (Date.now() - started) + "ms");
+        return result;
       }
       const result = await callRenderer(op.op, params, meta);
       const cid = canvasRef(result) || target;

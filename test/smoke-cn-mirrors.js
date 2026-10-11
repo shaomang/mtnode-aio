@@ -149,8 +149,12 @@ console.log("\n[4] 7 个随包安装脚本的源口径");
 const PACKS = [
   { id: "breeze", rel: "breeze-pack/scripts/install.ps1", pip: true, torch: true, weights: "breeze-pack/scripts/download_weights.py", modelscope: true, ghChain: true },
   { id: "llama", rel: "llama-pack/scripts/install.ps1", pip: true, torch: false, weights: "llama-pack/scripts/install.ps1", modelscope: false, ghChain: true },
-  { id: "h3", rel: "h3-pack/scripts/setup_env.ps1", pip: true, torch: true, weights: "h3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false },
-  { id: "music3", rel: "music3-pack/scripts/setup_env.ps1", pip: true, torch: false, weights: "music3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false },
+  { id: "h3", rel: "h3-pack/scripts/setup_env.ps1", pip: true, torch: true, weights: "h3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false,
+    extraPipChain: ["h3-pack/scripts/repair_torch_kitchen.ps1"],
+    pipStepScript: "h3-pack/scripts/install.ps1" },
+  { id: "music3", rel: "music3-pack/scripts/setup_env.ps1", pip: true, torch: false, weights: "music3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false,
+    extraPipChain: [],
+    pipStepScript: "music3-pack/scripts/install.ps1" },
   /* YuE2 的权重仓库（m-a-p/YuE2-3B）只走 hf-mirror：它没有可用的 ModelScope 同名仓库，
      所以这一条只钉「hf-mirror + HF_ENDPOINT」，不要求 ModelScope（见 docs/mirror-sources.md）。 */
   { id: "yue", rel: "yue-pack/scripts/install.ps1", pip: true, torch: true, weights: "yue-pack/scripts/install.ps1", modelscope: false, ghChain: false },
@@ -173,6 +177,28 @@ for (const p of PACKS) {
     const work = workLines(src);
     const off = work.indexOf("pypi.org/simple");
     if (off >= 0) ok(work.indexOf("pypi.tuna.tsinghua.edu.cn") < off, p.id + " 官方 PyPI 只作为最后一级兜底（干活的行里排在国内源之后）");
+    /* pip 索引回退链：单级源在「镜像只缺一个子包」时会整步失败（2026-10 现场：
+       comfyui-workflow-templates-media-assets-02==0.1.11 清华与 USTC 都没同步）。
+       本轮只覆盖 h3 与 music3（见每条的 extraPipChain / pipStepScript）：
+       干活的行里必须凑齐 ≥3 个国内/官方索引、官方排最后，并且真的逐级走链。 */
+    if (p.extraPipChain) {
+      const chainSrcs = [p.rel].concat(p.extraPipChain);
+      for (const rel of chainSrcs) {
+        const w = workLines(read(rel));
+        const offAt = w.indexOf("pypi.org/simple");
+        const dom = ["pypi.tuna.tsinghua.edu.cn", "mirrors.aliyun.com/pypi", "mirrors.ustc.edu.cn/pypi"].filter((s) => w.indexOf(s) >= 0);
+        ok(offAt >= 0 && dom.length >= 2, rel + " 干活的行里有 ≥3 个 pip 索引（国内 " + dom.length + " + 官方）");
+        ok(offAt < 0 || dom.every((s) => w.indexOf(s) >= 0 && w.indexOf(s) < offAt), rel + " 官方 PyPI 排在全部国内索引之后");
+        has(w, "$PipIndexChain", rel + " 索引链是显式数组（逐级可查）");
+        has(w, "$PipIndexChain.Count", rel + " 真的按链长度逐级迭代");
+        /* 这两句是脚本往安装窗打的进度行（Write-Host），workLines 会把它们滤掉，所以查原文。 */
+        has(read(rel), "pip index=$n/$($PipIndexChain.Count) host=$host_", rel + " 每次尝试都打一行「第几级 / 用的哪个源」");
+        has(read(rel), "falling back to the next index", rel + " 一级失败继续走下一级");
+      }
+      const step = codeLines(read(p.pipStepScript));
+      has(step, "No matching distribution found for", p.id + " 全级失败时点名缺哪个包（No matching distribution found for <pkg>）");
+      has(step, "已依次试过清华 / 阿里云 / USTC / 官方 PyPI", p.id + " 安装编排写明「pip 已走完四级源」");
+    }
   }
   if (p.torch) {
     /* torch 顺序只在**CUDA 轮子**那条链上比：`-Cpu` 后门分支本来就只有官方 `whl/cpu` 一种来源

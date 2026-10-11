@@ -187,10 +187,13 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
      并把实际安装来源写进日志与结论。
    - **注意力档位在 Windows 上是明确故障点，不是「慢一点」**：本机 torch 常常**有 flash-attn 的 schema、没有对应 kernel**，
      yue2 默认 `auto` 会选到 flash，真实生成跑到 **Planning score** 阶段才报
-     `USE_FLASH_ATTENTION was not enabled for build.`；必须靠 `scripts\probe_attention.py` 探针把档位降级到
-     `cudnn` / `sdpa`（结果写 `<INSTALL_DIR>\.attention-backend`，由 `app\windows_patch.py` 在服务启动时读取并强制下发）。
-     装完 torch 就探一次，口径见「Windows 与官方 Linux 的差异」。
-   - **不要装 `flash-attn`**（Windows 无官方轮子，源码编译基本失败）：降级靠探针，不靠装 flash-attn。
+     `USE_FLASH_ATTENTION was not enabled for build.`；本移植因此把档位**默认定成 `cudnn`**
+     （`app\windows_patch.py` 的 `resolve_backend()`：显式覆盖 → 默认 cudnn，**不再三档探针选档**），
+     安装脚本只把这份默认记一份 JSON 记录到 `<INSTALL_DIR>\.attention-backend`。
+     真跑一次的确认由**宿主**在启动服务前做：`scripts\probe_attention.py --only <生效档> --json`
+     （只验一档；跑不了直接报 `attention_backend_unsupported`，**不自动降级**）。
+     要换档只能显式：`YUE2_ATTENTION_BACKEND=sdpa`，或在 `.attention-backend` 里写**单行纯文本**。
+   - **不要装 `flash-attn`**（Windows 无官方轮子，源码编译基本失败）：换档靠显式指定，不靠装 flash-attn。
    - 装完自检：`.\.venv\Scripts\python.exe -c "import yue2, soundfile, torch; print('deps ok')"`。
 6. **下载模型权重**（ModelScope 优先，hf-mirror 回退；可参考 `SCAFFOLD_REF\scripts\install.ps1`）
    目标：`models\m-a-p__YuE2-3B\`、`models\m-a-p__YuE2-Vae\` 均含 `config.json` 且权重文件非空；
@@ -235,7 +238,7 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 | 主题 | 官方（Linux） | 本机（Windows）移植口径 |
 | --- | --- | --- |
 | 环境 / 激活 | `source .venv/bin/activate` | `.\.venv\Scripts\python.exe`（**不依赖 activate**，直接调解释器） |
-| 注意力加速 | `pip install flash-attn`（需源码编译） | **不装 flash-attn**（Windows 无官方轮子）。且「缺 flash_attn」在 Windows 上**是故障、不是只慢**：本机 torch 常有 flash-attn 的 schema 却没有对应 kernel，yue2 的 `auto` 会选到 flash，真实生成跑到 **Planning score** 阶段报 `USE_FLASH_ATTENTION was not enabled for build.` → 必须由 `scripts\probe_attention.py` 探针选一个真正可用的档位（`cudnn` → `sdpa` → `eager`），写 `<INSTALL_DIR>\.attention-backend`，由 `app\windows_patch.py` 在服务启动时读取并强制下发；`YUE2_ATTENTION_BACKEND` 可显式覆盖。不要用「装 flash-attn」绕过 |
+| 注意力加速 | `pip install flash-attn`（需源码编译） | **不装 flash-attn**（Windows 无官方轮子）。且「缺 flash_attn」在 Windows 上**是故障、不是只慢**：本机 torch 常有 flash-attn 的 schema 却没有对应 kernel，yue2 的 `auto` 会选到 flash，真实生成跑到 **Planning score** 阶段报 `USE_FLASH_ATTENTION was not enabled for build.` → 本移植默认档就是 `cudnn`（`app\windows_patch.py` 的 `resolve_backend()`；宿主启动前用 `probe_attention.py --only <档>` 单档快检），要换档只能**显式**指定 `YUE2_ATTENTION_BACKEND` 或在 `.attention-backend` 里写单行纯文本，**不自动降级**。不要用「装 flash-attn」绕过 |
 | Triton / `torch.compile` | 自带 triton 轮子 | 无 Linux 轮子；确实要加速时用 `triton-windows`（版本跟随 torch 自带 triton），装不上就**禁用 `torch.compile`**，不要判失败 |
 | 量化算子（bitsandbytes 一类） | apt / 预编译轮子 | 优先**不引入**这类依赖；确需时只在有匹配 Windows 轮子时启用，否则走 offload |
 | 符号链接 | `ln -s` | Windows 建 symlink 需开发者模式 / 管理员；ModelScope / HF 缓存与 `-ModelDir` 复用一律用**目录联接**（`New-Item -ItemType Junction`）或复制 |
@@ -260,8 +263,8 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 | `torch.cuda.is_available()` 为 `False` | ①torch 装成 CPU 版 → 用 `-TorchIndex` 按驱动重装；②驱动过老 → 升级驱动（`reason=driver_too_old`）；③`nvidia-smi` 版本与驱动不匹配 |
 | `import yue2` 失败 | 看真实报错：缺依赖按清华镜像补装；`ModuleNotFoundError` 但目录有包 → 装到了别的解释器（核对 `.venv` 路径）；PyPI 无 `yue2` → 改从官方仓库装并记录来源 |
 | `gradio_missing` / `missing_dependency` | 现象：启动即 `RuntimeError`「Gradio 未安装」，或 `ModuleNotFoundError: No module named 'gradio'`（`app\ui.py` 入口）。处置：`.\.venv\Scripts\python.exe -m pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn`（`PIP_*` 环境变量由宿主注入，**不要加 `--isolated`**）后重跑；**不要重下权重** |
-| `attention_backend_unsupported` | **现象**：安装期探针（`scripts\probe_attention.py`）报 flash / cudnn / sdpa 都不可用；或运行时真实生成在 **Planning score** 阶段报 `USE_FLASH_ATTENTION was not enabled for build.`。**根因**：本机 torch 有 flash-attn 的 schema 却没有可用 kernel（Windows 移植常见），且 `app\windows_patch.py` 的注意力探针降级没生效。**处置**：确认 `app\windows_patch.py` 与 `app\engine.py` **同时**存在于安装目录**与随包脚手架**（缺一半会被每轮 sync 覆盖），补齐后重跑 `install.ps1` 让它重探档位（或本身重跑探针）；仍不行用 `-TorchIndex` 换带 cuDNN 的 CUDA 版 torch，或换卡。**不要重下权重、不要装 flash-attn** |
-| `No module named 'flash_attn'` / `triton` | 报 `ModuleNotFoundError: flash_attn` 本身是预期（Windows 无轮子），**但它不代表没事**：注意力档位必须由探针降级，见上面 `attention_backend_unsupported` 行；`triton` 缺失则禁用 `torch.compile`。不要为此装 flash-attn 或重装环境 |
+| `attention_backend_unsupported` | **现象**：宿主启动服务前的单档快检（`scripts\probe_attention.py --only <档>`）报生效档跑不起来；或运行时真实生成在 **Planning score** 阶段报 `USE_FLASH_ATTENTION was not enabled for build.`。**根因**：本机 torch 有 flash-attn 的 schema 却没有可用 kernel（Windows 移植常见），或该档（默认 `cudnn`）在这台机器 / 这份 torch 上真跑不了。**处置**：先 `--only cudnn` 确认这一档能不能跑；跑不了就**显式**改成 `sdpa`（`YUE2_ATTENTION_BACKEND=sdpa`，或在 `.attention-backend` 里写单行纯文本）—— 本版不自动降级；若生成中途才报，则确认 `app\windows_patch.py` 与 `app\engine.py` **同时**存在于安装目录**与随包脚手架**（缺一半会被每轮 sync 覆盖）；仍不行用 `-TorchIndex` 换带 cuDNN 的 CUDA 版 torch，或换卡。**不要重下权重、不要装 flash-attn** |
+| `No module named 'flash_attn'` / `triton` | 报 `ModuleNotFoundError: flash_attn` 本身是预期（Windows 无轮子），**但它不代表没事**：注意力档位必须显式换档，见上面 `attention_backend_unsupported` 行；`triton` 缺失则禁用 `torch.compile`。不要为此装 flash-attn 或重装环境 |
 | 模型加载报 `model_missing` | `models\m-a-p__YuE2-3B`（或 VAE）缺 `config.json`/权重 → 重跑下载（ModelScope → hf-mirror）；核对仓库 id 是否真实存在 |
 | 下载反复中断 | 续传重跑；查磁盘空间、代理 / 镜像、长路径与杀软锁文件 |
 | `oom` | 关掉其它占 GPU 进程（H3 ComfyUI / 浏览器 / 上一次生成未卸回 CPU）；开 CPU offload；缩短时长；设 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`；仍不行就降档到量化分支 |
@@ -291,9 +294,11 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
    （靠 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 环境变量，**不要 `--isolated`**；`import` 失败同理，**不重下权重**）；
    `model_missing` → 只补缺的那个仓库；`/health` 秒回但 `loaded=false` → 生成接口再触发懒加载看真实报错；
    OOM → 关其它 GPU 进程 / 开 offload / 缩短时长；`busy` → 不发并发，改串行。
-4. **注意力档位重探针**（`USE_FLASH_ATTENTION was not enabled for build.` / `attention_backend_unsupported` / 换过 torch 之后必做）：
-   用 venv python 重跑 `scripts\probe_attention.py`，让它按当前 torch 重新选档并把结果写回 `<INSTALL_DIR>\.attention-backend`
-   （手写也行：单个档位名，如 `cudnn` / `sdpa`）；同时确认 `app\windows_patch.py` 与 `app\engine.py`
+4. **注意力档位核查**（`USE_FLASH_ATTENTION was not enabled for build.` / `attention_backend_unsupported` / 换过 torch 之后必做）：
+   本版**默认就是 `cudnn`**：先用 `scripts\probe_attention.py --only cudnn` 验这一档到底能不能跑
+   （`--all` 只看三档实测，不据此选档）。跑不了就把档位**显式**改成 `sdpa` —— 设 `YUE2_ATTENTION_BACKEND=sdpa`，
+   或在 `<INSTALL_DIR>\.attention-backend` 里写单行纯文本 `sdpa`（带 `{` 的 JSON 是记录，不是覆盖）；不自动降级。
+   若生成中途仍报 flash kernel 缺失，则说明补丁没生效：确认 `app\windows_patch.py` 与 `app\engine.py`
    **同时**存在于安装目录**与随包脚手架**，否则下一轮 sync 会把补丁覆盖掉、故障原样复现。
    **不要**为这条装 `flash-attn`，也**不要**重下模型权重。
 5. 修完**重跑冒烟**（`/health` + 一次极短真实生成），通过后重建 `.install-ok`、把 `.yue2-agent-result` 改回 `ok=true`；回复 `repair_ok=1`。

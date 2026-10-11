@@ -668,21 +668,27 @@ const depsInstallTried = new Set();
 let lastMissingDeps = [];
 
 /* ── 注意力档位（Windows torch 有 flash schema 但没编 CUDA kernel → yue2 auto 误判 flash） ──
- * 生成会在 Planning score 阶段硬报 USE_FLASH_ATTENTION was not enabled for build.，
- * 所以 spawn 前先用 scripts/probe_attention.py 实测可用档，并以 YUE2_ATTENTION_BACKEND 下发。 */
-/** 探针可给出的档位（顺序即优先序） */
+ * 现场（本机 RTX 4090 / torch 2.10.0+cu130 实测）：flash 真调必报
+ * `USE_FLASH_ATTENTION was not enabled for build.`（Planning score 阶段硬失败），
+ * cudnn（SDPA CUDNN_ATTENTION）与 sdpa 能跑，其中 cudnn 是本机可用的最快档。
+ *
+ * 所以本版**默认就是 cudnn**：不再按 flash → cudnn → sdpa 依次探针选档（那套要白等最长 180s，
+ * 探针失败还会回落 sdpa、却报「已改用 cudnn」的自相矛盾文案）。
+ * 唯一保留的一次实测：启动后端前只探**生效档位**（缺省 cudnn）一档 —— 不可用就直接报错、不排队，
+ * 且**不自动降级**；要换档由用户显式指定（env 或安装目录 `.attention-backend` 单行文本）。 */
+/** 合法档位（显式指定时认这三个） */
 const ATTENTION_BACKENDS = ["flash", "cudnn", "sdpa"];
-/** 探针实测无可用档时的回落档（sdpa 纯 torch 实现，任何构建都有） */
-const ATTENTION_FALLBACK = "sdpa";
-/** 探针超时（要 import torch + 跑三次极小前向） */
+/** 默认档位：本机实测可用档里最快的那个（flash 在 Windows 轮子里没编 kernel，永不自动选） */
+const ATTENTION_DEFAULT = "cudnn";
+/** 单档快检超时（要 import torch + CUDA 初始化 + 一次极小前向） */
 const ATTENTION_PROBE_TIMEOUT_MS = 180 * 1000;
-/** 探针结果缓存有效期：换 torch / 换驱动才会变，6h 足够，且每次 startBackend 会复用 */
-const ATTENTION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-/** 当前下发后端的档位（statusForUi / 控制台窗显示 + spawn env 注入共用） */
+/** 当前生效档位（statusForUi / 控制台窗显示 + spawn env 注入共用） */
 let attentionBackend = "";
-/** 档位来源：probe=探针实测 · forced=env 显式指定 · fallback=探针不可用回落 · cache=读缓存 */
+/** 档位来源：default=未显式指定走默认 cudnn · env=环境变量指定 · file=.attention-backend 单行文本指定 */
 let attentionBackendSource = "";
 let attentionProbePending = null;
+/** 本进程内的快检结论（同一台机器同一个 env，一个进程只探一次） */
+let attentionCheck = null;
 
 /** requirements.txt 顶层包名：剥掉版本号 / 注释 / pip 选项行与直接 URL。 */
 function requiredPyModules(installDir) {
@@ -890,7 +896,7 @@ function reportMissingDep(module, extra) {
 
 /* ═══════════ 注意力档位：报错指纹 → 探针选档 → 定向自修复 ═══════════ */
 
-/** 档位缓存文件：<DATA>\yue\attention.json */
+/** 档位记录文件：<DATA>\yue\attention.json（本版只作展示 / 排查记录，不再是选档依据） */
 function attentionCachePath() {
   return join(yueRoot(), "attention.json");
 }
@@ -898,6 +904,77 @@ function attentionCachePath() {
 function normalizeAttentionBackend(v) {
   const t = String(v || "").trim().toLowerCase();
   return ATTENTION_BACKENDS.indexOf(t) >= 0 ? t : "";
+}
+
+/** 生效档位 + 来源：默认 / env / file（同步口径，任何时候都答得出来，不探针）。 */
+function attentionEffective(installDir) {
+  for (const key of ["YUE2_ATTENTION_BACKEND", "YUE2_ATTENTION"]) {
+    const b = normalizeAttentionBackend(process.env[key]);
+    if (b) return { backend: b, source: "env", where: key };
+  }
+  const dir = String(installDir || loadConfig().installDir || "").trim();
+  if (dir) {
+    /* 只认**单行纯文本**的 .attention-backend（那是人写的覆盖）；JSON 那份是探针 / 宿主自己
+       留下的记录（source=probe:… / forced:… / fallback…），按新口径一律不当用户设置。 */
+    let raw = "";
+    try {
+      raw = fs.readFileSync(join(dir, ".attention-backend"), "utf8");
+    } catch {}
+    const t = String(raw || "").trim();
+    if (t && !t.startsWith("{")) {
+      const b = normalizeAttentionBackend(t.split(/\r?\n/)[0].trim());
+      if (b) return { backend: b, source: "file", where: ".attention-backend" };
+    }
+  }
+  return { backend: ATTENTION_DEFAULT, source: "default", where: "" };
+}
+
+/** 记下生效档位 + 来源（statusForUi / spawn env / 控制台窗共用同一份内存状态）。 */
+function setAttentionState(backend, source) {
+  const b = normalizeAttentionBackend(backend) || ATTENTION_DEFAULT;
+  attentionBackend = b;
+  attentionBackendSource = String(source || "");
+  return b;
+}
+
+/**
+ * 旧记录作废：<DATA>\yue\attention.json 里 source=probe/fallback/cache 的那份是旧「三档探针选档」
+ * 的结论（本机实测就落着 sdpa）。本版不再拿它当决定（未显式指定时一律默认 cudnn），
+ * 发现即删掉并留痕，免得排查时被旧值误导。
+ */
+function discardLegacyAttentionCache() {
+  const rec = readJson(attentionCachePath(), null);
+  if (!rec || typeof rec !== "object") return;
+  const src = String(rec.source || "");
+  if (src !== "probe" && src !== "fallback" && src !== "cache") return;
+  try {
+    fs.unlinkSync(attentionCachePath());
+    appendConsole("[attention] 旧记录已作废（source=" + src + " backend=" + String(rec.backend || "") + "）：本版默认 " + ATTENTION_DEFAULT);
+  } catch (e) {
+    appendConsole("[attention] 作废旧记录失败：" + String((e && e.message) || e));
+  }
+}
+
+/** 落一份档位记录（展示 / 排查用；选档不读它）。 */
+function writeAttentionRecord(extra) {
+  const rec = Object.assign(
+    { backend: attentionBackend, source: attentionBackendSource, at: Date.now() },
+    extra || {},
+  );
+  try {
+    writeJson(attentionCachePath(), rec);
+  } catch (e) {
+    appendConsole("[attention] 写记录失败：" + String((e && e.message) || e));
+  }
+  appendConsole(
+    "[attention] backend=" +
+      attentionBackend +
+      " (source=" +
+      (attentionBackendSource || "?") +
+      (rec.checked ? " · checked=" + rec.checked + " ok=" + !!rec.ok : "") +
+      ")",
+  );
+  return rec;
 }
 
 /**
@@ -921,53 +998,47 @@ function parseAttentionHint(logText) {
   };
 }
 
-/** 已缓存的探针结论（未过期且档位合法才算数） */
-function loadAttentionCache() {
-  const c = readJson(attentionCachePath(), null);
-  if (!c || typeof c !== "object") return null;
-  const backend = normalizeAttentionBackend(c.backend);
-  if (!backend) return null;
-  if (c.at && Date.now() - Number(c.at) > ATTENTION_CACHE_TTL_MS) return null;
-  return Object.assign({}, c, { backend });
-}
-
-/** 把探针结论记进内存 + 缓存文件，statusForUi / 下游 spawn env 共用同一份。 */
-function rememberAttentionBackend(backend, source, extra) {
-  const b = normalizeAttentionBackend(backend) || ATTENTION_FALLBACK;
-  attentionBackend = b;
-  attentionBackendSource = String(source || "");
-  const rec = Object.assign(
-    { backend: b, source: attentionBackendSource, at: Date.now() },
-    extra || {},
-  );
-  try {
-    writeJson(attentionCachePath(), rec);
-  } catch (e) {
-    appendConsole("[attention] 写缓存失败：" + String((e && e.message) || e));
-  }
-  appendConsole("[attention] backend=" + b + " (source=" + (attentionBackendSource || "?") + ")");
-  return b;
-}
-
-/** 探针脚本：优先安装目录（安装脚本会放一份），缺失时从随包脚手架补拷。 */
+/**
+ * 探针脚本：安装目录优先，**内容与随包脚手架不一致时按随包覆盖**（旧版探针不认 `--only`，
+ * 留着它快检每次都白跑一轮），随包也没有时才用安装目录那份。
+ */
 function ensureAttentionProbeScript(installDir) {
   const dest = join(installDir, "scripts", "probe_attention.py");
-  try {
-    if (fs.existsSync(dest)) return dest;
-  } catch {}
+  const hasDest = (() => {
+    try {
+      return fs.existsSync(dest);
+    } catch {
+      return false;
+    }
+  })();
   let src = "";
   try {
     src = join(packRoot(), "scripts", "probe_attention.py");
   } catch {}
-  if (!src || !fs.existsSync(src)) return "";
+  const hasSrc = (() => {
+    try {
+      return !!src && fs.existsSync(src);
+    } catch {
+      return false;
+    }
+  })();
+  if (!hasSrc) return hasDest ? dest : "";
   try {
+    if (hasDest) {
+      const a = sha256OfFile(src);
+      const b = sha256OfFile(dest);
+      if (a && a === b) return dest;
+      fs.copyFileSync(src, dest);
+      appendConsole("[attention] 探针脚本已更新（随包为准）→ " + dest);
+      return dest;
+    }
     mk(path.dirname(dest));
     fs.copyFileSync(src, dest);
     appendConsole("[attention] 补拷探针脚本 → " + dest);
     return dest;
   } catch (e) {
-    appendConsole("[attention] 补拷探针失败：" + String((e && e.message) || e));
-    return "";
+    appendConsole("[attention] 同步探针脚本失败：" + String((e && e.message) || e));
+    return hasDest ? dest : "";
   }
 }
 
@@ -985,62 +1056,69 @@ function parseProbeJson(stdout) {
 }
 
 /**
- * spawn 前选档：.venv\Scripts\python.exe scripts\probe_attention.py --json（超时 180s）。
- * 结果缓存到 <DATA>\yue\attention.json，并作为 YUE2_ATTENTION_BACKEND 注入后端进程 env；
- * 探针不可用 / 无可用档时回落 sdpa（纯 torch 实现，不会报 flash kernel 缺失）。
- * opts: { installDir?, force?, log? }
+ * spawn 前定档 + 单档快检（**不再三档探针选档**）：
+ *  - 用户显式指定（env / .attention-backend 单行文本）→ 直接信任，不探针；
+ *  - 否则 = 默认 cudnn，并只探 **cudnn 一档**（.venv python 跑 scripts\probe_attention.py
+ *    --only cudnn --json，超时 180s）确认本机能跑；跑不了就 ok:false（调用方报错、不 spawn、不降级）。
+ * 探针脚本取不到（缺 venv / 缺脚本）时不作判死：照默认档启动，让依赖自检那条路去报缺什么。
+ * opts: { installDir? }（进程内只探一次；显式覆盖连探都不探）
  */
 async function ensureAttentionBackend(opts) {
   const o = opts || {};
   if (attentionProbePending) return attentionProbePending;
   const task = (async () => {
-    const forced = normalizeAttentionBackend(process.env.YUE2_ATTENTION_BACKEND);
-    if (forced) {
-      const b = rememberAttentionBackend(forced, "forced");
-      return { ok: true, backend: b, source: "forced", forced: true };
-    }
-    if (!o.force) {
-      const cached = loadAttentionCache();
-      if (cached) {
-        attentionBackend = cached.backend;
-        attentionBackendSource = "cache";
-        return { ok: true, backend: cached.backend, source: "cache", cached: true };
-      }
-    }
     const installDir = String(o.installDir || loadConfig().installDir || "").trim();
+    discardLegacyAttentionCache();
+    const eff = attentionEffective(installDir);
+    const b = setAttentionState(eff.backend, eff.source);
+    if (eff.source !== "default") {
+      appendConsole("[attention] 用户显式指定 " + b + "（" + eff.where + "）→ 直接用，不探针");
+      writeAttentionRecord({ explicit: true, where: eff.where });
+      return { ok: true, backend: b, source: eff.source, explicit: true, checked: "" };
+    }
+    if (attentionCheck && attentionCheck.backend === b) {
+      return Object.assign({}, attentionCheck, { cached: true });
+    }
     const py = venvPython(installDir);
     const script = installDir && py ? ensureAttentionProbeScript(installDir) : "";
     if (!py || !script) {
-      const b = rememberAttentionBackend(ATTENTION_FALLBACK, "fallback", {
-        reason: py ? "probe_script_missing" : "no_venv",
-      });
-      return { ok: true, backend: b, source: "fallback", reason: py ? "probe_script_missing" : "no_venv" };
+      const why = py ? "probe_script_missing" : "no_venv";
+      appendConsole("[attention] 无法快检（" + why + "）→ 按默认 " + b + " 启动");
+      writeAttentionRecord({ checked: "", ok: true, reason: why });
+      return { ok: true, backend: b, source: eff.source, checked: "", reason: why };
     }
-    appendConsole("[attention] probing backends via " + script);
-    const r = await runExe(py, [script, "--json"], {
+    appendConsole("[attention] 快检 " + b + " 档 via " + script);
+    const r = await runExe(py, [script, "--only", b, "--json"], {
       cwd: installDir,
       timeoutMs: ATTENTION_PROBE_TIMEOUT_MS,
     });
     const payload = parseProbeJson(r.stdout) || parseProbeJson(r.stderr);
-    const backend = payload
-      ? normalizeAttentionBackend(payload.backend || payload.recommended)
-      : "";
-    if (backend) {
-      const b = rememberAttentionBackend(backend, "probe", {
-        cuda: !!(payload && payload.cuda),
-        torch: (payload && payload.torch) || "",
-        device: (payload && payload.device) || "",
-        code: 0,
-      });
-      return { ok: true, backend: b, source: "probe", recommended: backend };
+    if (!payload || typeof payload.ok !== "boolean") {
+      /* 探针自己崩了 / 没打 JSON：不拿它判死（现场日志里就有这种脏 stderr），照默认档走 */
+      const why = String((r.stderr || r.error || "")).trim().slice(-200) || "probe_no_result";
+      appendConsole("[attention] 快检没拿到结论（" + why + "）→ 按默认 " + b + " 启动");
+      writeAttentionRecord({ checked: "", ok: true, reason: why });
+      return { ok: true, backend: b, source: eff.source, checked: "", reason: why };
     }
-    const why =
-      (payload && payload.reason) ||
-      String(r.stderr || r.error || "").trim().slice(-200) ||
-      "probe_failed";
-    appendConsole("[attention] 无可用档（" + why + "）→ 回落 " + ATTENTION_FALLBACK);
-    const b = rememberAttentionBackend(ATTENTION_FALLBACK, "fallback", { reason: why });
-    return { ok: true, backend: b, source: "fallback", reason: why };
+    const detail =
+      String((payload.probes && payload.probes[b] && payload.probes[b].detail) || payload.reason || "").slice(0, 300);
+    attentionCheck = {
+      ok: !!payload.ok,
+      backend: b,
+      source: eff.source,
+      checked: b,
+      reason: payload.ok ? "" : detail,
+      at: Date.now(),
+    };
+    writeAttentionRecord({
+      checked: b,
+      ok: !!payload.ok,
+      reason: payload.ok ? "" : detail,
+      cuda: !!payload.cuda,
+      torch: payload.torch || "",
+      device: payload.device || "",
+    });
+    return Object.assign({}, attentionCheck);
   })();
   attentionProbePending = task;
   try {
@@ -1050,45 +1128,56 @@ async function ensureAttentionBackend(opts) {
   }
 }
 
-/** 下发给后端的档位：本轮探到的 / 上次缓存的；都没有则不注入（后端自己探）。 */
+/** 下发给后端的档位：用户显式指定 → 默认 cudnn（同步答得出来，不等探针）。 */
 function attentionBackendForEnv() {
   if (attentionBackend) return attentionBackend;
-  const cached = loadAttentionCache();
-  if (cached) {
-    attentionBackend = cached.backend;
-    attentionBackendSource = "cache";
-    return cached.backend;
-  }
-  return "";
+  const eff = attentionEffective();
+  return setAttentionState(eff.backend, eff.source);
 }
 
-/** 命中注意力指纹：作废缓存，下次启动重新探针选档（避免继续沿用误选的 flash）。 */
-function invalidateAttentionCache(why) {
-  attentionBackend = "";
-  attentionBackendSource = "";
-  try {
-    const p = attentionCachePath();
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-    appendConsole("[attention] 缓存已作废（" + String(why || "attention_backend_unsupported") + "），下次启动重探");
-  } catch (e) {
-    appendConsole("[attention] 作废缓存失败：" + String((e && e.message) || e));
-  }
-}
-
-/** 注意力档位的定向失败出口：短码 + 文案带「已改用哪个档」，回执带 attentionBackend。 */
+/**
+ * 注意力档位不可用（启动快检失败）的定向失败出口：短码 + 中文指路，回执带 attentionBackend。
+ * **不自动降级**、也不代用户改档：文案只说清「哪一档不行 + 怎么显式改成别的档」。
+ * plugin-error-repair.js 按这条文案判定「不可自动修复」（让 Agent 再跑一遍也不会变好）。
+ */
 function reportAttentionBackend(detail, extra) {
-  /* 已经在用的档位（或上次探到的）优先；flash 正是本次失败那一档，不能报「已改用 flash」。
-     命名只是提示，真正下发的是失败后触发的重探针结果。 */
-  let b = normalizeAttentionBackend(attentionBackend) || normalizeAttentionBackend((loadAttentionCache() || {}).backend);
-  if (!b || b === "flash") b = "cudnn";
+  const b = normalizeAttentionBackend(attentionBackend) || attentionEffective().backend;
+  const why = String((detail && (detail.reason || detail.hint)) || "").trim();
   const msg =
-    "注意力档位用了 flash（Windows 轮子没编 flash kernel）：已改用 " +
+    "注意力档位 " +
     b +
-    "，点「一键修复」重试";
+    " 在本机实测跑不起来" +
+    (why ? "（" + why + "）" : "") +
+    "：本版默认 cudnn，且不自动降级 —— 请显式改档后重试（环境变量 YUE2_ATTENTION_BACKEND=sdpa，" +
+    "或在安装目录 .attention-backend 里写单行 sdpa），或换一台支持 cuDNN 注意力的 NVIDIA 显卡；" +
+    "不要重下模型、不要装 flash-attn";
   reportErr(
     "attention_backend_unsupported",
     msg,
-    Object.assign({ attentionBackend: b, hint: (detail && detail.hint) || "" }, extra || {}),
+    Object.assign({ attentionBackend: b, hint: (detail && detail.hint) || "", reason: why }, extra || {}),
+  );
+  return { ok: false, error: "attention_backend_unsupported", message: msg, attentionBackend: b };
+}
+
+/**
+ * 生成中途仍报 flash 断言（USE_FLASH_ATTENTION / No available kernel / Planning score）的出口：
+ * 默认档是 cudnn、env 也下发了，还报这条说明**补丁没生效**（安装目录 app\windows_patch.py 缺一半 /
+ * 被 sync 回滚 / YUE2_SKIP_ATTENTION_PATCH=1 / 用户显式指定了 flash）。这类是可修的，文案指向补丁。
+ */
+function reportAttentionPatchMissing(detail, extra) {
+  const b = normalizeAttentionBackend(attentionBackend) || attentionEffective().backend;
+  const msg =
+    "注意力档位 " +
+    b +
+    " 没生效（生成中途仍报 flash kernel 缺失）：多半是安装目录的 app\\windows_patch.py 没跟上" +
+    "（它与 app\\engine.py 必须同时存在，缺一半会被每轮 sync 覆盖）。点「一键修复」让 Agent 补齐，" +
+    "或把 YUE2_ATTENTION_BACKEND 显式设成 " +
+    b +
+    " 后重启；不要重下模型、不要装 flash-attn";
+  reportErr(
+    "attention_backend_unsupported",
+    msg,
+    Object.assign({ attentionBackend: b, hit: (detail && detail.hit) || "", phase: "generate" }, extra || {}),
   );
   return { ok: false, error: "attention_backend_unsupported", message: msg, attentionBackend: b };
 }
@@ -1860,11 +1949,16 @@ async function startBackend(depRepairTried) {
     return reportMissingDeps(deps, { phase: "start", installDir });
   }
 
-  /* 注意力档位：spawn 前探针选档（缓存 + YUE2_ATTENTION_BACKEND 下发），避免 auto 误选 flash */
+  /* 注意力档位：spawn 前定档 + 单档快检（默认 cudnn；不可用就报错不 spawn、不排队、不降级） */
+  let att = { ok: true, backend: "", source: "" };
   try {
-    await ensureAttentionBackend({ installDir });
+    att = await ensureAttentionBackend({ installDir });
   } catch (e) {
-    appendConsole("[attention] probe warn: " + String((e && e.message) || e));
+    appendConsole("[attention] 快检 warn: " + String((e && e.message) || e));
+  }
+  if (att && att.ok === false) {
+    appendConsole("[attention] " + att.backend + " 档实测不可用 → 不启动后端");
+    return reportAttentionBackend(att, { phase: "start", installDir });
   }
 
   mk(path.dirname(consoleLogPath()));
@@ -1889,11 +1983,11 @@ async function startBackend(depRepairTried) {
           GRADIO_SERVER_PORT: String(port),
           YUE_PORT: String(port),
         });
-        /* 注意力档位：探针实测结果下发给后端（windows_patch.py 认这个环境变量） */
-        const att = attentionBackendForEnv();
-        if (att) {
-          env.YUE2_ATTENTION_BACKEND = att;
-          appendConsole("[attention] env YUE2_ATTENTION_BACKEND=" + att);
+        /* 注意力档位：生效档位下发给后端（windows_patch.py 认这个环境变量；默认就是 cudnn） */
+        const attEnv = attentionBackendForEnv();
+        if (attEnv) {
+          env.YUE2_ATTENTION_BACKEND = attEnv;
+          appendConsole("[attention] env YUE2_ATTENTION_BACKEND=" + attEnv + " (source=" + (attentionBackendSource || "?") + ")");
         }
         const prev = String(env.PYTORCH_CUDA_ALLOC_CONF || "").trim();
         if (!/expandable_segments/i.test(prev)) {
@@ -2423,14 +2517,16 @@ async function selfRepairFromConsole(opts) {
     depFp && depFp.module
       ? "最可能缺 " + depFp.module + "：先 pip install 补依赖，不要重下模型、不要启动常驻服务。\n"
       : "";
-  /* 注意力档位指纹优先顶到首位：这类失败重装依赖 / 重下权重都没用，只要换档或补 windows_patch.py */
+  /* 注意力档位指纹优先顶到首位：这类失败重装依赖 / 重下权重都没用 —— 本版默认 cudnn，
+     命中这条要么是补丁没生效（补 app\windows_patch.py），要么是用户显式指定了 flash 档 */
   const attFp = parseAttentionHint(logText);
   if (attFp) appendConsole("[self-repair] attention fingerprint → " + attFp.hint);
   const attLead = attFp
-    ? "最可能注意力档位不可用（Windows torch 有 flash schema 但没编 CUDA kernel）：" +
-      "先把注意力档位换成 cudnn/sdpa 或补 " +
+    ? "最可能注意力档位不对（Windows torch 有 flash schema 但没编 CUDA kernel）：" +
+      "本版默认 cudnn，命中这条说明补丁没生效（" +
       join("app", "windows_patch.py") +
-      "，不要重下模型、不要装 flash-attn。\n"
+      " 与 app\\engine.py 必须同时存在于安装目录），或用户显式指定了 flash；" +
+      "不要重下模型、不要装 flash-attn。\n"
     : "";
 
   const hint =
@@ -2970,19 +3066,17 @@ async function generateYue(params) {
     clearLock();
     activeGenerate = null;
     emitProgress({ phase: "generate", nodeId, message: err, error: true, pct: 0 });
-    /* 报错指纹：flash 内核缺失（Planning score 阶段硬失败）→ 定向修复码，而不是裸英文断言 */
-    const attFp = parseAttentionHint(err) || parseAttentionHint((consoleTail(96 * 1024).text) || "");
+    /* 报错指纹：flash 内核缺失（Planning score 阶段硬失败）→ 定向修复码，而不是裸英文断言。
+       只认**本次任务自己的报错**：旧实现还扫最近 96KB 控制台日志，上一次失败留下的那条
+       flash 断言会让「取消一次生成」也命中指纹，白作废缓存并重探一轮（本机日志实测过）。 */
+    const attFp = parseAttentionHint(err);
     if (attFp) {
       appendConsole("[job] attention fingerprint → " + attFp.hit);
-      const fix = reportAttentionBackend(attFp, {
-        phase: "generate",
+      const fix = reportAttentionPatchMissing(attFp, {
         nodeId,
         workflowId: String(params.workflowId || ""),
         nodeKind: LOCK_KIND,
       });
-      /* 作废缓存并后台重探：下一次启动（点「一键修复」后重跑）拿到的是实测档位 */
-      invalidateAttentionCache(attFp.hit);
-      ensureAttentionBackend({ installDir: loadConfig().installDir, force: true }).catch(() => {});
       return { ok: false, error: fix.error, message: fix.message, attentionBackend: fix.attentionBackend };
     }
     reportErr(err, err, {

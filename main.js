@@ -249,6 +249,9 @@ function mcp() {
         if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("mcp:event", ev);
         else if (mcpHost) mcpHost.settle({ id: ev.id, error: "MTNode 主窗口不可用，无法执行这次调用" });
       },
+      /* GUI 族（mtnode_gui）不走渲染层：只有主进程拿得到 BrowserWindow 与 webContents，
+         能往任意窗口注入脚本、能 capturePage 拍照（见 mcp-gui-agent.js）。 */
+      gui: (action, params) => require("./mcp-gui-agent.js").run(action, params),
     });
   }
   return mcpHost;

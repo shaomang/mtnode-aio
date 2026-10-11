@@ -87,7 +87,7 @@ def apply_windows_patch() -> str:
             _WINDOWS_PATCH[0] = f"应用失败（{str(exc)[:200]}）"
         else:
             _WINDOWS_PATCH[0] = windows_patch.describe() if applied else "未生效（yue2.cuda_graph 不可导入）"
-            _WINDOWS_PATCH[0] += f"（探针记录：{windows_patch.cache_file()}）"
+            _WINDOWS_PATCH[0] += f"（档位记录：{windows_patch.cache_file()}）"
     log("注意力补丁：" + _WINDOWS_PATCH[0])
     return _WINDOWS_PATCH[0]
 
@@ -99,7 +99,7 @@ WINDOWS_PATCH: str = apply_windows_patch()
 def attention_backend() -> str:
     """当前生效的注意力档位：flash / cudnn / sdpa / unsupported / unknown。
 
-    供 `app/ui.py` 启动日志与失败文案使用；探针有进程内缓存，重复调用不重复真跑。
+    供 `app/ui.py` 启动日志与失败文案使用；档位解析不探针，实测结论有进程内缓存。
     """
     try:
         from app import windows_patch  # app.engine 与 app 同包，两种入口都命中
@@ -148,26 +148,30 @@ def _attention_engine_error(exc: BaseException) -> "EngineError":
     return EngineError(
         "attention_backend_unsupported",
         f"注意力后端不可用（{WINDOWS_PATCH}）：{str(exc)[:300]}；"
-        f"可跑 scripts\\probe_attention.py 看各档实测，或设 YUE2_ATTENTION_BACKEND=sdpa|cudnn|flash "
-        f"强制档位后重启；探针记录：{where}",
+        f"本版默认 cudnn 且不自动降级：可设 YUE2_ATTENTION_BACKEND=sdpa|cudnn|flash"
+        f"（或在 .attention-backend 里写单行文本）显式改档后重启；"
+        f"各档实测见 scripts\\probe_attention.py，记录：{where}",
     )
 
 
 def _precheck_attention_backend(device: str) -> str:
-    """CUDA 设备上先确认有可用档位；三档全失败即抛短码（不等 torch 裸断言）。"""
+    """CUDA 设备上就**生效档位一档**真跑一次确认能跑；跑不了即抛短码（不等 torch 裸断言）。
+
+    只验一档（缺省 cudnn）：不自动降级、也不做三档探针 —— 换档由用户显式指定。
+    """
     if device != "cuda":
         return ""
     try:
         from app import windows_patch
     except Exception as exc:  # noqa: BLE001 - 补丁缺失不拖垮引擎
-        log(f"注意力探针不可用（忽略）：{str(exc)[:160]}")
+        log(f"注意力实测不可用（忽略）：{str(exc)[:160]}")
         return ""
     try:
-        backend = windows_patch.best_attention_backend()
+        backend = windows_patch.best_attention_backend(verify=True)
     except Exception as exc:  # noqa: BLE001
         if getattr(exc, "code", "") == "attention_backend_unsupported":
             raise _attention_engine_error(exc) from exc
-        log(f"注意力探针异常（忽略）：{str(exc)[:200]}")
+        log(f"注意力实测异常（忽略）：{str(exc)[:200]}")
         return ""
     log(f"注意力档位：{backend}（记录：{windows_patch.cache_file()}）")
     return backend
@@ -391,7 +395,7 @@ class YuE2Engine:
     def _new_pipeline(self) -> Any:
         """构造 pipeline（官方 `YuE2Pipeline.from_pretrained(repo, device=..., vae=...)`）。"""
         apply_windows_patch()  # 幂等；再压一道，确保 GraphAR 构造前补丁在位
-        _precheck_attention_backend(self._pick_device())  # 三档全失败 → 短码，别等 torch 裸断言
+        _precheck_attention_backend(self._pick_device())  # 生效档实测跑不了 → 短码，别等 torch 裸断言
         try:
             from yue2 import YuE2Pipeline
         except Exception as e:

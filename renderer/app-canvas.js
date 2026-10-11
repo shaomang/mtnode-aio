@@ -825,6 +825,18 @@ function renderCanvas() {
     }
     fillPreviews();
     fillImageMetas();
+    /* 媒体收尾（本轮需求）：刚被拆掉的旧节点里，音频外壳 / 视频元素凡是「宿主真没了」的
+       在这里回收 —— 正在播的那只若已被新节点重新挂上（isConnected）就原样继续播。 */
+    if (typeof wavePreviewStopAll === "function") {
+      try {
+        wavePreviewStopAll(false);
+      } catch (_) {}
+    }
+    if (typeof mediaViewPrune === "function") {
+      try {
+        mediaViewPrune();
+      } catch (_) {}
+    }
     /* 智能任务节点：只读会话历史自动滚动到底部 */
     for (const n of S.wf.nodes)
       if (n.kind === "agent_task") scrollAgentConv(n);
@@ -8132,16 +8144,20 @@ NODE_BROWSE_BODY.save = function (node, body) {
     nm.title = node.savedPath || "";
     prev.appendChild(nm);
   } else if (media === "audio" || media === "video") {
-    /* 音频用方角波形预览器（点波形试听），视频仍用原生播放器 */
+    /* 音频用方角波形预览器（点波形试听），视频用原生播放器。
+       视频元素走 mediaViewCreate（renderer/app-mediaview.js）：重绘时复用同一只
+       <video>，正在放的那只不会被摘断，也能被原生控件全屏。 */
     const el =
       media === "audio"
         ? wavePreviewCreate("svaud-" + node.id)
-        : document.createElement("video");
-    el.id = (media === "audio" ? "svaud-" : "svvid-") + node.id;
+        : mediaViewCreate(document.createElement("video"), {
+            id: "svvid-" + node.id,
+            path: node.savedPath || "",
+          });
     if (media === "video") el.controls = true;
     el.preload = "metadata";
     if (node.savedPath) el.dataset.path = node.savedPath;
-    prev.appendChild(el);
+    mediaViewAttach(el, prev, node.savedPath || "");
     if (!node.savedPath)
       prev.appendChild(
         emptyEl(
@@ -9490,15 +9506,21 @@ function assetItemMediaRow(node, it, view, type) {
     box.className = "n-av n-asset-av";
     if (p) {
       /* 音频条目也走方角波形预览器（css 的 .n-asset-av .n-wave 就是给它用的）；
-         视频仍用原生播放器。 */
+         视频条目走池化播放器（重绘不断播，见 renderer/app-mediaview.js）。 */
       const isVid = type === "video";
-      const media = isVid ? document.createElement("video") : wavePreviewCreate("");
+      const media = isVid
+        ? mediaViewCreate(document.createElement("video"), {
+            id: "assetvid-" + node.id + "-" + String(it.id || it.title || type),
+            cls: "n-av-el",
+            path: p,
+          })
+        : wavePreviewCreate("");
       media.preload = "metadata";
-      media.classList.add("n-av-el");
+      if (!isVid) media.classList.add("n-av-el");
       if (isVid) {
         media.controls = true;
         media.playsInline = true;
-        media.src = fileUrlWithBust(p, p);
+        mediaSetVideoSrc(media, fileUrlWithBust(p, p), p);
       } else if (typeof wavePreviewSetSource === "function") {
         wavePreviewSetSource(media, p, p);
       }
@@ -9510,7 +9532,7 @@ function assetItemMediaRow(node, it, view, type) {
         media.style.display = "none";
         bad.style.display = "";
       });
-      box.appendChild(media);
+      mediaViewAttach(media, box, p);
       box.appendChild(bad);
     } else {
       const g = document.createElement("div");
@@ -10792,18 +10814,22 @@ function buildLtartBody(node, body) {
     if (typeof bindImgSaveAs === "function") bindImgSaveAs(img);
     stage.appendChild(img);
   } else if (type === "video") {
-    const v = document.createElement("video");
-    v.src = url;
+    /* 池化播放器 + 全屏托底（renderer/app-mediaview.js）：长周期产物节点重绘也不断播 */
+    const v = mediaViewCreate(document.createElement("video"), {
+      id: "ltartvid-" + node.id + "-" + type,
+      cls: "n-ltart-media",
+      path: p,
+    });
     v.controls = true;
     v.preload = "metadata";
-    v.className = "n-ltart-media";
-    stage.appendChild(v);
+    mediaSetVideoSrc(v, url, p);
+    mediaViewAttach(v, stage, p);
   } else if (type === "audio") {
-    const a = document.createElement("audio");
-    a.src = url;
-    a.controls = true;
-    a.preload = "metadata";
-    a.className = "n-ltart-media";
+    /* 原生 <audio controls> 已全应用下线：音频统一走方角波形预览器
+       （全局播放引擎，重绘 / 失焦不断播，见 renderer/app-audioview.js）。 */
+    const a = wavePreviewCreate("");
+    a.classList.add("n-ltart-media");
+    wavePreviewSetSource(a, p, bust);
     stage.appendChild(a);
   } else if (type === "text") {
     const pre = document.createElement("pre");
@@ -11197,16 +11223,17 @@ function buildBody(node, body) {
     };
     const p = String(node.mediaAsset || "").trim();
     if (p) {
-      /* 音频：方角波形预览器（点波形任意位置试听）；视频：原生播放器。
+      /* 音频：方角波形预览器（点波形任意位置试听）；视频：原生播放器（池化复用，
+         重绘不断播，见 renderer/app-mediaview.js）。
          两者的 .n-av-el 类都保留 —— 节点点击换文件与拖拽放行都认这个类。 */
       const media = isVid
-        ? document.createElement("video")
+        ? mediaViewCreate(document.createElement("video"), { cls: "n-av-el", path: p })
         : wavePreviewCreate("");
       if (isVid) media.controls = true;
       media.preload = "metadata";
       /* 音频预览器外壳是 <div>：只补类名，不能整块覆盖 className（会丢掉 .n-wave），
          音源也不走 .src 属性而是 wavePreviewSetSource。 */
-      media.classList.add("n-av-el");
+      if (!isVid) media.classList.add("n-av-el");
       if (isVid) media.src = fileUrlWithBust(p, p);
       else if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(media, p, p);
       if (isVid) media.playsInline = true;
@@ -11218,7 +11245,7 @@ function buildBody(node, body) {
         media.style.display = "none";
         bad.style.display = "";
       });
-      wrap.appendChild(media);
+      mediaViewAttach(media, wrap, isVid ? p : "");
       wrap.appendChild(bad);
     } else {
       const g = document.createElement("div");
@@ -12818,11 +12845,12 @@ function buildBody(node, body) {
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    const vid = document.createElement("video");
-    vid.id = "mgvid-" + node.id;
+    /* 视频播放器池化复用（renderer/app-mediaview.js）：重绘换容器而不换元素，
+       正在放的那只不会被摘断；全屏也走同一套托底。 */
+    const vid = mediaViewCreate(document.createElement("video"), { id: "mgvid-" + node.id });
     vid.controls = true;
     vid.preload = "metadata";
-    prev.appendChild(vid);
+    mediaViewAttach(vid, prev, "");
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.id = "mgempty-" + node.id;
@@ -12877,11 +12905,11 @@ function buildBody(node, body) {
     appendMediaBackendPanel(body, node);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    const vid = document.createElement("video");
-    vid.id = "mgvid-" + node.id;
+    /* 池化播放器（renderer/app-mediaview.js）：重绘不断播 + 原生全屏键可用 */
+    const vid = mediaViewCreate(document.createElement("video"), { id: "mgvid-" + node.id });
     vid.controls = true;
     vid.preload = "metadata";
-    prev.appendChild(vid);
+    mediaViewAttach(vid, prev, "");
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.id = "mgempty-" + node.id;
@@ -12949,11 +12977,11 @@ function buildBody(node, body) {
     body.appendChild(st);
     const prev = document.createElement("div");
     prev.className = "sv-prev mg-prev";
-    const vid = document.createElement("video");
-    vid.id = "mgvid-" + node.id;
+    /* 池化播放器（renderer/app-mediaview.js）：重绘不断播 + 原生全屏键可用 */
+    const vid = mediaViewCreate(document.createElement("video"), { id: "mgvid-" + node.id });
     vid.controls = true;
     vid.preload = "metadata";
-    prev.appendChild(vid);
+    mediaViewAttach(vid, prev, "");
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.id = "mgempty-" + node.id;
@@ -13108,12 +13136,15 @@ function buildBody(node, body) {
         prev.appendChild(e);
       }
     } else if (media === "video") {
-      const vid = document.createElement("video");
-      vid.id = "svvid-" + node.id;
+      /* 池化播放器（renderer/app-mediaview.js）：重绘不断播 + 原生全屏键可用 */
+      const vid = mediaViewCreate(document.createElement("video"), {
+        id: "svvid-" + node.id,
+        path: node.savedPath || "",
+      });
       vid.controls = true;
       vid.preload = "metadata";
       if (node.savedPath) vid.dataset.path = node.savedPath;
-      prev.appendChild(vid);
+      mediaViewAttach(vid, prev, node.savedPath || "");
       if (!node.savedPath) {
         const e = document.createElement("div");
         e.className = "sv-empty";
@@ -13555,12 +13586,18 @@ async function fillPreviews() {
       const empty = document.querySelector("#svempty-" + n.id);
       if (el) {
         if (paths.length) {
-          el.src = fileUrlWithBust(paths[0], bust);
+          /* 视频走 mediaSetVideoSrc：同一个音源重复赋 src 会把正在播的那只打断 */
+          if (media === "video")
+            mediaSetVideoSrc(el, fileUrlWithBust(paths[0], bust), paths[0]);
+          else el.src = fileUrlWithBust(paths[0], bust);
           el.dataset.path = paths[0];
           if (empty) empty.style.display = "none";
         } else {
-          el.removeAttribute("src");
-          el.removeAttribute("data-path");
+          if (media === "video") mediaViewClear(el);
+          else {
+            el.removeAttribute("src");
+            el.removeAttribute("data-path");
+          }
           if (empty) empty.style.display = "";
         }
       }
@@ -13592,8 +13629,12 @@ async function fillPreviews() {
         );
       if (el) {
         if (path) {
-          el.src = fileUrlWithBust(path, bust + ":" + path);
-          el.dataset.path = path;
+          /* 视频走 mediaSetVideoSrc：同一个音源重复赋 src 会把正在播的那只打断 */
+          if (isVid) mediaSetVideoSrc(el, fileUrlWithBust(path, bust + ":" + path), path);
+          else {
+            el.src = fileUrlWithBust(path, bust + ":" + path);
+            el.dataset.path = path;
+          }
           /* 图像预览：点图开灯箱 + 右键另存，与文生图 / 保存图像同一套绑定 */
           if (isSnImg) {
             el.style.display = "";

@@ -27,8 +27,8 @@
  *   [8] i18n / 指南 / 图标
  *   [9] yue-pack 与 hosted Gradio 契约
  *  [10] 缺依赖自修复：app/ui.py 守卫 · 宿主 ensurePythonDeps / 报错指纹 · 安装脚本与技能同步
- *  [11] 注意力档位自修复：随包 windows_patch 探针 · 宿主 parseAttentionHint / ensureAttentionBackend
- *       · sync 回执与 runtime 口径 · 安装脚本与技能口径同步
+ *  [11] 注意力档位：随包 windows_patch 默认 cudnn（显式覆盖才换档）· 宿主 attentionEffective /
+ *       ensureAttentionBackend 单档快检 · 报错指纹只认本次 · sync 回执与 runtime 口径 · 安装链口径同步
  */
 const fs = require("fs");
 const path = require("path");
@@ -696,29 +696,36 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   eqNum(uniq([...hostSrc.matchAll(/ipcMain\.handle\("(yue:[^"]+)"/g)].map((m) => m[1])).length, 14, "宿主 handle 为 14 个（[6] 成对断言基准随本轮 consoleClear 同步）");
   has(read("renderer/i18n.js"), "缺依赖 ", "渲染层有缺依赖文案词条（一键修复口径）");
 
-  /* ===== [11] 注意力档位自修复（flash 无 kernel → 探针选档 / 报错指纹 / 安装链口径） ===== */
-  console.log("\n[11] 注意力档位自修复：随包补丁 · 宿主探针与报错指纹 · 同步回执 · 安装链");
+  /* ===== [11] 注意力档位（默认 cudnn · 单档快检 · 显式改档才换档 · 安装链口径） ===== */
+  console.log("\n[11] 注意力档位：默认 cudnn · 单档快检 · 显式覆盖才换档 · 同步回执 · 安装链");
 
-  /* --- 11.1 随包脚手架补丁（修根因：不再被每轮 sync 覆盖掉的单一真源） --- */
+  /* --- 11.1 随包脚手架补丁（单一真源；默认档 + 显式覆盖，不再三档探针选档） --- */
   ok(exists("yue-pack/app/windows_patch.py"), "yue-pack/app/windows_patch.py 存在（随包单一真源）");
   const wpPy = read("yue-pack/app/windows_patch.py");
-  for (const fn of ["forced_backend", "_probe_flash", "_probe_cudnn", "_probe_sdpa", "probe_backends", "best_attention_backend", "apply_yue2_windows_patch", "describe", "cache_file"])
+  for (const fn of ["forced_backend", "file_backend", "resolve_backend", "check_backend", "probe_backends", "_probe_cudnn", "best_attention_backend", "apply_yue2_windows_patch", "describe", "cache_file"])
     has(wpPy, "def " + fn + "(", "windows_patch 暴露 " + fn);
-  /* 三档真跑探针（schema 在 ≠ kernel 在）：不是 hasattr 就算数 */
-  has(wpPy, "torch.ops.aten._flash_attention_forward(", "flash 档真调 aten op");
+  has(wpPy, 'BACKENDS = ("flash", "cudnn", "sdpa")', "合法档位 = flash / cudnn / sdpa");
+  has(wpPy, '_DEFAULT_BACKEND = "cudnn"', "默认档 = cudnn（本机实测可用档里最快的那档）");
+  has(wpPy, '_ORDER = ("cudnn", "sdpa", "flash")', "诊断顺序默认档在前（不再当自动选档用）");
+  /* 真跑探针（schema 在 ≠ kernel 在）：cudnn 与 flash 都真调一次 */
   has(wpPy, "sdpa_kernel(SDPBackend.CUDNN_ATTENTION)", "cudnn 档真跑 CUDNN_ATTENTION");
-  has(wpPy, "F.scaled_dot_product_attention(", "sdpa 兜底档真跑前向");
-  has(wpPy, '("flash", "cudnn", "sdpa")', "档位顺序 flash → cudnn → sdpa");
-  /* 幂等包 GraphAR：attention_backend="auto" 换成实测档 */
+  has(wpPy, "torch.ops.aten._flash_attention_forward(", "flash 档真调 aten op（仅诊断，不自动选）");
+  has(wpPy, "def file_backend()", "文件覆盖走 file_backend()");
+  has(wpPy, 'text.startswith("{")', "带 { 的 JSON 是记录、不当覆盖（旧 forced/probe/fallback 痕迹同样作废）");
+  has(wpPy, 'return _DEFAULT_BACKEND, "default"', "没有显式覆盖 → 默认 cudnn");
+  has(wpPy, "def check_backend(", "单档实测 check_backend()");
+  has(wpPy, "verify: bool = False", "best_attention_backend 带 verify（只验生效档一档）");
+  /* 幂等包 GraphAR：attention_backend="auto" 换成生效档（默认 cudnn） */
   has(wpPy, "cg.GraphAR.__init__ = patched", "幂等包 GraphAR.__init__");
   has(wpPy, "if _APPLIED:", "已打过补丁就直接返回（重装 yue2 不必重打）");
-  has(wpPy, "attention_backend == \"auto\"", "只改 auto（显式档位不动）");
-  has(wpPy, "attention_backend = forced", "显式覆盖直接信任、跳过探针");
-  has(wpPy, "attention_backend = best_attention_backend()", "auto 时走实测探针");
+  has(wpPy, 'attention_backend == "auto"', "只改 auto（显式档位不动）");
+  has(wpPy, "attention_backend = best_attention_backend()  # 默认 cudnn / 显式覆盖；不探针", "auto → 默认档 / 显式覆盖，不探针");
+  hasnt(wpPy, "probe: flash → cudnn → sdpa", "旧的「三档依次降级选档」口径已删除");
   has(wpPy, "YUE2_ATTENTION_BACKEND", "支持 YUE2_ATTENTION_BACKEND 显式覆盖");
-  has(wpPy, '"attention_backend_unsupported"', "三档全失败抛短码 attention_backend_unsupported");
-  has(wpPy, "def cache_file()", "探针记录路径可查");
-  has(wpPy, '".attention-backend"', "探针结果落 <INSTALL_DIR>\\.attention-backend");
+  has(wpPy, '"attention_backend_unsupported"', "生效档实测失败抛短码 attention_backend_unsupported");
+  has(wpPy, "不自动降级", "文案写明不自动降级");
+  has(wpPy, "def cache_file()", "档位记录路径可查");
+  has(wpPy, '".attention-backend"', "档位记录落 <INSTALL_DIR>\\.attention-backend");
 
   /* --- 11.2 engine.py：import 期接线 + 短码收敛 --- */
   const engPy = read("yue-pack/app/engine.py");
@@ -727,7 +734,8 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(engPy, "def attention_backend()", "engine.py 暴露 attention_backend() 供宿主 / UI 读");
   has(engPy, "def _precheck_attention_backend(", "engine.py 构造 pipeline 前预检档位");
   has(engPy, "_precheck_attention_backend(self._pick_device())", "_new_pipeline 内接预检");
-  has(engPy, "attention_backend_unsupported", "探针全失败收敛成短码");
+  has(engPy, "windows_patch.best_attention_backend(verify=True)", "预检只验生效档一档（不再三档探针）");
+  has(engPy, "attention_backend_unsupported", "实测失败收敛成短码");
   has(engPy, 'USE_FLASH_ATTENTION', "裸 torch 断言纳入指纹");
   has(engPy, "No available kernel", "No available kernel 纳入指纹");
   has(engPy, "def _attention_engine_error(", "统一转成 EngineError 短码（不裸报英文断言）");
@@ -736,32 +744,38 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   ok(exists("yue-pack/scripts/probe_attention.py"), "yue-pack/scripts/probe_attention.py 存在");
   const probePy = read("yue-pack/scripts/probe_attention.py");
   has(probePy, 'ap.add_argument("--json"', "探针脚本支持 --json（机器可读一份）");
+  has(probePy, 'ap.add_argument("--only"', "探针脚本支持 --only <档>（宿主启动快检只验一档）");
+  has(probePy, 'ap.add_argument("--all"', "探针脚本支持 --all（手工排查三档）");
   has(probePy, "from app import windows_patch as wp", "探针复用补丁模块（探针实现只此一处）");
+  has(probePy, "wp.resolve_backend()", "探针取生效档（默认 cudnn / 显式覆盖）");
   has(probePy, 'wp.cache_file()', "探针写 .attention-backend 记录");
   has(probePy, 'if __name__ == "__main__"', "探针脚本有 __main__ 入口");
   has(probePy, "ROOT = Path(__file__).resolve().parent.parent", "探针自行反推安装根（任何 cwd 可导入）");
   ok(!/\bimport\s+torch\.\w+\s*\(/.test(probePy), "探针脚本不在 import 期真跑 torch 计算");
 
-  /* --- 11.4 install.ps1：安装期探针与自检 --- */
-  has(installPs1, "probe_attention.py", "install.ps1 跑注意力档位探针");
+  /* --- 11.4 install.ps1：安装期只记默认档，不跑三档探针 --- */
+  hasnt(installPs1, "$ProbeScript", "install.ps1 安装期不再调用探针脚本");
   has(installPs1, ".attention-backend", "install.ps1 把档位写 <INSTALL_DIR>\\.attention-backend");
-  has(installPs1, "attention_backend_unsupported", "无可用档记 reason=attention_backend_unsupported");
+  has(installPs1, "install:default:cudnn", "安装期只记默认档 cudnn（JSON 记录，不是覆盖）");
   has(installPs1, "app\\windows_patch.py", "工程文件清单含 app\\windows_patch.py");
   /* 本轮「安装脚本零中文」后，判据串改成脚本里的英文原句（脚本注释/消息全 ASCII 英文） */
   has(installPs1, "must **coexist**", "清单提示 windows_patch 与 engine 必须同时存在（防 sync 覆盖）");
 
-  /* --- 11.5 SKILL.md：纠正「缺 flash_attn 不是故障」旧口径 --- */
+  /* --- 11.5 SKILL.md：纠正「缺 flash_attn 不是故障」旧口径 + 新默认档口径 --- */
   hasnt(skill, "只慢，不算失败", "旧口径「只慢，不算失败」已删除");
   hasnt(skill, "只慢，不是故障", "旧口径「只慢，不是故障」已删除");
   has(skill, "是故障、不是只慢", "新口径：Windows 缺 flash kernel 是故障不是只慢");
   has(skill, "attention_backend_unsupported", "失败自查表新增 attention_backend_unsupported 行");
   has(skill, "Planning score", "自查行指出 Planning score 阶段硬失败");
-  has(skill, "probe_attention.py", "处置指向探针选档");
+  has(skill, "probe_attention.py", "处置指向单档实测脚本");
+  has(skill, "--only cudnn", "自查 / 修复口径改成单档核验（--only cudnn）");
   has(skill, "windows_patch.py", "处置指向 app\\windows_patch.py");
-  has(skill, "注意力档位重探针", "自我修复模式含「注意力档位重探针」一条");
+  has(skill, "注意力档位核查", "自我修复模式含「注意力档位核查」一条");
+  has(skill, "不自动降级", "写明默认 cudnn 且不自动降级");
   has(skill, "不要装 flash-attn", "明确不要用装 flash-attn 绕过");
   has(read("yue-pack/README.md"), "注意力档位与 Windows 差异", "README 增「注意力档位与 Windows 差异」一节");
   has(read("yue-pack/README.md"), "YUE2_ATTENTION_BACKEND", "README 记录 env 覆盖口径");
+  has(read("yue-pack/README.md"), "是记录，不是设置", "README 写明 .attention-backend 是记录不是设置");
   has(read("yue-pack/app/ui.py"), 'f"[yue2] attention=', "ui.py 启动打一行 attention=<档位>");
   eqStr(JSON.parse(read("yue-pack/manifest.json")).version, "1.0.1", "manifest version 提升到 1.0.1（走 runtime 覆盖通道）");
 
@@ -777,37 +791,68 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   ok(attOf("Traceback (most recent call last):\nValueError: boom") === null, "无注意力信号时指纹为 null");
   ok(attOf("") === null, "空文本指纹为 null");
 
-  /* --- 11.7 宿主：探针选档 + env 下发（探针必须在 spawn 之前） --- */
-  has(hostSrc, 'const ATTENTION_FALLBACK = "sdpa";', "探针失败回落 sdpa");
-  has(hostSrc, "const ATTENTION_PROBE_TIMEOUT_MS = 180 * 1000;", "探针超时 180s");
-  has(hostSrc, "const ATTENTION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;", "档位缓存 TTL 6h");
-  has(hostSrc, 'join(yueRoot(), "attention.json")', "档位缓存落 <DATA>\\yue\\attention.json");
+  /* --- 11.7 宿主：默认档 + 单档快检（快检必须在 spawn 之前）+ 不自动降级 --- */
+  has(hostSrc, 'const ATTENTION_DEFAULT = "cudnn";', "宿主默认档 = cudnn");
+  hasnt(hostSrc, 'const ATTENTION_FALLBACK = "sdpa";', "旧的「探针失败回落 sdpa」已删除");
+  hasnt(hostSrc, "ATTENTION_CACHE_TTL_MS", "旧的档位缓存 TTL（拿旧记录当决定）已删除");
+  has(hostSrc, "const ATTENTION_PROBE_TIMEOUT_MS = 180 * 1000;", "单档快检带超时");
+  has(hostSrc, 'join(yueRoot(), "attention.json")', "档位记录落 <DATA>\\yue\\attention.json（只作展示）");
   has(hostSrc, 'join(installDir, "scripts", "probe_attention.py")', "探针脚本优先用安装目录那份");
   has(hostSrc, 'join(packRoot(), "scripts", "probe_attention.py")', "探针脚本缺失时从随包脚手架补拷");
   {
-    const att = fnBody(hostSrc, "ensureAttentionBackend");
-    has(att, '"--json"', "ensureAttentionBackend 用 --json 调探针");
-    has(att, "ATTENTION_PROBE_TIMEOUT_MS", "探针带超时");
-    has(att, "process.env.YUE2_ATTENTION_BACKEND", "显式 env 覆盖优先");
-    has(att, "rememberAttentionBackend", "探针结论记缓存 + 内存");
-    has(att, "ATTENTION_FALLBACK", "无可用档回落 sdpa");
-    has(att, "attentionProbePending", "并发探针去重（同一次只探一次）");
+    const eff = fnBody(hostSrc, "attentionEffective");
+    has(eff, '["YUE2_ATTENTION_BACKEND", "YUE2_ATTENTION"]', "env 显式覆盖优先（新旧两个变量名）");
+    has(eff, ".attention-backend", "其次认安装目录 .attention-backend");
+    has(eff, '!t.startsWith("{")', "只认单行纯文本（JSON 记录不当覆盖）");
+    has(eff, 'return { backend: ATTENTION_DEFAULT, source: "default", where: "" };', "都没有 → 默认 cudnn");
   }
-  has(hostSrc, "function invalidateAttentionCache(", "失败后作废缓存（下次重探）");
+  {
+    const dis = fnBody(hostSrc, "discardLegacyAttentionCache");
+    has(dis, 'src !== "probe" && src !== "fallback" && src !== "cache"', "旧记录（probe/fallback/cache）一律作废");
+    has(dis, "fs.unlinkSync", "作废 = 真删掉旧记录文件");
+  }
+  {
+    const att = fnBody(hostSrc, "ensureAttentionBackend");
+    has(att, '"--only"', "快检只验生效档一档（--only <档>）");
+    has(att, '"--json"', "ensureAttentionBackend 用 --json 调探针");
+    has(att, "ATTENTION_PROBE_TIMEOUT_MS", "快检带超时");
+    has(att, "attentionEffective(", "档位由 attentionEffective 给（默认 cudnn / 显式覆盖）");
+    has(att, "payload.ok", "按探针结论判 ok");
+    has(att, "attentionCheck", "进程内只探一次（同一档不重复快检）");
+    has(att, "attentionProbePending", "并发快检去重");
+    hasnt(att, "ATTENTION_FALLBACK", "快检不再回落别的档");
+  }
+  hasnt(hostSrc, "function loadAttentionCache(", "旧的「读缓存当决定」已删除");
+  hasnt(hostSrc, "function invalidateAttentionCache(", "旧的「命中指纹就作废缓存重探」已删除");
+  {
+    const sp = fnBody(hostSrc, "ensureAttentionProbeScript");
+    has(sp, "sha256OfFile(dest)", "安装目录的探针脚本与随包比内容（不一致就覆盖）");
+    has(sp, "探针脚本已更新", "旧版探针（不认 --only）会被随包那份换掉");
+  }
   {
     const sb = fnBody(hostSrc, "startBackend");
     const probeAt = sb.indexOf("ensureAttentionBackend(");
     const spawnAt = sb.indexOf('spawn(py, ["-m", "app.ui"]');
-    ok(probeAt > 0 && spawnAt > 0 && probeAt < spawnAt, "startBackend 中注意力探针在 spawn 之前");
-    has(sb, "env.YUE2_ATTENTION_BACKEND = att", "spawn env 注入 YUE2_ATTENTION_BACKEND");
+    ok(probeAt > 0 && spawnAt > 0 && probeAt < spawnAt, "startBackend 中单档快检在 spawn 之前");
+    has(sb, "att.ok === false", "快检不过 → 报错返回，不 spawn（不排队）");
+    has(sb, "env.YUE2_ATTENTION_BACKEND = attEnv", "spawn env 注入 YUE2_ATTENTION_BACKEND");
   }
   {
     const rep = fnBody(hostSrc, "reportAttentionBackend");
     has(rep, '"attention_backend_unsupported"', "定向失败出口报错码 attention_backend_unsupported");
     has(rep, "attentionBackend", "回执带 attentionBackend 字段");
+    has(rep, "不自动降级", "文案写明不自动降级");
+    has(rep, "YUE2_ATTENTION_BACKEND=sdpa", "文案给出显式改档的写法（env）");
+    has(rep, ".attention-backend", "文案给出显式改档的写法（单行文件）");
   }
-  has(hostSrc, 'reportAttentionBackend(attFp', "生成失败命中指纹 → 走定向修复出口");
-  has(hostSrc, "invalidateAttentionCache(attFp.hit)", "命中后作废缓存并后台重探");
+  {
+    const miss = fnBody(hostSrc, "reportAttentionPatchMissing");
+    has(miss, "windows_patch.py", "补丁没生效那条指向 app\\windows_patch.py（可修）");
+    has(miss, "一键修复", "补丁没生效那条给「一键修复」出口");
+  }
+  has(hostSrc, "reportAttentionPatchMissing(attFp", "生成失败命中指纹 → 补丁没生效出口");
+  has(hostSrc, "const attFp = parseAttentionHint(err);", "指纹只认本次任务自己的报错（不再扫历史日志）");
+  hasnt(hostSrc, 'parseAttentionHint((consoleTail(96 * 1024).text) || "")', "旧的 96KB 日志尾巴兜底已删除");
   {
     const sr = fnBody(hostSrc, "selfRepairFromConsole");
     has(sr, "parseAttentionHint", "selfRepairFromConsole 注入注意力指纹");
@@ -827,9 +872,13 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
     has(st, "attentionSource", "statusForUi 回传 attentionSource");
   }
   has(read("yue/ui/ui.js"), "attentionBackend", "控制台窗显示注意力档位");
+  has(read("yue/ui/ui.js"), "attentionSource", "控制台窗显示档位来源（默认 / env / 文件）");
+  hasnt(read("yue/ui/ui.js"), "可能在 Planning 失败", "去掉「flash（可能在 Planning 失败）」猜测文案");
   has(read("yue/ui/index.html"), 'id="attBadge"', "控制台窗标题行有 attBadge");
-  has(i18nSrc, "注意力档位用了 flash", "i18n 有注意力定向修复文案（中英）");
-  has(i18nSrc, "未探到可用注意力档位，已回落 sdpa", "i18n 有回落 sdpa 文案");
+  has(i18nSrc, "在本机实测跑不起来", "i18n 有注意力定向失败文案（中英）");
+  hasnt(i18nSrc, "注意力档位用了 flash", "旧「已改用 cudnn」文案词条已删除");
+  has(read("plugin-error-repair.js"), "attention_backend_no_cudnn", "报错总线：cudnn 实测跑不起来判不可自动修复");
+  has(read("plugin-error-repair.js"), "本版默认 cudnn 且不自动降级", "报错总线指路文案给出显式改档口径");
 
   /* --- 11.8 同步不再回退补丁 + runtime 生效口径 --- */
   has(hostSrc, "function sha256OfFile(", "同步按 sha256 判内容（内容相同即跳过）");

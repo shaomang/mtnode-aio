@@ -149,9 +149,10 @@ def _attention_hint(exc: BaseException) -> str:
     backend = engine_mod.attention_backend()
     return (
         f"\n提示：本机注意力档位 attention={backend}（Windows 版 torch 常带 flash 的 schema "
-        f"却没编 CUDA kernel，yue2 的 auto 会误判成 flash）。"
-        f"可设 YUE2_ATTENTION_BACKEND=sdpa（或 cudnn）后重启再试；"
-        f"各档实测与推荐见 scripts\\probe_attention.py，探针记录在 <INSTALL_DIR>\\.attention-backend。"
+        f"却没编 CUDA kernel，yue2 的 auto 会误判成 flash）。本版默认 cudnn 且不自动降级："
+        f"可设 YUE2_ATTENTION_BACKEND=sdpa（或 cudnn / flash）显式改档后重启；"
+        f"单档实测见 scripts\\probe_attention.py --only cudnn（--all 看各档），"
+        f"档位记录在 <INSTALL_DIR>\\.attention-backend。"
     )
 
 

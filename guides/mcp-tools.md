@@ -35,6 +35,7 @@ node scripts/build-mcp-contract.mjs --check  # 只比对，不一致退码 1（�
 | `dsh/gateway/ai-facts-plugin.mjs`（`mtnode_facts`） | 同上 |
 | `dsh/gateway/longtask-plugin.mjs`（`lt_state`） | 同上 |
 | `dsh/gateway/assets-plugin.mjs`（`mtnode_assets`） | 同上 |
+| `dsh/gateway/gui-plugin.mjs`（`mtnode_gui`，唯一主进程执行族） | 同上 |
 | 生成器内的 `MCP_RESOURCES` / `MCP_PROMPTS`（MCP 侧自有，无插件真源） | `resources[]` / `prompts[]` |
 
 **不在导出范围**的插件（有意的边界，见 `guides/mcp-server.md` §5）：
@@ -53,3 +54,8 @@ prompts[]    { name, title, description, arguments, builder(内部字段) }
 
 `family` 与 `renderer/mcp-bridge.js`、`mcp-server.js` 的 `TOOL_OPS` 表三方对齐；
 `test/smoke-mcp-server.js` 会钉住「契约里的每个工具都有接线」。
+
+例外只有一个：`family:"gui"`（`mtnode_gui`）在 `TOOL_OPS` 里标了 `local:true`，
+**由主进程执行**（`mcp-gui-agent.js`）而不是推给渲染层 —— 只有主进程拿得到 `BrowserWindow`
+与 `webContents`。所以渲染层桥里那支 `case "gui"` 只负责给「旧版服务端推错帧」回一句可读报错；
+冒烟测试对这支单独钉（`LOCAL_TOOLS`）。

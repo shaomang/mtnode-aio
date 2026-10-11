@@ -6436,13 +6436,26 @@
     "一键修复": "One-click repair",
     "已自动补装 ": "Auto-installed ",
     /* yue 注意力档位定向修复（main-yue.js 报错码 attention_backend_unsupported / 控制台文案） */
-    "注意力档位用了 flash（Windows 轮子没编 flash kernel）：已改用 ":
-      "Attention backend was flash (the Windows wheel ships no flash kernel): switched to ",
-    "，点「一键修复」重试": ", click “One-click repair” to retry",
-    "注意力档位不可用（flash 在 Windows 轮子里没编 kernel）":
-      "Attention backend unavailable (the Windows wheel ships no flash kernel)",
+    "注意力档位 ": "Attention backend ",
+    " 在本机实测跑不起来": " could not run on this machine (measured)",
+    "：本版默认 cudnn，且不自动降级 —— 请显式改档后重试（环境变量 YUE2_ATTENTION_BACKEND=sdpa，":
+      ": this build defaults to cudnn and never downgrades — change the tier explicitly and retry (YUE2_ATTENTION_BACKEND=sdpa, ",
+    "或在安装目录 .attention-backend 里写单行 sdpa），或换一台支持 cuDNN 注意力的 NVIDIA 显卡；":
+      "or write a single-line sdpa into .attention-backend in the install dir), or use an NVIDIA GPU with cuDNN attention; ",
+    "不要重下模型、不要装 flash-attn":
+      "do not re-download the models and do not install flash-attn",
+    " 没生效（生成中途仍报 flash kernel 缺失）：多半是安装目录的 app\\windows_patch.py 没跟上":
+      " did not take effect (a flash-kernel error still appears mid-generation): most likely app\\windows_patch.py in the install dir is out of sync",
+    "（它与 app\\engine.py 必须同时存在，缺一半会被每轮 sync 覆盖）。点「一键修复」让 Agent 补齐，":
+      " (it must coexist with app\\engine.py; with only one of them every sync round overwrites it). Click “One-click repair” to let the Agent restore it, ",
+    " 后重启；不要重下模型、不要装 flash-attn":
+      " and restart; do not re-download the models and do not install flash-attn",
+    "注意力档位不可用": "Attention backend unavailable",
     "注意力档位：": "Attention backend: ",
-    "未探到可用注意力档位，已回落 sdpa": "No usable attention backend found; fell back to sdpa",
+    /* 插件报错总线：yue 注意力档位「实测跑不起来」那条「为什么按不动」指路文案（整句为键，见
+       plugin-error-repair.js 的 NOT_REPAIRABLE.attention_backend_no_cudnn） */
+    "本机注意力档位实测跑不起来（默认档 cudnn 跑不了，多半是显卡 / 驱动层面的能力问题）：让 Agent 再跑一遍也不会变好。请在环境变量 YUE2_ATTENTION_BACKEND 里指定别的档（如 sdpa），或在安装目录 .attention-backend 里写单行 sdpa 后重试 —— 本版默认 cudnn 且不自动降级。":
+      "This machine's attention tier cannot run at all (the default tier cudnn fails — usually a GPU / driver capability issue): running the Agent again will not help. Point YUE2_ATTENTION_BACKEND at another tier (e.g. sdpa), or write a single-line sdpa into .attention-backend in the install dir and retry — this build defaults to cudnn and never downgrades.",
     /* yue_gen 连线规则报错（connectError：数据端口只吃文本来源 · 控制线固定端口 3） */
     "YuE2 音乐节点需要文本来源（风格提示词 / 歌词 / ABC 谱）":
       "YuE2 music node needs a text source (style prompt / lyrics / ABC score)",
@@ -6631,6 +6644,10 @@
       "Could not decode this audio's waveform (you can still click or drag to preview)",
     "无法播放该音频（本机播放器不支持该格式）":
       "Cannot play this audio (the local player does not support this format)",
+    /* 波形播放器的音量调节（按钮 + 滑杆浮层） */
+    "音量": "Volume",
+    "已静音": "Muted",
+    "拖动调节音量，双击恢复 100%": "Drag to adjust volume; double-click to restore 100%",
     "点击选择": "Click to select",
     /* 音频节点现场录制（renderer/app-recaudio.js）：录音面板 / 两个出口 /
        真 mp3 编码与落盘（record_{yyyymmddhhmmss}.mp3 → 工作目录 recordings/）*/

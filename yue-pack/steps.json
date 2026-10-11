@@ -10,7 +10,7 @@
     { "id": "python", "title": "创建 Python 3.12 虚拟环境", "hint": "3.12 不可用时回退 3.11/3.13/3.10 并给警告。" },
     { "id": "deps", "title": "安装 requirements.txt（含 gradio）" },
     { "id": "torch", "title": "安装 CUDA torch / torchaudio", "hint": "按驱动版本选 cu130 / cu128 / cu126，逐级降档；只有 -Cpu 或全档失败才用 CPU 构建。" },
-    { "id": "attn", "title": "探测 attention 后端", "hint": "Windows 版 torch 常有 flash-attn 签名但没对应 kernel：探针会降档到 cudnn / sdpa；无可⽤档位判 attention_backend_unsupported。" },
+    { "id": "attn", "title": "记录默认 attention 档位（cudnn）", "hint": "Windows 版 torch 常有 flash-attn 签名但没对应 kernel，所以默认档定成 cudnn、安装期不再三档探针；真跑一次的确认由宿主启动服务前做（只验生效档一档），跑不了直接报 attention_backend_unsupported 且不自动降级。" },
     { "id": "pkg", "title": "安装 yue2 推理包", "hint": "优先取官方 yue2_infer-0.1.5 wheel；失败回退官方仓库 git+https（直连 → ghproxy）。" },
     { "id": "weights", "title": "下载权重 YuE2-3B + YuE2-Vae", "hint": "约 7.8GB；HF 直连失败自动走 hf-mirror，可续传。" },
     { "id": "files", "title": "校验项目文件清单与 app.ui 导入" },

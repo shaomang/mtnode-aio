@@ -53,6 +53,25 @@ Write-Host "[llama-install] ====================================================
 Write-Host "[llama-install] install dir: $InstallDir"
 Write-Host "[llama-install] progress: 8"
 
+# WHY Invoke-Quiet EXISTS (a real failure seen on a user machine): any native tool (pip / python /
+# node / nvidia-smi / git / npm) that writes ONE line to stderr -- even a harmless
+# "WARNING: Skipping uvloop as it is not installed." -- becomes a TERMINATING error under this
+# script's $ErrorActionPreference = "Stop" on Windows PowerShell 5.1. The installer died right
+# there; the user saw "exit 1 at the smoke step" with nothing but a warning as the last log line.
+# So everywhere we do not care about stderr (nor need the native exit code) we go through
+# Invoke-Quiet: it temporarily restores ErrorActionPreference to Continue and sends the child's
+# stderr to $null. (Do NOT use "2>&1 | Out-Null" instead: PowerShell still forwards those error
+# records to its own stderr and the host, which only drains stdout, blocks on a full pipe.)
+function Invoke-Quiet {
+  param([string]$Exe, [string[]]$Args, [switch]$PassThru)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if ($PassThru) { return (& $Exe @Args 2>$null) }
+    & $Exe @Args 2>$null | Out-Null
+  } finally { $ErrorActionPreference = $prev }
+}
+
 function Find-Python {
   if (Get-Command py -ErrorAction SilentlyContinue) {
     try {
@@ -125,13 +144,20 @@ $downloaded = $false
 
 # GitHub releases: retry through the China gh proxies first (ghfast.top -> gh-proxy.com -> ghproxy.net ->
 # ghproxy.com) and only then the direct github.com URL (mainland China networks)
+#
+# WHY THE MIRROR LIST IS [string[]] (a real failure: "the llama.cpp binary will not download"):
+# `$urls = @("https://a/" + `$Url, ...)` is NOT an array on Windows PowerShell 5.1 -- when an array
+# literal contains a "+" expression, PowerShell glues the whole thing into ONE space-joined string,
+# so `foreach (`$u in `$urls)` runs once with all five URLs concatenated and Invoke-WebRequest answers
+# 404 (that is the "remote server returned (404) not found" line in the log). Declare the chain as
+# [string[]] with each element computed separately.
 function Invoke-Download {
   param([string]$Url, [string]$Out)
-  $urls = @(
-    "https://ghfast.top/" + $Url,
-    "https://gh-proxy.com/" + $Url,
-    "https://ghproxy.net/" + $Url,
-    "https://ghproxy.com/" + $Url,
+  [string[]]$urls = @(
+    ("https://ghfast.top/" + $Url),
+    ("https://gh-proxy.com/" + $Url),
+    ("https://ghproxy.net/" + $Url),
+    ("https://ghproxy.com/" + $Url),
     $Url
   )
   foreach ($u in $urls) {
@@ -157,14 +183,22 @@ foreach ($variant in $cudaVariants) {
   }
 }
 
+# When no CUDA variant can be downloaded we DO NOT fall back to the CPU build (this round's rule:
+# GPU only, a silent CPU fallback is forbidden). The CPU llama-server used to be installed here
+# behind the user's back: it installs, it even "runs", but inference lands on the CPU -- the user
+# believes the local model is ready while it is unusably slow, and the UI cannot tell the
+# difference (a real incident). Now the install stops at this step with a fix the user can act on
+# (another mirror / drop the binary in by hand / upgrade the driver).
 if (-not $downloaded) {
-  Write-Host "[llama-install] CUDA builds failed, trying CPU build..."
-  $zipName = "llama-$release-bin-win-cpu-x64.zip"
-  $url = "https://github.com/ggml-org/llama.cpp/releases/download/$release/$zipName"
-  if (-not (Invoke-Download -Url $url -Out $zipPath)) {
-    Step-Fail "server" "llama.cpp binary download failed (direct GitHub and the gh proxy mirrors are all unreachable). Make sure GitHub or those mirrors are reachable, or drop llama-server into bin\ by hand and rerun."
-    throw "llama.cpp binary download failed (direct + ghproxy). Please make sure GitHub / the ghproxy mirror is reachable from this network."
-  }
+  Write-Host "[llama-install] error: no CUDA llama.cpp build could be downloaded (variants: $($cudaVariants -join ' / '))."
+  Write-Host "[llama-install]        NOT falling back to the CPU build: this plugin must run on the GPU."
+  Write-Host "[llama-install]        how to fix:"
+  Write-Host "[llama-install]          1) check that GitHub or a gh proxy is reachable from this machine (tried: ghfast.top / gh-proxy.com / ghproxy.net / ghproxy.com / github.com)"
+  Write-Host "[llama-install]          2) or download $zipName by hand and unzip it into $binDir (llama-server.exe must end up in bin\\), then rerun"
+  Write-Host "[llama-install]          3) if your driver is older than CUDA 12.4 support, upgrade the NVIDIA driver first"
+  Write-Host "[llama-install]        the venv and the Python dependencies already installed are kept; rerun resumes at this step."
+  Step-Fail "server" "llama.cpp CUDA binary download failed (direct GitHub and the gh proxy mirrors are all unreachable). Install a CUDA build by hand into bin\ and rerun -- no CPU fallback (this backend must use the GPU)."
+  throw "llama.cpp CUDA binary download failed (direct + ghproxy); CPU fallback was removed on purpose (GPU only)."
 }
 
 Write-Host "[llama-install] extracting to bin/..."
@@ -195,8 +229,34 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "models") | Out
 Write-Host "[llama-install] smoke test import..."
 Write-Host "[llama-install] progress: 92"
 Step-Begin "smoke" "smoke: import fastapi and app.server" 88
-& $venvPy -m pip uninstall -y uvloop 2>$null | Out-Null
-& $venvPy -c "import fastapi; from app import server; print('ok')"
+# There used to be a `pip uninstall -y uvloop` line here (uvicorn[standard] pulls it on Linux and it
+# cannot install on Windows). It is gone on purpose: it achieved nothing (this pack requirements
+# never list uvloop) while spawning one more native child process -- and the PowerShell the host
+# launches has no console, so every extra child is another chance to hang at startup (measured this
+# round: the install window sat forever on the smoke step right after that line).
+
+# Smoke import: run it INLINE (no Start-Process) -- measured at ~0.1s in a command-line context.
+#
+# HARD RULE (a real failure this round): this script must not write a single byte to stderr.
+# The host (main-llama.js) drains stdout only and feeds it to the install window; nothing reads the
+# stderr pipe, so leftover native noise (pip "WARNING: Skipping uvloop...", python "Error: [Errno
+# 13] Permission denied...") fills the pipe buffer and the whole installer BLOCKS on that write --
+# the user sees the install window frozen on the smoke step for tens of minutes, the last log line
+# still the previous one. So every native call redirects stderr to a file (or 2>`$null plus
+# Invoke-Quiet for the native exit code) and never leaves it on the inherited pipe.
+$smokeOut = Join-Path $env:TEMP ("mtnode-llama-smoke-" + [guid]::NewGuid().ToString("N") + ".out")
+$smokeErr = $smokeOut + ".err"
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $venvPy -c "import fastapi; from app import server; print('ok')" 1> $smokeOut 2> $smokeErr
+$smokeCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+$smokeText = (Get-Content $smokeOut -ErrorAction SilentlyContinue | Out-String).Trim()
+$smokeErrText = (Get-Content $smokeErr -ErrorAction SilentlyContinue | Out-String).Trim()
+if ($smokeText) { Write-Host "[llama-install] smoke stdout: $smokeText" }
+if ($smokeErrText) { Write-Host "[llama-install] smoke stderr: $smokeErrText" }
+Remove-Item $smokeOut, $smokeErr -Force -ErrorAction SilentlyContinue
+$LASTEXITCODE = $smokeCode
 if ($LASTEXITCODE -ne 0) {
   Step-Fail "smoke" "smoke import failed: fastapi or app.server inside the venv cannot be imported (dependencies only half installed / requirements out of sync with the code). Read this step's log and rerun the install."
   throw "smoke import failed"

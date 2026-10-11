@@ -1335,6 +1335,134 @@
           "action"
         ]
       }
+    },
+    {
+      "name": "mtnode_gui",
+      "description": "Drive the MTNode desktop UI (the Electron app's windows) and shoot stills of them. Use it when the work is a *window* action rather than a canvas edit: opening the plugin dialog, pressing \"开始安装\" in the install window, starting a local backend, hitting its \"test generate\" button, reading an error dialog.\n\nWindows: pass which = \"main\" (default, the main window) · \"install\" (the plugin install window) · \"any\" (focused window) · or any substring of a window title (e.g. \"Minimax H3\" — plugin console windows are titled after the plugin). Call action:\"windows\" first when you are unsure what is open.\n\nElement targets (used by click / type / set / scroll / wait): an object with ONE of\n- { css: \"…\" } — CSS selector;\n- { text: \"…\", exact?: true, index?: 0 } — visible text; default substring match, deepest/shortest node wins, index picks among ties;\n- { title: \"…\" } — substring of aria-label / title / data-tip / placeholder;\n- { role: \"button\", name: \"…\" } — role-ish match on button / a / [role=button] / input plus a name substring;\n- { ref: \"r7\" } — a ref returned by action:\"outline\" (stable until the page re-renders; re-run outline if it goes stale).\nAdd includeHidden:true to allow a hidden element (rarely useful — a user could not click it either).\n\nActions:\n- windows: list every window (id / title / url / visible / minimized). Read-only.\n- outline: compact structure snapshot — visible interactive elements with a ref each, plus the window's visible text lines (textMax, default 80, 0 = none). This is how you learn what to click. Read-only, capped at 120 items.\n- text: visible text lines of the window (offset / limit). Read-only.\n- click: click a target (a real DOM click inside the page, so the page's own handlers run). mode:\"dblclick\" for double click; force:true to click a disabled element anyway.\n- type: focus a target (or the focused element) and type text; clear:true (default) empties it first; submit:true presses Enter afterwards. Works on input / textarea / contenteditable through the native value setter, so framework listeners fire. NEVER use it for passwords or any credential.\n- set: assign a value to a form element: text input, textarea, select (by value or option text), checkbox / radio (true/false), contenteditable.\n- key: press one key on the focused element (Enter / Escape / Tab / Backspace / arrows / PageDown / a single character).\n- scroll: scroll the window, or a target container, by dx / dy.\n- wait: wait until a target appears, until text appears (text:\"…\"), or until a target is gone (gone:true). timeoutMs default 15000, max 600000.\n- eval: run a small READ-ONLY expression inside the window and return its value (diagnostics; use click / type / set for anything that changes state).\n- screenshot: write a still PNG/JPG of a window to an absolute path (path is required). canvasOnly:true shoots just the canvas viewport, hideUI:true hides transient menus and the image lightbox first, delayMs waits before shooting. Fails when the window is minimized / hidden — bring it up first.\n\nDiscipline: every action returns {ok, window, element?: {tag,id,cls,text,label}} and, on failure, a readable error saying what was not found — read it and adjust instead of retrying blindly. After a click that changes the page, either rely on the automatic short settle or follow with action:\"wait\". Screenshots are written ONLY to the path you pass.",
+      "family": "gui",
+      "source": "dsh/gateway/gui-plugin.mjs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Which GUI action to run.",
+            "enum": [
+              "windows",
+              "outline",
+              "text",
+              "click",
+              "type",
+              "set",
+              "key",
+              "scroll",
+              "wait",
+              "eval",
+              "screenshot"
+            ]
+          },
+          "which": {
+            "type": "string",
+            "description": "Target window: \"main\" (default) · \"install\" (the plugin install window) · \"any\" (focused) · or a substring of the window title."
+          },
+          "target": {
+            "type": "object",
+            "description": "Element target: {css} or {text, exact?, index?} or {title} or {role, name?} or {ref} (from outline), plus optional includeHidden.",
+            "additionalProperties": true
+          },
+          "text": {
+            "type": "string",
+            "description": "type: the text to type. wait: the text to wait for."
+          },
+          "value": {
+            "type": "string",
+            "description": "set: the value to assign (select takes the option value or its text; true/false for checkbox / radio)."
+          },
+          "key": {
+            "type": "string",
+            "description": "key: the key to press on the focused element (Enter / Escape / Tab / Backspace / ArrowUp / PageDown / a single character)."
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "type: empty the field before typing (default true). Pass false to append."
+          },
+          "submit": {
+            "type": "boolean",
+            "description": "type: press Enter after typing (default false)."
+          },
+          "mode": {
+            "type": "string",
+            "description": "click: \"click\" (default) or \"dblclick\".",
+            "enum": [
+              "click",
+              "dblclick"
+            ]
+          },
+          "force": {
+            "type": "boolean",
+            "description": "click: click even when the element is disabled / aria-disabled (default false)."
+          },
+          "gone": {
+            "type": "boolean",
+            "description": "wait: wait until the target DISAPPEARS instead of appearing."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "wait: how long to wait (default 15000, max 600000)."
+          },
+          "selector": {
+            "type": "string",
+            "description": "outline: override the element selector for the snapshot (default: buttons / links / inputs / cards / nodes)."
+          },
+          "textMax": {
+            "type": "number",
+            "description": "outline: how many visible text lines to include alongside the element list (default 80, 0 = none)."
+          },
+          "offset": {
+            "type": "number",
+            "description": "text: first visible line to return (0-based, default 0)."
+          },
+          "limit": {
+            "type": "number",
+            "description": "text: how many lines to return (default 200)."
+          },
+          "dx": {
+            "type": "number",
+            "description": "scroll: horizontal delta in pixels."
+          },
+          "dy": {
+            "type": "number",
+            "description": "scroll: vertical delta in pixels (positive scrolls down)."
+          },
+          "expression": {
+            "type": "string",
+            "description": "eval: a read-only JavaScript expression to evaluate inside the window and return."
+          },
+          "path": {
+            "type": "string",
+            "description": "screenshot: absolute output path (.png or .jpg). Required for screenshot."
+          },
+          "canvasOnly": {
+            "type": "boolean",
+            "description": "screenshot: shoot only the canvas viewport instead of the whole window."
+          },
+          "hideUI": {
+            "type": "boolean",
+            "description": "screenshot: hide transient menus / the image lightbox before shooting, then restore them."
+          },
+          "delayMs": {
+            "type": "number",
+            "description": "screenshot: wait this long before capturing (default 400 ms)."
+          },
+          "settleMs": {
+            "type": "number",
+            "description": "After an action, wait this long for the page to settle (default 400, 0 = do not wait)."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
     }
   ],
   "resources": [

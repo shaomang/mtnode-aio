@@ -304,6 +304,17 @@
             return mcpHandleAsset(frame);
           case "lt":
             return mcpHandleLt(frame);
+          case "gui":
+            /* gui 族由**主进程**执行（只有它拿得到 BrowserWindow / webContents，见
+               mcp-server.js 的 TOOL_OPS.local 与根目录 mcp-gui-agent.js），正常不会走到这里。
+               留着这一支是为了让「主进程服务端 ↔ 渲染层分派」的表保持完整：真收到 gui 帧
+               时给一句能照做的说明，而不是「未知的 MCP 操作」。 */
+            return {
+              ok: false,
+              error:
+                "mtnode_gui 在主进程执行（GUI 动作需要窗口本体），不会推给渲染层；" +
+                "看到这一条说明调用走了旧版服务端，请重启 MTNode。",
+            };
           case "canvasList":
             return mcpCanvasList(frame);
           case "skillList":

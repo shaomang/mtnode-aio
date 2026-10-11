@@ -93,7 +93,7 @@ try {
   }
   Step-Ok "deps" 58
 } catch {
-  Step-Fail "deps" "环境准备失败：$($_.Exception.Message)。requirements 里的 diffusers 来自 GitHub（脚本会走 ghproxy 镜像），确认网络后重跑。"
+  Step-Fail "deps" "环境准备失败：$($_.Exception.Message)。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI，requirements 里的 diffusers 还会再走 GitHub + ghproxy 镜像 —— 若日志里是「No matching distribution found for 某包」，就是该包在四个源上都没同步、按包名上报；否则看本步日志尾部的原始报错后重跑。"
   exit 1
 }
 

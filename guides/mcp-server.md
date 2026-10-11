@@ -96,6 +96,7 @@ curl -s http://127.0.0.1:<port>/mcp \
 | `mtnode_facts` | facts / `facts` | 部分 | 本画布 AI 事实库 |
 | `lt_state` | lt / `lt` | 是 | 长任务本轮状态（只在环节内有归属） |
 | `mtnode_assets` | asset / `asset` | 否 | 素材库 / 窗口静帧 |
+| `mtnode_gui` | gui / **主进程执行**（不经渲染层） | 是 | 认元素 / 点 / 输入 / 按键 / 滚动 / 等待 / 读结构 / 窗口截图 |
 
 参数表的**唯一真源**是 `dsh/gateway/*-plugin.mjs` 的 `defineTool` 参数表；`mcp-tools.json`
 由 `scripts/build-mcp-contract.mjs` 真实执行插件模块抓取并编译成 JSON Schema，
@@ -109,6 +110,37 @@ curl -s http://127.0.0.1:<port>/mcp \
 | `baseHash` | `mtnode_canvas_edit`、`mtnode_app` 的写动作 | 上一次 `mtnode_canvas_get` 回执里的 `contentHash`；不一致 → 本次修改被拒 |
 
 这两个参数在服务端被摘出来（不下发给渲染层的插件处理函数）。
+
+### 3.2.1 `mtnode_gui`：唯一在主进程执行的一族
+
+上面那张「执行链」图对 `mtnode_gui` **不成立**，它由主进程直接干（`mcp-gui-agent.js`）：
+只有主进程拿得到 `BrowserWindow`，能往**任意**窗口注入脚本、能 `webContents.capturePage` 拍照。
+渲染层桥里仍留着一支 `case "gui"` 的回执文案，那是给「旧版服务端推错帧」时的可读报错。
+
+```jsonc
+// 先看清有哪几只窗（安装窗 / 各插件控制台都算）
+{ "action": "windows" }
+// 看一眼结构 + 可见文字（拿 ref，随后点击）
+{ "action": "outline", "which": "install", "textMax": 40 }
+// 点一个按钮：按可见文字（推荐，改版也不容易失效）
+{ "action": "click", "which": "install", "target": { "text": "开始安装" } }
+// 等它变成「安装完成」
+{ "action": "wait", "which": "install", "text": "安装完成", "timeoutMs": 60000 }
+// 拍一张静帧落盘（外部 Agent 自己看）
+{ "action": "screenshot", "which": "install", "path": "E:\\tmp\\install.png" }
+```
+
+- `which`：`main`（默认）· `install`（插件安装窗）· `any`（焦点窗）· 或窗口标题的任意子串
+  （各插件控制台窗口以插件名命名，如 `"Minimax H3"`）。
+- `target` 五种写法：`{css}` · `{text, exact?, index?}` · `{title}` · `{role, name?}` ·
+  `{ref}`（outline 给的引用，页面重渲染后失效，重跑 outline 即可）。
+- 动作：`windows` / `outline` / `text` / `click` / `type` / `set` / `key` / `scroll` / `wait` /
+  `eval` / `screenshot`；细节与参数以工具描述为准（真源 `dsh/gateway/gui-plugin.mjs`）。
+- **点的是页面里真实的 DOM**（`el.click()` + 完整鼠标事件序列），不是屏幕坐标 ——
+  所以窗口不必在前台、不必获得焦点，也不会因为别的窗口挡住而点歪。
+- **够不着的**（会明确报错，不会假装成功）：原生菜单、系统文件选择对话框、托盘菜单
+  （它们不在 DOM 里）；最小化 / 隐藏的窗口拍不到图（先把它显示出来）。
+- **不代填凭据**：密码类输入一律由人在窗口里输入。
 
 ### 3.3 resources
 
@@ -145,7 +177,8 @@ curl -s http://127.0.0.1:<port>/mcp \
 | 不导出 dsh 引擎自带工具（文件 / 命令 / 联网） | 那些能力客户端自己就有；开了等于把主进程的 shell 与文件系统也交出去 |
 | 不导出 `browser_*`（13 个会话浏览器工具） | 那是用户自己的浏览器会话，不交给外部客户端 |
 | 不推进长任务、不替人审批 / 交付 | 长任务的人工环节必须有人的位置；MCP 只读写状态与图定义 |
-| 不把媒体生成做成独立工具 | 文生图 / 音乐 / 语音 / 视频是画布节点；MCP 负责建与连线，运行由用户点 |
+| 不把媒体生成做成独立工具 | 文生图 / 音乐 / 语音 / 视频是画布节点；MCP 负责建与连线，运行由用户点。**要无人值守跑生成**：用 `mtnode_gui` 点那些按钮，或按节点类型直接驱动本机后端 |
+| 不代填凭据、不碰原生对话框 | `mtnode_gui` 只操作页面 DOM：密码输入的凭据只由人给；系统文件选择框、原生菜单、托盘菜单够不着（会明确报错） |
 | 不做局域网 / 公网绑定 | 共识口径是只绑回环；需要远程接入请自行加隧道，并自行承担令牌保管 |
 | 不发独立 npm 包 | 共识口径是随包发 stdio 桥脚本；`npx` 形态留待需要时再评估 |
 
@@ -207,6 +240,7 @@ node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --
 | 路径 | 作用 |
 | --- | --- |
 | `mcp-server.js` | 主进程 MCP 服务端（HTTP / 协议分发 / 排队 / 版本闸 / 审计 / 抓包 / 自检） |
+| `mcp-gui-agent.js` | `mtnode_gui` 的执行器（主进程直接操作窗口：注入脚本 + `capturePage` 截图） |
 | `mcp-stdio.js` | stdio 桥（只转发；`--print-config` / `--check`） |
 | `mcp-prompts.js` | prompts 模板正文 |
 | `mcp-tools.json` / `mcp-tool-schemas.js` | 生成的契约快照与参数校验表（**禁止手改**） |

@@ -47,7 +47,19 @@ const TOOL_NAMES = [
   "mtnode_facts",
   "lt_state",
   "mtnode_assets",
+  "mtnode_gui",
 ];
+/** 六份参数表真源：五份由渲染层执行 + mtnode_gui（主进程执行，见 mcp-gui-agent.js）。 */
+const PLUGIN_FILES = [
+  "canvas-plugin.mjs",
+  "db-plugin.mjs",
+  "ai-facts-plugin.mjs",
+  "longtask-plugin.mjs",
+  "assets-plugin.mjs",
+  "gui-plugin.mjs",
+];
+/** gui 族的执行器在主进程（只有它拿得到 BrowserWindow / webContents）。 */
+const LOCAL_TOOLS = ["mtnode_gui"];
 
 /* ── [1] 契约不漂移 + 工具集 ─────────────────────────────────────────────── */
 console.log("[1] 契约由插件定义生成（不漂移）· 工具集");
@@ -66,11 +78,8 @@ console.log("[1] 契约由插件定义生成（不漂移）· 工具集");
   );
   const srcs = new Set(CONTRACT.tools.map((t) => t.source));
   ok(
-    srcs.size === 5 &&
-      ["canvas-plugin.mjs", "db-plugin.mjs", "ai-facts-plugin.mjs", "longtask-plugin.mjs", "assets-plugin.mjs"].every(
-        (f) => [...srcs].some((s) => s.endsWith("/" + f)),
-      ),
-    "参数表真源只来自 5 个插件：" + [...srcs].map((s) => s.split("/").pop()).join(", "),
+    srcs.size === PLUGIN_FILES.length && PLUGIN_FILES.every((f) => [...srcs].some((s) => s.endsWith("/" + f))),
+    "参数表真源只来自 " + PLUGIN_FILES.length + " 个插件：" + [...srcs].map((s) => s.split("/").pop()).join(", "),
   );
   ok(
     ![...srcs].some((s) => /browser-plugin|tools-plugin/.test(s)),
@@ -92,6 +101,25 @@ console.log("[2] 接线：契约 family ↔ TOOL_OPS ↔ 渲染层 op 分派");
     ok(new RegExp("\\b" + t.name + ":\\s*\\{").test(server), "服务端有 " + t.name + " 的 op 接线");
   }
   ok(/const TOOL_OPS = \{/.test(server), "TOOL_OPS 表存在（工具 → 渲染层 op）");
+  /* gui 族是唯一的主进程自执行族：接线必须标 local，执行器必须由 main.js 注入 ——
+     少了任何一环，外部客户端的点击/截图就是「报执行器不可用」。 */
+  for (const n of LOCAL_TOOLS) {
+    ok(
+      new RegExp("\\b" + n + ":\\s*\\{[^}]*local:\\s*true").test(server),
+      n + " 在 TOOL_OPS 里标了 local（主进程执行，不推渲染层）",
+    );
+  }
+  ok(/op\.local/.test(server), "服务端对 local 族走主进程执行分支（不经 callRenderer）");
+  ok(/require\("\.\/mcp-gui-agent\.js"\)/.test(read("main.js")), "main.js 把 mcp-gui-agent 注入 MCP 服务端（gui 执行器）");
+  ok(/mcp-gui-agent\.js/.test(read("build.json")), "mcp-gui-agent.js 在 build.json 白名单里（打包后仍可 require）");
+  /* gui 族**不做**按运行裁剪：能调它的只有连上本机 MCP 服务端的外部客户端；MTNode 自己的会话 /
+     助手 / 智能节点这一轮不注册 mtnode_gui（网关运行时不 import gui-plugin.mjs），所以没有
+     「按运行裁剪」的依据。这里钉住两件真的存在的事：文件里写明了这一层关系，以及调用有审计。 */
+  ok(
+    /never called by the dsh gateway runtime/.test(read("dsh/gateway/gui-plugin.mjs")),
+    "gui 插件声明了「不由网关运行时注册，只作参数表真源」",
+  );
+  ok(/mcp-audit/.test(read("dsh/gateway/gui-plugin.mjs")), "gui 插件声明了调用走 MCP 审计（可追责）");
   ok(/"case \"canvasList\"/.test(bridge) === false, "渲染层分派用 switch（非字符串 case 拼接）");
   for (const op of ["get", "edit", "app", "vision", "db", "facts", "asset", "lt", "canvasList", "skillList", "skillBody"]) {
     ok(new RegExp('case "' + op + '"').test(bridge), "渲染层认得 op：" + op);

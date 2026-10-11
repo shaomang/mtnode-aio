@@ -29,7 +29,9 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 
 > **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像。
 
-- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）→ 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/` → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）；可用 `MT_H3_PIP_INDEX` 覆盖。
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）→ 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/` → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）；可用 `MT_H3_PIP_INDEX` 覆盖（覆盖的是链的**第一级**，后面三级兜底仍在）。
+  - **这条链是随包脚本自己实现的**：`setup_env.ps1` / `repair_torch_kitchen.ps1` 里都有一份 `$PipIndexChain`，每次 `pip install` 逐级试（每试一级打一行 `[h3-setup] pip index=N/4 host=…`），**上一级失败不再立刻 throw**，末级仍失败才报错并点名 `No matching distribution found for <包名>`。别只调 `cn-mirrors.js` 的环境变量就以为有回退 —— 宿主注入的 `PIP_INDEX_URL` 只是第一级。
+  - **镜像没同步某个包 ≠ 版本写错**：ComfyUI 的 `requirements.txt` 钉了一串子包，任一子包在清华/USTC 缺失，pip 就报 `(from versions: none)` 并让整步失败。2026-10 实测：`comfyui-workflow-templates==0.11.78` 依赖的 `comfyui-workflow-templates-media-assets-02==0.1.11` 在清华与 USTC 都是 404、阿里云与官方 PyPI 都有 —— 症状是安装窗报「隔离 venv 没建起来（venv python 不存在）…多半是驱动与 CUDA 档位不匹配」，而现场其实 venv 在、上一个 step 的 torch 也早就绪。**判据一律看那一步日志尾部的 pip 原始报错**，别顺着「驱动」往下修。
   - **反制机器级 pip.ini**：用 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` **环境变量**在安装子进程内覆盖（宿主 `cn-mirrors.js` 的 `installEnv()` 已统一注入），**绝不改用户机器上的 pip.ini**。
   - **不要用 `pip --isolated`**：它忽略环境变量与用户级 config，机器级 `extra-index-url = https://pypi.ngc.nvidia.com`（NVIDIA PyIndex 常塞，国内 DNS 直接失败）照样生效，每个包白等 5 次重试。
 - torch cu130：**SJTU** `https://mirror.sjtu.edu.cn/pytorch-wheels/cu130` → **阿里云** `https://mirrors.aliyun.com/pytorch-wheels/cu130` → 官方 `https://download.pytorch.org/whl/cu130`（`MT_H3_TORCH_INDEX` 可覆盖）
@@ -37,7 +39,8 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 - GitHub（ComfyUI / KJNodes 克隆 / release 归档）：直连失败用代理回退 `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` → 直连（`cn-mirrors.js` 的 `ghProxyUrls()`）
 - 安装示例：
   ```powershell
-  .\scripts\setup_env.ps1   # 内部 pip 默认走清华镜像；CUDA Python 可传 -CudaPython 或设 MT_H3_CUDA_PYTHON
+  .\scripts\setup_env.ps1   # pip 按清华 → 阿里云 → USTC → 官方逐级回退；CUDA Python 可传 -CudaPython 或设 MT_H3_CUDA_PYTHON
+  .\scripts\setup_env.ps1 -SourceOnly   # 只保证 ComfyUI 源码在场（clone 缺失时），venv / torch / 依赖 / 节点一律不碰
   .\scripts\download_models.ps1  # 权重默认走 ModelScope
   ```
 
@@ -250,6 +253,16 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
 
 ## 已知故障摘要
 
+### pip 装依赖失败：镜像没同步某个子包（2026-10 现场，已修）
+
+症状：安装窗 `venv` 步报「隔离 venv 没建起来（`ComfyUI\venv\Scripts\python.exe` 不存在）…多半是驱动与 CUDA 档位不匹配」，但现场 `venv` 其实在、上一步 torch 也早就绪。
+真因：那句 message 是**误判**——实际失败点是依赖那一步的 pip。清华源没有 `comfyui-workflow-templates==0.11.78` 所需的子包 `comfyui-workflow-templates-media-assets-02==0.1.11`（USTC 也没有，阿里云与官方 PyPI 有），单级源脚本在这一行 `throw`。
+自查顺序（别跳步）：
+1. 看该步日志尾部有没有 `No matching distribution found for <包名> (from versions: none)` —— 有就是镜像未同步，不是版本写错、也不是驱动问题；
+2. 确认脚本版本：`setup_env.ps1` 里应有 `$PipIndexChain`，日志里应出现 `pip index=1/4 … → pip index=2/4 …`；只有一行 `pip=清华` 说明随包脚本是旧的（在插件里更新资源 / 重装，宿主每次安装都会把 `pack/scripts` 拷进 INSTALL_DIR）；
+3. 重跑安装（幂等，venv / torch 会复用，只补缺的包）；仍失败再按包名上报 —— 不要再删 `INSTALL_DIR` 重装，也不必换驱动。
+判据一句话：**先看 pip 缺哪个包，再谈 torch 与驱动。**
+
 ### sageattention 缺失（最常见的「不是故障」）
 
 日志：`No module named 'sageattention'`；MTNode 插件 Console：`sageattention missing → sageMode=disabled`。
@@ -331,6 +344,7 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖（含 `soundfile`，见 `requirements.txt`）、KJNodes + ComfyUI-Frame-Interpolation（4K 补帧）+ ComfyUI-MiniMaxH3-TeaCache（备用）。**该脚本不部署任何随包第三方节点包，也不清空 `custom_nodes`**。
    - 装完**必须**校验 `torch.cuda.is_available()` 为真且日志里 cuda backend 未被禁用；否则按「驱动太旧」处理。
    - pip 走 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 覆盖本机全局配置，避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）；**不要用 `--isolated`**（它忽略环境变量，机器级 extra-index 照样生效）。
+   - **装了依赖要自查源**：日志里应看到 `pip index=1/4 …` 起的逐级行；报错必须点名 `No matching distribution found for <包名>`，看到「驱动与 CUDA 档位不匹配」这句时**先回去看 pip 到底缺哪个包**（见「已知故障摘要 · pip 装依赖失败」，2026-10 就踩过这个误判）。
 5. 按需静默给 `nodes_minimax_h3.py` 加 `**legacy_refs` 折叠（幂等，见上）；如需，补 `polyfill`。
 6. `.\scripts\download_models.ps1`（优先 ModelScope `Comfy-Org/MiniMax-H3`，再 HuggingFace）；脚本还会拉 **RealESRGAN_x4plus.pth → models/upscale_models/** 与 **rife47.pth → custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife/**（这两个只服务**独立后处理通道** `h3:postProcess`（视频超分 / 视频补帧节点），生成链不再内联后处理）；另外**尝试**拉可选的 **RealESRGAN_x2plus.pth → models/upscale_models/**（超分 x2 倍率的原生权重；拉不到只 warn，不中断安装）；已存在 >1MB 的文件自动跳过。
 7. 冒烟 + `python -m app` 健康检查（见「冒烟与健康检查」）。

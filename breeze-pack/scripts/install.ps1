@@ -91,6 +91,12 @@ $PIP_MIRROR  = $env:PIP_INDEX_URL
 $PIP_TRUSTED = $env:PIP_TRUSTED_HOST
 # pip fallback chain, domestic first, official only as the last resort
 $PIP_CHAIN   = @($PIP_MIRROR, "https://mirrors.aliyun.com/pypi/simple/", "https://mirrors.ustc.edu.cn/pypi/simple/", "https://pypi.org/simple") | Select-Object -Unique
+# torch source order is ranked by MEASURED SPEED on this machine: SJTU mirrors download.pytorch.org
+# completely (a 1.8GB torch wheel came down in 23s, about 76 MB/s); the aliyun pytorch-wheels
+# directory manages about 1.5 MB/s and the official site is effectively unreachable from mainland
+# China. So: SJTU first, aliyun second, official last. The SJTU path downloads the wheel with curl
+# (-C - resumes) and then installs locally with --no-index; the wheel lands in the shared library
+$TORCH_SJTU  = "https://mirror.sjtu.edu.cn/pytorch-wheels/"
 $TORCH_INDEX = if ($env:BREEZE_TORCH_INDEX) { $env:BREEZE_TORCH_INDEX } else { "https://mirrors.aliyun.com/pytorch-wheels/cu128" }
 # torch wheels are tried in order: domestic mirrors first (fast in China, occasionally one version
 # behind) -> the pytorch.org official index last (most complete versions, slow / blocked in China)
@@ -220,20 +226,56 @@ if (Test-Path -LiteralPath $reqFile) {
 } else { throw "engine/requirements.txt is missing (the engine source is incomplete)" }
 
 if ($env:BREEZE_SKIP_TORCH -ne "1") {
-  Say "installing torch / torchaudio (CUDA build; indices tried in order: $($TORCH_INDICES -join ' -> '))"
+  Say "installing torch / torchaudio (CUDA build; indices tried in order: SJTU wheels -> $($TORCH_INDICES -join ' -> '))"
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   $torchRc = 1
   try {
-    foreach ($idx in $TORCH_INDICES) {
-      Say "torch index: $idx"
-      $torchRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "torch==2.9.1", "torchaudio==2.9.1", "--index-url", $idx)
-      if ($torchRc -eq 0) { Say "torch installed ($idx)"; break }
-      Say "that index did not work (exit $torchRc), trying the next one"
+    # (1) SJTU fast path: curl the wheel down first (resumable, lands in the shared library), then
+    #     install locally with --no-index. Measured: 23s instead of 15+ minutes; reinstalls reuse it.
+    $wheelCache = Join-Path (Split-Path -Parent $InstallDir) "_weights\wheels"
+    New-Item -ItemType Directory -Force -Path $wheelCache | Out-Null
+    $torchMinor = "2.9.1"
+    foreach ($cu in @("cu128", "cu126")) {
+      $w1 = Join-Path $wheelCache ("torch-" + $torchMinor + "+" + $cu + "-cp310-cp310-win_amd64.whl")
+      $w2 = Join-Path $wheelCache ("torchaudio-" + $torchMinor + "+" + $cu + "-cp310-cp310-win_amd64.whl")
+      $base = $TORCH_SJTU + $cu + "/"
+      if (-not (Test-Path $w1)) {
+        Say "downloading the torch wheel from SJTU ($cu)..."
+        & curl.exe -L --retry 5 --retry-delay 3 -C - -o "$w1" ($base + "torch-" + $torchMinor + "%2B" + $cu + "-cp310-cp310-win_amd64.whl") 2>$null | Out-Null
+      }
+      if ((-not (Test-Path $w2)) -and (Test-Path $w1)) {
+        Say "downloading the torchaudio wheel from SJTU ($cu)..."
+        & curl.exe -L --retry 5 --retry-delay 3 -C - -o "$w2" ($base + "torchaudio-" + $torchMinor + "%2B" + $cu + "-cp310-cp310-win_amd64.whl") 2>$null | Out-Null
+      }
+      if ((Test-Path $w1) -and (Test-Path $w2)) {
+        $torchRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "--no-index", "--force-reinstall", "--no-deps", $w1, $w2)
+        if ($torchRc -eq 0) { Say "torch installed from the SJTU wheels ($cu)"; break }
+      }
+    }
+    # (2) if that fails, walk the original index chain (aliyun -> official)
+    if ($torchRc -ne 0) {
+      foreach ($idx in $TORCH_INDICES) {
+        Say "torch index: $idx"
+        # torch and torchaudio MUST be pinned to the SAME version (one line): pinned separately the
+        # mirror resolves torchaudio to a higher minor (measured torchaudio 2.11 + torch 2.9.1) and the
+        # engine then dies on import with OSError: Could not load this library:
+        # ...torchaudio\lib\_torchaudio.pyd -- install all green, first synthesis broken.
+        #
+        # WARNING: never put "+" concatenation expressions inside an array literal (hit twice this
+        # round): @("a==x+" + $v, "b==x+" + $v) is evaluated into ONE string "a==x+v b==x+v" (the
+        # comma separator is swallowed) and pip answers "Invalid requirement". Compute each element
+        # into its own scalar variable and pass them one by one.
+        $pinTorch = if ($cu) { "torch==2.9.1+" + $cu } else { "torch==2.9.1" }
+        $pinAudio = if ($cu) { "torchaudio==2.9.1+" + $cu } else { "torchaudio==2.9.1" }
+        $torchRc = Invoke-Native $VENV_PY @("-m", "pip", "install", $pinTorch, $pinAudio, "--index-url", $idx)
+        if ($torchRc -eq 0) { Say "torch installed ($idx): $pinTorch + $pinAudio"; break }
+        Say "that index did not work (exit $torchRc), trying the next one"
+      }
     }
   } finally { $ErrorActionPreference = $prevEap }
   if ($torchRc -ne 0) {
-    throw "torch installation failed (indices tried: $($TORCH_INDICES -join ' / ')) -- see the pip output above; you can also point BREEZE_TORCH_INDEX at your own mirror and rerun"
+    throw "torch installation failed (SJTU wheels + indices: $($TORCH_INDICES -join ' / ')) -- see the pip output above; you can also point BREEZE_TORCH_INDEX at your own mirror and rerun"
   }
 } else { Say "BREEZE_SKIP_TORCH=1: skipping torch" }
 Progress 54
@@ -259,6 +301,48 @@ try {
 } finally { $ErrorActionPreference = $prevEapG }
 if ($depsRc -ne 0) { throw "Python dependency installation failed (see the pip output above)" }
 Progress 78
+
+# -- 3b. Re-assert the CUDA torch ------------------------------------------
+# A real failure measured this round: the CUDA torch installed by the torch step is then REPLACED
+# by the CPU build by the very next "pip install -r requirements.breeze.txt" (the qwen-tts chain
+# pins torch==2.9.1, and the PyPI mirror version compares HIGHER than the +cu128 local version, so
+# pip silently swaps it; the log shows "Uninstalling torch-2.9.1+cu128"). The install then finishes
+# "green" with a CPU torch and only the smoke step reports "torch cannot see CUDA" -- exactly what
+# the user experiences as "breeze installs but never works". The fix: after the dependency step we
+# re-check and force-reinstall the CUDA build (with the +cuXXX local tag pip only accepts that
+# wheel). This step runs last: no pip install after it can swap torch again.
+$torchOk2 = $false
+$torchVer = (& $VENV_PY -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+if ($torchVer -match '\+cu\d+') {
+  $torchOk2 = $true
+  Say "torch is already the CUDA build ($torchVer)"
+} else {
+  Say "torch is '$torchVer' (not a CUDA build) -- the requirements step replaced it; reinstalling the CUDA build"
+  $prevEapT = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    foreach ($idx in $TORCH_INDICES) {
+      $cu2 = if ($idx -match '/(cu\d+)$') { $Matches[1] } else { "" }
+      $pin2 = if ($cu2) { "torch==2.9.1+" + $cu2 } else { "torch==2.9.1" }
+      # torchaudio is pinned to the SAME cu version as torch: replacing only torch leaves a
+      # "torch 2.9.1+cu128 + torchaudio 2.11" pair and the engine fails to load _torchaudio.pyd.
+      $taPin2 = if ($cu2) { "torchaudio==2.9.1+" + $cu2 } else { "torchaudio==2.9.1" }
+      Say "torch reinstall: $pin2 + $taPin2 from $idx"
+      $rc = Invoke-Native $VENV_PY @("-m", "pip", "install", "--force-reinstall", "--no-deps", $pin2, $taPin2, "--index-url", $idx)
+      if ($rc -eq 0) {
+        $torchVer = (& $VENV_PY -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+        if ($torchVer -match '\+cu\d+') { $torchOk2 = $true; Say "torch is now $torchVer"; break }
+        Say "installed from $idx but the version is still '$torchVer' -- trying the next index"
+      } else {
+        Say "that index did not work (exit $rc), trying the next one"
+      }
+    }
+  } finally { $ErrorActionPreference = $prevEapT }
+}
+if (-not $torchOk2) {
+  throw "could not keep a CUDA build of torch (final version: '$torchVer'). Breeze TTS 2 must run on the GPU -- a CPU torch cannot generate usable speech. Fix: check that $TORCH_INDEX is reachable, or set BREEZE_TORCH_INDEX to another cu-tagged mirror and rerun; the weights already downloaded are not re-fetched."
+}
+Progress 79
 
 # -- 4. Weights -----------------------------------------------------------
 Step "preparing the Breeze TTS 2 weights" 80

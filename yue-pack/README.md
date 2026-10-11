@@ -25,13 +25,13 @@ yue-pack/                      （安装时复制到用户选定的 INSTALL_DIR�
 ├─ requirements.txt            推理依赖（torch 不在里面，见下）
 ├─ start_backend.cmd           手工启动入口（正常由 MTNode 启停）
 ├─ scripts/install.ps1         安装 / 修复脚本（幂等，可重复执行）
-├─ scripts/probe_attention.py  注意力档位探针：torch 装完后探 flash / cudnn / sdpa，写回 .attention-backend
+├─ scripts/probe_attention.py  注意力档位**单档**实测脚本（--only <档> 供宿主启动快检；--all 手工排查）
 ├─ app/
 │   ├─ __init__.py             版本号 + 服务名
 │   ├─ __main__.py             标准库 HTTP 服务入口（自查用）：`python -m app <port>`
 │   ├─ server.py               标准库 HTTP 服务 + 路由 + 并发保护 + 错误码
 │   ├─ ui.py                   宿主唯一入口：`python -m app.ui`（Gradio + run_generate 八槽）
-│   ├─ windows_patch.py        Windows 移植补丁：读 .attention-backend，把注意力档位强制降级到 cudnn / sdpa
+│   ├─ windows_patch.py        Windows 移植补丁：把注意力档位定成默认 cudnn（显式覆盖优先，不三档探针）
 │   └─ engine.py               yue2 pipeline 懒加载（常驻）+ staged 进度 + 取消 + 产物落盘
 ├─ yue2_infer-0.1.5-py3-none-any.whl  安装时从 YuE2-3B 仓库取回的官方推理 whl
 ├─ models/                     模型目录
@@ -69,8 +69,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -InstallDir .
 3. pip 装 `requirements.txt`（清华镜像 → 阿里云 → 官方 PyPI 兜底）
 4. 装 **CUDA 版 torch / torchaudio**：按驱动主版本选 `cu130` / `cu128` / `cu126`，**国内优先**（阿里云 pytorch-wheels），官方 `download.pytorch.org` 只做最后一档；失败逐档降级；
    `-Cpu` 或全部 CUDA 档位都失败时才装 CPU 版
-4b. 跑 `scripts\probe_attention.py` 探**注意力档位**（Windows 必需，见「注意力档位与 Windows 差异」）：
-   结果写 `<INSTALL_DIR>\.attention-backend`；一个可用档都没有 → `ok=false` / `reason=attention_backend_unsupported` 退出
+4b. 把注意力档位定在**默认 `cudnn`** 并记一份 JSON 记录到 `<INSTALL_DIR>\.attention-backend`
+   （安装期**不跑探针**；真跑一次的确认由宿主启动服务前做，见「注意力档位与 Windows 差异」）
 5. 装 **yue2 推理包**：`hf_hub_download` 取 `m-a-p/YuE2-3B` 的
    `yue2_infer-0.1.5-py3-none-any.whl` → 直链（hf-mirror / HF resolve）→ 官方仓库
    `git+https://github.com/multimodal-art-projection/YuE.git`（`ghfast.top` → `gh-proxy.com` → `ghproxy.net` → `ghproxy.com` → 直连）
@@ -108,7 +108,7 @@ cd <INSTALL_DIR>
 | `YUE2_MODEL_DIR` | YuE2-3B 已有模型目录；空 = 自动探测 `<INSTALL_DIR>\models` → HF 缓存 → 回官方 repo id |
 | `YUE2_VAE_DIR` / `YUE2_VAE` | YuE2-Vae 目录 / 直接指定 vae 源（repo id 或路径），默认 `m-a-p/YuE2-Vae` |
 | `YUE2_DEVICE` | `cuda` / `cpu`；空 = 自动（有 CUDA 就用 CUDA） |
-| `YUE2_ATTENTION_BACKEND` | 注意力档位 `flash` / `cudnn` / `sdpa` / `eager`；**优先于** `.attention-backend` 文件；留空 = 用文件（见「注意力档位与 Windows 差异」） |
+| `YUE2_ATTENTION_BACKEND` | 注意力档位 `flash` / `cudnn` / `sdpa`；**优先于** `.attention-backend` 文件；留空 = 用文件里的单行文本，都没有 = 默认 `cudnn`（不自动降级，见「注意力档位与 Windows 差异」） |
 | `YUE2_LOAD_PER_REQUEST` | `1` = 每个请求按官方 `with YuE2Pipeline.from_pretrained(...) as pipe` 重载一次（慢，默认关闭：权重懒加载一次后常驻） |
 | `MTNODE_YUE2_MOCK` | `1` = 不加载模型，按入参造占位产物（冒烟 / 联调）；响应里带 `"mock": true` |
 | `HF_ENDPOINT` | 模型下载回退源，默认 `https://hf-mirror.com` |
@@ -237,31 +237,39 @@ artifact **全部落在调用方给的 `outputDir`**，响应回传**真实绝�
 USE_FLASH_ATTENTION was not enabled for build.
 ```
 
-所以必须把注意力档位显式降级到**本机真正可用**的那一档（`cudnn` → `sdpa` → `eager`），做法是：
+所以本移植把注意力档位**定成默认 `cudnn`**，不再按 `flash` → `cudnn` → `sdpa` 依次探针选档
+（那套要白等最长 180 s，探针失败还会回落 `sdpa`，却报出「已改用 cudnn」的自相矛盾文案）：
 
-1. **安装期探针**：`scripts\install.ps1` 在 torch / torchaudio 装好后立刻跑
-   `scripts\probe_attention.py`（进度 `progress: 38`），把选定的档位写进 `<INSTALL_DIR>\.attention-backend`；
-   探针输出与写入都失败时脚本只打日志不拦安装，但 `.attention-backend` 缺失会让运行时要再探一次。
-2. **运行时下发**：`app\windows_patch.py` 在服务启动时读 `.attention-backend`，
-   把该档位强制喂给 yue2 pipeline（覆盖它自己的 `auto` 选择）。
-3. **一个可用档都没有**：安装脚本写 `.yue2-agent-result` 为 `ok=false` / `reason=attention_backend_unsupported`
-   并退出非 0，提示两条出路 —— 装一个**带 cuDNN 的 CUDA 版 torch**（如
-   `--index-url https://download.pytorch.org/whl/cu128`，或用 `install.ps1 -TorchIndex <档位>` 重装），
-   或**换卡**（官方要求支持 flash / cuDNN 注意力的 24G 级 NVIDIA GPU；老架构卡、核显、CPU 版 torch 都拿不到可用档位）。
+1. **默认档（不探针）**：`app\windows_patch.py` 的 `resolve_backend()` 给出生效档 ——
+   显式覆盖（`YUE2_ATTENTION_BACKEND`，或安装目录 `.attention-backend` 里**单行纯文本**）优先，
+   没有显式覆盖时就是 `cudnn`；安装脚本 `scripts\install.ps1`（进度 `progress: 38`）
+   只把这份默认**记一份 JSON 记录**到 `<INSTALL_DIR>\.attention-backend`，安装期不跑探针。
+2. **启动快检（只一档）**：宿主在拉起服务前跑 `scripts\probe_attention.py --only <生效档> --json`，
+   就这一档真跑一次极小前向（import torch + CUDA 初始化，几秒~十几秒）；
+   跑不了 → **直接报错、不入队、不降级**，文案给出显式改档的写法（`attention_backend_unsupported`）。
+   `app\engine.py` 构造 pipeline 前会再核一次同一档（进程内缓存，零额外成本）。
+3. **要换档只能显式**：`YUE2_ATTENTION_BACKEND=sdpa`（或 `cudnn` / `flash`），
+   或在 `<INSTALL_DIR>\.attention-backend` 里写**单行文本** `sdpa`。
+   这档真跑不起来时不再自动换别的档 —— 官方要求支持 flash / cuDNN 注意力的 24G 级 NVIDIA GPU；
+   老架构卡、核显、CPU 版 torch 都拿不到 cudnn 档，只能显式退到 `sdpa`。
 
-**`.attention-backend`**：单行文本，取值 `flash` / `cudnn` / `sdpa` / `eager`，缺省不存在（= 未探过）。
-**`YUE2_ATTENTION_BACKEND`**（环境变量）：显式指定档位，**优先于** `.attention-backend`；留空则用文件里的值。
-换过 torch、换过卡，或日志里出现 `USE_FLASH_ATTENTION was not enabled for build.` 之后，都该重跑一次探针：
+**`.attention-backend` 是记录，不是设置**：脚本与补丁写的是 JSON（含 `source` / `probes`），
+带 `{` 的文件一律不当覆盖 —— 旧版宿主与探针自己留下的 `source=probe:…` / `forced:…` / `fallback:…`
+痕迹更不算用户设置（否则本机会一直沿用旧档）。**只有单行纯文本才算人写的覆盖。**
+**`YUE2_ATTENTION_BACKEND`**（环境变量）：显式指定档位，**优先于**文件。
+换过 torch / 换过卡，或想确认这台机器到底行不行时，跑一次单档实测：
 
 ```powershell
 cd <INSTALL_DIR>
-# 重探注意力档位（结果写 .attention-backend，并由 windows_patch 在下次启动时生效）
-.\.venv\Scripts\python.exe .\scripts\probe_attention.py
+# 只验生效档（缺省 cudnn）：PASS 退出 0，FAIL 退出 3
+.\.venv\Scripts\python.exe .\scripts\probe_attention.py --only cudnn
+# 三档各看一眼（手工排查用；不会据此自动选档）
+.\.venv\Scripts\python.exe .\scripts\probe_attention.py --all
 ```
 
 排查口径：
 
-- **不要装 `flash-attn`**（Windows 无官方轮子，源码编译基本失败）——降级靠探针，不靠装 flash-attn；
+- **不要装 `flash-attn`**（Windows 无官方轮子，源码编译基本失败）——换档靠显式指定，不靠装 flash-attn；
 - **不要为此重下模型权重**（权重与注意力档位无关）；
 - `app\windows_patch.py` 与 `app\engine.py` 必须**同时**存在于安装目录**与随包脚手架**：
   只缺前者会让每轮 sync（脚手架 → 安装目录）把补丁覆盖掉，故障原样复现。

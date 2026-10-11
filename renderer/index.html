@@ -662,9 +662,17 @@
 <script src="app-asr.js"></script>
 <!-- 音频波形预览器（自包含：window.wavePreviewCreate / wavePreviewSetSource /
      wavePreviewRedraw）。音频节点（音频输入 / 保存音频 / 音乐生成 / 语音合成 /
-     素材音频条目）统一用它取代原生 <audio controls>：方角 + 自绘波形 + 点波形试听。
+     素材音频条目 / 长周期产物）统一用它取代原生 <audio controls>：方角 + 自绘波形 +
+     点波形试听。播放走**全局共享播放引擎**（挂在 body 上的那只 <audio>），因此
+     节点重绘 / 窗口失焦 / 最小化都不会把正在播的那只摘断。
      排在 app-canvas.js 之前：节点 body 区块与预览同步都在调用期取这几个全局函数。 -->
 <script src="app-audioview.js"></script>
+<!-- 媒体预览持久化（renderer/app-mediaview.js）：视频播放器的元素池（重绘复用同一只
+     <video>，不断播、不闪）+ 全屏托底（<video> 挂在带 transform 的 .fn-stage 下时先
+     临时抬到 body 占位容器再 requestFullscreen，原生控件上的全屏键因此可用）。
+     自包含（占位容器样式内联，无需新样式表），app-canvas.js 调用期按 typeof 取
+     mediaViewCreate / mediaViewAttach / mediaViewClear / mediaSetVideoSrc。 -->
+<script src="app-mediaview.js"></script>
 <!-- 音频节点现场录制（renderer/app-recaudio.js + css/recaudio.css）：节点操作行的
      「录制」按钮 → 居中录音面板（实时声波 + 计时）→ 停止后编码成**真 mp3**
      （随包的 renderer/vendor/lame.min.js，全局 `lamejs`；本机 MediaRecorder 只出

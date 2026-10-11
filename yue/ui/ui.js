@@ -65,11 +65,24 @@
       lockBadge.className = "badge off";
     }
 
-    /* 注意力档位：探针实测 / 缓存下发给后端的档位（flash 在 Windows 轮子里没编 kernel） */
+    /* 注意力档位：显示**实际生效**的档位与来源（本版默认 cudnn，不自动降级；
+       不再写「这一档大概会失败」那种猜测文案 —— 看到什么就是什么） */
     const att = String(st.attentionBackend || "");
     if (attBadge) {
-      attBadge.textContent = att ? "注意力 " + att + (att === "flash" ? "（可能在 Planning 失败）" : "") : "注意力 —";
-      attBadge.className = "badge " + (att && att !== "flash" ? "on" : "off");
+      const src = String(st.attentionSource || "");
+      const srcTxt =
+        src === "env"
+          ? "YUE2_ATTENTION_BACKEND 指定"
+          : src === "file"
+            ? ".attention-backend 指定"
+            : src === "default"
+              ? "默认"
+              : src || "";
+      attBadge.textContent = att ? "注意力 " + att + (srcTxt ? "（" + srcTxt + "）" : "") : "注意力 —";
+      attBadge.className = "badge " + (att ? "on" : "off");
+      attBadge.title =
+        "注意力档位：本版默认 cudnn（Windows 轮子里没编 flash kernel，永不自动选 flash）；" +
+        "不自动降级 —— 要换档请设 YUE2_ATTENTION_BACKEND，或在安装目录 .attention-backend 里写单行 sdpa / flash";
     }
 
     /* 起停门槛仍看安装目录（没装就没后端可起），但安装目录本身不再在这只窗里显示 */
@@ -86,7 +99,11 @@
     const m = String(code || "").match(/^missing_dep:(.+)$/);
     if (m) return `缺依赖 ${m[1]}（可在插件卡片的安装窗里重装后端，或手动 pip install）`;
     if (String(code || "") === "attention_backend_unsupported") {
-      return String(msg || "") || "注意力档位不可用（flash 在 Windows 轮子里没编 kernel）：已改用 cudnn/sdpa，可在插件卡片的安装窗里重装后端后重试";
+      return (
+        String(msg || "") ||
+        "注意力档位在本机跑不起来：本版默认 cudnn 且不自动降级 —— 请设 YUE2_ATTENTION_BACKEND=sdpa，" +
+          "或在安装目录 .attention-backend 里写单行 sdpa 后重试"
+      );
     }
     return String(msg || code || "");
   }

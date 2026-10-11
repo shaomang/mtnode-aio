@@ -5,10 +5,17 @@
 .PARAMETER CudaPython
   Optional path to a Python that already has CUDA-capable torch.
   If omitted, probes common conda/PATH locations.
+
+.PARAMETER SourceOnly
+  Only make sure the ComfyUI source tree is in place (clone when missing), then exit 0.
+  install.ps1 calls it this way for its "comfy" step, so the venv / torch / dependency work
+  stays in the single (idempotent) full run that the "venv" step performs.
+  Without this switch the script behaves exactly as before (source + venv + torch + deps).
 #>
 [CmdletBinding()]
 param(
-    [string]$CudaPython = ""
+    [string]$CudaPython = "",
+    [switch]$SourceOnly
 )
 
 # Force UTF-8 for this process so the host (which decodes our stdout as UTF-8)
@@ -26,17 +33,38 @@ $ErrorActionPreference = "Stop"
 # variables below overrides index / extra-index / trusted-host inside this process and every
 # child (pip / git / npm inherit them). Do NOT add `pip --isolated`: it ignores environment
 # variables, which lets that unreachable extra-index back in.
-$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+#
+# pip index fallback chain, same order as cn-mirrors.js pipIndexChain():
+# Tsinghua -> Aliyun -> USTC -> official PyPI (official is the last resort only).
+# Why the chain exists: a single index fails the whole step when the mirror has simply not
+# synced one sub-package yet (2026-10 real case: comfyui-workflow-templates 0.11.78 needs
+# comfyui-workflow-templates-media-assets-02==0.1.11; Tsinghua 404, USTC 404, Aliyun + PyPI
+# both have it). pip prints "No matching distribution found for <pkg> (from versions: none)"
+# and a single-index script dies on that line.
+$PipIndexChain = @(
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple/",
+    "https://mirrors.ustc.edu.cn/pypi/simple/",
+    "https://pypi.org/simple"
+)
+$PipTrustedHostChain = @(
+    "pypi.tuna.tsinghua.edu.cn",
+    "mirrors.aliyun.com",
+    "mirrors.ustc.edu.cn",
+    "pypi.org"
+)
+$PipChainStart = 0
+$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { $PipIndexChain[0] }
 $env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
 $env:PIP_TRUSTED_HOST    = "pypi.tuna.tsinghua.edu.cn"
 if (-not $env:HF_ENDPOINT)         { $env:HF_ENDPOINT = "https://hf-mirror.com" }
 if (-not $env:HF_HUB_DISABLE_XET)  { $env:HF_HUB_DISABLE_XET = "1" }
 if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
-Write-Host "[h3-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
+Write-Host "[h3-install] mirrors: pip=$env:PIP_INDEX_URL (pip chain Tsinghua -> aliyun -> USTC -> official; one index=N/4 line per attempt) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
 
 Write-Host "============================================================"
 Write-Host "[h3-setup] China mirror notes (required, especially when this machine sits on a mainland-China network):"
-Write-Host "  - Python packages: Tsinghua mirror pypi.tuna.tsinghua.edu.cn by default (or USTC mirrors.ustc.edu.cn; override with MT_H3_PIP_INDEX)"
+Write-Host "  - Python packages: Tsinghua mirror pypi.tuna.tsinghua.edu.cn first, then aliyun / USTC, official PyPI last (every pip call below walks that chain; override the first index with MT_H3_PIP_INDEX)"
 Write-Host "  - torch cu130: the Aliyun mirror mirrors.aliyun.com/pytorch-wheels/cu130 first, falling back to the official download.pytorch.org index last (override with MT_H3_TORCH_INDEX)"
 Write-Host "  - Weights come from ModelScope first; if git clone fails, fall back through the ghfast.top / gh-proxy.com / ghproxy.net / ghproxy.com proxies"
 Write-Host "============================================================"
@@ -44,6 +72,53 @@ $Root = Split-Path -Parent $PSScriptRoot
 $ComfyRoot = Join-Path $Root "ComfyUI"
 $VenvDir = Join-Path $ComfyRoot "venv"
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
+
+# Run one pip install against the index chain above: try Tsinghua, then aliyun, then USTC,
+# official PyPI last. The first success wins; when every index fails, name the missing
+# distribution and the sources that were tried, so the install window says what is really
+# wrong instead of pointing at the GPU driver.
+# IMPORTANT: $PipArgs are the arguments AFTER the 'install' subcommand (e.g. "-U", "pip" or
+# "-r", <requirements file>). The "-m pip install" part is added here, so passing "install" again
+# would make pip look for a package literally named "install" (real 2026-10 failure mode).
+function Install-PipWithFallback {
+    param([string[]]$PipArgs)
+    $last = 0
+    $tail = @()
+    for ($i = $PipChainStart; $i -lt $PipIndexChain.Count; $i++) {
+        $idx = $PipIndexChain[$i]
+        $host_ = $PipTrustedHostChain[$i]
+        $n = $i + 1
+        Write-Host "[h3-setup] pip index=$n/$($PipIndexChain.Count) host=$host_"
+        $env:PIP_INDEX_URL = $idx
+        $env:PIP_EXTRA_INDEX_URL = $idx
+        $env:PIP_TRUSTED_HOST = $host_
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $out = @(& $VenvPy -m pip install @PipArgs 2>&1)
+            $last = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        foreach ($l in $out) { Write-Host ([string]$l) }
+        $tail = @($out | Select-Object -Last 30)
+        if ($last -eq 0) { return }
+        if ($n -lt $PipIndexChain.Count) {
+            Write-Host "[h3-setup] pip index=$n/$($PipIndexChain.Count) host=$host_ failed (exit $last); falling back to the next index..."
+        }
+    }
+    $miss = ""
+    foreach ($l in $tail) {
+        if (([string]$l) -match "(?i)No matching distribution found for\s+([^\s\(]+)") { $miss = $Matches[1] }
+    }
+    $tried = ($PipIndexChain -join " -> ")
+    if ($miss) {
+        throw "pip install failed: no matching distribution found for $miss. All pip indexes were tried ($tried). That mirror has not synced this package yet; retry install and the script automatically walks to the next index."
+    }
+    $t = (@($tail | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }) -join " / ")
+    if ($t.Length -gt 400) { $t = $t.Substring($t.Length - 400) }
+    throw "pip install failed on every index ($tried). Last pip output: $t"
+}
 
 function Test-CudaPython {
     param([string]$Py)
@@ -144,6 +219,11 @@ function Ensure-CustomNode {
 
 Ensure-ComfyUI
 
+if ($SourceOnly) {
+    Write-Host "[h3-setup] source-only: ComfyUI source is in place at $ComfyRoot (venv / torch / deps skipped)"
+    exit 0
+}
+
 if (-not (Test-Path $VenvPy)) {
     $basePy = Find-CudaPython
     if (-not $basePy) {
@@ -157,16 +237,16 @@ if (-not (Test-Path $VenvPy)) {
     Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
 }
 
-# Explicit override for this package stays on top of the pinned defaults above
+# Explicit override for this package stays on top of the pinned defaults above: it replaces
+# the FIRST index of the chain, the aliyun / USTC / official fallbacks stay in place.
 if ($env:MT_H3_PIP_INDEX) {
-    # China mirror: Tsinghua by default (or USTC); override with MT_H3_PIP_INDEX
-    $env:PIP_INDEX_URL = $env:MT_H3_PIP_INDEX
-    $env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+    $PipIndexChain[0] = $env:MT_H3_PIP_INDEX
+    Write-Host "[h3-setup] pip chain start overridden by MT_H3_PIP_INDEX: $($PipIndexChain[0])"
 }
 
 Write-Host "Installing helper requirements (repo root)..."
-& $VenvPy -m pip install -U pip -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
-if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
+try { Install-PipWithFallback -PipArgs @("-U", "pip") }
+catch { throw "pip upgrade failed: $($_.Exception.Message)" }
 
 # Install CUDA torch inside the venv first, so the old torch in system site-packages is never reused.
 # The H3 quantized kernels need the optimized CUDA kernels from cu130; cu124/cu126 "start up but hang on the first step".
@@ -190,14 +270,15 @@ if ($cudaOk -ne "y") {
     throw "torch cu130 loaded but torch.cuda.is_available()=False. NVIDIA driver too old for CUDA 13.0. Update the driver (>= CUDA 13.0 support) and rerun."
 }
 
-& $VenvPy -m pip install -r (Join-Path $Root "requirements.txt") -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
-if ($LASTEXITCODE -ne 0) { throw "pip install helper requirements failed" }
+Install-PipWithFallback -PipArgs @("-r", (Join-Path $Root "requirements.txt"))
 
 Write-Host "Installing ComfyUI requirements..."
 $req = Join-Path $ComfyRoot "requirements.txt"
 if (Test-Path $req) {
-    & $VenvPy -m pip install -r $req -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
-    if ($LASTEXITCODE -ne 0) { throw "pip install ComfyUI requirements failed" }
+    # The chain matters most here: ComfyUI requirements pin many sub-packages, and a mirror
+    # that has not synced one of them fails the whole file with "No matching distribution found".
+    try { Install-PipWithFallback -PipArgs @("-r", $req) }
+    catch { throw "pip install ComfyUI requirements failed: $($_.Exception.Message)" }
 }
 
 Ensure-CustomNode -Name "ComfyUI-MiniMaxH3-TeaCache" -Url "https://github.com/Icyoung/ComfyUI-MiniMaxH3-TeaCache.git"

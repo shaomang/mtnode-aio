@@ -97,10 +97,10 @@ const PS_FILES = [
       "[yue2-install] progress:",
       ".yue2-agent-result",
       ".install-ok",
-      "probe_attention.py",
+      ".attention-backend",
+      "install:default:cudnn",
       "ui_entry_import_failed",
       "requirements_install_failed",
-      "attention_backend_unsupported",
     ],
   },
   {
@@ -128,7 +128,7 @@ const PY_FILES = [
   },
   {
     rel: "yue-pack/scripts/probe_attention.py",
-    markers: ["--json", "windows_patch", ".attention-backend", '_ORDER = ("flash", "cudnn", "sdpa")'],
+    markers: ["--json", "--only", "windows_patch", ".attention-backend", "resolve_backend"],
   },
 ];
 

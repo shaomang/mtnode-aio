@@ -4474,6 +4474,93 @@ textarea.asset-form-input {
   display: block;
 }
 
+/* 音量按钮（与播放键同尺寸同方角，图标随音量四档切换） */
+.n-wave-vol {
+  flex: none;
+  width: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bd2);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.n-wave-vol:hover {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.n-wave-vol.on {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.n-wave-vol.off {
+  color: var(--muted);
+}
+
+.n-wave-vol svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+/* 音量浮层：盖住播放键那一行往左展开（节点外壳普遍 overflow:hidden/clip，
+   往上弹十有八九被裁掉；浮层整块落在播放器自己的盒子里最稳），方角 + 主题变量 */
+.n-wave-volwrap {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: stretch;
+}
+
+.n-wave-volpop {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 40;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 0 6px 0 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--bd2);
+  border-radius: 0;
+  background: var(--code, #12161f);
+  box-shadow: -6px 0 14px rgba(0, 0, 0, .35);
+  white-space: nowrap;
+}
+
+.n-wave-volpop.on {
+  display: flex;
+}
+
+.n-wave-vol-range {
+  width: 96px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  flex: none;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+.n-wave-vol-pct {
+  flex: none;
+  min-width: 32px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: right;
+  color: var(--muted);
+}
+
 /* 波形区：canvas 铺满，提示层居中叠在上面 */
 .n-wave-box {
   position: relative;
@@ -4494,6 +4581,11 @@ textarea.asset-form-input {
 
 .n-wave-cv {
   display: block;
+  /* 绝对定位：canvas 的固有尺寸（300×150）不再参与布局 —— 否则它会把 .n-wave-row
+     顶高，而 ResizeObserver 又会按新的盒高重画，来回互相撑大（实测能滚成几万像素高）。 */
+  position: absolute;
+  left: 0;
+  top: 0;
   width: 100%;
   height: 100%;
 }

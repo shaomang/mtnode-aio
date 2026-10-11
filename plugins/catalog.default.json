@@ -23,7 +23,7 @@
       "kind": "music3",
       "handler": "music3",
       "order": 30,
-      "version": "1.0.11",
+      "version": "1.0.12",
       "minAppVersion": "1.1.20",
       "icon": "minimax-music3.png",
       "title": {
@@ -74,7 +74,7 @@
       "kind": "h3",
       "handler": "h3",
       "order": 40,
-      "version": "1.0.6",
+      "version": "1.0.8",
       "minAppVersion": "1.1.20",
       "icon": "minimax-h3.png",
       "title": {

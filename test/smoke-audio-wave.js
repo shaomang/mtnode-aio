@@ -210,6 +210,9 @@ function installMiniDom(sandbox) {
       addEventListener(t, fn) {
         (el.listeners[t] = el.listeners[t] || []).push(fn);
       },
+      removeEventListener(t, fn) {
+        el.listeners[t] = (el.listeners[t] || []).filter((f) => f !== fn);
+      },
       querySelector(sel) {
         for (const c of el.children) {
           if (matches(c, sel)) return c;
@@ -277,7 +280,11 @@ function installMiniDom(sandbox) {
     );
     return el;
   };
-  sandbox.document = { createElement: make };
+  sandbox.document = {
+    createElement: make,
+    body: make("body"),
+    addEventListener() {},
+  };
   sandbox.getComputedStyle = () => ({ getPropertyValue: () => "" });
   sandbox.devicePixelRatio = 1;
   sandbox.MutationObserver = function (cb) {
@@ -317,19 +324,20 @@ console.log("\n[5] play() 被中断（换源 / 节点被摘出文档）不再抛
       av.indexOf("      aud.play();") < 0,
     "不存在裸 aud.play()（原先 try/catch 接不住异步拒绝）",
   );
-  ok(av.indexOf("p.then(null,") > 0, "play() 的拒绝有兜底处理");
+  ok(av.indexOf("p.then(null,") > 0, "play() 的拒绝有兜底处理（AbortError 之外才收播放态）");
   ok(av.indexOf("function waveStopPlayback(") > 0, "有统一停播收尾 waveStopPlayback");
   ok(
-    /wavePreviewSetSource[\s\S]*?waveStopPlayback\(el\)[\s\S]*?aud\.src/.test(av),
+    /if \(changed\) \{[\s\S]*?waveStopPlayback\(el\);[\s\S]*?waveEngineSetSource\(el, url\)/.test(av),
     "换源前先停住（不打断未完成的 play()）",
   );
+  ok(av.indexOf('eng.removeAttribute("src")') > 0, "清空时摘掉引擎 src（不赋空串）");
   ok(
-    av.indexOf('aud.removeAttribute("src")') > 0,
-    "清空时摘掉 src（不再赋空串 = 文档地址）",
+    /function wavePreviewStopAll\(/.test(av) && /!force && el\.isConnected/.test(av),
+    "全局停播只回收「外壳真没了」的（重绘摘掉的那只继续播）",
   );
   ok(
-    /if \(!el\.isConnected\) \{[\s\S]*?waveStopPlayback\(el\)/.test(av),
-    "节点重绘摘出文档后自动停播",
+    /function waveDraw\(el\) \{[\s\S]{0,400}?if \(!el\.isConnected\) return;/.test(av),
+    "重绘摘出文档后 waveDraw 只跳过绘制、不停播（改由全局停播收尾）",
   );
   ok(
     /set\(v\) \{[\s\S]*?waveStopPlayback\(host0\)[\s\S]*?desc\.set\.call/.test(av),
@@ -338,32 +346,35 @@ console.log("\n[5] play() 被中断（换源 / 节点被摘出文档）不再抛
 }
 
 (async () => {
-  const s = load();
+  /* play() 被拒：拿全局播放引擎来测（波形播放器不再自带 <audio>） */
+  const s = loadWithDom();
+  const eng = vm.runInContext("waveEngineEnsure()", s);
   let unhandled = 0;
   const onUnhandled = () => {
     unhandled++;
   };
   process.on("unhandledRejection", onUnhandled);
-  const aud = {
-    paused: true,
-    play() {
-      return Promise.reject(new Error("The play() request was interrupted"));
-    },
-    pause() {},
+  eng.readyState = 4;
+  eng.play = () => Promise.reject(new Error("The play() request was interrupted"));
+  const el = { isConnected: true, querySelector: () => null };
+  const st = {
+    playing: true,
+    ver: 1,
+    peaks: null,
+    hint: "",
+    dur: 0,
+    path: "C:/a.wav",
+    srcUrl: "file:///C:/a.wav",
+    own: el,
   };
-  const el = {
-    isConnected: true,
-    querySelector: (sel) => (sel === "audio" ? aud : null),
-  };
-  const st = { playing: true, ver: 1, peaks: null, hint: "", dur: 0, path: "" };
   vm.runInContext("wavePreviewState", s).set(el, st);
-  vm.runInContext("wavePlay", s)(el);
-  await new Promise((r) => setTimeout(r, 30));
+  vm.runInContext("waveEngineKick", s)(el);
+  await new Promise((r) => setTimeout(r, 40));
   process.removeListener("unhandledRejection", onUnhandled);
   ok(unhandled === 0, "play() 被拒时没有未处理拒绝");
   ok(st.playing === false, "被拦下后播放态收回（按钮不假亮）");
 
-  console.log("\n[6] 外壳 <div> 也认 el.src / dataset.path（音频真挂到内部 <audio>）");
+  console.log("\n[6] 波形播放器只认 <div> 外壳契约；播放引擎是全局那只（挂 body）");
   const avSrc = read("renderer/app-audioview.js");
   ok(avSrc.indexOf("MutationObserver") > 0, "模块自己盯 data-path 变化");
   ok(
@@ -371,6 +382,11 @@ console.log("\n[5] play() 被中断（换源 / 节点被摘出文档）不再抛
     "模块自己接住 removeAttribute('src')",
   );
   ok(avSrc.indexOf("function waveSourceFromUrl(") > 0, "file:/// URL → 路径 + 时间戳有独立解析");
+  ok(
+    avSrc.indexOf("document.body.appendChild(a)") > 0 &&
+      avSrc.indexOf('dataset.mtnodeRole = "audio-engine"') > 0,
+    "播放引擎建在 body 上并带角色标记（节点重绘拆不掉它）",
+  );
   const canvasSrc = read("renderer/app-canvas.js");
   ok(
     canvasSrc.indexOf('media.className = "n-av-el"') < 0,
@@ -386,13 +402,14 @@ console.log("\n[5] play() 被中断（换源 / 节点被摘出文档）不再抛
   const create = vm.runInContext("wavePreviewCreate", dom);
   const w1 = create("svaud-n1");
   ok(w1.className.indexOf("n-wave") >= 0, "外壳自身带 .n-wave（外加 n-av-el 也不丢）");
-  const a1 = w1.querySelector("audio");
-  ok(!!a1, "外壳内确有隐藏 <audio> 播放引擎");
+  ok(w1.querySelector("audio") === null, "外壳里不再挂 <audio>（引擎全局一只，见 [1] 的断言）");
+  const a1 = vm.runInContext("waveEngineEnsure()", dom);
+  ok(!!a1 && a1.tagName === "AUDIO", "全局播放引擎确实存在");
   w1.src = "file:///C:/dir/a%20b.wav?t=123";
   await new Promise((r) => setTimeout(r, 20));
   ok(
-    a1.src === "file:///C:/dir/a b.wav?t=123",
-    "el.src = file:///…?t= 直达内部 audio（含时间戳）",
+    a1.getAttribute("src") === "file:///C:/dir/a b.wav?t=123",
+    "el.src = file:///…?t= 直达全局引擎（含时间戳）",
   );
   ok(w1.dataset.path === "C:/dir/a b.wav", "路径回写到 dataset.path");
   ok(
@@ -404,12 +421,12 @@ console.log("\n[5] play() 被中断（换源 / 节点被摘出文档）不再抛
     "读回 src 是 file:/// URL（不带时间戳）",
   );
   w1.removeAttribute("src");
-  ok(!a1.src, "removeAttribute('src') 真能清空音源");
+  ok(!a1.getAttribute("src"), "removeAttribute('src') 真能清空引擎音源");
   const w2 = create("svaud-n2");
   w2.dataset.path = "D:/m/take.mp3";
   await new Promise((r) => setTimeout(r, 20));
   ok(
-    String(w2.querySelector("audio").src).indexOf("D:/m/take.mp3") >= 0,
+    String(a1.getAttribute("src")).indexOf("D:/m/take.mp3") >= 0,
     "只写 dataset.path（保存节点构造分支）也会挂上音源",
   );
 

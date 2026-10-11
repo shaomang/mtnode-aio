@@ -82,12 +82,17 @@ if ($SkipCopy) {
 # -- 3. npm install ----------------------------------------------------------
 Step-Begin "npm" "install dependencies (npm install)" 32
 # Domestic registry by default; -Official switches to the official one and -Registry <url> picks a custom one (precedence: -Registry > -Official > default)
-if ($Registry) { $registry = @("--registry=$Registry") }
-elseif ($Official) { $registry = @("--registry=https://registry.npmjs.org") }
-else { $registry = @("--registry=https://registry.npmmirror.com") }
-Write-Host "[remotion-install] npm install $($registry -join ' ')"
+#
+# ⚠ 这里踩过一个真坑（用户侧报 `EINVALIDTAGNAME: Invalid tag name "=" of package "="`）：以前写成
+#   `$registry = @("--registry=$Registry")` 再 `& npm install @registry` —— 单元素数组经 splat
+#   传到**原生命令**时会被重新拆词，npm 实际收到 `install --registry = https://…`，把裸 `=` 当包名 tag。
+#   原生命令的整参数必须是一个字符串变量，别放进数组再 splat。
+if ($Registry) { $regFlag = "--registry=" + $Registry }
+elseif ($Official) { $regFlag = "--registry=https://registry.npmjs.org" }
+else { $regFlag = "--registry=https://registry.npmmirror.com" }
+Write-Host "[remotion-install] npm install $regFlag"
 try {
-  & npm install @registry
+  & npm install "$regFlag"
   if ($LASTEXITCODE -ne 0) { throw "npm install exit $LASTEXITCODE" }
   Step-Ok "npm" 88
 } catch {

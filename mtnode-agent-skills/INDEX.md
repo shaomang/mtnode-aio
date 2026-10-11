@@ -35,6 +35,8 @@
   - 文件：`mtnode/mcp-server/SKILL.md`
 - **mtnode-media-gen-nodes** — 音乐/语音/视频生成节点：MTNode music_gen / yue_gen / breeze_gen / video_gen 节点：MiniMax Music 3、YuE2、Breeze TTS 2 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, yue_gen, breeze_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.
   - 文件：`mtnode/media-gen-nodes/SKILL.md`
+- **mtnode-verify-in-app** — 真机自验（改 MTNode 时怎么验）：开发 MTNode 自身功能（插件 / 应用 / 窗口交互 / 渲染层 UI）时的自验纪律：起一只独立数据目录的开发态实例，经 tools/mtnode-gui.mjs 用 MCP 驱动真实窗口（outline / click / type / set / screenshot），截图读像素确认，留下可复核证据；做不到就如实写「未验证 + 原因」，不许拿 smoke 当「功能真的能用」。Use when developing MTNode itself (plugin install / console UI / app window / renderer CSS / dialog behaviour) and you must prove the change really works in the running desktop app, not only in node smoke 
+  - 文件：`mtnode/verify-in-app/SKILL.md`
 
 ## 音乐生成（MiniMax Music）
 

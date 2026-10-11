@@ -534,5 +534,297 @@ for (const [id, host] of Object.entries(W_HOST)) {
   );
 }
 
-console.log("\n" + (fails ? "FAILED " + fails + " / " + checks : "ALL PASS " + checks) + " checks");
-process.exit(fails ? 1 : 0);
+/* ═════════════ [13] H3 安装编排干跑：源码已在也照样备环境 ═════════════ */
+/* 修的是什么（用户现场）：h3-pack/scripts/install.ps1 上一版只要 ComfyUI\main.py 已存在，
+   就把「源码 + 环境」整段跳过（setup_env.ps1 根本没跑），随后 venv 步按「venv python 不存在」
+   判失败 —— 于是任何「源码拉下来了、venv 还没建」的断点续装现场都卡在 venv。
+   本节用 mock 子脚本真跑一遍编排（不装 H3、不下权重、不碰用户目录），把口径钉住：
+     · 源码已在 ⇒ comfy 步不重复拉源码，但 venv 步**仍然**执行完整环境准备；
+     · 失败按证据分档 + 失败步带子脚本报错尾部；后面没跑到的步骤标「已跳过」；
+     · 成功路径：venv 复检通过之后才允许 nodes 步开始。 */
+console.log("\n[13] h3 install.ps1 干跑：main.py 已存在仍执行环境准备 + 失败分档 + 步骤顺序");
+const h3InstallSrc = read("h3-pack/scripts/install.ps1");
+has(h3InstallSrc, "-SourceOnly", "comfy 步只保证源码（setup_env -SourceOnly），环境准备留给 venv 步");
+has(h3InstallSrc, "Skip-AfterStep", "失败时把后面没跑到的步骤显式标 skip");
+has(h3InstallSrc, "comfy_kitchen", "venv 步按实测复检（venv python + torch.cuda + comfy_kitchen）");
+const invSub = psFnBody(h3InstallSrc, "Invoke-SubScript");
+has(invSub, "ForEach-Object", "子脚本输出走管道逐行转发（实时流式，长步骤不再整段沉默）");
+hasnt(invSub, "$out = ", "不再先把整段输出收进变量、跑完才打印");
+hasnt(invSub, "Invoke-Expression", "不用 Invoke-Expression（转发不重新求值命令行）");
+const h3StepsMan = JSON.parse(read("h3-pack/steps.json"));
+const H3_STEP_IDS = ["comfy", "venv", "nodes", "weights", "smoke"];
+
+/** 取「function NAME {（或 function NAME( )」形态的函数体（大括号配平） */
+function psFnBody(src, name) {
+  const at = String(src).indexOf("function " + name);
+  if (at < 0) return "";
+  const open = String(src).indexOf("{", at);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return src.slice(at, i + 1);
+    }
+  }
+  return src.slice(at);
+}
+
+/** 把一段安装脚本输出按宿主口径解成（快照, 步骤行序列）；exitCode 走宿主同一条收尾路径 */
+function h3Collect(outText, exitCode) {
+  const snap = steps.createSnapshot({ steps: steps.normManifest(h3StepsMan).steps });
+  const seq = [];
+  String(outText)
+    .split(/\r?\n/)
+    .forEach((line, i) => {
+      const parsed = steps.parseStepLine(line);
+      if (parsed) {
+        seq.push({ id: parsed.step.id, status: parsed.step.status, line: i });
+        steps.applyStep(snap, parsed.step);
+      } else if (line.trim()) {
+        steps.pushLog(snap, steps.currentStepId(snap), line);
+      }
+    });
+  steps.finishSnapshot(snap, { ok: exitCode === 0 });
+  return { snap, seq };
+}
+const h3Step = (snap, id) => (snap.steps || []).find((s) => s.id === id) || {};
+const h3SeqAt = (seq, id, status) => {
+  const hit = seq.find((e) => e.id === id && e.status === status);
+  return hit ? hit.line : -1;
+};
+
+/* 干跑编排用的公共件（[13.4] 的异步探针也在模块级用它，所以放这儿） */
+const rootScripts = path.join(ROOT, "h3-pack", "scripts");
+const PS_RUN = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"];
+const writeMock = (file, lines) => fs.writeFileSync(file, lines.join("\r\n") + "\r\n", "utf8");
+const runInstall = (dir) =>
+  cp.spawnSync(
+    "powershell.exe",
+    [...PS_RUN, path.join(dir, "scripts", "install.ps1"), "-InstallDir", dir, "-DiskHintGb", "0"],
+    { encoding: "utf8" },
+  );
+
+if (process.platform !== "win32") {
+  console.log("  skip  windows-only：编排干跑要 PowerShell");
+} else {
+
+  /* ── [13.1] 失败路径：源码已在、venv 没建起来 ── */
+  const tmpA = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-h3-a-"));
+  try {
+    fs.mkdirSync(path.join(tmpA, "scripts"), { recursive: true });
+    for (const n of ["install.ps1", "step.ps1"]) fs.copyFileSync(path.join(rootScripts, n), path.join(tmpA, "scripts", n));
+    fs.mkdirSync(path.join(tmpA, "ComfyUI"), { recursive: true });
+    fs.writeFileSync(path.join(tmpA, "ComfyUI", "main.py"), "# mock ComfyUI\n", "utf8");
+    writeMock(path.join(tmpA, "scripts", "setup_env.ps1"), [
+      'param([string]$CudaPython = "", [switch]$SourceOnly)',
+      "$log = Join-Path (Split-Path -Parent $PSScriptRoot) 'setup_env.calls.log'",
+      "Add-Content -Path $log -Value ('sourceOnly=' + [bool]$SourceOnly)",
+      "Write-Host '[h3-setup] mock: full env prep'",
+      "Write-Host 'ERROR: Could not find a version that satisfies the requirement torch==2.9.1+cu130'",
+      "exit 0",
+    ]);
+    writeMock(path.join(tmpA, "scripts", "download_models.ps1"), ["Write-Host '[h3-download] mock'", "exit 0"]);
+    const rA = runInstall(tmpA);
+    const outA = String(rA.stdout || "");
+    const { snap: snapA, seq: seqA } = h3Collect(outA, rA.status);
+    const callLogA = fs.existsSync(path.join(tmpA, "setup_env.calls.log"))
+      ? fs.readFileSync(path.join(tmpA, "setup_env.calls.log"), "utf8").trim().split(/\r?\n/)
+      : [];
+    ok(rA.status !== 0, "venv 建不起来时脚本以非 0 退出（实得 " + rA.status + "）");
+    ok(callLogA.length >= 1, "ComfyUI\\main.py 已存在，环境准备**仍然**被执行（旧版这里一次都不跑）");
+    ok(callLogA.indexOf("sourceOnly=False") >= 0, "venv 步跑的是完整环境准备（sourceOnly=False）");
+    ok(callLogA.indexOf("sourceOnly=True") < 0, "源码已在时 comfy 步不重复调 setup_env（不做无用功）");
+    ok(h3Step(snapA, "comfy").status === "ok", "comfy 步照旧判 ok（源码已在）");
+    const venvA = h3Step(snapA, "venv");
+    ok(venvA.status === "fail", "停在 venv 步（实得 " + venvA.status + "）");
+    ok(String(venvA.message || "").indexOf("报错尾部") >= 0, "失败原因按证据分档并附报错尾部");
+    ok(String(venvA.message || "").indexOf("torch==2.9.1+cu130") >= 0, "报错尾部带的是子脚本里的真实报错行（不是「驱动与 CUDA 档位不匹配」那句套话）");
+    for (const id of ["nodes", "weights", "smoke"]) {
+      ok(h3Step(snapA, id).status === "skip", id + " 步标「已跳过」（不是在「待执行」上吊着）");
+    }
+    ok(String((snapA.logs || {}).venv || "").indexOf("mock: full env prep") >= 0, "环境准备的输出逐行进安装窗日志（归到 venv 步）");
+    ok(snapA.state === "failed", "整场会话结论 = 失败");
+  } finally {
+    try {
+      fs.rmSync(tmpA, { recursive: true, force: true });
+    } catch {}
+  }
+
+  /* ── [13.2] 成功路径：源码缺 → 先拉源码，再备环境，venv 复检过了才开 nodes ── */
+  const pyOk = cp.spawnSync("python", ["-c", "import sys;print(sys.version_info[0])"], { encoding: "utf8" });
+  if (!pyOk || pyOk.status !== 0 || String(pyOk.stdout || "").trim() !== "3") {
+    console.log("  skip  [13.2]/[13.3] 本机没有可用的 python：成功路径与两条分档干跑跳过（失败路径已覆盖根因）");
+  } else {
+    const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-h3-b-"));
+    try {
+      fs.mkdirSync(path.join(tmpB, "scripts"), { recursive: true });
+      for (const n of ["install.ps1", "step.ps1"]) fs.copyFileSync(path.join(rootScripts, n), path.join(tmpB, "scripts", n));
+      writeMock(path.join(tmpB, "scripts", "setup_env.ps1"), [
+        'param([string]$CudaPython = "", [switch]$SourceOnly)',
+        "$root = Split-Path -Parent $PSScriptRoot",
+        "$log = Join-Path $root 'setup_env.calls.log'",
+        "Add-Content -Path $log -Value ('sourceOnly=' + [bool]$SourceOnly)",
+        "$comfy = Join-Path $root 'ComfyUI'",
+        "if ($SourceOnly) {",
+        "  New-Item -ItemType Directory -Force -Path $comfy | Out-Null",
+        "  Set-Content -Path (Join-Path $comfy 'main.py') -Value '# mock ComfyUI'",
+        "  Write-Host '[h3-setup] mock: source-only'",
+        "  exit 0",
+        "}",
+        "$venv = Join-Path $comfy 'venv'",
+        "& python -m venv --without-pip $venv | Out-Null",
+        "$sp = Join-Path $venv 'Lib\\site-packages'",
+        "New-Item -ItemType Directory -Force -Path $sp | Out-Null",
+        "Set-Content -Path (Join-Path $sp 'torch.py') -Value @('class _Cuda:', '    @staticmethod', '    def is_available(): return True', 'cuda = _Cuda()', \"__version__ = '2.9.1+cu130'\")",
+        "Set-Content -Path (Join-Path $sp 'comfy_kitchen.py') -Value '# stub'",
+        "New-Item -ItemType Directory -Force -Path (Join-Path $comfy 'custom_nodes\\ComfyUI-KJNodes') | Out-Null",
+        "Write-Host '[h3-setup] mock: full env prep done'",
+        "exit 0",
+      ]);
+      writeMock(path.join(tmpB, "scripts", "download_models.ps1"), [
+        "$root = Split-Path -Parent $PSScriptRoot",
+        "foreach ($d in @('diffusion_models', 'text_encoders', 'vae')) { New-Item -ItemType Directory -Force -Path (Join-Path $root \"ComfyUI\\models\\$d\") | Out-Null }",
+        "Write-Host '[h3-download] mock'",
+        "exit 0",
+      ]);
+      const rB = runInstall(tmpB);
+      const { snap: snapB, seq: seqB } = h3Collect(String(rB.stdout || ""), rB.status);
+      const callLogB = fs.existsSync(path.join(tmpB, "setup_env.calls.log"))
+        ? fs.readFileSync(path.join(tmpB, "setup_env.calls.log"), "utf8").trim().split(/\r?\n/)
+        : [];
+      ok(rB.status === 0, "环境齐备时脚本以 0 退出（实得 " + rB.status + "；stderr=" + String(rB.stderr || "").slice(-200) + "）");
+      ok(fs.existsSync(path.join(tmpB, ".install-ok")), "收尾写出 .install-ok");
+      ok(callLogB.indexOf("sourceOnly=True") >= 0, "源码缺时 comfy 步用 -SourceOnly 只拉源码");
+      ok(callLogB.indexOf("sourceOnly=False") >= 0, "venv 步无条件再跑一次完整环境准备（幂等补齐）");
+      ok(
+        H3_STEP_IDS.every((id) => h3Step(snapB, id).status === "ok") && h3Step(snapB, "disk").status === "ok",
+        "六步全 ok（" + snapB.steps.map((s) => s.id + ":" + s.status).join(" ") + "）",
+      );
+      const iVenvOk = h3SeqAt(seqB, "venv", "ok");
+      const iNodesRun = h3SeqAt(seqB, "nodes", "run");
+      ok(iVenvOk >= 0 && iNodesRun > iVenvOk, "nodes 步在 venv 复检通过之后才开始（顺序：" + iVenvOk + " → " + iNodesRun + "）");
+      ok(seqB.filter((e) => e.status === "skip").length === 0, "成功路径不产生任何 skip 行");
+      ok(snapB.state === "done" && snapB.pct === 100, "成功收尾：state=done / pct=100");
+    } finally {
+      try {
+        fs.rmSync(tmpB, { recursive: true, force: true });
+      } catch {}
+    }
+
+    /* ── [13.3] 失败分档：venv 在但 cuda 不可用 / comfy_kitchen 导入失败各给各的原因 ── */
+    const tmpC = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-h3-c-"));
+    try {
+      fs.mkdirSync(path.join(tmpC, "scripts"), { recursive: true });
+      for (const n of ["install.ps1", "step.ps1"]) fs.copyFileSync(path.join(rootScripts, n), path.join(tmpC, "scripts", n));
+      fs.mkdirSync(path.join(tmpC, "ComfyUI"), { recursive: true });
+      fs.writeFileSync(path.join(tmpC, "ComfyUI", "main.py"), "# mock ComfyUI\n", "utf8");
+      writeMock(path.join(tmpC, "scripts", "setup_env.ps1"), [
+        "$log = Join-Path (Split-Path -Parent $PSScriptRoot) 'setup_env.calls.log'",
+        "Add-Content -Path $log -Value 'called'",
+        "Write-Host '[h3-setup] mock: venv already in place'",
+        "exit 0",
+      ]);
+      writeMock(path.join(tmpC, "scripts", "download_models.ps1"), ["Write-Host '[h3-download] mock'", "exit 0"]);
+      const venvDir = path.join(tmpC, "ComfyUI", "venv");
+      const vr = cp.spawnSync("python", ["-m", "venv", "--without-pip", venvDir], { encoding: "utf8" });
+      ok(vr.status === 0, "[13.3] 现场：真建一只 venv 用于两条分档（python -m venv --without-pip）");
+      const sitePkgs = path.join(venvDir, "Lib", "site-packages");
+      fs.mkdirSync(sitePkgs, { recursive: true });
+      const torchStub = (cuda) => [
+        "class _Cuda:",
+        "    @staticmethod",
+        "    def is_available(): return " + (cuda ? "True" : "False"),
+        "cuda = _Cuda()",
+        "__version__ = '2.9.1+cu130'",
+        "",
+      ].join("\n");
+      fs.writeFileSync(path.join(sitePkgs, "comfy_kitchen.py"), "# stub\n", "utf8");
+
+      /* ① venv 在、torch 在，但 cuda 不可用 */
+      fs.writeFileSync(path.join(sitePkgs, "torch.py"), torchStub(false), "utf8");
+      const rC1 = runInstall(tmpC);
+      const c1 = h3Collect(String(rC1.stdout || ""), rC1.status);
+      const msgC1 = String(h3Step(c1.snap, "venv").message || "");
+      ok(h3Step(c1.snap, "venv").status === "fail", "[13.3①] cuda 不可用 ⇒ 停在 venv 步");
+      ok(msgC1.indexOf("torch.cuda.is_available()") >= 0 && msgC1.indexOf("CPU 版 torch") >= 0, "[13.3①] 原因是「CPU 版 torch / 驱动档位」，不是「venv 没建起来」");
+      ok(msgC1.indexOf("仍不存在") < 0, "[13.3①] 不再把这类失败误报成「venv 没建起来」");
+      ok(msgC1.indexOf("nocuda") >= 0, "[13.3①] 失败步带上探针的真实输出（nocuda）");
+      ok(h3Step(c1.snap, "nodes").status === "skip", "[13.3①] 后续步骤照旧标「已跳过」");
+
+      /* ② torch 可用、comfy_kitchen 缺失 */
+      fs.writeFileSync(path.join(sitePkgs, "torch.py"), torchStub(true), "utf8");
+      fs.rmSync(path.join(sitePkgs, "comfy_kitchen.py"), { force: true });
+      const rC2 = runInstall(tmpC);
+      const c2 = h3Collect(String(rC2.stdout || ""), rC2.status);
+      const msgC2 = String(h3Step(c2.snap, "venv").message || "");
+      ok(h3Step(c2.snap, "venv").status === "fail", "[13.3②] comfy_kitchen 缺失 ⇒ 停在 venv 步");
+      ok(msgC2.indexOf("comfy_kitchen") >= 0 && msgC2.indexOf("ComfyUI 依赖没装全") >= 0, "[13.3②] 原因指向 comfy_kitchen / ComfyUI 依赖，与 cuda 那条分开");
+      ok(msgC2.indexOf("No module named") >= 0, "[13.3②] 失败步带上探针的真实报错行");
+    } finally {
+      try {
+        fs.rmSync(tmpC, { recursive: true, force: true });
+      } catch {}
+    }
+  }
+}
+
+/* ── [13.4] 实时流式：子脚本还在跑，它的输出就已经到安装窗了 ──
+   整只冒烟里唯一的异步断言（要观察「输出在子脚本结束前就到了」），所以收尾汇总交给它调用 finish()。 */
+async function h3StreamingProbe() {
+  const tmpS = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-h3-s-"));
+  try {
+    fs.mkdirSync(path.join(tmpS, "scripts"), { recursive: true });
+    for (const n of ["install.ps1", "step.ps1"]) fs.copyFileSync(path.join(rootScripts, n), path.join(tmpS, "scripts", n));
+    fs.mkdirSync(path.join(tmpS, "ComfyUI"), { recursive: true });
+    fs.writeFileSync(path.join(tmpS, "ComfyUI", "main.py"), "# mock ComfyUI\n", "utf8");
+    writeMock(path.join(tmpS, "scripts", "setup_env.ps1"), [
+      "Write-Host '[h3-setup] mock: first line'",
+      "Start-Sleep -Seconds 4",
+      "Write-Host '[h3-setup] mock: last line'",
+      "exit 0",
+    ]);
+    writeMock(path.join(tmpS, "scripts", "download_models.ps1"), ["exit 0"]);
+    const t0 = Date.now();
+    const at = { first: 0, close: 0 };
+    const child = cp.spawn(
+      "powershell.exe",
+      [...PS_RUN, path.join(tmpS, "scripts", "install.ps1"), "-InstallDir", tmpS, "-DiskHintGb", "0"],
+      { windowsHide: true },
+    );
+    let buf = "";
+    child.stdout.on("data", (d) => {
+      buf += String(d);
+      if (!at.first && buf.indexOf("mock: first line") >= 0) at.first = Date.now() - t0;
+    });
+    const done = new Promise((res) => child.on("close", () => { at.close = Date.now() - t0; res(); }));
+    const guard = new Promise((res) => setTimeout(res, 60000));
+    await Promise.race([done, guard]);
+    ok(at.first > 0, "[13.4] 子脚本的第一行输出被转发出来（实得 " + at.first + "ms）");
+    ok(
+      at.close > 0 && at.first > 0 && at.close - at.first >= 2000,
+      "[13.4] 第一行在子脚本结束前 " + (at.close - at.first) + "ms 就到了（旧版整段缓冲 ⇒ 只会在结束时一起出现）",
+    );
+  } finally {
+    try {
+      fs.rmSync(tmpS, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
+function finish() {
+  console.log("\n" + (fails ? "FAILED " + fails + " / " + checks : "ALL PASS " + checks) + " checks");
+  process.exit(fails ? 1 : 0);
+}
+
+if (process.platform === "win32") {
+  h3StreamingProbe().then(finish, (e) => {
+    checks++;
+    fails++;
+    console.log("  FAIL [13.4] 实时流式探针异常：" + ((e && e.message) || e));
+    finish();
+  });
+} else {
+  finish();
+}

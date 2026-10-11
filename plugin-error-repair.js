@@ -74,6 +74,8 @@ const NOT_REPAIRABLE = {
   missing_node_id: "节点缺少 id（画布数据异常）。重新添加一个该类型节点再跑。",
   no_dsh: "Agent 网关不可用，自我修复需要它。请重启 MTNode 后再试。",
   empty_console: "控制台日志为空，没有可供 Agent 分析的现场。先跑一次安装或生成再点修复。",
+  attention_backend_no_cudnn:
+    "本机注意力档位实测跑不起来（默认档 cudnn 跑不了，多半是显卡 / 驱动层面的能力问题）：让 Agent 再跑一遍也不会变好。请在环境变量 YUE2_ATTENTION_BACKEND 里指定别的档（如 sdpa），或在安装目录 .attention-backend 里写单行 sdpa 后重试 —— 本版默认 cudnn 且不自动降级。",
 };
 
 /** 错误码别名：各宿主历史写法收敛到同一口径。 */
@@ -94,6 +96,9 @@ const CODE_ALIASES = {
 /** 宿主只丢回一长串文本时，从正文兜底识别错误码。 */
 const CODE_HINTS = [
   [/\bcancelled\b|\bcanceled\b|已取消|用户取消/i, "cancelled"],
+  /* yue 注意力档位：**实测跑不起来**是硬件 / 驱动层面的事（Agent 再跑一遍也不会变好）；
+     补丁没生效那条（"没生效（生成中途仍报 flash kernel 缺失）"）不在此列 —— 那种可以补文件。 */
+  [/注意力档位\s*\S*\s*在本机实测跑不起来|cudnn.{0,12}(不可用|跑不起来)/i, "attention_backend_no_cudnn"],
   [/driver[_ ]?too[_ ]?old|驱动太旧|驱动过旧/i, "driver_too_old"],
   [/no_nvidia_gpu|no nvidia|未检测到.{0,8}(nvidia|显卡|gpu)|no_cuda/i, "no_cuda"],
   [/low_disk|磁盘剩余|not enough space|disk full/i, "low_disk"],

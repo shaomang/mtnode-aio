@@ -31,8 +31,11 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
 | `lt_state` | 长任务本轮共享状态 | 是（限环节内） |
 | `mtnode_assets` | 素材库：清单 / 读条目 / 窗口静帧截图 | 否 |
 | `mtnode_vision` | 识图子代理（读本机图片像素） | 否 |
+| `mtnode_gui` | 驱动 MTNode 窗口：认元素 / 点 / 输入 / 按键 / 滚动 / 等待 / 读结构 / 窗口截图 | 是 |
 
-**参数表真源**：`dsh/gateway/{canvas,db,ai-facts,longtask,assets}-plugin.mjs` 里的 `defineTool` 参数表 —— 不在这里抄第二份。要完整 schema：`tools/list`，或读仓里生成的 `mcp-tools.json`（`node scripts/build-mcp-contract.mjs` 重新生成）。
+**参数表真源**：`dsh/gateway/{canvas,db,ai-facts,longtask,assets,gui}-plugin.mjs` 里的 `defineTool` 参数表 —— 不在这里抄第二份。要完整 schema：`tools/list`，或读仓里生成的 `mcp-tools.json`（`node scripts/build-mcp-contract.mjs` 重新生成）。
+
+**`mtnode_gui` 是唯一在主进程执行的一族**（只有主进程拿得到 `BrowserWindow`）：它点的是页面里真实的 DOM 元素（不是屏幕坐标），所以窗口不必在前台。`which` 选窗（`main` / `install` / `any` / 标题子串），`target` 五种写法（`css` / `text` / `title` / `role` / `ref`）。**够不着的**：原生菜单、系统文件选择框、托盘菜单、最小化窗口的截图、任何凭据输入 —— 这些会明确报错，别反复重试。
 
 **多画布**：省略 `canvas` = 当前打开的画布；要动其它画布就传画布 **id 或精确名称**（清单见资源 `mtnode://canvases`）。解析不到会有明确错误（含「名字有歧义」这一种）。
 
@@ -64,10 +67,26 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
 ## 六、做不到的事（如实，别让客户端白试）
 
 - **长任务的人工环节**：`lt_state` 只在长任务的 Agent 环节内部有归属（那一步声明了可写键）；MCP 连接不在任何环节里，`write` 会被拒。看 / 改长任务图用 `mtnode_app` 的 `get_longtask` / `update_longtask` / `create_longtask`；**启用运行、推进、审批交付由人在条带上操作**。
-- **媒体生成不是独立工具**：文生图 / 音乐 / 语音 / 视频是画布**节点**（`proc_image` / `music_gen` / `breeze_gen` / `video_gen`）。第三方能做的是把节点建好、连好、写好提示词与输出路径；真正执行由用户点运行（与自家 Agent 一致，音视频另有全局互斥锁）。
+- **媒体生成不是独立工具**：文生图 / 音乐 / 语音 / 视频是画布**节点**（`proc_image` / `music_gen` / `breeze_gen` / `video_gen`）。第三方能做的是把节点建好、连好、写好提示词与输出路径；要真跑起来就**用 `mtnode_gui` 点那一下运行**（与自家 Agent 一致，音视频另有全局互斥锁）。
 - **不替人做判断**：需要用户在界面上点的动作（选择节点高亮、撤销重做这类依赖前台画布的动作）在目标画布不是前台时会被拒 —— 先把画布切到前台，或改用不依赖前台的动作。
 
-## 七、自检与排障
+## 七、自家开发会话怎么用 MCP 自验（改 MTNode 时就该这么做）
+
+MTNode 自己的开发会话（开发节点绑定会话、助手）跑在应用里，但**可以当外部客户端用**：仓库里有一把零依赖驱动 `tools/mtnode-gui.mjs`，它自己读数据目录的 `mcp-server.json` 拿端口与令牌，直连本机服务端（`POST /ctl`）——不必自己写 MCP 客户端，也不必走 stdio 桥。
+
+```bash
+node tools/mtnode-gui.mjs discover   --data <数据目录>            # tools/list + health + hasGui
+node tools/mtnode-gui.mjs gui outline --data <数据目录>            # 读界面结构（元素带 ref）
+node tools/mtnode-gui.mjs gui click  --target '{"text":"开始"}' --data <数据目录>
+node tools/mtnode-gui.mjs gui screenshot --args '{"path":"<证据目录>\\shots\\01.png"}' --data <数据目录>
+node tools/mtnode-gui.mjs call <工具名> --args '<JSON>' --data <数据目录>
+```
+
+（PowerShell / cmd 会吞掉 `--args '{"…"}'` 的引号：改用环境变量 `MTNODE_GUI_ARGS`。退出码：`0` = 回执 ok，`2` = 回执 `ok:false`（错误文本照打），`1` = 用法 / 环境错误。）
+
+**纪律**：验证要**起一只属于自己的实例**（独立 `MTNODE_DATA_DIR`），**不驱动用户正在用的那只实例、不占默认数据目录**；起实例 → 握手 → 真读真点 → 截图读像素 → 留可复核证据，这套完整口径在技能 **mtnode-verify-in-app**，改 MTNode 自身功能时照它做。
+
+## 八、自检与排障
 
 ```bash
 # 从仓库/安装目录跑（不接外部客户端，自己验整链）

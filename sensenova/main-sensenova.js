@@ -142,6 +142,25 @@ const PIP_INDEX_CHAIN = mirrors.pipIndexChain();
 const KEY_PY_MODULES = ["sensenova_u1", "transformers", "accelerate", "PIL", "modelscope"];
 /** 只探测不补装的模块（补它们等于替用户重装 torch） */
 const NO_AUTO_INSTALL = new Set(["torch", "torchvision"]);
+/**
+ * PyPI 包名 → **import 名**的对照（requirements.txt 里写的是包名，import 时必须用 import 名）。
+ * ⚠ 这一步不能省：requirements.txt 里的 `pillow` 用 `import pillow` 探测**必然失败**
+ *   （Pillow 的 import 名是 `PIL`），于是宿主每轮都报「缺依赖：pillow」、自动补装也永远修不好，
+ *   用户看到的是「后端一直起不来 / 控制台写着缺 pillow」，而 venv 里其实装得好好的（本轮实测真事故）。
+ * 只列两边不一致的；一致的不写。
+ */
+const PY_MODULE_ALIAS = {
+  pillow: "PIL",
+  "pillow-simd": "PIL",
+  pyyaml: "yaml",
+  "python-dateutil": "dateutil",
+  "scikit-learn": "sklearn",
+  "opencv-python": "cv2",
+  "opencv-python-headless": "cv2",
+  "huggingface-hub": "huggingface_hub",
+  protobuf: "google.protobuf",
+  "beautifulsoup4": "bs4",
+};
 const DEPS_PROBE_TIMEOUT_MS = 90 * 1000;
 const DEPS_INSTALL_TIMEOUT_MS = 12 * 60 * 1000;
 const DEPS_OK_TTL_MS = 5 * 60 * 1000;
@@ -929,7 +948,8 @@ async function ensurePythonDeps(installDir, opts) {
   const mods = requiredPyModules(installDir).filter((m) => m !== "torch");
   const missing = [];
   for (const name of mods) {
-    const r = await runExe(py, ["-c", "import " + name.replace(/-/g, "_")], {
+    const importName = PY_MODULE_ALIAS[name.toLowerCase()] || name.replace(/-/g, "_");
+    const r = await runExe(py, ["-c", "import " + importName], {
       timeoutMs: DEPS_PROBE_TIMEOUT_MS,
     });
     if (!r.ok) missing.push(name);

@@ -62,6 +62,9 @@
     "mcp-tools.json",
     "mcp-tool-schemas.js",
     "mcp-stdio.js",
+    /* MCP 的 GUI 动作执行器（mtnode_gui）：主进程直接操作窗口（注入脚本 + capturePage 截图）。
+       mcp-server.js 经 main.js 注入调用，漏进白名单 = 打包后 gui 族报「执行器不可用」。 */
+    "mcp-gui-agent.js",
     "db-store.js",
     "storage-clean.js",
     "storage-scan-worker.js",

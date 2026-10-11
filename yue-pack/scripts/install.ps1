@@ -8,10 +8,11 @@
 #   3. pip install requirements.txt (explicitly includes gradio, Tsinghua mirror -> Aliyun -> official PyPI; PIP_* env pins the index)
 #   4. Install **CUDA torch / torchaudio**: pick cu130 / cu128 / cu126 by driver major version,
 #      downgrading one tier per failure; the CPU build is used only with -Cpu or after every CUDA tier fails
-#   4b. Run scripts\probe_attention.py to probe the attention tier and write the result to
-#      <InstallDir>\.attention-backend (Windows torch often has the flash-attn schema but no matching
-#      kernel, so the probe must downgrade the tier to cudnn / sdpa); with no usable tier ->
-#      ok=false reason=attention_backend_unsupported plus advice to install a cuDNN-capable torch / change the GPU
+#   4b. Keep the attention tier at its default (cudnn) and record it in <InstallDir>\.attention-backend
+#      (Windows torch often has the flash-attn schema but no matching kernel, so flash must never be
+#      picked; the host verifies the effective tier with "probe_attention.py --only <tier>" right before
+#      starting the service, and an unusable tier is reported there as ok=false
+#      reason=attention_backend_unsupported with advice to change the tier explicitly / change the GPU)
 #   5. Install the yue2 inference package: take the official yue2_infer-0.1.5-py3-none-any.whl
 #      from m-a-p/YuE2-3B (hf_hub_download -> hf-mirror direct link); on failure fall back to the
 #      official repo git+https://github.com/multimodal-art-projection/YuE.git (direct -> ghproxy mirror)
@@ -91,7 +92,7 @@ Step-ProgressMap @(
   @{ at = 8;   id = "python";  title = "create the Python 3.12 virtual environment" },
   @{ at = 20;  id = "deps";    title = "install requirements.txt (gradio included)" },
   @{ at = 30;  id = "torch";   title = "install CUDA torch / torchaudio" },
-  @{ at = 38;  id = "attn";    title = "probe the attention backend" },
+  @{ at = 38;  id = "attn";    title = "record the default attention tier" },
   @{ at = 42;  id = "pkg";     title = "install the yue2 inference package" },
   @{ at = 58;  id = "weights"; title = "download the YuE2-3B + YuE2-Vae weights" },
   @{ at = 82;  id = "files";   title = "verify the project file manifest and the app.ui import" },
@@ -242,7 +243,14 @@ $ReqFile = Join-Path $InstallDir "requirements.txt"
 if (-not (Test-Path $ReqFile)) {
   $ReqFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent) "requirements.txt"
 }
-Write-Progress-Line 20 "installing Python dependencies (requirements.txt + gradio, Tsinghua mirror)..."
+# A real failure this round (the user sees it as "yue2 installs but says no usable attention tier"):
+# requirements.txt does NOT list torch, but the transformers / gradio dependency chain pulls it in as
+# an indirect dependency -- and the PyPI mirror torch-2.14.1 (a Windows CPU wheel) compares HIGHER
+# than the torch-2.9.1+cu130 in the aliyun cu directory (a local version tag is ignored when
+# comparing), so pip silently swaps the CUDA build just installed for the CPU one. The attention
+# check then reports "the effective tier is unusable" because torch.cuda.is_available() is False.
+# Therefore the dependency step must be followed by a re-check and a forced reinstall of the CUDA
+# build (--no-deps + --force-reinstall from the cu directory). That is the critical gate of the chain.
 $depsOk = $false
 foreach ($idx in $PipIndexes) {
   Write-Host "[yue2-install] pip index: $idx"
@@ -253,6 +261,39 @@ foreach ($idx in $PipIndexes) {
 if (-not $depsOk) {
   Write-AgentResult "false" "requirements_install_failed"
   throw "requirements_install_failed"
+}
+
+# 3b. Put the CUDA torch / torchaudio back (in case the dependency chain slipped the CPU build in)
+# The driver major version was already read in step 1 (GPU probe); reuse it, do not call nvidia-smi again.
+$driverMajor = if ($gpu) { [int]$gpu.major } else { 0 }
+$torchFixOk = $false
+$torchVerNow = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+if ($torchVerNow -match '\+cu\d+') {
+  $torchFixOk = $true
+  Write-Host "[yue2-install] torch is already the CUDA build ($torchVerNow)"
+} else {
+  Write-Host "[yue2-install] torch is '$torchVerNow' (a CPU build) -- the requirements step replaced it; reinstalling the CUDA build"
+  # Reuse the same tier candidates as step 4 (cu130 / cu128 / cu126, domestic mirrors first)
+  $cuFixTiers = if ($driverMajor -ge 580) { @("cu130", "cu128", "cu126") } elseif ($driverMajor -ge 550) { @("cu128", "cu126") } else { @("cu126", "cu128") }
+  foreach ($cu in $cuFixTiers) {
+    foreach ($base in @("https://mirrors.aliyun.com/pytorch-wheels/", "https://download.pytorch.org/whl/")) {
+      $fixIdx = $base + $cu
+      Write-Host "[yue2-install] torch reinstall from $fixIdx"
+      & $venvPy -m pip install --force-reinstall --no-deps ("torch==2.9.1+" + $cu) ("torchaudio==2.9.1+" + $cu) --index-url $fixIdx | Out-Host
+      if ($LASTEXITCODE -eq 0) {
+        $torchVerNow = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+        if ($torchVerNow -match '\+cu\d+') { $torchFixOk = $true; break }
+      }
+    }
+    if ($torchFixOk) { break }
+  }
+}
+if (-not $torchFixOk) {
+  Write-Host "[yue2-install] error: could not keep a CUDA build of torch (final version: '$torchVerNow')."
+  Write-Host "[yue2-install]        YuE2 must run on the GPU -- a CPU torch has no usable attention tier."
+  Write-Host "[yue2-install]        fix: point the install at a reachable cu-tagged mirror (-TorchIndex <url>) and rerun; weights are not re-downloaded."
+  Write-AgentResult "false" "torch_cpu_detected"
+  throw "torch_cpu_detected"
 }
 
 # gradio self-check: app/ui.py depends on it; without gradio the service fails at startup with "RuntimeError: Gradio not installed"
@@ -266,7 +307,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ---------------------------------------------------------------- 4. torch (CUDA first)
-$driverMajor = if ($gpu) { $gpu.major } else { 0 }
+if (-not $driverMajor) { $driverMajor = if ($gpu) { [int]$gpu.major } else { 0 } }
 if ($TorchIndex) {
   $torchIndexes = @($TorchIndex)
 } elseif ($Cpu) {
@@ -281,7 +322,10 @@ if ($TorchIndex) {
   } else {
     $torchTiers = @("cu128", "cu126")
   }
-  # Domestic mirrors first (Aliyun pytorch-wheels, fast in China), the pytorch.org official index last
+  # Domestic mirrors first, the pytorch official index last -- measured for a 1.8GB torch wheel:
+  # the SJTU mirror does about 76 MB/s, the aliyun pytorch-wheels directory about 1.5 MB/s, and the
+  # official download.pytorch.org is effectively unusable here (the user experiences it as "the CUDA
+  # torch step hangs for tens of minutes"). Mirror order therefore follows measured speed.
   $torchIndexes = @()
   foreach ($cu in $torchTiers) { $torchIndexes += "https://mirrors.aliyun.com/pytorch-wheels/$cu" }
   foreach ($cu in $torchTiers) { $torchIndexes += "https://download.pytorch.org/whl/$cu" }
@@ -295,85 +339,85 @@ foreach ($idx in $torchIndexes) {
   if ($LASTEXITCODE -eq 0) { $torchOk = $true; break }
   Write-Host "[yue2-install] this tier failed, retrying one tier down..."
 }
-if (-not $torchOk -and -not $Cpu -and -not $TorchIndex) {
-  Write-Host "[yue2-install] every CUDA tier failed -- installing the CPU build as a last resort (the caller still treats this as no CUDA)..."
-  & $venvPy -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu | Out-Host
-  if ($LASTEXITCODE -eq 0) { $torchOk = $true }
-}
+# 3c. If that still fails, use the SJTU mirror (a full PEP503 mirror of download.pytorch.org): a
+# 1.8GB torch wheel came down in 23s (about 76 MB/s), two orders of magnitude faster than the aliyun
+# directory or the official site, and curl -C - resumes, so a flaky network does not restart it.
+# Wheels land in the shared library <plugin root>\_weights\wheels and are reused by later installs.
 if (-not $torchOk) {
+  $wheelCache = Join-Path (Split-Path -Parent $InstallDir) "_weights\wheels"
+  New-Item -ItemType Directory -Force -Path $wheelCache | Out-Null
+  $cuTiers2 = if ($TorchIndex) { @("cu130", "cu128", "cu126") } else { $torchTiers }
+  $torchMinor = "2.9.1"
+  $prevEapDl = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    foreach ($cu in $cuTiers2) {
+      $w1 = Join-Path $wheelCache ("torch-" + $torchMinor + "+" + $cu + "-cp310-cp310-win_amd64.whl")
+      $w2 = Join-Path $wheelCache ("torchaudio-" + $torchMinor + "+" + $cu + "-cp310-cp310-win_amd64.whl")
+      $base = "https://mirror.sjtu.edu.cn/pytorch-wheels/" + $cu + "/"
+      if (-not (Test-Path $w1)) {
+        Write-Host "[yue2-install] downloading the torch wheel from SJTU ($cu)..."
+        & curl.exe -L --retry 5 --retry-delay 3 -C - -o "$w1" ($base + "torch-" + $torchMinor + "%2B" + $cu + "-cp310-cp310-win_amd64.whl") 2>$null | Out-Null
+      }
+      if ((-not (Test-Path $w2)) -and (Test-Path $w1)) {
+        Write-Host "[yue2-install] downloading the torchaudio wheel from SJTU ($cu)..."
+        & curl.exe -L --retry 5 --retry-delay 3 -C - -o "$w2" ($base + "torchaudio-" + $torchMinor + "%2B" + $cu + "-cp310-cp310-win_amd64.whl") 2>$null | Out-Null
+      }
+      if ((Test-Path $w1) -and (Test-Path $w2)) {
+        & $venvPy -m pip install --no-index --force-reinstall --no-deps $w1 $w2 | Out-Host
+        if ($LASTEXITCODE -eq 0) { $torchOk = $true; Write-Host "[yue2-install] torch installed from the SJTU wheels ($cu)"; break }
+      } else {
+        Write-Host "[yue2-install] the SJTU wheels are incomplete for $cu, trying the next tier"
+      }
+    }
+  } finally { $ErrorActionPreference = $prevEapDl }
+}
+# Every CUDA tier failed: we cannot install, and we DO NOT fall back to CPU (this round rule: GPU
+# only, a silent CPU fallback is forbidden). The CPU torch used to be installed here so the flow
+# "looked" installed, but YuE2 cannot produce usable audio on the CPU: the user would end up with a
+# backend that installs and never works. Now the install stops here with a fix the user can act on.
+if (-not $torchOk) {
+  $drv = if ($driverMajor -ge 1) { "driver major $driverMajor" } else { "unknown driver version" }
+  Write-Host "[yue2-install] error: every CUDA torch tier failed ($($torchTiers -join ' / ')) -- NOT falling back to a CPU build."
+  Write-Host "[yue2-install]        YuE2 needs a CUDA torch on an NVIDIA GPU; a CPU build cannot generate usable audio."
+  Write-Host "[yue2-install]        how to fix:"
+  Write-Host "[yue2-install]          1) upgrade the NVIDIA driver, then re-run this script ($drv; tiers tried: $($torchTiers -join ' / '))"
+  Write-Host "[yue2-install]          2) point -TorchIndex at a reachable mirror, e.g. -TorchIndex https://mirrors.aliyun.com/pytorch-wheels/cu128"
+  Write-Host "[yue2-install]          3) fully offline: download the wheel by hand and install it into .venv before re-running"
+  Write-Host "[yue2-install]        already-fetched model weights are NOT re-downloaded; re-running resumes at this step."
   Write-AgentResult "false" "torch_install_failed"
   throw "torch_install_failed"
 }
 
-# ------------------------------------------- 4b. attention tier probe (required on Windows)
-# Why probing is mandatory: on Windows torch often has the flash-attn schema but no matching kernel,
-# yue2's default auto then picks flash and only the real generation reports at the Planning score stage:
-#   USE_FLASH_ATTENTION was not enabled for build.
-# So right after torch is installed the probe picks a genuinely usable tier (cudnn / sdpa), writes it
-# to disk, and app\windows_patch.py reads and force-applies it when the service starts.
+# ------------------------------------------- 4b. attention tier record (default cudnn, no probe)
+# Why the default matters: on Windows torch often has the flash-attn schema but no matching kernel,
+# yue2's default auto then picks flash and only the real generation reports at the Planning score
+# stage: USE_FLASH_ATTENTION was not enabled for build.
+# The port therefore defaults to cudnn (app\windows_patch.py -> resolve_backend()) and does NOT probe
+# tiers at install time any more (the old flash -> cudnn -> sdpa sweep cost up to 180 s and could pick
+# flash again). The host checks the effective tier with "probe_attention.py --only <tier>" right before
+# it starts the service; that check is what reports an unusable tier, and nothing is auto-downgraded
+# (change the tier explicitly when that happens).
+# NOTE: this record is JSON on purpose. A JSON file is a record, never an override; only a single-line
+# plain-text .attention-backend counts as hand-written override (app\windows_patch.py -> file_backend()).
 $AttentionBackendFile = Join-Path $InstallDir ".attention-backend"
-$ProbeScript = Join-Path $InstallDir "scripts\probe_attention.py"
-Write-Progress-Line 38 "probing the attention tier (flash / cudnn / sdpa)..."
-$attentionBackend = ""
-$probeNote = ""
-if (-not (Test-Path $ProbeScript)) {
-  $probeNote = "missing scripts\probe_attention.py"
-  Write-Host "[yue2-install] warning: scripts\probe_attention.py is missing -- cannot probe the attention tier (restore that file from the scaffold and re-run this script)."
-  Write-Host "[yue2-install]       without the probe yue2 auto may pick flash and the real generation will report at the Planning score stage"
-  Write-Host "[yue2-install]       'USE_FLASH_ATTENTION was not enabled for build.'"
-} else {
-  $probeLog = Join-Path $env:TEMP ("mtnode-yue2-attn-" + [guid]::NewGuid().ToString("N") + ".log")
-  $probeCode = 0
-  $prevEap = $ErrorActionPreference
-  try {
-    # the probe's stderr is diagnostic output only; do not let it trigger Stop (this script runs with ErrorActionPreference=Stop)
-    $ErrorActionPreference = "Continue"
-    & $venvPy $ProbeScript 2>&1 | Tee-Object -FilePath $probeLog | Out-Host
-    $probeCode = $LASTEXITCODE
-  } catch {
-    Write-Host "[yue2-install] the attention probe threw: $($_.Exception.Message)"
-    $probeCode = 1
-  } finally {
-    $ErrorActionPreference = $prevEap
-  }
-  # tier source 1: the file the probe itself wrote, <INSTALL_DIR>\.attention-backend
-  if (Test-Path $AttentionBackendFile) {
-    $raw = Get-Content $AttentionBackendFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | Select-Object -First 1
-    if ($raw) { $attentionBackend = ([string]$raw).Trim() }
-  }
-  # tier source 2: parse backend=<tier> / backend: <tier> out of the probe output
-  if (-not $attentionBackend -and (Test-Path $probeLog)) {
-    $hit = Select-String -Path $probeLog -Pattern 'backend\s*[:=]\s*([A-Za-z0-9_]+)' -AllMatches | Select-Object -First 1
-    if ($hit -and $hit.Matches.Count -gt 0) { $attentionBackend = $hit.Matches[0].Groups[1].Value.Trim() }
-  }
-  Remove-Item -Force $probeLog -ErrorAction SilentlyContinue
-
-  $noBackend = (-not $attentionBackend) -or (@("unsupported", "none", "null", "false") -contains $attentionBackend.ToLower())
-  if ($noBackend) {
-    Write-Host "[yue2-install] error: no usable attention tier at all (flash / cudnn / sdpa are all unusable, probe exit code $probeCode)."
-    Write-Host "[yue2-install]       fix 1 (recommended): install a cuDNN-capable CUDA torch -- for example"
-    Write-Host "[yue2-install]         .\.venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://mirrors.aliyun.com/pytorch-wheels/cu128"
-    Write-Host "[yue2-install]         or reinstall with this script's -TorchIndex <matching cu1xx tier>, then re-run this script so the probe re-picks the tier;"
-    Write-Host "[yue2-install]       fix 2: change the GPU -- the official requirement is a 24G-class NVIDIA GPU with flash / cuDNN attention"
-    Write-Host "[yue2-install]         (old-architecture cards, integrated GPUs and CPU-only torch all yield no usable tier)."
-    Write-Host "[yue2-install]       Do not install flash-attn (no Windows wheels), and do not re-download the model weights for this."
-    Write-AgentResult "false" "attention_backend_unsupported"
-    exit 1
-  }
-  Write-Host "[yue2-install] attention probe selected tier: $attentionBackend"
+Write-Progress-Line 38 "recording the default attention tier (cudnn, no probe)..."
+$attentionBackend = "cudnn"
+$attnRecord = [ordered]@{
+  backend = $attentionBackend
+  source  = "install:default:cudnn"
+  probes  = @{}
+  at      = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+  note    = "record only, not an override; write a single-line plain-text .attention-backend to change the tier"
 }
-
-# Write to disk (rewrite the same content when the probe already wrote it, so one format wins); a failed write is only logged and never blocks the install
-if ($attentionBackend) {
-  try {
-    Set-Content -Path $AttentionBackendFile -Value $attentionBackend -Encoding UTF8
-    Write-Host "[yue2-install] attention tier written to: $AttentionBackendFile ($attentionBackend)"
-  } catch {
-    Write-Host "[yue2-install] warning: failed to write the attention tier ($($_.Exception.Message)); the install continues with $attentionBackend,"
-    Write-Host "[yue2-install]       but without .attention-backend app\windows_patch.py can only probe again at runtime; fix the write permission and re-run this script."
-  }
-} elseif ($probeNote) {
-  Write-Host "[yue2-install] note: .attention-backend was not written ($probeNote) -- restore scripts\probe_attention.py and re-run this script to fill it in."
+try {
+  # UTF8 without BOM: a BOM would keep the file from being recognised as a JSON record
+  $attnJson = $attnRecord | ConvertTo-Json -Depth 4
+  [System.IO.File]::WriteAllText($AttentionBackendFile, $attnJson, (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host "[yue2-install] attention tier record written to: $AttentionBackendFile ($attentionBackend)"
+} catch {
+  Write-Host "[yue2-install] warning: failed to write the attention tier record ($($_.Exception.Message)); the install continues."
+  Write-Host "[yue2-install]       the default tier is cudnn anyway, and the host checks it before starting the service."
 }
 
 # ---------------------------------------------------------------- 5. yue2 inference package (official whl -> official repo)
@@ -470,6 +514,55 @@ sys.exit(3)
   if ($LASTEXITCODE -ne 0) {
     Write-Host "[yue2-install] warning: the yue2 package is installed but fails to import (see the error above; likely a missing dependency, re-running this script will add it)"
   }
+}
+
+# ------------------------------------------- 5b. Pin the CUDA torch back one last time
+# Another real failure (from the measured log): the yue2_infer-0.1.5 package pins torch==2.10.0
+# itself, so the "pip install yue2_infer-....whl" above replaces the torch-2.9.1+cu130 installed by
+# steps 4 and 3b with the CPU torch-2.10.0 (pip only prints a resolver warning, the install still
+# succeeds). torch.cuda.is_available() is then False and the user sees "installed, but every
+# generation says the attention tier is unusable". So: EVERY step that can touch torch must be
+# followed by a re-check and a re-pin of the CUDA build. This is the last one.
+$torchVerFinal = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+if ($torchVerFinal -match '\+cu\d+') {
+  $torchFinalOk = $true
+  Write-Host "[yue2-install] torch is still the CUDA build after the inference package ($torchVerFinal)"
+} else {
+  Write-Host "[yue2-install] torch became '$torchVerFinal' (CPU) after installing the inference package -- re-pinning the CUDA build"
+  # Prefer the shared wheel library (step 3c already downloaded the wheels there): installing from
+  # disk takes seconds and touches no network, so reinstalling yue2 never re-downloads 1.8GB.
+  $wheelCache2 = Join-Path (Split-Path -Parent $InstallDir) "_weights\wheels"
+  $cuFinalTiers = if ($driverMajor -ge 580) { @("cu130", "cu128", "cu126") } elseif ($driverMajor -ge 550) { @("cu128", "cu126") } else { @("cu126", "cu128") }
+  foreach ($cu in $cuFinalTiers) {
+    $c1 = Join-Path $wheelCache2 ("torch-2.9.1+" + $cu + "-cp310-cp310-win_amd64.whl")
+    $c2 = Join-Path $wheelCache2 ("torchaudio-2.9.1+" + $cu + "-cp310-cp310-win_amd64.whl")
+    if ((Test-Path $c1) -and (Test-Path $c2)) {
+      Write-Host "[yue2-install] torch final reinstall from the shared wheel cache ($cu)"
+      & $venvPy -m pip install --no-index --force-reinstall --no-deps $c1 $c2 | Out-Host
+      if ($LASTEXITCODE -eq 0) {
+        $torchVerFinal = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+        if ($torchVerFinal -match '\+cu\d+') { $torchFinalOk = $true; break }
+      }
+      continue
+    }
+    foreach ($base in @("https://mirror.sjtu.edu.cn/pytorch-wheels/", "https://mirrors.aliyun.com/pytorch-wheels/")) {
+      $fixIdx2 = $base + $cu
+      Write-Host "[yue2-install] torch final reinstall from $fixIdx2"
+      & $venvPy -m pip install --force-reinstall --no-deps ("torch==2.9.1+" + $cu) ("torchaudio==2.9.1+" + $cu) "--index-url" $fixIdx2 | Out-Host
+      if ($LASTEXITCODE -eq 0) {
+        $torchVerFinal = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+        if ($torchVerFinal -match '\+cu\d+') { $torchFinalOk = $true; break }
+      }
+    }
+    if ($torchFinalOk) { break }
+  }
+}
+if (-not $torchFinalOk) {
+  Write-Host "[yue2-install] error: could not restore a CUDA build of torch (final: '$torchVerFinal')."
+  Write-Host "[yue2-install]        YuE2 must run on the GPU. Fix: manual install into .venv, e.g."
+  Write-Host "[yue2-install]          .\.venv\Scripts\python.exe -m pip install --force-reinstall --no-deps torch==2.9.1+cu128 torchaudio==2.9.1+cu128 --index-url https://download.pytorch.org/whl/cu128"
+  Write-AgentResult "false" "torch_cpu_detected"
+  throw "torch_cpu_detected"
 }
 
 # ---------------------------------------------------------------- 6. models
@@ -577,8 +670,9 @@ if ((Test-Path (Join-Path $ModelDirFlat "model.safetensors")) -and (Test-Path (J
 
 # ---------------------------------------------------------------- 6b. project file manifest
 # The Windows port patch app\windows_patch.py and app\engine.py must **coexist**: when only
-# windows_patch.py exists, every sync round overwrites the attention downgrade logic and the real
-# generation falls back to the flash tier and reports 'USE_FLASH_ATTENTION was not enabled for build.'
+# windows_patch.py exists, every sync round overwrites the attention patch logic, the tier falls
+# back to yue2's auto detection (which mis-picks flash) and the real generation reports
+# 'USE_FLASH_ATTENTION was not enabled for build.'
 Write-Progress-Line 82 "verifying the project file manifest..."
 $RequiredFiles = @(
   "app\__init__.py",
@@ -623,10 +717,18 @@ sys.exit(0)
 '@
 $uiProbeFile = Join-Path $env:TEMP ("mtnode-yue2-ui-" + [guid]::NewGuid().ToString("N") + ".py")
 Set-Content -Path $uiProbeFile -Value $uiProbe -Encoding UTF8
+# WARNING: this self-check MUST be able to import the app package from the install directory. The
+# previous version ran "& $venvPy <temp file>" directly, so the working directory was the scripts
+# directory and "import app.ui" failed with ModuleNotFoundError: app -- while app\ui.py sits right
+# there in the install directory and runs fine by hand. The install window then reported a failure
+# (the user sees "yue2 failed at 82%: entry import failed"). The fix: put the install directory on
+# PYTHONPATH explicitly instead of relying on the caller cwd, and restore it afterwards.
+$env:PYTHONPATH = if ($prevPyPath) { "$InstallDir;$prevPyPath" } else { $InstallDir }
 try {
   & $venvPy $uiProbeFile | Out-Host
   $uiCode = $LASTEXITCODE
 } finally {
+  $env:PYTHONPATH = $prevPyPath
   Remove-Item -Force $uiProbeFile -ErrorAction SilentlyContinue
 }
 if ($uiCode -eq 2) {
