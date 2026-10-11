@@ -6,12 +6,6 @@
   }
 
   const $ = (id) => document.getElementById(id);
-  const installDirEl = $("installDir");
-  const diskHint = $("diskHint");
-  const installStep = $("installStep");
-  const subStep = $("subStep");
-  const installBar = $("installBar").querySelector("i");
-  const subBar = $("subBar").querySelector("i");
   const consoleEl = $("console");
   const svcBadge = $("svcBadge");
   const gpuMemBar = $("gpuMemBar").querySelector("i");
@@ -30,22 +24,10 @@
 
   async function refresh() {
     const st = await api.getStatus();
-    installDirEl.textContent = st.installDir || "未设置";
-    const proj = st.project || {};
-    const bits = [];
-    if (proj.scaffold) bits.push("脚手架✓");
-    if (proj.venv) bits.push("venv✓");
-    if (proj.models) bits.push("模型✓");
-    diskHint.textContent =
-      `建议预留 ≥${st.diskHintGb || 65}GB。` +
-      (bits.length ? " 当前：" + bits.join(" · ") : " 尚未检测到完整安装。");
-
     const running = !!st.running || !!st.gradioUp;
     svcBadge.textContent = running ? "服务运行中" : "服务关闭";
     svcBadge.className = "badge " + (running ? "on" : "off");
 
-    $("btnInstall").disabled = !st.installDir || !!st.installing;
-    if ($("btnSelfRepair")) $("btnSelfRepair").disabled = !st.installDir || !!st.installing;
     $("btnStart").disabled = !st.installDir || running;
     $("btnStop").disabled = !running;
     $("btnUninstall").disabled = !st.installDir || !!st.installing;
@@ -62,65 +44,9 @@
     setBar(gpuUtilBar, gpu.util);
   }
 
-  $("btnDir").onclick = async () => {
-    const r = await api.pickInstallDir();
-    if (r && r.ok) {
-      logLine("installDir=" + r.installDir);
-      if (r.project && r.project.ready) logLine("发现已有完整项目，可直接启用服务。");
-    } else if (r && r.error) {
-      logLine("目录无效: " + r.error);
-      alert("目录无效：" + r.error + "\n请勿选择磁盘根目录或系统目录。");
-    }
-    refresh();
-  };
-
-  $("btnInstall").onclick = async () => {
-    async function runInstall(opts) {
-      logLine("开始 Agent 安装（脚手架仅作参考）…");
-      const r = await api.install(opts || {});
-      if (r && r.ok) {
-        logLine(r.recoveredByAgent ? "Agent 保底安装完成" : "Agent 安装完成");
-        return r;
-      }
-      const err = (r && (r.message || r.error)) || "未知错误";
-      if (r && r.userDeclinedAgent) logLine("已取消 Agent 安装");
-      else logLine("Agent 安装失败: " + err);
-      return r;
-    }
-
-    const disk = await api.freeDisk();
-    if (disk && disk.freeGb != null && disk.freeGb < (disk.needGb || 65)) {
-      const ok = confirm(
-        `磁盘剩余约 ${disk.freeGb}GB，建议预留 ≥${disk.needGb}GB。\n仍要继续安装吗？`,
-      );
-      if (!ok) return;
-      await runInstall({ force: true });
-    } else {
-      await runInstall({});
-    }
-    refresh();
-  };
-
-  $("btnSelfRepair").onclick = async () => {
-    if (!api.selfRepair) {
-      logLine("当前版本不支持自我修复");
-      return;
-    }
-    const ok = confirm(
-      "自我修复会把最近的 console 日志交给 Agent（dsh）分析判断并动手修复。\n每人环境不同，由 Agent 根据日志自行决策。不会启动服务。\n继续？",
-    );
-    if (!ok) return;
-    logLine("自我修复：提交 console → dsh…");
-    const r = await api.selfRepair({});
-    if (r && r.ok) logLine("自我修复完成" + (r.message ? " — " + r.message : ""));
-    else
-      logLine(
-        "自我修复失败: " +
-          ((r && (r.message || r.error)) || "未知错误") +
-          (r && r.consoleBytes != null ? " · log≈" + r.consoleBytes + "B" : ""),
-      );
-    refresh();
-  };
+  /* 安装目录选择 / 「安装」/ 「自我修复」/ 安装进度都不在这只窗里了：
+     安装相关操作与显示统一收进独立安装窗（plugins/main-install.js）；
+     宿主侧的 music3:pickInstallDir / music3:install / music3:selfRepair 等 IPC 原样保留。 */
 
   $("btnStart").onclick = async () => {
     logLine("手动启动后端（调试）…");
@@ -175,28 +101,34 @@
     refresh();
   };
 
-  $("btnClearLog").onclick = () => {
+  /* ───── 清空日志：真删文件内容（不只是清显示）─────
+   * 旧实现只把 DOM 清空，关窗再开宿主一 consoleTail 旧日志又回来了。
+   * 现在先让宿主 truncate 日志文件（宿主保留文件句柄，后端往同一个 inode 续写），
+   * 再清 DOM 并复位增量游标 lastLogLen；宿主广播 music3:consoleCleared 时做同样的事
+   * （别的窗口点的清空，这只窗也要跟着空）。 */
+  let lastLogLen = 0;
+  function clearLogView() {
     consoleEl.textContent = "";
-  };
+    lastLogLen = 0;
+  }
+  async function clearLog() {
+    let r = null;
+    try {
+      if (api.consoleClear) r = await api.consoleClear();
+    } catch (e) {
+      r = { ok: false, error: String((e && e.message) || e) };
+    }
+    clearLogView();
+    if (r && r.ok === false) logLine("[log] 清空日志文件失败：" + (r.error || "未知错误") + "（界面已清空）");
+  }
+  $("btnClearLog").onclick = clearLog;
+  if (api.onConsoleCleared) api.onConsoleCleared(() => clearLogView());
 
+  /* 进度事件订阅：安装 / Agent 兜底那两档的界面已不在本窗（统一走独立安装窗），
+     回调里不再碰任何安装元素；只剩生成档写一行日志，免得生成期间界面一片死寂。 */
   api.onProgress((ev) => {
     if (!ev) return;
-    if (ev.phase === "install" || ev.phase === "dsh") {
-      installStep.textContent =
-        (ev.stepLabel || ev.step || "") + (ev.message ? " — " + ev.message : "");
-      setBar(installBar, ev.pct);
-      if (ev.subPct != null) {
-        subStep.textContent = "子进度 " + Math.round(ev.subPct) + "%";
-        setBar(subBar, ev.subPct);
-      }
-      if (ev.step === "agent_recover") {
-        subStep.textContent = "Agent 保底修复中…";
-      }
-    }
-    if (ev.phase === "generate") {
-      installStep.textContent = "生成: " + (ev.message || "");
-      setBar(installBar, ev.pct || 0);
-    }
+    if (ev.phase === "generate") logLine("生成: " + (ev.message || ""));
   });
   api.onConsole((ev) => {
     if (ev && ev.line) logLine(ev.line);
@@ -207,16 +139,16 @@
     const tail = await api.consoleTail(48 * 1024);
     if (tail && tail.text) consoleEl.textContent = tail.text;
     consoleEl.scrollTop = consoleEl.scrollHeight;
+    lastLogLen = (tail && tail.text && tail.text.length) || 0;
     await refresh();
     setInterval(refresh, 4000);
     /* Gradio stdout is appended to the log file; poll so the UI stays live. */
-    let lastLen = (tail && tail.text && tail.text.length) || 0;
     setInterval(async () => {
       try {
         const t = await api.consoleTail(96 * 1024);
         if (!t || !t.text) return;
-        if (t.text.length === lastLen) return;
-        lastLen = t.text.length;
+        if (t.text.length === lastLogLen) return;
+        lastLogLen = t.text.length;
         const atBottom =
           consoleEl.scrollHeight - consoleEl.scrollTop - consoleEl.clientHeight < 48;
         consoleEl.textContent = t.text;

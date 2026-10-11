@@ -669,7 +669,10 @@ function scene(nodes, wires) {
     has(preloadSrc, m + ":", "preload.js 暴露 " + m);
 
   has(pluginsSrc, "function refreshBreezePluginCard(", "app-plugins.js 有 refreshBreezePluginCard");
-  has(pluginsSrc, "function bindBreezeProgress(", "app-plugins.js 有 bindBreezeProgress");
+  /* 本轮口径：卡片上的安装进度条与「安装中…」整块下线（安装过程只显示在安装窗里），
+     8 个后端的 bind*Progress 都已删除 —— 这里钉的是「不再有」，不是「有」。 */
+  hasnt(pluginsSrc, "function bindBreezeProgress(", "app-plugins.js 不再有 bindBreezeProgress（卡片不画安装进度）");
+  hasnt(pluginsSrc, "bindBreezeProgress(card)", "openAppPluginsDialog 不再挂 breeze 进度订阅");
   has(
     pluginsSrc,
     'item.kind === "breeze" || item.handler === "breeze"',
@@ -682,7 +685,7 @@ function scene(nodes, wires) {
      所以图标清单从那份共用实现里取；薄壳自身不许出现卸载入口。 */
   const breezeCard = pluginsSrc.slice(
     pluginsSrc.indexOf("async function refreshBreezePluginCard("),
-    pluginsSrc.indexOf("function bindBreezeProgress("),
+    pluginsSrc.indexOf("/* ---- 本地语音转写：卡片已随"),
   );
   const backendCard = pluginsSrc.slice(
     pluginsSrc.indexOf("async function refreshBackendPluginCard("),
@@ -742,7 +745,7 @@ function scene(nodes, wires) {
   has(installPs1, "BREEZE_WEIGHTS_DIR", "安装脚本支持手填已有权重目录");
   has(installPs1, "download_weights.py", "安装脚本调独立权重下载器");
   has(installPs1, "ffmpeg", "安装脚本下便携 ffmpeg");
-  has(installPs1, "Non-Commercial", "安装脚本打印非商用许可告知");
+  hasnt(installPs1, "Non-Commercial", "安装脚本不再打印许可告知（本轮口径：许可提醒只留 manifest / 状态块 / README / 权重仓库 LICENSE）");
   has(installPs1, "[breeze-install] progress:", "安装脚本带宿主能解析的进度口径");
   has(installPs1, "fast", "安装脚本说明不启用 fast 路径");
   hasnt(installPs1, "_probe_", "安装脚本不带探针脚本（不随包）");
@@ -750,7 +753,7 @@ function scene(nodes, wires) {
   has(dlWeights, "modelscope", "权重下载器 ModelScope 优先");
   has(dlWeights, "hf-mirror.com", "权重下载器回退 hf-mirror");
   has(dlWeights, "huggingface.co", "权重下载器最后回退 HF 官方");
-  has(dlWeights, "Non-Commercial", "权重下载器打印非商用许可告知");
+  hasnt(dlWeights, "Non-Commercial", "权重下载器不再打印许可告知（只删许可提醒，技术说明留着）");
 
   /* 打包白名单 */
   has(buildJson, '"breeze/**"', "build.json files 已加 breeze/**");
@@ -821,7 +824,7 @@ function scene(nodes, wires) {
   has(configSrc, "非商用", "config.py 写许可告知（中文）");
   has(configSrc, "NON-COMMERCIAL", "config.py 写许可告知（英文）");
   has(configSrc, "ffmpeg_exe", "config.py 提供便携 ffmpeg 定位（优先自带，其次 PATH）");
-  has(read("breeze-pack/app/console_banner.py"), "非商用", "启动横幅打印非商用许可告知");
+  hasnt(read("breeze-pack/app/console_banner.py"), "非商用", "启动横幅不再打印许可告知（许可块本身仍在 config.py / manifest / /api/status）");
   has(read("breeze-pack/start_backend.cmd"), "-m app", "start_backend.cmd 以 python -m app 起服务");
 
   /* 宿主：常驻单例、不随 MTNode 退出、安装列表护栏 */
@@ -1879,13 +1882,14 @@ function scene(nodes, wires) {
   has(installPs1, 'Write-Verdict "false" "no_cuda"', "CUDA 不可用 → 写裁决 no_cuda（只指路，不烧 AI 修复）");
   has(installPs1, "Remove-Item -Force $installOk", "旧 .install-ok 先撤（失败的重装不能冒充装好）");
   ok(
-    /* 冒烟失败块里现在先打一条步骤行（Step-Progress -Fail）再写裁决，窗口给到 400 字符 */
-    /if \(\$smokeRc -ne 0\)[\s\S]{0,400}exit 1/.test(installPs1),
+    /* 冒烟失败块里先打一条步骤行（Step-Progress -Fail）再写裁决，最后 exit 1（安装窗据此停在失败步）。
+       窗口给到 1200 字符：脚本的提示语已统一成 ASCII 英文长句（零中文纪律），比早先的中文串长得多。 */
+    /if \(\$smokeRc -ne 0\)[\s\S]{0,1200}exit 1/.test(installPs1),
     "冒烟失败以非 0 退出（安装窗据此停在失败步）",
   );
   has(
     installPs1,
-    'Step-Progress -Fail "冒烟导入失败',
+    'Step-Progress -Fail "smoke import failed',
     "冒烟失败在安装窗里停在「冒烟」这一步并给出原因",
   );
   has(installPs1, "BREEZE_SKIP_CUDA_CHECK", "无卡机器留了显式逃生阀（默认闸门关着）");
@@ -1894,12 +1898,37 @@ function scene(nodes, wires) {
     'if ($LASTEXITCODE -ne 0) { Say "smoke import failed',
     "老的「只打印一行仍写 .install-ok」已删除",
   );
-  /* 控制台手动修复入口：把 preload 里那座死桥接上 */
-  has(read("breeze/ui/index.html"), 'id="btnSelfRepair"', "Breeze 控制台有「自我修复」按钮");
+  /* 本轮口径：控制台窗不再暴露任何**安装**入口（安装全在独立安装窗 install/），
+     自我修复按钮随安装卡片一起下线；主进程侧的安装类 IPC 仍全部保留。 */
+  hasnt(read("breeze/ui/index.html"), 'id="btnSelfRepair"', "Breeze 控制台不再有「自我修复」按钮（安装期入口已下线）");
+  hasnt(read("breeze/ui/index.html"), 'id="btnInstall"', "Breeze 控制台不再有安装卡片（安装收进独立安装窗）");
   const uiJs = read("breeze/ui/app.js");
-  has(uiJs, "api.agentRecoverInstall({})", "按钮接 preload 已暴露的 agentRecoverInstall");
-  has(uiJs, '"btnSelfRepair").disabled', "按钮在没有安装目录 / 安装中时禁用");
-  has(uiJs, "自我修复会把最近的 console 日志交给 Agent", "点之前有确认（与 music3 / h3 同口径）");
+  hasnt(uiJs, "agentRecoverInstall", "控制台 UI 不再调 agentRecoverInstall（桥保留给主窗报错总线用）");
+  hasnt(uiJs, '"btnSelfRepair"', "控制台 UI 里没有对已删按钮的残留引用");
+  hasnt(uiJs, '"btnInstall"', "控制台 UI 里没有对已删安装按钮的残留引用");
+  /* 本轮口径②：日志「清空」= 真清文件（truncate 到 0 字节），不是只清界面显示 */
+  has(hostSrc, 'ipcMain.handle("breeze:consoleClear"', "宿主注册 breeze:consoleClear（真清日志文件）");
+  has(hostSrc, "function clearConsoleLog(", "宿主有 clearConsoleLog");
+  ok(
+    /fs\.writeFileSync\(p, "", "utf8"\)/.test(fnBody(hostSrc, "clearConsoleLog")),
+    "clearConsoleLog 是 truncate 到 0 字节（保留文件句柄，不是删文件）",
+  );
+  has(fnBody(hostSrc, "clearConsoleLog"), "consoleWatchPos = 0", "清空后复位文件监控游标（否则新行读不出来）");
+  has(fnBody(hostSrc, "clearConsoleLog"), '"breeze:consoleCleared"', "清空后广播 consoleCleared 让日志窗就地清空");
+  has(read("breeze/tray-main.js"), 'ipcMain.handle("breeze:consoleClear"', "托盘进程也注册 breeze:consoleClear（日志窗可能由托盘承载）");
+  has(read("breeze/preload-breeze.js"), 'consoleClear: () => ipcRenderer.invoke("breeze:consoleClear")', "preload-breeze 桥出 consoleClear");
+  has(read("breeze/preload-tray.js"), 'consoleClear: () => ipcRenderer.invoke("breeze:consoleClear")', "preload-tray 桥出 consoleClear");
+  has(uiJs, "api.consoleClear()", "控制台清空按钮先真清文件再清显示");
+  has(uiJs, "onConsoleCleared", "控制台订阅 consoleCleared");
+  has(read("breeze/ui/console-panel.js"), "api.consoleClear()", "并排日志窗的清空按钮也真清文件");
+  has(read("breeze/ui/console-panel.js"), "onConsoleCleared", "并排日志窗订阅 consoleCleared");
+  hasnt(read("breeze/ui/index.html"), "磁盘上的 console.log 不动", "清空按钮不再写「磁盘文件不动」那类措辞");
+  /* 本轮口径③：只清「对用户可见的提醒」——许可字段与 /api/status 的 license 块全保留 */
+  hasnt(read("breeze/ui/index.html"), "许可提醒", "Breeze 插件窗不再有「许可提醒」提示条");
+  hasnt(read("breeze/ui/index.html"), "warnbox", "提示条的样式类一并删掉（已无人使用）");
+  has(man.license.weights, "Non-Commercial", "manifest 的 license 字段保留（只清对用户可见的提醒）");
+  has(hostSrc, "license: {", "宿主 /api/status 回执里的 license 块保留");
+  has(read("breeze-pack/README.md"), "Non-Commercial", "breeze-pack/README.md 的许可章节保留");
   /* 文档：宿主清单补上 breeze（原文只列了 7 个宿主） */
   has(read("docs/plugin-auto-repair.md"), "breeze", "自动修复文档的宿主清单含 breeze");
   /* ═════════════ [9] 行为验证：宿主兜底真跑 + 闸门脚本真跑 + 不修判定真跑 ═════════════ */
@@ -2147,6 +2176,37 @@ function scene(nodes, wires) {
   has(uiJs, "未加载（首次合成自动拉起）", "推理引擎那一行也说明按需加载");
   has(uiJs, "再合成一次会自动重新拉起", "engine_down 的指路从「请先点加载模型」改成「会自动重新拉起」");
   hasnt(uiJs, '引擎未加载";', "老的裸「引擎未加载」徽章文案已换掉");
+  /* 本轮口径②：remotion 控制台同样不再显示安装内容（安装收进独立安装窗） */
+  {
+    const rUiHtml = read("remotion/ui/index.html");
+    const rUiJs = read("remotion/ui/ui.js");
+    const rPreload = read("remotion/preload-remotion.js");
+    const rHost = read("remotion/main-remotion.js");
+    for (const id of ["btnInstall", "btnDir", "btnCancelInstall", "installBar", "installStep", "installProgress", "installDir"])
+      hasnt(rUiHtml, 'id="' + id + '"', "remotion 控制台不再有安装元素 #" + id);
+    has(rUiHtml, 'id="btnClearMeta"', "remotion 控制台保留「移除入口」（按运行期元数据处理）");
+    hasnt(rUiJs, "$(\"btnInstall\")", "remotion UI 里没有对已删安装按钮的引用");
+    hasnt(rUiJs, 'api.install(', "remotion UI 不再调 install 桥（安装收进独立安装窗）");
+    hasnt(rUiJs, 'api.cancelInstall(', "remotion UI 不再调 cancelInstall 桥");
+    hasnt(rUiJs, 'api.pickInstallDir(', "remotion UI 不再调 pickInstallDir 桥");
+    hasnt(rUiJs, "onProgress(", "remotion UI 不再订阅安装进度（渲染进度走 console 一行）");
+    has(rHost, 'ipcMain.handle("remotion:consoleClear"', "remotion 宿主注册 remotion:consoleClear（真清日志文件）");
+    has(fnBody(rHost, "clearConsoleLog"), '"remotion:consoleCleared"', "remotion 清空后广播 consoleCleared");
+    has(rPreload, 'consoleClear: () => ipcRenderer.invoke("remotion:consoleClear")', "preload-remotion 桥出 consoleClear");
+    has(rPreload, "onConsoleCleared", "preload-remotion 桥出 onConsoleCleared");
+    has(rUiJs, "api.consoleClear()", "remotion 清空按钮先真清文件再清视图");
+    has(rUiJs, "onConsoleCleared", "remotion 控制台订阅 consoleCleared");
+    /* 主进程侧安装类 IPC 一律保留（只是界面不再暴露） */
+    has(rHost, 'ipcMain.handle("remotion:install"', "remotion:install IPC 保留");
+    has(rHost, 'ipcMain.handle("remotion:cancelInstall"', "remotion:cancelInstall IPC 保留");
+    has(rHost, 'ipcMain.handle("remotion:pickInstallDir"', "remotion:pickInstallDir IPC 保留");
+    has(hostSrc, 'ipcMain.handle("breeze:install"', "breeze:install IPC 保留");
+    has(hostSrc, 'ipcMain.handle("breeze:agentRecoverInstall"', "breeze:agentRecoverInstall IPC 保留");
+    has(hostSrc, 'ipcMain.handle("breeze:cancelInstall"', "breeze:cancelInstall IPC 保留");
+    has(hostSrc, 'ipcMain.handle("breeze:pickInstallDir"', "breeze:pickInstallDir IPC 保留");
+    has(hostSrc, 'ipcMain.handle("breeze:pickWeightsDir"', "权重相关通道（pickWeightsDir）保留");
+    has(hostSrc, 'ipcMain.handle("breeze:setWeightsDir"', "权重相关通道（setWeightsDir）保留");
+  }
   {
     /* 行为：真跑 backendFailure（四种真实错误体）+ engineBusCode */
     const ctx = { console, JSON, RegExp, String };

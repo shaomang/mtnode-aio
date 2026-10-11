@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("ttsApi", {
   open: () => ipcRenderer.invoke("tts:open"),
   close: () => ipcRenderer.invoke("tts:close"),
   consoleTail: (n) => ipcRenderer.invoke("tts:consoleTail", n),
+  consoleClear: () => ipcRenderer.invoke("tts:consoleClear"),
   log: (line) => ipcRenderer.invoke("tts:log", line),
   toggleLogPanel: () => ipcRenderer.invoke("tts:toggleLogPanel"),
   openLogPanel: () => ipcRenderer.invoke("tts:openLogPanel"),
@@ -53,6 +54,16 @@ contextBridge.exposeInMainWorld("ttsApi", {
     };
     ipcRenderer.on("tts:console", handler);
     return () => ipcRenderer.removeListener("tts:console", handler);
+  },
+  /* 日志文件被真清空（truncate）时宿主广播：打开着的日志窗就地清空显示 */
+  onConsoleCleared: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch {}
+    };
+    ipcRenderer.on("tts:consoleCleared", handler);
+    return () => ipcRenderer.removeListener("tts:consoleCleared", handler);
   },
   onLogPanelChanged: (cb) => {
     const handler = (_e, data) => {

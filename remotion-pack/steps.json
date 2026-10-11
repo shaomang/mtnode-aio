@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "plugin": "remotion",
+  "title": {
+    "zh": "Remotion 动效视频",
+    "en": "Remotion Motion Video"
+  },
+  "steps": [
+    { "id": "node", "title": "检查 Node 与 npm", "hint": "Remotion 是 Node 工程：本机要有可用的 node / npm（应用自带的运行时不算）。" },
+    { "id": "copy", "title": "复制 remotion 工程脚手架" },
+    { "id": "npm", "title": "安装依赖（npm install）", "hint": "默认走 registry.npmmirror.com；需要 npm 官方源时给安装脚本加 -Official（或 install.cmd --official），自定义源用 -Registry <url>。" },
+    { "id": "check", "title": "校验 remotion 依赖可加载" }
+  ]
+}

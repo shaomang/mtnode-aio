@@ -27,6 +27,17 @@ const api = {
   /* 关闭控制台窗（主进程侧关闭，与 yue:close 通道同义） */
   close: () => ipcRenderer.invoke("yue:close"),
   removePluginMeta: () => ipcRenderer.invoke("yue:removePluginMeta"),
+  /* 真清空日志文件（不只是清显示）：宿主 truncate 到 0 字节并广播 cleared */
+  consoleClear: () => ipcRenderer.invoke("yue:consoleClear"),
+  onConsoleCleared: (cb) => {
+    const h = (_e, d) => {
+      try {
+        cb(d);
+      } catch {}
+    };
+    ipcRenderer.on("yue:consoleCleared", h);
+    return () => ipcRenderer.removeListener("yue:consoleCleared", h);
+  },
   /* 控制台窗自己关掉自己 */
   closeSelf: () => {
     try {

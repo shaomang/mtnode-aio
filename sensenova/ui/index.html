@@ -34,7 +34,6 @@
     }
     button:hover { border-color: var(--accent); }
     button.primary { background: #14303d; border-color: #1f6d86; }
-    button.violet { background: #241a3d; border-color: #5b43a0; }
     button.danger { background: #3a2228; border-color: #8a3a45; color: #ffc9c9; }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
     button.mini { padding: 4px 9px; font-size: 12px; }
@@ -44,11 +43,6 @@
     }
     textarea { width: 100%; min-height: 56px; resize: vertical; font: 12px/1.4 ui-monospace, Consolas, monospace; }
     input[type="number"] { width: 86px; }
-    .path {
-      flex: 1; min-width: 140px; padding: 7px 10px; border-radius: 8px;
-      background: var(--panel); border: 1px solid var(--border);
-      color: var(--muted); word-break: break-all; font-size: 12px;
-    }
     .card {
       background: var(--panel); border: 1px solid var(--border);
       border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
@@ -97,7 +91,7 @@
       本地 <b>SenseNova-U1.5-8B-MoT</b> 文生图 / 图像编辑（8B MoT · 权重约 32.66GB）。画布节点执行时会
       <strong>自动启动后端 → 首次加载权重 → 出 PNG → 回填路径</strong>，无需手动启停。
       权重比 24G 显存大，靠<b>分层卸载</b>（不活跃的层留在主内存）跑起来：加载要几分钟、
-      空闲若干分钟后会自动释放显存。安装全程走面向中国的镜像（SJTU / 阿里云 / 清华 / ModelScope / GitHub 代理）。
+      空闲若干分钟后会自动释放显存。
     </div>
 
     <div>
@@ -108,33 +102,25 @@
         <span class="badge off" id="badgeAttn" title="注意力档位：Windows 无 flash-attn 轮子，正常应为 sdpa">注意力 —</span>
         <span class="badge off" id="badgeVram" title="显存档位：24G 卡用 fast，OOM 依次降 balanced / low">显存 —</span>
       </h1>
-      <div class="sub"><span id="diskLine">建议预留磁盘</span> · <span id="gpuLine">显卡 —</span></div>
+      <div class="sub"><span id="gpuLine">显卡 —</span></div>
     </div>
 
     <div class="card">
       <div class="kv"><span class="k">模型（ModelScope）</span><span class="v" id="vModel">—</span></div>
-      <div class="kv"><span class="k">安装目录</span><span class="v path" id="vDir">未设置</span></div>
       <div class="kv"><span class="k">当前状态</span><span class="v" id="vState">—</span></div>
-      <div class="row">
-        <button id="btnDir">选择安装目录…</button>
-        <button class="primary" id="btnInstall">安装（脚本 · 国内镜像）</button>
-        <button class="violet" id="btnAgentInstall" title="脚本装不上时交给 AI 按 skill 安装 / 修复">交给 AI 安装</button>
-        <button class="danger" id="btnCancel" disabled>取消安装</button>
-      </div>
+      <!-- 安装相关的一切（安装目录显示 / 「目录」键 / 「安装」键 / 「交给 AI 安装」/「取消安装」/
+           安装进度条）都不在这只窗里：安装统一走独立安装窗（plugins/main-install.js），
+           本窗只留运行期功能（启停 / 释放显存 / 服务 / 权重 / GPU / 试生成 / Console / 设置）。 -->
       <div class="row">
         <button id="btnStart" title="调试用；正常请从画布节点执行">手动启动后端</button>
         <button id="btnStop" title="调试用">停止后端</button>
         <button class="danger" id="btnForceKill" title="立刻结束后台进程，把显存与主内存还给系统">立即释放显存</button>
         <button id="btnCloseWin" style="margin-left:auto">关闭窗口</button>
       </div>
-      <div class="meta" id="progMsg">就绪</div>
-      <div class="bar"><i id="bar"></i></div>
-      <div class="meta" id="subMsg"></div>
-      <div class="bar" style="height:7px"><i id="subBar"></i></div>
     </div>
 
     <div class="card">
-      <div class="meta">试生成一张（与画布节点走同一条链路，用来验证安装是否真能出图）</div>
+      <div class="meta">试生成一张（与画布节点走同一条链路，用来验证本机后端是否真能出图）</div>
       <textarea id="inPrompt" placeholder="一只戴着宇航头盔的橘猫，漂浮在空间站舷窗前，地球在背景里发光">一只戴着宇航头盔的橘猫，漂浮在空间站舷窗前，地球在背景里发光</textarea>
       <div class="row">
         <span class="meta">画幅</span><select id="inRatio"></select>
@@ -159,7 +145,7 @@
     <div class="card" style="flex:1; min-height:0">
       <div class="row">
         <div class="meta">后端 Console（console.log 尾部）</div>
-        <button class="mini" id="btnClearLog" style="margin-left:auto">清空视图</button>
+        <button class="mini" id="btnClearLog" style="margin-left:auto" title="清空日志文件（真删除，不只是清显示）">清空日志</button>
       </div>
       <div id="log">（暂无日志）</div>
     </div>
@@ -176,9 +162,6 @@
       </div>
       <div class="kv"><span class="k">空闲多少分钟自动释放（0 = 不释放）</span>
         <input id="inIdle" type="number" min="0" max="240" />
-      </div>
-      <div class="kv"><span class="k">忽略硬件门槛（显存 &lt;20GB / 内存 &lt;32GB 仍要装）</span>
-        <input id="inForce" type="checkbox" />
       </div>
       <div class="row">
         <button class="primary" id="btnSaveCfg">保存设置</button>

@@ -531,6 +531,9 @@ function renderGpu(gpu) {
       /* 解释器口径（backend-python.js）：venv python.exe → pythonw.exe。抽出来的片段里那份真
          comfyVenvPython 会用到它，这里只关心选轮子的逻辑，桩成恒等 ⇒ 夹具路径照旧是 python.exe */
       quietPython: (p) => p,
+      /* 国内镜像源单一真源（cn-mirrors.js）：抽出来的 runVenvPip 会用 mirrors.installEnv()
+         下发 PIP_* 三件套（压掉机器级 pip.ini 里不可达的 extra-index）；沙箱里给真模块即可 */
+      mirrors: require("../cn-mirrors.js"),
       /* 报错总线的宿主包装（本轮把各失败出口接进 plugin-error-repair.js）：
          抽出来的片段会调它，沙箱不给桩就是 ReferenceError */
       reportErr: (code, msg, extra) =>
@@ -635,7 +638,7 @@ function renderGpu(gpu) {
   let r8 = await h8.installSageAttention({});
   ok(r8.ok === true && /Sage 加速已装好/.test(r8.message || ""), "缺包 → 补装成功并回执版本号（得到 " + show(r8.message) + "）");
   ok(h8.calls.pips.length === 2, "只发两次 pip（triton + wheel），不重复写盘（得到 " + show(h8.calls.pips) + "）");
-  ok(h8.calls.pips[0] === "--isolated triton-windows==3.5.*", "torch 2.9 → triton-windows==3.5.*（得到 " + show(h8.calls.pips[0]) + "）");
+  ok(h8.calls.pips[0] === "triton-windows==3.5.*", "torch 2.9 → triton-windows==3.5.*，且**不带** pip --isolated（国内源走 PIP_* 环境变量覆盖，--isolated 会把环境变量一起忽略、把机器级 pip.ini 里不可达的 extra-index 放回来；得到 " + show(h8.calls.pips[0]) + "）");
   ok(/--no-deps --force-reinstall .*sageattention-2\.2\.0\+cu130torch2\.9\.1\.post6-cp310-abi3-win_amd64\.whl$/.test(h8.calls.pips[1]),
     "本机组合挑中 cu130 + torch2.9.1 + cp310-abi3 那枚轮子（得到 " + show(h8.calls.pips[1]) + "）");
   ok(r8.sage && r8.sage.ok === true && r8.kernelOk === true, "装完按生成期同一口径复检通过（含小 kernel 试跑）");

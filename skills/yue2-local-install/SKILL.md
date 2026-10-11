@@ -100,18 +100,24 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 > **中国大陆网络下必须走镜像**：HuggingFace 无法直连。
 
 1. **pip**：清华 `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）
-   → 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/`；可用 `MT_YUE2_PIP_INDEX` 覆盖。
-   pip 一律加 `--isolated`（避开坏掉的 `pypi.ngc.nvidia.com` 一类 extra-index，否则 DNS 反复重试、几乎不前进）。
-2. **torch（按驱动选 cu 档位，见下节）**：优先官方 `https://download.pytorch.org/whl/<cuXXX>`
-   → 失败回退阿里云 `https://mirrors.aliyun.com/pytorch-wheels/<cuXXX>`（`MT_YUE2_TORCH_INDEX` 可覆盖）。
+   → 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`
+   → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）；可用 `MT_YUE2_PIP_INDEX` 覆盖。
+   **反制机器级 pip.ini**：用 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` **环境变量**在安装子进程内覆盖
+   （宿主 `cn-mirrors.js` 的 `installEnv()` 已统一注入），**绝不改用户机器上的 pip.ini**。
+   **不要用 `pip --isolated`**：它忽略环境变量与用户级 config，机器级 `extra-index-url = https://pypi.ngc.nvidia.com`
+   （NVIDIA PyIndex 常塞，国内 DNS 直接失败）照样生效，每个包白等 5 次重试。
+2. **torch（按驱动选 cu 档位，见下节）**：**SJTU** `https://mirror.sjtu.edu.cn/pytorch-wheels/<cuXXX>`
+   → **阿里云** `https://mirrors.aliyun.com/pytorch-wheels/<cuXXX>` → 官方 `https://download.pytorch.org/whl/<cuXXX>`
+   （`MT_YUE2_TORCH_INDEX` 可覆盖）。
    **不要把 torch 写进 `requirements.txt`**（清华镜像上的 torch 只有 CPU 轮子，会静默装成 CPU 版）。
 3. **模型权重**：**优先 ModelScope（魔搭）** `modelscope.snapshot_download("m-a-p/YuE2-3B")` /
    `"m-a-p/YuE2-Vae"`（国内直连）→ 失败回退 `HF_ENDPOINT=https://hf-mirror.com` + `HF_HUB_DISABLE_XET=1` 的
-   `huggingface_hub.snapshot_download`。
+   `huggingface_hub.snapshot_download` → 最后一级才是官方 `huggingface.co`。
    - **仓库 id 以实际可达为准**：ModelScope 上若不存在同名仓库，先用 `modelscope` 的仓库查询 / HF 镜像确认真实 id 再下，
      **不要假设魔搭 id 与 HF id 一定同名**；把最终使用的 id 写进日志与结论文本。
    - 下载中断可重跑续传；已存在且非空的权重**自动跳过**，不重下。
-4. **GitHub（如需克隆官方仓库 / 自定义算子）**：直连失败用 `ghproxy.com` / `ghfast.top` 前缀镜像。
+4. **GitHub（如需克隆官方仓库 / 自定义算子、下载 release 归档）**：直连失败用代理回退
+   `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` → 直连（`cn-mirrors.js` 的 `ghProxyUrls()`）。
 
 ## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
 
@@ -165,16 +171,18 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
    ```powershell
    cd INSTALL_DIR
    & "<Python312>" -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install --isolated -U pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple
+   .\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple
    ```
 4. **按驱动装 CUDA torch**（见上节），装完立即验证 `torch.cuda.is_available()`。
 5. **pip 安装 yue2 与依赖**
    ```powershell
-   .\.venv\Scripts\python.exe -m pip install --isolated -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
    ```
    - `requirements.txt` 至少包含 `yue2`、`modelscope`、`huggingface_hub`、`soundfile`、`numpy`、`transformers`、
      `accelerate`、`safetensors`、`sentencepiece`、`gradio`；**torch 不在其中**（`gradio` 是 `app\ui.py` 的必需依赖，
-     脚手架 `install.ps1` 在 `requirements.txt` 之外用 `--isolated` 显式补装并做 `import gradio` 自检）。
+     脚手架 `install.ps1` 在 `requirements.txt` 之外显式补装并做 `import gradio` 自检）。
+   - **pip 的源不靠命令行参数，靠 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 环境变量**
+     （宿主注入；手工跑时先设好），**不要加 `--isolated`** —— 它忽略环境变量，机器级 `pip.ini` 的不可达 extra-index 会照旧生效。
    - 若 `yue2` 在 PyPI 不可达：改从官方仓库以可编辑方式装（`pip install -e <仓库路径>` 或 `pip install git+<镜像前缀>https://github.com/multimodal-art-projection/YuE.git`），
      并把实际安装来源写进日志与结论。
    - **注意力档位在 Windows 上是明确故障点，不是「慢一点」**：本机 torch 常常**有 flash-attn 的 schema、没有对应 kernel**，
@@ -251,7 +259,7 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 | `reason=vram_too_small` | 显存 <24G：给量化 / ComfyUI / 云端替代方案，不硬装 |
 | `torch.cuda.is_available()` 为 `False` | ①torch 装成 CPU 版 → 用 `-TorchIndex` 按驱动重装；②驱动过老 → 升级驱动（`reason=driver_too_old`）；③`nvidia-smi` 版本与驱动不匹配 |
 | `import yue2` 失败 | 看真实报错：缺依赖按清华镜像补装；`ModuleNotFoundError` 但目录有包 → 装到了别的解释器（核对 `.venv` 路径）；PyPI 无 `yue2` → 改从官方仓库装并记录来源 |
-| `gradio_missing` / `missing_dependency` | 现象：启动即 `RuntimeError`「Gradio 未安装」，或 `ModuleNotFoundError: No module named 'gradio'`（`app\ui.py` 入口）。处置：`.\.venv\Scripts\python.exe -m pip install --isolated gradio -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn` 后重跑；**不要重下权重** |
+| `gradio_missing` / `missing_dependency` | 现象：启动即 `RuntimeError`「Gradio 未安装」，或 `ModuleNotFoundError: No module named 'gradio'`（`app\ui.py` 入口）。处置：`.\.venv\Scripts\python.exe -m pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn`（`PIP_*` 环境变量由宿主注入，**不要加 `--isolated`**）后重跑；**不要重下权重** |
 | `attention_backend_unsupported` | **现象**：安装期探针（`scripts\probe_attention.py`）报 flash / cudnn / sdpa 都不可用；或运行时真实生成在 **Planning score** 阶段报 `USE_FLASH_ATTENTION was not enabled for build.`。**根因**：本机 torch 有 flash-attn 的 schema 却没有可用 kernel（Windows 移植常见），且 `app\windows_patch.py` 的注意力探针降级没生效。**处置**：确认 `app\windows_patch.py` 与 `app\engine.py` **同时**存在于安装目录**与随包脚手架**（缺一半会被每轮 sync 覆盖），补齐后重跑 `install.ps1` 让它重探档位（或本身重跑探针）；仍不行用 `-TorchIndex` 换带 cuDNN 的 CUDA 版 torch，或换卡。**不要重下权重、不要装 flash-attn** |
 | `No module named 'flash_attn'` / `triton` | 报 `ModuleNotFoundError: flash_attn` 本身是预期（Windows 无轮子），**但它不代表没事**：注意力档位必须由探针降级，见上面 `attention_backend_unsupported` 行；`triton` 缺失则禁用 `torch.compile`。不要为此装 flash-attn 或重装环境 |
 | 模型加载报 `model_missing` | `models\m-a-p__YuE2-3B`（或 VAE）缺 `config.json`/权重 → 重跑下载（ModelScope → hf-mirror）；核对仓库 id 是否真实存在 |
@@ -279,8 +287,8 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 
 1. 以「最近失败焦点」为准判断根因；更早日志仅参考。
 2. 模型已齐**勿重下**；只修 venv / torch 档位 / app / 脚本 / 标记。
-3. 常见修复：torch 档位不匹配 → 按驱动换 `cu1xx` 重装；缺 `gradio` / 依赖 → 清华镜像 `--isolated` 补装
-   （`import` 失败同理，**不重下权重**）；
+3. 常见修复：torch 档位不匹配 → 按驱动换 `cu1xx` 重装（SJTU → 阿里云 → 官方）；缺 `gradio` / 依赖 → 清华镜像补装
+   （靠 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 环境变量，**不要 `--isolated`**；`import` 失败同理，**不重下权重**）；
    `model_missing` → 只补缺的那个仓库；`/health` 秒回但 `loaded=false` → 生成接口再触发懒加载看真实报错；
    OOM → 关其它 GPU 进程 / 开 offload / 缩短时长；`busy` → 不发并发，改串行。
 4. **注意力档位重探针**（`USE_FLASH_ATTENTION was not enabled for build.` / `attention_backend_unsupported` / 换过 torch 之后必做）：

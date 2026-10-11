@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "plugin": "sensenova-local",
+  "title": {
+    "zh": "SenseNova 本地图像生成",
+    "en": "SenseNova Local Image Generation"
+  },
+  "steps": [
+    { "id": "nvidia", "title": "检测 NVIDIA 显卡 / 驱动 / 显存", "hint": "没有 N 卡直接判不支持（ok=false no_cuda）；显存 <20GB 判 vram_too_low（32.66GB bf16 权重装得下也出不了图），-Force 可跳过该闸门。" },
+    { "id": "env", "title": "检测内存与磁盘余量", "hint": "内存 <32GB 判 ram_too_low；磁盘余量不足只警告（权重 32.66GB + venv 约 12GB + 产物）。" },
+    { "id": "python", "title": "选择 Python（uv 3.11 优先）", "hint": "uv 会从 npmmirror 拉 3.11，不需要翻墙；没有 uv 就退到本机 py -3.11/3.12/3.13/3.10。" },
+    { "id": "venv", "title": "创建虚拟环境 .venv" },
+    { "id": "torch", "title": "安装 CUDA torch 2.8.0", "hint": "SJTU 镜像 → 阿里云 → PyTorch 官方三级回退，按驱动版本选 cu128 / cu126。**绝对不要**用 PyPI/清华的 torch（Windows 版是 CPU 构建）；-TorchIndex / -TorchWheel 可指定来源或离线安装。" },
+    { "id": "torch_ok", "title": "验证 torch cuda.is_available()", "hint": "装上了但 cuda 不可用 = 档位与本机驱动不匹配（或装成 CPU 版）：升级驱动或换对应 CUDA 档位重装。" },
+    { "id": "reqs", "title": "安装 requirements.txt", "hint": "transformers 版本必须 >=4.57.1（要认识 model_type: neo_chat）。" },
+    { "id": "pkg", "title": "安装 sensenova_u1 推理包（源码）", "hint": "PyPI 没有这个包：从 GitHub tag 归档拉源码，只解 pyproject.toml + src/，用 --no-deps 装（否则会把刚装好的 cu128 torch 覆盖成 CPU 版）。" },
+    { "id": "weights", "title": "下载权重 SenseNova-U1.5-8B-MoT", "hint": "ModelScope 优先（国内直连），失败回退 hf-mirror；8 片 safetensors 合计 ≥30GB，断点续传，重跑接着下。" },
+    { "id": "files", "title": "校验项目文件清单" },
+    { "id": "smoke", "title": "mock 冒烟（起服务 → /health → 出图 → 并发 429）", "hint": "MTNODE_SENSENOVA_MOCK=1 不加载模型，只验服务契约；冒烟通过才写 .install-ok 与 models\\.ok。" }
+  ]
+}

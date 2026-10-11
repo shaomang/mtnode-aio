@@ -25,6 +25,8 @@ const {
   installManagedNode,
   translateRuntimeReject,
 } = require('../dsh-node.js')
+/* 国内镜像源单一真源（npm registry 等）：见仓库根 cn-mirrors.js */
+const mirrors = require('../cn-mirrors.js')
 
 /**
  * 插件安装专用 skill：同步到 dsh-home 供 Agent 调用，但不进入用户技能列表/工坊。
@@ -220,6 +222,11 @@ function createDshAdapter(opts) {
     fs.mkdirSync(dshHome, { recursive: true })
     const env = nodeEnvFor(nodeInfo, { ...process.env })
     env.DSH_HOME = dshHome
+    /* 国内 npm 镜像：DSH 扩展（插件 / 技能 / MCP）安装与网关补依赖都吃 npm_config_registry，
+       免得走 registry.npmjs.org（用户级覆盖 = MTNODE_NPM_REGISTRY，见 ../cn-mirrors.js）。 */
+    const npmRegistry = mirrors.installEnv().npm_config_registry
+    env.npm_config_registry = npmRegistry
+    env.NPM_CONFIG_REGISTRY = npmRegistry
     delete env.DSH_SESSION_ID
     delete env.DSH_SESSION_JSONL
     delete env.DSH_WEB_URL
@@ -552,6 +559,8 @@ function createDshAdapter(opts) {
     speech(params) {
       const p = params && typeof params === 'object' ? params : {}
       const action = String(p.action || 'state')
+      /* 语音权重（官方 SenseVoice，约 239MB）默认走**国内镜像**：调用方没显式给 downloadSource 时钉在 hf-mirror.com（官方 provider 自报的镜像源之一，见 dsh/gateway/speech-plugin.mjs 的 downloadSources）；显式选过就以它为准，不下发 = 运行时按官方顺序探测、国内先撞 huggingface.co。放这一层是因为它是网关调用的唯一收口（主窗口 IPC 与应用窗口 appHost 都经它）。真源见 ../cn-mirrors.js / docs/mirror-sources.md。 */
+      if (action === 'prepare' && !String(p.downloadSource || '').trim()) p.downloadSource = mirrors.HF_ENDPOINT
       const timeout = action === 'prepare' ? 660000 : action === 'transcribe' ? 200000 : 60000
       return request('speech', p, timeout).catch((err) => ({
         ok: false,

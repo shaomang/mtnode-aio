@@ -35,11 +35,6 @@
     button.primary { background: #2f2547; border-color: #6d4fc4; }
     button.danger { background: #3a2228; border-color: #8a3a45; color: #ffc9c9; }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .path {
-      flex: 1; min-width: 120px; padding: 7px 10px; border-radius: 8px;
-      background: var(--panel); border: 1px solid var(--border);
-      color: var(--muted); word-break: break-all; font-size: 12px;
-    }
     .card {
       background: var(--panel); border: 1px solid var(--border);
       border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
@@ -83,31 +78,22 @@
 <body>
   <div class="wrap">
     <div class="notice">
-      <b>插件测试中</b> · 画布节点执行时会<strong>自动启动后端 → 生成 → 转写音频 → 回填路径</strong>，无需手动启停。后端写出的 <code>audio.flac</code> 会用 venv 里的 soundfile / librosa 直写成 <code>.wav</code>（不依赖 ffmpeg）。安装复杂，可能会失败。
+      <b>插件测试中</b> · 画布节点执行时会<strong>自动启动后端 → 生成 → 转写音频 → 回填路径</strong>，无需手动启停。后端写出的 <code>audio.flac</code> 会用 venv 里的 soundfile / librosa 直写成 <code>.wav</code>（不依赖 ffmpeg）。
     </div>
     <div>
       <h1>YuE 音乐生成 <span class="badge test">插件测试中</span> <span class="badge off" id="svcBadge">服务关闭</span> <span class="badge off" id="lockBadge">全局锁空闲</span> <span class="badge off" id="attBadge" title="注意力档位：flash 在 Windows 轮子里没编 kernel，需实测选档">注意力 —</span></h1>
-      <div class="sub">本地歌词 → 歌曲 · <span id="diskLine">建议预留磁盘</span></div>
+      <div class="sub">本地歌词 → 歌曲</div>
     </div>
 
     <div class="card">
-      <div class="meta">安装目录</div>
+      <!-- 安装相关的一切（安装目录显示 / 「目录」键 / 「安装」键 / 进度条 / 「取消安装」/
+           「自我修复」兜底）都不在这只窗里：安装统一走独立安装窗（plugins/main-install.js），
+           本窗只留运行期功能（启停 / 服务 / 全局锁 / 注意力档位 / GPU / Console）。 -->
       <div class="row">
-        <div class="path" id="installDir">未设置</div>
-        <button id="btnDir">设置…</button>
-      </div>
-      <div class="meta" id="diskHint"></div>
-      <div class="row">
-        <button class="primary" id="btnInstall">安装</button>
-        <button class="danger" id="btnCancelInstall">取消安装</button>
         <button id="btnStart" title="调试用；正常请从画布节点执行">手动启动</button>
         <button id="btnStop" title="调试用">手动停止</button>
         <button id="btnCloseWin" style="margin-left:auto">关闭窗口</button>
       </div>
-      <div class="meta" id="installStep">—</div>
-      <div class="bar" id="installBar"><i></i></div>
-      <div class="meta" id="subStep"></div>
-      <div class="bar" id="subBar" style="height:7px"><i></i></div>
     </div>
 
     <div class="card">
@@ -120,7 +106,7 @@
     <div class="card" style="flex:1; min-height:0">
       <div class="row">
         <div class="meta">后端 Console</div>
-        <button id="btnClearLog" style="margin-left:auto;padding:4px 8px">清空视图</button>
+        <button id="btnClearLog" style="margin-left:auto;padding:4px 8px" title="清空日志文件（真删除，不只是清显示）">清空日志</button>
       </div>
       <div id="console"></div>
     </div>

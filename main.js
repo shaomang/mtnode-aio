@@ -8354,7 +8354,9 @@ ipcMain.handle("dsh:browser", (event, params) =>
 
 /* ── 语音输入（对话输入框的录音按钮）────────────────────────────────────────   透传到网关的 `speech` 方法：识别在网关拉起的运行时里用官方本地 SenseVoice 跑
    （CPU、离线），主进程只搬运 WAV 字节与结果，不落盘、不进任何模型上下文。
-   与 dsh:browser 同一口径：兜底成 {ok:false,error}，不 reject。 */
+   与 dsh:browser 同一口径：兜底成 {ok:false,error}，不 reject。
+   注：语音权重（约 239MB）的**国内镜像默认源**在 dsh/main-dsh.js 的 speech() 收口处注入
+   （那才是主窗口与应用窗口 appHost 的公共入口），这里不重复一份。 */
 ipcMain.handle("dsh:speech", (event, params) =>
   dsh()
     .speech(params)

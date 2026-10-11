@@ -27,7 +27,11 @@ const pluginErrors = require("../plugin-error-repair.js");
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
+const installKill = require("../plugins/install-cancel.js");
 const { quietPython } = require("../backend-python.js");
+/* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
+const mirrors = require("../cn-mirrors.js");
 
 const PLUGIN_ID = "tts-local";
 const TTS_PROVIDER_ID = "tts-local";
@@ -338,6 +342,23 @@ function consoleTail(maxBytes) {
     return { ok: true, text: buf.toString("utf8") };
   } catch (e) {
     return { ok: false, text: "", error: String((e && e.message) || e) };
+  }
+}
+
+/** 清空控制台日志：真删内容（truncate 到 0 字节）—— 保留文件与运行中后端持有的句柄；
+    复位文件监控游标并广播 cleared，让打开着的日志窗就地清空。 */
+function clearConsoleLog() {
+  try {
+    const p = consoleLogPath();
+    mk(path.dirname(p));
+    /* truncate 而不是重写：句柄不变，后端若还拿着写端也不会变成另一个文件 */
+    if (fs.existsSync(p)) fs.truncateSync(p, 0);
+    else fs.writeFileSync(p, "", "utf8");
+    consoleWatchPos = 0;
+    broadcast("tts:consoleCleared", { at: Date.now() });
+    return { ok: true, path: p };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
   }
 }
 
@@ -793,7 +814,7 @@ async function startBackend() {
     windowsHide: true,
     stdio: "ignore",
     env: Object.assign({}, process.env, {
-      HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
+      HF_ENDPOINT: process.env.HF_ENDPOINT || mirrors.HF_ENDPOINT,
       HF_HUB_DISABLE_XET: "1",
       PYTHONUNBUFFERED: "1",
       PYTHONIOENCODING: "utf-8",
@@ -896,6 +917,8 @@ function runPs(scriptPath, args, opts) {
       windowsHide: true,
       env: Object.assign({}, process.env, opts.env || {}),
     });
+    /* 登记当前安装脚本：安装窗点「取消安装」时按进程树强杀它（否则脚本会一直跑到自己结束） */
+    installKill.track(PLUGIN_ID, child);
     /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
     const rep = stepReporter.attach({
       pluginId: PLUGIN_ID,
@@ -922,10 +945,12 @@ function runPs(scriptPath, args, opts) {
       }
     });
     child.on("error", (e) => {
+      installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
       reject(e);
     });
     child.on("close", (code) => {
+      installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
       rep.finish(
         cancelled
@@ -1007,7 +1032,7 @@ async function agentInstallByAgent(opts) {
         mode === "recover" ? "完成或修复安装（保底；脚本安装已失败）" : "端到端完成安装"
       }。\n` +
       `INSTALL_DIR=${installDir}\nSCAFFOLD_REF=${pack}\n` +
-      `要求：国内 pip 镜像（清华/阿里云）+ HF_ENDPOINT=https://hf-mirror.com；建立 .venv 并安装 requirements.txt；克隆 GPT-SoVITS 到 engine/；下载预训练权重（GPT/SoVITS 权重 + chinese-hubert-base + chinese-roberta-wwm-ext-large）到 engine/GPT_SoVITS/pretrained_models/；创建 voices/；冒烟 import。\n` +
+      `要求：国内 pip 源用 PIP_INDEX_URL / PIP_EXTRA_INDEX_URL / PIP_TRUSTED_HOST 三个环境变量钉住（清华 → 阿里云 → USTC，官方 PyPI 只做最后兜底；**不要** pip --isolated，它忽略环境变量、会把本机全局 pip.ini 里不可达的 extra-index 放回来）+ HF_ENDPOINT=https://hf-mirror.com；建立 .venv 并安装 requirements.txt；克隆 GPT-SoVITS 到 engine/；下载预训练权重（GPT/SoVITS 权重 + chinese-hubert-base + chinese-roberta-wwm-ext-large）到 engine/GPT_SoVITS/pretrained_models/；创建 voices/；冒烟 import。\n` +
       (failReason ? `先前失败 / CONSOLE：\n${failReason}\n` : "") +
       `不要启动 python -m app。成功后创建 ${marker}，写入 ${resultMarker}（首行 ok=true）。`;
 
@@ -1190,7 +1215,7 @@ async function installProject(opts) {
 
   installing = true;
   installCancel = false;
-  appendConsole("[install] begin · pip 国内镜像优先");
+  appendConsole("[install] begin · " + mirrors.banner("tts install"));
   /* 安装窗的会话由 tts:install 入口先开（见 registerTtsIpc），这里只管跑安装并上报步骤行 */
   try {
     emitProgress({ phase: "install", step: "scaffold", stepLabel: "复制脚手架", pct: 5 });
@@ -1207,11 +1232,8 @@ async function installProject(opts) {
     }
     await runPs(script, ["-InstallDir", installDir], {
       cwd: installDir,
-      env: {
-        PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple",
-        HF_ENDPOINT: "https://hf-mirror.com",
-        HF_HUB_DISABLE_XET: "1",
-      },
+      /* 统一国内源（PIP_* 三件套压掉机器级 pip.ini 的不可达 extra-index）：见 ../cn-mirrors.js */
+      env: mirrors.installEnv(),
       onPct: (pct) =>
         emitProgress({
           phase: "install",
@@ -1909,9 +1931,11 @@ function registerTtsIpc(opts) {
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
-    cancel: () => {
+    cancel: async () => {
       installCancel = true;
-      return { ok: true };
+      /* 光置标志没用：脚本在下载权重 / 装依赖期间不会自己退出，标志要等它结束后才被读到。
+         这里立刻按进程树强杀（pip / 下载器这些子进程一并带走），close 回调据此判「已取消」。 */
+      return await installKill.cancelInstall(PLUGIN_ID);
     },
   });
 
@@ -1950,7 +1974,7 @@ function registerTtsIpc(opts) {
   ipcMain.handle("tts:agentRecoverInstall", async (e, opts) => agentRecoverInstall(opts || {}));
   ipcMain.handle("tts:cancelInstall", async () => {
     installCancel = true;
-    return { ok: true };
+    return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("tts:start", async () => startBackend());
   ipcMain.handle("tts:stop", async () => stopBackend());
@@ -1967,6 +1991,7 @@ function registerTtsIpc(opts) {
   ipcMain.handle("tts:providerSync", async () => syncProviderToMtnode());
   ipcMain.handle("tts:removePluginMeta", async () => removePluginMetaOnly());
   ipcMain.handle("tts:consoleTail", async (e, n) => consoleTail(n));
+  ipcMain.handle("tts:consoleClear", async () => clearConsoleLog());
   ipcMain.handle("tts:apiFetch", async (e, { path: apiPath, method, body, apiKey }) => {
     const cfg = loadConfig();
     const port = Number(cfg.port) || DEFAULT_PORT;

@@ -2,7 +2,8 @@
 #
 # Does four things:
 #   1. Create .venv and install dependencies from China mirrors (torch comes from the aliyun pytorch-wheels mirror)
-#   2. Clone the breeze-tts inference engine into engine/ (falls back to the ghproxy mirror when the official clone fails)
+#   2. Clone the breeze-tts inference engine into engine/ (GitHub archive / clone falls back through
+#      the ghfast.top -> gh-proxy.com -> ghproxy.net -> ghproxy.com proxies before the direct github.com URL)
 #   3. Download the Breeze TTS 2 weights into checkpoints/breeze-tts-2/ (ModelScope first -> hf-mirror fallback -> hand-filled local directory)
 #   4. Download a portable ffmpeg into tools/ffmpeg/ (used for mp3 output; missing it does not affect wav/flac)
 #
@@ -27,12 +28,29 @@ $ErrorActionPreference = "Stop"
 $InstallDir = (Resolve-Path -LiteralPath $InstallDir).Path
 $script:Step = 0
 
+# -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
+# A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
+# pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
+# override extra-index-url, so every package wastes 5 retries. Setting the three PIP_*
+# variables below overrides index / extra-index / trusted-host inside this process and every
+# child (pip / git / npm inherit them). Do NOT add `pip --isolated`: it ignores environment
+# variables, which lets that unreachable extra-index back in.
+$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+$env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+$env:PIP_TRUSTED_HOST    = "pypi.tuna.tsinghua.edu.cn"
+if (-not $env:HF_ENDPOINT)         { $env:HF_ENDPOINT = "https://hf-mirror.com" }
+if (-not $env:HF_HUB_DISABLE_XET)  { $env:HF_HUB_DISABLE_XET = "1" }
+if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
+Write-Host "[breeze-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
+
 function Say([string]$msg) { Write-Host "[breeze-install] $msg" }
 function Progress([double]$pct) { Write-Host ("[breeze-install] progress: {0:N1}" -f $pct) }
 function Step([string]$msg, [double]$pct) { $script:Step++; Say "- ($($script:Step)) $msg"; Progress $pct }
 
-# 步骤协议（安装窗按它列步骤 / 定位失败步）：真源是包内 scripts/step.ps1。
-# 这里不重排脚本流程，只把已有的 Progress 翻译成结构化步骤行（映射表见下方 Step-ProgressMap）。
+# Step protocol (the install window lists its steps / locates the failing step from it): the single
+# source is scripts/step.ps1 in this pack.
+# This layer does not reorder the script: it only translates the existing Progress numbers into
+# structured step lines (the map is Step-ProgressMap below).
 $stepLib = Join-Path $PSScriptRoot "step.ps1"
 if (Test-Path $stepLib) { . $stepLib }
 else {
@@ -58,8 +76,9 @@ else {
 function Invoke-Native([string]$exe, [string[]]$cmdArgs) {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
-  # Also strip that unreachable extra-index which pip.ini may carry (done on every call, idempotent)
-  Remove-Item Env:\PIP_EXTRA_INDEX_URL -ErrorAction SilentlyContinue
+  # The unreachable extra-index that pip.ini may carry is neutralised once and for all by the
+  # PIP_* environment variables set at the top of this script (they take precedence over pip.ini
+  # and are inherited by every child pip), so there is nothing to strip per call here.
   try {
     & $exe @cmdArgs 2>&1 | ForEach-Object { Say ("  " + $_) }
     return $LASTEXITCODE
@@ -68,34 +87,39 @@ function Invoke-Native([string]$exe, [string[]]$cmdArgs) {
   }
 }
 
-$PIP_MIRROR  = "https://pypi.tuna.tsinghua.edu.cn/simple"
-$PIP_FALLBACK= "https://mirrors.ustc.edu.cn/pypi/simple/"
-$TORCH_INDEX = if ($env:BREEZE_TORCH_INDEX) { $env:BREEZE_TORCH_INDEX } else { "https://download.pytorch.org/whl/cu128" }
-# torch wheels are tried in order: official index (most complete versions) -> aliyun mirror (fast in China, but usually one version behind)
+$PIP_MIRROR  = $env:PIP_INDEX_URL
+$PIP_TRUSTED = $env:PIP_TRUSTED_HOST
+# pip fallback chain, domestic first, official only as the last resort
+$PIP_CHAIN   = @($PIP_MIRROR, "https://mirrors.aliyun.com/pypi/simple/", "https://mirrors.ustc.edu.cn/pypi/simple/", "https://pypi.org/simple") | Select-Object -Unique
+$TORCH_INDEX = if ($env:BREEZE_TORCH_INDEX) { $env:BREEZE_TORCH_INDEX } else { "https://mirrors.aliyun.com/pytorch-wheels/cu128" }
+# torch wheels are tried in order: domestic mirrors first (fast in China, occasionally one version
+# behind) -> the pytorch.org official index last (most complete versions, slow / blocked in China)
 $TORCH_INDICES = @(
   $TORCH_INDEX,
   "https://mirrors.aliyun.com/pytorch-wheels/cu128",
-  "https://download.pytorch.org/whl/cu126",
-  "https://mirrors.aliyun.com/pytorch-wheels/cu126"
+  "https://mirrors.aliyun.com/pytorch-wheels/cu126",
+  "https://download.pytorch.org/whl/cu128",
+  "https://download.pytorch.org/whl/cu126"
 ) | Select-Object -Unique
 $WEIGHTS_REPO = if ($env:BREEZE_WEIGHTS_REPO) { $env:BREEZE_WEIGHTS_REPO } else { "BreezeBlue/breeze-tts-2" }
 
-# 步骤门槛 → 步骤 id（与同目录 steps.json 一致）：脚本里原有的进度数字不改成新语义，
-# 这一层只把「进度到哪」翻译成「到哪一步」。
+# Progress threshold -> step id (identical to steps.json in the same directory): the original
+# progress numbers keep their old meaning, this layer only translates "how far the progress got"
+# into "which step".
 Step-ProgressMap @(
-  @{ at = 4;   id = "python";  title = "检查 Python 3.10+" },
-  @{ at = 10;  id = "venv";    title = "创建虚拟环境 .venv" },
-  @{ at = 20;  id = "engine";  title = "克隆 breeze-tts 推理引擎" },
-  @{ at = 30;  id = "deps";    title = "安装依赖（锁定 gradio 版本）" },
-  @{ at = 54;  id = "torch";   title = "安装 CUDA torch" },
-  @{ at = 78;  id = "weights"; title = "下载 Breeze TTS 2 权重" },
-  @{ at = 96;  id = "ffmpeg";  title = "下载便携 ffmpeg（可选）" },
-  @{ at = 98;  id = "smoke";   title = "冒烟：导入引擎并写安装标记" }
+  @{ at = 4;   id = "python";  title = "check Python 3.10+" },
+  @{ at = 10;  id = "venv";    title = "create the .venv virtual environment" },
+  @{ at = 20;  id = "engine";  title = "clone the breeze-tts inference engine" },
+  @{ at = 30;  id = "deps";    title = "install dependencies (gradio pinned)" },
+  @{ at = 54;  id = "torch";   title = "install CUDA torch" },
+  @{ at = 78;  id = "weights"; title = "download the Breeze TTS 2 weights" },
+  @{ at = 96;  id = "ffmpeg";  title = "download a portable ffmpeg (optional)" },
+  @{ at = 98;  id = "smoke";   title = "smoke: import the engine and write the install marker" }
 )
-Say "步骤协议就绪（安装窗按 steps.json 列步骤）"
+Say "step protocol ready (the install window lists steps from steps.json)"
 
-# 原有 Progress 调用点（脚本自己打的阶段进度）在映射表就绪后自动带上步骤行：
-# 定义一次覆盖函数，脚本其余部分一行不用改。
+# The original Progress call sites (stage progress printed by the script itself) automatically carry
+# step lines once the map is ready: define the override once, the rest of the script needs no changes.
 function Progress([double]$pct) {
   Write-Host ("[breeze-install] progress: {0:N1}" -f $pct)
   Step-Progress $pct
@@ -109,7 +133,6 @@ $TOOLS_DIR   = Join-Path $InstallDir "tools"
 Say "InstallDir = $InstallDir"
 Say "weights repo = $WEIGHTS_REPO"
 Say "torch index  = $TORCH_INDEX"
-Say "license      = code Apache-2.0; weights and self-hosted output are research / non-commercial only (BreezeBlue Research and Non-Commercial License)"
 
 # -- 0. Prerequisite: Python ----------------------------------------------
 Step "checking Python (3.10+ required)" 1
@@ -135,7 +158,7 @@ if (-not (Test-Path -LiteralPath $VENV_PY)) {
 $prevEapPip = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
-  Invoke-Native $VENV_PY @("-m", "pip", "install", "--upgrade", "pip", "--index-url", $PIP_MIRROR, "--quiet", "--disable-pip-version-check") | Out-Null
+  Invoke-Native $VENV_PY @("-m", "pip", "install", "--upgrade", "pip", "--index-url", $PIP_MIRROR, "--trusted-host", $PIP_TRUSTED, "--quiet", "--disable-pip-version-check") | Out-Null
 } finally { $ErrorActionPreference = $prevEapPip }
 Progress 10
 
@@ -148,7 +171,12 @@ if ($engineOk) {
   New-Item -ItemType Directory -Force -Path $ENGINE_DIR | Out-Null
   $cloned = $false
   if (Get-Command git -ErrorAction SilentlyContinue) {
-    foreach ($url in @("https://github.com/breezeblue-ai/breeze-tts", "https://ghproxy.com/https://github.com/breezeblue-ai/breeze-tts")) {
+    foreach ($url in @(
+      "https://ghfast.top/https://github.com/breezeblue-ai/breeze-tts",
+      "https://gh-proxy.com/https://github.com/breezeblue-ai/breeze-tts",
+      "https://ghproxy.net/https://github.com/breezeblue-ai/breeze-tts",
+      "https://ghproxy.com/https://github.com/breezeblue-ai/breeze-tts",
+      "https://github.com/breezeblue-ai/breeze-tts")) {
       Say "git clone $url"
       Invoke-Native "git" @("clone", "--depth", "1", $url, $ENGINE_DIR) | Out-Null
       if (Test-Path -LiteralPath (Join-Path $ENGINE_DIR "infer.py")) { $cloned = $true; break }
@@ -157,7 +185,10 @@ if ($engineOk) {
     }
   } else { Say "git not found, falling back to a zip download" }
   if (-not $cloned) {
-    foreach ($zip in @("https://ghproxy.com/https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip",
+    foreach ($zip in @("https://ghfast.top/https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip",
+                       "https://gh-proxy.com/https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip",
+                       "https://ghproxy.net/https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip",
+                       "https://ghproxy.com/https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip",
                        "https://github.com/breezeblue-ai/breeze-tts/archive/refs/heads/main.zip")) {
       $tmp = Join-Path $env:TEMP ("breeze-tts-" + [guid]::NewGuid().ToString("N") + ".zip")
       try {
@@ -218,11 +249,12 @@ $prevEapG = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
   Say "pre-installing gradio==6.29.1 (keeps pip from backtracking on it)"
-  Invoke-Native $VENV_PY @("-m", "pip", "install", "--index-url", $PIP_MIRROR, "--no-deps", "gradio==6.29.1", "gradio-client==2.7.2") | Out-Null
-  $depsRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "-r", $filtered, "--index-url", $PIP_MIRROR, "--extra-index-url", $TORCH_INDEX_ARG)
-  if ($depsRc -ne 0) {
-    Say "tsinghua mirror failed (exit $depsRc), falling back to $PIP_FALLBACK"
-    $depsRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "-r", $filtered, "--index-url", $PIP_FALLBACK, "--extra-index-url", $TORCH_INDEX_ARG)
+  Invoke-Native $VENV_PY @("-m", "pip", "install", "--index-url", $PIP_MIRROR, "--trusted-host", $PIP_TRUSTED, "--no-deps", "gradio==6.29.1", "gradio-client==2.7.2") | Out-Null
+  $depsRc = 1
+  foreach ($idx in $PIP_CHAIN) {
+    $depsRc = Invoke-Native $VENV_PY @("-m", "pip", "install", "-r", $filtered, "--index-url", $idx, "--trusted-host", $PIP_TRUSTED, "--extra-index-url", $TORCH_INDEX_ARG)
+    if ($depsRc -eq 0) { break }
+    Say "mirror $idx failed (exit $depsRc), trying the next one"
   }
 } finally { $ErrorActionPreference = $prevEapG }
 if ($depsRc -ne 0) { throw "Python dependency installation failed (see the pip output above)" }
@@ -247,10 +279,24 @@ if (Test-Ckpt $CKPT_DIR) {
   Set-Content -LiteralPath $marker -Value $localWeights -Encoding UTF8
 } else {
   if ($localWeights) { Say "the directory BREEZE_WEIGHTS_DIR points to is incomplete (missing config.json or weight files), downloading instead" }
-  Invoke-Native $VENV_PY @("-m", "pip", "install", "--quiet", "--index-url", $PIP_MIRROR, "huggingface_hub") | Out-Null
+  Invoke-Native $VENV_PY @("-m", "pip", "install", "--quiet", "--index-url", $PIP_MIRROR, "--trusted-host", $PIP_TRUSTED, "huggingface_hub") | Out-Null
   $dl = Join-Path $InstallDir "scripts\download_weights.py"
   $src = Join-Path $PSScriptRoot "download_weights.py"
-  if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $dl -Force }
+  # The host copies this pack into the install dir before running the script (syncPackToInstall),
+  # so $PSScriptRoot is usually $InstallDir\scripts itself -- source and destination are then the very
+  # same file. PowerShell 7 refuses that ("Cannot overwrite the item ... with itself") and, with
+  # $ErrorActionPreference = "Stop", the script died right here at the weights step. Compare the
+  # normalised paths first: skip the copy when they are the same file, copy in every other case.
+  if (Test-Path -LiteralPath $src) {
+    $srcFull = (Resolve-Path -LiteralPath $src).Path
+    $dlFull = $dl
+    if (Test-Path -LiteralPath $dl) {
+      try { $dlFull = (Resolve-Path -LiteralPath $dl).Path } catch { $dlFull = $dl }
+    }
+    if (-not [string]::Equals($srcFull, $dlFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+      Copy-Item -LiteralPath $srcFull -Destination $dl -Force
+    }
+  }
   if (-not (Test-Path -LiteralPath $dl)) { throw "scripts/download_weights.py is missing (the installer script has been split apart)" }
   $dlArgs = @($dl, "--repo", $WEIGHTS_REPO, "--dest", $CKPT_DIR)
   if ($env:BREEZE_WEIGHTS_REVISION) { $dlArgs += @("--revision", $env:BREEZE_WEIGHTS_REVISION) }
@@ -278,6 +324,10 @@ if ($env:BREEZE_SKIP_FFMPEG -ne "1") {
     New-Item -ItemType Directory -Force -Path $ffDir | Out-Null
     $ok = $false
     foreach ($url in @("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+                       "https://ghfast.top/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+                       "https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+                       "https://ghproxy.net/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+                       "https://ghproxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
                        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip")) {
       $tmp = Join-Path $env:TEMP ("ffmpeg-" + [guid]::NewGuid().ToString("N") + ".zip")
       try {
@@ -345,7 +395,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "voices"), (Joi
 
 if ($smokeRc -ne 0) {
   Say "smoke import failed (exit $smokeRc): deps may be incomplete, install unfinished, no .install-ok."
-  Step-Progress -Fail "冒烟导入失败（退出码 $smokeRc）：依赖装了一半或与本机 torch 不匹配。看这一步日志，重跑安装脚本补齐；反复失败就把日志交给会话修复。"
+  Step-Progress -Fail "smoke import failed (exit $smokeRc): dependencies are half installed or do not match this machine's torch. Read this step's log and rerun the installer to fill them in; if it keeps failing, hand the log to the repair session."
   Write-Verdict "false" "smoke_failed"
   Say "handed back to the host for skill-based Agent repair (no need to read logs)."
   exit 1
@@ -353,7 +403,7 @@ if ($smokeRc -ne 0) {
 if ($cudaRc -ne 0 -and $env:BREEZE_SKIP_CUDA_CHECK -ne "1") {
   Say "torch cannot see CUDA -- Breeze TTS 2 needs an NVIDIA GPU and a working CUDA build of torch (about 7.7GB of VRAM), the install did not finish."
   Say "guidance: make sure this machine has an NVIDIA GPU with a working driver; if you really need static troubleshooting on a machine without a GPU, set BREEZE_SKIP_CUDA_CHECK=1 and rerun."
-  Step-Progress -Fail "torch 装上了但看不到 CUDA：本机没有可用的 NVIDIA 显卡 / 驱动，或装的是 CPU 版 torch。装的是 CUDA 版依赖，缺卡装不上——换有 N 卡的机器，或按需设 BREEZE_SKIP_CUDA_CHECK=1 只做静态排查。"
+  Step-Progress -Fail "torch installed but cannot see CUDA: this machine has no usable NVIDIA GPU / driver, or a CPU-only torch is installed. This pack installs CUDA builds, so a machine without an NVIDIA card cannot get there -- switch to a machine with one, or set BREEZE_SKIP_CUDA_CHECK=1 for static troubleshooting only."
   Write-Verdict "false" "no_cuda"
   exit 1
 }

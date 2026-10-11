@@ -15,6 +15,17 @@ const api = {
   uninstallPreview: () => ipcRenderer.invoke("music3:uninstallPreview"),
   uninstall: (opts) => ipcRenderer.invoke("music3:uninstall", opts || {}),
   consoleTail: (n) => ipcRenderer.invoke("music3:consoleTail", n),
+  /* 真清空日志文件（不只是清显示）：宿主 truncate 到 0 字节并广播 cleared */
+  consoleClear: () => ipcRenderer.invoke("music3:consoleClear"),
+  onConsoleCleared: (cb) => {
+    const h = (_e, d) => {
+      try {
+        cb(d);
+      } catch {}
+    };
+    ipcRenderer.on("music3:consoleCleared", h);
+    return () => ipcRenderer.removeListener("music3:consoleCleared", h);
+  },
   freeDisk: () => ipcRenderer.invoke("music3:freeDisk"),
   onProgress: (cb) => {
     const handler = (_e, data) => cb && cb(data);

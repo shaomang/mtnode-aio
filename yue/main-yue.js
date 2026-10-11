@@ -21,8 +21,10 @@
  * IPC（registerYueIpc 注册）：
  *   invoke yue:getStatus / yue:install / yue:cancelInstall / yue:start / yue:stop /
  *          yue:close / yue:open / yue:pickInstallDir / yue:generate /
- *          yue:cancelGenerate / yue:getLock / yue:removePluginMeta
- *   event  yue:progress（安装 / 生成进度）、yue:consoleChanged（控制台窗开关）、yue:gpu
+ *          yue:cancelGenerate / yue:getLock / yue:consoleTail / yue:consoleClear /
+ *          yue:removePluginMeta
+ *   event  yue:progress（安装 / 生成进度）、yue:consoleChanged（控制台窗开关）、yue:gpu、
+ *          yue:consoleCleared（日志文件被真清空，各窗就地清显示）
  */
 const { BrowserWindow, ipcMain, dialog, screen, app } = require("electron");
 const path = require("path");
@@ -50,7 +52,11 @@ const pluginErrors = require("../plugin-error-repair.js");
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
+const installKill = require("../plugins/install-cancel.js");
 const { quietPython } = require("../backend-python.js");
+/* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
+const mirrors = require("../cn-mirrors.js");
 
 const PLUGIN_ID = "yue";
 /* 随包脚手架 / 云端 runtime 包的 manifest.json id（≠ 插件 kind "yue"）：校验时用这个口径 */
@@ -633,11 +639,8 @@ function syncScaffoldToInstall(installDir) {
  * =========================================================================*/
 /** 入口 app/ui.py 必须能 import 的关键模块（其余顶层包从 requirements.txt 并入） */
 const KEY_PY_MODULES = ["gradio", "soundfile", "numpy"];
-/** pip 索引回退链：清华 → 阿里云；MT_YUE2_PIP_INDEX 可整体覆盖 */
-const PIP_INDEX_CHAIN = [
-  "https://pypi.tuna.tsinghua.edu.cn/simple",
-  "https://mirrors.aliyun.com/pypi/simple/",
-];
+/** pip 索引回退链：清华 → 阿里云 → USTC → 官方（最后一级兜底）；MT_YUE2_PIP_INDEX 可整体覆盖 */
+const PIP_INDEX_CHAIN = mirrors.pipIndexChain();
 /** 单模块探测超时（import transformers 这类较重） */
 const DEPS_PROBE_TIMEOUT_MS = 60000;
 /** 单次 pip 补装超时 */
@@ -772,7 +775,9 @@ async function ensurePythonDeps(installDir, opts) {
   for (const index of chain) {
     if (left() <= 0) break;
     const host = indexHostOf(index);
-    const args = ["-m", "pip", "install", "--isolated", "-U"].concat(todo);
+    /* 补装依赖：**不加** `pip --isolated`（它忽略环境变量，机器级 pip.ini 里那串不可达的
+       extra-index 会照旧生效、每个包白等 5 次重试）；改用 PIP_* 环境变量覆盖（见 cn-mirrors.js） */
+    const args = ["-m", "pip", "install", "-U"].concat(todo);
     if (index) {
       args.push("-i", index);
       if (host) args.push("--trusted-host", host);
@@ -780,6 +785,7 @@ async function ensurePythonDeps(installDir, opts) {
     log("[deps] missing=" + todo.join(",") + " → installing via " + (index || "pip default"));
     const r = await runExe(py, args, {
       cwd: path.dirname(py),
+      env: mirrors.installEnv(index ? { PIP_INDEX_URL: index, PIP_EXTRA_INDEX_URL: index } : {}),
       timeoutMs: Math.max(30000, Math.min(DEPS_INSTALL_TIMEOUT_MS, left())),
     });
     if (r.ok) {
@@ -1590,6 +1596,20 @@ function consoleTail(maxBytes) {
   }
 }
 
+/** 清空控制台日志：真删内容（truncate 到 0 字节）—— 保留文件与运行中后端持有的句柄；
+    本宿主没有文件监控游标，直接广播 cleared，让打开着的日志窗就地清空。 */
+function clearConsoleLog() {
+  try {
+    const p = consoleLogPath();
+    mk(path.dirname(p));
+    fs.writeFileSync(p, "", "utf8");
+    broadcast("yue:consoleCleared", { at: Date.now() });
+    return { ok: true, path: p };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 async function statusForUi() {
   const cfg = loadConfig();
   const man = readManifest();
@@ -1837,7 +1857,7 @@ async function startBackend(depRepairTried) {
     stdio: ["ignore", outFd, outFd],
     env: (() => {
       const env = Object.assign({}, process.env, {
-        HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
+        HF_ENDPOINT: process.env.HF_ENDPOINT || mirrors.HF_ENDPOINT,
         HF_HUB_DISABLE_XET: "1",
         PYTHONUNBUFFERED: "1",
         YUE_MEMORY_RESERVE_MARGIN: process.env.YUE_MEMORY_RESERVE_MARGIN || "6GB",
@@ -2027,15 +2047,15 @@ function runInstallScript(scriptPath, installDir, diskHintGb) {
       String(diskHintGb),
     ];
     appendConsole("$ powershell " + psArgs.join(" "));
+    appendConsole(mirrors.banner("yue2 install"));
     const child = spawn("powershell.exe", psArgs, {
       cwd: installDir,
       windowsHide: true,
-      env: Object.assign({}, process.env, {
-        PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple",
-        HF_ENDPOINT: "https://hf-mirror.com",
-        HF_HUB_DISABLE_XET: "1",
-      }),
+      /* 统一国内源（PIP_* 三件套压掉机器级 pip.ini 的不可达 extra-index）：见 ../cn-mirrors.js */
+      env: Object.assign({}, process.env, mirrors.installEnv()),
     });
+    /* 登记当前安装脚本：安装窗点「取消安装」时按进程树强杀它（否则脚本会一直跑到自己结束） */
+    installKill.track(PLUGIN_ID, child);
     const rep = stepReporter.attach({
       pluginId: PLUGIN_ID,
       child,
@@ -2059,10 +2079,12 @@ function runInstallScript(scriptPath, installDir, diskHintGb) {
       }
     });
     child.on("error", (e) => {
+      installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
       reject(e);
     });
     child.on("close", (code) => {
+      installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
       rep.finish(
         cancelled
@@ -2501,7 +2523,7 @@ function runExe(exe, args, opts) {
     execFile(
       exe,
       args,
-      { cwd: opts.cwd || path.dirname(exe), windowsHide: true, timeout: opts.timeoutMs || 0, maxBuffer: 8 * 1024 * 1024 },
+      { cwd: opts.cwd || path.dirname(exe), env: Object.assign({}, process.env, opts.env || {}), windowsHide: true, timeout: opts.timeoutMs || 0, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout, stderr) => {
         resolve({
           ok: !err,
@@ -3109,9 +3131,11 @@ function registerYueIpc(opts) {
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
-    cancel: () => {
+    cancel: async () => {
       installCancel = true;
-      return { ok: true };
+      /* 光置标志没用：脚本在下载权重 / 装依赖期间不会自己退出，标志要等它结束后才被读到。
+         这里立刻按进程树强杀（pip / 下载器这些子进程一并带走），close 回调据此判「已取消」。 */
+      return await installKill.cancelInstall(PLUGIN_ID);
     },
   });
 
@@ -3142,7 +3166,7 @@ function registerYueIpc(opts) {
   });
   ipcMain.handle("yue:cancelInstall", async () => {
     installCancel = true;
-    return { ok: true };
+    return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("yue:start", async () => startBackend());
   ipcMain.handle("yue:stop", async () => stopBackend());
@@ -3154,6 +3178,8 @@ function registerYueIpc(opts) {
   /* 插件界面内嵌 console 用（与 music3 / h3 / llama / tts / breeze / remotion 同名同义）：
      只读日志尾部；此前只有 getStatus 里带 consoleTail，插件卡每 2s 轮询会连带 probe + nvidia-smi。 */
   ipcMain.handle("yue:consoleTail", async (e, n) => consoleTail(n));
+  /* 真清空日志文件（不只是清显示）：truncate 到 0 字节 + 广播 yue:consoleCleared */
+  ipcMain.handle("yue:consoleClear", async () => clearConsoleLog());
   ipcMain.handle("yue:removePluginMeta", async () => removePluginMetaOnly());
 }
 

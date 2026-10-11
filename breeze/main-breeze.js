@@ -23,7 +23,11 @@ const pluginErrors = require("../plugin-error-repair.js");
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
+const installKill = require("../plugins/install-cancel.js");
 const { quietPython } = require("../backend-python.js");
+/* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
+const mirrors = require("../cn-mirrors.js");
 
 const PLUGIN_ID = "breeze-tts-local";
 const PLUGIN_NAME = "Breeze TTS 2 本地 TTS";
@@ -373,6 +377,21 @@ function consoleTail(maxBytes) {
     return { ok: true, text: buf.toString("utf8") };
   } catch (e) {
     return { ok: false, text: "", error: String((e && e.message) || e) };
+  }
+}
+
+/** 清空控制台日志：真删内容（truncate 到 0 字节）—— 保留文件与运行中后端持有的句柄；
+    复位文件监控游标并广播 cleared，让打开着的日志窗就地清空。 */
+function clearConsoleLog() {
+  try {
+    const p = consoleLogPath();
+    mk(path.dirname(p));
+    fs.writeFileSync(p, "", "utf8");
+    consoleWatchPos = 0;
+    broadcast("breeze:consoleCleared", { at: Date.now() });
+    return { ok: true, path: p };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
   }
 }
 
@@ -861,7 +880,7 @@ async function startBackendInner() {
   appendConsole("starting Breeze TTS 2 manager…");
 
   const env = Object.assign({}, process.env, {
-    HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
+    HF_ENDPOINT: process.env.HF_ENDPOINT || mirrors.HF_ENDPOINT,
     HF_HUB_DISABLE_XET: "1",
     PYTHONUNBUFFERED: "1",
     PYTHONIOENCODING: "utf-8",
@@ -986,6 +1005,8 @@ function runPs(scriptPath, args, opts) {
       windowsHide: true,
       env: Object.assign({}, process.env, opts.env || {}),
     });
+    /* 登记当前安装脚本：安装窗点「取消安装」时按进程树强杀它（否则脚本会一直跑到自己结束） */
+    installKill.track(PLUGIN_ID, child);
     /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
     const rep = stepReporter.attach({
       pluginId: PLUGIN_ID,
@@ -1014,10 +1035,12 @@ function runPs(scriptPath, args, opts) {
       }
     });
     child.on("error", (e) => {
+      installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
       reject(e);
     });
     child.on("close", (code) => {
+      installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
       rep.finish(
         cancelled
@@ -1123,7 +1146,7 @@ async function agentInstallByAgentInner(opts) {
         mode === "recover" ? "完成或修复安装（保底；脚本安装已失败）" : "端到端完成安装"
       }。\n` +
       `INSTALL_DIR=${installDir}\nSCAFFOLD_REF=${pack}\n` +
-      `要求：国内镜像（清华 pip / 阿里云 pytorch-wheels）；建立 .venv 安装 engine/requirements.txt（去掉 pytest/ruff）；` +
+      `要求：国内镜像（pip 源用 PIP_INDEX_URL / PIP_EXTRA_INDEX_URL / PIP_TRUSTED_HOST 三个环境变量钉住：清华 → 阿里云 → USTC，官方只做最后兜底，**不要** pip --isolated；torch 走阿里云 pytorch-wheels）；建立 .venv 安装 engine/requirements.txt（去掉 pytest/ruff）；` +
       `克隆 breeze-tts 到 engine/；下载 Breeze TTS 2 权重到 checkpoints/breeze-tts-2/（ModelScope 优先，回退 hf-mirror）；` +
       `准备便携 ffmpeg 到 tools/ffmpeg/；创建 voices/ 与 logs/；冒烟 import torch 且 torch.cuda.is_available() 为真。\n` +
       (failReason ? `先前失败 / CONSOLE：\n${failReason}\n` : "") +
@@ -1300,7 +1323,7 @@ async function installProjectInner(opts) {
 
   installing = true;
   installCancel = false;
-  appendConsole("[install] begin · pip 国内镜像优先");
+  appendConsole("[install] begin · " + mirrors.banner("breeze install"));
   /* 安装窗的会话由 breeze:install 入口先开（见 registerBreezeIpc），这里只管跑安装并上报步骤行 */
   /* 上一次的失败裁决先清掉：否则这次脚本没写新裁决时会被旧裁决误读（见 readInstallVerdict）。 */
   try {
@@ -1320,11 +1343,10 @@ async function installProjectInner(opts) {
         fs.copyFileSync(packScript, script);
       }
     }
-    const env = {
-      PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple",
-      HF_ENDPOINT: "https://hf-mirror.com",
-      HF_HUB_DISABLE_XET: "1",
-    };
+    /* 统一国内源：PIP_INDEX_URL / PIP_EXTRA_INDEX_URL / PIP_TRUSTED_HOST 三件套一起下发，
+       把机器级 pip.ini 里不可达的 extra-index（本轮报错的 pypi.ngc.nvidia.com）压掉；
+       数值与开关见 ../cn-mirrors.js（不要在这里再抄一份 host / hex）。 */
+    const env = mirrors.installEnv();
     if (cfg.weightsDir) env.BREEZE_WEIGHTS_DIR = String(cfg.weightsDir);
     await runPs(script, ["-InstallDir", installDir], {
       cwd: installDir,
@@ -1996,9 +2018,11 @@ function registerBreezeIpc(opts) {
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
-    cancel: () => {
+    cancel: async () => {
       installCancel = true;
-      return { ok: true };
+      /* 光置标志没用：脚本在下载权重 / 装依赖期间不会自己退出，标志要等它结束后才被读到。
+         这里立刻按进程树强杀（pip / 下载器这些子进程一并带走），close 回调据此判「已取消」。 */
+      return await installKill.cancelInstall(PLUGIN_ID);
     },
   });
 
@@ -2048,7 +2072,7 @@ function registerBreezeIpc(opts) {
   ipcMain.handle("breeze:agentRecoverInstall", async (e, o) => agentRecoverInstall(o || {}));
   ipcMain.handle("breeze:cancelInstall", async () => {
     installCancel = true;
-    return { ok: true };
+    return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("breeze:start", async () => startBackend());
   ipcMain.handle("breeze:stop", async () => stopBackend());
@@ -2064,6 +2088,8 @@ function registerBreezeIpc(opts) {
     return { ok: true };
   });
   ipcMain.handle("breeze:consoleTail", async (e, n) => consoleTail(n));
+  /* 清空日志 = 真清文件（不是只清界面显示），见 clearConsoleLog */
+  ipcMain.handle("breeze:consoleClear", async () => clearConsoleLog());
   /* 引擎日志 tail：控制台在「引擎加载中…」时要能就地看到权重加载到哪一步，不必去翻 Console 日志。 */
   ipcMain.handle("breeze:engineLog", async (e, n) =>
     backendJson("/api/engine/log?n=" + (Number(n) || 200), "GET"),

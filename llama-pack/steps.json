@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "plugin": "llama-local",
+  "title": {
+    "zh": "llama.cpp 本地模型",
+    "en": "llama.cpp Local Models"
+  },
+  "steps": [
+    { "id": "python", "title": "检查 Python 3.10+", "hint": "脚本先找 py -3.10 / 3.11 / 3.12，再退到 PATH 里的 python。都没有就装一个 Python 后重跑。" },
+    { "id": "venv", "title": "创建虚拟环境 .venv" },
+    { "id": "pip", "title": "安装 Python 依赖（清华镜像）", "hint": "requirements.txt 走 pypi.tuna.tsinghua.edu.cn；网络抖动时重跑即可，已装好的不会重装。" },
+    { "id": "server", "title": "下载 llama.cpp llama-server 二进制", "hint": "从 GitHub Releases 拉 CUDA 版（cuda-12.4 / cuda-13.3），直连失败自动走 ghproxy 镜像；仍失败则退 CPU 版。" },
+    { "id": "smoke", "title": "冒烟：导入 fastapi 与 app.server" }
+  ]
+}

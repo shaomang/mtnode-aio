@@ -66,14 +66,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -InstallDir .
 1. **探测 NVIDIA**：`nvidia-smi` 读显卡名 / 驱动主版本 / 显存；没有 N 卡且未给 `-Cpu` →
    写 `.yue2-agent-result`（`ok=false` / `reason=no_cuda`）并退出非 0；显存 <20GB 只告警不拦
 2. 探测 Python（`py -3.12` 优先，退 3.13 / 3.11 / 3.10 / `python`）→ 建 `.venv`
-3. pip 装 `requirements.txt`（清华镜像，失败回退阿里云）
-4. 装 **CUDA 版 torch / torchaudio**：按驱动主版本选 `cu130` / `cu128` / `cu126`，失败逐档降级；
+3. pip 装 `requirements.txt`（清华镜像 → 阿里云 → 官方 PyPI 兜底）
+4. 装 **CUDA 版 torch / torchaudio**：按驱动主版本选 `cu130` / `cu128` / `cu126`，**国内优先**（阿里云 pytorch-wheels），官方 `download.pytorch.org` 只做最后一档；失败逐档降级；
    `-Cpu` 或全部 CUDA 档位都失败时才装 CPU 版
 4b. 跑 `scripts\probe_attention.py` 探**注意力档位**（Windows 必需，见「注意力档位与 Windows 差异」）：
    结果写 `<INSTALL_DIR>\.attention-backend`；一个可用档都没有 → `ok=false` / `reason=attention_backend_unsupported` 退出
 5. 装 **yue2 推理包**：`hf_hub_download` 取 `m-a-p/YuE2-3B` 的
    `yue2_infer-0.1.5-py3-none-any.whl` → 直链（hf-mirror / HF resolve）→ 官方仓库
-   `git+https://github.com/multimodal-art-projection/YuE.git`（直连 → ghproxy / ghfast 镜像）
+   `git+https://github.com/multimodal-art-projection/YuE.git`（`ghfast.top` → `gh-proxy.com` → `ghproxy.net` → `ghproxy.com` → 直连）
 6. 用 huggingface_hub 下 `m-a-p/YuE2-3B` 与 `m-a-p/YuE2-Vae` 到 `models\`
    （HF 直连失败回退 `HF_ENDPOINT=https://hf-mirror.com`；跳过 assets/文档等无关文件）
 7. 建 `models\.ok` 与 `.install-ok`

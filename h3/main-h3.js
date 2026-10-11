@@ -41,7 +41,11 @@ const pluginErrors = require("../plugin-error-repair.js");
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
+const installKill = require("../plugins/install-cancel.js");
 const { quietPython } = require("../backend-python.js");
+/* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
+const mirrors = require("../cn-mirrors.js");
 
 const PLUGIN_ID = "minimax-h3";
 const H3_FEED = process.env.MTNODE_H3_URL || "http://mt-agent.com/mtnode/h3";
@@ -2295,6 +2299,8 @@ function runPs(scriptPath, args, opts) {
       windowsHide: true,
       env: Object.assign({}, process.env, opts.env || {}),
     });
+    /* 登记当前安装脚本：安装窗点「取消安装」时按进程树强杀它（否则脚本会一直跑到自己结束） */
+    installKill.track(PLUGIN_ID, child);
     /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
     const rep = stepReporter.attach({
       pluginId: PLUGIN_ID,
@@ -2321,10 +2327,12 @@ function runPs(scriptPath, args, opts) {
       }
     });
     child.on("error", (e) => {
+      installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
       reject(e);
     });
     child.on("close", (code) => {
+      installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
       rep.finish(
         cancelled
@@ -2395,13 +2403,11 @@ async function installProject(opts) {
     syncH3InstallSkill();
     const script = join(installDir, "scripts", "install.ps1");
     appendConsole("[install] script = " + script);
+    appendConsole(mirrors.banner("h3 install"));
     const out = await runPs(script, ["-InstallDir", installDir, "-DiskHintGb", String(DISK_HINT_GB)], {
       cwd: installDir,
-      env: {
-        PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple",
-        HF_ENDPOINT: "https://hf-mirror.com",
-        HF_HUB_DISABLE_XET: "1",
-      },
+      /* 统一国内源（PIP_* 三件套压掉机器级 pip.ini 的不可达 extra-index）：见 ../cn-mirrors.js */
+      env: mirrors.installEnv(),
       onPct: (pct) =>
         emitProgress({
           phase: "install",
@@ -4921,7 +4927,7 @@ function readSageProbe(installDir) {
 function sageMissingHint(probe) {
   const why = probe && probe.why ? String(probe.why) : "";
   if (/^arch:/.test(why)) return "（本机 GPU " + why.slice(5) + " 不在 Sage 支持列表，这一档优化跳过）";
-  if (/no_venv/.test(why)) return "（venv 还没装好：先点「安装」）";
+  if (/no_venv/.test(why)) return "（venv 还没装好：先在插件卡片的安装窗里把后端装好）";
   if (/^probe_failed/.test(why)) return "（自检没跑通：" + why.slice(0, 120) + "）";
   let need = "加速包";
   const miss = [];
@@ -4965,11 +4971,21 @@ async function resolveSageModeForGenerate(requested, installDir, optSageAttn) {
 function runVenvPip(py, args, opts) {
   opts = opts || {};
   return new Promise((resolve) => {
-    const env = Object.assign({}, process.env, { PIP_DISABLE_PIP_VERSION_CHECK: "1" });
-    if (process.env.MT_H3_PIP_INDEX) env.PIP_INDEX_URL = process.env.MT_H3_PIP_INDEX;
-    else if (!env.PIP_INDEX_URL) env.PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple";
-    const full = ["-m", "pip", "install", "--isolated", ...args];
-    appendConsole("$ venv pip install --isolated " + args.join(" "));
+    /* 国内源 + 用户覆盖（MT_H3_PIP_INDEX 优先，其次 MTNODE_PIP_INDEX）：见 ../cn-mirrors.js。
+       **不加** `pip --isolated` —— 它忽略环境变量，机器级 pip.ini 里不可达的 extra-index
+       （pypi.ngc.nvidia.com 那类）会照旧生效、每个包白等 5 次重试。 */
+    const env = Object.assign(
+      {},
+      process.env,
+      mirrors.installEnv(
+        process.env.MT_H3_PIP_INDEX
+          ? { PIP_INDEX_URL: process.env.MT_H3_PIP_INDEX, PIP_EXTRA_INDEX_URL: process.env.MT_H3_PIP_INDEX }
+          : {},
+      ),
+      { PIP_DISABLE_PIP_VERSION_CHECK: "1" },
+    );
+    const full = ["-m", "pip", "install", ...args];
+    appendConsole("$ venv pip install " + args.join(" "));
     const child = spawn(py, full, { windowsHide: true, env });
     let out = "";
     const onData = (d) => {
@@ -5004,7 +5020,7 @@ async function installSageAttention(opts) {
   const installDir = safe.path;
   const py = comfyVenvPython(installDir);
   if (!py) {
-    return { ok: false, error: "no_venv", message: "还没有 ComfyUI venv：请先点「安装」装好后端，再补加速包。" };
+    return { ok: false, error: "no_venv", message: "还没有 ComfyUI venv：请先在插件卡片的安装窗里把后端装好，再补加速包。" };
   }
   if (backendRunning()) {
     return {
@@ -6867,6 +6883,20 @@ function consoleTail(maxBytes) {
   }
 }
 
+/** 清空控制台日志：真删内容（truncate 到 0 字节）—— 保留文件与运行中后端持有的句柄；
+    本宿主没有文件监控游标，直接广播 cleared，让打开着的日志窗就地清空。 */
+function clearConsoleLog() {
+  try {
+    const p = consoleLogPath();
+    mk(path.dirname(p));
+    fs.writeFileSync(p, "", "utf8");
+    broadcast("h3:consoleCleared", { at: Date.now() });
+    return { ok: true, path: p };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 function removePluginMetaOnly() {
   try {
     if (consoleWin && !consoleWin.isDestroyed()) consoleWin.close();
@@ -6910,9 +6940,11 @@ function registerH3Ipc(opts) {
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
-    cancel: () => {
+    cancel: async () => {
       installCancel = true;
-      return { ok: true };
+      /* 光置标志没用：脚本在下载权重 / 装依赖期间不会自己退出，标志要等它结束后才被读到。
+         这里立刻按进程树强杀（pip / 下载器这些子进程一并带走），close 回调据此判「已取消」。 */
+      return await installKill.cancelInstall(PLUGIN_ID);
     },
   });
 
@@ -6964,7 +6996,7 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:installSage", async (e, opts) => installSageAttention(opts || {}));
   ipcMain.handle("h3:cancelInstall", async () => {
     installCancel = true;
-    return { ok: true };
+    return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("h3:start", async () => startBackend());
   ipcMain.handle("h3:stop", async () => stopBackend());
@@ -7095,6 +7127,7 @@ function registerH3Ipc(opts) {
   ipcMain.handle("h3:forceKillBackend", async () => forceKillBackend("manual"));
   ipcMain.handle("h3:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("h3:consoleTail", async (e, n) => consoleTail(n));
+  ipcMain.handle("h3:consoleClear", async () => clearConsoleLog());
   /* 管理窗左侧 Console 停靠面板：页面报来开合与宽度，宿主把窗口往左撑 / 收 */
   ipcMain.handle("h3:setConsolePane", async (e, opts) => setConsolePane(opts || {}));
   /* 右上角「ComfyUI」：一键在浏览器打开工作流编辑界面（start=true 时先拉起后端） */

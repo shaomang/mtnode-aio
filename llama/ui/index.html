@@ -132,8 +132,6 @@
     }
     .detail-form dt { color: var(--muted); margin: 0; }
     .detail-form dd { margin: 0; word-break: break-word; }
-    #installProgress { display: none; }
-    #installProgress.on { display: block; }
     #apiPanel { display: none; }
     #apiPanel.on { display: flex; }
     .filter-row {
@@ -160,7 +158,6 @@
       display: inline-flex; align-items: center; gap: 5px;
       opacity: 1; cursor: wait;
     }
-    #installProgress .meta { display: flex; align-items: center; gap: 6px; }
   </style>
 </head>
 <body>
@@ -168,7 +165,7 @@
     <div class="title-row">
       <div class="grow">
         <h1>llama.cpp 本地模型</h1>
-        <div class="sub">国内镜像 · Agent 保底安装</div>
+        <div class="sub">本地 GGUF 模型 · OpenAI 兼容 API</div>
       </div>
       <div class="vram-wrap" id="vramWrap">
         <div class="vram-line">
@@ -178,18 +175,6 @@
       </div>
       <button id="btnApi" class="mini" title="显示/隐藏 API 信息">API</button>
       <button id="btnConsole" class="mini" title="左侧 Console">Console</button>
-    </div>
-
-    <div class="card" id="installCard">
-      <div class="row">
-        <div class="path" id="installDir">未选择安装目录</div>
-        <button id="btnPickDir" class="mini">目录</button>
-        <button id="btnInstall" class="primary mini">安装</button>
-      </div>
-      <div id="installProgress">
-        <div class="meta" id="installStep"><span class="spin" id="installSpin"></span><span id="installStepTxt">准备安装…</span></div>
-        <div class="bar" id="installBar"><i></i></div>
-      </div>
     </div>
 
     <div class="svc-row row-nowrap">

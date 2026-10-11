@@ -37,7 +37,11 @@ const pluginErrors = require("../plugin-error-repair.js");
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
+const installKill = require("../plugins/install-cancel.js");
 const { quietPython } = require("../backend-python.js");
+/* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
+const mirrors = require("../cn-mirrors.js");
 
 const PLUGIN_ID = "minimax-music3";
 const MUSIC3_FEED =
@@ -1024,6 +1028,8 @@ function runPs(scriptPath, args, opts) {
       windowsHide: true,
       env: Object.assign({}, process.env, opts.env || {}),
     });
+    /* 登记当前安装脚本：安装窗点「取消安装」时按进程树强杀它（否则脚本会一直跑到自己结束） */
+    installKill.track(PLUGIN_ID, child);
     /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
     const rep = stepReporter.attach({
       pluginId: PLUGIN_ID,
@@ -1051,10 +1057,12 @@ function runPs(scriptPath, args, opts) {
       if (opts.onLine) opts.onLine(s);
     });
     child.on("error", (e) => {
+      installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
       reject(e);
     });
     child.on("close", (code) => {
+      installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
       rep.finish(
         cancelled
@@ -1125,13 +1133,11 @@ async function installProject(opts) {
     syncMusic3InstallSkill();
     const script = join(installDir, "scripts", "install.ps1");
     appendConsole("[install] script = " + script);
+    appendConsole(mirrors.banner("music3 install"));
     await runPs(script, ["-InstallDir", installDir, "-DiskHintGb", String(DISK_HINT_GB)], {
       cwd: installDir,
-      env: {
-        PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple",
-        HF_ENDPOINT: "https://hf-mirror.com",
-        HF_HUB_DISABLE_XET: "1",
-      },
+      /* 统一国内源（PIP_* 三件套压掉机器级 pip.ini 的不可达 extra-index）：见 ../cn-mirrors.js */
+      env: mirrors.installEnv(),
       onPct: (pct) =>
         emitProgress({
           phase: "install",
@@ -1661,7 +1667,7 @@ async function startBackend() {
     stdio: ["ignore", outFd, outFd],
     env: (() => {
       const env = Object.assign({}, process.env, {
-        HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
+        HF_ENDPOINT: process.env.HF_ENDPOINT || mirrors.HF_ENDPOINT,
         HF_HUB_DISABLE_XET: "1",
         PYTHONUNBUFFERED: "1",
         MUSIC3_MEMORY_RESERVE_MARGIN: process.env.MUSIC3_MEMORY_RESERVE_MARGIN || "6GB",
@@ -2282,6 +2288,21 @@ function consoleTail(maxBytes) {
   }
 }
 
+/** 清空控制台日志：真删内容（truncate 到 0 字节）—— 保留文件与运行中后端持有的句柄；
+    复位文件监控游标并广播 cleared，让打开着的日志窗就地清空。 */
+function clearConsoleLog() {
+  try {
+    const p = consoleLogPath();
+    mk(path.dirname(p));
+    fs.writeFileSync(p, "", "utf8");
+    consoleWatchPos = 0;
+    broadcast("music3:consoleCleared", { at: Date.now() });
+    return { ok: true, path: p };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 function removePluginMetaOnly() {
   // Called when user removes the plugin from catalog UI — keep installDir project + config
   try {
@@ -2327,9 +2348,11 @@ function registerMusic3Ipc(opts) {
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
-    cancel: () => {
+    cancel: async () => {
       installCancel = true;
-      return { ok: true };
+      /* 光置标志没用：脚本在下载权重 / 装 torch 期间不会自己退出，标志要等它结束后才被读到。
+         这里立刻按进程树强杀（pip / 下载器这些子进程一并带走），close 回调据此判「已取消」。 */
+      return await installKill.cancelInstall(PLUGIN_ID);
     },
   });
 
@@ -2381,7 +2404,7 @@ function registerMusic3Ipc(opts) {
   ipcMain.handle("music3:selfRepair", async (e, opts) => selfRepairFromConsole(opts || {}));
   ipcMain.handle("music3:cancelInstall", async () => {
     installCancel = true;
-    return { ok: true };
+    return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("music3:start", async () => startBackend());
   ipcMain.handle("music3:stop", async () => stopBackend());
@@ -2392,6 +2415,7 @@ function registerMusic3Ipc(opts) {
   ipcMain.handle("music3:forceKillBackend", async () => forceKillBackend("manual"));
   ipcMain.handle("music3:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("music3:consoleTail", async (e, n) => consoleTail(n));
+  ipcMain.handle("music3:consoleClear", async () => clearConsoleLog());
   ipcMain.handle("music3:open", async () => openConsoleWindow());
   ipcMain.handle("music3:close", async () => closeConsoleWindow());
   ipcMain.handle("music3:removePluginMeta", async () => removePluginMetaOnly());

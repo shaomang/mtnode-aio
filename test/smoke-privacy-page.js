@@ -237,6 +237,11 @@ const CLAIMS = [
   /* 本地后端与在线源（第 7 节） */
   { c: "download.pytorch.org" },
   { c: "mirrors.aliyun.com" },
+  { c: "mirror.sjtu.edu.cn/pytorch-wheels" },
+  { c: "ghfast.top" },
+  { c: "gh-proxy.com" },
+  { c: "ghproxy.net" },
+  { c: "registry.npmmirror.com/-/binary" },
   { c: "modelscope.cn" },
   { c: "hf-mirror.com" },
   { c: "huggingface.co" },

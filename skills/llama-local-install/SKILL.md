@@ -47,13 +47,17 @@ description: 在用户指定目录安装 llama.cpp 本地模型后端：创建 v
 
 > **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像，GitHub Releases 可能无法直连。
 
-- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）
-- HuggingFace：**无法直连**，一律 `HF_ENDPOINT=https://hf-mirror.com`（建议 `HF_HUB_DISABLE_XET=1`）
-- GitHub Releases（llama.cpp 二进制 zip）：直连失败自动回退 `ghproxy.com` 前缀镜像
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）→ 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/` → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）。
+  - **反制机器级 pip.ini**：用 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` **环境变量**在安装子进程内覆盖（宿主 `cn-mirrors.js` 的 `installEnv()` 已统一注入），**绝不改用户机器上的 pip.ini**。
+  - **不要用 `pip --isolated`**：它忽略环境变量与用户级 config，机器级 `extra-index-url = https://pypi.ngc.nvidia.com`（NVIDIA PyIndex 常塞，国内 DNS 直接失败）照样生效。
+- 模型权重（GGUF）：**优先 ModelScope(魔搭)** → 失败回退 `HF_ENDPOINT=https://hf-mirror.com` + `HF_HUB_DISABLE_XET=1` → 最后一级才是官方 `huggingface.co`（HuggingFace 直连不可靠）。
+- GitHub Releases（llama.cpp 二进制 zip）：直连失败按 `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` 顺序回退代理前缀，最后才直连（`cn-mirrors.js` 的 `ghProxyUrls()`）
+- 二进制镜像：`https://registry.npmmirror.com/-/binary/`（node / python-build-standalone / chrome-for-testing 一类预编译产物）
 - 安装示例：
   ```powershell
   .venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
   ```
+  （宿主已注入 `PIP_*`，**不要加 `--isolated`**；手工跑时先在当前 shell 设 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST`。）
 
 ## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
 

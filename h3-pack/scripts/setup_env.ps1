@@ -18,11 +18,27 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
+
+# -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
+# A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
+# pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
+# override extra-index-url, so every package wastes 5 retries. Setting the three PIP_*
+# variables below overrides index / extra-index / trusted-host inside this process and every
+# child (pip / git / npm inherit them). Do NOT add `pip --isolated`: it ignores environment
+# variables, which lets that unreachable extra-index back in.
+$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+$env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+$env:PIP_TRUSTED_HOST    = "pypi.tuna.tsinghua.edu.cn"
+if (-not $env:HF_ENDPOINT)         { $env:HF_ENDPOINT = "https://hf-mirror.com" }
+if (-not $env:HF_HUB_DISABLE_XET)  { $env:HF_HUB_DISABLE_XET = "1" }
+if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
+Write-Host "[h3-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
+
 Write-Host "============================================================"
 Write-Host "[h3-setup] China mirror notes (required, especially when this machine sits on a mainland-China network):"
 Write-Host "  - Python packages: Tsinghua mirror pypi.tuna.tsinghua.edu.cn by default (or USTC mirrors.ustc.edu.cn; override with MT_H3_PIP_INDEX)"
-Write-Host "  - torch cu130: official download.pytorch.org first, automatically falling back to the Aliyun mirror mirrors.aliyun.com/pytorch-wheels/cu130 (override with MT_H3_TORCH_INDEX)"
-Write-Host "  - Weights come from ModelScope first; if git clone fails, fall back to a ghproxy mirror"
+Write-Host "  - torch cu130: the Aliyun mirror mirrors.aliyun.com/pytorch-wheels/cu130 first, falling back to the official download.pytorch.org index last (override with MT_H3_TORCH_INDEX)"
+Write-Host "  - Weights come from ModelScope first; if git clone fails, fall back through the ghfast.top / gh-proxy.com / ghproxy.net / ghproxy.com proxies"
 Write-Host "============================================================"
 $Root = Split-Path -Parent $PSScriptRoot
 $ComfyRoot = Join-Path $Root "ComfyUI"
@@ -82,6 +98,25 @@ function Find-CudaPython {
     return $null
 }
 
+# git clone through the China gh proxies: ghfast.top -> gh-proxy.com -> ghproxy.net -> ghproxy.com, direct github.com last
+function Invoke-GitClone {
+    param([string]$Url, [string]$Dest)
+    $urls = @(
+        "https://ghfast.top/$Url",
+        "https://gh-proxy.com/$Url",
+        "https://ghproxy.net/$Url",
+        "https://ghproxy.com/$Url",
+        $Url
+    )
+    foreach ($u in $urls) {
+        Write-Host "git clone $u"
+        if (Test-Path -LiteralPath $Dest) { Remove-Item -Recurse -Force -LiteralPath $Dest -ErrorAction SilentlyContinue }
+        & git clone --depth 1 $u $Dest
+        if ($LASTEXITCODE -eq 0) { return $true }
+    }
+    return $false
+}
+
 function Ensure-ComfyUI {
     if (Test-Path (Join-Path $ComfyRoot "main.py")) {
         Write-Host "ComfyUI already present: $ComfyRoot"
@@ -90,8 +125,9 @@ function Ensure-ComfyUI {
     Write-Host "Cloning ComfyUI into $ComfyRoot ..."
     $git = Get-Command git -ErrorAction SilentlyContinue
     if (-not $git) { throw "git not found; cannot clone ComfyUI" }
-    & git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $ComfyRoot
-    if ($LASTEXITCODE -ne 0) { throw "git clone ComfyUI failed" }
+    if (-not (Invoke-GitClone -Url "https://github.com/comfyanonymous/ComfyUI.git" -Dest $ComfyRoot)) {
+        throw "git clone ComfyUI failed (direct + gh proxies)"
+    }
 }
 
 function Ensure-CustomNode {
@@ -103,8 +139,7 @@ function Ensure-CustomNode {
     }
     Write-Host "Cloning $Name ..."
     New-Item -ItemType Directory -Force -Path (Join-Path $ComfyRoot "custom_nodes") | Out-Null
-    & git clone --depth 1 $Url $dest
-    if ($LASTEXITCODE -ne 0) { throw "clone $Name failed" }
+    if (-not (Invoke-GitClone -Url $Url -Dest $dest)) { throw "clone $Name failed (direct + gh proxies)" }
 }
 
 Ensure-ComfyUI
@@ -122,27 +157,30 @@ if (-not (Test-Path $VenvPy)) {
     Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
 }
 
-# Avoid interference from a broken PIP_EXTRA_INDEX_URL (e.g. pypi.ngc.nvidia.com): --isolated ignores machine pip config
-$env:PIP_EXTRA_INDEX_URL = ""
-# China mirror: Tsinghua by default (or USTC); override with MT_H3_PIP_INDEX
-$env:PIP_INDEX_URL = if ($env:MT_H3_PIP_INDEX) { $env:MT_H3_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+# Explicit override for this package stays on top of the pinned defaults above
+if ($env:MT_H3_PIP_INDEX) {
+    # China mirror: Tsinghua by default (or USTC); override with MT_H3_PIP_INDEX
+    $env:PIP_INDEX_URL = $env:MT_H3_PIP_INDEX
+    $env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+}
 
 Write-Host "Installing helper requirements (repo root)..."
-& $VenvPy -m pip install --isolated -U pip
+& $VenvPy -m pip install -U pip -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 
 # Install CUDA torch inside the venv first, so the old torch in system site-packages is never reused.
 # The H3 quantized kernels need the optimized CUDA kernels from cu130; cu124/cu126 "start up but hang on the first step".
 Write-Host "Installing CUDA torch (cu130) into venv (required for comfy_kitchen)..."
-$torchIdx = if ($env:MT_H3_TORCH_INDEX) { $env:MT_H3_TORCH_INDEX } else { "https://download.pytorch.org/whl/cu130" }
-$torchIdxMirror = "https://mirrors.aliyun.com/pytorch-wheels/cu130"
+# Domestic mirror first (fast in China), the pytorch.org official index only as the last resort.
+$torchIdx = if ($env:MT_H3_TORCH_INDEX) { $env:MT_H3_TORCH_INDEX } else { "https://mirrors.aliyun.com/pytorch-wheels/cu130" }
+$torchIdxOfficial = "https://download.pytorch.org/whl/cu130"
 $torchPkgs = @("torch==2.9.1+cu130", "torchvision==0.24.1+cu130", "torchaudio==2.9.1+cu130")
-& $VenvPy -m pip install --isolated --index-url $torchIdx @torchPkgs
+& $VenvPy -m pip install --index-url $torchIdx @torchPkgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "torch cu130 direct index failed; retrying with aliyun mirror (China mirror)..."
-    & $VenvPy -m pip install --isolated --index-url $torchIdxMirror @torchPkgs
+    Write-Host "torch cu130 aliyun mirror failed; retrying with the pytorch official index (last resort)..."
+    & $VenvPy -m pip install --index-url $torchIdxOfficial @torchPkgs
     if ($LASTEXITCODE -ne 0) {
-        throw "torch cu130 install failed (direct + aliyun mirror). Please update the NVIDIA driver to one that supports CUDA 13.0, then retry."
+        throw "torch cu130 install failed (aliyun mirror + official). Please update the NVIDIA driver to one that supports CUDA 13.0, then retry."
     }
 }
 
@@ -152,13 +190,13 @@ if ($cudaOk -ne "y") {
     throw "torch cu130 loaded but torch.cuda.is_available()=False. NVIDIA driver too old for CUDA 13.0. Update the driver (>= CUDA 13.0 support) and rerun."
 }
 
-& $VenvPy -m pip install --isolated -r (Join-Path $Root "requirements.txt")
+& $VenvPy -m pip install -r (Join-Path $Root "requirements.txt") -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
 if ($LASTEXITCODE -ne 0) { throw "pip install helper requirements failed" }
 
 Write-Host "Installing ComfyUI requirements..."
 $req = Join-Path $ComfyRoot "requirements.txt"
 if (Test-Path $req) {
-    & $VenvPy -m pip install --isolated -r $req
+    & $VenvPy -m pip install -r $req -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
     if ($LASTEXITCODE -ne 0) { throw "pip install ComfyUI requirements failed" }
 }
 

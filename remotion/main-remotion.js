@@ -22,12 +22,17 @@ const {
 const path = require("path");
 const fs = require("fs");
 const { spawn, execFile } = require("child_process");
+const https = require("https");
+/* 国内镜像源单一真源（pip / torch / 权重 / npm / git / chrome-for-testing）：见根目录 cn-mirrors.js */
+const mirrors = require("../cn-mirrors.js");
 /* 插件报错总线：失败出口统一上报主窗口（跨窗可见 + 指路），见 plugin-error-repair.js */
 const pluginErrors = require("../plugin-error-repair.js");
 /* 安装窗编排（主进程单例，见 plugins/main-install.js）：包内 install.ps1 的步骤行上报给它，
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
+const installKill = require("../plugins/install-cancel.js");
 const {
   refreshStaleLock,
   tryAcquireLock,
@@ -44,6 +49,8 @@ const ENTRY_POINT = "src/" + ENTRY_BASENAME;
 const DISK_HINT_GB = 8;
 /** 渲染最长等待（默认 30 分钟） */
 const RENDER_MAX_MS = 30 * 60 * 1000;
+/** Remotion 4.0.518 钉的 Chrome Headless Shell 版本（读不到包内常量时的兜底，见 remotionChromeVersion） */
+const CHROME_HEADLESS_SHELL_FALLBACK_VERSION = "149.0.7790.0";
 
 let getDataDir = null;
 let getMainWin = null;
@@ -200,6 +207,20 @@ function consoleTail(maxBytes) {
     fs.readSync(fd, buf, 0, n, Math.max(0, st.size - n));
     fs.closeSync(fd);
     return { ok: true, text: buf.toString("utf8") };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/** 清空控制台日志：真删内容（truncate 到 0 字节）—— 保留文件与运行中后端持有的句柄；
+    复位文件监控游标并广播 cleared，让打开着的日志窗就地清空。 */
+function clearConsoleLog() {
+  try {
+    const p = consoleLogPath();
+    mk(path.dirname(p));
+    fs.writeFileSync(p, "", "utf8");
+    broadcast("remotion:consoleCleared", { at: Date.now() });
+    return { ok: true, path: p };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -428,7 +449,8 @@ function runNpmInstall(installDir, nodeId) {
       shell: true,
       cwd: installDir,
       windowsHide: true,
-      env: Object.assign({}, process.env, { npm_config_progress: "true" }),
+      /* npm 默认走 registry.npmmirror.com（用户级覆盖见 ../cn-mirrors.js 的 MTNODE_NPM_REGISTRY） */
+      env: Object.assign({}, process.env, mirrors.installEnv({ npm_config_progress: "true" })),
     });
     const cur = { pct: 15 };
     let out = "";
@@ -570,6 +592,14 @@ async function installProject(opts) {
       installedAt: new Date().toISOString(),
     });
     appendConsole("[install] ok version=" + version + " dir=" + installDir);
+    /* 顺手把渲染要用的 Chrome Headless Shell 从国内镜像预置好（失败不判安装失败：
+       渲染那一刻会再试一次，并回退本机 Edge / Chrome）。 */
+    try {
+      const b = await ensureRenderBrowser(installDir);
+      appendConsole("[install] browser " + b.how + (b.hint ? " · " + b.hint : ""));
+    } catch (e) {
+      appendConsole("[install] browser staging skipped: " + String((e && e.message) || e));
+    }
     emitProgress({ phase: "install", step: "done", stepLabel: "完成", pct: 100 });
     installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
     return { ok: true, installDir, version };
@@ -611,11 +641,15 @@ function runInstallScript(scriptPath, installDir, mirror) {
     ];
     if (mirror) psArgs.push("-Mirror");
     appendConsole("$ powershell " + psArgs.join(" "));
+    appendConsole(mirrors.banner("remotion install"));
     const child = spawn("powershell.exe", psArgs, {
       cwd: installDir,
       windowsHide: true,
-      env: Object.assign({}, process.env),
+      /* 统一国内源：npm_config_registry=registry.npmmirror.com（脚本里也默认走它） */
+      env: Object.assign({}, process.env, mirrors.installEnv()),
     });
+    /* 登记当前安装脚本：安装窗点「取消安装」时按进程树强杀它（否则脚本会一直跑到自己结束） */
+    installKill.track(PLUGIN_ID, child);
     const rep = stepReporter.attach({
       pluginId: PLUGIN_ID,
       child,
@@ -639,10 +673,12 @@ function runInstallScript(scriptPath, installDir, mirror) {
       }
     });
     child.on("error", (e) => {
+      installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
       reject(e);
     });
     child.on("close", (code) => {
+      installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
       rep.finish(
         cancelled
@@ -654,6 +690,208 @@ function runInstallScript(scriptPath, installDir, mirror) {
       else resolve(out);
     });
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Chrome Headless Shell：国内镜像代下 + 预置，失败回退本机浏览器        */
+/* ------------------------------------------------------------------ */
+/**
+ * 为什么需要这一块：Remotion 的浏览器下载直链是**硬编码**的 Google 存储地址
+ * （chrome-for-testing-public，见 @remotion/renderer/dist/browser/get-chrome-download-url.js，
+ * 没有任何环境变量可覆盖），
+ * 国内常常直接超时 —— 表现是「插件装得上、一渲染就卡在 Downloading Chrome Headless Shell」。
+ * 做法：先用 npmmirror 上同版本的 zip 代下，解到 Remotion 自己的缓存目录，并写好它认的
+ * VERSION 文件（getBrowserStatus 判「目录存在 + 可执行文件存在 + VERSION === TESTED_VERSION」
+ * 才跳过下载）；代下 / 解压失败才回退「探测本机 Edge / Chrome」并把路径交给 render.mjs。
+ */
+function remotionChromeVersion(installDir) {
+  try {
+    const p = path.join(
+      installDir,
+      "node_modules",
+      "@remotion",
+      "renderer",
+      "dist",
+      "browser",
+      "get-chrome-download-url.js",
+    );
+    const src = fs.readFileSync(p, "utf8");
+    const m = src.match(/TESTED_VERSION\s*=\s*['"]([0-9][0-9.]*)['"]/);
+    if (m) return m[1];
+  } catch {}
+  return CHROME_HEADLESS_SHELL_FALLBACK_VERSION;
+}
+
+/** Remotion 的缓存布局：node_modules/.remotion/chrome-headless-shell/{VERSION,<platform>/chrome-headless-shell-<platform>/…} */
+function chromeShellPaths(installDir) {
+  const platform =
+    process.platform === "win32"
+      ? "win64"
+      : process.platform === "darwin"
+        ? process.arch === "arm64"
+          ? "mac-arm64"
+          : "mac-x64"
+        : process.arch === "arm64"
+          ? "linux-arm64"
+          : "linux64";
+  const base = path.join(installDir, "node_modules", ".remotion", "chrome-headless-shell");
+  const folder = path.join(base, platform);
+  const exe =
+    platform === "win64"
+      ? path.join(folder, "chrome-headless-shell-win64", "chrome-headless-shell.exe")
+      : path.join(folder, "chrome-headless-shell-" + platform, "chrome-headless-shell");
+  return { platform, base, folder, exe, versionFile: path.join(base, "VERSION") };
+}
+
+/** 本机 Chromium 系浏览器候选（代下失败时的兜底；Remotion 支持 browserExecutable 用系统浏览器渲染）。 */
+function findLocalChromium() {
+  const explicit = String(process.env.MTNODE_REMOTION_BROWSER_EXECUTABLE || "").trim();
+  const cands = [];
+  if (explicit) cands.push(explicit);
+  const pf = process.env["ProgramFiles"] || "C:\\Program Files";
+  const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const local = process.env["LOCALAPPDATA"] || "";
+  cands.push(
+    path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+    path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+    path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
+  );
+  if (local) cands.push(path.join(local, "Google", "Chrome", "Application", "chrome.exe"));
+  for (const c of cands) {
+    try {
+      if (c && fs.existsSync(c)) return c;
+    } catch {}
+  }
+  return "";
+}
+
+/** 下载到文件（跟随跳转），超时/网络错误 → reject。 */
+function downloadToFile(url, dest, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { timeout: timeoutMs || 120000 }, (res) => {
+      const code = res.statusCode || 0;
+      if (code >= 300 && code < 400 && res.headers.location) {
+        res.resume();
+        const next = new URL(res.headers.location, url).toString();
+        downloadToFile(next, dest, timeoutMs).then(resolve, reject);
+        return;
+      }
+      if (code !== 200) {
+        res.resume();
+        reject(new Error("http " + code));
+        return;
+      }
+      const ws = fs.createWriteStream(dest);
+      res.pipe(ws);
+      ws.on("finish", () => ws.close(() => resolve(dest)));
+      ws.on("error", reject);
+    });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", reject);
+  });
+}
+
+/** 解压 zip（Windows 走 Expand-Archive；其它平台走 unzip）。 */
+function extractZip(zipPath, destDir, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const args =
+      process.platform === "win32"
+        ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+           "Expand-Archive -LiteralPath " + JSON.stringify(zipPath) + " -DestinationPath " + JSON.stringify(destDir) + " -Force"]
+        : ["-o", zipPath, "-d", destDir];
+    const bin = process.platform === "win32" ? "powershell.exe" : "unzip";
+    const child = spawn(bin, args, { windowsHide: true });
+    let err = "";
+    child.stderr.on("data", (d) => (err += d.toString()));
+    child.on("error", reject);
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      reject(new Error("extract timeout"));
+    }, timeoutMs || 180000);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(destDir);
+      else reject(new Error("extract exit " + code + ": " + err.slice(-300)));
+    });
+  });
+}
+
+/**
+ * 确保渲染要用的浏览器就位。返回 { ok, how, browserExecutable?, version?, hint? }：
+ *   how = "cache"（本地已有同版本缓存）· "mirror"（刚从 npmmirror 代下预置成功）
+ *       · "local-browser"（代下失败，回退本机 Edge / Chrome）· "failed"
+ */
+async function ensureRenderBrowser(installDir) {
+  const paths = chromeShellPaths(installDir);
+  const version = remotionChromeVersion(installDir);
+  try {
+    if (fs.existsSync(paths.exe) && fs.readFileSync(paths.versionFile, "utf8").trim() === version) {
+      return { ok: true, how: "cache", version };
+    }
+  } catch {}
+  const zipUrl =
+    mirrors.CHROME_FOR_TESTING_MIRROR +
+    "/" +
+    version +
+    "/" +
+    paths.platform +
+    "/chrome-headless-shell-" +
+    paths.platform +
+    ".zip";
+  const zipPath = path.join(installDir, "chrome-headless-shell-" + version + ".zip");
+  try {
+    appendConsole("[browser] 从国内镜像代下 chrome-headless-shell " + version + "：" + zipUrl);
+    mk(paths.folder);
+    await downloadToFile(zipUrl, zipPath, 120000);
+    await extractZip(zipPath, paths.folder, 180000);
+    if (!fs.existsSync(paths.exe)) throw new Error("exe_missing_after_extract: " + paths.exe);
+    /* macOS / Linux 上 zip 不保留可执行位，Remotion 自己下载时会 makeExecutable，这里手动补一次 */
+    if (process.platform !== "win32") {
+      try {
+        fs.chmodSync(paths.exe, 0o755);
+      } catch {}
+    }
+    /* VERSION 必须与 Remotion 期望值逐字符相同，否则它判 version-mismatch 又去撞官方直链 */
+    fs.writeFileSync(paths.versionFile, version + "\n");
+    try {
+      fs.unlinkSync(zipPath);
+    } catch {}
+    appendConsole("[browser] 已预置到 " + paths.exe + "（Remotion 不再下载）");
+    return { ok: true, how: "mirror", version };
+  } catch (e) {
+    const why = String((e && e.message) || e);
+    try {
+      fs.unlinkSync(zipPath);
+    } catch {}
+    const local = findLocalChromium();
+    appendConsole(
+      "[browser] 国内镜像代下失败（" +
+        why +
+        "）" +
+        (local
+          ? " → 回退用本机浏览器渲染：" + local + "（Remotion 会警告：非它钉版的浏览器，渲染确定性略降）"
+          : " → 本机也没找到 Edge / Chrome"),
+    );
+    if (local) return { ok: true, how: "local-browser", version, browserExecutable: local };
+    return {
+      ok: false,
+      how: "failed",
+      version,
+      hint:
+        "渲染需要 Chrome Headless Shell（约 170MB）：国内镜像 " +
+        mirrors.CHROME_FOR_TESTING_MIRROR +
+        "/" +
+        version +
+        "/" +
+        paths.platform +
+        "/chrome-headless-shell-" +
+        paths.platform +
+        ".zip 下载失败，且本机没有 Edge / Chrome。请联网重试，或装 Edge/Chrome 后重跑渲染。",
+    };
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1032,13 +1270,21 @@ function parseRenderProgressLine(line, cur) {
  *   {"type":"done","outputLocation":"..."}（完成路径）、{"type":"error","message":"..."}（失败）
  * - 退出码 0 = 成功；非 0 = 失败（优先带脚本 error message，尾部日志兜底）
  */
-function runRender(installDir, params, nodeId) {
+async function runRender(installDir, params, nodeId) {
+  const script = join(installDir, "render.mjs");
+  if (!fs.existsSync(script)) {
+    throw new Error("render_script_missing: " + script + "（remotion-pack 缺少 render.mjs）");
+  }
+  const outPath = resolveOutputPath(installDir, params);
+  /* 渲染要用的浏览器：先从国内镜像预置（Remotion 自己的下载直链硬编码在 Google 存储上，
+     国内常常不通），失败回退本机 Edge / Chrome 并把路径交给 render.mjs。 */
+  const browserInfo = await ensureRenderBrowser(installDir);
+  if (!browserInfo.ok) {
+    appendConsole("[render] browser missing: " + (browserInfo.hint || ""));
+    reportErr("browser_missing", browserInfo.hint || "渲染浏览器缺失", renderReportCtx(params, nodeId));
+    throw new Error(browserInfo.hint || "browser_missing");
+  }
   return new Promise((resolve, reject) => {
-    const script = join(installDir, "render.mjs");
-    if (!fs.existsSync(script)) {
-      return reject(new Error("render_script_missing: " + script + "（remotion-pack 缺少 render.mjs）"));
-    }
-    const outPath = resolveOutputPath(installDir, params);
     /* ---- 按 remotion-pack/render.mjs 契约写 render.json（render.mjs 默认读 ./render.json） ---- */
     const fps = Number(params.fps) || 30;
     const duration = Math.max(1, Math.round(Number(params.durationSeconds) || 5));
@@ -1056,6 +1302,8 @@ function runRender(installDir, params, nodeId) {
       },
       codec: "h264",
       outputLocation: outPath,
+      /* 只在回退本机浏览器时才有值（国内镜像预置成功时留空 = 用 Remotion 钉版的那份） */
+      ...(browserInfo.browserExecutable ? { browserExecutable: browserInfo.browserExecutable } : {}),
     };
     if (String(params.audioPath || "").trim()) {
       renderJson.inputProps.audioPath = String(params.audioPath).trim();
@@ -1372,9 +1620,11 @@ function registerRemotionIpc(opts) {
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
-    cancel: () => {
+    cancel: async () => {
       installCancel = true;
-      return { ok: true };
+      /* 光置标志没用：脚本在下载依赖期间不会自己退出，标志要等它结束后才被读到。
+         这里立刻按进程树强杀（npm / node 这些子进程一并带走），close 回调据此判「已取消」。 */
+      return await installKill.cancelInstall(PLUGIN_ID);
     },
   });
 
@@ -1410,12 +1660,14 @@ function registerRemotionIpc(opts) {
   });
   ipcMain.handle("remotion:cancelInstall", async () => {
     installCancel = true;
-    return { ok: true };
+    return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("remotion:render", async (e, params) => renderVideo(params || {}));
   ipcMain.handle("remotion:cancelRender", async (e, nodeId) => cancelRender(nodeId));
   ipcMain.handle("remotion:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("remotion:consoleTail", async (e, n) => consoleTail(n));
+  /* 清空日志 = 真清文件（不是只清界面显示），见 clearConsoleLog */
+  ipcMain.handle("remotion:consoleClear", async () => clearConsoleLog());
   ipcMain.handle("remotion:open", async () => openConsoleWindow());
   ipcMain.handle("remotion:close", async () => closeConsoleWindow());
   ipcMain.handle("remotion:removePluginMeta", async () => removePluginMetaOnly());

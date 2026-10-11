@@ -261,8 +261,9 @@
     const lang = ["auto", "zh", "en", "yue", "ja", "ko"].indexOf(String(c.language || "")) >= 0
       ? String(c.language)
       : "auto";
-    /* 手动指定的下载源（官方 provider 只认 http(s) origin）：留空 = 交给运行时按官方顺序探测
-       （默认 huggingface.co → hf-mirror.com 自动回退）。只在用户在设置里显式选过时才有值。 */
+    /* 手动指定的下载源（官方 provider 只认 http(s) origin）：留空 = 由**宿主默认下发国内镜像**
+       （dsh/main-dsh.js 的 speech() 收口把 downloadSource 钉在 hf-mirror.com），
+       官方 huggingface.co 仍可在失败重试那一行里显式选回。只在用户显式选过时这里才有值。 */
     const ds = String(c.downloadSource || "").trim();
     const downloadSource = /^https?:\/\/[^/\s?#@]+\/?$/.test(ds) ? ds : "";
     return { silenceMs: silence, language: lang, downloadSource };
@@ -2276,7 +2277,7 @@
         while (srcPick.children && srcPick.children.length) srcPick.removeChild(srcPick.children[0]);
         const auto = document.createElement("option");
         auto.value = "";
-        auto.textContent = T("自动（官方顺序）");
+        auto.textContent = T("自动（国内优先）");
         srcPick.appendChild(auto);
         for (const h of rest) {
           const o = document.createElement("option");

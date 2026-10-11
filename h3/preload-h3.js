@@ -17,6 +17,17 @@ const api = {
   uninstallPreview: () => ipcRenderer.invoke("h3:uninstallPreview"),
   uninstall: (opts) => ipcRenderer.invoke("h3:uninstall", opts || {}),
   consoleTail: (n) => ipcRenderer.invoke("h3:consoleTail", n),
+  /* 真清空日志文件（不只是清显示）：宿主 truncate 到 0 字节并广播 cleared */
+  consoleClear: () => ipcRenderer.invoke("h3:consoleClear"),
+  onConsoleCleared: (cb) => {
+    const h = (_e, d) => {
+      try {
+        cb(d);
+      } catch {}
+    };
+    ipcRenderer.on("h3:consoleCleared", h);
+    return () => ipcRenderer.removeListener("h3:consoleCleared", h);
+  },
   /* 左侧 Console 停靠面板：告知宿主面板开合与宽度（宿主据此把窗口往左撑 / 收，右边缘不动） */
   setConsolePane: (opts) => ipcRenderer.invoke("h3:setConsolePane", opts || {}),
   /* 右上角一键打开 ComfyUI 工作流编辑界面（opts.start = true 时先拉起后端） */

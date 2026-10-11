@@ -38,6 +38,17 @@ contextBridge.exposeInMainWorld("sensenovaApi", {
   forceKill: (reason) => ipcRenderer.invoke("sensenova:forceKill", reason),
   getLock: () => ipcRenderer.invoke("sensenova:getLock"),
   consoleTail: (n) => ipcRenderer.invoke("sensenova:consoleTail", n),
+  /* 真清空日志文件（不只是清显示）：宿主 truncate 到 0 字节并广播 cleared */
+  consoleClear: () => ipcRenderer.invoke("sensenova:consoleClear"),
+  onConsoleCleared: (cb) => {
+    const h = (_e, d) => {
+      try {
+        cb(d);
+      } catch {}
+    };
+    ipcRenderer.on("sensenova:consoleCleared", h);
+    return () => ipcRenderer.removeListener("sensenova:consoleCleared", h);
+  },
   gpuProbe: () => ipcRenderer.invoke("sensenova:gpuProbe"),
   open: () => ipcRenderer.invoke("sensenova:open"),
   close: () => ipcRenderer.invoke("sensenova:close"),

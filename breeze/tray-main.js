@@ -155,6 +155,24 @@ function registerTrayIpc() {
     } catch {}
     return { ok: true };
   });
+  /* 清空日志 = 真清文件。DATA 与主进程的 breezeRoot() 是同一个目录
+     （主进程 spawn 托盘时传 MTNODE_BREEZE_DATA=breezeRoot()，两侧都是
+     %APPDATA%\pipeline-console\breeze-tts），所以这里 truncate 的就是同一份 console.log。 */
+  ipcMain.handle("breeze:consoleClear", async () => {
+    try {
+      const p = join(DATA, "console.log");
+      fs.mkdirSync(DATA, { recursive: true });
+      fs.writeFileSync(p, "", "utf8");
+      for (const w of BrowserWindow.getAllWindows()) {
+        try {
+          if (!w.isDestroyed()) w.webContents.send("breeze:consoleCleared", { at: Date.now() });
+        } catch {}
+      }
+      return { ok: true, path: p };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
   ipcMain.handle("breeze:apiFetch", async (e, o) =>
     httpJson(String((o && o.path) || "/api/status"), (o && o.method) || "GET", o && o.body),
   );

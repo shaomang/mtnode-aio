@@ -23,8 +23,9 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallDir .
 > **中国大陆网络下必须使用镜像**：HuggingFace 无法直连，Python 库须走清华/中科院镜像。
 
 - **Python 库**：清华 `https://pypi.tuna.tsinghua.edu.cn/simple`（或中科院 USTC `https://mirrors.ustc.edu.cn/pypi/simple/`）
-- **预训练权重**：优先 **ModelScope(魔搭)** `lj1995/GPT-SoVITS`（可用 `TTS_MODELSCOPE_REPO` 覆盖），失败自动回退 `hf-mirror.com`
-- **GitHub**（GPT-SoVITS 源码）：直连失败自动回退 `ghproxy.com` 镜像
+- **预训练权重**：优先 **ModelScope(魔搭)** `XXXXRT/GPT-SoVITS-Pretrained`（它是 `lj1995/GPT-SoVITS` 的镜像，文件放在 `pretrained_models/` 下；可用 `TTS_MODELSCOPE_REPO` 覆盖），失败自动回退 `hf-mirror.com`（`lj1995/GPT-SoVITS`）；中文 BERT 缺的 `vocab.txt` 从 `hfl/chinese-roberta-wwm-ext-large` 取
+  - 注意：**`lj1995/GPT-SoVITS` 在 ModelScope 上并不存在**——它的模型页能打开，但 `api/v1/models/lj1995/GPT-SoVITS/...` 与 resolve 下载地址全部 404，照着它写会让「ModelScope 优先」静默失败、只剩 hf-mirror 一条路。
+- **GitHub**（GPT-SoVITS 源码）：依次用 `ghfast.top` → `gh-proxy.com` → `ghproxy.net` → `ghproxy.com` 代理，最后才直连
 - 安装脚本 `scripts/install.ps1` 已内置以上镜像与回退，无需手动配置。
 
 ## 运行（通常由插件启停）

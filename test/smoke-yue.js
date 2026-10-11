@@ -361,7 +361,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   console.log("\n[6] IPC：preload 白名单 ⇄ 宿主 handle / 事件 一一成对");
   const handles = uniq([...hostSrc.matchAll(/ipcMain\.handle\("(yue:[^"]+)"/g)].map((m) => m[1]));
   const invokes = uniq([...preloadSrc.matchAll(/ipcRenderer\.invoke\('(yue:[^']+)'/g)].map((m) => m[1]));
-  eqNum(handles.length, 13, "宿主注册 13 个 yue: handle（本轮新增 yue:consoleTail：插件界面内嵌 console 只读拉日志尾部）");
+  eqNum(handles.length, 14, "宿主注册 14 个 yue: handle（本轮新增 yue:consoleClear：日志真清除）");
   eqArr(sorted(invokes), sorted(handles), "preload invoke 通道与宿主 handle 完全一致（不多不少）");
   const expectedHandles = [
     "yue:getStatus",
@@ -376,9 +376,10 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
     "yue:open",
     "yue:close",
     "yue:consoleTail",
+    "yue:consoleClear",
     "yue:removePluginMeta",
   ];
-  eqArr(sorted(handles), sorted(expectedHandles), "13 个通道名与冻结清单逐个对上");
+  eqArr(sorted(handles), sorted(expectedHandles), "14 个通道名与冻结清单逐个对上");
   const sends = uniq([...hostSrc.matchAll(/"yue:(progress|gpu|consoleChanged)"/g)].map((m) => "yue:" + m[1]));
   const ons = uniq([...preloadSrc.matchAll(/ipcRenderer\.on\('(yue:[^']+)'/g)].map((m) => m[1]));
   eqArr(sorted(sends), sorted(["yue:progress", "yue:gpu", "yue:consoleChanged"]), "宿主发 3 个事件通道");
@@ -422,7 +423,9 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(appPluginsSrc, "async function refreshYuePluginCard", "插件卡刷新函数 refreshYuePluginCard 存在");
   has(appPluginsSrc, 'item.kind === "yue2" || item.handler === "yue2"', "插件卡分发链有 yue2 分支");
   has(appPluginsSrc, "onYueConsoleChanged", "卡片订阅控制台开关变化就地刷新");
-  has(appPluginsSrc, "bindYueProgress", "卡片绑定安装/更新进度");
+  /* 本轮口径：安装进度不再上插件卡（bindYueProgress 随卡片进度条一起下线，
+     安装过程与进度只在独立安装窗显示——见 test/smoke-plugin-console.js [2]） */
+  hasnt(appPluginsSrc, "function bindYueProgress(", "卡片不再绑定安装/更新进度（安装进度只显示在安装窗）");
   has(appRepairSrc, 'yue2: "yue2-local-install"', "自动修复：yue2 → 技能 yue2-local-install");
   has(appRepairSrc, 'yue2: "yue2Open"', "自动修复：yue2 → 控制台入口 yue2Open");
   has(appRepairSrc, 'label: "YuE2 本地音乐"', "常驻服务表登记 YuE2 本地音乐");
@@ -568,11 +571,16 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   ok(exists("yue/main-yue.js"), "yue/main-yue.js 存在");
   const ensureBody = fnBody(hostSrc, "ensurePythonDeps");
   has(ensureBody, "pip", "ensurePythonDeps 用 pip 补装");
-  has(ensureBody, "--isolated", "ensurePythonDeps 走 --isolated");
+  hasnt(ensureBody, '"--isolated"', "ensurePythonDeps **不走** pip --isolated（它忽略环境变量，机器级 pip.ini 里不可达的 extra-index 会照旧生效）");
+  has(ensureBody, "mirrors.installEnv", "ensurePythonDeps 补装时注入统一国内源（PIP_* 三件套，见 cn-mirrors.js）");
   has(ensureBody, "import ", "ensurePythonDeps 逐模块 import 探测");
   const pipChain = hostSrc.slice(hostSrc.indexOf("pip 索引"), hostSrc.indexOf("function indexHostOf"));
-  has(pipChain, "pypi.tuna.tsinghua.edu.cn", "pip 索引链含清华");
-  has(pipChain, "mirrors.aliyun.com", "pip 索引链含阿里云回退");
+  has(pipChain, "mirrors.pipIndexChain()", "pip 索引链取自统一真源 cn-mirrors.js（国内优先、官方最后一级）");
+  const mirrorsSrc = read("cn-mirrors.js");
+  has(mirrorsSrc, "pypi.tuna.tsinghua.edu.cn", "统一真源含清华 pip 源");
+  has(mirrorsSrc, "mirrors.aliyun.com", "统一真源含阿里云回退");
+  has(mirrorsSrc, "mirrors.ustc.edu.cn", "统一真源含 USTC 回退");
+  has(mirrorsSrc, "https://pypi.org/simple", "官方 PyPI 只作为最后一级兜底");
   has(hostSrc, "MT_YUE2_PIP_INDEX", "pip 索引可用 MT_YUE2_PIP_INDEX 覆盖");
   has(hostSrc, "depsInstallTried", "同一次启动不重复装同一包（节流）");
   has(ensureBody, "force", "定向补装支持 force（绕过节流重试一次）");
@@ -646,7 +654,7 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   /* --- 10.5 IPC 面未变（未新增通道 → 无需 preload 同步） --- */
   hasnt(hostSrc, '"yue:repairDeps"', "未新增 yue:repairDeps 通道");
   hasnt(preloadSrc, "yue2RepairDeps", "preload 未出现无主的 yue2RepairDeps");
-  eqNum(uniq([...hostSrc.matchAll(/ipcMain\.handle\("(yue:[^"]+)"/g)].map((m) => m[1])).length, 13, "宿主 handle 为 13 个（[6] 成对断言基准随本轮 consoleTail 同步）");
+  eqNum(uniq([...hostSrc.matchAll(/ipcMain\.handle\("(yue:[^"]+)"/g)].map((m) => m[1])).length, 14, "宿主 handle 为 14 个（[6] 成对断言基准随本轮 consoleClear 同步）");
   has(read("renderer/i18n.js"), "缺依赖 ", "渲染层有缺依赖文案词条（一键修复口径）");
 
   /* ===== [11] 注意力档位自修复（flash 无 kernel → 探针选档 / 报错指纹 / 安装链口径） ===== */

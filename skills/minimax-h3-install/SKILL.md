@@ -29,10 +29,12 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 
 > **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像。
 
-- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）；可用 `MT_H3_PIP_INDEX` 覆盖；pip 一律加 `--isolated`（避开坏掉的 `pypi.ngc.nvidia.com` extra-index）
-- torch cu130：优先官方 `https://download.pytorch.org/whl/cu130`，失败回退阿里云 `https://mirrors.aliyun.com/pytorch-wheels/cu130`（`MT_H3_TORCH_INDEX` 可覆盖）
-- 模型权重（HuggingFace 无法直连）：**优先 ModelScope(魔搭)** `Comfy-Org/MiniMax-H3`（国内直连），失败才回退 hf-mirror（`HF_ENDPOINT=https://hf-mirror.com`，`HF_HUB_DISABLE_XET=1`）
-- GitHub（ComfyUI / KJNodes 克隆）：直连失败用 `ghproxy.com` 前缀镜像
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）→ 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/` → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）；可用 `MT_H3_PIP_INDEX` 覆盖。
+  - **反制机器级 pip.ini**：用 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` **环境变量**在安装子进程内覆盖（宿主 `cn-mirrors.js` 的 `installEnv()` 已统一注入），**绝不改用户机器上的 pip.ini**。
+  - **不要用 `pip --isolated`**：它忽略环境变量与用户级 config，机器级 `extra-index-url = https://pypi.ngc.nvidia.com`（NVIDIA PyIndex 常塞，国内 DNS 直接失败）照样生效，每个包白等 5 次重试。
+- torch cu130：**SJTU** `https://mirror.sjtu.edu.cn/pytorch-wheels/cu130` → **阿里云** `https://mirrors.aliyun.com/pytorch-wheels/cu130` → 官方 `https://download.pytorch.org/whl/cu130`（`MT_H3_TORCH_INDEX` 可覆盖）
+- 模型权重（HuggingFace 无法直连）：**优先 ModelScope(魔搭)** `Comfy-Org/MiniMax-H3`（国内直连）→ 失败回退 `HF_ENDPOINT=https://hf-mirror.com` + `HF_HUB_DISABLE_XET=1` → 最后一级才是官方 `huggingface.co`
+- GitHub（ComfyUI / KJNodes 克隆 / release 归档）：直连失败用代理回退 `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` → 直连（`cn-mirrors.js` 的 `ghProxyUrls()`）
 - 安装示例：
   ```powershell
   .\scripts\setup_env.ps1   # 内部 pip 默认走清华镜像；CUDA Python 可传 -CudaPython 或设 MT_H3_CUDA_PYTHON
@@ -197,8 +199,10 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
 1. `triton-windows`（PyPI 有；大版本跟着 torch 自带 triton 走：torch 2.6→3.2 / 2.7→3.3 / 2.8→3.4 / **2.9→3.5** / 2.10→3.6）
 
    ```powershell
-   & "ComfyUI\venv\Scripts\python.exe" -m pip install --isolated "triton-windows==3.5.*"
+   & "ComfyUI\venv\Scripts\python.exe" -m pip install "triton-windows==3.5.*"
    ```
+
+   （宿主已注入 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST`，**别加 `--isolated`**；手工跑时先在当前 shell 设这三个变量。）
 
 2. `sageattention` 2.x **预编译 wheel**：PyPI 上只有老的 1.0.6（v1，且要现场编译），2.x 只能从 <https://github.com/woct0rdho/SageAttention/releases> 按本机组合挑轮子。文件名三段都要对上：
    - `cuNNN`：**CUDA 大版本**必须一致（cu130 与 cu128 不通用）
@@ -208,7 +212,7 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
    例（实测组合 Python 3.10.16 + torch 2.9.1+cu130 + RTX 4090/sm89）：`sageattention-2.2.0+cu130torch2.9.1.post6-cp310-abi3-win_amd64.whl`
 
    ```powershell
-   & "ComfyUI\venv\Scripts\python.exe" -m pip install --isolated --no-deps --force-reinstall "<下载好的 .whl>"
+   & "ComfyUI\venv\Scripts\python.exe" -m pip install --no-deps --force-reinstall "<下载好的 .whl>"
    ```
 
 3. 自检（**装完必做**，MTNode 的 H3 插件按同一口径判定）：
@@ -242,7 +246,7 @@ Windows 上 **两个包必须成对**：`sageattention` 的 `core` 在 **import 
    ```powershell
    & "ComfyUI\venv\Scripts\python.exe" -c "import soundfile, numpy, aiohttp; print('audio deps ok', soundfile.__version__)"
    ```
-   缺 `soundfile` 时补装：`& "ComfyUI\venv\Scripts\python.exe" -m pip install --isolated soundfile`（`numpy` / `aiohttp` 已由 ComfyUI 自身 requirements 提供，不重复装）。
+   缺 `soundfile` 时补装：`& "ComfyUI\venv\Scripts\python.exe" -m pip install soundfile`（`PIP_*` 由宿主注入，勿加 `--isolated`；`numpy` / `aiohttp` 已由 ComfyUI 自身 requirements 提供，不重复装）。
 
 ## 已知故障摘要
 
@@ -326,7 +330,7 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 3. 探测 CUDA Python → 写 `.cuda-python`（仅作 venv 基座；优先 `MT_H3_CUDA_PYTHON`）。
 4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖（含 `soundfile`，见 `requirements.txt`）、KJNodes + ComfyUI-Frame-Interpolation（4K 补帧）+ ComfyUI-MiniMaxH3-TeaCache（备用）。**该脚本不部署任何随包第三方节点包，也不清空 `custom_nodes`**。
    - 装完**必须**校验 `torch.cuda.is_available()` 为真且日志里 cuda backend 未被禁用；否则按「驱动太旧」处理。
-   - pip 用 `--isolated` 避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）。
+   - pip 走 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 覆盖本机全局配置，避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）；**不要用 `--isolated`**（它忽略环境变量，机器级 extra-index 照样生效）。
 5. 按需静默给 `nodes_minimax_h3.py` 加 `**legacy_refs` 折叠（幂等，见上）；如需，补 `polyfill`。
 6. `.\scripts\download_models.ps1`（优先 ModelScope `Comfy-Org/MiniMax-H3`，再 HuggingFace）；脚本还会拉 **RealESRGAN_x4plus.pth → models/upscale_models/** 与 **rife47.pth → custom_nodes/ComfyUI-Frame-Interpolation/ckpts/rife/**（这两个只服务**独立后处理通道** `h3:postProcess`（视频超分 / 视频补帧节点），生成链不再内联后处理）；另外**尝试**拉可选的 **RealESRGAN_x2plus.pth → models/upscale_models/**（超分 x2 倍率的原生权重；拉不到只 warn，不中断安装）；已存在 >1MB 的文件自动跳过。
 7. 冒烟 + `python -m app` 健康检查（见「冒烟与健康检查」）。

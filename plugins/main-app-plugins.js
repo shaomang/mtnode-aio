@@ -6,7 +6,7 @@
  * 下载 / 校验 / 解压安装 / 更新任一环节失败都上报插件报错总线（见 plugin-error-repair.js），
  * 让非后端类插件的报错也在主窗口弹窗，而不是只藏在卡片进度条里。
  */
-const { BrowserWindow, ipcMain, screen, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, screen, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -34,6 +34,10 @@ let appRoot = "";
 const pluginWins = new Map();
 const wcToPluginId = new WeakMap();
 const installing = Object.create(null);
+/** pluginId → { ac: AbortController|null, cancelled: bool }：窗口插件 / 桌宠的下载可中断。
+ *  这些安装是主进程自建的 HTTP 下载（没有子进程可杀），取消靠 AbortController 掐断连接 +
+ *  一个 cancelled 标志在后续每一步之间判「用户已经取消」，不与后端那套 taskkill 混用。 */
+const installAbort = Object.create(null);
 
 function join(...a) {
   return path.join(...a);
@@ -51,6 +55,90 @@ function cacheCatalogPath() {
 function pluginDir(id) {
   return join(pluginsRoot(), String(id));
 }
+
+/* ---------------- 插件根目录（唯一真源在 plugins/plugin-root.js） ----------------
+   本轮需求：插件界面放一个总的根目录设置（第一次打开时提示设置）；需要目录的插件
+   默认用「根目录 + 默认子目录名」，但插件里仍可单独更换安装目录。
+   渲染层（renderer/app-plugins.js）与安装窗（plugins/main-install.js）都从这里取口径，
+   谁也不许再抄一份子目录名表或自行拼路径。 */
+const { createPluginRoot, normDir, subDirNameOf } = require("./plugin-root.js");
+let pluginRoot = null;
+function initPluginRoot() {
+  pluginRoot = createPluginRoot({
+    getDataDir: () => (typeof getDataDir === "function" ? getDataDir() : ""),
+    /* 应用目录（含 exe 同目录）：根目录命中它就拒收 —— 数据不落应用文件夹 */
+    getAppDirs: () => {
+      const out = [];
+      try {
+        if (typeof appRoot === "string" && appRoot) {
+          out.push(appRoot);
+          out.push(join(appRoot, ".."));
+        }
+      } catch {}
+      try {
+        out.push(app.getPath("exe") ? path.dirname(app.getPath("exe")) : "");
+      } catch {}
+      return out.filter(Boolean);
+    },
+  });
+  return pluginRoot;
+}
+function pluginRootMod() {
+  return pluginRoot || initPluginRoot();
+}
+
+/**
+ * 某个插件的安装目录（全应用唯一口径）：
+ *   ① 插件自己的配置里设过 installDir → 用它（「插件中仍然允许更换安装目录」）；
+ *   ② 没设过、且它是「需目录的插件」→ 插件根目录 + 默认子目录名（根目录没设时为空串，
+ *      由渲染层去提示设置根目录 —— 见 resolvePluginInstallDir）；
+ *   ③ 其余（窗口插件 / 桌宠 / 云端新插件）→ 老口径 <数据目录>/app-plugins/<id>。
+ */
+function installDirOf(id) {
+  const sid = String(id || "");
+  if (!sid) return "";
+  try {
+    const mod = pluginRootMod();
+    const own = mod.pluginDir(sid);
+    if (own) return own;
+    if (mod.needsDir(sid)) return mod.defaultDir(sid) || "";
+  } catch {}
+  return pluginDir(sid);
+}
+/**
+ * 「这个插件现在该装到哪」——渲染层卡片「安装 / 重装」点下去时问一次。
+ * 三种回执：
+ *   · { ok:true, dir, source:"plugin" }   插件自己设过目录 → 直接用，不再问根目录
+ *   · { ok:true, dir, source:"root" }     用 根目录 + 默认子目录名（本轮共识的默认值）
+ *   · { ok:false, error:"need_root" }     需目录的插件而根目录还没设 → 渲染层提示去设置根目录
+ * 不必需目录的插件（窗口 / 桌宠）永远走老口径，不会被根目录设置拦住。
+ */
+function resolvePluginInstallDir(id) {
+  const sid = String(id || "");
+  if (!sid) return { ok: false, error: "bad_id" };
+  const mod = pluginRootMod();
+  const subDir = mod.subDir(sid);
+  const own = mod.pluginDir(sid);
+  /* 默认目录（根目录 + 子目录名）在**主进程**拼（path.join，跨平台分隔符正确）——
+     渲染层只显示，不许自己拼路径。 */
+  const def = mod.needsDir(sid) ? mod.defaultDir(sid) : "";
+  if (own) return { ok: true, dir: own, own, defaultDir: def, source: "plugin", subDir };
+  if (!mod.needsDir(sid)) {
+    return { ok: true, dir: pluginDir(sid), own: "", defaultDir: "", source: "legacy", subDir: "" };
+  }
+  if (!def) {
+    return {
+      ok: false,
+      error: "need_root",
+      own: "",
+      defaultDir: "",
+      subDir,
+      message: "还没有设置插件根目录：先在插件界面顶部选一个插件根目录。",
+    };
+  }
+  return { ok: true, dir: def, own: "", defaultDir: def, source: "root", subDir };
+}
+
 function runtimeDir(id) {
   return join(pluginDir(id), "runtime");
 }
@@ -115,10 +203,17 @@ function sha256(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
-function fetchBuffer(url, onProgress, maxBytes) {
+function fetchBuffer(url, onProgress, maxBytes, signal) {
   const cap = maxBytes || MAX_ZIP;
   return new Promise((resolve, reject) => {
     const lib = String(url).startsWith("https") ? https : http;
+    let aborted = false;
+    /* 注意：req 还没赋值时不能碰它（取消可能在 lib.get 之前就发生）—— 这里只置标志，
+       真正的 destroy 交给 data 回调（它一定在 req 赋值之后才跑）。 */
+    const onAbort = () => {
+      aborted = true;
+      reject(new Error("cancelled"));
+    };
     const req = lib.get(
       url,
       {
@@ -128,7 +223,7 @@ function fetchBuffer(url, onProgress, maxBytes) {
       (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          fetchBuffer(res.headers.location, onProgress, cap).then(resolve, reject);
+          fetchBuffer(res.headers.location, onProgress, cap, signal).then(resolve, reject);
           return;
         }
         if (res.statusCode !== 200) {
@@ -145,6 +240,13 @@ function fetchBuffer(url, onProgress, maxBytes) {
         const chunks = [];
         let got = 0;
         res.on("data", (c) => {
+          if (aborted || (signal && signal.aborted)) {
+            try {
+              req.destroy();
+            } catch {}
+            reject(new Error("cancelled"));
+            return;
+          }
           got += c.length;
           if (got > cap) {
             req.destroy();
@@ -158,6 +260,28 @@ function fetchBuffer(url, onProgress, maxBytes) {
         res.on("error", reject);
       },
     );
+    if (signal) {
+      if (signal.aborted) {
+        aborted = true;
+        try {
+          req.destroy();
+        } catch {}
+        reject(new Error("cancelled"));
+        return;
+      }
+      if (typeof signal.addEventListener === "function") {
+        signal.addEventListener(
+          "abort",
+          () => {
+            try {
+              req.destroy();
+            } catch {}
+            onAbort();
+          },
+          { once: true },
+        );
+      }
+    }
     req.on("error", reject);
     req.on("timeout", () => {
       req.destroy();
@@ -637,7 +761,7 @@ function ensureReportHost(id) {
       id: sid,
       name: pluginDisplayName(sid),
       skillName: "",
-      getInstallDir: () => pluginDir(sid),
+      getInstallDir: () => installDirOf(sid),
     });
   } catch {}
 }
@@ -676,6 +800,23 @@ function reportErr(id, code, message, extra) {
   } catch {}
 }
 
+/**
+ * 取消窗口插件的下载 / 安装：掐断正在下载的 HTTP 连接（AbortController），
+ * 后续每一步之间的 `throwIfCancelled` 也会立刻收手 —— 主进程自建下载没有子进程可杀。
+ * 真正的终局（state=cancelled）由 catch 分支统一落（含清掉 _extract_tmp）。
+ */
+function cancelWindowPluginInstall(id) {
+  const sid = String(id || "");
+  if (!sid) return { ok: false, error: "bad_id" };
+  const job = installAbort[sid];
+  if (!job) return { ok: true, noop: true, id: sid };
+  job.cancelled = true;
+  try {
+    if (job.ac) job.ac.abort();
+  } catch {}
+  return { ok: true, id: sid, cancelled: true };
+}
+
 async function installWindowPlugin(id) {
   if (!ID_OK.test(id)) return { ok: false, error: "bad_id" };
   if (installing[id]) {
@@ -685,8 +826,15 @@ async function installWindowPlugin(id) {
   installing[id] = true;
   /* 已经装过再点一次就是「更新」：报告按实际动作分类，用户看到的是「更新失败」而不是「安装失败」 */
   const ctx = { phase: isWindowInstalled(id) ? "update" : "install" };
-  /* 安装窗：开一次会话（步骤表由 plugins/main-install.js 的兜底表给出 —— 窗口插件没有 steps.json） */
-  installHost.beginPluginInstall({ id, action: ctx.phase, installDir: pluginDir(id) });
+  /* 安装窗：开一次会话（步骤表由 plugins/main-install.js 的兜底表给出 —— 窗口插件没有 steps.json）。
+     目录走统一口径（窗口插件回落 <数据目录>/app-plugins/<id>，后端插件走根目录 + 子目录名） */
+  installHost.beginPluginInstall({ id, action: ctx.phase, installDir: installDirOf(id) });
+  /* 本次下载的取消句柄：安装窗点「取消安装」→ cancelWindowPluginInstall */
+  const job = { ac: typeof AbortController === "function" ? new AbortController() : null, cancelled: false };
+  installAbort[id] = job;
+  const throwIfCancelled = () => {
+    if (job.cancelled) throw new Error("cancelled");
+  };
   sendProgress({ id, phase: "start", percent: 0 });
   try {
     let spec = findCatalogPlugin(id);
@@ -710,11 +858,18 @@ async function installWindowPlugin(id) {
     if (!spec.compatible) throw new Error("need_app_update");
     const zipUrl = resolveZipUrl(spec.zipUrl);
     if (!zipUrl) throw new Error("bad_zip_url");
+    throwIfCancelled();
     sendProgress({ id, phase: "download", percent: 5, version: spec.version });
-    const zipBuf = await fetchBuffer(zipUrl, ({ got, total }) => {
-      const pct = total ? Math.min(90, 5 + Math.floor((got / total) * 85)) : 40;
-      sendProgress({ id, phase: "download", percent: pct, got, total, version: spec.version });
-    });
+    const zipBuf = await fetchBuffer(
+      zipUrl,
+      ({ got, total }) => {
+        const pct = total ? Math.min(90, 5 + Math.floor((got / total) * 85)) : 40;
+        sendProgress({ id, phase: "download", percent: pct, got, total, version: spec.version });
+      },
+      null,
+      job.ac ? job.ac.signal : null,
+    );
+    throwIfCancelled();
     if (spec.sha256) {
       const h = sha256(zipBuf);
       if (h.toLowerCase() !== String(spec.sha256).toLowerCase()) throw new Error("sha256_mismatch");
@@ -723,7 +878,14 @@ async function installWindowPlugin(id) {
     const tmp = join(pluginDir(id), "_extract_tmp");
     rmDirRecursive(tmp);
     mk(tmp);
-    unzipBuffer(zipBuf, tmp);
+    try {
+      unzipBuffer(zipBuf, tmp);
+    } catch (e) {
+      /* 解压中途的异常（含取消）也要把临时目录收干净，别把半份 runtime 留在盘上 */
+      rmDirRecursive(tmp);
+      throw e;
+    }
+    throwIfCancelled();
     let srcDir = tmp;
     const ents = fs.readdirSync(tmp);
     const entry = safeEntry(spec.entry) || "index.html";
@@ -746,10 +908,25 @@ async function installWindowPlugin(id) {
     });
     sendProgress({ id, phase: "done", percent: 100, version: spec.version });
     installing[id] = false;
+    delete installAbort[id];
     return { ok: true, version: spec.version || "0.0.0" };
   } catch (err) {
     installing[id] = false;
+    delete installAbort[id];
     const msg = String((err && err.message) || err);
+    /* 用户主动取消：落成「已取消」终局（不弹报错报告窗），并把半份解压目录清掉 */
+    if (job.cancelled || msg === "cancelled") {
+      rmDirRecursive(join(pluginDir(id), "_extract_tmp"));
+      sendProgress({ id, phase: "cancel", percent: 0, error: "cancelled" });
+      installHost.finishPluginInstall({
+        id,
+        ok: false,
+        cancelled: true,
+        error: "cancelled",
+        hint: "",
+      });
+      return { ok: false, cancelled: true, error: "cancelled" };
+    }
     const hint = installFailHint(msg);
     /* 进度与返回值都保持原错误码原文：渲染层 pluginErrText 按整串精确匹配出中文文案 */
     sendProgress({ id, phase: "error", percent: 0, error: msg });
@@ -948,6 +1125,9 @@ function registerAppPluginsIpc(opts) {
     return dataUrl ? { ok: true, dataUrl } : { ok: false };
   });
   ipcMain.handle("appPlugins:install", (e, id) => installWindowPlugin(String(id || "")));
+  /* 安装窗「取消安装」对窗口插件走这条（id 来自云端目录，逐个 registerInstallTarget 登记不了） */
+  ipcMain.handle("appPlugins:cancelInstall", (e, id) => cancelWindowPluginInstall(String(id || "")));
+  installHost.registerCancelFallback((id) => cancelWindowPluginInstall(String(id || "")));
   ipcMain.handle("appPlugins:uninstall", (e, id) => uninstallWindowPlugin(String(id || "")));
   ipcMain.handle("appPlugins:open", (e, id) => openWindowPlugin(String(id || "")));
   ipcMain.handle("appPlugins:close", (e) => closeSenderWindow(e));
@@ -974,6 +1154,112 @@ function registerAppPluginsIpc(opts) {
     writeJson(dataPath(id), data && typeof data === "object" ? data : {});
     return { ok: true };
   });
+
+  /* ── 插件根目录（本轮需求：总的根目录 + 首次打开提示设置）──────────────────
+     真源在 plugins/plugin-root.js：值存 <数据目录>/config.json 的 plugins.installDir，
+     推断值（按已设 installDir 的插件的公共父目录）**只预填不写盘**，用户点确认才落。
+     桥：RootStatus / RootSet / RootPick / RootOpen / InstallDirOfPlugin。
+     渲染层只负责画，不许自己拼「根目录 + 子目录名」。 */
+  initPluginRoot();
+  const asText = (s) => String(s == null ? "" : s);
+  ipcMain.handle("appPlugins:rootStatus", () => {
+    try {
+      return pluginRootMod().status();
+    } catch (e) {
+      return { ok: false, error: asText((e && e.message) || e) };
+    }
+  });
+  ipcMain.handle("appPlugins:rootSet", (e, dir) => rootSetImpl(asText(dir)));
+  ipcMain.handle("appPlugins:rootPick", () => {
+    const mod = pluginRootMod();
+    const cur = mod.get();
+    const inf = mod.status().inferred;
+    let picked = [];
+    try {
+      picked =
+        dialog.showOpenDialogSync(getMainWin && getMainWin(), {
+          title: "选择插件根目录（所有需要目录的插件默认装到它下面的子目录）",
+          properties: ["openDirectory", "createDirectory", "dontAddToRecent"],
+          defaultPath: cur || inf || undefined,
+        }) || [];
+    } catch (err) {
+      return { ok: false, error: asText((err && err.message) || err) };
+    }
+    if (!picked.length) return { ok: false, cancelled: true };
+    return rootSetImpl(picked[0]);
+  });
+  ipcMain.handle("appPlugins:rootOpen", () => {
+    const mod = pluginRootMod();
+    const dir = mod.get() || mod.status().inferred;
+    if (!dir) return { ok: false, error: "no_root" };
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {}
+    try {
+      shell.openPath(dir);
+      return { ok: true, dir };
+    } catch (err) {
+      return { ok: false, error: asText((err && err.message) || err) };
+    }
+  });
+  /* 详情面板「打开目录」：把某个插件的安装目录在文件管理器里打开（不存在就建出来）。
+     只服务插件目录这一件事 —— 只接受绝对路径，盘符根一律拒绝，不做通用「打开任意路径」。 */
+  ipcMain.handle("appPlugins:openPath", (e, dir) => {
+    const n = normDir(asText(dir));
+    if (!n) return { ok: false, error: "bad_path" };
+    if (/^[a-zA-Z]:\\?$/.test(n) || n === "/" || /^\\\\[^\\]+\\[^\\]+$/.test(n)) {
+      return { ok: false, error: "refuse_root" };
+    }
+    try {
+      fs.mkdirSync(n, { recursive: true });
+    } catch {}
+    try {
+      shell.openPath(n);
+      return { ok: true, dir: n };
+    } catch (err) {
+      return { ok: false, error: asText((err && err.message) || err) };
+    }
+  });
+  /* 卡片「安装 / 重装」先问这里：拿该插件这次该用的目录；需目录而根目录没设 → need_root */
+  ipcMain.handle("appPlugins:installDirOfPlugin", (e, id) => resolvePluginInstallDir(id));
+  /* 插件自己的安装目录：读现状 / 写回（「恢复默认」= default:true → 改写成根目录+子目录名） */
+  ipcMain.handle("appPlugins:pluginInstallDir", (e, payload) => {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const id = String(p.id || "");
+    const mod = pluginRootMod();
+    const own = mod.pluginDir(id);
+    if (!p || p.default !== true) return { ok: true, id, installDir: own, isDefault: false };
+    if (!mod.needsDir(id)) return { ok: false, error: "not_dir_plugin" };
+    const dir = mod.defaultDir(id);
+    if (!dir) return { ok: false, error: "need_root", message: "还没有设置插件根目录。" };
+    const w = mod.writePluginDir(dataDirImpl(), id, dir);
+    if (!w.ok) return Object.assign({ ok: false, id }, w);
+    return { ok: true, id, installDir: dir, isDefault: true };
+  });
+}
+
+/** 写插件根目录（rootSet 与 rootPick 共用一份口径）。 */
+function rootSetImpl(dir) {
+  const mod = pluginRootMod();
+  const r = mod.set(String(dir || ""));
+  if (!r.ok) {
+    const why = {
+      empty_dir: "目录为空",
+      refuse_root: "不能把插件根目录设成盘符根目录（如 E:\\）—— 请选一个专门放插件的文件夹",
+      refuse_app_dir: "插件根目录不能落在应用目录里（升级 / 卸载会带走）—— 请另选一个文件夹",
+      refuse_data_dir: "插件根目录不能落在数据目录里 —— 请另选一个文件夹",
+    };
+    r.message = why[r.error] || r.error;
+  }
+  return r;
+}
+/** 数据目录（IPC 归一回调与模块内共用）：registerAppPluginsIpc 时已注入 getDataDir。 */
+function dataDirImpl() {
+  try {
+    return typeof getDataDir === "function" ? String(getDataDir() || "") : "";
+  } catch {
+    return "";
+  }
 }
 
 module.exports = {
@@ -982,4 +1268,10 @@ module.exports = {
   openWindowPlugin,
   closePluginWindow,
   isPluginWindowOpen,
+  installWindowPlugin,
+  cancelWindowPluginInstall,
+  /* 安装目录口径（渲染层卡片 / 安装窗 / 权重指路共用）：插件自己的目录优先，
+     没设过就用「插件根目录 + 默认子目录名」—— 见 plugins/plugin-root.js */
+  installDirOf,
+  resolvePluginInstallDir,
 };

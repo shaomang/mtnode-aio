@@ -224,7 +224,9 @@ footer a.author:hover{color:#fff;border-color:var(--cyan)}
   <h2>7. Local back-ends: installing downloads dependencies and models</h2>
   <p>The music, video, speech and local-LLM back-ends (Music3 / H3 / GPT-SoVITS / llama.cpp / Remotion) are downloaded only after you click "Install". The installation fetches Python / Node dependencies and model weights from third-party sites; those requests carry your client IP address and user agent. What is downloaded contains none of your data, and its use is governed by the terms of the corresponding third party:</p>
   <ul>
-    <li>Dependencies: the domestic PyPI mirrors (Tsinghua / Alibaba Cloud), <code>download.pytorch.org</code>, <code>mirrors.aliyun.com/pytorch-wheels</code>, the npm registry, and the GitHub repository URLs involved when you install a DSH plugin or the Remotion back-end.</li>
+    <li>Dependencies: the domestic PyPI mirrors (Tsinghua / Alibaba Cloud / USTC, with <code>pypi.org</code> as a last-resort fallback), the torch wheel mirrors <code>mirror.sjtu.edu.cn/pytorch-wheels</code> and <code>mirrors.aliyun.com/pytorch-wheels</code>, <code>download.pytorch.org</code>, and the npm registry.</li>
+    <li>GitHub repositories / release archives: when a direct connection fails, downloads fall back to the domestic proxies <code>ghfast.top</code>, <code>gh-proxy.com</code> and <code>ghproxy.net</code> (including the GitHub repository URLs involved when you install a DSH plugin or the Remotion back-end).</li>
+    <li>Binaries and runtimes: Node, the uv-managed Python distribution, the portable ffmpeg and the chrome-for-testing browser used by Remotion come from the <code>registry.npmmirror.com/-/binary</code> mirror.</li>
     <li>Model weights: ModelScope (<code>modelscope.cn</code>), the mirror <code>hf-mirror.com</code> and, where necessary, <code>huggingface.co</code>.</li>
     <li>Browsing plugins / skills / MCP online in "Manage extensions" additionally sends search requests to the default online sources <code>registry.npmmirror.com</code> and <code>data.jsdelivr.com</code>, and these requests <b class="hl">include the keywords you type into the search box</b>.</li>
   </ul>

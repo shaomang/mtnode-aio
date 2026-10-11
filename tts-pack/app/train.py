@@ -623,12 +623,22 @@ def _ensure_train_deps() -> None:
 
     idx = "https://pypi.tuna.tsinghua.edu.cn/simple"
     host = "pypi.tuna.tsinghua.edu.cn"
+    # Machine-level pip.ini often carries an unreachable extra-index-url
+    # (pypi.ngc.nvidia.com, written by NVIDIA PyIndex) and --index-url alone
+    # does not override it — every package then burns 5 retries. Hand the
+    # PIP_* overrides to the pip child process instead, and never use
+    # `pip --isolated`: it ignores environment variables and lets that
+    # extra-index straight back in.
+    pip_env = dict(os.environ)
+    pip_env["PIP_INDEX_URL"] = idx
+    pip_env["PIP_EXTRA_INDEX_URL"] = idx
+    pip_env["PIP_TRUSTED_HOST"] = host
 
     def _pip(args: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, "-m", "pip", "install", "--target", str(_PYLIBS)] + args,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            creationflags=_proc_flags(),
+            creationflags=_proc_flags(), env=pip_env,
         )
 
     if not torch_ok:
@@ -637,15 +647,21 @@ def _ensure_train_deps() -> None:
             # Pin the exact +cu126 local version so pip can never satisfy the
             # requirement with the CPU wheel (a bare "torch==2.6.0" on a cu126
             # index silently installed CPU torch, leaving .cuda_available() False).
-            # Install straight from download.pytorch.org: the aliyun cu126 mirror
-            # is unreliable for the multi-GB wheels (serves CPU for the bare pin
-            # and hangs mid-transfer), which left training stuck.
+            # Index chain: the aliyun pytorch-wheels mirror first (fast in China),
+            # download.pytorch.org only as the last resort (slow / blocked here;
+            # the mirror sometimes serves CPU for the bare pin or hangs
+            # mid-transfer, hence the fallback chain instead of a single index).
             _clean_pylibs_torch()
-            r = _pip([
-                "torch==2.6.0+cu126", "torchaudio==2.6.0+cu126",
-                "--index-url", "https://download.pytorch.org/whl/cu126",
-                "--timeout", "120",
-            ])
+            torch_args = ["torch==2.6.0+cu126", "torchaudio==2.6.0+cu126", "--timeout", "120"]
+            r = None
+            for torch_idx in (
+                "https://mirrors.aliyun.com/pytorch-wheels/cu126",
+                "https://download.pytorch.org/whl/cu126",
+            ):
+                r = _pip(torch_args + ["--index-url", torch_idx])
+                if r.returncode == 0:
+                    break
+                log("torch index failed (" + torch_idx + ", exit " + str(r.returncode) + "), trying the next one")
         else:
             log("torch missing — installing CPU build into .pylibs")
             r = _pip(["torch==2.6.0", "torchaudio==2.6.0", "-i", idx, "--trusted-host", host])
@@ -663,13 +679,48 @@ def _ensure_train_deps() -> None:
     if not core_ok:
         req = ENGINE_DIR / "requirements.txt"
         if req.is_file():
-            filtered = [
-                ln for ln in req.read_text(encoding="utf-8").splitlines()
-                if ln.strip()
-                and not ln.lstrip().startswith(
-                    ("--no-binary", "gradio", "funasr", "onnxruntime", "modelscope", "fastapi[standard]")
+            # requirements-train.txt 的过滤表（丢弃前缀 / 行替换 / 垫片包）只有
+            # 一份真源：tts-pack/reqs-fixups.json —— 安装脚本的 torch 步骤读同一份，
+            # 训练环境与安装环境的依赖口径因此不会漂移。文件缺失 / 解析失败时退到
+            # 下面内置的旧清单，并打日志说明退了，避免"文件没了却静默换口径"。
+            # 垫片：训练时 PYTHONPATH 最前就是 ROOT/shims（先于 .pylibs），
+            # jieba_fast 由垫片提供，因此它绝不能进 pip（源包只有 tar.gz，
+            # setup.py 会无条件编译 C 扩展）。
+            fx: dict[str, Any] | None = None
+            fx_path = ROOT / "reqs-fixups.json"
+            try:
+                fx = json.loads(fx_path.read_text(encoding="utf-8"))
+                log(f"train deps: filter lists loaded from {fx_path}")
+            except Exception as exc:
+                log(f"train deps: {fx_path} unreadable ({exc}) — falling back to the built-in filter lists")
+            if fx is None:
+                drop_prefixes = (
+                    "--no-binary", "gradio", "funasr", "onnxruntime", "modelscope", "fastapi[standard]"
                 )
-            ]
+                replacements: dict[str, Any] = {
+                    "pyopenjtalk": "pyopenjtalk-plus>=0.4.1.post9",
+                    "jieba_fast": None,
+                }
+            else:
+                drop_prefixes = tuple(str(d) for d in (fx.get("dropPrefixes") or []))
+                replacements = {
+                    str(k).lower().replace("-", "_"): v
+                    for k, v in (fx.get("replacements") or {}).items()
+                }
+            filtered: list[str] = []
+            for ln in req.read_text(encoding="utf-8").splitlines():
+                line = ln.strip()
+                if not line or line.startswith(drop_prefixes):
+                    continue
+                # 包名 = 行首连续的 [A-Za-z0-9._-]；比较时大小写不敏感、'-' 与 '_' 视为相同。
+                m = re.match(r"[A-Za-z0-9._-]+", line)
+                name = m.group(0).lower().replace("-", "_") if m else ""
+                if name in replacements:
+                    new_line = replacements[name]
+                    if new_line is None:
+                        continue  # 垫片提供的包（jieba_fast）绝不发给 pip
+                    line = str(new_line)  # 整行替换（pyopenjtalk -> pyopenjtalk-plus）
+                filtered.append(line)
             reqf = ENGINE_DIR / "requirements-train.txt"
             reqf.write_text("\n".join(filtered) + "\n", encoding="utf-8")
             r = _pip(["-r", str(reqf), "-i", idx, "--trusted-host", host])

@@ -20,6 +20,12 @@
  *   fps / width / height / durationInFrames
  *                   number  覆盖合成参数（可选，缺省用模板占位值）
  *   inputProps      object  传给合成的 props（可选）
+ *   browserExecutable string
+ *                   本机 Chromium 系浏览器路径（可选）。国内网络拿不到 Remotion 硬编码的
+ *                   storage.googleapis.com 下载直链时，宿主会先尝试从 npmmirror 代下
+ *                   chrome-headless-shell 预置到 node_modules/.remotion；代下也失败才落到这里，
+ *                   用本机 Edge / Chrome 渲染（Remotion 会警告版本非钉版、渲染确定性略降）。
+ *                   也可用环境变量 MTNODE_REMOTION_BROWSER_EXECUTABLE 传同一个值。
  *   concurrency / jpegQuality / audioCodec / logLevel
  *                           透传给 renderMedia（可选）
  */
@@ -66,7 +72,16 @@ const main = async () => {
   }
 
   const inputProps = cfg.inputProps ?? {};
-  const selected = await selectComposition({serveUrl, id: cfg.composition, inputProps});
+  /* 浏览器口径：优先 render.json.browserExecutable，其次环境变量；都没有 = 让 Remotion 用
+     它自己的 chrome-headless-shell 缓存（宿主已尽量从国内镜像预置好，见 main-remotion.js）。 */
+  const browserExecutable =
+    (typeof cfg.browserExecutable === 'string' && cfg.browserExecutable.trim()) ||
+    (typeof process.env.MTNODE_REMOTION_BROWSER_EXECUTABLE === 'string' &&
+      process.env.MTNODE_REMOTION_BROWSER_EXECUTABLE.trim()) ||
+    null;
+  const browserOpt = browserExecutable ? {browserExecutable} : {};
+  if (browserExecutable) emit({type: 'browser', browserExecutable});
+  const selected = await selectComposition({serveUrl, id: cfg.composition, inputProps, ...browserOpt});
   const composition = {
     ...selected,
     ...(cfg.fps != null ? {fps: cfg.fps} : {}),
@@ -86,6 +101,7 @@ const main = async () => {
     outputLocation,
     inputProps,
     logLevel: cfg.logLevel,
+    ...browserOpt,
     ...(cfg.concurrency ? {concurrency: cfg.concurrency} : {}),
     ...(cfg.jpegQuality ? {jpegQuality: cfg.jpegQuality} : {}),
     ...(cfg.audioCodec ? {audioCodec: cfg.audioCodec} : {}),

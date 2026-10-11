@@ -519,7 +519,7 @@ def _default_gpt_weights() -> Path | None:
 def _default_sovits_weights() -> Path | None:
     candidates = [
         PRETRAINED_DIR / "s2G488k.pth",
-        PRETRAINED_DIR / "s2G233k.pth",
+        PRETRAINED_DIR / "s2G2333k.pth",
         PRETRAINED_DIR / "SoVITS_weights_v2.pth",
         PRETRAINED_DIR / "SoVITS_weights_v1.pth",
     ]

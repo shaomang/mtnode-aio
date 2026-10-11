@@ -179,12 +179,37 @@ const TAIL_BRIDGE = {
   hasnt(popConsole, 'spec.api + "Install"', "内嵌 console 只读：不放安装写操作");
   hasnt(popConsole, 'spec.api + "Start"', "内嵌 console 只读：不放启动写操作");
   hasnt(popConsole, 'spec.api + "Stop"', "内嵌 console 只读：不放停止写操作");
+  /* 本轮需求：清除日志 = **真清除**（清宿主日志文件，不是只清显示） */
+  has(popConsole, 'pluginApiFn(spec.api + "ConsoleClear")', "「清屏」走 <api>ConsoleClear（真清日志文件）");
+  has(popConsole, "lastTail = \"\"", "清屏同时丢弃本地已聚合的正文与游标（关浮层再开不回填旧日志）");
+  hasnt(popConsole, "只看此刻之后的新行", "不再有「只清显示、文件不动」的旧口径");
+  /* 安装进度一律不上卡片：进度条元素与 bind*Progress 都已下线，改由安装窗显示 */
+  hasnt(pluginsSrc, 'data-plugin-progress"', "卡片壳里不再有安装进度条元素");
+  hasnt(backendCard, 'I18n.t("安装中…")', "卡片状态行不再有「安装中…」");
+  hasnt(backendCard, 'I18n.t("更新中…")', "卡片状态行不再有「更新中…」");
+  hasnt(backendCard, "prog.style.display", "共用卡片不再画进度条");
+  for (const name of [
+    "bindMusic3Progress",
+    "bindYueProgress",
+    "bindSensenovaProgress",
+    "bindH3Progress",
+    "bindRemotionProgress",
+    "bindLlamaProgress",
+    "bindBreezeProgress",
+    "bindTtsProgress",
+    "bindPluginProgress",
+  ]) {
+    hasnt(pluginsSrc, "function " + name + "(", "app-plugins.js 不再有 " + name + "（安装进度不上卡片）");
+  }
+  has(pluginsSrc, "function repaintPluginCard(", "有统一的卡片重画入口（安装跑完重画用）");
+  has(pluginsSrc, "onMtnodeInstallFinished", "插件对话框订阅「安装窗跑完」事件并重画卡片");
+  has(preloadSrc, "onMtnodeInstallFinished:", "preload 暴露安装终局订阅 mtnodeInstall:finished");
   has(pluginsSrc, 'I18n.t("后端运行中")', "状态行写「后端运行中」");
   has(pluginsSrc, 'I18n.t("后端未运行")', "状态行写「后端未运行」");
   has(pluginsSrc, "mountPluginPopConsole(pop, item)", "详情浮层挂上 console 区块");
 
   /* ═════════ [3] preload 桥 ⇄ 宿主 handle / 事件成对 ═════════ */
-  console.log("\n[3] preload.js：8 个 ConsoleTail 桥 + 3 个 Notice 订阅，与宿主一一成对");
+  console.log("\n[3] preload.js：8 个 ConsoleTail / ConsoleClear 桥 + 3 个 Notice 订阅，与宿主一一成对");
   for (const [k, m] of Object.entries(TAIL_BRIDGE)) {
     const p = PLUGINS[k];
     has(preloadSrc, m + ":", "preload 暴露 " + m);
@@ -194,6 +219,17 @@ const TAIL_BRIDGE = {
       p.host + " 注册 " + p.ipc + ":consoleTail",
     );
     has(preloadSrc, "'" + p.ipc + ":consoleTail'", m + " 转发到 " + p.ipc + ":consoleTail");
+    /* 清空日志：桥 + 宿主 handle + 真 truncate（三个都钉住，免得退回「只清显示」） */
+    has(preloadSrc, p.api + "ConsoleClear:", "preload 暴露 " + p.api + "ConsoleClear");
+    has(preloadSrc, "'" + p.ipc + ":consoleClear'", p.api + "ConsoleClear 转发到 " + p.ipc + ":consoleClear");
+    const hostSrc = read(p.host);
+    has(hostSrc, 'ipcMain.handle("' + p.ipc + ':consoleClear"', p.host + " 注册 " + p.ipc + ":consoleClear");
+    has(hostSrc, "function clearConsoleLog(", p.host + " 有 clearConsoleLog（真清日志文件）");
+    ok(
+      /clearConsoleLog[\s\S]{0,600}(writeFileSync\(p,\s*""|truncateSync\(p,\s*0)/.test(hostSrc),
+      p.host + " 把日志清到 0 字节（truncate / 空写，保留文件与运行中后端的句柄）",
+    );
+    has(hostSrc, '"' + p.ipc + ':consoleCleared"', p.host + " 广播 " + p.ipc + ":consoleCleared（打开着的日志窗就地清空）");
   }
   /* 求助通知：只有带 ui-signal 的三个宿主有这条事件通道 */
   for (const [k, api] of [["llama", "llama"], ["tts", "tts"], ["breeze", "breeze"]]) {
@@ -233,13 +269,21 @@ const TAIL_BRIDGE = {
       has(preloadSrc, api + n + ":", "preload 暴露 " + api + n + "（" + k + " 卡片要用）");
     }
   }
-  has(pluginsSrc, "pluginApiFn(spec.api + \"PickInstallDir\")", "「安装」前先弹系统目录选择框（不开插件窗）");
+  /* 目录口径本轮改了（插件根目录）：卡片不再先弹系统目录框，而是问「这次该装到哪」——
+     插件自己设过 installDir 就用它，没设过 = 插件根目录 + 默认子目录名；根目录没设 → need_root 提示。
+     系统目录框（<api>PickInstallDir）仍在，由安装窗 / 控制台里的「选择安装目录」用。 */
+  has(pluginsSrc, "const target = await plugInstallDir(id);", "卡片「安装」先问这次该装到哪（plugInstallDir）");
+  has(pluginsSrc, 'target.error === "need_root"', "根目录没设时先提示去设置（不弹系统目录框、不开始安装）");
+  has(pluginsSrc, "appPluginsInstallDirOf", "该插件的目录口径走主进程桥 appPluginsInstallDirOf");
+  has(preloadSrc, "appPluginsRootStatus:", "preload 暴露插件根目录现状桥 appPluginsRootStatus");
+  has(preloadSrc, "appPluginsRootPick:", "preload 暴露插件根目录选择桥 appPluginsRootPick");
+  has(pluginsSrc, "function buildPlugRootBar()", "插件对话框顶部有「插件根目录」那一行");
   /* 本轮共识：安装不再在卡片上静默跑，一律开那只独立安装窗（逐步骤 + 失败定位 + 会话修复）。
      桥仍在（安装窗经 mtnodeInstall:api 白名单转调它们），所以这里钉的是**入口口径**。 */
   has(
     pluginsSrc,
-    "await openPluginInstallWindow({ id, action: \"install\" })",
-    "卡片「安装 / 重装」改为开独立安装窗（不再卡片内静默安装）",
+    'await openPluginInstallWindow({ id, action: "install", installDir: target.dir })',
+    "卡片「安装 / 重装」改为开独立安装窗（并把解析好的安装目录带过去）",
   );
   has(pluginsSrc, "BACKEND_INSTALL_IDS", "卡片知道每个后端插件在安装窗里的 id（id 与 kind 分开维护）");
   has(preloadSrc, "mtnodeInstallOpen:", "preload 暴露安装窗入口 mtnodeInstallOpen");

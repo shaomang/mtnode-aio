@@ -56,7 +56,7 @@ def _ensure_multipart() -> None:
         return
     except Exception:
         pass
-    for idx in ("https://pypi.tuna.tsinghua.edu.cn/simple", "https://mirrors.aliyun.com/pypi/simple/"):
+    for idx in ("https://pypi.tuna.tsinghua.edu.cn/simple", "https://mirrors.aliyun.com/pypi/simple/", "https://pypi.org/simple"):
         try:
             _log("installing python-multipart -> " + str(libdir) + " (index " + idx + ")")
             r = subprocess.run(

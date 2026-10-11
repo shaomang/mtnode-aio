@@ -646,17 +646,17 @@ const snDefaults = (ndBlock.match(/sensenova_gen:\s*\{([\s\S]*?)\n  \},/) || [nu
   console.log("\n[6] IPC：preload 白名单 ⇄ 宿主 handle / 事件一一成对");
   const handles = uniq([...hostSrc.matchAll(/ipcMain\.handle\("(sensenova:[^"]+)"/g)].map((m) => m[1]));
   const invokes = uniq([...preloadSrc.matchAll(/ipcRenderer\.invoke\('(sensenova:[^']+)'/g)].map((m) => m[1]));
-  eqNum(handles.length, 22, "宿主注册 22 个 sensenova: handle");
+  eqNum(handles.length, 23, "宿主注册 23 个 sensenova: handle（本轮新增 sensenova:consoleClear：日志真清除）");
   eqArr(sorted(invokes), sorted(handles), "preload invoke 通道与宿主 handle 完全一致（不多不少）");
   const expectedHandles = [
     "sensenova:getStatus", "sensenova:pickInstallDir", "sensenova:setInstallDir", "sensenova:setConfig",
     "sensenova:install", "sensenova:agentInstall", "sensenova:agentRecoverInstall", "sensenova:selfRepair",
     "sensenova:cancelInstall", "sensenova:start", "sensenova:stop", "sensenova:ensureReady",
     "sensenova:generate", "sensenova:cancelGenerate", "sensenova:forceKill", "sensenova:getLock",
-    "sensenova:consoleTail", "sensenova:gpuProbe", "sensenova:health", "sensenova:open",
-    "sensenova:close", "sensenova:removePluginMeta",
+    "sensenova:consoleTail", "sensenova:consoleClear", "sensenova:gpuProbe", "sensenova:health",
+    "sensenova:open", "sensenova:close", "sensenova:removePluginMeta",
   ];
-  eqArr(sorted(handles), sorted(expectedHandles), "22 个通道名与冻结清单逐个对上");
+  eqArr(sorted(handles), sorted(expectedHandles), "23 个通道名与冻结清单逐个对上");
   const sends = uniq([...hostSrc.matchAll(/"sensenova:(progress|gpu|consoleChanged)"/g)].map((m) => "sensenova:" + m[1]));
   const ons = uniq([...preloadSrc.matchAll(/ipcRenderer\.on\('(sensenova:[^']+)'/g)].map((m) => m[1]));
   eqArr(sorted(sends), sorted(["sensenova:progress", "sensenova:gpu", "sensenova:consoleChanged"]), "宿主发 3 个事件通道");
@@ -706,7 +706,9 @@ const snDefaults = (ndBlock.match(/sensenova_gen:\s*\{([\s\S]*?)\n  \},/) || [nu
   has(appPluginsSrc, "async function refreshSensenovaPluginCard", "插件卡刷新函数 refreshSensenovaPluginCard 存在");
   has(appPluginsSrc, 'item.kind === "sensenova" || item.handler === "sensenova"', "插件卡分发链有 sensenova 分支");
   has(appPluginsSrc, "onSensenovaConsoleChanged", "卡片订阅控制台开关变化就地刷新");
-  has(appPluginsSrc, "bindSensenovaProgress", "卡片绑定安装/更新进度");
+  /* 本轮口径：安装进度不再上插件卡（bindSensenovaProgress 随卡片进度条一起下线，
+     安装过程与进度只在独立安装窗显示——见 test/smoke-plugin-console.js [2]） */
+  hasnt(appPluginsSrc, "function bindSensenovaProgress(", "卡片不再绑定安装/更新进度（安装进度只显示在安装窗）");
   has(appRepairSrc, 'sensenova: "sensenova-local-install"', "自动修复：sensenova → 技能 sensenova-local-install");
   has(appRepairSrc, 'sensenova: "sensenovaOpen"', "自动修复：sensenova → 控制台入口 sensenovaOpen");
   has(appRepairSrc, 'label: "SenseNova 图像"', "常驻服务表登记 SenseNova 图像");

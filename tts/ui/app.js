@@ -10,7 +10,6 @@ let state = {
   modelInfo: null,
   trainModeTouched: false,
   apiVisible: false,
-  installRunning: false,
   startRunning: false,
   voices: [],
   liveModels: [],
@@ -76,22 +75,6 @@ function syncApiPanel() {
   const btn = $("btnApi");
   if (panel) panel.classList.toggle("on", state.apiVisible);
   if (btn) btn.classList.toggle("active", state.apiVisible);
-}
-
-function setInstallProgress(on, step, pct) {
-  const box = $("installProgress");
-  if (!box) return;
-  if (on) {
-    box.classList.add("on");
-    const txt = $("installStepTxt");
-    if (txt) txt.textContent = step || "安装中…";
-    if (pct != null) setBar($("installBar"), pct);
-  } else if (!state.installRunning) {
-    box.classList.remove("on");
-  }
-  const installBusy = !!(on || state.installRunning);
-  setBtnWaiting($("btnInstall"), installBusy, "安装", "等待中");
-  if ($("btnPickDir")) $("btnPickDir").disabled = installBusy;
 }
 
 // ---------------- 训练中间模型（试听用的「live 音色」） ----------------
@@ -323,17 +306,7 @@ function mergeLiveModel(entry) {
 
 async function refreshStatus() {
   const st = await api.getStatus();
-  $("installDir").textContent = st.installDir || "未选择安装目录";
   const installed = st.installed || (st.project && st.project.ready);
-  const installBusy = !!st.installing || state.installRunning;
-  if (!installBusy) {
-    setBtnWaiting($("btnInstall"), false, "安装", "等待中");
-    $("btnInstall").disabled = !st.installDir;
-    if ($("btnPickDir")) $("btnPickDir").disabled = false;
-  } else {
-    setBtnWaiting($("btnInstall"), true, "安装", "等待中");
-    if ($("btnPickDir")) $("btnPickDir").disabled = true;
-  }
   if (state.startRunning) {
     setBtnWaiting($("btnStart"), true, "启用", "等待中");
     $("btnStop").disabled = true;
@@ -363,9 +336,6 @@ async function refreshStatus() {
     renderVoices(st.apiStatus.voices, Array.isArray(st.apiStatus.liveVoices) ? st.apiStatus.liveVoices : []);
   }
 
-  if (!(st.installing || state.installRunning)) {
-    setInstallProgress(false);
-  }
   return st;
 }
 
@@ -858,42 +828,6 @@ $("btnConsole").onclick = async () => {
   syncConsoleBtn(r && r.open);
 };
 
-$("btnPickDir").onclick = async () => {
-  const r = await api.pickInstallDir();
-  if (r.ok) refreshStatus();
-};
-
-function runInstallAsync() {
-  if (state.installRunning) return;
-  state.installRunning = true;
-  setInstallProgress(true, "开始安装（国内镜像）…", 5);
-  logLine("开始安装（国内镜像 pip）…");
-  api
-    .install({})
-    .then((r) => {
-      if (r && r.ok) {
-        logLine(r.installedByAgent ? "Agent 保底安装完成" : "脚本安装完成");
-        setInstallProgress(true, "安装完成", 100);
-      } else {
-        logLine("安装失败: " + ((r && r.error) || "?"));
-        setInstallProgress(true, "安装失败", 0);
-      }
-    })
-    .catch((e) => {
-      logLine("安装异常: " + ((e && e.message) || e));
-      setInstallProgress(true, "安装异常", 0);
-    })
-    .finally(() => {
-      state.installRunning = false;
-      setTimeout(() => {
-        setInstallProgress(false);
-        refreshStatus();
-      }, 1200);
-    });
-}
-
-$("btnInstall").onclick = () => runInstallAsync();
-
 $("btnStart").onclick = async () => {
   if (state.startRunning) return;
   state.startRunning = true;
@@ -1324,22 +1258,6 @@ $("btnPreview").onclick = async () => {
   logLine("默认语音预览（所选音色朗读固定文案）…");
   $("btnSynth").click();
 };
-
-if (api.onProgress) {
-  api.onProgress((ev) => {
-    if (!ev || ev.phase !== "install") return;
-    state.installRunning = true;
-    const step =
-      (ev.stepLabel || ev.step || "安装中") + (ev.message ? " — " + ev.message : "");
-    setInstallProgress(true, step, ev.pct);
-    if (ev.step === "agent_recover" || ev.step === "agent_install") {
-      logLine("[agent] " + (ev.message || ev.stepLabel || ""));
-    }
-    if (ev.step === "done" || ev.error) {
-      state.installRunning = false;
-    }
-  });
-}
 
 if (api.onLogPanelChanged) {
   api.onLogPanelChanged((data) => syncConsoleBtn(data && data.open));

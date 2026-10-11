@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "plugin": "minimax-h3",
+  "title": {
+    "zh": "Minimax H3 本地视频",
+    "en": "Minimax H3 Local Video"
+  },
+  "steps": [
+    { "id": "disk", "title": "检查磁盘空间", "hint": "建议预留 ≥70GB（ComfyUI + torch + MiniMax H3 权重）。空间不够脚本会判 low_disk 并停在这一步。" },
+    { "id": "comfy", "title": "准备 ComfyUI 源码" },
+    { "id": "venv", "title": "建立隔离 venv 与 CUDA torch", "hint": "ComfyUI 用**隔离** venv（禁用 system-site-packages），按驱动装 CUDA torch；torch 装错档位会在这一步报出来。" },
+    { "id": "nodes", "title": "安装 ComfyUI 依赖与自定义节点", "hint": "含 EasyCache / Frame-Interpolation（RIFE）/ 超分用的 UpscaleModelLoader 等；某个节点拉不下来就在这一步的日志里。" },
+    { "id": "weights", "title": "下载 MiniMax H3 权重", "hint": "ModelScope 优先（Comfy-Org/MiniMax-H3），git clone 失败回退 ghproxy；权重很大，可重跑续传。" },
+    { "id": "smoke", "title": "校验安装结果并写标记" }
+  ]
+}

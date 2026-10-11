@@ -68,9 +68,10 @@ if (-not $InstallDir) {
   $InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent
 }
 
-# 步骤协议（安装窗按它列步骤 / 定位失败步）：真源是包内 scripts/step.ps1。
-# 本脚本的安装/修复流程一行没重排：下面用一张「进度门槛 → 步骤 id」映射表，
-# 把脚本原有的 Write-Progress-Line 数字翻译成结构化步骤行（见 Step-Progress）。
+# Step protocol (the install window lists its steps / locates the failing step from it): the single
+# source is scripts/step.ps1 in this pack.
+# The install / repair flow below is not reordered: a "progress threshold -> step id" map translates the
+# script's original Write-Progress-Line numbers into structured step lines (see Step-Progress).
 $stepLib = Join-Path $PSScriptRoot "step.ps1"
 if (Test-Path $stepLib) { . $stepLib }
 else {
@@ -88,20 +89,20 @@ else {
   function Step-Progress { param([object]$Pct,[string]$Fail,[string]$Skip) }
 }
 
-# 步骤门槛 → 步骤 id（与同目录 steps.json 一致）。脚本原有进度数字的语义一字未改。
+# Progress threshold -> step id (identical to steps.json in the same directory). The original progress numbers keep their meaning exactly.
 Step-ProgressMap @(
-  @{ at = 4;   id = "nvidia";  title = "检测 NVIDIA 显卡 / 驱动 / 显存" },
-  @{ at = 6;   id = "env";     title = "检测内存与磁盘余量" },
-  @{ at = 10;  id = "python";  title = "选择 Python（uv 3.11 优先）" },
-  @{ at = 12;  id = "venv";    title = "创建虚拟环境 .venv" },
-  @{ at = 22;  id = "torch";   title = "安装 CUDA torch 2.8.0" },
-  @{ at = 30;  id = "torch_ok";title = "验证 torch cuda.is_available()" },
-  @{ at = 34;  id = "reqs";    title = "安装 requirements.txt" },
-  @{ at = 44;  id = "pkg";     title = "安装 sensenova_u1 推理包（源码）" },
-  @{ at = 58;  id = "weights"; title = "下载权重 SenseNova-U1.5-8B-MoT" },
-  @{ at = 82;  id = "files";   title = "校验项目文件清单" },
-  @{ at = 86;  id = "smoke";   title = "mock 冒烟（起服务 → /health → 出图 → 并发 429）" },
-  @{ at = 96;  id = "markers"; title = "写安装标记" }
+  @{ at = 4;   id = "nvidia";  title = "detect NVIDIA GPU / driver / VRAM" },
+  @{ at = 6;   id = "env";     title = "check RAM and free disk space" },
+  @{ at = 10;  id = "python";  title = "pick Python (uv 3.11 preferred)" },
+  @{ at = 12;  id = "venv";    title = "create the .venv virtual environment" },
+  @{ at = 22;  id = "torch";   title = "install CUDA torch 2.8.0" },
+  @{ at = 30;  id = "torch_ok";title = "verify torch cuda.is_available()" },
+  @{ at = 34;  id = "reqs";    title = "install requirements.txt" },
+  @{ at = 44;  id = "pkg";     title = "install the sensenova_u1 inference package (source)" },
+  @{ at = 58;  id = "weights"; title = "download the SenseNova-U1.5-8B-MoT weights" },
+  @{ at = 82;  id = "files";   title = "verify the project file manifest" },
+  @{ at = 86;  id = "smoke";   title = "mock smoke (start service -> /health -> generate -> concurrent 429)" },
+  @{ at = 96;  id = "markers"; title = "write the install markers" }
 )
 
 # ---------------------------------------------------------------- output and result markers
@@ -126,9 +127,10 @@ function Fail-Install([string]$Reason, [string]$Advice) {
   Write-Host "[sensenova-install] error: install did not finish reason=$Reason"
   if ($Advice) { Write-Host "[sensenova-install] action: $Advice" }
   Write-Host "[sensenova-install] progress: 100"
-  # 安装窗要把失败停在**正确那一步**：这里把当前步骤标 fail，并把脚本给的处置建议带上去
+  # The install window must stop at the CORRECT step: mark the current step as fail and carry the
+  # advice the script produced up with it
   $msg = "install failed: $Reason"
-  if ($Advice) { $msg = "$msg`n建议：$Advice" }
+  if ($Advice) { $msg = "$msg`nadvice: $Advice" }
   Step-Progress -Fail $msg
   Write-AgentResult "false" $Reason
   exit 1
@@ -192,6 +194,9 @@ $env:PYTHONUNBUFFERED = "1"
 $env:PIP_INDEX_URL = $PipIndex
 $env:PIP_EXTRA_INDEX_URL = $PipIndex
 $env:PIP_TRUSTED_HOST = $PipHost
+# npm default for the log line below (and for any child tool that reads it): npmmirror first, no official-source detour
+if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
+Write-Host "[sensenova-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
 # Keep the wheel cache: if the 3.5GB torch install ever fails, a rerun need not fetch it again
 $env:PIP_NO_CACHE_DIR = "0"
 # uv's python-build-standalone download mirror (npmmirror) so we never stall on a GitHub release

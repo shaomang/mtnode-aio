@@ -28,15 +28,18 @@ description: 在用户指定目录安装 MiniMax Music 3（24G Diffusers + Gradi
 
 > **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像。
 
-- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）；可用 `MT_MUSIC_PIP_INDEX` 覆盖
-- 模型权重（HuggingFace 无法直连）：
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）→ 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/` → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）；可用 `MT_MUSIC_PIP_INDEX` 覆盖。
+  - **反制机器级 pip.ini**：用 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` **环境变量**在安装子进程内覆盖（宿主 `cn-mirrors.js` 的 `installEnv()` 已统一注入），**绝不改用户机器上的 pip.ini**。
+  - **不要用 `pip --isolated`**：它忽略环境变量与用户级 config，机器级 `extra-index-url = https://pypi.ngc.nvidia.com`（NVIDIA PyIndex 常塞，国内 DNS 直接失败）照样生效。
+- 模型权重（HuggingFace 无法直连）：ModelScope 优先 → `HF_ENDPOINT=https://hf-mirror.com` → 官方 `huggingface.co` 最后一级兜底
   - Comfy 权重：**优先 ModelScope(魔搭)** `Comfy-Org/MiniMax-Music-3`（国内直连），失败回退 hf-mirror
   - App(Diffusers) 权重：`HF_ENDPOINT=https://hf-mirror.com`（`HF_HUB_DISABLE_XET=1`）；如需 ModelScope，设 `MUSIC3_MODELSCOPE_REPO` 指向你的魔搭仓库
-- diffusers 依赖来自 GitHub（`git+https://github.com/huggingface/diffusers@<commit>`，脚手架固定 `dafe3733fcfdbf3c48915fe77be3aef65b5d6a2d`）：pip 直连失败时改用 `git+https://ghproxy.com/https://github.com/huggingface/diffusers@...` 前缀重试
+- diffusers 依赖来自 GitHub（`git+https://github.com/huggingface/diffusers@<commit>`，脚手架固定 `dafe3733fcfdbf3c48915fe77be3aef65b5d6a2d`）：pip 直连失败时按 `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` 顺序加前缀重试（如 `git+https://ghfast.top/https://github.com/huggingface/diffusers@...`）
 - 安装示例：
   ```powershell
   .\.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
   ```
+  （宿主已注入 `PIP_*`，**不要加 `--isolated`**；手工跑时先在当前 shell 设 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST`。）
 
 ## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
 

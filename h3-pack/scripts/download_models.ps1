@@ -12,6 +12,10 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
+# Weights: ModelScope first, hf-mirror.com as the fallback (never straight to huggingface.co).
+# HF_HUB_DISABLE_XET=1 by default: xet transfers go through cas-server, which the mirror does not serve.
+if (-not $env:HF_ENDPOINT)        { $env:HF_ENDPOINT = "https://hf-mirror.com" }
+if (-not $env:HF_HUB_DISABLE_XET) { $env:HF_HUB_DISABLE_XET = "1" }
 Write-Host "============================================================"
 Write-Host "[h3-download] China mirror notes (required): HuggingFace cannot be reached directly from mainland China, so this script downloads weights from ModelScope first;"
 Write-Host "  when ModelScope fails it falls back to hf-mirror.com (it never connects straight to huggingface.co)."

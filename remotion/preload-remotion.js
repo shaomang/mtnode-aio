@@ -11,6 +11,17 @@ const api = {
   cancelRender: (nodeId) => ipcRenderer.invoke("remotion:cancelRender", nodeId),
   getLock: () => ipcRenderer.invoke("remotion:getLock"),
   consoleTail: (n) => ipcRenderer.invoke("remotion:consoleTail", n),
+  /* 清空日志 = 真清文件内容（truncate 到 0 字节），不是只清界面显示 */
+  consoleClear: () => ipcRenderer.invoke("remotion:consoleClear"),
+  onConsoleCleared: (cb) => {
+    const h = (_e, d) => {
+      try {
+        cb(d);
+      } catch {}
+    };
+    ipcRenderer.on("remotion:consoleCleared", h);
+    return () => ipcRenderer.removeListener("remotion:consoleCleared", h);
+  },
   freeDisk: () => ipcRenderer.invoke("remotion:freeDisk"),
   removePluginMeta: () => ipcRenderer.invoke("remotion:removePluginMeta"),
   onProgress: (cb) => {

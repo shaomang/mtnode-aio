@@ -4,8 +4,6 @@ Usage:
     python scripts/download_weights.py --repo BreezeBlue/breeze-tts-2 --dest <install dir>/checkpoints/breeze-tts-2
 
 Progress contract: prints "progress: NN.N" (the installer script turns it into a progress bar).
-License note: the Breeze TTS 2 weights are bound by the BreezeBlue Research and Non-Commercial License
-         and are for research and **non-commercial** use only; the inference code itself is Apache-2.0.
 """
 from __future__ import annotations
 
@@ -88,8 +86,6 @@ def main() -> int:
         log(f"weights are already in {dest}, skipping")
         log_progress(100)
         return 0
-
-    log("weight license: BreezeBlue Research and Non-Commercial License (research / non-commercial only)")
 
     # 1) ModelScope first (direct connection inside China)
     if try_modelscope(args.repo, dest):

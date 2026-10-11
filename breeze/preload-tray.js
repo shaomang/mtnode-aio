@@ -21,6 +21,17 @@ contextBridge.exposeInMainWorld("breezeApi", {
   open: () => ipcRenderer.invoke("breeze:open"),
   close: () => ipcRenderer.invoke("breeze:close"),
   consoleTail: (n) => ipcRenderer.invoke("breeze:consoleTail", n),
+  /* 清空日志 = 真清文件内容（truncate 到 0 字节），不是只清界面显示 */
+  consoleClear: () => ipcRenderer.invoke("breeze:consoleClear"),
+  onConsoleCleared: (cb) => {
+    const h = (_e, d) => {
+      try {
+        cb(d);
+      } catch {}
+    };
+    ipcRenderer.on("breeze:consoleCleared", h);
+    return () => ipcRenderer.removeListener("breeze:consoleCleared", h);
+  },
   log: (line) => ipcRenderer.invoke("breeze:log", line),
   apiFetch: (opts) => ipcRenderer.invoke("breeze:apiFetch", opts || {}),
   voices: () => ipcRenderer.invoke("breeze:voices"),

@@ -48,6 +48,10 @@
     /* 本地后端解释器口径（pythonw 不弹控制台）：llama / tts / breeze / music3 / yue / sensenova / h3
        七个插件宿主都 require 它，漏进白名单就是打包后 Cannot find module '../backend-python.js'。 */
     "backend-python.js",
+    /* 国内镜像源单一真源：8 个插件宿主（breeze / tts / llama / h3 / music3 / yue /
+       sensenova / remotion）与网关都 require 它，漏进白名单就是打包后
+       Cannot find module '../cn-mirrors.js' —— 安装链会退回官方源。 */
+    "cn-mirrors.js",
     "clipboard-images.js",
     "plugin-error-repair.js",
     "mtnode-agent-skills-lib.js",
@@ -264,7 +268,18 @@
         /* 安装窗的开窗步骤表（与 scripts/install.ps1 的步骤 id 同源）：
            漏进白名单 = 打包后安装窗开窗时列不出步骤表。 */
         "steps.json",
-        "manifest.json"
+        "manifest.json",
+        /* 需求清单（唯一真源，见 tts-pack/reqs-fixups.json）：install.ps1 的 torch 步骤从
+           $InstallDir 读它，读不到就直接 Step-Fail 抛 "reqs-fixups.json not found"（进度停在 50）；
+           app/train.py 的训练自愈读同一份。漏进白名单 = 打包后的安装目录里没有它，
+           用户重装时卡在 torch 步 —— 实测过 E:\mtnode-test\tts（脚手架里没有它）。 */
+        "reqs-fixups.json",
+        /* 本地垫片（清单一里 jieba_fast -> null 靠它落地；推理 / 训练子进程把 shims 摆在
+           PYTHONPATH 最前）：缺了它 install.ps1 末尾的 smoke 步会失败（jieba_fast 导不进），
+           gradio 桩缺失则引擎 import 阶段崩。__pycache__ 是开发机上 py3.10 留下的字节码缓存，
+           别打进安装包（拷贝侧 copyDirRecursive 本来就跳过它）。 */
+        "shims/**",
+        "!**/__pycache__/**"
       ]
     },
     {

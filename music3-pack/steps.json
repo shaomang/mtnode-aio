@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "plugin": "minimax-music3",
+  "title": {
+    "zh": "Minimax Music 3",
+    "en": "Minimax Music 3"
+  },
+  "steps": [
+    { "id": "disk", "title": "检查磁盘空间", "hint": "建议预留 ≥65GB（Diffusers + 官方权重约 53GB）。空间不够判 low_disk，停在这一步。" },
+    { "id": "torch", "title": "建立 venv 并安装 CUDA torch", "hint": "venv 用 system-site-packages（沿用本机已有的 CUDA torch），torch 档位不对会在这一步报错。" },
+    { "id": "deps", "title": "安装推理依赖（diffusers 固定 commit）", "hint": "diffusers 依赖来自 GitHub：直连失败会走 ghproxy 镜像。" },
+    { "id": "weights", "title": "下载官方权重", "hint": "ModelScope 优先，失败回退 hf-mirror；权重约 53GB，断点续传。" },
+    { "id": "files", "title": "校验权重文件清单" },
+    { "id": "smoke", "title": "冒烟：导入并写安装标记" }
+  ]
+}

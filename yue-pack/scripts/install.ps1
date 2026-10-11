@@ -5,7 +5,7 @@
 #   1. Probe NVIDIA (nvidia-smi / driver major / GPU name / VRAM); with no NVIDIA GPU it
 #      stops the install with ok=false reason=no_cuda (-Cpu is an explicit backdoor, but the official requirement is a 24G GPU)
 #   2. Probe Python and create a **3.12** venv (falls back to 3.11/3.13/3.10 with a warning when 3.12 is unavailable)
-#   3. pip install requirements.txt (explicitly includes gradio, Tsinghua mirror, falls back to Aliyun; --isolated), then self-check gradio
+#   3. pip install requirements.txt (explicitly includes gradio, Tsinghua mirror -> Aliyun -> official PyPI; PIP_* env pins the index)
 #   4. Install **CUDA torch / torchaudio**: pick cu130 / cu128 / cu126 by driver major version,
 #      downgrading one tier per failure; the CPU build is used only with -Cpu or after every CUDA tier fails
 #   4b. Run scripts\probe_attention.py to probe the attention tier and write the result to
@@ -44,13 +44,30 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
+
+# -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
+# A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
+# pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
+# override extra-index-url, so every package wastes 5 retries. Setting the three PIP_*
+# variables below overrides index / extra-index / trusted-host inside this process and every
+# child (pip / git / npm inherit them). Do NOT add `pip --isolated`: it ignores environment
+# variables, which lets that unreachable extra-index back in.
+$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+$env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+$env:PIP_TRUSTED_HOST    = "pypi.tuna.tsinghua.edu.cn"
+if (-not $env:HF_ENDPOINT)         { $env:HF_ENDPOINT = "https://hf-mirror.com" }
+if (-not $env:HF_HUB_DISABLE_XET)  { $env:HF_HUB_DISABLE_XET = "1" }
+if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
+Write-Host "[yue2-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
+
 $InferWhlName = "yue2_infer-0.1.5-py3-none-any.whl"
 $ModelRepo = "m-a-p/YuE2-3B"
 $VaeRepo = "m-a-p/YuE2-Vae"
 
-# 步骤协议（安装窗按它列步骤 / 定位失败步）：真源是包内 scripts/step.ps1。
-# 本脚本流程一行没重排：下面用一张「进度门槛 → 步骤 id」映射表，把脚本原有的
-# Write-Progress-Line 数字翻译成结构化步骤行（见 Step-Progress）。
+# Step protocol (the install window lists its steps / locates the failing step from it): the single
+# source is scripts/step.ps1 in this pack.
+# The install flow below is not reordered: a "progress threshold -> step id" map translates the
+# script's original Write-Progress-Line numbers into structured step lines (see Step-Progress).
 $stepLib = Join-Path $PSScriptRoot "step.ps1"
 if (Test-Path $stepLib) { . $stepLib }
 else {
@@ -68,18 +85,18 @@ else {
   function Step-Progress { param([object]$Pct,[string]$Fail,[string]$Skip) }
 }
 
-# 步骤门槛 → 步骤 id（与同目录 steps.json 一致）。
+# Progress threshold -> step id (identical to steps.json in the same directory).
 Step-ProgressMap @(
-  @{ at = 4;   id = "gpu";     title = "探测 NVIDIA 显卡与驱动" },
-  @{ at = 8;   id = "python";  title = "创建 Python 3.12 虚拟环境" },
-  @{ at = 20;  id = "deps";    title = "安装 requirements.txt（含 gradio）" },
-  @{ at = 30;  id = "torch";   title = "安装 CUDA torch / torchaudio" },
-  @{ at = 38;  id = "attn";    title = "探测 attention 后端" },
-  @{ at = 42;  id = "pkg";     title = "安装 yue2 推理包" },
-  @{ at = 58;  id = "weights"; title = "下载权重 YuE2-3B + YuE2-Vae" },
-  @{ at = 82;  id = "files";   title = "校验项目文件清单与 app.ui 导入" },
-  @{ at = 88;  id = "smoke";   title = "mock 冒烟（/health → 生成 → 收尾）" },
-  @{ at = 96;  id = "markers"; title = "写安装标记" }
+  @{ at = 4;   id = "gpu";     title = "probe NVIDIA GPU and driver" },
+  @{ at = 8;   id = "python";  title = "create the Python 3.12 virtual environment" },
+  @{ at = 20;  id = "deps";    title = "install requirements.txt (gradio included)" },
+  @{ at = 30;  id = "torch";   title = "install CUDA torch / torchaudio" },
+  @{ at = 38;  id = "attn";    title = "probe the attention backend" },
+  @{ at = 42;  id = "pkg";     title = "install the yue2 inference package" },
+  @{ at = 58;  id = "weights"; title = "download the YuE2-3B + YuE2-Vae weights" },
+  @{ at = 82;  id = "files";   title = "verify the project file manifest and the app.ui import" },
+  @{ at = 88;  id = "smoke";   title = "mock smoke (/health -> generate -> shutdown)" },
+  @{ at = 96;  id = "markers"; title = "write the install markers" }
 )
 
 function Write-Progress-Line([int]$Pct, [string]$Msg) {
@@ -91,7 +108,7 @@ function Write-Progress-Line([int]$Pct, [string]$Msg) {
 function Write-AgentResult([string]$Ok, [string]$Reason) {
   $body = "ok=$Ok"
   if ($Reason) { $body = "$body`nreason=$Reason" }
-  # 失败出口：把当前步骤标 fail（成功路径的 "true" 由进度 100 收尾，且重复标记无副作用）
+  # Failure exit: mark the current step as fail (on the success path progress 100 closes it out, and repeating the marker is harmless)
   if ("$Ok" -ne "true") { Step-Progress -Fail "install failed: $Reason" }
   Set-Content -Path (Join-Path $InstallDir ".yue2-agent-result") -Value $body -Encoding UTF8
 }
@@ -100,8 +117,8 @@ Write-Host "[yue2-install] =====================================================
 Write-Host "[yue2-install] YuE2 local music generation backend install"
 Write-Host "[yue2-install]   models: m-a-p/YuE2-3B (~7.3GB, CC BY-NC 4.0) + m-a-p/YuE2-Vae (~0.5GB)"
 Write-Host "[yue2-install]   inference pkg: yue2_infer-0.1.5-py3-none-any.whl (from the YuE2-3B repo)"
-Write-Host "[yue2-install]   Python pkgs: Tsinghua mirror pypi.tuna.tsinghua.edu.cn"
-Write-Host "[yue2-install]   torch: CUDA build from the official download.pytorch.org index (cu13x / cu12x by driver, downgrade on failure)"
+Write-Host "[yue2-install]   Python pkgs: Tsinghua mirror pypi.tuna.tsinghua.edu.cn (fallback Aliyun -> official PyPI)"
+Write-Host "[yue2-install]   torch: CUDA build from the Aliyun pytorch-wheels mirror first (cu13x / cu12x by driver, downgrade on failure), official download.pytorch.org last"
 Write-Host "[yue2-install]   model download: falls back to HF_ENDPOINT=https://hf-mirror.com when the HF direct link fails"
 Write-Host "[yue2-install]   official requirements: Linux reference env / Python 3.10+ / 24GB NVIDIA GPU (this Windows port wants a 24G-class GPU)"
 Write-Host "[yue2-install] ============================================================"
@@ -117,6 +134,8 @@ Set-Location $InstallDir
 $PipIndex = "https://pypi.tuna.tsinghua.edu.cn/simple"
 $PipHost = "pypi.tuna.tsinghua.edu.cn"
 $PipIndexFallback = "https://mirrors.aliyun.com/pypi/simple/"
+# pip mirror chain: Tsinghua -> Aliyun -> official PyPI (the official index only as the last resort)
+$PipIndexes = @($PipIndex, $PipIndexFallback, "https://pypi.org/simple")
 $env:HF_ENDPOINT = "https://hf-mirror.com"
 $env:HF_HUB_DISABLE_XET = "1"
 
@@ -212,10 +231,10 @@ if (-not (Test-Path $venvPy)) {
 }
 
 Write-Progress-Line 16 "upgrading pip..."
-& $venvPy -m pip install --upgrade pip -i $PipIndex --trusted-host $PipHost | Out-Host
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "[yue2-install] upgrading pip from the Tsinghua mirror failed, falling back to the Aliyun mirror..."
-  & $venvPy -m pip install --upgrade pip -i $PipIndexFallback | Out-Host
+foreach ($idx in $PipIndexes) {
+  & $venvPy -m pip install --upgrade pip -i $idx --trusted-host $PipHost | Out-Host
+  if ($LASTEXITCODE -eq 0) { break }
+  Write-Host "[yue2-install] upgrading pip from $idx failed, trying the next mirror..."
 }
 
 # ---------------------------------------------------------------- 3. dependencies
@@ -224,21 +243,23 @@ if (-not (Test-Path $ReqFile)) {
   $ReqFile = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent) "requirements.txt"
 }
 Write-Progress-Line 20 "installing Python dependencies (requirements.txt + gradio, Tsinghua mirror)..."
-& $venvPy -m pip install --isolated -r $ReqFile gradio -i $PipIndex --trusted-host $PipHost | Out-Host
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "[yue2-install] installing dependencies from the Tsinghua mirror failed, retrying on the Aliyun mirror..."
-  & $venvPy -m pip install --isolated -r $ReqFile gradio -i $PipIndexFallback | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    Write-AgentResult "false" "requirements_install_failed"
-    throw "requirements_install_failed"
-  }
+$depsOk = $false
+foreach ($idx in $PipIndexes) {
+  Write-Host "[yue2-install] pip index: $idx"
+  & $venvPy -m pip install -r $ReqFile gradio -i $idx --trusted-host $PipHost | Out-Host
+  if ($LASTEXITCODE -eq 0) { $depsOk = $true; break }
+  Write-Host "[yue2-install] installing dependencies from $idx failed, retrying on the next mirror..."
+}
+if (-not $depsOk) {
+  Write-AgentResult "false" "requirements_install_failed"
+  throw "requirements_install_failed"
 }
 
 # gradio self-check: app/ui.py depends on it; without gradio the service fails at startup with "RuntimeError: Gradio not installed"
 & $venvPy -c "import gradio; print('gradio', gradio.__version__)" | Out-Host
 if ($LASTEXITCODE -ne 0) {
   Write-Host "[yue2-install] error: gradio is not properly installed (without gradio the service fails at startup with RuntimeError 'Gradio not installed')."
-  Write-Host "[yue2-install]       reinstall gradio on its own: & `"$venvPy`" -m pip install --isolated gradio -i $PipIndex --trusted-host $PipHost"
+  Write-Host "[yue2-install]       reinstall gradio on its own: & `"$venvPy`" -m pip install gradio -i $PipIndex --trusted-host $PipHost"
   Write-Host "[yue2-install]       after reinstalling gradio just re-run this script; **do not re-download the model weights**."
   Write-AgentResult "false" "requirements_install_failed"
   throw "requirements_install_failed"
@@ -250,14 +271,20 @@ if ($TorchIndex) {
   $torchIndexes = @($TorchIndex)
 } elseif ($Cpu) {
   $torchIndexes = @("https://download.pytorch.org/whl/cpu")
-} elseif ($driverMajor -ge 580) {
-  $torchIndexes = @("https://download.pytorch.org/whl/cu130", "https://download.pytorch.org/whl/cu128", "https://download.pytorch.org/whl/cu126")
-} elseif ($driverMajor -ge 550) {
-  $torchIndexes = @("https://download.pytorch.org/whl/cu128", "https://download.pytorch.org/whl/cu126")
-} elseif ($driverMajor -ge 1) {
-  $torchIndexes = @("https://download.pytorch.org/whl/cu126", "https://download.pytorch.org/whl/cu128")
 } else {
-  $torchIndexes = @("https://download.pytorch.org/whl/cu128", "https://download.pytorch.org/whl/cu126")
+  if ($driverMajor -ge 580) {
+    $torchTiers = @("cu130", "cu128", "cu126")
+  } elseif ($driverMajor -ge 550) {
+    $torchTiers = @("cu128", "cu126")
+  } elseif ($driverMajor -ge 1) {
+    $torchTiers = @("cu126", "cu128")
+  } else {
+    $torchTiers = @("cu128", "cu126")
+  }
+  # Domestic mirrors first (Aliyun pytorch-wheels, fast in China), the pytorch.org official index last
+  $torchIndexes = @()
+  foreach ($cu in $torchTiers) { $torchIndexes += "https://mirrors.aliyun.com/pytorch-wheels/$cu" }
+  foreach ($cu in $torchTiers) { $torchIndexes += "https://download.pytorch.org/whl/$cu" }
 }
 
 Write-Progress-Line 30 "installing torch / torchaudio (CUDA builds)..."
@@ -325,7 +352,7 @@ if (-not (Test-Path $ProbeScript)) {
   if ($noBackend) {
     Write-Host "[yue2-install] error: no usable attention tier at all (flash / cudnn / sdpa are all unusable, probe exit code $probeCode)."
     Write-Host "[yue2-install]       fix 1 (recommended): install a cuDNN-capable CUDA torch -- for example"
-    Write-Host "[yue2-install]         .\.venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128"
+    Write-Host "[yue2-install]         .\.venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://mirrors.aliyun.com/pytorch-wheels/cu128"
     Write-Host "[yue2-install]         or reinstall with this script's -TorchIndex <matching cu1xx tier>, then re-run this script so the probe re-picks the tier;"
     Write-Host "[yue2-install]       fix 2: change the GPU -- the official requirement is a 24G-class NVIDIA GPU with flash / cuDNN attention"
     Write-Host "[yue2-install]         (old-architecture cards, integrated GPUs and CPU-only torch all yield no usable tier)."
@@ -420,11 +447,13 @@ sys.exit(3)
     if ($LASTEXITCODE -eq 0) { $inferOk = $true }
   }
   if (-not $inferOk) {
-    Write-Host "[yue2-install] the official whl is unusable, falling back to the official repo (direct -> ghproxy mirror)..."
+    Write-Host "[yue2-install] the official whl is unusable, falling back to the official repo (ghfast.top -> gh-proxy.com -> ghproxy.net -> ghproxy.com -> direct)..."
     foreach ($gitUrl in @(
-      "git+https://github.com/multimodal-art-projection/YuE.git",
+      "git+https://ghfast.top/https://github.com/multimodal-art-projection/YuE.git",
+      "git+https://gh-proxy.com/https://github.com/multimodal-art-projection/YuE.git",
+      "git+https://ghproxy.net/https://github.com/multimodal-art-projection/YuE.git",
       "git+https://ghproxy.com/https://github.com/multimodal-art-projection/YuE.git",
-      "git+https://ghfast.top/https://github.com/multimodal-art-projection/YuE.git"
+      "git+https://github.com/multimodal-art-projection/YuE.git"
     )) {
       if ($inferOk) { break }
       Write-Host "[yue2-install] pip install $gitUrl"

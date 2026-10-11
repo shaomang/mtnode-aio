@@ -14,7 +14,7 @@ remotion-pack/
 │   ├── index.tsx       # 入口：注册唯一合成 MTNodeRemotion（占位参数）
 │   └── Composition.tsx# 占位画面模板（宿主可整体替换）
 ├── render.mjs         # 读 render.json -> renderMedia，进度 JSON Lines 输出
-├── install.cmd        # npm install（支持 --mirror 国内镜像）
+├── install.cmd        # npm install（默认 registry.npmmirror.com，--official 切官方源）
 ├── README.md
 └── .gitignore         # 不提交 node_modules / 锁文件 / 产物
 ```
@@ -22,8 +22,9 @@ remotion-pack/
 ## 安装
 
 ```bat
-install.cmd            :: 普通安装
-install.cmd --mirror   :: 使用 npmmirror 国内镜像
+install.cmd              :: 默认走 registry.npmmirror.com
+install.cmd --official   :: 需要 npm 官方源时用（registry.npmjs.org）
+install.cmd --registry=<url>  :: 自定义 npm 源
 ```
 
 不提交 `node_modules` 与 `package-lock.json`（随包约定）。

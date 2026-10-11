@@ -47,14 +47,17 @@ description: 在用户指定目录安装 GPT-SoVITS 本地 TTS 后端：创建 v
 
 > **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像。
 
-- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`、阿里云 `https://mirrors.aliyun.com/pypi/simple/`）
-- 模型权重：**优先 ModelScope(魔搭)** `lj1995/GPT-SoVITS`（可用环境变量 `TTS_MODELSCOPE_REPO` 覆盖）；失败再回退 `HF_ENDPOINT=https://hf-mirror.com`（建议 `HF_HUB_DISABLE_XET=1`）
-- GitHub：克隆 GPT-SoVITS 直连失败时用 `ghproxy.com` 前缀镜像
-- torch（训练依赖）：清华镜像只有 CPU 轮子，须走阿里云 PyTorch 镜像 `https://mirrors.aliyun.com/pytorch-wheels/cu126`（失败回退官方 `https://download.pytorch.org/whl/cu126`）
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）→ 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/` → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）。
+  - **反制机器级 pip.ini**：用 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` **环境变量**在安装子进程内覆盖（宿主 `cn-mirrors.js` 的 `installEnv()` 已统一注入），**绝不改用户机器上的 pip.ini**。
+  - **不要用 `pip --isolated`**：它忽略环境变量与用户级 config，机器级 `extra-index-url = https://pypi.ngc.nvidia.com`（NVIDIA PyIndex 常塞，国内 DNS 直接失败）照样生效。
+- 模型权重：**优先 ModelScope(魔搭)** `lj1995/GPT-SoVITS`（可用环境变量 `TTS_MODELSCOPE_REPO` 覆盖）→ 失败再回退 `HF_ENDPOINT=https://hf-mirror.com` + `HF_HUB_DISABLE_XET=1` → 最后一级才是官方 `huggingface.co`
+- GitHub（克隆 GPT-SoVITS / 下载预训练权重归档）：直连失败时用代理回退 `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` → 直连（`cn-mirrors.js` 的 `ghProxyUrls()`）
+- torch（训练依赖）：清华镜像只有 CPU 轮子，须走 **SJTU** `https://mirror.sjtu.edu.cn/pytorch-wheels/cu126` → **阿里云** `https://mirrors.aliyun.com/pytorch-wheels/cu126` → 官方 `https://download.pytorch.org/whl/cu126`
 - 安装示例：
   ```powershell
   .venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
   ```
+  （宿主已注入 `PIP_*`，**不要加 `--isolated`**；手工跑时先在当前 shell 设 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST`。）
 
 ## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
 
@@ -92,9 +95,9 @@ description: 在用户指定目录安装 GPT-SoVITS 本地 TTS 后端：创建 v
    ```
    脚本会：
    - 创建 `.venv` 并用国内镜像安装 `requirements.txt`
-   - `git clone --depth 1 https://github.com/RVC-Boss/GPT-SoVITS.git` 到 `engine/`（GitHub 失败则尝试 `ghproxy.com` 镜像）
+   - `git clone --depth 1 https://github.com/RVC-Boss/GPT-SoVITS.git` 到 `engine/`（GitHub 失败则按 `ghfast.top` → `gh-proxy.com` → `ghproxy.net` 顺序试代理前缀）
    - **引擎训练依赖**：装 torch + torchaudio（CUDA cu126，见上镜像）；从引擎官方 `requirements.txt` 过滤掉 webui/asr/onnx 膨胀项（gradio、funasr、onnxruntime、fastapi[standard]、`--no-binary`），并**显式补回** `pandas` `matplotlib` `torch-einops-utils` `einx` `loguru` `onnxruntime`（CPU 版，g2pw 必需）`faster-whisper`（长音频 ASR 必需）
-   - 权重下载：**优先 ModelScope(魔搭)** `lj1995/GPT-SoVITS`（可用 `TTS_MODELSCOPE_REPO` 覆盖），失败回退 `huggingface_hub`（hf-mirror）——GPT/SoVITS 权重与 `chinese-hubert-base`、`chinese-roberta-wwm-ext-large` 到 `engine/GPT_SoVITS/pretrained_models/`
+   - 权重下载：**优先 ModelScope(魔搭)** `lj1995/GPT-SoVITS`（可用 `TTS_MODELSCOPE_REPO` 覆盖），失败回退 `huggingface_hub`（`HF_ENDPOINT=https://hf-mirror.com` + `HF_HUB_DISABLE_XET=1`，官方 `huggingface.co` 只做最后兜底）——GPT/SoVITS 权重与 `chinese-hubert-base`、`chinese-roberta-wwm-ext-large` 到 `engine/GPT_SoVITS/pretrained_models/`
    - 若 `INSTALL_DIR\.api-key` 不存在则生成一个随机 key（`python -c "import secrets; print(secrets.token_hex(16))"` 写入）
 
 4. **冒烟测试**  

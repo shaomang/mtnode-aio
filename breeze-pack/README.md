@@ -50,15 +50,15 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallDir <安装
 | --- | --- |
 | `BREEZE_WEIGHTS_DIR` | 已有本地权重目录（跳过下载） |
 | `BREEZE_WEIGHTS_REPO` | 权重仓库名（默认 `BreezeBlue/breeze-tts-2`） |
-| `BREEZE_TORCH_INDEX` | torch 轮子镜像（默认 aliyun pytorch-wheels cu128，失败回退 cu126） |
+| `BREEZE_TORCH_INDEX` | torch 轮子镜像（默认阿里云 pytorch-wheels cu128；链内顺序为 阿里云 cu128 → 阿里云 cu126 → 官方 cu128 → 官方 cu126，显式覆盖排第一） |
 | `BREEZE_SKIP_TORCH` / `BREEZE_SKIP_FFMPEG` | 调试用跳过 |
 
 ### 国内镜像（必须）
 
-- **Python 库**：清华 `https://pypi.tuna.tsinghua.edu.cn/simple`（回退中科院 USTC）
-- **torch**：阿里云 `https://mirrors.aliyun.com/pytorch-wheels/cu128`（回退 cu126）
+- **Python 库**：清华 `https://pypi.tuna.tsinghua.edu.cn/simple` → 阿里云 → 中科院 USTC → 官方 `pypi.org`
+- **torch**：阿里云 `https://mirrors.aliyun.com/pytorch-wheels/cu128` → 阿里云 cu126 → 官方 `download.pytorch.org` cu128 / cu126（官方只做最后兜底）
 - **权重**：ModelScope（魔搭）优先 → `hf-mirror.com` → `huggingface.co`
-- **引擎源码**：GitHub 直连失败回退 `ghproxy.com`
+- **引擎源码**：GitHub 依次用 `ghfast.top` → `gh-proxy.com` → `ghproxy.net` → `ghproxy.com` 代理，最后才直连
 
 ## 运行（通常由插件启停）
 

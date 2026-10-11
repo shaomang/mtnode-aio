@@ -62,11 +62,13 @@ description: 在用户指定目录安装 Breeze TTS 2（breezeblue-ai/breeze-tts
 
 > **中国大陆网络下，以下镜像必须使用**：HuggingFace 无法直连，Python 库必须走清华/中科院镜像。
 
-- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（或**中科院 USTC** `https://mirrors.ustc.edu.cn/pypi/simple/`）
-- **torch / torchaudio**：阿里云 PyTorch 轮子镜像 `https://mirrors.aliyun.com/pytorch-wheels/cu128`（失败回退 `.../cu126`，再回退官方 `https://download.pytorch.org/whl/cu128`）；版本按 `engine/requirements.txt` 的钉版（当前 **torch==2.9.1 / torchaudio==2.9.1**）
+- pip：**清华** `https://pypi.tuna.tsinghua.edu.cn/simple`（`--trusted-host pypi.tuna.tsinghua.edu.cn`）→ 失败回退**阿里云** `https://mirrors.aliyun.com/pypi/simple/` → **USTC** `https://mirrors.ustc.edu.cn/pypi/simple/` → 官方 `https://pypi.org/simple`（官方只做最后一级兜底）。
+  - **反制机器级 pip.ini**：用 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` **环境变量**在安装子进程内覆盖（宿主 `cn-mirrors.js` 的 `installEnv()` 已统一注入），**绝不改用户机器上的 pip.ini**。
+  - **不要用 `pip --isolated`**：它忽略环境变量与用户级 config，机器级 `extra-index-url = https://pypi.ngc.nvidia.com`（NVIDIA PyIndex 常塞，国内 DNS 直接失败）照样生效。
+- **torch / torchaudio**：**SJTU** `https://mirror.sjtu.edu.cn/pytorch-wheels/cu128` → **阿里云** `https://mirrors.aliyun.com/pytorch-wheels/cu128` → 官方 `https://download.pytorch.org/whl/cu128`（驱动不足时按 cu126 同序回退；可用 `BREEZE_TORCH_INDEX` 覆盖）；版本按 `engine/requirements.txt` 的钉版（当前 **torch==2.9.1 / torchaudio==2.9.1**）
 - 权重：**优先 ModelScope(魔搭)** `BreezeBlue/breeze-tts-2`（可用环境变量 `BREEZE_WEIGHTS_REPO` 覆盖）→ 失败回退 `HF_ENDPOINT=https://hf-mirror.com`（设 `HF_HUB_DISABLE_XET=1`）→ 最后官方 `huggingface.co`
-- GitHub（引擎源码）：直连失败用 `ghproxy.com` 前缀镜像，或改下 `archive/refs/heads/main.zip`
-- ffmpeg：`https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip`（失败回退 `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip`）
+- GitHub（引擎源码 / release 归档）：直连失败用代理回退 `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` → 直连（`cn-mirrors.js` 的 `ghProxyUrls()`），或改下 `archive/refs/heads/main.zip`
+- 二进制：便携 ffmpeg 走 `https://registry.npmmirror.com/-/binary/` 一类 npmmirror 二进制镜像；`https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip`（失败回退 `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip`，走上面的 gh 代理链）
 
 ## 脚本语言与编码（必须：零中文 + 钉死 UTF-8）
 
@@ -95,10 +97,11 @@ description: 在用户指定目录安装 Breeze TTS 2（breezeblue-ai/breeze-tts
 1. **前置检查**：Python ≥ 3.10（`python -c "import sys;print(sys.version_info[:2])"`）；NVIDIA 驱动可见（`nvidia-smi`）。
    显存要求：eager 约 **7.7GB**，官方建议 12GB 卡起步。**没有 CUDA 设备就直接停下并如实告知用户**（本项目在 Windows 原生跑，只走默认 eager 路径，不启用 CUDA Graph fast 路径）。
 2. **建 venv**：`python -m venv .venv`，然后 `python -m pip install --upgrade pip -i <清华镜像>`。
-3. **取引擎源码**：`git clone --depth 1 https://github.com/breezeblue-ai/breeze-tts engine`（失败依次回退 ghproxy / zip 解包）。校验 `engine/infer.py` 存在。
+3. **取引擎源码**：`git clone --depth 1 https://github.com/breezeblue-ai/breeze-tts engine`（失败依次回退 `ghfast.top` / `gh-proxy.com` / `ghproxy.net` 前缀，再退 zip 解包）。校验 `engine/infer.py` 存在。
 4. **装依赖**：按 `engine/requirements.txt`（可去掉 `pytest` / `ruff`）：
    - 先装 torch/torchaudio（上表镜像与版本）
    - 再 `pip install -r <过滤后的 requirements> -i <清华镜像>`
+   - **源口径**：靠 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 环境变量在安装子进程内覆盖本机全局配置，**不要加 `--isolated`**（它忽略环境变量，机器级 pip.ini 的不可达 extra-index 会照旧生效）。
 5. **下权重**：`python scripts/download_weights.py --repo BreezeBlue/breeze-tts-2 --dest checkpoints/breeze-tts-2`
    （或直接 `from modelscope.hub.snapshot_download import snapshot_download; snapshot_download("BreezeBlue/breeze-tts-2", local_dir=...)`；
    失败回退 `HF_ENDPOINT=https://hf-mirror.com` 的 `huggingface_hub.snapshot_download`）。

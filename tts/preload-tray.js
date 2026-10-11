@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("ttsApi", {
   open: () => ipcRenderer.invoke("tts:open"),
   close: () => ipcRenderer.invoke("tts:close"),
   consoleTail: (n) => ipcRenderer.invoke("tts:consoleTail", n),
+  /* 日志窗在本进程时「清空」由 tray-main.js 真删日志文件（truncate 到 0 字节） */
+  consoleClear: () => ipcRenderer.invoke("tts:consoleClear"),
   log: (line) => ipcRenderer.invoke("tts:log", line),
   apiFetch: (opts) => ipcRenderer.invoke("tts:apiFetch", opts || {}),
   onProgress: (cb) => {
@@ -32,6 +34,15 @@ contextBridge.exposeInMainWorld("ttsApi", {
     };
     ipcRenderer.on("tts:console", handler);
     return () => ipcRenderer.removeListener("tts:console", handler);
+  },
+  onConsoleCleared: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch {}
+    };
+    ipcRenderer.on("tts:consoleCleared", handler);
+    return () => ipcRenderer.removeListener("tts:consoleCleared", handler);
   },
   onGpu: (cb) => {
     const handler = (_e, data) => {

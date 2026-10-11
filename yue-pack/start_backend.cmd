@@ -5,8 +5,9 @@ REM   Usage (from this directory): start_backend.cmd          -> default port 87
 REM                                start_backend.cmd 8899     -> explicit port
 REM   Entry contract: the host (the MTNode plugin) only runs  -m app.ui  (the Gradio UI entry);
 REM                   this script runs                         -m app     (stdlib HTTP service, for self-check / contract smoke).
-REM   If gradio is missing, install it first:
-REM     ".venv\Scripts\python.exe" -m pip install --isolated gradio ^
+REM   If gradio is missing, install it first (do NOT add --isolated: it ignores the PIP_* env vars,
+REM   so an unreachable extra-index-url from a machine-level pip.ini would come right back):
+REM     ".venv\Scripts\python.exe" -m pip install gradio ^
 REM       -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 REM   Environment: YUE2_PORT / YUE2_MODEL_DIR / YUE2_DEVICE / MTNODE_YUE2_MOCK ...
 REM ===========================================================================
@@ -24,7 +25,7 @@ if not exist ".venv\Scripts\python.exe" (
 ".venv\Scripts\python.exe" -c "import gradio" >nul 2>nul
 if errorlevel 1 (
   echo [WARN] Gradio missing - install it first ^(do NOT re-download model weights^):
-  echo   ".venv\Scripts\python.exe" -m pip install --isolated gradio -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+  echo   ".venv\Scripts\python.exe" -m pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
   echo.
 )
 

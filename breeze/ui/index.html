@@ -31,11 +31,7 @@ textarea{resize:vertical;font-family:inherit}
 .badge.on{border-color:var(--ok);color:var(--ok)}
 .badge.off{border-color:#4a3a3a;color:#c8938f}
 .badge.load{border-color:var(--warn);color:var(--warn)}
-.bar{height:6px;background:#12141a;border-radius:99px;overflow:hidden;border:1px solid var(--line)}
-.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .25s}
 .meta{font-size:11px;color:var(--dim)}
-.warnbox{border:1px solid #6b5320;background:#241d0f;border-radius:6px;padding:8px;font-size:11px;color:#e8cd93;line-height:1.6}
-.warnbox b{color:#ffdf9e}
 .list{display:flex;flex-direction:column;gap:5px;overflow-y:auto}
 .item{display:flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:5px 7px}
 .item.sel{border-color:var(--accent2)}
@@ -69,31 +65,6 @@ audio{width:100%;height:32px}
     <span class="spacer"></span>
     <button class="mini" id="btnLogPanel" title="并排打开日志窗">日志窗</button>
     <button class="mini" id="btnRefresh" title="刷新状态">刷新</button>
-  </div>
-
-  <div class="warnbox">
-    <b>许可提醒：</b>推理代码为 Apache-2.0；<b>模型权重、衍生模型与自托管输出受 BreezeBlue Research and Non-Commercial License 约束，仅限研究与「非商用」用途</b>（Apache-2.0 不授予商用权；付费订阅只覆盖 breezeblue.ai 托管平台的输出，不覆盖本机自托管结果）。请自行确认对参考音频、声音与生成内容拥有合法权利，禁止未授权的语音克隆与冒用。
-  </div>
-
-  <div class="card">
-    <h2>安装</h2>
-    <div class="row">
-      <span class="path" id="installDir">未选择安装目录</span>
-      <button class="mini" id="btnPickDir">目录</button>
-      <button class="mini primary" id="btnInstall">安装</button>
-      <button class="mini" id="btnSelfRepair" title="读取最近 console 日志，由 Agent 对症修复（与 music3 / h3 控制台同口径）">自我修复</button>
-      <button class="mini danger hide" id="btnCancelInstall">取消</button>
-    </div>
-    <div class="row">
-      <span class="path" id="weightsDir">权重：随安装下载（可指定已有目录）</span>
-      <button class="mini" id="btnPickWeights">已有权重</button>
-      <button class="mini" id="btnClearWeights">清除</button>
-    </div>
-    <div id="installProgress" class="hide">
-      <div class="meta" id="installStep"><span class="spin"></span> <span id="installStepTxt">准备安装…</span></div>
-      <div class="bar" style="margin-top:5px"><i id="installBar"></i></div>
-    </div>
-    <div class="meta" id="installHint">安装要装 torch（约 3GB）+ 引擎源码 + 权重（十几 GB）+ 便携 ffmpeg，磁盘请留 ≥20GB。</div>
   </div>
 
   <div class="card">
@@ -181,7 +152,7 @@ audio{width:100%;height:32px}
     <h2>Console</h2>
     <div id="log"></div>
     <div class="row">
-      <button class="mini" id="btnClearLog">清空显示</button>
+      <button class="mini" id="btnClearLog" title="清空日志文件（真删除，不只是清显示）">清空日志</button>
       <span class="meta" id="logPath">—</span>
     </div>
   </div>

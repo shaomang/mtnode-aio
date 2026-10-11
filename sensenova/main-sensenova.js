@@ -37,8 +37,10 @@
  * IPC（registerSensenovaIpc 注册）：
  *   invoke sensenova:getStatus / pickInstallDir / setInstallDir / setConfig / install / cancelInstall /
  *          agentInstall / agentRecoverInstall / selfRepair / start / stop / ensureReady / generate /
- *          cancelGenerate / getLock / consoleTail / gpuProbe / open / close / removePluginMeta
+ *          cancelGenerate / getLock / consoleTail / consoleClear / gpuProbe / open / close /
+ *          removePluginMeta
  *   event  sensenova:progress（安装 / 生成进度）· sensenova:consoleChanged（控制台窗开关）· sensenova:gpu
+ *          · sensenova:consoleCleared（日志文件被真清空，各窗就地清显示）
  */
 const { BrowserWindow, ipcMain, dialog, screen, app } = require("electron");
 const path = require("path");
@@ -59,7 +61,11 @@ const pluginErrors = require("../plugin-error-repair.js");
    窗口里逐步骤显示；失败就地给「交给 mtnode 会话修复」，不再静默转 Agent 兜底 */
 const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
+/* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
+const installKill = require("../plugins/install-cancel.js");
 const { quietPython } = require("../backend-python.js");
+/* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
+const mirrors = require("../cn-mirrors.js");
 
 /** 报错总线 / 插件卡片 / 修复表用的插件 id（与 plugins/catalog.default.json 的卡 id 一致） */
 const PLUGIN_ID = "sensenova-local";
@@ -126,11 +132,8 @@ let lastHealthAt = 0;
  */
 let lastRunStats = null;
 
-/** pip 索引回退链（一律国内优先）；MT_SENSENOVA_PIP_INDEX 可整体覆盖 */
-const PIP_INDEX_CHAIN = [
-  "https://pypi.tuna.tsinghua.edu.cn/simple",
-  "https://mirrors.aliyun.com/pypi/simple/",
-];
+/** pip 索引回退链（清华 → 阿里云 → USTC → 官方最后）；MT_SENSENOVA_PIP_INDEX 可整体覆盖 */
+const PIP_INDEX_CHAIN = mirrors.pipIndexChain();
 /**
  * 后端 import 链上的关键模块。**torch 不在补装名单里**：
  * pip 一旦重新解析就会用清华的 CPU 轮子覆盖掉 `+cu128` 那版（SKILL.md 里的头号已知故障），
@@ -337,6 +340,20 @@ function consoleTail(maxBytes) {
     fs.readSync(fd, buf, 0, n, Math.max(0, st.size - n));
     fs.closeSync(fd);
     return { ok: true, text: buf.toString("utf8") };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/** 清空控制台日志：真删内容（truncate 到 0 字节）—— 保留文件与运行中后端持有的句柄；
+    本宿主没有文件监控游标，直接广播 cleared，让打开着的日志窗就地清空。 */
+function clearConsoleLog() {
+  try {
+    const p = consoleLogPath();
+    mk(path.dirname(p));
+    fs.writeFileSync(p, "", "utf8");
+    broadcast("sensenova:consoleCleared", { at: Date.now() });
+    return { ok: true, path: p };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -933,13 +950,19 @@ async function ensurePythonDeps(installDir, opts) {
   for (const n of wait) depsInstallTried.add(n);
   for (const index of pipIndexChain()) {
     const host = indexHostOf(index);
-    const args = ["-m", "pip", "install", "--isolated", "-U"].concat(wait);
+    /* **不加** `pip --isolated`：它忽略环境变量，机器级 pip.ini 里不可达的 extra-index
+       （pypi.ngc.nvidia.com 那类）会照旧生效；改用 PIP_* 环境变量覆盖（见 cn-mirrors.js） */
+    const args = ["-m", "pip", "install", "-U"].concat(wait);
     if (index) {
       args.push("-i", index);
       if (host) args.push("--trusted-host", host);
     }
     appendConsole("[deps] missing=" + wait.join(",") + " → pip via " + (index || "default"));
-    const r = await runExe(py, args, { cwd: installDir, timeoutMs: DEPS_INSTALL_TIMEOUT_MS });
+    const r = await runExe(py, args, {
+      cwd: installDir,
+      env: mirrors.installEnv(index ? { PIP_INDEX_URL: index, PIP_EXTRA_INDEX_URL: index } : {}),
+      timeoutMs: DEPS_INSTALL_TIMEOUT_MS,
+    });
     if (r.ok) {
       out.installed = wait.slice();
       depsOkStamp = 0;
@@ -1107,8 +1130,8 @@ async function startBackend(opts) {
   mk(path.dirname(consoleLogPath()));
   const outFd = fs.openSync(consoleLogPath(), "a");
   const env = Object.assign({}, process.env, {
-    /* 权重缺本地目录时后端会退到 HF repo id 拉取：把下载源钉在镜像上 */
-    HF_ENDPOINT: process.env.HF_ENDPOINT || "https://hf-mirror.com",
+    /* 权重缺本地目录时后端会退到 HF repo id 拉取：把下载源钉在镜像上（真源见 ../cn-mirrors.js） */
+    HF_ENDPOINT: process.env.HF_ENDPOINT || mirrors.HF_ENDPOINT,
     HF_HUB_DISABLE_XET: "1",
     PYTHONUNBUFFERED: "1",
     /* 后端会打中文进度行，GBK 控制台下 print 直接崩（SKILL.md 已知故障） */
@@ -1203,9 +1226,11 @@ function runPs(scriptPath, args, opts) {
       {
         windowsHide: true,
         cwd: path.dirname(scriptPath),
-        env: Object.assign({}, process.env, { PYTHONIOENCODING: "utf-8" }),
+        env: Object.assign({}, process.env, mirrors.installEnv({ PYTHONIOENCODING: "utf-8" })),
       },
     );
+    /* 登记当前安装脚本：安装窗点「取消安装」时按进程树强杀它（否则脚本会一直跑到自己结束） */
+    installKill.track(PLUGIN_ID, child);
     /* 安装窗的步骤流：脚本按协议打的 JSON 步骤行 → installHost，别的行 → 该步日志 */
     const rep = stepReporter.attach({
       pluginId: PLUGIN_ID,
@@ -1240,10 +1265,12 @@ function runPs(scriptPath, args, opts) {
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
     child.on("error", (e) => {
+      installKill.untrack(PLUGIN_ID);
       rep.finish({ ok: false, error: String((e && e.message) || e) });
       reject(e);
     });
     child.on("close", (code) => {
+      installKill.untrack(PLUGIN_ID);
       const cancelled = !!installCancel;
       rep.finish(
         cancelled
@@ -1351,6 +1378,7 @@ async function installScriptBody(installDir, opts) {
     message: "正在建 venv 与安装依赖（全程国内镜像）…",
     pct: 3,
   });
+  appendConsole(mirrors.banner("sensenova install"));
   try {
     await runPs(script, installArgs(installDir, opts), { stepLabel: "脚本安装" });
     const marker = readResultMarker(installDir);
@@ -1544,7 +1572,7 @@ async function installByAgent(opts) {
       `1) Python 3.11 优先（有 uv 用 uv python install 3.11 + UV_PYTHON_INSTALL_MIRROR 指 npmmirror；无 uv 退回本机 py -3.11/3.10），在 INSTALL_DIR 建 .venv\n` +
       `2) torch 2.8.0 + torchvision 0.23.0 装 CUDA 版：SJTU 镜像 https://mirror.sjtu.edu.cn/pytorch-wheels/cu128 → 阿里云 mirrors.aliyun.com/pytorch-wheels/cu128 → 官方 download.pytorch.org；驱动 <570 自动降 cu126；本地版本号 +cu128 必须保留\n` +
       `3) sensenova_u1 从 GitHub tag comfyui-v0.3.0 的 tarball 安装并 **--no-deps**（PyPI 上没有这个包；直连不通走 ghfast.top / gh-proxy.com / ghproxy.net）\n` +
-      `4) 其余依赖按 requirements.txt 从清华 / 阿里云 PyPI 镜像装；确认 transformers ≥ 4.57.1（否则认不出 model_type: neo_chat）\n` +
+      `4) 其余依赖按 requirements.txt 装：pip 源用 PIP_INDEX_URL / PIP_EXTRA_INDEX_URL / PIP_TRUSTED_HOST 三个环境变量钉在清华 → 阿里云 → USTC（官方 PyPI 只做最后一级兜底）；**别用 pip --isolated** —— 它忽略环境变量，会把本机全局 pip.ini 里不可达的 extra-index（pypi.ngc.nvidia.com 那类）放回来，每个包白等 5 次重试；确认 transformers ≥ 4.57.1（否则认不出 model_type: neo_chat）\n` +
       `5) 权重 ${MODEL_REPO_MODELSCOPE}（约 32.66GB，8 片 safetensors）用 modelscope 下到 ${join(installDir, "models", "SenseNova__SenseNova-U1.5-8B-MoT")}，失败回退 HF_ENDPOINT=https://hf-mirror.com；已下齐则跳过\n` +
       `6) 冒烟：MTNODE_SENSENOVA_MOCK=1 起一次服务，验 /health（11 个分辨率桶）→ /generate 出真 PNG → 并发 429 busy → /cancel → /shutdown；通过后写 models\\.ok（权重齐时）与 ${marker}\n` +
       (failReason ? `\n先前失败 / CONSOLE：\n${failReason}\n` : "") +
@@ -2429,9 +2457,11 @@ function registerSensenovaIpc(opts) {
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
-    cancel: () => {
+    cancel: async () => {
       installCancel = true;
-      return { ok: true };
+      /* 光置标志没用：脚本在下载权重 / 装 torch 期间不会自己退出，标志要等它结束后才被读到。
+         这里立刻按进程树强杀（pip / 下载器这些子进程一并带走），close 回调据此判「已取消」。 */
+      return await installKill.cancelInstall(PLUGIN_ID);
     },
   });
 
@@ -2494,7 +2524,7 @@ function registerSensenovaIpc(opts) {
   ipcMain.handle("sensenova:selfRepair", async (e, o) => selfRepairFromConsole(o || {}));
   ipcMain.handle("sensenova:cancelInstall", async () => {
     installCancel = true;
-    return { ok: true };
+    return await installKill.cancelInstall(PLUGIN_ID);
   });
   ipcMain.handle("sensenova:start", async (e, o) => startBackend(o || {}));
   ipcMain.handle("sensenova:stop", async () => stopBackend({ reason: "manual" }));
@@ -2504,6 +2534,8 @@ function registerSensenovaIpc(opts) {
   ipcMain.handle("sensenova:forceKill", async (e, reason) => forceKillBackend(reason));
   ipcMain.handle("sensenova:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("sensenova:consoleTail", async (e, n) => consoleTail(n));
+  /* 真清空日志文件（不只是清显示）：truncate 到 0 字节 + 广播 sensenova:consoleCleared */
+  ipcMain.handle("sensenova:consoleClear", async () => clearConsoleLog());
   ipcMain.handle("sensenova:gpuProbe", async () => queryGpu());
   ipcMain.handle("sensenova:health", async (e, o) => {
     const h = await probeApi(o || {});

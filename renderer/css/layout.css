@@ -965,6 +965,114 @@ button:disabled {
   line-height: 1.55
 }
 
+/* ── 插件根目录（本轮需求：插件对话框顶部一行「插件根目录」+ 第一次打开时的醒目提示）──
+   未设状态 = .need（红色左边条 + 一行说明），点「安装」被拦时再叠一次 .warn 闪一下。
+   配色只取既有语义变量（--red / --cyan / --muted / --bd2），不新造色板。 */
+.plug-root-bar {
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--cyan);
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.plug-root-bar.need {
+  border-left-color: var(--red);
+  background: color-mix(in srgb, var(--red) 8%, var(--panel));
+}
+
+.plug-root-bar.warn {
+  border-color: var(--red);
+  box-shadow: 0 0 0 1px var(--red);
+}
+
+.plug-root-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plug-root-label {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--orange2);
+  flex: none;
+}
+
+.plug-root-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.plug-root-path.unset {
+  color: var(--red);
+  direction: ltr;
+  font-family: inherit;
+  font-weight: 800;
+}
+
+.plug-root-hint {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.plug-root-bar.need .plug-root-hint {
+  color: var(--red);
+}
+
+/* ── 详情浮层里的「安装目录」一行：当前目录 / 来源说明 / 打开目录 / 恢复默认 ── */
+.plugin-pop-dir {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bd2);
+}
+
+.plugin-pop-dir-head {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--ink);
+}
+
+.plugin-pop-dir-path {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.plugin-pop-dir-path.unset {
+  color: var(--red);
+  font-family: inherit;
+}
+
+.plugin-pop-dir-src {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.plugin-pop-dir-acts {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 /* ── 本地后端插件的详情浮层内嵌 console（本轮：状态与 console 内容显示在插件界面里）──
    只读展示：状态行 + 后端 stdout 日志尾部（复制 / 清屏两颗小键），启停与安装仍走卡片按钮。 */
 .plugin-pop.has-console {
@@ -1050,22 +1158,8 @@ button:disabled {
   margin-top: 10px
 }
 
-.plugin-progress {
-  margin-top: 4px;
-  height: 4px;
-  background: var(--code);
-  border: 1px solid var(--bd);
-  overflow: hidden;
-}
-
-.plugin-progress>i {
-  display: block;
-  height: 100%;
-  width: 0;
-  background: linear-gradient(90deg, var(--orange), var(--cyan));
-  transition: width .15s;
-}
-
+/* 卡片上的安装进度条（.plugin-progress > i）已随本轮需求移除：安装过程只在安装窗里显示。
+   .plugin-progress-txt 保留 —— 它现在是卡片的**状态行**（启动失败原因 / 后端提示 / 启动中）。 */
 .plugin-progress-txt {
   font-size: 11px;
   color: var(--muted);

@@ -78,7 +78,7 @@
     "上次下载失败：": "Last download failed: ",
     "下载失败：": "Download failed: ",
     "下载源": "Download source",
-    "自动（官方顺序）": "Auto (official order)",
+    "自动（国内优先）": "Auto (China mirrors first)",
     "用这个源重试": "Retry with this source",
     "语音模型尚未下载（首次使用约 239MB，本机识别，不上传）":
       "The speech model has not been downloaded yet (about 239 MB on first use; recognized locally, never uploaded)",
@@ -9313,6 +9313,9 @@
     "清屏": "Clear",
     "已复制控制台内容": "Console content copied",
     "复制失败：请手动选中日志": "Copy failed — select the log manually",
+    /* 清除日志 = 真清除（宿主把 console.log 清到 0 字节），不是只清显示 */
+    "日志已清空（文件已清空，不是只清显示）": "Log cleared (the file itself is emptied, not just the view)",
+    "清空日志失败：": "Could not clear the log: ",
   });
 
   /* ── SenseNova 本地图像生成：插件卡片与控制台入口（renderer/app-plugins.js · sensenova/ui） ──
@@ -12279,6 +12282,47 @@
     "详情 / 修复 / 节点": "Details / Repair / Nodes",
     "还没有自建插件。点下方「打开插件目录」，把插件文件夹（含 mtnode-plugin.json）放进去，再点「导入插件」或重启应用即可 —— 也可以照抄目录里的 _example 模板。":
       "No own plugins yet. Click “Open plugin directory” below, put your plugin folder (with mtnode-plugin.json) inside, then click “Import plugin” or restart the app — you can also copy the _example template in that directory.",
+    /* 插件根目录（本轮需求）：插件对话框顶部一行 + 各插件的默认安装目录口径。
+       键与 renderer/app-plugins.js 逐字对齐（含全角「」与半角空格）。 */
+    "插件根目录": "Plugin root directory",
+    "换目录…": "Change…",
+    "选择目录…": "Choose…",
+    "打开插件根目录失败：": "Failed to open the plugin root directory: ",
+    "在文件管理器里打开插件根目录": "Open the plugin root directory in the file manager",
+    "第一次使用先设置「插件根目录」：需要目录的插件会默认装到它下面的子目录（如 根目录\\music）。":
+      "Set the “plugin root directory” first: plugins that need a directory install into a subdirectory under it (e.g. root\\music).",
+    "已按现有插件目录推断：": "Inferred from your existing plugin directories: ",
+    "插件默认装到该根目录下的子目录；单个插件仍可在它的安装窗里换成别的目录。":
+      "Plugins install into a subdirectory of this root by default; a single plugin can still be pointed elsewhere in its install window.",
+    "当前版本不支持设置插件根目录": "This version does not support setting a plugin root directory",
+    "设置插件根目录失败：": "Failed to set the plugin root directory: ",
+    "插件根目录已设为：": "Plugin root directory set to: ",
+    "还没有设置插件根目录：先在插件界面顶部选一个根目录，":
+      "No plugin root directory yet: pick one at the top of the plugins dialog first — ",
+    "就会默认装到它下面的「": " will then install into its “",
+    "」子目录。": "” subdirectory by default.",
+    "取不到这个插件的安装目录，请重开插件界面后再试。":
+      "Cannot resolve this plugin's install directory — reopen the plugins dialog and try again.",
+    "当前版本不支持在文件管理器里打开目录": "This version cannot open directories in the file manager",
+    "打开目录失败：": "Failed to open the directory: ",
+    "安装目录：": "Install directory: ",
+    "安装目录": "Install directory",
+    "未设置（先在上面设置插件根目录）": "Not set (set the plugin root directory above first)",
+    "默认子目录名：": " default subdirectory: ",
+    "插件自己设置的目录（仍可在安装窗 / 控制台里更换）":
+      "Directory set by the plugin itself (still changeable in its install window / console)",
+    "默认：插件根目录 + 子目录名「": "Default: plugin root + subdirectory “",
+    "还没设置插件根目录（可先设成推断出来的：": "No plugin root directory yet (you can use the inferred one: ",
+    "还没设置插件根目录": "No plugin root directory yet",
+    "后端正在运行：先停止后端再改目录": "The backend is running: stop it before changing the directory",
+    "清掉该插件自己的目录设置，之后用 插件根目录 + 子目录名":
+      "Clear this plugin's own directory setting and use plugin root + subdirectory instead",
+    "已恢复默认安装目录：": "Restored the default install directory: ",
+    "先设置插件根目录再恢复默认。": "Set the plugin root directory before restoring the default.",
+    "恢复默认失败：": "Failed to restore the default: ",
+    /* 桌宠卡片上这两条中文在英文界面里原先没对译（英文档回落到中文）—— 顺手补上 */
+    "桌宠": "Desktop pet",
+    "启动桌宠失败：": "Failed to start the desktop pet: ",
   });
 
   function listJoin(arr) {

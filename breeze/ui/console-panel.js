@@ -38,9 +38,30 @@
       for (const l of text.split(/\r?\n/)) if (l.trim()) append(l, clsOf(l));
     });
   }
-  document.getElementById("btnClear").addEventListener("click", () => {
+  /* 清空 = 真清日志文件（truncate 到 0 字节），不是只清这块显示：
+     主进程 / 托盘进程写完文件后广播 cleared，打开的日志窗就地清空。 */
+  function clearView() {
     logEl.textContent = "";
-  });
+  }
+  const btnClear = document.getElementById("btnClear");
+  if (btnClear) {
+    btnClear.title = "清空日志文件（真删除，不只是清显示）";
+    btnClear.addEventListener("click", async () => {
+      let failed = "";
+      if (api.consoleClear) {
+        try {
+          const r = await api.consoleClear();
+          if (!r || !r.ok) failed = String((r && r.error) || "clear_failed");
+        } catch (e) {
+          failed = String((e && e.message) || e);
+        }
+      }
+      /* 即使清文件失败，界面至少也要清掉（用户点的是「清空」） */
+      clearView();
+      if (failed && api.log) api.log("[console] 清空日志文件失败：" + failed);
+    });
+  }
+  if (api.onConsoleCleared) api.onConsoleCleared(() => clearView());
   if (api.getStatus) {
     api.getStatus().then((st) => {
       if (st && st.consolePath) pathEl.textContent = st.consolePath;

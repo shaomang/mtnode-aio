@@ -102,8 +102,6 @@
       display: inline-flex; align-items: center; gap: 5px;
       opacity: 1; cursor: wait;
     }
-    #installProgress { display: none; }
-    #installProgress.on { display: block; }
     #apiPanel { display: none; }
     #apiPanel.on { display: flex; }
     #voicePanel { display: none; }
@@ -173,18 +171,6 @@
       </div>
       <button id="btnApi" class="mini" title="显示/隐藏 API 信息">API</button>
       <button id="btnConsole" class="mini" title="左侧 Console">Console</button>
-    </div>
-
-    <div class="card" id="installCard">
-      <div class="row">
-        <div class="path" id="installDir">未选择安装目录</div>
-        <button id="btnPickDir" class="mini">目录</button>
-        <button id="btnInstall" class="primary mini">安装</button>
-      </div>
-      <div id="installProgress">
-        <div class="meta" id="installStep"><span class="spin" id="installSpin"></span><span id="installStepTxt">准备安装…</span></div>
-        <div class="bar" id="installBar"><i></i></div>
-      </div>
     </div>
 
     <div class="svc-row row-nowrap">

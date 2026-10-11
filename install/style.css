@@ -1,0 +1,148 @@
+/* 插件安装窗样式：跟随主界面的暗色口径，独立成一只窗（不加载 renderer 的样式表）。
+   只放这一只窗用得到的规则：头部 / 步骤表 / 日志 / 底栏 / toast。 */
+:root {
+  --ins-bg: #14161c;
+  --ins-panel: #1b1e26;
+  --ins-line: #2b2f3a;
+  --ins-fg: #e6e8ef;
+  --ins-dim: #98a0b3;
+  --ins-acc: #6ab7ff;
+  --ins-ok: #5fd08a;
+  --ins-fail: #ff7a72;
+  --ins-run: #ffc35c;
+}
+* { box-sizing: border-box; }
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--ins-bg);
+  color: var(--ins-fg);
+  font: 13px/1.5 "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+}
+body { display: flex; flex-direction: column; }
+
+.ins-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--ins-line);
+  background: var(--ins-panel);
+}
+.ins-title { display: flex; flex-direction: column; min-width: 0; }
+.ins-name { font-size: 14px; font-weight: 600; }
+.ins-sub { color: var(--ins-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ins-head-right { display: flex; align-items: center; gap: 10px; }
+.ins-state { font-size: 12px; color: var(--ins-dim); }
+.ins-state.is-running { color: var(--ins-run); }
+.ins-state.is-done { color: var(--ins-ok); }
+.ins-state.is-failed { color: var(--ins-fail); }
+.ins-icon {
+  border: 1px solid var(--ins-line); background: transparent; color: var(--ins-fg);
+  width: 26px; height: 24px; border-radius: 6px; cursor: pointer;
+}
+.ins-icon:hover { border-color: var(--ins-acc); color: var(--ins-acc); }
+
+.ins-main { flex: 1; display: flex; min-height: 0; }
+.ins-steps { width: 46%; min-width: 280px; border-right: 1px solid var(--ins-line); display: flex; flex-direction: column; }
+.ins-bar { height: 3px; background: #232733; }
+.ins-bar > i { display: block; height: 100%; width: 0; background: var(--ins-acc); transition: width .25s ease; }
+.ins-list { list-style: none; margin: 0; padding: 6px 0; overflow: auto; flex: 1; }
+.ins-step {
+  display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.ins-step:hover { background: #1a1d25; }
+.ins-step.is-current { background: #1c2028; border-left-color: var(--ins-acc); }
+.ins-step-icon { width: 16px; text-align: center; color: var(--ins-dim); flex: none; }
+.ins-step.is-run .ins-step-icon { color: var(--ins-run); }
+.ins-step.is-ok .ins-step-icon { color: var(--ins-ok); }
+.ins-step.is-fail .ins-step-icon { color: var(--ins-fail); }
+.ins-step.is-skip .ins-step-icon { color: var(--ins-dim); }
+.ins-step-body { display: flex; flex-direction: column; min-width: 0; }
+.ins-step-title { font-size: 13px; }
+.ins-step.is-pending .ins-step-title { color: var(--ins-dim); }
+.ins-step-meta { color: var(--ins-dim); font-size: 11px; word-break: break-all; }
+.ins-step.is-fail .ins-step-meta { color: var(--ins-fail); }
+
+.ins-logpane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.ins-loghead {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--ins-line); color: var(--ins-dim); font-size: 12px;
+}
+.ins-loghead > span:first-child { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ins-mini {
+  border: 1px solid var(--ins-line); background: transparent; color: var(--ins-dim);
+  border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+}
+.ins-mini:hover { color: var(--ins-fg); border-color: var(--ins-acc); }
+.ins-mini.is-on { color: var(--ins-acc); border-color: var(--ins-acc); }
+.ins-log {
+  flex: 1; margin: 0; padding: 10px 12px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  font: 12px/1.55 Consolas, "Cascadia Mono", monospace; color: #cfd6e4; background: #10131a;
+}
+
+.ins-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px; border-top: 1px solid var(--ins-line); background: var(--ins-panel);
+}
+.ins-dir {
+  color: var(--ins-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left;
+}
+.ins-actions { display: flex; gap: 8px; flex: none; }
+/* 硬件门槛逃生阀（原在 sensenova 控制台窗里，控制台去安装化后搬到这里） */
+.ins-force {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  color: var(--ins-dim); font-size: 11px; white-space: nowrap; cursor: pointer;
+}
+.ins-force[hidden] { display: none; }
+.ins-force input { accent-color: #2f6fa8; margin: 0; }
+.ins-btn {
+  border: 1px solid var(--ins-line); background: #22262f; color: var(--ins-fg);
+  border-radius: 7px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+}
+.ins-btn:hover { border-color: var(--ins-acc); color: #fff; }
+.ins-btn.primary { background: #1d4f7d; border-color: #2f6fa8; }
+.ins-btn.primary:hover { background: #23608f; }
+
+/* 没有会话时主区域留空（空态文案已按需求移除）：不留占位块、不装作有内容 */
+.ins-dim { color: var(--ins-dim); font-size: 12px; max-width: 520px; }
+
+/* 步骤表第一行「全部日志」：整场安装按输出顺序的那一条流（默认就停在它上面） */
+.ins-step.is-all { border-bottom: 1px solid var(--ins-line); }
+.ins-step.is-all .ins-step-title { font-weight: 600; }
+
+.ins-toast {
+  position: fixed; left: 50%; bottom: 62px; transform: translateX(-50%);
+  background: #262b36; border: 1px solid var(--ins-line); border-radius: 8px;
+  padding: 7px 12px; font-size: 12px; max-width: 80%;
+}
+.ins-toast.is-err { border-color: var(--ins-fail); color: #ffd9d6; }
+
+/* ── 权重指路（指定已手动下载的位置 → 移动就位） ───────────────────────── */
+.ins-weights {
+  border-top: 1px solid var(--ins-line); background: #171a21;
+  max-height: 46vh; display: flex; flex-direction: column;
+}
+.ins-w-head {
+  display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+  border-bottom: 1px solid var(--ins-line);
+}
+.ins-w-title { flex: 1; font-size: 12px; color: var(--ins-fg); }
+.ins-w-body { padding: 8px 14px 10px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.ins-w-body[hidden] { display: none; }
+.ins-w-note { color: var(--ins-dim); font-size: 11px; }
+.ins-w-block { display: flex; flex-direction: column; gap: 4px; }
+.ins-w-label { color: var(--ins-dim); font-size: 11px; }
+.ins-w-targets, .ins-w-sources { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ins-w-targets li, .ins-w-sources li {
+  font: 11px/1.5 Consolas, "Cascadia Mono", monospace; color: #cfd6e4;
+  word-break: break-all; display: flex; gap: 8px; align-items: center;
+}
+.ins-w-sources li { justify-content: space-between; }
+.ins-w-src-path { flex: 1; min-width: 0; }
+.ins-w-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.ins-w-preview { color: var(--ins-dim); font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+.ins-w-prog { height: 4px; background: #232733; border-radius: 999px; overflow: hidden; }
+.ins-w-prog[hidden] { display: none; }
+.ins-w-prog > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #2f9e6b, #5fd08a); transition: width .2s; }
+.ins-w-result { font-size: 11px; color: var(--ins-ok); white-space: pre-wrap; word-break: break-all; }
+.ins-w-result.is-err { color: var(--ins-fail); }

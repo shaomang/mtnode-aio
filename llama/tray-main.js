@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /**
  * llama.cpp 托盘进程 — 独立 Electron 进程，不随 MTNode 退出。
  * 启动：同一可执行文件加 --mtnode-llama-tray
@@ -7,7 +7,7 @@ if (!process.argv.includes("--mtnode-llama-tray")) {
   throw new Error("llama.cpp tray must be started with --mtnode-llama-tray");
 }
 
-const { app, Tray, Menu, nativeImage, BrowserWindow, screen } = require("electron");
+const { app, Tray, Menu, nativeImage, BrowserWindow, screen, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -93,6 +93,43 @@ function closeTrayConsoleWindow() {
     if (consoleWin && !consoleWin.isDestroyed()) consoleWin.close();
   } catch {}
   consoleWin = null;
+}
+
+/* 日志窗由本进程承载时（MTNode 主界面没开）：控制台窗在托盘态也要能「清空」——
+   真删日志文件内容（truncate 到 0 字节），保留文件与运行中后端持有的句柄。 */
+function consoleLogPath() {
+  return join(DATA, "console.log");
+}
+
+function clearConsoleLog() {
+  const p = consoleLogPath();
+  try {
+    if (!fs.existsSync(p)) {
+      fs.writeFileSync(p, "", "utf8"); /* 文件还没建：建一只空的，语义就是「已清空」 */
+      return { ok: true, path: p, created: true };
+    }
+    try {
+      fs.truncateSync(p, 0);
+    } catch (e) {
+      /* 这一版后端还开着写端、独占锁住日志文件：清盘失败 → 回 ok:false，
+         UI 仍会清显示（下面广播 cleared），但绝不假装文件已清空 */
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    return { ok: true, path: p };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    if (consoleWin && !consoleWin.isDestroyed()) {
+      try {
+        consoleWin.webContents.send("llama:consoleCleared", { at: Date.now() });
+      } catch {}
+    }
+  }
+}
+
+function registerTrayIpc() {
+  /* 托盘态的日志窗：清空 = 真删日志文件内容（见 clearConsoleLog） */
+  ipcMain.handle("llama:consoleClear", async () => clearConsoleLog());
 }
 
 function openTrayConsoleWindow() {
@@ -221,6 +258,7 @@ function startUiSignalWatch() {
 }
 
 app.whenReady().then(() => {
+  registerTrayIpc();
   ensureTray();
   startUiSignalWatch();
 });

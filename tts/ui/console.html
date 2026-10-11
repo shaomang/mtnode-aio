@@ -11,13 +11,31 @@
       background: #0a0d13; color: #c8d3df;
       font: 11px/1.5 ui-monospace, Consolas, monospace;
     }
-    #log { padding: 8px; white-space: pre-wrap; word-break: break-all; height: 100%; overflow: auto; }
+    .wrap { display: flex; flex-direction: column; height: 100%; }
+    .head {
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+      padding: 6px 8px; border-bottom: 1px solid #232b39;
+      font: 12px/1.4 system-ui, "Segoe UI", sans-serif; color: #7f8ea3;
+    }
+    .head button {
+      margin-left: auto;
+      border: 1px solid #2a3140; background: #161c26; color: #c8d3df;
+      border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 11px;
+    }
+    .head button:hover { border-color: #6aa6ff; }
+    #log { flex: 1; padding: 8px; white-space: pre-wrap; word-break: break-all; overflow: auto; }
     .muted { color: #5b6b7d; }
     .err { color: #ff8a8a; }
   </style>
 </head>
 <body>
-  <div id="log"></div>
+  <div class="wrap">
+    <div class="head">
+      <span>Console</span>
+      <button id="btnClear" title="清空日志文件（真删除，不只是清显示）">清空日志</button>
+    </div>
+    <div id="log"></div>
+  </div>
   <script src="console-panel.js"></script>
 </body>
 </html>

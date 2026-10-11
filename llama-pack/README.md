@@ -22,7 +22,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallDir .
 > **中国大陆网络下必须使用镜像**：HuggingFace 无法直连，Python 库须走清华/中科院镜像。
 
 - **Python 库**：清华 `https://pypi.tuna.tsinghua.edu.cn/simple`（或中科院 USTC `https://mirrors.ustc.edu.cn/pypi/simple/`）
-- **llama.cpp 二进制**（GitHub Releases）：直连失败自动回退 `ghproxy.com` 镜像
+- **llama.cpp 二进制**（GitHub Releases）：依次用 `ghfast.top` → `gh-proxy.com` → `ghproxy.net` → `ghproxy.com` 代理，最后才直连
 - **GGUF 模型**：走 `hf-mirror.com`（`HF_ENDPOINT=https://hf-mirror.com`，`HF_HUB_DISABLE_XET=1`）
 - 安装脚本 `scripts/install.ps1` 已内置以上镜像与回退，无需手动配置。
 

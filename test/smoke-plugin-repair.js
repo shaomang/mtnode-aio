@@ -188,9 +188,16 @@ for (const h of HOSTS) {
   const ap = read("plugins/main-app-plugins.js");
   ok(ap.indexOf('require("../plugin-error-repair.js")') > 0, "plugins/main-app-plugins.js 引用报错总线");
   ok(ap.indexOf("function ensureReportHost(") > 0, "窗口插件按需登记宿主（失败过一次才登记，不在启动期铺一堆）");
+  /* 现场目录口径本轮改统一（插件根目录）：窗口插件走 installDirOf —— 它内部先看插件自己的
+     installDir，再按「根目录 + 子目录名」，认不出的 id 回落 <数据目录>/app-plugins/<id>。
+     这里钉的是「窗口插件复修会话的工作区不会变成空串」。 */
   ok(
-    /ensureReportHost[\s\S]{0,600}getInstallDir:[\s\S]{0,120}pluginDir/.test(ap),
-    "按需登记的宿主给出现场目录 = 该插件在 %APPDATA% 下的安装目录",
+    /ensureReportHost[\s\S]{0,700}getInstallDir:\s*\(\)\s*=>\s*installDirOf\(sid\)/.test(ap),
+    "按需登记的宿主给出现场目录 = 统一口径 installDirOf（窗口插件回落 app-plugins/<id>，不为空）",
+  );
+  ok(
+    /return pluginDir\(sid\);/.test(ap.slice(ap.indexOf("function installDirOf("), ap.indexOf("function resolvePluginInstallDir("))),
+    "installDirOf 认不出的 id 回落 <数据目录>/app-plugins/<id>（老行为不变）",
   );
   ok(/function ensureReportHost[\s\S]{0,700}getPluginHost\(sid\)\)\s*return/.test(ap), "同名 id 已被后端宿主占用时不覆盖既有入口");
   ok(ap.indexOf("function reportErr(id, code, message") > 0 && ap.indexOf("pluginErrors.reportPluginError(") > 0, "插件安装链的 reportErr 落到总线");

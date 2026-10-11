@@ -49,14 +49,6 @@
     no_output_path: "未设置输出路径",
     write_failed: "音频写盘失败（请检查输出路径是否可写）",
     backend_down: "后端未能在规定时间内就绪",
-    busy: "已有安装 / 修复任务在跑",
-    cancelled: "已取消",
-    refuse_root: "不能选磁盘根目录",
-    refuse_system: "不能选系统目录",
-    refuse_app_dir: "不能选应用自己的目录（升级 / 卸载会带走数据）",
-    empty_dir: "未选择安装目录",
-    weights_incomplete: "该目录不像 Breeze TTS 2 权重目录（要有 config.json 与 safetensors / pt / bin）",
-    install_incomplete_after_script: "安装脚本跑完但要件不全（看 Console 日志）",
     dialog_failed: "文件对话框异常（看 Console 日志）",
   };
 
@@ -111,30 +103,8 @@
 
   function render() {
     const st = status || {};
-    const proj = st.project || {};
     const eng = (st.apiStatus && st.apiStatus.engine) || null;
     $("verBadge").textContent = "v" + (st.version || "1.0.0");
-    $("installDir").textContent = st.installDir || "未选择安装目录";
-    $("weightsDir").textContent = st.weightsDir
-      ? "权重：" + st.weightsDir
-      : "权重：" + (proj.weights ? "已就绪（随安装下载）" : "随安装下载（可指定已有目录）");
-
-    const parts = [];
-    if (proj.venv) parts.push("venv✓");
-    if (proj.engine) parts.push("引擎✓");
-    if (proj.weights) parts.push("权重✓");
-    if (proj.installed) parts.push("已安装✓");
-    $("installHint").textContent = parts.length
-      ? "就绪：" + parts.join("  ")
-      : "安装要装 torch（约 3GB）+ 引擎源码 + 权重（十几 GB）+ 便携 ffmpeg，磁盘请留 ≥20GB。";
-
-    $("btnInstall").disabled = !st.installDir || !!st.installing;
-    /* 自我修复：没有安装目录时没有可写工作区（Agent 没活干），安装中则防连点叠会话 */
-    $("btnSelfRepair").disabled = !st.installDir || !!st.installing || !has("agentRecoverInstall");
-    $("btnCancelInstall").classList.toggle("hide", !st.installing);
-    $("btnPickDir").disabled = !!st.installing || !has("pickInstallDir");
-    $("btnPickWeights").disabled = !!st.installing || !has("pickWeightsDir");
-    $("btnClearWeights").disabled = !!st.installing || !has("setWeightsDir");
 
     const badge = $("svcBadge");
     if (st.apiUp) {
@@ -298,54 +268,7 @@
     }
   }
 
-  /* ── 安装 / 启停 ──────────────────────────────────────────────────── */
-  $("btnPickDir").onclick = async () => {
-    const r = await api.pickInstallDir();
-    if (r && r.cancelled) return;
-    if (!r || !r.ok) return toast("目录不可用：" + t((r && r.error) || ""), "err");
-    toast("安装目录：" + r.installDir, "ok");
-    refresh();
-  };
-  $("btnPickWeights").onclick = async () => {
-    const r = await api.pickWeightsDir();
-    if (r && r.cancelled) return;
-    if (!r || !r.ok) return toast(t((r && (r.error || "weights_incomplete")) || ""), "err");
-    toast("已指定权重目录：" + r.weightsDir, "ok");
-    refresh();
-  };
-  $("btnClearWeights").onclick = async () => {
-    await api.setWeightsDir("");
-    toast("已改回随安装下载的权重目录", "ok");
-    refresh();
-  };
-  $("btnInstall").onclick = async () => {
-    const r = await api.install({});
-    if (!r || !r.ok) toast("安装失败：" + t((r && r.error) || ""), "err");
-    else toast("安装完成", "ok");
-    refresh();
-  };
-  $("btnCancelInstall").onclick = async () => {
-    await api.cancelInstall();
-    toast("已请求取消安装…", "warn");
-  };
-  /* 自我修复（与 music3 / h3 控制台同口径）：把最近 console 日志交给 Agent（dsh）自行分析并动手修。
-     这座桥（preload 的 agentRecoverInstall）以前暴露了却没人调用 —— 安装 / 启用失败时，
-     用户只能干看着日志，主窗也拿不到「一键修复」的入口。 */
-  $("btnSelfRepair").onclick = async () => {
-    if (!has("agentRecoverInstall")) return toast("当前版本不支持自我修复", "err");
-    if (
-      !confirm(
-        "自我修复会把最近的 console 日志交给 Agent（dsh）分析判断并动手修复。\n" +
-          "每人环境不同，由 Agent 根据日志自行决策。不会启动服务。\n继续？",
-      )
-    )
-      return;
-    toast("自我修复：提交 console → Agent…", "ok");
-    const r = await api.agentRecoverInstall({});
-    if (r && r.ok) toast("自我修复完成" + (r.consoleBytes != null ? "（日志 " + r.consoleBytes + "B）" : ""), "ok");
-    else toast("自我修复失败：" + t((r && (r.error || r.message)) || ""), "err");
-    refresh();
-  };
+  /* ── 启停 ─────────────────────────────────────────────────────────── */
   $("btnStart").onclick = async () => {
     toast("正在启用后端…（首次会加载权重）", "ok");
     const r = await api.start();
@@ -382,8 +305,24 @@
     if (has("toggleLogPanel")) await api.toggleLogPanel();
     else toast("这个窗口里没有并排日志（在 MTNode 的控制台里可用）", "warn");
   };
-  $("btnClearLog").onclick = () => {
+  /* 清空 = 真清日志文件（truncate 到 0 字节），不是只清这块显示：
+     关窗再开旧日志不该回来。写完文件后宿主广播 consoleCleared，打开的日志窗就地清空。 */
+  const clearConsoleView = () => {
     $("log").textContent = "";
+  };
+  $("btnClearLog").onclick = async () => {
+    let failed = "";
+    if (has("consoleClear")) {
+      try {
+        const r = await api.consoleClear();
+        if (!r || !r.ok) failed = String((r && r.error) || "clear_failed");
+      } catch (e) {
+        failed = String((e && e.message) || e);
+      }
+    }
+    /* 即使清文件失败，界面至少也要清掉（用户点的是「清空」） */
+    clearConsoleView();
+    if (failed) toast("清空日志文件失败（已清显示）：" + failed, "warn");
   };
 
   /* ── 音色库写入 ───────────────────────────────────────────────────── */
@@ -501,16 +440,8 @@
       for (const l of text.split(/\r?\n/)) if (l.trim()) appendLog(l, logCls(l));
     });
   }
-  if (has("onProgress")) {
-    api.onProgress((d) => {
-      if (!d || (d.id && d.id !== "breeze-tts-local")) return;
-      const pct = Math.max(0, Math.min(100, Number(d.pct) || 0));
-      $("installProgress").classList.remove("hide");
-      $("installBar").style.width = pct + "%";
-      $("installStepTxt").textContent = (d.stepLabel ? d.stepLabel + " · " : "") + (d.message || pct + "%");
-      if (d.done) setTimeout(() => $("installProgress").classList.add("hide"), 2500);
-    });
-  }
+  /* 别的窗口（并排日志窗 / 托盘进程）清了日志文件：这里也就地清空，别留着已删内容的残影 */
+  if (has("onConsoleCleared")) api.onConsoleCleared(() => clearConsoleView());
   if (has("onGpu")) {
     api.onGpu((d) => {
       const g = d && d.gpu;

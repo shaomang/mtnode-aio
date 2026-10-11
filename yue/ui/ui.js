@@ -6,13 +6,6 @@
   }
 
   const $ = (id) => document.getElementById(id);
-  const installDirEl = $("installDir");
-  const diskHint = $("diskHint");
-  const diskLine = $("diskLine");
-  const installStep = $("installStep");
-  const subStep = $("subStep");
-  const installBar = $("installBar").querySelector("i");
-  const subBar = $("subBar").querySelector("i");
   const consoleEl = $("console");
   const svcBadge = $("svcBadge");
   const lockBadge = $("lockBadge");
@@ -58,15 +51,6 @@
       return null;
     }
     if (!st) return null;
-    installDirEl.textContent = st.installDir || "未设置";
-    const proj = st.project || {};
-    const bits = [];
-    if (proj.scaffold) bits.push("脚手架✓");
-    if (proj.venv) bits.push("venv✓");
-    if (proj.models) bits.push("权重✓");
-    diskLine.textContent = `建议预留磁盘 ≥${st.diskHintGb || 25}GB`;
-    diskHint.textContent =
-      `建议预留 ≥${st.diskHintGb || 25}GB。` + (bits.length ? " 当前：" + bits.join(" · ") : " 尚未检测到完整安装。");
 
     const running = !!st.running || !!st.gradioUp;
     svcBadge.textContent = running ? "服务运行中" : "服务关闭";
@@ -88,8 +72,7 @@
       attBadge.className = "badge " + (att && att !== "flash" ? "on" : "off");
     }
 
-    $("btnInstall").disabled = !st.installDir || !!st.installing;
-    $("btnCancelInstall").disabled = !st.installing;
+    /* 起停门槛仍看安装目录（没装就没后端可起），但安装目录本身不再在这只窗里显示 */
     $("btnStart").disabled = !st.installDir || running;
     $("btnStop").disabled = !running;
 
@@ -98,65 +81,12 @@
     return st;
   }
 
-  $("btnDir").onclick = async () => {
-    try {
-      const r = await api.pickInstallDir();
-      if (r && r.ok) {
-        logLine("installDir=" + r.installDir);
-        if (r.project && r.project.ready) logLine("发现已有完整项目，可直接启用服务。");
-      } else if (r && r.error) {
-        logLine("目录无效: " + r.error);
-        alert("目录无效：" + r.error + "\n请勿选择磁盘根目录或系统目录。");
-      }
-    } catch (e) {
-      logLine("设置目录失败: " + String((e && e.message) || e));
-    }
-    refresh();
-  };
-
-  $("btnInstall").onclick = async () => {
-    logLine("开始 Agent 安装（脚手架仅作参考）…");
-    let r = null;
-    try {
-      r = await api.install({});
-    } catch (e) {
-      logLine("安装调用失败: " + String((e && e.message) || e));
-      return;
-    }
-    /* 磁盘不足：主进程已明确回报门槛，用户确认后带 force 再来一次 */
-    if (r && !r.ok && r.error === "low_disk") {
-      const ok = confirm(
-        `磁盘剩余约 ${r.freeGb}GB，建议预留 ≥${r.needGb}GB。\n仍要继续安装吗？`,
-      );
-      if (ok) {
-        try {
-          r = await api.install({ force: true });
-        } catch (e) {
-          logLine("安装调用失败: " + String((e && e.message) || e));
-          return;
-        }
-      }
-    }
-    if (r && r.ok) logLine(r.recoveredByAgent ? "Agent 保底安装完成" : "Agent 安装完成");
-    else if (r && r.error === "cancelled") logLine("安装已取消");
-    else logLine("Agent 安装失败: " + ((r && (r.message || r.error)) || "未知错误"));
-    refresh();
-  };
-
-  $("btnCancelInstall").onclick = async () => {
-    try {
-      await api.cancelInstall();
-    } catch {}
-    logLine("已请求取消安装…");
-    refresh();
-  };
-
   /** 失败出口文案：报错码 missing_dep:<name> / attention_backend_unsupported → 指明修复路径。 */
   function fmtErr(code, msg) {
     const m = String(code || "").match(/^missing_dep:(.+)$/);
-    if (m) return `缺依赖 ${m[1]}（点「一键修复」或手动 pip install）`;
+    if (m) return `缺依赖 ${m[1]}（可在插件卡片的安装窗里重装后端，或手动 pip install）`;
     if (String(code || "") === "attention_backend_unsupported") {
-      return String(msg || "") || "注意力档位不可用（flash 在 Windows 轮子里没编 kernel）：已改用 cudnn/sdpa，点「一键修复」重试";
+      return String(msg || "") || "注意力档位不可用（flash 在 Windows 轮子里没编 kernel）：已改用 cudnn/sdpa，可在插件卡片的安装窗里重装后端后重试";
     }
     return String(msg || code || "");
   }
@@ -179,26 +109,32 @@
     else api.close();
   };
 
-  $("btnClearLog").onclick = () => {
+  /* ───── 清空日志：真删文件内容（不只是清显示）─────
+   * 旧实现只把 DOM 清空，关窗再开宿主一 consoleTail 旧日志又回来了。
+   * 现在先让宿主 truncate 日志文件（宿主保留文件句柄，后端往同一个 inode 续写），
+   * 再清 DOM 并复位本地游标；宿主广播 yue:consoleCleared 时（别的窗口点的）做同样的事。 */
+  function clearLogView() {
     consoleEl.textContent = "";
     lastConsole = "";
-  };
+  }
+  async function clearLog() {
+    let r = null;
+    try {
+      if (api.consoleClear) r = await api.consoleClear();
+    } catch (e) {
+      r = { ok: false, error: String((e && e.message) || e) };
+    }
+    clearLogView();
+    if (r && r.ok === false) logLine("[log] 清空日志文件失败：" + (r.error || "未知错误") + "（界面已清空）");
+  }
+  $("btnClearLog").onclick = clearLog;
+  if (api.onConsoleCleared) api.onConsoleCleared(() => clearLogView());
 
+  /* 进度事件订阅：安装 / 更新 / Agent 兜底那几档的界面已不在本窗（统一走独立安装窗），
+     回调里不再碰任何安装元素；只剩生成档写一行日志，免得生成期间界面一片死寂。 */
   api.onProgress((ev) => {
     if (!ev) return;
-    if (ev.phase === "install" || ev.phase === "update") {
-      installStep.textContent = (ev.stepLabel || ev.step || "") + (ev.message ? " — " + ev.message : "");
-      setBar(installBar, ev.pct);
-      if (ev.subPct != null) {
-        subStep.textContent = "子进度 " + Math.round(ev.subPct) + "%";
-        setBar(subBar, ev.subPct);
-      }
-      if (ev.step === "agent_recover") subStep.textContent = "Agent 保底修复中…";
-    }
-    if (ev.phase === "generate") {
-      installStep.textContent = "生成: " + (ev.message || "");
-      setBar(installBar, ev.pct || 0);
-    }
+    if (ev.phase === "generate") logLine("生成: " + (ev.message || ""));
   });
   api.onGpu(applyGpu);
 

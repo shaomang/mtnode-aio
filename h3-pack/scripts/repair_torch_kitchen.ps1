@@ -15,6 +15,22 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
+
+# -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
+# A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
+# pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
+# override extra-index-url, so every package wastes 5 retries. Setting the three PIP_*
+# variables below overrides index / extra-index / trusted-host inside this process and every
+# child (pip / git / npm inherit them). Do NOT add `pip --isolated`: it ignores environment
+# variables, which lets that unreachable extra-index back in.
+$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+$env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+$env:PIP_TRUSTED_HOST    = "pypi.tuna.tsinghua.edu.cn"
+if (-not $env:HF_ENDPOINT)         { $env:HF_ENDPOINT = "https://hf-mirror.com" }
+if (-not $env:HF_HUB_DISABLE_XET)  { $env:HF_HUB_DISABLE_XET = "1" }
+if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
+Write-Host "[h3-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
+
 $Root = Split-Path -Parent $PSScriptRoot
 $ComfyRoot = Join-Path $Root "ComfyUI"
 $VenvDir = Join-Path $ComfyRoot "venv"
@@ -58,15 +74,23 @@ if ($usesSystem) {
     Set-Content -Path $dot -Value $basePy -Encoding utf8
 }
 
-# Avoid a broken PIP_EXTRA_INDEX_URL (e.g. an unresolvable pypi.ngc.nvidia.com)
-$env:PIP_EXTRA_INDEX_URL = ""
-$env:PIP_INDEX_URL = if ($env:MT_H3_PIP_INDEX) { $env:MT_H3_PIP_INDEX } else { "https://pypi.org/simple" }
+# Explicit override for this package stays on top of the pinned defaults at the top of this script
+if ($env:MT_H3_PIP_INDEX) {
+    $env:PIP_INDEX_URL = $env:MT_H3_PIP_INDEX
+    $env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+}
 
 Write-Host "Upgrading pip + ensuring CUDA torch in venv..."
-& $VenvPy -m pip install --isolated -U pip
+& $VenvPy -m pip install -U pip -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
 # The H3 quantized kernels need cu130; do not fall back to cu124/cu121 (it hangs the first forward step).
-$torchIdx = if ($env:MT_H3_TORCH_INDEX) { $env:MT_H3_TORCH_INDEX } else { "https://download.pytorch.org/whl/cu130" }
-& $VenvPy -m pip install --isolated --index-url $torchIdx "torch==2.9.1+cu130" "torchvision==0.24.1+cu130" "torchaudio==2.9.1+cu130"
+# Domestic mirror first, the pytorch.org official index only as the last resort (override with MT_H3_TORCH_INDEX).
+$torchIdx = if ($env:MT_H3_TORCH_INDEX) { $env:MT_H3_TORCH_INDEX } else { "https://mirrors.aliyun.com/pytorch-wheels/cu130" }
+$torchPkgs = @("torch==2.9.1+cu130", "torchvision==0.24.1+cu130", "torchaudio==2.9.1+cu130")
+& $VenvPy -m pip install --index-url $torchIdx @torchPkgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "torch cu130 aliyun mirror failed; retrying with the pytorch official index (last resort)..."
+    & $VenvPy -m pip install --index-url "https://download.pytorch.org/whl/cu130" @torchPkgs
+}
 if ($LASTEXITCODE -ne 0) {
     throw "torch cu130 install failed; update NVIDIA driver to a CUDA 13-capable release and retry."
 }
@@ -74,13 +98,13 @@ if ($LASTEXITCODE -ne 0) {
 $req = Join-Path $ComfyRoot "requirements.txt"
 if (Test-Path -LiteralPath $req) {
     Write-Host "Reinstalling ComfyUI requirements..."
-    & $VenvPy -m pip install --isolated -r $req
+    & $VenvPy -m pip install -r $req -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
     if ($LASTEXITCODE -ne 0) { throw "ComfyUI requirements failed" }
 }
 
 $helper = Join-Path $Root "requirements.txt"
 if (Test-Path -LiteralPath $helper) {
-    & $VenvPy -m pip install --isolated -r $helper
+    & $VenvPy -m pip install -r $helper -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
 }
 
 # Even though torch is isolated inside the venv, torch 2.6 infer_schema can still reject list[int] -- the patch is mandatory

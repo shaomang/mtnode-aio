@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("llamaApi", {
@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("llamaApi", {
   open: () => ipcRenderer.invoke("llama:open"),
   close: () => ipcRenderer.invoke("llama:close"),
   consoleTail: (n) => ipcRenderer.invoke("llama:consoleTail", n),
+  consoleClear: () => ipcRenderer.invoke("llama:consoleClear"),
   log: (line) => ipcRenderer.invoke("llama:log", line),
   toggleLogPanel: () => ipcRenderer.invoke("llama:toggleLogPanel"),
   openLogPanel: () => ipcRenderer.invoke("llama:openLogPanel"),
@@ -36,6 +37,16 @@ contextBridge.exposeInMainWorld("llamaApi", {
     };
     ipcRenderer.on("llama:console", handler);
     return () => ipcRenderer.removeListener("llama:console", handler);
+  },
+  /* 日志文件被真清空（truncate）时宿主广播：打开着的日志窗就地清空显示并复位游标 */
+  onConsoleCleared: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch {}
+    };
+    ipcRenderer.on("llama:consoleCleared", handler);
+    return () => ipcRenderer.removeListener("llama:consoleCleared", handler);
   },
   onLogPanelChanged: (cb) => {
     const handler = (_e, data) => {

@@ -11,7 +11,6 @@ let state = {
   apiVisible: false,
   items: [],
   downloadedIds: new Set(),
-  installRunning: false,
   startRunning: false,
   downloadIds: new Set(),
   deployIds: new Set(),
@@ -157,37 +156,9 @@ async function waitUntil(check, timeoutMs, intervalMs) {
   return null;
 }
 
-function setInstallProgress(on, step, pct) {
-  const box = $("installProgress");
-  if (!box) return;
-  if (on) {
-    box.classList.add("on");
-    const txt = $("installStepTxt");
-    if (txt) txt.textContent = step || "安装中…";
-    if (pct != null) setBar($("installBar"), pct);
-  } else if (!state.installRunning) {
-    box.classList.remove("on");
-  }
-  const installBusy = !!(on || state.installRunning);
-  setBtnWaiting($("btnInstall"), installBusy, "安装", "等待中");
-  if ($("btnPickDir")) $("btnPickDir").disabled = installBusy;
-}
-
 async function refreshStatus() {
   const st = await api.getStatus();
-  $("installDir").textContent = st.installDir || "未选择安装目录";
   const installed = st.installed || (st.project && st.project.ready);
-  const trayMode = !!st.trayMode;
-  if ($("installCard")) $("installCard").style.display = trayMode ? "none" : "";
-  const installBusy = !!st.installing || state.installRunning;
-  if (!installBusy) {
-    setBtnWaiting($("btnInstall"), false, "安装", "等待中");
-    $("btnInstall").disabled = !st.installDir;
-    if ($("btnPickDir")) $("btnPickDir").disabled = false;
-  } else {
-    setBtnWaiting($("btnInstall"), true, "安装", "等待中");
-    if ($("btnPickDir")) $("btnPickDir").disabled = true;
-  }
   if (state.startRunning) {
     setBtnWaiting($("btnStart"), true, "启用", "等待中");
     $("btnStop").disabled = true;
@@ -225,10 +196,6 @@ async function refreshStatus() {
     if (dlChanged && state.tab === "local") renderItems(state.items);
   }
   if (Object.keys(state.downloadProgress).length) ensureDownloadPoll();
-
-  if (!(st.installing || state.installRunning)) {
-    setInstallProgress(false);
-  }
 
   if (state.tab === "local") {
     if (st.apiUp && state.apiKey) await loadLocal();
@@ -757,42 +724,6 @@ $("btnConsole").onclick = async () => {
   syncConsoleBtn(r && r.open);
 };
 
-$("btnPickDir").onclick = async () => {
-  const r = await api.pickInstallDir();
-  if (r.ok) refreshStatus();
-};
-
-function runInstallAsync() {
-  if (state.installRunning) return;
-  state.installRunning = true;
-  setInstallProgress(true, "开始安装（国内镜像）…", 5);
-  logLine("开始安装（国内镜像 pip）…");
-  api
-    .install({})
-    .then((r) => {
-      if (r && r.ok) {
-        logLine(r.installedByAgent ? "Agent 保底安装完成" : "脚本安装完成");
-        setInstallProgress(true, "安装完成", 100);
-      } else {
-        logLine("安装失败: " + ((r && r.error) || "?"));
-        setInstallProgress(true, "安装失败", 0);
-      }
-    })
-    .catch((e) => {
-      logLine("安装异常: " + ((e && e.message) || e));
-      setInstallProgress(true, "安装异常", 0);
-    })
-    .finally(() => {
-      state.installRunning = false;
-      setTimeout(() => {
-        setInstallProgress(false);
-        refreshStatus();
-      }, 1200);
-    });
-}
-
-$("btnInstall").onclick = () => runInstallAsync();
-
 $("btnStart").onclick = async () => {
   if (state.startRunning) return;
   state.startRunning = true;
@@ -844,22 +775,6 @@ document.querySelectorAll('input[name="sizeFilter"]').forEach((el) => {
 if ($("recentOnly")) {
   $("recentOnly").addEventListener("change", () => {
     if (state.tab === "catalog") loadCatalog();
-  });
-}
-
-if (api.onProgress) {
-  api.onProgress((ev) => {
-    if (!ev || ev.phase !== "install") return;
-    state.installRunning = true;
-    const step =
-      (ev.stepLabel || ev.step || "安装中") + (ev.message ? " — " + ev.message : "");
-    setInstallProgress(true, step, ev.pct);
-    if (ev.step === "agent_recover" || ev.step === "agent_install") {
-      logLine("[agent] " + (ev.message || ev.stepLabel || ""));
-    }
-    if (ev.step === "done" || ev.error) {
-      state.installRunning = false;
-    }
   });
 }
 

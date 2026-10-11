@@ -302,6 +302,15 @@ contextBridge.exposeInMainWorld('api', {
   mtnodeInstallCancel: (id) => ipcRenderer.invoke('mtnodeInstall:cancel', { id: id || '' }),
   mtnodeInstallFix: (id) => ipcRenderer.invoke('mtnodeInstall:fix', { id: id || '' }),
   mtnodeInstallState: (id) => ipcRenderer.invoke('mtnodeInstall:state', { id: id || '' }),
+  /* 安装窗里跑完一次安装（成功 / 失败 / 取消）→ 主窗口重画插件卡片 + 刷新画布插件缓存。
+     卡片上不再有安装进度条，这是主窗口唯一能知道「装完了」的通道。 */
+  onMtnodeInstallFinished: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('mtnodeInstall:finished', handler);
+    return () => ipcRenderer.removeListener('mtnodeInstall:finished', handler);
+  },
   onMtnodeInstallSession: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on('mtnodeInstall:session', handler);
@@ -315,10 +324,28 @@ contextBridge.exposeInMainWorld('api', {
   appPluginsCatalog: () => ipcRenderer.invoke('appPlugins:catalog'),
   appPluginsIcon: (name) => ipcRenderer.invoke('appPlugins:icon', name),
   appPluginsInstall: (id) => ipcRenderer.invoke('appPlugins:install', id),
+  /* 窗口插件的下载中断（安装窗走主进程的兜底取消口；这条给控制台 / 卡片直接调） */
+  appPluginsCancelInstall: (id) => ipcRenderer.invoke('appPlugins:cancelInstall', id),
   appPluginsUninstall: (id) => ipcRenderer.invoke('appPlugins:uninstall', id),
   appPluginsOpen: (id) => ipcRenderer.invoke('appPlugins:open', id),
   appPluginsClose: (id) => ipcRenderer.invoke('appPlugins:closeById', id),
   appPluginsIsOpen: (id) => ipcRenderer.invoke('appPlugins:isOpen', id),
+  /* ── 插件根目录（本轮需求：插件界面一个总的根目录 + 第一次打开时提示设置）──
+     值存 <数据目录>/config.json 的 plugins.installDir（唯一真源 plugins/plugin-root.js）：
+       appPluginsRootStatus()    ：现状（设过的值 / 按已设目录推断出的预填值 / 是否已设）
+       appPluginsRootSet(dir)    ：写回（传空串 = 清掉，回到「未设 → 提示设置」）
+       appPluginsRootPick()      ：系统目录选择框（取消回 { ok:false, cancelled:true }）
+       appPluginsRootOpen()      ：在文件管理器里打开根目录
+       appPluginsInstallDirOf(id)：该插件这次该装到哪（需目录而根目录没设 → need_root）
+       appPluginsPluginInstallDir({ id, default })：读插件自己的目录 / 恢复默认(根目录+子目录名) */
+  appPluginsRootStatus: () => ipcRenderer.invoke('appPlugins:rootStatus'),
+  appPluginsRootSet: (dir) => ipcRenderer.invoke('appPlugins:rootSet', dir),
+  appPluginsRootPick: () => ipcRenderer.invoke('appPlugins:rootPick'),
+  appPluginsRootOpen: () => ipcRenderer.invoke('appPlugins:rootOpen'),
+  appPluginsInstallDirOf: (id) => ipcRenderer.invoke('appPlugins:installDirOfPlugin', id),
+  appPluginsPluginInstallDir: (payload) => ipcRenderer.invoke('appPlugins:pluginInstallDir', payload || {}),
+  /* 详情面板「打开目录」：只服务插件安装目录这一件事（绝对路径 + 拒收盘符根） */
+  appPluginsOpenPath: (dir) => ipcRenderer.invoke('appPlugins:openPath', dir),
   /* ── 用户自建插件（声明式 · <数据目录>/user-plugins，主进程 plugins/user-plugins.js）
      这是「不碰源码加插件」那一条路：目录 + mtnode-plugin.json 即插即用。
        list(deep)   ：插件清单（deep=true 连节点定义一起回；false 只回摘要 + 节点名）
@@ -421,6 +448,8 @@ contextBridge.exposeInMainWorld('api', {
   music3GetLock: () => ipcRenderer.invoke('music3:getLock'),
   /* 插件界面内嵌 console 用：读本插件后端日志尾部（宿主 consoleTail 按字节读文件尾部） */
   music3ConsoleTail: (n) => ipcRenderer.invoke('music3:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  music3ConsoleClear: () => ipcRenderer.invoke('music3:consoleClear'),
   mediaGenGetLock: () => ipcRenderer.invoke('mediaGen:getLock'),
   /* ── 本地模型显存释放（主进程 local-model-vram.js）：顶栏按钮 / 画布节点运行前后钩子 ──
      vramSnapshot  = 现况（各后端在跑没 / 忙没 + nvidia-smi 读数 + 最近释放日志）
@@ -482,6 +511,8 @@ contextBridge.exposeInMainWorld('api', {
   yue2GetLock: () => ipcRenderer.invoke('yue:getLock'),
   /* 插件界面内嵌 console 用：读本插件后端日志尾部（只读，不再连带 probe + nvidia-smi） */
   yue2ConsoleTail: (n) => ipcRenderer.invoke('yue:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  yue2ConsoleClear: () => ipcRenderer.invoke('yue:consoleClear'),
   yue2RemovePluginMeta: () => ipcRenderer.invoke('yue:removePluginMeta'),
   onYueProgress: (cb) => {
     const handler = (_e, data) => {
@@ -529,6 +560,8 @@ contextBridge.exposeInMainWorld('api', {
   h3GetLock: () => ipcRenderer.invoke('h3:getLock'),
   /* 插件界面内嵌 console 用：读本插件后端日志尾部 */
   h3ConsoleTail: (n) => ipcRenderer.invoke('h3:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  h3ConsoleClear: () => ipcRenderer.invoke('h3:consoleClear'),
   h3RemovePluginMeta: () => ipcRenderer.invoke('h3:removePluginMeta'),
   onH3Progress: (cb) => {
     const handler = (_e, data) => {
@@ -563,6 +596,8 @@ contextBridge.exposeInMainWorld('api', {
   llamaRemovePluginMeta: () => ipcRenderer.invoke('llama:removePluginMeta'),
   /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
   llamaConsoleTail: (n) => ipcRenderer.invoke('llama:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  llamaConsoleClear: () => ipcRenderer.invoke('llama:consoleClear'),
   onLlamaNotice: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -605,6 +640,8 @@ contextBridge.exposeInMainWorld('api', {
   ttsGenerate: (opts) => ipcRenderer.invoke('tts:generate', opts || {}),
   /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
   ttsConsoleTail: (n) => ipcRenderer.invoke('tts:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  ttsConsoleClear: () => ipcRenderer.invoke('tts:consoleClear'),
   onTtsNotice: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -649,6 +686,8 @@ contextBridge.exposeInMainWorld('api', {
   breezeGenerate: (opts) => ipcRenderer.invoke('breeze:generate', opts || {}),
   /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
   breezeConsoleTail: (n) => ipcRenderer.invoke('breeze:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  breezeConsoleClear: () => ipcRenderer.invoke('breeze:consoleClear'),
   onBreezeNotice: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}
@@ -697,6 +736,8 @@ contextBridge.exposeInMainWorld('api', {
   sensenovaSetConfig: (patch) => ipcRenderer.invoke('sensenova:setConfig', patch || {}),
   sensenovaGpuProbe: () => ipcRenderer.invoke('sensenova:gpuProbe'),
   sensenovaConsoleTail: (n) => ipcRenderer.invoke('sensenova:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  sensenovaConsoleClear: () => ipcRenderer.invoke('sensenova:consoleClear'),
   sensenovaRemovePluginMeta: () => ipcRenderer.invoke('sensenova:removePluginMeta'),
   onSensenovaProgress: (cb) => {
     const handler = (_e, data) => {
@@ -730,6 +771,8 @@ contextBridge.exposeInMainWorld('api', {
   remotionPickInstallDir: () => ipcRenderer.invoke('remotion:pickInstallDir'),
   /* 插件界面内嵌 console 用：读本插件后端日志尾部 */
   remotionConsoleTail: (n) => ipcRenderer.invoke('remotion:consoleTail', n),
+  /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */
+  remotionConsoleClear: () => ipcRenderer.invoke('remotion:consoleClear'),
   onRemotionProgress: (cb) => {
     const handler = (_e, data) => {
       try { cb(data); } catch (_) {}

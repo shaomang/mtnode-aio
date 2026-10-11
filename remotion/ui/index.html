@@ -78,8 +78,8 @@
 <body>
   <div class="wrap">
     <div class="notice">
-      <b>本地渲染</b> · 先「设置目录 → 安装」完成 remotion 运行时，之后画布节点渲染时会
-      <strong>自动写 src/ 模板 → spawn node render.mjs → 回传进度</strong>。渲染前会占用全局音视频互斥锁。
+      <b>本地渲染</b> · 画布节点渲染时<strong>自动写 src/ 模板 → spawn node render.mjs → 回传进度</strong>。
+      渲染前会占用全局音视频互斥锁（同一时刻只允许 1 个音视频任务）。
     </div>
     <div>
       <h1>Remotion <span class="badge off" id="svcBadge">未安装</span></h1>
@@ -87,35 +87,27 @@
     </div>
 
     <div class="card">
-      <div class="meta">安装目录</div>
-      <div class="row">
-        <div class="path" id="installDir">未设置</div>
-        <button id="btnDir">设置…</button>
-      </div>
-      <div class="row">
-        <button class="primary" id="btnInstall">安装</button>
-        <button id="btnCancelInstall" disabled>取消安装</button>
-        <button class="danger" id="btnClearMeta" title="仅移除数据目录入口，保留安装目录">移除入口</button>
-      </div>
-      <div class="meta" id="installStep">—</div>
-      <div class="bar" id="installBar"><i></i></div>
-    </div>
-
-    <div class="card">
       <div class="meta">状态</div>
       <div class="grid">
+        <!-- 只读运行目录：状态区用它判「运行时检测到 / 未检测到」。安装的一切（选目录 / 安装 /
+             进度 / 取消）都不在这只窗里，统一走独立安装窗（plugins/main-install.js）。 -->
+        <div class="meta">运行目录 <b id="stInstallDir">—</b></div>
         <div class="meta">运行时 <b id="stRuntime">—</b></div>
         <div class="meta">版本 <b id="stVersion">—</b></div>
         <div class="meta">渲染中 <b id="stRendering">否</b></div>
         <div class="meta">全局锁 <b id="stLock">空闲</b></div>
       </div>
       <div class="meta" id="renderState"></div>
+      <div class="row">
+        <button class="danger" id="btnClearMeta" title="仅移除数据目录入口，保留运行目录">移除入口</button>
+      </div>
     </div>
 
     <div class="card" style="flex:1; min-height:0">
       <div class="row">
         <div class="meta">Console</div>
-        <button id="btnClearLog" style="margin-left:auto;padding:4px 8px">清空视图</button>
+        <button id="btnClearLog" style="margin-left:auto;padding:4px 8px"
+          title="清空日志文件（真删除，不只是清显示）">清空日志</button>
       </div>
       <div id="console"></div>
     </div>

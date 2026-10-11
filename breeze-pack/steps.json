@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "plugin": "breeze-tts-local",
+  "title": {
+    "zh": "Breeze TTS 2 本地 TTS",
+    "en": "Breeze TTS 2 Local TTS"
+  },
+  "steps": [
+    { "id": "python", "title": "检查 Python 3.10+" },
+    { "id": "venv", "title": "创建虚拟环境 .venv" },
+    { "id": "engine", "title": "克隆 breeze-tts 推理引擎", "hint": "官方仓库直连失败时脚本自动走 ghproxy 镜像。" },
+    { "id": "deps", "title": "安装依赖（锁定 gradio 版本）" },
+    { "id": "torch", "title": "安装 CUDA torch", "hint": "官方索引优先、阿里云 pytorch-wheels 兜底；设 BREEZE_SKIP_TORCH=1 可显式跳过（调试用）。" },
+    { "id": "weights", "title": "下载 Breeze TTS 2 权重", "hint": "ModelScope 优先 → hf-mirror 兜底；也可以用 BREEZE_WEIGHTS_DIR 指向已有的本地权重目录跳过下载。" },
+    { "id": "ffmpeg", "title": "下载便携 ffmpeg（可选）", "optional": true, "hint": "只影响 mp3 输出；失败不影响 wav/flac 生成。可用 BREEZE_SKIP_FFMPEG=1 跳过。" },
+    { "id": "smoke", "title": "冒烟：导入引擎并写安装标记", "hint": "冒烟失败即判「未安装」（旧版会写 .install-ok，导致点启用才炸）。" }
+  ]
+}

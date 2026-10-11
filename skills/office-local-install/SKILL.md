@@ -37,9 +37,9 @@ ENGINE_DIR\
 1. **先探存量**：`%APPDATA%\pipeline-console\libreoffice-kit\node_modules\@deepseek-ai\libreoffice-kit-win32-x64\bin\libreoffice-kit.exe` 存在且能 `--version` → 已装好，跳到第 5 步验证；只缺一半则回到第 2 步补齐（`npm install` 可幂等续装）。
 2. **建目录**：`ENGINE_DIR` 下写一份最小 `package.json`（`{"name":"mtnode-libreoffice-kit","private":true}`），**不要**把 `ENGINE_DIR` 建在应用安装目录里。
 3. **装包**：在 `ENGINE_DIR` 里执行
-   `npm install --no-audit --no-fund @deepseek-ai/libreoffice-kit@0.1.2`
+   `npm install --no-audit --no-fund --registry=https://registry.npmmirror.com @deepseek-ai/libreoffice-kit@0.1.2`
    平台包是它的 `optionalDependencies`（win32-x64 / wasm / darwin-* / win32-arm64），npm 只在匹配平台时装 —— **装完检查 `libreoffice-kit-wasm` 是否也进来了**：它是 Linux 兜底，Windows 上可以删掉（省 145MB），但删之前先确认 `win32-x64` 的原生引擎已在。
-   - 网络慢 / 失败：先试 `--registry=https://registry.npmmirror.com`，再回官方源。
+   - **默认就走国内镜像**（口径见 `docs/mirror-sources.md` 与仓库根 `cn-mirrors.js`）：npm 源 = `https://registry.npmmirror.com`（也可以直接给本进程设 `npm_config_registry` / `NPM_CONFIG_REGISTRY`，两个名字都设，pnpm 与老工具各吃一个）；**只在镜像站本身挂了时才回退官方 `registry.npmjs.org`**，且不要为此去改用户机器上的 `.npmrc` / `npm config set`。
    - 装的是 `0.1.2`；换版本前先在 https://www.npmjs.com/package/@deepseek-ai/libreoffice-kit 核对引擎与入口包版本是否配套（`lib/index.js` 里 `wasm: "0.1.1"` 之类的钉版）。
 4. **体检**：`node <ENGINE_DIR>\node_modules\@deepseek-ai\libreoffice-kit\lib\cli.js --help`（或 `--version`）能打印用法即引擎可用；报 `Cannot find module .../libreoffice-kit-win32-x64` = 原生包没装上，重跑第 3 步并检查 `npm config get os/arch`。
 5. **真跑一次转换**：造一个最小 docx（或让用户给一份）→

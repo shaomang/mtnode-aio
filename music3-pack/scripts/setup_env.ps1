@@ -19,6 +19,21 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
 
+# -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
+# A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
+# pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
+# override extra-index-url, so every package wastes 5 retries. Setting the three PIP_*
+# variables below overrides index / extra-index / trusted-host inside this process and every
+# child (pip / git / npm inherit them). Do NOT add `pip --isolated`: it ignores environment
+# variables, which lets that unreachable extra-index back in.
+$env:PIP_INDEX_URL       = if ($env:MTNODE_PIP_INDEX) { $env:MTNODE_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+$env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+$env:PIP_TRUSTED_HOST    = "pypi.tuna.tsinghua.edu.cn"
+if (-not $env:HF_ENDPOINT)         { $env:HF_ENDPOINT = "https://hf-mirror.com" }
+if (-not $env:HF_HUB_DISABLE_XET)  { $env:HF_HUB_DISABLE_XET = "1" }
+if (-not $env:npm_config_registry) { $env:npm_config_registry = "https://registry.npmmirror.com" }
+Write-Host "[music3-install] mirrors: pip=$env:PIP_INDEX_URL (fallback aliyun / USTC -> official) | weights=ModelScope -> $env:HF_ENDPOINT | npm=$env:npm_config_registry"
+
 Write-Host "============================================================"
 Write-Host "[music3-setup] About the China mirrors (required; especially important when this machine is on a mainland China network):"
 Write-Host "  - Python packages: uses the Tsinghua mirror pypi.tuna.tsinghua.edu.cn by default (or the CAS USTC mirror mirrors.ustc.edu.cn; override with MT_MUSIC_PIP_INDEX)"
@@ -95,18 +110,22 @@ if (-not (Test-Path $VenvPy)) {
     Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
 }
 
-# China mirrors: Tsinghua by default (or the CAS USTC mirror); override with MT_MUSIC_PIP_INDEX
-$env:PIP_INDEX_URL = if ($env:MT_MUSIC_PIP_INDEX) { $env:MT_MUSIC_PIP_INDEX } else { "https://pypi.tuna.tsinghua.edu.cn/simple" }
+# Explicit override for this package stays on top of the pinned defaults above
+if ($env:MT_MUSIC_PIP_INDEX) {
+    # China mirrors: Tsinghua by default (or the CAS USTC mirror); override with MT_MUSIC_PIP_INDEX
+    $env:PIP_INDEX_URL = $env:MT_MUSIC_PIP_INDEX
+    $env:PIP_EXTRA_INDEX_URL = $env:PIP_INDEX_URL
+}
 Write-Host "Installing requirements..."
-& $VenvPy -m pip install -U pip
+& $VenvPy -m pip install -U pip -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
-& $VenvPy -m pip install -r (Join-Path $Root "requirements.txt")
+& $VenvPy -m pip install -r (Join-Path $Root "requirements.txt") -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "requirements install failed (direct); retrying with the ghproxy git mirror (China mirror)..."
+    Write-Host "requirements install failed (direct); retrying with the gh proxy git mirror (China mirror)..."
     $req = Join-Path $Root "requirements.txt"
     $reqMirror = Join-Path $env:TEMP "music3-requirements-mirror.txt"
     (Get-Content -LiteralPath $req -Raw) -replace "git\+https://github\.com/", "git+https://ghproxy.com/https://github.com/" | Set-Content -LiteralPath $reqMirror -Encoding utf8
-    & $VenvPy -m pip install -r $reqMirror
+    & $VenvPy -m pip install -r $reqMirror -i $env:PIP_INDEX_URL --trusted-host $env:PIP_TRUSTED_HOST
     if ($LASTEXITCODE -ne 0) { throw "pip install requirements failed (direct + ghproxy mirror)" }
 }
 & $VenvPy -c "import torch; from diffusers import ModularPipeline; print('torch', torch.__version__, 'cuda', torch.cuda.is_available()); print('diffusers ok')"

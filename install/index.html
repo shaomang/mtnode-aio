@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<!-- 窗标题 = 任务栏上那一行：安装窗开了之后由 app.js 的 renderHead 跟着当前这次安装改写
+     （「插件安装 · <插件名>」），让同一只窗切换插件时标题不撒谎 -->
+<title id="insWinTitle">插件安装</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="ins-head">
+    <div class="ins-title">
+      <span class="ins-name" id="insName">插件安装</span>
+      <span class="ins-sub" id="insSub"></span>
+    </div>
+    <div class="ins-head-right">
+      <span class="ins-state" id="insState"></span>
+      <button class="ins-icon" id="btnClose" title="关闭（Esc）" aria-label="关闭">✕</button>
+    </div>
+  </header>
+
+  <!-- 没有正在跑的安装时这块主区域**留空**：原先的空态块（一句「没有正在跑的安装」+ 说明段）
+       已按需求整块移除（连同它的样式），这只窗里显示的一切都属于「当前这次安装」。 -->
+  <main class="ins-main" id="insMain" hidden>
+    <section class="ins-steps">
+      <div class="ins-bar"><i id="insBar"></i></div>
+      <ol class="ins-list" id="insList"></ol>
+    </section>
+    <section class="ins-logpane">
+      <div class="ins-loghead">
+        <span id="insLogTitle">日志</span>
+        <button class="ins-mini" id="btnLogFollow" title="切换是否自动滚到最新一行">跟随最新</button>
+        <button class="ins-mini" id="btnLogCopy">复制日志</button>
+      </div>
+      <pre class="ins-log" id="insLog"></pre>
+    </section>
+  </main>
+
+  <!-- 权重指路（只有带大权重的插件才显示）：指定已手动下载的位置 → 移动就位（不复制）。
+       就位后由用户点「重试」继续安装：脚本本来就会跳过已存在的权重、只补缺的。 -->
+  <section class="ins-weights" id="insWeights" hidden>
+    <div class="ins-w-head">
+      <span class="ins-w-title" id="insWTitle">指定权重位置</span>
+      <button class="ins-mini" id="insWToggle" title="收起 / 展开">收起</button>
+    </div>
+    <div class="ins-w-body" id="insWBody">
+      <div class="ins-w-note" id="insWNote"></div>
+      <div class="ins-w-block">
+        <div class="ins-w-label">将移动到（按插件与安装目录推导）</div>
+        <ul class="ins-w-targets" id="insWTargets"></ul>
+      </div>
+      <div class="ins-w-block">
+        <div class="ins-w-label">已指定的「已下载位置」（只移动，不复制；可多次添加）</div>
+        <ul class="ins-w-sources" id="insWSources"></ul>
+        <div class="ins-w-acts">
+          <button class="ins-mini" id="insWAdd">添加目录…</button>
+          <button class="ins-mini" id="insWScan">扫描并预览</button>
+          <button class="ins-mini primary" id="insWMove">移动并就位</button>
+          <button class="ins-mini" id="insWCancel" hidden>取消搬运</button>
+          <button class="ins-mini" id="insWReset">清空</button>
+        </div>
+      </div>
+      <div class="ins-w-preview" id="insWPreview" hidden></div>
+      <div class="ins-w-prog" id="insWProg" hidden><i id="insWProgBar"></i></div>
+      <div class="ins-w-result" id="insWResult" hidden></div>
+    </div>
+  </section>
+
+  <footer class="ins-foot" id="insFoot" hidden>
+    <div class="ins-dir" id="insDir" title=""></div>
+    <label class="ins-force" id="insForceHwBox" hidden title="只有该类后端有这个门槛；勾了才透传 forceHardware（明知不够也继续装）">
+      <input type="checkbox" id="insForceHw" />
+      <span>忽略硬件门槛（显存 / 内存不够也继续装）</span>
+    </label>
+    <div class="ins-actions" id="insActions"></div>
+  </footer>
+
+  <div class="ins-toast" id="insToast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

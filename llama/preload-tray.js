@@ -1,8 +1,9 @@
-﻿"use strict";
+"use strict";
 /**
- * 托盘进程专用 preload：直接 HTTP 访问管理服务，不依赖 MTNode 主进程 IPC。
+ * 托盘进程专用 preload：管理服务走 HTTP，不依赖 MTNode 主进程 IPC。
+ * 日志窗由本进程承载时，「清空」也落在本进程（tray-main.js 注册 IPC 真删日志文件）。
  */
-const { contextBridge } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
 const API_PORT = Number(process.env.MTNODE_LLAMA_PORT || 8765);
 const BASE = `http://127.0.0.1:${API_PORT}`;
@@ -61,6 +62,17 @@ contextBridge.exposeInMainWorld("llamaApi", {
     return httpJson(opts.path || "/api/status", opts.method, opts.body, opts.apiKey || cachedKey);
   },
   syncProvider: async () => ({ ok: true, skipped: true }),
+  /* 日志窗在本进程时「清空」由 tray-main.js 真删日志文件（truncate 到 0 字节） */
+  consoleClear: () => ipcRenderer.invoke("llama:consoleClear"),
+  onConsoleCleared: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch {}
+    };
+    ipcRenderer.on("llama:consoleCleared", handler);
+    return () => ipcRenderer.removeListener("llama:consoleCleared", handler);
+  },
   onProgress: () => () => {},
   onGpu: () => () => {},
 });

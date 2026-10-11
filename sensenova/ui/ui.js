@@ -12,15 +12,9 @@
     badgeLock: $("badgeLock"),
     badgeAttn: $("badgeAttn"),
     badgeVram: $("badgeVram"),
-    diskLine: $("diskLine"),
     gpuLine: $("gpuLine"),
     vModel: $("vModel"),
-    vDir: $("vDir"),
     vState: $("vState"),
-    progMsg: $("progMsg"),
-    bar: $("bar"),
-    subMsg: $("subMsg"),
-    subBar: $("subBar"),
     log: $("log"),
     genMsg: $("genMsg"),
     outImg: $("outImg"),
@@ -109,30 +103,20 @@
     badge(el.badgeVram, "显存 " + (st.vramMode || "fast"), (Number(st.maxVramGb) || 24) >= 24 ? "on" : "warn");
 
     el.vModel.textContent = (st.model || "—") + (st.packageVersion ? "（推理包 v" + st.packageVersion + "）" : "");
-    el.vDir.textContent = st.installDir || "未设置";
-    const proj = st.project || {};
-    const bits = [];
-    if (proj.scaffold) bits.push("脚手架✓");
-    if (proj.venv) bits.push("venv✓");
-    if (proj.models) bits.push("权重✓");
-    if (proj.installed) bits.push("冒烟✓");
-    const stateBits = ["安装目录：" + (st.installDir || "未设置")];
-    if (bits.length) stateBits.push("当前：" + bits.join(" · "));
+    /* 当前状态只讲运行期事实：安装目录 / 安装完成度（脚手架 · venv · 冒烟）都在独立安装窗里，
+       不在这只窗回显；这里只留「后端能不能跑」的现场（权重是否加载 / 缺依赖 / 门槛）。 */
+    const stateBits = [];
     if (st.loaded) stateBits.push("权重已加载进内存");
     if (st.missingDeps && st.missingDeps.length) stateBits.push("缺依赖：" + st.missingDeps.join(","));
-    if (!st.supported) stateBits.push("本机显存 / 显卡不满足门槛（见安装提示）");
-    el.vState.textContent = stateBits.join(" — ");
+    if (!st.supported) stateBits.push("本机显存 / 显卡不满足本地后端门槛");
+    el.vState.textContent = stateBits.length ? stateBits.join(" — ") : "—";
 
-    el.diskLine.textContent = `建议预留磁盘 ≥${st.diskHintGb || 60}GB`;
     const g = st.gpu && st.gpu.gpus && st.gpu.gpus[0];
     el.gpuLine.textContent = g
       ? `显卡 ${g.name} · 显存 ${Math.round((g.memTotalMb || 0) / 1024)}GB · 驱动 ${g.driver || "?"}`
       : "显卡 未检测到 NVIDIA";
 
-    $("btnDir").disabled = false;
-    $("btnInstall").disabled = !st.installDir || !!st.installing;
-    $("btnAgentInstall").disabled = !st.installDir || !!st.installing;
-    $("btnCancel").disabled = !st.installing;
+    /* 起停 / 试生成仍看安装目录与安装中状态（没装就没后端可起），但安装目录本身不再在这只窗里显示 */
     $("btnStart").disabled = !st.installDir || running;
     $("btnStop").disabled = !running;
     $("btnForceKill").disabled = !running;
@@ -142,7 +126,6 @@
     if (st.vramMode != null && $("inVramMode").value !== String(st.vramMode)) {
       $("inVramMode").value = String(st.vramMode || "");
     }
-    $("inForce").checked = !!st.forceHardware;
     fillRatios(st.resolutions);
     /* status.gpu 是 { hasNvidia, gpus[], maxVramGb }，与 onGpu 推的单帧采样不同形，这里折算一次 */
     const g0 = st.gpu && st.gpu.gpus && st.gpu.gpus[0];
@@ -171,81 +154,15 @@
     return st;
   }
 
-  /* ───────── 目录 ───────── */
-  $("btnDir").onclick = async () => {
-    try {
-      const r = await api.pickInstallDir();
-      if (r && r.ok) {
-        logLine("installDir=" + r.installDir);
-        if (r.project && r.project.ready) logLine("发现已有项目，可直接安装补齐 / 启动服务。");
-      } else if (r && r.error) {
-        const why =
-          r.error === "refuse_root"
-            ? "不能选磁盘根目录"
-            : r.error === "refuse_system"
-              ? "不能选系统目录（Windows / Program Files）"
-              : r.error === "refuse_app_dir"
-                ? "不能选应用安装目录（升级会覆盖，数据必须留在别处）"
-                : r.error;
-        logLine("目录无效: " + why);
-        alert("目录无效：" + why + "\n请在数据盘上新建一个空目录，例如 E:\\dev\\sensenova。");
-      }
-    } catch (e) {
-      logLine("设置目录失败: " + String((e && e.message) || e));
-    }
-    refresh();
-  };
-
-  /* ───────── 安装 ───────── */
-  async function runInstall(fn, label) {
-    logLine(label + "…（32.66GB 权重视带宽约 20–60 分钟，请耐心等待，不要关窗）");
-    let r = null;
-    try {
-      r = await fn({});
-    } catch (e) {
-      logLine("安装调用失败: " + String((e && e.message) || e));
-      return;
-    }
-    /* 磁盘不够：主进程给了明确门槛，用户确认后带 force 再来一次 */
-    if (r && !r.ok && r.error === "low_disk") {
-      if (!confirm(`磁盘剩余约 ${r.freeGb}GB，建议预留 ≥${r.needGb}GB。\n仍要继续安装吗？`)) {
-        logLine("已取消：请先清理磁盘或换一个目录。");
-        refresh();
-        return;
-      }
-      try {
-        r = await fn({ force: true });
-      } catch (e) {
-        logLine("安装调用失败: " + String((e && e.message) || e));
-        return;
-      }
-    }
-    /* 硬件门槛被拒：说明原因 + 指路（勾选「忽略硬件门槛」才允许硬闯） */
-    if (r && !r.ok && (r.error === "vram_too_low" || r.error === "ram_too_low" || r.error === "no_cuda")) {
-      logLine("安装被拒：" + (r.message || r.error));
-      alert(String(r.message || r.error));
-      refresh();
-      return;
-    }
-    if (r && r.ok) logLine(r.recoveredByAgent ? "Agent 保底安装完成" : r.via === "agent" ? "Agent 安装完成" : "安装完成（脚本快路径）");
-    else if (r && r.error === "cancelled") logLine("安装已取消");
-    else logLine("安装失败: " + ((r && (r.message || r.error)) || "未知错误") + "\n可点「交给 AI 安装」按 skill 继续修复。");
-    refresh();
-  }
-  $("btnInstall").onclick = () => runInstall(api.install, "脚本安装（venv + CUDA torch + 推理包 + 权重 + mock 冒烟）");
-  $("btnAgentInstall").onclick = () => runInstall((o) => api.install(Object.assign({ mode: "agent" }, o || {})), "Agent 安装");
-  $("btnCancel").onclick = async () => {
-    try {
-      await api.cancelInstall();
-    } catch {}
-    logLine("已请求取消安装…");
-    refresh();
-  };
+  /* 安装目录选择 / 「安装」/ 「交给 AI 安装」/ 「取消安装」/ 安装进度都不在这只窗里了：
+     安装相关操作与显示统一收进独立安装窗（plugins/main-install.js）；
+     宿主侧的 sensenova:pickInstallDir / sensenova:install / sensenova:agentInstall /
+     sensenova:agentRecoverInstall / sensenova:selfRepair / sensenova:cancelInstall 等 IPC 原样保留。 */
 
   /* ───────── 后端启停 ───────── */
   function fmtErr(code, msg) {
     const c = String(code || "");
-    if (/^missing_dep/.test(c)) return "缺依赖：" + c.replace(/^missing_dep:?/, "") + "（点「交给 AI 安装」修复）";
+    if (/^missing_dep/.test(c)) return "缺依赖：" + c.replace(/^missing_dep:?/, "") + "（可在插件卡片的安装窗里重装后端）";
     if (c === "torch_cpu_build") return String(msg || "torch 是 CPU 版") + "：SenseNova 需要 CUDA 版 torch";
     if (c === "no_cuda") return "未检测到 NVIDIA 显卡，本地图像生成不可用（可改用云端「文生图」节点）";
     if (c === "vram_too_low") return "显存不足门槛（需 ≥20GB，24GB 档走 fast）：请降低占用或改用云端「文生图」节点";
@@ -274,10 +191,27 @@
     if (api.closeSelf) api.closeSelf();
     else api.close();
   };
-  $("btnClearLog").onclick = () => {
+
+  /* ───── 清空日志：真删文件内容（不只是清显示）─────
+   * 旧实现只把 DOM 清空，关窗再开宿主一 consoleTail 旧日志又回来了。
+   * 现在先让宿主 truncate 日志文件（宿主保留文件句柄，后端往同一个 inode 续写），
+   * 再清 DOM 并复位本地游标；宿主广播 sensenova:consoleCleared 时（别的窗口点的）做同样的事。 */
+  function clearLogView() {
     el.log.textContent = "";
     lastConsole = "";
-  };
+  }
+  async function clearLog() {
+    let r = null;
+    try {
+      if (api.consoleClear) r = await api.consoleClear();
+    } catch (e) {
+      r = { ok: false, error: String((e && e.message) || e) };
+    }
+    clearLogView();
+    if (r && r.ok === false) logLine("[log] 清空日志文件失败：" + (r.error || "未知错误") + "（界面已清空）");
+  }
+  $("btnClearLog").onclick = clearLog;
+  if (api.onConsoleCleared) api.onConsoleCleared(() => clearLogView());
 
   /* ───────── 试生成 ───────── */
   $("btnGen").onclick = async () => {
@@ -343,7 +277,6 @@
   $("btnSaveCfg").onclick = async () => {
     const patch = {
       vramMode: $("inVramMode").value || "",
-      forceHardware: !!$("inForce").checked,
     };
     /* 空闲释放分钟：只在输入框有合法数字时才下发。
        历史上这里是 `Number($("inIdle").value) || 0`：输入框为空 / 状态还没回填时点保存，
@@ -364,8 +297,7 @@
       logLine(
         "设置已保存：vramMode=" + (patch.vramMode || "后端默认") +
           " · 空闲释放=" +
-          (patch.idleMinutes == null ? "保持原值" : patch.idleMinutes + " 分钟") +
-          (patch.forceHardware ? " · 已允许忽略硬件门槛" : ""),
+          (patch.idleMinutes == null ? "保持原值" : patch.idleMinutes + " 分钟"),
       );
       if (patch.idleMinutes === 0)
         logLine("提示：空闲释放 = 0 表示**永不自动释放**后端（显存会被一直占着）");
@@ -373,26 +305,16 @@
     refresh();
   };
 
-  /* ───────── 进度回推 ───────── */
+  /* ───────── 进度回推 ─────────
+     安装 / 更新 / Agent 兜底那几档的界面已不在本窗（统一走独立安装窗），
+     回调里不再碰任何安装元素；只剩生成档刷「试生成」那行状态。 */
   api.onProgress((ev) => {
     if (!ev) return;
-    if (ev.phase === "install") {
-      el.progMsg.textContent = (ev.stepLabel || ev.step || "") + (ev.message ? " — " + ev.message : "");
-      setBar(el.bar, ev.pct);
-      if (ev.subPct != null) {
-        el.subMsg.textContent = "子进度 " + Math.round(ev.subPct) + "%";
-        setBar(el.subBar, ev.subPct);
-      }
-      if (ev.step === "agent_recover") el.subMsg.textContent = "脚本安装失败，Agent 正在保底修复…";
-    } else if (ev.phase === "runtime") {
-      el.progMsg.textContent = ev.message || "";
-      setBar(el.bar, ev.pct);
-    } else if (ev.phase === "generate") {
+    if (ev.phase === "generate") {
       const step = ev.totalSteps ? ` 步 ${ev.step}/${ev.totalSteps}` : "";
       el.genMsg.textContent = `${ev.message || "生成中"}${step} ${Math.round(ev.pct || 0)}%` +
-        (ev.elapsedSec ? ` · ${ev.elapsedSec.toFixed ? ev.elapsedSec.toFixed(0) : ev.elapsedSec}s` : "");
-      setBar(el.bar, ev.pct);
-      el.subMsg.textContent = ev.stage ? "阶段 " + ev.stage : "";
+        (ev.elapsedSec ? ` · ${ev.elapsedSec.toFixed ? ev.elapsedSec.toFixed(0) : ev.elapsedSec}s` : "") +
+        (ev.stage ? ` · 阶段 ${ev.stage}` : "");
     }
   });
   api.onGpu(applyGpu);

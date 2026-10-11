@@ -36,6 +36,10 @@ const BASE_H = 360;
 let petWin = null;
 let petTray = null;
 let installing = false;
+/** 本次桌宠安装的取消句柄：{ ac: AbortController|null, cancelled: bool }。
+ *  桌宠的下载在主进程自建 HTTP 里跑（没有子进程可杀），取消靠 AbortController 掐连接 +
+ *  这个标志阻断「远程失败 → 自动回落本地离线包」那条路（用户取消就是停，不再装）。 */
+let installJob = null;
 let getDataDir = null;
 let getMainWin = null;
 let appRoot = null;
@@ -405,9 +409,15 @@ async function statusForUi() {
   return st;
 }
 
-function fetchBuffer(url, onProgress, timeoutMs) {
+function fetchBuffer(url, onProgress, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith("https") ? https : http;
+    let aborted = false;
+    /* req 还没赋值时不能碰它 —— 只置标志；真正的 destroy 交给 abort 监听 / data 回调 */
+    const onAbort = () => {
+      aborted = true;
+      reject(new Error("cancelled"));
+    };
     const req = lib.get(
       url,
       {
@@ -421,7 +431,7 @@ function fetchBuffer(url, onProgress, timeoutMs) {
           res.headers.location
         ) {
           res.resume();
-          fetchBuffer(res.headers.location, onProgress, timeoutMs).then(resolve, reject);
+          fetchBuffer(res.headers.location, onProgress, timeoutMs, signal).then(resolve, reject);
           return;
         }
         if (res.statusCode !== 200) {
@@ -433,6 +443,13 @@ function fetchBuffer(url, onProgress, timeoutMs) {
         const chunks = [];
         let got = 0;
         res.on("data", (c) => {
+          if (aborted || (signal && signal.aborted)) {
+            try {
+              req.destroy();
+            } catch {}
+            reject(new Error("cancelled"));
+            return;
+          }
           chunks.push(c);
           got += c.length;
           if (onProgress) onProgress({ got, total });
@@ -441,12 +458,44 @@ function fetchBuffer(url, onProgress, timeoutMs) {
         res.on("error", reject);
       },
     );
+    if (signal) {
+      if (signal.aborted) {
+        aborted = true;
+        try {
+          req.destroy();
+        } catch {}
+        reject(new Error("cancelled"));
+        return;
+      }
+      if (typeof signal.addEventListener === "function") {
+        signal.addEventListener(
+          "abort",
+          () => {
+            try {
+              req.destroy();
+            } catch {}
+            onAbort();
+          },
+          { once: true },
+        );
+      }
+    }
     req.on("error", reject);
     req.on("timeout", () => {
       req.destroy();
       reject(new Error("timeout"));
     });
   });
+}
+
+/** 安装窗「取消安装」→ 这里：掐断正在下载的连接，并让安装链当场收手（不再回落本地离线包）。 */
+function cancelPetInstall() {
+  if (!installing || !installJob) return { ok: true, noop: true, id: PLUGIN_ID };
+  installJob.cancelled = true;
+  try {
+    if (installJob.ac) installJob.ac.abort();
+  } catch {}
+  return { ok: true, id: PLUGIN_ID, cancelled: true };
 }
 
 function sha256(buf) {
@@ -505,10 +554,10 @@ async function installFromLocalPack() {
   return { ok: true, version: man.version || "0.1.0", source: "local" };
 }
 
-async function installFromRemote() {
+async function installFromRemote(signal) {
   sendProgress({ phase: "manifest", percent: 2 });
   const manUrl = PET_FEED.replace(/\/$/, "") + "/manifest.json";
-  const manBuf = await fetchBuffer(manUrl);
+  const manBuf = await fetchBuffer(manUrl, null, null, signal);
   const man = JSON.parse(manBuf.toString("utf8"));
   if (!man || !man.zipUrl) throw new Error("bad_manifest");
   let zipUrl = String(man.zipUrl);
@@ -518,16 +567,22 @@ async function installFromRemote() {
     zipUrl = PET_FEED.replace(/\/$/, "") + "/" + zipUrl.replace(/^\.\//, "");
   }
   sendProgress({ phase: "download", percent: 5, version: man.version });
-  const zipBuf = await fetchBuffer(zipUrl, ({ got, total }) => {
-    const pct = total ? Math.min(90, 5 + Math.floor((got / total) * 85)) : 40;
-    sendProgress({
-      phase: "download",
-      percent: pct,
-      got,
-      total,
-      version: man.version,
-    });
-  });
+  const zipBuf = await fetchBuffer(
+    zipUrl,
+    ({ got, total }) => {
+      const pct = total ? Math.min(90, 5 + Math.floor((got / total) * 85)) : 40;
+      sendProgress({
+        phase: "download",
+        percent: pct,
+        got,
+        total,
+        version: man.version,
+      });
+    },
+    null,
+    signal,
+  );
+  if (installJob && installJob.cancelled) throw new Error("cancelled");
   if (man.sha256) {
     const h = sha256(zipBuf);
     if (h.toLowerCase() !== String(man.sha256).toLowerCase()) {
@@ -538,7 +593,17 @@ async function installFromRemote() {
   const tmpZipDir = join(petRoot(), "_extract_tmp");
   rmDirRecursive(tmpZipDir);
   mk(tmpZipDir);
-  unzipBuffer(zipBuf, tmpZipDir);
+  try {
+    unzipBuffer(zipBuf, tmpZipDir);
+  } catch (e) {
+    /* 解压中途的异常（含取消）也要把临时目录收干净 */
+    rmDirRecursive(tmpZipDir);
+    throw e;
+  }
+  if (installJob && installJob.cancelled) {
+    rmDirRecursive(tmpZipDir);
+    throw new Error("cancelled");
+  }
   let srcDir = tmpZipDir;
   const ents = fs.readdirSync(tmpZipDir);
   if (ents.length === 1) {
@@ -567,27 +632,41 @@ async function installPet() {
   installing = true;
   /* 安装窗：开一次会话（桌宠是「下载形象包」型，步骤表由 plugins/main-install.js 的兜底表给出） */
   installHost.beginPluginInstall({ id: PLUGIN_ID, action: "install", installDir: petInstallDir() });
+  /* 本次安装的取消句柄（取消 = 掐断下载；见 cancelPetInstall） */
+  installJob = { ac: typeof AbortController === "function" ? new AbortController() : null, cancelled: false };
+  const job = installJob;
   sendProgress({ phase: "start", percent: 0 });
   try {
     try {
-      const r = await installFromRemote();
+      const r = await installFromRemote(job.ac ? job.ac.signal : null);
       installing = false;
+      installJob = null;
       installHost.finishPluginInstall({ id: PLUGIN_ID, ok: !!(r && r.ok), error: (r && r.error) || "" });
       return r;
     } catch (remoteErr) {
+      /* 用户主动取消：**不**回落本地离线包（取消就是停），直接落「已取消」终局 */
+      const remoteMsg = String((remoteErr && remoteErr.message) || remoteErr);
+      if (job.cancelled || remoteMsg === "cancelled") {
+        installing = false;
+        installJob = null;
+        rmDirRecursive(join(petRoot(), "_extract_tmp"));
+        installHost.finishPluginInstall({ id: PLUGIN_ID, ok: false, cancelled: true, error: "cancelled" });
+        return { ok: false, cancelled: true, error: "cancelled" };
+      }
       const local = await installFromLocalPack();
       if (local.ok) {
         installing = false;
+        installJob = null;
         installHost.finishPluginInstall({ id: PLUGIN_ID, ok: true });
         return {
           ok: true,
           version: local.version,
           source: "local-fallback",
-          remoteError: String((remoteErr && remoteErr.message) || remoteErr),
+          remoteError: remoteMsg,
         };
       }
       installing = false;
-      const remoteMsg = String((remoteErr && remoteErr.message) || remoteErr);
+      installJob = null;
       /* 远程失败 + 离线包也没有 → 真正的安装失败出口（bad_manifest / sha256_mismatch / 下载错误都落在这） */
       reportErr(downloadErrCode(remoteMsg), remoteMsg);
       installHost.finishPluginInstall({
@@ -603,6 +682,7 @@ async function installPet() {
     }
   } catch (err) {
     installing = false;
+    installJob = null;
     const msg = String((err && err.message) || err);
     reportErr(downloadErrCode(msg), msg);
     sendProgress({
@@ -1154,7 +1234,8 @@ function registerPetIpc(opts) {
     tailConsole: () => ({ ok: true, text: "" }),
   });
 
-  /* 安装窗登记：卡片「下载安装」开这只窗（步骤表用兜底表，桌宠没有 steps.json） */
+  /* 安装窗登记：卡片「下载安装」开这只窗（步骤表用兜底表，桌宠没有 steps.json）；
+     取消口 = 掐断正在下载的形象包（主进程自建 HTTP，没有子进程可杀），且取消后不再回落本地包 */
   installHost.registerInstallTarget({
     id: PLUGIN_ID,
     key: "pet",
@@ -1162,10 +1243,13 @@ function registerPetIpc(opts) {
     skill: "",
     kindLabel: "桌宠",
     getInstallDir: () => petInstallDir(),
+    cancel: () => cancelPetInstall(),
   });
 
   ipcMain.handle("pet:status", () => statusForUi());
   ipcMain.handle("pet:install", async () => installPet());
+  /* 桌宠的下载中断（安装窗「取消安装」走 registerInstallTarget 的 cancel 口；这条给控制台直接调） */
+  ipcMain.handle("pet:cancelInstall", async () => cancelPetInstall());
   ipcMain.handle("pet:uninstall", async () => {
     if (installing) return { ok: false, error: "busy" };
     return uninstallPet();
