@@ -3707,6 +3707,13 @@ function openProviderConfigDialog(prov) {
   };
   paint();
   if (!alive) return;
+  /* 插件（llama 等）把新模型清单写回配置后要就地重画这张卡：settingsOnProvidersSynced
+     从这里取重画入口（不重开窗、也不丢用户改到一半的输入） */
+  host.__paint = () => {
+    try {
+      paint();
+    } catch {}
+  };
   host.classList.add("on");
   /* 中转服务卡：打开时本地没有快照才顺手拉一次，并把同步结果落回这张卡
      （判定见 renderer/app-relay.js 的 syncIfStale；订阅 MtRelay 的变更 → 重画，关窗时退订） */
@@ -4102,6 +4109,52 @@ function relayProvCard(prov, i, onChange) {
   return card;
 }
 
+/* ── llama.cpp 本地模型（插件托管那家）：状态徽标 + 「部署 / 停止」──────────────
+   服务商条目上的 llamaModels 由插件每次同步写回（见 llama/provider-sync.js），
+   这里只读不写：状态文字一律走 I18n（中英同源），状态本身是插件给的英文 key。 */
+function llamaProviderManaged(prov) {
+  return !!(
+    prov &&
+    (String(prov.source || "") === "llama-plugin" || String(prov.id || "") === "llama-local")
+  );
+}
+function llamaModelRowOf(prov, modelId) {
+  const rows = prov && Array.isArray(prov.llamaModels) ? prov.llamaModels : [];
+  const m = String(modelId || "");
+  return (
+    rows.find((r) => r && (String(r.id) === m || String(r.modelId) === m)) || null
+  );
+}
+function llamaStatusTextOf(row) {
+  const s = String((row && row.status) || "downloaded");
+  if (s === "running") return "运行中";
+  if (s === "starting") return "加载中";
+  if (s === "failed") return "加载失败";
+  return "未部署";
+}
+
+/* 插件把新的模型清单写回配置后：打开着的服务商卡 / 设置页就地刷新（本轮共识 q5：
+   部署 / 停止成功后已打开的界面当场刷新，不要求重开）。找不到落点时什么都不做。 */
+function settingsOnProvidersSynced() {
+  try {
+    const dlg = document.getElementById("provCfgDlg");
+    if (dlg && dlg.classList.contains("on") && typeof dlg.__paint === "function") {
+      dlg.__paint();
+      return true;
+    }
+    if (
+      overlayKind === "settings" &&
+      typeof openSettingsBody === "function" &&
+      document.getElementById("overlay") &&
+      document.getElementById("overlay").style.display === "flex"
+    ) {
+      openSettingsBody();
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 function provCard(prov, i, onChange) {
   /* MTNode 中转服务（账号托管）：接入信息与模型清单由云端下发，一处都不许手改，
      走上面那套只读卡（可改的只有启用开关与本机优先级）。 */
@@ -4492,6 +4545,65 @@ function provCard(prov, i, onChange) {
       row.appendChild(grip);
       row.appendChild(idxEl);
       row.appendChild(name);
+      /* llama.cpp 本地模型（插件托管那家）：状态徽标（未部署 / 加载中 / 运行中 / 加载失败）
+         + 「部署 / 停止」两颗按钮 —— 状态由插件每次同步写进 prov.llamaModels（见
+         llama/provider-sync.js 的 modelRows），这里只读它画；点按钮走 llama 宿主 IPC。 */
+      if (llamaProviderManaged(prov)) {
+        const lrow = llamaModelRowOf(prov, mid);
+        if (lrow) {
+          const stBadge = document.createElement("span");
+          stBadge.className = "llama-st-badge llama-st-" + String(lrow.status || "downloaded");
+          stBadge.textContent = I18n.t(llamaStatusTextOf(lrow));
+          stBadge.title =
+            I18n.t("本机 llama.cpp 的模型状态") +
+            " · " +
+            String(lrow.modelId || mid) +
+            (lrow.error ? " · " + lrow.error : "") +
+            (lrow.status === "downloaded"
+              ? " · " + I18n.t("运行时会先自动加载它再继续（最多等 10 分钟）")
+              : "");
+          row.appendChild(stBadge);
+          const running = lrow.status === "running";
+          const busy = lrow.status === "starting";
+          const act = document.createElement("button");
+          act.type = "button";
+          act.className = "mini";
+          act.textContent = running ? I18n.t("停止") : I18n.t("部署");
+          act.title = running
+            ? I18n.t("停止这个本地模型（后端服务照旧运行）")
+            : I18n.t("现在就把这个模型加载起来（首次可能要几十秒）");
+          act.disabled = busy;
+          act.onclick = async (ev) => {
+            ev.preventDefault();
+            const fn = running
+              ? window.api && window.api.llamaStopModel
+              : window.api && window.api.llamaDeployModel;
+            if (typeof fn !== "function") {
+              toast(I18n.t("当前版本不支持在设置里管理本地模型"), "warn");
+              return;
+            }
+            act.disabled = true;
+            act.textContent = running ? I18n.t("停止中…") : I18n.t("加载中…");
+            let r = null;
+            try {
+              r = await fn(String(lrow.modelId || mid));
+            } catch (err) {
+              r = { ok: false, message: (err && err.message) || String(err) };
+            }
+            if (!r || !r.ok) {
+              toast((r && (r.message || r.error)) || I18n.t("操作失败"), "err");
+            } else {
+              toast(running ? I18n.t("已停止本地模型") : I18n.t("本地模型已就绪"), "ok");
+            }
+            /* 先把插件刚写回盘上的那一份读回来（状态徽标跟着刷新），再重画这张卡 */
+            try {
+              await reloadConfigProvidersFromDisk();
+            } catch {}
+            rerender();
+          };
+          row.appendChild(act);
+        }
+      }
       /* 被白 / 黑名单排除的模型：照旧留在表里（还要能调优先级 / 删掉），但标出来
          「模型选择器里不会出现」—— 规则的效果一眼可见，不必去别处猜为什么选不到 */
       if (!providerModelAllowed(prov, mid)) {
@@ -4576,6 +4688,31 @@ function provCard(prov, i, onChange) {
   paintModels();
   modelsDirty = true;
   modelField.appendChild(orderBox);
+  /* llama.cpp 本地那家的两句实话（本轮共识 q10 / q14）：
+     · 后端没启动：列表照旧是本机已下载的模型（都标「未部署」），选中时运行前会自动拉起后端再加载；
+     · 安装目录冲突未决：端口上跑的是另一份脚手架，本机模型先不登记（去插件卡片上做选择）。 */
+  if (llamaProviderManaged(prov)) {
+    const sync = prov && prov.llamaSync ? prov.llamaSync : null;
+    const hints = [];
+    if (sync && sync.online === false) {
+      hints.push(
+        I18n.t(
+          "llama.cpp 后端未启动：上面列的是本机已下载的模型（都标「未部署」）；选中其中任何一个，运行前会自动拉起后端并加载它。",
+        ),
+      );
+    }
+    if (sync && sync.conflict === true) {
+      hints.push(
+        I18n.t("安装目录冲突未决：端口上跑的是另一份 llama.cpp，本机模型暂不登记 —— 请到顶栏「插件」的 llama.cpp 卡片上选一次。"),
+      );
+    }
+    for (const h of hints) {
+      const hint = document.createElement("div");
+      hint.className = "mo-kind-hint";
+      hint.textContent = h;
+      modelField.appendChild(hint);
+    }
+  }
   const addRow = document.createElement("div");
   addRow.className = "model-order-add";
   const addInp = document.createElement("input");

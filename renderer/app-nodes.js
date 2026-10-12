@@ -10926,7 +10926,9 @@ function refreshNodeEl(id) {
   if (!old || !n) return;
   const el = nodeElement(n);
   old.replaceWith(el);
-  if (fitNodeChrome(el, n)) refreshPorts(el, n);
+  /* 尺寸只认数据与用户手拖：这里只重排端子（fitNodeChrome 已不再改 n.w / n.h） */
+  refreshPorts(el, n);
+  fitNodeChrome(el, n);
   updateWires();
   fillPreviews();
 }

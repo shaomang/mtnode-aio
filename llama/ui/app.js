@@ -185,6 +185,21 @@ async function refreshStatus() {
 
   applyGpu(st.gpu);
 
+  /* 安装目录对不上（端口上这份脚手架 ≠ MTNode 插件配置的那一份）：在控制台里也明说一句，
+     免得用户以为「部署好了却没登记」是别的原因（判定与处理见 llama/main-llama.js 的 rootConflict） */
+  const mm = $("rootMismatch");
+  if (mm) {
+    const live = st.apiStatus && st.apiStatus.installRoot ? String(st.apiStatus.installRoot) : "";
+    const cfgDir = String(st.installDir || "");
+    const bad = !!live && !!cfgDir && live.replace(/[\\/]+$/, "").toLowerCase() !== cfgDir.replace(/[\\/]+$/, "").toLowerCase();
+    mm.style.display = bad ? "" : "none";
+    if (bad) {
+      $("rootMismatchText").textContent = live + "  ≠  " + cfgDir;
+      $("rootMismatchText").title =
+        "端口上这份 llama.cpp 的安装目录与 MTNode 插件配置的不一致：模型登记会错位，请在 MTNode 顶栏「插件」的 llama.cpp 卡片上选「换端口起自己的」或「继续用这份」。";
+    }
+  }
+
   if (st.apiStatus) {
     $("apiBase").textContent = st.apiStatus.apiBase || "—";
     $("apiKey").textContent = st.apiStatus.apiKey || "—";

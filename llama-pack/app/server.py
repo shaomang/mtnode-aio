@@ -119,6 +119,9 @@ async def status():
         "manageBase": f"http://127.0.0.1:{DEFAULT_PORT}",
         "apiKey": key,
         "port": DEFAULT_PORT,
+        # 本进程的脚手架根目录（MTNode 插件用它认出「端口上跑的是不是我自己配置的那一份」：
+        # 不一致时不静默复用，插件卡片会出告警让用户选，见 llama/main-llama.js 的 llamaRootState）
+        "installRoot": str(ROOT),
         "deployed": deployed,
         "deployedModels": models.deployed_model_names(),
         "downloads": models.list_downloads(),

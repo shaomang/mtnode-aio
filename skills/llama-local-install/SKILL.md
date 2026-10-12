@@ -119,6 +119,35 @@ description: 在用户指定目录安装 llama.cpp 本地模型后端：创建 v
    - 写入 `INSTALL_DIR\.llama-agent-result` 首行 `ok=true`
    - **不要**启动管理服务或 llama-server
 
+## 插件的模型登记链（改这段代码前先读）
+
+单一真源 = `llama/provider-sync.js`（零依赖，主进程与托盘进程共用）；写盘走
+`config-providers.js` 的 `mergeManagedProvider(..., { pruneUnknown: true })`。
+
+- **什么进 MTNode 的模型列表**：本机**已下载**的全部 GGUF（不是只 running）。状态四条：
+  `running`（运行中）/ `starting`（加载中）/ `downloaded`（未部署）/ `failed`（加载失败）；
+  模型 id 用 servedName（末段 + 点换横线，与管理服务 `_instance_for_model` 同一规则）。
+- **增与删**：插件托管的那份由插件增删（停止 / 删除的模型会从列表消失）；用户在设置里手加的
+  额外模型与手排序保留（托管清单记在服务商条目的 `llamaManagedModels` 字段里）。
+- **apiKey**：在线以 `/api/status` 为准；离线回退 `<installDir>/.api-key`；两者都拿不到就**不覆盖**
+  盘上旧值（历史上这里存过另一份安装目录的旧票，导致「列表里有、选了 401」）。
+- **即时生效**：写盘后广播 `llama:providerSynced`，渲染层就地重绘已打开的设置页 / 服务商卡。
+- **托盘路径**：MTNode 没开着时托盘自己开控制台，`preload-tray.js` 的 `syncProvider` →
+  `llama:syncProvider` → 托盘宿主合并写 config.json + 写 `.provider-dirty.json`；主进程每 3 秒消费
+  该信号（`startProviderDirtyWatch`）重新登记并刷新界面。
+- **运行前闸门**：`ensureModel()`（`llama:ensureModel`）——后端没起就先起，只释放**空闲**的其它本地
+  后端（`waitBusyMs: 0`，绝不打断正在跑的任务），再 `POST /api/models/deploy`，轮询到 running
+  上限 **10 分钟**；失败如实返回原因，**不自动换模型**。主进程 `api:call` / `api:callStream` /
+  `dsh:run` 三条路都在发请求前过这道闸门。
+- **安装目录冲突**：`/api/status` 的 `installRoot` ≠ 插件配置的 `installDir` ⇒ 不静默复用；
+  登记里的 `llamaSync` 会同时给 `mismatch`（两份目录事实不同）与 `conflict`（这个差异还没被用户裁决）；
+  插件卡片据此出告警，用户选「换端口起自己的」（挑空闲端口后启动配置目录那份）或「继续用这份」
+  （写 `reuseExternal: true`，此后以端口上那份为准，`conflict` 变 false 而 `mismatch` 仍 true）。
+- **接口注册**：`llama:ensureModel`（运行前闸门，主进程 api:call / api:callStream / dsh:run 都会先过）、
+  `llama:deployModel` / `llama:stopModel`（设置里模型行的两颗按钮；停止按 servedName→modelId 解析后再调
+  `/api/models/stop`，否则服务端会「200 但 stopped:false」）、`llama:resolveRootChoice(mode)`。
+  真机自验脚本：`node test/_verify-llama-registry.cjs`（真起后端 + 真部署一个 GGUF，手动跑）。
+
 ## 管理服务 API 契约（插件依赖，实现 app/ 时勿缺）
 
 以 `SCAFFOLD_REF` 的 `app/` 为权威实现；若自行生成需覆盖以下契约，否则插件面板/画布节点/模型下载部署不可用：
@@ -127,7 +156,7 @@ description: 在用户指定目录安装 llama.cpp 本地模型后端：创建 v
 - **鉴权**：`.api-key` 内容作 Bearer token（`X-API-Key` 头亦可）；除 `/api/health` 免鉴权外，其余接口校验 `Authorization: Bearer`
 - **端点**：
   - `GET /api/health` → `{"ok": true, "engine": "llama.cpp"}`（免鉴权，插件存活探测）
-  - `GET /api/status` → `{"apiBase": "http://127.0.0.1:8765/v1", "manageBase", "apiKey", "port", "deployed", "deployedModels", "gpu", "allocatedVramGb"}`（插件同步 OpenAI 兼容提供商与模型列表；`deployedModels` = 运行中实例的 servedName）
+  - `GET /api/status` → `{"apiBase": "http://127.0.0.1:8765/v1", "manageBase", "apiKey", "port", "installRoot", "deployed", "deployedModels", "gpu", "allocatedVramGb"}`。插件登记 MTNode 模型列表时：**清单以 `/api/models`（本机注册表，含已下载未部署的）为准**，`deployed` 逐条给状态（running / starting / failed），`deployedModels` 只剩「运行中实例的 servedName」这一条兼容用途；`apiKey` 是在线时唯一权威的 key；`installRoot` 是本进程的脚手架根目录，用于认出「端口上这份是不是插件配置的那一份」（不一致时插件卡片出告警让用户选，不静默复用）
   - `GET /api/gpu`（GPU 状态 + 已分配显存）
   - `GET /api/catalog`（HF GGUF 搜索：`q`/`kind`/`limit`/`sort`/`sizeBand`/`recentOnly`，精选列表置顶，走 hf-mirror）+ `GET /api/catalog/detail?modelId=`
   - `GET /api/models`（本地注册表）；`POST /api/models/download`（body `{modelId, kind?, pipelineTag?}`）；`POST /api/models/deploy`（body `{modelId}`）；`POST /api/models/restore`（恢复 `.want-deployed.json` 期望常驻的模型）；`POST /api/models/stop`（body `{modelId}`）；`DELETE /api/models/{modelId}`（停 + 删权重目录 + 移出注册表）

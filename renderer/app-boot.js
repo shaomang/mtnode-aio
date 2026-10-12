@@ -489,6 +489,27 @@ async function init() {
         if (settingsOpen) mergePluginManagedProviders(S.config, fresh);
         else S.config.providers = fresh.providers;
       } catch {}
+      /* 本轮共识 q5：部署 / 停止成功后**已打开的界面当场刷新**（不要求重开设置或重启应用）：
+         打开着的服务商卡 / 设置页就地重画（模型行的状态徽标与「部署 / 停止」跟着变）。
+         插件对话框那一侧由 app-plugins.js 自己订阅同一个事件重画卡片。 */
+      try {
+        if (typeof settingsOnProvidersSynced === "function") settingsOnProvidersSynced();
+      } catch {}
+    });
+  }
+  /* 运行前的「模型没加载就先加载」闸门（llama/main-llama.js 的 ensureModel）：
+     加载 / 就绪 / 失败都报一句，别让用户对着一个没反应的界面等十分钟。 */
+  if (window.api && window.api.onLlamaModelLoading) {
+    window.api.onLlamaModelLoading((data) => {
+      const d = data || {};
+      const phase = String(d.phase || "");
+      if (phase === "ready") {
+        toast(d.text || I18n.t("本地模型已就绪"), "ok");
+      } else if (phase === "failed") {
+        toast(d.text || I18n.t("本地模型加载失败"), "err");
+      } else if (phase === "deploy" || phase === "starting") {
+        toast(d.text || I18n.t("正在加载本地模型…"), "warn");
+      }
     });
   }
   if (window.api && window.api.onTtsProviderSynced) {

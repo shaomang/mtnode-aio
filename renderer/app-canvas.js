@@ -709,6 +709,162 @@ function toggleHideWires() {
 
 /* ============ 画布渲染 ============ */
 
+/* ── 渲染结构签名（本轮修 bug：点击 / 移动画布时图像闪烁）─────────────────────────
+ * 整幅 renderCanvas 会把舞台上每一颗节点的 DOM 拆掉重挂：图片 / 视频 / 音频预览元素
+ * 随之被销毁重建、重新加载解码，看起来就是「点一下节点，图闪一下」；正在流式输出的
+ * textarea / 会话列表也会被换掉。但绝大多数重绘请求（点选节点、点空白取消选择、多选、
+ * 形态同步、拖拽中的几何变化）**并没有改变任何一颗节点的渲染形状** —— 这类请求只该更新
+ * 相机与连线，DOM 必须原地不动。
+ *
+ * 判据：把「舞台 DOM 该长什么样」压成一串签名，与上一次渲染记下的签名逐字比较。签名不同
+ * 一律走原来的整幅重建（形状 / 顺序 / 层级变化都由它兜底），相同才走复用快速通道。
+ * 签名只收「真的会改变元素形状或顺序」的字段：
+ *   · 可见节点顺序（DOM 顺序 = 堆叠顺序，变了必须重挂）
+ *   · 节点的宽高与展开态尺寸（元素的内联宽高只在 nodeElement 里写）
+ *   · 浏览态 / 选中态（body 的形态分流）
+ *   · 运行中 / 报错 / 折叠 / 展开壳（节点头部按钮、状态行、内侧端子）
+ * 位置（x / y）与相机**不进签名**：它们由 .style.left/top 与 stage transform 承担，
+ * 复用 DOM 时无需重建。
+ * 显式失效：任何想强制整幅重建的调用点把 S._renderSig 置空即可。 */
+function canvasNodeSig(n) {
+  if (!n) return "?";
+  const open = superIsOpenShell(n);
+  const sz = open ? superDisplaySize(n) : nodeDrawSize(n);
+  return [
+    n.id,
+    n.kind,
+    isSel(n.id) ? 1 : 0,
+    nodeBrowseMode(n) ? 1 : 0,
+    Math.round(Number(sz && sz.w) || 0),
+    Math.round(Number(sz && sz.h) || 0),
+    n.running ? 1 : 0,
+    n.error ? 1 : 0,
+    n.expanded ? 1 : 0,
+    open ? 1 : 0,
+  ].join(":");
+}
+function canvasRenderParts() {
+  const visNodes = visibleWfNodes();
+  const nodes = [];
+  for (const n of visNodes) {
+    if (nodeIsNestedInOpenSuper(n)) continue;
+    nodes.push(n);
+  }
+  /* DOM 顺序 = 先普通节点、再展开壳（与整幅重建的挂载顺序一字不差）：
+     顺序变了就照旧整幅重建，绝不靠重排 DOM 去复用（重排会打乱堆叠语义）。 */
+  const tops = nodes.filter((n) => !superIsOpenShell(n));
+  const openSupers = nodes.filter((n) => superIsOpenShell(n));
+  const markList = visibleMarks().filter(
+    (m) =>
+      !(markParentSuperId(m) &&
+        nodeIsNestedInOpenSuper({ parentSuperId: markParentSuperId(m) })),
+  );
+  const groups = (S.wf.groups || []).filter((g) => groupVisibleInScope(g));
+  return { visNodes, tops, openSupers, markList, groups };
+}
+function canvasRenderSig(parts) {
+  const p = parts || canvasRenderParts();
+  const out = [];
+  for (const n of p.tops) out.push(canvasNodeSig(n));
+  out.push("|open|");
+  for (const n of p.openSupers) out.push(canvasNodeSig(n));
+  out.push("|marks|");
+  for (const m of p.markList) {
+    const b = markBounds(m);
+    out.push(
+      [
+        m.id,
+        m.kind,
+        Math.round(Number(m.fontSize) || 0),
+        b ? [b.x, b.y, b.w, b.h].map((v) => Math.round(v)).join(",") : "-",
+      ].join(":"),
+    );
+  }
+  out.push("|groups|");
+  for (const g of p.groups)
+    out.push([g.id, Boolean(g.collapsed)].join(":"));
+  return out.join("|");
+}
+/* 复用快速通道的放行条件：签名相同 **且** 舞台上真挂着对得上的那批节点 / 组 / 绘制。
+   后者是安全网：任何绕过 S._renderSig 的 DOM 改动（别处手拆节点、渲染被打断）都会被
+   这里的计数比对发现，于是退回整幅重建 —— 宁可多重建一次，也不留一颗画错的节点。 */
+function canvasReuseReady(parts, sig) {
+  const stage = $("#stage");
+  if (!stage) return false;
+  if (S._renderSig !== sig) return false;
+  const cnt = (sel) => {
+    try {
+      return stage.querySelectorAll(sel).length;
+    } catch (_) {
+      return -1;
+    }
+  };
+  return (
+    cnt(".wf-node") === parts.tops.length + parts.openSupers.length &&
+    cnt(".wf-group") === parts.groups.length &&
+    cnt(".wf-mark") === parts.markList.length
+  );
+}
+/* 舞台 / 连线画布的外框尺寸（整幅重建与复用快速通道共用同一份算式） */
+function applyStageExtent(parts) {
+  const stage = $("#stage"),
+    svg = $("#wfSvg");
+  const p = parts || canvasRenderParts();
+  /* 只按「不嵌在展开壳里」的节点算外框（与整幅重建的原算式一字不差）：
+     壳内子节点由壳自己的舞台定位，不参与主舞台外框。 */
+  const extentNodes = p.visNodes.filter((n) => !nodeIsNestedInOpenSuper(n));
+  let extX = Math.max(
+    2000,
+    ...extentNodes.map((n) => {
+      const sz = nodeDrawSize(n);
+      return n.x + sz.w;
+    }),
+    0,
+  );
+  let extY = Math.max(
+    1400,
+    ...extentNodes.map((n) => {
+      const sz = nodeDrawSize(n);
+      return n.y + sz.h;
+    }),
+    0,
+  );
+  for (const m of p.markList) {
+    const b = markBounds(m);
+    if (!b) continue;
+    extX = Math.max(extX, b.x + b.w);
+    extY = Math.max(extY, b.y + b.h);
+  }
+  extX += 1200;
+  extY += 1200;
+  if (stage) {
+    stage.style.width = extX + "px";
+    stage.style.height = extY + "px";
+  }
+  if (svg) {
+    svg.setAttribute("width", extX);
+    svg.setAttribute("height", extY);
+  }
+}
+
+/* 重绘收尾（整幅重建与复用快速通道共用）：预览回填 + 旧媒体外壳回收。
+   整幅重建时它顺带把「刚被拆掉、宿主真没了」的音频 / 视频外壳回收；复用通道下没有任何
+   元素被拆，这一步自然什么都不做（正在播的那只 isConnected 仍然为真，照旧继续播）。 */
+function afterCanvasRender() {
+  fillPreviews();
+  fillImageMetas();
+  if (typeof wavePreviewStopAll === "function") {
+    try {
+      wavePreviewStopAll(false);
+    } catch (_) {}
+  }
+  if (typeof mediaViewPrune === "function") {
+    try {
+      mediaViewPrune();
+    } catch (_) {}
+  }
+}
+
 function renderCanvas() {
   /* 绘制文字编辑中：推迟重绘，避免拆掉 contentEditable 导致失焦 */
   if (isMarkTextEditing()) {
@@ -737,46 +893,42 @@ function renderCanvas() {
         ae.blur();
       } catch (_) {}
     }
+    /* ── 复用快速通道（止闪主路径）──────────────────────────────────────────
+       签名一致 = 这次重绘没有改变任何节点的形状 / 顺序 / 形态，只是相机、连线或数据
+       变了：此时**一个 DOM 都不拆**，只更新舞台外框、相机、连线与各类回填。图片 / 视频 /
+       音频元素、正在编辑的 textarea、流式输出面板全部原地保留 —— 这正是「点选节点 /
+       点空白取消选择 / 多选 / 拖拽」不再闪烁的原因。签名不一致则落到下面的整幅重建。 */
+    const parts = canvasRenderParts();
+    const sig = canvasRenderSig(parts);
+    if (canvasReuseReady(parts, sig)) {
+      applyStageExtent(parts);
+      applyTransform();
+      updateGroupFrames();
+      for (const n of parts.openSupers) {
+        const nel = stage.querySelector('.wf-node[data-nid="' + n.id + '"]');
+        if (nel) refreshPorts(nel, n);
+      }
+      const sfHost0 = nodeById(currentSuperFocus());
+      if (sfHost0 && sfHost0.kind === "super") mountSuperFocusPorts(sfHost0);
+      else clearSuperFocusPorts();
+      updateWires();
+      afterCanvasRender();
+      for (const n of S.wf.nodes) if (n.kind === "agent_task") scrollAgentConv(n);
+      syncGroupBtns();
+      if (S.sidebarOpen) renderSidebar();
+      renderTaskCrumb();
+      applyFocusFormAfterRender();
+      return;
+    }
     stage.querySelectorAll(".wf-node").forEach(detachStageChild);
     stage.querySelectorAll(".wf-group").forEach(detachStageChild);
     stage.querySelectorAll(".wf-mark").forEach(detachStageChild);
     svg.innerHTML = "";
-    const markList = visibleMarks();
-    const visNodes = visibleWfNodes();
-    const extentNodes = visNodes.filter((n) => !nodeIsNestedInOpenSuper(n));
-    let extX = Math.max(
-      2000,
-      ...extentNodes.map((n) => {
-        const sz = nodeDrawSize(n);
-        return n.x + sz.w;
-      }),
-      0,
-    );
-    let extY = Math.max(
-      1400,
-      ...extentNodes.map((n) => {
-        const sz = nodeDrawSize(n);
-        return n.y + sz.h;
-      }),
-      0,
-    );
-    for (const m of markList) {
-      if (markParentSuperId(m) && nodeIsNestedInOpenSuper({ parentSuperId: markParentSuperId(m) }))
-        continue;
-      const b = markBounds(m);
-      if (!b) continue;
-      extX = Math.max(extX, b.x + b.w);
-      extY = Math.max(extY, b.y + b.h);
-    }
-    extX += 1200;
-    extY += 1200;
-    stage.style.width = extX + "px";
-    stage.style.height = extY + "px";
-    svg.setAttribute("width", extX);
-    svg.setAttribute("height", extY);
+    const markList = parts.markList;
+    const visNodes = parts.visNodes;
+    applyStageExtent(parts);
     /* 绘制在组之上、节点之下：不挡节点，仍可点选编辑 */
-    for (const g of S.wf.groups || []) {
-      if (!groupVisibleInScope(g)) continue;
+    for (const g of parts.groups) {
       stage.appendChild(groupElement(g));
     }
     for (const m of markList) {
@@ -788,16 +940,12 @@ function renderCanvas() {
         continue;
       stage.appendChild(markElement(m));
     }
-    const tops = [];
-    const openSupers = [];
-    for (const n of visNodes) {
-      /* 壳层内子节点由 fillSuperShellViewport 挂载，避免二次查找失败 */
-      if (nodeIsNestedInOpenSuper(n)) continue;
-      if (superIsOpenShell(n)) openSupers.push(n);
-      else tops.push(n);
-    }
+    const tops = parts.tops;
+    const openSupers = parts.openSupers;
     for (const n of tops) mountNodeEl(stage, n);
     for (const n of openSupers) mountNodeEl(stage, n);
+    /* 这一版 DOM 对应的签名：下一次重绘据此判断能不能整颗复用 */
+    S._renderSig = sig;
     applyTransform();
     updateGroupFrames();
     /* 展开超级节点：DOM 就绪后再按实测原点校正内侧端子 */
@@ -823,20 +971,7 @@ function renderCanvas() {
         updateWires();
       });
     }
-    fillPreviews();
-    fillImageMetas();
-    /* 媒体收尾（本轮需求）：刚被拆掉的旧节点里，音频外壳 / 视频元素凡是「宿主真没了」的
-       在这里回收 —— 正在播的那只若已被新节点重新挂上（isConnected）就原样继续播。 */
-    if (typeof wavePreviewStopAll === "function") {
-      try {
-        wavePreviewStopAll(false);
-      } catch (_) {}
-    }
-    if (typeof mediaViewPrune === "function") {
-      try {
-        mediaViewPrune();
-      } catch (_) {}
-    }
+    afterCanvasRender();
     /* 智能任务节点：只读会话历史自动滚动到底部 */
     for (const n of S.wf.nodes)
       if (n.kind === "agent_task") scrollAgentConv(n);

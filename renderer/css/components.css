@@ -816,6 +816,41 @@ button.pk-badge.pk-btn:hover {
   background: rgba(255, 255, 255, .06)
 }
 
+/* ── llama.cpp 本地模型的逐条状态徽标（未部署 / 加载中 / 运行中 / 加载失败）──
+   数据来自插件每次同步写回的 prov.llamaModels（见 llama/provider-sync.js），
+   行上还配一颗「部署 / 停止」按钮（.model-order-row button.mini 已有的样式）。 */
+.llama-st-badge {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid var(--bd2);
+  color: var(--muted);
+  background: transparent;
+  white-space: nowrap;
+}
+
+.llama-st-badge.llama-st-running {
+  color: #6fd08c;
+  border-color: #6fd08c
+}
+
+.llama-st-badge.llama-st-starting {
+  color: var(--cyan2);
+  border-color: var(--cyan2)
+}
+
+.llama-st-badge.llama-st-failed {
+  color: var(--red2, #e06c75);
+  border-color: var(--red2, #e06c75)
+}
+
+.llama-st-badge.llama-st-downloaded {
+  color: #e5a15a;
+  border-color: #e5a15a
+}
+
 /* 服务商「形态」一行：徽标 + 可选的「按模型纠正类型」按钮 */
 .pf-kind {
   display: flex;

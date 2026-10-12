@@ -20,6 +20,19 @@ contextBridge.exposeInMainWorld("llamaApi", {
   closeLogPanel: () => ipcRenderer.invoke("llama:closeLogPanel"),
   apiFetch: (opts) => ipcRenderer.invoke("llama:apiFetch", opts || {}),
   syncProvider: () => ipcRenderer.invoke("llama:syncProvider"),
+  /* 登记链：模型行上的「部署 / 停止」与安装目录冲突时的两个选择 */
+  deployModel: (modelId) => ipcRenderer.invoke("llama:deployModel", modelId),
+  stopModel: (modelId) => ipcRenderer.invoke("llama:stopModel", modelId),
+  resolveRootChoice: (mode) => ipcRenderer.invoke("llama:resolveRootChoice", mode),
+  onModelLoading: (cb) => {
+    const handler = (_e, data) => {
+      try {
+        cb(data);
+      } catch {}
+    };
+    ipcRenderer.on("llama:modelLoading", handler);
+    return () => ipcRenderer.removeListener("llama:modelLoading", handler);
+  },
   onProgress: (cb) => {
     const handler = (_e, data) => {
       try {

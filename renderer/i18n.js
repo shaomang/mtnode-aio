@@ -9423,6 +9423,59 @@
     Object.assign(EN, add);
   })();
 
+  /* ── llama.cpp 本地模型的「登记链」（本轮） ─────────────────────────────────
+     词条分三处用：设置 · 服务商模型行的状态徽标与「部署 / 停止」（app-settings.js）、
+     插件卡片上的安装目录冲突告警（app-plugins.js）、运行前自动加载的提示（app-boot.js）。
+     与上面那块同口径：只补新词，已有键一律不动。 */
+  (function () {
+    var llamaNewLabels = {
+      /* 状态徽标（插件给的是英文 status key，界面按这四条翻） */
+      "未部署": "Not loaded",
+      "加载失败": "Load failed",
+      "本机 llama.cpp 的模型状态": "Model status in the local llama.cpp",
+      "运行时会先自动加载它再继续（最多等 10 分钟）":
+        "It is loaded automatically before a run continues (waits up to 10 minutes)",
+      /* 模型行上的两颗按钮 */
+      "部署": "Load",
+      "停止": "Stop",
+      "停止这个本地模型（后端服务照旧运行）":
+        "Unload this local model (the backend service keeps running)",
+      "现在就把这个模型加载起来（首次可能要几十秒）":
+        "Load this model now (the first load can take tens of seconds)",
+      "当前版本不支持在设置里管理本地模型":
+        "This version cannot manage local models from Settings",
+      "停止中…": "Stopping…",
+      "已停止本地模型": "Local model unloaded",
+      "本地模型已就绪": "Local model is ready",
+      /* 运行前自动加载（节点 / 会话 / 助手共用） */
+      "正在加载本地模型…": "Loading the local model…",
+      "本地模型加载失败": "Could not load the local model",
+      /* 插件卡片上的安装目录冲突 */
+      "端口 ": "Port ",
+      " 上跑的是另一份安装目录的 llama.cpp：":
+        " is running a llama.cpp from a different install folder: ",
+      "；当前插件配置的是 ": "; this plugin is configured for ",
+      "。在你选之前，本机模型不会登记进 MTNode（避免把别人那份混进来）。":
+        ". Until you choose, local models are not registered into MTNode (so the other copy's models never leak in).",
+      "换端口起自己的": "Use our own on a free port",
+      "继续用这份": "Keep using that one",
+      "处理失败：": "Could not apply: ",
+      "已换到端口 ": "Switched to port ",
+      "；点「启用」启动这一份": "; press Enable to start this copy",
+      "已改为继续使用端口上那份 llama.cpp":
+        "Now using the llama.cpp already running on that port",
+      /* 设置 · 服务商卡上的两句状态提示（后端离线 / 安装目录冲突未决） */
+      "llama.cpp 后端未启动：上面列的是本机已下载的模型（都标「未部署」）；选中其中任何一个，运行前会自动拉起后端并加载它。":
+        "The llama.cpp backend is not running: the list above shows the models already downloaded on this machine (all tagged \u201cNot loaded\u201d). Picking one starts the backend and loads it before the run.",
+      "安装目录冲突未决：端口上跑的是另一份 llama.cpp，本机模型暂不登记 —— 请到顶栏「插件」的 llama.cpp 卡片上选一次。":
+        "Unresolved install-folder conflict: the port is serving a different llama.cpp, so local models are not registered yet \u2014 choose once on the llama.cpp card under Plugins in the top bar.",
+    };
+    var add = {};
+    for (var ak in llamaNewLabels)
+      if (!Object.prototype.hasOwnProperty.call(EN, ak)) add[ak] = llamaNewLabels[ak];
+    Object.assign(EN, add);
+  })();
+
   var locale = "zh";
 
   function t(key, vars) {

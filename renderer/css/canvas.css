@@ -214,6 +214,16 @@
   pointer-events: none !important
 }
 
+/* 平移中：把节点提到自己的合成层（JS 在 setCanvasPanning 里挂 .pan-live，抬手即撤）。
+   节点里嵌着图片 / 视频 / 音频波形，父层带 scale 时它们每帧都要重新栅格化 ——
+   用户看到的就是「拖动画布时图像发虚、闪」。提层后交给合成器做平移 + 采样，
+   不再逐帧重绘内容；backface-visibility 顺手压掉 3D 投影下的白闪。 */
+.fn-canvas.is-panning .wf-node.pan-live {
+  will-change: transform;
+  backface-visibility: hidden;
+  transform: translateZ(0)
+}
+
 .fn-stage {
   position: absolute;
   top: 0;

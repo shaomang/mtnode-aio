@@ -72,7 +72,7 @@ const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js"
 /* 插件**安装窗**编排：8 个后端宿主 + 窗口插件 + 桌宠的安装链统一在这只窗里逐步骤显示；
    各宿主把安装脚本的步骤行上报到这里，失败停在失败步并给「交给 mtnode 会话修复」（见 plugins/main-install.js） */
 const installHost = require("./plugins/main-install.js");
-const { registerLlamaIpc, shutdownLlamaUiOnly } = require("./llama/main-llama.js");
+const { registerLlamaIpc, shutdownLlamaUiOnly, isLlamaProvider, ensureModel: ensureLlamaModel } = require("./llama/main-llama.js");
 /* 本地 TTS 后端（Breeze TTS 2）：管理服务单例不随 MTNode 退出 */
 const { registerBreezeIpc, shutdownBreezeUiOnly } = require("./breeze/main-breeze.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
@@ -7741,6 +7741,8 @@ ipcMain.handle("api:deepseekBalance", async (e, provider) => {
 
 ipcMain.handle("api:call", async (e, spec) => {
   try {
+    const gate = await llamaPreflightFor(spec && spec.provider, spec && spec.model);
+    if (gate && gate.ok === false) return { ok: false, error: gate.message };
     return await apiCall(spec);
   } catch (err) {
     return { ok: false, error: err.message || String(err), relayAuth: !!err.relayAuth };
@@ -8045,6 +8047,12 @@ ipcMain.handle("api:callStream", async (e, spec) => {
   };
   try {
     checkProvider(spec.provider);
+    /* llama 本地模型：先把模型加载起来再发请求（未部署 / 上次加载失败都会重试一次） */
+    const gate = await llamaPreflightFor(spec.provider, spec.model);
+    if (gate && gate.ok === false) {
+      emit("error", { error: gate.message });
+      return { ok: false, error: gate.message };
+    }
     if (spec.kind !== "text") {
       const r = await apiCall(spec);
       emit("done", { text: r.text || "" });
@@ -8250,11 +8258,50 @@ function dshParamsWithRelayKey(params) {
   return out;
 }
 
-ipcMain.handle("dsh:run", (event, params) =>
-  dsh()
+/* ── llama.cpp 本地模型的「运行前闸门」（本轮共识 q8 / q9 / q10）──────────────
+   本地大模型是有意的人工加载动作：模型可能没部署、也可能上次加载失败。运行前先问一句
+   llama 宿主（它按 /api/status 与安装目录的注册表判状态、必要时自动部署），失败就把原因
+   原样返回给调用方 —— **不自动换模型、不静默回退**，用户看到的是一次明确的失败。
+   返回值：null = 不需要处理（不是 llama 的模型 / 已经就绪）；否则 { ok:false, message }。 */
+async function llamaPreflightFor(provider, model) {
+  try {
+    if (typeof isLlamaProvider !== "function" || !isLlamaProvider(provider)) return null;
+    if (!String(model || "").trim()) return null;
+    if (typeof ensureLlamaModel !== "function") return null;
+    const r = await ensureLlamaModel(model, {});
+    if (r && r.ok) return null;
+    return {
+      ok: false,
+      error: (r && r.error) || "llama_ensure_failed",
+      message: (r && r.message) || "本地模型未能就绪",
+    };
+  } catch (e) {
+    return { ok: false, error: "llama_ensure_failed", message: String((e && e.message) || e) };
+  }
+}
+
+/* dsh（会话 / 助手 / 智能节点）那条路：provider = "mtnode_<route>"，服务商表在
+   mtnodeProviders 里。命中 llama 托管那家时同样先过闸门。 */
+async function llamaPreflightForDsh(params) {
+  const p = params || {};
+  const provider = String(p.provider || "");
+  if (!provider) return null;
+  const list = Array.isArray(p.mtnodeProviders) ? p.mtnodeProviders : [];
+  const route = provider.indexOf("mtnode_") === 0 ? provider.slice(7) : provider;
+  const hit = list.find(
+    (x) => x && (String(x.route) === route || String(x.route) === provider),
+  );
+  if (!hit) return null;
+  return llamaPreflightFor(hit, p.model);
+}
+
+ipcMain.handle("dsh:run", async (event, params) => {
+  const gate = await llamaPreflightForDsh(params);
+  if (gate && gate.ok === false) return { ok: false, error: gate.message };
+  return dsh()
     .run(dshParamsWithRelayKey(params))
-    .catch((e) => ({ ok: false, error: e.message || String(e) }))
-);
+    .catch((e) => ({ ok: false, error: e.message || String(e) }));
+});
 
 ipcMain.handle("dsh:pluginList", () =>
   dsh()

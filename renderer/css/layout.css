@@ -1117,6 +1117,19 @@ button:disabled {
   margin-top: 10px
 }
 
+/* 安装目录冲突告警（llama 卡片）：端口上跑的是另一份安装目录的 llama.cpp，
+   在用户选「换端口起自己的 / 继续用这份」之前不登记本机模型（见 llama/main-llama.js） */
+.plugin-root-conflict {
+  flex: 1 1 100%;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #e2b33c;
+  border: 1px solid rgba(226, 179, 60, .5);
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: rgba(226, 179, 60, .07)
+}
+
 /* 卡片上的安装进度条（.plugin-progress > i）已随本轮需求移除：安装过程只在安装窗里显示。
    .plugin-progress-txt 保留 —— 它现在是卡片的**状态行**（启动失败原因 / 后端提示 / 启动中）。 */
 .plugin-progress-txt {

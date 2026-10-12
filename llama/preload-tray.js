@@ -61,7 +61,10 @@ contextBridge.exposeInMainWorld("llamaApi", {
     if (opts.apiKey) cachedKey = opts.apiKey;
     return httpJson(opts.path || "/api/status", opts.method, opts.body, opts.apiKey || cachedKey);
   },
-  syncProvider: async () => ({ ok: true, skipped: true }),
+  /* 部署 / 停止 / 删除模型后调用：托盘宿主把模型清单合并写进 MTNode 的 config.json，
+     并留一个 .provider-dirty.json 信号给正开着的 MTNode 立刻刷新（见 tray-main.js 的
+     syncProviderFromTray —— 本函数从前是空实现，托盘里部署的模型因此从不登记）。 */
+  syncProvider: () => ipcRenderer.invoke("llama:syncProvider"),
   /* 日志窗在本进程时「清空」由 tray-main.js 真删日志文件（truncate 到 0 字节） */
   consoleClear: () => ipcRenderer.invoke("llama:consoleClear"),
   onConsoleCleared: (cb) => {

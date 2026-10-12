@@ -8119,52 +8119,29 @@ function clampNodeToMinSize(n) {
   n.w = snapDim(Math.max(Number(n.w) || 0, mw), mw);
   n.h = snapDim(Math.max(Number(n.h) || 0, mh), mh);
 }
-/** 挂载后按标题栏 / 体内行实测抬宽（只抬不缩），避免菜单钮或参数条溢出 */
+/** 挂载一颗节点的收尾（纯显示，**绝不改 n.w / n.h**）。
+ *
+ * 本函数原先叫 fitNodeChrome，会按标题栏 / 体内参数条实测宽度把 n.w「只抬不缩」地改大，
+ * 并按 minHFor 把 n.h 抬到最小高度。它有两个致命问题（用户实报 bug）：
+ *   ① 它在**每次节点重新挂载**时都跑（整幅重绘、局部刷新、切语言都算），于是用户手拖好的
+ *      尺寸会被程序改掉 —— 正是「节点自动更新大小」；
+ *   ② 它量的是元素在**画布缩放之后**的像素（getBoundingClientRect），画布 zoom ≠ 1 时
+ *      算出来的宽度会随缩放档位漂移，同一颗节点在不同缩放下越长越宽。
+ * 现在节点尺寸只由这些来源决定：newNode spec 的 w/h、createNodes 的显式 w/h、
+ * clampNodeToMinSize 的最小尺寸兜底（minWFor / minHFor）、以及用户手拖（app.js 的 resize 分支）。
+ * 新建节点仍走 sizeNodeForContent 拿「按正文长短」的初值，已存在节点一律不动。
+ *
+ * 只保留纯显示收尾：超级节点文件夹标题按实测宽度缩字（不改数据）。 */
 function fitNodeChrome(el, n) {
-  if (!el || !n || isPinnedCtrl(n)) return false;
-  if (n.kind === "super" && superIsOpenShell(n)) return false;
-  const head = el.querySelector(":scope > .n-head");
-  let need = minWFor(n);
-  if (head) {
-    const TITLE_FLOOR = 40;
-    const PAD = 16;
-    const GAP = 6;
-    let w = PAD;
-    const kids = head.children;
-    for (let i = 0; i < kids.length; i++) {
-      const c = kids[i];
-      if (c.classList.contains("n-title")) w += TITLE_FLOOR;
-      else w += Math.ceil(c.getBoundingClientRect().width);
-      if (i) w += GAP;
-    }
-    need = Math.max(need, w + 4);
-  }
-  const body = el.querySelector(":scope > .n-body");
-  if (body) {
-    const row = body.querySelector(".mg-params");
-    if (row) need = Math.max(need, Math.ceil(row.scrollWidth) + 20);
-  }
-  const mh = minHFor(n);
-  let changed = false;
-  if ((n.w || 0) < need) {
-    n.w = snapDim(need, minWFor(n));
-    el.style.width = n.w + "px";
-    changed = true;
-  }
-  n._chromeMinW = need;
-  if ((n.h || 0) < mh) {
-    n.h = snapDim(mh, mh);
-    el.style.height = n.h + "px";
-    changed = true;
-  }
-  /* 超级节点文件夹标题：DOM 尺寸稳定后再按实测宽度缩字 */
+  if (!el || !n) return false;
   if (n.kind === "super") fitSuperFolderCard(el);
-  return changed;
+  return false;
 }
 function mountNodeEl(parent, n) {
   const el = nodeElement(n);
   parent.appendChild(el);
-  if (fitNodeChrome(el, n)) refreshPorts(el, n);
+  refreshPorts(el, n);
+  fitNodeChrome(el, n);
   return el;
 }
 
@@ -11757,6 +11734,44 @@ function applyRelWireState(p, ring, lab, w, base, host, hi) {
   return st;
 }
 /* 选中变化后（没有重排几何的场合）把高亮立刻刷到已有的线上 */
+/* ── 选中态就地换形态（本轮修 bug：点击节点 / 点空白时图像闪烁）──────────────────
+ * 选中态变化**只影响被点中与被撤选的那几颗节点**：sel class 与浏览 / 编辑形态（body 的
+ * 两套渲染）而已。以前这里一律调 renderCanvas()，而整幅重绘会把舞台上每颗节点的 DOM
+ * 拆掉重挂 —— 图片 / 视频 / 音频预览元素被销毁重建再解码，用户看到的就是「点一下图就闪」。
+ * 现在改成：先按调用方要求更新 S.selSet / S.sel，再只对「上一次已选 + 这一次已选」的
+ * 节点调 setNodeSelClass（它会顺带把刚被撤选的节点切回浏览态），其余 DOM 一个都不碰。
+ * 关系线高亮不在此处收：它由 refreshRelWireStates() 就地改 SVG（调用方各自负责）。 */
+function applySelectionInPlace(ids) {
+  const seen = new Set();
+  for (const id of ids || []) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const n = nodeById(id);
+    if (!n) continue;
+    try {
+      setNodeSelClass(null, n, nodeSelState(n));
+    } catch (_) {
+      /* 单颗节点的形态同步失败不该把整条交互打断（下次整幅重绘会纠正） */
+    }
+  }
+  /* 形态与选中必须同步：极端情况下（元素刚被局部替换过）兜一次底，
+     把「没有选中却还是编辑态」的节点刷回浏览态，不新增任何高亮。 */
+  try {
+    syncNodeForms();
+  } catch (_) {}
+  /* 绘制标注的选中框不随节点走，但撤掉节点选中时常与「清空选择」同一笔发生 */
+  try {
+    syncMarkSelDom();
+  } catch (_) {}
+}
+/* 取「这次点选前后的选中集合」——就地换形态需要两者的并集才能把撤选的也切回去 */
+function selectionTouchIds(before, after) {
+  const out = [];
+  for (const id of before || []) out.push(id);
+  for (const id of after || []) out.push(id);
+  return out;
+}
+
 function refreshRelWireStates() {
   const hi = relHighlightInfo();
   document.querySelectorAll("path.fn-edge.rel[data-wid]").forEach((p) => {
@@ -12816,9 +12831,18 @@ function setCanvasPanning(on) {
   if (canvas) canvas.classList.toggle("is-panning", !!on);
   const st = $("#stage");
   if (st) {
+    /* 平移全程只改 stage 的 transform（不整幅重绘）：把变换显式交给合成器，
+       别让浏览器在每一帧重新栅格化整棵子树 —— 图像 / 视频预览因此不再发虚、闪动。
+       抬起时立刻撤掉 will-change，不留长期图层占用。 */
     if (on) st.style.willChange = "transform";
     else st.style.willChange = "";
   }
+  /* 节点本身也要提层：媒体元素在缩放的父层里每帧重采样一次，是最显眼的「闪」 */
+  try {
+    document
+      .querySelectorAll(".fn-canvas .wf-node")
+      .forEach((el) => el.classList.toggle("pan-live", !!on));
+  } catch (_) {}
 }
 
 /* 一键居中：重新定位到当前画布可见内容中心 */
@@ -16846,27 +16870,32 @@ function startNodeDrag(ev, node, opts) {
   const multi = ev.ctrlKey || ev.metaKey || ev.shiftKey;
   if (!multi) S.selGroup = null;
   const already = S.selSet.has(node.id);
-  /* 点击前是否处于浏览态：首次点选会切到编辑态，重绘后需把光标送回主输入框 */
+  /* 点击前是否处于浏览态：首次点选会切到编辑态，换完形态后需把光标送回主输入框 */
   const wasBrowse = nodeBrowseMode(node);
+  /* 就地换形态要同时处理「上一次已选」与「这一次已选」：撤选的那颗也得切回浏览态 */
+  const selBefore = [...S.selSet];
   if (multi) {
     /* Shift/Ctrl+点击：切换该节点的多选状态；保留已选绘制 */
     if (already) {
       S.selSet.delete(node.id);
       S.sel = S.selSet.size ? [...S.selSet][S.selSet.size - 1] : null;
-      renderCanvas();
+      /* 不整幅重绘（那会拆掉所有节点 DOM，图片闪一下）：只换被影响的这几颗的形态 */
+      applySelectionInPlace(selectionTouchIds(selBefore, [...S.selSet]));
       return;
     }
     S.selSet.add(node.id);
     S.sel = node.id;
     if (wasBrowse) markFormFocusAfterRender(node);
-    renderCanvas();
+    applySelectionInPlace(selectionTouchIds(selBefore, [...S.selSet]));
+    applyFocusFormAfterRender();
   } else if (!already) {
     S.selSet = new Set([node.id]);
     S.sel = node.id;
     S.selMark = null;
     if (S.selMarkSet) S.selMarkSet.clear();
     if (wasBrowse) markFormFocusAfterRender(node);
-    renderCanvas();
+    applySelectionInPlace(selectionTouchIds(selBefore, [...S.selSet]));
+    applyFocusFormAfterRender();
   }
   /* 点选节点 → 相关的关系线立刻亮起（含再次点同一个节点、只改选中态不重绘的场合） */
   refreshRelWireStates();
@@ -17240,7 +17269,9 @@ function clampGroupScale(g, sx, sy, orig, origMarks) {
     const n = nodeById(id);
     if (!n) continue;
     const o = orig && orig[id];
-    const mw = Math.max(minWFor(n), Number(n._chromeMinW) || 0);
+    /* 组缩放的尺寸下限只认 kind 的最小宽（minWFor）；节点的实测 chrome 最小宽
+       （旧 n._chromeMinW）随「不再自动改尺寸」一并下线 —— 不再有实测抬宽这回事。 */
+    const mw = minWFor(n);
     minSx = Math.max(minSx, mw / (o ? o.w : n.w));
     minSy = Math.max(minSy, minHFor(n) / (o ? o.h : n.h));
   }
@@ -20803,7 +20834,8 @@ function bindCanvas() {
       const hasOut =
         !!(n.running && isDshTask(n)) ||
         !!(r && (r.output || r.batchOutputs || r.error));
-      const chromeMin = Math.max(minWFor(n), Number(n._chromeMinW) || 0);
+      /* 尺寸下限只认 kind 的最小宽（旧 n._chromeMinW 实测抬宽已随「不再自动改尺寸」下线） */
+      const chromeMin = minWFor(n);
       const minW = hasOut ? Math.max(chromeMin, procMinNodeW(n.outW)) : chromeMin;
       const z = S.cam.z > 0 ? S.cam.z : 1;
       const openSuper = superIsOpenShell(n);
@@ -21156,8 +21188,11 @@ function bindCanvas() {
       canvas.classList.remove("midpan");
       /* 中键平移不改变当前选择；左键在空白处点击（未拖动）才清空选择 */
       if (!d.moved && !wasMid) {
+        /* 点空白 = 撤掉选中：只把刚被撤选的几颗切回浏览态，不整幅重绘
+           （整幅重绘会拆掉所有节点 DOM，图片 / 视频 / 音频预览会闪一下） */
+        const wasSel = [...S.selSet];
         clearSelection();
-        renderCanvas();
+        applySelectionInPlace(wasSel);
       }
     }
   });

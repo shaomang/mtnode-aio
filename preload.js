@@ -594,6 +594,21 @@ contextBridge.exposeInMainWorld('api', {
   llamaStop: () => ipcRenderer.invoke('llama:stop'),
   llamaPickInstallDir: () => ipcRenderer.invoke('llama:pickInstallDir'),
   llamaRemovePluginMeta: () => ipcRenderer.invoke('llama:removePluginMeta'),
+  /* 登记链（本轮）：设置里模型行上的「部署 / 停止」、安装目录冲突的两个选择、
+     以及运行前的「模型没加载就先加载」闸门（主进程也会自己走 llama:ensureModel） */
+  llamaDeployModel: (modelId) => ipcRenderer.invoke('llama:deployModel', modelId),
+  llamaStopModel: (modelId) => ipcRenderer.invoke('llama:stopModel', modelId),
+  llamaResolveRootChoice: (mode) => ipcRenderer.invoke('llama:resolveRootChoice', mode),
+  llamaEnsureModel: (modelId) => ipcRenderer.invoke('llama:ensureModel', modelId),
+  llamaSyncProvider: () => ipcRenderer.invoke('llama:syncProvider'),
+  /* 正在加载本地模型（运行前闸门）：界面据此显示「正在加载本地模型…」与失败原因 */
+  onLlamaModelLoading: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('llama:modelLoading', handler);
+    return () => ipcRenderer.removeListener('llama:modelLoading', handler);
+  },
   /* 插件界面内嵌 console 用：日志尾部 + 后端求助通知（不再自动弹控制台窗） */
   llamaConsoleTail: (n) => ipcRenderer.invoke('llama:consoleTail', n),
   /* 清空日志：真删内容（宿主 truncate 日志文件），不是只清界面显示 */

@@ -924,6 +924,44 @@ async function refreshBackendPluginCard(root, spec, opts) {
       disabled: starting || stopping,
     });
   }
+  /* 安装目录冲突（本轮共识 q14）：端口上跑的是**另一份**安装目录的 llama.cpp。
+     不静默复用 —— 卡片上明说两份目录各是哪个，并给两个选择：
+       · 换端口起自己的：把配置端口挪到空闲端口后启动我们自己那份（清单回到配置目录）；
+       · 继续用这份：认下端口上那份（此后 apiKey / 模型清单都跟它走，不再报警）。
+     判定与动作都在 llama/main-llama.js（statusForUi 的 rootConflict / resolveRootChoice）。 */
+  if (spec.key === "llama" && st.rootConflict) {
+    const warn = document.createElement("div");
+    warn.className = "plugin-root-conflict";
+    warn.textContent =
+      I18n.t("端口 ") +
+      String(st.rootConflict.port || "") +
+      I18n.t(" 上跑的是另一份安装目录的 llama.cpp：") +
+      String(st.rootConflict.liveRoot || "") +
+      I18n.t("；当前插件配置的是 ") +
+      String(st.rootConflict.configuredRoot || "") +
+      I18n.t("。在你选之前，本机模型不会登记进 MTNode（避免把别人那份混进来）。");
+    actions.appendChild(warn);
+    const resolve = async (mode) => {
+      const fn = pluginApiFn("llamaResolveRootChoice");
+      if (!fn) return;
+      let r = null;
+      try {
+        r = await fn(mode);
+      } catch (e) {
+        r = { ok: false, error: (e && e.message) || String(e) };
+      }
+      if (!r || !r.ok) {
+        _backendLastErr.set(spec.key, pluginErrLine(I18n.t("处理失败："), r));
+      } else if (mode === "own") {
+        toast(I18n.t("已换到端口 ") + String(r.port || "") + I18n.t("；点「启用」启动这一份"), "ok");
+      } else {
+        toast(I18n.t("已改为继续使用端口上那份 llama.cpp"), "ok");
+      }
+      repaint();
+    };
+    addBtn("power", I18n.t("换端口起自己的"), () => resolve("own"), { primary: true });
+    addBtn("gear", I18n.t("继续用这份"), () => resolve("external"), {});
+  }
   /* 显式入口：那只控制台窗（卸载 / 工作流编辑器等重功能仍在窗里） */
   addBtn("console", I18n.t("控制台"), openConsole);
   if (spec.update && st.updateAvailable && pluginApiFn(spec.api + "UpdateRuntime")) {
@@ -1758,6 +1796,10 @@ async function openAppPluginsDialog() {
       /* 后端求助（ui-signal）不再自动弹窗：收到 llama:notice 就重绘卡片（角标 + 状态行） */
       if (window.api && window.api.onLlamaNotice) {
         offs.push(window.api.onLlamaNotice(() => refreshLlamaPluginCard(card)));
+      }
+      /* 登记链刷新（部署 / 停止 / 托盘改过配置）：卡片上的告警行与状态跟着重画 */
+      if (window.api && window.api.onLlamaProviderSynced) {
+        offs.push(window.api.onLlamaProviderSynced(() => refreshLlamaPluginCard(card)));
       }
       refreshLlamaPluginCard(card);
     } else if (item.kind === "breeze" || item.handler === "breeze") {

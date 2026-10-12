@@ -183,6 +183,13 @@
       <button id="btnStop" class="danger mini">停止</button>
     </div>
 
+    <!-- 安装目录对不上时的一句实话（见 app.js 的 refreshStatus）：
+         端口上这份脚手架不是 MTNode 配置的那一份 —— 平台上模型登记会因此错位 -->
+    <div class="card" id="rootMismatch" style="display:none">
+      <div class="meta">安装目录</div>
+      <div class="keybox" id="rootMismatchText">—</div>
+    </div>
+
     <div class="card" id="apiPanel">
       <div class="meta">本地 API</div>
       <div class="keybox" id="apiBase">—</div>

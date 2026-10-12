@@ -12,12 +12,19 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const uiBridge = require("./ui-bridge.js");
+/* 登记链的单一真源：清单口径与写盘实现都在 provider-sync.js（主进程 llama/main-llama.js
+   用的是同一份），于是「MTNode 没开着时在托盘控制台里部署的模型」也能被登记（本轮共识 q11）。 */
+const syncSignal = require("./provider-sync.js");
 
 const APP_DATA_ROOT = path.join(app.getPath("appData"), "pipeline-console");
 app.setPath("userData", path.join(APP_DATA_ROOT, "llama-tray-process"));
 
 const DATA = process.env.MTNODE_LLAMA_DATA || path.join(APP_DATA_ROOT, "pipeline-console", "llama");
+/* MTNode 的数据目录 = llama 根目录的上一级（.ui-owner.json 也写在那里） */
+const MTNODE_DATA = path.dirname(DATA);
+const MTNODE_CONFIG = path.join(MTNODE_DATA, "config.json");
 const API_PORT = Number(process.env.MTNODE_LLAMA_PORT || 8765);
+const INSTALL_DIR = String(process.env.MTNODE_LLAMA_INSTALL || "").trim();
 
 let tray = null;
 let consoleWin = null;
@@ -127,9 +134,30 @@ function clearConsoleLog() {
   }
 }
 
+/**
+ * 托盘态的「把当前模型登记进 MTNode 配置」—— 从前这里没有：控制台里调 `syncProvider()`
+ * 落到 preload-tray.js 的空实现，于是 MTNode 关着时部署的模型永远登记不上（本轮共识 q11）。
+ * 实现体在 provider-sync.js 的 syncProviderToConfig（与主进程同一份清单口径），
+ * 这里只负责给出本进程知道的三个路径：端口 / 安装目录 / MTNode 数据目录。
+ */
+async function syncProviderFromTray() {
+  return syncSignal.syncProviderToConfig({
+    port: API_PORT,
+    installDir: INSTALL_DIR,
+    configPath: MTNODE_CONFIG,
+    dataDir: MTNODE_DATA,
+    /* 托盘这份的「根」是端口上真正在跑的那一份（可能是别的安装目录）：
+       liveRoot 与 installDir 对不上时会写进 llamaSync.mismatch，
+       MTNode 侧照冲突口径出告警，不静默混用 */
+    mode: "external",
+  });
+}
+
 function registerTrayIpc() {
   /* 托盘态的日志窗：清空 = 真删日志文件内容（见 clearConsoleLog） */
   ipcMain.handle("llama:consoleClear", async () => clearConsoleLog());
+  /* 控制台里部署 / 停止 / 删除模型后调用（llama/ui/app.js 的 api.syncProvider()） */
+  ipcMain.handle("llama:syncProvider", async () => syncProviderFromTray());
 }
 
 function openTrayConsoleWindow() {

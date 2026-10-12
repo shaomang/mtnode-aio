@@ -32,6 +32,9 @@ const mirrors = require("../cn-mirrors.js");
 const uiBridge = require("./ui-bridge.js");
 
 const { mergeManagedProvider } = require("../config-providers.js");
+/* 登记链的单一真源（清单来源 / 模型行状态 / 托盘信号）：见 llama/provider-sync.js 头部口径。
+   托盘进程（llama/tray-main.js）用同一份，避免两条路各写各的。 */
+const syncSignal = require("./provider-sync.js");
 const PLUGIN_ID = "llama-local";
 const DEFAULT_PORT = 8765;
 const DISK_HINT_GB = 20;
@@ -51,6 +54,7 @@ let installing = false;
 let installCancel = false;
 let gpuTimer = null;
 let providerSyncTimer = null;
+let providerDirtyTimer = null;
 let uiSignalTimer = null;
 let consoleWatchTimer = null;
 let consoleWatchPos = 0;
@@ -537,6 +541,8 @@ function stopGpuPolling() {
   }
 }
 
+/* 登记刷新：后端在线时 8 秒一轮（部署成功 / 进程自己死掉都能被认出来）；
+   托盘进程改过配置时由 .provider-dirty.json 信号立刻催一轮，不等这 8 秒。 */
 function startProviderSync() {
   if (providerSyncTimer) return;
   providerSyncTimer = setInterval(() => {
@@ -553,58 +559,360 @@ function stopProviderSync() {
   }
 }
 
-function readInstallApiKey(installDir) {
-  try {
-    const p = join(String(installDir || "").trim(), ".api-key");
-    if (!p || !fs.existsSync(p)) return "";
-    return String(fs.readFileSync(p, "utf8") || "").trim();
-  } catch {
-    return "";
+/* ── 托盘进程的「配置已改」信号（MTNode 关着时托盘自己写盘；开着时这里立刻刷新） ── */
+function startProviderDirtyWatch() {
+  if (providerDirtyTimer) return;
+  providerDirtyTimer = setInterval(() => {
+    try {
+      const sig = syncSignal.consumeDirty(getDataDir());
+      if (!sig) return;
+      appendConsole("[sync] 托盘进程已更新模型列表，重新登记（" + (sig.liveRoot || sig.installDir || "") + "）");
+      syncProviderToMtnode().catch(() => {});
+    } catch {}
+  }, 3000);
+  if (providerDirtyTimer.unref) providerDirtyTimer.unref();
+}
+
+function stopProviderDirtyWatch() {
+  if (providerDirtyTimer) {
+    clearInterval(providerDirtyTimer);
+    providerDirtyTimer = null;
   }
 }
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/* 挑一个空闲端口（换端口起自己那份时用）：本机回环上能 listen 成功就算空着 */
+function pickFreePort(start) {
+  const base = Number(start) || DEFAULT_PORT + 1;
+  return new Promise((resolve) => {
+    const net = require("net");
+    let port = base;
+    let tries = 0;
+    const attempt = () => {
+      if (tries++ > 40) return resolve(0);
+      const srv = net.createServer();
+      srv.once("error", () => {
+        port += 1;
+        attempt();
+      });
+      srv.once("listening", () => {
+        srv.close(() => resolve(port));
+      });
+      try {
+        srv.listen(port, "127.0.0.1");
+      } catch {
+        port += 1;
+        attempt();
+      }
+    };
+    attempt();
+  });
+}
+
+/**
+ * 当前「谁在服役、算不算我们那份」的判定（本轮共识里的安装目录冲突口径）：
+ *   installRoot 由管理服务 /api/status 给出（llama-pack/app/server.py），与插件配置的
+ *   installDir 不一致 ⇒ 端口上跑的是**别人那份**脚手架：不静默复用，卡片出告警让用户选
+ *   （换端口起自己的 / 继续用 8765 那份）。用户选过「继续用」之后 reuseExternal = true，
+ *   冲突即视为已解决（此后以端口上那份为准，apiKey / 清单都跟它走）。
+ */
+async function llamaRootState() {
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  const live = await fetchApiStatus();
+  const liveRoot = live && live.installRoot ? String(live.installRoot) : "";
+  const cfgRoot = String(cfg.installDir || "");
+  const mismatch = !!(liveRoot && cfgRoot && syncSignal.normRoot(liveRoot) !== syncSignal.normRoot(cfgRoot));
+  const mode = cfg.reuseExternal ? "external" : "own";
+  return {
+    port,
+    live,
+    liveRoot,
+    cfgRoot,
+    mode,
+    mismatch,
+    conflict: mismatch && mode !== "external",
+    online: !!live,
+  };
+}
+
+/** 这条服务商是不是本插件托管的 llama 本地（主进程运行前闸门的判据，只有这里一份） */
+function isLlamaProvider(provider) {
+  const p = provider || {};
+  return (
+    String(p.source || "") === syncSignal.PROVIDER_SOURCE ||
+    String(p.id || "") === LLAMA_PROVIDER_ID
+  );
+}
+
+/**
+ * 要写进 MTNode 配置的那份 llama 服务商快照（登记链的唯一入口）。
+ *   · 模型清单 = **本机已下载的全部模型**（不只 running）：运行中 / 加载中 / 未部署 / 加载失败
+ *     逐条给出状态（见 llama/provider-sync.js 的 modelRows）；
+ *   · apiKey：在线时以管理服务 /api/status 的为准（权威，见本轮共识）；离线回退读
+ *     <installDir>/.api-key；两者都空 → 不带 apiKey 字段（mergeManagedProvider 于是保留盘上旧值）；
+ *   · 冲突未决（端口上是别人那份）时按 installDir 的本地文件登记（我们的后端没在跑 ⇒ 都是
+ *     「未部署」），绝不把别人那份的模型当成我们的。
+ */
 async function llamaProviderSnapshot() {
   const cfg = loadConfig();
   const port = Number(cfg.port) || DEFAULT_PORT;
-  let apiKey = "";
-  let apiBase = `http://127.0.0.1:${port}/v1`;
-  let modelList = [];
-  const up = await probeApi(port);
-  if (up) {
-    const st = await fetchApiStatus();
-    if (st) {
-      apiKey = String(st.apiKey || "").trim();
-      apiBase = String(st.apiBase || apiBase).trim() || apiBase;
-      modelList = Array.isArray(st.deployedModels) ? st.deployedModels.filter(Boolean) : [];
-    }
-  }
-  if (!apiKey) apiKey = readInstallApiKey(cfg.installDir);
-  if (!apiKey && !apiBase) return null;
-  return {
-    id: LLAMA_PROVIDER_ID,
-    name: "llama.cpp 本地",
-    type: "text_openai",
-    baseUrl: apiBase,
+  const rs = await llamaRootState();
+  const useLive = !!rs.live && (rs.mode === "external" || !rs.mismatch);
+  const liveKey = useLive && rs.live.apiKey ? String(rs.live.apiKey).trim() : "";
+  const apiKey = liveKey || syncSignal.readInstallApiKey(cfg.installDir);
+  let apiModels = null;
+  if (useLive) apiModels = await syncSignal.liveModels(port, apiKey);
+  const rows = syncSignal.modelRows({
+    /* 「以哪一份为准」也决定**离线回退读谁的注册表**：接着用端口上那份时（mode=external），
+       清单要来自它自己的 root，而不是插件配置的 installDir —— 否则会把两份目录的模型混在一起 */
+    installDir: useLive && rs.liveRoot ? rs.liveRoot : cfg.installDir,
+    deployed: useLive && rs.live && Array.isArray(rs.live.deployed) ? rs.live.deployed : undefined,
+    apiModels,
+  });
+  const item = syncSignal.buildProviderItem({
+    port,
+    rows,
     apiKey,
-    models: modelList,
-    vision: false,
-    source: "llama-plugin",
-  };
+    mode: rs.mode,
+    online: useLive,
+    installDir: cfg.installDir,
+    liveRoot: rs.liveRoot,
+    mismatch: rs.mismatch,
+    conflict: rs.conflict,
+  });
+  return { item, rows, rootState: rs, useLive };
 }
 
 async function syncProviderToMtnode() {
   const cfg = loadConfig();
   if (!cfg.syncToMtnode) return { ok: true, skipped: true };
-  const item = await llamaProviderSnapshot();
-  if (!item) return { ok: true, skipped: true, reason: "no_api" };
+  const snap = await llamaProviderSnapshot();
+  if (!snap || !snap.item) return { ok: true, skipped: true, reason: "no_api" };
   const configFile = join(getDataDir(), "config.json");
-  const result = mergeManagedProvider(configFile, item);
+  /* pruneUnknown：第一次同步（老配置没有 llamaManagedModels 字段）就把这份清单整份当托管的收敛一次
+     —— 插件托管的那份由插件增删（停止 / 删除的模型会消失），用户手加的额外模型照样保留。 */
+  const result = mergeManagedProvider(configFile, snap.item, { pruneUnknown: true });
   if (result.changed) {
+    const entry = result.providers.find((p) => p.id === LLAMA_PROVIDER_ID) || {};
     broadcast("llama:providerSynced", {
-      models: (result.providers.find((p) => p.id === LLAMA_PROVIDER_ID) || {}).models || [],
+      models: Array.isArray(entry.models) ? entry.models : [],
+      llamaModels: Array.isArray(entry.llamaModels) ? entry.llamaModels : [],
     });
   }
-  return { ok: true, changed: result.changed };
+  return { ok: true, changed: result.changed, rows: snap.rows };
+}
+
+/* ── 运行前的「模型没加载就先加载」闸门（本轮共识 q8 / q9 / q10） ──────────────
+   何时触发：智能节点 / 会话 / 全局助手在 llama 服务商上选了未部署（或上次加载失败）的模型。
+   做什么：① 后端没起就先起；② 只释放**空闲**的其它本地后端腾显存（正在跑任务的绝不打断）；
+           ③ POST /api/models/deploy；④ 轮询到 running（上限 10 分钟）。
+   失败：如实返回原因（不自动换模型、不静默回退），调用方把话原样报给用户。 */
+const DEPLOY_WAIT_MS = 10 * 60 * 1000;
+
+function emitModelLoading(ev) {
+  try {
+    broadcast(
+      "llama:modelLoading",
+      Object.assign({ id: PLUGIN_ID, at: Date.now() }, ev || {}),
+    );
+  } catch {}
+}
+
+async function ensureModel(modelId, opts) {
+  const o = opts || {};
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  const rs = await llamaRootState();
+  if (rs.conflict) {
+    const msg =
+      "端口 " +
+      port +
+      " 上跑的是另一份安装目录的 llama.cpp（" +
+      rs.liveRoot +
+      "），当前插件配置的是 " +
+      rs.cfgRoot +
+      " —— 请先在顶栏「插件」的 llama.cpp 卡片上选一次「换端口起自己的」或「继续用这份」。";
+    emitModelLoading({ phase: "failed", modelId, text: msg });
+    return { ok: false, error: "root_conflict", message: msg };
+  }
+  const live = rs.live;
+  const apiKey = (live && live.apiKey ? String(live.apiKey).trim() : "") || syncSignal.readInstallApiKey(cfg.installDir);
+  const rows = syncSignal.modelRows({
+    /* 与登记同源：后端在线时以它自己的 root 为准（用户选过「继续用这份」时两者本就不同） */
+    installDir: live && rs.liveRoot ? rs.liveRoot : cfg.installDir,
+    deployed: live && Array.isArray(live.deployed) ? live.deployed : undefined,
+    apiModels: live ? await syncSignal.liveModels(port, apiKey) : null,
+  });
+  const row = syncSignal.findRow(rows, modelId);
+  if (!row) {
+    const msg = "本机 llama.cpp 里没有这个模型（id=" + String(modelId || "") + "）—— 请到插件控制台里下载后再用。";
+    emitModelLoading({ phase: "failed", modelId, text: msg });
+    return { ok: false, error: "unknown_model", message: msg };
+  }
+  if (row.status === syncSignal.ST_RUNNING) {
+    return { ok: true, reused: true, modelId: row.modelId, servedName: row.id };
+  }
+  /* ① 后端没起就先起（q10：选中未部署的模型时先自动拉起后端再部署） */
+  if (!(await probeApi(port))) {
+    emitModelLoading({ phase: "starting", modelId: row.modelId, text: "正在启动 llama.cpp 后端…" });
+    const started = await startBackend();
+    if (!started || !started.ok) {
+      const msg = "llama.cpp 后端启动失败（" + ((started && started.error) || "unknown") + "）—— 请到插件卡片查看状态与日志。";
+      emitModelLoading({ phase: "failed", modelId: row.modelId, text: msg });
+      return { ok: false, error: (started && started.error) || "start_failed", message: msg };
+    }
+  }
+  /* ② 只释放空闲的其它本地后端（waitBusyMs=0 ⇒ 忙着的直接跳过，绝不打断别人的活） */
+  try {
+    const vram = require("../local-model-vram.js");
+    if (vram && typeof vram.vramReleaseOthers === "function") {
+      await vram.vramReleaseOthers({ except: "llama", reason: "llama_deploy", waitBusyMs: 0 });
+    }
+  } catch {}
+  /* ③ 发起部署 */
+  const key2 = (await fetchApiStatus()) || {};
+  const useKey = String(key2.apiKey || apiKey || "").trim();
+  emitModelLoading({
+    phase: "deploy",
+    modelId: row.modelId,
+    servedName: row.id,
+    text: "正在加载本地模型 " + row.id + "…（首次加载可能要几十秒）",
+  });
+  const dep = await syncSignal.httpJson(port, "/api/models/deploy", {
+    method: "POST",
+    apiKey: useKey,
+    body: { modelId: row.modelId },
+    timeoutMs: 120000,
+  });
+  if (!dep || !dep.ok || (dep.json && dep.json.ok === false)) {
+    const why =
+      (dep && dep.json && (dep.json.detail || dep.json.error)) ||
+      (dep && dep.error) ||
+      ("http_" + ((dep && dep.status) || "?"));
+    const msg = "加载本地模型失败：" + why;
+    emitModelLoading({ phase: "failed", modelId: row.modelId, text: msg });
+    return { ok: false, error: "deploy_failed", message: msg };
+  }
+  /* ④ 等它真的 running（上限 10 分钟；failed 立刻如实报出后端的原始错误） */
+  const deadline = Date.now() + (Number(o.timeoutMs) > 0 ? Number(o.timeoutMs) : DEPLOY_WAIT_MS);
+  let lastText = "";
+  while (Date.now() < deadline) {
+    await sleep(1500);
+    const st = await fetchApiStatus();
+    const inst =
+      st && Array.isArray(st.deployed)
+        ? st.deployed.find((i) => i && String(i.modelId) === String(row.modelId))
+        : null;
+    if (inst && String(inst.status) === "running") {
+      emitModelLoading({
+        phase: "ready",
+        modelId: row.modelId,
+        servedName: row.id,
+        text: "本地模型已就绪：" + row.id,
+      });
+      syncProviderToMtnode().catch(() => {});
+      return { ok: true, modelId: row.modelId, servedName: row.id, port: inst.port };
+    }
+    if (inst && String(inst.status) === "failed") {
+      const msg = "本地模型加载失败：" + (inst.error || "未知原因") + "（可在插件控制台看引擎日志）";
+      emitModelLoading({ phase: "failed", modelId: row.modelId, text: msg });
+      syncProviderToMtnode().catch(() => {});
+      return { ok: false, error: "load_failed", message: msg };
+    }
+    if (inst && String(inst.status) === "starting") {
+      const t = "正在加载本地模型 " + row.id + "…（已等 " + Math.round((DEPLOY_WAIT_MS - (deadline - Date.now())) / 1000) + " 秒）";
+      if (t !== lastText) {
+        lastText = t;
+        emitModelLoading({ phase: "deploy", modelId: row.modelId, servedName: row.id, text: t });
+      }
+    }
+  }
+  const msg = "加载本地模型超时（超过 " + Math.round(DEPLOY_WAIT_MS / 60000) + " 分钟仍未就绪）：" + row.id;
+  emitModelLoading({ phase: "failed", modelId: row.modelId, text: msg });
+  return { ok: false, error: "timeout", message: msg };
+}
+
+/** 设置里那颗「部署」按钮（手动档，与运行前闸门同一套逻辑） */
+async function deployModel(modelId) {
+  const r = await ensureModel(modelId, {});
+  syncProviderToMtnode().catch(() => {});
+  return r;
+}
+
+/**
+ * 设置里那颗「停止」按钮：停实例（不动后端服务本身），随后立刻重新登记。
+ * **必须先按 servedName / modelId 查出注册表里那条真 id**：MTNode 选择器里的模型 id 是
+ * servedName（如 gemma-4-E2B-it），而管理服务的 `stop_model` 是按注册表的 modelId
+ * （google/gemma-4-E2B-it）匹配实例的 —— 直接拿 servedName 去停会「HTTP 200 但 stopped:false」，
+ * 用户看到的就是「点了停止、模型还在跑」（真机自验里实测到的那一条）。
+ */
+async function stopModel(modelId) {
+  const cfg = loadConfig();
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  const rs = await llamaRootState();
+  const useLive = !!rs.live && (rs.mode === "external" || !rs.mismatch);
+  const key = String(
+    (useLive && rs.live && rs.live.apiKey) || syncSignal.readInstallApiKey(cfg.installDir) || "",
+  ).trim();
+  const rows = syncSignal.modelRows({
+    installDir: useLive && rs.liveRoot ? rs.liveRoot : cfg.installDir,
+    deployed: rs.live && Array.isArray(rs.live.deployed) ? rs.live.deployed : undefined,
+    apiModels: useLive ? await syncSignal.liveModels(port, key) : null,
+  });
+  const row = syncSignal.findRow(rows, modelId);
+  if (!row) {
+    return {
+      ok: false,
+      error: "unknown_model",
+      message: "本机 llama.cpp 里没有这个模型（id=" + String(modelId || "") + "），无法停止。",
+    };
+  }
+  const r = await syncSignal.httpJson(port, "/api/models/stop", {
+    method: "POST",
+    apiKey: key,
+    body: { modelId: row.modelId },
+    timeoutMs: 120000,
+  });
+  syncProviderToMtnode().catch(() => {});
+  if (!r || !r.ok) {
+    return {
+      ok: false,
+      error: (r && r.error) || "stop_failed",
+      message:
+        "停止模型失败：" +
+        ((r && r.json && (r.json.detail || r.json.error)) || (r && r.error) || "unknown"),
+    };
+  }
+  if (r.json && r.json.stopped === false) {
+    /* 服务端说「没找到在跑的实例」：如实报出来，别让界面显示「已停止」 */
+    return {
+      ok: false,
+      error: "not_running",
+      message: "这个模型当前没有在跑（服务端没有可停的实例）：" + row.modelId,
+    };
+  }
+  return { ok: true, modelId: row.modelId, servedName: row.id };
+}
+
+/** 卡片上「安装目录冲突」的两个选择（本轮共识 q14） */
+async function resolveRootChoice(mode) {
+  const want = String(mode || "") === "external" ? "external" : "own";
+  if (want === "external") {
+    saveConfig({ reuseExternal: true });
+    await syncProviderToMtnode();
+    return { ok: true, mode: "external" };
+  }
+  const cfg = loadConfig();
+  const cur = Number(cfg.port) || DEFAULT_PORT;
+  const free = await pickFreePort(cur + 1);
+  if (!free) return { ok: false, error: "no_free_port" };
+  saveConfig({ port: free, reuseExternal: false });
+  await syncProviderToMtnode();
+  return { ok: true, mode: "own", port: free };
 }
 
 function spawnTrayProcess() {
@@ -1223,12 +1531,29 @@ async function statusForUi() {
   } catch {
     gpu = null;
   }
+  /* 安装目录冲突（本轮共识 q14）：端口上那份的 installRoot 与配置的 installDir 不一致 ⇒
+     插件卡片出告警 + 两个选择（换端口起自己的 / 继续用这份）。用户选过「继续用」后不再报。 */
+  const liveRoot = apiStatus && apiStatus.installRoot ? String(apiStatus.installRoot) : "";
+  const rootMismatch =
+    !!(liveRoot && cfg.installDir) &&
+    syncSignal.normRoot(liveRoot) !== syncSignal.normRoot(cfg.installDir);
+  const rootConflict =
+    rootMismatch && !cfg.reuseExternal
+      ? {
+          liveRoot,
+          configuredRoot: String(cfg.installDir || ""),
+          port,
+          reuseExternal: false,
+        }
+      : null;
   return {
     ok: true,
     id: PLUGIN_ID,
     version: (man && man.version) || (installedMeta && installedMeta.version) || "1.0.0",
     diskHintGb: DISK_HINT_GB,
     installDir: cfg.installDir || "",
+    reuseExternal: !!cfg.reuseExternal,
+    rootConflict,
     project: sig,
     installed: !!(installedMeta && installedMeta.ok) || sig.ready,
     installing,
@@ -1247,7 +1572,22 @@ async function statusForUi() {
     consolePath: consoleLogPath(),
     localModelIds: readLocalModelIds(),
     localModels: readLocalModelsFromRegistry(),
+    /* 登记链那份逐条状态（未部署 / 加载中 / 运行中 / 加载失败）：与控制台「已安装」页同源 */
+    modelRows: await collectModelRowsSafe(),
   };
+}
+
+/** statusForUi 用的模型行（后端读不到时退回安装目录的本地文件，绝不抛） */
+async function collectModelRowsSafe() {
+  try {
+    const cfg = loadConfig();
+    return await syncSignal.collectRows({
+      installDir: cfg.installDir,
+      port: Number(cfg.port) || DEFAULT_PORT,
+    });
+  } catch {
+    return [];
+  }
 }
 
 function pickInstallDir() {
@@ -1523,6 +1863,7 @@ function shutdownLlamaUiOnly() {
   closeConsoleWindow();
   uiBridge.clearOwner(llamaRoot());
   stopUiSignalWatch();
+  stopProviderDirtyWatch();
 }
 
 function registerLlamaIpc(opts) {
@@ -1567,10 +1908,19 @@ function registerLlamaIpc(opts) {
   ensureUiRuntime();
   startConsoleLogWatch();
   startUiSignalWatch();
+  startProviderDirtyWatch();
   uiBridge.writeOwner(llamaRoot(), "mtnode", process.pid);
   syncProviderToMtnode().catch(() => {});
 
   ipcMain.handle("llama:getStatus", async () => statusForUi());
+  /* ── 登记链的四个新入口（本轮共识）───────────────────────────────────────────
+     · ensureModel：运行前的「模型没加载就先加载」闸门（节点 / 会话 / 助手共用）；
+     · deployModel / stopModel：设置里模型行上那两颗按钮；
+     · resolveRootChoice：安装目录冲突时用户的两个选择（换端口起自己的 / 继续用这份）。 */
+  ipcMain.handle("llama:ensureModel", async (e, modelId) => ensureModel(modelId, {}));
+  ipcMain.handle("llama:deployModel", async (e, modelId) => deployModel(modelId));
+  ipcMain.handle("llama:stopModel", async (e, modelId) => stopModel(modelId));
+  ipcMain.handle("llama:resolveRootChoice", async (e, mode) => resolveRootChoice(mode));
   ipcMain.handle("llama:pickInstallDir", async () => pickInstallDir());
   ipcMain.handle("llama:setInstallDir", async (e, dir) => {
     const safe = isSafeInstallDir(dir);
@@ -1652,6 +2002,13 @@ function registerLlamaIpc(opts) {
 module.exports = {
   registerLlamaIpc,
   shutdownLlamaUiOnly,
+  /* 登记链给主进程用的两个入口（见 main.js 的 llamaPreflight）：
+       · isLlamaProvider：这一条服务商是不是本插件托管的 llama 本地
+       · ensureModel：运行前把所选模型加载起来（未部署 / 上次加载失败都会重试一次） */
+  isLlamaProvider,
+  ensureModel,
+  syncProviderToMtnode,
+  PROVIDER_ID: LLAMA_PROVIDER_ID,
   /* 显存释放钩子：主进程 local-model-vram.js 收进统一编排表（画布节点运行前后 + 顶栏按钮） */
   vramHooks,
   onLlamaDshEvent,

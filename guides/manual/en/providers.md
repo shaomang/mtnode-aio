@@ -102,3 +102,29 @@ one **stops working immediately** — other software still using it (Codex, the 
 copy the new one. You can change it at most **5 times per day** (by server date; once used up, the card tells
 you how many are left). Normally you never need to: the key is valid for **3650 days**, and it only stops
 working when the account **runs out of balance** (top up and it works again).
+
+## The local model provider (llama.cpp)
+
+Once you install **llama.cpp Local Models** from the Plugin dialog in the top bar, Settings gains a
+**llama.cpp 本地** provider whose model list is **maintained by the plugin itself** (do not type into it):
+
+- **Every model downloaded on this machine is registered**, each with a status tag: **Running** /
+  **Loading** / **Not loaded** / **Load failed**; the list is ordered by that priority, running first.
+- Each row has two buttons: **Load** (load this model now — the first load can take tens of seconds to
+  minutes) and **Stop** (unload it; the backend service keeps running). Status changes refresh this card
+  and every model dropdown **on the spot**.
+- A stopped or deleted model disappears from the list (the plugin owns that part); models you **added by
+  hand** on this card, and your manual ordering, are never wiped.
+- **Loading happens before a run**: when a node / session / assistant picks a local model that is not
+  loaded (or failed last time), MTNode loads it first and then continues (the UI shows "Loading the local
+  model…", waiting up to 10 minutes). If loading fails, that run **stops with a clear reason** — it never
+  silently switches to another model. Before loading it frees the VRAM of **idle** local backends only;
+  a backend that is running someone else's task is never interrupted.
+- **When the backend is not running**: the list still shows up (tagged "Not loaded"), and picking one
+  starts the backend automatically before loading.
+- **One install folder uses only its own copy**: if the port is serving a llama.cpp from a **different**
+  install folder, the plugin card says so and lets you choose "Use our own on a free port" or "Keep using
+  that one" — until you choose, the other copy's models are not mixed into MTNode.
+
+Downloading models, deleting them and reading engine logs still happen in the llama.cpp console
+(the Console button on the card).
