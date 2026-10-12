@@ -1,26 +1,57 @@
 # =============================================================================
-# MTNode 安装步骤协议（所有 *-pack/scripts/* 共用的一份实现，随包复制到 scripts/step.ps1）
+# MTNode install step protocol (one implementation shared by every *-pack/scripts/*,
+# copied verbatim into each pack as scripts/step.ps1).
 #
-# 为什么存在：以前每个包的 install 脚本只打 `[xxx-install] progress: NN`，宿主把它压成
-# 一条进度条 —— 用户看不到「装的是哪一步、这一步成没成」。安装窗要列步骤表 + 逐步日志 +
-# 失败定位，就必须有结构化的步骤行。真源只有这一份，各包只调用、不各写一套。
+# Why this file exists: install scripts used to print only `[xxx-install] progress: NN`,
+# which the host collapsed into one progress bar -- the user could not see which step was
+# running or which one failed. The install window needs a step table, per-step logs and a
+# precise failure location, so it needs structured step lines. There is exactly one source
+# for them; packs call it instead of writing their own.
 #
-# 协议（stdout 一行一条 JSON，UTF-8，前后无其它字符的那一行才被宿主认）：
-#   {"mtnodeStep":1,"id":"<步骤id>","title":"<标题>","status":"run|ok|fail|skip","pct":<0-100>,"message":"<说明>"}
-#   · id 必须与同包 steps.json 里的 id 一致（安装窗靠它对上左侧步骤表）
-#   · status="ok" 时 pct 取该步结束时的整体百分比（不给也行：宿主按「第几步」折算）
-#   · status="fail" 时 message 写人能看懂的原因（安装窗会把它当「建议修复」的引子）
+# Protocol (one JSON object per stdout line, UTF-8, and the line must contain nothing else):
+#   {"mtnodeStep":1,"id":"<step id>","status":"run|ok|fail|skip","pct":<0-100>,"message":"<text>"}
+#   - id must match the same pack's steps.json (the install window aligns its step table by it)
+#   - status="ok" may carry pct = the overall percentage when the step finished
+#     (omit it and the host falls back to "step i of n")
+#   - status="fail" carries a human readable `message`; it may ALSO carry a stable error code
+#     plus dynamic values, and then the install window renders the localized reason and advice
+#     from the same pack's steps.json `messages` table:
+#       {"mtnodeStep":1,"id":"venv","status":"fail",
+#        "code":"h3.venv.pip_failed","params":{"venv":"<python.exe path>","tail":"ERROR: ..."},
+#        "message":"environment prep did not finish (venv still missing: ...)"}
+#     `tail` is rendered with a readable prefix (English " | error tail: ", Chinese uses the
+#     same separators with a localized label) and is the place for raw sub-process error lines;
+#     a code the manifest does not declare falls back to the plain `message`. Why codes instead
+#     of localized text: this file and every install script must stay pure ASCII (see the HARD
+#     RULE below), while steps.json is JSON read as UTF-8 by Node.
 #
-# 用法（每个包在脚本开头 dot-source 本文件，然后按步骤调用）：
+# Step titles are NOT part of this protocol: the single source for step titles and hints is
+# each pack's steps.json (localized there, zh/en). Scripts call Step-Begin with an empty
+# title, and the Step-ProgressMap rows below also carry an empty title (they only translate
+# progress figures into step ids), so the install window always renders titles from the manifest.
+#
+# Usage (each pack dot-sources this file at the top of its install script):
 #   . (Join-Path $PSScriptRoot "step.ps1")
-#   Step-Begin "venv" "创建 Python 虚拟环境" 15
-#   ...真正干活的命令...
+#   Step-Begin "venv" "" 15
+#   ...the real work...
 #   Step-Ok "venv" 25
-#   # 出错时（脚本自己要能兜住）：
-#   catch { Step-Fail "venv" "venv 创建失败：$($_.Exception.Message)"; throw }
+#   # on error (the script must catch its own errors):
+#   catch { Step-Fail "venv" "venv creation failed: $($_.Exception.Message)"; throw }
 #
-# 说明：Progress-Line 仍可继续调用（老进度口径与卡片状态行不变），本文件只是**多打一行**。
-# 不写文件、不联网、不依赖任何外部模块。
+# Note: Progress-Line calls may stay (the old progress figures and the card status line are
+# unchanged); this file only prints one more line.
+#
+# HARD RULE -- THIS FILE MUST STAY PURE ASCII (every byte <= 0x7F) AND MUST KEEP NO BOM:
+#   the host runs install scripts with powershell.exe (Windows PowerShell 5.1), which decodes
+#   a BOM-less .ps1 using the machine's ANSI code page (cp936 on Chinese Windows). Non-ASCII
+#   bytes (Chinese comments, full-width punctuation) are then decoded as mojibake, and a
+#   trailing byte can swallow the following `}` / `'` / `"` -- the parser dies with
+#   "Unexpected token '}'" and EVERY pack install fails. Pure ASCII decodes identically under
+#   any code page, so this cannot happen again. The same rule covers every *-pack install
+#   script; test/smoke-install-scripts.js enforces it (zero non-ASCII + parse under both the
+#   GBK and the UTF-8 decoding).
+#
+# This file writes no file, opens no network connection and needs no external module.
 # =============================================================================
 
 $script:MTStepIds = New-Object System.Collections.ArrayList
@@ -32,26 +63,43 @@ function Write-MTStepJson {
     [string]$Title,
     [string]$Status,
     [object]$Pct,
-    [string]$Message
+    [object]$Message
   )
   $obj = [ordered]@{
     mtnodeStep = 1
     id         = [string]$Id
-    title      = [string]$Title
     status     = [string]$Status
   }
+  # Titles come from steps.json; a non-empty one is still passed through for callers that
+  # print the fallback shape (a pack without step.ps1 next to it).
+  if ("$Title" -ne "") { $obj.title = [string]$Title }
   if ($null -ne $Pct -and "$Pct" -ne "") {
     $n = 0
     if ([int]::TryParse("$Pct", [ref]$n)) { $obj.pct = $n }
   }
-  if ($Message) { $obj.message = [string]$Message }
+  # Message is either plain text or a structured failure ({ code; params; message }).
+  # The parameter stays [object] on purpose: [string] would coerce that ordered dictionary into
+  # "System.Collections.Specialized.OrderedDictionary" and lose the error code.
+  if ($null -ne $Message) {
+    if ($Message -is [string]) {
+      if ("$Message" -ne "") { $obj.message = [string]$Message }
+    } elseif ($Message -is [System.Collections.IDictionary]) {
+      foreach ($k in @("code", "params", "message")) {
+        if ($Message.Contains($k) -and $null -ne $Message[$k] -and "$($Message[$k])" -ne "") { $obj[$k] = $Message[$k] }
+      }
+    } else {
+      $s = "$Message"
+      if ($s -ne "") { $obj.message = $s }
+    }
+  }
   try {
     $json = $obj | ConvertTo-Json -Compress -Depth 3
   } catch {
     return
   }
-  # ConvertTo-Json 在旧版 PowerShell 里会把非 ASCII 转成 \uXXXX —— 宿主按 UTF-8 解 JSON，
-  # 两种写法都能读；这里保持原样输出即可（不手工 unescape，避免破坏字符串里的转义）。
+  # ConvertTo-Json escapes non-ASCII as \uXXXX on older PowerShell versions -- the host
+  # decodes JSON as UTF-8 and reads either shape, so print it as-is (no manual unescape,
+  # which would break escapes inside strings).
   Write-Host $json
 }
 
@@ -65,7 +113,8 @@ function Get-MTStepIndex {
   return -1
 }
 
-# 记住这一步开始了（没在 steps.json 里声明过的 id 也接受：脚本永远比清单可信）
+# Remember that this step started (ids that steps.json does not declare are accepted too:
+# the script is always more trustworthy than the manifest).
 function Step-Begin {
   param([string]$Id, [string]$Title, [object]$Pct, [string]$Message)
   if ((Get-MTStepIndex $Id) -lt 0) { [void]$script:MTStepIds.Add([string]$Id) }
@@ -81,20 +130,26 @@ function Step-Ok {
   Write-MTStepJson -Id $Id -Title "" -Status "ok" -Pct $Pct -Message $Message
 }
 
+# A failing step takes EITHER a plain string OR a structured failure object produced by the
+# script's New-FailCode helper ([ordered]@{ code; params; message }): the install window
+# resolves the code through steps.json into localized text, and falls back to `message`.
+# The parameter must stay [object]: typing it [string] would coerce the structured object into
+# "System.Collections.Specialized.OrderedDictionary" and the code would be lost.
 function Step-Fail {
-  param([string]$Id, [string]$Message)
+  param([string]$Id, [object]$Message)
   $i = Get-MTStepIndex $Id
   if ($i -lt 0) { [void]$script:MTStepIds.Add([string]$Id) }
   Write-MTStepJson -Id $Id -Title "" -Status "fail" -Pct "" -Message $Message
 }
 
-# 本步跳过（要件已就绪 / 用户显式跳过）：安装窗显示「已跳过」而不是「失败」
+# This step is skipped (requirement already in place / the user skipped it): the install
+# window shows "skipped" instead of "failed".
 function Step-Skip {
-  param([string]$Id, [string]$Message)
+  param([string]$Id, [object]$Message)
   Write-MTStepJson -Id $Id -Title "" -Status "skip" -Message $Message
 }
 
-# 把「第 i 步 / 共 n 步」折成整体百分比，脚本不必自己算
+# Folds "step i of n" into an overall percentage so scripts need not compute it.
 function Step-Pct {
   param([int]$Step, [int]$Total)
   if ($Total -le 0) { return 0 }
@@ -102,25 +157,31 @@ function Step-Pct {
 }
 
 # -----------------------------------------------------------------------------
-# Step-Progress：给「本来就在按顺序打阶段性进度」的大脚本（sensenova / yue / breeze）
-# 用的一层薄适配 —— 它不重写那些脚本的流程，只把已有的进度行**翻译**成结构化步骤行。
+# Step-Progress: a thin adapter for the big scripts that already print staged progress
+# in order (sensenova / yue / breeze). It does not rewrite those flows -- it only
+# TRANSLATES their existing progress lines into structured step lines.
 #
-# 为什么要有它：这些脚本的 install / repair 逻辑是逐行调过的（镜像回退、档位探测、
-# 续传、mock 冒烟），整体重排成 Step-Begin 调用既贵又危险。用一张「进度阈值 → 步骤 id」
-# 表接上去，脚本里仍然只有原来的进度数字，但安装窗能列出步骤、并在失败时停在正确那一步。
+# Why it exists: the install / repair logic of those scripts was tuned line by line
+# (mirror fallbacks, tier probing, resume, mock smoke), so rearranging it into Step-Begin
+# calls would be expensive and risky. A "progress threshold to step id" map hooks it up:
+# the script keeps printing its own progress numbers, yet the install window can list the
+# steps and stop at the right one when something fails.
 #
-# 语义（严格顺序执行，不回退）：
-#   Step-Progress -Pct 34      → 进入门槛 ≤34 的那一步：上一步标 ok，本步标 run（只打一次）
-#   Step-Progress -Pct 100     → 前面的步骤全部 ok，整体 pct 给到 100
-#   Step-Progress -Fail "原因"  → 当前这一步标 fail（脚本自己 catch 到错误时调用）
-#   Step-Progress -Skip "原因"  → 当前这一批（同一门槛）的步骤标 skip（如 -SkipTorch / -SkipModels）
+# Semantics (strictly sequential, never goes backwards):
+#   Step-Progress -Pct 34      -> enter the step whose threshold is <= 34: the previous
+#                                 step is marked ok, this one run (printed once)
+#   Step-Progress -Pct 100     -> every earlier step is ok and the overall pct becomes 100
+#   Step-Progress -Fail "..."  -> mark the current step as fail (the script caught an error)
+#   Step-Progress -Skip "..."  -> mark the whole batch at the same threshold as skip
+#                                 (e.g. -SkipTorch / -SkipModels)
 #
-# 表由脚本在完成步骤解析后调用一次 Step-ProgressMap 给出（脚本自己的步骤 id 真源）。
+# The script hands the map over with Step-ProgressMap once, after it has resolved its own
+# step ids (the script remains the source of truth for its steps).
 # -----------------------------------------------------------------------------
 
 function Step-ProgressMap {
   param([object[]]$Map)
-  # Map：有序数组，每项 @{ at = <进度阈值>; id = "<步骤id>"; title = "<标题>" }
+  # Map: ordered array, each item @{ at = <progress threshold>; id = "<step id>"; title = "<title>" }
   $script:MTProgMap = @()
   if ($Map) { $script:MTProgMap = @($Map) }
   $script:MTProgIdx = -1
@@ -145,7 +206,7 @@ function Step-Progress {
   }
   $p = $script:MTProgPct
 
-  # 本次跨过的最后一步：从当前步往后找所有门槛 ≤ p 的项
+  # Furthest step covered so far: walk forward over every item whose threshold is <= p
   $target = $script:MTProgIdx
   $i = 0
   foreach ($m in $map) {
@@ -155,7 +216,7 @@ function Step-Progress {
   if ($target -lt 0) { return }
 
   if ($Skip) {
-    # 同一门槛的整批（如 torch 相关两步共享 30）一起标跳过
+    # The whole batch sharing this threshold (e.g. the two torch steps at 30) is skipped together
     $i = 0
     foreach ($m in $map) {
       if ($i -le $target -and $i -gt $script:MTProgIdx) { Step-Skip $m.id $Skip }
@@ -166,7 +227,7 @@ function Step-Progress {
   }
 
   if ($target -gt $script:MTProgIdx) {
-    # 上一步收尾（若已开始），本步开始
+    # Close the previous step (if it started) and open this one
     if ($script:MTProgIdx -ge 0) { Step-Ok $map[$script:MTProgIdx].id $map[$target].at }
     for ($k = $script:MTProgIdx + 1; $k -le $target; $k++) {
       Step-Begin $map[$k].id $map[$k].title $map[$k].at
@@ -183,4 +244,3 @@ function Step-Progress {
     $script:MTProgIdx = $map.Count - 1
   }
 }
-

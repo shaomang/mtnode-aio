@@ -54,7 +54,7 @@ Set-Location $InstallDir
 Write-Host "[remotion-install] install dir: $InstallDir"
 
 # -- 1. Node / npm ------------------------------------------------------------
-Step-Begin "node" "check Node and npm" 5
+Step-Begin "node" "" 5
 try {
   $nodeV = (& node --version) 2>$null
   $npmV = (& npm --version) 2>$null
@@ -67,7 +67,7 @@ try {
 }
 
 # -- 2. Project files ---------------------------------------------------------
-Step-Begin "copy" "copy the remotion project scaffold" 22
+Step-Begin "copy" "" 22
 if ($SkipCopy) {
   Step-Skip "copy" "the install dir already has the project (the host copies it)"
 } else {
@@ -80,13 +80,17 @@ if ($SkipCopy) {
 }
 
 # -- 3. npm install ----------------------------------------------------------
-Step-Begin "npm" "install dependencies (npm install)" 32
+Step-Begin "npm" "" 32
 # Domestic registry by default; -Official switches to the official one and -Registry <url> picks a custom one (precedence: -Registry > -Official > default)
 #
-# ⚠ 这里踩过一个真坑（用户侧报 `EINVALIDTAGNAME: Invalid tag name "=" of package "="`）：以前写成
-#   `$registry = @("--registry=$Registry")` 再 `& npm install @registry` —— 单元素数组经 splat
-#   传到**原生命令**时会被重新拆词，npm 实际收到 `install --registry = https://…`，把裸 `=` 当包名 tag。
-#   原生命令的整参数必须是一个字符串变量，别放进数组再 splat。
+# WARNING: this bit caused a real field bug (users reported
+#   `EINVALIDTAGNAME: Invalid tag name "=" of package "="`). It used to be
+#   `$registry = @("--registry=$Registry")` plus `& npm install @registry` -- splatting a
+#   single-element array into a NATIVE command re-splits the words, so npm actually received
+#   `install --registry = https://...` and treated the bare `=` as a package tag. A native
+#   command argument must be one string variable: never put it in an array and splat it.
+# NOTE: this file must stay pure ASCII (see step.ps1 "HARD RULE"): PowerShell 5.1 decodes a
+# BOM-less .ps1 with the machine ANSI code page and non-ASCII bytes break the parser.
 if ($Registry) { $regFlag = "--registry=" + $Registry }
 elseif ($Official) { $regFlag = "--registry=https://registry.npmjs.org" }
 else { $regFlag = "--registry=https://registry.npmmirror.com" }
@@ -101,7 +105,7 @@ try {
 }
 
 # -- 4. Verify ----------------------------------------------------------------
-Step-Begin "check" "verify that the remotion dependencies load" 90
+Step-Begin "check" "" 90
 try {
   & node -e "require.resolve('remotion'); require.resolve('@remotion/renderer'); console.log('ok')"
   if ($LASTEXITCODE -ne 0) { throw "remotion / @remotion/renderer failed to resolve" }

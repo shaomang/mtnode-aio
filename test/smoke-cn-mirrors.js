@@ -151,10 +151,10 @@ const PACKS = [
   { id: "llama", rel: "llama-pack/scripts/install.ps1", pip: true, torch: false, weights: "llama-pack/scripts/install.ps1", modelscope: false, ghChain: true },
   { id: "h3", rel: "h3-pack/scripts/setup_env.ps1", pip: true, torch: true, weights: "h3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false,
     extraPipChain: ["h3-pack/scripts/repair_torch_kitchen.ps1"],
-    pipStepScript: "h3-pack/scripts/install.ps1" },
+    pipStepScript: "h3-pack/scripts/install.ps1", pack: "h3-pack" },
   { id: "music3", rel: "music3-pack/scripts/setup_env.ps1", pip: true, torch: false, weights: "music3-pack/scripts/download_models.ps1", modelscope: true, ghChain: false,
     extraPipChain: [],
-    pipStepScript: "music3-pack/scripts/install.ps1" },
+    pipStepScript: "music3-pack/scripts/install.ps1", pack: "music3-pack" },
   /* YuE2 的权重仓库（m-a-p/YuE2-3B）只走 hf-mirror：它没有可用的 ModelScope 同名仓库，
      所以这一条只钉「hf-mirror + HF_ENDPOINT」，不要求 ModelScope（见 docs/mirror-sources.md）。 */
   { id: "yue", rel: "yue-pack/scripts/install.ps1", pip: true, torch: true, weights: "yue-pack/scripts/install.ps1", modelscope: false, ghChain: false },
@@ -195,9 +195,21 @@ for (const p of PACKS) {
         has(read(rel), "pip index=$n/$($PipIndexChain.Count) host=$host_", rel + " 每次尝试都打一行「第几级 / 用的哪个源」");
         has(read(rel), "falling back to the next index", rel + " 一级失败继续走下一级");
       }
-      const step = codeLines(read(p.pipStepScript));
-      has(step, "No matching distribution found for", p.id + " 全级失败时点名缺哪个包（No matching distribution found for <pkg>）");
-      has(step, "已依次试过清华 / 阿里云 / USTC / 官方 PyPI", p.id + " 安装编排写明「pip 已走完四级源」");
+      /* 这一句是脚本自带的失败契约说明（注释）：全级失败时 pip 的原始输出里是
+         「No matching distribution found for <包名>」，脚本把日志尾部当 tail 参数附给失败步。 */
+      has(read(p.pipStepScript), "No matching distribution found for", p.id + " 安装脚本写明全级失败时点名缺哪个包（pip 原文 No matching distribution found for <pkg>）");
+      /* 「pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI」与「No matching distribution found for
+         某包」这两句给人看的话，本轮从安装脚本（必须纯 ASCII）搬进了同包 steps.json 的
+         messages 失败文案表，由宿主按错误码解析。判据跟着落到文案表上。 */
+      const failTable = JSON.stringify((JSON.parse(read(p.pack + "/steps.json")).steps || []).map((s) => s.messages || {}));
+      ok(
+        failTable.indexOf("清华") >= 0 && failTable.indexOf("USTC") >= 0,
+        p.id + " 安装编排的失败文案（steps.json messages 表）写明「pip 已走完四级源」",
+      );
+      ok(
+        failTable.indexOf("No matching distribution found for") >= 0,
+        p.id + " 失败文案（steps.json messages 表）全级失败时点名缺哪个包",
+      );
     }
   }
   if (p.torch) {

@@ -88,16 +88,16 @@ else {
 
 # Progress threshold -> step id (identical to steps.json in the same directory).
 Step-ProgressMap @(
-  @{ at = 4;   id = "gpu";     title = "probe NVIDIA GPU and driver" },
-  @{ at = 8;   id = "python";  title = "create the Python 3.12 virtual environment" },
-  @{ at = 20;  id = "deps";    title = "install requirements.txt (gradio included)" },
-  @{ at = 30;  id = "torch";   title = "install CUDA torch / torchaudio" },
-  @{ at = 38;  id = "attn";    title = "record the default attention tier" },
-  @{ at = 42;  id = "pkg";     title = "install the yue2 inference package" },
-  @{ at = 58;  id = "weights"; title = "download the YuE2-3B + YuE2-Vae weights" },
-  @{ at = 82;  id = "files";   title = "verify the project file manifest and the app.ui import" },
-  @{ at = 88;  id = "smoke";   title = "mock smoke (/health -> generate -> shutdown)" },
-  @{ at = 96;  id = "markers"; title = "write the install markers" }
+  @{ at = 4;   id = "gpu";     title = "" },
+  @{ at = 8;   id = "python";  title = "" },
+  @{ at = 20;  id = "deps";    title = "" },
+  @{ at = 30;  id = "torch";   title = "" },
+  @{ at = 38;  id = "attn";    title = "" },
+  @{ at = 42;  id = "pkg";     title = "" },
+  @{ at = 58;  id = "weights"; title = "" },
+  @{ at = 82;  id = "files";   title = "" },
+  @{ at = 88;  id = "smoke";   title = "" },
+  @{ at = 96;  id = "markers"; title = "" }
 )
 
 function Write-Progress-Line([int]$Pct, [string]$Msg) {

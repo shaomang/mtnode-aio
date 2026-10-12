@@ -93,7 +93,7 @@ function Find-Python {
   throw "Python 3.10+ not found"
 }
 
-Step-Begin "python" "check Python 3.10+" 3
+Step-Begin "python" "" 3
 $pyInfo = Find-Python
 $py = $pyInfo.exe
 $pyArgs = $pyInfo.args
@@ -102,7 +102,7 @@ Step-Ok "python" 8
 
 Write-Host "[llama-install] creating venv..."
 Write-Host "[llama-install] progress: 15"
-Step-Begin "venv" "create the .venv virtual environment" 10
+Step-Begin "venv" "" 10
 if ($py -eq "py") {
   & py @pyArgs -m venv .venv
 } else {
@@ -120,7 +120,7 @@ $pipIndex = $env:PIP_INDEX_URL
 $pipHost = $env:PIP_TRUSTED_HOST
 Write-Host "[llama-install] pip install requirements..."
 Write-Host "[llama-install] progress: 25"
-Step-Begin "pip" "install the Python dependencies (Tsinghua mirror)" 18
+Step-Begin "pip" "" 18
 & $venvPy -m pip install --upgrade pip -i $pipIndex --trusted-host $pipHost
 Write-Host "[llama-install] progress: 40"
 & $venvPy -m pip install -r requirements.txt -i $pipIndex --trusted-host $pipHost
@@ -176,7 +176,7 @@ foreach ($variant in $cudaVariants) {
   $url = "https://github.com/ggml-org/llama.cpp/releases/download/$release/$zipName"
   Write-Host "[llama-install] downloading llama.cpp $release ($variant)..."
   Write-Host "[llama-install] progress: 65"
-  Step-Begin "server" "download the llama.cpp llama-server binary" 45 "release $release | $variant"
+  Step-Begin "server" "" 45 "release $release | $variant"
   if (Invoke-Download -Url $url -Out $zipPath) {
     $downloaded = $true
     break
@@ -228,7 +228,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "models") | Out
 
 Write-Host "[llama-install] smoke test import..."
 Write-Host "[llama-install] progress: 92"
-Step-Begin "smoke" "smoke: import fastapi and app.server" 88
+Step-Begin "smoke" "" 88
 # There used to be a `pip uninstall -y uvloop` line here (uvicorn[standard] pulls it on Linux and it
 # cannot install on Windows). It is gone on purpose: it achieved nothing (this pack requirements
 # never list uvloop) while spawning one more native child process -- and the PowerShell the host

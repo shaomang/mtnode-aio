@@ -91,18 +91,18 @@ else {
 
 # Progress threshold -> step id (identical to steps.json in the same directory). The original progress numbers keep their meaning exactly.
 Step-ProgressMap @(
-  @{ at = 4;   id = "nvidia";  title = "detect NVIDIA GPU / driver / VRAM" },
-  @{ at = 6;   id = "env";     title = "check RAM and free disk space" },
-  @{ at = 10;  id = "python";  title = "pick Python (uv 3.11 preferred)" },
-  @{ at = 12;  id = "venv";    title = "create the .venv virtual environment" },
-  @{ at = 22;  id = "torch";   title = "install CUDA torch 2.8.0" },
-  @{ at = 30;  id = "torch_ok";title = "verify torch cuda.is_available()" },
-  @{ at = 34;  id = "reqs";    title = "install requirements.txt" },
-  @{ at = 44;  id = "pkg";     title = "install the sensenova_u1 inference package (source)" },
-  @{ at = 58;  id = "weights"; title = "download the SenseNova-U1.5-8B-MoT weights" },
-  @{ at = 82;  id = "files";   title = "verify the project file manifest" },
-  @{ at = 86;  id = "smoke";   title = "mock smoke (start service -> /health -> generate -> concurrent 429)" },
-  @{ at = 96;  id = "markers"; title = "write the install markers" }
+  @{ at = 4;   id = "nvidia";  title = "" },
+  @{ at = 6;   id = "env";     title = "" },
+  @{ at = 10;  id = "python";  title = "" },
+  @{ at = 12;  id = "venv";    title = "" },
+  @{ at = 22;  id = "torch";   title = "" },
+  @{ at = 30;  id = "torch_ok";title = "" },
+  @{ at = 34;  id = "reqs";    title = "" },
+  @{ at = 44;  id = "pkg";     title = "" },
+  @{ at = 58;  id = "weights"; title = "" },
+  @{ at = 82;  id = "files";   title = "" },
+  @{ at = 86;  id = "smoke";   title = "" },
+  @{ at = 96;  id = "markers"; title = "" }
 )
 
 # ---------------------------------------------------------------- output and result markers

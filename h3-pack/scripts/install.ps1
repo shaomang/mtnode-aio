@@ -1,32 +1,44 @@
 # =============================================================================
-# MiniMax H3 本地视频后端 —— **逐步骤安装编排**
+# MiniMax H3 local video backend -- step-by-step install orchestration
 #
-# 为什么有这份脚本：以前 h3 的 installProject 只做「检查磁盘 → 直接把活交给 Agent」，
-# 安装过程在界面里只有一句「Agent 正在安装…」，装到哪、哪一步炸了都看不见。
-# 现在把已有的两份包内脚本按步骤串起来（都还在，逻辑一行没搬），每一步打一条步骤行，
-# 安装窗就能列出「装 ComfyUI venv / 装 torch / 下载权重…」并停死在失败那一步。
+# Why this script exists: installProject used to only "check the disk -> hand the work to
+# the Agent", so the UI showed a single "Agent is installing..." line and nobody could see
+# which step was running or which one blew up. This script chains the two existing pack
+# scripts into steps (both are still there, not one line of their logic moved) and prints a
+# step line per step, so the install window lists "ComfyUI venv / torch / weights ..." and
+# stops on the failing step.
 #
-# 复用（不改语义）：
-#   scripts/setup_env.ps1     建立隔离 ComfyUI venv + CUDA torch + 自定义节点
-#                             （-SourceOnly 只保证 ComfyUI 源码在场，本轮新增）
-#   scripts/download_models.ps1  从 ModelScope 下载 MiniMax H3 权重（失败回退 hf-mirror）
+# Reused as-is (semantics unchanged):
+#   scripts/setup_env.ps1        isolated ComfyUI venv + CUDA torch + custom nodes
+#                                (-SourceOnly only makes sure the ComfyUI sources are there)
+#   scripts/download_models.ps1  MiniMax H3 weights from ModelScope (falls back to hf-mirror)
 #
-# 步骤 id 与同目录 steps.json 一致：disk / comfy / venv / nodes / weights / smoke
-# 进步协议见 scripts/step.ps1。脚本可重跑（子脚本本身幂等 / 可续传）。
+# Step ids match steps.json in the same directory: disk / comfy / venv / nodes / weights / smoke
+# Step protocol lives in scripts/step.ps1. The script is re-runnable (the sub-scripts are
+# idempotent / resumable themselves).
 #
-# 为什么 comfy 与 venv 要分开判据（上一版的坑，本轮修的就是它）：
-#   上一版只要 ComfyUI\main.py 已存在，就把「源码 + 环境」整段跳过（setup_env.ps1 根本没跑），
-#   随后 venv 步按「venv\Scripts\python.exe 不存在」判失败。于是**任何「源码已拉下来、venv 还没建」**
-#   的现场（正常的断点续装 / 上次装到一半）都会卡在 venv，报「隔离 venv 没建起来」。
-#   现在：comfy 步只管源码（缺才拉）；venv 步**每次都跑** setup_env.ps1（幂等），再按实测复检。
+# Why comfy and venv use separate criteria (the trap fixed here): the previous version
+# skipped both "sources" and "environment" as soon as ComfyUI\main.py existed (so setup_env.ps1
+# never ran), and the venv step then failed on "venv\Scripts\python.exe is missing". Every
+# site with sources pulled but no venv yet (a normal resume, or a half-finished install) was
+# stuck on venv reporting "the isolated venv was not created".
+# Now: the comfy step only manages the sources (pulled when missing); the venv step ALWAYS
+# runs setup_env.ps1 (idempotent) and then re-checks by measurement.
 #
-# 失败口径（本轮新增）：
-#   · 失败原因按证据分档（环境准备没跑成 / venv 在但 cuda 不可用 / comfy_kitchen 导入失败），
-#     不再一律甩「驱动与 CUDA 档位不匹配」；
-#   · 失败步的 message 直接附上子脚本输出的**关键报错行**（尾部），用户不必自己翻整段日志；
-#   · 失败时把后面没跑到的步骤显式标 skip（安装窗显示「已跳过」），一眼看出哪几步压根没跑。
+# Failure reporting: reasons are split by evidence (environment prep did not finish / venv
+# exists but cuda is unavailable / importing comfy_kitchen failed) instead of always blaming
+# "driver and CUDA tier mismatch"; the failing step message carries the key error lines from
+# the sub-script tail, so the user does not have to dig through the whole log; the steps that
+# never ran are explicitly marked skip (the install window shows "skipped").
 #
-# 用法：
+# HARD RULE -- THIS FILE MUST STAY PURE ASCII (every byte <= 0x7F) AND MUST KEEP NO BOM:
+#   the host runs install scripts with powershell.exe (Windows PowerShell 5.1), which decodes
+#   a BOM-less .ps1 using the machine's ANSI code page (cp936 on Chinese Windows). Non-ASCII
+#   bytes get decoded as mojibake and a trailing byte can swallow the following `}` / `'` /
+#   `"`, so the parser dies with "Unexpected token '}'" and the install cannot even start.
+#   Step titles and hints are localized in steps.json, never here.
+#
+# Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallDir "D:\mtnode\h3"
 # =============================================================================
 param(
@@ -42,15 +54,23 @@ $ErrorActionPreference = "Stop"
 $stepLib = Join-Path $PSScriptRoot "step.ps1"
 if (Test-Path $stepLib) { . $stepLib }
 else {
-  function Write-MTStepJson { param([string]$Id,[string]$Title,[string]$Status,[object]$Pct,[string]$Message)
-    $o = [ordered]@{ mtnodeStep = 1; id = $Id; title = $Title; status = $Status }
+  # Message stays [object]: Step-Fail may receive a structured failure ({ code; params; message })
+  # and typing it [string] would coerce that ordered dictionary into its type name.
+  function Write-MTStepJson { param([string]$Id,[string]$Title,[string]$Status,[object]$Pct,[object]$Message)
+    $o = [ordered]@{ mtnodeStep = 1; id = $Id; status = $Status }
+    if ("$Title" -ne "") { $o.title = $Title }
     if ("$Pct" -ne "") { $n = 0; if ([int]::TryParse("$Pct",[ref]$n)) { $o.pct = $n } }
-    if ($Message) { $o.message = $Message }
-    Write-Host ($o | ConvertTo-Json -Compress -Depth 3)
+    if ($null -ne $Message) {
+      if ($Message -is [string]) { if ("$Message" -ne "") { $o.message = $Message } }
+      elseif ($Message -is [System.Collections.IDictionary]) {
+        foreach ($k in @("code", "params", "message")) { if ($Message.Contains($k) -and $null -ne $Message[$k] -and "$($Message[$k])" -ne "") { $o[$k] = $Message[$k] } }
+      } else { $o.message = "$Message" }
+    }
+    Write-Host ($o | ConvertTo-Json -Compress -Depth 4)
   }
   function Step-Begin { param([string]$Id,[string]$Title,[object]$Pct,[string]$Message) Write-MTStepJson $Id $Title "run" $Pct $Message }
   function Step-Ok { param([string]$Id,[object]$Pct,[string]$Message) Write-MTStepJson $Id "" "ok" $Pct $Message }
-  function Step-Fail { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "fail" "" $Message }
+  function Step-Fail { param([string]$Id,[object]$Message) Write-MTStepJson $Id "" "fail" "" $Message }
   function Step-Skip { param([string]$Id,[string]$Message) Write-MTStepJson $Id "" "skip" "" $Message }
 }
 
@@ -59,14 +79,24 @@ $VenvDir = Join-Path $ComfyRoot "venv"
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
 $ComfyMain = Join-Path $ComfyRoot "main.py"
 
-# 步骤清单（与同目录 steps.json 一致，顺序即执行顺序）。
-# 失败收尾靠它把「还没跑过」的步骤显式标 skip —— 用户在安装窗一眼看出哪几步压根没跑。
+# Step manifest (same ids as steps.json in this directory; the order is the execution order).
+# The failure path uses it to mark every step that never ran as skip -- the user sees at a
+# glance which steps did not run at all.
+#
+# Failure contract: this script prints an English `message` and a stable `code` (+ params) on a
+# failing step. The localized reason and advice live in this pack's steps.json `messages` table
+# and the install window resolves the code -- that is why this file has to stay pure ASCII.
+#
+# The pip failure path is the one users hit most: when all four indexes are exhausted the pip
+# output in the step log tail says "No matching distribution found for <package>" -- that line
+# is what names the missing package, and the step message carries it as the `tail` param.
 $StepOrder = @("disk", "comfy", "venv", "nodes", "weights", "smoke")
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Write-Host "[h3-install] install dir: $InstallDir"
 
-# 子脚本输出的环形缓冲（只留最后 200 行）：失败时从里面摘「关键报错行」写进失败步的 message。
+# Ring buffer for the sub-script output (only the last 200 lines): on failure the key error
+# lines are pulled out of it and written into the message of the failing step.
 $script:SubTail = New-Object System.Collections.ArrayList
 $script:SubBad = $false
 function Add-SubTail {
@@ -75,11 +105,12 @@ function Add-SubTail {
   while ($script:SubTail.Count -gt 200) { $script:SubTail.RemoveAt(0) }
 }
 
-# 摘「关键报错行」：命中报错字样的最后几行，单行拼接（安装窗那一步第二行直接显示它）；
-# 一行都没命中就退回最后 2 行普通输出。全空则返回空串。
+# Pull the "key error lines": the last few lines matching error wording, joined on one line
+# (the install window shows that as the second line of the step); when nothing matches, fall
+# back to the last 2 ordinary lines. Empty when there is nothing at all.
 function Get-ErrorTail {
   param([int]$MaxLines = 3, [int]$MaxChars = 600)
-  $pat = '(?i)(error|failed|failure|traceback|exception|no matching distribution|could not|cannot|unable|not found|timed out|denied|fatal|abort|失败|错误|超时|拒绝|找不到|无法)'
+  $pat = '(?i)(error|failed|failure|traceback|exception|no matching distribution|could not|cannot|unable|not found|timed out|denied|fatal|abort)'
   $all = @()
   foreach ($l in $script:SubTail) {
     $s = ([string]$l).Trim()
@@ -93,32 +124,38 @@ function Get-ErrorTail {
   return $txt
 }
 
-# 失败步的 message：一句人话 + 子脚本输出尾部的关键报错行
-function New-FailText {
-  param([string]$Head, [string]$Tail)
-  $t = ([string]$Tail).Trim()
-  if ($t) { return ($Head + " ｜ 报错尾部：" + $t) }
-  return $Head
+# Structured failure: a stable error code plus dynamic values. The install window renders the
+# localized (Chinese) reason and advice by looking the code up in this pack's steps.json
+# `messages` table -- this script stays pure ASCII, so no human readable text belongs here.
+function New-FailCode {
+  param([string]$Code, [hashtable]$Params, [string]$Message)
+  $o = [ordered]@{ code = $Code }
+  if ($Params -and $Params.Count) { $o.params = $Params }
+  $o.message = $Message
+  return $o
 }
 
-# 失败收尾：把这一步之后还没跑过的步骤标「已跳过」（不留在「待执行」上）
+# Failure wrap-up: mark every step after this one that never ran as "skipped" (instead of
+# leaving them in "pending").
 function Skip-AfterStep {
   param([string]$StepId)
   $i = [array]::IndexOf($StepOrder, $StepId)
   if ($i -lt 0) { return }
-  for ($k = $i + 1; $k -lt $StepOrder.Count; $k++) { Step-Skip $StepOrder[$k] "前一步失败，本步未执行" }
+  for ($k = $i + 1; $k -lt $StepOrder.Count; $k++) { Step-Skip $StepOrder[$k] "the previous step failed, this step did not run" }
 }
 
-# 跑一个子脚本：一边**实时**把输出逐行转发给安装窗（长步骤不再整段沉默），
-# 一边把尾部留在环形缓冲里供失败诊断；成败判据两条：退出码 + 输出里的明确失败标记。
+# Run a sub-script: forward its output line by line to the install window in real time (long
+# steps are no longer silent), keep the tail in the ring buffer for failure diagnostics, and
+# judge the outcome by two signals: the exit code and an explicit failure marker in the output.
 function Invoke-SubScript {
   param([string]$Path, [string]$What, [string[]]$ExtraArgs = @())
-  if (-not (Test-Path $Path)) { throw "缺少脚本 $Path（包不完整：请在插件里重装或更新插件资源）" }
+  if (-not (Test-Path $Path)) { throw "script missing: $Path (incomplete pack: reinstall or update the plugin resources)" }
   $script:SubTail.Clear()
   $script:SubBad = $false
   $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Path) + @($ExtraArgs)
-  # pip / git / python 往 stderr 写是常态：Stop 档下 PowerShell 会把它们当终止性错误抛出，
-  # 真正的报错文本反而丢了 —— 这一段临时降到 Continue，让 stderr 老老实实进管道。
+  # pip / git / python write to stderr all the time: under the Stop preference PowerShell turns
+  # those into terminating errors and the real error text is lost -- lower it to Continue for
+  # this section so stderr goes into the pipeline untouched.
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
@@ -136,12 +173,13 @@ function Invoke-SubScript {
   } finally {
     $ErrorActionPreference = $prevEap
   }
-  if ($code -ne 0) { throw "$What 退出码 $code" }
-  if ($script:SubBad) { throw "$What 报告失败（输出里有 ok=false / FAILED / Traceback）" }
+  if ($code -ne 0) { throw "$What exit code $code" }
+  if ($script:SubBad) { throw "$What reported failure (ok=false / FAILED / Traceback in the output)" }
 }
 
-# 探针：跑 venv python 的一小段代码，拿回最后一行输出 + 全部输出（同一个理由：报错在 stderr，
-# 不能让它变成终止性错误）。判定一律看最后一行，报错文本一律附给失败步。
+# Probe: run a small snippet with the venv python and get back its last line plus all output
+# (same reason: errors go to stderr and must not become terminating errors). The verdict
+# always reads the last line, the error text is always attached to the failing step.
 function Invoke-VenvProbe {
   param([string]$Code)
   $prevEap = $ErrorActionPreference
@@ -156,100 +194,100 @@ function Invoke-VenvProbe {
   return @{ Last = $last; Text = $txt }
 }
 
-# -- 1. 磁盘 ------------------------------------------------------------------
-Step-Begin "disk" "检查磁盘空间" 3 "建议预留 ≥${DiskHintGb}GB"
+# -- 1. disk ------------------------------------------------------------------
+Step-Begin "disk" "" 3 "reserve at least ${DiskHintGb}GB"
 try {
   $drive = (Get-Item $InstallDir).PSDrive
   $freeGb = [math]::Round((Get-PSDrive $drive.Name).Free / 1GB, 1)
-  Write-Host "[h3-install] disk free≈${freeGb}GB (hint ≥${DiskHintGb}GB)"
+  Write-Host "[h3-install] disk free ~${freeGb}GB (hint >= ${DiskHintGb}GB)"
   if ($freeGb -lt $DiskHintGb) {
-    Step-Fail "disk" "磁盘剩余约 ${freeGb}GB，低于建议的 ${DiskHintGb}GB（ComfyUI + torch + MiniMax H3 权重要占几十 GB）。清理磁盘或换一个剩余空间足够的安装目录后重跑。"
+    Step-Fail "disk" (New-FailCode "h3.disk.low_space" @{ free = "$freeGb"; want = "$DiskHintGb" } "disk free ${freeGb}GB is below the suggested ${DiskHintGb}GB")
     Skip-AfterStep "disk"
     exit 1
   }
   Step-Ok "disk" 6
 } catch {
-  Step-Fail "disk" "无法读取安装目录所在磁盘的剩余空间：$($_.Exception.Message)"
+  Step-Fail "disk" (New-FailCode "h3.disk.unreadable" @{ err = "$($_.Exception.Message)" } "cannot read the free space of the install drive: $($_.Exception.Message)")
   Skip-AfterStep "disk"
   exit 1
 }
 
-# -- 2. ComfyUI 源码 ----------------------------------------------------------
-Step-Begin "comfy" "准备 ComfyUI 源码" 8
+# -- 2. ComfyUI sources -------------------------------------------------------
+Step-Begin "comfy" "" 8
 try {
   if (Test-Path $ComfyMain) {
-    Step-Ok "comfy" 14 "ComfyUI 已在 $ComfyRoot"
+    Step-Ok "comfy" 14 "ComfyUI already at $ComfyRoot"
   } else {
-    # 源码不在就只拉源码（setup_env -SourceOnly）：venv / torch / 依赖留给下一步统一备齐，
-    # 免得整段环境准备在这里跑一遍、下一步又跑一遍。
-    Invoke-SubScript (Join-Path $PSScriptRoot "setup_env.ps1") "ComfyUI 源码准备" @("-SourceOnly")
-    if (-not (Test-Path $ComfyMain)) { throw "setup_env -SourceOnly 跑完仍找不到 ComfyUI\main.py" }
+    # Sources missing: only pull the sources (setup_env -SourceOnly) and leave venv / torch /
+    # dependencies to the next step, so the environment prep does not run twice.
+    Invoke-SubScript (Join-Path $PSScriptRoot "setup_env.ps1") "ComfyUI source setup" @("-SourceOnly")
+    if (-not (Test-Path $ComfyMain)) { throw "setup_env -SourceOnly finished but ComfyUI\main.py is still missing" }
     Step-Ok "comfy" 14
   }
 } catch {
-  Step-Fail "comfy" (New-FailText "ComfyUI 源码准备失败：$($_.Exception.Message)。多为 git 拉取被网络挡住（脚本先直连再走 ghproxy 镜像）；确认网络后重跑。" (Get-ErrorTail))
+  Step-Fail "comfy" (New-FailCode "h3.comfy.prep_failed" @{ err = "$($_.Exception.Message)"; tail = (Get-ErrorTail) } "ComfyUI source setup failed: $($_.Exception.Message)")
   Skip-AfterStep "comfy"
   exit 1
 }
 
-# -- 3. venv + torch（setup_env.ps1 一并完成；**每次都跑**，幂等） ---------------
-Step-Begin "venv" "建立隔离 venv 与 CUDA torch" 16
+# -- 3. venv + torch (setup_env.ps1 does both; it ALWAYS runs, idempotent) -----
+Step-Begin "venv" "" 16
 try {
   Write-Host "[h3-install] env prep: setup_env.ps1 (idempotent; venv / torch / deps are only topped up when needed)"
-  Invoke-SubScript (Join-Path $PSScriptRoot "setup_env.ps1") "ComfyUI 环境准备"
+  Invoke-SubScript (Join-Path $PSScriptRoot "setup_env.ps1") "ComfyUI environment setup"
   if (-not (Test-Path $VenvPy)) {
-    Step-Fail "venv" (New-FailText "环境准备没跑完（venv 仍不存在 $VenvPy）：最常见的现场是「依赖那一步的 pip 挂了」，而不是「驱动与 CUDA 档位不匹配」—— 本步日志尾部给出的 pip 原始报错才是真判据。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI：若日志里是「No matching distribution found for 某包」，说明该包在这四个源上都还没同步，先重试一次（脚本会自动走下一级源），仍失败就按包名上报。" (Get-ErrorTail))
+    Step-Fail "venv" (New-FailCode "h3.venv.pip_failed" @{ venv = "$VenvPy"; tail = (Get-ErrorTail) } "environment prep did not finish (venv still missing: $VenvPy)")
     Skip-AfterStep "venv"
     exit 1
   }
   $cuda = Invoke-VenvProbe "import torch;print('cuda' if torch.cuda.is_available() else 'nocuda')"
   if ($cuda.Last -ne "cuda") {
-    Step-Fail "venv" (New-FailText "venv 里的 torch 装上了，但 torch.cuda.is_available() 不成立：装的是 CPU 版 torch，或本机 NVIDIA 驱动不支持所装 CUDA 档位（H3 要 cu130）。升级驱动或重装对应档位的 torch 后重跑。" $cuda.Text)
+    Step-Fail "venv" (New-FailCode "h3.venv.cuda_unavailable" @{ tail = $cuda.Text } "torch is installed but torch.cuda.is_available() is false")
     Skip-AfterStep "venv"
     exit 1
   }
   $kit = Invoke-VenvProbe "import comfy_kitchen;print('kitchen_ok')"
   if ($kit.Last -ne "kitchen_ok") {
-    Step-Fail "venv" (New-FailText "venv 里 torch 已就绪（cuda 可用），但 import comfy_kitchen 失败 —— 这多半不是驱动问题，而是 ComfyUI 依赖没装全（pip 依赖缺失），或 torch 档位与 comfy_kitchen 不匹配。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI：先重试一次；若日志里是「No matching distribution found for 某包」，就是该包在四个源上都没同步，按包名上报。" $kit.Text)
+    Step-Fail "venv" (New-FailCode "h3.venv.kitchen_failed" @{ tail = $kit.Text } "torch is ready but importing comfy_kitchen fails")
     Skip-AfterStep "venv"
     exit 1
   }
   Step-Ok "venv" 46
 } catch {
-  Step-Fail "venv" (New-FailText "环境准备失败：$($_.Exception.Message)。pip / torch / git 的原始报错见本步日志尾部。" (Get-ErrorTail))
+  Step-Fail "venv" (New-FailCode "h3.venv.prep_failed" @{ err = "$($_.Exception.Message)"; tail = (Get-ErrorTail) } "environment prep failed: $($_.Exception.Message)")
   Skip-AfterStep "venv"
   exit 1
 }
 
-# -- 4. 自定义节点 -------------------------------------------------------------
-Step-Begin "nodes" "安装 ComfyUI 依赖与自定义节点" 30
+# -- 4. custom nodes ----------------------------------------------------------
+Step-Begin "nodes" "" 30
 try {
   $nodes = Join-Path $ComfyRoot "custom_nodes"
   $nodeCount = if (Test-Path $nodes) { (Get-ChildItem $nodes -Directory -ErrorAction SilentlyContinue | Measure-Object).Count } else { 0 }
   if ($nodeCount -le 0) {
-    throw "custom_nodes 里没有任何自定义节点：ComfyUI 依赖 / 节点没装上（看本步日志里 pip 与 git 的报错）"
+    throw "custom_nodes holds no custom node: the ComfyUI dependencies / nodes are not installed (see the pip and git errors in this step's log)"
   }
-  Write-Host "[h3-install] custom_nodes: $nodeCount 个"
+  Write-Host "[h3-install] custom_nodes: $nodeCount"
   Step-Ok "nodes" 55
 } catch {
-  Step-Fail "nodes" (New-FailText "ComfyUI 依赖 / 自定义节点没装齐：$($_.Exception.Message)。" (Get-ErrorTail))
+  Step-Fail "nodes" (New-FailCode "h3.nodes.incomplete" @{ err = "$($_.Exception.Message)"; tail = (Get-ErrorTail) } "ComfyUI dependencies / custom nodes are incomplete: $($_.Exception.Message)")
   Skip-AfterStep "nodes"
   exit 1
 }
 
-# -- 5. 权重 ------------------------------------------------------------------
-Step-Begin "weights" "下载 MiniMax H3 权重" 58
+# -- 5. weights ---------------------------------------------------------------
+Step-Begin "weights" "" 58
 try {
-  Invoke-SubScript (Join-Path $PSScriptRoot "download_models.ps1") "MiniMax H3 权重下载"
+  Invoke-SubScript (Join-Path $PSScriptRoot "download_models.ps1") "MiniMax H3 weights download"
   Step-Ok "weights" 90
 } catch {
-  Step-Fail "weights" (New-FailText "权重下载失败：$($_.Exception.Message)。权重来自 ModelScope（失败回退 hf-mirror），确认网络可达后重跑，已下载分片会复用。" (Get-ErrorTail))
+  Step-Fail "weights" (New-FailCode "h3.weights.download_failed" @{ err = "$($_.Exception.Message)"; tail = (Get-ErrorTail) } "weight download failed: $($_.Exception.Message)")
   Skip-AfterStep "weights"
   exit 1
 }
 
-# -- 6. 收尾 ------------------------------------------------------------------
-Step-Begin "smoke" "校验安装结果并写标记" 92
+# -- 6. wrap-up ---------------------------------------------------------------
+Step-Begin "smoke" "" 92
 try {
   $missing = @()
   foreach ($p in @(
@@ -259,11 +297,11 @@ try {
     (Join-Path $ComfyRoot "models\text_encoders"),
     (Join-Path $ComfyRoot "models\vae")
   )) { if (-not (Test-Path $p)) { $missing += $p } }
-  if ($missing.Count) { throw ("缺件：" + ($missing -join " / ")) }
+  if ($missing.Count) { throw ("missing: " + ($missing -join " / ")) }
   New-Item -ItemType File -Force -Path (Join-Path $InstallDir ".install-ok") | Out-Null
   Step-Ok "smoke" 100
 } catch {
-  Step-Fail "smoke" "安装收尾校验不通过：$($_.Exception.Message)。缺的目录 / 文件写在上面，补齐后重跑本脚本。"
+  Step-Fail "smoke" (New-FailCode "h3.smoke.files_missing" @{ err = "$($_.Exception.Message)" } "final install check failed: $($_.Exception.Message)")
   Skip-AfterStep "smoke"
   exit 1
 }

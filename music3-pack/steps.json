@@ -6,11 +6,73 @@
     "en": "Minimax Music 3"
   },
   "steps": [
-    { "id": "disk", "title": "检查磁盘空间", "hint": "建议预留 ≥65GB（Diffusers + 官方权重约 53GB）。空间不够判 low_disk，停在这一步。" },
-    { "id": "torch", "title": "建立 venv 并安装 CUDA torch", "hint": "venv 用 system-site-packages（沿用本机已有的 CUDA torch），torch 档位不对会在这一步报错。" },
-    { "id": "deps", "title": "安装推理依赖（diffusers 固定 commit）", "hint": "diffusers 依赖来自 GitHub：直连失败会走 ghproxy 镜像。" },
-    { "id": "weights", "title": "下载官方权重", "hint": "ModelScope 优先，失败回退 hf-mirror；权重约 53GB，断点续传。" },
-    { "id": "files", "title": "校验权重文件清单" },
-    { "id": "smoke", "title": "冒烟：导入并写安装标记" }
+    {
+      "id": "disk",
+      "title": "检查磁盘空间",
+      "hint": "建议预留 ≥65GB（Diffusers + 官方权重约 53GB）。空间不够判 low_disk，停在这一步。",
+      "messages": {
+        "music3.disk.low_space": {
+          "zh": "磁盘剩余约 {free}GB，低于建议的 {want}GB（官方权重约 53GB）。清理磁盘或换一个剩余空间足够的安装目录后重跑，或用 -Force 跳过本闸门。",
+          "en": "the disk has about {free}GB free, below the suggested {want}GB (the official weights are about 53GB). Free up space or pick a different install directory and re-run, or pass -Force to skip this gate."
+        },
+        "music3.disk.unreadable": {
+          "zh": "无法读取安装目录所在磁盘的剩余空间：{err}。",
+          "en": "cannot read the free space of the drive holding the install directory: {err}."
+        }
+      }
+    },
+    {
+      "id": "torch",
+      "title": "建立 venv 并安装 CUDA torch",
+      "hint": "venv 用 system-site-packages（沿用本机已有的 CUDA torch），torch 档位不对会在这一步报错。",
+      "messages": {
+        "music3.torch.cuda_unavailable": {
+          "zh": "torch 可用但 cuda.is_available() 为 false：本机 venv 沿用系统 torch，请确认系统 Python 里装的是 CUDA 版 torch 并升级到匹配的驱动。",
+          "en": "torch is importable but cuda.is_available() is false: this venv reuses the system torch, so make sure the system Python has a CUDA build of torch and upgrade to a matching driver."
+        }
+      }
+    },
+    {
+      "id": "deps",
+      "title": "安装推理依赖（diffusers 固定 commit）",
+      "hint": "diffusers 依赖来自 GitHub：直连失败会走 ghproxy 镜像。",
+      "messages": {
+        "music3.deps.prep_failed": {
+          "zh": "环境准备失败：{err}。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI，requirements 里的 diffusers 还会再走 GitHub + ghproxy 镜像 —— 若日志里是「No matching distribution found for 某包」，就是该包在四个源上都没同步、按包名上报；否则看本步日志尾部的原始报错后重跑。",
+          "en": "environment prep failed: {err}. pip already tried Tsinghua / Aliyun / USTC / official PyPI in order, and the diffusers entry in requirements walks GitHub + the ghproxy mirror too - if the log says 'No matching distribution found for <package>', that package is not synced on those four mirrors (report the package name); otherwise read the raw error in this step's log tail and re-run."
+        }
+      }
+    },
+    {
+      "id": "weights",
+      "title": "下载官方权重",
+      "hint": "ModelScope 优先，失败回退 hf-mirror；权重约 53GB，断点续传。",
+      "messages": {
+        "music3.weights.download_failed": {
+          "zh": "权重下载失败：{err}。App 权重走 hf-mirror，Comfy 权重走 ModelScope；确认网络后重跑，已完成分片会复用。",
+          "en": "weight download failed: {err}. The app weights come from hf-mirror and the Comfy weights from ModelScope; make sure the network reaches them and re-run - finished shards are reused."
+        }
+      }
+    },
+    {
+      "id": "files",
+      "title": "校验权重文件清单",
+      "messages": {
+        "music3.files.incomplete": {
+          "zh": "权重文件不完整：{err}。重跑 scripts\\download_models.ps1 -Target app 补齐（支持续传）。",
+          "en": "the weight files are incomplete: {err}. Re-run scripts\\download_models.ps1 -Target app to fill the gaps (it resumes)."
+        }
+      }
+    },
+    {
+      "id": "smoke",
+      "title": "冒烟：导入并写安装标记",
+      "messages": {
+        "music3.smoke.import_failed": {
+          "zh": "冒烟导入失败：{err}。依赖装了一半或版本冲突，看这一步日志后重跑安装。",
+          "en": "the smoke import failed: {err}. Dependencies are half installed or version-conflicted; read this step's log and re-run the install."
+        }
+      }
+    }
   ]
 }

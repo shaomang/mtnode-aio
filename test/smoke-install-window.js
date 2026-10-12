@@ -638,9 +638,10 @@ if (process.platform !== "win32") {
     ok(callLogA.indexOf("sourceOnly=True") < 0, "源码已在时 comfy 步不重复调 setup_env（不做无用功）");
     ok(h3Step(snapA, "comfy").status === "ok", "comfy 步照旧判 ok（源码已在）");
     const venvA = h3Step(snapA, "venv");
+    const msgA = String(venvA.messageText || venvA.message || "");
     ok(venvA.status === "fail", "停在 venv 步（实得 " + venvA.status + "）");
-    ok(String(venvA.message || "").indexOf("报错尾部") >= 0, "失败原因按证据分档并附报错尾部");
-    ok(String(venvA.message || "").indexOf("torch==2.9.1+cu130") >= 0, "报错尾部带的是子脚本里的真实报错行（不是「驱动与 CUDA 档位不匹配」那句套话）");
+    ok(msgA.indexOf("报错尾部") >= 0, "失败原因按 code 查 steps.json 的 messages 表，渲染出中文（含「报错尾部」）");
+    ok(msgA.indexOf("torch==2.9.1+cu130") >= 0, "报错尾部带的是子脚本里的真实报错行（不是「驱动与 CUDA 档位不匹配」那句套话）");
     for (const id of ["nodes", "weights", "smoke"]) {
       ok(h3Step(snapA, id).status === "skip", id + " 步标「已跳过」（不是在「待执行」上吊着）");
     }
@@ -746,7 +747,7 @@ if (process.platform !== "win32") {
       fs.writeFileSync(path.join(sitePkgs, "torch.py"), torchStub(false), "utf8");
       const rC1 = runInstall(tmpC);
       const c1 = h3Collect(String(rC1.stdout || ""), rC1.status);
-      const msgC1 = String(h3Step(c1.snap, "venv").message || "");
+      const msgC1 = String(h3Step(c1.snap, "venv").messageText || h3Step(c1.snap, "venv").message || "");
       ok(h3Step(c1.snap, "venv").status === "fail", "[13.3①] cuda 不可用 ⇒ 停在 venv 步");
       ok(msgC1.indexOf("torch.cuda.is_available()") >= 0 && msgC1.indexOf("CPU 版 torch") >= 0, "[13.3①] 原因是「CPU 版 torch / 驱动档位」，不是「venv 没建起来」");
       ok(msgC1.indexOf("仍不存在") < 0, "[13.3①] 不再把这类失败误报成「venv 没建起来」");
@@ -758,7 +759,7 @@ if (process.platform !== "win32") {
       fs.rmSync(path.join(sitePkgs, "comfy_kitchen.py"), { force: true });
       const rC2 = runInstall(tmpC);
       const c2 = h3Collect(String(rC2.stdout || ""), rC2.status);
-      const msgC2 = String(h3Step(c2.snap, "venv").message || "");
+      const msgC2 = String(h3Step(c2.snap, "venv").messageText || h3Step(c2.snap, "venv").message || "");
       ok(h3Step(c2.snap, "venv").status === "fail", "[13.3②] comfy_kitchen 缺失 ⇒ 停在 venv 步");
       ok(msgC2.indexOf("comfy_kitchen") >= 0 && msgC2.indexOf("ComfyUI 依赖没装全") >= 0, "[13.3②] 原因指向 comfy_kitchen / ComfyUI 依赖，与 cuda 那条分开");
       ok(msgC2.indexOf("No module named") >= 0, "[13.3②] 失败步带上探针的真实报错行");
@@ -768,6 +769,38 @@ if (process.platform !== "win32") {
       } catch {}
     }
   }
+}
+
+/* ── [13.5] 失败文案：脚本只打 code + utils，中文文案从 steps.json 查表 ──
+   口径：h3 / music3 的 install.ps1 必须纯 ASCII（PS 5.1 在中文 Windows 上按 ANSI 解码无 BOM 的
+   .ps1，中文会把语法解崩），所以给人看的失败原因与建议搬进了 steps.json 的 `messages` 表。
+   这一节钉住协议两端：步骤行里的 code + params 被解析出来、并按该步的文案表渲染成中文；
+   表里查不到（老包 / 老脚本）时退回脚本自己打的英文 message。 */
+console.log("\n[13.5] 失败文案走 code + steps.json messages 表（英文兜底）");
+{
+  const h3man = steps.normManifest(h3StepsMan);
+  const diskStep = h3man.steps.find((s) => s.id === "disk");
+  ok(!!(diskStep && diskStep.messages), "h3 steps.json 的 disk 步带 messages 文案表");
+  const parsed = steps.parseStepLine(
+    '{"mtnodeStep":1,"id":"disk","status":"fail","code":"h3.disk.low_space","params":{"free":"12.5","want":"70"},"message":"disk free 12.5GB is below the suggested 70GB"}',
+  );
+  ok(!!parsed && parsed.step.code === "h3.disk.low_space", "步骤行里的 code 被解析出来");
+  ok(!!parsed && parsed.step.params && parsed.step.params.free === "12.5", "params 一并解析（free / want）");
+  const snapD = steps.createSnapshot({ steps: h3man.steps });
+  steps.applyStep(snapD, parsed.step);
+  const diskRow = snapD.steps.find((s) => s.id === "disk") || {};
+  const diskMsg = String(diskRow.messageText || diskRow.message || "");
+  ok(diskMsg.indexOf("12.5") >= 0 && diskMsg.indexOf("70") >= 0, "[13.5] 参数替换进中文文案（实得：" + diskMsg.slice(0, 40) + "…）");
+  ok(/[\u4e00-\u9fff]/.test(diskMsg), "[13.5] 安装窗看到的是中文（脚本里只有英文）");
+  ok(snapD.error === diskMsg, "[13.5] 会话级 error 也取本地化文案（「交给会话修复」的载荷跟着中文）");
+  /* 老包 / 老脚本：没有文案表 ⇒ 退回脚本英文 message */
+  const snapE = steps.createSnapshot({ steps: [{ id: "disk", title: "disk" }] });
+  steps.applyStep(snapE, parsed.step);
+  const fbRow = snapE.steps.find((s) => s.id === "disk") || {};
+  ok(
+    String(fbRow.messageText || fbRow.message || "").indexOf("disk free 12.5GB") >= 0,
+    "[13.5] 表里查不到时就退回脚本英文 message（老包不炸）",
+  );
 }
 
 /* ── [13.4] 实时流式：子脚本还在跑，它的输出就已经到安装窗了 ──

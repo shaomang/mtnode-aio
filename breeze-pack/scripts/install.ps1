@@ -113,14 +113,14 @@ $WEIGHTS_REPO = if ($env:BREEZE_WEIGHTS_REPO) { $env:BREEZE_WEIGHTS_REPO } else 
 # progress numbers keep their old meaning, this layer only translates "how far the progress got"
 # into "which step".
 Step-ProgressMap @(
-  @{ at = 4;   id = "python";  title = "check Python 3.10+" },
-  @{ at = 10;  id = "venv";    title = "create the .venv virtual environment" },
-  @{ at = 20;  id = "engine";  title = "clone the breeze-tts inference engine" },
-  @{ at = 30;  id = "deps";    title = "install dependencies (gradio pinned)" },
-  @{ at = 54;  id = "torch";   title = "install CUDA torch" },
-  @{ at = 78;  id = "weights"; title = "download the Breeze TTS 2 weights" },
-  @{ at = 96;  id = "ffmpeg";  title = "download a portable ffmpeg (optional)" },
-  @{ at = 98;  id = "smoke";   title = "smoke: import the engine and write the install marker" }
+  @{ at = 4;   id = "python";  title = "" },
+  @{ at = 10;  id = "venv";    title = "" },
+  @{ at = 20;  id = "engine";  title = "" },
+  @{ at = 30;  id = "deps";    title = "" },
+  @{ at = 54;  id = "torch";   title = "" },
+  @{ at = 78;  id = "weights"; title = "" },
+  @{ at = 96;  id = "ffmpeg";  title = "" },
+  @{ at = 98;  id = "smoke";   title = "" }
 )
 Say "step protocol ready (the install window lists steps from steps.json)"
 

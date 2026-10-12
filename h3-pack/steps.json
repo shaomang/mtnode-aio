@@ -6,11 +6,85 @@
     "en": "Minimax H3 Local Video"
   },
   "steps": [
-    { "id": "disk", "title": "检查磁盘空间", "hint": "建议预留 ≥70GB（ComfyUI + torch + MiniMax H3 权重）。空间不够脚本会判 low_disk 并停在这一步。" },
-    { "id": "comfy", "title": "准备 ComfyUI 源码" },
-    { "id": "venv", "title": "建立隔离 venv 与 CUDA torch", "hint": "ComfyUI 用**隔离** venv（禁用 system-site-packages），按驱动装 CUDA torch；torch 装错档位会在这一步报出来。" },
-    { "id": "nodes", "title": "安装 ComfyUI 依赖与自定义节点", "hint": "含 EasyCache / Frame-Interpolation（RIFE）/ 超分用的 UpscaleModelLoader 等；某个节点拉不下来就在这一步的日志里。" },
-    { "id": "weights", "title": "下载 MiniMax H3 权重", "hint": "ModelScope 优先（Comfy-Org/MiniMax-H3），git clone 失败回退 ghproxy；权重很大，可重跑续传。" },
-    { "id": "smoke", "title": "校验安装结果并写标记" }
+    {
+      "id": "disk",
+      "title": "检查磁盘空间",
+      "hint": "建议预留 ≥70GB（ComfyUI + torch + MiniMax H3 权重）。空间不够脚本会判 low_disk 并停在这一步。",
+      "messages": {
+        "h3.disk.low_space": {
+          "zh": "磁盘剩余约 {free}GB，低于建议的 {want}GB（ComfyUI + torch + MiniMax H3 权重要占几十 GB）。清理磁盘或换一个剩余空间足够的安装目录后重跑。",
+          "en": "the disk has about {free}GB free, below the suggested {want}GB (ComfyUI + torch + the MiniMax H3 weights need tens of GB). Free up space or pick a different install directory and re-run."
+        },
+        "h3.disk.unreadable": {
+          "zh": "无法读取安装目录所在磁盘的剩余空间：{err}。",
+          "en": "cannot read the free space of the drive holding the install directory: {err}."
+        }
+      }
+    },
+    {
+      "id": "comfy",
+      "title": "准备 ComfyUI 源码",
+      "messages": {
+        "h3.comfy.prep_failed": {
+          "zh": "ComfyUI 源码准备失败：{err}。多为 git 拉取被网络挡住（脚本先直连再走 ghproxy 镜像）；确认网络后重跑。",
+          "en": "ComfyUI source setup failed: {err}. Usually the git fetch is blocked by the network (the script tries direct first, then the ghproxy mirrors); check the network and re-run."
+        }
+      }
+    },
+    {
+      "id": "venv",
+      "title": "建立隔离 venv 与 CUDA torch",
+      "hint": "ComfyUI 用**隔离** venv（禁用 system-site-packages），按驱动装 CUDA torch；torch 装错档位会在这一步报出来。",
+      "messages": {
+        "h3.venv.pip_failed": {
+          "zh": "环境准备没跑完（venv 仍不存在 {venv}）：最常见的现场是「依赖那一步的 pip 挂了」，而不是「驱动与 CUDA 档位不匹配」—— 本步日志尾部给出的 pip 原始报错才是真判据。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI：若日志里是「No matching distribution found for 某包」，说明该包在这四个源上都还没同步，先重试一次（脚本会自动走下一级源），仍失败就按包名上报。",
+          "en": "environment prep did not finish (venv still missing: {venv}): the usual cause is pip failing in the dependency phase, NOT a driver / CUDA tier mismatch - the raw pip error in this step's log tail is the real evidence. pip already tried Tsinghua / Aliyun / USTC / official PyPI in order: if the log says 'No matching distribution found for <package>', that package is not synced on those four mirrors yet; retry once (the script walks to the next mirror) and if it still fails, report the package name."
+        },
+        "h3.venv.cuda_unavailable": {
+          "zh": "venv 里的 torch 装上了，但 torch.cuda.is_available() 不成立：装的是 CPU 版 torch，或本机 NVIDIA 驱动不支持所装 CUDA 档位（H3 要 cu130）。升级驱动或重装对应档位的 torch 后重跑。",
+          "en": "torch is installed in the venv but torch.cuda.is_available() is false: either torch is the CPU build, or the local NVIDIA driver does not support the CUDA tier that was installed (H3 wants cu130). Upgrade the driver or reinstall the matching torch tier and re-run."
+        },
+        "h3.venv.kitchen_failed": {
+          "zh": "venv 里 torch 已就绪（cuda 可用），但 import comfy_kitchen 失败 —— 这多半不是驱动问题，而是 ComfyUI 依赖没装全（pip 依赖缺失），或 torch 档位与 comfy_kitchen 不匹配。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI：先重试一次；若日志里是「No matching distribution found for 某包」，就是该包在四个源上都没同步，按包名上报。",
+          "en": "torch is ready in the venv (cuda available) but importing comfy_kitchen fails - this is usually not a driver problem: the ComfyUI dependencies are incomplete (missing pip packages) or the torch tier does not match comfy_kitchen. pip already tried Tsinghua / Aliyun / USTC / official PyPI in order: retry once; if the log says 'No matching distribution found for <package>', that package is not synced on those four mirrors, so report the package name."
+        },
+        "h3.venv.prep_failed": {
+          "zh": "环境准备失败：{err}。pip / torch / git 的原始报错见本步日志尾部。",
+          "en": "environment prep failed: {err}. The raw pip / torch / git error is in this step's log tail."
+        }
+      }
+    },
+    {
+      "id": "nodes",
+      "title": "安装 ComfyUI 依赖与自定义节点",
+      "hint": "含 EasyCache / Frame-Interpolation（RIFE）/ 超分用的 UpscaleModelLoader 等；某个节点拉不下来就在这一步的日志里。",
+      "messages": {
+        "h3.nodes.incomplete": {
+          "zh": "ComfyUI 依赖 / 自定义节点没装齐：{err}。pip 与 git 的原始报错见本步日志尾部。",
+          "en": "ComfyUI dependencies / custom nodes are incomplete: {err}. The raw pip and git errors are in this step's log."
+        }
+      }
+    },
+    {
+      "id": "weights",
+      "title": "下载 MiniMax H3 权重",
+      "hint": "ModelScope 优先（Comfy-Org/MiniMax-H3），git clone 失败回退 ghproxy；权重很大，可重跑续传。",
+      "messages": {
+        "h3.weights.download_failed": {
+          "zh": "权重下载失败：{err}。权重来自 ModelScope（失败回退 hf-mirror），确认网络可达后重跑，已下载分片会复用。",
+          "en": "weight download failed: {err}. The weights come from ModelScope (falling back to hf-mirror); make sure the network reaches it and re-run - already downloaded shards are reused."
+        }
+      }
+    },
+    {
+      "id": "smoke",
+      "title": "校验安装结果并写标记",
+      "messages": {
+        "h3.smoke.files_missing": {
+          "zh": "安装收尾校验不通过：{err}。缺的目录 / 文件写在上面，补齐后重跑本脚本。",
+          "en": "final install check failed: {err}. The missing directories / files are listed above; fix them and re-run this script."
+        }
+      }
+    }
   ]
 }

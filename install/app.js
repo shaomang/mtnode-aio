@@ -424,8 +424,11 @@
       meta.className = "ins-step-meta";
       const bits = [STATUS_LABEL[s.status] ? STATUS_LABEL[s.status]() : s.status];
       if (s.startedAt && s.endedAt) bits.push(((s.endedAt - s.startedAt) / 1000).toFixed(1) + "s");
-      if (s.status === "fail" && s.message) bits.push(s.message);
-      else if (s.status === "skip" && s.message) bits.push(s.message);
+      /* messageText = 主进程按步骤行里的错误码 + 该包 steps.json 的 messages 表解析出的本地化文案
+         （脚本本身是纯 ASCII，给人看的失败原因与建议不在脚本里）；老包没有 code 时退回脚本 message。 */
+      const stepMsg = s.messageText || s.message;
+      if (s.status === "fail" && stepMsg) bits.push(stepMsg);
+      else if (s.status === "skip" && stepMsg) bits.push(stepMsg);
       meta.textContent = bits.join(" · ");
       body.appendChild(title);
       body.appendChild(meta);
