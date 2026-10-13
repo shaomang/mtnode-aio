@@ -1,0 +1,6 @@
+# MTNode weekly disk fallback check.
+# Checks df usage; below 80% it exits immediately, above it runs the log-side cleanup.
+# Installed by scripts/server-disk-check.sh (task 3), see scripts/SERVER-SYNC.md.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+30 4 * * 1 root /usr/local/sbin/mtnode-disk-check.sh

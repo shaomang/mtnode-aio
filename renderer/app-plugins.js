@@ -3676,15 +3676,14 @@ function mcpCopy(text, label) {
 
 function mcpClientSnippet(info) {
   const cmd = (info && info.stdioCommand) || {};
-  return JSON.stringify(
-    {
-      mcpServers: {
-        mtnode: { command: cmd.node || "node", args: [cmd.script || "mcp-stdio.js"] },
-      },
-    },
-    null,
-    2,
-  );
+  /* 打包态 command = 应用自己的 MTNodeAIO.exe（Electron 二进制）：**必须**连
+     env.ELECTRON_RUN_AS_NODE=1 一起给，否则它会当主程序启动（不起桥、零 jsonrpc）。
+     这份片段与 GET /meta 的 stdioCommand 取自同一真源（mcp-server.js 的 stdioCommand），
+     不再「/meta 说 exe、片段说 node」两套口径。开发态是真 Node，不带 env。 */
+  const env = cmd.env && Object.keys(cmd.env).length ? cmd.env : null;
+  const server = { command: cmd.node || "node", args: [cmd.script || "mcp-stdio.js"] };
+  if (env) server.env = env;
+  return JSON.stringify({ mcpServers: { mtnode: server } }, null, 2);
 }
 
 function paintMcpServerPanel(info) {

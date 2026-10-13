@@ -153,17 +153,17 @@ const USAGE_FIXTURE = {
   to: 0,
   limit: 1000,
   matched: 1500,
-  scope: { calls: 1500, textCalls: 1200, imageCalls: 300, promptTokens: 1234567, outputTokens: 456789, images: 300, unbilled: 12, chargedYuan: 321.4567, costYuan: 322, shortfallYuan: 0.5433, avgMs: 812 },
+  scope: { calls: 1500, textCalls: 1200, imageCalls: 300, promptTokens: 1234567, cacheHitTokens: 1000000, cacheMissTokens: 234567, outputTokens: 456789, images: 300, unbilled: 12, chargedYuan: 321.4567, costYuan: 322, shortfallYuan: 0.5433, avgMs: 812 },
   windows: [
-    { key: "today", label: "今日", from: 0, calls: 42, textCalls: 40, imageCalls: 2, promptTokens: 12345, outputTokens: 6789, images: 2, unbilled: 1, chargedYuan: 5.6789, costYuan: 5.7, shortfallYuan: 0.0211, avgMs: 500 },
-    { key: "7d", label: "近 7 天", from: 0, calls: 1500, textCalls: 1200, imageCalls: 300, promptTokens: 1234567, outputTokens: 456789, images: 300, unbilled: 12, chargedYuan: 321.4567, costYuan: 322, shortfallYuan: 0.5433, avgMs: 812 },
-    { key: "30d", label: "近 30 天", from: 0, calls: 9000, textCalls: 8500, imageCalls: 500, promptTokens: 9000000, outputTokens: 3000000, images: 500, unbilled: 40, chargedYuan: 1234.5678, costYuan: 1235, shortfallYuan: 0.4322, avgMs: 900 },
+    { key: "today", label: "今日", from: 0, calls: 42, textCalls: 40, imageCalls: 2, promptTokens: 12345, cacheHitTokens: 2000, cacheMissTokens: 10345, outputTokens: 6789, images: 2, unbilled: 1, chargedYuan: 5.6789, costYuan: 5.7, shortfallYuan: 0.0211, avgMs: 500 },
+    { key: "7d", label: "近 7 天", from: 0, calls: 1500, textCalls: 1200, imageCalls: 300, promptTokens: 1234567, cacheHitTokens: 1000000, cacheMissTokens: 234567, outputTokens: 456789, images: 300, unbilled: 12, chargedYuan: 321.4567, costYuan: 322, shortfallYuan: 0.5433, avgMs: 812 },
+    { key: "30d", label: "近 30 天", from: 0, calls: 9000, textCalls: 8500, imageCalls: 500, promptTokens: 9000000, cacheHitTokens: 8000000, cacheMissTokens: 1000000, outputTokens: 3000000, images: 500, unbilled: 40, chargedYuan: 1234.5678, costYuan: 1235, shortfallYuan: 0.4322, avgMs: 900 },
   ],
   models: ["deepseek-flash", "gpt-image-2.5-vip"],
   items: [
     { id: "ru_3", at: Date.UTC(2026, 5, 10, 4, 0, 0), userId: "u_a", username: "alice", model: "gpt-image-2.5-vip", kind: "image", images: 2, promptTokens: 0, outputTokens: 0, costYuan: 0.42, chargedYuan: 0.42, shortfallYuan: 0, ms: 3200 },
-    { id: "ru_2", at: Date.UTC(2026, 5, 10, 3, 0, 0), userId: "u_b", username: "bob", model: "deepseek-flash", kind: "text", images: 0, promptTokens: 1000, outputTokens: 500, costYuan: 0.003, chargedYuan: 0, shortfallYuan: 0.003, ms: 800 },
-    { id: "ru_1", at: Date.UTC(2026, 5, 10, 2, 0, 0), userId: "u_a", username: "alice", model: "deepseek-flash", kind: "text", images: 0, promptTokens: 500, outputTokens: 200, costYuan: 0.0012, chargedYuan: 0.0012, shortfallYuan: 0, ms: 420 },
+    { id: "ru_2", at: Date.UTC(2026, 5, 10, 3, 0, 0), userId: "u_b", username: "bob", model: "deepseek-flash", kind: "text", images: 0, promptTokens: 1000, cacheHitTokens: 800, cacheMissTokens: 200, outputTokens: 500, costYuan: 0.003, chargedYuan: 0, shortfallYuan: 0.003, ms: 800 },
+    { id: "ru_1", at: Date.UTC(2026, 5, 10, 2, 0, 0), userId: "u_a", username: "alice", model: "deepseek-flash", kind: "text", images: 0, promptTokens: 500, cacheHitTokens: 400, cacheMissTokens: 100, outputTokens: 200, costYuan: 0.0012, chargedYuan: 0.0012, shortfallYuan: 0, ms: 420 },
   ],
 };
 const fetchStub = async (url, opt) => {
@@ -252,8 +252,8 @@ const findCard = (label) => (byId.get("rlStatCards").children || []).find((c) =>
   ok(cards.length === 3, "三张窗口卡片（今日 / 近 7 天 / 近 30 天），实得 " + cards.length + " 张");
   const todayTxt = (findCard("今日") || mkEl("div")).text();
   ok(/今日（全站）/.test(todayTxt) && /¥5\.6789/.test(todayTxt) && /调用 42 次 · 文本 40 \/ 图像 2（2 张）/.test(todayTxt) &&
-    /tokens 入 12\.3k · 出 6\.8k/.test(todayTxt) && /未计费 1 次 · 欠费未计 ¥0\.0211/.test(todayTxt),
-    "今日卡：实扣 ¥5.6789 主数字 + 次数/文本图像 + tokens + 未计费与欠费：" + JSON.stringify(todayTxt).slice(0, 200));
+    /tokens 命中 2\.0k · 未命中 10\.3k · 出 6\.8k/.test(todayTxt) && /未计费 1 次 · 欠费未计 ¥0\.0211/.test(todayTxt),
+    "今日卡：实扣 ¥5.6789 主数字 + 次数/文本图像 + 三项 token（命中 / 未命中 / 出）+ 未计费与欠费：" + JSON.stringify(todayTxt).slice(0, 220));
   ok(!/耗时|平均/.test(todayTxt), "卡片不做健康度指标（平均耗时等按要求不放进统计卡片）");
   ok((findCard("近 7 天") || mkEl("div")).classList.contains("on") && !(findCard("今日") || mkEl("div")).classList.contains("on"),
     "默认窗口（近 7 天）那张卡高亮");
@@ -263,8 +263,8 @@ const findCard = (label) => (byId.get("rlStatCards").children || []).find((c) =>
   ok(/命中 1,500 条/.test(metaTxt) && /显示最近 3 条/.test(metaTxt) && /上限 1,000 条/.test(metaTxt),
     "明细上方标明命中条数、显示条数与上限（1000）：" + JSON.stringify(metaTxt).slice(0, 160));
   ok(/本次筛选合计 1,500 次（文本 1,200 \/ 图像 300）/.test(metaTxt) && /实扣 ¥321\.4567/.test(metaTxt) &&
-    /tokens 入 1,234,567 \/ 出 456,789/.test(metaTxt) && /未计费 12 次/.test(metaTxt) && /欠费未计 ¥0\.5433/.test(metaTxt),
-    "本次筛选合计：次数 / 文本图像 / 实扣 / tokens / 未计费 / 欠费都在一行里");
+    /tokens 命中 1,000,000 · 未命中 234,567 · 出 456,789/.test(metaTxt) && /未计费 12 次/.test(metaTxt) && /欠费未计 ¥0\.5433/.test(metaTxt),
+    "本次筛选合计：次数 / 文本图像 / 实扣 / 三项 token / 未计费 / 欠费都在一行里");
 
   console.log("[4] 点卡片 = 把明细一起收窄到那个窗口");
   const before = usageCalls().length;
@@ -278,12 +278,19 @@ const findCard = (label) => (byId.get("rlStatCards").children || []).find((c) =>
   console.log("[5] 明细表：列齐 + 未计费行有标记");
   const tableTxt = byId.get("tblRelayUsage").text();
   ok(/时间/.test(tableTxt) && /账号/.test(tableTxt) && /模型/.test(tableTxt) && /类型/.test(tableTxt) &&
-    /入 \/ 出 tokens/.test(tableTxt) && /应扣\(元\)/.test(tableTxt) && /实扣\(元\)/.test(tableTxt) && /耗时\(ms\)/.test(tableTxt),
-    "表格列齐：时间 / 账号 / 模型 / 类型 / 入出 tokens / 应扣 / 实扣 / 耗时");
+    /入·命中 \/ 未命中 \/ 出/.test(tableTxt) && /应扣\(元\)/.test(tableTxt) && /实扣\(元\)/.test(tableTxt) && /耗时\(ms\)/.test(tableTxt),
+    "表格列齐：时间 / 账号 / 模型 / 类型 / 三项 token / 应扣 / 实扣 / 耗时");
   ok(/alice/.test(tableTxt) && /gpt-image-2\.5-vip/.test(tableTxt) && /图像 ×2/.test(tableTxt) && /文本/.test(tableTxt),
     "行内容渲染出来（账号 / 模型 / 文本与图像类型）");
-  ok(/0\.0000（未计费）/.test(tableTxt) && /欠 0\.0030/.test(tableTxt),
-    "实扣为 0 的那次标「（未计费）」并把欠费差额单列（欠 0.0030）");
+  ok(/0（未计费）/.test(tableTxt) && /欠 0\.003/.test(tableTxt),
+    "实扣为 0 的那次标「（未计费）」并把欠费差额单列（欠 0.003）");
+  ok(/命中 800 · 未命中 200 · 出 500/.test(tableTxt), "文本行按三项 token 分列显示（命中 / 未命中 / 出）");
+  /* 明细金额给足精度（8 位小数、去尾零）：0.0012 / 0.003 都不再被写成 0.0000 之类的形态；
+     极小值不许变成科学计数法（科学计数法判定见上一行）。 */
+  /* 明细金额给足精度（8 位小数、去尾零）：0.0012 / 0.003 都不再被写成 0.0000 之类的形态；
+     极小值不许变成科学计数法（/\d+e[-+]\d/ 只认数字后跟指数的形态，日期里的「-」不算）。 */
+  ok(/0\.0012/.test(tableTxt) && /欠 0\.003/.test(tableTxt) && !/\d+e[-+]\d/.test(tableTxt),
+    "应扣 / 实扣按 8 位小数显示（去尾零），欠费单列且不出现科学计数法：" + JSON.stringify(tableTxt).slice(0, 300));
 
   console.log("[6] 筛选接线（类型 / 模型 / 账号 / 重置）");
   byId.get("fUsageKind").value = "image";

@@ -352,13 +352,16 @@
         everRecharged: true,
         models: ordered,
         kinds: kindsOf(doc),
-        /* 逐模型真实价目 + 峰谷判据的两半（节假日豁免日期 / 鲸圆币汇率）：
-           本地「中转按币」计价与云端同源，见 store-saas/relay.mjs 的 textCostYuan。 */
+        /* 逐模型真实价目 + 峰谷判据的两半（节假日豁免日期 / 鲸圆币汇率）+ 金额精度：
+           本地「中转按币」计价与云端同源，见 store-saas/relay.mjs 的 textCostYuan。
+           yuanPrecision = 元的小数位（8 = 1e-8 元）：客户端据此按同样的精度显示，
+           旧服务端不给这个字段时客户端按 8 位兜底（见 renderer/app-cost.js 的 costYuanDigits）。 */
         prices: pricesOf(doc),
         peaks: ((doc && doc.peaks) || []).map(function (s) {
           return String(s || "").trim();
         }).filter(Boolean),
         coinYuan: Number(doc && doc.coinYuan) || 0,
+        yuanPrecision: Number(doc && doc.yuanPrecision) || 0,
         at: Number(at) || Date.now(),
         error: "",
         errorAt: 0,

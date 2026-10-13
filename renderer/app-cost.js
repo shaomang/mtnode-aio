@@ -20,11 +20,17 @@
  *   · DeepSeek 官方路由 → ¥（本文件 DS_PRICE + 官方峰谷半价），一分不改；
  *   · MTNode 中转服务（source=mtnode-relay）→ **鲸圆币**，计算方式与官方路由一致
  *     （同一套 hit/miss/output × 单价、同一套峰谷判定），**只把费用单位换成币**：
- *     价目不再从云端快照取，改为本文件内置的 RELAY_PRICE（见下）；
+ *     **价目取服务端快照下发的那一份**（卡上 `relay.prices[模型 id]`，来自 /api/relay/me
+ *     的 models[].price，见 app-relay.js 的 pricesOf）；快照没给（老服务端 / 尚未同步过）
+ *     才退回本文件内置的 RELAY_PRICE（同值兜底）。
  *     公式与云端 store-saas/relay.mjs 的 textCostYuan / isPeak 逐字同源
- *     （空闲 1 倍、高峰 × peakMultiplier）；图像按「张数 × 元/张」（云端 imageCostYuan）。
- *     账目内部一律元，只在显示层 ×50 换成币（1 币 = ¥0.02，汇率固定）。
- *     没有内置价目的中转模型不猜价（返回 null → 界面显示 —）。
+ *     （空闲 1 倍、高峰 × peakMultiplier；节假日豁免取快照的 relay.peaks）；
+ *     图像按「张数 × 元/张」（云端 imageCostYuan）。
+ *     账目内部一律元，只在显示层换成币（1 币 = ¥0.02，汇率取快照的 relay.coinYuan，缺席兜底 0.02）。
+ *     没有价目的中转模型不猜价（返回 null → 界面显示 —）。
+ *     金额精度 = 快照的 `relay.yuanPrecision`（服务端真源 = relay.mjs 的 YUAN_PRECISION，
+ *     8 位 = 1e-8 元）：小于 1e-8 元的显示成「<0.00000001」/「<0.01」币，
+ *     绝不显示成 3e-9 这种科学计数法，也不把真实花费抹成 0。
  *     归属归一：会话台账里的服务商串是**网关路由名** `mtnode_<卡 id>`（记账那趟的
  *     provider 由 dsh/gateway/gateway.mjs 的 routeOfProvider 给出，与设置里的卡 id
  *     不是同一个串），所以 costIsRelay 会摘掉 `mtnode_` 前缀回查一次卡；
@@ -83,15 +89,15 @@ const DS_FLASH_ID = "deepseek-flash";
 /* ── MTNode 中转服务（鲸圆币计价）──────────────────────────────
    中转模型的费用**按币显示**（1 币 = ¥0.02），这是本文件唯一一处不按 ¥ 的分支：
      · 计算方式与 DeepSeek 官方路由**一致**（同一套 hit / miss / output × 单价），
-       差别只在两处：**费用单位换成币**、单价取下面这份内置表（不走官方 DS_PRICE）；
-     · 价目 = 本文件内置的 RELAY_PRICE（键 = 中转站对外的模型 id，精确命中，不认前缀 /
-       后缀）：数值取自中转站现役配置（store-saas/relay.mjs 的 DEFAULT_PRICES /
-       DEFAULT_MODELS），改价时改这一处即可，客户端不再依赖云端下发；
+       差别只在两处：**费用单位换成币**、单价取中转价目（不走官方 DS_PRICE）；
+     · 价目**首选服务端快照** `relay.prices`（真正扣费的那份，后台改价即时生效）；
+       下面是客户端内置兜底表 RELAY_PRICE（键 = 中转站对外的模型 id，精确命中，不认前缀 /
+       后缀；数值取自 store-saas/relay.mjs 的 DEFAULT_PRICES），只在快照没给时用；
      · 公式与云端**完全相同**（store-saas/relay.mjs 的 textCostYuan / isPeak）：
        (命中×cacheHit + 未命中×cacheMiss + 输出×output)/1e6，高峰再 × peakMultiplier，
-       高峰时段 = 北京时间周一至周五 9:00-12:00 / 14:00-18:00；
+       高峰时段 = 北京时间周一至周五 9:00-12:00 / 14:00-18:00（节假日豁免取快照 peaks）；
      · 图像按「张数 × 元/张」（云端 imageCostYuan：每次调用即计费，与尺寸无关）；
-     · 没有内置价目的模型**不猜价**（显示 —）：宁可空着，也不拿官方价冒充中转价。
+     · 没有价目的模型**不猜价**（显示 —）：宁可空着，也不拿官方价冒充中转价。
    账目内部一律元（与云端账本同源），只在显示层换算成币（costCoinText）。 */
 const RELAY_PRICE_ID = "mtnode-relay";
 const RELAY_SOURCE = "mtnode-relay";
@@ -186,32 +192,82 @@ function costIsRelay(provider) {
 }
 
 /* 这个模型在**中转站**的价目（未见价目 → null，绝不猜）。
- * 键按模型 id 精确命中（与云端 cfg.prices[model] 同一口径：中转不认前缀 / 后缀）——
- * 找不到内置条目的中转模型（新上架 / 带日期后缀）一律显示「—」，不拿官方价兜底。 */
+ * **服务端真价优先**：快照里 `relay.prices[模型 id]`（store-saas/relay.mjs 的 userModels.price，
+ * 由 /api/relay/me 下发、app-relay.js 的 pricesOf 落进卡上）就是**这一次真正扣费用的那份价目** ——
+ * 后台改价 / 改高峰倍率后，客户端这一次同步就跟着变，不必发版。
+ * 键按模型 id 精确命中（与云端 cfg.prices[model] 同一口径：中转不认前缀 / 后缀）；
+ * 快照没给（老服务端 / 还没同步过）才退回下面的内置表 RELAY_PRICE（同值兜底，不再当权威）；
+ * 两处都没有的中转模型一律显示「—」，不拿官方价兜底。 */
+function relaySnapshotOf(provider) {
+  const card = costCardOf(provider);
+  const meta = (card && card.relay) || null;
+  return meta && typeof meta === "object" ? meta : null;
+}
 function relayPriceOf(provider, model) {
   if (!costIsRelay(provider)) return null;
   const id = String(model || "").trim();
-  const p = (id && RELAY_PRICE[id]) || null;
-  return p && typeof p === "object" ? p : null;
+  if (!id) return null;
+  const meta = relaySnapshotOf(provider);
+  const fromCloud = meta && meta.prices && typeof meta.prices === "object" ? meta.prices[id] : null;
+  if (fromCloud && typeof fromCloud === "object") {
+    const kind = String(fromCloud.kind || "") === "image" ? "image" : "text";
+    if (kind === "image") return { kind: "image", perImageYuan: costNum(fromCloud.perImageYuan) };
+    return {
+      kind: "text",
+      cacheHit: costNum(fromCloud.cacheHit),
+      cacheMiss: costNum(fromCloud.cacheMiss),
+      output: costNum(fromCloud.output),
+      peakMultiplier: costNum(fromCloud.peakMultiplier) || 1,
+      source: "cloud",
+    };
+  }
+  const p = RELAY_PRICE[id] || null;
+  return p && typeof p === "object" ? Object.assign({ source: "builtin" }, p) : null;
 }
 
 /* 中转的峰谷判据：与云端 isPeak 同源（北京时间周一至周五 9:00-12:00 / 14:00-18:00）。
- * 云端快照里的节假日豁免名单不再参与（价目与判据都以本机内置为准，见文件头）；
- * 因此法定节假日会按高峰计（偏高，属于已知偏差，已在费用口径里写明）。 */
+ * 节假日豁免名单取**快照下发的那一份**（`relay.peaks`，与云端 cfg.peaks 同一份数据）：
+ * 法定节假日不按高峰计；快照没给（老服务端）时名单为空 —— 节假日会按高峰计（偏高，已知偏差）。 */
 function costRelayIsPeak(provider, ts) {
   const t = Number(ts);
   if (!Number.isFinite(t) || t <= 0) return true;
   const d = new Date(t + DS_BJ_OFFSET);
   const wd = d.getUTCDay();
   if (wd === 0 || wd === 6) return false;
+  const meta = relaySnapshotOf(provider);
+  const peaks = (meta && Array.isArray(meta.peaks) ? meta.peaks : []).map((s) => String(s || "").trim());
+  if (peaks.indexOf(d.toISOString().slice(0, 10)) >= 0) return false;
   const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
   return (mins >= 540 && mins < 720) || (mins >= 840 && mins < 1080);
 }
 
-/* 鲸圆币换算（1 币 = ¥0.02，固定汇率）：不再读云端快照的 coinYuan。
- * 这个汇率只用于**显示**：账目内部一律元，与云端账单对得上。 */
-function costCoinPerYuan() {
-  return 1 / COIN_YUAN_FALLBACK;
+/* 鲸圆币换算（1 币 = ¥0.02）：汇率取快照下发的 coinYuan（app-relay.js 落在卡上），
+ * 快照没给时用固定兜底值。这个汇率只用于**显示**：账目内部一律元，与云端账单对得上。 */
+function costCoinPerYuan(provider) {
+  const meta = relaySnapshotOf(provider);
+  const y = Number(meta && meta.coinYuan);
+  const per = Number.isFinite(y) && y > 0 ? y : COIN_YUAN_FALLBACK;
+  return 1 / per;
+}
+
+/* 金额显示精度（元的小数位）：快照下发的 yuanPrecision（服务端真源 = relay.mjs 的
+ * YUAN_PRECISION，8 位 = 1e-8 元）；旧服务端不给就按 8 位兜底。
+ * **精度只影响显示**：计价本身用 JS 数字原值，不做四舍五入到 1e-4 元那种截断。 */
+function costYuanDigits(provider) {
+  const meta = relaySnapshotOf(provider);
+  const d = Number(meta && meta.yuanPrecision);
+  return Number.isFinite(d) && d > 0 && d <= 12 ? Math.floor(d) : 8;
+}
+
+/* 元金额的文本形态（**元口径**的显示助手，与云端 relay.mjs 的 yuanText 同口径）：
+ * 小于最小位 1e-8 元 → 「<0.00000001」，绝不写成 3e-9 这种科学计数法。 */
+function costYuanText(yuan, provider, digits) {
+  const n = Number(yuan);
+  const d = Number.isFinite(Number(digits)) && Number(digits) > 0 ? Math.floor(Number(digits)) : costYuanDigits(provider);
+  if (!Number.isFinite(n) || n === 0) return "0";
+  const floor = Math.pow(10, -d);
+  if (Math.abs(n) < floor) return "<" + floor.toFixed(d);
+  return Number(n).toFixed(d).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
 
 /* 币金额格式：中转费用按币显示时统一走它 ——
@@ -238,10 +294,13 @@ function costCoinText(coins) {
     if (MC && typeof MC.coinCostText === "function") return MC.coinCostText(n) + costCoinUnit();
   } catch {}
   const v = n >= 100 ? Math.round(n) : Math.round(n * 100) / 100;
+  /* 兜底分支（MtCoin 缺席，例如预览页单独加载本模块）：同样不许把真实花费显示成 0。 */
+  if (n > 0 && v === 0) return "<0.01" + costCoinUnit();
   return String(v) + costCoinUnit();
 }
 
-/* 统一的单价取用：中转 → 内置中转价目（拿不到 → null）；其余 → 官方表 + 配置覆盖。
+/* 统一的单价取用：中转 → **服务端快照价目**（缺席退回内置表；拿不到 → null）；
+ * 其余 → 官方表 + 配置覆盖。
  * 两边都只回「每一百万 token 的元价」，峰谷判据由各自分支自己处理。 */
 function costPriceFor(provider, model) {
   const p = relayPriceOf(provider, model);
@@ -260,7 +319,8 @@ function costPriceFor(provider, model) {
 }
 
 /* 元 → 币（只用于显示口径；账目内部一律元）。
- * 汇率固定 1 币 = ¥0.02（不再读快照里的 coinYuan，见文件头）。 */
+ * 汇率取快照下发的 relay.coinYuan（1 币 = ¥0.02），缺席时用固定兜底值。
+ * 币值只保留 4 位小数（显示用的中间量，最终文案由 costCoinText / MtCoin 定精度）。 */
 function costCoinOfYuan(provider, yuan) {
   const n = Number(yuan);
   if (!Number.isFinite(n)) return 0;
@@ -405,7 +465,8 @@ function costOffPeakRatio() {
 /* 单个 token 桶的费用（返回 { currency, amount, … }；currency = "CNY" | "COIN"）：
  *   缓存命中 = cacheReadTokens，未命中 = inputTokens + cacheWriteTokens，输出 = outputTokens。
  *   · MTNode 中转（provider 命中 source=mtnode-relay）：按**币**，公式与云端 textCostYuan
- *     逐字同源（空闲 1 倍、高峰 × peakMultiplier；价目来自本文件内置表，没有价目 → null）。
+ *     逐字同源（空闲 1 倍、高峰 × peakMultiplier；价目取快照 relay.prices，缺席退回内置表；
+ *     没有价目 → null）。
  *   · DeepSeek 官方：按 ¥，峰谷 = 桶自带时刻（或第 4 参 atFallback，如台账 lastAt）
  *     落在空闲时段 → ×半价（S.config.deepseekOffPeakRatio）。
  * 其余路由 / 未知单价（且不是 DeepSeek） → null（不猜价）。 */
@@ -829,10 +890,10 @@ function costWhyLines() {
     ),
     /* 中转按币这一条：用户在中转模型上看到的是币，平台账本里仍是元。 */
     costI18n(
-      "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取客户端内置的中转价目表，不再从云端快照取 —— 中转站改价后要等一次客户端更新才对得上，未列入内置表的模型不猜价（显示 —）。",
+      "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取中转站随快照下发的那一份（后台改价、改高峰倍率，客户端同步一次就跟上），快照还没给价目时退回客户端内置表；没有价目的模型不猜价（显示 —）。",
     ),
     costI18n(
-      "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（快照里的节假日豁免不再参与），法定节假日按高峰计，这一栏会偏高。",
+      "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（节假日豁免取快照下发的那份名单），法定节假日若名单里没有则按高峰计，这一栏会偏高。",
     ),
   ];
 }
@@ -861,7 +922,7 @@ function costWhyDialog() {
   const foot = document.createElement("p");
   foot.className = "tok-cost-why-line tok-cost-why-foot";
   foot.textContent = costI18n(
-    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取客户端内置的中转价目表；token 一律按上游逐请求返回的 usage 累加。",
+    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取中转站随快照下发的那份价目（缺席退回客户端内置表）；token 一律按上游逐请求返回的 usage 累加。",
   );
   p.appendChild(foot);
   body.appendChild(p);

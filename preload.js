@@ -54,11 +54,14 @@ contextBridge.exposeInMainWorld('api', {
 
   /* 会话转写（agentSessions）从 config.json 拆到 agent-sessions/ 之后的读写口：
      sessionLoad = 索引（左栏字段，绝不含正文）；sessionSave = 只写脏会话 + 刷索引；
-     sessionBody = 按需读正文（懒加载：选中会话 / 轨迹·改动 / 全局搜索 / 续跑时）。
+     sessionBody = 按需读正文（懒加载：选中会话 / 轨迹·改动 / 全局搜索 / 续跑时）；
+     sessionPatch = 按 id 改白名单字段（只 workspace，不读正文）—— 工作目录体检修正旧
+     路径用它：既没读回正文、也没标脏的会话会被 sessionSave 整条跳过，改动落不了盘。
      实现与三条硬口径见主进程 agent-sessions-store.js 文件头。 */
   sessionLoad: () => ipcRenderer.invoke('session:load'),
   sessionSave: (payload) => ipcRenderer.invoke('session:save', payload),
   sessionBody: (ids) => ipcRenderer.invoke('session:body', ids),
+  sessionPatch: (payload) => ipcRenderer.invoke('session:patch', payload || {}),
 
   wfList: () => ipcRenderer.invoke('workflow:list'),
   wfLoad: (id) => ipcRenderer.invoke('workflow:load', id),

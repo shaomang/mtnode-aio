@@ -31800,7 +31800,7 @@ function ensureAgentSessionForNode(node) {
     sess.provider = node.provider || sess.provider || "deepseek-official";
     sess.model = node.model || sess.model || "";
     sess.effort = node.effort || sess.effort || "high";
-    if (node.workspace) sess.workspace = node.workspace;
+    if (node.workspace) agentSetSessionWorkspace(sess, node.workspace);
     if (node.title) sess.title = node.title;
   }
   /* 节点内容 → 会话(任务描述);任务消息带 _src 标记,之后节点任务文本修改会同步更新该条消息 */
@@ -33119,7 +33119,13 @@ async function wipeMatchingWorkspaces(badPath) {
     if (S.config) S.config.assistWorkspace = "";
     changed = true;
   }
-  for (const sess of agentSessions()) clr(sess, "workspace");
+  for (const sess of agentSessions()) {
+    if (!sess || String(sess.workspace || "").trim() !== bad) continue;
+    /* 会话侧走统一入口（标脏 + session:patch 改会话文件本体）：直接改内存那份的话，
+       既没读回正文、也没标脏的会话会被落盘层整条跳过，旧路径一直留在盘上。 */
+    await agentSetSessionWorkspace(sess, "");
+    changed = true;
+  }
   if (changed) {
     scheduleSave(true);
     try {
@@ -33171,12 +33177,27 @@ function showInfoOverlay(title, summary, detail) {
 async function sanitizeInvalidWorkspaces(opts) {
   opts = opts || {};
   const cleared = [];
+  /* 静默体检（本次需求 · 用户已确认）：自动修好之后不再弹「工作目录无效」卡，
+     只把每一条落进主进程日志（error.log，界面「打开日志」可查）——
+     「往工作目录输入框里手填 / 粘贴一个不存在的路径」那张当场提示不受影响（见
+     renderWfWorkspace 的 setWs：那是用户刚输的东西，当场说才有用）。 */
+  const note = (level, text) => {
+    cleared.push((level === "warn" ? "⚠ " : "") + text);
+    try {
+      if (window.api && window.api.crashLogRenderer)
+        window.api.crashLogRenderer({
+          kind: "workspace-cleanup",
+          message: "[" + level + "] " + text.replace(/\s*\n\s*/g, " → "),
+          source: opts.source || "boot",
+        });
+    } catch (_) {}
+  };
   const wipe = async (label, getter, setter) => {
     const v = String(getter() || "").trim();
     if (!v) return;
     if (await pathIsExistingDir(v)) return;
-    setter("");
-    cleared.push(label + "\n  " + v);
+    await setter("");
+    note("warn", label + "\n  " + v);
   };
   if (S.wf) {
     await wipe(I18n.t("画布工作目录"), () => S.wf.workspace, (v) => {
@@ -33206,13 +33227,23 @@ async function sanitizeInvalidWorkspaces(opts) {
   );
   for (const sess of agentSessions()) {
     if (!sess || typeof sess.workspace !== "string") continue;
-    await wipe(
-      I18n.t("智能会话") + " · " + (sess.title || sess.id || ""),
-      () => sess.workspace,
-      (v) => {
-        sess.workspace = v;
-      },
-    );
+    const cur = String(sess.workspace || "").trim();
+    if (!cur) continue;
+    const label = I18n.t("智能会话") + " · " + (sess.title || sess.id || "");
+    /* 先看能不能归位（本次需求 · 用户已确认）：会话记着某个应用的开发目录，而应用开发根
+       换过位置（真机现场：E:\mtnode\apps\test → E:\mtnode\apps\dev）—— 这类旧路径不改写成
+       「当前应用目录」，而是清空走兜底链，用户下次还得自己重选。判据见 wsHealDirFor。 */
+    const heal = await wsHealDirFor(sess);
+    if (heal) {
+      await agentSetSessionWorkspace(sess, heal);
+      note("info", label + "\n  " + cur + "  →  " + heal);
+      continue;
+    }
+    await wipe(label, () => sess.workspace, (v) => {
+      /* 会话的 workspace 只能经统一入口改：它同时要把会话文件本体改掉，否则旧值
+         下次启动又被读回来（弹窗反复的真根因）。 */
+      return agentSetSessionWorkspace(sess, v);
+    });
   }
   if (!cleared.length) return 0;
   scheduleSave(true);
@@ -33221,16 +33252,87 @@ async function sanitizeInvalidWorkspaces(opts) {
       await window.api.configSave(S.config);
     } catch (_) {}
   }
-  if (!opts.quiet) {
-    await showInfoOverlay(
-      I18n.t("工作目录无效"),
-      I18n.t(
-        "以下工作目录不存在或不是有效文件夹，已自动清空。请重新选择有效目录，以免影响全局助手、智能任务与相对路径保存。",
-      ),
-      cleared.join("\n\n"),
-    );
-  }
+  /* 会话侧还有一次合并落盘窗口要收口（索引条目 + 修正名单） */
+  try {
+    if (typeof agentFlushSessionSave === "function") await agentFlushSessionSave();
+  } catch (_) {}
   return cleared.length;
+}
+
+/* 失效的会话工作目录「该改写成哪里」（本次需求 · 用户已确认的口径）：
+   · 会话必须属于某个应用（appId），且该应用在当前**项目根**下真有一份（拿不到就回空，
+     绝不猜目录）；
+   · 现有路径必须落在「应用根家族」之下 —— 当前两套根（下载根 / 项目根）以及它们的
+     父目录（换过根的老路径就落在父目录下的兄弟目录里，如 E:\mtnode\apps\test）；
+   · 最后一级目录名必须等于 appId（指向的就是这个应用那一份，不是用户自己选的别处）；
+   · 已经等于当前应用目录 → 不回（一个字都不用动）。
+   四条的用意：只收拾「应用开发目录家族」里的历史路径，用户手填的其它目录一律不碰。 */
+/* 应用根家族：当前两套根 + 各自的父目录（换过根的老路径就落在父目录下的兄弟目录里）。
+   只在真有带 appId 的失效会话时才问一次主进程、并缓存在本进程内 —— 一次启动最多一次 IPC。
+   会话中途改根目录不会刷新这份缓存：那之后的判据会退化成「只按普通失效处理」（清空），
+   与修复前的行为一致，不会误改到别处。 */
+let _wsHealRoots = null;
+async function wsHealFamilyRoots() {
+  if (_wsHealRoots) return _wsHealRoots;
+  const dirs = [];
+  try {
+    if (window.api && window.api.appsRootGet) {
+      const r = await window.api.appsRootGet();
+      const roots = (r && r.roots) || {};
+      for (const k of ["down", "dev"]) {
+        const p = String((roots[k] && roots[k].path) || "");
+        if (!p) continue;
+        dirs.push(p);
+        const up = dirOfPath(p);
+        if (up) dirs.push(up);
+      }
+    }
+  } catch (_) {}
+  _wsHealRoots = dirs;
+  return dirs;
+}
+function wsUnderAnyDir(p, dirs) {
+  const norm = (v) => String(v || "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const x = norm(p);
+  if (!x) return false;
+  for (const d of dirs || []) {
+    const y = norm(d);
+    if (y && x.indexOf(y + "/") === 0) return true;
+  }
+  return false;
+}
+async function wsHealDirFor(sess) {
+  const appId = String((sess && sess.appId) || "").trim();
+  const cur = String((sess && sess.workspace) || "").trim();
+  if (!appId || !cur) return "";
+  const dirs = await wsHealFamilyRoots();
+  if (!dirs.length) return "";
+  /* 最后一级目录名必须就是该应用 id（E:\mtnode\apps\test\ds-village → ds-village）：
+     只认「指向这个应用那一份」的路径，不认用户自己建的别的目录 */
+  const normCur = String(cur).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const last = normCur.slice(normCur.lastIndexOf("/") + 1);
+  if (last !== appId.toLowerCase()) return "";
+  if (!wsUnderAnyDir(cur, dirs)) return "";
+  /* 应用当前那一份目录：开发页的取数口（appsDevProjectDir）优先，它自己问的就是本机
+     项目根下的那一条；拿不到（列表还没加载）时按需拉一次本机列表再取。 */
+  let dir = "";
+  try {
+    if (typeof appsDevProjectDir === "function") dir = String(appsDevProjectDir(appId) || "");
+  } catch (_) {}
+  if (!dir) {
+    try {
+      if (typeof appsListLoad === "function") await appsListLoad(false);
+    } catch (_) {}
+    try {
+      if (typeof appsDevProjectDir === "function") dir = String(appsDevProjectDir(appId) || "");
+    } catch (_) {}
+  }
+  if (!dir) return "";
+  const same =
+    typeof appsSamePath === "function"
+      ? appsSamePath(cur, dir)
+      : cur.toLowerCase() === dir.toLowerCase();
+  return same ? "" : dir;
 }
 
 /* ── 工作目录闸门：填目录 / 建目录 / 选目录（三处共用同一套弹窗）────────────────

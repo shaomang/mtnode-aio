@@ -1,0 +1,616 @@
+{
+ "mode": "dry-run",
+ "stamp": "20261014-010649",
+ "localChecks": [],
+ "summary": {
+  "mode": "dry-run",
+  "stamp": "20261014-010650",
+  "root": "/root/mtnode-disk-cleanup-20261014-010650",
+  "snap0": {
+   "at": "2026-10-14T01:06:50+08:00",
+   "df": {
+    "size": 20756914176,
+    "used": 14499905536,
+    "avail": 5176664064,
+    "pcent": "74%"
+   },
+   "journal_bytes": 180250214,
+   "journal_line": "Archived and active journals take up 171.9M in the file system.",
+   "sizes": {
+    "/root/.vscode-server": 4735488384,
+    "/root/.npm/_cacache": 20881536,
+    "/root/mt-ai-router": 1336735793,
+    "/var/lib/apt/lists": 156480421,
+    "/var/cache/apt": 82695483,
+    "/tmp": 79401796,
+    "/var/log/journal": 193608520,
+    "/opt/mtnode-store/data": 13087462,
+    "/var/www/mtnode": 83437178
+   }
+  },
+  "snap1": {
+   "at": "2026-10-14T01:07:02+08:00",
+   "df": {
+    "size": 20756914176,
+    "used": 14499921920,
+    "avail": 5176647680,
+    "pcent": "74%"
+   },
+   "journal_bytes": 180250214,
+   "journal_line": "Archived and active journals take up 171.9M in the file system.",
+   "sizes": {
+    "/root/.vscode-server": 4735489719,
+    "/root/.npm/_cacache": 20881536,
+    "/root/mt-ai-router": 1336736344,
+    "/var/lib/apt/lists": 156480421,
+    "/var/cache/apt": 82695483,
+    "/tmp": 79401796,
+    "/var/log/journal": 193608520,
+    "/opt/mtnode-store/data": 13087462,
+    "/var/www/mtnode": 83437178
+   }
+  },
+  "items": [
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:06:50+08:00"
+   },
+   {
+    "id": "journald-dropin",
+    "cat": "journald",
+    "title": "journald 保留策略配置",
+    "action": "config",
+    "path": "/etc/systemd/journald.conf.d/10-mtnode-retention.conf",
+    "status": "dry-run",
+    "size": 140,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --disk-usage -> rc=0 | Archived and active journals take up 171.9M in the file system.",
+     "$ journalctl --verify --quiet; echo verify-rc=$? -> rc=0 | verify-rc=0",
+     "systemctl is-active systemd-journald -> active"
+    ],
+    "note": "将写入 SystemMaxUse=64M / MaxRetentionSec=2day / MaxFileSec=1day",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "journald-vacuum",
+    "cat": "journald",
+    "title": "journald 立刻回收（vacuum）",
+    "action": "vacuum",
+    "path": "/var/log/journal",
+    "status": "dry-run",
+    "size": 180250214,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --disk-usage -> Archived and active journals take up 171.9M in the file system."
+    ],
+    "note": "将执行 journalctl --vacuum-time=2d --vacuum-size=64M；当前 171.9MB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "logrotate-nginx",
+    "cat": "logrotate",
+    "title": "nginx logrotate 保留份数",
+    "action": "config",
+    "path": "/etc/logrotate.d/nginx",
+    "status": "dry-run",
+    "size": 329,
+    "backup": "",
+    "evidence": [
+     "$ grep -n 'rotate' /etc/logrotate.d/nginx -> rc=0 | 4: rotate 14 10: prerotate 11: if [ -d /etc/logrotate.d/httpd-prerotate ]; then \\ 12: run-parts /etc/logrotate.d/httpd-prerotate; \\ 15: postrotate 16: invoke-rc.d nginx rotate >/dev/null 2>&1",
+     "$ ls -la /var/log/nginx | head -20 -> rc=0 | total 10828 drwxr-xr-x 2 root adm 4096 Oct 14 00:00 . drwxr-xr-x 11 root root 4096 Oct 1 00:00 .. -rw-r----- 1 www-data adm 17830 Oct 14 01:06 access.log -rw-r----- 1 www-data adm 7598205 Oct 13 23:59 access.log.1 -rw-r----- 1 www-data adm …"
+    ],
+    "note": "将把 rotate 14 改成 rotate 2",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "nginx-access",
+    "cat": "nginx",
+    "title": "脚手架 location 不记 access",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "dry-run",
+    "size": 14010,
+    "backup": "",
+    "evidence": [
+     "$ grep -n 'access_log' /etc/nginx/sites-available/mt-ai-router.conf -> ",
+     "修改点：/mtnode/music3/=added /mtnode/h3/=added"
+    ],
+    "note": "将在 music3 / h3 两个 location 内插入 access_log off;",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "nginx-yue",
+    "cat": "nginx",
+    "title": "/mtnode/yue/ 本地 alias（可选，未启用）",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ curl -s -o /dev/null -w '%{http_code}' https://mtnode-download.oss-cn-beijing.aliyuncs.com/yue/ -> rc=0 | 200"
+    ],
+    "note": "--yue 未开：/var/www/mtnode/yue/ 目录当前不存在，启用会把现在落到 OSS 的 /mtnode/yue/ 变成 404",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "vaproj-loglevel",
+    "cat": "vaproj",
+    "title": "vaproj-backend 日志降噪",
+    "action": "config",
+    "path": "/etc/systemd/system/vaproj-backend.service.d/10-mtnode-loglevel.conf",
+    "status": "dry-run",
+    "size": 91,
+    "backup": "",
+    "evidence": [
+     "$ systemctl is-active vaproj-backend -> rc=0 | active",
+     "$ cat /etc/systemd/system/vaproj-backend.service -> rc=0 | [Unit] Description=vaproj backend (uvicorn) After=network.target [Service] Type=simple User=root WorkingDirectory=/opt/vaproj/backend Environment=PYTHONUNBUFFERED=1 ExecStart=/opt/vaproj/backend/.venv/bin/uvicorn app.main:app --host 127.0.0…",
+     "$ grep -rn 'setup_logging' /opt/vaproj/backend/app/main.py /opt/vaproj/backend/app/core/logging.py -> rc=0 | /opt/vaproj/backend/app/main.py:14:from app.core.logging import get_logger, setup_logging /opt/vaproj/backend/app/main.py:39: setup_logging() /opt/vaproj/backend/app/core/logging.py:9:def setup_logging(level: str = \"INFO\") -> None:"
+    ],
+    "note": "将写 drop-in LogLevelMax=warning 并 restart（app/core/logging.py 的 setup_logging(level='INFO') 读的是硬编码默认值、不认环境变量，所以走 journald 侧 LogLevelMax=warning（日志仍写 stdout，只是不进 journal））",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "sshd-loglevel",
+    "cat": "sshd",
+    "title": "sshd 日志降噪",
+    "action": "config",
+    "path": "/etc/ssh/sshd_config",
+    "status": "dry-run",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ grep -n '^[# ]*LogLevel' /etc/ssh/sshd_config -> rc=0 | 28:#LogLevel INFO",
+     "$ sshd -T | grep loglevel -> loglevel INFO"
+    ],
+    "note": "将加一行 LogLevel ERROR（先 sshd -t 校验，通过才 reload）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "vscode-servers",
+    "cat": "clean",
+    "title": "VS Code Remote 旧版本",
+    "action": "delete",
+    "path": "/root/.vscode-server/cli/servers",
+    "status": "dry-run",
+    "size": 3251960657,
+    "backup": "",
+    "evidence": [
+     "$ 在跑版本：Stable-2a59476c9bfcb90b3ddc372c36762471b7dfad1c",
+     "$ ls -la /root/.vscode-server/cli/servers -> rc=0 | total 36 drwxr-xr-x 8 root root 4096 Oct 7 22:59 . drwx------ 3 root root 4096 Jul 27 10:58 .. -rw-r--r-- 1 root root 251 Oct 14 01:03 lru.json drwxr-xr-x 3 root root 4096 Sep 29 20:27 Stable-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1 drwxr-x…",
+     "$ du -sh 各版本：Stable-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1=615.5MB；Stable-07f806f999227108933c2e30515b26eecc1fda74=630.6MB；Stable-125df4672b8a6a34975303c6b0baa124e560a4f7=589.9MB；Stable-2242ebbb54efeeb0129e08e919e7e8d43033cd83=615.5MB；Stable-7debcd0e2acdea1c52de81bf9ee1620444407dda=649.8MB"
+    ],
+    "note": "将删 5 个旧版本（保留 Stable-2a59476c9bfcb90b3ddc372c36762471b7dfad1c），预计回收 3.0GB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "vscode-code-dirs",
+    "cat": "clean",
+    "title": ".vscode-server 下陈旧 code-* CLI 目录",
+    "action": "delete",
+    "path": "/root/.vscode-server",
+    "status": "dry-run",
+    "size": 104758944,
+    "backup": "",
+    "evidence": [
+     "$ ls -d /root/.vscode-server/code-* -> rc=0 | /root/.vscode-server/code-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1 /root/.vscode-server/code-07f806f999227108933c2e30515b26eecc1fda74 /root/.vscode-server/code-110a328ea54b42367b803ec53ee0bf52ef26b419 /root/.vscode-server/code-125df4672b8a6…"
+    ],
+    "note": "将删 3 个（code-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1,code-07f806f999227108933c2e30515b26eecc1fda74,code-645f29cc3176500b4b5762ba887cf2a7f0ffdf2c），预计 99.9MB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "store-sdk-cache",
+    "cat": "clean",
+    "title": "agent-host sdk-cache",
+    "action": "delete",
+    "path": "/opt/mtnode-store/data/agent-host/sdk-cache",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ du -sh /opt/mtnode-store/data -> rc=0 | 13M /opt/mtnode-store/data"
+    ],
+    "note": "目录不存在（首查 2026-10-14 已不在）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "store-logs",
+    "cat": "clean",
+    "title": "data/logs 30 天前历史",
+    "action": "delete",
+    "path": "/opt/mtnode-store/data/logs",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [],
+    "note": "目录不存在",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "tmp-residue",
+    "cat": "clean",
+    "title": "/tmp 30 天前一次性上传残留",
+    "action": "delete",
+    "path": "/tmp",
+    "status": "dry-run",
+    "size": 69856232,
+    "backup": "",
+    "evidence": [
+     "$ 命中 7 项：admin-dist.tgz, admin-dist2.tgz, admin-dist3.tgz, frp.tar.gz, mtnode-ext-upload, touhouai-upload, vaproj.tgz"
+    ],
+    "note": "将删 7 项，预计 66.6MB（正在用的 code-*.sock / systemd-private-* / mcp 之外一律不碰）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "npm-cacache",
+    "cat": "clean",
+    "title": "/root/.npm/_cacache",
+    "action": "delete",
+    "path": "/root/.npm/_cacache",
+    "status": "dry-run",
+    "size": 20881536,
+    "backup": "",
+    "evidence": [],
+    "note": "将删（19.9MB）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "router-dir",
+    "cat": "clean",
+    "title": "/root/mt-ai-router 整目录（先停 mongod）",
+    "action": "delete",
+    "path": "/root/mt-ai-router",
+    "status": "dry-run",
+    "size": 1336736344,
+    "backup": "",
+    "evidence": [
+     "$ systemctl is-active mt-ai-router-mongod -> rc=0 | active",
+     "$ systemctl is-enabled mt-ai-router-mongod -> rc=0 | enabled",
+     "$ ss -lntp | grep 27017 || echo no-listener -> rc=0 | LISTEN 0 4096 127.0.0.1:27017 0.0.0.0:* users:((\"mongod\",pid=388091,fd=10))",
+     "$ du -sh /root/mt-ai-router -> rc=0 | 1.4G /root/mt-ai-router",
+     "$ ps -eo pid,args | grep '[m]ongod' | head -3 -> rc=0 | 388091 /usr/bin/mongod --dbpath /root/mt-ai-router/data --bind_ip 127.0.0.1 --port 27017 --logpath /root/mt-ai-router/.runtime/logs/mongod.log --pidfilepath /root/mt-ai-router/.runtime/pids/mongod.pid --fork",
+     "$ 27017 监听：LISTEN 0 4096 127.0.0.1:27017 0.0.0.0:* users:((\"mongod\",pid=388091,fd=10))"
+    ],
+    "note": "将先 systemctl disable --now mt-ai-router-mongod（确认 27017 无别的服务），再把目录与 unit 移进备份；预计 1.2GB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "apt",
+    "cat": "clean",
+    "title": "apt 缓存与可 autoremove 的包",
+    "action": "apt",
+    "path": "/var/lib/apt/lists",
+    "status": "dry-run",
+    "size": 239175904,
+    "backup": "",
+    "evidence": [
+     "$ df -h / -> rc=0 | Filesystem Size Used Avail Use% Mounted on /dev/vda3 20G 14G 4.9G 74% /",
+     "$ du -sh /var/lib/apt/lists /var/cache/apt -> rc=0 | 150M /var/lib/apt/lists 79M /var/cache/apt",
+     "$ uname -r -> rc=0 | 6.1.0-33-amd64",
+     "$ dpkg --list | grep -c '^ii' -> rc=0 | 1287",
+     "$ apt-get -s autoremove --purge -> Reading package lists... Building dependency tree... Reading state information... 0 upgraded, 0 newly installed, 0 to remove and 121 not upgraded.",
+     "$ 现有内核：ii linux-image-6.1.0-13-amd64 6.1.55-1 amd64 Linux 6.1 for 64-bit PCs (signed) ii linux-image-6.1.0-33-amd64 6.1.133-1 amd64 Linux 6.1 for 64-bit PCs (signed) ii linux-image-amd64 6.1.133-1 amd64 Linu"
+    ],
+    "note": "将执行 apt-get autoremove --purge -y + clean + 清空 /var/lib/apt/lists/*（只删 autoremove 自己判定可删的，不手写内核版本号）",
+    "at": "2026-10-14T01:07:02+08:00"
+   },
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938",
+     "$ 与开始前比对 -> 一致"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:07:02+08:00"
+   }
+  ],
+  "integrity": {
+   "files": "83",
+   "dbjson": "65262 1791906938",
+   "at": "2026-10-14T01:07:02+08:00",
+   "same_as_ref": true
+  },
+  "verify": null,
+  "failures": [],
+  "ok": true
+ },
+ "manifest": {
+  "ver": 1,
+  "items": [
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:06:50+08:00"
+   },
+   {
+    "id": "journald-dropin",
+    "cat": "journald",
+    "title": "journald 保留策略配置",
+    "action": "config",
+    "path": "/etc/systemd/journald.conf.d/10-mtnode-retention.conf",
+    "status": "dry-run",
+    "size": 140,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --disk-usage -> rc=0 | Archived and active journals take up 171.9M in the file system.",
+     "$ journalctl --verify --quiet; echo verify-rc=$? -> rc=0 | verify-rc=0",
+     "systemctl is-active systemd-journald -> active"
+    ],
+    "note": "将写入 SystemMaxUse=64M / MaxRetentionSec=2day / MaxFileSec=1day",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "journald-vacuum",
+    "cat": "journald",
+    "title": "journald 立刻回收（vacuum）",
+    "action": "vacuum",
+    "path": "/var/log/journal",
+    "status": "dry-run",
+    "size": 180250214,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --disk-usage -> Archived and active journals take up 171.9M in the file system."
+    ],
+    "note": "将执行 journalctl --vacuum-time=2d --vacuum-size=64M；当前 171.9MB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "logrotate-nginx",
+    "cat": "logrotate",
+    "title": "nginx logrotate 保留份数",
+    "action": "config",
+    "path": "/etc/logrotate.d/nginx",
+    "status": "dry-run",
+    "size": 329,
+    "backup": "",
+    "evidence": [
+     "$ grep -n 'rotate' /etc/logrotate.d/nginx -> rc=0 | 4: rotate 14 10: prerotate 11: if [ -d /etc/logrotate.d/httpd-prerotate ]; then \\ 12: run-parts /etc/logrotate.d/httpd-prerotate; \\ 15: postrotate 16: invoke-rc.d nginx rotate >/dev/null 2>&1",
+     "$ ls -la /var/log/nginx | head -20 -> rc=0 | total 10828 drwxr-xr-x 2 root adm 4096 Oct 14 00:00 . drwxr-xr-x 11 root root 4096 Oct 1 00:00 .. -rw-r----- 1 www-data adm 17830 Oct 14 01:06 access.log -rw-r----- 1 www-data adm 7598205 Oct 13 23:59 access.log.1 -rw-r----- 1 www-data adm …"
+    ],
+    "note": "将把 rotate 14 改成 rotate 2",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "nginx-access",
+    "cat": "nginx",
+    "title": "脚手架 location 不记 access",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "dry-run",
+    "size": 14010,
+    "backup": "",
+    "evidence": [
+     "$ grep -n 'access_log' /etc/nginx/sites-available/mt-ai-router.conf -> ",
+     "修改点：/mtnode/music3/=added /mtnode/h3/=added"
+    ],
+    "note": "将在 music3 / h3 两个 location 内插入 access_log off;",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "nginx-yue",
+    "cat": "nginx",
+    "title": "/mtnode/yue/ 本地 alias（可选，未启用）",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ curl -s -o /dev/null -w '%{http_code}' https://mtnode-download.oss-cn-beijing.aliyuncs.com/yue/ -> rc=0 | 200"
+    ],
+    "note": "--yue 未开：/var/www/mtnode/yue/ 目录当前不存在，启用会把现在落到 OSS 的 /mtnode/yue/ 变成 404",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "vaproj-loglevel",
+    "cat": "vaproj",
+    "title": "vaproj-backend 日志降噪",
+    "action": "config",
+    "path": "/etc/systemd/system/vaproj-backend.service.d/10-mtnode-loglevel.conf",
+    "status": "dry-run",
+    "size": 91,
+    "backup": "",
+    "evidence": [
+     "$ systemctl is-active vaproj-backend -> rc=0 | active",
+     "$ cat /etc/systemd/system/vaproj-backend.service -> rc=0 | [Unit] Description=vaproj backend (uvicorn) After=network.target [Service] Type=simple User=root WorkingDirectory=/opt/vaproj/backend Environment=PYTHONUNBUFFERED=1 ExecStart=/opt/vaproj/backend/.venv/bin/uvicorn app.main:app --host 127.0.0…",
+     "$ grep -rn 'setup_logging' /opt/vaproj/backend/app/main.py /opt/vaproj/backend/app/core/logging.py -> rc=0 | /opt/vaproj/backend/app/main.py:14:from app.core.logging import get_logger, setup_logging /opt/vaproj/backend/app/main.py:39: setup_logging() /opt/vaproj/backend/app/core/logging.py:9:def setup_logging(level: str = \"INFO\") -> None:"
+    ],
+    "note": "将写 drop-in LogLevelMax=warning 并 restart（app/core/logging.py 的 setup_logging(level='INFO') 读的是硬编码默认值、不认环境变量，所以走 journald 侧 LogLevelMax=warning（日志仍写 stdout，只是不进 journal））",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "sshd-loglevel",
+    "cat": "sshd",
+    "title": "sshd 日志降噪",
+    "action": "config",
+    "path": "/etc/ssh/sshd_config",
+    "status": "dry-run",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ grep -n '^[# ]*LogLevel' /etc/ssh/sshd_config -> rc=0 | 28:#LogLevel INFO",
+     "$ sshd -T | grep loglevel -> loglevel INFO"
+    ],
+    "note": "将加一行 LogLevel ERROR（先 sshd -t 校验，通过才 reload）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "vscode-servers",
+    "cat": "clean",
+    "title": "VS Code Remote 旧版本",
+    "action": "delete",
+    "path": "/root/.vscode-server/cli/servers",
+    "status": "dry-run",
+    "size": 3251960657,
+    "backup": "",
+    "evidence": [
+     "$ 在跑版本：Stable-2a59476c9bfcb90b3ddc372c36762471b7dfad1c",
+     "$ ls -la /root/.vscode-server/cli/servers -> rc=0 | total 36 drwxr-xr-x 8 root root 4096 Oct 7 22:59 . drwx------ 3 root root 4096 Jul 27 10:58 .. -rw-r--r-- 1 root root 251 Oct 14 01:03 lru.json drwxr-xr-x 3 root root 4096 Sep 29 20:27 Stable-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1 drwxr-x…",
+     "$ du -sh 各版本：Stable-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1=615.5MB；Stable-07f806f999227108933c2e30515b26eecc1fda74=630.6MB；Stable-125df4672b8a6a34975303c6b0baa124e560a4f7=589.9MB；Stable-2242ebbb54efeeb0129e08e919e7e8d43033cd83=615.5MB；Stable-7debcd0e2acdea1c52de81bf9ee1620444407dda=649.8MB"
+    ],
+    "note": "将删 5 个旧版本（保留 Stable-2a59476c9bfcb90b3ddc372c36762471b7dfad1c），预计回收 3.0GB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "vscode-code-dirs",
+    "cat": "clean",
+    "title": ".vscode-server 下陈旧 code-* CLI 目录",
+    "action": "delete",
+    "path": "/root/.vscode-server",
+    "status": "dry-run",
+    "size": 104758944,
+    "backup": "",
+    "evidence": [
+     "$ ls -d /root/.vscode-server/code-* -> rc=0 | /root/.vscode-server/code-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1 /root/.vscode-server/code-07f806f999227108933c2e30515b26eecc1fda74 /root/.vscode-server/code-110a328ea54b42367b803ec53ee0bf52ef26b419 /root/.vscode-server/code-125df4672b8a6…"
+    ],
+    "note": "将删 3 个（code-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1,code-07f806f999227108933c2e30515b26eecc1fda74,code-645f29cc3176500b4b5762ba887cf2a7f0ffdf2c），预计 99.9MB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "store-sdk-cache",
+    "cat": "clean",
+    "title": "agent-host sdk-cache",
+    "action": "delete",
+    "path": "/opt/mtnode-store/data/agent-host/sdk-cache",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ du -sh /opt/mtnode-store/data -> rc=0 | 13M /opt/mtnode-store/data"
+    ],
+    "note": "目录不存在（首查 2026-10-14 已不在）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "store-logs",
+    "cat": "clean",
+    "title": "data/logs 30 天前历史",
+    "action": "delete",
+    "path": "/opt/mtnode-store/data/logs",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [],
+    "note": "目录不存在",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "tmp-residue",
+    "cat": "clean",
+    "title": "/tmp 30 天前一次性上传残留",
+    "action": "delete",
+    "path": "/tmp",
+    "status": "dry-run",
+    "size": 69856232,
+    "backup": "",
+    "evidence": [
+     "$ 命中 7 项：admin-dist.tgz, admin-dist2.tgz, admin-dist3.tgz, frp.tar.gz, mtnode-ext-upload, touhouai-upload, vaproj.tgz"
+    ],
+    "note": "将删 7 项，预计 66.6MB（正在用的 code-*.sock / systemd-private-* / mcp 之外一律不碰）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "npm-cacache",
+    "cat": "clean",
+    "title": "/root/.npm/_cacache",
+    "action": "delete",
+    "path": "/root/.npm/_cacache",
+    "status": "dry-run",
+    "size": 20881536,
+    "backup": "",
+    "evidence": [],
+    "note": "将删（19.9MB）",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "router-dir",
+    "cat": "clean",
+    "title": "/root/mt-ai-router 整目录（先停 mongod）",
+    "action": "delete",
+    "path": "/root/mt-ai-router",
+    "status": "dry-run",
+    "size": 1336736344,
+    "backup": "",
+    "evidence": [
+     "$ systemctl is-active mt-ai-router-mongod -> rc=0 | active",
+     "$ systemctl is-enabled mt-ai-router-mongod -> rc=0 | enabled",
+     "$ ss -lntp | grep 27017 || echo no-listener -> rc=0 | LISTEN 0 4096 127.0.0.1:27017 0.0.0.0:* users:((\"mongod\",pid=388091,fd=10))",
+     "$ du -sh /root/mt-ai-router -> rc=0 | 1.4G /root/mt-ai-router",
+     "$ ps -eo pid,args | grep '[m]ongod' | head -3 -> rc=0 | 388091 /usr/bin/mongod --dbpath /root/mt-ai-router/data --bind_ip 127.0.0.1 --port 27017 --logpath /root/mt-ai-router/.runtime/logs/mongod.log --pidfilepath /root/mt-ai-router/.runtime/pids/mongod.pid --fork",
+     "$ 27017 监听：LISTEN 0 4096 127.0.0.1:27017 0.0.0.0:* users:((\"mongod\",pid=388091,fd=10))"
+    ],
+    "note": "将先 systemctl disable --now mt-ai-router-mongod（确认 27017 无别的服务），再把目录与 unit 移进备份；预计 1.2GB",
+    "at": "2026-10-14T01:07:01+08:00"
+   },
+   {
+    "id": "apt",
+    "cat": "clean",
+    "title": "apt 缓存与可 autoremove 的包",
+    "action": "apt",
+    "path": "/var/lib/apt/lists",
+    "status": "dry-run",
+    "size": 239175904,
+    "backup": "",
+    "evidence": [
+     "$ df -h / -> rc=0 | Filesystem Size Used Avail Use% Mounted on /dev/vda3 20G 14G 4.9G 74% /",
+     "$ du -sh /var/lib/apt/lists /var/cache/apt -> rc=0 | 150M /var/lib/apt/lists 79M /var/cache/apt",
+     "$ uname -r -> rc=0 | 6.1.0-33-amd64",
+     "$ dpkg --list | grep -c '^ii' -> rc=0 | 1287",
+     "$ apt-get -s autoremove --purge -> Reading package lists... Building dependency tree... Reading state information... 0 upgraded, 0 newly installed, 0 to remove and 121 not upgraded.",
+     "$ 现有内核：ii linux-image-6.1.0-13-amd64 6.1.55-1 amd64 Linux 6.1 for 64-bit PCs (signed) ii linux-image-6.1.0-33-amd64 6.1.133-1 amd64 Linux 6.1 for 64-bit PCs (signed) ii linux-image-amd64 6.1.133-1 amd64 Linu"
+    ],
+    "note": "将执行 apt-get autoremove --purge -y + clean + 清空 /var/lib/apt/lists/*（只删 autoremove 自己判定可删的，不手写内核版本号）",
+    "at": "2026-10-14T01:07:02+08:00"
+   },
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938",
+     "$ 与开始前比对 -> 一致"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:07:02+08:00"
+   }
+  ]
+ }
+}

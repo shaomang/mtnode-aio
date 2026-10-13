@@ -2136,7 +2136,7 @@ function tokPeakTip(c) {
   const off = !!c.offPeak;
   if (coin) {
     if (peak)
-      return I18n.t("中转计费：高峰时段单价 × 高峰倍率（价目取客户端内置表，与会话统计同一份）");
+      return I18n.t("中转计费：高峰时段单价 × 高峰倍率（价目取中转站随快照下发的那份，缺席退回客户端内置表）");
     if (off) return I18n.t("中转计费：当前为空闲时段，按价目原价（无高峰倍率）");
     return "";
   }

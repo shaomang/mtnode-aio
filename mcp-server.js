@@ -144,6 +144,13 @@ function checkArgs(schema, args) {
  * @param {string} [o.resourcesDir]  打包态的 resources/ 目录（process.resourcesPath）：
  *   stdio 桥脚本随包发在 resources/mcp-stdio.js，**不在 asar 里** —— 外部 MCP 客户端用系统
  *   Node 拉起它，而 asar 内路径外部 Node 读不了。缺省回退 appRoot（开发态两者同义）。
+ * @param {boolean} [o.packaged]  打包态（main.js 注入 app.isPackaged）。**只影响
+ *   status().stdioCommand 那一份给第三方客户端的口径**：打包态的 process.execPath 是
+ *   MTNodeAIO.exe（Electron 二进制），直接当 Node 用会**当主程序启动**（实测：10 秒不退出、
+ *   多出 4 个实例、stdout 只有 [user-plugins] 体检文本、零 jsonrpc），必须连
+ *   ELECTRON_RUN_AS_NODE=1 一起给（实测 8 秒内正常退出并吐合法 JSON）。
+ *   开发态的 process.execPath 就是真 Node（node_modules/electron/dist/electron.exe 直接跑
+ *   脚本本来就走 Node 分支），按原样报，不加环境变量。
  * @param {(ev:object)=>void} o.sendToRenderer  推帧给渲染层
  * @param {(action:string, params:object)=>Promise<any>} [o.gui]  GUI 族（family "gui"）的执行器：
  *   这一族不在渲染层跑，由主进程直接操作窗口（main.js 注入 mcp-gui-agent.js 的 run）。
@@ -154,6 +161,7 @@ function createMcpHost(o) {
   const dataDir = o.dataDir;
   const appRoot = o.appRoot;
   const resourcesDir = o.resourcesDir || o.appRoot;
+  const packaged = !!o.packaged;
   const sendToRenderer = o.sendToRenderer;
   const guiRun = typeof o.gui === "function" ? o.gui : null;
   const log = typeof o.log === "function" ? o.log : () => {};
@@ -846,15 +854,25 @@ function createMcpHost(o) {
   function stdioCommand() {
     /* 打包态优先 resources/mcp-stdio.js（extraResources 放的，asar 外、外部 Node 读得了）；
        开发态 / 兜底 = appRoot。两条都指向同一份源码。 */
-    const packaged = path.join(resourcesDir, "mcp-stdio.js");
-    const script = fs.existsSync(packaged) ? packaged : path.join(appRoot, "mcp-stdio.js");
+    const packagedScript = path.join(resourcesDir, "mcp-stdio.js");
+    const script = fs.existsSync(packagedScript) ? packagedScript : path.join(appRoot, "mcp-stdio.js");
     const node = process.execPath;
-    return {
-      script,
-      node,
-      /* 第三方客户端配置里那一行：node <script>（脚本自己读数据目录里的端口与 token） */
-      display: node + " " + script,
-    };
+    /* 打包态的 process.execPath 是 MTNodeAIO.exe（Electron 二进制）：**只有**带上
+       ELECTRON_RUN_AS_NODE=1 才会当普通 Node 跑这个脚本；不带就会当主程序启动
+       （实测 10 秒不退出、多出 4 个实例、零 jsonrpc）。这条环境变量必须跟 command 一起给，
+       故这里把它作为 env 一并发出去 —— 面板片段与 /meta 的 stdioCommand 取自同一份。 */
+    const env = packaged ? { ELECTRON_RUN_AS_NODE: "1" } : {};
+    /* 第三方客户端配置里那一行：`<env> <node> <script>`（脚本自己读数据目录里的端口与 token） */
+    const display =
+      (env.ELECTRON_RUN_AS_NODE ? "ELECTRON_RUN_AS_NODE=1 " : "") +
+      quoteForDisplay(node) + " " + quoteForDisplay(script);
+    return { script, node, env, display };
+  }
+
+  /** 给人看的命令行里，含空格的路径加引号（只用于 display，不改任何真实取值） */
+  function quoteForDisplay(p) {
+    const s = String(p || "");
+    return /\s/.test(s) ? '"' + s + '"' : s;
   }
 
   function start() {

@@ -566,7 +566,7 @@ function publicUser(u) {
     },
     downloadsReceived: u.downloadsReceived || 0,
     likesReceived: u.likesReceived || 0,
-    // 余额（元，4 位小数）：客户端只对充值白名单账号展示，但字段一律随本人快照下发，
+    // 余额（元，8 位小数 = 1e-8 元）：客户端只对充值白名单账号展示，但字段一律随本人快照下发，
     // 避免「服务端有余额、客户端要再打一次接口」。他人摘要走 publicTemplate/publicSkill，不含此字段。
     // 内部存储仍是整数分（balanceCents），只在出接口时换算 —— 对外不出现「分」。
     balanceYuan: yuanOfCents(Number(u.balanceCents) || 0),
@@ -6033,15 +6033,19 @@ async function handle(req, res) {
       providerName: "MTNode 中转服务",
       enabled: models.length > 0,
       everRecharged,
-      /* 余额一律按「元」（4 位小数）下发；内部仍是整数分 + 亚分零头，客户端不接触分。 */
+      /* 余额按「元」下发（**中转计费精度 = 8 位小数 = 1e-8 元**，见 relay.mjs 的 YUAN_PRECISION；
+         内部仍是整数分 + 亚分零头，客户端不接触分）。yuanPrecision 一并给客户端，
+         旧客户端不认这个字段也无妨。 */
       balanceYuan: totalYuan,
       totalYuan: totalYuan,
       models: models,
       /* 中转计费的两半（客户端本地「中转按币」计价要与云端同源，见 relay.mjs 的
          textCostYuan / isPeak）：models[].price = 逐模型真实价目；peaks = 豁免高峰的
-         节假日日期；coinYuan = 鲸圆币汇率（1 币 = ¥0.02）。三个字段都只读、不含凭据。 */
+         节假日日期；coinYuan = 鲸圆币汇率（1 币 = ¥0.02）；yuanPrecision = 元的小数位。
+         四个字段都只读、不含凭据。 */
       peaks: relay.admin.peaks(),
       coinYuan: relay.admin.coinYuan(),
+      yuanPrecision: relay.admin.yuanPrecision(),
       reason: models.length ? "" : "账号在中转站的可用余额为 0：充值后即可使用",
       updatedAt: Date.now(),
       /* 凭据状态：relayKey 非空 = 这次新发的（客户端立刻存下）；为空 = 沿用现役那张。 */

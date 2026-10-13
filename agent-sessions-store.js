@@ -105,6 +105,11 @@ const META_KEYS = [
   "devContract",
 ];
 
+/* 字段级补丁（patchSessionMeta）**唯一**允许改的键。故意只有 workspace 一个：
+   这条通道是按 id 直接改盘上那份会话文件的，写入面越小越安全 —— 日后要放宽，
+   必须在这里显式加键（而不是让调用方随手传任意字段）。 */
+const PATCH_KEYS = ["workspace"];
+
 function compactJson(v) {
   return JSON.stringify(v);
 }
@@ -780,6 +785,69 @@ function createAgentSessionsStore(opts) {
     };
   }
 
+  /* ── 对外：字段级补丁（白名单键，不读正文）──────────────────────────────
+     为什么需要它（本次需求 · 现场）：工作目录体检在渲染层改的是**内存里的会话元数据**，
+     而 saveSessions 只送「脏的或正文已读回的」会话 —— 一条既没读回正文、也没被标脏的
+     老会话，它的 workspace 改动会被整条跳过，旧值就一直留在盘上；下次启动又从盘上读回来，
+     于是「工作目录无效」的弹窗每次启动都重现（真机现场：应用开发根从
+     E:\mtnode\apps\test 改成 E:\mtnode\apps\dev 之后，两条开发会话仍记着旧路径）。
+     这条通道按 id 只改会话文件顶层**白名单里的键**（原子写），并同步刷索引条目；
+     正文一个字节都不碰（不 parse messages，也不整份重写，省掉几 MB 的读写）。
+     写序与硬口径 ③ 一致：先写会话体，再写索引。 */
+  function patchSessionMeta(id, patch) {
+    const sid = String(id || "");
+    if (!ID_OK.test(sid)) return { ok: false, error: "bad_id" };
+    const src = patch && typeof patch === "object" ? patch : {};
+    const keys = PATCH_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(src, k));
+    if (!keys.length) return { ok: false, error: "no_patchable_key" };
+    ensureReady(false);
+    const file = sessionPath(sid);
+    const got = readJsonText(file);
+    if (!got || !got.obj || typeof got.obj !== "object") {
+      return { ok: false, error: statOf(file) ? "bad_file" : "missing" };
+    }
+    const body = got.obj;
+    const changed = [];
+    for (const k of keys) {
+      const before = String(body[k] == null ? "" : body[k]);
+      const next = String(src[k] == null ? "" : src[k]);
+      if (before === next) continue;
+      body[k] = next;
+      changed.push({ key: k, from: before, to: next });
+    }
+    if (!changed.length) return { ok: true, changed: 0, keys: [] };
+    let st = null;
+    try {
+      st = writeAtomic(file, compactJson(body));
+    } catch (e) {
+      log("[sessions] 补丁写会话 " + sid + " 失败：" + String((e && e.message) || e));
+      return { ok: false, error: "write" };
+    }
+    /* 索引条目同步（只改补丁键 + 刷新签名）：渲染层读的是索引那份，不刷 = 界面上还显示旧值 */
+    const idx = readIndex();
+    const rows = (idx.sessions || []).map((e) => Object.assign({}, e));
+    const hit = rows.find((e) => e && String(e.id || "") === sid);
+    let indexOk = true;
+    if (hit) {
+      for (const c of changed) hit[c.key] = body[c.key];
+      if (st) hit.sig = { size: st.size, mtimeMs: st.mtimeMs };
+      backupIndex(false);
+      indexOk = writeIndex(idx.activeId, rows);
+    } else {
+      writeMark();
+    }
+    for (const c of changed)
+      log("[sessions] 会话 " + sid + " " + c.key + " 改写：" + c.from + " → " + c.to);
+    return {
+      ok: true,
+      changed: changed.length,
+      keys: changed.map((c) => c.key),
+      id: sid,
+      path: file,
+      indexOk: !!indexOk,
+    };
+  }
+
   return {
     dir,
     indexPath,
@@ -788,6 +856,7 @@ function createAgentSessionsStore(opts) {
     readIndex: readIndexForUi,
     loadSessions,
     saveSessions,
+    patchSessionMeta,
     reconcile,
     migrateFromConfig,
     /* 冒烟 / 探针用的内部口径（不改语义，只读） */
@@ -795,4 +864,4 @@ function createAgentSessionsStore(opts) {
   };
 }
 
-module.exports = { createAgentSessionsStore, DIR_NAME, INDEX_FILE, BACKUP_DIR_NAME, META_KEYS };
+module.exports = { createAgentSessionsStore, DIR_NAME, INDEX_FILE, BACKUP_DIR_NAME, META_KEYS, PATCH_KEYS };

@@ -8,7 +8,7 @@
  *     回跳被拦、callback 根本到不了服务端（表现＝扫了码但页面毫无反应，轮询到过期）。
  *     兜底：#lnkNewWin 用同一条 authUrl 走顶层新窗口（顶层导航不受 frame-src 约束）。
  *   · 弹窗一律 persistent：只能点「取消 / 确定」或 Esc 关闭，点外部不关（避免填一半被吞）。
- *   · 金额一律「元」（服务端下发 4 位小数）展示；界面不做换算与算术决策（校验以服务端为准）。
+ *   · 金额一律「元」（服务端下发，中转计费精度 8 位小数 = 1e-8 元）；界面只做格式化，不做任何换算决策。
  */
 (() => {
   "use strict";
@@ -71,8 +71,36 @@
 
   /* ---------- 展示助手 ---------- */
 
-  /* 金额一律「元」：服务端已按元下发（4 位小数），界面只做格式化，不做任何换算决策。 */
+  /* 金额一律「元」：服务端已按元下发（**中转计费精度 8 位小数 = 1e-8 元**），界面只做格式化，
+     不做任何换算决策。
+       · 明细行给足精度（8 位，去尾零）——「应扣 0.00000002」这种小额必须看得见；
+       · 余额 / 统计卡片按 4 位（`money`）——账单卡片读起来清爽，零头在明细里查；
+       · 小于最小位 1e-8 元 → 「<0.00000001」，**绝不显示成 3e-9 这种科学计数法**。
+     精度口径的服务端唯一真源 = relay.mjs 的 YUAN_PRECISION（随配置下发 yuanPrecision）。 */
   const money = (yuan) => "¥" + Number(yuan || 0).toFixed(4);
+  /* 精度真源 = 服务端（调用流水接口一次性回 yuanPrecision，配置接口也回）：RL 在下面才声明，
+     这里用 typeof 守卫，取不到就按 8 位兜底 —— 既能读到时优先用真源，也不会在声明前炸。 */
+  const yuanDigits = () => {
+    let d = NaN;
+    try {
+      if (typeof RL !== "undefined" && RL) {
+        d = Number(RL.usageMeta && RL.usageMeta.yuanPrecision);
+        if (!Number.isFinite(d) || d <= 0) d = Number(RL.config && RL.config.yuanPrecision);
+      }
+    } catch {
+      d = NaN;
+    }
+    return Number.isFinite(d) && d > 0 && d <= 12 ? Math.floor(d) : 8;
+  };
+  const yuanFixed = (yuan, digits) => {
+    const n = Number(yuan);
+    const d = Number.isFinite(Number(digits)) && Number(digits) > 0 ? Math.floor(Number(digits)) : yuanDigits();
+    if (!Number.isFinite(n) || n === 0) return "0";
+    const floor = Math.pow(10, -d);
+    if (Math.abs(n) < floor) return "<" + floor.toFixed(d);
+    return Number(n).toFixed(d).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  };
+  /* 明细列的金额用 yuanFixed(值)（不带 ¥）；带货币符号的地方沿用 money 的 ¥ 前缀写法。 */
   const ts = (ms) => {
     if (!ms) return "—";
     const d = new Date(Number(ms));
@@ -311,6 +339,30 @@
     if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
     return String(v);
   };
+  /* 三项 token（需求 2）：输出 / 输入缓存命中 / 输入缓存未命中。
+     服务端 usagePublic 已对旧记录推算补齐（miss = prompt − hit），这里只做兜底一次。 */
+  const tok3 = (r) => {
+    const o = r && typeof r === "object" ? r : {};
+    const hit = numOr0(o.cacheHitTokens);
+    const out = numOr0(o.outputTokens);
+    const miss = o.cacheMissTokens != null ? numOr0(o.cacheMissTokens) : Math.max(0, numOr0(o.promptTokens) - hit);
+    return { hit: hit, miss: miss, out: out };
+  };
+  const tok3Text = (r, fmt) => {
+    const f = typeof fmt === "function" ? fmt : fmtNum;
+    const t = tok3(r);
+    return "命中 " + f(t.hit) + " · 未命中 " + f(t.miss) + " · 出 " + f(t.out);
+  };
+  /* 窗口卡片口径：服务端 usageAgg 已经按三项合计（旧记录按 prompt − hit 推算），
+     这里优先用它，缺字段时才逐行兜底推算（老服务端 / 单独切片跑）。 */
+  const tok3AggText = (agg, fmt) => {
+    const f = typeof fmt === "function" ? fmt : fmtNum;
+    const a = agg && typeof agg === "object" ? agg : {};
+    if (a.cacheHitTokens != null || a.cacheMissTokens != null) {
+      return "命中 " + f(a.cacheHitTokens) + " · 未命中 " + f(a.cacheMissTokens) + " · 出 " + f(a.outputTokens);
+    }
+    return tok3Text(a, fmt);
+  };
 
   /** 当前时间窗口：取下拉值，空则回落默认「近 7 天」（HTML 上也是 selected，这里是兜底）。 */
   const usageWindowValue = () => $("fUsageWindow").value || USAGE_DEFAULT_WINDOW;
@@ -373,7 +425,7 @@
       c.appendChild(el("div", "v money", money(w.chargedYuan)));
       c.appendChild(el("div", "card-line", "调用 " + fmtNum(w.calls) + " 次 · 文本 " + fmtNum(w.textCalls) + " / 图像 " + fmtNum(w.imageCalls) +
         (numOr0(w.images) ? "（" + fmtNum(w.images) + " 张）" : "")));
-      c.appendChild(el("div", "card-line muted", "tokens 入 " + fmtTok(w.promptTokens) + " · 出 " + fmtTok(w.outputTokens)));
+      c.appendChild(el("div", "card-line muted", "tokens " + tok3AggText(w, fmtTok)));
       c.appendChild(el("div", "card-line muted", "未计费 " + fmtNum(w.unbilled) + " 次" +
         (numOr0(w.shortfallYuan) > 0 ? " · 欠费未计 " + money(w.shortfallYuan) : "")));
       c.addEventListener("click", () => {
@@ -384,8 +436,10 @@
     }
     $("rlStatHint").textContent =
       "卡片是「全站」口径（不受下面筛选影响）；数字为「实扣」（真正从余额扣到的钱），欠费差额另列。" +
+      "tokens 三项 = 输入缓存命中 / 输入缓存未命中 / 输出；旧记录没有未命中字段时按「入 − 命中」推算（不标旧记录）。" +
       "「未计费」= 实扣为 0 的那几次（余额不足被夹紧 / 零费用）；上游没回 usage 的请求不写用量记录，" +
-      "所以不在统计里（服务端只记日志）。时间窗口按服务器本地时区的自然日。";
+      "所以不在统计里（服务端只记日志）。时间窗口按服务器本地时区的自然日。" +
+      "金额精度：明细 8 位小数（1e-8 元），余额与卡片 4 位小数，小于 1e-8 元显示「<0.00000001」。";
 
     /* 明细上方的合计：本次筛选口径（含窗口 + 类型 + 模型 + 账号）与条数。 */
     const shown = (meta.items || []).length;
@@ -396,7 +450,7 @@
     }
     t += " · 本次筛选合计 " + fmtNum(scope.calls) + " 次（文本 " + fmtNum(scope.textCalls) + " / 图像 " + fmtNum(scope.imageCalls) + "）" +
       " · 实扣 " + money(scope.chargedYuan) +
-      " · tokens 入 " + fmtNum(scope.promptTokens) + " / 出 " + fmtNum(scope.outputTokens) +
+      " · tokens " + tok3AggText(scope, fmtNum) +
       (numOr0(scope.unbilled) ? " · 未计费 " + fmtNum(scope.unbilled) + " 次" : "") +
       (numOr0(scope.shortfallYuan) > 0 ? " · 欠费未计 " + money(scope.shortfallYuan) : "");
     $("rlUsageMeta").textContent = t;
@@ -406,16 +460,17 @@
       { title: "账号", get: (r) => r.username || r.userId },
       { title: "模型", cls: "mono", get: (r) => r.model },
       { title: "类型", render: (td, r) => td.appendChild(el("span", "badge", r.kind === "image" ? "图像 ×" + (r.images || 1) : "文本")) },
-      { title: "入 / 出 tokens", cls: "num", get: (r) => (r.kind === "image" ? "—" : fmtNum(r.promptTokens) + " / " + fmtNum(r.outputTokens)) },
-      { title: "应扣(元)", cls: "num", get: (r) => numOr0(r.costYuan).toFixed(4) },
+      /* 三项 token 分开列（需求 2）：图像请求上游不返 usage，按张计费，这里如实给「—」。 */
+      { title: "入·命中 / 未命中 / 出", cls: "num", get: (r) => (r.kind === "image" ? "—" : tok3Text(r, fmtNum)) },
+      { title: "应扣(元)", cls: "num", get: (r) => yuanFixed(r.costYuan) },
       {
         title: "实扣(元)",
         cls: "num",
         render: (td, r) => {
           const charged = numOr0(r.chargedYuan);
           const short = numOr0(r.shortfallYuan);
-          td.appendChild(el("div", charged > 0 ? "" : "muted", charged.toFixed(4) + (charged > 0 ? "" : "（未计费）")));
-          if (short > 0) td.appendChild(el("div", "neg", "欠 " + short.toFixed(4)));
+          td.appendChild(el("div", charged > 0 ? "" : "muted", yuanFixed(charged) + (charged > 0 ? "" : "（未计费）")));
+          if (short > 0) td.appendChild(el("div", "neg", "欠 " + yuanFixed(short)));
         },
       },
       { title: "耗时(ms)", cls: "num", get: (r) => fmtNum(r.ms) },

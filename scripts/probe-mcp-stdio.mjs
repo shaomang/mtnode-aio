@@ -2,6 +2,10 @@
  * stdio 桥端到端测试（临时数据目录，用完即删）
  * 起主进程 MCP 服务端（假渲染层）→ 写 mcp-server.json → 用真子进程拉起 mcp-stdio.js →
  * 走它的 stdin/stdout 发 MCP 帧，验证「stdio ↔ HTTP ↔ 执行链路」整条通。
+ *
+ * 注意：这条链路靠 `MTNODE_DATA_DIR` 显式指路，**绕开了桥的默认发现分支**
+ *   （所以「默认发现路径少一层」这类问题它测不出来）；默认发现路径的回归在
+ *   `test/smoke-mcp-stdio-discovery.js`（临时 APPDATA + 不设 MTNODE_DATA_DIR）。
  */
 import fs from 'node:fs'
 import os from 'node:os'

@@ -56,12 +56,16 @@
     return Math.round(n * YUAN_PER_COIN * 100) / 100;
   }
 
-  /* 余额：四舍五入取整；<0.5 币的零头给专门文案（判定仍按真实值，见文件头第二条） */
+  /* 余额：四舍五入取整；<0.5 币的零头给专门文案（判定仍按真实值，见文件头第二条）。
+     小到连最小位都不到（不足 0.02 元 = 1 币？不是：是**显示位以下**的极小零头，
+     中转按 1e-8 元扣费后可能留下这种尾巴）先给「<0.02」下限文案 —— 账单上不能出现
+     「余额 0」而实际还有零头。这一条必须排在「<1」之前，否则任何 <0.5 币的零头都会先被拦走。 */
   function balancePartsOfYuan(yuan) {
     var n = Number(yuan);
     if (!isFinite(n) || n <= 0) return { whole: true, text: "0", yuan: isFinite(n) ? n : 0 };
     var c = coinsOfYuan(n);
-    if (c > 0 && c < 0.5) return { whole: true, text: "<1", yuan: n, dust: true };
+    if (!(c > 0)) return { whole: true, text: "<0.02", yuan: n, tiny: true };
+    if (c < 0.5) return { whole: true, text: "<1", yuan: n, dust: true };
     var w = Math.round(c);
     return { whole: true, text: w.toLocaleString("en-US"), yuan: n, coins: w };
   }
@@ -77,11 +81,16 @@
     return Math.round(n).toLocaleString("en-US");
   }
 
-  /* 费用等小额：最多 2 位小数，无小数就不带小数点（0.05 / 1 → "0.05" / "1"） */
+  /* 费用等小额：最多 2 位小数，无小数就不带小数点（0.05 / 1 → "0.05" / "1"）；
+     **不足最小位就给下限文案「<0.01」** —— 一次真实花费绝不许显示成「0」
+     （中转站按 1e-8 元计费，单次小额消耗换算成币可能只有 1e-6 量级）。
+     与 renderer/app-cost.js 的 costCoinText 同一口径（那边是元/币的会话统计口径）。 */
   function coinCostText(coins) {
     var n = Number(coins);
     if (!isFinite(n)) return "0";
+    if (n > 0 && n < 0.01) return "<0.01";
     var v = Math.round(n * 100) / 100;
+    if (n > 0 && v === 0) return "<0.01";
     return v.toFixed(2).replace(/\.?0+$/, "");
   }
 

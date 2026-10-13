@@ -890,6 +890,12 @@ function runMergeSessionProbe(opts) {
   ctx.agentTouchSession = async () => {};
   ctx.agentContractRound = async () => null;
   ctx.agentSessionById = () => null;
+  /* 会话工作目录的统一入口（app-assist.js）：真机里它标脏 + 走 session:patch 改会话文件本体；
+     这里用等价桩（本用例只核「工作区钉成应用目录」）。 */
+  ctx.agentSetSessionWorkspace = async (st, v) => {
+    st.workspace = String(v == null ? "" : v);
+    return true;
+  };
   if (!o.noNode) {
     ctx.createDevSessionForNode = (node, mode, req, contract) => {
       calls.push({ via: "dev", contract: String(contract || ""), req: String(req || "") });
@@ -952,6 +958,8 @@ async function mergeSessionTest() {
     "有开发节点时走开发会话（拿到会话对象：" + (sess && sess.id) + " / " + (probe.calls[0] && probe.calls[0].via) + "）",
   );
   ok(sess.title === "合并 分支作者 v1.0.1 的差异", "会话标题 = 对方作者 + 版本号（真值：" + sess.title + "）");
+  ok(sess.workspace === pull.dir,
+    "合并会话的工作区钉成该应用在本机的那份目录，且走统一入口（" + sess.workspace + "）");
   ok(
     sess.messages[0].content === "把 分支作者 v1.0.1 的差异按我逐项确认的结果合进本机",
     "会话里那条关键输入也填真值（用户看得到的就是它：" + sess.messages[0].content + "）",

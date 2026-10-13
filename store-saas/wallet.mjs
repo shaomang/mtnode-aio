@@ -7,7 +7,8 @@
  *     ，经 account-store 落到当前账户后端
  *     （生产 = 阿里云 Tablestore 的 mtnode_users 行 data JSON），与账户数据同源。
  *     **对外（接口 / 管理台 / CLI / 界面）一律按元出**，用本模块的 `yuanOfCents` / `centsOfYuan`
- *     换算 4 位小数；「分」不出现在任何对外文案与字段名里。
+ *     换算 **8 位小数（= 1e-8 元，中转计费精度；整数分的金额在这套精度下是精确值）**；
+ *     「分」不出现在任何对外文案与字段名里。
  *   · 订单 `rechargeOrders` 与流水 `rechargeLedger` 存服务端 DATA_DIR/db.json
  *     （沿用 server.mjs 的「临时文件 + rename」原子写），不新建云表。
  *
@@ -59,7 +60,7 @@ export function rechargeTiersCents() {
   return out.length ? out : [RECHARGE_MIN_CENTS];
 }
 
-/** 对外档位（元）：接口一律给元（4 位小数），内部仍是分。 */
+/** 对外档位（元）：接口一律给元（整数分链路在这套 8 位小数精度下是精确值），内部仍是分。 */
 export function rechargeTiersYuan() {
   return rechargeTiersCents().map(yuanOfCents);
 }
@@ -95,41 +96,53 @@ export const LEDGER_TYPES = Object.freeze([
 ]);
 
 /**
- * 亚分精度（中转站按用量扣费专用）：账户行的 `relaySubCents` 存 0 ~ 0.9999 分的零头。
+ * 亚分精度（中转站按用量扣费专用）：账户行的 `relaySubCents` 存 0 ~ 0.99999999 分的零头。
  * 余额 `balanceCents` 保持整数分不变（内部存储口径不动）：
  *   中转扣费 = 整数分部分（写一条 relay 流水 + 扣 balanceCents）+ 不足 1 分的零头（写 relaySubCents）。
  * 可用总额 = balanceCents + relaySubCents，两者都为 0 才算余额耗尽。
  *
+ * **精度口径 = 1e-8 元（本次修正）**：元保留 8 位小数；账户行的亚分零头按「分」存 8 位小数
+ * （即 1e-8 分的步进，足以表示 1e-8 元）。修正前是 1e-4 分（= 1e-6 元），
+ * 低于 1e-6 元的调用会被四舍五入吃掉 —— 「计费不准」的根因之一
+ * （deepseek 命中价 0.02 元/百万 token，小额调用本就算得出更小的数）。
+ * **只提中转扣费这一条链路**：充值 / 退款 / 打赏 / 调账 / 订单仍是整数分，`round4` 继续给它们用。
+ * **存量不动**：已扣的钱与历史明细不重算、不迁移，新精度只对修复之后的调用生效。
+ *
  * **对外一律「元」（不再出现「分」）**：本模块只管内部账（分），出接口 / 界面时用
- * `yuanOfCents()` 换算成 4 位小数的元，入参用 `centsOfYuan()` 换算回分再记账 —— 换算只在这一层，
+ * `yuanOfCents()` 换算成 8 位小数的元，入参用 `centsOfYuan()` 换算回分再记账 —— 换算只在这一层，
  * 别在别处再算一遍。
  */
-export const SUB_CENTS_STEP = 4; // 小数点后 4 位（1e-4 分 = 1e-6 元）
+export const SUB_CENTS_STEP = 8; // 亚分零头的小数位（8 位 = 1e-8 分 步进，配合 1e-8 元的计费精度）
 
-/** 四舍五入到 4 位小数（元与分的共同精度）。 */
+/** 四舍五入到 4 位小数（充值 / 退款 / 打赏 / 调账等整数分链路继续用它）。 */
 export function round4(n) {
   return Math.round(Number(n || 0) * 1e4) / 1e4;
 }
 
-/** 分 → 元（4 位小数）：出接口与界面唯一换算入口。接受 0.5 这种亚分零头。 */
-export function yuanOfCents(cents) {
-  return round4((Number(cents) || 0) / 100);
+/** 四舍五入到 8 位小数（**中转计费唯一精度口径**：元保留 8 位小数 = 1e-8 元）。 */
+export function round8(n) {
+  return Math.round(Number(n || 0) * 1e8) / 1e8;
 }
 
-/** 元 → 分（4 位小数，可含亚分零头）：入参与计价结果写账本前唯一换算入口。 */
+/** 分 → 元（8 位小数）：出接口与界面唯一换算入口。接受 0.5 这种亚分零头。 */
+export function yuanOfCents(cents) {
+  return round8((Number(cents) || 0) / 100);
+}
+
+/** 元 → 分（8 位小数，可含亚分零头）：入参与计价结果写账本前唯一换算入口。 */
 export function centsOfYuan(yuan) {
-  return round4((Number(yuan) || 0) * 100);
+  return round8((Number(yuan) || 0) * 100);
 }
 
 export function subCentsOf(user) {
   const n = Number(user && user.relaySubCents);
   if (!Number.isFinite(n) || n < 0) return 0;
-  const r = Math.round(n * 1e4) / 1e4;
-  return r >= 1 ? 0.9999 : r;
+  const r = round8(n);
+  return r >= 1 ? 0.99999999 : r;
 }
 
 export function totalCentsOf(user) {
-  return Math.round((balanceOf0(user) + subCentsOf(user)) * 1e4) / 1e4;
+  return round8(balanceOf0(user) + subCentsOf(user));
 }
 
 function balanceOf0(user) {
@@ -587,8 +600,9 @@ export function createWallet(deps) {
   function clampSub(v) {
     const n = Number(v);
     if (!Number.isFinite(n) || n <= 0) return 0;
-    const r = Math.round(n * 1e4) / 1e4;
-    return r >= 1 ? 0.9999 : r;
+    /* 8 位小数（1e-8 分 步进）：与计费精度 1e-8 元对齐，别再退回 1e-4 分把零头抹掉 */
+    const r = round8(n);
+    return r >= 1 ? 0.99999999 : r;
   }
 
   /** 只更新亚分零头（整数分不动 → 不需要流水，铁律①只约束 balanceCents）。 */
@@ -604,7 +618,7 @@ export function createWallet(deps) {
   }
 
   /**
-   * 中转站扣费：入参是本次要扣的**费用（分，可含 4 位小数的亚分）**，例如 0.3 / 1.14 / 21。
+   * 中转站扣费：入参是本次要扣的**费用（分，可含 8 位小数的亚分）**，例如 0.3 / 1.14 / 21 / 0.002。
    * 本函数负责「整数分 + 亚分零头」的拆分（调用方不要自己拆）：
    *   · 整数部分 ≥ 1 → 写一条 relay 流水 + 扣 balanceCents；
    *   · 整数部分 = 0 → 只改 relaySubCents（不够 1 分不记流水，铁律①只约束 balanceCents）；
@@ -614,7 +628,7 @@ export function createWallet(deps) {
    */
   async function chargeRelayUsage({ user, amountCents, note, meta }) {
     if (!user || !user.id) return { ok: false, code: "USER_NOT_FOUND", error: "账号不存在" };
-    const amt = round4(amountCents);
+    const amt = round8(amountCents);
     if (!Number.isFinite(amt) || amt <= 0) return { ok: false, code: "INVALID_AMOUNT", error: "扣费金额必须 > 0" };
     const text = String(note || "").trim();
     if (!text) return { ok: false, code: "NOTE_REQUIRED", error: "扣费必须写备注" };
@@ -622,9 +636,9 @@ export function createWallet(deps) {
 
     const avail = totalCentsOf(user);
     const pay = Math.min(amt, avail); // 本次实扣（分，含亚分），按可用额夹紧：不允许出现负余额
-    const rest = round4(avail - pay); // 扣完剩下的可用额（分）
+    const rest = round8(avail - pay); // 扣完剩下的可用额（分）
     const nextBalance = Math.floor(rest + 1e-9); // 剩下的整数分
-    const nextSub = clampSub(round4(rest - nextBalance)); // 剩下的亚分零头（0 ~ 0.9999）
+    const nextSub = clampSub(round8(rest - nextBalance)); // 剩下的亚分零头（0 ~ 0.99999999）
     const before = balanceOf(user);
     const whole = Math.max(0, before - nextBalance); // 本次要扣掉的整数分
     // 整数分不足 1（本次只啃掉不足 1 分的零头）：只改 relaySubCents，不写流水
@@ -706,7 +720,7 @@ export function createWallet(deps) {
       .slice(0, n)
       .map(publicOrder);
     const entries = listLedger({ userId: user.id, limit: n }).map(publicLedger);
-    // 对外一律「元」（4 位小数）：档位 / 余额 / 订单金额都不再出现「分」
+    // 对外一律「元」（中转计费精度 8 位小数；整数分链路的金额在同一精度下仍是精确值）：档位 / 余额 / 订单金额都不再出现「分」
     return {
       balanceYuan: yuanOfCents(balanceOf(user)),
       tiersYuan: rechargeTiersYuan(),
@@ -884,4 +898,4 @@ export function createWallet(deps) {
   };
 }
 
-export default { createWallet, validateAmount, RECHARGE_TIERS_CENTS, RECHARGE_MIN_CENTS, RECHARGE_MAX_CENTS, rechargeTiersCents, rechargeTiersYuan, ORDER_TTL_MS, ORDER_STATUSES, LEDGER_TYPES, RECENT_LIMIT, subCentsOf, totalCentsOf, round4, yuanOfCents, centsOfYuan };
+export default { createWallet, validateAmount, RECHARGE_TIERS_CENTS, RECHARGE_MIN_CENTS, RECHARGE_MAX_CENTS, rechargeTiersCents, rechargeTiersYuan, ORDER_TTL_MS, ORDER_STATUSES, LEDGER_TYPES, RECENT_LIMIT, subCentsOf, totalCentsOf, round4, round8, yuanOfCents, centsOfYuan };

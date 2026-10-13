@@ -485,7 +485,11 @@ has(
 has(pluginsUi, "function backendSpecById(", "按 id 反查后端 spec（安装窗「打开控制台」用）");
 const repairUi = read("renderer/app-repair.js");
 has(repairUi, "function pluginInstallFixSession(", "渲染层有「安装失败 → 新建修复会话」");
-has(repairUi, "st.workspace = info.installDir;", "修复会话的工作区 = 安装目录");
+has(
+  repairUi,
+  "await agentSetSessionWorkspace(st, info.installDir);",
+  "修复会话的工作区 = 安装目录（走统一入口：标脏 + session:patch 改会话文件本体）",
+);
 has(repairUi, "st.canvasFree = true;", "修复会话走「与画布无关」档（省上下文）");
 has(repairUi, "function pluginInstallOpenConsole(", "渲染层有「开该插件控制台」");
 has(repairUi, "onMtnodeInstallSession", "订阅安装窗的会话交接事件");

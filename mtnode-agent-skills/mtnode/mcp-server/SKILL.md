@@ -13,9 +13,9 @@ MTNode 平时是 MCP **客户端**（去连别人的服务器给自家 Agent 加
 ## 一、怎么连
 
 - **服务端**：主进程里的 `mcp-server.js`，只绑 `127.0.0.1`、随机端口、Bearer 令牌；默认开启。开关与地址/令牌在「设置 → 扩展能力 → 管理… → 服务端」页。
-- **运行信息**：数据目录（`%APPDATA%\pipeline-console`）的 `mcp-server.json` = `{enabled, token, port, clientId, capture}`；stdio 桥与脚本都从这里发现服务端，不需要手填地址。
+- **运行信息**：**数据目录**（默认 `%APPDATA%\pipeline-console\pipeline-console`；`main.js` 里 `userData = appData\pipeline-console`，数据目录是它下面的 `pipeline-console` 子目录，设置里改过「配置数据目录」则看 `data-root.json` 的 `path`）的 `mcp-server.json` = `{enabled, token, port, clientId, capture}`；stdio 桥与脚本都从这里发现服务端，不需要手填地址。桥的候选顺序：`$MTNODE_DATA_DIR`（+`pipeline-console` 子目录）→ `<应用数据根>\pipeline-console`（默认数据目录）→ `data-root.json` 指向的自定义数据目录 → 应用数据根（旧版位置）。
 - **两种传输，同一个服务端**：
-  - **stdio**：客户端配 `node <应用根>/mcp-stdio.js`（桥只做 stdio ↔ HTTP 转发，执行仍在主进程 → 渲染层）。
+  - **stdio**：客户端配 `"command": "<MTNode 安装目录>\\MTNodeAIO.exe"` + `"args": ["<…>\\resources\\mcp-stdio.js"]` + `"env": { "ELECTRON_RUN_AS_NODE": "1" }`。**打包态的 `command` 是 Electron 二进制（不是 Node）：只有带上这条 env 才会以 Node 模式跑桥脚本，漏了它会再拉起一个 MTNode 实例且零 JSON-RPC**（`GET /meta` 与面板片段已把 env 一并给出）；开发态 `command` 是真 Node，不带 env。用系统 `node` 亦可（`command` 换 `node`、去掉 env，≥ 18）。桥只做 stdio ↔ HTTP 转发，执行仍在主进程 → 渲染层；面板「复制配置片段」与 `GET /meta` 的 `stdioCommand` 是同一口径。
   - **HTTP**：`POST http://127.0.0.1:<port>/mcp`，头带 `Authorization: Bearer <token>`。
 - MTNode 没开着 → 桥会回「连不上 MTNode MCP 服务端，请打开 MTNode 后重试」；主窗口被关掉 → 调用会超时（执行在渲染层，窗口不在就没人执行）。
 
@@ -92,6 +92,7 @@ node tools/mtnode-gui.mjs call <工具名> --args '<JSON>' --data <数据目录>
 # 从仓库/安装目录跑（不接外部客户端，自己验整链）
 node scripts/probe-mcp-server.mjs      # 服务端 + 协议面 + 假渲染层
 node scripts/probe-mcp-stdio.mjs       # stdio 桥端到端
+node test/smoke-mcp-stdio-discovery.js # 桥的**默认发现路径**（临时 APPDATA + 真子进程，不设 MTNODE_DATA_DIR）
 node scripts/build-mcp-contract.mjs --check   # 契约与插件参数表是否漂移
 node mcp-stdio.js --print-config       # 打印客户端配置片段与当前地址
 node mcp-stdio.js --check              # 只验证「能否连上服务端」
@@ -102,6 +103,7 @@ node mcp-stdio.js --check              # 只验证「能否连上服务端」
 | 现象 | 先看哪里 |
 | --- | --- |
 | 401 | 令牌不对（重置过？）—— 重新复制配置片段 |
+| 「找不到运行信息」但 MTNode 明明开着 | 数据目录不一致：看 `--check` 报错里**逐个候选探活的结果**（每个候选的路径、端口、死活与连不上原因），比对 `mcp-server.json` 实际在哪（默认 `%APPDATA%\pipeline-console\pipeline-console`）；仍不一致才用 `MTNODE_DATA_DIR` / `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` 显式指定 |
 | 「画布已被改动」 | 有人在你读图之后改过：重新 `canvas_get` 再改 |
 | 调用超时 | 主窗口是不是关掉了；渲染层在不在 |
 | 工具「本轮不导出」 | 那是会话浏览器 / 引擎自带工具，本轮确实不开 |

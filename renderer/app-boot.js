@@ -893,7 +893,9 @@ async function init() {
     const wsInput = $("#agentWsInput");
     if (wsInput) {
       wsInput.addEventListener("change", () => {
-        agentSessionState().workspace = wsInput.value.trim();
+        /* 统一入口（标脏 + session:patch 改会话文件本体）：会话没读回正文时，
+           光 persistAgentSession 会被落盘层整条跳过，用户填的目录就落不了盘 */
+        agentSetSessionWorkspace(agentSessionState(), wsInput.value.trim());
         persistAgentSession();
       });
     }
@@ -902,7 +904,7 @@ async function init() {
     if (wsBr && wsInput)
       wsBr.onclick = () => {
         pickFolder(wsInput, (p) => {
-          agentSessionState().workspace = p;
+          agentSetSessionWorkspace(agentSessionState(), p);
           persistAgentSession();
         });
       };
@@ -989,7 +991,7 @@ async function init() {
       wt.onclick = () => {
         const wsInput = $("#agentWsInput");
         if (wsInput) pickFolder(wsInput, (p) => {
-          agentSessionState().workspace = p;
+          agentSetSessionWorkspace(agentSessionState(), p);
           persistAgentSession();
           renderAgentSession();
           renderAgentSessionSidebar();

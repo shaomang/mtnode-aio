@@ -32,24 +32,26 @@ handleCanvasEvent / handleDbToolEvent / handleAiFactsToolEvent / handleAssetTool
 
 ### 2.1 stdio（推荐，多数本地客户端）
 
-面板「设置 → 扩展能力 → 管理… → 服务端 → 复制配置片段」给出的就是这一段：
+面板「设置 → 扩展能力 → 管理… → 服务端 → 复制配置片段」给出的就是这一段（打包态 `command` = 安装目录里的 `MTNodeAIO.exe`，并**连 `env` 一起给**）：
 
 ```json
 {
   "mcpServers": {
     "mtnode": {
-      "command": "node",
-      "args": ["<repo-root-or-install-dir>/mcp-stdio.js"]
+      "command": "<MTNode 安装目录>\\MTNodeAIO.exe",
+      "args": ["<MTNode 安装目录>\\resources\\mcp-stdio.js"],
+      "env": { "ELECTRON_RUN_AS_NODE": "1" }
     }
   }
 }
 ```
 
-- macOS / Linux 同上（路径换成实际安装位置）。
+- **为什么 `command` 是应用自己的可执行文件、且打包态必须带 `ELECTRON_RUN_AS_NODE=1`**：`MTNodeAIO.exe` 是 **Electron 二进制，不是 Node**。打包态**只有**同时给出环境变量 `ELECTRON_RUN_AS_NODE=1`，它才会以普通 Node 模式运行这个脚本、正常吐 JSON-RPC；**漏掉这条环境变量它会再拉起一个应用实例**（真机实测：10 秒不退出、多出 4 个实例、stdout 只有 `[user-plugins]` 体检文本、**零 JSON-RPC**）—— 客户端侧的表现就是怎么都连不上。开发态（未打包）的 `command` 本身就是真 Node（`node_modules\\electron\\dist\\electron.exe` 或系统 `node`），**不带**这条 env（带了也无害，但不要在开发态抄进配置）。想用系统 Node：把 `command` 换成 `node` 并**删掉 `env` 这一段**（要求 Node ≥ 18，脚本只用 `fetch` 与内置模块）。
+- 同一个口径也在 `GET /meta` 的 `stdioCommand`（`{script, node, env, display}`）里给出：面板片段与它取自同一真源，不会再一个说 exe、一个说 node —— 打包态两边都给 `ELECTRON_RUN_AS_NODE=1`。
+- macOS / Linux 同上（`command` 换成实际的 MTNode 可执行文件或 `node`，路径换成实际安装位置；用应用可执行文件时同样要带 `ELECTRON_RUN_AS_NODE=1`）。
 - 桥脚本自己读数据目录里的 `mcp-server.json` 拿端口与令牌，所以**配置里不需要地址与令牌**；
   也可用环境变量显式覆盖（便携版 / 多用户）：`MTNODE_DATA_DIR`、`MTNODE_MCP_URL`、`MTNODE_MCP_TOKEN`。
-- 需要 Node ≥ 18（脚本只用 `fetch` 与内置模块；MTNode 自身用的受管 Node 也满足）。
-- 客户端重启一次即可看到 8 个工具。
+- 客户端重启一次即可看到 8 个工具（外加仅在 MCP 这一侧提供的 `mtnode_gui`）。
 
 ### 2.2 本机 HTTP（自研客户端 / 远程工具宿主）
 
@@ -60,7 +62,7 @@ curl -s http://127.0.0.1:<port>/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-- 端口与令牌：面板里可见；`%APPDATA%\pipeline-console\mcp-server.json` 里也可读。
+- 端口与令牌：面板里可见；数据目录（默认 `%APPDATA%\pipeline-console\pipeline-console`，设置在「配置数据目录」里改过就是它指向的那个目录）下的 `mcp-server.json` 里也可读。
 - 只绑 `127.0.0.1`，不对外网开放。
 - 另有两个只读辅助端点：`GET /meta`（健康与能力摘要，**不需要令牌**，不含令牌本身）、`GET /health`。
 - 给 stdio 桥用的扁平控制面 `POST /ctl`（`{method, params}` → `{ok, result|error}`），第三方一般不需要它。
@@ -71,7 +73,7 @@ curl -s http://127.0.0.1:<port>/mcp \
 | --- | --- |
 | Claude Code | 项目内 `.mcp.json` 或用户级 MCP 配置的 `mcpServers` 段 |
 | Cursor | 「Settings → MCP」里粘贴同一段 `mcpServers` |
-| 自研 Agent | 直接实现 HTTP 传输，或 `spawn('node', ['mcp-stdio.js'])` 走 stdio |
+| 自研 Agent | 直接实现 HTTP 传输，或 `spawn(process.execPath, ['mcp-stdio.js'], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })` 走 stdio（自家的 Electron 运行时**必须**带这条 env，理由见 §2.1；换成真 Node 则去掉它） |
 
 ## 3. 协议面
 
@@ -189,6 +191,7 @@ node scripts/build-mcp-contract.mjs --check   # 契约与插件参数表是否�
 node scripts/probe-mcp-server.mjs             # 服务端 + 协议面 + 版本闸 + 审计（假渲染层）
 node scripts/probe-mcp-stdio.mjs              # stdio 桥端到端（真子进程）
 node test/smoke-mcp-server.js                 # 契约 / 接线 / 渲染层钩子 / 面板 的静态与逻辑回归
+node test/smoke-mcp-stdio-discovery.js         # stdio 桥的**默认发现路径**（临时 APPDATA + 真子进程，不设 MTNODE_DATA_DIR）
 node test/smoke-mcp-version-gate.js           # 版本闸哈希真跑（与 detail 档位解耦 + 真改必变）
 node mcp-stdio.js --print-config              # 打印客户端配置片段与当前地址
 ```
@@ -226,7 +229,9 @@ node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --
 | --- | --- |
 | 桥报「连不上 MTNode MCP 服务端」 | MTNode 没开着，或重启后端口变了（桥每次调用都重读 `mcp-server.json`，打开 MTNode 即可） |
 | 桥报「找到数据目录，但 MCP 服务端没在跑」 | 端口没落盘 / `enabled:false`：面板「服务端」页看开关与状态；端口由服务端每次启动写入 `mcp-server.json`，`port:0` = 没在监听 |
-| 桥报「找不到 …运行信息」，但 MTNode 明明开着 | 数据目录不一致：桥按 `$MTNODE_DATA_DIR` →（+`pipeline-console` 子目录）→ `%APPDATA%\pipeline-console` 顺序找；便携版请显式设 `MTNODE_DATA_DIR` 或 `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` |
+| 桥报「找不到 …运行信息」，但 MTNode 明明开着 | 数据目录不一致。桥按这个顺序找 `mcp-server.json`：`$MTNODE_DATA_DIR`（+`pipeline-console` 子目录）→ `<应用数据根>\pipeline-console`（**默认数据目录就是这一层**：`%APPDATA%\pipeline-console\pipeline-console`）→ `data-root.json` 指定的自定义数据目录 → 应用数据根（旧版位置）。报错会把**逐个候选探活的结果**列出来（每个候选的路径、端口、死活与连不上原因），照着比对即可；仍不一致就显式给 `MTNODE_DATA_DIR` 或 `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` |
+| 同时开着多个 MTNode（共用同一个数据目录），桥连到的端口不对 | `mcp-server.json` 里**没有 pid**，而且每个实例都会**无条件覆盖**它（启动即 `saveState()`）：后启动的那个把自己的端口写进去，先启动的实例就对不上了。排障先**绕开自动发现** —— 给客户端设 `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` 显式指定真正在监听的那个地址与令牌；只留一个实例最干净 |
+| 桥报 `fetch failed` | 那是「采纳了一个已经死掉的端口」的表现（状态文件是旧进程 / 另一个实例留下的）。桥的报错会把**逐个候选探活的结果**列出来（哪个目录、哪个端口、连不上的原因）—— 按这份候选清单逐条核对端口死活：目录不对就显式给 `MTNODE_DATA_DIR`，端口不对就用 `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` 指定；先确认没开多个实例（见上一行） |
 | HTTP 401 | 令牌不对（被重置过 / 抄错）；重新复制配置片段 |
 | 工具返回「画布已被改动（版本不一致）」 | 读图之后画布真被改过 → 重新 `mtnode_canvas_get` 拿新 `contentHash`。若**刚读完、什么都没改**就被拒：那是版本闸哈希的实现缺陷（曾出现「哈希随 detail 档位变」），跑 `node test/smoke-mcp-version-gate.js` 定位 |
 | 工具返回「渲染层未回执（超时）」 | 主窗口被关掉 / 渲染层卡住；执行在渲染层，窗口不在就没人执行 |
@@ -250,4 +255,5 @@ node scripts/e2e-mcp-full.mjs --data "E:\tmp\mtnode-mcp-e2e\pipeline-console" --
 | `renderer/mcp-bridge.js` | 渲染层执行桥（帧 → 既有宿主处理函数 → 回执） |
 | `renderer/app-plugins.js` | 「扩展能力管理 → 服务端」页 |
 | `test/smoke-mcp-server.js` | 回归：契约 / 接线 / 帧的生命周期 / 三族回执通道 / 面板 |
+| `test/smoke-mcp-stdio-discovery.js` | 回归：stdio 桥的**默认发现路径**（打包态 `%APPDATA%\pipeline-console\pipeline-console` 布局、`data-root.json` 自定义数据目录、`MTNODE_DATA_DIR` 两种写法） |
 | `test/smoke-mcp-version-gate.js` | 回归：版本闸哈希与 detail 档位解耦、真改必变 |

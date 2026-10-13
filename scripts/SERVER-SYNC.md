@@ -113,6 +113,47 @@ Z:\Dev\mtnode-aio\
   - 大小不同（线上更大）：`server.mjs`、`relay.mjs`、`tips.mjs`、`comments.mjs`、`deploy.sh`
   - 仓库缺少（只存在于服务器）：`server.mjs.bak-20260909-132911`、`backup-recharge-20261003-201549/{server.mjs,wallet.mjs,mtnode-store.service}`
 
+## 六之二、服务器磁盘与日志口径（2026-10-14 一次性清理 + 每周兜底）
+
+服务器根分区只有 20G（`/dev/vda3`），清理前 `df -h /` = `20G 14G 4.9G 74%`。
+本节记录**已经落在服务器上的**改动与位置、回滚方式与每周兜底，改这些文件前先读这一节。
+
+### 1. 改动清单与位置
+
+| 位置 | 改动 | 生成方式 |
+| --- | --- | --- |
+| `/etc/systemd/journald.conf.d/10-mtnode-retention.conf` | 新增 drop-in：`SystemMaxUse=64M` / `MaxRetentionSec=2day` / `MaxFileSec=1day` | `scripts/server-disk-cleanup.py` |
+| `/etc/logrotate.d/nginx` | `rotate 14` → `rotate 2` | 同上 |
+| `/etc/nginx/sites-available/mt-ai-router.conf` | `/mtnode/music3/` 与 `/mtnode/h3/` 两个 location 加 `access_log off`（脚手架分发是静态托管，access 日志无价值） | 同上 |
+| `/etc/ssh/sshd_config` | `LogLevel` → `ERROR`（第 28 行） | 同上 |
+| `/etc/systemd/system/vaproj-backend.service.d/10-mtnode-loglevel.conf` | 新增 drop-in：`LogLevelMax=warning`（vaproj 的 apscheduler 每分钟两行 INFO 心跳写满 journal，这里压掉） | 同上 |
+| `/usr/local/sbin/mtnode-disk-check.sh` | **新增**每周兜底脚本（纯 ASCII · 0755 root:root · sha256 `fff7485e…bffb52`） | 仓库 `scripts/server-disk-check.sh` 上传 |
+| `/etc/cron.d/mtnode-disk-check` | **新增** cron（0644 root:root · sha256 `e84fd345…f368402`） | 仓库 `scripts/server-disk-check.cron` 上传 |
+| `/var/log/mtnode-disk-check.log` | 兜底脚本每次运行追加一行 `SKIP` / `CLEAN` 摘要 | 脚本自身 |
+| `/root/mt-ai-router`、`/root/.npm/_cacache` | 整目录搬进备份（vscode-server 只留当前在跑的那版） | 同上 |
+| `/etc/systemd/system/mt-ai-router-mongod.service`、`/etc/nginx/sites-available/mt-ai-router.conf` 原件 | 改前原件进备份 | 同上 |
+
+### 2. 备份目录命名与回滚
+
+- 命名：`/root/mtnode-disk-cleanup-<YYYYMMDD-HHMMSS>/`，本次是 `/root/mtnode-disk-cleanup-20261014-010649/`（`du -sh` = **4.6G**）。
+- 结构：`backup/<原绝对路径>`（`backup/root/…`、`backup/etc/…`、`backup/tmp/…`）+ `manifest.json`（逐项清单）+ `report.md` + `RESTORE.sh`。
+- 回滚：`bash /root/mtnode-disk-cleanup-20261014-010649/RESTORE.sh`（本次复验无异常，未执行过回滚）。
+- **清理是「搬进备份」不是真删**：4.6G 停在备份目录里，`df` 因此几乎没变（真回收只有 journald 的约 164MB）。确认真不需要回滚后再 `rm -rf` 备份目录，才能把 4.6G 真正拿回来。
+
+### 3. 每周兜底 cron 与阈值
+
+- cron：`/etc/cron.d/mtnode-disk-check` → **每周一 04:30**（服务器时区 `Asia/Shanghai`，cron 服务 `active`）。
+- 脚本：`/usr/local/sbin/mtnode-disk-check.sh`（仓库源文件 `scripts/server-disk-check.sh`，改完重新上传即可；幂等、可重复安装）。
+- 阈值：根分区使用率 **低于 80% 直接退出**（只写一行 `SKIP … nothing-to-do`，不碰任何文件）；≥80% 才执行日志侧清理：
+  `journalctl --vacuum-time=2d` + `--vacuum-size=64M` → `logrotate -f /etc/logrotate.d/nginx`（强制轮转，旧份按 `rotate 2` 逐次淘汰）→ 清 `/tmp` 30 天前的上传/打包残留（`*upload*` / `*dist*` 目录、<200M 的 `*.tgz|*.tar.gz|*.zip|*.gz|*.rar|*.7z`）→ 清 `/root/.npm/_cacache`。
+- 手动跑法：`/usr/local/sbin/mtnode-disk-check.sh`（按阈值）· `MN_DISK_THRESHOLD=0 …`（无视阈值、真清一次，用于验证）· `--help`；环境变量 `MN_DISK_THRESHOLD` / `MN_DISK_LOG` / `MN_DISK_TMP_DAYS` 可覆盖默认值。
+- 首验实测（2026-10-14 01:11，使用率 73%）：手动跑 `exit_code=0`、日志落一行 `SKIP`、`/tmp` 105 项与 journald 8.0M、nginx 日志 30 个文件全部未动；强制清一次后 nginx 日志 11M → 2.2M（旧份每次只淘汰最老一代，按 `rotate 2` 收敛），`nginx -t` 通过、h3 / music3 manifest 与 store-api health 仍 200。
+
+### 4. 已停用：mt-ai-router-mongod
+
+- `mt-ai-router-mongod` 已 **stopped + 停用**（unit 文件已从 `/etc/systemd/system/` 移进备份，`systemctl is-active` = `inactive`，27017 无监听）；二进制 `/usr/bin/mongod` 仍在，需要时可从备份恢复该 unit 再启用。
+- 连带影响：`/root/mt-ai-router`（含原 mongod `--dbpath`，1.4G）整目录已搬进备份，业务侧不依赖它。
+
 ## 七、已知边界
 
 - 服务器日志（nginx access/error、journalctl）**不在**同步范围（体积无上限）；要用时临时拉。

@@ -1361,7 +1361,8 @@ async function pluginRepairRun(info) {
   /* 标题是本窗的固定口径：锁死，不让首轮自动命名把它改成日志前 24 字 */
   st.titleLocked = true;
   st.titleAuto = false;
-  st.workspace = info.installDir;
+  /* 走统一入口（标脏 + session:patch）：全新会话盘上还没有文件，补丁回 missing 属正常 */
+  await agentSetSessionWorkspace(st, info.installDir);
   /* 与画布无关档（Gate B）：修插件用不上读图 / 改图三件套，整档不注册省约 26K 字符/步 */
   st.canvasFree = true;
   info.sessionId = st.id;
@@ -1552,7 +1553,8 @@ async function pluginInstallFixSession(info) {
   st.title = I18n.t("插件安装修复") + " · " + (info.name || info.id);
   st.titleLocked = true;
   st.titleAuto = false;
-  st.workspace = info.installDir;
+  /* 走统一入口（标脏 + session:patch）：全新会话盘上还没有文件，补丁回 missing 属正常 */
+  await agentSetSessionWorkspace(st, info.installDir);
   st.canvasFree = true;
   try {
     if (typeof persistAgentSession === "function") await persistAgentSession();

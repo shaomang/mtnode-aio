@@ -218,13 +218,14 @@ section("3 会话目录跟着应用走");
   ok(/appsDevAlignAppWorkspace\(DEVD\.appId\)\.catch\(\(\) => \{\}\);/.test(tickFn),
     "③ 每轮 tick 兜底（开轮前一定核过；运行中的会话不动）");
   const sendFn = pickFn(DEV, "appsDevComposerSend");
-  ok(/st\.workspace = dir;/.test(sendFn), "非首轮态发送前补一道「空 → 应用目录」");
+  ok(/agentSetSessionWorkspace\(st, dir\)/.test(sendFn),
+    "非首轮态发送前补一道「空 → 应用目录」，且走统一入口（标脏 + session:patch 改会话文件本体）");
   const alignFn = pickFn(DEV, "appsDevAlignAppWorkspace");
   ok(/if \(!st \|\| appsDevSessionRunning\(st\)\) continue;/.test(alignFn), "运行中的会话不动");
   ok(/isDir = !!\(await window\.api\.fileIsDir\(cur\)\);/.test(alignFn), "「填过但目录没了」靠主进程判存在性");
   ok(/if \(isDir\) continue;/.test(alignFn), "目录还在（用户自己选的）一个字不动");
-  ok(alignFn.indexOf("st.workspace = dir;") >= 0 && /persistAgentSession\(\)/.test(alignFn),
-    "回填写进会话的 workspace 并落盘");
+  ok(/await agentSetSessionWorkspace\(st, dir\)/.test(alignFn) && /persistAgentSession\(\)/.test(alignFn),
+    "回填走统一入口（标脏 + session:patch 改会话文件本体）并落盘 —— 直接改内存那份会被落盘层整条跳过");
   ok(/renderAgentComposer\(\)/.test(alignFn), "回填后立刻刷底部那颗芯片");
 }
 
@@ -255,11 +256,20 @@ section("3 会话目录跟着应用走");
     const ast4 = { id: "a4", appId: "appA", workspace: "", running: true };
     let saved = 0;
     let composer = 0;
+    /* 统一入口在真机上做三件事：改内存、标脏、走 session:patch 改会话文件本体。
+       这里用一只等价的桩（本用例只关心「对齐改没改、落没落盘」），
+       「真的走统一入口」那一层由 [3] 的源码断言钉住。 */
+    const viaEntry = [];
     const sb2 = {
       console: console,
       DEVD: { appId: "appA" },
       appsLocalById: () => ({ id: "appA", dir: APP_DIR, dev: true }),
       appSessionsOf: () => [ast1, ast2, ast3, ast4],
+      agentSetSessionWorkspace: async (st, v) => {
+        st.workspace = String(v == null ? "" : v);
+        viaEntry.push(st.id);
+        return true;
+      },
       persistAgentSession: async () => {
         saved++;
       },
@@ -285,6 +295,8 @@ section("3 会话目录跟着应用走");
     );
     const n = await vm.runInContext("appsDevAlignAppWorkspace", sb2)("appA");
     ok(n === 2, "改了 2 条（空值那条 + 目录已失效那条），实得 " + n);
+    ok(viaEntry.join(",") === "a1,a2",
+      "两条改动都经统一入口（标脏 + session:patch 改会话文件本体），实得 [" + viaEntry.join(",") + "]");
     ok(ast1.workspace === APP_DIR, "没填过工作区 → 回填成该应用目录");
     ok(ast2.workspace === APP_DIR, "旧目录已经不存在 → 改写成本应用目录");
     ok(ast3.workspace === OTHER, "填过且目录还在（用户自己选的）→ 一个字不动");

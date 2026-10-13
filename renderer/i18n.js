@@ -2221,22 +2221,23 @@
       "The estimate sums every model request, including retries and warm-up requests that were sent but may not be billed by the platform; the platform breaks usage down by hour and by model, which is not the same window as a session/round here — a mismatch between the two is expected.",
     "对账请以 DeepSeek 账单和余额变化为准。":
       "Token counts themselves are not double counted (they match the sum of per-request usage in the local session log — verify with scripts/audit-token-usage.mjs); for reconciliation, trust DeepSeek's official billing.",
-    /* 中转按币：MTNode 中转站仍以元记账，界面按币显示（1 币 = ¥0.02，价目取客户端内置表） */
-    "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取客户端内置的中转价目表，不再从云端快照取 —— 中转站改价后要等一次客户端更新才对得上，未列入内置表的模型不猜价（显示 —）。":
-      "Models routed through the MTNode relay are shown in W coins (1 W coin = ¥0.02): the calculation is the same as on the official route, only the unit changes into coins. Prices come from the relay price table built into the client, not from the cloud snapshot any more — after the relay changes prices, the local figure only catches up with a client update, and models missing from that table are never guessed (shown as —).",
-    "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（快照里的节假日豁免不再参与），法定节假日按高峰计，这一栏会偏高。":
-      "Relay peak hours are judged as Mon-Fri 09:00-12:00 / 14:00-18:00 Beijing time (the snapshot's holiday exemptions no longer apply), so public holidays are billed as peak and this column reads a bit high.",
+    /* 中转按币：MTNode 中转站仍以元记账，界面按币显示（1 币 = ¥0.02，价目取服务端快照，
+       缺席退回客户端内置表；金额精度 8 位小数 = 1e-8 元） */
+    "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取中转站随快照下发的那一份（后台改价、改高峰倍率，客户端同步一次就跟上），快照还没给价目时退回客户端内置表；没有价目的模型不猜价（显示 —）。":
+      "Models routed through the MTNode relay are shown in W coins (1 W coin = ¥0.02): the calculation is the same as on the official route, only the unit changes into coins. Prices come from the price table the relay sends with the snapshot (a price or peak-multiplier change on the server reaches the client at the next sync); when the snapshot carries no price yet, the client's built-in table is used as fallback, and models without any price are never guessed (shown as —).",
+    "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（节假日豁免取快照下发的那份名单），法定节假日若名单里没有则按高峰计，这一栏会偏高。":
+      "Relay peak hours are judged as Mon-Fri 09:00-12:00 / 14:00-18:00 Beijing time (holiday exemptions come from the list sent with the snapshot); a public holiday missing from that list is billed as peak and this column reads a bit high.",
     /* 中转图像按张计费（与 token 无关，每次调用即计费）。「图像」这个键上文已有同值条目，
        这里不重复登记（同键两写会被后写的覆盖，test/smoke-filepeek.js 会挑出来）。 */
     "图像张数": "Images",
     " 张": " img",
     " 张图": " img",
-    "中转计费：高峰时段单价 × 高峰倍率（价目取客户端内置表，与会话统计同一份）":
-      "Relay billing: during peak hours the rate is multiplied by the peak multiplier (prices come from the client's built-in table, the same one the session stats use).",
+    "中转计费：高峰时段单价 × 高峰倍率（价目取中转站随快照下发的那份，缺席退回客户端内置表）":
+      "Relay billing: during peak hours the rate is multiplied by the peak multiplier (prices come from what the relay sends with the snapshot, falling back to the client's built-in table).",
     "中转计费：当前为空闲时段，按价目原价（无高峰倍率）":
       "Relay billing: off-peak right now, so the list rate applies (no peak multiplier).",
-    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取客户端内置的中转价目表；token 一律按上游逐请求返回的 usage 累加。":
-      "Scope: on the official route, unit prices and peak/off-peak follow the official pricing page; for relay models the unit prices come from the client's built-in relay price table; tokens are always summed from the per-request usage the upstream returns.",
+    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取中转站随快照下发的那份价目（缺席退回客户端内置表）；token 一律按上游逐请求返回的 usage 累加。":
+      "Scope: on the official route, unit prices and peak/off-peak follow the official pricing page; for relay models the unit prices come from the price table sent with the relay snapshot (falling back to the client's built-in table); tokens are always summed from the per-request usage the upstream returns.",
     /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ── */
     "模型性能": "Model performance",
     "首 Token 延迟 (TTFT)": "Time to first token (TTFT)",

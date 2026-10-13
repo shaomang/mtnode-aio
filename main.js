@@ -243,6 +243,9 @@ function mcp() {
       /* 打包态：stdio 桥脚本在 resources/mcp-stdio.js（extraResources，asar 外）——
          外部 MCP 客户端用系统 Node 读不了 asar 内路径，故不进 asar。 */
       resourcesDir: process.resourcesPath || __dirname,
+      /* 打包态 = 给第三方客户端的 stdio 口径要连 ELECTRON_RUN_AS_NODE=1 一起给
+         （process.execPath 是 MTNodeAIO.exe，不带这条会被当主程序启动，见 mcp-server.js）。 */
+      packaged: !!app.isPackaged,
       log: (line) => {
         try {
           dshLog(line);
@@ -975,10 +978,19 @@ ipcMain.handle("config:patchProviders", (e, opts) =>
 
 /* ── 会话通道（agentSessions 从 config.json 拆出后的读写口）──────────────────
    session:load = 索引（左栏字段，绝不含正文）；session:save = 只写脏会话 + 刷索引；
-   session:body = 按需读正文（懒加载）。三条都由 agent-sessions-store.js 实现。 */
+   session:body = 按需读正文（懒加载）；session:patch = 按 id 改白名单字段（只 workspace，
+   不读正文）—— 工作目录体检修正旧路径时用它：这类会话既没读回正文、也没被标脏，
+   session:save 会整条跳过，改动就落不了盘（弹窗每次启动重现的根因）。四条都由
+   agent-sessions-store.js 实现。 */
 ipcMain.handle("session:load", () => sessionStore().readIndex());
 ipcMain.handle("session:save", (e, payload) => sessionStore().saveSessions(payload || {}));
 ipcMain.handle("session:body", (e, ids) => sessionStore().loadSessions(ids));
+ipcMain.handle("session:patch", (e, payload) =>
+  sessionStore().patchSessionMeta(
+    (payload && payload.id) || "",
+    (payload && payload.patch) || {},
+  ),
+);
 
 
 /* save/<id>.json 的「列表元数据」缓存：workflow:list 只需要 id / name / 节点数三个字段，

@@ -10,7 +10,10 @@
  *   [4] 门禁：余额 0 的账号 → 402 insufficient_quota
  *   [5] 白名单：清单只列开放模型；未开放的模型 → 404 model_not_found
  *   [6] 文本：流式 SSE 原样转发 + 自动给上游注入 include_usage + usage 收尾事件不下发客户端
- *   [7] 计费按元：费用按元算到底（4 位小数），换算成整数分只为写钱包账本；上游报错不扣费
+ *   [7] 计费按元：费用按元算到底（**8 位小数 = 1e-8 元**），换算成整数分只为写钱包账本；
+ *       **小额不被抹零**（命中价 × 1 token = 0.000005 元，修正前 round4 会吃掉）；
+ *       **三项 token 都落对**（output / input cache hit / input cache miss）；
+ *       上游报错不扣费
  *   [8] 图像：按张计费（元/张，默认 0.21 元/张）；multipart edits 整包原样转发
  *   [9] 限流：图像超过每账号每分钟配额 → 429 rate_limit_exceeded
  *  [10] 自查：/relay/v1/usage 回余额 / 已扣 / 最近明细（一律元），明细落 db.json
@@ -72,6 +75,15 @@ function startMock() {
         state.chat.push({ headers: req.headers, body });
         const first = (body.messages && body.messages[0] && body.messages[0].content) || "";
         if (String(first).includes("FAIL")) return json(500, { error: { message: "upstream boom" } });
+        /* TINY：只回 1 个命中 token（供 [7b] 的小额不被抹零用例 ——
+           命中 1 token × 5 元/百万 = 0.000005 元，修正前 round4 会抹成 0）。 */
+        if (String(first).includes("TINY")) {
+          return json(200, {
+            id: "m1",
+            choices: [{ index: 0, message: { role: "assistant", content: "ok" } }],
+            usage: { prompt_tokens: 1, completion_tokens: 0, prompt_cache_hit_tokens: 1, prompt_cache_miss_tokens: 0, total_tokens: 1 },
+          });
+        }
         if (body.stream) {
           res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache" });
           res.write('data: {"id":"m1","choices":[{"index":0,"delta":{"content":"你"}}]}\n\n');
@@ -131,6 +143,16 @@ async function main() {
     "图像价目直接填元/张（perImageYuan），默认价目里不再有美元与汇率字段");
   ok(relaySrc.includes("usagePublic") && /if \(\/Cents\$\/\.test\(k\)\) continue;/.test(relaySrc),
     "对外用量明细经 usagePublic 统一换成 *Yuan（内部 Cents 字段一律不出接口）");
+  /* 本轮修正：计费精度 = 1e-8 元（元保留 8 位小数），账本亚分零头跟着提到 8 位小数；
+     三项 token（输出 / 输入缓存命中 / 输入缓存未命中）都落明细。 */
+  ok(relaySrc.includes("const YUAN_PRECISION = 8") && relaySrc.includes("round8(") && !/yuan: round4\(/.test(relaySrc),
+    "计费精度 1e-8 元：YUAN_PRECISION=8 且计费结果走 round8（不再用 round4 抹掉小额）");
+  ok(relaySrc.includes("cacheMissTokens: info.detail.cacheMissTokens || 0") && relaySrc.includes("inputTokens:") &&
+    has("store-saas/wallet.mjs", "export function round8") && has("store-saas/wallet.mjs", "const r = round8(n);"),
+    "三项 token 落明细（cacheHitTokens / cacheMissTokens / outputTokens）+ 账本亚分零头按 round8 存");
+  ok(relaySrc.includes("yuanPrecision") && has("store-saas/server.mjs", "yuanPrecision: relay.admin.yuanPrecision()") &&
+    has("renderer/app-relay.js", "yuanPrecision: Number(doc && doc.yuanPrecision) || 0"),
+    "金额精度随接口下发（/relay/v1/usage 与 /api/relay/me → 客户端卡上 yuanPrecision）");
   ok(relaySrc.includes("isPeak") && relaySrc.includes("MTNODE_RELAY_PEAK_OFF"), "DeepSeek 高峰/空闲价按时段算，节假日可用 env 补");
 
   ok(has("store-saas/server.mjs", 'p.startsWith("/relay/v1/")') && has("store-saas/server.mjs", "createRelay({") &&
@@ -352,6 +374,15 @@ async function main() {
       MTNODE_RELAY_IMAGE_BASE: mock.url,
       MTNODE_RELAY_DEEPSEEK_KEY: "k-deepseek",
       MTNODE_RELAY_IMAGE_KEY: "k-image",
+      /* 显式给整份价表 + 白名单：除 deepseek-flash / -v4-pro 沿用默认价外，多一个
+         「命中价 5 元/百万」的压测模型 deepseek-tiny —— 命中 1 token = 0.000005 元，
+         正好落在修正前 round4 会抹零的区间（见 [7] 的小额不被抹零断言）。 */
+      MTNODE_RELAY_MODELS: "deepseek-flash,deepseek-v4-pro,deepseek-tiny,gpt-image-2.5-vip,gpt-image-2-vip",
+      MTNODE_RELAY_PRICES: JSON.stringify({
+        "deepseek-flash": { cacheHit: 0.02, cacheMiss: 1, output: 4, peakMultiplier: 2 },
+        "deepseek-v4-pro": { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5, peakMultiplier: 2 },
+        "deepseek-tiny": { cacheHit: 5, cacheMiss: 10, output: 20, peakMultiplier: 1 },
+      }),
       MTNODE_RELAY_PEAK_OFF: bjToday(),
       MTNODE_RELAY_ACCOUNT_PER_MIN: "40",
       MTNODE_RELAY_IMAGE_PER_MIN: "3",
@@ -391,11 +422,13 @@ async function main() {
     const u = userOf(id) || {};
     return !!(u.relayKeyPlain && String(u.relayKeyPlain.key || ""));
   };
-  /* 可用余额一律按「元」（4 位小数）：内部账仍是整数分 + 亚分零头，这里只做换算，
-     好让断言口径与接口 / 管理台一致（对外的名字与单位都是元）。 */
+  /* 可用余额一律按「元」（8 位小数 = 1e-8 元，中转计费精度）：内部账仍是整数分 + 亚分零头，
+     这里只做换算，好让断言口径与接口 / 管理台一致（对外的名字与单位都是元）。
+     亚分零头现在是 8 位小数（见 wallet.mjs 的 round8），换算也要跟着给足 8 位，
+     否则断言看不见 1e-6 元以下的那部分扣费。 */
   const totalOf = (id) => {
     const u = userOf(id);
-    return Math.round(((Number(u.balanceCents) || 0) + (Number(u.relaySubCents) || 0)) / 100 * 1e4) / 1e4;
+    return Math.round(((Number(u.balanceCents) || 0) + (Number(u.relaySubCents) || 0)) / 100 * 1e8) / 1e8;
   };
   async function waitFor(fn, ms) {
     const until = Date.now() + (ms || 4000);
@@ -569,6 +602,15 @@ async function main() {
     ok(good.status === 200 && ids.includes("deepseek-flash") && ids.includes("deepseek-v4-pro") && ids.includes("gpt-image-2.5-vip"),
       "有余额 → 模型清单列出文本 + 图像白名单");
     ok(!ids.includes("gpt-4o") && !ids.includes("text-embedding-3-large"), "清单只列开放模型（不是万能透传）");
+    /* 价目随清单下发（客户端本地「中转按币」计价改用服务端真价，不再靠内置表猜）：
+       文本三项价 + 高峰倍率 / 图像元每张，外加金额精度（8 位 = 1e-8 元）。 */
+    const priceRow = (((good.json || {}).data || []).find((m) => m.id === "deepseek-flash") || {}).mtnode_price || {};
+    ok(near(priceRow.cacheHit, 0.02) && near(priceRow.cacheMiss, 1) && near(priceRow.output, 4) && near(priceRow.peakMultiplier, 2),
+      "清单每行带 mtnode_price（命中 / 未命中 / 输出元·百万 + 高峰倍率）");
+    const imgRow = (((good.json || {}).data || []).find((m) => m.id === "gpt-image-2.5-vip") || {}).mtnode_price || {};
+    ok(near(imgRow.perImageYuan, 0.21), "图像模型带 mtnode_price.perImageYuan（元/张）");
+    ok(good.json.mtnode_yuan_precision === 8 && good.json.mtnode_coin_yuan === 0.02,
+      "清单随带 mtnode_yuan_precision=8 与 mtnode_coin_yuan=0.02（客户端显示精度与汇率与云端同源）");
     const poor = await api("/relay/v1/models", { token: TOKEN_POOR });
     ok(poor.status === 402 && poor.json.error.code === "insufficient_quota" && poor.json.error.type === "insufficient_quota",
       "余额 0 → 402 insufficient_quota");
@@ -624,6 +666,59 @@ async function main() {
     await sleep(250);
     ok(near(totalOf("u_relay_rich"), 0.9836), "上游报错不扣费（余额停在 0.9836 元）");
 
+    /* ── [7b] 精度修正：小额不再被四舍五入抹零（1e-8 元档） ──────────────────────
+       deepseek-tiny 命中价 5 元/百万 token，且只回 1 个命中 token：
+       精确费用 = 1 × 5 / 1e6 = 0.000005 元。修正前 round4（1e-4 元）会把它变成 0
+       —— 这就是「计费不准确」的最小复现。 */
+    const beforeTiny = totalOf("u_relay_rich");
+    const tiny = await api("/relay/v1/chat/completions", {
+      method: "POST",
+      token: TOKEN,
+      json: { model: "deepseek-tiny", messages: [{ role: "user", content: "TINY" }] },
+    });
+    ok(tiny.status === 200, "压测模型 deepseek-tiny 可调用（上游只回 1 个命中 token 的 usage）");
+    const tinyCharged = await waitFor(() => {
+      const rows = readHot("relay-usage.jsonl");
+      return rows.some((r) => r.model === "deepseek-tiny" && Number(r.chargedCents) > 0);
+    }, 5000);
+    ok(tinyCharged, "小额扣费真的落账（chargedCents > 0，不再被抹成 0）");
+    const tinyAfter = totalOf("u_relay_rich");
+    const tinyRec = (readHot("relay-usage.jsonl").filter((r) => r.model === "deepseek-tiny").slice(-1)[0]) || {};
+    if (!near(beforeTiny - tinyAfter, 0.000005, 1e-9)) {
+      console.log("      （tiny 明细：" + JSON.stringify({
+        hit: tinyRec.cacheHitTokens, miss: tinyRec.cacheMissTokens, out: tinyRec.outputTokens,
+        costCents: tinyRec.costCents, chargedCents: tinyRec.chargedCents, balanceCents: tinyRec.balanceCents,
+        subCents: tinyRec.subCents, note: tinyRec.note,
+      }) + " · 余额 " + beforeTiny + " → " + tinyAfter + "）");
+    }
+    ok(near(beforeTiny - tinyAfter, 0.000005, 1e-9),
+      "小额不被抹零：命中 1 token × 5 元/百万 = 0.000005 元照扣（余额 " + beforeTiny + " → " + tinyAfter + "）");
+    /* 小额扣费后的总账（后续图像 / 自查断言都以它为基准，别再用写死的 0.9836）。 */
+    const tinyTotal = Math.round(tinyAfter * 1e8) / 1e8;
+    /* 内部账仍是「分」，但零头给到 8 位小数：0.000005 元 = 5e-7 分，修正前 4 位小数的分存不下。 */
+    const tinySub = Number(userOf("u_relay_rich").relaySubCents);
+    ok(Number.isFinite(tinySub) && Math.abs(tinySub * 1e8 - Math.round(tinySub * 1e8)) < 1,
+      "亚分零头按 8 位小数存（0.000005 元 = 5e-7 分的零头不再被夹掉，实存 " + tinySub + "）");
+
+    /* ── [7c] 三项 token（需求 2）：output / input cache hit / input cache miss ────
+       三次调用的 usage 分别是：流式（hit 0 / miss 1000 / out 1000）、非流式（hit 1000 /
+       miss 1000 / out 500）、只给命中的那次（miss = prompt − hit 推算）。 */
+    const tokUsage = await api("/relay/v1/usage", { token: TOKEN });
+    ok(tokUsage.status === 200 && tokUsage.json.yuanPrecision === 8,
+      "/relay/v1/usage 下发 yuanPrecision=8（客户端按同一精度显示）");
+    const recent = tokUsage.json.recent || [];
+    const streamRow = recent.find((r) => r.model === "deepseek-flash" && r.cacheHitTokens === 0 && r.cacheMissTokens === 1000);
+    ok(!!streamRow && streamRow.outputTokens === 1000 && streamRow.inputTokens === 1000,
+      "流式那笔落全三项：命中 0 / 未命中 1000 / 出 1000（input 合计 1000）");
+    const proRow = recent.find((r) => r.model === "deepseek-v4-pro");
+    ok(!!proRow && proRow.cacheHitTokens === 1000 && proRow.cacheMissTokens === 1000 && proRow.outputTokens === 500,
+      "非流式那笔落全三项：命中 1000 / 未命中 1000 / 出 500");
+    const tinyRow = recent.find((r) => r.model === "deepseek-tiny");
+    ok(!!tinyRow && tinyRow.cacheHitTokens === 1 && tinyRow.cacheMissTokens === 0 && tinyRow.outputTokens === 0,
+      "只回命中的那笔：命中 1 / 未命中 0 / 出 0（未命中不再把命中重复算一遍）");
+    ok(recent.filter((r) => r.kind !== "image").every((r) => r.cacheHitTokens != null && r.cacheMissTokens != null && r.outputTokens != null),
+      "每一笔文本明细都带齐三项 token（cacheHitTokens / cacheMissTokens / outputTokens）");
+
     /* ======================= [8] 图像：按张计费 + multipart ======================= */
     console.log("[8] 图像：按张计费与 multipart 整包转发");
     const gen = await api("/relay/v1/images/generations", {
@@ -634,9 +729,15 @@ async function main() {
     ok(gen.status === 200 && gen.json && Array.isArray(gen.json.data) && gen.json.data.length === 1, "文生图原样回上游 JSON");
     ok((mock.state.image[0] || {}).headers.authorization === "Bearer k-image", "图像请求带上环境文件里的图像上游 Key");
     // 元/张计价：默认 0.21 元/张（上游 0.03 美元/张按固定 1 美元 = 7 元折成元，界面不再出现美元）
-    const chargedImg = await waitFor(() => near(totalOf("u_relay_rich"), 0.9836 - 0.21), 5000);
+    // 亚分零头此时是 0.3595 分（= 0.003595 元）：修正前 4 位小数的分存不下，会被抹成 0.36
+    //   —— 也就是「实扣比应扣少一点」的那类偏差，这里钉住它不再发生。
+    const chargedImg = await waitFor(() => near(totalOf("u_relay_rich"), tinyTotal - 0.21, 1e-9), 5000);
     const u3 = userOf("u_relay_rich");
-    ok(chargedImg && near(totalOf("u_relay_rich"), 0.7736) && u3.balanceCents === 77 && near(u3.relaySubCents, 0.36), "一图扣 0.21 元（0.9836 → 0.7736）：图像按「张数 × 元/张」计费");
+    if (!chargedImg || !near(totalOf("u_relay_rich"), tinyTotal - 0.21, 1e-9) || u3.balanceCents !== 77 || !near(u3.relaySubCents, 0.3595, 1e-9)) {
+      console.log("      （图像后账：" + JSON.stringify({ total: totalOf("u_relay_rich"), want: Math.round((tinyTotal - 0.21) * 1e8) / 1e8, balanceCents: u3.balanceCents, sub: u3.relaySubCents, tinyTotal: tinyTotal }) + "）");
+    }
+    ok(chargedImg && near(totalOf("u_relay_rich"), tinyTotal - 0.21, 1e-9) && u3.balanceCents === 77 && near(u3.relaySubCents, 0.3595, 1e-9),
+      "一图扣 0.21 元（" + tinyTotal + " → " + Math.round((tinyTotal - 0.21) * 1e8) / 1e8 + "）：图像按「张数 × 元/张」计费，亚分零头 0.3595 分不被抹掉");
     const led2 = hotLedger().filter((e) => e.type === "relay");
     ok(led2.length >= 2 && /1 张/.test(led2[led2.length - 1].note), "图像扣费流水备注写明张数");
 
@@ -658,7 +759,7 @@ async function main() {
     const upE = mock.state.edits[0] || {};
     ok(/multipart\/form-data/.test(upE.headers && upE.headers["content-type"]) && upE.raw.includes('name="image"') && upE.bytes === mp.length,
       "multipart 整包原样转发（含 image 文件与同一 boundary，不改写正文）");
-    await waitFor(() => near(totalOf("u_relay_rich"), 0.7736 - 0.21), 5000);
+    await waitFor(() => near(totalOf("u_relay_rich"), tinyTotal - 0.42, 1e-8), 5000);
 
     // 客户端中途断开：上游「断了也计费」，所以中转站必须继续等到上游回包并照扣
     //（否则就是「钱花了、账上没记」）。这条用例用 SLOW 让上游 300ms 后才回，60ms 时掐断连接。
@@ -671,8 +772,8 @@ async function main() {
     }).then(() => "done").catch(() => "aborted");
     setTimeout(() => ac.abort(), 60);
     ok((await aborted) === "aborted", "客户端在生成途中断开（AbortController 真断开了连接）");
-    const chargedAbort = await waitFor(() => near(totalOf("u_relay_rich"), 0.3536), 6000);
-    ok(chargedAbort && (mock.state.image || []).length === 2, "断开的那次照样计费（上游已计费，账不能漏：0.5636 → 0.3536）");
+    const chargedAbort = await waitFor(() => near(totalOf("u_relay_rich"), tinyTotal - 0.63, 1e-8), 6000);
+    ok(chargedAbort && (mock.state.image || []).length === 2, "断开的那次照样计费（上游已计费，账不能漏：" + (tinyTotal - 0.42) + " → " + (tinyTotal - 0.63) + "）");
 
     /* ======================= [9] 限流 ======================= */
     console.log("[9] 限流");
@@ -680,17 +781,19 @@ async function main() {
     ok(third.status === 429 && third.json.error.code === "rate_limit_exceeded" && third.headers.get("retry-after"),
       "第 4 张图撞上「图像 3 次/分」→ 429 rate_limit_exceeded + Retry-After（断开那次也占配额）");
     await sleep(200);
-    ok(near(totalOf("u_relay_rich"), 0.3536), "被限流的请求不扣费");
+    ok(near(totalOf("u_relay_rich"), tinyTotal - 0.63, 1e-8), "被限流的请求不扣费");
     ok(!(mock.state.image.length > 2), "被限流的请求没打到上游（省的是真金白银）");
 
     /* ======================= [10] 自查与落盘 ======================= */
     console.log("[10] 用量自查与落盘");
     const usage = await api("/relay/v1/usage", { token: TOKEN });
     ok(usage.status === 200 && usage.json.ok === true, "/relay/v1/usage 通");
-    ok(near(usage.json.balanceYuan, 0.3536) && near(usage.json.totalYuan, 0.3536), "自查回报余额 0.3536 元（内部账 35 分 + 亚分 0.36；接口只回元）");
+    ok(near(usage.json.balanceYuan, tinyTotal - 0.63, 1e-8) && near(usage.json.totalYuan, tinyTotal - 0.63, 1e-8),
+      "自查回报余额 " + (tinyTotal - 0.63) + " 元（内部账整数分 + 8 位小数的亚分零头；接口只回元，8 位小数）");
     ok(!("balanceCents" in usage.json) && !("totalCents" in usage.json) && !("spentCents" in usage.json),
       "自查接口不再出现任何 Cents 字段（对外一律元）");
-    ok(near(usage.json.spentYuan, 0.005 + 0.0114 + 0.21 * 3, 5e-5), "自查累计已扣 " + usage.json.spentYuan + " 元 = 各笔之和（含断开那次）");
+    ok(near(usage.json.spentYuan, 0.005 + 0.000005 + 0.0114 + 0.21 * 3, 1e-8),
+      "自查累计已扣 " + usage.json.spentYuan + " 元 = 各笔之和（含 0.000005 的小额与断开那次）");
     ok(Array.isArray(usage.json.recent) && usage.json.recent.length >= 5 && usage.json.recent[0].model,
       "自查回最近调用明细（模型 / 类型 / token / 张数 / 费用）");
     ok(usage.json.recent.every((r) => r.costYuan != null && r.chargedYuan != null && r.costCents === undefined),
@@ -745,6 +848,13 @@ async function main() {
         PORT: String(port), HOST: "127.0.0.1", DATA_DIR: DATA, MTNODE_ACCOUNT_STORE: "json",
         MTNODE_RELAY_DEEPSEEK_BASE: mock.url, MTNODE_RELAY_IMAGE_BASE: mock.url,
         MTNODE_RELAY_DEEPSEEK_KEY: "k-deepseek", MTNODE_RELAY_IMAGE_KEY: "k-image",
+        /* 与第一只同源（白名单 + 价表）：管理台「会话测试」面板与配置页读的就是这一份。 */
+        MTNODE_RELAY_MODELS: "deepseek-flash,deepseek-v4-pro,deepseek-tiny,gpt-image-2.5-vip,gpt-image-2-vip",
+        MTNODE_RELAY_PRICES: JSON.stringify({
+          "deepseek-flash": { cacheHit: 0.02, cacheMiss: 1, output: 4, peakMultiplier: 2 },
+          "deepseek-v4-pro": { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5, peakMultiplier: 2 },
+          "deepseek-tiny": { cacheHit: 5, cacheMiss: 10, output: 20, peakMultiplier: 1 },
+        }),
         MTNODE_RELAY_PEAK_OFF: bjToday(),
       }),
       stdio: ["ignore", logFd, logFd],
@@ -792,8 +902,8 @@ async function main() {
     const upEnv = cfg0.json.config.upstreams.find((u) => u.id === "deepseek");
     ok(upEnv && upEnv.keyFrom === "env" && upEnv.keyTail === "seek" && !("key" in upEnv),
       "界面只给 keyFrom + 后四位，绝不含任何 Key 明文");
-    ok(cfg0.json.config.models.length >= 7 && cfg0.json.config.models[0].price && cfg0.json.config.models[0].upstreamId,
-      "模型行带 bind 上游 / 价目（缺省价来自 DEFAULT_PRICES）");
+    ok(cfg0.json.config.models.length >= 5 && cfg0.json.config.models[0].price && cfg0.json.config.models[0].upstreamId,
+      "模型行带 bind 上游 / 价目（缺省价来自 DEFAULT_PRICES 或 env 的 MTNODE_RELAY_PRICES）");
 
     const bad = await admin("/api/admin/relay/config", {
       method: "POST",
@@ -837,17 +947,21 @@ async function main() {
     ok(upHit.headers.authorization === "Bearer k-mock-new" && upHit.body.model === "mock-chat-up",
       "请求打到新上游：用它的 Key 与上下游模型名（upstreamModel 改名生效）");
     // mock 回的 usage（非流式分支）：命中 1000 / 未命中 1000 / 输出 500
-    // →（1000×0.02 + 1000×1 + 500×4）/1e6 = 0.00302 元（写账本时换成 0.302 分）
-    const hotCost = 0.003; // 0.302 分 → 写账本时四舍五入成 0.3 分
-    await waitFor(() => near(totalOf("u_relay_rich"), 0.3536 - hotCost), 5000);
-    if (!near(totalOf("u_relay_rich"), 0.3506)) {
-      const r0 = (readDb().relayUsage || []).slice(-1)[0] || {};
-      console.log("      （此刻余额 " + totalOf("u_relay_rich") + " · 用量账：" + JSON.stringify({
-        model: r0.model, costCents: r0.costCents, chargedCents: r0.chargedCents, shortfallCents: r0.shortfallCents,
-        balanceCents: r0.balanceCents, subCents: r0.subCents,
-      }) + "）");
+    // →（1000×0.02 + 1000×1 + 500×4）/1e6 = 0.00302 元
+    //   **修正前**账本按 4 位小数分存（0.302 分 → 抹成 0.3 分）→ 余额差 0.00002；
+    //   现在按 1e-8 元保留，实扣正好 0.00302 元（这条断言就是精度修正的第二个证据）。
+    const hotCost = 0.00302;
+    await waitFor(() => near(totalOf("u_relay_rich"), tinyTotal - 0.63 - hotCost, 1e-8), 5000);
+    if (!near(totalOf("u_relay_rich"), tinyTotal - 0.63 - hotCost, 1e-8)) {
+      const r0 = readHot("relay-usage.jsonl").slice(-1)[0] || {};
+      console.log("      （此刻余额 " + totalOf("u_relay_rich") + " · 期望 " + Math.round((tinyTotal - 0.63 - hotCost) * 1e8) / 1e8 +
+        " · 用量账：" + JSON.stringify({
+          model: r0.model, costCents: r0.costCents, chargedCents: r0.chargedCents, shortfallCents: r0.shortfallCents,
+          balanceCents: r0.balanceCents, subCents: r0.subCents, note: r0.note,
+        }) + "）");
     }
-    ok(near(totalOf("u_relay_rich"), 0.3506), "新模型按行内价目扣费（命中价 0.02 / 未命中 1 / 输出 4 → 0.003 元）");
+    ok(near(totalOf("u_relay_rich"), tinyTotal - 0.63 - hotCost, 1e-8),
+      "新模型按行内价目扣费：0.00302 元一分不抹（命中价 0.02 / 未命中 1 / 输出 4）");
 
     const audit = await admin("/api/admin/relay/audit");
     const acts = (audit.json.items || []).map((r) => (r.changes || []).join("，"));
@@ -919,8 +1033,8 @@ async function main() {
       json: { model: "mock-chat", messages: [{ role: "user", content: "管理台会话测试" }] },
     });
     ok(tkChat.status === 200, "测试 Key 走完整中转链路（chat 通）");
-    await waitFor(() => near(totalOf("u_relay_rich"), 0.3506 - hotCost), 5000);
-    ok(near(totalOf("u_relay_rich"), 0.3476), "测试照常按真实使用扣费（从该管理员账号余额再扣 0.003 元）");
+    await waitFor(() => near(totalOf("u_relay_rich"), tinyTotal - 0.63 - hotCost * 2, 1e-8), 5000);
+    ok(near(totalOf("u_relay_rich"), tinyTotal - 0.63 - hotCost * 2, 1e-8), "测试照常按真实使用扣费（从该管理员账号余额再扣 0.00302 元）");
     const tkMe = await api("/api/me", { token: tk.json.token });
     ok(tkMe.status === 401, "测试票只对 /relay/v1/* 生效（普通接口不认）");
     const tkBad = await api("/relay/v1/models", { token: "mtr_test_deadbeef" });

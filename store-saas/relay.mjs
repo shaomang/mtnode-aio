@@ -16,13 +16,19 @@ import { hotAppendRows } from "./hot-store.mjs";
  *     管理员用 `node relay-key.mjs --user <用户名>` 给测试账号发一张新票（明文只打印一次）。
  *   · **门禁** = 可用余额 > 0。不加额外账号名单。
  *   · **计费单位 = 元**（不含「分」）：费用按元算到底（文本 = 元/百万 token × tokens，
- *     图像 = 元/张 × 张数），**换算成整数分只为写进钱包账本**（账户行的 balanceCents +
- *     relaySubCents 是钱包内部存储，见 wallet.mjs §亚分精度，界面与接口不出现它）。
+ *     图像 = 元/张 × 张数），**元保留 8 位小数（= 1e-8 元）**，
+ *     **换算成整数分只为写进钱包账本**（账户行的 balanceCents + relaySubCents 是钱包内部存储，
+ *     见 wallet.mjs §亚分精度，界面与接口不出现它）。
  *     本模块对外（/relay/v1/usage、管理台的用量明细与配置）一律回 **元**：
  *     `costYuan` / `chargedYuan` / `shortfallYuan` / `balanceYuan` / `totalYuan` / `spentYuan`
- *     / `perImageYuan`，4 位小数（0.0001 元 = 原来的亚分精度）。
+ *     / `perImageYuan`，明细给足 8 位小数、余额与卡片按 4 位小数显示（客户端按
+ *     `yuanPrecision` 自适应）。
+ *     修正前是 4 位小数（1e-4 元），小额调用被四舍五入吃掉 —— 这就是「计费不准」的根因。
  *   · **上游 usage**：文本用上游 usage（中转给 DeepSeek 自动注入 `stream_options.include_usage`，
- *     无 usage 一律不扣只记日志）；图像按张 × 单价（上游不回 usage）。
+ *     无 usage 一律不扣只记日志）；**同时统计 output tokens / input cache hit tokens /
+ *     input cache miss tokens 三项**（明细字段 outputTokens / cacheHitTokens / cacheMissTokens，
+ *     另有 inputTokens = 命中 + 未命中 与 promptTokens 兼容旧口径）；
+ *     图像按张 × 单价（上游不回 usage）。
  *     上游报错 / 超时 / 被拒一律不扣。
  *   · **上游凭据** = 只从服务器环境文件 `/etc/mtnode-store.env` 读（MTNODE_RELAY_DEEPSEEK_KEY /
  *     MTNODE_RELAY_IMAGE_KEY 等），代码里不出现任何 Key；缺 Key 时接口回 503，不静默假成功。
@@ -32,7 +38,7 @@ import { hotAppendRows } from "./hot-store.mjs";
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { subCentsOf, totalCentsOf, round4, yuanOfCents, centsOfYuan } from "./wallet.mjs";
+import { subCentsOf, totalCentsOf, round8, yuanOfCents, centsOfYuan } from "./wallet.mjs";
 
 /* ========================================================================== *
  * 一、默认口径（全部可被 MTNODE_RELAY_CONFIG 指向的 JSON 文件与 env 覆盖）
@@ -101,6 +107,12 @@ const DEFAULT_UPSTREAM_LIST = [
    客户端 renderer/app-whalecoin.js 里的同值只作模块缺席时的兜底。 */
 const COIN_YUAN = 0.02;
 
+/* 金额精度（对外元的小数位）：**8 位 = 1e-8 元**。
+   修正前是 4 位（1e-4 元），低于 1e-4 元的费用会被 round 掉、且小请求计费偏差明显
+   （deepseek-flash 缓存命中价 0.02 元/百万 token，一次小额调用本就算得出 1e-7 量级）。
+   随 describeAdmin / 管理台配置一起下发，客户端据此决定按几位小数显示（旧服务端不给也无妨）。 */
+const YUAN_PRECISION = 8;
+
 const DEFAULT_QUOTA = { accountPerMin: 60, imagePerMin: 10, ipPerMin: 120 };
 const USAGE_KEEP = 5000; // relayUsage 全局保留条数（明细只用于自查与排查，不参与对账）
 const AUDIT_KEEP = 500; // relayAudit 保留条数（谁 / 何时 / 改了哪项）
@@ -119,7 +131,7 @@ function envInt(v, dflt) {
 function stripSlash(s) {
   return String(s || "").trim().replace(/\/+$/, "");
 }
-// round4（4 位小数）来自 wallet.mjs：元与分共用同一套精度口径，不在这里再定义一份
+// round8 来自 wallet.mjs：计费精度 = 8 位小数（1e-8 元），元与分共用同一套口径，不在这里再定义一份
 function parseJsonLoose(raw, dflt) {
   const s = String(raw == null ? "" : raw).trim();
   if (!s) return dflt;
@@ -171,7 +183,7 @@ function normPrice(entry, kind) {
        之后一律只认 perImageYuan；界面与接口都不再出现美元。 */
     const legacy = o.perImageUsd != null ? o.perImageUsd : o.per_image_usd;
     const yuan = o.perImageYuan != null ? o.perImageYuan : (o.per_image_yuan != null ? o.per_image_yuan : null);
-    return { kind: "image", perImageYuan: yuan != null ? num(yuan) : round4(num(legacy) * LEGACY_USD_CNY) };
+    return { kind: "image", perImageYuan: yuan != null ? num(yuan) : round8(num(legacy) * LEGACY_USD_CNY) };
   }
   return {
     kind: "text",
@@ -222,6 +234,10 @@ function loadConfig(db) {
     peaks: [],
     configFile: "",
     source: "default",
+    /* 对外金额精度（元的小数位 = 8 = 1e-8 元）：配置层的只读常量，随 describeAdmin /
+       /api/relay/me / /relay/v1/usage 下发给管理台与客户端。 */
+    yuanPrecision: YUAN_PRECISION,
+    coinYuan: COIN_YUAN,
   };
 
   // ── 旧版整包 JSON（MTNODE_RELAY_CONFIG）仍然兼容：只作缺省层。
@@ -439,25 +455,52 @@ function isPeak(atMs, peaks) {
 }
 
 /* ========================================================================== *
- * 三、费用计算（按「元」算到底，4 位小数 = 0.0001 元；写账本时才换算成整数分）
+ * 三、费用计算（按「元」算到底，**8 位小数 = 1e-8 元**；写账本时才换算成分）
  * ========================================================================== */
 
-/** 文本费用：上游 usage → 元。没有 usage 返回 null（= 不扣费）。 */
+/**
+ * 文本费用：上游 usage → 元。没有 usage 返回 null（= 不扣费）。
+ *
+ * **三项 token 口径**（需求 2）：输出 `outputTokens`、缓存命中 `cacheHitTokens`、
+ * 缓存未命中 `cacheMissTokens`，并给出 `inputTokens = hit + miss`（= prompt 总量）。
+ * 上游拆分字段的兼容（DeepSeek 官方 → 主流 OpenAI 兼容服务商）：
+ *   · 命中：prompt_cache_hit_tokens / cache_hit_tokens / cache_read_input_tokens / prompt_cache_hit
+ *   · 未命中：prompt_cache_miss_tokens / cache_miss_tokens / cache_creation_input_tokens / prompt_cache_miss
+ *   · 总量：prompt_tokens / input_tokens
+ * 只给了总量（没拆缓存）时未命中 = 总量（全部按未命中价，与修正前一致）；
+ * 只给了命中时未命中 = 总量 − 命中（**不再把命中重复计一遍** —— 修正前缺总量兜底，
+ * 会出现「miss=0、hit=全部」而漏扣未命中部分）。三者都是 0 且总量为 0 → 不扣费。
+ */
 function textCostYuan(cfg, model, usage, atMs) {
   if (!usage || typeof usage !== "object") return null;
   const price = cfg.prices[model] || normPrice({}, "text");
   const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
-  const out = num(usage.completion_tokens != null ? usage.completion_tokens : usage.output_tokens);
-  let hit = num(usage.prompt_cache_hit_tokens != null ? usage.prompt_cache_hit_tokens : usage.cache_hit_tokens);
-  let miss = num(usage.prompt_cache_miss_tokens != null ? usage.prompt_cache_miss_tokens : usage.cache_miss_tokens);
-  const prompt = num(usage.prompt_tokens != null ? usage.prompt_tokens : usage.input_tokens);
-  if (!hit && !miss) miss = prompt; // 上游不拆缓存命中时，全部按未命中价
+  const pick = (a, b, c, d) => {
+    for (const k of [a, b, c, d]) if (usage[k] != null) return usage[k];
+    return null;
+  };
+  const out = num(pick("completion_tokens", "output_tokens", null, null));
+  const prompt = num(pick("prompt_tokens", "input_tokens", null, null));
+  const hitRaw = pick("prompt_cache_hit_tokens", "cache_hit_tokens", "cache_read_input_tokens", "prompt_cache_hit");
+  const missRaw = pick("prompt_cache_miss_tokens", "cache_miss_tokens", "cache_creation_input_tokens", "prompt_cache_miss");
+  let hit = num(hitRaw);
+  let miss = num(missRaw);
+  if (!hitRaw && !missRaw) miss = prompt; // 上游不拆缓存：全部按未命中价
+  else if (!missRaw) miss = prompt > hit ? prompt - hit : 0; // 只给了命中：未命中 = 总量 − 命中
+  else if (!hitRaw) hit = prompt > miss ? prompt - miss : 0; // 只给了未命中：命中 = 总量 − 未命中
   if (!hit && !miss && !out) return null;
   const peak = isPeak(atMs, cfg.peaks) ? price.peakMultiplier || 1 : 1;
   const yuan = ((hit * price.cacheHit + miss * price.cacheMiss + out * price.output) / 1e6) * peak;
   return {
-    yuan: round4(yuan),
-    detail: { cacheHitTokens: hit, cacheMissTokens: miss, outputTokens: out, peak: peak > 1, yuan: round4(yuan) },
+    yuan: round8(yuan),
+    detail: {
+      cacheHitTokens: hit,
+      cacheMissTokens: miss,
+      inputTokens: hit + miss,
+      outputTokens: out,
+      peak: peak > 1,
+      yuan: round8(yuan),
+    },
   };
 }
 
@@ -466,7 +509,7 @@ function imageCostYuan(cfg, model, images) {
   const price = cfg.prices[model] || normPrice({}, "image");
   const n = Math.max(1, Math.floor(Number(images) || 1));
   const yuan = n * (price.perImageYuan || 0);
-  return { yuan: round4(yuan), detail: { images: n, perImageYuan: round4(price.perImageYuan || 0) } };
+  return { yuan: round8(yuan), detail: { images: n, perImageYuan: round8(price.perImageYuan || 0) } };
 }
 
 /* ========================================================================== *
@@ -540,6 +583,10 @@ export function createRelay(deps) {
       source: cfg.source,
       configFile: cfg.configFile,
       modelsEndpoint: "/relay/v1/models",
+      /* 对外金额精度（元的小数位 = 8）：管理台据此决定表格显示几位、
+         且不把小于 1e-8 元的费用写成 3e-9 这种科学计数法。 */
+      yuanPrecision: YUAN_PRECISION,
+      coinYuan: COIN_YUAN,
     };
   }
 
@@ -757,8 +804,35 @@ export function createRelay(deps) {
     }
   }
 
+  /* ---------- 金额文案（对外一律元；余额与卡片 4 位、明细 8 位、小于最小位给下限文案） ---------- */
+
+  /** 金额的文本形态（**给流水备注与管理台用的唯一入口**）：
+   *   · 0（含极小浮点噪声）→ "0"
+   *   · 小于最小位 1e-8 元 → "<0.00000001"（**绝不写成 3e-9 这种科学计数法**）
+   *   · 其余 → 定长小数、去掉末尾多余的 0（8 位 → "0.00000001"、4 位 → "0.005"、"5"）。
+   *  digits 只允许 4（余额与统计卡片）或 8（明细与备注）。 */
+  function yuanText(yuan, digits) {
+    const n = Number(yuan);
+    if (!Number.isFinite(n) || n === 0) return "0";
+    const d = digits === 4 ? 4 : YUAN_PRECISION;
+    const abs = Math.abs(n);
+    const floor = Math.pow(10, -d);
+    if (abs < floor) return "<" + floor.toFixed(d);
+    const neg = n < 0 ? "-" : "";
+    return neg + abs.toFixed(d).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  }
+
+  /** 一笔文本调用的 token 文案：三项分开列（命中 / 未命中 / 输出）。 */
+  function tokenText(detail) {
+    const d = detail && typeof detail === "object" ? detail : {};
+    const hit = Number(d.cacheHitTokens) || 0;
+    const miss = Number(d.cacheMissTokens) || 0;
+    const out = Number(d.outputTokens) || 0;
+    return "命中 " + hit + " / 未命中 " + miss + " / 出 " + out + " tokens";
+  }
+
   /**
-   * 扣费：入参是**本次费用（元，4 位小数）**，换算成「分（可含亚分零头）」交给钱包；
+   * 扣费：入参是**本次费用（元，8 位小数 = 1e-8 元）**，换算成「分（可含亚分零头）」交给钱包；
    * 整数分 / 零头的拆分由 wallet.chargeRelayUsage 负责（金额口径只在一处实现）。
    * 不足以付清时按可用额夹紧（**不允许出现负余额 / 欠费**），差额记在 usage 与流水备注里。
    * @returns {Promise<{ok:boolean, chargedYuan:number, shortfallYuan:number, balanceYuan:number}>}
@@ -769,18 +843,18 @@ export function createRelay(deps) {
     const availCents = totalCentsOf(user); // 内部账（分，含亚分零头）
     const chargeCents = Math.max(0, centsOfYuan(costYuan));
     const payCents = Math.min(chargeCents, availCents);
-    const shortfallCents = round4(chargeCents - payCents);
+    const shortfallCents = round8(chargeCents - payCents);
     const out = await wallet.chargeRelayUsage({
       user,
       amountCents: payCents,
-      note: shortfallCents > 0 ? note + "（余额不足，按余额上限扣减，欠 " + yuanOfCents(shortfallCents) + " 元未计）" : note,
+      note: shortfallCents > 0 ? note + "（余额不足，按余额上限扣减，欠 " + yuanText(yuanOfCents(shortfallCents)) + " 元未计）" : note,
       meta,
     });
     if (out && out.ok === false) {
       console.warn("[relay] 扣费失败 " + (out.code || "") + " " + (out.error || "") + " userId=" + userId);
       return { ok: false, chargedYuan: 0, shortfallYuan: yuanOfCents(shortfallCents), balanceYuan: yuanOfCents(totalCentsOf(user)), code: out.code || "CHARGE_FAILED" };
     }
-    const afterCents = round4((Number(out.balanceCents) || 0) + (Number(out.subCents) || 0));
+    const afterCents = round8((Number(out.balanceCents) || 0) + (Number(out.subCents) || 0));
     return {
       ok: true,
       chargedYuan: yuanOfCents(payCents),
@@ -790,7 +864,12 @@ export function createRelay(deps) {
     };
   }
 
-  /** 一笔用量记录的对外形态：内部记录是分，出接口一律换成元（兼容读旧记录，且不回内部字段）。 */
+  /**
+   * 一笔用量记录的对外形态：内部记录是分，出接口一律换成元（兼容读旧记录，且不回内部字段）。
+   * **三项 token 一定都给**：新记录直接带 cacheMissTokens；**旧记录没有该字段**时按
+   * `promptTokens − cacheHitTokens` 推算（与当初「没拆分就全按未命中价」的计费口径一致），
+   * 并补齐 inputTokens = 命中 + 未命中 —— 旧记录不重算、不打标，只在读的时候推一次。
+   */
   function usagePublic(rec) {
     const o = rec && typeof rec === "object" ? rec : {};
     const out = {};
@@ -799,6 +878,15 @@ export function createRelay(deps) {
       if (/Cents$/.test(k)) continue;
       out[k] = v;
     }
+    const hit = Number(o.cacheHitTokens) || 0;
+    const outTok = Number(o.outputTokens) || 0;
+    const prompt = Number(o.promptTokens) || (hit + (Number(o.cacheMissTokens) || 0));
+    const miss = o.cacheMissTokens != null ? Number(o.cacheMissTokens) || 0 : Math.max(0, prompt - hit);
+    out.cacheHitTokens = hit;
+    out.cacheMissTokens = miss;
+    out.inputTokens = hit + miss;
+    out.promptTokens = prompt || hit + miss;
+    out.outputTokens = outTok;
     out.costYuan = yuanOfCents(o.costCents);
     out.chargedYuan = yuanOfCents(o.chargedCents);
     out.shortfallYuan = yuanOfCents(o.shortfallCents);
@@ -820,8 +908,12 @@ export function createRelay(deps) {
       upstreamModel: info.upstreamModel,
       endpoint: info.endpoint,
       images: info.kind === "image" ? (info.detail.images || 1) : 0,
-      promptTokens: info.detail.cacheHitTokens != null ? (info.detail.cacheHitTokens + info.detail.cacheMissTokens) : 0,
+      /* 三项 token（需求 2）：输入命中 / 输入未命中 / 输出。
+         promptTokens 与 inputTokens 是同一份总量的两个名字（promptTokens 供旧读法兼容）。 */
       cacheHitTokens: info.detail.cacheHitTokens || 0,
+      cacheMissTokens: info.detail.cacheMissTokens || 0,
+      inputTokens: (info.detail.cacheHitTokens || 0) + (info.detail.cacheMissTokens || 0),
+      promptTokens: (info.detail.cacheHitTokens || 0) + (info.detail.cacheMissTokens || 0),
       outputTokens: info.detail.outputTokens || 0,
       peak: !!info.detail.peak,
       // 内部记录仍按「分」落库（口径不动），出接口由 usagePublic 换成元
@@ -833,18 +925,21 @@ export function createRelay(deps) {
       ms: info.ms,
       ip: ctx.clientIp || "",
     };
-    pushUsage(rec);
     try {
       const r = await chargeYuan(user.id, cost, info.note, {
         model: info.model,
         endpoint: info.endpoint,
-        costYuan: round4(cost),
+        costYuan: round8(cost),
       });
       rec.chargedCents = centsOfYuan(r.chargedYuan);
       const afterCents = centsOfYuan(r.balanceYuan);
       rec.balanceCents = Math.floor(afterCents + 1e-9);
-      rec.subCents = round4(afterCents - rec.balanceCents);
+      rec.subCents = round8(afterCents - rec.balanceCents);
       rec.shortfallCents = centsOfYuan(r.shortfallYuan);
+      /* 明细也留一句金额话（实扣 + 欠额）：管理台表格与客户端自查都能直接读，
+         余额不足被夹紧时不会只看到一个「实扣 0」而不知欠了多少。 */
+      const short = Number(r.shortfallYuan) || 0;
+      rec.note = info.note + " · 实扣 " + yuanText(Number(r.chargedYuan) || 0) + " 元" + (short > 0 ? "（余额不足，欠 " + yuanText(short) + " 元未计）" : "");
       if (!r.ok) await saveDb();
     } catch (e) {
       // 扣费失败不改变「上游已成功」的事实：接口照常回，账留痕等人工核。
@@ -852,6 +947,11 @@ export function createRelay(deps) {
       rec.chargeError = String((e && e.message) || e);
       await saveDb();
     }
+    /* **扣完才落盘**：pushUsage 是「当场追加 + fsync」的（见上面的注释），
+       先 push 再扣费会把 chargedCents / balanceCents / subCents 写成 0（盘上留一条
+       「上游成功但实扣 0」的假记录，管理台与对账都会读错）。代价是「上游成功 + 进程
+       在扣费前崩」的那一瞬不再有明细行 —— 钱包那两笔写库是原子的，真账不会错。 */
+    pushUsage(rec);
     return rec;
   }
 
@@ -891,6 +991,12 @@ export function createRelay(deps) {
     const created = 1700000000;
     return sendJson(res, 200, {
       object: "list",
+      /* 价目随清单下发（客户端本地「中转按币」计价要用服务端真价，别再靠内置表猜）：
+         文本 = cacheHit / cacheMiss / output（元每百万 token）+ peakMultiplier；
+         图像 = perImageYuan（元/张）。yuanPrecision = 对外元的小数位（8 = 1e-8 元）。 */
+      mtnode_yuan_precision: YUAN_PRECISION,
+      mtnode_peaks: (cfg.peaks || []).slice(),
+      mtnode_coin_yuan: COIN_YUAN,
       data: cfg.models
         .filter((m) => m.enabled !== false && upstreamOf(m) && upstreamOf(m).enabled !== false)
         .map((m) => ({
@@ -899,6 +1005,7 @@ export function createRelay(deps) {
           created,
           owned_by: "mtnode-relay",
           mtnode_kind: m.upstream,
+          mtnode_price: Object.assign({}, cfg.prices[m.id] || normPrice({}, m.upstream)),
         })),
     });
   }
@@ -914,6 +1021,9 @@ export function createRelay(deps) {
       user: { id: user.id, username: user.username || "", nickname: user.nickname || "" },
       balanceYuan: yuanOfCents(totalCents),
       totalYuan: yuanOfCents(totalCents),
+      /* 金额精度随自查接口一起给：客户端据此按 8 位小数显示（旧服务端不给就按 4 位兜底）。 */
+      yuanPrecision: YUAN_PRECISION,
+      coinYuan: COIN_YUAN,
       calls: mine.length,
       spentYuan: spent,
       recent,
@@ -971,7 +1081,7 @@ export function createRelay(deps) {
           await settle(ctx, {
             kind: "text", model: hit.m.id, upstreamModel: hit.m.upstreamModel, endpoint: "chat/completions",
             cost: cost.yuan, detail: cost.detail, ms: Date.now() - started,
-            note: "中转扣费 · " + hit.m.id + " · 入 " + ((cost.detail.cacheHitTokens + cost.detail.cacheMissTokens) || 0) + " / 出 " + cost.detail.outputTokens + " tokens",
+            note: "中转扣费 · " + hit.m.id + " · " + tokenText(cost.detail) + " · 计费 " + yuanText(cost.yuan) + " 元",
           });
         }
       }
@@ -1031,7 +1141,7 @@ export function createRelay(deps) {
       await settle(ctx, {
         kind: "text", model: hit.m.id, upstreamModel: hit.m.upstreamModel, endpoint: "chat/completions",
         cost: cost.yuan, detail: cost.detail, ms: Date.now() - started,
-        note: "中转扣费 · " + hit.m.id + " · 入 " + ((cost.detail.cacheHitTokens + cost.detail.cacheMissTokens) || 0) + " / 出 " + cost.detail.outputTokens + " tokens",
+        note: "中转扣费 · " + hit.m.id + " · " + tokenText(cost.detail) + " · 计费 " + yuanText(cost.yuan) + " 元",
       });
     } else {
       console.warn("[relay] 上游未回 usage，本次不扣费：model=" + hit.m.id + " user=" + (ctx.user.username || ctx.user.id));
@@ -1087,7 +1197,7 @@ export function createRelay(deps) {
       await settle(ctx, {
         kind: "image", model: hit.m.id, upstreamModel: hit.m.upstreamModel, endpoint: "images/" + kind,
         cost: cost.yuan, detail: cost.detail, ms: Date.now() - started,
-        note: "中转扣费 · " + hit.m.id + " · " + cost.detail.images + " 张",
+        note: "中转扣费 · " + hit.m.id + " · " + cost.detail.images + " 张 · 计费 " + yuanText(cost.yuan) + " 元",
       });
     }
     const headers = Object.assign({ "Content-Type": ur.headers.get("content-type") || "application/json; charset=utf-8", "Content-Length": buf.length, "Cache-Control": "no-store" }, corsHeaders());
@@ -1164,7 +1274,7 @@ export function createRelay(deps) {
     // 余额门禁：可用余额（元）> 0 才放行
     const fresh = (db.users || []).find((u) => u.id === user.id) || user;
     if (totalCentsOf(fresh) <= 0) {
-      return sendError(res, 402, "账号余额不足（当前 " + yuanOfCents(totalCentsOf(fresh)) + " 元）：中转站只对余额 > 0 的账号开放", "insufficient_quota", "insufficient_quota");
+      return sendError(res, 402, "账号余额不足（当前 " + yuanText(yuanOfCents(totalCentsOf(fresh)), 4) + " 元）：中转站只对余额 > 0 的账号开放", "insufficient_quota", "insufficient_quota");
     }
 
     if (method === "GET" && p === "/relay/v1/models") return handleModels(res);
@@ -1207,9 +1317,13 @@ export function createRelay(deps) {
 
   const USAGE_QUERY_MAX = 1000;
 
-  /** 一组用量记录 → 统计口径（内部字段是分，出接口一律换成元）。 */
+  /** 一组用量记录 → 统计口径（内部字段是分，出接口一律换成元；
+   *  token 三项分别合计：输入缓存命中 / 输入缓存未命中 / 输出，promptTokens 是前两项之和）。
+   *  旧记录没有 cacheMissTokens 字段 → 按 `promptTokens − cacheHitTokens` 推算（不标旧记录）。 */
   function usageAgg(rows) {
     let promptTokens = 0;
+    let cacheHitTokens = 0;
+    let cacheMissTokens = 0;
     let outputTokens = 0;
     let images = 0;
     let chargedCents = 0;
@@ -1219,7 +1333,12 @@ export function createRelay(deps) {
     let textCalls = 0;
     let imageCalls = 0;
     for (const r of rows) {
-      promptTokens += Number(r.promptTokens) || 0;
+      const hit = Number(r.cacheHitTokens) || 0;
+      const prompt = Number(r.promptTokens) || 0;
+      const miss = r.cacheMissTokens != null ? Number(r.cacheMissTokens) || 0 : Math.max(0, prompt - hit);
+      cacheHitTokens += hit;
+      cacheMissTokens += miss;
+      promptTokens += prompt || hit + miss;
       outputTokens += Number(r.outputTokens) || 0;
       images += Number(r.images) || 0;
       chargedCents += Number(r.chargedCents) || 0;
@@ -1233,7 +1352,11 @@ export function createRelay(deps) {
       calls: rows.length,
       textCalls,
       imageCalls,
-      promptTokens,
+      /* promptTokens = 命中 + 未命中（旧字段名保留，客户端与管理台老读法都能用） */
+      promptTokens: promptTokens || cacheHitTokens + cacheMissTokens,
+      inputTokens: cacheHitTokens + cacheMissTokens,
+      cacheHitTokens,
+      cacheMissTokens,
       outputTokens,
       images,
       unbilled,
@@ -1288,6 +1411,9 @@ export function createRelay(deps) {
       from,
       to,
       limit,
+      /* 金额精度随查询一起给管理台：表格按它显示 8 位小数（旧服务端不给就按 8 位兜底）。 */
+      yuanPrecision: YUAN_PRECISION,
+      coinYuan: COIN_YUAN,
       matched: hit.length,
       scope: usageAgg(hit),
       windows: USAGE_WINDOWS.map(([key, label]) => {
@@ -1307,9 +1433,12 @@ export function createRelay(deps) {
     issueTestKey: issueTestKey,
     userModels: userModels,
     /* 峰谷判据的两半：客户端本地对账要用与云端**完全相同**的公式（见 textCostYuan），
-       所以把「节假日豁免日期」与「鲸圆币汇率」也随快照一起给出去（只读、不含凭据）。 */
+       所以把「节假日豁免日期」与「鲸圆币汇率」也随快照一起给出去（只读、不含凭据）。
+       yuanPrecision = 对外元的小数位（8 = 1e-8 元）：客户端按它决定显示精度，
+       旧服务端不给这个字段时客户端按 4 位兜底（见 renderer/app-relay.js 的精度自适应）。 */
     peaks: () => (cfg.peaks || []).slice(),
     coinYuan: () => COIN_YUAN,
+    yuanPrecision: () => YUAN_PRECISION,
     audit: (limit) => auditArr().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse(),
     usage: (limit) => usageList().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse().map(usagePublic),
     /* 调用流水的筛选 + 统计（只读，见上面 usageQuery 的口径注释）。 */

@@ -257,6 +257,11 @@ async function main() {
   ok(MC.balancePartsOfYuan(0.008).yuan === 0.008, "零头只改显示：真实元值原样留着（可用性判定不跟着变）");
   ok(MC.coinNumText(25000) === "25,000", "币数带千分位（25,000 币）");
   ok(MC.coinCostText(0.05) === "0.05" && MC.coinCostText(1) === "1", "小额费用最多 2 位小数、无小数不带点");
+  /* 本轮修正（中转按 1e-8 元计费后的小额）：不足最小位的花费给下限文案，不许显示成 0。 */
+  ok(MC.coinCostText(0.000004) === "<0.01" && MC.coinCostText(0.00004) === "<0.01" && MC.coinCostText(0) === "0",
+    "不足 0.01 币的花费显示「<0.01」（一次真实花费不显示成 0；真正的 0 仍显示 0）");
+  ok(MC.balanceTextOfYuan(1e-9) === "<0.02" && MC.balanceTextOfYuan(0.0000005) === "<0.02" && MC.balanceTextOfYuan(0.008) === "<1",
+    "余额小到连最小位都不到时显示「<0.02」（0.5 币以下的零头仍显示「<1」），判定按真实元值");
   /* 本轮纠正：把金币 emoji 与「币」字换成**自绘 SVG 金色圆环 + 圆内的 DeepSeek 官方 logo**
      （用户口径：圆内必须是 DeepSeek 官方 logo，不是自绘的鱼 / 鲸剪影）。 */
   ok(/createElementNS\(SVG_NS, "svg"\)/.test(coinSrc) && /DS_LOGO_D/.test(coinSrc) &&
@@ -280,35 +285,44 @@ async function main() {
 
   /* ── [4c] 币的边界（中转换币）：**只有中转按币，官方 DeepSeek 仍按 ¥** ───
      本次需求：用 MTNode 中转的模型时，Token 内计费从「元」换成「鲸圆币」（换算 + 换单位）。
-     计算方式与 DeepSeek 官方路由**一致**，只换单位；价目不再从云端快照取，而取
-     app-cost.js **内置的 RELAY_PRICE 表**（中转站改价 = 等一次客户端更新）。
+     计算方式与 DeepSeek 官方路由**一致**，只换单位；**价目取服务端快照下发的那一份**
+     （卡上 relay.prices，来自 /api/relay/me 的 models[].price），app-cost.js 的内置
+     RELAY_PRICE 表退为兜底（快照没给时用，不再当权威）。
      官方 DeepSeek 路由一分不改（仍是 ¥ + 峰谷半价）。
      另一条本轮修的坑：运行中记账用的服务商串是网关的**路由名** `mtnode_<卡 id>`
      （见 dsh/gateway/gateway.mjs 的 routeOfProvider / applySettings），计价侧必须认它，
      否则中转行永远算不出费用、显示「—」。 */
-  console.log("[4c] 中转换币：内置价目 + 与云端同源的计价 + mtnode_ 前缀归属 + 官方仍按 ¥");
-  /* 服务端：价目 / 峰谷 / 汇率三个只读字段照旧下发（客户端本轮起不再拿它们计价） */
+  console.log("[4c] 中转换币：服务端快照价目优先 + 内置表兜底 + 与云端同源的计价 + mtnode_ 前缀归属");
+  /* 服务端：价目 / 峰谷 / 汇率 / 金额精度四个只读字段随快照下发（客户端计价吃这一份） */
   const relaySrv = read("store-saas/relay.mjs");
   ok(relaySrv.includes("price: Object.assign({}, cfg.prices[m.id] || normPrice({}, m.upstream))"),
     "中转 /api/relay/me 的模型清单带上逐模型真实价目（与扣费同一份 cfg.prices）");
-  ok(relaySrv.includes("peaks: () => (cfg.peaks || []).slice()") && relaySrv.includes("coinYuan: () => COIN_YUAN"),
-    "同时下发峰谷判据（节假日豁免日期）与鲸圆币汇率（1 币 = ¥0.02）");
+  ok(relaySrv.includes("peaks: () => (cfg.peaks || []).slice()") && relaySrv.includes("coinYuan: () => COIN_YUAN") &&
+    relaySrv.includes("yuanPrecision: () => YUAN_PRECISION") && relaySrv.includes("const YUAN_PRECISION = 8"),
+    "同时下发峰谷判据 / 鲸圆币汇率 / 金额精度（8 位小数 = 1e-8 元）");
   ok(read("store-saas/server.mjs").includes("peaks: relay.admin.peaks()") &&
-    read("store-saas/server.mjs").includes("coinYuan: relay.admin.coinYuan()"),
-    "server.mjs 的 /api/relay/me 把 peaks / coinYuan 一起回给客户端");
+    read("store-saas/server.mjs").includes("coinYuan: relay.admin.coinYuan()") &&
+    read("store-saas/server.mjs").includes("yuanPrecision: relay.admin.yuanPrecision()"),
+    "server.mjs 的 /api/relay/me 把 peaks / coinYuan / yuanPrecision 一起回给客户端");
   ok(relaySrv.includes("const yuan = ((hit * price.cacheHit + miss * price.cacheMiss + out * price.output) / 1e6) * peak;") &&
     relaySrv.includes("const yuan = n * (price.perImageYuan || 0);"),
-    "中转站的计费公式（文本 / 图像）本轮一字未改（只加下发字段）");
-  /* 客户端：内置价目表是真源（键 = 中转站对外模型 id，数值 = 现役中转站的价目） */
+    "中转站的计费公式（文本 / 图像）口径未改（只提精度：结果走 round8）");
+  ok(relaySrv.includes("round8(yuan)") && relaySrv.includes("cacheMissTokens"),
+    "计费结果按 1e-8 元保留（round8）+ 明细落三项 token（含 cacheMissTokens）");
+  /* 客户端：内置价目表退为兜底（快照没给时用），快照价目优先 */
   ok(has("renderer/app-cost.js", "const RELAY_PRICE = {") &&
     has("renderer/app-cost.js", '"deepseek-v4-flash": { kind: "text", cacheHit: 0.02, cacheMiss: 1, output: 4, peakMultiplier: 2 }') &&
     has("renderer/app-cost.js", '"gpt-image-2.5-all": { kind: "image", perImageYuan: 0.21 }'),
-    "app-cost.js 内置中转价目表 RELAY_PRICE（与中转站现役价目同一份）");
+    "app-cost.js 保留内置中转价目表 RELAY_PRICE（作快照缺席时的兜底）");
+  ok(has("renderer/app-cost.js", "const fromCloud = meta && meta.prices") &&
+    has("renderer/app-cost.js", "return p && typeof p === \"object\" ? Object.assign({ source: \"builtin\" }, p) : null;"),
+    "relayPriceOf 先读快照 relay.prices[模型 id]（服务端真价），没有才退回内置表");
   ok(has("renderer/app-cost.js", 'low.indexOf("mtnode_") === 0') &&
     has("renderer/app-cost.js", 'route.indexOf("mtnode_") === 0'),
     "计价侧认网关路由名 mtnode_<卡 id>（字符串与卡对象两条路都归一，本轮修「中转费用永远 —」）");
-  ok(has("renderer/app-relay.js", "prices: pricesOf(doc)") && has("renderer/app-relay.js", "coinYuan: Number(doc && doc.coinYuan) || 0"),
-    "app-relay.js 仍把云端价目 / 峰谷 / 汇率写进中转卡快照（只是计价不再读它）");
+  ok(has("renderer/app-relay.js", "prices: pricesOf(doc)") && has("renderer/app-relay.js", "coinYuan: Number(doc && doc.coinYuan) || 0") &&
+    has("renderer/app-relay.js", "yuanPrecision: Number(doc && doc.yuanPrecision) || 0"),
+    "app-relay.js 把云端价目 / 峰谷 / 汇率 / 金额精度写进中转卡快照（计价读这一份）");
   ok(has("renderer/app-settings.js", "relayPriceText") && has("renderer/app-settings.js", "按张 "),
     "设置 · 提供商的中转只读卡逐模型展示价目（元 + 括号内鲸圆币，含高峰倍率）");
   /* 计价真跑（切片 app-cost.js；MtCoin 按应用里的加载顺序给齐） */
@@ -363,6 +377,31 @@ async function main() {
   const cImg = costWin.costOfImages("mtnode_mtnode-relay", "gpt-image-2.5-all", 3);
   ok(!!cImg && cImg.currency === "COIN" && cImg.images === 3 && near(cImg.amount, 31.5, 1e-6),
     "中转图像按张换币：3 张 × ¥0.21 = ¥0.63 = 31.5 币（同样认 mtnode_ 前缀）");
+  /* 快照**给了价目**时以服务端真价为准（内置表只兜底）：把 deepseek-v4-flash 的未命中价
+     改成 ¥2/百万，同一个桶（5M 未命中）必须算出 1000 币，而不是内置表 ¥1 的 500 币。
+     下面两段故意用**同一时刻**、只改 peaks：先不给豁免（= 高峰，1000 币），给了豁免日期
+     再算（= 空闲，500 币）—— 顺带钉住「快照里的节假日名单真的参与峰谷判定」。 */
+  const cloudProv = JSON.parse(JSON.stringify(relayProv));
+  cloudProv.relay.prices = {
+    "deepseek-v4-flash": { kind: "text", cacheHit: 0.02, cacheMiss: 2, output: 4, peakMultiplier: 2 },
+    "gpt-image-2.5-all": { kind: "image", perImageYuan: 0.3 },
+  };
+  cloudProv.relay.yuanPrecision = 8;
+  const cCloud = costWin.costOfBucket(cloudProv, "deepseek-v4-flash", flashBucket, atPeak);
+  ok(!!cCloud && cCloud.currency === "COIN" && near(cCloud.amount, 1000) && cCloud.peak === true,
+    "快照价目优先：服务端把未命中价改成 ¥2/百万 → 高峰 1000 币（内置表是 ¥1 → 500 币，说明真价生效）");
+  cloudProv.relay.peaks = ["2026-03-02"];
+  const cCloudPeakOff = costWin.costOfBucket(cloudProv, "deepseek-v4-flash", flashBucket, atPeak);
+  ok(cCloudPeakOff.peak === false && near(cCloudPeakOff.amount, 500),
+    "快照里的节假日豁免名单参与峰谷判定（2026-03-02 列为豁免 → 不按高峰计，1000 → 500 币）");
+  const cCloudImg = costWin.costOfImages(cloudProv, "gpt-image-2.5-all", 3);
+  ok(!!cCloudImg && near(cCloudImg.yuan, 0.9, 1e-9) && near(cCloudImg.amount, 45, 1e-6),
+    "图像价也用快照真价（3 张 × ¥0.3 = ¥0.9 = 45 币）");
+  ok(costWin.costYuanDigits(cloudProv) === 8 && costWin.costYuanDigits(relayProv) === 8,
+    "金额精度取快照 yuanPrecision（缺席按 8 位兜底，浮点噪声不再被 round 到 1e-4）");
+  ok(costWin.costYuanText(0.00000002, cloudProv) === "0.00000002" && costWin.costYuanText(3e-9, cloudProv) === "<0.00000001" &&
+    costWin.costYuanText(0, cloudProv) === "0",
+    "元金额文案：给足 8 位小数、小于最小位给「<0.00000001」、0 仍是 0（不出现科学计数法）");
   const mixed = costWin.costOfOwner({
     tokenReport: {
       lastAt: atPeak,

@@ -1,0 +1,461 @@
+{
+ "mode": "apply",
+ "stamp": "20261014-010649",
+ "localChecks": [],
+ "summary": {
+  "mode": "apply",
+  "stamp": "20261014-010649",
+  "root": "/root/mtnode-disk-cleanup-20261014-010649",
+  "snap0": {
+   "at": "2026-10-14T01:07:08+08:00",
+   "df": {
+    "size": 20756914176,
+    "used": 14499921920,
+    "avail": 5176647680,
+    "pcent": "74%"
+   },
+   "journal_bytes": 180250214,
+   "journal_line": "Archived and active journals take up 171.9M in the file system.",
+   "sizes": {
+    "/root/.vscode-server": 4735490164,
+    "/root/.npm/_cacache": 20881536,
+    "/root/mt-ai-router": 1336736851,
+    "/var/lib/apt/lists": 156480421,
+    "/var/cache/apt": 82695483,
+    "/tmp": 79401796,
+    "/var/log/journal": 193608520,
+    "/opt/mtnode-store/data": 13087462,
+    "/var/www/mtnode": 83437178
+   }
+  },
+  "snap1": {
+   "at": "2026-10-14T01:07:22+08:00",
+   "df": {
+    "size": 20756914176,
+    "used": 14328147968,
+    "avail": 5348421632,
+    "pcent": "73%"
+   },
+   "journal_bytes": 8388608,
+   "journal_line": "Archived and active journals take up 8.0M in the file system.",
+   "sizes": {
+    "/root/.vscode-server": 4090068850,
+    "/root/.npm/_cacache": 20881536,
+    "/root/mt-ai-router": 1336738047,
+    "/var/lib/apt/lists": 156480421,
+    "/var/cache/apt": 82695483,
+    "/tmp": 79401796,
+    "/var/log/journal": 8396800,
+    "/opt/mtnode-store/data": 13087462,
+    "/var/www/mtnode": 83437178
+   }
+  },
+  "items": [
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:07:08+08:00"
+   },
+   {
+    "id": "journald-dropin",
+    "cat": "journald",
+    "title": "journald 保留策略配置",
+    "action": "config",
+    "path": "/etc/systemd/journald.conf.d/10-mtnode-retention.conf",
+    "status": "done",
+    "size": 140,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --disk-usage -> rc=0 | Archived and active journals take up 171.9M in the file system.",
+     "$ journalctl --verify --quiet; echo verify-rc=$? -> rc=0 | verify-rc=0",
+     "systemctl is-active systemd-journald -> active",
+     "$ systemctl restart systemd-journald -> rc=0 "
+    ],
+    "note": "",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "journald-vacuum",
+    "cat": "journald",
+    "title": "journald 立刻回收（vacuum）",
+    "action": "vacuum",
+    "path": "/var/log/journal",
+    "status": "done",
+    "size": 171861606,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --vacuum-time=2d -> rc=0 Vacuuming done, freed 0B of archived journals from /run/log/journal. Vacuuming done, freed 0B of archived journals from /var/log/journal/0c291730241f4b0eaf6e781",
+     "$ journalctl --vacuum-size=64M -> rc=0 Vacuuming done, freed 0B of archived journals from /run/log/journal. Vacuuming done, freed 0B of archived journals from /var/log/journal/0c291730241f4b0eaf6e781",
+     "$ journalctl --disk-usage -> Archived and active journals take up 8.0M in the file system.（清理前 Archived and active journals take up 171.9M in the file system.）"
+    ],
+    "note": "回收 163.9MB",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "logrotate-nginx",
+    "cat": "logrotate",
+    "title": "nginx logrotate 保留份数",
+    "action": "config",
+    "path": "/etc/logrotate.d/nginx",
+    "status": "done",
+    "size": 329,
+    "backup": "/root/mtnode-disk-cleanup-20261014-010649/backup/etc/logrotate.d/nginx",
+    "evidence": [
+     "$ grep -n 'rotate' /etc/logrotate.d/nginx -> rc=0 | 4: rotate 14 10: prerotate 11: if [ -d /etc/logrotate.d/httpd-prerotate ]; then \\ 12: run-parts /etc/logrotate.d/httpd-prerotate; \\ 15: postrotate 16: invoke-rc.d nginx rotate >/dev/null 2>&1",
+     "$ ls -la /var/log/nginx | head -20 -> rc=0 | total 10828 drwxr-xr-x 2 root adm 4096 Oct 14 00:00 . drwxr-xr-x 11 root root 4096 Oct 1 00:00 .. -rw-r----- 1 www-data adm 20130 Oct 14 01:07 access.log -rw-r----- 1 www-data adm 7598205 Oct 13 23:59 access.log.1 -rw-r----- 1 www-data adm …",
+     "$ logrotate -d /etc/logrotate.d/nginx -> rc=0 Now: 2026-10-14 01:07 Last rotated at 2026-10-14 00:00 log does not need rotating (log has been rotated at 2026-10-14 00:00, which is less than a day ago) not running prerotate script, since no logs w"
+    ],
+    "note": "rotate 14 → 2",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "nginx-access",
+    "cat": "nginx",
+    "title": "脚手架 location 不记 access",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "done",
+    "size": 14010,
+    "backup": "/root/mtnode-disk-cleanup-20261014-010649/backup/etc/nginx/sites-available/mt-ai-router.conf",
+    "evidence": [
+     "$ grep -n 'access_log' /etc/nginx/sites-available/mt-ai-router.conf -> ",
+     "修改点：/mtnode/music3/=added /mtnode/h3/=added",
+     "$ nginx -t -> rc=0 nginx: the configuration file /etc/nginx/nginx.conf syntax is ok nginx: configuration file /etc/nginx/nginx.conf test is successful",
+     "$ systemctl reload nginx -> rc=0 "
+    ],
+    "note": "/mtnode/music3/=added /mtnode/h3/=added",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "nginx-yue",
+    "cat": "nginx",
+    "title": "/mtnode/yue/ 本地 alias（可选，未启用）",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ curl -s -o /dev/null -w '%{http_code}' https://mtnode-download.oss-cn-beijing.aliyuncs.com/yue/ -> rc=0 | 200"
+    ],
+    "note": "--yue 未开：/var/www/mtnode/yue/ 目录当前不存在，启用会把现在落到 OSS 的 /mtnode/yue/ 变成 404",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "vaproj-loglevel",
+    "cat": "vaproj",
+    "title": "vaproj-backend 日志降噪",
+    "action": "config",
+    "path": "/etc/systemd/system/vaproj-backend.service.d/10-mtnode-loglevel.conf",
+    "status": "done",
+    "size": 91,
+    "backup": "",
+    "evidence": [
+     "$ systemctl is-active vaproj-backend -> rc=0 | active",
+     "$ cat /etc/systemd/system/vaproj-backend.service -> rc=0 | [Unit] Description=vaproj backend (uvicorn) After=network.target [Service] Type=simple User=root WorkingDirectory=/opt/vaproj/backend Environment=PYTHONUNBUFFERED=1 ExecStart=/opt/vaproj/backend/.venv/bin/uvicorn app.main:app --host 127.0.0…",
+     "$ grep -rn 'setup_logging' /opt/vaproj/backend/app/main.py /opt/vaproj/backend/app/core/logging.py -> rc=0 | /opt/vaproj/backend/app/main.py:14:from app.core.logging import get_logger, setup_logging /opt/vaproj/backend/app/main.py:39: setup_logging() /opt/vaproj/backend/app/core/logging.py:9:def setup_logging(level: str = \"INFO\") -> None:",
+     "$ systemctl daemon-reload -> rc=0",
+     "$ systemctl restart vaproj-backend -> rc=0 ",
+     "$ systemctl is-active vaproj-backend -> active",
+     "$ journalctl -u vaproj-backend --since '-3min' --no-pager | tail -5 -> rc=0 | Oct 14 01:07:20 iZm5e5cjjtvw5l67gowa39Z uvicorn[3109462]: INFO: Shutting down Oct 14 01:07:20 iZm5e5cjjtvw5l67gowa39Z uvicorn[3109462]: INFO: Waiting for application shutdown. Oct 14 01:07:20 iZm5e5cjjtvw5l67gowa39Z uvicorn[3109462]: 2026-1…"
+    ],
+    "note": "LogLevelMax=warning；app/core/logging.py 的 setup_logging(level='INFO') 读的是硬编码默认值、不认环境变量，所以走 journald 侧 LogLevelMax=warning（日志仍写 stdout，只是不进 journal）",
+    "at": "2026-10-14T01:07:22+08:00"
+   },
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938",
+     "$ 与开始前比对 -> 一致"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:07:22+08:00"
+   }
+  ],
+  "integrity": {
+   "files": "83",
+   "dbjson": "65262 1791906938",
+   "at": "2026-10-14T01:07:22+08:00",
+   "same_as_ref": true
+  },
+  "verify": {
+   "at": "2026-10-14T01:07:22+08:00",
+   "checks": [
+    {
+     "id": "journald",
+     "title": "journald 保留策略 64M / 2 天且实际用量 ≤64M",
+     "ok": true,
+     "detail": "是；drop-in：Archived and active journals take up 8.0M in the file system.；systemctl show：",
+     "expect": "≤64M + MaxRetentionSec=2day"
+    },
+    {
+     "id": "logrotate",
+     "title": "nginx logrotate rotate 2",
+     "ok": true,
+     "detail": "4: rotate 2 10: prerotate 11: if [ -d /etc/logrotate.d/httpd-prerotate ]; then \\ 12: run-parts /etc/logrotate.d/httpd-pr",
+     "expect": "rotate 2"
+    },
+    {
+     "id": "nginx-access",
+     "title": "music3 / h3 不记 access",
+     "ok": true,
+     "detail": "两段均有 access_log off",
+     "expect": "均有"
+    },
+    {
+     "id": "nginx-conf",
+     "title": "nginx -t 通过",
+     "ok": true,
+     "detail": "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok nginx: configuration file /etc/nginx/nginx.conf test is successful",
+     "expect": "rc=0"
+    },
+    {
+     "id": "svc:nginx",
+     "title": "nginx active",
+     "ok": true,
+     "detail": "active",
+     "expect": "active"
+    },
+    {
+     "id": "svc:mtnode-store",
+     "title": "mtnode-store active",
+     "ok": true,
+     "detail": "active",
+     "expect": "active"
+    },
+    {
+     "id": "svc:systemd-journald",
+     "title": "systemd-journald active",
+     "ok": true,
+     "detail": "active",
+     "expect": "active"
+    },
+    {
+     "id": "svc:ssh",
+     "title": "ssh active",
+     "ok": true,
+     "detail": "active",
+     "expect": "active"
+    },
+    {
+     "id": "mongod-stopped",
+     "title": "mt-ai-router-mongod 已停用且 27017 无监听",
+     "ok": false,
+     "detail": "active enabled / LISTEN 0      4096       127.0.0.1:27017      0.0.0.0:*    users:((\"mongod\",pid=",
+     "expect": "inactive + 无监听"
+    },
+    {
+     "id": "router-dir",
+     "title": "/root/mt-ai-router 已删除",
+     "ok": false,
+     "detail": "存在",
+     "expect": "不存在"
+    },
+    {
+     "id": "sshd",
+     "title": "sshd LogLevel ERROR",
+     "ok": true,
+     "detail": "loglevel ERROR",
+     "expect": "loglevel ERROR"
+    },
+    {
+     "id": "vaproj",
+     "title": "vaproj-backend LogLevelMax=warning",
+     "ok": true,
+     "detail": "LogLevelMax=4",
+     "expect": "warning"
+    },
+    {
+     "id": "vscode",
+     "title": "只剩在跑版本的 VS Code Remote",
+     "ok": true,
+     "detail": "3.9G /root/.vscode-server 21M /root/.npm/_cacache",
+     "expect": "-"
+    },
+    {
+     "id": "http-local",
+     "title": "站内自测 h3 manifest / store-api health",
+     "ok": false,
+     "detail": "h3=%{http_code} health=%{http_code}",
+     "expect": "200/200"
+    },
+    {
+     "id": "df",
+     "title": "根分区余量",
+     "ok": true,
+     "detail": "/dev/vda3 20G 14G 5.0G 73% /",
+     "expect": "-"
+    }
+   ],
+   "ok": false
+  },
+  "failures": [
+   "step_sshd 抛异常：AttributeError: 'int' object has no attribute 'strip'",
+   "step_cleanup 抛异常：TypeError: note_item() got an unexpected keyword argument 'iid'"
+  ],
+  "ok": false
+ },
+ "manifest": {
+  "ver": 1,
+  "items": [
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:07:08+08:00"
+   },
+   {
+    "id": "journald-dropin",
+    "cat": "journald",
+    "title": "journald 保留策略配置",
+    "action": "config",
+    "path": "/etc/systemd/journald.conf.d/10-mtnode-retention.conf",
+    "status": "done",
+    "size": 140,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --disk-usage -> rc=0 | Archived and active journals take up 171.9M in the file system.",
+     "$ journalctl --verify --quiet; echo verify-rc=$? -> rc=0 | verify-rc=0",
+     "systemctl is-active systemd-journald -> active",
+     "$ systemctl restart systemd-journald -> rc=0 "
+    ],
+    "note": "",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "journald-vacuum",
+    "cat": "journald",
+    "title": "journald 立刻回收（vacuum）",
+    "action": "vacuum",
+    "path": "/var/log/journal",
+    "status": "done",
+    "size": 171861606,
+    "backup": "",
+    "evidence": [
+     "$ journalctl --vacuum-time=2d -> rc=0 Vacuuming done, freed 0B of archived journals from /run/log/journal. Vacuuming done, freed 0B of archived journals from /var/log/journal/0c291730241f4b0eaf6e781",
+     "$ journalctl --vacuum-size=64M -> rc=0 Vacuuming done, freed 0B of archived journals from /run/log/journal. Vacuuming done, freed 0B of archived journals from /var/log/journal/0c291730241f4b0eaf6e781",
+     "$ journalctl --disk-usage -> Archived and active journals take up 8.0M in the file system.（清理前 Archived and active journals take up 171.9M in the file system.）"
+    ],
+    "note": "回收 163.9MB",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "logrotate-nginx",
+    "cat": "logrotate",
+    "title": "nginx logrotate 保留份数",
+    "action": "config",
+    "path": "/etc/logrotate.d/nginx",
+    "status": "done",
+    "size": 329,
+    "backup": "/root/mtnode-disk-cleanup-20261014-010649/backup/etc/logrotate.d/nginx",
+    "evidence": [
+     "$ grep -n 'rotate' /etc/logrotate.d/nginx -> rc=0 | 4: rotate 14 10: prerotate 11: if [ -d /etc/logrotate.d/httpd-prerotate ]; then \\ 12: run-parts /etc/logrotate.d/httpd-prerotate; \\ 15: postrotate 16: invoke-rc.d nginx rotate >/dev/null 2>&1",
+     "$ ls -la /var/log/nginx | head -20 -> rc=0 | total 10828 drwxr-xr-x 2 root adm 4096 Oct 14 00:00 . drwxr-xr-x 11 root root 4096 Oct 1 00:00 .. -rw-r----- 1 www-data adm 20130 Oct 14 01:07 access.log -rw-r----- 1 www-data adm 7598205 Oct 13 23:59 access.log.1 -rw-r----- 1 www-data adm …",
+     "$ logrotate -d /etc/logrotate.d/nginx -> rc=0 Now: 2026-10-14 01:07 Last rotated at 2026-10-14 00:00 log does not need rotating (log has been rotated at 2026-10-14 00:00, which is less than a day ago) not running prerotate script, since no logs w"
+    ],
+    "note": "rotate 14 → 2",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "nginx-access",
+    "cat": "nginx",
+    "title": "脚手架 location 不记 access",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "done",
+    "size": 14010,
+    "backup": "/root/mtnode-disk-cleanup-20261014-010649/backup/etc/nginx/sites-available/mt-ai-router.conf",
+    "evidence": [
+     "$ grep -n 'access_log' /etc/nginx/sites-available/mt-ai-router.conf -> ",
+     "修改点：/mtnode/music3/=added /mtnode/h3/=added",
+     "$ nginx -t -> rc=0 nginx: the configuration file /etc/nginx/nginx.conf syntax is ok nginx: configuration file /etc/nginx/nginx.conf test is successful",
+     "$ systemctl reload nginx -> rc=0 "
+    ],
+    "note": "/mtnode/music3/=added /mtnode/h3/=added",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "nginx-yue",
+    "cat": "nginx",
+    "title": "/mtnode/yue/ 本地 alias（可选，未启用）",
+    "action": "config",
+    "path": "/etc/nginx/sites-available/mt-ai-router.conf",
+    "status": "skipped",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ curl -s -o /dev/null -w '%{http_code}' https://mtnode-download.oss-cn-beijing.aliyuncs.com/yue/ -> rc=0 | 200"
+    ],
+    "note": "--yue 未开：/var/www/mtnode/yue/ 目录当前不存在，启用会把现在落到 OSS 的 /mtnode/yue/ 变成 404",
+    "at": "2026-10-14T01:07:19+08:00"
+   },
+   {
+    "id": "vaproj-loglevel",
+    "cat": "vaproj",
+    "title": "vaproj-backend 日志降噪",
+    "action": "config",
+    "path": "/etc/systemd/system/vaproj-backend.service.d/10-mtnode-loglevel.conf",
+    "status": "done",
+    "size": 91,
+    "backup": "",
+    "evidence": [
+     "$ systemctl is-active vaproj-backend -> rc=0 | active",
+     "$ cat /etc/systemd/system/vaproj-backend.service -> rc=0 | [Unit] Description=vaproj backend (uvicorn) After=network.target [Service] Type=simple User=root WorkingDirectory=/opt/vaproj/backend Environment=PYTHONUNBUFFERED=1 ExecStart=/opt/vaproj/backend/.venv/bin/uvicorn app.main:app --host 127.0.0…",
+     "$ grep -rn 'setup_logging' /opt/vaproj/backend/app/main.py /opt/vaproj/backend/app/core/logging.py -> rc=0 | /opt/vaproj/backend/app/main.py:14:from app.core.logging import get_logger, setup_logging /opt/vaproj/backend/app/main.py:39: setup_logging() /opt/vaproj/backend/app/core/logging.py:9:def setup_logging(level: str = \"INFO\") -> None:",
+     "$ systemctl daemon-reload -> rc=0",
+     "$ systemctl restart vaproj-backend -> rc=0 ",
+     "$ systemctl is-active vaproj-backend -> active",
+     "$ journalctl -u vaproj-backend --since '-3min' --no-pager | tail -5 -> rc=0 | Oct 14 01:07:20 iZm5e5cjjtvw5l67gowa39Z uvicorn[3109462]: INFO: Shutting down Oct 14 01:07:20 iZm5e5cjjtvw5l67gowa39Z uvicorn[3109462]: INFO: Waiting for application shutdown. Oct 14 01:07:20 iZm5e5cjjtvw5l67gowa39Z uvicorn[3109462]: 2026-1…"
+    ],
+    "note": "LogLevelMax=warning；app/core/logging.py 的 setup_logging(level='INFO') 读的是硬编码默认值、不认环境变量，所以走 journald 侧 LogLevelMax=warning（日志仍写 stdout，只是不进 journal）",
+    "at": "2026-10-14T01:07:22+08:00"
+   },
+   {
+    "id": "integrity",
+    "cat": "verify",
+    "title": "/opt/mtnode-store/data 未被触碰",
+    "action": "check",
+    "path": "/opt/mtnode-store/data",
+    "status": "done",
+    "size": 0,
+    "backup": "",
+    "evidence": [
+     "$ find /opt/mtnode-store/data -type f | wc -l -> 83",
+     "$ stat -c '%s %mtime' /opt/mtnode-store/data/db.json -> 65262 1791906938",
+     "$ 与开始前比对 -> 一致"
+    ],
+    "note": "文件数 83；db.json 65262 1791906938（只读比对，脚本从不写业务数据）",
+    "at": "2026-10-14T01:07:22+08:00"
+   }
+  ]
+ }
+}

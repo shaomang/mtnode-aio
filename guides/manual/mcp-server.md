@@ -11,7 +11,7 @@ MTNode 平时是 **MCP 客户端**：它去连别人写的 MCP 服务器，给�
 - **令牌**：一串随机 Bearer 令牌，客户端必须带上。可随时**重置**（重置后已配置的客户端要重新复制一次配置片段）。
 - **stdio 客户端配置片段**：Claude Code / Cursor 这类客户端要用的那一段 JSON，一键复制。
 - **自检**：不接任何外部客户端，自己走一遍「初始化 → 列工具 → 真读一次画布」，绿了就说明这条链路通。
-- **最近调用（审计）**：谁、什么时候、调了哪个工具、动了哪张画布、成功还是失败。日志落在数据目录的 `mcp-audit/`（按天轮转，保留 7 天）。
+- **最近调用（审计）**：谁、什么时候、调了哪个工具、动了哪张画布、成功还是失败。日志落在数据目录的 `mcp-audit/`（按天轮转，保留 7 天）。**数据目录**默认是 `%APPDATA%\pipeline-console\pipeline-console`（端口与令牌也记录在它下面的 `mcp-server.json`）；在设置里改过「配置数据目录」的话，就是那个目录。
 - **原始 JSON-RPC 抓包**：排障用，需显式打开，只留最近 200 条、只在内存里。
 
 ## 怎么接到客户端上
@@ -24,14 +24,15 @@ MTNode 平时是 **MCP 客户端**：它去连别人写的 MCP 服务器，给�
 {
   "mcpServers": {
     "mtnode": {
-      "command": "node",
-      "args": ["<MTNode 安装目录或仓库根>/mcp-stdio.js"]
+      "command": "<MTNode 安装目录>\\MTNodeAIO.exe",
+      "args": ["<MTNode 安装目录>\\resources\\mcp-stdio.js"],
+      "env": { "ELECTRON_RUN_AS_NODE": "1" }
     }
   }
 }
 ```
 
-面板上的「复制配置片段」复制出来的就是这个（路径已经填好）。桥脚本会自己从数据目录读端口与令牌，所以你**不用手填地址，也不用把令牌粘进配置文件**。MTNode 没开着时，客户端会看到一句「连不上 MTNode MCP 服务端，请打开 MTNode 后重试」。
+面板上的「复制配置片段」复制出来的就是这个（两处路径都已经填好，`env` 那一段也一起给了）。`command` 用的是 MTNode 自己的可执行文件 —— 它是 Electron 二进制，**必须连 `env` 里的 `ELECTRON_RUN_AS_NODE=1` 一起给**才会以 Node 模式跑这个桥脚本；漏了这条它会当主程序再开一个 MTNode 实例、一条 JSON-RPC 都不吐（第三方客户端表现为一直连不上）。这么配**不用另外装 Node**；你也想用系统 `node`，就把 `command` 换成 `node` 并**把 `env` 那一段删掉**（要求 Node ≥ 18）。桥脚本会自己从数据目录读端口与令牌，所以你**不用手填地址，也不用把令牌粘进配置文件**。MTNode 没开着时，客户端会看到一句「连不上 MTNode MCP 服务端，请打开 MTNode 后重试」。
 
 **② 本机 HTTP** —— 自己写客户端或远程工具时用：`POST http://127.0.0.1:<端口>/mcp`，头带 `Authorization: Bearer <令牌>`，体是 MCP 的 JSON-RPC（`initialize` / `tools/list` / `tools/call` / `resources/list` / `resources/read` / `prompts/list` / `prompts/get`）。
 
@@ -72,8 +73,8 @@ MTNode 平时是 **MCP 客户端**：它去连别人写的 MCP 服务器，给�
 
 | 现象 | 先看哪里 |
 | --- | --- |
-| 客户端连不上 | 面板里总开关是否「已监听」；客户端配置里的脚本路径是否存在；`node --version` ≥ 18（受管 Node 也行，见 `dsh/` 的说明） |
-| 客户端报「找不到 MTNode MCP 服务端的运行信息」 | MTNode 没开着；或数据目录不是默认那个（便携版 / 自定义数据目录：给客户端加环境变量 `MTNODE_DATA_DIR`，或直接给 `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN`） |
+| 客户端连不上 | 面板里总开关是否「已监听」；客户端配置里的脚本路径是否存在（分两处：`command` 指向应用可执行文件或 `node`，`args` 指向 `mcp-stdio.js`）；用应用可执行文件时 `env` 里必须有 `ELECTRON_RUN_AS_NODE=1`（漏了它会再开一个 MTNode、不吐 JSON-RPC），用系统 Node 时把 `env` 去掉并 `node --version` ≥ 18 |
+| 客户端报「找不到 MTNode MCP 服务端的运行信息」 | 先看这句报错里**逐个候选探活的结果**（列了每个候选的路径、端口与连不上原因）：MTNode 没开着；或数据目录不是默认那个（默认就在 `%APPDATA%\pipeline-console\pipeline-console`，设置在「配置数据目录」里改过就是它指向的那个目录）。仍不一致：给客户端加环境变量 `MTNODE_DATA_DIR`，或直接给 `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` |
 | 调用返回 401 | 令牌不对（重置过？）—— 重新复制配置片段 |
 | 调用返回「画布已被改动」 | 有人在你读图之后改过这张图：重新 `mtnode_canvas_get` 再改 |
 | 调用**卡住不返回**（一直转圈到超时） | MTNode 主窗口是不是被关掉了（执行在渲染层，窗口不在就没人执行）；若是必现，把这条现象连同当时调用的工具名记下来报给我们（渲染层没回执属于缺陷） |

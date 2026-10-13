@@ -1870,6 +1870,14 @@ async function agentEnsureSessionBody(st) {
     if (got) {
       /* 原地合并：索引里的元数据 + 正文（正文优先，索引那份只是同一份数据的旧快照） */
       Object.assign(st, got);
+      /* 工作目录体检刚修正过的值按它重放：盘上那份（或这次飞行中已经发出去的旧响应）
+         里的旧路径不许把修正值盖回去 —— 否则「修好了盘、下次读回正文又变回旧路径」。 */
+      const fixedWs =
+        S._wsFixed instanceof Map ? S._wsFixed.get(String(id)) : undefined;
+      if (fixedWs !== undefined && String(st.workspace || "") !== String(fixedWs)) {
+        st.workspace = String(fixedWs);
+        agentMarkSessionDirty(String(id));
+      }
       st._lcLoaded = true;
     } else {
       /* 读不到（坏档已改名留痕 / 文件不在）：标 missing，按空会话继续并留一条日志口径 */
@@ -2052,6 +2060,9 @@ function agentViewBlankSt() {
    _appDirWorkspace = 这份目录是「跟着应用来的」，不是用户手填的（见 agentWorkspaceInfo）；
    真正建会话时另有一处强制（app-apps-dev.js 的 appsDevStartDevSession 传 agentWorkspace）。 */
 function agentViewBlankWorkspaceSet(dir) {
+  /* 注意：这里写的是**占位空会话**（id = "\0agent-view-blank"，非法会话 id，盘上没有它），
+     所以故意不走 agentSetSessionWorkspace —— 那条入口会标脏 + 走 session:patch，
+     对着一个不存在的会话白写一次盘。真会话的写入一律走统一入口。 */
   const st = agentViewBlankSt();
   const p = String(dir || "").trim();
   if (p) {
@@ -2062,6 +2073,50 @@ function agentViewBlankWorkspaceSet(dir) {
     delete st._appDirWorkspace;
   }
   return st.workspace;
+}
+/* ── 会话工作目录的唯一写入口（本次需求 · 现场根因）──────────────────────────
+   为什么必须收成一个入口：会话的 workspace 有**两份**存档 —— 会话文件本体
+   （agent-sessions/<id>.json 顶层 workspace）与索引条目（index.json 的同一个键）。
+   落盘层（agentWriteAgentSessions → agent-sessions-store.js 的 saveSessions）只送
+   「脏的或正文已读回的」会话：一条既没读回正文、也没被标脏的老会话，它内存里的
+   workspace 改动会被**整条跳过** → 旧路径一直留在盘上（真机现场：应用开发根从
+   E:\mtnode\apps\test 改成 E:\mtnode\apps\dev 之后，两条开发会话仍记着旧路径，
+   「工作目录无效」的弹窗于是每次启动都重现）。所以：
+     ① 会话的 st.workspace 一律只经这里改（标脏，索引条目跟着走）；
+     ② 同时走主进程字段级通道 session:patch 把会话文件本体也改掉（不读正文）；
+     ③ 修正过的值记进 S._wsFixed，正文读回时按它重放（见 agentEnsureSessionBody）。
+   桥不可用（老宿主）时退化为：先把正文读回来 → 标脏 → 立即 flush 整份重写。 */
+S._wsFixed = S._wsFixed instanceof Map ? S._wsFixed : new Map();
+function agentSetSessionWorkspace(st, v, opts) {
+  opts = opts || {};
+  const id = st && st.id ? String(st.id) : "";
+  if (!id) return Promise.resolve(false);
+  const val = String(v == null ? "" : v).trim();
+  if (String(st.workspace || "").trim() === val) return Promise.resolve(false);
+  st.workspace = val;
+  S._wsFixed.set(id, val);
+  agentMarkSessionDirty(id);
+  const run = async () => {
+    const api = window.api && window.api.sessionPatch;
+    if (api) {
+      try {
+        /* 盘上还没有这份文件（全新会话）→ 主进程回 missing：不是错误，紧接着的
+           session:save 会把整份正文写下去 */
+        await api({ id: id, patch: { workspace: val } });
+      } catch (_) {}
+      return true;
+    }
+    /* 老宿主兜底：会话文件只能整份重写，先把正文读回来（读回时按 _wsFixed 重放修正值） */
+    try {
+      if (typeof agentEnsureSessionBody === "function") await agentEnsureSessionBody(st);
+    } catch (_) {}
+    st.workspace = val;
+    try {
+      await agentFlushSessionSave();
+    } catch (_) {}
+    return true;
+  };
+  return Promise.resolve(run()).catch(() => false);
 }
 /* 视图会话 id：覆盖态 = 覆盖值（空串 = 空态 / 那条会话已不在）；否则 = 用户选中的 */
 function agentViewId() {
@@ -2467,7 +2522,7 @@ function agentContractSession(opts) {
   /* 「允许读画布」本次会话放开（Gate A 关掉）；「与画布无关」档（Gate B）不适用于契约会话 */
   st.noCanvasRead = opts.allowCanvas === false;
   st.canvasFree = false;
-  if (opts.workspace != null) st.workspace = String(opts.workspace || "");
+  if (opts.workspace != null) agentSetSessionWorkspace(st, opts.workspace);
   if (opts.provider) st.provider = String(opts.provider);
   if (opts.model != null) st.model = String(opts.model || "");
   if (opts.effort) st.effort = String(opts.effort);

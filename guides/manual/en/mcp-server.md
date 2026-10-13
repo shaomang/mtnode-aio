@@ -11,7 +11,7 @@ The top bar's “Plugins” dialog is not the way in — the entry is **Settings
 - **Token**: a random Bearer token the client must send. You can **reset** it at any time (after a reset, configured clients must copy the config snippet again).
 - **stdio client config snippet**: the JSON block Claude Code / Cursor style clients need, copied with one click.
 - **Self-check**: without any external client, it walks “initialize → list tools → really read the canvas once” itself; green means the whole chain works.
-- **Recent calls (audit)**: who, when, which tool, which canvas, success or failure. Logs land in `mcp-audit/` inside the data directory (rotated daily, kept 7 days).
+- **Recent calls (audit)**: who, when, which tool, which canvas, success or failure. Logs land in `mcp-audit/` inside the data directory (rotated daily, kept 7 days). The **data directory** is `%APPDATA%\pipeline-console\pipeline-console` by default (port and token are recorded in `mcp-server.json` right there); if you changed “config data directory” in Settings, it is that one instead.
 - **Raw JSON-RPC capture**: for troubleshooting, must be switched on explicitly, keeps only the last 200 frames, memory only.
 
 ## Connecting a client
@@ -24,14 +24,15 @@ Both transports are offered by the same server:
 {
   "mcpServers": {
     "mtnode": {
-      "command": "node",
-      "args": ["<MTNode install dir or repo root>/mcp-stdio.js"]
+      "command": "<MTNode install dir>\\MTNodeAIO.exe",
+      "args": ["<MTNode install dir>\\resources\\mcp-stdio.js"],
+      "env": { "ELECTRON_RUN_AS_NODE": "1" }
     }
   }
 }
 ```
 
-That is exactly what “Copy config snippet” on the panel produces (with the path already filled in). The bridge script reads the port and token from the data directory itself, so you **never hand-fill an address and never paste the token into a config file**. When MTNode is not running the client sees “cannot reach the MTNode MCP server — open MTNode and try again”.
+That is exactly what “Copy config snippet” on the panel produces (both paths already filled in, `env` included). `command` is MTNode's own executable — it is an Electron binary, so the `env` entry `ELECTRON_RUN_AS_NODE=1` **must** be passed along for it to run the bridge script in Node mode; without it the exe starts as the main program (a second MTNode instance, zero JSON-RPC), which is what the client sees as “cannot connect”. With this in place a third-party client does **not** have to install Node; if you prefer system `node`, put `node` there instead **and delete the `env` block** (requires Node ≥ 18). The bridge script reads the port and token from the data directory itself, so you **never hand-fill an address and never paste the token into a config file**. When MTNode is not running the client sees “cannot reach the MTNode MCP server — open MTNode and try again”.
 
 **② Local HTTP** — for your own client or a remote tool: `POST http://127.0.0.1:<port>/mcp` with the header `Authorization: Bearer <token>` and an MCP JSON-RPC body (`initialize` / `tools/list` / `tools/call` / `resources/list` / `resources/read` / `prompts/list` / `prompts/get`).
 
@@ -67,8 +68,8 @@ Beyond tools, two more MCP capability kinds are open:
 
 | Symptom | Where to look first |
 | --- | --- |
-| Client cannot connect | Is the panel's master switch “listening”; does the script path in the client config exist; is `node --version` ≥ 18 (a managed Node works too, see the notes in `dsh/`) |
-| Client says “cannot find the MTNode MCP server's runtime info” | MTNode is not running; or the data directory is not the default one (portable build / custom data dir: give the client the `MTNODE_DATA_DIR` environment variable, or pass `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` directly) |
+| Client cannot connect | Is the panel's master switch “listening”; do both parts of the client config exist (`command` → the app executable or `node`, `args` → `mcp-stdio.js`); with the app executable, does `env` carry `ELECTRON_RUN_AS_NODE=1` (without it you just get another MTNode instance and no JSON-RPC); with system Node, is the `env` block removed and `node --version` ≥ 18 |
+| Client says “cannot find the MTNode MCP server's runtime info” | First read the **per-candidate probe result** listed in that message (each candidate's path, port, liveness and why it failed): MTNode is not running, or the data directory is not the default one (the default is `%APPDATA%\pipeline-console\pipeline-console`; if you changed “config data directory” in Settings it is that one). If it still does not match, give the client the `MTNODE_DATA_DIR` environment variable, or pass `MTNODE_MCP_URL` + `MTNODE_MCP_TOKEN` directly |
 | A call returns 401 | Wrong token (did you reset it?) — copy the config snippet again |
 | A call returns “the canvas has been changed” | Someone edited that canvas after you read it: `mtnode_canvas_get` again, then edit |
 | A call **hangs and never returns** (spinning until timeout) | Was the MTNode main window closed (execution happens in the renderer — no window, nobody to execute it); if it reproduces, note the tool name that was being called and report it to us (no receipt from the renderer is a defect) |

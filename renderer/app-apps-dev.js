@@ -235,7 +235,11 @@ async function appsDevAlignAppWorkspace(appId) {
       seen.set(String(st.id), cur);
       if (isDir) continue;
     }
-    st.workspace = dir;
+    /* 对齐结果走**统一入口**（本次需求）：过去这里只改内存 + persistAgentSession，而落盘层
+       只送「脏的或正文已读回的」会话 —— 既没读回正文也没标脏的老会话会被整条跳过，对齐
+       结果根本进不了盘（下次启动读回来还是旧路径，弹窗重现）。统一入口 = 标脏 + 走
+       session:patch 直接改会话文件本体（不读正文）。 */
+    await agentSetSessionWorkspace(st, dir);
     changed++;
   }
   if (changed) {
@@ -1688,7 +1692,8 @@ function appsDevComposerSend(raw) {
       const st = DEVD.sessionId ? agentSessionById(DEVD.sessionId) : null;
       const dir = appsDevProjectDir();
       if (st && dir && !String(st.workspace || "").trim()) {
-        st.workspace = dir;
+        /* 走统一入口（标脏 + session:patch）：这条会话可能还没读回正文，光 persist 落不了盘 */
+        agentSetSessionWorkspace(st, dir);
         if (typeof persistAgentSession === "function") persistAgentSession().catch(() => {});
       }
     } catch (_) {}
@@ -1923,7 +1928,9 @@ async function appsDevStartMergeSession(pull, label) {
       contract,
     );
     if (sess) {
-      sess.workspace = appDir;
+      /* 统一入口（标脏 + session:patch）：全新会话盘上还没有文件，补丁回 missing 属正常，
+         紧接着的整份落盘会把它写下去 */
+      await agentSetSessionWorkspace(sess, appDir);
       sess.title = title;
       sess.titleLocked = true;
       sess.titleAuto = false;
