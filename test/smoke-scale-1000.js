@@ -143,6 +143,76 @@ ok(/max-age=60/.test(SERVER), "目录缓存 max-age=60（发布后一分钟内�
 ok(/gzipSync\(catalogBody/.test(SERVER), "静态目录同时落 catalog.json.gz（nginx gzip_static 直接发）");
 ok(/function gzipStatus\(/.test(SERVER) && /gzip: gzipStatus\(\)/.test(SERVER), "体检接口 /api/apps/pub 带回 gzip 与热表状态");
 
+/* ── 精简目录（catalog.slim.json）：首帧先渲染那份 ─────────────────────────────
+   1000 条时客户端一次要等完整的 catalog.json（约 1.5MB，每条带 versions[] / shots[] /
+   zipUrl / sha256 / tips…），而列表首帧一张卡也用不到这些。云端另出一份小表，
+   客户端优先拉它。这里钉住四件「以后一改就会悄悄退回去」的事：
+   ① 小表是**同一份条目的投影**（只对 appCatalogDoc() 的结果做键的取舍，不重算、不另抄清单）；
+   ② 顶层形状与 catalog.json 一致（version / updatedAt / apps），条目顺序逐条对齐；
+   ③ 与完整目录**同一次发布**写出（catalog.slim.json + .gz，沿用原子写与同一套 gzip 编码）；
+   ④ 四件套在托管名单里、且清理环节显式放行（客户端唯一入口，不许被「清理多余文件」删掉）。 */
+section("[3c] 精简目录 catalog.slim.json：同源投影 + 同一次发布 + 受托管清单保护");
+{
+  const iPlan = SERVER.indexOf("function appStaticPlan");
+  const iPlanEnd = SERVER.indexOf("function cleanAppBranchStatic", iPlan);
+  const planSrc = iPlan >= 0 && iPlanEnd > iPlan ? SERVER.slice(iPlan, iPlanEnd) : "";
+  const iSlimFn = SERVER.indexOf("function catalogSlimApp");
+  const iSlimEnd = SERVER.indexOf("function catalogSlimDoc", iSlimFn);
+  const slimFnSrc = iSlimFn >= 0 ? SERVER.slice(iSlimFn, iSlimEnd > iSlimFn ? iSlimEnd : iSlimFn + 2000) : "";
+  ok(/function catalogSlimDoc\(full\)/.test(SERVER), "存在 catalogSlimDoc(full)：发布路径把 appCatalogDoc() 的结果传进来投影");
+  ok(/apps: doc\.apps\.map\(catalogSlimApp\)/.test(SERVER), "小表 = 同一份 doc.apps 的 map 投影（不重新组目录、不查库）");
+  ok(/const slimDoc = catalogSlimDoc\(doc\);/.test(planSrc) && /slimDoc: slimDoc/.test(planSrc), "appStaticPlan 一次算好 slimDoc 并随计划下发（发布与体检拿的是同一份）");
+  ok(
+    ["id", "title", "desc", "description", "tags", "version", "latestVersion", "owner", "ownerName", "ownerId", "icon", "thumb", "coverSource", "coverVer", "updatedAt", "createdAt", "trunk", "familyRootId", "parentOwnerId", "forkOf"].every(
+      (k) => new RegExp("\\n\\s*" + k + ":").test(slimFnSrc),
+    ),
+    "catalogSlimApp 保留首帧要用的键（id/title/tags/版本/作者/封面/时间/分支识别/desc 描述）",
+  );
+  ok(
+    !["versions", "shots", "shotsThumb", "shotsSha", "zipUrl", "sha256", "bytes", "downloads", "entry", "window", "tips"].some((k) =>
+      new RegExp("\\n\\s*" + k + ":").test(slimFnSrc),
+    ),
+    "catalogSlimApp 不出现重字段（versions/shots/shotsThumb/shotsSha/zipUrl/sha256/bytes/downloads/entry/window/tips）",
+  );
+  /* ③ 同一次发布：两条目录在同一条落盘路径里，slim 用同一套原子写 + gzip 编码 */
+  const iWrite = SERVER.indexOf("function writeStaticApps");
+  const iWriteEnd = SERVER.indexOf("function publishStaticApps", iWrite);
+  const writeSrc = iWrite >= 0 && iWriteEnd > iWrite ? SERVER.slice(iWrite, iWriteEnd) : "";
+  ok(
+    writeSrc.indexOf('writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.json"), catalogBody)') > 0 &&
+      writeSrc.indexOf('writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.slim.json"), slimBody)') > 0,
+    "catalog.json 与 catalog.slim.json 在同一个 writeStaticApps 里原子写出（同源同批）",
+  );
+  ok(
+    writeSrc.indexOf('writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.slim.json.gz"), _slimGz)') > 0 &&
+      /const _slimGz = _slimEnc\.gz \|\| zlib\.gzipSync\(slimBody, \{ level: 6 \}\);/.test(writeSrc),
+    "catalog.slim.json.gz 沿用现有 gzip 写法（encodeJsonDoc 的缓存结果优先，退回同一档 level:6）",
+  );
+  ok(/errors\.push\("catalog\.slim\.json：" \+ /.test(writeSrc), "slim 落盘失败写进本次 errors（不静默，也不另起一套通道）");
+  /* ④ 托管名单 + 清理放行 */
+  ok(
+    /const managed = \[APPS_WEB_MANIFEST, "catalog\.json", "catalog\.json\.gz", "catalog\.slim\.json", "catalog\.slim\.json\.gz"\];/.test(SERVER),
+    "managed 名单含目录类四件套（含 slim 两份）—— 不会被「清理多余文件」当孤儿删掉",
+  );
+  ok(
+    /const CATALOG_KEEP = new Set\(\["catalog\.json", "catalog\.json\.gz", "catalog\.slim\.json", "catalog\.slim\.json\.gz"\]\);/.test(SERVER) &&
+      /if \(!r \|\| want\.has\(r\) \|\| CATALOG_KEEP\.has\(r\) \|\| r\.indexOf\("\.\."\) >= 0\) continue;/.test(SERVER),
+    "清理环节显式放行目录类四件套（客户端唯一入口，任何情况下都不删）",
+  );
+  /* 体检与发布回执：同一口径报 slim 的真实字节 */
+  ok(
+    /for \(const name of \["catalog\.json", "catalog\.json\.gz", "catalog\.slim\.json", "catalog\.slim\.json\.gz"\]\)/.test(SERVER) &&
+      /out\.slimBytes = slim;/.test(SERVER) &&
+      /out\.slimGzBytes = slimGz;/.test(SERVER),
+    "gzipStatus 报出 slim 的盘上真实字节（slimBytes / slimGzBytes，与完整目录同一口径）",
+  );
+  ok(
+    /if \(method === "GET" && p === "\/api\/apps\/pub"\)[\s\S]{0,200}?gzip: gzipStatus\(\)/.test(SERVER),
+    "GET /api/apps/pub 的 gzip 段带上 slim 体积（同一字段，不新增精简版接口）",
+  );
+  ok(!/catalog\.slim\.json"\s*\)\s*\)\s*\{[\s\S]{0,120}?sendCatalogJson/.test(SERVER), "没有为精简目录新开接口（客户端只用静态文件）");
+}
+
 /* 热表拆分（1000 条目录不是体积问题，relayUsage / rechargeLedger 才是） */
 const HOT = read("store-saas/hot-store.mjs");
 ok(/export function hotStoreInit\(/.test(HOT), "hot-store.mjs：hotStoreInit（启动装载 + 迁移）");

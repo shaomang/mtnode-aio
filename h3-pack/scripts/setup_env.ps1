@@ -26,6 +26,16 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
 
+# Absolute path to this PowerShell host: a few installation paths shrink PATH (the clean-machine
+# smoke test does), and a bare "powershell.exe" then fails with CommandNotFoundException.
+$PS_EXE = ""
+try { $PS_EXE = [string][System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $PS_EXE = "" }
+if (-not $PS_EXE -or -not (Test-Path -LiteralPath $PS_EXE)) {
+    $PS_EXE = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+}
+if (-not (Test-Path -LiteralPath $PS_EXE)) { $PS_EXE = "powershell.exe" }
+
+
 # -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
 # A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
 # pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
@@ -120,57 +130,73 @@ function Install-PipWithFallback {
     throw "pip install failed on every index ($tried). Last pip output: $t"
 }
 
-function Test-CudaPython {
-    param([string]$Py)
-    if (-not $Py -or -not (Test-Path -LiteralPath $Py)) { return $false }
-    try {
-        $out = & $Py -c "import torch; print('ok' if torch.cuda.is_available() else 'no')" 2>$null
-        return ($LASTEXITCODE -eq 0 -and ("$out".Trim() -eq "ok"))
-    } catch {
-        return $false
+# Base interpreter for the isolated venv.
+#
+# The old contract here was "a Python that ALREADY has CUDA torch" (the retired Test-CudaPython
+# gate above), which is exactly backwards: installing CUDA torch into the isolated venv is what
+# script does. On a fresh Windows machine (no conda, python.org / Microsoft Store Python on
+# PATH, no torch) every candidate failed and the install died with
+#   "Need a Python with CUDA torch. Pass -CudaPython <path> or set MT_H3_CUDA_PYTHON."
+# before torch was ever installed -- the 2026-11 user report.
+#
+# Now the gate is the INTERPRETER VERSION (torch 2.9.1+cu130 wheels are cp311 / cp312 /
+# cp313), and when nothing usable exists we fetch one ourselves (uv, else
+# python-build-standalone from npmmirror). -CudaPython / MT_H3_CUDA_PYTHON / the legacy
+# .cuda-python marker stay honoured as optional overrides. The shared helper keeps the
+# probe chain identical across h3 / music3 / yue2 (single source: pack-python/base_python.ps1).
+function Get-BasePython {
+    $helper = Join-Path $PSScriptRoot "base_python.ps1"
+    if (-not (Test-Path -LiteralPath $helper)) {
+        throw "base_python.ps1 is missing next to setup_env.ps1 (incomplete pack: reinstall or update the plugin resources)"
     }
+    # NB1: never pass an empty string as a parameter value -- PowerShell drops the empty
+    #      argument and the call dies with "Missing an argument for parameter 'CacheRoot'".
+    #      An omitted -CacheRoot is the documented default (%APPDATA%\pipeline-console\python).
+    # NB2: array parameters must be comma-joined when the helper is started with -File.
+    #      `-Wanted 3.11 3.12 -Module h3` binds "3.12" to the NEXT parameter, not to -Wanted.
+    $hArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $helper, "-WantedCsv", "3.11,3.12", "-Module", "h3", "-GpuRequired", "auto")
+    $hCache = if ($env:MT_H3_PYTHON_CACHE) { $env:MT_H3_PYTHON_CACHE } else { "" }
+    if ($hCache) { $hArgs += @("-CacheRoot", $hCache) }
+    if ($CudaPython) { $hArgs += @("-ExplicitPython", $CudaPython) }
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = @(& $PS_EXE @hArgs 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $py = ""
+    $ver = ""
+    $src = ""
+    $fail = ""
+    $reason = ""
+    foreach ($l in $out) {
+        $s = [string]$l
+        Write-Host $s
+        if ($s -match '^\s*PYTHON=(.+)$') { $py = $Matches[1].Trim() }
+        elseif ($s -match '^\s*VERSION=(.+)$') { $ver = $Matches[1].Trim() }
+        elseif ($s -match '^\s*SOURCE=(.+)$') { $src = $Matches[1].Trim() }
+        elseif ($s -match '^\s*FAILCODE=(.+)$') { $fail = $Matches[1].Trim() }
+        elseif ($s -match '^\s*REASON=(.+)$') { $reason = $Matches[1].Trim() }
+    }
+    if ($code -eq 0 -and $py -and (Test-Path -LiteralPath $py)) {
+        Write-Host "Selected base python: $py (Python $ver, via $src)"
+        return $py
+    }
+    # No raw "Need a Python with CUDA torch" text any more: the install window resolves the
+    # stable code against steps.json, so the user gets a Chinese reason plus the way out.
+    throw ("python_unusable [" + $fail + "] " + $reason)
 }
 
-function Find-CudaPython {
-    $candidates = @()
-    if ($CudaPython) { $candidates += $CudaPython }
-    if ($env:MT_H3_CUDA_PYTHON) { $candidates += $env:MT_H3_CUDA_PYTHON }
-    if ($env:MT_MUSIC_CUDA_PYTHON) { $candidates += $env:MT_MUSIC_CUDA_PYTHON }
-
-    $condaRoots = @(
-        "C:\ProgramData\miniconda3",
-        "C:\ProgramData\anaconda3",
-        "$env:USERPROFILE\miniconda3",
-        "$env:USERPROFILE\anaconda3",
-        "$env:LOCALAPPDATA\miniconda3",
-        "$env:LOCALAPPDATA\anaconda3"
-    )
-    $envNames = @("seg", "torch", "pytorch", "cuda", "base")
-    foreach ($root in $condaRoots) {
-        foreach ($name in $envNames) {
-            $candidates += (Join-Path $root "envs\$name\python.exe")
-        }
-        $candidates += (Join-Path $root "python.exe")
-    }
-
-    $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($cmd) { $candidates += $cmd.Source }
-    $cmd3 = Get-Command python3 -ErrorAction SilentlyContinue
-    if ($cmd3) { $candidates += $cmd3.Source }
-    $candidates += "C:\ProgramData\miniconda3\envs\seg\python.exe"
-
-    $seen = @{}
-    foreach ($py in $candidates) {
-        $key = [string]$py
-        if (-not $key -or $seen.ContainsKey($key.ToLowerInvariant())) { continue }
-        $seen[$key.ToLowerInvariant()] = $true
-        Write-Host "Probing CUDA python: $py"
-        if (Test-CudaPython $py) {
-            Write-Host "Selected CUDA python: $py"
-            return $py
-        }
-    }
-    return $null
+if (-not (Test-Path $VenvPy)) {
+    $basePy = Get-BasePython
+    # Do NOT use --system-site-packages: it would inherit the old conda torch and
+    # clash with the comfy_kitchen shipped by ComfyUI (list[int] annotations), which crashes on startup.
+    Write-Host "Creating isolated ComfyUI venv from $basePy (no system-site-packages)..."
+    & $basePy -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
+    Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
 }
 
 # git clone through the China gh proxies: ghfast.top -> gh-proxy.com -> ghproxy.net -> ghproxy.com, direct github.com last
@@ -225,10 +251,7 @@ if ($SourceOnly) {
 }
 
 if (-not (Test-Path $VenvPy)) {
-    $basePy = Find-CudaPython
-    if (-not $basePy) {
-        throw "Need a Python with CUDA torch. Pass -CudaPython <path> or set MT_H3_CUDA_PYTHON."
-    }
+    $basePy = Get-BasePython
     # Do NOT use --system-site-packages: it would inherit the old conda torch and
     # clash with the comfy_kitchen shipped by ComfyUI (list[int] annotations), which crashes on startup.
     Write-Host "Creating isolated ComfyUI venv from $basePy (no system-site-packages)..."
@@ -236,6 +259,28 @@ if (-not (Test-Path $VenvPy)) {
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
     Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
 }
+
+# Preflight: an NVIDIA card with a CUDA 13.0 capable driver is mandatory for H3. install.ps1
+# runs this before the step so the failure carries a stable code; here it is a second line of
+# defence for a direct `.\scripts\setup_env.ps1` run. The real gate stays the torch cu130
+# check below (measured, not guessed).
+function Invoke-GpuPreflight {
+    $helper = Join-Path $PSScriptRoot "base_python.ps1"
+    if (-not (Test-Path -LiteralPath $helper)) { return }
+    try {
+        & $PS_EXE -NoProfile -ExecutionPolicy Bypass -File $helper -SkipGpuProbe -Module h3 -MinDriverMajor 580 -GpuRequired auto 2>&1 |
+            ForEach-Object { Write-Host $_ }
+    } catch {
+        Write-Host "[h3-setup] gpu preflight could not run: $($_.Exception.Message)"
+    }
+}
+
+Invoke-GpuPreflight
+
+# Post-venv marker: the only consumer is test/smoke-install-scripts.js [12], which needs to run
+# the REAL chain (base Python -> venv) on a clean machine and then stop before the ~3GB
+# torch download. Nothing is marked unless the venv was actually created.
+if ($env:MT_H3_MARK_STAGE2 -eq "1") { Write-Host "[h3-test] stage2-venv-ready" }
 
 # Explicit override for this package stays on top of the pinned defaults above: it replaces
 # the FIRST index of the chain, the aliyun / USTC / official fallbacks stay in place.

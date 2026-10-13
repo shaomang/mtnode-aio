@@ -98,7 +98,10 @@
         <div class="meta">全局锁 <b id="stLock">空闲</b></div>
       </div>
       <div class="meta" id="renderState"></div>
+      <!-- 环境自检结论（只在必需项不过时才露头） -->
+      <div class="notice" id="selfCheckNotice" hidden></div>
       <div class="row">
+        <button id="btnSelfCheck" title="只读检查：node / npm、安装目录可写、磁盘余量、npm 源可达性、随包脚手架与安装脚本是否齐全">环境自检</button>
         <button class="danger" id="btnClearMeta" title="仅移除数据目录入口，保留运行目录">移除入口</button>
       </div>
     </div>

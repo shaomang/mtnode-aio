@@ -120,7 +120,22 @@ const slice = (src, from, to) => {
   ok(/if \(!user\) return send\(res, 401/.test(postReply), "回复需登录（未登录 401）");
   const patchTopic = slice(SERVER, 'method === "PATCH" && p === "/api/forum/topic"', "/api/forum/images/");
   ok(/if \(!user\) return send\(res, 401/.test(patchTopic), "改状态需登录（未登录 401）");
-  ok(/t\.userId !== user\.id/.test(patchTopic), "改状态仅话题作者可改（非作者 403）");
+  ok(
+    /if \(!forumTopicCanEditStatus\(t, user\)\)/.test(patchTopic) &&
+      /function forumTopicCanEditStatus\(t, viewer\) \{\s*\n\s*return !!\(viewer && t && \(viewer\.id === t\.userId \|\| isAdmin\(viewer\)\)\);/.test(SERVER),
+    "改状态判据 = 作者本人 / 管理员（forumTopicCanEditStatus 与 canDelete 同源，非此两人 403）",
+  );
+  ok(
+    /t\.statusBy = forumOperatorName\(user\)/.test(patchTopic) && /t\.statusAt = at/.test(patchTopic),
+    "改状态在话题上留 statusBy / statusAt 痕（界面不显示操作人）",
+  );
+  ok(
+    /if \(isAdmin\(user\) && from !== status\) \{/.test(patchTopic) &&
+      /status === "solved" \? "resolve" : status === "bug" \? "reopen" : "update"/.test(patchTopic) &&
+      /await contentAuditPush\(/.test(patchTopic) &&
+      /"forum_topic"/.test(patchTopic),
+    "管理员的改状态写 contentAudit（resolve / reopen / update，kind=forum_topic；作者改自己的帖不写）",
+  );
   ok(/replyCount\s*=|lastReplyAt\s*=/.test(postReply), "回复写回话题 replyCount / lastReplyAt");
   ok(/sort === "active"/.test(listHandler) || /sort === "active"/.test(SERVER), "列表支持 sort=new|active 排序");
   ok(/searchParams\.get\("q"\)/.test(listHandler) && /searchParams\.get\("status"\)/.test(listHandler), "列表支持 q 关键词与 status 状态筛选");
@@ -223,6 +238,10 @@ const slice = (src, from, to) => {
     /canDelete: forumTopicCanDelete\(t, viewer\)/.test(SERVER) && /canDelete: forumReplyCanDelete\(r, topic, viewer\)/.test(SERVER),
     "投影带 canDelete 位（前端不自己判 isAdmin）",
   );
+  ok(
+    /canModerate: !!\(viewer && isAdmin\(viewer\)\)/.test(summary),
+    "列表 / 详情投影带 canModerate 位（仅管理员；行内快捷按钮的显隐只看它）",
+  );
 
   console.log("\n[10] 客户端：详情页删除入口（按钮 + confirm + 回列表）");
   ok(/id="btnDelTopic"/.test(CHAT_HTML), "chat.html 有话题删除按钮 #btnDelTopic");
@@ -245,6 +264,54 @@ const slice = (src, from, to) => {
   ok(
     fs.existsSync(path.join(ROOT, "store-saas", "smoke-forum-delete.mjs")),
     "store-saas/smoke-forum-delete.mjs 存在（自起服务 + 临时数据目录的删帖全流程）",
+  );
+
+  console.log("\n[12] 客户端：列表行内的管理员改状态入口（标记已解决 / 改回 Bug）");
+  const rowAct = slice(CHAT_JS, "function rowAdminAction", "function topicRow");
+  ok(rowAct.length > 0, "chat.js 有列表行内按钮构造器 rowAdminAction");
+  ok(/if \(!it \|\| !it\.canModerate\) return null;/.test(rowAct), "行内按钮的显隐只看服务端投影 canModerate（前端不自己判 isAdmin）");
+  ok(
+    /cur !== "bug" && cur !== "solved"/.test(rowAct) && /const next = cur === "bug" \? "solved" : "bug";/.test(rowAct),
+    "只在 bug / solved 两态之间互转（可逆；其它状态不给行内入口）",
+  );
+  ok(
+    /t\("标记已解决", "Mark as solved"\)/.test(rowAct) && /t\("改回 Bug", "Back to Bug"\)/.test(rowAct),
+    "两个按钮带中英词条（标记已解决 / 改回 Bug）",
+  );
+  ok(/ev\.stopPropagation\(\)/.test(rowAct) && /row\.onclick = \(\) => openTopic/.test(CHAT_JS), "按钮点击不冒泡到行（不会顺带打开详情）");
+  ok(/adminSetStatus\(it, next, b\)/.test(rowAct), "按钮点击走 adminSetStatus");
+  const adminSetFn = slice(CHAT_JS, "async function adminSetStatus", "/* ---------------- 删帖（软删除）");
+  ok(
+    /method: "PATCH"/.test(adminSetFn) && /path: "\/api\/forum\/topic"/.test(adminSetFn),
+    "adminSetStatus 打 PATCH /api/forum/topic（服务端唯一的改状态路由）",
+  );
+  ok(!/\/api\/forum\/topic\/status/.test(CHAT_JS), "chat.js 已无自造的 /api/forum/topic/status 路径（曾一直 404）");
+  const authorStatusFn = slice(CHAT_JS, "async function changeStatus", "async function adminSetStatus");
+  ok(
+    /method: "PATCH"/.test(authorStatusFn) && /path: "\/api\/forum\/topic"/.test(authorStatusFn),
+    "作者在详情页改状态同样走 PATCH /api/forum/topic（本轮拨正）",
+  );
+  ok(/rowBusy\.has\(it\.id\)/.test(adminSetFn), "同一行防连点（进行中的话题 id 进 rowBusy）");
+  ok(
+    /"t-act " \+ \(next === "solved" \? "solve" : "undo"\)/.test(rowAct),
+    "按钮类名 solve / undo（样式挂在 .topic .t-act 下）",
+  );
+  ok(
+    /\.topic \.t-act\.solve \{[^}]*#96e9c4/.test(FORUM_CSS) && /\.topic \.t-act\.undo \{[^}]*#ffa6a6/.test(FORUM_CSS),
+    "forum.css 行内按钮取徽章同色系（解决用 solved 的绿、改回用 bug 的红）",
+  );
+
+  console.log("\n[13] 管理台留痕文案 + 运行时回归脚本 + 手册");
+  const ADMIN_JS_SRC = read(path.join(ROOT, "store-saas", "admin", "admin.js"));
+  ok(/forum_topic: "论坛话题"/.test(ADMIN_JS_SRC), "管理台 KIND_TEXT 认得 forum_topic（留痕表不显示原始英文）");
+  ok(/resolve: "标记已解决"/.test(ADMIN_JS_SRC) && /reopen: "改回 Bug"/.test(ADMIN_JS_SRC), "管理台 C_ACT_TEXT 认得 resolve / reopen");
+  ok(
+    fs.existsSync(path.join(ROOT, "store-saas", "smoke-forum-status.mjs")),
+    "store-saas/smoke-forum-status.mjs 存在（自起服务 + 临时数据目录的改状态全流程）",
+  );
+  ok(
+    /标记已解决/.test(read(path.join(ROOT, "guides", "manual", "community.md"))),
+    "应用内手册 guides/manual/community.md 写明管理员可标记已解决",
   );
 
   console.log(

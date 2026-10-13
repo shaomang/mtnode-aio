@@ -639,6 +639,7 @@ function runBridge(code) {
   /* ============ [5] 渲染层与模板接线（源码口径断言） ============ */
   console.log("[5] 开发页中继 / 脚手架 / i18n 的接线");
   const DEV = read("renderer/app-apps-dev.js");
+  const APPS_JS = read("renderer/app-apps.js");
   const PRE = read("preload.js");
   const I18N = read("renderer/i18n.js");
   const SCAF_APP = read("templates/app-scaffold/app.js");
@@ -682,14 +683,22 @@ function runBridge(code) {
     DEV.indexOf("ev.source !== frame.contentWindow") > 0,
     "中继只认中栏那一帧发来的消息（来源帧校验）",
   );
+  /* 本轮需求：预览列头条那串状态文字整体移除（「预览已连入宿主 …」不再写在条上）——
+     这几个词条与判定搬进预览栏「应用设置」窗的「预览状态」一行（app-apps.js 的
+     appsSettingsCtx）：中继这一侧仍要能算得出它们。 */
   ok(
-    DEV.indexOf("预览已连入宿主") > 0 && DEV.indexOf("预览未连入宿主") > 0,
-    "状态行写明「预览已连入宿主 / 未连入宿主」",
+    APPS_JS.indexOf("预览已连入宿主") > 0 &&
+      APPS_JS.indexOf("预览未连入宿主") > 0 &&
+      APPS_JS.indexOf("appsHubSettingsRow(\"预览状态\", ctx.preview.bridge)") > 0 &&
+      DEV.indexOf("function appsDevStatBridgeText(") < 0 &&
+      DEV.indexOf('appsDevT("预览已连入宿主")') < 0 &&
+      DEV.indexOf("DEVD.statEl") < 0,
+    "宿主桥态改写在「应用设置」窗的「预览状态」一行（预览条上那串状态文字已移除）",
   );
   ok(
-    DEV.indexOf("预览已连入宿主 · 只读（该应用已在独立窗口运行）") > 0 &&
+    APPS_JS.indexOf("预览已连入宿主 · 只读（该应用已在独立窗口运行）") > 0 &&
       DEV.indexOf('op: "host-state", readOnly: ro') > 0,
-    "只读态写进状态行，并实时发给预览页（开/关独立窗口立刻生效）",
+    "只读态写进「应用设置」窗的预览状态，并实时发给预览页（开/关独立窗口立刻生效）",
   );
   ok(
     DEV.indexOf("onAppsWindowChanged(() => {") > 0 && DEV.indexOf("appsDevBridgeSyncWindow()") > 0,

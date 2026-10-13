@@ -106,7 +106,7 @@ if (-not (Test-Path -LiteralPath $VenvPy)) {
 
 $cfgText = ""
 if (Test-Path -LiteralPath $Cfg) {
-    $cfgText = Get-Content -LiteralPath $Cfg -Raw -ErrorAction SilentlyContinue
+    $cfgText = Get-Content -LiteralPath $Cfg -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
 }
 $usesSystem = $cfgText -match "(?im)^\s*include-system-site-packages\s*=\s*true"
 
@@ -118,7 +118,7 @@ if ($usesSystem) {
     $basePy = $null
     $dot = Join-Path $Root ".cuda-python"
     if (Test-Path -LiteralPath $dot) {
-        $basePy = (Get-Content -LiteralPath $dot -Raw).Trim()
+        $basePy = (Get-Content -LiteralPath $dot -Raw -Encoding UTF8).Trim()
     }
     if (-not $basePy -or -not (Test-Path -LiteralPath $basePy)) {
         if ($cfgText -match "(?im)^\s*home\s*=\s*(.+)$") {

@@ -7,9 +7,10 @@
  *     按应用 id 持久化的图像后端选择、云端 spec 下发（含 provider 形态纠偏）、参考图（路径 / dataURL）
  *     读盘、本机 SenseNova 后端出图（产物落应用数据目录 + 进度 + 取消）、全局互斥锁忙时的
  *     busy_media、旧签名 imageGen(opts) 行为不变；
- *   需求 2（能力位）：app.json 的 capabilities 归一（缺字段 = false = 不携带语音）、默认欢迎页
- *     按能力位注入 templates/app-default/dict.js、宿主只为声明了 textInput 的应用注入听写条、
- *     创建 / 切换能力位（含入口页重生成与 speech.js / speech.css 的补撤）、卡片能力小标。
+ *   需求 2（能力位）：app.json 的 capabilities 归一（缺字段 = false = 不携带语音）、入口页**不因
+ *     能力位变化而改动**（旧版的内联听写注入路径已删，dict.js 只留在仓里当参考实现）、宿主只为
+ *     声明了 showDictate 的应用注入听写条、切换能力位只写声明 + 补撤 speech.js / speech.css、
+ *     存量页面里旧内联听写段的幂等清理、卡片能力小标。
  *
  * 被测对象是真源码：apps-store.js（真 require，只把 electron 换成桩）、apps-capabilities.js、
  * preload-app.js / preload.js / templates/ 与 renderer 的接线（源码口径断言）。
@@ -521,13 +522,17 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
     "卡片小标跟随界面语言（英文界面走 en 标签）",
   );
 
-  /* ════════════════ [7] 默认欢迎页按能力位注入 ════════════════ */
-  console.log("[7] 默认欢迎页：没声明不带听写条，声明了才内联 dict.js");
+  /* ════════════════ [7] 入口页不再按能力位注入任何听写 UI ════════════════ */
+  console.log("[7] 默认欢迎页：能力位不再进页面（内联听写路径已删，听写条只由宿主注入）");
   const TPL = read("templates/app-default/index.html");
-  ok(TPL.indexOf("DICT_SCRIPT") > 0, "模板留有 {{DICT_SCRIPT}} 注入位（由宿主按能力填）");
+  ok(TPL.indexOf("DICT_SCRIPT") < 0, "模板不再留 {{DICT_SCRIPT}} 注入位（能力位不写页面）");
+  ok(
+    TPL.indexOf("MTNDictate") < 0 && TPL.indexOf("mtnode-dictate") < 0,
+    "模板里不再有任何听写接线（不挂 window.MTNDictate）",
+  );
   ok(
     TPL.indexOf("dict-btn") < 0 && TPL.indexOf("dictPanel") < 0 && TPL.indexOf("const dict = (() => {") < 0,
-    "模板本体不再含听写 UI（标记 / 结果小窗 / 内联实现全部搬走）",
+    "模板本体不含听写 UI（标记 / 结果小窗 / 实现都不在）",
   );
   /* 本轮共识：默认 footer 内容（页脚那一行说明）整块删掉 —— 页面底部不再凭空多一行字 */
   ok(
@@ -537,24 +542,25 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   const DICT = read("templates/app-default/dict.js");
   ok(
     DICT.indexOf("MTNDictate") > 0 && DICT.indexOf("transcribeWav") > 0 && DICT.indexOf("pickAudio") > 0 && DICT.indexOf("mtnode-dictate") > 0,
-    "听写条搬到 templates/app-default/dict.js（走应用桥的 transcribeWav / pickAudio，结果事件名不变）",
+    "templates/app-default/dict.js 作为参考实现留在仓里（走应用桥的 transcribeWav / pickAudio，事件名不变）",
   );
+  const STORE_SRC7 = read("apps-store.js");
+  ok(
+    STORE_SRC7.indexOf("dictScriptTag") < 0 && STORE_SRC7.indexOf("DICT_JS_TPL") < 0,
+    "宿主侧的内联路径已删干净（dictScriptTag / DICT_JS_TPL 都不在了）",
+  );
+  /* 四位能力位无论怎么配，落盘页面都一模一样 —— 这就是「能力位不写页面」最基本的判据 */
   const pageOff = store.defaultPageHtml({ id: "cap-smoke", name: "能力冒烟", capabilities: {} });
-  ok(
-    pageOff.indexOf("dict-btn") < 0 && pageOff.indexOf("dictPanel") < 0 && pageOff.indexOf("mtnode-dictate-css") < 0,
-    "没声明显示听写条 → 入口页里没有任何听写 UI",
-  );
-  ok(pageOff.indexOf("DICT_SCRIPT") < 0, "注入位被替换（落盘页面里不留占位符）");
-  /* 只声明 textInput（要语音模块）不再等于要显示听写条：入口页仍旧不带它。
-     判据用内联进来才有的 'id = "mtnode-dictate-css"' —— 模板里那行 if (window.MTNDictate…) 一直在。 */
   const pageTyped = store.defaultPageHtml({ id: "cap-smoke", name: "能力冒烟", capabilities: { textInput: true } });
+  const pageOn = store.defaultPageHtml({ id: "cap-smoke", name: "能力冒烟", capabilities: { showDictate: true, imageGen: true } });
   ok(
-    pageTyped.indexOf('id = "mtnode-dictate-css"') < 0,
-    "只声明 textInput → 入口页仍不带听写条（要显示得声明 showDictate）",
+    pageOff.indexOf("mtnode-dictate") < 0 && pageOff.indexOf("MTNDictate") < 0,
+    "入口页里没有任何听写 UI（不管能力位怎么声明）",
   );
-  const pageOn = store.defaultPageHtml({ id: "cap-smoke", name: "能力冒烟", capabilities: { showDictate: true } });
-  ok(pageOn.indexOf("MTNDictate") > 0 && pageOn.indexOf('id = "mtnode-dictate-css"') > 0, "声明了 showDictate → 内联 dict.js（仍是单文件）");
-  ok(pageOn.split("</script>").length > pageOff.split("</script>").length, "声明后多出一个 script 块（就是那份听写模块）");
+  ok(
+    pageOn === pageOff && pageTyped === pageOff,
+    "能力位不同 → 生成的入口页逐字节相同（声明不进页面）",
+  );
 
   /* ════════════════ [8] 宿主注入闸门与桥的接口面 ════════════════ */
   console.log("[8] 宿主注入闸门：preload 先问能力位；桥上的接口始终保留");
@@ -564,21 +570,24 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
     PRE_APP.indexOf("capabilities.showDictate === true") > 0,
     "注入闸门看的是 showDictate（默认 false = 默认不注入听写条）",
   );
-  /* 默认隐藏（本轮共识）：注入脚本挂上后自带隐藏标记，placeStrip 不动隐藏态；要露面走 apSpeechReveal */
+  /* 可见性（本轮需求修正）：注入脚本挂上后**默认可见**（能力位为真 = 用户要它）；隐藏标记与
+     placeStrip 的隐藏态保护留给「收起」按钮 / apSpeechHide()，要它回来走 apSpeechReveal() */
   const SPEECH_UI = read("renderer/app-speech-ui.js");
   ok(
     SPEECH_UI.indexOf('"data-mtnode-hidden"') > 0 &&
-      SPEECH_UI.indexOf("markHidden(root)") > 0 &&
+      SPEECH_UI.indexOf("markShown(root)") > 0 &&
       SPEECH_UI.indexOf("display:none !important") > 0,
-    "听写条默认隐藏：@mtnode-dictate 带 data-mtnode-hidden + display:none（内联 + CSS 兜底）",
+    "听写条挂载即可见（markShown）：data-mtnode-hidden 与 display:none 兜底只留给收起态",
   );
   ok(
     /function placeStrip[\s\S]{0,260}hiddenNow\(root\)/.test(SPEECH_UI),
-    "隐藏态不做落点搬移（不会把隐藏的条搬到宿主自建的固定底栏）",
+    "隐藏态不做落点搬移（不会把收起的条搬到宿主自建的固定底栏）",
   );
   ok(
-    SPEECH_UI.indexOf("window.apSpeechHidden") > 0 && SPEECH_UI.indexOf("window.apSpeechReveal") > 0,
-    "露出路径仍在：apSpeechHidden() / apSpeechReveal()",
+    SPEECH_UI.indexOf("window.apSpeechHidden") > 0 &&
+      SPEECH_UI.indexOf("window.apSpeechReveal") > 0 &&
+      SPEECH_UI.indexOf("window.apSpeechHide") > 0,
+    "两个方向的入口都在：apSpeechHidden() / apSpeechReveal() / apSpeechHide()",
   );
   ok(
     PRE_APP.indexOf("pickAudio") > 0 && PRE_APP.indexOf("transcribeWav") > 0 && PRE_APP.indexOf("asrStatus") > 0,
@@ -614,23 +623,26 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
     "capabilities 真写进 app.json（含新位 showDictate）",
   );
   ok(
-    fs.readFileSync(path.join(made.dir, "index.html"), "utf8").indexOf("mtnode-dictate-css") > 0,
-    "新建时声明了显示听写条 → 入口页当场带听写条",
+    fs.readFileSync(path.join(made.dir, "index.html"), "utf8").indexOf("mtnode-dictate") < 0,
+    "新建的应用入口页里没有听写 UI（听写条由宿主按声明注入，页面不掺和）",
   );
   const capGet = store.appCapabilitiesGet({ id: "cap-smoke" });
   ok(capGet.ok === true && capGet.list.length === 3 && capGet.list[0].on === true, "appCapabilitiesGet 回能力位 + 给界面用的清单（三项）");
+  /* 本轮口径的硬判据：改能力位**不动入口页**。
+     先把入口页改写成「手写页面」（页面上留一句只有用户会写的内容），再连着切几次能力位，
+     逐字节比对必须完全一致 —— 旧实现这里会把整页重写成模板。 */
+  const entryAbs = path.join(made.dir, "index.html");
+  const handHtml =
+    '<!DOCTYPE html>\n<html><head><meta charset="UTF-8"><title>手写页</title></head>\n' +
+    '<body><h1>我自己写的页面</h1><p id="mine">keep me</p></body></html>\n';
+  fs.writeFileSync(entryAbs, handHtml, "utf8");
   const capOff = store.appCapabilitiesSet({ id: "cap-smoke", capabilities: { textInput: false, imageGen: true, showDictate: true } });
   ok(capOff.ok === true && capOff.capabilities.textInput === false, "appCapabilitiesSet 整份替换能力位");
-  ok(
-    fs.readFileSync(path.join(made.dir, "index.html"), "utf8").indexOf("mtnode-dictate-css") > 0,
-    "关掉文字输入但留着显示听写条 → 入口页里的听写条仍在（两位互不牵连）",
-  );
+  ok(fs.readFileSync(entryAbs, "utf8") === handHtml, "关掉文字输入 → 入口页逐字节不变（手写页面没被动过）");
+  ok(capOff.legacyInline && capOff.legacyInline.removed === false, "页面上没有旧内联听写段 → 清理不写文件");
   const capHide = store.appCapabilitiesSet({ id: "cap-smoke", capabilities: { textInput: false, imageGen: true, showDictate: false } });
   ok(capHide.ok === true && capHide.capabilities.showDictate === false, "关掉显示听写条 → 声明落盘");
-  ok(
-    fs.readFileSync(path.join(made.dir, "index.html"), "utf8").indexOf("mtnode-dictate-css") < 0,
-    "关掉显示听写条 → 入口页重生成，听写 UI 随之消失",
-  );
+  ok(fs.readFileSync(entryAbs, "utf8") === handHtml, "关掉显示听写条 → 入口页仍旧逐字节不变");
   ok(
     !fs.existsSync(path.join(made.dir, "speech.js")) && !fs.existsSync(path.join(made.dir, "speech.css")),
     "关掉文字输入 → 应用目录里不再留 speech.js / speech.css",
@@ -638,13 +650,70 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   const capOn = store.appCapabilitiesSet({ id: "cap-smoke", capabilities: { textInput: true } });
   ok(
     capOn.ok === true && capOn.wroteFiles.indexOf("speech.js") >= 0 && capOn.wroteFiles.indexOf("speech.css") >= 0,
-    "打开文字输入 → 把脚手架里的 speech.js / speech.css 补进应用目录",
+    "打开文字输入 → 把脚手架里的 speech.js / speech.css 补进应用目录（后端连接只补这两个文件）",
   );
   ok(fs.existsSync(path.join(made.dir, "speech.js")), "语音文件真的落在应用目录里");
+  ok(fs.readFileSync(entryAbs, "utf8") === handHtml, "打开文字输入 → 入口页还是逐字节不变");
   const manAfter = JSON.parse(fs.readFileSync(path.join(made.dir, "app.json"), "utf8"));
   ok(manAfter.capabilities.imageGen === false, "没提到的位按 false 归一（整份替换语义）");
-  const capNoRegen = store.appCapabilitiesSet({ id: "cap-smoke", capabilities: { textInput: true }, regenEntry: false });
-  ok(capNoRegen.ok === true && !capNoRegen.regeneratedEntry, "regenEntry:false 只写声明、不碰入口页（给手写页面的应用留出口）");
+  ok(
+    !("regenEntry" in capOn) && !("regeneratedEntry" in capOn),
+    "回执里不再有 regenEntry / regeneratedEntry（重写入口页那条路已删）",
+  );
+
+  /* ── 存量清理：老应用页面里那份旧的「内联听写脚本」 ──
+     旧格式（旧版 defaultPageHtml 注出来的就是这个形状）：一行说明注释 + 一段内联 dict.js 的
+     <script>。清理按成对标记来：没有标记的页面一个字都不改。 */
+  const legacyMark = store.DICT_INLINE_MARK;
+  ok(
+    typeof legacyMark === "string" && legacyMark.indexOf("<!--") === 0 && legacyMark.indexOf("-->") > 0,
+    "清理靠一对 HTML 注释标记认自己的东西（DICT_INLINE_MARK 已导出）",
+  );
+  const oldPage =
+    '<!DOCTYPE html>\n<html><head><meta charset="UTF-8"><title>老页</title></head>\n<body>\n' +
+    '<main><h1>老应用</h1><p>我手写的说明段</p></main>\n' +
+    '    ' + legacyMark + '\n' +
+    '    <!-- 语音听写条（可选）：旧版注入进来的那一段 -->\n' +
+    '    <script>\n(function(){ window.MTNDictate = { mount: function(){} }; })();\n</script>\n' +
+    '<script>console.log("用户自己的脚本，别动");</script>\n' +
+    '</body></html>\n';
+  const legacyApp = store.createApp({ name: "老内联页", id: "legacy-inline" });
+  const legacyAbs = path.join(legacyApp.dir, "index.html");
+  fs.writeFileSync(legacyAbs, oldPage, "utf8");
+  const clean1 = store.appCapabilitiesCleanEntry({ id: "legacy-inline" });
+  const afterClean = fs.readFileSync(legacyAbs, "utf8");
+  ok(clean1.ok === true && clean1.removed === true, "打开「应用设置」的清一次：认出了旧内联段并删掉");
+  ok(
+    afterClean.indexOf(legacyMark) < 0 && afterClean.indexOf("MTNDictate") < 0,
+    "旧内联听写段（标记 + 说明注释 + 脚本块）整段消失",
+  );
+  ok(
+    afterClean.indexOf("<h1>老应用</h1>") > 0 &&
+      afterClean.indexOf("我手写的说明段") > 0 &&
+      afterClean.indexOf('console.log("用户自己的脚本，别动")') > 0,
+    "页面其余内容（用户自己写的正文与脚本）一字未动",
+  );
+  const clean2 = store.appCapabilitiesCleanEntry({ id: "legacy-inline" });
+  ok(clean2.ok === true && clean2.removed === false, "再清一次：没痕迹 → 幂等、不写文件");
+  ok(fs.readFileSync(legacyAbs, "utf8") === afterClean, "幂等清理不会把页面改花");
+  /* 没有标记的页面绝不猜着删：只把标记那一段当自己的东西 */
+  const markless =
+    '<!DOCTYPE html>\n<html><body>\n<script>window.MTNDictate = { mount: function(){} };</script>\n</body></html>\n';
+  fs.writeFileSync(legacyAbs, markless, "utf8");
+  const clean3 = store.appCapabilitiesCleanEntry({ id: "legacy-inline" });
+  ok(clean3.ok === true && clean3.removed === false, "没有标记就不动（绝不靠正则猜哪一段是听写脚本）");
+  ok(fs.readFileSync(legacyAbs, "utf8") === markless, "无标记页面逐字节不变");
+  /* 只有标记、后面隔着别的内容才是脚本：也不许动（否则会一路吞掉用户自己的脚本） */
+  const strayMark =
+    '<!DOCTYPE html>\n<html><body>\n' +
+    legacyMark + '\n' +
+    '<p>标记是我写的，但下面那段脚本不是听写模块</p>\n' +
+    '<script>console.log("用户自己的脚本");</script>\n' +
+    '</body></html>\n';
+  fs.writeFileSync(legacyAbs, strayMark, "utf8");
+  const clean4 = store.appCapabilitiesCleanEntry({ id: "legacy-inline" });
+  ok(clean4.ok === true && clean4.removed === false, "标记后不紧接脚本 → 一个字都不删");
+  ok(fs.readFileSync(legacyAbs, "utf8") === strayMark, "孤儿标记页面逐字节不变");
   const list = store.listApps().apps.find((a) => a.id === "cap-smoke");
   ok(list && list.capabilityBadges.join(",") === "文字输入", "本机清单带能力位与卡片小标");
   const legacy = store.createApp({ name: "老应用", id: "legacy-cap" });
@@ -656,31 +725,54 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   );
 
   /* ════════════════ [10] 界面接线与脚手架契约 ════════════════ */
-  console.log("[10] 界面接线：新建浮层 / 开发页菜单 / 卡片小标 / 脚手架");
+  console.log("[10] 界面接线：新建浮层 / 应用设置窗 / 卡片小标 / 脚手架");
   const FLOW = read("renderer/app-app-flow.js");
   ok(
     FLOW.indexOf("appsCapabilityChecks") > 0 &&
-      FLOW.indexOf("capBox") > 0 &&
-      FLOW.indexOf("textInput: false, showDictate: false, imageGen: false") > 0,
-    "新建应用浮层有「能力」一节，三项默认都不勾（默认不带语音听写）",
+      FLOW.indexOf("capBox") < 0 &&
+      FLOW.indexOf("能力默认全开（文字输入 / 听写条 / 图像生成）") > 0 &&
+      FLOW.indexOf("textInput: true, showDictate: true, imageGen: true") > 0,
+    "新建应用浮层不再问能力（复选框那一节已删）：说明句写明默认全开",
   );
   ok(
     FLOW.indexOf('id: "showDictate"') > 0 && FLOW.indexOf('I18n.t("显示听写条")') > 0,
-    "开发页「应用能力…」多一项「显示听写条」（默认关）",
+    "能力复选框三行都在（含「显示听写条」），只是入口搬进「应用设置」窗",
   );
   ok(
-    FLOW.indexOf("textInput: false, showDictate: false, imageGen: false }") > 0,
-    "创建调用的能力位缺省也是三项全 false（老调用方不传时不再默认带听写）",
+    FLOW.indexOf("textInput: true, showDictate: true, imageGen: true }") > 0,
+    "创建调用的能力位缺省 = 三位全开（老调用方不传时也全开）",
   );
   ok(
-    FLOW.indexOf("async function appCapabilitiesDialog(") > 0 && FLOW.indexOf("regenEntry") > 0 && FLOW.indexOf("confirmDialog") > 0,
-    "开发页「应用能力…」：改能力先弹一次确认（重写入口页是破坏性动作）",
+    FLOW.indexOf("async function appCapabilitiesDialog(") > 0 &&
+      FLOW.indexOf("regenEntry") < 0 &&
+      FLOW.indexOf("appsCapabilitiesCleanEntry") > 0 &&
+      FLOW.indexOf("confirmDialog(warn.textContent") < 0,
+    "appCapabilitiesDialog 仍在，但只写声明（无「重写入口页」确认；打开时清一次旧内联）",
   );
-  ok(read("renderer/app-apps-dev.js").indexOf("appCapabilitiesDialog") > 0, "开发页 ⋯ 菜单挂了「应用能力…」入口");
   const APPS_JS = read("renderer/app-apps.js");
+  const DEV_JS = read("renderer/app-apps-dev.js");
+  ok(
+    DEV_JS.indexOf("appCapabilitiesDialog") < 0 && /appsIcoTextBtnEl\(\s*"gear"/.test(DEV_JS) &&
+      DEV_JS.indexOf("appsAppSettingsOpen") > 0,
+    "本轮口径：开发页工具栏的「应用能力…」入口下线，能力编辑搬进预览列头条那枚「应用设置」",
+  );
+  ok(
+    APPS_JS.indexOf("async function appsAppSettingsOpen(") > 0 &&
+      APPS_JS.indexOf("async function appsDirSettingsOpen(") > 0 &&
+      APPS_JS.indexOf('appsCapabilitiesGet(appId, rootKind)') > 0 &&
+      APPS_JS.indexOf('appsCapabilitiesSet(appId, next, { kind: rootKind })') > 0 &&
+      APPS_JS.indexOf("confirmDialog(capRegenWarn") < 0 &&
+      APPS_JS.indexOf("appsCapabilitiesCleanEntry") > 0,
+    "「应用设置」窗里保留完整能力位编辑（读取 → 勾选 → 保存，无覆盖确认；打开时清一次旧内联）",
+  );
+  ok(
+    APPS_JS.indexOf('appsDevCheckPreview(true)') > 0,
+    "保存后刷一次预览（听写条由宿主按声明注入，刷一帧就能看到）",
+  );
   ok(APPS_JS.indexOf("capabilityBadges") > 0 && APPS_JS.indexOf("apps-badge-cap") > 0, "本机应用的能力小标画在详情里（封面卡改版后卡片不再放描述 / 小标）");
   const CSS = read("renderer/css/apps.css");
   ok(CSS.indexOf(".apps-badge-cap") > 0 && CSS.indexOf(".cap-row") > 0, "样式补齐：能力小标 + 能力复选框行");
+  ok(CSS.indexOf(".apps-set-caprow") > 0, "样式补齐：「应用设置」窗里那一格能力位（复选框组 + 保存按钮）");
   const I18N = read("renderer/i18n.js");
   ok(
     I18N.indexOf('"需要文字输入": "Needs text input"') > 0 && I18N.indexOf('"需要图像生成": "Needs image generation"') > 0,
@@ -693,7 +785,7 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   ok(SM.indexOf("busy_media") > 0 && SM.indexOf("cuda_oom") > 0, "脚手架错误码字典补了图像那条路（busy_media / cuda_oom…）");
   const README = read("templates/app-scaffold/README.md");
   ok(README.indexOf("textInput") > 0 && README.indexOf("只有声明") > 0, "脚手架 README 写明：只有声明了 textInput 才复制 speech.js / speech.css");
-  ok(read("templates/app-default/dict.js").length > 4000, "dict.js 真在仓库里（默认页按需注入的源）");
+  ok(read("templates/app-default/dict.js").length > 4000, "dict.js 真在仓库里（保留的参考实现，不再被注入）");
   ok(exists("apps-capabilities.js"), "能力位纯模块 apps-capabilities.js 在仓库根（build.json 白名单已含它）");
   ok(read("build.json").indexOf("apps-capabilities.js") > 0, "build.json files 白名单含 apps-capabilities.js（否则打包后 Cannot find module）");
 

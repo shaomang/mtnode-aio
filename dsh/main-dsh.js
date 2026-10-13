@@ -39,6 +39,7 @@ const INSTALL_SKILL_SOURCES = {
   'breeze-tts-local-install': path.join(__dirname, '..', 'skills', 'breeze-tts-local-install', 'SKILL.md'),
   'llama-local-install': path.join(__dirname, '..', 'skills', 'llama-local-install', 'SKILL.md'),
   'sensenova-local-install': path.join(__dirname, '..', 'skills', 'sensenova-local-install', 'SKILL.md'),
+  'remotion-local-install': path.join(__dirname, '..', 'skills', 'remotion-local-install', 'SKILL.md'),
   'office-local-install': path.join(__dirname, '..', 'skills', 'office-local-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))

@@ -418,7 +418,8 @@
     }
   }
 
-  /* 面板底栏：左下 = 运行 / 下载、二次开发、数据目录、卸载（+ 回滚），
+  /* 面板底栏：左下 = 打开 / 运行 · 数据目录 · 二次开发 · 删除应用（+ 回滚；「删除应用」与
+     详情窗底栏同一枚 —— 原来的「卸载 / 移除登记」本轮统一成它），
      右侧 = 「在独立窗口里打开详情」（面板不是窗，没有「关闭」，但给一条去窗口的路）。 */
   function appsPanelPaintFoot(st) {
     var foot = st.foot;
@@ -426,10 +427,13 @@
     foot.innerHTML = "";
     var left = document.createElement("div");
     left.className = "apps-panel-foot-l";
-    var local = typeof appsLocalById === "function" ? appsLocalById(st.id) : null;
+    var local =
+      typeof appsLocalById === "function"
+        ? appsLocalById(st.id, "dev") || appsLocalById(st.id)
+        : null;
     if (local) {
-      left.appendChild(appsMini(appsTr("运行"), function () {
-        if (typeof appsOpenApp === "function") appsOpenApp(st.id);
+      left.appendChild(appsMini(appsTr(local.dev === true ? "打开" : "运行"), function () {
+        if (typeof appsOpenApp === "function") appsOpenApp(st.id, typeof appsLocalRootKind === "function" ? appsLocalRootKind(local) : "");
       }, true));
       var dir = appsMini("📂 " + appsTr("数据目录"), function () {
         if (typeof appsDataOpenNow === "function") appsDataOpenNow(st.id);
@@ -437,15 +441,15 @@
       dir.title = appsTr("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
       left.appendChild(dir);
       if (typeof appsSecondaryDevBtnEl === "function") left.appendChild(appsSecondaryDevBtnEl(local || { id: st.id }));
-      var isDev = !!(local.dev === true || local.kind === "dev");
-      var un = appsMini(appsTr(isDev ? "移除登记" : "卸载"), function () {
-        if (typeof appsUninstallApp === "function") appsUninstallApp(local || { id: st.id });
+      /* 「删除应用」：与详情窗底栏同一枚（本轮口径：原来的「卸载 / 移除登记」统一成删除应用 ——
+         二次确认 → 应用文件夹与该 app 的画布一起进系统回收站；应用数据 / 会话 / 导出包保留）。
+         列表模式这条面板以前还留着老的两颗（卸载 / 移除登记），口径与详情窗不一致。 */
+      var del = appsMini(appsTr("删除应用"), function () {
+        if (typeof appsAppDeleteRun === "function") appsAppDeleteRun(local || { id: st.id });
       });
-      if (!isDev) un.classList.add("danger");
-      un.title = isDev
-        ? appsTr("只移除登记：项目文件夹与里面的文件一个都不会删（要删文件请自己在资源管理器里删）")
-        : appsTr("卸载只删它在下载根下的子文件夹与它自己那一棵树，项目根与开发数据一概不动");
-      left.appendChild(un);
+      del.classList.add("danger");
+      del.title = appsTr("二次确认后把这个应用的应用文件夹与它的画布一起移入系统回收站（可在资源管理器还原）；应用数据与会话保留");
+      left.appendChild(del);
     } else {
       var dl = appsMini(appsTr("下载到本机"), function () {
         if (typeof appsDownload === "function") appsDownload(st.id, "", "", st.ownerId || "");
@@ -572,56 +576,14 @@
     );
   }
 
-  /* ── 库页的「应用目录」小菜单（紧挨刷新那一枚按钮，点击展开） ─────────────
-     两个动作：更改目录（走 appsRootPickNow("down")）/ 在资源管理器中打开（appsRootFolderNow）。
-     浮层纪律：这是一只**瞬态菜单**（没有待提交的输入），所以点外部即收 —— 与右键菜单同类。 */
-  function rootMenuEl(anchor) {
-    var menu = document.createElement("div");
-    menu.className = "apps-rootmenu";
-    var path = "";
-    try {
-      var roots = (window.APPS_ST && APPS_ST.list && APPS_ST.list.roots) || {};
-      path = String(((roots.down || (window.APPS_ST && APPS_ST.root) || {}) || {}).path || "");
-    } catch (_) {}
-    var head = document.createElement("div");
-    head.className = "apps-rootmenu-path";
-    /* 路径永远有（根目录默认就在画布所在的数据目录下，本轮需求：不再要求手选）——
-       path 为空只可能是应用中心还没把 roots 拉回来，兜一句中性的「未设置」。 */
-    head.textContent = path || appsTr("未设置");
-    head.title = path;
-    menu.appendChild(head);
-    menu.appendChild(
-      appsMini(appsTr("更改目录…"), function () {
-        close();
-        if (typeof appsRootPickNow === "function") appsRootPickNow("down");
-      })
-    );
-    menu.appendChild(
-      appsMini("📂 " + appsTr("在资源管理器中打开"), function () {
-        close();
-        if (typeof appsRootFolderNow === "function") appsRootFolderNow("down");
-      })
-    );
-    function close() {
-      document.removeEventListener("mousedown", onDoc, true);
-      document.removeEventListener("keydown", onKey, true);
-      if (menu.parentNode) menu.parentNode.removeChild(menu);
-    }
-    function onDoc(ev) {
-      if (menu.contains(ev.target) || (anchor && anchor.contains(ev.target))) return;
-      close();
-    }
-    function onKey(ev) {
-      if (ev.key === "Escape") close();
-    }
-    menu.__appsClose = close;
-    return { el: menu, close: close, bind: function () {
-      document.addEventListener("mousedown", onDoc, true);
-      document.addEventListener("keydown", onKey, true);
-    } };
-  }
+  /* ── 「应用目录」小菜单（更改下载根 / 在资源管理器中打开）**本轮已整体删除** ─────────
+     用户口径：移除常驻的路径入口 —— 库与开发两套根固定（<数据目录>\apps 与 \apps-dev），
+     不再要求也不提供手改；路径只在右上角齿轮那只**目录设置**窗（app-apps.js 的
+     appsDirSettingsOpen）里只读显示 + 在资源管理器中打开。原来壳上那枚「应用目录」按钮
+     与它的小菜单（appsRootMenuToggle / 本文件原 rootMenuEl）一并下线。 */
 
-  /* 页面重绘时把还开着的根目录菜单收掉（它挂在壳上，不随正文重绘消失） */
+  /* 壳级瞬态菜单的收口出口：下载根小菜单已下线，留一个空实现是为了让老调用方
+     （app-apps.js 的切页 / 重绘路径，第三方按名字探测）拿到函数而不是 undefined。 */
   function closeRootMenu() {
     var m = document.querySelector(".apps-rootmenu");
     if (m && typeof m.__appsClose === "function") m.__appsClose();
@@ -643,7 +605,6 @@
     currentPanel: function () {
       return PANEL;
     },
-    rootMenuEl: rootMenuEl,
     closeRootMenu: closeRootMenu,
     GEAR: ICON.gear,
   };

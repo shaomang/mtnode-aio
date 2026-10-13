@@ -101,6 +101,161 @@
   word-break: break-all;
 }
 
+/* 「图标 + 小字」按钮（开发页中栏预览列头条上那三枚：刷新 / 应用设置 / 画布）：
+   与 .apps-ico-btn 共用同一个图标表（APPS_ICO_SVG，stroke=currentColor），但**不是小方框** ——
+   图标 + 一行小字。列头条只有 38px 高，所以高 / 内边距 / 字号 / 图标尺寸都在这一条里收住；
+   图标尺寸用**显式 CSS width / height** 给（内联 svg 没有 width 属性，缺省尺寸由浏览器给，
+   显式写死才不随上下文漂）。 */
+button.mini.apps-ico-btn.apps-ico-txt {
+  width: auto;
+  height: 22px;
+  padding: 0 7px;
+  gap: 4px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+button.mini.apps-ico-btn.apps-ico-txt svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.apps-ico-txt-lab {
+  line-height: 1;
+}
+
+/* ── 右上角齿轮那颗设置按钮（紧挨「返回 MTNode」左侧）──
+   与同行其它图标按钮共用 .apps-ico-btn 的小方框口径，只多一份「不与返回钮贴住」的间距。
+   它开的是「目录设置」窗（只剩库 / 开发两套根目录，见 app-apps.js 的 appsDirSettingsOpen）。 */
+.apps-hub-gear {
+  flex: none;
+  margin-right: 8px;
+}
+
+/* ── 设置窗（openOverlay 里的内容）：应用设置（路径 / 目录 / 预览 / 维持状态 / 删除应用）
+   与目录设置（库 / 开发两套根，每行「修改 + 打开」）──
+   一行 = 左侧组名（定宽、次要色）+ 右侧值（等宽、可省略、可选中复制）+ 可选动作按钮。
+   值的口径分两种：应用文件夹 / 数据目录 / 预览这类**只读**；两套根目录可改（走右侧「修改」）。 */
+.apps-set-sec {
+  margin: 12px 0 6px;
+}
+
+.apps-set-sec:first-child {
+  margin-top: 0;
+}
+
+.apps-set-h {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+
+.apps-set-note {
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.apps-set-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--bd2);
+}
+
+.apps-set-row:last-of-type {
+  border-bottom: 0;
+}
+
+.apps-set-k {
+  flex: none;
+  width: 132px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.apps-set-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink);
+  user-select: text;
+}
+
+.apps-set-v.empty {
+  font-family: inherit;
+  color: var(--muted);
+}
+
+/* 目录设置窗里那一块**行内确认**（本轮需求）：点某一行的「修改」之后，在那一行下面
+   问一句「旧目录里的应用要不要一起搬过去」——不开浮层（另开一只 #overlay 会把本窗原地
+   换掉，用户就看不到自己在改哪个目录了），所以它是一段缩进的小条。 */
+.apps-set-ask {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 6px 132px; /* 与 .apps-set-k 的定宽对齐：缩进到值那一列下面 */
+  padding: 6px 8px;
+  border: 1px solid var(--bd2);
+  border-left: 2px solid var(--cyan2, var(--bd2));
+  border-radius: 6px;
+  background: var(--panel2, var(--panel));
+}
+
+.apps-set-ask[hidden] {
+  display: none !important;
+}
+
+.apps-set-asktxt {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink2, var(--ink));
+}
+
+/* 「维持状态」那一枚（从开发页顶栏 → 应用设置窗 → **本轮落在齿轮「目录设置」窗的「预览」一节**）：
+   沿用顶栏那套 checkbox + 文案 */
+.apps-set-sw {
+  margin: 4px 0 2px;
+}
+
+/* 换根回执（搬了哪些 / 跳过哪些）：本窗重开时显示一次，读过即清 */
+.apps-set-moved {
+  padding: 6px 8px;
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  background: var(--panel2, var(--panel));
+  font-family: inherit;
+  color: var(--ink2, var(--ink));
+  word-break: break-all;
+}
+
+/* ── 预览列头条那一行（本轮需求：六枚动作钮 + 「更多 ▾」）──
+   .apps-dev-baracts 是这一组按钮的容器：不参与伸缩 ——
+   放不下的由 app-apps-dev.js 的 appsDevFitColHead 按 pri 搬进「更多 ▾」面板
+   （搬的是同一个 DOM 元素），不是把某几枚藏起来。 */
+.apps-dev-baracts {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.apps-dev-baracts:empty {
+  display: none;
+}
 /* ── 右侧主区 ── */
 .apps-hub-main {
   flex: 1;
@@ -1826,29 +1981,37 @@ body.theme-light .apps-tile-ph {
   gap: 8px;
 }
 
-.apps-dev-topbar {
-  position: relative;
-  flex: none;
-}
-
-.apps-dev-head {
-  position: relative;
+/* ── 开发页顶部那一行（本轮需求：顶栏整体移除）──
+   原来那一整条（＋新开发会话 / 应用文件夹路径 / 先拷问需求 / 维持状态 / 更多 ▾）已经没有内容，
+   这里只剩**整页左上角一枚「新建应用」文字按钮**：不给边框、不给底色、不占高，
+   由自带 .mini.primary 的那枚按钮自己成形。 */
+.apps-dev-top {
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  /* 上方菜单条只允许一行：溢出不再折行，由 app-apps-dev.js 的 appsDevFitHead()
-     把优先级最低的项搬进「更多 ▾」（.apps-dev-more-pop）。 */
-  flex-wrap: nowrap;
-  overflow: hidden;
-  padding: 8px 10px;
-  border: 2px solid var(--bd);
-  border-radius: 8px;
-  background: var(--panel);
-  font-size: 11px;
+  padding: 0;
 }
 
-/* 菜单条上可搬运的一项（主行与「更多」面板共用同一个元素，搬的是 DOM 不是复制） */
+.apps-dev-top > .mini {
+  flex: none;
+}
+
+/* 列头条的外壳（本轮需求）：「更多 ▾」面板挂它上面 ——
+   列头条自己 overflow:hidden（定高一行靠它收尾），面板是 absolute、要探到条下面，
+   所以必须挂在这层不裁内容、position:relative 的壳上，才不会被裁掉。 */
+.apps-dev-colhead-wrap {
+  position: relative;
+  flex: none;
+}
+
+/* 弹性占位：把只读时那颗「关掉独立窗口」顶到列头条最右端
+   （这个位置原来放的是那串预览状态文字，本轮已移除）。 */
+.apps-dev-colhead-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .apps-dev-slot {
   display: flex;
   align-items: center;
@@ -1863,54 +2026,8 @@ body.theme-light .apps-tile-ph {
   min-width: 0;
 }
 
-.apps-dev-head .apps-dev-app {
-  max-width: 220px;
-}
-
-/* 应用根目录：路径（等宽、可省略）+ 更改…；点路径 = 在资源管理器中打开 */
-/* 开发页菜单条上的两枚根标签（下载根 / 项目根）：小一号的组名 */
-.apps-dev-roots {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.apps-dev-root-k {
-  color: var(--muted);
-  font-size: 10px;
-  letter-spacing: .5px;
-  margin-right: 2px;
-}
-
-.apps-dev-root {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-
-.apps-dev-root-v {
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 2px 4px;
-  border: 0;
-  border-bottom: 1px dashed var(--bd2);
-  border-radius: 3px 3px 0 0;
-  background: transparent;
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  cursor: pointer;
-}
-
-.apps-dev-root-v:hover {
-  color: var(--ink);
-  border-bottom-color: var(--cyan2, var(--bd2));
-}
-
-/* 「更多 ▾」：放不下的项都在它下面 */
+/* 「更多 ▾」：列头条上放不下的项都在它下面（本轮从顶栏搬到这里）。
+   按钮自己不参与伸缩；面板的定位基准是 .apps-dev-colhead-wrap（见上面那条）。 */
 .apps-dev-morebtn {
   flex: none;
 }
@@ -1918,7 +2035,7 @@ body.theme-light .apps-tile-ph {
 .apps-dev-more-pop {
   position: absolute;
   top: calc(100% + 6px);
-  right: 10px;
+  right: 8px;
   z-index: 6;
   min-width: 232px;
   max-width: 340px;
@@ -1945,21 +2062,8 @@ body.theme-light .apps-tile-ph {
   letter-spacing: 0.4px;
 }
 
-.apps-dev-more-pop .apps-dev-slot .apps-dev-sw {
-  flex: 1 1 auto;
-}
-
-.apps-dev-more-pop .apps-dev-root-v {
-  max-width: 176px;
-}
-
 body.theme-light .apps-dev-more-pop {
   box-shadow: 0 14px 30px rgba(20, 26, 40, 0.18);
-}
-
-.apps-dev-head-k {
-  color: var(--muted);
-  letter-spacing: .5px;
 }
 
 .apps-dev-sw {
@@ -1970,20 +2074,6 @@ body.theme-light .apps-dev-more-pop {
   color: var(--muted);
   cursor: pointer;
   user-select: none;
-}
-
-.apps-dev-stat {
-  flex: 0 1 auto;
-  margin-left: auto;
-  /* 预览状态是「刚才那一轮到底刷新了没」的唯一反馈：再挤也给它 96px，别压成只剩省略号 */
-  min-width: 96px;
-  max-width: 46%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10.5px;
-  color: var(--muted);
-  letter-spacing: .3px;
 }
 
 .apps-dev-warn {
@@ -2001,9 +2091,8 @@ body.theme-light .apps-dev-more-pop {
 }
 
 /* 「更多 ▾」面板：.apps-dev-more-pop 自己写了 display:flex，会盖掉浏览器默认的
-   [hidden]{display:none} —— 不压回去，工具栏右下角就常驻一只**空的浮窗**
-   （面板是 absolute 挂在 .apps-dev-topbar 上、紧跟「＋新建应用」那一行，看起来就是
-   「新建下方一块空白框」）。同口径见第 10 行的 .apps-hub[hidden] 与上面的 .apps-dev-warn[hidden]。 */
+   [hidden]{display:none} —— 不压回去，列头条右下角就常驻一只**空的浮窗**。
+   同口径见第 10 行的 .apps-hub[hidden] 与上面的 .apps-dev-warn[hidden]。 */
 .apps-dev-more-pop[hidden] {
   display: none !important;
 }
@@ -2246,11 +2335,17 @@ body.theme-light .apps-dev-more-pop {
 }
 
 /* ── 应用能力（app.json 的 capabilities）────────────────────────────────────
-   卡片小标 + 新建浮层 / 「应用能力…」对话框里的复选框组（renderer/app-app-flow.js）。
+   卡片小标 + 新建浮层的说明句 + 「应用设置」窗里的复选框组
+   （renderer/app-app-flow.js 的 appsCapabilityChecks；窗在 app-apps.js 的 appsAppSettingsOpen）。
    颜色只取既有语义变量（--line / --fg-dim / --accent），不新增色板。 */
 .apps-badge-cap {
   border-color: var(--line);
   color: var(--fg-dim);
+}
+/* 「应用设置」窗里那一格：只有复选框组 —— **本轮删掉窗内那枚「保存」**（勾选即写盘，
+   所以那行按钮的样式 .apps-set-caprow 一并删除，不留死规则） */
+.apps-set-cap {
+  margin: 2px 0 0;
 }
 .cap-list {
   display: flex;
@@ -2289,7 +2384,8 @@ body.theme-light .apps-dev-more-pop {
   margin-top: 10px;
 }
 
-/* 左栏底部那一行「＋ 新建应用」（本轮从顶栏菜单条移到列表底部，不随列表滚动） */
+/* 左栏底部那一行「＋ 新会话」（本轮需求：原来这里是「＋ 新建应用」，那颗搬到左上角了）：
+   钉在列表底部、不随列表滚动。没有「开发中」的应用时这一行整个不出现（宿主不建它）。 */
 .apps-dev-sidefoot {
   flex: none;
   display: flex;
@@ -2319,7 +2415,7 @@ body.theme-light .apps-dev-more-pop {
 }
 
 /* 切应用的加载提示（renderer/app-apps-dev.js 的 appsDevLoadingShow / appsDevLoadingHide）：
-   只在换应用时出现（首次进开发页不出、日常「刷新预览」与开发中的跟手重载都不出），
+   只在换应用时出现（首次进开发页不出、日常点「刷新」与开发中的跟手重载都不出），
    新页 load 完成就收起，另有超时兜底。**只是一行小字**：不再像旧黑幕那样盖满整块中栏
    （用户口径：切应用时整个界面被刷新般闪一下，要轻）。不吃指针事件，用户照样能点预览。 */
 .apps-dev-loading {
@@ -2395,16 +2491,10 @@ body.theme-light .apps-dev-more-pop {
   display: none !important;
 }
 
-/* 预览列头右端那一枚「📂 应用文件夹」（本轮需求）：与「关掉独立窗口」同处右端 ——
-   URL 是唯一的弹性项（flex:1）负责把这两枚推到右边；自己只占内容宽，不参与伸缩。
-   固定条高下不让它把标题条撑高（内边距 / 字号都收住）。 */
-.apps-dev-folderbtn {
-  flex: none;
-  margin-left: 6px;
-  padding: 0 6px;
-  line-height: 18px;
-  white-space: nowrap;
-}
+/* 预览列头那颗「📂 应用文件夹」（本轮需求：从工具栏那一行搬到这里，只留图标、不带路径）：
+   与同排的「图标 + 小字」按钮同风格，用 .apps-ico-btn 的小方框口径（不另设宽高）——
+   固定条高下它也不会把标题条撑高（38px 定高 + overflow:hidden 收尾）。
+   它不参与伸缩：列头条里唯一拉伸的是那枚弹性占位（.apps-dev-colhead-spacer）。 */
 
 /* 右栏：会话正文（消息壳 / #agentList / 队列 / 计划 / 待办都是搬进来的原节点）。
    消息区是**唯一填充项**（与 base.css 的 ① 逐字同一条不变式）：#agentList 会被会话视图的
@@ -2456,7 +2546,7 @@ body.theme-light .apps-dev-more-pop {
 }
 
 /* ── 设计风格卡片（renderer/app-app-flow.js 的 appsStyleCards）──────────────
-   两处入口共用：新建应用浮层、开发页 ⋯ 菜单的「换风格…」。
+   两处共用：新建应用浮层（唯一 UI 入口）与 appStyleSwapDialog（界面已不再挂入口）。
    每张卡 = 该风格**真实渲染出来的首屏预览图**（缺图回落色板）+ 风格名 + 一句说明；
    卡片本身跟随主题变量（它是 MTNode 的界面），预览图里是应用自己的配色 —— 两者不混。 */
 .style-field {\n  /* 选中态用「工具库紫」（与顶栏 .btn-tools 同一个值）：它只承担「这是当前选择」这一个语义 */
@@ -2629,6 +2719,69 @@ body.theme-light .apps-dev-more-pop {
 }
 .apps-minebar-more {
   justify-content: center;
+}
+/* ── 「开发中应用」页的上块（本机开发中的应用 · 只读清单）+ 两块的小标题 ──
+   本轮口径：这一页 = 上块（开发中应用，只读，点一条去「开发」页）+ 下块（我上架到云端的条目，
+   沿用原「我的应用」那一套工具条与卡片）。两块各带标题行，见 app-apps.js 的 appsSecHeadEl。 */
+.apps-devlist-block {
+  margin: 0 0 6px;
+}
+.apps-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 8px;
+}
+.apps-sec-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+.apps-devlist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+/* 一行 = 应用名 / 作者 / 版本 / 会话数 / 最后开发（整行可点，去「开发」页接着开发） */
+.apps-devrow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) minmax(80px, 1fr) 72px 84px minmax(140px, 1.2fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.apps-devrow:hover {
+  border-color: var(--accent, #c792ea);
+  background: color-mix(in srgb, var(--accent, #c792ea) 8%, transparent);
+}
+.apps-devrow-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apps-devrow-author,
+.apps-devrow-cell {
+  font-size: 11.5px;
+  color: var(--ink2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apps-devrow-last {
+  color: var(--muted);
 }
 
 /* ── 卡片上的危险动作（删除）：常态不抢眼，hover 才亮红 ── */

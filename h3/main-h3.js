@@ -43,6 +43,10 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
+/* 插件安装后自检内核（登记表 / 结果落盘 / 等全局媒体锁 / 产物目录 / 往安装窗推进度，
+   唯一一处见 plugins/plugin-selfcheck.js）：本宿主只实现「视频类」那一步 —— 真出一次
+   最低档视频，并在本文件（require 期）登记进它的注册表 */
+const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
 const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
@@ -6045,6 +6049,205 @@ async function generateVideo(params) {
     }
   }
 }
+
+/* ═══════════ 安装后自检（视频类）：把「装好了」证成「真能出片」 ═══════════
+ * 编排（谁跑 / 结果落哪 / 等锁排队 / 产物目录 / 往安装窗推进度）全在 plugins/plugin-selfcheck.js，
+ * 本宿主只负责这一段业务：要件判据 → 环境体检 → 等全局生成锁 → 真出片 → 校验产物。
+ * 档位一律取最低：4 秒（duration 的夹取下限）/ 480p（最小分辨率档）/ 20 步 ——
+ * 自检要证明的是「这条链路通」，不是「出一支好片」；更大的档位只是白烧用户几分钟显卡。 */
+
+/** 体检超时：healthCheckInstall 内部会把入参夹到 ≥30s（该函数的 Math.max(30000, …)），
+ *  这里给 60s —— `python -m app` 只打印一份环境 JSON，正常几秒就退；
+ *  给更长只会让「venv 基座被删」这类必失败的现场把安装窗拖住。 */
+const SELFCHECK_HEALTH_TIMEOUT_MS = 60 * 1000;
+
+/**
+ * 视频类自检：ok:true = 这台机器**现在**真能出片（插件卡片据此打勾）。
+ * 返回体口径见内核头部（{ ok, skipped?, reason?, note?, warnings?, artifacts?, steps?, error? }）；
+ * 宿主侧契约：ctx.step({ title, status, detail }) / ctx.log(line) / ctx.waitMediaLock() / ctx.signal.aborted。
+ */
+async function selfcheckVideo(ctx) {
+  const C = ctx || {};
+  /* 每一步都写两处：ctx.step 推到安装窗当场看，steps 数组随结论落盘 ——
+     用户关了安装窗再打开、或主窗口只看那份结果时，明细还得在（内核只负责把 steps 存下来）。 */
+  const steps = [];
+  const step = (title, status, detail) => {
+    const s = {
+      title: String(title || ""),
+      status: String(status || "run"),
+      detail: detail == null ? "" : String(detail),
+    };
+    steps.push(s);
+    try {
+      if (typeof C.step === "function") C.step(s);
+    } catch {}
+    return s;
+  };
+  const log = (line) => {
+    try {
+      if (typeof C.log === "function") C.log(line);
+    } catch {}
+  };
+  const aborted = () => !!(C.signal && C.signal.aborted);
+  const outCancelled = () => ({ ok: false, skipped: true, reason: "已取消", steps });
+
+  if (aborted()) return outCancelled();
+
+  /* ── 1. 安装信号：要件都不齐就别往后走（这一步只读文件，不碰后端、不烧显存） ──
+   * 安装目录优先取内核给的 ctx.installDir；内核当前的 getInstallDirOf 接线回的是空串
+   * （见 main.js 的 initPluginSelfcheck），所以再回落到本宿主自己的 config（loadConfig().installDir）
+   * —— 只认 ctx 会把「已经装好」误判成「没装」。
+   * 判据用本文件现成的 projectSignals().ready = 脚手架 && ComfyUI venv && 主权重三件齐。 */
+  const installDir = String(C.installDir || "").trim() || String(loadConfig().installDir || "").trim();
+  const sig = projectSignals(installDir);
+  const miss = [];
+  if (!installDir) miss.push("还没设过安装目录");
+  if (!sig.scaffold) miss.push("脚手架缺失（app / scripts / ComfyUI 都没有）");
+  if (!sig.venv) miss.push("ComfyUI\\venv 不在（隔离 venv 未建）");
+  if (!sig.models) miss.push("主权重不全（diffusion_models / text_encoders / vae）");
+  if (!sig.ready) {
+    step("检查安装要件", "skip", miss.join("；"));
+    log("[selfcheck] 要件不齐，跳过：" + miss.join("；"));
+    return { ok: false, skipped: true, reason: "还没装好（缺要件）", note: miss.join("；"), steps };
+  }
+  step("检查安装要件", "ok", "脚手架 / venv / 主权重齐备（" + installDir + "）");
+
+  /* ── 2. 环境体检：以 `python -m app` 的退出码为准（文件现成判据，比 .install-ok 那种
+   *   「Agent 的一面之词」可信 —— torch / cuda / 依赖这些文件层面看不出来的坑都靠它兜） ── */
+  const hc = await healthCheckInstall(installDir, SELFCHECK_HEALTH_TIMEOUT_MS);
+  if (!hc.ok) {
+    const why = String(hc.reason || "unknown");
+    /* 脚本正文进 detail（人要读全），只留尾部，别把整份 JSON 灌进安装窗 */
+    const tail = String(hc.out || "").trim().slice(-1500);
+    step("环境体检（python -m app）", "fail", why + (tail ? "\n" + tail : ""));
+    log("[selfcheck] 体检未通过：" + why);
+    return { ok: false, error: "环境体检未通过：" + why + (tail ? "\n" + tail : ""), steps };
+  }
+  step("环境体检（python -m app）", "ok", "退出码 0");
+  if (aborted()) return outCancelled();
+
+  /* ── 3. 等全局生成锁：音视频全局只允许 1 个任务（media-gen-global-lock.js），
+   *       自检也是出片，必须排在别人的生成后面，不抢锁也不占着锁干等 ── */
+  if (typeof C.waitMediaLock !== "function") {
+    step("等待全局生成锁", "fail", "内核没提供 waitMediaLock（版本不匹配）");
+    return {
+      ok: false,
+      error: "自检内核不支持等全局生成锁（waitMediaLock 缺失），请更新应用后重试。",
+      steps,
+    };
+  }
+  step("等待全局生成锁", "run", "出片前等锁空闲（有别人在生成就排队）");
+  const lock = await C.waitMediaLock();
+  if (!lock || lock.ok !== true) {
+    const reason = lock && lock.reason === "cancelled" ? "已取消" : "等全局生成锁超时";
+    step("等待全局生成锁", "skip", reason);
+    log("[selfcheck] " + reason + (lock && lock.message ? "：" + lock.message : ""));
+    return { ok: false, skipped: true, reason, steps };
+  }
+  step("等待全局生成锁", "ok", "锁已空闲");
+
+  /* ── 4. 真出片：走与画布节点完全同一条 generateVideo（只把档位压到最低） ──
+   * 产物目录必须用内核给的本次自检目录；拿不到就**不生成** ——
+   * generateVideo 在 outputDir 为空时会兜底复进画布资产目录（用户的正经产物区），
+   * 自检的临时产物落到那儿，比不测更糟。 */
+  const artifactDir = String(C.artifactDir || "").trim();
+  if (!artifactDir) {
+    step("准备产物目录", "fail", "内核没给自检产物目录（取不到数据目录）");
+    return { ok: false, error: "自检产物目录不可用（取不到应用数据目录），本次不生成。", steps };
+  }
+
+  /* nodeId 必给：generateVideo 第一件事就是查它，缺了直接 missing_node_id。
+     固定前缀 + 时间戳 —— 一眼认得出是自检单，也不会和画布节点 id 撞。 */
+  const nodeId = "selfcheck-h3-" + Date.now();
+  /* 取消要能真打断这一单：内核的 signal.abort() 会回调 signal.onAbort（它在 abort 里调），
+     这里接上本宿主现成的 cancelGenerate(nodeId)（置 abort 标志 + interrupt ComfyUI + 释放锁 + 收尾停后端）。
+     只靠 ctx.signal.aborted 轮询的话，用户点了「取消自检」得等整段视频跑完才收手。
+     注：全局锁不在这里手工清 —— generateVideo 自己 tryAcquireLock，也自己 clearLock。 */
+  if (C.signal && typeof C.signal === "object") {
+    C.signal.onAbort = () => {
+      try {
+        cancelGenerate(nodeId);
+      } catch (e) {
+        log("[selfcheck] 取消时中断生成失败：" + String((e && e.message) || e));
+      }
+    };
+  }
+
+  step("生成最低档视频", "run", "4 秒 / 480p / 16:9 / 20 步 → 自检目录");
+  let res = null;
+  try {
+    res = await generateVideo({
+      nodeId,
+      /* prompt 不留空：空提示词会被工作流层当成「没给输入」，自检要看的是这条链路能出片 */
+      prompt: "selfcheck: a static gray frame",
+      duration: 4, /* 夹取下限 4..15 → 最短的一支（帧数由 calcLength 算） */
+      outputRes: "480p", /* 最小分辨率档（短边 480，仍按比例缩放并过 24G 红线钳制） */
+      ratio: "16:9",
+      steps: 20,
+      /* ⚠ 输出路径参数名以 generateVideo 的实现为准：它认的是 outputDir（目录）+ filename（文件名主干），
+         **没有** outputPath 这个键；产物落内核给的本次自检目录（绝不写应用文件夹）。 */
+      outputDir: artifactDir,
+      filename: "selfcheck.mp4",
+      /* 自检不属于任何画布：不给画布 id，免得任何兜底分支跑去写画布资产目录 */
+      canvasWorkflowId: "",
+      /* 不传 mode（默认 r2v，无参考输入即纯文生视频那条链）、不传首末帧 / 参考素材 */
+    });
+  } catch (e) {
+    const msg = String((e && (e.detail || e.message)) || e);
+    step("生成最低档视频", "fail", msg);
+    log("[selfcheck] 生成抛异常：" + msg);
+    return { ok: false, error: "自检生成失败：" + msg, steps };
+  }
+  if (!res || res.ok !== true) {
+    /* 带原文：generateVideo 的 message 里已经有后端 / 工作流那条真实原因，别吞成一句「失败」 */
+    const msg = String((res && (res.message || res.error)) || "生成没有回执");
+    step("生成最低档视频", "fail", msg);
+    log("[selfcheck] 生成失败：" + msg);
+    return { ok: false, error: msg, steps };
+  }
+
+  /* ── 5. 校验产物：路径存在 + 字节 > 0（generateVideo 里也有这两道，但自检的结论得自己算，
+   *        不能只凭对方回了一句 ok） ── */
+  const got = String(res.path || "").trim() || join(artifactDir, "selfcheck.mp4");
+  let bytes = 0;
+  try {
+    bytes = fs.statSync(got).size || 0;
+  } catch {
+    bytes = 0;
+  }
+  if (!bytes) {
+    step("校验产物", "fail", "产物不存在或是空文件：" + got);
+    return {
+      ok: false,
+      error:
+        "自检产物不存在或为空（" + got + "），生成回执：" + String(res.message || res.error || "ok"),
+      steps,
+    };
+  }
+  step("校验产物", "ok", path.basename(got) + " · " + bytes + " 字节");
+  log("[selfcheck] 通过：" + got + "（" + bytes + " 字节）");
+
+  /* 收尾再认一次取消：产物可能已经落盘，但用户中途点了取消 —— 如实报「已取消」，
+     产物留在自检目录里（安装窗的「清理自检产物」会连目录一起删），不谎报通过。 */
+  if (aborted()) return outCancelled();
+
+  return {
+    ok: true,
+    artifacts: [{ path: got, label: "自检生成的视频" }],
+    steps,
+    warnings: Array.isArray(res.warnings) ? res.warnings : [],
+  };
+}
+
+/* 登记（require 期就登记）：插件卡片的打勾、安装窗的「重新自检 / 取消 / 清理」都按这个 id 查表。
+   与 installHost.registerInstallTarget 同一口径：id = PLUGIN_ID，key = "h3"。 */
+registerPluginSelfcheck({
+  id: PLUGIN_ID,
+  key: "h3",
+  label: "MiniMax H3 本地视频生成",
+  kind: "video",
+  check: selfcheckVideo,
+});
 
 /* ───────────── 自建 ComfyUI 工作流（任务 2–4） ───────────── */
 

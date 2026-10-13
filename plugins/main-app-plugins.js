@@ -65,7 +65,109 @@ function pluginDir(id) {
    渲染层（renderer/app-plugins.js）与安装窗（plugins/main-install.js）都从这里取口径，
    谁也不许再抄一份子目录名表或自行拼路径。 */
 const { createPluginRoot, normDir, subDirNameOf } = require("./plugin-root.js");
+/* 插件显存门槛（sensenova-local / minimax-music3 / yue2-local）：读不到显存一律照常显示，
+   已装的照常显示 —— 口径与名单的唯一真源在 plugins/vram-gate.js 的文件头。 */
+const vramGateMod = require("./vram-gate.js");
+const perfProbe = require("../perf-probe.js");
 let pluginRoot = null;
+let vramGate = null;
+
+/**
+ * 这个插件在**本机磁盘上**是否真的装过（后端插件唯一快判据）：
+ *   ① 插件自己那份配置里的 installDir，或「插件根目录 + 默认子目录名」（未设根目录时为空）；
+ *   ② 目录里有 .install-ok / .venv / 模型目录等就绪标记，或目录非空。
+ * 只读，不建目录（与 plugin-root.js 的「只读入口不许有副作用」同一纪律）。
+ */
+function backendPluginInstalled(id) {
+  const sid = String(id || "");
+  if (!sid) return false;
+  let dir = "";
+  try {
+    const mod = pluginRootMod();
+    dir = mod.pluginDir(sid) || (mod.needsDir(sid) ? mod.defaultDir(sid) || "" : "");
+  } catch {}
+  return vramGateMod.dirLooksInstalled(dir);
+}
+
+/**
+ * 门槛判定的「已装」输入：窗口插件看安装元数据，后端插件看磁盘目录。
+ * 桌宠 / 内置 / 云端窗口插件不在这张名单里（没有门槛），不会走到这里。
+ */
+function vramInstalledFor(raw) {
+  const p = raw && typeof raw === "object" ? raw : {};
+  const id = String(p.id || "");
+  if (p && p.__vramInstalled === true) return true;
+  if (p.installed === true) return true;
+  if (String(p.kind || "") === "window") {
+    try {
+      return !!isWindowInstalled(id);
+    } catch {
+      return false;
+    }
+  }
+  return backendPluginInstalled(id);
+}
+
+/**
+ * 显存读数来源：生产 = perf-probe.js 的 nvidia-smi 采样器（与顶栏「性能」面板同源）。
+ * 冒烟挂钩：MTNODE_VRAM_OVERRIDE_GB 设成数字时**只**用这个假读数（例如 8），
+ * 让「这台机器显存不够」的分支能在有 24G 卡的开发机上被真跑到 —— 除冒烟外没人设它。
+ */
+function vramGpuReader() {
+  const forced = Number(process.env.MTNODE_VRAM_OVERRIDE_GB);
+  if (Number.isFinite(forced) && forced > 0) {
+    return Promise.resolve({
+      available: true,
+      reason: "",
+      cards: [{ name: "MTNODE_VRAM_OVERRIDE_GB", totalMb: Math.round(forced * 1024) }],
+    });
+  }
+  return perfProbe.readGpu();
+}
+
+function initVramGate() {
+  vramGate = vramGateMod.createVramGate({
+    readGpu: () => vramGpuReader(),
+    isInstalled: (raw) => vramInstalledFor(raw),
+  });
+  return vramGate;
+}
+function vramGateMod2() {
+  return vramGate || initVramGate();
+}
+
+/** 给一个目录条目挂显存元数据（纯函数：判定已算好，这里只落字段） */
+function markVram(p, st) {
+  if (!p || typeof p !== "object") return p;
+  const s = st && typeof st === "object" ? st : null;
+  if (!s || !s.required) {
+    /* 没有门槛的插件：显式给 required:false，渲染层据此知道「它不参与显存过滤」 */
+    return Object.assign({}, p, { vram: { required: false, minVramGb: 0, vramOk: true, hide: false, notice: "" } });
+  }
+  /* 显存不达标但**已装** → 照常显示（用户要能进控制台 / 能卸载），只把 hide 收起来 */
+  const installed = !!s.installed;
+  return Object.assign({}, p, {
+    vram: {
+      required: true,
+      id: s.id,
+      minVramGb: s.minVramGb,
+      reading: s.vram && s.vram.state === "ok" ? s.vram.vramGb : null,
+      readingState: (s.vram && s.vram.state) || "unknown",
+      readingReason: (s.vram && s.vram.reason) || "",
+      installed,
+      vramOk: !!s.vramOk,
+      hide: !!s.hide && !installed,
+      notice: String(s.notice || ""),
+    },
+  });
+}
+
+/** 目录条目 → 门槛判定的输入形状（带上已经算好的「已装」，别让判定再摸一次盘） */
+function vramProbeOf(plugin) {
+  const p = plugin && typeof plugin === "object" ? plugin : {};
+  return Object.assign({}, p, { __vramInstalled: vramInstalledFor(p) });
+}
+
 function initPluginRoot() {
   pluginRoot = createPluginRoot({
     getDataDir: () => (typeof getDataDir === "function" ? getDataDir() : ""),
@@ -508,9 +610,11 @@ function attachInstalled(plugins) {
         updateAvailable: !!(st.installed && p.version && verGt(p.version, st.version)),
       }));
     } else if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr") {
-      /* 版本/可更新状态由 music3/yue2/sensenova/h3/llama/breeze/remotion/asr 主进程 status 异步判定；此处仅占位 */
+      /* 本地后端插件：**装没装以磁盘上的安装目录为准**（目录里有 .install-ok / .venv /
+         模型目录或目录非空 = 装过）—— 卡片动作（安装 / 启用 / 卸载）与插件显存门槛的
+         「已装就保留」判据都吃这一个字段。版本 / 可更新状态仍由各宿主 status 异步判定。 */
       out.push(Object.assign({}, p, {
-        installed: true,
+        installed: backendPluginInstalled(p.id),
         installedVersion: p.version || "",
         updateAvailable: false,
       }));
@@ -671,15 +775,22 @@ async function fetchRemoteCatalog() {
   return parsed;
 }
 
-async function loadCatalog() {
+/**
+ * 三条目录来源合成**一份**源列表（云端 → 缓存 → 内置兜底）：
+ *   · 云端正常时用它，并补上内置目录里有、云端没有的已知 kind（原「mergeLocalOnly」口径）；
+ *   · 云端挂了退回上次缓存，再退回内置；
+ * 返回 { source, remoteError, fetchedAt, plugins }。**不挂显存元数据、不补 installed** ——
+ * 那两件事在 finalizePluginList / buildFullPluginList 里做，免得两份口径各写一遍。
+ */
+async function loadCatalogSource() {
   const fallback = loadDefaultCatalog();
+  /** 内置目录里有、源列表里没有的已知 kind 条目补进来（老口径：pet / music3 不许因云端漏列而消失） */
   function mergeLocalOnly(plugins) {
     const list = Array.isArray(plugins) ? plugins.slice() : [];
     const have = new Set(list.map((p) => p && p.id).filter(Boolean));
     for (const p of fallback.plugins || []) {
       if (!p || !p.id || have.has(p.id)) continue;
-      // Keep built-in handlers (pet/music3) visible even if remote catalog omits them
-      if (p.kind === "music3" || p.handler === "music3" || p.kind === "yue2" || p.handler === "yue2" || p.kind === "sensenova" || p.handler === "sensenova" || p.kind === "h3" || p.handler === "h3" || p.kind === "llama" || p.handler === "llama" || p.kind === "breeze" || p.handler === "breeze" || p.kind === "remotion" || p.handler === "remotion" || p.kind === "asr" || p.handler === "asr" || p.kind === "pet" || p.handler === "pet") {
+      if (KNOWN_KINDS.has(String(p.kind || ""))) {
         list.push(p);
         have.add(p.id);
       }
@@ -689,35 +800,128 @@ async function loadCatalog() {
   try {
     const remote = await fetchRemoteCatalog();
     return {
-      ok: true,
       source: "remote",
+      remoteError: "",
       fetchedAt: Date.now(),
-      plugins: attachInstalled(mergeLocalOnly(remote.plugins)),
-      appVersion: appVer(),
+      plugins: mergeLocalOnly(remote.plugins),
     };
   } catch (remoteErr) {
+    const err = String((remoteErr && remoteErr.message) || remoteErr);
     const cached = readJson(cacheCatalogPath(), null);
     if (cached && cached.doc) {
-      const parsed = parseCatalogDoc(cached.doc);
       return {
-        ok: true,
         source: "cache",
+        remoteError: err,
         fetchedAt: Number(cached.fetchedAt) || 0,
-        plugins: attachInstalled(mergeLocalOnly(parsed.plugins)),
-        appVersion: appVer(),
-        remoteError: String((remoteErr && remoteErr.message) || remoteErr),
+        plugins: mergeLocalOnly(parseCatalogDoc(cached.doc).plugins),
       };
     }
     return {
-      ok: true,
       source: "fallback",
+      remoteError: err,
       fetchedAt: 0,
-      plugins: attachInstalled(fallback.plugins),
-      appVersion: appVer(),
-      remoteError: String((remoteErr && remoteErr.message) || remoteErr),
+      plugins: (fallback.plugins || []).slice(),
     };
   }
 }
+
+/**
+ * 插件列表的收尾（唯一出口，三条目录来源都走它）：
+ *   ① 挂显存元数据 —— 有门槛的插件标 vramOk / hide / notice（见 plugins/vram-gate.js）；
+ *   ② 把「显存不足且没装过」的插件从列表里滤掉 —— 隐藏口径放在目录侧：任何吃 catalog 的
+ *      地方都拿不到它，画布节点菜单与 S.plugins 快照（节点未装警示条）自动同步；
+ *   ③ 再补 installed / installedVersion（backendPluginInstalled 吃上面算好的已装）。
+ * 渲染层要用「显示不支持的插件」开关找回卡片时走 appPlugins:vramState（那份**不滤**）。
+ * 已装的、以及显存读数取不到的，一律不进这一档（口径见 vram-gate.js 文件头）。
+ */
+async function finalizePluginList(plugins) {
+  const marked = await markVramMeta(plugins);
+  return marked.filter((p) => !(p && p.vram && p.vram.hide === true));
+}
+
+/** 给整份列表挂显存元数据（判定炸了 = 当作「没超」，宁可多显示一个也不许凭空藏掉） */
+async function markVramMeta(plugins) {
+  const gate = vramGateMod2();
+  const list = Array.isArray(plugins) ? plugins : [];
+  const out = [];
+  for (const p of list) {
+    if (!p || !vramGateMod.hasRequirement(p.id)) {
+      out.push(markVram(p, null));
+      continue;
+    }
+    let st = null;
+    try {
+      st = await gate.stateOf(vramProbeOf(p));
+    } catch (e) {
+      st = null;
+    }
+    out.push(markVram(p, st));
+  }
+  return out;
+}
+
+async function loadCatalog() {
+  const src = await loadCatalogSource();
+  const plugins = await finalizePluginList(src.plugins);
+  const res = {
+    ok: true,
+    source: src.source,
+    fetchedAt: src.fetchedAt,
+    plugins: attachInstalled(plugins),
+    appVersion: appVer(),
+  };
+  if (src.remoteError) res.remoteError = src.remoteError;
+  return res;
+}
+
+/** 完整插件列表（**不滤**显存：含被隐藏的那几个）+ 显存元数据，给门槛快照用 */
+async function buildFullPluginList() {
+  const src = await loadCatalogSource();
+  const marked = await markVramMeta(src.plugins);
+  return attachInstalled(marked).map((p) =>
+    Object.assign({}, p, { source: src.source, remoteError: src.remoteError }),
+  );
+}
+
+/**
+ * 显存门槛现状（**不滤**，含被隐藏的那几个）：插件对话框的「显示不支持的插件」开关吃这一份。
+ *   { ok, reading: {state, vramGb, reason}, plugins: [ {id, minVramGb, vramOk, hide, notice, installed} ],
+ *     hidden: [id…], ttlMs }
+ * force=true 顺手丢掉读数缓存（用户点「刷新目录」/ 刚装完想立刻重判）。
+ */
+async function vramStateSnapshot(opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const gate = vramGateMod2();
+  if (o.force === true) gate.invalidate();
+  const reading = await gate.vramState(false);
+  const list = await buildFullPluginList();
+  const out = [];
+  for (const p of list) {
+    if (!p || !vramGateMod.hasRequirement(p.id)) continue;
+    const st = await gate.stateOf(vramProbeOf(p)).catch(() => null);
+    if (!st) continue;
+    out.push({
+      id: p.id,
+      minVramGb: st.minVramGb,
+      installed: !!st.installed,
+      vramOk: !!st.vramOk,
+      hide: !!st.hide,
+      notice: String(st.notice || ""),
+    });
+  }
+  return {
+    ok: true,
+    reading: {
+      state: reading.state,
+      vramGb: reading.vramGb != null ? reading.vramGb : null,
+      reason: reading.reason || "",
+    },
+    plugins: out,
+    hidden: out.filter((x) => x.hide).map((x) => x.id),
+    ttlMs: gate.ttlMs,
+  };
+}
+
 
 function findCatalogPlugin(id) {
   const cached = readJson(cacheCatalogPath(), null);
@@ -1122,6 +1326,9 @@ function registerAppPluginsIpc(opts) {
   getAppVersion = opts.getAppVersion;
   appRoot = String((opts && opts.appRoot) || "");
   ipcMain.handle("appPlugins:catalog", () => loadCatalog());
+  /* 显存门槛现状（**不滤**）：插件对话框「显示不支持的插件」开关与卡片标注吃这一份。
+     名单与门槛的唯一真源在 plugins/vram-gate.js。 */
+  ipcMain.handle("appPlugins:vramState", (e, opts) => vramStateSnapshot(opts));
   ipcMain.handle("appPlugins:icon", (e, name) => {
     const dataUrl = pluginIconDataUrl(name);
     return dataUrl ? { ok: true, dataUrl } : { ok: false };
@@ -1276,4 +1483,8 @@ module.exports = {
      没设过就用「插件根目录 + 默认子目录名」—— 见 plugins/plugin-root.js */
   installDirOf,
   resolvePluginInstallDir,
+  /* 冒烟用：显存门槛判定（插件列表侧的过滤与元数据） */
+  loadCatalog,
+  buildFullPluginList,
+  vramStateSnapshot,
 };

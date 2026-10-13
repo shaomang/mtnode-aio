@@ -432,11 +432,13 @@ async function main() {
     ok(APPS.indexOf("APPS_ST.detailId") < 0, "app-apps.js 里已无 detailId（内联展开整体撤掉）");
     ok(APPS.indexOf('card.className = "apps-tile" + (') < 0, "卡片不再带 open 态（不因展开改高度）");
     ok(APPS.indexOf("收起详情") < 0 && APPS.indexOf("查看详情") < 0, "不再有「查看详情 / 收起详情」两态按钮");
-    /* 本轮需求：卡片换成 16:9 封面卡，动作收进封面右下角那一排（appsCoverActionsEl）；
-       「详情」那一枚 ⓘ **本轮已按用户口径摘掉** —— 点卡片本身就是开详情窗，两者用途重复；
-       金币打赏那一枚也已搬进详情正文的打赏条（appsTipBtnEl）—— 所以卡上只剩「下载 / 更新」
-       （库页是运行、我的应用是编辑），appsDetailBtnEl 这个元件本身保留（外部脚本按名字探测）。 */
-    ok(/function appsCoverActionsEl\(spec, opts\)/.test(APPS) && APPS.indexOf("push(appsDetailBtnEl(spec && spec.id));") < 0,
+    /* 本轮需求（最新一轮）：**封面整排按钮下线**（用户口径：任何应用封面都不要出现按钮）——
+       卡片只剩封面 + 名称 / 作者，运行 / 下载 / 更新 / 编辑 / 删除全部只走详情窗。
+       这里改钉「按钮工厂成了空实现 + 那张卡不再挂动作行」，原来的 ⓘ / 金币 / 运行同排断言
+       随功能一起作废（历史口径见 git 记录）。 */
+    ok(/function appsCoverActionsEl\(spec, opts\) \{\s*return null;\s*\}/.test(APPS),
+      "封面按钮工厂 appsCoverActionsEl 恒 null（封面上不再有任何按钮）");
+    ok(APPS.indexOf("push(appsDetailBtnEl(spec && spec.id));") < 0,
       "卡片封面不再挂 ⓘ（详情入口只剩「点卡片」，与应用中心一致）");
     ok(
       /function appsDetailBtnEl\(id, label\) \{[\s\S]{0,300}const text = label \? appsT\(label\) : "ⓘ";/.test(APPS),
@@ -446,14 +448,16 @@ async function main() {
       /classList\.add\("apps-ico-btn", "apps-ico-info"\)/.test(APPS) && /b\.dataset\.appDetail = "1"/.test(APPS),
       "详情按钮仍是同一元件：小方框样式 + data-app-detail 标记不变",
     );
-    ok(
-      /push\(appsRunIcoBtnEl\(spec\.id[,)]/.test(APPS) &&
-        /push\(\s*appsIcoBtnEl\(\s*"download",/.test(APPS.slice(APPS.indexOf("function appsCoverActionsEl("))),
-      "库页卡片：运行 / 更新（有新版才有）同排在一处（封面右下角那一排）",
-    );
-    /* 开发页不挂（它自己就有一整块正文） */
+    /* 开发页不挂（它自己就有一整块正文；「启动 / 上架」在中栏预览栏那一行里 —— 本轮顶栏
+       整体移除后它们从「应用文件夹」那一行搬到了预览列头条） */
     const DEV = read("renderer/app-apps-dev.js");
     ok(DEV.indexOf("appsDetailBtnEl") < 0, "开发页不挂「详情」（它已有整块自己的正文）");
+    ok(
+      DEV.indexOf('addSlot(1, appsDevRunBtnEl())') >= 0 &&
+        DEV.indexOf('addSlot(3, appsDevPublishBtnEl())') >= 0 &&
+        DEV.indexOf("appsDevFolderRowEl") < 0,
+      "「启动 / 上架」只在开发页中栏预览栏那一行（卡片上一个按钮都没有）",
+    );
   }
 
   /* ============ [11] 静态口径：评论页签 + 折叠开发者信息 + 云端版本表全宽 + 本机版本块 ============ */
@@ -486,6 +490,17 @@ async function main() {
       "评论独占详情窗下方滚动区（「应用 / 评论」页签本轮已移除，仍是同一份 MtComments 组件）",
     );
     ok(/appsDevMetaEl\(devRows, \{ label: "安装包 sha256"/.test(APPS), "开发者信息与 sha256 仍走原来那套（默认折叠）");
+    /* 本轮需求：「选择版本 / 分支树」窗底栏备注下面多一行「本机这一份基于 v<本机版本>（来源：<源 id> ·
+       原作者 <名>）」—— 只在 local.forkOf.id 有值（= 本机 app.json 真声明过来源）时才出现，
+       没有记录 = 原创，这一行不许出现（否则每个应用都会凭空多一句「基于」）。 */
+    ok(
+      /function appsVdlgPaintFoot\(branch, selVer\)/.test(APPS) &&
+        APPS.indexOf('appsT("本机这一份基于 v")') >= 0 &&
+        APPS.indexOf('appsT("来源：")') >= 0 &&
+        APPS.indexOf('appsT("原作者 ")') >= 0 &&
+        /const fo = local && local\.forkOf && typeof local\.forkOf === "object" \? local\.forkOf : null;\s*\n\s*if \(local && fo && String\(fo\.id \|\| ""\)\.trim\(\)\) \{/.test(APPS),
+      "版本窗底栏：本机这一份的来源行（基于 v… · 来源：<源 id> · 原作者 <名>）只在 local.forkOf.id 有值时画出来",
+    );
     ok(/\.apps-detail-vers\s*\{/.test(CSS) && /\.apps-br-sel\s*\{/.test(CSS), "css：回滚块与「选中分支的版本块」都有样式");
   }
 
@@ -499,8 +514,11 @@ async function main() {
       "点本机当前那一版：只提示，不重下",
     );
     ok(
-      /if \(app\.dev === true\) \{[\s\S]{0,700}confirmDialog\(body, \{/.test(APPS),
-      "本机带「开发中」标记时先确认一次（与「更新」同一套口径）",
+      /* 本轮口径：判据从 app.json 的 dev 标记改成**物理目录**（appsLocalRootKind）——
+         同 id 两边各有一份时，躺在下载根那一份不该被当成「开发中」；
+         取值也点名 dev（appsLocalById(sid, "dev")），拿不到才回落老口径。 */
+      /const app = appsLocalById\(sid, "dev"\) \|\| appsLocalById\(sid\) \|\| \{\};[\s\S]{0,120}?if \(appsLocalRootKind\(app\) === "dev"\) \{[\s\S]{0,700}confirmDialog\(body, \{/.test(APPS),
+      "本机这一份躺在开发目录（appsLocalRootKind === \"dev\"，不再看 app.json 的 dev 标记）时先确认一次（与「更新」同一套口径）",
     );
     ok(
       /APPS_ST\.progress\[sid\] = \{ id: sid, phase: "start", percent: 0, version: want \}/.test(APPS),

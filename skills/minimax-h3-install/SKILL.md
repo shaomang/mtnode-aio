@@ -39,7 +39,7 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
 - GitHub（ComfyUI / KJNodes 克隆 / release 归档）：直连失败用代理回退 `https://ghfast.top` → `https://gh-proxy.com` → `https://ghproxy.net` → 直连（`cn-mirrors.js` 的 `ghProxyUrls()`）
 - 安装示例：
   ```powershell
-  .\scripts\setup_env.ps1   # pip 按清华 → 阿里云 → USTC → 官方逐级回退；CUDA Python 可传 -CudaPython 或设 MT_H3_CUDA_PYTHON
+  .\scripts\setup_env.ps1   # pip 按清华 → 阿里云 → USTC → 官方逐级回退；基座 Python 自动取（3.11 / 3.12），可用 -CudaPython 或 MT_H3_CUDA_PYTHON 显式指定
   .\scripts\setup_env.ps1 -SourceOnly   # 只保证 ComfyUI 源码在场（clone 缺失时），venv / torch / 依赖 / 节点一律不碰
   .\scripts\download_models.ps1  # 权重默认走 ModelScope
   ```
@@ -63,7 +63,7 @@ description: 在用户指定目录安装 MiniMax H3（24G ComfyUI）后端：探
   ```
 
   这样脚本自身与 pip / git / python 的输出都按 UTF-8 出去，宿主（用 UTF-8 解码 stdout，并按 `[h3-setup]` / `[h3-download]` 抓进度）看到的就是正常文本。
-- 改脚本后跑 `node test/smoke-install-scripts.js`：钉住「零非 ASCII + GBK 解码后 PowerShell 解析零错 + 进度前缀 / `reason=` 等 ASCII 契约仍在」。
+- 这条纪律已是**硬守卫**：`AGENTS.md` 的「协作约定」钉了它，`test/smoke-install-scripts.js` 会自动扫描全部 `*-pack` 的 `.ps1` / `.cmd` / `.bat`、`*-pack/scripts/**/*.py`、共享真源 `pack-steps/` 与 `pack-python/`、以及项目 `scripts/` 下的 `.ps1` / `.cmd` / `.bat` —— 任一字节 > 0x7F（中文、全角标点、emoji、`→`、制表线）或带 BOM 即硬失败。改脚本后**必须**跑 `node test/smoke-install-scripts.js`（同时还钉 GBK(cp936) 与 UTF-8 双解码解析零错、进度前缀与 `reason=` 等 ASCII 契约仍在）；后端运行时 Python（`*-pack/app/**`、`*-pack/shims/**`）豁免，仍是中文。
 - Python **后端**（`app/*.py` 的启动横幅与日志）本轮不做零中文，仍是中文，靠上面的 UTF-8 钉死正确显示。
 
 ## 硬件探测（第一步，必做）
@@ -109,9 +109,19 @@ torch `cu130` wheel 自带 CUDA 13.0 运行时，但**要求 NVIDIA 驱动足够
 - 打印 `False` → **驱动太旧**，H3 无法跑优化的 CUDA 算子。此时：告知用户更新 NVIDIA 驱动（≥ 支持 CUDA 13.0 的版本），并 `ok=false reason=driver_too_old`，不要退回 cu124 重装（会回到卡死）。
 - 顺带核对启动日志中 `comfy_kitchen backend cuda ... 'disabled': False`（未被禁用）。
 
-## CUDA Python 探测（setup_env 自动，也可手动）
+## 基座 Python（setup_env 自动取，也可手动指定）
 
-`setup_env.ps1` 依次取：`-CudaPython` 参数 → env `MT_H3_CUDA_PYTHON` → env `MT_MUSIC_CUDA_PYTHON` → 常见 conda（`ProgramData`/用户目录的 `miniconda3`/`anaconda3` 的 `envs\seg|torch|pytorch|cuda|base\python.exe`）→ PATH 中的 `python`/`python3`。用 `import torch; torch.cuda.is_available()` 验证，取第一个可用的，写入 `INSTALL_DIR\.cuda-python`。
+**判据是解释器版本，不是「已经装好 CUDA torch」**（历史上那条判据是错的：往隔离 venv 里装 CUDA torch 正是 `setup_env.ps1` 自己的活，要求用户先备一个带 CUDA torch 的 Python 等于把活推回给用户；2026-11 用户实测报错 `Need a Python with CUDA torch. Pass -CudaPython <path> or set MT_H3_CUDA_PYTHON.` 就是它）。
+
+`setup_env.ps1` 走共享获取器 `scripts/base_python.ps1`（真源 `pack-python/base_python.ps1`，h3 / music3 / yue2 三包逐字节一致），顺序：
+
+1. `-CudaPython` / `MT_H3_CUDA_PYTHON` / `MT_H3_PYTHON` / 安装目录 `.cuda-python` 记录的路径（**可选覆盖**，版本不合格就直接报 `h3.python.too_old` / `h3.python.too_new`）；
+2. 常见 conda（`ProgramData` / 用户目录的 `miniconda3` / `anaconda3` 的 `envs\seg|torch|pytorch|cuda|base\python.exe`）与 PATH 上的 `py -3.11/3.12` / `python` / `python3` —— **只要版本是 3.11 或 3.12 就用**（不查 torch；老 conda 的 3.10 会因为 cu130 没有 cp310 轮子被跳过）；
+3. 都没有 → **自己取一个**：有 `uv` 用 `uv python install 3.11/3.12`（`UV_PYTHON_INSTALL_MIRROR` 指向 npmmirror），没有 uv 就直接从 `https://registry.npmmirror.com/-/binary/python-build-standalone` 下 `cpython-3.1x…-x86_64-pc-windows-msvc-install_only(-stripped).tar.gz` 解压；缓存目录 `%APPDATA%\pipeline-console\python`（公共缓存，已下过不重下）。
+
+失败码（安装窗按 `steps.json` 的 `messages` 表渲染中文）：`h3.python.missing`（连下载都失败：网络 / 缓存目录不可写）、`h3.python.fetch_failed`、`h3.python.too_old` / `h3.python.too_new`（是你自己指定的路径不合格）。取到的路径仍写进 `INSTALL_DIR\.cuda-python`（宿主与 Agent 修复链读它）。
+
+> 同一条链还带**显卡体检**（`-SkipGpuProbe` 模式，只跑 nvidia-smi）：没 N 卡 → `h3.gpu.none`，驱动主版本 < 580 → `h3.gpu.driver_old`。`install.ps1` 在 venv 步之前先跑它，所以「没卡 / 驱动太旧」不会再伪装成 venv 或 Python 失败。
 
 ## 目标
 
@@ -338,9 +348,9 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 
 ## 步骤（全新安装）
 
-1. **硬件探测**（见上）。GPU 非 NVIDIA / 驱动不支持 CUDA 13 → fail 并写 reason。
-2. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `requirements.txt`（保留已有 ComfyUI/models/output）；或用内置脚本。
-3. 探测 CUDA Python → 写 `.cuda-python`（仅作 venv 基座；优先 `MT_H3_CUDA_PYTHON`）。
+1. **硬件探测**（见上）。GPU 非 NVIDIA / 驱动不支持 CUDA 13 → fail 并写 reason（内置脚本给的码是 `h3.gpu.none` / `h3.gpu.driver_old`，由 `install.ps1` 在 venv 步之前先跑 `scripts\base_python.ps1 -SkipGpuProbe` 得出）。
+2. 从 `SCAFFOLD_REF` 准备 `app/` / `scripts/` / `base_python.ps1` / `requirements.txt`（保留已有 ComfyUI/models/output）；或用内置脚本。
+3. 取基座 Python（见「基座 Python」：版本判据 3.11 / 3.12，没有就自己下）→ 写 `.cuda-python`（仅作 venv 基座；`-CudaPython` / `MT_H3_CUDA_PYTHON` 仍可显式覆盖）。
 4. `.\scripts\setup_env.ps1`：隔离 venv（**禁 `--system-site-packages`**）、装 **cu130** torch（torchvision/torchaudio 匹配）、ComfyUI 依赖（含 `soundfile`，见 `requirements.txt`）、KJNodes + ComfyUI-Frame-Interpolation（4K 补帧）+ ComfyUI-MiniMaxH3-TeaCache（备用）。**该脚本不部署任何随包第三方节点包，也不清空 `custom_nodes`**。
    - 装完**必须**校验 `torch.cuda.is_available()` 为真且日志里 cuda backend 未被禁用；否则按「驱动太旧」处理。
    - pip 走 `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL` / `PIP_TRUSTED_HOST` 覆盖本机全局配置，避开坏掉的 `pypi.ngc.nvidia.com` extra-index（否则 DNS 反复重试，下载几乎不前进）；**不要用 `--isolated`**（它忽略环境变量，机器级 extra-index 照样生效）。
@@ -362,6 +372,7 @@ def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_
 - 已有完整布局只补缺失，勿整体重装
 - **禁止** `--system-site-packages` 的 ComfyUI venv
 - 无 NVIDIA GPU / 显存极端不足 → 如实失败并说明，不硬装
+- **基座 Python 的判据是版本（3.11 / 3.12），不是「已经装好 CUDA torch」**：安装脚本自己取解释器（有 uv 用 uv，否则下 npmmirror 的 python-build-standalone），失败码 `h3.python.missing` / `h3.python.fetch_failed` / `h3.python.too_old` / `h3.python.too_new`。别退回「让用户先装一个带 CUDA torch 的 Python」那种前置条件——那正是 2026-11 用户报的 bug。
 
 ## 成功标准
 

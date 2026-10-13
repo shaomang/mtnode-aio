@@ -34,6 +34,9 @@ const fs = require("fs");
 const { BrowserWindow, ipcMain, screen, dialog } = require("electron");
 const steps = require("./install-steps.js");
 const weights = require("./install-weights.js");
+/* 安装后自检的内核（本轮需求）：注册表 / 结果落盘 / 等锁队列都在那里；本模块只做窗口侧编排
+   —— 本模块有「不落盘」的硬纪律（test/smoke-install-window.js），所以自检结果的读写一律在那边。 */
+const selfcheck = require("./plugin-selfcheck.js");
 /* plugin-root 的纯函数（normDir）：卸载守卫要把用户给的目录归一后再判危险目录 */
 const { normDir: rootNormDir } = require("./plugin-root.js");
 
@@ -472,6 +475,21 @@ function reportPluginStep(ev) {
       });
       return { ok: true };
     }
+    if (e.kind === "selfcheck") {
+      /* 安装后自检（本轮需求）：宿主 / 自检内核推来的进度与结论，原样转给安装窗。
+         契约见 plugins/plugin-selfcheck.js 头部 —— 只有 { state, ... }，不在这里解释业务。 */
+      sendToWin("mtnodeInstall:event", {
+        id,
+        kind: "selfcheck",
+        state: String(e.state || ""),
+        note: String(e.note || ""),
+        queued: !!e.queued,
+        step: e.step || null,
+        log: e.log == null ? "" : String(e.log),
+        result: e.result || null,
+      });
+      return { ok: true };
+    }
     if (e.kind === "finish") {
       steps.finishSnapshot(snap, {
         ok: !!e.ok,
@@ -616,6 +634,9 @@ const INSTALL_API_CHANNELS = {
      渲染层的 navigator.clipboard 会被 clipboard-write=false 拒掉 —— 用户看到的就是「复制失败」。
      放进这张白名单表 = 安装窗只多了一条**既有**通道的使用权，不新开 IPC 面。 */
   clipboardWriteText: "clipboard:writeText",
+  /* 自检产物路径点一下就定位到文件（本轮需求：结果区给「可点开的路径」）。
+     与剪贴板那条同理：只是让安装窗多一条**既有**通道的使用权，不新开 IPC 面。 */
+  shellShowItem: "shell:showItem",
 };
 
 /**
@@ -1281,6 +1302,10 @@ function startUninstall(id) {
       }
       /* ③ 收口：快照的安装目录清空（它已经不存在了） */
       if (snap) snap.installDir = "";
+      /* ④ 自检结果与产物一并清掉（用户共识：卸载后勾与结果一起失效） */
+      try {
+        selfcheck.dropCheck(sid);
+      } catch {}
       job.done = true;
       emit({ kind: "step", step: { id: UNINSTALL_STEP_ID, title: "卸载并清理文件", status: "ok", pct: 100 } });
       emit({ kind: "finish", ok: true });
@@ -1313,6 +1338,18 @@ function initInstallHost(opts) {
     getDataDir = typeof o.getDataDir === "function" ? o.getDataDir : () => o.getDataDir;
     appRoot = o.appRoot || appRoot || path.join(__dirname, "..");
     logLine = typeof o.log === "function" ? o.log : logLine;
+    /* 自检内核接线（本轮需求）：数据目录 / 各插件安装目录 / 推给安装窗的事件口 / 日志。
+       放在这里而不是启动路径上：数据目录只有到这一步才确定（DATA 取目录函数）。 */
+    try {
+      selfcheck.initPluginSelfcheck({
+        getDataDir: () => dataDirOf(),
+        getInstallDirOf: (id) => installDirOf(id),
+        pushEvent: (ev) => reportPluginStep(Object.assign({ pluginId: (ev && ev.id) || "" }, ev || {})),
+        log: (line) => log(line),
+      });
+    } catch (e) {
+      log("[install] selfcheck init failed: " + ((e && e.message) || e));
+    }
     if (o.registerIpc === false) return { ok: true, ipc: false };
     if (initInstallHost._ipc) return { ok: true, ipc: true };
     initInstallHost._ipc = true;
@@ -1395,8 +1432,21 @@ function initInstallHost(opts) {
       }
       return { ok: false, error: "bad_action", message: "安装窗不允许该卸载操作：" + action };
     });
-    /* 白名单透传：安装窗要用主窗口 preload 上那几个「安装 / 选安装目录」桥。
-       只放行 INSTALL_API_CHANNELS 里的名字，别的名字一律拒绝 —— 安装窗没有任意调用
+    /* 安装后自检（本轮需求）：{ action: "info"|"state"|"run"|"cancel"|"clean", id, reason }
+       编排（谁来跑、结果落哪、等锁排队）全在 plugins/plugin-selfcheck.js —— 本模块只转手，
+       自己不落盘、不解释业务（本模块有「不落盘」的硬纪律，见 test/smoke-install-window.js）。 */
+    ipcMain.handle("mtnodeInstall:selfcheck", async (e, payload) => {
+      const p = payload && typeof payload === "object" ? payload : {};
+      const id = String(p.id || currentId || "");
+      const action = String(p.action || "state");
+      if (!id) return { ok: false, error: "bad_id" };
+      if (action === "state") return selfcheck.stateOf(id);
+      if (action === "run") return selfcheck.runCheck(id, { reason: String(p.reason || "manual"), installDir: String(p.installDir || "") });
+      if (action === "cancel") return selfcheck.cancelCheck(id);
+      if (action === "clean") return selfcheck.cleanArtifacts(id);
+      return { ok: false, error: "bad_action", message: "安装窗不允许该自检操作：" + action };
+    });
+    /* 白名单透传：安装窗要用主窗口 preload 上那几个「安装 / 选安装目录」桥。       只放行 INSTALL_API_CHANNELS 里的名字，别的名字一律拒绝 —— 安装窗没有任意调用
        主进程能力的权限（这些通道本来就在主窗口 preload 里对渲染层开放）。 */
     ipcMain.handle("mtnodeInstall:api", async (e, payload) => {
       const p = payload && typeof payload === "object" ? payload : {};
@@ -1460,6 +1510,8 @@ function debugState() {
       job: weightsJob ? { id: weightsJob.id, cancelled: weightsJob.cancelled } : null,
     },
     uninstall: uninstallJob ? { id: uninstallJob.id, done: uninstallJob.done, cancelled: uninstallJob.cancelled } : null,
+    /* 安装后自检（本轮需求）：给冒烟与诊断看的现场 —— 登记了哪些插件、每个的最近一次结论 */
+    selfcheck: selfcheck.selfcheckSummary(),
   };
 }
 
@@ -1477,11 +1529,12 @@ module.exports = {
   requestSessionFix,
   requestOpenConsole,
   sessionRequestPayload,
+  /* 该插件这次的安装目录（自检内核要它判「都装好了没」；同一条口径，别再抄一份） */
+  installDirOf,
   snapshotOf,
   readManifest,
   /* 权重指路 → 移动就位（安装窗专用；冒烟直接调这几个纯主进程函数） */
-  weightsStateOf,
-  pickWeightsSources,
+  weightsStateOf,  pickWeightsSources,
   removeWeightsSource,
   scanWeights,
   startWeightsMove,

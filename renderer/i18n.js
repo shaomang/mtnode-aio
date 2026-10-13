@@ -2852,6 +2852,18 @@
     "自检结果：通过": "Self-test: passed",
     "自检结果：未通过": "Self-test: failed",
     "（没有步骤记录）": "(no steps recorded)",
+    /* 插件「安装后自检」的卡片侧词条（renderer/app-plugins.js）：卡片封面左上角的勾 +
+       详情浮层那一行。真源与结果落盘在 plugins/plugin-selfcheck.js。 */
+    "安装后自检": "Post-install self-test",
+    "安装后自检通过": "Post-install self-test passed",
+    "还没测过": "not tested yet",
+    "已跳过": "skipped",
+    "未通过": "failed",
+    "正在跑…": "running…",
+    "原因：": "reason: ",
+    "产物：": "artifact: ",
+    "产物目录：": "artifact dir: ",
+    "自检产物：": "self-test output: ",
     "打开抓包": "Start capture",
     "关掉抓包": "Stop capture",
     "抓包已打开（只留最近 200 条，仅本机内存）": "Capture on (last 200 entries, in-memory only)",
@@ -5214,8 +5226,6 @@
     "、{m} 个绘制": ", {m} mark(s)",
     " 项绘制": " mark(s)",
     "在资源管理器中打开该文件夹": "Open this folder in Explorer",
-    "📂 应用文件夹": "📂 App folder",
-    "打开应用文件夹": "Open the app folder",
     "在资源管理器里打开这个应用的文件夹（入口页 index.html 所在的那个目录）":
       "Open this app's folder in Explorer (the directory holding the entry page index.html)",
     "先在左栏选一个应用": "Pick an app in the left column first",
@@ -6894,8 +6904,6 @@
     "请填写本次希望开发或迭代的内容": "Please describe what to develop or iterate this round",
     "开发前需求确认（可选）": "Pre-development requirement check (optional)",
     "先拷问需求（grill-me）": "Grill me on the requirements first (grill-me)",
-    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消":
-      "Confirm = runs in the background in a new session (workspace = project root · titled Dev · module name · status becomes in progress · you stay on the canvas) · cancelling or stepping away keeps this text — reopen the box and continue where you left off · the “grill me first” switch below stays on this module block (still there next time you open it) · Ctrl+Enter submits · Esc cancels",
     /* 会话 / 助手栏【拷问模式】契约正文（app-assist.js 的 GRILL_CONTRACT，整段一条）：
        与开发节点任务书里那段【拷问模式】同一套纪律，只改两处 —— 允许只读地查现状、
        收尾不回写任何节点字段。 */
@@ -9391,31 +9399,29 @@
       "入口 index.html + app.json；宿主能力走 window.appHost（文本 / 图像生成、本机存储、账号摘要），模型与工具留在主进程与画布一侧。":
         "Entry point index.html + app.json; host capabilities go through window.appHost (text / image generation, local storage, account summary), while models and tools stay on the main-process and canvas side.",
       /* ── 应用能力位（app.json 的 capabilities：textInput / showDictate / imageGen）────
-         新建浮层的「能力」一节、开发页「应用能力…」对话框与卡片小标都用这一组词条。 */
+         「应用设置」窗里的能力位复选框与卡片小标都用这一组词条（新建浮层已不再问能力）。 */
       "能力": "Capabilities",
-      "决定起步模板带不带语音听写之类的现成能力；默认都不勾，建好之后也能在开发页「应用能力…」里改":
-        "Decides whether the starter template ships ready-made abilities such as voice dictation; everything is off by default, and you can change it later under App capabilities in the Develop page",
       "需要文字输入": "Needs text input",
       "脚手架会带上语音听写模块（本机语音识别，首次用会自动下载模型）；要不要在窗口底部显示听写条，看下面那一项":
         "The scaffold ships the local dictation module (speech recognition on this machine; the model downloads on first use). Whether the bar shows at the bottom of the window is the next option",
       "显示听写条": "Show dictate bar",
-      "在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；不勾就默认隐藏，应用自己的代码仍可唤起它":
-        "Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window; off means hidden by default, and the app's own code can still reveal it",
+      "在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）":
+        "Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window; on means visible by default, with a “Hide” button that lasts for this window only",
       "需要图像生成": "Needs image generation",
       "用 MTNode 已配好的图像能力出图：云端图像服务商或本机 SenseNova（没配就用不了，界面会写清去哪配）":
         "Draws with the image backends already configured in MTNode: a cloud image provider or the local SenseNova (without one it simply cannot draw, and the UI says where to configure it)",
       "应用能力": "App capabilities",
       "这个应用需要什么能力：": "Which capabilities does this app need: ",
       "正在读取…": "Reading…",
-      "已保存应用能力": "App capabilities saved",
       "能力没有变化": "Capabilities unchanged",
-      "应用能力并重写入口页": "Save capabilities and rewrite the entry page",
-      "按新能力重写入口页？": "Rewrite the entry page for the new capabilities?",
-      "重写入口页并保存": "Rewrite the entry page and save",
-      "改动能力位会按模板重生成这个应用的入口页（index.html）：你在里面手改过的页面内容会没了；assets/ 与数据文件夹不受影响。":
-        "Changing capabilities regenerates this app's entry page (index.html) from the template: hand edits you made in it are gone; assets/ and the data folder are untouched.",
-      "这个应用声明的能力（在开发页「应用能力…」里改）":
-        "Capabilities this app declares (change them under App capabilities in the Develop page)",
+      /* 本轮改口径：能力位只写 app.json 的声明，入口页一个字都不动（旧的
+         「重写入口页」那三句词条随实现一起删掉了） */
+      "已更新能力位（入口页未改动，听写条下次打开应用窗口生效）":
+        "Capabilities updated (the entry page was not touched; the dictate bar applies the next time the app window opens)",
+      "能力位只写 app.json 的声明：入口页（index.html）一个字都不动，你手改过的页面内容原样保留；听写条由宿主按声明注入，语音模块文件按需补撤。":
+        "Capabilities only write the declaration in app.json: the entry page (index.html) is left byte-for-byte alone, so your hand edits stay. The host injects the dictate bar from that declaration, and the speech module files are added or removed as needed.",
+      "这个应用声明的能力（在开发页「预览」条上的「应用设置」里改）":
+        "Capabilities this app declares (change them in App settings on the Dev page preview bar)",
     };
     var add = {};
     for (var ak in appNewLabels)
@@ -10404,6 +10410,24 @@
     "=== 该步骤日志尾部（更多上下文）===": "=== Tail of that step's log (more context) ===",
     "纪律（一律遵守）：只允许修改 INSTALL_DIR 内的文件（工作区之外一律不碰）；不要启动后端服务 / ComfyUI / 模型进程；不要删除用户产物目录（output/ 等）；模型与权重已就绪则勿重复下载，只补缺项；先修依赖 / 脚本 / 配置，再考虑重装。":
       "Discipline (always): only modify files under INSTALL_DIR (never touch anything outside the workspace); do not start backend services / ComfyUI / model processes; do not delete user output folders (output/ etc.); do not re-download ready models or weights — fill in only what is missing; fix dependencies / scripts / config first and consider a reinstall last.",
+    /* 安装脚本「零非 ASCII」闸门（renderer/app-repair.js 的 pluginRepairAscii* 一族）：
+       提示词纪律 + 收尾扫描后的回灌消息 + 结果窗文案，词条必须齐（英文界面不许回落中文） */
+    "脚本编码纪律：写 / 改任何 .ps1 / .cmd / .bat（以及安装期辅助 .py）时一律纯 ASCII 英文，注释也算 —— 宿主用 Windows PowerShell 5.1 跑它们，而 5.1 按机器 ANSI 代码页解码无 BOM 的 .ps1，脚本里的中文会把语法解崩。同一条纪律也管安装链会解析的清单 JSON：包里的 manifest.json 会被安装脚本读，它里面的中文同样会在中文 Windows 上把 ConvertFrom-Json 解崩 —— 清单也只写英文纯 ASCII。给用户看的中文一律走同包 steps.json 的 messages 表或界面词条。":
+      "Script encoding discipline: write / edit any .ps1 / .cmd / .bat (and install-time helper .py) in pure ASCII English, comments included — the app runs them with Windows PowerShell 5.1, which decodes a BOM-less .ps1 using the machine ANSI code page, so non-ASCII in a script breaks the parser. The same discipline covers the manifest JSON the install chain parses: a pack's manifest.json is read by the install script, and non-ASCII there breaks ConvertFrom-Json on a Chinese Windows just the same — keep that manifest pure ASCII English too. User-facing Chinese goes in the same pack's steps.json messages table or in UI strings.",
+    "宿主校验：INSTALL_DIR 里这些安装脚本含非 ASCII —— PowerShell 5.1 在中文 Windows 上会按 ANSI 代码页解码无 BOM 的 .ps1，脚本里的中文会把语法直接解崩：":
+      "Host check: these install scripts under INSTALL_DIR contain non-ASCII — PowerShell 5.1 decodes a BOM-less .ps1 with the ANSI code page on a Chinese Windows, so non-ASCII in a script breaks the parser outright:",
+    "（非 ASCII 字节 {n}）": " ({n} non-ASCII bytes)",
+    "（含 BOM）": " (has BOM)",
+    "（还有 {n} 个文件没列出来）": " ({n} more file(s) not listed)",
+    "请把这些文件里的中文（含注释）全部改成英文纯 ASCII，脚本行为不要动；改完在本会话回复里再给一次 repair_ok=1 与简要说明。":
+      "Rewrite every non-ASCII character in these files (comments included) as pure ASCII English without changing the script's behaviour; when done, reply in this session with repair_ok=1 again plus a short note.",
+    "（等共 {n} 个文件）": " (and {n} files in total)",
+    "安装脚本仍含非 ASCII（PowerShell 5.1 会按 ANSI 解码而解崩语法）：":
+      "Install scripts still contain non-ASCII (PowerShell 5.1 would decode them as ANSI and fail to parse): ",
+    "修复会话写出的安装脚本含非 ASCII：已要求它改成英文纯 ASCII":
+      "The repair session wrote install scripts containing non-ASCII: it has been asked to rewrite them in pure ASCII English",
+    "修复会话写出的安装脚本含非 ASCII（请在会话里让它改成英文纯 ASCII）":
+      "The repair session wrote install scripts containing non-ASCII (ask it in the session to rewrite them in pure ASCII English)",
     "完成后：在 INSTALL_DIR 根下写出结果文件（首行 ok=true，可附 reason= 简要根因），并在本会话回复里给出 repair_ok=1 与简要根因。":
       "When done: write the result file under the INSTALL_DIR root (first line ok=true, optionally reason=<brief root cause>) and reply in this session with repair_ok=1 plus the brief root cause.",
     "修不动：结果文件写 ok=false 与 reason=<哪一条没交付 + 具体报错>，并说清还需要用户做什么。":
@@ -10500,6 +10524,16 @@
       "No usable NVIDIA GPU detected. Use another machine / add a card, or explicitly choose \"Install the CPU version anyway (very slow)\" in the plugin and reinstall.",
     "NVIDIA 驱动太旧（跑不了目标 CUDA 算子）。请把驱动升到支持该 CUDA 的版本再重装 —— 自我修复不会替你更新驱动。":
       "The NVIDIA driver is too old (it cannot run the target CUDA kernels). Update the driver to a version supporting that CUDA, then reinstall — self-repair will not update your driver for you.",
+    "这台机器上没检测到可用的 NVIDIA 显卡：装下去也跑不了。换一台有 N 卡的机器再装；若本来就想在这台机器上跑，先把 NVIDIA 驱动装好、确认命令行能执行 nvidia-smi。":
+      "No usable NVIDIA GPU was detected on this machine, so installing would produce nothing. Install on a machine with an NVIDIA card, or get the NVIDIA driver working and confirm nvidia-smi runs from the command line first.",
+    "显卡在，但 NVIDIA 驱动太旧（这些后端要 cu130 = CUDA 13.0，驱动主版本需 ≥ 580）：自动修复不会替你更新驱动。升级驱动后重新安装即可。":
+      "The GPU is there but the NVIDIA driver is too old (these backends want cu130 = CUDA 13.0, driver major >= 580); self-repair will not update your driver. Upgrade the driver and reinstall.",
+    "安装脚本没能找到一个可用的 Python 3.11 / 3.12，它自己下载一个也没成功（走 npmmirror 的 python-build-standalone）—— 先确认能访问 registry.npmmirror.com 且 %APPDATA% 可写后重装；或自己装一个 Python 3.11 并重装。":
+      "The installer could not find a usable Python 3.11 / 3.12 and fetching one failed too (python-build-standalone via npmmirror): make sure registry.npmmirror.com is reachable and %APPDATA% is writable, then reinstall — or install Python 3.11 yourself and reinstall.",
+    "你指定的 Python 太旧：torch 的 cu130 轮子只提供 cp311 及以上。换一个 3.11 / 3.12 的解释器（或清掉 MT_*_CUDA_PYTHON / -CudaPython 让脚本自己取）后重装。":
+      "The Python you pointed at is too old: the cu130 torch wheels only ship cp311+. Use a 3.11 / 3.12 interpreter (or clear MT_*_CUDA_PYTHON / -CudaPython and let the installer fetch one) and reinstall.",
+    "你指定的 Python 太新：torch 的 cu130 轮子只覆盖到 cp313。换一个 3.11 / 3.12 的解释器（或清掉 MT_*_CUDA_PYTHON / -CudaPython 让脚本自己取）后重装。":
+      "The Python you pointed at is too new: the cu130 torch wheels only go up to cp313. Use a 3.11 / 3.12 interpreter (or clear MT_*_CUDA_PYTHON / -CudaPython and let the installer fetch one) and reinstall.",
     "安装目录不合法（盘根 / 系统目录 / 应用目录一律拒绝）。请在插件控制台重选一个普通用户目录。":
       "The install directory is not allowed (drive roots / system dirs / the app folder are all refused). Pick a normal user directory in the plugin console.",
     "安装目录不能是盘根目录。请在插件控制台重选一个子目录。":
@@ -10868,6 +10902,10 @@
      所以它必须走 Object.assign 而不是下面那道「只补缺键」的闸。 */
   Object.assign(EN, {
     "应用": "Apps",
+    /* 「开发」这一格在应用中心里是**页名**（与节点右键菜单的「开发」不是一处）：
+       用户共识的四项导航读作 应用 Apps / 库 Library / 开发中应用 In development / 开发 Develop，
+       所以这里与「应用」同一条**有意覆盖**（老译文是 "Dev"）。 */
+    "开发": "Develop",
   });
 
   /* 其余键只补缺、不改既有译文（与上方最后一块同一写法） */
@@ -10879,6 +10917,65 @@
         "应用：浏览云端应用目录，下载到本机后用独立窗口运行（已下载的应用在「库」里管理）":
           "Apps: browse the cloud app catalog, download to this computer and run in a separate window (downloaded apps are managed under Library)",
         "库": "Library",
+        /* 本轮需求（用户共识）：左导航 应用 / 库 / 开发中应用 / 开发 —— 第 3 格由原「我的应用」
+           改名，装两块：上 = 本机开发中的应用（只读清单）、下 = 我上架到云端的条目 */
+        "开发中应用": "In development",
+        "库里没有可显示的应用：本机这几个都在开发目录里（在「开发中应用」页）。":
+          "Nothing to show under Library: these apps live in the dev folder (see the In-development page).",
+        "去「开发中应用」页": "Go to the In-development page",
+        "本机开发中的应用（只读清单）· 我上架到云端的条目":
+          "Apps in development here (read-only list) · entries you published to the cloud",
+        "本机已下载的应用：打开 · 更新 · 二次开发 · 卸载":
+          "Apps downloaded to this computer: open · update · secondary development · uninstall",
+        "本机开发中的应用": "Apps in development on this computer",
+        "我上架到云端": "Published to the cloud",
+        "正在读取开发中的应用与你上架到云端的条目…":
+          "Reading the apps in development and the entries you published…",
+        "搜索我上架到云端的应用（标题 / 描述 / 标签；只管下半块）…":
+          "Search the apps you published (title / description / tags; lower block only)…",
+        "会话 ": "Sessions ",
+        "最后开发 ": "Last worked on ",
+        "还没有开发中的应用：到「库」里点「复制到开发文件夹（二次开发）」，或在「开发」页新建一个应用。":
+          "No apps in development yet: use “Copy to the dev folder (secondary development)” under Library, or create one on the Develop page.",
+        /* 二次开发 = 复制到开发目录（本轮口径）：入口文案 / 冲突二选一 / 落点提示 */
+        "复制到开发文件夹（二次开发）": "Copy to the dev folder (secondary development)",
+        "开发流程模块未就绪（请重启 MTNode）": "Dev flow module is not ready (restart MTNode)",
+        "把这个应用复制一份到开发文件夹（库目录里那份原地不动、仍留在「库」），并给它建 / 复用同名画布与开发节点":
+          "Copies this app into the dev folder (the Library copy stays where it is) and creates or reuses its same-name canvas and dev node",
+        "这个应用在开发目录里已经有一份了：": "This app already has a copy in the dev folder: ",
+        "开发目录里已经有这个应用：怎么办？": "This app is already in the dev folder — what now?",
+        "直接覆盖": "Overwrite now",
+        "用「库」里这一份整目录覆盖开发目录里那一份，然后接着开发":
+          "Replaces the dev-folder copy with this Library copy, then keeps developing",
+        "本机代码：整目录换成库里这一份，你在开发目录那份上的改动会丢":
+          "My code: the whole folder becomes the Library copy — your edits in the dev folder are lost",
+        "退路：覆盖前把旧那份整目录备份到数据目录的 merge-backups（界面不提供回滚入口）":
+          "Way back: the old copy is backed up to merge-backups in the data folder first (no roll-back button in the UI)",
+        "库目录：不动（那一份仍列在「库」里）": "Library folder: untouched (that copy stays listed under Library)",
+        "不需要 Agent：主进程一次做完": "No Agent needed: the main process does it in one go",
+        "应用窗口：覆盖前会自动关掉它（如果开着）": "App window: closed automatically before overwriting (if open)",
+        "交给 AI 合并": "Merge with AI",
+        "保持本机这一份继续用：把对方那一版拉到合并暂存目录，起一条会话让 Agent 逐项对比、问过你才写入":
+          "Keeps this local copy: the other version is fetched into the merge staging folder and a session lets the Agent compare item by item and write only after you confirm",
+        "两条路都不会自动上架；库目录里那一份始终原样保留。":
+          "Neither path auto-publishes; the Library copy is always left as it is.",
+        "已复制到开发文件夹：": "Copied to the dev folder: ",
+        "已用「库」里这一份覆盖开发目录，接着开发：":
+          "Replaced the dev folder with the Library copy, continuing: ",
+        "复制到开发文件夹失败：": "Copying to the dev folder failed: ",
+        "覆盖开发目录失败：": "Overwriting the dev folder failed: ",
+        "已复制到开发文件夹，但画布保存失败：": "Copied to the dev folder, but saving the canvas failed: ",
+        "开发目录里已经有这个应用了": "This app is already in the dev folder",
+        "这个应用不在库目录里（先把它下载到本机）": "This app is not in the Library folder (download it first)",
+        "库目录与开发目录是同一个文件夹：先分开它们再二次开发":
+          "The Library and dev folders are the same folder: separate them before secondary development",
+        "覆盖前备份失败（没敢动任何东西）：": "Backup before overwriting failed (nothing was touched): ",
+        "复制到开发目录失败：": "Copying into the dev folder failed: ",
+        "已复制到开发文件夹：库目录里那一份原样保留": "Copied to the dev folder; the Library copy is left as it is",
+        /* 来源 / 分支点（本轮需求）：app.json 的 forkOf 内部记录在「选择版本 / 分支树」窗里露一行 */
+        "本机这一份基于 v": "This local copy is based on v",
+        "来源：": "Source: ",
+        "原作者 ": "original author ",
         "浏览云端目录 · 下载到本机后用独立窗口运行":
           "Browse the cloud catalog · download and run in a separate window",
         "本机已下载的应用：打开 · 更新 · 卸载":
@@ -11123,6 +11220,147 @@
         "删除该应用？只删它在下载根下的子文件夹与它自己那一棵数据（apps-data/downloaded/），项目根与开发数据一概不动。":
           "Delete this app? Only its own folder under the download root and its own data tree (apps-data/downloaded/) are deleted; the project root and dev data are untouched.",
         "（已放进回收站）": " (moved to the recycle bin)",
+        /* 删除应用（二次确认 → 应用文件夹与该 app 的画布一起进系统回收站；数据 / 会话保留） */
+        /* 两只设置窗（本轮需求：库 / 开发的**目录设置** 与 应用自己的**应用设置**必须分开）
+           · 右上角齿轮 → 目录设置（app-apps.js 的 appsDirSettingsOpen）：只剩两套根目录；
+           · 开发页中栏「预览」列头条那枚 ⚙ → 应用设置（appsAppSettingsOpen）：
+             应用文件夹 / 数据目录 / 应用能力 / 预览 / 删除应用。 */
+        "目录设置": "Folder settings",
+        "目录设置：库目录 / 开发目录": "Folder settings: library root / dev root",
+        "应用设置": "App settings",
+        "应用设置：应用文件夹 / 数据目录 / 应用能力 / 预览 / 删除应用":
+          "App settings: app folder / data folder / capabilities / preview / delete app",
+        "库与开发两套根目录在右上角齿轮的「目录设置」里；这里只管这一个应用。":
+          "The library and dev roots live in “Folder settings” behind the top-right gear; this window only covers this one app.",
+        "库与开发的目录": "Library and dev roots",
+        "这两套根目录都可以改：点右侧的「修改」选一个新文件夹（改完会问一句要不要把旧目录里的应用一起搬过去），点「打开」在资源管理器里看它。应用自己的设置（应用文件夹 / 数据目录 / 应用能力 / 预览 / 删除应用）在开发页中栏「预览」条上的「应用设置」里。":
+          "Both roots can be changed: use “Modify” on the right to pick a new folder (you are then asked whether to move the apps in the old folder over), or “Open” to see it in File Explorer. Per-app settings (app folder / data folder / capabilities / preview / delete app) live in “App settings” on the Dev page's preview bar.",
+        /* 目录设置窗的两枚按钮（词条「修改」「打开」已有，这里不重复登记）
+           + 换根时那一句行内确认 + 换根回执（本轮需求） */
+        "改开发目录：给「自己开发的应用」换一个根目录（可顺带把旧目录里的应用搬过去）":
+          "Change the dev root: pick another folder for the apps you build (the apps in the old folder can be moved over with it)",
+        "改库目录：给「从云端下载的应用」换一个根目录（可顺带把旧目录里的应用搬过去）":
+          "Change the library root: pick another folder for apps downloaded from the cloud (the apps in the old folder can be moved over with it)",
+        "旧目录里有 ": "The old folder holds ",
+        " 个这一类的应用：改完根目录后要把它们一起搬过去吗？":
+          " app(s) of this kind: move them over after changing the root?",
+        "旧目录里没有这一类的应用：直接选新文件夹即可。":
+          "The old folder has no apps of this kind: just pick a new folder.",
+        "一起搬过去": "Move them over",
+        "留在原处": "Leave them where they are",
+        "选新文件夹…": "Choose a new folder…",
+        "已改到：": "Now set to: ",
+        "已搬过去 ": "Moved ",
+        " 个应用：": " app(s): ",
+        "没有需要搬动的应用（旧目录里没有这一类的应用）":
+          "Nothing needed moving (the old folder had no apps of this kind)",
+        "只改了根目录：旧目录里的应用留在原处，不再列出来":
+          "Only the root was changed: the apps in the old folder stay there and are no longer listed",
+        "跳过 ": "Skipped ",
+        " 个（原样留在旧目录）：": " (left as-is in the old folder): ",
+        "修改失败：": "Could not change it: ",
+        "宿主桥未就绪：这次没能修改目录":
+          "Host bridge not ready: the folder was not changed this time",
+        "目录已改到：": "Folder changed to: ",
+        /* 「维持状态」从开发页顶栏搬进应用设置窗（本轮需求）：真源 = config.appsDevKeepState */
+        "刷新 / 重载预览前先把页面状态（滚动位置与表单内容）存下来，加载完成后写回；关掉就不存不写。这个选择记在本机配置里，下次打开还是它。":
+          "Before reloading the preview, the page state (scroll position and form values) is saved and written back once it has loaded; turn this off and nothing is saved or written back. Your choice is stored in the local config, so it is still there next time.",
+        "刷新预览时记住页面状态（滚动位置与表单内容）":
+          "Remember the page state (scroll position and form values) when reloading the preview",
+        "已开启：刷新预览时记住页面状态（滚动位置与表单内容）":
+          "On: the page state (scroll position and form values) is remembered when reloading the preview",
+        "已关闭：刷新预览不再记住页面状态":
+          "Off: the page state is no longer remembered when reloading the preview",
+        "这个应用": "This app",
+        "（读不到这个应用）": "(this app cannot be read)",
+        "读不到这个应用的应用文件夹（可能在别处被删了）":
+          "Cannot read this app's folder (it may have been deleted elsewhere)",
+        "先在开发页左栏选一个应用": "Pick an app in the Dev page's left column first",
+        "新建的应用默认三位全开；这里是给已有应用改的地方。勾选当场生效（这只窗里没有单独的保存按钮）：只写 app.json 的声明，入口页（index.html）一个字都不动，你手改过的页面内容原样保留；听写条由宿主按声明注入，语音模块文件按需补撤。":
+          "New apps start with all three capabilities on; this is where you change an existing app. A click takes effect immediately (this window has no separate Save button): it only writes the declaration in app.json, the entry page (index.html) is left byte-for-byte alone so your hand edits stay. The host injects the dictate bar from that declaration, and the speech module files are added or removed as needed.",
+        "能力位没能写进 app.json：": "The capability bit could not be written to app.json: ",
+        /* 应用文件夹 / 数据目录两枚「修改」（本轮需求）：只回回执，选目录框与搬动都在主进程。
+           应用文件夹那一枚**不弹选目录框**：应用只认 <根>\<应用 id>，能选的落点就是这两套根本身，
+           所以界面上是行内二选一（放到库目录 / 放到开发目录）。 */
+        "修改应用文件夹：把这个应用搬到库目录或开发目录下（搬完这个应用已打开的窗口会被关掉）":
+          "Modify the app folder: move this app under the library root or the dev root (its open window is closed by the move)",
+        "修改数据目录：选一个新文件夹放这个应用的数据（旧目录里的数据原地不动）":
+          "Modify the data folder: pick a new folder for this app's data (data in the old folder stays where it is)",
+        "把这个应用放到哪一套根下？": "Which root should this app live under?",
+        "放到开发目录": "Move to the dev root",
+        "放到库目录": "Move to the library root",
+        "应用只能住在这两套根的根目录下（库目录 / 开发目录）：放进子文件夹里它就找不到了":
+          "An app can only live directly under one of the two roots (library / dev): put it in a subfolder and it disappears from the list",
+        "在资源管理器中打开这个应用自己的文件夹（入口页 index.html 所在的那个目录）":
+          "Open this app's own folder in File Explorer (the folder holding the entry page index.html)",
+        "在资源管理器中打开这个应用的数据目录（默认 <数据目录>/apps-data/<id>/）":
+          "Open this app's data folder in File Explorer (default <data folder>/apps-data/<id>/)",
+        "那个文件夹里已经有一个同名的应用文件夹：先自己处理它，这里不覆盖":
+          "That folder already holds an app folder with the same name: deal with it yourself first — nothing is overwritten here",
+        "修改应用文件夹失败：": "Could not change the app folder: ",
+        "应用文件夹已改到：": "App folder changed to: ",
+        "（这个应用已打开的窗口已关闭）": " (the app's open window was closed)",
+        "修改数据目录失败：": "Could not change the data folder: ",
+        "数据目录已改到：": "Data folder changed to: ",
+        "能力位编辑不可用（renderer/app-app-flow.js 未加载）":
+          "Capability editing unavailable (renderer/app-app-flow.js not loaded)",
+        "能力默认全开（文字输入 / 听写条 / 图像生成）：建好之后可在开发页「预览」条上的「应用设置」里逐位调整。":
+          "Capabilities are all on by default (text input / dictate bar / image generation); after creating the app you can flip each bit in “App settings” on the Dev page's preview bar.",
+        "决定这个应用入口页的长相；建好之后要换，让这个应用的开发会话按新风格重写入口页":
+          "Decides how this app's entry page looks; to change it later, have this app's dev session rewrite the entry page in the new style",
+        /* 预览列头条那一行动作钮（本条：刷新 / 应用设置 / 画布；本轮又添 📂 / 启动 / 上架，
+           放不下的收进「更多 ▾」） */
+        "刷新预览：重新读取应用目录并重载预览窗":
+          "Refresh the preview: re-read the app folder and reload the preview",
+        "打开这个应用的画布（居中到它的开发节点）":
+          "Open this app's canvas (centred on its dev node)",
+        "应用文件夹": "App folder",
+        "应用文件夹：": "App folder: ",
+        "点击在资源管理器中打开": "Click to open in Explorer",
+        "先在开发页左栏选一个应用（或在详情窗里打开一个应用）":
+          "Pick an app in the Dev page's left column first (or open one in the details window)",
+        "（还没建：应用第一次写存储时生成）":
+          "(not created yet: it appears the first time the app writes storage)",
+        "库目录（\\apps）": "Library root (\\apps)",
+        "开发目录（\\apps-dev）": "Dev root (\\apps-dev)",
+        "（读不到路径）": "(path unavailable)",
+        "打开开发中的应用所在的根目录": "Open the root folder holding apps in development",
+        "打开从云端下载的应用所在的根目录": "Open the root folder holding apps downloaded from the cloud",
+        "预览地址": "Preview URL",
+        "预览状态": "Preview state",
+        "独立窗口": "App window",
+        "该应用已在独立窗口运行，预览为只读":
+          "This app already runs in its own window, so the preview is read-only",
+        "关掉它，预览立刻恢复可写": "Close it and the preview becomes writable again",
+        "删除应用": "Delete app",
+        "二次确认后，把这个应用的应用文件夹与它的画布**一起移入系统回收站**（可在资源管理器里还原）。应用数据、会话与导出包保留。":
+          "After a second confirmation, this app's folder and its canvas are moved to the system recycle bin together (restorable in Explorer). App data, sessions and exported packages are kept.",
+        "删除不可撤销：应用文件夹与画布一起进回收站":
+          "Deleting cannot be undone: the app folder and its canvas both go to the recycle bin",
+        "（路径未知）": "(path unknown)",
+        "（这个应用还没有画布）": "(this app has no canvas yet)",
+        "应用数据、会话与导出包都会保留。": "App data, sessions and exported packages are all kept.",
+        "注意：它当前绑定着开发节点，删除后那张画布的开发节点会一起消失。":
+          "Note: it is bound to a dev node right now — that canvas and its dev node disappear together.",
+        "删除并移入回收站": "Delete and move to recycle bin",
+        "确定删除「": "Delete “",
+        "」？以下内容会一起移入系统回收站（可在资源管理器里还原）：":
+          "”? The following are moved to the system recycle bin together (restorable in Explorer):",
+        "应用文件夹：": "App folder: ",
+        "｜这个应用没有画布": " | this app has no canvas",
+        "｜画布已一并移入回收站": " | the canvas was moved to the recycle bin too",
+        "｜但画布没能删除：": " | but the canvas could not be deleted: ",
+        "（应用文件夹已放进回收站）": " (app folder moved to the recycle bin)",
+        "画布删除能力未就绪": "Canvas deletion is not available",
+        "这个应用就是你自己在开发的那一份，没有需要合并的别人的改动":
+          "This is the copy you are developing yourself — there are no changes from someone else to merge",
+        "二次确认后把这个应用的应用文件夹与它的画布一起移入系统回收站（可在资源管理器还原）；应用数据与会话保留":
+          "After a second confirmation, this app's folder and its canvas are moved to the system recycle bin together (restorable in Explorer); app data and sessions are kept",
+        "打开这个应用自己的文件夹（入口页 index.html 所在的那个目录）":
+          "Open this app's own folder (the directory holding the entry page index.html)",
+        "打开这个应用的数据目录（默认 <数据目录>/apps-data/<id>/）":
+          "Open this app's data folder (defaults to <data dir>/apps-data/<id>/)",
+        "路径未知，打不开": "Path unknown, cannot open",
         /* 开发页 / 会话工作区（bug：应用下列没有会话时会话落到默认目录） */
         "找不到这个应用的项目文件夹：先把它装回来（或修好 app.json），再发本轮需求":
           "Cannot find this app's project folder: bring the app back (or fix its app.json), then send this round's request",
@@ -11130,7 +11368,7 @@
           "This app's folder is gone from this computer: the session workspace cannot be determined, so no session is created (files must not land in the default folder)",
         "找不到这个应用在本机的项目文件夹：会话无法确定工作区（先把它装回来或修好 app.json）":
           "Cannot find this app's project folder on this computer: the session workspace cannot be determined (bring the app back or fix app.json)",
-        "已登记为开发中，但项目文件夹没能自动归位（项目根里可能已有一份同名目录）：位置未变，可稍后在「应用根目录」里手动迁移":
+        "已登记为开发中，但项目文件夹没能自动归位（项目根里可能已有一份同名目录）：位置未变，可稍后在「目录设置」里换根时一并搬过去":
           "Registered as in-development, but the project folder could not be moved automatically (the project root may already hold a folder with the same name): nothing changed — migrate manually later from App root folder",
         "应用根目录": "App root folder",
         "应用根目录已设置：": "App root folder set: ",
@@ -11149,8 +11387,6 @@
         /* 应用设计风格（新建时选 / 开发页换）：清单真源在主进程 apps-store.js 的 APP_STYLES，
            这里只放界面词条；风格名与预览图随每套风格的模板一起维护（templates/app-default） */
         "设计风格": "Design style",
-        "决定这个应用入口页的长相；建好之后也能在开发页「⋯ → 换风格…」里换":
-          "Sets how your app's entry page looks; you can change it later from ⋯ → Change style on the Develop page",
         "预览图就是每种风格真实渲染出来的样子":
           "Each preview is the real page rendered in that style",
         "风格预览图": "style preview",
@@ -11162,7 +11398,6 @@
         "终端": "Terminal",
         "玻璃拟态": "Glass",
         "复古印刷": "Retro print",
-        "换风格…": "Change style…",
         "换风格": "Change style",
         "选一种设计风格，按它重写这个应用的入口页：":
           "Pick a design style; the app's entry page is rewritten in it: ",
@@ -11286,7 +11521,9 @@
         /* 开发页顶部菜单条（renderer/app-apps-dev.js + css/apps.css）：
            只允许一行，放不下的项收进「更多 ▾」。 */
         "刷新预览": "Reload preview",
-        "维持状态": "Keep state",
+        /* 「维持状态」这个标题词条本轮随那一节一起消失（新家那节的标题是「预览」，
+           开关文案是「刷新预览时记住页面状态（滚动位置与表单内容）」—— 已在上面的
+           目录设置词条段里） */
         /* 「＋」= 新开发会话（本轮：入口挪到开发页左栏每条应用行右端，工具栏那颗也改成同一枚
            图标；文案只有这一枚「＋」，含义由 tooltip / aria-label 说清）。 */
         "＋": "＋",
@@ -11309,6 +11546,16 @@
         "预览不可用：": "Preview unavailable: ",
         "读不到该应用目录（可能在别处被删了）":
           "Cannot read this app folder (it may have been deleted elsewhere)",
+        /* ── 开发页（apps-dev）· 本轮需求：顶栏整体移除 ──────────────────────────────
+         *  · 左上角只剩「＋ 新建应用」文字按钮；左栏底部那颗「＋ 新建应用」改成「＋ 新会话」；
+         *  · 「📂 应用文件夹 / 启动 / 上架」搬进中栏「预览」列头条，与「刷新 / 应用设置 / 画布」
+         *    排成一行（放不下的收进「更多 ▾」）；
+         *  · 预览列头条那串状态文字（预览已是最新 · 已连入宿主 · N 个文件…）整体移除
+         *    （「预览已连入宿主」那几个词条仍有主：预览栏「应用设置」窗的「预览状态」一行）；
+         *  · 「先拷问需求」「维持状态」两枚开关撤下：前者真源仍在开发节点 devGrill（画布上
+         *    这个功能块的「开发」对话框里改），后者搬进预览栏「应用设置」窗。 */
+        "在资源管理器里打开这个应用的文件夹（入口页 index.html 所在的那个目录）":
+          "Open this app's folder in File Explorer (the folder holding the entry page index.html)",
         /* 切应用的轻量加载提示（renderer/app-apps-dev.js 的 appsDevLoadingShow）：
            只在换应用那一下露一行，替掉过去那块整块黑幕。 */
         "正在加载…": "Loading…",
@@ -11376,7 +11623,7 @@
         "删除…": "Delete…",
         /* 编辑框 */
         "编辑应用": "Edit app",
-        "这条应用的云端条目没载入：确认已登录并在「我的应用」页刷新后重试":
+        "这条应用的云端条目没载入：确认已登录并在「开发中应用」页刷新后重试":
           "This app's cloud entry is not loaded yet: make sure you are signed in and refresh the My Apps page, then retry",
         "① 基本信息（改完立刻对全站生效）": "① Basic info (takes effect for everyone right away)",
         "标题": "Title",
@@ -11563,7 +11810,7 @@
     /* 删版本这条链的失败码（服务端 code → 中文解释，见 app-publish.js 的 pubErrText） */
     "服务端说这一版不存在（可能已被删过，或界面上这一版不是服务端的真版本记录）：点「重新读取」刷一遍版本区":
       "The server says this version does not exist (it may already be deleted, or the list is out of date): click “Reload” to refresh the version list",
-    "服务端未启用应用多版本（单版模式）：这一版删不掉，要彻底删掉这个应用请在「我的应用」里删除它":
+    "服务端未启用应用多版本（单版模式）：这一版删不掉，要彻底删掉这个应用请在「开发中应用」页下半块删除它":
       "This server has app versions disabled (single-version mode): this version cannot be deleted here — to delete the app for good, delete it in My Apps",
     "这个 id 下没有你这个账号的分支：删版本只作用于自己的分支":
       "This id has no branch under your account: deleting versions only affects your own branch",
@@ -12016,8 +12263,8 @@
       "): nothing was moved, to avoid overwriting it. Rename or delete that canvas first.",
     "已登记为开发中，但画布保存失败：":
       "Registered as in development, but saving the canvas failed: ",
-    "本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。":
-      "No “in development” apps on this machine yet: click “Build on it” on the Library page, or “＋ New app” at the bottom of the left column.",
+    "本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左上角的「＋ 新建应用」。":
+      "No “in development” apps on this machine yet: click “Build on it” on the Library page, or “＋ New app” at the top left.",
     "搜索应用 / 会话…": "Search apps / sessions…",
     "暂无开发中的应用": "No apps in development",
     "没有匹配的应用或会话": "No matching app or session",
@@ -12322,6 +12569,19 @@
     /* 桌宠卡片上这两条中文在英文界面里原先没对译（英文档回落到中文）—— 顺手补上 */
     "桌宠": "Desktop pet",
     "启动桌宠失败：": "Failed to start the desktop pet: ",
+    /* 插件显存门槛（本轮需求）：显存不够的本地后端插件直接隐藏。
+       键与 renderer/app-plugins.js 逐字对齐（含全角括号与 ≥）；取值用 I18n.t(key, {…}) 的
+       {name} 占位（见 i18n.js 的 t()），免得为「本机 8G」这种夹在句子中间的值再造半截词条。 */
+    "显示不支持的插件": "Show unsupported plugins",
+    "显存不足的本地后端插件默认隐藏（避免装完跑不起来）":
+      "Local backend plugins that need more VRAM are hidden by default (so you don't install one that cannot run)",
+    "本机显存 ≈": "this machine ≈",
+    "本机显存可能不足（本机 {reading} · 需要 ≥{need}G）":
+      "VRAM may be insufficient on this machine (this machine {reading} · needs ≥{need}G)",
+    "本机显存不足，无法安装": "Not enough VRAM on this machine — cannot install",
+    "本机显存不足": "Not enough VRAM on this machine",
+    "本机显存不足，未显示该插件（本机 {reading} · 需要 ≥{need}G）":
+      "Hidden: not enough VRAM on this machine (machine {reading} · needs ≥{need}G)",
   });
 
   function listJoin(arr) {

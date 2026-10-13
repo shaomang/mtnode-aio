@@ -297,6 +297,69 @@ console.log("\n[7] 默认根固化（不要求手选 / 不覆盖已选 / 列应�
   );
   writeCfg({ apps: { installDir: DL, projectDir: DEV } });
 }
+
+/* ---------- [8] 二次开发的「归位」（本轮修的 bug）：缺省只看不动 · 归位后开发页才知道它 ---------- */
+console.log("\n[8] 二次开发归位（migrateAppsLayout 的 dryRun · 开发页那几条通道的目录解析）");
+{
+  /* 现场 = 新装机器上点「二次开发」：应用在**下载根**，app.json 先被写成 dev:true，
+     紧接着渲染层调 apps:migrateLayout({ id }) 归位 —— 老代码没带 dryRun，主进程按
+     「只看不动」只回了一份搬家清单，目录原地未动，于是开发页整列看不到它。 */
+  const STRANDED = "strandeddev";
+  const strandedDir = makeApp(
+    DL,
+    STRANDED,
+    { id: STRANDED, name: "二次开发的应用", version: "1.0.0", entry: "index.html", dev: true },
+    true,
+  );
+  /* 8.1 缺省（不带 dryRun）= 只看不动：这条安全默认是留给全量迁移的，调用方必须显式传 false */
+  const d1 = store.migrateAppsLayout({ id: STRANDED });
+  ok(d1.ok === true && d1.dryRun === true, "不带 dryRun 仍按 dry-run 走（安全缺省没被动过）");
+  ok(
+    fs.existsSync(strandedDir) && !fs.existsSync(path.join(DEV, STRANDED)),
+    "dry-run 之后应用还在下载根（这就是用户报的现场）",
+  );
+  ok(
+    (d1.moves || []).some((m) => m.kind === "app" && m.id === STRANDED),
+    "回执里只有「会搬哪些目录」的计划（老代码正是拿它当真实位置用）",
+  );
+  /* 8.2 这个现场下列表两个字段都如实带出来：清单说 dev、扫到的根是 down */
+  const s1 = store.listApps().apps.find((x) => x.id === STRANDED);
+  ok(
+    !!s1 && s1.kind === "dev" && s1.listKind === "down" && s1.kindMismatch === true,
+    "清单 dev:true 却躺在下载根：kind=dev / listKind=down / kindMismatch=true",
+  );
+  /* 8.3 开发页那几条通道点名 dev：项目根没有这一份时回落到**仲裁为 dev 的那一份真实目录** ——
+     否则应用在开发页可见了，点「启动 / 打开 / 移除登记」却一律报「该应用不在本机」。 */
+  ok(
+    path.resolve(store.dirOfApp(STRANDED, "dev")) === path.resolve(strandedDir),
+    "dirOfApp(id,'dev') 回落到实际那一份（打开窗口 / 移除登记都走它）",
+  );
+  ok(
+    path.resolve(store.dirOfApp(STRANDED)) === path.resolve(strandedDir),
+    "不点名时同样拿得到（老口径不变）",
+  );
+  const pv = store.devPreview(STRANDED);
+  ok(
+    pv.ok === true && path.resolve(String(pv.dir)) === path.resolve(strandedDir),
+    "开发页预览（apps:devPreview）指向实际目录，不再报「该应用不在本机」",
+  );
+  /* 8.4 真搬（渲染层本轮显式传 dryRun:false）：应用与它的数据一起归位 */
+  const d2 = store.migrateAppsLayout({ id: STRANDED, dryRun: false });
+  ok(d2.ok === true && d2.dryRun === false && d2.moved >= 1, "带 dryRun:false = 真搬（moved=" + d2.moved + "）");
+  ok(
+    fs.existsSync(path.join(DEV, STRANDED, "app.json")) && !fs.existsSync(strandedDir),
+    "应用已归位进项目根、下载根里那份没了",
+  );
+  ok(
+    path.resolve(store.dirOfApp(STRANDED, "dev")) === path.resolve(path.join(DEV, STRANDED)),
+    "归位后 dirOfApp(dev) = 项目根那一份（回落到此不再触发）",
+  );
+  const s2 = store.listApps().apps.find((x) => x.id === STRANDED);
+  ok(
+    !!s2 && s2.kind === "dev" && s2.listKind === "dev" && s2.kindMismatch === false,
+    "归位后两个字段都归 dev（开发页口径认它、库页不再列）",
+  );
+}
 }
 
 section3()

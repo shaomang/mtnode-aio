@@ -617,6 +617,20 @@ async function fullFlowTest() {
   ok(note.ok === true && note.versionBefore === "1.0.0" && note.version === "1.0.2" && note.versionChanged === true, "只有拷问问出「跟着动」时才改版本号（1.0.0 → 1.0.2）");
   ok(JSON.parse(fs.readFileSync(path.join(appDir, "app.json"), "utf8")).version === "1.0.2", "版本号落在 app.json 上");
   ok(merger.mergeNote({ id: "demo", ownerId: "u_other", author: "分支作者", version: "1.0.1" }).versionChanged === false, "不给 newVersion 时版本号一律不动");
+  /* 本轮口径（用户共识）：mergeNote 在本机**还没声明过来源**时补一条内部来源记录 forkOf
+     （取合并来源那一版；上架时据此认分支点）。真跑一遍读写，不靠源码口径。 */
+  const manFork = JSON.parse(fs.readFileSync(path.join(appDir, "app.json"), "utf8"));
+  ok(
+    !!manFork.forkOf && manFork.forkOf.id === "demo" && manFork.forkOf.ownerId === "u_other" && manFork.forkOf.owner === "分支作者",
+    "合并收尾给 app.json 补一条 forkOf = { id, ownerId, owner }（来源 = 这次合的是谁那一版）：" + JSON.stringify(manFork.forkOf),
+  );
+  /* 已声明过来源的不许被覆盖（用户自己填的 / 上架流程写的都算「他自己的声明」） */
+  merger.mergeNote({ id: "demo", ownerId: "u_third", author: "另一个人", version: "3.0.0" });
+  const manFork2 = JSON.parse(fs.readFileSync(path.join(appDir, "app.json"), "utf8"));
+  ok(
+    manFork2.forkOf.ownerId === "u_other" && manFork2.forkOf.owner === "分支作者",
+    "本机已经声明过来源 → 再合别人的一版也一个字不动（绝不覆盖用户自己的声明）",
+  );
 
   /* 越界保护：只许删自己建的那一棵暂存目录 */
   const outside = path.join(TMP, "not-ours");
@@ -763,7 +777,15 @@ section("[3] 接线：IPC / preload / 打包白名单 / 样式 / 词条 / 内置
   ok(noDev.appsMergeBtnEl("wordless", theirBranch, FIXTURE_CATALOG) === null, "不在本机开发目录里的应用不露入口");
   ok(/APPS_MERGE\.dev\[sid\]/.test(apps) && /appsMergeEnsureInfo/.test(apps), "开发态按 id 缓存再问主进程（答不到就不露按钮）");
   /* 卡片 / 列表行：开发中的应用走合并入口，非开发的照旧「更新」（整目录覆盖） */
-  ok(/function appsCardMergeTargetOf\(spec\)/.test(apps) && /local\.dev !== true\) return null/.test(apps), "只有开发中的应用才走「拉取并交给 Agent 合并」（其余照旧走更新）");
+  /* 本轮口径：合并入口的判据从「清单里的 dev 标记」改成**物理目录**——
+     取值点名 dev（appsLocalById(id, "dev")），再让 appsLocalRootKind 说话。
+     同 id 两边各有一份时，下载根那份不许露合并入口（它走「更新」）。 */
+  ok(
+    /function appsCardMergeTargetOf\(spec\)/.test(apps) &&
+      /const local = appsLocalById\(id, "dev"\);/.test(apps) &&
+      /if \(!local \|\| appsLocalRootKind\(local\) !== "dev"\) return null;/.test(apps),
+    "只有开发目录里那一份才走「拉取并交给 Agent 合并」（appsLocalById(id, \"dev\") + appsLocalRootKind !== \"dev\" 即不露入口；其余照旧走更新）",
+  );
   ok(/appsCardMergeTargetOf\(spec\)/.test(apps) && /appsCardUpdateTargetOf\(spec\)/.test(apps), "卡片与列表行两条路都在：开发中 → 合并入口，其余 → 更新入口");
   const css = read("renderer/css/apps.css");
   ok(/\.apps-br-merge\b/.test(css) && /\.apps-merge-entry\b/.test(css), "分支树入口块与合并按钮的样式都在");
@@ -801,6 +823,14 @@ section("[3] 接线：IPC / preload / 打包白名单 / 样式 / 词条 / 内置
   ok(/function appsMergeContractText/.test(dev) && /_devContract|agentContractSession/.test(dev), "契约正文有独立函数，会话走契约注入（开发会话 / 普通契约会话两条路）");
   ok(/createDevSessionForNode/.test(dev) && /agentContractSession/.test(dev), "有画布开发节点走开发会话，没有则退成普通契约会话");
   const mergeSrc = read("app-branch-merge.js");
+  /* 同一条来源记录的另一位写者：「完全替换」（app-branch-replace.js）本轮起也写**非空**的
+     forkOf = { id, ownerId: 对方 ownerId, owner: 对方 author }（原来是 null）——
+     写 null 就等于「我这份是原创」，上架时认不出分支点。 */
+  const replaceSrc = read("app-branch-replace.js");
+  ok(
+    /forkOf:\s*\n\s*their\.ownerId \|\| their\.author\s*\n\s*\? \{ id: id, ownerId: their\.ownerId, owner: their\.author \}\s*\n\s*: null,/.test(replaceSrc),
+    "app-branch-replace：覆盖进来的那一版把来源写进 forkOf = { id, ownerId: 对方 ownerId, owner: 对方 author }（不再是 null）",
+  );
   ok(
     !/[\u4e00-\u9fa5]/.test(
       mergeSrc

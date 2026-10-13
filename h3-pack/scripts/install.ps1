@@ -51,6 +51,16 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 $ErrorActionPreference = "Stop"
 
+# Absolute path to this PowerShell host: a few installation paths shrink PATH (the clean-machine
+# smoke test does), and a bare "powershell.exe" then fails with CommandNotFoundException.
+$PS_EXE = ""
+try { $PS_EXE = [string][System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $PS_EXE = "" }
+if (-not $PS_EXE -or -not (Test-Path -LiteralPath $PS_EXE)) {
+    $PS_EXE = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+}
+if (-not (Test-Path -LiteralPath $PS_EXE)) { $PS_EXE = "powershell.exe" }
+
+
 $stepLib = Join-Path $PSScriptRoot "step.ps1"
 if (Test-Path $stepLib) { . $stepLib }
 else {
@@ -159,7 +169,7 @@ function Invoke-SubScript {
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    & powershell.exe @psArgs 2>&1 | ForEach-Object {
+    & $PS_EXE @psArgs 2>&1 | ForEach-Object {
       $line = [string]$_
       Add-SubTail $line
       Write-Host $line
@@ -233,8 +243,51 @@ try {
 # -- 3. venv + torch (setup_env.ps1 does both; it ALWAYS runs, idempotent) -----
 Step-Begin "venv" "" 16
 try {
+  # Cheap hardware preflight FIRST (nvidia-smi only): without an NVIDIA card, or with a
+  # driver below 580, H3 cannot run at all. Failing here keeps the failure precise ("no
+  # card" / "driver too old") instead of surfacing 40 minutes later as a generic venv
+  # error -- and it stops us from downloading ~50MB of Python plus ~3GB of torch first.
+  # The gate that decides remains the measured torch cu130 check below.
+  # Guarded: an install directory whose scaffold predates this helper (or a partial copy)
+  # simply skips the preflight -- an upgrade must never block because a new optional file
+  # is absent.
+  $preHelper = Join-Path $PSScriptRoot "base_python.ps1"
+  if (Test-Path -LiteralPath $preHelper) {
+    $preFailed = $false
+    try {
+      Invoke-SubScript $preHelper "hardware preflight" @("-SkipGpuProbe", "-Module", "h3", "-GpuRequired", "require", "-MinDriverMajor", "580")
+    } catch {
+      # A non-zero exit is the EXPECTED shape of a failed preflight: the stable code is already
+      # in the captured output, so swallow the generic throw and report that code instead
+      # (otherwise the window only ever says "hardware preflight exit code 1").
+      $preFailed = $true
+    }
+    $preHits = @(@($script:SubTail) | Where-Object { "$_" -match '(?i)(h3\.gpu\.none|h3\.gpu\.driver_old|STATUS=fail)' })
+    if ($preHits.Count -gt 0 -or $preFailed) {
+      $preCode = "h3.gpu.none"
+      if (($preHits -join " ") -match 'h3\.gpu\.driver_old') { $preCode = "h3.gpu.driver_old" }
+      $preTail = (@(@($script:SubTail) | Where-Object { "$_" -match '(?i)^\s*(GPU-NONE|GPU|DRIVER|FAILCODE|REASON)=' } | Select-Object -Last 3) -join " / ")
+      if (-not $preTail) { $preTail = (@($preHits | Select-Object -Last 2) -join " / ") }
+      Step-Fail "venv" (New-FailCode $preCode @{ tail = $preTail } "this machine has no usable NVIDIA GPU / driver for H3")
+      Skip-AfterStep "venv"
+      exit 1
+    }
+  } else {
+    Write-Host "[h3-install] note: scripts\base_python.ps1 is missing, skipping the GPU / driver preflight"
+  }
   Write-Host "[h3-install] env prep: setup_env.ps1 (idempotent; venv / torch / deps are only topped up when needed)"
   Invoke-SubScript (Join-Path $PSScriptRoot "setup_env.ps1") "ComfyUI environment setup"
+  # The shared helper (scripts/base_python.ps1) reports why no base interpreter could be
+  # produced; route those codes straight into the install window instead of reporting a
+  # generic "environment prep failed".
+  $pyHits = @(@($script:SubTail) | Where-Object { "$_" -match '(?i)^\s*FAILCODE=(h3\.(python|gpu)\.\S+)' })
+  if ($pyHits.Count -gt 0) {
+    $pyCode = $Matches[1]
+    $pyReason = (@(@($script:SubTail) | Where-Object { "$_" -match '^\s*REASON=' } | Select-Object -Last 1) -join " ")
+    Step-Fail "venv" (New-FailCode $pyCode @{ tail = $pyReason } "base interpreter problem during environment prep")
+    Skip-AfterStep "venv"
+    exit 1
+  }
   if (-not (Test-Path $VenvPy)) {
     Step-Fail "venv" (New-FailCode "h3.venv.pip_failed" @{ venv = "$VenvPy"; tail = (Get-ErrorTail) } "environment prep did not finish (venv still missing: $VenvPy)")
     Skip-AfterStep "venv"

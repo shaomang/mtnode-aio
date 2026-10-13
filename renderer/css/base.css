@@ -316,17 +316,68 @@ input[type="number"]::-webkit-outer-spin-button {
   border-left-color: var(--bd2);
 }
 
+/* ── 可折叠概述条（开发 / 建议 / 细化 / 问询四只功能块弹窗共用）──────────────────
+ * 为什么要收：概述常有好几段，整段铺在表单最上面会把要填的字段挤出视野，而它只是
+ * 「看一眼就够」的参考信息。收起时只留「标签 + 首行摘要 + 箭头」，点标题行展开 / 收起。
+ * 展开态 = 这一块带 .on（与全仓 .on 开关同义）；正文 <p> 的显隐、箭头旋转都由这一条驱动，
+ * JS 侧只切 class，不再逐元素改样式。 */
+.mt-form-note .mt-note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mt-form-note .mt-note-head:hover i,
+.mt-form-note .mt-note-head:focus-visible i {
+  color: var(--ink);
+}
+
+.mt-form-note .mt-note-head:focus-visible {
+  outline: 1px solid var(--teal, #35c6b2);
+  outline-offset: 2px;
+}
+
 .mt-form-note i {
-  display: block;
-  margin-bottom: 3px;
   font-style: normal;
   font-size: 11px;
   letter-spacing: .4px;
   color: var(--muted);
+  flex: none;
 }
 
+/* 首行摘要：收起时告诉用户这块大概是什么（长概述截到一行，不把表单顶下去） */
+.mt-form-note .mt-note-sum {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-form-note .mt-note-arw {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+  transition: transform .15s ease;
+}
+
+/* 默认收起 */
 .mt-form-note p {
-  margin: 0;
+  display: none;
+}
+
+.mt-form-note.on .mt-note-arw {
+  transform: rotate(90deg);
+}
+
+.mt-form-note.on p {
+  display: block;
+  margin: 6px 0 0;
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--ink);

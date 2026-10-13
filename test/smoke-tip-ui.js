@@ -156,8 +156,9 @@ function main() {
   );
   const coverBody = apps.slice(apps.indexOf("function appsCoverActionsEl("), apps.indexOf("function appsTileEl("));
   ok(
-    !!coverBody && coverBody.length > 200 && !/apps-ico-coin|appsTipBtnEl/.test(coverBody),
-    "卡片封面右下角那一排（appsCoverActionsEl）里不再有金币打赏按钮",
+    !!coverBody && coverBody.length > 50 && !/apps-ico-coin|appsTipBtnEl/.test(coverBody) &&
+      /return null;/.test(coverBody),
+    "卡片封面右下角那一排（appsCoverActionsEl）已整条下线（本轮口径：封面不出现按钮，打赏更不在封面上）",
   );
   ok(
     !/MtTips\.metaEl\(cloudTarget/.test(apps) && !/MtTips\.buttonEl\(cloudTarget/.test(apps),
@@ -408,8 +409,8 @@ function main() {
   ok(/classList\.add\("apps-ico-btn", "apps-ico-info"\)/.test(apps) && /b\.dataset\.appDetail = "1"/.test(apps),
     "详情按钮仍是同一元件（data-app-detail 不变），只是换成 ⓘ 图标 + 小方框样式");
   ok(/const text = label \? appsT\(label\) : "ⓘ";/.test(apps), "目录卡片上的详情按钮不再显示「详情」文案");
-  ok(/const acts = appsCoverActionsEl\(spec, \{ local: !!o\.local, mine: !!o\.mine \}\);/.test(apps),
-    "图标行挂在封面卡上（与「点卡开详情」分开，不占标题区）");
+  ok(/const acts = appsCoverActionsEl\(spec, \{ local: !!o\.local, mine: !!o\.mine \}\);/.test(apps) === false,
+    "图标行不再挂在封面卡上（本轮：卡片只剩封面 + 名称/作者，动作全进详情窗）");
   ok(/\.apps-cover-acts\s*\{/.test(read("renderer/css/apps.css")) &&
       /button\.mini\.apps-ico-btn\s*\{/.test(read("renderer/css/apps.css")),
     "css/apps.css 有图标行与小方框按钮样式（下载/ⓘ/金币同一套）");

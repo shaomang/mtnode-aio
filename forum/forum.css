@@ -134,6 +134,18 @@ button.linkbtn.danger:hover { color: var(--red); }
 .topic:hover .t-title { color: var(--orange2); }
 .topic .t-sub { flex: none; color: var(--tx3); font-size: 11px; white-space: nowrap; }
 .topic .t-sub b { color: var(--tx2); font-weight: 600; }
+/* 列表行内的管理员快捷按钮（标记已解决 / 改回 Bug）：与状态徽章同色系 ——
+   解决取 solved 的绿，改回取 bug 的红；行本身可点，按钮上点击已在 JS 里 stopPropagation。 */
+.topic .t-act {
+  flex: none; border: 1px solid var(--bd); background: var(--bg2); color: var(--tx2);
+  border-radius: 999px; padding: 2px 10px; font-size: 11px; font-weight: 600;
+  line-height: 16px; white-space: nowrap; cursor: pointer;
+}
+.topic .t-act.solve { border-color: #2c6b50; color: #96e9c4; background: rgba(62, 207, 142, 0.14); }
+.topic .t-act.solve:hover { border-color: #3ecf8e; color: #ccffe6; background: rgba(62, 207, 142, 0.24); }
+.topic .t-act.undo { border-color: #7e3535; color: #ffa6a6; background: rgba(255, 93, 93, 0.14); }
+.topic .t-act.undo:hover { border-color: #ff5d5d; color: #ffd0d0; background: rgba(255, 93, 93, 0.24); }
+.topic .t-act[disabled] { opacity: 0.55; cursor: default; }
 .topic.archived { opacity: 0.72; }
 .badge {
   flex: none; display: inline-block; border-radius: 999px;

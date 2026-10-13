@@ -24,11 +24,35 @@
     {
       "id": "torch",
       "title": "建立 venv 并安装 CUDA torch",
-      "hint": "venv 用 system-site-packages（沿用本机已有的 CUDA torch），torch 档位不对会在这一步报错。",
+      "hint": "先体检显卡 / 驱动，再自动取一个 Python 3.11 / 3.12 当基座（本机没有就自己下，不用你装），在**隔离** venv 里装 CUDA torch（不再沿用系统 torch）；torch 档位不对会在这一步报错。",
       "messages": {
         "music3.torch.cuda_unavailable": {
-          "zh": "torch 可用但 cuda.is_available() 为 false：本机 venv 沿用系统 torch，请确认系统 Python 里装的是 CUDA 版 torch 并升级到匹配的驱动。",
-          "en": "torch is importable but cuda.is_available() is false: this venv reuses the system torch, so make sure the system Python has a CUDA build of torch and upgrade to a matching driver."
+          "zh": "torch 装上了但 cuda.is_available() 为 false：装的是 CPU 版 torch，或本机 NVIDIA 驱动不支持所装 CUDA 档位（本版要 cu130 = CUDA 13.0，驱动主版本需 ≥ 580）。升级驱动后重跑本步；日志里 torch 的版本号会写明装的是哪一档。原始探针输出：{probe}",
+          "en": "torch is installed but cuda.is_available() is false: either the CPU build got installed, or the local NVIDIA driver does not support the CUDA tier that was installed (this build wants cu130 = CUDA 13.0, driver major >= 580). Upgrade the driver and re-run this step; the torch version in the log names the tier. Raw probe output: {probe}"
+        },
+        "music3.gpu.none": {
+          "zh": "没检测到可用的 NVIDIA 显卡：Music3 本地后端在 CPU 上跑不出结果。请换一台有 N 卡的机器再装；若本来就想在这台机器上跑，先装好 NVIDIA 驱动并确认命令行能执行 nvidia-smi。",
+          "en": "no usable NVIDIA GPU was detected: the local Music3 backend cannot produce results on CPU. Install on a machine with an NVIDIA card, or get nvidia-smi working from the command line first. Diagnostic tail: {tail}"
+        },
+        "music3.gpu.driver_old": {
+          "zh": "显卡在，但 NVIDIA 驱动太旧（本版要 cu130 = CUDA 13.0，驱动主版本需 ≥ 580）：装上也跑不起来。请把驱动升级到 580 或更高后重跑。诊断日志尾部：{tail}",
+          "en": "the GPU is there but the NVIDIA driver is too old (this build wants cu130 = CUDA 13.0, driver major >= 580), so it would not run. Upgrade the driver to 580+ and re-run. Diagnostic tail: {tail}"
+        },
+        "music3.python.missing": {
+          "zh": "这台机器上找不到可用的 Python 3.11 / 3.12，脚本自己下载一个也没成功（走 npmmirror 的 python-build-standalone）。多半是网络问题或目录不可写：确认能访问 registry.npmmirror.com 后重跑本步；也可以自己装一个 Python 3.11（python.org 或 Microsoft Store）后重跑，或设环境变量 MT_MUSIC_CUDA_PYTHON 指向已有解释器。诊断日志尾部：{tail}",
+          "en": "no usable Python 3.11 / 3.12 was found and fetching one failed too (python-build-standalone via npmmirror). Usually network or a non-writable cache: make sure registry.npmmirror.com is reachable and re-run; or install Python 3.11 yourself (python.org / Microsoft Store), or point MT_MUSIC_CUDA_PYTHON at an existing interpreter. Diagnostic tail: {tail}"
+        },
+        "music3.python.fetch_failed": {
+          "zh": "取基座 Python 这一步失败了（下载或解压没成功）。网络可达后重跑本步即可（已下载的解释器会复用，不会重复下）。诊断日志尾部：{tail}",
+          "en": "fetching the base Python failed (download / extraction). Re-run this step once the network is fine - an already fetched interpreter is reused. Diagnostic tail: {tail}"
+        },
+        "music3.python.too_old": {
+          "zh": "你指定的 Python 太旧：torch 2.9.1+cu130 只提供 cp311 及以上的轮子（3.11 / 3.12 为宜）。换一个解释器，或清掉 MT_MUSIC_CUDA_PYTHON / -CudaPython 让脚本自己取。诊断日志尾部：{tail}",
+          "en": "the interpreter you pointed at is too old: torch 2.9.1+cu130 only ships cp311+ wheels (3.11 / 3.12 preferred). Use another interpreter, or clear MT_MUSIC_CUDA_PYTHON / -CudaPython and let the script fetch one. Diagnostic tail: {tail}"
+        },
+        "music3.python.too_new": {
+          "zh": "你指定的 Python 太新：torch 2.9.1+cu130 的轮子只覆盖到 cp313。换一个 3.11 / 3.12 的解释器，或清掉 MT_MUSIC_CUDA_PYTHON / -CudaPython 让脚本自己取。诊断日志尾部：{tail}",
+          "en": "the interpreter you pointed at is too new: the torch 2.9.1+cu130 wheels only go up to cp313. Use a 3.11 / 3.12 interpreter, or clear MT_MUSIC_CUDA_PYTHON / -CudaPython and let the script fetch one. Diagnostic tail: {tail}"
         }
       }
     },

@@ -1,30 +1,41 @@
-﻿# MTNode 本地后端插件 · torch wheel 共享获取库（被各 *-pack/scripts/install.ps1 dot-source）
+# MTNode local-backend plugins: shared torch wheel fetch library (dot-sourced by each
+# *-pack/scripts/install.ps1).
 #
-# 为什么需要它（本轮实测的真事故）：
-#   * `pip install torch==2.9.1+cu128 --index-url <国内镜像>` 在本机实测只有 1.5-3.9 MB/s，
-#     1.8GB 的 torch wheel 要 15-20 分钟，3.46GB 的要接近 40 分钟；而**同一个镜像**
-#     用 curl 直接拉是 76 MB/s（23 秒拉完 1.8GB）。差别来自 pip 的 HTTP 栈与元数据往返，
-#     不是镜像本身慢。
-#   * 用户在安装窗看到的就是「装到 CUDA torch 这一步卡死几十分钟」，很容易以为装坏了。
-#   * 另外：一次装 3 个插件（yue2 / breeze / sensenova）就要各下一次 1.8-3.5GB 的同一个 wheel。
+# Why it exists (measured on this machine):
+#   * `pip install torch==2.9.1+cu128 --index-url <CN mirror>` ran at only 1.5-3.9 MB/s here:
+#     15-20 minutes for a 1.8GB torch wheel and close to 40 minutes for the 3.46GB one, while
+#     curl pulling the very same file from the very same mirror does 76 MB/s (1.8GB in 23s).
+#     The difference comes from pip's HTTP stack and metadata round trips, not from the mirror.
+#   * What the user sees in the install window is "stuck for tens of minutes at the CUDA torch
+#     step", which easily reads as a broken install.
+#   * On top of that: installing three plugins (yue2 / breeze / sensenova) downloads the same
+#     1.8-3.5GB wheel once per plugin.
 #
-# 这套函数干两件事：
-#   1. `Get-MTNodeTorchWheel`：curl -L --retry -C -（断点续传）从国内镜像把 wheel 下到
-#      **共享库** `<插件根>\_weights\wheels`，已存在就跳过（跨插件复用，重装不再下载）；
-#   2. `Install-MTNodeTorchWheels`：按 cu 档位依次尝试，本地 `pip install --no-index`，
-#      装完全是 CUDA 版才算成功（返回 $true/$false），失败就把原因留在日志里。
+# The two functions here do:
+#   1. `Get-MTNodeTorchWheel`: curl -L --retry -C - (resume support) downloads wheels from the
+#      CN mirrors into the **shared cache** `<plugin root>\_weights\wheels` and skips files that
+#      are already there (reused across plugins, so a reinstall downloads nothing);
+#   2. `Install-MTNodeTorchWheels`: tries the cu tiers in order with a local
+#      `pip install --no-index`, and only counts as success when the installed build really is
+#      the CUDA one (returns $true/$false); on failure the reason stays in the log.
 #
-# 用法（在各 pack 的 install.ps1 里）：
+# Usage (inside each pack's install.ps1):
 #   . (Join-Path (Split-Path -Parent $PSScriptRoot) "scripts\mtnode-torch-wheel.ps1")
-#   ... 或直接用包根那份（随包发布，路径按各自的 $PSScriptRoot 拼）
+#   ... or use the copy shipped with the pack (path built from its own $PSScriptRoot)
 #   if (Install-MTNodeTorchWheels -Python $venvPy -InstallDir $InstallDir -Tiers @("cu128","cu126") -TorchMinor "2.9.1") { ... }
 #
-# 约定：只下 win_amd64 + cp310 的 wheel（本插件链统一用 Python 3.10/3.11 的 ABI3 兼容轮子；
-# cp311 与 cp310 的 torch wheel 不通用，所以按 $PyTag 参数决定，默认 cp310）。
+# Convention: only win_amd64 + cp310 wheels are fetched (this plugin chain uses the ABI3
+# compatible wheels of Python 3.10/3.11; a cp311 torch wheel is not interchangeable with a cp310
+# one, so the tag comes from the $PyTag parameter, default cp310).
+#
+# NOTE: this file is an install script fragment, so it must stay pure ASCII (every byte <= 0x7F,
+# no BOM): PowerShell 5.1 decodes a BOM-less .ps1 with the machine ANSI code page, and non-ASCII
+# bytes break the parser. See AGENTS.md and docs/mirror-sources.md section 9.
 
 function Get-MTNodeWheelCache {
   param([Parameter(Mandatory = $true)][string]$InstallDir)
-  # 共享库放在「插件根」下（与各插件安装目录并列），插件目录被删/重装都不影响已下好的 wheel
+  # The shared cache lives under the "plugin root" (next to the per-plugin install dirs), so
+  # deleting or reinstalling a plugin never loses the wheels already downloaded.
   $root = Split-Path -Parent $InstallDir
   $cache = Join-Path $root "_weights\wheels"
   New-Item -ItemType Directory -Force -Path $cache | Out-Null
@@ -39,10 +50,11 @@ function Get-MTNodeTorchWheel {
     [string]$PyTag = "cp310",
     [string]$Base = "https://mirror.sjtu.edu.cn/pytorch-wheels/",
     [string[]]$Packages = @("torch", "torchaudio"),
-    # 每个包自己的版本号：torch 2.8.0 配 torchvision 0.23.0（**不是** 2.8.0），
-    # 所以不能拿一个 $TorchMinor 套所有包（本轮实测踩过：拼出 torchvision-2.8.0 直接 404）。
+    # Per-package version numbers: torch 2.8.0 pairs with torchvision 0.23.0 (NOT 2.8.0), so one
+    # $TorchMinor cannot be reused for every package (that produced a 404 for
+    # torchvision-2.8.0 when tried).
     [hashtable]$Versions = @{},
-    [int]$MinMB = 4                                      # 小于这个体积视为没下完（会被重下）；torchvision/小轮子本身只有几 MB，门槛别定高
+    [int]$MinMB = 4                                      # below this size the file counts as truncated (and is re-downloaded); torchvision / small wheels are only a few MB, so keep the bar low
   )
   $out = @()
   foreach ($pkg in $Packages) {
@@ -61,7 +73,7 @@ function Get-MTNodeTorchWheel {
       $prev = $ErrorActionPreference
       $ErrorActionPreference = "Continue"
       try {
-        # -C - 断点续传：网络抖动只补差额，不从头再来
+        # -C - resumes: a network hiccup only fetches the missing part instead of starting over
         & curl.exe -L --retry 5 --retry-delay 3 -C - -o "$path" "$url" 2>$null | Out-Null
       } finally { $ErrorActionPreference = $prev }
       if (Test-Path $path) {

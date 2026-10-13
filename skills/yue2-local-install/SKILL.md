@@ -1,7 +1,7 @@
 ---
 name: yue2-local-install
 title: YuE2 本地音乐生成安装
-description: 在用户指定目录安装 YuE2（m-a-p/YuE2-3B + YuE2-Vae）本地全曲音乐生成后端：探测显存/驱动/Python 3.12（非 NVIDIA 或显存 <24G 直接拒绝并给替代方案）、建隔离 venv、按驱动装 cu12x/cu13x torch、pip 安装 yue2 与依赖、ModelScope/HF 镜像下载权重、拉起 yue-pack 服务做 /health 与一次极短生成冒烟。含失败自查、Windows 与官方 Linux 差异（本机移植口径）与自我修复指引。
+description: 在用户指定目录安装 YuE2（m-a-p/YuE2-3B + YuE2-Vae）本地全曲音乐生成后端：探测显存/驱动 + 取基座 Python（3.12 / 3.11，本机没有就从 npmmirror 下；非 NVIDIA 或显存 <24G 直接拒绝并给替代方案）、建隔离 venv、按驱动装 cu12x/cu13x torch、pip 安装 yue2 与依赖、ModelScope/HF 镜像下载权重、拉起 yue-pack 服务做 /health 与一次极短生成冒烟。含失败自查、Windows 与官方 Linux 差异（本机移植口径）与自我修复指引。
 ---
 
 # YuE2 本地音乐生成 — 安装 / 修复
@@ -66,7 +66,7 @@ py -3.12 -c "import sys; print(sys.version)"
 | 显存 `≥24GB` | 继续。24G 为**下限**，建议开 CPU offload / 短时长，`≥48GB` 可放宽 |
 | 系统内存 `<32GB` | 权重 offload 到 RAM 会挤，**警告**后可继续（备注在结论里） |
 | 驱动过老（装完 torch 后 `cuda.is_available()` 为假） | 按 `reason=driver_too_old` 失败，提示更新 NVIDIA 驱动；不要退回 CPU 版充数 |
-| 找不到 Python 3.12 | **拒绝**：`reason=no_python312`，给安装指引（见下）；只有用户显式同意才用 `-AllowOtherPython` 继续并在结论注明偏差 |
+| 本机没有 Python 3.12 / 3.11 且自动下载也失败 | 安装窗按 `yue2.python.missing` / `yue2.python.fetch_failed` 出中文（网络 / `%APPDATA%` 不可写是主因）；也可自己装 3.12 或设 `MT_YUE2_PYTHON` 后重跑 |
 
 **替代方案（拒绝时必须一并告诉用户）**：
 
@@ -80,20 +80,15 @@ py -3.12 -c "import sys; print(sys.version)"
 
 > 拒绝不是失败报告：要写清实测 `gpu=` / `vram=` / `driver=` 与上面 1–3 条替代方案，让用户能自己选下一手。
 
-## Python 3.12 探测（目标版本）
+## 基座 Python（3.12 优先 / 3.11 可用，install.ps1 自动取）
 
-YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测：
+YuE2 本机移植口径：**Python 3.12 优先，3.11 也可**（cu130 轮子是 cp311+）。`install.ps1` 不再要求你先装 Python，走共享获取器 `scripts/base_python.ps1`（真源 `pack-python/base_python.ps1`，与 h3 / music3 逐字节一致）：
 
-1. 显式 `-PythonExe <路径>`
-2. 环境变量 `MT_YUE2_PYTHON`
-3. `py -3.12`（Windows 启动器；`py -3.12 -c "import sys;print(sys.executable)"` 取真实路径）
-4. 常见 conda：`ProgramData` / 用户目录下 `miniconda3` / `anaconda3` 的 `envs\py312|seg|base\python.exe`
-5. PATH 中的 `python` / `python3`（**必须核对版本**，非 3.12 不算命中）
+1. `MT_YUE2_PYTHON` / `MT_YUE2_CUDA_PYTHON` / `.cuda-python` 记录的路径（可选覆盖）
+2. `py -3.12` / `py -3.11`（Windows 启动器）、常见 conda（`envs\py312|seg|torch|base`）、PATH 中的 `python` / `python3`（**必须核对版本**，3.10 / 3.13 不算命中）
+3. 都没有 → **自己取**：有 `uv` 用 `uv python install 3.12`，否则从 `https://registry.npmmirror.com/-/binary/python-build-standalone` 下 `cpython-3.12…x86_64-pc-windows-msvc-install_only` 解压；缓存 `%APPDATA%\pipeline-console\python`
 
-命中后写入 `INSTALL_DIR\.cuda-python`（单行绝对路径），venv 一律用它的 `-m venv` 创建。
-
-找不到时给用户明确指引（任选其一）：python.org 装 3.12（勾选 Add to PATH）、Microsoft Store 装 3.12、或 `winget install Python.Python.3.12`；
-装完重跑本 skill。**不要**拿 3.10/3.11/3.13 默认顶上——先失败给指引，除非用户显式同意走 `-AllowOtherPython`。
+命中后写入 `INSTALL_DIR\.cuda-python`（单行绝对路径），venv 一律用它的 `-m venv` 创建。失败码：`yue2.python.missing`（连下载都失败）、`yue2.python.fetch_failed`、`yue2.python.too_old` / `yue2.python.too_new`（你自己指定的路径版本不合格）——文案在 `yue-pack/steps.json` 的 `messages` 表。
 
 ## 国内镜像（必须）
 
@@ -138,7 +133,7 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
   ```
 
   这样脚本自身与 pip / git / python 的输出都按 UTF-8 出去，宿主（用 UTF-8 解码 stdout，并按 `[yue2-install] progress:` 抓进度）看到的就是正常文本。
-- 改脚本后跑 `node test/smoke-install-scripts.js`：钉住「零非 ASCII + GBK 解码后 PowerShell 解析零错 + 进度前缀 / `reason=` 等 ASCII 契约仍在」。
+- 这条纪律已是**硬守卫**：`AGENTS.md` 的「协作约定」钉了它，`test/smoke-install-scripts.js` 会自动扫描全部 `*-pack` 的 `.ps1` / `.cmd` / `.bat`、`*-pack/scripts/**/*.py`、共享真源 `pack-steps/` 与 `pack-python/`、以及项目 `scripts/` 下的 `.ps1` / `.cmd` / `.bat` —— 任一字节 > 0x7F（中文、全角标点、emoji、`→`、制表线）或带 BOM 即硬失败。改脚本后**必须**跑 `node test/smoke-install-scripts.js`（同时还钉 GBK(cp936) 与 UTF-8 双解码解析零错、进度前缀与 `reason=` 等 ASCII 契约仍在）；后端运行时 Python（`*-pack/app/**`、`*-pack/shims/**`）豁免，仍是中文。
 - Python **后端**（`app/*.py` 的启动横幅与日志）本轮不做零中文，仍是中文，靠上面的 UTF-8 钉死正确显示。
 
 ## torch 与驱动档位（按 `driver_version` 自动匹配）
@@ -280,7 +275,7 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 | `<INSTALL_DIR>\.install-ok` | 空文件 | 安装成功（**只有冒烟真跑通才写**；失败不要创建它） |
 | `<INSTALL_DIR>\.yue2-agent-result` | 首行 `ok=true`；失败首行 `ok=false` 且下一行 `reason=<短码>` | Agent 安装 / 修复结论（修复模式同样要重写） |
 | `<INSTALL_DIR>\models\.ok` | 空文件 | 两个权重目录都就位 |
-| `<INSTALL_DIR>\.cuda-python` | 单行绝对路径 | 建 venv 用的 Python 3.12 基座 |
+| `<INSTALL_DIR>\.cuda-python` | 单行绝对路径 | 建 venv 用的基座 Python（3.12 / 3.11，自动取或显式指定） |
 
 `reason` 短码至少覆盖：`no_nvidia_gpu`、`vram_too_small`、`no_python312`、`venv_creation_failed`、
 `torch_install_failed`、`driver_too_old`、`requirements_install_failed`、`model_download_failed`、
@@ -310,7 +305,7 @@ YuE2 本机移植口径固定 **Python 3.12**（`>=3.12,<3.13`），依次探测
 - 不删用户已有的 `models\` / `output\`（除非损坏且任务明确要求重下）。
 - **禁止** `--system-site-packages` 的 venv。
 - 磁盘不足先警告：3B 权重 + VAE + torch/cu + 依赖，建议预留 **≥25GB** 空闲（按实际文件大小估算，别凭感觉）。
-- 无 NVIDIA GPU / 显存 <24G / 无 Python 3.12 → **如实拒绝**并给替代方案，不硬装、不伪造成功。
+- 无 NVIDIA GPU / 显存 <24G → **如实拒绝**并给替代方案，不硬装、不伪造成功。基座 Python 由脚本自己取（3.12 / 3.11），取不到才按 `yue2.python.*` 失败。
 - 脚本（`scripts\*.ps1` / `*.cmd` / 安装期辅助 `*.py`）**零中文、纯 ASCII 英文**（见「脚本语言与编码」一节）；Python 后端的日志、API `message` 与本文档仍用中文。
 
 ## 成功标准

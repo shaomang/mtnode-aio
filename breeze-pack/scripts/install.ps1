@@ -219,6 +219,7 @@ $reqFile = Join-Path $ENGINE_DIR "requirements.txt"
 if (Test-Path -LiteralPath $reqFile) {
   # Drop test / static-check dependencies: pytest / ruff are not needed
   $filtered = Join-Path $InstallDir "requirements.breeze.txt"
+  # ASCII-only input, so no -Encoding is needed here (the pip index URLs are pure ASCII)
   Get-Content -LiteralPath $reqFile |
     Where-Object { $_ -notmatch '^\s*(pytest|ruff)' } |
     Set-Content -LiteralPath $filtered -Encoding UTF8

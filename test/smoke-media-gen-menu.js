@@ -222,6 +222,9 @@ const sandbox = {
   promptBuildWorkflow: () => {},
   nextNetChannel: () => 41001,
   appPluginInstalled: (id) => (id === "remotion" ? remotionInstalled : true),
+  /* 显存门槛（本轮需求）：菜单用 ctxDropVramHidden 收掉本地后端节点。
+     这份冒烟验的是菜单结构与端子，默认「没被挡掉」；判定真源在主进程 plugins/vram-gate.js。 */
+  appPluginHiddenByVram: () => false,
   /* 层级判定替身：一律按顶层画布 */
   currentSuperFocus: () => "",
   currentTaskFocus: () => "",
@@ -294,6 +297,11 @@ const APP_FNS = [
   "nodeKindIconCls",
   "ctxKindItem",
   "ctxSubmenu",
+  /* 子菜单按显存门槛收项的过滤器（读 NODE_KIND_PLUGIN + sandbox.appPluginHiddenByVram） */
+  "NODE_KIND_PLUGIN",
+  "nodeKindPluginId",
+  "nodeKindHiddenByVram",
+  "ctxDropVramHidden",
   "ctxAction",
   "canvasCreateMenuGroups",
   "nodeById",
@@ -456,7 +464,7 @@ const txt = mk("txt", "input_text", { text: "把这段念出来" });
 (async function main() {
   console.log("\n[ex] 源码抽取自检");
   eqArr(
-    APP_FNS.filter((n) => !["KIND_CLS", "NODE_DEFAULTS"].includes(n)).filter(
+    APP_FNS.filter((n) => !["KIND_CLS", "NODE_DEFAULTS", "NODE_KIND_PLUGIN"].includes(n)).filter(
       (n) => typeof G(n) !== "function",
     ),
     [],

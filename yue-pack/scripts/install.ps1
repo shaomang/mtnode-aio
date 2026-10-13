@@ -46,6 +46,16 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
 
+# Absolute path to this PowerShell host: a few installation paths shrink PATH (the clean-machine
+# smoke test does), and a bare "powershell.exe" then fails with CommandNotFoundException.
+$PS_EXE = ""
+try { $PS_EXE = [string][System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $PS_EXE = "" }
+if (-not $PS_EXE -or -not (Test-Path -LiteralPath $PS_EXE)) {
+    $PS_EXE = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+}
+if (-not (Test-Path -LiteralPath $PS_EXE)) { $PS_EXE = "powershell.exe" }
+
+
 # -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
 # A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
 # pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
@@ -185,46 +195,66 @@ if ($null -eq $gpu) {
 }
 
 # ---------------------------------------------------------------- 2. probe Python + venv
+# Python comes from the shared helper (single source: pack-python/base_python.ps1). The old
+# code here accepted ANY local python and then told the user to install Python 3.12 by hand
+# when none existed ("error: no usable Python 3 found. Install Python 3.12 first") -- a dead
+# end on a fresh machine. The helper applies the same version gate (torch cu130 wheels need
+# cp311+; 3.12 preferred, 3.11 accepted) and, when nothing usable exists, fetches an
+# interpreter itself (uv, else python-build-standalone from npmmirror) into the shared cache
+# %APPDATA%\pipeline-console\python. MT_YUE2_CUDA_PYTHON / MT_YUE2_PYTHON stay as overrides.
 function Find-Python {
-  # prefer the py launcher's 3.12 (task requirement), then fall back to other 3.1x / 3
-  if (Get-Command py -ErrorAction SilentlyContinue) {
-    foreach ($ver in @("3.12", "3.13", "3.11", "3.10", "3")) {
-      try {
-        & py "-$ver" -c "import sys; print(sys.version_info[:2])" 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { return @{ exe = "py"; args = @("-$ver") } }
-      } catch {}
-    }
+  # prefer 3.12 (task requirement), then 3.11
+  $helper = Join-Path $PSScriptRoot "base_python.ps1"
+  if (-not (Test-Path -LiteralPath $helper)) { return $null }
+  # NB: versions travel as ONE comma-joined -WantedCsv value -- `powershell -File` binds array
+  # parameters positionally, so -Wanted 3.12 3.11 would hand "3.11" to the next parameter.
+  $hArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $helper, "-WantedCsv", "3.12,3.11", "-Module", "yue2")
+  if ($env:MT_YUE2_PYTHON_CACHE) { $hArgs += @("-CacheRoot", $env:MT_YUE2_PYTHON_CACHE) }
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = @(& $PS_EXE @hArgs 2>&1)
+    $code = $LASTEXITCODE
+  } finally { $ErrorActionPreference = $prev }
+  $exe = ""; $ver = ""; $src = ""; $fail = ""; $reason = ""
+  foreach ($l in $out) {
+    $s = [string]$l
+    Write-Host $s
+    if ($s -match '^\s*PYTHON=(.+)$') { $exe = $Matches[1].Trim() }
+    elseif ($s -match '^\s*VERSION=(.+)$') { $ver = $Matches[1].Trim() }
+    elseif ($s -match '^\s*SOURCE=(.+)$') { $src = $Matches[1].Trim() }
+    elseif ($s -match '^\s*FAILCODE=(.+)$') { $fail = $Matches[1].Trim() }
+    elseif ($s -match '^\s*REASON=(.+)$') { $reason = $Matches[1].Trim() }
   }
-  if (Get-Command python -ErrorAction SilentlyContinue) {
-    try {
-      & python -c "import sys; print(sys.version_info[:2])" 2>$null | Out-Null
-      if ($LASTEXITCODE -eq 0) { return @{ exe = "python"; args = @() } }
-    } catch {}
+  if ($code -eq 0 -and $exe -and (Test-Path -LiteralPath $exe)) {
+    Write-Host "[yue2-install] python helper picked $exe (Python $ver, via $src)"
+    return @{ exe = $exe; args = @(); ver = $ver }
   }
+  $script:PyFailCode = $fail
+  $script:PyFailReason = $reason
   return $null
 }
 
 Write-Progress-Line 8 "probing Python..."
 $pyInfo = Find-Python
 if ($null -eq $pyInfo) {
-  Write-Host "[yue2-install] error: no usable Python 3 found. Install Python 3.12 first (python.org or Microsoft Store),"
-  Write-Host "[yue2-install]       make sure 'py -3.12' or 'python' runs from the command line, then re-run this script."
-  Write-AgentResult "false" "python_not_found"
-  throw "python_not_found"
+  $pyFail = if ($script:PyFailCode) { $script:PyFailCode } else { "yue2.python.missing" }
+  $pyWhy = if ($script:PyFailReason) { $script:PyFailReason } else { "no usable Python 3.12 / 3.11 available" }
+  Write-Host "[yue2-install] error: $pyFail -- $pyWhy"
+  Write-Host "[yue2-install]       the installer fetches its own interpreter (uv / npmmirror); a failure here is"
+  Write-Host "[yue2-install]       usually the network or a non-writable cache -- see the helper lines above."
+  Write-AgentResult "false" "$pyFail"
+  throw "$pyFail"
 }
 Write-Host "[yue2-install] using Python: $($pyInfo.exe) $($pyInfo.args -join ' ')"
-if (($pyInfo.args -join ' ') -notmatch "3\.12") {
-  Write-Host "[yue2-install] note: Python 3.12 was not available (using $($pyInfo.args -join ' ')); YuE2 needs 3.10+ so it can run, but 3.12 is preferred."
+if ("$($pyInfo.ver)" -and "$($pyInfo.ver)" -notmatch '^3\.12') {
+  Write-Host "[yue2-install] note: Python 3.12 was not available (using $($pyInfo.ver)); YuE2 needs 3.10+ so it can run, but 3.12 is preferred."
 }
 
 Write-Progress-Line 12 "creating the venv (.venv, skipped when it already exists)..."
 $venvPy = Join-Path $InstallDir ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) {
-  if ($pyInfo.exe -eq "py") {
-    & py @($pyInfo.args) -m venv .venv
-  } else {
-    & python -m venv .venv
-  }
+  & $pyInfo.exe @($pyInfo.args) -m venv .venv
 }
 if (-not (Test-Path $venvPy)) {
   Write-AgentResult "false" "venv_creation_failed"

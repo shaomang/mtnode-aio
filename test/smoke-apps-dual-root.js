@@ -169,8 +169,17 @@ const devDir = makeApp(DEV, ID, WORDLESS_DEV, false, "<html>我开发的那一�
 /* 另有一个只躺在项目根的开发应用：老口径的「纯开发」路径不许回归 */
 makeApp(DEV, "onlydev", { id: "onlydev", name: "只在项目根", version: "0.1.0", entry: "index.html", dev: true }, false, "<html>onlydev</html>");
 
-/* 渲染层的两个口径（与 renderer/app-apps.js 的 appsLocalRootKind / appsDevApps / appsLibList 同源） */
-const rootKindOf = (a) => String((a && a.listKind) || "") || (a && (a.dev === true || a.kind === "dev") ? "dev" : "down");
+/* 渲染层的两个口径（与 renderer/app-apps.js 的 appsLocalRootKind / appsDevApps / appsLibList 逐字同源）：
+   **仲裁后的身份（kind）优先，扫到它的那个根（listKind）并列** —— 两者任一为 dev 就算开发中的应用。
+   两处各挡一个真实的坑：认 kind 挡「清单 dev:true 却还躺在下载根」（归位失败 / 历史安装），
+   认 listKind 挡「躺在项目根、清单却写 dev:false」（库页那几条通道按 down 解析会报不在本机）。 */
+const rootKindOf = (a) => {
+  if (!a) return "";
+  if (a.kind === "dev") return "dev";
+  const lk = String(a.listKind || "");
+  if (lk) return lk;
+  return a.dev === true ? "dev" : "down";
+};
 const devPageApps = (list) => list.filter((a) => a && rootKindOf(a) === "dev");
 const libPageApps = (list) => list.filter((a) => a && rootKindOf(a) !== "dev");
 
@@ -236,11 +245,16 @@ async function main() {
     ok(vDev.ok === true && path.resolve(vDev.dir) === path.resolve(devDir), "apps:versions(dev) 读项目根那份的台账");
     const vDown = call("apps:versions", { id: ID });
     ok(vDown.ok === true && path.resolve(vDown.dir) === path.resolve(dlDir), "apps:versions 缺省读下载那份（老口径）");
-    /* 能力位：读写都落在点名的那一份上 */
+    /* 能力位：读写都落在点名的那一份上（本轮起只写声明，入口页不动 → 不再有 regenEntry 开关） */
     const capDev = call("apps:capabilitiesGet", { id: ID, kind: "dev" });
     ok(capDev.ok === true, "apps:capabilitiesGet(dev) ok");
-    const capSet = call("apps:capabilitiesSet", { id: ID, kind: "dev", capabilities: { imageGen: true }, regenEntry: false });
+    const devEntryBefore = fs.readFileSync(path.join(devDir, "index.html"), "utf8");
+    const capSet = call("apps:capabilitiesSet", { id: ID, kind: "dev", capabilities: { imageGen: true } });
     ok(capSet.ok === true, "apps:capabilitiesSet(dev) ok");
+    ok(
+      fs.readFileSync(path.join(devDir, "index.html"), "utf8") === devEntryBefore,
+      "改能力位不改入口页（逐字节不变）",
+    );
     const devMan = JSON.parse(fs.readFileSync(path.join(devDir, "app.json"), "utf8"));
     const dlMan = JSON.parse(fs.readFileSync(path.join(dlDir, "app.json"), "utf8"));
     ok(devMan.capabilities && devMan.capabilities.imageGen === true, "能力位写进**项目根**那份 app.json");
@@ -338,6 +352,34 @@ async function main() {
     const off = await call("apps:uninstall", { id: ID2, force: "dev_remove", kind: "dev" });
     ok(off.ok === true && off.mode === "unregister" && path.resolve(off.dir) === path.resolve(path.join(DEV, ID2)), "移除登记只作用在项目根那份");
     ok(fs.existsSync(path.join(DL, ID2, "installed.json")) && fs.existsSync(path.join(DEV, ID2, "index.html")), "两份的文件都还在（只摘登记）");
+  }
+
+  /* ---------- [7] 本轮修的 bug：app.json 已 dev:true、却还躺在下载根（归位没成功 / 历史安装） ---------- */
+  console.log("\n[7] 二次开发没归位成功：开发页口径仍要列它（用户报障）");
+  {
+    /* 现场：新装机器上点「二次开发」，app.json 写成了 dev:true，但「归位到项目根」只做了
+       dry-run（目录原地未动）——这份应用**只有一份**、躺在下载根里。
+       修复前：开发页判据只看 listKind → 整列看不到它，反而还留在库页。 */
+    const ID3 = "halfdev";
+    makeApp(DL, ID3, { id: ID3, name: "没归位成功的开发应用", version: "1.0.0", entry: "index.html", dev: true }, true, "<html>半开发</html>");
+    const r = await call("apps:list");
+    const one = r.apps.find((a) => a.id === ID3);
+    ok(!!one && one.kind === "dev" && one.listKind === "down" && one.kindMismatch === true, "只此一份：清单 dev:true、根是下载根（kindMismatch 如实标出）");
+    const devIds = devPageApps(r.apps).filter((a) => a.id === ID3);
+    const libIds = libPageApps(r.apps).filter((a) => a.id === ID3);
+    ok(devIds.length === 1, "★ 开发页口径列它（bug 现场：这里过去是空的 —— 用户报的「不在应用开发列表里」）");
+    ok(libIds.length === 0, "库页不再列它（两个页面不重叠）");
+    /* 目录解析：开发页那几条通道点名 dev 时，项目根没有这一份也要落到它真实的目录上，
+       否则应用在列表里可见、点「启动 / 打开 / 移除登记」却一律报「该应用不在本机」。 */
+    const pv3 = await call("apps:devPreview", { id: ID3, kind: "dev" });
+    ok(pv3.ok === true && path.resolve(pv3.dir) === path.resolve(path.join(DL, ID3)), "devPreview 落到它真实的目录（下载根那一份）");
+    /* [6] 留下的那份下载副本：它的 dev 双胞胎已被「移除登记」→ 本机只剩这一份、清单仍是
+       dev:true，于是按「只有一份时清单说了算」的口径归到开发页 —— 与本轮 [7] 同一条规则
+       （不是把 [6] 的口径改回去了：[6] 那两条同时都在时才由根说话）。 */
+    ok(
+      devPageApps(r.apps).some((a) => a.id === "cloudword" && a.listKind === "down"),
+      "双胞胎被移除登记后只剩一份：按清单 dev:true 归开发页（同一条规则）",
+    );
   }
 
   console.log("\n" + (fails ? "FAIL " : "PASS ") + checks + " 项，失败 " + fails + " 项");

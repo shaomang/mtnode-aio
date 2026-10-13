@@ -6,6 +6,9 @@
  *   [2] 追加即落盘：打赏一笔 → recharge-ledger.jsonl **立刻**增长（不等 saveDb 全量重写）
  *   [3] 目录缓存：/api/apps/catalog 带 ETag + max-age=60，带 If-None-Match 回 304
  *   [4] 静态目录同时落 catalog.json.gz，体检接口 /api/apps/pub 报 gzip 与热表状态
+ *   [5] 精简目录 catalog.slim.json / .gz：与 catalog.json 同源同批（条目数 / 顺序 / 保留键的值一致），
+ *       每条不含 versions/shots/sha256/zipUrl/tips 等重字段，含 id/title/tags/updatedAt 等首帧要用的键，
+ *       并把「完整 vs 精简」的真实字节打出来
  *
  * 为什么必须真起服务：这四件事的判据全在「启动时序 + 落盘路径 + 响应头」上，
  * 纯函数切片测不出（比如「迁移后有没有真的剪除」，切片里没有 saveDb 队列）。
@@ -230,6 +233,50 @@ try {
   ok(gz.staticGzipReady === true, "体检报 staticGzipReady=true");
   ok(gz.catalogGzBytes > 0 && gz.catalogGzBytes < gz.catalogBytes, "压后体积 " + gz.catalogGzBytes + "B < 原始 " + gz.catalogBytes + "B");
   ok(pub.hot && pub.hot.relayUsage.parseErrors === 0, "两个热表都没有半截行（parseErrors=0）");
+
+  /* [5] 精简目录 catalog.slim.json（首帧先渲染那份）——
+     同一次发布、同一份条目投影出来：条目数 / 顺序与 catalog.json 一致，字段只留首帧要用的。
+     真起服务走一遍，钉的是「发布后盘上真的有一份能用的小表」。 */
+  section("[5] 精简目录 catalog.slim.json：与 catalog.json 同源同批、字段只留首帧要用的");
+  const slimPath = path.join(WEB, "catalog.slim.json");
+  const slimGzPath = path.join(WEB, "catalog.slim.json.gz");
+  ok(fs.existsSync(slimPath), "发布后 catalog.slim.json 存在");
+  ok(fs.existsSync(slimGzPath), "发布后 catalog.slim.json.gz 也在");
+  const fullDoc = JSON.parse(fs.readFileSync(path.join(WEB, "catalog.json"), "utf8"));
+  const slimDoc = JSON.parse(fs.readFileSync(slimPath, "utf8"));
+  ok(slimDoc.apps.length === fullDoc.apps.length, "条目数与 catalog.json 一致（" + slimDoc.apps.length + " / " + fullDoc.apps.length + "）");
+  ok(
+    slimDoc.version === fullDoc.version && slimDoc.updatedAt === fullDoc.updatedAt,
+    "顶层 version / updatedAt 与 catalog.json 一致（客户端可共用同一套解析）",
+  );
+  ok(
+    slimDoc.apps.every((e, i) => e.id === fullDoc.apps[i].id) &&
+      slimDoc.apps.map((e) => e.ownerId + "/" + e.id).join(",") === fullDoc.apps.map((e) => e.ownerId + "/" + e.id).join(","),
+    "apps 顺序与 catalog.json 逐条一致（id + ownerId 全对齐）",
+  );
+  {
+    const BAN = ["versions", "shots", "shotsThumb", "shotsSha", "zipUrl", "url", "sha256", "bytes", "downloads", "entry", "window", "tips"];
+    const NEED = ["id", "title", "tags", "updatedAt", "createdAt", "version", "latestVersion", "owner", "ownerName", "ownerId", "icon", "thumb", "coverSource", "coverVer"];
+    const hasBanned = slimDoc.apps.filter((e) => BAN.some((k) => Object.prototype.hasOwnProperty.call(e, k)));
+    const missNeed = slimDoc.apps.filter((e) => !NEED.every((k) => Object.prototype.hasOwnProperty.call(e, k)));
+    ok(hasBanned.length === 0, "每条都不含重字段（versions/shots/shotsThumb/shotsSha/zipUrl/url/sha256/bytes/downloads/entry/window/tips）：实得 " + hasBanned.length + " 条违规");
+    ok(missNeed.length === 0, "每条都含首帧要用的键（id/title/tags/updatedAt/createdAt/version/latestVersion/owner/ownerName/ownerId/icon/thumb/coverSource/coverVer）：实得 " + missNeed.length + " 条缺失");
+    /* 值必须是**完整目录那一份的投影**（不是重新算出来的一份）：抽样逐键比对 */
+    const same = slimDoc.apps.every((e, i) =>
+      NEED.every((k) => JSON.stringify(e[k] === undefined ? null : e[k]) === JSON.stringify(fullDoc.apps[i][k] === undefined ? null : fullDoc.apps[i][k])),
+    );
+    ok(same, "每条每个保留键的值都与 catalog.json 同位置那条逐一相同（同源投影，不重算）");
+  }
+  ok(gz.slimGzipReady === true, "体检报 slimGzipReady=true");
+  {
+    const fullRaw = fs.statSync(path.join(WEB, "catalog.json")).size;
+    const fullGz = fs.statSync(path.join(WEB, "catalog.json.gz")).size;
+    const slimRaw = fs.statSync(slimPath).size;
+    const slimGz = fs.statSync(slimGzPath).size;
+    ok(gz.slimBytes === slimRaw && gz.slimGzBytes === slimGz, "体检报的精简体积 = 盘上真实字节（" + slimRaw + " / " + slimGz + "）");
+    ok(slimRaw < fullRaw && slimGz < fullGz, "精简目录比完整目录小（raw " + slimRaw + " < " + fullRaw + " · gz " + slimGz + " < " + fullGz + "）");
+    console.log("  · 体积对照：catalog.json " + fullRaw + "B（gz " + fullGz + "B） → catalog.slim.json " + slimRaw + "B（gz " + slimGz + "B）");
+  }
 
   exitCode = fail ? 1 : 0;
   console.log("\n" + (fail ? "✗ 有失败" : "✓ 全部通过") + "（通过 " + pass + " / 失败 " + fail + "）");

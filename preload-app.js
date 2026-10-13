@@ -276,12 +276,11 @@ contextBridge.exposeInMainWorld("appHost", appHost);
  * contextBridge 暴露的对象过不了 world 边界。所以那条脚本自己去读 window.appHost（页面
  * 世界里本来就有），并在挂载失败时等宿主派发的 "mtnode-apphost" 事件兜底。
  *
- * 纪律（本轮共识改动）：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了
- * 显示听写条**（app.json 的 capabilities.showDictate）」三条都满足时才注入 —— **默认不显示**
- * 听写条；没声明 / 问不到一律不注入。桥上的语音接口（pickAudio / transcribe …）始终在，
- * 应用自己写的语音 UI 照旧能用，能力位不是权限闸。
- * 声明了这一位的应用仍走同一条注入路径，但那条条由 app-speech-ui.js 自己按同一个标记
- * 决定可见性（默认隐藏、脚本仍可唤起）—— 两处口径一致，见 apSpeechMount。 */
+ * 纪律：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了显示听写条**（app.json
+ * 的 capabilities.showDictate）」三条都满足时才注入 —— **没声明一律不注入**（宿主侧也就没有那条
+ * 条）；声明了的应用注入进来是**默认可见**的（用户显式开了这一位），条尾的「收起」按钮只在本次
+ * 窗口内藏它，下次打开窗口按声明重新出现（实现见 app-speech-ui.js 的 markShown / hide）。
+ * 桥上的语音接口（pickAudio / transcribe …）始终在，应用自己写的语音 UI 照旧能用，能力位不是权限闸。 */
 let dictateAllowed = null; /* null = 还没问到；true / false = 主进程的答复 */
 function askDictateAllowed() {
   if (dictateAllowed !== null) return Promise.resolve(dictateAllowed);

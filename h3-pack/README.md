@@ -16,7 +16,7 @@
 ## 快速开始
 
 ```powershell
-# 1) 环境（复用本机 CUDA torch；可由 dsh agent 探测）
+# 1) 环境（隔离 venv：脚本自己取一个 Python 3.11 / 3.12 当基座，本机没有就从 npmmirror 下）
 .\scripts\setup_env.ps1
 
 # 2) 下载 24G 权重

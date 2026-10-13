@@ -823,6 +823,8 @@ button:disabled {
 }
 
 .plugin-tile {
+  /* relative：卡片封面左上角的「已装且自检通过」勾角标（.plugin-tile-done）按它定位 */
+  position: relative;
   border: 1px solid var(--bd2);
   background: linear-gradient(180deg, var(--panel2), var(--panel));
   padding: 8px;
@@ -834,6 +836,29 @@ button:disabled {
   user-select: none;
 }
 
+/* 安装后自检通过 → 封面左上角一枚勾（只给通过的卡片；未测过 / 失败 / 跳过的卡片没有它） */
+.plugin-tile-done {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #4dd0c4;
+  background: rgba(8, 12, 18, .82);
+  border: 1px solid rgba(77, 208, 196, .55);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.plugin-tile-done svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 .plugin-tile:hover {
   border-color: var(--cyan)
 }
@@ -2617,4 +2642,35 @@ button.mini.btn-sq.ws-browse svg {
 .wf-node.up .plugin-node-note {
   opacity: .66;
   font-size: 11px
+}
+
+/* 插件显存门槛（本轮需求：显存不够的本地后端插件直接隐藏）——
+   对话框底部那一行低频找回入口：「显示不支持的插件」开关 + 一句现状（本机显存 ≈XG）。
+   默认关：显存不足且没装过的插件不进列表，避免用户装完才发现跑不起来（口径见
+   plugins/vram-gate.js）。已装的照常显示，卡片上的原因写在这一行小字里。 */
+.plugin-vram-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 10px 2px 12px;
+  padding: 6px 8px;
+  border: 1px dashed var(--bd2);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--muted)
+}
+
+.plugin-vram-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #cfe3f5;
+  cursor: pointer;
+  user-select: none
+}
+
+.plugin-vram-bar .plugin-vram-hint {
+  font-family: var(--mono);
+  opacity: .85
 }

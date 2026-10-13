@@ -322,8 +322,15 @@ console.log("[1] 接线卡口：导航第 4 页 / PATCH 元数据 / 只删自己
 {
   const { spies } = loadApps();
   const navIds = spies.APPS_NAV.map((n) => n[0]);
-  ok(navIds.indexOf("mine") >= 0, "左导航有「我的应用」页：" + JSON.stringify(navIds));
-  ok(navIds.indexOf("mine") === 1, "它紧跟「应用」页（库 / 开发 在后）：" + navIds.join("/"));
+  /* 本轮口径（用户共识）：左导航顺序 = 应用 / 库 / 开发中应用 / 开发 —— 第 3 格是原「我的应用」
+     那一页改名（id 仍是 "mine"，它承载的还是同一份「我的东西」：上块 = 本机开发中的应用只读清单，
+     下块 = 我上架到云端的条目）。顺序与页名一起钉住：只改 id 或只改顺序都会被这里拦下。 */
+  const navLabels = spies.APPS_NAV.map((n) => n[1]);
+  ok(
+    navIds.join("/") === "apps/lib/mine/dev",
+    "左导航顺序 = 应用 / 库 / 开发中应用 / 开发：" + navIds.join("/"),
+  );
+  ok(navLabels[2] === "开发中应用", "第 3 格页名 = 开发中应用（原我的应用）：" + navLabels.join("/"));
   ok(/appsPaintMinePage\(body, seq\)/.test(SRC_APPS), "appsHubPaint 分发到 appsPaintMinePage");
   /* 这条原来钉的是 `… , body: body`（把 bug 一起钉住了）：主进程 store:request 只读 opts.json，
      正文写成 body 会被静默丢掉 —— 服务端读到空 body 就按「没勾声明」回 400，界面表现为
@@ -511,41 +518,20 @@ console.log("[3] 标签解析 / 派生分支计数");
   );
 }
 
-console.log("[4] 卡片作者动作（本轮口径：只留一枚「编辑」）+ 详情里的编辑入口");
+console.log("[4] 卡片作者动作（本轮口径：封面上一个按钮都没有）+ 详情里的编辑入口");
 {
   const { spies } = loadApps();
   const online = spies.appsSpecFromMine(mineItem({}));
+  /* 本轮需求（最新一轮）：封面整排按钮下线 —— 「我的应用」那张卡上的「编辑」也一起收走，
+     作者的自管入口只剩两处：点卡片进详情（正文里的「编辑…」），与详情窗里那颗编辑按钮。 */
   const row = spies.appsCoverActionsEl(online, { mine: true });
-  const btns = row.children;
-  ok(btns.length === 1, "卡片上只剩一枚按钮（编辑）：" + btns.length);
-  ok(classListOf(btns[0]).includes("apps-ico-edit"), "第 1 枚 = 编辑：" + btns[0].className);
-  ok(
-    !walkEls(row).some((e) => classListOf(e).includes("apps-ico-danger")),
-    "危险动作都不再摆在外侧（删除收进编辑窗，且带危险色）",
-  );
-  ok(
-    !walkEls(row).some((e) => classListOf(e).includes("apps-ico-eye") || classListOf(e).includes("apps-ico-eyeoff")),
-    "「上架 / 下架」那两枚眼睛图标整条移除（可见性只有两态，界面上没有开关可画）",
-  );
-  /* 本轮口径：可见性只剩「在线上 / 彻底删除」两态 —— 卡片上只剩「编辑」；
-     旧服务端 / 旧数据若还带着那个可见性位（unpublished），界面上也不该多出任何东西。 */
-  const offlineRow = spies.appsCoverActionsEl(spies.appsSpecFromMine(mineItem({ unpublished: true })), { mine: true });
-  ok(
-    offlineRow.children.length === 1 && classListOf(offlineRow.children[0]).includes("apps-ico-edit"),
-    "夹具带 legacy 的 unpublished 标记也一样：只剩编辑那一枚（可见性位在 spec 上根本不存在）",
-  );
-  ok(
-    !("unpublished" in spies.appsSpecFromMine(mineItem({ unpublished: true }))),
-    "appsSpecFromMine 不再把那个可见性位搬进 spec（服务端回执里带着也不消费）",
-  );
+  ok(row === null, "「我的应用」卡片上不再有按钮（封面按钮工厂恒 null）");
   const catalogRow = spies.appsCoverActionsEl(Object.assign({}, online, { mine: false }), {});
-  ok(
-    !walkEls(catalogRow).some((e) => classListOf(e).includes("apps-ico-danger")),
-    "目录卡（非 mine）不出现删除按钮 —— 不是自己的应用不给删",
-  );
+  ok(catalogRow === null, "目录卡同样一个按钮都没有（不是自己的应用更不给删）");
   const tile = spies.appsTileEl(online, { mine: true });
   ok(tile.dataset.appMine === "1", "卡片带 data-app-mine 标记（只读验证台与冒烟用）");
   ok(!!tile.onclick, "点卡片本身仍是开详情窗");
+  ok(tile.querySelector(".apps-cover-acts") === null, "卡片上没有封面动作排");
   /* 详情正文里也留一份带文案的作者入口（卡片图标在小屏上认不出） */
   const detail = spies.appsDetailBodyEl(online, {});
   const detailTexts = walkEls(detail).map((e) => String(e.textContent || ""));

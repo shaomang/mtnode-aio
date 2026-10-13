@@ -13,9 +13,10 @@
  *     走**本机回收站**（与「删除画布」同一口径，不物理删）；界面**不做**回滚入口。
  *   · **新画布**：复用对方包里的 .mtnodes（画布 id / appId / workspace 改写成这台机器的值、
  *     引用的资产一并搬进 assets/<appId>/）；对方包里没有 .mtnodes 就建一张同名空画布。
- *   · **登记**：仍是「开发中」；版本号采用对方那一版的；旧作者 / 来源 / 原版本号 / 时间 /
- *     备份路径只在 app.json 内部写一条 replaced 留痕（界面不展示）。旧作者的 id 不再留在
- *     author / ownerId 上（按用户口径「不留任何旧作者留痕」）。
+ *   · **登记**：仍是「开发中」；版本号与作者都采用对方那一版（= 保留原作者与来源版本，
+ *     用户口径：便于上架时选分支点）、来源写进 forkOf（内部记录）；被接替掉的**本机**那份
+ *     旧作者 / 来源 / 原版本号 / 时间 / 备份路径只在 app.json 内部写一条 replaced 留痕
+ *     （界面不展示），本机旧作者的 id 不再留在 author / ownerId 上。
  *
  * 与 app-branch-merge.js 同一条工程纪律：**纯逻辑 + 注入依赖** —— 目录、下载、解包、
  * 暂存元信息、回收站、画布落盘都由调用方（主进程）注入，冒烟测试用假依赖直接跑同一份算法。
@@ -293,8 +294,10 @@ function createBranchReplace(deps) {
         fs.copyFileSync(src, dst);
         copied++;
       }
-      /* 对方包里的清单当底，再补本机的登记：仍是「开发中」、版本号采用对方那一版、
-         作者 / 来源换成对方、旧作者只留一条内部 replaced 留痕（界面不展示）。 */
+      /* 对方包里的清单当底，再补本机的登记：仍是「开发中」、**版本号与作者都用对方那一版**
+         （用户口径：保留原作者与来源版本，便于上架时选分支点）、旧作者只留一条内部 replaced
+         留痕（界面不展示）；来源记录写进 forkOf（本轮口径：覆盖也要留一条内部来源记录，
+         与「复制到开发文件夹」那条路同一形状，见 apps-store.js 的 copyAppToDev）。 */
       const packMan = d.readManifest(srcDir) || {};
       const replaced = {
         ownerId: String(manBefore.authorOwnerId || manBefore.ownerId || ""),
@@ -313,7 +316,12 @@ function createBranchReplace(deps) {
         version: their.version || String(packMan.version || ""),
         author: their.author || String(packMan.author || ""),
         ownerId: their.ownerId || String(packMan.ownerId || ""),
-        forkOf: null,
+        /* 来源记录（内部）：这本是「谁的那一版接替进来的」——上架时据此认分支点。
+           对方没用云端作者（纯本机包）时退回落回包内清单的作者，两样都空才不写。 */
+        forkOf:
+          their.ownerId || their.author
+            ? { id: id, ownerId: their.ownerId, owner: their.author }
+            : null,
         dev: true,
         replaced: hist,
         replacedAt: Date.now(),

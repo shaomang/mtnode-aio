@@ -72,6 +72,9 @@ const { initPluginErrorBus, resetDebounce } = require("./plugin-error-repair.js"
 /* 插件**安装窗**编排：8 个后端宿主 + 窗口插件 + 桌宠的安装链统一在这只窗里逐步骤显示；
    各宿主把安装脚本的步骤行上报到这里，失败停在失败步并给「交给 mtnode 会话修复」（见 plugins/main-install.js） */
 const installHost = require("./plugins/main-install.js");
+/* 插件**安装后自检**的内核（本轮需求）：各生成类宿主在 require 期登记自己的自检，
+   结果落 <数据目录>/plugin-selfcheck/，主窗口插件界面据此在卡片封面左上角打勾（只给自检通过的） */
+const pluginSelfcheck = require("./plugins/plugin-selfcheck.js");
 const { registerLlamaIpc, shutdownLlamaUiOnly, isLlamaProvider, ensureModel: ensureLlamaModel } = require("./llama/main-llama.js");
 /* 本地 TTS 后端（Breeze TTS 2）：管理服务单例不随 MTNode 退出 */
 const { registerBreezeIpc, shutdownBreezeUiOnly } = require("./breeze/main-breeze.js");
@@ -8890,6 +8893,13 @@ app.whenReady().then(() => {
     getDataDir: DATA,
     getMainWin: () => mainWin,
     appRoot: __dirname,
+    /* 桌宠独立进程的数据目录是 <数据目录>/pet，看不到主程序装在数据根 <数据目录>/node-runtime
+       的那份托管 Node —— 客户端没装 Node ≥22.19 时它只能退到 Electron 自带的 Node，被 dsh 0.2
+       拒绝（界面表现 =「dsh 运行时需要本机 Node ≥22.19」，只在 BongoChat 出现）。
+       把本进程已解析出的 dsh node 现状交给桌宠宿主，由 startPet 只挑「真 Node」下发。 */
+    getDshNode: () => {
+      try { return dsh().nodeInfo(); } catch { return null; }
+    },
   });
   registerAppPluginsIpc({
     getDataDir: DATA,
@@ -8921,6 +8931,21 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     log: (line) => console.log(line),
   });
+  /* 自检内核的数据目录接线（同上：DATA 原样传，别包箭头）——各宿主登记自检时只给 check 函数；
+     安装目录走 installHost 的同一条口径（plugins/main-install.js 的 installDirOf）：
+     自检要判「这个插件都装好了没」，各宿主别自己再推一遍目录。 */
+  pluginSelfcheck.initPluginSelfcheck({
+    getDataDir: DATA,
+    getInstallDirOf: (id) => installHost.installDirOf(id),
+    log: (line) => console.log(line),
+    /* 自检结论变了 → 广播给主窗口：插件界面据此重画卡片封面左上角那个勾 */
+    notifyMain: (payload) => {
+      try {
+        if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("plugin-selfcheck:changed", payload);
+      } catch {}
+    },
+  });
+  ipcMain.handle("plugin-selfcheck:summary", async () => pluginSelfcheck.selfcheckSummary());
   registerMusic3Ipc({
     getDataDir: DATA,
     getMainWin: () => mainWin,

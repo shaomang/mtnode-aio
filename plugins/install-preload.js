@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld("mtnodeInstall", {
        preview = 只读地给出「删什么 / 留什么」；run = 真删（先停后端，进度走 onEvent）；cancel = 停手。
        删除范围由主进程的路由表决定（自定义卸载口的插件交给它自己，其余删该插件的安装目录）。 ── */
   uninstall: (payload) => ipcRenderer.invoke("mtnodeInstall:uninstall", payload || {}),
+  /* ── 安装后自检（本轮需求）：{ action: "state"|"run"|"cancel"|"clean", id, reason }
+       state = 登记能力 + 最近一次结果 + 正在跑 / 在排队；
+       run   = 起一次自检（立即回执，进度与结论走 onEvent 的 kind:"selfcheck"）；
+       cancel = 请宿主收手；clean = 删自检产物目录并清结果缓存（卡片上的勾随之消失）。 ── */
+  selfcheck: (payload) => ipcRenderer.invoke("mtnodeInstall:selfcheck", payload || {}),
   /* ── 安装脚本本身仍由主窗口渲染层按插件调用（桥名与主窗口 preload 完全同名）：
      安装窗只负责「看得见」，不自己再造一套安装实现（见 install/app.js 的 runInstall）。 ── */
   api: (name, args) => ipcRenderer.invoke("mtnodeInstall:api", { name: String(name || ""), args: args || [] }),
@@ -41,7 +46,7 @@ contextBridge.exposeInMainWorld("mtnodeInstall", {
     ipcRenderer.on("mtnodeInstall:state", fn);
     return () => ipcRenderer.removeListener("mtnodeInstall:state", fn);
   },
-  /** 事件流：{ kind:"step"|"log"|"finish", … } */
+  /** 事件流：{ kind:"step"|"log"|"finish"|"selfcheck", … } */
   onEvent: (cb) => {
     const fn = (_e, payload) => cb(payload);
     ipcRenderer.on("mtnodeInstall:event", fn);

@@ -3,7 +3,7 @@
   "name": "BongoChat",
   "version": "1.0.9",
   "minAppVersion": "1.1.18",
-  "description": "可以聊天的BongoCat！",
+  "description": "A BongoCat you can chat with!",
   "zipUrl": "pet-runtime-1.0.9.zip",
   "sha256": ""
 }

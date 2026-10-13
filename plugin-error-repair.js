@@ -65,6 +65,19 @@ const NOT_REPAIRABLE = {
   low_disk: "磁盘剩余空间不够，重装只会再失败一次。请清理磁盘，或在插件控制台换一个剩余空间足够的安装目录。",
   no_nvidia_gpu: "这些后端需要 NVIDIA 显卡，本机没检测到 —— 自动修复装不上 CUDA 版依赖。",
   no_cuda: "未检测到可用的 NVIDIA 显卡。换机器 / 插卡，或在插件里显式选「仍装 CPU 版（很慢）」后重新安装。",
+  /* 安装脚本的显卡 / Python 前置体检（各包 steps.json 同码文案更详细）：这两类都不是
+     「让 Agent 再跑一遍就会变好」的事 —— 前者要么没卡要么驱动太旧，后者要么断网要么
+     用户自己要给一个 Python，自我修复只会白烧一轮。 */
+  gpu_none:
+    "这台机器上没检测到可用的 NVIDIA 显卡：装下去也跑不了。换一台有 N 卡的机器再装；若本来就想在这台机器上跑，先把 NVIDIA 驱动装好、确认命令行能执行 nvidia-smi。",
+  gpu_driver_old:
+    "显卡在，但 NVIDIA 驱动太旧（这些后端要 cu130 = CUDA 13.0，驱动主版本需 ≥ 580）：自动修复不会替你更新驱动。升级驱动后重新安装即可。",
+  python_missing:
+    "安装脚本没能找到一个可用的 Python 3.11 / 3.12，它自己下载一个也没成功（走 npmmirror 的 python-build-standalone）—— 先确认能访问 registry.npmmirror.com 且 %APPDATA% 可写后重装；或自己装一个 Python 3.11 并重装。",
+  python_too_old:
+    "你指定的 Python 太旧：torch 的 cu130 轮子只提供 cp311 及以上。换一个 3.11 / 3.12 的解释器（或清掉 MT_*_CUDA_PYTHON / -CudaPython 让脚本自己取）后重装。",
+  python_too_new:
+    "你指定的 Python 太新：torch 的 cu130 轮子只覆盖到 cp313。换一个 3.11 / 3.12 的解释器（或清掉 MT_*_CUDA_PYTHON / -CudaPython 让脚本自己取）后重装。",
   driver_too_old:
     "NVIDIA 驱动太旧（跑不了目标 CUDA 算子）。请把驱动升到支持该 CUDA 的版本再重装 —— 自我修复不会替你更新驱动。",
   bad_dir: "安装目录不合法（盘根 / 系统目录 / 应用目录一律拒绝）。请在插件控制台重选一个普通用户目录。",
@@ -99,6 +112,12 @@ const CODE_HINTS = [
   /* yue 注意力档位：**实测跑不起来**是硬件 / 驱动层面的事（Agent 再跑一遍也不会变好）；
      补丁没生效那条（"没生效（生成中途仍报 flash kernel 缺失）"）不在此列 —— 那种可以补文件。 */
   [/注意力档位\s*\S*\s*在本机实测跑不起来|cudnn.{0,12}(不可用|跑不起来)/i, "attention_backend_no_cudnn"],
+  /* 安装期 GPU / Python 前置体检的带前缀稳定码（各包 steps.json 同码）。必须排在下面那条
+     泛化的 no_cuda 之前：`h3.gpu.driver_old` 里带 "driver_old" 会被 /driver[_ ]?too[_ ]?old/
+     抢走，于是「没插卡」被说成「驱动太旧」，用户被指到一条错路上。 */
+  [/\b[a-z0-9_]+\.gpu\.none\b|no usable NVIDIA GPU/i, "no_cuda"],
+  [/\b[a-z0-9_]+\.gpu\.driver_old\b/i, "driver_too_old"],
+  [/python[_ .]?(missing|not_found)|no usable Python\s*3/i, "python_missing"],
   [/driver[_ ]?too[_ ]?old|驱动太旧|驱动过旧/i, "driver_too_old"],
   [/no_nvidia_gpu|no nvidia|未检测到.{0,8}(nvidia|显卡|gpu)|no_cuda/i, "no_cuda"],
   [/low_disk|磁盘剩余|not enough space|disk full/i, "low_disk"],
@@ -181,8 +200,32 @@ function normCode(raw, message) {
  * （见 runRepairByToken），不参与本判定 —— 否则 remotion / 桌宠这类没有 Agent 安装链的宿主永远修不了。
  * opts = { installDir }：本次事件实际拿到的安装目录（宿主没注册 getInstallDir、但上报里带了也算）。
  */
+/**
+ * 各包安装脚本用的**带前缀**稳定码（h3.gpu.none / music3.python.missing / yue2.gpu.driver_old …）
+ * → 上面那张不分包的口径表。
+ *
+ * 为什么需要这一层：`h3.gpu.driver_old` 里带 "driver_old"，直接丢进 CODE_HINTS 会被
+ * /driver[_ ]?too[_ ]?old/ 认成 driver_too_old —— 文案指向「升级驱动」，可这条命中的往往
+ * 是本机根本没有 N 卡（真正的 no_cuda），用户就被指到一条错路上。安装期的 GPU / Python
+ * 前置体检一律先在这里换算成正确的口径，再走下面那张表。
+ */
+const PACK_CODE_MAP = {
+  "gpu.none": "no_cuda",
+  "gpu.driver_old": "driver_too_old",
+  "python.missing": "python_missing",
+  "python.fetch_failed": "python_missing",
+  "python.too_old": "python_too_old",
+  "python.too_new": "python_too_new",
+};
+
+/** 把 `<pack>.gpu.none` / `<pack>.python.missing` 收敛到不分包的口径码；认不出原样返回。 */
+function packCodeOf(code) {
+  const m = /^[A-Za-z0-9_]+\.((?:gpu|python)\.[a-z_]+)$/.exec(String(code || ""));
+  return m ? PACK_CODE_MAP[m[1]] || code : code;
+}
+
 function judgeRepairability(host, code, message, opts) {
-  const known = NOT_REPAIRABLE[code];
+  const known = NOT_REPAIRABLE[packCodeOf(code)];
   if (known) return { repairable: false, why: known };
   const hay = String(message || "");
   for (const [re, c] of CODE_HINTS) {
@@ -604,6 +647,8 @@ module.exports = {
   reportPluginError,
   resetDebounce,
   judgeRepairability,
+  /* 各包带前缀的稳定码（h3.gpu.none …）→ 不分包口径码：安装窗与自测共用这一份换算 */
+  packCodeOf,
   repairDialogPayload,
   runRepairByToken,
   restartByToken,

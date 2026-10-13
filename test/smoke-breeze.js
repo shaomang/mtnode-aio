@@ -640,12 +640,16 @@ function scene(nodes, wires) {
 
   has(appPluginsMain, '"breeze"', "plugins/main-app-plugins.js 的 KNOWN_KINDS 收 breeze");
   has(appPluginsMain, 'raw.handler === "breeze"', "normalizePlugin 的 handler 兜底链认识 breeze");
+  /* 「已安装占位」与「内置兜底」两处分支都还在，只是换了写法：
+       · 占位在 attachInstalled 的后端插件分支里（与显存门槛的「已装」判据同一个字段）；
+       · 内置兜底在 loadCatalogSource 的 knownIds 合并里（KNOWN_KINDS 表），不再逐 kind 写死一串。 */
   ok(
-    count(appPluginsMain, /p\.kind === "breeze" \|\| p\.handler === "breeze"/g) === 2,
-    "两处「已安装占位 / 内置兜底」分支都带上 breeze（得到 " +
-      count(appPluginsMain, /p\.kind === "breeze" \|\| p\.handler === "breeze"/g) +
-      "）",
+    /else if \(p\.kind === "music3"[\s\S]{0,400}p\.kind === "breeze" \|\| p\.handler === "breeze"/.test(
+      appPluginsMain,
+    ),
+    "attachInstalled 的后端插件分支带 breeze（已安装占位）",
   );
+  has(appPluginsMain, 'KNOWN_KINDS.has(String(p.kind || ""))', "内置兜底按 KNOWN_KINDS 整表判定（breeze 在表里）");
   has(mainSrc, 'require("./breeze/main-breeze.js")', "main.js 引到 breeze 宿主");
   has(mainSrc, "registerBreezeIpc({", "main.js 注册 breeze 的 IPC");
   has(mainSrc, "shutdownBreezeUiOnly();", "main.js before-quit 调 shutdownBreezeUiOnly（只关控制台窗）");

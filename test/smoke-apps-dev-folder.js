@@ -1,14 +1,16 @@
 "use strict";
 /* test/smoke-apps-dev-folder.js — 渲染层回归
- *   本轮需求：应用开发页「预览」列头上多一枚「📂 应用文件夹」按钮 —— 点它在系统资源管理器里
- *   打开**当前应用的文件夹**（应用目录：入口页 index.html / app.json 所在的那个）。
+ *   本轮需求：开发页顶栏整体移除后，「📂 应用文件夹」按钮搬到中栏「预览」列头条的最左端 ——
+ *   点它在系统资源管理器里打开**当前应用的文件夹**（应用目录：入口页 index.html / app.json
+ *   所在的那个）。**只留图标、不带路径**（原来那一行「📂 + 路径 + 启动 + 上架」整体下线）。
  *
- *   ① 源码接线：按钮挂在哪个容器（.apps-dev-colhead，预览列头）· 常驻不藏 · 走通用出口
+ *   ① 源码接线：按钮挂在预览栏那一组（.apps-dev-baracts，由 appsDevBarActsEl 组装，pri=2）·
+ *      用与同排其它枚同一套图标口径（appsIcoBtnEl + APPS_ICO_SVG 的 folder）· 走通用出口
  *      window.api.shellOpenPath（不新增 IPC）· 路径只从主进程解析的两条链取（应用摘要 dir →
  *      预览 info dir），渲染层不拼路径；
  *   ② vm 真跑 appsDevOpenAppFolder：目录命中 → 打开那一个；摘要还没有 → 回落到预览 info 的 dir；
  *      没选应用 / 两条链都拿不到 → 只提示不开；主进程回 ok:false / 抛错 → 弹失败 toast（不静默）；
- *   ③ 样式与词条：.apps-dev-folderbtn 存在且不撑高标题条、URL 是唯一的弹性项、英文词条齐备。
+ *   ③ 样式与词条：图标在 APPS_ICO_SVG 里有 folder 一枚、预览栏那一组样式齐备、英文词条齐备。
  *
  * 口径：零依赖、不启动 Electron、不碰真实 %APPDATA%、不写任何文件。
  *
@@ -76,41 +78,36 @@ console.log(
   "smoke-apps-dev-folder：预览列头「📂 应用文件夹」按钮（点它进当前应用的文件夹）\n",
 );
 
-/* ═══════════ [1] 源码接线：按钮挂在预览列头，常驻不藏 ═══════════ */
+/* ═══════════ [1] 源码接线：按钮在预览栏那一组的最左一枚 ═══════════ */
 section("1 接线点");
 {
-  /* 预览列头 = app-apps-dev.js 里那只 .apps-dev-colhead（左「预览」+ URL + 右端按钮） */
-  const headFn = pickFn(DEV, "appsDevFolderBtnEl");
-  ok(headFn.indexOf("appsMiniBtn(") >= 0, "按钮用既有的 appsMiniBtn 造（样式与工具栏同一套）");
+  /* 本轮需求：顶栏整体移除 → 「📂 应用文件夹」落在中栏预览列头条（appsDevBarActsEl 组装，
+     pri=2 = 排在「启动」之后、「上架」之前），**只留图标（不带路径）**。 */
+  const btnFn = pickFn(DEV, "appsDevFolderBtnEl");
   ok(
-    headFn.indexOf('appsDevT("📂 应用文件夹")') >= 0,
-    "按钮文案 = 📂 应用文件夹（有字有图标，一眼看出是进文件夹）",
+    btnFn.indexOf("appsIcoBtnEl(") >= 0 && btnFn.indexOf('"folder"') >= 0,
+    "按钮用同一套图标口径（appsIcoBtnEl + APPS_ICO_SVG 的 folder），与同排其它枚同风格",
   );
   ok(
-    /b\.title\s*=/.test(headFn) && /setAttribute\("aria-label"/.test(headFn),
-    "title 与 aria-label 都给了（悬浮说明 + 无障碍）",
+    DEV.indexOf("function appsDevFolderRowEl()") < 0 &&
+      DEV.indexOf("apps-dev-folderpath") < 0 &&
+      DEV.indexOf("apps-dev-folderrow") < 0,
+    "旧那一行「📂 + 路径 + 启动 + 上架」整体下线（路径块不再摆出来）",
   );
   ok(
-    headFn.indexOf("appsDevOpenAppFolder()") >= 0,
-    "点击出口 = appsDevOpenAppFolder（路径解析与打开的单一实现）",
+    /if \(hasApp\) \{\s*addSlot\(2, appsDevFolderBtnEl\(\), "应用文件夹"\);/.test(DEV) &&
+      /addSlot\(1, appsDevRunBtnEl\(\)\)/.test(DEV) &&
+      /addSlot\(3, appsDevPublishBtnEl\(\)\)/.test(DEV),
+    "预览栏从左到右：📂（pri=2）· 启动（pri=1）· 上架（pri=3），只在有应用时才画",
   );
   ok(
-    /viewHead\.appendChild\(appsDevFolderBtnEl\(\)\);/.test(DEV),
-    "按钮 append 进预览列头（viewHead = .apps-dev-colhead）",
+    APPS.indexOf("folder:") >= 0 && APPS.indexOf("upload:") >= 0,
+    "图标表补齐 folder / upload 两枚（内联 SVG、stroke=currentColor）",
   );
+  const rowFn = pickFn(DEV, "appsDevOpenAppFolder");
   ok(
-    DEV.split("appsDevFolderBtnEl()").length - 1 === 2,
-    "整份模块里只在定义与挂载两处出现（没有第二处重复入口）",
-  );
-  ok(
-    /viewHead\.appendChild\(bridgeCloseBtn\);[\s\S]{0,400}viewHead\.appendChild\(appsDevFolderBtnEl\(\)\);/.test(
-      DEV,
-    ),
-    "紧跟「关掉独立窗口」之后挂（预览列头右端那一组）",
-  );
-  ok(
-    DEV.indexOf("folderBtn.hidden") < 0 && !/apps-dev-folderbtn[\s\S]{0,80}hidden = true/.test(DEV),
-    "常驻不藏：没选中应用时也看得见（点了给一句提示，而不是按钮凭空消失）",
+    rowFn.indexOf("appsDevProjectDir(id)") >= 0,
+    "打开出口仍走 appsDevOpenAppFolder（路径解析的单一实现）",
   );
 }
 
@@ -282,23 +279,20 @@ section("2 路径真源 / 打开出口");
   /* ═══════════ [4] 样式与词条 ═══════════ */
   section("4 样式 / 词条");
   {
-    ok(CSS.indexOf(".apps-dev-folderbtn") >= 0, "apps.css 有 .apps-dev-folderbtn 规则");
-    const i = CSS.indexOf(".apps-dev-folderbtn");
-    const block = CSS.slice(i, i + 260);
-    ok(/flex:\s*none/.test(block), "按钮不参与伸缩（不挤 URL 那一行）");
-    ok(/(white-space:\s*nowrap)|(line-height)/.test(block), "固定条高下收住行高 / 不折行");
-    const urlBlock = CSS.slice(CSS.indexOf(".apps-dev-url {"), CSS.indexOf(".apps-dev-url {") + 200);
     ok(
-      /flex:\s*1 1 auto/.test(urlBlock),
-      ".apps-dev-url 是唯一的弹性项：把右端那一组按钮顶到右边（本轮补上）",
+      CSS.indexOf(".apps-dev-folderbtn") < 0 && CSS.indexOf(".apps-dev-folderrow") < 0,
+      "apps.css 不再有旧那一行 / 旧按钮的死规则（📂 用同排按钮那套 .apps-ico-btn）",
+    );
+    ok(
+      CSS.indexOf(".apps-dev-colhead-wrap {") >= 0 &&
+        CSS.indexOf(".apps-dev-colhead-spacer {") >= 0,
+      "预览栏外壳（「更多 ▾」的定位基准）与弹性占位两条规则都在",
     );
     ok(
       CSS.indexOf(".apps-dev-bridgeclose") >= 0,
-      "既有「关掉独立窗口」的规则仍在（新按钮与它同一处右端）",
+      "既有「关掉独立窗口」的规则仍在（弹性占位把它顶到列头条最右端）",
     );
     const keys = [
-      "📂 应用文件夹",
-      "打开应用文件夹",
       "在资源管理器里打开这个应用的文件夹（入口页 index.html 所在的那个目录）",
       "先在左栏选一个应用",
       "读不到该应用文件夹（可能在别处被删了）",
@@ -309,8 +303,8 @@ section("2 路径真源 / 打开出口");
     /* 复用的既有词条（本轮不重复新增） */
     ok(I18N.indexOf('"无法打开文件夹：":') >= 0, "复用既有「无法打开文件夹：」词条");
     ok(
-      APPS.indexOf("function appsMiniBtn(") >= 0 && APPS.indexOf("function appsToast(") >= 0,
-      "appsMiniBtn / appsToast 仍是 app-apps.js 的全局实现（本文件按经典脚本共用作用域调）",
+      APPS.indexOf("function appsIcoBtnEl(") >= 0 && APPS.indexOf("function appsToast(") >= 0,
+      "appsIcoBtnEl / appsToast 仍是 app-apps.js 的全局实现（本文件按经典脚本共用作用域调）",
     );
   }
 

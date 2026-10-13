@@ -49,6 +49,8 @@ const read = (rel) =>
     .replace(/\r\n/g, "\n");
 const exists = (rel) => fs.existsSync(path.join(ROOT, rel.split("/").join(path.sep)));
 const show = (v) => JSON.stringify(v);
+/* [7] 里那组「安装脚本编码闸门」真跑要 await，所以在 [7] 里把它挂成 async 组，再由下面的链调用 */
+let ASCII_GATE_GROUP = null;
 const count = (src, re) => (src.match(re) || []).length;
 /* 取「起点 → 终点」之间的一段源码：存在性判定太松，容易把「提到了」当成「做了」 */
 function seg(src, from, to, label) {
@@ -94,8 +96,9 @@ const HOSTS = [
   { file: "yue/main-yue.js", id: "yue2-local", skill: "yue2-local-install", fn: "", selfRepair: true, restart: true, reports: 20, skillConst: true },
   /* SenseNova 本地图像生成：同构（skill 名走宿主内 INSTALL_SKILL，兜底同步同步一份到 dshHome） */
   { file: "sensenova/main-sensenova.js", id: "sensenova-local", skill: "sensenova-local-install", fn: "syncSensenovaInstallSkill", selfRepair: true, restart: true, reports: 20, skillConst: true },
-  /* Remotion 走 npm 安装、没有 Agent 安装链：只注册「取可用目录 + 取日志」，可修性靠会话修复那条路 */
-  { file: "remotion/main-remotion.js", id: "remotion", skill: "", fn: "", selfRepair: false, restart: false, reports: 9 },
+  /* Remotion 走 npm 安装、没有 Agent 安装链：只注册「取可用目录 + 取日志」，可修性靠会话修复那条路
+     （本轮补上配套 skill remotion-local-install：会话修复按它的现场口径定位「脚本一行都没跑过」那类失败） */
+  { file: "remotion/main-remotion.js", id: "remotion", skill: "remotion-local-install", fn: "syncRemotionInstallSkill", selfRepair: false, restart: false, reports: 9 },
   /* 桌宠（BongoChat）：下载形象包型插件，连 skillName 都不注册（没有配套 skill），只给现场目录 */
   { file: "pet/main-pet.js", id: "bongochat", skill: "", fn: "", selfRepair: false, restart: false, reports: 5, noSkillField: true },
 ];
@@ -105,6 +108,7 @@ const INSTALL_SKILLS = [
   "breeze-tts-local-install",
   "llama-local-install",
   "sensenova-local-install",
+  "remotion-local-install",
 ];
 /* office-local-install 没有「插件宿主」，是随包内置的按需安装技能（Office→PDF 引擎不再随包，
    见 docs/app-size-audit.md）：同步表里要有它，但不进上面那份「每行配一个宿主」的清单 ——
@@ -135,8 +139,10 @@ for (const h of HOSTS) {
     h.noSkillField
       ? reg.indexOf("skillName:") < 0 /* 没有配套 skill：不注册空字段，弹窗侧按「无 skill 自行判断根因」分支走 */
       : h.skillConst
-        ? reg.indexOf("skillName: INSTALL_SKILL") > 0 && new RegExp('const INSTALL_SKILL = "' + h.skill + '";').test(src)
-        : reg.indexOf('skillName: "' + h.skill + '"') > 0,
+        ? reg.indexOf("skillName: INSTALL_SKILL") > 0 && src.indexOf('const INSTALL_SKILL = "' + h.skill + '";') >= 0
+        : reg.indexOf('skillName: INSTALL_SKILL') > 0
+          ? src.indexOf('const INSTALL_SKILL = "' + h.skill + '";') >= 0
+          : reg.indexOf('skillName: "' + h.skill + '"') > 0,
     h.file + (h.noSkillField ? " 不注册 skillName（该插件没有配套的内置 skill）" : " 注册 skillName = " + (h.skill || "(空：无 Agent 安装链)")),
   );
   ok(
@@ -240,7 +246,7 @@ console.log("\n[2] 安装技能真源唯一：根 skills/<name>/SKILL.md，宿�
     ok(body.indexOf("syncInstallSkills") > 0, h.file + " 的 " + h.fn + " 先叫网关统一同步（一份逻辑）");
     ok(
       /["']skills["']/.test(body) &&
-        (h.skillConst ? body.indexOf("INSTALL_SKILL") > 0 : body.indexOf('"' + h.skill + '"') > 0) &&
+        (h.copyLiteral ? body.indexOf('"' + h.skill + '"') > 0 : body.indexOf('"' + h.skill + '"') > 0 || body.indexOf("INSTALL_SKILL") > 0) &&
         body.indexOf('"SKILL.md"') > 0,
       h.file + " 的兜底拷贝读仓库根 skills/" + h.skill + "/SKILL.md",
     );
@@ -610,6 +616,118 @@ function groupTail() {
     ok(run('pluginRepairReasonFromText("ok=false\\nreason=缺 soundfile")') === "缺 soundfile", "判定：reason= 摘得出来（进二次报告窗）");
     ok(run('pluginRepairJoinPath("D:\\\\x\\\\", ".h3-agent-result")') === "D:\\x\\.h3-agent-result", "结果文件路径拼接吃 Windows 反斜杠且不重复分隔符");
     ok(run('pluginRepairJoinPath("", ".agent-repair-result")') === ".agent-repair-result", "没给 INSTALL_DIR 时退化成相对名（上层已禁用自动修复，不崩）");
+
+    /* 安装脚本编码闸门（零非 ASCII）真跑：扫 INSTALL_DIR → 违例点名 → 回灌消息 → 仍违例判失败。
+       为什么要有这组：宿主用 PowerShell 5.1 跑安装脚本，而无 BOM 的 .ps1 按 ANSI 解码 ——
+       中文会把语法解崩；仓库里的脚本由 test/smoke-install-scripts.js 扫，Agent 现场写的只能在这里兜。
+       这一段要 await（真跑扫描函数），所以挂成一个 async 组，由文件末尾的 .then 调用。 */
+    ASCII_GATE_GROUP = async function () {
+      const asb = { console, JSON, String, RegExp, Array, Number, Object };
+      asb.I18n = {
+        t: (s, vars) =>
+          String(s == null ? "" : s).replace(/\{(\w+)\}/g, (m, k) =>
+            String((vars || {})[k] != null ? vars[k] : m),
+          ),
+      };
+      let listed = 0;
+      asb.window = {
+        api: {
+          fileListDir: async () => {
+            listed++;
+            return {
+              ok: true,
+              list: [
+                { rel: "scripts/install.ps1", isDir: false, size: 90 },
+                { rel: "scripts/start_backend.cmd", isDir: false, size: 120 },
+                { rel: "README.md", isDir: false, size: 10 },
+                { rel: "node_modules", isDir: true, size: 0 },
+              ],
+            };
+          },
+          fileReadText: async (p) =>
+            /start_backend\.cmd$/.test(String(p))
+              ? { exists: true, content: "@echo off\nREM \u4e2d\u6587\u6ce8\u91ca\n" }
+              : { exists: true, content: "@echo off\nREM pure ascii\n" },
+        },
+      };
+      vm.createContext(asb);
+      /* 扫描函数依赖的三个模块级常量：从源码里原样抠出来（不在这里抄第二份口径） */
+      const gateConsts = [
+        /const PLUGIN_REPAIR_SCRIPT_RE = .*/.exec(repair),
+        /const PLUGIN_REPAIR_ASCII_MAX_FILES = \d+;/.exec(repair),
+        /const PLUGIN_REPAIR_ASCII_LIST_MAX = \d+;/.exec(repair),
+      ].map((m) => (m ? m[0] : ""));
+      ok(gateConsts.every(Boolean), "扫描函数依赖的三个常量都从源码抠到了（抠不到说明这组测试失真）");
+      vm.runInContext(
+        gateConsts
+          .concat([
+            fnBody(repair, "pluginRepairJoinPath"),
+            /* fnBody 从 `function <name>(` 起抠，会丢掉前面的 async —— 扫描函数是 async 的，这里补回来 */
+            "async " + fnBody(repair, "pluginRepairScanAsciiScripts"),
+            fnBody(repair, "pluginRepairAsciiSummary"),
+            fnBody(repair, "pluginRepairAsciiFixPrompt"),
+            fnBody(repair, "pluginRepairAsciiRuleText"),
+            fnBody(repair, "pluginRepairAsciiFailVerdict"),
+          ])
+          .join("\n"),
+        asb,
+      );
+      const scan = await vm.runInContext('pluginRepairScanAsciiScripts("D:\\\\inst")', asb);
+      ok(scan.ok === true && scan.checked === 2, "只扫 .ps1/.cmd/.bat（README 与目录不算）：checked=" + scan.checked);
+      ok(
+        scan.files.length === 1 && scan.files[0].rel === "scripts/start_backend.cmd" && scan.files[0].nonAscii === 4,
+        "含中文的脚本被抓出来（文件名 + 非 ASCII 字符数）：" + show(scan.files),
+      );
+      const clean = await vm.runInContext('pluginRepairScanAsciiScripts("D:\\\\inst")', asb);
+      ok(clean.files.length === 1 && listed >= 2, "纯 ASCII 的脚本不报（只有那一个违例）");
+      const fixMsg = vm.runInContext("pluginRepairAsciiFixPrompt(" + JSON.stringify(scan) + ")", asb);
+      ok(
+        fixMsg.indexOf("scripts/start_backend.cmd") >= 0 && /非 ASCII/.test(fixMsg) && /repair_ok=1/.test(fixMsg),
+        "回灌消息点出文件名 + 纪律 + 明确要求（改完再给 repair_ok=1）",
+      );
+      ok(
+        fixMsg.indexOf("README.md") < 0 && fixMsg.indexOf("install.ps1") < 0,
+        "回灌消息只列违例文件（干净的脚本不进清单，不冤枉 Agent）",
+      );
+      const bad = vm.runInContext(
+        'pluginRepairAsciiFailVerdict({ok:true,reason:"agent_reported_fix"}, ' + JSON.stringify(scan) + ")",
+        asb,
+      );
+      ok(
+        bad.ok === false && bad.source === "ascii_gate" && bad.reason.indexOf("scripts/start_backend.cmd") >= 0,
+        "回灌一轮后仍违例 → 结论改失败并把文件名写进 reason（结果窗看得见）",
+      );
+      const noBridge = await vm.runInContext(
+        '(function(){ var w = window; window = { api: {} }; var p = pluginRepairScanAsciiScripts("D:\\\\inst"); window = w; return p; })()',
+        asb,
+      );
+      ok(noBridge.ok === false, "桥不可用时如实回 ok=false（判不了就不误判成违例）");
+      const gateSrc = seg(repair, "async function pluginRepairAsciiGate", "function pluginRepairRerunNode");
+      ok(
+        gateSrc.indexOf("if (!verdict || !verdict.ok) return out") > 0 &&
+          gateSrc.indexOf("out.retried = true") > 0 &&
+          gateSrc.indexOf("pluginRepairAsciiFailVerdict") > 0,
+        "闸门只对「Agent 说修好了」生效，且只回灌一轮（再违例才判失败）",
+      );
+      ok(
+        /const gate = await pluginRepairAsciiGate\(info, st, rawVerdict\)/.test(repair) &&
+          /const verdict = gate\.verdict/.test(repair),
+        "自动修复收尾真的过这道闸门（不是写了函数没人调）",
+      );
+      ok(
+        /\.then\(\(\) => pluginRepairAsciiGateAfterInstallFix\(info, st\)\)/.test(repair),
+        "安装窗「交给会话修复」那条路径也有同一道收尾扫描",
+      );
+      ok(
+        seg(repair, "function pluginRepairPromptText", "function pluginRepairVerdictFromText").indexOf(
+          "pluginRepairAsciiRuleText()",
+        ) > 0 &&
+          seg(repair, "function pluginInstallFixPromptText", "async function pluginInstallFixSession").indexOf(
+            "pluginRepairAsciiRuleText()",
+          ) > 0,
+        "两条修复提示词都带「脚本编码纪律」（同一句真源，不各写一份）",
+      );
+    };
     /* 载荷归一：主进程给 id 还是 kind 都接得住，节点标题只按 id 现查、绝不瞎编 */
     const nm = seg(repair, "function pluginRepairNormalize", "\n}");
     ok(nm.indexOf("p.pluginId, p.plugin, p.id") > 0 && nm.indexOf("p.logTail") > 0 && nm.indexOf("p.errCode") > 0, "归一函数吃多种字段别名（logTail / errCode / …）");
@@ -626,8 +744,8 @@ function groupTail() {
     ok(/remotion:\s*\{[\s\S]{0,220}resident: false/.test(svcPet) && /pet:\s*\{[\s\S]{0,220}resident: false/.test(svcPet), "remotion 与桌宠都标 resident:false（无常驻服务 → 收尾改成重跑，不空等重启）");
     const alias = seg(repair, "const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService", "\n})();");
     ok(/pet:\s*\[[^\]]*"bongochat"/.test(alias), "别名表把 bongochat / deskpet 归到 pet（卡片 id 与查表口径一致）");
-    ok(seg(repair, "const PLUGIN_REPAIR_SKILLS = {", "\n};").indexOf("remotion") < 0, "PLUGIN_REPAIR_SKILLS 故意不含 remotion（没有配套 skill → 提示词走「自行判断根因」分支）");
-    ok(repair.indexOf("没有配套的内置 skill") > 0, "无配套 skill 的插件有专门提示词分支（桌宠与 remotion 就靠它）");
+    ok(seg(repair, "const PLUGIN_REPAIR_SKILLS = {", "\n};").indexOf('remotion: "remotion-local-install"') > 0, "PLUGIN_REPAIR_SKILLS 覆盖 remotion（本轮补上配套 skill → 修复提示词按技能给现场口径）");
+    ok(repair.indexOf("没有配套的内置 skill") > 0, "无配套 skill 的插件仍有专门提示词分支（桌宠就靠它）");
   }
 
   console.log("\n[8] H3 安装链与自修复提示词符合当前方案");
@@ -829,6 +947,10 @@ async function groupE2E() {
 
 groupBus()
   .then(groupTail)
+  .then(() => {
+    ok(typeof ASCII_GATE_GROUP === "function", "安装脚本编码闸门那一组挂上了（由本链真跑，不是死代码）");
+    return ASCII_GATE_GROUP ? ASCII_GATE_GROUP() : null;
+  })
   .then(groupE2E)
   .catch((e) => {
     fails++;

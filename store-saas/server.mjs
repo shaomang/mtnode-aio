@@ -334,7 +334,9 @@ let saving = Promise.resolve();
    有一处 top-level await（bootstrapAccountStore，Tablestore 冷启 ~20s），模块求值在那里挂起时事件循环
    照跑 —— 启动迁移那条 setImmediate 就会在 `let appCatalogBump` 求值之前调进 saveDb，撞 TDZ
    「Cannot access 'appCatalogBump' before initialization」：db.json 剪除失败，每次启动把 2000+ 条热表
-   重迁一遍。声明位置在这件事上就是语义的一部分，别把它搬回中段。 */
+   重迁一遍。声明位置在这件事上就是语义的一部分，别把它搬回中段。
+   同一个记忆对象顺带缓存**精简清单**（catalog.slim.json 的文档，见 catalogSlimDoc）：它与完整目录
+   同一份 bump 失效判据、同一次组装周期内只投影一次（→ 同一周期内 encodeJsonDoc 只 stringify/gzip 一份）。 */
 let appCatalogBump = 0;
 let _catalogMemo = { at: 0, bump: -1, doc: null };
 
@@ -1863,11 +1865,12 @@ function sendCatalogJson(req, res, obj, opts) {
 
 /**
  * 目录体积体检（只读）：给 GET /api/apps/pub、上线自检与本次「1000 条验证」用。
- * 报的是**盘上真实字节**（catalog.json / catalog.json.gz），不现场压缩。
+ * 报的是**盘上真实字节**（catalog.json / catalog.json.gz / catalog.slim.json / catalog.slim.json.gz），
+ * 不现场压缩。精简目录单独报一份：客户端首帧读的是它，压前压后两个数字都要能一眼看到。
  */
 function gzipStatus() {
   const out = { dir: APPS_WEB_DIR, files: {} };
-  for (const name of ["catalog.json", "catalog.json.gz"]) {
+  for (const name of ["catalog.json", "catalog.json.gz", "catalog.slim.json", "catalog.slim.json.gz"]) {
     const f = path.join(APPS_WEB_DIR, name);
     try {
       const st = fs.statSync(f);
@@ -1876,12 +1879,23 @@ function gzipStatus() {
       out.files[name] = null;
     }
   }
-  const raw = out.files["catalog.json"] ? out.files["catalog.json"].bytes : 0;
-  const gz = out.files["catalog.json.gz"] ? out.files["catalog.json.gz"].bytes : 0;
+  const sizeOf = (name) => (out.files[name] ? out.files[name].bytes : 0);
+  const raw = sizeOf("catalog.json");
+  const gz = sizeOf("catalog.json.gz");
   out.catalogBytes = raw;
   out.catalogGzBytes = gz;
   out.ratio = raw && gz ? +(gz / raw).toFixed(3) : null;
   out.staticGzipReady = !!(raw && gz);
+  /* 精简目录（catalog.slim.json + .gz）：口径与上面完全一样，只是另一份文件。
+     slimRatio 是「首帧那份占完整目录的比例」——体积优化的收益看这一个数就够。 */
+  const slim = sizeOf("catalog.slim.json");
+  const slimGz = sizeOf("catalog.slim.json.gz");
+  out.slimBytes = slim;
+  out.slimGzBytes = slimGz;
+  out.slimRatio = slimGz && slim ? +(slimGz / slim).toFixed(3) : null;
+  out.slimOfCatalog = slim && raw ? +(slim / raw).toFixed(3) : null;
+  out.slimGzOfCatalogGz = slimGz && gz ? +(slimGz / gz).toFixed(3) : null;
+  out.slimGzipReady = !!(slim && slimGz);
   out.apiGzip = true; // /api/apps/catalog 走 sendCatalogJson（按 Accept-Encoding 现场压，结果有缓存）
   return out;
 }
@@ -2400,6 +2414,12 @@ function forumReplyCanDelete(r, t, viewer) {
   if (t && viewer.id === t.userId) return true; /* 话题作者可清理自己楼里的回复 */
   return isAdmin(viewer);
 }
+/* 改状态权限（本轮需求）：话题作者本人 / 管理员 —— 与 canDelete 同一支判据。
+   界面分工：详情页状态下拉仍只给作者（客户端按作者身份显示），列表行内的快捷按钮只给管理员
+   （投影位 canModerate）——「是不是管理员」一律由服务端判定，客户端不自己判 isAdmin。 */
+function forumTopicCanEditStatus(t, viewer) {
+  return !!(viewer && t && (viewer.id === t.userId || isAdmin(viewer)));
+}
 /* 软删除的操作人留痕：与 comments.mjs 的 deletedBy 同口径（用户名优先，回落 id）。 */
 function forumOperatorName(user) {
   return String((user && (user.username || user.id)) || "system");
@@ -2419,6 +2439,8 @@ function publicForumTopicSummary(t, en, viewer) {
     updatedAt: t.updatedAt,
     lastReplyAt: t.lastReplyAt || t.createdAt,
     canDelete: forumTopicCanDelete(t, viewer),
+    /* 列表行内的管理员快捷按钮（标记已解决 / 改回 Bug）只看这一位 */
+    canModerate: !!(viewer && isAdmin(viewer)),
   }, "forum_topic", t.id, en);
 }
 
@@ -4940,7 +4962,7 @@ function appCatalogDoc() {
   const _t = now();
   if (_catalogMemo.doc && _catalogMemo.bump === appCatalogBump && _t - _catalogMemo.at < 2000) return _catalogMemo.doc;
   const doc = appCatalogDocUncached();
-  _catalogMemo = { at: _t, bump: appCatalogBump, doc: doc };
+  _catalogMemo = { at: _t, bump: appCatalogBump, doc: doc }; /* 换记忆对象 = 顺带丢掉那一份 slim（同一个 bump，口径一致） */
   return doc;
 }
 
@@ -4964,6 +4986,73 @@ function appCatalogDocUncached() {
   };
 }
 
+/* ─────────────── 精简目录（catalog.slim.json）：首帧先渲染那份 ─────────────── *
+ * 【用途】应用中心「商店（应用）」页的首帧慢，是因为客户端一次要等完整的 catalog.json ——
+ *   1000 条时约 1.5MB，而每条里最重的是**详情页才用**的那些字段：多版本台账 versions[]、
+ *   上架截图 shots[] / shotsThumb[] / shotsSha[]、zipUrl / url / sha256 / bytes / downloads /
+ *   entry / window、打赏 tips / 评分 / 评论计数。列表首帧其实一张卡都用不到它们。
+ *   所以云端另出一份精简清单：客户端**优先拉它**先把卡片画出来，详情 / 下载 / 打赏再走
+ *   原来的完整目录与接口。完整目录 catalog.json 的字段与语义**一个字都不改** ——
+ *   老客户端继续只读它，行为不变。
+ *
+ * 【字段取舍口径】只留「列表卡片首帧就要用」的键，其余一律不投影：
+ *   · 身份与定位：id / ownerId / owner / ownerName / familyRootId / trunk / parentOwnerId / forkOf
+ *     （forkOf 是跨 id 旧分支的归组键，见 renderer/app-apps.js 的 appsBranchParentKeyOf）；
+ *   · 卡片文字：title / desc / description（后两个同义，与服务端老口径一致） / tags；
+ *   · 版本号（只给号码，不给 versions[] 台账）：version / latestVersion；
+ *   · 排序与「最近更新」：createdAt / updatedAt；
+ *   · 封面：icon / thumb / coverSource / coverVer（coverVer 是封面源 mtime 令牌，换图绕缓存）。
+ *   去掉的（一律不出现，值是空也不补空串，保持 JSON 紧凑）：versions / shots / shotsThumb /
+ *   shotsSha / zipUrl / url / sha256 / bytes / downloads / entry / window / tips / rating / comments。
+ *
+ * 【与 catalog.json 的关系】**永远同源**：这里只对 appCatalogDoc() 的同一份条目做投影，
+ *   不再从 db 里另算一遍，也不在别处抄第二份字段清单（要加键只改下面那一处）。
+ *   两者在**同一次发布**里由 writeStaticApps 一起原子写出（catalog.slim.json 与它的 .gz）。
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** 单条目录条目 → 精简条目：**同一个条目的投影**（不重算、不查库，只做键的取舍）。 */
+function catalogSlimApp(e) {
+  return {
+    id: e.id,
+    ownerId: e.ownerId,
+    owner: e.owner,
+    ownerName: e.ownerName,
+    familyRootId: e.familyRootId,
+    trunk: e.trunk,
+    parentOwnerId: e.parentOwnerId,
+    forkOf: e.forkOf || null,
+    title: e.title,
+    desc: e.desc || "",
+    description: e.description || "",
+    tags: Array.isArray(e.tags) ? e.tags : [],
+    version: e.version,
+    latestVersion: e.latestVersion,
+    icon: e.icon,
+    thumb: e.thumb,
+    coverSource: e.coverSource,
+    coverVer: e.coverVer,
+    createdAt: e.createdAt,
+    updatedAt: e.updatedAt,
+  };
+}
+
+/** 精简目录文档：顶层形状与 catalog.json 完全一致（version / updatedAt / apps），
+ *  条目顺序也逐条对齐（客户端两套解析可以共用一份），只是每条只留首帧要用的键。
+ *
+ *  传了 full（发布路径会把 appCatalogDoc() 的结果传进来）就一定用**那一份**投影 ——
+ *  同一批写出的两个文件必须来自同一份条目，绝不能因为记忆窗口过期而错位一拍。
+ *  没传才自己取 appCatalogDoc()，并挂在目录记忆对象上（同一个 bump 判据，同一窗口内只投影一次）。 */
+function catalogSlimDoc(full) {
+  const of = (doc) => ({ version: doc.version, updatedAt: doc.updatedAt, apps: doc.apps.map(catalogSlimApp) });
+  if (full) return of(full);
+  const doc = appCatalogDoc();
+  if (_catalogMemo.slim && _catalogMemo.doc === doc) return _catalogMemo.slim;
+  const slim = of(doc);
+  /* 只有当记忆对象还是装着 doc 那一个时才挂回去（否则说明期间又重算过，挂了会串新旧两份）。 */
+  if (_catalogMemo.doc === doc) _catalogMemo.slim = slim;
+  return slim;
+}
+
 /* ---------- 静态目录发布（单一真源：接口变更 → 立即落盘） ---------- *
  * 客户端（apps-store.js）读的是**静态文件** <MTNODE_APPS_URL>/catalog.json，
  * 而接口（POST / PATCH / 版本 / 删除）只改 db.json 与 DATA_DIR。
@@ -4985,8 +5074,14 @@ function appStaticPlan() {
   const _t0 = Date.now();
   const doc = appCatalogDoc();
   const _tDoc = Date.now();
+  /* 精简目录也在计划里一次算好（**同一份 doc 的投影**，见 catalogSlimDoc）：发布与体检拿到的是
+     同一份对象，不会出现「体检按 A 份算、发布写 B 份」的错位。投影是纯 map，成本相对组目录可忽略。 */
+  const slimDoc = catalogSlimDoc(doc);
   const entries = [];
-  const managed = [APPS_WEB_MANIFEST, "catalog.json"];
+  /* managed = 本次发布要写 / 要保留的托管文件（清理环节只删「上次清单里有、这次不在」的）。
+     目录类四件套都在这里：完整目录 catalog.json 与它的 .gz，以及精简目录 catalog.slim.json
+     与它的 .gz —— 它们由同一次发布一起写出，也必须一起受清单保护（否则会被清理环节当多余文件删掉）。 */
+  const managed = [APPS_WEB_MANIFEST, "catalog.json", "catalog.json.gz", "catalog.slim.json", "catalog.slim.json.gz"];
   const missing = [];
   const seen = new Set(); /* 同 id 多分支：一个静态路径只登记一次（同号版本共用老落点时会出现） */
   const push = (id, rel, src) => {
@@ -5051,7 +5146,7 @@ function appStaticPlan() {
       missing.push({ id: a.id, reason: "版本被删光，当前没有可分发的包" });
     }
   }
-  return { doc: doc, entries: entries, managed: managed, missing: missing, msDoc: _tDoc - _t0, msPlanTotal: Date.now() - _t0 };
+  return { doc: doc, slimDoc: slimDoc, entries: entries, managed: managed, missing: missing, msDoc: _tDoc - _t0, msPlanTotal: Date.now() - _t0 };
 }
 
 /* ── 彻底删除：静态目录 / 数据目录里「这条分支的一切痕迹」────────────────────────────
@@ -5235,14 +5330,39 @@ function writeStaticApps() {
   } catch (err) {
     errors.push("catalog.json：" + ((err && err.message) || String(err)));
   }
+  /* 2b) 精简目录：**同一次发布的同一份条目**投影出来（见 catalogSlimDoc），与完整目录一起落盘。
+     它只服务「首帧先渲染」，与完整目录同源同批 —— 所以两条写完才叫这次发布写完。
+     照样原子写 + 一样顺手落 .gz（客户端优先拉它，省的就是这一段带宽与解析时间）。
+     口径与 catalog.json 对齐：写失败记进本次 errors（体检 / 发布回执都看得到，不静默）。 */
+  let slimBytes = 0;
+  let slimGzBytes = 0;
+  try {
+    const _slimEnc = encodeJsonDoc(plan.slimDoc);
+    const slimBody = Buffer.concat([_slimEnc.body, Buffer.from("\n")]);
+    writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.slim.json"), slimBody);
+    slimBytes = slimBody.length;
+    try {
+      const _slimGz = _slimEnc.gz || zlib.gzipSync(slimBody, { level: 6 });
+      writeFileAtomicSync(path.join(APPS_WEB_DIR, "catalog.slim.json.gz"), _slimGz);
+      slimGzBytes = _slimGz.length;
+    } catch (err) {
+      console.warn("[mtnode-store] catalog.slim.json.gz 写失败（不影响直发）：" + ((err && err.message) || String(err)));
+    }
+  } catch (err) {
+    errors.push("catalog.slim.json：" + ((err && err.message) || String(err)));
+  }
   // 3) 清理：上次发布留下的托管文件里，这次不再需要的
+  /* 目录类四件套在 plan.managed 里，正常永远不会走到这（want.has 命中）。
+     仍然显式放行一次：清理的口径是「只删清单里记着的托管文件」，而目录类文件是**客户端唯一的入口**，
+     任何情况下都不该被这个环节删掉（清单文件被外部改坏 / 老清单里混进来过时，也不删）。 */
   const want = new Set(plan.managed);
+  const CATALOG_KEEP = new Set(["catalog.json", "catalog.json.gz", "catalog.slim.json", "catalog.slim.json.gz"]);
   const prev = readJsonFileQuiet(path.join(APPS_WEB_DIR, APPS_WEB_MANIFEST));
   const prevList = prev && Array.isArray(prev.files) ? prev.files : [];
   const removed = [];
   for (const rel of prevList) {
     const r = String(rel || "").replace(/\\/g, "/");
-    if (!r || want.has(r) || r === "catalog.json" || r.indexOf("..") >= 0) continue;
+    if (!r || want.has(r) || CATALOG_KEEP.has(r) || r.indexOf("..") >= 0) continue;
     const p = path.join(APPS_WEB_DIR, ...r.split("/"));
     try {
       if (fs.existsSync(p)) {
@@ -5295,6 +5415,11 @@ function writeStaticApps() {
     msDoc: plan.msDoc,
     msPlanTotal: plan.msPlanTotal,
     msJson: typeof msJson === "number" ? msJson : 0,
+    /* 本次发布的目录类真实字节（与体检 /api/apps/pub 的 gzip 段同一口径）：
+       首帧先渲染读的是 slim，所以它单独报一份。 */
+    catalogBytes: catalogBytes,
+    slimBytes: slimBytes,
+    slimGzBytes: slimGzBytes,
     removed: removed,
     missing: plan.missing,
     errors: errors,
@@ -8188,20 +8313,35 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, item: publicForumReply(reply, null, user, t.userId) });
   }
 
-  // 改状态：需登录，仅话题作者可改（含标记「已解决」）。
+  /* 改状态：需登录，话题作者本人 / 管理员可改（含标记「已解决」）。
+     管理员改状态在话题上留 statusBy / statusAt 痕（界面不显示操作人），并写一条 contentAudit
+     （标记为已解决 = resolve / 改回 Bug = reopen / 其它状态变更 = update）—— 作者改自己的帖是日常动作，不写审计。 */
   if (method === "PATCH" && p === "/api/forum/topic") {
     if (!user) return send(res, 401, { ok: false, code: "UNAUTHORIZED", error: "未登录" });
     const b = await jsonBody();
     const id = String(b.id || "").trim();
     const t = (db.forumTopics || []).find((x) => x.id === id);
     if (!t || t.deleted) return send(res, 404, { ok: false, error: "话题不存在" });
-    if (t.userId !== user.id) {
-      return send(res, 403, { ok: false, error: "只能修改自己的话题" });
+    if (!forumTopicCanEditStatus(t, user)) {
+      return send(res, 403, { ok: false, error: "只有作者本人与管理员可以修改话题状态" });
     }
     const status = String(b.status || "").trim().toLowerCase();
     if (!FORUM_STATUSES.has(status)) return send(res, 400, { ok: false, error: "未知状态" });
+    const from = String(t.status || "");
+    const at = now();
     t.status = status;
-    t.updatedAt = now();
+    t.statusBy = forumOperatorName(user);
+    t.statusAt = at;
+    t.updatedAt = at;
+    if (isAdmin(user) && from !== status) {
+      await contentAuditPush(
+        user,
+        status === "solved" ? "resolve" : status === "bug" ? "reopen" : "update",
+        "forum_topic",
+        { id: t.id, ownerId: t.userId, title: t.title || t.id },
+        "把状态从 " + (from || "（空）") + " 改为 " + status,
+      );
+    }
     await saveDb();
     return send(res, 200, { ok: true, item: publicForumTopic(t, user) });
   }
@@ -9783,6 +9923,9 @@ async function handle(req, res) {
         fallback: !!status.fallback,
         missingOnDisk: status.missingOnDisk || [],
         last: status.last || null,
+        /* 与 GET /api/apps/pub 同一个口径（gzipStatus）：重发这一次的目录体积，
+           含精简目录 catalog.slim.json 的压前 / 压后字节 —— 首帧优化前后一眼可比。 */
+        gzip: gzipStatus(),
       },
     });
   }

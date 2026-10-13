@@ -515,6 +515,65 @@
   letter-spacing: 0
 }
 
+/* 封面懒加载（renderer/app-store.js 的 tplThumbFill）：
+   卡片进 DOM 时只有一块纯底色骨架 —— 与「无预览」终态区分开（后者才写字）；
+   真图进视口取回 base64 后才 .tpl-thumb-in 一次性淡入。 */
+.tpl-thumb-wrap {
+  position: relative
+}
+
+/* 骨架用绝对定位铺在底上，图必须在它上面（静态定位的元素会被绝对定位的骨架盖住） */
+.tpl-thumb-wrap > .tpl-thumb {
+  position: relative;
+  z-index: 1
+}
+
+.tpl-thumb-skel {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(100deg, #0a0d12 0%, #141b25 45%, #0a0d12 90%);
+  background-size: 220% 100%;
+  animation: tpl-thumb-skel 1.1s linear infinite;
+}
+
+.tpl-thumb[data-tpl-thumb="hold"],
+.tpl-thumb[data-tpl-thumb="load"] {
+  opacity: 0
+}
+
+.tpl-thumb-in {
+  animation: tpl-thumb-in .18s ease-out both;
+}
+
+@keyframes tpl-thumb-skel {
+  0% {
+    background-position: 120% 0
+  }
+  100% {
+    background-position: -120% 0
+  }
+}
+
+@keyframes tpl-thumb-in {
+  from {
+    opacity: 0
+  }
+  to {
+    opacity: 1
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tpl-thumb-skel {
+    animation: none
+  }
+  .tpl-thumb-in {
+    animation: none;
+    opacity: 1
+  }
+}
+
 .tpl-card-body {
   display: flex;
   flex-direction: column;

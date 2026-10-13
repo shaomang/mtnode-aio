@@ -44,12 +44,16 @@
  * 样式在 css/repair.css。 */
 
 /* 插件 id / kind → 该插件的安装类 skill（【自我修复】模式的唯一真源在 skill 正文里）。
-   remotion 与桌宠（pet / bongochat）**故意不在表里**：它们没有 Agent 安装链配套的 skill，
-   报错时走 pluginRepairPromptText 的「本插件没有配套的内置 skill → 按日志证据自行判断根因」分支。 */
+   桌宠（pet / bongochat）**故意不在表里**：它没有 Agent 安装链配套的 skill，
+   报错时走 pluginRepairPromptText 的「本插件没有配套的内置 skill → 按日志证据自行判断根因」分支。
+   remotion 本轮补进表里：它的 failures 多是「脚本/包缺失、node/npm 不在 PATH」这类现场问题，
+   配套的 remotion-local-install 写明了怎么读现场与按层排除（安装窗的「交给 mtnode 会话修复」同理）。 */
 const PLUGIN_REPAIR_SKILLS = {
   music3: "minimax-music3-install",
   "minimax-music-3": "minimax-music3-install",
   "music3-local": "minimax-music3-install",
+  remotion: "remotion-local-install",
+  "remotion-local": "remotion-local-install",
   yue2: "yue2-local-install",
   yue: "yue2-local-install",
   "yue2-local": "yue2-local-install",
@@ -763,6 +767,7 @@ function pluginRepairPromptText(info) {
         "纪律（一律遵守）：只允许修改 INSTALL_DIR 内的文件（工作区之外一律不碰）；不要启动后端服务 / ComfyUI / 模型进程；不要删除用户产物目录（output/ 等）；模型与权重已就绪则勿重复下载，只补缺项；skill 里的「已知故障」章节仅当日志证据确实匹配时才参考。优先修依赖 / 脚本 / 配置，再考虑重装。",
       ),
   );
+  L.push(pluginRepairAsciiRuleText());
   L.push(
     I18n.t("完成后：在 INSTALL_DIR 根下创建标记文件 ") +
       info.marker +
@@ -893,6 +898,172 @@ async function pluginRepairJudge(info, opts) {
     v.source = "none";
   }
   return v;
+}
+
+/* ── 安装脚本「零非 ASCII」闸门（修复会话的两道防线之一） ──
+   为什么在这儿查：宿主一律用 powershell.exe（Windows PowerShell 5.1）跑安装脚本，而 5.1 按机器
+   ANSI 代码页解码**无 BOM 的 .ps1** —— 脚本里的中文会把语法解崩（真实故障见
+   docs/mirror-sources.md §九）。仓库里的脚本由 test/smoke-install-scripts.js 自动扫描守着
+   （AGENTS.md 的协作约定钉住），而 Agent 在修复期**现场写/改**的脚本只能在这里兜：
+   提示词先写纪律，收尾再扫一遍 INSTALL_DIR，违例就回灌一条要求改成纯 ASCII。
+   全程只读（fileListDir + fileReadText），不替用户改任何文件。 */
+const PLUGIN_REPAIR_SCRIPT_RE = /\.(ps1|cmd|bat)$/i;
+/** 一次最多读多少个脚本（安装目录里脚本不该有几百个；超了只查前 N 个，避免拖住收尾） */
+const PLUGIN_REPAIR_ASCII_MAX_FILES = 200;
+/** 一次最多在回灌消息里列多少个违例文件名 */
+const PLUGIN_REPAIR_ASCII_LIST_MAX = 20;
+
+/** 脚本编码纪律（两条修复提示词 + 回灌消息共用这一句，避免第二真源）。 */
+function pluginRepairAsciiRuleText() {
+  return I18n.t(
+    "脚本编码纪律：写 / 改任何 .ps1 / .cmd / .bat（以及安装期辅助 .py）时一律纯 ASCII 英文，注释也算 —— 宿主用 Windows PowerShell 5.1 跑它们，而 5.1 按机器 ANSI 代码页解码无 BOM 的 .ps1，脚本里的中文会把语法解崩。同一条纪律也管安装链会解析的清单 JSON：包里的 manifest.json 会被安装脚本读，它里面的中文同样会在中文 Windows 上把 ConvertFrom-Json 解崩 —— 清单也只写英文纯 ASCII。给用户看的中文一律走同包 steps.json 的 messages 表或界面词条。",
+  );
+}
+
+/**
+ * 扫 INSTALL_DIR 里的安装脚本（.ps1 / .cmd / .bat），逐个数非 ASCII 字符与 BOM。
+ * 返回 { ok, source, checked, files:[{rel, nonAscii, bom}] }；ok=false = 桥不可用 / 目录读不到
+ * （**判不了就当没违例**，绝不因为扫不动而把一次真修好的修复判成失败）。
+ */
+async function pluginRepairScanAsciiScripts(installDir) {
+  const api = window.api || {};
+  const dir = String(installDir || "").trim();
+  if (!dir || typeof api.fileListDir !== "function" || typeof api.fileReadText !== "function")
+    return { ok: false, error: "no_bridge", source: dir, checked: 0, files: [] };
+  let list = [];
+  try {
+    const r = await api.fileListDir(dir);
+    list = r && r.ok && Array.isArray(r.list) ? r.list : [];
+  } catch (_) {
+    return { ok: false, error: "list_failed", source: dir, checked: 0, files: [] };
+  }
+  const targets = list
+    .filter((it) => it && !it.isDir && PLUGIN_REPAIR_SCRIPT_RE.test(String(it.rel || it.name || "")))
+    .slice(0, PLUGIN_REPAIR_ASCII_MAX_FILES);
+  const files = [];
+  for (const it of targets) {
+    const rel = String(it.rel || it.name || "");
+    if (!rel) continue;
+    let text = "";
+    try {
+      const rr = await api.fileReadText(pluginRepairJoinPath(dir, rel));
+      if (!rr || !rr.exists) continue;
+      text = String(rr.content || "");
+    } catch (_) {
+      continue;
+    }
+    let nonAscii = 0;
+    for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0x7f) nonAscii++;
+    const bom = text.charCodeAt(0) === 0xfeff;
+    if (nonAscii || bom) files.push({ rel: rel, nonAscii: nonAscii, bom: bom });
+  }
+  return { ok: true, source: dir, checked: targets.length, files: files };
+}
+
+/** 违例清单 → 一句能进结果窗 / toast 的人话（前三个文件名 + 总数）。 */
+function pluginRepairAsciiSummary(scan) {
+  const files = (scan && scan.files) || [];
+  if (!files.length) return "";
+  const head = files
+    .slice(0, 3)
+    .map((f) => f.rel)
+    .join(" / ");
+  const more = files.length > 3 ? I18n.t("（等共 {n} 个文件）", { n: files.length }) : "";
+  return head + more;
+}
+
+/** 回灌消息：把违例文件列清 + 纪律 + 明确要求（只发一轮，绝不递归回灌）。 */
+function pluginRepairAsciiFixPrompt(scan) {
+  const files = (scan && scan.files) || [];
+  const L = [];
+  L.push(
+    I18n.t(
+      "宿主校验：INSTALL_DIR 里这些安装脚本含非 ASCII —— PowerShell 5.1 在中文 Windows 上会按 ANSI 代码页解码无 BOM 的 .ps1，脚本里的中文会把语法直接解崩：",
+    ),
+  );
+  for (const f of files.slice(0, PLUGIN_REPAIR_ASCII_LIST_MAX)) {
+    L.push(
+      "- " +
+        f.rel +
+        I18n.t("（非 ASCII 字节 {n}）", { n: f.nonAscii }) +
+        (f.bom ? I18n.t("（含 BOM）") : ""),
+    );
+  }
+  if (files.length > PLUGIN_REPAIR_ASCII_LIST_MAX)
+    L.push(I18n.t("（还有 {n} 个文件没列出来）", { n: files.length - PLUGIN_REPAIR_ASCII_LIST_MAX }));
+  L.push(pluginRepairAsciiRuleText());
+  L.push(
+    I18n.t(
+      "请把这些文件里的中文（含注释）全部改成英文纯 ASCII，脚本行为不要动；改完在本会话回复里再给一次 repair_ok=1 与简要说明。",
+    ),
+  );
+  return L.join("\n");
+}
+
+/** 把回灌消息发进同一条修复会话。返回是否发出（发不出去就如实降级，不假装校验过）。 */
+async function pluginRepairAskAsciiFix(sessionId, scan) {
+  const sid = String(sessionId || "");
+  if (!sid || typeof agentSessionSend !== "function") return false;
+  try {
+    await agentSessionSend(pluginRepairAsciiFixPrompt(scan), { sessionId: sid });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** 回灌一轮之后仍违例 → 把结论改成失败（不让带中文的脚本跟着后端服务一起被拉起）。 */
+function pluginRepairAsciiFailVerdict(verdict, scan) {
+  const base = String((verdict && verdict.reason) || "").trim();
+  const reason =
+    I18n.t("安装脚本仍含非 ASCII（PowerShell 5.1 会按 ANSI 解码而解崩语法）：") +
+    pluginRepairAsciiSummary(scan) +
+    (base ? " ｜ " + base : "");
+  return {
+    ok: false,
+    reason: reason.slice(0, 1200),
+    source: "ascii_gate",
+    text: (verdict && verdict.text) || "",
+    file: (verdict && verdict.file) || null,
+    aborted: false,
+    error: "",
+    asciiFiles: (scan && scan.files) || [],
+  };
+}
+
+/** 末条 assistant 正文（结论只认这一条）。 */
+function pluginRepairLastAssistantText(st) {
+  const msgs = st && Array.isArray(st.messages) ? st.messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m && m.role === "assistant" && String(m.content || "").trim()) return String(m.content).trim();
+  }
+  return "";
+}
+
+/**
+ * 编码闸门（自动修复收尾）：Agent 说修好了，先确认它写出的脚本仍是纯 ASCII。
+ * 违例 → 回灌一轮要求改（只一轮），重判一次；再违例 → 结论改失败（如实报告，不静默）。
+ * 返回 { verdict, scan, retried }；扫不动（scan=null）时原样放行，不误判。
+ */
+async function pluginRepairAsciiGate(info, st, verdict) {
+  const out = { verdict: verdict, scan: null, retried: false };
+  if (!verdict || !verdict.ok) return out; /* 本来就没修好：走失败那条路，不必再查 */
+  const scan = await pluginRepairScanAsciiScripts(info && info.installDir);
+  out.scan = scan.ok ? scan : null;
+  if (!scan.ok || !scan.files.length) return out;
+  const sent = await pluginRepairAskAsciiFix(String((st && st.id) || (info && info.sessionId) || ""), scan);
+  if (!sent) {
+    out.verdict = pluginRepairAsciiFailVerdict(verdict, scan);
+    return out;
+  }
+  out.retried = true;
+  await pluginRepairWaitTurnEnd(st);
+  const again = await pluginRepairJudge(info, { text: pluginRepairLastAssistantText(st) });
+  const scan2 = await pluginRepairScanAsciiScripts(info && info.installDir);
+  if (scan2.ok) out.scan = scan2;
+  out.verdict = scan2.ok && scan2.files.length ? pluginRepairAsciiFailVerdict(again, scan2) : again;
+  return out;
 }
 
 /* 重跑报错那个节点：remotion 这类无常驻后端的插件，「修好了」的直接体现就是这条生成能跑通。
@@ -1225,11 +1396,15 @@ async function pluginRepairRun(info) {
       break;
     }
   }
-  const verdict = await pluginRepairJudge(info, {
+  const rawVerdict = await pluginRepairJudge(info, {
     text: last,
     error: outcome === "error" ? err || "session_error" : "",
     aborted: outcome === "cancelled",
   });
+  /* 编码闸门：Agent 说修好了，也要确认它写出的安装脚本仍是纯 ASCII —— 违例先回灌一轮要求改成
+     英文，仍违例就把结论改成失败（不让带中文的脚本跟着后端服务一起被拉起；理由进结果窗）。 */
+  const gate = await pluginRepairAsciiGate(info, st, rawVerdict);
+  const verdict = gate.verdict;
   const repairOk = !!verdict.ok;
   const reason = String(verdict.reason || (repairOk ? "" : "no_repair_verdict"))
     .trim()
@@ -1355,6 +1530,7 @@ function pluginInstallFixPromptText(info) {
         "纪律（一律遵守）：只允许修改 INSTALL_DIR 内的文件（工作区之外一律不碰）；不要启动后端服务 / ComfyUI / 模型进程；不要删除用户产物目录（output/ 等）；模型与权重已就绪则勿重复下载，只补缺项；先修依赖 / 脚本 / 配置，再考虑重装。",
       ),
   );
+  L.push(pluginRepairAsciiRuleText());
   L.push(
     I18n.t("完成后：在 INSTALL_DIR 根下写出结果文件（首行 ok=true，可附 reason= 简要根因），并在本会话回复里给出 repair_ok=1 与简要根因。"),
   );
@@ -1386,11 +1562,28 @@ async function pluginInstallFixSession(info) {
     if (typeof setView === "function") setView("agent");
   } catch (_) {}
   const prompt = pluginInstallFixPromptText(info);
-  /* 不 await 整轮：安装窗那边只是「请开一条会话」，本轮跑多久不该卡住它的按钮 */
-  agentSessionSend(prompt, { sessionId: st.id }).catch((e) => {
-    toast(I18n.t("修复会话起轮失败：") + ((e && e.message) || String(e)), "err");
-  });
+  /* 不 await 整轮：安装窗那边只是「请开一条会话」，本轮跑多久不该卡住它的按钮。
+     但收尾要补一道编码校验（这条路径没有自动修复那套判定）：本轮跑完扫一遍 INSTALL_DIR，
+     违例就把文件名回灌进同一条会话要求它改成纯 ASCII，并 toast 告知用户。 */
+  agentSessionSend(prompt, { sessionId: st.id })
+    .then(() => pluginRepairAsciiGateAfterInstallFix(info, st))
+    .catch((e) => {
+      toast(I18n.t("修复会话起轮失败：") + ((e && e.message) || String(e)), "err");
+    });
   return { ok: true, sessionId: st.id };
+}
+
+/** 安装窗「交给会话修复」那条路径的编码收尾（见上面调用点的注释）。只读 + 至多回灌一轮。 */
+async function pluginRepairAsciiGateAfterInstallFix(info, st) {
+  const scan = await pluginRepairScanAsciiScripts(info && info.installDir);
+  if (!scan.ok || !scan.files.length) return;
+  const sent = await pluginRepairAskAsciiFix(String((st && st.id) || ""), scan);
+  toast(
+    sent
+      ? I18n.t("修复会话写出的安装脚本含非 ASCII：已要求它改成英文纯 ASCII")
+      : I18n.t("修复会话写出的安装脚本含非 ASCII（请在会话里让它改成英文纯 ASCII）"),
+    "warn",
+  );
 }
 
 /** 开该插件自己的控制台窗（映射表就在本文件：后端插件 spec + 窗口插件 id）。 */

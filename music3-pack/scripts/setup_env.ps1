@@ -19,6 +19,16 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $ErrorActionPreference = "Stop"
 
+# Absolute path to this PowerShell host: a few installation paths shrink PATH (the clean-machine
+# smoke test does), and a bare "powershell.exe" then fails with CommandNotFoundException.
+$PS_EXE = ""
+try { $PS_EXE = [string][System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $PS_EXE = "" }
+if (-not $PS_EXE -or -not (Test-Path -LiteralPath $PS_EXE)) {
+    $PS_EXE = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+}
+if (-not (Test-Path -LiteralPath $PS_EXE)) { $PS_EXE = "powershell.exe" }
+
+
 # -- CN mirrors (single source of truth: repo root cn-mirrors.js; see docs/mirror-sources.md) --
 # A machine-wide pip.ini often carries an unreachable extra-index-url (NVIDIA PyIndex's
 # pypi.ngc.nvidia.com is the usual one). Passing --index-url on the command line does NOT
@@ -109,67 +119,80 @@ function Install-PipWithFallback {
     throw "pip install failed on every index ($tried). Last pip output: $t"
 }
 
-function Test-CudaPython {
-    param([string]$Py)
-    if (-not $Py -or -not (Test-Path -LiteralPath $Py)) { return $false }
+# Base interpreter for .venv.
+#
+# The old contract here was "a Python that ALREADY has CUDA torch" (Test-CudaPython), which
+# is backwards: installing CUDA torch is what this script does. On a fresh machine (no conda,
+# python.org / Microsoft Store Python on PATH, no torch) every candidate failed and the
+# install died with "Need a Python with CUDA torch. Pass -CudaPython <path> or set
+# MT_MUSIC_CUDA_PYTHON." before torch was ever installed.
+#
+# Now the gate is the INTERPRETER VERSION, and when nothing usable exists we fetch one
+# ourselves (uv, else python-build-standalone from npmmirror). -CudaPython /
+# MT_MUSIC_CUDA_PYTHON / the legacy .cuda-python marker stay honoured as optional overrides.
+# The shared helper keeps the probe chain identical across h3 / music3 / yue2
+# (single source: pack-python/base_python.ps1).
+function Get-BasePython {
+    $helper = Join-Path $PSScriptRoot "base_python.ps1"
+    if (-not (Test-Path -LiteralPath $helper)) {
+        throw "base_python.ps1 is missing next to setup_env.ps1 (incomplete pack: reinstall or update the plugin resources)"
+    }
+    # NB: versions travel as ONE comma-joined -WantedCsv value -- `powershell -File` binds
+    # array parameters positionally, so `-Wanted 3.11 3.12 -Module music3` would hand "3.12"
+    # to the next parameter (the helper refuses such a value by design). Never pass an empty
+    # string either: PowerShell drops it and the call dies on "Missing an argument".
+    $hArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $helper, "-WantedCsv", "3.11,3.12", "-Module", "music3", "-GpuRequired", "auto")
+    $hCache = if ($env:MT_MUSIC_PYTHON_CACHE) { $env:MT_MUSIC_PYTHON_CACHE } else { "" }
+    if ($hCache) { $hArgs += @("-CacheRoot", $hCache) }
+    if ($CudaPython) { $hArgs += @("-ExplicitPython", $CudaPython) }
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
-        $out = & $Py -c "import torch; print('ok' if torch.cuda.is_available() else 'no')" 2>$null
-        return ($LASTEXITCODE -eq 0 -and ("$out".Trim() -eq "ok"))
+        $out = @(& $PS_EXE @hArgs 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $py = ""; $ver = ""; $src = ""; $fail = ""; $reason = ""
+    foreach ($l in $out) {
+        $s = [string]$l
+        Write-Host $s
+        if ($s -match '^\s*PYTHON=(.+)$') { $py = $Matches[1].Trim() }
+        elseif ($s -match '^\s*VERSION=(.+)$') { $ver = $Matches[1].Trim() }
+        elseif ($s -match '^\s*SOURCE=(.+)$') { $src = $Matches[1].Trim() }
+        elseif ($s -match '^\s*FAILCODE=(.+)$') { $fail = $Matches[1].Trim() }
+        elseif ($s -match '^\s*REASON=(.+)$') { $reason = $Matches[1].Trim() }
+    }
+    if ($code -eq 0 -and $py -and (Test-Path -LiteralPath $py)) {
+        Write-Host "Selected base python: $py (Python $ver, via $src)"
+        return $py
+    }
+    throw ("python_unusable [" + $fail + "] " + $reason)
+}
+
+# Hardware line: nothing below can work without an NVIDIA card. install.ps1 gates this
+# properly (it fails the torch step with music3.gpu.none before calling us); a direct
+# `.\scripts\setup_env.ps1` run gets the same probe printed instead of a mystery later.
+function Write-GpuLine {
+    $helper = Join-Path $PSScriptRoot "base_python.ps1"
+    if (-not (Test-Path -LiteralPath $helper)) { return }
+    try {
+        & $PS_EXE -NoProfile -ExecutionPolicy Bypass -File $helper -SkipGpuProbe -Module music3 -GpuRequired auto -MinDriverMajor 580 2>&1 |
+            ForEach-Object { Write-Host $_ }
     } catch {
-        return $false
+        Write-Host "[music3-setup] gpu probe could not run: $($_.Exception.Message)"
     }
 }
 
-function Find-CudaPython {
-    $candidates = @()
-    if ($CudaPython) { $candidates += $CudaPython }
-    if ($env:MT_MUSIC_CUDA_PYTHON) { $candidates += $env:MT_MUSIC_CUDA_PYTHON }
-
-    $condaRoots = @(
-        "C:\ProgramData\miniconda3",
-        "C:\ProgramData\anaconda3",
-        "$env:USERPROFILE\miniconda3",
-        "$env:USERPROFILE\anaconda3",
-        "$env:LOCALAPPDATA\miniconda3",
-        "$env:LOCALAPPDATA\anaconda3"
-    )
-    $envNames = @("seg", "torch", "pytorch", "cuda", "base")
-    foreach ($root in $condaRoots) {
-        foreach ($name in $envNames) {
-            $candidates += (Join-Path $root "envs\$name\python.exe")
-        }
-        $candidates += (Join-Path $root "python.exe")
-    }
-
-    $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($cmd) { $candidates += $cmd.Source }
-    $cmd3 = Get-Command python3 -ErrorAction SilentlyContinue
-    if ($cmd3) { $candidates += $cmd3.Source }
-
-    # Fallback hint from original mt-music setup
-    $candidates += "C:\ProgramData\miniconda3\envs\seg\python.exe"
-
-    $seen = @{}
-    foreach ($py in $candidates) {
-        $key = [string]$py
-        if (-not $key -or $seen.ContainsKey($key.ToLowerInvariant())) { continue }
-        $seen[$key.ToLowerInvariant()] = $true
-        Write-Host "Probing CUDA python: $py"
-        if (Test-CudaPython $py) {
-            Write-Host "Selected CUDA python: $py"
-            return $py
-        }
-    }
-    return $null
-}
+Write-GpuLine
 
 if (-not (Test-Path $VenvPy)) {
-    $basePy = Find-CudaPython
-    if (-not $basePy) {
-        throw "Need a Python with CUDA torch. Pass -CudaPython <path> or set MT_MUSIC_CUDA_PYTHON."
-    }
-    Write-Host "Creating .venv from $basePy (system-site-packages for CUDA torch)..."
-    & $basePy -m venv --system-site-packages $VenvDir
+    $basePy = Get-BasePython
+    # Isolated venv, no --system-site-packages: the CUDA torch is installed INTO this venv by
+    # install.ps1 (previously the script re-used whatever torch the base interpreter had,
+    # which is exactly the prerequisite that a fresh machine cannot satisfy).
+    Write-Host "Creating isolated .venv from $basePy (no system-site-packages)..."
+    & $basePy -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
     # Persist choice for later installs / agent
     Set-Content -Path (Join-Path $Root ".cuda-python") -Value $basePy -Encoding utf8
@@ -184,12 +207,36 @@ if ($env:MT_MUSIC_PIP_INDEX) {
 Write-Host "Installing requirements..."
 try { Install-PipWithFallback -PipArgs @("-U", "pip") }
 catch { throw "pip upgrade failed: $($_.Exception.Message)" }
+
+# CUDA torch goes INTO this venv (same reasoning as the h3 pack). The venv is isolated, so the
+# old "reuse the base interpreter's torch" arrangement is gone -- and it was the reason a fresh
+# machine could not install at all. PyPI mirrors only carry the CPU build on Windows, so the
+# wheel must come from the pytorch wheel index (aliyun mirror first, official last), exactly
+# like the torch chain in cn-mirrors.js. Requirements are installed afterwards: nothing in
+# requirements.txt pins torch, and installing them first would let a CPU build slip in.
+Write-Host "Installing CUDA torch into the venv (torch==2.9.1+cu130)..."
+$torchIdx = if ($env:MT_MUSIC_TORCH_INDEX) { $env:MT_MUSIC_TORCH_INDEX } else { "https://mirrors.aliyun.com/pytorch-wheels/cu130" }
+$torchIdxOfficial = "https://download.pytorch.org/whl/cu130"
+$torchPkgs = @("torch==2.9.1+cu130", "torchvision==0.24.1+cu130", "torchaudio==2.9.1+cu130")
+& $VenvPy -m pip install --index-url $torchIdx @torchPkgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "torch cu130 aliyun mirror failed; retrying with the pytorch official index (last resort)..."
+    & $VenvPy -m pip install --index-url $torchIdxOfficial @torchPkgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "torch cu130 install failed (aliyun mirror + official). Update the NVIDIA driver to one that supports CUDA 13.0, then retry."
+    }
+}
+$torchOk = (& $VenvPy -c "import torch;print('y' if torch.cuda.is_available() else 'n')" 2>$null)
+if ("$torchOk".Trim() -ne "y") {
+    throw "torch cu130 loaded but torch.cuda.is_available() is False. Update the NVIDIA driver (>= CUDA 13.0 support) and rerun."
+}
+
 try { Install-PipWithFallback -PipArgs @("-r", (Join-Path $Root "requirements.txt")) }
 catch {
     Write-Host "requirements install failed (direct, all pip indexes); retrying with the gh proxy git mirror (China mirror)..."
     $req = Join-Path $Root "requirements.txt"
     $reqMirror = Join-Path $env:TEMP "music3-requirements-mirror.txt"
-    (Get-Content -LiteralPath $req -Raw) -replace "git\+https://github\.com/", "git+https://ghproxy.com/https://github.com/" | Set-Content -LiteralPath $reqMirror -Encoding utf8
+    (Get-Content -LiteralPath $req -Raw -Encoding UTF8) -replace "git\+https://github\.com/", "git+https://ghproxy.com/https://github.com/" | Set-Content -LiteralPath $reqMirror -Encoding utf8
     Install-PipWithFallback -PipArgs @("-r", $reqMirror)
 }
 & $VenvPy -c "import torch; from diffusers import ModularPipeline; print('torch', torch.__version__, 'cuda', torch.cuda.is_available()); print('diffusers ok')"

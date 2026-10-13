@@ -7,11 +7,12 @@
  * preload-app.js 在 DOMContentLoaded 后调 apSpeechMount()，本模块负责画界面与调桥。
  * 没装桥（老版 MTNode / 不是应用窗口）时整体不出现，应用照常跑。
  *
- * 默认隐藏（本轮共识：「默认 footer 出现的听写等内容隐藏」）：
- *   挂载出来的 #mtnode-dictate 一律带 data-mtnode-hidden="1" + display:none —— 页面底部
- *   不再默认出现 🎤 / 🎧 这一条；隐藏态下 placeStrip 不做落点搬移（见该函数）。要让它露面：
- *   删掉那个属性、或调 window.apSpeechReveal()；隐藏 / 可见也能问 window.apSpeechHidden()。
- *   宿主注不注入这一条另由 app.json 的 capabilities.showDictate 决定（preload-app.js 的闸门）。
+ * 可见性（本轮需求修正）：这条条**只在应用声明了 capabilities.showDictate 时才会被宿主注入**
+ *   （闸门在 preload-app.js）—— 既然用户显式声明要它，注入进来就**默认露面**，落到应用自己的
+ *   footer（装不下才落宿主自建的固定底栏）。以前挂载即 data-mtnode-hidden + display:none，
+ *   页面上永远看不到它，只能靠应用自己调 apSpeechReveal()，那正是「勾了显示听写条却没反应」的根因。
+ *   条尾有「收起」按钮 = 本窗口内藏起来（不写回 app.json，下次打开窗口按声明重新出现）；
+ *   程序化入口两个方向都在：apSpeechReveal() / apSpeechHide()，现状问 apSpeechHidden()。
  *
  * 界面（与画布状态栏那枚话筒同族，但只保留应用用得上的）：
  *   🎤 听写        点一下开始（再点 / 静音 1.6s / 满 60s 自动结束）→ 转写 → 结果小窗
@@ -118,6 +119,10 @@
       ".mtn-dict-note{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}" +
       ".mtn-dict-note[data-kind=warn]{color:" + p.warn + "}" +
       ".mtn-dict-note[data-kind=err]{color:" + p.err + "}" +
+      /* 「收起」按钮（本轮需求）：只是本窗口内把这条藏起来，不是关能力位 —— 靠右放，样式比
+         主按钮轻，免得抢 🎤 / 🎧 的视线 */
+      ".mtn-dict-btn.mtn-dict-hide{margin-left:auto;padding:2px 8px;opacity:.75;font-size:.92em}" +
+      ".mtn-dict-btn.mtn-dict-hide:hover:not(:disabled){border-color:" + p.line + ";color:inherit;opacity:1}" +
       ".mtn-dict-panel{position:fixed;left:50%;transform:translateX(-50%);z-index:12550;width:min(680px,92vw);" +
       "max-height:46vh;display:flex;flex-direction:column;border:1px solid " + p.line + ";border-radius:10px;" +
       "background:" + p.bg + ";color:" + p.fg + ";box-shadow:0 12px 40px rgba(0,0,0,.45);font:" + p.font + "}" +
@@ -128,8 +133,8 @@
       ".mtn-dict-x{margin-left:auto;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;opacity:.75}" +
       ".mtn-dict-body{padding:10px;overflow:auto;white-space:pre-wrap;word-break:break-word;line-height:1.6}" +
       ".mtn-dict-pf{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px;border-top:1px solid " + p.line + "}" +
-      /* 默认隐藏态的 CSS 兜底（内联 style 是主路，标记是给脚本认的）：!important 挡住应用
-         自己的 footer 样式把 display 又掰回来 */
+      /* 隐藏态的 CSS 兜底（内联 style 是主路，标记是给脚本认的）：!important 挡住应用
+         自己的 footer 样式把 display 又掰回来。只有「收起」/ apSpeechHide() 之后才会命中。 */
       "#mtnode-dictate[data-mtnode-hidden='1']{display:none !important}";
     (document.head || document.documentElement).appendChild(css);
   }
@@ -587,12 +592,13 @@
   var resizeHooked = false;
   var missCount = 0; /* 连续量到「在 footer 里看不见」的次数（连中两次才搬走，见 placeStrip） */
 
-  /* ── 默认隐藏（本轮共识）────────────────────────────────────────────────
-   * 「默认 footer 出现的听写」不再默认露面：这条条挂上去就带 data-mtnode-hidden="1" +
-   * display:none（标记 + 内联样式双保险，标记是给脚本 / 冒烟认的），CSS 兜底也写在 styleTag 里。
+  /* ── 收起态（本轮需求修正：挂载即可见，隐藏只用于「收起」）────────────────────
+   * 隐藏标记 data-mtnode-hidden="1" + display:none（标记 + 内联样式双保险，标记是给脚本 / 冒烟认的），
+   * CSS 兜底写在 styleTag 里。**挂载时不再打这个标记**（见 apSpeechMount 的 markShown）——
+   * 只有「收起」按钮 / apSpeechHide() 会打上它，那是本窗口内的临时隐藏。
    * 隐藏态下**不做落点搬移**（placeStrip 直接返回）：不然它一被量成「看不见」就会被搬到宿主
    * 自建的固定底栏 #mtnode-dictate-bar 去，页面上凭空多一条底栏。
-   * 要让它露面：删掉那个属性（或调 apSpeechReveal()）—— 下一次 placeStrip 会先补一次落点。 */
+   * 要让它回来：删掉那个属性（或调 apSpeechReveal()）—— 下一次 placeStrip 会先补一次落点。 */
   var HIDDEN_ATTR = "data-mtnode-hidden";
   function hiddenNow(el) {
     var t = el || root;
@@ -614,17 +620,34 @@
     } catch (_) {}
     return true;
   }
-  /** 让听写条露面（脚本 / 应用自己需要时调；幂等）。
-   *  返回 true 表示现在不再处于隐藏态 —— 顺手补一次落点，免得它挂在 footer 底下看不到。 */
+  /** 露面的落点写法（挂载时用）：这个标记只在**宿主按 app.json 的 capabilities.showDictate
+   *  注入进来**时才会走到这里 —— 用户显式声明了要这条条，所以挂载即可见，不再挂载即隐藏。
+   *  与 reveal() 的区别：reveal() 是给运行期（收起后再要它出来）用的，会顺手补一次落点。 */
+  function markShown(el) {
+    var t = el || root;
+    if (!t) return false;
+    try {
+      t.removeAttribute(HIDDEN_ATTR);
+      if (t.style) t.style.display = "";
+    } catch (_) {}
+    return true;
+  }
+  /** 让听写条露面（收起后要它回来时调；幂等）。
+   *  与 markShown 的差别只在这一步：顺手补一次落点，免得它挂在 footer 底下看不到。 */
   function reveal() {
     if (!root) return false;
-    try {
-      root.removeAttribute(HIDDEN_ATTR);
-      if (root.style) root.style.display = "";
-    } catch (_) {}
+    markShown(root);
     try {
       placeStrip({ allowReturn: true });
     } catch (_) {}
+    return true;
+  }
+  /** 把这条听写条收起来（「收起」按钮 / 应用自己调 apSpeechHide()；幂等）。
+   *  只写标记 + display:none，不碰 app.json 的能力位；下次打开应用窗口按声明照旧露面。 */
+  function hide() {
+    if (!root) return false;
+    markHidden(root);
+    missCount = 0; /* 隐藏态不算「装不下」：清掉计数，免得下次露面立刻被搬走 */
     return true;
   }
 
@@ -647,7 +670,7 @@
   }
   /** 这一条现在真的看得见吗（量不出来就返回 true） */
   function visibleNow(el) {
-    if (hiddenNow(el)) return false; /* 默认隐藏态：不算看得见（placeStrip 据此不搬它） */
+    if (hiddenNow(el)) return false; /* 收起态：不算看得见（placeStrip 据此不搬它） */
     var r = rectOf(el);
     if (!r) return true;
     if (!r.width && !r.height) return false; /* display:none / 折叠：没有尺寸就是没显示 */
@@ -701,7 +724,7 @@
    *  opts.allowReturn=true 只在窗口尺寸**真的**变了（用户拖窗口）时才用：搬回 footer 重量一次。 */
   function placeStrip(opts) {
     if (!root) return false;
-    /* 默认隐藏态：一动不动 —— 既不算「装不下」，也不进宿主自建的固定底栏 */
+    /* 收起态：一动不动 —— 既不算「装不下」，也不进宿主自建的固定底栏 */
     if (hiddenNow(root)) {
       missCount = 0;
       return true;
@@ -789,12 +812,21 @@
       '">🎧<span>' +
       esc(t("音频转文字", "Audio → text")) +
       '</span></button>' +
-      '<span class="mtn-dict-note"></span>';
-    /* 默认隐藏（本轮共识）：先打标记再挂进 DOM —— 避免挂载到移除之间闪一帧。
-       要露面就走 reveal()（apSpeechReveal）。 */
-    markHidden(root);
+      '<span class="mtn-dict-note"></span>' +
+      '<button type="button" class="mtn-dict-btn mtn-dict-hide" id="mtn-dict-hide" data-act="hide" title="' +
+      esc(t("收起这条听写条（只影响本次窗口；下次打开应用窗口按声明重新出现）", "Hide this dictate bar (this window only; it comes back the next time the app window opens)")) +
+      '">' +
+      esc(t("收起", "Hide")) +
+      "</button>";
+    /* 可见性（本轮需求修正）：这条条只有在应用声明了 capabilities.showDictate 时才会被宿主注入
+       （闸门在 preload-app.js），既然用户显式声明要它，注入进来就该**默认露面** —— 以前这里挂载即
+       markHidden(root)，结果「勾了显示听写条却永远看不见」，只能靠应用自己调 apSpeechReveal()。
+       标记 data-mtnode-hidden 与两个既有入口都保留：收起按钮 / apSpeechHide() 用它藏、
+       apSpeechReveal() 用它显示；隐藏态下 placeStrip 不搬落点（既有逻辑，见 placeStrip）。 */
+    markShown(root);
     refs.mic = root.querySelector('[data-act="mic"]');
     refs.file = root.querySelector('[data-act="file"]');
+    refs.hide = root.querySelector('[data-act="hide"]');
     refs.note = root.querySelector(".mtn-dict-note");
 
     /* 落点：① 应用自己的 <footer>（最自然，但**装得下**才用）② 宿主自建的固定底栏 */
@@ -828,6 +860,15 @@
 
     if (refs.mic) refs.mic.disabled = !c.mic;
     if (refs.file) refs.file.disabled = !c.file;
+
+    /* 「收起」= 本窗口内把这条藏起来（markHidden → display:none）。**不写回 app.json 的能力位**：
+       收起是这一次看着碍事的临时动作，下次打开应用窗口按声明重新露面 —— 声明与界面不会变成两回事。
+       要它回来：应用自己调 apSpeechReveal()，或重开窗口。 */
+    if (refs.hide) {
+      refs.hide.addEventListener("click", function () {
+        hide();
+      });
+    }
 
     refs.mic.addEventListener("click", function () {
       if (busy && rec) {
@@ -886,9 +927,11 @@
     /* 落点自检（宿主 / 冒烟用）：placeStrip 重算一次落点，visibleNow 量「这条现在看得见吗」 */
     window.apSpeechPlace = placeStrip;
     window.apSpeechVisible = visibleNow;
-    /* 默认隐藏 + 显示入口（本轮共识）：hidden = 现在是不是隐藏态；reveal = 让它露面 */
+    /* 可见性入口（本轮需求修正）：注入进来即默认可见（能力位为真 = 用户要它）；hidden = 现在
+       是不是隐藏态；reveal = 让它露面；hide = 收起它。两个方向都幂等，都只改本窗口的标记。 */
     window.apSpeechHidden = hiddenNow;
     window.apSpeechReveal = reveal;
+    window.apSpeechHide = hide;
   } catch (_) {}
 
   /* 自挂载（默认路径）：注入脚本在页面世界里跑，window.appHost 这时已经在了 —— 直接挂。

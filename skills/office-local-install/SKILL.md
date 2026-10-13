@@ -72,3 +72,4 @@ ENGINE_DIR\
 - **数据不落应用目录**：`ENGINE_DIR` 只能在 `%APPDATA%\pipeline-console\` 下（或用户明确指定的其它目录），不得写进安装目录 / exe 同目录。
 - **不动安装包里的东西**：本 skill 装的是**用户数据目录**；不要去改 `resources/dsh/gateway/node_modules`（升级会被覆盖，且可能没写权限）。
 - **删 wasm 是可选**：删掉 `libreoffice-kit-wasm` 省 145MB，Windows 上安全（原生引擎优先）；不确定就留着。
+- 写任何安装脚本（`.ps1` / `.cmd` / `.bat` / 安装期辅助 `.py`）时**一律纯 ASCII 英文**：PowerShell 5.1 在中文 Windows 上按 ANSI 解码无 BOM 的 `.ps1`，脚本里的中文会把语法解崩；给用户看的中文文案一律走 `steps.json` 的 `messages` 表或界面词条。这条纪律已是**硬守卫**（`AGENTS.md` 协作约定 + `test/smoke-install-scripts.js` 自动扫描），改脚本后跑 `node test/smoke-install-scripts.js`。

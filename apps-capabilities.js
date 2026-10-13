@@ -16,9 +16,9 @@
  * 缺省值（缺字段 / 非法值一律按此归一，绝不写脏数据）：
  *   · textInput   缺省 **false** —— 存量应用、云端下载的应用都没声明过，按「不携带语音」处理
  *     （用户共识：已装的不动，也不给它们注入听写条；需要时在开发页补声明）；
- *   · showDictate 缺省 **false** —— 应用窗口 footer 里那条宿主注入的听写条**默认隐藏**：宿主
- *     照旧把 renderer/app-speech-ui.js 挂上（仍可被脚本唤起，见 apSpeechMount 的可见性口径），
- *     但挂上时带 data-mtnode-hidden 标记 + display:none；要看得见必须在开发页显式勾这一位。
+ *   · showDictate 缺省 **false** —— 应用窗口 footer 里那条宿主注入的听写条**默认没有**：宿主只在
+ *     这一位为真时才注入 renderer/app-speech-ui.js，注入进来即**默认可见**（那是用户显式开的能力；
+ *     条尾有「收起」按钮，只藏本次窗口，不写回 app.json）。缺省的存量应用宿主根本不注入。
  *   · imageGen    缺省 false（同理）。
  *   新建应用由「新建应用」浮层显式勾选（浮层里三项都默认不勾），所以新应用不走这几个缺省。
  *
@@ -40,10 +40,10 @@ const APP_CAPABILITIES = [
   {
     id: "showDictate",
     label: { zh: "显示听写条", en: "Show dictate bar" },
-    /* 应用窗口 footer 里那条宿主注入的听写条（🎤 听写 / 🎧 音频转文字）默认隐藏 */
+    /* 应用窗口 footer 里那条宿主注入的听写条（🎤 听写 / 🎧 音频转文字）：为真 = 注入并默认可见 */
     hint: {
-      zh: "在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；不勾就默认隐藏，应用自己的代码仍可唤起它",
-      en: "Show the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) in the app window footer; off = hidden by default, app code can still reveal it",
+      zh: "在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）",
+      en: "Show the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) in the app window footer; on = visible by default, with a “Hide” button that lasts for this window only",
     },
   },
   {

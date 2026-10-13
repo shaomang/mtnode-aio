@@ -379,8 +379,15 @@ console.log("smoke-apps-tips：打赏概述接口 + 版本标签继承 + 渲染�
     "app-apps.js：打赏汇总的取数 / 触发 / 悬停文案三件套齐备");
   ok(APPS.indexOf('"/api/tips/summary?kind=app&ids="') >= 0,
     "渲染层问的就是本轮新增的 GET /api/tips/summary（kind=app 批量）");
-  ok(APPS.indexOf("appsTipsEnsure(list, false)") >= 0 && APPS.indexOf("return appsMergeSameId(appsSpecPoolAll()).map(appsSpecWithTips);") >= 0,
-    "列表载入 / 刷新时问一次（不是悬停那刻才问），条目上也挂了 tips");
+  /* 触发时机（本轮口径不变、位置变了）：列表**载入 / 刷新**时问一次、悬停那一刻不问网络 ——
+     但这一次网络请求**不在首帧那一趟**发（用户共识：首帧之后才拉打赏汇总），
+     所以它现在挂在 appsBackfillStart 的「完整目录到手」那一步里（卡片早已在屏幕上）。 */
+  ok(
+    APPS.indexOf("appsTipsEnsure(appsSpecListAll(), false)") >= 0 &&
+      /function appsBackfillStart\(\)[\s\S]{0,1200}appsTipsEnsure\(appsSpecListAll\(\), false\)/.test(APPS) &&
+      APPS.indexOf("return appsMergeSameId(appsSpecPoolAll()).map(appsSpecWithTips);") >= 0,
+    "列表载入 / 刷新时问一次（首帧之后、不在悬停那刻），条目上也挂了 tips",
+  );
   const tipEnv = vm.runInNewContext(
     "const APPS_ST = { tips: null, tipsFailed: false, tipsBusy: false };\n" +
     "function appsBranchIdOf(s){ return String((s && (s.id || s.appId)) || \"\"); }\n" +

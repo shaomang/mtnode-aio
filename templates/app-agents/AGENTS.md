@@ -37,10 +37,10 @@ assets/         图标 / 图片 / 字体 / 静态 json
 - **不要删掉模型选择位**（`#modelBtn` + `#modelMenu` + `app-model.js`）：换皮肤可以挪位置，但不能没有。
 - 不改 `app.json` 的 `id`（= 目录名 = 云端词条 id）；改它等于换一个应用。
 - **`app.json` 的 `capabilities` 是能力声明**：`textInput` 为真才带语音模块（`speech.js` / `speech.css`），
-  没声明就是「不携带语音转文字」；`showDictate` 为真才在**应用窗口底部**显示宿主注入的那条听写条
-  （默认 **false** = 隐藏，挂上的条带 `data-mtnode-hidden` + `display:none`，应用自己调
-  `apSpeechReveal()` 仍能唤起）；`imageGen` 只是声明要出图。它是静态声明、不是权限闸 ——
-  桥上的接口始终可调，别拿它去拦代码。
+  没声明就是「不携带语音转文字」；`showDictate` 为真才在**应用窗口底部**注入并**默认显示**那条宿主听写条
+  （缺省 **false** = 宿主根本不注入；条尾有「收起」按钮，只藏本次窗口，不写回 `app.json`；程序化入口
+  `apSpeechHide()` / `apSpeechReveal()` / `apSpeechHidden()`）；`imageGen` 只是声明要出图。它是静态声明、
+  不是权限闸 —— 桥上的接口始终可调，别拿它去拦代码。
 
 ## 三、能力桥用法（appHost / pluginApi → window.AppHost）
 
@@ -56,7 +56,7 @@ assets/         图标 / 图片 / 字体 / 静态 json
 | 选一张本机图 | `AppHost.pickImage()`（用户取消 → `{ ok:false, code:"cancelled" }`，不是报错） |
 | **出图** | `AppHost.image(prompt, { model, images, onProgress })`（云端图像服务商或本机 SenseNova，每次一张；取消走 `AppHost.cancelImage(reqId)`） |
 | 列图像后端 / 选 | `AppHost.imageModels()` / `imageModelGet()` / `imageModelSet(id)` |
-| 语音转写（可选） | `AppHost.pickAudio()` / `transcribe()` / `transcribeWav(b64)`（**只有声明了 `capabilities.textInput` 的应用才带脚手架的语音模块**；窗口底部那条宿主注入的听写条另看 `capabilities.showDictate`，缺省隐藏，脚本可用 `apSpeechReveal()` 唤起） |
+| 语音转写（可选） | `AppHost.pickAudio()` / `transcribe()` / `transcribeWav(b64)`（**只有声明了 `capabilities.textInput` 的应用才带脚手架的语音模块**；窗口底部那条宿主注入的听写条另看 `capabilities.showDictate` —— 为真即默认显示，缺省则宿主不注入，脚本可用 `apSpeechHide()` / `apSpeechReveal()` 控制） |
 | 关窗 | `AppHost.close()`；收尾挂 `AppClose.on(cb)` |
 | 语言 / 外观 | 只改 `<html lang>` 与 `styles/<id>.css`，不动其它文件的文案与配色 |
 

@@ -802,7 +802,7 @@ function pubIdCommit() {
   PUB.form.version = "1.0.0";
   if (PUB.dom.verIn) PUB.dom.verIn.value = "1.0.0";
   PUB.online = null; /* 线上状态是照旧 id 读的：先清掉，免得旧结论被当成新 id 的 */
-  pubForkFill(); /* 二次开发来源按新 id 重算（同 id 已有条目 → 自动指向主干作者） */
+  pubForkAutoSync(); /* 二次开发来源按新 id 重算（同 id 已有条目 → 自动声明为主干那一支） */
   pubPaintId();
   pubPaintHead();
   pubPaintFoot();
@@ -1168,8 +1168,8 @@ function pubBuildFormSec(host) {
     }
   });
 
-  /* 二次开发来源（可选，见 pubForkField）：放在「应用 id」之后 —— 两者一起构成应用的身份 */
-  sec.appendChild(pubForkField());
+  /* 二次开发来源这一格**已按用户共识撤掉**（不给手改入口）：来源一律由本机记录自动带出，
+     见 pubForkAutoSync —— 该声明就自动声明，界面不再问、也不再显示一行只读说明。 */
 
   /* 说明 */
   const descIn = pubEl("textarea", "pub-in pub-ta");
@@ -1311,106 +1311,24 @@ function pubForkInit(app) {
   if (owner || ownerId) return { id: pubStr(app && app.id), ownerId: ownerId, owner: owner };
   return { id: "", ownerId: "", owner: "" };
 }
-/* 云端目录里可以当 fork 源挑的条目（应用中心已经拉过目录就直接用它，不再多打一次网络） */
-function pubForkChoices() {
-  const out = [];
-  try {
-    const list = typeof appsCatalogList === "function" ? appsCatalogList() : [];
-    for (const s of Array.isArray(list) ? list : []) {
-      const id = pubStr(s && s.id);
-      if (!id) continue;
-      out.push({
-        id: id,
-        ownerId: pubStr(s.ownerId),
-        owner: pubStr(s.owner),
-        title: pubStr((s && s.title && (s.title.zh || s.title.en)) || (s && s.name) || id),
-        version: pubStr(s && s.version),
-      });
-    }
-  } catch (_) {}
-  return out;
-}
-function pubForkField() {
-  const wrap = pubEl("div", "pub-field");
-  const lab = pubEl("label", "pub-lab", pubT("基于哪个应用二次开发（可选）"));
-  lab.htmlFor = "pubFork";
-  const line = pubEl("div", "pub-labline");
-  line.appendChild(lab);
-  wrap.appendChild(line);
-
-  const sel = pubEl("select", "pub-in");
-  sel.id = "pubFork";
-  PUB.dom.forkSel = sel;
-  wrap.appendChild(sel);
-  const hint = pubEl("div", "pub-hint", "");
-  PUB.dom.forkHint = hint;
-  wrap.appendChild(hint);
-  pubForkFill();
-  return wrap;
-}
-
-/* 填充「基于哪个应用二次开发」下拉（同 id 多分支，§十）：
- *   · 线上这个 id 已经有条目（含别人先占的）→ 自动指向**主干作者**（createdAt 最早那条）
- *     并**锁定不可改**（q8：id 一致时自动二次开发），提示里写清「改 id 就取消」；
- *   · 线上没有这个 id → 回到本机已有声明（app.json.forkOf / 安装账本）或原创，可自由改。 */
-function pubForkFill() {
-  const sel = PUB.dom.forkSel;
-  if (!sel) return;
-  const cur = PUB.form.forkOf || { id: "", ownerId: "", owner: "" };
+/* 二次开发来源的**自动声明**（本轮口径 · 用户共识：上架窗不再有这一格，来源一律由本机记录带出）。
+ * 契约不变（docs/apps-market.md §八）：应用身份 = 应用 id + 作者 uid，云端条目用
+ * forkOf = { id, ownerId } 指回源应用，客户端据此把同源条目归成「同一应用的不同分支」。
+ *   · 线上这个 id 已经有条目 → **自动声明为主干那一支**（服务端按 forkOf 收下，本次上架 =
+ *     在同一个 id 下建我自己的分支）；
+ *   · 线上没有这个 id → 本机 app.json 里已声明过的 forkOf 原样带上（「复制到开发文件夹」/
+ *     「覆盖」/「AI 合并」那几条路都会写这条内部来源记录，见 apps-store.js 的 copyAppToDev、
+ *     app-branch-replace.js、app-branch-merge.js）；都没有 = 原创，远端提交时根本不发这个字段。
+ * 返回自动指向的那一条（没有 = null）。 */
+function pubForkAutoSync() {
   const auto = pubAutoForkOf();
-  const keyOf = (x) => pubStr(x.id) + "\u0000" + pubStr(x.ownerId) + "\u0000" + pubStr(x.owner);
-  const opt = (value, text) => {
-    const o = pubEl("option");
-    o.value = value;
-    o.textContent = text;
-    return o;
-  };
-  sel.innerHTML = "";
-  if (!auto) sel.appendChild(opt("", pubT("（原创：不声明来源）")));
-  const choices = pubForkChoices();
-  let matched = false;
-  for (const c of choices) {
-    if (auto && keyOf(auto) === keyOf(c)) matched = true;
-    sel.appendChild(
-      opt(
-        keyOf(c),
-        "v" + (c.version || "0.0.0") + " · " + c.title + " · " + c.id + " · " + pubT("作者 ") + (pubAuthorNameOf(c) || pubT("未知")),
-      ),
-    );
-  }
-  /* 自动指向 / 带出来的那一条不在目录里（源已下架 / 目录没拉到）：补一项，别让用户的声明被悄悄丢掉 */
-  if ((auto || cur.id) && !matched) {
-    const one = auto || cur;
-    sel.appendChild(
-      opt(keyOf(one), pubT("（已声明）") + one.id + (pubAuthorNameOf(one) ? " · " + pubT("作者 ") + pubAuthorNameOf(one) : "")),
-    );
-  }
-  sel.value = auto ? keyOf(auto) : cur.id ? keyOf(cur) : "";
   if (auto) {
     PUB.form.forkOf = { id: pubStr(auto.id), ownerId: pubStr(auto.ownerId), owner: pubStr(auto.owner) };
     PUB.form.forkLocked = true;
   } else {
     PUB.form.forkLocked = false;
   }
-  sel.disabled = !!auto;
-  sel.title = auto
-    ? pubT("这个应用 id 线上已经有条目：本次上架自动声明为它的二次开发分支（同一个 id 下建你自己的分支）。想改来源就换一个应用 id。")
-    : pubT("声明后云端条目会记下「二次开发自」这个应用（源 id + 原作者 uid），客户端就能在同一条分支树上看到它。");
-  sel.onchange = () => {
-    /* 锁定（自动声明）时下拉是 disabled，change 根本不会来；这里只管开放态 */
-    const v = pubStr(sel.value);
-    if (!v) PUB.form.forkOf = { id: "", ownerId: "", owner: "" };
-    else {
-      const parts = v.split("\u0000");
-      PUB.form.forkOf = { id: pubStr(parts[0]), ownerId: pubStr(parts[1]), owner: pubStr(parts[2]) };
-    }
-    pubEdit();
-  };
-  if (PUB.dom.forkHint) {
-    PUB.dom.forkHint.textContent = auto
-      ? pubT("同一个 id 在线上已经有条目：本次会自动声明为「基于它的二次开发」，并新建**你自己的一条分支**（主干在最左、你的分支向右延伸）。唯一取消方式 = 把上面的应用 id 改成别的。")
-      : pubT("声明后云端条目会记下「二次开发自」这个应用（源 id + 原作者 uid），别人的客户端就能在你的版本与它之间「切换分支」。选「原创」= 不声明，不影响上架；声明也会写进本机 app.json（随包走），以后再上架会自动带回。");
-  }
+  return auto;
 }
 /* 线上这个 id 的主干作者（自动声明目标）：同 id 条目里 createdAt 最早那条；
    目录没拉到就退回已经读到的线上条目本身。 */
@@ -2708,7 +2626,7 @@ async function pubLoadOnline() {
   }
   pubPaintId();
   /* 自动二次开发声明跟着 id 重算（q8/q35）：同 id 已有条目 → 指向主干作者并锁定 */
-  pubForkFill();
+  pubForkAutoSync();
   /* 云端已有那一套截图**带出来**（本轮需求；口径见 pubShotsPrefillCloud）。
      放在线上状态读完、即将收口处：带出来之后 pubPaintShots（含页脚）与版本区都按新的状态重画。 */
   await pubShotsPrefillCloud(mine, seq);
@@ -3025,7 +2943,16 @@ function pubResolveProv() {
 /* 素材：app.json + 入口页可见文本 + 目录文件清单（能读就读，读不到就少给，不编） */
 async function pubCollectMaterial() {
   const api = window.api || {};
-  const app = PUB.app || {};
+  /* 本机这份摘要可能是「轻表」口径（体积 / 文件数要递归目录，首帧不取，见 apps-store.js 的
+     appSummary slim）：上架材料里这两个数字要给真值，就这一件向主进程补问一次
+     （apps:detail，只算这一个应用），补不到就照旧用列表里那份 —— 绝不编造数字。 */
+  const seed = PUB.app || {};
+  let app = seed;
+  try {
+    if (seed && seed.detailPending && typeof appsLocalDetailEnsure === "function") {
+      app = (await appsLocalDetailEnsure(seed.id)) || seed;
+    }
+  } catch (_) {}
   const dir = pubStr(app.dir);
   const out = {
     app: {
@@ -3251,7 +3178,7 @@ function pubErrText(r) {
     APP_TOO_LARGE: "应用包超过云端上限",
     /* 删版本这条链的失败码（本轮需求：失败的**原因**要看得懂，不再只回一句「没删掉」） */
     VERSION_NOT_FOUND: "服务端说这一版不存在（可能已被删过，或界面上这一版不是服务端的真版本记录）：点「重新读取」刷一遍版本区",
-    APP_VERSIONS_DISABLED: "服务端未启用应用多版本（单版模式）：这一版删不掉，要彻底删掉这个应用请在「我的应用」里删除它",
+    APP_VERSIONS_DISABLED: "服务端未启用应用多版本（单版模式）：这一版删不掉，要彻底删掉这个应用请在「开发中应用」页下半块删除它",
     BRANCH_NOT_FOUND: "这个 id 下没有你这个账号的分支：删版本只作用于自己的分支",
   };
   if (code && CODE_TEXT[code]) return CODE_TEXT[code] + (msg ? "（" + msg + "）" : "");
@@ -4031,3 +3958,4 @@ window.closeAppPublish = pubClose;
 /* 测试钩子（只读观测，不给产品路径用）：test/smoke-app-publish-auth.js 等 PUB.load
    与 authChecked / loggedIn 判登录态收口。渲染层别依赖它 —— 它没有版本承诺。 */
 window.__mtnodeAppPublish = PUB;
+

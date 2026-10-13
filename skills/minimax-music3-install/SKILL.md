@@ -1,7 +1,7 @@
 ---
 name: minimax-music3-install
 title: MiniMax Music 3 本地安装
-description: 在用户指定目录安装 MiniMax Music 3（24G Diffusers + Gradio）后端：探测 CUDA Python、创建 venv（system-site-packages）、安装依赖（diffusers 固定 commit）、下载官方权重、冒烟验证。含 Gradio 生成契约、LM+RVQ offload 显存自修复与 console 自我修复指引。
+description: 在用户指定目录安装 MiniMax Music 3（24G Diffusers + Gradio）后端：探测基座 Python 版本（3.11 / 3.12，本机没有就从 npmmirror 下）、创建隔离 venv 并装入 CUDA torch cu130、安装依赖（diffusers 固定 commit）、下载官方权重、冒烟验证。含 Gradio 生成契约、LM+RVQ offload 显存自修复与 console 自我修复指引。
 ---
 
 # MiniMax Music 3 本地安装
@@ -60,13 +60,14 @@ description: 在用户指定目录安装 MiniMax Music 3（24G Diffusers + Gradi
   ```
 
   这样脚本自身与 pip / git / python 的输出都按 UTF-8 出去，宿主（用 UTF-8 解码 stdout，并按 `[music3-setup]` / `[music3-download]` 抓进度）看到的就是正常文本。
-- 改脚本后跑 `node test/smoke-install-scripts.js`：钉住「零非 ASCII + GBK 解码后 PowerShell 解析零错 + 进度前缀 / `reason=` 等 ASCII 契约仍在」。
+- 这条纪律已是**硬守卫**：`AGENTS.md` 的「协作约定」钉了它，`test/smoke-install-scripts.js` 会自动扫描全部 `*-pack` 的 `.ps1` / `.cmd` / `.bat`、`*-pack/scripts/**/*.py`、共享真源 `pack-steps/` 与 `pack-python/`、以及项目 `scripts/` 下的 `.ps1` / `.cmd` / `.bat` —— 任一字节 > 0x7F（中文、全角标点、emoji、`→`、制表线）或带 BOM 即硬失败。改脚本后**必须**跑 `node test/smoke-install-scripts.js`（同时还钉 GBK(cp936) 与 UTF-8 双解码解析零错、进度前缀与 `reason=` 等 ASCII 契约仍在）；后端运行时 Python（`*-pack/app/**`、`*-pack/shims/**`）豁免，仍是中文。
 - Python **后端**（`app/*.py` 的启动横幅与日志）本轮不做零中文，仍是中文，靠上面的 UTF-8 钉死正确显示。
 
-## 关键环境要点（与 H3 相反，勿混淆）
+## 关键环境要点（2026-11 起与 H3 同口径）
 
-- **venv 用 `--system-site-packages`**（`setup_env.ps1` 默认）：复用本机 conda 的 CUDA torch，只装应用依赖。这与 H3（必须隔离 venv、禁 system-site-packages）相反
-- `setup_env.ps1` 依次探测：`-CudaPython` → env `MT_MUSIC_CUDA_PYTHON` → 常见 conda（`envs\seg|torch|pytorch|cuda|base`）→ PATH → 兜底 `C:\ProgramData\miniconda3\envs\seg\python.exe`；结果写 `INSTALL_DIR\.cuda-python`
+- **venv 是隔离的**（`setup_env.ps1`，不再用 `--system-site-packages`）：CUDA torch（`torch==2.9.1+cu130`，阿里云 pytorch-wheels 优先、官方兜底，`MT_MUSIC_TORCH_INDEX` 可覆盖）**装进这个 venv**。历史上「复用系统 CUDA torch」把「先备一个带 CUDA torch 的 Python」变成了用户前置条件，新机器上安装会直接死在 `Need a Python with CUDA torch. Pass -CudaPython <path> or set MT_MUSIC_CUDA_PYTHON.`
+- **基座 Python 的判据是版本（3.11 / 3.12）**，走共享获取器 `scripts/base_python.ps1`（真源 `pack-python/base_python.ps1`，与 h3 / yue2 逐字节一致）：`-CudaPython` / `MT_MUSIC_CUDA_PYTHON` / `MT_MUSIC_PYTHON` / `.cuda-python` 记录（可选覆盖）→ 常见 conda（`envs\seg|torch|pytorch|cuda|base`）与 PATH 上版本合格的 `python` → `uv python install` → npmmirror 的 python-build-standalone（缓存 `%APPDATA%\pipeline-console\python`）；结果写 `INSTALL_DIR\.cuda-python`
+- **显卡 / 驱动前置体检**：`install.ps1` 的 torch 步先跑 `base_python.ps1 -SkipGpuProbe -GpuRequired require -MinDriverMajor 580`，没 N 卡 → `music3.gpu.none`，驱动 < 580 → `music3.gpu.driver_old`（`steps.json` 的 `messages` 表出中文）；取 Python 失败另有 `music3.python.missing` / `music3.python.fetch_failed` / `music3.python.too_old` / `music3.python.too_new`
 - Windows：`app/ui.py` 顶部设置 `asyncio.WindowsSelectorEventLoopPolicy()` 并过滤 `ConnectionResetError/10054` 日志——Gradio 长任务客户端断开时刷 10054 属**预期噪音**，不代表生成失败
 - 环境变量（插件启动默认）：`MUSIC3_MEMORY_RESERVE_MARGIN=6GB`、`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`；`MUSIC3_ALLOWED_PATHS` 可追加 Gradio 可访问路径（分号分隔）
 
@@ -120,20 +121,17 @@ Diffusers 自回归阶段要求 **language_model** 与 **rvq_depth_decoder** 同
 1. **准备工程文件**  
    若缺 `app\pipeline.py` / `app\ui.py` / `app\generate.py` / `scripts\*.ps1` / `requirements.txt` / `prompts\`：从 `SCAFFOLD_REF` 复制或按参考自行生成。保留用户已有的 `.venv` / `models` / `output`。
 
-2. **探测 CUDA Python（自行判断）**  
-   - 优先环境变量 `MT_MUSIC_CUDA_PYTHON`
-   - 再查常见 conda：`ProgramData` / 用户目录下的 `miniconda3`、`anaconda3` 的 `envs\seg|torch|pytorch|cuda|base\python.exe`
-   - 再查 PATH 中的 `python`
-   - 兜底线索：`C:\ProgramData\miniconda3\envs\seg\python.exe`（仅提示，不强制）
-   - 用 `python -c "import torch; print(torch.cuda.is_available())"` 验证；选第一个 CUDA 可用的
-   - 写入 `INSTALL_DIR\.cuda-python`（单行绝对路径）
+2. **取基座 Python（判据 = 解释器版本 3.11 / 3.12，不查 torch）**  
+   - 直接跑 `scripts\base_python.ps1`（共享真源 `pack-python/base_python.ps1`）：`-CudaPython` / `MT_MUSIC_CUDA_PYTHON` / `MT_MUSIC_PYTHON` / `.cuda-python` 记录（可选覆盖）→ 常见 conda（`envs\seg|torch|pytorch|cuda|base`）与 PATH 上版本合格的 `python` → `uv python install` → npmmirror 的 python-build-standalone（缓存 `%APPDATA%\pipeline-console\python`）
+   - 它打的 `STATUS=` / `PYTHON=` / `VERSION=` / `SOURCE=` / `FAILCODE=` 是机器可读契约：失败码 `music3.python.missing` / `music3.python.fetch_failed` / `music3.python.too_old` / `music3.python.too_new`（同一条链的 `-SkipGpuProbe` 模式还出 `music3.gpu.none` / `music3.gpu.driver_old`）
+   - 结果写 `INSTALL_DIR\.cuda-python`（单行绝对路径，仅作 venv 基座）
 
 3. **环境**（可参考 `SCAFFOLD_REF\scripts\setup_env.ps1`）  
    ```powershell
    cd INSTALL_DIR
-   .\scripts\setup_env.ps1 -CudaPython "<探测到的路径>"
+   .\scripts\setup_env.ps1
    ```
-   若已有 `.venv`，可跳过创建，只装/补依赖。**注意**：music3 的 venv 是 `--system-site-packages`（复用 CUDA torch；与 H3 的隔离 venv 相反）。
+   隔离 venv（**禁 `--system-site-packages`**）：脚本自己取基座 Python（3.11 / 3.12），再往 venv 里装 `torch==2.9.1+cu130`（阿里云 pytorch-wheels 优先、官方兜底，`MT_MUSIC_TORCH_INDEX` 可覆盖），最后装 requirements。若已有 `.venv`，可跳过创建，只装/补依赖。
 
 4. **下载 App 权重**（可参考 `SCAFFOLD_REF\scripts\download_models.ps1`）  
    ```powershell

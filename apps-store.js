@@ -59,7 +59,12 @@
  *   preventDefault（http(s) / mailto 交 shell.openExternal），新窗口一律 deny；随 MTNode 退出关闭。
  *
  * IPC（主窗口侧，preload.js 的 api.apps* 转发；本文件只注册通道，方法名见 registerAppsIpc）：
- *   apps:rootGet / rootSet / rootPick · apps:list · apps:create · apps:catalog · apps:install / uninstall
+ *   apps:rootGet（读两套根）· apps:rootSet / apps:rootPick（目录设置窗的「修改」：换根 +
+ *   按需把旧根里那一类应用一起搬过去，见 moveAppsToRoot）· apps:list · apps:create · apps:catalog · apps:install / uninstall
+ *   · apps:appDirPick / apps:dataDirPick（「应用设置」窗里「应用文件夹 / 数据目录」两枚「修改」：
+ *   前者把应用**搬到另一套根的根目录**下（应用只认 <根>\<id>，见 appDirMoveTo），后者与独立窗口里
+ *   那条数据目录口径同源；两者都只回回执，渲染层不碰文件系统）
+ *   · apps:delete（删除应用：应用文件夹与画布一起进系统回收站，见 deleteApp）
  *   apps:setMeta（本机状态字段 dev / author / forkOf / cloud 的唯一写入口，渲染层不碰文件系统）
  *   apps:probeChanges · apps:openWindow / closeWindow / isOpen
  *   apps:shotWindow · apps:readZipBase64（上架窗用：拍应用自己的窗口 + **一趟**现打包读回 base64，
@@ -250,7 +255,7 @@ function normAppStyle(v) {
   return APP_PRESET_STYLE_IDS.indexOf(id) >= 0 ? id : APP_DEFAULT_STYLE;
 }
 /* 写盘 / 回显口径：**多留一个 custom** —— app.json 要记住「用户选的是自定义」，
-   否则开发页与「换风格…」会把它当成极简，问风格的这一轮就再也回不来了。
+   否则开发页与换风格那条链会把它当成极简，问风格的这一轮就再也回不来了。
    认不出的值仍旧回落默认（与 normAppStyle 同一口径）。 */
 function normStoredAppStyle(v) {
   const id = String(v == null ? "" : v)
@@ -591,7 +596,7 @@ function previewNotFoundText(rel) {
    app.json 缺 entry 或入口页被删，预览也始终落到应用的默认界面。
    资源请求（app.js / x.png）只认它自己那一个文件，缺了照常 404 ——
    绝不能把一份 HTML 塞给 <script src> 或 <img src>（页面会悄悄变成另一份 HTML）。
-   HTML 一律注入页面状态小助手（刷新预览的「维持状态」靠它）。
+   HTML 一律注入页面状态小助手（点「刷新」时的「维持状态」靠它）。
    带 _host=1 的那条路（开发页中栏那只 iframe）**额外**在最前面注入宿主桥小助手
    （PREVIEW_BRIDGE）：预览里也就有了 window.appHost。别的入口（直接开这个 url、
    上架前的静态预览截图之类）不带这个参数 → 逐字还是老的纯静态预览。 */
@@ -1077,8 +1082,9 @@ function setRoot(p, kind) {
     roots: rootsInfo(),
   };
 }
-async function pickRoot(kind) {
+async function pickRoot(kind, opts0) {
   const k = kindOfRoot(kind);
+  const o = isObj(opts0) ? opts0 : {};
   const cur = (() => {
     try {
       return rootPathOf(k).root;
@@ -1096,7 +1102,256 @@ async function pickRoot(kind) {
     ? await dialog.showOpenDialog(parent, opts)
     : await dialog.showOpenDialog(opts);
   if (!r || r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
-  return setRoot(r.filePaths[0], k);
+  return setRootAndMaybeMove({ kind: k, path: r.filePaths[0], moveApps: o.moveApps === true });
+}
+
+/* ── 换根时把旧目录里的应用一起搬过去（本轮需求 · 「目录设置」里的「修改」按钮）────────────
+ *
+ * 用户口径（共识）：点「修改」选完新文件夹后，先问一句「要不要把旧目录里的应用一起搬过去」；
+ * 选搬就搬，不选就只换根（旧目录里的应用留在原处、不再列出来）。
+ *
+ * 只搬两类之一（**与哪一行对应**）：
+ *   · 开发目录那一行 → app.json 里 dev:true 的应用；
+ *   · 库目录那一行   → 没有 dev 标记的应用（kindOfManifest 判 down）。
+ * 旧目录下**其它文件与文件夹一概不动** —— 用户完全可能把一个公共文件夹当根用，
+ * 我们不能顺手搬走他别的东西。
+ *
+ * 冲突 / 失败一律**跳过并如实回报**，绝不覆盖：新目录里已有同 id 目录 = 那是另一份东西，
+ * 覆盖了就没法回头（与 migrateAppsLayout 同一条纪律）。单个失败不影响其它（rename 失败
+ * —— 跨盘 —— 退回「复制后删源」）。
+ * 返回 { scanned, moved:[{id,from,to}], skipped:[{id,from,to,reason}] }。 */
+function moveAppsToRoot(fromRoot, toRoot, kind) {
+  const k = kindOfRoot(kind);
+  const from = String(fromRoot == null ? "" : fromRoot).trim();
+  const to = String(toRoot == null ? "" : toRoot).trim();
+  const out = { scanned: 0, moved: [], skipped: [] };
+  if (!from || !to || cmpPath(from) === cmpPath(to)) return out;
+  let ents = [];
+  try {
+    ents = fs.readdirSync(from, { withFileTypes: true });
+  } catch (_) {
+    return out; /* 旧根不在盘上（被删 / 改名）：没有可搬的，不报错 */
+  }
+  for (const ent of ents) {
+    if (!ent.isDirectory() || ent.name.startsWith(".")) continue;
+    const id = safeAppId(ent.name);
+    if (!id) continue;
+    const src = path.join(from, ent.name);
+    const raw = rawManifestOf(src);
+    if (!raw) continue; /* 认不出的目录（没有 app.json）= 用户自己的东西，一律不动 */
+    if (kindOfManifest(raw, src) !== k) continue; /* 只搬这一行那一类 */
+    out.scanned++;
+    const dst = appDirOf(to, id);
+    if (!dst) continue;
+    if (fs.existsSync(dst)) {
+      out.skipped.push({
+        id: id,
+        from: src,
+        to: dst,
+        reason: t("新目录里已经有一个同名应用文件夹：不覆盖，这一份原样留在旧目录"),
+      });
+      continue;
+    }
+    try {
+      mk(path.dirname(dst));
+      try {
+        fs.renameSync(src, dst);
+      } catch (_) {
+        copyDirRecursive(src, dst);
+        rmDirRecursive(src);
+      }
+      out.moved.push({ id: id, from: src, to: dst });
+    } catch (err) {
+      out.skipped.push({
+        id: id,
+        from: src,
+        to: dst,
+        reason: String((err && err.message) || err || ""),
+      });
+    }
+  }
+  return out;
+}
+
+/* 设根（渲染层「修改」按钮的唯一出口）：先写 config.json，再按需把旧根里那一类应用搬过去。
+ * 搬动只在「确实换了根」（previous 非空且与新根不同）且 moveApps 为真时发生 —— 选到同一个
+ * 文件夹（picker 里点回原目录）不算换根，不搬。 */
+function setRootAndMaybeMove(arg) {
+  const a = isObj(arg) ? arg : {};
+  const r = setRoot(a.path, a.kind);
+  if (!r || r.ok === false) return r;
+  const out = Object.assign({}, r, {
+    moved: [],
+    skipped: [],
+    scanned: 0,
+    movedFrom: "",
+    moveAsked: a.moveApps === true,
+  });
+  const from = String(r.previous || "");
+  if (a.moveApps !== true || !from || !r.changed) return out;
+  const mv = moveAppsToRoot(from, r.path, r.kind);
+  out.moved = mv.moved;
+  out.skipped = mv.skipped;
+  out.scanned = mv.scanned;
+  out.movedFrom = from;
+  return out;
+}
+
+/* ── 应用文件夹「修改」（「应用设置」窗里那一枚）：把这个应用搬到**另一套根的根目录**下 ──
+ * 为什么落点只有这两套根（本轮**真跑出来的硬事实**）：应用在列表 / 预览 / 数据 / 打开窗口里
+ * 一律按 `<根>\<应用 id>\` 认（appDirOf / listApps / previewDirOf 都只扫根的**直接子目录**）——
+ * 放进根内的某个子文件夹，它就当场从列表里消失。所以「改到哪儿」实际就是「住哪一套根」。
+ * 口径（用户共识 + 上述事实）：
+ *   · 目标必须是这两套根之一的根目录本身：别处一律拦下并如实说（code=not_a_root）；
+ *   · 落点是 <目标根>\<应用 id>\：目录名必须等于应用 id（同 id 两套根的仲裁都按 id 认）；
+ *   · **一律搬过去**，不多问一句：rename 成功即旧目录清空；rename 失败（跨盘 / 被占用）退回复制 +
+ *     删源（与换根那条 moveAppsToRoot 同一套写法），删不干净的残留会如实回在 leftover 上；
+ *   · 目标位置已经有同名目录 = **拦下不覆盖**（那是另一份东西，覆盖了没法回头）；
+ *   · 搬之前先把它的独立窗口关掉：窗口里跑的是旧目录那份代码，还开着只会让人误会搬没搬成；
+ *   · 搬到另一套根下**不改归页**：归「库」还是归「开发」由 app.json 的 dev 标记说了算。
+ * 返回 { ok, id, from, to, fromKind, kind, sameRoot, closed, leftover }；失败回结构化 code：
+ *   bad_id / missing / not_a_root / exists / move_failed。 */
+function pathWithin(child, parent) {
+  const c = cmpPath(String(child || ""));
+  const p = cmpPath(String(parent || ""));
+  return !!c && !!p && (c === p || c.startsWith(p + path.sep));
+}
+/* 这个目录落在两套根里的哪一套（都不在 = 空串；嵌套时取最深的那一个根说了算） */
+function rootKindOfDir(dir) {
+  let best = "";
+  let bestLen = -1;
+  for (const k of APP_KINDS) {
+    let root = "";
+    try {
+      root = String(rootPathOf(k).root || "").replace(/[\\/]+$/, "");
+    } catch (_) {
+      root = "";
+    }
+    if (!root) continue;
+    if (!pathWithin(dir, root)) continue;
+    if (root.length > bestLen) {
+      best = k;
+      bestLen = root.length;
+    }
+  }
+  return best;
+}
+/* 这个目录**就是**某一套根的根目录吗（不是它里面的子文件夹）：应用只认 <根>\<id> */
+function rootKindOfRootDir(dir) {
+  const target = String(dir || "").replace(/[\\/]+$/, "");
+  if (!target) return "";
+  for (const k of APP_KINDS) {
+    let root = "";
+    try {
+      root = String(rootPathOf(k).root || "").replace(/[\\/]+$/, "");
+    } catch (_) {
+      root = "";
+    }
+    if (!root) continue;
+    if (cmpPath(target) === cmpPath(root)) return k;
+  }
+  return "";
+}
+/* 等那只独立窗口真的关掉（上限 ms）：目录里还有文件被窗口占着时，rename / 删除都可能失败 */
+async function waitAppWindowClosed(sid, ms) {
+  const t0 = Date.now();
+  while (isAppWindowOpen(sid) && Date.now() - t0 < ms) {
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return !isAppWindowOpen(sid);
+}
+async function moveAppDirInto(sid, parentDir, fromDir) {
+  const id = safeAppId(sid);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  const parent = path.resolve(String(parentDir || ""));
+  const from = path.resolve(String(fromDir || ""));
+  const to = path.join(parent, id);
+  const kind = rootKindOfRootDir(parent);
+  if (!kind)
+    return Object.assign(
+      bad(t("应用只能住在这两套根的根目录下（库目录 / 开发目录）：放进子文件夹里它就找不到了")),
+      { code: "not_a_root", id: id, from: from, to: to },
+    );
+  if (cmpPath(to) === cmpPath(from))
+    return {
+      ok: true,
+      id: id,
+      from: from,
+      to: to,
+      fromKind: rootKindOfDir(from),
+      kind: kind,
+      sameRoot: rootKindOfDir(from) === kind,
+      closed: false,
+      leftover: false,
+      unchanged: true,
+    };
+  if (fs.existsSync(to))
+    return Object.assign(
+      bad(t("那个文件夹里已经有一个同名的应用文件夹：先自己处理它，这里不覆盖")),
+      { code: "exists", id: id, from: from, to: to },
+    );
+  const hadWin = isAppWindowOpen(id);
+  if (hadWin) {
+    closeAppWindow(id);
+    await waitAppWindowClosed(id, 1500);
+  }
+  let leftover = false;
+  try {
+    mk(parent);
+    try {
+      fs.renameSync(from, to);
+    } catch (_) {
+      copyDirRecursive(from, to);
+      rmDirRecursive(from);
+      leftover = fs.existsSync(from);
+    }
+  } catch (err) {
+    return Object.assign(fail(err), { code: "move_failed", id: id, from: from, to: to });
+  }
+  return {
+    ok: true,
+    id: id,
+    from: from,
+    to: to,
+    fromKind: rootKindOfDir(from),
+    kind: kind,
+    sameRoot: rootKindOfDir(from) === kind,
+    closed: hadWin,
+    leftover: leftover,
+  };
+}
+/* 「应用文件夹 · 修改」的唯一出口（渲染层那枚「修改」调它）：把应用搬到 `to` 指定的那一套根。
+ * to 两种写法都认：根的名字（"dev" / "down"）或那套根的绝对路径；解析不出这两套根 = 拦下。
+ * 不弹系统选目录框：可选的落点本来就只有这两套根（见上面那段硬事实），让用户在文件树里
+ * 挑一个注定会被拒的文件夹是骗人 —— 界面上给的是「放到库目录 / 放到开发目录」两枚按钮。 */
+async function appDirMoveTo(arg) {
+  const a = isObj(arg) ? arg : {};
+  const id = safeAppId(a.id);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  const from = dirOfApp(id, a.kind ? kindOfRoot(a.kind) : "");
+  if (!from || !fs.existsSync(from))
+    return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: id });
+  const want = String(a.to == null ? "" : a.to).trim();
+  const targetKind = want
+    ? rootKindOfRootDir(want) || (want === APP_KIND_DEV || want === APP_KIND_DOWN ? want : "")
+    : "";
+  if (!targetKind) {
+    return Object.assign(
+      bad(t("应用只能住在这两套根的根目录下（库目录 / 开发目录）：放进子文件夹里它就找不到了")),
+      { code: "not_a_root", id: id, from: from, to: want },
+    );
+  }
+  return moveAppDirInto(id, rootPathOf(targetKind).root, from);
+}
+/* 数据目录「修改」（渲染层那一枚）：与独立窗口里的 appHost.dataDirPick **逐字同一条实现**
+   （pickAppDataDir：系统选目录框 + 只认用户亲自选的那一次 + 写本机配置里的指针，旧数据原地不动）。 */
+async function appDataDirPickFromMain(arg) {
+  const a = isObj(arg) ? arg : {};
+  const id = safeAppId(a.id);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  const r = await pickAppDataDir(id, { q: true });
+  if (!r || !r.ok) return r || bad(t("选择数据文件夹失败"), "pick_failed");
+  return Object.assign({}, r, { exists: fs.existsSync(r.dir) });
 }
 
 /* ---------------- 应用目录结构 ---------------- */
@@ -1165,19 +1420,42 @@ function dirOfKind(kind, id) {
     return "";
   }
 }
+/* 「本机仲裁为某一类」的那一份目录（listApps 的回执里 kind === want 且目录真实存在的那一条）。
+   只在 dirOfApp 的「点名的那一套根下没有这一份」回落分支上用，绝不用来改写任何文件。
+   拿不到（列表读不动 / 真没有这一类的那一份）回空串。 */
+function arbitratedDirOf(id, want) {
+  const sid = String(id || "");
+  const k = kindOfRoot(want);
+  try {
+    const list = listApps();
+    const hit = (Array.isArray(list.apps) ? list.apps : []).find(
+      (a) => a && String(a.id) === sid && String(a.kind) === k && a.dir && fs.existsSync(a.dir),
+    );
+    return hit ? String(hit.dir) : "";
+  } catch (_) {
+    return "";
+  }
+}
 /* 该应用在本机的目录：**先按类型取（新布局两边各一份），取不到再两套根都找一遍** ——
    老布局 / 手放进来的应用（文件与类型不一致）也要能打开，绝不因为「哪一边」猜错就打不开。
    两处都没有时回「按类型算出的那一个」（调用方多半会如实报 missing）。
    **kind 给了就只看那一套根**（缺省 = 两套根都看，逐字不变）：同一个 id 在两边各有一份时，
    缺省会先拿下载根那一份 —— 开发页（项目根那份才是用户在改的）必须显式传 dev，
-   否则「打开 / 预览 / 数据目录 / 台账」全指到下载副本上。 */
+   否则「打开 / 预览 / 数据目录 / 台账」全指到下载副本上。
+   **点名 kind ≠ 必须在那一套根下**（本轮修的 bug 的配套）：app.json 已写 dev:true、但「归位到
+   项目根」没成功的应用还躺在下载根里（历史安装 + 跨盘失败 / 项目根里已有同名目录）—— 开发页
+   现在会把它列出来，若这里只认项目根那条路径，点「启动 / 打开 / 移除登记」就一律报
+   「该应用不在本机」。所以那一套根下没有这一份时，回落到 listApps 仲裁为同一类的那一份。 */
 function dirOfApp(id, kind) {
   const sid = safeAppId(id);
   if (!sid) return "";
   if (kind) {
     const k = kindOfRoot(kind);
     const d = dirOfKind(k, sid);
-    return d && fs.existsSync(d) ? d : d || "";
+    if (d && fs.existsSync(d)) return d;
+    const alt = arbitratedDirOf(sid, k);
+    if (alt) return alt;
+    return d || "";
   }
   const byKind = dirOfKind(diskKindOf(sid), sid);
   if (byKind && fs.existsSync(byKind)) return byKind;
@@ -1458,7 +1736,7 @@ async function pickAppDataDir(id, opts) {
     properties: ["openDirectory", "createDirectory"],
     defaultPath: fs.existsSync(cur) ? cur : undefined,
   };
-  /* 与 apps:rootPick 同一口径：认不出父窗口就不再挂父窗口（dialog 不能被销毁的窗口继承） */
+  /* 认不出父窗口就不再挂父窗口（dialog 不能被销毁的窗口继承）；本条与已注销的 apps:rootPick 同源 */
   const r = await dialog.showOpenDialog(host, dlg);
   if (!r || r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
   return writeDataDirPointer(sid, r.filePaths[0]);
@@ -1542,7 +1820,7 @@ function manifestOf(dir, id) {
     styleSet: String(j.style == null ? "" : j.style).trim() !== "",
     tags: Array.isArray(j.tags) ? j.tags.map(String) : [],
     /* 应用能力位（textInput / imageGen）：清单白名单里**必须**带上它 ——
-       漏掉的话卡片小标、「应用能力…」对话框读出来永远是 false（见 apps-capabilities.js） */
+       漏掉的话卡片小标、「应用设置」窗里的能力位读出来永远是 false（见 apps-capabilities.js） */
     capabilities: normCapabilities(j.capabilities),
     createdAt: Number(j.createdAt) || 0,
     updatedAt: Number(j.updatedAt) || 0,
@@ -1628,8 +1906,12 @@ function ensureStructure(dir, man) {
 const DEFAULT_PAGE_TPL = path.join(__dirname, "templates", "app-default", "index.html");
 const BASE_CSS_TPL = path.join(__dirname, "templates", "app-default", "base.css");
 const STYLES_CSS_DIR = path.join(__dirname, "templates", "app-default", "styles");
-/* 默认页里可选的语音听写条：只有声明了 capabilities.showDictate 的应用才注入这一份 */
-const DICT_JS_TPL = path.join(__dirname, "templates", "app-default", "dict.js");
+/* 存量入口页里那份「内联听写条」的成对标记（本轮起不再生成，见 appCapabilitiesSet）：
+   旧版本勾了「显示听写条」时宿主写过这样一段 —— 一行说明注释 + 一段内联 dict.js 的 <script>。
+   现在听写条只由宿主按 app.json 的 showDictate 注入，页面里那一份成了孤儿脚本（不受任何
+   能力位控制、会与宿主注入的那条打架），所以给存量页面提供一次幂等清理（clearLegacyDictInline）。
+   只认下面这一对标记：用户自己写的 HTML / 注释一个字都不动。 */
+const DICT_INLINE_MARK = "<!-- MTNode:dictate-inline -->";
 function pageEsc(s) {
   return String(s == null ? "" : s).replace(/[<>&"]/g, (c) => {
     return { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c];
@@ -1648,27 +1930,60 @@ function appStyleCss(style) {
     return "";
   }
 }
-/* 语音听写条（可选）：声明了 showDictate 的应用把 templates/app-default/dict.js **内联**进
-   入口页（保持「入口页单文件、离线可用」这条契约：不新增相对资源，也就不怕用户拷走一个 html）。
-   没声明 / 模板缺失 → 空串（默认页不带任何语音转文字）。 */
-function dictScriptTag(caps) {
-  if (!capabilityOn(caps, "showDictate")) return "";
+/* 入口页**不再内联**任何听写 UI（本轮共识）：听写条只由宿主按 app.json 的 showDictate 注入
+   （preload-app.js 的闸门 → renderer/app-speech-ui.js）。旧版本注入时写的「说明注释 + 内联
+   dict.js 的那一段 <script>」在存量页面里成了孤儿脚本（不受任何能力位控制、还会与宿主注入
+   的那一条打架），所以给存量页面提供一次幂等清理（clearLegacyDictInline）。
+   清理只认我们自己的标记，且必须「标记 + 紧随其后的一段 <script>」成对存在：
+   缺一个就一个字都不动 —— 用户手写的 HTML / 注释绝不被猜着删。 */
+function clearLegacyDictInline(dir, entry) {
+  const out = { abs: "", removed: false, bytes: 0 };
+  const abs = resolveInside(dir, entry);
+  if (!abs || !fs.existsSync(abs)) return out;
+  out.abs = abs;
+  let html = "";
   try {
-    const js = fs.readFileSync(DICT_JS_TPL, "utf8");
-    if (!String(js).trim()) return "";
-    /* 收尾防呆：内联脚本里出现 </script 会提前结束这个 <script> 块（转义掉） */
-    return "<script>\n" + String(js).replace(/<\/script/gi, "<\\/script") + "\n</script>";
-  } catch (_) {
-    return "";
+    html = fs.readFileSync(abs, "utf8");
+  } catch (err) {
+    return out;
   }
+  const at = html.indexOf(DICT_INLINE_MARK);
+  if (at < 0) return out;
+  /* 标记之后必须**紧接**着一段 <script>（中间只允许 <script> 本体与空白 / 换行）：
+     只留下标记、或被手改过的页面，往后找多远都不许删 —— 否则可能一路吞掉用户的脚本。 */
+  /* 标记之后必须**紧接**着一段 <script>（中间只允许空白与别的 HTML 注释 —— 旧版注入就在
+     标记后跟一行说明注释）：只留下标记、或往后夹着别的内容的页面都不许动，
+     否则可能一路吞掉用户自己的脚本。 */
+  const scriptAt = html.indexOf("<script", at);
+  if (scriptAt < 0) return out;
+  const between = html.slice(at + DICT_INLINE_MARK.length, scriptAt);
+  if (!/^(?:\s|<!--[\s\S]*?-->)*$/.test(between)) return out;
+  const scriptEnd = html.indexOf("</script>", scriptAt);
+  if (scriptEnd < 0) return out;
+  /* 连同标记所在那一行一起删（前导空白 + 标记 + 脚本块 + 行尾），别的字符一律原样 */
+  const start = html.lastIndexOf("\n", at) + 1;
+  let end = scriptEnd + "</script>".length;
+  while (html[end] === " " || html[end] === "\t") end++;
+  if (html[end] === "\r") end++;
+  if (html[end] === "\n") end++;
+  const next = html.slice(0, start) + html.slice(end);
+  try {
+    fs.writeFileSync(abs, next, "utf8");
+  } catch (err) {
+    console.warn("[apps-cap] 旧内联听写段清理失败：" + ((err && err.message) || err));
+    return out;
+  }
+  out.removed = true;
+  out.bytes = Buffer.byteLength(next, "utf8");
+  return out;
 }
 function defaultPageHtml(man) {
   const name = String((man && man.name) || (man && man.id) || "应用");
   /* 生成入口页用预设口径：选了「自定义」的应用先落 minimal 那一套（页面绝不花），
      真正的长相由开发会话问清风格要求后改写页面 —— 见 APP_STYLES 里 custom 那一条。 */
   const style = normAppStyle(man && man.style);
-  /* 能力位：没声明过的一律 false（存量应用 / 云端包都按「不携带语音」处理） */
-  const caps = normCapabilities(man && man.capabilities);
+  /* 注：能力位**不进页面**（本轮共识）—— 入口页生成时不再按 capabilities 注入任何东西：
+     听写条由宿主按 app.json 的 showDictate 注入，语音模块文件由 appCapabilitiesSet 同步。 */
   try {
     const tpl = fs.readFileSync(DEFAULT_PAGE_TPL, "utf8");
     if (tpl.indexOf("{{APP_NAME}}") >= 0) {
@@ -1680,8 +1995,6 @@ function defaultPageHtml(man) {
       return tpl
         .split("{{STYLE_CSS}}")
         .join(css)
-        .split("{{DICT_SCRIPT}}")
-        .join(dictScriptTag(caps))
         .split("{{APP_NAME}}")
         .join(pageEsc(name))
         .split("{{STYLE}}")
@@ -1725,13 +2038,29 @@ function dirStatOf(dir) {
   }
   return { files: files.length, bytes: bytes, mtimeMs: mtimeMs };
 }
+/* 「轻表」口径的目录快照（应用中心首帧用）：**只 stat 目录本身一次**，不递归、不逐文件 stat。
+ * 为什么另开一份而不是 dirStatOf 加参数：两者语义不同 —— dirStatOf 是「这份目录里到底有多少
+ * 字节 / 文件」（详情页、变更探测、占用统计要它，必须真走一遍），dirStatLite 只是「给个 mtime
+ * 用于排序与占位」。files / bytes 一律回 0 = 「还没算」，渲染层把它们当「没有这一项」不显示，
+ * 等第二次（完整的 apps:list）回填。绝不用 -1 / null 这类哨兵值骗过 `Number(x) || 0` 的判断。 */
+function dirStatLite(dir) {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = fs.statSync(dir).mtimeMs || 0;
+  } catch (_) {}
+  return { files: 0, bytes: 0, mtimeMs: mtimeMs };
+}
 /* 目录 → 渲染层用的摘要（列表 / 冲突提示 / 变更探测共用同一份口径）。
  * 这里**只看 app.json 的 dev 标记**（唯一真源）：同一个 id 在下载根与项目根各有一份时，
  * 两份常常写着同一份清单字段（用户看对方那一版时把同 id 的装进下载根），于是两边都算「开发中」
  * —— 库页过滤不掉、开发页又会先拿到下载那份（它新、排序在前），用户报的「合并分支后开发项目
  * 在开发会话里消失」就是这么来的。**那一处的裁决在 listApps 的第二遍**（只有同 id 出现两份时
  * 才按「根即身份」改判 kind / dev），这里保持单份口径逐字不变，别把裁决抄第二份。 */
-function appSummary(root, id, kindHint) {
+function appSummary(root, id, kindHint, opts) {
+  /* slim = 「轻表」：只读清单 / 账本 / 指针与两枚 existsSync，**不做**递归遍历、不整读 zip、
+   * 不拿核心文件列表（用户已确认这三项可以挪到渲染之后）。首帧渲染用；完整的那一份随后由
+   * apps:list 回填（见 listAppsSlim / renderer/app-apps.js 的两段绘制）。 */
+  const slim = !!(opts && opts.slim);
   const dir = appDirOf(root, id);
   if (!dir || !fs.existsSync(dir)) return null;
   const man = manifestOf(dir, id);
@@ -1740,7 +2069,7 @@ function appSummary(root, id, kindHint) {
      kindHint = 调用方是从哪一边的根扫到它的，只当「老应用没写过 dev」时的兜底。 */
   const listKind = kindHint ? kindOfRoot(kindHint) : "";
   const kind = kindOfManifest(rawManifestOf(dir), dir) || listKind || APP_KIND_DOWN;
-  const stat = dirStatOf(dir);
+  const stat = slim ? dirStatLite(dir) : dirStatOf(dir);
   const canvas = canvasPathOf(dir, man.name);
   const zip = zipPathOf(dir, man.name);
   return {
@@ -1775,7 +2104,7 @@ function appSummary(root, id, kindHint) {
        上架窗的默认锁定 id 与离线回落判定都读它（见 renderer/app-apps.js 的
        appsPublishTraceOf / renderer/app-publish.js 的 pubTraceUpdate）。 */
     cloud: man.cloud,
-    /* 能力位（app.json 的 capabilities）：卡片小标与「应用能力…」对话框都读这一份 */
+    /* 能力位（app.json 的 capabilities）：卡片小标与「应用设置」窗里的能力位都读这一份 */
     capabilities: normCapabilities(man.capabilities),
     capabilityBadges: capabilityBadges(man.capabilities, appLocale()),
     /* 来源作者（安装账本里那份）：owner = 云端 username，ownerId = 云端 uid */
@@ -1811,32 +2140,42 @@ function appSummary(root, id, kindHint) {
       return { cur: cur, prev: prev, canRollback: !!(prev && cur && prev.version !== cur.version) };
     })(),
     /* 目录里的核心文件（相对路径，≤10 条，已去掉 storage/ 运行期数据）：
-       「二次开发」建开发节点时用它填 devFiles，与「新建应用」同一口径、不靠猜扩展名。 */
-    coreFiles: (() => {
-      try {
-        return walkFiles(dir, "", [])
-          .filter((rel) => rel.indexOf(SUB.storage + "/") !== 0)
-          .slice(0, 10);
-      } catch (_) {
-        return [];
-      }
-    })(),
+       「二次开发」建开发节点时用它填 devFiles，与「新建应用」同一口径、不靠猜扩展名。
+       轻表这一趟**不拿**（要走第二遍目录树）—— 调用方拿到 coreFiles=[] + detailPending=true
+       时应当走 apps:detail 补一件（见 renderer 的 appsLocalDetailEnsure）。 */
+    coreFiles: slim
+      ? []
+      : (() => {
+          try {
+            return walkFiles(dir, "", [])
+              .filter((rel) => rel.indexOf(SUB.storage + "/") !== 0)
+              .slice(0, 10);
+          } catch (_) {
+            return [];
+          }
+        })(),
     broken: !readManifest(dir),
+    /* 这份摘要是「轻表」口径（体积 / 文件数 / 核心文件 / zip 哈希**还没算**）：
+       渲染层据此决定要不要按需补一件、以及详情页别把 0 B 当成真的空目录。 */
+    detailPending: slim,
     /* 应用目录里那个打包 zip（<名称>.zip）的 sha256：同版本号「作者重传了同一版」要靠它判
        「本机这份到底是不是云端那份」（渲染层 appsVersionContentDiffers）。
        台账（installed.json）记着 sha256 的应用用台账那份；**没有台账**的应用（自己新建 / 二次开发）
        从来没有 sha256 可比 —— 这时包就在自己目录里，算一次即可（包不大，且只在渲染层问到时算）。
-       算不出来（没有 zip / 读不动）回空串：宁可少一个更新入口，也绝不拿猜的判据说话。 */
-    zipSha256: (() => {
-      try {
-        if (led && led.sha256) return String(led.sha256);
-        const zp = zipPathOf(dir, man.name);
-        if (!zp || !fs.existsSync(zp)) return "";
-        return sha256(fs.readFileSync(zp));
-      } catch (_) {
-        return "";
-      }
-    })(),
+       算不出来（没有 zip / 读不动）回空串：宁可少一个更新入口，也绝不拿猜的判据说话。
+       轻表这一趟同样不算（整读包最贵）：detailPending=true 时这里恒为空串。 */
+    zipSha256: slim
+      ? ""
+      : (() => {
+          try {
+            if (led && led.sha256) return String(led.sha256);
+            const zp = zipPathOf(dir, man.name);
+            if (!zp || !fs.existsSync(zp)) return "";
+            return sha256(fs.readFileSync(zp));
+          } catch (_) {
+            return "";
+          }
+        })(),
   };
 }
 /* 存量回填（一次性 · 幂等）：本机**没有 installed.json 安装账本**的应用 = 自己新建的
@@ -1893,6 +2232,153 @@ function setAppMeta(arg) {
     app: appSummary(path.dirname(dir), id, nowKind),
   };
 }
+/* ── 二次开发 = **复制**到开发目录（apps:copyToDev 的唯一实现）────────────────────
+ * 用户共识（本轮，别在别处再抄一份）：
+ *   · 「二次开发」不再搬动库目录里那一份，而是把它**复制**一份到项目根（<项目根>/<id>/）：
+ *     库里的原件原地不动、仍列在「库」，两份互不影响、互不绑定（库页点「更新」不动开发那份）。
+ *   · 只复制**应用本体**（代码 / assets 等应用文件）；不带 storage/ 数据、installed.json 账本、
+ *     随目录的 <名字>.mtnodes 画布、<名字>.zip 源包与 merge.json（判据见 copySkipOf；
+ *     与「完全替换」的 replaceSkipOf 同一套口径，见 app-branch-replace.js）。
+ *   · 副本的 app.json：dev:true（= 本机开发中）+ **保留来源那一份的原作者与来源版本**
+ *     （用户口径：便于上架时选分支点）+ 一条内部来源记录 forkOf；上架留痕 cloud 清掉
+ *     （那是「我在云端的那条」，复制出来的这份还没上架过）。
+ *   · 项目根里已经有同 id 时**默认拒绝**（拒绝 = 一个字节都不动），由渲染层问
+ *     「覆盖 / 交给 AI 合并」；mode="overwrite" = 先把旧那份整目录备份到
+ *     <数据目录>/merge-backups/<id>-<时间戳>/（与「完全替换」同一处退路）再整份接替。
+ * 回执：{ ok, id, mode, from, dir, backupDir, files, kept:{author,version,forkOf}, previous }；
+ *   失败给结构化 code：bad_id / not_in_library / same_root / exists / backup_failed / copy_failed。 */
+function copySkipOf(rel, man) {
+  const r = String(rel || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!r) return true;
+  const segs = r.split("/");
+  const top = segs[0];
+  const base = segs[segs.length - 1];
+  if (top === SUB.storage || top === "node_modules" || top === ".git") return true;
+  /* 清单与账本单独写：清单要补 dev 标记与来源记录，账本（installed.json）是「从云端下来的」
+     凭据，复制过去的开发副本不该带着它（否则主进程会把它当下载件分类）。 */
+  if (base === SUB.manifest || base === SUB.installed) return true;
+  if (/\.mtnodes$/i.test(base)) return true; /* 随目录的画布快照（开发副本自己那张画布由画布链管） */
+  if (base === "merge.json" || base === ".merge-done.json") return true; /* 合并链的暂存元信息 */
+  /* 源包 / 上架包 = zipPathOf 的落点（<名字>.zip）：不是应用自己的资源 */
+  const nm = String((man && man.name) || "");
+  if (nm && base.toLowerCase() === (safeBaseName(nm, "app") + ZIP_EXT).toLowerCase()) return true;
+  if (/^\.mtnode-merge-backup/.test(top)) return true;
+  return false;
+}
+function copyAppToDev(arg) {
+  const a = isObj(arg) ? arg : { id: arg };
+  const id = safeAppId(a.id);
+  if (!id) return bad(t("应用 id 不合法"), "bad_id");
+  const overwrite = String(a.mode || "") === "overwrite";
+  /* 源 = 库目录（下载根）里那一份：二次开发这个动作只从「库」发起 */
+  const srcRoot = String((rootPathOf(APP_KIND_DOWN) || {}).root || "");
+  const src = appDirOf(srcRoot, id);
+  if (!src || !fs.existsSync(src))
+    return Object.assign(bad(t("这个应用不在库目录里（先把它下载到本机）"), "not_in_library"), { id: id });
+  const dstRoot = String((rootPathOf(APP_KIND_DEV) || {}).root || "");
+  const dst = appDirOf(dstRoot, id);
+  if (!dst) return bad(t("应用 id 不合法"), "bad_id");
+  if (cmpPath(src) === cmpPath(dst))
+    return bad(t("库目录与开发目录是同一个文件夹：先分开它们再二次开发"), "same_root");
+  const exists = fs.existsSync(dst);
+  if (exists && !overwrite)
+    return Object.assign(bad(t("开发目录里已经有这个应用了"), "exists"), {
+      id: id,
+      exists: true,
+      dir: dst,
+    });
+  const man = manifestOf(src, id);
+  const raw = readManifest(src) || {};
+  const led = readInstalled(src) || {};
+  /* 来源记录（内部）：这一份是从哪个作者那一版复制出来的 —— 上架时据此认分支点。
+     来源作者优先取安装账本（云端 ownerId 才是身份），退回清单里写的作者。 */
+  const srcOwnerId = String(led.ownerId || "").trim();
+  const srcOwner = String(led.owner || raw.author || "").trim();
+  const forkOf = srcOwnerId || srcOwner ? normForkOf({ id: id, ownerId: srcOwnerId, owner: srcOwner }) : null;
+  /* 覆盖：先把旧那份整目录备份（失败当场中止，一个字节都不动） */
+  let backupDir = "";
+  if (exists) {
+    try {
+      backupDir = path.join(String(getDataDir() || ""), "merge-backups", id + "-" + Date.now().toString(36));
+      mk(backupDir);
+      copyDirRecursive(dst, path.join(backupDir, "app"));
+    } catch (e) {
+      try {
+        rmDirRecursive(backupDir);
+      } catch (_) {}
+      return Object.assign(
+        bad(t("覆盖前备份失败（没敢动任何东西）：") + ((e && e.message) || String(e)), "backup_failed"),
+        { id: id, dir: dst },
+      );
+    }
+  }
+  /* 旧那份的作者 / 版本（覆盖路径的如实回执：这次接替掉的是谁的那一版） */
+  const prevMan = exists ? readManifest(dst) || {} : null;
+  /* 覆盖前先把它的独立窗口关掉（与「完全替换」同一条纪律）：窗口里跑的是旧目录那份代码，
+     还开着只会让人误会没覆盖成，Windows 上也更容易撞上占用。 */
+  let windowClosed = false;
+  if (exists) {
+    try {
+      windowClosed = !!closeAppWindow(id);
+    } catch (_) {}
+  }
+  const oldDir = path.join(dstRoot, "." + id + ".copy-old-" + Date.now().toString(36));
+  let moved = false;
+  try {
+    if (exists) {
+      fs.renameSync(dst, oldDir);
+      moved = true;
+    }
+    mk(dst);
+    let files = 0;
+    for (const rel of walkFiles(src, "", [])) {
+      if (copySkipOf(rel, man)) continue;
+      const s = path.join(src, ...rel.split("/"));
+      const d = path.join(dst, ...rel.split("/"));
+      mk(path.dirname(d));
+      fs.copyFileSync(s, d);
+      files++;
+    }
+    /* 副本清单：来源那一份的 author / version 原样留着（用户口径），只补本机的开发标记与来源记录 */
+    const next = Object.assign({}, raw, {
+      id: String(raw.id || id),
+      dev: true,
+      forkOf: forkOf,
+      updatedAt: Date.now(),
+    });
+    delete next.cloud; /* 上架留痕是「我在云端的那条」：复制出来的这份还没上架过 */
+    delete next.removed;
+    delete next.removedAt;
+    writeJson(manifestPath(dst), next);
+    if (moved) rmDirRecursive(oldDir);
+    return {
+      ok: true,
+      id: id,
+      mode: exists ? "overwrite" : "copy",
+      from: src,
+      dir: dst,
+      backupDir: backupDir,
+      files: files,
+      kept: { author: String(raw.author || ""), version: String(raw.version || ""), forkOf: forkOf },
+      windowClosed: windowClosed,
+      previous: prevMan
+        ? { author: String(prevMan.author || ""), version: String(prevMan.version || "") }
+        : null,
+    };
+  } catch (e) {
+    /* 失败就把旧那份挪回来（覆盖路径），并把半份副本清掉 —— 绝不留下半成品 */
+    try {
+      rmDirRecursive(dst);
+      if (moved && fs.existsSync(oldDir)) fs.renameSync(oldDir, dst);
+    } catch (_) {}
+    return Object.assign(bad(t("复制到开发目录失败：") + ((e && e.message) || String(e)), "copy_failed"), {
+      id: id,
+      dir: dst,
+      backupDir: backupDir,
+    });
+  }
+}
+
 /* ── 云端条目元数据 → 本机副本（apps:syncCloudMeta 的唯一实现）────────────────────
  * 用途：应用中心里改过的**云端条目**（标题 / 简介 / 标签）要落到本机所有同 id 副本上，
  * 免得本机列表还显示老标题、搜索还按老标签命中。
@@ -2010,7 +2496,10 @@ function syncCloudMetaToLocal(arg) {
  * 两份都列；只有两套根指向同一个目录时才按 id 去重（那就是同一份文件，列两次纯属重复）。
  * **列应用 = 「真正要用到根」的第一处**：没配过时在这里把默认根固化进 config.json
  * （见 ensureRootPersisted），所以库页 / 开发页一打开，两个根就是明确可用的路径。 */
-function listApps() {
+function listApps(opts) {
+  /* opts.slim = 「轻表」：只读清单 / 账本 / 指针，不递归目录、不整读 zip（见 appSummary 的 slim）。
+     应用中心首帧走它（apps:listSlim），完整那一份仍由缺省的 apps:list 给。 */
+  const slim = !!(opts && opts.slim);
   for (const k of APP_KINDS) ensureRootPersisted(k);
   const roots = rootsInfo();
   /* 两套根配成同一个目录 → 只扫一遍（按 id 去重）；两套根不同 → 每一边独立按 id 去重，
@@ -2043,7 +2532,7 @@ function listApps() {
       devBackfillOnce(root, id);
       /* 已经登记为「移除过」的开发应用不再列（用户主动摘掉的登记，不自动回来） */
       if (rawManifestOf(path.join(root, id))?.removed === true) continue;
-      const s = appSummary(root, id, k);
+      const s = appSummary(root, id, k, { slim: slim });
       if (s) out.push(s);
     }
     return out;
@@ -2076,7 +2565,7 @@ function listApps() {
   }
   apps.sort((a, b) => (b.installedAt || b.mtimeMs) - (a.installedAt || a.mtimeMs));
   const down = roots[APP_KIND_DOWN] || {};
-  return {
+  const payload = {
     ok: true,
     /* 老字段（一批老调用点读它 = 下载根）：兼容保留，不删 */
     root: String(down.path || ""),
@@ -2087,6 +2576,103 @@ function listApps() {
     apps: apps,
     at: Date.now(),
   };
+  /* 完整那一趟顺手把轻表缓存刷新（唯一真源写一次）：下次开应用中心可以先把缓存画出来。
+     轻表这一趟**不写**（它自己就是缓存的来源，由 listAppsSlim 决定写不写），免得把
+     detailPending 的中间态固化进磁盘。 */
+  if (!slim) writeAppsSlimCache(payload);
+  return payload;
+}
+
+/* ---------------- 应用中心「轻表」（首帧）+ 按需补一件 ----------------
+ *
+ * 用户口径（本轮）：商店与库先拿一份体积很小的表（只有标题等必要文字）把界面画出来，
+ * 图像与重字段随后补，使常规打开「瞬间完成」。
+ *
+ * 主进程这一侧的落地：
+ *   · apps:listSlim  → 轻表（listApps({slim:true})；有缓存可先回缓存，见 opts.cache）
+ *   · apps:detail    → 单个应用的**完整**摘要（用户点「二次开发」/ 打开发布窗 / 详情窗要
+ *                      体积与核心文件时按需补一件，不必为一件重跑全库扫描）
+ *   · 轻表缓存落 <数据目录>/apps-cache/library-slim.json（**只存文字**，不存任何图像字节；
+ *     与 catalog 缓存同一处目录）。缓存只为「先出字」：渲染层拿到缓存后立刻再问一次实时轻表
+ *     并原地刷新，所以过期判定不靠 TTL 猜，而以「实时那一趟」为准。
+ */
+const SLIM_CACHE_VER = 1;
+const slimCachePath = () => path.join(cacheDir(), "library-slim.json");
+/* 缓存能不能用：版本对得上、条目是数组、**两套根与当前配置一致**（换过目录就不能拿旧的骗人）。
+   不一致一律当没有缓存（宁可多等一次实时轻表，也不显示别的目录里的应用）。 */
+function slimCacheUsable(c) {
+  if (!isObj(c) || Number(c.ver) !== SLIM_CACHE_VER || !Array.isArray(c.apps)) return false;
+  try {
+    const roots = rootsInfo();
+    for (const k of APP_KINDS) {
+      const a = cmpPath(String((c.roots && c.roots[k] && c.roots[k].path) || ""));
+      const b = cmpPath(String((roots[k] || {}).path || ""));
+      if (a !== b) return false;
+    }
+  } catch (_) {
+    return false;
+  }
+  return true;
+}
+function readAppsSlimCache() {
+  try {
+    const c = readJson(slimCachePath(), null);
+    return slimCacheUsable(c) ? c : null;
+  } catch (_) {
+    return null;
+  }
+}
+function writeAppsSlimCache(payload) {
+  try {
+    if (!payload || !Array.isArray(payload.apps)) return;
+    writeJson(slimCachePath(), {
+      ver: SLIM_CACHE_VER,
+      at: Number(payload.at) || Date.now(),
+      roots: payload.roots,
+      apps: payload.apps.map((a) => Object.assign({}, a, { detailPending: true })),
+    });
+  } catch (_) {}
+}
+/* 轻表入口：opts.cache=true 且缓存可用 → 先把缓存回给渲染层（fromCache=true），
+   渲染层随后再调一次（不带 cache）拿实时轻表原地刷新 —— 两趟都很便宜，
+   而「用户看到字」发生在第一趟（磁盘读一次 JSON）。 */
+function listAppsSlim(opts) {
+  const o = isObj(opts) ? opts : {};
+  if (o.cache !== false) {
+    const c = readAppsSlimCache();
+    if (c) {
+      const down = (c.roots && c.roots[APP_KIND_DOWN]) || {};
+      return {
+        ok: true,
+        fromCache: true,
+        at: Number(c.at) || 0,
+        root: String(down.path || ""),
+        configured: !!down.configured,
+        exists: !!down.exists,
+        roots: c.roots,
+        apps: c.apps,
+        slim: true,
+      };
+    }
+  }
+  const live = listApps({ slim: true });
+  writeAppsSlimCache(live);
+  return Object.assign({}, live, { fromCache: false, slim: true });
+}
+/* 单个应用的完整摘要（按需补一件）。类型走主进程仲裁（diskKindOf，与 listApps 同口径）。 */
+function appDetailSummary(id) {
+  const sid = safeAppId(id);
+  if (!sid) return null;
+  const kind = diskKindOf(sid);
+  const root = (() => {
+    try {
+      return rootPathOf(kind).root;
+    } catch (_) {
+      return "";
+    }
+  })();
+  if (!root) return null;
+  return appSummary(root, sid, kind, {});
 }
 
 /* ---------------- 本机新建应用（库页 / 开发页的「新建应用」入口） ----------------
@@ -2265,8 +2851,12 @@ function mirrorAppCanvas(id, obj) {
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
   let dir = "";
   try {
-    /* 画布镜像跟着应用自己的那一类走：开发的应用镜像进项目根，下载的进下载根 */
-    dir = dirOfApp(sid);
+    /* 画布镜像跟着应用自己的那一类走：开发的应用镜像进项目根，下载的进下载根。
+       **同 id 两边各有一份时开发那份优先**（本轮「二次开发 = 复制到开发目录」之后这是常态）：
+       画布（id = 应用 id）本来就是开发侧的东西 —— 镜像进库那份只会往用户的库目录里塞一个
+       他用不着的快照文件，而真正在开发的那一份反而没有镜像（整目录迁移要靠它）。 */
+    const devDir = dirOfKind(APP_KIND_DEV, sid);
+    dir = devDir && fs.existsSync(devDir) ? devDir : dirOfApp(sid);
   } catch (err) {
     return fail(err);
   }
@@ -2624,7 +3214,28 @@ function normStamp(v) {
   const t = Date.parse(s);
   return isFinite(t) && t >= NORM_STAMP_MIN ? t : 0;
 }
-function parseCatalogDoc(doc, base, kind) {
+/* 精简清单（catalog.slim.json）的条目落到渲染层用的形状：normSpec 会按「老目录」口径把
+   缺失字段补成空串 / 空数组（甚至连版本都合成一条），这在完整目录里是对的，但精简清单里
+   **没有**这些字段是「还没拉完整」，不是「云端没有」—— 合成出来的空版本会让详情窗画出
+   一条点不动的版本、让「下载」拿到空 zipUrl。所以这里把重字段显式清掉并打上 slim 标记，
+   等完整 catalog.json 回来时整份替换（见 renderer/app-apps.js 的 appsCatalogLoad）。 */
+function stripHeavySpecFields(spec) {
+  spec.zipUrl = "";
+  spec.sha256 = "";
+  spec.bytes = 0;
+  spec.shots = [];
+  spec.shotsThumb = [];
+  spec.shotsSha = [];
+  spec.versions = [];
+  spec.window = {};
+  spec.tips = null;
+  spec.rating = 0;
+  spec.comments = 0;
+  spec.slim = true;
+  return spec;
+}
+function parseCatalogDoc(doc, base, kind, opts) {
+  const slim = !!(opts && opts.slim);
   const d = isObj(doc) ? doc : {};
   const list = Array.isArray(d.apps) ? d.apps : Array.isArray(d.list) ? d.list : [];
   const b = base || FEED;
@@ -2632,14 +3243,17 @@ function parseCatalogDoc(doc, base, kind) {
   const apps = [];
   for (const item of list) {
     const spec = normSpec(item);
-    if (spec) apps.push(tagSourceBase(spec, b, k));
+    if (spec) apps.push(tagSourceBase(slim ? stripHeavySpecFields(spec) : spec, b, k));
   }
-  return { version: Number(d.version) || 1, updatedAt: String(d.updatedAt || ""), apps: apps };
+  const out = { version: Number(d.version) || 1, updatedAt: String(d.updatedAt || ""), apps: apps };
+  if (slim) out.slim = true;
+  return out;
 }
-/* 装上 / 可更新状态：目录条目 × 本机目录 */
-function attachInstalled(specs) {
+/* 装上 / 可更新状态：目录条目 × 本机目录。
+   opts.slim = 本机那一侧只取轻表（首帧路径用；重字段随后的完整那一趟会补上）。 */
+function attachInstalled(specs, opts) {
   const have = Object.create(null);
-  for (const s of listApps().apps) if (s.id) have[s.id] = s;
+  for (const s of listApps({ slim: !!(opts && opts.slim) }).apps) if (s.id) have[s.id] = s;
   return (Array.isArray(specs) ? specs : []).map((spec) => {
     const cur = have[spec.id] || null;
     const merged = Object.assign({}, spec, {
@@ -2794,6 +3408,97 @@ async function loadCatalog() {
   /* answered 见 emptyCatalogResult 的注释：两层都是 empty_catalog → true（云端就是没应用），
      两层都真的没连上 → false。渲染层据此决定说不说「无法连接」。 */
   return emptyCatalogResult(errors, answered);
+}
+
+/* ── 精简目录（catalog.slim.json · 首帧路径） ─────────────────────────────────────
+ * 用户口径（本轮）：商店先拉一份**体积很小**的表（只有标题等必要文字）把界面画出来，
+ * 图像与其余内容随后补。落地分两头：
+ *   · 云端：静态目录发布时与 catalog.json **同源同批**多写一份 catalog.slim.json（+.gz，
+ *     见 store-saas/server.mjs 的 catalogSlimDoc / publishStaticApps）——完整目录的字段与
+ *     语义一个字没动，老客户端继续读它。
+ *   · 本机：这里优先拉那份小的；拉不到（线上还没部署 / 404 / 坏文件）就**照旧走完整那条链**
+ *     （静态完整 → 接口 → 本机缓存），行为与改动前完全一致 —— 也就是说这条路径在最坏情况下
+ *     不比以前慢，最好情况下首帧只等一份小文件。
+ * 缓存放**另一个文件**（catalog-slim.json），绝不写进 catalogCachePath()：那份缓存是安装 /
+ * 回滚路径的目录来源，塞进一份没有 zipUrl 的精简条目会把下载打断。
+ */
+const catalogSlimUrl = () => FEED + "/catalog.slim.json";
+const catalogSlimCachePath = () => path.join(cacheDir(), "catalog-slim.json");
+function readCatalogSlimCache() {
+  try {
+    const c = readJson(catalogSlimCachePath(), null);
+    return c && c.doc ? c : null;
+  } catch (_) {
+    return null;
+  }
+}
+function writeCatalogSlimCache(sourceUrl, doc) {
+  try {
+    writeJson(catalogSlimCachePath(), { fetchedAt: Date.now(), sourceUrl: sourceUrl, sourceBase: FEED, doc: doc });
+  } catch (_) {}
+}
+/* 静态精简目录：空目录同样按失败处理（与 fetchRemoteCatalog 同一口径 —— 空目录正是
+   「部署链把线上目录刷空」那类事故的样子，不能让调用方把「一条都没有」当结论）。 */
+async function fetchRemoteCatalogSlim() {
+  const buf = await fetchBuffer(catalogSlimUrl(), null, MAX_CATALOG);
+  const doc = JSON.parse(buf.toString("utf8"));
+  if (!isObj(doc) || !(Array.isArray(doc.apps) || Array.isArray(d.list))) throw new Error("bad_catalog_slim");
+  const parsed = parseCatalogDoc(doc, FEED, "static", { slim: true });
+  if (!parsed.apps.length) throw emptyCatalogErr("精简目录");
+  writeCatalogSlimCache(catalogSlimUrl(), doc);
+  return parsed;
+}
+/* 首帧用的目录：① 静态精简 → ② 完整那条链（静态完整 → 接口 → 本机缓存）→ ③ 精简缓存兜底。
+   回执带 slim=true 只表示「这一份是精简清单」（渲染层据此知道版本树 / 截图 / 校验值还没到）；
+   走完整链路时字段原样，不带这个标记。 */
+async function loadCatalogSlim() {
+  const errors = [];
+  try {
+    const slim = await fetchRemoteCatalogSlim();
+    return {
+      ok: true,
+      source: "remote",
+      slim: true,
+      fetchedAt: Date.now(),
+      sourceUrl: catalogSlimUrl(),
+      sourceBase: FEED,
+      apps: attachInstalled(slim.apps, { slim: true }),
+      appVersion: String(getAppVersion() || ""),
+    };
+  } catch (err) {
+    errors.push("static-slim: " + ((err && err.message) || err));
+    console.warn("[apps-store] 精简目录不可用（" + errors.join(" · ") + "）→ 回退完整目录链路");
+  }
+  const full = await loadCatalog();
+  if (full && Array.isArray(full.apps) && full.apps.length) {
+    if (full.source !== "cache") {
+      return Object.assign({}, full, { slimFailed: errors.join(" · ") });
+    }
+    return full;
+  }
+  /* 完整链路也没内容（离线 + 本机连目录缓存都没有）：还有精简缓存就先画出来，
+     标题级的信息总比一句「无法连接」有用（文案仍按 answered 如实说）。 */
+  const c = readCatalogSlimCache();
+  if (c && c.doc) {
+    const parsed = parseCatalogDoc(c.doc, c.sourceBase || FEED, "static", { slim: true });
+    if (parsed.apps.length) {
+      return {
+        ok: true,
+        source: "cache",
+        slim: true,
+        fetchedAt: Number(c.fetchedAt) || 0,
+        sourceUrl: String(c.sourceUrl || catalogSlimUrl()),
+        sourceBase: FEED,
+        apps: attachInstalled(parsed.apps, { slim: true }),
+        appVersion: String(getAppVersion() || ""),
+        remoteError: errors.concat((full && full.remoteError) || "").filter(Boolean).join(" · "),
+        answered: !!(full && full.answered),
+      };
+    }
+  }
+  return full && full.remoteError
+    ? Object.assign({}, full, { remoteError: errors.concat(full.remoteError).filter(Boolean).join(" · ") })
+    : full;
 }
 /* 找一个目录条目：先缓存、再远端（安装时云端刚更新过也能装上）。
    同 id 多分支（docs/apps-market.md §十）：同一个 id 下每个作者一条，**必须按 ownerId 区分** ——
@@ -3445,8 +4150,71 @@ async function uninstallApp(id, opts) {
   };
 }
 
-/* 「移除登记」= 开发中的应用唯一的移除方式：只摘掉应用中心里的登记（app.json 的 dev → false
- * + removed:true），**磁盘上的项目文件夹一个字节都不动**（源码 / 画布镜像 / 数据目录全保留）。 */
+/* ── 删除应用（本轮需求：内容与画布一同移入回收站）────────────────────────────
+ *
+ * 与卸载（uninstallApp）**语义不同，两条都在**：
+ *   · 卸载（uninstallApp）：下载的应用 → 真删自己的子文件夹 + downloaded 那棵数据；开发的 →
+ *     只「移除登记」。用户口径是「删一个绝不误删另一个」，所以它不动开发目录里的源码。
+ *   · 删除应用（本函数）：**开发中的应用也真删** —— 把 <项目根>/<id> 整目录送进系统回收站
+ *     （shell.trashItem，可在资源管理器还原；回收站不可用时**拒绝**，绝不静默物理删）。
+ *     画布那一半由渲染层走既有的 workflow:delete（save/<id>.json + assets/<id> 进回收站），
+ *     本函数只管应用目录，两条都做完才算真的删干净。
+ *   · 数据（apps-data / storage / 会话 / 导出包）一律保留 —— 与用户共识一致：只删「内容与画布」。
+ *
+ * 类型由调用方点名（opts.kind）或按本机实际所在的那一套根判定：**开发目录优先**（同一个 id
+ * 两边各有一份时，用户从开发页点删除，删的该是他在开发的那一份）。 */
+async function deleteApp(id, opts) {
+  const sid = safeAppId(id);
+  if (!sid) return bad(t("应用 id 不合法"), "bad_id");
+  const o = isObj(opts) ? opts : {};
+  const wantKind = o.kind ? kindOfRoot(o.kind) : "";
+  let kind = wantKind;
+  if (!kind) {
+    const devDir = dirOfApp(sid, APP_KIND_DEV);
+    kind = devDir && fs.existsSync(devDir) ? APP_KIND_DEV : diskKindOf(sid);
+  }
+  const dir = dirOfApp(sid, kind);
+  if (!dir) return bad(t("非法路径"), "bad_id");
+  if (!fs.existsSync(dir))
+    return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid, kind: kind });
+  const root = rootPathOf(kind).root;
+  /* 守卫：目标必须严格等于 <该套根>/<id>（与 uninstallApp 同一条口径）——不猜、不批量删 */
+  if (path.resolve(dir) !== path.resolve(path.join(root, sid)))
+    return bad(t("删除目标不是这个应用自己的目录，已拒绝"), "path_escape");
+  closeAppWindow(sid);
+  writeModelSelection(sid, MODEL_AUTO); /* 删除顺手清掉该应用的模型选择（不留孤儿条目） */
+  let trashed = false;
+  let trashError = "";
+  try {
+    await shell.trashItem(dir);
+    trashed = true;
+  } catch (err) {
+    trashError = String((err && err.message) || err || "");
+  }
+  /* 回收站不可用（某些网络盘 / 权限）：**拒绝并如实回报**，绝不用 rmSync 顶上 ——
+     用户共识是「删除后能进回收站还原」，静默物理删就把这条退路抹掉了。 */
+  if (!trashed)
+    return Object.assign(
+      bad(t("无法把应用文件夹移入系统回收站，未删除：") + trashError, "trash_failed"),
+      { id: sid, kind: kind, dir: dir, trashed: false },
+    );
+  return {
+    ok: true,
+    id: sid,
+    kind: kind,
+    mode: "delete",
+    dir: dir,
+    root: root,
+    trashed: true,
+    /* 数据目录只回报「在哪、保留着」，供界面写清后果（本函数一个字节都不动它） */
+    dataKept: true,
+  };
+}
+
+/* 「移除登记」= 开发中的应用**唯一**的「不删文件」退出方式：只摘掉应用中心里的登记
+ * （app.json 的 dev → false + removed:true），**磁盘上的项目文件夹一个字节都不动**
+ * （源码 / 画布镜像 / 数据目录全保留）。界面上的「移除登记」按钮本轮已下线（改成「删除应用」），
+ * 本函数仍保留：它是「只想不再列出、又不想删文件」的唯一语义出口，老调用方与测试都还认它。 */
 async function unregisterApp(id, opts) {
   const sid = safeAppId(id);
   if (!sid) return bad(t("应用 id 不合法"), "bad_id");
@@ -4156,6 +4924,12 @@ function devPreview(id) {
 
 const appWins = new Map();
 const wcToAppId = new WeakMap();
+/* 发送方窗口**实际加载的是哪一套根的那一份**（openAppWindow 开窗时按解析出来的目录记下）。
+ * 为什么必须有它：同一个 id 完全可能在库根与开发根各有一份，而磁盘上的"本机仲裁"（diskKindOf）
+ * 是**库根优先**的 —— 宿主要是按 id 猜根，开发页启动的应用窗口会读到库里那份旧 app.json
+ * （用户报障：勾了「显示听写条」却永远没有听写条，根因就在这）。窗口自己知道它跑的是哪一份，
+ * 一切"这个应用声明了什么 / 它的目录在哪"都按它认。 */
+const wcToAppKind = new WeakMap();
 /* 关窗收尾（r1 共识）：每个应用窗口一份「等应用回包」的现场 */
 const appCloseWait = new Map();
 
@@ -4272,6 +5046,13 @@ function previewAppIdOf(e, arg) {
   const l = previewLeaseOf(e, a.token);
   return l ? String(l.id || "") : "";
 }
+/* 这条预览租约登记的是哪一套根的那一份（开发页登记时带上）。**认不出回空串** = 调用方回落到
+   按 id 猜根的老口径 —— 那份口径在同 id 两份时读的是库根副本（见 senderAppDir 的注释）。 */
+function previewAppKindOf(e, arg) {
+  const a = isObj(arg) ? arg : {};
+  const l = previewLeaseOf(e, a.token);
+  return l ? String(l.kind || "") : "";
+}
 /* 拒绝文案与错误码（应用侧据此区分「预览只读」与其他失败；渲染层据此在预览区浮提示） */
 function previewReadOnlyError() {
   return Object.assign(bad(t("该应用已在独立窗口运行，预览为只读"), "readonly_preview"), {
@@ -4305,7 +5086,10 @@ function emitPreviewNotice(appId, code, error) {
     });
   } catch {}
 }
-/* 登记一条预览租约（dev page 调；旧帧作废）。id 必须是本机真实存在的应用目录 */
+/* 登记一条预览租约（dev page 调；旧帧作废）。id 必须是本机真实存在的应用目录。
+ * kind（"dev" / "down"，可选）：开发页知道自己在预览**哪一份**（同 id 两份时开发页要的是
+ * 项目根那份），登记时带上 —— 租约里带着它，宿主回答「这个应用声明了什么 / 目录在哪」才与
+ * 预览里真正跑的那一份对得上（见 senderAppDir）。不带 = 老口径（previewDirOf 按 id 取）。 */
 function registerPreviewLease(e, arg) {
   const a = isObj(arg) ? arg : {};
   const sid = safeAppId(a.appId);
@@ -4316,15 +5100,21 @@ function registerPreviewLease(e, arg) {
   } catch {}
   if (!mw || mw.isDestroyed() || !e || e.sender !== mw.webContents)
     return bad(t("只有主窗口能登记预览会话"), "not_main");
-  const dir = previewDirOf(sid);
+  const wantKind = String(a.kind || "").trim();
+  const dir = previewDirOf(sid, wantKind ? kindOfRoot(wantKind) : undefined);
   if (!dir) return Object.assign(bad(t("该应用不在本机"), "missing"), { missing: true, id: sid });
   const token = String(a.token || "").slice(0, 64);
   if (!token) return bad(t("缺少预览会话标识"), "bad_token");
   if (previewLeases.active) previewLeases.byToken.delete(previewLeases.active.token);
-  const lease = { id: sid, token: token, at: Date.now() };
+  const lease = {
+    id: sid,
+    token: token,
+    at: Date.now(),
+    kind: openAppDirKindOf(sid, wantKind, dir),
+  };
   previewLeases.active = lease;
   previewLeases.byToken.set(token, lease);
-  return { ok: true, id: sid, token: token, readOnly: isAppWindowOpen(sid), dir: dir };
+  return { ok: true, id: sid, token: token, readOnly: isAppWindowOpen(sid), dir: dir, kind: lease.kind };
 }
 /* 撤掉租约（切应用 / 关页 / iframe 换页时调）。不带 token = 撤当前那条 */
 function releasePreviewLease(e, arg) {
@@ -4436,7 +5226,7 @@ function openAppWindow(id, kind) {
       existing.show();
       existing.focus();
     } catch {}
-    noteAppRun(sid); /* 把窗口调到前台也算「用了一次」（库页按最近运行排序） */
+    noteAppRun(sid, existing.__mtnodeAppKind || ""); /* 把窗口调到前台也算「用了一次」（库页按最近运行排序） */
     notifyWindowChanged(sid, true);
     /* 与开新窗同一条留痕：复用这条也要说清「重载了哪一份」（用户报障正是「点了没变化」） */
     const rdir = String(existing.__mtnodeAppDir || "") || dirOfApp(sid, kind ? kindOfRoot(kind) : "");
@@ -4540,6 +5330,9 @@ function openAppWindow(id, kind) {
     return { action: "deny" };
   });
   wcToAppId.set(w.webContents, sid);
+  /* 这个窗口跑的是**哪一套根的那一份**：宿主回答「它声明了什么 / 目录在哪」一律按它认
+     （同 id 两份时按 id 猜根会读到另一份，见 wcToAppKind 的注释） */
+  wcToAppKind.set(w.webContents, dirKind);
   appWins.set(sid, w);
   /* 窗口上记下**这一次真正加载的是哪一份**（目录 + 来自哪套根）：复用分支与回执都读它，
      免得同 id 两边各有一份时按 id 重算成下载根、说错自己跑的是哪份代码。 */
@@ -4604,7 +5397,7 @@ function openAppWindow(id, kind) {
     notifyWindowChanged(sid, false);
   });
   notifyWindowChanged(sid, true);
-  noteAppRun(sid);
+  noteAppRun(sid, dirKind);
   /* 回执带**实际加载的目录与来源根 + 这一份的版本号**：调用方（开发页 / 库页）与日志、
      窗口标题三处同源，用户报障时不必再猜「跑的是哪一份」。 */
   return {
@@ -4628,11 +5421,13 @@ function openAppWindow(id, kind) {
  *     本来就不是「下载来的」，给它凭空造一份账本会让 kindOfManifest 的兜底分类误判成
  *     「从云端下载的」（apps-store.js:1056 的口径）。所以只在账本已存在时更新它。
  *   · 写进的是绝对时间毫秒；老账本没有这个字段 = 0（界面按「还没运行过」排到末尾）。 */
-function noteAppRun(id) {
+function noteAppRun(id, kind) {
   const sid = safeAppId(id);
   if (!sid) return 0;
   try {
-    const dir = dirOfApp(sid);
+    /* 哪一套根下那一份：窗口侧开窗时按**实际加载的那一份**传进来（同 id 两份时按 id 猜根
+       会把「最近运行时间」写到另一份的账本上，库页排序跟着飘） */
+    const dir = dirOfApp(sid, kind ? kindOfRoot(kind) : "");
     if (!dir || !fs.existsSync(dir)) return 0;
     const p = installedPath(dir);
     const led = readInstalled(dir);
@@ -4690,6 +5485,10 @@ function quitFromAppWindow(e) {
 function appIdOfSender(e) {
   return wcToAppId.get(e.sender) || "";
 }
+/* 发送方窗口跑的是哪一套根的那一份（认不出来回空串 = 调用方回落到按 id 猜根的老口径） */
+function appKindOfSender(e) {
+  return wcToAppKind.get(e.sender) || "";
+}
 /* 发送方窗口所属应用的目录。**认 id 不认目录**：数据落盘与关窗收尾都不依赖
  * 「应用安装根目录已设置 / 应用还在本机」——那两样只影响装载与静态文件（见 openAppWindow）。
  * dir 取得到时顺手回一份（老调用方 hostSpec 等不用改）。
@@ -4698,17 +5497,22 @@ function appIdOfSender(e) {
  * 预览与独立窗口走**逐字同一条实现**（白名单、上限、错误码全同源）。 */
 function senderAppDir(e, arg) {
   const ownId = appIdOfSender(e);
+  const ownKind = ownId ? appKindOfSender(e) : "";
   const pvId = ownId ? "" : previewAppIdOf(e, arg);
+  const pvKind = pvId ? previewAppKindOf(e, arg) : "";
   const id = ownId || pvId;
   if (!id) return null;
-  const k = diskKindOf(id);
-  /* 根目录永远有（没配过就是默认根）：应用在默认根里也照常认出来，不再受「配没配过」影响 */
-  const { root } = rootPathOf(k);
-  const direct = appDirOf(root, id);
-  /* 预览态下 appDirOf 认不出（应用刚被二次开发、根目录指向变了）时退回预览目录解析：
-     预览协议本来就是按 previewDirOf 找目录的，两处口径必须一致。 */
-  const dir = direct && fs.existsSync(direct) ? direct : pvId ? previewDirOf(id) : "";
-  return { id: id, dir: dir && fs.existsSync(dir) ? dir : "" };
+  /* 哪一套根（**本轮修的 bug**）：① 这个窗口实际加载的那一份 —— 独立窗口开窗时记下，
+     预览租约里带着；② 两条都认不出才回落到按 id 猜根（diskKindOf，库根优先）。
+     为什么必须优先 ①：同一个 id 在库根与开发根各有一份时，按 id 猜根会读到**另一份**的
+     app.json —— 开发页启动的应用窗口跑的是开发根那份，宿主却按库根那份回答「这个应用声明了
+     什么」（听写条注入闸门读的就是它），用户看到的就是「勾了显示听写条却永远没有那条条」。 */
+  const rawKind = String(ownKind || pvKind || "").trim();
+  const k = rawKind ? kindOfRoot(rawKind) : diskKindOf(id);
+  /* 认得出哪一份就用哪一份的目录；预览态下 dirOfApp 认不出（应用刚被二次开发、根目录指向变了）
+     时退回预览目录解析：预览协议本来就是按 previewDirOf 找目录的，两处口径必须一致。 */
+  const dir = dirOfApp(id, k) || (pvId ? previewDirOf(id, k) : "");
+  return { id: id, kind: k, dir: dir && fs.existsSync(dir) ? dir : "" };
 }
 
 /* ---------------- appHost：语音转写（官方本地 SenseVoice，跑在 dsh 运行时里） ----------------
@@ -5084,7 +5888,8 @@ function hostModelsPayload(e, arg) {
   };
 }
 /* 应用自报能力位（读 app.json 的 capabilities）：preload 的听写条注入闸门用它 ——
- * 只在声明了 showDictate 时才注入（默认隐藏：能力位缺省 false = 不注入，宿主侧也就没有那条条）。
+ * 只在声明了 showDictate 时才注入（能力位缺省 false = 不注入，宿主侧也就没有那条条；声明为真则
+ * 注入进来即默认可见，收起按钮只藏本次窗口）。
  * **不是权限闸**：桥上的语音 / 图像接口始终可调，这里只回答「这个应用声明的界面能力里有没有
  * 让他把听写条显示出来」。认不出应用回 ok:false。 */
 function hostCapabilities(e, arg) {
@@ -6036,22 +6841,26 @@ function readKvOf(id) {
 
 /* ---------------- appHost：应用能力位（capabilities） ----------------
  *
- * 需求（用户共识）：默认应用**不再携带语音转文字** —— 「这个应用要不要文字输入 / 要不要在
- * 窗口底部显示听写条 / 要不要图像生成」写在 app.json 的 capabilities 里（见 apps-capabilities.js）：
+ * 需求（用户共识，本轮改口径）：默认应用**不再携带语音转文字** —— 「这个应用要不要文字输入 /
+ * 要不要在窗口底部显示听写条 / 要不要图像生成」写在 app.json 的 capabilities 里
+ * （见 apps-capabilities.js）：
  *   · textInput   决定脚手架那两份语音模块（speech.js / speech.css）补不补进应用目录；
- *   · showDictate 决定宿主注不注入听写条（preload-app.js 的闸门）与默认页注不注入 dict.js；
+ *   · showDictate 决定宿主注不注入听写条（preload-app.js 的闸门 → renderer/app-speech-ui.js）；
+ *   · imageGen    只是静态声明（卡片小标），不改任何文件。
  * 两者都缺省 false（新应用浮层里也不勾）。能力位是**静态声明**，不是权限闸
  * （桥上的接口始终在，旧应用不会突然报错）。
  *
- * 两条主进程入口（应用中心渲染层用）：
- *   appCapabilitiesGet({ id })             → { ok, capabilities, list:[{id,label,hint,on}] }
- *   appCapabilitiesSet({ id, capabilities, regenEntry? })
- *        · 整份替换能力位（缺的键按 false）；
- *        · textInput 打开 → 把随包脚手架的 speech.js / speech.css 补进应用目录 + 按模板重生成
- *          入口页（入口页本是模板生成的一份独立文件，「换风格」也是这么重生成的）；
- *        · textInput 关掉 → 反向：重生成入口页并删掉这两个文件；
- *        · showDictate 打开 / 关掉 → 只影响入口页里那份 dict.js 内联（宿主注入侧看同一个位）；
- *        · regenEntry=false 时只写声明、不碰文件（给「我自己写的入口页」留出口）。
+ * **能力位改动一律不写入口页**（本轮共识）：旧实现任何一位变化都按模板整份重写 index.html，
+ * 用户（或开发会话）在页面里做的改动会全没了；而现在宿主侧的听写条与语音模块都不需要页面配合，
+ * 所以改成「只写 app.json 的声明 + 按需补撤 speech.js / speech.css + 顺手清掉旧版内联的听写段」。
+ * 手写页面的应用与模板生成的应用走**同一条路**：不判断页面来历、不校验、页面一概不动。
+ *
+ * 三条主进程入口（应用中心 / 开发页渲染层用）：
+ *   appCapabilitiesGet({ id, kind })              → { ok, capabilities, list:[{id,label,hint,on}] }
+ *   appCapabilitiesSet({ id, kind, capabilities }) → 写声明；textInput 打开 / 关掉时同步
+ *        speech.js / speech.css（speechFiles）；每次调用都会幂等清一次存量页面里的旧内联听写段
+ *        （legacyInline，没痕迹就不产生任何写入）。**不再重生成入口页**。
+ *   appCapabilitiesCleanEntry({ id, kind })       → 只做那次存量清理（打开「应用设置」窗时调）。
  * ─────────────────────────────────────────────────────────────────────── */
 function appCapById(id, kind) {
   const sid = safeAppId(id);
@@ -6071,33 +6880,35 @@ function appCapabilitiesGet(arg) {
   const caps = normCapabilities(man.capabilities);
   return { ok: true, id: hit.id, capabilities: caps, list: capabilitiesForUi(caps, appLocale()) };
 }
+/* 能力位 → 声明落盘 +（按需）语音模块同步 + 存量内联听写段清理。
+   **绝不写入口页**：页面里用户（或开发会话）改过的东西原样保留 —— 听写条由宿主按声明注入，
+   语音模块是应用目录里的独立文件，都不需要动 HTML。 */
 function appCapabilitiesSet(arg) {
   const a = isObj(arg) ? arg : {};
   const hit = appCapById(a.id, a.kind);
   if (hit.error) return hit.error;
   const prev = manifestOf(hit.dir, hit.id) || {};
   const caps = normCapabilities(a.capabilities);
-  const regen = a.regenEntry !== false;
   const man = writeManifest(hit.dir, { capabilities: caps }, prev);
   const out = { ok: true, id: hit.id, capabilities: caps, wroteFiles: [] };
-  if (regen) {
-    /* 语音模块两份文件：声明打开就补，关掉就撤（撤的是我们补的那两份，绝不碰别的文件） */
-    const speech = syncSpeechFiles(hit.dir, caps);
-    out.wroteFiles = speech;
-    const entry = safeEntry(man.entry) || SUB.index;
-    const abs = resolveInside(hit.dir, entry);
-    if (abs) {
-      try {
-        fs.writeFileSync(abs, defaultPageHtml(man), "utf8");
-        out.regeneratedEntry = entry;
-      } catch (err) {
-        return fail(err);
-      }
-    }
-  }
+  /* 语音模块两份文件：声明打开就补，关掉就撤（撤的是我们补的那两份，绝不碰别的文件） */
+  out.wroteFiles = syncSpeechFiles(hit.dir, caps);
+  /* 顺手清一次旧版内联的听写段（幂等）：没痕迹时一个字都不写 */
+  const clean = clearLegacyDictInline(hit.dir, safeEntry(man.entry) || SUB.index);
+  out.legacyInline = { removed: clean.removed };
   out.capabilities = normCapabilities(readManifest(hit.dir) ? (readManifest(hit.dir) || {}).capabilities : caps);
   out.list = capabilitiesForUi(out.capabilities, appLocale());
   return out;
+}
+/* 只做那次存量清理（打开「应用设置」窗时静默调一次）：不写声明、不碰语音文件。
+   给渲染层一个入口，用户不必先去勾某一位才清掉页面里的旧内联听写条。 */
+function appCapabilitiesCleanEntry(arg) {
+  const a = isObj(arg) ? arg : {};
+  const hit = appCapById(a.id, a.kind);
+  if (hit.error) return hit.error;
+  const man = manifestOf(hit.dir, hit.id) || {};
+  const clean = clearLegacyDictInline(hit.dir, safeEntry(man.entry) || SUB.index);
+  return { ok: true, id: hit.id, entry: safeEntry(man.entry) || SUB.index, removed: clean.removed };
 }
 /* 应用侧展示语言（config.json 的 locale；hostLocale 由 main.js 注入，取不到按中文） */
 function appLocale() {
@@ -6573,16 +7384,17 @@ function registerAppsIpc(opts) {
     const one = roots[k] || {};
     return Object.assign({}, one, { roots: roots });
   }));
-  ipcMain.handle("apps:rootSet", guard((e, arg) => {
-    const o = isObj(arg) ? arg : { path: arg };
-    return setRoot(o.path, o.kind);
-  }));
+  /* apps:rootSet / apps:rootPick（手改根目录）**本轮恢复注册**（用户口径：目录设置窗里每行
+     都要有「修改」+「打开」两枚按钮，路径要能改）。两条通道都走 setRootAndMaybeMove：
+      先写 config.json，再按调用方给的 moveApps 决定要不要把旧根里那一类应用一起搬过去
+     （搬动口径见 moveAppsToRoot —— 只搬这一行那一类、认不出的目录与其它文件一概不动、
+     同名一律跳过不覆盖）。
+     老机器 config.json 里手改过的根照旧生效（rootPathOf 的兼容读没动过）。 */
+  ipcMain.handle("apps:rootSet", guard((e, arg) => setRootAndMaybeMove(arg)));
   ipcMain.handle("apps:rootPick", async (e, arg) => {
     try {
-      const o = isObj(arg) ? arg : {};
-      const r = await pickRoot(o.kind);
-      if (!r.ok) return r;
-      return Object.assign({}, r, { list: listApps() });
+      const a = isObj(arg) ? arg : { kind: arg };
+      return await pickRoot(a.kind, { moveApps: a.moveApps === true });
     } catch (err) {
       return fail(err);
     }
@@ -6593,6 +7405,17 @@ function registerAppsIpc(opts) {
   ));
 
   ipcMain.handle("apps:list", guard(() => listApps()));
+  /* 轻表（本轮：商店与库先出字）：opts.cache !== false 时优先回磁盘上的轻表缓存
+     （fromCache=true），渲染层随后再问一次实时的轻表并原地刷新；完整那一份仍走 apps:list。 */
+  ipcMain.handle("apps:listSlim", guard((e, arg) => listAppsSlim(isObj(arg) ? arg : {})));
+  /* 单个应用按需补一件（完整摘要：体积 / 文件数 / 核心文件 / zip 哈希）。
+     用户点「二次开发」、打开发布窗、打开详情时用它，不必为一件重跑全库扫描。 */
+  ipcMain.handle("apps:detail", guard((e, arg) => {
+    const id = isObj(arg) ? arg.id : arg;
+    const app = appDetailSummary(id);
+    if (!app) return bad(t("该应用不在本机"), "missing");
+    return { ok: true, app: app };
+  }));
   /* 新建应用：{ name 标题, id 文件夹名, style 设计风格 } → 建 <root>/<id>/ + app.json
      （画布由渲染层紧接着走既有 workflow:save 建，见 createApp 头部注释）。 */
   ipcMain.handle("apps:create", guard((e, arg) => createApp(arg)));
@@ -6604,13 +7427,19 @@ function registerAppsIpc(opts) {
   /* 本机状态字段写入口（渲染层不碰文件系统）：{ id, dev?, author?, forkOf? } ——
      二次开发（dev:true + 作者）、上架成功后写作者与二次开发来源都走这一条。 */
   ipcMain.handle("apps:setMeta", guard((e, arg) => setAppMeta(arg)));
+  /* 二次开发 = 复制到开发目录（本轮口径）：{ id, mode? } —— mode="overwrite" = 覆盖 + 先整目录备份；
+     缺省在开发目录已有同 id 时回 code:"exists"（一个字节都不动），由渲染层问「覆盖 / 交给 AI 合并」。 */
+  ipcMain.handle("apps:copyToDev", guard((e, arg) => copyAppToDev(arg)));
   /* 云端条目元数据 → 本机**所有**同 id 副本（两套根都扫；见 syncCloudMetaToLocal 头部）。
      与 apps:setMeta 是两条独立通道，语义不重叠：这一条只写 title / description / tags。 */
   ipcMain.handle("apps:syncCloudMeta", guard((e, arg) => syncCloudMetaToLocal(arg)));
-  /* 应用能力位（app.json 的 capabilities）：文字输入 / 图像生成 —— 卡片小标、脚手架起步文件、
-     宿主听写条注入都读它。设 textInput 时按模板重生成入口页（与「换风格」同一口径）。 */
+  /* 应用能力位（app.json 的 capabilities）：文字输入 / 显示听写条 / 图像生成 —— 卡片小标、
+     脚手架起步文件、宿主听写条注入闸门都读它。**能力位只写声明，不动入口页**；
+     设 textInput 时补 / 撤语音模块文件，另有一条只做存量内联听写段清理的旁路。 */
   ipcMain.handle("apps:capabilitiesGet", guard((e, arg) => appCapabilitiesGet(arg)));
   ipcMain.handle("apps:capabilitiesSet", guard((e, arg) => appCapabilitiesSet(arg)));
+  /* 只做存量清理（打开「应用设置」窗时静默调一次）：不写声明、不碰页面别的内容 */
+  ipcMain.handle("apps:capabilitiesCleanEntry", guard((e, arg) => appCapabilitiesCleanEntry(arg)));
   ipcMain.handle("apps:catalog", async (e, arg) => {
     try {
       const cat = await loadCatalog(arg || {});
@@ -6629,17 +7458,47 @@ function registerAppsIpc(opts) {
       return fail(err);
     }
   });
+  /* 首帧用的目录（本轮）：优先拉云端精简清单 catalog.slim.json（拉不到就照旧走完整链路），
+     并把本机那一侧也按轻表口径 attach（不递归目录、不整读 zip）。渲染层拿到就先画卡片，
+     随后再用 apps:catalog 拉完整目录原地补齐版本树 / 截图 / 校验值。 */
+  ipcMain.handle("apps:catalogSlim", async (e, arg) => {
+    try {
+      const cat = await loadCatalogSlim(arg || {});
+      if (cat && Array.isArray(cat.apps)) {
+        for (const spec of cat.apps) {
+          /* 精简条目也要这份 URL：首帧卡片画的正是图标 / 封面缩略图（zipUrl 那几条在精简清单里
+             本来就是空的，解析出来是空串，不会误导安装路径 —— 安装一律另走 findSpec）。 */
+          try {
+            spec.urls = zipUrlsOf(spec);
+          } catch {}
+        }
+      }
+      return cat;
+    } catch (err) {
+      return fail(err);
+    }
+  });
   ipcMain.handle("apps:install", async (e, arg) => {
     try {
       return await installApp(arg);
     } catch (err) {
       return fail(err);
     }
-  });
-  ipcMain.handle("apps:uninstall", async (e, arg) => {
+  });  ipcMain.handle("apps:uninstall", async (e, arg) => {
     try {
       const o = isObj(arg) ? arg : { id: arg };
       return await uninstallApp(o.id, o);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  /* 删除应用（本轮需求）：把**应用目录**整份送进系统回收站（开发中的应用也真删，与「卸载」
+     的「只移除登记」区分开）。画布那一半由渲染层走 workflow:delete 一并处理；app 数据 /
+     会话 / storage 保留。回收站不可用时拒绝，绝不物理删。 */
+  ipcMain.handle("apps:delete", async (e, arg) => {
+    try {
+      const o = isObj(arg) ? arg : { id: arg };
+      return await deleteApp(o.id, o);
     } catch (err) {
       return fail(err);
     }
@@ -6901,6 +7760,22 @@ function registerAppsIpc(opts) {
       return fail(err);
     }
   });
+  /* 「应用设置」窗那两枚「修改」：应用文件夹（搬到另一套根的根目录下，口径见 appDirMoveTo）
+     与数据目录（与独立窗口里那条逐字同源）。渲染层只拿回执，选目录框与搬动都在主进程。 */
+  ipcMain.handle("apps:appDirPick", async (e, arg) => {
+    try {
+      return await appDirMoveTo(arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle("apps:dataDirPick", async (e, arg) => {
+    try {
+      return await appDataDirPickFromMain(arg);
+    } catch (err) {
+      return fail(err);
+    }
+  });
 }
 
 module.exports = {
@@ -6910,10 +7785,28 @@ module.exports = {
   rootPath,
   setRoot,
   listApps,
+  /* 应用文件夹「修改」（「应用设置」窗那一枚）的判定与搬动：纯判定 + 真文件搬动，
+     冒烟用临时目录直接真跑（见 test/smoke-apps-host-kind.js） */
+  rootKindOfDir,
+  rootKindOfRootDir,
+  pathWithin,
+  moveAppDirInto,
+  /* 应用中心「轻表」（首帧）与按需补一件：冒烟直接真跑这几个（临时目录 + 真文件），
+     不用起 Electron 窗口（见 test/smoke-apps-slim-list.js） */
+  listAppsSlim,
+  appDetailSummary,
+  dirStatLite,
+  slimCachePath,
+  catalogSlimUrl,
+  loadCatalogSlim,
+  fetchRemoteCatalogSlim,
+  stripHeavySpecFields,
   createApp,
   setAppMeta,
   /* 云端条目元数据同步（title / description / tags → 本机所有同 id 副本）：纯函数段 + 真文件读写，
      冒烟用临时目录直接真跑（见 test/smoke-apps-sync-meta.js） */
+  copyAppToDev,
+  copySkipOf,
   syncCloudMetaToLocal,
   /* 设计风格：清单真源 + 换风格（渲染层只经 IPC 用，smoke 直接断言这两条真源） */
   APP_STYLES,
@@ -7014,9 +7907,13 @@ module.exports = {
   imageSpec,
   LOCAL_MAX_REF_IMAGES,
   LOCAL_IMAGE_PROVIDER_ID,
-  /* 应用能力位（app.json 的 capabilities）：主进程两条入口真跑 + 默认页注入口径 */
+  /* 应用能力位（app.json 的 capabilities）：主进程三条入口真跑；能力位**不再进页面**
+     （入口页生成时按 capabilities 注入的老路径已删，听写条改由宿主按声明注入） */
   appCapabilitiesGet,
   appCapabilitiesSet,
+  appCapabilitiesCleanEntry,
+  clearLegacyDictInline,
+  DICT_INLINE_MARK,
   defaultPageHtml,
   normCapabilities,
   capabilityOn,
@@ -7038,6 +7935,10 @@ module.exports = {
   appDataRootPath,
   legacyDataRoot,
   migrateAppsLayout,
+  /* 换根（目录设置窗的「修改」按钮）：设根 + 按需把旧根里那一类应用一起搬过去。
+     moveAppsToRoot / setRootAndMaybeMove 都是纯文件操作 + 配置写，冒烟直接真跑。 */
+  moveAppsToRoot,
+  setRootAndMaybeMove,
   /* 默认根的固化（本轮需求：不再要求手动指定）：冒烟直接真跑它 */
   ensureRootPersisted,
   unregisterApp,

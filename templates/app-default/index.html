@@ -216,22 +216,12 @@ Write what you want in the **chat box** under App Center → Develop, and this p
         }
 
 
-        /* ── 语音听写条（可选）────────────────────────────────────────────
-           默认页**不携带**语音转文字：只有声明了「显示听写条」（app.json 的
-           capabilities.showDictate）的应用，宿主才会在生成入口页时把 dict.js 注入进来
-           （宿主按能力位决定要不要注入那份脚本，见 apps-store.js 的 defaultPageHtml）——
-           那份脚本自己把听写条与结果小窗挂出来，并暴露 window.MTNDictate。
-           没注入就没有这一段：下面这行找不到东西也不报错。 */
-        if (window.MTNDictate && typeof window.MTNDictate.mount === "function")
-          window.MTNDictate.mount({ host: host, lang: lang });
-
         paint();
       })();
     </script>
 
-    <!-- 语音听写条（可选）：只有声明了 capabilities.showDictate 的应用，宿主才会把
-         templates/app-default/dict.js 注入成一行 <script>（占位符见 apps-store.js
-         的 defaultPageHtml）。没声明时这里是空的 —— 默认页不带任何语音转文字。 -->
-    {{DICT_SCRIPT}}
+    <!-- 语音听写条（可选）：本轮起**不再内联** —— 应用窗口底部那条由宿主按 app.json 的
+         capabilities.showDictate 注入（renderer/app-speech-ui.js）并在声明为真时默认显示，
+         入口页里不再写任何听写 UI。 -->
   </body>
 </html>

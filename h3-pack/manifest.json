@@ -7,7 +7,7 @@
     "en": "Minimax H3"
   },
   "subtitle": {
-    "zh": "【插件测试中】本地 H3 视频（24G）：安装、启停 ComfyUI 后端与 GPU 监视。安装过程复杂，可能会失败。",
+    "zh": "[Testing] Local H3 video (24G): install, start/stop ComfyUI backend, and GPU monitor. Install is complex and may fail.",
     "en": "[Testing] Local H3 video (24G): install, start/stop ComfyUI backend, and GPU monitor. Install is complex and may fail."
   },
   "diskHintGb": 70,

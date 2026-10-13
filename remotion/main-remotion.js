@@ -21,7 +21,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { spawn, execFile } = require("child_process");
+const { spawn, spawnSync, execFile } = require("child_process");
 const https = require("https");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git / chrome-for-testing）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
@@ -33,6 +33,11 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
+/* 插件安装后自检内核（结果落盘 / 等全局媒体锁 / 产物目录 / 进度上报全在它那儿，见 plugins/plugin-selfcheck.js）：
+   本模块只在 require 期登记自己的 check（selfcheckMotion），不自己写盘、不自己发事件 */
+const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
+/* 一次性 TCP 探测（npm 源可达性）：环境自检里只用它，不下载任何东西 */
+const net = require("net");
 const {
   refreshStaleLock,
   tryAcquireLock,
@@ -42,6 +47,9 @@ const {
 } = require("../media-gen-global-lock.js");
 
 const PLUGIN_ID = "remotion";
+/** 配套的安装 / 修复 skill 名（真源在仓库根 skills/<name>/SKILL.md，随包内置）。
+ *  安装窗的「交给 mtnode 会话修复」与报错弹窗的修复会话都按它加载提示词。 */
+const INSTALL_SKILL = "remotion-local-install";
 /** 宿主生成的入口文件名与 render.json 里的相对路径（必须 .tsx：模板含 JSX） */
 const ENTRY_BASENAME = "index.tsx";
 const ENTRY_POINT = "src/" + ENTRY_BASENAME;
@@ -58,6 +66,12 @@ let appRoot = null;
 let consoleWin = null;
 let installing = false;
 let installCancel = false;
+/* 当前这次安装的步骤上报器（runInstallScript 里 attach）：失败前的宿主级步骤行（环境预检 /
+   脚手架缺失 / spawn 失败）都靠它递进安装窗 —— 脚本一行都没跑过的失败，也必须看得见。
+   注意它只是「日志侧」的上报器：步骤行的解析仍由 install-step-reporter 负责。 */
+let installRep = null;
+/* 取 dsh 适配器（main.js 注入）：只为把安装 skill 同步进 dsh-home 供会话修复用 */
+let getDsh = null;
 /** @type {{ nodeId: string, child: import('child_process').ChildProcess|null, abort?: boolean, pct?: number, outputPath?: string }|null} */
 let renderProc = null;
 
@@ -308,6 +322,502 @@ function isSafeInstallDir(dir) {
   return { ok: true, path: norm };
 }
 
+/* ------------------------------------------------------------------ */
+/* 环境自检 / 预检（本轮：安装失败必须留下可复核的现场）                  */
+/* ------------------------------------------------------------------ */
+/* 为什么有这一段：安装窗开得出来、却「一条步骤行、一条日志都没有」的失败现场，
+   根因是失败发生在**脚本跑起来之前**（随包脚手架 / install.ps1 缺失、node 不可用、
+   目录没设或不可写），而那几处早退只发过报错总线，既没写 console.log，也没给安装窗
+   任何步骤行。现在把它们统统变成：① console.log 有落盘的一行行现场；② 安装窗里有
+   一个明确的失败步。日志真源仍然是 %APPDATA%\pipeline-console\<数据>\remotion\console.log。 */
+
+/** 跑一个命令取版本（同步、超时短）：拿不到就回「不可用 + 原因」，绝不抛。
+ *  **必须经 shell**：Windows 上 npm 是 `npm.cmd`，不经 shell 直接 spawnSync 会 EINVAL
+ *  （与 runNpmInstall 那条注释同一个坑）；统一拼成单字符串，也不再触发 DEP0190。 */
+function probeCommand(cmd, args) {
+  const line = [cmd].concat(args || []).join(" ");
+  try {
+    const r = spawnSync(line, { encoding: "utf8", timeout: 10000, windowsHide: true, shell: true });
+    const out = String((r && (r.stdout || r.stderr)) || "").trim().split(/\r?\n/)[0] || "";
+    if (r && r.error) return { ok: false, value: "", detail: String((r.error && r.error.message) || r.error) };
+    if (!r || r.status !== 0) {
+      return {
+        ok: false,
+        value: "",
+        detail: out || "exit " + String((r && r.status) || "?") + "（多半是 PATH 里没有 " + cmd + "）",
+      };
+    }
+    return { ok: true, value: out, detail: out };
+  } catch (e) {
+    return { ok: false, value: "", detail: String((e && e.message) || e) };
+  }
+}
+
+/** 目录可写吗：真的写一个探针文件再删掉（只看 existsSync 判不出只读盘 / 无权限）。 */
+function probeWritable(dir) {
+  const d = String(dir || "").trim();
+  if (!d) return { ok: false, path: "", detail: "安装目录未设置" };
+  const probe = join(d, ".mtnode-write-probe");
+  try {
+    mk(d);
+    fs.writeFileSync(probe, "probe\n", "utf8");
+    fs.rmSync(probe, { force: true });
+    return { ok: true, path: d, detail: "可写" };
+  } catch (e) {
+    return { ok: false, path: d, detail: "不可写：" + String((e && e.message) || e) };
+  }
+}
+
+/** 环境变量 / 默认值里的 npm registry（键名大小写在 Windows 上不敏感，逐个看）。 */
+function npmRegistryOf() {
+  const env = process.env || {};
+  const keys = Object.keys(env);
+  for (const k of keys) {
+    if (k.toLowerCase() === "npm_config_registry" && String(env[k] || "").trim()) {
+      return { url: String(env[k]).trim(), source: k };
+    }
+  }
+  return { url: "https://registry.npmmirror.com", source: "默认（cn-mirrors.js：registry.npmmirror.com）" };
+}
+
+/** 一次性 TCP 探测（不下载任何东西）：npm 源在本机通不通。 */
+function probeRegistryReachable(registry) {
+  return new Promise((resolve) => {
+    let url = null;
+    try {
+      url = new URL(String(registry || ""));
+    } catch {
+      return resolve({ ok: false, detail: "registry 不是合法 URL：" + String(registry || "") });
+    }
+    const host = url.hostname;
+    const port = Number(url.port || (url.protocol === "http:" ? 80 : 443));
+    const started = Date.now();
+    let done = false;
+    const finish = (r) => {
+      if (done) return;
+      done = true;
+      resolve(Object.assign({ host, port, ms: Date.now() - started }, r));
+    };
+    let sock = null;
+    try {
+      sock = net.connect({ host, port });
+    } catch (e) {
+      return finish({ ok: false, detail: String((e && e.message) || e) });
+    }
+    sock.setTimeout(3000);
+    sock.on("connect", () => {
+      try {
+        sock.destroy();
+      } catch {}
+      finish({ ok: true, detail: "可达（TCP " + host + ":" + port + "）" });
+    });
+    sock.on("timeout", () => {
+      try {
+        sock.destroy();
+      } catch {}
+      finish({ ok: false, detail: "连接超时（3s）：" + host + ":" + port + " 在本机不通" });
+    });
+    sock.on("error", (e) => finish({ ok: false, detail: String((e && e.message) || e) }));
+  });
+}
+
+/** npm 命令名（Windows 上是 npm.cmd：它是 .cmd，spawn 必须经 shell 或不带扩展名） */
+function npmCmdName() {
+  return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+/**
+ * 环境自检 / 安装预检的**同一份实现**：把「装之前该有的一切」逐条查一遍。
+ *   · 「Remotion 环境自检」按钮（remotion:selfcheck）→ 只出报告，不写日志文件（避免连点把日志刷满）；
+ *   · 安装链的预检步 → 报告逐行写进 console.log 与安装窗，任一必需项不过就停在失败步。
+ * items[].required=false 的项（磁盘余量、npm 源可达性）只提示、不拦安装：脚本自己会再判一次。
+ */
+async function environmentCheck(opts) {
+  const o = opts || {};
+  const cfgDir = String(loadConfig().installDir || "").trim();
+  const dir = String(o.installDir || cfgDir || "").trim();
+  const pack = bundledPackRoot();
+  const scriptRel = join("scripts", "install.ps1");
+  const scriptPath = join(dir || pack, scriptRel);
+  const packScriptPath = join(pack, scriptRel);
+  const reg = npmRegistryOf();
+  const items = [];
+  const push = (x) => items.push(Object.assign({ required: true, ok: false, key: "", label: "", detail: "" }, x));
+
+  push({
+    key: "app",
+    label: "应用与平台",
+    required: false,
+    ok: true,
+    detail:
+      "v" +
+      String((app && app.getVersion && app.getVersion()) || "?") +
+      " · " +
+      (app && app.isPackaged ? "已打包（发行版）" : "开发态（未打包）") +
+      " · " +
+      process.platform +
+      "/" +
+      process.arch +
+      " · Electron " +
+      String(process.versions.electron || "?") +
+      " · 内置 Node " +
+      String(process.versions.node || "?"),
+  });
+
+  const nodeProbe = probeCommand("node", ["--version"]);
+  push({
+    key: "node",
+    label: "node（PATH 里的真 Node）",
+    ok: nodeProbe.ok,
+    detail: nodeProbe.ok ? nodeProbe.value : nodeProbe.detail,
+    fix: "装 Node.js ≥18（建议 LTS）并确保新开的 PowerShell 里 node -v 有输出，然后重开 MTNode 再装。本应用自带的运行时不算。",
+  });
+  const npmProbe = probeCommand(npmCmdName(), ["--version"]);
+  push({
+    key: "npm",
+    label: "npm",
+    ok: npmProbe.ok,
+    detail: npmProbe.ok ? npmProbe.value : npmProbe.detail,
+    fix: "npm 随 Node.js 一起装（Windows 安装包默认带）。装完重开 MTNode。",
+  });
+
+  const safe = isSafeInstallDir(dir);
+  if (!dir) {
+    push({
+      key: "install_dir",
+      label: "安装目录",
+      ok: false,
+      detail: "未设置",
+      fix: "在插件卡片 / 安装窗里点「选择安装目录」，选一个普通用户目录（如 D:\\mtnode\\remotion）后重试。",
+    });
+  } else {
+    push({
+      key: "install_dir",
+      label: "安装目录",
+      ok: safe.ok,
+      detail: safe.ok ? dir : dir + "（" + humanizeInstallFailure(safe.error || "bad_dir").hint + "）",
+      fix: humanizeInstallFailure(safe.error || "bad_dir").hint,
+    });
+  }
+
+  if (dir && safe.ok) {
+    const w = probeWritable(dir);
+    push({
+      key: "writable",
+      label: "安装目录可写",
+      ok: w.ok,
+      detail: w.detail,
+      fix: "换成当前用户可写的目录（不要选 C:\\Program Files、盘根或只读盘），或修好该目录的权限后重试。",
+    });
+  } else {
+    push({
+      key: "writable",
+      label: "安装目录可写",
+      ok: false,
+      required: false,
+      detail: "跳过（目录未设置或不合法）",
+    });
+  }
+
+  let freeGb = null;
+  try {
+    freeGb = await freeDiskGb(dir || app.getPath("home"));
+  } catch {}
+  push({
+    key: "disk",
+    label: "磁盘余量",
+    required: false,
+    ok: freeGb == null ? true : freeGb >= DISK_HINT_GB,
+    detail: freeGb == null ? "读不到（不拦安装）" : "剩余约 " + freeGb + "GB（建议 ≥" + DISK_HINT_GB + "GB）",
+    fix: "清理磁盘，或换一个剩余空间足够的安装目录后重装（脚本可重跑，已下好的包会复用）。",
+  });
+
+  let regOk = true;
+  let regDetail = reg.url + "（" + reg.source + "）";
+  if (o.net !== false) {
+    const r = await probeRegistryReachable(reg.url);
+    regOk = !!r.ok;
+    regDetail = reg.url + " · " + r.detail + "（来源：" + reg.source + "）";
+  } else {
+    regDetail = reg.url + "（来源：" + reg.source + "，未探测）";
+  }
+  push({
+    key: "registry",
+    label: "npm 源可达性",
+    required: false,
+    ok: regOk,
+    detail: regDetail,
+    fix: "换源重试：安装窗 / 脚本支持 -Official（官方源）与 -Registry <url>（自定义 / 公司内网源）。",
+  });
+
+  push({
+    key: "pack",
+    label: "随包脚手架",
+    ok: !!fs.existsSync(pack),
+    detail: pack + (fs.existsSync(pack) ? "" : "（不存在）"),
+    fix: "随包脚手架缺失 = 应用安装包不完整（打包白名单漏项）：请重新安装 / 更新 MTNode 后再试。",
+  });
+  const stepsJson = join(pack, "steps.json");
+  push({
+    key: "pack_steps",
+    label: "安装步骤表 steps.json",
+    required: false,
+    ok: fs.existsSync(stepsJson),
+    detail: stepsJson + (fs.existsSync(stepsJson) ? "" : "（缺：安装窗左侧列不出步骤名）"),
+    fix: "打包白名单漏项（build.json 的 remotion-pack 段）。开发态确认仓库里 remotion-pack/steps.json 存在。",
+  });
+  push({
+    key: "install_script",
+    label: "安装脚本 scripts\\install.ps1",
+    ok: fs.existsSync(packScriptPath),
+    detail: packScriptPath + (fs.existsSync(packScriptPath) ? "" : "（不存在：安装链根本没有脚本可跑）"),
+    fix:
+      "这是「安装失败且没有日志」的典型根因：build.json 的 remotion-pack 段必须放行 scripts/**，" +
+      "否则装箱后的随包脚手架里没有安装脚本，宿主复制完就 spawn 失败，安装窗一条步骤行都不会有。",
+  });
+  push({
+    key: "install_script_here",
+    label: "工作区里的安装脚本",
+    required: false,
+    ok: fs.existsSync(scriptPath),
+    detail: scriptPath + (fs.existsSync(scriptPath) ? "" : "（还没复制过去：安装开始时由宿主复制）"),
+  });
+  push({
+    key: "runtime",
+    label: "运行时（node_modules/remotion）",
+    required: false,
+    ok: runtimeReadyAt(dir),
+    detail: runtimeReadyAt(dir)
+      ? "已就位 v" + (remotionVersionAt(dir) || "?")
+      : "未就位（未安装 / 装到一半）",
+  });
+
+  const bad = items.filter((x) => x.required && !x.ok);
+  return { ok: bad.length === 0, at: Date.now(), installDir: dir, pack, items, bad: bad.map((x) => x.key) };
+}
+
+/** 自检报告 → 逐行文本（console.log 与安装窗日志用的是同一份）。 */
+function formatEnvironmentReport(rep) {
+  const r = rep || {};
+  const lines = [];
+  const mark = (x) => (x.ok ? "[ok]" : x.required ? "[FAIL]" : "[warn]");
+  lines.push(
+    "[selfcheck] Remotion 环境自检 " +
+      new Date().toISOString() +
+      " · " +
+      (r.ok ? "通过" : "不通过（" + (r.bad || []).join(" / ") + "）"),
+  );
+  for (const it of r.items || []) {
+    lines.push("[selfcheck] " + mark(it) + " " + it.label + "：" + it.detail);
+    if (!it.ok && it.required && it.fix) lines.push("[selfcheck]        修法：" + it.fix);
+  }
+  return lines;
+}
+
+/**
+ * 安装失败 → 人话。常见失败（缺 node/npm、目录缺 / 不合法、npm 源不通、磁盘不足、
+ * 脚手架 / 脚本缺失）各给一句能照做的处置；认不出就如实说「看日志 / 交给会话修复」，不编根因。
+ */
+function humanizeInstallFailure(raw) {
+  const s = String(raw || "");
+  const table = [
+    [
+      /pack_missing/i,
+      "随包脚手架 remotion-pack 不存在：应用安装包不完整（打包白名单漏项），请重新安装 / 更新 MTNode 后再试。",
+    ],
+    [
+      /script_missing|install_script_missing/i,
+      "随包脚手架里没有 scripts\\install.ps1：打包白名单漏了 scripts/**（这就是「安装失败且没有日志」的根因）。装箱后的包必须重新构建；开发态请确认仓库里 remotion-pack\\scripts\\install.ps1 存在。",
+    ],
+    [
+      /empty_dir|bad_dir/i,
+      "还没设置安装目录：在插件卡片 / 安装窗里选一个普通用户目录（如 D:\\mtnode\\remotion）后重试。",
+    ],
+    [
+      /refuse_root/i,
+      "安装目录选到了盘根（如 D:\\）：换一个子目录（如 D:\\mtnode\\remotion）后重试。",
+    ],
+    [
+      /refuse_system/i,
+      "安装目录落在系统目录（C:\\Windows / Program Files）：换一个普通用户目录后重试。",
+    ],
+    [
+      /not found in PATH|node \/ npm|ENOENT.*node|spawn.*node/i,
+      "本机 PATH 里没有可用的 node / npm：装 Node.js ≥18（建议 LTS）后重开 MTNode 再装（应用自带运行时不算）。",
+    ],
+    [
+      /npm_exit_|npm ERR|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ENOTFOUND|EINVALIDTAGNAME|ERESOLVE/i,
+      "npm 依赖安装失败：默认走 registry.npmmirror.com；源不通就换网络或改用 -Official / -Registry <url>，版本冲突就先删 node_modules 再重跑。",
+    ],
+    [
+      /low_disk|磁盘/i,
+      "磁盘剩余不足：清理磁盘或换一个空间足够的安装目录后重装。",
+    ],
+    [
+      /runtime_missing/i,
+      "npm install 没跑完（被中断 / 失败）：重跑安装即可续装，反复失败先删 node_modules。",
+    ],
+    [
+      /cancelled|已取消/i,
+      "安装是你主动取消的，不算故障：要装就再点一次安装。",
+    ],
+  ];
+  for (const [re, hint] of table) {
+    if (re.test(s)) return { code: s.split(":")[0].slice(0, 60), hint };
+  }
+  return { code: s.split(":")[0].slice(0, 60), hint: "认不出这一类失败：请把下面这份日志（含 [selfcheck] 段）交给会话修复，或到插件控制台跑一次「环境自检」。" };
+}
+
+/** 失败现场落盘：无论失败发生在哪一步，先把「这次要干什么 + 现场在哪」写进 console.log。 */
+function logInstallFailure(phase, msg, ctx) {
+  const c = ctx || {};
+  const rep = installRep;
+  if (rep) {
+    try {
+      rep.log("[install] failed phase=" + phase + " dir=" + String(c.installDir || "(未设置)"));
+      rep.log("[install] pack=" + String(c.pack || ""));
+      rep.log("[install] reason=" + String(msg || ""));
+    } catch {}
+  }
+  const lines = [
+    "[install] FAILED · phase=" + phase,
+    "[install]   action=" + String(c.action || "install"),
+    "[install]   plugin=" + PLUGIN_ID,
+    "[install]   installDir=" + String(c.installDir || "(未设置)") + (c.dirExists ? "" : "（不存在）"),
+    "[install]   packRoot=" + String(c.pack || "(未取到)") + (c.packExists === false ? "（不存在）" : ""),
+    "[install]   installScript=" + String(c.script || "(未取到)") + (c.scriptExists === false ? "（不存在）" : ""),
+    "[install]   reason=" + String(msg || ""),
+    "[install]   hint=" + String(c.hint || ""),
+    "[install]   log=" + consoleLogPath(),
+  ];
+  for (const l of lines) appendConsole(l);
+  return lines;
+}
+
+/** 失败现场（给 logInstallFailure 用的结构）：路径一律先取好，判存在性失败就当不存在。 */
+function installFailureCtx(o) {
+  const x = o || {};
+  const dir = String(x.installDir || "").trim();
+  const safe = x.safe || isSafeInstallDir(dir);
+  const pack = bundledPackRoot();
+  const script = join(safe && safe.ok ? safe.path : dir, "scripts", "install.ps1");
+  const existsSafely = (p) => {
+    try {
+      return !!p && fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  };
+  return {
+    action: String(x.action || "install"),
+    installDir: dir,
+    dirExists: existsSafely(dir),
+    pack,
+    packExists: existsSafely(pack),
+    script,
+    scriptExists: existsSafely(script),
+    hint: String(x.hint || ""),
+  };
+}
+
+/** 给这次安装挂一个「日志侧」上报器：宿主自己的日志行（预检报告 / 失败现场）也要进安装窗。 */
+function attachInstallReporter() {
+  try {
+    if (installRep && typeof installRep.isClosed === "function" && !installRep.isClosed()) return installRep;
+  } catch {}
+  const rep = stepReporter.attach({
+    pluginId: PLUGIN_ID,
+    child: null,
+    onEvent: (ev) => installHost.reportPluginStep(ev),
+  });
+  installRep = rep;
+  return rep;
+}
+
+/**
+ * 脚本一行都没跑过时的显式失败步：直接给安装窗两条步骤行（开始 + 失败）。
+ * 不这么做的话，脚本存在性 / spawn 这类失败在安装窗里就是「步骤表一动不动」——
+ * 用户看不到任何东西，正是本轮要消掉的那种现场。
+ */
+function markHostStepFail(id, title, message, logLine) {
+  const stepId = String(id || "host");
+  const line = String(logLine || message || "");
+  const emitFailStep = () => {
+    try {
+      installHost.reportPluginStep({
+        pluginId: PLUGIN_ID,
+        kind: "step",
+        step: { id: stepId, title: String(title || ""), status: "run", message: line },
+      });
+      installHost.reportPluginStep({
+        pluginId: PLUGIN_ID,
+        kind: "step",
+        step: { id: stepId, status: "fail", message: String(message || "") },
+      });
+    } catch {}
+  };
+  const rep = installRep;
+  if (rep) {
+    try {
+      if (typeof rep.isClosed === "function" && !rep.isClosed()) {
+        emitFailStep();
+        return { ok: true, via: "step" };
+      }
+    } catch {}
+  }
+  /* 还没有上报器（失败发生在 attachInstallReporter 之前）：临时挂一只，断言完再收口 */
+  const tmp = attachInstallReporter();
+  emitFailStep();
+  try {
+    tmp.finish({ ok: false, error: String(message || "") });
+  } catch {}
+  installRep = null;
+  return { ok: true, via: "temp" };
+}
+
+/** 写日志文件的同时，把这行推给安装窗的日志区（脚本没跑起来时的现场也要看得见）。 */
+function appendInstallLog(line) {
+  appendConsole(line);
+  try {
+    installHost.reportPluginStep({ pluginId: PLUGIN_ID, kind: "log", stepId: "preflight", line: String(line), stream: "host" });
+  } catch {}
+}
+
+/** 宿主侧的「某一步成功」上报（脚本已经结束、宿主自己校验通过时用）。 */
+function emitInstallStepOk(id, message, pct) {
+  try {
+    installHost.reportPluginStep({
+      pluginId: PLUGIN_ID,
+      kind: "step",
+      step: { id: String(id || ""), status: "ok", message: String(message || ""), pct: Number(pct) || undefined },
+    });
+  } catch {}
+}
+
+/**
+ * 把安装 skill 同步一份到本机 dsh-home（与兄弟宿主同一口径：先叫网关统一同步，
+ * 网关不可用时自己从仓库根兜底拷一份）。修复会话靠它拿到现场口径的提示词。
+ */
+function syncRemotionInstallSkill() {
+  try {
+    if (getDsh) {
+      const dsh = getDsh();
+      if (dsh && typeof dsh.syncInstallSkills === "function") dsh.syncInstallSkills();
+    }
+  } catch {}
+  try {
+    /* 兜底拷贝读仓库根的技能真源（与 llama / breeze 同一个写法：宿主目录不留副本） */
+    const skillSrc = join(appRoot || path.join(__dirname, ".."), "skills", "remotion-local-install", "SKILL.md");
+    const dshHome = join(getDataDir(), "dsh-home", "skills", "remotion-local-install");
+    if (fs.existsSync(skillSrc)) {
+      mk(dshHome);
+      fs.copyFileSync(skillSrc, join(dshHome, "SKILL.md"));
+      /* 与网关同步同一口径：安装技能写 .install-only，不进用户技能列表 / 工坊 */
+      fs.writeFileSync(join(dshHome, ".install-only"), "1\n", "utf8");
+    }
+  } catch {}
+}
+
 function freeDiskGb(dir) {
   return new Promise((resolve) => {
     try {
@@ -493,7 +1003,9 @@ async function installProject(opts) {
   const cfg = loadConfig();
   const safe = isSafeInstallDir(cfg.installDir);
   if (!safe.ok) {
-    /* 目录没配 / 不合法同样是安装失败出口：总线按码给指路文案（bad_dir / refuse_root / refuse_system） */
+    /* 目录没配 / 不合法同样是安装失败出口：总线按码给指路文案（bad_dir / refuse_root / refuse_system）。
+       本轮补上现场落盘与安装窗里的失败步 —— 这条早退以前只在总线里说了一句，用户手上既没有日志、
+       安装窗也一条步骤行都没有（「安装失败且没有日志」的一半就是它）。 */
     const code = safe.error === "refuse_root" || safe.error === "refuse_system" ? safe.error : "bad_dir";
     reportErr(
       code,
@@ -502,13 +1014,32 @@ async function installProject(opts) {
         : "Remotion 安装目录不合法（盘根 / 系统目录一律拒绝），请在「插件 · Remotion 动效视频」里重选一个普通用户目录后重试",
       installReportCtx(opts),
     );
-    return { ok: false, error: safe.error || "bad_dir" };
+    /* 这一条以前不落盘：用户手上没有日志、安装窗也没有失败步。现在两处都有。 */
+    const h = humanizeInstallFailure(safe.error || "bad_dir");
+    const earlyCtx = installFailureCtx({ installDir: cfg.installDir, safe, hint: h.hint });
+    attachInstallReporter();
+    logInstallFailure("precheck", safe.error || "bad_dir", earlyCtx);
+    markHostStepFail("precheck", "[环境预检] 安装目录不可用：" + String(cfg.installDir || "(未设置)"), h.hint);
+    return { ok: false, error: safe.error || "bad_dir", hint: h.hint };
   }
   const installDir = safe.path;
 
   installing = true;
   installCancel = false;
+  /* 本次失败的文案（finally 收口时用它，别再无条件把快照打成「install-aborted」掩盖真原因） */
+  let failMsg = "";
+  /* 本轮的现场：脚手架路径与安装脚本路径在整条链里都要能拿到 */
+  let pack = "";
+  let scriptPath = "";
+  const existsFn = (p) => {
+    try {
+      return !!p && fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  };
   /* 安装窗的会话由 remotion:install 入口先开（见 registerRemotionIpc），这里只管跑安装并上报步骤行 */
+  attachInstallReporter();
   try {
     /* 建目录本身也可能失败（只读盘 / 权限）：放进 try 里，否则异常直接冒出 IPC，报告都不会有一份 */
     mk(installDir);
@@ -519,6 +1050,34 @@ async function installProject(opts) {
       message: `建议预留 ≥${DISK_HINT_GB}GB`,
       pct: 3,
     });
+
+    /* 0) 环境预检（本轮新增）：node / npm、目录可写、磁盘、npm 源、随包脚手架与安装脚本 ——
+       逐条写进 console.log 与安装窗日志。**必需项不过就停在预检失败步**：
+       否则用户看到的就是「脚本跑都没跑，窗里一片空白」。 */
+    const pre = await environmentCheck({ installDir });
+    for (const line of formatEnvironmentReport(pre)) appendInstallLog(line);
+    if (!pre.ok) {
+      const preFail = (pre.items || []).filter((x) => x.required && !x.ok);
+      const why = "preflight_failed: " + preFail.map((x) => x.key).join(" / ");
+      const h0 = humanizeInstallFailure(why);
+      const ctx0 = installFailureCtx({ installDir, safe, hint: h0.hint });
+      /* 逐条把不过的项写进现场（「哪一项、具体是什么值」才算可复核） */
+      for (const x of preFail) appendInstallLog("[preflight] " + x.key + " 不过：" + x.detail);
+      logInstallFailure("precheck", why, ctx0);
+      markHostStepFail(
+        "preflight",
+        "[环境预检] 未通过：" + preFail.map((x) => x.label).join(" / "),
+        preFail.map((x) => x.detail + " → " + x.fix).filter(Boolean).join("；"),
+      );
+      reportErr("preflight_failed", why, installReportCtx(opts));
+      installHost.finishPluginInstall({
+        id: PLUGIN_ID,
+        ok: false,
+        error: why,
+        hint: preFail[0] ? preFail[0].fix : h0.hint,
+      });
+      return { ok: false, error: "preflight_failed", bad: pre.bad, message: preFail.map((x) => x.label).join(" / ") };
+    }
     const free = await freeDiskGb(installDir);
     if (free != null && free < DISK_HINT_GB && !opts.force) {
       reportErr(
@@ -540,13 +1099,46 @@ async function installProject(opts) {
         message: `磁盘剩余约 ${free}GB，建议预留 ≥${DISK_HINT_GB}GB（remotion 依赖 + 渲染器）`,
       };
     }
-    appendConsole(`disk free≈${free}GB (hint ≥${DISK_HINT_GB}GB)`);
+    appendInstallLog(`disk free≈${free}GB (hint ≥${DISK_HINT_GB}GB)`);
 
-    /* 1) 复制 remotion-pack → 安装目录 */
-    const pack = bundledPackRoot();
-    if (!fs.existsSync(pack)) {
-      throw new Error("pack_missing: " + pack);
+    /* 1) 随包脚手架与安装脚本（本轮新增：这两处缺失以前没有任何步骤行、也没有日志） */
+    pack = bundledPackRoot();
+    /* 脚本先看**随包脚手架里那份**：真正的目录要等下面 copy 过去才有
+       （以前这里写成看 installDir\scripts —— 第一次安装必然还没有，等于把正常安装也拦下来）。 */
+    const packScriptPath = join(pack, "scripts", "install.ps1");
+    const packMissing = !existsFn(pack);
+    const scriptMissing = !existsFn(packScriptPath);
+    const packCtx = installFailureCtx({ installDir, safe });
+    if (packMissing || scriptMissing) {
+      const why = packMissing ? "pack_missing: " + pack : "script_missing: " + packScriptPath;
+      const h2 = humanizeInstallFailure(why);
+      appendInstallLog(
+        "[install] 脚手架核对：pack=" +
+          pack +
+          "（" +
+          (packMissing ? "无" : "有") +
+          "）· 随包安装脚本=" +
+          packScriptPath +
+          "（" +
+          (scriptMissing ? "无" : "有") +
+          "）",
+      );
+      emitProgress({
+        phase: "install",
+        step: "copy",
+        stepLabel: "检查随包脚手架",
+        message: h2.hint,
+        pct: 6,
+        error: true,
+      });
+      logInstallFailure("precheck", why, Object.assign(packCtx, { hint: h2.hint }));
+      markHostStepFail("copy", "[环境预检] 随包脚手架不完整", h2.hint);
+      reportErr(packMissing ? "pack_missing" : "script_missing", why, installReportCtx(opts));
+      installHost.finishPluginInstall({ id: PLUGIN_ID, ok: false, error: why, hint: h2.hint });
+      return { ok: false, error: packMissing ? "pack_missing" : "script_missing", message: h2.hint };
     }
+
+    /* 2) 复制 remotion-pack → 安装目录 */
     emitProgress({
       phase: "install",
       step: "copy",
@@ -554,11 +1146,36 @@ async function installProject(opts) {
       message: "remotion-pack → " + installDir,
       pct: 10,
     });
-    appendConsole("[install] copy pack " + pack + " → " + installDir);
+    appendInstallLog("[install] copy pack " + pack + " → " + installDir);
+    /* 复制前后的落地核对（失败时这两行就是现场：源在哪、目标里到底有什么） */
+    try {
+      appendInstallLog(
+        "[install] 复制前：源 " +
+          pack +
+          " 有 " +
+          fs.readdirSync(pack).length +
+          " 项 · 目标 " +
+          installDir +
+          (fs.existsSync(installDir) ? " 已存在" : " 不存在"),
+      );
+    } catch (e1) {
+      appendInstallLog("[install] 复制前核对失败：" + String((e1 && e1.message) || e1));
+    }
     copyDirRecursive(pack, installDir, ["node_modules", ".git", "out", "output"]);
-    appendConsole("[install] pack copied");
+    appendInstallLog("[install] pack copied");
+    /* 复制完核对：这次要看的是**工作区里**那份（脚本就在这儿被 spawn，缺了要当场指认复制结果） */
+    scriptPath = join(installDir, "scripts", "install.ps1");
+    if (!existsFn(scriptPath)) {
+      let listed = "(目录读不到)";
+      try {
+        listed = fs.readdirSync(installDir).join(", ") || "(空目录)";
+      } catch (e2) {
+        listed = "(readdir 失败：" + String((e2 && e2.message) || e2) + ")";
+      }
+      appendInstallLog("[install] 复制后 " + installDir + " 里有：" + listed);
+    }
 
-    /* 2) 包内 install.ps1 逐步骤装依赖（node / npm → npm install → 校验），
+    /* 3) 包内 install.ps1 逐步骤装依赖（node / npm → npm install → 校验），
        每一步一条结构化步骤行；卡片与安装窗都按它显示。原来的 runNpmInstall 保留给
        「运行时更新」等旧路径用，不再由安装链调用。 */
     emitProgress({
@@ -568,9 +1185,8 @@ async function installProject(opts) {
       message: "npm install（remotion / react / @remotion/renderer）…",
       pct: 15,
     });
-    const script = join(installDir, "scripts", "install.ps1");
-    if (!fs.existsSync(script)) throw new Error("script_missing: " + script);
-    await runInstallScript(script, installDir, !!opts.mirror);
+    if (!existsFn(scriptPath)) throw new Error("script_missing: " + scriptPath);
+    await runInstallScript(scriptPath, installDir, !!opts.mirror);
 
     /* 3) 校验 runtimeReady + 版本 */
     emitProgress({
@@ -580,6 +1196,9 @@ async function installProject(opts) {
       message: "检查 node_modules/remotion …",
       pct: 90,
     });
+    /* 依赖步骤收口：脚本打的是它自己那份 JSON 步骤行，宿主这里再显式确认一次
+       （快照终局要落成 done，不能只靠脚本最后那行） */
+    emitInstallStepOk("npm", "依赖已就位", 92);
     if (!runtimeReadyAt(installDir)) {
       throw new Error("runtime_missing: node_modules/remotion 未找到（npm install 可能被中断）");
     }
@@ -605,7 +1224,15 @@ async function installProject(opts) {
     return { ok: true, installDir, version };
   } catch (e) {
     const msg = String((e && e.message) || e);
-    appendConsole("[install] failed: " + msg);
+    failMsg = msg;
+    /* 失败必落盘（本轮）：现场（动作 / 目录 / 脚手架 / 安装脚本路径 / 原因）先写进 console.log
+       与安装窗日志，再谈失败步与建议 —— 这一行以前只有脚本自己跑起来过才有。 */
+    const hFail = humanizeInstallFailure(msg);
+    logInstallFailure(
+      "install",
+      msg,
+      installFailureCtx({ installDir, safe, hint: hFail.hint, action: (opts && opts.action) || "install" }),
+    );
     emitProgress({ phase: "install", step: "error", message: msg, pct: 0, error: true });
     /* 本轮口径：脚本失败**不再自动转 Agent 兜底**（那正是「看不见过程」的来源）。
        失败停在安装窗的失败步上，用户点「交给 mtnode 会话修复」才新建可见会话。 */
@@ -614,12 +1241,25 @@ async function installProject(opts) {
       id: PLUGIN_ID,
       ok: false,
       error: msg === "cancelled" ? "安装已取消" : msg,
-      hint: msg === "cancelled" ? "" : stepReporter.hintFor(msg),
+      hint: msg === "cancelled" ? "" : hFail.hint || stepReporter.hintFor(msg),
     });
     reportErr(msg, msg, installReportCtx(opts));
     return { ok: false, error: msg };
   } finally {
     installing = false;
+    /* 收口只针对**真失败**的那次：成功路径的快照终局由 finishPluginInstall(ok:true) 写
+       （日志侧上报器是宿主自己挂的，无条件 finish 会把 done 覆盖成 failed —— 本轮真踩到：
+       步骤行全 ok、快照却 failed 且 error=install-aborted）。 */
+    try {
+      if (failMsg) {
+        const snap = installHost.snapshotOf(PLUGIN_ID);
+        const running = !!(snap && snap.state === "running");
+        if (running && installRep && typeof installRep.isClosed === "function" && !installRep.isClosed()) {
+          installRep.finish({ ok: false, error: failMsg });
+        }
+      }
+    } catch {}
+    installRep = null;
   }
 }
 
@@ -629,6 +1269,8 @@ async function installProject(opts) {
  */
 function runInstallScript(scriptPath, installDir, mirror) {
   return new Promise((resolve, reject) => {
+    /* 日志侧上报器：脚本的每行输出除了落 console.log，也进安装窗日志区（步骤行仍由下面那只解析） */
+    installRep = attachInstallReporter();
     const psArgs = [
       "-NoProfile",
       "-ExecutionPolicy",
@@ -660,7 +1302,7 @@ function runInstallScript(scriptPath, installDir, mirror) {
       const s = d.toString();
       out += s;
       for (const line of s.split(/\r?\n/)) {
-        if (line.trim()) appendConsole(line);
+        if (line.trim()) appendInstallLog(line);
       }
       const m = s.match(/(\d+(?:\.\d+)?)\s*%/);
       if (m) emitProgress({ phase: "install", step: "npm", stepLabel: "安装依赖", pct: 15 + Number(m[1]) * 0.7 });
@@ -669,7 +1311,7 @@ function runInstallScript(scriptPath, installDir, mirror) {
       const s = d.toString();
       out += s;
       for (const line of s.split(/\r?\n/)) {
-        if (line.trim()) appendConsole("[err] " + line);
+        if (line.trim()) appendInstallLog("[err] " + line);
       }
     });
     child.on("error", (e) => {
@@ -1487,6 +2129,226 @@ function cancelRender(nodeId) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 插件安装后自检（动效视频类）                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 「插件安装后自检」在动效视频这一类的实现（内核见 plugins/plugin-selfcheck.js 头部契约）。
+ * 链路：现成的 environmentCheck → 运行时是否就位 → 等全局媒体锁空闲 → 真渲染最低档一帧
+ *       → 产物存在且字节 > 0。
+ *
+ * 为什么每一步都在那儿（各自拦一类真实故障，不是为了凑步骤）：
+ *   · 环境项先摆出来：node / npm 缺失、目录不可写、随包脚手架或 scripts\install.ps1 漏打包，
+ *     都是「根本装不上」的根因；这些不过就别再往下走，安装窗一眼看得见修法；
+ *   · 运行时（node_modules/remotion）不就位时**绝不渲染**：现在渲染只会回 not_ready，
+ *     那属于「还没装好 = 没得测」（内核的 skipped 语义），不是「这个插件坏了」（fail）；
+ *   · 全局媒体锁：Remotion 出片与 H3 / Music3 抢同一个 media-gen-global-lock，不等锁直接渲染会被
+ *     判 busy_other_node —— 那是机器正忙，不是插件有问题，所以交给内核排队等锁（上限 30 分钟）；
+ *   · 真渲染 + 产物校验：自检的意义是「真出一次内容」，产物必须落在内核给的 ctx.artifactDir 且非空
+ *     （数据纪律：绝不落应用目录，也不往安装目录里塞用户数据）。
+ */
+async function selfcheckMotion(ctx) {
+  const c = ctx || {};
+  /** 逐项明细：既累积进返回值（安装窗重画整份明细），又经 c.step 实时推给安装窗 */
+  const steps = [];
+  /** 取消标记（内核点「取消自检」时置真）；ctx 上可能没有，兜一个恒假的现场 */
+  const sig = c.signal || { aborted: false };
+  const aborted = () => !!sig.aborted;
+
+  /**
+   * 记一步：同 id 覆盖（占位行 → 结果行），避免「等锁 / 渲染」这类先 run 后出结论的步骤在明细里出现两行
+   * ——安装窗也是按 title 就地替换的（见 install/app.js 的 ev.step 处理），两边口径一致。
+   * status 只取安装窗认得的四个值：ok / fail / skip / run（✓ / ✕ / — / ·）。
+   */
+  const step = (id, title, status, detail) => {
+    const s = {
+      id: String(id || "step"),
+      title: String(title || ""),
+      status: String(status || "run"),
+      detail: detail == null ? "" : String(detail),
+    };
+    const at = steps.findIndex((x) => x.id === s.id);
+    if (at >= 0) steps[at] = s;
+    else steps.push(s);
+    try {
+      if (typeof c.step === "function") c.step({ title: s.title, status: s.status, detail: s.detail });
+    } catch {}
+    return s;
+  };
+  const log = (line) => {
+    try {
+      if (typeof c.log === "function") c.log(line);
+    } catch {}
+  };
+
+  if (aborted()) return { ok: false, skipped: true, reason: "已取消", steps };
+
+  /* 自检产物必须落在内核给的目录里；取不到目录就不要渲染（否则只能落到安装目录，等于往用户数据里塞东西） */
+  const artifactDir = String(c.artifactDir || "").trim();
+  if (!artifactDir) {
+    const msg = "自检产物目录不可用（数据目录取不到）：无法决定产物落哪，先不渲染";
+    step("artifact_dir", "自检产物目录", "fail", msg);
+    return { ok: false, error: msg, steps };
+  }
+
+  /* 渲染目录以「已经就绪的那一份」为准：renderVideo 只认 config.json 的 installDir，
+     而 ctx.installDir 是安装窗按插件根推导出来的现场（同样合法）。两边不一致时优先信能真跑的那份，
+     免得出现「自检说就绪、真渲染说不就绪」的假绿；渲染真报 not_installed 时按原文如实带回去。 */
+  const ctxDir = String(c.installDir || "").trim();
+  const installDir = runtimeReadyAt(ctxDir) ? ctxDir : String(loadConfig().installDir || "").trim();
+
+  /* ---- ① 环境：复用现成的 environmentCheck（不另写一份环境检查） ---- */
+  let rep = null;
+  try {
+    rep = await environmentCheck({ installDir });
+  } catch (e) {
+    const msg = "环境自检自身抛错：" + String((e && e.message) || e);
+    step("env", "环境自检", "fail", msg);
+    return { ok: false, error: msg, steps };
+  }
+  step(
+    "env",
+    "环境自检（node / npm / 安装目录 / 随包脚手架）",
+    rep.ok ? "ok" : "fail",
+    rep.ok ? "必需项全部通过" : "未过项：" + (rep.bad || []).join(" / "),
+  );
+  /* 逐项翻成明细行：必需项不通过 = fail（红，拦自检）；非必需项（磁盘余量、npm 源可达、运行时）不通过 = skip
+     （灰 —— environmentCheck 本来就只提示不拦，这里也不该把自检判死）。detail 用该项自己的 detail。 */
+  for (const it of rep.items || []) {
+    step(
+      "env:" + String(it.key || ""),
+      String(it.label || it.key || "环境项"),
+      it.ok ? "ok" : it.required ? "fail" : "skip",
+      it.detail,
+    );
+  }
+  if (!rep.ok) {
+    /* 整份报告进日志区（含每个失败项的修法），便于用户直接交给会话修复 */
+    for (const line of formatEnvironmentReport(rep)) {
+      /* 报告行自带 "[selfcheck] " 前缀（它还要直接进 console.log）；安装窗日志区会再加一个同名前缀，
+         这里剥掉，避免出现 "[selfcheck] [selfcheck] …" 的双前缀 */
+      log(String(line).replace(/^\[selfcheck\]\s?/, ""));
+    }
+    return { ok: false, error: "环境自检未通过：" + (rep.bad || []).join(" / "), steps };
+  }
+
+  /* ---- ② 运行时是否就位：没装好就绝不渲染 ---- */
+  const ready = runtimeReadyAt(installDir);
+  step(
+    "runtime",
+    "运行时（node_modules/remotion）",
+    ready ? "ok" : "skip",
+    ready
+      ? installDir + " · v" + (remotionVersionAt(installDir) || "?")
+      : "未就位：" + (installDir || "（安装目录未设置）") + " —— 自检没得跑（先装好再自检）",
+  );
+  if (!ready) {
+    /* 判 skipped 而不是 fail 的理由：「还没装好」= 缺工具，正是内核 skipped 的定义（不打勾、如实展示原因）；
+       这一步也不该红色报警 —— 安装窗那边若安装真失败了，失败原因早已写在安装步骤里，不该由自检二手转述。
+       注意：这里只是「不算自检通过」，**绝不能**在没装好时去渲染。 */
+    log("还没装好（runtime not ready）：" + (installDir || "(安装目录未设置)"));
+    return { ok: false, skipped: true, reason: "还没装好（runtime not ready）", steps };
+  }
+
+  /* ---- ③ 等全局媒体锁空闲（超时 / 取消都算跳过，不打勾） ---- */
+  if (aborted()) return { ok: false, skipped: true, reason: "已取消", steps };
+  step("lock", "等全局生成锁", "run", "与 H3 / Music3 同一个全局互斥锁，占用时自动排队（上限 30 分钟）…");
+  let lk = null;
+  try {
+    lk = await c.waitMediaLock();
+  } catch (e) {
+    lk = { ok: false, reason: "error", message: String((e && e.message) || e) };
+  }
+  if (aborted() || (lk && lk.reason === "cancelled")) {
+    step("lock", "等全局生成锁", "skip", "已取消");
+    return { ok: false, skipped: true, reason: "已取消", steps };
+  }
+  if (!lk || !lk.ok) {
+    const why = String((lk && (lk.message || lk.reason)) || "unknown");
+    step("lock", "等全局生成锁", "skip", "等锁超时 / 失败：" + why);
+    return { ok: false, skipped: true, reason: "等全局生成锁超时", steps };
+  }
+  step("lock", "等全局生成锁", "ok", "拿到锁（等待 " + String((lk && lk.waitedMs) || 0) + "ms）");
+
+  /* ---- ④ 真渲染最低档：64x64 / 1fps / 1 秒 = 1 帧（模板已避开 durationInFrames<=1 的 interpolate 报错） ---- */
+  if (aborted()) return { ok: false, skipped: true, reason: "已取消", steps };
+  const nodeId = "selfcheck-remotion-" + Date.now();
+  /* 取消要真收手：内核只置取消标记，渲染子进程得由宿主 kill（否则最长要干等 RENDER_MAX_MS = 30 分钟）。
+     挂 onAbort 而不是轮询 —— cancelRender 会杀进程树并释放它自己占的那个锁；渲染已经结束就摘掉钩子。 */
+  if (typeof sig === "object") {
+    sig.onAbort = () => {
+      try {
+        cancelRender(nodeId);
+      } catch {}
+    };
+  }
+  step("render", "最低档渲染（64x64 / 1fps / 1 帧）", "run", "spawn node render.mjs …");
+  let r = null;
+  try {
+    r = await renderVideo({
+      /* nodeId 必给：renderVideo 没它就回 missing_node_id（进度 / 报错 / 取消都靠它定位） */
+      nodeId,
+      width: 64,
+      height: 64,
+      fps: 1,
+      durationSeconds: 1,
+      title: "selftest",
+      /* 输出路径交给 host 侧解析：显式 outputPath > outputDir+filename（自动去重）> 安装目录 out/
+         （见 resolveOutputPath）；这里只给 outputDir，文件名由它去重生成，重复自检不会互相覆盖 */
+      outputDir: artifactDir,
+    });
+  } catch (e) {
+    r = { ok: false, error: String((e && e.message) || e) };
+  }
+  if (typeof sig === "object") sig.onAbort = null;
+  if (aborted()) {
+    step("render", "最低档渲染（64x64 / 1fps / 1 帧）", "skip", "已取消");
+    return { ok: false, skipped: true, reason: "已取消", steps };
+  }
+  if (!r || !r.ok) {
+    /* 失败一律带原文（friendlyRenderError 已把它翻成人话），不自己编根因 */
+    const raw = String((r && (r.error || r.message)) || "unknown");
+    step("render", "最低档渲染（64x64 / 1fps / 1 帧）", "fail", raw);
+    return { ok: false, error: "自检渲染失败：" + raw, steps };
+  }
+
+  /* ---- ⑤ 产物校验：必须在、且字节 > 0（自检的产物是「真出过内容」的唯一凭据） ---- */
+  const outPath = String(r.outputPath || r.path || "").trim();
+  let bytes = 0;
+  try {
+    bytes = fs.statSync(outPath).size || 0;
+  } catch {}
+  if (!outPath || !fs.existsSync(outPath) || bytes <= 0) {
+    const msg =
+      "自检产物校验失败：" +
+      (outPath || "(渲染回执里没有输出路径)") +
+      "（存在=" +
+      (outPath ? fs.existsSync(outPath) : false) +
+      "，字节=" +
+      bytes +
+      "）";
+    step("artifact", "产物校验（存在且字节 > 0）", "fail", msg);
+    step("render", "最低档渲染（64x64 / 1fps / 1 帧）", "ok", "渲染完成，但产物不可用");
+    return { ok: false, error: msg, steps };
+  }
+  step("render", "最低档渲染（64x64 / 1fps / 1 帧）", "ok", outPath + "（" + bytes + " 字节）");
+  step("artifact", "产物校验（存在且字节 > 0）", "ok", outPath + "（" + bytes + " 字节）");
+
+  /* 结果不自己写盘：内核统一落 <数据目录>/plugin-selfcheck/<id>.json，这里只把产物交出去 */
+  return { ok: true, artifacts: [{ path: outPath, label: "自检渲染的动效视频" }], steps };
+}
+
+/* require 期登记（本模块被主进程 require 时即生效；内核据此知道 remotion 有生成类自检，
+   主窗口插件卡片的勾角标与安装窗的「重新自检」都靠它）。登记只回 { ok }，不会抛，也不影响其它能力。 */
+registerPluginSelfcheck({
+  id: PLUGIN_ID,
+  key: "remotion",
+  label: "Remotion 动效视频",
+  kind: "motion",
+  check: selfcheckMotion,
+});
+
+/* ------------------------------------------------------------------ */
 /* 控制台窗 / 卸载元数据                                                */
 /* ------------------------------------------------------------------ */
 function openConsoleWindow() {
@@ -1595,18 +2457,23 @@ function registerRemotionIpc(opts) {
   getDataDir = opts.getDataDir;
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
+  getDsh = typeof opts.getDsh === "function" ? opts.getDsh : null;
 
   ensureUiRuntime();
   refreshStaleLock();
+  /* 安装 skill（skills/remotion-local-install/SKILL.md）同步进本机 dsh-home：
+     安装窗 / 报错弹窗点「交给 mtnode 会话修复」时，会话就用它按现场修。 */
+  syncRemotionInstallSkill();
 
   /* 报错总线：注册宿主。remotion 没有 dsh 安装链（安装 = npm install），所以只给
      「取可用安装目录」与「取日志尾部」两个能力入口 —— 报告照发，「自动修复」不隐藏；
      本宿主也无常驻服务，修完由渲染层（app-repair.js 的 resident:false 分支）走
-     「重跑报错节点」收尾，因此不注册 restart / selfRepair。 */
+     「重跑报错节点」收尾，因此不注册 restart / selfRepair。
+     本轮补上 skillName：修复会话据此加载 remotion-local-install（以前是空，会话只能自己瞎猜）。 */
   pluginErrors.registerPluginHost({
     id: PLUGIN_ID,
     name: "Remotion 动效视频",
-    skillName: "",
+    skillName: INSTALL_SKILL,
     getInstallDir: () => usableInstallDir(),
     tailConsole: (n) => consoleTail(n),
   });
@@ -1616,7 +2483,7 @@ function registerRemotionIpc(opts) {
     id: PLUGIN_ID,
     key: "remotion",
     name: "Remotion 动效视频",
-    skill: "",
+    skill: INSTALL_SKILL,
     kindLabel: "本地后端",
     packRoots: [bundledPackRoot()],
     getInstallDir: () => loadConfig().installDir || "",
@@ -1666,6 +2533,19 @@ function registerRemotionIpc(opts) {
   ipcMain.handle("remotion:cancelRender", async (e, nodeId) => cancelRender(nodeId));
   ipcMain.handle("remotion:getLock", async () => ({ ok: true, lock: refreshStaleLock() }));
   ipcMain.handle("remotion:consoleTail", async (e, n) => consoleTail(n));
+  /* 环境自检（本轮新增）：只读地查 node / npm、目录可写、磁盘、npm 源、随包脚手架与安装脚本，
+     回一份逐项报告（控制台窗把它显示出来）。**不写日志文件**：连点几次不该把日志刷满；
+     安装链的那份预检（同一份 environmentCheck）才逐行落盘。 */
+  ipcMain.handle("remotion:selfcheck", async () => {
+    try {
+      const rep = await environmentCheck({});
+      /* 两个 ok 语义分家，别混：ok = 「自检这一趟跑成功了」（调用方据此判回执可用），
+         pass = 「环境这一趟检查通过了」（必需项全过）。控制台按 pass 决定要不要报警。 */
+      return Object.assign({}, rep, { ok: true, pass: !!rep.ok, lines: formatEnvironmentReport(rep) });
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  });
   /* 清空日志 = 真清文件（不是只清界面显示），见 clearConsoleLog */
   ipcMain.handle("remotion:consoleClear", async () => clearConsoleLog());
   ipcMain.handle("remotion:open", async () => openConsoleWindow());

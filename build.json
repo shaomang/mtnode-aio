@@ -314,6 +314,12 @@
         "src/**",
         "render.mjs",
         "install.cmd",
+        /* 安装脚本必须随包：宿主（remotion/main-remotion.js）spawn 的就是
+           <pack>/scripts/install.ps1，安装窗的步骤行（node / copy / npm / check）
+           全靠它逐条上报。漏掉 scripts/** 的后果是真实事故：装箱后脚本不存在，
+           宿主复制完脚手架就 spawn 失败，安装窗一条步骤行、一条日志都没有
+           （用户看到的就是「安装失败且没有日志」）。step.ps1 是它的步骤协议库。 */
+        "scripts/**",
         "steps.json",
         "README.md",
         ".gitignore"

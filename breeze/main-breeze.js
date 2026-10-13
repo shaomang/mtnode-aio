@@ -25,6 +25,9 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
+/* 安装后自检内核：结果落盘 / 等全局媒体锁 / 产物目录 / 进度推给安装窗都在它里面实现
+   （见 plugins/plugin-selfcheck.js 头部契约）。本文件只登记「Breeze 语音怎么算装好了能用」。 */
+const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
 const { quietPython, pythonHealth, silentEnv } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
@@ -1966,6 +1969,212 @@ function generateBreezeFile(params) {
     });
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* 安装后自检（speech）                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Breeze TTS 2 的「装完能不能真出片」自检（登记给 plugins/plugin-selfcheck.js，安装窗自动跑一次）。
+ *
+ * 判据只认一件事：**真的合成出一句最短语音、产物文件字节 > 0**。
+ * 为什么不能只探接口：/api/health 只说明管理服务活着；引擎（约 7.7GB 权重）是
+ * /v1/audio/speech 进来时才 ensure_engine() 拉起的，权重不全 / 没 CUDA / 引擎起不来
+ * 全都在真正合成那一步才暴露 —— 只探 health 会让「装坏了」的插件在卡片上打勾。
+ *
+ * 每一步都 ctx.step 上报：安装窗是把自检当「安装的最后几行步骤」展示的，
+ * 用户要看到的是「现在卡在哪一步」，而不是转圈到最后只回一句失败。
+ * 结果不在这里落盘（内核负责写 <数据目录>/plugin-selfcheck/<id>.json），产物只写 ctx.artifactDir。
+ */
+async function selfcheckSpeech(ctx) {
+  const steps = [];
+  /** 上报一行步骤；同时留一份进回执 —— 安装窗关掉后，结果文件里仍能复盘过程 */
+  const mark = (title, status, detail) => {
+    const s = { title: String(title || ""), status: String(status || "run"), detail: detail == null ? "" : String(detail) };
+    steps.push(s);
+    try {
+      ctx.step(s);
+    } catch {}
+    return s;
+  };
+  const say = (line) => {
+    try {
+      ctx.log(line);
+    } catch {}
+  };
+  const aborted = () => !!(ctx && ctx.signal && ctx.signal.aborted);
+  /** 跳过 = 没跑（缺要件 / 等锁超时 / 取消）：按契约不打勾，如实回原因，不当成「自检失败」 */
+  const skipped = (reason) => ({ ok: false, skipped: true, reason, steps });
+
+  /* ① 安装信号五连：app/server.py + .venv + engine/infer.py + .install-ok + 权重。
+     不齐就没必要往下走 —— 后端起不来是必然，只会白等几分钟再报一句「没装好」。
+     目录取 loadConfig().installDir 而不是 ctx.installDir：判据必须与真实启用 / 合成路径
+     （startBackend / generateBreezeFile 都读这一份配置）看同一个目录，否则会出现
+     「自检说齐全、启用却说没装好」这种自相矛盾的现场。 */
+  const cfg = loadConfig();
+  const installDir = String(cfg.installDir || "");
+  const sig = projectSignals(installDir);
+  if (!sig.ready) {
+    const miss = [];
+    if (!sig.scaffold) miss.push("app/server.py");
+    if (!sig.venv) miss.push(".venv");
+    if (!sig.engine) miss.push("engine/infer.py");
+    if (!sig.installed) miss.push(".install-ok");
+    if (!sig.weights) miss.push("权重");
+    const missText = miss.join(" / ") || "安装目录";
+    mark("检查安装要件", "skip", "缺少：" + missText);
+    say("[selfcheck] installDir=" + (installDir || "(未设置)") + " · 缺失要件：" + missText);
+    return skipped("还没装好（缺要件）");
+  }
+  mark("检查安装要件", "ok", installDir + " · 五连要件齐全");
+  say("[selfcheck] installDir=" + installDir);
+
+  if (aborted()) return skipped("已取消");
+
+  /* ② 后端（管理服务单例）没跑就按本文件现成的启动路径拉起来。
+     这里只管管理服务：引擎由它按需拉起（见 startBackendInner 注释），
+     首次加载权重是分钟级，所以进度先给用户一句人话。 */
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  try {
+    if (await probeApi(port)) {
+      mark("唤醒本地语音后端", "ok", "管理服务已在运行（:" + port + "）");
+    } else {
+      mark("唤醒本地语音后端", "run", "本地语音后端未运行，正在启动（:" + port + "）…");
+      ctx.progress("正在唤醒本地语音后端…（首次要加载权重，分钟级）");
+      const up = await startBackend();
+      if (aborted()) return skipped("已取消");
+      if (!up || !up.ok) {
+        const err = String((up && up.error) || "backend_start_failed");
+        mark("唤醒本地语音后端", "fail", err);
+        say("[selfcheck] startBackend 失败：" + err);
+        return { ok: false, error: err, steps };
+      }
+      mark("唤醒本地语音后端", "ok", "管理服务就绪（:" + port + (up.reused ? " · 复用已在运行的服务" : "") + "）");
+    }
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    mark("唤醒本地语音后端", "fail", msg);
+    say("[selfcheck] startBackend 抛错：" + msg);
+    return { ok: false, error: msg, steps };
+  }
+
+  if (aborted()) return skipped("已取消");
+
+  /* ③ 等全局媒体锁：音视频全局只允许 1 个任务（media-gen-global-lock.js），
+     自检也是出片任务，不许插队 —— 排队 / 超时的口径都由内核给，这里不自己写轮询。 */
+  let lock = null;
+  try {
+    lock = await ctx.waitMediaLock();
+  } catch (e) {
+    lock = { ok: false, reason: "error", message: String((e && e.message) || e) };
+  }
+  if (!lock || !lock.ok) {
+    const why = String((lock && lock.reason) || "timeout");
+    if (why === "cancelled" || aborted()) {
+      mark("等待全局生成锁", "skip", "已取消");
+      return skipped("已取消");
+    }
+    const detail = String((lock && lock.message) || "全局生成锁被别的生成任务占用（排队上限 30 分钟）");
+    mark("等待全局生成锁", "skip", detail);
+    say("[selfcheck] waitMediaLock 未拿到锁：" + why + " · " + detail);
+    return skipped("等全局生成锁超时");
+  }
+  mark("等待全局生成锁", "ok", lock.waitedMs ? "等了约 " + Math.round(lock.waitedMs / 1000) + " 秒后拿到锁" : "锁空闲");
+
+  if (aborted()) return skipped("已取消");
+
+  /* ④ 真合成一句最短语音。复用画布节点那条出口（generateBreezeFile），不另造一套合成实现：
+     自检的判据必须与用户真实点「生成」时走的代码是同一份，否则自检通过不代表能用。 */
+  const warnings = [];
+  const artifactDir = String((ctx && ctx.artifactDir) || "");
+  let outPath = "";
+  if (artifactDir) {
+    outPath = join(artifactDir, "selfcheck.wav");
+  } else {
+    /* 内核拿不到数据目录时才可能为空：退化成本文件现成的托管落点（数据目录 asset-tmp），
+       绝不自造路径、也绝不写应用文件夹。产物路径以回执里的 r.path 为准。 */
+    warnings.push("managed_output_dir: 自检内核未给产物目录，本次产物落在宿主托管目录。");
+    say("[selfcheck] ctx.artifactDir 为空 → 用宿主托管落点（数据目录内）");
+  }
+  mark("合成自检语音", "run", outPath ? "输出 → " + outPath : "输出 → 宿主托管目录");
+  ctx.progress("正在唤醒本地语音后端…（首次合成要加载约 7.7GB 权重，分钟级）");
+  say("[selfcheck] 调用 /v1/audio/speech · text=\"自检\" · fmt=wav" + (outPath ? " · out=" + outPath : ""));
+
+  let gen = null;
+  try {
+    gen = await generateBreezeFile({
+      text: "自检",
+      response_format: "wav",
+      /* 关键：**不传** voice / refAudio / refText —— 后端没有预置音色库，留空即走「音色设计」模式
+         （breeze-pack/app/server.py 的 _resolve_mode：auto + 无参考音频 + 无 instruction → design），
+         这是唯一稳的路；显式钉一个模式反而会随后端枚举漂移而错。 */
+      ...(outPath ? { outputPath: outPath } : {}),
+    });
+  } catch (e) {
+    gen = { ok: false, error: String((e && e.message) || e) };
+  }
+
+  /* 取消只能在这里收手：generateBreezeFile 是 http.request 直连后端，没有取消口子；
+     已落盘的半截产物留在产物目录，由用户在安装窗点「清理自检产物」删（内核负责那个动作）。 */
+  if (aborted()) {
+    mark("合成自检语音", "skip", "已取消（后端可能仍在写文件，产物留给「清理自检产物」）");
+    return skipped("已取消");
+  }
+
+  if (!gen || !gen.ok) {
+    /* 失败文本走后端原文：backendFailure 认得出 FastAPI 的两种错误体（code + message），
+       自检回执里带上它，用户 / 自愈会话才知道是缺权重、没 CUDA、还是引擎起不来。 */
+    const f = backendFailure(gen);
+    const err = f.code && f.message && f.code !== f.message ? f.code + ": " + f.message : f.message || f.code || "generate_failed";
+    mark("合成自检语音", "fail", err);
+    say("[selfcheck] 合成失败：" + err);
+    return { ok: false, error: err, steps, warnings };
+  }
+
+  const produced = String(gen.path || outPath || "");
+  mark(
+    "合成自检语音",
+    "ok",
+    produced + "（" + (gen.bytes || 0) + " 字节" + (gen.mode ? " · 模式 " + gen.mode : "") +
+      (gen.durationSec ? " · " + gen.durationSec + "s" : "") + "）",
+  );
+  say("[selfcheck] 后端回执 ok · bytes=" + (gen.bytes || 0) + " · mode=" + (gen.mode || "") + " · path=" + produced);
+  if (Array.isArray(gen.warnings)) for (const w of gen.warnings) if (w) warnings.push(String(w));
+
+  /* ⑤ 产物校验：后端可能 2xx 却写出 0 字节 / 被磁盘满截断，所以「回执 ok」不算数，
+     必须自己 stat 一遍 —— 这是自检唯一能证明「真的出了片」的证据。 */
+  let bytes = 0;
+  try {
+    if (produced && fs.existsSync(produced)) bytes = fs.statSync(produced).size;
+  } catch {
+    bytes = 0;
+  }
+  if (!produced || bytes <= 0) {
+    const detail = (produced || "(空路径)") + " · " + bytes + " 字节";
+    mark("校验产物", "fail", "产物不存在或为空：" + detail);
+    say("[selfcheck] 产物校验失败：" + detail);
+    return { ok: false, error: "artifact_missing:" + (produced || "empty_path"), steps, warnings };
+  }
+  mark("校验产物", "ok", produced + " · " + bytes + " 字节");
+
+  return {
+    ok: true,
+    artifacts: [{ path: produced, label: "自检生成的语音" }],
+    steps,
+    warnings,
+    note: "最短语音自检通过（" + bytes + " 字节）",
+  };
+}
+
+/* require 期登记一次：安装窗装完自动跑、主窗口插件卡片据结果打勾。
+   重复 require（热重载）无害 —— 内核以最后一次登记为准。 */
+registerPluginSelfcheck({
+  id: PLUGIN_ID,
+  key: "breeze",
+  label: "Breeze TTS 2 本地语音",
+  kind: "speech",
+  check: selfcheckSpeech,
+});
 
 function dialogParent() {
   try {

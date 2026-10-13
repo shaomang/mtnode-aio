@@ -25,8 +25,17 @@ Two host flavours expose different bridge names (the scaffold detects both, so y
 use** — downloaded apps in `<data dir>\apps`, apps you develop in `<data dir>\apps-dev`, app data in
 `<data dir>\apps-data\<downloaded|dev>\<id>`. The first time a root is really needed (listing apps /
 downloading / creating), MTNode writes those two default paths into `config.json`
-(`apps.installDir` / `apps.projectDir`); to move them elsewhere use the "App folder" button menu on the
-Library page (download root) or "Project root … Change…" on the Development page.
+(`apps.installDir` / `apps.projectDir`); to move them, use **"Folder settings"** behind the gear button (see below).
+
+**Folder settings** (the gear button next to "Back to MTNode", shared by all four pages) gives the library root
+and the dev root one row each with two buttons: **"Modify"** (pick a new folder; you are then asked whether to
+move the apps in the old folder over — that moves only apps of that kind, skips same-named folders and touches
+nothing else) and **"Open"** (show it in File Explorer). Apps that were moved get their canvas dev-node path,
+canvas working folder and that app's dev-session workspaces realigned to the new location (paths you typed
+yourself that still exist are left alone). **Folder settings covers the two roots**, plus a trailing
+**"Preview"** section holding the "remember page state when reloading the preview" switch; everything belonging
+to one app (app folder / data folder / capabilities / preview / delete app) lives in the
+**⚙ App settings** window on the Development page's preview bar.
 
 | Location | Contents |
 | --- | --- |
@@ -35,37 +44,57 @@ Library page (download root) or "Project root … Change…" on the Development 
 | `<data dir>\apps-data\<id>\dataDir.json` | that app's data-folder pointer (only exists if the user changed it; changing it does not move data) |
 | `<id>\installed.json` | host-recorded version / entry / source / source author |
 
-## The Library and Development pages
+## The Library and In-development pages
 
-The App Center has four pages: **Apps** (cloud catalog), **My apps** (what I published to the cloud — edit info /
-unpublish / delete, see `app-publish.md`), **Library** (installed here, not in development yet) and
-**Development** (apps being built). The two lists never overlap — the line between them is one flag in the app's own `app.json`:
+The App Center has four pages, in left-nav order: **Apps** (cloud catalog), **Library** (installed here, not in
+development yet), **In development** (the apps in development on this machine, plus what I published to the cloud —
+read `app-publish.md` for the lower block) and **Development** (the three-pane workbench).
+**Which page an app shows up on depends only on which root folder it lives in** (not on a flag in `app.json`): apps
+under the **download root** (`apps.installDir`) are listed in Library, apps under the **dev root** (`apps.projectDir`)
+in In development. When the same id exists in both roots, each page lists its own copy (each with its own folder,
+ledger and data folder); the Library card is not annotated and is not linked to the dev copy.
 
-| State | Source of truth | Appears on | How to enter / leave |
+| State | How it is decided | Appears on | How to enter / leave |
 | --- | --- | --- | --- |
-| Downloaded (not in development) | `app.json` has no `dev:true` | Library: Run / Update / 📂 data folder / Build on it / Uninstall | click **Build on it** on that card in the Library |
-| In development | `app.json` has `dev: true` | Development: three-pane workbench + Launch / Publish / Open canvas / Data folder / Uninstall | create with "＋ New app" at the bottom of the left column, or build on it from the Library |
+| Downloaded (not in development) | folder is under the **download root** | Library | click **Copy to the dev folder (secondary development)** in that app's details |
+| In development | folder is under the **dev root** | the **read-only list** on the In-development page (click a row to continue on the Development page); the Development page itself is the three-pane workbench (top-left = "＋ New app"; preview bar = 📂 app folder / Launch / Publish / Refresh / App settings / Canvas, folding into "More ▾" when narrow; left column bottom = "＋ New session") | "＋ New app" at the top left, or copy one over from the Library |
 
-- **Build on it** (二次开发) = register it as "in development", create a **canvas with the same name** and a dev node on it
-  (the app folder itself is not moved at all). You land on the Development page with that app selected.
-  **If a canvas with that name already exists it is refused** and explains why — so nothing gets overwritten.
-  (The Library top bar keeps only the app root folder; the data folder and Build on it live on each card's right-hand buttons.)
-- One-time backfill: apps created with "＋ New app" before this change (no `installed.json` ledger on this machine)
-  are marked `dev:true` automatically, so they never just disappear.
+**Secondary development = copying a copy into the dev folder** (this round; the `dev` flag in `app.json` is no longer the
+criterion, it is only a compatibility fallback):
+
+- only the **app body** is copied (code / `assets` / `app.json` and similar app files): no `storage/` data, no
+  `installed.json` ledger, no `<name>.mtnodes` canvas snapshot, no `<name>.zip` source package, no `merge.json`;
+- **the copy in the Library folder stays where it is** and stays listed under Library; the two copies never affect each
+  other — clicking "Update" in Library does not touch the dev copy;
+- the dev copy's `app.json` keeps the **original author and source version** and gets an internal source record
+  (`forkOf`): publishing uses it to know the branch point (the version/branch dialog shows "this local copy is based on v<x>");
+- when the dev folder **already has the same id**, you are asked which way to go:
+  - **Overwrite** = replace the dev copy with the Library copy; the old copy is backed up in full to
+    `<data dir>\merge-backups\` first (there is no roll-back button in the UI — go to that folder to get it back);
+  - **Merge with AI** = keep this local copy, fetch the other version into the merge staging folder and open a session
+    where the Agent compares item by item and only writes after you confirm.
+- canvas: if a canvas with the same name (id = app id) already exists it is **reused** — its working folder and the
+  existing dev node's `devPath` / `subFolder` are pointed at the new dev folder (no new node); otherwise a new canvas of
+  the same name plus a dev node are created;
+- when the copy finishes you land on the **Development** page with that app selected.
+
+- One-time backfill (compatibility fallback): apps with no `dev` flag in `app.json` and no `installed.json` ledger on
+  this machine get `dev:true`; that only affects the local state flag and how data folders are sorted — which page an app
+  appears on always follows the folder it lives in (see above).
 - **Author** is shown on cards, in details, on Library rows and on the app rows in the Development page's left column:
   cloud entries use the publishing account, local apps use `app.json`'s `author` (falling back to the signed-in account;
   nothing is shown when signed out).
 - **The Development page's left column is the app list**: one row per "in development" app (name / author / session count /
   expand arrow) with that app's own sessions folded underneath (archived sessions are not listed — see the Sessions view).
   Clicking a row enters that app: the preview and the session pane switch together, and coming back to the Development page
-  re-selects the app you last opened. The search box matches both app names and session titles; "＋ New app" sits at the
-  bottom of the left column (the toolbar above no longer holds an app dropdown). When you switch apps the preview is covered
-  by a black curtain until the new page has loaded, so it no longer flashes white.
+  re-selects the app you last opened. The search box matches both app names and session titles; "＋ New session" sits at the
+  bottom of the left column (the top bar is gone — creating an app is the button at the top left). When you switch apps the
+  preview is covered by a black curtain until the new page has loaded, so it no longer flashes white.
 - **A new dev session is the "＋" at the right end of an app row**: one per row; clicking it switches to that app and returns
   to the first-round state — write what you need in the composer at the bottom and press Enter to create a new dev session
   **under that app** and start work (the same as clicking "Develop" on that app's dev node and submitting). One per row, so
-  you never have to switch apps first to find the button. The "＋" on the toolbar is the same glyph and is a shortcut for the
-  current app (when space runs out it folds into "More ▾" under the small heading "New dev session").
+  you never have to switch apps first to find the button. The "＋ New session" button at the bottom of the left column is the
+  same exit for the current app; it is not shown when there is no app in development.
 - **Checksums are tucked away**: long `sha256` strings are no longer spread across the UI — click the small "ⓘ checksum"
   button in the details to see the full value and copy it; app id / author uid / entry / download URL / window size live in a
   collapsed "Developer info ▾" block.
@@ -170,18 +199,30 @@ var e = await AppHost.imageEdit("keep the subject, make the background snowy", {
 
 ## Capabilities (app.json `capabilities`)
 
-`app.json` carries a capability declaration: `{ "textInput": false, "showDictate": false, "imageGen": false }` —
-the checkboxes when creating an app (**all off by default**), and Develop page ⋯ "App capabilities". It is a **static declaration, not a permission gate**
+`app.json` carries a capability declaration: `{ "textInput": true, "showDictate": true, "imageGen": true }` —
+new apps start with **all three on** (you are no longer asked), and you change them in the Develop page's
+preview bar → **⚙ App settings** → "App capabilities" (**a click takes effect immediately; that window has no
+separate Save button**). It is a **static declaration, not a permission gate**
 (the bridge interfaces are always callable):
 
 | Flag | When true | When false / absent (default) |
 | --- | --- | --- |
 | `textInput` | The scaffold ships the local dictation module (SenseVoice) | The app carries **no** speech-to-text |
-| `showDictate` | Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window | **Hidden by default** (no bar on the page; the app's own code can still call `apSpeechReveal()`) |
+| `showDictate` | Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window — **visible by default**, with a “Hide” button at its end | The host does **not inject** that bar at all (the speech interfaces on the bridge stay callable) |
+
+**Declared true = visible as soon as it is injected** (fixed 2026-02): previously the injected bar stayed
+marked hidden, so only the app's own `apSpeechReveal()` could show it — users saw “I ticked show dictate bar
+and nothing happened”. Now the “Hide” button / `apSpeechHide()` only hides it **for this window** (nothing is
+written back to `app.json`), and the next app-window open shows it again per the declaration; `apSpeechHidden()`
+asks for the current state and `apSpeechReveal()` brings it back — all three are idempotent.
 | `imageGen` | Declares that this app draws images; templates may ship an image entry | Merely undeclared; interfaces still callable |
 
-Toggling either of those makes the host regenerate the entry page from the template (hand edits are lost);
-toggling `textInput` also adds / removes `speech.js` / `speech.css` in the app folder.
+**Changing a capability never touches the entry page**: only the declaration in `app.json` is written
+(toggling `textInput` also adds / removes `speech.js` / `speech.css` in the app folder), and `index.html`
+is left byte-for-byte alone — whatever you (or a dev session) edited in it stays. The dictate bar is
+injected by the host from `showDictate` (it applies the next time the app window opens), and the preview
+reloads right away. Older versions inlined a dictate script into the entry page; opening "App settings"
+now removes that block idempotently (only our own marker, nothing else on the page).
 
 ## Building one from scratch
 

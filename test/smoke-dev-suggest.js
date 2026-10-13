@@ -99,6 +99,20 @@ function mkEl(tag) {
     addEventListener(t, f) {
       (el._l[t] = el._l[t] || []).push(f);
     },
+    /* 属性面（真实 DOM 一定有的两个方法）：概述条的 aria-expanded 要用 —— 只给这两个方法，
+       不引入完整的 attributes 语义（够用且不假装更多能力）。 */
+    setAttribute(k, v) {
+      el._attr = el._attr || {};
+      el._attr[String(k)] = String(v);
+    },
+    getAttribute(k) {
+      return el._attr && Object.prototype.hasOwnProperty.call(el._attr, String(k))
+        ? el._attr[String(k)]
+        : null;
+    },
+    removeAttribute(k) {
+      if (el._attr) delete el._attr[String(k)];
+    },
     removeEventListener(t, f) {
       const a = el._l[t] || [];
       const i = a.indexOf(f);
@@ -538,7 +552,14 @@ const MODEL_JSON =
     ).name === "mtnode-dev-architect",
     "CRLF 的 front matter 也能读出 name",
   );
-  ok(read("CHANGELOG-v1.1.md").indexOf("AGENTS.md") >= 0, "版本文档记录 AGENTS.md");
+  /* CHANGELOG-v1.1.md 是本机写更新说明留下的产物、不在仓库里（与 docs/ 同属本机文件，
+     口径同 smoke-agent-preset-lean.js）：文件不在就只记一笔 —— 原先直接 read 会抛
+     ENOENT 把整个第一段 IIFE 打断，后面所有检查（含 [14] 开发框检查）都不会再跑。 */
+  if (fs.existsSync(path.join(__dirname, "..", "CHANGELOG-v1.1.md"))) {
+    ok(read("CHANGELOG-v1.1.md").indexOf("AGENTS.md") >= 0, "版本文档记录 AGENTS.md");
+  } else {
+    console.log("note  跳过更新文档检查（CHANGELOG-v1.1.md 不在仓库里，属本机产物）");
+  }
 
   /* ==================== [4] 全流程 ==================== */
   console.log("\n[4] 按钮全流程：确认 → 只读调研 → 多选 + 补充 → 开发");
@@ -988,6 +1009,11 @@ const MODEL_JSON =
       s.mediaGenWaiters = new Map();
       s.mediaBackendRunWatchers = new Map();
       s.mediaGenRestoreTimers = new Map();
+      /* 取数层切片之外的依赖：collectRunQueue 开头的孤儿清扫住在 app-nodes.js，
+         不在 app.js 的切片里 —— 不补这一枚，整段 [9.2] 会在第一次取数时
+         ReferenceError（而且是在 vm 内抛出，看着像「测试异常」而不是断言之过）。
+         这里用与真源同口径的空实现：本段只验取数，不验清扫。 */
+      s.sweepOrphanPendingRuns = () => {};
       vm.runInContext(rqSrc.slice(rqA, rqB), s, { filename: "app.js#run-queue" });
       return s;
     };
@@ -1778,15 +1804,22 @@ const MODEL_JSON =
     grillSkill11.indexOf("兜底") >= 0 && grillSkill11.indexOf("❓") >= 0,
     "旧的「❓ Q1 + ➡️ 推荐答案」正文模板只作为询问窗被权限关掉时的兜底保留",
   );
-  const chg11 = read("CHANGELOG-v1.1.md");
-  ok(
-    chg11.indexOf("devModel") >= 0 && chg11.indexOf("就近向上继承") >= 0,
-    "版本更新文档写明 Agent 模型与就近继承",
-  );
-  ok(
-    chg11.indexOf("Agent 设定三格化") >= 0 && chg11.indexOf("devPreset") >= 0 && chg11.indexOf("devEffort") >= 0,
-    "版本更新文档记录 Agent 设定三格化（新增 devPreset / devEffort）",
-  );
+  /* 同上：本机文档不在就跳过这两条，别让它把整段跑挂 */
+  const chg11 = fs.existsSync(path.join(__dirname, "..", "CHANGELOG-v1.1.md"))
+    ? read("CHANGELOG-v1.1.md")
+    : "";
+  if (chg11) {
+    ok(
+      chg11.indexOf("devModel") >= 0 && chg11.indexOf("就近向上继承") >= 0,
+      "版本更新文档写明 Agent 模型与就近继承",
+    );
+    ok(
+      chg11.indexOf("Agent 设定三格化") >= 0 && chg11.indexOf("devPreset") >= 0 && chg11.indexOf("devEffort") >= 0,
+      "版本更新文档记录 Agent 设定三格化（新增 devPreset / devEffort）",
+    );
+  } else {
+    console.log("note  跳过版本更新文档检查（CHANGELOG-v1.1.md 不在仓库里，属本机产物）");
+  }
   ok(
     read("dsh/gateway/canvas-plugin.mjs").indexOf("devPreset") >= 0 &&
       read("dsh/gateway/canvas-plugin.mjs").indexOf("devEffort") >= 0,
@@ -2500,6 +2533,12 @@ const MODEL_JSON =
     const ctx = vm.createContext(s);
     vm.runInContext(appjs14.slice(dlgA14, dlgB14), ctx, { filename: "app.js#mtDialogForm" });
     vm.runInContext(appjs14.slice(devA14, devB14), ctx, { filename: "app.js#developDevNode" });
+    /* mtDialogForm 现在开头就调 mtDlgSupersede()（顶掉前一只窗），它住在 app.js 的
+       mtDialog 组里、不在上面两段切片内 —— 不补这一枚，整段 [14] 会在建窗时当场
+       ReferenceError（异步块被拒后连报错都来不及打印，看着像「全绿」）。 */
+    vm.runInContext("function mtDlgSupersede(){ return false; }", ctx, {
+      filename: "app.js#mtDlgSupersede-stub",
+    });
     return s;
   };
   const sbE14 = mkDlgSandbox();
@@ -2625,8 +2664,18 @@ const MODEL_JSON =
   ["已恢复上次未提交的内容", "清空草稿", "丢弃上次未提交的内容，重新填写"].forEach((k) =>
     ok(i18n14.t(k) !== k, "「" + k + "」有英文词条"),
   );
+  /* 本次需求：「开发」框那条底部提示（确认 = 新会话后台运行 … 下方「先拷问需求」…）已删 ——
+     提示条、它的英文词条都不再存在；「细化 / 建议 / 问询」三框的提示与开关逻辑不动。 */
+  ok(
+    appjs14.indexOf("下方「先拷问需求」开关留在该功能块上") < 0,
+    "「开发」框不再渲染那条底部提示（hint 已删）",
+  );
+  ok(
+    i18n14.t("确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消") ===
+      "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消",
+    "该提示的英文词条也已删除（缺词条 = 原样返回中文）",
+  );
   const hintKeys14 = [
-    "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消",
     "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「细化 · 模块名」· 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Esc 取消",
     "确认 = 只读评估（工作区 = 项目根目录）· 生成后可多选 / 换一批 · 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 确认 · Esc 取消",
     "确认 = 只读回答（工作区 = 项目根目录 · 强制只读：不改文件、不改画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · Ctrl+Enter 提交 · Esc 取消",
@@ -2705,12 +2754,95 @@ const MODEL_JSON =
   ok(i18n14.t(grillLine12) !== grillLine12, "任务书【拷问模式】整段有英文词条");
   i18n14.setLocale("zh");
 
+  /* ==================== [15] 模块概述条：默认收起的可点开条 + 删掉那行提示 ====================
+   * 本轮需求：① 开发节点的模块概述不再整段摊在表单顶部，收成一条概述条（点标题行展开）；
+   * ② 删掉「请说明本次要开发或迭代的内容；确认后将新建一个绑定该模块的开发会话并在其中运行。」
+   * 这里用 [14] 那套真实 mtDialogForm 沙箱真渲染一次「开发」框来验，不靠源码字符串。 */
+  console.log("\n[15] 模块概述条：默认收起 · 点标题行展开 · 提示行已删");
+  {
+    const n15 = sbH14.__nodes.filter((n) => n.id === "n1")[0];
+    /* 造一份两段式概述（【功能】+【实现】），再开一次「开发」框 */
+    n15.note = "【功能】积木式编排工作流。\n【实现】renderer/app-canvas.js 负责画布。";
+    const p15 = ex(sbH14, "developDevNode(nodeById('n1'))");
+    await drain();
+    const body15 = bodyOf(sbH14);
+    const nb15 = body15.querySelectorAll(".mt-form-note")[0];
+    ok(!!nb15, "概述块仍在（.mt-form-note），不是整块消失");
+    const head15 = nb15 && nb15.querySelector(".mt-note-head");
+    ok(!!head15, "概述块里有可点的标题行 .mt-note-head");
+    ok(
+      !!head15 && /模块概述/.test(head15.querySelector("i").textContent),
+      "标题行第一段是「模块概述」标签",
+    );
+    const sum15 = head15 && head15.querySelector(".mt-note-sum");
+    ok(
+      !!sum15 && sum15.textContent.indexOf("积木式编排工作流") >= 0,
+      "标题行带首行摘要（收起时也看得出这块是干什么的）",
+    );
+    ok(!!head15 && !!head15.querySelector(".mt-note-arw"), "标题行带展开箭头 .mt-note-arw");
+    const ps15 = nb15.querySelectorAll("p");
+    ok(ps15.length === 2, "两段式概述仍是两段正文（【功能】/【实现】）");
+    ok(
+      ps15[0].textContent.indexOf("模块功能（面向非技术）：") === 0 &&
+        ps15[1].textContent.indexOf("实现要点（面向技术）：") === 0,
+      "两段正文文本不变（题面标签与【功能】/【实现】顺序都照旧）",
+    );
+    ok(!nb15.classList.contains("on"), "默认收起（没有 .on）");
+    /* 显隐由 CSS 驱动：JS 侧只切 .on（沙箱没有真样式表，这里钉住这条分工） */
+    ok(
+      read("renderer/css/base.css").indexOf(".mt-form-note.on p") > 0 &&
+        read("renderer/css/base.css").indexOf(".mt-form-note p") > 0,
+      "base.css 负责显隐：.mt-form-note p 默认藏、.mt-form-note.on p 展开",
+    );
+    ok(
+      /\.mt-form-note\.on \.mt-note-arw\s*\{[^}]*rotate\(90deg\)/.test(
+        read("renderer/css/base.css"),
+      ),
+      "展开时箭头旋转 90°（收起 ▸ → 展开 ▾ 的视觉）",
+    );
+    /* 点标题行 → 展开；再点 → 收起；aria-expanded 同步 */
+    head15.onclick();
+    ok(nb15.classList.contains("on"), "点标题行 → 展开（.on）");
+    ok(head15.getAttribute("aria-expanded") === "true", "展开时 aria-expanded=true");
+    head15.onclick();
+    ok(!nb15.classList.contains("on"), "再点一次 → 收起");
+    ok(head15.getAttribute("aria-expanded") === "false", "收起时 aria-expanded=false");
+    /* 键位：Enter 也能开（键盘可及） */
+    head15.onkeydown({ key: "Enter", preventDefault() {} });
+    ok(nb15.classList.contains("on"), "回车也能展开（键盘可及）");
+    head15.onclick();
+    ok(!nb15.classList.contains("on"), "复位的第二次点击收回收起态");
+    /* ② 那一行提示删了（三只框都删；i18n 词条保留） */
+    ok(
+      body15.textContent.indexOf("请说明本次要开发或迭代的内容") < 0,
+      "「开发」框不再有那行提示（请说明本次要开发或迭代的内容…）",
+    );
+    ok(
+      appjs14.indexOf("请说明本次要开发或迭代的内容") < 0,
+      "renderer/app.js 里不再调用这句 msg",
+    );
+    const tools15 = read("renderer/app-tools.js");
+    ok(
+      tools15.indexOf("请说明本次要修改或扩展这个函数") < 0 &&
+        tools15.indexOf("请说明本次要修改或扩展这个工具") < 0,
+      "app-tools.js 里函数 / 工具两处同类提示行也删了（本轮一起做）",
+    );
+    ok(
+      read("renderer/i18n.js").indexOf("请说明本次要开发或迭代的内容") > 0 &&
+        read("renderer/i18n.js").indexOf("请说明本次要修改或扩展这个函数") > 0,
+      "i18n 词条保留（只删调用，不删词条）",
+    );
+    footBtn(sbH14.__host, "取消").onclick();
+    await p15;
+  }
+
     console.log(
     "\n" +
       (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +
       "  (smoke-dev-suggest)",
   );
 })().catch((e) => {
+  MERGED_FAILED = true;
   console.log("FAIL  测试异常：" + (e && e.stack ? e.stack : e));
 });
 
@@ -2927,6 +3059,7 @@ const MODEL_JSON =
     console.log("FAIL  [合并块异常] smoke-dev-project-folder.js：" + (e && e.stack ? e.stack : e));
   }
   if (fails) console.log("  ── 已并入块 smoke-dev-project-folder.js：" + fails + " / " + checks + " 项失败");
+  return Promise.resolve();
 })();
 
 /* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */

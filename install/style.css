@@ -166,3 +166,32 @@ body { display: flex; flex-direction: column; }
 .ins-w-prog > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #2f9e6b, #5fd08a); transition: width .2s; }
 .ins-w-result { font-size: 11px; color: var(--ins-ok); white-space: pre-wrap; word-break: break-all; }
 .ins-w-result.is-err { color: var(--ins-fail); }
+
+/* ── 安装后自检（本轮需求）：状态 + 逐项明细 + 产物路径 + 重新自检 / 清理产物 ───────── */
+.ins-self {
+  border-top: 1px solid var(--ins-line); background: #171a21;
+  max-height: 42vh; display: flex; flex-direction: column;
+}
+.ins-self[hidden] { display: none; }
+.ins-s-head {
+  display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+  border-bottom: 1px solid var(--ins-line);
+}
+.ins-s-title { font-size: 12px; color: var(--ins-fg); flex: none; }
+.ins-s-state { flex: 1; font-size: 11px; color: var(--ins-dim); }
+.ins-s-state.is-ok { color: var(--ins-ok); }
+.ins-s-state.is-fail { color: var(--ins-fail); }
+.ins-s-state.is-skip { color: #e2b33c; }
+.ins-s-body { padding: 8px 14px 10px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.ins-s-body[hidden] { display: none; }
+.ins-s-note { color: var(--ins-dim); font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+.ins-s-steps, .ins-s-arts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ins-s-steps li, .ins-s-arts li {
+  font: 11px/1.5 Consolas, "Cascadia Mono", monospace; color: #cfd6e4;
+  white-space: pre-wrap; word-break: break-all;
+}
+.ins-s-steps li.is-ok { color: var(--ins-ok); }
+.ins-s-steps li.is-fail { color: var(--ins-fail); }
+.ins-s-steps li.is-skip { color: #e2b33c; }
+.ins-s-arts li { cursor: pointer; text-decoration: underline dotted; }
+.ins-s-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }

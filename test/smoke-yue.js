@@ -267,7 +267,9 @@ const yueDefaults = (ndBlock.match(/yue_gen:\s*\{([\s\S]*?)\n  \},/) || [null, "
   has(subBlock, 'addNode("yue_gen"', "点菜单项真实建 yue_gen");
   const dropAt = appSrc.indexOf("const WIRE_DROP_TARGETS = [");
   const dropBlock = appSrc.slice(dropAt, appSrc.indexOf("];", dropAt));
-  has(dropBlock, '{ kind: "yue_gen", g: "处理节点" }', "WIRE_DROP_TARGETS 收 yue_gen（拖线落空白处可就地新建）");
+  /* 落点清单现在给本地后端节点多带一个 vramKind（显存门槛挡掉时不列这颗落点，见
+     renderer/app.js 的 nodeKindHiddenByVram / wireDropMenuGroups）—— 断言只钉「收了这个 kind」。 */
+  ok(/kind:\s*"yue_gen"/.test(dropBlock), "WIRE_DROP_TARGETS 收 yue_gen（拖线落空白处可就地新建）");
   has(appSrc, "else if (node.kind === \"yue_gen\") node.yueStatus = I18n.t(\"已取消\");", "停止 yue_gen 时写 yueStatus");
   const migAt = appSrc.indexOf("function migrateWf");
   ok(migAt > 0, "migrateWf 存在");

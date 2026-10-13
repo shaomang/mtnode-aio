@@ -48,6 +48,7 @@ Entry: **讨论区 (Forum)** at the top right — it **only appears once you are
 ### How to use it
 
 - It shares the same account as the Creative Workshop (sign in with the **Account** button at the top right); once signed in you can browse topics and replies, and also post a topic, reply and set topic status.
+- A topic has five statuses: **General / Help / Suggestion / Bug / Solved** (green badge). **The author** can change it any time from the status dropdown on their own topic page; an **administrator** can also handle bug reports right in the list: the row of a **Bug** topic has a green **Mark as solved**, and an already **Solved** row has **Back to Bug** (so a wrong click can be undone).
 - Signing out hides the forum entry again, and closes any forum window you still have open, bringing the main window back to the front.
 - Topics are kept long-term, so the same pitfall can be found later.
 

@@ -87,7 +87,7 @@ function appCanvasWsPath(dir) {
  * 每种风格都有一张**由同一份模板真实渲染出来**的首屏预览图（templates/app-default/
  * previews/<id>.png，随包），主进程读成 data URL 随 apps:styles 回给我们 —— 浮层是
  * 动态 DOM，拿不到模板目录，所以不拼路径、也不假设渲染层能读 file://。
- * 这里只做两件事：缓存清单 + 画卡片。两处入口（新建应用浮层、⋯ 菜单的「换风格…」）
+ * 这里只做两件事：缓存清单 + 画卡片。入口只剩新建应用浮层（开发页那枚「换风格…」已下线）
  * 共用同一份卡片渲染，避免两套长得不一样的风格选择器。
  *
  * 「自定义」是清单里唯一一个**不是预设模板**的条目（载荷里带 custom:true）：它没有
@@ -349,7 +349,9 @@ function appsCreateDialog() {
   styleHead.appendChild(styleTitle);
   const styleHint = document.createElement("span");
   styleHint.className = "style-hint";
-  styleHint.textContent = I18n.t("决定这个应用入口页的长相；建好之后也能在开发页「⋯ → 换风格…」里换");
+  /* 风格只在**新建这一步**选（本轮共识：开发页那枚「换风格…」按钮已下线，界面不再提供
+     换风格入口）—— 所以这句提示不再指向一个不存在的按钮，改说清「要换就让开发会话改入口页」。 */
+  styleHint.textContent = I18n.t("决定这个应用入口页的长相；建好之后要换，让这个应用的开发会话按新风格重写入口页");
   styleHead.appendChild(styleHint);
   styleLab.appendChild(styleHead);
   const styleHost = document.createElement("div");
@@ -369,25 +371,15 @@ function appsCreateDialog() {
   styleLab.appendChild(styleAskNote);
   body.appendChild(styleLab);
 
-  /* 能力（app.json 的 capabilities）：新建时就问一句 —— 本轮共识：**三项默认都不勾**。
-     默认应用不再带语音听写（入口页 / 脚手架 / 应用窗口底部那条都不出现）；需要的人在
-     这一步或建好之后在开发页「应用能力…」里自己勾。 */
-  const capLab = document.createElement("div");
-  capLab.className = "n-field cap-field";
-  const capHead = document.createElement("div");
-  capHead.className = "style-head";
-  const capTitle = document.createElement("span");
-  capTitle.className = "style-title";
-  capTitle.textContent = I18n.t("能力");
-  capHead.appendChild(capTitle);
-  const capHint = document.createElement("span");
-  capHint.className = "style-hint";
-  capHint.textContent = I18n.t("决定起步模板带不带语音听写之类的现成能力；默认都不勾，建好之后也能在开发页「应用能力…」里改");
-  capHead.appendChild(capHint);
-  capLab.appendChild(capHead);
-  const capBox = appsCapabilityChecks({ textInput: false, showDictate: false, imageGen: false });
-  capLab.appendChild(capBox.box);
-  body.appendChild(capLab);
+  /* 能力（app.json 的 capabilities）：**本轮共识 = 新建即三位全开，这一步不再问**
+     （原先是「三项默认都不勾」的三个复选框）。要改的话在开发页中栏「预览」条那枚
+     「应用设置」里改（app-apps.js 的 appsAppSettingsOpen）—— 那里保留完整编辑。 */
+  const capNote = document.createElement("div");
+  capNote.className = "settings-hint cap-note";
+  capNote.textContent = I18n.t(
+    "能力默认全开（文字输入 / 听写条 / 图像生成）：建好之后可在开发页「预览」条上的「应用设置」里逐位调整。",
+  );
+  body.appendChild(capNote);
 
   let styleCards = null;
   const styleReady = appStylesLoad().then((list) => {
@@ -455,7 +447,8 @@ function appsCreateDialog() {
       return;
     }
     ok.disabled = true;
-    const r = await appsCreateApp(name, id, styleCards ? styleCards.get() : "", capBox.get());
+    /* 能力位不再从这里传：appsCreateApp 的缺省 = 三位全开（本轮共识） */
+    const r = await appsCreateApp(name, id, styleCards ? styleCards.get() : "");
     ok.disabled = false;
     if (r) closeOverlay();
   };
@@ -491,11 +484,12 @@ async function appsCreateApp(name, id, style, capabilities) {
       aid,
       String(style || ""),
       appFlowMeName(),
-      /* 能力位（app.json 的 capabilities）：缺省三项全 false —— 与新建浮层里那三个复选框的
-         默认口径一致（本轮共识：默认不带语音听写；老调用方不传时就按这个默认） */
+      /* 能力位（app.json 的 capabilities）：**缺省三位全开**（本轮共识：新建即全开，
+         新建浮层里那段复选框已删）。老调用方不传时就按这个默认；要关哪一位，
+         建好之后去开发页「预览」条上的「应用设置」里改（app-apps.js 的 appsAppSettingsOpen）。 */
       capabilities && typeof capabilities === "object"
         ? capabilities
-        : { textInput: false, showDictate: false, imageGen: false },
+        : { textInput: true, showDictate: true, imageGen: true },
     );
   } catch (err) {
     toast(I18n.t("新建应用失败：") + ((err && err.message) || String(err)), "err");
@@ -578,17 +572,11 @@ async function appsCreateApp(name, id, style, capabilities) {
   };
 }
 
-/* ---------- ①b 二次开发（库页每张卡片右侧的「二次开发」按钮） ----------
- *
- * 与「新建应用」同规格：写 dev 标记（库页据此不再列它、开发页据此列它）+ **把这个应用
- * 从下载根归位到项目根**（只搬它一个，见 apps:migrateLayout）+ 建同名画布 +
- * 在画布上建开发节点（devPath 指向归位后的项目文件夹）。
- *
- * 同 id 冲突一律拒绝（避免误覆盖）：本机已有同名画布就直接停手并说清 —— 应用目录同名是
- * 本动作的前提（要迁的那个已经在那儿），所以只需要判画布这一条。
- *
- * 作者：app.json 里已经写过就不动它；没写过才把当前登录账号写进去（未登录就不写）。
- * 返回 { id, name, wfId, nodeId }；失败回 null（错误已 toast）。 */
+/* 当前登录账号的显示用账号名（昵称优先、占位账号名不算），新建应用时随 apps:create 一起写进
+   app.json 的 author；未登录 / 账号模块未就绪回空串（主进程按「没写过」处理）。
+   与 renderer/app-apps.js 的 appsMineOwnerKey / appsAuthorOf 同源（都读 MTNodeAuth.state()）——
+   本轮把「二次开发」那段整段重写时它被误删过，这条注释与 test/smoke-apps.js 的
+   「定义 + 调用点都在」断言一起把它钉住。 */
 function appFlowMeName() {
   try {
     const A = window.MTNodeAuth;
@@ -598,93 +586,90 @@ function appFlowMeName() {
     return "";
   }
 }
-async function appsMigrateToDev(appId) {
+/* ---------- ①b 二次开发 = **复制到开发目录**（本轮口径 · 用户共识） ----------
+ *
+ * 与「新建应用」同规格，但**不搬动库目录里那一份**：
+ *   ① 主进程 apps:copyToDev 复制一份到项目根（<项目根>/<id>/）：只复制应用本体（代码 / assets），
+ *      写 dev:true、**保留来源那一份的原作者与来源版本**、另写一条内部来源记录（forkOf）；
+ *      库里的原件原地不动、仍列在「库」，两份互不影响、互不绑定（库页点「更新」不动开发那份）。
+ *   ② 画布：本机已有同名画布（id = 应用 id）就**直接复用** —— 把画布工作目录与已有开发节点的
+ *      devPath / subFolder 改指新的开发文件夹（**不新增节点**）；没有就建一张同名画布 + 一个开发
+ *      节点（与「新建应用」同一个构造函数 appCanvasWf 与同一个建节点实现 appsCreateDevNode）。
+ *
+ * 目标已存在（项目根里已经有同一个 id）时**不在这里问**：appsCopyToDev 回 code:"exists"，
+ * 由调用方（renderer/app-apps.js 的 appsSecondaryDevRun）弹「覆盖 / 交给 AI 合并」两选一，
+ * 选「覆盖」再带 mode:"overwrite" 调回来（主进程会先把旧那份整目录备份到 merge-backups）。
+ *
+ * 返回 { id, name, wfId, nodeId, mode, dir, backupDir, reused }；
+ *   { exists:true, id } = 目标已存在（不是错误，交给调用方去问）；失败回 null（错误已 toast）。 */
+async function appsCopyToDevRun(appId, opts) {
   const id = String(appId || "").trim();
   if (!id) return null;
   if (!APP_WF_ID_RE.test(id)) {
     toast(I18n.t("应用 id 不合法"), "err");
     return null;
   }
-  const app = typeof appsLocalById === "function" ? appsLocalById(id) : null;
-  if (!app) {
-    toast(I18n.t("这个应用不在本机：先在应用中心下载或新建它"), "err");
+  const api = window.api || {};
+  if (typeof api.appsCopyToDev !== "function") {
+    toast(I18n.t("开发流程模块未就绪（请重启 MTNode）"), "err");
     return null;
   }
-  if (app.dev === true) {
-    toast(I18n.t("这个应用已经在开发中（在「开发」页）"), "warn");
-    return null;
-  }
-  /* 同名画布（= 同 id）：建第二张会当场覆盖前一张的内容，宁可停下来说清楚 */
-  let wfList = null;
+  const o = opts && typeof opts === "object" ? opts : {};
+  let r = null;
   try {
-    wfList = await window.api.wfList();
-  } catch (_) {
-    wfList = null;
+    r = await api.appsCopyToDev(id, o.mode === "overwrite" ? { mode: "overwrite" } : {});
+  } catch (err) {
+    r = { ok: false, error: (err && err.message) || String(err) };
   }
-  if (Array.isArray(wfList) && wfList.some((w) => w && String(w.id) === id)) {
+  if (!r || r.ok === false) {
+    if (r && String(r.code || "") === "exists") return { exists: true, id: id };
     toast(
-      I18n.t("已经有一张同名画布（") +
-        id +
-        I18n.t("）：为避免误覆盖，没有迁移。请先改名或删掉那张画布再试。"),
+      I18n.t("复制到开发文件夹失败：") +
+        String((r && (r.error || r.reason)) || I18n.t("未知错误")),
       "err",
     );
     return null;
   }
-  /* ① 写 dev 标记（顺带补作者：app.json 没写过作者才写当前登录账号） */
-  const me = appFlowMeName();
+  const dir = String(r.dir || "");
+  /* 名单先刷新：下面取名字与核心文件都按**新的开发副本**取（库里那份不是这次要开发的对象） */
   try {
-    const meta = await window.api.appsSetMeta(id, {
-      dev: true,
-      author: String(app.author || "").trim() || me,
-    });
-    if (!meta || meta.ok === false) {
-      toast(
-        I18n.t("二次开发失败：") + ((meta && (meta.error || meta.reason)) || I18n.t("未知错误")),
-        "err",
-      );
-      return null;
-    }
-  } catch (err) {
-    toast(I18n.t("二次开发失败：") + ((err && err.message) || String(err)), "err");
-    return null;
+    if (typeof appsListLoad === "function") await appsListLoad(true);
+  } catch (_) {}
+  let app = null;
+  try {
+    app =
+      (typeof appsLocalById === "function" &&
+        (appsLocalById(id, "dev") || appsLocalById(id))) ||
+      null;
+  } catch (_) {
+    app = null;
   }
-  /* ①b 归位到**项目根**（下载的应用与开发的应用严格分开：下载根只放云端下来的东西）：
-     只搬这一个应用（apps:migrateLayout 带 id），它的数据目录也一并按类型归位。
-     搬不动（跨盘失败 / 目标已存在）不算失败：如实提示，应用仍可用当前位置继续开发。 */
-  let appDirNow = String(app.dir || "");
-  if (typeof window.api.appsMigrateLayout === "function") {
-    try {
-      const mv = await window.api.appsMigrateLayout({ id: id });
-      if (mv && mv.ok !== false) {
-        const hit = (Array.isArray(mv.moves) ? mv.moves : []).find(
-          (m) => m && m.kind === "app" && m.id === id,
-        );
-        if (hit && hit.to) appDirNow = String(hit.to);
-        const bad =
-          (Array.isArray(mv.skipped) ? mv.skipped.length : 0) +
-          (Array.isArray(mv.conflicts) ? mv.conflicts.length : 0);
-        if (bad) {
-          toast(
-            I18n.t(
-              "已登记为开发中，但项目文件夹没能自动归位（项目根里可能已有一份同名目录）：位置未变，可稍后在「应用根目录」里手动迁移",
-            ),
-            "warn",
-          );
-        }
-      }
-    } catch (_) {}
+  const name = String((app && app.name) || id);
+  /* ① 画布：有同名画布就复用（只改路径 + 改已有开发节点），没有就建一张 */
+  let wf = null;
+  try {
+    wf = typeof wfOfCanvasIdForRun === "function" ? await wfOfCanvasIdForRun(id) : null;
+  } catch (_) {
+    wf = null;
   }
-  /* ② 同名画布（id = 应用 id，与新建应用同一条路：前台画布 + workflow:save）
-     + workspace = 应用目录（画布的工作目录必填，见 appCanvasWf） */
-  const wf = appCanvasWf(id, String(app.name || id), appDirNow);
-  clearHistory();
+  const fresh = !wf;
+  if (fresh) wf = appCanvasWf(id, name, dir);
+  const ws = appCanvasWsPath(dir);
+  if (ws) wf.workspace = ws;
+  const nodeBefore = typeof appsDevNodeOfWf === "function" ? appsDevNodeOfWf(wf) : null;
+  if (nodeBefore) {
+    /* 复用：把已有开发节点指到新的开发文件夹（**不新增节点**），节点其它配置一字不动 */
+    nodeBefore.devPath = dir;
+    nodeBefore.subFolder = dir;
+  }
+  if (fresh) clearHistory();
   setForegroundWf(wf);
-  reviveWf(id); /* 同名画布曾被删过：这次建的是一张全新画布，解禁它的 id */
+  reviveWf(id);
   try {
     await window.api.wfSave(id, wf);
   } catch (err) {
     toast(
-      I18n.t("已登记为开发中，但画布保存失败：") + ((err && err.message) || String(err)),
+      I18n.t("已复制到开发文件夹，但画布保存失败：") + ((err && err.message) || String(err)),
       "err",
     );
     return null;
@@ -698,21 +683,43 @@ async function appsMigrateToDev(appId) {
   try {
     await refreshWfSelect();
   } catch (_) {}
-  /* ③ 开发节点（与新建应用同一个实现：devPath / devFiles 都指向应用目录里的真实文件） */
-  const node = appsCreateDevNode({
-    id: id,
-    name: app.name,
-    dir: appDirNow,
-    coreFiles: Array.isArray(app.coreFiles) ? app.coreFiles : [],
-  });
-  if (node) focusNode(node.id);
+  /* ② 开发节点：复用时就是上面那一个（nodeId 回它），新建的画布才建节点 ——
+     与「新建应用」同一个实现：devPath / devFiles 都指向应用目录里的真实文件。 */
+  let nodeId = nodeBefore ? String(nodeBefore.id || "") : "";
+  if (fresh) {
+    let appForNode = app;
+    try {
+      if (app && app.detailPending && typeof appsLocalDetailEnsure === "function") {
+        appForNode = (await appsLocalDetailEnsure(app.id)) || app;
+      }
+    } catch (_) {}
+    const node = appsCreateDevNode({
+      id: id,
+      name: name,
+      dir: dir,
+      coreFiles: Array.isArray(appForNode && appForNode.coreFiles) ? appForNode.coreFiles : [],
+    });
+    if (node) {
+      focusNode(node.id);
+      nodeId = String(node.id || "");
+    }
+  } else if (nodeId) {
+    focusNode(nodeId);
+  }
   renderAll();
   scheduleSave(true);
-  try {
-    if (typeof appsListLoad === "function") await appsListLoad(true);
-  } catch (_) {}
-  return { id: id, name: String(app.name || id), wfId: id, nodeId: node ? node.id : "" };
+  return {
+    id: id,
+    name: name,
+    wfId: id,
+    nodeId: nodeId,
+    mode: String(r.mode || "copy"),
+    dir: dir,
+    backupDir: String(r.backupDir || ""),
+    reused: !fresh,
+  };
 }
+window.appsCopyToDevRun = appsCopyToDevRun;
 
 /* 选了「自定义」风格之后那一步：把用户领回开发页的输入框，问一句「要什么风格」。
  *
@@ -750,16 +757,19 @@ function startCustomStyleAsk(appId, appName, mode) {
   return done;
 }
 
-/* ---------- 能力复选框组（新建浮层与「应用能力…」共用） ---------- *
+/* ---------- 能力复选框组（「应用设置」窗用；新建浮层已不再问能力） ---------- *
  * 三个能力位就是 app.json 的 capabilities（见 apps-capabilities.js）：
  *   textInput    需要文字输入 → 脚手架带上语音听写模块（本机 SenseVoice）
- *   showDictate  显示听写条 → 应用窗口底部显示宿主注入的听写条（默认隐藏）
+ *   showDictate  显示听写条 → 应用窗口底部显示宿主注入的听写条（勾上即默认可见，条尾可收起）
  *   imageGen     需要生成图片 → 用 MTNode 已配好的图像能力（云端服务商或本机 SenseNova）
- * 缺省**三项都不勾**（本轮共识：默认 footer 出现的听写等内容隐藏）。
+ * 缺省**三项都不勾**（缺省 = 宿主不注入听写条；声明为真的应用注入进来就是可见的）。
  * 界面这边只负责「勾选 + 一句话说明」；真正的落盘、入口页重生成、语音文件补撤都在主进程
  * （apps:capabilitiesSet），渲染层不碰文件系统。
- * 返回 { box, get() }：get() 回一份 { textInput, showDictate, imageGen } 布尔对象。 */
-function appsCapabilityChecks(value) {
+ * 返回 { box, get(), set() }：get() 回一份 { textInput, showDictate, imageGen } 布尔对象。
+ * onChange（可选）＝**勾选即写盘**那条路的钩子（「应用设置」窗传它，用户口径：能力位不再单独
+ * 保存，统一由勾选当场生效）：每次勾选/取消后回调一次新的能力位；写盘失败由调用方用 set()
+ * 把勾选态回滚成磁盘上的真实值。不传 = 老口径（只改内存态，由调用方自己保存）。 */
+function appsCapabilityChecks(value, onChange) {
   const cur = Object.assign({ textInput: false, showDictate: false, imageGen: false }, value || {});
   const box = document.createElement("div");
   box.className = "cap-list";
@@ -768,6 +778,11 @@ function appsCapabilityChecks(value) {
     showDictate: cur.showDictate === true,
     imageGen: cur.imageGen === true,
   };
+  const read = () => ({
+    textInput: state.textInput === true,
+    showDictate: state.showDictate === true,
+    imageGen: state.imageGen === true,
+  });
   const rows = [
     {
       id: "textInput",
@@ -777,7 +792,7 @@ function appsCapabilityChecks(value) {
     {
       id: "showDictate",
       label: I18n.t("显示听写条"),
-      hint: I18n.t("在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；不勾就默认隐藏，应用自己的代码仍可唤起它"),
+      hint: I18n.t("在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）"),
     },
     {
       id: "imageGen",
@@ -794,6 +809,12 @@ function appsCapabilityChecks(value) {
     cb.dataset.cap = r.id;
     cb.onchange = () => {
       state[r.id] = cb.checked;
+      /* 勾选即写盘（「应用设置」窗那一版）：回调给调用方，由它去写 app.json 的声明 */
+      if (typeof onChange === "function") {
+        try {
+          onChange(read());
+        } catch (_) {}
+      }
     };
     lab.appendChild(cb);
     const txt = document.createElement("span");
@@ -810,11 +831,7 @@ function appsCapabilityChecks(value) {
   }
   return {
     box: box,
-    get: () => ({
-      textInput: state.textInput === true,
-      showDictate: state.showDictate === true,
-      imageGen: state.imageGen === true,
-    }),
+    get: read,
     set: (v) => {
       const nv = v || {};
       state.textInput = nv.textInput === true;
@@ -826,13 +843,21 @@ function appsCapabilityChecks(value) {
   };
 }
 
-/* ---------- ② 应用能力…（开发页 ⋯ 菜单那一项） ---------- *
+/* ---------- ② 应用能力（**本轮起没有独立入口**，编辑搬进「应用设置」窗） ---------- *
+ * 本轮共识：开发页工具栏那枚「应用能力…」按钮下线，能力位的编辑整体搬进开发页中栏
+ * 「预览」列头条上那枚「应用设置」开的窗（app-apps.js 的 appsAppSettingsOpen，
+ * 它直接复用下面的 appsCapabilityChecks 与同一套「变更 → 确认 → 按模板重写入口页」口径）。
+ * 这个对话框函数**留在原地不删**：它是同一套语义的第二出口（第三方 / 老调用方按名字探测），
+ * 也是上面那只窗外唯一一处写清楚了「为什么要先确认」的地方。
+ *
  * 改 app.json 的 capabilities。勾上「需要文字输入」= 宿主把脚手架里的 speech.js / speech.css
  * 补进应用目录；取消勾选走反向（撤那两份文件）。「显示听写条」（showDictate）只管应用窗口
- * footer 里那条宿主注入的听写条与入口页里的 dict.js（两处都缺省关 = 默认隐藏）。
- * 任何一位变了都会按模板重生成入口页（入口页是模板生成的一份独立文件，与「换风格」同一口径），
- * 重生成会覆盖用户手改过的内容 —— 所以这一步必须先弹确认，且确认文案里写清「会覆盖入口页」。
- * opts.canRegen === false 时（调用方自己知道入口页是手写的）只写声明、不碰文件。 */
+ * footer 里那条宿主注入的听写条：声明为真 = 宿主注入进来即默认可见（条尾「收起」只藏本次窗口），
+ * 缺省 false = 宿主根本不注入。
+ * **能力位一律不写入口页**（本轮共识）：只写 app.json 的声明 —— 旧实现任何一位变了都按模板
+ * 重生成入口页，用户手改过的页面内容会全没了；现在页面一个字不动，所以这条路上没有确认弹窗，
+ * 只剩一句「改完是什么效果」的说明。
+ * opts.kind = 改哪一套根下那一份（"dev" / "down"）。opts.canRegen 已废弃（只为兼容老调用方留着）。 */
 async function appCapabilitiesDialog(appId, appName, opts) {
   const id = String(appId || "");
   if (!id) return;
@@ -857,15 +882,20 @@ async function appCapabilitiesDialog(appId, appName, opts) {
       return { ok: false, error: (err && err.message) || String(err) };
     }
   })();
-  const warn = document.createElement("div");
-  warn.className = "settings-hint cap-warn";
-  warn.textContent = I18n.t(
-    "改动能力位会按模板重生成这个应用的入口页（index.html）：你在里面手改过的页面内容会没了；assets/ 与数据文件夹不受影响。",
+  /* 打开这只窗时顺手静默清一次存量入口页里旧版内联的听写段（幂等，没痕迹不写文件） */
+  try {
+    if (typeof window.api.appsCapabilitiesCleanEntry === "function")
+      window.api.appsCapabilitiesCleanEntry(id, (o && o.kind) || "").catch(() => {});
+  } catch (_) {}
+  const note = document.createElement("div");
+  note.className = "settings-hint cap-warn";
+  note.textContent = I18n.t(
+    "能力位只写 app.json 的声明：入口页（index.html）一个字都不动，你手改过的页面内容原样保留；听写条由宿主按声明注入，语音模块文件按需补撤。",
   );
   const foot = $("#ovFoot");
   const ok = document.createElement("button");
   ok.className = "mini primary";
-  ok.textContent = I18n.t("应用能力并重写入口页");
+  ok.textContent = I18n.t("保存");
   ok.disabled = true;
   const cancel = document.createElement("button");
   cancel.className = "mini";
@@ -884,7 +914,7 @@ async function appCapabilitiesDialog(appId, appName, opts) {
   }
   box = appsCapabilityChecks(r0.capabilities || {});
   body.appendChild(box.box);
-  body.appendChild(warn);
+  body.appendChild(note);
   ok.disabled = false;
   ok.onclick = async () => {
     const next = box.get();
@@ -897,24 +927,11 @@ async function appCapabilitiesDialog(appId, appName, opts) {
       toast(I18n.t("能力没有变化"));
       return;
     }
-    /* 任何一位变了都要按模板重生成入口页：textInput 影响脚手架那两份语音模块的补撤，
-       showDictate 影响入口页里 dict.js 的内联 —— 模板生成的那一份就是重写才跟得上。 */
-    const regen = o.canRegen !== false;
-    if (regen && typeof confirmDialog === "function") {
-      const yes = await confirmDialog(warn.textContent, {
-        title: I18n.t("按新能力重写入口页？"),
-        okText: I18n.t("重写入口页并保存"),
-        cancelText: I18n.t("取消"),
-      });
-      if (!yes) return;
-    }
+    /* 只写声明（+ textInput 的语音模块补撤）：页面不动，所以没有「要不要覆盖」这一步 */
     ok.disabled = true;
     let r = null;
     try {
-      r = await window.api.appsCapabilitiesSet(id, next, {
-        regenEntry: o.canRegen !== false,
-        kind: (o && o.kind) || "",
-      });
+      r = await window.api.appsCapabilitiesSet(id, next, { kind: (o && o.kind) || "" });
     } catch (err) {
       r = { ok: false, error: (err && err.message) || String(err) };
     }
@@ -924,7 +941,7 @@ async function appCapabilitiesDialog(appId, appName, opts) {
       return;
     }
     box.set(r.capabilities || next);
-    toast(I18n.t("已保存应用能力"), "ok");
+    toast(I18n.t("已更新能力位（入口页未改动，听写条下次打开应用窗口生效）"), "ok");
     /* 应用列表带缓存：重拉一次，卡片上的能力小标立刻跟上 */
     try {
       if (typeof appsListLoad === "function") await appsListLoad(true);
@@ -932,10 +949,15 @@ async function appCapabilitiesDialog(appId, appName, opts) {
   };
 }
 
-/* ---------- ② 换风格（开发页 ⋯ 菜单那一项） ---------- *
+/* ---------- ② 换风格（**本轮起没有 UI 入口**） ---------- *
+ * 本轮共识：开发页工具栏那枚「换风格…」下线（连同「应用能力…」），界面不再提供换风格入口 ——
+ * 要换就让这个应用的开发会话按新风格重写入口页（它自己能改文件，比套模板更贴用途）。
+ * 这个对话框与主进程的 apps:setStyle 一并**留在原地不删**：同一套语义的第二出口
+ * （第三方 / 老调用方按名字探测），也是「覆盖入口页要先确认」这条口径的落点之一。
+ *
  * 应用目录里的入口页是「新建时从模板生成的一份独立文件」，模板升级不会自动跟过去，
  * 所以换风格 = 按所选风格**重写入口页**（主进程 apps:setStyle）。确认框里写明会覆盖：
- * 用户后来在入口页里手改过的内容会没了 —— 这是本轮明确的口径（不生成备份），
+ * 用户后来在入口页里手改过的内容会没了 —— 这是明确的口径（不生成备份），
  * 所以确认这一步不能省，也不许默默替换。
  *
  * 「自定义」是这里的一个特例：它没有模板可套，所以**不重写入口页**，而是记下这个选择
@@ -1173,19 +1195,18 @@ async function openAppCanvas(appId) {
       appsHubClose();
   } catch (_) {}
   await loadWorkflow(id);
-  /* 老画布补一刀：workspace 是后加上的必填字段，早先经「新建应用 / 二次开发」建出来的
-     应用画布工作目录是空的（顶栏显示「未设置」、左栏「文件」页显示「尚未设置工作目录」）。
-     应用目录本来就是它的项目根，本地登记的应用目录存在时补写成工作目录并落盘 ——
-     只补空值，用户填过的一律不动；目录已被删（用户手动挪走 / 删了应用目录）时保持空，
-     让用户自己重新选，绝不留一个不存在的路径在画布上。 */
-  const localApp = typeof appsLocalById === "function" ? appsLocalById(id) : null;
+  /* 画布上的「路径两件套」自愈（口径见 appCanvasPathHeal）：空值补写 +
+     指向不存在的目录时按本机实际应用目录校准。取应用目录一律点「开发那一份」——
+     还躺在下载根里的开发应用（归位没成功）也要拿得到它真实的目录。 */
+  const localApp =
+    typeof appsLocalById === "function"
+      ? appsLocalById(id, "dev") || appsLocalById(id)
+      : null;
   const appDir = String((localApp && localApp.dir) || "").trim();
-  if (appDir && S.wf && !String(S.wf.workspace || "").trim()) {
+  if (appDir) {
     try {
-      if (await window.api.fileIsDir(appDir)) {
-        S.wf.workspace = appDir;
-        scheduleSave(true);
-      }
+      const healed = await appCanvasPathHeal(S.wf, appDir);
+      if (healed && (healed.workspace || healed.node)) scheduleSave(true);
     } catch (_) {}
   }
   setView("workflow");
@@ -1193,6 +1214,118 @@ async function openAppCanvas(appId) {
   if (dev) focusNode(dev.id);
   else renderAll();
   return true;
+}
+
+/* 应用画布上的「路径两件套」自愈（本轮修的 bug 的存量收尾；单独成型是为了能 vm 真跑）：
+   应用画布的工作目录**应当就是应用目录**（顶上「工作目录」= 这张画布一切相对路径的基准），
+   开发节点的 devPath / subFolder 同一个口径。两种情况要校准：
+     ① 空值 → 补写（workspace 是后加上的必填字段，早先建出来的应用画布是空的）；
+     ② 有值、但那个目录已经不在盘上 → 校准成应用目录 —— 「二次开发」在「归位到项目根」只做了
+        dry-run 时，把**搬家的目标目录**（<数据目录>/apps-dev/<id>，并不存在）当成了真实位置
+        写进 workspace 与 devPath（历史 bug：当年「二次开发」只跑了 dry-run，把搬家的目标目录
+        当成了真实位置）。
+   不动的情形：用户自己填过、且那个目录还在的；应用目录本身不在盘上的（什么也不做 ——
+   绝不往画布上留一个不存在的路径，也不拿别处目录顶替）；桥探不动（老包 / 被裁剪）的，
+   一律当「没问题」，宁可少改一次也不乱改用户的画布。
+   返回 { workspace, node } = 这两处各自是否真的改写了（调用方据此决定落盘）。 */
+async function appCanvasPathHeal(wf, appDir) {
+  const out = { workspace: false, node: false };
+  const dir = String(appDir || "").trim();
+  if (!wf || !dir) return out;
+  try {
+    if (!(await window.api.fileIsDir(dir))) return out;
+  } catch (_) {
+    return out;
+  }
+  /* ① 工作目录 */
+  const curWs = String(wf.workspace || "").trim();
+  let wsGone = false;
+  if (curWs) {
+    try {
+      wsGone = !(await window.api.fileIsDir(curWs));
+    } catch (_) {
+      wsGone = false;
+    }
+  }
+  if (!curWs || wsGone) {
+    wf.workspace = dir;
+    out.workspace = true;
+  }
+  /* ② 开发节点的 devPath / subFolder（只改指向不存在目录的那些，节点其它配置一字不动） */
+  const dev = typeof appsDevNodeOfWf === "function" ? appsDevNodeOfWf(wf) : null;
+  if (dev) {
+    for (const key of ["devPath", "subFolder"]) {
+      const cur = String(dev[key] || "").trim();
+      if (!cur) continue;
+      let gone = false;
+      try {
+        gone = !(await window.api.fileIsDir(cur));
+      } catch (_) {
+        gone = false;
+      }
+      if (gone) {
+        dev[key] = dir;
+        out.node = true;
+      }
+    }
+  }
+  return out;
+}
+
+/* 按应用 id 修那张应用画布的路径两件套（`appCanvasPathHeal` 的取数壳）：
+   画布 id = 应用 id（新建应用 / 二次开发都建同名画布，见本文件头部）。
+   画布不在内存里时走 wfOfCanvasIdForRun（读盘 + 入袋），拿不到（已删 / 桥探不动）就返回 false：
+   「宁可少改一次，也不乱改用户的画布」（与 appCanvasPathHeal 同一条纪律）。
+   只在真改了东西时回写（wfSave），没改就一个字节都不写盘。
+   入口：目录设置窗换根并搬过应用之后（app-apps.js 的 appsRootChange → appsRootHealAfterMove）。 */
+async function appCanvasPathHealById(appId, appDir) {
+  const id = String(appId || "").trim();
+  const dir = String(appDir || "").trim();
+  if (!id || !dir || typeof wfOfCanvasIdForRun !== "function") return false;
+  let wf = null;
+  try {
+    wf = await wfOfCanvasIdForRun(id);
+  } catch (_) {
+    wf = null; /* 没有这张画布 / 它已被删：跳过（不是错误） */
+  }
+  if (!wf) return false;
+  let hit = false;
+  try {
+    const h = await appCanvasPathHeal(wf, dir);
+    hit = !!(h.workspace || h.node);
+  } catch (_) {
+    return false;
+  }
+  if (!hit) return false;
+  try {
+    await window.api.wfSave(id, wf);
+  } catch (_) {
+    return false;
+  }
+  return true;
+}
+/* 换根后把搬过家的应用校准一遍（目录设置窗调，见 app-apps.js 的 appsRootChange）：
+   ① 该应用名下开发会话的工作区（app-apps-dev.js 的 appsDevAlignAppWorkspace：
+      空值 / 指向已不存在目录 → 改指应用目录；用户手填且还在的一字不动）；
+   ② 该应用的画布：开发节点 devPath / subFolder / 画布工作目录（appCanvasPathHeal）。
+   **调用前必须已经把应用名单重扫过**（appsListLoad(true)）—— 两条都按「应用目录当前在哪」取数。
+   返回 { sessions, canvases } 各改了几处；任何一步失败都只记不抛（换根本身已经成功了）。 */
+async function appsRootHealAfterMove(moved) {
+  const out = { sessions: 0, canvases: 0 };
+  const list = Array.isArray(moved) ? moved : [];
+  for (const m of list) {
+    const id = String((m && m.id) || "").trim();
+    const dir = String((m && m.to) || "").trim();
+    if (!id || !dir) continue;
+    try {
+      if (typeof appsDevAlignAppWorkspace === "function")
+        out.sessions += Number(await appsDevAlignAppWorkspace(id)) || 0;
+    } catch (_) {}
+    try {
+      if (await appCanvasPathHealById(id, dir)) out.canvases++;
+    } catch (_) {}
+  }
+  return out;
 }
 
 /* 库页 / 开发页顶部那一行「＋ 新建应用」：应用中心（renderer/app-apps.js）的
@@ -1218,9 +1351,11 @@ function appsCreateButtonEl() {
 window.appsCreateDialog = appsCreateDialog;
 window.appsCreateApp = appsCreateApp;
 window.appCapabilitiesDialog = appCapabilitiesDialog;
-window.appsMigrateToDev = appsMigrateToDev;
 window.appsCreateAppBtnEl = appsCreateAppBtnEl;
 window.appsCreateButtonEl = appsCreateButtonEl;
+/* 换根后校准（目录设置窗调）：应用画布路径两件套 + 该应用开发会话工作区 */
+window.appCanvasPathHealById = appCanvasPathHealById;
+window.appsRootHealAfterMove = appsRootHealAfterMove;
 window.openAppCanvas = openAppCanvas;
 window.appIdOfDevNode = appIdOfDevNode;
 window.appSessionsOf = appSessionsOf;

@@ -36,6 +36,16 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 $ErrorActionPreference = "Stop"
 
+# Absolute path to this PowerShell host: a few installation paths shrink PATH (the clean-machine
+# smoke test does), and a bare "powershell.exe" then fails with CommandNotFoundException.
+$PS_EXE = ""
+try { $PS_EXE = [string][System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $PS_EXE = "" }
+if (-not $PS_EXE -or -not (Test-Path -LiteralPath $PS_EXE)) {
+    $PS_EXE = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+}
+if (-not (Test-Path -LiteralPath $PS_EXE)) { $PS_EXE = "powershell.exe" }
+
+
 $stepLib = Join-Path $PSScriptRoot "step.ps1"
 if (Test-Path $stepLib) { . $stepLib }
 else {
@@ -88,7 +98,7 @@ function Invoke-SubScript {
   param([string]$Path, [string]$What, [string[]]$ExtraArgs = @())
   if (-not (Test-Path $Path)) { throw "script missing: $Path (incomplete pack: reinstall or update the plugin resources)" }
   $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Path) + $ExtraArgs
-  $out = & powershell.exe @args 2>&1
+  $out = & $PS_EXE @args 2>&1
   $code = $LASTEXITCODE
   foreach ($line in @($out)) { Write-Host "$line" }
   $text = (@($out) | Out-String)
@@ -119,7 +129,40 @@ try {
 Step-Begin "torch" "" 10
 Step-Begin "deps" "" 26
 try {
-  Invoke-SubScript (Join-Path $PSScriptRoot "setup_env.ps1") "Music3 environment setup" | Out-Null
+  # Cheap hardware preflight FIRST (nvidia-smi only): without an NVIDIA card, or with a
+  # driver below 580, Music3 cannot run. Failing here keeps the reason precise ("no card" /
+  # "driver too old") and stops us from downloading a base Python plus several GB of torch
+  # for nothing. The measured gate stays the torch cu130 probe below.
+  # Guarded: an install directory whose scaffold predates this helper (or a partial copy)
+  # simply skips the preflight -- an upgrade must never block because a new optional file
+  # is absent.
+  $preHelper = Join-Path $PSScriptRoot "base_python.ps1"
+  if (Test-Path -LiteralPath $preHelper) {
+    $pre = ""
+    try {
+      # A non-zero exit is the EXPECTED shape of a failed preflight: keep the captured output
+      # and report the stable code it carries instead of "hardware preflight exit code 1".
+      $pre = Invoke-SubScript $preHelper "hardware preflight" @("-SkipGpuProbe", "-Module", "music3", "-GpuRequired", "require", "-MinDriverMajor", "580")
+    } catch {
+      $pre = "$($_.Exception.Message)"
+    }
+    if ("$pre" -match '(?i)(music3\.gpu\.none|music3\.gpu\.driver_old)') {
+      $preCode = "music3.gpu.none"
+      if ("$pre" -match '(?i)music3\.gpu\.driver_old') { $preCode = "music3.gpu.driver_old" }
+      $preTail = (@(@("$pre" -split "`r?`n") | Where-Object { "$_" -match '(?i)(FAILCODE|REASON|DRIVER|GPU-NONE|GPU=)' } | Select-Object -Last 2) -join " / ")
+      throw ("preflight [" + $preCode + "] " + $preTail)
+    }
+  } else {
+    Write-Host "[music3-install] note: scripts\base_python.ps1 is missing, skipping the GPU / driver preflight"
+  }
+  $envText = Invoke-SubScript (Join-Path $PSScriptRoot "setup_env.ps1") "Music3 environment setup"
+  # The shared helper (scripts/base_python.ps1) reports why no base interpreter could be
+  # produced; route those codes into the install window instead of a generic prep failure.
+  if ("$envText" -match '(?im)^\s*FAILCODE=(music3\.(python|gpu)\.\S+)') {
+    $pyCode = $Matches[1]
+    $pyReason = (@(@("$envText" -split "`r?`n") | Where-Object { "$_" -match '^\s*REASON=' } | Select-Object -Last 1) -join " ")
+    throw ("python [" + $pyCode + "] " + $pyReason)
+  }
   if (-not (Test-Path $VenvPy)) { throw "the venv was not created ($VenvPy is missing)" }
   Step-Ok "torch" 46
   $probe = & $VenvPy -c "import torch;from diffusers import ModularPipeline;print('cuda', torch.cuda.is_available())" 2>&1
@@ -130,7 +173,16 @@ try {
   }
   Step-Ok "deps" 58
 } catch {
-  Step-Fail "deps" (New-FailCode "music3.deps.prep_failed" @{ err = "$($_.Exception.Message)" } "environment prep failed: $($_.Exception.Message)")
+  # A preflight / python failure carries its own stable code inside the message; the generic
+  # path keeps the old music3.deps.prep_failed so nothing that used to be reported is lost.
+  $msg = "$($_.Exception.Message)"
+  $code = "music3.deps.prep_failed"
+  $params = @{ err = $msg }
+  if ($msg -match '\[(music3\.(?:gpu|python)\.[a-z_]+)\]') {
+    $code = $Matches[1]
+    $params = @{ tail = $msg }
+  }
+  Step-Fail "deps" (New-FailCode $code $params $msg)
   exit 1
 }
 

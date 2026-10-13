@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions
-REM Agent helper: kill MTNode → compile win-unpacked → relaunch (no pause).
+REM Agent helper: kill MTNode -> compile win-unpacked -> relaunch (no pause).
 REM Usage: scripts\agent-rebuild.cmd
+REM Keep this file pure ASCII: PowerShell / cmd install helpers must survive an ANSI code page.
 cd /d "%~dp0.."
 
 set MTNODE_ROLE=

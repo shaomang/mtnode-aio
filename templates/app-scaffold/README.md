@@ -83,8 +83,9 @@
 5. 复制 `templates/app-agents/AGENTS.md` 成应用根目录的 `AGENTS.md`（已有就保留，别覆盖）。
 6. **按能力位决定复制哪些文件**：目标应用的 `app.json` 里 `capabilities.textInput` 为真才复制 `speech.js` /
    `speech.css`（并在入口页挂上听写条）；没声明就**不要**带这两个文件 —— 默认应用不携带语音转文字。
-   `capabilities.showDictate`（默认 **false**）决定**应用窗口底部那条宿主注入的听写条**显不显示
-   （见 `renderer/app-speech-ui.js`：默认带 `data-mtnode-hidden` + `display:none`，脚本仍可 `apSpeechReveal()` 唤起）。
+   `capabilities.showDictate`（缺省 **false**）决定**应用窗口底部那条宿主注入的听写条**显不显示：
+   为真 = 宿主注入进来就**默认可见**（条尾有「收起」按钮，只藏本次窗口），见 `renderer/app-speech-ui.js`
+   的 `markShown` / `apSpeechHide` / `apSpeechReveal`。
    `capabilities.imageGen` 只是声明（出图接口与文本接口一样，始终可调），界面按需自己写出图入口。
 
 ## 图像生成：用 MTNode 已配好的图像能力
@@ -123,11 +124,18 @@ else img.src = r.dataUrl;                       // 同时有 r.base64 / r.bytes 
 | 位 | 为真时 | 为假 / 没声明时（缺省） |
 | --- | --- | --- |
 | `textInput` | 脚手架带语音听写模块（`speech.js` / `speech.css`） | 默认应用不带任何语音转文字 |
-| `showDictate` | 应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字） | **默认隐藏**（那条条挂上就带 `data-mtnode-hidden` + `display:none`，脚本仍可 `apSpeechReveal()` 唤起） |
+| `showDictate` | 应用窗口底部**默认显示**宿主注入的听写条（🎤 听写 / 🎧 音频转文字），条尾有「收起」按钮 | 宿主**不注入**那条条（脚本仍可调桥上的语音接口） |
+
+**声明为真 = 注入进来就看得见**：以前注入后还带 `data-mtnode-hidden` + `display:none`，必须应用自己调
+`apSpeechReveal()` 才露面（「勾了显示听写条却没反应」的根因）。现在「收起」按钮 / `apSpeechHide()` 只在
+**本次窗口**内藏它（不写回 `app.json`），下次打开应用窗口按声明重新出现；`apSpeechHidden()` 问现状，
+`apSpeechReveal()` 再唤起。
 | `imageGen` | 声明这个应用要出图（界面自己写出图入口） | 只是没声明；接口照旧可调，只是模板不带 |
 
-新建应用时那几个复选框、以及开发页 ⋯「应用能力…」改的就是它；改了任一位宿主会按模板重生成入口页
-（你在入口页里手改过的内容会没了）。**复制脚手架时按这份声明决定要不要带 `speech.js` / `speech.css`。**
+新建应用时那几个复选框、以及开发页中栏 ⚙「应用设置」→「应用能力」改的就是它；**改了只写 `app.json`
+的声明，入口页（`index.html`）一个字都不动** —— 你手改过的页面内容原样保留。听写条由宿主按
+`showDictate` 注入，改 `textInput` 会补 / 撤应用目录里的 `speech.js` / `speech.css`。
+**复制脚手架时按这份声明决定要不要带 `speech.js` / `speech.css`。**
 
 ## 语音转写（本机内置，官方本地 SenseVoice）
 

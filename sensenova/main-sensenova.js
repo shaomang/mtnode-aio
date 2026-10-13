@@ -66,6 +66,9 @@ const installKill = require("../plugins/install-cancel.js");
 const { quietPython, pythonHealth, silentEnv } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
+/* 安装后自检内核（plugins/plugin-selfcheck.js）：本宿主只登记一个 check（见 selfcheckImage），
+   结果落盘 / 等全局媒体锁 / 产物目录 / 往安装窗推进度全在内核，宿主不重复实现那一套 */
+const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
 
 /** 报错总线 / 插件卡片 / 修复表用的插件 id（与 plugins/catalog.default.json 的卡 id 一致） */
 const PLUGIN_ID = "sensenova-local";
@@ -2455,6 +2458,227 @@ function removePluginMetaOnly() {
   return { ok: true, keptInstallDir: loadConfig().installDir || "" };
 }
 
+/* ───────────────────── 安装后自检（图像类） ───────────────────── */
+
+/**
+ * 安装后自检：内核 plugins/plugin-selfcheck.js 在插件装好后调它一次，用**最低档**真出一张图，
+ * 证明「脚手架 / venv / 权重 / 后端 / 出图 / 落盘」这条链路是通的（自检通过 → 卡片封面打勾）。
+ *
+ * 为什么一步都不自己实现：探活（probeApi）、拉起（startBackend）、出图（generateImage）的取舍
+ * 全在宿主这三处；自检另写一套的话，验出来的只是「自检专用路径能用」，而用户真跑 sensenova_gen
+ * 节点走的是上面那条路 —— 自检必须走同一条，结论才有意义。
+ *
+ * 明细：ctx.step({title,status,detail}) 一步一行（status: run / ok / fail / skip），ctx.log 打细节；
+ * 失败一律带上后端原文，绝不静默。结果文件由内核落盘（宿主不写），产物写 ctx.artifactDir。
+ * 耗时按「分钟级」预期，这里不设任何短超时：后端就绪沿用宿主的 BACKEND_READY_TIMEOUT_MS，
+ * 出图沿用 generateDeadlineMs（1 步 → 25 分钟下限）。
+ */
+async function selfcheckImage(ctx) {
+  const c = ctx || {};
+  const signal = c.signal || {};
+  /** 取消标记：只在关键 await 前后各看一眼（不去打断生成函数自己的收尾） */
+  const cancelled = () => !!signal.aborted;
+  const artifactDir = String(c.artifactDir || "");
+  /** 逐项明细（内核把它写进结果文件、安装窗据此画「自检结果区」）：
+      同一个 title 只留一行 —— 与安装窗的实时去重口径一致（先 run 再 ok 是同一行的状态推进） */
+  const steps = [];
+  const warnings = [];
+  const mark = (title, status, detail) => {
+    const s = {
+      title: String(title || ""),
+      status: String(status || "run"),
+      detail: detail == null ? "" : String(detail),
+    };
+    const i = steps.findIndex((x) => x.title === s.title);
+    if (i >= 0) steps[i] = s;
+    else steps.push(s);
+    try {
+      if (typeof c.step === "function") c.step(s);
+    } catch {}
+    appendConsole("[selfcheck] " + s.status + " " + s.title + (s.detail ? " — " + s.detail : ""));
+  };
+  const say = (line) => {
+    try {
+      if (typeof c.log === "function") c.log(String(line == null ? "" : line));
+    } catch {}
+  };
+  const progress = (msg) => {
+    try {
+      if (typeof c.progress === "function") c.progress(String(msg || ""));
+    } catch {}
+  };
+  const giveUpCancelled = () => ({ ok: false, skipped: true, reason: "已取消", steps, warnings });
+
+  appendConsole("[selfcheck] start kind=image artifactDir=" + (artifactDir || "?"));
+
+  /* ① 安装信号：脚手架 / venv / 权重三项齐了才谈得上出图（判据用现成的 projectSignals）。
+     缺件时**绝不**去唤起后端：没有权重时后端的真实动作是去 HF 拉 32.66GB ——
+     一次自检不该把用户的带宽与磁盘搭进去，而且那必然失败。 */
+  const cfg = loadConfig();
+  const installDir = String(cfg.installDir || "").trim();
+  const sig = projectSignals(installDir);
+  const missing = [];
+  if (!installDir) missing.push("未设置安装目录");
+  else {
+    if (!sig.exists) missing.push("安装目录不存在");
+    if (!sig.scaffold) missing.push("服务脚手架（app/server.py + app/engine.py）");
+    if (!sig.venv) missing.push("Python 环境（.venv\\Scripts\\python.exe）");
+    if (!sig.models) missing.push("模型权重（models\\.ok 或 8 片权重）");
+  }
+  if (missing.length) {
+    mark("检查安装信号（脚手架 / venv / 权重）", "skip", "缺：" + missing.join(" / "));
+    say("自检跳过：还没装好，缺 " + missing.join(" / "));
+    return {
+      ok: false,
+      skipped: true,
+      reason: "还没装好（缺要件）",
+      note: "缺：" + missing.join(" / "),
+      steps,
+      warnings: ["安装信号不齐（" + missing.join(" / ") + "）：自检不加载权重、也不启动后端。"],
+    };
+  }
+  mark("检查安装信号（脚手架 / venv / 权重）", "ok", installDir);
+  if (cancelled()) return giveUpCancelled();
+
+  /* ② 后端在跑吗：probeApi 只读 /health（/health 不触发权重加载），没跑就按宿主既有的
+     startBackend 路径拉起来；起不来按失败回（不静默降级成「跳过」—— 那会变成假通过的前身）。 */
+  let health = await probeApi();
+  if (!health) {
+    progress("正在唤醒本地图像后端（首次加载权重可能分钟级）…");
+    mark("启动本地图像后端", "run", "后端未在跑，按宿主既有路径拉起（端口 " + port() + "）");
+    const started = await startBackend({});
+    if (cancelled()) return giveUpCancelled();
+    if (!started || !started.ok) {
+      const err = String((started && started.error) || "backend_start_failed");
+      const why = String((started && (started.message || started.detail)) || "");
+      mark("启动本地图像后端", "fail", err + (why ? "：" + why : ""));
+      say("自检失败：后端起不来 " + err + (why ? " — " + why : ""));
+      return { ok: false, error: err + (why ? "：" + why : ""), steps, warnings };
+    }
+    health = await probeApi();
+    if (!health) {
+      mark("启动本地图像后端", "fail", "进程起来后 /health 仍不可达（端口 " + port() + "）");
+      return {
+        ok: false,
+        error: "backend_unreachable: 后端进程起来后 /health 仍不可达（端口 " + port() + "）",
+        steps,
+        warnings,
+      };
+    }
+    mark(
+      "启动本地图像后端",
+      "ok",
+      "已就绪" + (started.pid ? " pid=" + started.pid : "") + "（端口 " + port() + "）",
+    );
+  } else {
+    mark("启动本地图像后端", "ok", "后端已在运行（复用，不重启）");
+  }
+  if (cancelled()) return giveUpCancelled();
+
+  /* ③ 等全局生成锁（图像 / 音乐 / 视频共用一个锁：一张 24G 卡装不下两个本地大模型）。
+     被别人占着时内核会上报「已排队等它结束」，超时（30 分钟）就如实标「跳过」，绝不打勾。 */
+  mark("等全局生成锁", "run", "有其它生成任务在跑时排队等它结束");
+  const lock = typeof c.waitMediaLock === "function" ? await c.waitMediaLock() : { ok: true };
+  if (cancelled()) return giveUpCancelled();
+  if (!lock || !lock.ok) {
+    const why = String((lock && lock.reason) || "busy");
+    if (why === "timeout") {
+      mark("等全局生成锁", "skip", "排队超时：" + String((lock && lock.message) || "有别的生成任务在跑"));
+      return {
+        ok: false,
+        skipped: true,
+        reason: "等全局生成锁超时（有别的生成任务在跑）",
+        steps,
+        warnings,
+      };
+    }
+    if (why === "cancelled") {
+      mark("等全局生成锁", "skip", "已取消");
+      return giveUpCancelled();
+    }
+    /* 其余（理论上不该有）也按「跳过」回，绝不谎报通过 */
+    mark("等全局生成锁", "skip", why);
+    return { ok: false, skipped: true, reason: "等全局生成锁失败（" + why + "）", steps, warnings };
+  }
+  mark("等全局生成锁", "ok", lock.waitedMs ? "等了 " + Math.round(Number(lock.waitedMs) / 1000) + " 秒" : "锁空闲");
+
+  /* ④ 真出图：复用宿主的 generateImage（它自己会 ensureReady / 抢锁 / 收尾 releaseLock）。
+     参数取**最低档**：numSteps=1（最小档）· ratio=1:1（官方最小桶）· think=false（think 会额外
+     产出一份思考文本，自检只要一张能打开的图）。nodeId 必给 —— 缺了直接回 missing_node_id。 */
+  const nodeId = "selfcheck-sensenova-" + Date.now();
+  const startedAt = Date.now();
+  progress("正在生成一张最低档自检小图（1:1 · 1 步采样）…");
+  mark("生成自检图（最低档）", "run", "numSteps=1 · ratio=1:1 · think=false → " + (artifactDir || "应用托管目录"));
+  if (!artifactDir) {
+    /* 内核没给出产物目录（数据目录取不到）时不要瞎写：generateImage 会落应用托管目录，
+       下面按它回传的绝对路径校验，并在 warnings 里说清产物不在这只自检目录下 */
+    warnings.push("内核未给出产物目录（artifactDir 为空）：产物落在应用托管目录，自检目录下不会有这张图。");
+  }
+  const gen = await generateImage({
+    nodeId,
+    prompt: "selfcheck: a single small gray square",
+    ratio: "1:1",
+    numSteps: 1,
+    think: false,
+    outputDir: artifactDir,
+  });
+  const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+  if (!gen || !gen.ok) {
+    /* 后端原文（generateImage 的 error / message 就是它）一路带进结果：失败不静默 */
+    const err = String((gen && gen.error) || "generate_failed");
+    const why = String((gen && gen.message) || "");
+    mark("生成自检图（最低档）", "fail", err + (why ? "：" + why : "") + "（全程 " + elapsedSec + "s）");
+    say("自检出图失败：" + err + (why ? " — " + why : "") + "（全程 " + elapsedSec + "s）");
+    return { ok: false, error: err + (why ? "：" + why : ""), steps, warnings };
+  }
+
+  /* ⑤ 产物校验：文件真的在、且不是 0 字节空壳（generateImage 内部已按 ≥1KB 判过一次，
+     这里再按内核口径独立复核 —— 自检的结论必须落在磁盘上那个文件上）。 */
+  const outPath = String(gen.path || "");
+  let bytes = 0;
+  let bad = "";
+  try {
+    const st = fs.statSync(outPath);
+    if (!st.isFile()) bad = "不是普通文件";
+    else bytes = st.size;
+  } catch (e) {
+    bad = String((e && e.message) || e);
+  }
+  if (!outPath || bad || bytes <= 0) {
+    const why = bad || "0 字节";
+    mark("校验产物文件", "fail", (outPath || "缺产物路径") + " — " + why);
+    return {
+      ok: false,
+      error: "artifact_invalid: " + (outPath || "缺产物路径") + "（" + why + "）",
+      steps,
+      warnings,
+    };
+  }
+  mark("校验产物文件", "ok", outPath + "（" + bytes + " 字节，全程 " + elapsedSec + "s）");
+
+  /* 后端 / 宿主的 warnings 原样收进来（参考图、托管目录那类说明不该在自检里被吞掉） */
+  if (Array.isArray(gen.warnings)) {
+    for (const w of gen.warnings) warnings.push(String(w));
+  }
+  const peak = Number(gen.peakVramGiB) || 0;
+  const idleMin = Number(loadConfig().idleMinutes);
+  say(
+    "自检通过：bytes=" + bytes + " steps=" + (Number(gen.numSteps) || 1) +
+      " 全程 " + elapsedSec + "s" + (peak ? " peakVram=" + peak + "GiB" : "") + " path=" + outPath,
+  );
+  return {
+    ok: true,
+    steps,
+    artifacts: [{ path: outPath, label: "自检生成的图" }],
+    warnings,
+    note:
+      "自检通过：1:1 / 1 步真出图，全程 " + elapsedSec + "s，产物 " + bytes + " 字节；" +
+      (Number.isFinite(idleMin) && idleMin > 0
+        ? "后端保持运行（空闲 " + idleMin + " 分钟后自停）"
+        : "后端保持运行"),
+  };
+}
+
 /* ───────────────────────── IPC ───────────────────────── */
 
 function registerSensenovaIpc(opts) {
@@ -2497,6 +2721,16 @@ function registerSensenovaIpc(opts) {
          这里立刻按进程树强杀（pip / 下载器这些子进程一并带走），close 回调据此判「已取消」。 */
       return await installKill.cancelInstall(PLUGIN_ID);
     },
+  });
+  /* 安装后自检登记（内核 plugins/plugin-selfcheck.js）：插件装完后自动跑一次最低档真出图，
+     结果落数据目录、给插件卡片封面打勾；这里只交一个 check，落盘 / 排队 / 取消都在内核。
+     只登记一次（本函数由 main.js 调一次；内核本身也以最后一次登记为准，重复登记无害）。 */
+  registerPluginSelfcheck({
+    id: PLUGIN_ID,
+    key: "sensenova",
+    label: "SenseNova 本地图像生成",
+    kind: "image",
+    check: selfcheckImage,
   });
 
 

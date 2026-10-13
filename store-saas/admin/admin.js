@@ -1851,7 +1851,9 @@
 
   const C_SUBS = ["app", "template", "skill", "audit"];
   const C_PAGE_SIZE = 20;
-  const KIND_TEXT = { app: "应用", template: "模板", skill: "技能" };
+  /* kind 文案：forum_topic 只会出现在留痕表里（讨论区话题：管理员标记已解决），
+     内容管理三个子页签只拉 app / template / skill，多这一项不影响它们。 */
+  const KIND_TEXT = { app: "应用", template: "模板", skill: "技能", forum_topic: "论坛话题" };
   const C_ACT_TEXT = {
     publish: "上架",
     unpublish: "下架",
@@ -1859,6 +1861,8 @@
     delete: "删除",
     "delete-version": "删版本",
     republish: "重发目录",
+    resolve: "标记已解决",
+    reopen: "改回 Bug",
   };
   let cSub = "app";
   const cPages = { app: 1, template: 1, skill: 1 };

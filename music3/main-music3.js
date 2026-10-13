@@ -42,6 +42,9 @@ const installKill = require("../plugins/install-cancel.js");
 const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
+/* 插件「安装后自检」内核：只做注册表 / 结果落盘 / 等全局锁 / 产物目录 / 事件上报，
+   音乐侧真正怎么出片由本文件的 selfcheckMusic 提供（见该函数注释） */
+const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
 
 const PLUGIN_ID = "minimax-music3";
 const MUSIC3_FEED =
@@ -2209,6 +2212,204 @@ function cancelGenerate(nodeId) {
   return { ok: true, forceKillScheduled: true };
 }
 
+/* ------------------------------------------------------------------ */
+/* 安装后自检（音乐类）：装机完成 / 用户点「重新自检」时真出一段最短音乐 */
+/* ------------------------------------------------------------------ */
+
+/** 安装信号不齐时的缺件清单：把 projectSignals 的三个要件翻成人话给安装窗看 */
+function music3MissingParts(sig) {
+  if (!sig || !sig.exists) return "安装目录（还没选目录或目录不存在）";
+  const miss = [];
+  if (!sig.scaffold) miss.push("项目脚手架 app/pipeline.py");
+  if (!sig.venv) miss.push("Python 环境 .venv");
+  if (!sig.models) miss.push("模型权重 models/MiniMax-Music3");
+  return miss.length ? miss.join("、") : "安装目录";
+}
+
+/**
+ * MiniMax Music 3 的安装后自检（ctx 契约见 plugins/plugin-selfcheck.js 头部）：
+ *   ① 安装信号 → ② 后端就绪（没跑就按宿主现成路径拉起）→ ③ 等全局媒体锁
+ *   → ④ 最低档真出片（10 秒 = 后端滑杆下限）→ ⑤ 校验产物存在且字节 > 0。
+ *
+ * 为什么复用 generateMusic 而不是自己拼一次 Gradio 调用：全局锁、后端就绪、产物校验、
+ * 失败上报这四件事的口径只能有一份 —— 自检必须走与画布节点**同一条**生成链，
+ * 否则「自检打勾、真节点却跑不动」这类假阳性一定会出现。
+ * 本函数自己不写盘：结论由内核按插件 id 落 <数据目录>/plugin-selfcheck/<id>.json。
+ */
+async function selfcheckMusic(ctx) {
+  const steps = [];
+  /** 记一步：既推给安装窗（ctx.step 事件），也攒进返回值（结果落盘后重开窗仍能看到明细） */
+  const step = (title, status, detail) => {
+    const s = {
+      title: String(title),
+      status: String(status || "run"),
+      detail: detail == null ? "" : String(detail),
+    };
+    steps.push(s);
+    try {
+      ctx.step(s);
+    } catch {}
+    return s;
+  };
+  const log = (line) => {
+    try {
+      ctx.log(line);
+    } catch {}
+  };
+  const aborted = () => !!(ctx.signal && ctx.signal.aborted);
+  /** 已落地的产物：取消路径也照样回执（用户看得见「取消前已经出了一段」，但结论仍是跳过、不打勾） */
+  const artifactsOf = (out) => {
+    const p = out && out.ok ? String(out.path || "") : "";
+    return p ? [{ path: p, label: "自检生成的音乐" }] : [];
+  };
+  const cancelled = (out) => {
+    step("已取消", "skip", "用户取消了本次自检");
+    return { ok: false, skipped: true, reason: "已取消", steps, artifacts: artifactsOf(out) };
+  };
+
+  if (aborted()) return cancelled(null);
+
+  /* ① 安装信号：三个要件缺一就如实跳过（不打勾），绝不硬着头皮去 spawn 后端 */
+  let cfg = null;
+  let sig = null;
+  try {
+    cfg = loadConfig();
+    sig = projectSignals(cfg.installDir);
+  } catch (e) {
+    /* 读配置就炸 = 宿主还没完成注册 / 数据目录取不到，同按「还没装好」如实跳过 */
+    step("检查安装信号", "fail", "读不到安装配置：" + String((e && e.message) || e));
+    return { ok: false, skipped: true, reason: "还没装好（缺要件）", steps };
+  }
+  if (!sig.ready) {
+    const miss = music3MissingParts(sig);
+    log("[selfcheck] installDir=" + (cfg.installDir || "(未设置)") + " 缺：" + miss);
+    step("检查安装信号", "skip", "缺 " + miss);
+    return { ok: false, skipped: true, reason: "还没装好（缺要件）", steps };
+  }
+  step("检查安装信号", "ok", "安装目录 " + cfg.installDir);
+  log("[selfcheck] installDir=" + cfg.installDir);
+
+  /* 产物目录由内核建好（时间戳子目录）；拿不到就没法保证「清理自检产物」能收干净，如实跳过 */
+  const artifactDir = String(ctx.artifactDir || "");
+  if (!artifactDir) {
+    step("准备产物目录", "fail", "内核没给出自检产物目录（数据目录不可用）");
+    return { ok: false, skipped: true, reason: "拿不到自检产物目录", steps };
+  }
+
+  /* ② 后端：已在跑就复用；没跑就按宿主现成启动路径拉起（Gradio 起来 + 加载权重是分钟级，先给进度） */
+  const port = Number(cfg.port) || DEFAULT_PORT;
+  let backendNote = "";
+  try {
+    if (await probeGradio(port)) {
+      backendNote = "后端已在 127.0.0.1:" + port + " 运行，直接复用";
+      log("[selfcheck] gradio already up :" + port);
+    } else {
+      ctx.progress("正在唤醒本地音乐后端（首次加载权重可能分钟级）…");
+      log("[selfcheck] starting backend…");
+      const ready = await ensureBackendReadyForJob();
+      if (!ready || !ready.ok) {
+        const err = String((ready && ready.error) || "backend_start_failed");
+        step("启动后端", "fail", err);
+        return { ok: false, error: err, steps };
+      }
+      backendNote =
+        "已拉起后端 127.0.0.1:" + (Number(ready.port) || port) + (ready.reused ? "（复用已有进程）" : "");
+    }
+  } catch (e) {
+    const err = String((e && e.message) || e);
+    step("启动后端", "fail", err);
+    return { ok: false, error: err, steps };
+  }
+  step("启动后端", "ok", backendNote);
+  if (aborted()) return cancelled(null);
+
+  /* ③ 等全局媒体锁：全机同一时刻只允许 1 个音视频生成任务（排队与上限都在内核里） */
+  ctx.progress("正在等待全局生成锁…");
+  let lock = null;
+  try {
+    lock = await ctx.waitMediaLock();
+  } catch (e) {
+    lock = { ok: false, error: String((e && e.message) || e) };
+  }
+  if (!lock || !lock.ok) {
+    /* 等锁失败有两种成因：用户取消（内核回 reason:"cancelled"）与被别人占着超时 */
+    if (aborted() || (lock && lock.reason === "cancelled")) return cancelled(null);
+    const holder = lock && lock.lock && lock.lock.nodeId ? String(lock.lock.nodeId) : "";
+    step("等全局生成锁", "skip", holder ? "锁被 " + holder + " 占着（等锁超时）" : "等锁超时");
+    return { ok: false, skipped: true, reason: "等全局生成锁超时", steps };
+  }
+  step(
+    "等全局生成锁",
+    "ok",
+    "锁已空闲" + (lock.waitedMs ? "（等了 " + Math.round(lock.waitedMs / 1000) + " 秒）" : ""),
+  );
+  if (aborted()) return cancelled(null);
+
+  /* ④ 最低档真出片：prompt / lyrics 各一句，时长 10 秒（后端滑杆下限，generateDeadlineMs 也夹在 10..150）。
+     nodeId 必给 —— generateMusic 靠它拿全局锁，也靠它认自己的取消；产物直接落内核给的 artifactDir。 */
+  const nodeId = "selfcheck-music3-" + Date.now();
+  /* 用户在自检窗点「取消」时用宿主已有的取消原语掐掉在途请求：只置 abort + 断 HTTP，
+     不调 cancelGenerate（那条路会强杀常驻后端，自检取消不该让用户再等一次分钟级加载）。
+     generateMusic 自己的 catch/finally 会负责 clearLock 与收尾，这里不越权。 */
+  if (ctx.signal) {
+    ctx.signal.onAbort = () => {
+      try {
+        if (activeGenerate && String(activeGenerate.nodeId) === nodeId) {
+          activeGenerate.abort = true;
+          destroyActiveGenerateReq();
+          tryCancelGradio(
+            activeGenerate.eventId || "",
+            Number(loadConfig().port) || DEFAULT_PORT,
+          ).catch(() => {});
+        }
+      } catch {}
+    };
+  }
+  ctx.progress("正在生成一段 10 秒音乐（首次加载权重可能分钟级）…");
+  log("[selfcheck] generate nodeId=" + nodeId + " outputDir=" + artifactDir);
+  let out = null;
+  try {
+    out = await generateMusic({
+      nodeId,
+      prompt: "calm ambient",
+      lyrics: "[verse]\nla",
+      audioDuration: 10,
+      outputDir: artifactDir,
+    });
+  } catch (e) {
+    /* generateMusic 自己吞异常只回 { ok:false }，这里兜一层是防「连回执都没拿到」把内核挂住 */
+    out = { ok: false, error: String((e && e.message) || e) };
+  }
+  if (aborted()) return cancelled(out);
+
+  /* ⑤ 校验产物：存在 + 字节 > 0（generateMusic 内部按 64B 卡过一次，这里再独立复核一遍 ——
+     自检的判据不依赖上游的实现细节，「产物真的在、真的非空」才对得起卡片上那个勾） */
+  const outPath = out && out.ok ? String(out.path || "") : "";
+  let bytes = 0;
+  let exists = false;
+  try {
+    exists = !!outPath && fs.existsSync(outPath);
+    if (exists) bytes = fs.statSync(outPath).size || 0;
+  } catch {
+    exists = false;
+    bytes = 0;
+  }
+  if (!out || !out.ok || !exists || bytes <= 0) {
+    const err = String((out && (out.error || out.message)) || "generate_failed");
+    step("生成并校验产物", "fail", err + (outPath ? "（" + outPath + " bytes=" + bytes + "）" : ""));
+    return { ok: false, error: err, steps };
+  }
+  step("生成并校验产物", "ok", outPath + "（" + bytes + " 字节）");
+  log("[selfcheck] ok path=" + outPath + " bytes=" + bytes);
+  return {
+    ok: true,
+    steps,
+    /* generateMusic 的托管目录告警照传（本例显式给了 outputDir，正常为空） */
+    warnings: Array.isArray(out.warnings) ? out.warnings : [],
+    artifacts: [{ path: outPath, label: "自检生成的音乐" }],
+  };
+}
+
 function openConsoleWindow() {
   ensureUiRuntime();
   if (consoleWin && !consoleWin.isDestroyed()) {
@@ -2493,6 +2694,18 @@ function vramHooks() {
     },
   };
 }
+
+/* 登记自检能力（内核 plugins/plugin-selfcheck.js）：登记必须在 **require 期**完成 ——
+   安装窗是主进程另一条链（plugins/main-install.js），用户可能在任何一次界面操作里点「重新自检」，
+   等 registerMusic3Ipc 再登记就晚了。注册表只是个 Map，登记先后与内核 init 无关；
+   loadConfig() / getDataDir 都是**调用时**才读，所以此处登记不会提前碰数据目录。 */
+registerPluginSelfcheck({
+  id: PLUGIN_ID,
+  key: "music3",
+  label: "MiniMax Music 3 本地音乐",
+  kind: "music",
+  check: selfcheckMusic,
+});
 
 module.exports = {
   registerMusic3Ipc,

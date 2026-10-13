@@ -12776,8 +12776,9 @@ function buildBody(node, body) {
       body.appendChild(st);
     }
   } else if (node.kind === "yue_gen") {
-    /* YuE2 音乐节点：未安装警示条（插件 id = yue2-local） */
-    if (!appPluginInstalled("yue2-local")) {
+    /* YuE2 音乐节点：未安装警示条（插件 id = yue2-local）+ 显存门槛挡掉的说明
+       （低显存机器上插件目录不列它，节点入口也不会出现；老画布上留着的老节点看这一条） */
+    if (typeof appPluginInstalled === "function" && !appPluginInstalled("yue2-local")) {
       const warn = document.createElement("div");
       warn.className = "n-empty n-plugin-warn";
       warn.textContent = I18n.t(
@@ -12825,7 +12826,7 @@ function buildBody(node, body) {
     /* SenseNova 本地图像生成：未装警示 + 可编辑提示词（支持 @ 引用）+ 参数摘要 +
        后端状态面板 + 图像预览 + 状态行。点图 = 灯箱（bindImagePreview），
        与云端文生图 / 保存图像同一交互，不另起一套。 */
-    if (!appPluginInstalled("sensenova-local")) {
+    if (typeof appPluginInstalled === "function" && !appPluginInstalled("sensenova-local")) {
       const warn = document.createElement("div");
       warn.className = "n-empty n-plugin-warn";
       warn.textContent = I18n.t(

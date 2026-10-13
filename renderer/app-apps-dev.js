@@ -33,11 +33,13 @@
  *   开发页开着且处于首轮态（本应用还没有开发会话，或用户点了左栏应用行右端的「＋」）时由本文件接管：
  *   解析该应用的画布与开发节点（wfOfCanvasIdForRun → appsDevNodeOfWf）→ createDevSessionForNode
  *   （devNodeContractText 任务书整份写进 sess._devContract）→ agentSessionSend("", {_devContract:true})。
- *   「先拷问需求」开关的真源是节点上的 node.devGrill（默认 true，界面切换即写回节点并落盘）。
+ *   「先拷问需求」开关的真源是节点上的 node.devGrill（默认 true）——**界面上那一枚已撤**
+ *   （本轮需求：开发页顶栏整体移除），要改去画布上这个功能块的「开发」对话框里改。
  *
  * 预览刷新：每轮开发结束后比对应用目录的内容快照（apps:devPreview 的 files / bytes / mtimeMs），
  *   有变才重载 iframe；重载前把预览页的滚动与表单值存下来、加载后写回（协议注入的状态小助手，
- *   见主进程 apps-store.js 的 PREVIEW_AGENT），界面上的「维持状态」开关关掉就不存不写。
+ *   见主进程 apps-store.js 的 PREVIEW_AGENT）。这一位（原「维持状态」开关）本轮搬进预览栏
+ *   「应用设置」窗里，真源 = 全局配置 S.config.appsDevKeepState（缺省开，见 appsDevKeepStateOn）。
  *   切应用（换 iframe 上下文）那一下也在预览区中央露一行「正在加载…」，新页 load 后收起；
  *   同一个应用的日常重载不出提示（用户已经看着旧页面刷）。
  *   跨应用还多记一份状态（DEVD.stateByApp：appId → 滚动 / 表单值，**只在内存**）：
@@ -84,22 +86,21 @@ const DEVD = {
   bridgeCloseBtn: null, /* 预览列头那颗「关掉独立窗口」（只读时露出） */
   bridgeNoticeEl: null, /* 预览区那条短提示（被禁 / 被拒的动作） */
   bridgeNoticeTimer: 0,
-  statEl: null, /* 预览状态一行 */
-  urlEl: null, /* 预览 URL 一行 */
-  headEl: null, /* 顶部菜单条（只允许一行） */
-  headSlots: [], /* 菜单条上可搬运进「更多」的项（按优先级排） */
+  urlEl: null, /* 预览 URL 一行（早已移除，仅留引用位） */
+  colHeadEl: null, /* 中栏「预览」列头条（六枚动作钮 + 「更多 ▾」的宿主） */
+  colSlots: [], /* 列头条上可搬运进「更多」的项（按 pri 排；DOM 只有一个，搬的是元素本身） */
+  barActsEl: null, /* 那六枚按钮的容器（.apps-dev-baracts；搬运在它与「更多」面板之间） */
+  colHeadWrap: null, /* 列头条的外壳（position:relative，「更多」面板挂它、不被 head 的 overflow 裁） */
+  colHeadRO: null, /* 它的宽度监听（放不下的项收进「更多 ▾」，见 appsDevFitColHead） */
+  colHeadRaf: 0, /* 待执行的列头条收窄（ResizeObserver 回调里只登记一帧） */
   moreBtnEl: null, /* 「更多 ▾」按钮 */
   morePopEl: null, /* 「更多」面板 */
   moreOpen: false,
   moreOff: null, /* 面板开着时的全局监听摘除函数 */
-  headRO: null, /* 菜单条宽度监听 */
-  headW: 0, /* 上次排版的宽度（同宽不重排，防抖动） */
-  headRaf: 0, /* 待执行的菜单条重排（ResizeObserver 回调里只登记一帧，见 appsDevStartHeadWatch） */
   turnEl: null, /* 右栏头部：当前轮次说明 */
   colsEl: null, /* 三栏容器（.apps-dev-cols）：宽度变量与把手的宿主 */
   colsRaf: 0, /* 待执行的三栏重夹（窗口 resize 只登记一帧） */
   warnEl: null, /* 顶部警告条 */
-  grillEl: null, /* 「先拷问需求」复选框 */
   filter: "", /* 左栏搜索词 */
   draft: true, /* 首轮态：下一次输入 = 「开发」提交 */
   /* 「用户点过＋、要开一条**新**会话」的意图位（见 appsDevNewRoundOn / Mark / Clear）。
@@ -118,7 +119,6 @@ const DEVD = {
   liveChangedAt: 0, /* 最近一次快照「变了」的时刻（0 = 这一段时间没变过） */
   checkBusy: false, /* 一次快照比对 / 重载还在飞：tick 每 1.2s 一发，别叠着来 */
   snap: null, /* 最近一次内容快照 { files, bytes, mtimeMs } */
-  keepState: true, /* 「维持状态」开关 */
   pendingState: null, /* 重载前抓到的页面状态 */
   mounted: null, /* { body, saved:[…] }：搬运记录 */
   timer: null,
@@ -603,7 +603,6 @@ function appsDevPageUnmount() {
   DEVD.previewStatEl = null;
   DEVD.previewStatTxt = null;
   DEVD.previewStatBtn = null;
-  DEVD.statEl = null;
   DEVD.bridgeCloseBtn = null;
   DEVD.bridgeNoticeEl = null;
   if (DEVD.bridgeNoticeTimer) {
@@ -617,7 +616,6 @@ function appsDevPageUnmount() {
   DEVD.turnEl = null;
   DEVD.colsEl = null;
   DEVD.warnEl = null;
-  DEVD.grillEl = null;
   DEVD.pendingState = null;
   /* 加载提示随容器一起被丢弃，引用必须清干净（否则下一次切应用会去操作一个已摘掉的节点） */
   if (DEVD.loadingTimer) {
@@ -795,7 +793,7 @@ function appsDevDraftPending() {
    旧实现是整块黑幕（.apps-dev-curtain）：切应用时把中栏整块盖黑，新页 load 后淡出。
    用户口径（本轮）：不要那块黑 —— 换成预览区中央一行小字「正在加载…」，只在
    换应用（= 换 iframe 上下文）那一下露出，新页加载完就收起，另有超时兜底。
-   同应用内的重载（开发改动跟手刷新 / 「刷新预览」）不出提示：那里用户已经看着旧页面刷。 */
+   同应用内的重载（开发改动跟手刷新 / 预览条上的「刷新」）不出提示：那里用户已经看着旧页面刷。 */
 function appsDevLoadingShow() {
   const wrap = DEVD.frameWrap;
   if (!wrap) return;
@@ -829,14 +827,35 @@ function appsDevLoadingHide() {
 
    切到 B 再切回 A 时，A 的预览页回到上次离开时的位置。存的是状态小助手
    （主进程 apps-store.js 的 PREVIEW_AGENT）给的那份：滚动位置 + 表单值。
-   跟随「维持状态」开关：关掉就不存不写（与同应用内重载同一口径）。 */
+   跟随「维持状态」这一位（本轮需求：它从开发页顶栏搬进预览栏「应用设置」窗里）：
+   关掉就不存不写（与同应用内重载同一口径）。
+
+   真源 = 全局配置 S.config.appsDevKeepState（缺省开）。写成函数而不是 DEVD 上的字段：
+   它的家在本机配置里，读取必须当场看配置（设置窗改完立刻生效，不必重进开发页）。 */
+function appsDevKeepStateOn() {
+  try {
+    return !(S && S.config && S.config.appsDevKeepState === false);
+  } catch (_) {
+    return true;
+  }
+}
+/* 写这一位（「应用设置」窗里那一枚复选）：改配置 + 立刻落盘，跨重启记住 */
+function appsDevKeepStateSet(on) {
+  try {
+    if (typeof S !== "object" || !S) return;
+    if (!S.config) S.config = {};
+    S.config.appsDevKeepState = !!on;
+    if (window.api && typeof window.api.configSave === "function")
+      window.api.configSave(S.config).catch(() => {});
+  } catch (_) {}
+}
 function appsDevStateOf(appId) {
   const id = String(appId || "");
-  return id && DEVD.keepState ? DEVD.stateByApp.get(id) || null : null;
+  return id && appsDevKeepStateOn() ? DEVD.stateByApp.get(id) || null : null;
 }
 function appsDevStateSave(appId, state) {
   const id = String(appId || "");
-  if (!id || !DEVD.keepState || !state) return;
+  if (!id || !appsDevKeepStateOn() || !state) return;
   DEVD.stateByApp.set(id, state);
 }
 
@@ -998,16 +1017,11 @@ function appsDevBridgeNotice(code, text) {
     if (el) el.hidden = true;
   }, 3000);
 }
-/* 状态行上的「预览已连入宿主 / 只读」+ 只读时那颗「关掉独立窗口」按钮 */
+/* 预览态宿主桥变了：只读时露出那颗「关掉独立窗口」。
+   （本轮需求：预览列头条上那串状态文字——「预览已连入宿主」等——已整体移除，
+   宿主桥的连接状态改在预览栏「应用设置」窗的「预览状态」一行里看。） */
 function appsDevPaintBridge(kind) {
-  const b = DEVD.bridge || {};
   if (kind === "none") DEVD.bridge = { token: "", appId: "", readOnly: false, ready: false };
-  appsDevStatRepaint();
-  const el = DEVD.statEl;
-  if (el)
-    el.title = appsDevT(
-      "预览里也能调用 MTNode 的宿主能力（模型 / 存储 / 账号 / 选图 / 语音）：应用不必退回浏览器本地存储",
-    ) + (b.appId ? "\n" + appsDevT("预览的应用：") + b.appId : "");
   if (DEVD.bridgeCloseBtn) DEVD.bridgeCloseBtn.hidden = !DEVD.bridge.readOnly;
 }
 /* 独立窗口开了 / 关了：立刻改状态行，并把只读态发给预览页（不必等下一次重载） */
@@ -1079,9 +1093,13 @@ function appsDevPreviewUrlFallback(appId) {
 function appsDevUrlOf(appId) {
   return appsDevPreviewUrlFallback(appId);
 }
-/* ── 「应用文件夹」（本轮需求）：预览列头那一枚文件夹按钮 ─────────────────────────
+/* ── 「应用文件夹」（本轮需求：预览栏最左那一枚，只剩图标、不带路径）──────────────
  * 点它 = 在系统资源管理器里打开**当前这个应用的文件夹**（应用目录：index.html / app.json
- * 所在的那个，开发中在项目根 apps-dev/<id>、下载的在下载根 apps/<id>）。
+ * 所在的那个，开发中在 <数据目录>\apps-dev\<id>）。
+ * 原来它是工具栏「应用文件夹」那一行里的 📂，与只读路径 + 启动 + 上架并排；本轮顶栏整条移除，
+ * 路径块下线（要看路径去预览栏「应用设置」窗的应用文件夹一行），📂 留在预览栏最左。
+ * 图标用内联 SVG（APPS_ICO_SVG 的 folder，app-apps.js）—— 与同排其它枚同一套线性图标，
+ * 不用 emoji 当图标体系（DESIGN.md §7）。
  * 路径真源只有主进程，渲染层不拼：
  *   ① 先走 appsLocalList 那条摘要里的 dir（appsDevProjectDir，路径最权威）；
  *   ② 摘要还没回来（应用刚建 / 列表是上一帧的）时，回落到预览 info 的 dir（apps:devPreview
@@ -1089,11 +1107,11 @@ function appsDevUrlOf(appId) {
  * 打开动作走 preload 早就白名单好的通用出口 window.api.shellOpenPath（主进程 shell:openPath
  * → shell.openPath），不新增 IPC；失败按中文可读话术弹 toast。 */
 function appsDevFolderBtnEl() {
-  const b = appsMiniBtn(appsDevT("📂 应用文件夹"), () => appsDevOpenAppFolder());
-  b.classList.add("apps-dev-folderbtn");
-  b.title = appsDevT("在资源管理器里打开这个应用的文件夹（入口页 index.html 所在的那个目录）");
-  b.setAttribute("aria-label", appsDevT("打开应用文件夹"));
-  return b;
+  return appsIcoBtnEl(
+    "folder",
+    appsDevT("在资源管理器里打开这个应用的文件夹（入口页 index.html 所在的那个目录）"),
+    () => appsDevOpenAppFolder(),
+  );
 }
 async function appsDevOpenAppFolder() {
   const id = String(DEVD.appId || "").trim();
@@ -1176,7 +1194,6 @@ async function appsDevRetryPreview() {
       if (DEVD.frame && DEVD.frame.getAttribute("src") !== fb)
         DEVD.frame.setAttribute("src", fb);
     }
-    appsDevPaintPreviewStat("error");
     appsDevPreviewStatMsg(
       info && info.error
         ? appsDevT("预览不可用：") + String(info.error)
@@ -1191,7 +1208,6 @@ async function appsDevRetryPreview() {
     mtimeMs: info.mtimeMs,
     entry: info.entry,
   };
-  appsDevPaintPreviewStat("same");
   appsDevPaintUrl();
   appsDevPreviewStatMsg("");
   await appsDevReloadPreview();
@@ -1226,7 +1242,7 @@ function appsDevFrameStateSave(timeoutMs) {
     }, timeoutMs || 700);
   });
 }
-/* 重载预览：开着「维持状态」就先存页面状态，加载完成后由 load 监听写回 */
+/* 重载预览：开着「维持状态」（「应用设置」窗里那一项）就先存页面状态，加载完成后由 load 监听写回 */
 async function appsDevReloadPreview() {
   const frame = DEVD.frame;
   if (!frame) return;
@@ -1234,13 +1250,13 @@ async function appsDevReloadPreview() {
   if (!DEVD.url) DEVD.url = appsDevUrlOf(DEVD.appId);
   if (!DEVD.url) return;
   DEVD.pendingState = null;
-  if (DEVD.keepState && frame.getAttribute("src")) {
+  if (appsDevKeepStateOn() && frame.getAttribute("src")) {
     DEVD.pendingState = await appsDevFrameStateSave(700);
   }
   const sep = DEVD.url.indexOf("?") >= 0 ? "&" : "?";
-  /* 缓存戳 = 时间 + 单调序号：同一毫秒里连刷两次（实时刷新 + 用户点「刷新预览」）
+  /* 缓存戳 = 时间 + 单调序号：同一毫秒里连刷两次（实时刷新 + 用户点预览条上的「刷新」）
      也要能各刷一版 —— 只发同一个 url 的话浏览器把「src 没变」当无事发生，
-     点了没反应（真机上是「刷新预览」这种密度才会碰到，但一样得挡住）。
+     点了没反应（真机上是连点「刷新」这种密度才会碰到，但一样得挡住）。
      _host=1 = 这一帧要连入宿主（协议层据此注入宿主桥小助手；别的入口不带它 = 纯静态预览）。 */
   DEVD.reloadSeq = (Number(DEVD.reloadSeq) || 0) + 1;
   frame.setAttribute(
@@ -1249,61 +1265,31 @@ async function appsDevReloadPreview() {
   );
   appsDevPreviewStatMsg("");
 }
-/* 快照那一段文字（文件数 / 体积 / 最近修改） */
-function appsDevStatSnapText() {
-  const s = DEVD.snap || {};
-  const bits = [];
-  if (s.files != null) bits.push(s.files + appsDevT(" 个文件"));
-  if (s.bytes != null && typeof appsBytes === "function")
-    bits.push(appsBytes(s.bytes));
-  if (s.mtimeMs && typeof appsTime === "function")
-    bits.push(appsDevT("最近修改 ") + appsTime(s.mtimeMs));
-  return bits.join(" · ");
-}
-/* 宿主桥那一段文字（本轮需求：预览已连入宿主 / 只读） */
-function appsDevStatBridgeText() {
-  const b = DEVD.bridge || {};
-  if (!b.token && !b.appId) return appsDevT("预览未连入宿主");
-  if (b.readOnly) return appsDevT("预览已连入宿主 · 只读（该应用已在独立窗口运行）");
-  return b.ready ? appsDevT("预览已连入宿主") : appsDevT("预览正在连入宿主…");
-}
-/* 快照那一句（预览已是最新 / 有改动 → 已重载 / 不可用） */
-function appsDevStatHeadText(kind) {
-  return kind === "changed"
-    ? appsDevT("内容有改动 → 已重载预览")
-    : kind === "reload"
-      ? appsDevT("已重载预览")
-      : kind === "error"
-        ? appsDevT("预览不可用")
-        : appsDevT("预览已是最新");
-}
-/* 状态行 = 「那一句」+ 桥那一段 + 快照那一段 —— 两处各自刷新，谁也不许整行覆盖另一处 */
-function appsDevStatRepaint() {
-  const el = DEVD.statEl;
-  if (!el) return;
-  const bits = [appsDevStatHeadText(DEVD.statKind), appsDevStatBridgeText()];
-  const snap = appsDevStatSnapText();
-  if (snap) bits.push(snap);
-  el.textContent = bits.join(" · ");
-}
-function appsDevPaintPreviewStat(kind) {
-  const el = DEVD.statEl;
-  if (!el) return;
-  DEVD.statKind = kind;
-  appsDevStatRepaint();
-}
+/* ── 预览列头条那串状态文字**本轮整体移除**（用户口径：「移除预览中的文字描述」）──
+ * 原来的那一行是「预览已是最新 · 预览已连入宿主 · N 个文件 · 体积 · 最近修改」，
+ * 现在列头条上只有六枚动作钮 + 「更多 ▾」（+ 只读时那颗「关掉独立窗口」）。
+ * 它承载的两件事各自有了新家，**能力一个没丢**：
+ *   · 宿主桥的连接状态 / 预览地址 → 预览栏「应用设置」窗的「预览 / 预览状态」两行
+ *     （app-apps.js 的 appsAppSettingsOpen 读 DEVD.bridge / DEVD.url）；
+ *   · 拿不到应用目录 / 入口页这类**真出错**的情况 → 中栏兜底提示层
+ *     （appsDevPreviewStatMsg：盖在 iframe 上一句可读话 + 「重试」），不静默白屏。
+ * DEVD.snap（files / bytes / mtimeMs）照旧在每次比对后更新 —— 它仍是「预览该不该重载」
+ * 的判据，只是不再往界面上写一句话。 */
+/* 预览 URL 的落点（预览列头条上那条 URL 已移除）。
+   现在 URL 只活在**状态**里（DEVD.url / DEVD.snap），显示在中栏预览条那枚「应用设置」开的窗
+   （app-apps.js 的 appsAppSettingsOpen 读 DEVD.url）；本函数因此只保留「把最新的入口页信息
+   记进 DEVD」这一件事 —— 老名字留着，是因为重载 / 重试 / 切应用几条链都在调它，
+   改名只会平白多出一轮回归面。 */
 function appsDevPaintUrl() {
-  const el = DEVD.urlEl;
-  if (!el) return;
   const info = DEVD.snap || {};
-  el.textContent = String(DEVD.url || "");
-  el.title =
-    appsDevT("预览：应用目录里的入口页（相对资源同源加载；已注入宿主桥 → 预览里也能调用 MTNode 的能力）") +
-    (info.entry ? "\n" + appsDevT("入口页：") + info.entry : "");
+  DEVD.urlInfo = {
+    url: String(DEVD.url || ""),
+    entry: String(info.entry || ""),
+  };
 }
 /* 内容快照比对：有变（或 force）才重载预览。
    force 有两条来路，语义不同（都是显式动作，不受防抖门槛限制）：
-     · true  = 会话跑完那个边沿 / 工具栏「刷新预览」：**无条件**刷一次；
+     · true  = 会话跑完那个边沿 / 预览条上的「刷新」：**无条件**刷一次；
      · false = 开发会话跑着的时候的实时轮询（本轮需求）+ 收尾那一路。 */
 async function appsDevCheckPreview(force) {
   if (!appsDevPageOpen()) return;
@@ -1326,7 +1312,6 @@ async function appsDevCheckPreviewInner(force) {
   if (r.ok === false) {
     DEVD.snap = null;
     DEVD.liveChangedAt = 0;
-    appsDevPaintPreviewStat("error");
     /* 轮询里发现预览不可用：中栏盖回可读提示（拿不到目录 / 入口页，别只留白底） */
     appsDevPreviewStatMsg(
       r.error
@@ -1350,8 +1335,7 @@ async function appsDevCheckPreviewInner(force) {
     mtimeMs: r.mtimeMs,
     entry: r.entry,
   };
-  appsDevPaintPreviewStat(changed || force ? "changed" : "same");
-  /* force 是显式动作（跑完的边沿 / 工具栏「刷新预览」）：无条件刷，也不看防抖门槛。
+  /* force 是显式动作（跑完的边沿 / 预览条上的「刷新」）：无条件刷，也不看防抖门槛。
      注意它必须排在 changed 判断**之前** —— 显式刷新时内容往往已经跟上一版一样了。 */
   if (force) {
     DEVD.liveChangedAt = 0;
@@ -2023,12 +2007,25 @@ function appsDevNewRound(appId) {
 function appsDevNewSessionFor(appId) {
   appsDevNewRound(appId);
 }
+/* 左栏底部那颗「＋ 新会话」（本轮需求：替换原来的「＋ 新建应用」）：
+   动作 = appsDevNewRound()（当前应用下开一条新开发会话）—— 与左栏每行右端那枚 ＋、
+   原顶栏那枚 ＋ 是同一个出口，不另造一份语义。 */
+function appsDevNewSessionBtnEl() {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "mini primary";
+  btn.textContent = "＋ " + appsDevT("新会话");
+  btn.title = appsDevT("新开发会话：在本应用下开一条新会话（下一次输入即新建并开工）");
+  btn.setAttribute("aria-label", appsDevT("新会话"));
+  btn.onclick = () => appsDevNewRound();
+  return btn;
+}
 
 /* ── 「自定义」风格那一步：把提问落到开发页的输入框上 ──
  *
  * 触发点有两处（见 app-app-flow.js 的 startCustomStyleAsk）：
  *   ① 新建应用时选了「自定义」→ 建完停在开发页，直接问风格；
- *   ② 开发页 ⋯「换风格…」选了「自定义」→ 记下选择后同样回到这里。
+ *   ② （已下线）开发页 ⋯「换风格…」选了「自定义」→ 记下选择后同样回到这里 —— 界面不再有这个入口，
  * 这里只做「把问题摆到用户面前」：填一句可直接发送的提问 + 一条提示，**不自动发送**。
  * 用户点发送 = 正常走首轮开发会话（appsDevStartDevSession 会给它加上「先问清风格」的约束）。
  * 输入框里已有用户自己写的字时不覆盖，只给提示（那是他的草稿，不能被我们冲掉）。
@@ -2074,7 +2071,7 @@ function appsDevFlushStyleAsk() {
 window.appsDevAskStyle = appsDevAskStyle;
 window.appsDevFlushStyleAsk = appsDevFlushStyleAsk;
 
-/* ── 顶部：应用选择 / 开关 / 警告条 ── */
+/* ── 顶部：警告条（顶栏那两个开关本轮已撤，见 appsDevPagePaint 的注释） ── */
 
 function appsDevPaintWarn(msg) {
   const el = DEVD.warnEl;
@@ -2090,8 +2087,6 @@ function appsDevPaintWarn(msg) {
 async function appsDevRefreshHead() {
   const node = await appsDevEnsureNode();
   if (!appsDevPageOpen()) return;
-  const grill = DEVD.grillEl;
-  if (grill) grill.checked = appsDevGrillOn();
   if (!node) {
     appsDevPaintWarn(
       appsDevT(
@@ -2112,111 +2107,203 @@ async function appsDevRefreshHead() {
   );
 }
 
-/* ── 顶部菜单条：一行 + 按宽度搬运进「更多 ▾」 ── */
-
-/* 状态文字至少要留这么宽，否则继续往「更多」里收（窄到放不下时优先牺牲项，不牺牲可读性） */
-const DEVD_STAT_MIN = 96;
-
-/* 应用根目录（这条工具栏里的紧凑版）：路径 + 更改…；点路径 = 在资源管理器中打开。
-   与库页共用同一份动作函数（app-apps.js 的 appsRootPickNow / appsRootFolderNow），不写第二份逻辑。
-   **只给「项目根」这一枚**（本轮需求：开发页不出现下载根 —— 下载根是「库」的事，
-   库页的下载根改成了左上角那枚「应用目录」按钮 + 小菜单；开发页关心的是自己开发的应用落在哪）。 */
-function appsDevRootChip(kind) {
-  const roots = (typeof APPS_ST === "object" && APPS_ST && APPS_ST.list && APPS_ST.list.roots) || {};
-  const root = roots[kind] || (kind === "down" ? (APPS_ST && APPS_ST.root) || {} : {}) || {};
+/* ── 预览列头条：六枚动作钮 + 「更多 ▾」（本轮需求）─────────────────────────────
+ *
+ * 用户口径（共识）：
+ *   · 开发页**顶栏整体移除** —— 原来那一条上的「＋新开发会话 / 应用文件夹（📂+路径）/ 先拷问需求 /
+ *     维持状态 / 更多 ▾」全部不再出现在那里；
+ *   · 「启动」「上架」搬到**预览栏**，与一枚 📂（进当前应用的文件夹，**不带路径**）并排；
+ *   · 整行从左到右：📂 · 启动 · 上架 · 刷新 · 应用设置 · 画布（用户选的顺序）；
+ *   · 六枚都是「图标 + 小字」（appsIcoTextBtnEl，定义在 app-apps.js），与原来那三枚同风格；
+ *   · 窄到放不下时：放不下的收进一枚「更多 ▾」（把原来顶栏那套收窄机制搬到这一行）。
+ *
+ * 各枚的来处 / 去处：
+ *   · 📂   = appsDevFolderBtnEl（原在工具栏「应用文件夹」那一行；那一行连同路径一起下线）；
+ *   · 启动 = appsRunBtnEl("dev", …)（原在工具栏那一行）；
+ *   · 上架 = 原在工具栏那一行（window.openAppPublish）；
+ *   · 刷新 / 应用设置 / 画布 = 本轮之前就在这一行，位置与出口一字未改。
+ * hasApp === false（左栏空态：本机没有「开发中」的应用）时只留「刷新」：
+ *   应用文件夹 / 启动 / 上架 / 应用设置 / 画布都要一个应用才有意义，摆在那里只会点了没反应。 */
+function appsDevBarActsEl(hasApp) {
   const box = document.createElement("span");
-  box.className = "apps-dev-root";
-  box.dataset.rootKind = kind;
-  const tag = document.createElement("span");
-  tag.className = "apps-dev-root-k";
-  tag.textContent = appsDevT(kind === "dev" ? "项目根" : "下载根");
-  box.appendChild(tag);
-  const path = String(root.path || "");
-  const val = document.createElement("button");
-  val.type = "button";
-  val.className = "apps-dev-root-v";
-  val.textContent = path || appsDevT("未设置");
-  val.title =
-    appsDevT(kind === "dev" ? "项目根目录（开发中的应用）" : "下载根目录（从应用中心下载的）") +
-    "\n" +
-    (path || appsDevT("未设置")) +
-    "\n" +
-    appsDevT("点击在资源管理器中打开");
-  val.onclick = () => {
-    if (typeof appsRootFolderNow === "function") appsRootFolderNow(kind);
+  box.className = "apps-dev-baracts";
+  /* 建一个可搬运项：pri 越小越重要，宽度不够时从 pri 最大的开始收进「更多」。
+     label 非空 = 面板里给它一行小标题（自带文案的按钮就不必给）。 */
+  const addSlot = (pri, el, label) => {
+    const s = document.createElement("span");
+    s.className = "apps-dev-slot";
+    s.dataset.pri = String(pri);
+    if (label) s.dataset.label = appsDevT(label);
+    s.appendChild(el);
+    (DEVD.colSlots || (DEVD.colSlots = [])).push(s);
+    box.appendChild(s);
+    return s;
   };
-  box.appendChild(val);
-  /* 「未设置」红字 badge **已随本轮需求删除**：根目录默认就在画布所在的数据目录下
-     （<数据目录>/apps-dev），主进程列应用时把默认路径固化下来，这里永远有一个可用路径 ——
-     不再有「未设置：开发中的应用不会列出来」这个状态。 */
-  box.appendChild(
-    appsMiniBtn(appsDevT("更改…"), () => {
-      if (typeof appsRootPickNow === "function") appsRootPickNow(kind);
-    }),
-  );
+  if (hasApp) {
+    addSlot(2, appsDevFolderBtnEl(), "应用文件夹");
+    /* 启动 / 上架 / 刷新 / 应用设置 / 画布 这几枚**按钮自己带着文字**，不再另给面板小标题
+       （给了会在「更多 ▾」面板里显示成「启动 [启动]」这种重复；工具提示那条按按钮文字兜底）。
+       只有 📂 是纯图标，必须靠 label 说清它是「应用文件夹」。 */
+    addSlot(1, appsDevRunBtnEl());
+    addSlot(3, appsDevPublishBtnEl());
+  }
+  addSlot(4, appsIcoTextBtnEl("refresh", "刷新", "刷新预览：重新读取应用目录并重载预览窗", () =>
+    appsDevCheckPreview(true).catch(() => {}),
+  ));
+  if (hasApp) {
+    addSlot(
+      5,
+      appsIcoTextBtnEl(
+        "gear",
+        "应用设置",
+        "应用设置：应用文件夹 / 数据目录 / 应用能力 / 预览 / 删除应用",
+        () => {
+          if (typeof appsAppSettingsOpen === "function") appsAppSettingsOpen();
+        },
+      ),
+    );
+    addSlot(
+      6,
+      appsIcoTextBtnEl("canvas", "画布", "打开这个应用的画布（居中到它的开发节点）", () => {
+        if (DEVD.appId && typeof openAppCanvas === "function") openAppCanvas(DEVD.appId);
+      }),
+    );
+  }
   return box;
 }
-/* 这一组里只有项目根（下载根在库页，见 appsDevRootChip 注释） */
-function appsDevRootItem() {
-  const box = document.createElement("span");
-  box.className = "apps-dev-roots";
-  box.appendChild(appsDevRootChip("dev"));
-  return box;
+/* 预览栏那一枚「启动」= 给当前应用开独立窗口（等同在库中运行：appsOpenApp → apps:openWindow）。
+   原在工具栏「应用文件夹」那一行，本轮跟着搬过来；丢掉开发节点时会话仍可跑，
+   所以它不依赖画布，只依赖「有一个开发中的应用」（hasApp）。 */
+function appsDevRunBtnEl() {
+  return appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp());
+}
+/* 预览栏那一枚「上架」= 打开发布浮层（renderer/app-publish.js 的 window.openAppPublish）。
+   未加载该模块（旧版本）时点击给可读提示，不在按钮层面藏功能 —— 用户看得见这条路，
+   才知道能上架。应用上架统一叫「上架」：新上传与追加一版都叫上架，新建还是追加由
+   服务端按 id + 作者 uid 判定，结果在发布浮层里如实写清。 */
+function appsDevPublishBtnEl() {
+  const up = appsIcoTextBtnEl("upload", "上架", "上架：把这个应用传到云端（已上架过就是给同一条追加一版）", () => {
+    if (typeof window.openAppPublish !== "function") {
+      appsDevToast(appsDevT("上架模块未就绪（renderer/app-publish.js 未加载）"), "err");
+      return;
+    }
+    window.openAppPublish(DEVD.appId);
+  });
+  return up;
 }
 
-/* 收掉这条工具栏上的监听 / 观察者（关页、切页、整页重绘前都要走） */
-function appsDevHeadTeardown() {
+/* 预览栏的收窄（本轮需求）：**放不下的收进「更多 ▾」**，永远只有一行 ——
+   判定与原来顶栏那套同一份纪律：先把所有项放回主行量出真实宽度，再按 pri「前缀留主行、
+   后缀收进更多」一次算清；测量与改布局都推迟到下一帧，绝不在 RO 回调里同步搬
+   （同步搬会抛 ResizeObserver loop completed with undelivered notifications）。
+   失败一律吞掉：它由 ResizeObserver 回调驱动，抛出去会被报成界面错误。 */
+function appsDevFitColHead() {
+  try {
+    appsDevFitColHeadDo();
+  } catch (_) {}
+}
+function appsDevFitColHeadDo() {
+  const head = DEVD.colHeadEl;
+  const box = DEVD.barActsEl; /* 六枚的容器（.apps-dev-baracts）——搬运只在它内部与面板之间 */
+  const pop = DEVD.morePopEl;
+  const btn = DEVD.moreBtnEl;
+  if (!head || !box || !pop || !btn) return;
+  const slots = DEVD.colSlots || [];
   appsDevMoreToggle(false);
-  if (DEVD.headRO) {
-    try {
-      DEVD.headRO.disconnect();
-    } catch (_) {}
+  /* 先全部放回那一组里，再量真实宽度 */
+  for (const s of slots) box.appendChild(s);
+  if (!slots.length) {
+    btn.hidden = true;
+    return;
   }
-  DEVD.headRO = null;
-  if (DEVD.headRaf) {
-    try {
-      cancelAnimationFrame(DEVD.headRaf);
-    } catch (_) {}
+  btn.hidden = false; /* hidden 的元素 offsetWidth = 0，量宽度前它得先可见 */
+  /* 还没完成布局（首帧、刚 append 进 DOM）：clientWidth = 0 时**什么都别动** ——
+     照公式算会把六枚全判成「放不下」，用户会看到一次「整行瞬间被收进更多」的闪。 */
+  if (!head.clientWidth) return;
+  const GAP = 6; /* .apps-dev-colhead 的 gap */
+  const content = head.clientWidth - 16; /* 左右各 8px 内边距 */
+  /* 预算里要留出两样：右端的「更多 ▾」自己，以及只读时那颗「关掉独立窗口」的位置
+     （弹性占位是 flex:1 1 auto，挤到 0 也不占预算）。 */
+  const close = DEVD.bridgeCloseBtn;
+  let used = GAP + btn.offsetWidth + GAP;
+  if (close && !close.hidden) used += close.offsetWidth + GAP;
+  const order = slots
+    .slice()
+    .sort((a, b) => Number(a.dataset.pri) - Number(b.dataset.pri));
+  let keep = 0;
+  for (const s of order) {
+    const w = s.offsetWidth + GAP;
+    if (used + w > content) break;
+    used += w;
+    keep++;
   }
-  DEVD.headRaf = 0;
-  DEVD.headEl = null;
-  DEVD.headSlots = [];
-  DEVD.moreBtnEl = null;
-  DEVD.morePopEl = null;
-  DEVD.headW = 0;
+  const moved = order.slice(keep);
+  for (const s of moved) pop.appendChild(s);
+  const names = moved.map((s) => String(s.dataset.label || s.textContent || "").trim());
+  btn.hidden = names.length === 0;
+  btn.title = names.length
+    ? appsDevT("更多（放不下的项在这里）：") + names.join(" · ")
+    : "";
+  if (!names.length) appsDevMoreToggle(false);
 }
-
-/* 菜单条宽度监听：同宽不重排（重排会改布局，防抖一次）。
-   **重排一律推到下一帧**：appsDevFitHead 会搬 DOM（改布局），在 ResizeObserver 回调里
-   同步搬 = 同一帧内又产生一次未派发的尺寸通知，浏览器就抛
-   「ResizeObserver loop completed with undelivered notifications.」（index.html:0）。
-   推到 rAF 之后重排，回调返回时布局已定，不再自激成环。 */
-function appsDevStartHeadWatch(head) {
+/* 列头条宽度监听：同宽不重排（重排会改布局，防抖一次），重排推到下一帧。
+   隐藏「更多 ▾」不会改列头条自己的宽度，所以这条观察者不会被自己触发。 */
+function appsDevStartColHeadWatch(head) {
   if (!head) return;
-  if (DEVD.headRO) {
+  if (DEVD.colHeadRO) {
     try {
-      DEVD.headRO.disconnect();
+      DEVD.colHeadRO.disconnect();
     } catch (_) {}
   }
-  DEVD.headRO = null;
-  if (typeof ResizeObserver !== "function") return;
+  DEVD.colHeadRO = null;
+  if (typeof ResizeObserver !== "function") {
+    appsDevFitColHead();
+    return;
+  }
   const ro = new ResizeObserver(() => {
-    const w = DEVD.headEl ? DEVD.headEl.clientWidth : 0;
-    if (w === DEVD.headW) return;
-    DEVD.headW = w;
-    if (DEVD.headRaf) return;
-    DEVD.headRaf = requestAnimationFrame(() => {
-      DEVD.headRaf = 0;
-      /* 这一帧里页面可能已经切走 / 整页重绘过：对不上就丢 */
-      if (!DEVD.headEl || !DEVD.headEl.isConnected) return;
-      appsDevFitHead();
+    if (DEVD.colHeadRaf) return;
+    DEVD.colHeadRaf = requestAnimationFrame(() => {
+      DEVD.colHeadRaf = 0;
+      if (!DEVD.colHeadEl || !DEVD.colHeadEl.isConnected) return;
+      appsDevFitColHead();
     });
   });
   try {
     ro.observe(head);
   } catch (_) {}
-  DEVD.headRO = ro;
-  DEVD.headW = head.clientWidth;
+  DEVD.colHeadRO = ro;
+  appsDevFitColHead();
+}
+
+/* 路径 / 目录 / 应用自己的设置这一类入口的口径（本轮不变）：
+ *  · 右上角齿轮（app-apps.js 的 appsDirSettingsOpen）→ 库 / 开发两套根目录（各带「修改 / 打开」）；
+ *  · 开发页中栏「预览」列头条上那枚「应用设置」（app-apps.js 的 appsAppSettingsOpen）
+ *    → 应用文件夹 / 数据目录 / 应用能力 / 预览 / 删除应用（「维持状态」本轮搬去齿轮那只
+ *    目录设置窗的「预览」一节 —— 它是整个开发页预览的全局开关，不是某个应用的属性）。
+ * 开发页因此既没有路径块、也没有偏好开关（本轮那两个开关一个进设置窗、一个交回画布
+ * 「开发」对话框），连顶栏本身都不在了：那一行只剩左上角一枚「新建应用」。 */
+
+/* 收掉列头条那套监听 / 观察者（关页、切页、整页重绘前都要走） */
+function appsDevHeadTeardown() {
+  appsDevMoreToggle(false);
+  if (DEVD.colHeadRO) {
+    try {
+      DEVD.colHeadRO.disconnect();
+    } catch (_) {}
+  }
+  DEVD.colHeadRO = null;
+  if (DEVD.colHeadRaf) {
+    try {
+      cancelAnimationFrame(DEVD.colHeadRaf);
+    } catch (_) {}
+  }
+  DEVD.colHeadRaf = 0;
+  DEVD.colHeadEl = null;
+  DEVD.colHeadWrap = null;
+  DEVD.colSlots = [];
+  DEVD.barActsEl = null;
+  DEVD.moreBtnEl = null;
+  DEVD.morePopEl = null;
 }
 
 /* 开 / 关「更多 ▾」。它是瞬态菜单（没有待保存的输入），所以允许点外部即收；
@@ -2256,54 +2343,6 @@ function appsDevMoreToggle(open) {
     document.removeEventListener("mousedown", onDown, true);
     document.removeEventListener("keydown", onKey, true);
   };
-}
-
-/* 排版：只允许一行。先把所有项放回主行量出**真实宽度**，再按优先级「前缀留主行、
-   后缀收进更多」一次算清 —— 不靠反复读 scrollWidth 试（布局没落定时那会读晚一帧，
-   结果是尾巴被 overflow:hidden 裁掉，而裁掉的恰好是最右的「更多」）。
-   失败一律吞掉：它由 ResizeObserver 回调（rAF 后）驱动，抛出去会被报成界面错误。 */
-function appsDevFitHead() {
-  try {
-    appsDevFitHeadDo();
-  } catch (_) {}
-}
-function appsDevFitHeadDo() {
-  const head = DEVD.headEl;
-  const pop = DEVD.morePopEl;
-  const btn = DEVD.moreBtnEl;
-  if (!head || !pop || !btn) return;
-  const slots = DEVD.headSlots || [];
-  appsDevMoreToggle(false);
-  for (const s of slots) head.insertBefore(s, btn);
-  if (!slots.length) {
-    btn.hidden = true;
-    return;
-  }
-  /* 量「更多」按钮宽度前它得先可见（hidden 的元素 offsetWidth = 0） */
-  btn.hidden = false;
-  const GAP = 8; /* .apps-dev-head 的 gap */
-  const content = head.clientWidth - 20; /* 左右各 10px 内边距 */
-  /* 状态文字是「剩下多少就吃多少」的弹性项（flex:0 1 auto，下限 96px），
-     所以预算里只给它保底那 96px：其余项排得下就都留主行，排不下才往「更多」里收。 */
-  let used = DEVD_STAT_MIN + GAP + btn.offsetWidth + GAP;
-  const order = slots
-    .slice()
-    .sort((a, b) => Number(a.dataset.pri) - Number(b.dataset.pri));
-  let keep = 0;
-  for (const s of order) {
-    const w = s.offsetWidth + GAP;
-    if (used + w > content) break;
-    used += w;
-    keep++;
-  }
-  const moved = order.slice(keep);
-  for (const s of moved) pop.appendChild(s);
-  const names = moved.map((s) => String(s.dataset.label || s.textContent || "").trim());
-  btn.hidden = names.length === 0;
-  btn.title = names.length
-    ? appsDevT("更多（放不下的项在这里）：") + names.join(" · ")
-    : "";
-  if (!names.length) appsDevMoreToggle(false);
 }
 
 /* ── 整页绘制（app-apps.js 的 appsPaintDevPage 调） ── */
@@ -2350,224 +2389,29 @@ function appsDevPagePaint(body, seq) {
   const wrap = document.createElement("div");
   wrap.className = "apps-dev";
 
-  /* 顶部菜单条：**只允许一行**（.apps-dev-head 是 nowrap）。宽了主行多放，窄了自动把
-     优先级最低的几项搬进「更多 ▾」——功能一个不少，只是位置随宽度变：
-     ＋新开发会话 / 启动 / 打开画布 / 卸载 / 刷新预览 / 项目根 / 数据目录 /
-     换风格 / 先拷问需求 / 维持状态 / 预览状态 全在这一条上（appsDevFitHead 负责搬运）。
-     本轮需求：「新开发会话」的主入口移到**左栏每个应用行右端的「＋」**（点哪一行就在
-     哪个应用下新建会话）；这一条工具栏里那颗也改成同一枚「＋」图标 —— 当前应用的快捷
-     入口，含义与左栏那枚一样（都走 appsDevNewRound），放不下时收进「更多 ▾」里带「新开发会话」小标题。
-     本轮需求：原来的「应用 + 下拉 + 作者」整组已删 —— 选应用改到左栏（点应用行），
-     作者也跟去左栏那条应用行；省下的横向空间由 appsDevFitHead 自动把其余项搬回主行。 */
-  const head = document.createElement("div");
-  head.className = "apps-dev-head";
-  DEVD.headEl = head;
-  DEVD.headSlots = [];
-  /* 建一个可搬运项：pri 越小越重要，宽度不够时从 pri 最大的开始收进「更多」。
-     label 非空 = 面板里给它一行小标题（自带文案的按钮 / 开关就不必给）。 */
-  const addSlot = (pri, el, label) => {
-    const s = document.createElement("span");
-    s.className = "apps-dev-slot";
-    s.dataset.pri = String(pri);
-    if (label) s.dataset.label = appsDevT(label);
-    s.appendChild(el);
-    DEVD.headSlots.push(s);
-    return s;
-  };
-  head.appendChild(
-    addSlot(
-      1,
-      (() => {
-        const b = appsMiniBtn(appsDevT("＋"), () => appsDevNewRound(), true);
-        b.title = appsDevT("新开发会话：在本应用下开一条新会话（下一次输入即新建并开工）");
-        b.setAttribute("aria-label", appsDevT("新开发会话"));
-        return b;
-      })(),
-      "新开发会话",
-    ),
-  );
-  /* 「启动」= 等同在库中运行：给当前应用开独立窗口（appsOpenApp → apps:openWindow）。
-     丢掉应用的开发节点时会话仍可跑，但没有可启动的应用时这颗按钮不出现（需求：没有应用就不给点）。 */
-  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
-    head.appendChild(
-      addSlot(
-        2,
-        appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp()),
-      ),
-    );
-    /* 「上架」= 打开发布浮层（renderer/app-publish.js 的 window.openAppPublish）：
-       pri 2.5 = 紧挨「启动」右边；一行放不下时从 pri 最大的开始往「更多 ▾」收，
-       「启动」（pri 2）比它先留在主行。未加载该模块（旧版本）时点击给可读提示，
-       不在按钮层面藏功能 —— 用户看得见这条路，才知道能上架。
-       本轮需求：**应用上架统一叫「上架」**，新上传（云端新建一条）与更新（往云端已有那条
-       追加一版）都叫上架 —— 按钮不再按本机上架留痕切成「更新 / 上架」两套文案。
-       新建还是追加由服务端按 id + 作者 uid 判定，结果在发布浮层里如实写清（「新建应用」/
-       「追加版本」），按钮这一层不必替用户分辨。 */
-    head.appendChild(
-      addSlot(
-        2.5,
-        (() => {
-          const b = appsMiniBtn(appsDevT("上架"), () => {
-            if (typeof window.openAppPublish !== "function") {
-              appsDevToast(
-                appsDevT("上架模块未就绪（renderer/app-publish.js 未加载）"),
-                "err",
-              );
-              return;
-            }
-            window.openAppPublish(DEVD.appId);
-          });
-          b.title = appsDevT("上架：把这个应用传到云端（已上架过就是给同一条追加一版）");
-          b.setAttribute("aria-label", appsDevT("上架"));
-          return b;
-        })(),
-      ),
-    );
-  }
-  head.appendChild(
-    addSlot(
-      3,
-      appsMiniBtn(appsDevT("打开画布"), () => {
-        if (DEVD.appId && typeof openAppCanvas === "function")
-          openAppCanvas(DEVD.appId);
-      }),
-    ),
-  );
-  /* 「卸载」：开发中的应用不再列在「库」页，卸载入口在这里补齐（确认框由库页同一份实现给出：
-     只删该应用自己的子文件夹，画布 / 会话 / 其它用户内容一概不动）。取的是**最新的**本机摘要，
-     不用顶上那一份可能过期的列表。 */
-  head.appendChild(
-    addSlot(
-      3.5,
-      (() => {
-        const un = appsMiniBtn(appsDevT("卸载"), () => {
-          const app =
-            typeof appsLocalById === "function" ? appsLocalById(DEVD.appId, "dev") : null;
-          if (!app) {
-            appsDevToast(appsDevT("这个应用不在本机了"), "warn");
-            return;
-          }
-          if (typeof appsUninstallApp === "function") appsUninstallApp(app);
-        });
-        un.classList.add("danger");
-        un.title = appsDevT("只删该应用自己的子文件夹；画布、会话与该应用的存储一概不动");
-        if (!DEVD.appId || !apps.some((a) => String(a.id || "") === DEVD.appId))
-          un.disabled = true;
-        return un;
-      })(),
-      "卸载",
-    ),
-  );
-  head.appendChild(
-    addSlot(
-      4,
-      appsMiniBtn(appsDevT("刷新预览"), () =>
-        appsDevCheckPreview(true).catch(() => {}),
-      ),
-    ),
-  );
-  head.appendChild(addSlot(5, appsDevRootItem(), "项目根"));
-  /* 「数据目录」：打开**当前这个应用**的数据文件夹（默认 <数据目录>/apps-data/<id>/，
-     用户改过数据文件夹则是他选的那个）—— 与库页每张卡片右侧那颗 📂 同一个动作
-     （renderer/app-apps.js 的 appsDataOpenNow，路径只由主进程解析）。pri=5.5 = 紧挨
-     应用根目录；没有选中的本机应用时不给点。 */
-  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
-    const dirBtn = appsMiniBtn(appsDevT("数据目录"), () => {
-      if (typeof appsDataOpenNow === "function") appsDataOpenNow(DEVD.appId, "dev");
-    });
-    dirBtn.title = appsDevT("打开这个应用的数据目录（默认在 MTNode 数据目录下按应用 id 建）");
-    head.appendChild(addSlot(5.5, dirBtn, "数据目录"));
-  }
-  /* 「＋ 新建应用」本轮从这条菜单条移到左栏列表底部（左栏现在以应用为主体，
-     建应用就该在建应用的地方）。这里不再占菜单条的宽度。 */
-  /* 「换风格…」：按所选设计风格重写这个应用的入口页（renderer/app-app-flow.js 的
-     appStyleSwapDialog）。pri=9 = 比几个开关还不占主行，放不下就自然收进「更多 ▾」——
-     需求口径就是把它放这一条菜单里，所以它不抢主行宽度。选中应用才有得换。 */
-  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
-    head.appendChild(
-      addSlot(
-        9,
-        appsMiniBtn(appsDevT("换风格…"), () => {
-          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId, "dev") : null;
-          if (typeof appStyleSwapDialog === "function")
-            appStyleSwapDialog(
-              DEVD.appId,
-              String((app && app.name) || DEVD.appId || ""),
-              String((app && app.style) || ""),
-            );
-        }),
-        "换风格",
-      ),
-    );
-  }
-  /* 「应用能力…」：改这个应用的能力位（文字输入 / 图像生成）—— 入口页会按新能力重生成，
-     所以对话框里先弹一次确认（见 renderer/app-app-flow.js 的 appCapabilitiesDialog）。 */
-  if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {
-    head.appendChild(
-      addSlot(
-        9.5,
-        appsMiniBtn(appsDevT("应用能力…"), () => {
-          const app = typeof appsLocalById === "function" ? appsLocalById(DEVD.appId, "dev") : null;
-          if (typeof appCapabilitiesDialog === "function")
-            appCapabilitiesDialog(
-              DEVD.appId,
-              String((app && app.name) || DEVD.appId || ""),
-              /* kind=dev：改的是**项目根那一份**的能力位（同 id 在下载根也有时别写错副本） */
-              { kind: "dev" },
-            );
-        }),
-        "应用能力",
-      ),
-    );
-  }
-  const mkSwitch = (label, checked, onchange, title) => {
-    const lab = document.createElement("label");
-    lab.className = "apps-dev-sw";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = !!checked;
-    cb.onchange = () => onchange(cb.checked);
-    lab.appendChild(cb);
-    lab.appendChild(document.createTextNode(appsDevT(label)));
-    if (title) lab.title = appsDevT(title);
-    return { lab: lab, cb: cb };
-  };
-  const grill = mkSwitch(
-    "先拷问需求",
-    appsDevGrillOn(),
-    async (on) => {
-      const node = await appsDevEnsureNode();
-      if (!node) {
-        appsDevToast(appsDevT("该应用还没有可写的开发节点"), "err");
-        return;
-      }
-      node.devGrill = !!on;
-      try {
-        if (typeof persistWf === "function") persistWf(DEVD.wf);
-      } catch (_) {}
-      appsDevToast(
-        on
-          ? appsDevT("已开启：本次开发会话先按轮问清需求，确认后才动手")
-          : appsDevT("已关闭：开发会话直接开工"),
-      );
-    },
-    "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识后才动手（真源是开发节点上的 devGrill）",
-  );
-  DEVD.grillEl = grill.cb;
-  head.appendChild(addSlot(7, grill.lab));
-  const keep = mkSwitch(
-    "维持状态",
-    DEVD.keepState,
-    (on) => {
-      DEVD.keepState = !!on;
-    },
-    "重载预览前先存下预览页的滚动位置与表单内容，加载后写回",
-  );
-  head.appendChild(addSlot(8, keep.lab));
-  const stat = document.createElement("span");
-  stat.className = "apps-dev-stat";
-  DEVD.statEl = stat;
-  head.appendChild(stat);
+  /* 顶部那一行（本轮需求：**顶栏整体移除**）——
+     原来这一条上有：＋新开发会话 / 应用文件夹（📂 + 路径 + 启动 + 上架）/ 先拷问需求 /
+     维持状态 / 更多 ▾。现在**只剩整页左上角这一枚「新建应用」文字按钮**，各件的新家：
+       · ＋新会话     → 左栏底部那枚「＋ 新会话」（appsDevNewSessionBtnEl，与左栏每行右端的 ＋ 同出口）；
+       · 📂 / 启动 / 上架 → 中栏「预览」列头条（appsDevBarActsEl，见那里的注释）；
+       · 路径块        → 下线（要看路径去预览栏「应用设置」窗的应用文件夹一行）；
+       · 先拷问需求    → 撤销这一枚界面开关：真源仍在开发节点上（node.devGrill），
+                          要改去画布上这个功能块的「开发」对话框里改（renderer/app.js）；
+       · 维持状态      → 先搬进预览栏「应用设置」窗，**本轮又搬去右上角齿轮的「目录设置」窗**
+                           （末尾的「预览」一节；它是整个开发页预览的全局开关，见 appsDevKeepStateOn）。
+     这一条不再需要收窄 / 搬运那一套：整行只有一枚按钮，窄窗下也不会溢出。 */
+  const top = document.createElement("div");
+  top.className = "apps-dev-top";
+  if (typeof appsCreateAppBtnEl === "function") top.appendChild(appsCreateAppBtnEl());
+  wrap.appendChild(top);
+
+  /* 有没有「可操作的当前应用」：预览栏那几枚（📂 / 启动 / 上架 / 应用设置 / 画布）都要一个应用
+     才有意义 —— 一个都没有时只留「刷新」，摆在那里只会点了没反应。 */
+  const hasApp = !!DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId);
+
+  /* 「更多 ▾」那一套（按钮 + 面板）**本轮搬到预览列头条**：列头条是 overflow:hidden 的定高一行，
+     六枚按钮窄窗下放不下时由 appsDevFitColHead 把 pri 最大的几项搬进这只面板。
+     面板挂在列头条外面的壳上（.apps-dev-colhead-wrap），不在 overflow:hidden 的 head 里被裁掉。 */
   const moreBtn = document.createElement("button");
   moreBtn.type = "button";
   moreBtn.className = "mini apps-dev-morebtn";
@@ -2582,24 +2426,10 @@ function appsDevPagePaint(body, seq) {
     appsDevMoreToggle(!DEVD.moreOpen);
   };
   DEVD.moreBtnEl = moreBtn;
-  head.appendChild(moreBtn);
   const morePop = document.createElement("div");
   morePop.className = "apps-dev-more-pop";
   morePop.hidden = true;
   DEVD.morePopEl = morePop;
-  /* 面板要能探出这条工具栏：工具栏自己 overflow:hidden（一行不折行靠它收尾），
-     所以面板挂在外面这层 .apps-dev-topbar 上，不在 head 里被裁掉。 */
-  const headWrap = document.createElement("div");
-  headWrap.className = "apps-dev-topbar";
-  headWrap.appendChild(head);
-  headWrap.appendChild(morePop);
-  wrap.appendChild(headWrap);
-  /* 首帧排一次（此刻 head 还没进 DOM，等一帧再看宽度）；之后宽度一变就重排 */
-  requestAnimationFrame(() => {
-    appsDevStartHeadWatch(head);
-    appsDevFitHead();
-  });
-
   const warn = document.createElement("div");
   warn.className = "apps-dev-warn";
   warn.hidden = true;
@@ -2641,11 +2471,14 @@ function appsDevPagePaint(body, seq) {
   sideList.className = "agent-side-list";
   sideList.id = "appsDevSideList";
   side.appendChild(sideList);
-  /* 左栏底部：本机还没有「开发中」的应用时，这条列表就是唯一的入口 —— 把「＋ 新建应用」
-     钉在列表底部（本轮需求：它从顶栏菜单条移到这里）。列表滚动区独立，这行不跟着滚。 */
+  /* 左栏底部（本轮需求）：原来这里是「＋ 新建应用」（已搬到整页左上角），
+     改成「＋ 新会话」= 在当前应用下新建一条开发会话（原顶栏那颗 ＋ 搬到这里，
+     与左栏每行右端那枚 ＋ 同一出口 appsDevNewRound）。
+     一个「开发中」的应用都没有时不摆它：没有应用就无处可开会话，零应用时的入口
+     就是左上角那颗「新建应用」（列表里的空态话术也指着它）。 */
   const sideFoot = document.createElement("div");
   sideFoot.className = "apps-dev-sidefoot";
-  if (typeof appsCreateAppBtnEl === "function") sideFoot.appendChild(appsCreateAppBtnEl());
+  if (cur) sideFoot.appendChild(appsDevNewSessionBtnEl());
   if (sideFoot.childNodes.length) side.appendChild(sideFoot);
   /* 行自己的 onclick（app-assist.js）会设活动会话并重绘：这里在捕获段先把宿主态对齐，
      （点行内按钮不算选会话） */
@@ -2700,14 +2533,30 @@ function appsDevPagePaint(body, seq) {
 
   const view = document.createElement("section");
   view.className = "apps-dev-col apps-dev-view";
+  /* 列头条的外壳：position:relative + 不裁内容 —— 「更多 ▾」面板挂它上面，
+     才不会被列头条自己的 overflow:hidden 裁掉（面板是 absolute、探到条下面）。 */
+  const viewHeadWrap = document.createElement("div");
+  viewHeadWrap.className = "apps-dev-colhead-wrap";
+  DEVD.colHeadWrap = viewHeadWrap;
   const viewHead = document.createElement("div");
   viewHead.className = "apps-dev-colhead";
-  const viewK = document.createElement("span");
-  viewK.textContent = appsDevT("预览");
-  const urlEl = document.createElement("span");
-  urlEl.className = "apps-dev-url";
-  viewHead.appendChild(viewK);
-  viewHead.appendChild(urlEl);
+  /* 预览列头条（本轮口径）：**整行 = 六枚动作钮 + 「更多 ▾」**，右端留给条件出现的
+     「关掉独立窗口」。六枚从左到右：📂 · 启动 · 上架 · 刷新 · 应用设置 · 画布
+     （用户共识的顺序与样式：全是「图标 + 小字」，与原来那三枚同一套 —— 见 appsDevBarActsEl）。
+     那串状态文字（预览已是最新 · 已连入宿主 · N 个文件…）**本轮整体移除**（见文件里那段注释）。
+     放不下时由 appsDevFitColHead 把 pri 最大的几项收进「更多 ▾」，永远只有一行。
+     列头条本身留着：它是三栏等高（--apps-dev-colhead-h）与右端那枚「关掉独立窗口」的宿主。 */
+  DEVD.colHeadEl = viewHead;
+  DEVD.colSlots = [];
+  const barActs = appsDevBarActsEl(hasApp);
+  DEVD.barActsEl = barActs;
+  viewHead.appendChild(barActs);
+  viewHead.appendChild(DEVD.moreBtnEl);
+  /* 弹性占位：把「关掉独立窗口」顶到条的最右端（原来这个位置是那串状态文字） */
+  const headSpacer = document.createElement("span");
+  headSpacer.className = "apps-dev-colhead-spacer";
+  headSpacer.setAttribute("aria-hidden", "true");
+  viewHead.appendChild(headSpacer);
   /* 「关掉独立窗口」（本轮需求）：只在预览因该应用已在独立窗口运行而**只读**时露出 ——
      关掉它，预览立刻恢复可写（状态由主进程的窗口开关事件实时回来）。 */
   const bridgeCloseBtn = document.createElement("button");
@@ -2727,11 +2576,16 @@ function appsDevPagePaint(body, seq) {
   };
   viewHead.appendChild(bridgeCloseBtn);
   DEVD.bridgeCloseBtn = bridgeCloseBtn;
-  /* 文件夹按钮（本轮需求）：预览列头最右那一枚 —— 点它进这个应用的文件夹（应用目录）。
-     常驻不藏（没选中应用时点了给一句提示），与「关掉独立窗口」同一处右端对齐。 */
-  viewHead.appendChild(appsDevFolderBtnEl());
-  view.appendChild(viewHead);
-  DEVD.urlEl = urlEl;
+  viewHeadWrap.appendChild(viewHead);
+  viewHeadWrap.appendChild(DEVD.morePopEl);
+  /* 列头条的宽度监听：建好就登记（此刻还没进 DOM，第一发观察回调要等它连上），
+     首帧那一次收窄由整页绘制收尾的 rAF 补（见下面的 appsDevFitColHead 调用）。 */
+  appsDevStartColHeadWatch(viewHead);
+  view.appendChild(viewHeadWrap);
+  /* DEVD.urlEl（预览列头那条 URL）**早前已移除**：URL 现在只活在状态里（DEVD.url /
+     DEVD.urlInfo），显示在预览条那枚「应用设置」开的窗里（appsAppSettingsOpen）。这里显式
+     清掉老引用，避免残留元素被后续 paint 摸到。 */
+  DEVD.urlEl = null;
   const frameWrap = document.createElement("div");
   frameWrap.className = "apps-dev-framewrap";
   DEVD.frameWrap = frameWrap;
@@ -2807,6 +2661,11 @@ function appsDevPagePaint(body, seq) {
      不先画一次的话，这段空窗期里右栏（刚搬过来的那几个面板）还留着上一个上下文的
      内容 —— 首帧残留（用户看到的「刚点开开发页，右栏里是别人的计划」）。 */
   appsDevRenderConv();
+  /* 列头条的首次收窄：建它的时候还没进 DOM（clientWidth = 0，量不出真实宽度），
+     所以推到下一帧、等它连上并完成布局后再量一次。 */
+  requestAnimationFrame(() => {
+    appsDevFitColHead();
+  });
 
   if (!cur) {
     /* 左栏：应用分组由宿主渲染，但一个「开发中」的应用都没有时宿主不生效（appId 为空），
@@ -2818,9 +2677,8 @@ function appsDevPagePaint(body, seq) {
     /* 「项目根丢了 → 一键恢复候选目录」那一行**已随本轮需求删除**：根目录默认就在画布所在的
        数据目录下（<数据目录>/apps-dev），主进程列应用时把默认路径固化下来，不存在「没配 =
        整列消失」这个状态；真有应用躺在别处，走上面「项目根 … 更改…」指过去。 */
-    appsDevPaintPreviewStat("error");
     appsDevPreviewStatMsg(
-      appsDevT("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。"),
+      appsDevT("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左上角的「＋ 新建应用」。"),
     );
     return;
   }
@@ -2837,7 +2695,6 @@ async function appsDevSyncAfterPaint(mySeq, seq) {
     /* 拿不到目录 / info：url 退回按 appId 拼的兜底（协议层发默认入口页），
        确实读不到时中栏盖一层可读提示 + 「重试」，而不是只剩白底 */
     DEVD.url = appsDevUrlOf(DEVD.appId);
-    appsDevPaintPreviewStat("error");
     appsDevPaintUrl();
     if (DEVD.url && DEVD.frame && DEVD.frame.getAttribute("src") !== DEVD.url)
       DEVD.frame.setAttribute("src", DEVD.url);
@@ -2859,7 +2716,6 @@ async function appsDevSyncAfterPaint(mySeq, seq) {
       mtimeMs: info.mtimeMs,
       entry: info.entry,
     };
-    appsDevPaintPreviewStat("same");
     appsDevPaintUrl();
     appsDevPreviewStatMsg("");
     if (DEVD.frame && DEVD.url && DEVD.frame.getAttribute("src") !== DEVD.url)
@@ -3012,7 +2868,6 @@ async function appsDevSwitchAppRun(prevId, id, seq) {
   if (!info || info.ok === false) {
     DEVD.snap = null;
     DEVD.url = appsDevUrlOf(id);
-    appsDevPaintPreviewStat("error");
     appsDevPaintUrl();
     appsDevPreviewStatMsg(
       info && info.error
@@ -3027,7 +2882,6 @@ async function appsDevSwitchAppRun(prevId, id, seq) {
       mtimeMs: info.mtimeMs,
       entry: info.entry,
     };
-    appsDevPaintPreviewStat("same");
     appsDevPaintUrl();
     appsDevPreviewStatMsg("");
   }

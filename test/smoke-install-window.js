@@ -61,6 +61,14 @@ function fnBody(src, name) {
   return src.slice(at);
 }
 
+/** 取一段「以某前缀开头、到下一个 } 为止」的源码（CSS 规则 / 短片段用；不赌后面紧跟什么） */
+function fnSeg(src, from) {
+  const i = String(src).indexOf(from);
+  if (i < 0) return "";
+  const j = String(src).indexOf("}", i + from.length);
+  return j < 0 ? src.slice(i) : src.slice(i, j + 1);
+}
+
 /* 7 个后端插件：包目录 / 宿主文件 / 安装窗 id / steps.json */
 const PACKS = [
   { pack: "llama-pack", host: "llama/main-llama.js", id: "llama-local", skill: "llama-local-install", steps: 5 },
@@ -846,11 +854,172 @@ async function h3StreamingProbe() {
   }
 }
 
+/* ═════════════ [14] 安装后自检（本轮需求：装完真生成一个最小内容 + 结果展示 + 卡片打勾） ═════════════
+   口径：
+     · 内核 plugins/plugin-selfcheck.js = 注册表 + 结果落盘 + 等全局媒体锁（5s×30min）+ 产物目录；
+     · 安装窗 install/ 多一块「自检结果」区（状态 + 逐项明细 + 产物路径）与「重新自检 / 清理产物」；
+     · 主窗口插件界面按最近一次结论在**卡片封面左上角**打勾（只给通过的）；
+     · 结果落 <数据目录>/plugin-selfcheck/，plugins/main-install.js 仍不落盘（[5] 那条断言不变）。 */
+console.log("\n[14] 安装后自检：内核（真跑）/ 安装窗接线 / 主窗口打勾 / 宿主登记");
+const SELF_REL = "plugins/plugin-selfcheck.js";
+ok(exists(SELF_REL), "自检内核 plugins/plugin-selfcheck.js 存在");
+const selfSrc = read(SELF_REL);
+has(selfSrc, "function registerPluginSelfcheck(", "有宿主登记口（各宿主只给 check 函数）");
+has(selfSrc, "function initPluginSelfcheck(", "有初始化口（数据目录 / 事件口 / 主窗口广播）");
+has(selfSrc, "可多次调用：只覆盖这一次真给的那几项", "接线可多次调用且只覆盖这次给的那几项 —— 安装窗与主窗口各接一次不会互相冲掉");
+has(selfSrc, "function runCheck(", "有跑一次自检的入口");
+has(selfSrc, "function cancelCheck(", "可取消（宿主自己收手）");
+has(selfSrc, "function cleanArtifacts(", "「清理自检产物」删产物目录 + 清结果缓存");
+has(selfSrc, "function dropCheck(", "卸载时把结果与产物一并清掉");
+has(selfSrc, "function readCheck(", "结果可从盘上读回（卡片 / 安装窗共用一份真相）");
+has(selfSrc, "plugin-selfcheck", "结果落 <数据目录>/plugin-selfcheck/（不落应用目录）");
+has(selfSrc, "queued", "等锁时会回「在排队」状态（安装窗据此显示「排队等锁」）");
+has(selfSrc, 'require("../media-gen-global-lock.js")', "出片类自检走全局媒体锁（不抢用户正在跑的生成任务）");
+has(selfSrc, "QUEUE_MAX_MS = 30 * 60 * 1000", "排队上限 30 分钟（超时如实标注「已跳过」，不打勾）");
+has(selfSrc, "QUEUE_POLL_MS = 5000", "等锁每 5 秒看一眼（不空转）");
+hasnt(selfSrc, "shell.", "内核对窗口 / shell 无依赖（纯主进程逻辑，冒烟可直接 require）");
+
+/* 真跑内核：注册一个假插件 → 跑 → 结论落盘可读 → 清理 */
+const vmSelf = { exports: {} };
+let selfMod = null;
+try {
+  /* media-gen-global-lock 依赖 electron 的 app.getPath：这里用替身注入（只读路径，不真写盘） */
+  const Module = require("module");
+  const origResolve = Module._resolveFilename;
+  const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-selfcheck-"));
+  const lockStub = path.join(ROOT, "media-gen-global-lock.js");
+  const lockSrc = read("media-gen-global-lock.js").replace('require("electron")', '({ app: { getPath: () => ' + JSON.stringify(stubDir) + ' } })');
+  const stubLock = path.join(stubDir, "media-gen-global-lock.js");
+  fs.writeFileSync(stubLock, lockSrc, "utf8");
+  Module._resolveFilename = function (request, parent, ...rest) {
+    const r = origResolve.call(this, request, parent, ...rest);
+    if (path.basename(r) === "media-gen-global-lock.js") return stubLock;
+    return r;
+  };
+  try {
+    selfMod = require(path.join(ROOT, SELF_REL));
+  } finally {
+    Module._resolveFilename = origResolve;
+  }
+  if (selfMod) {
+    const dataDir = stubDir;
+    const events = [];
+    selfMod.initPluginSelfcheck({
+      getDataDir: () => dataDir,
+      getInstallDirOf: () => "",
+      pushEvent: (ev) => events.push(ev),
+      log: () => {},
+    });
+    const reg = selfMod.registerPluginSelfcheck({
+      id: "smoke-selfcheck",
+      key: "smoke",
+      label: "冒烟",
+      kind: "image",
+      check: async (ctx) => {
+        fs.mkdirSync(ctx.artifactDir, { recursive: true });
+        const p = path.join(ctx.artifactDir, "out.txt");
+        fs.writeFileSync(p, "x", "utf8");
+        ctx.step({ title: "生成", status: "ok", detail: "ok" });
+        return { ok: true, artifacts: [{ path: p, label: "冒烟产物" }], steps: [{ id: "gen", title: "生成", status: "ok" }] };
+      },
+    });
+    ok(reg && reg.ok === true, "[14] 登记自检能力回执 ok");
+    ok(selfMod.registry.has("smoke-selfcheck"), "[14] 登记后进注册表");
+    const started = selfMod.runCheck("smoke-selfcheck", { reason: "smoke" });
+    ok(started && started.started === true, "[14] runCheck 立即回「已起跑」（不阻塞调用方）");
+    const noReg = selfMod.runCheck("no-such-plugin", {});
+    ok(noReg && noReg.ok === false && noReg.error === "no_selfcheck", "[14] 没登记的插件如实回 no_selfcheck（不装作跑了）");
+  }
+} catch (e) {
+  ok(false, "[14] 内核可直接 require 真跑（" + ((e && e.message) || e) + "）");
+}
+if (selfMod && selfMod.registry.has("smoke-selfcheck")) {
+  /* 等一下这次异步自检落盘（假 check 是同步的，一轮 microtask 足够） */
+  const stubDir2 = null;
+  setTimeout(() => {
+    const r = selfMod.readCheck("smoke-selfcheck");
+    ok(!!r && r.ok === true, "[14] 结论已落盘且可读回（ok:true）");
+    ok(!!r && String(r.artifactDir || "").indexOf("plugin-selfcheck") >= 0, "[14] 结论带产物目录（产物落在自检专用目录）");
+    ok(selfMod.checkPassed("smoke-selfcheck") === true, "[14] checkPassed = 卡片打勾的唯一判据");
+    const clean = selfMod.cleanArtifacts("smoke-selfcheck");
+    ok(clean && clean.ok === true, "[14] 清理自检产物回执 ok");
+    ok(selfMod.readCheck("smoke-selfcheck") === null, "[14] 清理后结果缓存没了（勾随之消失）");
+    ok(selfMod.checkPassed("smoke-selfcheck") === false, "[14] 清理后不再打勾");
+  }, 30);
+}
+
+/* 安装窗接线 */
+has(hostInstSrc, 'require("./plugin-selfcheck.js")', "main-install.js 复用自检内核（不另写队列 / 落盘）");
+has(hostInstSrc, '"mtnodeInstall:selfcheck"', "安装窗有专用自检通道 mtnodeInstall:selfcheck");
+has(hostInstSrc, 'action === "state"', "自检通道认 state（登记能力 + 最近一次结果 + 在跑 / 排队）");
+has(hostInstSrc, 'action === "run"', "自检通道认 run（起一次）");
+has(hostInstSrc, 'action === "cancel"', "自检通道认 cancel");
+has(hostInstSrc, 'action === "clean"', "自检通道认 clean（清理产物 + 清结果）");
+has(hostInstSrc, 'e.kind === "selfcheck"', "宿主 / 内核推来的 selfcheck 事件原样转给安装窗");
+has(hostInstSrc, "selfcheck.dropCheck(sid)", "卸载收口把自检结果与产物一并清掉（勾与结果一起失效）");
+has(hostInstSrc, "shellShowItem: \"shell:showItem\"", "产物路径可在文件管理器里定位（复用既有通道，不新开 IPC 面）");
+hasnt(hostInstSrc, "fs.writeFileSync", "自检接进来后本模块**仍不落盘**（结果落盘在内核 / 各宿主里）");
+has(preloadWin, "selfcheck: (payload)", "窗桥暴露 mtnodeInstall:selfcheck");
+has(pageSrc, 'id="insSelf"', "窗页面有「自检结果」区块");
+has(pageSrc, 'id="insSState"', "区块里有状态位（通过 / 未通过 / 已跳过 / 未自检）");
+has(pageSrc, 'id="insSSteps"', "区块里列逐项明细");
+has(pageSrc, 'id="insSArts"', "区块里列产物路径");
+has(pageSrc, 'id="insSRun"', "区块里有「重新自检」");
+has(pageSrc, 'id="insSClean"', "区块里有「清理自检产物」");
+has(pageJs, "function renderSelfcheck(", "窗画自检结果区");
+has(pageJs, 'api.selfcheck({ action: "state"', "开窗 / 换插件时问一次自检现状");
+has(pageJs, 'action: "run"', "「重新自检」起一次（并把安装窗这份安装目录现场带上）");
+has(pageJs, "installDir: String((snap && snap.installDir) || \"\")", "起自检时带上当前安装目录（少一层「窗说装完、自检说没装好」的矛盾）");
+has(pageJs, 'api.selfcheck({ action: "clean"', "「清理自检产物」走 clean");
+has(pageJs, 'ev.kind === "selfcheck"', "窗订阅自检事件（进度 / 排队 / 明细 / 结论）");
+has(pageJs, 'runSelfcheck("auto")', "安装成功（终局 done）后**自动跑一次**自检");
+has(pageJs, "selfAutoDone", "自动自检只跑一次（终局事件重复到达也不重复跑）");
+has(pageJs, "selfArtifactOpen", "产物路径可点开（定位到文件，定位不可用则复制路径）");
+has(pageJs, "不影响**这次安装", "未通过时写清「不影响安装与插件启用」（失败不阻塞）");
+
+/* 主窗口：卡片封面左上角的勾 */
+const appPluginsRenderSrc = read("renderer/app-plugins.js");
+has(appPluginsRenderSrc, "pluginSelfcheckSummary", "主窗口拉自检现状（一份快照回全部插件）");
+has(appPluginsRenderSrc, "function paintPluginDone(", "有「把勾画到卡片上」的唯一入口");
+has(appPluginsRenderSrc, "function pluginCheckPassed(", "打勾判据来自最近一次结论（不是自己编）");
+has(appPluginsRenderSrc, "plugin-tile-done", "勾是卡片上的独立元素（封面左上角角标）");
+has(appPluginsRenderSrc, "paintPluginDone(card, item.id)", "拼卡片时就画勾（未通过 / 没测过不画）");
+has(appPluginsRenderSrc, "onPluginSelfcheckChanged", "自检结论变了就重画勾（装完不必重开插件界面）");
+has(appPluginsRenderSrc, "function paintPluginSelfcheckRow(", "卡片详情里可复看最近一次自检（时间 + 产物路径）");
+const layoutSrc = read("renderer/css/layout.css");
+const tileSeg = fnSeg(layoutSrc, ".plugin-tile {");
+has(layoutSrc, ".plugin-tile-done", "勾的样式在 layout.css（与卡片同一套变量）");
+ok(tileSeg.indexOf("position: relative;") > 0, "卡片是定位上下文（勾按卡片左上角定位）");
+has(read("preload.js"), "pluginSelfcheckSummary:", "主窗口 preload 暴露自检现状桥");
+has(read("preload.js"), "onPluginSelfcheckChanged:", "主窗口 preload 暴露自检变化订阅");
+has(read("main.js"), 'require("./plugins/plugin-selfcheck.js")', "main.js require 自检内核");
+has(read("main.js"), '"plugin-selfcheck:summary"', "main.js 注册自检现状通道");
+has(read("main.js"), "plugin-selfcheck:changed", "自检结论变化广播给主窗口");
+has(read("plugins/install-preload.js"), "selfcheck:", "窗桥暴露 mtnodeInstall:selfcheck");
+
+/* 宿主登记：6 个内容生成类插件各一条 */
+const SELF_HOSTS = [
+  { host: "sensenova/main-sensenova.js", id: "sensenova-local", kind: "image" },
+  { host: "breeze/main-breeze.js", id: "breeze-tts-local", kind: "speech" },
+  { host: "music3/main-music3.js", id: "minimax-music3", kind: "music" },
+  { host: "yue/main-yue.js", id: "yue2-local", kind: "music" },
+  { host: "h3/main-h3.js", id: "minimax-h3", kind: "video" },
+  { host: "remotion/main-remotion.js", id: "remotion", kind: "motion" },
+];
+for (const h of SELF_HOSTS) {
+  const src = read(h.host);
+  has(src, 'require("../plugins/plugin-selfcheck.js")', h.host + " require 自检内核");
+  has(src, "registerPluginSelfcheck({", h.host + " 登记自己的自检");
+  has(src, 'id: PLUGIN_ID', h.host + " 用 PLUGIN_ID 登记（与卡片 / 安装窗同源 id）");
+  has(src, 'kind: "' + h.kind + '"', h.host + " 自检类型 = " + h.kind);
+  has(src, "waitMediaLock()", h.host + " 出片前等全局媒体锁（不抢用户的生成任务）");
+  has(src, "artifactDir", h.host + " 产物落自检专用目录");
+}
+
 function finish() {
   console.log("\n" + (fails ? "FAILED " + fails + " / " + checks : "ALL PASS " + checks) + " checks");
   process.exit(fails ? 1 : 0);
 }
-
 if (process.platform === "win32") {
   h3StreamingProbe().then(finish, (e) => {
     checks++;

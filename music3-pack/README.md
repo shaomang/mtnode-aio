@@ -14,7 +14,7 @@
 ## 快速开始（App）
 
 ```powershell
-# 1) 环境（复用本机 CUDA torch）
+# 1) 环境（隔离 venv：脚本自己取 Python 3.11 / 3.12，再往 venv 里装 CUDA torch cu130）
 .\scripts\setup_env.ps1
 
 # 2) 下载官方权重 -> models/MiniMax-Music3

@@ -34,8 +34,32 @@
     {
       "id": "venv",
       "title": "建立隔离 venv 与 CUDA torch",
-      "hint": "ComfyUI 用**隔离** venv（禁用 system-site-packages），按驱动装 CUDA torch；torch 装错档位会在这一步报出来。",
+      "hint": "先体检显卡 / 驱动（H3 必须要 NVIDIA 卡 + 支持 CUDA 13.0 的驱动），再自动取一个 Python 3.11 / 3.12 当基座（本机没有就自己下，不用你装），最后在**隔离** venv（禁用 system-site-packages）里装 CUDA torch；torch 装错档位会在这一步报出来。",
       "messages": {
+        "h3.gpu.none": {
+          "zh": "没检测到可用的 NVIDIA 显卡：H3 的量化算子在 CPU 上跑不了，装下去也出不了片。请换一台有 N 卡的机器再装；若你本来就是想在这台机器上跑，先装好 NVIDIA 驱动并确认命令行能执行 nvidia-smi。",
+          "en": "no usable NVIDIA GPU was detected: the H3 quantized kernels cannot run on CPU, so installing here would produce nothing. Install on a machine with an NVIDIA card, or fix the driver so that nvidia-smi works from the command line first."
+        },
+        "h3.gpu.driver_old": {
+          "zh": "显卡在，但 NVIDIA 驱动太旧（H3 要 cu130 = CUDA 13.0，驱动主版本需 ≥ 580）：现在的 torch cu130 装上也跑不起来。请把显卡驱动升级到 580 或更高，然后重新安装。诊断日志尾部：{tail}",
+          "en": "the GPU is there but the NVIDIA driver is too old (H3 wants cu130 = CUDA 13.0, driver major >= 580), so the cu130 torch build would not run. Upgrade the NVIDIA driver to 580+ and re-run the install. Diagnostic tail: {tail}"
+        },
+        "h3.python.missing": {
+          "zh": "这台机器上找不到可用的 Python 3.11 / 3.12，脚本自己下载一个也没成功（走 npmmirror 的 python-build-standalone）。多半是网络问题或磁盘不可写：确认能访问 registry.npmmirror.com 后重跑本步；也可以自己装一个 Python 3.11（python.org 或 Microsoft Store）后重跑，或显式指定解释器：设环境变量 MT_H3_CUDA_PYTHON 指向它。诊断日志尾部：{tail}",
+          "en": "no usable Python 3.11 / 3.12 was found on this machine and fetching one failed too (python-build-standalone via npmmirror). Usually a network or a non-writable cache: make sure registry.npmmirror.com is reachable and re-run this step; or install Python 3.11 yourself (python.org / Microsoft Store) and re-run, or point MT_H3_CUDA_PYTHON at an existing interpreter. Diagnostic tail: {tail}"
+        },
+        "h3.python.fetch_failed": {
+          "zh": "取基座 Python 这一步失败了（下载或解压没成功）。网络可达后重跑本步即可（已下载的解释器会复用，不会重复下）。诊断日志尾部：{tail}",
+          "en": "fetching the base Python failed (download / extraction). Re-run this step once the network is fine - an already fetched interpreter is reused. Diagnostic tail: {tail}"
+        },
+        "h3.python.too_old": {
+          "zh": "你指定的 Python 太旧了：torch 2.9.1+cu130 只提供 cp311 及以上的轮子（Python 3.11 / 3.12 为宜）。换一个 3.11 或 3.12 的解释器，或者清掉 MT_H3_CUDA_PYTHON / -CudaPython 让脚本自己取。诊断日志尾部：{tail}",
+          "en": "the interpreter you pointed at is too old: torch 2.9.1+cu130 only ships cp311+ wheels (Python 3.11 / 3.12 preferred). Use a 3.11 or 3.12 interpreter, or clear MT_H3_CUDA_PYTHON / -CudaPython and let the script fetch one. Diagnostic tail: {tail}"
+        },
+        "h3.python.too_new": {
+          "zh": "你指定的 Python 太新了：torch 2.9.1+cu130 的轮子只覆盖到 cp313。换一个 3.11 或 3.12 的解释器，或者清掉 MT_H3_CUDA_PYTHON / -CudaPython 让脚本自己取。诊断日志尾部：{tail}",
+          "en": "the interpreter you pointed at is too new: the torch 2.9.1+cu130 wheels only go up to cp313. Use a 3.11 or 3.12 interpreter, or clear MT_H3_CUDA_PYTHON / -CudaPython and let the script fetch one. Diagnostic tail: {tail}"
+        },
         "h3.venv.pip_failed": {
           "zh": "环境准备没跑完（venv 仍不存在 {venv}）：最常见的现场是「依赖那一步的 pip 挂了」，而不是「驱动与 CUDA 档位不匹配」—— 本步日志尾部给出的 pip 原始报错才是真判据。pip 已依次试过清华 / 阿里云 / USTC / 官方 PyPI：若日志里是「No matching distribution found for 某包」，说明该包在这四个源上都还没同步，先重试一次（脚本会自动走下一级源），仍失败就按包名上报。",
           "en": "environment prep did not finish (venv still missing: {venv}): the usual cause is pip failing in the dependency phase, NOT a driver / CUDA tier mismatch - the raw pip error in this step's log tail is the real evidence. pip already tried Tsinghua / Aliyun / USTC / official PyPI in order: if the log says 'No matching distribution found for <package>', that package is not synced on those four mirrors yet; retry once (the script walks to the next mirror) and if it still fails, report the package name."

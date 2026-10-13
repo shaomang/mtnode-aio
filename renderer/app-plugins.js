@@ -5,8 +5,113 @@
 let _petProgressOff = null;
 /* 用户自建插件（<数据目录>/user-plugins）的清单缓存：卡片与详情面板都按 id 从这里取 */
 let _userPluginItems = [];
-const PLUGIN_ACT_SVG = {
-  play:
+/* ── 安装后自检现状（本轮需求）────────────────────────────────────────────────
+   卡片封面左上角的勾角标 = 该插件**最近一次自检通过**（真出过一次最小内容）。
+   真源是主进程 plugins/plugin-selfcheck.js 落的数据目录结果；这里只缓存一份快照，
+   打开插件界面时拉一次、安装窗跑完一次安装后再拉一次 —— 绝不在渲染层自己编结论。 */
+let _pluginCheckState = { ok: false, checks: {} };
+/* 勾（16 viewBox，与顶栏那批线性图标同风格） */
+const PLUGIN_DONE_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8.6l3 3 6.2-7.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+async function loadPluginCheckState() {
+  const fn = window.api && window.api.pluginSelfcheckSummary;
+  if (typeof fn !== "function") return _pluginCheckState;
+  try {
+    const r = await fn();
+    if (r && typeof r === "object") _pluginCheckState = r;
+  } catch {}
+  return _pluginCheckState;
+}
+/** 该插件 id 的自检记录（没登记 / 没测过 → null） */
+function pluginCheckOf(id) {
+  const m = (_pluginCheckState && _pluginCheckState.checks) || {};
+  return m[String(id || "")] || null;
+}
+function pluginCheckPassed(id) {
+  const c = pluginCheckOf(id);
+  return !!(c && c.passed);
+}
+/** 勾上的那行提示：通过时间 + 产物路径（鼠标停一下看得见结论从哪来） */
+function pluginCheckTip(id) {
+  const c = pluginCheckOf(id);
+  const r = c && c.result;
+  if (!r) return "";
+  const when = r.at ? new Date(r.at).toLocaleString() : "";
+  const arts = ((r.artifacts || [])[0] || {}).path || r.artifactDir || "";
+  return (
+    I18n.t("安装后自检通过") +
+    (when ? " · " + when : "") +
+    (arts ? "\n" + I18n.t("自检产物：") + arts : "")
+  );
+}
+/** 把勾画到（或从）卡片上：只给自检通过的卡片一个勾，其余一律不显示 */
+function paintPluginDone(card, id) {
+  if (!card) return;
+  const old = card.querySelector(".plugin-tile-done");
+  const pass = pluginCheckPassed(id);
+  if (!pass) {
+    if (old) old.remove();
+    return;
+  }
+  if (old) {
+    old.title = pluginCheckTip(id);
+    return;
+  }
+  const el = document.createElement("div");
+  el.className = "plugin-tile-done";
+  el.setAttribute("aria-hidden", "true");
+  el.innerHTML = PLUGIN_DONE_SVG;
+  el.title = pluginCheckTip(id);
+  card.appendChild(el);
+}
+/** 详情浮层里的一行「安装后自检」：通过 / 未通过 / 已跳过 / 没测过 + 时间 + 产物路径。
+ *  没登记自检的插件（窗口插件 / 桌宠 / llama）不画这一行 —— 不装作有结论。 */
+function paintPluginSelfcheckRow(pop, id) {
+  const c = pluginCheckOf(id);
+  if (!pop || !c) return;
+  const r = c.result;
+  const row = document.createElement("div");
+  row.className = "plugin-pop-desc";
+  row.style.marginTop = "8px";
+  const head =
+    I18n.t("安装后自检") +
+    "：" +
+    (!r
+      ? I18n.t("还没测过")
+      : r.ok
+        ? I18n.t("通过")
+        : r.skipped
+          ? I18n.t("已跳过")
+          : I18n.t("未通过")) +
+    (c.running ? " · " + I18n.t("正在跑…") : "");
+  row.textContent = head;
+  if (r) {
+    const when = r.at ? new Date(r.at).toLocaleString() : "";
+    const parts = [];
+    if (when) parts.push(when);
+    if (!r.ok) {
+      const why = r.error || r.reason || "";
+      if (why) parts.push(I18n.t("原因：") + String(why).slice(0, 400));
+    }
+    const arts = (r.artifacts || []).map((a) => a && a.path).filter(Boolean);
+    if (arts.length) parts.push(I18n.t("产物：") + arts.join(" · "));
+    else if (r.artifactDir) parts.push(I18n.t("产物目录：") + r.artifactDir);
+    if (parts.length) {
+      const sub = document.createElement("div");
+      sub.className = "plugin-pop-desc";
+      sub.style.marginTop = "2px";
+      sub.style.whiteSpace = "pre-wrap";
+      sub.style.wordBreak = "break-all";
+      sub.textContent = parts.join("\n");
+      pop.appendChild(row);
+      pop.appendChild(sub);
+      return;
+    }
+  }
+  pop.appendChild(row);
+}
+
+const PLUGIN_ACT_SVG = {  play:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2l8 4.8-8 4.8z" fill="currentColor"/></svg>',
   stop:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1" fill="currentColor"/></svg>',
@@ -326,6 +431,8 @@ function openPluginPop(wrap, pop, card, item) {
   /* 本地后端插件：详情浮层里内嵌只读 console（状态行 + 后端日志尾部），见 mountPluginPopConsole */
   const consoleMounted = mountPluginPopConsole(pop, item);
   if (consoleMounted) setPluginNotice(card, ""); /* 角标当场收起（用户已经看到详情里的日志区） */
+  /* 安装后自检的最近一次结论（本轮需求）：卡片详情里能复看「什么时候测的、产物在哪」 */
+  paintPluginSelfcheckRow(pop, item.id);
   /* 安装目录**不在插件界面里显示**（本轮需求）：目录由安装窗统一显示与修改
      （底栏那一行 + 「选择安装目录」）。这里不再挂目录 / 路径这类只读文字。 */
   pop.classList.add("on");
@@ -989,7 +1096,9 @@ async function refreshBackendPluginCard(root, spec, opts) {
   /* 卡片不再挂 hint 说明行（Breeze 的权重许可、SenseNova 的磁盘 / 权重说明、Remotion 的安装口径
      各占一行小字都已移除）—— 卡片上只剩图标 + 标题 + 动作按钮 + 状态行（启动失败原因 / 后端提示），
      失败不静默。 */
-  const line = backendCardLine(st, spec);
+  /* 卡片状态行 = 显存门槛那句（已装但不达标）+ 后端自己的状态（启动失败原因 / 后端提示） */
+  const vramHint = root._pluginItem ? pluginVramNoticeText(root._pluginItem) : "";
+  const line = [vramHint, backendCardLine(st, spec)].filter(Boolean).join(" · ");
   if (progTxt) {
     if (line) {
       progTxt.style.display = "block";
@@ -1077,6 +1186,188 @@ function pluginCatalogHint(cat) {
     (cat && cat.remoteError ? " (" + cat.remoteError + ")" : "")
   );
 }
+
+/* ============ 插件显存门槛（本轮需求：显存不够的本地后端插件直接隐藏） ============
+   名单与门槛的唯一真源在主进程 plugins/vram-gate.js：sensenova-local 24G · minimax-music3 24G ·
+   yue2-local 16G · minimax-h3 16G。分工：
+     · 主进程目录（appPluginsCatalog）已经把「显存不足且没装过」的插件滤掉了 —— 卡片、画布
+       节点菜单、S.plugins 快照（节点未装警示条）都因此自动同步，渲染层不必各处再判一次；
+     · 这一份不滤的现状（appPluginsVramState）只给两件事用：卡片上「本机显存可能不足」的标注，
+       和对话框底部那个**低频找回入口**（「显示不支持的插件」，默认关，状态只在本次运行内存里）。
+   ​口径三句话：读不到显存 → 照常显示；已装的 → 照常显示 + 标注；其余 → 藏。 */
+const PLUGIN_VRAM_KNOWN_KINDS = {
+  music3: "minimax-music3",
+  yue2: "yue2-local",
+  sensenova: "sensenova-local",
+  /* H3（本地视频生成）：门槛 16G（真源 plugins/vram-gate.js） */
+  h3: "minimax-h3",
+};
+/** 本次运行的「显示不支持的插件」开关（默认关；不落盘，重启即回默认） */
+let _showUnsupportedPlugins = false;
+/** 最近一次 appPluginsVramState 快照（卡片标注 + 开关文案用） */
+let _pluginVramState = { ok: false, reading: null, plugins: [], hidden: [] };
+
+/** 插件目录 id（卡片的 id 可能是 kind 别名，统一折成目录 id） */
+function pluginVramIdOf(item) {
+  const p = item || {};
+  const id = String(p.id || "");
+  if (id && id.indexOf("user-plugin:") === 0) return "";
+  const kind = String(p.kind || p.handler || "");
+  if (PLUGIN_VRAM_KNOWN_KINDS[kind]) {
+    /* 目录里两种 id 都可能出现（minimax-music3 / music3）——门槛表只认目录 id */
+    return PLUGIN_VRAM_KNOWN_KINDS[kind];
+  }
+  return id;
+}
+
+/** 拉一次不滤的显存门槛现状（主进程桥没有就直接回空态，界面照旧工作） */
+async function pluginVramState(force) {
+  const fn = window.api && window.api.appPluginsVramState;
+  if (!fn) return _pluginVramState;
+  try {
+    const r = await fn(force === true ? { force: true } : undefined);
+    if (r && typeof r === "object") _pluginVramState = r;
+  } catch {}
+  return _pluginVramState;
+}
+function pluginVramInfoOf(item) {
+  const id = pluginVramIdOf(item);
+  if (!id) return null;
+  const list = (_pluginVramState && _pluginVramState.plugins) || [];
+  return list.find((x) => x && x.id === id) || null;
+}
+/** 卡片当前这一份 item 上的门槛结论（主进程挂的元数据优先，其次查不滤快照） */
+function pluginVramField(item) {
+  const own = item && item.vram && typeof item.vram === "object" ? item.vram : null;
+  if (own && (own.required === false || own.minVramGb > 0)) {
+    return {
+      required: own.required !== false,
+      minVramGb: Number(own.minVramGb) || 0,
+      vramOk: own.vramOk !== false,
+      hide: own.hide === true,
+      notice: String(own.notice || ""),
+      reading: own.reading != null ? Number(own.reading) : null,
+    };
+  }
+  const st = pluginVramInfoOf(item);
+  if (!st) return null;
+  return {
+    required: true,
+    minVramGb: Number(st.minVramGb) || 0,
+    vramOk: st.vramOk !== false,
+    hide: st.hide === true,
+    notice: String(st.notice || ""),
+    reading: pluginVramMachineReading(null),
+  };
+}
+/** 本机显存读数（GB；读不到 → null）。目录挂的元数据优先，其次用不滤快照的那一次读数。 */
+function pluginVramMachineReading(item) {
+  const own = item && item.vram && typeof item.vram === "object" ? item.vram : null;
+  if (own && own.reading != null && Number.isFinite(Number(own.reading))) return Number(own.reading);
+  const r = _pluginVramState && _pluginVramState.reading;
+  if (r && r.state === "ok" && r.vramGb != null && Number.isFinite(Number(r.vramGb))) return Number(r.vramGb);
+  return null;
+}
+/** 卡片上那句「本机显存可能不足（本机 ≈XG · 需要 ≥YG）」；不达标又不该藏时才给 */
+function pluginVramNoticeText(item) {
+  const v = pluginVramField(item);
+  if (!v || !v.required || v.vramOk) return "";
+  const gb = pluginVramMachineReading(item);
+  const reading = gb != null ? "≈" + gb + "G" : I18n.t("量不到");
+  return I18n.t("本机显存可能不足（本机 {reading} · 需要 ≥{need}G）", {
+    reading,
+    need: String(v.minVramGb || 0),
+  });
+}
+/** 显存不足的插件从目录里被滤掉了：用不滤快照把它的一条拼回列表（**只在开关打开时**用）。
+ *  这条是「虚条目」：没有宿主可问，动作只留一颗置灰的按钮 + 写明原因。 */
+function pluginVramHiddenItem(id, name) {
+  const st = ((_pluginVramState && _pluginVramState.plugins) || []).find((x) => x && x.id === id);
+  const vram = {
+    required: true,
+    id,
+    minVramGb: st ? Number(st.minVramGb) || 0 : 0,
+    vramOk: false,
+    /* 开关已经打开才拼得出来，所以这里恒 false —— 卡片是可见的那一种 */
+    hide: false,
+    notice: st ? String(st.notice || "") : "",
+    /* 带上本机读数：标注要写「本机 ≈8G」，不能因为这里没值就显示「量不到」（8G 是读到的） */
+    reading: pluginVramMachineReading(null),
+    readingState: "ok",
+  };
+  return {
+    id,
+    /* kind 不落 "unknown"：那条路是「认不出的云端插件，请升级主程序」，与显存无关。
+       这里 kind:"vram" 让卡片渲染成普通窗口插件壳，动作只留一颗置灰的「本机显存不足」。 */
+    kind: "vram",
+    handler: "",
+    order: 890,
+    title: { zh: name || id, en: name || id },
+    subtitle: {
+      zh: I18n.t("本机显存不足，未显示该插件（本机 {reading} · 需要 ≥{need}G）", {
+        reading: vram.reading != null ? "≈" + vram.reading + "G" : I18n.t("量不到"),
+        need: String((st && st.minVramGb) || 24),
+      }),
+      en: "Hidden: not enough VRAM on this machine.",
+    },
+    version: "",
+    /* compatible:false 让卡片的安装按钮置灰（「请先升级主程序」那句文案不改，它本来就是
+       「这颗按钮点不动」的既有说法）；详情面板与卡片状态行都会写明显存不足的原因。 */
+    compatible: false,
+    vramOnly: true,
+    vram,
+  };
+}
+/** 被显存门槛滤掉、但用户勾了「显示不支持的插件」时要补回列表的那几条。
+ *  **开关是这里的第一道闸**（默认关 → 返回空表，目录滤掉的那几个就不出现在列表里）；
+ *  再按不滤快照确认它确实在「藏」的那一档（已装 / 门槛不适用 → 目录里本来就有，不必拼）。 */
+function pluginVramHiddenItems() {
+  if (_showUnsupportedPlugins !== true) return [];
+  const known = [
+    ["minimax-music3", "Minimax Music 3"],
+    ["sensenova-local", "SenseNova 本地图像生成"],
+    ["yue2-local", "YuE2 本地音乐"],
+    ["minimax-h3", "Minimax H3"],
+  ];
+  const out = [];
+  for (const [id, name] of known) {
+    const st = ((_pluginVramState && _pluginVramState.plugins) || []).find((x) => x && x.id === id);
+    if (!st || st.hide !== true) continue; /* 不在藏的那一档（已装 / 门槛不适用）→ 目录里本来就有 */
+    out.push(pluginVramHiddenItem(id, name));
+  }
+  return out;
+}
+/** 对话框底部那一行低频入口：一句说明 + 一个开关 */
+function buildPluginVramBar() {
+  const row = document.createElement("div");
+  row.className = "plugin-vram-bar";
+  row.setAttribute("data-plugin-vram-bar", "1");
+  const lab = document.createElement("label");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = _showUnsupportedPlugins === true;
+  cb.setAttribute("data-plugin-vram-toggle", "1");
+  cb.onchange = () => {
+    _showUnsupportedPlugins = !!cb.checked;
+    openAppPluginsDialog(); /* 开关只管这一张列表：原地重画（画布入口不受它影响） */
+  };
+  const txt = document.createElement("span");
+  txt.textContent = I18n.t("显示不支持的插件");
+  lab.appendChild(cb);
+  lab.appendChild(txt);
+  const hint = document.createElement("span");
+  hint.className = "plugin-vram-hint";
+  const reading = _pluginVramState && _pluginVramState.reading;
+  hint.textContent =
+    I18n.t("显存不足的本地后端插件默认隐藏（避免装完跑不起来）") +
+    (reading && reading.state === "ok" && reading.vramGb != null
+      ? " · " + I18n.t("本机显存 ≈") + reading.vramGb + "G"
+      : "");
+  row.appendChild(lab);
+  row.appendChild(hint);
+  return row;
+}
+
 function pluginErrText(err) {
   const s = String(err || "");
   if (s === "need_app_update") return I18n.t("请先升级主程序");
@@ -1491,11 +1782,24 @@ async function refreshWindowPluginCard(host, item) {
   const st = item || {};
   setPluginVer(host, st);
   actions.innerHTML = "";
+  /* 显存门槛拼回来的虚拟条目（开关打开时才出现）：没有宿主动作可做，只标明原因 */
+  if (st.vramOnly) {
+    const line = host.querySelector("[data-plugin-progress-txt]");
+    if (line) {
+      line.style.display = "";
+      line.textContent = pluginVramNoticeText(st) || I18n.t("本机显存不足");
+    }
+  }
   const addBtn = (kind, title, onClick, opts) => {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
   };
   if (!st.compatible) {
-    addBtn("download", I18n.t("请先升级主程序"), null, { disabled: true });
+    addBtn(
+      "download",
+      st.vramOnly ? I18n.t("本机显存不足，无法安装") : I18n.t("请先升级主程序"),
+      null,
+      { disabled: true },
+    );
     return;
   }
   if (st.kind === "unknown") {
@@ -1583,6 +1887,19 @@ function mkPluginCardShell(item) {
     img.alt = pluginLoc(item, "title") || item.id;
     bindPluginCover(img, item);
   }
+  /* 显存门槛标注（已装但不达标 / 开关翻出来的那一档）：角标只是可见提示，
+     真正的动作限制由卡片自己的动作区决定（见 refreshWindowPluginCard）。 */
+  const noticeText = pluginVramNoticeText(item);
+  if (noticeText) {
+    const el = card.querySelector("[data-plugin-notice]");
+    if (el) {
+      el.hidden = false;
+      el.textContent = noticeText;
+      el.title = noticeText;
+    }
+  }
+  /* 已装 + 安装后自检通过 → 封面左上角打勾（本轮需求） */
+  paintPluginDone(card, item.id);
   return card;
 }
 async function openAppPluginsDialog() {
@@ -1664,6 +1981,11 @@ async function openAppPluginsDialog() {
   }
   intro.textContent = pluginCatalogHint(cat);
   intro.hidden = !intro.textContent; /* 云端目录正常时没有说明 → 不留一个空占位 */
+  /* 显存门槛现状（**不滤**的那一份）：卡片标注 + 底部开关都要它。
+     顺序上必须在拼 list 之前 —— 开关打开时要用它把被滤掉的卡片拼回列表。 */
+  /* 自检现状（卡片封面左上角的勾）与显存门槛现状一起先拉：都在拼卡片之前。 */
+  await loadPluginCheckState();
+  await pluginVramState();
   /* 根目录现状：未设的提示 + 推断出来的预填值都画进顶部那一行（只预填不写盘） */
   repaintPlugRootBar(await plugRootInfo());
   /* 一次把 8 个后端插件的「这次该装到哪」问齐（各卡片状态行要用）：并行一次，别一卡一次。
@@ -1715,6 +2037,14 @@ async function openAppPluginsDialog() {
           },
         ]
   ).filter((p) => p && p.id !== "forum");
+
+  /* 显存门槛：目录侧已经把「显存不足且没装过」的插件滤掉了（画布入口与节点警示条同源）。
+     这里只在用户勾了「显示不支持的插件」时，用不滤快照把它们的卡片拼回来 —— 只影响这一张
+     列表，画布入口保持隐藏（用户共识）。 */
+  const hiddenByVram = pluginVramHiddenItems();
+  if (hiddenByVram.length) list.push(...hiddenByVram);
+  /* 底部那一行低频入口（默认关）：给愿意折腾的用户留一条找回路径 */
+  body.appendChild(buildPluginVramBar());
 
   const wrap = document.createElement("div");
   wrap.className = "plugin-grid-wrap";
@@ -1839,6 +2169,24 @@ async function openAppPluginsDialog() {
         if (typeof refreshAppPluginsCache === "function") {
           try { refreshAppPluginsCache().catch(() => {}); } catch {}
         }
+        /* 装完那次自检的结论可能刚到：重新拉一次勾的状态并补画（勾只给自检通过的插件） */
+        void loadPluginCheckState().then(() => {
+          grid.querySelectorAll("[data-plugin-id]").forEach((el) => {
+            try { paintPluginDone(el, el.getAttribute("data-plugin-id")); } catch {}
+          });
+        });
+      }),
+    );
+  }
+  /* 自检结论变了（安装窗里跑完 / 清理过）：重拉一次状态并补画勾 */
+  if (window.api && window.api.onPluginSelfcheckChanged) {
+    offs.push(
+      window.api.onPluginSelfcheckChanged(() => {
+        void loadPluginCheckState().then(() => {
+          grid.querySelectorAll("[data-plugin-id]").forEach((el) => {
+            try { paintPluginDone(el, el.getAttribute("data-plugin-id")); } catch {}
+          });
+        });
       }),
     );
   }

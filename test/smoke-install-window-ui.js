@@ -240,6 +240,8 @@ const navigatorStub = {
 };
 /* 目录落地桥的回执：null = 老口径（dir 空串）；测落地那一段换成真回执 / 失败回执 */
 let ensureReply = null;
+/* 自检现状的桩（本轮需求）：默认 = 「这个插件没有内容生成类自检」；测自检那一段换成支持 + 真结果 */
+let selfcheckState = { supported: false, kind: "", result: null, running: false, queued: false, note: "" };
 
 const win = {
   mtnodeInstall: {
@@ -268,6 +270,14 @@ const win = {
     weights: async (p) => {
       calls.push({ name: "weights:" + String((p && p.action) || "info"), args: [p] });
       return weightsReply(p);
+    },
+    /* 安装后自检（本轮需求）：state 回现场、run 回「已起跑」，结论由 onEvent 的 selfcheck 事件推来 */
+    selfcheck: async (p) => {
+      calls.push({ name: "selfcheck:" + String((p && p.action) || "state"), args: [p] });
+      if (String((p && p.action) || "state") === "state") return Object.assign({ ok: true, id: String((p && p.id) || "") }, selfcheckState);
+      if (String((p && p.action) || "") === "clean") return { ok: true, removed: 1 };
+      if (String((p && p.action) || "") === "cancel") return { ok: true, cancelled: true };
+      return { ok: true, started: true, running: true };
     },
     uninstall: async (p) => {
       calls.push({ name: "uninstall:" + String((p && p.action) || "preview"), args: [p] });
@@ -875,6 +885,123 @@ console.log("\n[10] 安装开始时先落地「插件根目录 + 默认子目录
   await tick();
   ok(calls.some((c) => c.name === "api:llamaInstall"), "needs=false 的空目录回执不拦（老口径照旧往下走）");
   ensureReply = null;
+
+  /* ═════════ [12] 安装后自检（本轮需求）═════════════════════════════════════
+     口径：装成功（终局 done）自动跑一次；结果区给状态 + 逐项明细 + 产物路径；
+     未通过 / 已跳过如实显示且不打勾（勾由主窗口按最近一次结论画）；
+     「重新自检」手动重跑，「清理自检产物」清结果与产物。 */
+  console.log("\n[12] 安装后自检：自动跑 / 结果区 / 重新自检 / 清理产物");
+  selfcheckState = { supported: false, kind: "", result: null, running: false, queued: false, note: "" };
+  await adopt({
+    pluginId: "llama-local",
+    name: "llama.cpp 本地模型",
+    installDir: "D:\\llama",
+    state: "done",
+    pct: 100,
+    steps: [{ id: "smoke", title: "冒烟自检", status: "ok" }],
+    logs: {},
+  });
+  await tick();
+  ok(els.get("insSelf").hidden === true, "没登记自检的插件：结果区不显示（不装作有结论）");
+  ok(!calls.some((c) => c.name === "selfcheck:run"), "没登记自检的插件不会被自动起跑");
+
+  /* 支持自检的插件：装完自动跑一次（state → run） */
+  selfcheckState = { supported: true, kind: "image", result: null, running: false, queued: false, note: "" };
+  const senseSession = {
+    pluginId: "sensenova-local",
+    name: "SenseNova 本地图像生成",
+    installDir: "D:\\sn",
+    state: "running",
+    pct: 90,
+    steps: [{ id: "smoke", title: "冒烟自检", status: "run" }],
+    logs: {},
+  };
+  await adopt(senseSession);
+  calls.length = 0;
+  /* 真机口径：终局走 finish 事件（不是状态帧），且窗里正显示的就是这个插件 */
+  subs.event({
+    id: "sensenova-local",
+    kind: "finish",
+    session: Object.assign({}, senseSession, { state: "done", pct: 100, steps: [{ id: "smoke", title: "冒烟自检", status: "ok" }] }),
+  });
+  await tick();
+  await tick();
+  await tick();
+  ok(calls.some((c) => c.name === "selfcheck:state"), "装完那一刻先问一次自检现状");
+  const runCall = calls.find((c) => c.name === "selfcheck:run");
+  ok(!!runCall, "安装成功（终局 done）后自动跑一次自检");
+  ok(runCall && runCall.args[0] && runCall.args[0].reason === "auto", "自动那次带上 reason:auto（手动重跑是 manual）");
+  ok(runCall && runCall.args[0] && runCall.args[0].id === "sensenova-local", "自检的 id = 刚装完的那个插件");
+  ok(els.get("insSelf").hidden === false, "支持自检的插件：结果区显示出来");
+
+  /* 进度 + 排队 + 明细 */
+  subs.event({ id: "sensenova-local", kind: "selfcheck", state: "run", queued: true, note: "有其它生成任务进行中（全局仅允许 1 个），已排队等它结束…" });
+  ok(String(els.get("insSState").textContent).indexOf("排队") >= 0, "排队时状态位写明「排队等锁」");
+  subs.event({ id: "sensenova-local", kind: "selfcheck", state: "run", step: { title: "生成", status: "ok", detail: "1 步采样" } });
+  subs.event({ id: "sensenova-local", kind: "selfcheck", state: "run", log: "后端已就绪" });
+  ok(textOf(els.get("insSSteps")).indexOf("1 步采样") >= 0, "逐项明细落进结果区");
+  ok(textOf(els.get("insLog")).indexOf("[selfcheck]") >= 0, "明细同时进日志区（可复制、可交给会话修）");
+
+  /* 结论：通过 → 状态位「通过」+ 产物路径 */
+  subs.event({
+    id: "sensenova-local",
+    kind: "selfcheck",
+    state: "done",
+    result: { ok: true, at: Date.now(), kind: "image", steps: [{ id: "gen", title: "生成", status: "ok", detail: "极小图" }], artifacts: [{ path: "D:\\data\\plugin-selfcheck\\sensenova-local\\check-1\\out.png", label: "自检生成的图" }] },
+  });
+  ok(String(els.get("insSState").textContent).indexOf("通过") >= 0, "通过时状态位写「通过」");
+  const artsText = textOf(els.get("insSArts"));
+  ok(artsText.indexOf("out.png") >= 0, "结果区给出产物路径（可点开定位）");
+  ok(artsText.indexOf("自检生成的图") >= 0 || artsText.indexOf("产物") >= 0, "产物路径带人读标签（点一下定位到文件）");
+
+  /* 结论：未通过 → 如实显示 + 写清不影响安装 */
+  subs.event({
+    id: "sensenova-local",
+    kind: "selfcheck",
+    state: "done",
+    result: { ok: false, at: Date.now(), kind: "image", error: "backend_timeout", steps: [{ id: "gen", title: "生成", status: "fail", detail: "超时" }], artifacts: [] },
+  });
+  ok(String(els.get("insSState").textContent).indexOf("未通过") >= 0, "未通过时状态位写「未通过」");
+  ok(textOf(els.get("insSNote")).indexOf("不影响") >= 0, "未通过时写清「不影响安装与插件启用」");
+  ok(textOf(els.get("insSNote")).indexOf("backend_timeout") >= 0, "失败原因原样展示（不吞）");
+
+  /* 结论：已跳过（等锁超时 / 缺工具） */
+  subs.event({
+    id: "sensenova-local",
+    kind: "selfcheck",
+    state: "done",
+    result: { ok: false, skipped: true, reason: "等全局生成锁超时", at: Date.now(), kind: "image", steps: [], artifacts: [] },
+  });
+  ok(String(els.get("insSState").textContent).indexOf("已跳过") >= 0, "跳过时状态位写「已跳过」");
+  ok(textOf(els.get("insSNote")).indexOf("等全局生成锁超时") >= 0, "跳过原因如实展示");
+
+  /* 手动重跑 + 清理产物 */
+  calls.length = 0;
+  els.get("insSRun").onclick();
+  await tick();
+  const manualRun = calls.find((c) => c.name === "selfcheck:run");
+  ok(!!manualRun && manualRun.args[0].reason === "manual", "「重新自检」手动起一次（reason:manual）");
+  calls.length = 0;
+  els.get("insSClean").onclick();
+  await tick();
+  ok(calls.some((c) => c.name === "selfcheck:clean"), "「清理自检产物」走 clean（删产物 + 清结果）");
+  ok(String(els.get("insSState").textContent).indexOf("未自检") >= 0, "清理后状态位回到「未自检」");
+
+  /* 取消：跑着的时候给「取消自检」 */
+  subs.event({ id: "sensenova-local", kind: "selfcheck", state: "run", note: "正在跑" });
+  ok(els.get("insSCancel").hidden === false, "自检跑着时显示「取消自检」");
+  calls.length = 0;
+  els.get("insSCancel").onclick();
+  await tick();
+  ok(calls.some((c) => c.name === "selfcheck:cancel"), "「取消自检」走 cancel（宿主自己收手）");
+  subs.event({
+    id: "sensenova-local",
+    kind: "selfcheck",
+    state: "done",
+    result: { ok: false, skipped: true, reason: "已取消", at: Date.now(), kind: "image", steps: [], artifacts: [] },
+  });
+  ok(els.get("insSCancel").hidden === true, "落结论后取消键收起");
+  selfcheckState = { supported: false, kind: "", result: null, running: false, queued: false, note: "" };
 }
 
 console.log("\n" + (fails ? "FAILED " + fails + " / " + checks : "ALL PASS " + checks) + " checks");

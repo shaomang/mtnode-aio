@@ -16,11 +16,16 @@ if you are not signed in you are asked to sign in first.
 
 ## Building on another app (fork)
 
-When you build on someone else's app and publish it, pick the source in **“Builds on which app? (optional)”**:
+The source is **declared automatically from the local record**; the publish dialog no longer has a
+“Builds on which app? (optional)” field (this round: no hand-editing entry):
 
-- It is filled in automatically: a source already declared in your local `app.json`, otherwise “the cloud entry this
-  copy was installed from”.
-- You can switch it to any catalog entry, or choose “(Original: no source declared)” — **declaring nothing never blocks publishing**.
+- It is taken from the source record already in your local `app.json` (`forkOf`, written by “Copy to the dev folder /
+  Overwrite / Merge with AI”), otherwise from “the cloud entry this copy was installed from”.
+- When that id already has entries online (including one someone else grabbed first), this upload **declares the trunk
+  branch automatically** — the effect is your own branch under the same id.
+- Neither applies = original work; no source field is sent at all, and **declaring nothing never blocks publishing**.
+- To see “which version this local copy is based on”: the App Center's version/branch dialog shows
+  “this local copy is based on v<x> (source: <app id> · original author <name>)” in its footer.
 - The declaration is recorded on the cloud entry (source app id + original author uid) and is visible in the catalog; it is
   also written into the local `app.json` and travels with the package, so later uploads bring it back automatically.
 - Effect: other users opening that app see a **“Switch branch”** menu and can install / launch your version or the source
@@ -101,10 +106,11 @@ stops listing it right away, and there is no “restore / publish again” way b
 **Deleting a single version is not deleting the app**: when you delete one version and the branch still has others,
 the app stays online (the latest version points at the highest remaining one).
 
-## Managing what you published: the “My apps” page
+## Managing what you published: the lower block of the “In development” page
 
-The second page of the App Center, **My apps**, manages the entries you published to the cloud (including ones you
-forked from someone else). The search box filters by title / description / tags and “Load more” pages through the
+The App Center's third page, **In development**, has the apps being developed on this machine in its upper block
+(a read-only list — click a row to continue on the Development page) and **“Published to the cloud”** in its lower
+block, which manages the entries you published to the cloud (including ones you forked from someone else). The search box filters by title / description / tags and “Load more” pages through the
 rest (50 per page). Every card has two icons in its bottom-right corner — **Edit / Delete** (clicking the card
 itself still opens the detail window, which carries the same two actions with labels).
 

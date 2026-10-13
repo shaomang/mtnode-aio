@@ -43,6 +43,9 @@ let installJob = null;
 let getDataDir = null;
 let getMainWin = null;
 let appRoot = null;
+/** 主进程 dsh 适配器的 node 现状（`dsh().nodeInfo()`）。桌宠是独立进程，靠它把
+ *  「主程序已解析出的真 Node」经 MTNODE_NODE_BIN 带进桌宠进程（见 startPet）。 */
+let getDshNode = null;
 let hoverTimer = null;
 let hoverHidden = false;
 let hookStarted = false;
@@ -1183,6 +1186,24 @@ function startPet() {
     }
   } catch {}
 
+  /* dsh 运行时的 Node（见 dsh/DESIGN.md「Node 运行时」）—— 桌宠为什么单单会报
+     「dsh 运行时需要本机 Node ≥22.19」：桌宠是独立进程，它自己的数据目录是
+     `<数据目录>/pet`，而托管 Node 只按 `<dataDir>/node-runtime/node.exe` 找
+     （dsh-node.js 的候选表），于是主程序装在数据根那份它**看不见**；本机又没装
+     Node ≥22.19 时就退到 Electron 自带的 Node，被 dsh 0.2 的内核以
+     `unsupported Electron runtime fingerprint` 拒绝 —— 同一次安装里画布节点 /
+     会话都正常，只有 BongoChat 撞这条。
+     修法（最小口径）：主程序已解析出**真 Node**（不是 Electron 回退）时，把它经
+     MTNODE_NODE_BIN（dsh-node.js 候选表第 1 位，与 dataDir 无关）交给桌宠进程。
+     取不到、或主程序自己也在回退态时**一律不动**这个变量 —— 用户自己在系统环境里
+     设的 MTNODE_NODE_BIN 是文档化的显式出口，不许被我们抹掉。 */
+  try {
+    const info = getDshNode ? getDshNode() : null;
+    if (info && info.bin && !info.fallback && !info.electron) {
+      env.MTNODE_NODE_BIN = String(info.bin);
+    }
+  } catch { /* 取不到 dsh 的 node 现状不算错：桌宠照旧走它自己的候选表 */ }
+
   let args;
   if (app.isPackaged) {
     args = ["--mtnode-pet"];
@@ -1224,6 +1245,8 @@ function registerPetIpc(opts) {
   getDataDir = opts.getDataDir;
   getMainWin = opts.getMainWin;
   appRoot = opts.appRoot || path.join(__dirname, "..");
+  /* 主进程的 dsh node 现状（可选）：拿得到就把真 Node 带进桌宠进程，见 startPet 那段口径 */
+  getDshNode = typeof opts.getDshNode === "function" ? opts.getDshNode : null;
 
   /* 报错总线：注册宿主。桌宠是「下载形象包」型插件——没有 Agent 安装链、也没有独立控制台日志，
      所以只给安装目录（= 修复会话的可写工作区）与空日志尾部，失败事实由 reportErr 上报。 */

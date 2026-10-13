@@ -973,17 +973,21 @@ function makeSpeechBox(o) {
     ok(ui.indexOf("transcribeWav") > 0 && ui.indexOf("pickAudio") > 0, "听写 UI 走应用桥的 transcribeWav / pickAudio");
     ok(ui.indexOf("mtnode-dictate") > 0, "听写条有稳定 id（宿主注入与落点复核都认它）");
     const tpl = read("templates/app-default/index.html");
-    /* 本轮口径：默认页**不携带**语音 —— 听写 UI（含样式与桥接线）搬到 templates/app-default/dict.js，
-       由宿主按 app.json 的 capabilities.textInput 决定要不要注入。 */
+    /* 本轮口径：默认页**不携带**语音，也不再内联任何听写 UI —— 听写条只由宿主按 app.json 的
+       capabilities.showDictate 注入（preload-app.js 的闸门 → renderer/app-speech-ui.js）。
+       templates/app-default/dict.js 留在仓里当参考实现，但已不再被注入。 */
     ok(
       tpl.indexOf("dict-btn") < 0 && tpl.indexOf("mtnode-dictate-css") < 0 && tpl.indexOf("dictPanel") < 0,
-      "默认应用模板本体不再含听写 UI（标记 / 结果小窗都搬走）",
+      "默认应用模板本体不含听写 UI（标记 / 结果小窗都不在）",
     );
-    ok(tpl.indexOf("DICT_SCRIPT") > 0, "默认页留有按能力位注入的占位符（没声明就替换成空）");
+    ok(
+      tpl.indexOf("DICT_SCRIPT") < 0 && tpl.indexOf("MTNDictate") < 0,
+      "默认页不再留任何按能力位注入的占位 / 接线（入口页不被能力位改动）",
+    );
     const dictJs = read("templates/app-default/dict.js");
     ok(
       dictJs.indexOf("dict-btn") > 0 && dictJs.indexOf("asrStatus") > 0 && dictJs.indexOf("MTNDictate") > 0,
-      "听写 UI 在 templates/app-default/dict.js 里（dict-btn + asrStatus 桥 + window.MTNDictate）",
+      "听写 UI 参考实现仍在 templates/app-default/dict.js（不再被注入，只作参考）",
     );
     ok(exists("templates/app-scaffold/speech.js"), "应用脚手架带 speech.js（声明了 textInput 才复制）");
     /* 本轮共识：默认 footer 内容（页脚说明文案）整块删掉 —— 页面底部不再凭空多一行字 */
@@ -1051,20 +1055,32 @@ function makeSpeechBox(o) {
       preApp.indexOf("capabilities.showDictate === true") > 0,
       "注入闸门看的是 showDictate（默认 false = 默认不注入听写条）",
     );
-    /* 默认隐藏：注入进来那条也带隐藏标记（保留注入 + 视觉隐藏，脚本仍可唤起） */
+    /* 可见性（本轮需求修正）：注入进来即**默认可见** —— 能力位 showDictate 为真 = 用户显式要它，
+       以前挂载即 markHidden，结果「勾了显示听写条却永远看不见」；隐藏标记与两个入口保留给
+       「收起」按钮 / apSpeechHide() / apSpeechReveal() 用。 */
     ok(
       ui.indexOf('"data-mtnode-hidden"') > 0 &&
-        ui.indexOf("markHidden(root)") > 0 &&
+        ui.indexOf("markShown(root)") > 0 &&
         ui.indexOf("display:none !important") > 0,
-      "听写条默认隐藏：带 data-mtnode-hidden + display:none（内联 + CSS 兜底）",
+      "听写条挂载即可见（markShown）；隐藏标记 data-mtnode-hidden 与 CSS 兜底仍保留给收起用",
+    );
+    ok(
+      /function hide\(\)[\s\S]{0,200}markHidden\(root\)/.test(ui),
+      "收起 = hide() → markHidden(root)（挂载路径不再调它：那正是「开了也看不见」的根因）",
+    );
+    ok(
+      ui.indexOf("mtn-dict-hide") > 0 && /function hide\(\)/.test(ui),
+      "条尾有「收起」按钮 + hide() 实现（只藏本窗口，不写回 app.json）",
     );
     ok(
       /function placeStrip[\s\S]{0,260}hiddenNow\(root\)/.test(ui),
-      "隐藏态不做落点搬移（不会被搬到宿主自建的固定底栏）",
+      "隐藏态（收起后）不做落点搬移（不会被搬到宿主自建的固定底栏）",
     );
     ok(
-      ui.indexOf("window.apSpeechHidden") > 0 && ui.indexOf("window.apSpeechReveal") > 0,
-      "露出路径仍在：apSpeechHidden() / apSpeechReveal()",
+      ui.indexOf("window.apSpeechHidden") > 0 &&
+        ui.indexOf("window.apSpeechReveal") > 0 &&
+        ui.indexOf("window.apSpeechHide") > 0,
+      "两个方向的入口都在：apSpeechHidden() / apSpeechReveal() / apSpeechHide()",
     );
     ok(
       /maybeInjectDictateBar/.test(preApp) && preApp.indexOf("dictateAllowed = false") > 0,

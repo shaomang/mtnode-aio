@@ -153,9 +153,23 @@ node-addon-require-builtin unsupported: Unsupported/no-context
    非该错一律原样透传。
 5. 自检与修复入口：`dsh:status` 附带 `node`（bin / source / version / fallback / installed /
    managed）；`dsh:installNode`（preload `dshInstallNode`）显式安装。
+6. **托管目录随调用方 `dataDir` 走 —— 桌宠为什么单单会缺 Node**：托管 Node 只在
+   `<dataDir>/node-runtime/node.exe` 找（候选表第 2 位），而同一个应用里有**两个** `dataDir`：
+   主程序（`main.js` → `createDshAdapter({ dataDir: DATA() })` = 数据根）与桌宠独立进程
+   （`pet/standalone-main.js` → `createDshAdapter({ dataDir: petRoot() })`，`petRoot()` =
+   `<数据目录>/pet`，它另有自己的 `dsh-home` 做会话隔离）。桌宠于是**看不见主程序装在数据根
+   的那份托管 Node**，客户端本机又没装 Node ≥22.19 时只能回退 Electron 自带的 Node，被 dsh 0.2
+   拒绝 —— 同一次安装里画布节点 / 会话都正常，只有 BongoChat 弹「dsh 运行时需要本机 Node ≥22.19」。
+   口径：主进程经 `registerPetIpc({ getDshNode })` 把 `dsh().nodeInfo()` 交给 `pet/main-pet.js`，
+   `startPet()` 仅在**真 Node**（`!fallback && !electron`）时写 `env.MTNODE_NODE_BIN`
+   （候选表第 1 位，与 dataDir 无关）；取不到、或主程序自己也在回退态时**不动**该变量 ——
+   用户自己在系统环境里设的 `MTNODE_NODE_BIN` 是文档化的显式出口，不许被抹掉。桌宠此前自装的
+   `<数据目录>/pet/node-runtime` 保留不动（它仍是桌宠侧该数据目录下优先命中的本地候选）。
 
 回归见 `test/smoke-dsh-node.js`（候选顺序、探针判据、回退、报错翻译、zip 解压、安装失败路径、
-接线口径）。**不要**把 `process.execPath` 重新写回网关 spawn —— 那等于把这条事故原样搬回来。
+接线口径 —— 含第 6 条：`main.js` 传 `getDshNode`、`startPet` 只下发真 Node 且不抹用户显式覆盖、
+桌宠那种 `<数据目录>/pet` 也能靠 `MTNODE_NODE_BIN` 选到真 Node）。**不要**把
+`process.execPath` 重新写回网关 spawn —— 那等于把这条事故原样搬回来。
 
 ### Messages 端点根（0.2：配置里的 OpenAI 兼容根要归一）
 

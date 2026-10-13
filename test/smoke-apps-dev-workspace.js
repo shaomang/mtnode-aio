@@ -73,26 +73,28 @@ const STORE = read("apps-store.js");
 console.log("smoke-apps-dev-workspace：开发页不出现下载根 + 不再要求手选根目录 + 会话目录跟着应用走\n");
 
 /* ═══════════ [1] 需求一：开发页两处都不出现「下载根」 ═══════════ */
-section("1 开发页不再出现下载根");
+section("1 开发页不再出现下载根（本轮：连项目根那一块也收进设置窗了）");
 {
-  const itemFn = pickFn(DEV, "appsDevRootItem");
-  ok(itemFn.indexOf('appsDevRootChip("dev")') >= 0, "工具栏那一组仍给项目根一枚");
-  ok(itemFn.indexOf('appsDevRootChip("down")') < 0, "工具栏那一组不再给下载根那一枚");
+  /* 本轮需求（用户口径：「移除项目根等内容，统一放进右上角那只设置按钮」）：
+     开发页工具栏上的 appsDevRootItem / appsDevRootChip 整块删除，路径只在设置窗里只读显示。 */
+  ok(DEV.indexOf("function appsDevRootItem(") < 0, "工具栏不再有「项目根」那一块（appsDevRootItem 已删）");
+  ok(DEV.indexOf("function appsDevRootChip(") < 0, "chip 本体（appsDevRootChip）也一起删了");
   ok(DEV.indexOf('appsDevRootChip("down")') < 0, "整个开发页模块里没有下载根 chip 的调用点");
+  ok(DEV.indexOf('addSlot(5, appsDevRootItem(), "项目根")') < 0, "「更多 ▾」面板里那一项也跟着没了");
   ok(
-    /addSlot\(5, appsDevRootItem\(\), "项目根"\)/.test(DEV),
-    "「更多 ▾」面板里那一项的标题也跟着改成「项目根」",
+    APPS.indexOf('["down", "库目录') >= 0 &&
+      APPS.indexOf('["dev", "开发目录') >= 0 &&
+      APPS.indexOf("function appsRootAppsOfKind(kind)") >= 0,
+    "两套根的路径只在设置窗里（库目录 / 开发目录各一行，本轮起每行「修改 + 打开」）",
   );
-  /* 左导航页脚（本轮需求：只留项目根那一行 —— 下载根那一行与条数行都下线） */
+  /* 左导航页脚（本轮需求：整块清空 —— 项目根那一行也随「移除项目根等内容」下线） */
   const navFn = pickFn(APPS, "appsHubPaintNav");
   ok(navFn.indexOf("下载根目录（从应用中心下载的）") < 0, "页脚不再画下载根那一行");
   ok(navFn.indexOf('appsT("已下载 ") + count') < 0, "页脚不再画「已下载 N 个应用」条数行");
   ok(navFn.indexOf('appsT("开发中 ") + count') < 0, "页脚不再画「开发中 N 个应用」条数行");
   ok(navFn.indexOf("apps-hub-footdim") < 0, "页脚不再挂条数行的 apps-hub-footdim 那一行");
-  ok(navFn.indexOf('appsT("项目根目录（开发中的应用）")') >= 0, "页脚保留项目根那一行（下载页 / 开发页都一样）");
-  ok(APPS.indexOf('line(appsT("项目根目录（开发中的应用）"), dev)') < 0 &&
-    navFn.indexOf("appsEscape(appsT(\"项目根目录（开发中的应用）\"))") >= 0,
-    "项目根那一行改成内联拼（不再走只服务两套根的 line() 助手）");
+  ok(navFn.indexOf('appsT("项目根目录（开发中的应用）")') < 0, "页脚的项目根那一行也下线（路径只在设置窗里）");
+  ok(/foot\.innerHTML = "";/.test(navFn), "页脚整块清空（容器留着，避免左栏底部跳动）");
 }
 
 /* ═══════════ [2] 需求二：不再要求手选根目录（强制弹框 / 红字 / 恢复行全删） ═══════════ */
@@ -137,34 +139,62 @@ section("2 不再要求手选根目录（本轮需求）");
     /ensureRootPersisted\(APP_KIND_DEV\)\.root/.test(pickFn(STORE, "createApp")),
     "createApp（新建应用）用默认根并固化",
   );
-  /* ④ 保留下来的人工入口仍是两条（想改装到别的盘的人还有路） */
+  /* ④ 保留下来的人工入口（**本轮恢复**：用户口径「目录设置无法更改，右侧需要有两个按钮，
+      一个是修改，一个是打开」）——换根只在右上角齿轮的目录设置窗里，走
+      appsRootChange → api.appsRootPick（系统选目录框）+ 按需搬迁。库页那枚「应用目录」按钮与
+      它的小菜单**仍然没有**（本轮没把它加回来：入口只在设置窗里）。 */
   ok(
-    APPS.indexOf("async function appsRootPickNow(kind)") >= 0 &&
-      APPS.indexOf("function appsRootFolderNow(kind)") >= 0,
-    "「更改目录…」/「在资源管理器中打开」两个动作保留（库页「应用目录」按钮 + 开发页那一行）",
+    APPS.indexOf("async function appsRootPickNow(kind)") < 0 &&
+      APPS.indexOf("function appsRootFolderNow(kind)") < 0 &&
+      APPS.indexOf("function appsRootMenuToggle()") < 0,
+    "库页那套「更改目录…」动作函数与小菜单仍是删掉的（换根入口只在目录设置窗里）",
   );
-  ok(DEV.indexOf('appsDevRootChip("dev")') >= 0 && DEV.indexOf('appsDevRootChip("down")') < 0,
-    "开发页仍只给项目根那一枚 chip");
-  /* ⑤ 根目录回执同步进 S.config（双保险的另一半） */
+  ok(
+    APPS.indexOf('appsIcoBtnEl("folder"') < 0 &&
+      PRELOAD.indexOf("appsRootPick:") >= 0 &&
+      PRELOAD.indexOf("appsRootSet:") >= 0 &&
+      STORE.indexOf('ipcMain.handle("apps:rootSet"') >= 0 &&
+      STORE.indexOf('ipcMain.handle("apps:rootPick"') >= 0,
+    "壳上那枚「应用目录」按钮仍没有；preload 与主进程的 appsRootPick / appsRootSet 两条桥本轮恢复（目录设置窗的「修改」）",
+  );
+  ok(
+    APPS.indexOf("async function appsRootChange(kind, moveApps)") >= 0 &&
+      APPS.indexOf("function appsRootResultEl(last)") >= 0 &&
+      APPS.indexOf("APPS_ROOT_LAST") >= 0,
+    "目录设置窗的「修改」= appsRootChange（选目录 → 换根 → 按需搬迁 → 回执 + 重开窗）",
+  );
+  ok(
+    STORE.indexOf("function moveAppsToRoot(fromRoot, toRoot, kind)") >= 0 &&
+      STORE.indexOf("function setRootAndMaybeMove(arg)") >= 0 &&
+      STORE.indexOf("if (kindOfManifest(raw, src) !== k) continue;") >= 0 &&
+      STORE.indexOf("新目录里已经有一个同名应用文件夹：不覆盖，这一份原样留在旧目录") >= 0,
+    "主进程搬迁口径：只搬这一行那一类、认不出的目录不动、同名跳过不覆盖（moveAppsToRoot）",
+  );
+  ok(
+    FLOW.indexOf("async function appsRootHealAfterMove(moved)") >= 0 &&
+      FLOW.indexOf("async function appCanvasPathHealById(appId, appDir)") >= 0 &&
+      FLOW.indexOf("appCanvasPathHeal(wf, dir)") >= 0,
+    "搬完自动校准路径：应用画布的 devPath / 工作目录（复用 appCanvasPathHeal）+ 会话工作区",
+  );
+  ok(DEV.indexOf("appsDevRootChip(") < 0, "开发页那一行根目录 chip 也不再有");
+  /* ⑤ 根目录回执同步进 S.config（双保险的另一半）—— 手改入口撤了，但这条同步仍要在：
+     它守住的是「主进程已固化的根别被渲染层整份回写盖掉」（老机器的自定义根仍生效）。 */
   ok(APPS.indexOf("function appsRootsSyncConfig(roots)") >= 0, "渲染层有 roots → S.config.apps 的同步函数");
-  ok(/if \(APPS_ST\.list && APPS_ST\.list\.roots\) appsRootsSyncConfig\(APPS_ST\.list\.roots\);/.test(APPS),
-    "appsListLoad 拿到清单后就同步（重启后也能自愈内存副本）");
-  ok(/appsRootsSyncConfig\(r\.roots\);/.test(APPS), "根目录回执（pick / set）同样同步");
+  /* 同步点跟着「本机列表收下」那一步走（本轮把收下逻辑收口到 appsListAccept：轻表与完整那一趟
+     共用同一处，roots 也在那里对齐）。断言口径不变：拿到清单就必须同步，重启后也能自愈内存副本。 */
+  ok(
+    /function appsListAccept\(r\)[\s\S]{0,900}if \(r\.roots\) appsRootsSyncConfig\(r\.roots\);/.test(APPS),
+    "本机列表一收下就同步 roots（appsListAccept 是轻表与完整那一趟的共同出口）",
+  );
   const syncFn = pickFn(APPS, "appsRootsSyncConfig");
   ok(/if \(!r\.configured\) continue;/.test(syncFn),
-    "只写「已配置」的那一套键（configured=true 现在只可能来自主进程已固化 / 用户手选）");
+    "只写「已配置」的那一套键（configured=true 现在只可能来自主进程已固化 / 老机器的自定义根）");
   /* 迁移旧布局**整条功能已移除**（本轮用户口径：移除「迁移旧布局」按钮与功能）：
-     跟着它一起删掉的还有「搬完把旧路径改指新目录」那套改写（appsRewriteMovedAppPaths）。
-     仍保留的路径动作：appsRootPickNow / appsRootFolderNow（下载根 / 项目根各一套）+ 小菜单。 */
+     跟着它一起删掉的还有「搬完把旧路径改指新目录」那套改写（appsRewriteMovedAppPaths）。 */
   ok(
     APPS.indexOf("async function appsRewriteMovedAppPaths(moves)") < 0 &&
       APPS.indexOf("async function appsMigrateLayoutNow") < 0,
     "「迁移旧布局」的功能代码已整条删除（按钮与改写逻辑一起走）",
-  );
-  ok(
-    APPS.indexOf("async function appsRootPickNow(kind)") >= 0 &&
-      APPS.indexOf("function appsRootFolderNow(kind)") >= 0,
-    "根目录的「选目录 / 在资源管理器中打开」两个动作仍在（改由小菜单调用）",
   );
 }
 
@@ -263,6 +293,161 @@ section("3 会话目录跟着应用走");
     /* 再跑一遍：同一个应用目录已经命中，不再重复写 */
     const n2 = await vm.runInContext("appsDevAlignAppWorkspace", sb2)("appA");
     ok(n2 === 0 && saved === 1, "已经是应用目录 → 第二次不再改写（幂等）");
+  }
+
+  /* ═══════════ [4b] 二次开发 = 复制到开发目录 + 归页只看物理目录 ═══════════ */
+  section("4b 二次开发改成「复制到开发目录」（旧：搬动库目录那一份）");
+  {
+    const FLOW6 = read("renderer/app-app-flow.js");
+    const APPS6 = read("renderer/app-apps.js");
+    /* ① 二次开发本轮从「搬到项目根」改成**复制到开发目录**（用户共识）：执行体是
+          appsCopyToDevRun（导出 window.appsCopyToDevRun），底下调主进程 apps:copyToDev。
+          老的搬移链（appsMigrateLayout + dryRun:false + 「搬完之后真的在盘上」复查 + appDirNow）
+          必须连根拔掉 —— 留着任何一处，用户看到的就还是「库目录那一份被搬走了」。 */
+    ok(
+      /async function appsCopyToDevRun\(appId, opts\)/.test(FLOW6) &&
+        /window\.appsCopyToDevRun = appsCopyToDevRun/.test(FLOW6) &&
+        FLOW6.indexOf('await api.appsCopyToDev(id, o.mode === "overwrite" ? { mode: "overwrite" } : {})') >= 0,
+      "二次开发调主进程 appsCopyToDev（复制一份到开发目录；覆盖 = 带 {mode:\"overwrite\"} 再调一次）",
+    );
+    ok(
+      FLOW6.indexOf("appsMigrateToDev") < 0 &&
+        FLOW6.indexOf("appsMigrateLayout") < 0 &&
+        FLOW6.indexOf("dryRun") < 0 &&
+        FLOW6.indexOf("appDirNow") < 0,
+      "旧搬移链一条都不留（appsMigrateToDev / appsMigrateLayout / dryRun / appDirNow）—— 拦「又回到搬动库目录那一份」的回归",
+    );
+    /* 目标已存在时这条链不问也不覆盖：主进程回 code:"exists"（一个字节都不动），
+       由渲染层（app-apps.js 的 appsSecondaryDevRun）弹「覆盖 / 交给 AI 合并」二选一。 */
+    ok(
+      /if \(r && String\(r\.code \|\| ""\) === "exists"\) return \{ exists: true, id: id \};/.test(FLOW6) &&
+        APPS6.indexOf("await appsSecondaryDevChoice(appId, { name: name, canMerge: !!ownerId });") >= 0 &&
+        APPS6.indexOf('await window.appsCopyToDevRun(appId, { mode: "overwrite" });') >= 0 &&
+        /appsMergeStart\(\s*appId,\s*ownerId,\s*version,\s*[\s\S]{0,120}?"agent",\s*\)/.test(APPS6),
+      "开发目录里已有同 id → 主进程如实回 exists，渲染层才问「覆盖（带 mode:overwrite 再调一次）/ 交给 AI 合并」（这条链自己绝不覆盖）",
+    );
+    /* 画布：有同名画布就复用（改 devPath / subFolder、不新增节点），没有才建 ——
+       这条链真要跑起来得有一整条画布链现场，所以这里钉接线形状（行为口径见 smoke-apps.js 同一组断言） */
+    ok(
+      /if \(nodeBefore\) \{[\s\S]{0,400}?nodeBefore\.devPath = dir;[\s\S]{0,400}?nodeBefore\.subFolder = dir;/.test(FLOW6) &&
+        /if \(fresh\) \{[\s\S]{0,700}?appsCreateDevNode\(\{/.test(FLOW6) &&
+        FLOW6.indexOf("reused: !fresh") >= 0,
+      "有同名画布 → 复用（只把已有开发节点的 devPath / subFolder 改指新的开发文件夹）；没有才 appCanvasWf + appsCreateDevNode",
+    );
+
+    /* ② 归页判据（本轮口径 · 用户共识）= **物理目录**：listKind（主进程标出的「扫到它的那一套根」）
+          优先，其次 kind，最后才 dev 标记。vm 真跑真代码。
+          「app.json 已 dev:true 却还躺在下载根」的那条旧预期**已翻转**：现在它算「库」——
+          库页按下载根解析目录，把它列进开发页反而会让「打开数据目录 / 更新」全找不到人。 */
+    const sb3 = { console: console };
+    sb3.window = sb3;
+    vm.createContext(sb3);
+    vm.runInContext(pickFn(APPS, "appsLocalRootKind"), sb3);
+    const rk = (a) => vm.runInContext("appsLocalRootKind", sb3)(a);
+    ok(rk(null) === "", "空值回空串（不给假判定）");
+    ok(
+      rk({ id: "x", kind: "dev", listKind: "down", dev: true, kindMismatch: true }) === "down",
+      "★ 清单 dev:true 却躺在**下载根**（listKind=down）→ 算「库」：归页只看物理目录，不看 app.json 的 dev 标记",
+    );
+    ok(
+      rk({ listKind: "dev", kind: "down", dev: false }) === "dev",
+      "★ 躺在**项目根**（listKind=dev）→ 算「开发中应用」，哪怕 kind / dev 都说 down",
+    );
+    ok(
+      rk({ listKind: "down", kind: "dev", dev: true }) === "down",
+      "★ 反方向也要拦住：listKind=down + kind=dev + dev:true → 仍算「库」（listKind 优先，两边都认同一件事）",
+    );
+    ok(rk({ kind: "down", listKind: "down", dev: false }) === "down", "正常下载的仍在「库」页");
+    ok(rk({ kind: "dev", listKind: "dev", dev: true }) === "dev", "正常开发的仍在「开发」页");
+    ok(
+      rk({ kind: "down", listKind: "dev", dev: false }) === "dev",
+      "躺在项目根、清单却写 dev:false → 也算开发页那份（否则库页按 down 解析目录会报「不在本机」）",
+    );
+    /* listKind 缺失（老主进程 / 老缓存）→ 退回 kind（仲裁后的身份） */
+    ok(
+      rk({ kind: "dev", dev: false }) === "dev" && rk({ kind: "down", dev: true }) === "down",
+      "没有 listKind 时退回 kind（两层兜底里的第一层，比 dev 标记更可信）",
+    );
+    /* 连 kind 都没有（最老的缓存）→ 才按 dev 标记回落；都没有就当下载根 */
+    ok(
+      rk({ dev: true }) === "dev" && rk({ dev: false }) === "down" && rk({}) === "down",
+      "kind / listKind 都缺时才按 dev 标记回落（都没有 = 当下载根），绝不把应用漏列",
+    );
+    ok(
+      rk({ listKind: "别的值", kind: "dev" }) === "dev",
+      "listKind 只认 down / dev 两个值：写别的（脏数据 / 未来的新根）一律不当判据，落回 kind",
+    );
+
+    /* ③ 画布路径自愈（q4）：空值补写 + 指向已不存在的目录 → 校准成应用目录；用户填过且目录还在的不动 */
+    const APP_DIR = path.join("E:", "apps", "dev", "appA");
+    const OTHER = path.join("E:", "work", "elsewhere");
+    const GONE = path.join("E:", "apps", "dev", "appA-moved-away");
+    const alive = new Set([APP_DIR, OTHER].map((p) => String(p).toLowerCase()));
+    let probeThrows = false;
+    const sb4 = { console: console };
+    sb4.window = {
+      api: {
+        fileIsDir: async (p) => {
+          if (probeThrows) throw new Error("bridge down");
+          return alive.has(String(p || "").toLowerCase());
+        },
+      },
+    };
+    sb4.appsDevNodeOfWf = (wf) => (wf.nodes || []).find((n) => n && n.dev) || null;
+    vm.createContext(sb4);
+    vm.runInContext(pickFn(FLOW6, "appCanvasPathHeal"), sb4);
+    const heal = (wf, dir) => vm.runInContext("appCanvasPathHeal", sb4)(wf, dir);
+    /* 3.1 bug 现场：workspace 与 devPath / subFolder 都是「搬家的目标目录」（不存在） */
+    const wf1 = {
+      workspace: GONE,
+      nodes: [{ kind: "super", dev: true, devPath: GONE, subFolder: GONE, note: "x" }],
+    };
+    const h1 = await heal(wf1, APP_DIR);
+    ok(h1.workspace === true && wf1.workspace === APP_DIR, "workspace 指向不存在的目录 → 校准成应用目录");
+    ok(
+      h1.node === true &&
+        wf1.nodes[0].devPath === APP_DIR &&
+        wf1.nodes[0].subFolder === APP_DIR,
+      "开发节点 devPath / subFolder 同一处病灶一起校准",
+    );
+    ok(wf1.nodes[0].note === "x", "节点其它配置一字不动");
+    /* 3.2 空 workspace（老画布）：补写 */
+    const wf2 = { workspace: "", nodes: [{ dev: true, devPath: APP_DIR, subFolder: APP_DIR }] };
+    const h2 = await heal(wf2, APP_DIR);
+    ok(h2.workspace === true && wf2.workspace === APP_DIR, "空工作目录补写（老画布那条口径不变）");
+    ok(h2.node === false, "节点路径已对 → 一个字节不动");
+    /* 3.3 用户自己填过、目录还在：不动 */
+    const wf3 = { workspace: OTHER, nodes: [{ dev: true, devPath: OTHER, subFolder: OTHER }] };
+    const h3 = await heal(wf3, APP_DIR);
+    ok(
+      h3.workspace === false && h3.node === false && wf3.workspace === OTHER,
+      "填过且目录还在（用户自己选的）→ 一个字不动",
+    );
+    /* 3.4 应用目录本身不在盘上：什么也不做（绝不往画布上留一个不存在的路径） */
+    const wf4 = { workspace: "", nodes: [{ dev: true, devPath: GONE, subFolder: GONE }] };
+    const h4 = await heal(wf4, path.join("E:", "apps", "dev", "not-there"));
+    ok(h4.workspace === false && h4.node === false && wf4.workspace === "", "应用目录不在盘上 → 原样不动");
+    /* 3.5 桥探不动（老包 / 被裁剪）：一律当「没问题」，不乱改用户的画布 */
+    probeThrows = true;
+    const wf5 = { workspace: GONE, nodes: [{ dev: true, devPath: GONE, subFolder: GONE }] };
+    const h5 = await heal(wf5, APP_DIR);
+    ok(
+      h5.workspace === false && h5.node === false && wf5.workspace === GONE,
+      "桥抛错时不动任何字段（宁可少改一次）",
+    );
+    probeThrows = false;
+    /* 3.6 幂等：已经是对的再跑一遍不再改写 */
+    const h6 = await heal(wf1, APP_DIR);
+    ok(h6.workspace === false && h6.node === false, "已经校准过 → 第二次不再改写（幂等）");
+    ok(
+      /appCanvasPathHeal\(S\.wf, appDir\)/.test(FLOW6) &&
+        /if \(healed && \(healed\.workspace \|\| healed\.node\)\) scheduleSave\(true\);/.test(FLOW6),
+      "openAppCanvas 调它并只在真改写时落盘",
+    );
+    ok(
+      /appsLocalById\(id, "dev"\) \|\| appsLocalById\(id\)/.test(FLOW6),
+      "取应用目录点「开发那一份」（还躺在下载根里的开发应用也拿得到真实目录）",
+    );
   }
 
   /* ═══════════ [5] 词条与样式收尾 ═══════════ */

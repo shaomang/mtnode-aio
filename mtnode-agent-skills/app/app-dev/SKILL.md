@@ -1,7 +1,7 @@
 ---
 name: mtnode-app-dev
 title: MTNode 应用开发
-description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不显示（默认隐藏）、imageGen 声明出图；是静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
+description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不显示（新建应用默认声明为真）、imageGen 声明出图；是静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
 ---
 
 # MTNode 应用开发
@@ -25,10 +25,15 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 `close.js`（关窗收尾注册）、`app.js`（业务示范：便签 + 文字/图像提问）。
 
 **按 `capabilities` 决定复制哪些文件**：目标应用 `app.json` 的 `capabilities.textInput` 为真才复制 `speech.js` /
-`speech.css`；没声明就**不要**带这两个文件 —— 默认应用不携带语音转文字。
-`capabilities.showDictate`（默认 **false**）决定**应用窗口底部那条宿主注入的听写条**显不显示：宿主注入的
+`speech.css`。**新建应用默认三位全开**（`textInput` / `showDictate` / `imageGen` 缺省 true，见 `renderer/app-app-flow.js` 的 `appsCreateApp`），
+所以新建出来的应用**带**这两个文件；只有用户在中栏「预览」条的 ⚙「应用设置」里把 `textInput` 关掉时才不带。
+**能力位改动只写 `app.json` 的声明，绝不重写入口页**（`apps-store.js` 的 `appCapabilitiesSet`）——
+`index.html` 一个字都不动，手改过的页面内容原样保留；听写条只由宿主按下面这一位注入。
+`capabilities.showDictate` 决定**应用窗口底部那条宿主注入的听写条**显不显示：宿主注入的
 `renderer/app-speech-ui.js` 挂上就带 `data-mtnode-hidden` + `display:none`，要露面得声明这一位（或应用自己调
-`apSpeechReveal()`）；默认欢迎页里的 `dict.js` 内联同样只看这一位（`apps-store.js` 的 `dictScriptTag()`）。
+`apSpeechReveal()`）。**入口页里不再内联任何听写 UI**（`templates/app-default/dict.js` 与
+`apps-store.js` 的 `dictScriptTag()` 内联路径已随本轮改动删除）；老应用页面里那份旧内联段在打开
+「应用设置」时由 `clearLegacyDictInline()` 幂等清掉（只认我们自己的标记）。
 `capabilities.imageGen` 只是声明，出图接口与文本接口一样始终可调。
 新建应用的**默认欢迎页**在 `templates/app-default/index.html`（`apps-store.js` 的 `defaultPageHtml()` 读它），与脚手架同一套设计语言与同一段上手文案。
 
@@ -139,11 +144,13 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
 
 ### 3.3 数据文件夹（用户可改）
 
-- 默认 = 默认数据根；用户可以在**应用窗口里**（`dataDirPick()`）或**应用中心「库」页那一行**改。
+- 默认 = 默认数据根；用户可以在**应用窗口里**（`dataDirPick()`）改 —— 应用中心那一行**本轮已撤**，
+  现在只在右上角齿轮那枚「应用设置」窗里**只读**显示该应用的数据目录 + 一个「打开」按钮。
 - 路径**只能来自用户在系统目录框里亲自选的那一次**：`dataDirPick` 是宿主自己弹的框，应用（与 agent）传不了路径；主进程侧 `pickAppDataDir` 无宿主窗口直接拒绝。
 - 改完**不搬数据**：新目录当场生效（没有就建），旧目录文件原样留着；「恢复默认」只删指针（`dataDir.json`），也不删文件。
 - 指针存 `<数据目录>/apps-data/<id>/dataDir.json`：选在根内记**相对名**（换数据目录 / 换机器仍认），选在根外记绝对路径；落在应用目录里 / 盘根一律不认（回落默认数据根）。
-- 应用中心那一行还有状态徽标：「自定义位置」「还没写过数据」，以及打开 / 更改… / 恢复默认三个动作。
+- 应用窗口里还有状态徽标（「自定义位置」「还没写过数据」）与打开 / 更改… / 恢复默认三个动作；应用中心的
+  「应用设置」窗只给**只读**路径 + 打开（这一格不再有改数据文件夹的入口）。
 
 ---
 
@@ -169,7 +176,8 @@ window.AppClose.on(() => Promise.all([store.flush(), Promise.resolve(H.offAll())
 
 ```
 应用中心这套：
-  应用安装根目录/<AppName>/                源码目录（升级 / 卸载 = 整目录替换，别往里写数据）
+  应用根目录/<AppName>/                    源码目录（**固定**：库 `<数据目录>/apps`、开发 `<数据目录>/apps-dev`；
+                                           升级 / 卸载 / 删除应用 = 整目录替换或进回收站，别往里写数据）
   <数据目录>/apps-data/<id>/data.json      应用数据（默认数据根；dataRead / dataWrite 的落点）
   <数据目录>/apps-data/<id>/dataDir.json   数据文件夹指针（用户改过才有）
   <数据目录>/apps-models.json              各应用选的模型（宿主侧，按应用 id；卸载时清掉那一项）

@@ -54,6 +54,11 @@ const installHost = require("../plugins/main-install.js");
 const stepReporter = require("../plugins/install-step-reporter.js");
 /* 安装中断核心：取消 = 置 installCancel + 强杀当前安装脚本的进程树（见 plugins/install-cancel.js） */
 const installKill = require("../plugins/install-cancel.js");
+/* 插件**安装后自检**内核（见 plugins/plugin-selfcheck.js 头部）：结果落盘、等全局媒体锁、
+   本次产物目录、把进度推给安装窗这四件事全在它里面，宿主只登记「我这一档怎么跑」。
+   本文件按音乐类登记 selfcheckMusic（登记语句在生成区末尾，require 期执行），
+   宿主自己不写结果文件 —— 否则安装窗里的结论与主窗口卡片上的勾会变成两份真相。 */
+const { registerPluginSelfcheck } = require("../plugins/plugin-selfcheck.js");
 const { quietPython, pythonHealth, silentEnv, syncShims } = require("../backend-python.js");
 /* 国内镜像源单一真源（pip / torch / 权重 / npm / git 代理）：见根目录 cn-mirrors.js */
 const mirrors = require("../cn-mirrors.js");
@@ -3120,6 +3125,196 @@ function cancelGenerate(nodeId) {
   appendConsole("[cancel] generate cancelled node=" + (nid || "?") + " → stop backend");
   return { ok: true, forceKillScheduled: true };
 }
+
+/* ═══════════ 安装后自检（音乐类 · 编排在 plugins/plugin-selfcheck.js） ═══════════ */
+
+/**
+ * 安装后自检：装完插件后由安装窗自动跑一次**最低档真出片**，证明整条链路真的通
+ * （脚手架 / venv / 权重 / Gradio / 生成 / 落盘），而不是只回一句「装好了」。
+ *
+ * 为什么宿主只写「怎么跑」：结果落盘（<数据目录>/plugin-selfcheck/<id>.json）、等全局媒体锁、
+ * 建本次产物目录、把进度推给安装窗 —— 这四件事全在内核里；宿主一旦自己写盘、自己轮询锁，
+ * 就会出现「安装窗里的结论」与「主窗口卡片上的勾」两份真相。
+ *
+ * 为什么每步都复用本宿主现成函数（projectSignals / ensureBackendReadyForJob / generateYue）：
+ * 自检要证明的是「画布节点跑的那条路能通」；另写一条轻量通道只会证明另一条路能通。
+ *
+ * 返回契约见内核头部：{ ok, skipped?, reason?, artifacts?, steps? }；抛异常由内核兜成 ok:false。
+ */
+async function selfcheckMusic(ctx) {
+  /* 每一步同时做两件事：报给安装窗（进度即时可见）+ 攒进回执（结论落盘后重开窗还看得见明细） */
+  const steps = [];
+  const mark = (title, status, detail) => {
+    const s = {
+      title: String(title || ""),
+      status: String(status || "run"),
+      detail: detail == null ? "" : String(detail),
+    };
+    steps.push(s);
+    try {
+      ctx.step(s);
+    } catch {}
+    return s;
+  };
+  /** 中间进度（「正在加载权重…」这类）：安装窗的进度 / 排队文案走它，日志区走 ctx.log */
+  const note = (line) => {
+    try {
+      ctx.progress(String(line || ""));
+    } catch {}
+  };
+  const aborted = () => !!(ctx && ctx.signal && ctx.signal.aborted);
+  const skip = (reason) => ({ ok: false, skipped: true, reason: reason, steps });
+  const fail = (error) => ({ ok: false, error: String(error || "unknown"), steps });
+
+  /* 0) 产物目录：内核给的（<数据目录>/plugin-selfcheck/<id>/check-<时间戳>）—— 自检产物必须落这里，
+     落别处用户点「清理自检产物」清不掉。拿不到就跳过：不用「失败」吓人，但也绝不假装通过。
+     这一步先判且**只在失败时**留一条明细，是为了别为一次注定交不出产物的自检白起后端（分钟级）。 */
+  const artifactDir = String((ctx && ctx.artifactDir) || "").trim();
+  if (!artifactDir) {
+    mark("自检产物目录", "skip", "拿不到内核给的产物目录（数据目录未知），本次不生成");
+    return skip("拿不到自检产物目录");
+  }
+  if (aborted()) return skip("已取消");
+
+  /* 1) 安装信号：脚手架 / venv / 权重三样齐才算装好。缺一样只能**跳过**（不打勾、不算失败）——
+     装到一半就判「失败」，用户会以为装坏了，其实只是还没装完。 */
+  const cfg = loadConfig();
+  /* 口径以 config.installDir 为准：启动链（startBackend）只认它，自检跟着它判，
+     否则会出现「自检过了、节点却起不来」。ctx.installDir 是内核按安装窗登记问到的同一份值，
+     只作兜底；两者不一致时留一行日志证据（按 config 判）。 */
+  const cfgDir = String(cfg.installDir || "").trim();
+  const ctxDir = String((ctx && ctx.installDir) || "").trim();
+  const dir = cfgDir || ctxDir;
+  if (cfgDir && ctxDir && path.resolve(cfgDir) !== path.resolve(ctxDir)) {
+    ctx.log("[selfcheck] 安装目录口径不一致：config=" + cfgDir + " ctx=" + ctxDir + "（按 config 判）");
+  }
+  const sig = projectSignals(dir);
+  const missing = [];
+  if (!dir) missing.push("未设置安装目录");
+  else {
+    if (!sig.exists) missing.push("安装目录不存在");
+    if (!sig.scaffold) missing.push("脚手架 app/ui.py");
+    if (!sig.venv) missing.push("Python 环境 .venv");
+    if (!sig.models) missing.push("模型权重 models/");
+  }
+  if (missing.length) {
+    mark("安装信号", "skip", "缺：" + missing.join("、"));
+    ctx.log("[selfcheck] 还没装好（缺要件）：" + missing.join("、") + (dir ? " @ " + dir : ""));
+    return skip("还没装好（缺要件）");
+  }
+  mark("安装信号", "ok", "脚手架 / venv / 权重齐 @ " + dir);
+  ctx.log("[selfcheck] 安装信号齐 @ " + dir);
+
+  /* 2) 后端：已在跑就复用；没跑就走本宿主的现成启动路径（依赖自检 → spawn → 等 Gradio 可探测），
+     不为自检另开一条启动路。Gradio 首次加载权重是分钟级，先挂一条进度文案，
+     否则安装窗里几分钟没有任何动静，看起来像卡死。 */
+  const port = backendPort();
+  if (await probeGradio(port)) {
+    mark("后端", "ok", "已在 :" + port + " 运行，直接复用");
+  } else {
+    mark("后端", "run", "正在拉起后端（首次加载权重可能几分钟）…");
+    note("正在启动 YuE2 后端并加载权重（首次可能几分钟）…");
+    ctx.log("[selfcheck] 后端未运行 → 按现成启动路径拉起（端口 " + port + "）");
+    const ready = await ensureBackendReadyForJob();
+    if (!ready || !ready.ok) {
+      const code = String((ready && ready.error) || "backend_start_failed");
+      const why = String((ready && ready.message) || code);
+      mark("后端", "fail", why);
+      ctx.log("[selfcheck] 后端起不来：" + why);
+      return fail(code);
+    }
+    mark("后端", "ok", "已就绪 :" + (Number(ready.port) || port));
+  }
+  if (aborted()) {
+    mark("已取消", "skip", "启动后端期间被取消");
+    return skip("已取消");
+  }
+
+  /* 3) 全局媒体锁：音视频同时只允许 1 个任务（media-gen-global-lock.js）。自检也是真出片，
+     必须排队 —— 等不到（排队超 30 分钟仍被占 / 用户取消）就跳过：不打勾，也不报失败。
+     这里只等锁空闲；真正 tryAcquireLock 由 generateYue 自己做（它负责释放，不会漏锁）。 */
+  mark("全局生成锁", "run", "等待其它生成任务结束（全局仅允许 1 个）…");
+  note("有其它生成任务进行中（全局仅允许 1 个），已排队等它结束…");
+  const lock = await ctx.waitMediaLock();
+  if (!lock || !lock.ok) {
+    const why = lock && lock.reason === "cancelled" ? "已取消" : "等全局生成锁超时";
+    mark("全局生成锁", "skip", String((lock && lock.message) || why));
+    ctx.log("[selfcheck] " + why + (lock && lock.reason ? "（reason=" + lock.reason + "）" : ""));
+    return skip(why);
+  }
+  mark("全局生成锁", "ok", "已取得" + (lock.waitedMs ? "（排队 " + Math.round(Number(lock.waitedMs) / 1000) + "s）" : ""));
+  if (aborted()) return skip("已取消");
+
+  /* 4) 真出片：**最低档** —— 歌词给一两行就够，因为 YuE2 的 audioDuration 只是「仅记录」
+     （后端滑杆标签就写着这三个字，真正时长由歌词行数决定）；但 audioDuration 照样按 Gradio
+     契约传 10（不传会被后端当默认 60，那才是真的慢）。产物目录直接用内核给的 artifactDir。 */
+  const nodeId = "selfcheck-yue2-" + Date.now();
+  mark("生成", "run", "最低档：prompt=lofi、歌词一行、audioDuration=10");
+  note("正在生成自检音频（最低档，歌词一行；实际时长由歌词决定）…");
+  ctx.log("[selfcheck] generate nodeId=" + nodeId + " outputDir=" + artifactDir);
+  let out = null;
+  try {
+    out = await generateYue({
+      nodeId,
+      prompt: "lofi",
+      lyrics: "[verse]\nla la",
+      audioDuration: 10,
+      outputDir: artifactDir,
+    });
+  } catch (e) {
+    const err = String((e && e.message) || e);
+    mark("生成", "fail", err);
+    ctx.log("[selfcheck] 生成抛异常：" + err);
+    return fail(err);
+  }
+  if (!out || out.ok !== true) {
+    const code = String((out && out.error) || "generate_failed");
+    const why = String((out && out.message) || code);
+    /* 取消不是失败（内核口径）：generateYue 的取消回 error:"cancelled" */
+    if (code === "cancelled" || aborted()) {
+      mark("生成", "skip", "已取消");
+      return skip("已取消");
+    }
+    mark("生成", "fail", why);
+    ctx.log("[selfcheck] 生成失败：" + code + (why !== code ? "：" + why : ""));
+    return fail(code);
+  }
+
+  /* 5) 校验产物：路径存在且字节 > 0 才算通过 —— 后端偶尔回一句「Saved: …」但文件是 0 字节，
+     这种「看起来成功」的结论比失败更坑（卡片会打勾，用户下次真用节点时才发现是空的）。 */
+  const outPath = String(out.path || "").trim();
+  let bytes = 0;
+  try {
+    if (outPath && fs.existsSync(outPath)) bytes = fs.statSync(outPath).size || 0;
+  } catch {
+    bytes = 0;
+  }
+  if (!outPath || bytes <= 0) {
+    mark("校验产物", "fail", "产物不存在或 0 字节：" + (outPath || "(没有回传路径)"));
+    ctx.log("[selfcheck] 校验失败：path=" + (outPath || "?") + " bytes=" + bytes);
+    return fail("artifact_missing_or_empty");
+  }
+  mark("校验产物", "ok", path.basename(outPath) + " · " + Math.round(bytes / 1024) + " KB");
+  ctx.log("[selfcheck] 通过：path=" + outPath + " bytes=" + bytes + " seed=" + (out.seed || 0));
+  note("自检完成");
+  return {
+    ok: true,
+    artifacts: [{ path: outPath, label: "自检生成的音乐" }],
+    steps,
+    warnings: Array.isArray(out.warnings) ? out.warnings : [],
+  };
+}
+
+/* 登记给自检内核（require 期执行一次，热重载重复执行无害）：内核据此在安装窗里显示
+   「YuE2 本地音乐生成 · 音乐类」，并在这个插件装完后自动跑上面这个 check。
+   id 必须是卡片 id（见 PLUGIN_ID 的注释：安装窗按卡片 id 过滤事件流）。 */
+registerPluginSelfcheck({
+  id: PLUGIN_ID,
+  key: "yue2",
+  label: "YuE2 本地音乐生成",
+  kind: "music",
+  check: selfcheckMusic,
+});
 
 /* ═══════════ 控制台窗 / 目录 / 元数据 ═══════════ */
 

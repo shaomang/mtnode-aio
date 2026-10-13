@@ -149,6 +149,16 @@ const sandbox = {
   currentSuperFocus: () => "",
   currentTaskFocus: () => "",
   appPluginInstalled: () => pluginInstalled,
+  /* 显存门槛（本轮需求）：落点菜单会按它收掉本地后端节点。默认「没被挡掉」，
+     用例要验「挡掉」时把 __vramHidden 打开（见 renderer/app.js 的 nodeKindHiddenByVram）。
+     真判定走 S.pluginsVramHidden（被滤掉的插件不在目录里）与目录条的 vram.hide 两路。 */
+  appPluginHiddenByVram: (id) => {
+    const pid = String(id || "");
+    const hit = (S.plugins || []).find((p) => p && p.id === pid);
+    if (hit && hit.vram && hit.vram.hide === true) return true;
+    const hidden = S.pluginsVramHidden;
+    return !!(hidden && typeof hidden.has === "function" && hidden.has(pid));
+  },
   nextNetChannel: () => 41001,
   ctxKindItem: (kind, label, run, extra) => ({ kind, label, run, extra: extra || {} }),
   addNode: (kind, x, y, extra) => {
@@ -259,6 +269,9 @@ const APP_FNS = [
   "videoPostInputCount",
   "videoPostSlotMeta",
   "splitCtxParenLabel",
+  "NODE_KIND_PLUGIN",
+  "nodeKindPluginId",
+  "nodeKindHiddenByVram",
   "WIRE_DROP_TARGETS",
   "wireDropExtraOf",
   "wireDropLabelOf",
@@ -297,7 +310,7 @@ const F = new Proxy(
 );
 console.log("\n[ex] 源码抽取自检");
 eqArr(
-  APP_FNS.filter((n) => !["WIRE_DROP_TARGETS", "ASSET_ITEM_TYPES"].includes(n)).filter(
+  APP_FNS.filter((n) => !["WIRE_DROP_TARGETS", "ASSET_ITEM_TYPES", "NODE_KIND_PLUGIN"].includes(n)).filter(
     (n) => typeof G(n) !== "function",
   ),
   [],
@@ -323,6 +336,8 @@ function fixture(extraNodes, extraWires) {
   ctxOpened.length = 0;
   sandbox.__dropParent = "";
   pluginInstalled = true;
+  /* 每个用例从「没有任何插件被显存门槛挡掉」开始（个别用例自己设，见 [2]） */
+  S.pluginsVramHidden = new Set();
 }
 /* 菜单项可能嵌在一级子菜单里（ctxSubmenu → item.submenu）：递归展平后再断言，
    这样菜单结构再怎么分组，候选判定口径都不变。 */
@@ -390,6 +405,26 @@ groups = F.wireDropMenuGroups(F.nodeById("txt"), 0, { x: 900, y: 500 });
 ok(hasKind(groups, "proc_image"), "图像生成在列（文本提示词驱动文生图）");
 ok(hasKind(groups, "music_gen"), "Minimax Music 3 在列（提示词 / 歌词端子）");
 ok(hasKind(groups, "breeze_gen"), "Breeze 语音在列（待合成文本端子）");
+/* 显存门槛（本轮需求）：目录里看不到的本地后端插件，落点菜单也不列它的节点。
+   真判定在主进程 plugins/vram-gate.js，渲染层读 S.pluginsVramHidden（被滤掉的插件不在目录里）。 */
+S.pluginsVramHidden = new Set(["minimax-music3"]);
+groups = F.wireDropMenuGroups(F.nodeById("txt"), 0, { x: 900, y: 500 });
+ok(!hasKind(groups, "music_gen"), "显存门槛挡掉 Minimax Music 3 时：落点菜单不列 music_gen");
+ok(hasKind(groups, "breeze_gen"), "同一轮里没门槛的节点照常在列（Breeze 语音不受影响）");
+S.pluginsVramHidden = new Set(["yue2-local"]);
+groups = F.wireDropMenuGroups(F.nodeById("txt"), 0, { x: 900, y: 500 });
+ok(!hasKind(groups, "yue_gen"), "显存门槛挡掉 YuE2 时：落点菜单不列 yue_gen");
+ok(hasKind(groups, "music_gen"), "Music 3 没被挡 → 仍在列（判定按插件各算各的）");
+S.pluginsVramHidden = new Set(["sensenova-local"]);
+groups = F.wireDropMenuGroups(F.nodeById("txt"), 0, { x: 900, y: 500 });
+ok(!hasKind(groups, "sensenova_gen"), "显存门槛挡掉 SenseNova 时：落点菜单不列 sensenova_gen");
+/* 另一路：目录条目自带的 vram.hide（已装的条目恒 false，这里造一条被挡的） */
+S.pluginsVramHidden = new Set();
+S.plugins = [{ id: "minimax-music3", installed: false, vram: { required: true, minVramGb: 24, hide: true } }];
+groups = F.wireDropMenuGroups(F.nodeById("txt"), 0, { x: 900, y: 500 });
+ok(!hasKind(groups, "music_gen"), "目录条目挂 vram.hide 时同样不列（两路判据都要认）");
+S.plugins = [];
+S.pluginsVramHidden = new Set();
 ok(hasKind(groups, "remotion"), "Remotion 在列（插件已装）");
 ok(hasKind(groups, "save"), "保存在列（按文本保存）");
 ok(!hasKind(groups, "task"), "任务节点仍不在列（数据线连不进任务）");

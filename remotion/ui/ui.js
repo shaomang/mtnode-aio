@@ -36,6 +36,38 @@
     return st;
   }
 
+  /* 环境自检（只读）：安装失败时用户手上往往什么都没有 —— 这一颗当场把
+     node / npm、目录可写、磁盘、npm 源、随包脚手架与安装脚本逐项列出来。 */
+  $("btnSelfCheck").onclick = async () => {
+    const btn = $("btnSelfCheck");
+    btn.disabled = true;
+    logLine("[selfcheck] 正在自检环境…");
+    try {
+      const r = typeof api.selfcheck === "function" ? await api.selfcheck() : { ok: false, error: "版本过旧：控制台没有自检桥" };
+      if (!r || !r.ok) {
+        logLine("[selfcheck] 自检失败：" + String((r && r.error) || "unknown"));
+        return;
+      }
+      for (const line of r.lines || []) logLine(line);
+      /* ok = 自检这趟跑成功了；pass = 环境这一趟过了（必需项全过）—— 报警只看 pass */
+      const bad = (r.items || []).filter((x) => x.required && !x.ok);
+      const notice = $("selfCheckNotice");
+      if (notice) {
+        notice.hidden = !bad.length;
+        notice.textContent = bad.length
+          ? "环境自检未通过：" +
+            bad.map((x) => x.label).join(" / ") +
+            "。逐项修法见下面 console 里的 [selfcheck] 行；修好后回到「插件」对话框点「安装 / 重装」。"
+          : "";
+      }
+      if (!bad.length) logLine("[selfcheck] 必需项全部通过（" + (r.pass ? "环境就绪" : "有非必需项待留意") + "）。");
+    } catch (e) {
+      logLine("[selfcheck] 自检异常：" + String((e && e.message) || e));
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
   $("btnClearMeta").onclick = async () => {
     const ok = confirm("仅移除数据目录入口（控制台 UI 等）？安装目录与配置将保留。");
     if (!ok) return;

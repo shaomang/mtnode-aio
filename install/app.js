@@ -27,6 +27,197 @@
   let cancelling = false;   /* 已发出取消、进程树还在死：按钮显示「正在停止…」并置灰 */
   let autoCreatedDir = "";  /* 这次安装的目录是本窗**自动建出来**的（本轮需求）：顶部副行加一句回执，换插件即作废 */
 
+  /* ── 安装后自检（本轮需求）───────────────────────────────────────────────
+     口径（用户共识）：
+       · 安装成功（终局 done）后**自动跑一次**；只自检刚刚装完的那一个插件；
+       · 「最低档、最快」的参数由各宿主写死在它自己的 check 里，本窗只负责起跑与展示；
+       · 结果区 = 状态 + 逐项明细 + 产物路径（路径可点，定位到文件）；
+       · 出片类遇上用户自己的生成任务时**自动排队**等锁（上限 30 分钟，超时如实标注「已跳过」）；
+       · 不通过只如实展示 —— 不阻塞安装、不改安装状态、不影响插件启用；卡片上的勾只给通过的。 */
+  const selfPref = { id: "", supported: false, kind: "", result: null, running: false, queued: false, note: "" };
+  let selfOpen = true;        /* 结果区展开态（默认展开：装完就要看见结论） */
+  let selfAutoDone = false;   /* 这一次安装已经自动跑过自检了（不重复跑） */
+  const selfSteps = [];       /* 本次自检的逐项明细（{title,status,detail}，按上报顺序累积） */
+  let selfBusy = false;       /* 已发出自检请求、还没落结论（按钮置灰 + 文案改成「自检中…」） */
+
+  function selfLocalSteps(result) {
+    return ((result && result.steps) || []).map((s) => ({ title: s.title || s.id || "", status: s.status || "", detail: s.detail || "" }));
+  }
+
+  /** 换插件（或关窗）时把自检现场整块作废：结果区先收起来，等新插件的 state 回来再画 */
+  function resetSelfcheck() {
+    selfPref.id = "";
+    selfPref.supported = false;
+    selfPref.kind = "";
+    selfPref.result = null;
+    selfPref.running = false;
+    selfPref.queued = false;
+    selfPref.note = "";
+    selfAutoDone = false;
+    selfBusy = false;
+    selfSteps.length = 0;
+    renderSelfcheck();
+  }
+
+  /** 问一次自检状态（登记能力 + 最近一次结果 + 正在跑 / 在排队） */
+  async function loadSelfcheck(id, opts) {
+    if (!id || typeof api.selfcheck !== "function") return null;
+    const r = await api.selfcheck({ action: "state", id }).catch(() => null);
+    if (!r || !r.ok) return null;
+    if (!snap || snap.pluginId !== id) return null; /* 回来晚了：已经切到别的插件，丢弃 */
+    selfPref.id = id;
+    selfPref.supported = !!r.supported;
+    selfPref.kind = String(r.kind || "");
+    selfPref.result = r.result || null;
+    selfPref.running = !!r.running;
+    selfPref.queued = !!r.queued;
+    selfPref.note = String(r.note || "");
+    if (selfPref.result) {
+      selfSteps.length = 0;
+      for (const s of selfLocalSteps(selfPref.result)) selfSteps.push(s);
+    }
+    if (!(opts && opts.keepSteps) && !selfPref.running && !selfPref.result) selfSteps.length = 0;
+    renderSelfcheck();
+    return r;
+  }
+
+  /** 起一次自检（立即回执，进度与结论走 onEvent 的 kind:"selfcheck"） */
+  async function runSelfcheck(reason) {
+    if (!snap || !selfPref.supported || selfPref.running) return;
+    const id = snap.pluginId;
+    selfBusy = true;
+    selfSteps.length = 0;
+    selfPref.result = null;
+    selfPref.note = T("正在准备自检…", "preparing self-test…");
+    selfOpen = true;
+    renderSelfcheck();
+    const r = await api
+      .selfcheck({
+        action: "run",
+        id,
+        reason: String(reason || "manual"),
+        /* 把安装窗手上这份现场带上（这次到底装到哪）：宿主与内核据此判「要件齐了没」，
+           少一层「窗说刚装完、自检说没装好」的自相矛盾 */
+        installDir: String((snap && snap.installDir) || ""),
+      })
+      .catch((e) => ({ ok: false, error: (e && e.message) || String(e) }));
+    if (!r || !r.ok) {
+      selfBusy = false;
+      selfPref.note = (r && (r.message || r.error)) || T("自检没有启动", "self-test did not start");
+      renderSelfcheck();
+      toast(T("自检没能开始：", "self-test could not start: ") + selfPref.note, "err");
+      return;
+    }
+    selfPref.running = true;
+    selfPref.queued = false;
+    selfBusy = false;
+    renderSelfcheck();
+  }
+
+  function selfArtifactOpen(p) {
+    const path = String(p || "");
+    if (!path) return;
+    /* 点路径 = 在文件管理器里定位到这个文件；白名单里没有那条桥就退回复制路径（照抄复制日志的三级口径） */
+    const fn = typeof api.api === "function" ? () => api.api("shellShowItem", [path]) : null;
+    const done = (r) => {
+      if (r && r.ok === true) {
+        toast(T("已在文件管理器中定位", "revealed in file manager"));
+        return;
+      }
+      selfCopyPath(path);
+    };
+    if (!fn) {
+      selfCopyPath(path);
+      return;
+    }
+    try {
+      Promise.resolve(fn()).then(done).catch(() => selfCopyPath(path));
+    } catch {
+      selfCopyPath(path);
+    }
+  }
+  function selfCopyPath(p) {
+    navigator.clipboard
+      .writeText(String(p || ""))
+      .then(() => toast(T("产物路径已复制到剪贴板", "artifact path copied")))
+      .catch(() => toast(T("复制失败：请手动选中路径", "copy failed: select the path manually"), "err"));
+  }
+
+  function renderSelfcheck() {
+    const box = $("insSelf");
+    if (!box) return;
+    const show = !!(snap && selfPref.supported && selfPref.id === snap.pluginId);
+    box.hidden = !show;
+    if (!show) return;
+    const r = selfPref.result;
+    const st = $("insSState");
+    const state = selfPref.running
+      ? selfPref.queued
+        ? T("排队等锁", "queued for the media lock")
+        : T("自检中…", "self-test running…")
+      : r
+        ? r.ok
+          ? T("通过", "passed")
+          : r.skipped
+            ? T("已跳过", "skipped")
+            : T("未通过", "failed")
+        : T("未自检", "not tested");
+    st.textContent = state;
+    st.className = "ins-s-state" + (selfPref.running ? "" : r ? (r.ok ? " is-ok" : r.skipped ? " is-skip" : " is-fail") : "");
+    $("insSToggle").textContent = selfOpen ? T("收起", "Hide") : T("展开", "Show");
+    $("insSBody").hidden = !selfOpen;
+    $("insSRun").disabled = selfPref.running;
+    $("insSRun").textContent = selfPref.running ? T("自检中…", "self-test running…") : T("重新自检", "Run self-test again");
+    $("insSCancel").hidden = !selfPref.running;
+    $("insSClean").disabled = selfPref.running;
+    if (!selfOpen) return;
+    /* 说明行：结论 / 原因 / 中间进度。耗时警告按插件给 —— 图像那类首次要加载权重（分钟级）。 */
+    const NOTE = {
+      image: T(
+        "自检会用最低档参数真生成一张最小尺寸的图（1 步采样）。首次要加载全部权重，可能耗时分钟级（宿主自己按 25 分钟下限估计）；结果区会给产物路径。",
+        "The self-test really generates one smallest-size image with the lowest settings (1 step). The first run loads all weights and may take minutes (the host budgets 25 min); the artifact path is shown below.",
+      ),
+      speech: T("自检会用最低档参数真合成一句最短语音。", "The self-test really synthesizes one short utterance with the lowest settings."),
+      music: T("自检会用最低档参数真生成一段最短音乐。", "The self-test really generates the shortest possible music clip."),
+      video: T("自检会用最低档参数（最小分辨率 + 最短时长）真渲染一段视频，可能耗时分钟级。", "The self-test really renders a video at the lowest resolution and shortest duration; it may take minutes."),
+      motion: T("自检会用最低档参数（1 帧）真渲染一次动效视频。", "The self-test really renders a single frame of the motion template."),
+    };
+    const bits = [];
+    if (NOTE[selfPref.kind || ""]) bits.push(NOTE[selfPref.kind || ""]);
+    if (selfPref.note) bits.push(selfPref.note);
+    if (r && r.error) bits.push(T("失败原因：", "reason: ") + String(r.error));
+    if (r && r.skipped && r.reason) bits.push(T("跳过原因：", "skipped: ") + String(r.reason));
+    if (r && r.at) bits.push(T("最近一次：", "last run: ") + new Date(r.at).toLocaleString());
+    if (r && !r.ok && !r.skipped) bits.push(T("自检不通过**不影响**这次安装与插件启用；可点「重新自检」，或把下面这份明细交给 mtnode 会话修。", "A failed self-test does NOT affect the install or the plugin: run it again, or hand the details below to an MTNode session."));
+    const note = $("insSNote");
+    note.textContent = bits.join("\n");
+    const sl = $("insSSteps");
+    sl.innerHTML = "";
+    for (const s of selfSteps) {
+      const li = document.createElement("li");
+      const mark = s.status === "ok" ? "✓" : s.status === "fail" ? "✕" : s.status === "skip" ? "—" : "·";
+      li.className = s.status ? "is-" + s.status : "";
+      li.textContent = mark + " " + (s.title || "") + (s.detail ? " — " + s.detail : "");
+      sl.appendChild(li);
+    }
+    const al = $("insSArts");
+    al.innerHTML = "";
+    for (const a of (r && r.artifacts) || []) {
+      const li = document.createElement("li");
+      li.textContent = T("产物：", "artifact: ") + (a.label ? a.label + " · " : "") + String(a.path || "");
+      li.title = T("点一下：在文件管理器中定位（定位不可用则复制路径）", "click: reveal in the file manager (or copy the path)");
+      li.onclick = () => selfArtifactOpen(a.path);
+      al.appendChild(li);
+    }
+    if (r && r.artifactDir && !((r.artifacts || []).length)) {
+      const li = document.createElement("li");
+      li.textContent = T("产物目录：", "artifact dir: ") + r.artifactDir;
+      li.title = T("点一下：在文件管理器中定位（定位不可用则复制路径）", "click: reveal in the file manager (or copy the path)");
+      li.onclick = () => selfArtifactOpen(r.artifactDir);
+      al.appendChild(li);
+    }
+  }
+
   /* ── 日志的「真实输出顺序」 ──────────────────────────────────────────────
      主进程按**步骤分桶**存日志（snap.logs[stepId]），分桶本身不带顺序信息。窗里自己维护一份
      「桶 → 到达序号」表：adopt 时按快照里桶的出现顺序起号（已是第几批就接着往下排），
@@ -408,6 +599,31 @@
     allLi.appendChild(allBody);
     allLi.onclick = () => { selected = ""; renderSteps(); renderLog(); };
     list.appendChild(allLi);
+    /* 步骤表为空 = 主进程没读到该插件的 steps.json（打包白名单漏项那类）。
+       以前这里就是一片空白，用户以为「没有日志」；现在当场说清缺的是什么。 */
+    if (!(snap.steps || []).length) {
+      const emptyLi = document.createElement("li");
+      emptyLi.className = "ins-step is-fail";
+      const emptyIcon = document.createElement("span");
+      emptyIcon.className = "ins-step-icon";
+      emptyIcon.textContent = "!";
+      const emptyBody = document.createElement("span");
+      emptyBody.className = "ins-step-body";
+      const emptyTitle = document.createElement("span");
+      emptyTitle.className = "ins-step-title";
+      emptyTitle.textContent = T("没读到安装步骤表（steps.json）", "no install step table (steps.json) found");
+      const emptyMeta = document.createElement("span");
+      emptyMeta.className = "ins-step-meta";
+      emptyMeta.textContent = T(
+        "该插件的随包脚手架里没有 steps.json（打包白名单漏项），安装窗列不出步骤名；失败原因仍看右侧日志与数据目录里的 console.log。",
+        "the bundled scaffold has no steps.json (packaging whitelist gap); the failure reason is still in the log pane and the console.log under the data dir.",
+      );
+      emptyBody.appendChild(emptyTitle);
+      emptyBody.appendChild(emptyMeta);
+      emptyLi.appendChild(emptyIcon);
+      emptyLi.appendChild(emptyBody);
+      list.appendChild(emptyLi);
+    }
     for (const s of snap.steps || []) {
       const li = document.createElement("li");
       li.className = "ins-step is-" + s.status + (s.id === cur ? " is-current" : "");
@@ -798,6 +1014,7 @@
       renderHead();
       renderWeights();
       renderUninstall();
+      renderSelfcheck();
       return;
     }
     main.hidden = false;
@@ -809,6 +1026,7 @@
     renderActions();
     renderWeights();
     renderUninstall();
+    renderSelfcheck();
   }
 
   /* ── 权重指路：指定已手动下载的位置 → 移动就位（只移动、不复制） ──
@@ -1073,6 +1291,8 @@
       injErr = null;
       uninRunning = false;
       resetLogOrder();
+      /* 自检现场同样当场作废（结果区收起来，等新插件的 state 回来再画） */
+      resetSelfcheck();
     }
     syncLogOrderFromSnap();
     renderAll();
@@ -1086,6 +1306,8 @@
           }
         })
         .catch(() => {});
+      /* 新插件的自检现状（登记能力 + 最近一次结论）；上一次装完留下的结果在这里复看 */
+      void loadSelfcheck(snap.pluginId);
     }
   }
 
@@ -1113,14 +1335,95 @@
       if (!selected || selected === key) appendLogLine(String(ev.line || ""));
       return;
     }
+    if (ev.kind === "selfcheck") {
+      /* 自检事件（本轮需求）：跑 / 排队 / 明细 / 日志 / 结论。只认当前这个插件的事件。 */
+      if (ev.state === "run") {
+        selfPref.running = true;
+        selfPref.queued = !!ev.queued;
+        if (ev.note) selfPref.note = String(ev.note);
+        if (ev.log) pushLogText("_", "[selfcheck] " + String(ev.log), 0);
+        if (ev.step && ev.step.title) {
+          const s = { title: ev.step.title, status: ev.step.status || "run", detail: ev.step.detail || "" };
+          const i = selfSteps.findIndex((x) => x.title === s.title);
+          if (i >= 0) selfSteps[i] = s;
+          else selfSteps.push(s);
+        }
+        renderSelfcheck();
+        if (ev.log && (!selected || selected === "_")) appendLogLine("[selfcheck] " + String(ev.log));
+        return;
+      }
+      if (ev.state === "done" && ev.result) {
+        selfPref.running = false;
+        selfPref.queued = false;
+        selfPref.result = ev.result;
+        selfPref.note = ev.result.skipped ? T("本次没有真出内容（见下面的原因）", "nothing was generated this time (see why below)") : "";
+        selfSteps.length = 0;
+        for (const s of selfLocalSteps(ev.result)) selfSteps.push(s);
+        selfOpen = true;
+        renderSelfcheck();
+        toast(
+          ev.result.ok
+            ? T("自检通过", "self-test passed")
+            : ev.result.skipped
+              ? T("自检已跳过", "self-test skipped")
+              : T("自检未通过：见自检结果区", "self-test failed — see the self-test panel"),
+          ev.result.ok ? "ok" : "err",
+        );
+        return;
+      }
+      if (ev.state === "cleaned") {
+        selfPref.result = null;
+        selfSteps.length = 0;
+        selfPref.note = T("自检产物与结果已清理（卡片上的勾随之消失）", "self-test artifacts and result cleared (the tick disappears)");
+        renderSelfcheck();
+        return;
+      }
+      return;
+    }
     if (ev.kind === "finish" && ev.session) {
       /* 终局快照走 adopt（它负责把「正在停止…」复位并整屏重画）——
          失败时日志区随之切到「全部（末尾 240 行）」，脚本崩溃那一段默认就在眼前。 */
       adopt(ev.session);
       const tail = snap && snap.state === "failed" ? (snap.error || "") : "";
       if (tail) $("insLogTitle").title = tail;
+      /* 安装成功 → 自动跑一次自检（用户共识：只自检刚刚装完的那一个插件；失败 / 取消不跑） */
+      if (snap && snap.state === "done" && !selfAutoDone) {
+        selfAutoDone = true;
+        void (async () => {
+          await loadSelfcheck(snap.pluginId);
+          if (selfPref.supported) await runSelfcheck("auto");
+          else selfPref.note = T("这个插件不做内容生成类自检。", "This plugin has no content-generation self-test.");
+          renderSelfcheck();
+        })();
+      }
     }
   });
+
+  /* ── 自检结果区的按钮 ── */
+  $("insSToggle").onclick = () => {
+    selfOpen = !selfOpen;
+    renderSelfcheck();
+  };
+  $("insSRun").onclick = () => runSelfcheck("manual");
+  $("insSCancel").onclick = async () => {
+    const r = await api.selfcheck({ action: "cancel", id: snap ? snap.pluginId : "" }).catch(() => null);
+    if (!r || !r.ok) toast((r && (r.message || r.error)) || T("取消失败", "cancel failed"), "err");
+    else toast(T("已请求取消自检（脚本 / 后端可能要几秒才收手）", "cancel requested (the script/backend may take a few seconds)"));
+  };
+  $("insSClean").onclick = async () => {
+    const r = await api.selfcheck({ action: "clean", id: snap ? snap.pluginId : "" }).catch(() => null);
+    if (!r || !r.ok) {
+      toast((r && (r.message || r.error)) || T("清理失败", "clean failed"), "err");
+      return;
+    }
+    selfPref.result = null;
+    selfPref.running = false;
+    selfPref.queued = false;
+    selfSteps.length = 0;
+    selfPref.note = T("自检产物与结果已清理（卡片上的勾随之消失）", "self-test artifacts and result cleared (the tick disappears)");
+    renderSelfcheck();
+    toast(T("已清理自检产物与结果", "self-test artifacts and result cleared"));
+  };
 
   /* 日志跟随开关 / 复制 / 关闭 */
   $("btnLogFollow").onclick = () => {

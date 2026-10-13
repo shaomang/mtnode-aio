@@ -321,7 +321,23 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('mtnodeInstall:openConsole', handler);
     return () => ipcRenderer.removeListener('mtnodeInstall:openConsole', handler);
   },
+  /* 安装后自检（本轮需求）：卡片封面左上角的勾角标 = 该插件最近一次自检通过。
+     一份快照回全部生成类插件的结论（{ checks: { id: { passed, result, running } } }），
+     卡片重画时一次问齐，不必一卡一次。结果落 <数据目录>/plugin-selfcheck/。 */
+  pluginSelfcheckSummary: () => ipcRenderer.invoke('plugin-selfcheck:summary'),
+  /* 自检结论变了（跑完 / 清理）：卡片封面左上角的勾据此重画 */
+  onPluginSelfcheckChanged: (cb) => {
+    const handler = (_e, data) => {
+      try { cb(data); } catch (_) {}
+    };
+    ipcRenderer.on('plugin-selfcheck:changed', handler);
+    return () => ipcRenderer.removeListener('plugin-selfcheck:changed', handler);
+  },
   appPluginsCatalog: () => ipcRenderer.invoke('appPlugins:catalog'),
+  /* 显存门槛现状（插件对话框「显示不支持的插件」开关 + 卡片「本机显存可能不足」标注）：
+     目录本身已经把不支持的插件滤掉了，这一份**不滤**，供用户手动翻出来看。
+     口径与名单的唯一真源在 plugins/vram-gate.js。 */
+  appPluginsVramState: (opts) => ipcRenderer.invoke('appPlugins:vramState', opts),
   appPluginsIcon: (name) => ipcRenderer.invoke('appPlugins:icon', name),
   appPluginsInstall: (id) => ipcRenderer.invoke('appPlugins:install', id),
   /* 窗口插件的下载中断（安装窗走主进程的兜底取消口；这条给控制台 / 卡片直接调） */
@@ -981,22 +997,37 @@ contextBridge.exposeInMainWorld('api', {
         **两套根**（下载的应用与开发的应用严格分开，删一个不误删另一个）：
           · kind='down' 下载根 → config.json 的 apps.installDir（老键名沿用）
           · kind='dev'  项目根 → config.json 的 apps.projectDir
-        **不再要求用户手动指定（本轮需求）**：没配过时主进程直接用默认根（画布所在的数据目录下
-        的 apps / apps-dev），并在列应用 / 下载 / 新建时把默认路径固化进 config.json；
-        界面只在用户主动点「更改目录…」时才走 appsRootSet / appsRootPick。
-        不给 kind 一律按下载根（老调用点 / 老渲染层逐字不变）；解析结果落在应用目录内一律拒绝。
+        **路径可在界面上改（本轮需求）**：默认库 = <数据目录>\\apps、开发 = <数据目录>\\apps-dev，
+        目录设置窗里每行有「修改」+「打开」两枚按钮 —— 修改走 appsRootPick（系统选目录框）或
+        appsRootSet（给绝对路径），两者都可带 moveApps:true 表示「把旧目录里那一类应用一起搬过去」。
+        老机器 config.json 里手改过的根**仍生效**（主进程 rootPathOf 优先读配置，行为不变）。
+        不给 kind 一律按下载根（老调用点逐字不变）；解析结果落在应用目录内一律拒绝。
         应用窗口**内部**的桥另有一份：preload-app.js 的 window.appHost（无画布 / 无文件系统 /
         无账号 token），与本表互不重叠。 */
   appsRootGet: (kind) => ipcRenderer.invoke('apps:rootGet', { kind: kind || 'down' }),
-  appsRootSet: (p, kind) => ipcRenderer.invoke('apps:rootSet', { path: p, kind: kind || 'down' }),
-  /* 弹系统目录选择框并落 config：{ kind } → 回 { ok, kind, path, previous, changed, roots }
-     / { ok:false, canceled:true } */
-  appsRootPick: (kind) => ipcRenderer.invoke('apps:rootPick', { kind: kind || 'down' }),
+  /* 目录设置窗的「修改」：弹系统目录框选新根（默认定位到当前根），选完写 config.json；
+     opts.moveApps=true 时把旧根里**那一类**应用一起搬过去（同名跳过、别的文件不动，
+     回执带 moved / skipped / scanned / movedFrom）。取消 = { ok:false, canceled:true }。 */
+  appsRootPick: (kind, opts) =>
+    ipcRenderer.invoke('apps:rootPick', Object.assign({ kind: kind || 'dev' }, opts || {})),
+  /* 同一件事的「直接给路径」版（不弹框）：{ kind, path, moveApps? } → 与 appsRootPick 同形回执 */
+  appsRootSet: (opts) => ipcRenderer.invoke('apps:rootSet', opts || {}),
   /* 旧布局显式迁移（含 dryRun 预览）：{ id?, dryRun? } —— 只搬「该在项目根却躺在下载根」的
      应用与它那一棵数据（apps-data/<id> → apps-data/<dev|downloaded>/<id>）。
      绝不自动迁移、绝不覆盖已存在的目标；回 { ok, dryRun, moves, conflicts, skipped, note, roots } */
   appsMigrateLayout: (opts) => ipcRenderer.invoke('apps:migrateLayout', opts || {}),
   appsList: () => ipcRenderer.invoke('apps:list'),
+  /* 轻表（首帧）：与 appsList 同形，但**不含**体积 / 文件数 / 核心文件 / zip 哈希这些要递归
+     目录或整读包才算得出的字段（每条带 detailPending:true 标明「还没算」）。
+     opts.cache !== false 时优先回磁盘上的轻表缓存（fromCache:true），渲染层随后再问一次
+     实时的轻表并原地刷新（见 renderer/app-apps.js 的两段绘制）。 */
+  appsListSlim: (opts) => ipcRenderer.invoke('apps:listSlim', opts || {}),
+  /* 单个应用按需补一件（完整摘要）：{ id } → { ok, app } —— 用户点「二次开发」/ 打开发布窗 /
+     打开详情时用，不必为一件重跑全库扫描。查不到回 { ok:false, error }。 */
+  appsDetail: (id) => ipcRenderer.invoke('apps:detail', { id }),
+  /* 首帧用的云端目录：优先拉精简清单 catalog.slim.json（拉不到就照旧走完整链路），
+     本机那一侧也按轻表口径 attach。回执带 slim:true 表示「版本树 / 截图 / 校验值还没到」。 */
+  appsCatalogSlim: () => ipcRenderer.invoke('apps:catalogSlim'),
   /* 新建应用：{ name 标题, id 文件夹名, style 设计风格 id, author 当前登录账号名（可空）} →
      建 <root>/<id>/ + app.json（dev:true = 开发中、author = 作者）；画布（id = 文件夹名）由渲染层
      紧接着走既有 wfSave 建（见 renderer/app-app-flow.js）。 */
@@ -1006,7 +1037,12 @@ contextBridge.exposeInMainWorld('api', {
      dev = 开发中（新建 / 二次开发）；author = 作者；forkOf = 二次开发来源 { id, ownerId }。
      省略的键保持原样；回 { ok, id, patched, app }。 */
   appsSetMeta: (id, patch) => ipcRenderer.invoke('apps:setMeta', Object.assign({ id }, patch || {})),
-  /* 云端条目元数据 → 本机**所有同 id 副本**（下载根 + 项目根两边都写；与 appsSetMeta 是两条
+  /* 二次开发 = **复制到开发目录**（本轮口径）：把「库」目录里那一份复制一份到项目根，库里的原件
+     原地不动（两份互不影响）。opts.mode = 'overwrite' 时先整目录备份到 <数据目录>/merge-backups
+     再整份接替；不给 mode 且目标已存在 → { ok:false, code:'exists' }（一个字节都不动），
+     由界面问「覆盖 / 交给 AI 合并」。回 { ok, id, mode, from, dir, backupDir, files, kept }。 */
+  appsCopyToDev: (id, opts) =>
+    ipcRenderer.invoke('apps:copyToDev', Object.assign({ id }, opts || {})),  /* 云端条目元数据 → 本机**所有同 id 副本**（下载根 + 项目根两边都写；与 appsSetMeta 是两条
      独立通道，语义不重叠）：meta = { title?, description?, tags? } —— 只写传了的键，
      title 同一个值同时进 app.json 的 title 与 name；icon / dev / forkOf / capabilities / version
      一律不写（本机自己的事）。回 { ok, id, synced, missing, patched, results:[{ dir, kind, ok, error? }] }
@@ -1017,15 +1053,19 @@ contextBridge.exposeInMainWorld('api', {
      不传 preview:false 时带预览图；渲染层只在真开浮层时才要它。 */
   appsStyles: (opts) => ipcRenderer.invoke('apps:styles', opts || {}),
   appsSetStyle: (id, style) => ipcRenderer.invoke('apps:setStyle', { id, style }),
-  /* 应用能力位（app.json 的 capabilities：textInput 文字输入 / imageGen 图像生成）：
-     get 回 { ok, capabilities, list }；set 整份替换并（默认）按模板重生成入口页
-     —— 换 `textInput` 会补 / 撤应用目录里的 speech.js + speech.css。
+  /* 应用能力位（app.json 的 capabilities：textInput 文字输入 / showDictate 显示听写条 /
+     imageGen 图像生成）：get 回 { ok, capabilities, list }；set 只写声明 —— **不碰入口页**，
+     换 `textInput` 会补 / 撤应用目录里的 speech.js + speech.css；关掉 `showDictate` 后听写条
+     由宿主注入闸门按声明决定，下次打开应用窗口生效。
      kind（'dev' / 'down'，可选）＝**改哪一套根下那一份**：同 id 在下载根与项目根各有一份时，
      开发页要点名 dev（否则能力位写到下载副本上）。 */
   appsCapabilitiesGet: (id, kind) =>
     ipcRenderer.invoke('apps:capabilitiesGet', kind ? { id, kind } : { id }),
   appsCapabilitiesSet: (id, capabilities, opts) =>
     ipcRenderer.invoke('apps:capabilitiesSet', Object.assign({ id, capabilities }, opts || {})),
+  /* 只清一次存量入口页里旧版内联的听写段（打开「应用设置」窗时静默调）：不写声明、不动别的 */
+  appsCapabilitiesCleanEntry: (id, kind) =>
+    ipcRenderer.invoke('apps:capabilitiesCleanEntry', kind ? { id, kind } : { id }),
   appsCatalog: () => ipcRenderer.invoke('apps:catalog'),
   /* 安装 / 更新：同名目录已存在且没给 mode 时回三态
      { ok:false, conflict:true, choices:['overwrite','rename','cancel'], existing }，由界面弹窗；
@@ -1041,6 +1081,12 @@ contextBridge.exposeInMainWorld('api', {
        磁盘上的项目文件夹原样保留（要删文件由用户自己在资源管理器里删）。 */
   appsUninstall: (id, force, kind) =>
     ipcRenderer.invoke('apps:uninstall', { id, force: force || '', kind: kind || '' }),
+  /* 删除应用（本轮需求：内容与画布一同进回收站）：**应用目录**整份送系统回收站（开发中的应用
+     也真删，与上面「卸载」的「只移除登记」区分开）；kind 点名删哪一套根那一份，不点名时
+     开发目录优先。画布那一半由渲染层走 wfDelete 一并处理；app 数据 / 会话 / storage 保留。
+     回收站不可用时拒绝（回 code:'trash_failed'），不做物理删。 */
+  appsDelete: (id, kind) =>
+    ipcRenderer.invoke('apps:delete', { id, kind: kind || '' }),
   /* 本机多版本（docs/apps-market.md §九；应用详情对话窗的「本机版本」块走这两个）：
      versions = 只读台账 —— 回 { ok, id, installed, dev, version, source, installedAt,
        versions:[{ version, source, sha256, bytes, slot:'cur'|'prev', current }], canRollback, prev }；
@@ -1153,9 +1199,22 @@ contextBridge.exposeInMainWorld('api', {
   /* 应用数据目录（应用中心库页 / 开发页）：打开这个应用的数据文件夹
      （默认 <数据目录>/apps-data/<id>/，用户改过数据文件夹则是他选的那个）——
      库 / 开发页每张卡片右侧那颗 📂 走它；回 { ok, dir } 或一句失败。
-     改数据文件夹位置仍只在应用窗口里：preload-app.js 的 appHost.dataDirGet / dataDirPick /
-     dataDirOpen / dataDirReset（主进程 apps:hostDataDir*）。 */
+     改数据文件夹位置有两条等价入口：应用窗口里（preload-app.js 的 appHost.dataDirGet /
+     dataDirPick / dataDirOpen / dataDirReset → apps:hostDataDir*）与「应用设置」窗里的
+     「数据目录 · 修改」（appsDataDirPick → apps:dataDirPick，同一条 pickAppDataDir 实现）。 */
   appsDataOpen: (id, kind) => ipcRenderer.invoke('apps:dataOpen', { id, kind: kind || '' }),
+  /* 「应用设置」窗里那两枚「修改」（渲染层只拿回执，选目录框与搬动都在主进程）：
+     appDirPick = 换**应用文件夹**：应用在列表 / 预览 / 数据里一律按 <根>\<应用 id>\ 认
+       （只扫两套根的**直接子目录**），所以可选的落点就是这两套根本身 —— to 传根名
+       （'dev' / 'down'）或那套根的绝对路径；别处回 code:'not_a_root'。一律整份搬过去
+       （旧目录清空），目标已有同名目录回 code:'exists'（不覆盖）；搬之前会先关掉它已打开的
+       独立窗口。回 { ok, id, from, to, kind, sameRoot, closed, leftover }。
+     dataDirPick = 换**数据目录**：与独立窗口里 appHost.dataDirPick 逐字同源（系统选目录框 +
+       只认用户亲自选的那一次 + 写本机配置指针），旧数据原地不动，不给「恢复默认」。
+       回 { ok, id, dir, def:false, root }。 */
+  appsAppDirPick: (id, kind, to) =>
+    ipcRenderer.invoke('apps:appDirPick', { id, kind: kind || '', to: to || '' }),
+  appsDataDirPick: (id, kind) => ipcRenderer.invoke('apps:dataDirPick', { id, kind: kind || '' }),
   /* 安装进度：{ id, phase:'start'|'download'|'extract'|'conflict'|'done'|'error', percent, got?, total?, version?, error? } */
   onAppsProgress: (cb) => {
     const handler = (_e, data) => {

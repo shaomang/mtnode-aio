@@ -9,15 +9,16 @@
  *   GET  /api/forum/topic?id=<topicId>                            → 正文 + 回复
  *   POST /api/forum/topics        { title, content, status }      → 新建话题
  *   POST /api/forum/replies       { topicId, content, replyToId? } → 回复（二级回复＝平铺引用）
- *   PATCH /api/forum/topic        { id, status }                  → 作者改状态
+ *   PATCH /api/forum/topic        { id, status }                  → 改状态（作者本人 / 管理员）
  *   DELETE /api/forum/topic       { id }                          → 删话题（软删；连带隐藏回复、软删评论）
  *   DELETE /api/forum/replies     { id }                          → 删回复（软删；连带软删它的评论）
  *   POST /api/forum/images        { base64, mime }                → 返回 imageId
  *   GET  /api/forum/images/<imageId>                              → 图片（公开可读）
- * 列表项：{ id, title, status, user{id,username,nickname}, createdAt, updatedAt, replyCount, canDelete }
- * 详情：  { item:{…列表项, body, canDelete}, replies:[{ id, body, user, createdAt, replyToId?, replyTo?, canDelete }] }
+ * 列表项：{ id, title, status, user{id,username,nickname}, createdAt, updatedAt, replyCount, canDelete, canModerate }
+ * 详情：  { item:{…列表项, body, canDelete, canModerate}, replies:[{ id, body, user, createdAt, replyToId?, replyTo?, canDelete }] }
  * 删帖权限位（canDelete）由服务端算：话题 = 作者 / 管理员；回复 = 回复作者 / 话题作者 / 管理员。
- * 状态枚举：general（一般）/ help（求助中）/ idea（建议）/ bug / solved（已解决）
+ * 改状态权限（本轮需求）：作者本人 / 管理员；canModerate = 仅管理员（列表行内快捷按钮的显隐只看它）。
+ * 状态枚举：general（一般）/ help（求助中）/ suggest（建议）/ bug / solved（已解决）
  */
 (function () {
   const api = window.forumApi || window.pluginApi;
@@ -134,6 +135,7 @@
   let detailSeq = 0;
   let postBusy = false;
   let delBusy = false; /* 删帖 / 删回复进行中：防连点重复提交 */
+  const rowBusy = new Set(); /* 列表行内改状态进行中的话题 id（同一行防连点） */
   let toastTimer = null;
   const imgUrl = Object.create(null);
   const imgPending = Object.create(null);
@@ -631,6 +633,30 @@
       sel.appendChild(o);
     });
   }
+  /* 列表行内的管理员快捷按钮（本轮需求）：
+     · 只给管理员看 —— 显隐只看服务端投影 canModerate，前端不自己判 isAdmin（与 canDelete 同口径）；
+     · 只在 bug / solved 两态之间互转（bug → 已解决，已解决 → 改回 Bug），可逆、无二次确认；
+     · 其它状态（一般 / 求助中 / 建议）不给行内入口，作者仍在自己帖的详情页用状态下拉改。 */
+  function rowAdminAction(it) {
+    if (!it || !it.canModerate) return null;
+    const cur = statusMeta(it.status).id;
+    if (cur !== "bug" && cur !== "solved") return null;
+    const next = cur === "bug" ? "solved" : "bug";
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "t-act " + (next === "solved" ? "solve" : "undo");
+    b.textContent = next === "solved" ? t("标记已解决", "Mark as solved") : t("改回 Bug", "Back to Bug");
+    b.title = next === "solved"
+      ? t("管理员操作：把这个 Bug 帖标记为已解决", "Admin: mark this bug report as solved")
+      : t("管理员操作：把已解决改回 Bug", "Admin: change it back to Bug");
+    b.onclick = (ev) => {
+      /* 行本身是「打开话题」的点击区：按钮上的点击不能顺带把详情打开 */
+      ev.preventDefault();
+      ev.stopPropagation();
+      adminSetStatus(it, next, b);
+    };
+    return b;
+  }
   function topicRow(it) {
     const row = document.createElement("div");
     row.className = "topic";
@@ -645,13 +671,15 @@
     title.textContent = String(it.title || t("（无标题）", "(untitled)"));
     main.appendChild(badge);
     main.appendChild(title);
+    row.appendChild(main);
+    const act = rowAdminAction(it);
+    if (act) row.appendChild(act);
     const sub = document.createElement("span");
     sub.className = "t-sub";
     const n = replyCountOf(it);
     sub.innerHTML =
       esc(displayName(it.user)) + " · " + esc(formatTime(it.updatedAt || it.createdAt)) +
       ' · <b>' + n + "</b> " + t("回复", "replies");
-    row.appendChild(main);
     row.appendChild(sub);
     row.onclick = () => openTopic(it.id);
     return row;
@@ -948,13 +976,15 @@
     renderMarkdownInto(tBody, item.body || item.content || "");
     renderReplies();
   }
+  /* 改状态（作者本人的详情页下拉）：服务端路由是 PATCH /api/forum/topic
+     —— 这里曾误写成一条服务端并不存在的 /status 子路由（改状态一直 404），本轮一并拨正。 */
   async function changeStatus(next) {
     if (!detail || !detail.item) return;
     const id = detail.item.id;
     statusSel.disabled = true;
     const r = await api.storeRequest({
-      method: "POST",
-      path: "/api/forum/topic/status",
+      method: "PATCH",
+      path: "/api/forum/topic",
       json: { id, status: next },
     });
     statusSel.disabled = false;
@@ -975,9 +1005,44 @@
     const row = state.items.find((x) => x.id === id);
     if (row) {
       row.status = detail.item.status;
+      if (updated && updated.canModerate != null) row.canModerate = !!updated.canModerate;
       renderList(true);
     }
     toast(t("状态已更新", "Status updated"), false);
+  }
+  /* 列表行内的管理员改状态：同一个 PATCH 接口（服务端按「作者本人 / 管理员」放行）。
+     成功后只重画列表（分页与滚动位置都不动），详情页开着同一条话题时徽章一起跟上。 */
+  async function adminSetStatus(it, next, btn) {
+    if (!it || !it.id || rowBusy.has(it.id)) return;
+    rowBusy.add(it.id);
+    if (btn) btn.disabled = true;
+    const r = await api.storeRequest({
+      method: "PATCH",
+      path: "/api/forum/topic",
+      json: { id: it.id, status: next },
+    });
+    rowBusy.delete(it.id);
+    if (btn && btn.isConnected) btn.disabled = false;
+    if (r && r.status === 401) {
+      handle401();
+      toast(t("登录已失效，请重新登录", "Session expired, please sign in again"), true);
+      return;
+    }
+    if (!r || !r.ok) {
+      toast(apiErr(r), true);
+      return;
+    }
+    const updated = pickItem(r.data);
+    it.status = (updated && updated.status) || next;
+    if (updated && updated.canModerate != null) it.canModerate = !!updated.canModerate;
+    if (detail && detail.item && detail.item.id === it.id) {
+      detail.item.status = it.status;
+      renderDetailHeader();
+    }
+    renderList(true);
+    toast(it.status === "solved"
+      ? t("已标记为已解决", "Marked as solved")
+      : t("已改回 Bug", "Changed back to Bug"), false);
   }
   /* ---------------- 删帖（软删除） ----------------
      本轮共识：话题与回复都能删；话题 = 作者本人 / 管理员，回复 = 回复作者 / 话题作者 / 管理员；
@@ -1257,6 +1322,9 @@
         if (!auth && wasSignedIn) return closeForAuthLoss();
         renderDetailHeader();
         refreshPermissions();
+        /* 列表也按旧登录态画过徽章与「改状态」行内按钮（权限位 canDelete / canModerate 都来自
+           服务端投影），换账号后必须重拉一次，否则会留下上一位用户的按钮。 */
+        if (view === "list") loadTopics(true);
       });
     }
     if (api && typeof api.onShown === "function") {

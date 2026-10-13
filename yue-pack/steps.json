@@ -7,7 +7,29 @@
   },
   "steps": [
     { "id": "gpu", "title": "探测 NVIDIA 显卡与驱动", "hint": "没有 N 卡直接判 no_cuda（-Cpu 是显式后门，官方要求 24G 卡）。" },
-    { "id": "python", "title": "创建 Python 3.12 虚拟环境", "hint": "3.12 不可用时回退 3.11/3.13/3.10 并给警告。" },
+    {
+      "id": "python",
+      "title": "准备 Python 3.12 / 3.11 并建虚拟环境",
+      "hint": "本机没有合格 Python 时由脚本自己取（uv 优先，否则从 npmmirror 下 python-build-standalone），缓存到 %APPDATA%\\pipeline-console\\python；不再要求你先手动装 Python 3.12。",
+      "messages": {
+        "yue2.python.missing": {
+          "zh": "这台机器上找不到可用的 Python 3.12 / 3.11，脚本自己下载一个也没成功（走 npmmirror 的 python-build-standalone）。多半是网络问题或缓存目录不可写（%APPDATA%\\pipeline-console\\python）：确认能访问 registry.npmmirror.com 后重跑；也可以自己装一个 Python 3.12（python.org 或 Microsoft Store），或设 MT_YUE2_PYTHON 指向已有解释器。诊断日志尾部：{tail}",
+          "en": "no usable Python 3.12 / 3.11 was found and fetching one failed too (python-build-standalone via npmmirror). Usually the network or a non-writable cache (%APPDATA%\\pipeline-console\\python): make sure registry.npmmirror.com is reachable and re-run; or install Python 3.12 yourself (python.org / Microsoft Store), or point MT_YUE2_PYTHON at an existing interpreter. Diagnostic tail: {tail}"
+        },
+        "yue2.python.fetch_failed": {
+          "zh": "取基座 Python 失败了（下载或解压没成功）。网络可达后重跑即可（已下载的解释器会复用，不会重复下）。诊断日志尾部：{tail}",
+          "en": "fetching the base Python failed (download / extraction). Re-run once the network is fine - an already fetched interpreter is reused. Diagnostic tail: {tail}"
+        },
+        "yue2.python.too_old": {
+          "zh": "你指定的 Python 太旧：torch cu130 只提供 cp311 及以上的轮子。换一个 3.12 / 3.11 的解释器，或清掉 MT_YUE2_PYTHON / MT_YUE2_CUDA_PYTHON 让脚本自己取。诊断日志尾部：{tail}",
+          "en": "the interpreter you pointed at is too old: torch cu130 only ships cp311+ wheels. Use a 3.12 / 3.11 interpreter, or clear MT_YUE2_PYTHON / MT_YUE2_CUDA_PYTHON and let the script fetch one. Diagnostic tail: {tail}"
+        },
+        "yue2.python.too_new": {
+          "zh": "你指定的 Python 太新：torch cu130 的轮子只覆盖到 cp313。换一个 3.12 / 3.11 的解释器，或清掉 MT_YUE2_PYTHON / MT_YUE2_CUDA_PYTHON 让脚本自己取。诊断日志尾部：{tail}",
+          "en": "the interpreter you pointed at is too new: the torch cu130 wheels only go up to cp313. Use a 3.12 / 3.11 interpreter, or clear MT_YUE2_PYTHON / MT_YUE2_CUDA_PYTHON and let the script fetch one. Diagnostic tail: {tail}"
+        }
+      }
+    },
     { "id": "deps", "title": "安装 requirements.txt（含 gradio）" },
     { "id": "torch", "title": "安装 CUDA torch / torchaudio", "hint": "按驱动版本选 cu130 / cu128 / cu126，逐级降档；只有 -Cpu 或全档失败才用 CPU 构建。" },
     { "id": "attn", "title": "记录默认 attention 档位（cudnn）", "hint": "Windows 版 torch 常有 flash-attn 签名但没对应 kernel，所以默认档定成 cudnn、安装期不再三档探针；真跑一次的确认由宿主启动服务前做（只验生效档一档），跑不了直接报 attention_backend_unsupported 且不自动降级。" },

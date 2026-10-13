@@ -133,6 +133,10 @@ const S = {
   /* 应用插件目录缓存（appPluginsCatalog 快照）：菜单项可见性 / 节点未安装警示条用。
      启动时与插件对话框增删后刷新（refreshAppPluginsCache）。 */
   plugins: [],
+  /* 显存门槛挡掉的插件 id 集合（appPluginsVramState 的 hidden 名单）：
+     被滤掉的那几个**不在 plugins 里**，画布入口的可见性只能靠这一份（见 appPluginHiddenByVram） */
+  pluginsVramHidden: null,
+  pluginsVramReading: null,
 };
 
 /* 节点粘贴板（Ctrl+C 复制 / Ctrl+V 粘贴）：仅保存最近一次。
@@ -165,6 +169,18 @@ async function refreshAppPluginsCache() {
       }
     }
     S.plugins = list;
+    /* 显存门槛挡掉的插件**不在目录里**（主进程已滤），所以画布入口还得单独问一次
+       「哪些被滤掉了」—— appPluginsVramState 那一份是不滤的（口径见 plugins/vram-gate.js）。 */
+    if (window.api.appPluginsVramState) {
+      try {
+        const vs = await window.api.appPluginsVramState();
+        const ids = (vs && Array.isArray(vs.hidden) ? vs.hidden : []).map(String);
+        S.pluginsVramHidden = new Set(ids);
+        S.pluginsVramReading = (vs && vs.reading) || null;
+      } catch (_) {
+        /* 门槛查询失败：不清旧集合（首启为空 → 菜单照常列出，宁可多显示也不许凭空少） */
+      }
+    }
   } catch (_) {
     /* 目录拉取失败：保留旧缓存（首启为空 → 菜单不显示插件节点，安全） */
   }
@@ -174,6 +190,46 @@ function appPluginInstalled(id) {
     S.plugins &&
     (S.plugins || []).some((p) => p && p.id === id && p.installed)
   );
+}
+/* ── 显存门槛（本轮需求：显存不够的本地后端插件直接隐藏）──
+   名单与门槛的唯一真源在主进程 plugins/vram-gate.js：sensenova-local 24G · minimax-music3 24G ·
+   yue2-local 16G · minimax-h3 16G。两路判据（都要看，因为被隐藏的插件**根本不在目录里**）：
+     · ① 目录条目上的 vram.hide（已装 / 显存够的条目恒为 false）；
+     · ② S.pluginsVramHidden（appPluginsVramState 的 hidden 名单 —— 被滤掉的那几个只在这里）。
+   画布入口的可见性与插件列表同源：列表框里看不到，这里也就不列出对应节点（用户共识）；
+   「显示不支持的插件」开关只管插件列表，不影响画布（开关状态在 renderer/app-plugins.js）。 */
+function appPluginHiddenByVram(id) {
+  const pid = String(id || "");
+  if (!pid) return false;
+  const hit = (S.plugins || []).find((p) => p && p.id === pid);
+  if (hit && hit.vram && hit.vram.hide === true) return true;
+  const hidden = S.pluginsVramHidden;
+  return !!(hidden && typeof hidden.has === "function" && hidden.has(pid));
+}
+/** 画布入口判定：插件既装了、又没被显存门槛挡掉（当前只用于「节点入口该不该列」的自检口径；
+ *  菜单与落点各自读上面两个函数 —— 不把「必须已装」混进显存判定里，免得改掉既有口径） */
+function appPluginUsable(id) {
+  return appPluginInstalled(id) && !appPluginHiddenByVram(id);
+}
+/* 节点类型 → 它属于哪个应用插件（画布入口可见性只看这一张表；@see nodeKindHiddenByVram）
+   注意：节点「未装警示条」（如 yue_gen / remotion）仍按 appPluginInstalled 各自判，
+   这里只回答一件事：**显存门槛**有没有把它挡掉。 */
+const NODE_KIND_PLUGIN = {
+  music_gen: "minimax-music3",
+  sensenova_gen: "sensenova-local",
+  yue_gen: "yue2-local",
+  breeze_gen: "breeze-tts-local",
+  remotion: "remotion",
+  /* H3（本地视频生成）与 SenseNova / Music 3 同为本地后端：门槛 16G（真源在 plugins/vram-gate.js） */
+  video_gen: "minimax-h3",
+};
+function nodeKindPluginId(kind) {
+  return NODE_KIND_PLUGIN[String(kind || "")] || "";
+}
+/** 纯显存门槛判定（不要求已安装）：给「插件没装也照样列」的那几处节点入口用 */
+function nodeKindHiddenByVram(kind) {
+  const pid = nodeKindPluginId(kind);
+  return !!pid && appPluginHiddenByVram(pid);
 }
 
 const HEAD = 28;
@@ -10044,6 +10100,18 @@ function mtDialogForm(opts) {
         }
         frag.appendChild(wrap);
       }
+      /* 概述块现在是**可折叠的概述条**（本轮需求）：默认收起，只留标签 + 首行摘要 + 箭头，
+         点标题行任意处展开 / 收起（.on = 展开，样式在 css/base.css 的 .mt-form-note 一组）。
+         为什么收起来：这份概述常常是好几段（功能区 + 实现区），整段铺在表单最上面会把要填写
+         的字段挤出视野 —— 而它本来就是「看一眼就够」的参考信息，不是每次都要读。
+         结构约束（回归口径见 test/smoke-plan-dialog.js）：<i> 与 <p> 仍是 .mt-form-note 的
+         直接子元素（querySelector("i") / querySelector("p") 照旧命中），只是 <i> 被收进标题行
+         容器里；展开 / 收起由 CSS 控制 <p> 的显隐，不动正文文本。 */
+      const _noteTextOf = (p) =>
+        [String((p && p.design) || "").trim(), String((p && p.impl) || "").trim()]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\s+/g, " ");
       const _noteTwo =
         opts.note &&
         (opts.note.design !== undefined || opts.note.impl !== undefined);
@@ -10051,11 +10119,57 @@ function mtDialogForm(opts) {
       if (opts.note && (_noteTwo || _noteBody)) {
         const nb = document.createElement("div");
         nb.className = "mt-form-note";
+        const head = document.createElement("div");
+        head.className = "mt-note-head";
         const nl = document.createElement("i");
         nl.textContent = opts.note.label || I18n.t("概述");
-        nb.appendChild(nl);
+        const ns = document.createElement("span");
+        ns.className = "mt-note-sum";
+        const _sumSrc = _noteTwo
+          ? _noteTextOf(opts.note) || I18n.t("（暂无概述）")
+          : _noteBody;
+        ns.textContent =
+          _sumSrc.length > 80 ? _sumSrc.slice(0, 80) + "…" : _sumSrc;
+        const na = document.createElement("span");
+        na.className = "mt-note-arw";
+        na.textContent = "▸";
+        head.appendChild(nl);
+        head.appendChild(ns);
+        head.appendChild(na);
+        /* 点标题行 = 展开 / 收起。键盘可及（Enter / Space），并同步 aria-expanded（无障碍）。
+           classList / setAttribute 都做了存在性判断与兜底：极端环境（老引擎、极简 DOM）里
+           缺任何一个都不该把整个弹窗渲染拖挂 —— 最差也只是点不动，不会报错。 */
+        const _noteOn = () =>
+          nb.classList ? nb.classList.contains("on") : nb.className.indexOf("on") >= 0;
+        const _syncNoteAria = () => {
+          try {
+            if (!head.setAttribute) return;
+            head.setAttribute("aria-expanded", _noteOn() ? "true" : "false");
+          } catch (_) {}
+        };
+        try {
+          head.setAttribute("role", "button");
+          head.setAttribute("tabindex", "0");
+        } catch (_) {}
+        _syncNoteAria();
+        const _toggleNote = () => {
+          try {
+            if (nb.classList) nb.classList.toggle("on");
+            else nb.className = nb.className.indexOf("on") < 0 ? nb.className + " on" : nb.className;
+          } catch (_) {}
+          _syncNoteAria();
+        };
+        head.onclick = _toggleNote;
+        head.onkeydown = (ev) => {
+          if (!ev) return;
+          if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+            ev.preventDefault();
+            _toggleNote();
+          }
+        };
+        nb.appendChild(head);
         if (_noteTwo) {
-          /* 两段式概述：一项两行 —— 功能段（人话）+ 实现段（技术梗概） */
+          /* 两段式概述：一项两行 —— 功能段（人话）+ 实现段（技术梗概），展开后可见 */
           const pd = document.createElement("p");
           pd.textContent =
             I18n.t("模块功能（面向非技术）：") +
@@ -19665,19 +19779,22 @@ function canvasCreateMenuGroups(pt) {
         ]),
         /* 图像生成：云端图像生成（proc_image）与本地图像生成（SenseNova）收成二级菜单，
            与「文本生成 / 视频生成 / 音频生成」同族写法（成员按后端命名） */
-        ctxSubmenu(I18n.t("图像生成"), "proc_image", "proc-img", [
+        ctxSubmenu(I18n.t("图像生成"), "proc_image", "proc-img", ctxDropVramHidden([
           ctxKindItem("proc_image", I18n.t("图像生成（云端服务商）"), () =>
             addNode("proc_image", pt.x, pt.y),
           ),
+          /* SenseNova 本地图像：显存档不够（未装 + <24G）时由 ctxDropVramHidden 收掉 */
           ctxKindItem(
             "sensenova_gen",
             I18n.t("SenseNova（本地图像生成 · SenseNova-U1.5-8B-MoT）"),
             () => addNode("sensenova_gen", pt.x, pt.y),
           ),
-        ]),
+        ])),
         /* 音频 / 视频生成：各自收进一个一级子菜单，成员按后端命名
            （菜单只显示括号前的短名，括号内为说明） */
-        ctxSubmenu(I18n.t("视频生成"), "video_gen", "video", [
+        ctxSubmenu(I18n.t("视频生成"), "video_gen", "video", ctxDropVramHidden([
+          /* Minimax H3 本地视频生成：显存档不够（未装 + <16G）时由 ctxDropVramHidden 收掉；
+             超分 / 补帧 / Remotion 不参与显存门槛，过滤器原样放行。 */
           ctxKindItem(
             "video_gen",
             I18n.t("Minimax H3（视频生成 · 文本 / 图像 / 音频 / 视频）"),
@@ -19704,8 +19821,9 @@ function canvasCreateMenuGroups(pt) {
                 ),
               ]
             : []),
-        ]),
-        ctxSubmenu(I18n.t("音频生成"), "music_gen", "music", [
+        ])),
+        ctxSubmenu(I18n.t("音频生成"), "music_gen", "music", ctxDropVramHidden([
+          /* Minimax Music 3 与 YuE2：显存档不够（未装 + 低于门槛）时由 ctxDropVramHidden 收掉 */
           ctxKindItem(
             "music_gen",
             I18n.t("Minimax Music 3（音乐生成 · 提示词 + 歌词）"),
@@ -19721,7 +19839,7 @@ function canvasCreateMenuGroups(pt) {
             I18n.t("Breeze 语音生成（文本转语音 · Breeze TTS 2）"),
             () => addNode("breeze_gen", pt.x, pt.y),
           ),
-        ]),
+        ])),
       ],
     ],
     [
@@ -21767,6 +21885,9 @@ function ctxKindItem(kind, label, run, extra) {
   const dummy = { kind: kind, ctrlRole: extra.ctrlRole || "" };
   return {
     label,
+    /* kind 也带回菜单项：菜单按类型收项（显存门槛的 ctxDropVramHidden、冒烟的展平断言）要用它。
+       （显存门槛的 ctxDropVramHidden 就是靠它认人的） */
+    kind: String(kind || ""),
     iconKey: extra.iconKey || nodeKindIconKey(dummy),
     iconCls: extra.iconCls || nodeKindIconCls(dummy),
     run,
@@ -21776,6 +21897,16 @@ function ctxKindItem(kind, label, run, extra) {
 /* 一级菜单项（带二级子菜单）：与 ctxKindItem 同族，只是不直接建节点而是展开成员清单 */
 function ctxSubmenu(label, iconKey, iconCls, submenu) {
   return { label, iconKey, iconCls, submenu };
+}
+
+/**
+ * 收掉「显存门槛挡掉」的节点菜单项（本轮需求：显存不够的本地后端插件在画布上也不列入口）。
+ * 判据只看 NODE_KIND_PLUGIN + 目录挂的 vram.hide —— 与插件列表同源（见 nodeKindHiddenByVram）。
+ * 写法上用**过滤整表**而不是在每一项上套条件表达式：菜单项的字面量（I18n 文案、addNode 调用）
+ * 保持原样，既不改变菜单顺序，也不让「一眼看不出还有哪几项」的嵌套三元把这张表读坏。
+ */
+function ctxDropVramHidden(items) {
+  return (items || []).filter((it) => !(it && it.kind && nodeKindHiddenByVram(it.kind)));
 }
 
 function ctxAction(label, run, iconKey, extra) {
@@ -21801,11 +21932,14 @@ function ctxAction(label, run, iconKey, extra) {
 const WIRE_DROP_TARGETS = [
   { kind: "proc_text", g: "处理节点" },
   { kind: "proc_image", g: "处理节点" },
-  { kind: "sensenova_gen", g: "处理节点" },
-  { kind: "music_gen", g: "处理节点" },
-  { kind: "yue_gen", g: "处理节点" },
+  /* 本地后端节点：vramKind = 显存门槛挡掉（未装 + 显存不够）时不列出这颗落点 ——
+     判定见 wireDropMenuGroups 里的 nodeKindHiddenByVram（与插件目录同源）。
+     这里**不**顺手加 plugin 未装即不列：那会改掉「未装也列、建出来给警示条」的既有口径。 */
+  { kind: "sensenova_gen", g: "处理节点", vramKind: "sensenova_gen" },
+  { kind: "music_gen", g: "处理节点", vramKind: "music_gen" },
+  { kind: "yue_gen", g: "处理节点", vramKind: "yue_gen" },
   { kind: "breeze_gen", g: "处理节点" },
-  { kind: "video_gen", g: "处理节点" },
+  { kind: "video_gen", g: "处理节点", vramKind: "video_gen" },
   { kind: "video_upscale", g: "处理节点" },
   { kind: "video_interp", g: "处理节点" },
   { kind: "remotion", g: "处理节点", plugin: "remotion" },
@@ -21893,6 +22027,8 @@ function wireDropMenuGroups(fromNode, fromIndex, worldPt) {
   const byTitle = new Map();
   for (const spec of WIRE_DROP_TARGETS) {
     if (spec.plugin && !appPluginInstalled(spec.plugin)) continue;
+    /* 显存门槛挡掉的本地后端节点：不列出这颗落点（与插件目录、右键菜单同源） */
+    if (spec.vramKind && nodeKindHiddenByVram(spec.vramKind)) continue;
     const extra = wireDropExtraOf(spec);
     if (wireDropConnectError(fromNode, spec, extra, worldPt, fromIndex)) continue;
     const gt = I18n.t(spec.g);
@@ -32159,7 +32295,9 @@ async function developDevNode(node) {
     wide: true,
     rows,
     note: devNoteDialogField(node),
-    msg: I18n.t("请说明本次要开发或迭代的内容；确认后将新建一个绑定该模块的开发会话并在其中运行。"),
+    /* 本轮需求：删掉开发框顶部那行说明（「请说明本次要开发…确认后新建会话」那种话）——
+       它与下方输入框的标签重复（标签已说明要写什么、按钮已说明提交后会新建会话），白占一行高度。
+       i18n 词条保留（可能仍被别处引用）。 */
     warn: p
       ? ""
       : I18n.t(
@@ -32175,9 +32313,9 @@ async function developDevNode(node) {
     }),
     /* 边写边留存：取消 / Esc / 被别的事务顶出对话框都不丢，下次打开原样回填 */
     onText: (t) => devDraftSet(node, "dev", t),
-    hint: I18n.t(
-      "确认 = 新会话后台运行（工作区 = 项目根目录 · 标题「开发 · 模块名」· 状态转为进行中 · 不离开画布）· 取消 / 跳出不清空：再次打开本框接着上次写 · 下方「先拷问需求」开关留在该功能块上（下次打开仍在）· Ctrl+Enter 提交 · Esc 取消",
-    ),
+    /* 本轮需求：删掉「开发」框底部那条提示（确认 = 新会话后台运行 … 下方「先拷问需求」……）。
+       msg 那行已说明提交后会发生什么，提示条只是复述；底部只留「先拷问需求」开关本身
+       （开关读数 / 写回逻辑未动，见下）。 */
     /* 「先拷问需求」：开关状态真源是 node.devGrill（布尔 · 随画布落盘），不塞进
        devDraft —— 那是文本草稿、提交后会清掉，而本开关的语义是「这个模块我就是要
        先被问清再动手」，属于粘在功能块上的偏好。真正生效在 devNodeContractText：
@@ -33551,6 +33689,29 @@ function doImportBase64() {
     adoptImportedWorkflow(r.workflow);
   }, true));
 }
+
+/* 从应用中心删掉某个应用的画布（本轮需求：删除应用 = 应用文件夹 + 画布一同进回收站）。
+   主进程那一半是既有的 workflow:delete（save/<id>.json 与 assets/<id> 整体搬进 trash/<时间戳>__<id>/，
+   可在回收站还原）；渲染层这一半必须做完整收口，否则会留下「删掉的画布又回来」这个老坑：
+   掐待保存定时器 + 摘 wfBag + 剔运行绑定栈 + 清 nodeWfId 归属 + 记黑名单（forgetDeletedWf 一处做全）。
+   调用方（app-apps.js 的删除应用）拿回执决定要不要报成功；画布本来就已不在 = noop，不算失败。 */
+function wfDeleteById(id, opts) {
+  const sid = String(id == null ? "" : id);
+  const o = opts && typeof opts === "object" ? opts : {};
+  if (!sid || !window.api || typeof window.api.wfDelete !== "function")
+    return Promise.resolve({ ok: false, error: I18n.t("画布删除能力未就绪"), code: "no_bridge" });
+  const arg = { id: sid };
+  if (o.expectId) arg.expectId = String(o.expectId);
+  if (o.expectName) arg.expectName = String(o.expectName);
+  return Promise.resolve(window.api.wfDelete(arg)).then(
+    (r) => {
+      if (r && r.ok) forgetDeletedWf(sid, o.wf || null);
+      return r || { ok: false, error: I18n.t("未知错误") };
+    },
+    (e) => ({ ok: false, error: (e && e.message) || String(e) }),
+  );
+}
+window.wfDeleteById = wfDeleteById;
 
 /* 导入方式选择 */
 function importWorkflowDialog() {

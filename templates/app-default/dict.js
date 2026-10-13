@@ -1,13 +1,17 @@
 "use strict";
 
-/* ═══════════════ 默认欢迎页的可选语音听写条（按能力位注入）═══════════════
+/* ═══════════════ 默认欢迎页的可选语音听写条（**本轮起不再被注入**）═══════════════
  *
- * 为什么单独一份文件：默认欢迎页（templates/app-default/index.html）**不再默认携带**
- * 语音转文字 —— 只有声明了「文字输入」（app.json 的 capabilities.textInput）的应用，
- * 主进程才会在生成入口页时把这份脚本注入进去（占位符 {{DICT_SCRIPT}}，见 apps-store.js
- * 的 defaultPageHtml）。没声明的应用里根本没有这一段。
+ * 现状（本轮共识，改口径）：入口页里**不再内联任何听写 UI** —— `templates/app-default/index.html`
+ * 里的 `{{DICT_SCRIPT}}` 占位与 `apps-store.js` 的 `dictScriptTag()` 内联路径都已删除。
+ * 应用窗口底部那条听写条只由宿主按 app.json 的 capabilities.showDictate 注入
+ * （preload-app.js 的闸门 → renderer/app-speech-ui.js）。
+ * 因此这份文件**当前没有任何代码引用**：它留在仓里当参考实现（页面单文件、离线可用、
+ * 自带听写条 + 结果小窗，全部走应用桥），需要时由开发会话把它内联进某个应用的入口页即可。
+ * 老应用页面里那份由旧版本注入的同类脚本（带 `<!-- MTNode:dictate-inline -->` 标记的那一段）
+ * 由 apps-store.js 的 clearLegacyDictInline() 在打开「应用设置」时幂等清掉。
  *
- * 它自己把 UI（听写条 + 结果小窗 + 样式）挂进页脚，所以宿主只需要注入一行 <script>：
+ * 它自己把 UI（听写条 + 结果小窗 + 样式）挂进页脚，所以内联时只占一行 <script>：
  *   MTNDictate.mount({ host: window.appHost, lang: "zh" | "en" })
  *
  * 识别走 window.appHost（preload-app.js）：pickAudio / transcribe / transcribeWav /

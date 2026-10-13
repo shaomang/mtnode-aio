@@ -424,6 +424,24 @@ function findLocalSkill(skillName) {
   const nm = String(skillName || "").toLowerCase();
   return (TPL_ST._localSkills || []).find((s) => s.name === nm) || null;
 }
+/* 本机技能清单的「用到时必已加载」：开窗首帧不再等这次 skillList 扫描，但每一个读
+   TPL_ST._localSkills 的地方都要先 await ensureLocalSkillsForStore() —— 否则「还没扫完」
+   （null）会被当成「本机没装过」，卡片上的「更新」会显示成「下载」（甚至当成新装覆盖）。
+   已经有一次在跑就共用同一个 promise，不重复扫描。 */
+let TPL_LOCAL_SKILLS_P = null;
+function ensureLocalSkillsForStore() {
+  if (Array.isArray(TPL_ST._localSkills)) return Promise.resolve(TPL_ST._localSkills);
+  if (!TPL_LOCAL_SKILLS_P) {
+    TPL_LOCAL_SKILLS_P = Promise.resolve()
+      .then(() => refreshLocalSkillsForStore())
+      .catch(() => TPL_ST._localSkills || [])
+      .then((list) => {
+        TPL_LOCAL_SKILLS_P = null;
+        return list;
+      });
+  }
+  return TPL_LOCAL_SKILLS_P;
+}
 
 /* 商店二级浮层：大图 / 只读画布预览（盖在模板商店之上） */
 function openTplSubOverlay(title) {
@@ -712,6 +730,306 @@ async function tplFetchFileCached(item) {
   return { base64: r.data.base64, fromCache: false, title: item.title || r.data.title };
 }
 
+/* ============ 工坊封面：先进视口再取图（工坊自己的小队列） ============
+ * 背景：列表本身是分页 JSON（回执里没有图片字节），封面却是**逐卡一次 IPC → 整张图 base64**
+ * 回来当 data URL。改动前 appendTplItems → cardEl → fillThumb 在同一个 items.forEach 里对
+ * 一屏最多 48 张同时发起请求：没有 lazy、没有并发闸、没有磁盘缓存。
+ * 这里的口径（与应用中心 app-apps-img.js 同一套思路，但**不依赖那个模块** —— 它绑的是 URL
+ * 预取，工坊是 base64 回调）：
+ *   ① 先占位：卡片进 DOM 时只挂一块纯底色骨架（.tpl-thumb-skel），一张图都不取；
+ *   ② 进视口才取：IntersectionObserver（rootMargin 往外约一屏）命中才 tplPreviewSrc(id,"thumb")；
+ *   ③ 并发上限 6：同时在取的张数封顶，其余排队 —— base64 走 IPC + 整张图，比一个 URL 重；
+ *   ④ 一批一起显形：同一收集窗口内到货的图一起 img.src = base64 并加 .tpl-thumb-in（CSS 一次淡入）；
+ *   ⑤ 收口：重绘 / 切页 / 关窗时 tplThumbFlush() 作废排队项（代际失效）；元素已脱离 DOM 的
+ *      一律不再换地址 —— 不留半张卡，也不会把图换到别的卡上。
+ * 无 IntersectionObserver 的运行时退化成「挂上即取」：不 lazy，但功能不缺。
+ * 大图灯箱（showTplImageLightbox）不走这里：它保持「点开才拉 full」。
+ * 内存缓存 TPL_PREV_CACHE 照旧（命中缓存的那次 tplPreviewSrc 直接返回，不再发请求）。 */
+const TPL_THUMB_CONCURRENCY = 6;
+/* 一批图的收集窗口（毫秒）：这段时间内到货的算同一批，一起换上（≈5 帧，够收一屏，又不至于等） */
+const TPL_THUMB_BATCH_WINDOW = 80;
+const TPL_THUMB_EL = new WeakMap(); /* img 元素 → { el, wrap, item, obs, gen, started } */
+let TPL_THUMB_OBS = null; /* 视口观察器（懒建，延迟取图的唯一触发口） */
+let TPL_THUMB_BATCH = null; /* { items:Set } 当前收集到的一批 */
+let TPL_THUMB_TIMER = 0;
+let TPL_THUMB_RUNNING = 0; /* 正在取图的张数（并发闸的读数） */
+let TPL_THUMB_PEND_SEEN = false; /* 已排了「待取 → 取图」的微任务（同一轮只排一次） */
+let TPL_THUMB_HALT = false; /* 刚做过一次收口（重绘 / 切页 / 关窗）：新的一批入队前不再发起取图 */
+let TPL_THUMB_GEN = 0; /* 代际：收口时 +1，上一代的结果一律作废 */
+const TPL_THUMB_PENDING = []; /* 刚入队、还没进文档的图（下一轮微任务处理） */
+const TPL_THUMB_QUEUE = []; /* 等待取图的元素（按入队顺序） */
+const TPL_THUMB_INFLIGHT = new Set(); /* 正在取图的元素 */
+const TPL_THUMB_OBSERVED = new Set(); /* 已交给观察器、还在等进视口的元素 */
+
+/* 视口观察器（懒建）：rootMargin 往外扩 480px，滚到的位置图通常已就绪。
+   没有 IntersectionObserver（老运行时 / 冒烟桩）退化成「挂上即取」：功能不缺。 */
+function tplThumbObserver() {
+  if (TPL_THUMB_OBS) return TPL_THUMB_OBS;
+  if (typeof IntersectionObserver !== "function") return null;
+  try {
+    TPL_THUMB_OBS = new IntersectionObserver(
+      (entries) => {
+        for (const en of entries) {
+          if (!en || !en.isIntersecting) continue;
+          const el = en.target;
+          const rec = TPL_THUMB_EL.get(el);
+          if (!rec) continue;
+          tplThumbUnobserve(rec);
+          tplThumbEnqueue(el);
+        }
+      },
+      { rootMargin: "480px 0px" },
+    );
+  } catch (_) {
+    TPL_THUMB_OBS = null;
+  }
+  return TPL_THUMB_OBS;
+}
+
+function tplThumbUnobserve(rec) {
+  if (!rec) return;
+  if (rec.el) TPL_THUMB_OBSERVED.delete(rec.el);
+  if (!rec.obs) return;
+  try {
+    rec.obs.unobserve(rec.el);
+  } catch (_) {}
+  rec.obs = null;
+}
+
+/* 元素还在文档里吗：真 DOM 用 isConnected；桩环境没有它就退回「能不能走回 document.body」 */
+function tplThumbLive(el) {
+  if (!el) return false;
+  if (typeof el.isConnected === "boolean") return el.isConnected;
+  let n = el;
+  let hops = 0;
+  while (n && hops++ < 128) {
+    if (typeof document !== "undefined" && n === document.body) return true;
+    n = n.parentNode;
+  }
+  return false;
+}
+
+/* 「无预览」= 终态（这条目本来就没有预览图，或者取回来是空的）；
+   取图中 = .tpl-thumb-skel 纯底色骨架。两者样式不同：占位期间不写「无预览」三个字，
+   否则每张卡都会先闪一句「无预览」再变成图 —— 那是在说假话。 */
+function tplThumbNoPreviewEl() {
+  const ph = document.createElement("div");
+  ph.className = "tpl-thumb ph";
+  ph.textContent = I18n.t("无预览");
+  return ph;
+}
+function tplThumbNoPreview(wrap) {
+  if (!tplThumbLive(wrap)) return; /* 元素已拆：连占位都不再动它 */
+  wrap.innerHTML = "";
+  wrap.appendChild(tplThumbNoPreviewEl());
+}
+
+/* 建卡时唯一入口（cardEl 调它）：先挂占位 + 交给观察器，进视口才真去取图。
+   返回那个 <img>（还没进视口的卡上，它没有 src）。 */
+function tplThumbFill(wrap, item) {
+  wrap.innerHTML = "";
+  wrap.className = "tpl-thumb-wrap";
+  if (!item || !item.hasPreview) {
+    wrap.appendChild(tplThumbNoPreviewEl());
+    return null;
+  }
+  const img = document.createElement("img");
+  img.className = "tpl-thumb";
+  img.alt = item.title || "";
+  img.title = I18n.t("点击查看大图");
+  img.onclick = (ev) => {
+    ev.stopPropagation();
+    showTplImageLightbox(item);
+  };
+  img.setAttribute("data-tpl-thumb", "hold");
+  const skel = document.createElement("div");
+  skel.className = "tpl-thumb-skel";
+  wrap.appendChild(skel);
+  wrap.appendChild(img);
+  const rec = {
+    el: img,
+    wrap: wrap,
+    item: item,
+    obs: null,
+    gen: TPL_THUMB_GEN,
+    started: false,
+  };
+  TPL_THUMB_EL.set(img, rec);
+  const obs = tplThumbObserver();
+  if (obs) {
+    rec.obs = obs;
+    TPL_THUMB_OBSERVED.add(img);
+    try {
+      obs.observe(img);
+    } catch (_) {}
+    return img;
+  }
+  tplThumbEnqueue(img); /* 没有观察器：退化「挂上即取」 */
+  return img;
+}
+
+/* 入队：只进**待取队列**，真正的取图交给下一轮微任务（入队这一刻元素往往还没挂进文档） */
+function tplThumbEnqueue(el) {
+  TPL_THUMB_HALT = false; /* 有新的一批了：解除上一次收口的封口 */
+  if (
+    TPL_THUMB_PENDING.indexOf(el) >= 0 ||
+    TPL_THUMB_QUEUE.indexOf(el) >= 0 ||
+    TPL_THUMB_INFLIGHT.has(el)
+  )
+    return;
+  TPL_THUMB_PENDING.push(el);
+  tplThumbSchedulePump();
+}
+function tplThumbSchedulePump() {
+  if (TPL_THUMB_PEND_SEEN) return;
+  TPL_THUMB_PEND_SEEN = true;
+  Promise.resolve().then(() => {
+    TPL_THUMB_PEND_SEEN = false;
+    tplThumbDrainPending();
+  });
+}
+function tplThumbDrainPending() {
+  if (!TPL_THUMB_PENDING.length) return;
+  for (const el of TPL_THUMB_PENDING.splice(0, TPL_THUMB_PENDING.length)) TPL_THUMB_QUEUE.push(el);
+  tplThumbPump();
+}
+
+/* 取图泵：并发上限内把队列里的封面真取回来，一张都不多取 */
+function tplThumbPump() {
+  if (TPL_THUMB_HALT) {
+    /* 刚做过一次收口（上一页 / 上一次重绘的收口）：这一轮不再发起新的取图请求 */
+    TPL_THUMB_QUEUE.length = 0;
+    TPL_THUMB_PENDING.length = 0;
+    return;
+  }
+  tplThumbDrainPending();
+  while (TPL_THUMB_RUNNING < TPL_THUMB_CONCURRENCY && TPL_THUMB_QUEUE.length) {
+    const el = TPL_THUMB_QUEUE.shift();
+    if (!tplThumbLive(el)) continue; /* 已被拆掉的卡：安静出队 */
+    const rec = TPL_THUMB_EL.get(el);
+    if (!rec || rec.started) continue;
+    rec.started = true;
+    if (el.dataset) el.dataset.tplThumb = "load";
+    TPL_THUMB_RUNNING++;
+    TPL_THUMB_INFLIGHT.add(el);
+    tplThumbFetch(rec, () => {
+      TPL_THUMB_RUNNING = Math.max(0, TPL_THUMB_RUNNING - 1);
+      TPL_THUMB_INFLIGHT.delete(el);
+      tplThumbPump();
+    });
+  }
+}
+
+/* 单张取图：仍是既有的 IPC → base64 通路（tplPreviewSrc），拿到字节才换地址。
+   一路只走 promise，绝不在取图途中直接写 img.src。 */
+function tplThumbFetch(rec, done) {
+  let finished = false;
+  const fin = () => {
+    if (finished) return;
+    finished = true;
+    done();
+  };
+  Promise.resolve()
+    .then(() => tplPreviewSrc(rec.item.id, "thumb"))
+    .catch(() => "")
+    .then((src) => tplThumbSettle(rec, src))
+    .then(fin, fin);
+}
+
+/* base64 到手：还在文档里 + 代际没被作废才换地址，然后进当前批次等一起显形 */
+function tplThumbSettle(rec, src) {
+  const el = rec && rec.el;
+  if (!el) return;
+  if (!tplThumbLive(el)) {
+    /* 元素已脱离 DOM（切页 / 重绘 / 关窗）：不换地址 —— 图绝不跑到别的卡上 */
+    if (el.dataset) el.dataset.tplThumb = "drop";
+    return;
+  }
+  if (rec.gen !== TPL_THUMB_GEN) {
+    /* 这一批已被 tplThumbFlush() 作废（排队时的收口）：结果丢弃 */
+    if (el.dataset) el.dataset.tplThumb = "drop";
+    return;
+  }
+  if (!src) {
+    if (el.dataset) el.dataset.tplThumb = "empty";
+    tplThumbNoPreview(rec.wrap); /* 与改动前同一口径：取不到就按「无预览」收尾 */
+    return;
+  }
+  if (el.dataset) el.dataset.tplThumb = "ready";
+  try {
+    el.src = src;
+  } catch (_) {}
+  if (!TPL_THUMB_BATCH) TPL_THUMB_BATCH = { items: new Set() };
+  TPL_THUMB_BATCH.items.add(el);
+  tplThumbArmBatch();
+}
+
+/* 每有新成员都要保证收集窗口挂着（图到货时上一批往往已经收过，只 add 不重挂就永远不显形） */
+function tplThumbArmBatch() {
+  if (!TPL_THUMB_BATCH || TPL_THUMB_TIMER) return;
+  TPL_THUMB_TIMER = setTimeout(tplThumbReveal, TPL_THUMB_BATCH_WINDOW);
+}
+
+/* 一批到点：把这一批里「已就绪且还在文档里」的图一次性显形（加 class，CSS 里做一次淡入） */
+function tplThumbReveal() {
+  if (TPL_THUMB_TIMER) {
+    clearTimeout(TPL_THUMB_TIMER);
+    TPL_THUMB_TIMER = 0;
+  }
+  const batch = TPL_THUMB_BATCH;
+  TPL_THUMB_BATCH = null;
+  if (!batch) return;
+  for (const el of batch.items) {
+    if (!tplThumbLive(el)) continue;
+    if (!el.dataset || el.dataset.tplThumb !== "ready") continue;
+    if (el.classList) el.classList.add("tpl-thumb-in");
+  }
+}
+
+/* 收口（重绘 / 切页 / 关窗的唯一入口）：排队中的当场作废，正在路上的标记为上一代 ——
+   结果回来时只走「已脱离 DOM / 代际不符」的静默出队，不会再有卡被换上一张半张的图。 */
+function tplThumbFlush() {
+  TPL_THUMB_GEN++;
+  if (TPL_THUMB_TIMER) {
+    clearTimeout(TPL_THUMB_TIMER);
+    TPL_THUMB_TIMER = 0;
+  }
+  TPL_THUMB_BATCH = null; /* 还没显形的：DOM 马上要拆，不必再淡入 */
+  TPL_THUMB_QUEUE.length = 0;
+  TPL_THUMB_PENDING.length = 0;
+  for (const el of Array.from(TPL_THUMB_OBSERVED)) {
+    const rec = TPL_THUMB_EL.get(el);
+    if (rec) tplThumbUnobserve(rec);
+  }
+  TPL_THUMB_OBSERVED.clear();
+  /* 在取的那几张**不计入**置零：请求已经在路上，等它们各自回来时自然递减并发读数，
+     这样紧接着的新一屏也不会因为「旧的在途」而超过上限。 */
+  for (const el of Array.from(TPL_THUMB_INFLIGHT)) {
+    const rec = TPL_THUMB_EL.get(el);
+    if (rec) rec.gen = -1;
+    if (el.dataset) el.dataset.tplThumb = "drop";
+  }
+  TPL_THUMB_INFLIGHT.clear();
+  TPL_THUMB_HALT = true; /* 收口后不再替上一页取图，直到有新的卡入队（重绘后自然解除） */
+}
+
+/* 冒烟 / 验证台口径（生产不看它）：当前排队读数 + 手动收口 */
+if (typeof window !== "undefined") {
+  window.__mtnodeTplThumb = {
+    stats: () => ({
+      queued: TPL_THUMB_QUEUE.length,
+      pending: TPL_THUMB_PENDING.length,
+      running: TPL_THUMB_RUNNING,
+      observed: TPL_THUMB_OBSERVED.size,
+      batch: TPL_THUMB_BATCH ? TPL_THUMB_BATCH.items.size : 0,
+      gen: TPL_THUMB_GEN,
+      concurrency: TPL_THUMB_CONCURRENCY,
+      rootMargin: "480px 0px",
+    }),
+    flush: () => tplThumbFlush(),
+  };
+}
+
 async function openTemplateStore() {
   openOverlay(I18n.t("创意工坊"));
   overlayPersistent = true;
@@ -778,7 +1096,17 @@ async function openTemplateStore() {
   const pane = document.createElement("div");
   pane.className = "tpl-pane";
   body.appendChild(pane);
-  foot.appendChild(mkMiniBtn(I18n.t("关闭"), closeOverlay, true));
+  foot.appendChild(
+    mkMiniBtn(
+      I18n.t("关闭"),
+      () => {
+        /* 关窗也是收口点：排队中的封面请求当场作废（重开时 list 会重建，不留半张卡） */
+        tplThumbFlush();
+        closeOverlay();
+      },
+      true,
+    ),
+  );
 
   /* 统一账户：顶栏登录 / 登出 / 绑定后，商店用户区立即跟随同一账号。
      只重画用户区（不整页重画），避免与 refreshMe → refresh → onChange 形成回环。 */
@@ -875,37 +1203,6 @@ async function openTemplateStore() {
     host.appendChild(wrap);
   }
 
-  function fillThumb(wrap, item) {
-    wrap.innerHTML = "";
-    wrap.className = "tpl-thumb-wrap";
-    if (!item.hasPreview) {
-      const ph = document.createElement("div");
-      ph.className = "tpl-thumb ph";
-      ph.textContent = I18n.t("无预览");
-      wrap.appendChild(ph);
-      return;
-    }
-    const img = document.createElement("img");
-    img.className = "tpl-thumb";
-    img.alt = item.title || "";
-    img.title = I18n.t("点击查看大图");
-    img.onclick = (ev) => {
-      ev.stopPropagation();
-      showTplImageLightbox(item);
-    };
-    wrap.appendChild(img);
-    tplPreviewSrc(item.id, "thumb").then((src) => {
-      if (src) img.src = src;
-      else {
-        wrap.innerHTML = "";
-        const ph = document.createElement("div");
-        ph.className = "tpl-thumb ph";
-        ph.textContent = I18n.t("无预览");
-        wrap.appendChild(ph);
-      }
-    });
-  }
-
   async function downloadTpl(item) {
     if (tplIsSkill()) {
       const skillName = item.skillName || "";
@@ -913,6 +1210,8 @@ async function openTemplateStore() {
         toast(I18n.t("技能名无效"), "err");
         return;
       }
+      /* 本机技能清单是首帧之后异步扫的：这里用到就先兜底 await 一次（已扫完则立刻返回） */
+      await ensureLocalSkillsForStore();
       const local = findLocalSkill(skillName);
       const updating = !!(local && !local.builtin);
       if (
@@ -1027,6 +1326,8 @@ async function openTemplateStore() {
       body.innerHTML = "";
       const note = document.createElement("div");
       note.className = "tpl-prev-note";
+      /* 同上：本机已装状态靠 findLocalSkill，用到前先兜底一次 */
+      await ensureLocalSkillsForStore();
       const local = findLocalSkill(item.skillName);
       note.textContent =
         (item.official ? I18n.t("官方 Skill") + " · " : "") +
@@ -1134,7 +1435,8 @@ async function openTemplateStore() {
     card.className = "tpl-card" + (list ? " list" : "");
     const thumb = document.createElement("div");
     card.appendChild(thumb);
-    fillThumb(thumb, item);
+    /* 封面不再在这里同步取图：先挂骨架占位，进视口才由 tplThumbFill 的队列去取 */
+    tplThumbFill(thumb, item);
 
     const body = document.createElement("div");
     body.className = "tpl-card-body";
@@ -1434,7 +1736,9 @@ async function openTemplateStore() {
 
   async function paintBrowse() {
     pane.className = "tpl-pane";
-    if (tplIsSkill()) await refreshLocalSkillsForStore();
+    /* 卡片的「已安装 / 有更新 / 下载」由 findLocalSkill 决定（cardEl 是同步的，不能在那里等）：
+       这里兜底 await 一次本机技能清单 —— 开窗时已经后台起过一次，通常这里直接命中同一个 promise。 */
+    if (tplIsSkill()) await ensureLocalSkillsForStore();
     pane.appendChild(hintEl(I18n.t("工坊加载中…")));
     const pageSize = tplBrowsePageSize();
     const qs =
@@ -2198,6 +2502,8 @@ async function openTemplateStore() {
             skillTextSnap &&
             (replacingFile || !editId || payload.files)
           ) {
+            /* 覆盖本机那份之前，先确保本机技能清单已加载（否则会漏掉「本机已装 → 该覆盖」） */
+            await ensureLocalSkillsForStore();
             const local = findLocalSkill(skillNameSnap);
             if (local && !local.builtin) {
               try {
@@ -2255,7 +2561,7 @@ async function openTemplateStore() {
       paintAuthForm(pane);
       return;
     }
-    if (tplIsSkill()) await refreshLocalSkillsForStore();
+    if (tplIsSkill()) await ensureLocalSkillsForStore();
     pane.appendChild(hintEl(I18n.t("工坊加载中…")));
     const r = await tplApi("GET", tplIsSkill() ? "/api/me/skills" : "/api/me/templates");
     pane.innerHTML = "";
@@ -2303,6 +2609,9 @@ async function openTemplateStore() {
   }
 
   async function paint() {
+    /* 统一收口点：重绘 / 切页 / 换视图前，把上一批封面排队作废（下面马上要清空 pane，
+       留在队列里的元素已脱离 DOM —— 再换地址就是往拆掉的卡上写，也白取一遍图）。 */
+    tplThumbFlush();
     markTabs();
     paintUser();
     pane.innerHTML = "";
@@ -2311,8 +2620,20 @@ async function openTemplateStore() {
     else await paintBrowse();
   }
 
-  await refreshMe();
-  if (tplIsSkill()) await refreshLocalSkillsForStore();
+  /* 首帧不再等账号摘要（/api/me）与本机技能扫描（skillList）：先把列表画出来，
+     这两条回来后原地更新 —— 账号行只重画用户区；本机技能清单进 TPL_ST._localSkills，
+     技能页 / 下载 / 预览 / 覆盖这些「用到」的地方都有 ensureLocalSkillsForStore() 兜底。 */
+  function refreshStoreAux() {
+    refreshMe()
+      .then(() => {
+        if (overlayKind === "tplstore") paintUser();
+      })
+      .catch(() => {});
+    /* 只有 Skill 这一侧才需要本机清单（与改动前的 if (tplIsSkill()) 同口径）；
+       模板页不扫，切到 Skill 页时 paintBrowse 的 ensure 会现起一次。 */
+    if (tplIsSkill()) ensureLocalSkillsForStore().catch(() => {});
+  }
+  refreshStoreAux();
   await paint();
 }
 

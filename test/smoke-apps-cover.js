@@ -379,44 +379,22 @@ console.log("[3] appsCoverEl：缩略图 404 → 退回原图 → 再 404 收图
   ok(noIcon.querySelector(".apps-cover-img") === null && classListOf(noIcon).includes("noimg"), "压根没图标 → 直接兜底底色");
 }
 
-console.log("[4] appsCoverActionsEl：卡上只留该有的那几枚图标，且都不冒泡");
+console.log("[4] appsCoverActionsEl：**本轮已下线**（任何应用封面都不出现按钮）");
 {
-  const { spies, sandbox } = loadApps();
-  sandbox.window.MtTips = { coinIcon: () => makeEl("span") };
-  const mk = (over) => spies.appsCoverActionsEl(Object.assign({ id: "a", title: "A" }, over), {});
-  const notInstalled = mk({});
-  let btns = notInstalled.children.filter((c) => c.tagName === "BUTTON");
-  ok(btns.length === 1, "未装 + 未上架云端 → 一枚（下载）：ⓘ 本轮已摘掉，实际 " + btns.length);
-  ok(
-    classListOf(btns[0]).includes("apps-ico-download"),
-    "只剩下载那一枚：" + btns.map((b) => b.className).join(" | "),
-  );
-  ok(/<svg/.test(String(btns[0].innerHTML || "")), "下载那颗的内联 SVG 直接在按钮里（不是套一层 span）");
-  const cloud = mk({ ownerId: "u1" });
-  btns = cloud.children.filter((c) => c.tagName === "BUTTON");
-  /* 本轮需求：卡片封面右下角不再有打赏按钮（上架到云端也一样只有下载那一枚） */
-  ok(btns.length === 1 && !cloud.querySelector(".apps-ico-coin"), "上架到云端也不再有金币打赏那一枚（本轮搬到详情里）");
-  ok(!cloud.querySelector(".apps-ico-info"), "上架到云端的卡片上也没有 ⓘ（点卡片本身就开详情窗）");
-  const localRow = spies.appsCoverActionsEl({ id: "a", title: "A" }, { local: true });
-  btns = localRow.children.filter((c) => c.tagName === "BUTTON");
-  ok(btns.length === 1 && classListOf(btns[0]).includes("apps-ico-play"), "库页：只剩运行（play）");
-  ok(
-    !localRow.querySelector(".apps-ico-info"),
-    "库页封面上的 ⓘ 也摘掉了（点卡片就是开详情窗）",
-  );
-  ok(
-    btns[0].dataset.appRun === "1" && btns[0].id === "appsRunBtn-a",
-    "运行那颗带 data-app-run + 稳定 id（打开态回贴靠它）：" + btns[0].id,
-  );
-  let cardClicks = 0;
-  const card = makeEl("div");
-  card.addEventListener("click", () => cardClicks++);
-  card.appendChild(btns[0]);
-  btns[0].dispatch("click");
-  ok(cardClicks === 0, "点图标不冒泡到卡片（不会连带打开详情）");
+  const { spies } = loadApps();
+  /* 用户口径（本轮）：卡片只剩封面 + 名称 / 作者，下载 / 启动 / 更新 / 编辑 / 删除
+     全部只走详情窗。函数本体保留为恒 null 的空实现（app-apps.js 里写清了为什么留名字）。 */
+  ok(spies.appsCoverActionsEl({ id: "a", title: "A" }, {}) === null,
+    "未装：不再生成任何封面按钮（返回 null）");
+  ok(spies.appsCoverActionsEl({ id: "a", ownerId: "u1" }, {}) === null,
+    "已上架云端：同样一枚按钮都没有（打赏早已搬进详情）");
+  ok(spies.appsCoverActionsEl({ id: "a" }, { local: true }) === null,
+    "库页：运行那一枚也不再挂在封面上（点卡片进详情）");
+  ok(spies.appsCoverActionsEl({ id: "a" }, { mine: true }) === null,
+    "「我的应用」：编辑那一枚也不再挂在封面上");
 }
 
-console.log("[5] appsTileEl：点卡片开详情；点图标各自做自己的事（不冒泡）");
+console.log("[5] appsTileEl：卡片只剩封面 + 名称/作者（一个按钮都没有）");
 {
   const { spies, sandbox } = loadApps();
   const opened = [];
@@ -424,37 +402,17 @@ console.log("[5] appsTileEl：点卡片开详情；点图标各自做自己的�
     opened.push(id);
     return true;
   };
-  const picks = [];
-  sandbox.window.openAppsVersionDlg = (id) => {
-    picks.push(id);
-    return true;
-  };
-  /* app-apps.js 里对它是**同文件裸调用**（openAppsVersionDlg(...)）：沙箱的全局对象是 sandbox
-     本身（sandbox.window 只是它的一个属性），所以 spy 要挂两份才被裸标识符取到。 */
-  sandbox.openAppsVersionDlg = sandbox.window.openAppsVersionDlg;
   sandbox.window.MtTips = { coinIcon: () => makeEl("span"), open: () => {} };
   const card = spies.appsTileEl({ id: "sudoku", title: "数独", icon: "icons/s.png", ownerId: "u1" }, {});
   ok(card.attrs.role === "button", "卡片带 role=button（可键盘触发）");
   card.dispatch("click");
   ok(opened.length === 1 && opened[0] === "sudoku", "点卡片 → openAppsDetail(id)");
-  const acts = card.querySelector(".apps-cover-acts");
-  ok(!!acts, "卡片上有封面右下角那一排图标");
-  /* ⓘ 本轮已摘掉（点卡片即开详情），打赏那枚也搬进详情了，所以这里拿下载那一枚
-     验「图标各做各的事、不冒泡」（它按设计点了就是开「分支 / 版本」跳窗）。 */
-  ok(!acts.querySelector(".apps-ico-info"), "封面动作排里没有 ⓘ 了（用途与点卡片重复）");
-  ok(!acts.querySelector(".apps-ico-coin"), "封面动作排里也没有金币打赏了（本轮搬进详情打赏条）");
-  const dl = acts.querySelector(".apps-ico-download");
-  if (dl) {
-    /* 本轮口径（需求 4）：卡片上的「下载 / 其他版本」**直接开「分支 / 版本」跳窗**
-       （appsOpenDetailForPick → openAppsVersionDlg），不再先开详情窗。 */
-    const n0 = opened.length;
-    const p0 = picks.length;
-    dl.dispatch("click");
-    ok(
-      picks.length === p0 + 1 && picks[picks.length - 1] === "sudoku" && opened.length === n0,
-      "点下载 → 直接开「分支 / 版本」跳窗一次（不再先开详情，也不是静默下载）",
-    );
-  }
+  ok(card.querySelector(".apps-cover-acts") === null,
+    "卡片上没有封面动作排（.apps-cover-acts 不再生成）");
+  ok(!/<button/i.test(String(card.innerHTML || "")) && !/tagName.*BUTTON/i.test(String(card.innerHTML || "")),
+    "整张卡片里一个按钮元素都没有（动作全进详情窗）");
+  const localCard = spies.appsTileEl({ id: "sudoku", title: "数独" }, { local: true });
+  ok(localCard.querySelector(".apps-cover-acts") === null, "库页卡同样没有按钮");
 }
 
 console.log("[6] 详情头部封面：缓存令牌（新图立刻可见）+ 本机已装封面兜底");

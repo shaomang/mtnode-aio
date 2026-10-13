@@ -66,6 +66,27 @@
     </div>
   </section>
 
+  <!-- 安装后自检（本轮需求）：装完自动跑一次「最低档」的内容生成自检，结论、逐项明细与产物
+       路径都摆在这里；另有「重新自检」与「清理自检产物」。结果同时落本机数据目录，
+       主窗口插件界面据此在卡片封面左上角打勾（只给自检通过的插件）。 -->
+  <section class="ins-self" id="insSelf" hidden>
+    <div class="ins-s-head">
+      <span class="ins-s-title" id="insSTitle">自检结果</span>
+      <span class="ins-s-state" id="insSState"></span>
+      <button class="ins-mini" id="insSToggle" title="收起 / 展开">收起</button>
+    </div>
+    <div class="ins-s-body" id="insSBody">
+      <div class="ins-s-note" id="insSNote"></div>
+      <ul class="ins-s-steps" id="insSSteps"></ul>
+      <ul class="ins-s-arts" id="insSArts"></ul>
+      <div class="ins-s-acts">
+        <button class="ins-mini" id="insSRun">重新自检</button>
+        <button class="ins-mini" id="insSCancel" hidden>取消自检</button>
+        <button class="ins-mini" id="insSClean">清理自检产物</button>
+      </div>
+    </div>
+  </section>
+
   <footer class="ins-foot" id="insFoot" hidden>
     <!-- 卸载确认（点底栏「卸载」才展开）：删什么 / 留什么都列在这里，确认前不动盘。
          卸载是破坏性动作，所以不做成「点一下就走」——先把清单摆出来，用户点「确认卸载」才开跑。 -->

@@ -530,6 +530,9 @@ module.exports = {
   cpuDelta,
   readCpuTimes,
   parseSmiLine,
+  /* nvidia-smi 读数（多卡逐张）：插件显存门槛（plugins/vram-gate.js）复用它，
+     不另起一份探测 —— 面板与插件目录对「这台机器有多少显存」必须同源 */
+  readGpu,
   volumeRootOf,
   parseJson,
   sample,

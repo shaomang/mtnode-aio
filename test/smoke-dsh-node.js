@@ -110,6 +110,12 @@ console.log("\n[1] 候选清单：env 覆盖 → 托管 → PATH → 常见安�
   ok(bins.includes("C:\\nvm4w\\nodejs\\node.exe"), "nvm-windows 的 symlink 在表里");
   ok(c.every((x) => x.bin && x.source), "每条候选都带来源标签（诊断要说得清是谁）");
   ok(new Set(bins.map((b) => b.toLowerCase())).size === bins.length, "候选去重（同一目录只试一次）");
+  /* 桌宠（BongoChat）独立进程的 dataDir 是 <数据目录>/pet：托管候选跟着落在 pet 子目录里，
+     主程序装在数据根的那份**不在**候选表里 —— 这就是「同一次安装里画布节点正常、只有 BongoChat
+     报需要 Node ≥22.19」的根因（见 dsh/DESIGN.md「Node 运行时」第 6 条）。 */
+  const sub = M.nodeCandidates({ dataDir: path.join(dataDir, "pet"), env }).filter((x) => x.source === "managed");
+  ok(sub.length === 1 && sub[0].bin === path.join(dataDir, "pet", M.MANAGED_DIR, "node.exe"),
+    "托管候选只在调用方的 dataDir 下找：<数据目录>/pet ⇒ <数据目录>/pet/node-runtime（主程序那份不在表里）");
 }
 
 console.log("\n[2] 探针判据：真跑一次才算数");
@@ -152,6 +158,24 @@ console.log("\n[3] resolveDshNode：先真 Node，实在没有才回退 Electron
   });
   ok(none.fallback === true && none.electron === true, "一个候选都没有：回退 Electron 并显式标 fallback（不许静默）");
   ok(none.bin === process.execPath, "回退目标就是 Electron 自带的 Node（老行为）");
+
+  /* 桌宠侧那条路（本次修的正是它）：桌宠进程的 dataDir = <数据目录>/pet，自己那份托管 Node
+     不在时，主程序经 MTNODE_NODE_BIN 注入的真 Node（候选表第 1 位，与 dataDir 无关）照样命中。 */
+  const petEnv = {
+    PATH: "", ProgramFiles: "X:\\nope", "ProgramFiles(x86)": "X:\\nope2",
+    LOCALAPPDATA: "X:\\nope3", APPDATA: "X:\\nope4", USERPROFILE: "X:\\nope5", ProgramData: "X:\\nope6",
+  };
+  const petHit = M.resolveDshNode({
+    dataDir: path.join(TMP, "pet-home", "pet"),
+    refresh: true,
+    env: { ...petEnv, MTNODE_NODE_BIN: process.execPath },
+    log: () => {},
+  });
+  ok(petHit.bin === process.execPath && petHit.fallback === false && petHit.source === "env:MTNODE_NODE_BIN",
+    "桌宠那种 dataDir（<数据目录>/pet）靠主程序注入的 MTNODE_NODE_BIN 也能选到真 Node（不再退 Electron）");
+  const petMiss = M.resolveDshNode({ dataDir: path.join(TMP, "pet-home2", "pet"), refresh: true, env: petEnv, log: () => {} });
+  ok(petMiss.fallback === true,
+    "没注入、本机又没有真 Node 时桌宠仍会回退（本次不覆盖这条残留，见 DESIGN.md 第 6 条）");
 }
 
 console.log("\n[4] 报错翻译：把 SDK 的 stderr 尾巴换成能修的话");
@@ -255,12 +279,30 @@ console.log("\n[6] 托管安装：失败路径要干净、要能说清原因");
     ok(/dsh:installNode/.test(mainJs) && /nodeInfo\(\)/.test(mainJs), "main.js 把 node 状态并进 dsh:status，并留 dsh:installNode");
     const preload = read("preload.js");
     ok(/dshInstallNode:/.test(preload), "preload 暴露 dshInstallNode（自愈按钮的桥）");
+    /* 桌宠那条链（本次需求：客户端「dsh 运行时需要本机 Node ≥22.19」只在 BongoChat 出现）：
+       桌宠独立进程的 dataDir = <数据目录>/pet，看不到主程序装在数据根的托管 Node ——
+       主程序把已解析出的真 Node 经 getDshNode → MTNODE_NODE_BIN 带进桌宠进程。 */
+    ok(/getDshNode: \(\) => \{[\s\S]{0,140}?dsh\(\)\.nodeInfo\(\)/.test(mainJs),
+      "main.js 经 registerPetIpc({ getDshNode }) 把 dsh node 现状交给桌宠宿主");
+    const petHost = read("pet/main-pet.js");
+    ok(/getDshNode = typeof opts\.getDshNode === "function" \? opts\.getDshNode : null/.test(petHost),
+      "桌宠宿主接住 getDshNode（缺省 null，不传也不算错）");
+    ok(/const info = getDshNode \? getDshNode\(\) : null/.test(petHost) && /env\.MTNODE_NODE_BIN = String\(info\.bin\)/.test(petHost),
+      "startPet 把真 Node 路径写进桌宠进程的 MTNODE_NODE_BIN（候选表第 1 位）");
+    ok(/!info\.fallback && !info\.electron/.test(petHost),
+      "只有真 Node 才下发 —— Electron 回退态绝不带进桌宠（那等于把事故搬过去）");
+    ok(!/delete\s+env\.MTNODE_NODE_BIN/.test(petHost),
+      "取不到 / 回退态时不动 MTNODE_NODE_BIN（用户自己在系统环境里设的显式出口不被抹掉）");
     const design = read("dsh/DESIGN.md");
     ok(/Node 运行时/.test(design) && /unsupported Electron runtime fingerprint/.test(design),
       "DESIGN.md 记下「Node 运行时」口径与实测报错现象");
+    ok(/getDshNode/.test(design) && /pet\/standalone-main\.js/.test(design) && /petRoot\(\)/.test(design),
+      "DESIGN.md 第 6 条：托管目录随调用方 dataDir 走 + 桌宠靠 getDshNode / MTNODE_NODE_BIN 注入");
   }
 
   fs.rmSync(TMP, { recursive: true, force: true });
+  if (fails || MERGED_FAILED) process.exitCode = 1;
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
   console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "ALL OK  " + checks + " checks"));
 })();
 
@@ -354,6 +396,8 @@ console.log("\n[6] 托管安装：失败路径要干净、要能说清原因");
   if (fails) console.log("  ── 已并入块 smoke-dsh-default-model.js：" + fails + " / " + checks + " 项失败");
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定。
+   **别在这里调 process.exit()**：正文的 [6]/[7] 是异步块（[6] 要 await 托管安装），同步 exit 会把
+   它整段吞掉 —— [7] 接线口径的断言就再也跑不到（曾经长期如此：输出里只有 [1]~[5]）。
+   用 process.exitCode 让事件循环自然收尾，异步块自己按 fails 收口。 */
+process.exitCode = MERGED_FAILED ? 1 : 0;

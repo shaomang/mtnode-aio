@@ -28,6 +28,7 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.5.0 — Electron 39 桌面端 A
 ## 协作约定
 - 改 Agent 网关（`dsh/`）先读 `dsh/DESIGN.md` 遵守三层契约（main.js ↔ main-dsh.js ↔ gateway.mjs ↔ cordis 运行时）。
 - **根目录主进程新模块必须进 `build.json` `files`**：否则打包后 `Cannot find module './xxx.js'`（已发生过 `assets-store.js` 遗漏）。
+- **插件 / 本地后端安装脚本一律纯 ASCII（每个字节 ≤ 0x7F，且无 BOM）**：宿主用 `powershell.exe`（Windows PowerShell 5.1）跑 `*-pack/scripts/*.ps1`，而 5.1 按机器 ANSI 代码页解码**无 BOM 的 `.ps1`** —— 脚本里的中文（注释也算）会把语法解崩（历史故障与完整口径见 `docs/mirror-sources.md` §九）。给人看的中文文案只放同包 `steps.json` 的 `messages` 表或界面词条，**不许写进脚本**。守卫 = `test/smoke-install-scripts.js`，它**自动发现**并逐字节检查：全部 `*-pack` 的 `.ps1` / `.cmd` / `.bat`、`*-pack/scripts/` 下的 `.py`、共享真源 `pack-steps/` 与 `pack-python/`、项目 `scripts/` 下的 PS 系脚本（`*-pack/app|shims/*.py` 后端运行时 Python 有意豁免，仍是中文）；Agent 修复期现场写的脚本由 `renderer/app-repair.js` 收尾扫描兜底（违例回灌一轮要求改成英文）。改任何安装脚本后必须跑这只冒烟。
 - 新增渲染层能力按 `renderer/index.html` 的脚本加载顺序（= 模块分层）放置，样式进 `renderer/css/` 对应文件。
 - **扩展能力（DSH 插件 / 技能 Skills / MCP）统一在 `app-plugins.js` 的「扩展能力管理」对话框（`EXT_UI` + `#extManagerDlg`）里维护**：`app-settings.js` 只放「扩展能力」汇总小节与「管理…」入口，不要再往设置里加内联清单或表单；新增分类请扩 `EXT_KINDS`（复用卡片/详情样式，CSS 前缀 `.dsh-plugin-* / .dsh-ext-*` 在 `css/dsh.css`）。
 - **应用插件卡片（顶栏「插件」对话框）只有「开始 / 关闭」两态，不做「删除 / 卸载 / 移除入口」**：卡片动作 = play（打开控制台或运行）与 stop（关闭控制台或停止）互斥开关，必要时保留「下载安装 / 更新」「状态与设置」；插件启停与卸载类操作留在各自控制台窗内。卡片按钮图标一律取自 `renderer/app-plugins.js` 的 `PLUGIN_ACT_SVG`——新用到的 kind 必须先在该表补图标，否则按钮渲染成没有图标的空方块。封面图标放 `plugins/icons/<id>.png`（1:1，随 `scripts/stage-plugins.mjs` 发布）。

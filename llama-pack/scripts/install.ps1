@@ -132,7 +132,17 @@ Write-Host "[llama-install] progress: 55"
 Step-Ok "pip" 40
 
 # Read llama.cpp release from manifest
-$manifest = Get-Content manifest.json -Raw | ConvertFrom-Json
+#
+# WHY -Encoding UTF8 (a real failure: "ConvertFrom-Json : ArgumentException, Invalid object passed in"):
+# PowerShell 5.1's Get-Content without -Encoding reads a text file with the system ANSI code page, and
+# this file has no BOM -- on a zh-CN machine (CP936) non-ASCII bytes get decoded as GBK garbage, the
+# string can lose its closing quote, and ConvertFrom-Json throws System.ArgumentException:
+# "Invalid object passed in, ':' or '}' expected.".
+# Two independent guards, both wanted: manifest.json is now pure ASCII (non-ASCII text lives in
+# steps.json, which only Node reads -- see test/smoke-install-scripts.js [14]), AND we read it
+# explicitly as UTF-8 here (works with and without a BOM). Either one alone would already fix it;
+# together, no code page on earth can break this line.
+$manifest = Get-Content manifest.json -Raw -Encoding UTF8 | ConvertFrom-Json
 $release = if ($manifest.llamaRelease) { $manifest.llamaRelease } else { "b10566" }
 
 $binDir = Join-Path $InstallDir "bin"
@@ -251,8 +261,8 @@ $ErrorActionPreference = "Continue"
 & $venvPy -c "import fastapi; from app import server; print('ok')" 1> $smokeOut 2> $smokeErr
 $smokeCode = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
-$smokeText = (Get-Content $smokeOut -ErrorAction SilentlyContinue | Out-String).Trim()
-$smokeErrText = (Get-Content $smokeErr -ErrorAction SilentlyContinue | Out-String).Trim()
+$smokeText = (Get-Content $smokeOut -Encoding UTF8 -ErrorAction SilentlyContinue | Out-String).Trim()
+$smokeErrText = (Get-Content $smokeErr -Encoding UTF8 -ErrorAction SilentlyContinue | Out-String).Trim()
 if ($smokeText) { Write-Host "[llama-install] smoke stdout: $smokeText" }
 if ($smokeErrText) { Write-Host "[llama-install] smoke stderr: $smokeErrText" }
 Remove-Item $smokeOut, $smokeErr -Force -ErrorAction SilentlyContinue

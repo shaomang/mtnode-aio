@@ -610,11 +610,13 @@ async function partPublishWindow() {
   ok(/app-publish\.js/.test(html), "index.html 挂载 app-publish.js");
   ok(/app-publish\.css/.test(html), "index.html 挂载 app-publish.css");
   const dev = read("renderer/app-apps-dev.js");
-  /* 认**菜单条上那两颗按钮本尊**（不是全文件里第一次出现「上架」两个字）：
-     版本合并会话的契约正文里也写着「不自动上架」，按整文件 indexOf 会误判成「上架在启动之前」。 */
-  const iPub = dev.indexOf('appsMiniBtn(appsDevT("上架")');
-  const iRun = dev.indexOf('appsRunBtnEl("dev", appsDevT("启动")');
-  ok(iPub >= 0 && iRun >= 0 && iPub > iRun, "开发页「上架」出现在「启动」之后（同一行菜单条）");
+  /* 认**预览栏上那两颗按钮本尊**（不是全文件里第一次出现「上架」两个字）：
+     版本合并会话的契约正文里也写着「不自动上架」，按整文件 indexOf 会误判成「上架在启动之前」。
+     本轮需求：顶栏整体移除后，这两颗从中栏预览列头条那一行里出来（📂 · 启动 · 上架 · 刷新 ·
+     应用设置 · 画布），顺序 = 上架排在启动之后。 */
+  const iPub = dev.indexOf('addSlot(3, appsDevPublishBtnEl())');
+  const iRun = dev.indexOf('addSlot(1, appsDevRunBtnEl())');
+  ok(iPub >= 0 && iRun >= 0 && iPub > iRun, "开发页「上架」出现在「启动」之后（预览栏同一行）");
   ok(/openAppPublish/.test(dev), "「上架」按钮调 openAppPublish");
   const i18n = read("renderer/i18n.js");
   ok(/"上架": "Publish"/.test(i18n) && /"下载这一版"/.test(i18n), "i18n 中英词条（上架 / 版本树）在");

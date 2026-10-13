@@ -1110,17 +1110,18 @@ async function main() {
       APPS_SRC.indexOf("LOCAL_IMAGE_PROVIDER_ID") >= 0,
     "可用图像后端按模型形态认 + 本机 SenseNova 走同一份清单（不再只看服务商 type）",
   );
-  /* 默认 footer 的听写等内容隐藏（本轮共识）：宿主注入闸门看 capabilities.showDictate（默认 false），
-     挂上来的那条也默认带隐藏标记；默认欢迎页与脚手架的页脚说明文案一起清掉。 */
+  /* 听写条注入闸门看 capabilities.showDictate（缺省 false = 不注入）；声明为真的应用注入进来
+     即**默认可见**（见 renderer/app-speech-ui.js 的 markShown），隐藏标记只留给条尾「收起」按钮 /
+     apSpeechHide()。默认欢迎页与脚手架的页脚说明文案一起清掉。 */
   {
     const PRE_APP_SRC = read("preload-app.js");
     ok(
       PRE_APP_SRC.indexOf("capabilities.showDictate === true") > 0,
-      "听写条注入闸门看 showDictate（默认 false = 应用窗口 footer 默认没有听写条）",
+      "听写条注入闸门看 showDictate（缺省 false = 应用窗口 footer 没有听写条）",
     );
     ok(
-      read("renderer/app-speech-ui.js").indexOf('"data-mtnode-hidden"') > 0,
-      "注入进来的听写条默认隐藏（data-mtnode-hidden + display:none），脚本仍可唤起",
+      read("renderer/app-speech-ui.js").indexOf("markShown(root)") > 0,
+      "声明为真的应用：注入进来的听写条默认可见（markShown），收起按钮 / apSpeechHide() 才藏它",
     );
     ok(
       read("templates/app-default/index.html").indexOf("footText") < 0 &&
@@ -1234,19 +1235,30 @@ async function main() {
   ok(R.indexOf('b.id = "appsRunBtn-" + String(id || "")') >= 0, "按钮 id 稳定可寻：appsRunBtn-<appId>");
   ok(R.indexOf('b.dataset.appRun = "1"') >= 0, "按钮带 data-app-run 标记（打开态回贴按它定位）");
   ok(R.indexOf('b.title = appsT("在独立窗口里运行这个应用")') >= 0, "按钮 title 说明它是独立窗口运行");
-  ok(R.indexOf('b.className = primary ? "mini primary" : "mini"') >= 0 && /function appsRunIcoBtnEl\(id, open, kind\)/.test(R) && R.indexOf("appsRunBtnEl(id, \"\", () => appsOpenApp(id, kind || appsOpenKindOf(id)))") >= 0, "库页卡片：「运行」→ appsOpenApp(id, kind)（同一个 appsRunBtnEl，封面卡上换成 play 图标形态；open 参数 = 画卡时带上窗口打开态，kind = 这张卡对应哪套根那一份）");
+  ok(R.indexOf('b.className = primary ? "mini primary" : "mini"') >= 0, "「运行 / 启动」仍是同一个 appsRunBtnEl（primary 决定样式）");
   ok(
     R.indexOf('appsRunBtnEl("dev"') < 0 &&
       DEV4.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
-    "开发页的运行入口只剩三栏工具栏的「启动」（页脚工具区那一颗随整块移除）",
+    "开发页的运行入口 = 工具栏「应用文件夹」那一行里的「启动」（与「上架」同排）",
   );
   ok(
-      /appsRunIcoBtnEl\(spec\.id, !!spec\.windowOpen, appsOpenKindOf\(spec\.id\)\)/.test(R) &&
-        R.indexOf("async function appsOpenIdsOf(") >= 0 &&
-        R.indexOf("const openIds = await appsOpenIdsOf(list)") >= 0 &&
-        /if \(open\) \{/.test(R),
-      "库页打开态：一次问齐（appsOpenIdsOf）→ 画卡时就带上（窗口化渲染下离屏卡不在 DOM，逐张回贴贴不到）",
-    );
+    /async function appsOpenIdsOf\(/.test(R) &&
+      /async function appsOpenIdsEnsure\(/.test(R) &&
+      R.indexOf("await appsOpenIdsOf(list)") >= 0 &&
+      R.indexOf("appsOpenIdsEnsure(false)") >= 0 &&
+      /* 本轮口径：这一次批量问**不再挡在库页首帧前面** —— 画卡前只等轻表（appsListSlimLoad），
+         打开态由首帧之后的回填（appsBackfillStart → appsOpenIdsEnsure）写进 APPS_ST.openIds，
+         由 appsLocalSpecOf 现读；用户抢在回填之前点开详情时另有 appsOpenStateEnsure 就那一个 id 补问。 */
+      R.indexOf("const openIds = await appsOpenIdsOf(list)") < 0 &&
+      /function appsLocalSpecOf\(app\)[\s\S]{0,900}APPS_ST\.openIds && APPS_ST\.openIds\[id\]/.test(R) &&
+      /function appsPaintLibPage\(body, seq\)[\s\S]{0,4000}appsOpenIdsOf/.test(R) === false &&
+      R.indexOf("await Promise.all([appsListSlimLoad({ cache: true }), appsRootLoad()])") >= 0,
+    "库页打开态：批量问一次（appsOpenIdsOf）但**挪到首帧之后**（appsOpenIdsEnsure → APPS_ST.openIds），画卡只等轻表；详情窗可按需补问单个 id",
+  );
+  ok(
+    R.indexOf("function appsRunIcoBtnEl(") < 0,
+    "封面上的 play 图标按钮工厂 appsRunIcoBtnEl 已随「封面无按钮」下线",
+  );
   ok(R.indexOf("async function appsOpenApp(id, kind)") >= 0 && R.indexOf("const k = kind ? String(kind) : appsOpenKindOf(id)") >= 0 && R.indexOf("await api.appsOpenWindow(id, k)") >= 0, "appsOpenApp → window.api.appsOpenWindow(id, kind)（主进程开窗；不点名时按 appsOpenKindOf = 有开发那份就优先它，用户报障「启动是旧版本」）");
   ok(R.indexOf("appsBridgeMissing()") >= 0, "桥缺席（非 Electron / 未接入）时明确报错，不静默失败");
   ok(read("renderer/css/apps.css").length > 0, "css/apps.css 存在（.apps-row-acts 样式随文件走）");
@@ -1267,7 +1279,8 @@ async function main() {
   const CSS4 = read("renderer/css/apps.css");
   ok(
     R.indexOf("apps-sec-more") < 0 &&
-      R.indexOf("apps-sec") < 0 &&
+      R.indexOf("apps-sec-hint") < 0 &&
+      R.indexOf("apps-select") < 0 &&
       R.indexOf('appsT("导出应用包")') < 0 &&
       R.indexOf('appsT("变更探测")') < 0 &&
       R.indexOf('appsT("开发绑定")') < 0 &&
@@ -1276,7 +1289,7 @@ async function main() {
       R.indexOf("devExport") < 0 &&
       R.indexOf("devProbe") < 0 &&
       R.indexOf("more.appendChild") < 0,
-    "开发页页脚整块移除：三节渲染、桥调用与 devExport / devProbe 状态都不留",
+    "开发页页脚整块移除：那一块自己的类名（apps-sec-more / apps-sec-hint / apps-select）、三节渲染、桥调用与 devExport / devProbe 状态都不留；判据**不**写成一刀切禁用 \"apps-sec\" 子串 —— 本轮「开发中应用」两块的小标题（appsSecHeadEl 的 apps-sec-head / apps-sec-title）正当在用这个前缀",
   );
   ok(
     CSS4.indexOf(".apps-sec-more") < 0 &&
@@ -1404,24 +1417,39 @@ async function main() {
   const STORE = read("apps-store.js");
   const I18N = read("renderer/i18n.js");
 
-  /* ① 只允许一行：nowrap + 溢出交给「更多 ▾」（不再靠 flex-wrap 折行） */
-  const headCss = CSS.slice(CSS.indexOf(".apps-dev-head {"), CSS.indexOf(".apps-dev-slot {"));
+  /* ① 开发页顶栏本轮**整体移除**：顶部那一行只剩左上角一枚「新建应用」文字按钮；
+     收窄那一套（放不下的收进「更多 ▾」）搬到了中栏预览列头条 —— 列头条仍是定高一行，
+     靠 nowrap + overflow:hidden 收尾，面板挂在不裁内容的外壳上。 */
+  const topCss = CSS.slice(CSS.indexOf(".apps-dev-top {"), CSS.indexOf(".apps-dev-slot {"));
   ok(
-    headCss.indexOf("flex-wrap: nowrap") >= 0 && headCss.indexOf("flex-wrap: wrap") < 0,
-    "css：.apps-dev-head 固定一行（nowrap，不再折行）",
+    topCss.indexOf("display: flex") >= 0 && topCss.indexOf("border") < 0,
+    "css：顶部那一行只剩一枚「新建应用」（不再有整条菜单条的边框 / 底色）",
   );
   ok(
-    headCss.indexOf("overflow: hidden") >= 0 && CSS.indexOf(".apps-dev-more-pop") >= 0,
-    "css：溢出交给「更多 ▾」面板（.apps-dev-more-pop）",
+    CSS.indexOf(".apps-dev-head {") < 0 &&
+      CSS.indexOf(".apps-dev-topbar {") < 0 &&
+      DEV.indexOf("apps-dev-head") < 0 &&
+      DEV.indexOf("apps-dev-topbar") < 0,
+    "开发页顶栏（.apps-dev-head / .apps-dev-topbar）整体移除：源码与样式都不留死件",
+  );
+  const colHeadCss = CSS.slice(
+    CSS.indexOf(".apps-dev-colhead {"),
+    CSS.indexOf(".apps-dev-q {"),
   );
   ok(
-    DEV.indexOf("function appsDevFitHead()") >= 0 &&
+    colHeadCss.indexOf("overflow: hidden") >= 0 &&
+      CSS.indexOf(".apps-dev-colhead-wrap {") >= 0 &&
+      /\.apps-dev-more-pop\[hidden\]/.test(CSS),
+    "css：预览列头条仍是定高一行（overflow:hidden），「更多 ▾」面板挂在不裁内容的外壳上",
+  );
+  ok(
+    DEV.indexOf("function appsDevFitColHead()") >= 0 &&
       DEV.indexOf("function appsDevMoreToggle(open)") >= 0 &&
       DEV.indexOf("new ResizeObserver") >= 0,
-    "开发页：按宽度把放不下的项搬进「更多 ▾」，宽度变了就重排",
+    "开发页：预览列头条按宽度把放不下的项搬进「更多 ▾」，宽度变了就重排",
   );
   ok(
-    DEV.indexOf("dataset.pri") >= 0 && DEV.indexOf("DEVD.headSlots") >= 0,
+    DEV.indexOf("dataset.pri") >= 0 && DEV.indexOf("DEVD.colSlots") >= 0,
     "开发页：搬运按优先级（pri 越小越重要，从最低的收起）",
   );
   /* 「更多 ▾」面板自带 display:flex，会盖掉浏览器默认的 [hidden] —— 不显式压回去，
@@ -1520,8 +1548,18 @@ async function main() {
     "开发页右栏：四块面板（计划 / 任务清单 / 发送队列 / 已暂停）一起清",
   );
   ok(
-    DEV.indexOf("function appsDevRootItem()") >= 0 && DEV.indexOf("appsCreateAppBtnEl()") >= 0,
-    "开发页：应用根目录 / ＋新建应用 并进同一条工具栏",
+    DEV.indexOf("function appsDevRootItem()") < 0 &&
+      DEV.indexOf("function appsDevFolderRowEl()") < 0 &&
+      DEV.indexOf("function appsDevFolderBtnEl()") >= 0 &&
+      DEV.indexOf("function appsDevPublishBtnEl()") >= 0 &&
+      DEV.indexOf("appsCreateAppBtnEl()") >= 0,
+    "开发页：顶栏「应用文件夹」那一行整体下线（📂 只留图标进预览栏，启动 / 上架各有独立按钮）；左上角摆「新建应用」",
+  );
+  ok(
+    DEV.indexOf("appsDevRootChip(") < 0 &&
+      DEV.indexOf("appsRootPickNow(") < 0 &&
+      APPS.indexOf("async function appsRootPickNow(kind)") < 0,
+    "开发页不再有「项目根…更改…」那类入口：换根只在右上角齿轮的目录设置窗里（「修改」按钮）",
   );
   const devFn = APPS.slice(
     APPS.indexOf("async function appsPaintDevPage("),
@@ -1529,7 +1567,7 @@ async function main() {
   );
   ok(
     devFn.indexOf("appsRootLineEl()") < 0 && devFn.indexOf("appsCreateButtonEl()") < 0,
-    "开发页不再各占一行（那两项已并进工具栏）",
+    "开发页不再各占一行（新建应用那枚在开发页左上角）",
   );
   /* 库页（本轮需求）：**根目录那两行与「迁移旧布局…」整条撤掉** —— 下载根改成壳第 1 行
      那枚「应用目录」按钮（刷新右边，点它弹小菜单）；项目根那一行不留（开发中的应用在开发页管）。 */
@@ -1542,26 +1580,29 @@ async function main() {
     "库页不再画根目录那两行，也不再有「迁移旧布局」入口",
   );
   ok(
-    APPS.indexOf("async function appsRootPickNow(kind)") >= 0 &&
-      APPS.indexOf("function appsRootFolderNow(kind)") >= 0 &&
-      APPS.indexOf("function appsRootMenuToggle()") >= 0 &&
+    APPS.indexOf("async function appsRootPickNow(kind)") < 0 &&
+      APPS.indexOf("function appsRootFolderNow(kind)") < 0 &&
+      APPS.indexOf("function appsRootMenuToggle()") < 0 &&
       APPS.indexOf("function appsRootRowEl(kind)") < 0 &&
       APPS.indexOf("async function appsMigrateLayoutNow()") < 0 &&
+      APPS.indexOf("async function appsRootChange(kind, moveApps)") >= 0 &&
+      APPS.indexOf("function appsDirSettingsOpen()") >= 0 &&
       FLOW.indexOf("function appsCreateAppBtnEl()") >= 0,
-    "根目录动作仍按类型（下载根 / 项目根）"+ "且「迁移旧布局」功能代码已删（按钮 → 小菜单）",
+    "换根只走目录设置窗里的「修改」（appsRootChange → apps:rootPick）；库页那套手改 / 小菜单动作仍是删掉的",
   );
   ok(
-    APPSLIST.indexOf("function rootMenuEl(anchor)") >= 0 &&
-      /appsTr\("更改目录…"\)/.test(APPSLIST) &&
-      /appsTr\("在资源管理器中打开"\)/.test(APPSLIST),
-    "「应用目录」小菜单 = 更改目录 / 在资源管理器中打开（app-apps-list.js 的 rootMenuEl）",
-  );  ok(
+    APPSLIST.indexOf("function rootMenuEl(anchor)") < 0 &&
+      APPSLIST.indexOf("appsRootPickNow") < 0,
+    "「应用目录」小菜单（更改目录 / 在资源管理器中打开）已从 app-apps-list.js 下线",
+  );
+  ok(
     I18N.indexOf('"刷新预览": "Reload preview"') >= 0 &&
-      I18N.indexOf('"维持状态": "Keep state"') >= 0 &&
+      I18N.indexOf('"刷新预览时记住页面状态（滚动位置与表单内容）"') >= 0 &&
+      I18N.indexOf('"维持状态": "Keep state"') < 0 &&
       I18N.indexOf('"＋": "＋"') >= 0 &&
       I18N.indexOf('"新开发会话": "New dev session"') >= 0 &&
       I18N.indexOf('"更多": "More"') >= 0,
-    "i18n：菜单条新增 / 补齐的文案都有英文译文（「＋」= 新开发会话）",
+    "i18n：菜单条新增 / 补齐的文案都有英文译文（「＋」= 新开发会话；「维持状态」死词条已清）",
   );
 
   /* ④ 应用中心：去掉标题栏 · 整屏盖住顶栏 · 专属蓝（不再品红）· 去掉误导提示 */
@@ -1845,7 +1886,7 @@ async function previewSections() {
   );
   /* 调用点的缩进会随包裹层级变化：按「函数名 + 那句文案」放宽匹配（判据不变） */
   const noAppAt = new RegExp(
-    'appsDevPreviewStatMsg\\(\\s*appsDevT\\("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。"\\)',
+    'appsDevPreviewStatMsg\\(\\s*appsDevT\\("本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左上角的「＋ 新建应用」。"\\)',
   ).test(DEV);
   ok(noAppAt, "一个应用都没有时中栏给可读提示（同样不是白底；并指向「二次开发」）");
   /* 左栏空态（应用列表由宿主渲染，一个应用都没有时宿主不生效，得自己补一行空态） */
@@ -1860,7 +1901,7 @@ async function previewSections() {
       CSS.indexOf("background: var(--panel);") >= 0,
     "css：提示层绝对定位盖在 iframe 上（样式只进 css/apps.css）",
   );
-  for (const k of ["本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左栏底部的「＋ 新建应用」。", "正在读取应用目录…", "预览不可用：", "读不到该应用目录（可能在别处被删了）"])
+  for (const k of ["本机还没有「开发中」的应用：在「库」页点「二次开发」，或点左上角的「＋ 新建应用」。", "正在读取应用目录…", "预览不可用：", "读不到该应用目录（可能在别处被删了）"])
     ok(I18N.indexOf('"' + k + '"') >= 0, "i18n 中英成对：" + k.slice(0, 12) + "…");
 
   /* ⑥ 主进程 devPreview：app.json 缺 entry / 入口页不在磁盘上 → 一律回落默认入口页。
@@ -2144,9 +2185,12 @@ async function previewSections() {
   );
   ok(
     R.indexOf("function appsSecondaryDevBtnEl(") >= 0 &&
-      R.indexOf('appsT("二次开发")') >= 0 &&
-      R.indexOf('btn.dataset.appFork = "1"') >= 0,
-    "库页卡片右侧「二次开发」按钮（原「迁移到开发」，动作不变）",
+      R.indexOf('appsT("复制到开发文件夹（二次开发）")') >= 0 &&
+      R.indexOf("() => appsSecondaryDevRun(id)") >= 0 &&
+      R.indexOf('appsT("二次开发")') < 0 &&
+      R.indexOf('btn.dataset.appFork = "1"') >= 0 &&
+      R.indexOf("typeof window.appsCopyToDevRun") >= 0,
+    "库页卡片右侧按钮 = 「复制到开发文件夹（二次开发）」（旧文案「二次开发」已撤）：点它走 appsSecondaryDevRun → 主进程 apps:copyToDev；桥不在（app-app-flow.js 没加载）时当场置灰。拦「文案 / 动作退回旧的『迁移到开发』」的回归",
   );
   ok(
     MAINPRE.indexOf("'apps:dataOpen'") >= 0 &&
@@ -2351,12 +2395,12 @@ async function previewSections() {
   }
 
   /* ②b 拖宽不再诱发 ResizeObserver 未派发通知（用户报的渲染错误）：
-     菜单条重排 / 三栏重夹 / 历史导航轨重建一律推到下一帧，不在回调里同步改布局 */
+     预览列头条重排 / 三栏重夹 / 历史导航轨重建一律推到下一帧，不在回调里同步改布局 */
   ok(
-    DEV.indexOf("DEVD.headRaf = requestAnimationFrame") >= 0 &&
-      DEV.indexOf("appsDevFitHeadDo();") >= 0 &&
-      DEV.indexOf("if (!DEVD.headEl || !DEVD.headEl.isConnected) return;") >= 0,
-    "开发页：菜单条重排推到 rAF（ResizeObserver 回调里不再同步搬 DOM）",
+    DEV.indexOf("DEVD.colHeadRaf = requestAnimationFrame") >= 0 &&
+      DEV.indexOf("appsDevFitColHeadDo();") >= 0 &&
+      DEV.indexOf("if (!DEVD.colHeadEl || !DEVD.colHeadEl.isConnected) return;") >= 0,
+    "开发页：预览列头条重排推到 rAF（ResizeObserver 回调里不再同步搬 DOM）",
   );
   ok(
     DEV.indexOf("DEVD.colsRaf = requestAnimationFrame") >= 0 &&
@@ -2414,30 +2458,41 @@ async function previewSections() {
     "开发页「启动」→ appsOpenApp(id, \"dev\")（与库页「运行」同一条链，点名项目根那一份）",
   );
   ok(
-    DEV.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
-    "开发页工具栏：用同一按钮口径渲染「启动」（data-app-run + 稳定 id）",
+    DEV.indexOf('appsDevRunBtnEl()') >= 0 &&
+      DEV.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())') >= 0,
+    "开发页预览栏：用同一按钮口径渲染「启动」（data-app-run + 稳定 id）",
   );
-  /* 本轮需求：「新开发会话」主入口从这条工具栏挪到开发页左栏每条应用行右端（「＋」，
-     见 app-assist.js 的 mkAppRow + 本文件 [15]）；工具栏这颗改成同一枚「＋」图标
-     （当前应用的快捷入口，都走 appsDevNewRound / appsDevNewSessionFor）。 */
+  /* 本轮需求（顶栏整体移除）：「新开发会话」的主入口在左栏每条应用行右端（「＋」，见
+     app-assist.js 的 mkAppRow + 本文件 [15]）与**左栏底部那颗「＋ 新会话」**；顶栏那颗已随
+     顶栏一起下线。 */
   ok(
-    DEV.indexOf('appsMiniBtn(appsDevT("＋"), () => appsDevNewRound(), true)') >= 0 &&
-      DEV.indexOf('appsDevT("＋ 新开发会话")') < 0,
-    "开发页工具栏：「新开发会话」= 一枚「＋」图标（旧的全文字按钮已删）",
-  );
-  ok(
-    DEV.indexOf('b.setAttribute("aria-label", appsDevT("新开发会话"))') >= 0 &&
-      DEV.indexOf('"新开发会话",') >= 0,
-    "开发页工具栏：「＋」带 aria-label 与「更多 ▾」小标题「新开发会话」（窄屏收进更多也说清是什么）",
+    DEV.indexOf("function appsDevNewSessionBtnEl()") >= 0 &&
+      DEV.indexOf('btn.textContent = "＋ " + appsDevT("新会话")') >= 0 &&
+      DEV.indexOf('appsMiniBtn(appsDevT("＋"), () => appsDevNewRound(), true)') < 0,
+    "开发页左栏底部：「＋ 新会话」= 同一出口 appsDevNewRound（顶栏那颗「＋」已随顶栏下线）",
   );
   ok(
-    DEV.indexOf('appsMiniBtn(appsDevT("＋"), () => appsDevNewRound(), true)') <
-      DEV.indexOf('appsRunBtnEl("dev", appsDevT("启动"), () => appsDevStartApp())'),
-    "开发页：「启动」紧跟「＋」之后（工具栏主行靠前，窄屏也收不进「更多」）",
+    DEV.indexOf("if (cur) sideFoot.appendChild(appsDevNewSessionBtnEl());") >= 0 &&
+      DEV.indexOf("sideFoot.appendChild(appsCreateAppBtnEl())") < 0,
+    "开发页左栏底部：只在有「开发中」的应用时才摆「新会话」（原来那颗「新建应用」已搬到左上角）",
   );
   ok(
-    DEV.indexOf('if (DEVD.appId && apps.some((a) => String(a.id || "") === DEVD.appId)) {') >= 0,
-    "开发页：没有可用应用（一个都没建）时「启动」不出现",
+    DEV.indexOf("if (typeof appsCreateAppBtnEl === \"function\") top.appendChild(appsCreateAppBtnEl());") >= 0 &&
+      DEV.indexOf("const hasApp = !!DEVD.appId") >= 0 &&
+      DEV.indexOf("appsDevBarActsEl(hasApp)") >= 0,
+    "开发页：左上角那枚「新建应用」不依赖有没有应用；预览栏六枚按 hasApp 组装",
+  );
+  ok(
+    DEV.indexOf("addSlot(1, appsDevRunBtnEl())") >= 0 &&
+      DEV.indexOf("addSlot(3, appsDevPublishBtnEl())") >= 0 &&
+      /if \(hasApp\) \{\s*addSlot\(2, appsDevFolderBtnEl\(\), "应用文件夹"\);/.test(DEV),
+    "预览栏：📂 · 启动 · 上架 排在最左（有应用时才画），收窄时按 pri 收进「更多 ▾」",
+  );
+  ok(
+    DEV.indexOf("function appsDevPublishBtnEl()") >= 0 &&
+      DEV.indexOf("window.openAppPublish(DEVD.appId)") >= 0 &&
+      DEV.indexOf("appsIcoTextBtnEl(\"upload\", \"上架\"") >= 0,
+    "预览栏「上架」= 同一出口 window.openAppPublish（图标 + 小字，与同排其它枚同风格）",
   );
 
   /* ⑤ 词条：新增文案走 i18n（英文界面不留中文） */
@@ -2571,7 +2626,7 @@ async function previewSections() {
     "app-store 暴露 setAppStyle（换风格 = 按所选风格重写入口页）",
   );
 
-  /* ④ 两处界面入口：新建浮层里的选择器 + 开发页 ⋯ 菜单里的「换风格…」 */
+  /* ④ 界面入口：新建浮层里的选择器（开发页 ⋯ 菜单那枚「换风格…」本轮已下线） */
   ok(
     FLOW.indexOf("function appsStyleCards(") >= 0 &&
       FLOW.indexOf("function appStylesLoad(") >= 0 &&
@@ -2596,8 +2651,9 @@ async function previewSections() {
     "选中的就是当前风格 → 不重复写盘，只给一句提示（当前风格按 app.json 原值比对，含「自定义」）",
   );
   ok(
-    DEV.indexOf('appsDevT("换风格…")') >= 0 && DEV.indexOf("appStyleSwapDialog(") >= 0,
-    "开发页：⋯ 溢出菜单里有「换风格…」（pri=9，放不下就自然收进面板）",
+    DEV.indexOf('appsDevT("换风格…")') < 0 && DEV.indexOf("appStyleSwapDialog(") < 0 &&
+      FLOW.indexOf("function appStyleSwapDialog(") >= 0,
+    "本轮口径：开发页「换风格…」按钮下线（对话框与 apps:setStyle 留着，界面不再提供入口）",
   );
 
   /* ④b 「自定义」那条路：选中 → 问风格 → 约束随会话契约下发（三层各断言一次） */
@@ -2691,7 +2747,7 @@ async function previewSections() {
   );
   ok(
     I18N.indexOf('"设计风格": "Design style"') >= 0 &&
-      I18N.indexOf('"换风格…": "Change style…"') >= 0 &&
+      I18N.indexOf('"决定这个应用入口页的长相；建好之后要换，让这个应用的开发会话按新风格重写入口页"') >= 0 &&
       I18N.indexOf('"预览图就是每种风格真实渲染出来的样子"') >= 0 &&
       I18N.indexOf('"换风格并重写入口页"') >= 0 &&
       I18N.indexOf('"先问再定": "Asked first"') >= 0 &&
@@ -2987,14 +3043,16 @@ async function previewSections() {
     "「应用」页卡片与详情头部不再挂任何 chip 徽标（本轮口径：连「开发中」在内全部去掉）",
   );
   ok(
-    RENDERER.indexOf('appsRunBtnEl(id, appsT("启动"), () => appsOpenApp(id, appsOpenKindOf(id)))') >= 0 &&
-      RENDERER.indexOf('appsMiniBtn(busy ? appsT("下载中…") : appsT("下载"), () => appsOpenDetailForPick(id))') >= 0,
-    "已装 = 启动（不再显示下载）；未装 = 下载（点了先开详情选分支与版本）",
+    RENDERER.indexOf('appsMiniBtn(appsT("启动"), () => appsOpenApp(id, appsOpenKindOf(id)))') < 0 &&
+      RENDERER.indexOf("function appsFillCatalogActions(") < 0 &&
+      RENDERER.indexOf("appsOpenDetailForPick(id)") >= 0 &&
+      RENDERER.indexOf("function openAppsVersionDlg(") >= 0,
+    "卡片上不再有「启动 / 下载」（封面无按钮）；下载与选版本都落到详情与「分支 / 版本」跳窗",
   );
   ok(
-    RENDERER.indexOf("appsCardUpdateTargetOf(spec)") >= 0 &&
-      /appsIcoBtnEl\(\s*"download",/.test(RENDERER),
-    "「更新」按钮走 appsCardUpdateTargetOf（本机已装那一支的作者最新版）",
+    RENDERER.indexOf("function appsCardUpdateTargetOf(spec)") >= 0 &&
+      RENDERER.indexOf("本机已装那一支的作者") >= 0,
+    "「更新」判据仍走 appsCardUpdateTargetOf（本机已装那一支的作者最新版），只是改由详情窗摆按钮",
   );
   /* 同 id 多分支（docs/apps-market.md §十，本轮）：旧的「切换分支 ▾」（按 forkOf.id 归组、
      列不同 id 的 fork 条目）已按用户共识去掉，换成「合并成一张卡 + 详情里的多层分支树」。 */
@@ -3151,9 +3209,103 @@ async function previewSections() {
     "「二次开发」不再独占页顶一行，改挂在本机应用的详情动作区（库页卡上收掉了）",
   );
   ok(
-    DEV.indexOf('appsDevT("数据目录")') >= 0 && DEV.indexOf('appsDataOpenNow(DEVD.appId, "dev")') >= 0,
-    "开发页菜单条也能进「数据目录」（当前选中应用；点名 dev = 项目根那份的数据树）",
+    DEV.indexOf('appsDevT("数据目录")') < 0 &&
+      RENDERER.indexOf('appsHubSettingsRow("数据目录", dataDir') >= 0 &&
+      RENDERER.indexOf("appsDataOpenNow(appId,") >= 0,
+    "「数据目录」不再占工具栏一格：收进「应用设置」窗（只读显示 + 打开）",
   );
+
+  /* ⑧b 本轮需求：右上角齿轮的**目录设置** 与 应用自己的**应用设置**必须分开 ——
+     目录那一头只剩库 / 开发两套根；应用这一头（文件夹 / 数据 / 能力 / 预览 / 删除）
+     住在开发页中栏「预览」列头条那枚 ⚙ 开的窗里。 */
+  {
+    const dirWin = RENDERER.slice(
+      RENDERER.indexOf("async function appsDirSettingsOpen("),
+      RENDERER.indexOf("async function appsAppSettingsOpen("),
+    );
+    const appWin = RENDERER.slice(
+      RENDERER.indexOf("async function appsAppSettingsOpen("),
+      RENDERER.indexOf("/* 设置窗里的小标题 + 一句说明"),
+    );
+    ok(
+      dirWin.length > 200 && appWin.length > 400,
+      "两只窗都真在 app-apps.js 里（目录设置 / 应用设置）",
+    );
+    ok(
+      dirWin.indexOf('["down", "库目录（\\\\apps）"]') >= 0 &&
+        dirWin.indexOf('["dev", "开发目录（\\\\apps-dev）"]') >= 0 &&
+        /appsSetMiniBtn\(\s*"修改",/.test(dirWin) &&
+        /appsSetMiniBtn\(\s*"打开",/.test(dirWin) &&
+        dirWin.indexOf("appsRootChange(kind, true)") >= 0 &&
+        dirWin.indexOf("appsRootChange(kind, false)") >= 0 &&
+        dirWin.indexOf("appsSetOpenPath(p)") >= 0 &&
+        dirWin.indexOf("appsDataOpenNow") < 0 &&
+        dirWin.indexOf("appsCapabilityChecks") < 0 &&
+        dirWin.indexOf("预览地址") < 0 &&
+        dirWin.indexOf("appsAppDeleteRun") < 0,
+      "目录设置窗只剩库目录 / 开发目录两行，每行「修改 + 打开」（应用自己的那几段一处都不在）",
+    );
+    ok(
+      /appsHubSettingsRow\(\s*"应用文件夹"/.test(appWin) &&
+        appWin.indexOf("appsDataOpenNow(appId, rootKind)") >= 0 &&
+        appWin.indexOf("appsCapabilityChecks(") >= 0 &&
+        appWin.indexOf('appsHubSettingsRow("预览地址", ctx.preview.url)') >= 0 &&
+        appWin.indexOf("appsAppDirChangeNow(appId, rootKind, k)") >= 0 &&
+        appWin.indexOf("appsDataDirChangeNow(appId, rootKind)") >= 0 &&
+        appWin.indexOf("appsAppDeleteRun(app || { id: appId })") >= 0,
+      "应用设置窗五段齐备：应用文件夹 / 数据目录 / 应用能力 / 预览地址与状态 / 删除应用（两枚「修改」在册）",
+    );
+    ok(
+      appWin.indexOf("appsDevKeepStateOn()") < 0 &&
+        appWin.indexOf("appsSetSection(\"维持状态\"") < 0 &&
+        appWin.indexOf("mkMiniBtn(appsT(\"保存\")") < 0 &&
+        /mkMiniBtn\(appsT\("关闭"\),\s*\(\)\s*=>\s*closeOverlay\(\)/.test(appWin),
+      "本轮口径：窗里没有「保存」也没有「维持状态」，底部只留一枚「关闭」（勾选即写盘）",
+    );
+    ok(
+      /appsSetSection\(\s*"预览"/.test(dirWin) &&
+        dirWin.indexOf("appsDevKeepStateOn()") >= 0 &&
+        dirWin.indexOf("appsDevKeepStateSet(on)") >= 0,
+      "「维持状态」新家：目录设置窗末尾的「预览」一节（勾选即写盘 + 一句回执）",
+    );
+    ok(
+      appWin.indexOf("mkRootRow") < 0 &&
+        appWin.indexOf("appsRootChange(") < 0 &&
+        appWin.indexOf("appsDevCloseOwnWindow") < 0,
+      "应用设置窗里没有两套根目录（只有「修改」那一问会读一次根的路径），也没有「关掉独立窗口」（预览条右端那枚是唯一入口）",
+    );
+    ok(
+      /appsIcoBtnEl\("gear",\s*appsT\("目录设置：库目录 \/ 开发目录"\),\s*\(\)\s*=>\s*\n?\s*appsDirSettingsOpen\(\)/.test(RENDERER) &&
+        RENDERER.indexOf('appsT("目录设置")') >= 0,
+      "右上角齿轮改成开「目录设置」（tooltip 与窗名都换了）",
+    );
+    ok(
+      DEV.indexOf("appsDevBarActsEl(hasApp)") >= 0 &&
+        /appsIcoTextBtnEl\(\s*"refresh",\s*"刷新"/.test(DEV) &&
+        /appsIcoTextBtnEl\(\s*"gear",\s*"应用设置"/.test(DEV) &&
+        /appsIcoTextBtnEl\("canvas",\s*"画布"/.test(DEV) &&
+        DEV.indexOf("appsAppSettingsOpen") >= 0,
+      "预览栏六枚（📂 / 启动 / 上架 / 刷新 / 应用设置 / 画布）都在，应用设置走 appsAppSettingsOpen",
+    );
+    ok(
+      DEV.indexOf("appsDevFitColHead") >= 0 &&
+        DEV.indexOf("DEVD.colSlots") >= 0 &&
+        DEV.indexOf("appsDevStartColHeadWatch(viewHead)") >= 0 &&
+        DEV.indexOf("appsDevPaintPreviewStat") < 0 &&
+        DEV.indexOf("DEVD.statEl") < 0 &&
+        CSS.indexOf(".apps-dev-colhead .apps-dev-stat") < 0 &&
+        CSS.indexOf(".apps-dev-baracts") >= 0 &&
+        CSS.indexOf(".apps-dev-colhead-wrap {") >= 0,
+      "预览栏收窄口径：六枚按钮按 pri 收进「更多 ▾」；那串状态文字（含样式与 JS）整体移除",
+    );
+    ok(
+      DEV.indexOf('appsDevT("打开画布")') < 0 &&
+        DEV.indexOf('appsDevT("刷新预览")') < 0 &&
+        DEV.indexOf("openAppCanvas(DEVD.appId)") >= 0 &&
+        DEV.indexOf("appsDevCheckPreview(true)") >= 0,
+      "工具栏不再有「打开画布 / 刷新预览」两枚（功能搬到预览列头条那三枚里）",
+    );
+  }
   ok(RENDERER.indexOf("appsCreateButtonEl") < 0, "库页不再挂「＋新建应用」（只留开发页）");
   ok(RENDERER.indexOf("开发绑定：已绑定") < 0, "库页去掉「开发绑定」徽标（绑定信息移到开发页）");
   ok(
@@ -3161,8 +3313,14 @@ async function previewSections() {
     "开发页只列**项目根**那份（同 id 两边各有一份时按根判，不看共用的 dev 标记）",
   );
   ok(
-    DEV.indexOf('appsDevT("卸载")') >= 0 && DEV.indexOf("appsUninstallApp(app)") >= 0,
-    "开发页补「卸载」（开发中的应用的唯一卸载入口）",
+    RENDERER.indexOf("appsLocalRootKind(a) === \"dev\"") >= 0 || DEV.indexOf('appsLocalRootKind(a) === "dev"') >= 0,
+    "开发页只列**项目根**那份（同 id 两边各有一份时按根判，不看共用的 dev 标记）",
+  );
+  ok(
+    DEV.indexOf('appsDevT("卸载")') < 0 && DEV.indexOf("appsUninstallApp(app)") < 0 &&
+      RENDERER.indexOf("async function appsDeleteApp(app)") >= 0 &&
+      RENDERER.indexOf('appsT("删除应用")') >= 0,
+    "开发页工具栏不再有「卸载」（删除应用只在设置窗 / 详情窗出，走 appsDeleteApp）",
   );
   ok(
     DEV.indexOf("appsAuthorOf(a)") >= 0 &&
@@ -3220,8 +3378,9 @@ async function previewSections() {
   );
   ok(
     DEV.indexOf("if (typeof appsCreateAppBtnEl === \"function\") head.appendChild(addSlot(6") < 0 &&
+      DEV.indexOf("if (typeof appsCreateAppBtnEl === \"function\") top.appendChild(appsCreateAppBtnEl());") >= 0 &&
       DEV.indexOf('sideFoot.className = "apps-dev-sidefoot"') >= 0,
-    "「＋ 新建应用」从顶栏菜单条移到左栏列表底部",
+    "「＋ 新建应用」在整页左上角（顶栏整体移除后那一行只剩它）；左栏底部那颗改成了「＋ 新会话」",
   );
   /* 预览加载提示（本轮口径：黑幕换成一行小字）：只在切应用那一下露出、load 完成收起 + 超时兜底 */
   ok(
@@ -3239,23 +3398,92 @@ async function previewSections() {
       CSS.indexOf("background: #fff;\n}\n\n.apps-dev-frame") < 0,
     "css：预览加载提示那行小字在册，黑幕那层样式已撤（不再闪白 / 不再盖黑）",
   );
+  /* 本轮口径（用户共识）：二次开发 = **复制到开发目录**，不再是「把库目录那一份搬到项目根」。
+     执行体 = app-app-flow.js 的 appsCopyToDevRun（导出 window.appsCopyToDevRun），底下调主进程
+     apps:copyToDev（api.appsCopyToDev）。所以判据钉的是「调 appsCopyToDev」，不是 appsMigrateLayout。 */
   ok(
-    FLOW.indexOf("async function appsMigrateToDev(") >= 0 &&
-      FLOW.indexOf("window.appsMigrateToDev = appsMigrateToDev") >= 0,
-    "app-app-flow：二次开发 = 写 dev + 建同名画布 + 建开发节点（目录原地不动）",
+    FLOW.indexOf("async function appsCopyToDevRun(appId, opts)") >= 0 &&
+      FLOW.indexOf("window.appsCopyToDevRun = appsCopyToDevRun") >= 0 &&
+      FLOW.indexOf("await api.appsCopyToDev(id, o.mode === \"overwrite\" ? { mode: \"overwrite\" } : {})") >= 0 &&
+      /* 老的搬移那一套（写 dev 标记 + 归位到项目根 + dryRun 计划 + 落地复查）已整条删除：
+         任何一处残留都说明这条路又回到「搬动库目录那一份」。 */
+      FLOW.indexOf("appsMigrateToDev") < 0 &&
+      FLOW.indexOf("appsMigrateLayout") < 0 &&
+      FLOW.indexOf("dryRun") < 0 &&
+      FLOW.indexOf("if (landed) appDirNow = to;") < 0,
+    "app-app-flow：二次开发 = 复制到开发目录（appsCopyToDevRun → api.appsCopyToDev / apps:copyToDev，覆盖带 {mode:\"overwrite\"}）；旧的 appsMigrateToDev / appsMigrateLayout / dryRun / 落地复查一条都不留",
+  );
+  /* 画布：本机已有同名画布（id = 应用 id）就**复用** —— 只把画布工作目录与**已有开发节点**的
+     devPath / subFolder 改指新的开发文件夹（不新建画布、不新增节点）；没有才 appCanvasWf 建一张。 */
+  ok(
+    FLOW.indexOf('wf = typeof wfOfCanvasIdForRun === "function" ? await wfOfCanvasIdForRun(id) : null;') >= 0 &&
+      FLOW.indexOf("const fresh = !wf;") >= 0 &&
+      FLOW.indexOf("if (fresh) wf = appCanvasWf(id, name, dir);") >= 0 &&
+      /if \(nodeBefore\) \{[\s\S]{0,400}?nodeBefore\.devPath = dir;[\s\S]{0,400}?nodeBefore\.subFolder = dir;/.test(FLOW),
+    "有同名画布 → 复用：画布 workspace 与已有开发节点的 devPath / subFolder 一起改指新的开发文件夹；没有才 appCanvasWf 新建（拦「二次开发又去搬一份目录」的回归）",
   );
   ok(
-    FLOW.indexOf("已经有一张同名画布（") >= 0 && FLOW.indexOf("为避免误覆盖，没有迁移") >= 0,
-    "同 id（同名画布）冲突 → 拒绝迁移并说清原因",
+    /if \(fresh\) \{[\s\S]{0,700}?appsCreateDevNode\(\{/.test(FLOW) &&
+      FLOW.indexOf("reused: !fresh") >= 0,
+    "只有新建的画布才 appsCreateDevNode（复用时回执 reused:true、nodeId = 已有那个节点）—— 拦「每次二次开发都在旧画布上再堆一个开发节点」的回归",
+  );
+  /* 目标已存在（项目根里已经有同 id）时这条链**不自己问、也不自己覆盖**：主进程回 code:"exists"
+     （一个字节都不动），往上抛 { exists:true }，由渲染层 appsSecondaryDevRun 弹二选一。
+     判据落在渲染层：覆盖 = 带 {mode:"overwrite"} 再调一次；AI 合并 = appsMergeStart(..., "agent")。 */
+  ok(
+    /if \(r && String\(r\.code \|\| ""\) === "exists"\) return \{ exists: true, id: id \};/.test(FLOW),
+    "appsCopyToDevRun：主进程回 code:\"exists\" 时如实往上抛 { exists:true }（自己绝不覆盖 / 绝不建）",
   );
   ok(
-    FLOW.indexOf("appFlowMeName()") >= 0 &&
-      FLOW.indexOf('author: String(app.author || "").trim() || me') >= 0,
-    "迁移 / 新建补作者：app.json 没写过才写当前登录账号（未登录不写）",
+    RENDERER.indexOf("const how = await appsSecondaryDevChoice(appId, { name: name, canMerge: !!ownerId });") >= 0 &&
+      RENDERER.indexOf("r = await window.appsCopyToDevRun(appId, { mode: \"overwrite\" });") >= 0 &&
+      /appsMergeStart\(\s*appId,\s*ownerId,\s*version,\s*appsBranchLabelOf\(spec, null\) \|\| name,\s*"agent",\s*\)/.test(RENDERER) &&
+      /* 旧的「同名画布冲突 → 拒绝迁移」问句随搬移链一起删干净（冲突现在问的是「覆盖 / 交给 AI 合并」） */
+      RENDERER.indexOf("为避免误覆盖，没有迁移") < 0,
+    "同 id 冲突改成渲染层二选一：覆盖 = 带 {mode:\"overwrite\"} 再调 appsCopyToDevRun；交给 AI 合并 = appsMergeStart(appId, ownerId, version, label, \"agent\")（第 5 个参数跳过「合并二问」）—— 拦「冲突时又回到静默拒绝 / 直接覆盖」的回归",
+  );
+  /* 补作者这一条随搬移链改口径：新建应用仍补（appsCreate 第 4 个参数 = 当前登录账号）；
+     二次开发（复制）**不补** —— 副本的 author / version 由主进程 copyAppToDev 原样保留来源那一份。 */
+  ok(
+    /* **定义 + 调用点两样都要在**：本轮重写二次开发那条链时，appFlowMeName 的定义被整段带走、
+       只留了调用点（三个断言全在钉调用字符串，一个都没钉到定义）—— 真机上表现为点「新建应用」
+       当场 ReferenceError。这条按「定义与调用点同在」钉住。 */
+    FLOW.indexOf("function appFlowMeName(") >= 0 &&
+      FLOW.indexOf("appFlowMeName()") >= 0 &&
+      /window\.api\.appsCreate\(\s*nm,\s*aid,\s*String\(style \|\| ""\),\s*appFlowMeName\(\)/.test(FLOW) &&
+      FLOW.indexOf('author: String(app.author || "").trim() || me') < 0,
+    "补作者只在新建那条路（appsCreate 的第 4 个参数），且 appFlowMeName 的定义与调用点同在（缺定义 = 新建应用直接 ReferenceError）；二次开发那条不写 author —— 副本的作者 / 版本由主进程 copyAppToDev 原样保留来源那一份",
+  );
+  /* 收尾落点（本轮口径）：**复制 / 覆盖成功**后按共识切到「开发」页并选中这个应用 ——
+     判据只扫 appsSecondaryDevRun 这一个函数体（全局扫会被「开发中应用」页那一条同样的落点糊过去）。 */
+  const secDevFn = RENDERER.slice(
+    RENDERER.indexOf("async function appsSecondaryDevRun(id)"),
+    RENDERER.indexOf("/* 库页可显示的应用"),
   );
   ok(
-    RENDERER.indexOf('APPS_ST.nav = "dev";') >= 0 && RENDERER.indexOf("appsDevSelectApp(r.id)") >= 0,
-    "迁移成功后自动切到「开发」页并选中该应用",
+    secDevFn.indexOf("await appsListLoad(true);") >= 0 &&
+      secDevFn.indexOf('APPS_ST.nav = "dev";') >= 0 &&
+      secDevFn.indexOf("closeAppsDetail();") >= 0 &&
+      secDevFn.indexOf("appsDevSelectApp(r.id)") >= 0,
+    "复制 / 覆盖成功后切到「开发」页并选中该应用（appsSecondaryDevRun 收尾：刷新名单 → nav=dev → 关详情 → appsDevSelectApp）",
+  );
+  /* 「开发中应用」页（第 3 格，id 仍是 mine）本轮改成**两块**：上块 = 本机开发目录里的应用
+     只读清单（整行点击 = 去「开发」页，**不放动作按钮**），下块 = 我上架到云端的条目
+     （原「我的应用」那一套刷新 / 搜索 / 编辑窗 / 删除框原样保留）。搜索框只管下半块。 */
+  ok(
+    RENDERER.indexOf("function appsMineDevBlock()") >= 0 &&
+      RENDERER.indexOf("function appsDevAppRows()") >= 0 &&
+      RENDERER.indexOf("body.appendChild(appsMineDevBlock());") >= 0 &&
+      RENDERER.indexOf('appsT("本机开发中的应用")') >= 0 &&
+      RENDERER.indexOf('body.appendChild(appsSecHeadEl(appsT("我上架到云端")));') >= 0,
+    "「开发中应用」页两块：上块 = appsMineDevBlock（本机开发目录里的应用只读清单），下块 = 我上架到云端的条目（原「我的应用」整套能力还在）",
+  );
+  ok(
+    /* 上块整行点击 = 切「开发」页并选中它；**不给动作按钮**（二次开发 / 卸载那些只在「库」页的卡片上） */
+    /row\.onclick = \(ev\) => \{[\s\S]{0,500}?APPS_ST\.nav = "dev";[\s\S]{0,300}?appsDevSelectApp\(r\.id\)/.test(RENDERER) &&
+      RENDERER.indexOf("appsSecondaryDevBtnEl(a)") < 0 &&
+      RENDERER.indexOf('"搜索我上架到云端的应用（标题 / 描述 / 标签；只管下半块）…"') >= 0,
+    "上块的整行点击 = 去「开发」页接着开发（不放动作按钮）；搜索框占位词写明「只管下半块」—— 拦「上块又长出按钮 / 搜索被误当成也筛本机那份」的回归",
   );
   /* ⑩ 应用画布的工作目录 = 应用目录（原 bug：新建 / 二次开发建出来的画布 workspace 是空的，
      顶栏「工作目录」显示「未设置」、左栏「文件」页显示「尚未设置工作目录」） */
@@ -3267,10 +3495,11 @@ async function previewSections() {
   );
   ok(
     FLOW.indexOf("const wf = appCanvasWf(res.id, res.name, res.dir);") >= 0 &&
-      /* 二次开发那条现在用的是**归位后**的目录（appDirNow：apps:migrateLayout 把它搬进项目根），
-         仍走同一个构造函数 —— 判据是「两条路都走 appCanvasWf 且都带应用目录」 */
-      /const wf = appCanvasWf\(id, String\(app\.name \|\| id\), app(?:DirNow|\.dir)\)/.test(FLOW),
-    "「新建应用」与「二次开发」两条建图路径都走 appCanvasWf（都带上应用目录）",
+      /* 二次开发那条（复制）用的是主进程回执里的新开发目录 dir，仍走同一个构造函数；
+         复用时**不重建**，只改 workspace —— 判据是「两条路都走 appCanvasWf 且都带上应用目录」 */
+      FLOW.indexOf("if (fresh) wf = appCanvasWf(id, name, dir);") >= 0 &&
+      /const ws = appCanvasWsPath\(dir\);\s*\n\s*if \(ws\) wf\.workspace = ws;/.test(FLOW),
+    "「新建应用」与「二次开发（复制）」两条建图路径都走 appCanvasWf（都带上应用目录；复用时不重建、只把 workspace 改指新目录）",
   );
   ok(
     FLOW.indexOf("async function appsCreateApp(") >= 0 &&
@@ -3280,24 +3509,40 @@ async function previewSections() {
       ).indexOf('workspace: ""') < 0,
     "新建应用的画布不再落一个空 workspace 字面量",
   );
+  /* ⑩b 应用画布的「路径两件套」自愈（本轮扩展 —— 原口径只补空 workspace）：
+     应用目录真实存在时，① 空工作目录补写、② 指向**不存在**目录的 workspace / 开发节点
+     devPath / subFolder 一律校准成应用目录（二次开发只做了 dry-run 时写的是搬家目标目录）。 */
   ok(
-    FLOW.indexOf('if (appDir && S.wf && !String(S.wf.workspace || "").trim())') >= 0 &&
-      FLOW.indexOf("await window.api.fileIsDir(appDir)") >= 0,
-    "openAppCanvas 补刀老画布：空工作目录 + 应用目录真实存在才补写并落盘（用户填过的不动）",
+    FLOW.indexOf("async function appCanvasPathHeal(wf, appDir)") >= 0 &&
+      FLOW.indexOf("if (!(await window.api.fileIsDir(dir))) return out;") >= 0 &&
+      FLOW.indexOf("if (!curWs || wsGone)") >= 0 &&
+      FLOW.indexOf('for (const key of ["devPath", "subFolder"])') >= 0 &&
+      FLOW.indexOf("if (healed && (healed.workspace || healed.node)) scheduleSave(true);") >= 0,
+    "openAppCanvas 补刀老画布：空工作目录 / 指向已不存在的目录 → 按应用目录校准并落盘（用户填过且目录还在的不动）",
   );
 
-  /* ⑨ fork 声明：上架窗 → 请求 → 服务端 → 文档 */
+  /* ⑨ fork 声明：上架窗 → 请求 → 服务端 → 文档。
+     本轮口径（用户共识）：上架窗里「基于哪个应用二次开发（可选）」那一格**整体撤掉**
+     （pubForkField 删除、孤儿函数 pubForkChoices 删除），来源一律自动同步 —— pubForkAutoSync
+     （原来叫 pubForkFill）：线上同 id 已有条目 → 自动声明为主干那一支；否则带出本机 app.json
+     里已有的 forkOf；都没有就不发该字段。提交链一个字没变（仍是 PUB.form.forkOf → body.forkOf）。 */
   ok(
     PUB.indexOf("function pubForkInit(") >= 0 &&
-      PUB.indexOf("function pubForkField(") >= 0 &&
-      PUB.indexOf('pubT("基于哪个应用二次开发（可选）")') >= 0,
-    "上架窗「基于哪个应用二次开发」（自动带出 + 可改 + 可清空）",
+      PUB.indexOf("function pubForkAutoSync()") >= 0 &&
+      PUB.indexOf("pubForkAutoSync();") >= 0 &&
+      PUB.indexOf("function pubForkField(") < 0 &&
+      PUB.indexOf("function pubForkChoices(") < 0 &&
+      PUB.indexOf("function pubForkFill(") < 0 &&
+      PUB.indexOf('pubT("基于哪个应用二次开发（可选）")') < 0,
+    "上架窗那一格已撤：pubForkField / pubForkChoices / pubForkFill 都不在，pubForkAutoSync 仍在（上架窗两处调用它：初始化 + id 变化后重算），pubForkInit 也仍在",
   );
   ok(
     PUB.indexOf("body.forkOf = {") >= 0 &&
       PUB.indexOf("patch.forkOf = pubStr(fork.id)") >= 0 &&
+      PUB.indexOf("const fork = PUB.form.forkOf || {};") >= 0 &&
+      PUB.indexOf("PUB.form.forkOf = {") >= 0 &&
       PUB.indexOf("async function pubWriteLocalMeta(") >= 0,
-    "上架：forkOf 随请求下发 + 成功后写回本机 app.json（连同 author）",
+    "上架：forkOf 仍由 PUB.form.forkOf 带出并随请求下发（body / patch 两条路）+ 成功后写回本机 app.json（连同 author）",
   );
   ok(
     PRELOAD.indexOf("appsSetMeta:") >= 0 && PRELOAD.indexOf("author: author || ''") >= 0,
@@ -3326,8 +3571,10 @@ async function previewSections() {
   ok(
     I18N.indexOf('"开发中": "In development"') >= 0 &&
       I18N.indexOf('"作者 ": "Author "') >= 0 &&
-      I18N.indexOf('"基于哪个应用二次开发（可选）"') >= 0,
-    "i18n：开发中 / 作者 / fork 声明都有英文译文",
+      /* 词条本身还留在 i18n.js 里（本轮只撤界面那一格，没动词条表）；这里钉的是**界面不再引用它**：
+         上架窗里再出现 pubT("基于哪个应用二次开发（可选）") 就说明那一格又回来了。 */
+      PUB.indexOf('pubT("基于哪个应用二次开发（可选）")') < 0,
+    "i18n：开发中 / 作者有英文译文；「基于哪个应用二次开发（可选）」那一格已撤（词条成孤儿，上架窗不再引用）",
   );
 }
 
@@ -4553,18 +4800,22 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
   ok(/for \(const b of tree\.list\) \{[\s\S]{0,220}walk\(b, 0, true, ""\)/.test(APPS),
     "脏数据（父键指不到 / 成环）时其余分支平铺在末尾 —— 任何一条分支都不会从树上消失");
 
-  /* ③ 卡片动作行 */
-  const actsFn = APPS.slice(APPS.indexOf("function appsFillCatalogActions("), APPS.indexOf("function appsCardUpdateTargetOf("));
-  ok(/appsMiniBtn\(busy \? appsT\("下载中…"\) : appsT\("下载"\), \(\) => appsOpenDetailForPick\(id\)\)/.test(actsFn),
-    "未装：点「下载」先开详情界面（不是直接静默下载）");
-  ok(actsFn.indexOf("appsRunBtnEl") >= 0 && actsFn.indexOf("appsCardUpdateTargetOf") >= 0 &&
-    actsFn.indexOf("appsHasOtherVersions") >= 0,
-    "已装：启动 → 更新 → 其他版本（同一行依次排）");
-  ok(APPS.indexOf("const up = appsCardUpdateTargetOf(spec);") >= 0 &&
-    APPS.indexOf("function appsCardUpdateTargetOf(spec)") >= 0 && APPS.indexOf("本机已装那一支的作者") >= 0,
-    "「更新」指向本机已装那一支的作者最新版（不是「版本号最高那条」）");
+  /* ③ 卡片动作行：**本轮已整体下线**（用户口径：任何应用封面都不要出现按钮）——
+     卡片只剩封面 + 名称 / 作者，那批动作（下载 / 启动 / 更新 / 其他版本）全部只走详情窗。
+     这里钉的是「下线得干净 + 判据函数还在」：卡片不再生成动作行，而更新 / 合并的目标判据
+     （appsCardUpdateTargetOf / appsCardMergeTargetOf）仍留在文件里给详情窗用。 */
+  ok(APPS.indexOf("function appsFillCatalogActions(") < 0,
+    "卡片动作行 appsFillCatalogActions 已下线（不再往卡片上排按钮）");
+  ok(/function appsCoverActionsEl\(spec, opts\) \{\s*return null;\s*\}/.test(APPS),
+    "封面图标行 appsCoverActionsEl 变成恒 null 的空实现（卡片上一个按钮都不生成）");
+  ok(!/const acts = appsCoverActionsEl\(spec, \{ local: !!o\.local, mine: !!o\.mine \}\);/.test(APPS),
+    "appsTileEl 只挂封面（不再挂动作行 / 文字按钮行）");
+  ok(/function appsPaintTileActions\(card, spec, local\)[\s\S]{0,400}row\.parentNode\.removeChild\(row\)/.test(APPS),
+    "卡片局部重画那条路只剩「把历史遗留的动作行摘掉」（不再贴回按钮）");
+  ok(APPS.indexOf("function appsCardUpdateTargetOf(") >= 0 && APPS.indexOf("本机已装那一支的作者") >= 0,
+    "「更新」判据仍在：指向本机已装那一支的作者最新版（详情窗读它，不是「版本号最高那条」）");
   ok(/function appsHasOtherVersions\(spec\)/.test(APPS) && /appsT\("其他版本"\)/.test(APPS),
-    "「其他版本」：本机还有没装的其它分支 / 其它版本时才出现");
+    "「其他版本」判据仍在（详情窗用：本机还有没装的其它分支 / 其它版本时才出现）");
   ok(!/appsMiniBtn\(appsT\("看分支"\)/.test(APPS), "「看分支」按钮已移除");
   ok(/function appsOpenDetailForPick\(id\)[\s\S]{0,240}APPS_DETAIL\.branchOwnerId = ""/.test(APPS),
     "开详情前把选中态清空 ⇒ 默认落回原作者 + 其最新版");
@@ -5451,8 +5702,9 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
   ok(/window\.AppsList = \{/.test(LIST) &&
     /isListMode: isListMode/.test(LIST) && /toggleView: toggleView/.test(LIST) &&
     /mountListMode: mountListMode/.test(LIST) && /rowEl: rowEl/.test(LIST) &&
-    /panelEl: panelEl/.test(LIST) && /rootMenuEl: rootMenuEl/.test(LIST),
-    "app-apps-list.js 导出 AppsList（模式判定 / 切换 / 装配 / 行 / 面板 / 根目录小菜单）");
+    /panelEl: panelEl/.test(LIST) && /closeRootMenu: closeRootMenu/.test(LIST) &&
+    !/rootMenuEl: rootMenuEl/.test(LIST),
+    "app-apps-list.js 导出 AppsList（模式判定 / 切换 / 装配 / 行 / 面板），下载根小菜单 rootMenuEl 已下线");
   ok(LIST.indexOf("require(") < 0 && LIST.indexOf("import ") < 0,
     "自包含、零依赖（只按名字探测 app-apps.js 的公有出口）");
 
@@ -5472,15 +5724,19 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
   ok(/appsSortForList\(items,\s*o\.sort \|\| "updated"\)|appsSortForList\(items, o\.sort\)/.test(APPS),
     "装配出口统一走 appsSortForList（三页同一份排序实现）");
 
-  /* ③ 视图切换钮：在壳的第 1 行（刷新右边）、开发页不出现、状态按页落盘 */
-  ok(/appsIcoBtnEl\("refresh"/.test(APPS) && /appsIcoBtnEl\("folder"/.test(APPS) &&
-    /id = "appsHubRootBtn"/.test(APPS) && /id = "appsViewToggle"/.test(APPS),
-    "壳第 1 行三枚：刷新 · 应用目录（folder）· 视图切换");
+  /* ③ 视图切换钮：在壳的第 1 行（刷新右边）、开发页不出现、状态按页落盘。
+     本轮口径：「应用目录」（folder + appsHubRootBtn + 小菜单）整条下线，第 1 行只剩
+     刷新 · 视图切换 · 右上角那颗齿轮（齿轮挨着「返回 MTNode」，单独一段断言）。 */
+  ok(/appsIcoBtnEl\("refresh"/.test(APPS) &&
+    /appsIcoBtnEl\("gear"/.test(APPS) && /id = "appsViewToggle"/.test(APPS),
+    "壳第 1 行三枚：刷新 · 视图切换 · 齿轮（设置）");
   ok(
-    APPS.indexOf('appsIcoBtnEl("refresh"') < APPS.indexOf('appsIcoBtnEl("folder"') &&
-      APPS.indexOf('appsIcoBtnEl("folder"') < APPS.indexOf('id = "appsViewToggle"'),
-    "顺序 = 刷新 → 应用目录 → 视图切换（「应用目录」紧挨刷新右边）",
+    APPS.indexOf('appsIcoBtnEl("refresh"') < APPS.indexOf('id = "appsViewToggle"') &&
+      APPS.indexOf('id = "appsViewToggle"') < APPS.indexOf('appsIcoBtnEl("gear"'),
+    "顺序 = 刷新 → 视图切换 → 齿轮（齿轮在「返回 MTNode」左侧）",
   );
+  ok(APPS.indexOf('id = "appsHubRootBtn"') < 0 && APPS.indexOf("function appsRootMenuToggle(") < 0,
+    "「应用目录」按钮与它的小菜单已下线（路径只在设置窗里只读显示）");
   ok(/btn\.hidden = !has;\s*\/\/?|const has = nav === "apps" \|\| nav === "lib" \|\| nav === "mine";/.test(APPS) &&
     /btn\.hidden = !has;/.test(APPS),
     "开发页不出现视图切换（只有 apps / lib / mine 三页有列表模式）");
@@ -5499,9 +5755,11 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
     /if \(typeof appsDetailSpecOf === "function"\) cur = appsDetailSpecOf\(st\.id\) \|\| st\.spec;/.test(LIST) &&
     /appsDetailMediaEl\(cur, /.test(LIST),
     "面板按选中分支取 spec（ctx.panel + appsDetailSpecOf）—— 切分支后截图 / 作者行 / 评论一起换");
-  ok(/appsPanelPaintFoot\(st\)/.test(LIST) && /appsTr\("运行"\)/.test(LIST) && /appsTr\("数据目录"\)/.test(LIST) &&
-    /appsTr\(isDev \? "移除登记" : "卸载"\)/.test(LIST),
-    "面板底栏左下角：运行 / 数据目录 / 二次开发 / 卸载（与详情窗底栏同一套动作）");
+  ok(/appsPanelPaintFoot\(st\)/.test(LIST) && /appsTr\(local\.dev === true \? "打开" : "运行"\)/.test(LIST) &&
+    /appsTr\("数据目录"\)/.test(LIST) && /appsTr\("删除应用"\)/.test(LIST) &&
+    /appsAppDeleteRun\(local \|\| \{ id: st\.id \}\)/.test(LIST) &&
+    !/isDev \? "移除登记" : "卸载"/.test(LIST),
+    "面板底栏左下角：打开 / 运行 · 数据目录 · 二次开发 · 删除应用（与详情窗底栏同一套动作，老「卸载 / 移除登记」两颗已下线）");
   ok(/el\.addEventListener\("click", function \(\) \{\s*pick\(spec, el\);/.test(LIST) ||
     /pick\(spec, el\)/.test(LIST),
     "点左列条目 → 就地换右侧面板（不弹窗）");
@@ -5525,14 +5783,16 @@ if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）
     ok(!!m && !!m[1] && !/[\u4e00-\u9fff]/.test(m[1]), "i18n 英文表里有「" + s + "」");
   }
 
-  /* ⑦ lastRunAt：主进程在开窗时记一笔，台账读数带到渲染层 */
-  ok(/function noteAppRun\(id\)/.test(STORE) && /led\.lastRunAt = at;/.test(STORE) &&
+  /* ⑦ lastRunAt：主进程在开窗时记一笔，台账读数带到渲染层。
+     本轮起 noteAppRun 多带一个 kind（窗口**实际加载的那一份**）—— 同 id 在库根也有时，
+     按 id 猜根会把「最近运行时间」写到另一份的账本上。 */
+  ok(/function noteAppRun\(id, kind\)/.test(STORE) && /led\.lastRunAt = at;/.test(STORE) &&
     /writeJson\(p, led\)/.test(STORE),
     "apps-store.js：noteAppRun 把「刚跑过」写进安装账本（失败静默，绝不影响开窗）");
   ok(
-    STORE.indexOf("noteAppRun(sid)") > 0 &&
-      /if \(existing && !existing\.isDestroyed\(\)\)[\s\S]{0,2400}noteAppRun\(sid\);/.test(STORE) &&
-      /notifyWindowChanged\(sid, true\);[\s\S]{0,900}noteAppRun\(sid\);/.test(STORE),
+    STORE.indexOf("noteAppRun(sid, dirKind)") > 0 &&
+      /if \(existing && !existing\.isDestroyed\(\)\)[\s\S]{0,2400}noteAppRun\(sid, existing\.__mtnodeAppKind \|\| ""\);/.test(STORE) &&
+      /notifyWindowChanged\(sid, true\);[\s\S]{0,900}noteAppRun\(sid, dirKind\);/.test(STORE),
     "两条成功路径都记：复用已有窗口（调到前台，中间是重载 + 启动留痕）+ 新建窗口成功后",
   );
   ok(/lastRunAt: Number\(led\.lastRunAt\) \|\| 0,/.test(STORE), "appSummary 把 lastRunAt 透传给渲染层");

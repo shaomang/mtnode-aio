@@ -448,7 +448,8 @@ function createBranchMerge(deps) {
   }
 
   /**
-   * 写 app.json：**只**补一条 merges 留痕（对方作者 + 版本 + 时间）。
+   * 写 app.json：补一条 merges 留痕（对方作者 + 版本 + 时间），外加一条**内部来源记录**
+   * （forkOf：本机还没声明过来源时才写；上架时据此认分支点，见本轮共识）。
    * 版本号默认**不动**；只有用户在会话里选了「我这一版跟着动」并写进结束声明时，
    * 才按 newVersion 覆盖（主进程是 app.json 的唯一写者，见文件头）。
    */
@@ -473,6 +474,14 @@ function createBranchMerge(deps) {
     const next = Object.assign({}, man, { merges: merges, updatedAt: Date.now() });
     const want = String(a.newVersion || "").trim();
     if (want && want !== before) next.version = want;
+    /* 来源记录（本轮口径 · 用户共识）：合并出来的开发副本要留一条**内部来源记录**（forkOf），
+       上架时据此认出「基于谁的那一版、哪个分支点」。本机已经声明过来源的（用户自己填的 /
+       上架流程写过的）一字不动 —— 绝不覆盖用户自己的声明。 */
+    if (!next.forkOf || !String(next.forkOf.id || "").trim()) {
+      const srcOwnerId = String(a.ownerId || "");
+      const srcOwner = String(a.author || "");
+      if (srcOwnerId || srcOwner) next.forkOf = { id: id, ownerId: srcOwnerId, owner: srcOwner };
+    }
     try {
       d.writeJson(manPath, next);
     } catch (e) {
