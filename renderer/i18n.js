@@ -3935,6 +3935,15 @@
     "我已处理，继续": "Done — continue",
     "⏹ 这一轮已经结束": "⏹ This round has ended",
     "⏹ 这一轮已经结束：上面那张卡已收口，模型不再等它了。": "⏹ This round has ended: that card was settled and the model is no longer waiting for it.",
+    /* 手机端（Paseo）接管的会话：询问卡不在电脑上开，改落一行痕迹（见 app-db.js 的 ixRemoteDriven） */
+    "📱 {what}{title}：这条会话正被手机端接管，电脑上不再弹出询问卡 —— 题面与选项以纯文字发到手机上。":
+      "📱 {what}{title}: this session is driven from the phone, so no question card pops up on the desktop — the question and its options go to the phone as plain text.",
+    "📱 这条会话已由手机端接管：上面那张询问卡已撤，题面会以纯文字发到手机上作答。":
+      "📱 This session is now driven from the phone: that question card was dismissed and the question goes to the phone as plain text.",
+    "（这条会话正被手机端接管：提问与选项以纯文字发到手机上，在手机输入框里回一条消息即为答案，会落回这条会话。）":
+      "(This session is driven from the phone: the question and its options go there as plain text — reply with a message in the phone's input box and it lands back in this session.)",
+    "模型在问你一件事": "The model is asking you something",
+    "会话在等你处理浏览器上的事": "The session is waiting for you to handle something in the browser",
     "⏹ 这一轮已经结束：那张浏览器确认卡已收口，你的回应没能送达模型。": "⏹ This round has ended: that browser confirmation card was settled, so your response never reached the model.",
     "⏹ 这一轮已经结束：那张卡已收口，你的回答没能送达模型（可把它作为新消息再发一次）。": "⏹ This round has ended: that card was settled, so your answer never reached the model (you can send it again as a new message).",
     "这一轮已经结束。要从头再跑一遍就点「重发本轮」。": "This round has ended. Click \"Resend this round\" to run it again from the top.",

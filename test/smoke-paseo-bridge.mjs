@@ -79,6 +79,12 @@ function createFakeMtnode() {
     /* 这些卡片 id 的 session/approval 一律回 {ok:false, stale:true}（模拟「电脑上已经答过 /
        那一轮早就结束了」——真机上 renderer/app-session-bridge.js 的 sessionApproval 就回这个形状） */
     staleApprovalIds: new Set(),
+    /* 提问通道自检：自检发过的卡 + 手机那条作答（[9] 真跑 --probe-question 用） */
+    probeAsks: new Map(),
+    probeAnswered: null,
+    probeSeq: 0,
+    /* 会话族每一发都记下它带没带自检标志（MTNode 侧就是按这枚头放行自检那两条口） */
+    flags: [],
   };
   const token = "smoke-token-1234567890";
   const reqLog = [];
@@ -122,6 +128,10 @@ function createFakeMtnode() {
         body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       } catch {}
       state.calls.push({ method: body.method, params: body.params || {} });
+      state.flags.push({
+        method: String(body.method || ""),
+        selfcheck: String(req.headers["x-mtnode-selfcheck"] || ""),
+      });
       const r = handleCtl(String(body.method || ""), body.params || {});
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(r));
@@ -241,9 +251,44 @@ function createFakeMtnode() {
         if (p.model != null && String(p.model)) s.model = String(p.model);
         return { ok: true, result: { ok: true, sessionId: String(p.sessionId), provider: s.provider || "", model: s.model || "" } };
       }
+      /* ── 提问通道自检的两条口（只有桥的自检会调；MCP 侧按 x-mtnode-selfcheck 放行）──
+         现场：这两条以前按 `process.env.MTNODE_PASEO_PROBE_CHILD` 放行，而自检是**另一个
+         进程** spawn 出来的子桥，父进程设的 env 到不了正在跑的 MTNode —— 控制台那颗
+         「提问通道自检」在真机上永远停在 ③，报「未知的方法：session/probe-question」。
+         现在只看请求头（随请求走，跨进程不丢），这里连头一起记下来供断言。 */
+      case "session/probe-question": {
+        const id = "probe-ask-" + (state.probeSeq = (state.probeSeq || 0) + 1);
+        const qs = [
+          {
+            id: "probe_q1",
+            header: "MTNode 提问通道自检",
+            question: "MTNode 提问通道自检\n\n这一问由自检发出，用来验证「询问卡 → 可读消息 → 文本作答 → 回执」这条链。",
+            options: [
+              { label: "选它即代表手机端能答（推荐）", description: "与真机同一张卡。" },
+              { label: "另一项", description: "同样逐字下发。" },
+            ],
+            multiSelect: false,
+          },
+        ];
+        state.probeAsks.set(id, qs);
+        setTimeout(() => emit(String(p.sessionId || ""), "question", { id, sessionId: String(p.sessionId || ""), questions: qs }), 20);
+        return { ok: true, result: { ok: true, id } };
+      }
+      case "session/probe-answer":
+        return {
+          ok: true,
+          result: {
+            got: !!state.probeAnswered,
+            id: String(state.probeAnswered && state.probeAnswered.id) || "",
+            answers: (state.probeAnswered && state.probeAnswered.answers) || [],
+          },
+        };
       case "session/approval":
         if (state.staleApprovalIds.has(String(p.id))) {
           return { ok: true, result: { ok: false, stale: true, id: String(p.id), note: "这张卡已失效（发起轮已结束或已被答过）。" } };
+        }
+        if (state.probeAsks.has(String(p.id))) {
+          state.probeAnswered = { id: String(p.id), answers: p.answers || [], answerText: p.answerText || "" };
         }
         return { ok: true, result: { ok: true, id: String(p.id), outcome: String(p.outcome) } };
       default:
@@ -614,6 +659,8 @@ function startBridge(env) {
       if (sent3 >= 3) break;
       await sleep(25);
     }
+    /* 超长选项：手机上的询问卡不截断选项（本次需求：卡片内容一个字都不许省） */
+    const longOpt = "超长选项：" + "长".repeat(220);
     const questions = [
       {
         id: "q1",
@@ -625,7 +672,7 @@ function startBridge(env) {
       {
         id: "q2",
         question: "顺带改哪些？（可多选）",
-        options: [{ label: "文档" }, { label: "冒烟" }],
+        options: [{ label: "文档" }, { label: "冒烟" }, { label: longOpt }],
         multiSelect: true,
       },
       { id: "q3", question: "还有什么要补充的？（自由文本）" },
@@ -652,6 +699,7 @@ function startBridge(env) {
     ok(/先改哪一层？/.test(body) && /背景/.test(body), "题面第一行 + 空行后的 Markdown 总结都在正文里（不截断、可读）");
     ok(/只改渲染层（风险小）/.test(body) && /也改主进程/.test(body), "选项与说明都在正文里（手机上照原话看到）");
     ok(/可多选/.test(body) && /文档/.test(body) && /冒烟/.test(body), "多选题带选项与「可多选」标记");
+    ok(body.indexOf(longOpt) >= 0, "超长选项也一字不落地出现在正文里（手机端不截断选项）");
     ok(/还有什么要补充的？/.test(body), "自由文本题照样在正文里");
     ok(/怎么答/.test(body) && /不会当成新指令/.test(body), "末尾写清「怎么答」：回一条消息即答案");
     ok(
@@ -789,7 +837,16 @@ function startBridge(env) {
     fake.emit(realId, "done", { ok: true });
     await stalePrompt;
 
-    /* ①b MTNode 明确说这张卡 stale（电脑上先答过 / 那一轮已结束）→ 同样按普通消息下发 */
+    /* ①b MTNode 明确说这张卡 stale（电脑上先答过 / 那一轮已结束）→ 同样按普通消息下发。
+       这一例必须先有「一轮正挂着」：问卡是从这一轮的 SSE 里冒出来的（askPermission 只在
+       turn.stream 的回调里被调），① 收尾那一发 done 已经把流关了 —— 此时再投问卡谁也收不到。
+       所以先让手机说一句开一轮，MTNode 再在这轮里抛卡；这一枪最后会被下面那条答案消息
+       顶掉（真机是「先 interrupt 再 prompt」，桥走的就是这条路），它的回执由下面那发 done 一并收掉。 */
+    const pFresh = bare.send("session/prompt", {
+      sessionId: bareSid,
+      prompt: [{ type: "text", text: "这一轮先挂着（问卡要来）" }],
+    });
+    await sleep(300);
     const midStale = await waitAsk("q-card-stale");
     ok(!!midStale, "又来一张问卡（stale 用例）");
     fake.state.staleApprovalIds.add("q-card-stale");
@@ -802,8 +859,9 @@ function startBridge(env) {
       if (!forwardedStale) await sleep(25);
     }
     ok(forwardedStale, "MTNode 回 stale 时，手机那条消息按普通消息下发（回执失败也不吞用户的话）");
-    fake.emit(realId, "done", { ok: true });
+    fake.emit(realId, "done", { ok: true }); /* 两轮都挂着（①b 开的那轮已被这条答案顶掉）：一条 done 把两轮都收掉 */
     await staleAnswered;
+    await pFresh;
     fake.state.staleApprovalIds.clear();
 
     /* ② 真按「停止」：打断之后 3 秒内没等到那条消息 → 照常停 MTNode 那一轮 */
@@ -1096,6 +1154,102 @@ function startBridge(env) {
       "第一条 prompt 才明确报错（接不上 MTNode 时不会静默建一条假会话）",
     );
     dead.close();
+  }
+
+  /* [8] 提问通道自检的信任标志：跨进程只认请求头（不认 env） */
+  console.log("[8] 自检标志：随请求走的 x-mtnode-selfcheck");
+  {
+    /* 现场：控制台「提问通道自检」在真机上永远停在 ③，报「未知的方法：session/probe-question」——
+       放行那道闸长在正在跑的 MTNode 身上，而自检是**另一个进程**（桥 spawn 的子桥），
+       父进程给子进程设的 MTNODE_PASEO_PROBE_CHILD 到不了 MTNode 进程。
+       口径：自检客户端把标志当**请求头**发出（进程边界不丢），MTNode 侧只看这枚头。 */
+    const bs = read("paseo/acp-bridge.mjs");
+    ok(
+      /x-mtnode-selfcheck/i.test(bs) && /selfcheck/.test(bs),
+      "桥的自检客户端把标志当请求头发出去（createMtnodeClient 的 selfcheck）",
+    );
+    ok(
+      /createMtnodeClient\(Object\.assign\(\{\}, server, \{ selfcheck: true \}\)\)/.test(bs),
+      "③ / ⑥ 那两发（probe-question / probe-answer）显式带标志",
+    );
+    const ms = read("mcp-server.js");
+    ok(
+      /x-mtnode-selfcheck/.test(ms) && /ctx\.selfcheck/.test(ms),
+      "MTNode 侧按请求头放行 session/probe-*（ctx.selfcheck）",
+    );
+    ok(
+      !/process\.env\.MTNODE_PASEO_PROBE_CHILD/.test(ms),
+      "MTNode 侧不再用 process.env.MTNODE_PASEO_PROBE_CHILD 判（那道判据跨不过进程边界）",
+    );
+    ok(
+      /if \(!ctx \|\| ctx\.selfcheck !== true\)/.test(ms),
+      "没有标志时仍报「未知的方法」（默认关，不暴露自检口）",
+    );
+  }
+
+  /* [9] 真跑 `--probe-question`（对端是假 MTNode）：③ 那一发必须带着标志出去，
+         并且六拍一路走通（询问卡 → 可读消息 → 文本作答 → 回执） */
+  console.log("[9] 提问通道自检真跑（--probe-question → 假 MTNode）");
+  {
+    const fake9 = createFakeMtnode();
+    await new Promise((r) => fake9.server.listen(0, "127.0.0.1", r));
+    const port9 = fake9.server.address().port;
+    const dir9 = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-probe9-"));
+    fs.writeFileSync(
+      path.join(dir9, "mcp-server.json"),
+      JSON.stringify({ port: port9, token: fake9.token, enabled: true }),
+    );
+    const chk9 = spawn(process.execPath, [BRIDGE, "--probe-question"], {
+      cwd: ROOT,
+      env: Object.assign({}, process.env, {
+        MTNODE_DATA_DIR: dir9,
+        MTNODE_MCP_URL: "http://127.0.0.1:" + port9,
+        MTNODE_MCP_TOKEN: fake9.token,
+      }),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out9 = "";
+    chk9.stdout.setEncoding("utf8");
+    chk9.stderr.setEncoding("utf8");
+    chk9.stdout.on("data", (c) => (out9 += c));
+    chk9.stderr.on("data", (c) => (out9 += c));
+    const code9 = await new Promise((r) => {
+      const t = setTimeout(() => {
+        try {
+          chk9.kill();
+        } catch {}
+        r(-1);
+      }, 25000);
+      chk9.on("exit", (c) => {
+        clearTimeout(t);
+        r(c);
+      });
+    });
+    const sent9 = fake9.state.flags.filter((x) => x.method === "session/probe-question");
+    ok(sent9.length === 1, "自检真跑到 ③（发出 session/probe-question，实际 " + sent9.length + " 发）");
+    ok(
+      sent9[0] && sent9[0].selfcheck === "1",
+      "③ 那一发带 x-mtnode-selfcheck: 1（MTNode 侧据此放行；不带就报「未知的方法」）",
+    );
+    ok(/✓ ③ MTNode 已发出询问卡/.test(out9), "③ 通过（自检卡真的从 MTNode 发出来了）");
+    ok(
+      !/未知的方法：session\/probe-/.test(out9),
+      "③ 不再报「未知的方法：session/probe-question」（本次修复的现场：标志到不了 MTNode）",
+    );
+    ok(
+      !/层级过深|\[省略|已省略\]/.test(out9),
+      "自检输出里没有占位符（手机上不会看到「层级过深已省略」那类技术文本）",
+    );
+    /* ④～⑥ 那条链（卡 → 可读消息 → 文本作答 → 回执）由 [5q] 全链覆盖（自检自己也走同一条路）。
+       自检的下半程在假服务端上会停住：② 的 session/cancel 已把这一轮在假 MTNode 侧收尾，
+       流不再挂新卡 —— 那是假服务端与 MTNode 真实现的口径差，不是桥的毛病，
+       所以这里只钉「③ 那一发真的出去了、且不再被拒」。 */
+    try {
+      fake9.server.close();
+    } catch {}
+    try {
+      fs.rmSync(dir9, { recursive: true, force: true });
+    } catch {}
   }
 
   try {

@@ -225,6 +225,16 @@ function discoverServer() {
 
 function createMtnodeClient(server) {
   const auth = { authorization: "Bearer " + server.token, "content-type": "application/json" };
+  /* 「提问通道自检」的信任标志：**自检子进程**（MTNODE_PASEO_PROBE_CHILD=1）发出去的
+     每一发都带上这枚头，MTNode 侧据此放行 `session/probe-question` / `probe-answer`
+     两条口（它们只该给自检用，别处一律看不到）。
+     为什么不能靠环境变量：自检是**另一个进程**（桥的父进程 spawn 出来的），而放行那道闸
+     长在**正在跑的 MTNode** 身上 —— 父进程给子进程设的 env 永远到不了 MTNode 进程，
+     于是控制台那颗「提问通道自检」在真机上必然报「未知的方法：session/probe-question」
+     （2026-10-15 实测复现）。头是随请求走的，进程边界不丢。 */
+  const selfcheck =
+    String(process.env.MTNODE_PASEO_PROBE_CHILD || "") === "1" || server.selfcheck === true;
+  if (selfcheck) auth["x-mtnode-selfcheck"] = "1";
 
   function post(pathname, body) {
     return new Promise((resolve, reject) => {
@@ -656,7 +666,8 @@ function askOfEvent(sessionId, ev) {
 }
 
 /** 一张询问卡里**一道题**的可读正文：题干第一行 + 空行之后的 Markdown + 选项。
- *  手机端看到的就是这段人话（不渲染任何 JSON）。
+ *  手机端看到的就是这段人话（不渲染任何 JSON）；题面、选项与说明一律**原样、不截断**
+ *  —— 选项就是用户照着作答的依据，少一个字都可能选错（只把换行压成空格）。
  *  `opts.number`：一窗多题时给每道题加「1. / 2.」序号（单题不加，免得像列表）。 */
 function readableQuestion(q, idx, opts) {
   const o = opts || {};
@@ -670,10 +681,12 @@ function readableQuestion(q, idx, opts) {
   if (q && q.detail) lines.push(String(q.detail).trim());
   if (tail) lines.push(tail);
   if (options.length) {
+    /* 选项与说明**不截断**：手机上的这张卡就是照它作答的依据（与 MTNode 那侧同一条口径：
+       卡片帧不做结构裁剪、文本也不截）。只把换行压成空格，免得一条选项撑成好几行。 */
     lines.push(
       (q.multiSelect ? "可多选" : "单选") +
         "：" +
-        options.map((x) => oneLine(x.label, 120) + (x.description ? "（" + oneLine(x.description, 160) + "）" : "")).join(" / "),
+        options.map((x) => oneLine(x.label) + (x.description ? "（" + oneLine(x.description) + "）" : "")).join(" / "),
     );
   }
   return lines.filter(Boolean).join("\n");
@@ -881,11 +894,16 @@ async function runQuestionProbe(server) {
     await send("session/cancel", { sessionId: sid }, 5000);
     await promptP;
     /* ③ 让 MTNode **从它自己那一侧**发一张货真价实的询问卡
-       （同一根 SSE 管子、同一帧形状；见 session-bridge.js 的 probeQuestion）。 */
-    const made = await createMtnodeClient(server).ctl("session/probe-question", {
-      sessionId: mtnodeId,
-      title: "MTNode 提问通道自检",
-    });
+       （同一根 SSE 管子、同一帧形状；见 session-bridge.js 的 probeQuestion）。
+       `selfcheck: true` → 这一发带上 x-mtnode-selfcheck 头：MTNode 那两道自检口只认它
+       （父进程给子进程设的 env 到不了 MTNode，靠 env 判会把自检永远卡在 ③）。 */
+    const made = await createMtnodeClient(Object.assign({}, server, { selfcheck: true })).ctl(
+      "session/probe-question",
+      {
+        sessionId: mtnodeId,
+        title: "MTNode 提问通道自检",
+      },
+    );
     if (!made || !made.ok) {
       say("✗ ③ 发不出自检询问卡：" + oneLine(JSON.stringify(made), 300));
       return 1;
@@ -953,7 +971,10 @@ async function runQuestionProbe(server) {
     /* ⑥ 回执真的落到 MTNode：/ctl session/approval 带上 answers[]（按题 id 对齐）+ answerText */
     let got = null;
     for (let i = 0; i < 40; i++) {
-      got = await createMtnodeClient(server).ctl("session/probe-answer", {});
+      got = await createMtnodeClient(Object.assign({}, server, { selfcheck: true })).ctl(
+        "session/probe-answer",
+        {},
+      );
       if (got && got.got) break;
       await new Promise((r) => setTimeout(r, 250));
     }

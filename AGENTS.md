@@ -11,6 +11,7 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.5.0 — Electron 39 桌面端 A
 - **应用插件宿主**：`plugins/`（`main-app-plugins.js`、`runtime-feed.js`、`catalog.default.json`、`icons/`）。
 - **技能**：`skills/`（本地后端安装类技能）；`mtnode-agent-skills/<类目>/`（画布 / 数据库 / 开发架构等内置技能，索引由 `tools/build-mtnode-agent-skill-index.js` 生成；frontmatter `menu: user` 的条目随包内置但对用户可见，同步时写 `.builtin` 进技能清单与「/」菜单——如 `music/minimax-music-prompt`、`music/minimax-music-lyrics`）；`ext-repo/skills/` 为云发版技能（音乐提示词 / 歌词两份已改内置，不再从工坊发）。
 - **文档**：`docs/`（设计文档）；`guides/manual/`（应用内手册，`index.json` 为目录）；`guides/nodes/`（节点指南 Markdown）。
+- **更新日志（面向用户）**：`changelog/`。每版一份 `changelog/v<版本>.md`（H1 = `v<版本>（YYYY-MM-DD）`、紧跟一行摘要、再按 `新增 / 改进 / 修复` 分类列条目；条目最多两层、只写用户可感知的变化、**不含技术细节**），`changelog/README.md` 为版本索引表 + 写作规范 + 模板；`changelog/v1.0.md` 是 v1.0.25 以前的概述页。
 - **测试**：`test/`、`smoke.js`（require ./main.js）、`dsh/smoke-*.mjs`。
 - **构建发布·更新·诊断**：`scripts/`、`build.json`、`installer.nsh`、`updater.js`、`crash-report.js`、`version.js`；Microsoft Store 的 MSIX 打包链在 `scripts/msix/`（`msix.config.json` 身份配置 + `make-msix.mjs` 主脚本 + `make-assets.mjs` 磁贴资产，手册 `docs/msix-store-publish.md`）。**一次发版用 `npm run release`（`scripts/release.mjs`）同时出 NSIS 安装包与 Store（MSIX）包，两包版本号必须一致**（`--dry-run` 可干跑校验版本与步骤）；只出 Store 包用 `npm run release:store`，单跑 MSIX 用 `npm run dist:msix`；MSIX 只能人工拖进 Partner Center 上传框，本链不做自动上传。
 - **诊断脚本（只读 · 零依赖 · 手动跑）**：`scripts/audit-token-usage.mjs` 解本机 `<userData>\pipeline-console\dsh-home\sessions\*\<sid>\session.jsonl[.zstd]`，按会话给出固定前缀（system 与逐个工具的字符数）、每步 prompt 与其增量、各工具返回体积（次数/均值/最大）、思考文本量、缓存命中率与 top-N 排行；调工具负载 / 返回预算 / 思考回放类优化前后各跑一次即可量化收益（`--help` 读口径）。
@@ -27,6 +28,7 @@ MTNode AI编排器（mtnode-ai-orchestrator）v1.5.0 — Electron 39 桌面端 A
 - **Agent 运行期间不得使用任何 git 命令**。
 ## 协作约定
 - 改 Agent 网关（`dsh/`）先读 `dsh/DESIGN.md` 遵守三层契约（main.js ↔ main-dsh.js ↔ gateway.mjs ↔ cordis 运行时）。
+- **发版前必须补本版更新日志**：`changelog/v<当前版本>.md` 必须写好（面向用户、简明、条目最多两层，不出现文件名 / 函数名 / 接口 / 协议 / 性能数字），并同步 `changelog/README.md` 的版本索引表；`scripts/release.mjs` 在打包前硬校验，文件缺失或没有条目即中断发版。起草可由 Agent 会话在**用户明确授权**下读**只读** git 历史（相邻发布提交差异 + 界面词条 + `guides/` 与 `docs/` 交付说明）完成，人工润色后提交。
 - **根目录主进程新模块必须进 `build.json` `files`**：否则打包后 `Cannot find module './xxx.js'`（已发生过 `assets-store.js` 遗漏）。
 - **插件 / 本地后端安装脚本一律纯 ASCII（每个字节 ≤ 0x7F，且无 BOM）**：宿主用 `powershell.exe`（Windows PowerShell 5.1）跑 `*-pack/scripts/*.ps1`，而 5.1 按机器 ANSI 代码页解码**无 BOM 的 `.ps1`** —— 脚本里的中文（注释也算）会把语法解崩（历史故障与完整口径见 `docs/mirror-sources.md` §九）。给人看的中文文案只放同包 `steps.json` 的 `messages` 表或界面词条，**不许写进脚本**。守卫 = `test/smoke-install-scripts.js`，它**自动发现**并逐字节检查：全部 `*-pack` 的 `.ps1` / `.cmd` / `.bat`、`*-pack/scripts/` 下的 `.py`、共享真源 `pack-steps/` 与 `pack-python/`、项目 `scripts/` 下的 PS 系脚本（`*-pack/app|shims/*.py` 后端运行时 Python 有意豁免，仍是中文）；Agent 修复期现场写的脚本由 `renderer/app-repair.js` 收尾扫描兜底（违例回灌一轮要求改成英文）。改任何安装脚本后必须跑这只冒烟。
 - 新增渲染层能力按 `renderer/index.html` 的脚本加载顺序（= 模块分层）放置，样式进 `renderer/css/` 对应文件。

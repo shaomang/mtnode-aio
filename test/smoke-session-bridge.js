@@ -539,6 +539,142 @@ console.log("[4] 协议面真跑（/ctl + tools/call + SSE）");
     );
   }
 
+  /* ── [5s] 手机端收到的「停下来等人」的卡片不做结构裁剪（选项一个字都不许省）────────
+     现场：手机上接受询问单时，「单选：」后面显示的是「[层级过深已省略]」—— 选项在第 4 层
+     （data.questions[].options[].label），被 slimValue 那道 depth > 3 的结构闸整片换成了占位符，
+     手机拿到的 options 全是一串占位字符串（Paseo 桥只能把它们当标签打印出来）。
+     这里在 vm 里**真跑**渲染层那一半（renderer/app-session-bridge.js），喂一张真形状的
+     question 帧，检查推给主进程（SSE → 手机）的那一帧；同时确认普通帧的深度闸没被顺手拆掉。 */
+  console.log("[5s] 手机端卡片不做结构裁剪（询问单的选项不被省略）");
+  {
+    const vm = require("vm");
+    const pushes = [];
+    const sandbox = { window: { api: { mcpSessionEvent: (ev) => pushes.push(ev) } }, console };
+    vm.runInNewContext(read("renderer/app-session-bridge.js"), sandbox, {
+      filename: "renderer/app-session-bridge.js",
+    });
+    const S = sandbox.window.MTNodeSession;
+    ok(!!S && typeof S.onRunEvent === "function", "渲染层那一半在沙箱里跑起来了（window.MTNodeSession）");
+    /* 先登记观察者：只有被手机观察的会话才推帧（口径与主进程下发的观察名单一致） */
+    S.handleFrame({ op: "sessionWatch", params: { sessionId: SID_A, on: true } });
+
+    const ask = {
+      id: "ask-smoke-1",
+      kind: "question",
+      questions: [
+        {
+          id: "q1",
+          question: "先改哪一层？\n\n**背景**：渲染层与主进程都有可能，先定一层再动。",
+          header: "范围",
+          detail: "细节说明也要一字不落",
+          options: [
+            { label: "只改渲染层", description: "风险小" },
+            { label: "也改主进程", description: "顺带一起改" },
+          ],
+          multiSelect: false,
+        },
+        {
+          id: "q2",
+          question: "顺带改哪些？",
+          options: [{ label: "文档" }, { label: "冒烟" }],
+          multiSelect: true,
+        },
+      ],
+    };
+    pushes.length = 0;
+    S.onRunEvent("agent:" + SID_A, "question", ask, "req-ask-1");
+    const frame = pushes.filter((x) => x.type === "question").pop() || null;
+    ok(!!frame, "question 帧推给了主进程（手机端能收到这张卡）");
+    const qs = (frame && frame.data && frame.data.questions) || [];
+    ok(qs.length === 2, "两道题都在（题数不丢）");
+    ok(
+      qs[0] && Array.isArray(qs[0].options) && qs[0].options.length === 2 &&
+        qs[0].options[0].label === "只改渲染层" && qs[0].options[0].description === "风险小",
+      "单选题的选项与说明逐字到手机（label / description 都在，不再是占位符）",
+    );
+    ok(
+      qs[1] && Array.isArray(qs[1].options) && qs[1].options.length === 2 && qs[1].multiSelect === true,
+      "多选题的选项与「可多选」标记都在",
+    );
+    ok(
+      qs[0] && String(qs[0].question).indexOf("**背景**") > 0 && qs[0].detail === "细节说明也要一字不落",
+      "题面（含 Markdown 总结）与补充说明没被截断",
+    );
+    ok(
+      JSON.stringify(frame || {}).indexOf("层级过深已省略") < 0,
+      "整帧里没有「层级过深已省略」（手机端「单选：」后面不再只剩这句话）",
+    );
+    /* 深度闸只为卡片让路：普通帧（工具参数 / 结果这些可以很深的对象）照旧裁剪 */
+    pushes.length = 0;
+    S.onRunEvent("agent:" + SID_A, "tool", { name: "x", args: { a: { b: { c: { d: { e: "太深了" } } } } } }, "req-tool-1");
+    const toolFrame = pushes.filter((x) => x.type === "tool").pop() || null;
+    ok(
+      !!toolFrame && JSON.stringify(toolFrame).indexOf("层级过深已省略") >= 0,
+      "普通工具帧仍照旧裁到 3 层（这道闸只给卡片让路，没被拆掉）",
+    );
+    /* 卡片里的内联媒体（浏览器求助卡的页面截图那种）仍然只留摘要：手机不要 MB 级帧 */
+    pushes.length = 0;
+    S.onRunEvent(
+      "agent:" + SID_A,
+      "approval",
+      { id: "ap-smoke-1", title: "写入 a.js", shot: "data:image/png;base64," + "A".repeat(4000) },
+      "req-ask-2",
+    );
+    const apFrame = pushes.filter((x) => x.type === "approval").pop() || null;
+    ok(
+      !!apFrame && /内联媒体/.test(JSON.stringify(apFrame.data)) && JSON.stringify(apFrame).length < 2000,
+      "卡片里的内联媒体仍换成一句摘要（不把图片字节推给手机）",
+    );
+    /* 边界：逐字口径只给「模型提问」这一类 —— 审批 / 画布确认那两种卡手机只用标题与一行
+       说明，仍照旧瘦身（画布确认的原始帧可能很大：整段改动参数不该整份推给手机） */
+    pushes.length = 0;
+    S.onRunEvent(
+      "agent:" + SID_A,
+      "canvas",
+      { id: "cv-smoke-1", title: "改画布", params: { a: { b: { c: { d: "很深" } } } } },
+      "req-ask-3",
+    );
+    const cvFrame = pushes.filter((x) => x.type === "canvas").pop() || null;
+    ok(
+      !!cvFrame && JSON.stringify(cvFrame.data).indexOf("层级过深已省略") >= 0,
+      "画布确认帧仍照旧瘦身（逐字口径只给模型提问这一类，不是所有卡片）",
+    );
+    /* 超大卡片（多题 / 长说明）：**不许**因为帧超过 FRAME_MAX 就被那条「按深度 1 重裁」
+       的兜底吃到 —— 选项在第 4 层，一裁就整片变占位符，用户在手机上没法作答。
+       这就是「手机端单选处显示 [层级过深已省略]」的第二条成因（长卡片走兜底支路）。 */
+    pushes.length = 0;
+    const bigAsk = {
+      id: "ask-big-1",
+      sessionId: SID_A,
+      questions: Array.from({ length: 8 }, (_, i) => ({
+        id: "bq" + i,
+        header: "第 " + (i + 1) + " 问",
+        question: "题面 " + (i + 1) + "：" + "很长的一段说明。".repeat(60),
+        detail: "补充说明 " + (i + 1),
+        options: Array.from({ length: 6 }, (_, j) => ({
+          label: "选项 " + (i + 1) + "-" + (j + 1),
+          description: "理由 " + (i + 1) + "-" + (j + 1) + "：" + "一行解释。".repeat(40),
+        })),
+        multiSelect: i % 2 === 1,
+      })),
+    };
+    S.onRunEvent("agent:" + SID_A, "question", bigAsk, "req-big-1");
+    const bigFrame = pushes.filter((x) => x.type === "question").pop() || null;
+    const bigRaw = JSON.stringify((bigFrame && bigFrame.data) || {});
+    ok(
+      bigRaw.length > 12000 && bigRaw.indexOf("层级过深已省略") < 0 && bigRaw.indexOf("未能送到手机") < 0,
+      "超大询问卡（" + Math.round(bigRaw.length / 1024) + "KB，超过一帧 12KB 的上限）照样逐字送到手机：选项与说明一个字都不省",
+    );
+    ok(
+      !!bigFrame &&
+        bigFrame.data.questions.length === 8 &&
+        bigFrame.data.questions[0].options.length === 6 &&
+        bigFrame.data.questions[0].options[0].label === "选项 1-1",
+      "超大卡的题数与选项数都完整（那条按结构条数做的兜底没有误伤正常卡片）",
+    );
+    ok(!(bigFrame && bigFrame.trimmed), "超大卡片不再走「按深度 1 重裁」那条兜底（trimmed 标记不该出现）");
+  }
+
   /* ── [6] 打包与预加载 ─────────────────────────────────────────────────── */
   console.log("[6] 打包与预加载");
   {

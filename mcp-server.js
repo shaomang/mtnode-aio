@@ -854,10 +854,11 @@ function createMcpHost(o) {
       case "session/state":
         return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_state, params || {}, ctx);
       case "session/probe-question": {
-        /* 提问通道自检（Paseo 桥 `--probe-question`）：**只在桥的自检子进程里**可用 ——
-           桥给自检子进程设了 MTNODE_PASEO_PROBE_CHILD=1，别处一律看不到这条口，
-           免得有人拿它往任意会话里塞一张假询问卡。 */
-        if (!process.env.MTNODE_PASEO_PROBE_CHILD) {
+        /* 提问通道自检（Paseo 桥 `--probe-question`）：**只认自检子进程那枚请求头**
+           `x-mtnode-selfcheck: 1`（桥的 createMtnodeClient 在自检子进程里自动带上）。
+           它仍要过下面那道会话族闸门与 Bearer token，别处（普通桥 / 第三方客户端）看不到
+           这条口，免得有人拿它往任意会话里塞一张假询问卡。 */
+        if (!ctx || ctx.selfcheck !== true) {
           throw mcpFail(-32601, "未知的方法：session/probe-question（只有桥的提问通道自检会用它）");
         }
         assertSessionAllowed();
@@ -867,7 +868,7 @@ function createMcpHost(o) {
         );
       }
       case "session/probe-answer": {
-        if (!process.env.MTNODE_PASEO_PROBE_CHILD) {
+        if (!ctx || ctx.selfcheck !== true) {
           throw mcpFail(-32601, "未知的方法：session/probe-answer（只有桥的提问通道自检会用它）");
         }
         assertSessionAllowed();
@@ -978,7 +979,11 @@ function createMcpHost(o) {
     const clientId = String(
       req.headers["x-mtnode-client"] || (body && body._client) || state.clientId || "",
     ).slice(0, 64);
-    return { sessionId, clientId };
+    /* 自检标志（Paseo 桥 `--probe-question` 的自检子进程）：**随请求走**，不看环境变量 ——
+       自检是另一个进程 spawn 出来的，父进程给它设的 env 到不了这个正在跑的 MTNode，
+       靠 env 判会把控制台的「提问通道自检」永远卡死（2026-10-15 实测复现）。 */
+    const selfcheck = String(req.headers["x-mtnode-selfcheck"] || "") === "1";
+    return { sessionId, clientId, selfcheck };
   }
 
   function noteCapture(kind, payload) {

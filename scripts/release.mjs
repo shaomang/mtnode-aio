@@ -6,6 +6,8 @@
 
    按序执行的步骤：
      ① 版本校验：根 version 文件是唯一真源，必须与 package.json 一致（不一致直接报错退出）
+     ①b 更新日志校验：changelog/v<当前版本>.md 必须存在且至少一条条目
+        （「每次版本更新都更新 changelog」的卡口；缺即报错退出，规范见 changelog/README.md）
      ② npm run dist —— electron-builder --win，产出 dist\win-unpacked + NSIS Setup + latest.yml
         紧接着校验 latest.yml 的版本与根 version 一致（保证 NSIS 包与 MSIX 包同源）
      ③ node scripts/msix/make-msix.mjs --skip-build
@@ -45,6 +47,7 @@ const LATEST_YML = path.join(DIST, 'latest.yml');
 const MSIX_SCRIPT = path.join(HERE, 'msix', 'make-msix.mjs');
 const STAGE_SCRIPT = path.join(HERE, 'stage-updates.mjs');
 const GIT_SCRIPT = path.join(HERE, 'release-git.mjs');
+const CHANGELOG_DIR = path.join(ROOT, 'changelog');
 
 const USAGE = `发版主链：一次 release 同时出 NSIS 安装包与 Microsoft Store（MSIX）包
 
@@ -127,6 +130,32 @@ function checkSourceVersions(ver) {
     );
   }
   console.log(`  根 version = ${ver} · package.json = ${pv} —— 一致`);
+}
+
+/* ①b 「每次版本更新都更新 changelog」的卡口：
+   面向用户的更新日志必须为当前版本写好（changelog/v<版本>.md 存在且至少一条条目）。
+   规范、模板与版本索引表见 changelog/README.md；缺失即中断发版，
+   避免打出一个没有更新说明的版本（约定见 AGENTS.md 协作约定）。 */
+function checkChangelog(ver) {
+  const file = path.join(CHANGELOG_DIR, `v${ver}.md`);
+  const rel = path.relative(ROOT, file).split(path.sep).join('/');
+  if (!fs.existsSync(file)) {
+    die(
+      `缺少本版更新日志：${rel}\n` +
+      '  每次发版都必须为当前版本补一份面向用户的更新日志（简明、不含技术细节、条目最多两层）。\n' +
+      '  做法：由 Agent 会话读只读 git 历史（相邻发布提交的差异 + 界面词条 + guides/ 与 docs/ 交付说明）起草\n' +
+      `  → 写入 ${rel} → 同步 changelog/README.md 的版本索引表。规范见 changelog/README.md。`,
+    );
+  }
+  const text = fs.readFileSync(file, 'utf8');
+  const items = text.split(/\r?\n/).filter((l) => /^\s*[-*]\s+\S/.test(l)).length;
+  if (!items && !/无用户可见变化/.test(text)) {
+    die(
+      `本版更新日志没有任何条目：${rel}\n` +
+      '  至少写一条用户可感知的变化；确实只是内部维护，就写一行「本版以内部维护为主，无用户可见变化。」',
+    );
+  }
+  console.log(`  ${rel} —— 已就位（${items} 条${items ? '' : ' · 内部维护'}）`);
 }
 
 /* ② 之后：dist/latest.yml 的版本必须与根 version 一致（NSIS 包与 MSIX 包同源） */
@@ -284,9 +313,13 @@ console.log('══════════════════════�
 console.log('\n[1] 版本校验（根 version ↔ package.json）');
 checkSourceVersions(ver);
 
+console.log('\n[1b] 更新日志校验（changelog/v<版本>.md）');
+checkChangelog(ver);
+
 /* 干跑：只做版本一致性校验 + 打印步骤顺序，不构建 / 不打包 / 不上传。 */
 if (opt.dryRun) {
   console.log('\n[干跑] ① 版本一致性校验通过（根 version ↔ package.json 逐字符一致）');
+  console.log('[干跑] ①b 更新日志已就位（changelog/v<版本>.md 存在且有条目）');
   if (fs.existsSync(LATEST_YML)) {
     console.log('\n[干跑] ②b 校验 dist/latest.yml 与根 version 一致');
     checkLatestYml(ver);
@@ -296,6 +329,7 @@ if (opt.dryRun) {
   console.log('\n[干跑] 将要执行的步骤（按序，任一步失败即非零退出）：');
   if (opt.storeOnly) {
     console.log('  ① 版本校验：根 version ↔ package.json（已完成）');
+    console.log('  ①b 更新日志校验：changelog/v<版本>.md 存在且有条目（已完成）');
     console.log('  ② node scripts/msix/make-msix.mjs（自建 win-unpacked → .msix）');
     console.log('  ③ 另存 dist\\msix-publish\\ + 打印 Partner Center 上传指引');
     console.log(
@@ -305,6 +339,7 @@ if (opt.dryRun) {
     );
   } else {
     console.log('  ① 版本校验：根 version ↔ package.json（已完成）');
+    console.log('  ①b 更新日志校验：changelog/v<版本>.md 存在且有条目（已完成）');
     console.log('  ② npm run dist（electron-builder --win → win-unpacked + NSIS Setup + latest.yml）');
     console.log('  ②b 校验 dist/latest.yml 版本 ↔ 根 version（两包同源）');
     console.log('  ③ node scripts/msix/make-msix.mjs --skip-build（复用同一份 win-unpacked → .msix）');

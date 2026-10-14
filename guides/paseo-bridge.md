@@ -123,6 +123,13 @@ MTNode 自己的会话（左栏 `as…` 那条）**借 Paseo 的手机端**用�
   电脑侧会话里也会留下这轮回答的痕迹。手机发消息时 Paseo 会先 interrupt（`session/cancel`）再发 ——
   桥在「正等作答」时**不会**因此停掉 MTNode 那一轮（只把旧那一枪按 ACP 要求以 `cancelled` 收尾）；
   真按「停止」时（3 秒内没等到那条消息）才照常停。
+  - **被手机端接管的会话，电脑上不再弹询问卡**（本轮口径）：手机端只有纯文字，**没有关掉
+    MTNode 界面上那张卡的入口** —— 过去卡会一直挂在电脑上等人点，用户又不在电脑前，看着就是
+    「弹窗卡住了会话」。现在判据 = **这条会话正被手机端观察**（桥自己开的 `session/watch`）：
+    凡是被它登记过的会话，电脑侧不再开询问卡（已经开着的当场撤掉），改在会话里落一行可读痕迹
+    ——痕迹里写明「这一问走手机纯文字、在手机输入框里回一条消息即答案、答案会落回这条会话」。
+    手机端那条可读消息与 `answers[]` 回执**完全不受影响**（这条链本来就不经过电脑上那张卡）。
+    自己坐在电脑前的那条会话（没人用手机看）照旧弹卡点选；工具审批与画布修改确认**两种卡不变**。
   - **为什么不走权限卡 / 表单**（踩过的两个坑）：
     · ACP 的 `ToolKind` 只有 read/edit/delete/move/search/execute/think/fetch/switch_mode/other，
       **没有 `question`** —— 发 `toolCall.kind:"question"` 会被 Paseo daemon 的校验**整帧拒掉**
@@ -190,9 +197,12 @@ MTNode 自己的会话（左栏 `as…` 那条）**借 Paseo 的手机端**用�
 | Paseo 报「版本过低」 | 本桥声明了最低兼容版本（控制台上「协议 / 最低 Paseo 版本」可见）。升级 Paseo；确实要用未验证的组合可设环境变量 `MTNODE_PASEO_MIN_VERSION` 放宽。 |
 | 手机上发消息没反应 | 看控制台「正在接管 N 条会话」是否为 0（为 0 说明没有观察者：桥没连上），以及「远程连接」总开关是否打开；再看 MTNode 主窗口是否还开着 —— 会话的执行在渲染层，窗口关了没人执行。 |
 | 手机上答了审批但电脑上还挂着卡 | 那张卡已失效（发起轮结束 / 已被别处答过）：手机上会明确报 stale，让模型重发一次请求。 |
+| 电脑上弹出一张**没人点得动**的询问卡（人在手机上，卡在那里挡着） | 旧包才会这样：那一版认不出「这条会话正被手机端观察」，照旧在电脑上开卡。本轮起被手机观察的会话**不在电脑上开询问卡**（已有的当场撤），改落一行痕迹；手机那条可读消息与作答链不变。判据是桥自己开的 `session/watch`，所以**要重新打包 + 重启**才会生效（渲染层那一半在 `app.asar` 里）；开发态（`npm start`）改完重启即生效。 |
 | 手机上**询问卡不弹**、模型在电脑侧一直干等 | 先在控制台点「**提问通道自检**」——它把这条链逐拍验一遍：① 桥起得来、② 会话落到 MTNode、③ MTNode 真的发出询问卡、④ 桥把它发成一条**可读消息**（`agent_message_chunk`，正文里没有 JSON、也不再发 `kind:"question"` 的权限卡）、⑤ 手机那条回复被当作答案接住（回 `end_turn`，不新起一轮）、⑥ 答案回到 MTNode。哪一拍 ✗ 就是断在哪一拍：<br>· ④ 全没有 → 卡根本没从 MTNode 出去（看那一轮是不是真调了 `ask_user_question`），或桥脚本是旧的（重新打包 / 让控制台「注册到 Paseo」把 `command` 指到新桥脚本后 reload）；<br>· ④ 说「又发了 `session/request_permission(kind=question)`」→ 桥脚本是旧的：ACP 没有那个 kind，Paseo 会整帧拒；<br>· ⑥ ✗ → 回执没落回 MTNode（会话已被删 / 该轮已结束，日志里会写明）。 |
 | 手机上答了询问卡但模型没反应 | 同上先跑「提问通道自检」。**作答方式 = 在手机输入框里回一条消息**（不是点卡上的按钮）：桥把这条回复翻成 `{ answers: [{id, selected[]}] }`（外加一条可读 `answerText`）再打回 MTNode —— 自检的 ⑤⑥ 就是验这一段；它通过而真机没反应时，多半是那一轮已经结束（卡作废，电脑上会看到「这一轮已经结束」的痕迹），这时手机那条消息会按普通消息发下去。 |
 | 手机上看到的提问是 **Other**、点进去是一堆 JSON | 桥脚本是旧的：那一版把提问工具自己的 tool 事件翻成 `toolCall.kind:"other"` 的工具卡，Paseo 把这类卡显示成 `humanizeToolName("other") = **Other**`，详情是 `{type:"unknown", input: rawInput}` 的原始 JSON。新桥把提问发成一条可读消息、提问类工具卡一律不下发、其它工具卡也不再写死 `kind:"other"`。重新打包 / 让控制台「注册到 Paseo」指向新桥脚本，再 reload provider。 |
+| 手机上询问卡的**单选处显示 `[层级过深已省略]`** | 选项文本没到手机：MTNode 侧把询问卡事件当普通事件瘦身，而选项在第 4 层（`data.questions[].options[].label`），被整片换成占位符 —— 桥拿到的是一串占位字符串，只能把它们当标签打印出来。两条病因都已修：① 询问卡帧不做结构裁剪与文本截断（只保留「内联媒体换一句摘要」；审批 / 画布确认那两种卡手机只用标题 + 一行说明，仍照旧瘦身）；② **超过一帧 12KB 上限的长卡片**不再走「按深度 1 重裁」那条兜底（那条一裁就把第 4 层的选项整片换成占位符）—— 长卡片按**结构条数**（200 题 / 每题 50 选项）兜底，文本一个字都不截，真裁了也只留一句人话「（这段内容因为太长没能送到手机，请在电脑上作答）」。桥侧也不再截断选项与说明。<br>旧包上还会看到它，而且**只重开 MTNode 没用** —— 两半代码都要跟着更新：渲染层那一半在 `app.asar` 里、桥那一半在 `resources/paseo/`（asar 外），只有**重新打包**才会换新。开发态（`npm start`）读的就是源码，改完重启即生效；打包态（`dist/win-unpacked` 或安装版）必须先 `npm run compile`（只出 win-unpacked）或 `npm run dist`（出安装包）**再**重启，否则跑的还是旧构建（可核对：`app.asar` 里搜得到 `VERBATIM_TYPES`、`resources/paseo/acp-bridge.mjs` 里没有 `oneLine(x.label, 120)` 才算新）。手机聊天记录里那条旧消息会一直躺着，要看**新发起**的那张卡。 |
+| 控制台点「提问通道自检」直接停在 ③、报 **未知的方法：`session/probe-question`** | 旧包的判据错在**跨进程**：放行那道闸长在**正在跑的 MTNode** 身上，而自检是桥 spawn 出来的**另一个进程** —— 父进程给子进程设的 `MTNODE_PASEO_PROBE_CHILD` 到不了 MTNode 进程，于是这条口永远关着（2026-10-15 实测复现；这个报错本身就是「旧包」的判据）。修好之后自检客户端改把这枚标志当**请求头** `x-mtnode-selfcheck: 1` 发出（随请求走，进程边界不丢），MTNode 只认这枚头；仍要过会话族闸门与 Bearer token，普通桥 / 第三方客户端看不到这条口。**要重新打包 + 重启**才会生效（mcp-server.js 在 `app.asar` 里、桥在 `resources/paseo/`）。 |
 | 手机上回了消息，模型却当成**新指令** | 桥脚本是旧的（旧版没有「等作答」这条挂起：用户消息一律当新一轮下发）。另外这条挂起只在当前这一轮真的挂着询问时生效；电脑上先答过、或那一轮已结束，手机那条消息就按普通消息发。 |
 | 想作废已经发出去的配对码 | 官方**没有撤销接口**（offer 无有效期、无 nonce）：控制台「重置配对凭据」= 换 daemon 密钥并重启，**会作废所有已配对设备**（密钥先备份到数据目录）。 |
 
@@ -222,7 +232,8 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($j.port)/ctl" `
 | `paseo/bridge-info.js` | 落点与 provider 配置片段的**单一真源**（桥、宿主与控制台共用一份纯函数） |
 | `session-bridge.js` | 主进程侧的会话回路：文件层读会话 + 按会话分发实时事件给观察者；`probeQuestion` / `probeAnswer` 供提问通道自检用（不是给模型 / 第三方客户端的口） |
 | `session-tools.js` | 会话族（`mtnode_session_*`，11 个）的参数表（手写，不进生成契约） |
-| `renderer/app-session-bridge.js` | 渲染层执行那一半：发消息 / 插话 / 终止 / 审批 / **换模型（`sessionModel`）** / 模型清单 + 事件旁路 |
+| `renderer/app-session-bridge.js` | 渲染层执行那一半：发消息 / 插话 / 终止 / 审批 / **换模型（`sessionModel`）** / 模型清单 + 事件旁路；**被手机端观察的会话名单**（`session/watch` → `remoteDriven`，对外给 `isRemoteDriven(sid)`，并调 `window.ixDropQuestionCardsOf` 收掉电脑上已开的询问卡） |
+| `renderer/app-db.js` | 询问窗那一半：`ixRemoteDriven(runKey)` 判「这一轮是不是被手机端驱动」→ `ixPush` 对询问类卡**不开卡**、改落一行痕迹（审批卡与危险动作确认卡不受影响）；回归见 `test/smoke-paseo-no-popup.js` |
 | `renderer/mcp-bridge.js` | 帧分派：会话族在这一支里（**不**打开「第三方已授权」开关） |
 | `mcp-server.js` | 会话族的协议面：`POST /ctl` 的 `session/*`、`GET /session/stream`（SSE）；**会话族闸门**（`sessionGate`）与 `dropSessionStreams` 也在这里 |
 | `plugins/catalog.default.json` | 插件卡片词条（id `paseo-remote` / kind `paseo`） |

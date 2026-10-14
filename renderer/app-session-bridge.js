@@ -43,9 +43,43 @@
   const STR_MAX = 4000;
   /** 一帧的整体上限：超过就把大字段逐个替换成摘要 */
   const FRAME_MAX = 12000;
+  /** 「停下来等人作答」的那一种卡片帧（模型提问）：手机上要**照着它作答** —— 题面 / 选项 /
+   *  多选标记必须逐字到达。而选项在第 4 层（data.questions[].options[].label），正好被下面
+   *  那道 depth > 3 的结构闸换成了 "[层级过深已省略]"：手机端「单选：」后面就只剩这句占位符
+   *  （本次要修掉的现场）。所以这一类帧不做结构裁剪、文本也不截断。
+   *  审批 / 画布确认那两种卡手机只用「标题 + 一行说明」（都是浅字段），照旧走瘦身 ——
+   *  画布确认的原始帧可能很大（整段改动参数），不能原样推给手机。 */
+  const VERBATIM_TYPES = new Set(["question"]);
+  /** 这一类帧的深度上限：只为挡住病态递归（正常卡片深 4～5 层，离它很远） */
+  const VERBATIM_DEPTH_MAX = 32;
+  /** 卡片帧的结构上限（只为挡住病态大的帧，正常一张卡远到不了）：题数 / 每题选项数。
+   *  **不用截断文本**去兜大小 —— 选项就是用户照着作答的依据，少一个字都可能选错；
+   *  真要挡，给这个文本一个**看得懂**的说法，而不是把内容换成技术占位符。 */
+  const VERBATIM_MAX_QUESTIONS = 200;
+  const VERBATIM_MAX_OPTIONS = 50;
+  /** 结构被裁掉时写进帧里的人话（绝不写「层级过深已省略」这类技术占位符：
+   *  手机端「单选：」后面曾经只剩这句话，用户根本没法作答 —— 2026-10-15 的现场）。 */
+  const DROPPED_TEXT = "（这段内容因为太长没能送到手机，请在电脑上作答）";
+  const DROPPED_STRUCT = "（结构太深 / 太大，未能送到手机）";
 
   /** 被观察的会话 id（主进程按 SSE 连接下发；空集合 = 一个字段都不推） */
   const watched = new Set();
+  /** 「正被手机端驱动」的会话 id —— 与 watched 同一批（只是**记住**，unwatch 也不清）：
+   *  手机端（Paseo）会按需开 / 关观察，而「这条会话不由电脑上的人作答」这个判断在整个
+   *  Paseo 会话期间都得成立。见下面 sessionWatch 的口径说明。 */
+  const remoteDriven = new Set();
+  /** 全局登记（工具体系里两个半区各活在自己的作用域：渲染层那一半写在这里，
+   *  app-db.js 的帧处理按它判「这一问要不要在电脑上开卡」；DOM 之外也能读）。 */
+  const remoteRegistry = (() => {
+    try {
+      if (typeof window !== "undefined" && window) {
+        if (!(window.__mtnodeRemoteDriven instanceof Set))
+          window.__mtnodeRemoteDriven = new Set();
+        return window.__mtnodeRemoteDriven;
+      }
+    } catch (_) {}
+    return remoteDriven;
+  })();
   /** 网关那一轮的 session id（形如 session-…）→ MTNode 会话 id（as…）：
    *  事件帧上带的是**网关**的 id，不是会话 id，靠这张表把归属认回来。 */
   const gwOwner = new Map();
@@ -121,20 +155,27 @@
     return s.length > lim ? s.slice(0, lim) + "…[截断 " + (s.length - lim) + " 字]" : s;
   }
 
-  /** 图片 / 音频这类内联数据一律换成一句摘要：手机端要的是「发生了什么」，不是字节。 */
-  function slimValue(v, depth) {
+  /** 图片 / 音频这类内联数据一律换成一句摘要：手机端要的是「发生了什么」，不是字节。
+   *  最后两个参数只在**卡片帧的结构裁剪**里用：卡片帧不做文本截断（见 slimFrame），
+   *  真裁了也要留一句人话，而不是技术占位符。 */
+  function slimValue(v, depth, keepAll, opt) {
     if (v == null) return v;
     if (typeof v === "string") {
       if (/^data:[a-z-]+\/[a-z0-9.+-]+;base64,/i.test(v))
         return "[内联媒体 " + Math.round(v.length / 1024) + "KB 已省略]";
+      /* 逐字帧（keepAll）：题面 / 选项 / 说明就是手机上要读的全部内容，一个字都不截 */
+      if (keepAll) return v;
       if (v.length > STR_MAX) return cutStr(v);
       return v;
     }
     if (typeof v !== "object") return v;
-    if (depth > 3) return "[层级过深已省略]";
+    const d = depth || 0;
+    if (d > (keepAll ? VERBATIM_DEPTH_MAX : 3)) return keepAll ? DROPPED_STRUCT : "[层级过深已省略]";
     if (Array.isArray(v)) {
-      const out = v.slice(0, 40).map((x) => slimValue(x, (depth || 0) + 1));
-      if (v.length > 40) out.push("[还有 " + (v.length - 40) + " 项]");
+      const cap = !opt ? v.length : opt.key === "options" ? VERBATIM_MAX_OPTIONS : VERBATIM_MAX_QUESTIONS;
+      const keep = keepAll ? Math.min(cap, v.length) : Math.min(40, v.length);
+      const out = v.slice(0, keep).map((x) => slimValue(x, d + 1, keepAll, opt));
+      if (v.length > keep) out.push(keepAll ? DROPPED_TEXT : "[还有 " + (v.length - keep) + " 项]");
       return out;
     }
     const out = {};
@@ -144,20 +185,29 @@
         out[k] = "[内联媒体 " + Math.round(val.length / 1024) + "KB 已省略]";
         continue;
       }
-      out[k] = slimValue(val, (depth || 0) + 1);
+      out[k] = slimValue(val, d + 1, keepAll, keepAll ? { key: k } : null);
     }
     return out;
   }
 
   function slimFrame(ev) {
+    const type = String(ev.type || "");
+    /* 卡片帧（模型提问）不瘦身：只做「内联媒体换一句摘要」，
+       结构与文本原样带到手机（口径见 VERBATIM_TYPES）。 */
+    const keepAll = VERBATIM_TYPES.has(type);
     const out = {
       sessionId: String(ev.sessionId || ""),
       runKey: String(ev.runKey || ""),
-      type: String(ev.type || ""),
-      data: slimValue(ev.data === undefined ? null : ev.data, 0),
+      type,
+      data: slimValue(ev.data === undefined ? null : ev.data, 0, keepAll),
     };
     try {
-      if (JSON.stringify(out).length > FRAME_MAX) {
+      /* 普通帧的超大兜底（把大字段逐个换成摘要）。
+         **卡片帧不走这一支**：这条支路是「按深度 1 重裁一遍」，而题面 / 选项正在第 4 层
+         —— 一张长一点的询问卡（多题 / 带说明）一旦超过 FRAME_MAX，选项会被整片换成
+         占位符，用户在手机上根本没法作答。卡片的兜底改在 slimValue 里按结构条数做
+         （题数 / 选项数），文本一个字都不截。 */
+      if (!keepAll && JSON.stringify(out).length > FRAME_MAX) {
         out.data = slimValue(ev.data === undefined ? null : ev.data, 1);
         out.trimmed = true;
       }
@@ -657,7 +707,22 @@
     };
   }
 
-  /** 观察名单：主进程按 SSE 连接下发（谁在看这条会话 → 才推它的事件） */
+  /** 观察名单：主进程按 SSE 连接下发（谁在看这条会话 → 才推它的事件）
+   *
+   *  ★ 顺带记一笔「这条会话正被手机端驱动」（本次需求，用户确认的口径）：
+   *   Paseo 手机端只认**纯文字** —— 它的桥把模型提问翻成手机上的一条可读消息
+   *   （`paseo/acp-bridge.mjs` 的 `questionChatText`），作答就是回一条消息，
+   *   桥再把答案打回 `session/approval`。**Paseo 没有关掉 MTNode 界面上那张卡的能力**，
+   *   于是电脑侧那张询问卡会一直挂着、还挡在眼前 —— 用户报的「手机上会话时弹窗卡住」。
+   *   所以：谁**在看**这条会话（观察名单正是 Paseo 桥自己开的口），谁就是作答方，
+   *   电脑侧不再开询问卡（见 renderer/app-db.js 帧处理里那道 remoteDriven 判断）。
+   *
+   *  两个细节：
+   *   · **只加不减**：Paseo 会按需关观察（切走再切回），而「这条会话不由电脑上的人作答」
+   *     在整段 Paseo 会话里都成立；电脑上的人自己接手时（点开那条会话照常能读能答）也不受影响
+   *     —— 他只是看不到「需要点选」的卡，而卡本来就不该在 Paseo 会话里出现。
+   *   · 已经开着的询问卡**当场收掉**：观察名单可能晚于那张卡一拍到达（先弹卡、手机才连上），
+   *     不收就会留一张谁也不认领的死卡在眼前。 */
   function sessionWatch(params) {
     const p = params || {};
     const sid = String(p.sessionId || "").trim();
@@ -665,12 +730,35 @@
     const on = p.on === undefined ? true : !!p.on;
     if (on) watched.add(sid);
     else watched.delete(sid);
-    const st = sessionOf(sid);
-    if (on && st && !st._lcLoaded && typeof agentEnsureSessionBody === "function") {
-      /* 手机开始看这条会话：顺手把正文读回内存 —— 它接下来的审批 / 插话都要用到上下文 */
-      Promise.resolve(agentEnsureSessionBody(st)).catch(() => {});
+    let closed = 0;
+    if (on && !remoteDriven.has(sid)) {
+      remoteDriven.add(sid);
+      remoteRegistry.add(sid);
+      try {
+        if (typeof window !== "undefined" && window && typeof window.ixDropQuestionCardsOf === "function")
+          closed = Number(window.ixDropQuestionCardsOf(sid)) || 0;
+      } catch (_) {}
     }
-    return { ok: true, sessionId: sid, watching: on, watched: [...watched] };
+    /* 正文读回内存是**顺手**做的事（手机接下来的审批 / 插话要用到上下文）：
+       取不到会话对象 / 读正文失败都不该把这帧弄失败 —— 观察登记本身已经生效，
+       回答一句「失败」会让主进程以为手机看不了这条会话。所以整段包起来。 */
+    let bodyLoaded = false;
+    try {
+      const st = sessionOf(sid);
+      if (on && st && !st._lcLoaded && typeof agentEnsureSessionBody === "function") {
+        Promise.resolve(agentEnsureSessionBody(st)).catch(() => {});
+        bodyLoaded = true;
+      }
+    } catch (_) {}
+    return {
+      ok: true,
+      sessionId: sid,
+      watching: on,
+      watched: [...watched],
+      remoteDriven: [...remoteDriven],
+      closedCards: closed,
+      bodyLoaded,
+    };
   }
 
   /* ── 帧入口 ───────────────────────────────────────────────────────────── */
@@ -709,8 +797,18 @@
     onDshEvent,
     /** 有没有人正在观察（app-db.js 用它做零开销短路：没人看时一次都不多跑） */
     isRemoteWatching: () => watched.size > 0,
+    /** 这条会话是不是正被手机端驱动（见 sessionWatch 的口径说明）。
+     *  app-db.js 的帧处理用它决定「这一问要不要在电脑上开卡」——被手机驱动时不开，
+     *  改成落一行可读痕迹（Paseo 侧走纯文字，见 renderer/app-db.js 的 ixRemoteDriven）。 */
+    isRemoteDriven: (sid) => {
+      const id = String(sid || "").trim();
+      if (!id) return false;
+      return remoteDriven.has(id) || remoteRegistry.has(id);
+    },
+    remoteDriven: () => [...remoteDriven],
     stats: () => ({
       watched: [...watched],
+      remoteDriven: [...remoteDriven],
       pushed,
       dropped,
       gwMapped: gwOwner.size,

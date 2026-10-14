@@ -4708,10 +4708,102 @@ function ixHelpQuestionsOf(d) {
   if (!out.some((q) => q.options.length)) out[0].options = [{ label: I18n.t("我已处理，继续") }];
   return out;
 }
+/* ── 手机端（Paseo）会话：**不开询问卡**（本次需求 · 用户确认的口径）──────────────
+   现场：用手机 Paseo 接管一条会话时，模型一问话就在电脑上开一张询问卡 —— 而 Paseo
+   **没有关掉 MTNode 界面上那张卡的能力**，卡就一直挂着、挡在眼前（用户报的「弹窗卡住」）。
+   口径（用户确认）：认「这条会话正被手机端驱动」为判据 —— 那条通道走的就是 Paseo 桥自己
+   开的观察（`session/watch`，登记在 renderer/app-session-bridge.js 的 remoteDriven 名单里），
+   凡是被它登记过的会话，**电脑侧不再开卡**，改在会话里落一行可读痕迹（谁也不白等）。
+   手机侧本来就是纯文字：桥把题面 / 选项拼成一条可读消息发下去（paseo/acp-bridge.mjs 的
+   questionChatText），用户回一条消息就是答案，桥按题 id 对齐成 answers[] 打回
+   session/approval —— 这条链与「电脑上有没有开卡」无关，所以不开卡不会让模型收不到答案。
+   谁在作答也写进痕迹里，电脑前的人一眼看得出「这一问在手机上答」。 */
+function ixSessionOfRun(runKey) {
+  const k = String(runKey || "");
+  return k.slice(0, 6) === "agent:" ? k.slice(6).trim() : "";
+}
+function ixRemoteDriven(runKey) {
+  const sid = ixSessionOfRun(runKey);
+  if (!sid) return false;
+  try {
+    const ses = window.MTNodeSession;
+    if (ses && typeof ses.isRemoteDriven === "function") return !!ses.isRemoteDriven(sid);
+    const reg = window.__mtnodeRemoteDriven;
+    return !!(reg && typeof reg.has === "function" && reg.has(sid));
+  } catch (_) {
+    return false;
+  }
+}
+/** 手机上那条回答的落点说明（痕迹尾部一行）：答案会落回这条会话，不是没答 */
+function ixRemoteAnswerNote() {
+  return I18n.t("（这条会话正被手机端接管：提问与选项以纯文字发到手机上，在手机输入框里回一条消息即为答案，会落回这条会话。）");
+}
+/** 手机上作答：这一问在电脑上不再开卡（approval=true 时那句「谁在给按钮」另算） */
+function ixRemoteAskTrace(runKey, data, what) {
+  const d = data && typeof data === "object" ? data : {};
+  const title = String(d.title || d.tool || d.name || "").trim();
+  const head = String(what || "").trim() || I18n.t("模型在问你一件事");
+  ixRoundEndTrace(
+    runKey,
+    I18n.t("📱 {what}{title}：这条会话正被手机端接管，电脑上不再弹出询问卡 —— 题面与选项以纯文字发到手机上。", {
+      what: head,
+      title: title ? "（" + title + "）" : "",
+    }) +
+      "\n" +
+      ixRemoteAnswerNote(),
+  );
+}
+/** 这张卡是不是「正被手机端驱动的会话」上的询问类卡（提问 / 浏览器求助卡）。
+ *  审批卡与危险动作确认卡**不在其列**（它们另有手机侧权限卡通道，本轮不动）。 */
+function ixRemoteAskKind(kind) {
+  const k = String(kind || "");
+  return k === "question" || k === "browser-help";
+}
+/** 会话桥在同一会话变成「被手机端驱动」时顺手收掉已经开着的询问卡（晚到一拍的死卡） */
+function ixDropQuestionCardsOf(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid || !S.activeIx || !S.activeIx.items.length) return 0;
+  const hit = S.activeIx.items.filter(
+    (x) =>
+      !!x &&
+      ixRemoteAskKind(x.kind) &&
+      (!x.runKey || ixSessionOfRun(x.runKey) === sid),
+  );
+  for (const it of hit) {
+    if (it.data && it.data.id) {
+      ixDrop(it.data.id);
+      ixRoundEndTrace(
+        it.runKey,
+        I18n.t("📱 这条会话已由手机端接管：上面那张询问卡已撤，题面会以纯文字发到手机上作答。") +
+          "\n" +
+          ixRemoteAnswerNote(),
+      );
+    }
+  }
+  return hit.length;
+}
+/* 给渲染层那一半（renderer/app-session-bridge.js）用：会话变成「被手机端驱动」时收掉
+   已经开着的询问卡。app-db.js 的顶层函数本来就挂在 window 上（app-browser.js 也这么用
+   ixPush / ixDrop），这里显式再挂一次，免得依赖「加载顺序 / 严格模式」这类偶然。 */
+try {
+  window.ixDropQuestionCardsOf = ixDropQuestionCardsOf;
+} catch (_) {}
 function ixPush(kind, data, runKey, src) {
   if (!S.activeIx) S.activeIx = { items: [] };
   /* 先清孤儿卡，再决定这张要不要收 */
   ixPruneOrphanCards();
+  /* 正被手机端接管的会话：询问类卡**不开**（口径与理由见上面 ixRemoteDriven 那一段） */
+  if (ixRemoteAskKind(kind) && ixRemoteDriven(runKey)) {
+    ixRemoteAskTrace(
+      runKey,
+      data,
+      kind === "question"
+        ? I18n.t("模型在问你一件事")
+        : I18n.t("会话在等你处理浏览器上的事"),
+    );
+    renderIxPanel();
+    return;
+  }
   /* 发起轮已经结束（取消句柄被删）→ 这一帧的答案注定没人接，
      收进来就是一张点了没反应的死卡，直接丢弃 */
   const deadRun = !!runKey && !(S._runCancels && S._runCancels[runKey]);
