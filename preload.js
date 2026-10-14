@@ -956,6 +956,22 @@ contextBridge.exposeInMainWorld('api', {
      真源 = paseo/bridge-info.js（桥自己的 --config / --check 读的是同一份）。 */
   paseoStatus: () => ipcRenderer.invoke('paseo:status'),
   paseoCheck: () => ipcRenderer.invoke('paseo:check'),
+  /* ── Paseo 手机接管（应用插件 kind paseo，id paseo-remote）──────────────────────
+     宿主 = paseo/main-paseo.js。控制台窗自己那份桥在 paseo/preload-paseo.js；
+     这一组是**主窗口**要的：卡片状态、打开/关闭控制台、以及设置页那一行入口。 */
+  paseoRemoteStatus: () => ipcRenderer.invoke('paseoRemote:getStatus'),
+  paseoRemoteOpen: () => ipcRenderer.invoke('paseoRemote:open'),
+  paseoRemoteClose: () => ipcRenderer.invoke('paseoRemote:close'),
+  paseoRemoteRemoteSet: (on) => ipcRenderer.invoke('paseoRemote:remoteSet', { on: !!on }),
+  /* 修完「重启该服务」那条收尾（renderer/app-repair.js 的 PLUGIN_REPAIR_SERVICE.paseo）要的两个入口 */
+  paseoRemoteStartDaemon: () => ipcRenderer.invoke('paseoRemote:startDaemon'),
+  paseoRemoteStopDaemon: () => ipcRenderer.invoke('paseoRemote:stopDaemon'),
+  paseoRemoteConsoleTail: (n) => ipcRenderer.invoke('paseoRemote:consoleTail', n),
+  paseoRemoteOnConsoleChanged: (cb) => {
+    const h = (_e, d) => { try { cb(d); } catch (_) {} };
+    ipcRenderer.on('paseoRemote:consoleChanged', h);
+    return () => ipcRenderer.removeListener('paseoRemote:consoleChanged', h);
+  },
   mcpInteract: (params) => ipcRenderer.invoke('mcp:interact', params),
   /* 会话实时流（Paseo 桥）：渲染层把**已经在跑的那一轮**的 dsh 事件复制一份推给主进程，
      主进程按 sessionId 分发给 SSE 观察者（GET /session/stream，见 session-bridge.js）。

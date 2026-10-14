@@ -10,7 +10,7 @@
  *   再加上接线与打包：build.json 白名单 / index.html 加载顺序 / preload 的 mcpSessionEvent。
  *
  * 覆盖：
- *   [1] 工具表与参数校验：10 个 mtnode_session_*、required 与类型、枚举只收合法 outcome
+ *   [1] 工具表与参数校验：11 个 mtnode_session_*、required 与类型、枚举只收合法 outcome
  *   [2] 主进程读路径：真会话文件（临时数据目录）→ 列表 / 单条 / 截断 / 已删除会话明确报错
  *   [3] 观察者与事件分发：watch/unwatch 计数、只推给在看的那条会话、环形缓存补发、答复台账
  *   [4] 协议面真跑：/ctl 的 session/* 与 tools/call、SSE 逐帧、401、未注入会话桥时的明确报错
@@ -52,6 +52,7 @@ const EXPECTED_TOOLS = [
   "mtnode_session_steer",
   "mtnode_session_stop",
   "mtnode_session_approval",
+  "mtnode_session_model",
   "mtnode_session_models",
   "mtnode_session_state",
 ];
@@ -204,6 +205,48 @@ console.log("[3] 观察者与事件分发");
   ok(st.ok && st.watchers === 1, "stats 报当前观察者数");
 }
 
+/* ── [3b] 提问通道自检（Paseo 桥 --probe-question 的那两件小事）────────────
+   症状：手机上询问框不弹 / 答了回不到 MTNode，日志里看不出断在哪一拍。
+   自检要能把「MTNode 发卡 → 收到回执」这条链在**不经过模型**的前提下走一遍，
+   所以 session-bridge 提供了 probeQuestion（从 MTNode 这侧发一张真卡）与
+   probeAnswer（把这张卡收到的 answers 取回来核对）。 */
+console.log("[3b] 提问通道自检：probeQuestion / probeAnswer");
+{
+  const cards = [];
+  bridge.watch(SID_A, "sse-probe", (t) => cards.push(t));
+  const made = bridge.probeQuestion(SID_A, { title: "自检标题" });
+  ok(made.ok && /^probe-/.test(made.id), "probeQuestion 回一张自检卡的 id（" + made.id + "）");
+  ok(made.questions >= 2, "自检卡带多题（含一道自由文本，验多题合并成一份表单）");
+  const parsed = cards
+    .map((t) => {
+      try {
+        return JSON.parse(String(t).replace(/^data: /, ""));
+      } catch (e) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  const frame = parsed.filter((f) => f.type === "question").pop() || null;
+  if (!frame) console.log("      [dbg] cards=" + JSON.stringify(cards).slice(0, 400));
+  ok(!!frame && frame.sessionId === SID_A, "卡是从 MTNode 这一侧按同一帧形状发出的（SSE 可达）");
+  const qs = (frame.data && frame.data.questions) || [];
+  ok(
+    qs.length >= 2 &&
+      qs.some((q) => Array.isArray(q.options) && q.options.length) &&
+      qs.some((q) => !q.options || !q.options.length),
+    "题面/选项/自由文本都在（与真询问卡同形）",
+  );
+  const before = bridge.probeAnswer(made.id);
+  ok(before.got === false, "还没人答：probeAnswer 如实回 got=false（不假装收到答案）");
+  bridge.markAnswered(made.id, SID_A);
+  bridge.markAnswer(made.id, [{ id: "q1", selected: ["通道正常"] }], SID_A);
+  const after = bridge.probeAnswer(made.id);
+  ok(after.got === true && after.answers[0].selected[0] === "通道正常", "回执到了就取得到 answers（自检据此判通）");
+  const other = bridge.probeAnswer("");
+  ok(other.got === true && other.id === made.id, "不点名 id 时回最近一张已作答的卡（自检不必自己追 id）");
+  bridge.unwatch("sse-probe");
+}
+
 /* ── [4] 协议面真跑（/ctl + tools/call + SSE）──────────────────────────── */
 const RENDERED = [];
 console.log("[4] 协议面真跑（/ctl + tools/call + SSE）");
@@ -304,6 +347,41 @@ console.log("[4] 协议面真跑（/ctl + tools/call + SSE）");
   ok(sendR.json.ok && sendR.json.result.ok, "渲染层回执原样回到调用方");
   RENDERED.length = 0;
 
+  /* 换模型（本轮新增的那条）：协议面必须把 provider/model 原样推给渲染层 —— 桥换模型
+     （Paseo 的 session/set_model 与配置项两条通道）最终就落在这帧上 */
+  const modelP = post("/ctl", {
+    method: "session/model",
+    params: { sessionId: SID_A, provider: "mtnode_piai", model: "glm-4.6" },
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  const modelFrame = RENDERED.find((f) => f.op === "sessionModel");
+  ok(
+    modelFrame && modelFrame.params.provider === "mtnode_piai" && modelFrame.params.model === "glm-4.6",
+    "session/model 推了一帧给渲染层（带 provider + model）",
+  );
+  ok(modelFrame && modelFrame.write === true, "换模型这一帧标成写（要落盘）");
+  host.settle({
+    id: modelFrame.id,
+    result: { ok: true, sessionId: SID_A, provider: "mtnode_piai", model: "glm-4.6", running: false },
+  });
+  const modelR = await modelP;
+  ok(
+    modelR.json.ok && modelR.json.result.model === "glm-4.6",
+    "换模型的回执原样回到调用方（桥据此回 ACP 的成功应答）",
+  );
+  /* 参数校验走 tools/call 那条（扁平 session/* 是桥内部调用，不重复校验） */
+  const badModel = await post("/mcp", {
+    jsonrpc: "2.0",
+    id: 9,
+    method: "tools/call",
+    params: { name: "mtnode_session_model", arguments: { model: "x" } },
+  });
+  ok(
+    badModel.json.result && badModel.json.result.isError === true && /sessionId/.test(badModel.json.result.content[0].text),
+    "缺 sessionId 的换模型调用被参数校验拒（MCP 口径：JSON-RPC 成功 + isError）",
+  );
+  RENDERED.length = 0;
+
   /* SSE：真开一条长连接，喂一条事件看它到不到 */
   let sse = null;
   try {
@@ -397,6 +475,7 @@ console.log("[4] 协议面真跑（/ctl + tools/call + SSE）");
       "sessionSteer",
       "sessionStop",
       "sessionApproval",
+      "sessionModel",
       "sessionModels",
       "sessionWatch",
     ]) {
@@ -488,8 +567,8 @@ console.log("[4] 协议面真跑（/ctl + tools/call + SSE）");
        main-uncaughtException: Cannot find module './paseo/bridge-info.js'，
        main.js 求值中断，窗口都出不来（表现＝「编译后进不去程序」）。 */
     ok(
-      /"paseo\/bridge-info\.js"/.test(bj),
-      "build.json files 白名单含 paseo/bridge-info.js（只靠 extraResources 会打包后启动即 Cannot find module）",
+      /"paseo\/(?:\*\*|bridge-info\.js)"/.test(bj),
+      "build.json files 白名单覆盖 paseo/（整目录 paseo/** 或显式列 bridge-info.js；只靠 extraResources 会打包后启动即 Cannot find module）",
     );
     ok(
       /require\("\.\/paseo\/bridge-info\.js"\)/.test(read("main.js")),

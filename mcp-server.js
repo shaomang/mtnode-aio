@@ -173,6 +173,14 @@ function createMcpHost(o) {
   const guiRun = typeof o.gui === "function" ? o.gui : null;
   /** 会话桥（session-bridge.js）：会话族的读路径 + SSE 事件分发都交给它 */
   const sessionBridge = o.sessionBridge || null;
+  /**
+   * 会话族的闸门（可选）：返回 { allowed, reason }。
+   * 真源是「Paseo 手机接管」插件的远程连接总开关（paseo/main-paseo.js 的 sessionGate）。
+   * 为什么放在这一层：会话族是**唯一**能被远程驱动的一族（发消息 / 插话 / 终止 / 代答审批卡），
+   * 闸门必须卡在协议面入口，而不是散在渲染层各处 —— 关着时任何请求都进不去。
+   * 没注入闸门 = 不限制（保持旧行为，独立冒烟与测试环境不受影响）。
+   */
+  const sessionGate = typeof o.sessionGate === "function" ? o.sessionGate : null;
   const log = typeof o.log === "function" ? o.log : () => {};
   const statePath = path.join(dataDir, "mcp-server.json");
   const auditDir = path.join(dataDir, "mcp-audit");
@@ -575,7 +583,21 @@ function createMcpHost(o) {
     return sessionBridge;
   }
 
+  /** 会话族闸门（见 createMcpHost 的 sessionGate）：关着时一律拒绝，并给一句人话指路。
+   *  只卡会话族 —— 画布 / 资源 / 技能那些第三方 MCP 能力不受它影响。 */
+  function assertSessionAllowed() {
+    if (!sessionGate) return;
+    let g = null;
+    try {
+      g = sessionGate() || {};
+    } catch {
+      g = { allowed: true };
+    }
+    if (g.allowed === false) throw mcpFail(-32001, g.reason || "远程接管已关闭");
+  }
+
   async function sessionToolCall(spec, args, ctx) {
+    assertSessionAllowed();
     const b = sessionBridgeOf(spec.name);
     const a = args && typeof args === "object" ? args : {};
     switch (spec.op) {
@@ -625,6 +647,7 @@ function createMcpHost(o) {
       case "sessionCreate":
       case "sessionSteer":
       case "sessionStop":
+      case "sessionModel":
       case "sessionApproval": {
         const reply = await callRenderer(spec.op, a, {
           sessionId: ctx.sessionId,
@@ -633,6 +656,9 @@ function createMcpHost(o) {
         });
         if (spec.op === "sessionApproval" && a.id) {
           b.markAnswered(a.id, a.sessionId);
+          /* 提问的答案另外留一份：Paseo 桥的「提问通道自检」要把它取回来核对
+             （不是给模型用的口，见 session-bridge.js 的 probeQuestion） */
+          if (Array.isArray(a.answers)) b.markAnswer(a.id, a.answers, a.sessionId);
         }
         return reply;
       }
@@ -690,6 +716,12 @@ function createMcpHost(o) {
     const sid = String(q.get("sessionId") || "").trim();
     if (!sessionBridge) {
       return sendJson(res, 503, { ok: false, error: "会话桥不可用（主进程没有注入 session-bridge.js）" });
+    }
+    /* 总开关关着时 SSE 也不许挂：实时流是远程接管的一半（另一半是会话族写操作） */
+    try {
+      assertSessionAllowed();
+    } catch (e) {
+      return sendJson(res, 403, { ok: false, error: (e && e.message) || "远程接管已关闭" });
     }
     if (!sid) return sendJson(res, 400, { ok: false, error: "缺少 sessionId" });
     const first = sessionBridge.countWatchers(sid) === 0;
@@ -815,10 +847,32 @@ function createMcpHost(o) {
         return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_stop, params || {}, ctx);
       case "session/approval":
         return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_approval, params || {}, ctx);
+      case "session/model":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_model, params || {}, ctx);
       case "session/models":
         return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_models, params || {}, ctx);
       case "session/state":
         return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_state, params || {}, ctx);
+      case "session/probe-question": {
+        /* 提问通道自检（Paseo 桥 `--probe-question`）：**只在桥的自检子进程里**可用 ——
+           桥给自检子进程设了 MTNODE_PASEO_PROBE_CHILD=1，别处一律看不到这条口，
+           免得有人拿它往任意会话里塞一张假询问卡。 */
+        if (!process.env.MTNODE_PASEO_PROBE_CHILD) {
+          throw mcpFail(-32601, "未知的方法：session/probe-question（只有桥的提问通道自检会用它）");
+        }
+        assertSessionAllowed();
+        return sessionBridgeOf("session/probe-question").probeQuestion(
+          String((params && params.sessionId) || ""),
+          params || {},
+        );
+      }
+      case "session/probe-answer": {
+        if (!process.env.MTNODE_PASEO_PROBE_CHILD) {
+          throw mcpFail(-32601, "未知的方法：session/probe-answer（只有桥的提问通道自检会用它）");
+        }
+        assertSessionAllowed();
+        return sessionBridgeOf("session/probe-answer").probeAnswer(String((params && params.id) || ""));
+      }
       case "tools/call": {
         const name = String((params && params.name) || "");
         /* 工具执行 / 参数校验失败按 MCP 口径回报：**JSON-RPC 成功 + isError:true**
@@ -1272,6 +1326,19 @@ function createMcpHost(o) {
     onSessionEvent: (ev) => {
       if (!sessionBridge) return { ok: false, error: "会话桥不可用" };
       return sessionBridge.emitEvent(ev);
+    },
+    /**
+     * 收掉所有会话实时流（「断开所有远程设备」用）。
+     * 为什么要有：关掉总开关只挡得住**新**请求，已经挂着的 SSE 还连着、还会继续收事件；
+     * 用户点「断开」期待的是当场断干净 —— 这里把在连接的客户端逐个 closeSse。
+     * @returns {{ok:boolean, closed:number}}
+     */
+    dropSessionStreams: (why) => {
+      let closed = 0;
+      for (const id of [...sseClients.keys()]) {
+        if (closeSse(id, String(why || "主动断开"))) closed++;
+      }
+      return { ok: true, closed };
     },
     selfTest,
     /** 主进程退出时收尾（关监听 + 清审计目录外的临时态） */

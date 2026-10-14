@@ -353,10 +353,9 @@ function mountPluginPopConsole(pop, item) {
       statusEl.textContent = backendStatusLineText(st, spec);
       statusEl.title = st.consolePath ? String(st.consolePath) : "";
       const notice = String(st.notice || "");
-      /* 求助提示同时落在日志区顶部一行（宿主也写进了日志文件；这里保证没写日志的实现也看得见），
-         并把这枚提示记成「已看过」——卡片角标从此收起，直到后端再发一条新的提示。 */
+      /* 求助提示落在日志区顶部一行（宿主也写进了日志文件；这里保证没写日志的实现也看得见）。
+         卡片角标已随本轮需求下线，所以这里不再记「已看过」。 */
       if (notice) {
-        _backendNoticeSeen.set(spec.key, notice);
         /* 宿主也把这行写进了日志文件 → 已经在 tail 里就别重复贴一遍 */
         if (statusEl.dataset.notice !== notice && String(lastTail).indexOf("[notice] " + notice) < 0) {
           statusEl.dataset.notice = notice;
@@ -428,9 +427,9 @@ function openPluginPop(wrap, pop, card, item) {
   desc.textContent = pluginLoc(item, "subtitle") || I18n.t("暂无描述");
   pop.appendChild(title);
   pop.appendChild(desc);
-  /* 本地后端插件：详情浮层里内嵌只读 console（状态行 + 后端日志尾部），见 mountPluginPopConsole */
-  const consoleMounted = mountPluginPopConsole(pop, item);
-  if (consoleMounted) setPluginNotice(card, ""); /* 角标当场收起（用户已经看到详情里的日志区） */
+  /* 本地后端插件：详情浮层里内嵌只读 console（状态行 + 后端日志尾部），见 mountPluginPopConsole。
+     卡片上已无「后端提示」角标（本轮需求：卡片不留任何文字），所以这里不再收起角标。 */
+  mountPluginPopConsole(pop, item);
   /* 安装后自检的最近一次结论（本轮需求）：卡片详情里能复看「什么时候测的、产物在哪」 */
   paintPluginSelfcheckRow(pop, item.id);
   /* 安装目录**不在插件界面里显示**（本轮需求）：目录由安装窗统一显示与修改
@@ -567,13 +566,9 @@ async function paintPetExtras(root, st) {
   row3.appendChild(importBtn);
   extras.appendChild(row3);
 
-  if (st.running && st.hook === false) {
-    const tip = document.createElement("div");
-    tip.className = "plugin-progress-txt";
-    tip.style.display = "block";
-    tip.textContent = I18n.t("全局键鼠钩子未就绪（仍可使用窗口与形象功能）");
-    extras.appendChild(tip);
-  }
+  /* 桌宠的附加项在卡片里（勾选 / 缩放 / 形象），但**不再往卡片上写任何纯提示文字**：
+     原先这里有一条「全局键鼠钩子未就绪（仍可使用窗口与形象功能）」小字，本轮按要求删除
+     —— 钩子状态在桌宠控制台里看。 */
 }
 async function refreshPetPluginCard(root) {
   if (!root || !window.api || !window.api.petStatus) return;
@@ -883,34 +878,9 @@ function pluginApiFn(name) {
 /* 正在启动 / 正在停止的插件：「启用」那一颗当场置灰并用 tooltip 说明状态（跨重绘保留） */
 const _backendStarting = new Set();
 const _backendStopping = new Set();
-/* 已在详情浮层里看过提示的插件（kind → 看过的提示原文）：本地收掉角标 */
-const _backendNoticeSeen = new Map();
-/* 最近一次启动 / 安装的失败原因：卡片状态行要看得见（失败不静默、也不弹窗） */
+/* 最近一次启动 / 安装的失败原因：**不再上卡片**（卡片底部不许有任何文字）——
+   用户可见的失败出口是 toast + 详情浮层里的后端日志；这张表只留作窗内诊断最近一次失败。 */
 const _backendLastErr = new Map();
-function pluginErrLine(prefix, r) {
-  return prefix + ((r && (r.message || r.error)) || I18n.t("未知错误"));
-}
-/* 卡片上的求助角标（后端 ui-signal 留下的提示）；空串 = 收起 */
-function setPluginNotice(root, text) {
-  const el = root && root.querySelector("[data-plugin-notice]");
-  if (!el) return;
-  const t = String(text || "").trim();
-  el.hidden = !t;
-  el.textContent = t ? I18n.t("后端提示") : "";
-  el.title = t;
-}
-/* 卡片状态行：启用中 > 失败原因 > 后端求助提示（同一行只显示最要紧的那条）。
-   安装 / 更新的进度与「安装中…」不再上卡片 —— 那属于独立安装窗（逐步骤 + 失败定位 + 重试）。
-   **安装目录不上卡片**（本轮需求）：目录在安装窗里显示与修改（底栏一行 + 「选择安装目录」），
-   卡片只留标题 / 三颗按钮 / 这几条真实状态。 */
-function backendCardLine(st, spec) {
-  if (_backendStarting.has(spec.key)) return I18n.t("启用中…（首次加载模型可能几分钟，按钮已置灰）");
-  const err = _backendLastErr.get(spec.key);
-  if (err) return err;
-  const notice = String(st.notice || "");
-  if (notice && _backendNoticeSeen.get(spec.key) !== notice) return notice;
-  return "";
-}
 /* 本轮 8 个插件共用的卡片重绘 —— 各自的 refresh<Name>PluginCard 只是薄壳（保留函数名给冒烟用） */
 async function refreshBackendPluginCard(root, spec, opts) {
   const o = opts || {};
@@ -918,14 +888,13 @@ async function refreshBackendPluginCard(root, spec, opts) {
   if (!root || !statusFn) return;
   const st = (await statusFn()) || {};
   const actions = root.querySelector("[data-plugin-actions]");
-  /* 卡片上只剩「状态文字行」：启用中 / 失败原因 / 后端提示。
-     安装 / 更新的进度条与百分比一律不再上卡片 —— 那些只属于独立安装窗。 */
-  const progTxt = root.querySelector("[data-plugin-progress-txt]");
+  /* 卡片上**一个字的正文都不留**（本轮共识）：原来的状态文字行
+     （启用中 / 启动失败原因 / 后端提示 / 显存门槛）与角标整块下线，元素也不再建。
+     这些信息现在的出口：失败看 toast + 详情浮层里的后端日志，后端提示看控制台 / 浮层日志区。 */
   if (!actions) return;
   setPluginVer(root, { version: st.version, installed: !!st.installed });
-  /* 真在跑 = 上一条失败提示已过期，清掉（免得卡片一直挂着旧错误） */
+  /* 真在跑 = 上一条失败提示已过期，清掉（免得窗内诊断一直挂着旧错误） */
   if (st.running) _backendLastErr.delete(spec.key);
-  setPluginNotice(root, _backendNoticeSeen.get(spec.key) === String(st.notice || "") ? "" : st.notice);
   actions.innerHTML = "";
   const addBtn = (kind, title, onClick, btnOpts) => {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, btnOpts));
@@ -936,7 +905,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
     if (!fn) return;
     _backendLastErr.delete(spec.key);
     const r = await fn();
-    if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
+    if (!r || !r.ok) toast(I18n.t("打开失败：") + pluginErrText(r && r.error), "err");
     repaint();
   };
   const stopBackend = async () => {
@@ -951,7 +920,12 @@ async function refreshBackendPluginCard(root, spec, opts) {
     }
     const r = await fn();
     _backendStopping.delete(spec.key);
-    if (!r || !r.ok) _backendLastErr.set(spec.key, pluginErrLine(I18n.t("停止后端失败："), r));
+    /* 失败不许静默：卡片上不能写字了 → 用 toast 说，细节仍在内嵌 console 的日志里 */
+    if (!r || !r.ok) {
+      const line = I18n.t("停止后端失败：") + pluginErrText(r && r.error) + I18n.t(" —— 可点「控制台」看日志");
+      _backendLastErr.set(spec.key, line);
+      toast(line, "err");
+    }
     repaint();
   };
   const startBackend = async () => {
@@ -967,8 +941,12 @@ async function refreshBackendPluginCard(root, spec, opts) {
       r = { ok: false, error: (e && e.message) || String(e) };
     }
     _backendStarting.delete(spec.key);
-    /* 失败不静默、也不弹窗：写进卡片状态行（点开卡片还能在内嵌 console 里看后端日志） */
-    if (!r || !r.ok) _backendLastErr.set(spec.key, pluginErrLine(I18n.t("启动失败："), r) + I18n.t(" —— 可点「控制台」看日志"));
+    /* 失败不静默：卡片上不能写字了 → 用 toast 说；要看后端日志点进详情浮层的 console */
+    if (!r || !r.ok) {
+      const line = I18n.t("启动失败：") + pluginErrText(r && r.error) + I18n.t(" —— 可点「控制台」看日志");
+      _backendLastErr.set(spec.key, line);
+      toast(line, "err");
+    }
     repaint();
   };
   const installing = !!st.installing || !!st.updating;
@@ -1031,23 +1009,12 @@ async function refreshBackendPluginCard(root, spec, opts) {
       disabled: starting || stopping,
     });
   }
-  /* 安装目录冲突（本轮共识 q14）：端口上跑的是**另一份**安装目录的 llama.cpp。
-     不静默复用 —— 卡片上明说两份目录各是哪个，并给两个选择：
-       · 换端口起自己的：把配置端口挪到空闲端口后启动我们自己那份（清单回到配置目录）；
-       · 继续用这份：认下端口上那份（此后 apiKey / 模型清单都跟它走，不再报警）。
-     判定与动作都在 llama/main-llama.js（statusForUi 的 rootConflict / resolveRootChoice）。 */
+  /* 安装目录冲突（共识 q14）：端口上跑的是**另一份**安装目录的 llama.cpp。
+     不静默复用 —— 给两个选择：换端口起自己的 / 继续用这份（此后 apiKey / 模型清单都跟它走）。
+     判定与动作都在 llama/main-llama.js（statusForUi 的 rootConflict / resolveRootChoice）。
+     注：这段冲突说明**原先写成卡片上一整段黄字**，本轮按要求整块下线：
+     卡片不再承载任何文字，两颗选择按钮与后端行为一字未动。 */
   if (spec.key === "llama" && st.rootConflict) {
-    const warn = document.createElement("div");
-    warn.className = "plugin-root-conflict";
-    warn.textContent =
-      I18n.t("端口 ") +
-      String(st.rootConflict.port || "") +
-      I18n.t(" 上跑的是另一份安装目录的 llama.cpp：") +
-      String(st.rootConflict.liveRoot || "") +
-      I18n.t("；当前插件配置的是 ") +
-      String(st.rootConflict.configuredRoot || "") +
-      I18n.t("。在你选之前，本机模型不会登记进 MTNode（避免把别人那份混进来）。");
-    actions.appendChild(warn);
     const resolve = async (mode) => {
       const fn = pluginApiFn("llamaResolveRootChoice");
       if (!fn) return;
@@ -1058,7 +1025,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
         r = { ok: false, error: (e && e.message) || String(e) };
       }
       if (!r || !r.ok) {
-        _backendLastErr.set(spec.key, pluginErrLine(I18n.t("处理失败："), r));
+        _backendLastErr.set(spec.key, I18n.t("处理失败：") + pluginErrText(r && r.error));
       } else if (mode === "own") {
         toast(I18n.t("已换到端口 ") + String(r.port || "") + I18n.t("；点「启用」启动这一份"), "ok");
       } else {
@@ -1083,7 +1050,7 @@ async function refreshBackendPluginCard(root, spec, opts) {
         if (wasOpen && closeFn) await closeFn();
         const r = await window.api[spec.api + "UpdateRuntime"]();
         if (r && r.ok) toast(I18n.t("插件已更新") + (r.version ? " v" + r.version : ""), "ok");
-        else toast(pluginErrLine(I18n.t("安装失败："), r), "err");
+        else toast(I18n.t("安装失败：") + pluginErrText(r && r.error), "err");
         if (wasOpen && r && r.ok) {
           const openFn = pluginApiFn(spec.api + "Open");
           if (openFn) await openFn();
@@ -1094,20 +1061,9 @@ async function refreshBackendPluginCard(root, spec, opts) {
     );
   }
   /* 卡片不再挂 hint 说明行（Breeze 的权重许可、SenseNova 的磁盘 / 权重说明、Remotion 的安装口径
-     各占一行小字都已移除）—— 卡片上只剩图标 + 标题 + 动作按钮 + 状态行（启动失败原因 / 后端提示），
-     失败不静默。 */
-  /* 卡片状态行 = 显存门槛那句（已装但不达标）+ 后端自己的状态（启动失败原因 / 后端提示） */
-  const vramHint = root._pluginItem ? pluginVramNoticeText(root._pluginItem) : "";
-  const line = [vramHint, backendCardLine(st, spec)].filter(Boolean).join(" · ");
-  if (progTxt) {
-    if (line) {
-      progTxt.style.display = "block";
-      progTxt.textContent = line;
-    } else {
-      progTxt.style.display = "none";
-      progTxt.textContent = "";
-    }
-  }
+     各占一行小字都已移除）。**本轮再进一步：卡片底部一个字的正文都不留** ——
+     状态行（显存门槛 / 启动失败原因 / 后端提示）与角标整块下线，元素与样式都已删除。
+     卡片上只允许「图标封面 · 已装勾角标(无字) · 标题 · 版本号 · 动作按钮」这五样。 */
 }
 async function refreshMusic3PluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.music3);
@@ -1161,6 +1117,41 @@ async function refreshSensenovaPluginCard(root) {
   return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.sensenova, {
     installLabel: (st) => (st.installed ? I18n.t("补装权重") : I18n.t("安装（国内镜像）")),
   });
+}
+
+/* ---- Paseo 手机接管（应用插件 kind paseo，id paseo-remote）----
+   卡片口径：**只有一颗「控制台」按钮**（本轮需求：卡片底部一个字的正文都不留）。
+   为什么不用 refreshBackendPluginCard：它的主按钮是「安装 / 重装」且必然走那只安装窗
+   （包内 steps.json 协议），而本插件的后端优先**复用本机已装的 Paseo**、只有没装时才 npm 装一个包
+   —— 安装入口因此统一留在控制台里（paseo/ui/ui.js 的「安装后端」），卡片不重复一条容易误导的安装路径。
+   原先卡片底部那条状态行（认没认到后端 · daemon / relay 状态 · 远程是否开着 · 正在接管几条）
+   已按本轮要求整块下线：同一个状态在插件控制台里逐项显示。 */
+async function refreshPaseoPluginCard(root) {
+  const fn = pluginApiFn("paseoRemoteStatus");
+  const actions = root && root.querySelector("[data-plugin-actions]");
+  if (!fn || !actions) return;
+  let st = null;
+  try {
+    st = await fn();
+  } catch (e) {
+    st = { ok: false, error: (e && e.message) || String(e) };
+  }
+  const b = (st && st.backend) || {};
+  setPluginVer(root, { version: b.version, installed: !!b.installed });
+  actions.innerHTML = "";
+  actions.appendChild(
+    mkPluginActBtn(
+      "console",
+      I18n.t("控制台"),
+      async () => {
+        const f = pluginApiFn("paseoRemoteOpen");
+        const res = f ? await f() : null;
+        if (!res || !res.ok) toast(I18n.t("打开失败：") + ((res && res.error) || I18n.t("未知错误")), "err");
+        refreshPaseoPluginCard(root);
+      },
+      { primary: true },
+    ),
+  );
 }
 
 function pluginLoc(p, key) {  const v = p && p[key];
@@ -1230,36 +1221,6 @@ async function pluginVramState(force) {
   } catch {}
   return _pluginVramState;
 }
-function pluginVramInfoOf(item) {
-  const id = pluginVramIdOf(item);
-  if (!id) return null;
-  const list = (_pluginVramState && _pluginVramState.plugins) || [];
-  return list.find((x) => x && x.id === id) || null;
-}
-/** 卡片当前这一份 item 上的门槛结论（主进程挂的元数据优先，其次查不滤快照） */
-function pluginVramField(item) {
-  const own = item && item.vram && typeof item.vram === "object" ? item.vram : null;
-  if (own && (own.required === false || own.minVramGb > 0)) {
-    return {
-      required: own.required !== false,
-      minVramGb: Number(own.minVramGb) || 0,
-      vramOk: own.vramOk !== false,
-      hide: own.hide === true,
-      notice: String(own.notice || ""),
-      reading: own.reading != null ? Number(own.reading) : null,
-    };
-  }
-  const st = pluginVramInfoOf(item);
-  if (!st) return null;
-  return {
-    required: true,
-    minVramGb: Number(st.minVramGb) || 0,
-    vramOk: st.vramOk !== false,
-    hide: st.hide === true,
-    notice: String(st.notice || ""),
-    reading: pluginVramMachineReading(null),
-  };
-}
 /** 本机显存读数（GB；读不到 → null）。目录挂的元数据优先，其次用不滤快照的那一次读数。 */
 function pluginVramMachineReading(item) {
   const own = item && item.vram && typeof item.vram === "object" ? item.vram : null;
@@ -1267,17 +1228,6 @@ function pluginVramMachineReading(item) {
   const r = _pluginVramState && _pluginVramState.reading;
   if (r && r.state === "ok" && r.vramGb != null && Number.isFinite(Number(r.vramGb))) return Number(r.vramGb);
   return null;
-}
-/** 卡片上那句「本机显存可能不足（本机 ≈XG · 需要 ≥YG）」；不达标又不该藏时才给 */
-function pluginVramNoticeText(item) {
-  const v = pluginVramField(item);
-  if (!v || !v.required || v.vramOk) return "";
-  const gb = pluginVramMachineReading(item);
-  const reading = gb != null ? "≈" + gb + "G" : I18n.t("量不到");
-  return I18n.t("本机显存可能不足（本机 {reading} · 需要 ≥{need}G）", {
-    reading,
-    need: String(v.minVramGb || 0),
-  });
 }
 /** 显存不足的插件从目录里被滤掉了：用不滤快照把它的一条拼回列表（**只在开关打开时**用）。
  *  这条是「虚条目」：没有宿主可问，动作只留一颗置灰的按钮 + 写明原因。 */
@@ -1288,10 +1238,10 @@ function pluginVramHiddenItem(id, name) {
     id,
     minVramGb: st ? Number(st.minVramGb) || 0 : 0,
     vramOk: false,
-    /* 开关已经打开才拼得出来，所以这里恒 false —— 卡片是可见的那一种 */
+    /* 开关已经打开才拼得出来，所以这里恒 false —— 这条虚拟条目是可见的那一种 */
     hide: false,
     notice: st ? String(st.notice || "") : "",
-    /* 带上本机读数：标注要写「本机 ≈8G」，不能因为这里没值就显示「量不到」（8G 是读到的） */
+    /* 带上本机读数：置灰按钮的 tooltip 要说清「本机 ≈8G」，不能因为这里没值就写成「量不到」 */
     reading: pluginVramMachineReading(null),
     readingState: "ok",
   };
@@ -1782,14 +1732,8 @@ async function refreshWindowPluginCard(host, item) {
   const st = item || {};
   setPluginVer(host, st);
   actions.innerHTML = "";
-  /* 显存门槛拼回来的虚拟条目（开关打开时才出现）：没有宿主动作可做，只标明原因 */
-  if (st.vramOnly) {
-    const line = host.querySelector("[data-plugin-progress-txt]");
-    if (line) {
-      line.style.display = "";
-      line.textContent = pluginVramNoticeText(st) || I18n.t("本机显存不足");
-    }
-  }
+  /* 显存门槛拼回来的虚拟条目（开关打开时才出现）：**不再往卡片上写一行原因**（本轮需求），
+     理由由下面那颗置灰按钮的文案（「本机显存不足，无法安装」）与 tooltip 承担。 */
   const addBtn = (kind, title, onClick, opts) => {
     actions.appendChild(mkPluginActBtn(kind, title, onClick, opts));
   };
@@ -1874,12 +1818,14 @@ function mkPluginCardShell(item) {
     "</div>" +
     '<div class="plugin-tile-title"></div>' +
     '<div class="plugin-tile-ver" data-plugin-ver></div>' +
-    /* 后端求助角标（本轮：ui-signal 不再自动弹窗 → 卡片上给一枚可见提示，见 setPluginNotice） */
-    '<div class="plugin-tile-notice" data-plugin-notice hidden></div>' +
-    '<div class="plugin-tile-actions" data-plugin-actions data-pet-actions></div>' +
-    /* 卡片上不再有安装进度条（`data-plugin-progress` 已删）：安装过程与进度只显示在安装窗。
-       这一行是**状态行**（启动失败原因 / 后端提示 / 启动中），与安装进度无关。 */
-    '<div class="plugin-progress-txt" data-plugin-progress-txt data-pet-progress-txt style="display:none"></div>';
+    '<div class="plugin-tile-actions" data-plugin-actions data-pet-actions></div>';
+  /* 卡片上**只允许**这五样：图标封面 · 已装勾角标（无字，见 paintPluginDone）· 标题 · 版本号 · 动作按钮。
+     本轮删掉的两块正文元素（别再往卡片里加回来）：
+       · 状态文字行（原 `plugin-progress-txt` 那个 div）：显存门槛、启动失败原因、启用中、
+         Paseo 的后端 / daemon / relay 状态都曾写在这里；
+       · 「后端提示」小角标。
+     它们的出口现在是：失败 → toast + 详情浮层里的后端日志；后端提示 → 控制台 / 浮层日志区。
+     卡片高度因此恒定，不再被一行小字撑开。 */
   card.querySelector(".plugin-tile-title").textContent = pluginLoc(item, "title") || item.id;
   card.querySelector("[data-plugin-ver]").textContent = ver;
   const img = card.querySelector(".plugin-tile-cover img");
@@ -1887,18 +1833,7 @@ function mkPluginCardShell(item) {
     img.alt = pluginLoc(item, "title") || item.id;
     bindPluginCover(img, item);
   }
-  /* 显存门槛标注（已装但不达标 / 开关翻出来的那一档）：角标只是可见提示，
-     真正的动作限制由卡片自己的动作区决定（见 refreshWindowPluginCard）。 */
-  const noticeText = pluginVramNoticeText(item);
-  if (noticeText) {
-    const el = card.querySelector("[data-plugin-notice]");
-    if (el) {
-      el.hidden = false;
-      el.textContent = noticeText;
-      el.title = noticeText;
-    }
-  }
-  /* 已装 + 安装后自检通过 → 封面左上角打勾（本轮需求） */
+  /* 已装 + 安装后自检通过 → 封面左上角打勾（纯图形，无文字） */
   paintPluginDone(card, item.id);
   return card;
 }
@@ -2140,6 +2075,12 @@ async function openAppPluginsDialog() {
         offs.push(window.api.onBreezeNotice(() => refreshBreezePluginCard(card)));
       }
       refreshBreezePluginCard(card);
+    } else if (item.kind === "paseo" || item.handler === "paseo") {
+      /* Paseo 手机接管：控制台窗开/关都会广播 consoleChanged，卡片据它重画状态行 */
+      if (window.api && window.api.paseoRemoteOnConsoleChanged) {
+        offs.push(window.api.paseoRemoteOnConsoleChanged(() => refreshPaseoPluginCard(card)));
+      }
+      refreshPaseoPluginCard(card);
     } else {
       if (window.api && window.api.onAppPluginsWindowChanged) {
         offs.push(
@@ -3674,7 +3615,7 @@ function paintPaseoBridgePanel(info) {
   bar.className = "dsh-mcp-res-bar";
   const title = document.createElement("span");
   title.className = "dsh-mcp-res-status";
-  title.textContent = I18n.t("Paseo 桥 · 远程接管会话（手机端）");
+  title.textContent = I18n.t("Paseo 手机接管 · 远程会话（手机端）");
   const state = document.createElement("span");
   state.className = "dsh-mcp-res-uri";
   state.textContent = s.watchers
@@ -3703,67 +3644,30 @@ function paintPaseoBridgePanel(info) {
   };
 
   if (EXT_UI.errors.paseo) field(I18n.t("状态"), EXT_UI.errors.paseo);
+  /* 本轮起这一块**只做入口与排障**：装后端、出配对二维码、注册 provider、远程总开关
+     全部搬进插件控制台（顶栏「插件」→「Paseo 手机接管」）。留着旧面板等于同一件事两处维护，
+     迟早漂移 —— 这正是本轮收敛它的原因（共识 q1）。 */
   note(
     I18n.t(
-      "手机上用 Paseo App 经它自带的 relay 扫码配对，之后就能看并接管 MTNode 的智能体会话：读消息与工具调用、发消息、中途插话、终止本轮，以及接管工具审批 / 画布确认 / 模型提问。只碰会话层，不动画布。",
+      "安装 Paseo 后端、配对二维码、provider 注册与「远程连接」总开关都已搬进插件控制台（顶栏「插件」→「Paseo 手机接管」）。这里只保留入口与排障信息。",
     ),
   );
   field(I18n.t("桥脚本"), s.script || I18n.t("（没找到）"));
   if (s.script && s.scriptExists === false) field(I18n.t("脚本状态"), I18n.t("文件不存在（打包白名单少了 paseo/？）"));
-  field(I18n.t("拉起用的 Node"), s.node || "");
-  field(I18n.t("数据目录"), s.dataDir || "");
   field(
     I18n.t("协议 / 最低 Paseo 版本"),
     "ACP v" + (s.protocolVersion || 1) + " · Paseo ≥ " + (s.paseoMinVersion || "?"),
   );
-  field(I18n.t("会话族工具"), (s.sessionTools || 0) + I18n.t(" 个（只给桥内部用，不进 MCP 的 tools/list）"));
-  note(
-    I18n.t(
-      "配对与「添加主机」在 Paseo 自己的界面里做（relay 或 Tailscale 直连都行）；MTNode 这一侧只负责把会话交给桥。桥连不上时会明确报错，不会静默失败。",
-    ),
-  );
-
-  extInfoDetails(
-    info,
-    I18n.t("Paseo provider 配置片段（~/.paseo/config.json，改完跑 paseo reload）"),
-    I18n.t("把这段合并进 Paseo 的配置：桥脚本会自己从数据目录读端口与令牌，不用手填地址。") +
-      "\n" +
-      (s.snippet || ""),
-  );
-
-  if (st.check) {
-    extInfoDetails(
-      info,
-      (st.check.ok ? I18n.t("桥自检：通过") : I18n.t("桥自检：未通过")) +
-        (st.check.error ? " · " + st.check.error : ""),
-      String(st.check.stdout || st.check.stderr || I18n.t("（没有输出）")),
-    );
-  }
 
   extInfoButtons(info, [
     [
-      I18n.t("复制 provider 片段"),
+      I18n.t("打开「Paseo 手机接管」"),
       "primary",
-      async () => mcpCopy(s.snippet || "", I18n.t("Paseo provider 配置")),
-    ],
-    [
-      I18n.t("桥自检"),
-      "",
       async () => {
-        st.busy = true;
-        paintExtManager();
-        try {
-          st.check = await window.api.paseoCheck();
-          toast(
-            st.check && st.check.ok ? I18n.t("桥自检通过") : I18n.t("桥自检未通过：见下方明细"),
-            st.check && st.check.ok ? "ok" : "err",
-          );
-        } catch (e) {
-          st.check = { ok: false, error: extErrorText(e) };
-        }
-        st.busy = false;
-        await paseoBridgeLoad();
-        paintExtManager();
+        const fn = window.api && window.api.paseoRemoteOpen;
+        if (typeof fn !== "function") return toast(I18n.t("当前版本没有这个插件"), "err");
+        const r = await fn();
+        if (!r || !r.ok) toast(I18n.t("打开失败：") + ((r && r.error) || I18n.t("未知错误")), "err");
       },
     ],
     [

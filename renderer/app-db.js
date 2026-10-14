@@ -5139,7 +5139,14 @@ function ixAnswerSessionOf(it) {
 }
 /* 卡片上每道题的「题面」与用户最终给出的答案。
    answers 与 questions 按 id 对齐；手填（custom）优先，与 ixAnswerQuestion 回传口径同源 ——
-   界面气泡、落库正文、之后补进上下文的文字三处必须字字一致，否则用户对不上账。 */
+   界面气泡、落库正文、之后补进上下文的文字三处必须字字一致，否则用户对不上账。
+   ★ 手机端（Paseo 表单）回来的答案只有 selected[]、没有 custom 键，所以这里**先看 custom、
+     再从 selected 里取** —— 少这一步会出「手机上明明答了、气泡里却写着（未作答）」。 */
+function ixAnswerTextOf(a) {
+  if (!a) return "";
+  const sel = Array.isArray(a.selected) ? a.selected.filter((x) => String(x || "").trim()) : [];
+  return sel.join(" / ");
+}
 function ixAnswerPairsOf(it, answers) {
   const qs = (it && it.data && it.data.questions) || [];
   const byId = {};
@@ -5150,15 +5157,13 @@ function ixAnswerPairsOf(it, answers) {
     const id = String((q && q.id) || "");
     if (id) seen[id] = 1;
     const a = byId[id] || null;
-    const sel = a && Array.isArray(a.selected) ? a.selected.filter((x) => String(x || "").trim()) : [];
-    out.push({ id: id, q: String((q && q.question) || "").trim(), a: sel.join(" / ") });
+    out.push({ id: id, q: String((q && q.question) || "").trim(), a: ixAnswerTextOf(a) });
   }
   /* 卡片里没列出来的题（老网关不带 questions 数组）：按回传顺序补上，答案一个都不丢 */
   for (const a of answers || []) {
     const id = String((a && a.id) || "");
     if (id && seen[id]) continue;
-    const sel = a && Array.isArray(a.selected) ? a.selected.filter((x) => String(x || "").trim()) : [];
-    out.push({ id: id, q: "", a: sel.join(" / ") });
+    out.push({ id: id, q: "", a: ixAnswerTextOf(a) });
   }
   return out;
 }

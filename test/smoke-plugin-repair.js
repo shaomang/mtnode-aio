@@ -99,6 +99,10 @@ const HOSTS = [
   /* Remotion 走 npm 安装、没有 Agent 安装链：只注册「取可用目录 + 取日志」，可修性靠会话修复那条路
      （本轮补上配套 skill remotion-local-install：会话修复按它的现场口径定位「脚本一行都没跑过」那类失败） */
   { file: "remotion/main-remotion.js", id: "remotion", skill: "remotion-local-install", fn: "syncRemotionInstallSkill", selfRepair: false, restart: false, reports: 9 },
+  /* Paseo 手机接管（应用插件 paseo-remote）：后端是官方 npm 包 @getpaseo/cli（复用或自装），
+     宿主只注册「现场目录 + 日志尾部」，没有隐藏的 selfRepair 入口；Paseo daemon 是常驻单例
+     → 提供 restart（先停后起），修完由渲染层的服务表收尾。 */
+  { file: "paseo/main-paseo.js", id: "paseo-remote", skill: "paseo-remote-install", fn: "", selfRepair: false, restart: true, reports: 4, skillConst: true },
   /* 桌宠（BongoChat）：下载形象包型插件，连 skillName 都不注册（没有配套 skill），只给现场目录 */
   { file: "pet/main-pet.js", id: "bongochat", skill: "", fn: "", selfRepair: false, restart: false, reports: 5, noSkillField: true },
 ];
@@ -109,6 +113,7 @@ const INSTALL_SKILLS = [
   "llama-local-install",
   "sensenova-local-install",
   "remotion-local-install",
+  "paseo-remote-install",
 ];
 /* office-local-install 没有「插件宿主」，是随包内置的按需安装技能（Office→PDF 引擎不再随包，
    见 docs/app-size-audit.md）：同步表里要有它，但不进上面那份「每行配一个宿主」的清单 ——
@@ -155,7 +160,9 @@ for (const h of HOSTS) {
   );
   if (h.restart)
     ok(
-      /restart:\s*async[\s\S]{0,220}stopBackend\([\s\S]{0,220}startBackend\(/.test(reg),
+      /* 口径是「先停旧的再拉起」（半死进程否则会被判「端口已有人 = reused」）；
+         函数名允许两种叫法：*-backend（本地后端那族）与 *-daemon（Paseo 那族）。 */
+      /restart:\s*async[\s\S]{0,220}(?:stopBackend|stopDaemon)\([\s\S]{0,220}(?:startBackend|startDaemon)\(/.test(reg),
       h.file + " 重启 = 先停旧进程再拉起（半死进程否则会被判「端口已有人 = reused」）",
     );
   ok(src.indexOf("function reportErr(") > 0, h.file + " 有 reportErr 包装（自带 try/catch）");

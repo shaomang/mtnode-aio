@@ -409,10 +409,12 @@ const IDS = ["sensenova-local", "minimax-music3", "yue2-local", "minimax-h3"];
   hasIn(rp, "显示不支持的插件", "底部那一行低频入口的开关文案");
   hasIn(rp, "let _showUnsupportedPlugins = false", "开关默认关");
   hasIn(rp, "pluginVramHiddenItems", "开关打开时把被滤掉的卡片拼回来");
-  hasIn(rp, "pluginVramNoticeText", "卡片上「本机显存可能不足」的标注");
-  hasIn(rp, "本机显存可能不足（本机 {reading} · 需要 ≥{need}G）", "标注用的是占位词条（中英都能落）");
+  /* 本轮需求：卡片底部不许再出现任何文字 → 显存门槛那句标注（pluginVramNoticeText）已删除，
+     理由改由虚拟条目那颗置灰按钮的文案与 tooltip 承担。 */
+  ok(rp.indexOf("pluginVramNoticeText") < 0, "卡片上的显存门槛标注已删除（缺则说明又加回卡片了）");
+  ok(rp.indexOf("本机显存可能不足（本机 {reading} · 需要 ≥{need}G）") < 0, "占位词条不再被卡片引用");
   hasIn(rp, "本机显存不足，无法安装", "虚拟条目的按钮写明原因");
-  hasIn(rp, "pluginVramIdOf", "卡片 id（kind 别名）折成目录 id");
+  ok(rp.indexOf("function pluginVramField(") < 0, "只服务于卡片标注的 pluginVramField 已删（不留死代码）");
 
   const appjs = read("renderer/app.js");
   hasIn(appjs, "function appPluginHiddenByVram", "画布侧读「哪些插件被显存门槛滤掉」");
@@ -481,7 +483,6 @@ const IDS = ["sensenova-local", "minimax-music3", "yue2-local", "minimax-h3"];
       return {
         bar: vm.runInContext("pluginVramHiddenItems()", box),
         one: vm.runInContext('pluginVramHiddenItem("minimax-music3", "Minimax Music 3")', box),
-        notice: vm.runInContext('pluginVramNoticeText({ vram: { required: true, minVramGb: 24, vramOk: false } })', box),
       };
     }
     const snap = {
@@ -511,10 +512,6 @@ const IDS = ["sensenova-local", "minimax-music3", "yue2-local", "minimax-h3"];
     ok(
       on.one.subtitle.zh.indexOf("≈8G") >= 0 && on.one.subtitle.zh.indexOf("24") >= 0,
       "虚条目的说明写清「本机 ≈8G · 需要 ≥24G」（实到 " + show(on.one.subtitle.zh) + "）",
-    );
-    ok(
-      off.notice.indexOf('"reading":"≈8G"') >= 0 && off.notice.indexOf('"need":"24"') >= 0,
-      "卡片标注用占位词条 + 真读数（实到 " + show(off.notice) + "）",
     );
     /* 已装的那一条不该被拼回来（目录里本来就有它） */
     const snapInstalled = Object.assign({}, snap, {

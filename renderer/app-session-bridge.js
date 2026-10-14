@@ -521,6 +521,76 @@
     };
   }
 
+  /** 换模型（手机端在 Paseo 里选模型就落到这里）：与界面上「模型提供商 / 模型」两格**同一落点**
+   *  —— 只改这条会话的 st.provider / st.model 并落盘（下一轮开轮时 agentSessionSend 读的正是
+   *  这两个字段，见 app-assist.js 的下发点），历史消息与**正在跑的那一轮**都不动：那一轮的服务商
+   *  与模型在开轮时就已定下，改不了也不假装改。
+   *
+   *  为什么这里要校验两件事（Paseo 侧允许手工添模型 id，不校验就会把「A 家模型配 B 家路由」
+   *  这种组合写进会话，直到这一轮发出去才炸，而且报错与原因离得很远）：
+   *    · 服务商必须是 MTNode 服务商配置里真有的一个 route；
+   *    · 模型要在该 route 的模型清单里（清单为空时跳过这一条：配置还没加载好时别误拒）。
+   *  校验不过就**如实报错**（错误原话会经桥回到手机端，不静默回退到别家）。 */
+  function sessionModel(params) {
+    const p = params || {};
+    const sid = String(p.sessionId || "").trim();
+    if (!sid) throw new Error("缺少会话 id");
+    const st = sessionOf(sid);
+    if (!st) {
+      const e = new Error("会话不存在或已被删除：" + sid);
+      e.code = "SESSION_GONE";
+      throw e;
+    }
+    const wantProvider = String(p.provider || "").trim();
+    const wantModel = String(p.model == null ? "" : p.model).trim();
+    if (!wantProvider && !wantModel) throw new Error("provider 与 model 至少要给一个");
+    let groups = [];
+    try {
+      groups = typeof agentProviderGroupsNow === "function" ? agentProviderGroupsNow() || [] : [];
+    } catch (_) {
+      groups = [];
+    }
+    const route = wantProvider || String(agentSessionProviderRoute(st) || "");
+    if (wantProvider && groups.length && !groups.some((g) => String(g.id) === wantProvider)) {
+      throw new Error(
+        "MTNode 里没有这个服务商：" + wantProvider + "（可选：" + groups.map((g) => String(g.id)).join("、") + "）",
+      );
+    }
+    if (wantModel && groups.length) {
+      const g = groups.filter((x) => String(x.id) === route)[0];
+      const models = g && Array.isArray(g.models) ? g.models.map(String) : [];
+      if (models.length && models.indexOf(wantModel) < 0) {
+        throw new Error(
+          "服务商 " + route + " 没有这个模型：" + wantModel + "（可选：" + models.join("、") + "）",
+        );
+      }
+    }
+    const before = { provider: String(st.provider || ""), model: String(st.model || "") };
+    if (wantProvider) st.provider = wantProvider;
+    if (wantModel) st.model = wantModel;
+    /* 落盘与回显：与界面选完模型那一下同口径（标脏 + 刷侧栏 + 刷会话头） */
+    try {
+      if (typeof agentTouchSession === "function") agentTouchSession();
+      if (typeof agentFlushSessionSave === "function") agentFlushSessionSave();
+    } catch (_) {}
+    try {
+      if (typeof renderAgentSession === "function") renderAgentSession();
+      if (typeof renderAgentSessionSidebar === "function") renderAgentSessionSidebar();
+    } catch (_) {}
+    const running = typeof sessionIsRunning === "function" ? !!sessionIsRunning(st) : !!st.running;
+    return {
+      ok: true,
+      sessionId: sid,
+      provider: String(st.provider || ""),
+      model: String(st.model || ""),
+      before,
+      running,
+      note: running
+        ? "已换：这条会话下一条消息用新模型；正在跑的这一轮仍用旧模型。"
+        : "已换：下一条消息就用新模型（历史消息与已跑过的轮次不变）。",
+    };
+  }
+
   /** 供应商与模型清单 + 新建会话的默认值（手机端新建时选）：
    *  数据源与电脑上那两枚下拉**同一份**（dshProvider / mtnodePiProviders / providerCatalog）。 */
   function sessionModels() {
@@ -604,6 +674,7 @@
     sessionSend,
     sessionSteer,
     sessionStop,
+    sessionModel,
     sessionApproval,
     sessionModels,
     sessionWatch,

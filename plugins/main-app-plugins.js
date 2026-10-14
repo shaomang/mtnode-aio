@@ -25,7 +25,7 @@ const PLUGIN_FEED =
 /* 认得出的插件 kind 白名单：认不出的一律归一成 "unknown"（卡片显「请先升级主程序」、不可装）。
    已移除的 tts（GPT-SoVITS）故意不在表里 —— 云端旧目录里若还有 kind="tts" 的条目，
    它会走 unknown 那一档（看得见但装不了），而不是被当成一个已注册的后端。 */
-const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr"]);
+const KNOWN_KINDS = new Set(["builtin", "pet", "window", "music3", "yue2", "sensenova", "h3", "llama", "breeze", "remotion", "asr", "paseo"]);
 const ID_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const MAX_CATALOG = 512 * 1024;
 const MAX_ZIP = 80 * 1024 * 1024;
@@ -520,6 +520,8 @@ function normalizePlugin(raw) {
   if (!kind && raw.handler === "breeze") kind = "breeze";
   if (!kind && raw.handler === "remotion") kind = "remotion";
   if (!kind && raw.handler === "asr") kind = "asr";
+  /* Paseo 手机接管（kind paseo，id paseo-remote）：handler 与 kind 同名，这里只是兜底链的一员 */
+  if (!kind && raw.handler === "paseo") kind = "paseo";
   const iconName = safeIconName(raw.icon) || (id + ".png");
   const known = KNOWN_KINDS.has(kind);
   const win = (raw.window && typeof raw.window === "object") ? raw.window : {};
@@ -528,7 +530,7 @@ function normalizePlugin(raw) {
   return {
     id,
     kind: known ? kind : "unknown",
-    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "builtin" ? id : "")).trim(),
+    handler: String(raw.handler || (kind === "pet" ? "pet" : kind === "music3" ? "music3" : kind === "yue2" ? "yue2" : kind === "sensenova" ? "sensenova" : kind === "h3" ? "h3" : kind === "llama" ? "llama" : kind === "breeze" ? "breeze" : kind === "remotion" ? "remotion" : kind === "asr" ? "asr" : kind === "paseo" ? "paseo" : kind === "builtin" ? id : "")).trim(),
     order: Number(raw.order) || 100,
     title: locObj(raw.title || raw.name || id),
     subtitle: locObj(raw.subtitle || raw.description || ""),

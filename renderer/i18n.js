@@ -2860,6 +2860,22 @@
     "MCP 服务端状态不可用（": "MCP server status unavailable (",
     /* ── Paseo 桥（手机端远程接管会话；面板在「服务端」页，桥与桥脚本见 paseo/）── */
     "Paseo 桥 · 远程接管会话（手机端）": "Paseo bridge · take over sessions from your phone",
+    /* ── Paseo 手机接管（应用插件 kind paseo，id paseo-remote）：卡片 + 服务端页那一行入口 ── */
+    "Paseo 手机接管": "Paseo phone handoff",
+    "Paseo 手机接管 · 远程会话（手机端）": "Paseo phone handoff · remote sessions",
+    "安装 Paseo 后端、配对二维码、provider 注册与「远程连接」总开关都已搬进插件控制台（顶栏「插件」→「Paseo 手机接管」）。这里只保留入口与排障信息。":
+      "Installing the Paseo backend, the pairing QR code, provider registration and the remote-access master switch all live in the plugin console now (top bar \"Plugins\" -> \"Paseo phone handoff\"). This block keeps the entry point and troubleshooting facts only.",
+    "打开「Paseo 手机接管」": "Open \"Paseo phone handoff\"",
+    "当前版本没有这个插件": "This build has no such plugin",
+    "未检测到 Paseo：打开控制台装后端": "No Paseo found: open the console to install the backend",
+    "（插件自带）": " (bundled by the plugin)",
+    "daemon 运行中": "daemon running",
+    "daemon 没在跑": "daemon not running",
+    "relay 已开": "relay on",
+    "relay 未开": "relay off",
+    "远程已开 · 接管 ": "remote on · taking over ",
+    " 条": " session(s)",
+    "远程未开": "remote off",
     "正在远程接管 ": "Remote takeover: ",
     " 条会话": " session(s)",
     "待机（手机没在接）": "Idle (no phone attached)",

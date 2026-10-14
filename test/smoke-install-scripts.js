@@ -25,11 +25,13 @@
  *   [13] 读文件必须显式声明编码：脚本里凡 `Get-Content` 等按文本读一个文件的地方，都要写
  *        `-Encoding UTF8` —— 不写就是交给 PS 5.1 按机器 ANSI 代码页解码；别的包的中文文案
  *        不在这份脚本里也不代表安全（同包 `steps.json` 是 UTF-8 中文的错误码文案表）
- *   [14] 随包 `manifest.json` 必须纯 ASCII：它是**唯一会被 PS 解析的随包 JSON**
- *        （llama 的 install.ps1 要读 `llamaRelease`），历史故障正是它里面的中文把
- *        ConvertFrom-Json 解崩；本轮把中文从这些清单里整体去掉（文案位改英文，给人看的
- *        中文只在 plugins/catalog.default.json 与各包 steps.json），并钉住
- *        「零非 ASCII + 无 BOM + 仍是合法 JSON」。`steps.json` 有意保留中文，不在本节。
+ *   [14] 随包 JSON 清单必须纯 ASCII：**会被 PowerShell / 子进程读的那些**
+ *        —— 每包 `manifest.json`（llama 的 install.ps1 要读 `llamaRelease`，历史故障正是它里面的
+ *        中文把 ConvertFrom-Json 解崩）与本轮新增的 `*-pack/**`（除 node_modules）`package.json`
+ *        （npm 子进程按机器代码页读它）。文案位改英文，给人看的中文只在
+ *        plugins/catalog.default.json 与各包 steps.json，并钉住
+ *        「零非 ASCII + 无 BOM + 仍是合法 JSON」。`steps.json` / `package-lock.json` /
+ *        ComfyUI 工作流 / Live2D 模型配置有意保留中文，不在本节。
  *
  * **与 tts-pack 绑定的那几节（[7] 真跑 tts 安装脚本、[8]/[8.2]/[8.3] reqs-fixups 单一真源、
  *   [9] tts-pack 的打包白名单、[10]/[10.2] torch 档位链、[11]/[11.2] resampy 自愈）已随
@@ -1120,19 +1122,50 @@ ok(
        / license.weights / license.code，没有一处读 title / subtitle / notes。
      · 为什么不在 [1] 里顺手管 `manifest.json`：`steps.json` 是**有意保留中文**的（错误码文案表，
        Node 按 UTF-8 读），按扩展名一刀切会把那份也扫成违例；所以这里按**文件名**精准收口。 */
-console.log("\n[14] 随包 manifest.json 必须纯 ASCII：安装脚本会用它，不靠代码页运气");
+console.log("\n[14] 随包 JSON 清单必须纯 ASCII：安装脚本 / npm 子进程会用它，不靠代码页运气");
 const packDirs = fs
   .readdirSync(ROOT, { withFileTypes: true })
   .filter((e) => e.isDirectory() && /-pack$/.test(e.name))
   .map((e) => e.name)
   .sort();
+/* 本轮扩面：从「唯一被 PS 解析的 manifest.json」扩到**会被 PowerShell / 子进程读的随包 JSON** ——
+   `*-pack/**` 下除 node_modules 之外的每一份 `package.json`（npm 装依赖 / 起 render 时按机器代码页
+   读它，description 里的中文就是那类现场：一屏 npm WARN 乱码，用户只看到「文字报错」）。
+   仍有意不覆盖（中文该留就留）：steps.json（错误码文案表，Node 按 UTF-8 读）、package-lock.json
+   （npm 自己写自己读，不解析 description）、ComfyUI 工作流（music3-pack/workflows/*.json）、
+   Live2D 模型配置（pet-pack/models/ 下的 .json，部件显示名是第三方素材原样）。 */
+function packPackageJsonRels() {
+  const out = [];
+  const walk = (dir, rel) => {
+    let ents = [];
+    try {
+      ents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const it of ents) {
+      if (SKIP_DIRS.has(it.name) || it.name.startsWith(".")) continue;
+      const full = path.join(dir, it.name);
+      const r = rel ? rel + "/" + it.name : it.name;
+      if (it.isDirectory()) walk(full, r);
+      else if (it.name === "package.json") out.push(r);
+    }
+  };
+  for (const pack of packDirs) walk(path.join(ROOT, pack), pack);
+  return out.sort();
+}
 const packManifestRels = packDirs
   .map((p) => p + "/manifest.json")
-  .filter((rel) => fs.existsSync(abs(rel)));
+  .filter((rel) => fs.existsSync(abs(rel)))
+  .concat(packPackageJsonRels());
 ok(packManifestRels.length >= 8, "[14] 扫到 " + packManifestRels.length + " 份随包清单（低于下限说明发现逻辑空转了）");
 ok(
   packManifestRels.indexOf("llama-pack/manifest.json") >= 0,
   "[14] llama-pack/manifest.json 在覆盖集里（历史故障点）",
+);
+ok(
+  packManifestRels.filter((r) => /\/package\.json$/.test(r)).length >= 2,
+  "[14] `*-pack/**` 的 package.json 也进了覆盖集（npm 子进程读的那一类）",
 );
 /** 逐字节查一份清单：返回 {rel, bytes, nonAscii:[偏移…], boms, parses}。
  *  真源只此一份 —— 下面的自检直接复用，保证「夹具会报红」与「仓库全绿」同源。 */
@@ -1160,7 +1193,7 @@ for (const rel of packManifestRels) {
   ok(r.parses, "[14] " + rel + " 仍是合法 JSON（去中文不能把 JSON 改坏）");
 }
 /* 覆盖集不许被无声改窄：这几份清单必须都在名单里 */
-for (const rel of ["llama-pack/manifest.json", "music3-pack/manifest.json", "h3-pack/manifest.json", "yue-pack/manifest.json", "sensenova-pack/manifest.json", "breeze-pack/manifest.json", "pet-pack/manifest.json"]) {
+for (const rel of ["llama-pack/manifest.json", "music3-pack/manifest.json", "h3-pack/manifest.json", "yue-pack/manifest.json", "sensenova-pack/manifest.json", "breeze-pack/manifest.json", "pet-pack/manifest.json", "remotion-pack/package.json", "pet-pack/package.json"]) {
   ok(packManifestRels.indexOf(rel) >= 0, "[14] 覆盖到 " + rel);
 }
 /* 自检：判据必须真会报红、也真不误报（拿临时夹具，同一份 scanAsciiJson） */

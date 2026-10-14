@@ -357,7 +357,10 @@ console.log("\n[5] 渲染层：状态徽标 + 部署 / 停止 + 当场刷新 + �
 
   const plugins = read("renderer/app-plugins.js");
   has(plugins, "st.rootConflict", "卡片认冲突状态");
-  has(plugins, "plugin-root-conflict", "卡片画冲突告警行");
+  /* 本轮需求：卡片底部不许再出现任何文字 → 那段黄字冲突说明（.plugin-root-conflict）整块下线；
+     两颗选择按钮与后端行为一字未动。 */
+  hasnt(plugins, "plugin-root-conflict", "冲突说明不再写成卡片上一段文字");
+  hasnt(plugins, 'I18n.t(" 上跑的是另一份安装目录的 llama.cpp：")', "那段冲突长文案已从卡片移除");
   has(plugins, 'I18n.t("换端口起自己的")', "冲突时的第一个选择");
   has(plugins, 'I18n.t("继续用这份")', "冲突时的第二个选择");
   has(plugins, 'pluginApiFn("llamaResolveRootChoice")', "两个选择走宿主 IPC");
@@ -367,7 +370,7 @@ console.log("\n[5] 渲染层：状态徽标 + 部署 / 停止 + 当场刷新 + �
   has(css, ".llama-st-badge.llama-st-running", "运行中徽标配色");
   has(css, ".llama-st-badge.llama-st-failed", "加载失败徽标配色");
   const cssL = read("renderer/css/layout.css");
-  has(cssL, ".plugin-root-conflict", "冲突告警行的样式");
+  hasnt(cssL, ".plugin-root-conflict", "冲突告警行的样式随那段文字一起删除");
 
   const i18n = read("renderer/i18n.js");
   for (const k of ["未部署", "加载失败", "换端口起自己的", "正在加载本地模型…", "部署", "停止"]) {

@@ -39,6 +39,7 @@
     sessionSend: true,
     sessionSteer: true,
     sessionStop: true,
+    sessionModel: true,
     sessionApproval: true,
     sessionModels: true,
     sessionState: true,

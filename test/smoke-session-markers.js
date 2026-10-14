@@ -1210,6 +1210,9 @@ console.log(
   console.log("\n[1] 询问窗答案落进会话消息（真跑 app-db.js 的真实函数）");
   const ANSWER_FNS = [
     "ixAnswerSessionOf",
+    /* 答案正文的取法（custom 优先、再看 selected）：手机端表单回来的答案只有 selected[]，
+       ixAnswerPairsOf 与「老网关不带 questions」那条补漏都走它 —— 少这只函数就取不到正文 */
+    "ixAnswerTextOf",
     "ixAnswerPairsOf",
     "ixAnswerBubbleText",
     "ixCommitAnswerToSession",
@@ -1249,7 +1252,7 @@ console.log(
   vm.createContext(sandbox);
   vm.runInContext(
     fnsSrc +
-      "\n;globalThis.__ix = { ixAnswerSessionOf, ixAnswerPairsOf, ixAnswerBubbleText, ixCommitAnswerToSession, agentHistoryEntries, agentConfirmedHistoryEntries };",
+      "\n;globalThis.__ix = { ixAnswerSessionOf, ixAnswerTextOf, ixAnswerPairsOf, ixAnswerBubbleText, ixCommitAnswerToSession, agentHistoryEntries, agentConfirmedHistoryEntries };",
     sandbox,
   );
   const IX = sandbox.__ix;
@@ -1297,6 +1300,13 @@ console.log(
   /* 手填优先：custom 与 selected 同源（ixAnswerQuestion 已把 custom 放进 selected） */
   const customAns = [{ id: "q1", selected: ["我自己写的答案"], custom: "我自己写的答案" }];
   has(IX.ixAnswerBubbleText(IX.ixAnswerPairsOf(card, customAns)), "我自己写的答案", "手填答案原样进气泡");
+  /* 手机端（Paseo 表单）回来的答案：只有 selected[]、**没有** custom 键 —— 正文照样要取到，
+     否则手机上明明答了、气泡里却写着「（未作答）」（本次需求：远端回执那条回归）。 */
+  const remoteAns = [{ id: "q1", selected: ["只改渲染层"] }, { id: "q2", selected: ["文档", "冒烟"] }];
+  const remotePairs = IX.ixAnswerPairsOf(card, remoteAns);
+  eqNum(remotePairs[0].a, "只改渲染层", "手机端单选答案进气泡（无 custom 键也不丢）");
+  eqNum(remotePairs[1].a, "文档 / 冒烟", "手机端多选答案并成一行");
+  eqNum(IX.ixAnswerTextOf({ id: "q3" }), "", "没答的题正文为空（不编造）");
 
   /* =====================================================================
    * [2] 会话历史段：去重 + 上限

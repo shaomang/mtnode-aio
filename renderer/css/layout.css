@@ -1119,21 +1119,8 @@ button:disabled {
   user-select: text
 }
 
-/* 卡片上的后端求助角标（ui-signal 不再自动弹窗 → 卡片角标 + 状态行一句） */
-.plugin-tile-notice {
-  display: block;
-  margin: 0 auto;
-  padding: 1px 7px;
-  border: 1px solid rgba(226, 179, 60, .5);
-  color: #e2b33c;
-  font-size: 10.5px;
-  line-height: 1.6;
-  letter-spacing: .5px
-}
-
-.plugin-tile-notice[hidden] {
-  display: none
-}
+/* 卡片上的「后端提示」角标（.plugin-tile-notice）已随本轮需求删除：卡片上不再允许任何文字。
+   同一个提示现在的出口 = 详情浮层内嵌 console 的日志区（宿主也写进日志文件）。 */
 
 .plugin-card-actions {
   display: flex;
@@ -1142,27 +1129,12 @@ button:disabled {
   margin-top: 10px
 }
 
-/* 安装目录冲突告警（llama 卡片）：端口上跑的是另一份安装目录的 llama.cpp，
-   在用户选「换端口起自己的 / 继续用这份」之前不登记本机模型（见 llama/main-llama.js） */
-.plugin-root-conflict {
-  flex: 1 1 100%;
-  font-size: 11px;
-  line-height: 1.6;
-  color: #e2b33c;
-  border: 1px solid rgba(226, 179, 60, .5);
-  border-radius: 4px;
-  padding: 6px 8px;
-  background: rgba(226, 179, 60, .07)
-}
+/* 安装目录冲突告警（llama）**原先写成卡片上一整段黄字块**：本轮按需求删除
+   —— 卡片上不允许再出现任何文字。冲突的两颗选择按钮仍在卡片上，判定与动作见 llama/main-llama.js。 */
 
-/* 卡片上的安装进度条（.plugin-progress > i）已随本轮需求移除：安装过程只在安装窗里显示。
-   .plugin-progress-txt 保留 —— 它现在是卡片的**状态行**（启动失败原因 / 后端提示 / 启动中）。 */
-.plugin-progress-txt {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 4px;
-  font-family: var(--mono)
-}
+/* 卡片上的安装进度条（.plugin-progress > i）与**状态文字行**（.plugin-progress-txt）都已删除：
+   安装进度只在安装窗里显示，状态（启动失败 / 显存门槛 / Paseo 后端状态）只在控制台与 toast 里说
+   —— 卡片上不允许再出现任何会撑高它的正文。 */
 
 .approvals-panel {
   position: fixed;

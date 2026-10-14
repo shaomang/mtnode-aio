@@ -68,6 +68,10 @@ const PLUGIN_REPAIR_SKILLS = {
   "breeze-tts-local": "breeze-tts-local-install",
   llama: "llama-local-install",
   "llama-local": "llama-local-install",
+  /* Paseo 手机接管：它的失败多是现场问题（没装 CLI / relay 关着 / daemon 起不来 /
+     provider 没写进 Paseo），配套的 paseo-remote-install 写明了怎么读现场并逐条验回去 */
+  paseo: "paseo-remote-install",
+  "paseo-remote": "paseo-remote-install",
 };
 
 /* 插件 id / kind → 打开它自己控制台窗的 preload 桥方法名（「打开控制台看日志」用） */
@@ -90,6 +94,9 @@ const PLUGIN_REPAIR_CONSOLE = {
   llama: "llamaOpen",
   "llama-local": "llamaOpen",
   remotion: "remotionOpen",
+  /* Paseo 手机接管：控制台里就能看出后端认没认到、relay 开没开、码出不出得来 */
+  paseo: "paseoRemoteOpen",
+  "paseo-remote": "paseoRemoteOpen",
 };
 
 /* 插件 id / kind → 修完之后该调的「该服务自己的重启入口」与卡片刷新口。
@@ -169,6 +176,18 @@ const PLUGIN_REPAIR_SERVICE_BASE = {
     cards: ["remotion"],
     results: [".remotion-agent-result"],
   },
+  /* Paseo 手机接管：后端（Paseo daemon）是常驻单例、不随 MTNode 退出 —— 修完要能重启它。
+     start/stop 走主窗口 preload 新增的两个薄转发（控制台窗自己那份在 paseo/preload-paseo.js）。 */
+  paseo: {
+    label: "Paseo 手机接管",
+    resident: true,
+    start: "paseoRemoteStartDaemon",
+    stop: "paseoRemoteStopDaemon",
+    status: "paseoRemoteStatus",
+    card: "refreshPaseoPluginCard",
+    cards: ["paseo-remote"],
+    results: [".paseo-agent-result"],
+  },
   /* 桌宠：没有安装类 skill（走「自行判断根因」提示词分支），也没有登记的服务启停入口
      → resident:false，修完按「无常驻服务」收尾（有节点就重跑节点，没有就提示可重试）。 */
   pet: {
@@ -190,6 +209,7 @@ const PLUGIN_REPAIR_SERVICE = (function expandPluginRepairService() {
     breeze: ["breeze", "breeze-tts", "breeze-tts-local", "breeze_gen"],
     llama: ["llama", "llama-local", "llama-cpp"],
     remotion: ["remotion", "remotion-video", "remotion-render"],
+    paseo: ["paseo", "paseo-remote", "paseo-bridge"],
     pet: ["pet", "bongochat", "bongo-cat", "deskpet"],
   };
   const out = {};

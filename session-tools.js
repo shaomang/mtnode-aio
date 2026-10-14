@@ -15,6 +15,7 @@
  *   mtnode_session_steer     往正在跑的那一轮插话
  *   mtnode_session_stop      终止这一条会话正在跑的轮次
  *   mtnode_session_approval  回执一张「停下来等人」的卡（工具审批 / 画布确认 / 模型提问）
+ *   mtnode_session_model     换一条**已有**会话的模型（与界面上那两格同一落点）
  *   mtnode_session_models    供应商与模型清单（手机新建会话时选）
  *   mtnode_session_state     桥自身的运行态（观察者数 / 最近事件类型）
  */
@@ -191,6 +192,26 @@ const SESSION_TOOLS = Object.freeze([
           description: "kind=question 且是选择题时的选项下标",
           items: { type: "number" },
         },
+      },
+    },
+  },
+  {
+    name: "mtnode_session_model",
+    family: "session",
+    op: "sessionModel",
+    write: true,
+    local: true,
+    description:
+      "换一条**已有**会话用的模型（provider / model 两个字段，与电脑上界面的「模型提供商 / 模型」两格" +
+      "同一落点）。下一条消息就用新模型，历史与正在跑的那一轮都不动（那一轮的服务商与模型在开轮时已定）。" +
+      "服务商不在 MTNode 的服务商配置里、或该家没有这个模型时如实报错，不静默回退到别家。",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId"],
+      properties: {
+        sessionId: { type: "string", description: "会话 id（as…）" },
+        provider: { type: "string", description: "服务商 route（省略 = 只换模型，服务商不动）" },
+        model: { type: "string", description: "模型 id" },
       },
     },
   },

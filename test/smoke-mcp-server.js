@@ -304,21 +304,27 @@ console.log("[4] 服务端本体：起停 / 回环 / 令牌落点");
     ok(/s\.token/.test(plugins) && /mcpCopy\(s\.token/.test(plugins), "令牌可看可复制");
     ok(!/point-out|outside-click/.test(plugins), "面板不引入点外部即关（persistent 口径）");
 
-    /* 「Paseo 桥」（手机端远程接管会话）：与服务端同一个页 —— 桥走的正是这个服务端的
-       会话族。面板要有：脚本落点 / 真 Node / 数据目录 / 兼容版本 / provider 片段 / 自检。 */
-    ok(/paintPaseoBridgePanel/.test(plugins), "服务端页里有「Paseo 桥」那一块");
+    /* 「Paseo 手机接管」（手机端远程接管会话）：与服务端同一个页 —— 桥走的正是这个服务端的
+       会话族。本轮起这一块**只留入口与排障**（脚本落点 / 协议版本 / 复制自检命令 + 打开插件）：
+       装后端、配对二维码、provider 注册、远程总开关都搬进了插件控制台（kind paseo）。 */
+    ok(/paintPaseoBridgePanel/.test(plugins), "服务端页里有「Paseo 手机接管」那一块");
     for (const s of [
-      "Paseo 桥 · 远程接管会话（手机端）",
+      "Paseo 手机接管 · 远程会话（手机端）",
       "桥脚本",
-      "拉起用的 Node",
       "协议 / 最低 Paseo 版本",
-      "复制 provider 片段",
-      "桥自检",
-      "Paseo provider 配置片段（~/.paseo/config.json，改完跑 paseo reload）",
+      "打开「Paseo 手机接管」",
+      "复制自检命令",
     ]) {
       ok(plugins.includes('I18n.t("' + s + '")') || plugins.includes('"' + s + '"'), "桥面板文案：" + s);
     }
-    ok(/window\.api\.paseoStatus/.test(plugins) && /window\.api\.paseoCheck/.test(plugins), "面板走 paseoStatus / paseoCheck 两个入口");
+    ok(
+      /window\.api\.paseoStatus/.test(plugins) && /window\.api\.paseoRemoteOpen/.test(plugins),
+      "面板走 paseoStatus（状态）/ paseoRemoteOpen（打开插件控制台）两个入口",
+    );
+    ok(
+      !/window\.api\.paseoCheck/.test(plugins),
+      "旧面板的「桥自检」按钮已收进插件控制台（设置页不再留第二份自检入口）",
+    );
     const bridgeInfo = read("paseo/bridge-info.js");
     ok(
       /extends: "acp"/.test(bridgeInfo) && /agents[\s\S]{0,40}providers/.test(bridgeInfo),

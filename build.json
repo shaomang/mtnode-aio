@@ -64,13 +64,15 @@
        漏进白名单 = 打包后 Cannot find module './session-bridge.js'（会话族整体不可用）。 */
     "session-bridge.js",
     "session-tools.js",
-    /* Paseo 桥共用的纯函数真源（CJS）：main.js **顶层** require("./paseo/bridge-info.js")，
-       在 asar 内解析 —— 必须进 files 白名单。extraResources 把 paseo/ 送到
-       resources/paseo 只解决「外部 Node 读不了 asar 内路径」的桥脚本（acp-bridge.mjs），
-       **不覆盖主进程这条 require**。漏掉的真实后果（2026-10-14 实发）：打包后进程启动即
-       main-uncaughtException: Cannot find module './paseo/bridge-info.js'，
-       main.js 求值中断 → 窗口都不出来（表现就是「编译后进不去程序」）。 */
-    "paseo/bridge-info.js",
+    /* Paseo 手机接管（应用插件 kind paseo）：整目录进白名单 ——
+       · bridge-info.js 是 main.js **顶层** require 的纯函数真源（CJS，asar 内解析）；
+       · main-paseo.js / preload-paseo.js 是插件主进程宿主与控制台桥，main.js require 它们；
+       · ui/ 是控制台窗（loadFile 走 asar 虚拟路径）、qr.js 是自研二维码编码器（ui 以 ../qr.js 引用）。
+       extraResources 也带了一份 paseo/（resources/paseo）：那是给**外部 Node** 跑桥脚本
+       （acp-bridge.mjs）用的 —— 外部进程读不了 asar 内路径，两条链缺一不可。
+       漏掉本条的真实后果（2026-10-14 实发过一次）：打包后启动即
+       main-uncaughtException: Cannot find module './paseo/bridge-info.js'，窗口都出不来。 */
+    "paseo/**",
     "mcp-prompts.js",
     "mcp-tools.json",
     "mcp-tool-schemas.js",
@@ -163,13 +165,15 @@
       "to": "mcp-stdio.js"
     },
     {
-      /* Paseo 桥（手机端远程接管会话）：Paseo daemon 按 ~/.paseo/config.json 把
+      /* Paseo 手机接管（手机端远程接管会话）：Paseo daemon 按 ~/.paseo/config.json 把
          acp-bridge.mjs 当 ACP provider 子进程拉起 —— 同样是**外部 Node**，asar 内路径
-         读不了。整目录带过去（bridge-info.js 是面板与桥共用的同一份纯函数真源）。
+         读不了。整目录带过去（bridge-info.js 是面板与桥共用的同一份纯函数真源；
+         本轮加上的 ui/ 与 qr.js 也一起带，resources/paseo 是一份**完整**的插件目录，
+         便于从 resources 侧直接排障）。
          路径解析见 paseo/bridge-info.js 的 bridgePaths（优先 resourcesDir/paseo）。 */
       "from": "paseo",
       "to": "paseo",
-      "filter": ["**/*.mjs", "**/*.js", "!**/node_modules/**"]
+      "filter": ["**/*.mjs", "**/*.js", "**/*.html", "**/*.css", "!**/node_modules/**"]
     },
     {
       "from": "node_modules/uiohook-napi",

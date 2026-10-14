@@ -40,6 +40,9 @@ const INSTALL_SKILL_SOURCES = {
   'llama-local-install': path.join(__dirname, '..', 'skills', 'llama-local-install', 'SKILL.md'),
   'sensenova-local-install': path.join(__dirname, '..', 'skills', 'sensenova-local-install', 'SKILL.md'),
   'remotion-local-install': path.join(__dirname, '..', 'skills', 'remotion-local-install', 'SKILL.md'),
+  /* Paseo 手机接管（应用插件 paseo-remote）：后端是官方 npm 包 @getpaseo/cli，
+     修的是「CLI 找不到 / relay 关着 / daemon 起不来 / provider 没生效」这类现场 */
+  'paseo-remote-install': path.join(__dirname, '..', 'skills', 'paseo-remote-install', 'SKILL.md'),
   'office-local-install': path.join(__dirname, '..', 'skills', 'office-local-install', 'SKILL.md'),
 }
 const INSTALL_SKILL_NAMES = new Set(Object.keys(INSTALL_SKILL_SOURCES))

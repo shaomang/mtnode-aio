@@ -2,7 +2,7 @@
   "name": "remotion-pack",
   "version": "1.0.0",
   "private": true,
-  "description": "MTNode Remotion 随包模板：宿主替换占位符后，node render.mjs 读取 render.json 渲染视频（codec=h264）。",
+  "description": "MTNode Remotion scaffold (shipped in the app package): after the host substitutes the placeholders, `node render.mjs` reads render.json and renders the video (codec=h264).",
   "type": "module",
   "scripts": {
     "render": "node render.mjs",

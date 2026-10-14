@@ -410,7 +410,9 @@ console.log("\n[3] renderer/app-plugins.js + preload.js：界面接线");
      卡片状态行与详情浮层原先那行目录都已摘掉，这里钉「不再出现」，免得日后又被加回来。 */
   hasnt(app, "async function mountPluginPopDir(pop, item)", "详情浮层不再有「安装目录」一行（目录只在安装窗里显示）");
   hasnt(app, 'I18n.t("安装目录：") + dir', "卡片状态行不再写安装目录路径");
-  has(app, "function backendCardLine(st, spec)", "卡片状态行仍在（只写启动中 / 失败原因 / 后端提示）");
+  /* 本轮需求：卡片底部不许再出现任何文字 → 状态文字行（backendCardLine）与角标整块下线 */
+  hasnt(app, "function backendCardLine(st, spec)", "卡片状态文字行已删除（卡片上不再写启动中 / 失败原因 / 后端提示）");
+  hasnt(app, "data-plugin-progress-txt", "卡片壳里不再有状态文字行元素");
   has(app, '_plugRoots = new Map()', "根目录变了 → 各插件目录缓存作废重取");
   has(app, "repaintPlugRootBar(await plugRootInfo());", "开对话框时先读根目录现状再画");
   has(app, 'data-plugin-root-open', "底部「打开插件目录」改成打开当前插件根目录");

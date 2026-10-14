@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Paseo 手机接管</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body>
+    <header>
+      <div class="hdrow">
+        <div class="ttl">Paseo 手机接管</div>
+        <button id="btn-close" class="mini" title="关闭控制台（后端照常运行）">关闭</button>
+      </div>
+      <div class="sub">手机 Paseo App 扫码后，可以直接查看并操作 MTNode 左栏的智能体会话（读消息 / 发消息 / 插话 / 终止 / 替你答审批卡）。只碰会话层，不动画布。</div>
+    </header>
+
+    <main>
+      <section id="sec-backend">
+        <h2>后端<span class="sp"></span><button id="btn-refresh" class="mini">刷新</button></h2>
+        <div id="backend-body" class="body"></div>
+      </section>
+
+      <section id="sec-pair">
+        <h2>配对二维码</h2>
+        <div id="pair-body" class="body"></div>
+      </section>
+
+      <section id="sec-provider">
+        <h2>会话接入（provider）</h2>
+        <div id="provider-body" class="body"></div>
+      </section>
+
+      <section id="sec-remote">
+        <h2>远程连接</h2>
+        <div id="remote-body" class="body"></div>
+      </section>
+
+      <section id="sec-server">
+        <h2>前置依赖 · 本机服务端</h2>
+        <div id="server-body" class="body"></div>
+      </section>
+
+      <section id="sec-log">
+        <h2>日志<span class="sp"></span><button id="btn-clearlog" class="mini">清空</button></h2>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- 二维码编码器（自研零依赖，paseo/qr.js）：挂在 window.MTNodeQR 上 -->
+    <script src="../qr.js"></script>
+    <script src="ui.js"></script>
+  </body>
+</html>

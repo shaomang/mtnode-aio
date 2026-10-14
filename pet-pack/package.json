@@ -1,7 +1,7 @@
 {
   "name": "pet-pack",
   "version": "1.0.0",
-  "description": "本目录内容**不会**打进 MTNode AIO 安装包。用户通过顶栏「插件」对话框下载安装到 `%APPDATA%/pipeline-console/.../pet/runtime/`。",
+  "description": "NOT shipped inside the MTNode AIO installer: users download it from the top-bar Plugins dialog into %APPDATA%/pipeline-console/.../pet/runtime/.",
   "main": "app.js",
   "directories": {
     "lib": "lib"

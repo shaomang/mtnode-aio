@@ -79,6 +79,10 @@ const { registerLlamaIpc, shutdownLlamaUiOnly, isLlamaProvider, ensureModel: ens
 /* 本地 TTS 后端（Breeze TTS 2）：管理服务单例不随 MTNode 退出 */
 const { registerBreezeIpc, shutdownBreezeUiOnly } = require("./breeze/main-breeze.js");
 const { registerRemotionIpc, shutdownRemotionUiOnly } = require("./remotion/main-remotion.js");
+/* Paseo 手机接管（应用插件 kind paseo，id paseo-remote）：检测 / 复用或安装 Paseo 后端、
+   配对二维码、把 MTNode 会话注册成 Paseo 的 ACP provider，并管住「远程连接」总开关。
+   sessionGate 会被 mcp() 取用（会话族闸门），故这个 require 必须早于任何 mcp() 调用。 */
+const paseoRemote = require("./paseo/main-paseo.js");
 /* 本地语音转写（官方本地 SenseVoice，跑在 dsh 运行时里）：主进程只留「转写缓存 +
    音频读盘」这条小内核，识别本身走 dsh:speech 通道（见 speech-store.js 头部口径） */
 const { registerSpeechIpc } = require("./speech-store.js");
@@ -257,6 +261,9 @@ function mcp() {
       },
       /* 会话桥：会话族（mtnode_session_*）的读路径 + SSE 事件分发 */
       sessionBridge: sessionBridge(),
+      /* 会话族闸门：「Paseo 手机接管」插件的「远程连接」总开关（默认关）。
+         卡在协议面这一层 —— 关着时任何会话请求与 SSE 都进不来，见 paseo/main-paseo.js 的 sessionGate。 */
+      sessionGate: () => paseoRemote.sessionGate(),
       /* GUI 族（mtnode_gui）不走渲染层：只有主进程拿得到 BrowserWindow 与 webContents，
          能往任意窗口注入脚本、能 capturePage 拍照（见 mcp-gui-agent.js）。 */
       gui: (action, params) => require("./mcp-gui-agent.js").run(action, params),
@@ -9161,6 +9168,15 @@ app.whenReady().then(() => {
     appRoot: __dirname,
     getDsh: () => dsh(),
   });
+  /* Paseo 手机接管（应用插件 kind paseo）：后端检测 / 自建安装 / 配对二维码 / provider 注册 /
+     远程连接总开关。daemon 是常驻单例（与 llama / music3 同口径），退出只关控制台窗。
+     getMcp 注入给它三件事：读服务端状态、一键开启、以及「断开所有远程设备」时收掉会话 SSE。 */
+  paseoRemote.registerPaseoRemoteIpc({
+    getDataDir: DATA,
+    getMainWin: () => mainWin,
+    appRoot: __dirname,
+    getMcp: () => mcp(),
+  });
   /* 本地语音转写（官方本地 SenseVoice）：识别在 dsh 运行时里跑，主进程这一层只有
      「转写缓存 + 音频读盘」（见 speech-store.js）；不再有需要起停的 ASR 后端进程 */
   registerSpeechIpc({ getDataDir: DATA });
@@ -9312,6 +9328,8 @@ app.on("before-quit", () => {
      这里只关它的控制台窗；要停服务/释放显存走插件「停止」或托盘「停止服务并退出」。 */
   try { shutdownBreezeUiOnly(); } catch {}
   try { shutdownRemotionUiOnly(); } catch {}
+  /* Paseo 手机接管：daemon 不随 MTNode 退出（手机随时要用），这里只关它的控制台窗 */
+  try { paseoRemote.shutdownPaseoRemoteUiOnly(); } catch {}
   /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
      这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */
   try { shutdownSensenovaUiOnly(); } catch {}

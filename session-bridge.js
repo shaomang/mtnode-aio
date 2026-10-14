@@ -285,6 +285,83 @@ function createSessionBridge(o) {
     answeredAsks.set(key, { sessionId: String(sessionId || ""), at: Date.now() });
   }
 
+  /* ── 提问通道自检（Paseo 桥的 --probe-question 用；不是给模型 / 第三方客户端的口）──
+     症状现场：手机上询问框不弹 / 答了回不到 MTNode，而日志里什么都看不出来。
+     自检要能区分「桥没发」「客户端不渲染」「回执送不回去」，所以这里做两件小事：
+       · probeQuestion()：**从 MTNode 这一侧**发一张货真价实的询问卡（走的就是
+         emitEvent 那条 SSE → 桥的同一根管子，帧形状与真提问逐字一致），返回卡的 id；
+       · probeAnswer(id)：把这张卡收到的回执（answers[]）取回来给自检核对。
+     卡是合成的（不经过模型），所以自检不花钱、不依赖网络，也就不会时灵时不灵。 */
+  const probeCards = new Map();
+
+  function probeQuestion(sessionId, opts) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return { ok: false, error: "缺少 sessionId" };
+    const id = "probe-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36);
+    const o = opts || {};
+    const questions = [
+      {
+        id: "q1",
+        question:
+          String(o.title || "MTNode 提问通道自检") +
+          "\n\n这是一次**自检**：手机上能答就说明询问卡这条通道通了（答案只用于核对，不影响任何会话）。",
+        header: "自检",
+        options: [{ label: "通道正常", description: "选它即代表手机端能答" }],
+        multiSelect: false,
+      },
+      {
+        id: "q2",
+        question: "顺手试一下自由文本：随便写点什么（可留空）",
+        header: "自检",
+        options: [],
+        multiSelect: false,
+      },
+    ];
+    probeCards.set(id, { sessionId: sid, at: Date.now() });
+    if (probeCards.size > 20) probeCards.delete(probeCards.keys().next().value);
+    emitEvent({ sessionId: sid, type: "question", data: { id, kind: "question", questions } });
+    return { ok: true, id, sessionId: sid, questions: questions.length, note: "已在手机上发一张自检询问卡（等待作答）" };
+  }
+
+  function probeAnswer(id) {
+    const key = String(id || "").trim();
+    let rec = key ? probeCards.get(key) || null : null;
+    let ans = key ? answerOf(key) : null;
+    if (!ans) {
+      /* 没点名（或点名的那张还没答）：回**最近一张已作答**的卡 —— 自检只关心
+         「回执有没有真的落到 MTNode」，卡的 id 由自检自己从桥那边拿。 */
+      const last = lastAnswered;
+      if (last) {
+        rec = rec || probeCards.get(last.id) || null;
+        ans = answerOf(last.id);
+      }
+    }
+    return {
+      ok: true,
+      id: key || (ans && lastAnswered ? lastAnswered.id : ""),
+      known: !!rec,
+      sessionId: rec ? rec.sessionId : (lastAnswered ? lastAnswered.sessionId : ""),
+      got: !!ans,
+      answers: ans ? ans.answers : null,
+    };
+  }
+
+  /** 询问卡的答案缓存（自检取回来核对）：由 markAnswered 一并记下 */
+  const askAnswers = new Map();
+  /** 最近一张「真的收到回执」的卡（自检不点名 id 时按它回） */
+  let lastAnswered = null;
+  function answerOf(id) {
+    return askAnswers.get(String(id || "").trim()) || null;
+  }
+  function markAnswer(id, answers, sessionId) {
+    const key = String(id || "").trim();
+    if (!key) return;
+    const list = Array.isArray(answers) ? answers : [];
+    askAnswers.set(key, { at: Date.now(), answers: list });
+    lastAnswered = { id: key, sessionId: String(sessionId || ""), at: Date.now() };
+    if (askAnswers.size > 50) askAnswers.delete(askAnswers.keys().next().value);
+  }
+
   /* ── 汇总（面板 / 探针用）────────────────────────────────────────────── */
 
   function stats() {
@@ -317,6 +394,9 @@ function createSessionBridge(o) {
     replay,
     askAnswered,
     markAnswered,
+    probeQuestion,
+    probeAnswer,
+    markAnswer,
     stats,
     _internals: { watchers, streams, lastEvents },
   };

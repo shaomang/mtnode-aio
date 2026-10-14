@@ -41,6 +41,10 @@ const MANUAL = new Map([
     "smoke-db-dsh.mjs",
     "真连 DeepSeek 官方 API（要密钥 + 出网），且凭据路径硬编码到本机某用户目录",
   ],
+  [
+    "smoke-paseo-install-real.mjs",
+    "真装 @getpaseo/cli（要出网、拉 300+ 依赖）+ 真起一份隔离 daemon；离线那条判据在 smoke-paseo-install-isolation.js",
+  ],
 ]);
 
 /* ---------------- 参数 ---------------- */

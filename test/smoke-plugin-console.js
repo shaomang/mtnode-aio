@@ -125,11 +125,9 @@ async function runBackendCard(st, spec, opts, sets) {
     constBlock(src, "BACKEND_PLUGIN_SPECS") + "\n" +
     constBlock(src, "BACKEND_INSTALL_IDS") + "\n" +
     fnBody(src, "mkPluginActBtn") + "\n" +
-    fnBody(src, "pluginErrLine") + "\n" +
-    fnBody(src, "setPluginNotice") + "\n" +
+    fnBody(src, "pluginErrText") + "\n" +
     fnBody(src, "setPluginVer") + "\n" +
     fnBody(src, "pluginVerLabel") + "\n" +
-    fnBody(src, "backendCardLine") + "\n" +
     fnBody(src, "pluginApiFn") + "\n" +
     fnBody(src, "pluginLoc") + "\n" +
     fnBody(src, "refreshBackendPluginCard");
@@ -142,7 +140,7 @@ async function runBackendCard(st, spec, opts, sets) {
   const documentStub = { createElement: (t) => mkCardEl(t) };
   const i18nStub = { t: (s) => String(s) };
   const fn = new Function(
-    "window,document,I18n,toast,_backendStarting,_backendStopping,_backendNoticeSeen,_backendLastErr,_plugRoots,plugRootWarn,plugInstallDir,openPluginInstallWindow",
+    "window,document,I18n,toast,_backendStarting,_backendStopping,_backendLastErr,_plugRoots,plugRootWarn,plugInstallDir,openPluginInstallWindow",
     code + "\nreturn refreshBackendPluginCard;",
   )(
     windowStub,
@@ -153,7 +151,6 @@ async function runBackendCard(st, spec, opts, sets) {
     sets.stopping,
     new Map(),
     new Map(),
-    new Map(),
     () => {},
     async () => ({ ok: true, dir: "C:\\x", sub: "s" }),
     async () => ({ ok: true }),
@@ -162,10 +159,7 @@ async function runBackendCard(st, spec, opts, sets) {
   const actions = mkCardEl("div");
   actions.className = "plugin-tile-actions";
   actions.setAttribute("data-plugin-actions", "1");
-  const prog = mkCardEl("div");
-  prog.setAttribute("data-plugin-progress-txt", "1");
   root.appendChild(actions);
-  root.appendChild(prog);
   await fn(root, spec, opts || {});
   const btns = actions.children.map((b) => ({
     title: b.title,
@@ -173,7 +167,12 @@ async function runBackendCard(st, spec, opts, sets) {
     hasIcon: !!b.innerHTML,
     cls: b.className,
   }));
-  return { btns, labels: btns.map((b) => b.title + (b.disabled ? "（置灰）" : "")), icons: btns.map((b) => b.hasIcon) };
+  /* root 里**除了动作区不能再长出任何节点**（本轮需求：卡片底部一个字的正文都不留）。
+     返回 textNodes 供用例断言「卡片这次重绘没有往卡片上写文字」。 */
+  const textNodes = root.children
+    .filter((c) => c !== actions)
+    .map((c) => (c.attrs && c.attrs["data-plugin-progress-txt"] !== undefined ? "progress-txt" : c.className || c.tagName));
+  return { btns, labels: btns.map((b) => b.title + (b.disabled ? "（置灰）" : "")), icons: btns.map((b) => b.hasIcon), textNodes };
 }
 
 /* 7 个本地后端插件：kind → { api 前缀, 宿主文件, 宿主 IPC 前缀 } */
@@ -265,20 +264,14 @@ const TAIL_BRIDGE = {
   has(backendCard, "disabled: starting || stopping", "启停过程中那颗按钮置灰（免得连点出第二次启停）");
   has(backendCard, "_backendStarting", "启动中状态按插件记账（跨重绘保留）");
   has(backendCard, "_backendStopping", "停止中状态同样按插件记账（按钮据此置灰）");
-  has(backendCard, "_backendLastErr", "启动 / 安装失败写进卡片状态行（不静默、不弹窗）");
-  has(pluginsSrc, "function setPluginNotice(", "有卡片角标绘制 setPluginNotice");
-  has(
-    pluginsSrc,
-    'plugin-tile-notice" data-plugin-notice hidden',
-    "卡片壳里带角标元素",
-  );
-  has(pluginsSrc, "function backendCardLine(", "卡片状态行统一口径 backendCardLine");
-  /* 本轮需求：插件界面不写安装目录 —— 卡片状态行不许再回目录路径（目录只在安装窗里显示与修改） */
-  hasnt(backendCard, 'I18n.t("安装目录：")', "卡片状态行不再写「安装目录：<路径>」");
-  ok(
-    !/_plugRoots|安装目录/.test(fnBody(pluginsSrc, "backendCardLine")),
-    "状态行源码里既没有目录缓存也没有「安装目录」字样（目录只在安装窗里显示与修改）",
-  );
+  has(backendCard, "_backendLastErr", "启动 / 安装失败仍记账（用户可见出口 = toast + 浮层日志，不静默）");
+  /* 本轮需求：卡片底部不许再出现任何文字 —— 状态文字行与「后端提示」角标整块下线 */
+  hasnt(pluginsSrc, "function backendCardLine(", "卡片状态文字行 backendCardLine 已删除");
+  hasnt(pluginsSrc, "function setPluginNotice(", "卡片角标绘制 setPluginNotice 已删除");
+  hasnt(pluginsSrc, "plugin-tile-notice", "卡片壳里不再有角标元素");
+  hasnt(pluginsSrc, "data-plugin-progress-txt", "卡片壳里不再有状态文字行元素");
+  hasnt(pluginsSrc, "data-pet-progress-txt", "桌宠那条状态行元素也一并删除");
+  hasnt(pluginsSrc, "progTxt", "再无任何往卡片状态行写字的代码路径");
 
   has(pluginsSrc, 'I18n.t(" —— 可点「控制台」看日志")', "失败时指向「控制台」看日志");
   has(pluginsSrc, "function pluginApiFn(", "桥调用统一走 pluginApiFn（缺桥不炸）");
@@ -747,6 +740,24 @@ const TAIL_BRIDGE = {
     card.labels.length === 2 && card.labels.join("|").indexOf("启用") < 0,
     "Remotion（无常驻后端）：只有「重装」+「控制台」，没有「启用」（实到 " + JSON.stringify(card.labels) + "）",
   );
+
+  /* ═════════ [12] 本轮需求：卡片底部不许再出现任何文字 ═════════
+     把几种「以前会往卡片状态行写字的」状态各真跑一遍，断言卡片根节点上
+     除了动作按钮区**没有多出任何节点**（runBackendCard 回的是 root.children 里动作区之外的节点）。 */
+  console.log("\n[12] 卡片底部无字：任何状态都不再往卡片上长文字行");
+  for (const [label, st, sets] of [
+    ["普通态", { installed: true, running: false, wantRunning: false }, mkSets()],
+    ["启用中", { installed: true, running: false, wantRunning: false }, (() => { const s = mkSets(); s.starting.add("llama"); return s; })()],
+    ["停用中", { installed: true, running: true, wantRunning: true }, (() => { const s = mkSets(); s.stopping.add("llama"); return s; })()],
+    ["带 notice", { installed: true, running: true, wantRunning: true, notice: "后端自检提示" }, mkSets()],
+    ["端口冲突", { installed: true, running: false, wantRunning: false, rootConflict: { port: 8080, liveRoot: "A", configuredRoot: "B" } }, mkSets()],
+  ]) {
+    const c = await runBackendCard(st, LLAMA_SPEC, {}, sets);
+    ok(
+      c.textNodes.length === 0,
+      label + "：卡片上除动作区外没有任何节点（实到 " + JSON.stringify(c.textNodes) + "）",
+    );
+  }
 
   console.log(
     "\n" + (fails ? "FAILED " + fails + " / " + checks : "ALL PASS " + checks) + " checks",

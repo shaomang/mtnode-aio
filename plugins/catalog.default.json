@@ -121,6 +121,23 @@
       }
     },
     {
+      "id": "paseo-remote",
+      "kind": "paseo",
+      "handler": "paseo",
+      "order": 80,
+      "version": "1.0.0",
+      "minAppVersion": "1.5.0",
+      "icon": "paseo-remote.png",
+      "title": {
+        "zh": "Paseo 手机接管",
+        "en": "Paseo Phone Handoff"
+      },
+      "subtitle": {
+        "zh": "手机 Paseo App 扫码后直接接管 MTNode 的智能体会话：读消息、发消息、插话、终止、替你答审批卡。插件复用或安装 Paseo 后端、在控制台里出配对二维码，并把 MTNode 会话注册成 Paseo 的 ACP provider。只碰会话层，不动画布。",
+        "en": "Scan once with the Paseo phone app and take over MTNode agent sessions: read, send, steer mid-turn, stop, and answer the cards that wait for a human. The plugin reuses or installs the Paseo backend, shows the pairing QR code in its console, and registers MTNode sessions as an ACP provider in Paseo. Sessions only — the canvas is never touched."
+      }
+    },
+    {
       "id": "remotion",
       "kind": "remotion",
       "handler": "remotion",
