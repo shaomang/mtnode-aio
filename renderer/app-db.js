@@ -3867,6 +3867,14 @@ function dshRunOnce(input, opts) {
           if (msg.type === "tool" && msg.data && msg.data.callId)
             runCallArgs[msg.data.callId] = msg.data.args || "";
           try { traceFeedEvent(runKey, msg.type, msg.data || {}); } catch {}
+          /* 会话桥（Paseo 手机端）：把**已经在跑的那一轮**的事件复制一份推给主进程 → SSE。
+             这里是唯一同时拿得到 runKey 与 msg 的收口点，所以归属会话（as…）在这一句里定死，
+             下游（session-bridge.js → 桥）不用再猜。没人观察时 isRemoteWatching() 为假，
+             这一次函数调用都没有额外开销（正常本机使用完全不进这条链）。 */
+          try {
+            if (window.MTNodeSession && typeof window.MTNodeSession.onRunEvent === "function")
+              window.MTNodeSession.onRunEvent(runKey, msg.type, msg.data || {}, msg.reqId);
+          } catch {}
           if (opts.onEvent) {
             try { opts.onEvent(msg.type, msg.data || {}); } catch {}
           }

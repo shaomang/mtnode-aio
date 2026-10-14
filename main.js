@@ -255,6 +255,8 @@ function mcp() {
         if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("mcp:event", ev);
         else if (mcpHost) mcpHost.settle({ id: ev.id, error: "MTNode 主窗口不可用，无法执行这次调用" });
       },
+      /* 会话桥：会话族（mtnode_session_*）的读路径 + SSE 事件分发 */
+      sessionBridge: sessionBridge(),
       /* GUI 族（mtnode_gui）不走渲染层：只有主进程拿得到 BrowserWindow 与 webContents，
          能往任意窗口注入脚本、能 capturePage 拍照（见 mcp-gui-agent.js）。 */
       gui: (action, params) => require("./mcp-gui-agent.js").run(action, params),
@@ -535,6 +537,9 @@ function mutateConfigFile(fp, fn) {
    背景与三条硬口径（懒加载 / 不写未加载的会话 / 写序先会话体后索引）写在
    agent-sessions-store.js 文件头。这里只负责把它接到 IPC 与启动链上。 */
 const { createAgentSessionsStore } = require("./agent-sessions-store.js");
+const { createSessionBridge } = require("./session-bridge.js");
+/* 「Paseo 桥」的落点与配置片段真源（与 paseo/acp-bridge.mjs 共用同一份纯函数） */
+const paseoInfo = require("./paseo/bridge-info.js");
 let _sessionsStore = null;
 function sessionStore() {
   if (!_sessionsStore) {
@@ -982,6 +987,22 @@ ipcMain.handle("config:patchProviders", (e, opts) =>
    不读正文）—— 工作目录体检修正旧路径时用它：这类会话既没读回正文、也没被标脏，
    session:save 会整条跳过，改动就落不了盘（弹窗每次启动重现的根因）。四条都由
    agent-sessions-store.js 实现。 */
+/* ── 会话桥（session-bridge.js）：Paseo 远程接管 MTNode 会话的主进程回路 ────────
+   读路径走文件层（列会话 / 读历史，窗口不在也能读），写路径仍推帧给渲染层执行
+   （与用户在界面上点发送同一套执行器）。渲染层把在跑那一轮的事件复制一份经
+   mcp:stream 送上来，这里转给观察者（SSE，见 mcp-server.js 的 /session/stream）。
+   这一族工具不进 tools/list，只给 Paseo 桥用（共识）。 */
+let _sessionBridge = null;
+function sessionBridge() {
+  if (!_sessionBridge) {
+    _sessionBridge = createSessionBridge({
+      store: sessionStore(),
+      log: (m) => errLog(String(m)),
+    });
+  }
+  return _sessionBridge;
+}
+
 ipcMain.handle("session:load", () => sessionStore().readIndex());
 ipcMain.handle("session:save", (e, payload) => sessionStore().saveSessions(payload || {}));
 ipcMain.handle("session:body", (e, ids) => sessionStore().loadSessions(ids));
@@ -8427,6 +8448,108 @@ ipcMain.handle("mcp:selfTest", () =>
 
 /* 渲染层执行回执（mcp-bridge.js 跑完一帧后回传） */
 ipcMain.handle("mcp:interact", (event, params) => mcp().settle(params || {}));
+
+/* 会话实时流：渲染层把在跑那一轮的 dsh 事件复制一份（带 sessionId 归属）推上来，
+   转给观察者（SSE）。**单向 send、不 handle** —— 每次事件同步回执等于给热路径加一次往返。
+   没有任何观察者时这一条秒回，不做多余的活（见 session-bridge.js 的 emitEvent）。 */
+ipcMain.on("mcp:stream", (event, ev) => {
+  try {
+    if (mcpHost) mcpHost.onSessionEvent(ev);
+  } catch (e) {
+    errLog("[mcp] 会话事件分发失败：" + ((e && e.message) || e));
+  }
+});
+
+/* ── 「Paseo 桥」面板（扩展能力管理 → 服务端 页里那一块）────────────────────────
+   面板要的是「桥脚本在哪、用哪个 Node 拉起、数据目录是哪个、provider 片段长什么样」，
+   这些都是**纯路径计算**（paseo/bridge-info.js，与桥自己的 --config / --check 同一份），
+   不需要拉起桥进程。真探活由面板上的「自检」按钮跑 --check（主进程 spawn，超时兜底）。 */
+ipcMain.handle("paseo:status", () => {
+  try {
+    const st = paseoInfo.bridgeStatus({
+      appRoot: __dirname,
+      resourcesDir: process.resourcesPath || "",
+      dataDir: DATA(),
+      nodeBin: process.execPath,
+    });
+    return Object.assign(st, {
+      /* 桥进程是否正在被 Paseo 拉起：桥那边没有常驻登记，这里只报「本机有没有装 Paseo」
+         与「会话桥有没有观察者」—— 后者才是「手机正在接」的真实信号。 */
+      watchers: (() => {
+        try {
+          const b = _sessionBridge ? _sessionBridge.stats() : null;
+          return b ? b.watchers : 0;
+        } catch {
+          return 0;
+        }
+      })(),
+      sessionTools: (() => {
+        try {
+          return require("./session-tools.js").SESSION_TOOLS.length;
+        } catch {
+          return 0;
+        }
+      })(),
+      mcpRunning: (() => {
+        try {
+          return !!mcp().status().running;
+        } catch {
+          return false;
+        }
+      })(),
+    });
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
+
+/* 桥自检：真跑一次 `node acp-bridge.mjs --check`（读数据目录 → 找服务端端口与令牌 →
+   探活），把输出原样回面板。超时 15 秒（探活本身 3 秒兜底）。 */
+ipcMain.handle("paseo:check", async () => {
+  const { spawn } = require("child_process");
+  const paths = paseoInfo.bridgePaths({
+    appRoot: __dirname,
+    resourcesDir: process.resourcesPath || "",
+    dataDir: DATA(),
+    nodeBin: process.execPath,
+  });
+  if (!paths.script) return { ok: false, error: "找不到桥脚本（paseo/acp-bridge.mjs）" };
+  return new Promise((resolve) => {
+    let out = "";
+    let err = "";
+    let done = false;
+    const child = spawn(paths.node, [paths.script, "--check"], {
+      env: Object.assign({}, process.env, { MTNODE_DATA_DIR: DATA() }),
+      windowsHide: true,
+    });
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      try {
+        child.kill();
+      } catch {}
+      resolve({ ok: false, error: "自检超时（15 秒）", stdout: out, stderr: err });
+    }, 15000);
+    child.stdout.on("data", (c) => {
+      out += String(c);
+    });
+    child.stderr.on("data", (c) => {
+      err += String(c);
+    });
+    child.on("error", (e) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ ok: false, error: (e && e.message) || String(e) });
+    });
+    child.on("close", (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ ok: code === 0, code, stdout: out, stderr: err });
+    });
+  });
+});
 
 /* ── 会话自己的浏览器（browser_* 工具面的宿主侧控制）────────────────────────
    进程与 CDP 都在网关进程里（dsh/gateway/browser-host.mjs）；主进程只透传并

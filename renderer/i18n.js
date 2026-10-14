@@ -128,9 +128,15 @@
     "重试：右键这枚话筒 →「下载 / 检查语音模型」或「重新检查语音服务」":
       "To retry: right-click the mic → “Download / check the speech model” or “Recheck speech service”",
     /* 同一轮的另外三句 toast（都出现在「说了话却没落字」的那条链上）：失焦没处写、队列积压、
-       模型还没下完就按了持续转录 —— 每句都把「现在该做什么」写清楚，不给一个空提示。 */
-    "没找到要写入的输入框：先把光标点进文本框再说话":
-      "No input box to write into: put the caret in a text box first, then speak",
+       模型还没下完就按了持续转录 —— 每句都把「现在该做什么」写清楚，不给一个空提示。
+       本轮改口径（落点跟随光标、绝不抢焦点）：第一句不再是「先把光标点进文本框再说话」，
+       而是「字先留住了，点进任意输入框即补写」—— 一个字都不会丢，所以不能再吓唬用户。 */
+    "现在没有可写入的输入框：识别结果先留住，点进任意输入框即补写":
+      "No input box to write into right now: the result is held and written into whatever input box you click into",
+    /* 浮窗上「挂住等落字」那一行（本轮新增）：会说几句、去哪儿补 */
+    "等待落字 ": "Waiting to be written: ",
+    " 句（点进输入框即补写）": " line(s) — click into an input box to flush",
+    "语音输入已关闭": "Voice input is off",
     "语音输入积压过多：先让它把已录的写完（或点回文本框）":
       "Voice input is backed up: let it finish the audio already recorded (or click back into a text box)",
     "语音模型还没下载完：先让它下完，就绪后会自动开始录音":
@@ -2852,6 +2858,39 @@
     "令牌": "token",
     "stdio 配置": "stdio config",
     "MCP 服务端状态不可用（": "MCP server status unavailable (",
+    /* ── Paseo 桥（手机端远程接管会话；面板在「服务端」页，桥与桥脚本见 paseo/）── */
+    "Paseo 桥 · 远程接管会话（手机端）": "Paseo bridge · take over sessions from your phone",
+    "正在远程接管 ": "Remote takeover: ",
+    " 条会话": " session(s)",
+    "待机（手机没在接）": "Idle (no phone attached)",
+    "Paseo 桥状态不可用（": "Paseo bridge status unavailable (",
+    "手机上用 Paseo App 经它自带的 relay 扫码配对，之后就能看并接管 MTNode 的智能体会话：读消息与工具调用、发消息、中途插话、终止本轮，以及接管工具审批 / 画布确认 / 模型提问。只碰会话层，不动画布。":
+      "Pair the Paseo app on your phone through its built-in relay, then you can watch and take over MTNode agent sessions: read messages and tool calls, send, steer mid-turn, stop a turn, and answer tool approvals / canvas confirmations / model questions. Sessions only — the canvas is never touched.",
+    "桥脚本": "Bridge script",
+    "（没找到）": "(not found)",
+    "脚本状态": "Script state",
+    "文件不存在（打包白名单少了 paseo/？）": "File missing (is paseo/ missing from the packaging whitelist?)",
+    "拉起用的 Node": "Node used to launch it",
+    "数据目录": "Data directory",
+    "协议 / 最低 Paseo 版本": "Protocol / minimum Paseo version",
+    "会话族工具": "Session-family tools",
+    " 个（只给桥内部用，不进 MCP 的 tools/list）": " (bridge-internal only, never listed in MCP tools/list)",
+    "配对与「添加主机」在 Paseo 自己的界面里做（relay 或 Tailscale 直连都行）；MTNode 这一侧只负责把会话交给桥。桥连不上时会明确报错，不会静默失败。":
+      "Pairing and \"add host\" happen inside Paseo itself (relay or a direct Tailscale connection); MTNode only hands sessions to the bridge. When the bridge cannot reach MTNode it reports the reason instead of failing silently.",
+    "Paseo provider 配置片段（~/.paseo/config.json，改完跑 paseo reload）":
+      "Paseo provider snippet (~/.paseo/config.json, run paseo reload after editing)",
+    "把这段合并进 Paseo 的配置：桥脚本会自己从数据目录读端口与令牌，不用手填地址。":
+      "Merge this into Paseo's config: the bridge reads the port and token from the data directory itself, so no address to fill in.",
+    "桥自检：通过": "Bridge self-check: passed",
+    "桥自检：未通过": "Bridge self-check: failed",
+    "（没有输出）": "(no output)",
+    "复制 provider 片段": "Copy provider snippet",
+    "Paseo provider 配置": "Paseo provider config",
+    "桥自检": "Bridge self-check",
+    "桥自检通过": "Bridge self-check passed",
+    "桥自检未通过：见下方明细": "Bridge self-check failed: see details below",
+    "复制自检命令": "Copy self-check command",
+    "自检命令": "self-check command",
     "MCP 服务端已开启": "MCP server started",
     "MCP 服务端已关闭": "MCP server stopped",
     "开启服务端": "Start server",

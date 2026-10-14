@@ -61,8 +61,7 @@ const PLUGIN_FILES = [
 /** gui 族的执行器在主进程（只有它拿得到 BrowserWindow / webContents）。 */
 const LOCAL_TOOLS = ["mtnode_gui"];
 
-/* ── [1] 契约不漂移 + 工具集 ─────────────────────────────────────────────── */
-console.log("[1] 契约由插件定义生成（不漂移）· 工具集");
+/* ── [1] 契约不漂移 + 工具集 ─────────────────────────────────────────────── */console.log("[1] 契约由插件定义生成（不漂移）· 工具集");
 {
   const r = spawnSync(process.execPath, [abs("scripts/build-mcp-contract.mjs"), "--check"], {
     cwd: ROOT,
@@ -304,6 +303,33 @@ console.log("[4] 服务端本体：起停 / 回环 / 令牌落点");
     ok(/mcp-audit/.test(plugins) || /最近调用（审计/.test(plugins), "面板展示审计入口");
     ok(/s\.token/.test(plugins) && /mcpCopy\(s\.token/.test(plugins), "令牌可看可复制");
     ok(!/point-out|outside-click/.test(plugins), "面板不引入点外部即关（persistent 口径）");
+
+    /* 「Paseo 桥」（手机端远程接管会话）：与服务端同一个页 —— 桥走的正是这个服务端的
+       会话族。面板要有：脚本落点 / 真 Node / 数据目录 / 兼容版本 / provider 片段 / 自检。 */
+    ok(/paintPaseoBridgePanel/.test(plugins), "服务端页里有「Paseo 桥」那一块");
+    for (const s of [
+      "Paseo 桥 · 远程接管会话（手机端）",
+      "桥脚本",
+      "拉起用的 Node",
+      "协议 / 最低 Paseo 版本",
+      "复制 provider 片段",
+      "桥自检",
+      "Paseo provider 配置片段（~/.paseo/config.json，改完跑 paseo reload）",
+    ]) {
+      ok(plugins.includes('I18n.t("' + s + '")') || plugins.includes('"' + s + '"'), "桥面板文案：" + s);
+    }
+    ok(/window\.api\.paseoStatus/.test(plugins) && /window\.api\.paseoCheck/.test(plugins), "面板走 paseoStatus / paseoCheck 两个入口");
+    const bridgeInfo = read("paseo/bridge-info.js");
+    ok(
+      /extends: "acp"/.test(bridgeInfo) && /agents[\s\S]{0,40}providers/.test(bridgeInfo),
+      "provider 片段 = agents.providers.<id> + extends:acp（Paseo 认的接入协议）",
+    );
+    ok(
+      /paseo\/acp-bridge\.mjs/.test(bridgeInfo) && /resourcesDir/.test(bridgeInfo),
+      "片段里的脚本路径同时认打包态（resources/paseo/）与开发态（项目根 paseo/）",
+    );
+    ok(/MTNODE_DATA_DIR/.test(bridgeInfo), "片段带上数据目录环境变量（桥据此找端口与令牌）");
+
     const settings = read("renderer/app-settings.js");
     ok(/refreshExtInventory/.test(settings), "设置里仍走扩展能力管理入口（不另加内联清单）");
 

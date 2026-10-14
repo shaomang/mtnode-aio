@@ -29,9 +29,13 @@ const http = require("http");
 const crypto = require("crypto");
 
 const SCHEMAS = require("./mcp-tool-schemas.js").MCP_TOOL_SCHEMAS;
+const { SESSION_TOOLS, SESSION_TOOL_BY_NAME } = require("./session-tools.js");
 const CONTRACT = JSON.parse(
   fs.readFileSync(path.join(__dirname, "mcp-tools.json"), "utf8"),
 );
+
+/** SSE（会话实时流）的心跳间隔：15 秒一句注释行，穿过任何空闲超时 */
+const SSE_HEARTBEAT_MS = 15000;
 
 const PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -155,6 +159,9 @@ function checkArgs(schema, args) {
  * @param {(action:string, params:object)=>Promise<any>} [o.gui]  GUI 族（family "gui"）的执行器：
  *   这一族不在渲染层跑，由主进程直接操作窗口（main.js 注入 mcp-gui-agent.js 的 run）。
  *   没注入时 gui 族会明确报错，而不是静默失败。
+ * @param {object} [o.sessionBridge]  「会话桥」的主进程回路（session-bridge.js 的实例）：
+ *   会话族（mtnode_session_*）的读路径走它（文件层），写路径仍推帧给渲染层。
+ *   没注入时会话族整体不可用（明确报错），其余工具不受影响。
  * @param {(line:string)=>void} [o.log]
  */
 function createMcpHost(o) {
@@ -164,6 +171,8 @@ function createMcpHost(o) {
   const packaged = !!o.packaged;
   const sendToRenderer = o.sendToRenderer;
   const guiRun = typeof o.gui === "function" ? o.gui : null;
+  /** 会话桥（session-bridge.js）：会话族的读路径 + SSE 事件分发都交给它 */
+  const sessionBridge = o.sessionBridge || null;
   const log = typeof o.log === "function" ? o.log : () => {};
   const statePath = path.join(dataDir, "mcp-server.json");
   const auditDir = path.join(dataDir, "mcp-audit");
@@ -177,6 +186,8 @@ function createMcpHost(o) {
   /** 每张画布上一次被读到的内容哈希（MCP 侧的乐观并发：写前比对） */
   const canvasHashes = new Map();
   const sessions = new Map();
+  /** 会话实时流（SSE）的在途连接：streamId → { sessionId, res, timer } */
+  const sseClients = new Map();
   const recent = [];
   let capture = [];
   let calls = 0;
@@ -443,14 +454,23 @@ function createMcpHost(o) {
       args: safeJson(args, 200),
     };
     const t0 = Date.now();
-    const spec = (CONTRACT.tools || []).find((t) => t.name === name);
+    /* 会话族（mtnode_session_*）的参数表手写在 session-tools.js：它不在生成契约里
+       （真源是网关插件，网关不认识左栏会话），因此也不进 tools/list —— 走 POST /ctl 调用。 */
+    const sesSpec = SESSION_TOOL_BY_NAME[name] || null;
+    const spec = sesSpec || (CONTRACT.tools || []).find((t) => t.name === name);
     if (!spec) {
       const ex = EXCLUDED_TOOLS.find((x) => String(name).startsWith(x.prefix));
       const msg = ex ? `本轮不导出 ${name}：${ex.reason}` : `未知工具：${name}`;
       audit(Object.assign({}, auditBase, { ok: false, ms: Date.now() - t0, error: msg }));
       throw mcpFail(-32601, msg);
     }
-    const op = TOOL_OPS[name];
+    const op = TOOL_OPS[name] || (sesSpec ? {
+      op: sesSpec.op,
+      family: "session",
+      write: !!sesSpec.write,
+      local: true,
+      session: true,
+    } : null);
     if (!op) {
       const msg = `工具 ${name} 没有接线（TOOL_OPS 缺条目）`;
       audit(Object.assign({}, auditBase, { ok: false, ms: Date.now() - t0, error: msg }));
@@ -470,6 +490,7 @@ function createMcpHost(o) {
 
     const run = async () => {
       let params = Object.assign({}, rest);
+      if (op.session) return sessionToolCall(sesSpec, params, ctx);
       if (op.family === "canvas") {
         if (target) params.canvas = target;
         if (op.write && baseHash) params.baseHash = baseHash;
@@ -537,6 +558,168 @@ function createMcpHost(o) {
       audit(Object.assign({}, auditBase, { ok: false, ms: Date.now() - t0, error: oneLine(msg, 300) }));
       throw e;
     }
+  }
+
+  /* ── 会话族（mtnode_session_*）─────────────────────────────────────────────
+     读走主进程文件层（session-bridge.js，窗口不在也能读），
+     写走既有那条帧回路（推给渲染层 → 与用户在界面上点发送同一套执行器）。
+     这一族**不进 tools/list**（共识：只给 Paseo 桥内部用，走 POST /ctl）。     */
+
+  function sessionBridgeOf(opName) {
+    if (!sessionBridge) {
+      throw mcpFail(
+        -32603,
+        "会话桥不可用：" + opName + " 需要主进程注入 session-bridge.js（见 main.js 的 createMcpHost）",
+      );
+    }
+    return sessionBridge;
+  }
+
+  async function sessionToolCall(spec, args, ctx) {
+    const b = sessionBridgeOf(spec.name);
+    const a = args && typeof args === "object" ? args : {};
+    switch (spec.op) {
+      case "sessionList": {
+        const out = b.listSessions();
+        const limit = Math.max(1, Math.min(200, Number(a.limit) || 60));
+        const list = (out.sessions || [])
+          .filter((s) => (a.includeArchived ? true : !s.archived))
+          .slice(0, limit);
+        return { ok: true, activeId: out.activeId, count: list.length, total: out.count, sessions: list };
+      }
+      case "sessionRead":
+        return b.readSessionBody(a.sessionId, a);
+      case "sessionWatch": {
+        const on = a.on === undefined ? true : !!a.on;
+        const sid = String(a.sessionId || "");
+        if (!on) {
+          const removed = [];
+          for (const [id, rec] of sseClients) {
+            if (rec.sessionId !== sid) continue;
+            closeSse(id, "客户端要求停止观察");
+            removed.push(id);
+          }
+          return { ok: true, watching: false, sessionId: sid, closed: removed };
+        }
+        return {
+          ok: true,
+          watching: true,
+          sessionId: sid,
+          watchers: b.countWatchers(sid),
+          hint: "实时事件在 GET /session/stream?sessionId=" + sid + "（SSE，带同一枚 Bearer token）",
+        };
+      }
+      case "sessionState":
+        return b.stats();
+      case "sessionModels": {
+        /* 供应商与模型清单：真源在渲染层（服务商配置 + 官方目录 S.providerCatalog），
+           走帧回路取一次；渲染层不在时明确报错，不回一份凭空造的清单。 */
+        const out = await callRenderer("sessionModels", {}, {
+          sessionId: ctx.sessionId,
+          clientId: ctx.clientId,
+          write: false,
+        });
+        return out;
+      }
+      case "sessionSend":
+      case "sessionCreate":
+      case "sessionSteer":
+      case "sessionStop":
+      case "sessionApproval": {
+        const reply = await callRenderer(spec.op, a, {
+          sessionId: ctx.sessionId,
+          clientId: ctx.clientId,
+          write: true,
+        });
+        if (spec.op === "sessionApproval" && a.id) {
+          b.markAnswered(a.id, a.sessionId);
+        }
+        return reply;
+      }
+      default:
+        throw mcpFail(-32603, "会话族没有接线：" + spec.name + " → " + spec.op);
+    }
+  }
+
+  /* ── 会话实时流（SSE）──────────────────────────────────────────────────── */
+
+  function sseWrite(res, text) {
+    try {
+      res.write(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function closeSse(streamId, why) {
+    const rec = sseClients.get(streamId);
+    if (!rec) return false;
+    sseClients.delete(streamId);
+    clearInterval(rec.timer);
+    try {
+      rec.res.end();
+    } catch {
+      /* 已经断了 */
+    }
+    if (sessionBridge) {
+      sessionBridge.unwatch(streamId);
+      /* 最后一位观察者走了 → 告诉渲染层停推（别让它白转一份事件） */
+      if (sessionBridge.countWatchers(rec.sessionId) === 0) watchInRenderer(rec.sessionId, false);
+    }
+    log("[mcp] 会话流关闭 stream=" + streamId + (why ? "（" + why + "）" : ""));
+    return true;
+  }
+
+  /** 告诉渲染层「这条会话有没有人在看」。**不 await、不抛**：SSE 的开合不能被它拖住；
+   *  推不出去（窗口关了）也没关系 —— 渲染层没在推时这边本来就收不到事件。 */
+  function watchInRenderer(sessionId, on) {
+    try {
+      callRenderer("sessionWatch", { sessionId: sessionId, on: !!on }, {
+        sessionId: "sse:" + sessionId,
+        clientId: "paseo-bridge",
+        write: true,
+      }).catch(() => {});
+    } catch {
+      /* 渲染层不可用：观察者仍在，只是不会有事件 */
+    }
+  }
+
+  function openSse(req, res, url) {
+    const q = new URLSearchParams(String(url.split("?")[1] || ""));
+    const sid = String(q.get("sessionId") || "").trim();
+    if (!sessionBridge) {
+      return sendJson(res, 503, { ok: false, error: "会话桥不可用（主进程没有注入 session-bridge.js）" });
+    }
+    if (!sid) return sendJson(res, 400, { ok: false, error: "缺少 sessionId" });
+    const first = sessionBridge.countWatchers(sid) === 0;
+    const streamId = "sse-" + randHex(12);
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    sseWrite(res, ": mtnode session stream " + streamId + " session=" + sid + "\n\n");
+    const sink = (text) => {
+      if (!sseWrite(res, text)) closeSse(streamId, "写失败");
+    };
+    sessionBridge.watch(sid, streamId, sink);
+    const timer = setInterval(() => {
+      if (!sseWrite(res, ": ping " + Date.now() + "\n\n")) closeSse(streamId, "心跳失败");
+    }, SSE_HEARTBEAT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();
+    sseClients.set(streamId, { sessionId: sid, res, timer });
+    /* 补一屏：这一轮已经发生过的事（重连 / 手机刚打开时不用干等下一次事件） */
+    if (String(q.get("replay") || "1") !== "0") {
+      for (const ev of sessionBridge.replay(sid)) sseWrite(res, "data: " + JSON.stringify(ev) + "\n\n");
+    }
+    /* 第一位观察者到位 → 告诉渲染层「开始推这条会话的事件」（没有人看时它一个字节都不推） */
+    if (first) watchInRenderer(sid, true);
+    const bye = () => closeSse(streamId, "客户端断开");
+    req.on("close", bye);
+    req.on("error", bye);
+    return undefined;
   }
 
   /* ── 资源读取 ─────────────────────────────────────────────────────────── */
@@ -611,7 +794,31 @@ function createMcpHost(o) {
       case "ping":
         return {};
       case "tools/list":
+        /* 会话族**刻意不在这里**：它只给 Paseo 桥内部用（走 POST /ctl 的
+           tools/call 或 session/* 扁平方法），不污染第三方客户端的工具表。 */
         return { tools: toolList() };
+      case "session/tools":
+        return { tools: SESSION_TOOLS.map((t) => ({ name: t.name, description: t.description })) };
+      case "session/list":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_list, params || {}, ctx);
+      case "session/read":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_read, params || {}, ctx);
+      case "session/watch":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_watch, params || {}, ctx);
+      case "session/send":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_send, params || {}, ctx);
+      case "session/create":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_create, params || {}, ctx);
+      case "session/steer":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_steer, params || {}, ctx);
+      case "session/stop":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_stop, params || {}, ctx);
+      case "session/approval":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_approval, params || {}, ctx);
+      case "session/models":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_models, params || {}, ctx);
+      case "session/state":
+        return sessionToolCall(SESSION_TOOL_BY_NAME.mtnode_session_state, params || {}, ctx);
       case "tools/call": {
         const name = String((params && params.name) || "");
         /* 工具执行 / 参数校验失败按 MCP 口径回报：**JSON-RPC 成功 + isError:true**
@@ -660,13 +867,19 @@ function createMcpHost(o) {
 
   /* ── HTTP ─────────────────────────────────────────────────────────────── */
 
+  /** 令牌比对（定长比较，避免时序侧信道）。SSE 那条 GET 也用它比 query 里的 token。 */
+  function tokenEquals(got) {
+    const a = Buffer.from(String(got || ""));
+    const b = Buffer.from(String((state && state.token) || ""));
+    if (!a.length || a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  }
+
   function authorized(req) {
     const h = String(req.headers["authorization"] || "");
     const m = /^Bearer\s+(.+)$/i.exec(h);
     if (!m) return false;
-    const got = Buffer.from(m[1]);
-    const want = Buffer.from(state.token);
-    return got.length === want.length && crypto.timingSafeEqual(got, want);
+    return tokenEquals(m[1]);
   }
 
   function sendJson(res, code, obj, extraHeaders) {
@@ -751,6 +964,17 @@ function createMcpHost(o) {
     }
     if (url === "/health") {
       return sendJson(res, 200, { ok: true, port, pid: process.pid });
+    }
+    /* 会话实时流（SSE）：会话族专用。EventSource 给不了自定义头，所以这一条
+       允许把同一枚 Bearer token 放进 query（token=…）—— 因此它必须**先于**下面那道
+       全局请求头检查（否则永远走不到这里就 401 了）；其余路径一律只认请求头。 */
+    if (req.method === "GET" && url === "/session/stream") {
+      const q = new URLSearchParams(String(req.url || "").split("?")[1] || "");
+      const t = String(q.get("token") || "");
+      if (!authorized(req) && !(t && tokenEquals(t))) {
+        return sendJson(res, 401, { ok: false, error: "缺少或错误的 Bearer token" });
+      }
+      return openSse(req, res, req.url);
     }
     if (!authorized(req)) {
       return sendJson(res, 401, { ok: false, error: "缺少或错误的 Bearer token" });
@@ -847,6 +1071,10 @@ function createMcpHost(o) {
       auditDir,
       statePath,
       stdioCommand: stdioCommand(),
+      /* 会话族（Paseo 桥用）：这一族不进 tools/list，单独报计数 */
+      sessionTools: SESSION_TOOLS.length,
+      sessionStreams: sseClients.size,
+      sessionBridge: sessionBridge ? sessionBridge.stats() : null,
       lastError,
     };
   }
@@ -915,6 +1143,8 @@ function createMcpHost(o) {
       p.reject(new Error("MCP 服务端已关闭"));
     }
     pending.clear();
+    /* 会话实时流一并收尾：观察者不该留在一个已经停掉的监听上 */
+    for (const id of [...sseClients.keys()]) closeSse(id, "服务端关闭");
     const s = server;
     server = null;
     port = 0;
@@ -1037,6 +1267,12 @@ function createMcpHost(o) {
     readAudit,
     readCapture: (limit) => capture.slice(-Math.max(1, Math.min(200, limit || 100))),
     settle,
+    /** 渲染层推上来的会话事件（IPC mcp:stream）→ 观察者（SSE）。
+     *  没有观察者时秒回 { dropped:true }，不做任何多余的活。 */
+    onSessionEvent: (ev) => {
+      if (!sessionBridge) return { ok: false, error: "会话桥不可用" };
+      return sessionBridge.emitEvent(ev);
+    },
     selfTest,
     /** 主进程退出时收尾（关监听 + 清审计目录外的临时态） */
     dispose: () => stop(),

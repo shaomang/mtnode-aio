@@ -363,6 +363,182 @@ function flushDeferredMarkCanvas() {
   S._deferCanvasForMarkEdit = false;
   if (!isMarkTextEditing()) renderCanvas();
 }
+/* ── 节点输入框的焦点守卫（本次需求：保存后输入框失焦）───────────────────────────
+ * 现场：画布上只要有一颗「接了上游且开了自动保存」的保存节点，每次自动保存
+ * （scheduleSave → 250ms → persist 落盘成功）都会调 autoSaveSaves()，它落盘后
+ * 走 renderCanvas()；而整幅重建干的第一件事就是把 activeElement blur 掉再拆节点 DOM。
+ * 于是「正在打字的输入框」被换成新元素：字还在、光标没了，中文输入法连组合态一起断。
+ * 画布上没有这类保存节点的机器永不重绘 —— 这就是「对方必现、本机复现不了」的全部差别。
+ * 口径：① 有焦点在舞台输入控件（含输入法组合态）时，**会拆 DOM 的重绘**推迟，
+ *       编辑结束（失焦 / 组合结束）补一拍；② 万一真重建（形状真变了 / 强制），
+ *       重建后按「节点 id + 字段序号」把焦点、光标与选区原位恢复。
+ * 复用快速通道不拆 DOM，照旧即时渲染，不受本闸影响。
+ * 闸门只认「可写字段 + 结构没变」这两条（canvasFieldFocused / canvasMountSetIdle）：
+ * 按节点头部按钮（✕ 删节点 / ▶ 跑节点）不算编辑中，删节点 / 新建 / 撤销这类结构变化
+ * 一刻都不推迟 —— 否则删掉的节点会一直留在画面上，看起来就是「节点删不掉」。 */
+function canvasStageFieldEl() {
+  let el = document.activeElement;
+  for (let i = 0; i < 10 && el; i++) {
+    if (el.id === "stage") return el;
+    el = el.parentElement || el.parentNode || null;
+  }
+  return null;
+}
+function isCanvasFieldEl(el) {
+  if (!el || el === document.body) return false;
+  if (typeof el.isContentEditable === "boolean" && el.isContentEditable) return true;
+  const tag = String(el.tagName || "").toUpperCase();
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") {
+    const t = String(el.type || "").toLowerCase();
+    return t !== "checkbox" && t !== "radio" && t !== "button" && t !== "file";
+  }
+  return false;
+}
+/* 光标 / 选区：只有 textarea 与文本类 input 有 setSelectionRange；别的控件给 null */
+function canvasFieldRange(el) {
+  try {
+    if (!el || typeof el.selectionStart !== "number") return null;
+    return { start: el.selectionStart, end: el.selectionEnd };
+  } catch (_) {
+    return null;
+  }
+}
+/* 字段序号：同一颗节点上的第几个可写输入（重建后按同序号找回同一个框） */
+function canvasFieldIndex(body, el) {
+  if (!body || !body.querySelectorAll) return 0;
+  let list = null;
+  try {
+    list = body.querySelectorAll("input, textarea, select");
+  } catch (_) {
+    return 0;
+  }
+  let i = 0;
+  const n = list && typeof list.length === "number" ? list.length : 0;
+  for (; i < n; i++) if (list[i] === el) return i;
+  return -1;
+}
+/* 重建前快照：只在「舞台内的输入控件」上生效（顶栏 / 侧栏 / 弹窗的输入与本画布重建无关） */
+function snapshotCanvasFieldFocus() {
+  const el = document.activeElement;
+  if (!isCanvasFieldEl(el) || !canvasStageFieldEl()) return null;
+  const host =
+    el.closest && el.closest(".wf-node")
+      ? el.closest(".wf-node")
+      : el.closest && el.closest(".super-shell")
+        ? el.closest(".super-shell")
+        : null;
+  const own =
+    el.parentElement &&
+    el.parentElement.classList &&
+    el.parentElement.classList.contains("n-body")
+      ? el.parentElement
+      : null;
+  return {
+    nodeId: host && host.dataset ? String(host.dataset.nid || "") : "",
+    field: canvasFieldIndex(own, el),
+    range: canvasFieldRange(el),
+  };
+}
+/* 舞台内「真在打字」的控件才算编辑中：节点头部那排按钮（✕ / ▶ / ⚙ / ? …）与舞台本身拿到
+   焦点都不算 —— 它们不是输入框，按它们（删节点 / 跑节点 / 开设置）必须当场生效。
+   canvasStageFieldEl() 只回答「焦点在舞台内任意元素上」，这里再补一道「它得是可写字段」。 */
+function canvasFieldFocused() {
+  return isCanvasFieldEl(document.activeElement) && !!canvasStageFieldEl();
+}
+/* 舞台上现挂着的节点 / 绘制 / 分组 id（按同一批选择器取，返回值排好序便于逐个比对） */
+function canvasMountedIds(sel, key) {
+  const stage = $("#stage");
+  if (!stage) return null;
+  let list = null;
+  try {
+    list = stage.querySelectorAll(sel);
+  } catch (_) {
+    return null;
+  }
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const el = list[i];
+    out.push(String((el && el.dataset && el.dataset[key]) || ""));
+  }
+  return out.sort();
+}
+/* 结构闸：这一拍要挂的那批节点 / 绘制 / 分组，与舞台上现挂着的是不是同一批。
+   不是同一批 = 结构真的变了（删节点 / 删绘制 / 新建 / 粘贴 / 撤销换对象 …）——
+   这种重绘一刻都不能推迟：推迟出去，被删的节点会继续留在画面上，而焦点还留在某个
+   输入框里、被推迟的那一拍要等到失焦才补，现场表现就是「节点删不掉 / 删了还在」。
+   取不到舞台（异常）时返回 false = 不推迟，宁可多重建一次也不留一颗错节点。 */
+function canvasMountSetIdle(parts) {
+  const same = (sel, key, list) => {
+    const have = canvasMountedIds(sel, key);
+    if (!have || have.length !== list.length) return false;
+    const want = list.map((x) => String((x && x.id) || "")).sort();
+    for (let i = 0; i < want.length; i++) if (want[i] !== have[i]) return false;
+    return true;
+  };
+  return (
+    same(".wf-node", "nid", parts.tops.concat(parts.openSupers)) &&
+    same(".wf-mark", "mid", parts.markList) &&
+    same(".wf-group", "gid", parts.groups)
+  );
+}
+function canvasFocusAnchorEl(snap) {
+  if (!snap) return null;
+  let nodeEl = null;
+  if (snap.nodeId) {
+    try {
+      nodeEl = document.querySelector('.wf-node[data-nid="' + snap.nodeId + '"]');
+    } catch (_) {
+      nodeEl = null;
+    }
+  }
+  /* nodeElement 的结构是 .wf-node > .n-body（见 nodeBodyEl / rebuildNodeBody）：
+     这里与它们同一口径，不另造一套查找。 */
+  const body =
+    (nodeEl && nodeBodyEl(nodeEl)) ||
+    (nodeEl && nodeEl.querySelector ? nodeEl.querySelector(".n-body") : null);
+  if (!body || snap.field < 0) return null;
+  let list = null;
+  try {
+    list = body.querySelectorAll("input, textarea, select");
+  } catch (_) {
+    return null;
+  }
+  return list && list[snap.field] ? list[snap.field] : null;
+}
+/* 重建后原位恢复焦点 / 光标 / 选区；锚点没了（节点被删 / 字段没了 / 形状换了）
+   就什么也不做 —— 那种情况本来就该是一次正常失焦，不抢焦点。 */
+function restoreCanvasFieldFocus(snap) {
+  const el = canvasFocusAnchorEl(snap);
+  if (!el || typeof el.focus !== "function") return false;
+  try {
+    el.focus({ preventScroll: true });
+  } catch (_) {
+    try {
+      el.focus();
+    } catch (_) {
+      return false;
+    }
+  }
+  try {
+    if (snap.range && typeof el.setSelectionRange === "function") {
+      el.setSelectionRange(snap.range.start, snap.range.end);
+    }
+  } catch (_) {}
+  return true;
+}
+/* 推迟的那一拍：编辑结束（失焦 / 组合结束）后补上这次重绘。
+   _resumeCanvasFocus 同时是「这一拍必须画」的放行旗：补拍时置真，跳过守卫闸并触发
+   重建后的焦点原位恢复；渲染 tail 里复位。 */
+function flushDeferredCanvasFocus() {
+  if (!S._deferCanvasForFieldEdit || S._renderingCanvas) return;
+  if (canvasStageFieldEl() || S._canvasImeComposing) return;
+  /* 清账 + 放行：补这一拍，并让重建后的焦点原位恢复接管 */
+  S._deferCanvasForFieldEdit = false;
+  S._resumeCanvasFocus = true;
+  renderCanvas();
+  if (S._resumeCanvasFocus) S._resumeCanvasFocus = false;
+}
 function detachStageChild(el) {
   if (!el || !el.parentNode) return;
   try {
@@ -886,13 +1062,6 @@ function renderCanvas() {
     closeRefMenu();
     const stage = $("#stage"),
       svg = $("#wfSvg");
-    /* 先主动 blur，避免 remove() 时同步 blur 再改树 */
-    const ae = document.activeElement;
-    if (ae && stage && stage.contains(ae) && typeof ae.blur === "function") {
-      try {
-        ae.blur();
-      } catch (_) {}
-    }
     /* ── 复用快速通道（止闪主路径）──────────────────────────────────────────
        签名一致 = 这次重绘没有改变任何节点的形状 / 顺序 / 形态，只是相机、连线或数据
        变了：此时**一个 DOM 都不拆**，只更新舞台外框、相机、连线与各类回填。图片 / 视频 /
@@ -900,6 +1069,27 @@ function renderCanvas() {
        点空白取消选择 / 多选 / 拖拽」不再闪烁的原因。签名不一致则落到下面的整幅重建。 */
     const parts = canvasRenderParts();
     const sig = canvasRenderSig(parts);
+    /* ── 焦点守卫闸（本次需求：保存后输入框失焦）─────────────────────────────
+       只挡「真要拆 DOM 的那一拍」：能走复用通道的照旧即时渲染（它一个 DOM 都不拆，
+       焦点自然不受影响）。真拆 DOM 时：
+       ① 有人正在舞台输入控件里打字（或输入法正组合）→ 推迟这一拍，编辑结束（失焦 /
+          组合结束）由 flushDeferredCanvasFocus 补上 —— 别把正在打的框拆掉；
+       ② 但**结构变了**（删 / 新建 / 粘贴 / 撤销换对象：舞台上该挂的那批节点 / 绘制 /
+          分组与现挂着的不是同一批）时一刻都不许推迟 —— 推迟出去被删的节点会留在画面上，
+          而焦点还留在某个输入框里、补拍要等失焦（这个仓的 mousedown 普遍 preventDefault，
+          点空白根本移不走焦点），现场表现就是「节点删不掉」（本次回归）。
+       这一拍必须排在下面那句主动 blur **之前**（blur 之后 activeElement 就没了，
+       既推迟不了也恢复不了）。 */
+    if (
+      !S._resumeCanvasFocus &&
+      (canvasFieldFocused() || S._canvasImeComposing) &&
+      !canvasReuseReady(parts, sig) &&
+      canvasMountSetIdle(parts)
+    ) {
+      S._deferCanvasForFieldEdit = true;
+      return;
+    }
+    const fieldFocus = snapshotCanvasFieldFocus();
     if (canvasReuseReady(parts, sig)) {
       applyStageExtent(parts);
       applyTransform();
@@ -919,6 +1109,15 @@ function renderCanvas() {
       renderTaskCrumb();
       applyFocusFormAfterRender();
       return;
+    }
+    /* 走到这里 = 签名真的变了、要整幅重建（复用快速通道在上面已经返回）：
+       先主动 blur，避免 remove() 时同步 blur 再改树（复用那一拍本来就没有 DOM 被拆，
+       所以「先 blur 再判复用」的老行为一并收敛到这条路径上）。 */
+    const ae = document.activeElement;
+    if (ae && stage && stage.contains(ae) && typeof ae.blur === "function") {
+      try {
+        ae.blur();
+      } catch (_) {}
     }
     stage.querySelectorAll(".wf-node").forEach(detachStageChild);
     stage.querySelectorAll(".wf-group").forEach(detachStageChild);
@@ -994,15 +1193,23 @@ function renderCanvas() {
     renderTaskCrumb();
     /* 浏览态节点刚被点选 → 表单已换成编辑态，把光标落回主输入框末尾 */
     applyFocusFormAfterRender();
+    /* 本次重建前有人正在输入 → 原位恢复焦点、光标与选区（锚点没了就正常失焦） */
+    if (fieldFocus) restoreCanvasFieldFocus(fieldFocus);
   } finally {
     S._ignoreMarkBlurFlush = false;
     S._renderingCanvas = false;
+    S._resumeCanvasFocus = false;
     if (S._deferCanvasForMarkEdit && !isMarkTextEditing()) {
       S._deferCanvasForMarkEdit = false;
       setTimeout(() => {
         if (!S._renderingCanvas && !isMarkTextEditing()) renderCanvas();
       }, 0);
     }
+    /* 焦点守卫闸：被推迟的那一拍由「编辑结束」来补 —— 失焦 / 组合结束时会调
+       flushDeferredCanvasFocus()（app-boot.js 的 focusout / compositionend）。
+       这里不再自己排定时器：推迟那一拍根本没走到 blur，收尾这一刻焦点还在输入框上，
+       按「现在没焦点」排定时器等于永远排不出来（有焦点的那一拍反而不该补）。
+       结构变化（删节点 / 新建 / 撤销…）从不进这条推迟账：那种重绘当场就画了。 */
   }
 }
 

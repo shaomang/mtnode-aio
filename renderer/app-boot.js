@@ -869,6 +869,40 @@ async function init() {
       clearTimeout(S.saveTimer);
       persist();
     }
+    /* 焦点守卫闸：编辑结束（焦点移出）→ 把被推迟的那一拍画布重绘补上 */
+    if (typeof flushDeferredCanvasFocus === "function") {
+      setTimeout(() => {
+        try {
+          flushDeferredCanvasFocus();
+        } catch (_) {}
+      }, 0);
+    }
+  });
+  /* 输入法组合态（本次需求 · 保存后失焦）：组合期间一律不重建画布 —— 重建会打断拼音
+     组合（正在拼的那个字丢掉）。组合结束由 compositionend 摘标记，同一拍补重绘（收尾在
+     flushDeferredCanvasFocus 里做，与失焦同一条补拍路径）。 */
+  S._canvasImeComposing = false;
+  document.addEventListener("compositionstart", (ev) => {
+    const t = ev && ev.target;
+    if (!t) return;
+    let el = t;
+    for (let i = 0; i < 10 && el; i++) {
+      if (el.id === "stage") {
+        S._canvasImeComposing = true;
+        return;
+      }
+      el = el.parentElement || el.parentNode || null;
+    }
+  });
+  document.addEventListener("compositionend", () => {
+    S._canvasImeComposing = false;
+    if (typeof flushDeferredCanvasFocus === "function") {
+      setTimeout(() => {
+        try {
+          flushDeferredCanvasFocus();
+        } catch (_) {}
+      }, 0);
+    }
   });
   window.addEventListener("blur", () => {
     cancelDrag();

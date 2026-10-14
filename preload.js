@@ -951,7 +951,18 @@ contextBridge.exposeInMainWorld('api', {
   mcpAudit: (limit) => ipcRenderer.invoke('mcp:audit', { limit }),
   mcpCapture: (limit) => ipcRenderer.invoke('mcp:capture', { limit }),
   mcpSelfTest: () => ipcRenderer.invoke('mcp:selfTest'),
+  /* 「Paseo 桥」面板（扩展能力管理 → 服务端 页里那一块）：桥脚本落点 / 真 Node / 数据目录 /
+     provider 配置片段，以及 --check 自检（真 spawn 一次，读数据目录并探活本机服务端）。
+     真源 = paseo/bridge-info.js（桥自己的 --config / --check 读的是同一份）。 */
+  paseoStatus: () => ipcRenderer.invoke('paseo:status'),
+  paseoCheck: () => ipcRenderer.invoke('paseo:check'),
   mcpInteract: (params) => ipcRenderer.invoke('mcp:interact', params),
+  /* 会话实时流（Paseo 桥）：渲染层把**已经在跑的那一轮**的 dsh 事件复制一份推给主进程，
+     主进程按 sessionId 分发给 SSE 观察者（GET /session/stream，见 session-bridge.js）。
+     单向 send、不 handle：没有观察者时主进程秒丢，不给热路径加往返。 */
+  mcpSessionEvent: (ev) => {
+    try { ipcRenderer.send('mcp:stream', ev); } catch (_) {}
+  },
   mcpOnEvent: (cb) => {
     const onEv = (ev, msg) => {
       try { cb(msg); } catch (e) { console.error('mcpOnEvent cb error:', e); }

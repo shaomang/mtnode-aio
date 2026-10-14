@@ -976,5 +976,14 @@
      处理函数（调用期按 typeof 取），所以必须排在它们之后。真正「哪个 MCP 连接能做什么」
      由主进程 mcp-server.js 决定（见 docs/mcp-server.md）。 -->
 <script src="mcp-bridge.js"></script>
+<!-- 会话桥（Paseo 远程接管 MTNode 会话的渲染层那一半）：renderer/app-session-bridge.js。
+     ① 帧执行：sessionCreate / sessionSend / sessionSteer / sessionStop / sessionApproval /
+        sessionModels —— 落地一律复用既有函数（agentSessionSend / agentSteerNow /
+        stopSessionRuns / dshInteract），与用户在界面上点发送、点终止、点确认完全同一套；
+     ② 实时事件旁路：把**已经在跑的那一轮**的 dsh 事件（只转发白名单类型、剥掉大块
+        base64）复制一份经 preload 的 mcpSessionEvent 推给主进程，按 sessionId 分发给
+        SSE 观察者（见 session-bridge.js 与 mcp-server.js 的 GET /session/stream）。
+     必须排在 app-assist.js / app-db.js / app.js 之后（调用期按 typeof 取既有全局）。 -->
+<script src="app-session-bridge.js"></script>
 </body>
 </html>

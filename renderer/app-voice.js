@@ -16,7 +16,7 @@
  *   没配文本模型 / 结果离谱 → 留原始识别并说清原因）、**只润色**（不扩写、不改语言、不续写）。
  *   开关状态落在 S.config.voice.enhance（随画布设置一起保存）；右键菜单与「设置 · 语音输入」
  *   里各有一枚同源入口。落字这一侧同时补上「点按钮不抢焦点」（noFocusSteal）—— 否则点一下
- *   话筒就把焦点从输入框挪走，增强结果回来时没有落点，会一直挂在 pendingInsert 里。
+ *   话筒就把焦点从输入框挪走，增强结果回来时没有落点，会一直挂在 state.pending 里。
  *
  * 链路（原样复用，未新增任何后端能力）：
  *   renderer/app-voice.js（本文件）→ preload 的 dshSpeech（IPC 'dsh:speech'）
@@ -45,10 +45,17 @@
  *   · 插入（insert）：定稿用 execCommand('insertText') 写进当时 focus 的输入框 —— 走浏览器
  *     原生插入，节点正文 / 参数面板的撤销栈（Ctrl+Z）语义与你手敲一段字完全一致。
  *
- * 焦点纪律：插入点锚在**可输入控件**上，只有「焦点正落在这个框里」才落字；焦点一走就只暂停
- * 落字 —— 识别出来的文字先留住（state.pendingInsert），焦点回到同一个框立刻补上，
- * 一个字都不丢（点了状态栏那枚话筒就会把焦点从输入框挪走，靠这条不丢话）。
- * 框本身没了（从文档里移除）才丢弃，并明确提示。
+ * 焦点纪律（**本轮改口径：落点跟随真实光标**）：落点是**每一次落字前现读的当前光标** ——
+ * 用户在同一个框里手点光标、手写正文、或把焦点点进另一个输入框，语音就写到那个位置；
+ * 不再「记住采集开始时那个插入点、之后一直往它后面接」（那正是用户报的「语音永远接在上一次
+ * 语音的末尾、与手写编辑打架」）。
+ *   · 焦点不在任何可输入控件里 → **绝不抢焦点**、也绝不硬塞：这一片挂住（state.pending），
+ *     等用户点进任意输入框时补写到**那个框当时的光标处**，一个字都不丢（点了状态栏那枚话筒
+ *     就会把焦点从输入框挪走，靠这条不丢话），浮窗上写明「N 句等待落字」；
+ *   · 输入法组合态（拼音还没上屏）期间也只挂不写，上屏那一刻补到光标处；
+ *   · 框本身没了（从文档里移除）才丢弃，并明确提示。
+ * 空格：只按**落点两端**判 —— 贴着字母 / 数字才补一个空格（中文相邻不补），
+ * 所以插在句中也不会夹出多余空格（见 padForCaret）。
  *
  * 首次使用要下载权重（int8 约 239MB）：按钮上直接显示 ⬇ 与百分比（事件 'speech-state'），
  * 下载由运行时自己的准备任务持有，切态 / 关窗都不会中断它。
@@ -222,7 +229,12 @@
     segSeq: 0,
     bufText: "", /* 当前句已识别、待定稿的文本 */
     lastText: "", /* 上一句定稿的原文（AI 增强的极短上下文用它，见 enhContext） */
-    pendingInsert: "", /* 识别出来但当时没有焦点：留住，等焦点回来再落字（不丢音频） */
+    /** 识别出来但当时落不了字（焦点不在可输入控件 / 输入法组合中）：留住，等能落时补写（不丢音频）。
+     *  **一片一条**（数组，不是拼成一个字符串）：补写时逐片按「补写那一刻的光标」写，句界与空格都对得上，
+     *  浮窗上「N 句等待落字」数的就是它。本轮去掉旧的 state.pendingInsert 字符串口径。 */
+    pending: [],
+    /** 输入法组合态（compositionstart … compositionend）：组合期间只挂不写，上屏那一刻补到光标处 */
+    composing: false,
     interim: "", /* 浮窗里显示的那一行 */
     interimAt: 0,
     /** 静音门已判「这句说完」，但队列 / 在途还有尾巴：排空后才清零收口 */
@@ -412,12 +424,111 @@
     return btoa(s);
   }
 
-  /** 插完把锚点往后挪，下一次接着写（不重排用户的正文） */
+  /** 插完把锚点往后挪，下一次接着写（不重排用户的正文）。
+   *  本轮起它只在**一次插入之内**负责「这一段写到哪儿了」——下一次插入前会重新现读光标。 */
   function advanceAnchor(anchor, len) {
     if (!anchor) return;
     anchor.start = Number(anchor.start || 0) + len;
     anchor.end = anchor.start;
     anchor.at = Date.now();
+  }
+
+  /* ── 落点：**以此刻的真实光标为准**（本轮改口径）────────────────────────────
+     旧口径是「采集开始时记下插入点，之后每一句都往那个点后面接」：用户点走光标、手改正文
+     都不更新它，于是语音永远接在上一次语音的末尾，与手写编辑打架（用户报的就是这条）。
+     现在每一次落字前都现读一次当前焦点控件的选区：
+       · 焦点在任何可输入控件里 → 落点就是它此刻的光标（包含「说着话换到了另一个框」）；
+       · 焦点不在可输入控件里 → 不抢焦点、不硬塞，这一片挂住（见 holdPending）。
+     锚点对象仍然保留：它记的是「这一段写到哪儿了」（AI 增强要按它核对待替换的那一段），
+     而**不再是**「以后一直往这里写」。 */
+
+  /** 现读一次真实光标并把它记成当前锚点；焦点不在可输入控件里 → false（这一片该挂住） */
+  function syncAnchorToLiveCaret() {
+    let el = null;
+    try {
+      el = typeof document !== "undefined" ? document.activeElement : null;
+    } catch (_) {
+      el = null;
+    }
+    if (!isWritable(el)) return false;
+    state.anchor = captureAnchor(el);
+    return anchorReady();
+  }
+
+  /** 此刻能不能落字：焦点在可输入控件里（现读光标）且不在输入法组合态 */
+  function canInsertNow() {
+    return !!syncAnchorToLiveCaret() && !state.composing;
+  }
+
+  /** 落点两端的空格：只有「贴着字母 / 数字」时才补一个（中文相邻不补，免得夹出空格）。
+   *  prefix / suffix = 落点前 / 后的现有正文。 */
+  function padForCaret(prefix, text, suffix) {
+    const t = String(text == null ? "" : text);
+    if (!t) return "";
+    const p = String(prefix || "");
+    const s = String(suffix || "");
+    const lead = !/^\s/.test(t) && /[A-Za-z0-9]$/.test(p) && /^[A-Za-z0-9]/.test(t);
+    const trail = !/\s$/.test(t) && /[A-Za-z0-9]$/.test(t) && /^[A-Za-z0-9]/.test(s);
+    return (lead ? " " : "") + t + (trail ? " " : "");
+  }
+
+  /** 把一段文字写进**此刻光标所在的**输入框（原生插入，保留撤销栈语义）。
+   *  · 落点现读（syncAnchorToLiveCaret）：手点光标 / 手写正文 / 中途换框都跟着走；
+   *  · **不抢焦点**：焦点不在可输入控件里就直接回 false（调用方把这一片挂着，等用户点回来）；
+   *  · 空格按落点两侧判（padForCaret）：两侧是字母 / 数字才补一个。 */
+  function insertText(text) {
+    const t = String(text == null ? "" : text);
+    if (!t) return false;
+    if (!syncAnchorToLiveCaret()) return false;
+    const a = state.anchor;
+    if (!a || !a.el) return false;
+    const kind = inputKind(a.el);
+    if (!kind) return false;
+    /* 落点两端的上下文（补空格用）：按此刻的选区取一次现值 */
+    const all = inputTextOf(a.el);
+    const s0 = Math.max(0, Math.min(all.length, Number(a.start) || 0));
+    const e0 = Math.max(s0, Math.min(all.length, Number(a.end) || s0));
+    const payload = padForCaret(all.slice(0, s0), t, all.slice(e0));
+    let ok = false;
+    try {
+      /* 焦点已经在 syncAnchorToLiveCaret 里确认过就在这个框：这里**绝不再调 focus()**
+         （旧口径会先 a.el.focus() 把手写的焦点抢回来，也是「与手写编辑打架」的一半）。 */
+      if (kind === "ce") {
+        ceSetOffset(a.el, s0);
+      } else {
+        a.el.setSelectionRange(s0, e0);
+      }
+      ok = !!(document.execCommand && document.execCommand("insertText", false, payload));
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok) {
+      /* 兜底：老 Chromium / 非标准控件上 execCommand 可能不生效，直接改值并派发 input
+         （这条路径会绕开浏览器撤销栈，所以只在原生插入失败时才走） */
+      try {
+        if (kind === "ce") {
+          ceSetOffset(a.el, s0);
+          ok = !!(document.execCommand && document.execCommand("insertText", false, payload));
+        } else {
+          const v = String(a.el.value || "");
+          a.el.value = v.slice(0, s0) + payload + v.slice(e0);
+          try {
+            a.el.setSelectionRange(s0 + payload.length, s0 + payload.length);
+          } catch (_) {}
+          a.el.dispatchEvent(new Event("input", { bubbles: true }));
+          ok = true;
+        }
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (ok) {
+      /* 锚点挪到这一段之后：本句的下一片接着写（用户中途点了别处，下一片会现读新光标） */
+      a.start = s0 + payload.length;
+      a.end = a.start;
+      a.at = Date.now();
+    }
+    return ok;
   }
 
   /* ── 可输入控件与插入点 ───────────────────────────────────────────────── */
@@ -555,7 +666,8 @@
     }
   }
 
-  /** 当前能不能写：锚点还在、还挂在文档里、且**焦点仍在这个框里**（否则暂停，等它回来） */
+  /** 当前能不能写：锚点还在、还挂在文档里、且**焦点仍在这个框里**（否则暂停，等它回来）。
+   *  本轮起它只用来判「AI 增强能不能就地替换那一段」；落字判据是 canInsertNow()（现读光标）。 */
   function anchorReady() {
     if (!anchorAttached()) return false;
     try {
@@ -565,75 +677,27 @@
     }
   }
 
-  /** 把一段文字写进当时 focus 的输入框（原生插入，保留撤销栈语义） */
-  function insertText(text) {
-    const t = String(text == null ? "" : text);
-    if (!t) return false;
-    const a = state.anchor;
-    if (!a || !a.el) return false;
-    const attached = anchorAttached();
-    if (!attached) {
-      state.anchor = null;
-      return false;
-    }
-    const kind = inputKind(a.el);
-    if (!kind) return false;
-    let ok = false;
-    try {
-      if (document.activeElement !== a.el) a.el.focus();
-      if (kind === "ce") {
-        ceSetOffset(a.el, a.start);
-      } else {
-        const v = String(a.el.value || "");
-        const s = Math.max(0, Math.min(v.length, Number(a.start) || 0));
-        const e = Math.max(s, Math.min(v.length, Number(a.end) || s));
-        a.el.setSelectionRange(s, e);
-      }
-      ok = !!(document.execCommand && document.execCommand("insertText", false, t));
-    } catch (_) {
-      ok = false;
-    }
-    if (!ok) {
-      /* 兜底：老 Chromium / 非标准控件上 execCommand 可能不生效，直接改值并派发 input
-         （这条路径会绕开浏览器撤销栈，所以只在原生插入失败时才走） */
-      try {
-        if (kind === "ce") {
-          ceSetOffset(a.el, a.start);
-          ok = !!(document.execCommand && document.execCommand("insertText", false, t));
-        } else {
-          const v = String(a.el.value || "");
-          const s = Math.max(0, Math.min(v.length, Number(a.start) || 0));
-          const e = Math.max(s, Math.min(v.length, Number(a.end) || s));
-          a.el.value = v.slice(0, s) + t + v.slice(e);
-          try {
-            a.el.setSelectionRange(s + t.length, s + t.length);
-          } catch (_) {}
-          a.el.dispatchEvent(new Event("input", { bubbles: true }));
-          ok = true;
-        }
-      } catch (_) {
-        ok = false;
-      }
-    }
-    if (ok) advanceAnchor(a, t.length);
-    return ok;
-  }
 
   /** 原生 **替换**（AI 增强把刚落进去的原始识别换成润色后的一份）：只换记下来的那一段。
    *  走 execCommand("insertText") —— 与 insertText 同一条原生路径，撤销栈语义一致。
-   *  失败（老引擎 / 值已被改）返回 false，调用方保留原文，绝不留下半截。 */
+   *  **不抢焦点**：焦点已经不在这个框里就直接回 false（调用方保留原文，绝不硬塞）；
+   *  失败（老引擎 / 值已被改）同样返回 false，绝不留下半截。 */
   function replaceText(a, from, len, text) {
     const t = String(text == null ? "" : text);
     if (!a || !a.el || !t) return false;
     const kind = inputKind(a.el);
     if (!kind) return false;
+    try {
+      if (typeof document !== "undefined" && document.activeElement !== a.el) return false;
+    } catch (_) {
+      return false;
+    }
     const all = inputTextOf(a.el);
     const n = Math.max(0, Number(len) || 0);
     const s = Math.max(0, Math.min(all.length, Number(from) || 0));
     const e = Math.max(s, Math.min(all.length, s + n));
     let ok = false;
     try {
-      if (document.activeElement !== a.el) a.el.focus();
       if (kind === "ce") ceSetOffset(a.el, s);
       else a.el.setSelectionRange(s, e);
       ok = !!(document.execCommand && document.execCommand("insertText", false, t));
@@ -838,7 +902,19 @@
     const a = state.anchor;
     /* 没有落点 / 这一段根本不是刚落进去的那一份：不替换（留原文，绝不改成半截） */
     if (!a || !a.el) return false;
-    const from = Math.max(0, Number(a.start) || 0) - raw.length;
+    let from = Math.max(0, Number(a.start) || 0) - raw.length;
+    /* 落点两端可能被 padForCaret 补过一个空格（贴着字母 / 数字时）：先按原样对一次，
+       不中再往前挪一个空格对一次 —— 只认「一字不差」的那一段，宁可不换。 */
+    {
+      const full0 = String(inputTextOf(a.el) || "");
+      if (
+        full0.slice(from, from + raw.length) !== raw &&
+        from > 0 &&
+        full0.slice(from - 1, from - 1 + raw.length) === raw
+      ) {
+        from -= 1;
+      }
+    }
     if (from < 0) return false;
     if (String(inputTextOf(a.el) || "").slice(from, from + raw.length) !== raw) return false;
     /* 上一句还在途：这一句不排队（免得请求叠加、替换互相打架），直接留原始识别 */
@@ -1370,15 +1446,19 @@
 
   function enqueueChunk(pcm) {
     if (!pcm || pcm.length < MIN_SEG_SAMPLES) return;
-    /* 判据是「这个框还在不在」，**不是焦点在不在**：点了状态栏那枚话筒 / 切了下焦点，
-       音频照样要送出去转写；落字那一步会等焦点回来（pump 里留着，focusin 补落）。
-       以前这里按焦点判，于是点一次按钮就把整段话静默丢掉（连转写都不发，界面毫无提示）。 */
-    if (!anchorAttached()) {
-      if (!state._noAnchorAt || Date.now() - state._noAnchorAt > 6000) {
-        state._noAnchorAt = Date.now();
-        toastKind(T("没找到要写入的输入框：先把光标点进文本框再说话"));
-      }
-      return;
+    /* 判据不再是「当时那个框还在不在」：落点每次落字前现读（见 syncAnchorToLiveCaret），
+       所以哪怕用户还没点过任何输入框，音频也照样送出去转写 —— 识别结果会挂住
+       （holdPending），点进任意输入框即补写到那里的光标处，一个字都不丢。
+       这里只提醒一次「字先留住了」，不再把整段话静默丢掉。 */
+    let liveEl = null;
+    try {
+      liveEl = typeof document !== "undefined" ? document.activeElement : null;
+    } catch (_) {
+      liveEl = null;
+    }
+    if (!isWritable(liveEl) && (!state._noAnchorAt || Date.now() - state._noAnchorAt > 6000)) {
+      state._noAnchorAt = Date.now();
+      toastKind(T("现在没有可写入的输入框：识别结果先留住，点进任意输入框即补写"));
     }
     if (state.queue.length >= QUEUE_MAX) {
       state.queue.shift(); /* 兜底：极端情况下队列不无限涨（正常不会走到） */
@@ -1415,10 +1495,10 @@
             state.interim = state.bufText;
             state.interimAt = Date.now();
             state.lastErr = "";
-            /* 焦点不在这里：字留住（等焦点回来一并落字），音频与识别结果都不作废 */
+            /* 落点现读：能写就写在此刻光标处；写不了（焦点不在可输入控件 / 输入法组合中）就挂住。
+               绝不因为「写不进去」把识别结果作废，也绝不硬塞进别的控件。 */
             if (add) {
-              if (anchorReady()) insertText(add);
-              else state.pendingInsert += add;
+              if (!canInsertNow() || !insertText(add)) holdPending(add);
             }
             paintNote();
           }
@@ -1487,14 +1567,35 @@
     paintAll();
   }
 
-  /** 有焦点就把之前留住的字落进输入框（失焦期间识别出来的那部分不丢） */
-  function flushPendingInsert() {
-    const t = state.pendingInsert;
+  /** 这一片落不了字（焦点不在可输入控件 / 输入法组合中）：留住，等能落时补写。
+   *  一片一条（state.pending 数组）：补写时逐片按当时光标写，句界与空格都对得上，
+   *  浮窗上「N 句等待落字」数的就是它。 */
+  function holdPending(text) {
+    const t = String(text == null ? "" : text);
     if (!t) return false;
-    if (!anchorReady()) return false;
-    state.pendingInsert = "";
-    insertText(t);
+    state.pending.push(t);
+    paintNote();
     return true;
+  }
+
+  /** 能落字了（焦点落进某个输入框 / 输入法上屏）：把挂住的这几片**逐片补到此刻光标处**。
+   *  焦点搬到别的框也算能落 —— 共识是「字写到你现在所在的框」，所以这里不认「必须是原来那个框」。 */
+  function flushPendingInsert() {
+    if (!state.pending.length) return false;
+    if (!canInsertNow()) return false;
+    const pieces = state.pending.slice();
+    state.pending = [];
+    let wrote = 0;
+    for (let i = 0; i < pieces.length; i++) {
+      if (insertText(pieces[i])) wrote += 1;
+      else {
+        /* 写到一半又不能写了（焦点又跑了 / 组合态又起）：剩下的原样挂回去，顺序与内容都不丢 */
+        state.pending = pieces.slice(i).concat(state.pending);
+        break;
+      }
+    }
+    paintNote();
+    return wrote > 0;
   }
 
   /* ── 采集 ─────────────────────────────────────────────────────────────── */
@@ -1975,7 +2076,7 @@
     state.queue = [];
     state.bufText = "";
     state.interim = "";
-    state.pendingInsert = "";
+    state.pending = [];
     state.segSeq = 0;
     state.pendingFinalize = false;
   }
@@ -2274,14 +2375,17 @@
    *  **有字 / 有错**：照旧显示临时字与错误；一句说完（静音门）且没有字也没有错时收起。 */
   function paintNote() {
     const active = state.mode !== MODE_OFF && (state.mode === MODE_LIVE || state.pttOn);
-    if (!active) {
+    const pendingN = state.pending.length;
+    /* 关闭态但还有挂住没落字的句子：浮窗留着（只报「N 句等待落字」）——
+       否则用户看到的就是「说了话却什么都没有」，也不知道字被挂住了 */
+    if (!active && !pendingN) {
       hideNote();
       return;
     }
     const text = String(state.bufText || state.interim || "").trim();
     /* 录音中（已出过声）就一直挂着浮窗报进度：哪怕还没有一个字 */
     const rec = !!state.gateArm || (Number(state.segSamples) || 0) > 0;
-    if (!text && !rec && !state.lastErr && !state.provErr) {
+    if (!text && !rec && !state.lastErr && !state.provErr && !pendingN) {
       hideNote();
       state.noteShownAt = 0;
       return;
@@ -2292,6 +2396,8 @@
     const lines = [text];
     if (!text && rec) lines.push(T("正在听…") + " " + T("已录 ") + noteSeconds().toFixed(1) + "s");
     if (state.queue.length) lines.push(T("待识别 ") + state.queue.length + T(" 句"));
+    /* 挂住等落字的句子：说清「几句、去哪儿补」——本轮新增（不抢焦点就得让用户知道字去哪了） */
+    if (pendingN) lines.push(T("等待落字 ") + pendingN + T(" 句（点进输入框即补写）"));
     if (state.lastErr) lines.push(T("最近一次失败：") + state.lastErr);
     /* 服务商没就绪：浮窗上直接给一句能照做的（本来就已经是 i18n 文案） */
     if (state.provErr) lines.push(state.provErr);
@@ -2312,11 +2418,13 @@
       state.noteVol.hidden = !rec;
     }
     if (state.noteTag) {
-      state.noteTag.textContent = state.mode === MODE_PTT
-        ? T("按住 F1 说话")
-        : state.pttOn
-          ? T("松开 F1 即写入")
-          : T("持续转录");
+      state.noteTag.textContent = state.mode === MODE_OFF
+        ? T("语音输入已关闭")
+        : state.mode === MODE_PTT
+          ? T("按住 F1 说话")
+          : state.pttOn
+            ? T("松开 F1 即写入")
+            : T("持续转录");
     }
     d.classList.toggle("is-err", !!(state.lastErr || state.provErr));
     d.classList.toggle("is-wait", !text);
@@ -2779,8 +2887,18 @@
     document.addEventListener("keyup", onKeyUp, true);
     document.addEventListener("focusin", (ev) => {
       if (isWritable(ev.target)) state.anchor = captureAnchor(ev.target);
-      flushPendingInsert(); /* 焦点回来了：把失焦期间识别出来、留住的字补上 */
+      flushPendingInsert(); /* 焦点进了某个输入框：把挂住的那几片补写到它此刻的光标处 */
       if (state.mode !== MODE_OFF) paintNote();
+    }, true);
+    /* 输入法组合态（拼音 / 日文假名还没上屏）：**组合期间只挂不写** —— 这时插字会把未上屏的
+       组合态打乱（用户报的「与手写编辑协同」就包括这一条）。上屏那一刻补到当时的光标处。 */
+    document.addEventListener("compositionstart", () => {
+      state.composing = true;
+    }, true);
+    document.addEventListener("compositionend", () => {
+      state.composing = false;
+      flushPendingInsert();
+      if (state.mode !== MODE_OFF || state.pending.length) paintNote();
     }, true);
     document.addEventListener("mousedown", (ev) => {
       if (state.mode !== MODE_OFF && !isWritable(ev.target)) hideNote();
@@ -2827,7 +2945,8 @@
     dropQueue();
     state.lastErr = "";
     state.anchor = null;
-    state.pendingInsert = "";
+    state.pending = [];
+    state.composing = false;
     /* AI 增强：在途的那一句作废（句序 +1 ⇒ 结果回来时自己丢掉），说明也清掉 */
     state.enh.seq += 1;
     state.enh.busy = false;

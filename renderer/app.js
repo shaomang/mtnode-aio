@@ -6368,6 +6368,10 @@ function applySnap(s) {
   /* 撤销/重做必须立刻重绘绘制层，不可被文字编辑 defer 挡住 */
   blurMarkEditing();
   S._deferCanvasForMarkEdit = false;
+  /* 同理：撤销 / 重做这一拍必须生效，别被「焦点守卫闸」推到失焦之后 —— 清掉待补的推迟账，
+     再按「这一拍必须画」放行（守卫闸认这个旗，见 app-canvas.js renderCanvas；收尾复位）。 */
+  S._deferCanvasForFieldEdit = false;
+  S._resumeCanvasFocus = true;
   S.wf.nodes = s.nodes;
   S.wf.wires = s.wires;
   S.wf.groups = s.groups || [];

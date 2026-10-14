@@ -1022,7 +1022,7 @@ function makeSpeechBox(o) {
 
     /* ── 本轮（2026-02 二轮）：三态模式（持续转录 + 按键转录）+ 落字 + AI 增强 ─────────────
        口径照画布那枚话筒（renderer/app-voice.js）：MODE_OFF / MODE_LIVE / MODE_PTT 三态、
-       PTT 按 ev.code 判键、keyup 立刻交付、落字用锚点 + execCommand("insertText")、
+       PTT 按 ev.code 判键、keyup 立刻交付、落字走「现读光标 + execCommand("insertText")」、
        AI 增强走 appHost.textGenStream（默认模型 + thinking:"off" + 不传 maxTokens）。 */
     ok(
       ui.indexOf('var MODE_OFF = "off"') > 0 &&
@@ -1063,12 +1063,24 @@ function makeSpeechBox(o) {
     );
     ok(
       ui.indexOf("function captureAnchor(") > 0 &&
-        ui.indexOf("function advanceAnchor(") > 0 &&
-        /execCommand\("insertText", false, txt\)/.test(ui) &&
+        ui.indexOf("function syncAnchorToLiveCaret(") > 0 &&
+        ui.indexOf("function canInsertNow(") > 0 &&
+        /execCommand\("insertText", false, payload\)/.test(ui) &&
         /function insertAtAnchor\(/.test(ui) &&
         /function flushPendingInsert\(/.test(ui) &&
         /addEventListener\(\s*"focusin"/.test(ui),
-      "★ 落字：锚点（captureAnchor / advanceAnchor）+ 原生插入（execCommand(\"insertText\")）+ 焦点跑了先挂住、focusin 补写",
+      "★ 落字（**本轮改口径：落点跟随真实光标**）：每次落字前现读光标（syncAnchorToLiveCaret / " +
+        "canInsertNow）+ 原生插入（execCommand insertText）+ 焦点不在输入框则挂住、focusin 补写",
+    );
+    ok(
+      ui.indexOf("if (document.activeElement !== a.el && a.el.focus) a.el.focus();") < 0 &&
+        /function padForCaret\(/.test(ui) &&
+        /compositionstart/.test(ui) &&
+        /compositionend/.test(ui) &&
+        /"compositionend"[\s\S]{0,220}composing = false;[\s\S]{0,120}flushPendingInsert\(\)/.test(ui) &&
+        /"focusin"[\s\S]{0,320}flushPendingInsert\(\)/.test(ui),
+      "★ 绝不抢焦点（源码里没有 a.el.focus() 强拉）+ 空格按落点两端判（padForCaret）+ " +
+        "输入法组合态只挂不写、focusin / compositionend 两个监听器都补写",
     );
     ok(
       /function inputKind\(el\)/.test(ui) && /tag === "textarea"/.test(ui) && /el\.isContentEditable/.test(ui),
@@ -1262,6 +1274,152 @@ function makeSpeechBox(o) {
       ok(rs(src48, 16000) === src48, "本来就在 16k 的输入原样返回（不做无谓的复制）");
       const out44 = rs(new Float32Array(4410), 44100);
       ok(out44.length === 1600, "44.1k 这种非整数倍率也搬得到 16k 附近（4410 → 1600）· 得到 " + out44.length);
+    }
+
+    /* 把「落字」这条链**真跑一遍**（本轮改口径：落点跟随真实光标 / 不抢焦点 / 跨框跟随 / 组合态）。
+       app-speech-ui 是注入到别人的页面里的，所以这里给它一个最小的 DOM 桩：两个可输入控件 +
+       一个非输入控件（按钮）+ 各事件监听收下来 + document.execCommand 真按选区插字。 */
+    {
+      const mkField = (tag, type) => {
+        const el = {
+          nodeType: 1,
+          tagName: String(tag).toUpperCase(),
+          type: type || "text",
+          isContentEditable: false,
+          isConnected: true,
+          value: "",
+          selectionStart: 0,
+          selectionEnd: 0,
+          handlers: {},
+          addEventListener(t, fn) {
+            (this.handlers[t] || (this.handlers[t] = [])).push(fn);
+          },
+          removeEventListener() {},
+          setAttribute() {},
+          getAttribute() {
+            return null;
+          },
+          setSelectionRange(s, e) {
+            this.selectionStart = s;
+            this.selectionEnd = e;
+          },
+          dispatchEvent() {
+            return true;
+          },
+          contains() {
+            return false;
+          },
+          focus() {
+            box.document.activeElement = this;
+          },
+        };
+        return el;
+      };
+      const docListeners = {};
+      const ta = mkField("textarea");
+      const field2 = mkField("input", "text");
+      const notField = {
+        nodeType: 1,
+        tagName: "BUTTON",
+        isContentEditable: false,
+        isConnected: true,
+        addEventListener() {},
+        setAttribute() {},
+        getAttribute() {
+          return null;
+        },
+      };
+      const box = {
+        console,
+        setTimeout,
+        clearTimeout,
+        Event: function () {},
+        CustomEvent: function () {},
+        navigator: { language: "zh-CN" },
+        document: {
+          readyState: "loading", /* 自挂载永不触发：这一段只验「落字」这条链 */
+          activeElement: ta,
+          documentElement: { getAttribute: () => "zh-CN", setAttribute() {}, appendChild() {} },
+          body: null,
+          head: null,
+          addEventListener(t, fn) {
+            (docListeners[t] || (docListeners[t] = [])).push(fn);
+          },
+          removeEventListener() {},
+          querySelector: () => null,
+          getElementById: () => null,
+          createElement: () => mkField("div"),
+          createTreeWalker: () => ({ nextNode: () => null }),
+          execCommand(cmd, _ui, text) {
+            if (cmd !== "insertText") return false;
+            const cur = box.document.activeElement;
+            if (!cur || typeof cur.value !== "string") return false;
+            const s = Number(cur.selectionStart) || 0;
+            const e = Number(cur.selectionEnd) || s;
+            cur.value = cur.value.slice(0, s) + text + cur.value.slice(e);
+            cur.selectionStart = cur.selectionEnd = s + String(text).length;
+            return true;
+          },
+        },
+        window: { addEventListener() {}, removeEventListener() {}, dispatchEvent() {} },
+      };
+      box.window.document = box.document;
+      vm.createContext(box);
+      vm.runInContext(ui, box);
+      const W2 = box.window;
+      const T = W2.apSpeechTest;
+      ok(!!T && typeof T.insert === "function", "落字自检入口在（apSpeechTest：走与真转写同一条落字路径）");
+
+      /* ① 光标优先：同一个框里把光标点到中间（没有 focusin 事件），字就写在那一刻的光标处 */
+      ta.value = "手写在前，手写在后";
+      ta.selectionStart = ta.selectionEnd = 5;
+      T.insert("语音");
+      eqStr(ta.value, "手写在前，语音手写在后", "★ 落在**此刻的光标处**（不再接在上一次语音的末尾）");
+      eqStr(W2.apSpeechPending(), "", "写进去了就没有挂字");
+      ta.selectionStart = ta.selectionEnd = 0;
+      T.insert("开头");
+      eqStr(ta.value, "开头手写在前，语音手写在后", "★ 光标再被点走，下一句仍写在新的光标处");
+
+      /* ② 空格按落点两端判（padForCaret）：字母 / 数字相邻才补一个 */
+      ta.value = "hello world";
+      ta.selectionStart = ta.selectionEnd = 5;
+      T.insert("dictated");
+      eqStr(ta.value, "hello dictated world", "★ 贴字母 / 数字补一个空格（hello|dictated）");
+      ta.value = "中文";
+      ta.selectionStart = ta.selectionEnd = 2;
+      T.insert("继续");
+      eqStr(ta.value, "中文继续", "★ 中文相邻一个空格都不补");
+
+      /* ③ 不抢焦点 + 挂住：焦点在非输入控件上，落字不抢、字留住 */
+      box.document.activeElement = notField;
+      ok(T.insert("挂住的一句") === false, "焦点不在输入框：落字回 false（不硬塞）");
+      ok(box.document.activeElement === notField, "★ 绝不抢焦点（activeElement 仍是那个按钮，没被拉回输入框）");
+      eqStr(T.pending().length, 1, "这一句挂住了（一句一条）");
+      eqStr(W2.apSpeechPending(), "挂住的一句", "apSpeechPending() 仍是**一个字符串**（对外 API 语义不变）");
+
+      /* ④ 跨框跟随：焦点进了另一个输入框 → 挂住的字补到**那个框**的光标处（不写回旧框）。
+         补写入口按同一条路走 flush（**真机由 focusin / compositionend 触发** —— 那两个监听器
+         在 mount 时才挂，本桩不挂载，所以这里直接调自检的 flush；接线本身由上面的源码断言钉住）。 */
+      field2.value = "1234";
+      field2.selectionStart = field2.selectionEnd = 2;
+      box.document.activeElement = field2;
+      ok(T.flush() === true, "能落字时 flush 真的补写了");
+      eqStr(field2.value, "12挂住的一句34", "★ 补写到**焦点当前所在框**的光标处（不是旧框、也不是旧锚点）");
+      eqStr(ta.value, "中文继续", "旧框一个字都没被塞");
+      eqStr(T.pending().length, 0, "补写后挂字清单清空");
+
+      /* ⑤ 输入法组合态：只挂不写，上屏那一刻补到光标处 */
+      box.document.activeElement = ta;
+      ta.value = "拼音";
+      ta.selectionStart = ta.selectionEnd = 2;
+      T.composing(true);
+      ok(T.insert("组合态的那句") === false, "★ 组合态期间不落字（不打乱未上屏的拼音）");
+      eqStr(ta.value, "拼音", "组合态里输入框一个字都没变");
+      eqStr(T.pending().length, 1, "组合态里那一句挂住（不丢）");
+      T.composing(false);
+      ok(T.flush() === true, "上屏后 flush 补写了（真机由 compositionend 触发）");
+      eqStr(ta.value, "拼音组合态的那句", "★ 上屏（compositionend）后补写到当时的光标处");
+      eqStr(T.pending().length, 0, "上屏后挂字清单清空");
     }
 
     const tpl = read("templates/app-default/index.html");

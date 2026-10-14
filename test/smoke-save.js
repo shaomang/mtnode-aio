@@ -882,6 +882,479 @@ let MERGED_FAILED = false;
   if (fails) console.log("  ── 已并入块 smoke-save-image-out.js：" + fails + " / " + checks + " 项失败");
 })();
 
+/* ==================== 已并入：test/smoke-canvas-focus.js ====================
+ * 本次需求：其他用户的客户端「保存后输入框失焦」，本机复现不了。
+ * 根因：画布上只要有一颗「接了上游且开了自动保存」的保存节点，每次自动保存
+ * （scheduleSave → 250ms → persist 落盘成功）都会调 autoSaveSaves() → renderCanvas()，
+ * 而整幅重建先 blur 活动元素再拆掉节点 DOM —— 正在打字的输入框被换成新元素。
+ * 本用例在假 DOM 里真跑 renderer/app-canvas.js 的 renderCanvas，钉住两条不变量：
+ *   ① 舞台输入控件有焦点（或输入法组合态）时，会拆 DOM 的重绘必须推迟，DOM 一个不动；
+ *      编辑结束（失焦 / 组合结束）后补上那一拍。
+ *   ② 真重建（形状真变了 / 强制）时，焦点、光标与选区必须原位恢复。
+ * 注意：本用例只证「机制在这个环境下不再丢焦点」，不等价于对方那台机器的真机验证。
+ */
+(function () {
+  const __dirname = TEST_DIR;
+  const __filename = TEST_DIR + "/" + "smoke-canvas-focus.js";
+  const { fs, path, vm } = SHARED;
+  const section = (name) => console.log("\n" + name);
+  let fails = 0, checks = 0;
+  const ok = (cond, msg) => { checks++; if (cond) console.log("  ok  " + msg); else { fails++; MERGED_FAILED = true; console.log("FAIL  " + msg); } };
+  try {
+
+    const ROOT = path.join(__dirname, "..");
+    const read = (p) => fs.readFileSync(path.join(ROOT, p.split("/").join(path.sep)), "utf8");
+
+    /* ── 假 DOM：只实现 renderCanvas 会碰的那部分契约（同 smoke-canvas-flicker.js 的手法） ── */
+    function makeFakeEl(tag, made) {
+      const el = {
+        tagName: String(tag || "div").toUpperCase(),
+        className: "",
+        id: "",
+        type: "",
+        dataset: {},
+        style: { setProperty() {}, removeProperty() {} },
+        children: [],
+        childNodes: [],
+        parentElement: null,
+        isConnected: true,
+        innerHTML: "",
+        textContent: "",
+        value: "",
+        selectionStart: 0,
+        selectionEnd: 0,
+        _attrs: {},
+      };
+      const classes = () =>
+        String(el.className || "").trim().split(/\s+/).filter(Boolean);
+      const writeClasses = (list) => { el.className = list.join(" "); };
+      el.classList = {
+        add(...cs) { const cur = classes(); for (const c of cs) if (c && cur.indexOf(c) < 0) cur.push(c); writeClasses(cur); },
+        remove(...cs) { writeClasses(classes().filter((c) => cs.indexOf(c) < 0)); },
+        toggle(c, on) {
+          const has = classes().indexOf(c) >= 0;
+          const want = on === undefined ? !has : !!on;
+          if (want) el.classList.add(c); else el.classList.remove(c);
+          return want;
+        },
+        contains(c) { return classes().indexOf(c) >= 0; },
+      };
+      el.appendChild = function (c) {
+        if (c && c.parentElement) c.parentElement.removeChild(c);
+        this.children.push(c);
+        this.childNodes.push(c);
+        if (c) c.parentElement = this;
+        return c;
+      };
+      el.removeChild = function (c) {
+        const i = this.children.indexOf(c);
+        if (i >= 0) this.children.splice(i, 1);
+        const j = this.childNodes.indexOf(c);
+        if (j >= 0) this.childNodes.splice(j, 1);
+        if (c) c.parentElement = null;
+        return c;
+      };
+      el.setAttribute = function (k, v) { this._attrs[k] = v; };
+      el.getAttribute = function (k) {
+        return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
+      };
+      el.addEventListener = function () {};
+      el.removeEventListener = function () {};
+      el.closest = function (sel) {
+        let cur = this;
+        for (let i = 0; i < 8 && cur; i++) {
+          if (matchesSel(cur, sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      };
+      el.contains = function (n) {
+        if (n === this) return true;
+        return this.children.some((c) => c && typeof c.contains === "function" && c.contains(n));
+      };
+      el.focus = function () { document.activeElement = this; };
+      el.blur = function () { if (document.activeElement === this) document.activeElement = document.body; };
+      el.getBoundingClientRect = function () { return { width: 0, height: 0, left: 0, top: 0, right: 0, bottom: 0 }; };
+      el.setSelectionRange = function (a, b) { this.selectionStart = a; this.selectionEnd = b; };
+      /* 假 DOM 的后代查找：nodeBodyEl / canvasFieldIndex 都走这两个方法 */
+      el.querySelectorAll = function (sel) { return walkAll(this, []).filter((e) => matchesSel(e, sel)); };
+      el.querySelector = function (sel) { return walkAll(this, []).find((e) => matchesSel(e, sel)) || null; };
+      made.push(el);
+      return el;
+    }
+    /* 选择器只支持 .class 与标签名（以及它们的逗号列表）—— 本用例用到的就这些 */
+    function matchesSel(el, sel) {
+      return String(sel)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .some((p) => (p[0] === "." ? el.classList.contains(p.slice(1)) : el.tagName === p.toUpperCase()));
+    }
+    function walkAll(el, out) {
+      for (const c of el.children) { out.push(c); walkAll(c, out); }
+      return out;
+    }
+    function makeStage(made) {
+      const stage = makeFakeEl("div", made);
+      stage.id = "stage";
+      stage.querySelectorAll = function (sel) { return walkAll(this, []).filter((e) => matchesSel(e, sel)); };
+      stage.querySelector = function (sel) {
+        const m = /^\.wf-node\[data-nid="(.+)"\]$/.exec(String(sel));
+        if (m) return walkAll(this, []).find((e) => e.dataset && e.dataset.nid === m[1]) || null;
+        return walkAll(this, []).find((e) => matchesSel(e, sel)) || null;
+      };
+      return stage;
+    }
+
+    const made = [];
+    const stage = makeStage(made);
+    const svg = makeFakeEl("svg", made);
+    /* 连线层：本用例不验连线渲染，只保证 updateWires 能在它上面跑空 */
+    svg.querySelector = () => null;
+    svg.querySelectorAll = () => [];
+    const document = {
+      activeElement: null,
+      body: makeFakeEl("body", made),
+      documentElement: makeFakeEl("html", made),
+      createElement: (t) => makeFakeEl(t, made),
+      createElementNS: (ns, t) => makeFakeEl(t, made),
+      getElementById: (id) => (id === "stage" ? stage : id === "wfSvg" ? svg : null),
+      querySelector: (sel) => {
+        if (sel === "#stage") return stage;
+        if (sel === "#wfSvg") return svg;
+        return stage.querySelector(sel);
+      },
+      querySelectorAll: (sel) => stage.querySelectorAll(sel),
+    };
+    document.activeElement = document.body;
+    const noop = () => {};
+    const timers = [];
+    const counters = { nodeEl: 0, live: {} };
+    /* 替身：节点元素只造 .wf-node > .n-body > textarea + input[type=text] 这一种形状，
+       它与真 nodeElement 的「.wf-node 承载 data-nid、.n-body 承载可写字段」同一口径。 */
+    function testNodeElement(n) {
+      const el = makeFakeEl("div", made);
+      el.className = "wf-node";
+      el.dataset.nid = n.id;
+      el.dataset.nodeForm = "edit";
+      const body = makeFakeEl("div", made);
+      body.className = "n-body";
+      const ta = makeFakeEl("textarea", made);
+      ta.className = "n-text";
+      ta.value = String(n.text || "");
+      const ti = makeFakeEl("input", made);
+      ti.type = "text";
+      ti.className = "n-title";
+      ti.value = String(n.title || "");
+      body.appendChild(ta);
+      body.appendChild(ti);
+      el.appendChild(body);
+      counters.nodeEl++;
+      counters.live[n.id] = el;
+      return el;
+    }
+    const sandbox = {
+      console,
+      document,
+      window: { addEventListener: noop, removeEventListener: noop },
+      requestAnimationFrame: () => 0,
+      /* 定时器只记账：补拍那一拍由用例手动触发，避免假 DOM 里跑成异步 */
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: noop,
+      setInterval: () => 0,
+      clearInterval: noop,
+      I18n: { t: (k) => String(k) },
+      S: {
+        cam: { x: 0, y: 0, z: 1 },
+        wf: { id: "wf1", nodes: [], wires: [], marks: [], groups: [] },
+        sel: null,
+        selSet: new Set(),
+        drag: null,
+        sidebarOpen: false,
+        _renderSig: "",
+        _renderingCanvas: false,
+        _ignoreMarkBlurFlush: false,
+        _deferCanvasForMarkEdit: false,
+        _deferCanvasForFieldEdit: false,
+        _resumeCanvasFocus: false,
+        _canvasImeComposing: false,
+      },
+      nodeById: (id) => sandbox.S.wf.nodes.find((n) => n.id === id) || null,
+      nodeDrawSize: (n) => ({ w: (n && n.w) || 240, h: (n && n.h) || 160 }),
+      visibleWfNodes: () => sandbox.S.wf.nodes.filter((n) => n && !n.hidden),
+      nodeIsNestedInOpenSuper: () => false,
+      isSel: (id) => !!sandbox.S.selSet && sandbox.S.selSet.has(id),
+      superIsOpenShell: () => false,
+      superDisplaySize: (n) => ({ w: (n && n.w) || 320, h: (n && n.h) || 220 }),
+      visibleMarks: () => sandbox.S.wf.marks.filter((m) => m && !m.hidden),
+      markBounds: () => null,
+      markParentSuperId: () => "",
+      groupVisibleInScope: () => true,
+      groupElement: (g) => {
+        const el = makeFakeEl("div", made);
+        el.className = "wf-group";
+        el.dataset.gid = g.id;
+        return el;
+      },
+      markElement: (m) => {
+        const el = makeFakeEl("div", made);
+        el.className = "wf-mark";
+        el.dataset.mid = m.id;
+        return el;
+      },
+      nodeElement: testNodeElement,
+      mountNodeEl: (parent, n) => parent.appendChild(testNodeElement(n)),
+      __testDetach: (el) => { if (el && el.parentElement) el.parentElement.removeChild(el); },
+      refreshPorts: noop,
+      /* 连线渲染依赖一大票 SVG 设施；本用例的 S.wf.wires 恒为空，替身与真跑等价 */
+      ensureWireRing: noop,
+      bindWirePathInteractions: noop,
+      syncRingFromCore: noop,
+      refreshAllSuperInnerWires: noop,
+      renderRelWiresPass: noop,
+      nodeInCurrentScope: () => true,
+      wireOpenSuperHost: () => false,
+      updateGroupFrames: noop,
+      syncGroupBtns: noop,
+      renderSidebar: noop,
+      renderTaskCrumb: noop,
+      currentSuperFocus: () => "",
+      mountSuperFocusPorts: noop,
+      clearSuperFocusPorts: noop,
+      refreshSuperFocusPortLayout: noop,
+      scrollAgentConv: noop,
+      fillPreviews: noop,
+      fillImageMetas: noop,
+      isMarkTextEditing: () => false,
+      hidePortTip: noop,
+      hideNodeTitleTip: noop,
+      closeRefMenu: noop,
+      syncNodeSettingsDialogShape: noop,
+      applyTransform: noop,
+      applyFocusFormAfterRender: noop,
+      selResult: () => null,
+      isDshTask: () => false,
+      autoFitOutputHeight: noop,
+      wavePreviewStopAll: noop,
+      mediaViewPrune: noop,
+      nodeBrowseMode: () => false,
+    };
+    sandbox.globalThis = sandbox;
+    sandbox.$ = (sel) => document.querySelector(sel);
+    sandbox.$$ = (sel) => document.querySelectorAll(sel);
+    vm.createContext(sandbox);
+    vm.runInContext('var svgNS = "http://www.w3.org/2000/svg";', sandbox);
+    /* detachStageChild 在真源码里是从全局取的自由变量（本用例不提供），换成沙箱一定认得的替身 */
+    const jsCanvasPatched = read("renderer/app-canvas.js").replace(
+      /\.forEach\(detachStageChild\)/g,
+      ".forEach(__testDetach)",
+    );
+    vm.runInContext(jsCanvasPatched, sandbox, { filename: "renderer/app-canvas.js" });
+    const g = vm.runInContext("globalThis", sandbox);
+    g.$ = (sel) => document.querySelector(sel);
+    g.$$ = (sel) => document.querySelectorAll(sel);
+    g.afterCanvasRender = noop;
+    const realNodeElement = g.nodeElement;
+    g.nodeElement = function (n) {
+      const el = realNodeElement.apply(this, arguments);
+      if (el && n && n.id) counters.live[n.id] = el;
+      return el;
+    };
+
+    function seed() {
+      counters.nodeEl = 0;
+      counters.live = {};
+      timers.length = 0;
+      stage.children.length = 0;
+      stage.childNodes.length = 0;
+      document.activeElement = document.body;
+      g.S.wf.nodes = [{ id: "n1", kind: "input_text", x: 0, y: 0, w: 320, h: 200, text: "hi", title: "输入" }];
+      g.S.wf.marks = [];
+      g.S.wf.groups = [];
+      g.S._renderSig = "";
+      g.S._renderingCanvas = false;
+      g.S._ignoreMarkBlurFlush = false;
+      g.S._deferCanvasForMarkEdit = false;
+      g.S._deferCanvasForFieldEdit = false;
+      g.S._resumeCanvasFocus = false;
+      g.S._canvasImeComposing = false;
+      /* 首绘前把焦点落回 body：假 DOM 里上一轮的 textarea 仍留着 parentElement 链，
+         不显式清掉它就会被守卫闸当成「还有人正在打字」，首绘当场被推迟 */
+      document.activeElement = document.body;
+      g.renderCanvas();
+    }
+    const nodeElNow = () => stage.querySelector('.wf-node[data-nid="n1"]');
+    const bodyFieldsNow = () => nodeElNow().querySelectorAll("input, textarea, select");
+    /* 补拍入口与真应用同源：app-boot.js 的 focusout / compositionend → flushDeferredCanvasFocus */
+    const flush = () => g.flushDeferredCanvasFocus();
+
+    section("[7] 焦点守卫：保存带起的画布重建不许拆掉正在打字的输入框（本次需求）");
+    {
+      /* ① 基线：舞台上真挂着一颗节点，字段齐全 */
+      seed();
+      ok(counters.nodeEl === 1, "首绘造了一颗节点元素");
+      ok(!!nodeElNow(), "舞台上挂着 .wf-node[data-nid=n1]");
+      ok(bodyFieldsNow().length === 2, "节点 body 里有两个可写字段（textarea + input）");
+
+      /* ② 正在打字（焦点在 textarea 第 2 个字符后）时来一次「保存带起的重绘」：
+         换了 kind → 签名必变（input_text 在浏览态下尺寸取外框，改 w 不一定动签名）
+         → 本会走整幅重建，焦点守卫必须把这一拍挡住 */
+      const before = nodeElNow();
+      const ta = bodyFieldsNow()[0];
+      ta.value = "hi";
+      document.activeElement = ta;
+      ta.setSelectionRange(2, 2);
+      g.S.wf.nodes[0].kind = "proc_text";
+      g.renderCanvas();
+      ok(document.activeElement === ta, "推迟后焦点仍在原输入框上（没有 blur）");
+      ok(nodeElNow() === before, "推迟后节点 DOM 原地不动（没有被拆掉重建）");
+      ok(counters.nodeEl === 1, "这一拍没有新建节点元素（= 没有重建）");
+      ok(g.S._deferCanvasForFieldEdit === true, "记下了「有一拍重绘被推迟」");
+      ok(before.querySelector(".n-body").children[0] === ta, "输入框元素本身还是同一个（不是新造的）");
+
+      /* ③ 编辑还没结束（focusout 从 stage 内另一个框冒出来）→ 不许补拍；
+         真失焦后（activeElement 落回 body）→ 补上那一拍，这时才允许重建 */
+      flush();
+      ok(counters.nodeEl === 1, "焦点仍在输入框上时，补拍不放行（一拍都不多画）");
+      document.activeElement = document.body;
+      flush();
+      ok(counters.nodeEl === 2, "失焦后的补拍真的重建了一次（这一次没有人在打字）");
+      ok(nodeElNow() !== before, "补拍后舞台上换成新元素（被推迟的形状改动没有丢）");
+      ok(g.S._deferCanvasForFieldEdit === false, "被推迟的那一拍已清账");
+      ok(g.S._resumeCanvasFocus === false, "补拍用的放行旗已复位（不会漏到下一拍）");
+    }
+    {
+      /* ④ 真重建（强制，例如形状真变了）时：焦点、光标与选区原位恢复 */
+      seed();
+      const before = nodeElNow();
+      const ta = bodyFieldsNow()[0];
+      ta.value = "hello";
+      document.activeElement = ta;
+      ta.setSelectionRange(2, 2);
+      /* 真重建（形状真的变了，这一步签名必变）——且这一拍必须画：跳过推迟闸。
+         想定的正是「万一真的重建了，也把焦点原位还回去」这条兜底。 */
+      g.S.wf.nodes[0].kind = "proc_text";
+      g.S._resumeCanvasFocus = true;
+      g.renderCanvas();
+      g.S._resumeCanvasFocus = false;
+      ok(counters.nodeEl === 2, "强制重建真的重建了一次");
+      const after = nodeElNow();
+      ok(after !== before, "舞台上是新元素");
+      const ta2 = after.querySelector(".n-body").children[0];
+      ok(document.activeElement === ta2, "重建后焦点原位回到同一个输入框（按节点 id + 字段序号找回）");
+      ok(ta2.selectionStart === 2 && ta2.selectionEnd === 2, "重建后光标位置保持在第 2 个字符后");
+
+      /* ⑤ 锚点没了（节点被删 / 字段没了）→ 正常失焦，不抢焦点（不许乱聚焦） */
+      seed();
+      document.activeElement = bodyFieldsNow()[1];
+      g.S.wf.nodes = [];
+      g.S._resumeCanvasFocus = true;
+      g.renderCanvas();
+      g.S._resumeCanvasFocus = false;
+      ok(document.activeElement === document.body, "锚点没了就正常失焦（不把焦点抢给别的框）");
+    }
+    {
+      /* ⑥ 输入法组合态：没有任何输入控件被 focus 也要推迟（组合态一律不重建） */
+      seed();
+      const before = nodeElNow();
+      document.activeElement = document.body;
+      g.S._canvasImeComposing = true;
+      g.S.wf.nodes[0].w = 480;
+      g.renderCanvas();
+      ok(nodeElNow() === before, "组合态期间不重建（DOM 原地不动）");
+      ok(counters.nodeEl === 1, "组合态期间没有新建节点元素");
+      ok(g.S._deferCanvasForFieldEdit === true, "组合态那一拍也记进了推迟账");
+      flush();
+      ok(counters.nodeEl === 1, "组合还没结束 → 补拍仍不放行");
+      g.S._canvasImeComposing = false;
+      flush();
+      ok(counters.nodeEl === 2, "组合结束后补上那一拍（形状改动没丢）");
+    }
+    {
+      /* ⑦ 没有人在编辑时不得无谓推迟：普通重绘照旧即时生效（不能把画布整体变懒） */
+      seed();
+      const before = nodeElNow();
+      document.activeElement = document.body;
+      g.S.wf.nodes[0].w = 520;
+      g.renderCanvas();
+      ok(counters.nodeEl === 2, "无人编辑时重绘照旧立刻重建（没被守卫闸拦住）");
+      ok(nodeElNow() !== before, "形状马上生效");
+      ok(g.S._deferCanvasForFieldEdit === false, "没有留下待补的推迟账");
+    }
+    {
+      /* ⑧ 复用快速通道不被守卫闸波及：签名一致时照旧即时渲染、一个 DOM 都不拆 */
+      seed();
+      const keep = nodeElNow();
+      document.activeElement = bodyFieldsNow()[0];
+      g.renderCanvas();
+      ok(nodeElNow() === keep, "签名一致（有人正在打字）时走复用通道：DOM 原地不动");
+      ok(counters.nodeEl === 1, "复用通道没有新建任何节点元素");
+      ok(document.activeElement === bodyFieldsNow()[0], "复用通道不碰焦点（连 blur 都不做）");
+    }
+
+    section("[7b] 回归：焦点在输入框里时，删节点 / 撤销那一拍必须当场生效（不许被守卫闸吞掉）");
+    {
+      /* ⑨ 现场：用户在 n1 的输入框里打字，另一颗节点 n2 被删（头部 ✕ / 右键菜单 / 侧栏删除
+         —— 这几条路都可能在焦点还留在输入框里时触发 renderCanvas）。结构变了 → 这一拍必须
+         当场画：推迟出去 n2 就一直留在画面上，看起来就是「节点删不掉」 */
+      seed();
+      g.S.wf.nodes.push({ id: "n2", kind: "input_text", x: 460, y: 0, w: 320, h: 200, text: "b", title: "第二" });
+      g.renderCanvas();
+      const el2 = () => stage.querySelector('.wf-node[data-nid="n2"]');
+      ok(!!el2(), "先把第二颗节点挂上（基线）");
+
+      const ta = bodyFieldsNow()[0];
+      ta.value = "hi";
+      document.activeElement = ta;
+      ta.setSelectionRange(1, 1);
+      const made = counters.nodeEl;
+      /* deleteNodes 的收尾：从 S.wf.nodes 摘掉再 renderCanvas（与 app.js deleteNodes 同口径） */
+      g.S.wf.nodes = g.S.wf.nodes.filter((n) => n.id !== "n2");
+      g.renderCanvas();
+      ok(!el2(), "被删的节点当场从画面上消失（结构闸放行，没有被守卫闸推迟）");
+      ok(counters.nodeEl === made + 1, "这一拍真的整幅重建了一次（只剩 n1 一颗被重造）");
+      ok(g.S._deferCanvasForFieldEdit === false, "没有留下待补的推迟账（删节点不等失焦）");
+      const ta2 = bodyFieldsNow()[0];
+      ok(document.activeElement === ta2, "重建后正在打的框原位拿回焦点");
+      ok(ta2.selectionStart === 1 && ta2.selectionEnd === 1, "光标保持在第 1 个字符后");
+    }
+    {
+      /* ⑩ 焦点在舞台内的**非输入控件**（节点头部 ✕ 按钮 / 舞台本身）上不算编辑中：
+         这种焦点的来源普遍是「刚点过那颗按钮」（点选后光标会落进节点输入框，再点按钮
+         若不改焦点就一直是它），照旧推迟等于按钮点了没反应 */
+      seed();
+      const before = nodeElNow();
+      const del = document.createElement("button");
+      del.className = "n-play n-del";
+      nodeElNow().appendChild(del);
+      del.focus();
+      ok(document.activeElement === del, "焦点落在节点头部的 ✕ 按钮上（在舞台内、但不是输入控件）");
+      g.S.wf.nodes[0].kind = "proc_text";
+      g.renderCanvas();
+      ok(counters.nodeEl === 2, "这一拍没有被推迟（照旧整幅重建）");
+      ok(nodeElNow() !== before, "形状改动马上生效");
+      ok(g.S._deferCanvasForFieldEdit === false, "没有留下待补的推迟账");
+    }
+    {
+      /* ⑪ 撤销 / 重做（app.js applySnap）换上一批新对象、可能连结构一起换：必须按
+         「这一拍必须画」放行，否则撤销看起来没反应。这里读源码钉住那条放行旗 */
+      const appSrc = read("renderer/app.js");
+      const at = appSrc.indexOf("function applySnap(");
+      const snapBody = at >= 0 ? appSrc.slice(at, at + 1500) : "";
+      ok(at >= 0, "读到 app.js 的 applySnap");
+      ok(/S\._deferCanvasForFieldEdit = false;/.test(snapBody), "撤销 / 重做清掉待补的推迟账");
+      ok(/S\._resumeCanvasFocus = true;/.test(snapBody), "撤销 / 重做按放行旗放行（守卫闸认这个旗）");
+      ok(/renderCanvas\(\);/.test(snapBody), "撤销 / 重做仍然当场重绘");
+    }
+
+    console.log("\n" + (fails ? "FAIL" : "PASS") + " — " + checks + " 项，失败 " + fails + " 项");
+  } catch (e) {
+    MERGED_FAILED = true;
+    console.log("FAIL  [合并块异常] smoke-canvas-focus.js：" + (e && e.stack ? e.stack : e));
+  }
+  if (fails) console.log("  ── 已并入块 smoke-canvas-focus.js：" + fails + " / " + checks + " 项失败");
+})();
+
 /* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
 if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
 process.exit(MERGED_FAILED ? 1 : 0);

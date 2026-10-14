@@ -29,6 +29,21 @@
   /** runKey 前缀：与自家会话 / 节点 / 助手的 runKey 命名空间分开，绝不撞车 */
   const RUN_PREFIX = "mcp:";
 
+  /** 会话族（mtnode_session_*）：由 renderer/app-session-bridge.js 执行。
+   *  它们**不**走 canvas 那条「第三方已授权」通道 —— 审批与画布确认必须仍由人给。 */
+  const OP_SESSION = {
+    sessionList: true,
+    sessionRead: true,
+    sessionWatch: true,
+    sessionCreate: true,
+    sessionSend: true,
+    sessionSteer: true,
+    sessionStop: true,
+    sessionApproval: true,
+    sessionModels: true,
+    sessionState: true,
+  };
+
   /** lt_state 的能力边界（如实告知，不假装能推进长任务）： */
   const LT_NOTE =
     "lt_state 只在**长任务的 Agent 环节内部**可用（那里的伪节点声明了本轮可写的输出键）。" +
@@ -285,6 +300,21 @@
       if (S._runCancels && S._runCancels[runKey] === runTicket) delete S._runCancels[runKey];
     };
     const body = async () => {
+      /* 会话族（session*）：**不**打开「第三方已授权」那位开关 —— 这一族的意义正是
+         把「停下来等人」的卡片原样交给手机去答（工具审批 / 画布确认 / 模型提问），
+         放行只能由人给出（手机点了按钮或电脑上点了按钮），绝不因为「来自桥」就免确认。 */
+      if (OP_SESSION[String(frame.op || "")]) {
+        const ses = window.MTNodeSession;
+        if (!ses || typeof ses.handleFrame !== "function") {
+          const err = "会话桥渲染层未加载（renderer/app-session-bridge.js）";
+          reply(frame.id, { ok: false, error: err }, err);
+          return;
+        }
+        const out = await ses.handleFrame(frame);
+        if (out && out.ok === false && out.error) reply(frame.id, out, out.error);
+        else reply(frame.id, out);
+        return;
+      }
       /* 首次连接授权 = 不再逐笔弹确认框：把开关打开，跑完立刻恢复原值。
          授权窗口只覆盖这一帧（同步设、finally 复原），不常驻、不影响用户自己的会话。 */
       const prevAuth = S._mcpAuthorized;

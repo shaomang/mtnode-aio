@@ -2329,7 +2329,7 @@ const EXT_UI = {
   kind: "dsh",
   hintEl: null,
   loaded: { dsh: false, skill: false, mcp: false, server: false },
-  errors: { dsh: "", skill: "", mcp: "", server: "" },
+  errors: { dsh: "", skill: "", mcp: "", server: "", paseo: "" },
   state: {
     dsh: { list: [], selectedKey: "", query: "" },
     skill: { list: [], selectedKey: "", query: "", editor: null },
@@ -2345,6 +2345,8 @@ const EXT_UI = {
       busy: false,
       selfTest: null,
     },
+    /* Paseo 桥：服务端页里的第二块（手机端远程接管会话，见 paintPaseoBridgePanel） */
+    paseo: { info: null, check: null, busy: false },
   },
 };
 
@@ -3637,6 +3639,139 @@ async function fetchMcpServerState(opts) {
     EXT_UI.errors.server = I18n.t("MCP 服务端状态不可用（") + extErrorText(e) + I18n.t("）");
   }
   await mcpServerLoadLogs(opts);
+  await paseoBridgeLoad();
+}
+
+/* ── 「Paseo 桥」：远程接管会话那一层（面板就在服务端页里，与 MCP 同一个开关面）──
+   它**不是**新的一类清单，而是「服务端」页里的第二块信息区：手机（Paseo App）经 Paseo
+   自带的 relay 配对后，由 Paseo daemon 把 paseo/acp-bridge.mjs 当 ACP provider 拉起；
+   桥说 ACP、对 MTNode 说本机 HTTP 的会话族（mtnode_session_*，不进 tools/list）。
+   落点与配置片段的真源 = paseo/bridge-info.js（桥的 --config / --check 读同一份）。 */
+function paseoBridgeState() {
+  if (!EXT_UI.state.paseo) EXT_UI.state.paseo = { info: null, check: null, busy: false };
+  return EXT_UI.state.paseo;
+}
+
+async function paseoBridgeLoad() {
+  const st = paseoBridgeState();
+  try {
+    st.info = await window.api.paseoStatus();
+    EXT_UI.errors.paseo = "";
+  } catch (e) {
+    st.info = null;
+    EXT_UI.errors.paseo = I18n.t("Paseo 桥状态不可用（") + extErrorText(e) + I18n.t("）");
+  }
+}
+
+function paintPaseoBridgePanel(info) {
+  const st = paseoBridgeState();
+  const s = st.info || {};
+  const wrap = document.createElement("div");
+  wrap.className = "dsh-mcp-res";
+  info.appendChild(wrap);
+
+  const bar = document.createElement("div");
+  bar.className = "dsh-mcp-res-bar";
+  const title = document.createElement("span");
+  title.className = "dsh-mcp-res-status";
+  title.textContent = I18n.t("Paseo 桥 · 远程接管会话（手机端）");
+  const state = document.createElement("span");
+  state.className = "dsh-mcp-res-uri";
+  state.textContent = s.watchers
+    ? I18n.t("正在远程接管 ") + s.watchers + I18n.t(" 条会话")
+    : I18n.t("待机（手机没在接）");
+  bar.appendChild(title);
+  bar.appendChild(state);
+  wrap.appendChild(bar);
+
+  const body = document.createElement("div");
+  body.className = "dsh-mcp-res-row";
+  body.style.display = "block";
+  wrap.appendChild(body);
+
+  const field = (label, value) => {
+    const row = document.createElement("div");
+    row.className = "dsh-mcp-res-name";
+    row.textContent = label + "：" + String(value == null ? "" : value);
+    body.appendChild(row);
+  };
+  const note = (text) => {
+    const p = document.createElement("div");
+    p.className = "dsh-mcp-res-uri";
+    p.textContent = text;
+    body.appendChild(p);
+  };
+
+  if (EXT_UI.errors.paseo) field(I18n.t("状态"), EXT_UI.errors.paseo);
+  note(
+    I18n.t(
+      "手机上用 Paseo App 经它自带的 relay 扫码配对，之后就能看并接管 MTNode 的智能体会话：读消息与工具调用、发消息、中途插话、终止本轮，以及接管工具审批 / 画布确认 / 模型提问。只碰会话层，不动画布。",
+    ),
+  );
+  field(I18n.t("桥脚本"), s.script || I18n.t("（没找到）"));
+  if (s.script && s.scriptExists === false) field(I18n.t("脚本状态"), I18n.t("文件不存在（打包白名单少了 paseo/？）"));
+  field(I18n.t("拉起用的 Node"), s.node || "");
+  field(I18n.t("数据目录"), s.dataDir || "");
+  field(
+    I18n.t("协议 / 最低 Paseo 版本"),
+    "ACP v" + (s.protocolVersion || 1) + " · Paseo ≥ " + (s.paseoMinVersion || "?"),
+  );
+  field(I18n.t("会话族工具"), (s.sessionTools || 0) + I18n.t(" 个（只给桥内部用，不进 MCP 的 tools/list）"));
+  note(
+    I18n.t(
+      "配对与「添加主机」在 Paseo 自己的界面里做（relay 或 Tailscale 直连都行）；MTNode 这一侧只负责把会话交给桥。桥连不上时会明确报错，不会静默失败。",
+    ),
+  );
+
+  extInfoDetails(
+    info,
+    I18n.t("Paseo provider 配置片段（~/.paseo/config.json，改完跑 paseo reload）"),
+    I18n.t("把这段合并进 Paseo 的配置：桥脚本会自己从数据目录读端口与令牌，不用手填地址。") +
+      "\n" +
+      (s.snippet || ""),
+  );
+
+  if (st.check) {
+    extInfoDetails(
+      info,
+      (st.check.ok ? I18n.t("桥自检：通过") : I18n.t("桥自检：未通过")) +
+        (st.check.error ? " · " + st.check.error : ""),
+      String(st.check.stdout || st.check.stderr || I18n.t("（没有输出）")),
+    );
+  }
+
+  extInfoButtons(info, [
+    [
+      I18n.t("复制 provider 片段"),
+      "primary",
+      async () => mcpCopy(s.snippet || "", I18n.t("Paseo provider 配置")),
+    ],
+    [
+      I18n.t("桥自检"),
+      "",
+      async () => {
+        st.busy = true;
+        paintExtManager();
+        try {
+          st.check = await window.api.paseoCheck();
+          toast(
+            st.check && st.check.ok ? I18n.t("桥自检通过") : I18n.t("桥自检未通过：见下方明细"),
+            st.check && st.check.ok ? "ok" : "err",
+          );
+        } catch (e) {
+          st.check = { ok: false, error: extErrorText(e) };
+        }
+        st.busy = false;
+        await paseoBridgeLoad();
+        paintExtManager();
+      },
+    ],
+    [
+      I18n.t("复制自检命令"),
+      "",
+      async () => mcpCopy(s.checkCommand || "", I18n.t("自检命令")),
+    ],
+  ]);
 }
 
 async function mcpServerLoadLogs() {
@@ -3849,6 +3984,10 @@ function paintMcpServerPanel(info) {
       lines.join("\n") || I18n.t("（没有步骤记录）"),
     );
   }
+
+  /* Paseo 桥（手机端远程接管会话）：与 MCP 服务端同一页 —— 桥正是走这个服务端的
+     会话族（mtnode_session_*）来读写会话的，放在一起才看得出「谁依赖谁」。 */
+  paintPaseoBridgePanel(info);
 
   /* 最近调用（审计） */
   const auditWrap = document.createElement("div");

@@ -11,7 +11,9 @@
  *
  *   [1] 纯函数：WAV 编码头（16 kHz 单声道 PCM16）、重采样、RMS、阈值、文本合并去重；
  *   [2] 三态循环：off → live → ptt → off；按钮文案 / 类名跟着状态走；
- *   [3] 落点纪律：有焦点才插、走 execCommand("insertText")、失焦暂停、回到同一个框继续写；
+ *   [3] 落点纪律（**本轮改口径：落点跟随真实光标**）：每次落字前现读光标、走
+ *       execCommand("insertText")、焦点不在输入框则挂住（不抢焦点）并写明「N 句等待落字」、
+ *       点进任意输入框补写到该框光标处、输入法组合态只挂不写、空格按落点两端判；
  *   [4] 静音门与在途转写：门先到、字后到也不丢（尾巴照样插进去）；
  *   [5] 按键转录态与 [6] 配置（断句停顿 / 语言的夹取与落盘位置；切片长度已退役）；
  *   [7]–[9] 准备态：**停顿才整段提交**（中途不切、句长不再封顶、只在后端硬顶切、尾部静音裁剪）、
@@ -443,26 +445,89 @@ const VOICE_SUITE = (async () => {
   await new Promise((r) => setTimeout(r, 60));
   eqStr(box.input.value, "你好，我们来测一下全局语音输入应该实时写进来", "重叠字被切掉后接上（不重复「全局语音输入」）");
 
-  /* 失焦：不插，但音频照样转写、识别结果留住（点数状态栏那枚话筒就靠这条不丢话） */
+  /* 焦点跑到**非输入控件**上（去点按钮 / 画布空白）：不插、也**不抢焦点**，这一片挂住并说出来 */
   box.pendingText = "这一段失焦时不该插进去";
-  box.ctx.document.activeElement = box.other; /* 焦点跑掉了 */
+  box.ctx.document.activeElement = box.foot; /* 页脚：不是可输入控件 */
   const before = box.input.value;
   V._test.feed(new Float32Array(16000));
   await new Promise((r) => setTimeout(r, 120));
-  eqStr(box.input.value, before, "焦点不在这个框：一个字都不插（未 focus 则无视）");
-  eqStr(st.pendingInsert, "这一段失焦时不该插进去", "失焦期间的识别结果留住了（不丢音频，等焦点回来再落）");
+  eqStr(box.input.value, before, "焦点不在输入框：一个字都不插（绝不硬塞）");
+  eqNum(st.pending.length, 1, "★ 这一片挂住了（state.pending 一片一条，不再拼成一坨）");
+  eqStr(st.pending[0], "这一段失焦时不该插进去", "挂住的正是这一片（一个字都不丢）");
+  ok(st.note.hidden === false, "★ 浮窗留着（挂字时用户得看得见字去哪了）");
+  ok(
+    String(st.noteBody.textContent).indexOf("等待落字 1 句") >= 0,
+    "★ 浮窗上写明「N 句等待落字」（实测：" + String(st.noteBody.textContent).replace(/\n/g, " / ") + "）",
+  );
   eqNum(st.queue.length, 0, "队列不积压（该转写的照转）");
 
-  /* 焦点回到同一个框：留住的字先落，再接着写 */
+  /* 焦点回到同一个框：挂住的字补写到**那一处光标**（不再是「原来的锚点」） */
   box.pendingText = "回来后继续写";
   box.ctx.document.activeElement = box.input;
   box.input.selectionStart = box.input.selectionEnd = box.input.value.length;
   for (const fn of box.docListeners.focusin || []) fn({ target: box.input });
   await new Promise((r) => setTimeout(r, 60));
-  eqStr(box.input.value, "你好，我们来测一下全局语音输入应该实时写进来这一段失焦时不该插进去", "焦点回到同一个框：留住的字补上");
+  eqStr(box.input.value, "你好，我们来测一下全局语音输入应该实时写进来这一段失焦时不该插进去", "焦点回到同一个框：挂住的字补上");
+  eqNum(V._test.state().pending.length, 0, "补写后挂字清单清空");
   V._test.feed(new Float32Array(16000));
   await new Promise((r) => setTimeout(r, 60));
   eqStr(box.input.value, "你好，我们来测一下全局语音输入应该实时写进来这一段失焦时不该插进去回来后继续写", "接着写不重排、不覆盖");
+
+  /* ★ 本轮主症状回归①：同一个框里把光标点走（手写编辑之后），下一片写在**那一刻的光标处** */
+  {
+    const v = box.input.value;
+    const at = v.indexOf("全局语音输入");
+    box.input.selectionStart = box.input.selectionEnd = at; /* 用户手点回中间：没有 focusin 事件 */
+    box.pendingText = "【插在中间】";
+    V._test.feed(new Float32Array(16000));
+    await new Promise((r) => setTimeout(r, 60));
+    eqStr(
+      box.input.value,
+      v.slice(0, at) + "【插在中间】" + v.slice(at),
+      "★ 落在用户此刻的光标处（不再接在上一次语音的末尾 —— 用户报的那条）",
+    );
+    eqStr(box.inserted[box.inserted.length - 1], "【插在中间】", "中文相邻不补空格（padForCaret 按落点两端判）");
+  }
+
+  /* ★ 回归②：不抢焦点 —— 焦点在非输入控件时，落字不把用户的焦点拉回输入框 */
+  {
+    box.ctx.document.activeElement = box.foot;
+    box.pendingText = "不抢焦点的一句";
+    V._test.feed(new Float32Array(16000));
+    await new Promise((r) => setTimeout(r, 120));
+    ok(box.ctx.document.activeElement === box.foot, "★ 落字不抢焦点（activeElement 仍是页脚，没被拉回输入框）");
+    eqNum(V._test.state().pending.length, 1, "写不进去 → 挂住（字不丢）");
+  }
+
+  /* ★ 回归③：跨框跟随 —— 焦点进了另一个输入框，挂住的字补到**那个框**的光标处 */
+  {
+    box.other.value = "";
+    box.other.selectionStart = box.other.selectionEnd = 0;
+    box.ctx.document.activeElement = box.other;
+    for (const fn of box.docListeners.focusin || []) fn({ target: box.other });
+    await new Promise((r) => setTimeout(r, 60));
+    eqStr(box.other.value, "不抢焦点的一句", "★ 补写到**焦点当前所在框**的光标处（不写回旧框）");
+    box.pendingText = "继续写在另一个框";
+    V._test.feed(new Float32Array(16000));
+    await new Promise((r) => setTimeout(r, 60));
+    eqStr(box.other.value, "不抢焦点的一句继续写在另一个框", "下一片跟着光标搬到新框（落点每次现读）");
+  }
+
+  /* ★ 回归④：输入法组合态（拼音还没上屏）期间只挂不写，上屏那一刻补到光标处 */
+  {
+    box.ctx.document.activeElement = box.input;
+    box.input.selectionStart = box.input.selectionEnd = box.input.value.length;
+    for (const fn of box.docListeners.compositionstart || []) fn({});
+    box.pendingText = "组合态里说的话";
+    const vBefore = box.input.value;
+    V._test.feed(new Float32Array(16000));
+    await new Promise((r) => setTimeout(r, 60));
+    eqStr(box.input.value, vBefore, "★ 组合态期间一个字都不插（不打乱未上屏的拼音）");
+    eqNum(V._test.state().pending.length, 1, "组合态里那一片挂住（不丢）");
+    for (const fn of box.docListeners.compositionend || []) fn({});
+    await new Promise((r) => setTimeout(r, 60));
+    eqStr(box.input.value, vBefore + "组合态里说的话", "★ 上屏（compositionend）后补写到当时的光标处");
+  }
 
   /* 静音门：定稿后浮窗收起、当前句清零 */
   V._test.gate();
