@@ -2219,29 +2219,16 @@ function wsGroupOf(ws) {
   /* 用最内层文件夹名作为项目目录（分组标签） */
   return parts.length ? parts[parts.length - 1] : I18n.t("默认目录");
 }
-/* ── 会话消息的保留上限（本次需求 · 用户口径「本会话每一轮都长期保留」）─────────
-   过去这里是「超过 100 条就从头裁掉」的固定条数上限（本文件的开轮裁切、落盘 slice，
-   app-db.js 的三处写入路径各一份）。它的实际后果不是「少留点闲聊」：一次开发 / 细化
-   轮次里用户消息本来就多（询问窗的每一条回答都是一条 user 消息），一轮能吃掉 8～15 条，
-   于是一到 7 轮上下，最早的**助手消息**就被整条挤出去 —— 轨迹与改动两栏的数据源正是
-   「每条助手消息的 m.segments / m.tools」，那一轮从此在那两栏里消失（用户报的
-   「轨迹和改动仅保留了最后一轮」）。
-   所以口径改成**按轮保留**：至少留住最近 AGENT_MIN_KEEP_PER_ROUND 轮（一轮按最多
-   AGENT_ROUND_MAX_ENTRIES 条消息折算），另设一个宽松的总条数上限兜住极端情况。
-   两个数都只是「最多留多少」的闸，不改变任何一条消息的字段与内容。 */
-const AGENT_MIN_KEEP_PER_ROUND = 120; /* 至少留住这么多轮（每轮按下面那个折算） */
-const AGENT_ROUND_MAX_ENTRIES = 16; /* 一轮最多按这么多条消息算 */
-const AGENT_MSG_KEEP_MAX = AGENT_MIN_KEEP_PER_ROUND * AGENT_ROUND_MAX_ENTRIES; /* 1920 条 */
-/* 按「至少留住最近 N 轮」裁掉开头的旧条目；返回被裁掉的条数（未裁 = 0）。
-   调用点：开轮追加用户消息后、落盘前、以及 app-db.js 那三处「问询窗回答 / 痕迹」写入后
-   —— 全部同源到这一处，免得四个地方各留一个数字走神。 */
-function agentTrimSessionMessages(st) {
-  if (!st || !Array.isArray(st.messages)) return 0;
-  if (st.messages.length <= AGENT_MSG_KEEP_MAX) return 0;
-  const cut = st.messages.length - AGENT_MSG_KEEP_MAX;
-  st.messages.splice(0, cut);
-  return cut;
-}
+/* ── 会话消息**不做条数裁剪**（本次需求 · 用户口径「token 出入量保留全部」）─────────
+   历史沿革（留档，避免以后有人再把它加回来）：这里先是「超过 100 条就从头裁」的固定
+   条数上限，后改成「按轮保留」（「最少留住 N 轮」×「一轮按 M 条折算」两个常量相乘
+   = 1920 条，多余的最老整条消息被切掉）。两版都有同一个后果：一轮被挤出去时，那一轮
+   助手消息上的 **usageSteps（每步 token 出入量）**、segments、tools 一起消失 ——
+   轨迹视图里就是「token 只保留了最新的一小部分」。
+   现在的口径（用户已确认）：**一条都不裁**。按轮保留的那两个常量与裁剪函数已整体删除，
+   开轮 / 落盘 / app-db.js 的写入路径都不再裁剪消息。
+   代价是长命会话的消息数组与单会话落盘大小随使用时间增长（用户侧回收手段仍是会话归档 /
+   删除）；这比「悄悄丢掉用户已经花掉的 token 账」更可接受。 */
 /* ── 会话落盘：懒加载 + 合并写盘（本次需求 · 用户已确认口径）──────────────────
    背景：会话正文（agentSessions）原本跟着 config.json 一起落盘 —— 本机实测
    75.8 MB，其中会话 56.1 MB / 74%，于是**每次保存设置**都要整份读写 + 备份
@@ -2298,9 +2285,10 @@ async function agentWriteAgentSessions() {
     if (!isDirty && !s._lcLoaded) continue;
     const meta = agentSessionMetaForDisk(s);
     if (isDirty && s._lcLoaded) {
-      /* 脏 + 正文在内存：送完整持久化对象（主进程逐字比对后才真写盘） */
+      /* 脏 + 正文在内存：送完整持久化对象（主进程逐字比对后才真写盘）。
+         正文一条不裁（见 agentSessionBodyForDisk 上方的口径说明）：过去这里写完盘再把
+         内存里那份裁到上限，一并删掉。 */
       payloadSessions.push(Object.assign({}, meta, { body: agentSessionBodyForDisk(s) }));
-      agentTrimSessionMessages(s); /* 与原口径一致：内存里也裁到保留上限 */
     } else if (isDirty) {
       /* 脏但正文不在内存（只有索引里的元数据被改过：改名 / 归档 / 拖序…）：
          只更新索引条目 —— 主进程见到 body 缺省就绝不碰会话文件。 */
@@ -2406,13 +2394,14 @@ function agentSessionMetaForDisk(s) {
 /* 会话正文 = 落盘白名单里「除索引元数据以外」的那一份（与原 config.agentSessions 逐字同构） */
 function agentSessionBodyForDisk(s) {
   return Object.assign({}, agentSessionMetaForDisk(s), {
-    /* 整对象落盘（含 reasoning / tools / segments），条数走**按轮保留**的那一个闸
-       （见 agentTrimSessionMessages：至少留住最近 AGENT_MIN_KEEP_PER_ROUND 轮，
-       过去的 messages.slice(-100) 会在一轮 8～15 条消息时把最早的助手消息挤掉 ——
-       轨迹与改动两栏的数据源就是它，所以那边一裁，这里就只剩最后一轮）。
-       segments 再限一次长：只夹单段字数（段一条不丢，见 agentSegsForDisk）——
-       段一丢，工具 chip 就会从消息尾部压住最终回复 */
-    messages: (s.messages || []).slice(-AGENT_MSG_KEEP_MAX).map((m) => {
+    /* 整对象落盘（含 reasoning / tools / segments / usageSteps），**条数不裁**
+       （本次需求：一条都不裁，见本文件上方「会话消息不做条数裁剪」的口径说明）。
+       轨迹与改动两栏的数据源就是每条助手消息的 m.segments / m.tools / m.usageSteps，
+       历史上两次条数闸（固定 100 条 / 按轮 1920 条）都在这里与开轮处把最老的整条消息切掉，
+       那一轮的每步 token 也跟着没了 —— 现在整道去掉。
+       segments 仍限单段字数（只夹长，段一条不丢，见 agentSegsForDisk）——
+       段一丢，工具 chip 就会从消息尾部压住最终回复。 */
+    messages: (s.messages || []).map((m) => {
       if (!m || !Array.isArray(m.segments) || !m.segments.length) return m;
       try {
         const segs = agentSegsForDisk(m.segments);
@@ -5566,8 +5555,13 @@ function agentCarryThinkOpenState(st, msg, runKey) {
      · step  = 网关内部的步号（轨迹段自己的 step 也是它，两边同源自证对齐）；
      · round 拿不到（节点运行 / 助手运行等非会话运行，用户口径：不记）→ 返回 false，
        轨迹侧照旧回落内存时间线（「拿不到轮号就不编号」，绝不编一个号出来）；
-     · **同一步有多次模型调用**（同一步内多轮流式 / 子代理 / 续跑）→ 按 calls 累加、共用
-       一行（用户口径：行内显示该步合计并标「N 次调用」）；
+     · **同一步有多次模型调用**（同一步内多轮流式 / 子代理 / 续跑）→ **每次调用各存一条**
+       （本次需求：明细要保留全部，不再把同一步压成一条 —— 压掉的那几条就再也查不到了）。
+       界面上仍只显示该步合计并标「N 次调用」：合计由渲染侧把该步名下全部条目相加
+       （renderer/app-trajectory.js 的 detailOf），读数与旧口径逐字一致；
+     · **一条都不裁**（本次需求：用户口径「保留全部」）：原来这里给明细留了「一步最多 64 条、
+       超了从头裁」的闸，超长轮次最早的几步 token 就此消失 —— 现在整道去掉。内存与单会话
+       落盘大小随步数线性增长，用户侧回收手段仍是会话归档；
      · **重发不重复计**：整轮重发（runKey 同名的新一轮）由轨迹的 resetAt 判定并整份
        清掉旧账 —— 失败尝试的用量不再挂在同一步上（用户口径：只记最终成功那次）。
    invalid 的返回值语义：true = 采集侧已接手（调用方**不要**再往内存时间线里塞这条，
@@ -5599,27 +5593,10 @@ function tokUsageStepNote(st, runKey, data) {
     provider: String(data.provider || ""),
     model: String(data.model || ""),
   };
+  /* 每条 usage = 一次模型调用 = 明细里的一条（本次需求：保留全部，不再按 (turn, step) 合并）。
+     同一步里并发子代理 / 续跑会有多条，压成一条等于把后到的几次调用抹掉。 */
   const list = (st._usageSteps = Array.isArray(st._usageSteps) ? st._usageSteps : []);
-  const k = u.turn + ":" + u.step;
-  let hit = null;
-  for (let i = list.length - 1; i >= 0; i--) {
-    const x = list[i];
-    if (x && Number(x.turn) === u.turn && Number(x.step) === u.step) {
-      hit = x;
-      break;
-    }
-  }
-  if (hit) {
-    for (const f of ["input", "output", "cacheRead", "cacheWrite", "reasoning"]) hit[f] += u[f];
-    hit.calls += 1;
-    if (u.provider) hit.provider = u.provider;
-    if (u.model) hit.model = u.model;
-  } else {
-    list.push(u);
-    /* 一步最多记 64 条：几十步的正常会话远够；真超了（异常长的并发流）也绝不长成
-       无上限数组（用户口径：明细要与消息窗口同尺度、有裁剪）。 */
-    if (list.length > 64) list.splice(0, list.length - 64);
-  }
+  list.push(u);
   return true;
 }
 /* 本轮明细交给收尾消息（app-assist.js 的 agentRoundMsgTail 调用）：
@@ -5660,6 +5637,8 @@ function agentRoundMsgTail(st, msg, runKey) {
     msg.tools = st._liveTools.slice();
   /* 每步 usage 明细（本次需求 · 修「每步 token 丢失」）：带上 (轮号, 步号) 随消息落盘 ——
      历史轨迹（切走再切回、重启后）直接按键取数，不再靠时刻猜归步。
+     一次模型调用 = 一条，**一条都不裁**（用户口径「保留全部」；同一步多调用各自留一条，
+     界面显示该步合计，见 tokUsageStepNote）。
      三条收尾路径（正常结束 / 终止 / 出错）都走本函数，故**终止与出错那一轮的用量同样留住**。 */
   try {
     const steps = typeof tokUsageStepsTake === "function" ? tokUsageStepsTake(st, runKey) : null;
@@ -9958,15 +9937,10 @@ async function agentSessionSend(text, opts) {
      都能落地；真正应用过一次（titleAuto=true）或用户手改后，此位才让位。 */
   st._autoTitleRound = !st.titleAuto && !st.titleLocked;
   st.updatedAt = Date.now();
-  /* 开轮裁切（本次需求 · 口径改成「按轮保留」）：这里原来是 `length > 100 → splice`
-     一刀切。两个毛病：① 100 条在一轮 8～15 条消息的开发 / 细化会话里就是 7 轮上下，
-     最早的**助手消息**被整条挤掉 —— 轨迹与改动两栏的数据源正是它（用户报的「只剩
-     最后一轮」）；② 这一刀切在**本轮用户消息刚 push、助手的还没写**的位置，
-     除非溢出量超过 AGENT_ROUND_MAX_ENTRIES，否则它会从中间切开上一轮。
-     现在只把「总条数超上限且溢出量已跨过一整轮」的那一段切掉（agentTrimSessionMessages
-     同源口径），否则留给落盘前与下一轮收尾去裁。 */
-  if (st.messages.length - AGENT_MSG_KEEP_MAX >= AGENT_ROUND_MAX_ENTRIES)
-    agentTrimSessionMessages(st);
+  /* 开轮不再裁消息（本次需求 · 用户口径「保留全部」）：这里历史上先是
+     `length > 100 → splice` 的一刀切，后改成「按轮保留」的裁剪函数 —— 两版都会把最老
+     那一轮的助手消息整条切掉，连带它上面的每步 token 一起消失。
+     现在整道去掉（见本文件「会话消息不做条数裁剪」的口径说明），一条都不裁。 */
   /* 新的一轮开始：显示窗口回到默认最近 200 条，更早的可从最前端重新「显示更早内容」 */
   st._visItems = undefined;
   st.running = true;

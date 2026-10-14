@@ -9328,7 +9328,9 @@ app.on("before-quit", () => {
      这里只关它的控制台窗；要停服务/释放显存走插件「停止」或托盘「停止服务并退出」。 */
   try { shutdownBreezeUiOnly(); } catch {}
   try { shutdownRemotionUiOnly(); } catch {}
-  /* Paseo 手机接管：daemon 不随 MTNode 退出（手机随时要用），这里只关它的控制台窗 */
+  /* Paseo 手机接管：**宿主持有的那份自建 daemon 要一起停**（本轮口径，它是 MTNode 的子进程，
+     而且它不再有窗口可关）；复用模式（Paseo Desktop）与外部实例一律不动。收尾是「优雅 5 秒 →
+     超时强杀」，且**不拦 MTNode 退出**：这里不 await，退出流程照常往下走，事件循环等管道自然收尾。 */
   try { paseoRemote.shutdownPaseoRemoteUiOnly(); } catch {}
   /* 本地图像生成后端（SenseNova）故意不杀：32.66GB 权重加载要几分钟，是独立于 MTNode 的单例；
      这里只关它的控制台窗。想立刻把显存还给系统 → 控制台「停止后端」/「立即释放显存」，或等空闲自停。 */

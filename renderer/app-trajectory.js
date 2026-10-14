@@ -459,17 +459,21 @@
      真源（本次需求）：**采集点自带 (轮号, 步号) 的明细** —— app-assist.js 的
      tokUsageStepNote 在 usage 到达那一刻写下 {turn, step, calls, input, output,
      cacheRead, cacheWrite, reasoning, provider, model}，随助手消息落盘（m.usageSteps）。
-     渲染直接按键取数：段的 (round, step) → 明细里同一步那一条。**不再猜**。
+     渲染直接按键取数：段的 (round, step) → 明细里同一步那几条**相加**。**不再猜**。
+     **一次模型调用 = 一条明细，一条都不裁**（本次需求 · 用户口径「保留全部」）：
+     原来采集侧每轮只留最新 64 条，超长轮次最早的几步 token 就此消失；现在同一步里的
+     多次调用各自留一条，取数时相加成该步合计 —— 显示口径不变（行内仍是该步合计 +
+     「N 次调用」），但每一条明细都能查到、也能算（见 detailOf 的合并口径）。
      为什么必须换掉旧判据：usage 帧本身不带 turn/step（网关的 accountUsage 只发
      provider/model/at），旧口径只能拿「段自己的到达时刻」与 usage 时刻比大小来推断
      （TOK_JITTER_MS / TOK_TOOL_FOLLOW_MS + p/q 邻段关系）—— 当 usage 之后、下一步的
      任何段之前悄悄隔了一段时间（真实会话里很常见），它就整条被归给**上一步**，
      于是「这一步」永远显示未记到（用户看到的正是这个）。
      兜底（老数据 / 非会话运行）：st._tokUsageTimeline 的内存时间线照旧按时刻就近归步
-     （老轮次不回填，用户口径：只从改版后的新会话开始记）；两边都没有 → 不显示数字。
+     （老轮次不回填，用户口径：只从改版后的新会话开始记；这条时间线同样**不裁**）；
+     两边都没有 → 不显示数字。
      显示位（用户口径不变）：一步的 token 只显示在该步**最后一段**那一行（一般是工具行；
      末尾没有工具调用的步落在正文行），同一 (轮, 步) 的其它行在 tooltip 里写清归属。 */
-  const TOK_LINE = 400;
   /* 归步的两个时间窗（见 tokenPlan 里的说明）：
      · TOK_TOOL_FOLLOW_MS = 「这一次模型调用请求的工具」随后就到 —— 实测会话日志里只差
        2ms；给到 2s 是为了容下渲染层的排队，而下一步的工具调用至少隔着下一次模型调用
@@ -589,6 +593,10 @@
     /* ① 明细优先：按 (轮号, 步号) 取数 —— 采集点写下的键与段自己的键同源
        （段的 round = 轨迹轮号、step = 网关步号），所以这里只做等值匹配，不做任何推断。 */
     const details = st && Array.isArray(st._usageSteps) ? st._usageSteps : [];
+    /* 明细里「有没有带轮号」只算一次（本次需求：明细不再裁条，一次运行里可以上千条；
+       逐组 some() 就是 O(组数 × 明细数)）。明细数组在这次渲染里不变 —— 采集发生在运行时，
+       渲染拿到的是当时那一份快照。 */
+    const anyDetailHasRound = details.some((d) => Number(d && d.round) > 0);
     function detailOf(round, step, roundFilter) {
       if (step == null || !details.length) return null;
       /* 轮号那一半的键怎么认（明细自带 round 时最准，采集点就是这么写的）：
@@ -597,16 +605,16 @@
          · 明细没带（老形态）→ 只有明细确实属于「当前在跑的这一轮」时才认它
            （curRoundOf 取会话轨迹上的轮号；取不到就整条不认 —— 老轮次不回填，用户口径）。 */
       const wantRound = roundFilter != null ? Number(roundFilter) : Number(round);
-      const anyHasRound = details.some((d) => Number(d && d.round) > 0);
-      if (!anyHasRound) {
+      if (!anyDetailHasRound) {
         const curRound = curRoundOf(st, details);
         if (curRound == null || !Number.isFinite(wantRound) || wantRound !== Number(curRound))
           return null;
       }
-      /* **同一步的多条明细合并成一条**（同一步内两次模型调用 = 2 条明细）：入/出/缓存/
+      /* **同一步的多条明细合并成一条**（本次需求 · 保留全部：一次模型调用 = 一条明细，
+         同一步里可以有 N 条 —— 并发子代理 / 续跑 / 同一步内多轮流式）：入/出/缓存/
          思考各自相加，calls 相加 —— 用户口径「行内显示该步合计并标 N 次调用」。
-         采集侧（tokUsageStepNote）已按 (turn, step) 累加过，这里再合并一次是为了兜住
-         「明细数组里落着两条同 (轮, 步)」的形态，绝不各显示一条。 */
+         采集侧（tokUsageStepNote）现在**不再**把同一步压成一条（那时后到的调用会被抹掉），
+         所以这里的合并是显示口径的唯一收敛点，一条明细都不会因此消失。 */
       let hit = null;
       for (let i = 0; i < details.length; i++) {
         const d = details[i];
@@ -756,7 +764,9 @@
   /* 内存时间线（兜底口径 · 本次需求起**不再是主口径**）：
      采集侧（app-assist.js 的 usage 分支）只在这条 usage 没被明细接手时才调它 ——
      明细接手 = 采集点拿到了 (轮号, 步号)（tokUsageStepNote 返回 true）。两种口径
-     **互斥**，同一条 usage 不会被算两遍。 */
+     **互斥**，同一条 usage 不会被算两遍。
+     **不裁**（本次需求 · 用户口径「保留全部」）：原来这里留了「最多 400 条、超了从头裁」
+     的闸，长会话最早的每步 token 就此消失 —— 现在整道去掉。 */
   function pushTokLine(st, data) {
     if (!st || !data) return;
     const l = (st._tokUsageTimeline = Array.isArray(st._tokUsageTimeline)
@@ -772,7 +782,6 @@
       cacheWriteTokens: Number(data.cacheWriteTokens) || 0,
       reasoningTokens: Number(data.reasoningTokens) || 0,
     });
-    if (l.length > TOK_LINE) l.splice(0, l.length - TOK_LINE);
   }
 
   const KIND_LABEL = {

@@ -22,31 +22,42 @@ MTNode 自己的会话（左栏 `as…` 那条）**借 Paseo 的手机端**用�
 手机上看到的就是 MTNode 里那条会话本身 —— **同一份账**：手机上发的消息在电脑左栏看得到，
 电脑上开的会话手机也能接着聊。
 
-## 2. 装（两步，都在插件里）
+## 2. 装（两步：安装窗装、控制台配）
 
-从顶栏「**插件**」打开「**Paseo 手机接管**」插件控制台（`paseo-remote`，kind `paseo`）：
+**第一步 · 装** —— 顶栏「**插件**」→「**Paseo 手机接管**」卡片上点「**安装**」（已装过就是「重装」）：
+它开的是与其它本地后端**同一只安装窗**（`paseo-remote`，kind `paseo`），逐步骤显示、可取消、失败可交给会话修复。
 
-1. **认后端 / 装后端**：控制台会先找本机已装的 Paseo —— 桌面端自带的 CLI
-   （`C:\Program Files\Paseo\resources\bin\paseo.cmd`）或 PATH 里的 `paseo` 都能直接用；
-   找不到时才点「安装后端」，它会在你选的目录里 `npm i @getpaseo/cli` 装一份独立后端
-   （独立 home；**不与桌面端抢 6767** —— 见下）。
-   - **装完会自检**：`node_modules\.bin\paseo.cmd --version` 真能报版本才算装好
-     （只看 `node_modules\@getpaseo\cli` 目录在不在会误报 —— 曾经的现场就是
-     `[install] 完成：code=0 installed=false`：npm 正常退出、依赖也落了盘，界面却说没装上）。
-     第一次自检不过会自动清掉半成品（`node_modules` + lock）重装一次；仍不过就给出可操作原因
-     （依赖没落盘 / bin 没生成 / CLI 跑不起来），控制台「安装自检」那行直接写着是哪一种。
-   - **不抢端口**：官方 daemon 的 listen 来自持久配置 `daemon.listen`（默认 6767），
-     而桌面端那份长期占着 6767。自己装的那份起来时会先试 6767，被占就**把 `daemon.listen`
-     钉到第一个空闲端口**（6768+），只在自建 home 的配置里写，不动你 `~/.paseo` 那份。
-     万一还是撞上（`EADDRINUSE`），控制台点「启动后端」会自动换端口重试一次。
-   - **自建用不了就切回复用**：自建模式检测不到可用 CLI、而本机其实装着 Paseo 时，
-     控制台会多出一颗**「改用本机已装的 Paseo」**（不静默改配置，要你点一下）。
-   - **真 Node 是硬前置**：桥的 `command[0]` 必须是真 Node（≥22.19，Electron 自带的那个 Paseo 不认）。
-     只有 Electron Node 时控制台给「等真 Node 就位」（等 dsh 的托管 Node 装好）；注册 provider 前
-     也会先等一会儿 —— 宁可不写，也不把一份错的 provider 配置写进 Paseo。
-2. **出码 → 注册 → 打开开关**：点「生成配对二维码」，手机 Paseo App 扫码配对；
-   点「注册到 Paseo」把 MTNode 会话注册成它的一个 ACP provider（走官方 CLI，官方负责合并与 reload）；
-   最后打开「远程连接」总开关（**默认关**，配对完由你亲手开）。
+1. **探测本机已装的 Paseo**（第一步）：桌面端自带的 CLI（`C:\Program Files\Paseo\resources\bin\paseo.cmd`）
+   或 PATH 里的 `paseo` 都能直接用 —— 命中就**复用**，后面 node / npm / 自检 / 起 daemon 四步全部标「跳过」，
+   不给你装第二份（免得抢端口与配对身份）。想强制装一份自建的，在安装窗里勾「**仍要自建一份（忽略本机已装的 Paseo）**」。
+2. **真 Node（≥22.19）**：缺 / 过旧时安装窗会**自动装一份托管 Node** 进数据目录
+   （桥的 `command[0]` 必须是真 Node，Electron 自带的那个 Paseo 不认）。
+3. **npm 安装 @getpaseo/cli**：只有走自建那份时才跑（`npm i @getpaseo/cli --prefix <插件根目录>\paseo`，走国内镜像）。
+   - **装完会自检**：`paseo --version` 真能报版本才算装好（只看依赖目录在不在会误报 —— 曾经的现场就是
+     `[install] 完成：code=0 installed=false`）。第一次自检不过会自动清掉半成品（`node_modules` + lock）重装一次；
+     仍不过就停在失败步给出原因（依赖没落盘 / bin 没生成 / CLI 跑不起来）与建议。
+   - **不抢端口**：官方 daemon 的 listen 来自持久配置 `daemon.listen`（默认 6767），而桌面端那份长期占着 6767。
+     自建那份起来前会先把 `daemon.listen` 钉到第一个空闲端口（6768+），只写自建 home 的配置，不动你 `~/.paseo` 那份。
+4. **注册 provider**：写 `agents.providers.mtnode`；Paseo 里正有会话在跑时**不动配置**（这一步标「跳过」，
+   到控制台点「注册到 Paseo」确认一次）。
+5. **起自建 daemon**（复用模式跳过：那份 daemon 由 Paseo Desktop 自己管）。自建这份由**宿主静默托管**：
+   跑的是 `paseo daemon run --home <自建 home>`（宿主自己持有这个进程，`windowsHide` + 接管 stdio），
+   **不会再冒出那只标题 `Paseo Daemon` 的终端窗口** —— 过去用官方 `paseo daemon start` 时，
+   它会自己 detached 一个 supervisor，Windows 上就多出一只可见窗口，误关一下后端就死了。
+   daemon 的输出逐行进控制台日志（`<数据目录>\paseo\console.log`）。
+6. **配对冒烟**：只读试算一次配对码；relay 关着时标「跳过」并提示去控制台开 relay。
+7. **收尾**：远程接管总开关**不会自动打开**（默认关是安全口径）—— 提示你去控制台亲手开。
+
+自建那份用不了、而本机其实装着 Paseo 时，**探测步骤会直接切回复用**（只用你点「安装」这一下，不静默改配置）；
+要自建就在窗里勾上面那个复选框。卸载也在同一只窗里（底栏「卸载」）：只清这个插件自己的数据
+（自建依赖 / 配置 / 日志 / 自建 daemon home），**本机已装的 Paseo Desktop 与 `~/.paseo` 一律不碰**。
+
+**第二步 · 配** —— 打开「**控制台**」（卡片第二颗按钮），按顺序做三件事：
+点「生成配对二维码」，手机 Paseo App 扫码配对；点「注册到 Paseo」把 MTNode 会话注册成它的一个 ACP provider
+（走官方 CLI，官方负责合并与 reload）；最后打开「远程连接」总开关（**默认关**，配对完由你亲手开）。
+自建模式下控制台还有「启动后端 / 停止后端」两颗：启动 = 宿主静默托管（后台跑、不留窗口），
+**停止 = 优雅停 5 秒，超时按进程树强杀**；自建这份**随 MTNode 退出而停**（它是 MTNode 的子进程，
+不再是一只独立窗口里的常驻进程）—— 要手机随时连着，就先别关 MTNode。意外退出宿主会自动重启，最多 3 次。
 
 > 控制台同时显示：CLI 落在哪、用哪个真 Node 拉起桥、数据目录、协议与最低 Paseo 版本、
 > 「桥自检」结果，以及「重置配对凭据」（换 daemon 密钥，会作废所有已配对设备）。
@@ -104,15 +115,31 @@ MTNode 自己的会话（左栏 `as…` 那条）**借 Paseo 的手机端**用�
   - 「终止」= 电脑上那个 ■，连排队消息一起清掉。
 - **审批**：会话里要写工作区外的文件、要跑命令、要改画布时，手机上会弹卡：
   允许一次 / 本会话后续都放行 / 拒绝。电脑上同时也会显示这张卡 —— **谁先答算谁的**。
-- **模型提问（询问卡）**：模型用 `ask_user_question` 问话时，手机上弹的是一张**表单**
-  （ACP 的 `session/elicitation`，form 模式）——一题一字段：单选题是一组按钮、
-  多选题可勾多项、没有选项的题就是一行自由文本；题面第一行当标题，空行之后的 Markdown
-  总结进字段说明（与电脑上询问卡同一份数据）。答完答案按题 id 回到 MTNode 的询问卡，
-  模型接着往下跑，电脑侧会话里也会留下这轮回答的痕迹。
-  - 手机端**不支持表单问答**（老版本 / 自己接的 ACP 客户端没声明 `elicitation.form`）时：
-    桥会回退成「允许一次 / 拒绝」那一对按钮，**并推一条说明**让模型重发或到电脑上答 ——
-    绝不代答、也不假装送达（回退路径是刻意保留的，不是故障）。
-  - 桥没拿到回执（手机断线 / 你一直没答）时 MTNode 那边**继续等**，不自动作答也不自动拒绝。
+- **模型提问（询问卡）**：模型用 `ask_user_question` 问话时，手机上收到的是一条**普通消息**
+  （`session/update · agent_message_chunk`）：题面第一行当标题、空行之后的 Markdown 总结照样带上，
+  有选项的题把选项连说明一起列出来，末尾写清「**怎么答**」——正文是纯人话，**一个 JSON 都没有**。
+  **作答 = 在手机输入框里回一条消息**：桥把这条回复按题翻成 `answers[]`（逐题按题 id 对齐）+
+  一条可读 `answerText`，走 `/ctl` 的 `session/approval` 打回 MTNode 那张询问卡，模型接着往下跑，
+  电脑侧会话里也会留下这轮回答的痕迹。手机发消息时 Paseo 会先 interrupt（`session/cancel`）再发 ——
+  桥在「正等作答」时**不会**因此停掉 MTNode 那一轮（只把旧那一枪按 ACP 要求以 `cancelled` 收尾）；
+  真按「停止」时（3 秒内没等到那条消息）才照常停。
+  - **为什么不走权限卡 / 表单**（踩过的两个坑）：
+    · ACP 的 `ToolKind` 只有 read/edit/delete/move/search/execute/think/fetch/switch_mode/other，
+      **没有 `question`** —— 发 `toolCall.kind:"question"` 会被 Paseo daemon 的校验**整帧拒掉**
+      （`-32602 Invalid params`，`data.toolCall.kind`），询问卡根本到不了手机；
+    · 就算 kind 合法也用不上 Paseo 的问句表单：它的渲染条件是客户端自己的
+      `request.kind === "question"` 且 `request.input.questions[]`，而 ACP 通道里 daemon 只产出
+      `kind: "tool"/"mode"`、**从不填 `input`**（0.11.2 的 `mapPermissionRequest`）。
+  - **不再走 ACP 的 form elicitation**：那条通道要客户端声明 `clientCapabilities.elicitation.form`，
+    而真机 Paseo（0.11.2 实测：客户端能力只有 `fs` + `terminal`）**从不声明**。这一版起提问走上面那条
+    可读消息：**不依赖任何客户端能力位**，也不再发「这台手机端不支持表单问答」那句说明帧。
+  - **提问类工具自己的工具卡不再下发**：`ask_user_question` 的参数就是那份询问 JSON，
+    过去它被翻成 `toolCall.kind:"other"` 的工具卡，Paseo 把这类卡显示成 **Other**
+    （`humanizeToolName("other")`），点开是原始 JSON —— 用户报的「手机端显示 Other，点进去是 JSON」
+    说的就是它。现在提问只以那条可读消息出现；其它工具调用也不再写死 `kind:"other"`，
+    手机上显示的是可读的工具名。
+  - 断线 / 一直没答时 MTNode 那边**继续等**，不自动作答也不自动拒绝；电脑上先答了的话，
+  手机再回的那条消息会按**普通消息**发下去（不会当成答案吞掉）。
 - 手机断线时：MTNode 这边**继续等**（不自动拒绝、不自动超时），重连后接着答即可。
 - **电脑上的界面会跟着动**：手机发一条消息时，MTNode 会把那条会话切成当前会话（这是
   会话正文落盘的必要条件 —— 渲染层只在「活动会话」换代或内容变脏时才写 `agent-sessions/<id>.json`），
@@ -150,18 +177,23 @@ MTNode 自己的会话（左栏 `as…` 那条）**借 Paseo 的手机端**用�
 | 桥自检说「探活失败 ECONNREFUSED」 | 端口是上次启动的旧端口（**端口每次启动都会变**）：重开 Paseo 的 provider / 重跑 daemon 即可。 |
 | 手机上「**未检测到 Model**」 | 桥没把模型清单交出去。看控制台「手机端能选到」那行或自检的 `models: N`：为 0 说明渲染层没就绪（MTNode 主窗口关着）或服务商配置是空的 —— 先在 MTNode 里配好服务商 / 打开窗口，再在控制台点「注册到 Paseo」重来一次让它 reload，手机上**下拉刷新**。 |
 | 手机上看不到任何**已有会话** | 两处都得对：桥要在 `initialize` 里声明 `sessionCapabilities.list`（旧版桥没声明，Paseo 直接回空清单），并且它得真跑 `session/list`、并在 `session/load` 里**回放正文**（Paseo 靠 load 期间的帧判断这条会话有没有对话，没有就把它剔掉）。自检的 `sessions: M` 就是桥交出去的条数：显示 0 但左栏明明有会话 → 那些会话被归档了；数字正常但手机空 → Paseo 版本旧 / 没 reload，重开 provider 后再刷新。 |
-| 控制台说「没找到 Paseo 的命令行」 | 本机没装 Paseo，或装在非常规路径；点控制台的「安装后端」自建一份，或装官方桌面端。**若本机其实装着桌面端**，控制台会多一颗「改用本机已装的 Paseo」，点它切回复用即可。 |
-| 「安装后端」跑完仍显示未装好 | 看控制台「安装自检」那行的原因：`dep_missing` 依赖没落盘（npm 报错/被打断）、`cli_bin_missing` 依赖在但 `.bin\paseo.cmd` 没生成（半成品，宿主已自动清掉重装过一次）、`cli_not_runnable` CLI 在位但 `--version` 失败。处置：点「重装依赖（修复）」，或「换目录重装」换一个普通目录（**不要**选 MTNode 自己的目录、也不要用要管理员权限的位置）；仍失败看日志里的 npm 输出。 |
+| 安装窗说「没找到 Paseo 的命令行」 | 本机没装 Paseo，或装在非常规路径；在安装窗点「开始安装」让它自建一份（`npm i @getpaseo/cli`），或装官方桌面端。**若本机其实装着桌面端**，探测步骤会自己切回复用，不装第二份。 |
+| 安装失败停在某一步 | 看安装窗左栏哪一步是 ✕：`node` = 真 Node 不达标且托管安装没成（网络 / 代理），`npm` = npm install 失败（镜像 / 磁盘），`check` = 装上了但 `paseo --version` 不通过（多半是旧 Node 装出来的依赖，点「重装」会先清掉再用真 Node 装回），`daemon` = 端口全被占或起不来，`provider` = 写 Paseo 配置失败，`pair` = relay 关着（去控制台点「开启 relay」）。失败步下会给出处置建议，也可以直接点「交给 mtnode 会话修复」。 |
+| 安装窗跑完仍显示未装好 | 看控制台「安装自检」那行的原因：`dep_missing` 依赖没落盘（npm 报错/被打断）、`cli_bin_missing` 依赖在但 `.bin\paseo.cmd` 没生成（半成品，安装链已自动清掉重装过一次）、`cli_not_runnable` CLI 在位但 `--version` 失败。处置：到安装窗点「重装」；仍失败就把那一步的日志交给会话修复。 |
 | 起后端后手机连着又断 / 控制台说 daemon 没在跑 | 多半是**端口被本机已装的 Paseo 占着**（6767）：看日志里有没有 `EADDRINUSE`。自建后端会在安装时把 `daemon.listen` 钉到一个空闲端口；手动起撞上时再点一次「启动后端」会自动换端口重试。 |
-| 控制台标「是 Electron 自带 Node（桥要真 Node）」 | 本机没有 Node ≥22.19：桥由真 Node 拉起是硬要求。装 Node 后重开 MTNode，或点「等真 Node 就位」（dsh 会把托管 Node 装进数据目录）。这段时间里注册 provider 会被明确拒绝（不写错配置）。 |
+| 控制台 daemon 那行标着「**旧方式（带窗口）**」 | 这份是过去用官方 `paseo daemon start` 起的（它自己 detached 一个 supervisor，Windows 上外面挂着一只标题 `Paseo Daemon` 的终端窗口）。宿主会在**开机 / 下次启动后端时自动换成静默托管**（先优雅停旧的再以 `daemon run` 拉起，配对密钥与配置都不动，手机至多瞬断一次）；也可以手动点「停止后端」再「启动后端」。 |
+| 关掉 MTNode 后手机就连不上了 | 本轮口径：自建那份 daemon 由宿主持有，**随 MTNode 退出而停**（过去那只独立窗口里的常驻进程不再存在）。要手机随时连着就别关 MTNode；复用模式的 daemon 由 Paseo Desktop 自己管，不受影响。 |
+| 控制台日志里刷出一堆 `{"level":30 …}` | daemon 的 stdout/stderr 是逐行进控制台日志的（本意如此：过去只有 `<自建 home>\daemon.log` 里能看到）。要更完整的现场看那份 `daemon.log`。 |
+| 控制台标「是 Electron 自带 Node（桥要真 Node）」 | 本机没有 Node ≥22.19：桥由真 Node 拉起是硬要求。到安装窗跑一次安装（第 2 步会把托管 Node 装进数据目录），装完重开 MTNode。这段时间里注册 provider 会被明确拒绝（不写错配置）。 |
 | 出码时报 `RELAY_DISABLED` | 这个 Paseo home 的 relay 关着（**新装默认关**）；点控制台「开启 relay」或 `paseo daemon config set daemon.relay.enabled true`。 |
 | Paseo 里看不到 MTNode 会话 provider | provider 没注册 / 没 reload / 缺 `label`：在控制台点「注册到 Paseo」重来一次；`command` 第一条要是真 Node，不能是 Electron 可执行文件。 |
 | Paseo 报「版本过低」 | 本桥声明了最低兼容版本（控制台上「协议 / 最低 Paseo 版本」可见）。升级 Paseo；确实要用未验证的组合可设环境变量 `MTNODE_PASEO_MIN_VERSION` 放宽。 |
 | 手机上发消息没反应 | 看控制台「正在接管 N 条会话」是否为 0（为 0 说明没有观察者：桥没连上），以及「远程连接」总开关是否打开；再看 MTNode 主窗口是否还开着 —— 会话的执行在渲染层，窗口关了没人执行。 |
 | 手机上答了审批但电脑上还挂着卡 | 那张卡已失效（发起轮结束 / 已被别处答过）：手机上会明确报 stale，让模型重发一次请求。 |
-| 手机上**询问卡不弹**、模型在电脑侧一直干等 | 先在控制台点「**提问通道自检**」——它把这条链逐拍验一遍：① 桥起得来、② 会话落到 MTNode、③ MTNode 真的发出询问卡、④ 桥把它翻成 `session/elicitation`（form）、⑤ 表单回执翻成 `answers[]`、⑥ 答案回到 MTNode。哪一拍 ✗ 就是断在哪一拍：<br>· ④ ✗ 且改发权限请求 → 客户端没声明 `elicitation.form`（Paseo 版本旧，或自己接的 ACP 客户端没声明）；<br>· ④ 全没有 → 卡根本没从 MTNode 出去（看那一轮是不是真调了 `ask_user_question`）；<br>· ⑥ ✗ → 回执没落回 MTNode（会话已被删 / 该轮已结束，日志里会写明）。 |
-| 手机上答了询问卡但模型没反应 | 同上先跑「提问通道自检」。手机端答的是**表单**，答案要经桥翻成 `{ answers: [{id, selected[]}] }` 再打回 MTNode —— 自检的 ⑥ 就是验这一段；它通过而真机没反应时，多半是那一轮已经结束（卡作废，电脑上会看到「这一轮已经结束」的痕迹）。 |
-| 手机上的提问卡只有「允许一次 / 拒绝」两个按钮 | 走到了**回退**路径（客户端不支持 form elicitation）：卡片上同时会有一条说明。要让表单问答生效，把 Paseo 升级到声明 `elicitation.form` 的版本，或换支持该能力的客户端。 |
+| 手机上**询问卡不弹**、模型在电脑侧一直干等 | 先在控制台点「**提问通道自检**」——它把这条链逐拍验一遍：① 桥起得来、② 会话落到 MTNode、③ MTNode 真的发出询问卡、④ 桥把它发成一条**可读消息**（`agent_message_chunk`，正文里没有 JSON、也不再发 `kind:"question"` 的权限卡）、⑤ 手机那条回复被当作答案接住（回 `end_turn`，不新起一轮）、⑥ 答案回到 MTNode。哪一拍 ✗ 就是断在哪一拍：<br>· ④ 全没有 → 卡根本没从 MTNode 出去（看那一轮是不是真调了 `ask_user_question`），或桥脚本是旧的（重新打包 / 让控制台「注册到 Paseo」把 `command` 指到新桥脚本后 reload）；<br>· ④ 说「又发了 `session/request_permission(kind=question)`」→ 桥脚本是旧的：ACP 没有那个 kind，Paseo 会整帧拒；<br>· ⑥ ✗ → 回执没落回 MTNode（会话已被删 / 该轮已结束，日志里会写明）。 |
+| 手机上答了询问卡但模型没反应 | 同上先跑「提问通道自检」。**作答方式 = 在手机输入框里回一条消息**（不是点卡上的按钮）：桥把这条回复翻成 `{ answers: [{id, selected[]}] }`（外加一条可读 `answerText`）再打回 MTNode —— 自检的 ⑤⑥ 就是验这一段；它通过而真机没反应时，多半是那一轮已经结束（卡作废，电脑上会看到「这一轮已经结束」的痕迹），这时手机那条消息会按普通消息发下去。 |
+| 手机上看到的提问是 **Other**、点进去是一堆 JSON | 桥脚本是旧的：那一版把提问工具自己的 tool 事件翻成 `toolCall.kind:"other"` 的工具卡，Paseo 把这类卡显示成 `humanizeToolName("other") = **Other**`，详情是 `{type:"unknown", input: rawInput}` 的原始 JSON。新桥把提问发成一条可读消息、提问类工具卡一律不下发、其它工具卡也不再写死 `kind:"other"`。重新打包 / 让控制台「注册到 Paseo」指向新桥脚本，再 reload provider。 |
+| 手机上回了消息，模型却当成**新指令** | 桥脚本是旧的（旧版没有「等作答」这条挂起：用户消息一律当新一轮下发）。另外这条挂起只在当前这一轮真的挂着询问时生效；电脑上先答过、或那一轮已结束，手机那条消息就按普通消息发。 |
 | 想作废已经发出去的配对码 | 官方**没有撤销接口**（offer 无有效期、无 nonce）：控制台「重置配对凭据」= 换 daemon 密钥并重启，**会作废所有已配对设备**（密钥先备份到数据目录）。 |
 
 ## 6. 连不上时手查（不依赖面板）
@@ -181,11 +213,12 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($j.port)/ctl" `
 
 | 路径 | 作用 |
 | --- | --- |
-| `paseo/main-paseo.js` | **插件主进程宿主**：认后端（复用 / 自建）、配对、注册 provider、远程总开关、控制台窗、报错总线 |
-| `paseo/preload-paseo.js` | 控制台窗的能力桥（`window.paseoApi`，白名单转发 `paseoRemote:*`） |
-| `paseo/ui/{index.html,ui.js,ui.css}` | 插件控制台（状态 / 二维码 / provider / 开关 / 前置依赖 / 日志） |
+| `paseo/main-paseo.js` | **插件主进程宿主**：认后端（复用 / 自建）、**安装窗会话（登记 / 步骤上报 / 卸载）**、配对、注册 provider、远程总开关、控制台窗、报错总线；**自建 daemon 的静默托管**（`paseo daemon run` 宿主持有：零新增可见控制台窗口 / 输出逐行进控制台日志 / 意外退出重启 ≤3 次 / 优雅停 5 秒再强杀 / 随 MTNode 退出而停 / 旧「带窗口」实例开机静默迁移） |
+| `paseo/steps.json` | **安装窗的步骤表真源**（8 步：探测 / 真 Node / npm / 自检 / provider / daemon / 配对冒烟 / 收尾）+ 失败文案表（`messages`）；宿主用 `install-step-reporter` 按同一批 id 上报状态 |
+| `paseo/preload-paseo.js` | 控制台窗的能力桥（`window.paseoApi`，白名单转发 `paseoRemote:*` + `mtnodeInstall:open`） |
+| `paseo/ui/{index.html,ui.js,ui.css}` | 插件控制台（**只读后端状态 + 打开安装窗 + 启停** / 二维码 / provider / 开关 / 前置依赖 / 日志） |
 | `paseo/qr.js` | 自研零依赖二维码编码器（官方 `qr` 字段是 ANSI 字符画，不能直接用于界面） |
-| `paseo/acp-bridge.mjs` | 桥本体：ACP（stdio JSON-RPC）↔ MTNode 本机 HTTP；`--config` / `--check` / `--probe-question`（提问通道自检：跑一次真桥，逐拍验询问卡那条链） |
+| `paseo/acp-bridge.mjs` | 桥本体：ACP（stdio JSON-RPC）↔ MTNode 本机 HTTP；`--config` / `--check` / `--probe-question`（提问通道自检：跑一次真桥，逐拍验「询问卡 → 可读消息 → 文本作答 → 回执」那条链） |
 | `paseo/bridge-info.js` | 落点与 provider 配置片段的**单一真源**（桥、宿主与控制台共用一份纯函数） |
 | `session-bridge.js` | 主进程侧的会话回路：文件层读会话 + 按会话分发实时事件给观察者；`probeQuestion` / `probeAnswer` 供提问通道自检用（不是给模型 / 第三方客户端的口） |
 | `session-tools.js` | 会话族（`mtnode_session_*`，11 个）的参数表（手写，不进生成契约） |
@@ -196,7 +229,9 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($j.port)/ctl" `
 | `skills/paseo-remote-install/SKILL.md` | 安装 / 自我修复技能（报错弹窗的「交给 mtnode 会话修复」按它走） |
 | `test/smoke-paseo-remote.js` | 冒烟：五层接线 + 宿主契约 + 会话族闸门 + QR 真编码 + 打包与交付 |
 | `test/smoke-session-bridge.js` | 冒烟：主进程回路 + 协议面 + SSE + 渲染层接线 + 打包白名单 |
-| `test/smoke-paseo-bridge.mjs` | 冒烟：真子进程跑桥，假 MTNode + 假 ACP 客户端走完一整轮（含模型清单 / 配置项两条换模型通道 / 懒创建 / `session/list` / 审批 / **询问卡（form elicitation）+ 回退** / 取消 / `--check` 计数） |
+| `test/smoke-paseo-bridge.mjs` | 冒烟：真子进程跑桥，假 MTNode + 假 ACP 客户端走完一整轮（含模型清单 / 配置项两条换模型通道 / 懒创建 / `session/list` / 审批（权限卡）/ **询问卡（可读消息 + 手机下一条消息作答 + `answers` 回执 + 先 interrupt 再作答不停 MTNode）** / 取消 / `--check` 计数） |
+| `test/smoke-paseo-daemon-silent.js` | 冒烟：自建 daemon 的**后台静默**口径 —— 静态（不再用 `daemon start`、`windowsHide` + stdio 管道、退出收尾、重启上限 3 / 优雅停 5 秒）+ **真测量**（真起一次后端，用 `scripts/probe-console-windows.ps1` 数可见控制台窗口，断言零新增）+ 生命周期（`/api/status` / pid 锁同树 / 停完不留孤儿）+ 存量迁移判据 |
+| `test/smoke-paseo-install-isolation.js` | 冒烟（离线）：空机器 / 半成品 / 回落 / 自检判据 / 旧 Node 拒绝安装 |
 
 ## 8. 参考
 

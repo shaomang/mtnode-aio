@@ -26,20 +26,17 @@ const api = {
   remoteSet: (on) => ipcRenderer.invoke("paseoRemote:remoteSet", { on: !!on }),
   disconnectAll: () => ipcRenderer.invoke("paseoRemote:disconnectAll"),
   resetPairing: () => ipcRenderer.invoke("paseoRemote:resetPairing"),
-  install: (opts) => ipcRenderer.invoke("paseoRemote:install", opts || {}),
-  /* 清干净重装：先删这个目录里的 node_modules / lock，再用真 Node 重装（用户点了才删） */
-  cleanReinstall: (opts) => ipcRenderer.invoke("paseoRemote:cleanReinstall", opts || {}),
-  pickInstallDir: () => ipcRenderer.invoke("paseoRemote:pickInstallDir"),
-  /* own 走不通时的出口：改用本机已装的 Paseo（只改用户亲手点的这一下） */
-  useReuse: () => ipcRenderer.invoke("paseoRemote:useReuse"),
-  /* 真 Node 前置：缺 / 过旧时先自动装一份托管 Node，再等桥那份就位 */
-  waitNode: () => ipcRenderer.invoke("paseoRemote:waitNode"),
+  /* 安装 / 重装：控制台不再自己装（那一整块已搬进安装窗）—— 这里只负责把那只窗开出来。
+     通道就是安装窗编排模块的通用入口（plugins/main-install.js 的 mtnodeInstall:open）。 */
+  openInstall: () => ipcRenderer.invoke("mtnodeInstall:open", { id: "paseo-remote", action: "install" }),
+  /* 后端启停：仍留在控制台（卡片上没有「启用」按钮，这颗是它唯一的出口） */
   startDaemon: () => ipcRenderer.invoke("paseoRemote:startDaemon"),
   stopDaemon: () => ipcRenderer.invoke("paseoRemote:stopDaemon"),
   serverEnable: () => ipcRenderer.invoke("paseoRemote:serverEnable"),
   bridgeCheck: () => ipcRenderer.invoke("paseoRemote:bridgeCheck"),
   /* 提问通道自检（桥的 --probe-question）：手机上「询问框没弹出 / 答了回不到 MTNode」时
-     一键跑完四拍（桥有没有发 form elicitation、回执有没有送回 MTNode），输出进日志窗。 */
+     一键跑完六拍（桥有没有把题面发成可读消息、正文里有没有 JSON、文本作答有没有送回 MTNode），
+     输出进日志窗。 */
   bridgeProbeQuestion: () => ipcRenderer.invoke("paseoRemote:bridgeProbeQuestion"),
   consoleTail: (n) => ipcRenderer.invoke("paseoRemote:consoleTail", n),
   consoleClear: () => ipcRenderer.invoke("paseoRemote:consoleClear"),

@@ -20,12 +20,15 @@
  *       （正文分段 / 工具调用首帧 + 更新帧）→ 收尾回 end_turn
  *   [5] 审批：MTNode 的 approval 帧 → session/request_permission（选项齐）→ 手机选
  *       「允许一次」→ 桥回执 session/approval（outcome=allowed-once）打到 MTNode
- *   [5q] 询问卡（本次需求的核心）：MTNode 的 question 帧 → **session/elicitation（form）**
- *       → 表单 schema（单选题 oneOf / 多选题 array+enum / 自由文本 string / 题面第一行进
- *       title、Markdown 总结进 description）→ 表单应答 → 桥翻成 MTNode 的 answers[]
- *       （逐题 id + selected[]）打回 session/approval
- *   [5r] 回退：客户端没声明 elicitation/form 时，提问回退 session/request_permission，
- *       并推一条说明帧（不代答、也不静默吞掉）
+ *   [5q] 询问卡（本次需求的核心）：MTNode 的 question 帧 → 手机上一条**可读消息**
+ *       （agent_message_chunk：题面 / 选项 / 作答方式全是人话，正文里没有 JSON，也不再发
+ *       kind:"question" 的权限卡 —— ACP 的 ToolKind 没有 question，Paseo 会整帧拒）→
+ *       手机回一条消息作答（真机时序：先 interrupt 再 prompt，桥不停 MTNode 那一轮）→
+ *       桥翻成 MTNode 的 answers[]（逐题 id + 手机那条文本）+ 一条可读 answerText，
+ *       打回 session/approval
+ *   [5r] 作废 / 停止两条兜底 + 工具卡可读性：问卡作废后手机那条消息按普通消息下发；
+ *       真按「停止」（打断后没等到消息）→ 宽限到点才 session/stop；提问工具的 tool 事件
+ *       不再变成「Other + JSON」的工具卡，普通工具卡也不写死 kind:"other"
  *   [5b] 清单三件套：session/list 回已有会话（cwd / ISO updatedAt / 分页游标）、
  *       session/load 回放正文（Paseo 靠这些帧判断「有没有对话」，缺了就把会话剔掉），
  *       **换模型**：session/set_model 与 session/set_config_option（category=model）两条通道
@@ -70,6 +73,12 @@ function createFakeMtnode() {
     streams: new Set(), // { sessionId, res }
     seq: 0,
     failNextSend: false,
+    /* 默认：session/send 之后自动演一轮（正文两段 + 一次工具调用 + done）。
+       需要「这一轮一直挂着等人」的用例（询问卡那条链）把它设成 false。 */
+    autoScript: true,
+    /* 这些卡片 id 的 session/approval 一律回 {ok:false, stale:true}（模拟「电脑上已经答过 /
+       那一轮早就结束了」——真机上 renderer/app-session-bridge.js 的 sessionApproval 就回这个形状） */
+    staleApprovalIds: new Set(),
   };
   const token = "smoke-token-1234567890";
   const reqLog = [];
@@ -203,15 +212,18 @@ function createFakeMtnode() {
         const s = state.sessions.get(sid);
         if (!s) return { ok: false, error: "会话不存在或已被删除：" + sid };
         s.messages.push({ role: "user", content: String(p.text || ""), at: Date.now() });
-        /* 编程式地演一轮：正文两段 + 一次工具调用（先 pending 再 completed） */
-        setTimeout(() => {
-          emit(sid, "text", { text: "收到，" });
-          emit(sid, "text", { text: "我看看。" });
-          emit(sid, "tool", { name: "read_file", args: { path: "a.js" }, callId: "c1", status: "pending" });
-          emit(sid, "tool", { name: "read_file", callId: "c1", status: "completed", result: "文件内容" });
-          emit(sid, "done", { ok: true });
-          s.messages.push({ role: "assistant", content: "收到，我看看。", at: Date.now() });
-        }, 30);
+        /* 编程式地演一轮：正文两段 + 一次工具调用（先 pending 再 completed）。
+           autoScript=false 时不自动收尾 —— 询问卡那几条用例要的是「这一轮一直挂着等人」。 */
+        if (state.autoScript !== false) {
+          setTimeout(() => {
+            emit(sid, "text", { text: "收到，" });
+            emit(sid, "text", { text: "我看看。" });
+            emit(sid, "tool", { name: "read_file", args: { path: "a.js" }, callId: "c1", status: "pending" });
+            emit(sid, "tool", { name: "read_file", callId: "c1", status: "completed", result: "文件内容" });
+            emit(sid, "done", { ok: true });
+            s.messages.push({ role: "assistant", content: "收到，我看看。", at: Date.now() });
+          }, 30);
+        }
         return { ok: true, result: { ok: true, sessionId: sid } };
       }
       case "session/stop":
@@ -230,6 +242,9 @@ function createFakeMtnode() {
         return { ok: true, result: { ok: true, sessionId: String(p.sessionId), provider: s.provider || "", model: s.model || "" } };
       }
       case "session/approval":
+        if (state.staleApprovalIds.has(String(p.id))) {
+          return { ok: true, result: { ok: false, stale: true, id: String(p.id), note: "这张卡已失效（发起轮已结束或已被答过）。" } };
+        }
         return { ok: true, result: { ok: true, id: String(p.id), outcome: String(p.outcome) } };
       default:
         return { ok: false, error: "不支持的方法：" + method, code: -32601 };
@@ -371,9 +386,9 @@ function startBridge(env) {
   {
     const r = await bridge.send("initialize", {
       protocolVersion: 1,
-      /* 真 Paseo（≥0.11）在 initialize 里就声明 elicitation/form —— 桥的询问卡走它
-         （见 [5q]）。声明成能力位，冒烟才与真客户端同一形状。 */
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, elicitation: { form: {} } },
+      /* 声明成与真机 Paseo 同一形状（它只有 fs + terminal，**从不声明 elicitation**）——
+         询问卡那条链不依赖能力位，冒烟就该按真客户端的形状验。 */
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: true },
       clientInfo: { name: "fake-paseo", version: "0.9.9" },
     });
     ok(r.result && r.result.protocolVersion === 1, "回协议版本 1");
@@ -499,6 +514,10 @@ function startBridge(env) {
     const tc = await bridge.waitNote("session/update", (m) => m.params.update.sessionUpdate === "tool_call");
     ok(!!tc, "工具调用首帧翻成 tool_call");
     ok(tc && tc.params.update.toolCallId === "c1" && tc.params.update.title === "read_file", "tool_call 带 toolCallId 与标题");
+    ok(
+      tc && !("kind" in tc.params.update),
+      "工具卡不写死 kind:\"other\"（Paseo 的 humanizeToolName(\"other\") 会把它显示成 Other）",
+    );
     const tcu = await bridge.waitNote(
       "session/update",
       (m) => m.params.update.sessionUpdate === "tool_call_update" && m.params.update.status === "completed",
@@ -576,11 +595,15 @@ function startBridge(env) {
     ok(done.result && done.result.stopReason === "end_turn", "审批答完这一轮照常收尾");
   }
 
-  /* [5q] 询问卡：MTNode 的 question 帧 → ACP 的 session/elicitation（form）→ 答案回执
-     本次需求的核心：以前 question 被当权限请求发出去，手机上看到一张审批卡、答不出题面，
-     答案也回不到模型。现在走 form elicitation，多题/选项/多选/自由文本都装得下。 */
-  console.log("[5q] 询问卡：question 帧 → session/elicitation（form）→ answers 回执");
+  /* [5q] 询问卡（本次需求的核心）：MTNode 的 question 帧 → 手机上一条**可读消息**
+     （agent_message_chunk，题面 / 选项 / 作答方式全是人话，正文里一个 JSON 都没有）→
+     手机**回一条消息**作答（真机时序：先 interrupt 再 prompt）→ 桥把这条回复翻成
+     answers[] + answerText 打回 MTNode（session/approval），而且**不停 MTNode 那一轮**。
+     同时钉住两条被否掉的旧路：不发 elicitation、也**不再**发
+     session/request_permission(kind:"question")（ACP 的 ToolKind 没有 question，Paseo 整帧拒）。 */
+  console.log("[5q] 询问卡：question 帧 → 可读消息 → 手机回一条消息作答 → answers 回执");
   {
+    fake.state.autoScript = false; /* 这一轮要一直挂着等人（不自动收尾） */
     const p = bridge.send("session/prompt", {
       sessionId: bridge.SID,
       prompt: [{ type: "text", text: "先问清再动手" }],
@@ -607,42 +630,64 @@ function startBridge(env) {
       },
       { id: "q3", question: "还有什么要补充的？（自由文本）" },
     ];
-    let elicit = null;
-    for (let i = 0; i < 40 && !elicit; i++) {
+    let msg = null;
+    for (let i = 0; i < 40 && !msg; i++) {
       fake.emit(bridge.REAL, "question", { id: "q-card-1", kind: "question", questions });
-      elicit = await bridge.waitNote("session/elicitation", null, 150);
+      msg = await bridge.waitNote(
+        "session/update",
+        (n) => String(((n.params || {}).update || {}).messageId || "") === "ask-q-card-1",
+        150,
+      );
     }
-    ok(!!elicit, "MTNode 的 question 帧翻成 ACP 的 session/elicitation（不再发权限请求）");
-    if (!elicit) {
+    ok(!!msg, "MTNode 的 question 帧 → 手机上一条普通消息（session/update · agent_message_chunk）");
+    if (!msg) {
       console.log("      bridge stderr: " + String(bridge.err).slice(-600));
-      throw new Error("询问卡没翻成 elicitation —— 后续断言无法继续");
+      throw new Error("询问消息没发出来 —— 后续断言无法继续");
     }
-    const schema = (elicit && elicit.params && elicit.params.requestedSchema) || {};
-    const props = schema.properties || {};
-    ok(elicit && elicit.params.mode === "form", "表单模式：mode=form + requestedSchema");
-    ok(Object.keys(props).length === 3, "多题合并成一份表单（3 个字段）");
+    const upd = msg.params.update || {};
+    const body = String((upd.content || {}).text || "");
+    ok(upd.sessionUpdate === "agent_message_chunk" && (upd.content || {}).type === "text", "帧形状 = {sessionUpdate:'agent_message_chunk', content:{type:'text'}}");
+    ok(!/\{\s*"/.test(body) && !/questions/.test(body) && !/rawInput/.test(body), "正文里一个 JSON 都没有（手机上不再看到 JSON）");
+    ok(/MTNode 想问你 3 个问题/.test(body), "抬头标出题数（不点开也知道有几问）");
+    ok(/先改哪一层？/.test(body) && /背景/.test(body), "题面第一行 + 空行后的 Markdown 总结都在正文里（不截断、可读）");
+    ok(/只改渲染层（风险小）/.test(body) && /也改主进程/.test(body), "选项与说明都在正文里（手机上照原话看到）");
+    ok(/可多选/.test(body) && /文档/.test(body) && /冒烟/.test(body), "多选题带选项与「可多选」标记");
+    ok(/还有什么要补充的？/.test(body), "自由文本题照样在正文里");
+    ok(/怎么答/.test(body) && /不会当成新指令/.test(body), "末尾写清「怎么答」：回一条消息即答案");
     ok(
-      props.q1 && props.q1.type === "string" && Array.isArray(props.q1.oneOf) && props.q1.oneOf.length === 2,
-      "单选题 = string + oneOf（选项 label 进 const，说明进 title）",
+      !bridge.notes.some(
+        (m) =>
+          String(m.method) === "session/request_permission" &&
+          String(((m.params || {}).toolCall || {}).toolCallId || "") === "ask-q-card-1",
+      ),
+      "**不再**发 kind:\"question\" 的权限卡（ACP 的 ToolKind 没有 question，Paseo 会整帧拒）",
     );
-    ok(props.q2 && props.q2.type === "array" && props.q2.items && props.q2.items.enum, "多选题 = array + items.enum");
-    ok(props.q3 && props.q3.type === "string" && !props.q3.oneOf, "无选项的题 = 自由文本字段");
+    ok(!bridge.notes.some((m) => String(m.method).indexOf("elicitation") >= 0), "也不走 ACP 的 form elicitation（客户端从不声明它）");
+
+    /* 手机上作答：真机时序 = **先 interrupt 再 prompt**（Paseo 默认 activeTurnBehavior=interrupt）。
+       这一枪不是要停这一轮，桥不该去停 MTNode 那边还挂着等人的那一轮。 */
+    const answerBody = "1 只改渲染层；2 文档 + 冒烟；3 别忘了写回归";
+    const cancelAck = await bridge.send("session/cancel", { sessionId: bridge.SID });
+    ok(!cancelAck.error, "手机发消息前的那一枪 interrupt 被受理（桥照 ACP 要求把旧那一枪以 cancelled 收尾）");
+    const interrupted = await p;
+    ok(interrupted.result && interrupted.result.stopReason === "cancelled", "被 interrupt 的那一枪回 cancelled（客户端在等它）");
+    const answeredPrompt = bridge.send("session/prompt", {
+      sessionId: bridge.SID,
+      prompt: [{ type: "text", text: answerBody }],
+    });
+    const ack = await bridge.waitNote(
+      "session/update",
+      (n) => String(((n.params || {}).update || {}).messageId || "") === "ask-ok-q-card-1",
+      4000,
+    );
+    ok(!!ack, "答案接住后给手机一条收口消息（✅ 已把你的回答交给 MTNode）");
+    const answered = await answeredPrompt;
+    ok(answered.result && answered.result.stopReason === "end_turn", "那条消息被当作答案接住（不新起一轮，回 end_turn）");
     ok(
-      props.q1 && /先改哪一层？/.test(String(props.q1.title || "")) && /背景/.test(String(props.q1.description || "")),
-      "题面第一行进 title、空行之后的 Markdown 总结进 description（与询问卡同一口径）",
+      !fake.state.calls.some((c) => c.method === "session/stop"),
+      "**没有**因为这一枪打断去停 MTNode 那一轮（那一轮还在等作答）",
     );
-    ok(
-      elicit && /先改哪一层/.test(String(elicit.params.message || "")),
-      "卡片标题行也带上题面（手机上不点开也能看见问了什么）",
-    );
-    /* 手机上填表单（单选 + 多选 + 自由文本）→ 桥应当翻成 MTNode 的 answers[] */
-    bridge.child.stdin.write(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: elicit.id,
-        result: { action: "accept", content: { q1: "只改渲染层", q2: ["文档", "冒烟"], q3: "别忘了写回归" } },
-      }) + "\n",
-    );
+
     let qAppr = null;
     for (let i = 0; i < 80 && !qAppr; i++) {
       qAppr = fake.state.calls
@@ -650,26 +695,38 @@ function startBridge(env) {
         .pop() || null;
       if (!qAppr) await sleep(25);
     }
-    ok(!!qAppr, "表单答案回执打回 MTNode（session/approval, kind=question）");
+    ok(!!qAppr, "答案回执打回 MTNode（session/approval, kind=question）");
     const qa = (qAppr && qAppr.params.answers) || [];
-    ok(qAppr && qAppr.params.kind === "question", "回执带上卡片类型 kind=question");
-    ok(qa.length === 3, "answers[] 逐题一条（3 条）");
+    ok(qAppr && qAppr.params.kind === "question" && qAppr.params.outcome === "answered", "回执带 kind=question + outcome=answered");
+    ok(qa.length === 3, "answers[] 逐题一条（3 条，一张卡的答案一条都不落）");
     ok(
-      qa[0] && qa[0].id === "q1" && JSON.stringify(qa[0].selected) === JSON.stringify(["只改渲染层"]),
-      "单选题 → { id:'q1', selected:['只改渲染层'] }（按题 id 对齐，不是字段名）",
+      qa[0] && qa[0].id === "q1" && qa[2] && qa[2].id === "q3",
+      "按题 id 对齐（q1 / q3 —— renderer/app-db.js 的 ixAnswerPairsOf 认 id，不认 header）",
     );
-    ok(qa[1] && JSON.stringify(qa[1].selected) === JSON.stringify(["文档", "冒烟"]), "多选题 → selected 两项都在");
-    ok(qa[2] && JSON.stringify(qa[2].selected) === JSON.stringify(["别忘了写回归"]), "自由文本 → selected 带着正文");
-    /* 收尾这一轮 */
+    ok(
+      qa.length === 3 && qa.every((a) => Array.isArray(a.selected) && a.selected[0] === answerBody),
+      "手机那条文本逐题都填上（缺一题 MTNode 卡片上就会显示「（未作答）」）",
+    );
+    ok(
+      qAppr && /手机上回答/.test(String(qAppr.params.answerText || "")) && /别忘了写回归/.test(String(qAppr.params.answerText || "")),
+      "同时带一条可读 answerText（MTNode 侧气泡与之后的上下文都用它）",
+    );
+    /* 收尾这一轮：MTNode 的 done 到了 —— 桥只收流，不再回一条（那一枪早已回过 cancelled） */
     fake.emit(bridge.REAL, "done", { ok: true });
-    const done = await p;
-    ok(done.result && done.result.stopReason === "end_turn", "询问卡答完这一轮照常收尾");
+    await sleep(200);
+    ok(true, "一轮收尾不重复回执（统一回复只发一次）");
+    fake.state.autoScript = true;
   }
 
-  /* [5r] 回退：客户端**没声明** elicitation/form 时，提问回退权限请求 + 一条说明帧
-     （绝不代答、也绝不弹一张装不下题面的假卡而不吭声） */
-  console.log("[5r] 回退：客户端不支持 form elicitation → 权限请求 + 说明帧");
+  /* [5r] 两条兜底 + 工具卡可读性：
+     · 电脑上先答了 / 那一轮已收尾 → 问卡作废，手机再回的消息按**普通消息**下发（不吞用户的话）；
+     · 真按「停止」（打断后没等到消息）→ 宽限到点就照常停 MTNode 那一轮（session/stop）；
+     · 提问类工具自己的 tool 事件**不再**变成「Other + JSON」的工具卡；普通工具卡也不再写死
+       kind:"other"（Paseo 的 buildToolCallDisplayModel 会把 "other" 显示成 Other）；
+     · 老客户端（能力位里没有 elicitation，真机 Paseo 就长这样）拿到的同样是这条可读消息。 */
+  console.log("[5r] 作废 / 停止两条兜底 + 工具卡不再显示成 Other");
   {
+    fake.state.autoScript = false;
     const bare = startBridge(ENV);
     await bare.send("initialize", {
       protocolVersion: 1,
@@ -685,22 +742,124 @@ function startBridge(env) {
       if (m) realId = m[1];
       else await sleep(25);
     }
-    ok(!!realId, "回退路径同样先把会话落到 MTNode（" + realId + "）");
-    let perm = null;
-    for (let i = 0; i < 40 && !perm; i++) {
-      fake.emit(realId, "question", { id: "q-card-bare", kind: "question", questions: [{ id: "q1", question: "选哪个？", options: [{ label: "A" }] }] });
-      perm = await bare.waitNote("session/request_permission", null, 150);
-    }
-    ok(!!perm, "没有 elicitation/form 能力 → 回退成 session/request_permission");
+    ok(!!realId, "先把会话落到 MTNode（" + realId + "）");
+    const qs = [{ id: "q1", question: "选哪个？", header: "范围", options: [{ label: "A" }] }];
+    /** 等某条询问消息（按 messageId 认领）：每 50ms 重投一次问卡 —— 桥的 SSE 是每轮挂一次，
+        投早了会掉在流挂上之前，所以边等边投比「先投再等」稳。 */
+    const waitAsk = async (cardId, times) => {
+      for (let i = 0; i < (times || 60); i++) {
+        fake.emit(realId, "question", { id: cardId, kind: "question", questions: qs });
+        const got = await bare.waitNote(
+          "session/update",
+          (n) => String(((n.params || {}).update || {}).messageId || "") === "ask-" + cardId,
+          50,
+        );
+        if (got) return got;
+      }
+      return null;
+    };
+    const bareMsg = await waitAsk("q-card-bare");
+    const bareBody = String((((bareMsg || {}).params || {}).update || {}).content ? (((bareMsg || {}).params || {}).update || {}).content.text : "");
     ok(
-      !!bare.notes.find(
-        (m) => String(m.method) === "session/update" &&
-          /不支持表单问答/.test(JSON.stringify(m.params || {})),
-      ),
-      "同时推一条说明帧（用户看得到「这台手机答不了、去电脑上答」）",
+      !!bareMsg && /选哪个？/.test(bareBody) && /怎么答/.test(bareBody),
+      "不声明 elicitation 的老客户端照样拿到这条可读消息（通道不再看能力位）",
     );
+    ok(
+      !bare.notes.some((m) => /不支持表单问答/.test(JSON.stringify(m.params || {}))),
+      "不再推「这台手机端不支持表单问答」那条说明帧",
+    );
+
+    /* ① 作废：电脑上先答了 / 那一轮已收尾（MTNode 的 done 到了）→ 挂起项撤掉，
+       手机再回的那条消息必须**按普通消息**下发（session/send），不能被当答案吞掉。 */
+    const sendsBefore = fake.state.calls.filter((c) => c.method === "session/send" && c.params.sessionId === realId).length;
+    fake.emit(realId, "done", { ok: true });
+    await sleep(200);
+    const stalePrompt = bare.send("session/prompt", { sessionId: bareSid, prompt: [{ type: "text", text: "这条不是答案" }] });
+    let forwarded = false;
+    for (let i = 0; i < 60 && !forwarded; i++) {
+      forwarded =
+        fake.state.calls.filter((c) => c.method === "session/send" && c.params.sessionId === realId).length > sendsBefore;
+      if (!forwarded) await sleep(25);
+    }
+    ok(forwarded, "问卡作废后，手机那条消息按普通消息下发（session/send —— 用户的话不被吞）");
+    ok(
+      !fake.state.calls.some((c) => c.method === "session/approval" && c.params.id === "q-card-bare"),
+      "作废的卡不再回执（不假装送达）",
+    );
+    fake.emit(realId, "done", { ok: true });
+    await stalePrompt;
+
+    /* ①b MTNode 明确说这张卡 stale（电脑上先答过 / 那一轮已结束）→ 同样按普通消息下发 */
+    const midStale = await waitAsk("q-card-stale");
+    ok(!!midStale, "又来一张问卡（stale 用例）");
+    fake.state.staleApprovalIds.add("q-card-stale");
+    const staleSends = fake.state.calls.filter((c) => c.method === "session/send" && c.params.sessionId === realId).length;
+    const staleAnswered = bare.send("session/prompt", { sessionId: bareSid, prompt: [{ type: "text", text: "卡已经作废了" }] });
+    let forwardedStale = false;
+    for (let i = 0; i < 60 && !forwardedStale; i++) {
+      forwardedStale =
+        fake.state.calls.filter((c) => c.method === "session/send" && c.params.sessionId === realId).length > staleSends;
+      if (!forwardedStale) await sleep(25);
+    }
+    ok(forwardedStale, "MTNode 回 stale 时，手机那条消息按普通消息下发（回执失败也不吞用户的话）");
+    fake.emit(realId, "done", { ok: true });
+    await staleAnswered;
+    fake.state.staleApprovalIds.clear();
+
+    /* ② 真按「停止」：打断之后 3 秒内没等到那条消息 → 照常停 MTNode 那一轮 */
+    const p2 = bare.send("session/prompt", { sessionId: bareSid, prompt: [{ type: "text", text: "再问一句" }] });
+    const mid2 = await waitAsk("q-card-stop");
+    ok(!!mid2, "新一轮的问卡照样发成可读消息");
+    const stopsBefore = fake.state.calls.filter((c) => c.method === "session/stop").length;
+    await bare.send("session/cancel", { sessionId: bareSid });
+    await sleep(400);
+    ok(
+      fake.state.calls.filter((c) => c.method === "session/stop").length === stopsBefore,
+      "刚打断的那一下**不**立刻停 MTNode（先等那条答案）",
+    );
+    let stopped = false;
+    for (let i = 0; i < 40 && !stopped; i++) {
+      stopped = fake.state.calls.filter((c) => c.method === "session/stop").length > stopsBefore;
+      if (!stopped) await sleep(150);
+    }
+    ok(stopped, "宽限（3 秒）到点没等到消息 → 照常停 MTNode 那一轮（session/stop）");
+    const afterStop = bare.send("session/prompt", { sessionId: bareSid, prompt: [{ type: "text", text: "停完再说一句" }] });
+    let forwarded2 = false;
+    const sends2 = fake.state.calls.filter((c) => c.method === "session/send" && c.params.sessionId === realId).length;
+    for (let i = 0; i < 60 && !forwarded2; i++) {
+      forwarded2 =
+        fake.state.calls.filter((c) => c.method === "session/send" && c.params.sessionId === realId).length > sends2;
+      if (!forwarded2) await sleep(25);
+    }
+    ok(forwarded2, "停完之后手机的消息按普通消息下发（挂起项已撤）");
+
+    /* ③ 工具卡可读性（趁这一轮的流还挂着）：提问类工具（参数就是那份询问 JSON）不再上卡；
+       普通工具卡不写死 kind —— Paseo 的 buildToolCallDisplayModel 会把 "other" 显示成 Other。 */
+    const notesBefore = bare.notes.length;
+    fake.emit(realId, "tool", { name: "ask_user_question", args: { questions: qs }, callId: "asktool-1", status: "pending" });
+    fake.emit(realId, "tool", { name: "read_file", args: { path: "a.js" }, callId: "c9", status: "pending" });
+    await sleep(500);
+    const newNotes = bare.notes.slice(notesBefore).filter((m) => String(m.method) === "session/update");
+    const toolCards = newNotes
+      .map((m) => m.params.update || {})
+      .filter((u) => u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update");
+    ok(
+      !toolCards.some((u) => u.toolCallId === "asktool-1"),
+      "提问工具的 tool 事件**不再**翻成工具卡（手机上不会再多出一张 Other + JSON）",
+    );
+    const readCard = toolCards.find((u) => u.toolCallId === "c9");
+    ok(!!readCard, "普通工具调用照旧上卡");
+    ok(
+      readCard && !("kind" in readCard),
+      "工具卡不写死 kind:\"other\"（Paseo 会把它显示成 humanizeToolName(\"other\") = Other）",
+    );
+    fake.emit(realId, "done", { ok: true });
+    await afterStop;
+    await p2;
     bare.close();
+    fake.state.autoScript = true;
   }
+
 
   /* [5b] 清单三件套：session/list / session/set_model / session/close */
   console.log("[5b] session/list · session/set_model · session/close");

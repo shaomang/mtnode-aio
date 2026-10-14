@@ -628,6 +628,10 @@ const INSTALL_API_CHANNELS = {
   sensenovaPickInstallDir: "sensenova:pickInstallDir",
   remotionInstall: "remotion:install",
   remotionPickInstallDir: "remotion:pickInstallDir",
+  /* Paseo 手机接管（kind paseo）：安装是纯 JS 驱动（无 PowerShell 脚本），
+     宿主自己上报步骤；换目录仍走它的 pickInstallDir（没有目录时弹系统目录框）。 */
+  paseoRemoteInstall: "paseoRemote:install",
+  paseoRemotePickInstallDir: "paseoRemote:pickInstallDir",
   appPluginsInstall: "appPlugins:install",
   petInstall: "pet:install",
   /* 「复制日志」的稳路：主窗口 preload 上那条写剪贴板的桥（electron clipboard，不过渲染层权限闸）。
@@ -1001,6 +1005,13 @@ const UNINSTALL_SPECS = {
   "minimax-music3": { label: "MiniMax Music 3", stop: "music3:stop", custom: { preview: "music3:uninstallPreview", run: "music3:uninstall" }, keepHint: "output/ 里的音频输出保留。" },
   "minimax-h3": { label: "MiniMax H3 视频生成", stop: "h3:stop", custom: { preview: "h3:uninstallPreview", run: "h3:uninstall" }, keepHint: "output/ 里的渲染产物保留。" },
   remotion: { label: "Remotion 动效视频" },
+  /* Paseo 手机接管：它自己的卸载口更懂删什么 —— 自建 npm 依赖 + 配置 / 日志 + 自建 daemon home
+     （配对密钥）；本机已装的 Paseo Desktop 与 ~/.paseo 一律不碰。所以走 custom 而不是通用删目录。 */
+  "paseo-remote": {
+    label: "Paseo 手机接管",
+    custom: { preview: "paseoRemote:uninstallPreview", run: "paseoRemote:uninstall" },
+    keepHint: "本机已装的 Paseo Desktop 与 ~/.paseo 一律保留（只清这个插件自己的数据）。",
+  },
   pet: { label: "桌宠", custom: { preview: "", run: "pet:uninstall" }, keepHint: "桌面上的桌宠窗口会先关掉。" },
   bongochat: { label: "桌宠", custom: { preview: "", run: "pet:uninstall" }, keepHint: "桌面上的桌宠窗口会先关掉。" },
 };
@@ -1022,6 +1033,8 @@ const BACKEND_ID_ALIASES = {
   tts: "tts-local",
   breeze: "breeze-tts-local",
   remotion: "remotion",
+  /* Paseo 手机接管：卡片 / 报错总线报的是 kind（paseo），安装窗用的是目录 id（paseo-remote） */
+  paseo: "paseo-remote",
 };
 
 /** 认得出是不是「需目录的本地后端插件」（认不出 = 窗口插件 / 未知 id）。 */

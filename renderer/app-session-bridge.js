@@ -474,7 +474,14 @@
   }
 
   /** 接管一张「停下来等人」的卡：与界面上点「允许一次 / 拒绝 / 本会话后续都放行」同一枚回执。
-   *  卡已经失效（发起轮结束 / 已被答过）时**明确报 stale**，不假装成功。 */
+   *  卡已经失效（发起轮结束 / 已被答过）时**明确报 stale**，不假装成功。
+   *
+   *  ★ 提问卡（kind=question）有**两份**答案口径，缺一不可：
+   *   · `answers[]`：Paseo 桥把手机上的作答按题 id 对齐后给的那份（`[{id, selected:[…]}]`），
+   *     原样转给网关（dsh 的 ask_user_question 就吃这个形状）。
+   *   · `answerText`：同一份答案的可读正文（手机侧气泡 / 之后的上下文用）。
+   *  过去这里只认 `selected`（一串**下标**，是给界面按钮用的下脚料），桥那边送来的
+   *  `answers[]` 与 `answerText` 全被丢掉 —— 手机答了、模型却什么都收不到。 */
   async function sessionApproval(params) {
     const p = params || {};
     const id = String(p.id || "").trim();
@@ -486,15 +493,14 @@
     let r = null;
     try {
       if (kind === "question") {
-        const answers = Array.isArray(p.selected) && p.selected.length
-          ? p.selected.map((i) => ({ index: Number(i) }))
-          : undefined;
+        const answers = Array.isArray(p.answers) && p.answers.length ? p.answers : undefined;
+        const answerText = p.answerText != null ? String(p.answerText) : "";
         r = await api.dshInteract({
           kind: "question",
           id,
           answers,
-          answerText: p.answerText != null ? String(p.answerText) : undefined,
-          outcome: p.answerText || p.selected ? "answered" : outcome,
+          answerText: answerText || undefined,
+          outcome: answers || answerText ? "answered" : outcome,
         });
       } else if (kind === "canvas") {
         /* 画布修改确认：outcome=allowed-once 放行 / rejected 拒绝（与确认框按钮同义）。

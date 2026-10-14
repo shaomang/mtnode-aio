@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "plugin": "paseo-remote",
+  "title": {
+    "zh": "Paseo 手机接管",
+    "en": "Paseo Phone Handoff"
+  },
+  "steps": [
+    {
+      "id": "probe",
+      "title": "探测本机已装的 Paseo",
+      "hint": "命中就复用它的 CLI（本机已装的那份由 Paseo Desktop 自己管），后面的安装步骤全部标「跳过」—— 不装第二份，免得抢端口与配对身份。",
+      "messages": {
+        "paseo.none": {
+          "zh": "本机没有可用的 Paseo：改走自建一份（npm 装 @getpaseo/cli）。",
+          "en": "No usable Paseo on this machine: falling back to a self-built backend (npm install @getpaseo/cli)."
+        }
+      }
+    },
+    {
+      "id": "node",
+      "title": "检查 Node 运行时（要真 Node ≥22.19）",
+      "hint": "npm 与 CLI 都必须由真 Node（≥22.19）跑：Electron 自带的那个不算，PATH 里的旧 Node 会被 npm 放行却让 CLI 起不来。缺 / 过旧时自动装一份托管 Node 进数据目录。",
+      "messages": {
+        "paseo.node.missing": {
+          "zh": "本机没有达标的真 Node（要 ≥{min}），自动装也没成功。{tail}",
+          "en": "No usable Node runtime (needs ≥{min}); the automatic install did not succeed either. {tail}"
+        },
+        "paseo.node.npm_missing": {
+          "zh": "真 Node 在（{node}），但它没带配套的 npm（node_modules\\npm\\bin\\npm-cli.js）—— 这份 Node 是不带 npm 的精简包。{tail}",
+          "en": "A real Node is present ({node}) but without its bundled npm (node_modules\\npm\\bin\\npm-cli.js) — this build ships no npm. {tail}"
+        }
+      }
+    },
+    {
+      "id": "npm",
+      "title": "npm 安装 @getpaseo/cli",
+      "hint": "走国内镜像（registry.npmmirror.com）；装进插件根目录下的 paseo 子目录，用真 Node 直接跑 npm-cli.js（不经 npm.cmd，避免 PATH 里的旧 Node）。",
+      "messages": {
+        "paseo.npm.failed": {
+          "zh": "npm 安装 @getpaseo/cli 失败（{reason}）：重装一次通常能好（半成品依赖会被先清掉）。{tail}",
+          "en": "npm install @getpaseo/cli failed ({reason}): a reinstall usually helps (half-written deps are cleaned first). {tail}"
+        }
+      }
+    },
+    {
+      "id": "check",
+      "title": "CLI 自检（paseo --version）",
+      "hint": "判据是「CLI 真能报版本号」，不是「依赖目录在不在」：装到一半、或被旧 Node 装出来的依赖都在这一步被拦下。",
+      "messages": {
+        "paseo.check.dep_missing": {
+          "zh": "依赖没落盘（npm 报错或被中途打断）—— 点「重试」会先清掉半成品再装一次。{tail}",
+          "en": "Dependencies never landed (npm failed or the install was interrupted) — Retry cleans the half-written tree and installs again. {tail}"
+        },
+        "paseo.check.cli_bin_missing": {
+          "zh": "依赖目录在，但 node_modules\\.bin\\paseo.cmd 没生成 —— 安装不完整，重装一次通常就好。{tail}",
+          "en": "The dependency folder is there but node_modules\\.bin\\paseo.cmd was never generated — the install is incomplete; reinstalling usually fixes it. {tail}"
+        },
+        "paseo.check.cli_not_runnable": {
+          "zh": "CLI 装上了但跑不起来（paseo --version 没回版本号）：多是被旧 Node（<{min}）装出来的依赖 —— 「重装」会清掉 node_modules 后用真 Node 重装。{tail}",
+          "en": "The CLI is installed but not runnable (paseo --version printed no version) — usually deps installed by an old Node (<{min}); Reinstall wipes node_modules and installs again with a real Node. {tail}"
+        }
+      }
+    },
+    {
+      "id": "provider",
+      "title": "注册 provider 到 Paseo",
+      "hint": "写 agents.providers.mtnode（走官方 CLI，官方负责合并并自动 reload）。Paseo 里正有会话在跑时不动配置，改到控制台点「注册到 Paseo」确认一次。",
+      "messages": {
+        "paseo.provider.failed": {
+          "zh": "写入 Paseo 的 provider 配置失败：{tail}",
+          "en": "Failed to write the provider config into Paseo: {tail}"
+        }
+      }
+    },
+    {
+      "id": "daemon",
+      "title": "起自建 daemon 并挑空闲端口",
+      "hint": "只对自建那份：默认 6767 被本机已装的 Paseo 占着时，自动改用 6768~6787 里的空闲端口（只写自建 home 的配置，不碰你自己的 Paseo）。起法由 MTNode 在后台静默托管（不再另开终端窗口），已跑的旧实例会被自动换成这种静默方式；自建后端随 MTNode 退出而停。复用模式这一步跳过 —— 那份 daemon 由 Paseo Desktop 自己管。",
+      "messages": {
+        "paseo.daemon.failed": {
+          "zh": "自建 daemon 起不来：{tail}",
+          "en": "The self-built daemon did not start: {tail}"
+        },
+        "paseo.daemon.no_port": {
+          "zh": "6767~6787 全被占着，没有空闲端口给自建后端：先关掉占端口的程序（多半是另一份 Paseo），或直接用本机已装的那份。",
+          "en": "Ports 6767-6787 are all taken, leaving none for the self-built backend: free one (usually another Paseo) or use the Paseo already on this machine."
+        }
+      }
+    },
+    {
+      "id": "pair",
+      "title": "配对冒烟（只读试算配对码）",
+      "hint": "只读验一次「能不能出配对码」，不改任何配置：relay 关着时出不了码（那是 Paseo 自己的开关），到控制台点「开启 relay」后再生成。",
+      "messages": {
+        "paseo.pair.failed": {
+          "zh": "试算配对码失败：{tail}",
+          "en": "Computing the pairing code failed: {tail}"
+        }
+      }
+    },
+    {
+      "id": "done",
+      "title": "收尾（写安装信息 · 提示开启远程接管）",
+      "hint": "远程接管总开关默认关着（不静默替你打开对外接管）：去控制台那个开关打开它，手机才能接管会话。"
+    }
+  ]
+}

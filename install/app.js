@@ -309,6 +309,9 @@
     "minimax-music3": "music3Install",
     "yue2-local": "yue2Install",
     remotion: "remotionInstall",
+    /* Paseo 手机接管：安装是**纯 JS** 驱动（npm + 官方 CLI，无 PowerShell 脚本），
+       步骤状态由宿主上报、步骤表读它自己的 paseo/steps.json。 */
+    "paseo-remote": "paseoRemoteInstall",
   };
   /* id → 选安装目录的桥 / 启动安装的桥（窗口插件与桌宠用它们自己的那两条） */
   function installApiOf(id) {
@@ -322,6 +325,10 @@
   /* 硬件门槛的逃生阀：sensenova 的「显存 <20GB / 内存 <32GB」闸门靠 install 的 forceHardware 放行。
      这个开关原本在 sensenova 控制台窗里，控制台去安装化后搬到本窗（能力不丢，位置归一）。 */
   const FORCE_HW_IDS = ["sensenova-local"];
+  /* Paseo 手机接管的「仍要自建一份」阀：它的后端优先**复用本机已装的 Paseo**（探测步骤自己认），
+     勾了就忽略本机那份、npm 装一份自建的。这个开关原本在插件控制台里（「改用本机已装的 Paseo」），
+     控制台去安装化后搬到本窗 —— 与 FORCE_HW_IDS 同一套做法。 */
+  const PASEO_OWN_IDS = ["paseo-remote"];
   let pollTimer = null;
   function startPolling(id) {
     stopPolling();
@@ -537,10 +544,17 @@
        窗口插件的 `appPlugins:install` 收的是**插件 id 字符串**（传对象会被 String() 成
        "[object Object]" → bad_id，安装直接失败）—— 这里按桥名分派，别混着传。 */
     const forceHw = FORCE_HW_IDS.indexOf(id) >= 0 && $("insForceHw") && $("insForceHw").checked;
+    const forceOwn = PASEO_OWN_IDS.indexOf(id) >= 0 && $("insPaseoOwn") && $("insPaseoOwn").checked;
     const installArgs =
       m.install === "appPluginsInstall"
         ? [String(id)]
-        : [Object.assign({ action: snap.action || "install" }, forceHw ? { forceHardware: true } : {})];
+        : [
+            Object.assign(
+              { action: snap.action || "install" },
+              forceHw ? { forceHardware: true } : {},
+              forceOwn ? { forceOwn: true } : {},
+            ),
+          ];
     const r = await api.api(m.install, installArgs);
     stopPolling();
     const now = await api.state(id).catch(() => null);
@@ -850,9 +864,12 @@
     if (!snap) return;
     const id = snap.pluginId;
     const idle = snap.state === "idle" || snap.state === "done";
-    /* 硬件门槛逃生阀只对带这道门槛的插件显示（见 FORCE_HW_IDS） */
+    /* 硬件门槛逃生阀只对带这道门槛的插件显示（见 FORCE_HW_IDS）；
+       Paseo 的「仍要自建一份」同理（见 PASEO_OWN_IDS） */
     const forceBox = $("insForceHwBox");
     if (forceBox) forceBox.hidden = FORCE_HW_IDS.indexOf(id) < 0;
+    const ownBox = $("insPaseoOwnBox");
+    if (ownBox) ownBox.hidden = PASEO_OWN_IDS.indexOf(id) < 0;
     /* 卸载那一次：同一只窗，按钮换成「确认卸载 / 取消 / 重试」。
        判据除了快照的 mode，还要算上「确认块已展开」—— 点「卸载」是先展开清单、由用户点
        「确认卸载」才走 mode=uninstall 的那份快照，这中间那一拍也得按卸载那组按钮画。 */

@@ -832,8 +832,15 @@ button:disabled {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  cursor: pointer;
+  /* 本轮需求：卡片本体不再是可点区域（看信息走封面右上角那颗 ⓘ），所以不再给手型光标；
+     仍然可点的只有「自建插件」那一栏（.np-tile，见下方规则）。 */
+  cursor: default;
   user-select: none;
+}
+
+/* 自建插件卡片照旧是整卡可点（点卡片打开状态 / 试运行 / 修复那块面板） */
+.plugin-tile.np-tile {
+  cursor: pointer
 }
 
 /* 安装后自检通过 → 封面左上角一枚勾（只给通过的卡片；未测过 / 失败 / 跳过的卡片没有它） */
@@ -869,6 +876,8 @@ button:disabled {
 }
 
 .plugin-tile-cover {
+  /* relative：右上角那颗 ⓘ 信息角标按**封面**定位（锚在卡片上会在宽卡里飘离封面右上角） */
+  position: relative;
   width: 128px;
   height: 128px;
   margin: 0 auto;
@@ -876,6 +885,45 @@ button:disabled {
   background: #0a0d12;
   border: 1px solid var(--bd);
   overflow: hidden;
+}
+
+/* 信息入口（本轮需求）：插件卡片本体不再响应点击，看插件信息只能点这颗 ⓘ。
+   常态半透明（不抢封面），悬停卡片 / 悬停角标 / 键盘聚焦时提亮到不透明。 */
+.plugin-tile-info {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cyan);
+  background: rgba(8, 12, 18, .82);
+  border: 1px solid rgba(120, 200, 255, .45);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: .55;
+  transition: opacity .15s ease, border-color .15s ease;
+  z-index: 3;
+}
+
+.plugin-tile-info svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.plugin-tile:hover .plugin-tile-info,
+.plugin-tile-info:hover,
+.plugin-tile-info:focus-visible {
+  opacity: 1;
+}
+
+.plugin-tile-info:hover,
+.plugin-tile-info:focus-visible {
+  border-color: var(--cyan);
 }
 
 .plugin-tile-cover img {
@@ -982,6 +1030,38 @@ button:disabled {
   letter-spacing: .5px;
   color: var(--orange2);
   margin-bottom: 6px;
+  /* 右上角那颗 ✕ 占位：标题不许压到它下面 */
+  padding-right: 20px;
+}
+
+/* 信息浮层的显式关闭键（本轮需求）：浮层里唯一一颗常驻动作 —— 只关浮层，不关插件窗 */
+.plugin-pop-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.plugin-pop-close svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+
+.plugin-pop-close:hover {
+  color: var(--ink);
+  border-color: var(--cyan);
 }
 
 .plugin-pop-desc {

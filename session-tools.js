@@ -187,6 +187,19 @@ const SESSION_TOOLS = Object.freeze([
           enum: SESSION_ASK_OUTCOMES.slice(),
         },
         answerText: { type: "string", description: "kind=question 时的回答正文" },
+        answers: {
+          type: "array",
+          description:
+            "kind=question 时的逐题答案（Paseo 桥把手机上的作答按题 id 对齐后给的那份，原样转给网关）：" +
+            "[{id: 题 id, selected: [答案文本…]}]",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "题 id（与 questions[] 的 id 对齐）" },
+              selected: { type: "array", items: { type: "string" }, description: "该题选中的选项 label 或用户输入的文本" },
+            },
+          },
+        },
         selected: {
           type: "array",
           description: "kind=question 且是选择题时的选项下标",

@@ -372,6 +372,53 @@ for (const p of PACKS) {
   }
 }
 
+/* ═════════════ [7b] Paseo 手机接管：JS 驱动的安装宿主（无 pack / 无 PowerShell 脚本） ═════════════
+   它和第 7 节那 7 个宿主走**同一只安装窗**，但安装链是纯 JS（npm + 官方 CLI）：步骤表在
+   paseo/steps.json，状态由宿主用 install-step-reporter + reportPluginStep 自己上报，
+   所以没有 pack 目录、也没有 scripts/step.ps1 那份协议副本 —— 这里把这条分支单独钉住。 */
+console.log("\n[7b] Paseo 手机接管：JS 驱动的安装宿主（登记 / 上报 / 取消 / 卸载）");
+{
+  const host = read("paseo/main-paseo.js");
+  has(host, 'require("../plugins/main-install.js")', "paseo 宿主 require 安装窗编排模块");
+  has(host, 'require("../plugins/install-step-reporter.js")', "paseo 宿主 require 步骤上报器");
+  has(host, 'require("../plugins/install-cancel.js")', "paseo 宿主接中断核心（install-cancel.js）");
+  has(host, "installHost.registerInstallTarget({", "paseo 宿主登记安装目标");
+  has(host, "id: PLUGIN_ID", "paseo 登记用 PLUGIN_ID（paseo-remote，与卡片 / 报错总线同源 id）");
+  has(host, "packRoots: [__dirname]", "把 paseo/ 当包根交给安装窗（读 paseo/steps.json 列全表）");
+  has(host, "stepReporter.hintFor(", "失败建议走步骤上报器的 hintFor（与其它宿主同一套口径）");
+  has(host, "installHost.reportPluginStep(", "步骤 / 日志事件转给安装窗");
+  has(host, "installHost.beginPluginInstall(", "安装入口先开安装窗的会话");
+  has(host, "installHost.finishPluginInstall(", "安装终局报给安装窗");
+  has(host, "cancel: async () => {", "paseo 登记取消口（安装窗「取消安装」走它）");
+  has(host, "installKill.cancelInstall(PLUGIN_ID)", "取消口真的按进程树强杀（不是只置标志）");
+  has(host, "installKill.track(PLUGIN_ID, child)", "npm 子进程一生出来就登记进取消表");
+  ok(exists("paseo/steps.json"), "步骤表在 paseo/steps.json（开窗即列全表）");
+  ok(!exists("paseo-pack"), "没有造 pack 目录：纯 JS 驱动，不需要 scripts/step.ps1 协议副本");
+  {
+    const man = JSON.parse(read("paseo/steps.json"));
+    const ids = (man.steps || []).map((s) => String(s.id || ""));
+    ok(ids.length >= 5, "paseo steps.json 列出了完整步骤（" + ids.length + " 步）");
+    ok(ids.indexOf("probe") === 0, "第一步是探测本机已装的 Paseo（复用优先）");
+    ok((man.steps || []).some((s) => s.messages), "失败文案走 code + messages 表（与其它包同一套解析）");
+  }
+  const pageJs = read("install/app.js");
+  has(pageJs, '"paseo-remote": "paseoRemoteInstall"', "安装窗知道 paseo 的安装桥");
+  has(pageJs, "PASEO_OWN_IDS", "「仍要自建一份」是插件专属开关（照 FORCE_HW_IDS 的做法）");
+  has(pageJs, "forceOwn ? { forceOwn: true } : {}", "勾选后透传 forceOwn 给宿主");
+  has(read("install/index.html"), 'id="insPaseoOwnBox"', "安装窗页面有这个复选框（默认隐藏，只对 paseo 显示）");
+  const instHost = read("plugins/main-install.js");
+  has(instHost, 'paseoRemoteInstall: "paseoRemote:install"', "安装桥白名单放行 paseo（安装窗只能调这张表里的通道）");
+  has(instHost, 'paseoRemotePickInstallDir: "paseoRemote:pickInstallDir"', "换目录那条也放行（没有目录时弹系统目录框）");
+  has(instHost, '"paseo-remote": {', "卸载路由表里有 paseo-remote");
+  has(instHost, 'preview: "paseoRemote:uninstallPreview"', "paseo 走它自己的卸载预览口");
+  has(instHost, 'run: "paseoRemote:uninstall"', "paseo 走它自己的卸载口");
+  has(instHost, 'paseo: "paseo-remote"', "kind → 目录 id 别名（报错总线报 kind 也接得住）");
+  has(read("paseo/main-paseo.js"), "handle(\"uninstallPreview\"", "宿主注册了卸载预览");
+  has(read("paseo/main-paseo.js"), "handle(\"uninstall\"", "宿主注册了卸载（真删只在 run）");
+  has(read("plugins/plugin-root.js"), '"paseo-remote": "paseo"', "插件根目录体系认 paseo（默认子目录名 paseo）");
+}
+
+
 /* ═════════════ [8] 失败处置：脚本失败不再静默转 Agent 兜底 ═════════════ */
 console.log("\n[8] 脚本失败一律停在安装窗的失败步（不再静默转 Agent）");
 let failStepHosts = 0;

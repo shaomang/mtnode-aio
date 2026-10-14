@@ -9,14 +9,17 @@
  *        写入路径各一份）：开发 / 细化会话一轮里用户消息本来就多（询问窗每条回答都是一条
  *        user 消息），7 轮上下就把最早的**助手消息**（轨迹 / 改动唯一的数据源）挤出去。
  * 口径（用户已确认）：历史轮次与当前运行轮**合并展示、按「第 N 轮」分组**；
- *   改动栏除「每轮都在」外不变；消息保留改成**按轮保留**；存量数据不回填。
+ *   改动栏除「每轮都在」外不变；存量数据不回填。
+ * 后续需求（token 出入量保留全部 · 用户已确认）：消息**一条都不裁** ——
+ *   原来那两个保留上限（固定 100 条 → 按轮 1920 条）都会把最老那一轮的助手消息整条切掉，
+ *   连带它上面的 m.usageSteps（每步 token）一起消失；两道闸连同裁剪函数一并删除。
  *
  * 覆盖：
  *   [1] 轨迹取数：带 live 段的会话上，历史轮次一条不丢、与本轮合并、按轮号分组
  *   [2] 合并判据（agentSegsMergeRounds 真函数）：别轮保留 / 同轮去重 / 无轮号不误删
  *   [3] 改动取数：全量助手消息的工具清单 + 本轮 _liveTools，轮号按段配对（app-changes.js 真模块）
- *   [4] 消息按轮保留（agentTrimSessionMessages 真函数）：按轮裁、绝不切开一轮
- *   [5] 静态口径：四处写入路径同源到同一个闸，不再有写死的 100 条
+ *   [4] 消息一条都不裁（裁剪函数与那两个常量都已删除；落盘整份消息）
+ *   [5] 静态口径：两处写入路径都不再裁剪，旧的两道条数闸不许复活
  */
 "use strict";
 const fs = require("node:fs");
@@ -94,11 +97,6 @@ function grabFn(src, name, indent) {
     }
   }
   throw new Error("函数 " + name + " 括号不配对");
-}
-function grabNumConst(src, name) {
-  const m = new RegExp("^const\\s+" + name + "\\s*=\\s*(\\d+)", "m").exec(src);
-  if (!m) throw new Error("找不到常量 " + name);
-  return Number(m[1]);
 }
 const T = (s, p) =>
   String(s).replace(/\{(\w+)\}/g, (m, k) => (p && p[k] != null ? String(p[k]) : m));
@@ -374,89 +372,53 @@ section("[3] 改动栏取数（app-changes.js 真模块）：每轮的工具记�
 }
 
 /* =====================================================================
- * [4] 消息按轮保留（agentTrimSessionMessages 真函数）
+ * [4] 消息一条都不裁（本次需求 · 用户口径「token 出入量保留全部」）
+ *   历史沿革：先是「超过 100 条从头裁」，后改成「按轮保留 1920 条」；两版都会把最老那一轮
+ *   的助手消息整条切掉，连带它上面的 m.usageSteps（每步 token 出入量）一起消失 ——
+ *   轨迹视图里就是「token 只保留了最新的一小部分」。现在整道去掉。
  * ===================================================================== */
-section("[4] 消息保留改成按轮（agentTrimSessionMessages 真函数）");
+section("[4] 消息一条都不裁（裁剪函数与那两个常量都已删除）");
 {
-  /* 三个常量：前两个是字面量，上限由它们相乘得来（跟着源码算，不在冒烟里另写一个数） */
-  const PER = grabNumConst(ASSIST, "AGENT_ROUND_MAX_ENTRIES");
-  const MINROUNDS = grabNumConst(ASSIST, "AGENT_MIN_KEEP_PER_ROUND");
-  const CAP = PER * MINROUNDS;
-  const sb = { console };
-  vm.createContext(sb);
-  vm.runInContext(
-    [
-      "var AGENT_MIN_KEEP_PER_ROUND = " + MINROUNDS + ";",
-      "var AGENT_ROUND_MAX_ENTRIES = " + PER + ";",
-      "var AGENT_MSG_KEEP_MAX = " + CAP + ";",
-      grabFn(ASSIST, "agentTrimSessionMessages", 0),
-    ].join("\n") + "\nthis.trim = agentTrimSessionMessages;",
-    sb,
-    { filename: "keep.js" },
-  );
-  const trim = (st) => vm.runInContext("trim", sb)(st);
-  ok(CAP > 100, "[4] 总上限比原来的固定 100 条宽松得多（实得 " + CAP + "）");
   ok(
-    PER >= 10,
-    "[4] 一轮按最多 " + PER + " 条消息折算（开发 / 细化轮里一轮含多条询问窗回答）",
-  );
-
-  const mk = (rounds) => {
-    const msgs = [];
-    for (let r = 1; r <= rounds; r++) {
-      msgs.push({ role: "user", content: "q" + r, at: r * 10 });
-      msgs.push({ role: "assistant", content: "a" + r, at: r * 10 + 1, segments: [{ k: "say", text: "a" + r, round: r }] });
-    }
-    return { id: "asT", messages: msgs };
-  };
-  const small = mk(3);
-  ok(trim(small) === 0 && small.messages.length === 6, "[4] 没到上限 → 一条都不裁");
-  const big = mk(Math.ceil(CAP / 2) + 50);
-  const n0 = big.messages.length;
-  const cut = trim(big);
-  ok(cut > 0 && big.messages.length === CAP, "[4] 到上限 → 裁回 " + CAP + " 条（裁掉 " + cut + " / " + n0 + "）");
-  ok(
-    big.messages.filter((m) => m.role === "assistant").length >= MINROUNDS,
-    "[4] 裁完仍留着 ≥ " + MINROUNDS + " 轮的助手消息（轨迹 / 改动的数据源还在）",
-  );
-  /* 裁切点不切开一轮：留下的第一条要么本身就是用户消息（轮的起点），要么是助手消息、
-     而它的用户消息（at 更小、紧跟在前）也一起留下了 */
-  const first = big.messages[0];
-  ok(
-    big.messages.length > 1 &&
-      (first.role === "user" || (big.messages[1] && big.messages[1].role === "user")),
-    "[4] 裁切点不落在「只有助手消息、没有它的用户消息」的位置（保留的是完整轮）",
+    !/function agentTrimSessionMessages\(/.test(ASSIST),
+    "[4] app-assist.js 里裁剪函数已整体删除",
   );
   ok(
-    big.messages[big.messages.length - 1].content === "a" + (Math.ceil(CAP / 2) + 50),
-    "[4] 最新一轮永远在（尾部不裁）",
+    !/AGENT_MSG_KEEP_MAX|AGENT_MIN_KEEP_PER_ROUND|AGENT_ROUND_MAX_ENTRIES/.test(ASSIST),
+    "[4] 按轮保留那两个常量与总上限常量都不在了（不留半截口径）",
   );
-  ok(trim(null) === 0 && trim({}) === 0, "[4] 没会话 / 没 messages → 不抛、返回 0");
+  ok(
+    !/messages: \(s\.messages \|\| \[\]\)\.slice\(-/.test(ASSIST) &&
+      /messages: \(s\.messages \|\| \[\]\)\.map\(/.test(ASSIST),
+    "[4] 落盘整份消息（不再 slice(-上限)）—— 每步 token 随消息一起留住",
+  );
+  ok(
+    !/length > 1920/.test(DB) && !/length - 1920/.test(DB),
+    "[4] app-db.js 里那处 1920 条的就地兜底也已撤",
+  );
 }
 
 /* =====================================================================
- * [5] 静态口径：四处写入路径同源
+ * [5] 静态口径：两处写入路径都不再裁剪
  * ===================================================================== */
-section("[5] 写入路径同源到同一个闸（不再有写死的 100 条）");
+section("[5] 写入路径不再裁剪（旧的两道条数闸都不许复活）");
 {
   ok(
-    (DB.match(/agentTrimSessionMessages\(st\)/g) || []).length === 2,
-    "[5] app-db.js 两处写入路径（询问窗 / 求助卡的「回答」 + 轮末痕迹）都走同一个闸"
-      + "（求助卡已与询问卡同源：答案走 ixCommitAnswerToSession 这一条，"
-      + "旧的那条「已回应」痕迹随本次改版下线）",
+    !/agentTrimSessionMessages/.test(DB),
+    "[5] app-db.js 两处写入路径（询问窗回答 + 轮末痕迹）都不再调裁剪函数",
   );
   ok(
     !/if \(st\.messages\.length > 100\) st\.messages\.splice/.test(DB) &&
       !/if \(st\.messages\.length > 100\) st\.messages\.splice/.test(ASSIST),
-    "[5] 写死 100 条的那两处旧判据已撤",
+    "[5] 写死 100 条的那两处旧判据仍是撤的",
   );
   ok(
-    /agentTrimSessionMessages\(st\)/.test(ASSIST),
-    "[5] app-assist.js 开轮那一处也走同一个闸（不再一刀切）",
+    !/agentTrimSessionMessages/.test(ASSIST),
+    "[5] app-assist.js 开轮那一处也不再裁剪（一条都不裁）",
   );
   ok(
-    /messages: \(s\.messages \|\| \[\]\)\.slice\(-AGENT_MSG_KEEP_MAX\)/.test(ASSIST),
-    "[5] 落盘条数读的就是同一个上限常量（不再各写一个数字）",
+    !/AGENT_MSG_KEEP_MAX/.test(ASSIST) && !/AGENT_MSG_KEEP_MAX/.test(DB),
+    "[5] 上限常量在两侧都无残留",
   );
 }
 

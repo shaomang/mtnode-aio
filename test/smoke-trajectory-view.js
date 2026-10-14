@@ -1441,6 +1441,156 @@ section("[8] 检查器升级（每步 token / 步间隔 / JSON 树与代码切�
 }
 
 /* =====================================================================
+ * [8.7] 「token 出入量保留全部」（本次需求 · 去上限 + 一次调用一条明细）
+ *   · 采集点 tokUsageStepNote：同一步多次模型调用**各存一条**（不再压成一条把后到的抹掉），
+ *     且**一条都不裁**（原「一步最多 64 条、超了从头裁」的闸已撤）；
+ *   · 渲染侧 detailOf：该步名下全部条目相加 = 该步合计（显示口径不变，calls = 条目数）；
+ *   · 内存时间线 pushTokLine：原「最多 400 条、超了从头裁」的闸已撤；
+ *   · 会话消息：原按轮保留的 1920 条闸（agentTrimSessionMessages）已整体删除 ——
+ *     被切掉的整条助手消息会连带它上面的 m.usageSteps 一起消失，那正是「只剩最新一小部分」。
+ * ===================================================================== */
+section("[8.7] 保留全部（采集不压条 / 不裁；合计仍在渲染侧）");
+{
+  const A = read("renderer/app-assist.js");
+  const TJ = read("renderer/app-trajectory.js");
+  /* 采集点：真函数跑一遍 —— 同一步三次调用进来，明细里就该有三条 */
+  const note = (() => {
+    const at = A.indexOf("function tokUsageStepNote(st, runKey, data) {");
+    if (at < 0) throw new Error("找不到 tokUsageStepNote");
+    let i = A.indexOf("{", at);
+    let depth = 0;
+    for (; i < A.length; i++) {
+      if (A[i] === "{") depth++;
+      else if (A[i] === "}") {
+        depth--;
+        if (!depth) return A.slice(at, i + 1);
+      }
+    }
+    throw new Error("tokUsageStepNote 括号不配对");
+  })();
+  const sb = { console, Date };
+  vm.createContext(sb);
+  vm.runInContext(
+    "var S = {};\n" +
+      "function traceOf() { return { turn: 3, step: 7, round: 4, resetAt: 1 }; }\n" +
+      "function traceNum(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }\n" +
+      note +
+      "\nthis.note = tokUsageStepNote;",
+    sb,
+    { filename: "usage-steps.js" },
+  );
+  const st = { id: "asfull", messages: [], _usageSteps: [], _usageStepsAt: 0 };
+  const noteFn = vm.runInContext("note", sb);
+  const mk = (input, output) => ({
+    turn: 3,
+    step: 7,
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    provider: "deepseek-official",
+    model: "deepseek-chat",
+  });
+  noteFn(st, "agent:asfull", mk(10, 1));
+  noteFn(st, "agent:asfull", mk(20, 2));
+  noteFn(st, "agent:asfull", mk(30, 3));
+  ok(
+    st._usageSteps.length === 3,
+    "[8.7] 同一步 3 次模型调用 = 明细里 3 条（各自留一条，不合并抹掉）：实得 " +
+      st._usageSteps.length,
+  );
+  ok(
+    st._usageSteps[0].input === 10 &&
+      st._usageSteps[1].input === 20 &&
+      st._usageSteps[2].input === 30 &&
+      st._usageSteps.every((u) => u.turn === 3 && u.step === 7),
+    "[8.7] 三条都带归步键 (网关 turn, 网关步号) 与各自的出入量（次序 = 到达次序）",
+  );
+  /* 超长轮次（原 64 条闸）不再从头裁：灌 200 条，最早的还在 */
+  for (let i = 0; i < 200; i++) noteFn(st, "agent:asfull", mk(1, 1));
+  ok(
+    st._usageSteps.length === 203 && st._usageSteps[0].input === 10,
+    "[8.7] 一条都不裁（203 条都在，最早那条 input=10 仍在）：实得 " + st._usageSteps.length,
+  );
+  /* 静态口径：三处上限的写法都不许复活 */
+  ok(
+    !/list\.length > 64/.test(A) && !/length - 64/.test(A),
+    "[8.7] 采集侧「一步最多 64 条」的裁剪判据已撤（app-assist.js）",
+  );
+  ok(
+    !/TOK_LINE/.test(TJ),
+    "[8.7] 内存时间线「最多 400 条」的裁剪判据已撤（app-trajectory.js 无 TOK_LINE）",
+  );
+  ok(
+    !/function agentTrimSessionMessages\(/.test(A) &&
+      !/AGENT_MSG_KEEP_MAX/.test(A) &&
+      !/AGENT_MIN_KEEP_PER_ROUND/.test(A) &&
+      !/agentTrimSessionMessages/.test(read("renderer/app-db.js")),
+    "[8.7] 消息条数闸整体删除（函数 / 常量 / app-db.js 两处调用点都不在）",
+  );
+  ok(
+    /messages: \(s\.messages \|\| \[\]\)\.map\(/.test(A),
+    "[8.7] 落盘不再 slice(-上限)：整份消息落盘（每条带自己的 m.usageSteps）",
+  );
+  /* 渲染侧：同一步多条明细 → 行内仍只有一个合计 +「N 次调用」 */
+  const scene = buildScene();
+  const stR = {
+    id: "asfull2",
+    running: true,
+    messages: [],
+    trajView: "trace",
+    runTrace: {
+      "agent:asfull2": {
+        round: 1,
+        turn: 1,
+        step: 1,
+        items: [
+          { k: "think", text: "想", round: 1, step: 1, at: 100 },
+          { k: "tool", text: "", round: 1, step: 1, callId: "f1", at: 300 },
+        ],
+      },
+    },
+    _usageSteps: [
+      { round: 1, turn: 1, step: 1, calls: 1, input: 10, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, provider: "p", model: "m" },
+      { round: 1, turn: 1, step: 1, calls: 1, input: 20, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 0, provider: "p", model: "m" },
+      { round: 1, turn: 1, step: 1, calls: 1, input: 30, output: 3, cacheRead: 0, cacheWrite: 0, reasoning: 0, provider: "p", model: "m" },
+    ],
+    _liveTools: [
+      { callId: "f1", name: "read", turn: 1, step: 1, args: {}, result: [{ text: "x" }], error: null, at: 300, doneAt: 400 },
+    ],
+  };
+  const T = loadTrajectory(
+    scene,
+    {
+      S: {
+        agentSessions: [stR],
+        agentActiveId: "asfull2",
+        config: {},
+        runTrace: { "agent:asfull2": { items: stR.runTrace["agent:asfull2"].items, round: 1 } },
+      },
+    },
+    {
+      traceRunKey: (k) => String(k),
+      traceOf: (k) => (k === "agent:asfull2" ? stR.runTrace["agent:asfull2"] : null),
+      agentTraceItems: (rk) => (rk === "agent:asfull2" ? stR.runTrace["agent:asfull2"].items : null),
+      agentTraceRound: (rk) => (rk === "agent:asfull2" ? 1 : null),
+    },
+  );
+  T.sync();
+  const main = docGetById(scene.root, "agentTraceMain");
+  const inspRow = rowAt(T.sandbox, 1);
+  fireIn(main, inspRow, "click");
+  const insp = main.querySelector(".dsh-trace-insp");
+  ok(
+    /↑60/.test(insp.textContent) &&
+      /↓6/.test(insp.textContent) &&
+      /3 次调用/.test(insp.textContent),
+    "[8.7] 3 条明细相加成该步合计（↑60 ↓6 · 3 次调用）：" + String(insp.textContent).slice(0, 80),
+  );
+}
+
+/* =====================================================================
  * [8.5] 会话轨迹的竖线 + 时间轴（本次需求）
  *   · 每行的轴栏：序号刻度（每轮从 1 起，同一步共用一个号）+ 骑在竖轨上的节点圆点；
  *   · 轴侧刻度栏：时刻（有真实值才标）/ 耗时 / 每步 token（拿不到就显式「未记到」）；

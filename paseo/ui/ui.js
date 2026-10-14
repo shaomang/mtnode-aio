@@ -128,18 +128,18 @@ async function load() {
 }
 
 const ERR_TEXT = {
-  cli_missing: "没找到 Paseo 的命令行（CLI）：装官方 Paseo 桌面端，或在本窗底部用「安装后端」装一份。",
+  cli_missing: "没找到 Paseo 的命令行（CLI）：装官方 Paseo 桌面端，或点「打开安装窗」装一份自建后端。",
   relay_disabled: "这个 Paseo 还没开 relay —— 先点下面的「开启 relay」再出码（relay 走 end-to-end 加密的中继，不需要开端口）。",
   pair_failed: "取配对信息失败，看日志里的 CLI 输出。",
-  npm_missing: "本机没有可用的 npm：本轮会先准备一份真 Node（≥22.19）再用它的 npm —— 若这行出现，说明那份 Node 是不带 npm 的精简包，换装官方 Node 22+ 即可。",
+  npm_missing: "本机没有可用的 npm：安装窗会先准备一份真 Node（≥22.19）再用它的 npm。",
   install_failed: "npm 安装失败，看日志与下面的原因。",
   node_too_old:
-    "本机 Node 版本太低（要 ≥22.19）：低版本会让 npm 只给 EBADENGINE 警告就放行，装出来的 CLI 跑不起来。装 Node 22+ 后重试，或点「等真 Node 就位」让插件把 Node 装进数据目录。",
+    "本机 Node 版本太低（要 ≥22.19）：低版本会让 npm 只给 EBADENGINE 警告就放行，装出来的 CLI 跑不起来。装 Node 22+ 后重试，或在安装窗里让插件把托管 Node 装进数据目录。",
   node_install_failed:
     "自动安装 Node 失败（多半是下载不通）：检查网络 / 代理后重试，或自己装 Node 22+（nodejs.org），或改用本机已装的 Paseo。",
   real_node_missing:
     "本机没有可用的真 Node（≥22.19）：桥必须由真 Node 拉起，Electron 自带的那个 Paseo 不认。装上 Node 后重试。",
-  no_reuse_cli: "这台机器上没找到别的 Paseo（桌面端 / PATH 都没有）—— 所以只能走「安装后端」这条路。",
+  no_reuse_cli: "这台机器上没找到别的 Paseo（桌面端 / PATH 都没有）—— 所以只能走「打开安装窗」装自建后端这条路。",
   snippet_missing: "provider 片段算不出来（paseo/bridge-info.js 缺失？）。",
   need_confirm: "需要先确认。",
   app_dir: "不能装在 MTNode 自己的目录里（升级 / 卸载会带走）—— 换一个普通目录。",
@@ -156,7 +156,7 @@ const INSTALL_REASON_TEXT = {
   dep_missing: "依赖没落盘：npm 报错或被中途打断。",
   cli_bin_missing: "依赖目录在，但 .bin\\paseo.cmd 没生成（安装不完整）。",
   cli_not_runnable: "CLI 在位但跑不起来（paseo --version 没回版本号）。",
-  node_too_old: "这份 CLI 是用旧 Node 装出来 / 正在被旧 Node 跑的（要 ≥22.19）：点「清干净重装」删掉依赖后用真 Node 重装。",
+  node_too_old: "这份 CLI 是用旧 Node 装出来 / 正在被旧 Node 跑的（要 ≥22.19）：到安装窗点「重装」，它会先清掉依赖再用真 Node 装回去。",
 };
 
 /* ------------------------------------------------------------------ */
@@ -178,6 +178,10 @@ function pill(text, kind) {
   return '<span class="pill ' + (kind || "") + '">' + esc(text) + "</span>";
 }
 
+/* 「后端」区（本轮共识：**安装控件整块搬进安装窗**，这里只留只读状态 + 两个出口）。
+   为什么改：安装 / 重装 / 清干净重装 / 换目录重装 / 装等真 Node / 改用本机已装的 Paseo
+   原来全散在这只窗里，与其它 7 个本地后端的「安装窗装、控制台配」两套入口对不上 ——
+   现在这一区只做三件事：把后端现状摊开（只读）、开安装窗、启停自建 daemon。 */
 function renderBackend() {
   const b = S.backend || {};
   const own = b.mode === "own";
@@ -202,7 +206,7 @@ function renderBackend() {
       ),
     );
   } else {
-    out.push(row("CLI", pill("未找到", "err") + ' <span class="tip">需要装 Paseo 桌面端，或用下面的「安装后端」装一份 CLI</span>'));
+    out.push(row("CLI", pill("未找到", "err") + ' <span class="tip">点下面的「打开安装窗」装一份自建后端，或先装官方 Paseo 桌面端</span>'));
   }
   out.push(
     row(
@@ -212,10 +216,25 @@ function renderBackend() {
           " " +
           esc(b.daemon.listen || "") +
           (b.daemon.desktopManaged ? " · 由桌面端托管" : "") +
+          /* 本轮口径：自建那份默认由**宿主静默托管**（后台跑、不留终端窗口）。
+             不是托管的那份 = 旧方式（自己 detached，Windows 上带一只可见终端窗口）——
+             宿主会在开机 / 下次启动时把它静默换掉，这里如实标出来，免得用户以为漏改了。 */
+          (own
+            ? b.daemon.hosted
+              ? " · " + pill("宿主静默托管", "ok")
+              : " · " + pill("旧方式（带窗口）", "warn")
+            : "") +
           (b.daemon.serverId ? ' · <span class="path">' + esc(b.daemon.serverId) + "</span>" : "")
         : pill("没在跑", own ? "warn" : ""),
     ),
   );
+  if (own && b.daemon && b.daemon.running && !b.daemon.hosted) {
+    out.push(
+      '<p class="tip warn">这份后端是旧方式起的（自己 detached 一个 supervisor，Windows 上会多出一只终端窗口）：' +
+        "宿主会在下次启动 / 你点一次「停止后端」再「启动后端」时把它换成<b>宿主静默托管</b>（后台跑、不再留窗口）。" +
+        "配对密钥与配置都不动，手机至多瞬断一次。</p>",
+    );
+  }
   out.push(row("数据目录", '<span class="path">' + esc(b.home || "") + "</span>"));
   out.push(
     row(
@@ -234,17 +253,12 @@ function renderBackend() {
   );
   if (b.nodeElectronFallback) {
     out.push(
-      '<div class="row"><button class="mini" data-act="wait-node" ' +
-        (busyBtn ? "disabled" : "") +
-        ">等真 Node 就位</button></div>",
-    );
-    out.push(
       '<p class="tip warn">桥必须由<b>真 Node</b>（≥22.19）拉起：现在只有 Electron 自带的那个，注册上去手机也建不起会话。' +
-        "装上 Node，或点上面那颗按钮等 dsh 的托管 Node 装好（它会在后台把 Node 装进数据目录）。</p>",
+        "「打开安装窗」跑一次安装就会把托管 Node 装进数据目录（安装步骤里有这一步）。</p>",
     );
   }
 
-  /* 跑 npm / 自建 CLI 用的那份 Node（本轮新增）：不达标时把出口摆出来 —— 低版本 Node 装出来的 CLI 一定跑不起来 */
+  /* 跑 npm / 自建 CLI 用的那份 Node：不达标只如实展示（装它那一步在安装窗里） */
   const nr = b.nodeRuntime || null;
   if (nr && !nr.ready) {
     out.push(
@@ -253,20 +267,15 @@ function renderBackend() {
         pill("不达标（要 ≥" + esc(nr.min || "22.19.0") + "）", "err") +
           ' <span class="tip">' +
           esc(nr.reason === "too_old" ? "本机这份是 " + (nr.version || "旧版本") : "本机没找到") +
-          " · 安装时会自动装一份托管 Node" +
+          " · 安装窗会自动装一份托管 Node" +
           "</span>",
       ),
     );
-    out.push(
-      '<div class="row"><button class="mini primary" data-act="wait-node" ' +
-        (busyBtn ? "disabled" : "") +
-        ">装 / 等真 Node</button></div>",
-    );
-  } else if (nr && nr.ready && b.mode === "own") {
+  } else if (nr && nr.ready && own) {
     out.push(row("安装用 Node", '<span class="path">' + esc(nr.bin) + "</span> · " + esc(nr.version || "") + " · " + esc(nr.source || "")));
   }
 
-  /* 自建模式的「装好了没」按**自检**结论显示（CLI 真能跑才算装好），并把失败原因摊开 */
+  /* 自建模式的「装好了没」按**自检**结论显示（CLI 真能跑才算装好），失败原因照实摊开 */
   if (own && b.installCheck) {
     const c = b.installCheck;
     out.push(
@@ -287,56 +296,42 @@ function renderBackend() {
         '<span class="path">' + esc(c.dep || "") + "</span>" + (c.depExists ? "" : ' ' + pill("不在", "err")),
       ),
     );
-    /* 装坏的那份（跑不起来 / 被旧 Node 装出来的）：「清干净重装」点了才删 node_modules 再重装 */
     if (c.reason === "cli_not_runnable" || c.reason === "node_too_old") {
       out.push(
-        '<div class="row"><button class="mini primary" data-act="clean-reinstall" ' +
-          (busyBtn ? "disabled" : "") +
-          ">清干净重装</button></div>",
-      );
-      out.push(
-        '<p class="tip">会先删掉这个目录里的 <span class="path">node_modules</span> 与 lock，' +
-          "再用真 Node（≥" + esc((b.nodeRuntime && b.nodeRuntime.min) || "22.19.0") + "）重装一次 —— 修半成品与「旧 Node 装出来的」都走这条路。</p>",
+        '<p class="tip warn">这份依赖跑不起来（多半是旧 Node 装出来的）：点「打开安装窗」→「重装」会先清掉 ' +
+          '<span class="path">node_modules</span> 再用真 Node 装回去。</p>',
       );
     }
   }
 
-  /* own 模式走不通（没 CLI / 自检没过）而本机其实装着 Paseo：给一条一次点击的出口，不静默改配置 */
-  if (own && (!b.cli || !b.installed) && b.reuse && b.reuse.available) {
-    out.push(
-      row(
-        "本机已装的 Paseo",
-        '<span class="path">' + esc(b.reuse.cli) + "</span>" + ' <span class="tip">' + esc(b.reuse.source) + "</span>",
-      ),
-    );
-    out.push(
-      '<div class="row"><button class="mini primary" data-act="use-reuse" ' +
-        (busyBtn ? "disabled" : "") +
-        ">改用本机已装的 Paseo</button></div>",
-    );
-    out.push('<p class="tip">自建这份用不了（没装成 / 目录不对），而本机已经有 Paseo 了 —— 点它切回复用模式即可。</p>');
-  }
-
-  /* 自建模式：起停后端 + 换目录；复用模式：不提供安装（免得装重一份抢端口与配对身份） */
-  const btns = [];
-  if (own) {
-    btns.push('<button class="mini" data-act="start" ' + (busyBtn ? "disabled" : "") + ">启动后端</button>");
-    btns.push('<button class="mini" data-act="stop" ' + (busyBtn ? "disabled" : "") + ">停止后端</button>");
-    btns.push(
-      '<button class="mini" data-act="reinstall" ' + (busyBtn ? "disabled" : "") + ">" +
-        (b.installed ? "重装依赖" : "重装依赖（修复）") +
-        "</button>",
-    );
-    btns.push('<button class="mini" data-act="install" ' + (busyBtn ? "disabled" : "") + ">换目录重装</button>");
-  } else {
-    btns.push('<button class="mini" data-act="install" ' + (busyBtn ? "disabled" : "") + ">安装后端（本机没有 Paseo 时用）</button>");
-  }
-  out.push('<div class="row">' + btns.join("") + "</div>");
+  /* 唯一入口：安装窗（安装 / 重装 / 清干净重装 / 装等真 Node / 改用本机已装的 Paseo 都在里面） */
+  out.push(
+    '<div class="row"><button class="mini primary" data-act="open-install">打开安装窗（安装 / 重装 / 卸载）</button></div>',
+  );
+  out.push(
+    '<p class="tip">安装相关的动作都在那只窗里：装自建后端、重装依赖、清干净重装、准备真 Node、' +
+      "以及「本机其实装着 Paseo 时改用它」（探测步骤会自己认，想强制自建可在窗里勾选）。</p>",
+  );
   if (own && b.installDir) {
     out.push(row("安装目录", '<span class="path">' + esc(b.installDir) + "</span>"));
   }
-  if (!b.npmAvailable) {
-    out.push('<p class="tip warn">本机 PATH 里没有 npm：自建后端这条分支用不了（复用已装 Paseo 不受影响）。</p>');
+
+  /* 启停：卡片上没有「启用」按钮（本轮共识），这两颗就是自建 daemon 的唯一出口。
+     本轮口径：启动 = 由**宿主静默托管**（`paseo daemon run`，后台跑、不留终端窗口）；
+     停止 = 优雅停（5 秒）→ 超时按进程树强杀。MTNode 退出时自建那份也会一起停（不再常驻）。 */
+  if (own) {
+    out.push(
+      '<div class="row">' +
+        '<button class="mini" data-act="start" ' + (busyBtn ? "disabled" : "") + ">启动后端</button>" +
+        '<button class="mini" data-act="stop" ' + (busyBtn ? "disabled" : "") + ">停止后端</button>" +
+        "</div>",
+    );
+    out.push(
+      '<p class="tip">启动 = 宿主静默托管（后台跑，<b>不会再冒出终端窗口</b>）；MTNode 退出时自建后端会一起停' +
+        "（要手机随时连着就先别关 MTNode）。意外退出宿主会自动重启，最多 3 次。</p>",
+    );
+  } else {
+    out.push('<p class="tip">复用模式：后端由 Paseo Desktop 自己管，这里没有启停。</p>');
   }
   $("#backend-body").innerHTML = out.join("");
 }
@@ -408,7 +403,7 @@ function renderProvider() {
   btns.push('<button class="mini" data-act="bridge-check" ' + (busyBtn ? "disabled" : "") + ">桥自检</button>");
   btns.push(
     '<button class="mini" data-act="bridge-probe-question" ' + (busyBtn ? "disabled" : "") +
-      ' title="跑一次「MTNode 发询问卡 → 桥以表单交给客户端 → 表单应答 → 回执送回 MTNode」，四拍逐个报（手机上询问框不弹 / 答了回不到 MTNode 时用它定位）">提问通道自检</button>',
+      ' title="跑一次「MTNode 发询问卡 → 桥发一条可读消息 → 手机文本作答 → 回执送回 MTNode」，六拍逐个报（手机上询问框不弹 / 答了回不到 MTNode 时用它定位）">提问通道自检</button>',
   );
   out.push('<div class="row">' + btns.join("") + "</div>");
   out.push(row("手机端能选到", bridgeFactsLine()));
@@ -417,9 +412,13 @@ function renderProvider() {
       "会话来自 MTNode 左栏）。这两项在 Paseo 里是「新建会话」时选的；换完 provider 配置后手机端要下拉刷新一次。</p>",
   );
   out.push(
-    '<p class="tip"><b>提问通道自检</b>：手机上的询问卡走 ACP 的 <span class="path">session/elicitation</span>（表单）——' +
-      "自检会把这条链逐拍验一遍（桥有没有发、表单字段全不全、答案有没有回到 MTNode）。" +
-      "手机端<b>不支持表单问答</b>时，桥会回退成「允许一次 / 拒绝」那一对按钮，并推一条说明让模型重发或到电脑上答。</p>",
+    '<p class="tip"><b>提问通道自检</b>：MTNode 的询问卡走<b>普通聊天消息</b>（' +
+      '<span class="path">session/update · agent_message_chunk</span>：题面 / 选项 / 作答方式都是一段可读正文，' +
+      "一个 JSON 都不露给手机），用户在手机输入框里回一条消息就是答案（桥把这条回复翻成 " +
+      '<span class="path">answers[] + answerText</span> 送回去）——' +
+      "自检会把这条链逐拍验一遍（消息发没发对、题面全不全、文本作答有没有回到 MTNode）。" +
+      "审批 / 画布确认仍走 <span class=\"path\">session/request_permission</span>（允许 / 拒绝按钮）。" +
+      "它<b>不依赖</b>任何客户端能力位：老版本 Paseo（不声明表单问答）拿到的同样是这条可读消息。</p>",
   );
   out.push(
     '<p class="tip">注册 = 往 <span class="path">agents.providers.mtnode</span> 写一条 ACP provider（走官方 CLI，' +
@@ -552,7 +551,7 @@ document.addEventListener("click", async (ev) => {
     return;
   }
   if (act === "bridge-probe-question") {
-    /* 提问通道自检：跑完四拍才回话（最长两分钟），期间逐行输出已经进了日志窗 */
+    /* 提问通道自检：跑完六拍才回话（最长两分钟），期间逐行输出已经进了日志窗 */
     const r = await run("probe-question", () => window.paseoApi.bridgeProbeQuestion());
     toast(
       r && r.ok ? "提问通道自检通过" : "提问通道自检没通过：看日志窗最后几行",
@@ -593,54 +592,10 @@ document.addEventListener("click", async (ev) => {
     await load();
     return;
   }
-  if (act === "clean-reinstall") {
-    const dir = (S.backend && S.backend.installDir) || "";
-    if (!dir) {
-      toast("先选一个安装目录", "err");
-      return;
-    }
-    if (
-      !window.confirm(
-        "清干净重装？\n\n会删掉这个目录里的 node_modules 与 lock：\n" + dir + "\n\n然后用真 Node 重装一次（下载依赖要几分钟）。",
-      )
-    )
-      return;
-    const r = await run("clean-reinstall", () => window.paseoApi.cleanReinstall({ installDir: dir }));
-    if (r && r.ok) toast("已重装（自检 v" + (r.version || "?") + "）", "ok");
-    else toast(errText(r), "err");
-    await load();
-    return;
-  }
-  if (act === "install" || act === "reinstall") {
-    let dir = (S.backend && S.backend.installDir) || "";
-    if (!dir || act === "install") {
-      const p = await window.paseoApi.pickInstallDir();
-      if (!p || !p.ok) {
-        if (p && p.cancelled) return;
-        toast("目录不可用：" + errText(p), "err");
-        return;
-      }
-      dir = p.installDir;
-    }
-    const r = await run("install", () => window.paseoApi.install({ installDir: dir }));
-    if (r && r.ok) toast("后端已装好（自检 v" + (r.version || "?") + "）· 下一步：启动后端 → 开 relay → 出码", "ok");
-    else toast(errText(r), "err");
-    await load();
-    return;
-  }
-  if (act === "use-reuse") {
-    const r = await run("use-reuse", () => window.paseoApi.useReuse());
-    toast(r && r.ok ? "已改用本机已装的 Paseo（" + (r.source || "") + "）" : errText(r), r && r.ok ? "ok" : "err");
-    await load();
-    return;
-  }
-  if (act === "wait-node") {
-    const r = await run("wait-node", () => window.paseoApi.waitNode());
-    toast(
-      r && r.ok ? "真 Node 已就位（等了 " + Math.round((r.waitedMs || 0) / 1000) + "s）" : errText(r),
-      r && r.ok ? "ok" : "err",
-    );
-    await load();
+  /* 安装窗（安装 / 重装 / 卸载的唯一入口）：宿主那只窗由主进程开，这里只是按一下 */
+  if (act === "open-install") {
+    const r = await window.paseoApi.openInstall();
+    if (!r || !r.ok) toast("打开安装窗失败：" + errText(r), "err");
     return;
   }
   if (act === "start") {

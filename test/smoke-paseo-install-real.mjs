@@ -2,7 +2,7 @@
 /* 「Paseo 手机接管」隔离安装 · 真装实测（要网络，默认不跑；run-all 归入 MANUAL）：
  *   node test/smoke-paseo-install-real.mjs
  *
- * 它回答的是现场那个问题：**一台没装 Paseo 的机器，插件里点「安装后端」到底装不装得上？**
+ * 它回答的是现场那个问题：**一台没装 Paseo 的机器，在安装窗里点「开始安装」到底装不装得上？**
  * 所以这里走真实链路，只用隔离目录、隔离 home、隔离端口（不动本机 ~/.paseo 与已装的 Paseo）：
  *   [1] 隔离「空机器」：MTNODE_PASEO_DIRS 指向空目录 → 复用模式找不到 CLI（复现现场前提）
  *   [2] **走宿主真身**：假 electron 加载 paseo/main-paseo.js，调它真正的 installBackend()
@@ -135,9 +135,9 @@ process.env.MTNODE_PASEO_PORT = String(TEST_PORT); // 隔离端口：连「6767 
 
 const host = require(path.join(ROOT, "paseo", "main-paseo.js"));
 const I = host.__internals;
-/* 自建模式的 home 由宿主决定（数据目录下的 app-plugins/paseo-remote/paseo-home）：
+/* 自建模式的 home 由宿主决定（数据目录下的 paseo\paseo-home，见宿主 pluginRoot()）：
    安装回执里会带回来，安装前先按同一份口径算出来给 daemon 那几步用 */
-const HOME_DIR = path.join(DATA_DIR, "app-plugins", "paseo-remote", "paseo-home");
+const HOME_DIR = path.join(DATA_DIR, "paseo", "paseo-home");
 
 console.log("隔离根：" + SANDBOX);
 console.log("（宿主真身：" + path.join("paseo", "main-paseo.js") + " · 数据目录 " + DATA_DIR + "）");
@@ -150,7 +150,9 @@ console.log("[1] 隔离「空机器」：复用模式找不到 CLI");
 console.log("[2] 走宿主真身：installBackend()（npm i → 自检 → 开 relay）");
 let installRes = null;
 try {
-  installRes = await I.installBackend({ installDir: INSTALL_DIR });
+  /* forceOwn = 安装窗里那个「仍要自建一份（忽略本机已装的 Paseo）」复选框：
+     不勾它的话探测步骤会优先复用本机那份 Paseo，这里要验的正是「自建这条路装不装得上」 */
+  installRes = await I.installBackend({ installDir: INSTALL_DIR, forceOwn: true });
 } catch (e) {
   ok(false, "installBackend 抛异常：" + ((e && e.message) || e));
 }
@@ -213,11 +215,11 @@ if (installRes && installRes.ok) {
   ok(false, "跳过 daemon：安装没成功");
 }
 
-console.log("[4] own 走不通时的一键回落（用户点「改用本机已装的 Paseo」）");
+console.log("[4] own 走不通时的一键回落（安装窗探测步骤用的 switchToReuse）");
 {
   const broken = path.join(SANDBOX, "broken-own");
   fs.mkdirSync(broken, { recursive: true });
-  const cfgPath = path.join(DATA_DIR, "app-plugins", "paseo-remote", "config.json");
+  const cfgPath = path.join(DATA_DIR, "paseo", "config.json");
   let cfg = {};
   try {
     cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));

@@ -79,7 +79,11 @@ process.env.MTNODE_PASEO_DIRS = EMPTY_MACHINE;
 
 const host = require(abs("paseo/main-paseo.js"));
 const I = host.__internals;
-const configPath = path.join(DATA_DIR, "app-plugins", "paseo-remote", "config.json");
+/* 本轮口径：插件数据（配置 / 日志 / 自建 daemon home）并入插件根目录体系 → <数据目录>\paseo；
+   旧的 <数据目录>\app-plugins\paseo-remote 只在搬迁用例里出现。 */
+const DATA_ROOT = path.join(DATA_DIR, "paseo");
+const configPath = path.join(DATA_ROOT, "config.json");
+const LEGACY_ROOT = path.join(DATA_DIR, "app-plugins", "paseo-remote");
 const writeCfg = (o) => {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(o, null, 2), "utf8");
@@ -133,6 +137,35 @@ function makeFakeDesktop(dir) {
     ok(cands.length >= 1 && cands[0].startsWith(EMPTY_MACHINE), "desktop CLI 候选只在注入目录里找（真机上的 Paseo 不干扰）");
     ok(I.resolveCli({ mode: "reuse" }).cli === "", "空机器 + 复用模式 → 找不到 CLI（cli_missing 的现场）");
     ok(I.reuseCandidate().available === false, "空机器上没有可回落的本机 Paseo");
+  }
+
+  /* ── [1.5] 旧落点搬迁：老机器上的配置 / 自建 daemon home 必须搬到新落点 ────
+     不搬的后果很具体：配置路径一变，老用户的 mode / installDir / ownHome / 远程开关全读不到 ——
+     界面表现成「插件突然变回没装过、还要重新配对」。 */
+  console.log("[1.5] 旧落点（app-plugins\\paseo-remote）→ 新落点（paseo）搬迁");
+  {
+    fs.mkdirSync(LEGACY_ROOT, { recursive: true });
+    fs.writeFileSync(
+      path.join(LEGACY_ROOT, "config.json"),
+      JSON.stringify({ mode: "own", installDir: OWN_DIR, remoteEnabled: true }, null, 2),
+      "utf8",
+    );
+    fs.mkdirSync(path.join(LEGACY_ROOT, "paseo-home"), { recursive: true });
+    fs.writeFileSync(path.join(LEGACY_ROOT, "paseo-home", "daemon-keypair.json"), "{}", "utf8");
+    fs.writeFileSync(path.join(LEGACY_ROOT, "console.log"), "[old] 上一版留下的日志\n", "utf8");
+    /* 搬迁是「注册时跑一次」：新 require 一份宿主，_migrated 才是干净的 */
+    delete require.cache[require.resolve(abs("paseo/main-paseo.js"))];
+    const fresh = require(abs("paseo/main-paseo.js"));
+    fresh.__internals.migrateLegacyData();
+    ok(exists(configPath), "配置搬到 " + configPath);
+    ok(readCfg().remoteEnabled === true && readCfg().mode === "own", "搬迁保留原内容（mode / installDir / 远程开关）");
+    ok(exists(path.join(DATA_ROOT, "paseo-home", "daemon-keypair.json")), "自建 daemon home 一起搬（配对凭据不丢）");
+    ok(exists(path.join(DATA_ROOT, "console.log")), "旧日志复制到新落点（排障要看历史）");
+    ok(read("paseo/main-paseo.js").indexOf("migrateLegacyData()") >= 0, "宿主注册时真的调了搬迁（不是只写了个函数）");
+    /* 清掉这一节造的现场，别影响后面的用例 */
+    fs.rmSync(configPath, { force: true });
+    fs.rmSync(path.join(DATA_ROOT, "paseo-home"), { recursive: true, force: true });
+    delete require.cache[require.resolve(abs("paseo/main-paseo.js"))];
   }
 
   /* ── [2] own 走不通时的回落出口 ────────────────────────────────────────── */
@@ -210,6 +243,24 @@ function makeFakeDesktop(dir) {
     ok(st3.cli && st3.cliSource === "own", "坏 CLI 仍在状态里指出来（cli 路径给用户看）");
     ok(!st3.version, "坏 CLI 的版本号为空（界面据此标「跑不起来」）");
     ok(st3.installed === false && st3.installCheck.reason === "cli_not_runnable", "坏 CLI：installed=false + cli_not_runnable（不显示成装好）");
+
+    /* 3f. 本轮需求：「慢的半边」会话内缓存真跑一遍 ——
+       卡片一打开就要有按钮，状态查询不能再每次起一遍外部进程（CLI 版本 + 真 Node 解析）。
+       判据：同一份 CLI 连查两次只探测一次；清缓存后条目归零（安装 / 卸载 / 换目录 / 切模式都会清）。 */
+    writeCfg({ mode: "own", installDir: good, ownHome: HOME_DIR });
+    I3.clearPaseoProbeCache();
+    ok(I3.probeCacheSize() === 0, "3f 清缓存后条目归零（安装 / 卸载 / 换目录 / 切模式都会清）");
+    const st4 = await I3.detectBackend();
+    const sizeAfterFirst = I3.probeCacheSize();
+    const st5 = await I3.detectBackend();
+    ok(sizeAfterFirst >= 1, "3f 第一次状态查询把 CLI 探测结果缓存下来（条目 " + sizeAfterFirst + "）");
+    ok(I3.probeCacheSize() === sizeAfterFirst, "3f 第二次查询命中同一份缓存（不再新增条目 = 没有再起进程）");
+    ok(st4.version === st5.version && st4.installed === st5.installed, "3f 两次结论一致（缓存不改判据）");
+    ok(I3.realNode() === I3.realNode(), "3f 真 Node 解析同样命中会话内缓存（同一份对象）");
+    /* 「installed 实时读」这条没被缓存吃掉：把依赖删掉（文件事实变了）→ 下一次查询立刻改判 */
+    fs.rmSync(path.join(good, "node_modules"), { recursive: true, force: true });
+    const st6 = await I3.detectBackend();
+    ok(st6.installed === false, "3f CLI 文件没了 → 下一次查询立刻判未装（installed 仍实时读，不吃缓存）");
   }
 
   /* ── [4] 真 Node 前置 ─────────────────────────────────────────────────── */
@@ -229,7 +280,7 @@ function makeFakeDesktop(dir) {
       "托管安装的版本与 dsh 同一份常量（不各写一个数字）",
     );
     const waitSrc = /async function waitRealNode\(opts\)([\s\S]*?)\n\}/.exec(src);
-    ok(!!waitSrc && /resolveDshNode|realNode\(\)/.test(waitSrc[1]), "等待走的是 dsh 的解析口径（同一份真源）");
+    ok(!!waitSrc && /resolveDshNode|realNode\(\{ refresh: true \}\)/.test(waitSrc[1]), "等待走的是 dsh 的解析口径（同一份真源 · 且强制重解析不吃缓存）");
     ok(!!waitSrc && !/fs\.|spawn|exec/.test(waitSrc[1]), "等待只轮询解析结果：不写盘、不起安装进程");
   }
 
@@ -358,18 +409,26 @@ function makeFakeDesktop(dir) {
       return origProbe2.apply(dshMod2, arguments);
     };
     I47.cachedNodeRuntime({ refresh: true });
-    const r = await I47.installBackend({ installDir: rejDir, noRetry: true });
+    /* forceOwn=true = 安装窗里那个「仍要自建一份（忽略本机已装的 Paseo）」复选框：
+       不勾它的话，探测步骤会发现本机那份 Paseo 并直接切复用（见 [4.8]），根本走不到自建这条路。 */
+    const r = await I47.installBackend({ installDir: rejDir, noRetry: true, forceOwn: true });
     dshMod2.probeNodeBin = origProbe2;
     process.env[origPathKey] = origPath;
     delete process.env.MTNODE_NODE_BIN;
     delete process.env.MTNODE_NO_NODE_DOWNLOAD;
 
     ok(r.ok === false && r.error === "install_failed", "旧 Node + Node 装不上 → 拒绝安装（不留下装坏的目录）");
-    ok(r.reason === "node_install_failed", "原因码是 node_install_failed（自动装 Node 失败）：" + r.reason);
-    ok(/Node ≥/.test(String(r.message || "")) && /改用本机已装的 Paseo|等真 Node 就位/.test(String(r.hint || "")), "提示里写清底线与三条出口（装 Node / 自动装 / 改用桌面端）");
+    ok(
+      r.reason === "paseo.node.missing",
+      "原因码走安装窗的 code 表（paseo.node.missing，渲染中文文案给窗）：" + r.reason,
+    );
+    ok(
+      /Node ≥/.test(String(r.message || "")) && /改用本机已装的 Paseo/.test(String(r.hint || "")),
+      "提示里写清底线与出口（装 Node / 自动装 / 改用桌面端那份）",
+    );
     const log = (() => {
       try {
-        return fs.readFileSync(path.join(DATA_DIR, "app-plugins", "paseo-remote", "console.log"), "utf8");
+        return fs.readFileSync(path.join(DATA_ROOT, "console.log"), "utf8");
       } catch {
         return "";
       }
@@ -380,25 +439,58 @@ function makeFakeDesktop(dir) {
     ok(!exists(path.join(rejDir, "node_modules")), "目录里没有留下半成品 node_modules");
   }
 
-  /* ── [5] 宿主接线：新出口都在五层里 ─────────────────────────────────────── */
-  console.log("[5] 接线（宿主 / 控制台桥 / 前端动作）");  {
+  /* ── [4.8] 探测步骤：本机已装的 Paseo 优先被复用（安装窗第一条步骤） ──────
+     本轮口径：安装窗第一步探测本机已装的 Paseo，命中就**不装第二份**（后面 node / npm / 自检 /
+     起 daemon 四步标跳过）。要强制自建，只能在窗里勾「仍要自建一份」（= forceOwn）。 */
+  console.log("[4.8] 探测步骤的复用优先（forceOwn 才能强制自建）");
+  {
+    const I48 = require(abs("paseo/main-paseo.js")).__internals;
+    const steps = I48.installSteps();
+    const ids = steps.map((s) => String(s.id || ""));
+    ok(ids[0] === "probe" && ids.length === 8, "步骤表第一步是 probe（共 8 步，实得 " + ids.length + "）");
+    ok(ids.indexOf("npm") > 0 && ids.indexOf("check") > 0 && ids.indexOf("daemon") > 0, "npm / check / daemon 都在探测之后（复用时要跳过它们）");
     const src = read("paseo/main-paseo.js");
-    ok(/handle\("useReuse"/.test(src), "宿主注册了 useReuse");
-    ok(/handle\("waitNode"/.test(src), "宿主注册了 waitNode");
-    ok(/handle\("cleanReinstall"/.test(src), "宿主注册了 cleanReinstall（清干净重装）");
+    ok(/const cand = reuseCandidate\(\)/.test(src) && /switchToReuse\(\)/.test(src), "探测步骤会认本机已装的 Paseo 并切到复用（switchToReuse）");
+    ok(/if \(ownOk && !o\.forceReuse\) action = "own-ready"/.test(src), "自建那份自己能用就继续用它（不静默改用户已跑通的模式）");
+    ok(/else if \(cand\.available && !o\.forceOwn\) action = "reuse"/.test(src), "本机已装且没勾 forceOwn → 走复用");
+    ok(/skipSteps\(\["node", "npm", "check", "daemon"\]/.test(src), "复用模式把 node / npm / check / daemon 四步标「跳过」");
+    const pageJs = read("install/app.js");
+    ok(/PASEO_OWN_IDS = \["paseo-remote"\]/.test(pageJs), "安装窗给 paseo 一个「仍要自建一份」开关");
+    ok(/forceOwn \? \{ forceOwn: true \} : \{\}/.test(pageJs), "勾了就把它透传给宿主");
+  }
+
+  /* ── [5] 宿主接线：安装窗一条链 + 控制台只留只读状态与启停 ──────────────── */
+  console.log("[5] 接线（宿主 / 安装窗 / 控制台桥 / 前端动作）");
+  {
+    const src = read("paseo/main-paseo.js");
+    /* 安装窗三件套（登记 / 上报 / 取消）*/
+    ok(/registerInstallTarget\(\{/.test(src) && /packRoots: \[__dirname\]/.test(src), "宿主登记安装目标并把 paseo/ 当包根（开窗即读 steps.json）");
+    ok(/installHost\.beginPluginInstall\(/.test(src) && /installHost\.finishPluginInstall\(/.test(src), "安装会话有开始与终局两条上报");
+    ok(/installKill\.cancelInstall\(PLUGIN_ID\)/.test(src) && /installKill\.track\(PLUGIN_ID, child\)/.test(src), "取消口真杀进程树，npm 子进程一 spawn 就登记");
+    ok(/cleanOwnDeps\(target\)/.test(src) && /重装一次/.test(src), "自检不过先清半成品再重装一次（不无限重试）");
+    /* 安装控件已整块搬走：控制台不再有这些 IPC */
+    ok(!/handle\("useReuse"/.test(src) && !/handle\("waitNode"/.test(src) && !/handle\("cleanReinstall"/.test(src), "旧的三条安装 IPC（useReuse / waitNode / cleanReinstall）已下线");
+    ok(/handle\("uninstallPreview"/.test(src) && /handle\("uninstall"/.test(src), "新增卸载两条（preview 只读 / run 真删）");
+    ok(/underDataDir\(/.test(src), "卸载守卫：只删数据目录里的路径（本机 Paseo 与 ~/.paseo 一律不碰）");
     const pre = read("paseo/preload-paseo.js");
-    ok(/useReuse: \(\) => ipcRenderer\.invoke\("paseoRemote:useReuse"\)/.test(pre), "控制台桥转发 useReuse");
-    ok(/waitNode: \(\) => ipcRenderer\.invoke\("paseoRemote:waitNode"\)/.test(pre), "控制台桥转发 waitNode");
-    ok(/cleanReinstall: \(opts\) => ipcRenderer\.invoke\("paseoRemote:cleanReinstall"/.test(pre), "控制台桥转发 cleanReinstall");
+    ok(/openInstall: \(\) => ipcRenderer\.invoke\("mtnodeInstall:open"/.test(pre), "控制台桥只留「打开安装窗」这条入口");
+    ok(/startDaemon:/.test(pre) && /stopDaemon:/.test(pre), "控制台桥保留启停（卡片上没有「启用」按钮，这是唯一出口）");
+    ok(!/useReuse:|waitNode:|cleanReinstall:|pickInstallDir:/.test(pre), "控制台桥不再暴露安装类动作");
     const ui = read("paseo/ui/ui.js");
-    ok(/act === "use-reuse"/.test(ui) && /paseoApi\.useReuse\(\)/.test(ui), "控制台有「改用本机已装的 Paseo」动作");
-    ok(/act === "wait-node"/.test(ui) && /paseoApi\.waitNode\(\)/.test(ui), "控制台有「等真 Node 就位」动作");
-    ok(/act === "clean-reinstall"/.test(ui) && /paseoApi\.cleanReinstall\(/.test(ui), "控制台有「清干净重装」动作（点了才删 node_modules）");
-    ok(/node_too_old/.test(ui) && /node_install_failed/.test(ui), "控制台把「Node 太旧 / Node 装不上」翻成人话");
-    ok(/InstallCheck|installCheck/.test(ui), "控制台渲染安装自检结论");
+    ok(/data-act="open-install"/.test(ui) && /paseoApi\.openInstall\(\)/.test(ui), "控制台有「打开安装窗」动作");
+    ok(/data-act="start"/.test(ui) && /data-act="stop"/.test(ui), "控制台保留启动 / 停止后端两颗");
+    ok(!/act === "use-reuse"|act === "wait-node"|act === "clean-reinstall"/.test(ui), "控制台不再有安装类动作（去安装化）");
+    ok(/node_too_old/.test(ui) && /node_install_failed/.test(ui), "控制台把「Node 太旧 / Node 装不上」翻成人话（错误表仍留着给安装窗回执用）");
+    ok(/InstallCheck|installCheck/.test(ui), "控制台渲染安装自检结论（只读状态行）");
     ok(/real_node_missing/.test(ui), "控制台把「没有真 Node」翻成人话");
-    ok(/cleanOwnDeps/.test(src) && /重装一次/.test(src), "安装失败先清半成品再重装一次（不无限重试）");
-    ok(/daemon 自检|installCheck/.test(read("paseo/ui/ui.js")), "控制台把自检结论画在状态行里（用户看得见卡在哪一步）");
+    /* 卡片：两颗按钮（安装 / 重装 + 控制台），没有「启用」 */
+    const plug = read("renderer/app-plugins.js");
+    ok(/paseo: \{ key: "paseo", api: "paseoRemote", hasService: false, update: false \}/.test(plug), "卡片 spec：hasService:false（不给「启用」按钮）");
+    ok(/paseo: "paseo-remote"/.test(plug), "卡片「安装」开的是 paseo-remote 那只安装窗");
+    ok(/return refreshBackendPluginCard\(root, BACKEND_PLUGIN_SPECS\.paseo\)/.test(plug), "卡片复用通用后端卡片");
+    /* 插件根目录体系：安装目录 = 插件根目录 + paseo（ensureDir 写回 config.json 的 installDir） */
+    const root = read("plugins/plugin-root.js");
+    ok(/"paseo-remote": "paseo"/.test(root) && /"paseo-remote": "paseo\/config\.json"/.test(root), "plugin-root 认 paseo（默认子目录 paseo + 配置位 paseo/config.json）");
   }
 
   /* ── 收尾 ─────────────────────────────────────────────────────────────── */

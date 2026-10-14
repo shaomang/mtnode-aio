@@ -90,9 +90,26 @@ console.log("[1] 插件五层接线");
   ok(/item\.kind === "paseo" \|\| item\.handler === "paseo"/.test(ui), "openAppPluginsDialog 里挂了 paseo 分支");
   ok(/refreshPaseoPluginCard\(card\)/.test(ui), "分支里真的调它重画卡片");
   ok(/paseoRemoteOnConsoleChanged/.test(ui), "卡片订阅控制台开/关事件");
+  /* 本轮口径：卡片走**通用后端卡片**（与其它 6 个本地后端同一套）——
+     按钮 = 「安装 / 重装」（download）+ 「控制台」（console），**没有**「启用/停用」（hasService:false）；
+     图标一律取自 PLUGIN_ACT_SVG 既有 kind，不自创。 */
   ok(
-    /mkPluginActBtn\(\s*"console"/.test(ui) && !/mkPluginActBtn\(\s*"paseo/.test(ui),
-    "卡片按钮图标取自 PLUGIN_ACT_SVG 既有 kind（console），不自创图标名",
+    /return refreshBackendPluginCard\(root, BACKEND_PLUGIN_SPECS\.paseo\)/.test(ui),
+    "卡片复用通用后端卡片（refreshBackendPluginCard + BACKEND_PLUGIN_SPECS.paseo）",
+  );
+  ok(
+    /paseo: \{ key: "paseo", api: "paseoRemote", hasService: false, update: false \}/.test(ui),
+    "paseo spec：api=paseoRemote / hasService:false（卡片不给「启用」按钮）/ 无 update",
+  );
+  ok(/paseo: "paseo-remote"/.test(ui), "BACKEND_INSTALL_IDS 把 paseo 映射到安装窗 id paseo-remote");
+  /* 本轮 bug 现场：安装结束的广播会把每张卡片按 kind 重画一次，而重画分派表里漏了 paseo
+     → paseo 卡片落进窗口插件兜底分支，按钮从「安装 / 控制台」变成「下载安装 / 运行」。 */
+  const repaintSeg = ui.slice(ui.indexOf("function repaintPluginCard("), ui.indexOf("async function refreshWindowPluginCard("));
+  ok(/paseo: refreshPaseoPluginCard/.test(repaintSeg), "重画分派表里登记了 paseo（装完重画仍走后端卡片）");
+  ok(!/paseo: refreshWindowPluginCard/.test(repaintSeg), "paseo 不会落进窗口插件兜底分支");
+  ok(
+    /"download"/.test(read("renderer/app-plugins.js")) && /PLUGIN_ACT_SVG/.test(read("renderer/app-plugins.js")),
+    "按钮图标取自 PLUGIN_ACT_SVG 既有 kind（download / console），不自创图标名",
   );
 }
 
@@ -110,6 +127,33 @@ console.log("[2] 宿主契约（paseo/main-paseo.js）");
     ok(/tailConsole:/.test(reg[1]) && /getInstallDir:/.test(reg[1]), "宿主给了日志尾部与现场目录");
   }
   ok(/defaultConfig\(\)[\s\S]{0,400}remoteEnabled: false/.test(host), "远程连接总开关**默认关**");
+  /* ── 本轮需求：状态查询的「慢的半边」加会话内缓存 ──────────────────────────
+     现场：打开插件窗时卡片要先等 paseoRemote:getStatus 回来才画按钮，而这条状态过去每次
+     都会真跑一遍 CLI 版本探测 + 真 Node 解析（已装的机器上几秒）。口径是**只缓存这两样**，
+     installed / running / 启停 / 控制台开合仍每次实时读。 */
+  ok(/const CLI_PROBE_CACHE = new Map\(\)/.test(host), "有 CLI 探测的会话内缓存表（CLI_PROBE_CACHE）");
+  ok(/function clearPaseoProbeCache\(\)/.test(host), "有统一清缓存的出口 clearPaseoProbeCache");
+  ok(
+    /const cacheKey = \[cli[\s\S]{0,200}fileMtimeMs/.test(host) && /const memo = CLI_PROBE_CACHE\.get\(cacheKey\)/.test(host),
+    "cliVersionOf 命中缓存就直接回（key 里带文件 mtime：CLI 被换掉会自动重探）",
+  );
+  ok(/CLI_PROBE_CACHE\.set\(cacheKey, res\)/.test(host), "探测结果写回缓存");
+  ok(
+    /function realNode\(opts\)[\s\S]{0,600}REAL_NODE_CACHE_MS/.test(host),
+    "realNode 也吃会话内缓存（真 Node 解析不再每次扫目录 + 起探针）",
+  );
+  ok(
+    /realNode\(\{ refresh: true \}\)/.test(host),
+    "等真 Node 就位那条链显式 refresh（托管 Node 装好后必须重解析，不能吃缓存）",
+  );
+  ok(
+    /if \("mode" in p \|\| "installDir" in p \|\| "ownHome" in p\) clearPaseoProbeCache\(\)/.test(host),
+    "saveConfig 只在「后端从哪来」变了时清缓存（模式 / 安装目录 / 自建 home）",
+  );
+  ok(
+    (host.match(/clearPaseoProbeCache\(\)/g) || []).length >= 4,
+    "装完 / 卸载 / 托管 Node 就位等改变事实的出口都清缓存（实到 " + (host.match(/clearPaseoProbeCache\(\)/g) || []).length + " 处）",
+  );
   ok(
     /function sessionGate\(\)[\s\S]{0,400}allowed: false/.test(host),
     "sessionGate 关着时回 allowed:false + 人话原因",
@@ -151,10 +195,20 @@ console.log("[2] 宿主契约（paseo/main-paseo.js）");
 
   const preloadPaseo = read("paseo/preload-paseo.js");
   ok(/contextBridge\.exposeInMainWorld\("paseoApi"/.test(preloadPaseo), "控制台桥暴露 window.paseoApi");
-  for (const ch of ["pair", "providerApply", "remoteSet", "disconnectAll", "resetPairing", "install", "bridgeCheck"]) {
+  /* 本轮口径：控制台只留「只读状态 + 打开安装窗 + 启停 + 配对 / 接入 / 远程 / 服务端 / 日志」——
+     安装类桥（install / cleanReinstall / useReuse / waitNode / pickInstallDir）整块搬去了安装窗。 */
+  for (const ch of ["pair", "providerApply", "remoteSet", "disconnectAll", "resetPairing", "startDaemon", "stopDaemon", "openInstall", "bridgeCheck"]) {
     ok(new RegExp(ch + ": \\(").test(preloadPaseo), "控制台桥有 " + ch);
   }
   ok(/paseoRemote:getStatus/.test(preloadPaseo), "控制台桥走 paseoRemote:* 通道");
+  ok(
+    /mtnodeInstall:open/.test(preloadPaseo) && /id: "paseo-remote"/.test(preloadPaseo),
+    "控制台开安装窗走通用入口 mtnodeInstall:open（id=paseo-remote）",
+  );
+  ok(
+    !/cleanReinstall|useReuse|waitNode/.test(preloadPaseo),
+    "安装控件已整块移出控制台桥（不再有 cleanReinstall / useReuse / waitNode）",
+  );
 
   const uiHtml = read("paseo/ui/index.html");
   ok(/<script src="\.\.\/qr\.js"><\/script>/.test(uiHtml), "控制台加载 ../qr.js（自研二维码编码器）");
@@ -251,10 +305,43 @@ console.log("[5] 打包白名单与交付物");
   ok(exists("skills/paseo-remote-install/SKILL.md"), "安装 / 修复技能 skills/paseo-remote-install/SKILL.md 在");
   const skill = exists("skills/paseo-remote-install/SKILL.md") ? read("skills/paseo-remote-install/SKILL.md") : "";
   ok(/自我修复/.test(skill), "技能里写了【自我修复】模式");
-  ok(/paseo daemon pair --json/.test(skill), "技能里给了配对真源命令");
+  ok(/daemon pair --json/.test(skill), "技能里给了配对真源命令");
+  /* 本轮口径：技能里的入口说明必须与新入口一致（安装窗装、控制台配），否则修复会话会照旧指引用户去控制台装 */
+  ok(
+    /安装窗/.test(skill) && /控制台只做只读状态/.test(skill),
+    "技能已改成「安装窗装、控制台只做只读状态 + 打开安装窗 + 启停」的新口径",
+  );
+
+  /* 步骤表：安装窗开窗预览读的就是 paseo/steps.json（宿主上报的步骤 id 必须与它一致） */
+  ok(exists("paseo/steps.json"), "paseo/steps.json（安装窗步骤表真源）在");
+  {
+    const man = JSON.parse(read("paseo/steps.json"));
+    const ids = (man.steps || []).map((s) => String(s.id || ""));
+    ok(ids.length === 8, "步骤表 8 步（实得 " + ids.length + "）");
+    ok(
+      ["probe", "node", "npm", "check", "provider", "daemon", "pair", "done"].every((id) => ids.indexOf(id) >= 0),
+      "步骤 id 与宿主上报的一批一致（probe/node/npm/check/provider/daemon/pair/done）",
+    );
+    ok(new Set(ids).size === ids.length, "步骤 id 无重复");
+    ok((man.steps || []).every((s) => String(s.title || "").trim().length > 0), "每步都有标题");
+    ok(
+      !!(man.steps || []).find((s) => s.id === "node" && s.messages) &&
+        !!(man.steps || []).find((s) => s.id === "check" && s.messages),
+      "node / check 两步带 messages 失败文案表（code + params 渲染中英文）",
+    );
+  }
 
   const guide = read("guides/paseo-bridge.md");
   ok(/插件/.test(guide) && /Paseo 手机接管/.test(guide), "guides/paseo-bridge.md 已改成「装插件 → 控制台出码」的新路径");
+  ok(/安装窗/.test(guide), "指南写明安装走那只通用安装窗（装 / 重装 / 卸载都在窗里）");
+  for (const rel of ["guides/manual/paseo-bridge.md", "guides/manual/en/paseo-bridge.md"]) {
+    ok(/安装窗|install window/.test(read(rel)), rel + " 的手册同步了新入口");
+  }
+  ok(
+    /安装走通用安装窗|安装窗（优先复用/.test(read("plugins/catalog.default.json")) ||
+      /安装走通用安装窗/.test(read("plugins/catalog.default.json")),
+    "catalog 副标题改成与新按钮口径一致（安装走通用安装窗）",
+  );
 
   const i18n = read("renderer/i18n.js");
   for (const zh of ["Paseo 手机接管", "未检测到 Paseo：打开控制台装后端", "远程已开 · 接管 "]) {

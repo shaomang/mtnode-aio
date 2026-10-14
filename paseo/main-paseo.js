@@ -21,8 +21,15 @@
  *   · 「断开所有远程设备」只断 MTNode 这一侧的接管（关总开关 + 收掉所有 SSE 观察者）；
  *     配对凭据（二维码里的 offer）在手机里，MTNode 撤不掉 —— 真要作废走「重置配对凭据」，
  *     它重新生成 daemon 密钥（**会作废所有已配对设备**，UI 上必须二次确认）。
- *   · daemon 不随 MTNode 退出（与 llama / music3 那族单例后端同一口径）：手机随时要用，
- *     宿主退出时只关控制台窗；要停后端走控制台上的「停止后端」。
+ *   · **自建 daemon 由宿主持有、后台静默**（本轮共识，2026-10）：过去走官方
+ *     `paseo daemon start`（它自己 detached 一个 supervisor），在 Windows 上会**留下一只
+ *     可见的终端窗口**（实测：窗口类 CASCADIA_HOSTING_WINDOW_CLASS / PseudoConsoleWindow，
+ *     标题 `Paseo Daemon`）—— 用户一不小心关掉它，后端就跟着死。现在改成宿主自己持有
+ *     `paseo daemon run --home <自建 home>`（windowsHide + stdio pipe，**零新增可见控制台窗口**）：
+ *     输出逐行进控制台日志；意外退出由宿主重启（最多 3 次）；**MTNode 退出即停**（进程随宿主走），
+ *     控制台「停止后端」仍是显式出口；宿主首次需要它时会把旧的「带窗口」实例静默换掉。
+ *     原版 Paseo Desktop（复用模式）不归我们管：它那份由它自己启停。
+ *   · 复用模式的 daemon 不随 MTNode 退出（那是桌面端自己的进程）：宿主退出只关控制台窗。
  *   · 用户数据只落 %APPDATA%\pipeline-console\app-plugins\paseo-remote（config / 日志 / 自建后端）。
  *
  * 新增根目录之外的模块：paseo/** 已在 build.json 的 files 白名单里（本轮扩成整目录）。
@@ -42,9 +49,17 @@ const bridgeInfo = require("./bridge-info.js");
 const mirrors = require("../cn-mirrors.js");
 /* 真 Node 的选择口径（dsh 用同一份）：桥必须由**真 Node**拉起，Electron 自带的那个不算 */
 const dshNode = require("../dsh-node.js");
+/* 安装窗三件套（与其它 7 个本地后端同一只窗）：编排 / 步骤上报 / 进程树取消。
+   本插件的安装是**纯 JS 驱动**（npm + 官方 CLI，没有 PowerShell 脚本），所以步骤状态由这里
+   用 stepReporter + reportPluginStep 自己上报；步骤表的真源是 paseo/steps.json。 */
+const installHost = require("../plugins/main-install.js");
+const installKill = require("../plugins/install-cancel.js");
+const stepReporter = require("../plugins/install-step-reporter.js");
 
 const PLUGIN_ID = "paseo-remote";
 const KIND = "paseo";
+/** 安装窗 / 卡片 / 报错总线上显示的名字（一处真源） */
+const PLUGIN_NAME = "Paseo 手机接管";
 /** 配套的安装 / 修复 skill 名（真源在仓库根 skills/paseo-remote-install/SKILL.md，随包内置） */
 const INSTALL_SKILL = "paseo-remote-install";
 /** 官方后端包名（npm 公开包，Apache-2.0；见 docs 与调研记录） */
@@ -98,8 +113,18 @@ function dataDir() {
   if (!d) throw new Error("数据目录未注入（registerPaseoRemoteIpc 的 getDataDir）");
   return d;
 }
+/**
+ * 插件自己的数据目录（配置 / 日志 / 自建 daemon home）。
+ * **本轮口径变了**：并入插件根目录体系 —— 与其它本地后端一样落 `<数据目录>/paseo`
+ * （plugins/plugin-root.js 的 PLUGIN_CFG 认的就是这一份），自建后端的安装目录则由
+ * 「插件根目录 + paseo」给出（安装窗的 ensureDir 负责落地并写回 config.json 的 installDir）。
+ */
 function pluginRoot() {
-  return mk(join(dataDir(), "app-plugins", PLUGIN_ID));
+  return mk(join(dataDir(), "paseo"));
+}
+/** 旧落点（<数据目录>/app-plugins/paseo-remote）：只为把老机器的配置 / daemon home 搬过来 */
+function legacyRoot() {
+  return join(dataDir(), "app-plugins", PLUGIN_ID);
 }
 function configPath() {
   return join(pluginRoot(), "config.json");
@@ -111,6 +136,58 @@ function uiEntry() {
   const packed = join(pluginRoot(), "ui", "index.html");
   if (exists(packed)) return packed;
   return join(__dirname, "ui", "index.html");
+}
+/**
+ * 一次性搬迁（老机器 → 新落点）：配置 / 自建 daemon home / 日志 / 控制台 ui 副本。
+ * 为什么要有：配置路径一变，老用户的 mode / installDir / ownHome / 远程开关就读不到了 ——
+ * 表现成「插件突然变回没装过、还要重新配对」。搬迁只**读旧写新**，旧文件不删（出问题能回头看），
+ * 失败也绝不拦住启动（下一次注册还会再试）。
+ */
+let _migrated = false;
+function migrateLegacyData() {
+  if (_migrated) return;
+  _migrated = true;
+  try {
+    const old = legacyRoot();
+    const next = pluginRoot();
+    if (!exists(old) || path.resolve(old) === path.resolve(next)) return;
+    const moved = [];
+    const oldCfg = join(old, "config.json");
+    const newCfg = configPath();
+    if (!exists(newCfg) && exists(oldCfg)) {
+      const cfg = readJson(oldCfg, null);
+      if (cfg && typeof cfg === "object" && !Array.isArray(cfg)) {
+        writeJson(newCfg, cfg);
+        moved.push("config.json");
+      }
+    }
+    /* 自建 daemon home：配置里没写过 ownHome、而旧目录里确实有一份 → 整目录搬过去
+       （里面是配对密钥与 daemon 配置：搬过去手机不用重新扫码；搬不动就留在原地并如实记一行）。 */
+    const cfgNow = readJson(configPath(), {}) || {};
+    const homeName = "paseo-home";
+    if (!cfgNow.ownHome && exists(join(old, homeName)) && !exists(join(next, homeName))) {
+      try {
+        fs.renameSync(join(old, homeName), join(next, homeName));
+        moved.push(homeName);
+      } catch (e) {
+        appendConsole("[migrate] 自建 daemon home 搬迁失败（会在新位置重建，需要重新配对）：" + String((e && e.message) || e));
+      }
+    }
+    /* 日志与 ui 副本搬不搬都行，但用户排障时要看历史日志 —— 搬过去一份（复制，不删原文件）。 */
+    for (const name of ["console.log"]) {
+      const from = join(old, name);
+      const to = join(next, name);
+      if (exists(from) && !exists(to)) {
+        try {
+          fs.copyFileSync(from, to);
+          moved.push(name);
+        } catch {}
+      }
+    }
+    if (moved.length) appendConsole("[migrate] 已从旧落点搬到 " + next + "：" + moved.join(" | "));
+  } catch (e) {
+    /* 搬迁永不拦路 */
+  }
 }
 function readJson(p, fb) {
   try {
@@ -143,8 +220,11 @@ function loadConfig() {
   return Object.assign(defaultConfig(), readJson(configPath(), {}) || {});
 }
 function saveConfig(partial) {
-  const next = Object.assign(loadConfig(), partial || {});
+  const p = partial || {};
+  const next = Object.assign(loadConfig(), p);
   writeJson(configPath(), next);
+  /* 只有「后端从哪来」这几项变了才会让 CLI 探测 / 真 Node 的缓存结论过期（见 clearPaseoProbeCache） */
+  if ("mode" in p || "installDir" in p || "ownHome" in p) clearPaseoProbeCache();
   return next;
 }
 
@@ -354,11 +434,11 @@ function ownCliSpec(runtime, cfg) {
   if (node && exists(node) && exists(entry)) return { node, args: [entry] };
   return null;
 }
-/** 真 Node 缺失 / 过旧时统一的一句话（三条出口：自动装、自己装、改用桌面端） */
+/** 真 Node 缺失 / 过旧时统一的一句话（三条出口：安装窗自动装、自己装、改用桌面端那份） */
 function nodeRuntimeMsg(rt) {
   const have = String((rt && rt.version) || "");
   const tail =
-    "装 Node ≥" + NODE_MIN_VERSION + " 后重试，或在控制台点「等真 Node 就位」让插件把 Node 装进数据目录，" +
+    "装 Node ≥" + NODE_MIN_VERSION + " 后重试，或在安装窗点「重试」让插件把托管 Node 装进数据目录，" +
     "或改用本机已装的 Paseo 桌面端。";
   if (rt && rt.error === "download-failed") return "本机 Node 版本/可用性不达标" + (have ? "（现在是 " + have + "）" : "") + "，而自动安装 Node 失败（下载不通）。" + tail;
   if (rt && rt.error === "install-failed") return "本机 Node 版本/可用性不达标" + (have ? "（现在是 " + have + "）" : "") + "，自动安装 Node 也没成功。";
@@ -453,6 +533,7 @@ async function ensureNodeRuntime(opts) {
   appendConsole("[node] 托管 Node 就位：" + r.bin + "（" + String(r.version || "") + "）");
   /* 刚装好：清掉两边缓存再解析一次，免得拿到「装之前」的旧结论 */
   nodeRuntimeCache = null;
+  clearPaseoProbeCache();
   try {
     dshNode.resetDshNodeCache();
   } catch {}
@@ -499,6 +580,10 @@ async function cliVersionOf(cli, opts) {
   if (!cli || !exists(cli)) return { ok: false, version: "", code: -1, detail: "CLI 文件不在" };
   const nodeBin = String(o.node || "");
   const viaNode = !!(nodeBin && exists(nodeBin));
+  /* 会话内缓存（见 CLI_PROBE_CACHE）：key 含两份文件的 mtime —— 文件被换掉就自动重探 */
+  const cacheKey = [cli, viaNode ? nodeBin : "", fileMtimeMs(cli), viaNode ? fileMtimeMs(nodeBin) : 0].join("|");
+  const memo = CLI_PROBE_CACHE.get(cacheKey);
+  if (memo) return memo;
   const r = viaNode
     ? await spawnCli(nodeBin, [cli, "--version"], { timeoutMs: o.timeoutMs || CLI_PROBE_TIMEOUT_MS })
     : await spawnCli(cli, ["--version"], { timeoutMs: o.timeoutMs || CLI_PROBE_TIMEOUT_MS });
@@ -506,7 +591,7 @@ async function cliVersionOf(cli, opts) {
   const version = out.split(/\s+/).filter(Boolean).pop() || "";
   const ok = !!r.ok && /^\d+\.\d+/.test(version);
   const rawDetail = String(r.stderr || out || "没拿到版本号");
-  return {
+  const res = {
     ok,
     version: ok ? version : "",
     code: r.code,
@@ -516,6 +601,8 @@ async function cliVersionOf(cli, opts) {
     nodeTooOld: !ok && !!nodeVersionFromText(rawDetail) && !dshNode.versionAtLeast(nodeVersionFromText(rawDetail), NODE_MIN_VERSION),
     sawNodeVersion: nodeVersionFromText(rawDetail),
   };
+  CLI_PROBE_CACHE.set(cacheKey, res);
+  return res;
 }
 /**
  * 自检「这份 CLI 到底能不能报版本」：首选 `<真Node> <入口>`（正是运行时真正会走的那条路），
@@ -570,13 +657,20 @@ async function verifyOwnInstall(cfg, opts) {
     sawNodeVersion: v.sawNodeVersion || "",
   };
 }
-/** 真 Node（桥的 command 第一条必须是它）：与 dsh 同一份解析口径 */
-function realNode() {
+/** 真 Node（桥的 command 第一条必须是它）：与 dsh 同一份解析口径。
+ *  5s 会话内缓存（本轮需求）：状态查询每次都解析一遍要扫目录 + 起探针进程，太贵；
+ *  等真 Node 就位那条轮询（waitRealNode）显式传 `{refresh:true}` 强制重解析。 */
+function realNode(opts) {
+  const o = opts || {};
+  if (!o.refresh && realNodeCache && Date.now() - realNodeCache.at < REAL_NODE_CACHE_MS) return realNodeCache.node;
+  let node = null;
   try {
-    return dshNode.resolveDshNode({ dataDir: dataDir(), log: (l) => appendConsole(l) });
+    node = dshNode.resolveDshNode({ dataDir: dataDir(), log: (l) => appendConsole(l) });
   } catch (e) {
-    return { bin: process.execPath, source: "electron-fallback", version: process.versions.node, electron: true };
+    node = { bin: process.execPath, source: "electron-fallback", version: process.versions.node, electron: true };
   }
+  realNodeCache = { at: Date.now(), node };
+  return node;
 }
 function nodeReadyOf(n) {
   return !!n && !!n.bin && !n.electron;
@@ -603,14 +697,15 @@ async function waitRealNode(opts) {
   const o = opts || {};
   const budget = Number(o.timeoutMs) || NODE_WAIT_MS;
   const t0 = Date.now();
-  let n = realNode();
+  /* 这条链就是要等「托管安装把真 Node 放好」，所以每次轮询都强制重解析（不吃 5s 缓存） */
+  let n = realNode({ refresh: true });
   if (nodeReadyOf(n)) return { ok: true, node: n, waitedMs: 0 };
   broadcast("paseoRemote:progress", { phase: "node", message: "等真 Node 就位（dsh 托管安装可能正在后台跑）…" });
   appendConsole("[node] 暂时只有 Electron 自带的 Node，开始等真 Node（上限 " + Math.round(budget / 1000) + "s）");
   while (Date.now() - t0 < budget) {
     if (!o.keepWaiting || !o.keepWaiting()) break;
     await new Promise((r) => setTimeout(r, 2000));
-    n = realNode();
+    n = realNode({ refresh: true });
     if (nodeReadyOf(n)) {
       appendConsole("[node] 真 Node 已就位：" + n.bin + "（" + String(n.version || "") + "，" + Math.round((Date.now() - t0) / 1000) + "s）");
       return { ok: true, node: n, waitedMs: Date.now() - t0 };
@@ -725,6 +820,27 @@ function cmdLineOf(exe, args) {
 /* 已经解析好的那份真 Node（本次会话内缓存；安装完托管 Node 后由 installBackend 清掉重解析）。
    为什么缓存：控制台每次刷新状态都会调一次 CLI，重复扫候选目录 + 起探针进程没必要。 */
 let nodeRuntimeCache = null;
+/* ── 「慢的半边」会话内缓存（本轮需求 · 用户共识）────────────────────────────
+   卡片一打开就要有按钮，而 statusForUi 过去每次都会起外部进程：`<cli> --version`
+   （超时上限 12s）+ 真 Node 解析（扫候选目录、逐个起探针）。已装 Paseo 的机器上
+   打开插件窗就是几秒空窗（现场：「安装/控制台按钮没有第一时间出现」）。
+   口径：**只缓存这两样**；installed / running / 启停 / 控制台开合仍每次实时读
+   （它们来自文件与 HTTP 探活，本身很快）。失效点：saveConfig（模式 / 目录 / home 变了）、
+   装完、卸载、托管 Node 就位 —— 另外 CLI 探测按文件 mtime 认人，用户在外面换了那份 CLI 也会重探。 */
+const CLI_PROBE_CACHE = new Map();
+let realNodeCache = null;
+const REAL_NODE_CACHE_MS = 5000;
+function clearPaseoProbeCache() {
+  CLI_PROBE_CACHE.clear();
+  realNodeCache = null;
+}
+function fileMtimeMs(p) {
+  try {
+    return Number(fs.statSync(p).mtimeMs) || 0;
+  } catch {
+    return 0;
+  }
+}
 function cachedNodeRuntime(opts) {
   if (nodeRuntimeCache && !(opts && opts.refresh)) return nodeRuntimeCache;
   nodeRuntimeCache = pickNodeRuntime(opts);
@@ -776,6 +892,13 @@ function spawnCli(cli, args, opts) {
       }
     } catch (e) {
       return resolve({ ok: false, code: -1, stdout: "", stderr: String((e && e.message) || e), timedOut: false });
+    }
+    /* 子进程一出来就交给调用方（安装链要把它登记进 install-cancel 的取消表：点「取消安装」
+       才能真的按进程树强杀，而不是只置一个标志） */
+    if (typeof o.onChild === "function") {
+      try {
+        o.onChild(child);
+      } catch {}
     }
     let stdout = "";
     let stderr = "";
@@ -879,6 +1002,10 @@ async function detectBackend() {
       listen,
       pid: Number((lock && lock.pid) || 0),
       desktopManaged: !!(lock && lock.desktopManaged),
+      /* 本轮新增：这份是不是「宿主持有（静默托管）」的那一份（旧方式起的会是 false → 界面上提示会换掉） */
+      hosted: !!probe.ok && ownDaemonHosted(home),
+      silentRestarts: Number(ownDaemon.restarts || 0),
+      silentRestartsMax: RESTART_MAX,
       serverId: serverIdOf(home) || String((probe.status && probe.status.serverId) || ""),
       reportedVersion: String((probe.status && probe.status.version) || ""),
     },
@@ -998,6 +1125,12 @@ async function statusForUi() {
   return {
     ok: true,
     busy,
+    /* 卡片读的就是这三个顶层字段（renderer/app-plugins.js 走的是通用后端卡片）：
+       installed = 复用或自建任一份可用（有 CLI 且自检过）；running = daemon 真在跑；
+       version = 应用版本号（卡片角上的版本号，与其它后端同一口径）。 */
+    installed: !!backend.installed,
+    running: !!(backend.daemon && backend.daemon.running),
+    version: app.getVersion(),
     plugin: { id: PLUGIN_ID, kind: KIND, version: app.getVersion() },
     backend,
     provider: {
@@ -1358,10 +1491,13 @@ async function npmInstallOnce(dir, spec) {
   const useNode = !!(spec && spec.node && spec.cli && exists(spec.cli));
   appendConsole("[install] npm i " + NPM_PACKAGE + " --prefix " + dir + (useNode ? "（用真 Node " + spec.node + "）" : ""));
   const args = ["i", NPM_PACKAGE, "--prefix", dir, "--no-audit", "--no-fund"];
+  /* 取消安装：npm 进程一生出来就登记进 install-cancel 的取消表（安装窗那颗「取消安装」走它） */
+  const onChild = (child) => installKill.track(PLUGIN_ID, child);
   const r = useNode
     ? await spawnCli(spec.node, [spec.cli].concat(args), {
         timeoutMs: 30 * 60 * 1000,
         env: mirrors.installEnv({ npm_config_progress: "true" }),
+        onChild,
         onStdout: (t) => {
           const line = String(t).trim();
           if (line) broadcast("paseoRemote:progress", { phase: "install", message: line.slice(0, 200) });
@@ -1370,7 +1506,9 @@ async function npmInstallOnce(dir, spec) {
     : await spawnCli("npm", args, {
         timeoutMs: 30 * 60 * 1000,
         env: mirrors.installEnv({ npm_config_progress: "true" }),
+        onChild,
       });
+  installKill.untrack(PLUGIN_ID);
   appendConsole("[install] npm 退出：code=" + r.code + (r.timedOut ? "（超时）" : ""));
   if (r.code !== 0) {
     /* npm 的 EBADENGINE 只在 stderr 里说人话；把它摘出来，别让用户在一屏 WARN 里找 */
@@ -1390,104 +1528,349 @@ const INSTALL_REASON_TEXT = {
   node_too_old:
     "这份 CLI 是被旧 Node 装出来的 / 正在被旧 Node 跑：" +
     "本轮要求 Node ≥" + NODE_MIN_VERSION + "，更低的 Node 会被 npm 放行（只给 EBADENGINE 警告）却跑不起来。" +
-    "先在控制台点「清干净重装」（会删掉这个目录的 node_modules 后用真 Node 重装）。",
+    "在安装窗点「重装」一次（会先清掉这个目录的 node_modules，再用真 Node 装回去）。",
 };
+
+/* ------------------------------------------------------------------ */
+/* 安装窗会话（JS 步骤上报，不走 PowerShell）                            */
+/* ------------------------------------------------------------------ */
+/** 兜底步骤表：真源是 paseo/steps.json（安装窗开窗预览读的也是它）；读不到时才用它，别让窗空着。 */
+const FALLBACK_STEPS = [
+  { id: "probe", title: "探测本机已装的 Paseo" },
+  { id: "node", title: "检查 Node 运行时（要真 Node ≥22.19）" },
+  { id: "npm", title: "npm 安装 @getpaseo/cli" },
+  { id: "check", title: "CLI 自检（paseo --version）" },
+  { id: "provider", title: "注册 provider 到 Paseo" },
+  { id: "daemon", title: "起自建 daemon 并挑空闲端口" },
+  { id: "pair", title: "配对冒烟（只读试算配对码）" },
+  { id: "done", title: "收尾（写安装信息 · 提示开启远程接管）" },
+];
+function installSteps() {
+  const man = readJson(join(__dirname, "steps.json"), null);
+  const list = man && Array.isArray(man.steps) ? man.steps.filter((s) => s && String(s.id || "").trim()) : [];
+  return list.length ? list : FALLBACK_STEPS;
+}
+/* 安装窗的每一次上报都只是**旁路**：它失败（窗没开 / 隔离测试里没有 Electron）绝不能拖住安装。
+   隔离安装冒烟（test/smoke-paseo-install-isolation.js）就是无窗环境，这几个空壳必须容错。 */
+function hostBegin(o) {
+  try {
+    return installHost.beginPluginInstall(o);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+function hostReport(ev) {
+  try {
+    return installHost.reportPluginStep(ev);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+function hostFinish(o) {
+  try {
+    return installHost.finishPluginInstall(o);
+  } catch {}
+  return { ok: false };
+}
+/** 一条步骤事件（安装窗左栏就是这些行）；status ∈ run|ok|skip|fail（与 pack-steps 协议同一套） */
+function emitStep(step) {
+  return hostReport({ pluginId: PLUGIN_ID, kind: "step", step: step || {} });
+}
+/** 一条日志（归到某一步名下，安装窗点该步就能看到） */
+function emitLog(stepId, line) {
+  const text = String(line == null ? "" : line);
+  if (!text.trim()) return;
+  return hostReport({ pluginId: PLUGIN_ID, kind: "log", stepId: String(stepId || "_"), line: text, stream: "host" });
+}
+/** 把「这一步这次不做」明确标成跳过（复用模式 / 已经装好时用），别让用户以为漏跑了 */
+function skipSteps(ids, message) {
+  for (const id of ids) {
+    emitStep(message ? { id, status: "skip", message } : { id, status: "skip" });
+  }
+}
+
+/**
+ * 安装 / 重装（安装窗里那颗「开始安装 / 重试」调的就是它）。
+ *
+ * 本轮共识：安装这件事**只有安装窗一条入口** —— 控制台里那套安装控件（安装后端 / 换目录重装 /
+ * 清干净重装 / 装等真 Node / 改用本机已装的 Paseo）整块搬到了这里，控制台只剩只读状态 + 启停 + 打开本窗。
+ *
+ * 步骤口径（paseo/steps.json）：
+ *   ① probe  探测本机已装的 Paseo：命中且自建那份不可用 / 用户没勾「仍要自建一份」→ 切到复用，
+ *            后面 node / npm / check / daemon 四步全标跳过（**不装第二份**，免得抢端口与配对身份）；
+ *            自建那份自己能用就继续用它（不静默改用户已经跑通的模式）；
+ *   ② node   真 Node ≥22.19（缺 / 过旧自动装一份托管 Node）；
+ *   ③ npm    npm i @getpaseo/cli --prefix <插件根目录>\paseo（国内镜像）；
+ *   ④ check  paseo --version 真回版本号才算装好；首次不过就清半成品重装一次；
+ *   ⑤ provider 写 agents.providers.mtnode（Paseo 里正有会话在跑时不动配置，改到控制台确认）；
+ *   ⑥ daemon 只对自建那份：挑一个不与本机已装 Paseo 抢的空闲端口；
+ *   ⑦ pair  只读试算一次配对码（relay 关着就如实说「去控制台开 relay」）；
+ *   ⑧ done  收尾：远程接管总开关**不自动开**（默认关是现行安全口径），只提示一句。
+ *
+ * 失败一律停在失败步并如实 ok:false（不再自动转 Agent 兜底）；取消走 installKill 强杀进程树。
+ * opts: { installDir?（安装窗已落地的目录）、forceOwn?（勾了「仍要自建一份」）、noRetry?（测试用） }
+ */
 async function installBackend(opts) {
   const o = opts || {};
-  const cfg = loadConfig();
-  const dir = o.installDir || cfg.installDir;
+  const cfg0 = loadConfig();
+  const dir = String(o.installDir || cfg0.installDir || installHost.installDirOf(PLUGIN_ID) || "");
   const safe = isSafeInstallDir(dir);
-  if (!safe.ok) return { ok: false, error: safe.error };
+  if (!safe.ok) {
+    /* 目录不合法：连窗都别开成「安装中」—— 如实回报，让安装窗显示目录问题 */
+    return { ok: false, error: safe.error, reason: safe.error, installDir: dir };
+  }
+  const target = safe.path;
+  hostBegin({ id: PLUGIN_ID, name: PLUGIN_NAME, action: "install", installDir: target, steps: installSteps() });
   busy = "install";
-  broadcast("paseoRemote:progress", { phase: "install", message: "检查 Node 运行时（要真 Node ≥" + NODE_MIN_VERSION + "）…" });
+  broadcast("paseoRemote:progress", { phase: "install", message: "检查后端…" });
+  emitLog("probe", "[install] 安装会话开始（mode=" + (cfg0.mode || "reuse") + (o.forceOwn ? " · 用户要求自建一份" : "") + "）");
 
-  /* ── 预检（本轮新增，这次的现场就出在这一步）───────────────────────────
-   * 先拿到一份够版本的**真 Node**：PATH 里的旧 Node 会被 npm 放行、却让 CLI 起不来，
-   * 所以这里缺就自动装（dsh 托管那份）、装不上就**直接拒绝**，不跑 npm。 */
-  const rt = await ensureNodeRuntime({});
-  if (!rt.ok) {
+  /** 停在一个失败步上：步骤标 fail、如实回报，并把可操作的处置建议给安装窗。 */
+  const failAt = (stepId, code, params, message, hint) => {
     busy = "";
-    const why = nodeRuntimeMsg(rt);
-    const detail = String(rt.detail || "").slice(-300);
-    appendConsole("[install] 预检不过（" + rt.error + "）：" + why + " " + detail);
-    reportErr("install_failed", "Paseo 后端安装前置不满足（" + rt.error + "）：" + why, { phase: "install" });
+    appendConsole("[install] 失败于 " + stepId + "（" + (code || "") + "）：" + String(message || ""));
+    emitLog(stepId, "✕ " + String(message || ""));
+    emitStep({ id: stepId, status: "fail", code: code || "", params: params || {}, message: String(message || "") });
+    reportErr("install_failed", "Paseo 后端安装失败（" + stepId + "）：" + String(message || ""), { phase: "install" });
+    hostFinish({ id: PLUGIN_ID, ok: false, error: code || "install_failed", hint: hint || stepReporter.hintFor(String(message || "")) });
     return {
       ok: false,
       error: "install_failed",
-      reason: rt.error === "download-failed" ? "node_install_failed" : "node_too_old",
-      message: why + (detail ? "（" + detail + "）" : ""),
-      detail,
-      hint: "装 Node ≥" + NODE_MIN_VERSION + " 后重试；或点「等真 Node 就位」让插件把 Node 装进数据目录；或点「改用本机已装的 Paseo」。",
-      installDir: safe.path,
+      reason: code || "install_failed",
+      message: String(message || ""),
+      detail: String((params && params.tail) || ""),
+      installDir: target,
+      hint: hint || stepReporter.hintFor(String(message || "")),
     };
-  }
-  const spec = npmSpecFor(rt.bin);
-  if (!spec) {
-    busy = "";
-    const why =
-      "真 Node 在（" + rt.bin + "，" + String(rt.version || "") + "），但没找到随它的 npm（node_modules\\npm\\bin\\npm-cli.js）：" +
-      "这份 Node 是不带 npm 的精简包。";
-    appendConsole("[install] 预检不过（npm_missing for node）：" + why);
-    reportErr("npm_missing", why, { phase: "install" });
-    return { ok: false, error: "install_failed", reason: "npm_missing", message: why, installDir: safe.path };
-  }
-  appendConsole("[install] Node 运行时就绪：node=" + rt.bin + "（" + String(rt.version || "") + "，" + rt.source + "）· npm=" + spec.cli);
+  };
+  const tail = (r, n) => String((r && (r.stderr || r.stdout)) || "").replace(/\s+/g, " ").slice(-(n || 300));
 
-  saveConfig({ mode: "own", installDir: safe.path, ownHome: cfg.ownHome || join(pluginRoot(), "paseo-home") });
-  broadcast("paseoRemote:progress", { phase: "install", message: "npm 安装 " + NPM_PACKAGE + " …" });
-
-  let r = await npmInstallOnce(safe.path, spec);
-  let check = await verifyOwnInstall(loadConfig(), { node: rt.bin, nodeVersion: rt.version });
-  appendConsole(
-    "[install] 完成：code=" + r.code + " installed=" + check.ok + " 自检=" + (check.ok ? "v" + check.version : check.reason),
+  /* ── ① 探测本机已装的 Paseo ───────────────────────────────────────────── */
+  emitStep({ id: "probe", status: "run" });
+  let cfg = loadConfig();
+  const rtNow = cachedNodeRuntime({});
+  const ownVerify = cfg.mode === "own" ? await verifyOwnInstall(cfg, { node: rtNow.ready ? rtNow.bin : "", nodeVersion: rtNow.version }) : null;
+  const ownOk = !!(ownVerify && ownVerify.ok);
+  const cand = reuseCandidate();
+  /* 回执里带上 CLI 版本号（界面 / 日志 / 隔离测试都当「装好的判据」用） */
+  let version = ownOk ? String(ownVerify.version || "") : "";
+  emitLog(
+    "probe",
+    "现状：mode=" + cfg.mode + " · 自建那份可用=" + (ownOk ? "是" : "否") + " · 本机已装 Paseo=" + (cand.available ? cand.cli + "（" + cand.source + "）" : "没找到"),
   );
-  /* 第一次自检不过：清掉半成品再装一次（用户口径：重装一次，仍失败才报）。
-     超时不重试：那次多半已经跑了半小时，再跑一遍只是让用户多等半小时。 */
-  if (!check.ok && !o.noRetry && !r.timedOut) {
-    broadcast("paseoRemote:progress", { phase: "install", message: "首次安装自检没过（" + (check.reason || "") + "），清理后重装一次…" });
-    cleanOwnDeps(safe.path);
-    r = await npmInstallOnce(safe.path, spec);
-    check = await verifyOwnInstall(loadConfig(), { node: rt.bin, nodeVersion: rt.version });
-    appendConsole(
-      "[install] 重装完成：code=" + r.code + " installed=" + check.ok + " 自检=" + (check.ok ? "v" + check.version : check.reason),
+  /* 三条路：own-ready 沿用已装好的自建那份 / reuse 用本机已装的 / selfbuild 自己装一份 */
+  let action = "selfbuild";
+  if (ownOk && !o.forceReuse) action = "own-ready";
+  else if (cand.available && !o.forceOwn) action = "reuse";
+  if (action === "reuse" && cfg.mode !== "reuse") {
+    /* 这就是原来控制台里那颗「改用本机已装的 Paseo」：现在由探测步骤执行（用户能在窗里勾「仍要自建一份」否掉它） */
+    switchToReuse();
+    cfg = loadConfig();
+    appendConsole("[install] own 那份不可用 → 已切回复用本机已装的 Paseo：" + cand.cli + "（" + cand.source + "）");
+  }
+  if (action === "reuse") {
+    if (!version) version = String((await cliVersionOf(cand.cli, { timeoutMs: 12000 })).version || "");
+    emitStep({ id: "probe", status: "ok", message: "复用本机已装的 Paseo：" + cand.cli + "（" + cand.source + "）" });
+    emitLog("probe", "复用模式：不装第二份（避免抢端口与配对身份）");
+  } else if (action === "own-ready") {
+    emitStep({ id: "probe", status: "ok", message: "沿用自建那份（自检通过）" });
+  } else {
+    emitStep({ id: "probe", status: "ok", code: "paseo.none", message: "本机没有可用的 Paseo：装一份自建的" });
+  }
+
+  /* ── ② 真 Node ───────────────────────────────────────────────────────── */
+  let rt = rtNow;
+  if (action === "reuse") {
+    skipSteps(["node", "npm", "check", "daemon"], "复用本机已装的 Paseo：这一步不需要");
+  } else if (action === "own-ready") {
+    skipSteps(["node", "npm", "check"], "自建那份已经装好（自检通过）：这一步不需要");
+  } else {
+    emitStep({ id: "node", status: "run" });
+    broadcast("paseoRemote:progress", { phase: "install", message: "检查 Node 运行时（要真 Node ≥" + NODE_MIN_VERSION + "）…" });
+    rt = await ensureNodeRuntime({});
+    if (!rt.ok) {
+      const why = nodeRuntimeMsg(rt);
+      const detail = String(rt.detail || "").slice(-300);
+      appendConsole("[install] 预检不过（" + rt.error + "）：" + why + " " + detail);
+      return failAt(
+        "node",
+        "paseo.node.missing",
+        { min: NODE_MIN_VERSION, tail: detail },
+        why + (detail ? "（" + detail + "）" : ""),
+        "装 Node ≥" +
+          NODE_MIN_VERSION +
+          " 后重试；或让插件把托管 Node 装进数据目录后点「重试」；或勾选「改用本机已装的 Paseo」那份（本机若已装 Paseo 用它即可）。",
+      );
+    }
+    emitLog("node", "真 Node 就绪：" + rt.bin + "（" + String(rt.version || "") + "，" + rt.source + "）");
+    const spec0 = npmSpecFor(rt.bin);
+    if (!spec0) {
+      const why =
+        "真 Node 在（" + rt.bin + "，" + String(rt.version || "") + "），但没找到随它的 npm（node_modules\\npm\\bin\\npm-cli.js）：" +
+        "这份 Node 是不带 npm 的精简包。";
+      appendConsole("[install] 预检不过（npm_missing for node）：" + why);
+      return failAt("node", "paseo.node.npm_missing", { node: rt.bin }, why, "装一份带 npm 的 Node ≥" + NODE_MIN_VERSION + " 后点「重试」。");
+    }
+    emitStep({ id: "node", status: "ok" });
+    emitLog("node", "npm 走真 Node 直跑：" + spec0.cli);
+
+    /* ── ③ npm 安装 + ④ 自检 ───────────────────────────────────────────── */
+    emitStep({ id: "npm", status: "run" });
+    saveConfig({ mode: "own", installDir: target, ownHome: cfg.ownHome || join(pluginRoot(), "paseo-home") });
+    broadcast("paseoRemote:progress", { phase: "install", message: "npm 安装 " + NPM_PACKAGE + " …" });
+    let r = await npmInstallOnce(target, spec0);
+    let check = await verifyOwnInstall(loadConfig(), { node: rt.bin, nodeVersion: rt.version });
+    appendConsole("[install] 完成：code=" + r.code + " installed=" + check.ok + " 自检=" + (check.ok ? "v" + check.version : check.reason));
+    /* 第一次自检不过：清掉半成品再装一次（用户口径：重装一次，仍失败才报）。
+       超时不重试：那次多半已经跑了半小时，再跑一遍只是让用户多等半小时。 */
+    if (!check.ok && !o.noRetry && !r.timedOut) {
+      broadcast("paseoRemote:progress", { phase: "install", message: "首次安装自检没过（" + (check.reason || "") + "），清理后重装一次…" });
+      emitLog("npm", "首次自检没过（" + (check.reason || "") + "）→ 清掉半成品依赖重装一次…");
+      cleanOwnDeps(target);
+      r = await npmInstallOnce(target, spec0);
+      check = await verifyOwnInstall(loadConfig(), { node: rt.bin, nodeVersion: rt.version });
+      appendConsole("[install] 重装完成：code=" + r.code + " installed=" + check.ok + " 自检=" + (check.ok ? "v" + check.version : check.reason));
+    }
+    if (!check.ok) {
+      const why = INSTALL_REASON_TEXT[check.reason] || "安装自检没过。";
+      const detail = String(r.stderr || check.detail || "").replace(/\s+/g, " ").slice(-400);
+      /* 失败停在哪一步看证据：npm 自己退出码非 0 就停在 npm 步；npm 成功而 CLI 跑不起来才停在自检步。 */
+      const atNpm = r.code !== 0;
+      return failAt(
+        atNpm ? "npm" : "check",
+        atNpm ? "paseo.npm.failed" : "paseo.check." + String(check.reason || "unknown"),
+        { min: NODE_MIN_VERSION, reason: String(check.reason || "npm_exit_" + r.code), tail: detail },
+        why + (detail ? "（" + detail + "）" : ""),
+        "点「重装」再来一次（会先清掉半成品依赖）；仍失败就把这一步的日志交给会话修复，或换一个安装目录（不要选应用自己所在的目录、也不要用需要管理员权限的位置）。",
+      );
+    }
+    emitStep({ id: "npm", status: "ok" });
+    emitStep({ id: "check", status: "ok", message: "paseo --version → v" + check.version });
+    appendConsole("[install] 自检通过：v" + check.version + " cli=" + check.cli);
+    version = String(check.version || "");
+    /* 刚装好：CLI 探测 / 真 Node 的缓存结论可能还是「装之前」的，清掉重探 */
+    clearPaseoProbeCache();
+    /* 首次安装顺带开 relay：**自建那份的 home 是我们自己的独立 home**（关着时官方 pair 一定失败，实测结论）。
+       复用模式不碰这一项：那是用户自己那份 Paseo 的配置，改它要用户自己在控制台点。 */
+    const home0 = paseoHomeOf(loadConfig());
+    mk(home0);
+    const pre = await cliSetDaemonConfig(check.cli, home0, "daemon.relay.enabled", "true", rt.bin);
+    appendConsole("[install] relay 开启 → code=" + pre.code + " home=" + home0);
+    if (!pre.ok) emitLog("check", "relay 开启失败（可在控制台点「开启 relay」重试）：" + tail(pre, 200));
+  }
+
+  /* ── ⑤ provider 注册 ──────────────────────────────────────────────────── */
+  emitStep({ id: "provider", status: "run" });
+  const prov = await applyProvider({});
+  if (prov.ok) {
+    emitStep({ id: "provider", status: "ok", message: "已写入 agents.providers.mtnode" });
+  } else if (prov.error === "need_confirm") {
+    /* Paseo 里正有会话在跑：不静默动它的配置 —— 留给用户到控制台点一次确认（与原来同一道闸） */
+    emitStep({
+      id: "provider",
+      status: "skip",
+      message: "Paseo 里正有 " + String(prov.runningSessions || 0) + " 条会话在跑：先不动配置，去控制台点「注册到 Paseo」确认一次。",
+    });
+    emitLog("provider", "跳过写入：runningSessions=" + String(prov.runningSessions || 0) + "（需要用户确认）");
+  } else {
+    return failAt(
+      "provider",
+      "paseo.provider.failed",
+      { tail: String(prov.detail || prov.error || "") },
+      "写入 Paseo 的 provider 配置失败：" + String(prov.detail || prov.error || ""),
+      "点「重试」再来一次；仍失败就点「交给 mtnode 会话修复」（它按 paseo-remote-install 读现场）。",
     );
   }
-  busy = "";
-  if (!check.ok) {
-    const why = INSTALL_REASON_TEXT[check.reason] || "安装自检没过。";
-    const detail = String(r.stderr || check.detail || "").replace(/\s+/g, " ").slice(-400);
-    reportErr("install_failed", "npm 安装 " + NPM_PACKAGE + " 失败（" + (check.reason || "unknown") + "）：" + why + " " + detail.slice(-200), {
-      phase: "install",
+
+  /* ── ⑥ 起自建 daemon（复用模式已在上面跳过）─────────────────────────── */
+  let listen = "";
+  if (action !== "reuse") {
+    emitStep({ id: "daemon", status: "run" });
+    cfg = loadConfig();
+    const home = paseoHomeOf(cfg);
+    const cli = resolveCli(cfg);
+    if (!cli.cli) {
+      return failAt("daemon", "paseo.daemon.failed", { tail: "cli_missing" }, "自检过了但取不到 CLI 入口（cli_missing）。", "点「重装」一次；仍失败就交给会话修复。");
+    }
+    const lock = daemonLock(home);
+    const already = !!(lock && lock.listen) && (await probeDaemon(String(lock.listen))).ok && ownDaemonHosted(home);
+    if (already) {
+      listen = String(lock.listen);
+      emitStep({ id: "daemon", status: "ok", message: "后端已在跑（宿主静默托管）：" + listen });
+    } else {
+      /* 先钉 listen：自建后端**必须**避开本机已装 Paseo 的 6767（默认值），否则一起来就 EADDRINUSE */
+      const port = await ensureOwnListen(cli.cli, home, { node: rt.bin || rtNow.bin || "" });
+      if (!port.ok) {
+        return failAt(
+          "daemon",
+          "paseo.daemon.no_port",
+          {},
+          "6767~6787 全被占着，没有空闲端口给自建后端。",
+          "先关掉占端口的程序（多半是另一份 Paseo），或直接用本机已装的那份。",
+        );
+      }
+      const started = await startDaemon();
+      if (!started.ok) {
+        return failAt(
+          "daemon",
+          "paseo.daemon.failed",
+          { tail: String(started.detail || started.error || "") },
+          "自建 daemon 起不来：" + String(started.detail || started.error || ""),
+          "点「重试」会换一个空闲端口再起一次；仍失败就交给会话修复。",
+        );
+      }
+      listen = String(started.listen || port.listen || "");
+      emitStep({ id: "daemon", status: "ok", message: listen ? "已起：" + listen : "已起" });
+    }
+  }
+
+  /* ── ⑦ 配对冒烟（只读）────────────────────────────────────────────────── */
+  emitStep({ id: "pair", status: "run" });
+  const homeFinal = paseoHomeOf(loadConfig());
+  if (!relayEnabledOf(homeFinal)) {
+    emitStep({
+      id: "pair",
+      status: "skip",
+      message: "这个 Paseo 的 relay 是关着的：关着时官方命令直接报 RELAY_DISABLED、出不了码 —— 到控制台点「开启 relay」后再生成。",
     });
-    return {
-      ok: false,
-      error: "install_failed",
-      reason: check.reason || "",
-      message: why,
-      detail,
-      installDir: safe.path,
-      hint:
-        check.reason === "node_too_old"
-          ? "点「清干净重装」把这份用旧 Node 装出来的依赖删掉，再用真 Node 重装。"
-          : "换一个安装目录（不要选应用自己所在的目录、也不要用需要管理员权限的位置）后重试；仍失败就看日志里的 npm 输出。",
-    };
+  } else {
+    const offer = await pairingOffer();
+    if (offer && offer.ok && offer.url) {
+      emitStep({ id: "pair", status: "ok", message: "配对码可以生成（控制台里出码，手机扫它即可）" });
+    } else {
+      return failAt(
+        "pair",
+        "paseo.pair.failed",
+        { tail: String((offer && (offer.detail || offer.error)) || "") },
+        "试算配对码失败：" + String((offer && (offer.detail || offer.error)) || ""),
+        "到控制台看一眼后端与 relay 状态后重试；仍失败就交给会话修复。",
+      );
+    }
   }
-  /* 首次安装顺带开 relay：新 home 默认关着，关着时 pair 一定失败（实测结论） */
-  const home = paseoHomeOf(loadConfig());
-  mk(home);
-  const pre = await cliSetDaemonConfig(check.cli, home, "daemon.relay.enabled", "true", rt.bin);
-  appendConsole("[install] relay 开启 → code=" + pre.code + " home=" + home);
-  if (!pre.ok) {
-    appendConsole("[install] relay 开启失败（可在控制台点「开启 relay」重试）：" + String(pre.stderr || "").slice(-200));
-  }
-  /* 自建后端**必须**避开本机已装 Paseo 的 6767**：官方 daemon 的 listen 是从持久配置读的
-     （`daemon.listen`，见 @getpaseo/server 的 resolveListenAddress），默认 6767 ——
-     而 Paseo 桌面端那份长期占着 6767，自建 daemon 一起来就 `EADDRINUSE` 退出，
-     现场表现成「依赖装好了、后端起不来」。这里给它钉一个本地空闲端口（只写自建 home 的配置，
-     不碰用户自己那份；用户若已配过 daemon.listen 则一字不改）。 */
-  const port = await ensureOwnListen(check.cli, home, { node: rt.bin });
-  broadcast("paseoRemote:progress", { phase: "install", message: "依赖已就位（自检 v" + check.version + "）" });
-  return { ok: true, installDir: safe.path, home, version: check.version, listen: port.listen, check };
+
+  /* ── ⑧ 收尾 ───────────────────────────────────────────────────────────── */
+  const finalCfg = loadConfig();
+  const remoteOn = isRemoteEnabled();
+  emitStep({ id: "done", status: "run" });
+  emitStep({
+    id: "done",
+    status: "ok",
+    message: remoteOn
+      ? "远程接管总开关是开着的（去控制台扫码即可接管）。"
+      : "远程接管总开关仍关着（不自动替你打开对外接管）：去控制台打开它，手机才能接管会话。",
+  });
+  broadcast("paseoRemote:progress", { phase: "install", message: "安装完成" });
+  appendConsole("[install] 收尾：mode=" + finalCfg.mode + " dir=" + (finalCfg.installDir || "") + " remote=" + (remoteOn ? "on" : "off"));
+  busy = "";
+  hostFinish({ id: PLUGIN_ID, ok: true });
+  return {
+    ok: true,
+    installDir: finalCfg.installDir || target,
+    mode: finalCfg.mode,
+    reused: action === "reuse",
+    version,
+    listen,
+  };
 }
 /** 端口是否空闲（本地回环上试占一下；占了就换一个，不去动占着它的那个进程） */
 function portFree(port) {
@@ -1569,48 +1952,600 @@ function switchToReuse() {
   appendConsole("[mode] 已切回复用本机已装的 Paseo：" + cand.cli + "（" + cand.source + "）");
   return { ok: true, cli: cand.cli, source: cand.source };
 }
+/* ------------------------------------------------------------------ */
+/* 自建 daemon：由宿主持有、后台静默（本轮共识）                          */
+/* ------------------------------------------------------------------ */
+/**
+ * 为什么不再用官方 `paseo daemon start`：它为「后台常驻」自己 detached 一个 supervisor，
+ * 在 Windows 上会留下一只**可见的终端窗口**（实测：标题 `Paseo Daemon`，窗口类
+ * `CASCADIA_HOSTING_WINDOW_CLASS`；Win11 用 Windows Terminal 当默认终端宿主时即如此）。
+ * 用户误关那只窗 = 后端跟着死，而界面上完全看不出因果 —— 这正是本次要根治的现场。
+ *
+ * 现在改成宿主自己持有 `paseo daemon run --home <自建 home>`：
+ *   · `windowsHide: true` + `stdio: pipe`：实测**零新增可见控制台窗口**（对照组：`daemon start` 一次新增 2 只）；
+ *   · `daemon run` 与 `daemon start` 同一份 supervisor 实现（只是前台），因此 listen / provider / 配对
+ *     这些语义一条都没变；输出我们接过来逐行写进控制台日志（原来那份只在 daemon.log 里）；
+ *   · 它是 MTNode 的子进程 → **MTNode 退出即停**（控制台「停止后端」也照旧能停，走同一段优雅停止）；
+ *   · 意外退出由宿主重启，最多 RESTART_MAX 次（官方 managed supervisor 的崩溃重启由此补齐）。
+ * 原版 Paseo Desktop（复用模式）一概不碰：它那份由它自己启停。
+ */
+const DAEMON_STOP_GRACE_MS = 5000;
+const DAEMON_READY_TIMEOUT_MS = 90000;
+/** 意外退出后的重启上限与间隔（官方 managed supervisor 的 restartOnCrash 由这里等价补齐） */
+const RESTART_MAX = 3;
+const RESTART_DELAY_MS = 3000;
+/** 跑够这么久才算「稳定」，重启计数归零（不然长期运行中偶发一次崩溃就吃掉额度） */
+const RESTART_RESET_MS = 60000;
+/** 现场缓冲上限（失败时把这半截写进控制台与报错总线） */
+const OWN_LOG_KEEP = 8000;
+
+/** 宿主当前持有的那份自建 daemon */
+let ownDaemon = {
+  child: null,
+  pid: 0,
+  home: "",
+  listen: "",
+  childPid: 0,
+  logs: [],
+  startedAt: 0,
+  stopping: false,
+  restarts: 0,
+  restartTimer: null,
+};
+
+function ownLogPush(line) {
+  const s = String(line == null ? "" : line).replace(/\r?\n$/, "");
+  if (!s) return;
+  ownDaemon.logs.push(s);
+  const total = ownDaemon.logs.reduce((n, x) => n + x.length + 1, 0);
+  while (total > OWN_LOG_KEEP * 2 && ownDaemon.logs.length > 1) ownDaemon.logs.shift();
+}
+function ownLogTail(max) {
+  const text = ownDaemon.logs.join("\n");
+  return text.slice(-(Number(max) || 600));
+}
+/** <自建 home>/daemon.log 末尾（daemon 自己那份日志：崩溃原因常常只写在这里） */
+function daemonLogTail(home, max) {
+  try {
+    const p = join(String(home || ""), "daemon.log");
+    if (!exists(p)) return "";
+    const st = fs.statSync(p);
+    const n = Math.min(st.size, Number(max) || 600);
+    const fd = fs.openSync(p, "r");
+    const buf = Buffer.alloc(n);
+    fs.readSync(fd, buf, 0, n, Math.max(0, st.size - n));
+    fs.closeSync(fd);
+    return buf.toString("utf8").trim();
+  } catch {
+    return "";
+  }
+}
+/** 收输出：逐行进控制台日志（既有 appendConsole 自己带 1MB 轮转），同时留一份现场尾巴给失败上报 */
+function attachOwnStdio(child) {
+  const feed = (stream) => {
+    if (!stream) return;
+    let buf = "";
+    stream.on("data", (d) => {
+      buf += d.toString("utf8");
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.trim()) {
+          ownLogPush(line);
+          appendConsole("[daemon] " + line);
+        }
+      }
+      if (buf.length > 8192) {
+        ownLogPush(buf);
+        appendConsole("[daemon] " + buf);
+        buf = "";
+      }
+    });
+    stream.on("error", () => {});
+  };
+  feed(child.stdout);
+  feed(child.stderr);
+}
+/** 自建 home 的 pid 锁（listen / pid 都取自这里） */
+function ownDaemonLock() {
+  const home = paseoHomeOf(loadConfig());
+  return { home, lock: daemonLock(home) };
+}
+/**
+ * 把「自建后端」派生的动作交给官方 CLI：
+ *   拿到真 Node 时 = `<真 Node> <自建 CLI 入口>`（不经 .cmd shim），否则退回宿主那条稳路。
+ * 为什么不复用 spawnPaseoCli：那条会把命令包进 `cmd.exe`（起了 daemon 就多一层中转），
+ * 而这里要的是**我们直接持有那个进程** —— 它必须能被优雅停止、能读输出、能随宿主走。
+ */
+function spawnOwnCli(args, opts) {
+  const cfg = loadConfig();
+  const spec = ownCliSpec(pickNodeRuntime({}), cfg);
+  if (spec) return spawnCli(spec.node, spec.args.concat(args || []), opts);
+  const cli = resolveCli(cfg, { ownOnly: true });
+  if (!cli.cli) return Promise.resolve({ ok: false, code: -1, stdout: "", stderr: "CLI 未找到", timedOut: false });
+  return spawnCli(cli.cli, args || [], opts);
+}
+/** 等后端就绪：读 pid 锁的 listen + HTTP 探活（daemon 没起来时探活会直接 ECONNREFUSED） */
+async function waitOwnDaemonReady(home, opts) {
+  const o = opts || {};
+  const t0 = Date.now();
+  const budget = Number(o.timeoutMs) || DAEMON_READY_TIMEOUT_MS;
+  const mark = Date.now() - 3000;
+  while (Date.now() - t0 < budget) {
+    if (o.childExited && o.childExited()) return { ok: false, exited: true };
+    if (o.readCheck && !o.readCheck()) return { ok: false, aborted: true };
+    const lock = daemonLock(home);
+    const listen = String((lock && lock.listen) || "");
+    if (listen) {
+      const probe = await probeDaemon(listen);
+      if (probe.ok) return { ok: true, listen, pid: Number((lock && lock.pid) || 0) };
+    }
+    /* daemon.log 里出现「刚写进去」的致命错误就不用等满了（EADDRINUSE 是最常见的那个） */
+    const tail = daemonLogTail(home, 4000);
+    const fresh = tail && /"level":50|EADDRINUSE|address already in use|FATAL/i.test(tail);
+    if (fresh && Date.now() - t0 > 2000) return { ok: false, error: tail.slice(-400), logFresh: true };
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return { ok: false, timeout: true };
+}
+/**
+ * 意外退出后的自动重启（官方 managed supervisor 的 crash-restart 由这里等价补齐）：
+ * 每次重启仍走同一条静默路（同一份 windowsHide + stdio 管道参数），所以窗口不会因此冒出来；
+ * 重启本身失败也计数（别死循环），到 RESTART_MAX 就停下并把现场送上报错总线。
+ */
+function scheduleOwnRestart() {
+  if (ownDaemon.restartTimer) return;
+  ownDaemon.restartTimer = setTimeout(async () => {
+    ownDaemon.restartTimer = null;
+    if (ownDaemon.stopping || ownDaemon.child) return;
+    let r = null;
+    try {
+      /* 先等旧实例真的让出端口：`daemon run` 起来就 bind，旧 supervisor 还压着 listen 时
+         新的会直接 EADDRINUSE 退出（实测现场：一条「自动重启没成功 … EADDRINUSE」）。 */
+      await waitDaemonGone(ownDaemon.home, ownDaemon.listen, 5000).catch(() => {});
+      r = await startOwnDaemonSilently({ home: ownDaemon.home, restart: true });
+    } catch (e) {
+      r = { ok: false, error: String((e && e.message) || e) };
+    }
+    if (!r || r.ok) return;
+    appendConsole("[daemon] 自动重启没成功：" + String(r.detail || r.error || ""));
+    if (ownDaemon.restarts >= RESTART_MAX) {
+      reportErr("daemon_exited", "Paseo 自建后端重启失败（已达上限 " + RESTART_MAX + " 次）：" + String(r.detail || r.error || ""), {
+        phase: "daemon",
+      });
+      appendConsole("[daemon] 重启失败已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启动后端」再试。");
+      return;
+    }
+    ownDaemon.restarts += 1;
+    scheduleOwnRestart();
+  }, RESTART_DELAY_MS);
+  if (ownDaemon.restartTimer && typeof ownDaemon.restartTimer.unref === "function") ownDaemon.restartTimer.unref();
+}
+/**
+ * 起一份静默的自建 daemon（宿主持有）。
+ * 返回 `{ ok, listen, pid }` 或 `{ ok:false, error, detail }`；**不在这里做端口重试**（见 startDaemon）。
+ */
+async function startOwnDaemonSilently(opts) {
+  const o = opts || {};
+  const cfg = loadConfig();
+  if (cfg.mode !== "own") return { ok: false, error: "not_own_mode" };
+  const cli = resolveCli(cfg, { ownOnly: true });
+  if (!cli.cli) return { ok: false, error: "cli_missing" };
+  /* 已在跑（宿主持有中或上次留下的进程还活着）：直接复用，不重复起 */
+  if (ownDaemon.child && ownDaemon.childPid) {
+    const lock = daemonLock(o.home || paseoHomeOf(cfg));
+    const listening = String((lock && lock.listen) || ownDaemon.listen || "");
+    if (listening && (await probeDaemon(listening)).ok) {
+      return { ok: true, listen: listening, pid: Number((lock && lock.pid) || ownDaemon.pid || 0), already: true };
+    }
+  }
+  const spec = ownCliSpec(pickNodeRuntime({}), cfg);
+  /* 拿不到真 Node 入口时退回 CLI shim（CLI 会自己去 PATH 找 node —— 旧 Node 现场就是这么崩的，
+     所以只作为兜底；statusForUi 会把「安装用 Node 不达标」单独摊开给人看）。 */
+  const useNode = !!spec;
+  const exe = spec ? spec.node : cli.cli;
+  const args = (spec ? spec.args.slice() : []).concat(["daemon", "run", "--home", String(o.home || paseoHomeOf(cfg))]);
+  let child = null;
+  try {
+    child = spawn(exe, args, {
+      windowsHide: true,
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: Object.assign({}, process.env, { PASEO_HOME: String(o.home || paseoHomeOf(cfg)) }),
+    });
+  } catch (e) {
+    return { ok: false, error: "spawn_failed", detail: String((e && e.message) || e) };
+  }
+  ownDaemon.child = child;
+  ownDaemon.childPid = Number(child.pid || 0);
+  ownDaemon.home = String(o.home || paseoHomeOf(cfg));
+  ownDaemon.logs = [];
+  ownDaemon.startedAt = Date.now();
+  /* 手动「启动后端」= 用户重新要它跑 → 清掉 stopping；自动重启那条路（o.restart）不清，
+     否则一次手动停掉之后，重启计时器就能把它又拉起来（stopping 闸门会被自己拆掉）。 */
+  if (!o.restart) ownDaemon.stopping = false;
+  appendConsole(
+    "[daemon] 静默启动（宿主持有）：" + (useNode ? "<真Node> " : "") + exe + " daemon run --home " + ownDaemon.home,
+  );
+  attachOwnStdio(child);
+  let exited = false;
+  let exitCode = null;
+  child.on("error", (e) => {
+    ownLogPush("[spawn error] " + String((e && e.message) || e));
+    appendConsole("[daemon] spawn 出错：" + String((e && e.message) || e));
+  });
+  child.on("exit", (code) => {
+    exited = true;
+    exitCode = code;
+  });
+  const ready = await waitOwnDaemonReady(ownDaemon.home, {
+    timeoutMs: o.timeoutMs || DAEMON_READY_TIMEOUT_MS,
+    childExited: () => exited,
+    readCheck: o.readCheck,
+  });
+  if (!ready.ok) {
+    const detail = ready.error || ownLogTail(600) || daemonLogTail(ownDaemon.home, 600) || (ready.exited ? "进程已退出（code=" + exitCode + "）" : "等不到就绪");
+    /* 起不来就别把这个进程留在后台空转（它多半已经自己退了，收尾是幂等的） */
+    await stopOwnDaemon({ force: true, quiet: true });
+    ownDaemon.restarts = 0;
+    return { ok: false, error: "daemon_start_failed", detail: String(detail).slice(-600), exitCode, exited };
+  }
+  ownDaemon.listen = ready.listen;
+  ownDaemon.pid = ready.pid || ownDaemon.childPid;
+  appendConsole("[daemon] 已就绪：listen=" + ownDaemon.listen + " pid=" + ownDaemon.pid + "（宿主托管，随 MTNode 退出而停）");
+  /* 退出后处理：意外退出 → 记日志 + 有限重启；我们主动停（stopping）→ 什么都不做 */
+  child.on("exit", (code, signal) => {
+    if (ownDaemon.stopping) appendConsole("[daemon] 已停止（code=" + code + (signal ? " signal=" + signal : "") + "）");
+    if (ownDaemon.child !== child) return;
+    ownDaemon.child = null;
+    ownDaemon.childPid = 0;
+    if (ownDaemon.stopping) return;
+    const ranMs = Date.now() - ownDaemon.startedAt;
+    if (ranMs > RESTART_RESET_MS) ownDaemon.restarts = 0;
+    const tail = ownLogTail(400) || daemonLogTail(ownDaemon.home, 400);
+    appendConsole("[daemon] 意外退出（code=" + code + (signal ? " signal=" + signal : "") + "，跑了 " + Math.round(ranMs / 1000) + "s）");
+    if (tail) appendConsole("[daemon] 退出前最后几行：" + String(tail).replace(/\n/g, " ⏎ ").slice(-400));
+    if (ownDaemon.restarts >= RESTART_MAX) {
+      reportErr(
+        "daemon_exited",
+        "Paseo 自建后端意外退出，且重启已达上限（" + RESTART_MAX + " 次）：" + String(tail || "").slice(-200),
+        { phase: "daemon" },
+      );
+      appendConsole("[daemon] 重启已达上限 " + RESTART_MAX + " 次 —— 停止自动重启，请到控制台点「启动后端」再试。");
+      return;
+    }
+    ownDaemon.restarts += 1;
+    appendConsole("[daemon] " + Math.round(RESTART_DELAY_MS / 1000) + " 秒后自动重启（第 " + ownDaemon.restarts + "/" + RESTART_MAX + " 次）");
+    scheduleOwnRestart();
+  });
+  return { ok: true, listen: ownDaemon.listen, pid: ownDaemon.pid };
+}
+/**
+ * 优雅停自建 daemon：SIGTERM → 最多等 graceMs → 还在就按进程树强杀。
+ * 收尾一律返回 `{ ok, forced }`：调用方（退出路径）**绝不**因为它失败而卡住。
+ */
+async function stopOwnDaemon(opts) {
+  const o = opts || {};
+  const grace = Number(o.graceMs) || DAEMON_STOP_GRACE_MS;
+  ownDaemon.stopping = true;
+  if (ownDaemon.restartTimer) {
+    clearTimeout(ownDaemon.restartTimer);
+    ownDaemon.restartTimer = null;
+  }
+  const child = ownDaemon.child;
+  ownDaemon.child = null;
+  ownDaemon.childPid = 0;
+  ownDaemon.listen = "";
+  ownDaemon.pid = 0;
+  if (!child || !child.pid) return { ok: true, forced: false, already: true };
+  const pid = Number(child.pid);
+  let exited = false;
+  const onExit = () => {
+    exited = true;
+  };
+  try {
+    child.once("exit", onExit);
+  } catch {}
+  try {
+    child.kill("SIGTERM");
+  } catch {}
+  const t0 = Date.now();
+  while (Date.now() - t0 < grace && !exited) await new Promise((r) => setTimeout(r, 100));
+  if (!exited) {
+    killTree(child);
+    appendConsole("[daemon] 优雅停止超时（" + Math.round(grace / 1000) + "s）→ 按进程树强杀 pid=" + pid);
+    for (let i = 0; i < 10 && !exited; i++) await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!o.quiet) appendConsole("[daemon] 停止完成（" + (exited ? "优雅" : "强杀") + " pid=" + pid + "）");
+  /* 这一行是「控制台明确看得出后端被停了」的锚点：退出回调可能因为重启换过对象而没跑到，
+     所以在调用方这一侧兜底记一次（不依赖 exit 事件的归属判断）。 */
+  appendConsole("[daemon] 已停止（" + (exited ? "优雅，等待 " + Math.round((Date.now() - t0) / 1000) + "s" : "强杀") + " pid=" + pid + "）");
+  return { ok: true, forced: !exited, pid };
+}
+/** 停「不是宿主持有」的那份自建 daemon（旧方式留下的、或上一次 MTNode 会话留下的） */
+async function stopForeignOwnDaemon(reason) {
+  const { home, lock } = ownDaemonLock();
+  const pid = Number((lock && lock.pid) || 0);
+  const listen = String((lock && lock.listen) || "");
+  if (!listen && !pid) return { ok: true, none: true };
+  appendConsole("[daemon] " + (reason || "换成静默方式") + "：先停掉旧的" + (pid ? "（pid=" + pid + "）" : "") + (listen ? " listen=" + listen : ""));
+  /* 与「停止后端」同一条正路：官方 CLI 停（它知道 pid 锁与生命周期 RPC） */
+  const r = await spawnPaseoCli(loadConfig(), withHome(["daemon", "stop"], loadConfig()), { timeoutMs: 30000 });
+  appendConsole("[daemon] daemon stop → code=" + r.code);
+  const gone = await waitDaemonGone(home, listen, 8000);
+  if (!gone && pid) {
+    appendConsole("[daemon] CLI 没停掉它 → 按进程树强杀 pid=" + pid);
+    try {
+      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, timeout: 8000 });
+    } catch {}
+    await waitDaemonGone(home, listen, 5000);
+  }
+  return { ok: true };
+}
+/** 等旧实例真的消失（pid 锁与 HTTP 探活都算） */
+async function waitDaemonGone(home, listen, budgetMs) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < (Number(budgetMs) || 5000)) {
+    const lock = daemonLock(home);
+    const l = String((lock && lock.listen) || listen || "");
+    const alive = l ? (await probeDaemon(l)).ok : false;
+    if (!alive) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+/**
+ * 判断当前跑着的自建 daemon 是不是**我们宿主持有的这一份**。
+ * 实测的进程关系（2026-10，Windows）：我们 spawn 的是 `paseo daemon run` 那个 CLI 进程，
+ * 它自己再拉起**官方 managed supervisor**，而 `<home>/paseo.pid` 记的是 **supervisor** 的 pid ——
+ * 所以不能拿「锁里的 pid === 我们的 child pid」当判据（实测 child=10848 / lock=18176）。
+ * 判据改成两条任一成立，且我们的 child 必须还活着：
+ *   ① 锁里的 pid 就是我们的 child；② 锁里的 pid 的祖先是我们的 child（正常情况就是这条）。
+ * 进程表用一次快照缓存（statusForUi 会频繁调它，别每次都起 wmic/powershell）。
+ */
+let _procTreeCache = { at: 0, map: null };
+function processParentMap() {
+  const now = Date.now();
+  if (_procTreeCache.map && now - _procTreeCache.at < 3000) return _procTreeCache.map;
+  const map = new Map();
+  try {
+    if (process.platform === "win32") {
+      const psScript = 'Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }';
+      const r = spawnSync("powershell.exe", ["-NoProfile", "-Command", psScript], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 8000,
+      });
+      for (const line of String(r.stdout || "").split(/\r?\n/)) {
+        const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+        if (m) map.set(Number(m[1]), Number(m[2]));
+      }
+    } else {
+      const r = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", windowsHide: true, timeout: 8000 });
+      for (const line of String(r.stdout || "").split(/\r?\n/)) {
+        const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+        if (m) map.set(Number(m[1]), Number(m[2]));
+      }
+    }
+  } catch {
+    /* 拿不到进程表就只认「pid 直接相等」那条：判 false 的后果只是多跑一次迁移，比误判安全 */
+  }
+  _procTreeCache = { at: now, map };
+  return map;
+}
+function pidInTable(pid) {
+  const p = Number(pid || 0);
+  if (!p) return false;
+  const map = processParentMap();
+  if (!map.size) return true; /* 进程表读不到：不凭这个否掉（交给别的判据） */
+  return map.has(p);
+}
+/** lockPid 是不是 childPid 自己或它的后代 */
+function pidDescendsFrom(lockPid, childPid, map) {
+  let cur = Number(lockPid || 0);
+  const child = Number(childPid || 0);
+  if (!cur || !child) return false;
+  if (cur === child) return true;
+  if (!map || !map.size) return false;
+  for (let i = 0; i < 12; i++) {
+    const parent = Number(map.get(cur) || 0);
+    if (!parent) return false;
+    if (parent === child) return true;
+    cur = parent;
+  }
+  return false;
+}
+function ownDaemonHosted(home) {
+  const childPid = Number((ownDaemon.child && ownDaemon.child.pid) || 0);
+  if (!childPid || !ownDaemon.child) return false;
+  if (!pidInTable(childPid)) return false; /* 我们的 child 已经不在了：这份不是我们托管的 */
+  const lock = daemonLock(home);
+  const lockPid = Number((lock && lock.pid) || 0);
+  if (!lockPid) return false;
+  return pidDescendsFrom(lockPid, childPid, processParentMap());
+}
+/**
+ * 存量迁移 + 静默启动（本轮共识）：
+ *   ① 自建 daemon 正以**旧方式**在跑（有进程但不由宿主持有）→ 先优雅停掉，再以静默方式拉起；
+ *     配对密钥与配置都不动（手机至多瞬断一次，会自动重连）。
+ *   ② daemon 没在跑 → 直接静默拉起。
+ * `readCheck`：调用方传进来的「还要不要继续等」（安装被取消时就不必再等）。
+ */
+async function ensureOwnDaemon(opts) {
+  const o = opts || {};
+  const cfg = loadConfig();
+  if (cfg.mode !== "own") return { ok: true, skipped: "not_own_mode" };
+  const home = paseoHomeOf(cfg);
+  const lock = daemonLock(home);
+  const listen = String((lock && lock.listen) || "");
+  const alive = listen ? (await probeDaemon(listen)).ok : false;
+  if (alive && ownDaemonHosted(home)) return { ok: true, listen, hosted: true, already: true };
+  let migrated = false;
+  if (alive && !ownDaemonHosted(home)) {
+    await stopForeignOwnDaemon("这个自建后端是旧方式起的（带可见窗口），换成宿主静默托管");
+    broadcast("paseoRemote:progress", { phase: "start", message: "把自建后端换成静默托管（不再留窗口）…" });
+    migrated = true;
+  }
+  const r = await startOwnDaemonSilently({ home, readCheck: o.readCheck, timeoutMs: o.timeoutMs });
+  /* `hosted: true` = 起来这份是宿主静默托管的（调用方据此判断「要不要再走迁移」） */
+  return Object.assign({}, r, { hosted: !!r.ok, migrated });
+}
+/** 只在插件注册时跑一次的存量迁移（旧「带窗口」实例 → 静默托管）；失败只记日志，绝不拦启动 */
+async function migrateOwnDaemonToSilent() {
+  try {
+    const cfg = loadConfig();
+    if (cfg.mode !== "own") return { ok: true, skipped: "not_own_mode" };
+    if (!ownCliPath(cfg) && !resolveCli(cfg, { ownOnly: true }).cli) return { ok: true, skipped: "no_cli" };
+    const r = await ensureOwnDaemon({});
+    if (!r.ok) appendConsole("[daemon] 开机静默接管没成功：" + String(r.detail || r.error || ""));
+    return r;
+  } catch (e) {
+    appendConsole("[daemon] 开机静默接管异常：" + String((e && e.message) || e));
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 /** 起后端（自建模式；复用模式由 Paseo Desktop 自己管，按钮不显示） */
 async function startDaemon() {
   const cfg = loadConfig();
   const cli = resolveCli(cfg);
   if (!cli.cli) return { ok: false, error: "cli_missing" };
   busy = "start";
-  const r = await spawnPaseoCli(cfg, withHome(["daemon", "start"], cfg), { timeoutMs: DAEMON_START_TIMEOUT_MS });
-  const j = lastJson(r.stdout);
-  appendConsole("[daemon] start → code=" + r.code + (j && j.listen ? " listen=" + j.listen : ""));
+  const home = paseoHomeOf(cfg);
+  /* 自建模式一律走「宿主持有 + 静默」这条路（存量旧实例在这里被换掉） */
+  let r = await ensureOwnDaemon({ home });
   /* 端口被占是最常见的起不来（本机已装的 Paseo 常占着 6767）：换一个空闲端口再试一次 */
-  const text = String(r.stdout || "") + String(r.stderr || "");
+  const text = String(r.detail || "");
   if (!r.ok && /EADDRINUSE|address already in use/i.test(text)) {
-    const home = paseoHomeOf(cfg);
     appendConsole("[daemon] 端口被占 → 给自建后端换一个空闲端口再试");
     broadcast("paseoRemote:progress", { phase: "start", message: "端口被本机已装的 Paseo 占着，换端口重试…" });
     const listen = await ensureOwnListen(cli.cli, home, { force: true });
     if (listen.ok) {
-      const r2 = await spawnPaseoCli(cfg, withHome(["daemon", "start"], cfg), { timeoutMs: DAEMON_START_TIMEOUT_MS });
-      const j2 = lastJson(r2.stdout);
+      r = await ensureOwnDaemon({ home });
       busy = "";
-      appendConsole("[daemon] 换端口后 start → code=" + r2.code + " listen=" + String(listen.listen || ""));
-      if (r2.ok) return { ok: true, listen: String(listen.listen || (j2 && j2.listen) || ""), retriedPort: true };
-      reportErr("daemon_start_failed", "Paseo daemon 启动失败（换端口重试仍失败）：" + String(r2.stderr || "").slice(-300), { phase: "start" });
-      return { ok: false, error: "daemon_start_failed", detail: String(r2.stderr || "").slice(-400) };
+      appendConsole("[daemon] 换端口后 → " + (r.ok ? "listen=" + String(r.listen || listen.listen || "") : "仍失败"));
+      if (r.ok) return { ok: true, listen: String(r.listen || listen.listen || ""), retriedPort: true };
+      reportErr("daemon_start_failed", "Paseo daemon 启动失败（换端口重试仍失败）：" + String(r.detail || "").slice(-300), { phase: "start" });
+      return { ok: false, error: "daemon_start_failed", detail: String(r.detail || "").slice(-400) };
     }
   }
   busy = "";
   if (!r.ok) {
-    reportErr("daemon_start_failed", "Paseo daemon 启动失败：" + String(r.stderr || "").slice(-300), { phase: "start" });
-    return { ok: false, error: "daemon_start_failed", detail: String(r.stderr || "").slice(-400) };
+    reportErr("daemon_start_failed", "Paseo daemon 启动失败：" + String(r.detail || r.error || "").slice(-300), { phase: "start" });
+    return { ok: false, error: "daemon_start_failed", detail: String(r.detail || r.error || "").slice(-400) };
   }
-  return { ok: true, listen: String((j && j.listen) || "") };
+  return { ok: true, listen: String(r.listen || "") };
 }
+/**
+ * 停后端。两条路：
+ *   · 宿主持有中（本轮默认）→ 优雅停（SIGTERM，5 秒）→ 仍不死就按进程树强杀；
+ *   · 不是我们持有的那份（复用模式、或旧方式留下的）→ 交回官方 CLI `daemon stop`，行为与过去一致。
+ */
 async function stopDaemon() {
   const cfg = loadConfig();
+  const home = paseoHomeOf(cfg);
   const cli = resolveCli(cfg);
-  if (!cli.cli) return { ok: false, error: "cli_missing" };
+  if (!ownDaemon.child && !cli.cli) return { ok: false, error: "cli_missing" };
   busy = "stop";
+  if (ownDaemon.child) {
+    const r = await stopOwnDaemon({});
+    busy = "";
+    return { ok: !!r.ok, hosted: true, forced: !!r.forced };
+  }
   const r = await spawnPaseoCli(cfg, withHome(["daemon", "stop"], cfg), { timeoutMs: 30000 });
+  const gone = await waitDaemonGone(home, String((daemonLock(home) || {}).listen || ""), 5000);
   busy = "";
-  appendConsole("[daemon] stop → code=" + r.code);
-  return { ok: r.ok };
+  appendConsole("[daemon] stop（外部实例）→ code=" + r.code + (gone ? "，已停" : "，仍在跑"));
+  return { ok: r.ok || gone, hosted: false };
+}
+
+/* ------------------------------------------------------------------ */
+/* 卸载（安装窗里那颗「卸载」）                                          */
+/* ------------------------------------------------------------------ */
+/**
+ * 卸载口径（本轮共识）：**只清这个插件自己的数据** ——
+ *   · 自建后端的 npm 依赖目录（config.json 里那个 installDir）；
+ *   · 插件自己的配置 / 日志 / 控制台 ui 副本（<数据目录>\paseo）；
+ *   · 自建那份的独立 daemon home（ownHome：配对密钥与 daemon 配置）—— 删掉后**手机要重新扫码**。
+ * 一律**不碰**本机已装的 Paseo Desktop 与 `~/.paseo`：那是用户自己的东西，不属于这个插件。
+ * 两份数据都在 %APPDATA% 数据目录下（守卫：只删落在数据目录里的路径，别的一律拒绝）。
+ */
+function underDataDir(p) {
+  try {
+    const dd = path.resolve(dataDir());
+    const t = path.resolve(String(p || ""));
+    if (!t || !dd) return false;
+    const low = t.toLowerCase();
+    const dl = dd.toLowerCase();
+    return low === dl || low.startsWith(dl + path.sep);
+  } catch {
+    return false;
+  }
+}
+/** 卸载清单：{ targets:[{path,rel,note}], keep, installDir }（只读，不动盘） */
+function uninstallTargets() {
+  const cfg = loadConfig();
+  const own = cfg.mode === "own" ? String(cfg.ownHome || join(pluginRoot(), "paseo-home")) : "";
+  const list = [];
+  const add = (p, note) => {
+    const s = String(p || "");
+    if (!s) return;
+    if (!underDataDir(s)) return; /* 数据目录之外（用户 ~/.paseo / Paseo Desktop）一律不进清单 */
+    list.push({ path: s, rel: "", note });
+  };
+  if (cfg.installDir) add(cfg.installDir, "自建后端的 npm 依赖（@getpaseo/cli）");
+  add(configPath(), "插件自己的配置（模式 / 安装目录 / 远程开关）");
+  add(consoleLogPath(), "插件控制台日志");
+  add(join(pluginRoot(), "ui"), "控制台窗的 ui 副本（若有）");
+  if (own) add(own, "自建后端的独立 daemon home（配对密钥 / daemon 配置 —— 删掉后手机要重新扫码）");
+  return { targets: list, installDir: cfg.mode === "own" ? String(cfg.installDir || "") : "" };
+}
+function uninstallPreview() {
+  const t = uninstallTargets();
+  return {
+    ok: true,
+    installDir: t.installDir,
+    targets: t.targets,
+    note:
+      "只清「Paseo 手机接管」插件自己的数据（自建依赖 / 配置 / 日志 / 自建 daemon home）。" +
+      "本机已装的 Paseo Desktop 与 ~/.paseo 一律不碰。",
+  };
+}
+async function uninstallRun() {
+  const cfg = loadConfig();
+  /* 先停自建 daemon（文件被占用时删不掉；复用模式那份由 Paseo Desktop 自己管，不动它） */
+  if (cfg.mode === "own") {
+    const lock = daemonLock(paseoHomeOf(cfg));
+    if (lock && lock.listen) {
+      const r = await stopDaemon();
+      appendConsole("[uninstall] 停自建 daemon → " + (r && r.ok ? "已停" : "没停成（继续删）"));
+    }
+  }
+  const deleted = [];
+  const errors = [];
+  const t = uninstallTargets();
+  appendConsole("[uninstall] 开始卸载：计划删除 " + t.targets.length + " 项");
+  for (const it of t.targets) {
+    try {
+      if (!exists(it.path)) continue;
+      fs.rmSync(it.path, { recursive: true, force: true, maxRetries: 3 });
+      deleted.push(it.path);
+    } catch (e) {
+      errors.push({ path: it.path, error: String((e && e.message) || e) });
+    }
+  }
+  /* 收尾：把上面那行日志留下的空文件再删一次，整个配置目录空了就一并收掉（收不掉不算失败） */
+  try {
+    fs.rmSync(consoleLogPath(), { force: true });
+  } catch {}
+  try {
+    fs.rmdirSync(pluginRoot());
+  } catch {}
+  /* 卸载把自建依赖清掉了：缓存里的「能报版本」结论必须作废，否则卡片会继续显示「已装」 */
+  clearPaseoProbeCache();
+  nodeRuntimeCache = null;
+  return { ok: errors.length === 0, deleted, errors, installDir: "" };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1685,7 +2620,32 @@ function registerPaseoRemoteIpc(opts) {
   getMcp = typeof opts.getMcp === "function" ? opts.getMcp : null;
 
   mk(pluginRoot());
+  migrateLegacyData();
   appendConsole("[boot] 宿主注册（mode=" + loadConfig().mode + "）");
+
+  /* 开机静默接管（本轮共识）：自建模式上一轮多半留下了一份**旧方式起的** daemon（它自己 detached，
+     在 Windows 上带着一只可见终端窗口）。这里在后台把它换成宿主静默托管 —— 停在后台、不拦启动，
+     失败只记一行日志（用户到控制台点「启动后端」仍是同一条路）。复用模式直接跳过（那份不归我们管）。 */
+  setTimeout(() => {
+    migrateOwnDaemonToSilent().catch((e) => appendConsole("[daemon] 开机静默接管异常：" + String((e && e.message) || e)));
+  }, 1500);
+
+  /* 安装窗登记（本轮共识：安装这件事只走那只窗 —— 卡片「安装 / 重装」与控制台里的「打开安装窗」
+     都只是入口，真正开跑由窗里那颗「开始安装」发起）。
+     packRoots 指向本目录：安装窗开窗预览读的就是 paseo/steps.json（步骤表的真源）。 */
+  installHost.registerInstallTarget({
+    id: PLUGIN_ID,
+    key: KIND,
+    name: PLUGIN_NAME,
+    skill: INSTALL_SKILL,
+    kindLabel: "本地后端",
+    packRoots: [__dirname],
+    getInstallDir: () => String(loadConfig().installDir || ""),
+    cancel: async () => {
+      /* 取消安装：真按进程树强杀当前安装子进程（npm），不是只置一个标志 */
+      return await installKill.cancelInstall(PLUGIN_ID);
+    },
+  });
 
   /* 报错总线：注册宿主（现场目录 = 自建安装目录，日志 = 控制台日志尾部；
      修复入口由渲染层那条看得见的会话走，skill 名指向 paseo-remote-install）。 */
@@ -1725,34 +2685,13 @@ function registerPaseoRemoteIpc(opts) {
   handle("remoteSet", (o) => setRemoteEnabled(o && o.on));
   handle("disconnectAll", () => disconnectAllRemote());
   handle("resetPairing", () => resetPairing());
+  /* 安装（安装窗里那颗「开始安装 / 重试」；参数 {forceOwn?} 来自窗里那个复选框）。
+     「换目录」仍走 pickInstallDir：安装窗在没有目录时弹系统目录框（与其它后端同一条路）。 */
   handle("install", (o) => installBackend(o || {}));
   handle("pickInstallDir", () => pickInstallDir());
-  /* 一键改用本机已装的 Paseo（own 走不通时的出口；只改用户亲手点的这一下） */
-  handle("useReuse", () => switchToReuse());
-  /* 真 Node 前置：先看有没有达标的真 Node（缺 / 过旧就自动装一份托管 Node），
-     装到再顺带等桥要的那份（同一份，不主动改 dsh 的解析结果）。 */
-  handle("waitNode", async () => {
-    const rt = await ensureNodeRuntime({});
-    const r = await waitRealNode({ timeoutMs: NODE_WAIT_MS });
-    if (!rt.ok) {
-      return { ok: false, error: rt.error === "download-failed" ? "node_install_failed" : "node_too_old", detail: nodeRuntimeMsg(rt), nodeBin: "" };
-    }
-    return r.ok
-      ? { ok: true, node: r.node, waitedMs: r.waitedMs, runtime: { bin: rt.bin, version: rt.version, installed: !!rt.installed } }
-      : { ok: false, error: r.error, detail: r.detail, nodeBin: (r.node && r.node.bin) || "" };
-  });
-  /* 「清干净重装」：用旧 Node 装出来的依赖只能删掉重来 —— **用户点这一下才删**，不静默动目录 */
-  handle("cleanReinstall", async (o) => {
-    const arg = o || {};
-    const cfg = loadConfig();
-    const dir = arg.installDir || cfg.installDir;
-    if (!dir) return { ok: false, error: "empty_dir" };
-    const safe = isSafeInstallDir(dir);
-    if (!safe.ok) return { ok: false, error: safe.error };
-    const removed = cleanOwnDeps(safe.path);
-    appendConsole("[install] 清干净重装：已删 " + (removed.length ? removed.join(" | ") : "（无残留可删）"));
-    return await installBackend({ installDir: safe.path });
-  });
+  /* 卸载（安装窗底栏那颗「卸载」）：preview 只读列清单，真删只在 run。 */
+  handle("uninstallPreview", () => uninstallPreview());
+  handle("uninstall", () => uninstallRun());
   handle("startDaemon", () => startDaemon());
   handle("stopDaemon", () => stopDaemon());
   handle("consoleTail", (n) => consoleTail(n));
@@ -1781,9 +2720,9 @@ function registerPaseoRemoteIpc(opts) {
     const r = await spawnCli(node.bin, [bp.script, "--check"], { timeoutMs: 20000 });
     return { ok: r.ok, code: r.code, text: String(r.stdout || "") + String(r.stderr || "") };
   });
-  /* 提问通道自检（桥的 --probe-question）：真跑一次「MTNode 发询问卡 → 桥以 form
-     elicitation 交给客户端 → 表单应答 → 回执送回 MTNode」这条链，四拍逐个报。
-     为什么要它：手机上「询问框没弹出 / 答了回不到 MTNode」时，光看日志分不清断在哪一拍。 */
+  /* 提问通道自检（桥的 --probe-question）：真跑一次「MTNode 发询问卡 → 桥发一条可读消息
+     （agent_message_chunk，题面 / 选项都是人话）→ 手机文本作答 → 回执送回 MTNode」这条链，
+     六拍逐个报。为什么要它：手机上「询问框没弹出 / 答了回不到 MTNode」时，光看日志分不清断在哪一拍。 */
   handle("bridgeProbeQuestion", async () => {
     const node = realNode();
     const bp = bridgeInfo.bridgePaths({
@@ -1804,12 +2743,28 @@ function registerPaseoRemoteIpc(opts) {
   });
 }
 
-/** 应用退出时只关控制台窗：daemon 是常驻单例（手机随时要用），一律不动它。 */
-function shutdownPaseoRemoteUiOnly() {
+/**
+ * 应用退出时的收尾（本轮口径变了）：
+ *   · **宿主持有的自建 daemon 要一起停**（它是 MTNode 的子进程：不停会留孤儿，而它又没有窗口可关了）；
+ *   · 复用模式（Paseo Desktop 那份）与「不是我们持有的」外部实例一律不动 —— 那是别人的进程；
+ *   · 无论停成没停成**都不拦 MTNode 退出**：`opts.timeoutMs` 给了就等到那个上限，没给就当场返回、后台收尾。
+ * 停止本身是「优雅 5 秒 → 超时强杀」（见 stopOwnDaemon）。
+ */
+function shutdownPaseoRemoteUiOnly(opts) {
+  const o = opts || {};
   try {
     if (consoleWin && !consoleWin.isDestroyed()) consoleWin.close();
   } catch {}
   consoleWin = null;
+  if (!ownDaemon.child && !ownDaemon.restartTimer) return Promise.resolve({ ok: true, skipped: "no_hosted_daemon" });
+  const stopping = stopOwnDaemon({ quiet: true }).catch(() => ({ ok: false }));
+  const budget = Number(o.timeoutMs) || 0;
+  if (!budget) {
+    /* 只关窗的旧行为：不停手等，但也不放着一个必然被强杀的进程不管 */
+    stopping.then((r) => appendConsole("[daemon] MTNode 退出收尾：" + (r && r.ok ? "已停" : "没停成")));
+    return Promise.resolve({ ok: true, async: true });
+  }
+  return Promise.race([stopping, new Promise((r) => setTimeout(() => r({ ok: false, timeout: true }), budget))]);
 }
 
 module.exports = {
@@ -1844,11 +2799,21 @@ module.exports = {
     nodeReadyOf,
     waitRealNode,
     detectBackend,
+    /* 本轮新增：「慢的半边」会话内缓存（CLI 版本探测 + 真 Node 解析）——smoke-paseo-status-cache.js 直呼它们 */
+    clearPaseoProbeCache,
+    realNode,
+    probeCacheSize: () => CLI_PROBE_CACHE.size,
     installBackend,
     switchToReuse,
     cleanOwnDeps,
     isSafeInstallDir,
     paseoHomeOf,
+    /* 本轮新增：安装窗那条链（步骤表 / 上报 / 卸载）与旧落点搬迁 */
+    installSteps,
+    migrateLegacyData,
+    uninstallPreview,
+    uninstallRun,
+    uninstallTargets,
     /* 本轮新增：Node 运行时预检 / 自动安装 / 与解析出的 Node 配套的 npm */
     NODE_MIN_VERSION,
     MANAGED_NODE_VERSION,
@@ -1861,6 +2826,26 @@ module.exports = {
     nodeVersionFromText,
     spawnPaseoCli,
     cachedNodeRuntime,
+    /* 本轮新增：自建 daemon 的「宿主持有 + 后台静默」这一套（静默启动 / 优雅停止 /
+       存量旧实例迁移 / 崩溃重启 / 窗口口径常量）——smoke-paseo-daemon-silent.js 直呼它们 */
+    ensureOwnDaemon,
+    startOwnDaemonSilently,
+    stopOwnDaemon,
+    stopForeignOwnDaemon,
+    migrateOwnDaemonToSilent,
+    ownDaemonHosted,
+    processParentMap,
+    ownDaemonState: () => ownDaemon,
+    daemonLogTail,
+    ownLogTail,
+    shutdownPaseoRemoteUiOnly,
+    SILENT: {
+      restartMax: RESTART_MAX,
+      restartDelayMs: RESTART_DELAY_MS,
+      restartResetMs: RESTART_RESET_MS,
+      stopGraceMs: DAEMON_STOP_GRACE_MS,
+      readyTimeoutMs: DAEMON_READY_TIMEOUT_MS,
+    },
   },
   PLUGIN_ID,
   KIND,

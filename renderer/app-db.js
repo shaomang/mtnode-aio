@@ -4868,13 +4868,10 @@ function ixRoundEndTrace(runKey, text) {
     _src: IX_ROUND_END_SRC,
     _roundKey: k,
   });
-  /* 条数闸与开轮 / 落盘同源（app-assist.js 的 agentTrimSessionMessages：按轮保留，
-     不再是一刀切的固定 100 条 —— 那个上限在开发 / 细化会话里会把最早的**助手消息**
-     连同它的 segments / tools 一起挤掉，轨迹与改动两栏因此只剩最后一轮）。
-     拿不到那个函数（模块尚未加载 / 冒烟桩）时按同一份判据就地兜底：
-     AGENT_MIN_KEEP_PER_ROUND(120) × AGENT_ROUND_MAX_ENTRIES(16) = 1920，改那两个常量时这里要跟着改。 */
-  if (typeof agentTrimSessionMessages === "function") agentTrimSessionMessages(st);
-  else if (st.messages.length > 1920) st.messages.splice(0, st.messages.length - 1920);
+  /* 消息一条不裁（本次需求 · 用户口径「保留全部」，口径说明在 app-assist.js
+     「会话消息不做条数裁剪」那一段）：这里原来与开轮 / 落盘同源调用按轮裁剪的那个函数
+     （agent-assist 侧已整体删除）、模块未加载时还就地按 1920 条兜底 —— 两处都删掉，
+     免得旧上限从这里又漏回来。 */
   /* 轮末痕迹是这一轮的产出：点名这条会话盖一次时间戳（收口走 agentTouchSession） */
   try {
     if (typeof agentTouchSession === "function") agentTouchSession(st);
@@ -5189,13 +5186,8 @@ function ixCommitAnswerToSession(it, answers) {
   };
   st.messages = Array.isArray(st.messages) ? st.messages : [];
   st.messages.push(um);
-  /* 条数闸与开轮 / 落盘同源（app-assist.js 的 agentTrimSessionMessages：按轮保留，
-     不再是一刀切的固定 100 条 —— 那个上限在开发 / 细化会话里会把最早的**助手消息**
-     连同它的 segments / tools 一起挤掉，轨迹与改动两栏因此只剩最后一轮）。
-     拿不到那个函数（模块尚未加载 / 冒烟桩）时按同一份判据就地兜底：
-     AGENT_MIN_KEEP_PER_ROUND(120) × AGENT_ROUND_MAX_ENTRIES(16) = 1920，改那两个常量时这里要跟着改。 */
-  if (typeof agentTrimSessionMessages === "function") agentTrimSessionMessages(st);
-  else if (st.messages.length > 1920) st.messages.splice(0, st.messages.length - 1920);
+  /* 消息一条不裁（本次需求 · 用户口径「保留全部」，口径说明在 app-assist.js
+     「会话消息不做条数裁剪」那一段）：这里的按轮裁切与 1920 条兜底一并删除。 */
   /* 用户亲口答的这轮提问是会话里的真内容（一条用户消息）：点名这条会话盖一次时间戳 */
   try {
     if (typeof agentTouchSession === "function") agentTouchSession(st);

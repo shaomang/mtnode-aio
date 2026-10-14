@@ -129,6 +129,9 @@ const PLUGIN_ACT_SVG = {  play:
   /* 显式入口「控制台」（本轮新增：插件不再自己弹窗，开窗只能由用户点这里或托盘菜单） */
   console:
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.9 6.6l1.9 1.7-1.9 1.7M8.4 10.2h2.8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  /* 信息入口（本轮需求）：插件卡片本体不再响应点击，看插件信息只能点封面右上角这颗 ⓘ */
+  info:
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.1" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 7.1v4.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="4.9" r=".85" fill="currentColor"/></svg>',
 };
 function pluginIconName(item) {
   const raw = String((item && item.icon) || (item && item.id ? item.id + ".png" : "")).replace(/\\/g, "/");
@@ -218,6 +221,24 @@ function closePluginPop(wrap, pop) {
     pop.classList.remove("on", "flip", "has-console");
     pop.innerHTML = "";
   }
+}
+/* 信息浮层的显式关闭键（本轮需求）：浮层里补一颗 ✕。
+   浮层的出口 = 再点一次 ⓘ / 这颗 ✕ / Esc / 点插件窗顶部那行说明（见 openAppPluginsDialog）。
+   与全应用同口径：不算「点外部即关」，也不新挂任何蒙层监听。 */
+function mountPluginPopClose(wrap, pop) {
+  if (!pop) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "plugin-pop-close";
+  /* 只有一处可读名（aria-label）—— 与全应用那颗通用 ✕ 同口径：title 与它逐字相同属于冗余提示 */
+  btn.setAttribute("aria-label", I18n.t("关闭"));
+  btn.innerHTML =
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.3 4.3l7.4 7.4M11.7 4.3l-7.4 7.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    closePluginPop(wrap, pop);
+  };
+  pop.appendChild(btn);
 }
 function positionPluginPop(wrap, pop, card) {
   if (!pop || !card || !pop.classList.contains("on")) return;
@@ -415,6 +436,8 @@ function openPluginPop(wrap, pop, card, item) {
   /* 用户自建插件：详情面板换成状态 / 节点试运行 / 修复那一套（见 renderUserPluginPanel） */
   if (item && item.handler === "userplugin") {
     renderUserPluginPanel(pop, item);
+    /* renderUserPluginPanel 会清空浮层 → ✕ 必须在它之后补（两条分支都要有 ✕） */
+    mountPluginPopClose(wrap, pop);
     pop.classList.add("on");
     requestAnimationFrame(() => positionPluginPop(wrap, pop, card));
     return;
@@ -434,6 +457,8 @@ function openPluginPop(wrap, pop, card, item) {
   paintPluginSelfcheckRow(pop, item.id);
   /* 安装目录**不在插件界面里显示**（本轮需求）：目录由安装窗统一显示与修改
      （底栏那一行 + 「选择安装目录」）。这里不再挂目录 / 路径这类只读文字。 */
+  /* 显式关闭键（本轮需求）：信息浮层右上角一颗 ✕（出口不只有「再点一次 ⓘ」） */
+  mountPluginPopClose(wrap, pop);
   pop.classList.add("on");
   requestAnimationFrame(() => positionPluginPop(wrap, pop, card));
 }
@@ -830,6 +855,10 @@ const BACKEND_PLUGIN_SPECS = {
   llama: { key: "llama", api: "llama", hasService: true },
   breeze: { key: "breeze", api: "breeze", hasService: true },
   remotion: { key: "remotion", api: "remotion", hasService: false },
+  /* Paseo 手机接管：卡片只有「安装 / 重装 + 控制台」—— hasService:false 就是「不给启用按钮」
+     （它不是没有后端，而是启停故意留在控制台：复用模式那份后端由 Paseo Desktop 自己管）。
+     api 前缀是 paseoRemote（宿主那套 paseoRemote:* IPC）。 */
+  paseo: { key: "paseo", api: "paseoRemote", hasService: false, update: false },
 };
 function backendSpecOf(item) {
   const k = item && (item.kind || item.handler);
@@ -859,6 +888,8 @@ const BACKEND_INSTALL_IDS = {
   llama: "llama-local",
   breeze: "breeze-tts-local",
   remotion: "remotion",
+  /* Paseo 手机接管：安装窗里的插件 id 就是它的目录 id */
+  paseo: "paseo-remote",
 };
 /** 开这只插件的安装窗：**唯一入口**（卡片「安装 / 重装」与控制台窗内的「安装」都走它）。 */
 async function openPluginInstallWindow(payload) {
@@ -881,24 +912,23 @@ const _backendStopping = new Set();
 /* 最近一次启动 / 安装的失败原因：**不再上卡片**（卡片底部不许有任何文字）——
    用户可见的失败出口是 toast + 详情浮层里的后端日志；这张表只留作窗内诊断最近一次失败。 */
 const _backendLastErr = new Map();
-/* 本轮 8 个插件共用的卡片重绘 —— 各自的 refresh<Name>PluginCard 只是薄壳（保留函数名给冒烟用） */
+/* 本轮 8 个插件共用的卡片重绘 —— 各自的 refresh<Name>PluginCard 只是薄壳（保留函数名给冒烟用）。
+   时序口径（本轮需求）：**先画骨架、再补状态**。状态查询本身要起外部进程（paseo 最慢：
+   每次都会问 CLI 版本 + 解析真 Node），等它回来才画按钮会让动作行空几秒 ——
+   现场就是「打开插件窗，卡片上先没有按钮，过几秒才出来」。所以：
+     · 动作行还是空的（首次画这张卡）→ 同步先画「控制台」（它与状态无关，永远都在、立刻能用）
+       + 一颗灰态不可点的安装占位（tooltip 写明正在读状态）；
+     · 状态回来后再整行重画成最终形态（未装 = 安装 / 已装 = 重装），此后重绘不再走骨架，
+       免得每次点按钮都闪一下。 */
 async function refreshBackendPluginCard(root, spec, opts) {
   const o = opts || {};
   const statusFn = pluginApiFn(spec.api + "Status");
   if (!root || !statusFn) return;
-  const st = (await statusFn()) || {};
   const actions = root.querySelector("[data-plugin-actions]");
   /* 卡片上**一个字的正文都不留**（本轮共识）：原来的状态文字行
      （启用中 / 启动失败原因 / 后端提示 / 显存门槛）与角标整块下线，元素也不再建。
      这些信息现在的出口：失败看 toast + 详情浮层里的后端日志，后端提示看控制台 / 浮层日志区。 */
   if (!actions) return;
-  setPluginVer(root, { version: st.version, installed: !!st.installed });
-  /* 真在跑 = 上一条失败提示已过期，清掉（免得窗内诊断一直挂着旧错误） */
-  if (st.running) _backendLastErr.delete(spec.key);
-  actions.innerHTML = "";
-  const addBtn = (kind, title, onClick, btnOpts) => {
-    actions.appendChild(mkPluginActBtn(kind, title, onClick, btnOpts));
-  };
   const repaint = () => refreshBackendPluginCard(root, spec, o);
   const openConsole = async () => {
     const fn = pluginApiFn(spec.api + "Open");
@@ -907,6 +937,18 @@ async function refreshBackendPluginCard(root, spec, opts) {
     const r = await fn();
     if (!r || !r.ok) toast(I18n.t("打开失败：") + pluginErrText(r && r.error), "err");
     repaint();
+  };
+  if (!actions.childElementCount) {
+    actions.appendChild(mkPluginActBtn("download", I18n.t("正在读取插件状态…"), null, { disabled: true }));
+    actions.appendChild(mkPluginActBtn("console", I18n.t("控制台"), openConsole));
+  }
+  const st = (await statusFn()) || {};
+  setPluginVer(root, { version: st.version, installed: !!st.installed });
+  /* 真在跑 = 上一条失败提示已过期，清掉（免得窗内诊断一直挂着旧错误） */
+  if (st.running) _backendLastErr.delete(spec.key);
+  actions.innerHTML = "";
+  const addBtn = (kind, title, onClick, btnOpts) => {
+    actions.appendChild(mkPluginActBtn(kind, title, onClick, btnOpts));
   };
   const stopBackend = async () => {
     const fn = pluginApiFn(spec.api + "Stop");
@@ -1120,38 +1162,14 @@ async function refreshSensenovaPluginCard(root) {
 }
 
 /* ---- Paseo 手机接管（应用插件 kind paseo，id paseo-remote）----
-   卡片口径：**只有一颗「控制台」按钮**（本轮需求：卡片底部一个字的正文都不留）。
-   为什么不用 refreshBackendPluginCard：它的主按钮是「安装 / 重装」且必然走那只安装窗
-   （包内 steps.json 协议），而本插件的后端优先**复用本机已装的 Paseo**、只有没装时才 npm 装一个包
-   —— 安装入口因此统一留在控制台里（paseo/ui/ui.js 的「安装后端」），卡片不重复一条容易误导的安装路径。
-   原先卡片底部那条状态行（认没认到后端 · daemon / relay 状态 · 远程是否开着 · 正在接管几条）
-   已按本轮要求整块下线：同一个状态在插件控制台里逐项显示。 */
+   卡片口径（本轮需求）：与其它本地后端同一套 —— **两颗按钮 = 「安装」（未装）/「重装」（已装）+「控制台」**。
+   安装 / 重装开的是那只**通用安装窗**（安装 / 重装 / 清干净重装 / 准备真 Node / 卸载都在窗里）；
+   「启用 / 停用」**故意不做**（Paseo 的后端要么由它自己的桌面端管、要么是常驻 daemon，
+   启停留在控制台里那两颗按钮上，卡片不重复一条容易误解的语义）。
+   已装判据看宿主 statusForUi 的顶层 installed：**复用本机已装的 Paseo 或自建那份，任一可用就算已装**。
+   卡片底部仍不留任何正文（状态在控制台里逐项显示）。 */
 async function refreshPaseoPluginCard(root) {
-  const fn = pluginApiFn("paseoRemoteStatus");
-  const actions = root && root.querySelector("[data-plugin-actions]");
-  if (!fn || !actions) return;
-  let st = null;
-  try {
-    st = await fn();
-  } catch (e) {
-    st = { ok: false, error: (e && e.message) || String(e) };
-  }
-  const b = (st && st.backend) || {};
-  setPluginVer(root, { version: b.version, installed: !!b.installed });
-  actions.innerHTML = "";
-  actions.appendChild(
-    mkPluginActBtn(
-      "console",
-      I18n.t("控制台"),
-      async () => {
-        const f = pluginApiFn("paseoRemoteOpen");
-        const res = f ? await f() : null;
-        if (!res || !res.ok) toast(I18n.t("打开失败：") + ((res && res.error) || I18n.t("未知错误")), "err");
-        refreshPaseoPluginCard(root);
-      },
-      { primary: true },
-    ),
-  );
+  return refreshBackendPluginCard(root, BACKEND_PLUGIN_SPECS.paseo);
 }
 
 function pluginLoc(p, key) {  const v = p && p[key];
@@ -1709,7 +1727,10 @@ async function openUserPluginsImport() {
    过程与进度在窗里逐步骤显示（plugins/main-install.js 的 reportPluginStep）。
    原来这里的 bindPluginProgress（把 pet:progress / appPlugins:progress 画成卡片进度条）
    已随本轮需求整块移除 —— 卡片只留图标 + 标题 + 动作按钮 + 状态行。 */
-/* 按插件 kind 重画一张卡片（安装窗里跑完一次安装后统一重画用） */
+/* 按插件 kind 重画一张卡片（安装窗里跑完一次安装后统一重画用）。
+   **每个后端 kind 都必须在这张表里**：漏一个（paseo 曾漏过）就会掉进 refreshWindowPluginCard
+   那条窗口插件分支，卡片上「安装 / 重装 + 控制台」被换成「下载安装 / 运行 / 请先升级主程序」，
+   现场表现就是「刚装完按钮变了样」。表里没有的后端 kind 请补上，别让它落到兜底分支。 */
 function repaintPluginCard(card, item) {
   const k = (item && (item.kind || item.handler)) || "";
   const map = {
@@ -1721,6 +1742,7 @@ function repaintPluginCard(card, item) {
     remotion: refreshRemotionPluginCard,
     llama: refreshLlamaPluginCard,
     breeze: refreshBreezePluginCard,
+    paseo: refreshPaseoPluginCard,
   };
   const fn = map[k];
   if (fn) return fn(card);
@@ -1805,16 +1827,24 @@ function mkPluginCardShell(item) {
   const card = document.createElement("div");
   card.className = "plugin-tile";
   card.setAttribute("data-plugin-id", item.id);
-  card.setAttribute("role", "button");
-  card.tabIndex = 0;
+  /* 本轮需求：卡片本体不再是按钮 —— 看插件信息只能点封面右上角那颗 ⓘ（.plugin-tile-info），
+     所以这里不再挂 role=button / tabIndex（免得键盘 Tab 停在一个点了没反应的东西上）。 */
   if (item.version) card.dataset.catalogVer = String(item.version);
   const iconUrl = pluginIconUrl(item);
   const ver = pluginVerLabel(item, card);
+  /* 封面里两颗角标：左上 = 已装勾（paintPluginDone 后补），右上 = ⓘ 信息入口（这里就写进标记，
+     由 openAppPluginsDialog 接线）。ⓘ 锚在封面上（不是卡片上）——卡片比封面宽，
+     锚在卡片上会让它在宽卡里飘离封面的右上角。 */
   card.innerHTML =
     '<div class="plugin-tile-cover">' +
     (iconUrl
       ? '<img alt="" width="128" height="128">'
       : '<div class="plugin-tile-ph"></div>') +
+    '<button type="button" class="plugin-tile-info" data-plugin-info aria-label="' +
+    I18n.t("插件信息") +
+    '">' +
+    PLUGIN_ACT_SVG.info +
+    "</button>" +
     "</div>" +
     '<div class="plugin-tile-title"></div>' +
     '<div class="plugin-tile-ver" data-plugin-ver></div>' +
@@ -1860,18 +1890,20 @@ async function openAppPluginsDialog() {
     try { _petProgressOff(); } catch {}
     _petProgressOff = null;
   }
-
-  const closeBtn = document.createElement("button");
-  closeBtn.className = "mini";
-  closeBtn.textContent = I18n.t("关闭");
-  closeBtn.onclick = () => {
+  /* 关窗的唯一出口集合（底栏「关闭」按钮 与 Esc 都走它）：摘订阅 + 收浮层 + 关 #overlay */
+  function closeDialog() {
     _plugRootDialog = false;
     if (_petProgressOff) {
       try { _petProgressOff(); } catch {}
       _petProgressOff = null;
     }
     closeOverlay();
-  };
+  }
+
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "mini";
+  closeBtn.textContent = I18n.t("关闭");
+  closeBtn.onclick = closeDialog;
   const refreshBtn = document.createElement("button");
   refreshBtn.className = "mini";
   refreshBtn.textContent = I18n.t("刷新目录");
@@ -1989,8 +2021,9 @@ async function openAppPluginsDialog() {
   const grid = document.createElement("div");
   grid.className = "plugin-grid";
   wrap.appendChild(grid);
-  /* 插件详情面板（role=dialog）persistent：点它周围的空白不再收起，
-     关它只走「再点一次这张卡片」与「简介」那条显式切换路径 —— 见 AGENTS.md */
+  /* 插件详情浮层（role=dialog）persistent：点它周围的空白不再收起 —— 见 AGENTS.md。
+     本轮需求：**卡片本体不再响应任何点击**（连 Enter / Space 也不再开浮层），
+     唯一的入口是封面右上角那颗 ⓘ（.plugin-tile-info，下面逐卡接线）。 */
   const overlayEl = $("#overlay");
   overlayEl.querySelectorAll(":scope > .plugin-pop").forEach((el) => el.remove());
   overlayEl.appendChild(pop);
@@ -2003,26 +2036,39 @@ async function openAppPluginsDialog() {
   };
   body.addEventListener("scroll", onReposition);
   window.addEventListener("resize", onReposition);
+  /* Esc：浮层开着 → 先关浮层（吃掉这一次按键）；浮层没开 → 再按一次才关插件窗。
+     捕获阶段拦下，免得同一个 Esc 被画布那道全局监听当成别的意思。 */
+  const onEscKey = (ev) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (pop.classList.contains("on")) {
+      closePluginPop(wrap, pop);
+      return;
+    }
+    closeDialog();
+  };
+  document.addEventListener("keydown", onEscKey, true);
 
   const offs = [];
   offs.push(() => {
     body.removeEventListener("scroll", onReposition);
     window.removeEventListener("resize", onReposition);
+    document.removeEventListener("keydown", onEscKey, true);
     if (pop && pop.parentNode) pop.remove();
   });
   for (const item of list) {
     const card = mkPluginCardShell(item);
     card._pluginItem = item;
     const openPop = () => openPluginPop(wrap, pop, card, item);
-    card.addEventListener("click", (ev) => {
-      if (ev.target.closest(".plugin-tile-actions")) return;
-      openPop();
-    });
-    card.addEventListener("keydown", (ev) => {
-      if (ev.key !== "Enter" && ev.key !== " ") return;
-      ev.preventDefault();
-      openPop();
-    });
+    /* 信息入口：封面右上角那颗 ⓘ（本轮需求）。卡片本体没有监听 —— 点击 / 键盘都不会开浮层。 */
+    const infoBtn = card.querySelector("[data-plugin-info]");
+    if (infoBtn) {
+      infoBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openPop();
+      });
+    }
     grid.appendChild(card);
     card._repaint = () => repaintPluginCard(card, card._pluginItem || item);
     if (item.kind === "pet" || item.handler === "pet") {

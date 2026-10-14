@@ -312,7 +312,7 @@ function createSessionBridge(o) {
       {
         id: "q2",
         question: "顺手试一下自由文本：随便写点什么（可留空）",
-        header: "自检",
+        header: "补充",
         options: [],
         multiSelect: false,
       },

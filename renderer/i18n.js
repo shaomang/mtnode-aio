@@ -9366,6 +9366,9 @@
     "停用中…": "Disabling…",
     "控制台": "Console",
     "重装": "Reinstall",
+    /* 本轮需求：插件卡片的入口 —— 卡片本体不再可点，信息走封面右上角那颗 ⓘ */
+    "插件信息": "Plugin info",
+    "正在读取插件状态…": "Reading plugin status…",
     "启动中…": "Starting…",
     "更新中…": "Updating…",
     "启动失败：": "Failed to start: ",

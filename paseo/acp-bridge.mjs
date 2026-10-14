@@ -20,7 +20,7 @@
  *   node acp-bridge.mjs --check    # 自检：数据目录 / 端口 / 令牌 / ACP 帧形状
  *   node acp-bridge.mjs --probe-question
  *                                  # 提问通道自检：自己当客户端跑一次真桥，逐拍验
- *                                  # 「MTNode 发询问卡 → form elicitation → 答案回到 MTNode」
+ *                                  # 「MTNode 发询问卡 → 手机上一条可读消息 → 文本作答回到 MTNode」
  *
  * 环境变量：MTNODE_DATA_DIR（覆盖数据目录）、MTNODE_MCP_URL + MTNODE_MCP_TOKEN（直接点名服务端）、
  *          MTNODE_PASEO_DEBUG=1（把 ACP 帧与桥的动作打到 stderr）。
@@ -56,19 +56,52 @@ const HISTORY_BODY_LIMIT = 4000;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(HERE, "..");
 
-/* ── 模型的「询问卡」走哪条 ACP 通道 ─────────────────────────────────────
- * MTNode 的 ask_user_question（以及收尾那张带 Markdown 总结的确认卡）以前被当成
- * **权限请求**发给手机：`session/request_permission` + 两个按钮（允许一次 / 拒绝）。
- * 那条通道表达不了题面、选项与自由文本，回执也只有 optionId —— 用户看到一张审批卡，
- * 答案回不到模型。ACP 为「向用户要输入」准备了另一条通道：**form 模式的
- * `session/elicitation`**（client 声明 `clientCapabilities.elicitation.form`，
- * agent 发 `{ message, mode:"form", requestedSchema }`，client 回
- * `{ action:"accept", content:{ <字段名>: 值 } }`）。
- * 现在：能 elicitation 就 elicitation（题面/选项/多选/自由文本都能装），
- * 不能才回退权限请求（老实说清「这台手机答不了」）——见 questionViaPermission 的注释。 */
-const CLIENT_CAP_ELICITATION_FORM = "elicitation.form";
-/** 用户把卡放着不答时等多久（真实上限由 request.signal 兜底：宿主「中断任务」时 resolve(null)） */
+/* ── 模型的「询问卡」走哪条 ACP 通道（本次需求 · 四代口径）──────────────────
+ * 写清免得再走回头路 —— 每一代都是真机实测后的结论：
+ *   ① 最早：提问被当成权限请求发出去 —— 只有「允许一次 / 拒绝」两个按钮，
+ *      题面与选项全丢，答案回不到模型。
+ *   ② 上一版：改发 form 模式的 `session/elicitation`（要求 client 声明
+ *      `clientCapabilities.elicitation.form`），不支持才回退权限请求 + 一条
+ *      「这台手机不支持表单问答」的说明帧 —— 但真机 Paseo（0.11.2 实测：客户端能力
+ *      只有 fs + terminal，**从不声明 elicitation**）因此永远走回退，用户看到的正是那个现场。
+ *   ③ 再上一版（**错的，已下线**）：改发 `session/request_permission` +
+ *      `toolCall.kind:"question"` + `input.questions[]`，指望 Paseo 渲染它自己的
+ *      QuestionFormCard。两条硬事实把它否掉（2026-10 实测 Paseo 0.11.2）：
+ *        · ACP 的 ToolKind 只有 read/edit/delete/move/search/execute/think/fetch/
+ *          switch_mode/other，**没有 question** —— daemon 的 zod 校验把整帧拒掉
+ *          （日志原文：`method: 'session/request_permission' … code: -32602, message:
+ *          'Invalid params', data: { toolCall: { kind: [Object] } }`），询问卡根本到不了手机；
+ *        · 就算 kind 合法也到不了那张表单：daemon 的 mapPermissionRequest 只产出
+ *          kind "tool"/"mode"，且**从不填 input** —— 客户端渲染表单的条件是
+ *          `request.kind === "question" && request.input.questions[]`，两个条件都凑不齐。
+ *      而同一时刻 MTNode 那个提问工具自己的 tool 事件被翻成 `kind:"other"` 的工具卡，
+ *      Paseo 的 buildToolCallDisplayModel 把它显示成 **Other**（humanizeToolName("other")），
+ *      点开是 { type:"unknown", input: rawInput } 的详情 = 原始 JSON ——
+ *      「手机端显示 Other，点进去是 JSON」说的就是这张卡。
+ *   ④ 现在（这一版）：**提问走普通聊天消息**。题面 / 选项 / 作答方式拼成一段可读正文
+ *      （questionChatText），以 `agent_message_chunk` 发下去 —— 手机上就是一条普通消息，
+ *      按 Markdown 渲染，正文里一个 JSON 都没有；用户在手机输入框里回一条消息就是答案：
+ *        · 桥把这条回复翻成 answers[]（逐题按 id 对齐）+ 可读 answerText，走 /ctl 的
+ *          session/approval 打回 MTNode：那张卡就地收口、模型接着往下跑；
+ *        · 手机发消息时 Paseo **先 interrupt 再 prompt**（它默认 activeTurnBehavior =
+ *          "interrupt"，见 daemon 的 session.js / agent-manager.replaceAgentRun）——
+ *          这一枪打断不是要停这一轮，所以桥在「正等作答」时**不打 MTNode 的 session/stop**，
+ *          只按 ACP 要求把旧那一枪以 cancelled 收尾，随后到的那条 prompt 就是答案。
+ * 审批（approval）与画布确认（canvas）**照旧**走 session/request_permission：
+ * 本来就是「允许 / 拒绝」两三个按钮的事（toolCall.kind 用合法的 "other"）。
+ * 口径由 --check 的 ASK_CHANNEL_NOTE 一行报出，排障时一眼看出走的是哪条。 */
+/** 本桥声明的「提问通道」自述（--check 那一行与注释同源，避免两处口径漂移）。 */
+const ASK_CHANNEL_NOTE =
+  "ask channel: question → 可读聊天消息（agent_message_chunk）+ 手机下一条消息作答 → answers[]；" +
+  "approval / canvas → session/request_permission(toolCall.kind=\"other\")；" +
+  "不发 elicitation、也不发 kind=\"question\" 的权限卡（ACP ToolKind 没有 question，Paseo 整帧拒）";
+
+/** 用户把审批卡放着不答时等多久（真实上限由 request.signal 兜底：宿主「中断任务」时 resolve(null)） */
 const ASK_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+/** 「等手机文本作答」的有效期：过了就忘掉这条挂起（手机再来消息按普通消息下发） */
+const TEXT_ASK_TTL_MS = Number(process.env.MTNODE_PASEO_ASK_TTL_MS) || 6 * 60 * 60 * 1000;
+/** 手机发消息会先 interrupt：打断后这么久还没等到那条 prompt，就当成「用户真的按了停止」 */
+const ANSWER_WAIT_AFTER_CANCEL_MS = 3000;
 
 /* ── 小工具 ────────────────────────────────────────────────────────────── */
 
@@ -503,6 +536,14 @@ async function mtnodeSessions(server, limit) {
   return (list && list.sessions) || [];
 }
 
+/** 「提问类工具」自己的 tool 事件：它的参数就是那份询问 JSON。
+ *  这类事件**一张工具卡都不发** —— 手机上那张卡正是用户报的现场：
+ *  Paseo 的 buildToolCallDisplayModel 用 `name`（daemon 填的 snapshot.kind）当标题，
+ *  kind 认不出就落到 humanizeToolName("other") = **"Other"**，详情又是
+ *  `{ type:"unknown", input: rawInput }` 的原始 JSON。题面已经由 questionChatText
+ *  那条可读消息讲清楚了，工具卡只会再把 JSON 露一次（见文件头第 ④ 代口径）。 */
+const ASK_TOOL_RE = /^(ask_user_question|ask_user|user-questions|user_questions|browser_help)$/i;
+
 /** 把 MTNode 的一帧事件翻成 ACP 的 session/update */
 function toAcpUpdate(mtnodeSessionId, ev) {
   const d = ev.data || {};
@@ -519,14 +560,22 @@ function toAcpUpdate(mtnodeSessionId, ev) {
     }
     case "tool": {
       const name = String(d.name || d.tool || "tool");
+      /* 提问类工具不上卡（见 ASK_TOOL_RE 的注释）：它的 JSON 参数不该出现在手机上 */
+      if (ASK_TOOL_RE.test(name.trim())) {
+        const t0 = liveTurn(mtnodeSessionId);
+        if (t0) t0.tools.add(String(d.callId || d.id || name));
+        return null;
+      }
       const callId = String(d.callId || d.id || name + "@" + (ev.seq || 0));
       const status = String(d.status || (d.error ? "failed" : d.result !== undefined ? "completed" : "pending"));
       const base = {
         toolCallId: callId,
         title: name,
-        kind: "other",
         status: status === "running" ? "in_progress" : status,
         rawInput: d.args === undefined ? undefined : d.args,
+        /* **不写死 kind**：ACP 的 ToolKind 是封闭枚举，"other" 会让 Paseo 把卡标题显示成
+           humanizeToolName("other") = "Other"（工具名被丢掉）。省略 kind 时 daemon 用
+           `snapshot.kind ?? snapshot.title` 兜底 —— 手机上显示的就是可读的工具名。 */
       };
       const isUpdate = liveTurn(mtnodeSessionId) && liveTurn(mtnodeSessionId).tools.has(callId);
       if (isUpdate) {
@@ -555,11 +604,13 @@ function toAcpUpdate(mtnodeSessionId, ev) {
   }
 }
 
-/** 「停下来等人」的那几类事件 → 一张卡（手机上来回的那一发）。
+/** 「停下来等人」的那几类事件 → 手机上来回的那一发。
  *
- *  `question`（模型提问）与 `approval` / `canvas`（审批 / 画布确认）的**通道不同**：
- *  前者走 session/elicitation（form），后两者走 session/request_permission —— 见
- *  questionAsk / permissionAskOf。 */
+ *  两条通道，按卡片类型分流：
+ *   · `question`（模型提问）→ **一条可读聊天消息**（questionChatText，题面 / 选项 / 作答方式
+ *     全是人话）+ 手机下一条消息作答（askQuestionViaChat / answerPendingAsk）；
+ *   · `approval` / `canvas`（审批 / 画布确认）→ session/request_permission（允许 / 拒绝按钮）。
+ *  见 askPermission。 */
 function askOfEvent(sessionId, ev) {
   const type = String(ev.type || "");
   if (type !== "approval" && type !== "canvas" && type !== "question") return null;
@@ -586,9 +637,10 @@ function askOfEvent(sessionId, ev) {
     return {
       kind: "question",
       id,
-      title: questions.length ? "模型提问" : String(d.question || d.title || "模型提问"),
+      /* 抬头只留一句「这是要你作答的一问」；题数由 questionChatText 按实际装了几题拼
+         —— 两处各拼一次会重复。 */
+      title: "MTNode 询问",
       detail: "",
-      raw: d,
       questions,
     };
   }
@@ -600,95 +652,89 @@ function askOfEvent(sessionId, ev) {
     id,
     title: kindLabel + "：" + title,
     detail: detail ? oneLine(detail, 600) : "",
-    raw: d,
   };
 }
 
-/** 客户端声明的能力里有没有 form 模式的 elicitation（Paseo ≥0.11 会带 `elicitation:{form:{}}`）。 */
-function elicitationFormSupported(caps) {
-  if (!caps || typeof caps !== "object") return false;
-  const e = caps.elicitation;
-  if (!e || typeof e !== "object") return false;
-  return !!(e.form && typeof e.form === "object");
-}
-
-/** 字段名（elicitation 的 requestedSchema.properties 的键）：只允许 A-Za-z0-9_-（AC0 稳定）。 */
-function fieldNameOf(id, idx) {
-  const s = String(id || "").replace(/[^A-Za-z0-9_-]/g, "");
-  return s || "q" + (idx + 1);
-}
-
-/** MTNode 的题面 → elicitation 的字段描述。
- *  `question` 的第一行是标题行，空行之后是 Markdown 总结（与询问卡同一口径，见
- *  renderer/app-db.js 的卡片渲染）：标题行进 field.title，总结整段进 field.description
- *  （description 在表单里是多行文本，Markdown 源码照样可读，不会被截断）。 */
-function questionForm(ask) {
-  const fields = ask.questions.map((q, idx) => {
-    const name = fieldNameOf(q.id, idx);
-    const text = String(q.question || "");
-    const nl = text.indexOf("\n\n");
-    const head = (nl >= 0 ? text.slice(0, nl) : text).trim();
-    const tail = nl >= 0 ? text.slice(nl + 2).trim() : "";
-    const desc = [q.detail ? String(q.detail) : "", tail].filter(Boolean).join("\n\n");
-    const title = head || q.header || "第 " + (idx + 1) + " 问";
-    const field = { name, id: q.id, title, asked: text, options: q.options || [], multiSelect: !!q.multiSelect, required: true };
-    if (!q.options || !q.options.length) {
-      field.schema = { type: "string", title, ...(desc ? { description: desc } : {}) };
-    } else if (q.multiSelect) {
-      /* 多选 = array + items.enum（ACP 的 MultiSelectPropertySchema） */
-      field.schema = {
-        type: "array",
-        title,
-        ...(desc ? { description: desc } : {}),
-        items: { type: "string", enum: q.options.map((o) => oneLine(o.label, 200)) },
-      };
-    } else {
-      /* 单选 = string + oneOf:[{const,title}]（官方 EnumOption；选项的第二行说明走 title） */
-      field.schema = {
-        type: "string",
-        title,
-        ...(desc ? { description: desc } : {}),
-        oneOf: q.options.map((o) => ({
-          const: oneLine(o.label, 200),
-          title: o.description ? oneLine(o.label, 80) + " —— " + oneLine(o.description, 160) : oneLine(o.label, 200),
-        })),
-      };
-    }
-    return field;
-  });
-  const summary = fields.map((f) => "· " + f.title).join("\n");
-  return {
-    fields,
-    requestedSchema: {
-      type: "object",
-      title: fields.length > 1 ? "MTNode 询问（" + fields.length + " 题）" : "MTNode 询问",
-      description: fields.length > 1 ? summary : String(ask.questions[0] && ask.questions[0].question) || "",
-      properties: Object.fromEntries(fields.map((f) => [f.name, f.schema])),
-      required: fields.map((f) => f.name),
-    },
-  };
-}
-
-/** 表单回执（{ [字段名]: 值 }）→ MTNode 的 answers[]：{ id, selected[] }。
- *  单选取字符串、多选取数组（值就是选项 label）；没作答的字段**不补空键**
- *  （补了会让模型以为用户答了「空」）。
- *  注意 id 必须回**原题 id**（renderer/app-db.js 的 ixAnswerPairsOf 按它把答案对回题面），
- *  不是 elicitation 的字段名。 */
-function answersFromContent(fields, content) {
-  const out = [];
-  for (const f of fields) {
-    const raw = content ? content[f.name] : undefined;
-    const vals = (Array.isArray(raw) ? raw : raw == null ? [] : [raw])
-      .map((v) => String(v == null ? "" : v).trim())
-      .filter(Boolean);
-    const a = { id: String(f.id || f.name) };
-    if (vals.length) a.selected = vals;
-    out.push(a);
+/** 一张询问卡里**一道题**的可读正文：题干第一行 + 空行之后的 Markdown + 选项。
+ *  手机端看到的就是这段人话（不渲染任何 JSON）。
+ *  `opts.number`：一窗多题时给每道题加「1. / 2.」序号（单题不加，免得像列表）。 */
+function readableQuestion(q, idx, opts) {
+  const o = opts || {};
+  const text = String((q && q.question) || "");
+  const nl = text.indexOf("\n\n");
+  const head = (nl >= 0 ? text.slice(0, nl) : text).trim();
+  const tail = nl >= 0 ? text.slice(nl + 2).trim() : "";
+  const options = (Array.isArray(q && q.options) ? q.options : []).filter(Boolean);
+  const lines = [];
+  lines.push((o.number ? String(idx + 1) + ". " : "") + (head || String((q && q.header) || "") || "第 " + (idx + 1) + " 问"));
+  if (q && q.detail) lines.push(String(q.detail).trim());
+  if (tail) lines.push(tail);
+  if (options.length) {
+    lines.push(
+      (q.multiSelect ? "可多选" : "单选") +
+        "：" +
+        options.map((x) => oneLine(x.label, 120) + (x.description ? "（" + oneLine(x.description, 160) + "）" : "")).join(" / "),
+    );
   }
-  return out;
+  return lines.filter(Boolean).join("\n");
 }
 
-/** 权限请求的选项：与 MTNode 卡片上的按钮一一对应（工具审批三出口，其余两出口） */
+/** 一道题的 header（可读标题；题面没给 header 时按序号生成）—— 只在可读正文里用，
+ *  MTNode 的 answers[] 按**题 id** 对齐（见 answersFromChat），不靠它。 */
+function headerOf(q, idx) {
+  const h = String((q && q.header) || "").replace(/[\r\n]+/g, " ").trim();
+  return h || "第" + (idx + 1) + "问";
+}
+
+/** MTNode 的询问卡 → 手机上那条**可读消息**的正文（本次需求的核心：普通信息，不是 JSON）。
+ *
+ *  为什么不是权限卡 / 表单：见文件头「模型的询问卡走哪条 ACP 通道」第 ③ 代那条实测结论
+ *  （ACP 的 ToolKind 没有 question，Paseo daemon 整帧拒掉；它的问句表单又不吃 ACP 的 input）。
+ *  所以这里只做一件事：把题面、选项、以及「**怎么答**」写成一段 Markdown 人话，
+ *  由 askQuestionViaChat 当普通助手消息发下去。 */
+function questionChatText(ask) {
+  const qs = Array.isArray(ask.questions) ? ask.questions : [];
+  const lines = [];
+  lines.push(qs.length > 1 ? "❓ MTNode 想问你 " + qs.length + " 个问题" : "❓ MTNode 想问你一个问题");
+  if (String(ask.detail || "").trim()) lines.push("", String(ask.detail).trim());
+  lines.push("");
+  qs.forEach((q, idx) => {
+    lines.push(readableQuestion(q, idx, { number: qs.length > 1 }));
+    lines.push("");
+  });
+  lines.push(
+    qs.length > 1
+      ? "**怎么答**：直接回一条消息就是这一问的答案（可以几条一起答）。这条回复会被当作回答送回 MTNode，不会当成新指令；想中止请按停止。"
+      : "**怎么答**：直接回一条消息就是答案。这条回复会被当作回答送回 MTNode，不会当成新指令；想中止请按停止。",
+  );
+  return lines.join("\n").trim();
+}
+
+/** 手机回的那**一条**消息 → MTNode 的 answers[]：`{ id, selected[] }`，**按题 id 对齐**
+ *  （renderer/app-db.js 的 ixAnswerPairsOf 按 id 把答案对回题面；回 header 它就对不上了）。
+ *
+ *  手机端这一版没有逐题表单（Paseo 的问句表单经 ACP 到不了，见文件头），所以一条回复就是
+ *  整张卡的答案：**逐题都填这条文本** —— 只填一题会让 MTNode 卡片上其余几题显示「（未作答）」，
+ *  模型也会以为漏答了。同时给一条可读 answerText（MTNode 侧气泡与之后的上下文都用它）。 */
+function answersFromChat(questions, text) {
+  const list = (questions || []).filter(Boolean);
+  const body = String(text == null ? "" : text).trim();
+  const answers = list.map((q, idx) => {
+    const a = { id: String((q && q.id) || "第" + (idx + 1) + "问") };
+    if (body) a.selected = [body];
+    return a;
+  });
+  const pairs = list.map(
+    (q, idx) => "· " + oneLine(headerOf(q, idx), 60) + "：" + oneLine(readableQuestion(q, idx, {}).split("\n")[0], 160) + " → " + body,
+  );
+  return {
+    answers,
+    answerText: body ? ["【我在手机上回答】"].concat(pairs).join("\n") : "",
+  };
+}
+
+/** 权限请求的选项（只管审批 / 画布确认；提问不走这条，见 askQuestionViaChat）。
+ *  与 MTNode 卡片上的按钮一一对应：允许一次（审批再多一条「本会话后续都放行」）/ 拒绝。 */
 function permissionOptions(ask) {
   const opts = [
     { optionId: "allow-once", name: "允许一次", kind: "allow_once" },
@@ -705,13 +751,17 @@ function permissionOptions(ask) {
 /**
  * 跑一次「提问通道」端到端自检，返回退出码（0 全通 / 1 某一拍断了）。
  *
- * 四拍逐个报：
- *   ① 桥进程起得来、initialize 通（含能力协商）；
- *   ② 桥把「模型提问」发成 session/elicitation（form）—— 而不是权限请求；
- *   ③ 表单应答（accept + content）被翻成 MTNode 的 answers[] 回执；
- *   ④ 回执真的落到 MTNode（/ctl session/approval）。
+ * 六拍逐个报：
+ *   ① 桥进程起得来、initialize / session/new 通；
+ *   ② 一轮真消息把会话落到 MTNode（拿到真 as… id）；
+ *   ③ MTNode 从它自己那一侧发出询问卡；
+ *   ④ 桥把它发成**一条可读的普通消息**（agent_message_chunk：题面 / 选项 / 作答方式都是人话，
+ *      正文里没有 JSON；也**不再**发 session/request_permission(kind:"question") —— ACP 没有那个
+ *      ToolKind，Paseo 会把整帧 -32602 拒掉）；
+ *   ⑤ 手机回一条 prompt（文本）= 答案：桥按 ACP 收尾（end_turn，不新起一轮）；
+ *   ⑥ 答案真的落到 MTNode（/ctl session/approval，带 answers[] + answerText）。
  *
- * 不依赖真模型：提问由 MTNode 的 demo 路径（`/ctl session/demo-question`）发出。
+ * 不依赖真模型：提问由 MTNode 的 demo 路径（`/ctl session/probe-question`）发出。
  */
 async function runQuestionProbe(server) {
   const say = (s) => process.stdout.write(s + "\n");
@@ -775,18 +825,6 @@ async function runQuestionProbe(server) {
       }, timeoutMs || 10000);
     });
   };
-  const waitNote = async (method, timeoutMs) => {
-    const until = Date.now() + (timeoutMs || 20000);
-    let seen = 0;
-    while (Date.now() < until) {
-      for (let i = seen; i < st.notes.length; i++) {
-        seen = i + 1;
-        if (String(st.notes[i].method) === method) return st.notes[i];
-      }
-      await new Promise((r) => setTimeout(r, 40));
-    }
-    return null;
-  };
   const kill = () => {
     try {
       child.stdin.end();
@@ -802,7 +840,9 @@ async function runQuestionProbe(server) {
       "initialize",
       {
         protocolVersion: 1,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, elicitation: { form: {} } },
+        /* 声明得**与真机 Paseo 一样**（它只有 fs + terminal，从不声明 elicitation）——
+           自检才算「拿真客户端的形状」验这条链，而不是验一个更理想的客户端。 */
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: true },
         clientInfo: { name: "mtnode-probe", version: "0.11.2" },
       },
       15000,
@@ -851,52 +891,80 @@ async function runQuestionProbe(server) {
       return 1;
     }
     say("✓ ③ MTNode 已发出询问卡：" + made.id);
-    const elicit = await waitNote("session/elicitation", 20000);
-    if (!elicit) {
-      const perm = st.notes.find((m) => String(m.method) === "session/request_permission");
-      say(
-        "✗ ④ 桥没发 session/elicitation（form）—— " +
-          (perm ? "改发了权限请求（回退通道）：桥没拿到 elicitation/form 能力位" : "两样都没发，问题出在桥的上游"),
-      );
+    /* ④ 桥必须把它发成**一条可读的普通消息**（agent_message_chunk）：
+       题面 / 选项 / 作答方式都是人话，正文里一个 JSON 都没有，
+       而且**不能**再发 session/request_permission(kind=question) —— ACP 的 ToolKind
+       没有 question，Paseo daemon 会把整帧 -32602 拒掉（这正是上一版的病根）。 */
+    let msg = null;
+    for (let i = 0; i < 40 && !msg; i++) {
+      msg =
+        st.notes.find(
+          (m) =>
+            String(m.method) === "session/update" &&
+            String(((m.params || {}).update || {}).sessionUpdate || "") === "agent_message_chunk" &&
+            String(((m.params || {}).update || {}).messageId || "") === "ask-" + String(made.id),
+        ) || null;
+      if (!msg) await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!msg) {
+      say("✗ ④ 桥没发这条询问消息（session/update + messageId=ask-" + made.id + "）—— 问题出在桥的上游（这一轮没收到 MTNode 的 question 帧？）");
       say("   stderr：" + oneLine(st.err, 400));
       return 1;
     }
-    const schema = (elicit.params || {}).requestedSchema || {};
-    const props = Object.keys(schema.properties || {});
-    say("✓ ④ 询问卡（elicitation/form）：" + props.length + " 个字段 · " + oneLine(JSON.stringify(schema.properties || {}), 260));
-    if (props.length < 2) {
-      say("✗ ④ 表单只有 " + props.length + " 个字段（多题没装进同一份表单）");
+    const askText = String((((msg.params || {}).update || {}).content || {}).text || "");
+    if (!askText.trim()) {
+      say("✗ ④ 询问消息是空的");
       return 1;
     }
-    /* ⑤ 应答（模拟手机表单提交）→ 核对桥翻成 MTNode 的 answers[] 并真的送达 */
-    const content = {};
-    for (const [k, v] of Object.entries(schema.properties || {})) {
-      if (v && v.type === "array") content[k] = [((v.items || {}).enum || [""])[0]];
-      else if (v && Array.isArray(v.oneOf) && v.oneOf.length) content[k] = v.oneOf[0].const;
-      else content[k] = "（自检）文本答案";
-    }
-    child.stdin.write(
-      JSON.stringify({ jsonrpc: "2.0", id: elicit.id, result: { action: "accept", content } }) + "\n",
+    const badCard = st.notes.find(
+      (m) =>
+        String(m.method) === "session/request_permission" &&
+        String(((m.params || {}).toolCall || {}).toolCallId || "") === "ask-" + String(made.id),
     );
-    let answer = null;
+    if (badCard) {
+      say("✗ ④ 又发了 session/request_permission(kind=" + String((badCard.params.toolCall || {}).kind) + ") —— ACP 没有 kind:\"question\"，Paseo 会整帧拒掉；提问只走可读消息");
+      return 1;
+    }
+    if (!/MTNode 提问通道自检/.test(askText) || !/怎么答/.test(askText)) {
+      say("✗ ④ 消息里没有可读题面 / 作答说明：" + oneLine(askText, 300));
+      return 1;
+    }
+    if (/\{\s*"/.test(askText)) {
+      say("✗ ④ 消息正文里出现了 JSON 片段（手机上又会看到 JSON）：" + oneLine(askText, 300));
+      return 1;
+    }
+    say("✓ ④ 询问消息（可读 · 无 JSON）：" + oneLine(askText, 240));
+    /* ⑤ 模拟手机作答：**回一条 prompt（文本）** —— 桥必须把它当答案、
+       不新起一轮（回 end_turn），并翻成 MTNode 的 answers[]。 */
+    const answerText = "（自检）通道正常，这是手机侧输入的答案";
+    const answerPrompt = send("session/prompt", { sessionId: sid, prompt: [{ type: "text", text: answerText }] }, 20000);
+    const ack = st.notes.find(
+      (m) =>
+        String(m.method) === "session/update" &&
+        String(((m.params || {}).update || {}).messageId || "") === "ask-ok-" + String(made.id),
+    );
+    say(ack ? "✓ ⑤ 桥回了「已交给 MTNode」的回执消息（手机上看得见作答收口）" : "· ⑤ 没看到作答回执消息（不影响回执本身）");
+    const answer = await answerPrompt;
+    if (!answer || !answer.result || answer.result.stopReason !== "end_turn") {
+      say("✗ ⑤ 那条消息没被当成答案（回的不是 end_turn）：" + oneLine(JSON.stringify(answer), 300));
+      return 1;
+    }
+    say("✓ ⑤ 手机那条消息被当作答案接住（这一轮不新起，回 end_turn）");
+    /* ⑥ 回执真的落到 MTNode：/ctl session/approval 带上 answers[]（按题 id 对齐）+ answerText */
+    let got = null;
     for (let i = 0; i < 40; i++) {
-      answer = await createMtnodeClient(server).ctl("session/probe-answer", {});
-      if (answer && answer.got) break;
+      got = await createMtnodeClient(server).ctl("session/probe-answer", {});
+      if (got && got.got) break;
       await new Promise((r) => setTimeout(r, 250));
     }
-    const receipt = st.notes.find(
-      (m) => String(m.method) === "session/update" && (m.params || {}).update &&
-        (m.params.update || {}).toolCallId === "ask-" + String(made.id),
-    );
-    say(receipt ? "✓ ⑤ 桥回了回执帧（手机端那张卡会收口）" : "· ⑤ 没看到回执帧（tool_call_update）");
-    if (answer && answer.got && Array.isArray(answer.answers) && answer.answers.length) {
-      const withSel = answer.answers.filter((a) => a && Array.isArray(a.selected) && a.selected.length);
-      say("✓ ⑥ MTNode 收到 answers[]：" + oneLine(JSON.stringify(answer.answers), 400));
-      if (withSel.length) {
-        say("== 提问通道自检通过：手机端能弹表单卡、答案能回到 MTNode ==");
+    if (got && got.got && Array.isArray(got.answers) && got.answers.length) {
+      const withSel = got.answers.filter((a) => a && Array.isArray(a.selected) && a.selected.length);
+      say("✓ ⑥ MTNode 收到 answers[]：" + oneLine(JSON.stringify(got.answers), 400));
+      if (withSel.length === got.answers.length && withSel.every((a) => a.selected[0] === answerText)) {
+        say("== 提问通道自检通过：手机端看到的是可读的普通消息，文本作答能回到 MTNode ==");
         return 0;
       }
-      say("✗ ⑥ 答案到了但没带上选项值（selected 为空）—— 回执映射有问题");
+      say("✗ ⑥ 答案到了但对不上（每题都该拿到这条文本）—— 回执映射有问题");
       return 1;
     }
     say("✗ ⑥ MTNode 没收到 answers[] —— 断在回执这一段");
@@ -972,11 +1040,8 @@ async function main() {
       );
       lines.push("configOptions(model): " + (modelConfigOptions(models).length ? "已露出" : "没露出（模型清单为空）"));
       /* 提问通道：静态自检时**没有客户端连着**，所以这里只能报口径；真机那一枪由
-         `--probe-question` 跑（它自己当客户端，逐拍验完）。两句话摆在一起，省得排障时
-         把「静态自检没报 elicitation」误读成坏消息。 */
-      lines.push(
-        "ask channel: question → session/elicitation(form)/回退 session/request_permission（客户端是否声明 elicitation.form 由真机那一枪决定）",
-      );
+         `--probe-question` 跑（它自己当客户端，逐拍验完）。 */
+      lines.push(ASK_CHANNEL_NOTE);
       lines.push("ask self-check: " + path.join(HERE, "acp-bridge.mjs") + " --probe-question（控制台「提问通道自检」同一份）");
       try {
         const sessions = await mtnodeSessions(server, 200);
@@ -995,12 +1060,12 @@ async function main() {
 
   /* --probe-question：提问通道自检
      拿本文件当 ACP provider 跑一次**真桥**（子进程），自己当客户端把「模型提问」那一枪
-     走完：initialize（带 elicitation/form 能力）→ session/new → 让桥发一张询问卡
-     （经 MTNode 的真实提问路径：/ctl session/demo-question）→ 表单应答 → 核对回执真的
-     落到 MTNode（/ctl session/approval，带 answers[]）。
+     走完：initialize（能力位与真机 Paseo 同形）→ session/new → 让桥发一张询问卡
+     （经 MTNode 的真实提问路径：/ctl session/probe-question）→ 按 question 卡作答 → 核对
+     回执真的落到 MTNode（/ctl session/approval，带 answers[]）。
      为什么要有它：手机上「询问框没弹出 / 答了回不到 MTNode」时，光看日志分不清断在
-     「桥没发」「客户端没声明能力」「客户端不渲染」「回执送不回去」哪一拍 ——
-     这条自检把四拍逐个报出来（控制台一键跑，见 paseo/ui）。 */
+     「桥没发」「卡的类型不对」「客户端不渲染」「回执送不回去」哪一拍 ——
+     这条自检把六拍逐个报出来（控制台一键跑，见 paseo/ui）。 */
   if (argv.includes("--probe-question")) {
     return runQuestionProbe(server);
   }
@@ -1008,15 +1073,26 @@ async function main() {
   /* stdio ACP 主循环 */
   let buf = "";
   /** 本桥发出去的 session/request_permission：id → { resolve, sessionId, ask }。
-   *  客户端（Paseo）的应答从 stdin 回来，按 id 认领 —— 认不到就是别的请求（这里没有）。 */
+   *  客户端（Paseo）的应答从 stdin 回来，按 id 认领 —— 认不到就是别的请求（这里没有）。
+   *  **只有审批卡 / 画布确认卡走这张表**：ACP 里「向人要输入」也就这一条通道被普遍实现，
+   *  而提问（question）走聊天消息 + 下一条消息作答（见文件头第 ④ 代口径 / textAsks）。 */
   const askWaiters = new Map();
-  /** 本桥发出去的 session/elicitation（form 模式的询问卡）：id → { resolve, sessionId, fields }。
-   *  与权限请求同一套「按 id 认领应答」的口径，只是应答形状不同
-   *  （{ result: { action, content } } 而不是 { result: { outcome } }）。 */
-  const elicitWaiters = new Map();
+  /** ACP sessionId → 一张「等手机文本作答」的询问（`kind:"question"`）：
+   *  `{ ask, mtnodeId, qs, at }`。手机下一条 session/prompt 的正文就是答案（answerPendingAsk），
+   *  在那之前 MTNode 那一轮一直挂着等人；这一轮自己收了尾 / 超时就把挂起项删掉。 */
+  const textAsks = new Map();
+  /** ACP sessionId → 定时器：手机 interrupt 之后多久还没等到那条答案 prompt，
+   *  就当「用户真的按了停止」，照常停 MTNode 那一轮（见 session/cancel 的第一支）。 */
+  const answerGrace = new Map();
+  /** 手机上那条答案到了：撤掉宽限定时器（那一轮不该被停）。 */
+  function clearAnswerGrace(sid) {
+    const key = String(sid || "");
+    const g = answerGrace.get(key);
+    if (!g) return;
+    clearTimeout(g);
+    answerGrace.delete(key);
+  }
   let askCounter = 0;
-  /** 客户端在 initialize 里声明的能力（置 true 才能用 elicitation 发询问卡） */
-  let clientSupportsElicitation = false;
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
     buf += chunk;
@@ -1032,24 +1108,25 @@ async function main() {
         continue;
       }
       dbg("←", msg);
-      /* ① 先看是不是「我们发出去的请求」的应答（session/request_permission / session/elicitation） */
+      /* ① 先看是不是「我们发出去的请求」的应答（session/request_permission：审批 / 画布确认 /
+         询问卡都走它）。提问卡的回执除了 optionId 还带 **updatedInput**（手机端填好的表单），
+         少了它答案就白答了 —— 所以一并取下来。 */
       if (msg && msg.id !== undefined && msg.method === undefined) {
-        const ew = elicitWaiters.get(msg.id);
-        if (ew) {
-          elicitWaiters.delete(msg.id);
-          const res = msg.result || {};
-          ew.resolve({
-            action: String(res.action || (msg.error ? "error" : "")),
-            content: res.content && typeof res.content === "object" ? res.content : null,
-            error: msg.error ? String(msg.error.message || "") : "",
-          });
-          continue;
-        }
         const w = askWaiters.get(msg.id);
         if (w) {
           askWaiters.delete(msg.id);
           const oc = (msg.result && msg.result.outcome) || {};
-          w.resolve(oc.optionId ? { optionId: String(oc.optionId) } : null);
+          w.resolve(
+            oc.optionId
+              ? {
+                  optionId: String(oc.optionId),
+                  updatedInput:
+                    msg.result && msg.result.updatedInput && typeof msg.result.updatedInput === "object"
+                      ? msg.result.updatedInput
+                      : null,
+                }
+              : null,
+          );
           continue;
         }
       }
@@ -1069,17 +1146,12 @@ async function main() {
     /* ── initialize：版本与能力协商 ── */
     if (method === "initialize") {
       const clientVersion = String((p.clientInfo && p.clientInfo.version) || "");
-      /* 客户端声明的能力要**记下来**：form 模式的 elicitation 是模型询问卡的通道，
-         不声明就只能回退权限请求（手机上那张卡就装不下题面与选项）。
-         ★ 只在这一次 initialize **真带了** clientCapabilities 时才更新：客户端可能先探一次
-         （不带能力位 / 老客户端），后一次才带全 —— 不能被后到的空能力位把已有能力抹掉。
-         （真机同形：Paseo 刷新 provider 清单时也会再发一次会话探针。） */
-      if (p.clientCapabilities && typeof p.clientCapabilities === "object") {
-        clientSupportsElicitation = elicitationFormSupported(p.clientCapabilities);
-      }
+      /* 客户端能力位**不参与提问通道的选择**（提问统一走一条可读聊天消息 + 下一条消息作答，
+         见文件头「模型的询问卡走哪条 ACP 通道」第 ④ 代口径）。这里只把它打进 debug 日志，
+         排障时能一眼看出对端声明了什么。 */
       dbg(
-        "客户端能力：elicitation.form=" + (clientSupportsElicitation ? "有" : "无") +
-          " · client=" + oneLine(JSON.stringify(p.clientCapabilities || {}), 300),
+        "客户端能力：" + oneLine(JSON.stringify(p.clientCapabilities || {}), 300) +
+          " · 提问通道不依赖 elicitation（走可读消息 + 手机文本作答）",
       );
       const gate = clientVersionAllowed(clientVersion);
       if (gate.why) dbg("版本闸：" + gate.why);
@@ -1375,6 +1447,7 @@ async function main() {
       const sid = String(p.sessionId || "");
       pending.delete(sid);
       sessions.delete(sid);
+      textAsks.delete(sid);
       return reply(id, {});
     }
 
@@ -1391,6 +1464,28 @@ async function main() {
         .trim();
       if (!text) return replyErr(id, -32602, "只支持文本消息（这一版不转发图片 / 附件）");
       if (!server.ok) return replyErr(id, -32000, "接不上 MTNode：" + server.error);
+
+      /* ── 先看这条消息是不是「在回答一张问卡」（见文件头第 ④ 代口径）──
+         手机端没有逐题表单：题面是我们发下去的一条可读消息，**用户的回复就是答案**。
+         答上了就把 answers[] 打回 MTNode（不新起一轮）；那张卡已经失效（电脑上答过 /
+         那一轮已收尾）就落下去按普通消息发，绝不吞掉用户的话。 */
+      const pendingAsk = textAsks.get(sid);
+      if (pendingAsk) {
+        const answered = await answerPendingAsk(sid, text);
+        if (answered.ok) {
+          /* 手机的这条消息正是刚才那一枪 interrupt 要送的东西：别再把 MTNode 那一轮停掉 */
+          clearAnswerGrace(sid);
+          notify("session/update", {
+            sessionId: sid,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              messageId: "ask-ok-" + pendingAsk.ask.id,
+              content: { type: "text", text: "✅ 已把你的回答交给 MTNode（这一轮接着往下跑）。" },
+            },
+          });
+          return reply(id, { stopReason: "end_turn" });
+        }
+      }
 
       const client = createMtnodeClient(server);
       const rec = sessions.get(sid) || {};
@@ -1420,14 +1515,25 @@ async function main() {
       };
       setTurn(turn, sid, targetId);
 
-      const finish = (reason) => {
-        if (turn.done) return;
-        turn.done = true;
+      /** 收掉这一轮的流与登记（**不回执**）—— 回执由 finish 负责，或早已回过（手机作答那一路）。 */
+      const settle = () => {
         clearTimeout(turn.timer);
+        const grace = answerGrace.get(sid);
+        if (grace) {
+          clearTimeout(grace);
+          answerGrace.delete(sid);
+        }
         try {
           turn.stream && turn.stream.close();
         } catch {}
         dropTurn(sid, turn.mtnodeId);
+      };
+      turn.settle = settle;
+
+      const finish = (reason) => {
+        if (turn.done) return;
+        turn.done = true;
+        settle();
         reply(id, { stopReason: reason });
       };
 
@@ -1462,14 +1568,19 @@ async function main() {
         (ev) => {
           const t = String(ev.type || "");
           if (t === "round-end" || t === "done") {
-            /* 一轮收尾：等 MTNode 的 done 到了才回 stopReason（不外泄内部帧） */
+            /* 一轮收尾：等 MTNode 的 done 到了才回 stopReason（不外泄内部帧）。
+               这一轮若因为「手机先 interrupt 再作答」已经回过执（turn.done），就只收流；
+               顺手把这一轮挂着的问卡撤掉 —— MTNode 那边这一轮已经结束（电脑上答过 /
+               手机上答过 / 被停），挂起项再留着只会误吞用户的下一条消息。 */
+            textAsks.delete(sid);
             if (!started) pendingEv.push(ev);
+            else if (turn.done) settle();
             else finish(turn.cancelled ? "cancelled" : "end_turn");
             return;
           }
           const ask = askOfEvent(mid, ev);
           if (ask) {
-            void askPermission(sid, mid, ask, turn);
+            void askPermission(sid, mid, ask);
             return;
           }
           const upd = toAcpUpdate(mid, ev);
@@ -1491,11 +1602,7 @@ async function main() {
         /* 只有这一条出口能回 id 的 error：**先撤掉 turn**，别再让 finish 回一次 result
            （同一 id 回两条 = 客户端把它当重复帧丢掉，还会留下一条假 stopReason）。 */
         turn.done = true;
-        clearTimeout(turn.timer);
-        try {
-          turn.stream && turn.stream.close();
-        } catch {}
-        dropTurn(sid, turn.mtnodeId);
+        settle();
         return replyErr(id, -32000, "发不出去：" + ((e && e.message) || e));
       }
       for (const ev of pendingEv.splice(0)) {
@@ -1510,6 +1617,33 @@ async function main() {
     if (method === "session/cancel") {
       const sid = String(p.sessionId || "");
       const t = liveTurn(sid);
+      /* 手机上「发一条消息」= **先 interrupt 再 prompt**（Paseo 默认 activeTurnBehavior =
+         "interrupt"，见 daemon 的 session.js / agent-manager.replaceAgentRun）—— 正等作答时，
+         这一枪打断不是要停这一轮，而是为了把「答案」发过来（见文件头第 ④ 代口径）。
+         所以这一支：不打 MTNode 的 session/stop、也不回收事件流（模型接着跑的输出照旧推到手机），
+         只按 ACP 要求把旧那一枪以 cancelled 收尾（客户端在等它），随后那条 prompt 就是答案。
+         真按「停止」的情况由 ANSWER_WAIT_AFTER_CANCEL_MS 兜底：等不到那条 prompt 就照常停。 */
+      const pendingAsk = textAsks.get(sid);
+      if (pendingAsk) {
+        if (t && !t.done) {
+          t.done = true; /* 已经回过执了：别让 finish 再回一次 */
+          t.cancelled = false; /* 这不是「这一轮被取消」—— 它还在 MTNode 那边等人作答 */
+          clearTimeout(t.timer);
+          reply(t.id, { stopReason: "cancelled" });
+        }
+        const prevGrace = answerGrace.get(sid);
+        if (prevGrace) clearTimeout(prevGrace);
+        const grace = setTimeout(() => {
+          answerGrace.delete(sid);
+          textAsks.delete(sid);
+          dbg("打断后没等到答案（用户真的按了停止）—— 照常停 MTNode 这一轮");
+          void stopTurnOnCancel(sid, pendingAsk.mtnodeId, liveTurn(sid));
+        }, ANSWER_WAIT_AFTER_CANCEL_MS);
+        if (grace && typeof grace.unref === "function") grace.unref();
+        answerGrace.set(sid, grace);
+        dbg("cancel 落在正等作答的那一轮上：不停 MTNode，等手机那条答案");
+        return isNotification ? undefined : reply(id, {});
+      }
       if (t) t.cancelled = true;
       /* 叫停要打 MTNode 那条**真会话**（as…），不是桥侧的 sessionId */
       const stopId = String((t && t.mtnodeId) || (sessions.get(sid) || {}).mtnodeId || sid);
@@ -1527,11 +1661,14 @@ async function main() {
           const cur = liveTurn(sid);
           if (cur === t && !t.done) {
             t.done = true;
-            clearTimeout(t.timer);
-            try {
-              t.stream && t.stream.close();
-            } catch {}
-            dropTurn(sid, t.mtnodeId);
+            if (typeof t.settle === "function") t.settle();
+            else {
+              clearTimeout(t.timer);
+              try {
+                t.stream && t.stream.close();
+              } catch {}
+              dropTurn(sid, t.mtnodeId);
+            }
             reply(t.id, { stopReason: "cancelled" });
           }
         }, 1500);
@@ -1543,105 +1680,42 @@ async function main() {
     return replyErr(id, -32601, "本桥不支持这个方法：" + method);
   }
 
-  /** 把 MTNode 那张「停下来等人」的卡交给 Paseo（客户端弹给手机），按用户的选择回执。
+  /** 真按了「停止」（打断后没等到那条答案 prompt）：照旧停 MTNode 那一轮并收掉事件流。
+   *  ACP 那一侧早已以 cancelled 回执过（见 session/cancel 的第一支），这里只做 MTNode 侧的收尾。 */
+  async function stopTurnOnCancel(sessionId, mtnodeId, t) {
+    const stopId = String(mtnodeId || (t && t.mtnodeId) || (sessions.get(sessionId) || {}).mtnodeId || sessionId);
+    if (server.ok) {
+      try {
+        await createMtnodeClient(server).ctl("session/stop", { sessionId: stopId });
+      } catch (e) {
+        dbg("cancel failed", (e && e.message) || e);
+      }
+    }
+    if (t && typeof t.settle === "function") t.settle();
+  }
+
+  /** 把 MTNode 那张「停下来等人」的卡交给手机，按用户的选择回执。
    *
-   *  **两条通道**：
-   *   · `question`（模型提问 / 收尾确认卡）→ `session/elicitation`（form）：题面、选项、
-   *     多选、自由文本都能装，回执是 `{ action, content }`，再翻成 MTNode 的 answers[]；
-   *   · `approval` / `canvas`（审批 / 画布确认）→ `session/request_permission`：本来就是
-   *     「允许 / 拒绝」两三个按钮的事，走权限请求最贴切。
-   *  客户端**没声明** form elicitation 时，提问回退权限请求（题面塞进 toolCall.title /
-   *  content，选项只留 允许一次 / 拒绝）—— 那张卡答不出模型要的答案，所以同时推一条说明帧
-   *  告诉用户「到电脑上答」。绝不自己也弹一张假的、也绝不代答。
+   *  **两条通道，按卡片类型分流**（口径见文件头「模型的询问卡走哪条 ACP 通道」）：
+   *   · `question`（模型提问 / 收尾确认卡）→ **普通聊天消息**（questionChatText，题面可读、
+   *     一个 JSON 都没有）+ 手机下一条消息作答（askQuestionViaChat）；
+   *   · `approval` / `canvas`（审批 / 画布确认）→ `session/request_permission`
+   *     （toolCall.kind:"other"，本来就是「允许 / 拒绝」几个按钮的事）。
+   *  客户端的卡片渲染不出来时**至少也是人话**：题面与选项都在正文 / 标题里，
+   *  绝不把 MTNode 事件的原始 JSON 塞给它看。
    *
    *  Paseo 没答 / 断了 → 什么都不回执：MTNode 那边**永久等待**（共识：断线不自动拒绝）。
    *
    *  两个 id 别混：**通知给客户端的 sessionId 必须是 ACP 那个**（客户端按它归位这条会话），
    *  而打回 MTNode 的回执必须带**真 as… 会话 id**（否则回执落不到那条会话上）。 */
-  async function askPermission(sessionId, mtnodeId, ask, turn) {
-    if (ask.kind === "question" && clientSupportsElicitation) {
-      return askQuestionViaElicitation(sessionId, mtnodeId, ask);
-    }
-    return askPermissionViaPermission(sessionId, mtnodeId, ask);
-  }
-
-  /** 询问卡（form elicitation）：一份表单装下全部问题。 */
-  async function askQuestionViaElicitation(sessionId, mtnodeId, ask) {
-    const client = createMtnodeClient(server);
-    const form = questionForm(ask);
-    const reqId = 900000 + (askCounter += 1);
-    const p = new Promise((resolve) => {
-      elicitWaiters.set(reqId, { resolve, sessionId, fields: form.fields });
-    });
-    dbg(
-      "问卡（elicitation/form）：题数=" + form.fields.length +
-        " 字段=" + form.fields.map((f) => f.name + ":" + (f.options.length ? (f.multiSelect ? "多选" : "单选") + f.options.length : "文本")).join(","),
-    );
-    out({
-      jsonrpc: "2.0",
-      id: reqId,
-      method: "session/elicitation",
-      params: {
-        sessionId,
-        message: ask.title + (form.fields.length > 1 ? "（" + form.fields.length + " 题）" : "") +
-          "\n" + form.fields.map((f) => "· " + oneLine(f.title, 120)).join("\n"),
-        mode: "form",
-        requestedSchema: form.requestedSchema,
-      },
-    });
-    let ans = null;
-    try {
-      ans = await Promise.race([
-        p,
-        new Promise((r) => setTimeout(() => r(null), ASK_TIMEOUT_MS)),
-      ]);
-    } finally {
-      elicitWaiters.delete(reqId);
-    }
-    if (!ans) {
-      /* 客户端把这一枪丢了（断开 / 一直没答）：MTNode 那边继续等，什么都不回执 */
-      dbg("问卡没有回执（客户端没答）");
-      return;
-    }
-    const action = String(ans.action || "");
-    if (action !== "accept") {
-      /* decline / cancel / error：用户明确没作答。**不代答、也不拒绝** ——
-         卡交给发起轮自己收（宿主「中断任务」才是那条失败路径）。 */
-      dbg("问卡未作答：action=" + (action || "(空)") + (ans.error ? " err=" + ans.error : ""));
-      return;
-    }
-    const answers = answersFromContent(form.fields, ans.content || {});
-    dbg("问卡回执：answers=" + oneLine(JSON.stringify(answers), 400));
-    await receiptToMtnode(sessionId, mtnodeId, ask, "answered", answers);
-  }
-
-  /** 提问的**回退**通道（客户端不支持 elicitation）：权限请求 + 一条说明帧。
-   *  说明写的是实话：那张权限卡只能回「允许一次 / 拒绝」，答不出模型要的答案。 */
-  async function askPermissionViaPermission(sessionId, mtnodeId, ask) {
-    notify("session/update", {
-      sessionId,
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        content: {
-          type: "text",
-          text:
-            "\n\n⚠️ 这台手机端不支持表单问答（ACP elicitation/form）：模型提的问题在这里只能回「允许一次 / 拒绝」，" +
-            "答不出它要的答案。请在电脑上的 MTNode 询问卡里回答，模型会继续等。\n",
-        },
-      },
-    });
+  async function askPermission(sessionId, mtnodeId, ask) {
+    if (ask.kind === "question") return askQuestionViaChat(sessionId, mtnodeId, ask);
     return askPermissionViaPermissionRaw(sessionId, mtnodeId, ask);
   }
 
-  /** 审批 / 画布确认（以及提问的回退）：session/request_permission，按选择的 optionId 回执。 */
-  async function askPermissionViaPermissionRaw(sessionId, mtnodeId, ask) {
-    const client = createMtnodeClient(server);
-    const options = permissionOptions(ask);
-    const reqId = 900000 + (askCounter += 1);
-    const p = new Promise((resolve) => {
-      askWaiters.set(reqId, { resolve, sessionId, ask });
-    });
-    out({
+  /** 组装一张权限卡的帧（审批 / 画布确认用）。 */
+  function permissionFrame(sessionId, reqId, ask, toolCallKind, extra) {
+    return {
       jsonrpc: "2.0",
       id: reqId,
       method: "session/request_permission",
@@ -1650,13 +1724,20 @@ async function main() {
         toolCall: {
           toolCallId: "ask-" + ask.id,
           title: ask.title,
-          kind: "other",
+          kind: toolCallKind,
           status: "pending",
-          rawInput: ask.raw,
           ...(ask.detail ? { content: [{ type: "content", content: { type: "text", text: ask.detail } }] } : {}),
+          ...(extra || {}),
         },
-        options,
+        options: permissionOptions(ask),
       },
+    };
+  }
+
+  /** 发出这张卡，等用户作答（超时 / 断开都回 null，由调用方决定怎么收）。 */
+  async function awaitAsk(reqId, ask) {
+    const p = new Promise((resolve) => {
+      askWaiters.set(reqId, { resolve, sessionId: "", ask });
     });
     let ans = null;
     try {
@@ -1667,31 +1748,105 @@ async function main() {
     } finally {
       askWaiters.delete(reqId);
     }
-    if (!ans) return; /* 客户端把这一枪丢了（断开）：MTNode 那边继续等 */
-    const outcome = String(ans.optionId || "");
-    const mapped = outcome === "reject" ? "rejected" : outcome === "allow-session" ? "allowed-session" : "allowed-once";
-    await receiptToMtnode(sessionId, mtnodeId, ask, mapped, null);
+    return ans;
   }
 
-  /** 把用户的选择送回 MTNode（两条通道共用）：
-   *  先给手机一个明确的回执帧（tool_call_update），再调 /ctl 的 session/approval。 */
-  async function receiptToMtnode(sessionId, mtnodeId, ask, outcome, answers) {
-    const client = createMtnodeClient(server);
+  /** 询问卡（**普通聊天消息** + 手机下一条消息作答）：一份消息装下全部问题。
+   *
+   *  为什么不走权限卡 / 表单：见文件头第 ③ 代那条实测结论（ACP 的 ToolKind 没有 question，
+   *  Paseo daemon 会把整帧 -32602 拒掉；它的问句表单又只认自己 provider 填的 input）。
+   *  于是把题面写成一段可读 Markdown 当普通助手消息发下去，答案就是用户的下一条消息：
+   *  由 session/prompt 那一支接住（answerPendingAsk），翻成 answers[] 打回 MTNode。
+   *
+   *  这里**不 await**（不占着这一轮的事件流）：这一轮还挂在 MTNode 那边等人，
+   *  手机随时可以答；答了、或那一轮自己收了尾（电脑上答过 / 被停），这个挂起项就作废。 */
+  async function askQuestionViaChat(sessionId, mtnodeId, ask) {
+    const qs = Array.isArray(ask.questions) ? ask.questions : [];
+    const text = questionChatText(ask);
+    /* 同一会话又来一张问卡：旧的作废（MTNode 一次只会挂一张，新的一定是最新的） */
+    textAsks.set(sessionId, { ask, mtnodeId, qs, at: Date.now() });
     notify("session/update", {
       sessionId,
       update: {
-        sessionUpdate: "tool_call_update",
-        toolCallId: "ask-" + ask.id,
-        status: outcome === "rejected" ? "failed" : "completed",
+        sessionUpdate: "agent_message_chunk",
+        messageId: "ask-" + ask.id,
+        content: { type: "text", text },
       },
     });
+    dbg(
+      "问卡（聊天消息）：题数=" + qs.length +
+        " 题=" +
+        qs.map((q, i) => headerOf(q, i) + ":" + ((q.options || []).length ? ((q.multiSelect ? "多选" : "单选") + q.options.length) : "文本")).join(",") +
+        " · 等手机回一条消息作答",
+    );
+  }
+
+  /** 手机那一条消息 → 答案：翻成 answers[] / answerText 打回 MTNode。
+   *  返回 `{ ok:true }` = 已送达（调用方别再把它当新消息发下去）；
+   *  `{ ok:false, stale:true }` = MTNode 明确说这张卡已经失效（电脑上答过 / 那一轮已结束）——
+   *  调用方要把这条消息**按普通消息**继续下发，别吞掉用户的话。 */
+  async function answerPendingAsk(sessionId, text) {
+    const rec = textAsks.get(sessionId);
+    if (!rec) return { ok: false };
+    if (Date.now() - rec.at > TEXT_ASK_TTL_MS) {
+      textAsks.delete(sessionId);
+      dbg("挂起的问卡超时作废（" + Math.round(TEXT_ASK_TTL_MS / 60000) + " 分钟）—— 这条消息按普通消息下发");
+      return { ok: false };
+    }
+    textAsks.delete(sessionId);
+    const fromChat = answersFromChat(rec.qs, text);
+    const r = await receiptToMtnode(sessionId, rec.mtnodeId, rec.ask, "answered", fromChat.answers, fromChat.answerText, {
+      card: false,
+    });
+    if (!r || r.stale || r.ok === false) {
+      dbg("这条消息没被当成答案（那张问卡已失效 / 回执没送到）—— 按普通消息下发");
+      return { ok: false, stale: !!(r && (r.stale || r.ok === false)) };
+    }
+    dbg("手机上作答：answers=" + oneLine(JSON.stringify(fromChat.answers), 400));
+    return { ok: true };
+  }
+
+  /** 审批 / 画布确认：session/request_permission，按选择的 optionId 回执。
+   *  提问**不走这里**（它走 askQuestionViaChat 的聊天消息）。 */
+  async function askPermissionViaPermissionRaw(sessionId, mtnodeId, ask) {
+    const reqId = 900000 + (askCounter += 1);
+    out(permissionFrame(sessionId, reqId, ask, "other", null));
+    const ans = await awaitAsk(reqId, ask);
+    if (!ans) return; /* 客户端把这一枪丢了（断开）：MTNode 那边继续等 */
+    const outcome = String(ans.optionId || "");
+    const mapped = outcome === "reject" ? "rejected" : outcome === "allow-session" ? "allowed-session" : "allowed-once";
+    await receiptToMtnode(sessionId, mtnodeId, ask, mapped, null, null);
+  }
+
+  /** 把用户的选择送回 MTNode（各条路共用）：
+   *  先给手机一个明确的回执帧（tool_call_update），再调 /ctl 的 session/approval。
+   *  提问那条要带 `answers[]`（按题 id 对齐）与一条可读 `answerText` —— MTNode 的
+   *  renderer/app-session-bridge.js 认这两样（`selected[]` 是给界面按钮用的下脚料，不用）。
+   *  `opts.card === false`：这条通道**本来就没有工具卡**（提问走聊天消息）—— 别再发
+   *  tool_call_update：ACP 客户端收到陌生 toolCallId 的更新会**新建**一张工具卡
+   *  （手机上又是一张「Other」+ JSON，正是本次要修掉的现场）。
+   *  返回值 = /ctl 的应答（调用方据此判 stale），送不出去时为 null。 */
+  async function receiptToMtnode(sessionId, mtnodeId, ask, outcome, answers, answerText, opts) {
+    const o = opts || {};
+    const client = createMtnodeClient(server);
+    if (o.card !== false) {
+      notify("session/update", {
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "ask-" + ask.id,
+          status: outcome === "rejected" ? "failed" : "completed",
+        },
+      });
+    }
     try {
-      await client.ctl("session/approval", {
+      return await client.ctl("session/approval", {
         id: ask.id,
         sessionId: mtnodeId,
         kind: ask.kind,
         outcome,
         ...(ask.kind === "question" && Array.isArray(answers) ? { answers } : {}),
+        ...(ask.kind === "question" && answerText ? { answerText } : {}),
       });
     } catch (e) {
       notify("session/update", {
@@ -1701,6 +1856,7 @@ async function main() {
           content: { type: "text", text: "\n\n⚠️ 回执没能送到 MTNode：" + ((e && e.message) || e) + "\n" },
         },
       });
+      return null;
     }
   }
 }

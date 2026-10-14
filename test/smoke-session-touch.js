@@ -195,7 +195,6 @@ const SLICE = [
   "function wsGroupOf(ws) {",
   "function activeAgentId() {",
   "function agentSessions() {",
-  "function agentTrimSessionMessages(st) {",
   "function renderAgentSessionSidebar() {",
 ];
 
@@ -285,7 +284,6 @@ function makeSandbox(sessions, opts) {
   vm.runInContext(
     "S._sessionDirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();\n" +
       "const AGENT_SAVE_MS = 500;\n" +
-      "const AGENT_MSG_KEEP_MAX = 1920;\n" +
       "S._sessionBodyWait = S._sessionBodyWait instanceof Map ? S._sessionBodyWait : new Map();\n" +
       'const AGENT_PRESET_DEFAULT = "standard";\n' +
       SLICE.map((h) => funcBody(ASSIST, h)).join("\n") +

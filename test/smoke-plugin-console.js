@@ -96,6 +96,8 @@ function mkCardEl(tag) {
     setAttribute(k, v) { el.attrs[k] = String(v); },
     getAttribute(k) { return el.attrs[k]; },
     appendChild(c) { c.parentNode = el; el.children.push(c); return c; },
+    /* 与 DOM 同口径：childElementCount 就是子元素个数（卡片「骨架先画」靠它判断动作行空不空） */
+    get childElementCount() { return el.children.length; },
     querySelector(sel) {
       const want = String(sel).replace(/^\[|\]$/g, "");
       const walk = (n) => {
@@ -111,7 +113,15 @@ function mkCardEl(tag) {
   };
   Object.defineProperty(el, "className", { get: () => el._cls, set: (v) => { el._cls = String(v); } });
   Object.defineProperty(el, "textContent", { get: () => el._text, set: (v) => { el._text = String(v); el.children.length = 0; } });
-  Object.defineProperty(el, "innerHTML", { get: () => el._html, set: (v) => { el._html = String(v); } });
+  /* 与 DOM 同口径：innerHTML = "" 会清掉原有子节点（卡片「骨架先画 → 状态回来整行重画」
+     正是靠它清场；桩不照这个行为，断言就会看到骨架 + 终态两套按钮叠在一起） */
+  Object.defineProperty(el, "innerHTML", {
+    get: () => el._html,
+    set: (v) => {
+      if (!v) el.children.length = 0;
+      el._html = String(v);
+    },
+  });
   return el;
 }
 /* ═══════ 真跑一遍共用卡片：把 refreshBackendPluginCard 拉进沙箱（配最小 DOM 与桥桩）═══════
@@ -313,6 +323,31 @@ const TAIL_BRIDGE = {
   ]) {    hasnt(pluginsSrc, "function " + name + "(", "app-plugins.js 不再有 " + name + "（安装进度不上卡片）");
   }
   has(pluginsSrc, "function repaintPluginCard(", "有统一的卡片重画入口（安装跑完重画用）");
+  /* 本轮需求：重画分派表必须覆盖**每一个后端 kind**（paseo 曾漏过 → 装完卡片被画成窗口插件那套） */
+  {
+    const seg = pluginsSrc.slice(
+      pluginsSrc.indexOf("function repaintPluginCard("),
+      pluginsSrc.indexOf("async function refreshWindowPluginCard("),
+    );
+    for (const k of [...Object.keys(PLUGINS), "paseo"]) {
+      has(seg, k + ": refresh", "重画分派表登记了 kind " + k + "（漏一个就会被画成窗口插件）");
+    }
+    hasnt(seg, "paseo: refreshWindowPluginCard", "paseo 不走窗口插件兜底分支");
+  }
+  /* 本轮需求：先画骨架、再补状态 —— 状态查询要起外部进程（paseo 最慢），等它回来才画按钮就是
+     「打开插件窗先没有按钮，过几秒才出来」的现场 */
+  {
+    const skeletonAt = backendCard.indexOf("actions.childElementCount");
+    const awaitAt = backendCard.indexOf("await statusFn()");
+    ok(
+      skeletonAt > 0 && awaitAt > skeletonAt,
+      "骨架先画：动作行空着时先画「控制台 + 灰态安装占位」，再去 await 状态",
+    );
+    has(backendCard, 'I18n.t("正在读取插件状态…")', "占位那颗写明「正在读取插件状态…」（工具提示说清为什么不可点）");
+    has(backendCard, 'mkPluginActBtn("console", I18n.t("控制台"), openConsole)', "控制台那颗立刻可用（与状态无关，不等查询）");
+    has(backendCard, "disabled: true", "占位那颗置灰不可点（状态没回来之前不假装能装）");
+    has(backendCard, 'actions.innerHTML = ""', "状态回来后整行重画成最终形态（骨架不残留）");
+  }
   has(pluginsSrc, "onMtnodeInstallFinished", "插件对话框订阅「安装窗跑完」事件并重画卡片");
   has(preloadSrc, "onMtnodeInstallFinished:", "preload 暴露安装终局订阅 mtnodeInstall:finished");
   has(pluginsSrc, 'I18n.t("后端运行中")', "状态行写「后端运行中」");
@@ -757,6 +792,55 @@ const TAIL_BRIDGE = {
       c.textNodes.length === 0,
       label + "：卡片上除动作区外没有任何节点（实到 " + JSON.stringify(c.textNodes) + "）",
     );
+  }
+
+  /* ═════════ [13] 本轮需求：信息入口 = 封面右上角 ⓘ（卡片本体不再可点） ═════════
+     两条一起钉：① 浮层入口只剩 ⓘ；② 浮层自己多了显式出口（✕ / Esc），
+     出口口径与 AGENTS.md 一致（不算「点外部即关」）。 */
+  console.log("\n[13] 插件信息入口：封面右上角 ⓘ + 浮层的显式关闭（✕ / Esc）");
+  {
+    const popSrc = fnBody(pluginsSrc, "openPluginPop");
+    has(pluginsSrc, "function mountPluginPopClose(", "有把 ✕ 挂进浮层的唯一入口 mountPluginPopClose");
+    has(fnBody(pluginsSrc, "mountPluginPopClose"), "closePluginPop(wrap, pop)", "✕ 只关浮层（不关插件窗）");
+    has(fnBody(pluginsSrc, "mountPluginPopClose"), 'I18n.t("关闭")', "✕ 的可读名走 i18n「关闭」");
+    ok(
+      (popSrc.match(/mountPluginPopClose\(wrap, pop\)/g) || []).length >= 2,
+      "两条分支（用户自建插件面板 / 普通插件信息）都挂 ✕",
+    );
+    const upPanelAt = popSrc.indexOf("renderUserPluginPanel(pop, item)");
+    const closeAt = popSrc.indexOf("mountPluginPopClose(wrap, pop)", upPanelAt);
+    ok(
+      upPanelAt > 0 && closeAt > upPanelAt,
+      "自建插件那条分支里 ✕ 挂在那块面板**之后**（面板会清空浮层，先挂就被清掉）",
+    );
+    /* Esc：先关浮层、再按一次才关插件窗（捕获阶段拦下，别让同一个 Esc 派给画布） */
+    has(pluginsSrc, 'document.addEventListener("keydown", onEscKey, true)', "Esc 在捕获阶段接管");
+    has(pluginsSrc, 'document.removeEventListener("keydown", onEscKey, true)', "关窗时摘掉 Esc 监听（不留悬挂）");
+    const escSrc = pluginsSrc.slice(pluginsSrc.indexOf("const onEscKey = (ev)"), pluginsSrc.indexOf("document.addEventListener(\"keydown\", onEscKey, true)"));
+    ok(
+      escSrc.indexOf("closePluginPop(wrap, pop)") > 0 && escSrc.indexOf("closeDialog()") > escSrc.indexOf("closePluginPop(wrap, pop)"),
+      "浮层开着 → 先关浮层；浮层没开 → 才关插件窗",
+    );
+    has(pluginsSrc, "function closeDialog()", "插件窗的关闭收口只有一处 closeDialog（底栏「关闭」与 Esc 共用）");
+    const dlgSrc = fnBody(pluginsSrc, "openAppPluginsDialog");
+    ok(
+      !/document\.addEventListener\(\s*"(mousedown|click)"/.test(dlgSrc) &&
+        !/window\.addEventListener\(\s*"(mousedown|click)"/.test(dlgSrc),
+      "插件窗不挂任何「点外部即关」的监听（对话框一律 persistent）",
+    );
+    /* 样式与词条 */
+    has(cssSrc, ".plugin-tile-info {", "ⓘ 的样式在 layout.css");
+    const coverCss = cssSrc.slice(cssSrc.indexOf(".plugin-tile-cover {"), cssSrc.indexOf(".plugin-tile-cover img {"));
+    ok(coverCss.indexOf("position: relative;") > 0, "封面是定位上下文（ⓘ 锚在封面右上角）");
+    ok(/\.plugin-tile-info\s*\{[^}]*opacity:\s*\.55/.test(cssSrc), "ⓘ 常态半透明（不抢封面）");
+    ok(
+      /\.plugin-tile:hover \.plugin-tile-info[\s\S]{0,120}opacity:\s*1/.test(cssSrc),
+      "悬停卡片时 ⓘ 提亮到不透明",
+    );
+    ok(/\.plugin-tile-info:focus-visible/.test(cssSrc), "键盘聚焦时同样提亮（Tab 找得到它）");
+    has(cssSrc, ".plugin-pop-close {", "浮层 ✕ 的样式在 layout.css");
+    has(i18nSrc, '"插件信息": "Plugin info"', "i18n 中英成对：插件信息");
+    has(i18nSrc, '"正在读取插件状态…": "Reading plugin status…"', "i18n 中英成对：正在读取插件状态…");
   }
 
   console.log(

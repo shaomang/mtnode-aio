@@ -52,7 +52,7 @@ function declBody(src, name) {
   return src.slice(src.lastIndexOf("\n", m.index) + 1, semi + 1);
 }
 
-const PICK_DECL = ["PLUGIN_DONE_SVG", "_pluginCheckState"];
+const PICK_DECL = ["PLUGIN_DONE_SVG", "_pluginCheckState", "PLUGIN_ACT_SVG"];
 /* [名字, 是不是 async]：async 那几个要按 async function 抽，否则 await 会当场报语法错 */
 const PICK_FN = [
   ["loadPluginCheckState", true],
@@ -262,6 +262,28 @@ const pop2 = mkEl("div");
 const n2 = put("__pop2", pop2);
 run("paintPluginSelfcheckRow(" + n2 + ", 'llama-local')");
 ok(pop2.children.length === 0, "没登记自检的插件不画这一行（不装作有结论）");
+
+/* ── [5] 本轮需求：卡片本体不再是按钮，信息入口 = 封面右上角那颗 ⓘ ── */
+console.log("\n[5] 卡片信息入口：封面右上角 ⓘ，卡片本体不再可点");
+{
+  const shellSrc = fnBody(SRC, "mkPluginCardShell");
+  const shellHtml = String(mkCardFor("paseo-remote", false)._html || "");
+  ok(shellHtml.indexOf('class="plugin-tile-info"') >= 0, "卡片壳里就有那颗 ⓘ（.plugin-tile-info，随 innerHTML 一起出）");
+  ok(shellHtml.indexOf("data-plugin-info") >= 0, "ⓘ 带 data-plugin-info（接线用，不靠猜 class）");
+  ok(shellHtml.indexOf("插件信息") >= 0, "ⓘ 的 tooltip / aria-label 有可读名（走 i18n 词条「插件信息」）");
+  ok(/<svg/.test(shellHtml.slice(shellHtml.indexOf("data-plugin-info"))), "ⓘ 里是内联 SVG（取自 PLUGIN_ACT_SVG.info，不是位图）");
+  /* ⓘ 必须锚在封面上（卡片比封面宽，锚卡片的角标会飘离封面右上角） */
+  const coverAt = shellHtml.indexOf('class="plugin-tile-cover"');
+  const infoAt = shellHtml.indexOf('class="plugin-tile-info"');
+  const coverEnd = shellHtml.indexOf("</div>", infoAt);
+  ok(coverAt >= 0 && infoAt > coverAt && infoAt < coverEnd, "ⓘ 写在封面容器里面（按封面定位，不在卡片上）");
+  ok(!/card\.setAttribute\(\s*"role"/.test(shellSrc), "卡片壳不再声明 role=button（按不动的东西不该是按钮）");
+  ok(!/card\.tabIndex\s*=/.test(shellSrc), "卡片壳不再进 Tab 顺序（键盘只停在 ⓘ 上）");
+  const loopSrc = SRC.slice(SRC.indexOf("for (const item of list) {"), SRC.indexOf("if (!list.length) {"));
+  ok(loopSrc.indexOf('querySelector("[data-plugin-info]")') > 0, "插件对话框逐卡给 ⓘ 接线");
+  ok(loopSrc.indexOf("infoBtn.addEventListener") > 0, "ⓘ 的点击监听是唯一入口");
+  ok(loopSrc.indexOf("card.addEventListener") < 0, "卡片本体不再挂任何监听（点击 / Enter / Space 都不开浮层）");
+}
 
 console.log("\n" + (fails ? "FAILED " + fails + " / " + checks : "ALL PASS " + checks) + " checks");
 process.exit(fails ? 1 : 0);

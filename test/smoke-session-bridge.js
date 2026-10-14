@@ -489,6 +489,19 @@ console.log("[4] 协议面真跑（/ctl + tools/call + SSE）");
       "审批复用既有一枚回执通道（dshInteract kind=approval）",
     );
     ok(/SESSION_GONE/.test(src), "会话已被删除时明确报 SESSION_GONE");
+    /* 手机上答的询问卡：Paseo 桥把答案按题 id 对齐后送进 `answers[]`（外加一条可读
+       `answerText`），这里必须**原样转给网关**——过去只认 `p.selected`（一串给界面按钮用的
+       下标），桥那边送来的两份答案全被丢掉，手机答了模型什么都收不到。 */
+    const qBlock = src.slice(src.indexOf('if (kind === "question")'), src.indexOf('} else if (kind === "canvas")'));
+    ok(
+      /Array\.isArray\(p\.answers\)/.test(qBlock) && /answers,/.test(qBlock),
+      "提问回执把 answers[] 原样转给网关（手机答的答案不再被丢掉）",
+    );
+    ok(
+      /answerText/.test(qBlock) && /p\.answerText/.test(qBlock),
+      "同时把可读 answerText 带上（气泡与之后的上下文用它）",
+    );
+    ok(!/p\.selected/.test(qBlock), "不再用 p.selected（那串下标是界面按钮的下脚料，与桥的口径无关）");
     ok(!/canvasSnapshotFull|handleCanvasEvent|mtnode_canvas_edit/.test(src), "渲染层这一半一个画布调用都没有");
     ok(/PUSH_TYPES/.test(src) && /base64/.test(src), "事件旁路有类型白名单 + 内联媒体剥离");
     /* 真机验过（隔离实例）：渲染层的会话落盘只在「活动会话」换代或内容被标脏时发生 ——
