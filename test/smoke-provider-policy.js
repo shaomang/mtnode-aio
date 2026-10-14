@@ -251,6 +251,48 @@ console.log("\n[3] providerDisabled / providerSelectableModels / modelsOfKind");
   EQ(MK.modelsOfKind({}, null, "text"), [], "空服务商 = 空表");
 }
 
+/* ═════════ [3b] 中转余额不足以出图：**只收图像**，文本照旧 ═════════
+   本轮 bug：中转站余额 > 0 就放行，余额 0.10 也能出一张 0.21 的图、扣费只扣到 0。
+   云端改成「调用前按应付额 402」（store-saas/relay.mjs 的 reserveImageCharge），
+   客户端跟着把图像模型收起来：判据 = 快照的 relay.imageShortYuan（一张图的最低门槛，
+   云端 minImageYuan 下发）> 余额。文本仍可用，所以**不能**走 providerDisabled。 */
+console.log("\n[3b] relayImageShort：余额不够一张图只收图像");
+{
+  const relayCard = (relay) =>
+    Object.assign(
+      {
+        id: "mtnode-relay",
+        source: "mtnode-relay",
+        type: "text_openai",
+        models: ["deepseek-v4-flash", "gpt-image-2.5-all"],
+      },
+      { relay: relay },
+    );
+  const shortCard = relayCard({ blocked: false, balanceYuan: 0.1, imageShortYuan: 0.21 });
+  const richCard = relayCard({ blocked: false, balanceYuan: 99, imageShortYuan: 0.21 });
+  const noImageCard = relayCard({ blocked: false, balanceYuan: 0.1, imageShortYuan: 0 });
+
+  EQ(MK.relayImageShort(shortCard), true, "余额 0.10 < 一张图 0.21 ⇒ 图像被余额卡住");
+  EQ(MK.relayImageShort(richCard), false, "余额够 ⇒ 不拦");
+  EQ(MK.relayImageShort(noImageCard), false, "没有可用的图像模型（门槛 0）⇒ 不拦");
+  EQ(MK.relayImageShort({ source: "mtnode-relay" }), false, "老服务端不给门槛字段 ⇒ 不拦（不误伤）");
+  EQ(MK.relayImageShort({ source: "openai", relay: { balanceYuan: 0, imageShortYuan: 1 } }), false,
+    "只认中转卡（别的服务商不看这两个字段）");
+
+  EQ(MK.providerDisabled(shortCard), false,
+    "**不算停用**：文本调用照旧可用（停用会把它从文本选择器里也收走）");
+  EQ(MK.modelsOfKind({}, shortCard, "image"), [], "图像模型选不到");
+  EQ(MK.modelsOfKind({}, shortCard, "text"), ["deepseek-v4-flash"], "文本模型照常选得到");
+  EQ(MK.modelsOfKind({}, richCard, "image"), ["gpt-image-2.5-all"], "余额够时图像模型照常列出");
+  EQ(MK.providerSelectableModels(shortCard), ["deepseek-v4-flash"], "选择器口径同样只留文本");
+  /* 与白 / 黑名单叠加时仍是「先收图像、再收窄 / 剔除」 */
+  EQ(
+    MK.modelsOfKind({}, Object.assign({}, shortCard, { modelDeny: "deepseek-*" }), "text"),
+    [],
+    "图像闸与黑名单同时生效（文本被黑名单剔掉后为空）",
+  );
+}
+
 /* ═════════ [4] DeepSeek 官方路由的停用口径 ═════════ */
 console.log("\n[4] deepseekRouteSelectable：官方路由跟着那家 DeepSeek 服务商走");
 {

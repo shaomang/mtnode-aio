@@ -7,6 +7,17 @@
  *   ③ 按键转录 —— 只有**按住 F1 键**时才听（松开即止；F1 无字符，不插进输入框）；
  *   再点一下回 ①。
  *
+ * 话筒**右侧**还有一枚 ✨ 开关（#btnVoiceEnhance，本轮新增）：
+ *   **AI 增强**（默认关）—— 打开后每一句识别完先过一次**默认文本模型**（无思考）做润色
+ *   （同音字 / 标点 / 断句 / 语气词），再交付这一句；原始识别永远是先落进去的那一份，
+ *   增强结果回来时**就地替换**那一段（元素值一字不差才换，用户中途改过就不动它）。
+ *   三条硬纪律：**默认模型**（不带 model = apiProvidersForKind("proc_text") 第一位 + 它的
+ *   第一个文本模型，思考走 effort:"off"）、**绝不吞话**（调用失败 / 超时 8 秒 /
+ *   没配文本模型 / 结果离谱 → 留原始识别并说清原因）、**只润色**（不扩写、不改语言、不续写）。
+ *   开关状态落在 S.config.voice.enhance（随画布设置一起保存）；右键菜单与「设置 · 语音输入」
+ *   里各有一枚同源入口。落字这一侧同时补上「点按钮不抢焦点」（noFocusSteal）—— 否则点一下
+ *   话筒就把焦点从输入框挪走，增强结果回来时没有落点，会一直挂在 pendingInsert 里。
+ *
  * 链路（原样复用，未新增任何后端能力）：
  *   renderer/app-voice.js（本文件）→ preload 的 dshSpeech（IPC 'dsh:speech'）
  *   → dsh/main-dsh.js 的 speech() → 网关本地协议方法 `speech`
@@ -43,7 +54,9 @@
  * 下载由运行时自己的准备任务持有，切态 / 关窗都不会中断它。
  *
  * 依赖（调用期取，全部是既有全局）：window.api.dshSpeech / onSpeechState、I18n、toast、S、
- * agentRunWorkspace / assistDisplayWorkspace。缺接口（老 preload）时按钮仍挂上并给出提示，
+ * agentRunWorkspace / assistDisplayWorkspace；AI 增强另用 apiCallTextStream（renderer/app-nodes.js）、
+ * apiProvidersForKind / modelsOfKind（renderer/app.js、app-model-kind.js）—— 这几个缺任一个就
+ * 把开关置灰并说明原因（绝不静默失败）。缺接口（老 preload）时按钮仍挂上并给出提示，
  * 不静默消失 —— 用户至少知道「这枚按钮为什么点了没反应」。
  * 样式在 renderer/css/voice.css（前缀 .gv-*）；冒烟见 test/smoke-global-voice.js。
  */
@@ -120,6 +133,14 @@
   const PREP_FAIL_TIP = "语音模型没能准备好：右键话筒 →「下载 / 检查语音模型」可以再来一次";
   /** 模型准备「正在重试」的过场相位（这期间不画错误态，避免红色闪来闪去） */
   const PROGRESS_PHASES = /^(downloading|checking|loading|waking|cancelling)$/;
+  /* ── AI 增强（话筒右侧那枚 ✨）────────────────────────────────────────────
+     口径与画布 / 应用窗口那两枚话筒**完全同源**（renderer/app-speech-ui.js 的 enh* 段）：
+     只润色、不扩写；失败 / 超时 / 没配模型一律回落原始识别并说明原因；默认关。 */
+  const ENH_TIMEOUT_MS = 8000; /* 一句的增强上限：超了就留原始识别，绝不让用户干等 */
+  const ENH_CTX_CHARS = 400; /* 上下文预算（上一两句 + 输入框里插入点之前那一截）*/
+  const ENH_MAX_RATIO = 4; /* 增强结果长度上限（按原句）：超了当模型跑偏，回落原文 */
+  const ENH_MIN_CHARS = 1;
+  const ENH_DEFAULT = false; /* 默认关：不替用户花模型调用 */
   /* speechCall 自己抛的两条「已是中文」文案：认出来原样保留，不再套一层通用文案 */
   const MSG_NO_BRIDGE = "语音输入不可用（宿主桥未就绪）";
   const MSG_NO_WS = "先选好工作目录（或打开一张画布）再用语音输入";
@@ -156,6 +177,8 @@
   const state = {
     mode: MODE_OFF,
     btn: null,
+    /** AI 增强（话筒右侧那枚 ✨）的按钮元素 */
+    enhBtn: null,
     note: null,
     menu: null,
     /* 采集 */
@@ -198,6 +221,7 @@
     busy: false,
     segSeq: 0,
     bufText: "", /* 当前句已识别、待定稿的文本 */
+    lastText: "", /* 上一句定稿的原文（AI 增强的极短上下文用它，见 enhContext） */
     pendingInsert: "", /* 识别出来但当时没有焦点：留住，等焦点回来再落字（不丢音频） */
     interim: "", /* 浮窗里显示的那一行 */
     interimAt: 0,
@@ -229,6 +253,19 @@
     provAutoRetried: false,
     /* 插入锚点 */
     anchor: null, /* { el, start, end, wfId, at } */
+    /** AI 增强的**当前这一句**的落字账（见 enhApply）：一句一条，替换只认它记下的那一段 */
+    enh: {
+      seq: 0, /* 句序：只有它没变（用户没关 / 没切画布）才允许替换 */
+      busy: false, /* 上一句的增强还在途：这一句不排队，直接留原始识别（不叠请求） */
+      anchor: null, /* 这一句开始落字时用的那个锚点对象（用户中途换了框就不替换） */
+      oldText: "", /* 已经落进输入框的那一份原文（替换前要一字不差地比一次） */
+      /** 这一句落字完成后输入框的**整段内容**：增强回来时用来判「用户动过没有」。
+       *  只看「那一段」不够 —— 用户在这一段**里面**改一个字、或在中间插字，段落切片
+       *  仍可能恰好等于原文，替换就会把用户自己写的字冲掉（冒烟里就是这么抓到的）。 */
+      fullAfter: "",
+      phrase: "", /* 最近一次增强的说明（浮窗上那一行） */
+      t: 0, /* 的那句的说明时刻（压 1.2 秒，别一闪而过）*/
+    },
     /* 其他 */
     pttBusy: false,
     lastPaint: 0,
@@ -266,7 +303,11 @@
        官方 huggingface.co 仍可在失败重试那一行里显式选回。只在用户显式选过时这里才有值。 */
     const ds = String(c.downloadSource || "").trim();
     const downloadSource = /^https?:\/\/[^/\s?#@]+\/?$/.test(ds) ? ds : "";
-    return { silenceMs: silence, language: lang, downloadSource };
+    /* AI 增强（话筒右侧那枚 ✨）：默认关；true / "on" 才算开（配置里写别的值一律当关）。
+       归一化成 "on" / "off" 字符串 —— 右键菜单的 on/off 回显按字面比（与 language 同一套）。 */
+    const enhRaw = c.enhance === undefined || c.enhance === null ? ENH_DEFAULT : c.enhance;
+    const enhance = enhRaw === true || enhRaw === "on" ? "on" : "off";
+    return { silenceMs: silence, language: lang, downloadSource, enhance };
   }
   function setCfg(patch) {
     const c = rawCfg();
@@ -274,6 +315,14 @@
       for (const k of Object.keys(patch)) c[k] = patch[k];
     }
     paintAll();
+    /* 落盘（本轮新增）：AI 增强开关写在状态栏上，用户点完就切窗口 / 重启也得记住。
+       这里与整仓既有口径一致 —— S.config 是唯一真源，改完自己调 configSave
+       （app-apps.js / app-assist.js 那些偏好项都是这么写的），不新增文件、不写画布。 */
+    try {
+      const s = root();
+      const a = api();
+      if (s && a && typeof a.configSave === "function") a.configSave(s.config).catch(() => {});
+    } catch (_) {}
     return cfg();
   }
 
@@ -568,6 +617,288 @@
     }
     if (ok) advanceAnchor(a, t.length);
     return ok;
+  }
+
+  /** 原生 **替换**（AI 增强把刚落进去的原始识别换成润色后的一份）：只换记下来的那一段。
+   *  走 execCommand("insertText") —— 与 insertText 同一条原生路径，撤销栈语义一致。
+   *  失败（老引擎 / 值已被改）返回 false，调用方保留原文，绝不留下半截。 */
+  function replaceText(a, from, len, text) {
+    const t = String(text == null ? "" : text);
+    if (!a || !a.el || !t) return false;
+    const kind = inputKind(a.el);
+    if (!kind) return false;
+    const all = inputTextOf(a.el);
+    const n = Math.max(0, Number(len) || 0);
+    const s = Math.max(0, Math.min(all.length, Number(from) || 0));
+    const e = Math.max(s, Math.min(all.length, s + n));
+    let ok = false;
+    try {
+      if (document.activeElement !== a.el) a.el.focus();
+      if (kind === "ce") ceSetOffset(a.el, s);
+      else a.el.setSelectionRange(s, e);
+      ok = !!(document.execCommand && document.execCommand("insertText", false, t));
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok) {
+      /* 兜底：老 Chromium / 非标准控件上 execCommand 可能不生效，直接改值并派发 input */
+      try {
+        if (kind === "ce") {
+          ceSetOffset(a.el, e);
+          ok = !!(document.execCommand && document.execCommand("insertText", false, t));
+        } else {
+          const v = String(a.el.value || "");
+          a.el.value = v.slice(0, s) + t + v.slice(e);
+          try {
+            a.el.setSelectionRange(s + t.length, s + t.length);
+          } catch (_) {}
+          a.el.dispatchEvent(new Event("input", { bubbles: true }));
+          ok = true;
+        }
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (ok) {
+      /* 锚点从「原文末尾」搬到「新文末尾」：不搬的话，这一句后面再来的片会落错位 */
+      a.start = s + t.length;
+      a.end = a.start;
+      a.at = Date.now();
+    }
+    return ok;
+  }
+
+  /** 这枚按钮 / 开关不吃焦点：点它不该把用户正在写的框丢了焦点。
+   *  （状态栏那枚话筒一点就把焦点从输入框挪走，是本轮真机测出来的老毛病：焦点一走，落字
+   *  得等它回来，增强结果更是没处写。preventDefault 只挡「聚焦」这一步，click 照常派发。） */
+  function noFocusSteal(el) {
+    if (!el) return el;
+    try {
+      el.addEventListener("mousedown", (ev) => {
+        if (ev && ev.preventDefault) ev.preventDefault();
+      });
+    } catch (_) {}
+    return el;
+  }
+
+  /* ── AI 增强（话筒右侧那枚 ✨）────────────────────────────────────────────
+   * 与 renderer/app-speech-ui.js 的 enh* 段同源口径，差别只在「怎么叫模型」：
+   * 那边是应用窗口的 appHost.textGenStream（不带 model），这边是渲染层既有的
+   * apiCallTextStream(spec) —— 所以 spec 得自己拼出「默认服务商 + 它的第一个文本模型」。 */
+  function enhanceCapable() {
+    return typeof apiCallTextStream === "function" && typeof apiProvidersForKind === "function";
+  }
+
+  /** 默认文本服务商（与 proc_text 节点同源：apiProvidersForKind("proc_text") 的第一位） */
+  function enhanceDefault() {
+    if (!enhanceCapable()) return null;
+    let prov = null;
+    try {
+      const list = apiProvidersForKind("proc_text") || [];
+      prov = list[0] || null;
+    } catch (_) {
+      prov = null;
+    }
+    if (!prov) return null;
+    let model = "";
+    try {
+      if (typeof modelsOfKind === "function") {
+        model = String((modelsOfKind(root() && root().config, prov, "text") || [])[0] || "");
+      }
+    } catch (_) {
+      model = "";
+    }
+    return { prov, model };
+  }
+
+  /** 系统提示：只润色这一句（与画布 / 应用那两枚话筒逐字同源） */
+  const ENH_SYSTEM =
+    "你是一个语音识别结果的润色器。用户发来一段 ASR 原始识别文本（可能带同音字错误、缺标点、" +
+    "断句混乱或口语残渣）。要求：① 只在原意范围内修正同音字、补或改标点、理顺断句、" +
+    "删掉「嗯 / 啊 / 那个」这类语气词与重复词；② 保持原语言与原来的长度量级，不扩写、不续写、" +
+    "不补充用户没说的内容，不回答内容的提问；③ 只输出润色后的这一句正文 —— 不要解释、" +
+    "不要加引号、不要编号或列表、不要 markdown。";
+
+  /** 极短上下文（上一两句 + 输入框里插入点之前那一段，合计 ≈400 字符）：只用来消歧 */
+  function enhContext(text) {
+    const parts = [];
+    if (state.lastText) {
+      const prev = String(state.lastText).split("\n").filter(Boolean).slice(-2).join(" ");
+      if (prev) parts.push(T("上文：") + prev);
+    }
+    let tail = "";
+    try {
+      const a = state.anchor;
+      if (a && a.el) {
+        const v = inputTextOf(a.el) || "";
+        tail = v.slice(0, Math.max(0, Math.min(v.length, Number(a.start) || 0)));
+      }
+    } catch (_) {}
+    if (tail) parts.push(T("输入框已有：") + tail);
+    let head = parts.join("\n");
+    if (head.length > ENH_CTX_CHARS) head = head.slice(head.length - ENH_CTX_CHARS);
+    return (head ? head + "\n" : "") + T("这一句：") + String(text || "");
+  }
+
+  /** 模型输出 → 可直接交付的正文；不像正文（空的 / 带解释标签 / 长出一大截）就回空串（回落原文） */
+  function enhSanitize(raw, src) {
+    let s = String(raw == null ? "" : raw).trim();
+    if (!s) return "";
+    s = s
+      .replace(/^(增强(后)?|润色(后)?|修正(后)?|修改(后)?|结果|正文|文本)\s*[:：]\s*/i, "")
+      .replace(/^(enhanced|polished|corrected|output|result|text)\s*[:：]\s*/i, "");
+    const lead = /^[「『"'“‘]+/;
+    const tail = /[」』"'”’]+$/;
+    for (let i = 0; i < 2; i++) s = s.replace(lead, "").replace(tail, "").trim();
+    /* 折行：中文直接接上，西文补空格（模型偶尔会按标点换行） */
+    const cjk = /[\u4e00-\u9fff]/.test(String(src || ""));
+    s = s.replace(/\s*\n+\s*/g, cjk ? "" : " ").trim();
+    if (s.length < ENH_MIN_CHARS) return "";
+    const cap = Math.max(24, String(src == null ? "" : src).length * ENH_MAX_RATIO);
+    if (s.length > cap) return "";
+    return s;
+  }
+
+  /** 一句 → 增强后的一句。永远 resolve（失败回 { ok:false, why }，调用方据此留原始识别）。
+   *  插着 INJ.enhance 时走注入（冒烟用）：注入自己负责超时语义。 */
+  function enhanceText(text) {
+    const src = String(text || "").trim();
+    if (!src) return Promise.resolve({ ok: false, why: T("这一句是空的"), code: "empty" });
+    if (INJ && typeof INJ.enhance === "function") {
+      return Promise.resolve()
+        .then(() => INJ.enhance(src, enhContext(src)))
+        .then(
+          (r) =>
+            r && r.ok
+              ? { ok: true, text: String(r.text || "") }
+              : { ok: false, why: String((r && r.why) || T("模型调用失败")), code: "inj" },
+          (err) => ({ ok: false, why: String((err && err.message) || err), code: "inj" }),
+        );
+    }
+    if (!enhanceCapable()) {
+      return Promise.resolve({ ok: false, why: T("宿主未提供文本生成能力"), code: "no_gen" });
+    }
+    const pick = enhanceDefault();
+    if (!pick || !pick.prov) {
+      return Promise.resolve({ ok: false, why: T("没配文本模型"), code: "no_provider" });
+    }
+    /* model 为空也算「没配」：空 model 打过去只会拿到服务商自己的默认模型，行为不可预期 */
+    if (!pick.model) {
+      return Promise.resolve({ ok: false, why: T("没配文本模型"), code: "no_model" });
+    }
+    const spec = {
+      provider: pick.prov,
+      kind: "text",
+      model: pick.model,
+      temperature: 0.2,
+      /* 无思考：off ⇒ thinking disabled（main.js applyTextThinkingEffort），与另外两枚话筒同口径 */
+      effort: "off",
+      size: "",
+      prompt: src,
+      chatMessages: [
+        { role: "system", content: ENH_SYSTEM },
+        { role: "user", content: enhContext(src) },
+      ],
+      texts: [],
+      images: [],
+      refImage: "",
+    };
+    let timer = 0;
+    const timed = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ ok: false, why: T("增强超时（8 秒）"), code: "timeout" });
+      }, ENH_TIMEOUT_MS);
+    });
+    const call = Promise.resolve()
+      .then(() => apiCallTextStream(spec, null, null))
+      .then((r) => {
+        const out = enhSanitize(r && r.text, src);
+        if (!out) return { ok: false, why: T("增强结果不可用"), code: "bad_result" };
+        return { ok: true, text: out };
+      })
+      .catch((err) => {
+        return {
+          ok: false,
+          why: String((err && (err.message || err)) || err),
+          code: "failed",
+        };
+      });
+    return Promise.race([call, timed]).then((r) => {
+      if (timer) clearTimeout(timer);
+      return r;
+    });
+  }
+
+  /** 一句定稿 → 增强 → 就地替换。返回 true = 这一句的增强在跑。
+   *  seq 由调用方给（收口那一刻的句序）：结果回来时对不上就作废（用户关了开关 / 切了画布）。 */
+  function enhApply(rawText, seq) {
+    const raw = String(rawText || "");
+    if (cfg().enhance !== "on") return false;
+    if (!raw.trim()) return false;
+    const a = state.anchor;
+    /* 没有落点 / 这一段根本不是刚落进去的那一份：不替换（留原文，绝不改成半截） */
+    if (!a || !a.el) return false;
+    const from = Math.max(0, Number(a.start) || 0) - raw.length;
+    if (from < 0) return false;
+    if (String(inputTextOf(a.el) || "").slice(from, from + raw.length) !== raw) return false;
+    /* 上一句还在途：这一句不排队（免得请求叠加、替换互相打架），直接留原始识别 */
+    if (state.enh.busy) {
+      state.enh.phrase = T("AI 增强忙，这一句交原始识别");
+      state.enh.t = Date.now();
+      return false;
+    }
+    state.enh.busy = true;
+    state.enh.anchor = a;
+    state.enh.oldText = raw;
+    state.enh.fullAfter = String(inputTextOf(a.el) || "");
+    state.enh.phrase = T("正在 AI 增强…");
+    state.enh.t = Date.now();
+    enhanceText(raw)
+      .then((r) => {
+        if (seq !== state.enh.seq) return; /* 期间关了开关 / 切了画布：这一句的结果作废 */
+        if (!r || !r.ok) {
+          state.enh.phrase = T("AI 增强没生效，已交原始识别：") + String((r && r.why) || T("增强失败"));
+          state.enh.t = Date.now();
+          return;
+        }
+        const out = String(r.text || "").trim();
+        if (!out || out === raw) {
+          state.enh.phrase = T("AI 增强：这一句无需修改");
+          state.enh.t = Date.now();
+          return;
+        }
+        if (state.anchor !== a) {
+          state.enh.phrase = T("AI 增强没落字：输入框换了，已保留原始识别");
+          state.enh.t = Date.now();
+          return;
+        }
+        const still =
+          String(inputTextOf(a.el) || "") === state.enh.fullAfter &&
+          String(inputTextOf(a.el) || "").slice(from, from + raw.length) === raw;
+        if (!anchorReady() || !still) {
+          state.enh.phrase = T("AI 增强没落字：原文已改动，已保留原样");
+          state.enh.t = Date.now();
+          return;
+        }
+        if (replaceText(a, from, raw.length, out)) {
+          state.bufText = out;
+          state.interim = out;
+          state.enh.phrase = T("已 AI 增强");
+          state.enh.t = Date.now();
+        } else {
+          state.enh.phrase = T("AI 增强没落字：替换失败，已保留原始识别");
+          state.enh.t = Date.now();
+        }
+      })
+      .catch(() => {})
+      .then(() => {
+        state.enh.busy = false;
+        if (seq === state.enh.seq) {
+          paintNote();
+          paintEnhance();
+        }
+      });
+    return true;
   }
 
   /* ── 工作区（语音运行时按工作区建）───────────────────────────────────── */
@@ -1137,6 +1468,14 @@
     if (!state.pendingFinalize) return;
     if (state.queue.length || state.busy) return;
     flushPendingInsert(); /* 之前失焦时留住的字：这一版就落进去，不留到下一句 */
+    /* AI 增强挂在收口这一刀上：这一句的全部片都已经落进输入框（上面的 flush 保证），
+       所以此刻「输入框里那一段」就是这一句的原文 —— 增强回来时只替换这一段。
+       句序在这里 +1：这一句的增强属于新句序；结果回来时对不上（用户关了开关 / 切了画布）
+       就自己作废。在途不拦着下一句继续攒（下一句的增强会因 busy 走「交原始识别」）。 */
+    const raw = String(state.bufText || "");
+    state.enh.seq += 1;
+    enhApply(raw, state.enh.seq);
+    if (raw.trim()) state.lastText = raw.trim(); /* 下一句的极短上下文 */
     state.pendingFinalize = false;
     state.gateArm = false; /* 这一句收口：下一句要重新出过声才允许静音门判定 */
     state.segQuietSamples = 0;
@@ -1815,8 +2154,32 @@
     }
   }
 
+  /** AI 增强那枚开关的皮（#btnVoiceEnhance）：两态 + 三种「用不了」的说明。
+   *  开关状态在 cfg().enhance（一个开关只有两态），持久化与右键 / 设置入口同源。 */
+  function paintEnhance(btn) {
+    const b = btn || state.enhBtn;
+    if (!b) return;
+    const on = cfg().enhance === "on";
+    const capable = enhanceCapable();
+    const pick = capable ? enhanceDefault() : null;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.title = !capable
+      ? T("AI 增强不可用：宿主没挂上文本生成通道（apiCallTextStream / 服务商清单缺失）")
+      : !pick || !pick.prov || !pick.model
+        ? T("AI 增强：还没配文本模型 —— 先到「设置 · 提供商」加一家文本服务商，增强才能生效（现在识别结果一律按原始识别交付）")
+        : (on
+            ? T("AI 增强已开启：每句识别完先用默认文本模型润色一次（无思考），再交付这一句")
+            : T("AI 增强已关闭：点一下打开（用默认文本模型 + 无思考，逐句润色识别结果）")) +
+          "\n" +
+          T("用什么：") +
+          (pick && pick.model ? pick.model : "—") +
+          T("（默认文本模型，可在「设置 · 语音输入」里关掉）");
+  }
+
   function paintAll() {
     paint(state.btn);
+    paintEnhance(state.enhBtn);
     paintMenuState();
   }
 
@@ -1932,6 +2295,9 @@
     if (state.lastErr) lines.push(T("最近一次失败：") + state.lastErr);
     /* 服务商没就绪：浮窗上直接给一句能照做的（本来就已经是 i18n 文案） */
     if (state.provErr) lines.push(state.provErr);
+    /* AI 增强：这一句的结果说明（成功 / 回落原因），压 1.2 秒再收 —— 别一闪而过
+       （增强是异步的，这条比正文晚到，所以不看 text 有没有） */
+    if (state.enh.phrase && Date.now() - (state.enh.t || 0) < 4000) lines.push(state.enh.phrase);
     /* 模型下载失败：再把「怎么重试」写在下面（浮窗本身不吃鼠标，动作在右键菜单里） */
     if (state.prepFail && String((state.prep && state.prep.phase) || "") === "failed") {
       lines.push(T("重试：右键这枚话筒 →「下载 / 检查语音模型」或「重新检查语音服务」"));
@@ -2055,6 +2421,10 @@
     for (const v of [200, 300, 500, 900]) {
       addOpt(silRow, "silenceMs", v, v + " ms");
     }
+    /* AI 增强（话筒右侧那枚 ✨ 的同源入口）：菜单里也能开关，状态就写在按钮的 .on 上 */
+    const enhRow = addRow(T("AI 增强"));
+    addOpt(enhRow, "enhance", true, T("开"));
+    addOpt(enhRow, "enhance", false, T("关"));
     const foot = document.createElement("div");
     foot.className = "gv-menu-foot";
     /* 失败（模型下载失败 / 服务商没就绪）就先摆一行：**为什么、从哪下的**，再下面是两枚重试按钮 */
@@ -2189,6 +2559,28 @@
     sil.onchange = () => setCfg({ silenceMs: Number(sil.value) || 300 });
     row(T("断句停顿（毫秒）"), sil);
 
+    /* AI 增强（话筒右侧那枚 ✨ 的同源入口）：与右键菜单、状态栏开关写的是同一份配置 */
+    const enhSel = document.createElement("select");
+    for (const [v, lab] of [["off", "关"], ["on", "开"]]) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = T(lab);
+      enhSel.appendChild(o);
+    }
+    enhSel.value = c.enhance;
+    enhSel.onchange = () => setCfg({ enhance: enhSel.value === "on" ? true : false });
+    row(T("AI 增强"), enhSel);
+
+    /* 说清「用哪个模型、什么时候回落」——这一项花的是用户的模型调用，不能只给一个开关 */
+    const enhHint = document.createElement("div");
+    enhHint.className = "settings-hint";
+    const pick0 = enhanceCapable() ? enhanceDefault() : null;
+    enhHint.textContent =
+      T("AI 增强：每一句识别完先用默认文本模型（无思考）润色一次（同音字 / 标点 / 断句 / 语气词），再交付这一句；调用失败、8 秒超时、没配模型或结果离谱时一律保留原始识别并说明原因。") +
+      T("当前默认文本模型：") +
+      (pick0 && pick0.model ? pick0.model : T("（未配置文本服务商）"));
+    d.appendChild(enhHint);
+
     const foot = document.createElement("div");
     foot.className = "dsh-btn-row";
     const dl = document.createElement("button");
@@ -2316,6 +2708,43 @@
   }
 
   /* ── 挂载 ─────────────────────────────────────────────────────────────── */
+  /** 话筒右侧那枚 ✨ 开关（#btnVoiceEnhance）：本轮新增。挂在话筒紧后面（CSS 用
+   *  order:-2 / -1 把这一对钉在状态栏最左），点一下开 / 关 AI 增强。 */
+  function mountEnhanceButton(foot, mic) {
+    if (state.enhBtn && state.enhBtn.parentNode) return state.enhBtn;
+    if (typeof document === "undefined") return null;
+    if (!foot) return null;
+    let b = document.getElementById("btnVoiceEnhance");
+    if (!b) {
+      b = document.createElement("button");
+      b.type = "button";
+      b.id = "btnVoiceEnhance";
+      b.className = "sb-voice sb-enh";
+      if (mic && mic.parentNode === foot) {
+        if (mic.nextSibling) foot.insertBefore(b, mic.nextSibling);
+        else foot.appendChild(b);
+      } else {
+        const shot = document.getElementById("btnCanvasShot");
+        if (shot && shot.parentNode === foot) foot.insertBefore(b, shot);
+        else foot.appendChild(b);
+      }
+    }
+    b.textContent = "✨";
+    /* 点它也不吃焦点：切增强时用户正在写的框必须还握着焦点，落字才有落点 */
+    noFocusSteal(b);
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      setCfg({ enhance: cfg().enhance !== "on" });
+      const now = cfg().enhance === "on";
+      say(now ? T("AI 增强已开启") : T("AI 增强已关闭"), now ? "ok" : "");
+    });
+    /* 右键这枚开关 = 打开与话筒同一只快捷菜单（设置都在那里，不用再记第二个入口） */
+    b.addEventListener("contextmenu", openMenu);
+    state.enhBtn = b;
+    paintEnhance(b);
+    return b;
+  }
+
   function mountButton() {
     if (state.btn && state.btn.parentNode) return state.btn;
     if (typeof document === "undefined") return null;
@@ -2331,6 +2760,8 @@
       if (shot && shot.parentNode === foot) foot.insertBefore(btn, shot);
       else foot.insertBefore(btn, foot.firstChild);
     }
+    /* 点话筒不抢焦点：否则识别结果要等用户点回输入框才落字（本轮真机测出来的老毛病） */
+    noFocusSteal(btn);
     btn.addEventListener("click", (ev) => {
       ev.preventDefault();
       cycleMode();
@@ -2338,6 +2769,7 @@
     btn.addEventListener("contextmenu", openMenu);
     state.btn = btn;
     paint(btn);
+    state.enhBtn = mountEnhanceButton(foot, btn);
     return btn;
   }
 
@@ -2396,6 +2828,15 @@
     state.lastErr = "";
     state.anchor = null;
     state.pendingInsert = "";
+    /* AI 增强：在途的那一句作废（句序 +1 ⇒ 结果回来时自己丢掉），说明也清掉 */
+    state.enh.seq += 1;
+    state.enh.busy = false;
+    state.enh.phrase = "";
+    state.enh.t = 0;
+    state.enh.anchor = null;
+    state.enh.oldText = "";
+    state.enh.fullAfter = "";
+    state.lastText = "";
     stopLivePrepKick();
     hideNote();
     stopMic();
@@ -2523,6 +2964,12 @@
       capHoldMs: CAP_HOLD_MS,
       /** 静音门阈值（排障用） */
       flushPending: () => flushPendingInsert(),
+      /** AI 增强：直接跑一句（冒烟钉住「注入了什么、回落成什么」） */
+      enhance: (text) => enhanceText(text),
+      /** AI 增强的清洗步骤（纯函数）：模型输出 → 可交付正文；空串 = 不可用（回落原文） */
+      enhSanitize,
+      /** AI 增强的极短上下文组装（纯函数） */
+      enhContext,
       pure: { mergeTranscript, thresholdFor, rmsOf, encodeWav16kMono, resampleTo16k },
       pttKey: PTT_KEY,
     },

@@ -329,6 +329,20 @@ function providerStateText(prov) {
   return "";
 }
 
+/* MTNode 中转服务（source="mtnode-relay"，见 renderer/app-relay.js）**余额不足以出一张图**：
+   余额 > 0（文本照常可用）但付不起最便宜的一张图 —— 云端会在调用前按应付额 402 拦下
+   （见 store-saas/relay.mjs 的 reserveImageCharge），客户端据此**只把图像模型收起来**，
+   表现与「自己没配图像模型」一致：文本节点照旧、图像节点挂不上这个卡。
+
+   判据来自云端快照的 relay.imageShortYuan（= 一张图的最低门槛，/api/relay/me 随清单下发）：
+   它 > 余额时就是「不够一张图」。老服务端不给这个字段（undefined）一律当 0 = 不拦。 */
+function relayImageShort(prov) {
+  if (!prov || String(prov.source || "") !== "mtnode-relay") return false;
+  const min = Number((prov.relay || {}).imageShortYuan) || 0;
+  if (!(min > 0)) return false;
+  return (Number((prov.relay || {}).balanceYuan) || 0) < min;
+}
+
 /* 单个模型 id 是否通过该服务商的白 / 黑名单（先白名单收窄、再黑名单剔除） */
 function providerModelAllowed(prov, modelId) {
   if (!prov) return true;
@@ -348,14 +362,18 @@ function providerModelFilter(prov, models) {
     : (prov && Array.isArray(prov.models) ? prov.models : []) || [];
   const list = src.map((m) => String(m));
   if (!prov) return list;
+  /* 中转余额不够一张图：图像模型整体收起来（文本照旧）。判据只在这条策略闸里加，
+     所以节点设置的下拉、节点「无模型」闸门、会话的模型表自动一致。 */
+  const imgShort = relayImageShort(prov);
   const allowRe = modelPatterns(prov.modelAllow)
     .map(modelGlobToRegExp)
     .filter(Boolean);
   const denyRe = modelPatterns(prov.modelDeny)
     .map(modelGlobToRegExp)
     .filter(Boolean);
-  if (!allowRe.length && !denyRe.length) return list;
+  if (!allowRe.length && !denyRe.length && !imgShort) return list;
   return list.filter((id) => {
+    if (imgShort && modelKindOf(null, prov.id, id) === KIND_IMAGE) return false;
     if (allowRe.length && !allowRe.some((re) => re.test(id))) return false;
     if (denyRe.some((re) => re.test(id))) return false;
     return true;
@@ -485,6 +503,7 @@ if (typeof module !== "undefined" && module.exports) {
     providerModelAllowed,
     providerModelFilter,
     providerSelectableModels,
+    relayImageShort,
     providerTimeoutTiers,
     providerTimeoutSpec,
     deepseekRouteSelectable,

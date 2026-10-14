@@ -59,7 +59,15 @@
   var renewing = false;
 
   function T(s, vars) {
-    return window.I18n && window.I18n.t ? window.I18n.t(s, vars) : s;
+    /* 与 app-settings.js 等模块同一口径：认全局 I18n（浏览器里它就是 window.I18n）。
+       两步都做**存在性判断**：任一缺席（沙箱 / 早期启动）都不能抛，退回原文案。 */
+    try {
+      if (typeof window !== "undefined" && window.I18n && window.I18n.t) return window.I18n.t(s, vars);
+    } catch (e) { /* 取不到就走下一步 */ }
+    try {
+      if (typeof I18n !== "undefined" && I18n && I18n.t) return I18n.t(s, vars);
+    } catch (e) { /* 同上 */ }
+    return s;
   }
   function cfg() {
     if (typeof S === "undefined" || !S) return null;
@@ -83,6 +91,16 @@
   }
   function isBlocked(p) {
     return meta(p).blocked === true;
+  }
+  /* 图像是否被余额卡住（余额 > 0 但 < 一张图的门槛）：与 app-model-kind.js 的
+     relayImageShort 同一判据（只置灰图像、文本照旧）。
+     门槛 = 云端快照的 minImageYuan（一张图的最低门槛，见 store-saas/relay.mjs 的
+     minImageYuan），落在卡上 relay.imageShortYuan；0 / 缺省 = 没有可用的图像模型，不拦。 */
+  function imageShort(prov) {
+    var m = meta(prov);
+    var min = Number(m.imageShortYuan) || 0;
+    if (!(min > 0)) return false;
+    return (Number(m.balanceYuan) || 0) < min;
   }
   /* key = 卡上那串真 Key（有票时非空）；authKey = 账号凭据到没到；
      keyIssue = 没到时的原因（"" = 没登录 / "decrypt_failed" 等 = 凭据在手却解不开）；
@@ -157,6 +175,8 @@
             expiresAt: key.expiresAt,
             renewDue: key.renewDue,
             rotate: key.rotate,
+            /* 图像门槛随快照留着：这一段只补凭据字段，别把余额判据顺手清掉 */
+            imageShortYuan: Number(meta(p).imageShortYuan) || 0,
           });
         }
         return key;
@@ -369,6 +389,9 @@
         /* 余额一律「元」（4 位小数）：服务端快照只给 Yuan 字段，客户端不做分↔元换算。 */
         balanceYuan: Number(doc.balanceYuan) || 0,
         totalYuan: Number(doc.totalYuan) || 0,
+        /* 一张图的最低门槛（元）：余额 > 0 但不够它时，**只把图像模型**收起来
+           （文本照旧）；判据见 app-model-kind.js 的 relayImageShort。 */
+        imageShortYuan: Number(doc.minImageYuan) || 0,
         blocked: blocked,
         /* 凭据一并落在卡的 relay 元数据里给界面显示（真票本身在 provider.apiKey 上）；
            有效期 / 续期状态一起带上（卡上「凭据」那一行要说得清什么时候该换票）。 */
@@ -738,6 +761,7 @@
           expiresAt: view.expiresAt,
           renewDue: false,
           rotate: view.rotate,
+          imageShortYuan: Number(meta(p).imageShortYuan) || 0,
         });
       }
       return saveConfig().then(function () {
@@ -764,6 +788,8 @@
     provider: providerOf,
     meta: meta,
     isBlocked: isBlocked,
+    /* 余额 > 0 但不够一张图（只影响图像模型可见性；文本照旧）。供设置页 / 回归读。 */
+    imageShort: imageShort,
     sync: sync,
     syncIfStale: syncIfStale,
     onAuthState: onAuthState,
@@ -772,11 +798,17 @@
     onChange: onChange,
     tsText: tsText,
     money: money,
-    /* 卡上那一行状态文案的取值口径（app-settings.js 与回归都读它） */
+    /* 卡上那一行状态文案的取值口径（app-settings.js 与回归都读它）。
+       三种「不能用」分开说：刷新失败 / 余额耗尽（文本也停）/ 余额不够一张图（只有图像停）。 */
     stateText: function (prov) {
       var m = meta(prov);
       if (m.error) return T("刷新失败：") + m.error;
       if (m.blocked) return m.reason || T("余额不足，充值后刷新");
+      if (imageShort(prov)) {
+        return T("余额不足以出图（一张需 ¥{amount}）：文本仍可用", {
+          amount: String(Number(m.imageShortYuan) || 0),
+        });
+      }
       if (!m.at) return T("未同步（点「刷新中转清单」重试）");
       return T("上次同步 ") + tsText(m.at);
     },

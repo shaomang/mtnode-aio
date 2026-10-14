@@ -7302,6 +7302,9 @@ function checkProvider(provider) {
       throw new Error(
         I18n.t("MTNode 中转服务余额不足：请充值后在「设置 · 提供商」里点「刷新」"),
       );
+    /* 余额 > 0 但不够一张图：图像模型已被收起来（app-model-kind.js 的 relayImageShort），
+       但 card 上绑着旧配置时仍可能走到这里 —— 由 checkRelayImageQuota 在**图像调用**前拦住
+       （文本调用不受影响，见那里的注释）。这里只留通用的余额耗尽判据。 */
     if (!providerAuthKey(provider))
       throw new Error(
         I18n.t("MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新"),
@@ -7310,6 +7313,31 @@ function checkProvider(provider) {
   }
   if (!String(provider.apiKey || "").trim())
     throw new Error(I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"));
+}
+
+/** 中转服务的**图像**余额闸：余额 > 0 但不够最便宜的一张图时给可执行的错。
+ *
+ *  为什么单独一个函数、且只在图像调用点调：
+ *    · 余额为 0 由 checkProvider 统一拦（那种状态下文本也调不了）；
+ *    · 「余额 > 0 但不够一张图」**只影响图像**（云端按「张数 × 元/张」的应付额 402，
+ *      文本按 token 事后计费、照旧可用），所以不能放在 checkProvider 里 ——
+ *      那会把还有几毛钱的账号的文本会话一起挡死。
+ *  判据与云端 / 渲染层同源：一张图的门槛 = 快照的 relay.imageShortYuan
+ *  （云端 minImageYuan，见 store-saas/relay.mjs）；0 / 缺省 = 不拦。
+ *  kind 只认图像（proc_image / image_*），其余一律放行。 */
+function checkRelayImageQuota(provider, kind) {
+  if (!provider || String(provider.source || "") !== RELAY_PROVIDER_SOURCE) return;
+  if (String(kind || "") !== "image") return;
+  const relay = provider.relay || {};
+  const min = Number(relay.imageShortYuan) || 0;
+  if (!(min > 0)) return;
+  if ((Number(relay.balanceYuan) || 0) >= min) return;
+  const amount = min.toFixed(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  throw new Error(
+    I18n.t("MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值后在「设置 · 提供商」里点「刷新」", {
+      amount: amount,
+    }),
+  );
 }
 
 async function apiCall({
@@ -7341,6 +7369,8 @@ async function apiCall({
      按花括号配平取 apiCall 的函数体，多包一层就会把重试那段切到窗外。 */
   const attempt = async () => {
   checkProvider(provider);
+  /* 图像请求多一道余额闸（余额 > 0 但不够一张图）：只拦图像，文本照旧 */
+  checkRelayImageQuota(provider, kind);
   /* 本次请求要走的接口族（与 buildRequestSpec 同一判据，见 effectiveProviderType）：
      图像请求不被服务商级 type 拦住 —— text_openai 的混合端点照旧按 OpenAI 兼容图像端点发。 */
   const reqType = effectiveProviderType(provider, kind);
@@ -8008,6 +8038,7 @@ async function sensenovaAppSnapshot() {
 
 async function appsAiCallStream(spec, emit) {
   checkProvider(spec.provider);
+  checkRelayImageQuota(spec.provider, spec.kind);
   const req = buildRequestSpec(
     spec.provider,
     spec.kind,
@@ -8062,6 +8093,8 @@ ipcMain.handle("api:callStream", async (e, spec) => {
   };
   try {
     checkProvider(spec.provider);
+    /* 图像请求多一道余额闸（余额 > 0 但不够一张图）；文本调用不受影响 */
+    checkRelayImageQuota(spec.provider, spec.kind);
     /* llama 本地模型：先把模型加载起来再发请求（未部署 / 上次加载失败都会重试一次） */
     const gate = await llamaPreflightFor(spec.provider, spec.model);
     if (gate && gate.ok === false) {
@@ -8125,6 +8158,8 @@ ipcMain.handle("api:callStream", async (e, spec) => {
 ipcMain.handle("api:preview", async (e, spec) => {
   try {
     checkProvider(spec.provider);
+    /* 图像预览同样受「余额够不够一张图」约束（文本预览照旧） */
+    checkRelayImageQuota(spec.provider, spec.kind);
     const req = buildRequestSpec(
       spec.provider,
       spec.kind,

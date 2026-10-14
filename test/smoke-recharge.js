@@ -92,6 +92,52 @@ async function main() {
   ok(w.includes("amountYuan") && w.includes("tiersYuan") && w.includes("balanceYuan") && !w.includes("Cents"),
     "充值金额一律按元（4 位小数）传递：amountYuan / tiersYuan / balanceYuan，客户端不出现分");
   ok(w.includes("window.MtWallet = {"), "对外只暴露 window.MtWallet 一个入口");
+  /* 本轮需求（流水不再按「分」/ 整数币显示）：流水金额 = 鲸圆币 4 位小数（不足最小位给「<0.0001」），
+     相邻连续的 relay 行折成一条可展开的「中转扣费 N 笔」——否则每笔扣费一条流水会把摘要刷满。 */
+  ok(w.includes("coinFlowTextOfYuan") && w.includes("var flowText = function") && w.includes("var flowSigned = function") &&
+    !w.includes("coinNum(coinsOfYuan(Math.abs(dv)))"),
+    "钱包流水按 4 位小数币显示（不再对变动额 Math.round 到整数币 → 小额不再画成「0」）");
+  ok(w.includes('T("中转扣费 {n} 笔", { n: items.length })') && w.includes("ledgerOpen") &&
+    w.includes("ST.ledgerOpen[key] = !ST.ledgerOpen[key]") && w.includes('el("tr", "wl-fold-item")'),
+    "相邻连续的 relay 流水折成一条「中转扣费 N 笔」，点一下就地展开逐笔（展开态记在 ST.ledgerOpen）");
+  ok(w.includes('api("GET", "/api/wallet/summary?limit=20")'),
+    "摘要取 20 条原始流水再折叠（每笔扣费一条后，10 条会被扣费刷满、充值与退款看不见）");
+  /* 真跑折叠与币口径（假 window 里执行 renderer/app-whalecoin.js + renderer/app-wallet.js）：
+     只断言源码不够 —— 折法 / 4 位小数换算都要跑一遍才算数。 */
+  {
+    const vm = require("vm");
+    const sandbox = { window: {}, I18n: { t: (s) => s }, console };
+    sandbox.window.I18n = sandbox.I18n;
+    vm.createContext(sandbox);
+    vm.runInContext(read("renderer/app-whalecoin.js"), sandbox, { filename: "app-whalecoin.js" });
+    vm.runInContext(read("renderer/app-wallet.js"), sandbox, { filename: "app-wallet.js" });
+    const Mt = sandbox.window.MtWallet;
+    ok(!!Mt && typeof Mt.foldLedgerRows === "function", "假 window 下真跑 app-wallet.js，拿到真的 MtWallet.foldLedgerRows");
+    const ledger = [
+      { id: "a1", type: "relay", deltaYuan: -0.00996868, balanceAfterYuan: 0.99003132, at: 3 },
+      { id: "a2", type: "relay", deltaYuan: -0.00000002, balanceAfterYuan: 0.9900313, at: 2 },
+      { id: "r1", type: "recharge", deltaYuan: 10, balanceAfterYuan: 10.9900313, at: 1 },
+      { id: "a3", type: "relay", deltaYuan: -0.5, balanceAfterYuan: 10.4900313, at: 0 },
+    ];
+    const folded = Mt.foldLedgerRows(ledger);
+    ok(folded.length === 3 && folded[0].kind === "relay" && folded[0].items.length === 2 && folded[0].key === "a1" &&
+      folded[1].kind === "one" && folded[1].e.id === "r1" && folded[2].kind === "relay" && folded[2].items.length === 1,
+      "折叠口径：相邻连续的 relay 合成一条（2 笔），被充值隔开后另起一条（1 笔）");
+    const MtCoin = sandbox.window.MtCoin;
+    ok(MtCoin.coinFlowTextOfYuan(0.00996868) === "0.4984" && MtCoin.coinFlowTextOfYuan(-0.00996868) === "-0.4984",
+      "流水金额按币 4 位小数（0.00996868 元 = 0.4984 币，不再被取整成 0）");
+    ok(MtCoin.coinFlowTextOfYuan(0) === "0" && MtCoin.coinFlowTextOfYuan(0.00000002) === "<0.0001",
+      "不足最小位给下限文案「<0.0001」，真正 0 元才显示 0");
+  }
+  ok(read("renderer/i18n.js").includes('"中转扣费 {n} 笔": "Relay charges × {n}"') &&
+    read("renderer/i18n.js").includes('"中转扣费": "Relay charge"') &&
+    read("renderer/i18n.js").includes('"点一下展开 / 收起逐笔明细"'),
+    "新词条有 EN 译文（折叠行文案 / 悬停提示）");
+  ok(read("renderer/css/wallet.css").includes(".wl-table tr.wl-fold") &&
+    read("renderer/css/wallet.css").includes(".wl-fold-item") &&
+    read("renderer/app-whalecoin.js").includes("function coinFlowTextOfYuan") &&
+    read("renderer/app-whalecoin.js").includes("coinFlowTextOfYuan: coinFlowTextOfYuan"),
+    "折叠行样式与 coinFlowTextOfYuan 都已接上（app-whalecoin.js 暴露 / wallet.css 有用例）");
 
   /* 本轮口径：单笔上限收到 ¥50（档位 ≤ 2500 币）、自定义 ¥2 – ¥100（100 – 5000 币）；
      汇率只在充值窗可见，账号菜单与设置里的中转卡都不再提示。 */
@@ -564,6 +610,40 @@ async function main() {
   ok(list && (list.items || list.rows || list.list), "listOrders 返回分页结构");
   const sum = wallet.summarize(me, 5);
   ok(sum && near(sum.balanceYuan, me.balanceCents / 100), "summarize 的余额（元）与账户行（内部按分）一致");
+  /* 本次需求：余额 = **可用总额**（整数分 + 中转扣费留下的亚分零头）。
+     只算整数分的话，一个余额 0 分、零头 0.5 分的账号会在钱包摘要里显示成 0 元 —— 「未同步」的根因。 */
+  const subBackup = me.relaySubCents;
+  me.relaySubCents = 0.5;
+  const sumSub = wallet.summarize(me, 5);
+  ok(near(sumSub.balanceYuan, (me.balanceCents + 0.5) / 100),
+    "summarize 的余额含亚分零头（整数分 " + me.balanceCents + " + 0.5 分 → " + sumSub.balanceYuan + " 元）");
+  /* 流水窗口 / 按订单取关联流水（每笔扣费一条流水后，这两条筛选必须在截断前生效） */
+  const ledAll = wallet.listLedger({ limit: 500 });
+  const ledWin = wallet.listLedger({ limit: 500, since: Date.now() - 1000 });
+  ok(Array.isArray(ledAll) && ledWin.length <= ledAll.length, "listLedger 支持时间窗口（since）筛选");
+  const csvWin = wallet.csv("ledger", { since: Date.now() - 1000 });
+  ok(typeof csvWin === "string" && csvWin.includes("流水号"), "CSV 导出支持跟随窗口（since）");
+  /* 亚分扣费（不足 1 分）也写一条流水（本次需求）：不足 1 分的零头有两种落法，两种都必须留流水 ——
+     ① 整数分余额还够 → 账户行整数分让出 1 分、零头补回（balanceCents 100 → 99、零头 0.5）；
+     ② 整数分余额已经是 0 → 只改 relaySubCents（这一条正是修正前的 skippedLedger，流水完全看不到钱）。 */
+  me.balanceCents = 100;
+  me.relaySubCents = 0;
+  const ledBefore = db.rechargeLedger.length;
+  const chg = await wallet.chargeRelayUsage({ user: me, amountCents: 0.5, note: "亚分扣费（冒烟）" });
+  const lastLed = db.rechargeLedger[db.rechargeLedger.length - 1];
+  ok(chg.ok && db.rechargeLedger.length === ledBefore + 1 && lastLed && lastLed.type === "relay" && lastLed.deltaCents === -0.5,
+    "亚分扣费（0.5 分）也写一条 relay 流水，deltaCents = -0.5（真实扣减额）");
+  ok(me.balanceCents === 99 && near(me.relaySubCents, 0.5) && near(lastLed.balanceAfterCents, 99.5),
+    "账户行口径不动（整数分 100 → 99、零头 0.5），流水的「变动后余额」= 99.5（可用总额）");
+  me.balanceCents = 0;
+  me.relaySubCents = 0.6;
+  const ledBefore2 = db.rechargeLedger.length;
+  const chg2 = await wallet.chargeRelayUsage({ user: me, amountCents: 0.5, note: "亚分扣费（冒烟·零头路）" });
+  const lastLed2 = db.rechargeLedger[db.rechargeLedger.length - 1];
+  ok(chg2.ok && db.rechargeLedger.length === ledBefore2 + 1 && lastLed2 && lastLed2.deltaCents === -0.5 &&
+    near(lastLed2.balanceAfterCents, 0.1) && me.balanceCents === 0 && near(me.relaySubCents, 0.1),
+    "整数分余额为 0 时只啃零头也留流水（修正前 skippedLedger：这笔钱在流水里根本不存在）");
+  me.relaySubCents = subBackup;
   const csvText = wallet.csv("orders");
   ok(csvText.charCodeAt(0) === 0xfeff && csvText.includes("\r\n"), "CSV 带 BOM + CRLF（Excel 直开不乱码）");
   const wst = wallet.stats();

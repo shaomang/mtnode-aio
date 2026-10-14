@@ -12,6 +12,8 @@
  *     的换算 —— 界面上给币，提交给云端的仍是元。
  *   · 余额四舍五入取整（<0.5 币显示「<1 币」）；**可用性判定仍按真实元值**
  *     （不因为显示成 0 币就把还有零头的账号判成「余额不足」）。
+ *   · **流水金额（余额变动列表）例外：固定 4 位小数、不足最小位给「<0.0001」** ——
+ *     那里的每一行都是一笔真实扣费（中转按 1e-8 元计费），取整会把小额画成「0」。
  *   · 支付/退款按元写（支付宝实际收付的是元）。
  *
  * 三、图标（本轮需求：界面上把「币」字换成鲸圆币 icon）
@@ -92,6 +94,24 @@
     var v = Math.round(n * 100) / 100;
     if (n > 0 && v === 0) return "<0.01";
     return v.toFixed(2).replace(/\.?0+$/, "");
+  }
+
+  /* 流水金额（本次需求：钱包流水的每一笔都按真实值显示，不再四舍五入成整数币）：
+     · 单位仍是鲸圆币，**固定保留 4 位小数**（1 币 = ¥0.02；云端按 1e-8 元计费，
+       一笔 0.00996868 元的扣费 ≈ 0.4984 币，正是这一档）；
+     · 换算后不足最小位（0.0001 币）→ 下限文案「<0.0001」，**绝不显示成 0**
+       （原来 Math.round 到整数币时，这类小额会画成「-0」）。
+     opts.unit === false 时不给单位文字（中文界面本来就是图标）。 */
+  function coinFlowTextOfYuan(yuan) {
+    var n = Number(yuan);
+    if (!isFinite(n) || n === 0) return "0";
+    var raw = Math.abs(n) * COIN_PER_YUAN;
+    var floor = 0.0001;
+    var sign = n < 0 ? "-" : "";
+    if (raw > 0 && raw < floor) return sign + "<" + floor.toFixed(4);
+    var v = coinRound4(raw);
+    if (raw > 0 && v === 0) return sign + "<" + floor.toFixed(4);
+    return sign + v.toFixed(4);
   }
 
   /* 简短币名（**只给英文界面**用；中文界面单位一律是图标，不写「币」字） */
@@ -250,6 +270,7 @@
     balanceTextOfYuan: balanceTextOfYuan,
     coinNumText: coinNumText,
     coinCostText: coinCostText,
+    coinFlowTextOfYuan: coinFlowTextOfYuan,
     coinText: coinText,
     coinIcon: coinIcon,
     coinEl: coinEl,

@@ -100,6 +100,8 @@ function startMock() {
       }
       if (p === "/images/generations") {
         state.image.push({ headers: req.headers, raw: raw.toString("utf8") });
+        // VERYSLOW：延迟 1200ms 再回，供「并发预留」那条用例把三张图压在同一段在途窗口里
+        if (raw.toString("utf8").includes("VERYSLOW")) return setTimeout(() => json(200, { created: 1, data: [{ b64_json: "VS" }] }), 1200);
         // SLOW：延迟 300ms 再回，供「客户端中途断开也照常计费」那条用例掐断连接
         if (raw.toString("utf8").includes("SLOW")) return setTimeout(() => json(200, { created: 1, data: [{ b64_json: "SLOW" }] }), 300);
         return json(200, { created: 1, data: [{ b64_json: "AAAA" }] });
@@ -154,6 +156,24 @@ async function main() {
     has("renderer/app-relay.js", "yuanPrecision: Number(doc && doc.yuanPrecision) || 0"),
     "金额精度随接口下发（/relay/v1/usage 与 /api/relay/me → 客户端卡上 yuanPrecision）");
   ok(relaySrc.includes("isPeak") && relaySrc.includes("MTNODE_RELAY_PEAK_OFF"), "DeepSeek 高峰/空闲价按时段算，节假日可用 env 补");
+  /* 本轮 bug（余额不足仍能出图、且只扣到 0 不变负）：
+     图像按「张数 × 元/张」的**应付额**在调用前原子预留，不足 402 且不转上游；
+     预留上限 = 本次扣除上限（不再拿结算那一刻的可用额夹紧）。 */
+  ok(relaySrc.includes("function reserveImageCharge") && relaySrc.includes("function releaseReserve") &&
+    relaySrc.includes("function liveCentsOf") && relaySrc.includes("function imageReserveYuan") &&
+    relaySrc.includes("function imageCountOf") && relaySrc.includes("function minImageYuan"),
+    "图像应付额门禁的五件套齐备：张数估算 / 应付额 / 可用额（扣在途预留）/ 预留 / 释放");
+  ok(/const hold = reserveImageCharge\(ctx\.user\.id, centsOfYuan\(needYuan\)\)/.test(relaySrc) &&
+    /if \(!hold\.ok\) \{[\s\S]{0,220}?insufficient_quota/.test(relaySrc) &&
+    relaySrc.includes("releaseReserve(ctx.user.id, hold.id)"),
+    "handleImages：预留失败即 402 insufficient_quota，且 try/finally 一律释放预留");
+  ok(/capCents: hold\.cents/.test(relaySrc) && /opt && opt\.capCents != null/.test(relaySrc),
+    "结算的扣除上限 = 预留额（在途的别的预留不吃这一次的钱；上游多出张数只记 shortfall）");
+  ok(/p\.startsWith\("\/relay\/v1\/images\/"\) \? "image" : "account"/.test(relaySrc) &&
+    relaySrc.indexOf("liveCents <= 0") < relaySrc.indexOf("gates.forEach(commit)"),
+    "余额门禁先于限流（钱不够的请求不白占一次配额），且按「可用余额（扣在途预留）」判");
+  ok(relaySrc.includes("minImageYuan: minImageYuan") && has("store-saas/server.mjs", "minImageYuan: relay.admin.minImageYuan()"),
+    "一张图的最低门槛随 /api/relay/me 下发给客户端（客户端据此在发请求前置灰图像模型）");
 
   ok(has("store-saas/server.mjs", 'p.startsWith("/relay/v1/")') && has("store-saas/server.mjs", "createRelay({") &&
     has("store-saas/server.mjs", "issueSession: issueRelayTestKey") && has("store-saas/server.mjs", "publicBase: RELAY_PUBLIC_BASE"),
@@ -240,6 +260,25 @@ async function main() {
   const walletSrc = read("store-saas/wallet.mjs");
   ok(walletSrc.includes('"relay"') && walletSrc.includes("chargeRelayUsage") && walletSrc.includes("writeRelaySub"),
     "账本新增 relay 流水类型与亚分扣费入口（内部记账仍整数分）");
+  /* 本次需求（流水不再按「分」记账）：每一笔扣费都写流水，金额是真实值（含亚分零头）——
+     旧口径下「整数分不足 1 分就不写流水」（skippedLedger）已经彻底没有这条分支了。 */
+  ok(!walletSrc.includes("skippedLedger") && /deltaCents: -pay/.test(walletSrc) &&
+    /balanceAfterCents: afterTotal/.test(walletSrc),
+    "钱包：中转扣费不再有「不足 1 分不写流水」的分支，流水金额 = 真实扣减额（deltaCents = -pay）");
+  ok(/balanceYuan: yuanOfCents\(totalCentsOf\(user\)\)/.test(walletSrc),
+    "钱包摘要的余额（元）改用可用总额（整数分 + 亚分零头），与账号快照同一口径");
+  const srvSrc = read("store-saas/server.mjs");
+  ok(/balanceYuan: yuanOfCents\(totalCentsOf\(u\)\)/.test(srvSrc) && !/balanceYuan: yuanOfCents\(wallet\.balanceOf/.test(srvSrc),
+    "服务端下发余额一律走可用总额：publicUser / 打赏不足 / 退款 / 用户列表不再只算整数分");
+  ok(srvSrc.includes("function ledgerWindowOf") && srvSrc.includes("window: win.key") &&
+    /wallet\.csv\(kind, kind === "ledger"/.test(srvSrc) && read("store-saas/wallet.mjs").includes("since"),
+    "管理台流水页与 CSV 跟随时间窗口（ledgerWindowOf，缺省近 30 天）");
+  ok(read("store-saas/admin/index.html").includes('id="fLedgerWindow"') &&
+    read("store-saas/admin/admin.js").includes("ledgerWindowValue") && read("store-saas/admin/admin.js").includes("&window="),
+    "管理台流水页有窗口下拉（今日 / 7 天 / 30 天 / 全部），导出 CSV 带同一窗口");
+  ok(/yuanFixed\(Math\.abs\(v\)\)/.test(read("store-saas/admin/admin.js")) &&
+    /get: \(e\) => yuanFixed\(e\.balanceAfterYuan\)/.test(read("store-saas/admin/admin.js")),
+    "管理台流水页「变动 / 变动后余额」两列都按 8 位小数显示（yuanFixed）");
   const walletPublic = walletSrc.slice(walletSrc.indexOf("function publicOrder"), walletSrc.indexOf("/** CSV 导出"));
   ok(walletSrc.includes("export function yuanOfCents") && walletSrc.includes("export function centsOfYuan") &&
     walletPublic.includes("amountYuan") && walletPublic.includes("deltaYuan") && walletPublic.includes("balanceAfterYuan") &&
@@ -313,10 +352,20 @@ async function main() {
   let loginTicket = "";
   let TOKEN_POOR = "";
   let TOKEN_ADJUST = "";
+  /* 余额不足三个档（本轮 bug：图像按应付额门禁）：
+       · thin = 0.10 元 < 一张图 0.21 → 必然 402（文本还能用）
+       · edge = 正好 0.21 元 → 只够一张（边界）
+       · race = 0.70 元 → 三张同发只放行一张（原子预留，不是各读一次余额） */
+  let TOKEN_THIN = "";
+  let TOKEN_EDGE = "";
+  let TOKEN_RACE = "";
   const LOGIN_RICH = crypto.randomBytes(24).toString("hex");
   const LOGIN_POOR = crypto.randomBytes(24).toString("hex");
   const LOGIN_ADJUST = crypto.randomBytes(24).toString("hex");
   const LOGIN_BOOT = crypto.randomBytes(24).toString("hex");
+  const LOGIN_THIN = crypto.randomBytes(24).toString("hex");
+  const LOGIN_EDGE = crypto.randomBytes(24).toString("hex");
+  const LOGIN_RACE = crypto.randomBytes(24).toString("hex");
   /* 同一个账号的**第二台设备**（另一个登录会话）：幂发口径要「两台设备拿到同一张票」。 */
   const LOGIN_OTHER = crypto.randomBytes(24).toString("hex");
   /* 「换账号」用的另一个账号及其密码摘要（走真登录口 POST /api/login，见 [3b]）。 */
@@ -332,6 +381,11 @@ async function main() {
         /* 后台人工调过账、但余额已花光：everRecharged 为真而清单为空 ——
            正是客户端「卡还在、置灰、提示充值」那一种状态 */
         { id: "u_relay_adjust", username: "adjusted", nickname: "后台充过", balanceCents: 0, createdAt: t0 },
+        /* 本轮 bug 的三个档：余额 > 0 但不够一张图（0.10）/ 正好够一张（0.21）/ 够三张（0.70）。
+           一张图 = 0.21 元（见 MTNODE_RELAY_PRICES 与默认价目）。 */
+        { id: "u_relay_thin", username: "thin", nickname: "余额不够一张图", balanceCents: 10, createdAt: t0 },
+        { id: "u_relay_edge", username: "edge", nickname: "正好一张", balanceCents: 21, createdAt: t0 },
+        { id: "u_relay_race", username: "race", nickname: "并发只够一张", balanceCents: 21, createdAt: t0 },
         /* 「换账号」那个账号：带密码摘要（同一套 scrypt 口径，见 server.mjs 的 hashPass），
            供 [3b] 走真登录口（POST /api/login）换账号 —— 换账号是三条显式轮换路径之一。 */
         { id: "u_relay_switch", username: "switchy", nickname: "换账号用", balanceCents: 100, createdAt: t0,
@@ -350,6 +404,9 @@ async function main() {
         { tokenHash: hashToken(LOGIN_ADJUST), userId: "u_relay_adjust", expiresAt: t0 + 86400e3 },
         { tokenHash: hashToken(LOGIN_BOOT), userId: "u_relay_boot", expiresAt: t0 + 86400e3 },
         { tokenHash: hashToken(LOGIN_OTHER), userId: "u_relay_rich", expiresAt: t0 + 86400e3 },
+        { tokenHash: hashToken(LOGIN_THIN), userId: "u_relay_thin", expiresAt: t0 + 86400e3 },
+        { tokenHash: hashToken(LOGIN_EDGE), userId: "u_relay_edge", expiresAt: t0 + 86400e3 },
+        { tokenHash: hashToken(LOGIN_RACE), userId: "u_relay_race", expiresAt: t0 + 86400e3 },
       ],
       identities: [], templates: [], skills: [], apps: [], likes: [], skillLikes: [],
       forumTopics: [], forumReplies: [], rechargeOrders: [], adminSessions: [], relayUsage: [],
@@ -594,6 +651,15 @@ async function main() {
     ok(poorKey.key.length >= 32 && adjustKey.key.length >= 32, "余额 0 / 人工调账两个账号同样领得到凭据");
     TOKEN_POOR = poorKey.key;
     TOKEN_ADJUST = adjustKey.key;
+    /* 余额不足三个档的票同样现领（余额 > 0 时模型清单照给，门禁落在**调用时按应付额**） */
+    const thinKey = await mint(LOGIN_THIN, DEV_B);
+    const edgeKey = await mint(LOGIN_EDGE, DEV_B);
+    const raceKey = await mint(LOGIN_RACE, DEV_B);
+    ok(thinKey.key.length >= 32 && edgeKey.key.length >= 32 && raceKey.key.length >= 32,
+      "余额 0.10 / 0.21 / 0.70 三个账号都领得到凭据（余额 > 0 就不再是「发不出票」的问题）");
+    TOKEN_THIN = thinKey.key;
+    TOKEN_EDGE = edgeKey.key;
+    TOKEN_RACE = raceKey.key;
 
     /* ======================= [4][5] 门禁与白名单 ======================= */
     console.log("[4][5] 余额门禁与模型白名单");
@@ -643,8 +709,11 @@ async function main() {
     const u1 = userOf("u_relay_rich");
     ok(charged1 && u1.balanceCents === 99 && near(u1.relaySubCents, 0.5), "第一笔扣 0.005 元：内部账 balanceCents 100 → 99、亚分零头 relaySubCents 0.5");
     const led1 = hotLedger().filter((e) => e.type === "relay");
-    ok(led1.length === 1 && led1[0].deltaCents === -1 && led1[0].balanceAfterCents === 99 && /中转扣费/.test(led1[0].note),
-      "整数分那 1 分落成一条 relay 流水（管理台流水页能看到，备注写清模型与 token）");
+    /* 本次需求：**每一笔扣费都写一条流水**，金额是真实值（含亚分零头）——
+       这笔扣了 0.5 分（不足 1 分），修正前走 skippedLedger 连流水都不写；
+       现在 deltaCents = -0.5、balanceAfterCents = 99.5（整数分 99 + 零头 0.5，可用总额口径）。 */
+    ok(led1.length === 1 && led1[0].deltaCents === -0.5 && led1[0].balanceAfterCents === 99.5 && /中转扣费/.test(led1[0].note),
+      "亚分扣费（0.5 分）也落一条 relay 流水：deltaCents = -0.5、变动后余额 = 99.5（含零头的可用总额）");
 
     const plain = await api("/relay/v1/chat/completions", {
       method: "POST",
@@ -783,6 +852,107 @@ async function main() {
     await sleep(200);
     ok(near(totalOf("u_relay_rich"), tinyTotal - 0.63, 1e-8), "被限流的请求不扣费");
     ok(!(mock.state.image.length > 2), "被限流的请求没打到上游（省的是真金白银）");
+
+    /* ======================= [9b] 图像余额门禁：按应付额预留 =======================
+       本轮 bug：余额 > 0 就放行，扣费再按可用额夹紧 ⇒ 余额 0.10 也能出一张 0.21 的图，
+       扣完只归零、不会变负。现在：调用前按「张数 × 元/张」原子预留，不足即 402 且不转上游。 */
+    console.log("[9b] 图像余额门禁：应付额不足 402、边界正好一张、并发只放行一张");
+    const imgCalls = () => mock.state.image.length || 0;
+    const thinBefore = totalOf("u_relay_thin");
+    const imgN0 = imgCalls();
+    const thinGen = await api("/relay/v1/images/generations", {
+      method: "POST",
+      token: TOKEN_THIN,
+      json: { model: "gpt-image-2.5-vip", prompt: "余额不足也要出图" },
+    });
+    ok(thinGen.status === 402 && thinGen.json && thinGen.json.error.code === "insufficient_quota" &&
+      /0\.21/.test(String(thinGen.json.error.message)) && /0\.1/.test(String(thinGen.json.error.message)),
+      "余额 0.10 < 一张图 0.21 → 402 insufficient_quota，文案写明「本次需 0.21 元 / 当前 0.10 元」");
+    await sleep(150);
+    ok(imgCalls() === imgN0, "被拦下的那一次**没打到上游**（不白花上游的钱）");
+    ok(near(totalOf("u_relay_thin"), thinBefore, 1e-8) && !readHot("relay-usage.jsonl").some((r) => r.userId === "u_relay_thin"),
+      "被拦下的那一次不扣费（余额仍是 " + thinBefore + " 元），也不落用量明细");
+
+    /* 余额 > 0 但不够一张图：文本调用不受影响（文本按 token 计费，调用前算不出应付额） */
+    const thinChat = await api("/relay/v1/chat/completions", {
+      method: "POST",
+      token: TOKEN_THIN,
+      json: { model: "deepseek-flash", messages: [{ role: "user", content: "文本仍可用" }] },
+    });
+    ok(thinChat.status === 200, "同一个账号文本调用照常 200（门禁只按图像应付额拦，不误伤文本）");
+    /* mock 的文本 usage = 命中 1000 / 未命中 1000 / 出 500 → (1000×0.02 + 1000×1 + 500×4)/1e6
+       = 0.00302 元（与 [6][7] 非流式那一笔同价）：0.10 → 0.09698，一分不抹。 */
+    await waitFor(() => near(totalOf("u_relay_thin"), 0.09698, 1e-8), 5000);
+    if (!near(totalOf("u_relay_thin"), 0.09698, 1e-8)) {
+      const row = readHot("relay-usage.jsonl").filter((r) => r.userId === "u_relay_thin").slice(-1)[0] || {};
+      console.log("      （thin 明细：" + JSON.stringify({ costCents: row.costCents, chargedCents: row.chargedCents, balanceCents: row.balanceCents, subCents: row.subCents, note: row.note }) +
+        " · 余额 " + totalOf("u_relay_thin") + " · user=" + JSON.stringify({ b: userOf("u_relay_thin").balanceCents, sub: userOf("u_relay_thin").relaySubCents }) + "）");
+    }
+    ok(near(totalOf("u_relay_thin"), 0.09698, 1e-8),
+      "文本那笔照常扣 0.00302 元（0.10 → 0.09698：小额扣费的精度口径不变）");
+
+    /* 换一条路也一样拦：images/edits（multipart 的 model 在表单字段里） */
+    const thinMp = Buffer.concat([
+      Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-image-2.5-vip\r\n"),
+      Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n改一改\r\n"),
+      Buffer.from("--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\n"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      Buffer.from("\r\n--" + boundary + "--\r\n"),
+    ]);
+    const editN0 = mock.state.edits.length || 0;
+    const thinEdit = await api("/relay/v1/images/edits", {
+      method: "POST",
+      token: TOKEN_THIN,
+      raw: thinMp,
+      contentType: "multipart/form-data; boundary=" + boundary,
+    });
+    ok(thinEdit.status === 402 && thinEdit.json.error.code === "insufficient_quota" && (mock.state.edits.length || 0) === editN0,
+      "images/edits 同样在调用前拦下（multipart 路径也是 402，不转上游）");
+
+    /* 边界：余额正好 0.21 → 第一张放行、扣到 0，第二张（余额已 0）402 */
+    const edgeN0 = imgCalls();
+    const edgeOk = await api("/relay/v1/images/generations", {
+      method: "POST",
+      token: TOKEN_EDGE,
+      json: { model: "gpt-image-2.5-vip", prompt: "边界一张" },
+    });
+    ok(edgeOk.status === 200 && imgCalls() === edgeN0 + 1, "余额正好 0.21 = 一张图：边界放行（402 不早一步、也不晚一步）");
+    await waitFor(() => near(totalOf("u_relay_edge"), 0, 1e-8), 5000);
+    ok(near(totalOf("u_relay_edge"), 0, 1e-8), "边界那张扣干净：0.21 → 0（余额为 0 时图像与文本一起停）");
+    const edgeAgain = await api("/relay/v1/images/generations", {
+      method: "POST",
+      token: TOKEN_EDGE,
+      json: { model: "gpt-image-2.5-vip", prompt: "再来一张" },
+    });
+    ok(edgeAgain.status === 402 && /余额/.test(edgeAgain.json.error.message), "余额已 0：下一张 402（不再出现「扣到 0 却还出了一张」）");
+
+    /* 并发：余额 0.21（正好一张）同时发三张，上游慢 1200ms ——
+       「各读一次余额」的老写法会让三张全过（余额被扣到 0 却出了三张）；
+       原子预留只放行一张，另两张 402 且不转上游。 */
+    const raceN0 = imgCalls();
+    const raceReq = () => api("/relay/v1/images/generations", {
+      method: "POST",
+      token: TOKEN_RACE,
+      json: { model: "gpt-image-2.5-vip", prompt: "VERYSLOW 并发" },
+    });
+    const raceRes = await Promise.all([raceReq(), raceReq(), raceReq()]);
+    const raceOk = raceRes.filter((r) => r.status === 200).length;
+    const raceBlocked = raceRes.filter((r) => r.status === 402 && r.json.error.code === "insufficient_quota").length;
+    if (!(raceOk === 1 && raceBlocked === 2)) {
+      const calls = (mock.state.image || []).slice(raceN0).map((r) => String(r.raw || "").includes("VERYSLOW"));
+      console.log("      （并发诊断：状态 " + raceRes.map((r) => r.status).join("/") +
+        " · 上游收到 " + calls.length + " 次 · 带 VERYSLOW " + JSON.stringify(calls) +
+        " · 余额 " + totalOf("u_relay_race") + "）");
+    }
+    ok(raceOk === 1 && raceBlocked === 2,
+      "余额 0.21 同时发三张：只放行 1 张（其余 2 张 402）—— 应付额是**原子预留**，不是各读一次余额（" +
+        raceRes.map((r) => r.status).join(" / ") + "）");
+    ok(imgCalls() === raceN0 + 1, "被预留挡下的两张没有打到上游（省的是真金白银）");
+    await waitFor(() => near(totalOf("u_relay_race"), 0, 1e-8), 5000);
+    ok(near(totalOf("u_relay_race"), 0, 1e-8),
+      "并发那轮只扣一张的钱：0.21 → 0（不是三张一起放行后扣到 0）");
+    ok(!hotLedger().some((e) => e.userId === "u_relay_race" && Number(e.deltaCents) === 0),
+      "被拦下的请求不写扣费流水（0 元流水不存在）");
 
     /* ======================= [10] 自查与落盘 ======================= */
     console.log("[10] 用量自查与落盘");

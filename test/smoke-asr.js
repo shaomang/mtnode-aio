@@ -52,7 +52,7 @@ function eqStr(a, b, msg) {
 /* 从源码里按名字抠出顶层函数的完整函数体（与其它冒烟脚本同一套做法：不改动源文件，
    把真实现拖进沙箱跑，而不是在测试里重抄一份口径）。 */
 function fnBody(src, name) {
-  const m = src.match(new RegExp("\\n(?:async\\s+)?function " + name + "\\s*\\(", "m"));
+  const m = src.match(new RegExp("\\n[ \\t]*(?:async\\s+)?function " + name + "\\s*\\(", "m"));
   if (!m) throw new Error("找不到函数：" + name);
   const at = m.index + 1;
   const i = src.indexOf("{", at);
@@ -970,8 +970,300 @@ function makeSpeechBox(o) {
   console.log("\n[6] 应用窗口的 footer 听写：默认模板 + 脚手架");
   {
     const ui = read("renderer/app-speech-ui.js");
-    ok(ui.indexOf("transcribeWav") > 0 && ui.indexOf("pickAudio") > 0, "听写 UI 走应用桥的 transcribeWav / pickAudio");
-    ok(ui.indexOf("mtnode-dictate") > 0, "听写条有稳定 id（宿主注入与落点复核都认它）");
+    ok(ui.indexOf("transcribeWav") > 0, "听写 UI 走应用桥的 transcribeWav");
+    ok(
+      ui.indexOf("mtnode-dictate") > 0,
+      "听写条有稳定 id（宿主注入与落点复核都认它）",
+    );
+    /* 本轮需求（持续听写 / 快捷键 / 左下角浮动话筒）钉在这里 —— 三条都改在同一支注入模块里 */
+    ok(
+      ui.indexOf("function startLive(") > 0 &&
+        ui.indexOf("function toggleLive(") > 0 &&
+        ui.indexOf("function stopLive(") > 0 &&
+        ui.indexOf("apSpeechToggle") > 0,
+      "★ 听写是**持续**的：startLive / stopLive / toggleLive 三件套（不再一次性录完再交）",
+    );
+    ok(
+      ui.indexOf("mtnode-dictate-zone") > 0 && ui.indexOf("mtn-dict-zone-btn") > 0,
+      "★ 左下角常驻浮动话筒（#mtnode-dictate-zone / 点它 = 呼出并开始听写）",
+    );
+    ok(
+      ui.indexOf('var HOTKEY_KEY = "F2"') > 0 &&
+        /addEventListener\(\s*\n?\s*"keydown"/.test(ui) &&
+        ui.indexOf("function isHotkey(") > 0,
+      "★ 窗口内快捷键 F2 呼出 / 收起听写条（isHotkey 认 key / code / keyCode 三条）",
+    );
+    ok(
+      /ev\.ctrlKey && ev\.shiftKey[\s\S]{0,160}"KeyD"/.test(ui),
+      "★ 备选快捷键 Ctrl+Shift+D（应用自己也要用 F2 时，页面上仍有一条不打架的入口）",
+    );
+    ok(
+      ui.indexOf("function stopLive(") > 0 && /ev\.key !== "Escape"[\s\S]{0,200}setMode\(MODE_OFF\)/.test(ui),
+      "★ 听写中按 Esc 也能停（走 setMode(MODE_OFF)：先交出手里那一句再收采集，不关任何浮层）",
+    );
+    /* 本轮需求：🎧「音频文件转文字」那枚按钮与它的功能整块摘除 —— 听写条只做听写 */
+    ok(
+      ui.indexOf('data-act="file"') < 0 && ui.indexOf("音频转文字") < 0 && ui.indexOf("transcribeFile") < 0,
+      "听写条不再有「音频转文字」按钮与它的功能（pickAudio/transcribe 只留在桥上给应用自己调）",
+    );
+    /* 本轮改法：电平读取从 MediaRecorder 一次性录制改成 analyser 直取 PCM 帧（持续听写），
+       正确用法仍是「回填后直接用 buf，不拿返回值」—— 拿返回值就是那个已修 bug 的形态 */
+    ok(
+      ui.indexOf("analyser.getFloatTimeDomainData(buf)") > 0 &&
+        ui.indexOf("var d = analyser.getFloatTimeDomainData(buf)") < 0 &&
+      ui.indexOf("analyser.getFloatTimeDomainData(buf);") > 0 &&
+      ui.indexOf("var d = buf;") < 0,
+      "★ 麦克风电平：getFloatTimeDomainData 的正确用法（回填后直接用 buf，不再拿返回值）",
+    );
+    ok(
+      ui.indexOf("function micErrText(") > 0 && ui.indexOf("stopStream(streamRef)") > 0,
+      "★ 麦克风失败路径：按 err.name 分派文案（没输入设备 / 被占用 / 被拒 / 被中断），并停掉已拿到的话筒",
+    );
+
+    /* ── 本轮（2026-02 二轮）：三态模式（持续转录 + 按键转录）+ 落字 + AI 增强 ─────────────
+       口径照画布那枚话筒（renderer/app-voice.js）：MODE_OFF / MODE_LIVE / MODE_PTT 三态、
+       PTT 按 ev.code 判键、keyup 立刻交付、落字用锚点 + execCommand("insertText")、
+       AI 增强走 appHost.textGenStream（默认模型 + thinking:"off" + 不传 maxTokens）。 */
+    ok(
+      ui.indexOf('var MODE_OFF = "off"') > 0 &&
+        ui.indexOf('var MODE_LIVE = "live"') > 0 &&
+        ui.indexOf('var MODE_PTT = "ptt"') > 0 &&
+        ui.indexOf("var MODE_CYCLE = [MODE_OFF, MODE_LIVE, MODE_PTT]") > 0 &&
+        ui.indexOf("function cycleMode(") > 0 &&
+        ui.indexOf("function setMode(") > 0,
+      "★ 三态模式：MODE_OFF / MODE_LIVE（持续转录）/ MODE_PTT（按键转录）+ setMode / cycleMode",
+    );
+    ok(
+      ui.indexOf('var PTT_KEY = "F1"') > 0 &&
+        /function pttIsKey\(ev\)\s*\{[\s\S]{0,120}ev\.code/.test(ui),
+      "★ 按键转录判键走 ev.code === \"F1\"（无字符、与键盘布局无关，不污染输入框）",
+    );
+    ok(
+      ui.indexOf("function startPtt(") > 0 &&
+        ui.indexOf("function stopPtt(") > 0 &&
+        /function stopPtt\([\s\S]{0,400}rec\.submitNow/.test(ui) &&
+        /rec = \{ stop: stop, beginPtt: beginPtt, submitNow:/.test(ui),
+      "★ 按住起录 / 松开**立刻**把这一句交出去（submitNow → submitSeg，不等静音门）",
+    );
+    ok(
+      /var PRE_ROLL_FRAMES = \d+/.test(ui) &&
+        /mode === MODE_PTT && !pttOn[\s\S]{0,200}preRoll\.push/.test(ui) &&
+        /function beginPtt\(\)[\s\S]{0,260}seg = preRoll\.slice\(\)/.test(ui),
+      "★ 按住之前留前卷（PRE_ROLL_FRAMES 帧）：首字不会被按键切掉",
+    );
+    ok(
+      /keyup[\s\S]{0,700}pttOn\) stopPtt\("keyup"\)/.test(ui) &&
+        /if \(ev\.repeat\) return;/.test(ui) &&
+        /ev\.ctrlKey \|\| ev\.altKey \|\| ev\.metaKey/.test(ui),
+      "★ 按键转录的键序：keyup 即交、长按重复只吞键不重复起停、Ctrl/Alt/Meta 组合键放行",
+    );
+    ok(
+      /var HOTKEY_KEYCODE = 113;/.test(ui) && ui.indexOf("var HOTKEY_KEYCODE = 59") < 0,
+      "★ 老引擎的 keyCode 口径修正：113 才是 F2（旧值 59 是 F1 —— 按 F1 会误触听写）",
+    );
+    ok(
+      ui.indexOf("function captureAnchor(") > 0 &&
+        ui.indexOf("function advanceAnchor(") > 0 &&
+        /execCommand\("insertText", false, txt\)/.test(ui) &&
+        /function insertAtAnchor\(/.test(ui) &&
+        /function flushPendingInsert\(/.test(ui) &&
+        /addEventListener\(\s*"focusin"/.test(ui),
+      "★ 落字：锚点（captureAnchor / advanceAnchor）+ 原生插入（execCommand(\"insertText\")）+ 焦点跑了先挂住、focusin 补写",
+    );
+    ok(
+      /function inputKind\(el\)/.test(ui) && /tag === "textarea"/.test(ui) && /el\.isContentEditable/.test(ui),
+      "★ 落字认三类可输入控件：input / textarea / contenteditable",
+    );
+    ok(
+      ui.indexOf('data-act="enh"') > 0 &&
+        ui.indexOf("mtn-dict-enh") > 0 &&
+        ui.indexOf("function setEnhance(") > 0 &&
+        ui.indexOf("function loadEnhance(") > 0 &&
+        /storageSet\(ENH_STORE_KEY, enhOn\)/.test(ui) &&
+        /storageGet\(ENH_STORE_KEY\)/.test(ui),
+      "★ 转录按钮右侧那枚 AI 增强 Toggle（#mtn-dict-enh）：状态按应用持久化（storageGet/Set dictateEnhance）",
+    );
+    {
+      /* 真实的 enhanceText 请求体拖进来看一眼（不重抄一份口径）：默认模型 + 无思考 + 不下发 maxTokens。
+         注释要剥掉再看 —— 「不下发 maxTokens」这句话本身写在注释里，别把注释当成代码。 */
+      const enhBody = fnBody(ui, "enhanceText");
+      const enhCode = enhBody.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      ok(
+        enhCode.indexOf('thinking: "off"') > 0 &&
+          enhCode.indexOf("maxTokens") < 0 &&
+          enhCode.indexOf("model:") < 0 &&
+          /messages: \[/.test(enhCode) &&
+          /role: "system", content: enhSystem\(\)/.test(enhCode) &&
+          /role: "user", content: enhContext\(text\)/.test(enhCode),
+        "★ AI 增强用默认 LLM + system prompt + 无思考：不带 model（跟随宿主默认）、thinking:\"off\"、不传 maxTokens",
+      );
+    }
+    ok(
+      ui.indexOf("function enhSystem(") > 0 &&
+        /同音字/.test(ui) &&
+        /不要解释/.test(ui) &&
+        /只输出润色后的这一句正文/.test(ui),
+      "★ 增强的 system prompt 只做润色（同音字 / 标点 / 断句 / 语气词），禁解释 / 禁引号 / 禁列表",
+    );
+    ok(
+      /var ENH_CTX_CHARS = \d+/.test(ui) &&
+        /function enhContext\(text\)/.test(ui) &&
+        /lastText\.split\("\\n"\)\.filter\(Boolean\)\.slice\(-2\)/.test(ui) &&
+        /输入框已有/.test(ui),
+      "★ 增强的上下文很短：上一两句定稿 + 当前输入框尾部，合计截到 ENH_CTX_CHARS（≈400 字符）",
+    );
+    ok(
+      /var ENH_TIMEOUT_MS = \d+;/.test(ui) &&
+        /Promise\.race\(\[call, timed\]\)/.test(ui) &&
+        /AI 增强没生效，已交原始识别：/.test(ui) &&
+        /code === "no_provider"[\s\S]{0,200}没配文本模型/.test(ui),
+      "★ 绝不吞话：增强超时（约 8 秒）/ 没配文本模型 / 失败 → 原样交原始识别，状态行说明原因",
+    );
+    ok(
+      /function deliver\(text, raw, meta\)/.test(ui) &&
+        ui.indexOf("function apSpeechRawLast(") > 0 &&
+        /showRaw \? rawText : lastText/.test(ui) &&
+        /data-act="raw"/.test(ui),
+      "★ 结果小窗留原文可查（增强在上，可切「原文 / 增强」）；apSpeechRawLast() 取未增强的原始识别",
+    );
+    ok(
+      /window\.apSpeechMode = / .test(ui) &&
+        ui.indexOf("window.apSpeechSetMode") > 0 &&
+        ui.indexOf("window.apSpeechCycle") > 0 &&
+        ui.indexOf("window.apSpeechPttKey") > 0 &&
+        ui.indexOf("window.apSpeechEnhance") > 0 &&
+        ui.indexOf("window.apSpeechInsert") > 0 &&
+        ui.indexOf("window.apSpeechToggle = toggleLive") > 0 &&
+        ui.indexOf("window.apSpeechLast = apSpeechLast") > 0,
+      "★ 对外入口：三态（mode / setMode / cycle）+ 增强开关 + 落字开关都挂上；apSpeechToggle / apSpeechLast 语义不变",
+    );
+    ok(
+      ui.indexOf('classList.toggle("is-ptt"') > 0 && ui.indexOf(".mtn-dict-btn.is-ptt{") > 0,
+      "★ 按键转录态与持续转录态在条上 / 浮动话筒上都有可视态（is-ptt 琥珀 / is-rec 红点脉冲）",
+    );
+    ok(
+      /function setMode\([\s\S]{0,400}stopPtt\("leave"\)/.test(ui),
+      "★ 离开按键转录态前先把手里那一句交出去（顺序不能反：交要读缓冲）",
+    );
+    /* ── 本轮真机自验挖出来的真 bug：交付的 WAV 采样率标错（设备 48k 当 16k 写）─────────────
+       现场：真机说两句中文 → 结果小窗「没有识别到文字」。根因是 AudioContext 按设备原生率
+       跑，旧稿把 48k 的样本原样写进 16k 的 WAV 头（音频慢 3 倍、音高塌），而且帧内样本数是
+       48k 口径，静音门 / 最短片段 / 硬顶全是按 SR=16000 换算的（等价于 0.5 秒就断句）。
+       修法照画布那枚话筒：优先要 16 kHz 的上下文，要不到就逐帧 resampleTo16k。 */
+    ok(
+      ui.indexOf("function resampleTo16k(") > 0 &&
+        ui.indexOf("function createAudioCtx(") > 0 &&
+        /new AC\(\{ sampleRate: SR \}\)/.test(ui) &&
+        /ac = createAudioCtx\(AC\)/.test(ui),
+      "★ 采集上下文优先要 16 kHz（老引擎退回设备原生率）",
+    );
+    ok(
+      /pushFrame\(rate === SR \? chunk : resampleTo16k\(chunk, rate\)\)/.test(ui),
+      "★ 设备不是 16 kHz 时**逐帧重采样**：帧里最终一定是 960 个 16k 样本（静音门 / 最短片段 / 硬顶的换算才成立）",
+    );
+    ok(
+      ui.indexOf("window.apSpeechResample16k = resampleTo16k") > 0,
+      "★ 重采样导出给自检用（apSpeechResample16k）",
+    );
+    ok(
+      /function insertAtAnchor\(/.test(ui) &&
+        /if \(cur\) anchor = cur;/.test(ui) &&
+        /function noFocusSteal\(/.test(ui) &&
+        /noFocusSteal\(refs\.mic\)/.test(ui) &&
+        /noFocusSteal\(zoneBtn\)/.test(ui),
+      "★ 落字锚点不被自己的按钮抢走：focusin 随时记锚点 + 条上按钮 / 浮动话筒 mousedown 不吃焦点",
+    );
+
+    /* 把**整个注入模块**拖进沙箱真跑一遍（不重抄一份口径）：桥缺席时它必须安静地什么都不做，
+       同时把默认值与纯函数（增强清洗 / 三态常量 / 落字开关）暴露出来给这里核。 */
+    {
+      const stubEl = () => ({
+        style: {},
+        dataset: {},
+        hidden: false,
+        innerHTML: "",
+        textContent: "",
+        classList: { add() {}, remove() {}, toggle() {} },
+        setAttribute() {},
+        getAttribute() {
+          return null;
+        },
+        removeAttribute() {},
+        addEventListener() {},
+        appendChild() {},
+        querySelector() {
+          return null;
+        },
+      });
+      const box = {
+        console,
+        setTimeout,
+        clearTimeout,
+        btoa: (s) => Buffer.from(s, "binary").toString("base64"),
+        Event: function () {},
+        CustomEvent: function () {},
+        getComputedStyle: () => ({ getPropertyValue: () => "", display: "", flexDirection: "" }),
+        navigator: { language: "zh-CN" },
+        document: {
+          readyState: "loading", /* 自挂载走 DOMContentLoaded 分支：桩的 addEventListener 是空的，永不触发 */
+          documentElement: {
+            getAttribute: () => "zh-CN",
+            setAttribute() {},
+            appendChild() {},
+          },
+          body: null,
+          head: null,
+          addEventListener() {},
+          querySelector: () => null,
+          getElementById: () => null,
+          createElement: stubEl,
+          createTreeWalker: () => ({ nextNode: () => null }),
+        },
+        window: {
+          addEventListener() {},
+          removeEventListener() {},
+          dispatchEvent() {},
+        },
+      };
+      vm.createContext(box);
+      vm.runInContext(ui, box);
+      const W = box.window;
+      ok(
+        typeof W.apSpeechMount === "function" && typeof W.apSpeechMode === "function" && W.apSpeechHost === undefined,
+        "桥缺席（桩里没有 appHost）时模块照样加载完，不抛异常、也不自己挂上（听写条由注入方按能力位挂）",
+      );
+      eqStr(W.apSpeechMode(), "off", "加载后的初始态是 MODE_OFF（不会自己开始听）");
+      eqStr(W.apSpeechHotkey, "F2", "F2 是持续转录的开关键（对外的 apSpeechHotkey 不变）");
+      eqStr(W.apSpeechPttKey, "F1", "按键转录键 = F1（对外的 apSpeechPttKey）");
+      ok(W.apSpeechEnhance() === false, "AI 增强默认**关**（不替用户花模型调用）");
+      ok(W.apSpeechInsert() === true, "自动落字默认**开**（应用可调 apSpeechInsert(false) 关掉）");
+      eqStr(W.apSpeechLast(), "", "apSpeechLast() 在没识别过时是空串（老契约不变）");
+      eqStr(W.apSpeechRawLast(), "", "apSpeechRawLast() 同样从空串开始");
+      eqStr(W.apSpeechPending(), "", "没有挂住的文字");
+      /* 增强清洗：真实的 enhSanitize（导出的 apSpeechSane） */
+      const sane = W.apSpeechSane;
+      eqStr(sane("增强后：今天天气不错。", "今天天气不错"), "今天天气不错。", "增强输出剥掉「增强后：」这类标签");
+      eqStr(sane("“今天天气不错。”", "今天天气不错"), "今天天气不错。", "增强输出剥掉包裹的引号");
+      eqStr(sane("第一句\n第二句", "第一句第二句"), "第一句第二句", "中文折行直接接上（不留下换行）");
+      eqStr(sane("Hello\nthere", "Hello there"), "Hello there", "西文折行补一个空格");
+      eqStr(sane("  ", "有话说"), "", "空输出回空串（交付回落原始识别）");
+      eqStr(
+        sane("这是一段被模型扩写得很长很长的文字".repeat(8), "短句"),
+        "",
+        "增强结果比原句长出太多（超过 ENH_MAX_RATIO 倍）→ 回空串，回落原始识别",
+      );
+      /* 重采样（真实现，导出的 apSpeechResample16k）：48k → 16k 长度 1/3，波形按线性内插 */
+      const rs = W.apSpeechResample16k;
+      const src48 = new Float32Array(4800); /* 0.1 秒 @48k */
+      for (let i = 0; i < src48.length; i++) src48[i] = Math.sin((i / 4800) * Math.PI * 2 * 10);
+      const out16 = rs(src48, 48000);
+      ok(out16.length === 1600, "48k → 16k 重采样后长度是原来的 1/3（4800 → 1600 样本）· 得到 " + out16.length);
+      ok(Math.abs(out16[0]) < 1e-6 && Math.abs(out16[800]) < 0.05, "重采样后仍是同一条正弦（零点对得上）");
+      ok(rs(src48, 16000) === src48, "本来就在 16k 的输入原样返回（不做无谓的复制）");
+      const out44 = rs(new Float32Array(4410), 44100);
+      ok(out44.length === 1600, "44.1k 这种非整数倍率也搬得到 16k 附近（4410 → 1600）· 得到 " + out44.length);
+    }
+
     const tpl = read("templates/app-default/index.html");
     /* 本轮口径：默认页**不携带**语音，也不再内联任何听写 UI —— 听写条只由宿主按 app.json 的
        capabilities.showDictate 注入（preload-app.js 的闸门 → renderer/app-speech-ui.js）。
@@ -1039,16 +1331,21 @@ function makeSpeechBox(o) {
     const ui = read("renderer/app-speech-ui.js");
     const preApp = read("preload-app.js");
 
-    ok(preApp.indexOf('"renderer", "app-speech-ui.js"') > 0, "preload-app 注入 renderer/app-speech-ui.js");
+    ok(
+      preApp.indexOf('injectAppUiScript("app-speech-ui.js", "dictate")') > 0 &&
+        preApp.indexOf('path.join(__dirname, "renderer", fileName)') > 0,
+      "preload-app 注入 renderer/app-speech-ui.js（注入器与作者标签共用一支：injectAppUiScript）",
+    );
     ok(/pathToFileURL\(file\)\.href/.test(preApp) && /createElement\("script"\)/.test(preApp), "注入方式 = file:// 的 <script src>");
     ok(/readyState === "loading"[\s\S]{0,140}DOMContentLoaded/.test(preApp), "等 DOM 就绪再注入（footer 那时才在）");
     ok(ui.indexOf("window.appHost") > 0 && ui.indexOf('"mtnode-apphost"') > 0, "注入脚本自己取桥 + 事件兜底");
     ok(/FOOT_SELS = \["footer", "\.app-foot", "\.foot", "#appFoot"\]/.test(ui), "落点优先应用自己的 <footer>（找不到才自建底栏）");
     ok(ui.indexOf("mtnode-dictate-bar") > 0, "应用没有 footer 时宿主自建一条底栏");
     ok(/autoMount/.test(ui), "注入脚本自挂载（不依赖应用改代码）");
-    /* 本轮口径：宿主只为**声明了显示听写条**（capabilities.showDictate）的应用注入；没声明 / 问不到都不注入 */
+    /* 本轮口径：宿主只为**声明了显示听写条**（capabilities.showDictate）的应用注入；没声明 / 问不到都不注入。
+       闸门与作者标签（showAuthor）共用同一个答复（preload-app.js 的 askCapabilities / maybeInjectAppUi）。 */
     ok(
-      preApp.indexOf("apps:hostCapabilities") > 0 && preApp.indexOf("askDictateAllowed") > 0,
+      preApp.indexOf("apps:hostCapabilities") > 0 && preApp.indexOf("askCapabilities") > 0,
       "注入前先问 apps:hostCapabilities（按应用 app.json 的 capabilities 决定）",
     );
     ok(
@@ -1083,8 +1380,8 @@ function makeSpeechBox(o) {
       "两个方向的入口都在：apSpeechHidden() / apSpeechReveal() / apSpeechHide()",
     );
     ok(
-      /maybeInjectDictateBar/.test(preApp) && preApp.indexOf("dictateAllowed = false") > 0,
-      "问不到能力位 → 按「没声明」处理（默认不注入）",
+      /maybeInjectAppUi/.test(preApp) && preApp.indexOf("return fallback();") > 0,
+      "问不到能力位 → 按「没声明」处理（默认不注入；作者标签与听写条同一条退路）",
     );
     ok(
       preApp.indexOf("pickAudio") > 0 && preApp.indexOf("transcribeWav") > 0 && preApp.indexOf("asrStatus") > 0,

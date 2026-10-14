@@ -199,8 +199,8 @@ var e = await AppHost.imageEdit("keep the subject, make the background snowy", {
 
 ## Capabilities (app.json `capabilities`)
 
-`app.json` carries a capability declaration: `{ "textInput": true, "showDictate": true, "imageGen": true }` —
-new apps start with **all three on** (you are no longer asked), and you change them in the Develop page's
+`app.json` carries a capability declaration: `{ "textInput": true, "showDictate": true, "showAuthor": true, "imageGen": true }` —
+new apps start with **all four on** (you are no longer asked), and you change them in the Develop page's
 preview bar → **⚙ App settings** → "App capabilities" (**a click takes effect immediately; that window has no
 separate Save button**). It is a **static declaration, not a permission gate**
 (the bridge interfaces are always callable):
@@ -208,7 +208,8 @@ separate Save button**). It is a **static declaration, not a permission gate**
 | Flag | When true | When false / absent (default) |
 | --- | --- | --- |
 | `textInput` | The scaffold ships the local dictation module (SenseVoice) | The app carries **no** speech-to-text |
-| `showDictate` | Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window — **visible by default**, with a “Hide” button at its end | The host does **not inject** that bar at all (the speech interfaces on the bridge stay callable) |
+| `showDictate` | Shows the host-injected dictate bar (🎤 Dictate) at the bottom of the app window — **visible by default**, with a “Hide” button at its end | The host does **not inject** that bar at all (the speech interfaces on the bridge stay callable) |
+| `showAuthor` | Shows the host-injected author tag in the app window's **bottom-left corner**: hidden until you hover it, then `@author - vX.Y.Z`; **click it for the app details** | The host does **not inject** that tag (call `AppHost.authorTag()` if the app wants to show author / version itself) |
 
 **Declared true = visible as soon as it is injected** (fixed 2026-02): previously the injected bar stayed
 marked hidden, so only the app's own `apSpeechReveal()` could show it — users saw “I ticked show dictate bar
@@ -217,11 +218,56 @@ written back to `app.json`), and the next app-window open shows it again per the
 asks for the current state and `apSpeechReveal()` brings it back — all three are idempotent.
 | `imageGen` | Declares that this app draws images; templates may ship an image entry | Merely undeclared; interfaces still callable |
 
+**How the dictate bar (`showDictate`) works** (2026-02, second round: **two transcription modes + typing into the
+focused box + AI enhance**):
+
+- **Three states** (same scheme as the canvas mic): clicking **🎤 Dictate** on the bar or the **persistent
+  floating mic at the bottom-left** cycles "off → live → push-to-talk → off".
+  - **Live**: it keeps listening; each pause (default 1.5s, tunable with `apSpeechSilenceMs(ms)`) ends a sentence
+    which is transcribed, and the result window grows one line at a time. Sentence length is not capped.
+  - **Push-to-talk**: **hold F1 and release to recognize** that sentence immediately (no silence gate — voice
+    commands want low latency); ~240ms of pre-roll is kept so the first word is not clipped. The key test uses
+    `ev.code` (no character, layout/IME independent, never pollutes the input box) and Ctrl / Alt / Meta
+    combinations pass through. The microphone stays open in this state (otherwise every press would re-open it
+    and the startup delay would eat the first word); holding the floating mic does the same with the mouse.
+- Hotkeys: **F2** toggles live transcription (off ↔ live; in push-to-talk it goes back to off), **Esc** stops,
+  and "Hide" hands over the half sentence still in hand before shutting down. Ctrl+Shift+D is an equivalent
+  fallback.
+- **Typing into the focused box**: at capture start the bar remembers the insertion point of the box that has
+  focus (`input` / `textarea` / `contenteditable`) and inserts each finalized sentence there (native
+  `execCommand("insertText")`, falling back to a value edit + `input` event) plus a trailing space. If focus
+  left that box, the text is **held** and written back when focus returns (`focusin`) — nothing is lost and
+  nothing is jammed into another control. Apps that both listen to `"mtnode-dictate"` and write the text
+  themselves (that would double-write) should call `apSpeechInsert(false)` to switch the auto-insert off.
+- **AI enhance** (the **✨ AI enhance** toggle right of the mic, **off** by default): when on, every recognized
+  sentence is polished once by the **default text model** (no `model` = follow this app's selection / host
+  default, `thinking: "off"`, **no** `maxTokens`), with a system prompt limited to homophones / punctuation /
+  sentence breaks / filler words, keeping meaning and language, returning only that one sentence; the user
+  message is that sentence plus a very short context (the last one or two finalized lines + the tail of the
+  current box, ~400 chars). On **failure / timeout (8s) / no text model it delivers the raw recognition text**
+  (never swallows the sentence) and says why on the status line. The toggle is persisted per app
+  (`storageSet("dictateEnhance")`).
+- Result window: full text, one-click copy, and a **Raw / Enhanced** switch (with enhance on, the raw
+  recognition stays available). Apps can also read `apSpeechLast()` (whole text; empty before the first line),
+  `apSpeechRawLast()` (the un-enhanced recognition) or listen for the `"mtnode-dictate"` window event
+  (`detail.text` = the same text, fired once per finalized sentence). Programmatic entries:
+  `apSpeechToggle()` (live on/off), `apSpeechMode()` / `apSpeechSetMode("off"|"live"|"ptt")` / `apSpeechCycle()`,
+  `apSpeechLive()`, `apSpeechEnhance(on?)`, `apSpeechInsert(on?)`, `apSpeechPtt(on)`, `apSpeechZone()`.
+
+**Author tag (`showAuthor`)** is injected by the host — the app writes no code at all. The name comes from
+`app.json`'s `author`, falling back to the signed-in account's nickname; the version comes from `app.json`'s
+`version`. **If either is missing the whole tag stays away** (no “unknown author” placeholder). Clicking it
+opens a **read-only** app-details panel (icon / title / app id / author / version / description / tags / data
+folder; the only exits are ✕ and `Esc`). Colours come from the app's own theme variables (`--bg` / `--fg` /
+`--accent`…), so light and dark apps both look right; the dictate floating mic lives in the same bottom-left
+corner column (`#mtnode-dictate-zone`), and the tag is placed **above that column** (measured from the
+container's top edge, never overlapping).
+
 **Changing a capability never touches the entry page**: only the declaration in `app.json` is written
 (toggling `textInput` also adds / removes `speech.js` / `speech.css` in the app folder), and `index.html`
-is left byte-for-byte alone — whatever you (or a dev session) edited in it stays. The dictate bar is
-injected by the host from `showDictate` (it applies the next time the app window opens), and the preview
-reloads right away. Older versions inlined a dictate script into the entry page; opening "App settings"
+is left byte-for-byte alone — whatever you (or a dev session) edited in it stays. The dictate bar and the
+author tag are injected by the host from their declarations (they apply the next time the app window opens),
+and the preview reloads right away. Older versions inlined a dictate script into the entry page; opening "App settings"
 now removes that block idempotently (only our own marker, nothing else on the page).
 
 ## Building one from scratch

@@ -129,6 +129,39 @@
   }
 }
 
+/* ── AI 增强开关（#btnVoiceEnhance：话筒**右侧**那枚 ✨）────────────────────
+   与话筒同一套皮（.sb-voice），只多两件事：order 钉在话筒后面、自己的强调色。
+   关着时是一枚很淡的灰 ✨（不抢戏）；打开后紫边紫底（与语音三态的青 / 琥珀区分开）。 */
+.statusbar .sb-enh {
+  order: -1; /* 与 .sb-voice 的 -2 配对：永远紧挨在话筒右边、其它按钮左边 */
+  font-family: var(--sans, system-ui, sans-serif);
+  font-size: 12px;
+  line-height: 1;
+  /* 关着：灰、半透明 —— 一眼看出「有这枚开关，但现在没开」 */
+  opacity: .55
+}
+
+.statusbar .sb-enh:hover {
+  color: #c792ea;
+  border-color: color-mix(in srgb, #c792ea 45%, transparent);
+  background: rgba(199, 146, 234, .08);
+  opacity: 1
+}
+
+/* 打开：紫边紫底（.on 由 paintEnhance 挂） */
+.statusbar .sb-voice.sb-enh.on {
+  color: #d0a6ff;
+  border-color: color-mix(in srgb, #c792ea 55%, transparent);
+  background: rgba(199, 146, 234, .14);
+  opacity: 1;
+  font-weight: 700
+}
+
+.statusbar .sb-voice.sb-enh.on:hover {
+  border-color: #d0a6ff;
+  background: rgba(199, 146, 234, .2)
+}
+
 /* ── 转写浮窗（便笺式：不抢焦点，只报当前这句）───────────────────────── */
 .gv-note {
   position: fixed;

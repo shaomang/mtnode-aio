@@ -98,7 +98,11 @@ export const LEDGER_TYPES = Object.freeze([
 /**
  * 亚分精度（中转站按用量扣费专用）：账户行的 `relaySubCents` 存 0 ~ 0.99999999 分的零头。
  * 余额 `balanceCents` 保持整数分不变（内部存储口径不动）：
- *   中转扣费 = 整数分部分（写一条 relay 流水 + 扣 balanceCents）+ 不足 1 分的零头（写 relaySubCents）。
+ *   **每一笔中转扣费都写一条 relay 流水（本次需求：流水不再按「分」记账）** —— 流水的
+ *   `deltaCents` = 真实扣减额（8 位小数，含亚分零头），`balanceAfterCents` = 变动后的**可用总额**；
+ *   账户行的存储拆分不变（整数分扣 balanceCents、不足 1 分的零头落 relaySubCents）。
+ *   为什么两处金额可以不同：balanceCents 是既有铁律的整数分账户行，流水才是「这一笔到底扣了多少」的账；
+ *   合起来看一条流水就能对上账（历史流水只有整数分金额，读的时候照样成立）。
  * 可用总额 = balanceCents + relaySubCents，两者都为 0 才算余额耗尽。
  *
  * **精度口径 = 1e-8 元（本次修正）**：元保留 8 位小数；账户行的亚分零头按「分」存 8 位小数
@@ -620,11 +624,13 @@ export function createWallet(deps) {
   /**
    * 中转站扣费：入参是本次要扣的**费用（分，可含 8 位小数的亚分）**，例如 0.3 / 1.14 / 21 / 0.002。
    * 本函数负责「整数分 + 亚分零头」的拆分（调用方不要自己拆）：
-   *   · 整数部分 ≥ 1 → 写一条 relay 流水 + 扣 balanceCents；
-   *   · 整数部分 = 0 → 只改 relaySubCents（不够 1 分不记流水，铁律①只约束 balanceCents）；
-   *   · 两者都不为 0 时一起写（零头随账户行落库，可对账）。
+   *   · **每一笔扣费都写一条 relay 流水**（本次需求：不足 1 分的扣费不再无流水）：
+   *     `deltaCents` = 真实扣减额（8 位小数，含亚分零头）、`balanceAfterCents` = 变动后可用总额；
+   *   · 整数部分 ≥ 1 → 同时扣 balanceCents（整数分账户行）；
+   *   · 整数部分 = 0 → 账户行只改 relaySubCents（铁律① 只约束 balanceCents，流水照记）。
    * 写库失败回滚流水条目并抛错；扣减不得把 balanceCents 打成负数（调用方先按可用额夹紧）。
-   * @returns {Promise<{ok:boolean, balanceCents?:number, subCents?:number, wholeCents?:number}>}
+   * @returns {Promise<{ok:boolean, ledger?:object, chargedCents?:number, balanceCents?:number,
+   *                    subCents?:number, wholeCents?:number, balanceAfterCents?:number}>}
    */
   async function chargeRelayUsage({ user, amountCents, note, meta }) {
     if (!user || !user.id) return { ok: false, code: "USER_NOT_FOUND", error: "账号不存在" };
@@ -635,32 +641,47 @@ export function createWallet(deps) {
     if (text.length > 200) return { ok: false, code: "NOTE_TOO_LONG", error: "备注不得超过 200 字" };
 
     const avail = totalCentsOf(user);
-    const pay = Math.min(amt, avail); // 本次实扣（分，含亚分），按可用额夹紧：不允许出现负余额
+    const pay = round8(Math.min(amt, avail)); // 本次实扣（分，含亚分），按可用额夹紧：不允许出现负余额
     const rest = round8(avail - pay); // 扣完剩下的可用额（分）
     const nextBalance = Math.floor(rest + 1e-9); // 剩下的整数分
     const nextSub = clampSub(round8(rest - nextBalance)); // 剩下的亚分零头（0 ~ 0.99999999）
     const before = balanceOf(user);
-    const whole = Math.max(0, before - nextBalance); // 本次要扣掉的整数分
-    // 整数分不足 1（本次只啃掉不足 1 分的零头）：只改 relaySubCents，不写流水
-    if (whole < 1) {
-      const r = await writeRelaySub({ user, subCents: nextSub });
-      if (!r.ok) return r;
-      return { ok: true, chargedCents: pay, balanceCents: before, subCents: nextSub, wholeCents: 0, skippedLedger: true };
-    }
+    const whole = Math.max(0, before - nextBalance); // 本次扣掉的整数分
+    const afterTotal = round8(nextBalance + nextSub); // 变动后的可用总额（整数分 + 零头）
+    /* 先流水后余额（铁律①）：条目里同时留拆分痕迹 —— wholeCents = 整数分部分、
+       subCents = 账户行扣完后剩下的零头，排查 / 对账都不必再去翻账户行。 */
     const entry = pushLedger(
       Object.assign(
         {
           userId: user.id,
           type: "relay",
-          deltaCents: -whole,
-          balanceAfterCents: nextBalance,
+          deltaCents: -pay,
+          balanceAfterCents: afterTotal,
           note: text,
           source: "relay_usage",
+          wholeCents: whole,
           subCents: nextSub,
         },
         meta && typeof meta === "object" ? meta : {},
       ),
     );
+    // 整数分不足 1（本次只啃掉不足 1 分的零头）：账户行只改 relaySubCents，流水已经写下了
+    if (whole < 1) {
+      const r = await writeRelaySub({ user, subCents: nextSub });
+      if (!r.ok) {
+        popLedger(entry);
+        return r;
+      }
+      return {
+        ok: true,
+        ledger: entry,
+        chargedCents: pay,
+        balanceCents: before,
+        subCents: nextSub,
+        wholeCents: 0,
+        balanceAfterCents: afterTotal,
+      };
+    }
     let updated = null;
     try {
       updated = await applyUserPatch(user.id, { balanceCents: nextBalance, relaySubCents: nextSub });
@@ -675,7 +696,15 @@ export function createWallet(deps) {
     user.balanceCents = nextBalance;
     user.relaySubCents = nextSub;
     await saveDb();
-    return { ok: true, ledger: entry, chargedCents: pay, balanceCents: nextBalance, subCents: nextSub, wholeCents: whole };
+    return {
+      ok: true,
+      ledger: entry,
+      chargedCents: pay,
+      balanceCents: nextBalance,
+      subCents: nextSub,
+      wholeCents: whole,
+      balanceAfterCents: afterTotal,
+    };
   }
 
   /* ---------- 查询 ---------- */
@@ -702,11 +731,17 @@ export function createWallet(deps) {
     return { total, page: pageN, pageSize: pageSizeN, items: arr.slice(start, start + pageSizeN) };
   }
 
-  function listLedger({ userId, type, limit } = {}) {
+  function listLedger({ userId, type, limit, since, orderId } = {}) {
     const n = Math.min(500, Math.max(1, intCents(limit) || RECENT_LIMIT));
     let arr = ledger().slice();
     if (userId) arr = arr.filter((e) => e.userId === String(userId));
     if (type) arr = arr.filter((e) => e.type === String(type));
+    /* 按订单号取关联流水（管理台订单详情用）：必须在截断之前筛 —— 每笔中转扣费都会写一条流水，
+       取「最近 N 条再筛订单号」会把老订单的充值 / 退款流水挤出窗口，看起来像「没有关联流水」。 */
+    if (orderId) arr = arr.filter((e) => String(e.orderId || "") === String(orderId));
+    /* 时间窗口（管理台「流水」页默认只看近 30 天）：按条目时间戳过滤，0 / 缺省 = 不限 */
+    const from = Number(since) || 0;
+    if (from > 0) arr = arr.filter((e) => Number(e.at) >= from);
     arr.sort((a, b) => (b.at || 0) - (a.at || 0));
     return arr.slice(0, n);
   }
@@ -721,8 +756,9 @@ export function createWallet(deps) {
       .map(publicOrder);
     const entries = listLedger({ userId: user.id, limit: n }).map(publicLedger);
     // 对外一律「元」（中转计费精度 8 位小数；整数分链路的金额在同一精度下仍是精确值）：档位 / 余额 / 订单金额都不再出现「分」
+    // 余额 = **可用总额**（整数分账户行 + 中转扣费留下的亚分零头）：与客户端账号快照同一口径，别只算整数分
     return {
-      balanceYuan: yuanOfCents(balanceOf(user)),
+      balanceYuan: yuanOfCents(totalCentsOf(user)),
       tiersYuan: rechargeTiersYuan(),
       orders: mine,
       ledger: entries,
@@ -801,11 +837,14 @@ export function createWallet(deps) {
     });
   }
 
-  /** CSV 导出：kind = orders | ledger（打赏 CSV 由 tips.mjs 的 csvTips 出，见 server.mjs 的 export.csv 路由）。 */
-  function csv(kind) {
+  /** CSV 导出：kind = orders | ledger（打赏 CSV 由 tips.mjs 的 csvTips 出，见 server.mjs 的 export.csv 路由）。
+   *  opts.since = 时间窗口起点（ms，0 / 缺省 = 不限）——管理台「流水」页按当前窗口导出，与页面口径一致。 */
+  function csv(kind, opts) {
+    const since = Number(opts && opts.since) || 0;
     if (kind === "ledger") {
       const rows = ledger()
         .slice()
+        .filter((e) => !since || Number(e.at) >= since)
         .sort((a, b) => (b.at || 0) - (a.at || 0))
         .map(adminLedger);
       return toCsv(rows, [

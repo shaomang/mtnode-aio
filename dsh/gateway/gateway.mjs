@@ -4780,14 +4780,22 @@ rl.on('line', (line) => {
               `interact answered browser id=${String(p.id || '')} runKey=${shortKey(String(item.key || ''))} ` +
               `reqId=${String(item.reqId || '(无)')} sid=${String(item.sessionId || '(无)')}`,
             )
+            /* ★ 本次需求 · bug 修复（「点了求助卡上的「回答」没反应 + 这一等会超时」的根因）：
+               这里过去在 `item.resolve({ answers: p.answers })` 之后紧跟一句 `break` ——
+               它跳出 switch，**跳过了函数末尾那句 `reply({ ok: true })`**。于是宿主那一跳
+               `request('interact', params, 30000)`（dsh/main-dsh.js）永远等不到回执，30 秒后
+               超时：答案其实早就经 item.resolve 交到工具手里了（会话照常往下跑），渲染层却
+               拿到一个失败 —— 卡不撤、浮窗不关，用户看到的就是「点了没反应」，且这一等会超时。
+               提问卡（kind:'question'）不 break、会走到那句 reply，所以它当场关、不超时。
+               修法：成功路径一律**不 break**，和别的 kind 一样落到末尾统一回执一次。 */
             if (Array.isArray(p.answers)) {
               item.resolve({ answers: p.answers })
-              break
+            } else {
+              const outcome = String(p.outcome || p.answer || 'allowed-once')
+              if (p.answerText || p.answer || p.selected) {
+                item.resolve({ outcome: outcome === 'rejected' ? 'cancelled' : outcome, answer: p.answerText || p.answer || '', selected: p.selected || [] })
+              } else item.resolve(outcome)
             }
-            const outcome = String(p.outcome || p.answer || 'allowed-once')
-            if (p.answerText || p.answer || p.selected) {
-              item.resolve({ outcome: outcome === 'rejected' ? 'cancelled' : outcome, answer: p.answerText || p.answer || '', selected: p.selected || [] })
-            } else item.resolve(outcome)
           } else if (p.kind === 'tool') {
             /* 用户工具节点 func call 结果：渲染层跑完节点图后回传输出值；
                失败（err 非空）→ ok:false + error 文本，运行时工具以失败收场，会话不中断 */
@@ -4805,6 +4813,11 @@ rl.on('line', (line) => {
             reply(undefined, 'kind 非法')
             break
           }
+          /* 不变量（本次需求 · 求助卡「点了没反应」的根因就在这里被踩穿）：
+             interact 的**每一发**都必须走到这句 reply —— 宿主那一跳在等这一帧回执
+             （dsh/main-dsh.js 的 interact；交付「等用户回应」的那一跳已不设上限）。
+             成功路径一律别自己 break（失败路径要先 reply 再 break），
+             回归见 test/smoke-ask-reply.js [2]。 */
           reply({ ok: true })
           break
         }

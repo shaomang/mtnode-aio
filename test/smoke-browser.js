@@ -396,6 +396,40 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
         /if \(ixEndedKindOf\(it\)\) \{/.test(APP_DB),
         "轮末收口按族走：求助卡与提问卡同族转「这一轮已经结束」态留住（不再当场撤卡）");
     }
+    /* 本次需求（「点了求助卡上的「回答」没反应 + 这一等会超时」的根因，细节见
+       test/smoke-ask-reply.js）：求助卡作答路径过去 `break` 跳过 switch 末尾那句
+       `reply({ ok: true })`，宿主那一跳（main-dsh 的 interact）等满 30 秒被判失败 ——
+       答案早已送达（会话照常跑），渲染层却卡不撤、浮窗不关。 */
+    {
+      const gwCode = GATEWAY.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+      const seg = gwCode.split("} else if (p.kind === 'browser') {")[1] || "";
+      const branch = seg.slice(0, seg.indexOf("} else if (p.kind === 'tool') {"));
+      ok(
+        branch.length > 200 &&
+          /item\.resolve\(\{ answers: p\.answers \}\)/.test(branch) &&
+          !/\bbreak\b/.test(branch.slice(branch.indexOf("item.resolve({ answers: p.answers })"))),
+        "求助卡作答路径不再 break 跳过末尾的统一回执（成功路径都落到 reply({ ok: true })）",
+      );
+      ok(
+        /request\('interact', params, 0\)/.test(DSH) && !/request\('interact', params, 30000\)/.test(DSH),
+        "交付那一跳（main-dsh 的 interact）不设上限：回执一到就 resolve，网关退出由 failPending 立刻拒绝",
+      );
+      /* 等待口径统一（用户口径：所有「等用户回应」的东西都不许超时）：
+         看门狗只在「本轮确实没有任何东西在等用户」时才用 30 分钟静默上限；
+         画布确认框过去没算进去 —— 只弹框没弹卡的那一轮会被当成引擎挂死自动终止。 */
+      ok(
+        /const pendingWait =/.test(APP_DB) &&
+          /pendingIx \+/.test(APP_DB) &&
+          /canvasConfirmPendingOf\(runKey\)/.test(APP_DB) &&
+          /const DSH_IX_WAIT_TIMEOUT_MS = Number\.POSITIVE_INFINITY/.test(APP_DB),
+        "看门狗：提问 / 审批 / 求助卡 + **画布确认框**都算「在等人」→ 一律永久等待（无人在等才用静默上限）",
+      );
+      ok(
+        /function canvasConfirmPendingOf\(runKey\)/.test(APP_NODES) &&
+          /String\(it\.runKey \|\| ""\) === k/.test(APP_NODES),
+        "app-nodes：canvasConfirmPendingOf 按 runKey 数本轮挂起的确认框（与卡片同一判据）",
+      );
+    }
     /* 本次需求：求助卡专属可见态下线 —— 「已等 N 秒」常驻行只剩危险动作确认卡有；
        60 秒无进展看门狗（已回应记录 + 重发 / 终止横幅）整块撤掉。 */
     ok(

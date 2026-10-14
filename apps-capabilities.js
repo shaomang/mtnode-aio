@@ -11,7 +11,7 @@
  *      升级突然报错。
  *
  * 声明形状（app.json）：
- *   "capabilities": { "textInput": true, "imageGen": false, "showDictate": false }
+ *   "capabilities": { "textInput": true, "imageGen": false, "showDictate": false, "showAuthor": true }
  *
  * 缺省值（缺字段 / 非法值一律按此归一，绝不写脏数据）：
  *   · textInput   缺省 **false** —— 存量应用、云端下载的应用都没声明过，按「不携带语音」处理
@@ -19,8 +19,12 @@
  *   · showDictate 缺省 **false** —— 应用窗口 footer 里那条宿主注入的听写条**默认没有**：宿主只在
  *     这一位为真时才注入 renderer/app-speech-ui.js，注入进来即**默认可见**（那是用户显式开的能力；
  *     条尾有「收起」按钮，只藏本次窗口，不写回 app.json）。缺省的存量应用宿主根本不注入。
+ *   · showAuthor  缺省 **false** —— 应用窗口**左下角**那枚宿主注入的作者标签（平时隐藏、hover 出
+ *     `@作者 - v版本`、点击看只读应用详情）：宿主只在这一位为真时才注入 renderer/app-author-ui.js。
+ *     与 showDictate 同一条纪律（新建应用默认开、存量应用不动），见本文件 APP_CAPABILITIES 的注释。
  *   · imageGen    缺省 false（同理）。
- *   新建应用由「新建应用」浮层显式勾选（浮层里三项都默认不勾），所以新应用不走这几个缺省。
+ *   新建应用不走这几个缺省：`renderer/app-app-flow.js` 的 appsCreateApp 给的是**显式全开**
+ *   （新建浮层里那段复选框已删，见那里的注释）；存量应用才按上面的 false 归一（一律不动）。
  *
  * 本模块只做纯计算（无 fs / 无 electron），可被 test/ 直接切片真跑。
  * ───────────────────────────────────────────────────────────────────── */
@@ -40,10 +44,24 @@ const APP_CAPABILITIES = [
   {
     id: "showDictate",
     label: { zh: "显示听写条", en: "Show dictate bar" },
-    /* 应用窗口 footer 里那条宿主注入的听写条（🎤 听写 / 🎧 音频转文字）：为真 = 注入并默认可见 */
+    /* 应用窗口 footer 里那条宿主注入的听写条（🎤 听写）：为真 = 注入并默认可见。
+       本轮：原来那枚「🎧 音频转文字」按钮与其功能已摘除，这条条只做听写。 */
     hint: {
-      zh: "在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）",
-      en: "Show the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) in the app window footer; on = visible by default, with a “Hide” button that lasts for this window only",
+      zh: "在应用窗口底部显示宿主注入的听写条（🎤 听写）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）",
+      en: "Show the host-injected dictate bar (🎤 Dictate) in the app window footer; on = visible by default, with a “Hide” button that lasts for this window only",
+    },
+  },
+  {
+    id: "showAuthor",
+    label: { zh: "作者标签", en: "Author tag" },
+    /* 应用窗口**左下角**那枚宿主注入的作者标签：为真 = 注入（平时隐藏，hover 出
+       `@作者 - v版本`，点击弹只读应用详情）。与 showDictate 同一套机制：能力位是静态声明，
+       宿主只在声明为真时注入 renderer/app-author-ui.js；新建应用默认三位全开（见
+       renderer/app-app-flow.js 的 appsCreateApp），存量应用按 false 归一 = 不动。
+       名字与版本缺任一个时标签整枚不出现（不写「未知作者」）。 */
+    hint: {
+      zh: "在应用窗口左下角显示作者标签（平时隐藏，鼠标移上去显示「@作者 - v版本」，点击看应用详情）；勾上即生效，不想要就取消勾选",
+      en: "Show an author tag in the app window's bottom-left corner (hidden until hover, then “@author - vX.Y.Z”; click it for app details). On by default for new apps",
     },
   },
   {

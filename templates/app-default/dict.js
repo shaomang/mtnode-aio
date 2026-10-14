@@ -150,8 +150,6 @@
     dict.innerHTML =
       '<button type="button" class="dict-btn" data-act="mic" title="点一下开始听，再点一下结束">🎤' +
       '<span data-lang="zh">听写</span><span data-lang="en">Dictate</span></button>' +
-      '<button type="button" class="dict-btn" data-act="file" title="选一个音频文件转成文字">🎧' +
-      '<span data-lang="zh">音频转文字</span><span data-lang="en">Audio → text</span></button>' +
       '<span class="dict-note"></span>';
     foot.insertBefore(dict, foot.firstChild);
 
@@ -178,7 +176,6 @@
     const ui = mountDom();
     const bar = ui.dict;
     const btnMic = bar.querySelector('[data-act="mic"]');
-    const btnFile = bar.querySelector('[data-act="file"]');
     const note = bar.querySelector(".dict-note");
     const panel = ui.panel;
     const pBody = panel.querySelector(".dict-panel-body");
@@ -191,7 +188,6 @@
     let stopFn = null;
     let lastText = "";
 
-    const canFile = !!(host && host.pickAudio && host.transcribe);
     const canWav = !!(host && host.transcribeWav);
     const canMic =
       canWav &&
@@ -212,7 +208,6 @@
     const setBusy = (on, label) => {
       busy = !!on;
       btnMic.disabled = busy || !canMic;
-      btnFile.disabled = busy || !canFile;
       if (label) say(label, "");
     };
 
@@ -365,32 +360,26 @@
             const raw = String((err && err.name) || "") + " " + String((err && err.message) || "");
             resolve({
               ok: false,
-              error: /NotAllowed|Permission|denied/i.test(raw)
+              error: /NotAllowed|Permission|denied|Security/i.test(raw)
                 ? lang === "zh"
                   ? "麦克风权限被拒绝（到系统设置里允许本应用使用麦克风）"
                   : "Microphone permission denied"
-                : lang === "zh"
-                  ? "麦克风没能启动（检查系统输入设备与权限）"
-                  : "Microphone failed to start",
+                : /NotFound|no device/i.test(raw)
+                  ? lang === "zh"
+                    ? "没找到可用的麦克风设备"
+                    : "No microphone device found"
+                  : /NotReadable|TrackStart/i.test(raw)
+                    ? lang === "zh"
+                      ? "麦克风被占用或被系统隐私设置拦住（关掉其它用麦克风的程序）"
+                      : "Microphone busy or blocked by system privacy settings"
+                    : lang === "zh"
+                      ? "麦克风启动失败"
+                      : "Could not start the microphone",
             });
           });
       });
     }
 
-    btnFile.onclick = () => {
-      if (busy) return;
-      setBusy(true, lang === "zh" ? "正在转写音频…" : "Transcribing audio…");
-      ensureReady()
-        .then(() => host.pickAudio())
-        .then((r) => {
-          if (!r || !r.ok) return r || { ok: false, code: "cancelled" };
-          say(lang === "zh" ? "正在识别…" : "Recognizing…", "");
-          return host.transcribe({ path: r.path });
-        })
-        .then((r) => report(r))
-        .catch((e) => report({ ok: false, error: String((e && e.message) || e) }))
-        .then(() => setBusy(false));
-    };
     btnMic.onclick = () => {
       if (stopFn) {
         const f = stopFn;
@@ -446,7 +435,6 @@
     if (!host) {
       say(lang === "zh" ? "语音转写不可用：当前不在 MTNode 窗口里" : "Speech unavailable outside MTNode", "warn");
       btnMic.disabled = true;
-      btnFile.disabled = true;
     } else if (host.asrStatus) {
       host.asrStatus().then((st) => {
         if (!st || st.ok === false) {
@@ -471,7 +459,6 @@
         });
     }
     if (!canMic) btnMic.disabled = true;
-    if (!canFile) btnFile.disabled = true;
 
     const api = {
       /* 给应用自己用：直接拿本机音频转文字（不进 footer 的界面流程） */

@@ -874,9 +874,10 @@
       const me = RL.usage.filter((x) => x.at >= t0 - 2000);
       if (me.length) {
         const charged = me.reduce((s, x) => s + numOr0(x.chargedYuan), 0);
-        $("rlTestStatus").textContent += " · 本次实扣 " + Number(charged.toFixed(4)) + " 元";
+        $("rlTestStatus").textContent += " · 本次实扣 " + yuanFixed(charged) + " 元";
       }
-      $("rlTestBalance").textContent = "管理员账号余额 " + money(k.totalYuan) + "（" + Number(k.totalYuan).toFixed(4) + " 元）";
+      /* 余额同样按 8 位小数（与流水页同一口径）：一笔中转扣费的真实值才看得见 */
+      $("rlTestBalance").textContent = "管理员账号余额 " + yuanFixed(k.totalYuan) + " 元";
     } catch (e) {
       $("rlTestStatus").textContent = "测试失败：" + ((e && e.message) || e);
       toast((e && e.message) || "测试失败", "err");
@@ -1636,6 +1637,14 @@
 
   /* ---------- 流水 ---------- */
 
+  /** 当前时间窗口（页面上的下拉，缺省「近 30 天」；缺元素时回落 30d）。
+      窗口是**只读筛选**：服务端按服务器本地时区的自然日起点过滤，不改任何记账。 */
+  function ledgerWindowValue() {
+    const el0 = $("fLedgerWindow");
+    const v = el0 ? String(el0.value || "") : "";
+    return v === "today" || v === "7d" || v === "all" ? v : "30d";
+  }
+
   function ledgerColumns(withUser) {
     const cols = [];
     if (withUser !== false) cols.push({ title: "账号", get: (e) => (e.username ? e.username + "（" + e.userId + "）" : e.userId || "—") });
@@ -1649,11 +1658,14 @@
         title: "变动",
         cls: "num",
         render: (td, e) => {
-          const n = el("span", e.deltaYuan >= 0 ? "pos" : "neg", (e.deltaYuan >= 0 ? "+" : "") + money(e.deltaYuan));
+          /* 金额按 8 位小数（1e-8 元）：一笔中转扣费的真实值就是 0.00996868 这种数，
+             不足最小位给「<0.00000001」——别退回 4 位把零头抹平（本次需求）。 */
+          const v = Number(e.deltaYuan) || 0;
+          const n = el("span", v >= 0 ? "pos" : "neg", (v >= 0 ? "+" : "-") + yuanFixed(Math.abs(v)));
           td.appendChild(n);
         },
       },
-      { title: "变动后余额", cls: "num", get: (e) => money(e.balanceAfterYuan) },
+      { title: "变动后余额", cls: "num", get: (e) => yuanFixed(e.balanceAfterYuan) },
       { title: "订单号", cls: "mono", get: (e) => e.orderId || "—" },
       { title: "交易号", cls: "mono", get: (e) => e.tradeNo || "—" },
       { title: "操作人", get: (e) => e.operator || "—" },
@@ -1665,15 +1677,24 @@
   async function loadLedger() {
     const type = encodeURIComponent($("fLedgerType").value);
     const userId = encodeURIComponent($("fLedgerUser").value.trim());
+    const win = ledgerWindowValue();
     try {
-      const r = await api("GET", "/api/admin/ledger?limit=200&type=" + type + "&userId=" + userId);
+      const r = await api("GET", "/api/admin/ledger?limit=200&window=" + encodeURIComponent(win) + "&type=" + type + "&userId=" + userId);
       renderTable($("tblLedger"), ledgerColumns(true), r.items, "没有匹配的流水");
+      const hint = $("ledgerHint");
+      if (hint) {
+        const label = { today: "今日", "7d": "近 7 天", "30d": "近 30 天", all: "全部" }[r.window || win] || "近 30 天";
+        hint.textContent =
+          "窗口：" + label + "（服务器本地时区，最多显示最新 200 条，导出 CSV 跟随该窗口；要更早的流水切「全部」）。" +
+          "金额列按 8 位小数显示（1e-8 元），余额 = 整数分 + 中转扣费留下的亚分零头。";
+      }
     } catch (e) {
       toast((e && e.message) || "加载流水失败", "err");
     }
   }
   $("btnLedgerSearch").addEventListener("click", loadLedger);
   $("fLedgerType").addEventListener("change", loadLedger);
+  if ($("fLedgerWindow")) $("fLedgerWindow").addEventListener("change", loadLedger);
   $("fLedgerUser").addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadLedger();
   });
@@ -1762,7 +1783,10 @@
 
   async function downloadCsv(kind) {
     try {
-      const res = await fetch(API + "/api/admin/export.csv?kind=" + kind, { headers: { Authorization: "Bearer " + TOKEN } });
+      /* 流水跟随页面当前的窗口（默认近 30 天）：随手点一下导出不再把全库流水拉下来；
+         订单 / 打赏没有窗口概念，参数不带也不影响服务端口径。 */
+      const win = kind === "ledger" ? "&window=" + encodeURIComponent(ledgerWindowValue()) : "";
+      const res = await fetch(API + "/api/admin/export.csv?kind=" + kind + win, { headers: { Authorization: "Bearer " + TOKEN } });
       if (!res.ok) throw new Error("HTTP " + res.status);
       const blob = await res.blob();
       const a = el("a");

@@ -405,7 +405,7 @@
     askOut(String(res.text || "") + (res.model ? "\n\n— " + res.model : ""));
   }
 
-  /* ── 底部语音听写（speech.js）：footer 里那一枚话筒 + 「音频转文字」 ──
+  /* ── 底部语音听写（speech.js）：footer 里那一枚话筒 ──
      识别用的是本机内置语音（官方本地 SenseVoice，跑在 MTNode 的 dsh 运行时里），
      与上面那条的别的宿主能力一样：先探能力，缺了就写清原因，不假装能用。
      结果只展示 + 一键复制，应用要拿去做什么由自己的代码决定（见 window.Speech）。 */

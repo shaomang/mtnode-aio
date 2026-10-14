@@ -324,10 +324,19 @@ function createDshAdapter(opts) {
       }
       const id = nextId++
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id)
-          reject(new Error(`dsh 请求超时:${method}`))
-        }, timeoutMs || 60000)
+        /* 预算口径：显式给正数 = 照旧按它超时；**显式给 0 / 负数 / Infinity = 不设上限**
+           （本次需求：交付「等用户回应」的那一跳与询问卡同一口径 —— 用户还没答完就不该被一个
+           钟点判成失败）；完全没给 = 沿用旧默认 60 秒。不设上限也绝不悬挂：网关退出 / stdin 断
+           由 failPending 立刻拒绝（见下方 child.on('exit')），本轮收尾撤卡、用户在卡上点
+           「稍后 / 中断」也各有自己的出口。 */
+        const budget = timeoutMs === undefined ? 60000 : Number(timeoutMs)
+        const timer =
+          Number.isFinite(budget) && budget > 0
+            ? setTimeout(() => {
+                pending.delete(id)
+                reject(new Error(`dsh 请求超时:${method}`))
+              }, budget)
+            : null
         pending.set(id, { resolve, reject, timer })
         /* 没交出去（进程已死 / stdin 已断）就地判失败：绝不留一个等满超时的空请求，
            也绝不把 EPIPE 交给进程级异常处理 */
@@ -463,9 +472,14 @@ function createDshAdapter(opts) {
       return request('cancel', params, 30000)
     },
 
-    /* 渲染层回答模型提问 / 审批(交互 id 由网关在事件里下发) */
+    /* 渲染层回答模型提问 / 审批(交互 id 由网关在事件里下发)。
+       等待口径（本次需求 · 拷问共识）：**不设上限** —— 与询问卡同一条口径，回执一到就
+       resolve，没到就一直等（网关侧那一问本来就是永久等待，见 gateway.mjs 的 ask()）。
+       旧实现在这里给 30 秒，超时就把「用户已经答了、答案也送到了」的一次提交判成失败：
+       渲染层拿到失败 → 卡不撤、浮窗不关、还弹一句「回答失败」，用户看到的就是「点了没反应」。
+       回归见 test/smoke-ask-reply.js [1]。 */
     interact(params) {
-      return request('interact', params, 30000)
+      return request('interact', params, 0)
     },
 
     /* 插话：往「此刻正在跑的这一轮」的下一步边界投一句话(运行时侧 agent.steer)，

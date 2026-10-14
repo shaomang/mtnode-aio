@@ -158,6 +158,15 @@ function makeSandbox(opts) {
       selectionStart: 0,
       selectionEnd: 0,
       isConnected: true,
+      /** 元素级监听（冒烟要能把 click / mousedown 真派进去：本轮 AI 增强开关就靠它验） */
+      handlers: {},
+      /** 下一个兄弟：模块按 mic.nextSibling 把新按钮插在话筒紧后面，这条得跟真 DOM 同口径 */
+      get nextSibling() {
+        const p = this.parentNode;
+        if (!p || !p.children) return null;
+        const i = p.children.indexOf(this);
+        return i < 0 ? null : p.children[i + 1] || null;
+      },
       appendChild(c) {
         this.children.push(c);
         c.parentNode = this;
@@ -181,8 +190,30 @@ function makeSandbox(opts) {
       getAttribute(k) {
         return this.attributes[k] === undefined ? null : this.attributes[k];
       },
-      addEventListener() {},
-      removeEventListener() {},
+      addEventListener(type, fn) {
+        const k = String(type);
+        (this.handlers[k] || (this.handlers[k] = [])).push(fn);
+      },
+      removeEventListener(type, fn) {
+        const k = String(type);
+        this.handlers[k] = (this.handlers[k] || []).filter((x) => x !== fn);
+      },
+      /** 派发一个事件给这个元素上的监听（返回的事件对象上 .prevented = 有没有被 preventDefault） */
+      fire(type, ev) {
+        const e = Object.assign(
+          {
+            type: String(type),
+            prevented: false,
+            preventDefault() {
+              e.prevented = true;
+            },
+            stopPropagation() {},
+          },
+          ev || {},
+        );
+        for (const fn of this.handlers[String(type)] || []) fn(e);
+        return e;
+      },
       dispatchEvent() {
         return true;
       },
@@ -241,6 +272,15 @@ function makeSandbox(opts) {
      传 o.pushSpeech:true 才挂上，用例可以自己把一帧「下载失败」推进来 */
   const pushed = []; /* 模块注册的回调（装了通道才有） */
   const apiObj = o.api === null ? {} : (o.api || { dshSpeech: async () => ({ ok: true, text: "" }) });
+  /* configSave 计数器（本轮新增断言用）：真实宿主上 setCfg 会调它落盘；
+     给了 o.api 而没带 configSave 时补一个计数替身，缺它时（o.api:null）就真的没有 —— 不崩即可。 */
+  let configSaves = 0;
+  if (apiObj && typeof apiObj.configSave !== "function") {
+    apiObj.configSave = () => {
+      configSaves++;
+      return Promise.resolve({ ok: true });
+    };
+  }
   if (o.pushSpeech) apiObj.onSpeechState = (fn) => { pushed.push(fn); };
   sandbox.window = {
     api: apiObj,
@@ -250,6 +290,34 @@ function makeSandbox(opts) {
     innerHeight: 800,
     AudioContext: undefined,
   };
+  /* AI 增强（话筒右侧那枚 ✨）用的三件既有全局：默认都缺（= 老宿主 / 没挂通道那条路），
+     用例要验真实链路时自己传 o.textStream / o.providers / o.models 装上。
+     模块用 typeof xxx === "function" 判在不在，所以只在给了的时候才挂到沙箱全局上 ——
+     「宿主没挂上文本生成通道」这条回落路径本身也要能被断言。
+     给了 providers / models 而没给 textStream 时，补一个默认实现（返回 o.outText）：
+     真机里这三个全局是一起在的（app-nodes.js / app.js 同一层），用例只关心「润色后的那一句」。 */
+  const streamCalls = [];
+  const stream =
+    typeof o.textStream === "function"
+      ? o.textStream
+      : Array.isArray(o.providers) || Array.isArray(o.models)
+        ? (spec) => {
+            streamCalls.push(spec);
+            return Promise.resolve({ text: o.outText === undefined ? "润色后的这一句。" : String(o.outText) });
+          }
+        : null;
+  if (stream) {
+    sandbox.apiCallTextStream = stream;
+    sandbox.window.apiCallTextStream = stream;
+  }
+  if (Array.isArray(o.providers)) {
+    sandbox.apiProvidersForKind = () => o.providers;
+    sandbox.window.apiProvidersForKind = sandbox.apiProvidersForKind;
+  }
+  if (Array.isArray(o.models)) {
+    sandbox.modelsOfKind = () => o.models;
+    sandbox.window.modelsOfKind = sandbox.modelsOfKind;
+  }
   /* 假麦克风（只给按键转录段用）：AudioContext + getUserMedia 的最小可用替身，
      让 startPtt 那条 await startMic() 真的走完，按 F1 → 起录 → 松手 → 停录能被观测 */
   if (o.mic) {
@@ -312,7 +380,7 @@ function makeSandbox(opts) {
   sandbox.window.document = sandbox.document;
   const ctx = vm.createContext(sandbox);
   vm.runInContext(SRC, ctx, { filename: "renderer/app-voice.js" });
-  return { ctx, sandbox, foot, shot, input, other, inserted, toasted, store, docListeners, pushed };
+  return { ctx, sandbox, foot, shot, input, other, inserted, toasted, store, docListeners, pushed, streamCalls, get configSaves() { return configSaves; } };
 }
 
 {
@@ -321,7 +389,10 @@ function makeSandbox(opts) {
   // mount 已随模块加载执行（readyState=complete）：按钮应挂在 #btnCanvasShot 之前
   const btn = box.foot.children.find((c) => c.id === "btnVoiceGlobal");
   ok(!!btn, "按钮被挂进 footer.statusbar（缺静态节点时模块自己补）");
-  ok(!!btn && box.foot.children.indexOf(btn) === box.foot.children.indexOf(box.shot) - 1, "按钮就在 #btnCanvasShot 左边");
+  ok(
+    !!btn && box.foot.children.indexOf(btn) < box.foot.children.indexOf(box.shot),
+    "按钮排在 #btnCanvasShot 之前（AI 增强开关就在它俩中间）"
+  );
 
   eqStr(V.mode(), "off", "默认关闭");
   ok(!!btn && btn.classList.contains("on") === false, "关闭态没有 .on");
@@ -424,6 +495,173 @@ const VOICE_SUITE = (async () => {
   await new Promise((r) => setTimeout(r, 20));
   eqStr(V.mode(), "off", "setMode('off') 回到关闭");
   ok(V._test.state().note.hidden === true, "关闭后浮窗收起");
+
+  /* ============ [3.5] AI 增强开关（话筒右侧那枚 ✨） ============ */
+  console.log("\n[3.5] AI 增强（话筒右侧 #btnVoiceEnhance）：逐句润色 + 三级回落 + 就地替换");
+  {
+    /* ① 先把「有这枚开关、位置对、默认为关、点了会亮、点它不吃焦点」验掉 —— 就是用户报的那一条 */
+    {
+      const bx = makeSandbox({
+        providers: [{ id: "p-text", type: "text_openai" }],
+        models: ["deepseek-chat"],
+      });
+      const Vx = bx.ctx.window.VoiceInput;
+      const mic = bx.foot.children.find((c) => c.id === "btnVoiceGlobal");
+      const enh = bx.foot.children.find((c) => c.id === "btnVoiceEnhance");
+      ok(!!enh, "★ 话筒右侧真的挂出了 AI 增强开关（#btnVoiceEnhance）");
+      ok(
+        !!enh && bx.foot.children.indexOf(enh) === bx.foot.children.indexOf(mic) + 1,
+        "★ 开关紧挨在话筒右边（不隔别的按钮）"
+      );
+      ok(!!enh && String(enh.textContent).indexOf("✨") >= 0, "开关键面是 ✨");
+      ok(!!enh && /\bsb-voice\b/.test(enh.className) && /\bsb-enh\b/.test(enh.className), "开关沿用状态栏按钮那套皮（.sb-voice.sb-enh）");
+      eqStr(Vx.cfg().enhance, "off", "默认关（不替用户花模型调用）");
+      ok(!!enh && enh.classList.contains("on") === false, "默认关：没有 .on");
+      ok(!!enh && /AI 增强已关闭/.test(enh.title), "默认关：tooltip 讲清点一下会怎样");
+      ok(!!enh && /deepseek-chat/.test(enh.title), "tooltip 报出「用哪个默认文本模型」（花的是用户的调用，得说清）");
+      eqStr(enh.getAttribute("aria-pressed"), "false", "无障碍属性同源（aria-pressed=false）");
+      /* 点一下 → 开（落到配置里 + .on 亮起来） */
+      enh.fire("click", {});
+      eqStr(Vx.cfg().enhance, "on", "点一下 → 写进配置（随画布设置一起落盘）");
+      eqStr(bx.sandbox.S.config.voice.enhance, true, "落盘的是布尔 true（配置里不塞字符串态）");
+      eqNum(bx.configSaves, 1, "★ 点一下真的落盘一次（configSave(S.config)：重启后开关状态还在）");
+      ok(enh.classList.contains("on"), "点一下 → 开关亮起来（.on）");
+      ok(/AI 增强已开启/.test(enh.title), "开着时 tooltip 讲的是「已开启」");
+      eqStr(enh.getAttribute("aria-pressed"), "true", "开着时 aria-pressed=true");
+      /* 再点一下 → 关 */
+      enh.fire("click", {});
+      eqStr(Vx.cfg().enhance, "off", "再点一下 → 关回去");
+      ok(!enh.classList.contains("on"), "关掉后 .on 摘掉");
+      /* 点它不吃焦点：不 preventDefault 的话，点一下话筒就把输入框的落点丢了 */
+      const eMic = mic.fire("mousedown", {});
+      const eEnh = enh.fire("mousedown", {});
+      ok(eMic.prevented === true, "★ 点话筒先 preventDefault（不把焦点从正在写的框里抢走）");
+      ok(eEnh.prevented === true, "★ 点增强开关同样不吃焦点");
+      /* 右键它 → 与话筒同一只快捷菜单（设置都在那里） */
+      const em = enh.fire("contextmenu", {});
+      ok(em.prevented === true, "右键开关打开同一只快捷菜单（不是浏览器默认菜单）");
+      ok(!!Vx._test.state().menu, "菜单真的开了（AI 增强那一行也在里面）");
+      {
+        const txt = (Vx._test.state().menu.children || [])
+          .map((row) => String((row.children && row.children[0] && row.children[0].textContent) || ""))
+          .join("|");
+        ok(/AI 增强/.test(txt), "菜单里有「AI 增强」一行（右键与状态栏开关同源）");
+      }
+    }
+
+    /* ② 真链路：识别 → 增强 → 就地替换（注入假模型，替换走真 execCommand） */
+    {
+      const calls = [];
+      const bx = makeSandbox({
+        providers: [{ id: "p-text", type: "text_openai", apiKey: "sk-x", baseUrl: "https://x" }],
+        models: ["deepseek-chat"],
+        textStream: (spec) => {
+          calls.push(spec);
+          return Promise.resolve({ text: "我们来测一下全局语音输入。" });
+        },
+      });
+      const Vx = bx.ctx.window.VoiceInput;
+      Vx._test.inject({ speech: async () => ({ ok: true, text: "我们来测一下全局语音输入" }) });
+      Vx.setCfg({ enhance: true });
+      const enh = bx.foot.children.find((c) => c.id === "btnVoiceEnhance");
+      bx.input.value = "";
+      bx.ctx.document.activeElement = bx.input;
+      Vx.setMode("live");
+      Vx._test.feed(new Float32Array(16000));
+      await new Promise((r) => setTimeout(r, 80));
+      eqStr(bx.input.value, "我们来测一下全局语音输入", "原始识别先落字（绝不因为等增强而吞话）");
+      Vx._test.gate(); /* 静音门：这一句定稿 → 增强在收口这一刀上发出 */
+      await new Promise((r) => setTimeout(r, 80));
+      eqNum(calls.length, 1, "定稿后恰好发一次增强请求");
+      eqStr(bx.input.value, "我们来测一下全局语音输入。", "★ 增强结果回来后就地替换成润色后的这一句");
+      eqNum(bx.inserted.length, 2, "替换也走原生插入路径（execCommand insertText）");
+      {
+        const s = calls[0] || {};
+        ok(!("maxTokens" in s) || s.maxTokens === undefined, "不传 maxTokens（传小了正文会被截断）");
+        eqStr(String(s.model || ""), "deepseek-chat", "用默认文本模型（apiProvidersForKind 的第一位 + 它的第一个文本模型）");
+        eqStr(String(s.effort || ""), "off", "无思考：effort=off");
+        eqStr(String(s.kind || ""), "text", "kind=text");
+        const msgs = Array.isArray(s.chatMessages) ? s.chatMessages : [];
+        eqNum(msgs.length, 2, "system + user 两条消息（指令与正文分开）");
+        ok(/润色器/.test(String((msgs[0] || {}).content || "")), "system 是「只润色」的指令");
+        ok(/这一句：/.test(String((msgs[1] || {}).content || "")), "user 带极短上下文 + 这一句");
+      }
+      ok(/已 AI 增强/.test(String(Vx._test.state().enh.phrase || "")), "浮窗说明写了「已 AI 增强」");
+      Vx.setMode("off");
+    }
+
+    /* ③ 三级回落：没配模型 / 模型调用失败 / 结果离谱 → 都留原始识别，且说清原因 */
+    {
+      const bx = makeSandbox(); /* 没给 providers / models / textStream = 老宿主 */
+      const Vx = bx.ctx.window.VoiceInput;
+      const r = await Vx._test.enhance("你好");
+      ok(r.ok === false && r.code === "no_gen", "宿主没挂文本生成通道 → 回落（no_gen）");
+      ok(/文本生成/.test(String(r.why || "")), "回落原因是中文可执行说明");
+      const enh = bx.foot.children.find((c) => c.id === "btnVoiceEnhance");
+      ok(/AI 增强不可用/.test(enh.title), "开关 tooltip 把「为什么用不了」说清");
+
+      const bx2 = makeSandbox({ providers: [{ id: "p-text", type: "text_openai" }], models: [] });
+      const V2b = bx2.ctx.window.VoiceInput;
+      const r2 = await V2b._test.enhance("你好");
+      ok(r2.ok === false && r2.code === "no_model", "服务商在、但一个文本模型都没有 → 回落（no_model，不打空 model 出去）");
+      const enh2 = bx2.foot.children.find((c) => c.id === "btnVoiceEnhance");
+      ok(/还没配文本模型/.test(enh2.title), "开关 tooltip 指向「设置 · 提供商」（一句能照做的）");
+
+      const bx3 = makeSandbox({
+        providers: [{ id: "p-text", type: "text_openai" }],
+        models: ["m1"],
+        textStream: () => Promise.reject(new Error("429 限流")),
+      });
+      const V3b = bx3.ctx.window.VoiceInput;
+      const r3 = await V3b._test.enhance("你好");
+      ok(r3.ok === false && r3.code === "failed" && /429/.test(String(r3.why || "")), "模型调用失败 → 回落并带上真实原因");
+
+      /* 结果离谱（空 / 带解释标签 / 长出一大截）→ 不可用（回落原文） */
+      const S = V3b._test.enhSanitize;
+      eqStr(S("", "你好"), "", "空结果不可用");
+      eqStr(S("润色后：你好。", "你好"), "你好。", "剥掉「润色后：」这类解释标签");
+      eqStr(S("「你好。」", "你好"), "你好。", "剥掉整句包的引号");
+      eqStr(S("你好。".repeat(40), "你好"), "", "长出一大截 → 判为跑偏，回落原文");
+      eqStr(S("hello world\nnext", "hi"), "hello world next", "西文折行接成一行（补空格）");
+      eqStr(S("你好\n世界", "你好"), "你好世界", "中文折行直接接上（不补空格）");
+
+      /* 8 秒超时：用注入的「永不回包」验真（不等满 8 秒，只验竞速那一路真的在） */
+      const bx4 = makeSandbox();
+      const V4 = bx4.ctx.window.VoiceInput;
+      let hung = 0;
+      V4._test.inject({ enhance: () => { hung++; return new Promise(() => {}); } });
+      const p = V4._test.enhance("超时这一句");
+      await new Promise((r) => setTimeout(r, 30));
+      eqNum(hung, 1, "注入的增强确实被调了（在途不回来）");
+      ok(p && typeof p.then === "function", "增强永远回一个 Promise（调用方不会卡死在 await 上）");
+    }
+
+    /* ④ 用户中途改动 / 换框：只保留原文，绝不把用户自己写的字改掉 */
+    {
+      const bx = makeSandbox({
+        providers: [{ id: "p-text", type: "text_openai" }],
+        models: ["m1"],
+        textStream: () => new Promise((res) => setTimeout(() => res({ text: "润色后的这一句。" }), 20)),
+      });
+      const Vx = bx.ctx.window.VoiceInput;
+      Vx._test.inject({ speech: async () => ({ ok: true, text: "原始这一句" }) });
+      Vx.setCfg({ enhance: true });
+      bx.input.value = "";
+      bx.ctx.document.activeElement = bx.input;
+      Vx.setMode("live");
+      Vx._test.feed(new Float32Array(16000));
+      await new Promise((r) => setTimeout(r, 60));
+      eqStr(bx.input.value, "原始这一句", "基线：原文已落进输入框");
+      /* 定稿（增强发出）→ 用户立刻在后面补了字 → 增强回来时那一段已经不「一字不差」 */
+      Vx._test.gate();
+      bx.input.value = "原始这一句（我自己补的）";
+      bx.input.selectionStart = bx.input.selectionEnd = bx.input.value.length;
+      await new Promise((r) => setTimeout(r, 80));
+      eqStr(bx.input.value, "原始这一句（我自己补的）", "★ 原文已被改动：增强不落字，用户写的一个字都不动");
+      ok(/没落字/.test(String(Vx._test.state().enh.phrase || "")), "浮窗说明写了「没落字」的原因");
+      Vx.setMode("off");
+    }
+  }
 
   /* ============ [4] 静音门排在在途转写之前：尾巴不能丢 ============ */
   console.log("\n[4] 静音门与在途转写（本地推有几百毫秒延迟，字不能丢）");
@@ -1028,7 +1266,7 @@ const VOICE_SUITE = (async () => {
   console.log(
     failed
       ? "\n冒烟失败（见上面 ✗ 行）"
-      : "\n全部通过：全局语音输入的三态、F1 按键纪律（吞键 / 不落字 / 不重复起停）、按钮恒态与载入弧、落点纪律、静音门与配置口径、停顿才整段提交（句长不封顶 / 只在后端硬顶切 / 尾部裁剪 / 浮窗报「正在听」）、模型未就绪时的自愈、下载失败时的「看得见 + 点得通」（原因 / 下载源 / 两枚重试入口 · state 回包与运行时推送两条入口都算）都钉住了（真实录音与识别精度需手动实测）",
+      : "\n全部通过：全局语音输入的三态、F1 按键纪律（吞键 / 不落字 / 不重复起停）、按钮恒态与载入弧、落点纪律、静音门与配置口径、停顿才整段提交（句长不封顶 / 只在后端硬顶切 / 尾部裁剪 / 浮窗报「正在听」）、模型未就绪时的自愈、AI 增强（话筒右侧那枚 ✨：逐句润色 / 就地替换 / 三级回落 / 用户改过就不动它）、下载失败时的「看得见 + 点得通」（原因 / 下载源 / 两枚重试入口 · state 回包与运行时推送两条入口都算）都钉住了（真实录音与识别精度需手动实测）",
   );
 })();
 
@@ -1152,6 +1390,16 @@ const VOICE_SUITE = (async () => {
   ok(/@import url\("\.\/css\/voice\.css"\)/.test(read("renderer/style.css")), "style.css 串入 css/voice.css");
   ok(/"语音输入（关闭）：点一下开启持续转录，再点按键转录，再点关闭"/.test(I18N), "i18n 有三态按钮词条");
   ok(/settings-sec-title/.test(VOICE) && /VoiceInput\.settingsSection\(\)/.test(SETTINGS), "设置面板挂上「语音输入」小节（.settings-sec-title + 模块提供的整块）");
+  /* AI 增强（话筒右侧那枚 ✨，本轮新增）：接线 / 样式 / 词条三处齐备 */
+  ok(/id = "btnVoiceEnhance"/.test(VOICE) && /"btnVoiceEnhance"/.test(VOICE), "AI 增强开关的 id 在模块里成对出现（建 + 复用查重）");
+  ok(/apiCallTextStream/.test(VOICE) && /apiProvidersForKind/.test(VOICE) && /effort: "off"/.test(VOICE), "增强走既有文本通道（apiCallTextStream + 默认服务商 + 无思考）");
+  ok(/function enhSanitize/.test(VOICE) && /ENH_TIMEOUT_MS = 8000/.test(VOICE), "只润色的清洗步骤与 8 秒超时上限都在");
+  ok(/function replaceText/.test(VOICE) && /execCommand\("insertText"/.test(VOICE), "增强结果走原生插入就地替换（撤销栈语义与手敲一致）");
+  ok(/function noFocusSteal/.test(VOICE), "状态栏那两枚按钮统一走 noFocusSteal（点按钮不抢焦点）");
+  ok(/\.sb-enh/.test(VCSS) && /order:\s*-1/.test(VCSS), "开关的样式齐备并钉在话筒右侧（order:-1 配 order:-2）");
+  ok(/sb-enh\.on/.test(VCSS), "开着时有专属高亮（.sb-enh.on）");
+  ok(/apiCallTextStream/.test(VOICE) && !/maxTokens/.test(VOICE), "增强请求不带 maxTokens（传小了正文会被截断）");
+  ok(/"AI 增强"/.test(I18N) && /"AI 增强已开启"/.test(I18N) && /"AI 增强不可用/.test(I18N), "i18n 有 AI 增强的中英词条");
 
   console.log("[6] 与既有本地 ASR 的分工（节点级转写仍归 renderer/app-asr.js）");
   ok(fs.existsSync(path.join(ROOT, "renderer/app-asr.js")), "renderer/app-asr.js 仍在（节点级批量转写）");

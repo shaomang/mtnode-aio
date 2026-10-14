@@ -398,7 +398,12 @@ async function main() {
             everRecharged: true,
             balanceYuan: 99.5,
             totalYuan: 99.5,
-            models: [{ id: "deepseek-v4-flash", kind: "text" }],
+            /* 一张图的最低门槛（云端 minImageYuan）：[3b] 段会把余额改小来验「只收图像」 */
+            minImageYuan: 0.21,
+            models: [
+              { id: "deepseek-v4-flash", kind: "text", price: { kind: "text", cacheHit: 0.02, cacheMiss: 1, output: 4, peakMultiplier: 2 } },
+              { id: "gpt-image-2.5-v4", kind: "image", price: { kind: "image", perImageYuan: 0.21 } },
+            ],
           },
         }),
       configSave: (c) => {
@@ -581,6 +586,109 @@ async function main() {
     fnBody("renderer/app-settings.js", "provTile").includes("providerStateText"),
     "提供商网格角标同口径（余额不足不是「已停用」）",
   );
+
+  /* ── [3b] 余额 > 0 但不够一张图：只收图像、文本照旧（本轮 bug 的客户端侧）──
+     云端（store-saas/relay.mjs 的 reserveImageCharge）在图像调用前按应付额 402；
+     客户端跟着预判：门槛 = 快照的 minImageYuan（一张图的最低门槛，云端 minImageYuan）。 */
+  console.log("[3b] 中转余额不足以出图：客户端只收图像（文本照旧）");
+  {
+    const card0 = relaySavedCfg && relaySavedCfg.providers && relaySavedCfg.providers[0];
+    const M = relayRun && relayRun.window.MtRelay;
+    /* 快照那两条要等第一次同步落地（同步是异步的）：与 [1] 段同一套 laterChecks。 */
+    laterChecks.push(() => {
+      const cardLate =
+        relaySavedCfg && relaySavedCfg.providers && relaySavedCfg.providers[0];
+      ok(
+        !!cardLate && cardLate.relay && Number(cardLate.relay.imageShortYuan) === 0.21 && cardLate.relay.blocked === false,
+        "同步一次后：卡上快照带上「一张图的最低门槛」（relay.imageShortYuan=0.21，来自 /api/relay/me 的 minImageYuan）",
+      );
+      ok(
+        !!cardLate && (cardLate.relay.models || []).indexOf("gpt-image-2.5-v4") >= 0,
+        "余额够时：图像模型照样在可用清单里（不误伤）",
+      );
+    });
+    const mk = (extra) =>
+      Object.assign(
+        {
+          id: "mtnode-relay",
+          source: "mtnode-relay",
+          type: "text_openai",
+          models: ["deepseek-v4-flash", "gpt-image-2.5-v4"],
+        },
+        { relay: Object.assign({ blocked: false, balanceYuan: 99.5, imageShortYuan: 0.21 }, extra || {}) },
+      );
+    ok(!!M && M.imageShort(mk()) === false, "MtRelay.imageShort：余额够 ⇒ false");
+    ok(
+      !!M && M.imageShort(mk({ balanceYuan: 0.1 })) === true,
+      "MtRelay.imageShort：余额 0.10 < 一张图 0.21 ⇒ true（图像被余额卡住）",
+    );
+    ok(
+      !!M && M.imageShort(mk({ balanceYuan: 0.1, imageShortYuan: 0 })) === false,
+      "没有可用的图像模型（门槛 0）⇒ 不拦",
+    );
+    const shortCard = mk({ balanceYuan: 0.1, imageShortYuan: 0.2 });
+    /* 形态过滤真跑（app-model-kind.js 是纯函数段，可直接 require）：
+       与 smoke-provider-policy.js 的 [3b] 同一口径，这里再钉一次「只收图像」。 */
+    const KindMod = require("../renderer/app-model-kind.js");
+    ok(
+      KindMod.providerDisabled(shortCard) === false &&
+        KindMod.modelsOfKind({}, shortCard, "image").length === 0 &&
+        KindMod.modelsOfKind({}, shortCard, "text").join(",") === "deepseek-v4-flash",
+      "同一张卡：图像模型收起来、文本模型照旧，且不算「停用」",
+    );
+    /* 卡上那行状态文案要走**会插值的** I18n（沙箱里那份 I18n.t 是恒等桩，插不出金额）：
+       另起一只带真插值的实例跑同一段真代码。 */
+    const interp = (() => {
+      const win2 = {};
+      const sb = {
+        window: win2,
+        S: { config: { providers: [], modelKinds: {} } },
+        console: { log() {}, warn() {} },
+        /* 与 renderer/i18n.js 的 t(s, vars) 同口径的最小实现（{name} 占位替换） */
+        I18n: {
+          t: (s, vars) =>
+            vars
+              ? String(s).replace(/\{(\w+)\}/g, (m, k) => (vars[k] != null ? String(vars[k]) : m))
+              : String(s),
+        },
+        setTimeout,
+        clearTimeout,
+      };
+      win2.api = { relayMe: () => Promise.resolve({ ok: false }) };
+      vm.createContext(sb);
+      vm.runInContext(relayMod, sb, { filename: "app-relay.js" });
+      return win2.MtRelay;
+    })();
+    const shortState = String(interp.stateText(shortCard));
+    ok(
+      /余额不足以出图/.test(shortState) && /0\.2/.test(shortState) && !/\{amount\}/.test(shortState),
+      "卡上那行状态文案说清「余额不足以出图（一张需 0.2）」（I18n 插值后不留 {amount}）",
+    );
+    ok(
+      has("renderer/i18n.js", '"余额不足以出图（一张需 ¥{amount}）：文本仍可用"') &&
+        has("renderer/i18n.js", "Balance too low to generate an image"),
+      "i18n 中英词条齐备（卡上状态行）",
+    );
+    /* 主进程：图像调用前的余额闸（只拦图像；文本会话不受影响）。
+       checkProvider 恒查余额耗尽，图像多一道 checkRelayImageQuota —— 两个函数分开，
+       正是为了不让「还有几毛钱」的账号连文本也调不了。 */
+    ok(
+      has("main.js", "function checkRelayImageQuota") &&
+        fnBody("main.js", "checkRelayImageQuota").includes('String(kind || "") !== "image"') &&
+        fnBody("main.js", "checkRelayImageQuota").includes("imageShortYuan") &&
+        has("main.js", "checkRelayImageQuota(provider, kind)") &&
+        has("main.js", "checkRelayImageQuota(spec.provider, spec.kind)"),
+      "main.js：checkRelayImageQuota 只对图像调用生效（apiCall / 流式 / 应用 / 预览四处都接上）",
+    );
+    ok(
+      !fnBody("main.js", "checkProvider").includes("imageShortYuan"),
+      "「余额不够一张图」不进 checkProvider（否则文本调用会被一起挡死）",
+    );
+    ok(
+      has("renderer/i18n.js", '"MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值后在「设置 · 提供商」里点「刷新」"'),
+      "主进程那条错也有中英词条",
+    );
+  }
 
   /* ── [4] 刷新时机 ───────────────────────────────────────────── */
   console.log("[4] 刷新时机：本地无快照才拉 / 登录后立即拉 / config 就绪补拉 / 手动");

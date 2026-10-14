@@ -135,10 +135,19 @@
           <option value="tip_revoke_in">tip_revoke_in 撤销退回</option>
         </select>
         <input id="fLedgerUser" type="search" placeholder="账号ID（可留空）">
+        <!-- 时间窗口（本次需求：每笔中转扣费都写一条流水，页面默认只看近 30 天；
+             窗口同样作用于「导出流水 CSV」，更早的流水切「全部」再查） -->
+        <select id="fLedgerWindow">
+          <option value="today">今日</option>
+          <option value="7d">近 7 天</option>
+          <option value="30d" selected>近 30 天</option>
+          <option value="all">全部</option>
+        </select>
         <button id="btnLedgerSearch" class="btn">查询</button>
         <span class="spacer"></span>
         <button id="btnCsvLedger" class="btn btn-ghost">导出流水 CSV</button>
       </div>
+      <div class="hint" id="ledgerHint"></div>
       <div class="table-wrap"><table id="tblLedger"></table></div>
     </section>
 

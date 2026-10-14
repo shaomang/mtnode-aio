@@ -1,10 +1,11 @@
 /* MTNode 应用脚手架 —— 底部「语音听写」模块（speech.js）
  *
  * 用途：应用的 footer 里带一枚话筒，用户点一下用**本机内置语音识别**（官方本地 SenseVoice，
- * 识别跑在 MTNode 的 dsh 运行时里）把说的话变成文字；旁边一枚「选音频文件」把本机录音
- * 转成文字。识别结果只展示 + 一键复制，**不自动往页面控件里塞**（插到哪儿由应用自己决定）。
+ * 识别跑在 MTNode 的 dsh 运行时里）把说的话变成文字。识别结果只展示 + 一键复制，
+ * **不自动往页面控件里塞**（插到哪儿由应用自己决定）。
+ * （本轮需求：🎧「音频文件转文字」那枚按钮与它的 `file()` 接口整块摘除 —— 这条条只做听写。）
  *
- * 桥：只用 window.appHost 的那一组语音能力（pickAudio / transcribe / transcribeWav /
+ * 桥：只用 window.appHost 的那一组语音能力（transcribeWav /
  * asrStatus / asrPrepare / asrMic / onSpeechState，见 preload-app.js）。
  *   · 哪些能力真的在：Speech.create() 自己探测（缺能力时 footer 里写清原因，不假装能用）；
  *   · 麦克风采集在**本页**做（getUserMedia + AudioContext），整形规则与宿主一致：
@@ -117,8 +118,6 @@
   Speech.create = function () {
     var cap = {
       host: !!host(),
-      pick: !!(host() && typeof host().pickAudio === "function"),
-      transcribe: !!(host() && typeof host().transcribe === "function"),
       wav: !!(host() && typeof host().transcribeWav === "function"),
       status: !!(host() && typeof host().asrStatus === "function"),
       prepare: !!(host() && typeof host().asrPrepare === "function"),
@@ -143,18 +142,6 @@
       onState: function (cb) {
         if (!cap.events) return function () {};
         return host().onSpeechState(cb);
-      },
-      /* 本机音频文件 → 文字（系统选文件框，取消返回 { ok:false, code:"cancelled" }） */
-      file: function () {
-        if (!cap.pick || !cap.transcribe) return Promise.resolve({ ok: false, code: "no_cap" });
-        return host()
-          .pickAudio()
-          .then(function (r) {
-            if (!r || !r.ok) return r || { ok: false, code: "cancelled" };
-            return host().transcribe({ path: r.path }).then(function (out) {
-              return Object.assign({}, out || {}, { name: r.name, path: r.path });
-            });
-          });
       },
       /* 应用自己录的 16k 单声道 PCM16 → 文字 */
       wav: function (base64) {
@@ -237,11 +224,15 @@
             })
             .catch(function (err) {
               var raw = String((err && err.name) || "") + " " + String((err && err.message) || "");
-              var msg = /NotAllowed|Permission|denied/i.test(raw)
+              var msg = /NotAllowed|Permission|denied|Security/i.test(raw)
                 ? t("麦克风权限被拒绝（到系统设置里允许本应用使用麦克风）", "Microphone permission denied")
                 : /NotFound|no device/i.test(raw)
                   ? t("没找到可用的麦克风设备", "No microphone device found")
-                  : t("麦克风没能启动（检查系统输入设备与权限）", "Microphone failed to start");
+                  : /NotReadable|TrackStart/i.test(raw)
+                    ? t("麦克风被占用或被系统隐私设置拦住（关掉其它用麦克风的程序）", "Microphone busy or blocked by system privacy settings")
+                    : /Abort/i.test(raw)
+                      ? t("麦克风启动被中断，请再点一次", "Microphone start was interrupted — try again")
+                      : t("麦克风启动失败", "Could not start the microphone");
               resolve({ ok: false, code: "mic_failed", error: msg });
             });
         });
@@ -263,14 +254,8 @@
       '">🎤<span class="speech-lbl">' +
       esc(t("听写", "Dictate")) +
       "</span></button>" +
-      '<button type="button" class="speech-btn" data-act="file" title="' +
-      esc(t("选一个音频文件转成文字", "Transcribe an audio file")) +
-      '">🎧<span class="speech-lbl">' +
-      esc(t("音频转文字", "Audio → text")) +
-      "</span></button>" +
       '<span class="speech-note"></span>';
     var btnMic = el.querySelector('[data-act="mic"]');
-    var btnFile = el.querySelector('[data-act="file"]');
     var note = el.querySelector(".speech-note");
 
     /* 结果小窗：贴着 footer 上方弹出，展示全文 + 一键复制（不自动动应用界面） */
@@ -305,7 +290,6 @@
     function setBusy(on, label) {
       busy = !!on;
       btnMic.disabled = busy;
-      btnFile.disabled = busy;
       if (label) say(label, "");
     }
     /* 下载进度画在按钮上（首次使用约 239MB）：按钮标题与 footer 提示同步 */
@@ -337,7 +321,6 @@
           "warn",
         );
         btnMic.disabled = true;
-        btnFile.disabled = true;
         return;
       }
       sp.status().then(function (st) {
@@ -374,24 +357,6 @@
         say(String(r.error || t("识别失败", "Failed")), "warn");
       }
     }
-
-    btnFile.onclick = function () {
-      if (busy) return;
-      setBusy(true, t("正在转写音频…", "Transcribing audio…"));
-      ensureReady()
-        .then(function () {
-          return sp.file();
-        })
-        .then(function (r) {
-          report(r);
-        })
-        .catch(function (err) {
-          say(String((err && err.message) || err), "warn");
-        })
-        .then(function () {
-          setBusy(false);
-        });
-    };
 
     /* 话筒：点一下开始录，再点一下（或静音 1.5 秒 / 到时长上限）自动收尾转写 */
     var curStop = null;

@@ -49,6 +49,7 @@ When a session hits something it cannot get past, it raises a **browser help car
 
 - Cannot answer right now? Click **"Later (stop this round)"** or **"Abort task"**: the round stops and that help request **fails** for the model (it is never taken as silent consent) — it will ask again when it picks the work back up.
 - If the round ended before you answered, the card stays and turns into a **"This round has ended"** state whose "Send this answer to the model as a new message" key re-sends exactly what you wrote (nothing is lost).
+- **Clicking "Answer" closes the card right away** (a real bug fixed this round): it used to sit there with **no visible reaction** (card kept, panel kept) until a 30-second timeout called it a failure — while the model had actually received your answer and the session carried on. The receipt is synchronous now: the card is dropped at once, and when the last card goes the whole "🐋 the model is waiting for you" panel collapses by itself. Waiting for you has **no timeout** (same rule as the ordinary question card), so take your time logging in.
 - While you are driving, **the session's browser actions are refused** (not queued up to sneak in later); it continues once you have answered — and it takes a fresh look at the page first.
 
 ## Safety defaults

@@ -15742,6 +15742,17 @@ function canvasConfirmPruneOrphans() {
     it.settle();
   }
 }
+/* 本轮挂起的确认框数（本次需求）：看门狗用它判「这一轮是不是正在等人」——
+   有确认框在等用户点，就与提问 / 审批 / 求助卡同族**不设等待上限**（见 app-db.js 的
+   DSH_IX_WAIT_TIMEOUT_MS）。少了这一条，只弹确认框、没弹卡片的那一轮会被 30 分钟
+   静默上限当成「引擎挂了」自动终止 —— 用户正看着框想点，会话却自己停了。 */
+function canvasConfirmPendingOf(runKey) {
+  const k = String(runKey || "");
+  if (!k) return 0;
+  let n = 0;
+  for (const [, it] of canvasConfirmRegistry()) if (String(it.runKey || "") === k) n++;
+  return n;
+}
 
 function confirmAssistAction(title, info, opts) {
   info = info || {};

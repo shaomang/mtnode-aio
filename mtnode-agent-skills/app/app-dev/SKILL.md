@@ -1,7 +1,7 @@
 ---
 name: mtnode-app-dev
 title: MTNode 应用开发
-description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示；出图按 hostImageModels / imageGen 走云端服务商或本机 SenseNova）、应用能力位 capabilities（textInput 决定脚手架带不带语音模块、showDictate 决定应用窗口底部那条宿主注入的听写条显不显示（新建应用默认声明为真）、imageGen 声明出图；是静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
+description: 开发 MTNode「应用」（顶栏「应用中心」下载 / 自建后独立窗口运行，或「插件」对话框里 kind=window 的窗口类应用）：静态 HTML/JS/CSS 契约（本身不依赖 appHost 也能跑）、两套宿主桥的能力清单与调用样例（应用中心 window.appHost · 插件窗口 window.pluginApi：数据落盘、数据文件夹、账号摘要、创意工坊请求、图片选择与缓存、生命周期事件）、**开发页中栏预览里也有宿主桥**（预览里 close/quit 回 preview_no_window；应用已在独立窗口运行时预览只读、写类回 readonly_preview）、模型能力正解（文本模型与**图像后端**都从 MTNode 继承、界面上必须有选择位、文字+图像多模态输入、无模型/断网时不降级只给明确提示）、应用能力位 capabilities（textInput 带不带语音模块、showDictate 底部宿主听写条、showAuthor 左下角作者标签（平时隐藏 / hover 显示 / 点击看详情）、imageGen 出图；新建默认全开；静态声明不是权限闸）、三件基础设施（正确关闭的数据冲刷握手 / 内容落盘与自动迁移 / 数据文件夹）、应用目录结构与 app.json 字段、默认随应用生成 AGENTS.md 共识文件、常见坑（iframe 无 window.api、sandbox 与 file:// 资源路径、数据只写数据目录）。配套脚手架 templates/app-scaffold/ 与 templates/app-agents/AGENTS.md。
 ---
 
 # MTNode 应用开发
@@ -25,15 +25,35 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 `close.js`（关窗收尾注册）、`app.js`（业务示范：便签 + 文字/图像提问）。
 
 **按 `capabilities` 决定复制哪些文件**：目标应用 `app.json` 的 `capabilities.textInput` 为真才复制 `speech.js` /
-`speech.css`。**新建应用默认三位全开**（`textInput` / `showDictate` / `imageGen` 缺省 true，见 `renderer/app-app-flow.js` 的 `appsCreateApp`），
+`speech.css`。**新建应用默认四位全开**（`textInput` / `showDictate` / `showAuthor` / `imageGen` 缺省 true，见 `renderer/app-app-flow.js` 的 `appsCreateApp`），
 所以新建出来的应用**带**这两个文件；只有用户在中栏「预览」条的 ⚙「应用设置」里把 `textInput` 关掉时才不带。
 **能力位改动只写 `app.json` 的声明，绝不重写入口页**（`apps-store.js` 的 `appCapabilitiesSet`）——
-`index.html` 一个字都不动，手改过的页面内容原样保留；听写条只由宿主按下面这一位注入。
-`capabilities.showDictate` 决定**应用窗口底部那条宿主注入的听写条**显不显示：宿主注入的
-`renderer/app-speech-ui.js` 挂上就带 `data-mtnode-hidden` + `display:none`，要露面得声明这一位（或应用自己调
-`apSpeechReveal()`）。**入口页里不再内联任何听写 UI**（`templates/app-default/dict.js` 与
+`index.html` 一个字都不动，手改过的页面内容原样保留；听写条与作者标签都只由宿主按声明注入。
+`capabilities.showDictate` 决定**应用窗口底部那条宿主注入的听写条**显不显示：这一位为真，宿主才注入
+`renderer/app-speech-ui.js`，**注入进来即默认可见**（`markShown`，没有隐藏标记）；条尾「收起」/ `apSpeechHide()`
+只在本次窗口内藏它（不写回 `app.json`），`apSpeechReveal()` 唤回，`apSpeechHidden()` 问现状。
+这条条有**两种转录模式**（与画布那枚话筒同一套口径，2026-02 二轮）：点话筒 / 点左下角那枚常驻浮动话筒按
+「关闭 → **持续转录** → **按键转录** → 关闭」循环 —— 持续转录按「说完一句的停顿」（默认 1500ms，`apSpeechSilenceMs(ms)` 可调）
+逐句转写；按键转录**按住 F1 说话、松开立刻识别**这一句（判键走 `ev.code`，前卷 240ms，浮动话筒按住同样能说）。
+**F2** 是持续转录的开 / 关（按键转录态下按它回关闭），`Esc` 与「收起」停止。
+每句定稿**落进采集开始时焦点所在的那个输入框**（`input`/`textarea`/`contenteditable`，原生 `execCommand("insertText")`，
+行尾补空格；焦点跑了先挂住、`focusin` 补写）—— 自己监听 `"mtnode-dictate"` 又自己写一遍的应用请调 `apSpeechInsert(false)`。
+话筒右侧还有一枚 **✨ AI 增强** Toggle（默认关）：走 `appHost.textGenStream`（不带 `model` = 跟随该应用选择 /
+宿主默认，`thinking:"off"`，**不传** `maxTokens`），system prompt 只做同音字 / 标点 / 断句 / 语气词清理，
+user = 这一句 + 极短上下文（约 400 字符）；失败 / 超时 / 没配模型一律回落原始识别（绝不吞话）。
+**入口页里不再内联任何听写 UI**（`templates/app-default/dict.js` 与
 `apps-store.js` 的 `dictScriptTag()` 内联路径已随本轮改动删除）；老应用页面里那份旧内联段在打开
 「应用设置」时由 `clearLegacyDictInline()` 幂等清掉（只认我们自己的标记）。
+`capabilities.showAuthor` 决定**应用窗口左下角那枚宿主注入的作者标签**显不显示（本轮新增，与听写条同一条机制）：
+宿主注入 `renderer/app-author-ui.js`，平时 `opacity:0` 隐形、鼠标 hover（或键盘聚焦）才浮现
+`@作者 - v版本`（如 `@ms2308 - v1.0.1`），**点一下弹只读「应用详情」**（图标 / 标题 / 应用 id / 作者 / 版本 /
+说明 / 标签 / 数据目录，出口只有 ✕ 与 Esc —— 浮层不做「点外部即关」）。名字与版本由宿主给：
+`app.json` 的 `author` → 当前登录账号昵称（两级回落，系统占位名 `u_xxxxxxxx` 不算名字）；
+**两者缺任一个 / 未登录且没写过作者 → 这枚标签整枚不出现**（不写「未知作者」）。配色只取应用自己主题的
+`--bg/--fg/--muted/--accent/--line`（与听写条同一份 palette 口径），深浅底都不突兀；左下角那枚听写浮动话筒
+与它共用一个角落列（`#mtnode-dictate-zone`），此时标签排在**整列之上**（按容器实际顶边算）。
+注入闸门只看 `capabilities.showAuthor`（`preload-app.js` 的 `maybeInjectAppUi` + `apps-store.js` 的 `hostCapabilities`），
+应用侧**不用写任何代码**；要在别处显示「谁做的、哪一版」，调 `appHost.authorTag()`（见第二节桥表）。
 `capabilities.imageGen` 只是声明，出图接口与文本接口一样始终可调。
 新建应用的**默认欢迎页**在 `templates/app-default/index.html`（`apps-store.js` 的 `defaultPageHtml()` 读它），与脚手架同一套设计语言与同一段上手文案。
 
@@ -73,9 +93,10 @@ MTNode 里的「应用」＝一份**静态** HTML / JS / CSS，由宿主用独�
 | **数据文件夹** | `dataDirGet()` → `{ok,dir,root,def,exists,file,allow}`；`dataDirPick()`（用户亲自选）；`dataDirOpen()`；`dataDirReset()`（回默认） | —（路径由宿主管，应用看不到） |
 | 键值存储（老写法） | `storageGet/Set/All/Remove`（内部走同一个 `data.json` 的 `kv`） | —（用 `dataGet`/`dataSet` 自己存对象） |
 | 账号摘要 | `account()` → `{ok,loggedIn,user,encryption}`（无 token） | `authGetState()` / `authMe()` / `authLoginPassword` / `authChangePassword` / `authLogout` / `onAuthChanged(cb)` |
+| **本机清单摘要（谁做的 / 哪一版）** | `authorTag()` → `{ok,name,version,id,title,description,tags,icon,dataDir}`（`icon` 是宿主读好的 data URL；名字版本凑不齐回 `{ok:false,code:"no_author_tag"}`）。**注入左下角那枚作者标签用的就是它**；应用自己想在别处显示也可以用（与语音 / 图像同一条纪律：能力位只管宿主注不注入，桥上接口始终在） | — |
 | 创意工坊请求 | —（应用中心窗口没有网络面） | `storeRequest({method,path,json,anon})`（主进程持 token） |
 | 选图 / 压图 / 缓存 | — | `pickImage()` / `compressImage()` / `cacheImage(id,base64)` / `readCachedImage(id)` |
-| 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` / `imageEdit(opts)`（出图 / 图生图，见第六节） · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |
+| 模型能力（可选） | `textGenStream(opts, cb)`（**文字 + 图像多模态**；**默认关思考**，`opts.thinking` 认 `off / on(=high) / low / high / max`，非法值回 `bad_thinking`；回执带 `finishReason` / `truncated` / `reasoningChars`）。宿主注入的**听写条「AI 增强」就是它的标准用法**：`{ messages:[{role:"system",…},{role:"user",…}], thinking:"off", temperature:0.2 }` —— **不带 `model`**（跟随该应用的选择 / 宿主默认）、**不传 `maxTokens`**，失败 / 超时回落原文（见第七节坑表）· 脚手架另有 `AppHost.json(opts)`（要 JSON 就用它）· `imageGen(opts)` / `imageEdit(opts)`（出图 / 图生图，见第六节） · `hostModels()` / `hostModel()` / `hostSetModel(id)`（模型从 MTNode 继承）· `pickImage()` 系统选图。**服务商与 Key 只留主进程**，应用只能给 prompt / messages / model(清单内 id) / 温度 / 图像路径或 dataURL；**maxTokens 别随手设**（它是思考+正文共用预算，见第七节） | —（插件窗口这套没有模型桥：见第六节的正路 —— `pickImage` + 自己的后端，或升级为本地后端插件） |
 | **生命周期** | `close()`（关自己窗口）· `quit()`（连 MTNode 一起退）· **`onWillClose(cb)`**（关窗前收尾，见第三节） | `close()` · `onShown(cb)` · `onAuthChanged(cb)` |
 
 调用前一律先探测：`typeof host.dataWrite === "function"`，缺就走降级分支。**脚手架的 `window.AppHost` 把两套桥统一成一套名字**
@@ -349,6 +370,9 @@ else use(j.data);                              // 已经解析好的对象
 | 把 `pickImage` 的 `cancelled` 当报错弹红字 | 用户每次取消都看到一条错误 | `code === "cancelled"` 只恢复按钮，不提示 |
 | 忘了默认建 `AGENTS.md`（或反过来覆盖了已有的那份） | 下个会话没有共识、或冲掉用户自己写的约定 | 从 `templates/app-agents/AGENTS.md` 复制过去（**默认就建、不必询问**）；已存在则保留只补 |
 | 以为「预览里没有宿主、只能退回 localStorage」 | 白写一套预览专用降级分支，用户在开发页中栏看到的还是「进度暂存在浏览器本地」 | 开发页中栏的预览 iframe **有** `window.appHost`（见第四节）；按「有宿主」写，只额外处理 `close`/`quit` 的 `preview_no_window` 与只读时的 `readonly_preview` |
+| 应用自己监听 `"mtnode-dictate"` 把文字写进输入框 | 宿主听写条**默认也会往当时焦点的那个输入框里原位写**（2026-02 二轮），同一句会写两遍 | 交给宿主落字（什么都不用做）；确实要自己接管（比如写进富文本节点）就调 `apSpeechInsert(false)` 关掉宿主的自动落字，只留事件 |
+| 以为听写条只能「一直听」 | 用户要的是按住说一句就走（语音指令场景） | 按键转录态：按住 **F1** 说话、松开立刻识别；`apSpeechSetMode("ptt")` / 点话筒循环都能进这一态 |
+| 把 AI 增强当成「必过的一步」（失败就丢字） | 模型限流 / 超时 / 没配服务商时用户的话被吞掉 | 增强只做润色、**失败一律回落原始识别**（宿主听写条就是这么做的，见第二节 `textGenStream` 那行）；自己接线时也照这个口径 |
 
 ---
 

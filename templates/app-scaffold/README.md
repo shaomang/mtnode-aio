@@ -17,7 +17,7 @@
 | `app-model.js` | **模型选择位**：右上「模型」按钮 + 下拉，分「文本模型 / 图像后端」两区（文本首项 = 跟随 MTNode 默认、每项标「支持识图」；图像后端 = 云端服务商 + 本机 SenseNova）；`AppModel.errorText(res)` 把宿主的错误码翻成一句人话，`AppModel.imageErrorText(res)` 管出图那条路的码（`busy_media` / `cuda_oom`…）。两行接入，见文件尾注 |
 | `model.css` | 模型选择位与示例区样式（颜色仍走 `styles/<id>.css` 的语义变量） |
 | `store.js` | **落盘脚手架**：`Store.create({host, file, debounceMs})` → `set(data)` 标脏 + 防抖自动写盘，`load()` 读回，`flush()` 立即写盘；没有宿主时退化为内存态（`store.persisted === false`） |
-| `speech.js` | **底部语音听写（按需）**：footer 里一枚话筒（本机内置语音识别，官方本地 SenseVoice）+ 一枚「音频转文字」（选本机录音文件），结果进结果小窗、一键复制。`Speech.mount(el)` 挂载，`Speech.create()` 拿纯接口（`file()` / `wav(base64)` / `record()` / `status()` / `prepare()` / `onState()`）；桥缺席时整块禁用并写清原因。**只有该应用声明了 `capabilities.textInput` 才复制本文件**（见下「能力位」一节） |
+| `speech.js` | **底部语音听写（按需）**：footer 里一枚话筒（本机内置语音识别，官方本地 SenseVoice），结果进结果小窗、一键复制。`Speech.mount(el)` 挂载，`Speech.create()` 拿纯接口（`wav(base64)` / `record()` / `status()` / `prepare()` / `onState()`）；桥缺席时整块禁用并写清原因。**只有该应用声明了 `capabilities.textInput` 才复制本文件**（见下「能力位」一节）。本轮：原来的「🎧 音频转文字」按钮与 `file()` 接口已摘除，这条条只做听写（本文件是**一次性录制**口径：点一下录一段再识别；宿主按 `showDictate` 注入的那条则是**两种持续模式 + 落字 + AI 增强**，口径不同、互不影响，详见下「听写条细说」） |
 | `speech.css` | 听写条与结果小窗的样式（颜色只取语义变量，换风格自动跟随）。与 `speech.js` 同一条口径：**只有声明了 `textInput` 才复制** |
 | `close.js` | **关窗收尾脚手架**：`AppClose.on(cb)` 登记钩子，宿主关窗前（`apps:willClose`）跑完再关；`visibilitychange` / `pagehide` / `beforeunload` 三处兜底冲刷 |
 | `app.js` | 最小业务示范：便签落盘（脏标记 + 防抖 + 关窗冲刷）、数据文件夹显示 / 更改 / 打开、模型选择位初始化、文字+图像调用、关闭按钮 |
@@ -86,6 +86,9 @@
    `capabilities.showDictate`（缺省 **false**）决定**应用窗口底部那条宿主注入的听写条**显不显示：
    为真 = 宿主注入进来就**默认可见**（条尾有「收起」按钮，只藏本次窗口），见 `renderer/app-speech-ui.js`
    的 `markShown` / `apSpeechHide` / `apSpeechReveal`。
+   `capabilities.showAuthor`（缺省 **false**）决定**应用窗口左下角那枚宿主注入的作者标签**显不显示：
+   为真 = 宿主注入 `renderer/app-author-ui.js`（平时隐藏、hover 浮现 `@作者 - v版本`、点击弹只读应用详情）；
+   应用侧**一行代码都不用写**，要自己显示作者 / 版本就调 `AppHost.authorTag()`。
    `capabilities.imageGen` 只是声明（出图接口与文本接口一样，始终可调），界面按需自己写出图入口。
 
 ## 图像生成：用 MTNode 已配好的图像能力
@@ -117,24 +120,67 @@ else img.src = r.dataUrl;                       // 同时有 r.base64 / r.bytes 
 
 ## 能力位（app.json 的 capabilities）
 
-应用的自述能力位写在 `app.json`：`{ "textInput": false, "showDictate": false, "imageGen": false }`
-（**默认三项都不勾**）。它是**静态声明**，不是权限闸 —— 桥上的接口始终可调，它决定的是
-「起步模板带不带语音模块 / 应用窗口底部那条宿主注入的听写条显不显示」：
+应用的自述能力位写在 `app.json`：
+`{ "textInput": false, "showDictate": false, "showAuthor": false, "imageGen": false }`（**默认四位都不勾**）。
+它是**静态声明**，不是权限闸 —— 桥上的接口始终可调，它决定的是「起步模板带不带语音模块 /
+宿主往应用窗口里注入哪些 UI（底部的听写条、左下角的作者标签）」：
 
 | 位 | 为真时 | 为假 / 没声明时（缺省） |
 | --- | --- | --- |
 | `textInput` | 脚手架带语音听写模块（`speech.js` / `speech.css`） | 默认应用不带任何语音转文字 |
-| `showDictate` | 应用窗口底部**默认显示**宿主注入的听写条（🎤 听写 / 🎧 音频转文字），条尾有「收起」按钮 | 宿主**不注入**那条条（脚本仍可调桥上的语音接口） |
+| `showDictate` | 应用窗口底部**默认显示**宿主注入的听写条（🎤 听写），条尾有「收起」按钮；**两种转录模式**：点话筒循环「持续转录 → 按键转录 → 关闭」（持续转录按停顿逐句识别，按键转录按住 **F1** 说话、松开即识别），话筒右侧还有一枚 **✨ AI 增强** Toggle（默认关，失败回落原文），定稿会**落进当时焦点的输入框** | 宿主**不注入**那条条（脚本仍可调桥上的语音接口） |
+| `showAuthor` | 应用窗口**左下角**显示宿主注入的作者标签：平时隐藏，鼠标移上去浮现 `@作者 - v版本`，**点一下看应用详情** | 宿主**不注入**那枚标签（应用想自己显示作者 / 版本就调 `AppHost.authorTag()`） |
+| `imageGen` | 声明这个应用要出图（界面自己写出图入口） | 只是没声明；接口照旧可调，只是模板不带 |
 
-**声明为真 = 注入进来就看得见**：以前注入后还带 `data-mtnode-hidden` + `display:none`，必须应用自己调
+**声明为真 = 注入进来就看得见**：听写条以前注入后还带 `data-mtnode-hidden` + `display:none`，必须应用自己调
 `apSpeechReveal()` 才露面（「勾了显示听写条却没反应」的根因）。现在「收起」按钮 / `apSpeechHide()` 只在
 **本次窗口**内藏它（不写回 `app.json`），下次打开应用窗口按声明重新出现；`apSpeechHidden()` 问现状，
 `apSpeechReveal()` 再唤起。
-| `imageGen` | 声明这个应用要出图（界面自己写出图入口） | 只是没声明；接口照旧可调，只是模板不带 |
 
-新建应用时那几个复选框、以及开发页中栏 ⚙「应用设置」→「应用能力」改的就是它；**改了只写 `app.json`
-的声明，入口页（`index.html`）一个字都不动** —— 你手改过的页面内容原样保留。听写条由宿主按
-`showDictate` 注入，改 `textInput` 会补 / 撤应用目录里的 `speech.js` / `speech.css`。
+**听写条细说（`showDictate`）** —— 由宿主注入，应用一行代码都不用写：
+
+- **两种转录模式**（与画布那枚话筒同源）：点条上的 🎤 听写或左下角那枚常驻浮动话筒，按
+  「关闭 → **持续转录** → **按键转录** → 关闭」循环。
+  - 持续转录：一直听，按「说完一句的停顿」（默认 1.5 秒，`apSpeechSilenceMs(ms)` 可调）**逐句**转写，
+    识别一句往结果小窗追加一行，句长不封顶。
+  - 按键转录：**按住 F1 说话、松开立刻识别**这一句（不等停顿判据，语音指令要低延迟）；判键走 `ev.code`，
+    Ctrl / Alt / Meta 组合键放行；浮动话筒在这一态按住也能说。
+- 快捷键：**F2** = 持续转录的开 / 关（按键转录态下按它回关闭），`Esc` 与「收起」停止。
+- **会落字**：每句定稿**原位写进采集开始时焦点所在的那个输入框**（`input` / `textarea` / `contenteditable`，
+  原生 `execCommand("insertText")` + 行尾空格；焦点跑了先挂住、回来补写）。**应用自己监听
+  `"mtnode-dictate"` 又自己写一遍就会写两遍** —— 那就调 `apSpeechInsert(false)` 关掉宿主的自动落字。
+- **✨ AI 增强**（话筒右侧那枚 Toggle，默认关）：走 `appHost.textGenStream`（不带 `model` = 跟随本应用
+  选择 / 宿主默认，`thinking:"off"`，不传 `maxTokens`）做同音字 / 标点 / 断句 / 语气词润色；失败 / 超时 /
+  没配模型时**原样交原始识别**（绝不吞话）。原始识别仍可查（结果小窗「看原文 / 看增强」、`apSpeechRawLast()`）。
+- 结果小窗：全文 + 一键复制；应用也可以取 `apSpeechLast()`（全篇；没识别过是空串）或监听
+  `window` 的 `"mtnode-dictate"` 事件（每句定稿各发一次，`detail.text` 与前者同一份全文）。
+  程序化入口：`apSpeechToggle()` / `apSpeechMode()` / `apSpeechSetMode("off"|"live"|"ptt")` / `apSpeechCycle()` /
+  `apSpeechLive()` / `apSpeechEnhance(on?)` / `apSpeechInsert(on?)` / `apSpeechPtt(on)` /
+  `apSpeechSilenceMs(ms)` / `apSpeechZone()`。
+- ⚠ **与本脚手架自带的 `speech.js` 不是同一条**：`speech.js` 是**一次性录制**（点一下录一段再识别，
+  只进结果小窗、不落字），宿主注入的那条是**两种持续模式 + 落字 + AI 增强**。两者互不影响，
+  声明了 `showDictate` 的应用窗口中会同时存在（各自独立的结果小窗）。
+
+**作者标签（`showAuthor`）细说** —— 它也是宿主注入的，应用不用写代码：
+
+- 位置：应用窗口**左下角**（`position:fixed`，不占应用自己的布局）；平时 `opacity:0` 隐形，
+  **hover / 键盘聚焦**才浮现（不写 `display:none`：那样连 hover 都触发不了）。
+- 文案：`@作者 - v版本`（如 `@ms2308 - v1.0.1`）。**名字与版本缺任一个就整枚不出现**：
+  名字 = `app.json` 的 `author` → 当前登录账号昵称（两级回落，系统占位名 `u_xxxxxxxx` 不算名字）；
+  版本 = `app.json` 的 `version`（空 / `0.0.0` 不算）。
+- 点击：弹**只读**「应用详情」—— 图标 / 标题 / 应用 id / 作者 / 版本 / 说明 / 标签 / 数据目录；
+  出口只有面板上的 ✕ 与 `Esc`（浮层不做「点外部即关」，与本仓其它浮层同一纪律）。
+  （本轮：面板底部原来那行「这枚标签由宿主注入…关掉它：…」的说明文字已删。）
+- 配色：只取应用自己主题的 `--bg` / `--fg` / `--muted` / `--accent` / `--line`（缺变量退回页面上算出来的
+  实际颜色），深浅底的应用都不会被塞进一块突兀的方块；左下角那枚听写浮动话筒与它共用一个角落列
+  （`#mtnode-dictate-zone`），标签按容器顶边排在**整列之上**，两者不压盖。
+- 要自己显示作者 / 版本（比如「关于」面板）：`await AppHost.authorTag()` →
+  `{ ok, name, version, id, title, description, tags, icon, dataDir }`（`icon` 是宿主读好的 data URL；
+  名字版本凑不齐回 `{ ok:false, code:"no_author_tag" }`）。
+
+新建应用时那几位复选框、以及开发页中栏 ⚙「应用设置」→「应用能力」改的就是它；**改了只写 `app.json`
+的声明，入口页（`index.html`）一个字都不动** —— 你手改过的页面内容原样保留。听写条与作者标签都由宿主
+按声明注入，改 `textInput` 会补 / 撤应用目录里的 `speech.js` / `speech.css`。
 **复制脚手架时按这份声明决定要不要带 `speech.js` / `speech.css`。**
 
 ## 语音转写（本机内置，官方本地 SenseVoice）

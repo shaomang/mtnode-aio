@@ -56,6 +56,49 @@
     "断句停顿": "Pause cutoff",
     "语音输入已关闭": "Voice input is off",
     "语音输入（全局）": "Voice input (global)",
+    /* ── AI 增强（话筒右侧那枚 ✨ 开关，renderer/app-voice.js）──
+       文案出现在：开关 tooltip、右键快捷菜单那一行、设置 · 语音输入小节、浮窗说明与 toast。 */
+    "AI 增强": "AI enhance",
+    "AI 增强已开启": "AI enhance on",
+    "AI 增强已关闭": "AI enhance off",
+    "AI 增强已开启：每句识别完先用默认文本模型润色一次（无思考），再交付这一句":
+      "AI enhance is on: each sentence is polished once by the default text model (thinking off) before it is delivered",
+    "AI 增强已关闭：点一下打开（用默认文本模型 + 无思考，逐句润色识别结果）":
+      "AI enhance is off - click to polish each sentence with the default text model (thinking off)",
+    "AI 增强不可用：宿主没挂上文本生成通道（apiCallTextStream / 服务商清单缺失）":
+      "AI enhance unavailable: the host exposes no text-generation channel (apiCallTextStream / provider list missing)",
+    "AI 增强：还没配文本模型 —— 先到「设置 · 提供商」加一家文本服务商，增强才能生效（现在识别结果一律按原始识别交付）":
+      "AI enhance: no text model configured yet - add a text provider in Settings > Providers first; until then raw recognition is delivered",
+    "AI 增强：每一句识别完先用默认文本模型（无思考）润色一次（同音字 / 标点 / 断句 / 语气词），再交付这一句；调用失败、8 秒超时、没配模型或结果离谱时一律保留原始识别并说明原因。":
+      "AI enhance: each recognized sentence is polished once by the default text model (thinking off) - homophones, punctuation, sentence breaks, filler words - and then delivered; on failure, an 8s timeout, a missing model or a runaway result the raw recognition is kept and the reason is shown.",
+    "当前默认文本模型：": "Current default text model: ",
+    "（未配置文本服务商）": " (no text provider configured)",
+    "用什么：": "Using: ",
+    "（默认文本模型，可在「设置 · 语音输入」里关掉）":
+      " (default text model; turn it off in Settings > Voice input)",
+    "开": "On",
+    "关": "Off",
+    "正在 AI 增强…": "AI enhancing…",
+    "已 AI 增强": "AI enhanced",
+    "AI 增强：这一句无需修改": "AI enhance: nothing to fix in this sentence",
+    "AI 增强没生效，已交原始识别：": "AI enhance did not apply - raw recognition delivered: ",
+    "AI 增强忙，这一句交原始识别": "AI enhance is busy - this sentence uses the raw recognition",
+    "AI 增强没落字：输入框换了，已保留原始识别":
+      "AI enhance skipped: the input box changed, raw recognition kept",
+    "AI 增强没落字：原文已改动，已保留原样":
+      "AI enhance skipped: the raw text was edited, it is left as it is",
+    "AI 增强没落字：替换失败，已保留原始识别":
+      "AI enhance skipped: replacing failed, raw recognition kept",
+    "增强超时（8 秒）": "enhance timed out (8s)",
+    "增强结果不可用": "the enhanced text is unusable",
+    "增强失败": "enhance failed",
+    "没配文本模型": "no text model configured",
+    "模型调用失败": "model call failed",
+    "宿主未提供文本生成能力": "the host exposes no text generation",
+    "这一句是空的": "this sentence is empty",
+    "上文：": "Context: ",
+    "输入框已有：": "Already in the box: ",
+    "这一句：": "This line: ",
     /* 设置小节的说明：口径改成「停顿才提交」后，这句话必须跟着改 ——
        「说话即写入」会让人以为边说边出字（现在是一句说完才落字）。旧那句话的词条
        随改文一并删掉：留着就是一条永不命中的死条目。 */
@@ -9399,15 +9442,18 @@
         "What this app does for the user (still to be filled in).",
       "入口 index.html + app.json；宿主能力走 window.appHost（文本 / 图像生成、本机存储、账号摘要），模型与工具留在主进程与画布一侧。":
         "Entry point index.html + app.json; host capabilities go through window.appHost (text / image generation, local storage, account summary), while models and tools stay on the main-process and canvas side.",
-      /* ── 应用能力位（app.json 的 capabilities：textInput / showDictate / imageGen）────
+      /* ── 应用能力位（app.json 的 capabilities：textInput / showDictate / showAuthor / imageGen）────
          「应用设置」窗里的能力位复选框与卡片小标都用这一组词条（新建浮层已不再问能力）。 */
       "能力": "Capabilities",
       "需要文字输入": "Needs text input",
       "脚手架会带上语音听写模块（本机语音识别，首次用会自动下载模型）；要不要在窗口底部显示听写条，看下面那一项":
         "The scaffold ships the local dictation module (speech recognition on this machine; the model downloads on first use). Whether the bar shows at the bottom of the window is the next option",
       "显示听写条": "Show dictate bar",
-      "在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）":
-        "Shows the host-injected dictate bar (🎤 Dictate / 🎧 Audio → text) at the bottom of the app window; on means visible by default, with a “Hide” button that lasts for this window only",
+      "在应用窗口底部显示宿主注入的听写条（🎤 听写）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）":
+        "Shows the host-injected dictate bar (🎤 Dictate) at the bottom of the app window; on means visible by default, with a “Hide” button that lasts for this window only",
+      "作者标签": "Author tag",
+      "在应用窗口左下角显示作者标签：平时隐藏，鼠标移上去显示「@作者 - v版本」，点一下看应用详情（作者取 app.json 的 author，没写就用当前登录账号昵称）":
+        "Shows an author tag in the app window's bottom-left corner: hidden until you hover it, then “@author - vX.Y.Z”; click it for app details (the author comes from app.json's author, falling back to the signed-in account's nickname)",
       "需要图像生成": "Needs image generation",
       "用 MTNode 已配好的图像能力出图：云端图像服务商或本机 SenseNova（没配就用不了，界面会写清去哪配）":
         "Draws with the image backends already configured in MTNode: a cloud image provider or the local SenseNova (without one it simply cannot draw, and the UI says where to configure it)",
@@ -9417,8 +9463,8 @@
       "能力没有变化": "Capabilities unchanged",
       /* 本轮改口径：能力位只写 app.json 的声明，入口页一个字都不动（旧的
          「重写入口页」那三句词条随实现一起删掉了） */
-      "已更新能力位（入口页未改动，听写条下次打开应用窗口生效）":
-        "Capabilities updated (the entry page was not touched; the dictate bar applies the next time the app window opens)",
+      "已更新能力位（入口页未改动，听写条 / 作者标签下次打开应用窗口生效）":
+        "Capabilities updated (the entry page was not touched; the dictate bar / author tag applies the next time the app window opens)",
       "能力位只写 app.json 的声明：入口页（index.html）一个字都不动，你手改过的页面内容原样保留；听写条由宿主按声明注入，语音模块文件按需补撤。":
         "Capabilities only write the declaration in app.json: the entry page (index.html) is left byte-for-byte alone, so your hand edits stay. The host injects the dictate bar from that declaration, and the speech module files are added or removed as needed.",
       "这个应用声明的能力（在开发页「预览」条上的「应用设置」里改）":
@@ -10042,6 +10088,10 @@
     "充值入账": "Top-up credit",
     "退款": "Refund",
     "人工调账": "Manual adjustment",
+    /* 中转扣费（本次需求）：每一笔扣费都会写一条流水，相邻连续的会折成一条折叠行 */
+    "中转扣费": "Relay charge",
+    "中转扣费 {n} 笔": "Relay charges × {n}",
+    "点一下展开 / 收起逐笔明细": "Click to expand / collapse the itemised list",
     "充值到账后可在余额中查看；如长时间未到账，请用「我已完成支付」核对或联系管理员。":
       "Top-ups show up in your balance once credited; if it takes too long, use “I have paid” to re-check or contact the administrator.",
     /* 服务端错误码文案（store-saas 的 code → 用户可读） */
@@ -12389,8 +12439,15 @@
     "刷新失败：": "Refresh failed: ",
     "余额不足": "Insufficient balance",
     "余额不足，充值后刷新": "Insufficient balance — top up, then refresh",
+    /* 余额 > 0 但不够一张图：只有图像停，文本照旧（判据见 app-model-kind.js 的 relayImageShort） */
+    "余额不足以出图（一张需 ¥{amount}）：文本仍可用":
+      "Balance too low to generate an image (¥{amount} per image): text models still work",
     "MTNode 中转服务余额不足：请充值后在「设置 · 提供商」里点「刷新」":
       "MTNode relay balance is insufficient: top up, then click “Refresh” under Settings · Providers",
+    /* 主进程图像闸（main.js 的 checkRelayImageQuota）：余额 > 0 但不够一张图 ——
+       只拦图像调用，文本照旧（与云端按应付额 402 同一口径）。 */
+    "MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值后在「设置 · 提供商」里点「刷新」":
+      "MTNode relay balance is too low to generate an image ({amount} CNY per image): top up, then click “Refresh” under Settings · Providers",
     "MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新":
       "The MTNode relay needs a signed-in account: sign in first, then refresh under Settings · Providers",
     "MTNode 中转服务余额不足：去「设置 · 提供商」充值并点「刷新」，恢复后本节点照原配置运行。":

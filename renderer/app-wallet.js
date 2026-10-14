@@ -217,6 +217,9 @@
     order: null,
     orders: [],
     ledger: [],
+    /* 折叠行的展开状态（key = 该缀里最新一条流水的 id）：重绘 / 轮询刷新都保留，
+       用户展开看逐笔时不会被下一次刷新收回去。 */
+    ledgerOpen: {},
     gen: 0,
     timer: 0,
     busy: false,
@@ -312,7 +315,9 @@
   }
 
   function loadSummary() {
-    return api("GET", "/api/wallet/summary?limit=10")
+    /* limit=20：每笔中转扣费都会写一条流水，摘要太短会全是扣费（本次需求）。
+       客户端只在显示时把相邻连续的 relay 行折叠成一条，原始条数仍是 20。 */
+    return api("GET", "/api/wallet/summary?limit=20")
       .then(function (r) {
         if (!r || !r.ok || !r.data) throw r;
         /* 这一次现拉成功了：清掉上一次的失败标记（余额行那条提示跟着撤掉） */
@@ -735,6 +740,25 @@
     }
   }
 
+  /* 流水折叠（纯函数，便于冒烟真跑）：时间倒序的流水数组 → 显示行数组。
+     · relay 行：**相邻连续**的合成一组 { kind:"relay", key, items }（被打赏 / 充值隔开就断开）；
+     · 其余类型：各自一行 { kind:"one", e }（顺序原样保留）。
+     key 用该组最新那条的流水 id：展开状态按 key 记，刷新 / 轮询不会把展开收回去。 */
+  function foldLedgerRows(list) {
+    var rows = [];
+    (Array.isArray(list) ? list : []).forEach(function (e) {
+      if (!e || typeof e !== "object") return;
+      var last = rows[rows.length - 1];
+      if (e.type === "relay") {
+        if (last && last.kind === "relay") last.items.push(e);
+        else rows.push({ kind: "relay", key: e.id, items: [e] });
+        return;
+      }
+      rows.push({ kind: "one", key: e.id, e: e });
+    });
+    return rows;
+  }
+
   function paintHistory() {
     if (!dialogAlive()) return;
     var box = ST.root.querySelector("#wlHistory");
@@ -785,20 +809,92 @@
         h2.appendChild(el("th", "", h));
       });
       t2.appendChild(h2);
-      var TY = { recharge: T("充值入账"), refund: T("退款"), adjust: T("人工调账"), mismatch: T("金额不符") };
-      ST.ledger.slice(0, 8).forEach(function (e) {
-        var tr = el("tr");
-        tr.appendChild(el("td", "", tsText(e.at)));
-        tr.appendChild(el("td", "", TY[e.type] || e.type));
-        /* 负数要显示成 -500 而不是 500-：符号在数量外面才读得顺 */
-        var dv = Number(e.deltaYuan) || 0;
-        var d = el("td", "num " + (dv >= 0 ? "pos" : "neg"));
-        d.textContent = (dv >= 0 ? "+" : "-") + coinNum(coinsOfYuan(Math.abs(dv)));
-        tr.appendChild(d);
-        var afterTd = el("td", "num");
-        afterTd.appendChild(coinEl(coinsOfYuan(e.balanceAfterYuan), { size: "sm" }));
-        tr.appendChild(afterTd);
-        t2.appendChild(tr);
+      var TY = { recharge: T("充值入账"), refund: T("退款"), adjust: T("人工调账"), mismatch: T("金额不符"), relay: T("中转扣费") };
+      /* 流水金额 = 鲸圆币 4 位小数（不足最小位给「<0.0001」）：云端按 1e-8 元计费，
+         一笔小额扣费取整到整数币会显示成「0」（本次需求：不再取整）。 */
+      var flowText = function (yuan) {
+        return window.MtCoin && window.MtCoin.coinFlowTextOfYuan
+          ? window.MtCoin.coinFlowTextOfYuan(yuan)
+          : String(Math.round(coinsOfYuan(yuan)));
+      };
+      var coinFlowEl = function (yuan, cls) {
+        var sp = el("span", cls || "");
+        sp.textContent = flowText(yuan);
+        sp.appendChild(coinIconOf("sm"));
+        return sp;
+      };
+      /* 变动列带符号（+ / -）：符号在数量外面才读得顺；负数走 flowText 的取绝对值口径 */
+      var flowSigned = function (yuan) {
+        var n = Number(yuan) || 0;
+        return (n > 0 ? "+" : n < 0 ? "-" : "") + flowText(Math.abs(n));
+      };
+      var coinFlowSignedEl = function (yuan, cls) {
+        var sp = el("span", cls || "");
+        sp.textContent = flowSigned(yuan);
+        sp.appendChild(coinIconOf("sm"));
+        return sp;
+      };
+      var stamp = function (ms) {
+        var t = tsText(ms);
+        return t === "—" ? t : t.slice(11);
+      };
+      /* 相邻连续的 relay 行折成一条「中转扣费 N 笔 · 合计 X」：每笔扣费都会写一条流水
+         （服务端口径），不折叠的话 20 条摘要很快被小额扣费刷满，充值与退款就看不见了。
+         只合并**挨着**的那些（被打赏 / 充值隔开就断开），时间倒序里顺序即时间顺序。
+         折法抽成纯函数 foldLedgerRows（放在本文件底部、随 MtWallet 暴露），冒烟能真跑。 */
+      var rows = foldLedgerRows(ST.ledger.slice(0, 20));
+      if (!ST.ledgerOpen) ST.ledgerOpen = {};
+      /* 显示多少条：非 relay 行 + 折叠行（展开的行内逐笔另算，不占这 8 条） */
+      rows.slice(0, 8).forEach(function (r) {
+        if (r.kind === "one") {
+          var e = r.e;
+          var tr = el("tr");
+          tr.appendChild(el("td", "", tsText(e.at)));
+          tr.appendChild(el("td", "", TY[e.type] || e.type));
+          var dv = Number(e.deltaYuan) || 0;
+          tr.appendChild(coinFlowSignedEl(dv, "num " + (dv >= 0 ? "pos" : "neg")));
+          var afterTd = el("td", "num");
+          afterTd.appendChild(coinFlowEl(Number(e.balanceAfterYuan) || 0));
+          tr.appendChild(afterTd);
+          t2.appendChild(tr);
+          return;
+        }
+        var items = r.items;
+        var sum = items.reduce(function (s, x) {
+          return s + (Number(x.deltaYuan) || 0);
+        }, 0);
+        var newest = items[0];
+        var oldest = items[items.length - 1];
+        var open = !!ST.ledgerOpen[r.key];
+        var gtr = el("tr", "wl-fold" + (open ? " on" : ""));
+        gtr.title = T("点一下展开 / 收起逐笔明细");
+        var timeTd = el("td", "", tsText(newest.at) + (items.length > 1 ? " – " + stamp(oldest.at) : ""));
+        gtr.appendChild(timeTd);
+        /* 类型列：折叠行写「中转扣费 N 笔」，单条 relay 也走这里（N = 1），口径一致 */
+        gtr.appendChild(el("td", "", T("中转扣费 {n} 笔", { n: items.length })));
+        gtr.appendChild(coinFlowSignedEl(sum, "num " + (sum >= 0 ? "pos" : "neg")));
+        var gAfter = el("td", "num");
+        gAfter.appendChild(coinFlowEl(Number(newest.balanceAfterYuan) || 0));
+        gtr.appendChild(gAfter);
+        (function (key) {
+          gtr.addEventListener("click", function () {
+            ST.ledgerOpen[key] = !ST.ledgerOpen[key];
+            paintHistory();
+          });
+        })(r.key);
+        t2.appendChild(gtr);
+        if (!open) return;
+        items.forEach(function (e) {
+          var dv = Number(e.deltaYuan) || 0;
+          var xr = el("tr", "wl-fold-item");
+          xr.appendChild(el("td", "", tsText(e.at)));
+          xr.appendChild(el("td", "", TY[e.type] || e.type));
+          xr.appendChild(coinFlowSignedEl(dv, "num " + (dv >= 0 ? "pos" : "neg")));
+          var xAfter = el("td", "num");
+          xAfter.appendChild(coinFlowEl(Number(e.balanceAfterYuan) || 0));
+          xr.appendChild(xAfter);
+          t2.appendChild(xr);
+        });
       });
       box.appendChild(t2);
     }
@@ -1177,6 +1273,8 @@
     balanceCoinTextOf: balanceCoinTextOf,
     coinIcon: coinIconOf,
     relayWarnEl: relayWarnEl,
+    /* 流水折叠（纯函数）：冒烟在假 window 里真跑它，界面只读同一份实现 */
+    foldLedgerRows: foldLedgerRows,
     open: openWallet,
     refreshUser: refreshUser,
     state: function () {

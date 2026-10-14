@@ -248,6 +248,11 @@ const appHost = {
   /* 账号摘要（无 token）：{ ok, loggedIn, user, encryption } */
   account: () => ipcRenderer.invoke("apps:hostAccount"),
 
+  /* 本机清单摘要（作者 / 版本 / 说明 / 标签 / 图标 data URL / 数据目录）：宿主注入的
+     作者标签读它，应用自己想在别处显示「谁做的、哪一版」也可以调。没声明作者或不适用时
+     { ok:false }（调用方据此不显示，绝不编造作者）。 */
+  authorTag: () => ipcRenderer.invoke("apps:hostAuthorTag"),
+
   /* 关窗收尾钩子：cb 可以是 async（宿主等它跑完再关，上限 1.5s）。
      返回退订函数；不打这个钩子也能关，宿主到点自己关。 */
   onWillClose: (cb) => {
@@ -267,38 +272,43 @@ const appHost = {
 
 contextBridge.exposeInMainWorld("appHost", appHost);
 
-/* ── 宿主注入的 footer 语音听写条（需求：应用界面的 footer 也要能用内置 ASR）────────
+/* ── 宿主注入的应用窗口 UI（两条，同一套机制）─────────────────────────────────
+ * ① footer 语音听写条（需求：应用界面的 footer 也要能用内置 ASR）
+ * ② **左下角作者标签**（需求：平时隐藏、hover 出 `@作者 - v版本`、点击看应用详情）
  * 为什么由宿主注入、而不是等应用自己写：应用是**用户自己的页面**（下载来的只有一份
- * index.html，没人会回去改它），所以这条能力必须对任何应用都自动出现。
+ * index.html，没人会回去改它），所以这些能力必须对任何应用都自动出现。
  *
- * 注入方式：往页面主世界插一张 <script src="…/app-speech-ui.js">（渲染层模块，与本仓
+ * 注入方式：往页面主世界插一张 <script src="…/renderer/<模块>.js">（渲染层模块，与本仓
  * 主窗口共用同一份构建产物）。**不能**直接把 appHost 递给它：preload 与页面是两个 JS 世界，
- * contextBridge 暴露的对象过不了 world 边界。所以那条脚本自己去读 window.appHost（页面
+ * contextBridge 暴露的对象过不了 world 边界。所以那些脚本自己去读 window.appHost（页面
  * 世界里本来就有），并在挂载失败时等宿主派发的 "mtnode-apphost" 事件兜底。
  *
- * 纪律：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了显示听写条**（app.json
- * 的 capabilities.showDictate）」三条都满足时才注入 —— **没声明一律不注入**（宿主侧也就没有那条
- * 条）；声明了的应用注入进来是**默认可见**的（用户显式开了这一位），条尾的「收起」按钮只在本次
- * 窗口内藏它，下次打开窗口按声明重新出现（实现见 app-speech-ui.js 的 markShown / hide）。
- * 桥上的语音接口（pickAudio / transcribe …）始终在，应用自己写的语音 UI 照旧能用，能力位不是权限闸。 */
-let dictateAllowed = null; /* null = 还没问到；true / false = 主进程的答复 */
-function askDictateAllowed() {
-  if (dictateAllowed !== null) return Promise.resolve(dictateAllowed);
+ * 纪律（两条一模一样）：只在「DOM 就绪 + 页面世界真的拿到了 appHost + **这个应用声明了对应
+ * 能力位**（app.json 的 capabilities.showDictate / showAuthor）」三条都满足时才注入 ——
+ * **没声明一律不注入**（宿主侧也就没有那条 UI）；声明了的应用注入进来即生效（听写条默认可见，
+ * 作者标签平时隐藏、hover 才露）。桥上的接口始终在，能力位不是权限闸。
+ * 作者标签还多一道闸：清单里**名字与版本缺任一个**也不注入（authorTagOf 回 null）——
+ * 标签上要写的字凑不齐就不显示这枚标签，不写「未知作者」。 */
+const capAnswer = { at: 0, dict: null, auth: null }; /* 主进程对「这个应用声明了什么」的答复（只问一次） */
+function askCapabilities() {
+  if (capAnswer.at) return Promise.resolve(capAnswer);
+  const fallback = () => ({ dict: false, auth: null });
   return Promise.resolve(ipcRenderer.invoke("apps:hostCapabilities"))
     .then((r) => {
-      dictateAllowed = !!(r && r.ok && r.capabilities && r.capabilities.showDictate === true);
-      return dictateAllowed;
+      if (!r || !r.ok || !r.capabilities) return fallback();
+      capAnswer.at = Date.now();
+      capAnswer.dict = r.capabilities.showDictate === true;
+      /* author 只在主进程判定「名字 + 版本齐」时才带；老版主进程不带这一项 = 不注入 */
+      capAnswer.auth = r.author && typeof r.author === "object" ? r.author : null;
+      return capAnswer;
     })
-    .catch(() => {
-      dictateAllowed = false;
-      return false;
-    });
+    .catch(() => fallback());
 }
-function injectDictateBar() {
+function injectAppUiScript(fileName, marker) {
   try {
     const path = require("path");
     const url = require("url");
-    const file = path.join(__dirname, "renderer", "app-speech-ui.js");
+    const file = path.join(__dirname, "renderer", fileName);
     const lang = (() => {
       try {
         const m = /--mtnode-lang=([A-Za-z-]+)/.exec((process.argv || []).join(" "));
@@ -315,23 +325,32 @@ function injectDictateBar() {
     const tag = document.createElement("script");
     tag.src = url.pathToFileURL(file).href;
     tag.async = false;
-    tag.dataset.mtnode = "dictate";
+    tag.dataset.mtnode = marker;
     (document.head || document.documentElement).appendChild(tag);
   } catch (err) {
     try {
-      console.error("dictate bar inject failed:", err);
+      console.error(marker + " inject failed:", err);
     } catch {}
   }
 }
-/* 注入时机：DOM 就绪 → 先问主进程「这个应用声明要显示听写条没」→ 声明了才注入听写条。
-   问不到（老版主进程 / 非应用窗口）按「没声明」处理：宁可不注入，也不给默认应用硬塞语音。 */
-function maybeInjectDictateBar() {
-  askDictateAllowed().then((ok) => {
-    if (ok) injectDictateBar();
+/* 注入时机：DOM 就绪 → 一次性问主进程「这个应用声明了哪些窗口 UI」→ 声明了才注入。
+   问不到（老版主进程 / 非应用窗口）按「没声明」处理：宁可不注入，也不给默认应用硬塞 UI。
+   作者标签那一份数据顺手挂到 window.__mtnodeAuthorTag（同一世界，注入脚本直接读；
+   它自己也会读 window.appHost.__authorTag 兜底）—— 注入脚本与 preload 是两个世界，
+   事件 detail 里塞得进对象，但这份数据是**纯值**，挂在 window 上更省一次往返。 */
+function maybeInjectAppUi() {
+  askCapabilities().then((ans) => {
+    if (ans.auth) {
+      try {
+        window.__mtnodeAuthorTag = ans.auth;
+      } catch {}
+    }
+    if (ans.dict) injectAppUiScript("app-speech-ui.js", "dictate");
+    if (ans.auth) injectAppUiScript("app-author-ui.js", "author");
   });
 }
 if (typeof document !== "undefined") {
   if (document.readyState === "loading")
-    document.addEventListener("DOMContentLoaded", maybeInjectDictateBar, { once: true });
-  else maybeInjectDictateBar();
+    document.addEventListener("DOMContentLoaded", maybeInjectAppUi, { once: true });
+  else maybeInjectAppUi();
 }

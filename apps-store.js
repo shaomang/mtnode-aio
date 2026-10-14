@@ -5887,17 +5887,107 @@ function hostModelsPayload(e, arg) {
     defaultModel: fallback ? modelIdsOf(fallback)[0] || "" : "",
   };
 }
-/* 应用自报能力位（读 app.json 的 capabilities）：preload 的听写条注入闸门用它 ——
- * 只在声明了 showDictate 时才注入（能力位缺省 false = 不注入，宿主侧也就没有那条条；声明为真则
- * 注入进来即默认可见，收起按钮只藏本次窗口）。
+/* 应用自报能力位（读 app.json 的 capabilities）：preload 的**注入闸门**用它 ——
+ * 只有声明了 showDictate / showAuthor 才注入对应的宿主 UI（能力位缺省 false = 不注入；声明为真则
+ * 注入进来即生效）。
  * **不是权限闸**：桥上的语音 / 图像接口始终可调，这里只回答「这个应用声明的界面能力里有没有
- * 让他把听写条显示出来」。认不出应用回 ok:false。 */
+ * 让他把听写条 / 作者标签显示出来」。
+ * author（本机清单摘要，见 authorTagOf）：作者标签要显示的就是那几个字段 —— 一次 IPC 全给它，
+ * 免得注入脚本再问一趟；声明了 showAuthor 才带（没声明的应用连读盘都省了）。
+ * 认不出应用回 ok:false。 */
 function hostCapabilities(e, arg) {
   const own = senderAppDir(e, arg);
   if (!own) return bad(t("不是应用窗口"), "not_app");
   const man = manifestOf(own.dir || "", own.id) || {};
   const caps = normCapabilities(man.capabilities);
-  return { ok: true, id: own.id, capabilities: caps };
+  const out = { ok: true, id: own.id, capabilities: caps };
+  if (caps.showAuthor === true) out.author = authorTagOf(own.dir || "", own.id, man);
+  return out;
+}
+/* ═══════════ 作者标签（应用窗口左下角那枚宿主注入的小标签 · 本轮需求）═══════════
+ * 口径（用户共识，逐条落在这里，别再在别处各算一套）：
+ *   · 名字 = app.json 的 author → **当前登录账号昵称**（两级；昵称空才回落账号名，系统自动占位名
+ *     `u_xxxxxxxx` 不算名字 —— 与 renderer/app-apps.js 的 appsAuthorOf 同一口径，那边是云端三级，
+ *     本机这份刻意不联网）；两级都空 = 这枚标签**整枚不出现**（不写「未知作者」）。
+ *   · 版本 = app.json 的 version；名字与版本**缺任一个就整枚不出现**。
+ *   · 图标：目录里那张（app.json 的 icon，≤ MAX_AUTHOR_ICON_BYTES）读成 data URL —— 标签与详情
+ *     面板是注入进应用页的，file:// 页面里的相对路径不一定能加载，宿主直接给字节最稳（纯内存读，
+ *     不落盘）。读不到 / 过大 / 越界一律空串（详情面板跳过图标那一格，
+ *     **绝不因为图标读不到就不给标签**）。
+ *   · 数据目录：与 AppHost.dataDirGet() 同一处（appDataDirOf），给详情面板那一行用。
+ * 本函数只在闸门放行（showAuthor === true）时被调，所以读盘这步不会给没声明的应用添负担。 */
+const MAX_AUTHOR_ICON_BYTES = 512 * 1024;
+/* 系统自动占位账号名（`u_` + 4 字节十六进制）：与 renderer/app-apps.js 的 APPS_PLACEHOLDER_NAME_RE
+   同一条口径（那边另有服务端的 accountDisplayNameOf；这里只判本机看得到的那一份）。 */
+function isPlaceholderAccountName(name) {
+  return /^u_[0-9a-f]{6,24}$/i.test(String(name || "").trim());
+}
+function authorNameOf(man) {
+  const raw = String((man && man.author) || "").trim();
+  if (raw && !isPlaceholderAccountName(raw)) return raw;
+  try {
+    const st = authState() || {};
+    const u = publicUserOf(st.user) || {};
+    const nick = String(u.nickname || "").trim();
+    if (nick) return nick;
+    const name = String(u.username || "").trim();
+    return isPlaceholderAccountName(name) ? "" : name;
+  } catch (err) {
+    return "";
+  }
+}
+function authorIconDataUrl(dir, name) {
+  const rel = String(name == null ? "" : name).replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!rel || !dir) return "";
+  const abs = resolveInside(dir, rel);
+  if (!abs) return "";
+  try {
+    const st = fs.statSync(abs);
+    if (!st.isFile() || st.size <= 0 || st.size > MAX_AUTHOR_ICON_BYTES) return "";
+    const mime = PREVIEW_MIME[path.extname(abs).toLowerCase()] || "";
+    if (!/^image\//.test(mime)) return "";
+    return "data:" + mime + ";base64," + fs.readFileSync(abs).toString("base64");
+  } catch (err) {
+    return "";
+  }
+}
+/** 作者标签那一份数据（{name, version, id, title, description, tags, icon, dataDir}）；
+ *  name / version 缺任一个回 null（= 不注入，调用方据此判定）。
+ *  version 的判据带上 manifestOf 的兜底值 "0.0.0"：app.json 里版本为空时清单回的就是它，
+ *  那不是真版本号 —— 标签上写「v0.0.0」等于编一个版本，宁可整枚不显示。 */
+function authorTagOf(dir, id, man) {
+  const m = man || manifestOf(dir || "", id) || {};
+  const name = authorNameOf(m);
+  const version = String(m.version || "").trim();
+  if (!name || !version || version === "0.0.0") return null;
+  const aid = String(m.id || id || "");
+  return {
+    name: name,
+    version: version,
+    id: aid,
+    /* title 原样可能是字符串，也可能是 {zh,en}（app.json 两种都收）：走 manifestTitle 同一口径 */
+    title: manifestTitle(m, String(m.name || aid)),
+    description: String(m.description || ""),
+    tags: (Array.isArray(m.tags) ? m.tags : []).map(String).filter(Boolean),
+    icon: authorIconDataUrl(dir, m.icon),
+    dataDir: (() => {
+      try {
+        return String(appDataDirOf(aid, diskKindOf(aid)) || "");
+      } catch (err) {
+        return "";
+      }
+    })(),
+  };
+}
+/* apps:hostAuthorTag：**不看能力位** —— 那一位只管「宿主注不注入左下角那枚标签」，
+ * 桥上的接口照旧随时可调（与语音 / 图像同一条纪律：能力位是界面声明，不是权限闸）。
+ * 认不出应用 / 名字版本凑不齐 → { ok:false, code:"no_author_tag" }（调用方不显示，不编造）。 */
+function hostAuthorTag(e, arg) {
+  const own = senderAppDir(e, arg);
+  if (!own) return bad(t("不是应用窗口"), "not_app");
+  const info = authorTagOf(own.dir || "", own.id, null);
+  if (!info) return { ok: false, code: "no_author_tag", error: "no_author_tag" };
+  return Object.assign({ ok: true }, info);
 }
 function hostModelGet(e, arg) {
   const own = senderAppDir(e, arg);
@@ -7585,8 +7675,11 @@ function registerAppsIpc(opts) {
   /* 模型继承（列清单 / 读选择 / 改选择）：应用窗口不能在已配置清单之外挑模型，
      服务商与 Key 一律不回传（见 hostModelsPayload 一节）。 */
   ipcMain.handle("apps:hostModels", guard((e) => hostModelsPayload(e)));
-  /* 应用自报能力位：preload 据此决定要不要注入听写条（没声明 = 不注入） */
+  /* 应用自报能力位：preload 据此决定要不要注入听写条 / 作者标签（没声明 = 不注入） */
   ipcMain.handle("apps:hostCapabilities", guard((e, arg) => hostCapabilities(e, arg)));
+  /* 作者标签那一份清单摘要（作者 / 版本 / 说明 / 标签 / 图标 / 数据目录）：
+     与 apps:hostCapabilities 里的 author 同一份实现（hostAuthorTagOf），页面自己也能调。 */
+  ipcMain.handle("apps:hostAuthorTag", guard((e, arg) => hostAuthorTag(e, arg)));
   ipcMain.handle("apps:hostModel", guard((e, arg) => hostModelGet(e, arg)));
   ipcMain.handle("apps:hostSetModel", guard((e, arg) => hostModelSet(e, arg)));
   /* 宿主选图（多模态输入里的「选一张本机图」）：只回路径，读盘 / 缩放留在主进程 */

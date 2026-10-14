@@ -568,8 +568,9 @@ function publicUser(u) {
     likesReceived: u.likesReceived || 0,
     // 余额（元，8 位小数 = 1e-8 元）：客户端只对充值白名单账号展示，但字段一律随本人快照下发，
     // 避免「服务端有余额、客户端要再打一次接口」。他人摘要走 publicTemplate/publicSkill，不含此字段。
-    // 内部存储仍是整数分（balanceCents），只在出接口时换算 —— 对外不出现「分」。
-    balanceYuan: yuanOfCents(Number(u.balanceCents) || 0),
+    // 内部存储仍是整数分（balanceCents）+ 中转扣费留下的亚分零头（relaySubCents），只在出接口时换算 ——
+    // **对外只有一个余额口径 = 可用总额**（totalCentsOf，含零头）：与钱包摘要同一份，别在这里只算整数分。
+    balanceYuan: yuanOfCents(totalCentsOf(u)),
     createdAt: u.createdAt,
     isAdmin: isAdmin(u),
   };
@@ -6039,6 +6040,10 @@ async function handle(req, res) {
       balanceYuan: totalYuan,
       totalYuan: totalYuan,
       models: models,
+      /* 一张图的最低门槛（元，见 relay.mjs 的 minImageYuan）：客户端据此在**发请求前**
+         判断「余额 > 0 但不够一张图」，把图像模型置灰并提示充值（余额为 0 时清单本来就空）。
+         0 = 没有可用的图像模型，客户端不用拦。 */
+      minImageYuan: relay.admin.minImageYuan(),
       /* 中转计费的两半（客户端本地「中转按币」计价要与云端同源，见 relay.mjs 的
          textCostYuan / isPeak）：models[].price = 逐模型真实价目；peaks = 豁免高峰的
          节假日日期；coinYuan = 鲸圆币汇率（1 币 = ¥0.02）；yuanPrecision = 元的小数位。
@@ -8539,7 +8544,7 @@ async function handle(req, res) {
       // 余额不足额外带上当前余额（客户端据此决定是否拉起充值窗）。
       const code = r.code === "TIP_TARGET_NOT_FOUND" ? 404 : 400;
       const payload = { ok: false, code: r.code, error: r.error };
-      if (r.code === "BALANCE_INSUFFICIENT") payload.balanceYuan = yuanOfCents(Number(user.balanceCents) || 0);
+      if (r.code === "BALANCE_INSUFFICIENT") payload.balanceYuan = yuanOfCents(totalCentsOf(user));
       return send(res, code, payload);
     }
     /* 打的是应用：静态目录条目里也带着公开打赏汇总（见 appCatalogDoc），这一次变更必须跟着落盘，
@@ -8850,7 +8855,7 @@ async function handle(req, res) {
       tradeStatus: r.tradeStatus || "",
       code: r.code || "",
       order: wallet.publicOrder(order),
-      balanceYuan: yuanOfCents(wallet.balanceOf(user)),
+      balanceYuan: yuanOfCents(totalCentsOf(user)),
     });
   }
 
@@ -9049,8 +9054,7 @@ async function handle(req, res) {
     const order = wallet.getOrder(decodeURIComponent(adminOrderR[1]));
     if (!order) return send(res, 404, { ok: false, code: "ORDER_NOT_FOUND", error: "订单不存在" });
     const entries = wallet
-      .listLedger({ limit: 200 })
-      .filter((e) => e.orderId === order.id)
+      .listLedger({ orderId: order.id, limit: 200 })
       .map((e) => wallet.adminLedger(e));
     return send(res, 200, { ok: true, order: wallet.adminOrder(order), ledger: entries });
   }
@@ -9147,7 +9151,7 @@ async function handle(req, res) {
       order: wallet.adminOrder(r.order),
       ledger: wallet.adminLedger(r.ledger),
       fundChange: ar.fundChange,
-      balanceYuan: yuanOfCents(wallet.balanceOf(db.users.find((u) => u.id === r.order.userId) || {})),
+      balanceYuan: yuanOfCents(totalCentsOf(db.users.find((u) => u.id === r.order.userId) || {})),
     });
   }
 
@@ -9182,7 +9186,7 @@ async function handle(req, res) {
         phone: u.phone ? maskPhone(u.phone) : "",
         wechatBound: !!u.wechatUnionId,
         hasPassword: !!u.pass,
-        balanceYuan: yuanOfCents(wallet.balanceOf(u)),
+        balanceYuan: yuanOfCents(totalCentsOf(u)),
         isAdmin: isAdmin(u),
         adminEligible: adminEligible(u),
         createdAt: u.createdAt,
@@ -9312,23 +9316,38 @@ async function handle(req, res) {
       "[admin] 调账 " + (target.username || target.id) + " " + yuanOfCents(r.ledger.deltaCents) + " 元 by " +
         (a.user.username || a.user.id) + "：" + r.ledger.note,
     );
-    const out = { ok: true, balanceYuan: yuanOfCents(r.balanceCents), ledger: wallet.adminLedger(r.ledger) };
+    const out = { ok: true, balanceYuan: yuanOfCents(totalCentsOf(target)), ledger: wallet.adminLedger(r.ledger) };
     // 调的是自己 → 顺带回最新账号摘要，客户端 / 管理页立即同步
     if (target.id === a.user.id) out.user = publicUser(target);
     return send(res, 200, out);
   }
 
+  /* 管理台「流水」页的时间窗口（本次需求：每笔中转扣费都会写一条流水，页面默认只看近 30 天）。
+     档位与大页「调用流水」同一套（今日 / 近 7 天 / 近 30 天 / 全部），起点按**服务器本地时区的自然日**；
+     窗口只影响列表与 CSV 导出的范围，不碰任何记账、金额与保留策略（账本一条不删）。 */
+  const LEDGER_WINDOWS = [["today", "今日", 0], ["7d", "近 7 天", 6], ["30d", "近 30 天", 29]];
+  function ledgerWindowOf(key) {
+    const k = String(key || "").trim();
+    if (k === "all") return { key: "all", from: 0 };
+    const hit = LEDGER_WINDOWS.find((w) => w[0] === k) || LEDGER_WINDOWS[2]; // 缺省 / 非法值一律回落到近 30 天
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return { key: hit[0], from: d.getTime() - hit[2] * 86400000 };
+  }
+
   if (method === "GET" && p === "/api/admin/ledger") {
     const a = requireAdmin(req, res);
     if (!a) return;
+    const win = ledgerWindowOf(url.searchParams.get("window"));
     const items = wallet
       .listLedger({
         userId: url.searchParams.get("userId") || "",
         type: url.searchParams.get("type") || "",
         limit: Number(url.searchParams.get("limit")) || 50,
+        since: win.from,
       })
       .map((e) => wallet.adminLedger(e));
-    return send(res, 200, { ok: true, items });
+    return send(res, 200, { ok: true, window: win.key, from: win.from, windows: LEDGER_WINDOWS.map((w) => ({ key: w[0], label: w[1] })), items });
   }
 
   /* ==========================================================================
@@ -9441,7 +9460,13 @@ async function handle(req, res) {
     const raw = String(url.searchParams.get("kind") || "orders");
     const kind = raw === "ledger" || raw === "tips" ? raw : "orders";
     // tips 走 tips.mjs 自己的 CSV 出口（列含打赏对象 / 撤销理由），其余仍由 wallet 出。
-    const buf = Buffer.from(kind === "tips" ? plans.csvTips() : wallet.csv(kind), "utf8");
+    // 流水导出跟随管理台当前的窗口（ledgerWindowOf，缺省近 30 天）——订单 / 打赏没有窗口概念，照旧全量。
+    const buf = Buffer.from(
+      kind === "tips"
+        ? plans.csvTips()
+        : wallet.csv(kind, kind === "ledger" ? { since: ledgerWindowOf(url.searchParams.get("window")).from } : undefined),
+      "utf8",
+    );
     const name = "mtnode-" + kind + "-" + new Date().toISOString().slice(0, 10) + ".csv";
     return sendBin(res, 200, buf, "text/csv; charset=utf-8", {
       "Content-Disposition": 'attachment; filename="' + name + '"',

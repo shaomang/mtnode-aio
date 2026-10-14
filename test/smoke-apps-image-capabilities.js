@@ -513,9 +513,9 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   ok(store.capabilityOn({ textInput: true }, "textInput") === true && store.capabilityOn(null, "textInput") === false, "capabilityOn：没声明 = 关");
   ok(store.capabilityOn({ showDictate: true }, "showDictate") === true, "capabilityOn 认新位 showDictate（宿主注入闸门只看它）");
   ok(
-    JSON.stringify(store.capabilityBadges({ textInput: true, showDictate: true, imageGen: true }, "zh")) ===
-      JSON.stringify(["文字输入", "显示听写条", "图像生成"]),
-    "卡片小标：只列已声明为真的能力（顺序固定）",
+    JSON.stringify(store.capabilityBadges({ textInput: true, showDictate: true, showAuthor: true, imageGen: true }, "zh")) ===
+      JSON.stringify(["文字输入", "显示听写条", "作者标签", "图像生成"]),
+    "卡片小标：只列已声明为真的能力（顺序固定，作者标签在显示听写条之后）",
   );
   ok(
     store.capabilityBadges({ textInput: true }, "en").join(",") === "Text input",
@@ -544,6 +544,11 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
     DICT.indexOf("MTNDictate") > 0 && DICT.indexOf("transcribeWav") > 0 && DICT.indexOf("pickAudio") > 0 && DICT.indexOf("mtnode-dictate") > 0,
     "templates/app-default/dict.js 作为参考实现留在仓里（走应用桥的 transcribeWav / pickAudio，事件名不变）",
   );
+  /* 本轮需求：参考实现里那枚「🎧 音频转文字」按钮与它的点击路径也一并摘掉（纯接口 file() 仍在） */
+  ok(
+    DICT.indexOf('data-act="file"') < 0 && DICT.indexOf("🎧") < 0 && DICT.indexOf("btnFile") < 0,
+    "参考实现里不再有「音频转文字」按钮（只留 🎤 听写）",
+  );
   const STORE_SRC7 = read("apps-store.js");
   ok(
     STORE_SRC7.indexOf("dictScriptTag") < 0 && STORE_SRC7.indexOf("DICT_JS_TPL") < 0,
@@ -565,7 +570,10 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   /* ════════════════ [8] 宿主注入闸门与桥的接口面 ════════════════ */
   console.log("[8] 宿主注入闸门：preload 先问能力位；桥上的接口始终保留");
   const PRE_APP = read("preload-app.js");
-  ok(PRE_APP.indexOf("apps:hostCapabilities") > 0 && PRE_APP.indexOf("maybeInjectDictateBar") > 0, "注入前先问 apps:hostCapabilities（问不到 = 按没声明处理）");
+  ok(
+    PRE_APP.indexOf("apps:hostCapabilities") > 0 && PRE_APP.indexOf("maybeInjectAppUi") > 0,
+    "注入前先问 apps:hostCapabilities（问不到 = 按没声明处理；作者标签与听写条同一个答复）",
+  );
   ok(
     PRE_APP.indexOf("capabilities.showDictate === true") > 0,
     "注入闸门看的是 showDictate（默认 false = 默认不注入听写条）",
@@ -627,7 +635,7 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
     "新建的应用入口页里没有听写 UI（听写条由宿主按声明注入，页面不掺和）",
   );
   const capGet = store.appCapabilitiesGet({ id: "cap-smoke" });
-  ok(capGet.ok === true && capGet.list.length === 3 && capGet.list[0].on === true, "appCapabilitiesGet 回能力位 + 给界面用的清单（三项）");
+  ok(capGet.ok === true && capGet.list.length === 4 && capGet.list[0].on === true, "appCapabilitiesGet 回能力位 + 给界面用的清单（四项，含本轮新增的作者标签）");
   /* 本轮口径的硬判据：改能力位**不动入口页**。
      先把入口页改写成「手写页面」（页面上留一句只有用户会写的内容），再连着切几次能力位，
      逐字节比对必须完全一致 —— 旧实现这里会把整页重写成模板。 */
@@ -730,17 +738,19 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   ok(
     FLOW.indexOf("appsCapabilityChecks") > 0 &&
       FLOW.indexOf("capBox") < 0 &&
-      FLOW.indexOf("能力默认全开（文字输入 / 听写条 / 图像生成）") > 0 &&
-      FLOW.indexOf("textInput: true, showDictate: true, imageGen: true") > 0,
+      FLOW.indexOf("能力默认全开（文字输入 / 听写条 / 作者标签 / 图像生成）") > 0 &&
+      FLOW.indexOf("textInput: true, showDictate: true, showAuthor: true, imageGen: true") > 0,
     "新建应用浮层不再问能力（复选框那一节已删）：说明句写明默认全开",
   );
   ok(
-    FLOW.indexOf('id: "showDictate"') > 0 && FLOW.indexOf('I18n.t("显示听写条")') > 0,
-    "能力复选框三行都在（含「显示听写条」），只是入口搬进「应用设置」窗",
+    FLOW.indexOf('id: "showDictate"') > 0 &&
+      FLOW.indexOf('id: "showAuthor"') > 0 &&
+      FLOW.indexOf('I18n.t("显示听写条")') > 0,
+    "能力复选框四行都在（含「显示听写条」与「作者标签」），只是入口搬进「应用设置」窗",
   );
   ok(
-    FLOW.indexOf("textInput: true, showDictate: true, imageGen: true }") > 0,
-    "创建调用的能力位缺省 = 三位全开（老调用方不传时也全开）",
+    FLOW.indexOf("textInput: true, showDictate: true, showAuthor: true, imageGen: true }") > 0,
+    "创建调用的能力位缺省 = 四位全开（老调用方不传时也全开，含作者标签）",
   );
   ok(
     FLOW.indexOf("async function appCapabilitiesDialog(") > 0 &&
@@ -775,8 +785,11 @@ if (!appX || appX.ok !== true || !appOther || appOther.ok !== true) {
   ok(CSS.indexOf(".apps-set-caprow") > 0, "样式补齐：「应用设置」窗里那一格能力位（复选框组 + 保存按钮）");
   const I18N = read("renderer/i18n.js");
   ok(
-    I18N.indexOf('"需要文字输入": "Needs text input"') > 0 && I18N.indexOf('"需要图像生成": "Needs image generation"') > 0,
-    "中英词条齐备（能力位那两句）",
+    I18N.indexOf('"需要文字输入": "Needs text input"') > 0 &&
+      I18N.indexOf('"需要图像生成": "Needs image generation"') > 0 &&
+      I18N.indexOf('"作者标签": "Author tag"') > 0 &&
+      I18N.indexOf('"显示听写条": "Show dictate bar"') > 0,
+    "中英词条齐备（能力位那几句，含本轮新增的作者标签）",
   );
   const SCAF = read("templates/app-scaffold/apphost.js");
   ok(SCAF.indexOf("imageModels") > 0 && SCAF.indexOf("cancelImage") > 0 && SCAF.indexOf("async function image(") > 0, "脚手架 apphost.js 封好 imageModels / image / cancelImage");

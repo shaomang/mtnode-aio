@@ -1005,6 +1005,7 @@ async function main() {
     "asrMic",
     "asrPrepare",
     "asrStatus",
+    "authorTag",
     "close",
     "dataDirGet",
     "dataDirOpen",
@@ -1036,6 +1037,10 @@ async function main() {
   ];
   ok(keys.filter((k) => !ALLOWED.includes(k)).length === 0, "没有白名单外的键：" + keys.filter((k) => !ALLOWED.includes(k)).join(","));
   ok(typeof exposedObj.textGenStream === "function", "文本生成（流式）textGenStream");
+  ok(
+    typeof exposedObj.authorTag === "function",
+    "本机清单摘要 authorTag（注入左下角作者标签用的那一份；应用自己也能调）",
+  );
   ok(typeof exposedObj.imageGen === "function", "图像生成 imageGen（每次一张）");
   ok(
     typeof exposedObj.hostModels === "function" &&

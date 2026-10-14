@@ -3595,12 +3595,12 @@ function dshRunOnce(input, opts) {
     const DSH_WATCHDOG_INTERVAL_MS = 5000;
     const DSH_CANCEL_GRACE_MS = 10000;
     const DSH_RUN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-    /* 有未消费的提问 / 审批 / 浏览器求助卡片时**永久等待**（本次需求 · 拷问共识）：
+    /* 有未消费的提问 / 审批 / **浏览器求助卡片** / **画布确认框**时**永久等待**
+       （本次需求 · 拷问共识：所有「等用户回应」的东西一条口径）：
        原实现给 2 小时，超时后自动取消 —— 用户正好在登录 / 看页面 / 慢慢填答案时，
-       这一刀下来就是「我明明答了，会话却自己停了」。现在只要卡还在（pendingIx > 0）
-       就不设上限：唯一能结束这一问的是用户自己（作答 / 稍后 / 中断）。
-       真正的「引擎挂了」由会话里的终止键与各卡片自己的出口兜（求助卡专属的
-       60 秒无进展提示已随本次改版下线，见 IX_BROWSER_NOTE_SRC 上方那一段）。 */
+       这一刀下来就是「我明明答了，会话却自己停了」。现在只要还有东西在等用户
+       （pendingWait > 0）就不设上限：唯一能结束这一问的是用户自己（作答 / 稍后 / 中断 /
+       确认或拒绝那张框）。真正的「引擎挂了」由会话里的终止键与各卡片自己的出口兜。 */
     const DSH_IX_WAIT_TIMEOUT_MS = Number.POSITIVE_INFINITY;
     let lastActivity = Date.now();
     const finish = (ok, val, keepRunSession) => {
@@ -3670,14 +3670,17 @@ function dshRunOnce(input, opts) {
         return;
       }
       cancelSeenAt = 0;
-      /* 模型等待用户回答（提问 / 审批）时没有任何事件，属合法静默：给一个更长的上限，
-         引擎若在等待中挂起，也不能无限卡死 UI。
-         只数本 runKey 的卡片：全局条数会把「别的会话正挂着提问」算进本轮静默，
-         本轮的静默上限会从 30 分钟被莫名抬到 2 小时。 */
+      /* 模型等待用户回答（提问 / 审批 / 求助卡 / 画布确认框）时没有任何事件，属合法静默：
+         这些一律**永久等待**（上限见 DSH_IX_WAIT_TIMEOUT_MS），只有真的一个等用户的
+         东西都没有时才按静默上限兜底，免得引擎挂死时 UI 无限卡着。
+         只数本 runKey 的：全局条数会把「别的会话正挂着提问」算进本轮静默。 */
       const pendingIx = ((S.activeIx && S.activeIx.items) || []).filter(
         (x) => x && x.runKey === runKey,
       ).length;
-      if (idle >= (pendingIx ? DSH_IX_WAIT_TIMEOUT_MS : DSH_RUN_IDLE_TIMEOUT_MS)) {
+      const pendingWait =
+        pendingIx +
+        (typeof canvasConfirmPendingOf === "function" ? canvasConfirmPendingOf(runKey) : 0);
+      if (idle >= (pendingWait ? DSH_IX_WAIT_TIMEOUT_MS : DSH_RUN_IDLE_TIMEOUT_MS)) {
         try {
           dshCancelActive(runKey);
         } catch (_) {}
@@ -3685,7 +3688,7 @@ function dshRunOnce(input, opts) {
           false,
           new Error(
             I18n.t(
-              pendingIx
+              pendingWait
                 ? "交互等待超时，已自动终止"
                 : "运行长时间无响应，已自动终止",
             ),

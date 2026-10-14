@@ -507,6 +507,38 @@
   white-space: nowrap;
 }
 
+/* 折叠行（中转扣费：每笔扣费一条流水，相邻连续的折成一条）：
+   行身可点（展开 / 收起逐笔），左侧一道细边 + 展开态高亮；展开出来的逐笔行缩进、字号略小。 */
+.wl-table tr.wl-fold {
+  cursor: pointer;
+}
+
+.wl-table tr.wl-fold td {
+  background: color-mix(in srgb, var(--bd) 22%, transparent);
+}
+
+.wl-table tr.wl-fold td:first-child {
+  box-shadow: inset 3px 0 0 var(--muted);
+}
+
+.wl-table tr.wl-fold.on td {
+  background: color-mix(in srgb, var(--bd) 40%, transparent);
+}
+
+.wl-table tr.wl-fold:hover td {
+  background: color-mix(in srgb, var(--bd) 34%, transparent);
+}
+
+.wl-table tr.wl-fold-item td {
+  font-size: 11.5px;
+  color: var(--muted);
+  background: transparent;
+}
+
+.wl-table tr.wl-fold-item td:first-child {
+  padding-left: 22px;
+}
+
 .wl-table .st-paid {
   color: var(--green);
 }

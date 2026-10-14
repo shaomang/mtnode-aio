@@ -14,7 +14,10 @@ import { hotAppendRows } from "./hot-store.mjs";
  * 本轮共识（内部测试口径）：
  *   · **鉴权** = 账号登录 token（`Authorization: Bearer <token>`，与客户端同一套 30 天会话）。
  *     管理员用 `node relay-key.mjs --user <用户名>` 给测试账号发一张新票（明文只打印一次）。
- *   · **门禁** = 可用余额 > 0。不加额外账号名单。
+ *   · **门禁** = 文本「可用余额 > 0」（不加额外账号名单）；**图像 = 可用余额（已扣掉在途预留）
+ *     必须 ≥ 本次应付额（张数 × 元/张）**，不足即 402 且**不转上游**（见 handleImages 的
+ *     reserveImageCharge）。修正前图像也只按「余额 > 0」放行、扣费再按可用额夹紧
+ *     （chargeYuan 的 cap），于是余额 0.10 也能出一张 0.21 的图，扣完只归零、不会变负。
  *   · **计费单位 = 元**（不含「分」）：费用按元算到底（文本 = 元/百万 token × tokens，
  *     图像 = 元/张 × 张数），**元保留 8 位小数（= 1e-8 元）**，
  *     **换算成整数分只为写进钱包账本**（账户行的 balanceCents + relaySubCents 是钱包内部存储，
@@ -512,6 +515,29 @@ function imageCostYuan(cfg, model, images) {
   return { yuan: round8(yuan), detail: { images: n, perImageYuan: round8(price.perImageYuan || 0) } };
 }
 
+/**
+ * 这一次图像请求要出几张（**调用前估算用**，与出图后 imageCostYuan 的张数口径一致）：
+ * 上游 OpenAI 兼容接口用 `n` 指定张数（缺省 1）；客户端也可能直接传 `count`。
+ * multipart（images/edits）的 `n` 在表单字段里，按 name 取，找不到按 1 张。
+ * 出图后仍以上游真实返回的 data.length 为准（见 handleImages）。
+ */
+function imageCountOf(raw, isEdit) {
+  const one = (v) => {
+    const n = Math.floor(Number(v) || 0);
+    return n > 1 ? n : 1;
+  };
+  if (isEdit) {
+    const m = /name="(?:n|count)"\r?\n\r?\n([^\r\n]+)/.exec(raw.toString("latin1"));
+    return one(m ? m[1].trim() : 1);
+  }
+  try {
+    const j = JSON.parse(raw.toString("utf8") || "{}") || {};
+    return one(j.n != null ? j.n : j.count);
+  } catch {
+    return 1;
+  }
+}
+
 /* ========================================================================== *
  * 四、中转站本体
  * ========================================================================== */
@@ -557,6 +583,86 @@ export function createRelay(deps) {
   }
   const UID_RE = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
   const OK_TIMEOUT = (n) => Math.max(1000, Math.min(3600000, Math.floor(Number(n) || 0)));
+
+  /* ---------- 在途预留（图像调用的原子门禁） ----------
+     图像费用在**调用前**就算得出来（张数 × 元/张），所以门禁必须按应付额拦，而不是
+     只看「余额 > 0」：否则余额 0.10 也能出一张 0.21 的图，结算时只能按可用额夹紧，
+     余额被扣到 0 就不再是「欠着」而是「白出一张」。
+     并发也不能只靠「读一次余额」：两张图同时进来会各自看到同一个余额、双双通过。
+     这里给每账号做**原子预留**（同一 tick 内 computeLiveCents → 写入 reserved 之间没有 await，
+     所以 Node 单线程下不会穿插）：预留成功才转上游，结算时本次扣除上限 = 预留额，
+     上游失败 / 报错立即释放。纯内存：预留只活在一次请求的几十秒内，进程重启即清空。 */
+  const reserved = new Map(); // userId -> [{ id, cents, at }]
+  const RESERVE_STALE_MS = 10 * 60 * 1000;
+
+  /** 该账号已预留的在途费用（分）。顺带清掉过期的（进程被强杀时兜底）。 */
+  function reservedCentsOf(userId, atMs) {
+    const t = Number(atMs) || Date.now();
+    const arr = reserved.get(userId) || [];
+    let sum = 0;
+    for (const r of arr) {
+      if (t - (Number(r.at) || 0) > RESERVE_STALE_MS) continue; // 过期：视作已释放（下面顺手清）
+      sum += Number(r.cents) || 0;
+    }
+    return round8(sum);
+  }
+  function sweepReserved(atMs) {
+    const t = Number(atMs) || Date.now();
+    for (const [uid, arr] of reserved) {
+      const keep = arr.filter((r) => t - (Number(r.at) || 0) <= RESERVE_STALE_MS);
+      if (keep.length) reserved.set(uid, keep);
+      else reserved.delete(uid);
+    }
+  }
+
+  /** **可用**余额（分）= 账上可用总额 − 在途预留。门禁与结算上限都读它。 */
+  function liveCentsOf(user) {
+    const u = (db.users || []).find((x) => x.id === (user && user.id)) || user;
+    return round8(totalCentsOf(u) - reservedCentsOf(u && u.id));
+  }
+
+  /**
+   * 原子预留一笔应付额（分）：成功回 { ok:true, id, cents }，不足回 { ok:false, ... }。
+   * 调用方必须配 try/finally 调 releaseReserve（上游报错 / 客户端断开 / 结算异常都要释放）。
+   */
+  function reserveImageCharge(userId, cents) {
+    sweepReserved();
+    const uid = String(userId || "");
+    const need = round8(cents);
+    if (!uid || !(need > 0)) return { ok: true, id: "", cents: 0 };
+    const avail = liveCentsOf((db.users || []).find((u) => u.id === uid) || { id: uid });
+    if (avail < need) return { ok: false, id: "", cents: need, availCents: avail };
+    const hold = { id: "rs" + Date.now().toString(36) + crypto.randomBytes(3).toString("hex"), cents: need, at: Date.now() };
+    const arr = reserved.get(uid) || [];
+    arr.push(hold);
+    reserved.set(uid, arr);
+    return { ok: true, id: hold.id, cents: need };
+  }
+
+  /** 释放预留（按 id 精确删，重复释放无副作用）。 */
+  function releaseReserve(userId, reserveId) {
+    const uid = String(userId || "");
+    const id = String(reserveId || "");
+    if (!uid || !id) return;
+    const arr = reserved.get(uid);
+    if (!arr) return;
+    const keep = arr.filter((r) => r.id !== id);
+    if (keep.length) reserved.set(uid, keep);
+    else reserved.delete(uid);
+  }
+
+  /** 图像调用的应付额（元）：张数 × 元/张（缺省 1 张）。为 0（没配价目）时不拦。 */
+  function imageReserveYuan(model, images) {
+    const price = cfg.prices[model] || normPrice({}, "image");
+    const n = Math.max(1, Math.floor(Number(images) || 1));
+    return round8(n * (Number(price.perImageYuan) || 0));
+  }
+
+  /** 余额不足的统一文案（余额 / 应付额都按元给，用户一眼知道还差多少）。 */
+  function imageShortMessage(user, needYuan) {
+    return "账号余额不足（当前可用 " + yuanText(yuanOfCents(liveCentsOf(user)), 4) +
+      " 元，本次需 " + yuanText(needYuan, 4) + " 元）：请充值后再试";
+  }
 
   /** 管理台读配置：绝不含任何 Key 材料（只有 keyFrom / keyTail）。 */
   function describeAdmin() {
@@ -745,6 +851,22 @@ export function createRelay(deps) {
       });
   }
 
+  /** 该账号**一张图的最低门槛**（元）：可用余额 < 它 ⇒ 图像调用必然 402（文本不受影响）。
+   *  客户端拿它做前置置灰（额度为正但不够一张图时，不再等云端 402 才知道）。
+   *  没有可用的图像模型（没配 / 没上架 / 没绑上游）时回 0 = 不用拦。 */
+  function minImageYuan() {
+    let min = 0;
+    for (const m of cfg.models || []) {
+      if (m.enabled === false || m.upstream !== "image") continue;
+      const up = upstreamOf(m);
+      if (!up || up.enabled === false) continue;
+      const per = Number((cfg.prices[m.id] || normPrice({}, "image")).perImageYuan) || 0;
+      if (!(per > 0)) continue;
+      if (!min || per < min) min = per;
+    }
+    return round8(min);
+  }
+
   /* ---------- 限流（60 秒滑窗，与 server.mjs 的单 IP 小时桶同思路） ---------- */
   const win = new Map(); // key -> number[]
   function take(key, max) {
@@ -834,20 +956,25 @@ export function createRelay(deps) {
   /**
    * 扣费：入参是**本次费用（元，8 位小数 = 1e-8 元）**，换算成「分（可含亚分零头）」交给钱包；
    * 整数分 / 零头的拆分由 wallet.chargeRelayUsage 负责（金额口径只在一处实现）。
-   * 不足以付清时按可用额夹紧（**不允许出现负余额 / 欠费**），差额记在 usage 与流水备注里。
+   * 扣除上限：`capCents` 给了就用它（**图像调用传预留额**：门禁已按应付额拦过，
+   * 在途的其它预留不该把这一次的钱挪走），没给才按当前可用总额夹紧 ——
+   * 文本按 token 计费、调用前算不出应付额，只能事后按余额夹紧（差额记进 shortfall，
+   * 见 usage 明细与流水备注：**不允许出现负余额 / 欠费**）。
+   * @param {object} [opt] { capCents } 本次扣除上限（分，含亚分）
    * @returns {Promise<{ok:boolean, chargedYuan:number, shortfallYuan:number, balanceYuan:number}>}
    */
-  async function chargeYuan(userId, costYuan, note, meta) {
+  async function chargeYuan(userId, costYuan, note, meta, opt) {
     const user = (db.users || []).find((u) => u.id === userId);
     if (!user) return { ok: false, chargedYuan: 0, shortfallYuan: 0, balanceYuan: 0, code: "USER_NOT_FOUND" };
-    const availCents = totalCentsOf(user); // 内部账（分，含亚分零头）
+    const capGiven = opt && opt.capCents != null && Number.isFinite(Number(opt.capCents));
+    const availCents = capGiven ? round8(Math.max(0, Number(opt.capCents))) : totalCentsOf(user); // 内部账（分，含亚分零头）
     const chargeCents = Math.max(0, centsOfYuan(costYuan));
     const payCents = Math.min(chargeCents, availCents);
     const shortfallCents = round8(chargeCents - payCents);
     const out = await wallet.chargeRelayUsage({
       user,
       amountCents: payCents,
-      note: shortfallCents > 0 ? note + "（余额不足，按余额上限扣减，欠 " + yuanText(yuanOfCents(shortfallCents)) + " 元未计）" : note,
+      note: shortfallCents > 0 ? note + "（余额不足，按本次上限扣减，欠 " + yuanText(yuanOfCents(shortfallCents)) + " 元未计）" : note,
       meta,
     });
     if (out && out.ok === false) {
@@ -930,7 +1057,7 @@ export function createRelay(deps) {
         model: info.model,
         endpoint: info.endpoint,
         costYuan: round8(cost),
-      });
+      }, info.capCents != null ? { capCents: info.capCents } : null);
       rec.chargedCents = centsOfYuan(r.chargedYuan);
       const afterCents = centsOfYuan(r.balanceYuan);
       rec.balanceCents = Math.floor(afterCents + 1e-9);
@@ -997,6 +1124,9 @@ export function createRelay(deps) {
       mtnode_yuan_precision: YUAN_PRECISION,
       mtnode_peaks: (cfg.peaks || []).slice(),
       mtnode_coin_yuan: COIN_YUAN,
+      /* 一张图的最低门槛（元）：客户端拿它做「余额够不够出图」的前置判断，
+         与 door 的判据同源（见 minImageYuan）。0 = 没有可用的图像模型，不用拦。 */
+      mtnode_min_image_yuan: minImageYuan(),
       data: cfg.models
         .filter((m) => m.enabled !== false && upstreamOf(m) && upstreamOf(m).enabled !== false)
         .map((m) => ({
@@ -1170,40 +1300,63 @@ export function createRelay(deps) {
     const up = hit.up;
     if (!up.key) return notConfigured(ctx.res, hit.m, up);
 
+    /* 余额门禁（图像）：按**本次应付额**（张数 × 元/张）原子预留，不足即 402 且不转上游 ——
+       修正前只看「余额 > 0」，余额 0.10 也能出一张 0.21 的图（结算时按可用额夹紧，只归零不变负）。 */
+    const needYuan = imageReserveYuan(hit.m.id, imageCountOf(raw, isEdit));
+    const hold = reserveImageCharge(ctx.user.id, centsOfYuan(needYuan));
+    if (!hold.ok) {
+      return sendError(
+        ctx.res,
+        402,
+        imageShortMessage(ctx.user, needYuan),
+        "insufficient_quota",
+        "insufficient_quota",
+      );
+    }
+
     const started = Date.now();
-    let upres;
     try {
-      upres = await callUpstream(ctx, up, "/images/" + kind, {
-        method: "POST",
-        headers: {
-          "Content-Type": ctx.req.headers["content-type"] || (isEdit ? "multipart/form-data" : "application/json"),
-          Authorization: "Bearer " + up.key,
-          Accept: "application/json",
-        },
-        body: raw,
-      }, up.timeoutMs);
-    } catch (e) {
-      return sendError(ctx.res, 502, "上游请求失败：" + ((e && e.message) || e), "upstream_error", "api_error");
-    }
-    const { res: ur } = upres;
-    const buf = Buffer.from(await ur.arrayBuffer());
-    if (ur.ok) {
-      let images = 1;
+      let upres;
       try {
-        const j = JSON.parse(buf.toString("utf8"));
-        if (j && Array.isArray(j.data) && j.data.length) images = j.data.length;
-      } catch { /* 非 JSON：按 1 张计 */ }
-      const cost = imageCostYuan(cfg, hit.m.id, images);
-      await settle(ctx, {
-        kind: "image", model: hit.m.id, upstreamModel: hit.m.upstreamModel, endpoint: "images/" + kind,
-        cost: cost.yuan, detail: cost.detail, ms: Date.now() - started,
-        note: "中转扣费 · " + hit.m.id + " · " + cost.detail.images + " 张 · 计费 " + yuanText(cost.yuan) + " 元",
-      });
+        upres = await callUpstream(ctx, up, "/images/" + kind, {
+          method: "POST",
+          headers: {
+            "Content-Type": ctx.req.headers["content-type"] || (isEdit ? "multipart/form-data" : "application/json"),
+            Authorization: "Bearer " + up.key,
+            Accept: "application/json",
+          },
+          body: raw,
+        }, up.timeoutMs);
+      } catch (e) {
+        return sendError(ctx.res, 502, "上游请求失败：" + ((e && e.message) || e), "upstream_error", "api_error");
+      }
+      const { res: ur } = upres;
+      const buf = Buffer.from(await ur.arrayBuffer());
+      if (ur.ok) {
+        let images = 1;
+        try {
+          const j = JSON.parse(buf.toString("utf8"));
+          if (j && Array.isArray(j.data) && j.data.length) images = j.data.length;
+        } catch { /* 非 JSON：按 1 张计 */ }
+        const cost = imageCostYuan(cfg, hit.m.id, images);
+        await settle(ctx, {
+          kind: "image", model: hit.m.id, upstreamModel: hit.m.upstreamModel, endpoint: "images/" + kind,
+          cost: cost.yuan, detail: cost.detail, ms: Date.now() - started,
+          /* 本次扣除上限 = 预留额：在途的**其它**预留不该被这一次的结算吃掉。
+             上游多出了几张（超出预留）或没配价目（预留 0）时差额按余额夹紧，
+             差额记 shortfall，不把余额扣成负数。 */
+          capCents: hold.cents > 0 ? hold.cents : null,
+          note: "中转扣费 · " + hit.m.id + " · " + cost.detail.images + " 张 · 计费 " + yuanText(cost.yuan) + " 元",
+        });
+      }
+      const headers = Object.assign({ "Content-Type": ur.headers.get("content-type") || "application/json; charset=utf-8", "Content-Length": buf.length, "Cache-Control": "no-store" }, corsHeaders());
+      if (ctx.res.destroyed) return undefined;
+      if (!ctx.res.headersSent) ctx.res.writeHead(ur.status, headers);
+      return ctx.res.end(buf);
+    } finally {
+      /* 上游报错 / 非 2xx / 客户端断开 / 结算异常：一律释放预留（否则这笔钱会被永久占住） */
+      releaseReserve(ctx.user.id, hold.id);
     }
-    const headers = Object.assign({ "Content-Type": ur.headers.get("content-type") || "application/json; charset=utf-8", "Content-Length": buf.length, "Cache-Control": "no-store" }, corsHeaders());
-    if (ctx.res.destroyed) return undefined;
-    if (!ctx.res.headersSent) ctx.res.writeHead(ur.status, headers);
-    return ctx.res.end(buf);
   }
 
   /* ---------- 鉴权 / 门禁 / 白名单 ---------- */
@@ -1258,6 +1411,18 @@ export function createRelay(deps) {
     }
 
     const kind = p.startsWith("/relay/v1/images/") ? "image" : "account";
+
+    /* 余额门禁（先于限流：钱不够的请求不该白占一次配额，也不该走到上游）。
+       文本按 token 计费、调用前算不出应付额 → 维持「可用余额 > 0 才放行」；
+       图像的费用调用前就知道 → 由 handleImages 按**本次应付额**原子预留后再转上游
+       （这里的 > 0 只作粗筛，省掉一次注定 402 的解析）。
+       「可用」一律扣掉在途预留（liveCentsOf）：并发时不会把已经许给别人的钱再许一次。 */
+    const fresh = (db.users || []).find((u) => u.id === user.id) || user;
+    const liveCents = liveCentsOf(fresh);
+    if (liveCents <= 0) {
+      return sendError(res, 402, "账号余额不足（当前 " + yuanText(yuanOfCents(totalCentsOf(fresh)), 4) + " 元）：中转站只对余额 > 0 的账号开放", "insufficient_quota", "insufficient_quota");
+    }
+
     // 限流：账号级（图像单独一档）+ 单 IP（命中即 429，OpenAI 兼容错误体）
     const gates = [
       take("acct:" + user.id, cfg.quota.accountPerMin),
@@ -1270,12 +1435,6 @@ export function createRelay(deps) {
       return res.end(JSON.stringify({ error: { message: "请求过于频繁，请 " + (blocked.retryAfter || 1) + " 秒后重试", type: "rate_limit_error", code: "rate_limit_exceeded", param: null } }));
     }
     gates.forEach(commit);
-
-    // 余额门禁：可用余额（元）> 0 才放行
-    const fresh = (db.users || []).find((u) => u.id === user.id) || user;
-    if (totalCentsOf(fresh) <= 0) {
-      return sendError(res, 402, "账号余额不足（当前 " + yuanText(yuanOfCents(totalCentsOf(fresh)), 4) + " 元）：中转站只对余额 > 0 的账号开放", "insufficient_quota", "insufficient_quota");
-    }
 
     if (method === "GET" && p === "/relay/v1/models") return handleModels(res);
     if (method === "GET" && p === "/relay/v1/usage") return handleUsage(res, fresh);
@@ -1439,6 +1598,8 @@ export function createRelay(deps) {
     peaks: () => (cfg.peaks || []).slice(),
     coinYuan: () => COIN_YUAN,
     yuanPrecision: () => YUAN_PRECISION,
+    /* 一张图的最低门槛（元）：/api/relay/me 随快照下发给客户端做「余额够不够出图」的预判。 */
+    minImageYuan: minImageYuan,
     audit: (limit) => auditArr().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse(),
     usage: (limit) => usageList().slice(-Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)))).reverse().map(usagePublic),
     /* 调用流水的筛选 + 统计（只读，见上面 usageQuery 的口径注释）。 */

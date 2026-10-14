@@ -377,7 +377,7 @@ function appsCreateDialog() {
   const capNote = document.createElement("div");
   capNote.className = "settings-hint cap-note";
   capNote.textContent = I18n.t(
-    "能力默认全开（文字输入 / 听写条 / 图像生成）：建好之后可在开发页「预览」条上的「应用设置」里逐位调整。",
+    "能力默认全开（文字输入 / 听写条 / 作者标签 / 图像生成）：建好之后可在开发页「预览」条上的「应用设置」里逐位调整。",
   );
   body.appendChild(capNote);
 
@@ -484,12 +484,14 @@ async function appsCreateApp(name, id, style, capabilities) {
       aid,
       String(style || ""),
       appFlowMeName(),
-      /* 能力位（app.json 的 capabilities）：**缺省三位全开**（本轮共识：新建即全开，
+      /* 能力位（app.json 的 capabilities）：**缺省四位全开**（本轮共识：新建即全开，
          新建浮层里那段复选框已删）。老调用方不传时就按这个默认；要关哪一位，
-         建好之后去开发页「预览」条上的「应用设置」里改（app-apps.js 的 appsAppSettingsOpen）。 */
+         建好之后去开发页「预览」条上的「应用设置」里改（app-apps.js 的 appsAppSettingsOpen）。
+         showAuthor（作者标签，本轮新增）= 应用窗口左下角那枚平时隐藏、hover 显示、点击看详情的
+         标签：同样**默认开** —— 需求「默认开启、可启用禁用」，与语音转录（showDictate）同一条机制。 */
       capabilities && typeof capabilities === "object"
         ? capabilities
-        : { textInput: true, showDictate: true, imageGen: true },
+        : { textInput: true, showDictate: true, showAuthor: true, imageGen: true },
     );
   } catch (err) {
     toast(I18n.t("新建应用失败：") + ((err && err.message) || String(err)), "err");
@@ -758,29 +760,36 @@ function startCustomStyleAsk(appId, appName, mode) {
 }
 
 /* ---------- 能力复选框组（「应用设置」窗用；新建浮层已不再问能力） ---------- *
- * 三个能力位就是 app.json 的 capabilities（见 apps-capabilities.js）：
+ * 四个能力位就是 app.json 的 capabilities（见 apps-capabilities.js）：
  *   textInput    需要文字输入 → 脚手架带上语音听写模块（本机 SenseVoice）
  *   showDictate  显示听写条 → 应用窗口底部显示宿主注入的听写条（勾上即默认可见，条尾可收起）
+ *   showAuthor   作者标签 → 应用窗口**左下角**显示宿主注入的作者标签（平时隐藏、hover 出
+ *                `@作者 - v版本`、点击看只读应用详情）
  *   imageGen     需要生成图片 → 用 MTNode 已配好的图像能力（云端服务商或本机 SenseNova）
- * 缺省**三项都不勾**（缺省 = 宿主不注入听写条；声明为真的应用注入进来就是可见的）。
+ * 缺省**四个都不勾**（缺省 = 宿主不注入；声明为真的应用注入进来就是生效的）。
  * 界面这边只负责「勾选 + 一句话说明」；真正的落盘、入口页重生成、语音文件补撤都在主进程
  * （apps:capabilitiesSet），渲染层不碰文件系统。
- * 返回 { box, get(), set() }：get() 回一份 { textInput, showDictate, imageGen } 布尔对象。
+ * 返回 { box, get(), set() }：get() 回一份 { textInput, showDictate, showAuthor, imageGen } 布尔对象。
  * onChange（可选）＝**勾选即写盘**那条路的钩子（「应用设置」窗传它，用户口径：能力位不再单独
  * 保存，统一由勾选当场生效）：每次勾选/取消后回调一次新的能力位；写盘失败由调用方用 set()
  * 把勾选态回滚成磁盘上的真实值。不传 = 老口径（只改内存态，由调用方自己保存）。 */
 function appsCapabilityChecks(value, onChange) {
-  const cur = Object.assign({ textInput: false, showDictate: false, imageGen: false }, value || {});
+  const cur = Object.assign(
+    { textInput: false, showDictate: false, showAuthor: false, imageGen: false },
+    value || {},
+  );
   const box = document.createElement("div");
   box.className = "cap-list";
   const state = {
     textInput: cur.textInput === true,
     showDictate: cur.showDictate === true,
+    showAuthor: cur.showAuthor === true,
     imageGen: cur.imageGen === true,
   };
   const read = () => ({
     textInput: state.textInput === true,
     showDictate: state.showDictate === true,
+    showAuthor: state.showAuthor === true,
     imageGen: state.imageGen === true,
   });
   const rows = [
@@ -792,7 +801,12 @@ function appsCapabilityChecks(value, onChange) {
     {
       id: "showDictate",
       label: I18n.t("显示听写条"),
-      hint: I18n.t("在应用窗口底部显示宿主注入的听写条（🎤 听写 / 🎧 音频转文字）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）"),
+      hint: I18n.t("在应用窗口底部显示宿主注入的听写条（🎤 听写）；勾上就默认显示，条尾可「收起」（只藏本次窗口，下次打开仍按本声明显示）"),
+    },
+    {
+      id: "showAuthor",
+      label: I18n.t("作者标签"),
+      hint: I18n.t("在应用窗口左下角显示作者标签：平时隐藏，鼠标移上去显示「@作者 - v版本」，点一下看应用详情（作者取 app.json 的 author，没写就用当前登录账号昵称）"),
     },
     {
       id: "imageGen",
@@ -836,6 +850,7 @@ function appsCapabilityChecks(value, onChange) {
       const nv = v || {};
       state.textInput = nv.textInput === true;
       state.showDictate = nv.showDictate === true;
+      state.showAuthor = nv.showAuthor === true;
       state.imageGen = nv.imageGen === true;
       const boxes = box.querySelectorAll("input[data-cap]");
       for (const b of boxes) b.checked = state[b.dataset.cap] === true;
@@ -922,6 +937,7 @@ async function appCapabilitiesDialog(appId, appName, opts) {
     const changed =
       (before.textInput === true) !== (next.textInput === true) ||
       (before.showDictate === true) !== (next.showDictate === true) ||
+      (before.showAuthor === true) !== (next.showAuthor === true) ||
       (before.imageGen === true) !== (next.imageGen === true);
     if (!changed) {
       toast(I18n.t("能力没有变化"));
@@ -941,7 +957,7 @@ async function appCapabilitiesDialog(appId, appName, opts) {
       return;
     }
     box.set(r.capabilities || next);
-    toast(I18n.t("已更新能力位（入口页未改动，听写条下次打开应用窗口生效）"), "ok");
+    toast(I18n.t("已更新能力位（入口页未改动，听写条 / 作者标签下次打开应用窗口生效）"), "ok");
     /* 应用列表带缓存：重拉一次，卡片上的能力小标立刻跟上 */
     try {
       if (typeof appsListLoad === "function") await appsListLoad(true);
