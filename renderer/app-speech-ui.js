@@ -405,34 +405,23 @@
     }
     return d;
   }
+  /* 复制：走全渲染层唯一出口（renderer/app-clipboard.js 的三级链路：
+     ① navigator.clipboard.writeText → ② preload 桥 → ③ execCommand 兜底）。
+     这里原来自带一套「原生 API + textarea 兜底」，同样是被权限闸拒就只能走兜底；
+     现在统一到出口，失败也给准确原因（不再是无声无息）。 */
   function copy(text) {
     var s = String(text || "");
     if (!s) return;
     var done = function () {
       say(t("已复制到剪贴板", "Copied"), "ok");
     };
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(s).then(done, function () {
-          fallbackCopy(s, done);
-        });
-        return;
-      }
-    } catch (_) {}
-    fallbackCopy(s, done);
-  }
-  function fallbackCopy(s, done) {
-    try {
-      var ta = document.createElement("textarea");
-      ta.value = s;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      done();
-    } catch (_) {}
+    var fail = function (r) {
+      say(appClipboardFailureText(r || {}), "err");
+    };
+    appClipboardWrite(s).then(function (r) {
+      if (r && r.ok) done();
+      else fail(r);
+    }, fail);
   }
   /** 把一行定稿追加进结果窗（逐句累加，不是每句重写整篇）。
    *  line = 交付的那一份（增强成功就是增强文本），raw = 原始识别（不传 = 与 line 相同）。 */

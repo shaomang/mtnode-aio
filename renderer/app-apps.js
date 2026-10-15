@@ -1791,54 +1791,16 @@ function appsSameAuthor(spec) {
   return true;
 }
 /* 复制一段文本到系统剪贴板（校验值直接用，不再为它开小窗）。
-   复用设置页那条三级链路（settingsClipboardWrite：navigator → preload 桥 → execCommand，
-   定义在 app-settings.js，本文件先加载，所以调用期探测 typeof）；链路不在时自己走
-   preload 桥 / execCommand 兜底，绝不假装复制成功。返回 Promise<boolean>。 */
+   走全渲染层唯一出口 renderer/app-clipboard.js（三级链路：navigator → preload 桥 → execCommand）；
+   这里原来自带一份「settingsClipboardWrite 不在就自己拼一遍同样三级」的抄本 —— 同一套逻辑两份
+   实现必然会漂，已删。宁可失败也不假装复制成功：返回 Promise<boolean>。 */
 function appsCopyText(txt) {
   const s = String(txt == null ? "" : txt);
   if (!s) return Promise.resolve(false);
-  if (typeof settingsClipboardWrite === "function")
-    return Promise.resolve(settingsClipboardWrite(s))
-      .then((r) => !!(r && r.ok === true))
-      .catch(() => false);
-  const viaBridge = () => {
-    try {
-      if (window && window.api && typeof window.api.clipboardWriteText === "function")
-        return Promise.resolve(window.api.clipboardWriteText(s)).then((r) => !!(r && r.ok === true));
-    } catch (_) {}
-    return Promise.resolve(false);
-  };
-  const viaExec = () => {
-    try {
-      if (!document.body || !document.execCommand) return false;
-      const ta = document.createElement("textarea");
-      ta.value = s;
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      const done = document.execCommand("copy");
-      document.body.removeChild(ta);
-      return !!done;
-    } catch (_) {
-      return false;
-    }
-  };
-  let first = null;
-  try {
-    const nb = navigator && navigator.clipboard;
-    if (nb && typeof nb.writeText === "function") first = Promise.resolve(nb.writeText(s));
-  } catch (_) {
-    first = null;
-  }
-  if (first)
-    return first.then(
-      () => true,
-      () => viaBridge().then((ok) => ok || viaExec()),
-    );
-  return viaBridge().then((ok) => ok || viaExec());
+  if (typeof appClipboardWrite !== "function") return Promise.resolve(false);
+  return Promise.resolve(appClipboardWrite(s))
+    .then((r) => !!(r && r.ok === true))
+    .catch(() => false);
 }
 /* 「ⓘ 复制校验值」小按钮：界面上只摊算法名 + 前 8 位（长哈希不该摊在界面上），
    **点一下直接把完整校验值复制进剪贴板**（本轮需求：不再开「点开看全文」的小窗），

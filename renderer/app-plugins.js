@@ -388,12 +388,9 @@ function mountPluginPopConsole(pop, item) {
   };
   copyBtn.onclick = (ev) => {
     ev.stopPropagation();
-    try {
-      navigator.clipboard.writeText(logEl.textContent || "");
-      toast(I18n.t("已复制控制台内容"), "ok");
-    } catch {
-      toast(I18n.t("复制失败：请手动选中日志"), "warn");
-    }
+    /* 走唯一出口（renderer/app-clipboard.js）：原来是「同步写 + 立刻 toast」——
+       权限闸拒的时候 reject 只飘进控制台，用户这边照样看到「已复制控制台内容」（假成功）。 */
+    appClipboardCopy(logEl.textContent || "", I18n.t("已复制控制台内容"));
   };
   clearBtn.onclick = async (ev) => {
     ev.stopPropagation();
@@ -3156,14 +3153,7 @@ function extMcpResourcesPanel(info, s) {
       copy.type = "button";
       copy.className = "mini";
       copy.textContent = I18n.t("复制 URI");
-      copy.onclick = async () => {
-        try {
-          await navigator.clipboard.writeText(r.uri);
-          toast(I18n.t("已复制资源 URI"), "ok");
-        } catch (e) {
-          toast(I18n.t("复制失败：") + extErrorText(e), "err");
-        }
-      };
+      copy.onclick = () => appClipboardCopy(r.uri, I18n.t("已复制资源 URI"));
       const acts = document.createElement("div");
       acts.className = "dsh-mcp-res-acts";
       acts.appendChild(open);
@@ -3740,23 +3730,17 @@ async function mcpServerLoadLogs() {
   }
 }
 
+/* 复制一段文本（MCP 服务端面板的多处小按钮共用）：走全渲染层唯一出口
+   （renderer/app-clipboard.js 的三级链路），这里自己那套「原生 API + textarea 兜底」已删 ——
+   原生 API 被权限闸拒时它照样弹「复制失败」。成功文案仍带 label（「已复制：xxx」）。 */
 function mcpCopy(text, label) {
-  const write = (t) => {
-    if (navigator.clipboard && navigator.clipboard.writeText)
-      return navigator.clipboard.writeText(t);
-    const ta = document.createElement("textarea");
-    ta.value = t;
-    document.body.appendChild(ta);
-    ta.select();
-    try {
-      document.execCommand("copy");
-    } catch (_) {}
-    ta.remove();
-    return Promise.resolve();
-  };
-  Promise.resolve(write(String(text || "")))
-    .then(() => toast(I18n.t("已复制") + (label ? "：" + label : ""), "ok"))
-    .catch(() => toast(I18n.t("复制失败"), "err"));
+  return appClipboardWrite(String(text == null ? "" : text)).then((r) => {
+    if (r && r.ok)
+      toast(I18n.t("已复制") + (label ? "：" + label : ""), "ok");
+    else
+      toast(appClipboardFailureText(r) + (label ? "：" + label : ""), "err");
+    return r;
+  });
 }
 
 function mcpClientSnippet(info) {

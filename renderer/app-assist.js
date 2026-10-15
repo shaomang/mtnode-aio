@@ -6141,10 +6141,12 @@ function dshThinkTranslateRow(scopeId, segKey) {
         };
         dshClipboardWrite(String(it.text || ""))
           .then((r) => {
-            if (r && r.ok === false) toast(I18n.t("复制失败"), "err");
+            if (r && r.ok === false) toast(appClipboardFailureText(r), "err");
             else done();
           })
-          .catch(() => toast(I18n.t("复制失败"), "err"));
+          .catch((err) =>
+            toast(appClipboardFailureText({ error: (err && err.message) || "" }), "err"),
+          );
       });
       head.appendChild(cp);
     }
@@ -6610,8 +6612,10 @@ function openDshThinkPop(desc) {
       }, 1200);
     };
     dshClipboardWrite(txt)
-      .then((r) => (r && r.ok === false ? toast(I18n.t("复制失败"), "err") : done()))
-      .catch(() => toast(I18n.t("复制失败"), "err"));
+      .then((r) => (r && r.ok === false ? toast(appClipboardFailureText(r), "err") : done()))
+      .catch((err) =>
+        toast(appClipboardFailureText({ error: (err && err.message) || "" }), "err"),
+      );
   };
   bar.tools.appendChild(cp);
 
@@ -7431,9 +7435,9 @@ function dshMsgActionBar(text, role) {
         cp.textContent = I18n.t("复制");
       }, 1200);
     };
-    const fail = () => toast(I18n.t("复制失败"), "err");
+    const fail = (r) => toast(appClipboardFailureText(r), "err");
     dshClipboardWrite(payload.text)
-      .then((r) => (r && r.ok === false ? fail() : done()))
+      .then((r) => (r && r.ok === false ? fail(r) : done()))
       .catch(fail);
   });
   bar.appendChild(cp);
@@ -7464,10 +7468,10 @@ function dshCopyBtn(m, cls) {
         b.textContent = I18n.t("复制");
       }, 1200);
     };
-    const fail = () => toast(I18n.t("复制失败"), "err");
+    const fail = (r) => toast(appClipboardFailureText(r), "err");
     dshClipboardWrite(txt)
       .then((r) => {
-        if (r && r.ok === false) fail();
+        if (r && r.ok === false) fail(r);
         else done();
       })
       .catch(fail);
@@ -7806,13 +7810,13 @@ function agentEntryBudgetFrom(st, idx) {
   for (let i = at; i < msgs.length; i++) n += agentEntryCount(msgs[i]);
   return Math.max(1, n);
 }
-/* 写剪贴板：navigator.clipboard 优先，回退 preload 桥（失败 reject） */
+/* 写剪贴板：走全渲染层唯一出口（renderer/app-clipboard.js 的三级链路：
+   ① navigator.clipboard.writeText → ② preload 桥 → ③ execCommand 兜底）。
+   这里保留老名字，是因为本文件与 app-db.js / app-fileview.js 都以 dshClipboardWrite 取它。
+   契约：返回 Promise<{ ok, via, error }>，**任何情况下都不 reject**（失败以 ok:false 表达），
+   所以调用方请读 r.ok，别再指望 catch 到失败。 */
 function dshClipboardWrite(txt) {
-  if (navigator.clipboard && navigator.clipboard.writeText)
-    return Promise.resolve(navigator.clipboard.writeText(txt));
-  if (window.api && window.api.clipboardWriteText)
-    return Promise.resolve(window.api.clipboardWriteText(txt));
-  return Promise.reject(new Error("no clipboard"));
+  return appClipboardWrite(txt);
 }
 /* ═══════════ 消息栏草稿的「视图键」（本轮需求:未输入完毕发送的内容切窗口不许丢） ═══════════
    同一只输入框（#agentInput）在三种上下文里装的是三份不同的草稿，按视图键存取：

@@ -136,6 +136,9 @@ const sb = {
 };
 vm.createContext(sb);
 vm.runInContext(ESC, sb);
+/* 剪贴板唯一出口（renderer/app-clipboard.js）：真页面里它就排在 app.js 之前，
+   问询卡的「复制总结 Markdown」经 ixCopyText 调它 —— 沙箱里也得像真页面那样先喂进来。 */
+vm.runInContext(read("renderer/app-clipboard.js"), sb, { filename: "renderer/app-clipboard.js" });
 const API = vm.runInNewContext(
   DB.slice(FROM, TO) +
     "\n;({ ixSummarySplit, ixInlineMd, ixMdHtml, ixMdBlock, ixCopyText, ixSummaryBlock })",
@@ -222,10 +225,15 @@ ok(copied === "- 位置：#ixPanel\n- 渲染：renderMarkdown", "点「复制」
 ok(API.ixMdBlock("x", "ix-approval-md").className === "md ix-md-block ix-approval-md", "ixMdBlock 支持附加类名（审批卡 / 求助卡共用）");
 ok(API.ixMdBlock("").innerHTML === "<p></p>", "空正文也渲染成空块（不抛错）");
 
-/* 剪贴板回退链：优先会话那套 dshClipboardWrite，拿不到才退原生 */
-has(DB, 'if (typeof dshClipboardWrite === "function") {', "复制优先走会话共用的 dshClipboardWrite");
-has(DB, "if (navigator.clipboard && navigator.clipboard.writeText) {", "回退到原生 navigator.clipboard.writeText");
-has(DB, "} catch (_) {}", "两条都失败只当没复制（不抛错、不弹错）");
+/* 剪贴板：走全渲染层唯一出口（renderer/app-clipboard.js 的三级链路
+   ① navigator.clipboard.writeText → ② preload 桥 → ③ execCommand），
+   本文件里那套「优先 dshClipboardWrite、退原生、失败静默」的旧写法已删 */
+has(
+  DB,
+  'if (typeof appClipboardWrite === "function") appClipboardWrite(s).then((r) => (r && r.ok ? done() : fail(r)), fail);',
+  "复制走唯一出口 appClipboardWrite（三级链路）",
+);
+has(DB, "appClipboardFailureText(r || {})", "失败给准确原因（不再是「没复制成也不出声」）");
 
 /* 渲染失败兜底：renderMarkdown 抛错 → 转义纯文本，绝不白屏 */
 console.log("\n[4b] 兜底：渲染入口抛错时回落转义纯文本");
@@ -334,6 +342,8 @@ function renderCard(questionText) {
   const ctx = vm.createContext(c);
   vm.runInContext(ESC, ctx);
   vm.runInContext(MULTI_SRC, ctx);
+  /* 同上：复制出口要先在上下文里（ixCopyText 取它） */
+  vm.runInContext(read("renderer/app-clipboard.js"), ctx, { filename: "renderer/app-clipboard.js" });
   vm.runInContext(DB.slice(FROM_PANEL, TO_PANEL_END) + "\n;renderIxPanel();", ctx);
   return doc;
 }

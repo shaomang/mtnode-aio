@@ -3158,6 +3158,11 @@ async function previewSections() {
       setTimeout,
     };
     vm.createContext(sandbox);
+    /* 复制走全渲染层唯一出口：真页面里 renderer/app-clipboard.js 排在 app.js 之前，
+       沙箱里也要像真页面那样先加载它，否则 appsCopyText 找不到出口（真 page 里它就在）。 */
+    vm.runInContext(read("renderer/app-clipboard.js"), sandbox, {
+      filename: "renderer/app-clipboard.js",
+    });
     vm.runInContext(read("renderer/app-apps.js"), sandbox, { filename: "renderer/app-apps.js" });
     const FULL = "a".repeat(64);
     const btn = vm.runInContext('appsHashBtnEl("复制校验值", ' + JSON.stringify(FULL) + ")", sandbox);

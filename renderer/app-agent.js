@@ -2673,16 +2673,13 @@ function tokBadgeEl(owner) {
   copy.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
+    /* 走唯一出口（renderer/app-clipboard.js）：原来是「原生 API 优先 + 桥兜底」，
+       原生那一步被权限闸拒时只弹一句「复制失败」，桥明明可用也不会被退到。 */
     try {
-      const txt = tokReportPlain(owner);
-      if (navigator.clipboard && navigator.clipboard.writeText)
-        navigator.clipboard.writeText(txt).then(
-          () => toast(I18n.t("报告已复制"), "ok"),
-          () => toast(I18n.t("复制失败"), "err"),
-        );
-      else if (window.api && window.api.clipboardWriteText)
-        window.api.clipboardWriteText(txt);
-    } catch {}
+      appClipboardCopy(tokReportPlain(owner), I18n.t("报告已复制"));
+    } catch (err) {
+      toast(appClipboardFailureText({ error: (err && err.message) || "" }), "err");
+    }
   });
   sum.appendChild(copy);
   /* 折叠态余额 chip（金额 + ⟳ + 取数时间）；非官方路由 / 没 key 时返回 null，不占位 */

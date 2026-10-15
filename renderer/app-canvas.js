@@ -8164,9 +8164,71 @@ function browseStatusEl(node) {
   return st;
 }
 
-/* 输出面板（浏览态）：只留标题行与正文 ——「复制 / 清空 / 浏览」按钮和
-   左缘拖宽条（.n-out-resize）都不渲染；元素 id 与编辑态一致，
-   所以运行中的流式增量与 fillPreviews 的图像回填都不用另写一套。 */
+/* ============ 输出面板共用构件（拖宽条 + 按钮组）============
+   编辑态与浏览态（未选中 = 预览形态 / defocus）共用这一份：两态的可用按钮与文案永远一致。
+   本轮需求 ＝ 文本处理节点在预览模式下也要出现「复制」等按钮，所以浏览态不再自建一套。 */
+
+/* 输出面板左缘拖宽条（.n-out-resize）：编辑态与浏览态共用同一份实现
+   （拖宽与节点是否选中无关，两态各建一个自己的 DOM）。 */
+function outResizeHandleEl(node) {
+  const rz = document.createElement("div");
+  rz.className = "n-out-resize";
+  rz.title = I18n.t("拖拽左侧边缘调整输出面板宽度（← 拉宽 · → 收窄）");
+  rz.addEventListener("mousedown", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    S.preDragSnap = snapshotState();
+    S.drag = {
+      mode: "outresize",
+      id: node.id,
+      sx: ev.clientX,
+      sy: ev.clientY,
+      ow: node.outW,
+      moved: false,
+    };
+  });
+  return rz;
+}
+
+/* 输出标题行右对齐按钮组（.n-out-btns：复制 / 清空 / 浏览 / 审阅）。
+   编辑态与浏览态共用这一份，两态的可用按钮与文案永远一致：
+     · 复制 ＝ 有文本可复制（已跑完的文本输出 / 智能节点的运行中流）时才出现；
+     · 清空 / 浏览 ＝ 恒有；审阅 ＝ 普通（非智能）proc_text 节点专属。
+   复制走全渲染层唯一出口（renderer/app-clipboard.js 的三级链路）：裸调
+   navigator.clipboard.writeText 会被权限闸直接拒，用户看到的就是「点复制按钮就报错」。 */
+function outButtonsEl(node, liveDsh, r) {
+  const ob = document.createElement("div");
+  ob.className = "n-out-btns";
+  const mkOutBtn = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "n-out-btn";
+    b.textContent = label;
+    b.title = title || label;
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      fn();
+    };
+    ob.appendChild(b);
+    return b;
+  };
+  if (liveDsh || (r && r.output && r.output.kind === "text"))
+    mkOutBtn(I18n.t("复制"), I18n.t("复制输出文本"), () =>
+      appClipboardCopy(outputTextOf(node), I18n.t("已复制到剪贴板")),
+    );
+  mkOutBtn(I18n.t("清空"), I18n.t("清空本节点输出与会话（历史 / 工具日志一并重置）"), () =>
+    clearOutput(node),
+  );
+  mkOutBtn(I18n.t("浏览"), I18n.t("弹窗大窗显示本节点输出内容"), () => browseOutput(node));
+  /* 审阅入口：普通（非智能）文本处理节点 → 与 复制/清空/浏览 并列 · 橙色 */
+  if (node.kind === "proc_text" && !node.agent && typeof procReviewOpenEl === "function")
+    ob.appendChild(procReviewOpenEl(node));
+  return ob;
+}
+
+/* 输出面板（浏览态）：标题行挂**与编辑态同一套**按钮组（复制 / 清空 / 浏览 / 审阅）
+   和左缘拖宽条 —— 未选中的节点（预览形态）也要能直接复制输出，不必先点选它。
+   元素 id 与编辑态一致，所以运行中的流式增量与 fillPreviews 的图像回填都不用另写一套。 */
 function browseProcOutEl(node) {
   const r = selResult(node);
   const liveDsh = !!(node.running && typeof isDshTask === "function" && isDshTask(node));
@@ -8175,6 +8237,7 @@ function browseProcOutEl(node) {
   const out = document.createElement("div");
   out.className = "n-out";
   out.style.width = node.outW + "px";
+  out.appendChild(outResizeHandleEl(node));
   const nA = attemptCount(node);
   const oh = document.createElement("div");
   oh.className = "n-out-head";
@@ -8188,6 +8251,8 @@ function browseProcOutEl(node) {
               : "")),
     ),
   );
+  /* 按钮组与编辑态同一份实现：未选中的节点（预览形态）也能直接复制输出 */
+  oh.appendChild(outButtonsEl(node, liveDsh, r));
   out.appendChild(oh);
   if (liveDsh) {
     if (node.kind !== "agent_task" && typeof dshToolDetailsEl === "function") {
@@ -11950,23 +12015,8 @@ function buildBody(node, body) {
       const out = document.createElement("div");
       out.className = "n-out";
       out.style.width = node.outW + "px";
-      const rz = document.createElement("div");
-      rz.className = "n-out-resize";
-      rz.title = I18n.t("拖拽左侧边缘调整输出面板宽度（← 拉宽 · → 收窄）");
-      rz.addEventListener("mousedown", (ev) => {
-        ev.stopPropagation();
-        ev.preventDefault();
-        S.preDragSnap = snapshotState();
-        S.drag = {
-          mode: "outresize",
-          id: node.id,
-          sx: ev.clientX,
-          sy: ev.clientY,
-          ow: node.outW,
-          moved: false,
-        };
-      });
-      out.appendChild(rz);
+      /* 左缘拖宽条与右对齐按钮组（复制 / 清空 / 浏览 / 审阅）都与浏览态共用同一份实现 */
+      out.appendChild(outResizeHandleEl(node));
       const oh = document.createElement("div");
       oh.className = "n-out-head";
       const nA = attemptCount(node);
@@ -11984,36 +12034,7 @@ function buildBody(node, body) {
                   : "")),
         ),
       );
-      /* 右对齐方形按钮组：复制 / 清空 / 浏览 */
-      const ob = document.createElement("div");
-      ob.className = "n-out-btns";
-      const mkOutBtn = (label, title, fn) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "n-out-btn";
-        b.textContent = label;
-        b.title = title || label;
-        b.onclick = (ev) => {
-          ev.stopPropagation();
-          fn();
-        };
-        ob.appendChild(b);
-        return b;
-      };
-      if (liveDsh || (r && r.output && r.output.kind === "text"))
-        mkOutBtn(I18n.t("复制"), I18n.t("复制输出文本"), () =>
-          navigator.clipboard
-            .writeText(outputTextOf(node))
-            .then(() => toast(I18n.t("已复制到剪贴板"), "ok")),
-        );
-      mkOutBtn(I18n.t("清空"), I18n.t("清空本节点输出与会话（历史 / 工具日志一并重置）"), () =>
-        clearOutput(node),
-      );
-      mkOutBtn(I18n.t("浏览"), I18n.t("弹窗大窗显示本节点输出内容"), () => browseOutput(node));
-      /* 审阅入口：普通（非智能）文本处理节点 → 与 复制/清空/浏览 并列 · 橙色 */
-      if (node.kind === "proc_text" && !node.agent && typeof procReviewOpenEl === "function")
-        ob.appendChild(procReviewOpenEl(node));
-      oh.appendChild(ob);
+      oh.appendChild(outButtonsEl(node, liveDsh, r));
       out.appendChild(oh);
       if (nA > 1) out.appendChild(attemptTabsEl(node));
       if (liveDsh) {

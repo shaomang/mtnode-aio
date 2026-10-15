@@ -1,75 +1,18 @@
 "use strict";
 /* ============ 设置（APIs/Config） ============ */
 
-/* ── 设置页写剪贴板：三级链路（本轮修「API Key 复制失败」） ──────────────
-   为什么不能只写 navigator.clipboard.writeText：主窗的会话权限闸（main.js 的
-   setPermissionRequestHandler / setPermissionCheckHandler）只放行 media 一类，
-   **clipboard-write 一律 callback(false)** —— 授权态下一次成功、之后（check 复查）
-   就被拒，渲染层只拿到一个 NotAllowedError，用户看到的就是「复制失败」这四个字。
-   preload 桥 window.api.clipboardWriteText → ipcMain "clipboard:writeText"
-   （main.js：electron clipboard.writeText）不经这层权限闸，是权限受限时唯一稳的路；
-   两个都不可用时再用 execCommand("copy") 兜底（老 Electron / 桥缺失的最后退路）。
-   返回 Promise<{ ok, via, error }>；调用方据此决定 toast 文案，绝不再凭 catch 猜「复制失败」。 */
+/* ── 设置页写剪贴板：薄封装，实现已收敛到全渲染层唯一出口 ───────────────────
+   历史：这条三级链路（① navigator.clipboard.writeText → ② preload 桥
+   window.api.clipboardWriteText → ③ execCommand 兜底）当初就写在这里，为修「设置页
+   API Key 复制失败」—— 根因是主窗权限闸（main.js 的 setPermissionRequestHandler /
+   setPermissionCheckHandler）把 clipboard-write 一律拒，裸调原生 API 的地方只拿到一个
+   NotAllowedError（详见 renderer/app-clipboard.js 文件头）。
+   同一类 bug 后来又在画布节点 OUTPUT 面板的「复制」上复现，于是实现整体搬去
+   renderer/app-clipboard.js（appClipboardWrite），这里只留同名薄封装：老调用点
+   （设置页两处复制按钮 + 别处引用 settingsClipboardWrite 的地方）一个字都不用改。
+   契约不变：返回 Promise<{ ok, via, error }>。 */
 function settingsClipboardWrite(text) {
-  const txt = String(text == null ? "" : text);
-  /* ③ execCommand 兜底：临时 textarea + select + copy，用完立刻摘掉 */
-  const execCopy = () => {
-    try {
-      if (!document.body || !document.execCommand)
-        return Promise.resolve({ ok: false, via: "none", error: "no fallback" });
-      const ta = document.createElement("textarea");
-      ta.value = txt;
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      const done = document.execCommand("copy");
-      document.body.removeChild(ta);
-      return Promise.resolve(
-        done ? { ok: true, via: "exec" } : { ok: false, via: "none", error: "execCommand refused" },
-      );
-    } catch (err) {
-      return Promise.resolve({
-        ok: false,
-        via: "none",
-        error: (err && err.message) || String(err),
-      });
-    }
-  };
-  /* ② preload 桥：不过权限闸，权限受限时唯一稳的路。
-     桥**不存在**时回 null（不许把 null 当成功：它会顺着 obj.ok 的读法变成「已成功」） */
-  const ipcCopy = () => {
-    if (!(window && window.api && typeof window.api.clipboardWriteText === "function"))
-      return Promise.resolve(null);
-    try {
-      return Promise.resolve(window.api.clipboardWriteText(txt)).then((r) =>
-        /* 只有显式 { ok:true } 算成功：桥答不上来（undefined/null/别的形状）一律当失败往下退，
-           绝不因为「拿不到明确的 ok:false」就把没写进去的当成功骗用户 */
-        r && r.ok === true
-          ? { ok: true, via: "ipc" }
-          : { ok: false, via: "ipc", error: (r && r.error) || "bridge did not confirm" },
-      );
-    } catch (err) {
-      /* 桥自己抛了（极少）：继续往下退 */
-      return Promise.resolve(null);
-    }
-  };
-  /* ① Web 标准 API：成功就结束，失败只当「这条不通」，把错误交给下一级 */
-  let first = null;
-  try {
-    const nb = navigator && navigator.clipboard;
-    if (nb && typeof nb.writeText === "function") first = Promise.resolve(nb.writeText(txt));
-  } catch (err) {
-    first = null;
-  }
-  if (first)
-    return first.then(
-      () => ({ ok: true, via: "navigator" }),
-      () => ipcCopy().then((r) => (r && r.ok ? r : execCopy())),
-    );
-  return ipcCopy().then((r) => (r && r.ok ? r : execCopy()));
+  return appClipboardWrite(text);
 }
 
 /* 「打开设置并直接滚到某一节」的请求位（顶栏红色警示点进来时落在「配置数据目录」）。

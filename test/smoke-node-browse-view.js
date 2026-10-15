@@ -75,6 +75,10 @@ const BROWSE_MARK = "/* ============ 浏览态 body 渲染器（NODE_BROWSE_BODY
 const BROWSE_END = "/* ── 函数 / 工具节点 body（参数即端子 · 设置面板）";
 const browseRegion = sliceBetween(jsCanvas, BROWSE_MARK, BROWSE_END);
 const editRegion = jsCanvas.slice(jsCanvas.indexOf("function buildBody(node, body) {"));
+/* 共用 helper 锚点：输出按钮组 / 拖宽条就写在浏览态区块开头，[2] 里要把这段正文排除掉
+   再断言「浏览态区块正文零交互构件」（否则会拿 helper 自己的 createElement("button") 误报） */
+const helperAt = browseRegion ? browseRegion.indexOf("/* 输出面板左缘拖宽条（.n-out-resize）") : -1;
+const helperBlock = browseRegion ? sliceBetween(browseRegion, "function outResizeHandleEl(node) {", "/* 输出面板（浏览态）") : null;
 
 /* 参与浏览态的 kind（函数节点本可复用「代码只读视图」，随工具/函数节点上线而登记，
    故一并列入。素材节点随「未 focus 不显示详细内容」那一轮登记：未选中只列条目标题 +
@@ -138,10 +142,23 @@ console.log("\n[2] 八个 kind 的浏览态渲染器登记齐全 + 浏览态零�
   if (browseRegion) {
     ok(!/createElement\("textarea"\)/.test(browseRegion), "浏览态区块不构造 textarea（不再有输入框）");
     ok(!/createElement\("input"\)/.test(browseRegion), "浏览态区块不构造 input（含 checkbox / 路径框）");
-    ok(!/createElement\("button"\)/.test(browseRegion), "浏览态区块不构造 button（复制 / 清空 / 浏览 / 选择图像等都不渲染）");
-    ok(!/\.onclick\s*=/.test(browseRegion), '浏览态区块不挂 onclick（"点空白换图"那类已撤掉）');
+    /* 输出按钮组 / 拖宽条自本轮起是编辑态与浏览态**共用**的 helper（就在本区块开头），
+       所以这几条只按「helper 之前 + helper 之后」的区块正文断言：正文自身仍不得造按钮 / 挂 onclick。 */
+    const helperEnd = browseRegion.indexOf("function browseProcOutEl(node) {");
+    ok(helperAt > 0 && helperEnd > helperAt, "浏览态区块里能找到共用的输出按钮组 / 拖宽条 helper");
+    ok(!!helperBlock, "能切出共用 helper 的函数体");
+    const regionBody = helperAt > 0 && helperEnd > helperAt
+      ? browseRegion.slice(0, helperAt) + browseRegion.slice(helperEnd)
+      : "";
+    ok(regionBody.length > 1000, "切得出「除共用 helper 之外」的浏览态区块正文（实测 " + regionBody.length + " 字符）");
+    ok(!/createElement\("button"\)/.test(regionBody), "浏览态区块正文不自己造 button（输出按钮组走共用 helper，见 [2b]）");
+    ok(/createElement\("button"\)/.test(helperBlock || ""), "共用 helper 里才造 button（helper 自己只被两态调用）");
+    ok(!/\.onclick\s*=/.test(regionBody), '浏览态区块正文不直接挂 onclick（"点空白换图"那类已撤掉）');
     ok(!/addEventListener\("click"/.test(browseRegion), '浏览态区块不挂 click 监听（只留展示与滚动）');
-    ok(!/class(Name)?\s*=\s*["'](n-text|n-bentries|n-out-btns|n-out-resize)["']/.test(browseRegion), "浏览态区块不复用编辑态控件类名");
+    ok(
+      !/class(Name)?\s*=\s*["'](n-text|n-bentries|n-out-btns|n-out-resize)["']/.test(regionBody),
+      "浏览态区块正文不复用编辑态控件类名（输出按钮组 / 拖宽条走共用 helper）",
+    );
     /* 回填 id 族按现源列全（chat 一族随 kind 下线：会话式渲染改用 agent_task 的 dsh-out-* 族） */
     for (const id of ["st-", "dsh-out-stream-", "dsh-out-tools-", "out-img-", "outimg-", "svpre-", "svimg-", "svempty-", "svthumbs-"])
       ok(browseRegion.includes('"' + id + '" + node.id'), "浏览态沿用同一个回填 id（运行中的流式增量 / fillPreviews 照常命中）：\"" + id + '" + node.id');
@@ -150,12 +167,48 @@ console.log("\n[2] 八个 kind 的浏览态渲染器登记齐全 + 浏览态零�
     ok(browseRegion.includes("n-view-entries"), "批量 / YAML 条目走紧凑条目列表（替掉那一排 textarea）");
   }
 }
+console.log("\n[2b] 输出按钮组 / 拖宽条：编辑态与浏览态共用一份（未选中也能复制）");
+{
+  const rz = funcBody(jsCanvas, "function outResizeHandleEl(node)");
+  ok(!!rz, "存在共用拖宽条 outResizeHandleEl");
+  ok(!!rz && /rz\.className = "n-out-resize"/.test(rz), "拖宽条仍用 .n-out-resize（不用 .n-resize，免得抢整节点缩放手势）");
+  ok(!!rz && /mode: "outresize"/.test(rz) && /ev\.stopPropagation\(\)/.test(rz), "mousedown 仍起 outresize 拖拽并挡住节点拖动");
+  const ob = funcBody(jsCanvas, "function outButtonsEl(node, liveDsh, r)");
+  ok(!!ob, "存在共用按钮组 outButtonsEl（kind 与浏览态各自的可用按钮 / 文案唯一真源）");
+  ok(!!ob && /ob\.className = "n-out-btns"/.test(ob) && /b\.className = "n-out-btn"/.test(ob), "按钮组沿用编辑态类名（CSS 直接命中）");
+  ok(
+    !!ob && /I18n\.t\("复制"\)/.test(ob) && /appClipboardCopy\(outputTextOf\(node\)/.test(ob),
+    "复制走全渲染层唯一出口 appClipboardCopy(outputTextOf(node))（不是裸 clipboard.writeText）",
+  );
+  ok(!!ob && !/navigator\.clipboard/.test(ob), "共用 helper 里没有任何裸 navigator.clipboard 调用");
+  ok(
+    !!ob && /outButtonsEl\(node, liveDsh, r\)/.test(jsCanvas.slice(0, jsCanvas.indexOf("function buildBody(node, body) {"))),
+    "浏览态 OUTPUT 标题行挂的就是这份按钮组（在 buildBody 之前的浏览态区块里调用）",
+  );
+  const browseCall = /outButtonsEl\(node, liveDsh, r\)/.test(
+    funcBody(jsCanvas, "function browseProcOutEl(node)") || "",
+  );
+  const editCall = /outButtonsEl\(node, liveDsh, r\)/.test(editRegion || "");
+  ok(browseCall, "浏览态（未选中 / 预览形态）真的调用它 —— 本轮需求：复制等按钮在预览模式下也出现");
+  ok(editCall, "编辑态改调同一份 helper（两态按钮不会各自漂）");
+  ok(
+    /outResizeHandleEl\(node\)/.test(funcBody(jsCanvas, "function browseProcOutEl(node)") || ""),
+    "浏览态同时补回左缘拖宽条（拖宽与是否选中无关）",
+  );
+  /* 复制按钮的显隐口径两态同源：有已跑完的文本输出或智能节点运行流时才出现 */
+  ok(
+    !!ob && /if \(liveDsh \|\| \(r && r\.output && r\.output\.kind === "text"\)\)/.test(ob),
+    "复制按「有文本可复制」显隐（两态同源；图像输出不出复制）",
+  );
+  ok(!!ob && /procReviewOpenEl\(node\)/.test(ob), "审阅按钮（普通 proc_text）也在共用组里");
+}
+
 console.log("\n[3] 编辑态零回归（只有新增，没有删改）");
 {
   ok(!!editRegion, "能切出编辑态区块（buildBody 起）");
   ok(/const ta = document.createElement\("textarea"\);/.test(editRegion), "编辑态仍构造 textarea（选中后与今天完全一致）");
-  ok(/className = "n-out-btns"/.test(editRegion), "编辑态仍有输出面板按钮组（复制 / 清空 / 浏览）");
-  ok(/className = "n-out-resize"/.test(editRegion), "编辑态仍有输出面板左缘拖宽条");
+  ok(/oh\.appendChild\(outButtonsEl\(node, liveDsh, r\)\)/.test(editRegion), "编辑态标题行仍挂输出面板按钮组（复制 / 清空 / 浏览 / 审阅）");
+  ok(/out\.appendChild\(outResizeHandleEl\(node\)\)/.test(editRegion), "编辑态仍有输出面板左缘拖宽条");
   ok(/className = "n-bentries"|n-bentries/.test(editRegion), "编辑态仍有批量条目编辑列表");
   ok(!jsCanvas.slice(0, jsCanvas.indexOf(BROWSE_MARK)).match(/function browseTextEl\(/), "浏览态 helper 都只在新增区块里定义（不侵入既有函数）");
 }

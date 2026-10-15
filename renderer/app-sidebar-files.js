@@ -772,8 +772,9 @@ function sfRowMenu(x, y, path, isDir) {
   items.push({
     label: I18n.t("复制完整路径"),
     run: () => {
-      window.api.clipboardWriteText(path);
-      toast(I18n.t("已复制路径"), "ok");
+      /* 走唯一出口（renderer/app-clipboard.js）：原来直接调桥 + 立刻 toast，
+         桥没应答时用户照样看到「已复制路径」（假成功）。成功文案不变。 */
+      appClipboardCopy(path, I18n.t("已复制路径"));
     },
   });
   items.push({ sep: true });

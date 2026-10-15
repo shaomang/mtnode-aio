@@ -808,11 +808,7 @@ async function previewNode(node) {
     const copy = document.createElement("button");
     copy.className = "mini primary";
     copy.textContent = I18n.t("复制摘要");
-    copy.onclick = () => {
-      navigator.clipboard
-        .writeText(pre.textContent)
-        .then(() => toast(I18n.t("已复制摘要"), "ok"));
-    };
+    copy.onclick = () => appClipboardCopy(pre.textContent, I18n.t("已复制摘要"));
     const close = document.createElement("button");
     close.className = "mini";
     close.textContent = I18n.t("关闭");
@@ -962,11 +958,7 @@ async function previewNode(node) {
   const copy = document.createElement("button");
   copy.className = "mini primary";
   copy.textContent = I18n.t("复制请求");
-  copy.onclick = () => {
-    navigator.clipboard
-      .writeText(pre.textContent)
-      .then(() => toast(I18n.t("已复制请求"), "ok"));
-  };
+  copy.onclick = () => appClipboardCopy(pre.textContent, I18n.t("已复制请求"));
   const close = document.createElement("button");
   close.className = "mini";
   close.textContent = I18n.t("关闭");
@@ -10798,7 +10790,7 @@ function openGlobalRefsDialog(fromNode) {
       toast(I18n.t("无可复制的文本（输出为图像）"), "warn");
       return;
     }
-    navigator.clipboard.writeText(txt).then(() => toast(I18n.t("已复制"), "ok"));
+    appClipboardCopy(txt, I18n.t("已复制"));
   };
   const close = document.createElement("button");
   close.className = "mini";
@@ -10909,7 +10901,7 @@ function browseOutput(node) {
       toast(I18n.t("无可复制的文本（输出为图像）"), "warn");
       return;
     }
-    navigator.clipboard.writeText(txt).then(() => toast(I18n.t("已复制"), "ok"));
+    appClipboardCopy(txt, I18n.t("已复制"));
   };
   const close = document.createElement("button");
   close.className = "mini";

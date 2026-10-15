@@ -1014,16 +1014,11 @@ function fvPeekImgUrl(p, bust) {
   return "";
 }
 
+/* 写剪贴板：走全渲染层唯一出口（renderer/app-clipboard.js 的三级链路）。
+   契约：Promise<{ ok, via, error }>，**不 reject** —— 调用方读 r.ok（别再写两参 then 的失败分支，
+   那条分支再也不会触发，失败会变成静默）。 */
 function fvPeekCopy(txt) {
-  const t = String(txt == null ? "" : txt);
-  if (typeof dshClipboardWrite === "function") return dshClipboardWrite(t);
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    return Promise.resolve(navigator.clipboard.writeText(t));
-  }
-  if (window.api && window.api.clipboardWriteText) {
-    return Promise.resolve(window.api.clipboardWriteText(t));
-  }
-  return Promise.reject(new Error("no clipboard"));
+  return appClipboardWrite(String(txt == null ? "" : txt));
 }
 
 /* 面板当前是否开着（供工具条徽标画「已在看这个文件」的状态） */
@@ -1161,16 +1156,18 @@ function ensureFilePeek() {
       toast(I18n.t("没有可复制的内容"), "warn");
       return;
     }
-    fvPeekCopy(txt).then(
-      () => toast(I18n.t("已复制文件内容"), "ok"),
-      () => toast(I18n.t("复制失败"), "err"),
+    fvPeekCopy(txt).then((r) =>
+      r && r.ok
+        ? toast(I18n.t("已复制文件内容"), "ok")
+        : toast(appClipboardFailureText(r), "err"),
     );
   };
   host.querySelector("#fpCopyPathBtn").onclick = () => {
     if (!FV_PEEK.path) return;
-    fvPeekCopy(FV_PEEK.path).then(
-      () => toast(I18n.t("已复制文件路径"), "ok"),
-      () => toast(I18n.t("复制失败"), "err"),
+    fvPeekCopy(FV_PEEK.path).then((r) =>
+      r && r.ok
+        ? toast(I18n.t("已复制文件路径"), "ok")
+        : toast(appClipboardFailureText(r), "err"),
     );
   };
   host.querySelector("#fpRevealBtn").onclick = () => {

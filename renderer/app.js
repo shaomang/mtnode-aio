@@ -18402,9 +18402,11 @@ function textSelectionWantsNativeCopy() {
   }
   return false;
 }
-/* 文字复制出口（navigator.clipboard.writeText / preload 桥）不触发 copy 事件，但它们同样意味着
-   「用户手里的粘贴板是一份文字」—— 包一层，让内部节点粘贴板及时退位（否则在节点输入框里粘贴
-   文字会被当成「粘贴节点」）。包不上（对象只读）就退回 copy 事件 / 切窗口两条路。 */
+/* 文字复制出口（renderer/app-clipboard.js 的三级链路：navigator.clipboard.writeText → preload 桥
+   → execCommand）不触发 copy 事件，但它们同样意味着「用户手里的粘贴板是一份文字」—— 包一层，
+   让内部节点粘贴板及时退位（否则在节点输入框里粘贴文字会被当成「粘贴节点」）。
+   两个出口都包：全仓写剪贴板都走 app-clipboard.js，而它正是按这个顺序调用这两个的。
+   包不上（对象只读）就退回 copy 事件 / 切窗口两条路。 */
 (function watchTextCopyOutlets() {
   try {
     const cb = navigator.clipboard;
@@ -23688,7 +23690,7 @@ function ensureYamlViewer() {
   host.querySelector("#yamlViewerReloadBtn").onclick = () => {
     if (_yamlViewerState.path) openYamlViewer(_yamlViewerState.path, { force: true });
   };
-  host.querySelector("#yamlViewerCopyBtn").onclick = async () => {
+  host.querySelector("#yamlViewerCopyBtn").onclick = () => {
     const ed = host.querySelector("#yamlViewerEditor");
     const pre = host.querySelector("#yamlViewerCode");
     const text = ed
@@ -23696,15 +23698,9 @@ function ensureYamlViewer() {
       : pre && pre.dataset.raw != null
         ? pre.dataset.raw
         : "";
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText)
-        await navigator.clipboard.writeText(text);
-      else if (window.api && window.api.clipboardWriteText)
-        await window.api.clipboardWriteText(text);
-      toast(I18n.t("已复制"), "ok");
-    } catch (e) {
-      toast(I18n.t("复制失败") + ": " + ((e && e.message) || e), "warn");
-    }
+    /* 走全渲染层唯一出口（renderer/app-clipboard.js 的三级链路）：
+       原来是「原生 API 不成才退桥」，原生被权限闸拒时连桥都不试、直接弹失败。 */
+    appClipboardCopy(text, I18n.t("已复制"));
   };
   host.querySelector("#yamlViewerRevealBtn").onclick = () => {
     const p = _yamlViewerState.path;
@@ -24208,18 +24204,11 @@ function ensureMdViewer() {
     await flushMdViewerSave();
     openMdViewer(_mdViewerState.path, { force: true });
   };
-  host.querySelector("#mdViewerCopyBtn").onclick = async () => {
+  host.querySelector("#mdViewerCopyBtn").onclick = () => {
     /* 取当前草稿（所见即所得档要序列化一次），不是打开时那份原文 */
     const text = mdViewerDraftText();
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText)
-        await navigator.clipboard.writeText(text);
-      else if (window.api && window.api.clipboardWriteText)
-        await window.api.clipboardWriteText(text);
-      toast(I18n.t("已复制"), "ok");
-    } catch (e) {
-      toast(I18n.t("复制失败") + ": " + ((e && e.message) || e), "warn");
-    }
+    /* 同 YAML 阅读器：走唯一出口，原生被权限闸拒时还能退到 preload 桥 */
+    appClipboardCopy(text, I18n.t("已复制"));
   };
   host.querySelector("#mdViewerRevealBtn").onclick = () => {
     const p = _mdViewerState.path;
@@ -27584,9 +27573,9 @@ function showThinking(node) {
       toast(I18n.t("暂无思考内容"), "warn");
       return;
     }
-    navigator.clipboard
-      .writeText(pre2.textContent)
-      .then(() => toast(I18n.t("已复制思考内容"), "ok"));
+    /* 走唯一出口（renderer/app-clipboard.js）：原来裸调原生 API，被权限闸拒就只剩一句
+       unhandled rejection，用户这边什么都没有。 */
+    appClipboardCopy(pre2.textContent, I18n.t("已复制思考内容"));
   };
   foot.appendChild(close);
   foot.appendChild(copy);
@@ -27613,9 +27602,8 @@ function showMsgThinking(node, msg) {
   copy.className = "mini primary";
   copy.textContent = I18n.t("复制");
   copy.onclick = () => {
-    navigator.clipboard
-      .writeText(pre.textContent || "")
-      .then(() => toast(I18n.t("已复制思考内容"), "ok"));
+    /* 同上：思考内容复制也走唯一出口（成功文案不变） */
+    appClipboardCopy(pre.textContent || "", I18n.t("已复制思考内容"));
   };
   foot.appendChild(close);
   foot.appendChild(copy);
@@ -33734,13 +33722,16 @@ async function doExportBase64() {
   body.appendChild(ta);
   foot.appendChild(mkMiniBtn(I18n.t("返回"), exportWorkflowDialog));
   foot.appendChild(
-    mkMiniBtn(I18n.t("复制到剪贴板"), async () => {
-      const c = await window.api.clipboardWriteText(r.base64);
-      toast(
-        c && c.ok
-          ? I18n.t("已复制 Base64 到剪贴板（") + fmtBytes(r.bytes) + "）"
-          : I18n.t("复制失败：") + ((c && c.error) || I18n.t("未知错误")),
-        c && c.ok ? "ok" : "err",
+    mkMiniBtn(I18n.t("复制到剪贴板"), () => {
+      /* 走唯一出口（renderer/app-clipboard.js 的三级链路）：这里原来直连 preload 桥 ——
+         能用，但全仓的复制出口只应该有一个（桥没应答时也得知道失败原因）。 */
+      appClipboardWrite(r.base64).then((c) =>
+        toast(
+          c && c.ok
+            ? I18n.t("已复制 Base64 到剪贴板（") + fmtBytes(r.bytes) + "）"
+            : appClipboardFailureText(c),
+          c && c.ok ? "ok" : "err",
+        ),
       );
     }, true),
   );

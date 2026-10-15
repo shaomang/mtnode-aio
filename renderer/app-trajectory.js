@@ -2398,19 +2398,19 @@
           b.classList.remove("ok");
         }, 1200);
       };
-      const fail = () => {
+      const fail = (r) => {
         b.textContent = T("复制失败");
-        setTimeout(() => (b.textContent = label || T("复制")), 1200);
+        /* 这一页不用 toast（面板内的一枚小按钮就是全部反馈）—— 准确原因放在 title 里，
+           鼠标停一下就能看见「为什么没复制成」，不再是光秃秃一句「复制失败」。 */
+        b.title = appClipboardFailureText(r || {});
+        setTimeout(() => {
+          b.textContent = label || T("复制");
+          b.title = T("复制原文到剪贴板");
+        }, 1200);
       };
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(String(text == null ? "" : text)).then(done, fail);
-          return;
-        }
-      } catch {
-        /* 走下面的兜底 */
-      }
-      fail();
+      /* 走全渲染层唯一出口（renderer/app-clipboard.js）：原来自带「原生 API + fail 兜底」，
+         原生那一步被权限闸拒时就连桥都不试，直接判失败。 */
+      appClipboardWrite(String(text == null ? "" : text)).then((r) => (r && r.ok ? done() : fail(r)), fail);
     });
     return b;
   }

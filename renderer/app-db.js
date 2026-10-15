@@ -5835,8 +5835,10 @@ function ixMdBlock(text, cls) {
   md.innerHTML = ixMdHtml(text);
   return md;
 }
-/* 写剪贴板：沿用会话那套 dshClipboardWrite（navigator.clipboard → preload 桥回退），
-   它不在（被单独抠出来跑等边角）时退到原生 API；两条都失败就只当没复制，不报错。 */
+/* 写剪贴板：走全渲染层唯一出口（renderer/app-clipboard.js 的三级链路：
+   ① navigator.clipboard.writeText → ② preload 桥 → ③ execCommand 兜底）。
+   原来这里「失败就只当没复制、不报错」—— 用户点一下没有任何反馈，等于静默丢东西；
+   现在失败也弹准确原因（与全仓复制按钮同一口径）。 */
 function ixCopyText(txt, okMsg) {
   const s = String(txt == null ? "" : txt);
   const done = () => {
@@ -5844,14 +5846,14 @@ function ixCopyText(txt, okMsg) {
       if (typeof toast === "function") toast(okMsg, "ok");
     } catch (_) {}
   };
+  const fail = (r) => {
+    try {
+      if (typeof toast === "function") toast(appClipboardFailureText(r || {}), "err");
+    } catch (_) {}
+  };
   try {
-    if (typeof dshClipboardWrite === "function") {
-      Promise.resolve(dshClipboardWrite(s)).then(done).catch(() => {});
-      return;
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      Promise.resolve(navigator.clipboard.writeText(s)).then(done).catch(() => {});
-    }
+    if (typeof appClipboardWrite === "function") appClipboardWrite(s).then((r) => (r && r.ok ? done() : fail(r)), fail);
+    else if (typeof dshClipboardWrite === "function") dshClipboardWrite(s).then((r) => (r && r.ok ? done() : fail(r)), fail);
   } catch (_) {}
 }
 /* 总结区：小标题 + 「复制总结 Markdown」+ 渲染后的正文。复制取**渲染前的源码**

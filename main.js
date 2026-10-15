@@ -9005,23 +9005,32 @@ app.whenReady().then(() => {
     },
   });
   mainWin.loadFile(join(__dirname, "renderer", "index.html"));
-  /* 麦克风等**媒体权限**放行：Electron 默认拒绝一切权限请求，语音输入（对话输入框的录音
-     按钮，走 dsh 官方本地 SenseVoice）会直接拿不到 getUserMedia。只放行 media 一类，且只
-     认本机页面（file: / 自定义协议），其余权限（通知 / 定位 / 剪贴板读…）仍走 Electron 默认
-     拒绝 —— 要新增就显式加进 MEDIA_PERMISSIONS，不要整放开。两个 handler 都装：request
-     管「请求时批准」，check 管「已授权状态下复查」。装在 loadFile 之后、用户点录音之前，
-     时序上稳（handler 生效与页面加载无关）。 */
+  /* 放行两类权限，都只认本机页面（file: / 自定义协议）：
+       ① **媒体权限**（media / audioCapture / videoCapture）：Electron 默认拒绝一切权限请求，
+          语音输入（对话输入框的录音按钮，走 dsh 官方本地 SenseVoice）会直接拿不到 getUserMedia；
+       ② **剪贴板写入**（clipboard-sanitized-write）：渲染层自己的复制按钮走异步剪贴板 API 时
+          Chromium 要复查这条权限，此前它不是「被拒就是成功」，而是**一律拒** —— 用户看到的就是
+          「点复制按钮报错 / 复制失败」（设置页 API Key、画布节点 OUTPUT 面板都撞过）。
+          只放「写」，**不放 clipboard-read**（读剪贴板是另一件事，别顺手放开）。
+     其余权限（通知 / 定位 / 摄像头以外的…）仍走 Electron 默认拒绝 —— 要新增就显式加进下面两个
+     集合之一，不要整放开。两个 handler 都装：request 管「请求时批准」，check 管「已授权状态下
+     复查」。装在 loadFile 之后、用户点录音之前，时序上稳（handler 生效与页面加载无关）。
+     注：剪贴板这条路渲染层仍保留 preload 桥兜底（renderer/app-clipboard.js 的三级链路），
+     放行只是让最标准的 ① 也能直接用。 */
   {
     const MEDIA_PERMISSIONS = new Set(["media", "audioCapture", "videoCapture"]);
+    const CLIPBOARD_PERMISSIONS = new Set(["clipboard-sanitized-write"]);
     const isLocalPage = (url) => !/^https?:/i.test(String(url || ""));
+    const permissionAllowed = (permission) =>
+      MEDIA_PERMISSIONS.has(permission) || CLIPBOARD_PERMISSIONS.has(permission);
     const ses = mainWin.webContents.session;
     ses.setPermissionRequestHandler((wc, permission, callback, details) => {
       const url = (details && details.requestingUrl) || (wc && wc.getURL && wc.getURL()) || "";
-      callback(MEDIA_PERMISSIONS.has(permission) && isLocalPage(url));
+      callback(permissionAllowed(permission) && isLocalPage(url));
     });
     ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
       const url = (details && details.requestingUrl) || requestingOrigin || "";
-      return MEDIA_PERMISSIONS.has(permission) && isLocalPage(url);
+      return permissionAllowed(permission) && isLocalPage(url);
     });
   }
   /* 应用目录零数据：启动只读体检（违规即记日志 + 弹窗报警，不静默写入） */

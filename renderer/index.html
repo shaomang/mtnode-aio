@@ -633,6 +633,12 @@
      无加载期依赖（window.api / I18n / mtDialogForm 全在调用期取），故只要排在用它的
      app.js 之前即可；审阅侧同样按调用期取用。 -->
 <script src="app-inline-img.js"></script>
+<!-- 剪贴板「写」的唯一出口（renderer/app-clipboard.js）：三级链路
+     ① navigator.clipboard.writeText → ② preload 桥 window.api.clipboardWriteText
+     → ③ execCommand 兜底，返回 { ok, via, error }。所有复制按钮都调它，不许裸调原生 API。
+     必须排在最前：它是全渲染层（含 app.js / app-canvas.js / app-nodes.js）的公共出口，
+     虽然彼此都在调用期取，但加载顺序写在这里 = 依赖关系写在这里。 -->
+<script src="app-clipboard.js"></script>
 <script src="app.js"></script>
 <!-- 模型形态识别（文本 / 图像生成）：纯函数段，设置页模型徽标、节点服务商 / 模型
      下拉、运行期兜底、导入导出解析共用同一份判定（见 renderer/app-model-kind.js）。
