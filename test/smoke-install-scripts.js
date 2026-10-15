@@ -32,6 +32,10 @@
  *        plugins/catalog.default.json 与各包 steps.json，并钉住
  *        「零非 ASCII + 无 BOM + 仍是合法 JSON」。`steps.json` / `package-lock.json` /
  *        ComfyUI 工作流 / Live2D 模型配置有意保留中文，不在本节。
+ *   [15] 原生命令的 stderr 不许中止安装：`$ErrorActionPreference = "Stop"` 下 PS 5.1 会把
+ *        pip / python / curl 写到 stderr 的任何内容变成 terminating error（`2>$null` / `2>&1`
+ *        都挡不住），yue 的 torch 探针因此在没装 torch 的 venv 上当场终止安装；本节既查
+ *        脚手架里没有裸探针，也真跑一遍守卫（夹具：路径不存在 + 退出码 1）。
  *
  * **与 tts-pack 绑定的那几节（[7] 真跑 tts 安装脚本、[8]/[8.2]/[8.3] reqs-fixups 单一真源、
  *   [9] tts-pack 的打包白名单、[10]/[10.2] torch 档位链、[11]/[11.2] resampy 自愈）已随
@@ -1236,6 +1240,201 @@ for (const rel of ["llama-pack/manifest.json", "music3-pack/manifest.json", "h3-
       fs.rmSync(fx, { recursive: true, force: true });
     } catch {}
   }
+}
+
+/* ---------------- [15] 原生命令的 stderr 不许中止安装 ----------------
+   现场（2026-11 的真实故障，yue-pack/scripts/install.ps1 的 torch 探针）：
+   脚本开着 `$ErrorActionPreference = "Stop"`（全篇如此），而 **Windows PowerShell 5.1 会把
+   原生命令写到 stderr 的任何内容变成 terminating error**（PS 7 只在
+   `$PSNativeCommandUseErrorActionPreference` 打开时才这样，宿主跑的正是 5.1）。
+   于是 `$torchVerNow = (& $venvPy -c "import torch;..." 2>$null | Out-String).Trim()`
+   在没装 torch 的 venv 上（python 打 ModuleNotFoundError traceback）当场终止整个安装，
+   用户看到的就是「进度 16 之后什么也没发生，最后一行 NativeCommandError」——而那一刻
+   脚本还没走到 torch 安装步骤，所以现场是「装完依赖、没有 torch、日志没有原因」。
+   实测（本节的自检把它钉死）：`2>$null` / `2>&1` 在 5.1 上**都挡不住**，只有把
+   `$ErrorActionPreference` 临时降到 Continue 再跑才行。
+   所以判据两条：① 脚手架里不再有裸的原生探针；② 那份守卫能真跑（夹具：路径不存在 +
+   进程退出码 1，都必须继续往下走，而不是把脚本掀翻）。 */
+console.log("\n[15] 原生命令的 stderr 不许中止安装：yue 脚手架的 torch 探针走守卫，守卫真跑");
+const yueInstallPs = read("yue-pack/scripts/install.ps1");
+/* 先掐掉注释：脚本自己的 WHY 注释里就引着旧写法（那是给下一个人看的历史），不排除注释
+   这条判据会一直假红 —— 判据要管的是**代码**。 */
+const yueInstallCode = yueInstallPs
+  .split(/\r?\n/)
+  .filter((l) => !/^\s*#/.test(l))
+  .join("\n");
+/* 允许残留的裸探针只有两处，都是**有意中止**的（它们后面紧跟 throw / 或本身就是判定）：
+   gradio 自检失败就要停（"RuntimeError: Gradio not installed" 那道闸）；
+   "checking that the ui.py ..." 只是进度文案，不是命令。
+   yue2 包那次导入探针不算：它后面跟着「import 失败只 warning、继续走」的分支，所以它必须
+   经守卫（否则 PS 5.1 上 import 失败会把脚本中止在那一步，warning 永远打不出来）。 */
+const BARE_PROBE_OK = ['import gradio; print', 'checking that the ui.py'];
+const bareVenvProbes = yueInstallCode
+  .split("\n")
+  .filter((l) => l.indexOf("$venvPy -c") >= 0)
+  .filter((l) => !BARE_PROBE_OK.some((keep) => l.indexOf(keep) >= 0));
+ok(
+  bareVenvProbes.length === 0,
+  "[15] yue install.ps1 的代码里不再有裸的 venv 探针（`& $venvPy -c ...`：5.1 上它的 stderr 会终止安装）" +
+    (bareVenvProbes.length ? " 残留 " + bareVenvProbes.length + " 处：" + bareVenvProbes[0].trim().slice(0, 110) : ""),
+);
+has(yueInstallCode, '@("-c", "import yue2', "[15] yue2 包的导入探针也走守卫（它的失败路径只是 warning）");
+has(yueInstallPs, "$NativeQuiet = {", "[15] 守卫的降级跑法在（$NativeQuiet）");
+has(yueInstallPs, "function Invoke-NativeHost", "[15] 守卫被包成函数");
+has(yueInstallPs, "function Get-VenvTorchVersion", "[15] torch 探针走 Get-VenvTorchVersion");
+has(yueInstallPs, "$torchVerNow = Get-VenvTorchVersion $venvPy", "[15] 3b 的探针改走守卫（历史故障点）");
+has(yueInstallPs, "$torchVerFinal = Get-VenvTorchVersion $venvPy", "[15] 5b 的探针也走守卫");
+has(
+  yueInstallPs,
+  "torch is not in the venv at all -- the dependency step did not pull it in",
+  "[15] torch 缺失时给出可读原因（不再是「莫名其妙停住」）",
+);
+/* 原生命令的 stderr **重定向**（`2>$null` / `2>&1`）配上 $ErrorActionPreference = "Stop" 就是
+   终止错误 —— 报告里断掉的那一行正是这个写法。所以这个脚本里每一处重定向都必须落在「守卫
+   内部」或「显式降到 Continue 的作用域」里，别处不许再出现；新写一行重定向会被这条判据当场
+   拦下，而不是等用户在安装窗里看它断在 40%。 */
+const YUE_REDIRECT_OK = [
+  "$script:MTNativeOut = @(& $File @Arguments 2>&1", // 守卫自己（作用域内降到 Continue）
+  "$out = @(& $PS_EXE @hArgs 2>&1", // 取解释器（同一处的 Continue 作用域）
+  '& curl.exe -L --retry 5 --retry-delay 3 -C - -o "$w1"', // SJTU 轮子下载（Continue 作用域）
+  '& curl.exe -L --retry 5 --retry-delay 3 -C - -o "$w2"',
+];
+const yueRedirects = yueInstallCode
+  .split("\n")
+  .filter((l) => /2>\$null|2>&1/.test(l))
+  .filter((l) => !YUE_REDIRECT_OK.some((keep) => l.indexOf(keep) >= 0));
+ok(
+  yueRedirects.length === 0,
+  "[15] yue install.ps1 的 stderr 重定向只剩守卫 / Continue 作用域里的那几处" +
+    (yueRedirects.length
+      ? "（残留 " + yueRedirects.length + " 处：" + yueRedirects[0].trim().slice(0, 110) + "）"
+      : ""),
+);
+has(yueInstallCode, "function Get-NvidiaInfo", "[15] 显卡探针函数还在");
+has(
+  yueInstallCode,
+  "[void](Invoke-NativeHost $smiExe",
+  "[15] nvidia-smi 探针也走守卫（它原先是同一个雷的静默版：stderr 一响就被当成「没有 N 卡」）",
+);
+has(
+  yueInstallCode,
+  'foreach ($l in ($script:MTNativeMsg -split "`r?`n"))',
+  "[15] 显卡探针只认长得像 CSV 的那一行（stderr 噪声不许顶掉真显卡）",
+);
+if (process.platform !== "win32") {
+  console.log("  skip  [15] 守卫真跑需要 Windows + PowerShell");
+} else {
+  const gStart = yueInstallPs.indexOf("$NativeQuiet = {");
+  const gEnd = yueInstallPs.indexOf('Write-Host "[yue2-install] ===');
+  const guardBlock = gStart >= 0 && gEnd > gStart ? yueInstallPs.slice(gStart, gEnd) : "";
+  ok(guardBlock.indexOf("Get-VenvTorchVersion") >= 0, "[15] 从脚本里切出了守卫 + 探针那段（" + guardBlock.length + " 字符）");
+  const fx = fs.mkdtempSync(path.join(os.tmpdir(), "mtnode-nativeguard-"));
+  const fixture = path.join(fx, "guard.ps1");
+  const emptyVenv = path.join(fx, "venv");
+  fs.mkdirSync(emptyVenv, { recursive: true });
+  const stubStderr = path.join(fx, "stub_stderr.py");
+  const stubExit1 = path.join(fx, "stub_exit1.py");
+  fs.writeFileSync(stubStderr, "import sys\nsys.stderr.write('noise on stderr\\n')\nprint('ok')\n", "utf8");
+  fs.writeFileSync(stubExit1, "import sys\nsys.exit(1)\n", "utf8");
+  /* 真解释器优先（更贴近现场：python 真往 stderr 打 traceback），取不到就用 PATH 上的 python */
+  const realPy = [
+    path.join(process.env.APPDATA || "", "pipeline-console", "python", "standalone", "3.12", "python", "python.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python312", "python.exe"),
+  ].find((p) => p && fs.existsSync(p));
+  const pyExe = realPy || "python";
+  const emptyPy = path.join(emptyVenv, "python.exe");
+  /* 夹具之所以不走内联命令：`& exe script.py` 里那几个路径都得转义，而 `&` 一旦被拼进
+     一句话里就不再是行首调用运算符（PS 5.1 当场 ParserError）。子脚本单独落盘最省事。 */
+  const childPs1 = path.join(fx, "child.ps1");
+  fs.writeFileSync(
+    childPs1,
+    ["& '" + pyExe + "' '" + stubStderr + "' | Out-Host", "& '" + pyExe + "' '" + stubExit1 + "' | Out-Host"].join("\r\n") + "\r\n",
+    "utf8",
+  );
+  fs.writeFileSync(
+    fixture,
+    [
+      '$ErrorActionPreference = "Stop"',
+      guardBlock,
+      "$venvPy = '" + emptyPy + "'",
+      "Write-Host ('probe-on-empty-venv=[' + (Get-VenvTorchVersion $venvPy) + ']')",
+      "Write-Host 'survived-empty-venv'",
+      "& '" + path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe") + "' -NoProfile -ExecutionPolicy Bypass -File '" + childPs1 + "' | Out-Host",
+      "Write-Host 'survived-child'",
+    ].join("\r\n") + "\r\n",
+    "utf8",
+  );
+  const r = spawnSync(PS_EXE, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", fixture], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 120000,
+  });
+  const out = String(r.stdout || "");
+  console.log("     [15] 夹具输出：" + JSON.stringify(out.trim().slice(-220)));
+  ok(
+    out.indexOf("probe-on-empty-venv=[]") >= 0,
+    "[15] 空 venv / 解释器不存在时探针回空串，不再把脚本掀翻（真跑）",
+  );
+  ok(out.indexOf("survived-empty-venv") >= 0, "[15] 空 venv 之后脚本继续往下走（真跑）");
+  ok(
+    out.indexOf("survived-child") >= 0,
+    "[15] 子进程往 stderr 打字 + 退出码 1 之后安装还在继续 —— 这正是报告里断掉的那一步（真跑，夹具" +
+      (realPy ? "用真 python" : "用 PATH 上的 python") + "）",
+  );
+  ok(r.status === 0, "[15] 夹具进程退出码 0（实得 " + r.status + "）");
+
+  /* 第二个真跑夹具：显卡探针。它就是同一个雷的**静默版** —— 老写法
+     `& nvidia-smi ... 2>$null` 在 5.1 上被 try/catch 吞成 $null，调用方读成「没有 N 卡」并在
+     好卡上拒绝安装（reason=no_cuda）。夹具给一只往 stderr 打字、CSV 走 stdout 的替身，
+     断言探针仍然认出显卡、且脚本继续往下走。 */
+  const nvStart = yueInstallPs.indexOf("function Get-NvidiaInfo {");
+  const nvEnd = yueInstallPs.indexOf("Write-Progress-Line 4 ");
+  const nvBlock = nvStart >= 0 && nvEnd > nvStart ? yueInstallPs.slice(nvStart, nvEnd) : "";
+  ok(nvBlock.indexOf("Invoke-NativeHost") >= 0, "[15] 从脚本里切出了显卡探针那段（" + nvBlock.length + " 字符）");
+  const nvBin = path.join(fx, "nvbin");
+  fs.mkdirSync(nvBin, { recursive: true });
+  fs.writeFileSync(
+    path.join(nvBin, "nvidia-smi.cmd"),
+    [
+      "@echo off",
+      ">&2 echo nvidia-smi stub: a driver warning on stderr",
+      "echo NVIDIA GeForce RTX 4090, 610.88, 24564 MiB",
+      "",
+    ].join("\r\n"),
+    "ascii",
+  );
+  const nvFixture = path.join(fx, "nv.ps1");
+  fs.writeFileSync(
+    nvFixture,
+    [
+      '$ErrorActionPreference = "Stop"',
+      guardBlock,
+      nvBlock,
+      "$env:PATH = '" + nvBin + ";" + "' + $env:PATH",
+      "$g = Get-NvidiaInfo",
+      "if ($null -eq $g) { Write-Host 'nv-null'; exit 3 }",
+      "Write-Host ('nv-ok=' + $g.name + '|' + $g.driver + '|' + $g.major + '|' + $g.memMb)",
+      "Write-Host 'survived-nv'",
+      "",
+    ].join("\r\n"),
+    "utf8",
+  );
+  const nv = spawnSync(PS_EXE, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", nvFixture], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 60000,
+  });
+  const nvOut = String(nv.stdout || "");
+  console.log("     [15] 显卡夹具输出：" + JSON.stringify(nvOut.trim().slice(-200)));
+  ok(
+    nvOut.indexOf("nv-ok=NVIDIA GeForce RTX 4090|610.88|610|24564") >= 0,
+    "[15] 替身往 stderr 打字后显卡仍被认出来（老写法在这里返回 $null = 误报「没有 N 卡」）",
+  );
+  ok(nvOut.indexOf("survived-nv") >= 0, "[15] 显卡探针之后脚本继续往下走（真跑）");
+  ok(nv.status === 0, "[15] 显卡夹具进程退出码 0（实得 " + nv.status + "）");
+  try {
+    fs.rmSync(fx, { recursive: true, force: true });
+  } catch {}
 }
 
 cleanMachineRun().then(

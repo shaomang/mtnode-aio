@@ -6339,6 +6339,29 @@ body.theme-light button.hist-proc-bar:hover {
   font-weight: 400
 }
 
+/* ── 峰谷颜色标记（用户口径）：给左侧的模型名 / 轮次标题**整段文字**上色 ──
+   「移除会话里的峰 / 谷文字标记，改成用颜色标记左侧模型：谷 = 绿、峰 = 橙红，
+   鼠标 hover 显示峰谷与价位简要」（上一版的 6px 圆点 .tok-peak-dot 已整体下线）。
+   色值只取主题变量（--green / --orange），浅色主题下这两个变量本身就切到深一档，
+   不必另写色板；span 上的颜色盖住 .tok-badge-table td 的 --ink。 */
+.tok-model-name,
+.tok-round-title-txt {
+  display: inline-block
+}
+
+.tok-peak-off {
+  color: var(--green, #5fd68a)
+}
+
+.tok-peak-peak {
+  color: var(--orange, #ff8f2e)
+}
+
+.tok-peak-off,
+.tok-peak-peak {
+  cursor: help
+}
+
 .tok-badge-meta {
   margin-top: 5px;
   color: var(--muted);
@@ -6395,49 +6418,6 @@ body.theme-light button.hist-proc-bar:hover {
 .tok-badge-table tr.tok-badge-total td.tok-badge-cost {
   color: var(--green);
   font-weight: 600
-}
-
-/* 「合计计费」旁的口径说明入口（app-cost.js costHelpEl）：
-   小圆形 ? ，hover 出 tooltip、点击开完整口径弹窗；只新增类，不动既有格子样式。
-   金额行末的 * = 单价是兜底估的（价格表里没有的模型按 flash 价），说明里第 3 条讲它。 */
-.tok-cost-help {
-  flex: none;
-  width: 14px;
-  height: 14px;
-  margin-left: 4px;
-  padding: 0;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 12px;
-  text-align: center;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid var(--bd2);
-  border-radius: 999px;
-  cursor: help;
-  vertical-align: middle
-}
-
-.tok-cost-help:hover,
-.tok-cost-help:focus-visible {
-  color: var(--ink);
-  border-color: var(--ink);
-  outline: none
-}
-
-.tok-cost-why {
-  max-width: 720px;
-  font-size: 12.5px;
-  line-height: 1.7;
-  color: var(--ink)
-}
-
-.tok-cost-why-line {
-  margin: 0 0 8px
-}
-
-.tok-cost-why-foot {
-  color: var(--muted)
 }
 
 /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ──

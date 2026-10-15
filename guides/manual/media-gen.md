@@ -281,6 +281,7 @@ Remotion 节点用代码化的方式合成视频：字幕、图文卡片、数�
 - **关掉控制台窗不影响后端**：这七套后端都是常驻单例，关窗只是关界面；要停就点卡片上的「停用」（llama / Breeze 会连托盘进程一起退）。
 - **静默 = 连一只终端窗口都不留**：起后端用的解释器是 venv 里的 `pythonw.exe`（GUI 子系统，Windows 不为它分配控制台）。这一步是必要的：Store 版 Python 建的 venv 里 `python.exe` 只是一层再启动器，它再拉真解释器时会被系统新分配一个控制台，Windows 11 上就表现为「插件又弹了一只 Windows Terminal 窗口」；换成 `pythonw.exe` 后整条链静默，日志照旧写进插件 console（`.venv\Scripts\pythonw.exe` 不存在时自动退回 `python.exe`）。
 - **静默覆盖整条子树，不只是后端自己**：`pythonw` 让后端自己那只解释器没有控制台，可代价是「它拉起的每个控制台子进程都没有控制台可继承」，Windows 反过来会给它们**各新建一只终端窗口**（Breeze 的引擎按需拉起多个子进程，就是这么冒出一片窗口的）。所以宿主起后端时会把安装目录里的 `shims/` 挂在子进程 `PYTHONPATH` 最前，`sitecustomize.py` 在解释器启动时给 `subprocess.Popen` 与 `os.system / os.popen` 补上默认的 `CREATE_NO_WINDOW`；子进程继承 `PYTHONPATH`，于是 `multiprocessing` / DataLoader 的 worker 里同样生效。机制、实测数据与复跑手法见 `docs/plugin-console-silence.md`，诊断脚本 `scripts/probe-console-windows.ps1`。
+- **后端自己「主动开窗」的那一处也清了（llama.cpp）**：llama.cpp 管理服务原先在启动时用 Windows API 给自己**另开一只控制台窗**（标题写着它自己的名字，里面还写着「请勿关闭此窗口」）——`pythonw` 拦不住这种「代码自己开窗」。现在它**永不新建窗口**：你手动在终端里跑 `start_backend.cmd` 时，横幅照旧打在那只终端里；由插件静默拉起时（常态），横幅只写进管理服务日志（插件 ⓘ 信息浮层里就能看到），屏幕上一只窗都不会多。
 - **环境被删/搬走不会再弹系统消息框**：venv 里的 `pythonw.exe` 其实是「venv 重定向器」，它按 `pyvenv.cfg` 找**基座解释器**（例如 conda 的某个 env）；基座被你手工删掉或换位置后，直接起它只会弹一只 `Python Launcher is sorry to say … No Python at '…'` 的**模态系统消息框**（GUI 子系统走 MessageBox，不点就一直挂着）。现在宿主在**起任何 python 之前先体检**：基座不在了就不起进程，改在插件的 ⓘ 信息浮层（内嵌 console）与错误报告里给一句「环境已失效，请在该插件卡片的安装窗里重装」——启动、依赖自检、探针、转码、后处理每条路都是这个口径（真源 `backend-python.js` 的 `pythonHealth`）。
 
 

@@ -124,6 +124,60 @@ function Write-AgentResult([string]$Ok, [string]$Reason) {
   Set-Content -Path (Join-Path $InstallDir ".yue2-agent-result") -Value $body -Encoding UTF8
 }
 
+# ---- native-command guard ---------------------------------------------------
+# Measured failure this script used to die on (log: "At ...install.ps1:300 char:17
+# + ... & $venvPy -c "import torch;print(torch.__version__)" 2>$null ..." followed by
+# "NativeCommandError"): Windows PowerShell 5.1 turns ANY stderr output of a native
+# command -- pip, python or curl -- into a TERMINATING error while
+# $ErrorActionPreference = "Stop", which this script sets globally. PowerShell 7 only
+# does that when $PSNativeCommandUseErrorActionPreference is on, so the bug is 5.1-only
+# and it goes off exactly when the host runs this script with powershell.exe.
+# Guarding the failing command is not enough (a probe that *succeeds* also prints
+# warnings, and "2>$null" does NOT help on 5.1); every probe whose stderr is only
+# noise must run through Invoke-NativeHost, which lowers the preference to
+# "Continue" inside its own scope. A language error still terminates the script.
+# Regression: test/smoke-install-scripts.js [15] pins this guard (static + a real run).
+$NativeQuiet = {
+  param([string]$File, [object[]]$Arguments)
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  $script:MTNativeOut = @()
+  $script:MTNativeCode = 0
+  try {
+    $script:MTNativeOut = @(& $File @Arguments 2>&1)
+    $script:MTNativeCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  return $script:MTNativeCode
+}
+function Invoke-NativeHost {
+  param([string]$File, [object[]]$Arguments)
+  $code = (& $NativeQuiet $File $Arguments)
+  $script:MTNativeMsg = ($script:MTNativeOut | Out-String).Trim()
+  return $code
+}
+
+# Read the torch version string out of the venv, never dying on it.
+# Returns "" when torch is absent / not importable -- both are "the CUDA build is not
+# in place" for every caller below (they then take the reinstall branch instead of
+# being aborted mid-install, which is what happened before this function existed).
+# When the import fails the version comes from "pip show torch" (no import, so no
+# traceback either): that tells "the dependency step never brought torch in" apart
+# from "torch is there but cannot be imported".
+# NB the guard writes the captured output into $script:MTNativeMsg on purpose: the
+# exit code is the function's *return value*, so it must stay out of the captured text
+# (piping the guard would put "0" in front of the version string).
+function Get-VenvTorchVersion {
+  param([string]$VenvPy)
+  if (-not (Test-Path -LiteralPath $VenvPy)) { return "" }
+  [void](Invoke-NativeHost $VenvPy @("-c", "import torch;print(torch.__version__)"))
+  if ($script:MTNativeMsg -match '(?m)^\s*(\d+\.\d+\.\d+\S*)\s*$') { return $Matches[1].Trim() }
+  [void](Invoke-NativeHost $VenvPy @("-m", "pip", "show", "torch"))
+  if ($script:MTNativeMsg -match '(?im)^\s*Version:\s*(\S+)') { return $Matches[1].Trim() }
+  return ""
+}
+
 Write-Host "[yue2-install] ============================================================"
 Write-Host "[yue2-install] YuE2 local music generation backend install"
 Write-Host "[yue2-install]   models: m-a-p/YuE2-3B (~7.3GB, CC BY-NC 4.0) + m-a-p/YuE2-Vae (~0.5GB)"
@@ -162,7 +216,21 @@ function Get-NvidiaInfo {
   $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
   if (-not $smi) { return $null }
   try {
-    $line = (& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>$null | Select-Object -First 1)
+    # This probe is the SECOND landmine of the family described at the native guard above,
+    # and the quiet one: "& nvidia-smi ... 2>$null" under $ErrorActionPreference = "Stop"
+    # raises NativeCommandError on 5.1 as soon as the driver writes a single stderr line
+    # (a driver warning, a "Unable to determine the device handle" note). The try/catch
+    # below then swallows it and returns $null -- which the caller reads as "no NVIDIA
+    # GPU" and refuses the whole install with reason=no_cuda on a perfectly good card.
+    # Through the guard any stderr line is captured (never thrown), and only a line that
+    # actually looks like the CSV is used, so stderr noise cannot hide the GPU either.
+    $smiExe = if ($smi.Source) { [string]$smi.Source } else { [string]$smi.Path }
+    if (-not $smiExe) { return $null }
+    [void](Invoke-NativeHost $smiExe @("--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"))
+    $line = ""
+    foreach ($l in ($script:MTNativeMsg -split "`r?`n")) {
+      if (($l -split ',').Count -ge 3) { $line = $l; break }
+    }
     if (-not $line) { return $null }
     $parts = $line -split ','
     if ($parts.Count -lt 3) { return $null }
@@ -297,12 +365,22 @@ if (-not $depsOk) {
 # The driver major version was already read in step 1 (GPU probe); reuse it, do not call nvidia-smi again.
 $driverMajor = if ($gpu) { [int]$gpu.major } else { 0 }
 $torchFixOk = $false
-$torchVerNow = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+# Probe through Get-VenvTorchVersion: a plain "& $venvPy -c ... 2>$null" here used to
+# abort the whole install as soon as python wrote anything to stderr -- and python DOES
+# write to stderr whenever torch is absent (ModuleNotFoundError traceback) or a CPU
+# build imports with warnings. That is the reported failure: install stops dead at this
+# line, before torch was ever installed, with "NativeCommandError" as the last log line.
+$torchVerNow = Get-VenvTorchVersion $venvPy
+$torchInstalled = [bool]($torchVerNow -ne "")
 if ($torchVerNow -match '\+cu\d+') {
   $torchFixOk = $true
   Write-Host "[yue2-install] torch is already the CUDA build ($torchVerNow)"
 } else {
-  Write-Host "[yue2-install] torch is '$torchVerNow' (a CPU build) -- the requirements step replaced it; reinstalling the CUDA build"
+  if (-not $torchInstalled) {
+    Write-Host "[yue2-install] torch is not in the venv at all -- the dependency step did not pull it in; installing the CUDA build now"
+  } else {
+    Write-Host "[yue2-install] torch is '$torchVerNow' (a CPU build) -- the requirements step replaced it; reinstalling the CUDA build"
+  }
   # Reuse the same tier candidates as step 4 (cu130 / cu128 / cu126, domestic mirrors first)
   $cuFixTiers = if ($driverMajor -ge 580) { @("cu130", "cu128", "cu126") } elseif ($driverMajor -ge 550) { @("cu128", "cu126") } else { @("cu126", "cu128") }
   foreach ($cu in $cuFixTiers) {
@@ -311,7 +389,7 @@ if ($torchVerNow -match '\+cu\d+') {
       Write-Host "[yue2-install] torch reinstall from $fixIdx"
       & $venvPy -m pip install --force-reinstall --no-deps ("torch==2.9.1+" + $cu) ("torchaudio==2.9.1+" + $cu) --index-url $fixIdx | Out-Host
       if ($LASTEXITCODE -eq 0) {
-        $torchVerNow = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+        $torchVerNow = Get-VenvTorchVersion $venvPy
         if ($torchVerNow -match '\+cu\d+') { $torchFixOk = $true; break }
       }
     }
@@ -319,7 +397,11 @@ if ($torchVerNow -match '\+cu\d+') {
   }
 }
 if (-not $torchFixOk) {
-  Write-Host "[yue2-install] error: could not keep a CUDA build of torch (final version: '$torchVerNow')."
+  if (-not $torchInstalled) {
+    Write-Host "[yue2-install] error: no torch in the venv and the CUDA build could not be installed (probe result: '$torchVerNow')."
+  } else {
+    Write-Host "[yue2-install] error: could not keep a CUDA build of torch (final version: '$torchVerNow')."
+  }
   Write-Host "[yue2-install]        YuE2 must run on the GPU -- a CPU torch has no usable attention tier."
   Write-Host "[yue2-install]        fix: point the install at a reachable cu-tagged mirror (-TorchIndex <url>) and rerun; weights are not re-downloaded."
   Write-AgentResult "false" "torch_cpu_detected"
@@ -540,9 +622,15 @@ sys.exit(3)
     Write-AgentResult "false" "infer_install_failed"
     throw "infer_install_failed"
   }
-  & $venvPy -c "import yue2; print('[yue2-install] yue2 package imported:', getattr(yue2, '__version__', 'unknown'))" | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "[yue2-install] warning: the yue2 package is installed but fails to import (see the error above; likely a missing dependency, re-running this script will add it)"
+  # Guard as well: the warning below is the failure path, so a failed import must not
+  # abort the script here (PS 5.1 would, since python writes the traceback to stderr).
+  $importCode = Invoke-NativeHost $venvPy @("-c", "import yue2; print('[yue2-install] yue2 package imported:', getattr(yue2, '__version__', 'unknown'))")
+  if ($importCode -ne 0) {
+    $importMsg = if ($script:MTNativeMsg) { (($script:MTNativeMsg -split "`n") | Select-Object -Last 1).Trim() } else { "" }
+    if ($script:MTNativeMsg) { Write-Host $script:MTNativeMsg }
+    Write-Host "[yue2-install] warning: the yue2 package is installed but fails to import ($importMsg) -- likely a missing dependency; re-running this script will add it"
+  } else {
+    Write-Host $script:MTNativeMsg
   }
 }
 
@@ -553,12 +641,18 @@ sys.exit(3)
 # succeeds). torch.cuda.is_available() is then False and the user sees "installed, but every
 # generation says the attention tier is unusable". So: EVERY step that can touch torch must be
 # followed by a re-check and a re-pin of the CUDA build. This is the last one.
-$torchVerFinal = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+# Same guard as in step 3b: this probe must not be able to abort the install (python
+# prints a traceback to stderr whenever torch is absent), so it goes through the helper.
+$torchVerFinal = Get-VenvTorchVersion $venvPy
 if ($torchVerFinal -match '\+cu\d+') {
   $torchFinalOk = $true
   Write-Host "[yue2-install] torch is still the CUDA build after the inference package ($torchVerFinal)"
 } else {
-  Write-Host "[yue2-install] torch became '$torchVerFinal' (CPU) after installing the inference package -- re-pinning the CUDA build"
+  if ($torchVerFinal -eq "") {
+    Write-Host "[yue2-install] torch is gone after installing the inference package -- installing the CUDA build again"
+  } else {
+    Write-Host "[yue2-install] torch became '$torchVerFinal' (CPU) after installing the inference package -- re-pinning the CUDA build"
+  }
   # Prefer the shared wheel library (step 3c already downloaded the wheels there): installing from
   # disk takes seconds and touches no network, so reinstalling yue2 never re-downloads 1.8GB.
   $wheelCache2 = Join-Path (Split-Path -Parent $InstallDir) "_weights\wheels"
@@ -570,7 +664,7 @@ if ($torchVerFinal -match '\+cu\d+') {
       Write-Host "[yue2-install] torch final reinstall from the shared wheel cache ($cu)"
       & $venvPy -m pip install --no-index --force-reinstall --no-deps $c1 $c2 | Out-Host
       if ($LASTEXITCODE -eq 0) {
-        $torchVerFinal = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+        $torchVerFinal = Get-VenvTorchVersion $venvPy
         if ($torchVerFinal -match '\+cu\d+') { $torchFinalOk = $true; break }
       }
       continue
@@ -580,7 +674,7 @@ if ($torchVerFinal -match '\+cu\d+') {
       Write-Host "[yue2-install] torch final reinstall from $fixIdx2"
       & $venvPy -m pip install --force-reinstall --no-deps ("torch==2.9.1+" + $cu) ("torchaudio==2.9.1+" + $cu) "--index-url" $fixIdx2 | Out-Host
       if ($LASTEXITCODE -eq 0) {
-        $torchVerFinal = (& $venvPy -c "import torch;print(torch.__version__)" 2>$null | Out-String).Trim()
+        $torchVerFinal = Get-VenvTorchVersion $venvPy
         if ($torchVerFinal -match '\+cu\d+') { $torchFinalOk = $true; break }
       }
     }
@@ -633,7 +727,7 @@ if ($SkipModels) {
   } else {
     Write-Progress-Line 62 "downloading m-a-p/YuE2-3B (~7.3GB) and m-a-p/YuE2-Vae (~0.5GB)..."
     $pyDl = @'
-import os, sys
+import os, sys, time, traceback, urllib.request
 from pathlib import Path
 
 targets = [
@@ -645,31 +739,54 @@ def ok(d):
     p = Path(d)
     return p.is_dir() and (p / "config.json").is_file() and (p / "model.safetensors").is_file()
 
+def reachable(endpoint, repo):
+    # Cheap "is the repo URL actually answering" check: tells a real network / mirror problem
+    # apart from a huggingface_hub bookkeeping error (that error text is the same for both and
+    # has already cost one round of guesswork).
+    try:
+        req = urllib.request.Request(endpoint + "/" + repo + "/resolve/main/config.json",
+                                     headers={"User-Agent": "MTNode-YuE2-Installer"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return "HTTP " + str(r.status)
+    except Exception as e:
+        return "unreachable (" + type(e).__name__ + ": " + str(e)[:120] + ")"
+
 failed = []
 for repo, dest, ignore in targets:
     if ok(dest):
-        print(f"[yue2-install] already present, skipping {repo}")
+        print("[yue2-install] already present, skipping " + repo)
         continue
     done = False
+    # Mirror first: in CN the official huggingface.co endpoint is the one that usually
+    # times out, and waiting for it costs a full timeout on every attempt.
     attempts = [
-        ("HF_HUB", {}),
-        ("hf-mirror", {"endpoint": "https://hf-mirror.com"}),
+        ("hf-mirror", "https://hf-mirror.com"),
+        ("HF_HUB", None),
+        ("hf-mirror", "https://hf-mirror.com"),
+        ("HF_HUB", None),
     ]
-    for label, cfg in attempts:
+    for i, (label, endpoint) in enumerate(attempts, 1):
         if done:
             break
-        endpoint = cfg.get("endpoint")
         if endpoint:
             os.environ["HF_ENDPOINT"] = endpoint
         else:
             os.environ.pop("HF_ENDPOINT", None)
         try:
             from huggingface_hub import snapshot_download
-            print(f"[yue2-install] {label} downloading {repo} -> {dest}")
+            print("[yue2-install] attempt " + str(i) + "/" + str(len(attempts)) + " " + label +
+                  " downloading " + repo + " -> " + dest)
             snapshot_download(repo_id=repo, local_dir=dest, ignore_patterns=list(ignore))
             done = ok(dest)
+            if not done:
+                print("[yue2-install] " + label + " finished but " + repo + " is still incomplete")
         except Exception as e:
-            print(f"[yue2-install] {label} failed: {str(e)[:300]}")
+            print("[yue2-install] " + label + " failed: " + str(e)[:300])
+            traceback.print_exc()
+        if not done:
+            print("[yue2-install] " + label + " probe: " +
+                  reachable(endpoint or "https://huggingface.co", repo))
+            time.sleep(3)
     if not done:
         failed.append(repo)
 
@@ -777,8 +894,32 @@ from pathlib import Path
 
 install_dir = Path(sys.argv[1])
 port = int(sys.argv[2])
+free_port = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 log_path = Path(tempfile.gettempdir()) / f"mtnode-yue2-smoke-{uuid.uuid4().hex}.log"
 out_dir = Path(tempfile.gettempdir()) / f"mtnode-yue2-out-{uuid.uuid4().hex}"
+
+def port_taken(p):
+    # A foreign service on our port used to look like a contract failure: the smoke talked
+    # to it and reported "/health fields do not match the contract" for a backend that had
+    # never even started. Ask the OS instead of assuming the port is ours.
+    import socket
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", p))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+if port_taken(port):
+    if not free_port:
+        free_port = 0
+    if port_taken(free_port):  # 0 always binds; only a stale explicit value lands here
+        print("[yue2-install] smoke failed: port " + str(port) + " is already in use by another process")
+        sys.exit(11)
+    print("[yue2-install] port " + str(port) + " is in use -- the smoke test uses port " + str(free_port))
+    port = free_port
 
 env = dict(os.environ)
 env["MTNODE_YUE2_MOCK"] = "1"
@@ -801,11 +942,18 @@ try:
         except Exception:
             time.sleep(0.5)
     if not health:
-        print("[yue2-install] smoke failed: /health did not respond")
+        if proc.poll() is not None:
+            print("[yue2-install] smoke failed: /health did not respond (the service process exited)")
+        else:
+            print("[yue2-install] smoke failed: /health did not respond on " + base)
         code = 4
+    elif health.get("service") != "mtnode-yue2":
+        print("[yue2-install] smoke failed: whatever answers on " + base +
+              " is not the YuE2 service -> " + json.dumps(health, ensure_ascii=False))
+        code = 12
     else:
         print("[yue2-install] /health -> " + json.dumps(health, ensure_ascii=False))
-        if health.get("mock") is not True or health.get("model") != "m-a-p/YuE2-3B" or health.get("service") != "mtnode-yue2":
+        if health.get("mock") is not True or health.get("model") != "m-a-p/YuE2-3B":
             print("[yue2-install] smoke failed: /health fields do not match the contract")
             code = 5
         body = {
@@ -817,8 +965,12 @@ try:
         }
         req = urllib.request.Request(base + "/generate", data=json.dumps(body).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            gen = json.loads(r.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                gen = json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            print("[yue2-install] smoke failed: POST /generate -> " + type(e).__name__ + ": " + str(e)[:200])
+            raise
         print("[yue2-install] mock generate -> " + json.dumps({k: gen.get(k) for k in
               ("ok", "audioPath", "outputDir", "cot", "seed", "mock", "scoreAbc")}, ensure_ascii=False))
         if gen.get("ok") is not True or gen.get("mock") is not True:
@@ -881,8 +1033,46 @@ $smokePort = 8773
 if ($env:YUE2_PORT) {
   try { $smokePort = [int]$env:YUE2_PORT } catch { $smokePort = 8773 }
 }
+# Port collision guard (measured): 8773 is not ours to assume. On this machine another
+# local service already listened on it; the smoke then talked to THAT service, got its
+# /health body ({"status":"ok","sample_rate":24000}), reported "fields do not match the
+# contract" and the install ended with a "smoke failed" warning that had nothing to do
+# with YuE2. Ask the OS for a free port whenever the wanted one cannot be bound.
+function Test-PortFree {
+  param([int]$Port)
+  $ok = $false
+  try {
+    $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
+    $l.Start()
+    $l.Stop()
+    $ok = $true
+  } catch { $ok = $false }
+  return $ok
+}
+function Get-FreeTcpPort {
+  try {
+    $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+    $l.Start()
+    $p = $l.LocalEndpoint.Port
+    $l.Stop()
+    return $p
+  } catch { return 0 }
+}
+if (-not (Test-PortFree $smokePort)) {
+  $fallback = Get-FreeTcpPort
+  if ($fallback -gt 0) {
+    Write-Host "[yue2-install] port $smokePort is already in use -- smoke test uses $fallback instead"
+    $smokePort = $fallback
+  } else {
+    Write-Host "[yue2-install] warning: port $smokePort is in use and no free port could be taken; the smoke test may talk to another service"
+  }
+}
+# Second spare, handed to the smoke script (it re-checks the port itself right before it
+# binds: a port that is free now can be taken a moment later, and then the smoke must not
+# silently talk to the other guy).
+$reservePort = Get-FreeTcpPort
 try {
-  & $venvPy $smoke $InstallDir $smokePort | Out-Host
+  & $venvPy $smoke $InstallDir $smokePort $reservePort | Out-Host
   if ($LASTEXITCODE -ne 0) { Write-Host "[yue2-install] warning: the mock smoke did not pass (see the log above); the install marker is still written" }
 } finally {
   Remove-Item -Force $smoke -ErrorAction SilentlyContinue

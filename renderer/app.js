@@ -31670,9 +31670,6 @@ function openMetricsDistribution(metrics) {
           ": ≈" +
           (typeof fmtMoney === "function" ? fmtMoney(runCost.amount, runCost.currency) : "—") +
           (runCost.estimated ? "*" : "");
-      /* 「？」口径入口：为什么这里的估算会高于实际消费（app-cost.js costHelpEl） */
-      const why = typeof costHelpEl === "function" ? costHelpEl() : null;
-      if (why) c.appendChild(why);
       body.insertBefore(c, mt);
     }
     if (typeof balanceLine === "function") {

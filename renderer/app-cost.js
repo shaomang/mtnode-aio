@@ -64,9 +64,11 @@
  *     所以「未命中 + 缓存读 + 缓存写」= 真实 prompt 量，也没有把缓存读算两遍。
  *   · 剩下的偏差来自单价侧：估算未计入官方活动折扣与赠送余额抵扣；价格表里
  *     没有的模型按 flash 价兜底（estimated:true）；估算按「每一次模型请求」
- *     累加，含重试 / 预热等已发出而平台可能不计费的请求。UI 侧的解释入口见
- *     本文件 costHelpEl()。峰谷本身不构成偏差：桶带时刻就按峰谷计价（谷时
- *     半价），与官方按实际调用时刻计费的口径一致。
+ *     累加，含重试 / 预热等已发出而平台可能不计费的请求。峰谷本身不构成偏差：
+ *     桶带时刻就按峰谷计价（谷时半价），与官方按实际调用时刻计费的口径一致。
+ *     **该问题已解决（2026-11）：原先挂在会话统计「合计计费」旁的「？」口径说明
+ *     入口（费用为什么高于实际消费）连同它的弹窗一并整体移除，不再有这类解释
+ *     入口；本节只留计价公式与上面这份核对结论。**
  * ============================================================ */
 
 /* ============================================================
@@ -484,7 +486,11 @@ function costOfBucket(provider, model, bucket, atFallback) {
        空闲 = 1 倍，高峰 = × peakMultiplier（**不是**官方的空闲半价）。 */
     if (!price) return null;
     const rp = relayPriceOf(provider, model) || {};
-    const peak = costRelayIsPeak(provider, at) ? costNum(rp.peakMultiplier) || 1 : 1;
+    /* 高峰 = 「贵的那一档」；peakFlag 是**时段判据**（与下面返回的 peak / offPeak 同源），
+       与 peak 倍数分开记 —— peakMultiplier 为 1 时 peak 仍是 1，靠 peak > 1 判档会把
+       中转的高峰行当成空闲行（本轮需求：模型行要按峰 / 谷上色，两档必须都能认出来）。 */
+    const peakFlag = costRelayIsPeak(provider, at);
+    const peak = peakFlag ? costNum(rp.peakMultiplier) || 1 : 1;
     const hit = costNum(bucket.cacheReadTokens);
     const miss = costNum(bucket.inputTokens) + costNum(bucket.cacheWriteTokens);
     const out = costNum(bucket.outputTokens);
@@ -494,8 +500,8 @@ function costOfBucket(provider, model, bucket, atFallback) {
       currency: "COIN",
       amount: costCoinOfYuan(provider, yuan),
       yuan: yuan,
-      peak: peak > 1, /* 高峰才是「贵的那一档」——展示层据此标峰谷 */
-      offPeak: !(peak > 1),
+      peak: peakFlag, /* 展示层据此标峰谷（绿 = 峰、橙红 = 谷） */
+      offPeak: !peakFlag,
       estimated: false,
     };
   }
@@ -504,11 +510,14 @@ function costOfBucket(provider, model, bucket, atFallback) {
   const hit = costNum(bucket.cacheReadTokens);
   const miss = costNum(bucket.inputTokens) + costNum(bucket.cacheWriteTokens);
   const out = costNum(bucket.outputTokens);
-  const offPeak = !!at && !costIsPeakAt(at);
+  const peakFlag = !at || costIsPeakAt(at); /* 无时刻信息 → 按高峰（表内就是高峰价） */
+  const offPeak = !peakFlag;
   const ratio = offPeak ? costOffPeakRatio() : 1;
   const amount =
     ((hit * price.cacheHit + miss * price.cacheMiss + out * price.output) / 1e6) * ratio;
-  return { currency: "CNY", amount, offPeak, estimated: !!price.estimated };
+  /* peak 与 offPeak 都给全：调用方（tokCostFoldAux / tokRoundCost / 圆点）不必各自再判一次
+     时段 —— 两档都能从费用对象上读出来，行与行之间也不会一个有一档、另一个什么都没有。 */
+  return { currency: "CNY", amount, peak: peakFlag, offPeak, estimated: !!price.estimated };
 }
 
 /* 台账取数：优先 app-agent.js 的 tokViewModels；单独切片跑时退回等价实现
@@ -853,108 +862,4 @@ function balanceLine() {
     () => renderBalance(el, "line"),
   );
   return el;
-}
-
-/* ============================================================
- * 四、费用口径说明（「？」入口：为什么显示会高于实际消费）
- * ------------------------------------------------------------
- * 用户在「token 统计 · 合计计费」旁最常问的就是「为什么比平台账单高」。
- * 这里的每一行都对应一条真实存在的口径差（见文件头「显示比实际消费高」
- * 一节），不是安慰话术：
- *   · 估算未计入官方活动折扣 / 赠送余额抵扣（峰谷已按调用时刻计价，不再是偏差源）
- *   · 价格表没有的模型按 flash 价兜底（estimated:true，UI 用 * 标出）
- *   · 估算按每一次模型请求累加（含重试 / 预热等平台可能不计费的请求）
- *   · 平台按小时 / 按模型分账，与会话 / 轮次窗口不是同一口径
- *   · 中转模型按**内置价目**本地估算（不再随账号由云端下发）→ 中转站改价 / 节假日
- *     按高峰计，都会让本地这一栏与账本有差；中转站账本才是准的
- *   · 内置价目里没有的中转模型不猜价（显示 —）
- * 文案走 I18n（键就是中文原文），英文界面自动取词条；缺词条时回落中文。
- * ============================================================ */
-
-const COST_WHY_TITLE = "费用为什么高于实际消费？";
-
-/* 口径说明正文：一行一句（i18n 逐条词条，便于英文界面独立翻译） */
-function costWhyLines() {
-  return [
-    costI18n(
-      "估算未计入官方活动折扣与赠送余额抵扣，显示值可能高于实际消费；峰谷按调用时刻计价，与官方账单口径一致。",
-    ),
-    costI18n(
-      "官方 DeepSeek 价格表里没有的模型（如带日期后缀的内测模型）按 flash 价兜底，这类金额是估算值，已在行末用 * 标出。",
-    ),
-    costI18n(
-      "估算按「每一次模型请求」累加，包含重试、预热等已发出但平台可能不计费的请求；平台按小时 / 按模型分账，与会话 / 轮次窗口口径不同，两边对不上属正常。",
-    ),
-    costI18n(
-      "对账请以 DeepSeek 账单和余额变化为准。",
-    ),
-    /* 中转按币这一条：用户在中转模型上看到的是币，平台账本里仍是元。 */
-    costI18n(
-      "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取中转站随快照下发的那一份（后台改价、改高峰倍率，客户端同步一次就跟上），快照还没给价目时退回客户端内置表；没有价目的模型不猜价（显示 —）。",
-    ),
-    costI18n(
-      "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（节假日豁免取快照下发的那份名单），法定节假日若名单里没有则按高峰计，这一栏会偏高。",
-    ),
-  ];
-}
-
-/* 纯文本口径说明（tooltip / 复制报告共用；换行分隔） */
-function costWhyText() {
-  return [costI18n(COST_WHY_TITLE)].concat(costWhyLines()).join("\n");
-}
-
-/* 「？」弹窗：与节点弹窗同一宿主（#overlay / #ovBody / #ovFoot），显式关闭按钮；
- * 不做「点外部即收」（口径见 AGENTS.md 对话框持久化约定）。 */
-function costWhyDialog() {
-  if (typeof openOverlay !== "function" || typeof document === "undefined") return false;
-  openOverlay(costI18n(COST_WHY_TITLE), { persistent: true });
-  const body = typeof $ === "function" ? $("#ovBody") : null;
-  if (!body) return false;
-  const p = document.createElement("div");
-  p.className = "tok-cost-why";
-  const rows = costWhyLines();
-  for (let i = 0; i < rows.length; i++) {
-    const line = document.createElement("p");
-    line.className = "tok-cost-why-line";
-    line.textContent = (i + 1) + ". " + rows[i];
-    p.appendChild(line);
-  }
-  const foot = document.createElement("p");
-  foot.className = "tok-cost-why-line tok-cost-why-foot";
-  foot.textContent = costI18n(
-    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取中转站随快照下发的那份价目（缺席退回客户端内置表）；token 一律按上游逐请求返回的 usage 累加。",
-  );
-  p.appendChild(foot);
-  body.appendChild(p);
-  const oFoot = typeof $ === "function" ? $("#ovFoot") : null;
-  if (oFoot) {
-    const okBtn = document.createElement("button");
-    okBtn.className = "mini primary";
-    okBtn.textContent = costI18n("知道了");
-    okBtn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      if (typeof closeOverlay === "function") closeOverlay();
-    });
-    oFoot.appendChild(okBtn);
-  }
-  return true;
-}
-
-/* 「？」图标：挂在「token 统计 · 合计计费」旁。hover 看 tooltip，
- * 点击开完整口径弹窗；无可展示环境（无 document / 非官方路由）返回 null。 */
-function costHelpEl() {
-  if (typeof document === "undefined") return null;
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = "tok-cost-help";
-  b.textContent = "?";
-  b.title = costWhyText();
-  b.setAttribute("aria-label", costI18n(COST_WHY_TITLE));
-  b.addEventListener("mousedown", (ev) => ev.stopPropagation());
-  b.addEventListener("click", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    costWhyDialog();
-  });
-  return b;
 }

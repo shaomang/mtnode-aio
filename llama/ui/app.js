@@ -343,7 +343,11 @@ function mkItemMeta(m, isLocal) {
     size.textContent = fmtSizeCompact(m.sizeGb);
   } else {
     date.textContent = fmtRelease(m.lastModified || m.createdAt);
-    size.textContent = fmtSizeCompact(m.totalSizeGb);
+    /* 体积未知（仓库里没解析到那一份 GGUF 的文件字节数）时写明「未知」——
+       以前一律显示「—」，与「这个仓库确实没给体积」分不开（两者对筛选口径的意义完全不同：
+       未知的条目在带体积档位时会被排除）。 */
+    size.textContent = m.sizeUnknown ? "未知" : fmtSizeCompact(m.totalSizeGb);
+    if (m.sizeUnknown) size.title = "未解析到该仓库将下载的那份 GGUF 的文件大小；选体积档位时它会被排除";
   }
   meta.appendChild(date);
   meta.appendChild(size);
@@ -640,7 +644,8 @@ async function showModelDetail(m, isLocal) {
     addDetailField(form, "Model Type", d.modelType);
     addDetailField(form, "下载量", fmtNum(d.downloads));
     addDetailField(form, "点赞", fmtNum(d.likes));
-    addDetailField(form, "仓库大小", d.totalSizeGb ? d.totalSizeGb + " GB" : fmtBytes(d.totalSizeBytes));
+    /* 体积口径与列表同源：后端给的是「这次会下载的那一份 GGUF」的大小（不是整仓占用）。 */
+    addDetailField(form, "下载大小", d.sizeGb != null ? d.sizeGb + " GB" : d.sizeUnknown ? "未知（未解析到文件大小）" : null);
     addDetailField(form, "文件数", d.fileCount);
     addDetailField(form, "最后更新", d.lastModified ? d.lastModified.replace("T", " ").replace("Z", " UTC") : null);
     addDetailField(form, "Gated", d.gated ? "是" : "否");
@@ -787,6 +792,13 @@ document.querySelectorAll('input[name="sizeFilter"]').forEach((el) => {
     if (state.tab === "catalog") loadCatalog();
   });
 });
+/* 类型下拉（全部 / LLM / Embedding）改选即重搜：以前只有体积档位与「仅半年内」挂了监听，
+   下拉换了值什么都不发生，用户以为筛选没生效（得再点一次「搜索」）。 */
+if ($("kindFilter")) {
+  $("kindFilter").addEventListener("change", () => {
+    if (state.tab === "catalog") loadCatalog();
+  });
+}
 if ($("recentOnly")) {
   $("recentOnly").addEventListener("change", () => {
     if (state.tab === "catalog") loadCatalog();

@@ -10,7 +10,8 @@
  * 修复口径：明细与合计共用同一趟逐轮计价（app-agent.js 的 tokCostCurve）——
  *   1) 明细逐行之和 = 合计行（恒等式，唯一真源）
  *   2) 明细行的峰谷按各轮自己的记账时刻判（不再拿累计桶的一个时刻定整段会话的折扣档）
- *   3) 明细行 / 纯文本报告标出「峰谷 / 谷」，悬停有解释；纯高峰行不标（全价是默认口径）
+ *   3) 明细行给左侧模型名**整段文字**上色（谷 = 绿、峰 = 橙红）+ 悬停解释与价位简要；
+ *      纯文本报告不夹带「峰 / 谷」文字标记
  *   4) 老台账（没有 roundList）没有「逐轮」可依 → 回落单桶口径（桶 at → 台账 lastAt），
  *      与合计的尾段兜底同口径，不退化成「—」
  *
@@ -165,15 +166,29 @@ ctx.tokMergeRun(peakOnly, v4proRound(T_PEAK, 1e6, 0), { runKey: "agent:as-peak",
 const pk = ctx.tokModelCostOf(ctx.tokViewModels(peakOnly)[0], peakOnly);
 near(pk.amount, 9.0, "只跑高峰：明细全价 ¥9");
 ok(pk.peak === true && pk.offPeak === false, "只跑高峰：只带峰标记，不误标谷");
-ok(ctx.tokPeakMark(pk) === "", "纯高峰行不加「峰 / 谷」标记（全价是默认口径，不刷噪声）");
+/* 本轮口径（用户需求）：会话语录里的「峰 / 谷」文字标记整体下线 → 给左侧的模型名
+   **整段文字**上色（谷 = 绿、峰 = 橙红），悬停给出峰谷口径 + 该档单价。 */
+ok(typeof ctx.tokPeakMark === "function", "颜色标记判据 tokPeakMark 存在（返回档位类名 + 悬停文案）");
+ok(typeof ctx.tokPeakDotEl !== "function", "上一版的圆点元件 tokPeakDotEl 已下线（改为整段文字上色）");
+const pkMark = ctx.tokPeakMark(pk);
+ok(pkMark.cls === "tok-peak-peak", "峰行（全价）文字落橙红档： " + pkMark.cls);
+ok(/高峰/.test(pkMark.tip) && /价目：缓存命中/.test(pkMark.tip),
+  "峰行悬停 = 峰谷口径 + 价位简要：" + pkMark.tip);
 
 const offOnly = { id: "as-off", messages: [] };
 ctx.tokMergeRun(offOnly, v4proRound(T_OFF, 1e6, 0), { runKey: "agent:as-off", title: "只空闲" });
 const of = ctx.tokModelCostOf(ctx.tokViewModels(offOnly)[0], offOnly);
 near(of.amount, 4.5, "只跑空闲：明细半价 ¥4.5");
 ok(of.offPeak === true && of.peak === false, "只跑空闲：只带谷标记");
-ok(/谷/.test(ctx.tokPeakMark(of)), "纯空闲行标「谷」：" + ctx.tokPeakMark(of));
-ok(/空闲/.test(ctx.tokPeakTip(of)), "谷标记带悬停解释：" + ctx.tokPeakTip(of));
+const offMark = ctx.tokPeakMark(of);
+ok(offMark.cls === "tok-peak-off", "谷行（折扣）文字落绿档：" + offMark.cls);
+ok(/空闲/.test(offMark.tip || ""), "谷行悬停解释峰谷口径：" + offMark.tip);
+ok(/价目：缓存命中/.test(offMark.tip || "") && /元\/百万 token/.test(offMark.tip || ""),
+  "谷行悬停带价位简要（该档三项单价 · 元/百万 token）：" + offMark.tip);
+/* 谷时单价就是高峰表价的一半（官方 0.3 / 9 / 27 的半价）—— 悬停里的价位必须跟着档位走 */
+ok(/未命中 4\.5\b/.test(offMark.tip || ""), "谷时价位按半价给出（未命中 4.5 元/百万）：" + offMark.tip);
+ok(/空闲/.test(ctx.tokPeakTip(of, offOnly)), "谷行带悬停解释：" + ctx.tokPeakTip(of, offOnly));
+ok(/高峰/.test(ctx.tokPeakTip(pk, peakOnly)), "峰行也给一句悬停口径（橙红有据可依）：" + ctx.tokPeakTip(pk, peakOnly));
 
 /* ── 3. 老台账（没有 roundList）：回落单桶口径，不退化成「—」──── */
 const legacy = {
@@ -208,9 +223,10 @@ ctx.tokMergeRun(foreign, {
 }, { runKey: "agent:as-foreign", title: "别家模型" });
 const fm = ctx.tokModelCostOf(ctx.tokViewModels(foreign)[0], foreign);
 ok(fm === null, "非官方路由的明细行仍不计费（null → UI 显示 —）");
-ok(ctx.tokPeakMark(fm) === "" && ctx.tokPeakTip(fm) === "", "不计费的行不带峰谷标记");
+ok(ctx.tokPeakMark(fm).cls === "" && ctx.tokPeakMark(fm).tip === "" && ctx.tokPeakTip(fm, foreign) === "",
+  "不计费的行不上色、也不给悬停口径（不凭空染一档）");
 
-/* ── 5. UI：明细表与轮次表的费用单元带标记、title 有解释 ───────── */
+/* ── 5. UI：模型名整段文字上色、费用格不再带文字标记、title 有解释 ── */
 /* 「按轮次」区由脚部开关控制（owner._tokRoundOpen）：先打开再渲染 —— 与用户点开
    「N 轮」看到的是同一条路径。 */
 owner._tokRoundOpen = true;
@@ -220,8 +236,20 @@ const modelTable = findEl(badge, (c) => c.tag === "table" && /tok-badge-table/.t
 const modelRow = findEl(modelTable, (c) => c.tag === "tr" && c.className === "tok-model-row");
 const modelCostTd = modelRow && modelRow.children[modelRow.children.length - 1];
 ok(!!modelCostTd && /^¥13\.5/.test(modelCostTd.textContent || ""), "明细表模型行费用 = ¥13.5（带峰谷折扣）：" + (modelCostTd && modelCostTd.textContent));
-ok(!!modelCostTd && /峰谷/.test(modelCostTd.textContent || ""), "明细行标出「峰谷」（用户能一眼看出打了折）");
-ok(!!modelCostTd && /高峰/.test(modelCostTd.title || ""), "明细行 title 解释峰谷口径：" + (modelCostTd && modelCostTd.title));
+ok(!!modelCostTd && !/峰谷|谷/.test(modelCostTd.textContent || ""), "费用格不再有「峰谷 / 谷」文字标记：" + (modelCostTd && modelCostTd.textContent));
+ok(!!modelCostTd && /高峰/.test(modelCostTd.title || ""), "费用格 title 仍解释峰谷口径：" + (modelCostTd && modelCostTd.title));
+const nameTd = modelRow && modelRow.children[0];
+/* 上色对象 = 模型名那一段文字（span.tok-model-name），不是名字旁的一枚圆点 */
+const nameSpan = nameTd && findEl(nameTd, (c) => /tok-model-name/.test((c && c.className) || ""));
+ok(!!nameSpan && nameSpan.textContent === "deepseek-v4-pro", "左侧模型名整段文字是上色载体：" + (nameSpan && nameSpan.textContent));
+ok(!!nameSpan && nameSpan.className === "tok-model-name tok-peak-peak",
+  "跨峰谷行（含全价份量）整段文字落橙红档：" + (nameSpan && nameSpan.className));
+ok(!!nameSpan && /高峰/.test(nameSpan.title || "") && /价目：缓存命中/.test(nameSpan.title || ""),
+  "文字悬停 = 峰谷口径 + 价位简要：" + (nameSpan && nameSpan.title));
+ok((nameTd.children || []).indexOf(nameSpan) >= 0 && /tok-badge-prov/.test((nameTd.children || []).map((c) => (c && c.className) || "").join(" ")),
+  "模型名与服务商小字同在首格、且服务商小字仍不上色：" + (nameTd.children || []).map((c) => (c && c.className) || c.tag || "?").join(" | "));
+ok(!findEl(badge, (c) => /tok-peak-dot/.test((c && c.className) || "")), "整份报告里不再有旧的圆点节点 tok-peak-dot");
+ok(!findEl(badge, (c) => /tok-peak-mark/.test((c && c.className) || "")), "整份报告里不再有 tok-peak-mark 文字标记节点");
 
 const totalRow = findEl(modelTable, (c) => /tok-badge-total/.test(c.className || ""));
 const totalCostTd = totalRow && totalRow.children[totalRow.children.length - 1];
@@ -235,11 +263,18 @@ const roundTable = findEl(badge, (c) => c.tag === "table" && /tok-round-table/.t
 const roundCostCells = findAll(roundTable, (c) => c.tag === "td" && /tok-badge-cost/.test(c.className || ""));
 ok(roundCostCells.length === 2, "轮次表两轮各一格费用（实得 " + roundCostCells.length + "）");
 ok(roundCostCells.some((c) => /¥9\.00/.test(c.textContent || "")) && roundCostCells.some((c) => /¥4\.50/.test(c.textContent || "")), "轮次表逐轮费用 = ¥9.00 / ¥4.50（各按自己时刻）");
+/* 轮次行同样上色：谷轮（折扣）绿、峰轮（全价）橙红 —— 染的是标题那一段文字 */
+const roundTitleTxts = findAll(roundTable, (c) => /tok-round-title-txt/.test((c && c.className) || ""));
+ok(roundTitleTxts.length === 2, "两轮各有一段可上色的标题文字（实得 " + roundTitleTxts.length + "）");
+const roundTxtCls = roundTitleTxts.map((d) => d.className);
+ok(roundTxtCls.some((s) => /tok-round-title-txt tok-peak-off/.test(s)) && roundTxtCls.some((s) => /tok-round-title-txt tok-peak-peak/.test(s)),
+  "高峰轮橙红、空闲轮绿：" + roundTxtCls.join(" | "));
+ok(roundTitleTxts.every((d) => /高峰|空闲/.test(d.title || "")), "轮次标题悬停给峰谷口径：" + roundTitleTxts.map((d) => d.title).join(" | "));
 
-/* 纯文本报告（复制出去的那份）：费用行同样带标记 */
+/* 纯文本报告（复制出去的那份）：本轮口径下**不再**夹带峰 / 谷文字标记 */
 const plain = ctx.tokReportPlain(owner);
 ok(/费用 ≈¥13\.50/.test(plain), "纯文本报告「按模型」费用行 = ≈¥13.50");
-ok(/13\.50 峰谷|峰谷/.test(plain), "纯文本报告费用行带「峰谷」标记");
+ok(!/峰谷|谷/.test(plain), "纯文本报告里不再有「峰 / 谷」文字标记（标记只留在界面上）");
 ok(/合计/.test(plain) && /按轮次/.test(plain), "纯文本报告结构未变（合计 / 按轮次仍在）");
 
 /* ── 6. 口径自洽：多模型时逐行之和 = 合计 ─────────────────────── */

@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from huggingface_hub import hf_hub_download, list_repo_files
 
+from app.console_log import log_line
 from app.gpu import estimate_vram_gb, query_gpu
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -244,8 +245,10 @@ def log(msg: str) -> None:
     line = f"[models] {msg}"
     if _log_fn:
         _log_fn(line)
-    else:
-        print(line, flush=True)
+        return
+    # 没注入 logger（例如裸跑某个模块做排查）：退回日志文件真源，别写 stdout ——
+    # 宿主是用 pythonw + stdio:"ignore" 起的，stdout 是个黑洞（写进去就丢了）。
+    log_line(line)
 
 
 def _read_json(path: Path, default: Any) -> Any:

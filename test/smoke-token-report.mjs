@@ -420,9 +420,13 @@ ok(bucketCost("gpt-4o", { inputTokens: 1e6 }) === null, "非 DeepSeek 未知模�
 
 /* 7b. 峰谷：同样 token，高峰全价 / 空闲半价 */
 near(bucketCost("deepseek-v4-pro", { inputTokens: 1e6, at: T_PEAK }).amount, 9.0, "高峰时段全价 ¥9");
+/* 本轮口径：官方路由的峰行也要带上 peak 标记（原先只有 offPeak 一档）——
+   「按模型」明细行靠它给左侧模型上绿色圆点，缺了这档高峰行就没有颜色。 */
+ok(bucketCost("deepseek-v4-pro", { inputTokens: 1e6, at: T_PEAK }).peak === true,
+  "高峰桶带 peak 标记（本轮：两档标记都给全，展示层才能给峰 / 谷各上一种颜色）");
 const off = bucketCost("deepseek-v4-pro", { inputTokens: 1e6, at: T_OFF });
 near(off.amount, 4.5, "空闲时段半价 ¥4.5");
-ok(off.offPeak === true, "空闲桶带 offPeak 标记");
+ok(off.offPeak === true && off.peak === false, "空闲桶带 offPeak 标记（且不误标峰）");
 near(bucketCost("deepseek-v4-flash", { outputTokens: 1e6, at: T_OFF }).amount, 4.0, "flash 输出空闲半价");
 near(bucketCost("deepseek-v4-pro", { cacheReadTokens: 1e6, at: T_WEEKEND }).amount, 0.15, "周末缓存命中半价");
 near(

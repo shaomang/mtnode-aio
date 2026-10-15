@@ -1380,6 +1380,32 @@ const MAIN = (async () => {
     "节点内会话（.agent-conv）：渲染收尾仍 appendChild 到 conv 末尾（节点框没余量）",
   );
 
+  /* ==================== [4] 费用口径说明入口已整体移除 ====================
+     本次需求：会话底部说明「费用为什么高于实际消费」随问题解决一并撤下 ——
+     三处挂点（会话折叠摘要 / 会话合计行 / 节点 Token 弹窗）、那套小节函数、
+     中英词条与 dsh.css 的样式全部删净，不留死代码与死规则。 */
+  console.log("\n[4] 「费用为什么高于实际消费」口径说明入口已整体移除（代码 / 词条 / 样式）");
+  const COST = read("renderer/app-cost.js");
+  const I18N_SRC = read("renderer/i18n.js");
+  ok(
+    !/costHelpEl|costWhyLines|costWhyText|costWhyDialog|COST_WHY_TITLE/.test(AGENT + APP + COST + ASSIST),
+    "三处挂点与小节函数全删净（会话折叠摘要 / 会话合计行 / 节点 Token 弹窗都不再挂「？」）",
+  );
+  ok(
+    !/tok-cost-help|tok-cost-why/.test(DSH_CSS),
+    "dsh.css 的两套样式（? 圆钮 / 口径弹窗正文）一并删掉，不留死规则",
+  );
+  ok(
+    !/"费用为什么高于实际消费？":/.test(I18N_SRC) &&
+      !/"口径：官方路由的单价与峰谷按官方价格页/.test(I18N_SRC) &&
+      !/"对账请以 DeepSeek 账单和余额变化为准。":/.test(I18N_SRC),
+    "i18n 不再登记说明入口的标题与整批说明词条（英文界面也不会再冒出这批文案）",
+  );
+  ok(
+    !/costWhyLines\(\)/.test(AGENT),
+    "复制的 Token 报告回到「只报数」：不再往报告尾部追加那段口径说明",
+  );
+
   console.log(
     "\n" +
       (fails ? " " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +

@@ -15,6 +15,11 @@
  *   .venv\Scripts\pythonw.exe                 → 无新增 conhost / 终端窗口，解释器照常执行（本模块口径）
  *   WindowsApps\…\python.exe（直连真解释器）  → 同样干净
  *
+ * 另一处「凭空多一只窗」不归本模块管（2026-10 查明并已修）：llama.cpp 后端自己的
+ * `llama-pack/app/console_banner.py` 原先调 `kernel32.AllocConsole()` 给横幅造控制台 ——
+ * 那是**代码主动**开窗，pythonw / CREATE_NO_WINDOW / 垫片全都拦不住；现在改成「有控制台才打
+ * stdout，否则只写 .console.log」。回归：test/smoke-llama-backend-silent.js。
+ *
  * 口径：venv 的 python.exe 一律换成同目录的 pythonw.exe（GUI 子系统，CreateProcess 不给它分配控制台，
  * shim 链同理，整条链静默）；pythonw.exe 不存在时原样返回 python.exe。
  * 语义不变：stdio 由宿主显式给定（"ignore" / 管道 / 已打开的日志文件句柄），pythonw 下 sys.stdout / sys.stderr

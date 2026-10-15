@@ -19,11 +19,16 @@ from pydantic import BaseModel
 
 from app import catalog, models
 from app.console_banner import show_service_banner
+from app.console_log import log_line
 from app.gpu import query_gpu
 
 ROOT = Path(__file__).resolve().parent.parent
 API_KEY_PATH = ROOT / ".api-key"
 DEFAULT_PORT = int(os.environ.get("LLAMA_API_PORT", "8765"))
+
+
+# 日志落点唯一真源在 app/console_log.py（启动横幅也写它）——服务器不再自己拼 .console.log 路径。
+_log = log_line
 
 app = FastAPI(title="llama.cpp Local Manager", version="2.0.0")
 app.add_middleware(
@@ -32,16 +37,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def _log(msg: str) -> None:
-    line = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
-    log_path = ROOT / ".console.log"
-    try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception:
-        pass
 
 
 models.set_logger(_log)

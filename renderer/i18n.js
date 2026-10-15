@@ -2257,25 +2257,14 @@
     "充值": "Topped up",
     "更新于": "Updated",
     "未查询": "Not queried",
-    /* ── 会话统计 · 费用口径说明（「？」入口，app-cost.js / app-agent.js / app.js） ──
-       每条都是真实存在的口径差，不是安慰话术：折扣 / 赠送抵扣未计入，以及兜底 flash 价
-       与窗口口径（会话 / 轮次 vs 平台按小时按模型）不同，所以显示可能高于实际账单。
-       峰谷本身按调用时刻计价，不再是偏差源，故不再作为口径说明的一行。 */
-    "费用为什么高于实际消费？": "Why is the cost shown higher than what was actually spent?",
-    "估算未计入官方活动折扣与赠送余额抵扣，显示值可能高于实际消费；峰谷按调用时刻计价，与官方账单口径一致。":
-      "The estimate does not include official promos or granted-balance offsets, so the figure shown may exceed what you actually spend; peak/off-peak is priced by the actual call time, matching the official bill.",
-    "官方 DeepSeek 价格表里没有的模型（如带日期后缀的内测模型）按 flash 价兜底，这类金额是估算值，已在行末用 * 标出。":
-      "Models missing from the official DeepSeek price table (e.g. preview models with a date suffix) fall back to flash pricing; such amounts are estimates and are marked with * at the end of the row.",
-    "估算按「每一次模型请求」累加，包含重试、预热等已发出但平台可能不计费的请求；平台按小时 / 按模型分账，与会话 / 轮次窗口口径不同，两边对不上属正常。":
-      "The estimate sums every model request, including retries and warm-up requests that were sent but may not be billed by the platform; the platform breaks usage down by hour and by model, which is not the same window as a session/round here — a mismatch between the two is expected.",
-    "对账请以 DeepSeek 账单和余额变化为准。":
-      "Token counts themselves are not double counted (they match the sum of per-request usage in the local session log — verify with scripts/audit-token-usage.mjs); for reconciliation, trust DeepSeek's official billing.",
+    /* ── 会话统计 · 用户曾问「为什么显示比实际账单高」──
+       该问题已解决（2026-11）：会话底部「合计计费」旁的「？」口径说明入口、
+       它的弹窗与整批说明词条（费用为什么高于实际消费 / 折扣与赠送未计入 /
+       flash 价兜底 / 窗口口径不同 / 对账口径 / 中转按币与中转峰谷两条 / 口径脚注）
+       一并移除，这里不再登记那批翻译；计价相关的其它词条（图像按张、中转计费、
+       峰谷提示）仍在下文使用，保留。 */
     /* 中转按币：MTNode 中转站仍以元记账，界面按币显示（1 币 = ¥0.02，价目取服务端快照，
        缺席退回客户端内置表；金额精度 8 位小数 = 1e-8 元） */
-    "走 MTNode 中转服务的模型按鲸圆币显示（1 币 = ¥0.02）：计算方式与官方路由一致，只把单位换成币；价目取中转站随快照下发的那一份（后台改价、改高峰倍率，客户端同步一次就跟上），快照还没给价目时退回客户端内置表；没有价目的模型不猜价（显示 —）。":
-      "Models routed through the MTNode relay are shown in W coins (1 W coin = ¥0.02): the calculation is the same as on the official route, only the unit changes into coins. Prices come from the price table the relay sends with the snapshot (a price or peak-multiplier change on the server reaches the client at the next sync); when the snapshot carries no price yet, the client's built-in table is used as fallback, and models without any price are never guessed (shown as —).",
-    "中转的高峰时段按北京时间周一至周五 9:00-12:00 / 14:00-18:00 判定（节假日豁免取快照下发的那份名单），法定节假日若名单里没有则按高峰计，这一栏会偏高。":
-      "Relay peak hours are judged as Mon-Fri 09:00-12:00 / 14:00-18:00 Beijing time (holiday exemptions come from the list sent with the snapshot); a public holiday missing from that list is billed as peak and this column reads a bit high.",
     /* 中转图像按张计费（与 token 无关，每次调用即计费）。「图像」这个键上文已有同值条目，
        这里不重复登记（同键两写会被后写的覆盖，test/smoke-filepeek.js 会挑出来）。 */
     "图像张数": "Images",
@@ -2285,8 +2274,6 @@
       "Relay billing: during peak hours the rate is multiplied by the peak multiplier (prices come from what the relay sends with the snapshot, falling back to the client's built-in table).",
     "中转计费：当前为空闲时段，按价目原价（无高峰倍率）":
       "Relay billing: off-peak right now, so the list rate applies (no peak multiplier).",
-    "口径：官方路由的单价与峰谷按官方价格页；中转模型的单价取中转站随快照下发的那份价目（缺席退回客户端内置表）；token 一律按上游逐请求返回的 usage 累加。":
-      "Scope: on the official route, unit prices and peak/off-peak follow the official pricing page; for relay models the unit prices come from the price table sent with the relay snapshot (falling back to the client's built-in table); tokens are always summed from the per-request usage the upstream returns.",
     /* ── 会话统计 · 逐模型性能下钻（app-agent.js / app.js） ── */
     "模型性能": "Model performance",
     "首 Token 延迟 (TTFT)": "Time to first token (TTFT)",
@@ -2326,14 +2313,27 @@
     "该轮按模型": "This round by model",
     "LLM 用时": "LLM time",
     "墙钟用时": "Wall-clock time",
-    /* 峰谷计价可见性（app-agent.js 的 tokPeakMark / tokPeakTip）：
-       全价是默认口径，故只在真有折扣时标「谷 / 峰谷」；纯高峰行不标。 */
+    /* 峰谷可见性（用户口径 · app-agent.js 的 tokPeakMark / tokPeakHoverText / tokPeakTip / tokPriceBrief）：
+       「峰 / 谷」两个字的文字标记已下线，改成给左侧模型名 / 轮次标题**整段文字**上色 ——
+       谷（折扣）绿、峰（全价）橙红，悬停给出峰谷口径 + 该档单价（元/百万 token）。
+       下面「峰谷 / 谷」两条词条保留：纯文本报告与旧断言仍按这两个字取词。 */
     "峰谷": "peak/off-peak",
     "谷": "off-peak",
     "该行含高峰（全价）与空闲（谷时半价）两个时段的用量：已按各轮各自的记账时刻分别计价":
       "This row mixes peak (full price) and off-peak (half price) usage: each round is priced by its own accounting time.",
     "该行按空闲时段计价（谷时半价）":
       "This row is priced at the off-peak rate (half price).",
+    "高峰时段全价（空闲时段半价）":
+      "Peak hours are full price (off-peak hours are half price).",
+    /* 悬停里的「价位简要」：这一行的模型在当前这一档的单价（元 / 百万 token） */
+    "价目：缓存命中 ": "Rate: cache hit ",
+    " · 未命中 ": " · miss ",
+    " · 输出 ": " · output ",
+    " 元/百万 token": " CNY / M tokens",
+    "（高峰 × 高峰倍率）": " (peak × peak multiplier)",
+    "（空闲价，无高峰倍率）": " (off-peak rate, no peak multiplier)",
+    "（谷时折扣价）": " (off-peak discounted rate)",
+    "（估算单价）": " (estimated rate)",
     "口径：本轮的 token 与用时按该轮自身的记账时刻（endedAt）计价 —— 峰谷折扣因此逐轮生效，明细逐行相加 = 合计。性能指标里「实测」= 网关逐次采样的累计值直接得出，「(推算)」= 缺纯生成时间 / Prefill 计数时用 LLM 用时、计费输入近似，「—」= 无样本。":
       "How to read: this round's tokens and time are priced at the round's own accounting time (endedAt), so the peak/off-peak discount applies round by round and the detail rows add up to the total. For performance metrics, measured = derived directly from the cumulative per-call samples the gateway collects; (estimated) = approximated from LLM time / billed input when pure generation time or Prefill counts are missing; — = no samples.",
     "点击展开按轮次统计": "Click to expand round-by-round stats",
