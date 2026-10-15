@@ -1,6 +1,7 @@
 """FastAPI management server + OpenAI-compatible proxy to llama-server."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -141,7 +142,7 @@ async def model_catalog(
     recentOnly: bool = False,
 ):
     items = await catalog.search_models(q, kind, limit, sort, sizeBand, recentOnly)
-    return {"ok": True, "items": items, "mirror": catalog.HF_MIRROR}
+    return {"ok": True, "items": items, "mirror": catalog.HF_MIRROR, "kinds": list(catalog._CATALOG_KINDS)}
 
 
 @app.get("/api/catalog/detail")
@@ -166,7 +167,13 @@ async def downloads():
 async def download(body: DownloadBody, authorization: str | None = Header(None)):
     require_key(authorization)
     try:
-        info = models.download_model(
+        # 下载必须离开事件循环：models.download_model 是**全同步**的（内部 hf_hub_download
+        # 阻塞几分钟到几十分钟），直接 await 会把单进程 uvicorn 的循环占死 ——
+        # 于是 /api/downloads 与 /api/status 在下载期间连不上、界面进度永远停在 0%
+        # （真机复现：27B 下到 14.9GB 时本机 8765 端口完全无响应）。to_thread 之后
+        # 下载期间接口照常应答，进度轮询才拿得到数（Python 3.10+ 内置）。
+        info = await asyncio.to_thread(
+            models.download_model,
             body.modelId,
             body.kind,
             body.pipelineTag,
@@ -187,7 +194,8 @@ async def download(body: DownloadBody, authorization: str | None = Header(None))
 @app.post("/api/models/deploy")
 async def deploy(body: DeployBody, authorization: str | None = Header(None)):
     require_key(authorization)
-    result = models.deploy_model(body.modelId, get_api_key())
+    # deploy_model 会同步扫架构 / 起子进程 / 落盘（秒级），同样别占着事件循环。
+    result = await asyncio.to_thread(models.deploy_model, body.modelId, get_api_key())
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "deploy_failed"))
     return result
@@ -196,19 +204,22 @@ async def deploy(body: DeployBody, authorization: str | None = Header(None)):
 @app.post("/api/models/restore")
 async def restore_wanted(authorization: str | None = Header(None)):
     require_key(authorization)
-    return models.restore_wanted_deploys(get_api_key())
+    # 恢复要逐个部署（每个都要起进程），同步跑会把界面卡到「恢复」整段结束。
+    return await asyncio.to_thread(models.restore_wanted_deploys, get_api_key())
 
 
 @app.post("/api/models/stop")
 async def stop(body: DeployBody, authorization: str | None = Header(None)):
     require_key(authorization)
-    return models.stop_model(body.modelId)
+    # stop_model 里有 taskkill（同步等待），挪出循环免得「停止」期间界面假死。
+    return await asyncio.to_thread(models.stop_model, body.modelId)
 
 
 @app.delete("/api/models/{model_id:path}")
 async def delete_model(model_id: str, authorization: str | None = Header(None)):
     require_key(authorization)
-    return models.delete_model(model_id)
+    # delete_model = 停引擎 + shutil.rmtree（几十 GB 的目录，同步删要好几秒）。
+    return await asyncio.to_thread(models.delete_model, model_id)
 
 
 @app.post("/api/shutdown")

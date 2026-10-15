@@ -127,15 +127,49 @@ def _fmt_bytes(n: int) -> str:
         return ""
 
 
+def _repo_file_size_via_api(repo: str, fname: str) -> int:
+    """兜底：用仓库文件列表元数据取该文件字节数（拿不到 = 0）。
+
+    与 catalog.py 的 `_file_bytes` 同一份口径（siblings 的 size / lfs.size），
+    只多一条 huggingface_hub 的 API 调用；镜像 endpoint 跟随 HF_ENDPOINT。
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo_id=repo, files_metadata=True)
+        for sib in getattr(info, "siblings", None) or []:
+            if str(getattr(sib, "rfilename", "") or "") != fname:
+                continue
+            for v in (getattr(sib, "size", None), getattr(getattr(sib, "lfs", None), "size", None)):
+                try:
+                    n = int(v or 0)
+                except Exception:
+                    n = 0
+                if n > 0:
+                    return n
+    except Exception:
+        pass
+    return 0
+
+
 def _remote_file_size(repo: str, fname: str) -> int:
-    """Total size in bytes of a remote HF file (0 when unknown)."""
+    """Total size in bytes of a remote HF file (0 when unknown).
+
+    先走文件元数据接口（快、准）。它失败时**再兜一次**仓库文件列表元数据：
+    拿不到总量的后果不是少一行提示，而是界面整段下载都算不出百分比（pct 恒为 null），
+    用户看到的就只有「下载中…」——真机复现过（27B 那次 14.9GB 全程无百分比）。
+    两条路都失败才返回 0（界面按「未知大小 + 已下载字节数」展示，见 _progress_text）。
+    """
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
         meta = get_hf_file_metadata(hf_hub_url(repo_id=repo, filename=fname))
-        return int(getattr(meta, "size", 0) or 0)
+        n = int(getattr(meta, "size", 0) or 0)
+        if n > 0:
+            return n
     except Exception:
-        return 0
+        pass
+    return _repo_file_size_via_api(repo, fname)
 
 
 # Quantization preference when a GGUF repo offers several files (lower = better).
@@ -214,22 +248,34 @@ def _find_partial_size(dest_dir: Path, fname: str) -> int:
     return best
 
 
+def _progress_text(received: int, total: int) -> str:
+    """进度行文案（total=0 时也要说得出「在动」）。"""
+    if total > 0:
+        return f"下载中 {_fmt_bytes(received)} / {_fmt_bytes(total)}"
+    if received > 0:
+        return f"下载中（未知大小）已下载 {_fmt_bytes(received)}"
+    return "下载中（未知大小）…"
+
+
+def _publish_download_progress(model_id: str, dest_dir: Path, state: dict[str, Any]) -> None:
+    """把当前进度快照写进 _downloads（watcher 与换候选时共用同一份算法）。"""
+    fname = str(state.get("fname") or "")
+    total = int(state.get("total") or 0)
+    received = _find_partial_size(dest_dir, fname)
+    pct = (received / total * 100.0) if total > 0 else None
+    _set_download(model_id, "download", _progress_text(received, total), pct, received, total)
+
+
 def _spawn_download_watcher(model_id: str, dest_dir: Path, state: dict[str, Any]) -> threading.Event:
     """Poll the partial file size every second and publish progress to _downloads."""
     stop = threading.Event()
 
     def watch() -> None:
-        while not stop.is_set():
-            fname = str(state.get("fname") or "")
-            total = int(state.get("total") or 0)
-            received = _find_partial_size(dest_dir, fname)
-            pct = (received / total * 100.0) if total > 0 else None
-            if total > 0:
-                message = f"下载中 {_fmt_bytes(received)} / {_fmt_bytes(total)}"
-            else:
-                message = "下载中（未知大小）…"
-            _set_download(model_id, "download", message, pct, received, total)
-            stop.wait(1.0)
+        # 首帧先发一次：以前要先等满 1 秒，小文件（几十 MB）下完都看不到一行进度。
+        while True:
+            _publish_download_progress(model_id, dest_dir, state)
+            if stop.wait(1.0):
+                return
 
     t = threading.Thread(target=watch, daemon=True, name="dl-watch")
     t.start()
@@ -417,6 +463,179 @@ def gguf_path_for(entry: dict[str, Any]) -> Path:
     return model_dir(entry["id"]) / fname
 
 
+# ── 引擎支持的架构（部署前的最后一道闸）──────────────────────────────────
+# 用户报障：列表把 llama-server 根本不认识的架构也摆出来，装完几个 GB 才在部署时炸
+# （llama-<port>.log：`error loading model: unknown model architecture: 'deepseek4_mtp_support'`）。
+# 列表侧的白名单在 llama-pack/app/catalog.py（搜索时读 GGUF 文件头）；这里管本地这一侧：
+# 手工丢进 models/ 的 GGUF、注册表里历史留下的条目，都要在**拉起 llama-server 之前**判一次。
+#
+# 判据不手抄白名单：llama.cpp 认架构靠它自己 arch 表里的字符串（llm_arch_from_string），
+# 所以直接看**本机这份引擎**的二进制里有没有这个架构名 —— 引擎升版多了/少了架构自动跟着变，
+# 不会出现「名单写着支持、引擎其实不支持」的漂移（实测本机 build b10566：gemma4 / qwen35 在册，
+# deepseek4_mtp_support / t5 / gpt-oss 不在册）。二进制读不到时不硬判、直接放行（见 check_local_arch）：
+# 手抄一份「支持清单」在引擎升版后只会变成新的谎。
+_ENGINE_ARCH_BINS = ("llama.dll", "llama-server-impl.dll", "llama-common.dll")
+_ENGINE_ARCH_RE = re.compile(rb"(?<![A-Za-z0-9_])[a-z][a-z0-9_]{2,23}(?![A-Za-z0-9_])")
+_engine_arch_cache: set[str] | None = None
+
+
+def _engine_bin_dirs() -> list[Path]:
+    """本机引擎二进制可能在的目录（按可信度排）。
+
+    ① 插件起后端时下发的安装目录（llama/main-llama.js 的 silentEnv 传 MTNODE_LLAMA_INSTALL）；
+    ② 脚手架自带的 bin/（standalone 跑法，如手工 python -m app）；
+    ③ 本文件同级的 ../bin（万一被单独拷出去跑）。
+    少了 ① 会踩到「源码目录里根本没有 bin/」→ 扫不出任何架构 → 真能跑的模型被误判。
+    """
+    out: list[Path] = []
+    for d in (os.environ.get("MTNODE_LLAMA_INSTALL"), str(ROOT)):
+        root = str(d or "").strip()
+        if root:
+            out.append(Path(root) / "bin")
+    out.append(BIN_DIR)
+    uniq: list[Path] = []
+    for p in out:
+        if p not in uniq:
+            uniq.append(p)
+    return uniq
+
+
+def _engine_arch_scan() -> set[str] | None:
+    """从本机引擎二进制里扫出它认识的架构名（一个二进制都没读到 = None）。"""
+    global _engine_arch_cache
+    if _engine_arch_cache is not None:
+        return _engine_arch_cache or None
+    found: set[str] = set()
+    for d in _engine_bin_dirs():
+        for name in _ENGINE_ARCH_BINS:
+            p = d / name
+            if not p.is_file():
+                continue
+            try:
+                data = p.read_bytes()
+            except Exception:
+                continue
+            for m in _ENGINE_ARCH_RE.finditer(data):
+                found.add(m.group().decode("ascii"))
+    _engine_arch_cache = found
+    return found or None
+
+
+def engine_supports_arch(arch: str) -> bool:
+    """本机引擎认不认这个 general.architecture。
+
+    引擎二进制读得到 → 以它为准（这就是 llama.cpp 自己的判据）；
+    读不到（bin/ 还没下好 / 架构名在二进制里被压缩掉了）→ 返回 True：
+    交回给引擎自己报错，别拿一份手抄清单当真理去挡用户。
+    """
+    a = str(arch or "").strip().lower()
+    if not a or a.startswith("unknown"):
+        return False  # 本机 no_arch 的模型一律拒（与 llama.cpp 一致）
+    scanned = _engine_arch_scan()
+    if scanned is None:
+        return True
+    return a in scanned
+
+
+def local_gguf_arch(path: Path) -> str:
+    """本机 GGUF 文件头的 general.architecture（没有 / 读不动 = 空串）。
+
+    与 catalog.py 的远程探测同一份格式口径（那边读 Range 回来的头，这边读文件前 4MB），
+    解析失败时再退一步：扫文件里的 `general.architecture` 键名，取紧随其后的
+    「u32 值类型(8=字符串) + u64 长度 + 字符串」——比整段二进制里瞎找更靠得住。
+    """
+    import struct
+
+    try:
+        if not path.is_file():
+            return ""
+        with open(path, "rb") as fp:
+            buf = fp.read(4 * 1024 * 1024)
+    except Exception:
+        return ""
+    if len(buf) < 24 or buf[:4] != b"GGUF":
+        return ""
+    try:
+        version = struct.unpack_from("<I", buf, 4)[0]
+        if not 1 <= version <= 3:
+            return ""
+        n_kv = struct.unpack_from("<Q", buf, 16)[0]
+        if n_kv <= 0 or n_kv > 1_000_000:
+            raise ValueError("bad kv count")
+        mv = memoryview(buf)
+        off = 24
+        fixed = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+        def skip_value(typ: int, pos: int) -> int:
+            if typ == 8:
+                n = struct.unpack_from("<Q", mv, pos)[0]
+                return pos + 8 + n
+            if typ == 9:
+                et = struct.unpack_from("<I", mv, pos)[0]
+                cnt = struct.unpack_from("<Q", mv, pos + 4)[0]
+                pos += 12
+                if cnt > 1_000_000:
+                    raise ValueError("array too big")
+                for _ in range(cnt):
+                    pos = skip_value(et, pos)
+                return pos
+            return pos + fixed[typ]
+
+        for _ in range(n_kv):
+            klen = struct.unpack_from("<Q", mv, off)[0]
+            off += 8
+            if klen > 4096:
+                raise ValueError("key too long")
+            key = bytes(mv[off:off + klen]).decode("utf-8", "replace")
+            off += klen
+            typ = struct.unpack_from("<I", mv, off)[0]
+            off += 4
+            if key == "general.architecture":
+                if typ != 8:
+                    return ""
+                vlen = struct.unpack_from("<Q", mv, off)[0]
+                if vlen > 512:
+                    return ""
+                return bytes(mv[off + 8:off + 8 + vlen]).decode("utf-8", "replace").strip().lower()
+            off = skip_value(typ, off)
+        return ""
+    except Exception:
+        pass
+    # 结构化解析没走通（头部字段异常 / 键位错乱）：退回键名附近的定向扫描。
+    # 只在键名之后 1KB 内按「u32 类型 + u64 长度 + 字节」读，比全文件瞎找安全。
+    i = 0
+    while True:
+        i = buf.find(b"general.architecture", i)
+        if i < 0:
+            return ""
+        p = i + len(b"general.architecture")
+        for _ in range(4):  # 键名后可能有长度前缀 / 分隔字节，允许几次对齐尝试
+            if p + 12 <= len(buf):
+                typ = struct.unpack_from("<I", buf, p)[0]
+                if typ == 8:
+                    n = struct.unpack_from("<Q", buf, p + 4)[0]
+                    if 0 < n <= 512 and p + 12 + n <= len(buf):
+                        val = buf[p + 12:p + 12 + n].decode("utf-8", "replace").strip().lower()
+                        if val and all(c.isalnum() or c in "-_." for c in val):
+                            return val
+            p += 1
+        i = p
+
+
+def check_local_arch(gpath: Path) -> tuple[bool, str, str]:
+    """部署前判本地 GGUF 能不能被当前引擎加载 → (ok, arch, errorCode)。
+
+    探不到架构（文件头异常）时放行：让 llama-server 自己去报错，本函数只挡
+    「架构名明确探到、且引擎明确不支持」这种已经被证实必炸的情况。
+    """
+    arch = local_gguf_arch(gpath)
+    if not arch:
+        return True, "", ""
+    if engine_supports_arch(arch):
+        return True, arch, ""
+    return False, arch, "architecture_not_supported"
+
+
 def llama_server_bin() -> Path:
     for name in ("llama-server.exe", "llama-server"):
         p = BIN_DIR / name
@@ -436,6 +655,14 @@ def local_model_info(entry: dict[str, Any]) -> dict[str, Any]:
     )
     quant = entry.get("quant") or entry.get("ggufQuant") or ""
     vram = entry.get("vramGb") or estimate_vram_gb(mid, size, quant)
+    # 架构状态（「已安装」列表要能一眼看出这条为什么起不来）：
+    #   confirmed = 探到且引擎支持；unsupported = 探到但引擎不支持（部署会被挡下）；
+    #   unconfirmed = 没读到架构（文件头异常 / 文件还没落全）。
+    arch = local_gguf_arch(gpath) if gpath.is_file() else ""
+    if arch:
+        arch_status = "confirmed" if engine_supports_arch(arch) else "unsupported"
+    else:
+        arch_status = "unconfirmed"
     return {
         **entry,
         "path": str(gpath),
@@ -447,6 +674,8 @@ def local_model_info(entry: dict[str, Any]) -> dict[str, Any]:
         "status": deployed.get("status") if deployed else "idle",
         "servedName": deployed.get("servedName") if deployed else None,
         "error": deployed.get("error") if deployed else None,
+        "arch": arch,
+        "archStatus": arch_status,
     }
 
 
@@ -539,10 +768,11 @@ def download_model(
             repo = cand["repo"]
             fname = cand["file"]
             total = _remote_file_size(repo, fname)
+            # 换候选仓库（fallback）时同步刷新文件名与总量：watcher 读的就是这份 state，
+            # 不刷的话它会拿上一个候选的名字算字节数 → 恒 0（旧实现的坑）。
             watcher_state["fname"] = fname
             watcher_state["total"] = total
-            if watcher_stop is None:
-                watcher_stop = _spawn_download_watcher(model_id, dest_dir, watcher_state)
+            # 先播报这次要下哪一份（用户一眼知道下的是哪个文件）…
             _set_download(
                 model_id,
                 "download",
@@ -551,6 +781,12 @@ def download_model(
                 0,
                 total,
             )
+            # …再起 watcher —— 它的**首帧立刻**发一次真实进度，所以上面那条占位不会停在 0%
+            #（顺序反过来的话，首帧快照会被这条占位盖掉，重试续传时已下载的字节数就白算了）。
+            if watcher_stop is None:
+                watcher_stop = _spawn_download_watcher(model_id, dest_dir, watcher_state)
+            else:
+                _publish_download_progress(model_id, dest_dir, watcher_state)
             log(f"downloading {repo}/{fname} -> {dest_dir}")
             try:
                 path = hf_hub_download(
@@ -623,6 +859,11 @@ def scan_existing_models() -> None:
             _ensure_chat_template(mid)
             continue
         g = max(ggufs, key=lambda p: p.stat().st_size)
+        # 手工 / 迁移进来的 GGUF 也先看一眼架构：不支持的照旧登记（用户能看见、能删），
+        # 但日志里留一句，排查「点部署就被拒」时不用猜。
+        arch = local_gguf_arch(g)
+        if arch and not engine_supports_arch(arch):
+            log(f"unsupported architecture {arch} in {sub.name} ({g.name}); deploy will be refused")
         import_local_gguf(mid, g)
         _ensure_chat_template(mid)
         log(f"imported existing {mid} <- {g.name}")
@@ -798,6 +1039,12 @@ def deploy_model(model_id: str, api_key: str = "") -> dict[str, Any]:
     gpath = Path(info["path"])
     if not gpath.is_file():
         return {"ok": False, "error": "not_downloaded"}
+    # 部署前最后一次架构校验：引擎不支持就别拉起 llama-server（起来也只是白等一场
+    # 「unknown model architecture」的失败，日志里还会多一条 failed 实例）。
+    arch_ok, arch, arch_err = check_local_arch(gpath)
+    if not arch_ok:
+        log(f"deploy refused {model_id}: unsupported architecture {arch}")
+        return {"ok": False, "error": arch_err, "arch": arch, "modelId": model_id}
     reused = _reuse_instance(model_id)
     if reused:
         return reused

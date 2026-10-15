@@ -111,6 +111,8 @@ function syncDownloadProgress(items) {
       if (
         !b ||
         Math.round(Number(a.pct) || 0) !== Math.round(Number(b.pct) || 0) ||
+        // 未知大小（pct = null）时要靠已下载字节数判定变化，否则这一格永远不重绘。
+        (Number(a.received) || 0) !== (Number(b.received) || 0) ||
         String(a.phase || "") !== String(b.phase || "")
       ) {
         changed = true;
@@ -265,19 +267,31 @@ function mkDownloadProgress(p) {
   const txt = document.createElement("span");
   txt.className = "dl-txt";
   cell.appendChild(txt);
-  const pct = Number(p && p.pct);
+  // 后端的 pct 拿不到总量时就是 null —— 以前 Number(null) = 0，于是「未知大小」被画成
+  // 刺眼的 0%（用户看到的就是进度永远不动）。现在只认真正的数字，且**总量未知时一律不画百分比**
+  // （有 pct 却不给 total 的那种快照，百分比是没法解释的）。
+  const rawPct = p ? p.pct : null;
   const total = Number(p && p.total) || 0;
   const received = Number(p && p.received) || 0;
-  if (Number.isFinite(pct) && pct >= 0) {
+  const hasPct = typeof rawPct === "number" && Number.isFinite(rawPct) && rawPct >= 0 && total > 0;
+  const pct = hasPct ? rawPct : null;
+  let label = "";
+  if (pct !== null) {
     setBar(bar, pct);
-    txt.textContent = Math.round(pct) + "%";
+    label = Math.round(pct) + "%";
   } else if (total > 0) {
-    setBar(bar, (received / total) * 100);
-    txt.textContent = Math.round((received / total) * 100) + "%";
+    const derived = (received / total) * 100;
+    setBar(bar, derived);
+    label = Math.round(derived) + "%";
   } else {
+    // 总量未知：进度条钉在 0，但文字必须显示「已下载 X」（看得出在动，而不是卡死）。
     setBar(bar, 0);
-    txt.textContent = "下载中…";
+    label = received > 0 ? "已下载 " + fmtBytes(received) : String((p && p.message) || "下载中…");
   }
+  txt.textContent = label;
+  // 悬停能看到后端的原始进度行（含「已下载 X / Y」与阶段文案），排查时不用翻日志。
+  const detail = String((p && p.message) || "").trim();
+  if (detail) cell.title = detail;
   return cell;
 }
 
@@ -384,7 +398,16 @@ function renderItems(items) {
       } else if (state.downloadIds.has(m.id)) {
         row.appendChild(mkWaitBtn("等待中"));
       } else if (!state.downloadedIds.has(m.id)) {
-        row.appendChild(mkRowBtn("下载", () => confirmDownload(m), "primary"));
+        if (m.archStatus === "unsupported") {
+          /* 后端已经在列表层把「引擎不支持架构」的条目收掉了（见 llama-pack/app/catalog.py
+             的 _filter_arch）；走到这里说明是缓存 / 老界面兜底，禁掉下载别再让人白下几个 GB。 */
+          const b = mkRowBtn("架构不支持", () => {}, "danger");
+          b.disabled = true;
+          b.title = "当前 llama.cpp 引擎不支持的架构" + (m.arch ? "：" + m.arch : "");
+          row.appendChild(b);
+        } else {
+          row.appendChild(mkRowBtn("下载", () => confirmDownload(m), "primary"));
+        }
       }
       row.appendChild(mkRowBtn("详情", () => showModelDetail(m)));
     } else {
@@ -396,6 +419,13 @@ function renderItems(items) {
         row.appendChild(mkDownloadProgress(dl));
       } else if (m.status === "starting") {
         row.appendChild(mkWaitBtn("加载中"));
+      } else if (m.archStatus === "unsupported") {
+        /* 引擎认不出这个架构：后端会直接拒（architecture_not_supported），
+           别让用户点一次、看着它走一遍必败的流程。行尾小标写着为什么。 */
+        const b = mkRowBtn("架构不支持", () => {}, "danger");
+        b.disabled = true;
+        b.title = "当前 llama.cpp 引擎不支持的架构" + (m.arch ? "：" + m.arch : "") + "，部署会被拒绝；可用「删除」清掉它释放磁盘";
+        row.appendChild(b);
       } else if (!m.deployed || m.status === "failed" || m.status === "dead" || m.status === "idle") {
         row.appendChild(mkRowBtn("部署", () => startDeploy(m), "primary"));
       } else {
@@ -421,6 +451,30 @@ function renderItems(items) {
     name.textContent = title;
     name.title = title;
     row.appendChild(name);
+    /* 架构状态的第二行说明（体积那格只管体积，别再往里塞别的）：
+       catalog 的「未确认」= 没读到 GGUF 文件头里的 general.architecture；
+       local 的「不支持」= 引擎认不出这个架构，点部署会被后端挡下（原因写在行内）。 */
+    if (m.archStatus === "unconfirmed" && state.tab === "catalog") {
+      const t = document.createElement("span");
+      t.className = "arch-tag warn";
+      t.textContent = "架构未确认";
+      t.title = "没能读到该仓库 GGUF 文件头里的 general.architecture（网络超时或没有单文件权重），下载与部署仍可尝试";
+      row.appendChild(t);
+    }
+    if (m.archStatus === "unsupported") {
+      const t = document.createElement("span");
+      t.className = "arch-tag bad";
+      t.textContent = "架构不支持";
+      t.title = "当前 llama.cpp 引擎不含该架构" + (m.arch ? "：" + m.arch : "") + "，部署会被拒绝；可用「删除」清掉它释放磁盘";
+      row.appendChild(t);
+    }
+    if (m.archStatus === "non-llm") {
+      const t = document.createElement("span");
+      t.className = "arch-tag warn";
+      t.textContent = "非对话架构";
+      t.title = "该架构" + (m.arch ? "（" + m.arch + "）" : "") + "不是可对话文本模型（向量 / 文本编码类），在线列表不收它";
+      row.appendChild(t);
+    }
     list.appendChild(row);
   }
 }
@@ -626,6 +680,12 @@ async function showModelDetail(m, isLocal) {
     addDetailField(form, "预估显存", m.vramGb != null ? "≈" + m.vramGb + " GB" : null);
     addDetailField(form, "部署状态", m.deployed ? "已部署 : " + (m.port || "?") : m.status || "未部署");
     addDetailField(form, "类型", m.kind);
+    /* 本机文件的架构（读 GGUF 文件头得来）：不支持的会写明「部署会被拒绝」，
+       这正是「装了却拉不起来」的那条线索，不再只留一句引擎日志里的话。 */
+    addDetailField(form, "架构", m.arch || (m.archStatus === "unconfirmed" ? "未确认（读不出文件头架构）" : ""));
+    if (m.archStatus === "unsupported") {
+      addDetailField(form, "可用性", "当前 llama.cpp 引擎不支持该架构，部署会被拒绝；可删除该模型释放磁盘");
+    }
   }
 
   try {
@@ -640,7 +700,12 @@ async function showModelDetail(m, isLocal) {
     addDetailField(form, "类型", d.kind);
     addDetailField(form, "Pipeline", d.pipelineTag);
     addDetailField(form, "库", d.libraryName);
-    addDetailField(form, "架构", d.architectures);
+    addDetailField(form, "架构", d.arch || (d.archStatus === "unconfirmed" ? "未确认（读不到 GGUF 文件头）" : d.architectures));
+    if (d.archStatus === "unsupported") {
+      addDetailField(form, "可用性", "当前 llama.cpp 引擎不支持该架构，不能部署；它也不会出现在在线列表里");
+    } else if (d.archStatus === "non-llm") {
+      addDetailField(form, "可用性", "该架构不是可对话文本模型（向量 / 文本编码类），在线列表不收它");
+    }
     addDetailField(form, "Model Type", d.modelType);
     addDetailField(form, "下载量", fmtNum(d.downloads));
     addDetailField(form, "点赞", fmtNum(d.likes));
