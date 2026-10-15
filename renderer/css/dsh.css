@@ -2251,13 +2251,6 @@ button.mini.btn-sq.tpl-ico {
   background: rgb(44, 50, 66);
 }
 
-/* 运行中那一轮被条目封顶折叠的更早条目提示（本轮收尾后随消息进历史，可从最前端展开） */
-.dsh-live-cut {
-  color: rgb(147, 155, 167);
-  font-size: 11.5px;
-  line-height: 1.7;
-}
-
 /* 会话侧边栏(按项目目录归类 + 归档) —— dsh web rail 会话项 */
 .side-group {
   font-size: 11px;
@@ -3119,10 +3112,12 @@ button.mini.btn-sq.tpl-ico {
   display: none
 }
 
-/* 「拷问需求」状态小字（本次开发需求 · 会话头部）：模式菜单里那一枚默认开，这一枚只**回显**
-   这一轮会不会被拷问（不挂 onclick，切换只走模式菜单）。它跟「工具 / 模式」一样是硬 chip：
-   状态要一眼看得见，不能被别的软 chip 挤没（.agent-chip[hidden] 已定义，关掉即整枚消失）。 */
-.agent-chip.agent-chip-grill {
+/* 「压缩上下文」/「查看压缩摘要」（本次开发需求 · 拷问共识）：原位替换掉按需求撤走的
+   「拷问需求」回显 chip（那一档开关本身仍在「模式」菜单里）。两枚都是硬 chip（键面固定、
+   不被别的软 chip 挤掉）；压缩中 / 会话运行中由 disabled 表禁用（口径：运行中不可压缩）；
+   「查看压缩摘要」只在压过之后出现（hidden 由 paintCompactChips 控制）。 */
+.agent-chip.agent-chip-compact,
+.agent-chip.agent-chip-compact-view {
   flex: 0 0 auto;
   max-width: none;
   height: 22px;
@@ -3131,11 +3126,75 @@ button.mini.btn-sq.tpl-ico {
   background: rgba(86, 134, 254, .08);
   color: rgb(86, 134, 254);
   font-size: 10.5px;
+}
+
+.agent-chip.agent-chip-compact:hover,
+.agent-chip.agent-chip-compact-view:hover {
+  background: rgba(86, 134, 254, .16)
+}
+
+.agent-chip.agent-chip-compact:disabled {
+  opacity: .55;
   cursor: default;
 }
 
-.agent-chip.agent-chip-grill:hover {
+.agent-chip.agent-chip-compact:disabled:hover {
   background: rgba(86, 134, 254, .08)
+}
+
+/* 「查看压缩摘要」是「看」不是「改」：中性配色，跟左边那枚操作键分开 */
+.agent-chip.agent-chip-compact-view {
+  border-color: var(--bd2);
+  background: transparent;
+  color: var(--muted);
+}
+
+.agent-chip.agent-chip-compact-view:hover {
+  background: rgba(255, 255, 255, .06)
+}
+
+/* ── 手动压缩后的折叠行（本次开发需求）───────────────────────────────────────
+   被压掉的那段历史在原位折成一行「已压缩的历史 · N 条」（.agent-fold-head），默认收起；
+   点开时组内消息接在 .agent-fold-body 里（左边一条虚线竖线标出「这段已不在上下文」）。
+   折叠只影响渲染与下发上下文，会话本身一条消息都没删（见 app-assist.js 的同名段注释）。 */
+.agent-fold {
+  margin: 8px 0 6px;
+}
+
+.agent-fold-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  border: 1px dashed rgba(86, 134, 254, .4);
+  border-radius: 999px;
+  background: rgba(86, 134, 254, .06);
+  color: rgb(86, 134, 254);
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.agent-fold-head:hover {
+  background: rgba(86, 134, 254, .12)
+}
+
+.agent-fold-caret {
+  font-size: 10px;
+  opacity: .85;
+}
+
+.agent-fold-time {
+  opacity: .7;
+  font-size: 10.5px;
+}
+
+.agent-fold-body {
+  margin: 6px 0 0 8px;
+  padding-left: 10px;
+  border-left: 1px dashed rgba(86, 134, 254, .28);
 }
 
 .agent-chip:hover {
@@ -4784,6 +4843,49 @@ body.theme-light button.dsh-think-row {
   max-height: min(88vh, 900px);
 }
 
+/* ── 压缩摘要弹窗（本次开发需求 · 拷问共识）：看「最近一次手动压缩」产出的摘要全文 ──
+   形态照思考弹窗那一套（#overlay 宿主 + 自己的外形类，绝不用内联尺寸）：上面一行元信息
+   （压掉 N 条 · 原文约 N 字 · 时刻），下面正文自己滚；出口「复制 / 关闭」在窗脚。 */
+.overlay-box.compact-pop-box {
+  width: min(880px, 92vw);
+  max-height: min(84vh, 820px);
+}
+
+.compact-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 2px 0 4px;
+}
+
+.compact-pop-meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  opacity: .8;
+  font-size: 11.5px;
+}
+
+.compact-pop-body {
+  flex: 1 1 auto;
+  min-height: 160px;
+  padding: 8px 10px;
+  overflow: auto;
+  background: rgba(0, 0, 0, .22);
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+  font-family: var(--sans);
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.78;
+}
+
+.compact-pop-body.md-viewer-doc {
+  max-width: none;
+  margin: 0;
+}
+
 .dsh-think-pop {
   display: flex;
   flex-direction: column;
@@ -5186,6 +5288,74 @@ button.dsh-xlate-copy:hover {
 
   .dsh-seg.dsh-seg-has-time > .dsh-seg-time {
     font-size: 9px
+  }
+}
+
+/* ── 每步 token（本次需求 · 用户口径「在左侧时间下方写明 token 出入」）──────────────
+   位置：时刻栏（.dsh-seg-time）**内部的第二行** —— 时刻栏本身是绝对定位（不进文档流），
+   所以正文宽度 / 缩进 / 行序一个像素都不动，也就不会把任何东西挤跑。
+   行内只有「↑计费输入 ↓输出」（拷问共识：精简口径，不带「（新增 N）」与「N 次调用」），
+   数字格式与轨迹同源（app-assist.js 的 dshTokShort）；完整明细在 tooltip 里。
+   配色复用 css/dsh-tokens.css 的 .dsh-tok-in / .dsh-tok-out（输入蓝 / 输出绿，与轨迹行内、
+   Token 报告同一对色类），这里只给两段之间加一点间距。
+   回归口径：test/smoke-session-markers.js [6] / test/smoke-trajectory-view.js [9]。 */
+.dsh-seg.dsh-seg-has-time > .dsh-seg-time > .dsh-seg-tok {
+  display: block;
+  margin-top: 1px;
+  font-size: 9px;
+  line-height: 1.15;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: .78;
+}
+
+.dsh-seg.dsh-seg-has-time:hover > .dsh-seg-time > .dsh-seg-tok {
+  opacity: 1
+}
+
+.dsh-seg.dsh-seg-has-time > .dsh-seg-time > .dsh-seg-tok > .dsh-tok-out {
+  margin-left: 3px
+}
+
+/* 带 token 的时刻栏紧一档：行距 1.3 → 1.15，右侧只留 2px（原来留 8px）。
+   让出这 6px 是为了**最长形态的时刻永远只占一行**（「12/31 09:12:31」在 9.5px 下 77.9px、
+   在 9px 下 73.8px，都塞得进加宽后的 78–90px），于是时刻栏的行数恒为
+   「时刻 1 行 + 耗时 1 行（只有工具项有）+ token 1 行」，下面那两条最小高度才有确定的上界。 */
+.dsh-seg.dsh-seg-has-tok > .dsh-seg-time {
+  width: calc(var(--dsh-seg-time-w, 92px) - 2px);
+  line-height: 1.15;
+}
+
+/* 最小高度兜底（只在带 token 的项上生效；不带 token 的项一个字都不改，与改动前逐像素一致）：
+     · 通用档 24px = 时刻 1 行 + token 1 行（思考 / 正文这些项）；
+     · 工具档 35px = 上面两行 + 耗时那 1 行（工具项的时刻后面挂着耗时，它在栏里必折一行）。
+   为什么要这两条：时刻栏是绝对定位，项高不够时**溢出的部分会盖住下面的内容** ——
+   没有这一条，token 那一行就会压到下一个条目的时刻上。
+   数值是真浏览器量出来的（test/_preview-seg-time.html：项高、越出项底多少、与下一项的间距），
+   不是估的；窄栏两档见下面 900 那一档的收法。 */
+.dsh-seg.dsh-seg-has-tok {
+  min-height: 24px;
+}
+
+.dsh-seg.dsh-seg-tool-wrap.dsh-seg-has-tok {
+  min-height: 35px;
+}
+
+/* 窄栏那一档（与时刻栏的容器档位同一套判据）：字号收小一档，行数不变、高度下限跟着收。
+   这一块**必须排在上面的基础档之后**（同权重靠源码顺序取胜，放前面会被基础档盖掉）。 */
+@container (max-width: 900px) {
+  .dsh-seg.dsh-seg-has-tok {
+    min-height: 23px;
+  }
+
+  .dsh-seg.dsh-seg-tool-wrap.dsh-seg-has-tok {
+    min-height: 34px;
+  }
+
+  .dsh-seg.dsh-seg-has-time > .dsh-seg-time > .dsh-seg-tok {
+    font-size: 8.5px
   }
 }
 

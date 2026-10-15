@@ -21,8 +21,13 @@
  *   --timeout=SECONDS 单只上限（默认 300）；超时判 timeout 并杀进程
  *   --tail=N          汇总里每只失败贴多少行关键输出（默认 24）
  *   --log-dir=PATH    完整输出落盘目录（默认 <tmp>/mtnode-smoke-logs/<时间戳>）
- *   --include-manual  连 MANUAL 表里那些需要外部服务/人工前置的一起跑
+ *   --heavy           连 HEAVY 表里的【重活】一起跑（真起 Electron / Edge / 本机服务 / 装依赖）
+ *   --include-manual  连 MANUAL 表里那些需要外部服务/人工前置的一起跑（含重活）
  *   --list            只打印将要运行的清单后退出
+ *
+ * 默认口径（2026-10 起）：`npm test` 只跑**安静、纯 Node、不起外部进程**的那批 ——
+ * 重活（见 HEAVY 表）默认跳过，因为它们会真起 Electron / Edge / 服务端，跳窗、抢焦点、
+ * 拖时间，正在做别的活的人会被打断。要全量：`npm run test:heavy`。
  * ============================================================================
  */
 import { spawn } from "node:child_process";
@@ -45,11 +50,44 @@ const MANUAL = new Map([
     "smoke-paseo-install-real.mjs",
     "真装 @getpaseo/cli（要出网、拉 300+ 依赖）+ 真起一份隔离 daemon；离线那条判据在 smoke-paseo-install-isolation.js",
   ],
+  ["smoke-paseo-daemon-silent.js", "真起一份 Paseo daemon（要 npm 装配 + 起进程），实测会新增可见控制台窗口"],
+  ["smoke-recharge.js", "nginx 配置断言已过时（线上 patch-nginx.py 只改 store-api 限位，不再建 location）"],
+  ["smoke-relay.js", "nginx 配置断言已过时（同上），且真起服务端"],
 ]);
+
+/* 【重活】默认不跑（`npm test` = 安静、纯 Node、无外部进程的快速闸门）。
+ * 这些脚本会真起 Electron / Edge / 本机服务 / 装依赖，跑起来会跳窗、抢焦点、拖时间，
+ * 打断正在做别的活的人。要跑：node test/run-all.mjs --heavy [子串] */
+const HEAVY = new Map([
+  ["smoke-browser.js", "真起 Edge/Chrome（要 MTNODE_BROWSER_SMOKE=1 才开那段，仍会拉起浏览器）"],
+  ["smoke-browser-view.mjs", "浏览器视图宿主，起真窗口"],
+  ["smoke-scale-1000.js", "本机有 electron 时真起 electron.exe 量首屏（无 windowsHide）"],
+  ["smoke-relay-client.js", "本机有 electron 时真起 electron.exe 跑凭据自愈"],
+  ["smoke-composer-chips.js", "起 Electron 离屏窗口量布局"],
+  ["smoke-slash-menu-reuse.js", "起 Electron 离屏窗口"],
+  ["smoke-mcp-bridge.js", "起 Electron 窗口 + 真 MCP 桥"],
+  ["smoke-config-probe.js", "真起一次运行时探配置（~60s）"],
+  ["smoke-llama-backend-silent.js", "真起 Python 后端探「零可见窗口」（~30s）"],
+  ["smoke-install-scripts.js", "逐字节扫全部安装脚本 + 真跑 powershell（~2min）"],
+  ["smoke-account-store.mjs", "真起 HTTP 服务"],
+  ["smoke-comment.js", "真起服务端（~67s）"],
+  ["smoke-forum.js", "真起论坛服务"],
+  ["smoke-forum-auth.js", "真起论坛服务"],
+  ["smoke-notifications.js", "真起服务端"],
+  ["smoke-store.js", "真起商店服务端"],
+  ["smoke-tip.js", "真起服务端"],
+  ["smoke-paseo-install-isolation.js", "拉起 Paseo 宿主做隔离安装推演"],
+  ["smoke-paseo-bridge.mjs", "拉起 ACP 桥"],
+  ["smoke-agent-skills-verify.js", "校验真机自验纪律时真起一次 GUI 实例"],
+  ["smoke-app-shots.js", "真起 store-saas 服务端（并行跑会被线上/别的实例的状态串味）"],
+  ["smoke-wechat-fastlogin.js", "真起本地微信快速登录桥并探端口归因"],
+  ["smoke-console-silent.js", "真起 powershell / python 探「零新增可见控制台窗口」：并发跑时别的脚本一冒窗就误判（~18s）"],
+]);
+
 
 /* ---------------- 参数 ---------------- */
 const argv = process.argv.slice(2);
-const flags = { manual: false, list: false };
+const flags = { manual: false, heavy: false, list: false };
 const filters = [];
 let timeoutSec = 300;
 let tailN = 24;
@@ -57,6 +95,7 @@ let logDirArg = "";
 let jobs = 4;
 for (const a of argv) {
   if (a === "--include-manual") flags.manual = true;
+  else if (a === "--heavy") flags.heavy = true;
   else if (a === "--list") flags.list = true;
   else if (a.startsWith("--only="))
     filters.push(...a.slice(7).split(",").map((s) => s.trim()).filter(Boolean));
@@ -69,6 +108,7 @@ for (const a of argv) {
     process.exit(2);
   } else filters.push(a);
 }
+if (flags.manual) flags.heavy = true; /* 要跑人工前置的那批，重活一并放行 */
 if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) timeoutSec = 300;
 if (!Number.isFinite(jobs) || jobs < 1) jobs = 4;
 jobs = Math.max(1, Math.min(16, Math.floor(jobs)));
@@ -84,11 +124,20 @@ const picked = all.filter(
   (n) => !lower.length || lower.some((f) => n.toLowerCase().includes(f)),
 );
 const skippedManual = picked.filter((n) => MANUAL.has(n) && !flags.manual);
-const queue = picked.filter((n) => !MANUAL.has(n) || flags.manual);
+const skippedHeavy = picked.filter((n) => HEAVY.has(n) && !flags.heavy && !MANUAL.has(n));
+const queue = picked.filter((n) => {
+  if (MANUAL.has(n)) return flags.manual;
+  if (HEAVY.has(n)) return flags.heavy;
+  return true;
+});
 
 if (flags.list) {
   console.log("test/ 下 smoke-* 共 " + all.length + " 只，本次将跑 " + queue.length + " 只：");
-  for (const n of queue) console.log("  · " + n + (MANUAL.has(n) ? "  [manual]" : ""));
+  for (const n of queue) console.log("  · " + n + (MANUAL.has(n) ? "  [manual]" : HEAVY.has(n) ? "  [heavy]" : ""));
+  if (skippedHeavy.length) {
+    console.log("默认跳过（--heavy 才跑）：");
+    for (const n of skippedHeavy) console.log("  - " + n + "  ← " + HEAVY.get(n));
+  }
   if (skippedManual.length) {
     console.log("默认跳过（--include-manual 才跑）：");
     for (const n of skippedManual) console.log("  - " + n + "  ← " + MANUAL.get(n));
@@ -218,6 +267,11 @@ const lines = [];
 lines.push(`MTNode 冒烟聚合 ${stamp}`);
 lines.push(`跑了 ${results.length} 只：pass ${pass} · fail ${results.filter((r) => r.status === "fail").length} · timeout ${results.filter((r) => r.status === "timeout").length} · spawn-error ${results.filter((r) => r.status === "spawn-error").length}`);
 lines.push(`墙钟（各只耗时之和） ${(totalMs / 1000).toFixed(1)}s · 实际墙钟 ${(wallMs / 1000).toFixed(1)}s（并发 ${jobs}） · 单只超时上限 ${timeoutSec}s`);
+if (skippedHeavy.length) {
+  lines.push("");
+  lines.push(`默认跳过 ${skippedHeavy.length} 只【重活·会起外部进程 / 跳窗】（--heavy 才跑）：`);
+  for (const n of skippedHeavy) lines.push(`  - ${n}  ← ${HEAVY.get(n)}`);
+}
 if (skippedManual.length) {
   lines.push("");
   lines.push(`默认跳过 ${skippedManual.length} 只（--include-manual 才跑）：`);

@@ -62,8 +62,17 @@
     browserSessions: new Set(),
     /* 库里查出来的「本会话有浏览器」的那个会话 id（见 reload：只认样本里的浏览器类活动） */
     dbBrowserSession: "",
-    /* 网关说浏览器此刻由哪条会话驱动（'' = 没有会话持锁 / 用户手动开的） */
+    /* 网关说浏览器此刻由哪条会话驱动（'' = 没有会话持锁 / 用户手动开的）。
+       ⚠ 网关 status 回执里这一格是 **dsh 的 session-…**（见 browser-host 的 claimDriver），
+       不是渲染层的 as… —— 判据一律走 driverIsSession / driverIsElsewhere，不要与
+       sessionId 裸比（裸比永不相等，会把本会话自己的浏览器判成别人的：实况流一条都不接）。 */
     driver: "",
+    /* 同上那一串翻成宿主会话号（网关的 hostSessionTagOf / 本文件的映射来源）：
+       有它就能与 BA.sessionId 直接对齐。两格任一命中即算「本会话的浏览器」。 */
+    driverHost: "",
+    /* 「眼前这条会话此刻正拿着浏览器」：由浏览器活动事件亲口盖章（见 onEvent）。
+       与 driver / browserSessions 互补 —— 活动列表为空或被清空时，它是唯一还记得这件事的地方。 */
+    liveSession: "",
     /* 本次运行里用户对每条会话的显式取舍：true = 亲手开过，false = 亲手关过。
        切回同一会话尊重它；切到别的会话按「那个会话有没有浏览器」重算。
        （落盘的 mtnode.baOpen 仍是跨重启的记忆，两者互不覆盖。） */
@@ -81,6 +90,7 @@
     live: {
       on: false,          // 流在跑（网关 startScreencast 成功）
       starting: false,    // 正在开流（单飞：同一拍重复 liveSync 只发一次 viewStart）
+      reconnecting: false, // 正在「重新连接」（停旧流 + 开新流，单飞）
       paused: false,      // 「暂停观察」：只丢帧不关流
       mode: "docked",     // docked = 面板实况（真实窗口让位）；detached = 独立窗口（用户亲手点）
       seq: 0,
@@ -92,6 +102,14 @@
       frame: null,        // 待画的 Image（只留最新一帧，中间帧直接丢）
       painting: false,
       lastPaintAt: 0,
+      /* 最近一次**收到帧**的时刻（本地时钟）：用来判「网关说在流上、可这一拍根本没有画面」
+         —— 那一态下 liveStart 会被网关当成「已经在流上」空转发，面板就永远停在遮罩上。 */
+      lastFrameAt: 0,
+      /* 本条流从这一刻起算（开流成功时刷新，帧到达也顺手推后）：空流判据的计时基准。
+         帧本来就稀疏（静态页只有一帧），所以不能拿「帧密不密」当判据。 */
+      streamAt: 0,
+      /* 本条流上收到过几帧（onFrame 计数）：>0 = 这条流确实在出帧，不必重生 */
+      liveFrameSeen: 0,
       frames: 0,
     },
   };
@@ -211,13 +229,48 @@
     return sid.indexOf("\u0000") === 0 ? "" : sid;
   };
 
+  /* 网关说「浏览器此刻由谁驱动」时给的那一串 id 有两种写法：宿主（渲染层）会话号 `as…`
+     （网关把 dsh 的 session-… 翻成宿主会话号之后），或仍是 dsh 的 `session-…`。
+     **绝不能拿它与宿主会话号裸比**：两者格式不同、永不相等，比错就会把「本会话自己的
+     浏览器」判成「别人在驱动」→ 实况流一条都不接，面板永远停在「未连接」（本次修复的根因）。
+     所以统一走这两个判据：本站 id（两个写法任一相等即算），以及「有没有驱动者」。 */
+  const driverIds = () => {
+    const out = [];
+    try { if (BA.driver) out.push(String(BA.driver)); } catch (_) {}
+    try { if (BA.driverHost) out.push(String(BA.driverHost)); } catch (_) {}
+    return out;
+  };
+  const driverIsSession = (sid) => {
+    const s = String(sid || "");
+    if (!s) return false;
+    return driverIds().some((d) => d && d === s);
+  };
+  const driverIsElsewhere = (sid) => {
+    const s = String(sid || "");
+    const ids = driverIds();
+    if (!ids.length) return false;   /* 没有驱动者（用户手动开的 / 已交还）→ 不是「别人的」 */
+    if (ids.some((d) => d === s) && s) return false;
+    /* 只有宿主会话号（as…）才能证明「这条会话不是它」：网关 status 的 driver 可能是 dsh 的
+       session-…，且 driverHost 翻不出来（run 已收尾 / 老宿主不下发）时，凭它无法断定归属 ——
+       这时**宁可宽松**（照常接流），也不许把本会话判成别人的、把画面整个扣掉。
+       同一口径也管「认不出当前会话」（老壳 / 启动期 sessionId 还空着）：宁可为空会话接上，
+       也不许因为认不出来就把用户的画面扣掉（旧的空 sessionId 行为就是这样）。 */
+    const hasHostId = ids.some((d) => /^as/i.test(d));
+    if (!s) return hasHostId && ids.every((d) => /^as/i.test(d));
+    return hasHostId;
+  };
+
   /* 本会话有没有浏览器：内存里见过它的浏览器活动 ∪ 网关说浏览器由它驱动 ∪ 库里查出历史。
      库里那份只认 reload 拿回的那批样本（limit 400）——比这更早的历史不再追，够用且省一次 IPC。 */
   BA.sessionHasBrowser = function (sid) {
     const s = String(sid || "");
     if (!s) return false;
     if (BA.browserSessions.has(s)) return true;
-    if (BA.driver && BA.driver === s) return true;
+    if (driverIsSession(s)) return true;
+    /* 「本条会话此刻正拿着浏览器」的**直接记忆**（事件亲口说的，见 onEvent）：
+       少了它，活动列表还没拉回来 / 用户清过活动时，这道判据会回 false → 面板自己收起
+       → 收面板就把实况流掐了（本次修复踩到的第三个坑：画面刚出来又没了）。 */
+    if (BA.liveSession && BA.liveSession === s) return true;
     return BA.dbBrowserSession === s;
   };
 
@@ -436,8 +489,10 @@
   BA.autoOpenForUse = async function () {
     if (BA.userClosed || BA.autoOpenBusy) return false;
     /* 会话闸：只让**当前会话自己**的浏览器动作把栏带出来（调用方已按会话过滤过事件，
-       这里再判一次，防「别的会话的活动漏进来」把眼前这条会话的栏顶开）。 */
-    if (BA.sessionId && BA.driver && BA.driver !== BA.sessionId) return false;
+       这里再判一次，防「别的会话的活动漏进来」把眼前这条会话的栏顶开）。
+       判据走 driverIsElsewhere：网关那串 id 可能是 dsh 的 session-…，裸比会把本会话
+       自己的浏览器判成别人的、栏永远不出现（本次修复的根因之一）。 */
+    if (driverIsElsewhere(BA.sessionId)) return false;
     const pane = $("#agentPane");
     if (!pane || pane.style.display === "none") return false;
     /* 状态可能是旧的（浏览器由会话刚拉起）：问一次网关再决定，别拿过期状态当判据 */
@@ -507,9 +562,22 @@
   BA.applyStatus = function (st) {
     if (!st || typeof st !== "object") return;
     /* 谁在驱动这只浏览器（'' = 没有会话持锁 / 用户手动开的）：实况流只给驱动它的那条会话看。
-       只在回执真带了 driver 时才更新（view 这类回执不带它，别把已知的驱动者抹掉）。 */
-    if (typeof st.driver === "string") {
-      BA.driver = st.driver;
+       只在回执真带了 driver 时才更新（view 这类回执不带它，别把已知的驱动者抹掉）。
+       两个写法都留着：**网关 status 回执给的是 dsh 的 session-…**（见 gateway 的 driverHost
+       与 browser-host 的 claimDriver），宿主会话号在 driverHost 那一格；判据统一走
+       driverIsSession / driverIsElsewhere，绝不在这里裸比（裸比 = 本次修复的根因）。
+       ⚠ 那一串 dsh id **翻不出宿主号时不许单独采信**：它与宿主会话号格式不同，单留着就会
+       让 driverIsElsewhere 把本会话判成「别人在驱动」（面板永远连不上）。所以：
+         · 回执带了 driverHost（或 driver 本身就是宿主号）→ 照抄；
+         · 只给了一串翻不出来的 dsh id → 不采信（保持「没有驱动者」的宽松口径）。 */
+    const drv = typeof st.driver === "string" ? st.driver : null;
+    const drvHost = typeof st.driverHost === "string" ? st.driverHost : "";
+    if (typeof st.driverHost === "string") {
+      BA.driverHost = st.driverHost;
+      if (BA.driverHost) BA.browserSessions.add(BA.driverHost);
+    }
+    if (drv !== null && (drvHost || /^as/i.test(drv))) {
+      BA.driver = drv;
       if (BA.driver) BA.browserSessions.add(BA.driver);
     }
     const wasRunning = BA.running;
@@ -528,6 +596,8 @@
       BA.live.on = false;
       BA.live.frames = 0;
       BA.live.frame = null;
+      BA.live.lastFrameAt = 0;
+      BA.live.lastPaintAt = 0;
       BA.live.mode = "docked";
       BA.live.fallback = false;
       BA.live.reason = "";
@@ -694,6 +764,9 @@
       BA.browserSessions.add(row.sessionId);
       BA.noteBrowserSession(row.sessionId);
     }
+    /* 「眼前这条会话的浏览器就是它」的直接记忆：这条活动亲口说了归属（sessionId 命中当前会话），
+       而活动列表可能是空的 / 已被清空，那道判据就不能只靠列表样本（见 sessionHasBrowser）。 */
+    if (isBrowserKind(kind) && row.sessionId && row.sessionId === BA.sessionId) BA.liveSession = row.sessionId;
     /* 浏览器在跑而这条会话正是驱动者：同样补标记（launch 类活动也可能不在 AUTO_OPEN_KINDS 里） */
     if (BA.driver && isBrowserKind(kind)) BA.noteBrowserSession(BA.driver);
     /* 会话真碰了浏览器：右栏自己出现（用户亲手关过就不打扰）。
@@ -867,6 +940,11 @@
     const dataUrl = /^data:image\//.test(s) ? s : "data:image/jpeg;base64," + s;
     let img;
     try { img = new Image(); } catch (_) { return; }
+    /* 帧一到就算「这条流是活的」（不问解码成不成）：空流判据看的是有没有帧下来；
+       解码失败是另一类问题（onerror 静默），不在这里当成「流是好的」。 */
+    BA.live.lastFrameAt = Date.now();
+    BA.live.liveFrameSeen = (BA.live.liveFrameSeen || 0) + 1;
+    noteStreamAlive();
     img.onload = () => {
       BA.live.frame = img;
       if (!BA.live.painting) BA.liveSchedule();
@@ -917,8 +995,9 @@
     L.lastPaintAt = Date.now();
     L.frames += 1;
     if (L.frames === 1) {
-      /* 第一帧到了：清掉「连接中…」，别让它挂在实况区下面 */
-      if (L.reason === T("正在连接浏览器画面…")) L.reason = "";
+      /* 第一帧到了：画面已经出来，把「连接中… / 正在重新连接…」这类过程说明清掉 ——
+         这次的失败原因行（陈旧流 / 开流失败）也一并收起，不然它会一直挂在画面上。 */
+      L.reason = "";
       BA.livePaintStatus();
     }
   };
@@ -928,6 +1007,7 @@
     const modeEl = $("#baLiveMode");
     const note = $("#baLiveNote");
     const mask = $("#baLiveMask");
+    const retryBtn = $("#baLiveRetry");
     const L = BA.live;
     const detached = L.mode === "detached" && !BA.headless;
     if (winBtn) {
@@ -948,17 +1028,33 @@
           ? T("已在独立窗口")
           : L.on ? (L.frames ? T("实况中") : T("连接中…")) : T("未连接");
     }
+    /* 「重新连接」（本次需求）：只有浏览器在跑时才有意义；重连进行中自锁 + 说明 */
+    if (retryBtn) {
+      retryBtn.hidden = !BA.running;
+      retryBtn.disabled = !!L.reconnecting;
+      retryBtn.title = L.reconnecting
+        ? T("正在重新连接浏览器画面…")
+        : T("重新连接：停掉当前这条实况流再开一条（画面停在遮罩上 / 一直「连接中…」时按它；不动真实窗口）");
+    }
     if (note) {
-      const txt = BA.headless
-        ? T("这只是无窗口（后台）浏览器，画面就在这里；想要真窗口点上面那枚「用真窗口打开」（会温和重开成带窗口的）。")
-        : L.reason || (detached ? T("已在独立窗口操作；点「收回」回到右栏。") : "");
+      /* 有原因（开流失败 / 陈旧流重连 / 看门狗回落）就先说原因 —— 先前的写法把 headless 的
+         说明句无条件盖在前面，失败原因根本露不出来（用户口径：失败要把原因写清楚）。 */
+      const txt = L.reason
+        ? L.reason
+        : BA.headless
+          ? T("这只是无窗口（后台）浏览器，画面就在这里；想要真窗口点上面那枚「用真窗口打开」（会温和重开成带窗口的）。")
+          : detached ? T("已在独立窗口操作；点「收回」回到右栏。") : "";
       note.textContent = txt;
       note.hidden = !txt;
-      note.classList.toggle("warn", !!L.fallback);
+      note.classList.toggle("warn", !!L.fallback || !!L.reason);
     }
     if (mask) mask.hidden = !!(L.frames && L.on);
     const col = document.querySelector(".ba-col");
     if (col) col.classList.toggle("ba-live-on", !!L.on || detached);
+    /* 状态重画的入口很多（面板开合 / 会话切换 / 浏览器状态回执）：顺手复查一次陈旧流 ——
+       面板是在流已经开始之后才开的，那一拍不会有人替它重连（本次修复的另一半）。
+       scheduleStaleCheck 自己在「没开流 / 已画出画面 / 已排过」时早退，重复调用无副作用。 */
+    scheduleStaleCheck();
   };
 
   /* 开实况流。silent = 这是「焦点不在该会话」的静默连流（BA.silentConnect）：
@@ -983,6 +1079,15 @@
         L.on = false;
       } else {
         L.on = true;
+        /* 这条流从这一刻起算（空流看门狗用它计时）；顺手清掉上一轮的空流计数。
+           **序号也要归零**：网关重生 / 重启 screencast 之后序号从 1 重新数（见 browser-host 的
+           startViewStream），本地若留着上一轮的大序号，新流的前若干帧会被 onFrame 当成
+           「乱序 / 重放」整批丢掉 —— 画面就停在遮罩上（本次修复踩到的第二个坑）。
+           onFrame 的判据是 `seq <= L.seq` 丢掉，所以归零之后 >=1 的新帧一律放行。 */
+        L.liveFrameSeen = 0;
+        L.lastPaintAt = 0;
+        L.seq = 0;
+        noteStreamAlive();
         /* 连上但还没帧时给一句「连接中…」：不然用户只看到遮罩，不知道是在等还是坏了 */
         if (!L.frames) L.reason = T("正在连接浏览器画面…");
         if (res) BA.applyView(res);
@@ -994,6 +1099,8 @@
       L.starting = false;
     }
     BA.livePaintStatus();
+    /* 开流后仍一帧没有 = 网关那边挂着的是一条没人收的空流：排一次复查，到点重连 */
+    scheduleStaleCheck();
   };
 
   BA.liveStop = async function () {
@@ -1002,11 +1109,84 @@
     L.frames = 0;
     L.frame = null;
     L.seq = 0;
+    L.lastFrameAt = 0;
+    L.lastPaintAt = 0;
+    L.streamAt = 0;
+    L.liveFrameSeen = 0;
     try {
       if (window.api && typeof window.api.dshBrowserViewStop === "function") await window.api.dshBrowserViewStop();
     } catch (_) {}
     BA.livePaintStatus();
   };
+
+  /* 「重新连接」：把网关那条流停掉再开一条（本次需求 —— 不自愈，但手上要有一枚能按的键）。
+     为什么要「停 + 开」而不是再发一次 start：网关那边若还挂着一条**没有客户端在收**的旧流，
+     start 会被它当成「已经在流上」空转发，画面永远不会来（本次修复的另一半）。
+     单飞；失败把原因留在实况区（reconnecting 期间按钮自锁，避免连点打出多条流）。 */
+  BA.liveReconnect = async function () {
+    const L = BA.live;
+    if (L.reconnecting) return false;
+    if (!BA.running) { L.reason = T("浏览器没在跑：先在会话里让它打开浏览器。"); BA.livePaintStatus(); return false; }
+    if (!window.api || typeof window.api.dshBrowserViewStop !== "function" || typeof window.api.dshBrowserViewStart !== "function") return false;
+    L.reconnecting = true;
+    L.reason = T("正在重新连接浏览器画面…");
+    BA.livePaintStatus();
+    try {
+      await BA.liveStop();
+      await BA.liveStart({});
+    } catch (e) {
+      L.reason = (e && e.message) || String(e);
+    } finally {
+      L.reconnecting = false;
+    }
+    BA.livePaintStatus();
+    return true;
+  };
+
+  /* 「网关说流在跑、可这一拍根本没有画面」：客户端接上之前留下的空流（网关那边
+     `startViewStream` 已在流上就直接 return、不补帧），面板就只能停在遮罩上 ——
+     用户报的「无连接」正是这一态。判据 = 本地在流上 + 真在画的时候一帧都没画过 +
+     距开流已过 STALE_MS；真在跑的流每帧都会刷新 lastPaintAt，不会误判。
+     命中就重连一次（停旧流 + 开新流），节流 STALE_MS，免得在坏掉的流上反复开关。 */
+  const STALE_MS = 1500;
+  let staleTimer = 0, lastReconnectAt = 0;
+  /* 本地认为「这条流是从这一刻起在跑的」：liveStart 成功时记下（连续帧到达也会顺手推后，
+     所以静默期不会被误判成陈旧流）。 */
+  function noteStreamAlive() { BA.live.streamAt = Date.now(); }
+
+  /* 该不该把这条流当成「空流」重生一次。判据三条同时成立：
+     ① 本地在流上、没有暂停、没在重连；
+     ② **一条帧都没画上过画布**（lastPaintAt 为 0）——真在跑的流每帧都会刷新它；
+     ③ 这条流已经存活超过 STALE_MS，且期间也没有帧下来（liveFrameSeen 为 0）。 */
+  function streamLooksStale() {
+    const L = BA.live;
+    if (!L.on || L.paused || L.reconnecting || L.painting) return false;
+    if (L.lastPaintAt) return false;
+    if (!L.streamAt || Date.now() - L.streamAt < STALE_MS) return false;
+    if (L.liveFrameSeen) return false;
+    return true;
+  }
+  function ensureFreshStream() {
+    if (!streamLooksStale()) return false;
+    if (Date.now() - lastReconnectAt < STALE_MS) return false;
+    lastReconnectAt = Date.now();
+    BA.live.reason = T("实况流是空流（网关那边还挂着一条没人收的流）：正在重新连接…");
+    void BA.liveReconnect();
+    return true;
+  }
+  /* 看门狗：只在面板真显示、流在跑、还没画出画面时排；到点仍是空流就重连一条。
+     连续帧唤醒（liveFrameSeen > 0）与第一帧落笔（lastPaintAt）都会让它自然停掉 ——
+     帧本来就稀疏（静态页只有一帧），所以判据看的是「有没有帧下来」，不是「帧密不密」。 */
+  function scheduleStaleCheck() {
+    if (staleTimer) return;
+    const L = BA.live;
+    if (!BA.isOpen() || !L.on || L.paused || L.reconnecting || L.lastPaintAt) return;
+    staleTimer = setTimeout(() => {
+      staleTimer = 0;
+      if (ensureFreshStream()) return;
+      scheduleStaleCheck();
+    }, STALE_MS);
+  }
 
   /* 面板 / 视图开着才要帧：收起面板、离开会话视图、暂停观察时不占资源。
      「独立窗口」（detached）时也不连：独立窗口形态下画面就在用户眼前，
@@ -1015,15 +1195,24 @@
     const pane = $("#agentPane");
     const inSessionView = !!(pane && pane.style.display !== "none");
     /* 会话闸：这只浏览器此刻由**别的会话**驱动时不拉帧 —— 同一时刻只有一条会话持驱动锁，
-       画面属于那条会话，本会话的右栏不该把它的画面搬到自己眼下（切回驱动会话再开）。 */
-    const mine = !BA.sessionId || !BA.driver || BA.driver === BA.sessionId;
+       画面属于那条会话，本会话的右栏不该把它的画面搬到自己眼下（切回驱动会话再开）。
+       判据走 driverIsElsewhere：网关那串 id 可能是 dsh 的 session-…，与宿主会话号裸比
+       永不相等，会把本会话自己的浏览器当成别人的（= 一条流都不接，面板停在「未连接」）。 */
+    const mine = !driverIsElsewhere(BA.sessionId);
     /* 静默期（焦点不在该会话、右栏收着）流照旧连着：那条流不只是画面，更是「真实窗口让位」
        —— 内部界面的定义。收起面板就把流掐了，等于让窗口又留回屏幕上（用户报的 bug）。
        帧在面板收起时本来就不画（onFrame 挡着），所以静默期只花网关那点编码成本。 */
-    const silentStream = !!(BA.sessionId && BA.driver === BA.sessionId && BA.viewing(BA.sessionId));
+    const silentStream = !!(BA.sessionId && driverIsSession(BA.sessionId) && BA.viewing(BA.sessionId));
     const shown = BA.isOpen() && inSessionView;
     const want = (shown || silentStream) && BA.running && !BA.live.paused && BA.live.mode !== "detached" && mine;
-    if (want) { if (!BA.live.on) void BA.liveStart({ silent: !shown }); return; }
+    if (want) {
+      /* 流在跑但一帧没有（陈旧流）：光 liveStart 会被网关空转发，得先重连一条 */
+      if (BA.live.on) ensureFreshStream();
+      else void BA.liveStart({ silent: !shown });
+      scheduleStaleCheck();
+      return;
+    }
+    if (staleTimer) { try { clearTimeout(staleTimer); } catch (_) {} staleTimer = 0; }
     if (BA.live.on) void BA.liveStop();
   };
 
@@ -1137,6 +1326,8 @@
     canvas._bound = true;
     bindLiveBtn(pause, "pause", () => BA.toggleLivePause && BA.toggleLivePause());
     bindLiveBtn(winBtn, "win", () => BA.liveWindowToggle && BA.liveWindowToggle());
+    /* 「重新连接」：不自愈口径下唯一的手动恢复键（见 BA.liveReconnect） */
+    bindLiveBtn($("#baLiveRetry"), "retry", () => BA.liveReconnect && BA.liveReconnect());
     /* 形态默认 docked（右栏实况 = 内部界面），**不按上次恢复**：
        独立窗口只是本次运行里的例外，重开应用回到内部界面；跟随网关的那一半见
        applyStatus / applyView。 */

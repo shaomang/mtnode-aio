@@ -316,7 +316,11 @@ ok(
 const segTiers = segBlock
   .split("@container (")
   .slice(1)
-  .map((s) => Number((s.match(/--dsh-seg-time-w:\s*(\d+)px/) || [])[1]));
+  /* 只认**声明了栏宽档位**的那些 @container 块：本次需求后这里还多了两个只管 token 行
+     字号 / 最小高度的容器块（它们不定义 --dsh-seg-time-w），不该被算成「档位」。 */
+  .map((s) => (s.match(/--dsh-seg-time-w:\s*(\d+)px/) || [])[1])
+  .filter((v) => v != null)
+  .map(Number);
 ok(
   segTiers.length >= 2 && segTiers.every((w) => w > 0) &&
     segTiers.every((w, i) => i === 0 || w <= segTiers[i - 1]),

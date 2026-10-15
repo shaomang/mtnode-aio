@@ -694,6 +694,24 @@ async function init() {
             path: String(sess.ltBound.path || ""),
           }
         : null;
+    /* 手动压缩的记录与折组展开态（本次开发需求 · 拷问共识）：与落盘白名单
+       （app-assist.js 的 agentSessionMetaForDisk）同口径归一 —— 老存档没这两位 →
+       空表 / 空表；坏档里的非数组、非对象值一律吃掉，别让渲染层拿着它崩。
+       compacts 每条 = {id, at, count, chars, summary}（摘要只留最近一份）；
+       foldOpen 的键 = 折组 id，展开才写 true（默认收起不在表里）。 */
+    sess.compacts = (Array.isArray(sess.compacts) ? sess.compacts : [])
+      .filter((c) => c && c.id)
+      .map((c) => ({
+        id: String(c.id),
+        at: Number(c.at) || 0,
+        count: Math.max(0, Number(c.count) || 0),
+        chars: Math.max(0, Number(c.chars) || 0),
+        summary: String(c.summary || ""),
+      }));
+    sess.foldOpen =
+      sess.foldOpen && typeof sess.foldOpen === "object" && !Array.isArray(sess.foldOpen)
+        ? sess.foldOpen
+        : {};
     return sess;
   });
   S.agentActiveId = S.config.agentActiveId || "";
@@ -1031,8 +1049,14 @@ async function init() {
           renderAgentSessionSidebar();
         });
       };
-    /* 「规划 / 压缩」chip 已按需求从输入区移除：规划模式与压缩上文只保留 /plan、/compact
-       斜杠命令入口（见 app-assist.js），这里不再绑定按钮。 */
+    /* 「规划」仍只有 /plan 命令入口（那枚 chip 按上一轮需求撤走，不再绑定）。
+       「压缩」这一枚本轮以新形态回来（本次开发需求）：#agentCompactBtn = 手动压一次
+       （确认卡在 app-assist.js 的 agentCompact 里，与手敲 /compact 同一条链）；
+       #agentCompactViewBtn = 看最近一次压缩产出的摘要全文（压过才出现）。 */
+    const cpb = $("#agentCompactBtn");
+    if (cpb) cpb.onclick = () => void agentCompact();
+    const cvb = $("#agentCompactViewBtn");
+    if (cvb) cvb.onclick = () => openCompactSummaryPop();
     const rpb = $("#agentRunPlanBtn");
     if (rpb) rpb.onclick = () => agentExecutePlan();
     document.addEventListener("mousedown", (ev) => {
@@ -1181,6 +1205,11 @@ async function init() {
         S.assistEffort = effortSel.value;
         persistAssistUi();
       };
+    /* 助手栏「上下文压缩」档位（本次需求 · 思考强度下一行）：与「设置 · 智能能力」同一份值，
+       写回走 app-assist.js 的 applyAssistCompactChoice（落盘后由 main.js 改写 dsh 组合行） */
+    const compactSel = $("#assistCompactSel");
+    if (compactSel)
+      compactSel.onchange = () => applyAssistCompactChoice(compactSel.value);
     const scopeSel = $("#assistScopeSel");
     if (scopeSel && !scopeSel._bound) {
       scopeSel._bound = true;

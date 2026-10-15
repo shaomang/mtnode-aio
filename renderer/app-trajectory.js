@@ -592,7 +592,18 @@
     };
     /* ① 明细优先：按 (轮号, 步号) 取数 —— 采集点写下的键与段自己的键同源
        （段的 round = 轨迹轮号、step = 网关步号），所以这里只做等值匹配，不做任何推断。 */
-    const details = st && Array.isArray(st._usageSteps) ? st._usageSteps : [];
+    /* 明细来源 = app-assist.js 的 dshUsageDetailsOf：**本轮内存那份 + 各条助手消息落盘那份**
+       （本次需求 · 老轮次回填）。过去这里只读 st._usageSteps，切会话 / 重启后内存是空的，
+       于是轨迹里「每步 token」只剩当前这一轮 —— 用户看到的就是「只显示最新的几十条」。
+       明细自带 (轮号, 步号)，所以下面的取数是等值匹配，不做任何推断；合并表里同一步的
+       多条明细（并发子代理 / 续跑）照样各自保留，由 detailOf 相加成该步合计。
+       老壳 / 冒烟沙箱里没有这个全局时退回旧口径（只读内存那份），行为与改动前一致。 */
+    const details =
+      typeof dshUsageDetailsOf === "function"
+        ? dshUsageDetailsOf(st)
+        : st && Array.isArray(st._usageSteps)
+          ? st._usageSteps
+          : [];
     /* 明细里「有没有带轮号」只算一次（本次需求：明细不再裁条，一次运行里可以上千条；
        逐组 some() 就是 O(组数 × 明细数)）。明细数组在这次渲染里不变 —— 采集发生在运行时，
        渲染拿到的是当时那一份快照。 */
@@ -899,6 +910,10 @@
     );
   }
   function fmtNum(n) {
+    /* 数字格式**唯一真源**在 app-assist.js 的 dshTokShort（会话 · 对话里那一行 token 与
+       轨迹行内取同一份）—— 那边在场就委托它，拿不到（冒烟沙箱 / 老壳）走下面这份同算法
+       兜底，两处逐字一致。 */
+    if (typeof dshTokShort === "function") return dshTokShort(n);
     const v = Number(n) || 0;
     if (v < 1000) return String(v);
     if (v < 1000000) return (v / 1000).toFixed(1) + "k";

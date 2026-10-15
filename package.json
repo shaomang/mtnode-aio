@@ -8,6 +8,7 @@
     "start": "electron .",
     "test": "node test/run-all.mjs",
     "test:list": "node test/run-all.mjs --list",
+    "test:heavy": "node test/run-all.mjs --heavy",
     "version:major": "node version.js bump-major",
     "pack": "electron-packager . MTNodeAIO --platform=win32 --arch=x64 --out=E:/dev/tools/dist --overwrite --electron-version=39.8.10 --executable-name=MTNodeAIO --prune=true --icon=E:/dev/tools/pipeline-console/build/icon.ico --ignore=\"^/smoke\\.js$|^/dist($|/)|^/node_modules/\\.cache($|/)\"",
     "dist": "electron-builder --win --config build.json --publish never",

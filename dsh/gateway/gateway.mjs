@@ -1168,9 +1168,22 @@ const BrowserCtl = {
          所以在 claim 的一刻把它翻成宿主会话号存下来（见 hostSessionTagOf）。 */
   usedRuns: new Map(),
   driverHost: '',
-  /* 浏览器进程 / 标签 / 驱动锁的只读快照（活动流面板与求助卡的真窗口通道共用） */
+  /* 浏览器控制面的状态快照：**把驱动者翻成宿主会话号**（本次修复）。
+     浏览器宿主的 `statusOf().driver` 是 dsh 的 `session-…`（claimDriver 拿它当锁键），
+     而右栏实况那侧手里的会话号是渲染层的 `as…`（活动流条目也按它过滤，见 hostSessionTagOf）——
+     两者格式不同、裸比永不相等，于是渲染层会把「本会话自己的浏览器」判成「别人在驱动」：
+     实况流一条都不接、面板永远停在「未连接」（用户报的那个 bug）。
+     按既有的那本账补一格 `driverHost`（claim 的一刻就翻好存下了，见 noteDriver）：
+     翻不出来 = 空串，渲染层拿到空串就退回「没有驱动者」的宽松口径，
+     而不是把本会话当成别人的。 */
   status() {
-    return { ...BrowserHost.statusOf(), takeover: BrowserHost.takeoverOf(), ok: true }
+    const st = BrowserHost.statusOf()
+    return {
+      ...st,
+      driverHost: String(this.driverHost || hostSessionTagOf(st && st.driver) || ''),
+      takeover: BrowserHost.takeoverOf(),
+      ok: true,
+    }
   },
   /* 记「这一轮真的在浏览器上做过事」：handle() 里除 help / release / status 外
      每个 op 都记一次。**失败也记** —— 失败说明它确实在试着用浏览器，
@@ -1263,7 +1276,12 @@ const BrowserCtl = {
     if (!st.running) {
       return { ok: false, error: '浏览器没在跑（让会话调用 browser_launch，或在求助卡上点「用真窗口打开」）', ...BrowserHost.viewStatus() }
     }
+    /* 已经开着、但距上次帧/ack 超过 VIEW_STALE_MS = 客户端接上之前留下的空流（或慢客户端
+       一直没 ack）：`startViewStream` 会自己拆掉旧订阅、重开一条，让这一位一定拿到帧 ——
+       修复前它是 `if (v.on) return`，新接上的面板只能停在遮罩上（用户报的「无连接」）。 */
+    const stale = BrowserHost.isViewStale()
     const r = await BrowserHost.startViewStream(params || {})
+    if (stale) this.push({ kind: 'browser', text: '实况流是客户端接上之前留下的空流：已重新打开一条（画面会重新出现）' })
     /* 开流即停靠：**默认形态就是内部界面**（真实窗口移出可视区，画面只在右栏实况里）。
        判据必须是「真的搬走了没有」（parked），不能只看 mode —— mode 默认就是 docked，
        新起的窗口却还摆在屏幕上，只看 mode 会漏搬，用户看到的仍是「面板有画面、屏幕上多一只 Edge」。

@@ -1,0 +1,369 @@
+"use strict";
+/* ============================================================================
+ * test/smoke-assist-compact.js — 助手栏「上下文压缩」档位（本次需求：挪到「思考强度」下一行）
+ *
+ *   node test/smoke-assist-compact.js              断言模式（绿 = 退出码 0）
+ *
+ * 为什么要有它：这一格是「设置 · 智能能力 · 上下文压缩」的**第二个人口**，两处必须是同一份值
+ * （S.config.dsh.compact）—— 别人另存一份（如 S.assistCompact）就会造成「面板显示中档、
+ * 组合里是早档」的静默错配；位置也要钉住（用户点名「思考强度下方」）。
+ * 靠读源码只能证明它写在那一行，证明不了「真实 DOM 里真的在下方」「改一下真的写成那张配置」，
+ * 所以这里用仓库自带的 Electron（show:false + offscreen，布局照算）摆起**真实 index.html 的
+ * <body>** 与真实样式（renderer/style.css 的 @import 分片全量内联），并抠出 app-assist.js 里
+ * 真正在跑的那几个函数注进页面执行（改名 / 改写法即变红）：
+ *   · 布局：压缩这一格必须整格落在「思考强度」那一格的**下方**（rect.top 更大），
+ *     且两格同属 #assistCtrl（不会跑到别处去）；
+ *   · 回显：缺省配置 → 选项是「中」；{enabled:false,tier:'late'} → 选项是「关闭」；
+ *     非法档 → 回落「中」；切语言 → 选项文字跟着换（英文界面不回落中文）；
+ *   · 落盘：改下拉 → S.config.dsh.compact 写成对应形状 + configSave 真被调用 + 档位不丢。
+ * ========================================================================== */
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+const ROOT = path.join(__dirname, "..");
+const rel = (...p) => path.join(ROOT, ...p);
+
+/* ---------- 纯 Node 时：用仓库自带的 Electron 重启自己（保持 `node test/...` 的跑法） ---------- */
+if (!process.versions.electron) {
+  const { spawn } = require("child_process");
+  const bin = require("electron");
+  const env = Object.assign({}, process.env);
+  delete env.ELECTRON_RUN_AS_NODE;
+  const child = spawn(String(bin), [__filename].concat(process.argv.slice(2)), {
+    stdio: "inherit",
+    env,
+  });
+  child.on("exit", (code, sig) => process.exit(sig ? 1 : code == null ? 1 : code));
+  child.on("error", (e) => {
+    console.error("启动 Electron 失败：" + (e && e.message));
+    process.exit(1);
+  });
+} else {
+  main().catch((e) => {
+    console.error("[smoke-assist-compact] 失败：", (e && e.stack) || e);
+    try {
+      require("electron").app.exit(1);
+    } catch (_) {}
+  });
+}
+
+/* ==================== 从 renderer/app-assist.js 抠出「真正在跑」的构件 ====================
+ * 断言必须打在产品代码上：按名字把原文抠出来，注入页面执行。抠不到（改名 / 删了 / 换写法）
+ * → 直接抛错让 smoke 变红，逼着两边同步。 */
+const IMPL_FNS = [
+  "compactPolicyOf",
+  "syncAssistCompactOptions",
+  "applyAssistCompactChoice",
+  "persistAssistUi",
+];
+
+function grabFn(src, name) {
+  const re = new RegExp("^function\\s+" + name + "\\s*\\(", "m");
+  const m = re.exec(src);
+  if (!m)
+    throw new Error("renderer/app-assist.js 里找不到函数 " + name + "（改名了？断言要跟着改）");
+  let i = m.index + m[0].length;
+  while (i < src.length && src[i] !== "{") i++;
+  if (i >= src.length) throw new Error("函数 " + name + " 找不到函数体起始 {");
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") {
+      depth--;
+      if (depth === 0) return src.slice(m.index, i + 1);
+    }
+  }
+  throw new Error("函数 " + name + " 的收尾 } 没找到（括号不配对？）");
+}
+
+/* 档位清单常量：整段原文抠出来（syncAssistCompactOptions 直接引用它） */
+function grabOptionsConst(src) {
+  const start = src.indexOf("const ASSIST_COMPACT_OPTIONS = [");
+  if (start < 0) throw new Error("renderer/app-assist.js 里找不到 ASSIST_COMPACT_OPTIONS");
+  const end = src.indexOf("];", start);
+  if (end < 0) throw new Error("ASSIST_COMPACT_OPTIONS 的收尾 ] 没找到");
+  return src.slice(start, end + 2);
+}
+
+/* app-assist.js 依赖、但不属于本格行为的三样（探针里按原样补齐，免得抠一大串）：
+   · AGENT_PRESET_DEFAULT：落盘那一句 `S.config.assistPreset = S.assistPreset || …` 要用；
+   · clampAssistW / ASSIST_W_MIN：同一句里的窗口宽度夹取。
+   这三个都从产品源码里取（常量抠原文、函数按名字抠），不自己编值。 */
+function grabConst(src, name, where) {
+  const m = new RegExp("^const " + name + "\\s*=\\s*([^;\\n]+);", "m").exec(src);
+  if (!m) throw new Error((where || "renderer/app-assist.js") + " 里找不到常量 " + name);
+  return "const " + name + " = " + m[1] + ";";
+}
+
+function implInjection() {
+  const src = fs.readFileSync(rel("renderer", "app-assist.js"), "utf8");
+  const appSrc = fs.readFileSync(rel("renderer", "app.js"), "utf8");
+  let code = grabOptionsConst(src) + "\n";
+  code += grabConst(src, "ASSIST_W_MIN") + "\n";
+  /* AGENT_PRESET_DEFAULT 的真源在 app.js（app-assist.js 直接用它） */
+  code += grabConst(appSrc, "AGENT_PRESET_DEFAULT", "renderer/app.js") + "\n";
+  for (const n of IMPL_FNS) code += grabFn(src, n) + "\n";
+  try {
+    new Function("window", "document", "I18n", "S", "toast", "clampAssistW", code);
+  } catch (e) {
+    throw new Error("从 app-assist.js 抠出的构件编译不过（切割位置不对？）：" + (e && e.message));
+  }
+  return (
+    "window.__compactImpl=(function(){\n" +
+    "  var S = window.__probeS;\n" +
+    "  function toast(){ window.__toastCalls.push(Array.prototype.slice.call(arguments)); }\n" +
+    "  function clampAssistW(w){\n" +
+    "    var half = Math.max(ASSIST_W_MIN, Math.floor((window.innerWidth || 1200) / 2));\n" +
+    "    var n = Math.round(Number(w) || ASSIST_W_MIN);\n" +
+    "    return Math.max(ASSIST_W_MIN, Math.min(half, n));\n" +
+    "  }\n" +
+    code +
+    "  return { compactPolicyOf: compactPolicyOf, syncAssistCompactOptions: syncAssistCompactOptions," +
+    " applyAssistCompactChoice: applyAssistCompactChoice, options: ASSIST_COMPACT_OPTIONS };\n" +
+    "})();\n"
+  );
+}
+
+/* ============================ 页内探针（真实 Blink 里执行） ============================ */
+const I18N_SRC = fs.readFileSync(rel("renderer", "i18n.js"), "utf8");
+
+const PROBE_SRC = String.raw`
+window.__probe = (function () {
+  function q(s, r) { return (r || document).querySelector(s); }
+  function R(el) {
+    if (!el) return null;
+    var r = el.getBoundingClientRect();
+    return { x: +r.left.toFixed(1), y: +r.top.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+             bottom: +r.bottom.toFixed(1) };
+  }
+  function ownText(el) {
+    var s = "";
+    if (!el) return s;
+    for (var i = 0; i < el.childNodes.length; i++)
+      if (el.childNodes[i].nodeType === 3) s += el.childNodes[i].nodeValue;
+    return s.trim();
+  }
+
+  /* 探针配置：与运行时同一形状（persistAssistUi 就是读写这一坨） */
+  window.__probeS = {
+    config: { dsh: {} },
+    assistMessages: [], assistLiveTools: [], assistW: 340,
+    assistPreset: "minimal", assistProvider: "deepseek-official", assistModel: "",
+    assistEffort: "high", assistWorkspace: "", assistScope: "current",
+    assistGrill: true, assistPure: false, assistOpen: true, assistLive2d: false,
+  };
+  window.__savedConfigs = [];
+  window.__toastCalls = [];
+  window.api = {
+    configSave: function (cfg) { window.__savedConfigs.push(JSON.parse(JSON.stringify(cfg))); return Promise.resolve(); },
+  };
+
+  /* 真实 i18n：词条齐不齐、切语言会不会回落中文，都在真表上验 */
+  __I18N_SRC__;
+
+  /* 应用代码：把真实 index.html 的 body 摆上来，再注入产品函数 */
+  __IMPL_SRC__;
+
+  function showAssist() {
+    /* 助手栏默认是收起的（index.html 上带 hidden + CSS 只在 .layout.assist-open 时 display:flex）
+       —— 不显式摊开就量不到布局：rect 全是 0，断言会「假绿」。这里按运行时的观感打开它。 */
+    var pane = document.getElementById("assistPane");
+    var layout = document.querySelector(".layout");
+    if (layout) layout.classList.add("assist-open");
+    document.body.classList.add("assist-open");
+    pane.style.display = "";
+    pane.hidden = false;
+    pane.style.setProperty("--assist-w", "340px");
+    var ctrl = document.getElementById("assistCtrl");
+    ctrl.style.display = "flex";
+    ctrl.hidden = false;
+    return ctrl;
+  }
+
+  /* 走一次 product 的「打开助手栏即回刷」那条链（app-assist.js 的 renderAssistPanel 里那一句） */
+  function repaint() { window.__compactImpl.syncAssistCompactOptions(q("#assistCompactSel")); }
+
+  function optionTexts() {
+    var sel = q("#assistCompactSel");
+    var out = [];
+    for (var i = 0; i < sel.options.length; i++) out.push({ v: sel.options[i].value, t: sel.options[i].textContent });
+    return out;
+  }
+
+  function layout() {
+    var ctrl = showAssist();
+    var compact = q("#assistCompactSel"), effort = q("#assistEffortSel");
+    if (compact && compact.dataset && compact.dataset.bound !== "1") {
+      compact.dataset.bound = "1";
+      compact.onchange = function () { window.__compactImpl.applyAssistCompactChoice(compact.value); };
+    }
+    var cLabel = q('label.assist-ctrl-item:has(#assistCompactSel) span');
+    return {
+      inCtrl: !!ctrl && ctrl.contains(compact) && ctrl.contains(effort),
+      sameRow: !!compact && !!effort && !!compact.closest("label") && compact.closest("label") !== effort.closest("label") &&
+        compact.closest(".assist-ctrl-item") && effort.closest(".assist-ctrl-item"),
+      compact: R(compact),
+      effort: R(effort),
+      labelText: ownText(cLabel),
+      titleAttr: compact ? compact.getAttribute("title") || "" : "",
+      optionCount: compact ? compact.options.length : 0,
+    };
+  }
+
+  /* 改下拉 = 用户真的选一下（走 onchange，与 app-boot.js 的接线同一入口） */
+  function choose(v) {
+    var sel = q("#assistCompactSel");
+    sel.value = v;
+    sel.dispatchEvent(new Event("change"));
+    return JSON.parse(JSON.stringify(window.__probeS.config.dsh.compact || null));
+  }
+
+  /* 切语言：真 i18n.setLocale（app-boot.js 的 applyLocale 走的就是它） */
+  function setLocale(loc) { I18n.setLocale(loc); repaint(); }
+
+  return {
+    ready: function () {
+      showAssist();
+      repaint();
+      return !!q("#assistCompactSel");
+    },
+    repaint: repaint, optionTexts: optionTexts, layout: layout, choose: choose,
+    setLocale: setLocale,
+    setConfig: function (o) { window.__probeS.config.dsh.compact = o; repaint(); },
+    currentValue: function () { return q("#assistCompactSel").value; },
+    savedCount: function () { return window.__savedConfigs.length; },
+    lastSavedCompact: function () {
+      var last = window.__savedConfigs[window.__savedConfigs.length - 1] || {};
+      return (last.dsh && last.dsh.compact) || null;
+    },
+    toasts: function () { return window.__toastCalls.map(function (a) { return String(a[0] || ""); }); },
+  };
+})();
+`;
+
+/* ============================ 探针页 ============================ */
+function probeHtml() {
+  const html = fs.readFileSync(rel("renderer", "index.html"), "utf8");
+  const m = /<body[^>]*>([\s\S]*)<\/body>/i.exec(html);
+  if (!m) throw new Error("renderer/index.html 里没有解析到 <body>");
+  const body = m[1].replace(/<script[\s\S]*?<\/script>/gi, "");
+  const styleEntry = fs.readFileSync(rel("renderer", "style.css"), "utf8");
+  const names = [];
+  const re = /@import\s+url\(["']?([^"')]+)["']?\)/g;
+  let mm;
+  while ((mm = re.exec(styleEntry))) names.push(mm[1]);
+  if (!names.length) throw new Error("renderer/style.css 没有解析到 @import 分片");
+  let css = "";
+  for (const n of names)
+    css += "\n/* ==== " + n + " ==== */\n" + fs.readFileSync(path.join(rel("renderer"), n.split("/").join(path.sep)), "utf8");
+  const baseHref = "file:///" + rel("renderer").split(path.sep).join("/").replace(/\/$/, "") + "/";
+  const probe = PROBE_SRC.replace("__I18N_SRC__", I18N_SRC).replace("__IMPL_SRC__", implInjection());
+  return (
+    '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><base href="' + baseHref + '">' +
+    "<style>" + css + "</style></head><body>" + body +
+    "\n<script>" + probe + "</scr" + "ipt></body></html>"
+  );
+}
+
+async function main() {
+  const { app, BrowserWindow } = require("electron");
+  try {
+    app.setPath("userData", path.join(os.tmpdir(), "mtnode-smoke-assist-compact-userdata"));
+  } catch (_) {}
+  app.commandLine.appendSwitch("disable-gpu");
+
+  let checks = 0;
+  let fails = 0;
+  const ok = (cond, msg) => {
+    checks++;
+    if (cond) console.log("  ok    " + msg);
+    else {
+      fails++;
+      console.log("FAIL  " + msg);
+    }
+  };
+
+  await app.whenReady();
+  const tmp = path.join(os.tmpdir(), "mtnode-smoke-assist-compact.html");
+  fs.writeFileSync(tmp, probeHtml(), "utf8");
+
+  const win = new BrowserWindow({
+    show: false,
+    useContentSize: true,
+    width: 1280,
+    height: 820,
+    webPreferences: { offscreen: true, backgroundThrottling: false, sandbox: false, contextIsolation: true, nodeIntegration: false },
+  });
+  await win.loadFile(tmp);
+  const run = (expr) => win.webContents.executeJavaScript(expr, true);
+
+  console.log("\n[1] 真实 DOM：压缩这一格落在「思考强度」下一行");
+  ok(await run("!!window.__probe && window.__probe.ready()"), "探针页摆好：真实 index.html body + 真实样式 + 产品函数已注入");
+  const lay = await run("window.__probe.layout()");
+  ok(lay.inCtrl, "压缩下拉与思考强度下拉同属 #assistCtrl（没跑到别处去）");
+  ok(!!lay.sameRow, "两格各占一条 .assist-ctrl-item 行（没有并进同一格）");
+  ok(lay.compact && lay.effort, "两格都真的渲染出来了（有布局矩形）");
+  ok(
+    !!lay.compact && lay.compact.h > 0 && !!lay.effort && lay.effort.h > 0,
+    "两格都量到了真实高度（h " + (lay.compact && lay.compact.h) + " / " + (lay.effort && lay.effort.h) + "，不是 0 高——否则「下方」会假绿）",
+  );
+  ok(
+    lay.compact && lay.effort && lay.compact.y >= lay.effort.bottom - 0.5,
+    "压缩这一格整格在思考强度那一格下方（top " + (lay.compact && lay.compact.y) + " ≥ bottom " + (lay.effort && lay.effort.bottom) + "）",
+  );
+  ok(lay.labelText === "上下文压缩", "行标签就是「上下文压缩」（实测：" + lay.labelText + "）");
+  ok(/上下文压缩时机/.test(lay.titleAttr), "下拉带中文悬浮说明（tooltip 真落到了 DOM 上）");
+  ok(lay.optionCount === 4, "四档（关闭 / 早 / 中 / 晚），实测 " + lay.optionCount + " 项");
+
+  console.log("\n[2] 与「设置 · 智能能力」同一份值的回显");
+  const opts0 = await run("window.__probe.optionTexts()");
+  ok(
+    opts0.map((o) => o.v).join(",") === "off,early,mid,late",
+    "档位值顺序 = off,early,mid,late（与设置面板同一张三档表 + 关闭）",
+  );
+  ok(await run("window.__probe.currentValue()") === "mid", "缺省配置回显「中」（缺省 = 开 · 中档，与组合里的 0.3 / 32768 对得上）");
+  await run('window.__probe.setConfig({ enabled: false, tier: "late" })');
+  ok(await run("window.__probe.currentValue()") === "off", "enabled:false 回显「关闭」（不按 tier 显示，用户看到的就是关掉了）");
+  await run('window.__probe.setConfig({ tier: "nonsense" })');
+  ok(await run("window.__probe.currentValue()") === "mid", "非法档位回落「中」（脏值不会写进组合）");
+
+  console.log("\n[3] 改一下 = 写进同一份配置并落盘");
+  await run('window.__probe.setConfig({ enabled: true, tier: "mid" })');
+  const before = await run("window.__probe.savedCount()");
+  const afterEarly = await run('window.__probe.choose("early")');
+  ok(afterEarly && afterEarly.enabled === true && afterEarly.tier === "early", "选「早」→ config.dsh.compact = {enabled:true, tier:'early'}");
+  ok((await run("window.__probe.savedCount()")) === before + 1, "选完走 persistAssistUi → configSave 落盘一次（不是只改内存）");
+  const savedEarly = await run("window.__probe.lastSavedCompact()");
+  ok(savedEarly && savedEarly.tier === "early" && savedEarly.enabled === true, "落盘那份里带的就是新档（main.js 的 syncCompactPolicy 读的就是它）");
+  const afterOff = await run('window.__probe.choose("off")');
+  ok(afterOff && afterOff.enabled === false && afterOff.tier === "early", "选「关闭」→ enabled:false 且保留原档 early（再打开回到原档）");
+  ok(await run("window.__probe.currentValue()") === "off", "关闭后下拉回显仍是「关闭」");
+  const afterLate = await run('window.__probe.choose("late")');
+  ok(afterLate && afterLate.enabled === true && afterLate.tier === "late", "再选「晚」→ 开起来并落到 late（三档都能选到）");
+  const toasts = await run("window.__probe.toasts()");
+  ok(toasts.length === 3 && /下一个新会话生效/.test(toasts[0]), "每次改都提示「下一个新会话生效」（口径与设置面板一致）");
+
+  console.log("\n[4] 切语言：选项文字跟着换（英文界面不回落中文）");
+  await run('window.__probe.setConfig({ enabled: true, tier: "mid" })');
+  await run('window.__probe.setLocale("en")');
+  const optsEn = await run("window.__probe.optionTexts()");
+  ok(optsEn.length === 4 && optsEn[0].t === "Off · do not compact automatically", "英文界面第一档 = Off · do not compact automatically");
+  ok(
+    optsEn.slice(1).every((o) => !/[\u4e00-\u9fa5]/.test(o.t)),
+    "英文界面后三档没有中文残留（" + optsEn.slice(1).map((o) => o.t.slice(0, 12)).join(" | ") + "）",
+  );
+  await run('window.__probe.setLocale("zh")');
+  const optsZh = await run("window.__probe.optionTexts()");
+  ok(optsZh[0].t === "关闭 · 不自动压缩长会话", "切回中文第一档 = 关闭 · 不自动压缩长会话");
+
+  const exitWith = (code) => {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    console.log(
+      "\n" + (code === 0 ? "✓" : "✗") + " " + (checks - fails) + " / " + checks + " 项" +
+        (code === 0 ? "全部通过" : "里有 " + fails + " 项失败") + "  (smoke-assist-compact)",
+    );
+    app.exit(code);
+  };
+  exitWith(fails ? 1 : 0);
+}

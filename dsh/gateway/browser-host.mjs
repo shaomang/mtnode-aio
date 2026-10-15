@@ -191,6 +191,7 @@ const state = {
   /* 实况视图（会话右边栏的「实况」区，见本文件末「实况流」一节）：
      帧只走内存回调，**绝不落库、绝不进模型上下文**。 */
   view: { sink: null, on: false, seq: 0, at: 0, w: 0, h: 0, dpr: 1, lastFrameAt: 0, lastAckAt: 0, shots: 0, fallback: false, reason: '' },
+  /* 帧序号跨流单调（不随重生归零）：见 viewSeqCounter 的注释 */
   /* docked = 面板实况（真实窗口移出可视区）；detached = 独立窗口。
      「独立窗口」只是**本次浏览器运行内的例外**（用户在面板上亲手点的）：进程一起来
      一律 docked（见 parkSessionWindow / ensureBrowser），重启浏览器就回到默认内部界面 —— 
@@ -231,6 +232,12 @@ export function profileDirOf(dshHome) {
 }
 
 export function _state() { return state }
+
+/** 帧序号**跨流单调**：不随重生 / 重开归零。
+ *  渲染层按 `seq <= 上次收到的` 丢乱序 / 重放帧（app-browser.js 的 onFrame）——
+ *  序号若在重生后从 1 重数，新客户端会把前几帧当成旧帧丢掉，画面就停在遮罩上
+ *  （本次修复踩到的第二个坑）。state.view.lastFrameAt / at 的归零不受影响，那是空流判据的事。 */
+let viewSeqCounter = 0
 
 /* 动作留痕（网关读走并转成活动流；只留摘要，完整输出由工具回执自己带） */
 
@@ -1013,6 +1020,19 @@ export function setLastAction(op, extra) {
 }
 
 /** 状态里给渲染层的那一份（帧本体不在这里，也不落库）。 */
+/* 实况流是不是「开着但这一拍没有画面」（陈旧流）：客户端接上之前留下的空流、或慢客户端
+   一直没 ack，画面就永远停在遮罩上。判据 = 在流上 + 距上一次帧/ack 超过 VIEW_STALE_MS。
+   调用方（网关 viewStart 与渲染层的「重新连接」）据此决定「重生一次流」而不是空转发 ——
+   `startViewStream` 已经在流上时是直接 return 的，什么也不会补偿。 */
+const VIEW_STALE_MS = 1500
+export function isViewStale() {
+  const v = state.view
+  if (!v.on) return false
+  const last = Math.max(Number(v.lastFrameAt) || 0, Number(v.lastAckAt) || 0, Number(v.at) || 0)
+  if (!last) return true
+  return Date.now() - last > VIEW_STALE_MS
+}
+
 export function viewStatus() {
   const v = state.view
   return {
@@ -1114,15 +1134,36 @@ export async function setViewMode(mode) {
   return { ok: true, ...viewStatus() }
 }
 
-/** 开实况流：Page.startScreencast + ack 流控。重复调用不重复订阅（不出现双份帧）。 */
+/** 拆掉当前实况流的订阅（不碰 CDP；用于「陈旧流重生」与开流出错时的清理）。 */
+function teardownStream() {
+  const v = state.view
+  if (v.off) { try { v.off() } catch { /* 已断 */ } v.off = null }
+  v.on = false
+}
+
+/** 开实况流：Page.startScreencast + ack 流控。重复调用不重复订阅（不出现双份帧）。
+ *
+ *  **陈旧流不再空转发**（本次修复）：`v.on` 为真只说明「网关这一侧订阅还在」，不说明
+ *  有客户端在收帧 —— 客户端接上之前留下的空流、或慢客户端一直没 ack，新接上的面板就会
+ *  永远停在遮罩上（`viewStart` 原来的 `if (v.on) return` 把这一态当成「已经在流上」）。
+ *  所以：已经在流上 + 距上次帧/ack 超过 VIEW_STALE_MS → 先拆掉旧订阅、停一次 screencast
+ *  再重开一条，让新客户端一定拿到帧。 */
 export async function startViewStream(params) {
   const p = params && typeof params === 'object' ? params : {}
   const cdp = state.cdp
   if (!cdp || cdp.closed) throw new Error('浏览器还没启动或已关闭，先调用 browser_launch')
   const v = state.view
-  if (v.on) return { ok: true, ...viewStatus() }
+  if (v.on) {
+    if (!isViewStale()) return { ok: true, ...viewStatus() }
+    teardownStream()
+    try { await cdp.send('Page.stopScreencast', {}, 4000) } catch { /* 老内核 / 已断 */ }
+  }
   v.on = true
+  /* 每开一条**新**流都从零起算：陈旧流重生时若留着上一轮的 lastFrameAt，看门狗会把
+     「这一条一条帧都还没来」误判成「早就有帧了」而直接放行（本次修复踩到的正是这一条）。 */
   v.lastAckAt = Date.now()
+  v.lastFrameAt = 0
+  v.at = 0
   const off = cdp.on((m) => {
     if (!m || m.method !== 'Page.screencastFrame') return
     /* 停流之后到达的帧（stopScreencast 生效前已在飞）一律丢掉：
@@ -1134,7 +1175,10 @@ export async function startViewStream(params) {
     const tooSoon = v.at && now - v.at < VIEW_MIN_INTERVAL_MS
     const keep = !tooSoon || v.seq === 0
     if (keep) {
-      v.seq += 1
+      /* 序号跨流单调（viewSeqCounter）：重生一条流之后**不从 1 重数** —— 渲染层按
+         `seq <= 上次收到的` 丢乱序帧，重数会把新流的前几帧当成旧帧丢掉（画面停在遮罩上）。 */
+      viewSeqCounter += 1
+      v.seq = viewSeqCounter
       v.at = now
       v.w = Number(meta.deviceWidth) || v.w
       v.h = Number(meta.deviceHeight) || v.h
@@ -1156,9 +1200,7 @@ export async function startViewStream(params) {
       everyNthFrame: 1,
     }, 8000)
   } catch (e) {
-    v.on = false
-    if (off) { try { off() } catch {} }
-    v.off = null
+    teardownStream()
     throw new Error('这台浏览器无法开启实况画面：' + String((e && e.message) || e))
   }
   /* docked 形态的定义就是「真实窗口让位」：新起的窗口（viewParked=false）还没被搬过，

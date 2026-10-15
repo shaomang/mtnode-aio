@@ -4103,6 +4103,223 @@ textarea.asset-form-input {
   box-shadow: 0 2px 0 0 var(--cyan);
 }
 
+/* ===== 条目行的行内预览（renderer/app-assets.js · 素材库右栏与素材设置框共用）=====
+   行内小样：图像＝40px 缩略图（尺寸钉死，图到货不撑动列表）· 文本＝正文首行摘要（单行省略）
+   · 音频＝小播放键。鼠标停一会儿浮出 .asset-pv-pop（体量更大的放大图 / 全文 / 波形试听）。 */
+.asset-pv-thumb {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  background: var(--code);
+  overflow: hidden;
+}
+
+/* 缩略图未到货 / 取不到时留同尺寸的占位框：尺寸钉死，图到货不撑动列表 */
+.asset-set-row .asset-pv-thumb {
+  position: relative;
+}
+
+.asset-pv-thumb .asset-pv-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 40px 方框里看中心那一块：不拉变形，也不给行留出长宽比带来的空隙 */
+  object-fit: cover;
+  background: var(--code);
+}
+
+.asset-pv-ghost {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--muted);
+  opacity: .55;
+}
+
+/* 正文摘要：与文件名同族的 mono 小字，单行省略；读不到时不给空行。
+   宽度夹在一个区间里 —— 摘要不该比标题输入框还抢地方，也绝不把行撑成两三行。 */
+.asset-pv-text {
+  flex: none;
+  width: min(240px, 24vw);
+  min-width: 90px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  cursor: default;
+}
+
+/* 正文本体：单行省略（截断在 span 上，单元格只管占位与裁切） */
+.asset-pv-text .asset-pv-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-pv-text.none .asset-pv-line {
+  opacity: .55;
+}
+
+/* 音频小播放键：与行内其它 .mini 同高同圆角，只多一个「正在放」的亮态 */
+.asset-pv-audio {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.asset-pv-play {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.asset-pv-play:hover {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+}
+
+.asset-pv-play.on {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+/* 悬停浮层：固定定位（不塞进行里，行不会被撑开 / 推挤），
+   层级压在素材库框（2350）与素材设置框（2370）之上、条目只读预览框（2400）之下。 */
+.asset-pv-pop {
+  position: fixed;
+  z-index: 2380;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 72vh;
+  padding: 8px 9px 9px;
+  background: var(--panel2);
+  border: 1px solid var(--bd2);
+  border-left: 2px solid var(--cyan);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+}
+
+.asset-pv-pop.image {
+  border-left-color: #ff5ea8;
+}
+
+.asset-pv-pop.audio {
+  border-left-color: #6aa6ff;
+}
+
+.asset-pv-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.asset-pv-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.asset-pv-kind {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 1.6;
+  padding: 0 5px;
+  border-radius: 2px;
+  color: var(--cyan);
+  background: rgba(56, 214, 255, .12);
+}
+
+.asset-pv-file {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-pv-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.asset-pv-imgbig {
+  display: block;
+  max-width: 100%;
+  max-height: 52vh;
+  margin: 0 auto;
+  object-fit: contain;
+  background: var(--code);
+  border-radius: 3px;
+}
+
+.asset-pv-text-full {
+  width: 100%;
+  min-height: 128px;
+  max-height: 52vh;
+  resize: none;
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 6px 7px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  outline: none;
+}
+
+.asset-pv-wave {
+  background: var(--code);
+}
+
+.asset-pv-ghostline {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 6px 0;
+}
+
+.asset-pv-note {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--orange);
+}
+
+.asset-pv-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
 /* 正文编辑用的宽版表单框（长文本不在 440px 里挤） */
 .mt-dialog-box.asset-form-box-wide {
   width: min(94vw, 880px);

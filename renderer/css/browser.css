@@ -166,6 +166,12 @@
 }
 .ba-live-head .mini { font-size: 11px; padding: 3px 7px; }
 .ba-live-head .mini.on { background: rgba(96, 165, 250, 0.25); border-color: rgba(96, 165, 250, 0.6); color: #eaf2ff; }
+/* 「重新连接」不参与压缩：窄栏（右栏可拖到很窄）时挤掉的是状态字，不是这两枚能按的键
+   —— 挤没了就成了「有失败也点不到恢复」，那正是本次需求要避免的。 */
+.ba-live-head #baLiveRetry,
+.ba-live-head #baLiveWin,
+.ba-live-head #baLivePause { flex: 0 0 auto; }
+.ba-live-head #baLiveRetry[disabled] { opacity: 0.5; cursor: default; }
 .ba-live-stage {
   position: relative;
   width: 100%;

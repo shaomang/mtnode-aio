@@ -120,6 +120,40 @@ live runtime 转发（池里没有 = `{ ok:false, reason:'no_runtime' }`，不�
 回归见 `test/smoke-config-probe.js`（端到端，只跑假 key 的一轮、不跑真模型对话）与
 `test/smoke-settings.js` 的「已并入：smoke-settings-profile-patch.js」段（写入器形状 + 幂等 + 用户补丁不被碰）。
 
+### 上下文压缩（`compaction-basic` 行 + `dsh-compact-policy.js`）
+
+dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-result-pruner`）
+本来就在基座组合里挂着，但**从来没触发过**（`scripts/audit-token-usage.mjs` 的会话台账里
+「压缩 0 次」）。原因不是没挂插件，而是触发线永远到不了：
+
+- dsh 默认触发线 = 适配器声明的 `contextWindow × thresholdRatio(0.8)`；
+- 而网关（`gateway.mjs` 的 `OFFICIAL_MODEL_KNOWN` / `officialModelsYaml`）给
+  `deepseek-v4-*` 系列声明的是 `contextWindow: 1000000` → 要跑到 **80 万 token** 才压，
+  本机 14 天里最长的会话是 335 步、每步均 218K token，离触发线差得远。
+
+**不能靠改声明的窗口来压**：`contextWindow` 同时是适配器向模型声明的真实容量，
+用它当压缩触发线会连带影响图片预算与溢出判定。正确的旋钮是压缩插件自己的 config：
+
+| 键 | 值 | 为什么 |
+|---|---|---|
+| `thresholdRatio` | `0.3` | 有效窗口 ≈ 30 万 token（声明窗口 × 0.3）。dsh 的默认 0.8 在本机等价于不触发 |
+| `retainRatio` | `0.04` | 未点名路由的比例兜底：窗口越小留得越少（1M → 约 3.7 万；12.8 万 → 约 4.6 千） |
+| `modelPolicies[]` | `deepseek-official/deepseek-flash` → `retainTokens: 32768` | 这条路由的窗口是网关自己声明的 1M，纯比例会「留 16 万原文」，压缩几乎白压 → 必须给**绝对**保留尾部 |
+| `auto` | `true` | 自动压缩；置 false 只停自动触发，provider 确认的上下文溢出恢复仍在 |
+
+- **配置值真源 = `dsh-compact-policy.js`**（与 `dsh-agent-policy.js` 同一个模式）：
+  用户设置写成 `config.dsh.compact = { enabled, tier }`，由 `main.js` 的 `syncCompactPolicy`
+  在**启动时**与**每次保存配置后**改写 `cordis.yml` 里这一行的 config ——
+  下一个新会话生效，正在跑的会话沿用原值。三档（早 / 中 / 晚）只差 `thresholdRatio`
+  与 `retainTokens`（0.16/16K · 0.3/32K · 0.45/64K），设置界面只给档位、不摊原始百分比。
+- **幂等**：设置缺省（开 · 中档）与出货组合逐字一致，`applyCompactPolicy` 因此
+  每次启动零字节改动；早↔中、关↔开往返都能逐字回到出货原文。
+- **不点名 `mtnode_<route>`**：自配服务商的路由名是 `mtnode_` + 用户自己填的 route
+  （`gateway.mjs` 的 `routeOfProvider` / `applySettings`），模型名也是用户填的 ——
+  没有固定组合可点名，点名必落空。那类路由统一走 `retainRatio` 兜底。
+- 回归见 `test/smoke-token-budget.js` `[11]`（组合行取值 + 策略模块幂等/往返 +
+  设置与 i18n 同源 + build.json 白名单）。
+
 ### Node 运行时（网关必须跑在真 Node 上）
 
 dsh 0.2 的内核在 boot 阶段要用原生插件 `node-addon-require-builtin` 去 hook ESM 内部模块，

@@ -498,9 +498,6 @@ body.theme-light .agent-load-earlier button:hover {
   border-color: var(--cyan);
   background: var(--bd);
 }
-body.theme-light .dsh-live-cut {
-  color: var(--muted);
-}
 
 /* ── 会话空状态 / 工作目录 ── */
 body.theme-light .agent-empty {

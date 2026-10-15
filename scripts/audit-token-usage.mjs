@@ -333,7 +333,9 @@ function collectSessions(root, opts) {
     for (const ent of dirs) {
       if (!ent.isDirectory()) continue
       let file = ''
-      for (const name of ['session.jsonl.zstd', 'session.jsonl']) {
+      /* dsh 0.2 起会话日志落的是带版本号的 session.v4.jsonl(.zstd)（见 gateway 的
+         resumeSessionExists 口径）；老名字留在候选表里，0.1 代现场仍读得到。 */
+      for (const name of ['session.v4.jsonl.zstd', 'session.v4.jsonl', 'session.jsonl.zstd', 'session.jsonl']) {
         const f = path.join(pd, ent.name, name)
         try { if (statSync(f).isFile()) { file = f; break } } catch { /* 下一个 */ }
       }

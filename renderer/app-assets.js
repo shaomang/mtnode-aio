@@ -639,6 +639,8 @@ function assetLibOpen() {
 
 function closeAssetLib() {
   assetCloseMenu();
+  /* 悬停浮层与它里面那只播放器不属于框内 DOM（挂在 body 上），关框要自己收 */
+  assetPvDropHost();
   const host = document.getElementById("assetsDlg");
   if (host) host.classList.remove("on");
   ASSET_LIB.open = false;
@@ -1019,6 +1021,8 @@ function assetCard(a, pick) {
    正文＝内容条目列表（标题可改、可换文件、可编辑正文、可增删与拖动排序），
    写入一律走与「素材设置」同一份写库路径（assets* IPC），只是编辑目标换成这份素材。 */
 function paintAssetDetail(host, a) {
+  /* 详情重画＝条目行全部重建：浮层与它的播放器一并作废（同一份口径，见 paintAssetSetBody） */
+  assetPvDropHost();
   host.innerHTML = "";
   const wrap = assetEl("div", "asset-detail");
   const head = assetEl("div", "asset-detail-head");
@@ -2472,6 +2476,8 @@ function closeAssetSettings() {
   ASSET_SET.open = false;
   ASSET_SET.id = "";
   ASSET_SET.dragFrom = -1;
+  /* 悬停浮层挂在 body 上（不在设置框内），关框要自己收 */
+  assetPvDropHost();
   const host = document.getElementById("assetSetDlg");
   if (host) host.classList.remove("on");
 }
@@ -2625,6 +2631,8 @@ function paintAssetSettings() {
 }
 
 function paintAssetSetBody(box, a) {
+  /* 重画＝行全部重建：先把浮层与里面那只播放器收掉（否则留下看不见声源的声音） */
+  assetPvDropHost();
   box.innerHTML = "";
   /* ── 资料区：显示名 / 描述（改动失焦即写库） ── */
   const meta = assetEl("div", "asset-set-meta");
@@ -3120,6 +3128,535 @@ async function assetDropAppend(a, paths) {
   }
 }
 
+/* ════════════ 条目行的行内预览（renderer/app-assets.js）════════════
+   一行只有「端子名 + 文件名」时，图像要逐条点开才看得见、正文一律看不见。
+   这里给条目行补上「就地看一眼」的小样，鼠标停一下再浮出放大图 / 全文 / 波形试听。
+
+   口径（与用户确认过的共识）：
+     · 行内：图像＝40px 缩略图（惰性加载）· 文本＝正文首行摘要（单行省略）· 音频＝小播放键
+     · 悬停浮层：图像放大图 · 文本全文（只读）· 音频完整波形试听 + 「打开原文件」两键
+     · 鼠标移开即收，鼠标进浮层内保持，Esc 也能关；全程只读，不写库、不落盘、不改行内任何编辑态
+     · 行尾「预览」按钮与文件名按钮的行为一律不变（浮层只是多一条快路）
+   repaint（拖拽复位 / 重画）会把浮层与播放器外壳一起丢掉：外壳没了但全局播放引擎还在放，
+   所以重画前先停掉那一只，免得留下「看不见声源的声音」。 */
+const ASSET_PV_ROW_TEXT_BYTES = 32 * 1024; // 行内正文摘要最多读这么多字节（大文件不顿）
+const ASSET_PV_TEXT_MAX = 200000; // 浮层里全文的展示上限（超出给截断提示）
+const ASSET_PV_HOVER_MS = 150; // 悬停多久才出场（扫过列表时不闪窗）
+let _assetPvSrc = null; // 缩略图 / 摘要的当前宿主（只在同一份列表里复用，换列表即清）
+let _assetPvIo = null; // 缩略图惰性加载的 IntersectionObserver
+let _assetPvRevealed = null; // 已经取过的缩略图（绝对路径 → true，重画不重新解码）
+let _assetPvHeads = null; // 已读到的正文摘要（absPath → 摘要文本）
+let _assetPvHeadBusy = null; // 正在读的摘要（absPath → Promise）
+let _assetPvLoading = null; // 正在读全文的浮层序号
+let _assetPvSeq = 0; // 浮层序号：异步读回来的内容只贴给「还开着的那一次」
+let _assetPvKeyFn = null; // 当前浮层挂的 Esc 监听（收层时摘掉）
+let _assetPvMoveFn = null; // 当前浮层挂的滚动 / 缩放监听（行离开原位即收层）
+
+/* 缩略图 / 摘要的缓存只在同一份列表里复用：换列表（另一个素材 / 另一种模式）即清，
+   免得几十份素材的缩略图与正文摘要一直挂在内存里。 */
+function assetPvSrc(scope) {
+  if (_assetPvSrc !== scope) {
+    _assetPvSrc = scope;
+    if (_assetPvIo) {
+      try {
+        _assetPvIo.disconnect();
+      } catch (_) {}
+    }
+    _assetPvIo = null;
+    _assetPvRevealed = new Map();
+    _assetPvHeads = new Map();
+    _assetPvHeadBusy = new Map();
+  }
+  if (!_assetPvRevealed) _assetPvRevealed = new Map();
+  if (!_assetPvHeads) _assetPvHeads = new Map();
+  if (!_assetPvHeadBusy) _assetPvHeadBusy = new Map();
+}
+
+/* 行内小样：惰性加载（一屏之外的图不取字节，避免一开列表就解码几十张大图） */
+function assetPvFrame() {
+  return new Promise((resolve) => {
+    const raf =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame
+        : (fn) => setTimeout(fn, 16);
+    raf(() => resolve());
+  });
+}
+function assetPvThumb(scope, r) {
+  assetPvSrc(scope);
+  const box = assetEl("div", "asset-pv-thumb");
+  const abs = String(r.absPath || "");
+  if (!abs || r.missing) {
+    const g = assetEl("div", "asset-pv-ghost", "🖼");
+    g.title = r.missing
+      ? I18n.t("库里的实体文件不在了：换一份内容即可恢复")
+      : I18n.t("（还没有内容）");
+    box.appendChild(g);
+    return box;
+  }
+  const key = "i|" + String(r.id || "") + "|" + abs;
+  const img = document.createElement("img");
+  img.className = "asset-pv-img";
+  img.alt = "";
+  img.title = abs;
+  img.decoding = "async";
+  img.loading = "lazy";
+  box.appendChild(img);
+  const put = () => {
+    if (!_assetPvRevealed || _assetPvRevealed.get(key)) return;
+    _assetPvRevealed.set(key, true);
+    try {
+      img.src = window.api.toFileUrl(abs);
+    } catch (_) {}
+  };
+  if (typeof IntersectionObserver !== "function") {
+    assetPvFrame().then(put);
+    return box;
+  }
+  if (!_assetPvIo) {
+    _assetPvIo = new IntersectionObserver(
+      (ents) => {
+        for (const e of ents) {
+          if (!e.isIntersecting) continue;
+          const fn = e.target && e.target._assetPvLoad;
+          try {
+            _assetPvIo.unobserve(e.target);
+          } catch (_) {}
+          if (fn) fn();
+        }
+      },
+      { rootMargin: "220px 0px" },
+    );
+  }
+  box._assetPvLoad = put;
+  _assetPvIo.observe(box);
+  /* 兜底：这一帧还没被观察器扫到（刚插入）时，下一帧自己再看一眼 —— 已经在视口里的图
+     不该等到下次滚动才出现。 */
+  assetPvFrame().then(() => {
+    const b = box.getBoundingClientRect();
+    if (b.width > 0 && b.bottom > -220 && b.top < window.innerHeight + 220) put();
+  });
+  return box;
+}
+
+/* 行内正文摘要：只读开头一小段（fileStat 先判体积，大文件直接给「大文件 + 体积」），
+   整份正文只在悬停浮层里读（见 assetPvOpen）。 */
+function assetPvHeadText(r) {
+  const abs = String(r.absPath || "");
+  const api = window.api || {};
+  if (!abs || r.missing || typeof api.fileReadText !== "function")
+    return Promise.resolve("");
+  const key = abs;
+  if (_assetPvHeads && _assetPvHeads.has(key))
+    return Promise.resolve(_assetPvHeads.get(key));
+  if (_assetPvHeadBusy && _assetPvHeadBusy.has(key))
+    return _assetPvHeadBusy.get(key);
+  const p = Promise.resolve()
+    .then(() =>
+      typeof api.fileStat === "function" ? api.fileStat(abs) : null,
+    )
+    .catch(() => null)
+    .then((st) => {
+      const size = Number((st && st.size) || r.bytes || 0);
+      if (size > ASSET_PV_ROW_TEXT_BYTES)
+        return I18n.t("大文件（{size}）：悬停看全文", {
+          size: humanBytes(size),
+        });
+      return Promise.resolve(api.fileReadText(abs)).then(
+        (rd) => {
+          const t = rd && rd.ok !== false && rd.content != null ? String(rd.content) : "";
+          return t ? assetPvLine(t, 120) : "";
+        },
+        () => "",
+      );
+    })
+    /* 读挂了（桥不在 / 文件被占用 / 意外异常）不写缓存：这是「这一次没读到」，
+       不是「这条内容没有摘要」，下次重画该重试。 */
+    .then(
+      (head) => ({ head: head, ok: true }),
+      () => ({ head: "", ok: false }),
+    )
+    .then((res) => {
+      if (res.ok && _assetPvHeads) _assetPvHeads.set(key, res.head);
+      if (_assetPvHeadBusy) _assetPvHeadBusy.delete(key);
+      return res.head;
+    });
+  if (_assetPvHeadBusy) _assetPvHeadBusy.set(key, p);
+  return p;
+}
+/* 摘成一行的可读文本：换行 / 制表 / 连续空白都收成一个空格，超长截断加省略号 */
+function assetPvLine(t, max) {
+  const s = String(t == null ? "" : t).replace(/\s+/g, " ").trim();
+  const m = Number(max) > 0 ? Number(max) : 120;
+  return s.length > m ? s.slice(0, m) + "…" : s;
+}
+function assetPvTextCell(scope, r) {
+  assetPvSrc(scope);
+  /* 单元格只负责占位与宽度（overflow:hidden），正文放里面那层 span 上：
+     长行靠 span 的单行省略收掉，绝不会把行撑成两三行。 */
+  const cell = assetEl("div", "asset-pv-text");
+  const span = assetEl("span", "asset-pv-line");
+  cell.appendChild(span);
+  /* 贴内容：命中缓存时单元格此刻还没进 DOM（调用方 append 才进树），所以这一支不设
+     「是否在树上」的闸 —— 拿到值就写；异步读到的那一支才需要它（行可能已经重画没了）。 */
+  const put = (head, force) => {
+    if (!force && !cell.isConnected) return;
+    span.textContent = head || "";
+    cell.classList.toggle("none", !head);
+    if (!head) span.textContent = r.missing ? I18n.t("文件缺失") : I18n.t("（还没有内容）");
+    cell.title = head || "";
+  };
+  const cached = _assetPvHeads.get(String(r.absPath || ""));
+  if (cached != null) put(cached, true);
+  else
+    assetPvHeadText(r).then(
+      (head) => put(head),
+      () => {},
+    );
+  return cell;
+}
+
+/* 同一条内容？—— 注意不能拿对象比：assetSetRows() 每次调用都新建一份行数据，
+   行内小样捕获的那一份与浮层里现读的那一份不是同一个对象（比 id 才对得上）。 */
+function assetPvItemSame(a, b) {
+  if (!a || !b) return false;
+  const ia = String(a.id || "");
+  const ib = String(b.id || "");
+  if (ia || ib) return ia === ib;
+  return String(a.absPath || "") === String(b.absPath || "") && String(a.title || "") === String(b.title || "");
+}
+
+/* 音频条目：行内只放一个小播放键（完整波形在悬停浮层里展开，列表不被撑高）。
+   小键不自己起播：它的状态来自浮层里那只播放器的 n-wave-btn.on（MutationObserver 同步），
+   点一下＝展开浮层并起播 / 正在放＝暂停 / 放完＝从头再放。 */
+function assetPvAudioCell(scope, r) {
+  const cell = assetEl("div", "asset-pv-audio");
+  const b = assetEl("button", "asset-pv-play", "▶");
+  b.type = "button";
+  b.title = I18n.t("展开波形试听这条音频（鼠标停在这一行上即出现浮层）");
+  cell.appendChild(b);
+  const pvBtn = () =>
+    _assetPv && _assetPv.audio && assetPvItemSame(_assetPv.audio, r) && _assetPv.el
+      ? _assetPv.el.querySelector(".n-wave-btn")
+      : null;
+  const sync = () => {
+    const wb = pvBtn();
+    const on = !!(wb && wb.classList.contains("on"));
+    b.classList.toggle("on", on);
+    b.textContent = on ? "⏸" : "▶";
+  };
+  b.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const rowEl = cell._assetPvRow || null;
+    const playing = b.classList.contains("on");
+    /* 浮层还没摆出这一行（按钮是 ▶）：先把播放器摆出来再起播 —— 同一只外壳，
+       不用另做一只「行内播放器」，播放状态与波形都由 .n-wave 那一套管。 */
+    if (!playing && !(_assetPv.el && _assetPv.row === rowEl)) assetPvShowNow(rowEl);
+    const wb = pvBtn();
+    if (wb) wb.click();
+    setTimeout(sync, 0);
+  });
+  let mo = null;
+  const arm = () => {
+    const wb = pvBtn();
+    if (!wb || typeof MutationObserver !== "function") return;
+    if (mo) mo.disconnect();
+    mo = new MutationObserver(sync);
+    mo.observe(wb, { attributes: true, attributeFilter: ["class"] });
+    sync();
+  };
+  assetPvFrame().then(arm);
+  b.addEventListener("mouseenter", () => setTimeout(arm, 30));
+  return cell;
+}
+
+/* ── 悬停浮层：一只元素到处复用（不移进行里，所以行不会被它撑开） ──
+   浮层开着的期间：鼠标进浮层内保持，移出行与浮层即收；Esc / 打开原文件后也收。
+   只读展示，不带任何会写库的动作（改内容仍走「更换文件 / 编辑文本 / 预览」）。 */
+const _assetPv = {
+  row: null, // 当前悬停 / 浮层归属的那一行（行被重画即整条链自然作废）
+  asset: null, // 浮层正在展示的那份素材（拿条目行数据用）
+  item: null, // 浮层正在展示的那一条内容
+  el: null, // 浮层本体（一只元素到处复用）
+  audio: null, // 浮层里正在放的那条音频条目
+  timer: 0,
+};
+
+/* 鼠标停在行上：等一小会儿再出场（扫过列表时不闪窗），已经开着的那一行不重开 */
+function assetPvShowFor(row) {
+  if (!row || row === _assetPv.row) return;
+  if (_assetPv.timer) clearTimeout(_assetPv.timer);
+  _assetPv.row = row;
+  _assetPv.timer = setTimeout(() => {
+    _assetPv.timer = 0;
+    if (_assetPv.row !== row || !row.isConnected) return;
+    assetPvOpen(row);
+  }, ASSET_PV_HOVER_MS);
+}
+
+/* 行内播放键就地起播：浮层若还没开就直接开（复用同一只播放器，不另起一只） */
+function assetPvShowNow(row) {
+  if (!row || !row.isConnected) return;
+  if (_assetPv.timer) clearTimeout(_assetPv.timer);
+  _assetPv.timer = 0;
+  if (_assetPv.row === row && _assetPv.el) return;
+  _assetPv.row = row;
+  assetPvOpen(row);
+}
+
+function assetPvCancel() {
+  if (_assetPv.timer) clearTimeout(_assetPv.timer);
+  _assetPv.timer = 0;
+  _assetPv.row = null;
+}
+
+function assetPvClose() {
+  assetPvCancel();
+  if (_assetPvKeyFn) {
+    document.removeEventListener("keydown", _assetPvKeyFn, true);
+    _assetPvKeyFn = null;
+  }
+  if (_assetPvMoveFn) {
+    window.removeEventListener("scroll", _assetPvMoveFn, true);
+    window.removeEventListener("resize", _assetPvMoveFn);
+    _assetPvMoveFn = null;
+  }
+  const el = _assetPv.el;
+  if (el && el.querySelector(".n-wave-btn.on"))
+    assetPvStopAudio(); // 正在放：先把这一只停掉再拆外壳（全局引擎不会留下看不见的声源）
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+  _assetPv.el = null;
+  _assetPv.item = null;
+  _assetPv.asset = null;
+  _assetPv.audio = null;
+  _assetPvLoading = 0;
+  _assetPvSeq++;
+}
+
+/* 行被重画（拖拽复位 / 写库后刷新 / 关框）：浮层与播放器外壳一起作废，先停音再拆 */
+function assetPvDropHost() {
+  assetPvClose();
+  _assetPv.row = null;
+}
+
+function assetPvStopAudio() {
+  const el = _assetPv.el;
+  const wb = el ? el.querySelector(".n-wave-btn") : null;
+  if (wb) {
+    try {
+      wb.click();
+    } catch (_) {}
+  }
+  if (typeof wavePreviewStopAll === "function") wavePreviewStopAll();
+}
+
+/* 浮层里那一块：图像放大图 / 文本全文（只读）/ 音频波形播放器 */
+function assetPvBody(r, a) {
+  const box = assetEl("div", "asset-pv-body");
+  const abs = String(r.absPath || "");
+  if (!abs || r.missing) {
+    box.appendChild(
+      assetEl(
+        "div",
+        "asset-pv-ghostline",
+        r.missing
+          ? I18n.t("库里的实体文件不在了：换一份内容即可恢复")
+          : I18n.t("这条内容还没有实体文件"),
+      ),
+    );
+    return box;
+  }
+  if (r.type === "image") {
+    const img = document.createElement("img");
+    img.className = "asset-pv-imgbig";
+    img.alt = r.title || "";
+    img.title = abs;
+    img.src = window.api.toFileUrl(abs);
+    box.appendChild(img);
+    return box;
+  }
+  if (r.type === "audio") {
+    const media =
+      typeof wavePreviewCreate === "function" ? wavePreviewCreate("") : null;
+    if (!media) {
+      box.appendChild(assetEl("div", "asset-pv-ghostline", I18n.t("音频预览器不可用")));
+      return box;
+    }
+    media.classList.add("asset-pv-wave");
+    if (typeof wavePreviewSetSource === "function") wavePreviewSetSource(media, abs, abs);
+    box.appendChild(media);
+    _assetPv.audio = r;
+    return box;
+  }
+  if (r.type !== "text") {
+    box.appendChild(
+      assetEl("div", "asset-pv-ghostline", I18n.t("这一类内容没有内嵌预览：用「打开原文件」看")),
+    );
+    return box;
+  }
+  const ta = document.createElement("textarea");
+  ta.className = "asset-pv-text-full";
+  ta.readOnly = true;
+  ta.spellcheck = false;
+  ta.value = I18n.t("正在读取…");
+  box.appendChild(ta);
+  const seq = ++_assetPvSeq;
+  _assetPvLoading = seq;
+  const put = (t, note) => {
+    if (_assetPvLoading !== seq || !ta.isConnected) return;
+    ta.value = t;
+    if (note) box.insertBefore(assetEl("div", "asset-pv-note", note), ta);
+  };
+  Promise.resolve()
+    .then(() => {
+      if (a && r.id && window.api.assetsItemRead)
+        return window.api.assetsItemRead(a.id, r.id);
+      return window.api.fileReadText(abs);
+    })
+    .then(
+      (rd) => {
+        if (!rd || rd.ok === false) {
+          put("", (rd && rd.error) || I18n.t("读取失败："));
+          return;
+        }
+        const t = rd.text != null ? String(rd.text) : String(rd.content || "");
+        const cut = t.length > ASSET_PV_TEXT_MAX;
+        put(cut ? t.slice(0, ASSET_PV_TEXT_MAX) : t, cut ? I18n.t("正文过长，这里只显示前 20 万字符") : "");
+      },
+      (err) => put("", I18n.t("读取失败：") + String((err && err.message) || err || "")),
+    );
+  return box;
+}
+
+function assetPvOpen(row) {
+  const itemId = String(row.dataset.iid || "");
+  const a = row._assetPvAsset || null;
+  if (!a || !itemId) return;
+  const r = assetSetRows(a).filter((x) => String(x.id) === itemId)[0];
+  if (!r) return;
+  /* 换行即换内容：先把上一行那一只的声源停掉，再换壳（同一只外壳到处复用） */
+  if (_assetPv.el && _assetPv.item && !assetPvItemSame(_assetPv.item, r)) {
+    if (_assetPv.el.querySelector(".n-wave-btn.on")) assetPvStopAudio();
+  }
+  let el = _assetPv.el;
+  if (!el) {
+    el = assetEl("div", "asset-pv-pop");
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-label", I18n.t("内容预览"));
+    el.addEventListener("mouseenter", () => {
+      if (_assetPv.timer) clearTimeout(_assetPv.timer);
+      _assetPv.timer = 0;
+    });
+    el.addEventListener("mouseleave", assetPvCancelAndClose);
+    el.addEventListener("mousedown", (ev) => ev.stopPropagation());
+    document.body.appendChild(el);
+    _assetPv.el = el;
+  }
+  _assetPv.item = r;
+  _assetPv.asset = a;
+  el.className = "asset-pv-pop " + String(r.type || "text");
+  el.innerHTML = "";
+  el.title = "";
+  const head = assetEl("div", "asset-pv-head");
+  head.appendChild(assetEl("b", "asset-pv-title", r.title || I18n.t("内容 ")));
+  head.appendChild(assetEl("span", "asset-pv-kind", assetItemTypeLabel(r.type)));
+  el.appendChild(head);
+  el.appendChild(
+    assetEl(
+      "div",
+      "asset-pv-file",
+      r.file
+        ? fileName(r.absPath) + (r.bytes ? " · " + humanBytes(r.bytes) : "")
+        : I18n.t("（还没有内容）"),
+    ),
+  );
+  el.appendChild(assetPvBody(r, a));
+  const foot = assetEl("div", "asset-pv-foot");
+  const op = assetBtn(
+    I18n.t("打开原文件"),
+    null,
+    I18n.t("用本机默认程序打开这条内容的实体文件"),
+  );
+  op.onclick = (ev) => {
+    ev.stopPropagation();
+    if (r.absPath && window.api.shellOpenPath) window.api.shellOpenPath(r.absPath);
+    assetPvClose();
+  };
+  const rv = assetBtn(
+    I18n.t("在文件夹中显示"),
+    null,
+    I18n.t("在资源管理器中定位这条内容的实体文件"),
+  );
+  rv.onclick = (ev) => {
+    ev.stopPropagation();
+    if (r.absPath && window.api.shellShowItem) window.api.shellShowItem(r.absPath);
+    assetPvClose();
+  };
+  foot.append(op, rv);
+  el.appendChild(foot);
+  /* 摆位：优先贴在行的**右侧**（不盖住下面几条内容），右边放不下就退到行的下方；
+     下面也放不下就翻到行的上方。宽高都夹在窗口内，超长内容由浮层自己滚。 */
+  const b = row.getBoundingClientRect();
+  const w = Math.min(520, Math.max(280, Math.round(window.innerWidth * 0.36)));
+  el.style.width = w + "px";
+  const h = Math.min(
+    el.getBoundingClientRect().height || 340,
+    Math.round(window.innerHeight * 0.72),
+  );
+  const gap = 10;
+  const pad = 8;
+  let top = Math.min(
+    Math.max(pad, Math.round(b.top)),
+    Math.max(pad, window.innerHeight - h - pad),
+  );
+  let left = Math.round(b.right + gap);
+  if (left + w > window.innerWidth - pad) {
+    /* 右边放不下：退回行的下方（下方也放不下就翻到上方） */
+    left = Math.min(
+      Math.max(pad, Math.round(b.left + 24)),
+      Math.max(pad, window.innerWidth - w - pad),
+    );
+    top = Math.round(b.bottom + 6);
+    if (top + h > window.innerHeight - pad)
+      top = Math.max(pad, Math.round(b.top - h - 6));
+  }
+  el.style.left = left + "px";
+  el.style.top = top + "px";
+  /* Esc 只收这一层（capture ＋ stopPropagation：不惊动底下的素材库 / 设置框）；
+     滚动 / 缩放让行离开原位则直接收掉（重新悬停即再开）。 */
+  const keyFn = (ev) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    assetPvClose();
+  };
+  const moveFn = () => assetPvClose();
+  _assetPvKeyFn = keyFn;
+  _assetPvMoveFn = moveFn;
+  document.addEventListener("keydown", keyFn, true);
+  window.addEventListener("scroll", moveFn, true);
+  window.addEventListener("resize", moveFn);
+}
+
+/* 鼠标离开行 / 浮层：稍等一帧再收（从行移到浮层、或从浮层移回行时不闪） */
+function assetPvCancelAndClose() {
+  if (_assetPv.timer) clearTimeout(_assetPv.timer);
+  _assetPv.timer = setTimeout(() => {
+    _assetPv.timer = 0;
+    if (_assetPv.el && _assetPv.el.matches(":hover")) return;
+    assetPvClose();
+  }, 120);
+}
+
+/* 行上挂的两件事：鼠标停一会儿浮出预览；鼠标离开即收（Esc / 滚动另有出口） */
+function assetPvWireRow(row, r, ctx) {
+  row.dataset.iid = String(r.id || "");
+  row._assetPvAsset = (ctx && ctx.asset) || null;
+  row.addEventListener("mouseenter", () => assetPvShowFor(row));
+  row.addEventListener("mouseleave", assetPvCancelAndClose);
+}
+
 /** 条目行：素材设置框与素材库右栏详情共用（ctx.asset ＝ 本次编辑的素材；
     ctx.holder ＝ 该列表的拖拽状态宿主；ctx.repaint ＝ 拖拽作废后重画该列表）。
     不传 ctx ＝ 素材设置框（编辑目标回落 ASSET_SET 的素材）。 */
@@ -3182,6 +3719,17 @@ function assetSetRow(r, i, n, ctx) {
     "\n" +
     I18n.t("连入只做检查，点端子上的「覆盖」并确认才写入素材库，输出即读出该条内容");
   row.appendChild(idx);
+  /* 行内预览：文本＝正文首行摘要 · 图像＝40px 缩略图（惰性加载）· 音频＝小播放键。
+     鼠标停在这一行上再浮出放大图 / 全文 / 波形试听（见本文件顶部「条目行的行内预览」）。
+     只读展示：不改库，也不占行内的编辑态。 */
+  if (r.type === "text") row.appendChild(assetPvTextCell(ctx.holder || ASSET_SET, r));
+  else if (r.type === "image") row.appendChild(assetPvThumb(ctx.holder || ASSET_SET, r));
+  else if (r.type === "audio") row.appendChild(assetPvAudioCell(ctx.holder || ASSET_SET, r));
+  assetPvWireRow(row, r, ctx);
+  /* 行内那块小样（若有）记一下归属行：音频播放键要按「这一行」开浮层 */
+  for (const cell of row.children)
+    if (/^asset-pv-(thumb|text|audio)$/.test(String(cell.className || "")))
+      cell._assetPvRow = row;
   const file = document.createElement("button");
   file.type = "button";
   file.className =

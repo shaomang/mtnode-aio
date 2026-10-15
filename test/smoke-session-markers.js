@@ -421,7 +421,7 @@ ok(
 );
 has(ASSIST, 'if (seg.k === "ctx") {', "[5] 历史分段渲染接上 ctx（并给它挂上这一项自己的时刻栏）");
 ok(
-  /if \(seg\.k === "ctx"\) \{[\s\S]{0,200}?dshSegTimeAttach\(c, seg\.at, 0, msgAt\);/.test(ASSIST),
+  /if \(seg\.k === "ctx"\) \{[\s\S]{0,200}?dshSegTimeAttach\(c, seg\.at, 0, msgAt, tok\);/.test(ASSIST),
   "[5] ctx 行也挂自己的时刻栏（历史路径）",
 );
 ok(
@@ -495,23 +495,26 @@ ok(
 );
 /* 逐项时刻（本轮需求 · 用户口径「时间应当在每一项，而不是总项」）：
    每一项左侧一条恒显时刻（工具项带耗时），来源只有两处真实记录（段自己的 at / 工具 at·doneAt）。 */
-has(ASSIST, "function dshSegTimeEl(own, doneAt, msgAt)", "[6] 逐项时刻栏渲染器在位");
+has(ASSIST, "function dshSegTimeEl(own, doneAt, msgAt, tok)", "[6] 逐项时刻栏渲染器在位（第 5 参 = 该步 token，可为空）");
 has(ASSIST, "function dshSegDurText(at, doneAt)", "[6] 工具项的耗时格式化在位");
-has(ASSIST, "function dshSegTimeAttach(host, own, doneAt, msgAt)", "[6] 时刻栏挂载口径在位");
+has(ASSIST, "function dshSegTimeAttach(host, own, doneAt, msgAt, tok)", "[6] 时刻栏挂载口径在位");
 has(ASSIST, "function dshSegSetStreamText(el, txt)", "[6] 流式正文就地更新时不冲掉时刻栏");
+has(ASSIST, "function dshSegTokEl(tok)", "[6] 时刻栏里的 token 行渲染器在位（本次需求）");
+has(ASSIST, "function dshSegTokTitle(tok)", "[6] token 行的完整明细走 tooltip（本次需求）");
 ok(
   /* 历史 + 运行中两条渲染路径的每一项都挂：思考 / 正文 / 工具 / 上下文注入
      （本次需求后历史思考段的时刻栏宿主是 .dsh-seg-think-wrap 那一层 row，
-       运行中依然是 box —— 两处都必须挂着，思考不能因为换成一行摘要条就丢了时刻）。 */
-  /dshSegTimeAttach\(row, seg\.at, 0, msgAt\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(box, seg\.at, 0, 0\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(d, seg\.at, 0, msgAt\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(wrap, t && t\.at, t && t\.doneAt, msgAt\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(c, seg\.at, 0, msgAt\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(d, seg\.at, 0, 0\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(wrap, t\.at \|\| seg\.at, t\.doneAt, 0\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(c, seg\.at, 0, 0\)/.test(ASSIST),
-  "[6] 历史与运行中两条路径的每一项（思考 / 正文 / 工具 / 注入）都挂自己的时刻栏",
+       运行中依然是 box —— 两处都必须挂着，思考不能因为换成一行摘要条就丢了时刻；
+       第 5 参 tok = 该步 token，两条路径都要传下去，否则 token 行只在一条路径上出现）。 */
+  /dshSegTimeAttach\(row, seg\.at, 0, msgAt, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(box, seg\.at, 0, 0, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(d, seg\.at, 0, msgAt, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(wrap, t && t\.at, t && t\.doneAt, msgAt, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(c, seg\.at, 0, msgAt, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(d, seg\.at, 0, 0, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(wrap, t\.at \|\| seg\.at, t\.doneAt, 0, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(c, seg\.at, 0, 0, tok\)/.test(ASSIST),
+  "[6] 历史与运行中两条路径的每一项（思考 / 正文 / 工具 / 注入）都挂自己的时刻栏 + 该步 token",
 );
 ok(
   !/dshChatMetaEl|dshChatTickText/.test(ASSIST) && DSH_CSS.indexOf(".dsh-chat-meta") < 0,
@@ -592,8 +595,8 @@ ok(
   "[6] 不再有「时刻栏宿主兼皮肤」的写法（青轨 / 青底不会从时刻栏左边起画、把时刻裹进去）",
 );
 ok(
-  /dshSegTimeAttach\(wrap, t && t\.at, t && t\.doneAt, msgAt\)/.test(ASSIST) &&
-    /dshSegTimeAttach\(wrap, t\.at \|\| seg\.at, t\.doneAt, 0\)/.test(ASSIST) &&
+  /dshSegTimeAttach\(wrap, t && t\.at, t && t\.doneAt, msgAt, tok\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(wrap, t\.at \|\| seg\.at, t\.doneAt, 0, tok\)/.test(ASSIST) &&
     /const wrap = document\.createElement\("div"\);\s*\n\s*wrap\.className = "dsh-seg dsh-seg-tool-wrap";/.test(
       ASSIST,
     ),
@@ -672,7 +675,13 @@ ok(
   };
   vm.createContext(sb);
   vm.runInContext(
-    extract(ASSIST, ["dshSegDurText", "dshSegTimeEl", "dshSegTimeAttach"]),
+    extract(ASSIST, [
+      "dshSegDurText",
+      "dshSegTokTitle",
+      "dshSegTokEl",
+      "dshSegTimeEl",
+      "dshSegTimeAttach",
+    ]),
     sb,
     { filename: "segtime.js" },
   );
@@ -717,6 +726,233 @@ ok(
   ok(
     !!host2 && host2.children.length === 0 && !host2.classList.contains("dsh-seg-has-time"),
     "[6] 拿不到时刻的项一字不动（不留空栏、不加类）",
+  );
+}
+/* ── [6.5] 每步 token：取数（老轮次回填）+ 时刻下方那一行（真函数跑）────────────────
+   本次需求：「会话 · 对话」里每一步（= 一次模型调用）在**该步最后一项**的左侧时刻下方
+   写一行 token 出入，并且**不再有时效性 / 条数限制** —— 明细表要把落盘的 m.usageSteps
+   一并读回（过去没人读回它：切会话 / 重启后老轮次的 token 全消失，用户看到的就是
+   「只显示最新的几十条」）。这里把取数与那一行 DOM 都真跑一遍。 */
+{
+  const mkTokEl = (tag) => {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag || "div").toUpperCase(),
+      children: [],
+      parentNode: null,
+      title: "",
+      textContent: "",
+      dataset: {},
+      _cls: new Set(),
+    };
+    /* className 与 classList 同源（与真 DOM 一致）：模块写的是 className = "dsh-tok-in"，
+       紧跟着的断言读的是 classList.contains —— 两处必须是同一份状态，否则断的是桩的毛病。 */
+    Object.defineProperty(el, "className", {
+      get: () => Array.from(el._cls).join(" "),
+      set: (v) => {
+        el._cls = new Set(String(v || "").split(/\s+/).filter(Boolean));
+      },
+    });
+    el.classList = {
+      add: (...c) => c.forEach((x) => el._cls.add(x)),
+      remove: (...c) => c.forEach((x) => el._cls.delete(x)),
+      contains: (c) => el._cls.has(c),
+    };
+    el.appendChild = (c) => {
+      if (c.parentNode) c.parentNode.removeChild(c);
+      c.parentNode = el;
+      el.children.push(c);
+      return c;
+    };
+    el.removeChild = (c) => {
+      const i = el.children.indexOf(c);
+      if (i >= 0) el.children.splice(i, 1);
+      if (c) c.parentNode = null;
+      return c;
+    };
+    el.insertBefore = (c, ref) => {
+      if (c.parentNode) c.parentNode.removeChild(c);
+      c.parentNode = el;
+      const i = ref ? el.children.indexOf(ref) : -1;
+      if (i < 0) el.children.push(c);
+      else el.children.splice(i, 0, c);
+      return c;
+    };
+    el.querySelector = (sel) => {
+      const want = String(sel || "").replace(/^\./, "");
+      const walk = (n) => {
+        for (const c of n.children) {
+          if (c.classList && c.classList.contains(want)) return c;
+          const r = walk(c);
+          if (r) return r;
+        }
+        return null;
+      };
+      return walk(el);
+    };
+    return el;
+  };
+  const sb = {
+    console,
+    S: {},
+    I18n: { t: (s, p) => String(s).replace(/\{(\w+)\}/g, (m, k) => (p && p[k] != null ? String(p[k]) : m)) },
+    document: { createElement: (t) => mkTokEl(t) },
+    formatMsgTimeSec: (ts) => "T" + (Number(ts) || 0),
+    formatMsgStamp: (ts) => "STAMP" + (Number(ts) || 0),
+  };
+  vm.createContext(sb);
+  vm.runInContext(
+    extract(ASSIST, [
+      "dshTokShort",
+      "dshUsageRoundOfMsg",
+      "dshUsageStepsStampRound",
+      "dshUsageDetailsOf",
+      "dshTokStepSigOf",
+      "dshTokStepKeyOf",
+      "dshTokStepMapOf",
+      "dshSegRoundNum",
+      "dshStepTokAt",
+      "dshTokOfSegs",
+      "dshSegTokTitle",
+      "dshSegTokEl",
+      "dshSegDurText",
+      "dshSegTimeEl",
+      "dshSegTimeAttach",
+    ]),
+    sb,
+    { filename: "tokstep.js" },
+  );
+  const Q3 = (code, vars) => {
+    if (vars) Object.assign(sb, vars);
+    return vm.runInContext(code, sb);
+  };
+  /* 会话：第 2 轮的明细分两处 —— 一条助手消息上落盘的老形态（**没带轮号**），
+     一条还在内存里的本轮明细。两处合成一张表，老那条按消息的段轮号补号。 */
+  const st = {
+    id: "as1",
+    messages: [
+      { role: "user", content: "hi", at: 1 },
+      {
+        role: "assistant",
+        content: "a",
+        segments: [{ k: "say", step: 1, round: 2, text: "x" }],
+        usageSteps: [
+          {
+            turn: 1,
+            step: 1,
+            calls: 1,
+            input: 10,
+            output: 1,
+            cacheRead: 5,
+            cacheWrite: 0,
+            reasoning: 0,
+            provider: "p",
+            model: "m",
+          },
+        ],
+      },
+    ],
+    _usageSteps: [
+      {
+        round: 2,
+        turn: 1,
+        step: 2,
+        calls: 2,
+        input: 100,
+        output: 20,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 3,
+        provider: "p",
+        model: "m",
+      },
+    ],
+  };
+  ok(
+    Q3("dshUsageDetailsOf(__st).length", { __st: st }) === 2,
+    "[6.5] 明细表 = 落盘的 m.usageSteps + 本轮内存那份（**读回落盘那份**：老轮次 token 不再消失）",
+  );
+  ok(
+    Q3("dshUsageDetailsOf(__st)[0].round", { __st: st }) === 2,
+    "[6.5] 老形态明细（没带轮号）按所属消息的段轮号补号 —— 不补这一位历史轮次永远取不到数",
+  );
+  const tok1 = Q3("dshTokStepMapOf(__st).get('2:1')", { __st: st });
+  const tok2 = Q3("dshTokStepMapOf(__st).get('2:2')", { __st: st });
+  ok(
+    tok1 && tok1.in === 15 && tok1.out === 1 && tok1.cacheRead === 5 && tok1.calls === 1,
+    "[6.5] 计费输入 = 非缓存输入 + 缓存读 + 缓存写（与轨迹同一口径）：10+5+0 = " +
+      (tok1 ? tok1.in : "无"),
+  );
+  ok(
+    tok2 && tok2.in === 100 && tok2.out === 20 && tok2.calls === 2 && tok2.reasoning === 3,
+    "[6.5] 同一步多条明细相加、calls 记条数（界面只写一行合计）",
+  );
+  /* 一步只写一次：落在该步**最后一段**（与轨迹同粒度） */
+  const segs = [
+    { k: "think", step: 1, round: 2, at: 1 },
+    { k: "tool", step: 1, round: 2, callId: "c1", at: 2 },
+    { k: "say", step: 3, round: 2, at: 3 },
+  ];
+  ok(
+    Q3("dshStepTokAt(__segs, 0, 0, __map) === null", { __segs: segs, __map: Q3("dshTokStepMapOf(__st)", { __st: st }) }),
+    "[6.5] 同一步的**非最后一段**不重复写 token（返回 null，不刷第二遍数字）",
+  );
+  ok(
+    !!Q3("dshStepTokAt(__segs, 1, 0, __map)", { __segs: segs }),
+    "[6.5] 该步最后一段（这里 = 工具项）拿到 token —— token 就写在这一项下方",
+  );
+  ok(
+    Q3("dshStepTokAt(__segs, 2, 0, __map) === null", { __segs: segs }),
+    "[6.5] 这一步**没有明细**（未记到）→ 什么都不写（不拿 0 冒充）",
+  );
+  /* 那一行 DOM：两段带色 span + 完整明细进 tooltip；两个数都是 0 就整行不写 */
+  const tk = Q3("__t = dshSegTokEl(dshTokStepMapOf(__st).get('2:2')); __t", { __st: st });
+  ok(
+    !!tk &&
+      tk.children.length === 2 &&
+      tk.children[0].textContent === "↑100" &&
+      tk.children[1].textContent === "↓20" &&
+      tk.children[0]._cls.has("dsh-tok-in") &&
+      tk.children[1]._cls.has("dsh-tok-out"),
+    "[6.5] 行内只有「↑计费输入 ↓输出」两段（与轨迹同一对色类）：实得 " +
+      (tk ? tk.children.map((c) => c.textContent).join(" ") : "无"),
+  );
+  ok(
+    !!tk && /缓存读 0/.test(tk.title) && /输出 20/.test(tk.title) && /推理 3/.test(tk.title) &&
+      /本步 2 次调用/.test(tk.title) && /p · m/.test(tk.title),
+    "[6.5] 完整明细进 tooltip（缓存读 / 写、输出、推理、N 次调用、服务商 · 模型）：" +
+      (tk ? tk.title : "无"),
+  );
+  const tkOld = Q3("__t2 = dshSegTokEl(dshTokStepMapOf(__st).get('2:1')); __t2", { __st: st });
+  ok(
+    !!tkOld && /缓存读 5/.test(tkOld.title) && !/本步 \d+ 次调用/.test(tkOld.title),
+    "[6.5] 单次调用的那一步不写「N 次调用」，缓存读照实写进 tooltip：" + (tkOld ? tkOld.title : "无"),
+  );
+  ok(
+    Q3("dshSegTokEl({ in: 0, out: 0, calls: 1 })") === null,
+    "[6.5] 两个数都是 0 → 整行不写（不拿 0 冒充「这一步没花钱」）",
+  );
+  ok(
+    Q3("dshTokShort(1234)") === "1.2k" && Q3("dshTokShort(999)") === "999" && Q3("dshTokShort(1234567)") === "1.23M",
+    "[6.5] 短数字口径与轨迹 fmtNum 同源（1.2k / 999 / 1.23M）",
+  );
+  const hostTok = Q3(
+    "__h = document.createElement('div'); dshSegTimeAttach(__h, 1000, 0, 0, dshTokStepMapOf(__st).get('2:2')); __h",
+    { __st: st },
+  );
+  ok(
+    !!hostTok &&
+      hostTok.classList.contains("dsh-seg-has-time") &&
+      hostTok.classList.contains("dsh-seg-has-tok") &&
+      !!hostTok.children[0].querySelector(".dsh-seg-tok"),
+    "[6.5] 挂上 token 的项同时落 .dsh-seg-has-tok（CSS 按它给最小高度兜底，绝不压下一项）",
+  );
+  const hostNoTok = Q3("__h2 = document.createElement('div'); dshSegTimeAttach(__h2, 1000, 0, 0, null); __h2");
+  ok(
+    !!hostNoTok &&
+      hostNoTok.classList.contains("dsh-seg-has-time") &&
+      !hostNoTok.classList.contains("dsh-seg-has-tok"),
+    "[6.5] 没有 token 的项照旧（不加 .dsh-seg-has-tok → 几何与改动前逐像素一致）",
   );
 }
 /* 页脚动作行：样式收了「最新一轮常显、历史轮 hover 才现」（上游 turn-tail 口径） */
@@ -1616,20 +1852,52 @@ console.log(
     "被裁掉的前置段先把对应工具从 pool 里认掉（否则会从尾部兜底 chips 又冒出来一次）",
   );
 
-  /* ==================== [5] 运行中那一轮同样封顶 ==================== */
-  console.log("\n[5] 运行中的一轮：段预算同样封顶，且流式就地更新的段序不错位");
+  /* ==================== [5] 运行中那一轮不再封顶（本次需求） ==================== */
+  console.log("\n[5] 运行中的一轮：段**不封顶**，重绘只补新增的尾段");
   ok(
-    /const off = Math\.max\(0, items\.length - AGENT_MAX_VISIBLE_ITEMS\);/.test(ASSIST),
-    "agentLiveSegsEl 只从最近 200 条起渲染（长任务跑到一半也不卡）",
+    ASSIST.indexOf("const off = Math.max(0, items.length - AGENT_MAX_VISIBLE_ITEMS);") < 0 &&
+      ASSIST.indexOf("dsh-live-cut") < 0,
+    "运行中的那一轮不再按 200 条起点截断（本次需求 · 用户口径「移除最大个数限制」）",
   );
   ok(
-    /for \(let i = off; i < items\.length; i\+\+\) \{/.test(ASSIST),
-    "循环用 items 的绝对序号（dataset.segIdx 与 agentLiveSegTail 的比对口径不错位）",
+    /for \(let i = start; i < items\.length; i\+\+\) \{/.test(ASSIST),
+    "循环从对账起点起（新增的尾段），索引仍是 items 的绝对序号（dataset.segIdx 不错位）",
   );
   ok(
-    ASSIST.indexOf('cut.className = "dsh-seg dsh-live-cut";') > 0 &&
-      ASSIST.indexOf('I18n.t("已折叠更早的运行条目：{n}", { n: off })') > 0,
-    "折叠时给一行说明（用户知道更早的运行条目去哪了）",
+    /row\._dshItemsRef === items && row\._dshRound === round && built\.length <= items\.length/.test(
+      ASSIST,
+    ) &&
+      /start = Math\.max\(0, built\.length - 1\);/.test(ASSIST),
+    "段 DOM 复用对账（同一份 items + 同一轮 + 段数不缩）且**尾段一律重画**（流式收口 / 工具转完成都靠它）",
+  );
+  ok(
+    /const toolOfSeg = \(sg\) =>/.test(ASSIST) &&
+      /if \(!rec \|\| rec\.result \|\| rec\.error\) continue;\s*\n\s*start = i;\s*\n\s*break;/.test(ASSIST),
+    "复用起点再往前退到「最早的还没回来的工具卡」（并行调用里先发的那个不能停在运行中）",
+  );
+  ok(
+    /const hook = row\._dshHookEl;/.test(ASSIST) &&
+      /if \(typeof hook\.removeAttribute === "function"\) hook\.removeAttribute\("id"\);/.test(ASSIST) &&
+      /if \(hook\.dataset\) delete hook\.dataset\.segIdx;/.test(ASSIST) &&
+      (ASSIST.match(/row\._dshHookEl = /g) || []).length >= 3,
+    "被复用的段一定不再是尾段 → 先摘掉上一帧挂在尾段上的 #agent-stream / #agent-think 与 segIdx（不留重复 id）",
+  );
+  ok(
+    /row\._dshSegEls = \[\];/.test(ASSIST) &&
+      /const segEls = row\._dshSegEls;/.test(ASSIST) &&
+      (ASSIST.match(/segEls\[i\] = /g) || []).length >= 6,
+    "每一段建好后登记进 row._dshSegEls（含空位），下次重绘按它精确对账",
+  );
+  ok(
+    /st\._liveBox = box;/.test(ASSIST) &&
+      /st\._liveBox && st\._liveBox\.nodeType === 1 \? st\._liveBox : document\.createElement\("div"\)/.test(
+        ASSIST,
+      ),
+    "段容器跨帧复用（整表重绘只把它摘下来再挂回去，已建好的段不重建）",
+  );
+  ok(
+    (ASSIST.match(/st\._liveBox = null;/g) || []).length >= 3,
+    "开轮 / 收尾 / 整轮重发三处都把 live 段缓存放开（不留旧 DOM）",
   );
   ok(
     !/dataset\.segIdx = String\(i \+ off\)/.test(ASSIST),
@@ -1639,11 +1907,7 @@ console.log(
   /* ==================== [6] i18n 与样式 ==================== */
   console.log("\n[6] i18n 中英成对 + 暗 / 亮两套样式");
   const I18n = require("../renderer/i18n.js");
-  const KEYS = [
-    "显示更早内容（已折叠 {n} 条）",
-    "每个会话最多同时渲染 200 条，点击展开更早的 200 条",
-    "已折叠更早的运行条目：{n}",
-  ];
+  const KEYS = ["显示更早内容（已折叠 {n} 条）", "每个会话最多同时渲染 200 条，点击展开更早的 200 条", "这一步的 token"];
   const I18N_SRC = read("renderer/i18n.js");
   I18n.setLocale("en");
   for (const k of KEYS) {
@@ -1655,12 +1919,24 @@ console.log(
   I18n.setLocale("zh");
   ok(I18n.t("显示更早内容（已折叠 {n} 条）", { n: 7 }).indexOf("显示更早内容") === 0, "中文口径就是「显示更早内容…」");
   ok(
-    /\.dsh-live-cut \{[^}]*color:/.test(read("renderer/css/dsh.css")),
-    "dsh.css 有 .dsh-live-cut 样式",
+    I18N_SRC.indexOf("已折叠更早的运行条目") < 0,
+    "「已折叠更早的运行条目」词条随封顶一并删掉（不留死词条）",
   );
   ok(
-    /body\.theme-light \.dsh-live-cut \{/.test(read("renderer/css/theme-light.css")),
-    "亮色主题也有对应规则（不继承暗色灰）",
+    /\.dsh-seg\.dsh-seg-has-time > \.dsh-seg-time > \.dsh-seg-tok \{/.test(read("renderer/css/dsh.css")),
+    "dsh.css 有 token 行样式（时刻栏内部的第二行小字）",
+  );
+  ok(
+    /\.dsh-seg\.dsh-seg-has-tok \{\s*\n\s*min-height: 24px;/.test(read("renderer/css/dsh.css")) &&
+      /\.dsh-seg\.dsh-seg-tool-wrap\.dsh-seg-has-tok \{\s*\n\s*min-height: 35px;/.test(
+        read("renderer/css/dsh.css"),
+      ),
+    "最小高度兜底只在带 token 的项上生效（通用 24px / 工具项 35px，真浏览器量出来的）",
+  );
+  ok(
+    read("renderer/css/dsh.css").indexOf("dsh-live-cut") < 0 &&
+      read("renderer/css/theme-light.css").indexOf("dsh-live-cut") < 0,
+    "折叠提示的样式连同暗 / 亮两套一并删净",
   );
   ok(
     /\.agent-load-earlier \{/.test(read("renderer/css/dsh.css")),

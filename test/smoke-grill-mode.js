@@ -14,7 +14,9 @@
  *   [4] 助手栏也要：另起一枚全局位（S.assistGrill，随配置落盘、缺省开）+ 助手栏自己的
  *       「模式」菜单（同一套构件）+ 头部「拷问需求」状态小字；
  *   [5] 与会话窗口完全一致的纯净模式（S.assistPure → 下发 pure 位、system prompt 置空）；
- *   [6] 回显：会话头部与助手栏都标一块「拷问需求」状态。
+ *   [6] 回显：**两处「拷问需求」标记已撤**（本次开发需求：会话输入区那枚 chip 原位换成
+ *       「压缩上下文」，助手栏那枚小字一并撤）—— 状态回显改由「模式」入口变色 +
+ *       tooltip 逐项「（开）/（关）」承担；压缩那两枚 chip 见 smoke-agent-compact-manual.js。
  * 纯静态 + 真跑 grillTurnOn（vm 抠原文）：不拉浏览器、不碰 Electron。 */
 const fs = require("fs");
 const path = require("path");
@@ -112,7 +114,11 @@ has(ASSIST, "function assistModeEntries() {", "助手栏行集单独一支（复
 has(ASSIST, 'return [agentModeEntryOf("assistGrill"), agentModeEntryOf("assistPure")];', "助手栏菜单 = 先拷问需求 + 纯净模式");
 has(HTML, 'id="assistModeTrigger"', "助手栏有「模式」入口");
 has(HTML, 'id="assistModeMenu"', "助手栏有模式菜单宿主");
-has(HTML, 'id="assistGrillTag"', "助手栏有「拷问需求」状态小字");
+/* 本次开发需求：助手栏那枚「拷问需求」小字已撤（会话输入区那枚同族 chip 也一并撤了），
+   开关本身仍在模式菜单里 —— 这两处标记与其样式都不许再冒出来（钉住，别被加回来）。 */
+no(HTML, 'id="assistGrillTag"', "助手栏那枚「拷问需求」小字已撤掉（本次需求）");
+no(ASSIST, "function assistGrillTagPaint(", "它的画法也一并删了（不留死代码）");
+no(CSS_ASSIST, ".assist-grill-tag", "助手栏那枚小字的样式已删（不留死样式）");
 has(
   BOOT,
   'buildAgentModeMenu("assistModeMenu", assistModeEntries, paintAssistModeChip);',
@@ -133,15 +139,18 @@ has(ASSIST, "const systemPrompt = assistPure\n    ? \"\"", "纯净模式 → sys
 has(ASSIST, "      pure: assistPure,", "下发网关的 pure 位同源（同一轮两个消费点）");
 has(ASSIST, "          pure: assistPure,", "工具可见集（hideTools）也读同一位");
 
-/* ── [6] 回显 ─────────────────────────────────────────────────────────────── */
-console.log("\n[6] 回显（会话头部 + 助手栏）");
-has(HTML, 'id="agentGrillTag"', "会话头部有「拷问需求」chip");
-has(ASSIST, "function paintGrillTag() {", "chip 由它回显（开 = 显示 / 关 = hidden）");
-has(ASSIST, "function assistGrillTagPaint(on) {", "助手栏那块小字由它回显");
-has(ASSIST, "const grill = S.assistGrill !== false;\n  assistGrillTagPaint(grill);", "助手栏每次刷 scope 小字时一并刷它");
-has(CSS_DSH, ".agent-chip.agent-chip-grill", "会话侧 chip 有专属样式（硬 chip，不被挤掉）");
+/* ── [6] 回显：两枚标记已撤（本次开发需求），状态改由「模式」入口表达 ────────── */
+console.log("\n[6] 回显（会话输入区 / 助手栏那两枚标记已撤；开关仍在模式菜单）");
+no(HTML, 'id="agentGrillTag"', "会话输入区那枚「拷问需求」chip 已撤（本次需求）");
+no(ASSIST, "function paintGrillTag(", "它的画法也一并删了（不留死代码）");
+no(CSS_DSH, ".agent-chip.agent-chip-grill", "它的样式已删（不留死样式）");
+has(ASSIST, "function paintAgentModeChip()", "状态回显仍在：模式 chip 变色 + tooltip 逐项（开）/（关）");
+has(ASSIST, "I18n.t(e.on ? \"（开）\" : \"（关）\")", "tooltip 里逐项写「（开）/（关）」（开关态一眼看得见）");
+/* 原位换成手动压缩的两枚 chip（详见 test/smoke-agent-compact-manual.js） */
+has(HTML, 'id="agentCompactBtn"', "原位换成「压缩上下文」按钮");
+has(HTML, 'id="agentCompactViewBtn"', "旁边那枚「查看压缩摘要」（压过才出现）");
+has(CSS_DSH, ".agent-chip.agent-chip-compact", "压缩按钮有专属样式（硬 chip，不被挤掉）");
 has(CSS_ASSIST, ".assist-chip-mode", "助手栏入口有样式");
-has(CSS_ASSIST, ".assist-grill-tag", "助手栏状态小字有样式");
 
 /* ── [7] 中英词条成对 ─────────────────────────────────────────────────────── */
 console.log("\n[7] i18n（中英成对）");

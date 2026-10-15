@@ -735,10 +735,10 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       "显隐唯一口径未被破坏（.ba-open + hidden）");
     ok(/export function registerViewSink/.test(HOST) && !/process\.env\.MTNODE_VIEW/.test(HOST), "实况流没有额外的环境开关（只跟面板 / 浏览器状态走）");
     ok(/BA\.liveStart = async function/.test(APP_BROWSER) && /BA\.liveStop = async function/.test(APP_BROWSER), "渲染层有开 / 停流");
-    ok(/BA\.liveSync = function[\s\S]{0,600}BA\.isOpen\(\)[\s\S]{0,200}BA\.running[\s\S]{0,120}paused/.test(APP_BROWSER),
+    ok(/BA\.liveSync = function[\s\S]{0,1200}BA\.isOpen\(\)[\s\S]{0,400}BA\.running[\s\S]{0,200}paused/.test(APP_BROWSER),
       "开流四条件：面板开着 + 会话视图 + 浏览器在跑 + 没暂停");
     /* 本轮修：右栏「被调用即出现」——不自动开的话实况流永远不连，浏览器只能是眼前的独立窗口 */
-    ok(/BA\.autoOpenForUse = async function[\s\S]{0,900}BA\.userClosed[\s\S]{0,300}display === "none"[\s\S]{0,700}BA\.running/.test(APP_BROWSER)
+    ok(/BA\.autoOpenForUse = async function[\s\S]{0,1600}BA\.userClosed[\s\S]{0,600}display === "none"[\s\S]{0,1200}BA\.running/.test(APP_BROWSER)
       && /BA\.userClosed = !on/.test(APP_BROWSER),
       "会话一用浏览器就自动开右栏（刹车＝用户亲手关过 / 非会话视图 / 浏览器没在跑）");
     const autoKinds = (APP_BROWSER.match(/const AUTO_OPEN_KINDS = \{[\s\S]*?\};/) || [""])[0];
@@ -1031,14 +1031,26 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 340, height: 620 }),
     };
   }
-
+  /* 实况画布的 2D 上下文桩（本轮修复）：空流看门狗的判据是「一帧都没画上画布」
+     （BA.live.lastPaintAt），而 lastPaintAt 只在 liveDraw 真画成之后才置位 ——
+     getContext 回 null 的话 liveDraw 早退，真收到了帧也会被判成空流。
+     所以画布给个记账用的上下文，让「画帧」这条链在沙箱里也真跑通。 */
+  function mkCanvasCtx(draws) {
+    return {
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: "",
+      clearRect() {},
+      drawImage(img) { draws.n += 1; draws.last = img; },
+    };
+  }
   const IDS = [
     /* 本次需求：真窗口的去程与回程合成一枚**常态**小键（#baLiveWin）—— 求助卡与询问卡
-       同型之后卡上不再有窗口按钮，这里就是真窗口的唯一入口（旧 #baLiveBack 只管回程）。 */
+       同型之后卡上不再有窗口按钮，这里就是真窗口的唯一入口（旧 #baLiveBack 只管回程）。
+       本轮修复：实况区另加一枚常态小键 #baLiveRetry（「重新连接」）。 */
     "agentPane", "agentBrowserChip", "baPanel", "baResize", "baClose",
     "baFilter", "baAll", "baClear", "baList",
     "baCount", "baStatus", "baLiveCanvas", "baLivePause", "baLiveWin", "baLiveMode",
-    "baLiveNote", "baLiveMask", "baLive",
+    "baLiveNote", "baLiveMask", "baLive", "baLiveRetry",
   ];
 
   function makeApp(opts) {
@@ -1046,21 +1058,50 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     const els = {};
     for (const id of IDS) els[id] = mkEl(id);
     els.baPanel.hidden = true;
+    /* 实况画布：给个真能「画帧」的上下文（见 mkCanvasCtx 的注释） */
+    const draws = { n: 0, last: null };
+    els.baLiveCanvas.getContext = () => mkCanvasCtx(draws);
 
     const store = Object.assign({}, o.storage || {});
     const calls = { viewStart: 0, viewStop: 0, status: 0, viewInput: 0 };
+    let frameSeq = 0;
     const state = { running: !!o.running };
+    /* 本轮修复：网关 status 回执里 driver 是 dsh 的 session-…（claimDriver 的锁键），
+       另有一格 driverHost = 宿主会话号（gateway 的 status() 补的）。两格都按真口径桩出来 ——
+       少了 driverHost 这条用例就测不出「裸比 driver 会把本会话判成别人」这个坑。
+       默认：driverHost 跟着**当前会话**走（这批用例测的是别的行为，不该被驱动者闸拦住）；
+       用例可用 o.driver / o.driverHost 显式改成「别人在驱动」。 */
+    state.driver = o.driver === undefined ? "session-real-1" : String(o.driver);
+    state.driverHost = o.driverHost === undefined ? null : String(o.driverHost);
+    /* viewFrames=false：桩一个「网关回 on:true、可这一拍一帧都不下来」的空流（本轮修复的核心场景） */
+    const viewFrames = o.viewFrames !== false;
+    state.viewing = String(o.viewing || "");
 
     const api = {
       dshBrowser: async (p) => {
         const action = p && p.action;
+        /* driverHost 缺省 = 当前会话（见上面那段注释）；用例显式给过就按用例的来 */
+        const host = state.driverHost === null ? String(win.BrowserAct && win.BrowserAct.sessionId || "") : state.driverHost;
         if (action === "status") {
           calls.status++;
-          return { ok: true, running: state.running, exe: "msedge.exe", port: 9222 };
+          return { ok: true, running: state.running, exe: "msedge.exe", port: 9222, driver: state.driver, driverHost: host };
         }
-        return { ok: true, running: state.running };
+        return { ok: true, running: state.running, driver: state.driver, driverHost: host };
       },
-      dshBrowserViewStart: async () => { calls.viewStart++; return { ok: true, on: true, mode: "docked" }; },
+      /* 本轮修复：真网关「已经在流上且不陈旧」时 start 是空转（不补帧），只有重生一条才给帧。
+         桩里按 o.viewFrames 分两种：true = 正常开流（渲染层会收到一帧）；false = 空流（只有 on:true）。
+         序号像真网关那样**跨流单调**（browser-host 的 viewSeqCounter）：渲染层按
+         `seq <= 上次收到的` 丢乱序帧，桩里若拿 viewStart 次数当序号，重开一条时序号会回退、
+         那一帧被当旧帧丢掉（真机上就是「重生后前几帧不画」）。 */
+      dshBrowserViewStart: async () => {
+        calls.viewStart++;
+        const res = { ok: true, on: true, mode: "docked" };
+        if (!viewFrames) return res;
+        frameSeq += 1;
+        const seq = frameSeq;
+        setTimeout(() => { try { win.__frameCb && win.__frameCb({ seq, w: 750, h: 485, dpr: 1, frame: "/9j/4AAQ" + "A".repeat(600) }); } catch (_) {} }, 0);
+        return res;
+      },
       dshBrowserViewStop: async () => { calls.viewStop++; return { ok: true, on: false }; },
       dshBrowserViewInput: async () => { calls.viewInput++; return { ok: true }; },
       /* viewMode 像真网关一样「回声」请求的形态（真网关回 {ok, mode, parked, ...}）：
@@ -1077,24 +1118,54 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       activityPush: async () => ({ ok: true }),
       activityClear: async () => ({ ok: true }),
       dshOnActivity: () => () => {},
-      onBrowserFrame: () => () => {},
+      /* 帧通路：渲染层 boot 时把自己那一个回调登记进来（真壳同口径），
+         上面的 dshBrowserViewStart 桩据此把「一帧」投回去（viewFrames=true 时）。 */
+      onBrowserFrame: (cb) => { win.__frameCb = cb; return () => {}; },
       dshSteer: async () => ({ ok: true }),
     };
 
     const win = { api, I18n: { t: (k) => k }, toast: () => {} };
     const observers = [];
+    /* 可选：可控时钟（o.clock）。本轮修复给 app-browser.js 加了「空流看门狗」——
+       真壳里它按 1.5s 到点，沙箱里若也用真定时器，用例就变成「跟它赛跑」（毫秒级抖动即翻车）。
+       给了 clock 时把沙箱的 setTimeout 收成可手动触发的队列（fireTimers），
+       于是「到点没到点」由用例说了算。 */
+    const pendingTimers = new Map();
+    let timerSeq = 0;
+    const sbSetTimeout = o.clock
+      ? (cb, ms) => { const id = ++timerSeq; pendingTimers.set(id, { cb, ms: Number(ms) || 0 }); return id; }
+      : setTimeout;
+    const sbClearTimeout = o.clock
+      ? (id) => { pendingTimers.delete(id); }
+      : clearTimeout;
+    const fireTimers = (minMs) => {
+      const floor = Number(minMs) || 0;
+      const due = [...pendingTimers.entries()].filter(([, t]) => t.ms >= floor);
+      for (const [id, t] of due) {
+        pendingTimers.delete(id);
+        try { t.cb(); } catch (_) {}
+      }
+      return due.length;
+    };
     const sb = {
       console,
-      setTimeout,
-      clearTimeout,
+      setTimeout: sbSetTimeout,
+      clearTimeout: sbClearTimeout,
       localStorage: {
         getItem: (k) => (k in store ? store[k] : null),
         setItem: (k, v) => { store[k] = String(v); },
         removeItem: (k) => { delete store[k]; },
       },
       MutationObserver: class { constructor(cb) { this.cb = cb; observers.push(this); } observe() {} },
-      Image: class { },
-      requestAnimationFrame: (cb) => setTimeout(cb, 0),
+      /* Image 桩：src 一设就「解码完成」并回调 onload（真壳同口径）。
+         本轮修复后「一帧都没画上画布」是空流看门狗的判据（BA.live.lastPaintAt），
+         桩里不给 onload，liveDraw 就永远不跑、每个用例都会在 1.5s 后被判成空流。 */
+      Image: class {
+        constructor() { this.naturalWidth = 750; this.naturalHeight = 485; this.onload = null; this.onerror = null; }
+        set src(v) { this._src = v; const self = this; sbSetTimeout(() => { try { self.onload && self.onload(); } catch (_) {} }, 0); }
+        get src() { return this._src; }
+      },
+      requestAnimationFrame: (cb) => sbSetTimeout(cb, 0),
       document: {
         readyState: "complete",
         addEventListener() {},
@@ -1118,7 +1189,7 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     vm.runInContext(SRC, sb, { filename: "app-browser.js" });
     const BA = win.BrowserAct;
     const act = (kind, text) => { win.browserActivityOnEvent({ kind, text: text || "x" }); };
-    return { BA, els, store, calls, state, act, pane: els.agentPane };
+    return { BA, els, store, calls, state, act, pane: els.agentPane, draws, fireTimers: o.clock ? fireTimers : null, pending: pendingTimers };
   }
 
   (async () => {
@@ -1387,7 +1458,12 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
       await tick(); await tick();
       app2.BA.setSession("as_me");
       await tick(); await tick();
-      ok(app2.BA.isOpen() === false, "起点：右栏收着");
+      /* 起点：右栏本来是收着的。启动那一拍（sessionId 还空着）可能已经把它带出来过一次 ——
+         本轮修复的「driver 错号」口径下，空会话不再被驱动者闸拦住（宁可宽松也不扣画面）。
+         这里显式收起一次，把它压回「用户亲手关过」那一位，再测焦点不在时的静默行为。 */
+      if (app2.BA.isOpen()) app2.BA.setOpen(false);
+      await tick(); await tick();
+      ok(app2.BA.isOpen() === false, "起点：右栏收着（且算作「用户亲手关过」，自动开栏的刹车之一）");
       app2.act("navigate", "打开 https://example.com");
       await tick(); await tick(); await tick();
       ok(app2.BA.isOpen() === false && app2.els.baPanel.hidden === true,
@@ -1405,6 +1481,136 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
         "静默连流只开流，不改面板显隐、不递归触发自动开栏");
       ok(/BA\.viewing = function/.test(SRC) && /agentViewHas/.test(SRC),
         "「焦点在不在这条会话」的唯一判据收口到 agentViewHas");
+    }
+
+    /* ── [13] 驱动者 id 错号（本轮修复）：网关给的是 dsh 的 session-…，不许拿它裸比宿主会话号 ── */
+    console.log("\n[13] 驱动者 id：dsh 的 session-… 不再把本会话自己的浏览器判成别人的");
+    {
+      ok(/driverHost/.test(SRC),
+        "渲染层认下 driverHost（网关 status 回执里翻好的宿主会话号）");
+      const sideways = SRC.split("driverIsElsewhere = (sid) => {")[1] || "";
+      ok(sideways.length > 0 && /hasHostId/.test(sideways.slice(0, 900)),
+        "判据收口到 driverIsElsewhere：只有宿主号（as…）才能断定「这是别人的浏览器」——"
+        + "翻不出宿主号时宁可宽松，也不许把本会话的画面整个扣掉");
+      ok(!/BA\.driver === BA\.sessionId/.test(SRC) && !/BA\.driver !== BA\.sessionId/.test(SRC),
+        "全文件不再出现「driver 与 sessionId 裸比」（那正是永不相等、面板停在「未连接」的根因）");
+      const st = GATEWAY.split("  status() {")[1] || "";
+      ok(/driverHost/.test(st.slice(0, 700)),
+        "网关 status 回执带 driverHost（claim 的一刻翻好的宿主会话号）");
+
+      /* ① driver 是 session-…、driverHost 命中本会话 → 该接流（修复前：一条都不接） */
+      const app = makeApp({ running: true, viewing: "as_me" });
+      await tick(); await tick();
+      app.BA.setSession("as_me");
+      await tick(); await tick();
+      app.act("navigate", "打开 https://example.com");
+      await tick(); await tick(); await tick();
+      ok(app.BA.isOpen() === true, "本会话的浏览器：右栏照常出现（driver 与会话号格式不同也不误判）");
+      ok(app.calls.viewStart === 1, "实况流真接上了（viewStart=" + app.calls.viewStart + "，修复前 = 0）");
+
+      /* ② driverHost 翻不出来（空串）→ 同样不许判成「别人在驱动」 */
+      const app2 = makeApp({ running: true, viewing: "as_me", driverHost: "" });
+      await tick(); await tick();
+      app2.BA.setSession("as_me");
+      await tick(); await tick();
+      app2.act("navigate", "打开 https://example.com");
+      await tick(); await tick(); await tick();
+      ok(app2.calls.viewStart >= 1,
+        "翻不出宿主号时不扣画面（viewStart=" + app2.calls.viewStart + "）");
+
+      /* ③ 真的另有其人在驱动（宿主号形式的别人）→ 仍然一条都不接（会话闸没被改坏） */
+      const app3 = makeApp({ running: true, viewing: "as_me", driver: "as_other", driverHost: "as_other" });
+      await tick(); await tick();
+      app3.BA.setSession("as_me");
+      await tick(); await tick();
+      const base3 = app3.calls.viewStart;
+      app3.act("navigate", "打开 https://example.com");
+      await tick(); await tick(); await tick();
+      ok(app3.calls.viewStart === base3,
+        "别的会话在驱动 → 本会话仍不接流（viewStart 没增加：" + base3 + " → " + app3.calls.viewStart + "）");
+    }
+
+    /* ── [14] 空流看门狗 +「重新连接」小键（本轮修复：不自愈，但要给一枚能按的键）──── */
+    console.log("\n[14] 空流：手动「重新连接」真重连；网关说在流上却一帧不来时自己重生一条");
+    {
+      /* 两只都用**可控时钟**（clock:true）：沙箱里的 setTimeout 收成可手动触发的队列。
+         本轮修复给 app-browser.js 加了「空流看门狗」（1.5s 到点），真定时器下这条用例
+         就变成跟它赛跑（毫秒级抖动即翻车）。逐条触发时「到点没到点」由用例说了算。 */
+      const app = makeApp({ running: true, viewing: "as_me", storage: { "mtnode.baOpen": "1" }, clock: true });
+      await tick(); await tick();
+      app.BA.setSession("as_me");     /* 切会话：换活动范围 + 按「这条会话有没有浏览器」重算显隐 */
+      await tick(8);
+      if (!app.BA.isOpen()) app.BA.setOpen(true);   /* 用户亲手打开右栏（本轮修复：开着就别自己收） */
+      await tick(12);
+      /* 可控时钟下「投帧」也排在队列里：先把它跑掉，再让 Image.onload → liveDraw 那几拍跑完，
+         这条流才是「真出过帧的流」（空流看门狗只在一条帧都没画上时才动，正常流必须不被误伤）。 */
+      app.fireTimers(0);
+      await tick(4);
+      app.fireTimers(0);
+      await tick(4);
+      ok(app.BA.isOpen() === true,
+        "前置：右栏开着（open=" + app.BA.isOpen() + "）；没有浏览器活动列表时也不许自己收起 ——"
+        + " 收起面板会把实况流一起掐掉");
+      ok(app.BA.live.lastPaintAt > 0 && app.draws.n > 0,
+        "前置：这一帧真画上了画布（draws=" + app.draws.n + "）");
+      /* 干净的实测基线：把这一拍之前排下的看门狗清掉（面板开合 / 切会话都会排它），
+         亲手停一次再开一次 —— 之后的 stop 只可能来自「重新连接」或空流看门狗。 */
+      app.BA.liveStop();
+      await tick(6);
+      app.BA.liveStart({});
+      await tick(6);
+      app.fireTimers(0);      /* 新流的第一帧：画上之后这条流就不算空流了 */
+      await tick(4);
+      app.fireTimers(0);
+      await tick(4);
+      const beforeStop = app.calls.viewStop;
+      ok(app.calls.viewStop === beforeStop && app.BA.live.on === true,
+        "前置：真出过帧的流不会被当成空流（viewStop=" + app.calls.viewStop + " / on="
+        + app.BA.live.on + " / draws=" + app.draws.n + "）");
+
+      const retry = app.els.baLiveRetry;
+      ok(!!retry && retry.hidden === false,
+        "「重新连接」常态露出（浏览器在跑就有意义；键面常驻，失败原因另起一行）");
+      ok(typeof retry.onclick === "function", "它接了线（bindLiveBtn 走 BA.liveReconnect）");
+      const before = { start: app.calls.viewStart, stop: app.calls.viewStop };
+      retry.onclick();
+      await tick(12);
+      ok(app.calls.viewStop >= before.stop + 1 && app.calls.viewStart >= before.start + 1,
+        "按它是「停旧流 + 开新流」两下（viewStop " + before.stop + "→" + app.calls.viewStop
+        + " / viewStart " + before.start + "→" + app.calls.viewStart + "）——"
+        + "只再发一次 start 的话，网关那边挂着空流时空转发、画面永远不来");
+
+      /* 空流看门狗：桩一个「回 on:true、可一帧都不下来」的网关（viewFrames:false）——
+         面板开着、流也开了，可这一拍一条帧都不下来（用户报的那一态）。 */
+      const app2 = makeApp({ running: true, viewing: "as_me", storage: { "mtnode.baOpen": "1" }, viewFrames: false, clock: true });
+      await tick(); await tick();
+      app2.BA.setSession("as_me");
+      await tick(8);
+      if (!app2.BA.isOpen()) app2.BA.setOpen(true);
+      await tick(12);
+      app2.fireTimers(0);          /* 队列里的 0ms 帧回调按原样跑掉（这一只本来就不投帧） */
+      await tick(4);
+      const base2 = { start: app2.calls.viewStart, stop: app2.calls.viewStop };
+      ok(app2.BA.isOpen() === true && app2.BA.live.on === true && base2.start >= 1,
+        "前置：栏开着、本地认为流在跑（open=" + app2.BA.isOpen() + " on=" + app2.BA.live.on
+        + " viewStart=" + base2.start + "）");
+      ok(app2.BA.live.lastPaintAt === 0 && app2.draws.n === 0,
+        "前置：开了流、可一条帧都没下来（lastPaintAt=0 / draws=" + app2.draws.n + "）");
+      ok(String(app2.els.baLiveMode.textContent) === "连接中…",
+        "这一拍状态字就是「连接中…」（遮罩还在，正是用户看到的那一态）");
+      /* 到点：触发沙箱里那个 1500ms 的看门狗（阈值以下的小定时器上一步已经跑掉了）。
+         队列是手动触发的、真实时间没有流逝，所以先把「这条流是从更早开始的」标出来 ——
+         真机上它就是 1.5s 之后那一拍（见 STALE_MS 的判据）。 */
+      const pendingMs = [...app2.pending.values()].map((t) => t.ms);
+      app2.BA.live.streamAt = Date.now() - 3000;
+      const fired = app2.fireTimers(1500);
+      ok(fired >= 1, "沙箱里排着那个空流看门狗（1500ms，队列里实际排着 "
+        + pendingMs.join("/") + "ms 那几条）");
+      await tick(8);
+      ok(app2.calls.viewStop >= base2.stop + 1,
+        "过了空流门限自己把空流停掉（viewStop " + base2.stop + " → " + app2.calls.viewStop + "）");
+      ok(app2.calls.viewStart >= base2.start + 1,
+        "并重生一条（viewStart " + base2.start + " → " + app2.calls.viewStart + "）");
     }
 
     console.log("\n" + (fails ? "FAILED " + fails : "全部通过"));

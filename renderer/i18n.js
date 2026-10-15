@@ -2121,8 +2121,12 @@
     "供应商": "Provider",
     "模型提供商": "Model provider",
     "模型提供商：": "Model provider: ",
-    "模型提供商 / 预设 / 模型 / 思考强度":
-      "Model provider / preset / model / thinking effort",
+    /* 会话「模型」chip 的 tooltip（本轮起菜单多一格「上下文压缩」）：这一档是**全局**设置，
+       写在 dsh 组合的 compaction-basic 行上，下一个新会话生效。
+       （旧键「模型提供商 / 预设 / 模型 / 思考强度」已随之删除：全仓再无引用 —— 键面漏列
+         「上下文压缩」会让用户以为这一档只在设置里。） */
+    "模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩":
+      "Model provider / preset / model / thinking effort / context compaction",
     "未选择：本功能块与子功能块跟随默认模型提供商。":
       "Not set: this block and its sub-blocks follow the default model provider.",
     "未选择：本节点需要借助 AI 时跟随默认模型提供商。":
@@ -2464,6 +2468,21 @@
     "上文已压缩": "Context compacted",
     "压缩": "Compact",
     "压缩上下文": "Compact context",
+    /* 手动压缩（本次开发需求）：输入区那两枚 chip、确认卡、折叠行与摘要浮层的词条 */
+    "压缩中…": "Compacting…",
+    "查看压缩摘要": "View compact summary",
+    "压缩摘要": "Compact summary",
+    "已压缩的历史 · {n} 条": "Compacted history · {n} messages",
+    "这段历史已被收进摘要：不再进模型上下文；点开可按原样回看（会话本身与这些记录都留着）":
+      "This part is already folded into the summary: it no longer goes to the model context; click to read the original messages (the session and these records are all kept)",
+    "确定压缩当前会话的上文？": "Compact the context of this session?",
+    "压掉 {n} 条消息 · 原文约 {c} 字": "{n} messages compacted · about {c} characters of source text",
+    "压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）":
+      "Compact context: fold the earlier conversation into one summary (the session is kept and the original text stays readable when expanded)",
+    "查看压缩摘要：看最近一次压缩产出的摘要全文":
+      "View compact summary: read the full summary produced by the most recent compaction",
+    "还没有压缩记录：先点「压缩上下文」": "No compaction yet — click \"Compact context\" first",
+    "复制这份摘要到剪贴板": "Copy this summary to the clipboard",
     "当前会话没有可压缩的消息": "No messages to compact in this session",
     "运行中不可压缩：请等待当前会话结束": "Cannot compact while running — wait for the current run to end",
     "会话视图不使用画布边栏：请在「画布」视图中查看节点列表":
@@ -2661,7 +2680,6 @@
     "显示更早内容（已折叠 {n} 条）": "Show earlier content ({n} collapsed)",
     "每个会话最多同时渲染 200 条，点击展开更早的 200 条":
       "Each session renders at most 200 entries at a time; click to unfold 200 earlier ones",
-    "已折叠更早的运行条目：{n}": "Earlier run entries collapsed: {n}",
     "已复制到剪贴板": "Copied to clipboard",
     "已复制思考内容": "Thinking content copied",
     "已恢复单次尝试": "Restored single attempt",
@@ -3491,6 +3509,19 @@
     "允许后台并行委派（取消后子代理只在前台同步跑，一次一个）": "Allow background parallel delegation (unchecked: subagents run in the foreground, one at a time)",
     "允许 fork 型子代理（复制当前上下文另起一个子会话）": "Allow fork-type subagents (copy the current context into a child session)",
     "这几项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。深度只约束「子代理再派子代理」，不影响你自己发起的一次委派。": "These are written into the dsh composition (cordis.yml) and apply to the next new session; a session already running keeps the previous values. Depth only limits a subagent delegating further — it never blocks a delegation you start yourself.",
+    /* 设置 · 智能能力 · 上下文压缩（写进 cordis.yml 的 compaction-basic 行，见 dsh-compact-policy.js） */
+    "上下文压缩": "Context compaction",
+    "自动压缩长会话（接近上限时把较早的对话收成摘要，保留最近一段原文）": "Compact long sessions automatically (condense older conversation into a summary as the window fills, keeping the most recent exchange verbatim)",
+    "压缩时机": "When to compact",
+    "早 · 上下文还宽裕时就压（最省，前文细节丢得最多）": "Early · compact while there is still room (cheapest, loses the most earlier detail)",
+    "中 · 默认档（约 30 万 token 触发）": "Medium · default (triggers around 300K tokens)",
+    "晚 · 接近上限才压（保留最多前文）": "Late · compact only near the limit (keeps the most earlier context)",
+    "这一项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。压缩会额外花一次模型调用写摘要，换来之后每一步都少发一大段历史。": "This is written into the dsh composition (cordis.yml) and applies to the next new session; a session already running keeps the previous value. Compaction costs one extra model call for the summary, and every later step then sends far less history.",
+    /* 助手栏「上下文压缩」（思考强度下一行 · 本次需求；与上面那一组同一份值） */
+    "上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）": "When to compact the context: condense older conversation into a summary as the window fills, keeping the most recent exchange verbatim; Off = no automatic compaction (recovery when the provider reports the window full is still kept)",
+    "关闭 · 不自动压缩长会话": "Off · do not compact automatically",
+    "上下文压缩已关闭（下一个新会话生效）": "Context compaction turned off (takes effect in the next new session)",
+    "上下文压缩时机已更新（下一个新会话生效）": "Compaction timing updated (takes effect in the next new session)",
     /* 设置 · 智能能力：精简工具负载（工具可见集裁剪，见 docs/codex-agent-benchmark.md） */
     "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）": "Lean tool payload (do not register optional tools such as app control / vision subagent; about 4.7K fewer characters per step; takes effect on the next run)",
     /* 设置 · 智能能力：开发者工具（会话右栏「运行轨迹」View · renderer/app-trajectory.js） */
@@ -3749,6 +3780,10 @@
     "这一行属于第 {n} 步": "This row belongs to step {n}",
     "本步 token 未记到（这一步没有 usage 记录）": "Step tokens not recorded (no usage event for this step)",
     "（显示在本步最后一段）": " (shown on this step's last segment)",
+    /* 会话 · 对话里逐项时刻下方那一行 token（本次需求 · renderer/app-assist.js 的
+       dshSegTokTitle）：行内只有「↑计费输入 ↓输出」两个数字，完整明细在悬停里读，
+       所以这一句就是那行小字的抬头。 */
+    "这一步的 token": "This step's tokens",
     "步间隔 ": "Step gap ",
     /* 会话轨迹「时间上横轴」（本次需求 · renderer/app-trajectory.js 的吸顶横轴 +
        行内读数栏）新词条 */
@@ -3899,6 +3934,14 @@
     "继续观察": "Resume live view",
     "等待浏览器画面…": "Waiting for the browser picture…",
     "正在连接浏览器画面…": "Connecting to the browser picture…",
+    /* 「重新连接」（本次需求）：不自愈口径下的手动恢复键 —— 停旧流再开一条 */
+    "重新连接": "Reconnect",
+    "正在重新连接浏览器画面…": "Reconnecting to the browser picture…",
+    "重新连接：停掉当前这条实况流再开一条（画面停在遮罩上 / 一直「连接中…」时按它；不动真实窗口）":
+      "Reconnect: drop the current live stream and open a new one (press it when the picture stays on the mask or keeps saying \"connecting…\"; the real window is not touched)",
+    "浏览器没在跑：先在会话里让它打开浏览器。": "The browser is not running: let the session open it first.",
+    "实况流是空流（网关那边还挂着一条没人收的流）：正在重新连接…":
+      "The live stream is empty (a stream nobody is receiving is still open): reconnecting…",
     "连接中…": "connecting…",
     "实况中": "live",
     "未连接": "not connected",
@@ -9026,6 +9069,23 @@
     "预览文本内容 · {name}": "Preview text · {name}",
     "这条内容还没有实体文件": "This content item has no file on disk yet",
     "读取失败：": "Read failed: ",
+    /* 条目行的行内预览 + 悬停浮层（renderer/app-assets.js · 素材库右栏与素材设置框共用） */
+    "内容预览": "Content preview",
+    "大文件（{size}）：悬停看全文":
+      "Large file ({size}): hover to read the full text",
+    "文件缺失": "File missing",
+    "正文过长，这里只显示前 20 万字符":
+      "Text is very long — only the first 200,000 characters are shown here",
+    "音频预览器不可用": "The audio previewer is unavailable",
+    "这一类内容没有内嵌预览：用「打开原文件」看":
+      "This kind of content has no inline preview — use “Open original file”",
+    "打开原文件": "Open original file",
+    "用本机默认程序打开这条内容的实体文件":
+      "Open this item's file with the system default program",
+    "在资源管理器中定位这条内容的实体文件":
+      "Reveal this item's file in the file manager",
+    "展开波形试听这条音频（鼠标停在这一行上即出现浮层）":
+      "Expand the waveform to audition this audio (a preview pops up when you hover this row)",
   });
 
   /* ── 节点「设置」统一跳窗（NODE_SETTINGS_FORMS · 摘要行 · 节拍 / 网络 / 媒体参数）──

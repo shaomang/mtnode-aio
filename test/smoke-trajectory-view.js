@@ -2031,13 +2031,14 @@ section("[8.5] 竖线 + 时间轴（轴栏 / 刻度栏 / 节点配色；对话�
   ok(
     /function dshSegTimeEl\(/.test(ASSIST) &&
       /function dshSegTimeAttach\(/.test(ASSIST) &&
-      /* 思考段（本次需求后是一行可点开的摘要条）挂在 .dsh-seg-think-wrap 那一层：row */
-      /dshSegTimeAttach\(row, seg\.at, 0, msgAt\)/.test(ASSIST) &&
-      /dshSegTimeAttach\(d, seg\.at, 0, msgAt\)/.test(ASSIST),
+      /* 思考段（本次需求后是一行可点开的摘要条）挂在 .dsh-seg-think-wrap 那一层：row。
+         第 5 参 = 该步 token（本次需求：时刻下方那一行 token 也随时刻栏一起挂）。 */
+      /dshSegTimeAttach\(row, seg\.at, 0, msgAt, tok\)/.test(ASSIST) &&
+      /dshSegTimeAttach\(d, seg\.at, 0, msgAt, tok\)/.test(ASSIST),
     "[8.5] 对话区每一项（思考 / 正文 / 上下文注入）都在左侧挂自己的时刻栏（段 at → 老存档回落 msgAt）",
   );
   ok(
-    /dshSegTimeAttach\(wrap, t && t\.at, t && t\.doneAt, msgAt\)/.test(ASSIST) &&
+    /dshSegTimeAttach\(wrap, t && t\.at, t && t\.doneAt, msgAt, tok\)/.test(ASSIST) &&
       /function dshSegDurText\(/.test(ASSIST),
     "[8.5] 对话区工具项用真实 at / doneAt 标时刻与耗时（与轨迹视图同一口径）",
   );
@@ -2128,8 +2129,28 @@ ok(
 );
 ok(
   /function tokUsageStepsTake\(st, runKey\) \{/.test(ASSIST_SRC) &&
-    /msg\.usageSteps = steps;/.test(ASSIST_SRC),
-  "[9] 明细随助手消息落盘（agentRoundMsgTail 里 msg.usageSteps = steps）",
+    /msg\.usageSteps = dshUsageStepsStampRound\(steps, usageSegs\)/.test(ASSIST_SRC),
+  "[9] 明细随助手消息落盘（agentRoundMsgTail 里 msg.usageSteps = steps；落盘前补轮号）",
+);
+/* 取数口径（本次需求 · 老轮次 token 回填）：明细表 = 本轮内存那份 + 各条助手消息落盘那份，
+   两处渲染（会话 · 对话 / 轨迹）都按 (轮号, 步号) 等值取数 —— 过去没人读回 m.usageSteps，
+   切会话 / 重启后每步 token 就只剩当前这一轮。 */
+ok(
+  /function dshUsageDetailsOf\(st\) \{/.test(ASSIST_SRC) &&
+    /const list = Array\.isArray\(m\.usageSteps\) \? m\.usageSteps : null;/.test(ASSIST_SRC),
+  "[9] 明细表把落盘的 m.usageSteps 一并读回（老轮次 token 不再消失）",
+);
+ok(
+  /typeof dshUsageDetailsOf === "function"/.test(TRAJ_CODE) &&
+    /const details =/.test(TRAJ_CODE),
+  "[9] 轨迹视图的取数改用同一份明细表（两处一个口径，不各认一处）",
+);
+ok(
+  /function dshTokStepMapOf\(st\) \{/.test(ASSIST_SRC) &&
+    /const tok = typeof dshStepTokAt === "function" \? dshStepTokAt\(items, i, round, tokMap\) : null;/.test(
+      ASSIST_SRC,
+    ),
+  "[9] 会话 · 对话按 (轮号, 步号) 取该步 token（同一把键，与轨迹的 detailOf 同源）",
 );
 ok(
   /const step = tr \? traceNum\(tr\.step, 0\) : 0;/.test(ASSIST_SRC) &&
@@ -2196,9 +2217,33 @@ ok(
     "[9] app-assist.js：开轮把会话轮号交给 dshRunTask，落盘那一层也照抄 round 与 at（不丢轮号、不丢逐项时刻）",
   );
   ok(
-    /dshSegTimeEl\(own, doneAt, msgAt\)/.test(AS_SRC2) &&
+    /dshSegTimeEl\(own, doneAt, msgAt, tok\)/.test(AS_SRC2) &&
       /这一项自己没有独立时刻/.test(AS_SRC2),
     "[9] 对话视图的逐项时刻只看段自己的 at，拿不到才回落所属消息时刻（标「≈」，不推断）",
+  );
+  /* 本次需求：时刻下方那一行 token —— 行内只有「↑计费输入 ↓输出」（精简口径，拷问共识），
+     完整明细（缓存读 / 写、推理、N 次调用、服务商 · 模型）走 tooltip；两个数都是 0 不写行。 */
+  ok(
+    /function dshSegTokEl\(tok\) \{/.test(AS_SRC2) &&
+      /up\.textContent = "↑" \+ short\(a\);/.test(AS_SRC2) &&
+      /dn\.textContent = "↓" \+ short\(b\);/.test(AS_SRC2) &&
+      /if \(!a && !b\) return null;/.test(AS_SRC2),
+    "[9] token 行 = ↑计费输入 ↓输出 两段（与轨迹行内同一对色类），两个数都是 0 就整行不写",
+  );
+  ok(
+    /I18n\.t\("这一步的 token"\)/.test(AS_SRC2) &&
+      /I18n\.t\("缓存读"\)/.test(AS_SRC2) &&
+      /I18n\.t\("缓存写入"\)/.test(AS_SRC2) &&
+      /I18n\.t\("本步 \{n\} 次调用", \{ n: calls \}\)/.test(AS_SRC2),
+    "[9] 完整明细进 tooltip（缓存读 / 写、输出、推理、N 次调用、服务商 · 模型）",
+  );
+  ok(
+    /function dshStepTokAt\(segs, i, defRound, tokMap\) \{/.test(AS_SRC2) &&
+      /const nx = segs\[i \+ 1\];/.test(AS_SRC2) &&
+      /if \(nx && dshSegRoundNum\(nx, defRound\) === round && Number\(nx\.step\) === step\) return null;/.test(
+        AS_SRC2,
+      ),
+    "[9] 一步只写一次：落在该步**最后一段**（与轨迹同粒度，同一 (轮, 步) 的其它段返回 null）",
   );
 }
 ok(/"↓ 回到底部跟随": "↓ Back to latest"/.test(I18N_SRC), "[9] i18n 补跟尾浮标英文词条");

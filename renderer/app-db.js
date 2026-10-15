@@ -5331,6 +5331,12 @@ function agentHistoryEntries(st, opts) {
     /* 「这一轮已经结束」痕迹同理（本次需求：轮次收尾时卡片收口的界面痕迹，
        同样是给用户看的，不是用户说过的话） */
     if (String(m._src || "") === "ix-round-end") continue;
+    /* 手动压缩折起来的历史（本次开发需求 · 拷问共识）：它们已经被收进摘要，**不再进
+       模型上下文** —— 折叠行只负责界面回看（app-assist.js 的 agentFoldRowEl）。
+       这里是「压缩生效」的**唯一过滤点**：压缩不删任何一条消息，只给它们盖 `_fold`
+       标记（agentCompactRun），上下文因此只剩「（上文已压缩）+ 摘要」那一条。
+       注意：会话的轮次 / 时间区间 / 轨迹 / Token 报告 / 导出照旧包含这些消息（用户口径）。 */
+    if (m._fold) continue;
     if (m.role === "user" && String(m._src || "") === "ix-answer") {
       /* 这张卡答过的题里，只要有一题的最新答案不在这条上 → 这条是旧版，整条丢掉 */
       let stale = false;
@@ -5374,6 +5380,9 @@ function agentConfirmedHistoryEntries(st, opts) {
     if (String(m._src || "") === "ix-browser") continue;
     /* 「这一轮已经结束」痕迹同样不进这一段（同上） */
     if (String(m._src || "") === "ix-round-end") continue;
+    /* 手动压缩折起来的历史同理（本次开发需求）：那段已收进摘要、不再进上下文，
+       连续跑兜底这条路径也不把它们抄回来（口径同 agentHistoryEntries 的 _fold 过滤） */
+    if (m._fold) continue;
     rows.push({ at: Number(m.at) || 0, text: txt, answer: isAnswer, qids: m._ixQids || [] });
   }
   /* 回答气泡按题 id 去重取最新；用户消息按原文去重（与 agentHistoryEntries 同源口径） */

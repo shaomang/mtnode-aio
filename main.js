@@ -52,6 +52,10 @@ const { createMcpHost } = require("./mcp-server.js");
    subagent* 这 8 行的配置值与 disabled 取值；dsh 三层契约一字未动。
    口径与网关的 applyCordisPreset 同源：新运行时（新会话）首个回合即用所选值。 */
 const { applySubagentPolicy, policyFromConfig } = require("./dsh-agent-policy.js");
+/* 上下文压缩策略（开关 / 早中晚三档）→ 只改写 cordis.yml 里 compaction-basic 那一行的
+ * config（thresholdRatio / retainRatio / modelPolicies / auto）；dsh 三层契约一字未动。
+ * 与子代理策略同一口径：启动时与每次保存配置后写入，下一个新会话生效。 */
+const { applyCompactPolicy, compactPolicyFromConfig } = require("./dsh-compact-policy.js");
 const I18n = require("./renderer/i18n.js");
 const {
   registerUpdateIpc,
@@ -192,6 +196,28 @@ function syncSubagentPolicy(cfg) {
     return { ok: true, changed: true };
   } catch (e) {
     dshLog("subagent policy failed: " + ((e && e.message) || String(e)));
+    return { ok: false, reason: (e && e.message) || String(e) };
+  }
+}
+/* 上下文压缩策略：与 syncSubagentPolicy 完全同构（同一份文件、同一套原子改写、
+ * 同一个调用时机）。默认「开 · 中档」—— config.json 里没写过这一节时，
+ * compactPolicyFromConfig 回落默认，而默认档的落地值与出货 cordis.yml 里那一行一致，
+ * 所以首次启动不会产生任何字节变化（幂等）。 */
+function syncCompactPolicy(cfg) {
+  const fp = subagentPolicyPath();
+  if (!fp) return { ok: false, reason: "网关路径不可用" };
+  try {
+    if (!fs.existsSync(fp)) return { ok: false, reason: "cordis.yml 不存在" };
+    const text = fs.readFileSync(fp, "utf8");
+    const r = applyCompactPolicy(text, compactPolicyFromConfig(cfg));
+    if (!r.changed) return { ok: true, changed: false };
+    const tmp = fp + ".tmp" + process.pid;
+    fs.writeFileSync(tmp, r.text, "utf8");
+    fs.renameSync(tmp, fp);
+    dshLog("compact policy applied: " + JSON.stringify(compactPolicyFromConfig(cfg)));
+    return { ok: true, changed: true };
+  } catch (e) {
+    dshLog("compact policy failed: " + ((e && e.message) || String(e)));
     return { ok: false, reason: (e && e.message) || String(e) };
   }
 }
@@ -981,6 +1007,8 @@ ipcMain.handle("config:save", (e, cfg) =>
   if (next && (next.locale === "en" || next.locale === "zh")) applyMainLocale(next.locale);
   /* 子代理策略随配置一起落进 cordis.yml（不返回给渲染层，失败只进 dsh.log） */
   syncSubagentPolicy(next);
+  /* 上下文压缩策略同源：写 compaction-basic 那一行的 config（开关 / 档位） */
+  syncCompactPolicy(next);
   return { ok: true, bytes: Buffer.byteLength(text) };
   }),
 );
@@ -8976,6 +9004,11 @@ app.whenReady().then(() => {
      还是按 dsh 自带的 maxDepth 3 在跑。配置读不到时按默认策略（深度 1）收口。 */
   try {
     syncSubagentPolicy(readJson(path.join(DATA(), "config.json"), {}));
+  } catch {}
+  /* 上下文压缩策略同一时机：否则首次启动仍是 dsh 自带触发线（声明窗口 1M × 0.8
+     = 80 万 token 才压，本机永远到不了）。默认「开 · 中档」，与出货组合行一致。 */
+  try {
+    syncCompactPolicy(readJson(path.join(DATA(), "config.json"), {}));
   } catch {}
   dsh().ensureStarted().catch(() => {});
   /* MCP 服务端随应用启动（幂等；失败只记日志，不阻塞应用）——

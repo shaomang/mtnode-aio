@@ -317,17 +317,21 @@
               <button type="button" class="agent-chip" id="agentWsTrigger" data-i18n-title="选择工作区" title="选择工作区">
                 <span class="agent-chip-icon">🗂</span><span class="agent-tool-val" id="agentWsTriggerVal" data-i18n="选择工作区">选择工作区</span>
               </button>
-              <button type="button" class="agent-chip" id="agentModelTrigger" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度" title="模型提供商 / 预设 / 模型 / 思考强度">
+              <button type="button" class="agent-chip" id="agentModelTrigger" data-i18n-title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩" title="模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩">
                 <span class="agent-chip-icon">⚙</span><span class="agent-tool-val" id="agentModelTriggerVal">标准模式</span>
               </button>
               <button type="button" class="agent-chip" id="agentCmdTrigger" data-i18n-title="技能" title="技能"><span data-i18n="技能">技能</span></button>
               <!-- 会话不再有「规划 / 压缩」chip：规划模式与压缩上文仍可手敲 /plan、/compact
                    （见 app-assist.js 斜杠命令），按钮入口按需求移除。 -->
               <button type="button" class="agent-chip run-plan" id="agentRunPlanBtn" hidden data-i18n-title="关闭规划模式并按上一条计划开始实施" title="关闭规划模式并按上一条计划开始实施"><span data-i18n="▶ 执行计划">▶ 执行计划</span></button>
-              <!-- 「拷问需求」状态小字（本次开发需求）：模式菜单里那一枚「先拷问需求」默认开，
-                   这一枚只**回显**这一轮会不会被拷问（不挂 onclick，切换只走模式菜单）——
-                   开 = 显示，关 = hidden（见 app-assist.js paintGrillTag）。 -->
-              <button type="button" class="agent-chip agent-chip-grill" id="agentGrillTag" hidden data-i18n-title="先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手" title="先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手"><span data-i18n="拷问需求">拷问需求</span></button>
+              <!-- 「压缩上下文」/「查看压缩摘要」（本次开发需求）：原先那一枚只做回显的
+                   「拷问需求」chip 已按需求撤掉（开关本身仍在「模式」菜单里，状态由「模式」
+                   chip 变色 + tooltip 逐项表达）—— 原位换成**手动压缩**入口：
+                   点一下先弹确认卡，压完把被压掉的历史在原位折成一行「已压缩的历史 · N 条」
+                   （默认收起、点开可回看原文），会话照旧保留。
+                   右侧那枚只在压过之后出现（见 app-assist.js 的 paintCompactChips）。 -->
+              <button type="button" class="agent-chip agent-chip-compact" id="agentCompactBtn" data-i18n-title="压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）" title="压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）"><span data-i18n="压缩上下文">压缩上下文</span></button>
+              <button type="button" class="agent-chip agent-chip-compact-view" id="agentCompactViewBtn" hidden data-i18n-title="查看压缩摘要：看最近一次压缩产出的摘要全文" title="查看压缩摘要：看最近一次压缩产出的摘要全文"><span data-i18n="查看压缩摘要">查看压缩摘要</span></button>
               <button type="button" class="agent-chip" id="agentToolsTrigger" data-i18n-title="工具" title="工具"><span data-i18n="工具">工具</span><span class="agent-tool-val" id="agentToolsTriggerVal"></span></button>
               <!-- 会话不再显示「本画布 / 工具库可调用工具」清单 chip：清单每轮重收集，
                    展示它要额外打 IPC（toolsList 读盘）且对用户没有决策价值；
@@ -408,6 +412,10 @@
             <span data-i18n="实况">实况</span>
             <span class="ba-live-mode" id="baLiveMode"></span>
             <button type="button" class="mini" id="baLiveWin" hidden data-i18n-title="用一只真实的浏览器窗口打开它（当前无窗口那只会被温和重开成带窗口的）：登录 / 验证码你自己输，密码不进对话" title="用一只真实的浏览器窗口打开它（当前无窗口那只会被温和重开成带窗口的）：登录 / 验证码你自己输，密码不进对话">用真窗口打开</button>
+            <!-- 「重新连接」（本次需求）：不自愈口径下唯一的手动恢复键 —— 画面停在遮罩上 /
+                 一直「连接中…」时按它（停掉当前那条实况流再开一条，不动真实窗口）。
+                 常态露出（浏览器在跑就有意义），重连进行中自锁。 -->
+            <button type="button" class="mini" id="baLiveRetry" hidden data-i18n="重新连接" data-i18n-title="重新连接：停掉当前这条实况流再开一条（画面停在遮罩上 / 一直「连接中…」时按它；不动真实窗口）" title="重新连接：停掉当前这条实况流再开一条（画面停在遮罩上 / 一直「连接中…」时按它；不动真实窗口）">重新连接</button>
             <button type="button" class="mini" id="baLivePause" data-i18n="暂停观察" data-i18n-title="暂停画面更新（重新打开即恢复）" title="暂停画面更新（重新打开即恢复）">暂停观察</button>
           </div>
           <div class="ba-live-stage" id="baLiveStage">
@@ -514,6 +522,13 @@
           <option value="max" data-i18n="最强">最强</option>
         </select>
       </label>
+      <!-- 上下文压缩：接在「思考强度」下一行（本次需求）。档位真源 = S.config.dsh.compact
+           （与「设置 · 智能能力 · 上下文压缩」同一份值、同一份落盘），清单与回显由
+           app-assist.js 的 syncAssistCompactOptions 按当前语言现算（故这里不写死 option，
+           也不挂 data-i18n，免得切语言时被 applyDom 写掉）。 -->
+      <label class="assist-ctrl-item"><span data-i18n="上下文压缩">上下文压缩</span>
+        <select id="assistCompactSel" data-i18n-title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）" title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）"></select>
+      </label>
     </div>
     <!-- 助手栏「模式」菜单（本次开发需求）：与会话窗口「模式」菜单**同一套构件**
          （app-assist.js 的 buildAgentModeMenu / agentModeEntryOf），行集 = assistModeEntries
@@ -522,8 +537,10 @@
          tooltip 逐项「（开）/（关）」表达（见 paintAssistModeChip）。 -->
     <div class="assist-ctrl" id="assistModeCtrl">
       <button type="button" class="assist-chip-mode" id="assistModeTrigger" data-i18n-title="模式" title="模式"><span data-i18n="模式">模式</span></button>
-      <!-- 「拷问需求」状态小字：与会话头部那一枚同一份词条（见 assistGrillTagPaint） -->
-      <span class="assist-grill-tag" id="assistGrillTag" hidden data-i18n="拷问需求">拷问需求</span>
+      <!-- 「拷问需求」状态小字**已按本次需求撤掉**（会话输入区那枚同族 chip 也一并撤了）：
+           这一档开关本身仍在上面这只「模式」菜单里（真源 = 全局偏好 S.assistGrill），
+           状态由菜单行与入口变色表达；头部那行小字从此只报「工作范围」（见
+           app-assist.js 的 updateAssistScopeChrome）。 -->
     </div>
     <div class="agent-menu agent-tools-menu" id="assistModeMenu" hidden></div>
     <div class="assist-ws-line">

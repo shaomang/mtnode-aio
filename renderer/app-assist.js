@@ -1115,30 +1115,20 @@ function fillAssistScopeControl() {
 
 function updateAssistScopeChrome() {
   const scopeCurrent = assistScopeIsCurrent();
-  /* 「先拷问需求」状态回显（本次需求）：助手栏头部那行小字里带上它 ——
-     用户不再需要展开模式菜单才知道这一轮会不会被追问。 */
-  const grill = S.assistGrill !== false;
-  assistGrillTagPaint(grill);
+  /* 「拷问需求」那枚状态小字**已按本次需求撤掉**（会话侧那枚 chip 也一并撤了）：
+     这一档开关本身仍在「模式」菜单里（助手栏那只是 assistGrill，见 assistModeEntries）。
+     这行小字因此只报**作用范围** —— 它本来就在报同一件事的另一半。 */
   const sub = document.querySelector("#assistPane .assist-sub");
   if (sub) {
-    const scope = scopeCurrent
+    sub.textContent = scopeCurrent
       ? I18n.t("仅当前画布")
       : I18n.t("可见全局状态");
-    sub.textContent = grill
-      ? I18n.t("拷问需求") + " · " + scope
-      : scope;
   }
   paintAssistModeChip();
 }
-/* 助手栏头部的「拷问需求」小字标记（本次需求）：开 = 显示，关 = 收起。
-   与会话侧头部那一枚同一份词条、同一处观感。 */
-function assistGrillTagPaint(on) {
-  const el = document.getElementById("assistGrillTag");
-  if (!el) return;
-  el.hidden = !on;
-  el.textContent = I18n.t("拷问需求");
-  el.title = I18n.t("先拷问需求：开启中 —— 像需求 / 开发的那几轮会先用询问窗问清再动手");
-}
+/* 助手栏头部那枚「拷问需求」小字的画法**已按本次需求撤掉**（连着会话侧那枚 chip 一起：
+   用户口径「撤掉这两处提示」，功能本身保留在模式菜单里）—— 回归口径见
+   test/smoke-grill-mode.js [4][6]：那两处标记与它们的样式都不许再冒出来。 */
 
 /* 助手侧「与画布无关」按钮已随本次需求移除（改为按消息自动判定，见 agentCanvasTurnRelated）：
    原来这里那个 updateAssistCanvasFreeChrome()（回显按钮开启态 + tooltip）一并删掉。
@@ -1175,6 +1165,77 @@ function syncAssistPresetOptions(sel) {
   if (keep && sel.options && sel.options.length) {
     for (const o of sel.options) if (o.value === keep) { sel.value = keep; break; }
   }
+}
+
+/* ── 助手栏「上下文压缩」档位下拉（本次需求：放在「思考强度」下一行）──────────────
+   与「设置 · 智能能力 · 上下文压缩」**同一份值**：真源 S.config.dsh.compact
+   （{enabled, tier}，由 main.js 的 syncCompactPolicy 落进 dsh 组合的 compaction-basic 行，
+   见 dsh-compact-policy.js）—— 这里只是同一份设置的第二个人口，不另立真源、不另存一份。
+   下拉四档：关闭 / 早 / 中 / 晚；「关闭」= enabled:false（仍在档位上保留用户选的 tier，
+   再打开时回到原档），早/中/晚 = enabled:true + 该档。归一与非法值回落由
+   compactPolicyOf 负责（缺省 = 开 · 中档，与策略模块的出厂值一字一致）。 */
+const ASSIST_COMPACT_OPTIONS = [
+  ["off", "关闭 · 不自动压缩长会话"],
+  ["early", "早 · 上下文还宽裕时就压（最省，前文细节丢得最多）"],
+  ["mid", "中 · 默认档（约 30 万 token 触发）"],
+  ["late", "晚 · 接近上限才压（保留最多前文）"],
+];
+
+/* 读回归一后的压缩策略：缺省 / 非法值一律回落「开 · 中档」（与 dsh-compact-policy.js 同源口径） */
+function compactPolicyOf(cfg) {
+  const c = (cfg && cfg.dsh && cfg.dsh.compact) || {};
+  return {
+    enabled: c.enabled !== false,
+    tier: ["early", "mid", "late"].indexOf(String(c.tier)) >= 0 ? String(c.tier) : "mid",
+  };
+}
+
+/* 档位 → 档位词条键（「关闭」那一档的键另算：它同时是「关掉压缩」的语义）。
+   会话菜单那一格与助手栏下拉共用它，档位清单常量 ASSIST_COMPACT_OPTIONS 仍是唯一真源。 */
+function assistCompactOptionLabel(v) {
+  const hit = ASSIST_COMPACT_OPTIONS.filter((p) => p[0] === String(v))[0];
+  return hit ? hit[1] : ASSIST_COMPACT_OPTIONS[2][1];
+}
+
+/* 档位清单按「语言」重建（档名要走词条），回显取当前生效值 */
+function syncAssistCompactOptions(sel) {
+  if (!sel || typeof document === "undefined" || !document.createElement) return;
+  const loc = I18n && I18n.getLocale ? I18n.getLocale() : "";
+  if (sel.dataset && sel.dataset.compactSig !== loc) {
+    sel.textContent = "";
+    for (const pair of ASSIST_COMPACT_OPTIONS) {
+      const o = document.createElement("option");
+      o.value = pair[0];
+      o.textContent = I18n.t(pair[1]);
+      sel.appendChild(o);
+    }
+    if (sel.dataset) sel.dataset.compactSig = loc;
+  }
+  /* 用户正在选的时候不回写（否则下拉会被自己关掉） */
+  if (document.activeElement === sel) return;
+  const cp = compactPolicyOf(S.config);
+  sel.value = cp.enabled === false ? "off" : cp.tier;
+}
+
+/* 写回：与设置面板同一份落盘链（persistAssistUi → configSave → main.js 的
+   syncCompactPolicy 改写组合行；生效时机 = 下一个新会话） */
+function applyAssistCompactChoice(v) {
+  if (!S.config) return;
+  const cur = compactPolicyOf(S.config);
+  const next = String(v || "");
+  /* 档位：选的是三档之一就用它；选「关闭」时保留用户原来那一档（再打开回到原档） */
+  const tier = ["early", "mid", "late"].indexOf(next) >= 0 ? next : cur.tier;
+  if (!S.config.dsh) S.config.dsh = {};
+  S.config.dsh.compact = { enabled: next !== "off", tier };
+  persistAssistUi();
+  /* 提示语**不点名哪一只界面**（本轮起这一份写回链有两个入口：助手栏下拉与会话
+     「模型」菜单里的「上下文压缩」一格），否则从会话改完会收到一句「助手栏…」的错话。 */
+  toast(
+    next === "off"
+      ? I18n.t("上下文压缩已关闭（下一个新会话生效）")
+      : I18n.t("上下文压缩时机已更新（下一个新会话生效）"),
+    "ok",
+  );
 }
 
 function renderAssistPanel(opts) {
@@ -1267,6 +1328,8 @@ function renderAssistPanel(opts) {
     effortSel.value = AGENT_EFFORT_UI_ORDER.includes(cur) ? cur : "high";
     if (S.assistEffort !== cur) S.assistEffort = cur;
   }
+  /* 「上下文压缩」档位（本次需求 · 紧接在思考强度下一行）：清单按语言重建 + 回显生效值 */
+  syncAssistCompactOptions($("#assistCompactSel"));
   syncAssistWorkspaceChrome();
   fillAssistScopeControl();
   updateAssistScopeChrome();
@@ -2387,6 +2450,27 @@ function agentSessionMetaForDisk(s) {
     /* 作废计数：终止 / 清除 / 归档 / 用户改口后随会话一起落盘（重启后不点亮续跑入口） */
     planDrops: Math.max(0, Number(s._planDrops) || 0),
     tokenReport: s.tokenReport || null,
+    /* 手动压缩的记录（本次开发需求 · 拷问共识）：每次压缩一条
+       {id, at, count, chars, summary}；**摘要只留最近一份** —— 更早的那些在
+       agentCompactRun 里就地抹掉 summary，只留条数与时刻给那一行折叠当标题。
+       foldOpen = 各折组的展开态（键 = 折组 id，展开才写 true；默认收起不在表里）。 */
+    compacts: (Array.isArray(s.compacts) ? s.compacts : []).slice(-40).map((c) => ({
+      id: String((c && c.id) || ""),
+      at: Number(c && c.at) || 0,
+      count: Math.max(0, Number(c && c.count) || 0),
+      chars: Math.max(0, Number(c && c.chars) || 0),
+      summary: String((c && c.summary) || "").slice(0, 40000),
+    })),
+    foldOpen:
+      s.foldOpen && typeof s.foldOpen === "object"
+        ? Object.keys(s.foldOpen)
+            .filter((k) => s.foldOpen[k])
+            .slice(-40)
+            .reduce((o, k) => {
+              o[k] = true;
+              return o;
+            }, {})
+        : {},
     /* 开发 / 细化绑定会话的任务书契约：随会话持久化，重启后仍按契约运行 */
     devContract: s._devContract || "",
   };
@@ -2703,6 +2787,14 @@ function agentPresetLabel(id) {
   /* 档位真源是 app.js 的 AGENT_PRESETS，这里只负责取显示名 */
   return I18n.t(agentPresetById(id).labelKey);
 }
+/* 会话菜单「上下文压缩」一格的回显值（本轮需求）：与助手栏那一格同一份真源
+   （compactPolicyOf 读 config.dsh.compact）——「关闭」显示关闭，否则显示三档里的那一档。 */
+function agentCompactMenuValue() {
+  const cp = compactPolicyOf(S.config);
+  return cp.enabled === false
+    ? I18n.t("关闭 · 不自动压缩长会话")
+    : I18n.t(assistCompactOptionLabel(cp.tier));
+}
 function renderAgentComposer() {
   const st = agentSessionState();
   const mv = document.getElementById("agentModelTriggerVal");
@@ -2713,7 +2805,7 @@ function renderAgentComposer() {
       (st.pure ? I18n.t("纯净") + " · " : "") + agentPresetLabel(st.preset) + " · " + agentModelName(st);
   const mt = document.getElementById("agentModelTrigger");
   if (mt) {
-    mt.dataset.i18nTitle = "模型提供商 / 预设 / 模型 / 思考强度";
+    mt.dataset.i18nTitle = "模型提供商 / 预设 / 模型 / 思考强度 / 上下文压缩";
     mt.title = I18n.t(mt.dataset.i18nTitle);
   }
   const wv = document.getElementById("agentWsTriggerVal");
@@ -2745,7 +2837,7 @@ function renderAgentComposer() {
   }
   /* 会话级开关（先拷问需求 / 纯净模式 / 自动续跑）已收进「模式」菜单：chip 只留入口 +
      摘要，逐项开关态由 paintAgentModeChip 统一回显（见下方 buildAgentModeMenu）。*/
-  paintGrillTag();
+  paintCompactChips();
   /* 「与画布无关」chip 已随本次需求移除（改为按消息自动判定）：这里不再回显它。
      判据真源 = agentCanvasTurnRelated，下发点见 agentSessionSend 的 turnCanvasFree。 */
   /* 计划已产出且未在运行 → 浮现「▶ 执行计划」 */
@@ -2811,6 +2903,14 @@ function buildAgentModelMenu() {
     agentMenuItemCell(menu, "预设", agentPresetLabel(st.preset), "preset");
     agentMenuItemCell(menu, "模型", agentModelName(st), "model");
     agentMenuItemCell(menu, "思考强度", agentEffortDisplayLabel(st), "effort");
+    /* 「上下文压缩」一格（本轮需求）：右侧助手栏那一格（#assistCompactSel）的**第二个入口**，
+       会话侧此前没有 —— 用户打开的是会话，压缩档得在这里也够得着。
+       与助手栏 / 设置面板**同一份值**：档位清单 = ASSIST_COMPACT_OPTIONS（真源一处），
+       读 = compactPolicyOf(S.config)（= config.dsh.compact），写 = applyAssistCompactChoice
+       —— 所以这里只多一格入口，不另立真源、不另存一份。
+       值本身是**全局**的（main.js 的 syncCompactPolicy 把它写进 dsh 组合的 compaction-basic
+       行），生效时机 = 下一个新会话：正在跑的会话沿用原值，与助手栏的口径一字一致。 */
+    agentMenuItemCell(menu, "上下文压缩", agentCompactMenuValue(), "compact");
     return;
   }
   const bk = document.createElement("button");
@@ -2822,7 +2922,9 @@ function buildAgentModelMenu() {
         ? I18n.t("预设")
         : pane === "provider"
           ? I18n.t("模型提供商")
-          : I18n.t("思考强度");
+          : pane === "compact"
+            ? I18n.t("上下文压缩")
+            : I18n.t("思考强度");
   bk.textContent = "← " + backLabel;
   bk.onclick = back;
   menu.appendChild(bk);
@@ -2921,6 +3023,27 @@ function buildAgentModelMenu() {
       e.className = "agent-menu-empty";
       e.textContent = I18n.t("没有可用的模型");
       menu.appendChild(e);
+    }
+  } else if (pane === "compact") {
+    /* 上下文压缩四档（关闭 / 早 / 中 / 晚）：清单与助手栏那一格共用 ASSIST_COMPACT_OPTIONS
+       （同一个真源，改一处两边一起变），当前档打 ✓，选完走 applyAssistCompactChoice
+       —— 与助手栏下拉、设置面板走**同一条写回链**（S.config.dsh.compact → 落盘 →
+       main.js 的 syncCompactPolicy 改写组合行），所以这里不自己碰 config。 */
+    const cur = compactPolicyOf(S.config);
+    for (const pair of ASSIST_COMPACT_OPTIONS) {
+      const on = pair[0] === "off" ? !cur.enabled : cur.enabled && pair[0] === cur.tier;
+      const opt = document.createElement("button");
+      opt.className = "agent-menu-option" + (on ? " selected" : "");
+      opt.innerHTML =
+        '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
+        '<span class="agent-menu-check">' + (on ? "✓" : "") + "</span>";
+      opt.querySelector(".agent-menu-option-name").textContent = I18n.t(pair[1]);
+      opt.onclick = () => {
+        applyAssistCompactChoice(pair[0]);
+        closeAgentMenus();
+        renderAgentSession();
+      };
+      menu.appendChild(opt);
     }
   } else {
     /* 思考强度五档（无 / 轻 / 标准 / 强 / 最强）：选哪档就按哪档下发，路由能力不足时网关夹到
@@ -3566,7 +3689,9 @@ function paintAgentModeChip() {
   /* 会话侧 chip 重绘顺带刷一次助手栏那一枚（切换会话 / 切语言 / 自动续跑态变化都会走到这里，
      助手栏没有自己的重绘总线）—— 两边行集不同，各画各的，互不覆盖。 */
   paintAssistModeChip();
-  paintGrillTag();
+  /* 压缩那两枚 chip 同源刷新（模式菜单每次重绘都会走到这里，压缩中 / 运行中的禁用态
+     与「查看压缩摘要」的显隐就跟着一起对齐；本次需求） */
+  paintCompactChips();
   const summary = agentModeChipSummary();
   t.classList.toggle("on", !!summary);
   /* 摘要 span 留在 DOM 里兼容外部读，但永不显示（写入 → 直清 + hidden） */
@@ -3582,20 +3707,10 @@ function paintAgentModeChip() {
   delete t.dataset.i18nTitle;
   t.title = I18n.t("模式：") + entries.map(mark).join(" / ");
 }
-/* 会话头部的「拷问需求」小字标记（本次需求 · 用户口径：这一轮到底会不会被拷问，
-   要能一眼看见）：开 = 显示，关 = 收起。挂在输入区上方那一排 chip 里（.agent-chip），
-   与会话头部同一处观感；文案与模式菜单里那一行共用一份词条。 */
-function paintGrillTag() {
-  const el = document.getElementById("agentGrillTag");
-  if (!el) return;
-  const s = agentSessionState();
-  const on = !(s && s.grill === false);
-  el.hidden = !on;
-  el.textContent = I18n.t("拷问需求");
-  el.title = I18n.t(
-    "先拷问需求：开启中 —— 这条会话里像需求 / 开发的那几轮会先用询问窗问清，经你确认无歧义后才动手",
-  );
-}
+/* 会话头部的「拷问需求」小字标记**已按本次需求撤掉**（输入区那枚 chip 原位换成了
+   「压缩上下文」）：那一档开关本身与功能一字未动，仍在「模式」菜单里；状态回显改由
+   「模式」chip 的变色 + tooltip 逐项「（开）/（关）」承担（见 paintAgentModeChip）。
+   这里只留压缩那两枚 chip 的回显（见「手动压缩上下文」段的 paintCompactChips）。 */
 /* 助手栏「模式」chip 回显（本次需求）：与会话侧同款 —— 键面只写「模式」两个字，
    开着的开关由 chip 变色（.on）+ tooltip 逐项「（开）/（关）」表达。 */
 function paintAssistModeChip() {
@@ -5306,8 +5421,65 @@ function dshSegDurText(at, doneAt) {
   const ms = b - a;
   return ms < 1000 ? ms + "ms" : (ms / 1000).toFixed(1) + "s";
 }
-/* 一项的时刻栏元素：own = 这一项自己的真实时刻（优先），msgAt = 所属消息时刻（回落）。 */
-function dshSegTimeEl(own, doneAt, msgAt) {
+/* ── 每步 token 那一行（本次需求 · 用户口径「在左侧时间下方写明 token 出入」）──────────
+   行内只有 `↑计费输入 ↓输出`（拷问共识：精简口径 ——「（新增 N）」与「N 次调用」不进行内），
+   数字格式与轨迹同源（dshTokShort）；完整明细（缓存读 / 缓存写 / 输出 / 推理 / 步内调用
+   次数 / 服务商 · 模型）走 tooltip，一行小字不塞第二组数字。
+   形态：它是时刻栏（.dsh-seg-time）**内部的第二个块级子节点** —— 时刻栏本身是绝对定位
+   （不进文档流），所以正文宽度 / 缩进 / 行序一个像素都不动；带 token 的项由 CSS
+   （.dsh-seg-has-tok 的最小高度兜底）保证这一行绝不压到下一项。 */
+function dshSegTokTitle(tok) {
+  if (!tok) return "";
+  const short = typeof dshTokShort === "function" ? dshTokShort : (n) => String(Number(n) || 0);
+  const parts = [I18n.t("这一步的 token")];
+  parts.push(
+    I18n.t("计费输入") +
+      " " +
+      short(tok.in) +
+      "（" +
+      I18n.t("缓存读") +
+      " " +
+      short(tok.cacheRead) +
+      " · " +
+      I18n.t("缓存写入") +
+      " " +
+      short(tok.cacheWrite) +
+      "）",
+  );
+  parts.push(I18n.t("输出") + " " + short(tok.out));
+  const rsn = Number(tok.reasoning) || 0;
+  if (rsn > 0) parts.push(I18n.t("推理") + " " + short(rsn));
+  const calls = Math.max(1, Number(tok.calls) || 1);
+  if (calls > 1) parts.push(I18n.t("本步 {n} 次调用", { n: calls }));
+  const who = [String(tok.provider || ""), String(tok.model || "")].filter(Boolean).join(" · ");
+  if (who) parts.push(who);
+  return parts.join(" · ");
+}
+function dshSegTokEl(tok) {
+  if (!tok) return null;
+  const a = Number(tok.in) || 0;
+  const b = Number(tok.out) || 0;
+  /* 两个数都是 0（这一步确实没记到 token）= 什么都不写：不拿 0 冒充「这一步没花钱」。 */
+  if (!a && !b) return null;
+  const short = typeof dshTokShort === "function" ? dshTokShort : (n) => String(Number(n) || 0);
+  const el = document.createElement("span");
+  el.className = "dsh-seg-tok";
+  el.title = dshSegTokTitle(tok);
+  const up = document.createElement("span");
+  /* 输入蓝 / 输出绿：与轨迹行内、Token 报告**同一套类名**（css/dsh-tokens.css 的
+     .dsh-tok-in / .dsh-tok-out，色值只在那边一处定义）。 */
+  up.className = "dsh-tok-in";
+  up.textContent = "↑" + short(a);
+  const dn = document.createElement("span");
+  dn.className = "dsh-tok-out";
+  dn.textContent = "↓" + short(b);
+  el.appendChild(up);
+  el.appendChild(dn);
+  return el;
+}
+/* 一项的时刻栏元素：own = 这一项自己的真实时刻（优先），msgAt = 所属消息时刻（回落）；
+   tok = 这一项的每步 token（只有该步最后一段才有，见 dshStepTokAt），null = 不写 token 行。 */
+function dshSegTimeEl(own, doneAt, msgAt, tok) {
   const at = Number(own) || 0;
   const msg = Number(msgAt) || 0;
   const use = at || msg;
@@ -5321,22 +5493,30 @@ function dshSegTimeEl(own, doneAt, msgAt) {
      时刻被折成两行（真浏览器量到「≈10/1」+「09:12:31」）。「这不是这一项自己的时刻」
      由 CSS 的点线下划线 + 更淡，以及下面 title 里那句写明。 */
   el.textContent = txt + (dur ? " · " + dur : "");
-  el.title = at
-    ? I18n.t("这一项自己的时刻（精确到秒）") +
-      " · " +
-      formatMsgStamp(at) +
-      (dur ? I18n.t("，耗时 ") + dur : "")
-    : I18n.t("这一项自己没有独立时刻（老存档的段）：显示的是所属消息的时刻") +
-      " · " +
-      formatMsgStamp(use);
+  const tk = dshSegTokEl(tok);
+  const tkTitle = tk ? dshSegTokTitle(tok) : "";
+  el.title =
+    (at
+      ? I18n.t("这一项自己的时刻（精确到秒）") +
+        " · " +
+        formatMsgStamp(at) +
+        (dur ? I18n.t("，耗时 ") + dur : "")
+      : I18n.t("这一项自己没有独立时刻（老存档的段）：显示的是所属消息的时刻") +
+        " · " +
+        formatMsgStamp(use)) + (tkTitle ? " · " + tkTitle : "");
+  /* token 行是时刻栏内部的第二行（块级子节点）：它跟着时刻栏一起绝对定位，
+     不参与正文排版；CSS 给带 token 的项一个最小高度兜底。 */
+  if (tk) el.appendChild(tk);
   return el;
 }
-/* 把时刻栏挂到某一项的最前面（拿不到任何真实时刻就不挂空栏）。 */
-function dshSegTimeAttach(host, own, doneAt, msgAt) {
+/* 把时刻栏挂到某一项的最前面（拿不到任何真实时刻就不挂空栏）。
+   挂了 token 行时另在宿主上落 .dsh-seg-has-tok（CSS 按它给最小高度，见 css/dsh.css）。 */
+function dshSegTimeAttach(host, own, doneAt, msgAt, tok) {
   if (!host || !host.classList) return host;
-  const t = dshSegTimeEl(own, doneAt, msgAt);
+  const t = dshSegTimeEl(own, doneAt, msgAt, tok);
   if (!t) return host;
   host.classList.add("dsh-seg-has-time");
+  if (t.querySelector && t.querySelector(".dsh-seg-tok")) host.classList.add("dsh-seg-has-tok");
   host.insertBefore(t, host.firstChild);
   return host;
 }
@@ -5583,6 +5763,10 @@ function tokUsageStepNote(st, runKey, data) {
   };
   const u = {
     turn: traceNum(tr.turn, 0),
+    /* 会话轮号（本次需求 · 老轮次 token 回填）：明细**自己带轮号**才能按 (轮号, 步号)
+       与被回填的历史明细同键取数 —— 少了这一位，明细只能按「当前在跑的那一轮」认领，
+       切会话 / 重启后老轮次就再也对不上号（见 dshUsageDetailsOf 的口径说明）。 */
+    round: round,
     step: step,
     calls: 1,
     input: num(data.inputTokens),
@@ -5615,6 +5799,171 @@ function tokUsageStepsTake(st, runKey) {
   return list.length ? list : null;
 }
 
+/* ── 每步 token 的取数口径（本次需求 · 「会话 · 对话」也要写 token 出入 + 老轮次不再丢）──
+   真源有两处，这里把它们合成**一份明细表**：
+     · st._usageSteps —— 正在跑的这一轮的明细（运行时内存，见 tokUsageStepNote）；
+     · 每条助手消息的 m.usageSteps —— 已收尾各轮随消息落盘的那一份（agentRoundMsgTail 写）。
+   **过去没人读回 m.usageSteps**（轨迹只认内存那份）：切会话 / 重启后内存是空的，于是
+   「每步 token」只剩当前这一轮 —— 用户看到的就是「只显示最新的几十条」。本次起一并读回，
+   按 (轮号, 步号) 取数，历史轮次照样有 token。
+   轮号（明细表里必须有它，否则同一会话里第 1 轮的 step 3 与第 3 轮的 step 3 会串台）：
+     · 新明细自带（tokUsageStepNote 写 round）；
+     · 改版前落盘的老明细没这一位 → 由 dshUsageStepsStampRound 按**同一条消息的段轮号**补
+       （两者同源，都出自 app-db.js 的 traceReset.round）；补不出轮号的条目保留原样，
+       取数时自然对不上 → 不显示（绝不编一个轮号出来）。
+   数字口径（与轨迹行内、与上游账单一致）：计费输入 = 非缓存输入 + 缓存读 + 缓存写。 */
+function dshUsageRoundOfMsg(m) {
+  if (!m) return 0;
+  const segs = Array.isArray(m.segments)
+    ? m.segments
+    : Array.isArray(m._segs)
+      ? m._segs
+      : null;
+  if (!segs) return 0;
+  for (const s of segs) {
+    const r = Number(s && s.round);
+    if (Number.isFinite(r) && r > 0) return r;
+  }
+  return 0;
+}
+/* 收尾时给本轮明细补轮号（老形态的条目没有）：一个都不改结构，只补缺的那一位。 */
+function dshUsageStepsStampRound(steps, segs) {
+  if (!Array.isArray(steps) || !steps.length) return steps;
+  let round = 0;
+  for (const s of Array.isArray(segs) ? segs : []) {
+    const r = Number(s && s.round);
+    if (Number.isFinite(r) && r > 0) {
+      round = r;
+      break;
+    }
+  }
+  if (!(round > 0)) return steps;
+  for (const d of steps) {
+    if (d && !(Number(d.round) > 0)) d.round = round;
+  }
+  return steps;
+}
+/* 合成明细表：本轮内存那份 + 各条助手消息落盘那份（顺序 = 先历史后本轮，取数只按键，
+   与顺序无关）。返回**新数组**，调用方随便读，不会改到会话对象。 */
+function dshUsageDetailsOf(st) {
+  if (!st) return [];
+  const out = [];
+  const msgs = Array.isArray(st.messages) ? st.messages : [];
+  for (const m of msgs) {
+    if (!m || m.role !== "assistant") continue;
+    const list = Array.isArray(m.usageSteps) ? m.usageSteps : null;
+    if (!list || !list.length) continue;
+    const round = dshUsageRoundOfMsg(m);
+    for (const d of list) {
+      if (!d) continue;
+      if (Number(d.round) > 0 || !(round > 0)) {
+        out.push(d);
+        continue;
+      }
+      out.push(Object.assign({}, d, { round: round }));
+    }
+  }
+  const live = Array.isArray(st._usageSteps) ? st._usageSteps : null;
+  if (live) for (const d of live) if (d) out.push(d);
+  return out;
+}
+/* 明细表的签名：会话里的消息条数 + 本轮内存明细条数 + 末尾那条助手消息带的明细条数。
+   三者任一变了就重算（明细不再按条数裁，长会话里上千条也只算一次）。 */
+function dshTokStepSigOf(st) {
+  const msgs = st && Array.isArray(st.messages) ? st.messages : [];
+  let lastLen = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.role !== "assistant") continue;
+    if (Array.isArray(m.usageSteps)) lastLen = m.usageSteps.length;
+    break;
+  }
+  const liveLen = st && Array.isArray(st._usageSteps) ? st._usageSteps.length : 0;
+  return msgs.length + ":" + liveLen + ":" + lastLen;
+}
+/* 键：轮号 + 步号（与轨迹的 detailOf 同一把键，两处读数同源）。 */
+function dshTokStepKeyOf(round, step) {
+  return String(round) + ":" + String(step);
+}
+/* 会话的每步 token 表：Map("轮:步" → {in, out, calls, cacheRead, cacheWrite, reasoning,
+   provider, model})。in = 计费输入；两个数都是 0 的桶照样留在表里（由展示层判断写不写）。
+   一次算好挂会话上（签名不变就直接复用）—— 整表重绘时逐条消息问一次也只是读缓存。 */
+function dshTokStepMapOf(st) {
+  if (!st) return null;
+  const sig = dshTokStepSigOf(st);
+  if (st._tokStepMap instanceof Map && st._tokStepMapSig === sig) return st._tokStepMap;
+  const map = new Map();
+  for (const d of dshUsageDetailsOf(st)) {
+    const r = Number(d && d.round) || 0;
+    const step = Number(d && d.step);
+    if (!(r > 0) || !Number.isFinite(step)) continue;
+    const k = dshTokStepKeyOf(r, step);
+    let cur = map.get(k);
+    if (!cur) {
+      cur = {
+        in: 0,
+        out: 0,
+        calls: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+        provider: "",
+        model: "",
+      };
+      map.set(k, cur);
+    }
+    cur.calls += Math.max(1, Number(d.calls) || 1);
+    cur.cacheRead += Number(d.cacheRead) || 0;
+    cur.cacheWrite += Number(d.cacheWrite) || 0;
+    cur.reasoning += Number(d.reasoning) || 0;
+    cur.out += Number(d.output) || 0;
+    /* 计费输入 = 非缓存输入 + 缓存读 + 缓存写（与轨迹、与上游账单同一口径） */
+    cur.in +=
+      (Number(d.input) || 0) + (Number(d.cacheRead) || 0) + (Number(d.cacheWrite) || 0);
+    if (d.provider) cur.provider = String(d.provider);
+    if (d.model) cur.model = String(d.model);
+  }
+  st._tokStepMap = map;
+  st._tokStepMapSig = sig;
+  return map;
+}
+/* 段自己的轮号（段没带就退回落实参给的兜底；两者都没有 = 0 = 取不到，不显示）。 */
+function dshSegRoundNum(seg, fallback) {
+  const r = Number(seg && seg.round);
+  if (Number.isFinite(r) && r > 0) return r;
+  const f = Number(fallback);
+  return Number.isFinite(f) && f > 0 ? f : 0;
+}
+/* 段列表第 i 段要不要写 token（在 = 它正是该步的**最后一段**，与轨迹「一步一行、
+   落在该步最后一项」同粒度；同一 (轮号, 步号) 的其它段返回 null = 不重复写）。 */
+function dshStepTokAt(segs, i, defRound, tokMap) {
+  if (!tokMap || !tokMap.size || !Array.isArray(segs)) return null;
+  const seg = segs[i];
+  if (!seg) return null;
+  const round = dshSegRoundNum(seg, defRound);
+  const step = Number(seg.step);
+  if (!(round > 0) || !Number.isFinite(step)) return null;
+  const nx = segs[i + 1];
+  if (nx && dshSegRoundNum(nx, defRound) === round && Number(nx.step) === step) return null;
+  return tokMap.get(dshTokStepKeyOf(round, step)) || null;
+}
+/* 整条段列表的「哪一段写 token」表（下标对齐；不在 = null）：一次算完，
+   渲染循环里只按下标取，别在循环里逐段扫明细。 */
+function dshTokOfSegs(segs, defRound, tokMap) {
+  const out = [];
+  if (!Array.isArray(segs) || !segs.length) return out;
+  for (let i = 0; i < segs.length; i++) out.push(dshStepTokAt(segs, i, defRound, tokMap));
+  return out;
+}
+/* 短数字（1.2k / 3.40M）：与轨迹的 fmtNum 同一份算法 —— 那边改为委托本函数，
+   会话与轨迹的数字永远长得一样（口径只有这一处）。 */
+function dshTokShort(n) {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(v);
+  if (v < 1000000) return (v / 1000).toFixed(1) + "k";
+  return (v / 1000000).toFixed(2) + "M";
+}
+
 /* 一轮收尾消息的公共尾巴：思考 / 段快照 / 工具清单 ─────────────────────────
    正常结束、被终止、出错三条收尾路径**共用一份口径**（需求「一轮结束后不要自动隐藏
    或删除思考」）：think 段拼出的纯思考必须随消息归档（msg.reasoning + msg.segments）。
@@ -5635,15 +5984,9 @@ function agentRoundMsgTail(st, msg, runKey) {
   if (String(rsn).trim()) msg.reasoning = rsn;
   if (st && Array.isArray(st._liveTools) && st._liveTools.length)
     msg.tools = st._liveTools.slice();
-  /* 每步 usage 明细（本次需求 · 修「每步 token 丢失」）：带上 (轮号, 步号) 随消息落盘 ——
-     历史轨迹（切走再切回、重启后）直接按键取数，不再靠时刻猜归步。
-     一次模型调用 = 一条，**一条都不裁**（用户口径「保留全部」；同一步多调用各自留一条，
-     界面显示该步合计，见 tokUsageStepNote）。
-     三条收尾路径（正常结束 / 终止 / 出错）都走本函数，故**终止与出错那一轮的用量同样留住**。 */
-  try {
-    const steps = typeof tokUsageStepsTake === "function" ? tokUsageStepsTake(st, runKey) : null;
-    if (steps) msg.usageSteps = steps;
-  } catch (_) {}
+  /* 段快照先算（下面的每步 token 要借它的轮号补号，见 dshUsageStepsStampRound）：
+     段与明细同源，都出自本轮的 traceReset.round。 */
+  let usageSegs = null;
   try {
     const segs =
       typeof agentSegsForDisk === "function"
@@ -5651,7 +5994,21 @@ function agentRoundMsgTail(st, msg, runKey) {
             typeof traceSegmentsOf === "function" ? traceSegmentsOf(runKey) : null,
           )
         : null;
-    if (segs && segs.length) msg.segments = segs;
+    if (segs && segs.length) {
+      msg.segments = segs;
+      usageSegs = segs;
+    }
+  } catch (_) {}
+  /* 每步 usage 明细（本次需求 · 修「每步 token 丢失」）：带上 (轮号, 步号) 随消息落盘 ——
+     历史轨迹（切走再切回、重启后）直接按键取数，不再靠时刻猜归步。
+     一次模型调用 = 一条，**一条都不裁**（用户口径「保留全部」；同一步多调用各自留一条，
+     界面显示该步合计，见 tokUsageStepNote）。
+     **本次需求起这一段还要被读回来**（dshUsageDetailsOf）：老形态的条目没有轮号，
+     落盘前按同一条消息的段轮号补齐 —— 不补这一位，历史轮次的 token 就永远取不到。
+     三条收尾路径（正常结束 / 终止 / 出错）都走本函数，故**终止与出错那一轮的用量同样留住**。 */
+  try {
+    const steps = typeof tokUsageStepsTake === "function" ? tokUsageStepsTake(st, runKey) : null;
+    if (steps) msg.usageSteps = dshUsageStepsStampRound(steps, usageSegs);
   } catch (_) {}
   return msg;
 }
@@ -6942,13 +7299,13 @@ function dshContextRowEl(seg) {
   return d;
 }
 
-function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy) {
+function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy, tok) {
   if (!seg || !seg.k) return null;
   const pol = policy || null;
   /* 上下文注入行：同样按段序内联，左侧也挂它自己的时刻（本次需求） */
   if (seg.k === "ctx") {
     const c = dshContextRowEl(seg);
-    if (c) dshSegTimeAttach(c, seg.at, 0, msgAt);
+    if (c) dshSegTimeAttach(c, seg.at, 0, msgAt, tok);
     return c;
   }
   if (seg.k === "think") {
@@ -6970,8 +7327,8 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy) {
     });
     if (!btn) return null;
     row.appendChild(btn);
-    /* 左侧挂这一项自己的时刻（段自带 at，老存档回落所属消息时刻） */
-    dshSegTimeAttach(row, seg.at, 0, msgAt);
+    /* 左侧挂这一项自己的时刻（段自带 at，老存档回落所属消息时刻）+ 该步的 token 行 */
+    dshSegTimeAttach(row, seg.at, 0, msgAt, tok);
     return row;
   }
   if (seg.k === "say" || seg.k === "err") {
@@ -6985,7 +7342,7 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy) {
     md.className = "md";
     md.innerHTML = renderMarkdown(txt);
     d.appendChild(md);
-    dshSegTimeAttach(d, seg.at, 0, msgAt);
+    dshSegTimeAttach(d, seg.at, 0, msgAt, tok);
     return d;
   }
   if (seg.k === "tool") {
@@ -7013,7 +7370,7 @@ function dshHistSegEl(seg, pool, nodeId, idx, n, showThink, msgAt, policy) {
     wrap.appendChild(box);
     /* 工具项左侧的时刻取**这次调用自己的**真实时刻与耗时（at → doneAt）；
        记录上一条时间都抽不到时，才回落到所属消息时刻。 */
-    dshSegTimeAttach(wrap, t && t.at, t && t.doneAt, msgAt);
+    dshSegTimeAttach(wrap, t && t.at, t && t.doneAt, msgAt, tok);
     return wrap;
   }
   return null;
@@ -7032,29 +7389,94 @@ function agentLiveSegsEl(row, st, live, items) {
   /* 正在增长的思考段未必是尾段：agent 每步「思考 → 工具」，思考段后面还会挂
      tool 段，所以按 tracePush 打的 open 标记认它，而不是认 items 末尾。 */
   const anyOpenThink = items.some((x) => x && x.k === "think" && x.open === true);
-  /* 运行中的这一轮同样封顶：一轮里思考 / 工具段动辄上百，全量重绘就是卡死的直接来源。
-     只从最近 AGENT_MAX_VISIBLE_ITEMS 条起渲染（这一轮还没落成历史消息，不参与最前端的
-     「显示更早内容」；收尾后它的段随消息进历史，届时可在列表最前端展开）。
+  /* ── 一轮**不封顶**（本次需求 · 用户口径「移除该计量的最大个数限制」）─────────────
+     原来这里只从最近 AGENT_MAX_VISIBLE_ITEMS（200）条起渲染，前面的段折成一行
+     「已折叠更早的运行条目：N」而且运行中展不开 —— 用户看到的就是「只显示最新的几十条」。
+     现在全量常驻（与「显示更早内容」那条历史窗口不是一回事：那条是用户手点的分页）。
+     不封顶的代价怎么收住：**一段的 DOM 只在它首次出现时建，重绘时复用**（下面的对账口径）
+     —— 否则长任务里「每来一帧就把上千段重建一遍」正是卡死的来源。
      索引一律用 items 里的绝对序号：流式就地更新按 dataset.segIdx 找尾段，不能错位。 */
-  const off = Math.max(0, items.length - AGENT_MAX_VISIBLE_ITEMS);
-  if (off > 0) {
-    const cut = document.createElement("div");
-    cut.className = "dsh-seg dsh-live-cut";
-    cut.textContent = I18n.t("已折叠更早的运行条目：{n}", { n: off });
-    row.appendChild(cut);
+  const round = typeof agentTraceRound === "function" ? agentTraceRound("agent:" + st.id) : null;
+  const tokMap = typeof dshTokStepMapOf === "function" ? dshTokStepMapOf(st) : null;
+  const built = Array.isArray(row._dshSegEls) ? row._dshSegEls : null;
+  /* 对账（三条全中才敢复用）：
+       · 同一份 items 数组（tracePush 就地追加 = 同一个引用；换轮 = traceReset 换新数组）；
+       · 同一轮号；
+       · 已建段数 ≤ 现在的段数（变少 = 内容换了，整份重建）。
+     复用起点**往前退**：
+       · 尾段一律重画（它可能在两帧之间变了身份：流式正文刚收口 → 要按 markdown 重画；
+         工具卡从「运行中」转「已完成」）；
+       · 再往前退到**最早的「还没回来的工具卡」**：并行调用里先发的那个可能迟迟不回，
+         而它后面早已追加了别的段 —— 只认尾段的话，它就会一直停在「运行中」（改动前
+         每次都整表重绘，所以看不出来）。扫描一次已建段即可（O(段数)，比建 DOM 便宜得多）。
+     于是每帧的构建量是 O(新增段数 + 未定稿的工具卡数)，不是 O(总段数)。
+     还要清掉上一帧挂在尾段上的那几枚 id（#agent-stream / #agent-think + dataset.segIdx）：
+     被复用的段一定不再是尾段，id 留在它身上 = 下一帧的就地更新写错元素（重复 id）。 */
+  /* 段 → 工具记录：与下面工具分支**同一份配对口径**（callId 优先，老数据退回落 step） */
+  const toolOfSeg = (sg) =>
+    !sg || sg.k !== "tool"
+      ? null
+      : tools.find((x) =>
+          sg.callId
+            ? String(x.callId) === String(sg.callId)
+            : sg.step != null && x.step != null && x.step === sg.step,
+        ) || null;
+  const reuse =
+    !!built && row._dshItemsRef === items && row._dshRound === round && built.length <= items.length;
+  let start = 0;
+  if (reuse) {
+    start = Math.max(0, built.length - 1);
+    for (let i = 0; i < start; i++) {
+      const sg = items[i];
+      if (!sg || sg.k !== "tool") continue;
+      const rec = toolOfSeg(sg);
+      if (!rec || rec.result || rec.error) continue;
+      start = i;
+      break;
+    }
+    const hook = row._dshHookEl;
+    if (hook) {
+      if (typeof hook.removeAttribute === "function") hook.removeAttribute("id");
+      else hook.id = "";
+      if (hook.dataset) delete hook.dataset.segIdx;
+      row._dshHookEl = null;
+    }
+    for (let i = start; i < built.length; i++) {
+      const el = built[i];
+      if (el && el.parentNode === row) row.removeChild(el);
+    }
+    built.length = start;
+  } else {
+    row.textContent = "";
+    row._dshSegEls = [];
+    row._dshHookEl = null;
   }
-  for (let i = off; i < items.length; i++) {
+  const segEls = row._dshSegEls;
+  row._dshItemsRef = items;
+  row._dshRound = round;
+  for (let i = start; i < items.length; i++) {
     const seg = items[i];
-    if (!seg) continue;
+    /* 该步的 token（只有「这一步的最后一段」才有；拿不到轮号 / 明细 → null = 不写） */
+    const tok = typeof dshStepTokAt === "function" ? dshStepTokAt(items, i, round, tokMap) : null;
+    if (!seg) {
+      segEls[i] = null;
+      continue;
+    }
     const isLast = i === items.length - 1;
     const streaming =
       seg.k === "think" ? seg.open === true || (isLast && !anyOpenThink) : isLast;
     if (seg.k === "think") {
       /* 「显示思考」关掉：这一项不渲染（数据仍在轨迹与消息存档里，
          再打开开关即整表重绘看回来） */
-      if (!showThink) continue;
+      if (!showThink) {
+        segEls[i] = null;
+        continue;
+      }
       const txt = String(seg.text || "");
-      if (!txt) continue;
+      if (!txt) {
+        segEls[i] = null;
+        continue;
+      }
       const oKey = "segthink:" + (st.id || "") + ":" + i;
       /* 本次需求：不再有 details 下拉开合 —— 一行可点的摘要条，点开在弹窗里读全文。
          仍在增长的那一段挂上旧 id + 段序：重绘前的就地字数刷新与滚动记忆按它们找它。 */
@@ -7066,15 +7488,22 @@ function agentLiveSegsEl(row, st, live, items) {
         segKey: oKey,
         at: seg.at,
       });
-      if (!btn) continue;
+      if (!btn) {
+        segEls[i] = null;
+        continue;
+      }
       if (streaming) {
         btn.id = "agent-think";
         btn.dataset.segIdx = String(i);
+        /* 记下这一帧的 id 宿主：下一帧它若被复用（不再是尾段），先把 id 摘掉，
+           免得两枚元素同时叫 #agent-think（就地更新会写到错的那一枚上）。 */
+        row._dshHookEl = btn;
       }
       box.appendChild(btn);
       /* 这一项的时刻来自**段自己**的 at（app-db.js tracePush 在思考增量到达那一刻记下）——
          不再拿「本轮 / 消息」的时刻冒充本段时刻（见 dshSegTimeEl 的上方口径）。 */
-      dshSegTimeAttach(box, seg.at, 0, 0);
+      dshSegTimeAttach(box, seg.at, 0, 0, tok);
+      segEls[i] = box;
       row.appendChild(box);
     } else if (seg.k === "say" || seg.k === "err") {
       const d = document.createElement("div");
@@ -7091,6 +7520,8 @@ function agentLiveSegsEl(row, st, live, items) {
         d.id = "agent-stream";
         d.dataset.segIdx = String(i);
         d.classList.add("dsh-stream");
+        /* 同 #agent-think：记下 id 宿主，下一帧被复用时先摘 id（见上面那段说明） */
+        row._dshHookEl = d;
         d.textContent =
           seg.k === "err" && !String(seg.text || "").startsWith("⚠")
             ? "⚠ " + String(seg.text || "")
@@ -7105,7 +7536,8 @@ function agentLiveSegsEl(row, st, live, items) {
       }
       /* 这一项自己的时刻（段 at）：**在写完正文之后再挂** —— 时刻栏是元素的第一只子节点，
          上面的 textContent 赋值会把子节点清空一次（就地更新路径另见 dshSegSetStreamText）。 */
-      dshSegTimeAttach(d, seg.at, 0, 0);
+      dshSegTimeAttach(d, seg.at, 0, 0, tok);
+      segEls[i] = d;
       row.appendChild(d);
     } else if (seg.k === "tool") {
       const t = tools.find((x) =>
@@ -7113,7 +7545,10 @@ function agentLiveSegsEl(row, st, live, items) {
           ? String(x.callId) === String(seg.callId)
           : seg.step != null && x.step != null && x.step === seg.step,
       );
-      if (!t) continue;
+      if (!t) {
+        segEls[i] = null;
+        continue;
+      }
       /* 两层结构与历史路径一致（见 dshHistSegEl 的 tool 分支）：外层只当时刻栏宿主、
          内层 .dsh-seg-tool 才是青轨 + 淡青底的视觉盒 —— 颜色不裹住左侧时刻。 */
       const box = document.createElement("div");
@@ -7128,13 +7563,15 @@ function agentLiveSegsEl(row, st, live, items) {
       wrap.className = "dsh-seg dsh-seg-tool-wrap";
       wrap.appendChild(box);
       /* 工具项左侧：这次调用自己的真实时刻 + 耗时（结果还没回来就只有发起时刻） */
-      dshSegTimeAttach(wrap, t.at || seg.at, t.doneAt, 0);
+      dshSegTimeAttach(wrap, t.at || seg.at, t.doneAt, 0, tok);
+      segEls[i] = wrap;
       row.appendChild(wrap);
     } else if (seg.k === "ctx") {
       /* 上下文注入行：运行中也照同一份渲染（工具增删随请求头到达，往往还在跑的时候就有） */
       const c = dshContextRowEl(seg);
+      segEls[i] = c || null;
       if (c) {
-        dshSegTimeAttach(c, seg.at, 0, 0);
+        dshSegTimeAttach(c, seg.at, 0, 0, tok);
         row.appendChild(c);
       }
     }
@@ -7553,6 +7990,122 @@ function bindDshUserImgOpen(body) {
    **不要再把它加回来** ——
    回归口径见 test/smoke-session-markers.js [6]（钉住模块里没有折叠行、段按序内联）。 */
 
+/* ── 手动压缩后的折叠行（本次开发需求 · 拷问共识）──────────────────────────────
+   被压掉的那段历史在**原位**折成一行「已压缩的历史 · N 条」：默认收起（组内消息一条都
+   不渲染），点开按会话其它消息同款的完整时间线回看（正文 + 工具 + 思考按当前「显示思考」
+   档位）；每次压缩各占一行（旧折组不并入新组，见 agentCompactRun）。
+   注意：折叠只影响**渲染**与**下发上下文**（app-db.js 的 agentHistoryEntries 过滤 _fold），
+   会话的轮次 / 时间区间 / 轨迹 / Token 报告 / 导出照旧包含这些消息（用户口径）。 */
+function agentFoldCountOf(msgs, gid) {
+  let n = 0;
+  for (const m of msgs || []) if (m && String(m._fold || "") === String(gid)) n++;
+  return n;
+}
+function agentFoldRowEl(st, gid, count, at, open) {
+  const row = document.createElement("div");
+  row.className = "agent-fold" + (open ? " open" : "");
+  row.dataset.fold = String(gid);
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "agent-fold-head";
+  const caret = document.createElement("span");
+  caret.className = "agent-fold-caret";
+  caret.textContent = open ? "▾" : "▸";
+  head.appendChild(caret);
+  const label = document.createElement("span");
+  label.className = "agent-fold-label";
+  label.textContent = I18n.t("已压缩的历史 · {n} 条", { n: Number(count) || 0 });
+  head.appendChild(label);
+  if (at) {
+    const t = document.createElement("span");
+    t.className = "agent-fold-time";
+    t.textContent = formatMsgTimeSec(at);
+    head.appendChild(t);
+  }
+  head.title = I18n.t(
+    "这段历史已被收进摘要：不再进模型上下文；点开可按原样回看（会话本身与这些记录都留着）",
+  );
+  head.onclick = () => {
+    st.foldOpen = Object.assign({}, st.foldOpen);
+    if (st.foldOpen[gid]) delete st.foldOpen[gid];
+    else st.foldOpen[gid] = true;
+    /* 展开态随会话落盘（用户口径）：只标脏，不盖 updatedAt（看东西不该把会话顶到最前） */
+    agentMarkSessionDirty(st.id);
+    renderAgentSession();
+  };
+  row.appendChild(head);
+  return row;
+}
+/* 「查看压缩摘要」那枚 chip：最近一次压缩的摘要全文 + 元信息 + 复制（只读，不改写） */
+function openCompactSummaryPop() {
+  const st = agentSessionState();
+  const rec = compactLatestOf(st);
+  if (!rec) {
+    toast(I18n.t("还没有压缩记录：先点「压缩上下文」"), "warn");
+    return;
+  }
+  if (typeof openOverlay !== "function") return;
+  const txt = String(rec.summary || "");
+  openOverlay(I18n.t("压缩摘要"));
+  const box = document.getElementById("overlay");
+  const shell = box ? box.querySelector(".overlay-box") : null;
+  if (shell) shell.classList.add("compact-pop-box");
+  const body = document.getElementById("ovBody");
+  if (!body) return;
+  body.innerHTML = "";
+  const root = document.createElement("div");
+  root.className = "compact-pop";
+  const meta = document.createElement("div");
+  meta.className = "compact-pop-meta";
+  meta.textContent = [
+    I18n.t("压掉 {n} 条消息 · 原文约 {c} 字", {
+      n: Number(rec.count) || 0,
+      c: Number(rec.chars) || 0,
+    }),
+    rec.at ? formatMsgTimeSec(rec.at) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  root.appendChild(meta);
+  const pane = document.createElement("div");
+  pane.className = "compact-pop-body md-viewer-doc";
+  try {
+    pane.innerHTML =
+      typeof dshThinkMdHtml === "function" ? dshThinkMdHtml(txt) : escapeHtml(txt);
+  } catch (_) {
+    pane.textContent = txt;
+  }
+  root.appendChild(pane);
+  body.appendChild(root);
+  const foot = document.getElementById("ovFoot");
+  if (foot) {
+    const cp = document.createElement("button");
+    cp.type = "button";
+    cp.className = "mini";
+    cp.textContent = I18n.t("复制");
+    cp.title = I18n.t("复制这份摘要到剪贴板");
+    cp.onclick = () => {
+      const done = () => {
+        cp.textContent = I18n.t("已复制");
+        setTimeout(() => {
+          cp.textContent = I18n.t("复制");
+        }, 1200);
+      };
+      dshClipboardWrite(txt)
+        .then((r) => (r && r.ok === false ? toast(appClipboardFailureText(r), "err") : done()))
+        .catch((err) =>
+          toast(appClipboardFailureText({ error: (err && err.message) || "" }), "err"),
+        );
+    };
+    foot.appendChild(cp);
+    const close = document.createElement("button");
+    close.className = "mini primary";
+    close.textContent = I18n.t("关闭");
+    close.onclick = () => closeOverlay();
+    foot.appendChild(close);
+  }
+}
+
 function dshMsgBlock(m, nodeId, idx, opts) {
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
@@ -7667,8 +8220,30 @@ function dshMsgBlock(m, nodeId, idx, opts) {
        思考 / 正文 / 工具 / 上下文注入各自落回它在时间线上的位置，不再有
        「把工具段搬进一行折叠条」的轮次过程折叠（原 dshTurnProcessFold 已撤，
        见该函数原址的说明）；段自己的时刻由 dshSegTimeAttach 挂在每项左侧。 */
+    /* 每步 token（本次需求 · 「在左侧时间下方写明 token 出入」）：整条消息**一次算好**
+       「哪一段该写 token」（只有该步最后一段），段循环里只按下标取 —— 不在循环里逐段扫
+       明细（长会话里那是 O(段数 × 明细数)）。取不到会话 / 明细 → null = 整个不写。 */
+    let tokOfIdx = null;
+    try {
+      const own = typeof agentSessionById === "function" ? agentSessionById(nodeId) : null;
+      const tokMap = own && typeof dshTokStepMapOf === "function" ? dshTokStepMapOf(own) : null;
+      if (tokMap && tokMap.size)
+        tokOfIdx = dshTokOfSegs(m.segments, dshUsageRoundOfMsg(m), tokMap);
+    } catch (_) {
+      tokOfIdx = null;
+    }
     for (let n = from; n < m.segments.length; n++) {
-      const el = dshHistSegEl(m.segments[n], pool, nodeId, idx, n, showThink, m.at, policy);
+      const el = dshHistSegEl(
+        m.segments[n],
+        pool,
+        nodeId,
+        idx,
+        n,
+        showThink,
+        m.at,
+        policy,
+        tokOfIdx ? tokOfIdx[n] || null : null,
+      );
       if (el) body.appendChild(el);
     }
     /* 时间线上没配到段、剩下的工具（重发 / 老数据等边角）挂消息**最前面**，
@@ -7771,12 +8346,42 @@ function agentEntryCount(m) {
     return Math.max(1, m.segments.length);
   return 1;
 }
+/* 全局搜索跳进一条「已被手动压缩折起来」的消息时，先把它的折组展开 ——
+   折叠默认收起（组内消息一条都不渲染），不展开就等于「跳过去什么都没有」。
+   只动命中消息所在的那一个折组，别的折组照旧（用户的展开态不被覆盖）。 */
+function agentRevealFoldedMessage(st, idx) {
+  try {
+    const msgs = (st && st.messages) || [];
+    const m = msgs[Number(idx) || 0];
+    const gid = m && m._fold ? String(m._fold) : "";
+    if (!gid || !st) return false;
+    st.foldOpen = Object.assign({}, st.foldOpen);
+    if (st.foldOpen[gid]) return false;
+    st.foldOpen[gid] = true;
+    agentMarkSessionDirty(st.id);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 /* 从尾部往前凑条目预算：返回可见起点 start、以及起点那条消息要跳过的前置条目数 skip。
    只有能按段裁的消息才可能被裁（留下尾部段，head 照常渲染）；装不下整条的普通消息
    直接不进窗口，交给最前端的「显示更早内容」。 */
 function agentEntrySlice(st) {
   const msgs = Array.isArray(st && st.messages) ? st.messages : [];
-  const costs = msgs.map(agentEntryCount);
+  /* 手动压缩的折组：收起时整组只算**那一行折叠条**（1 条），组内消息不占条目预算 ——
+     否则压掉几百条的会话里，窗口会被这些根本不渲染的消息吃光，折叠条自己也被挤到
+     「显示更早内容」后面去。展开的折组照常逐条计（见 agentFoldRowEl）。 */
+  const foldOpen = (st && st.foldOpen) || {};
+  const foldSeen = Object.create(null);
+  const costs = msgs.map((m) => {
+    const gid = m && m._fold ? String(m._fold) : "";
+    if (!gid) return agentEntryCount(m);
+    if (foldOpen[gid]) return agentEntryCount(m);
+    if (foldSeen[gid]) return 0;
+    foldSeen[gid] = 1;
+    return 1;
+  });
   let total = 0;
   for (const c of costs) total += c;
   let budget = Number(st && st._visItems);
@@ -7938,11 +8543,47 @@ function renderAgentSession(opts) {
     loadRow.appendChild(btn);
     list.appendChild(loadRow);
   }
-  /* 会话消息逐条渲染（仅限可见列表内；回滚入口已随会话轮次回滚功能一并移除） */
+  /* 会话消息逐条渲染（仅限可见列表内；回滚入口已随会话轮次回滚功能一并移除）。
+     手动压缩留下的折组在这里收口：组内第一条消息的位置上画那**一行折叠条**（标题里的
+     条数 / 时刻取 st.compacts 的记录），组内其余消息在收起时一条都不渲染；展开时它们
+     按原样接在折叠条下面（同一个 .agent-fold-body 容器里，见 agentFoldRowEl）。 */
+  const foldSeen = Object.create(null);
+  const foldCollapsed = Object.create(null);
+  let foldBox = null;
   for (let i = slice.start; i < slice.msgs.length; i++) {
     const m = slice.msgs[i];
+    const gid = m && m._fold ? String(m._fold) : "";
+    if (!gid) foldBox = null;
+    if (gid) {
+      if (!foldSeen[gid]) {
+        foldSeen[gid] = 1;
+        const rec = compactRecOf(st, gid);
+        const open = !!(st.foldOpen && st.foldOpen[gid]);
+        try {
+          list.appendChild(
+            agentFoldRowEl(
+              st,
+              gid,
+              (rec && rec.count) || agentFoldCountOf(slice.msgs, gid),
+              rec && rec.at,
+              open,
+            ),
+          );
+        } catch (_) {}
+        foldBox = null;
+        if (!open) {
+          foldCollapsed[gid] = 1;
+          continue;
+        }
+        foldBox = document.createElement("div");
+        foldBox.className = "agent-fold-body";
+        list.appendChild(foldBox);
+      } else if (foldCollapsed[gid]) {
+        continue;
+      }
+    }
     try {
-      list.appendChild(
+      (foldBox || list).appendChild(
         dshMsgBlock(m, st.id || "agent", i, {
           /* 窗口起点那条消息若被裁过段：前面的段不进 DOM（它们的工具也已对账掉） */
           segFrom: i === slice.start ? slice.skip : 0,
@@ -7970,11 +8611,18 @@ function renderAgentSession(opts) {
       /* 分段轨迹：思考 / 正文 / 工具 / 错误按发生顺序逐段插进容器。
          会话主体不画竖线（竖线 + 时间轴只属于「轨迹」视图，见 app-trajectory.js） */
       row.dataset.seg = "1";
-      const box = document.createElement("div");
+      /* 段容器**跨帧复用**（本次需求 · 取消 200 段封顶的配套）：整表重绘每次都会
+         `list.innerHTML = ""`，但那只是把这一段 DOM 从父节点上摘下来 —— 元素本身连同
+         已经建好的各个段还在，重新 append 回去即可，agentLiveSegsEl 只需补新增的尾段
+         （对账口径见那边）。换轮 / 换会话 / 段数变少时它自己整份重建，绝不显示旧内容。 */
+      const box =
+        st._liveBox && st._liveBox.nodeType === 1 ? st._liveBox : document.createElement("div");
+      st._liveBox = box;
       box.className = "dsh-msg-body dsh-msg-segs";
       agentLiveSegsEl(box, st, live, segItems);
       row.appendChild(box);
     } else {
+      st._liveBox = null;
       /* 非分段（老路径）：思考同样只给一行可点开的摘要条（本次需求）
          —— 全文改在弹窗里读，不再有下拉开合。 */
       const tRow = dshThinkRowEl({
@@ -8763,7 +9411,124 @@ function startAgentSideTimeTicker() {
     } catch (_) {}
   }, 30000);
 }
-/* /compact 命令入口（会话输入区的「压缩」按钮已按需求移除）：空会话 / 运行中 / 压缩进行中均有明确提示，并防重入 */
+/* ── 手动压缩上下文（本次开发需求 · 拷问共识）──────────────────────────────────
+   入口从「只有 /compact 斜杠命令」扩到输入区那一枚「压缩上下文」chip —— 它原位替换掉
+   按需求撤走的「拷问需求」回显 chip；两条入口（按钮 / 手敲命令）走**同一条链**：
+   确认卡 → 摘要 → 折叠 → 落盘。
+   口径（用户已确认，别再改回去）：
+     ① 点击先弹一次确认卡（只问一句「确定压缩当前会话的上文？」，配「压缩」/「取消」）；
+     ② 压什么 = 原有 /compact 口径：把「还在上下文里的」会话历史（截最近约 40000 字）
+        交给模型压成一段摘要（dshRunTask，与会话运行同一工作区 / 模型 / 预设）；
+     ③ **压缩后会话保留**：被压掉的消息一条不删 —— 原位折成一行
+        「已压缩的历史 · N 条」（默认收起，点开按原样回看），并从此退出模型上下文
+        （过滤点唯一：app-db.js 的 agentHistoryEntries 看 `_fold` 标记）；
+     ④ **每次压缩各留一行折叠**（旧折组不并入新组）；新一组从**上一次那份摘要消息**开始
+        —— 摘要一起被再压一次，上下文里因此永远只有一份最新摘要；
+     ⑤ 摘要只留最近一份（st.compacts 最后一条带 summary）：「查看压缩摘要」那枚 chip
+        读它，点开浮层看全文 + 元信息 + 复制（见 openCompactSummaryPop）；
+     ⑥ 折叠展开态（st.foldOpen）与压缩记录（st.compacts）随会话落盘，切走 / 重启照旧；
+        撤销不做（折叠行只读回看，不提供「重新放回上下文」）。 */
+
+/* 压缩落地（纯状态变更，脱离界面也能单测：vm 抠出来真跑，见
+   test/smoke-agent-compact-manual.js [3]）：
+     ① 把「还在上下文里的」每条消息盖上 `_fold = gid`（已经在旧折组里的跳过 —— 它们本来
+        就不进上下文，也不该被并进新组，否则多次压缩就并成一行了）；
+     ② 追加一条「（上文已压缩）+ 摘要」消息（它**不进**折组 —— 压缩后留在上下文里的就是
+        这一条）；
+     ③ 写记录：更早那些摘要就地抹掉（只留条数与时刻给折叠行当标题），新记录带上本次摘要
+        —— 摘要只有最近一份；
+     ④ 新折组默认收起（展开态是用户自己点出来的，随会话落盘）。
+   返回本次折掉的条数。 */
+function agentCompactApply(st, info) {
+  const gid = String((info && info.id) || "");
+  if (!st || !gid) return 0;
+  if (!Array.isArray(st.messages)) st.messages = [];
+  let count = 0;
+  for (const m of st.messages) {
+    if (!m || m._fold) continue;
+    m._fold = gid;
+    count++;
+  }
+  const at = Number(info && info.at) || Date.now();
+  const summary = String((info && info.summary) || "");
+  st.messages.push({
+    role: "assistant",
+    content: I18n.t("（上文已压缩）\n\n") + summary,
+    at: at,
+    _compact: gid,
+  });
+  const prev = (Array.isArray(st.compacts) ? st.compacts : []).map((c) =>
+    Object.assign({}, c, { summary: "" }),
+  );
+  st.compacts = prev.concat([
+    {
+      id: gid,
+      at: at,
+      count: count,
+      chars: Math.max(0, Number(info && info.chars) || 0),
+      summary: summary,
+    },
+  ]);
+  st.foldOpen = Object.assign({}, st.foldOpen);
+  delete st.foldOpen[gid];
+  return count;
+}
+/* 最近一次压缩的记录：摘要只有最近一份 —— 最后一条带 summary 的（历史的那些压过就没了） */
+function compactLatestOf(st) {
+  const list = (st && Array.isArray(st.compacts) ? st.compacts : []).filter(
+    (c) => c && c.summary && String(c.summary).trim(),
+  );
+  return list.length ? list[list.length - 1] : null;
+}
+/* 某个折组的记录（标题里的条数 / 时刻）：找不到就返回 null（调用方按消息现数） */
+function compactRecOf(st, gid) {
+  const list = st && Array.isArray(st.compacts) ? st.compacts : [];
+  for (let i = list.length - 1; i >= 0; i--)
+    if (list[i] && String(list[i].id) === String(gid)) return list[i];
+  return null;
+}
+/* 输入区那两枚「压缩」chip 的显隐与状态（每次会话渲染都刷一遍）：
+   · 「压缩上下文」：压缩中显示「压缩中…」并禁用；会话运行中同样禁用（沿用现状口径，
+     tooltip 明说为什么点不动）；
+   · 「查看压缩摘要」：只在压过之后出现（没压过不占位）。 */
+function paintCompactChips() {
+  const st = agentSessionState();
+  const btn = document.getElementById("agentCompactBtn");
+  if (btn) {
+    const busy = !!st._compacting;
+    const running = !busy && sessionIsRunning(st);
+    const key = busy ? "压缩中…" : "压缩上下文";
+    const tip = busy
+      ? "正在压缩上文…"
+      : running
+        ? "运行中不可压缩：请等待当前会话结束"
+        : "压缩上下文：把较早的对话收成一段摘要（会话保留，原文折起来仍可回看）";
+    const span = btn.querySelector("span");
+    if (span) {
+      if (span.dataset.i18n !== key) span.dataset.i18n = key;
+      span.textContent = I18n.t(key);
+    } else btn.textContent = I18n.t(key);
+    btn.dataset.i18nTitle = tip;
+    btn.title = I18n.t(tip);
+    btn.disabled = busy || running;
+  }
+  const view = document.getElementById("agentCompactViewBtn");
+  if (view) view.hidden = !compactLatestOf(st);
+}
+/* 确认卡（按钮与手敲 /compact 共用）：只问一句，不预告细节（用户口径） */
+async function agentCompactConfirm() {
+  try {
+    return await confirmDialog(I18n.t("确定压缩当前会话的上文？"), {
+      title: I18n.t("压缩上下文"),
+      okText: I18n.t("压缩"),
+      cancelText: I18n.t("取消"),
+    });
+  } catch (_) {
+    return false;
+  }
+}
+/* 压缩入口（输入区按钮 / /compact 命令同一条链）：
+   空会话 / 运行中 / 压缩进行中均有明确提示并防重入（沿用现状口径）。 */
 async function agentCompact() {
   const st = agentSessionState();
   if (!st.messages.length) {
@@ -8778,12 +9543,21 @@ async function agentCompact() {
     toast(I18n.t("正在压缩上文…"), "warn");
     return;
   }
+  if (!(await agentCompactConfirm())) return;
+  /* 用户在确认卡上待着的这段时间里会话可能已经跑起来了：同一条判据再拦一次 */
+  if (sessionIsRunning(st)) {
+    toast(I18n.t("运行中不可压缩：请等待当前会话结束"), "warn");
+    return;
+  }
+  if (st._compacting) return;
   st._compacting = true;
+  paintCompactChips();
   try {
     await agentCompactRun(st);
   } finally {
     st._compacting = false;
   }
+  paintCompactChips();
 }
 async function agentCompactRun(st) {
   /* 历史存档里曾被回滚的轮次消息不参与压缩：它们已不在上下文里，摘要也不该复述它们。
@@ -8810,9 +9584,15 @@ async function agentCompactRun(st) {
         onDone: (d) => recordDshMetrics(null, d.metrics),
       },
     );
-    st.messages = [
-      { role: "assistant", content: "（上文已压缩）\n\n" + summary },
-    ];
+    /* 折叠 + 保留会话（口径见上方「手动压缩上下文」段的 ③④，落点 = agentCompactApply）：
+       压缩**不删**任何一条消息 —— 它们留在原位，只是打上 _fold 并退出上下文，会话照旧。 */
+    const gid = uid("cf");
+    agentCompactApply(st, {
+      id: gid,
+      at: Date.now(),
+      summary: summary,
+      chars: hist.length,
+    });
     toast(I18n.t("上文已压缩"), "ok");
   } catch (e) {
     toast(I18n.t("压缩失败：") + (e.message || String(e)), "err");
@@ -9956,6 +10736,9 @@ async function agentSessionSend(text, opts) {
   st._liveSid = "";
   st._pending = "";
   st._liveTools = [];
+  /* 新一轮：live 段的 DOM 缓存作废（本轮 items 数组是新的，对账本来就认不过去，
+     这里主动放开是免得把上一轮那棵 DOM 树一直挂在会话对象上）。 */
+  st._liveBox = null;
   /* 会话开始：开发节点「绑定会话运行中」即时反映到左下角运行队列 */
   updateRunQueuePanel();
   /* 新一轮（本次需求）：到这里这一轮是真开跑了（上面的「会话忙」闸已经放行、
@@ -10201,6 +10984,8 @@ async function agentSessionSend(text, opts) {
           st._pending = "";
           st._liveTools = [];
           st._usageLive = null;
+          /* 整轮重发：轨迹被 traceReset 换成了新的 items，live 段 DOM 一并作废 */
+          st._liveBox = null;
           if (mine) {
             try {
               renderAgentSession();
@@ -10497,6 +11282,8 @@ async function agentSessionSend(text, opts) {
     st.running = false;
     st._cancelled = false;
     st._liveTools = [];
+    /* 本轮收尾：live 段的 DOM 缓存一并放开（段已随消息进历史，缓存留着只是占用）。 */
+    st._liveBox = null;
     /* 本轮收尾先把界面落定：st.running 一置 false，live 行就不再算「流式尾段」，
        这里立刻重绘一次 —— 最终答复（消息已在上面 push 好）马上按 markdown 落定，
        而不是以未渲染原文的形态留在屏上等 finally 末尾那一帧。旧口径里渲染是

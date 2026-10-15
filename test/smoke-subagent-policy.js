@@ -160,8 +160,10 @@ console.log("\n[5] 仓库接线");
   const saveSeg = mainJs.slice(mainJs.indexOf('ipcMain.handle("config:save"'));
   ok(
     /* config:save 现在包在 queueCfgWrite(...) 里（config.json 的写盘串行闸门），
-       回执也多带了 bytes —— 判据放宽到「同一段里 syncSubagentPolicy(next) 紧跟 return」 */
-    /syncSubagentPolicy\(next\);\s*\n\s*return \{ ok: true[^}]*\};/.test(saveSeg.slice(0, 6000)),
+       回执也多带了 bytes —— 判据放宽到「同一段里 syncSubagentPolicy(next) 之后跟着
+       return { ok: true … }」，中间允许夹别的同源下发（本轮就是 syncCompactPolicy(next)：
+       上一轮加它时这里是「紧跟 return」，于是这条断言被夹红了一整轮）。 */
+    /syncSubagentPolicy\(next\);[\s\S]{0,400}?return \{ ok: true[^}]*\};/.test(saveSeg.slice(0, 6000)),
     "config:save 之后调一次（设置改完立刻落进组合）",
   );
   ok(

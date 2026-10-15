@@ -1399,6 +1399,9 @@ async function gsGotoSession(g) {
         ? agentEntryBudgetFrom(st, g.msgIndex)
         : (Array.isArray(st.messages) ? st.messages.length : 0) + 1;
     st._visItems = Math.max(Number(st._visItems) || 0, budget);
+    /* 命中消息若落在「手动压缩」折起来的那段历史里（app-assist.js 的 agentFoldRowEl）：
+       先把它的折组展开 —— 折叠默认收起、组内消息一条都不渲染，不展开就跳不过去。 */
+    if (typeof agentRevealFoldedMessage === "function") agentRevealFoldedMessage(st, g.msgIndex);
   }
   if (typeof setView === "function" && S.view !== "agent") setView("agent");
   S.agentActiveId = st.id;

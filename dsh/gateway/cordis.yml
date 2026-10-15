@@ -136,7 +136,7 @@
       mtnode-unattended:
         sandbox: workspace-write
         approval: ask
-    defaultPreset: workspace-write
+    defaultPreset: mtnode-unattended
 
 - id: tool-bash
   disabled: !!js process.platform === 'win32' || process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'
@@ -217,6 +217,45 @@
     thresholdChars: 4096
     headChars: 1536
     tailChars: 512
+
+# 上下文压缩（dsh 自带 compaction-basic）：长会话的历史压缩（含 provider 确认的
+# 上下文溢出恢复）。dsh 默认触发线 = 适配器声明的 contextWindow × 0.8，而网关给
+# deepseek-v4 系列声明的是 1,000,000 → 要跑到 80 万 token 才压，本机所有会话都
+# 到不了（审计脚本里「压缩 0 次」就是这么来的）。这里按 id 覆盖它的 config：
+#   thresholdRatio 0.3   = 有效窗口 ≈ 300K（声明窗口 × 0.3）
+#   retainRatio 0.04     = 保留最近原文的比例兜底（1M 窗口上约 3.7 万 token）
+#   modelPolicies[]      = 已知主力路由钉死**绝对**保留尾部（1M 窗口上留 16% 原文
+#                          = 16 万 token，压缩几乎白压，所以这一项必须绝对量）
+#   auto: true           = 自动压缩；false 时只停自动触发，溢出恢复仍在
+# 只点名 deepseek-official（本机实测：这个工作区的会话全部走它）—— 它的窗口是网关
+# 自己声明的 1,000,000，比例算出来的保留量会偏大，所以要给绝对量。自配服务商的路由名
+# 是 `mtnode_<route>`（route 由用户配置决定，没有固定的模型名可点名），一律走 retainRatio
+# 兜底：窗口越小留得越少（12.8 万窗口 → 触发约 3.8 万 / 留约 4.6 千），不会出现「留得比触发线还多」。
+# 三个键/档位的真源是 dsh-compact-policy.js（用户设置 → 本行的唯一写入点，
+# 由 main.js 在启动时与每次保存配置后改写）；改本段不会与设置打架 —— 设置没写过
+# 时这里就是「默认开 · 中档」的落地值，写过后由策略模块整份重写本段。
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.3
+    retainRatio: 0.04
+    auto: true
+    modelPolicies:
+      - provider: deepseek-official
+        model: deepseek-flash
+        retainTokens: 32768
+
+# 工具呈现（PTC）：本行已被回滚，MTNode 现跑 dsh-tools 的默认 native。
+# 为什么不留在树上：实测 both 能生效（run_code 进工具负载 +2.1K 字符），但 run_code
+# 在本机 win32 起不来（控制通道 fd 7 被 noop-runner 的 stdio:'inherit' 吞掉 →
+# ERR_INVALID_FD_TYPE），模型三个任务一次没用它，而固定前缀每步多 ~20K token
+# （PTC 的 tools:sdk 段）。机制、数据与复现方式见 docs/ptc-mode-plan.md 第十节。
+# runner 侧修好后重新启用，把下面这段取消注释即可（桌宠对话 / 纯净模式保持 native）：
+#
+# - id: tools
+#   config:
+#     mode: !!js (process.env.MTNODE_CHAT_ISOLATE !== '1' && process.env.MTNODE_PURE !== '1') && 'both' || 'native'
+#
+# 表达式写成 && / || 而非三元：!!js 是 YAML 纯量，` : ` 会被当成映射切断。
 
 - id: tool-todo
   disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1' || process.env.MTNODE_PURE === '1'

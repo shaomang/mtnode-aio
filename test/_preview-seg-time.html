@@ -17,6 +17,12 @@
   .agent-body { display: block; }
   .agent-list { display: flex; flex-direction: column; gap: 12px; padding: 18px 22px; }
   .dsh-msg { position: relative; }
+  /* 真应用里 .agent-body 的高度由 flex 布局撑开；预览页没有那层布局（pane 被当成 flex 容器
+     时高度会塌成几十像素、内容溢出到下一块下面，看截图会误判成「token 行被遮挡」），
+     所以这里按普通块按内容撑高。 */
+  .pane { display: block; }
+  .pane .agent-body { height: auto !important; }
+  .pane .agent-list { height: auto !important; max-height: none !important; overflow: visible !important; }
 </style>
 </head>
 <body>
@@ -81,6 +87,19 @@
   </div>
 </div>
 
+<!-- ⑥ 每步 token（本次需求 · 逐项时刻下方那一行）：量「会不会压到下一项 / 项高会不会涨」。
+     结构与 app-assist.js 的 dshSegTokEl 一比一（.dsh-seg-tok > .dsh-tok-in + .dsh-tok-out），
+     宿主带 .dsh-seg-has-tok（CSS 的最小高度兜底按它生效）。 -->
+<div class="pane" data-w="900" style="width:900px">
+  <div class="pane-title">⑥ 每步 token 行（宽栏 900px）</div>
+  <div class="agent-body"><div class="agent-list" data-tok-list></div></div>
+</div>
+
+<div class="pane" data-w="560" style="width:560px">
+  <div class="pane-title">⑦ 每步 token 行（窄栏 560px，容器第二档）</div>
+  <div class="agent-body"><div class="agent-list" data-tok-list></div></div>
+</div>
+
 <script>
 /* 与 app-assist.js 的 dshMsgBlock / dshHistSegEl 同构的一屏：
    逐项时刻（.dsh-seg-has-time > .dsh-seg-time）一层（最左侧那条「消息级时刻」已按本次需求移除）。
@@ -92,6 +111,94 @@ function segTime(txt, approx) {
   s.textContent = txt;
   return s;
 }
+/* 每步 token 那一行（dshSegTokEl 的同构）：↑计费输入 ↓输出，输入蓝 / 输出绿两段 span。 */
+function tokLine(inTxt, outTxt) {
+  const s = document.createElement("span");
+  s.className = "dsh-seg-tok";
+  s.title = "这一步的 token · 计费输入 " + inTxt + "（缓存读 11k · 缓存写入 0）· 输出 " + outTxt;
+  const up = document.createElement("span");
+  up.className = "dsh-tok-in";
+  up.textContent = "↑" + inTxt;
+  const dn = document.createElement("span");
+  dn.className = "dsh-tok-out";
+  dn.textContent = "↓" + outTxt;
+  s.appendChild(up);
+  s.appendChild(dn);
+  return s;
+}
+function tokSegRow(at, approx, inTxt, outTxt) {
+  const wrap = document.createElement("div");
+  wrap.className = "dsh-seg dsh-seg-has-time dsh-seg-has-tok";
+  wrap.dataset.mk = "tokseg";
+  const t = segTime(at, approx);
+  if (inTxt) t.appendChild(tokLine(inTxt, outTxt));
+  wrap.appendChild(t);
+  return wrap;
+}
+function buildTokMsg(list) {
+  const row = document.createElement("div");
+  row.className = "dsh-msg dsh-ai";
+  const body = document.createElement("div");
+  body.className = "dsh-msg-body dsh-msg-segs";
+
+  /* ① 思考项（带 token）：一行摘要条 + 时刻栏第二行的 token */
+  const thinkWrap = tokSegRow(LONG_TIME, false, "12.3k", "1.2k");
+  const thinkRow = document.createElement("button");
+  thinkRow.className = "dsh-seg dsh-seg-think dsh-think-row";
+  const sumTxt = document.createElement("span");
+  sumTxt.className = "dsh-think-sum-txt";
+  sumTxt.textContent = "◉ 思考 · 128 字";
+  thinkRow.appendChild(sumTxt);
+  thinkWrap.appendChild(thinkRow);
+  body.appendChild(thinkWrap);
+
+  /* ② 工具项（带 token，时刻最长形态 = 时刻 + 耗时折两行）：最坏情况，量它压不压下一项 */
+  const toolWrap = tokSegRow(LONG_TIME + " · 12.3s", false, "88.8k", "12.3k");
+  toolWrap.classList.add("dsh-seg-tool-wrap");
+  const toolBox = document.createElement("div");
+  toolBox.className = "dsh-seg dsh-seg-tool";
+  const chips = document.createElement("div");
+  chips.className = "dsh-tools";
+  const tool = document.createElement("details");
+  tool.className = "dsh-tool st-done";
+  const tsum = document.createElement("summary");
+  tsum.className = "dsh-tool-sum";
+  const chip = document.createElement("span");
+  chip.className = "dsh-tool-chip";
+  chip.textContent = "🔧 读取";
+  tsum.appendChild(chip);
+  tool.appendChild(tsum);
+  chips.appendChild(tool);
+  toolBox.appendChild(chips);
+  toolWrap.appendChild(toolBox);
+  body.appendChild(toolWrap);
+
+  /* ③ 正文项（带 token）：一行正文 —— 项高最小的那一档，最小高度兜底真正起作用的地方 */
+  const say = tokSegRow(LONG_TIME, false, "3.4k", "456");
+  say.classList.add("dsh-seg-say");
+  const md = document.createElement("div");
+  md.className = "md";
+  md.innerHTML = "<p>已按小时汇总完成。</p>";
+  say.appendChild(md);
+  body.appendChild(say);
+
+  /* ④ 不带 token 的正文项（对照：这一项的几何必须与改动前逐像素一致） */
+  const plain = document.createElement("div");
+  plain.className = "dsh-seg dsh-seg-has-time dsh-seg-say";
+  plain.dataset.mk = "plainseg";
+  plain.appendChild(segTime(LONG_TIME, false));
+  const md2 = document.createElement("div");
+  md2.className = "md";
+  md2.innerHTML = "<p>这一项没有 token（对照行）。</p>";
+  plain.appendChild(md2);
+  body.appendChild(plain);
+
+  row.appendChild(body);
+  list.appendChild(row);
+}
+for (const list of document.querySelectorAll("[data-tok-list]")) buildTokMsg(list);
+</script>
+<script>
 function segRow(at, approx) {
   const wrap = document.createElement("div");
   wrap.className = "dsh-seg dsh-seg-has-time";

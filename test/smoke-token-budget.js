@@ -1210,6 +1210,152 @@ const MAIN = (async () => {
   has(NODES_SRC, "if (snapshotWantsStaticRefs(opts)) attachSnapshotStaticRefs(out);",
     "refs 闸补在 pruneMinimalSnapshot 裁剪之后（否则会被 MINIMAL_SNAPSHOT_DROP 再摘掉）");
 
+  /* ===== [11] 本轮落地：上下文压缩（组合行 + 策略模块 + 设置/下发三处同名） =====
+     为什么钉这一组：dsh 默认触发线 = 适配器声明的 contextWindow × 0.8，而网关给
+     deepseek-v4 系列声明的是 1,000,000 → 要跑到 80 万 token 才压，本机所有会话都到不了
+     （审计脚本里「压缩 0 次」）。所以「组合里这一行在不在、比例对不对、设置能不能改到它」
+     必须有门槛，否则下次谁把行删了 / 比例改回 0.8，账单会静默涨回去。 */
+  console.log("\n[11] 上下文压缩：组合行 + dsh-compact-policy 策略模块 + 设置与下发同源");
+  {
+    const CORDIS = readN("dsh/gateway/cordis.yml");
+    const POLICY = read("dsh-compact-policy.js");
+    const MAIN_SRC = read("main.js");
+    const SETTINGS_SRC = read("renderer/app-settings.js");
+    const I18N_SRC2 = read("renderer/i18n.js");
+    const BUILD = read("build.json");
+    has(CORDIS, "\n- id: compaction-basic\n", "组合里有 compaction-basic 行（dsh 自带压缩真正被挂上）");
+    /* 只取这一行的 config 段：从 `- id:` 到**第一个空行**为止（空行之后是别的行/注释；
+       整块切到下一个 `- id:` 会把 2000 多字的别处注释也圈进来，断言就失去意义）。 */
+    const rowStart = CORDIS.indexOf("\n- id: compaction-basic\n") + 1;
+    const rowBlank = CORDIS.indexOf("\n\n", rowStart);
+    const rowBody = CORDIS.slice(rowStart, rowBlank < 0 ? CORDIS.length : rowBlank);
+    has(rowBody, "thresholdRatio: 0.3", "触发比例 = 0.3（声明窗口 1M → 约 30 万 token 触发，而不是默认的 80 万）");
+    has(rowBody, "retainRatio: 0.04", "兜底保留比例 = 0.04（未列名模型按窗口比例留最近原文；必须 < 最小档 0.16）");
+    has(rowBody, "auto: true", "出厂 auto: true（默认自动压缩）");
+    has(rowBody, "modelPolicies:", "按路由列了 modelPolicies（已知主力模型走绝对保留尾部）");
+    has(rowBody, "retainTokens: 32768", "默认档保留尾部 = 32,768 token（绝对值，不按 1M 窗口的 16% 留 16 万）");
+    has(rowBody, "provider: deepseek-official", "点名 deepseek-official 路由（本机实测会话全走它；比例算出的保留量偏大，所以给绝对量）");
+    ok(!/provider: mtnode\b/.test(rowBody),
+      "不点名自配服务商（provider 名是 mtnode_<route>、route 与模型名都由用户配置决定，点名必落空 → 那类路由走 retainRatio 兜底）");
+
+    has(POLICY, 'const TIERS = ["early", "mid", "late"]', "三档 = 早 / 中 / 晚（设置里只给档位，不摊原始百分比）");
+    has(POLICY, 'const DEFAULT_TIER = "mid"', "出厂档 = 中档");
+    has(POLICY, "function normalizeCompactPolicy(raw)", "归一函数独立成模块（与 dsh-agent-policy 同构，非法值一律回落默认）");
+    has(POLICY, "function applyCompactPolicy(text, rawPolicy)", "写组合的唯一入口 = applyCompactPolicy(text, policy)");
+    has(POLICY, "function compactPolicyFromConfig(cfg)", "真源读取 = config.dsh.compact（设置界面写的就是它）");
+    has(MAIN_SRC, 'require("./dsh-compact-policy.js")', "main.js require 了策略模块");
+    has(MAIN_SRC, "function syncCompactPolicy(cfg)", "main.js 有 syncCompactPolicy（与 syncSubagentPolicy 同构）");
+    ok((MAIN_SRC.match(/syncCompactPolicy\(/g) || []).length >= 3,
+      "syncCompactPolicy 在「启动时」与「保存配置后」两处都被调用（定义 1 次 + 调用 ≥2 次）");
+    has(BUILD, '"dsh-compact-policy.js"', "build.json 白名单已登记（否则打包后 Cannot find module）");
+
+    has(SETTINGS_SRC, "S.config.dsh.compact", "设置界面把值写进 config.dsh.compact");
+    has(SETTINGS_SRC, '["early", "mid", "late"]', "设置界面给的是三档选择（不是原始数字输入）");
+    has(SETTINGS_SRC, '"中 · 默认档（约 30 万 token 触发）"', "设置界面登记了默认档的档位文案");
+    has(I18N_SRC2, '"上下文压缩": "Context compaction"', "i18n 中英词条齐（英文界面不回落中文）");
+    has(I18N_SRC2, '"压缩时机": "When to compact"', "档位选择行的词条也有英文");
+
+    /* 幂等与往返：拿真组合文件跑一遍策略模块（策略与出货一致时必须零改动） */
+    try {
+      const pol = require(path.join(__dirname, "..", "dsh-compact-policy.js"));
+      const text = read("dsh/gateway/cordis.yml");
+      const def = pol.applyCompactPolicy(text, pol.compactPolicyFromConfig({}));
+      ok(def.changed === false, "默认策略（开 · 中档）对出货组合零改动（幂等，不会每次启动都写盘）");
+      const early = pol.applyCompactPolicy(text, { enabled: true, tier: "early" });
+      ok(early.changed === true && /thresholdRatio: 0.16/.test(early.text) && /retainTokens: 16384/.test(early.text),
+        "早档写进去的是 0.16 / 16384（档位真的落到组合上）");
+      const back = pol.applyCompactPolicy(early.text, { enabled: true, tier: "mid" });
+      ok(back.text === text, "早档改回中档后与出货原文逐字一致（往返无损，结构没被改写）");
+      const off = pol.applyCompactPolicy(text, { enabled: false, tier: "mid" });
+      const st = pol.compactStateInCordis(off.text);
+      ok(st && st.auto === false, "关掉后 auto: false（读回的取值不被上方注释里的示例数字带偏）");
+      ok(pol.compactStateInCordis(text).retainTokens.length === pol.KNOWN_TARGETS.length,
+        "读数只统计真正生效的 modelPolicies（不含注释示例；条数 = 策略模块点名的路由数）");
+      const noRow = pol.applyCompactPolicy("- id: tool-todo\n  config:\n    a: 1\n", { enabled: true, tier: "late" });
+      ok(noRow.changed === false, "组合里没有这一行时不自己插行（挂载由组合决定，模块只改配置值）");
+    } catch (e) {
+      ok(false, "策略模块可直接 require 并跑通：" + ((e && e.message) || String(e)));
+    }
+  }
+
+  /* ===== [12] 本轮落地：上下文压缩档位挪到助手栏「思考强度」下一行 =====
+     为什么钉这一组：压缩档的第二个人口（助手栏下拉）与设置面板**必须是同一份值**——
+     别人把它写成第二份真源（另存一个 S.assistCompact）就会出现「面板显示中档、组合里是早档」
+     这种看不见的错配；位置也要钉住（用户点名「思考强度下方」）。 */
+  console.log("\n[12] 上下文压缩档位：助手栏「思考强度」下一行 + 与设置同一份值");
+  {
+    const IDX = readN("renderer/index.html");
+    const ASSIST_SRC2 = readN("renderer/app-assist.js");
+    const BOOT_SRC = readN("renderer/app-boot.js");
+    const I18N_SRC3 = readN("renderer/i18n.js");
+
+    const effIdx = IDX.indexOf('id="assistEffortSel"');
+    const cmpIdx = IDX.indexOf('id="assistCompactSel"');
+    ok(effIdx > 0 && cmpIdx > effIdx,
+      "助手栏下拉 id=assistCompactSel 落在 id=assistEffortSel 之后（「思考强度」下一行）");
+    const ctrlEnd = IDX.indexOf("</div>", cmpIdx);
+    ok(ctrlEnd > cmpIdx && IDX.slice(cmpIdx, ctrlEnd).indexOf('class="assist-ctrl-item"') < 0,
+      "压缩这一格自己是一条 .assist-ctrl-item 行（不塞进「思考强度」那一格）");
+    ok(/id="assistCompactSel"[^>]*data-i18n-title="上下文压缩时机/.test(IDX),
+      "下拉带 i18n 悬浮说明（切语言不退回中文）");
+    ok(/<span data-i18n="上下文压缩">/.test(IDX),
+      "行标签走 data-i18n（语言切换由 applyDom 换字，不靠重绘）");
+
+    has(ASSIST_SRC2, 'const ASSIST_COMPACT_OPTIONS = [', "档位清单常量在 app-assist.js");
+    /* 只取常量数组那一段（整文件里 ["early", "mid", "late"] 还出现在归一与写回两处，
+       全文件扫会多出重复项） */
+    const optFrom = ASSIST_SRC2.indexOf("const ASSIST_COMPACT_OPTIONS = [");
+    const optBlock = ASSIST_SRC2.slice(optFrom, ASSIST_SRC2.indexOf("];", optFrom));
+    const optVals = (optBlock.match(/\["(off|early|mid|late)", "/g) || []).map(
+      (s) => s.slice(2, -4),
+    );
+    ok(eq(optVals, ["off", "early", "mid", "late"]),
+      "四档顺序 = 关闭 / 早 / 中 / 晚（默认那档排第三，与设置面板并列）");
+    has(ASSIST_SRC2, "function compactPolicyOf(cfg)", "读值走 compactPolicyOf（与策略模块同源口径）");
+    has(ASSIST_SRC2, 'tier: ["early", "mid", "late"].indexOf(String(c.tier)) >= 0 ? String(c.tier) : "mid"',
+      "归一：非法 tier 回落 mid");
+    has(ASSIST_SRC2, "enabled: c.enabled !== false", "归一：缺省 = 开（与 dsh-compact-policy 的 DEFAULT_POLICY 一致）");
+    has(ASSIST_SRC2, "function syncAssistCompactOptions(sel)", "清单 + 回显合并成一个 sync（切语言重建、按语言做指纹）");
+    has(ASSIST_SRC2, "if (document.activeElement === sel) return;", "正在选的时候不回写（下拉不会自己关掉）");
+    has(ASSIST_SRC2, 'sel.value = cp.enabled === false ? "off" : cp.tier;', "回显 = enabled:false → 关闭，否则显示档位");
+    has(ASSIST_SRC2, "S.config.dsh.compact = { enabled: next !== \"off\", tier };",
+      "写回落在 S.config.dsh.compact（与设置面板同一份值、同一份落盘，不另立真源）");
+    has(ASSIST_SRC2, "function applyAssistCompactChoice(v)", "写回入口独立成函数（boot 只接线）");
+    has(ASSIST_SRC2, "syncAssistCompactOptions($(\"#assistCompactSel\"));", "每次重画助手栏都回刷一次（打开面板即正确回显）");
+    has(BOOT_SRC, "applyAssistCompactChoice(compactSel.value)", "app-boot.js 把 onchange 接到写回入口");
+    has(I18N_SRC3, '"关闭 · 不自动压缩长会话":', "新增词条有英文（英文界面不回落中文）");
+    const i18nMiss = ["关闭 · 不自动压缩长会话", "上下文压缩时机已更新（下一个新会话生效）"].filter(
+      (k) => I18N_SRC3.indexOf('"' + k + '":') < 0,
+    );
+    ok(i18nMiss.length === 0, "本轮新增的 i18n 键都在词条表里：" + (i18nMiss.join(" / ") || "齐"));
+
+    /* 真行为：把归一函数抠出来放进沙箱跑（助手栏读的那一份必须与出货组合对得上） */
+    try {
+      const sandbox = {};
+      vm.createContext(sandbox);
+      vm.runInContext(
+        grabFunction(ASSIST_SRC2, "compactPolicyOf", "app-assist.js") + "\nthis.p = compactPolicyOf;",
+        sandbox,
+      );
+      const p = sandbox.p;
+      ok(eq(p({}), { enabled: true, tier: "mid" }), "缺省配置 → 开 · 中档（与组合里的 0.3 / 32768 对得上）");
+      ok(eq(p({ dsh: { compact: { enabled: false, tier: "early" } } }), { enabled: false, tier: "early" }),
+        "关 · 早档原样读出");
+      ok(eq(p({ dsh: { compact: { tier: "nonsense" } } }), { enabled: true, tier: "mid" }),
+        "非法档位回落中档（不把脏值写进组合）");
+      const settingsSrc = readN("renderer/app-settings.js");
+      const mTier = settingsSrc.match(/\["early", "mid", "late"\]/);
+      ok(!!mTier, "设置面板给的是同一张三档表（两处人口档位集合一致）");
+      const pol2 = require(path.join(__dirname, "..", "dsh-compact-policy.js"));
+      const off2 = pol2.applyCompactPolicy(read("dsh/gateway/cordis.yml"), p({ dsh: { compact: { enabled: false, tier: "late" } } }));
+      const st2 = pol2.compactStateInCordis(off2.text);
+      ok(st2 && st2.auto === false && /retainTokens: 65536/.test(off2.text),
+        "助手栏选「关闭」后组合行 = auto:false 且保留尾巴仍是该档的 65536（关掉不丢用户选的档）");
+    } catch (e) {
+      ok(false, "compactPolicyOf 可在沙箱里跑通：" + ((e && e.message) || String(e)));
+    }
+  }
+
   console.log(
     "\n" +
       (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ " + checks + " 项全部通过") +

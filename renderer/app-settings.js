@@ -1477,6 +1477,77 @@ function openSettingsBody() {
       sec.appendChild(subHint);
     }
 
+    /* ── 上下文压缩（dsh 自带 compaction-basic）：长会话的历史压缩 ──
+       为什么必须有这一节：dsh 默认触发线 = 适配器声明的 contextWindow × 0.8，而网关给
+       deepseek-v4 系列声明的是 1,000,000（见 dsh/gateway/gateway.mjs 的 knownModels）
+       → 要跑到 80 万 token 才压，本机所有会话都到不了（审计脚本里「压缩 0 次」的直接原因）。
+       值存 S.config.dsh.compact，由 main.js 的 syncCompactPolicy 落进 dsh 组合
+       （cordis.yml 的 compaction-basic 那一行，见 dsh-compact-policy.js）；
+       三档只差「多早触发」与「保留多少原文」，不把百分比摊给用户。 */
+    {
+      const cp = (S.config.dsh.compact = Object.assign(
+        { enabled: true, tier: "mid" },
+        S.config.dsh.compact || {},
+      ));
+      if (["early", "mid", "late"].indexOf(String(cp.tier)) < 0) cp.tier = "mid";
+      cp.enabled = cp.enabled !== false;
+
+      const cpHead = document.createElement("div");
+      cpHead.className = "settings-hint";
+      cpHead.style.fontWeight = "600";
+      cpHead.textContent = I18n.t("上下文压缩");
+      sec.appendChild(cpHead);
+
+      const cpEnRow = document.createElement("label");
+      cpEnRow.className = "n-field";
+      cpEnRow.style.flexDirection = "row";
+      cpEnRow.style.alignItems = "center";
+      const cpEn = document.createElement("input");
+      cpEn.type = "checkbox";
+      cpEn.checked = !!cp.enabled;
+      cpEn.onchange = () => {
+        S.config.dsh.compact.enabled = !!cpEn.checked;
+        settingsSaved(0);
+      };
+      cpEnRow.appendChild(cpEn);
+      cpEnRow.appendChild(
+        document.createTextNode(
+          I18n.t("自动压缩长会话（接近上限时把较早的对话收成摘要，保留最近一段原文）"),
+        ),
+      );
+      sec.appendChild(cpEnRow);
+
+      const cpRow = document.createElement("label");
+      cpRow.className = "n-field";
+      cpRow.appendChild(document.createTextNode(I18n.t("压缩时机")));
+      const cpSel = document.createElement("select");
+      [
+        ["early", "早 · 上下文还宽裕时就压（最省，前文细节丢得最多）"],
+        ["mid", "中 · 默认档（约 30 万 token 触发）"],
+        ["late", "晚 · 接近上限才压（保留最多前文）"],
+      ].forEach((pair) => {
+        const o = document.createElement("option");
+        o.value = pair[0];
+        o.textContent = I18n.t(pair[1]);
+        cpSel.appendChild(o);
+      });
+      cpSel.value = String(cp.tier);
+      cpSel.disabled = !cp.enabled;
+      cpSel.onchange = () => {
+        S.config.dsh.compact.tier = String(cpSel.value);
+        settingsSaved(0);
+      };
+      cpRow.appendChild(cpSel);
+      sec.appendChild(cpRow);
+
+      const cpHint = document.createElement("div");
+      cpHint.className = "settings-hint";
+      cpHint.textContent = I18n.t(
+        "这一项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。压缩会额外花一次模型调用写摘要，换来之后每一步都少发一大段历史。",
+      );
+      sec.appendChild(cpHint);
+    }
+
     /* 权限预设(dsh permission-presets:沙箱模式 + 审批策略,热重载生效) */
     const permRow = document.createElement("label");
     permRow.className = "n-field";
