@@ -2167,6 +2167,8 @@ async function assetWriteItem(aid, itemId, payload, opts) {
   });
   /* 落盘后库里那份就是新的：缓存必须作废，body 才会重新向库读一次 */
   assetItemViewInvalidate(aid, itemId);
+  /* 行内摘要同理：这一条的实体文件已经换了内容（文本就地改写常是同一路径） */
+  assetPvForgetHead(r.item && r.item.absPath);
   ASSET_SYNC_PENDING.delete(assetViewKey(aid, itemId));
   if (opts.light) {
     if (typeof scheduleSave === "function") scheduleSave();
@@ -3142,9 +3144,8 @@ async function assetDropAppend(a, paths) {
 const ASSET_PV_ROW_TEXT_BYTES = 32 * 1024; // 行内正文摘要最多读这么多字节（大文件不顿）
 const ASSET_PV_TEXT_MAX = 200000; // 浮层里全文的展示上限（超出给截断提示）
 const ASSET_PV_HOVER_MS = 150; // 悬停多久才出场（扫过列表时不闪窗）
-let _assetPvSrc = null; // 缩略图 / 摘要的当前宿主（只在同一份列表里复用，换列表即清）
+let _assetPvSrc = null; // 正文摘要缓存的当前宿主（只在同一份列表里复用，换列表即清）
 let _assetPvIo = null; // 缩略图惰性加载的 IntersectionObserver
-let _assetPvRevealed = null; // 已经取过的缩略图（绝对路径 → true，重画不重新解码）
 let _assetPvHeads = null; // 已读到的正文摘要（absPath → 摘要文本）
 let _assetPvHeadBusy = null; // 正在读的摘要（absPath → Promise）
 let _assetPvLoading = null; // 正在读全文的浮层序号
@@ -3152,8 +3153,9 @@ let _assetPvSeq = 0; // 浮层序号：异步读回来的内容只贴给「还�
 let _assetPvKeyFn = null; // 当前浮层挂的 Esc 监听（收层时摘掉）
 let _assetPvMoveFn = null; // 当前浮层挂的滚动 / 缩放监听（行离开原位即收层）
 
-/* 缩略图 / 摘要的缓存只在同一份列表里复用：换列表（另一个素材 / 另一种模式）即清，
-   免得几十份素材的缩略图与正文摘要一直挂在内存里。 */
+/* 正文摘要的缓存只在同一份列表里复用：换列表（另一个素材 / 另一种模式）即清，
+   免得几十份素材的正文摘要一直挂在内存里。
+   （缩略图不在这里缓存字节：它按行现取，命中的是浏览器自己的图片缓存 —— 见 assetPvThumb。） */
 function assetPvSrc(scope) {
   if (_assetPvSrc !== scope) {
     _assetPvSrc = scope;
@@ -3163,11 +3165,9 @@ function assetPvSrc(scope) {
       } catch (_) {}
     }
     _assetPvIo = null;
-    _assetPvRevealed = new Map();
     _assetPvHeads = new Map();
     _assetPvHeadBusy = new Map();
   }
-  if (!_assetPvRevealed) _assetPvRevealed = new Map();
   if (!_assetPvHeads) _assetPvHeads = new Map();
   if (!_assetPvHeadBusy) _assetPvHeadBusy = new Map();
 }
@@ -3194,7 +3194,6 @@ function assetPvThumb(scope, r) {
     box.appendChild(g);
     return box;
   }
-  const key = "i|" + String(r.id || "") + "|" + abs;
   const img = document.createElement("img");
   img.className = "asset-pv-img";
   img.alt = "";
@@ -3203,8 +3202,12 @@ function assetPvThumb(scope, r) {
   img.loading = "lazy";
   box.appendChild(img);
   const put = () => {
-    if (!_assetPvRevealed || _assetPvRevealed.get(key)) return;
-    _assetPvRevealed.set(key, true);
+    /* 这一只 <img> 只取一次（观察器与兜底两路都会打进来）；但**重画出来的新元素**
+       必须照常拿到 src —— 早先这里拿「这个文件取过没有」当闸，同一份列表重画
+       （切素材再回来 / 排序 / 改名 / 拖拽复位）后的新 img 就永远没有 src，
+       表现为「小样看过一次，再回来就没了」。同一 URL 的字节由浏览器自己的
+       图片缓存兜住，重设 src 不会把文件再读一遍。 */
+    if (img.getAttribute("src")) return;
     try {
       img.src = window.api.toFileUrl(abs);
     } catch (_) {}
@@ -3237,6 +3240,15 @@ function assetPvThumb(scope, r) {
     if (b.width > 0 && b.bottom > -220 && b.top < window.innerHeight + 220) put();
   });
   return box;
+}
+
+/* 这一条的正文被改写（编辑文本 / 上传覆盖 / 更换文件）后，行内摘要的缓存当场作废：
+   正文是就地写回同一个 .txt 的，路径不变 —— 不清缓存的话，重画回列表时贴的还是改写前那一句。 */
+function assetPvForgetHead(absPath) {
+  const k = String(absPath || "");
+  if (!k) return;
+  if (_assetPvHeads) _assetPvHeads.delete(k);
+  if (_assetPvHeadBusy) _assetPvHeadBusy.delete(k);
 }
 
 /* 行内正文摘要：只读开头一小段（fileStat 先判体积，大文件直接给「大文件 + 体积」），

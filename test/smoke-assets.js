@@ -16,6 +16,8 @@
    [4] 收层出口：Esc 只收这一层（capture）、滚动 / 缩放让行离开原位即收、重画 / 关框不留下声源
    [5] 音频：行内播放键开浮层并起播同一只 .n-wave（不另起第二只），播放态回贴到行内按钮
    [6] 缓存：同一份列表不重复读摘要；换列表（另一个 holder）即清缓存重读
+   [8] 重画回归：「看过一次，再回来就没了」—— 同一份列表重画后的新行照样拿到缩略图；
+       正文改写后摘要缓存当场作废（不贴改写前那一句）
    [7] 静态接线与词条：行渲染挂载点、CSS 类、i18n 中英齐全、行尾「预览」按钮与文件名行为未动 */
 const fs = require("fs");
 const path = require("path");
@@ -312,6 +314,7 @@ const FN_NAMES = [
   "assetPvFrame",
   "assetPvThumb",
   "assetPvHeadText",
+  "assetPvForgetHead",
   "assetPvLine",
   "assetPvTextCell",
   "assetPvItemSame",
@@ -660,6 +663,35 @@ async function main() {
   flushFrames();
   await settle();
   ok(CALLS.stat.length > n1, "[6] 换列表（另一个 holder）即清缓存并重读（缓存不跨列表长挂）");
+
+  /* ═════════ [8] 重画回归：看过一次的小样，重画后照样在 ═════════
+     真实现场：素材库点开一个素材看到缩略图 → 点另一个素材 → 再点回来（行全部重建），
+     缩略图就一片空白（「预览看过一次后再返回就失效了」）。根因是把「这个文件取过没有」
+     当成设 src 的闸：重建出来的新 <img> 从来没拿到过 src。同一份列表里的重画（切素材
+     回来 / 排序 / 改名 / 拖拽复位）都走这条道，所以这一条必须钉住。 */
+  const imgRow1 = SB.assetSetRow(SB.assetSetRows(ASSET)[1], 1, 5, { asset: ASSET, holder: holderB, repaint: () => {} });
+  ROOT_EL.appendChild(imgRow1);
+  flushFrames();
+  const cell1 = cellOf(imgRow1, "asset-pv-thumb");
+  OBS.cb([{ target: cell1, isIntersecting: true }]);
+  ok(!!findEl(cell1, "asset-pv-img") && findEl(cell1, "asset-pv-img").src === "file:///" + ROOT_DIR + "/items/立绘.png",
+    "[8] 第一次画出的图像行拿到缩略图");
+  const imgRow2 = SB.assetSetRow(SB.assetSetRows(ASSET)[1], 1, 5, { asset: ASSET, holder: holderB, repaint: () => {} });
+  ROOT_EL.appendChild(imgRow2);
+  flushFrames();
+  const cell2 = cellOf(imgRow2, "asset-pv-thumb");
+  OBS.cb([{ target: cell2, isIntersecting: true }]);
+  ok(!!findEl(cell2, "asset-pv-img") && findEl(cell2, "asset-pv-img").src === "file:///" + ROOT_DIR + "/items/立绘.png",
+    "[8] 同一份列表重画后，新行的缩略图照样拿到 src（「看过一次再回来就没了」已修）");
+  /* 正文改写（编辑文本 / 上传覆盖）是就地写回同一个 .txt：摘要缓存必须当场作废，
+     否则重画回列表贴的还是改写前那一句 */
+  SB.assetPvForgetHead(ROOT_DIR + "/items/人物设定.txt");
+  const n3 = CALLS.stat.length;
+  const txtRow2 = SB.assetSetRow(SB.assetSetRows(ASSET)[0], 0, 5, { asset: ASSET, holder: holderB, repaint: () => {} });
+  ROOT_EL.appendChild(txtRow2);
+  flushFrames();
+  await settle();
+  ok(CALLS.stat.length > n3, "[8] 正文改写后摘要缓存作废（重画回列表重新读，不贴改写前那一句）");
   SB.assetPvDropHost();
 
   /* ═════════ [7] 静态接线与词条 ═════════ */
@@ -707,6 +739,10 @@ async function main() {
     "[7] 条目只读预览框仍在（本轮只加不改）");
   ok(SRC.indexOf("assetsSaveMeta") > 0 && CODE.indexOf("assetsSaveMeta") < 0,
     "[7] 预览链路里没有任何写库调用（assetsSaveMeta 只出现在行内编辑动作中）");
+  ok(SRC.indexOf("_assetPvRevealed") < 0,
+    "[8] 缩略图不再拿「这个文件取过没有」当闸（重画必须能重新填 src）");
+  ok(/assetItemViewInvalidate\(aid, itemId\);[\s\S]{0,300}assetPvForgetHead\(/.test(SRC),
+    "[8] 写库收口（assetWriteItem）里作废行内摘要缓存 —— 正文改写后摘要不陈旧");
 
   console.log("");
   console.log(fails ? "FAILED  " + fails + " / " + checks : "PASS  " + checks + " 项");

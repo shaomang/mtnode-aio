@@ -3725,8 +3725,14 @@ function paintAssistModeChip() {
   t.title = I18n.t("模式：") + entries.map(mark).join(" / ");
 }
 
-function setView(view) {
-  S.view = view;
+/* ── 视图外壳（顶栏三枚视图键高亮 / 三个面板显隐 / body 视图类 / 画布边栏）的唯一写入口 ──
+   为什么必须只有一个写入口（用户报的 bug）：以前这几处**只有 setView 会写**，而启动路径
+   （app-boot.js 的 bootView 那一段）为了「首绘只画一次」跳过了 setView、只补了 body 上的
+   视图类 —— 于是「上次关在会话（或团队）视图」的用户开机后：#wfWrap 仍是 HTML 初值可见、
+   #agentPane 仍是 display:none，画面上是画布、S.view 却写着 agent。此时点画布工具条那枚 ☰，
+   toggleSidebar 按 S.view 判定「会话视图不许开画布边栏」弹警告 —— 边栏明明该能开。
+   所以：视图相关的样式与类一次写齐，启动首帧与运行期切换共用本函数（本函数不重绘任何内容）。 */
+function applyViewChrome(view) {
   const wf = $("#btnToolWf");
   const ag = $("#btnToolAgent");
   const tm = $("#btnTeam");
@@ -3748,6 +3754,10 @@ function setView(view) {
   document.body.classList.toggle("view-team", view === "team");
   document.body.classList.toggle("view-workflow", view === "workflow");
   if (typeof applySidebarVisibility === "function") applySidebarVisibility();
+}
+function setView(view) {
+  S.view = view;
+  applyViewChrome(view);
   S.config.view = view;
   window.api.configSave(S.config).catch(() => {});
   if (view === "agent") {

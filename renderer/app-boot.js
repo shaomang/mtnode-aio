@@ -1302,22 +1302,32 @@ async function init() {
     if (aSend) aSend.onclick = doAssistSend;
     renderAssistPanel();
   }
-  /* 视图与左侧栏互斥：先落 body 类，让 CSS 硬闸从首帧起生效 */
+  /* 视图与左侧栏互斥：先把整套视图外壳落定，让 CSS 硬闸从首帧起生效 */
   const bootView = (S.config && S.config.view) || "workflow";
   /* S.view = 「现在是哪个视图」的唯一真源，必须在这儿就落定：下面那句 setView 只给
-     agent / team 调（画布视图只补 body 类，不再多跑一遍 renderCanvas），于是一路 boot 进
-     画布的用户 S.view 一直是 undefined —— 而 canvasPasteFromClipboard 开头的
+     agent / team 调（启动期视图外壳由 applyViewChrome 落定，不再多跑一遍 renderCanvas），
+     于是一路 boot 进画布的用户 S.view 一直是 undefined —— 而 canvasPasteFromClipboard 开头的
      `if (S.view !== "workflow") return;` 读的正是它，画布 Ctrl+V 被整条吃掉：
      Ctrl+C 有「已复制 N 个节点」的提示、Ctrl+V 却毫无反应（本轮修的 bug：复制节点后粘不出来）。
-     这里落定后，画布视图的 S.view 与 body.view-workflow 同源，视图切换仍由 setView 收口。 */
+     这里落定后，S.view 与 body 上的视图类同源，视图切换仍由 setView 收口。 */
   S.view = bootView;
-  document.body.classList.toggle("view-agent", bootView === "agent");
-  document.body.classList.toggle("view-team", bootView === "team");
-  document.body.classList.toggle("view-workflow", bootView === "workflow");
+  /* 视图外壳（面板显隐 / body 视图类 / 顶栏高亮 / 画布边栏）一次写齐 —— 与运行期切视图
+     共用 applyViewChrome()。以前这里只补了 body 上的视图类：上次关在会话（或团队）视图的
+     用户开机后 #wfWrap 仍是初值可见、#agentPane 仍是 display:none，画面上是画布而 S.view
+     说 agent，点画布工具条那枚 ☰ 只会弹「会话视图不使用画布边栏」（用户报的 bug）。 */
+  if (typeof applyViewChrome === "function") applyViewChrome(bootView);
+  else {
+    document.body.classList.toggle("view-agent", bootView === "agent");
+    document.body.classList.toggle("view-team", bootView === "team");
+    document.body.classList.toggle("view-workflow", bootView === "workflow");
+  }
   const bootToAgentOrTeam = bootView === "agent" || bootView === "team";
+  /* 会话 / 团队视图把右侧全局助手栏收掉（与 setView 同口径；不持久化，回画布仍按用户偏好） */
+  if (bootToAgentOrTeam && typeof setAssistOpen === "function")
+    setAssistOpen(false, false);
   /* 启动期先把视图切过去，但**别**在这里拆建 DOM：setView 对 agent / team 会各画一遍
      （renderAgentSession / renderTeamPane），紧接着下面那句首绘还要整屏再画一遍 ——
-     那正是「刷新两次」的另一半来源。视图类上面已落定，这里让首绘一次性画齐。
+     那正是「刷新两次」的另一半来源。视图外壳上面已落定，这里让首绘一次性画齐。
      （S._bootSeen 为假 = 还在启动这一段；运行期切视图照旧走 setView。） */
   if (bootToAgentOrTeam && S._bootSeen) setView(bootView);
   else if (!bootToAgentOrTeam && typeof applySidebarVisibility === "function")
@@ -1329,6 +1339,12 @@ async function init() {
   S._bootSeen = true;
   renderAll();
   bootPaintDeferred = false;
+  /* 首绘的另一半：会话 / 团队视图自己的内容（renderAll 只画了画布那一层）。
+     跳过 setView 之后这两块以前没人画 —— 面板一显示就是空白（会话列表与正文全空）。 */
+  if (bootView === "agent" && typeof renderAgentSession === "function")
+    renderAgentSession();
+  else if (bootView === "team" && typeof renderTeamPane === "function")
+    renderTeamPane();
   ensureTimerScheduler();
   /* 会话正文的后台空闲补读（懒加载的第二条腿，见 app-assist.js agentWireBodyBackfill）：
      首屏已经按索引画完了，这一步只是趁空闲把还没读回来的会话分批读进内存 ——

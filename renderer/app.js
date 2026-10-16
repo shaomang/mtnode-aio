@@ -13091,7 +13091,11 @@ function safeOverviewName() {
 /* 「画布拍照」在智能会话 / 团队视图下也要能用：那两个视图把 #wfWrap 收成 display:none，
    而拍照是**截屏**（主进程 webContents.capturePage），画布必须真的画在屏幕上。
    这里临时把画布显示出来（同时收掉当前面板），返回「原样收回」的恢复函数；
-   只动这两个容器的行内 display，不碰 S.view、不重渲染 —— 收完界面与拍之前一模一样。 */
+   只动这两个容器的行内 display，不碰 S.view、不重渲染 —— 收完界面与拍之前一模一样。
+   ⚠ 恢复**以 S.view 为真源重新落一次视图外壳**，不回填拍前那一刻的行内值：拍照期间用户
+   完全可能切了视图（或另一次拍照同时在跑），回填旧值会把界面写成与 S.view 相矛盾的状态 ——
+   画布一直亮着、而 S.view 说在会话视图，于是画布工具条那枚 ☰ 被视图闸拦下弹
+   「会话视图不使用画布边栏」（用户报的 bug 的第二个来路）。 */
 function revealCanvasForShot() {
   const wrap = $("#wfWrap");
   const panes = [$("#agentPane"), $("#teamPane")].filter(Boolean);
@@ -13103,10 +13107,13 @@ function revealCanvasForShot() {
   for (const p of panes) p.style.display = "none";
   flushCamTransform();
   return () => {
-    if (wrap) wrap.style.display = saved.wrap;
-    panes.forEach((p, i) => {
-      p.style.display = saved.panes[i];
-    });
+    if (typeof applyViewChrome === "function") applyViewChrome(S.view);
+    else {
+      if (wrap) wrap.style.display = saved.wrap;
+      panes.forEach((p, i) => {
+        p.style.display = saved.panes[i];
+      });
+    }
     flushCamTransform();
   };
 }
