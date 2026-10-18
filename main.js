@@ -46,7 +46,7 @@ function gifenc() {
 
 /* dsh agent 适配器（网关侧车）：全部 dsh 能力经此模块，契约见 dsh/DESIGN.md。
    本文件与渲染层不 import 任何 dsh 代码，dsh 升级只触及 dsh/gateway/。 */
-const { createDshAdapter, GATEWAY_PATH: DSH_GATEWAY_PATH } = require("./dsh/main-dsh.js");
+const { createDshAdapter, GATEWAY_PATH: DSH_GATEWAY_PATH, dshKernelVersion } = require("./dsh/main-dsh.js");
 const { createMcpHost } = require("./mcp-server.js");
 /* 子代理策略（嵌套深度 / 后台并行委派 / fork / 总开关）→ 只改写 cordis.yml 里
    subagent* 这 8 行的配置值与 disabled 取值；dsh 三层契约一字未动。
@@ -141,8 +141,9 @@ const activityStore = require("./activity-store.js");
 const wechatPc = require("./wechat-pc.js");
 /* 剪贴板里「被复制的图片文件」列表解析（CF_HDROP / FileNameW 的纯函数口径，见该文件顶部） */
 const clipImages = require("./clipboard-images.js");
-/* 提醒音的主进程通道（sound-alert.js / sound:alert）本次已整体移除：长任务音效与随包
-   all-done.wav 下线，完成音只走渲染层 WebAudio（见 renderer/app-db.js）。 */
+/* 主进程侧只剩「完成音心跳」（sound:watch / sound:tick，见下面 setSoundWatch）：
+   声音仍由渲染层 WebAudio 发出；主进程提醒音通道（sound-alert.js / sound:alert）早已移除，
+   长任务音效与随包 all-done.wav 也一并下线（见 renderer/app-db.js）。 */
 let dshAdapter = null;
 function dshConfig() {
   /* 只为取 cfg.dsh 下 6 个标量，原本却把整份 config.json（当时本机 75.8 MB，其中
@@ -736,10 +737,39 @@ function appVersion() {
     return "0.0.0";
   }
 }
-ipcMain.handle("app:version", () => ({ ok: true, version: appVersion() }));
-/* 提醒音的主进程通道（sound:alert → sound-alert.js）本次已整体移除：
-   长任务音效（全局三音上行 / 随包 renderer/sounds/all-done.wav）下线，完成音与
-   提问/审批提示音统一只走渲染层 WebAudio（见 renderer/app-db.js 的 playTaskDoneSound）。 */
+/* dsh 内核版本随应用版本一起回给渲染层：会话左栏「DeepSeek Harness」后面那枚版本号
+   （版本号真源与读法见 dsh/main-dsh.js 的 dshKernelVersion）。读不到就是空串，界面不显示。 */
+ipcMain.handle("app:version", () => ({ ok: true, version: appVersion(), dsh: dshKernelVersion() }));
+/* ── 完成音的心跳（主进程驱动，不是"主进程发声"）─────────────────────────────
+   声音本身仍然只由渲染层 WebAudio 发出（见 renderer/app-db.js 的 playTaskDoneSound）；
+   这里补的是**判定时机**：完成音由「运行队列面板刷新 → dshRunQueueDoneCheck」判定，
+   而那一拍原先只靠渲染层的 setInterval。Chromium 的后台节流（定时器降频 / 页面挂起）
+   会把这一拍推迟到用户切回窗口 —— 用户报的「后台跑完了没声音，切回来才响」。
+   现在渲染层一有活在跑就打开这只心跳（ipc 的 sound:watch），主进程每 2 秒发一次
+   sound:tick 让渲染层当场跑一次判定：IPC 走消息循环，不受定时器节流影响。
+   实测（开发态 + 独立数据目录、本机）：最小化 150 秒 / 全屏遮挡 90 秒时面板心跳仍 2 秒
+   一跳、AudioContext 时钟 1:1 前进、队列清空后 21ms~2s 内响；对照组（去掉
+   backgroundThrottling:false 与那四个命令行开关）同样场景下定时器与音频时钟都会被挂起。
+   所以这条心跳与下面窗口那几个开关是同一件事的两道保险，别只留一道。 */
+const SOUND_TICK_MS = 2000;
+let soundWatchTimer = null;
+function setSoundWatch(on) {
+  const want = !!on;
+  if (want && !soundWatchTimer) {
+    soundWatchTimer = setInterval(() => {
+      try {
+        if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("sound:tick");
+      } catch {}
+    }, SOUND_TICK_MS);
+  } else if (!want && soundWatchTimer) {
+    clearInterval(soundWatchTimer);
+    soundWatchTimer = null;
+  }
+}
+ipcMain.handle("sound:watch", (e, on) => {
+  setSoundWatch(!!on);
+  return { ok: true, watching: !!soundWatchTimer, intervalMs: SOUND_TICK_MS };
+});
 ipcMain.handle("mediaGen:getLock", () => ({ ok: true, lock: refreshMediaGenLock() }));
 ipcMain.handle("crash:status", () => crashReport.status());
 ipcMain.handle("crash:export", async () => crashReport.exportDiagnosticBundle({}));
@@ -7356,14 +7386,14 @@ function checkProvider(provider) {
     const relay = provider.relay || {};
     if (relay.blocked === true)
       throw new Error(
-        I18n.t("MTNode 中转服务余额不足：请充值后在「设置 · 提供商」里点「刷新」"),
+        I18n.t("MTNode 中转服务余额不足：请充值，到账后会自动恢复"),
       );
     /* 余额 > 0 但不够一张图：图像模型已被收起来（app-model-kind.js 的 relayImageShort），
        但 card 上绑着旧配置时仍可能走到这里 —— 由 checkRelayImageQuota 在**图像调用**前拦住
        （文本调用不受影响，见那里的注释）。这里只留通用的余额耗尽判据。 */
     if (!providerAuthKey(provider))
       throw new Error(
-        I18n.t("MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新"),
+        I18n.t("MTNode 中转服务需要登录账号：请先登录"),
       );
     return;
   }
@@ -7390,7 +7420,7 @@ function checkRelayImageQuota(provider, kind) {
   if ((Number(relay.balanceYuan) || 0) >= min) return;
   const amount = min.toFixed(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   throw new Error(
-    I18n.t("MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值后在「设置 · 提供商」里点「刷新」", {
+    I18n.t("MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值，到账后会自动恢复", {
       amount: amount,
     }),
   );
@@ -7716,7 +7746,7 @@ async function listProviderModels(provider) {
       ok: false,
       error:
         String(p.source || "") === RELAY_PROVIDER_SOURCE
-          ? I18n.t("MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新")
+          ? I18n.t("MTNode 中转服务需要登录账号：请先登录")
           : I18n.t("未配置 API Key（请在「设置 · API/配置」中填写）"),
     };
   }
@@ -8956,17 +8986,19 @@ ipcMain.handle("pluginRepair:result", async (e, payload) => {
 
 /* ---------------- 窗口 ---------------- */
 
-/* 后台不降频（常驻编排器：用户切走是常态，定时器降频 / 渲染停摆都会让界面「看着不动」）。
-   Chromium 对「不可见 / 被盖住 / 最小化」的窗口有一套后台节流：定时器降频、渲染停下来、
-   整页静音/挂起音频会话 —— 被推迟的那一拍要等用户切回窗口才落地（完成音只剩渲染层
-   WebAudio 这一条路之后，这一点只能减轻、不能消除）。
-   三个开关各管一段：renderer-backgrounding（后台进程降级）、background-timer-throttling
-   （定时器降频）、backgrounding-occluded-windows（被别的窗口盖住也当后台）。
-   再加一条 disable-features=CalculateNativeWinOcclusion：Chromium 在 Windows 上会用
-   「窗口被别的窗口整片盖住」的原生遮挡判定把该窗当不可见，进而挂起它的页面（被挂起的
-   页面里，那一拍的发声会一直排到用户切回窗口才落地 —— 用户报的「只有返回 MTNode 才响」）。
-   关掉这个判定后「被盖住」不再等于「不可见」，盖住时的完成音 / 提问音当场响（最小化那条路
-   本来就不受它管：实测最小化后静置 6 秒发声，AudioContext 仍是 running）。 */
+/* 后台不降频（常驻编排器：用户切走是常态，定时器降频 / 渲染停摆都会让界面「看着不动」，
+   完成音 / 提问音那一拍也会被推迟到用户切回窗口 —— 用户报的「后台跑完没声音、切回来才响」）。
+   实测口径（2026-10，本机开发态 + 独立数据目录、单独探针复核）：
+     · 有这几项：最小化 150 秒 / 全屏遮挡 90 秒时，页面 document.hidden 恒为 false，
+       渲染层 2 秒心跳照跳（150 秒里 75 次）、AudioContext 时钟 1:1 前进（54.6s → 204.6s）、
+       队列清空后 21ms~2s 内就响；
+     · 去掉 backgroundThrottling:false 与这四条（对照组）：同样的最小化场景里定时器被降到
+       一分钟一跳、AudioContext 时钟停走 —— 那一拍就只能等切回窗口。
+   四个开关各管一段：renderer-backgrounding（后台进程降级）、background-timer-throttling
+   （定时器降频）、backgrounding-occluded-windows（被别的窗口盖住也当后台）、
+   CalculateNativeWinOcclusion（Windows 原生遮挡判定，会把"被整片盖住"当不可见并挂起页面）。
+   除此之外还有一道保险：主进程的完成音心跳（sound:watch → sound:tick，见 setSoundWatch），
+   让判定不 depend 渲染层定时器。改动前先看这两处的实测结论，别凭猜测删。 */
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
@@ -9006,7 +9038,7 @@ app.whenReady().then(() => {
     syncSubagentPolicy(readJson(path.join(DATA(), "config.json"), {}));
   } catch {}
   /* 上下文压缩策略同一时机：否则首次启动仍是 dsh 自带触发线（声明窗口 1M × 0.8
-     = 80 万 token 才压，本机永远到不了）。默认「开 · 中档」，与出货组合行一致。 */
+     = 800k token 才压，本机永远到不了）。默认「开 · 中档」，与出货组合行一致。 */
   try {
     syncCompactPolicy(readJson(path.join(DATA(), "config.json"), {}));
   } catch {}
@@ -9031,9 +9063,9 @@ app.whenReady().then(() => {
       webviewTag: true,
       preload: join(__dirname, "preload.js"),
       /* 主窗永不按「后台」对待：后台节流会把「任务跑完该响的那一拍」推迟到用户切回来。
-         完成音与提问音现在只走渲染层 WebAudio（主进程提醒音通道已下线，见 preload.js），
-         所以这一条只能减轻推迟、不能消除 —— 窗口被盖住 / 最小化时仍可能等到切回才响
-         （用户已知并接受）；命令行那三个开关是同一目的的全局兜底。 */
+         （实测见上面四个命令行开关那段注释：有这一条时最小化 / 被盖住都照响）。
+         完成音与提问音只走渲染层 WebAudio，故「判定时机」另有一条主进程心跳兜底
+         （setSoundWatch）；命令行那四个开关是同一目的的全局兜底。 */
       backgroundThrottling: false,
     },
   });
@@ -9098,6 +9130,7 @@ app.whenReady().then(() => {
   });
   mainWin.on("closed", () => {
     closeContentViewWin();
+    setSoundWatch(false); /* 窗口没了：完成音心跳跟着停（否则往后每 2 秒空转一次） */
     mainWin = null;
     try { shutdownAppPlugins(); } catch {}
   });

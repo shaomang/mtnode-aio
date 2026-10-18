@@ -31,6 +31,7 @@
 - 页骨架：`# 页标题` → `> 一句话目标：`（由该分区的说明改写）→ 图（只有关键页有）→ `## <卡片标题>`（去掉 ①② 序号）→ 卡片内【…】降为 `###`。
 - 分区 → 页：1.准备工作 → `providers`；2.内容生成（①文本 ②图像 → `io-proc`，③音乐 ④语音 ⑤视频 ⑥Remotion → `media-gen`，⑦审阅 → `ai-review`，⑧蒙版 → `image-edit`）；3.全局助手与工作流 → `workflows`、`quick-build`（另含 `longtask`：快速开始卡片没有这一页，长周期任务上线后补进本章）；4.开发节点 → `dev-nodes`；5.会话 → `dsh`、`agent-nodes`、`approvals`；6.工具 / 函数节点 → `tools-functions`；7.素材库 → `asset-library`；8.专家团 → `one-person-company`；9.社区 → `community`；其他 → `nodes-wires`、`marks-groups`、`rollback`、`glossary`、`faq`。`app-dev`（开发一个应用）是后补进第 4 章 `dev` 的第 2 页：快速开始卡片里没有它，随「应用（窗口插件）开发」契约与 `templates/app-scaffold/` 上线补进本章。
 - 配图只给 11 个关键页：`providers`(start-01-ui)、`io-proc`(flow-01-ui)、`media-gen`(flow-02-flow)、`ai-review`(edit-01-ui)、`image-edit`(edit-02-ui)、`workflows`(canvas-01-flow)、`quick-build`(agent-01-flow)、`dev-nodes`(app-01-ui)、`app-dev`(app-02-ui)、`agent-nodes`(agent-02-ui)、`tools-functions`(canvas-02-ui)。
+- `md-editing`（Markdown 编辑：换行与 Tab 缩进）是 2026-10 后补进第 2 章 `content` 的第 4 页：讲四个编辑面共用的编辑手感（所见即所得 / 源码两档、Tab 与 Shift+Tab、粘贴、以及「没动过就不回写」三条底线），快速开始卡片里没有它，随本轮编辑手感修复补进本章；本页不配图。自动成块一节在本轮改动里改写成「不再自动成块」（该能力已整体下线）。
 - 术语统一用「思考强度」（英文 thinking effort）。
 
 ## 2. IPC 契约

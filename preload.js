@@ -8,10 +8,17 @@ contextBridge.exposeInMainWorld('api', {
   getPathForFile: (f) => webUtils.getPathForFile(f),
 
   appVersion: () => ipcRenderer.invoke('app:version'),
-  /* 提醒音主进程通道（soundAlert → sound:alert → sound-alert.js）本次已整体移除：
-     长任务音效（全局三音上行 / 随包 all-done.wav）下线，完成音与提问/审批提示音
-     统一只走页面内 WebAudio / <audio>。代价：窗口被盖住 / 最小化时这一拍可能被推迟到
-     用户切回本窗口才响（用户已知并接受）。别再把它加回来。 */
+  /* 提醒音的主进程发声通道（soundAlert → sound:alert → sound-alert.js）已整体移除：
+     长任务音效（全局三音上行 / 随包 all-done.wav）下线，完成音与提问/审批提示音只走页面内
+     WebAudio / <audio>。主进程侧只剩「判定心跳」：soundWatch(on) 告诉主进程"现在有活在跑"，
+     主进程每 2 秒回一发 onSoundTick —— 让完成判定不再只依赖渲染层定时器（后台节流会把它
+     推迟到切回窗口才响，见 main.js 的 setSoundWatch）。别再把它改成主进程发声。 */
+  soundWatch: (on) => ipcRenderer.invoke('sound:watch', !!on),
+  onSoundTick: (cb) => {
+    const h = () => { try { cb(); } catch (_) {} };
+    ipcRenderer.on('sound:tick', h);
+    return () => { try { ipcRenderer.removeListener('sound:tick', h); } catch (_) {} };
+  },
   crashStatus: () => ipcRenderer.invoke('crash:status'),
   crashExport: () => ipcRenderer.invoke('crash:export'),
   crashOpenLogs: () => ipcRenderer.invoke('crash:openLogs'),

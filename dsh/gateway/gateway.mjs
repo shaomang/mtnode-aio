@@ -3568,10 +3568,12 @@ const OFFICIAL_MODELS_MAX = 24
 const OFFICIAL_MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._@/-]{0,63}$/
 const OFFICIAL_MODEL_MODALITIES = ['text', 'image']
 /* 已知官方模型的元数据兜底(真源:dsh-llm-deepseek 的 DEFAULT_MODELS 与 gateway 的
-   providerCatalog):宿主只给 id 字符串时用来补 name / 上下文窗口 / 输入模态。 */
+   providerCatalog):宿主只给 id 字符串时用来补 name / 上下文窗口 / 输入模态。
+   网关侧所有官方模型一律声明可识图(text + image):dsh-tool-fs 的读图闸按模态放拦,
+   纯文本档标 [text] 会永不放拦读图;真不支持时由上游 API 原样报错回话。 */
 const OFFICIAL_MODEL_KNOWN = {
-  'deepseek-v4-flash': { name: 'DeepSeek-V4-Flash', contextWindow: 1000000, inputModalities: ['text'] },
-  'deepseek-v4-pro': { name: 'DeepSeek-V4-Pro', contextWindow: 1000000, inputModalities: ['text'] },
+  'deepseek-v4-flash': { name: 'DeepSeek-V4-Flash', contextWindow: 1000000, inputModalities: ['text', 'image'] },
+  'deepseek-v4-pro': { name: 'DeepSeek-V4-Pro', contextWindow: 1000000, inputModalities: ['text', 'image'] },
   'deepseek-v4-flash-vision-exp': { name: 'DeepSeek-V4-Flash-Vision-Exp', contextWindow: 1000000, inputModalities: ['text', 'image'] },
   'deepseek-flash': { name: 'DeepSeek-V4.1-Flash', contextWindow: 1000000, inputModalities: ['text', 'image'] },
 }
@@ -3587,7 +3589,8 @@ function officialModelAliasesOf(id) {
   return OFFICIAL_MODEL_ALIAS_GROUPS.find((g) => g.includes(id)) || []
 }
 
-/* 输入模态归一:只留 text / image,去重保序;非法值丢弃(空则由调用方兜底 ["text"]) */
+/* 输入模态归一:只留 text / image,去重保序;非法值丢弃(空则由调用方兜底 ["text","image"] ——
+   网关侧一律声明可识图,读图闸不因宿主漏给模态而放拦,真不支持时由上游 API 原样报错) */
 function officialModelModalities(v) {
   const raw = Array.isArray(v) ? v : v == null ? [] : [v]
   const out = []
@@ -3623,7 +3626,7 @@ function normalizeOfficialModels(raw) {
       name,
       contextWindow: Number.isInteger(ctx) && ctx > 0 ? ctx : known.contextWindow || 0,
       maxTokens: Number.isInteger(max) && max > 0 ? max : known.maxTokens || 0,
-      inputModalities: given.length ? given : [...(known.inputModalities || ['text'])],
+      inputModalities: given.length ? given : [...(known.inputModalities || [...OFFICIAL_MODEL_MODALITIES])],
     })
   }
   /* 别名映射:在原始条目(保序)之后补同组别名,元数据同源、模态与别名已知能力取并集 */

@@ -66,6 +66,25 @@ const GATEWAY_PATH = app.isPackaged
   ? path.join(process.resourcesPath, 'dsh', 'gateway', 'gateway.mjs')
   : path.join(__dirname, 'gateway', 'gateway.mjs')
 
+/* dsh 内核版本（会话左栏「DeepSeek Harness」后面那枚版本号读的就是它）。
+   真源 = 网关树里 @deepseek-ai/dsh 的 package.json（与 gateway.mjs 的 RUNTIME_BIN
+   用 require.resolve('@deepseek-ai/dsh/package.json') 解析到的是同一个包，也与
+   scripts/app-deps-check.mjs 的运行时入口判定同源）。dev 与打包两种布局都从
+   GATEWAY_PATH 的目录推出来，所以只有一处路径知识。
+   读不到就回空串 —— 界面宁可不显示版本，也绝不编一个。 */
+let kernelVersionCache = ''
+let kernelVersionProbed = false
+function dshKernelVersion() {
+  if (kernelVersionProbed) return kernelVersionCache
+  kernelVersionProbed = true
+  try {
+    const manifest = path.join(path.dirname(GATEWAY_PATH), 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+    const v = String(JSON.parse(fs.readFileSync(manifest, 'utf8')).version || '').trim()
+    if (v) kernelVersionCache = v
+  } catch { /* 依赖还没装 / 打包缺包：留空 */ }
+  return kernelVersionCache
+}
+
 function createDshAdapter(opts) {
   const { dataDir, errLog, log } = opts
   const appRoot = opts.appRoot || path.join(__dirname, '..')
@@ -928,4 +947,4 @@ function createDshAdapter(opts) {
   }
 }
 
-module.exports = { createDshAdapter, GATEWAY_PATH }
+module.exports = { createDshAdapter, GATEWAY_PATH, dshKernelVersion }

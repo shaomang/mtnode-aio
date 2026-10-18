@@ -22,6 +22,8 @@
  *       抛「unknown preset (known: workspace-write, danger-full-access)」整行不激活。故
  *       六档 sandbox/approval 逐个与 dsh/gateway/cordis.yml 那张表对齐核对；
  *   [7] 运行时 env 注入 DSH_TELEMETRY_DISABLED=1（关掉基座两行 OTel 的 stderr 噪声）。
+ *   [8] 官方模型清单一律声明可识图：宿主实际下发的形状是 {id,name,image}，网关不拿它当门槛，
+ *       每条都补齐到 inputModalities 含 image（读图闸不再按目录预拦；真不吃图由上游报错）。
  * 「真的抵达运行时」由 test/smoke-config-probe.js 端到端核（config/probe 桥）；
  * 组合层的复核跑 scripts/audit-dsh-profile-patch.mjs（只读，审计本机 DSH_HOME 那份）。
  *
@@ -167,6 +169,45 @@ const GATEWAY = path.resolve(__dirname, "..", "dsh", "gateway", "gateway.mjs");
   ok(managed.length === 3, "[5] 人设为空 = 不写 system-prompt（只剩 3 条托管行）");
   ok(rows.find((r) => r && r.id === "llm-deepseek").config.reasoningEffort === "high", "[5] 思考档仍只写兜底默认 high（档位走 env MTNODE_EFFORT）");
   ok(fs.readFileSync(userPatchFile, "utf8") === userPatchText, "[4] 重写后用户的 profile 补丁层仍未被碰");
+
+  /* ── [8] 新语义：官方模型清单一律可识图 ──────────────────────────────────
+     宿主（renderer/app-db.js 的 runOfficialModels）实际下发的形状是 {id, name, image}，
+     不是 inputModalities；网关**不把 image:false 当门槛**（读图闸不再在凭据与网络之前
+     预拦），归一后每条都含 image —— 真不吃图由上游 API 原样报错。
+     归一函数不单独导出（gateway.mjs 只 export applySettings），所以按源码切片在 vm 里
+     跑**真实实现**，口径同 test/smoke-resume-on-retry.js。 */
+  const gwSrc = fs.readFileSync(path.resolve(__dirname, "..", "dsh", "gateway", "gateway.mjs"), "utf8");
+  const normSrc =
+    gwSrc.slice(
+      gwSrc.indexOf("const OFFICIAL_MODELS_MAX"),
+      gwSrc.indexOf("function officialModelsYaml"),
+    ) + "\nthis.normalizeOfficialModels = normalizeOfficialModels;";
+  const normCtx = {};
+  require("node:vm").runInNewContext(normSrc, normCtx);
+  const hostShaped = [
+    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", image: false },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", image: false },
+    { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" },
+  ];
+  const normalized = normCtx.normalizeOfficialModels(hostShaped);
+  ok(
+    normalized.length >= hostShaped.length &&
+      normalized.every((m) => Array.isArray(m.inputModalities) && m.inputModalities.includes("image")),
+    "[8] 网关归一后的模型清单每条 inputModalities 含 image：" +
+      JSON.stringify(normalized.map((m) => [m.id, m.inputModalities])),
+  );
+  const r4 = applySettings(home, "high", providers, "workspace-write", "你是 MTNode 的助手。", normalized);
+  ok(r4.changed === true, "[8] 换官方模型清单触发重写");
+  const rows4 = yaml.parse(fs.readFileSync(overlayFile, "utf8"));
+  const models4 =
+    ((rows4 || []).find((r) => r && r.id === "llm-deepseek") || { config: {} }).config.models || [];
+  ok(models4.length >= hostShaped.length, "[8] 清单写出（含别名展开）：" + models4.map((m) => m.id).join(","));
+  ok(
+    models4.length > 0 &&
+      models4.every((m) => Array.isArray(m.inputModalities) && m.inputModalities.includes("image")),
+    "[8] 写进叠加层的模型清单每条 inputModalities 含 image：" +
+      JSON.stringify(models4.map((m) => [m.id, m.inputModalities])),
+  );
 
   fs.rmSync(home, { recursive: true, force: true });
   console.log("\nsettings-profile-patch smoke: pass " + pass + " / fail " + fail);

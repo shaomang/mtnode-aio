@@ -277,6 +277,15 @@ const LAZY_ALLOWED_FILES = new Set([
   'node_modules/@browserbasehq/sdk/node_modules/node-fetch/lib/index.js',
   'node_modules/@browserbasehq/sdk/node_modules/node-fetch/lib/index.mjs',
   'node_modules/@browserbasehq/sdk/node_modules/node-fetch/lib/index.es.js',
+  /* (c) openai@7.19.0（0.2.1 内核带上来的新版本，0.2.0 代是 6.40.0）把 bedrock 适配器拆成
+     独立子路径 `openai/providers/bedrock/aws.{js,mjs}`，并在包 manifest 里声明
+     `@aws-sdk/credential-provider-node` / `@smithy/signature-v4` 两枚 optional peer ——
+     正好落在「Bedrock / S3 签名栈」能力组的 `@aws-sdk/*` + `@smithy/*` 通配里。
+     这个子路径只有显式选择 Bedrock 提供方才会被 import（`openai/index.*` 的可选子路径导出），
+     MTNode 没有任何 AWS 凭据与 Bedrock 配置，与 pi-ai 那条 bedrock 懒加载分支同生共死。
+     若将来接 Bedrock，回滚该能力组即可（删 docs/app-deps-capability.json 里那个组）。 */
+  'node_modules/openai/providers/bedrock/aws.js',
+  'node_modules/openai/providers/bedrock/aws.mjs',
 ])
 const LAZY_ALLOWED_DIRS = [
   // 未挂载的 OTLP 遥测能力组：本包整体（含它对 @opentelemetry/* 的引用）属于可选能力，

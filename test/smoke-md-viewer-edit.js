@@ -125,10 +125,14 @@ const tbFn = fnBody(app, "function buildMdViewerToolbar(tb)");
 ok(tbFn.indexOf('b.className = "rv-tool";') >= 0, "按钮复用 review.css 的 .rv-tool 方形样式");
 for (const act of [
   "h1", "h2", "h3", "p", "bold", "italic", "strike", "quote",
-  "ul", "ol", "task", "hr", "link", "inlineCode", "code", "undo", "redo",
+  "ul", "ol", "link", "inlineCode", "code", "undo", "redo",
 ]) {
   ok(tbFn.indexOf('mk("' + act + '"') >= 0, "工具栏有动作 " + act);
 }
+ok(
+  tbFn.indexOf('mk("hr"') < 0 && tbFn.indexOf('mk("task"') < 0,
+  "工具栏已移除「水平线 / 任务清单」两颗按钮",
+);
 const actFn = fnBody(app, "function mdViewerRichAct(action)");
 ok(
   actFn.indexOf('exec("formatBlock", action)') >= 0 &&
@@ -139,7 +143,7 @@ ok(
   actFn.indexOf("mdViewerInsertHtml(") >= 0 &&
     actFn.indexOf("mdViewerWrapInline(") >= 0 &&
     actFn.indexOf("mdViewerInsertLink()") >= 0,
-  "插入类动作（水平线 / 任务清单 / 代码块 / 行内码 / 链接）已接",
+  "插入类动作（代码块 / 行内码 / 链接）已接",
 );
 ok(
   app.indexOf("function mdViewerInsertHtml(html)") >= 0 &&

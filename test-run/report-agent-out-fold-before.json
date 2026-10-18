@@ -1,0 +1,42 @@
+{
+  "ts": "2026-10-16T09:30:01.506Z",
+  "kind": "before(broken-layout)",
+  "runDir": "C:\\Users\\shaom\\AppData\\Local\\Temp\\mtnode-verify-before-20261016092954\\verify-agent-out-fold-before-20261016092954",
+  "fixture": {
+    "before": 137,
+    "id": "nmvaro4fubjg"
+  },
+  "inject": {
+    "outKind": "text",
+    "w": 384
+  },
+  "sel": {
+    "form": "edit",
+    "hasFold": true,
+    "open": true
+  },
+  "measure": {
+    "nodeW": 384,
+    "fold": {
+      "w": 131.9,
+      "right": 645
+    },
+    "left": {
+      "w": 198.7,
+      "right": 505.1
+    },
+    "panel": {
+      "w": 130.6,
+      "right": 644.3
+    },
+    "btns": {
+      "w": 86,
+      "right": 636.3
+    },
+    "foldParentIsRow": true,
+    "foldParentIsLeft": false
+  },
+  "cleanup": {
+    "nodes": 137
+  }
+}

@@ -267,7 +267,7 @@ async function main() {
       !has("renderer/app-settings.js", 'meta.keyIssue === "encryption_unavailable"') &&
       has("renderer/app-settings.js", 'meta.keyIssue === "server_no_relay_key"') &&
       !has("renderer/app-settings.js", "请重新登录一次"),
-    "只读卡不再提「凭据读不出来 / 重新登录一次」，只留「服务端没下发 → 点刷新」这一档",
+    "只读卡不再提「凭据读不出来 / 重新登录一次」，只留「服务端没下发 → 稍后自动重试」这一档",
   );
 
   /* ── [1c] relay:rotateKey（卡上「更换 Key」）──────────────────────────── */
@@ -485,13 +485,14 @@ async function main() {
     "「更换 Key」按钮走 confirmDialog 二次确认 + MtRelay.rotateKey()（确认文案带上当日余量）",
   );
   ok(
-    card.includes('I18n.t("可直接用于 Codex 等 OpenAI 兼容客户端：Base URL 就是上面那行接口地址")'),
-    "有票时的提示行：可直接用于 Codex 等 OpenAI 兼容客户端（Base URL 就是上面那行接口地址）",
+    card.includes('"可直接用于 Codex 等 OpenAI 兼容客户端：Base URL 就是上面那行接口地址"') &&
+      card.includes("settingsTipBeside("),
+    "有票时的用法说明挂在 API Key 标签本身（悬停 / focus 即出，可直接用于 Codex 等 OpenAI 兼容客户端 · Base URL 就是上面那行接口地址）",
   );
   ok(
     card.includes('meta.keyIssue === "server_no_relay_key"') &&
-      card.includes('I18n.t("还没有取到中转 Key：请先登录 MTNode 账号，或点「刷新中转清单」")'),
-    "没票时的动作提示：先登录 MTNode 账号 / 点「刷新中转清单」（并区分「服务端没下发」）",
+      card.includes('I18n.t("还没有取到中转 Key：请先登录 MTNode 账号（登录后会自动拉取）")'),
+    "没票时的动作提示：先登录 MTNode 账号（登录后自动拉取，不再让用户去点刷新）",
   );
   ok(
     !card.includes('createElement("input")') ||
@@ -525,11 +526,15 @@ async function main() {
     provCardBody.includes("MtRelay.isRelay(prov)") && provCardBody.includes("relayProvCard"),
     "provCard 把中转卡交给只读卡渲染（普通卡那套输入框一个都不走）",
   );
+  /* 注释里写「需求：移除刷新按钮」不算残留：只看代码（与 smoke-relay 的 settingsCode 同口径） */
+  const settingsNoComments = read("renderer/app-settings.js")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
   ok(
-    has("renderer/app-settings.js", "刷新中转清单") &&
-      card.includes('textContent = I18n.t("刷新")') &&
-      card.includes("sync({ force: true })"),
-    "两处手动刷新入口：提供商页标题栏一个、卡里一个",
+    !settingsNoComments.includes("刷新中转清单") &&
+      !card.includes('textContent = I18n.t("刷新")') &&
+      !/\.sync\(\s*\{\s*force: true\s*\}\s*\)/.test(card),
+    "两处手动刷新入口都已移除（标题行「刷新中转清单」与卡内「刷新」），拉取交给 syncIfStale",
   );
   /* 只读卡上**没有充值入口**（本轮口径）：全应用唯一的充值入口是右上角账户菜单里的
      「余额」（renderer/app-auth.js）。此前卡上那枚「去充值」只有充过值的账号才看得见，
@@ -543,8 +548,8 @@ async function main() {
     "卡上那两枚按钮的 i18n 词条一并撤掉（不留死键）",
   );
   ok(
-    fnBody("renderer/app-settings.js", "relayProvCard").includes('textContent = I18n.t("刷新")'),
-    "余额行只剩「刷新」（充值与到账后的回拉在账户菜单那边的余额窗里）",
+    !fnBody("renderer/app-settings.js", "relayProvCard").includes('textContent = I18n.t("刷新")'),
+    "余额行只剩余额（刷新按钮已按需求移除，充值到账仍会自动重拉）",
   );
 
   /* ── [3] 可见性与不可用语义 ─────────────────────────────────── */
@@ -685,7 +690,7 @@ async function main() {
       "「余额不够一张图」不进 checkProvider（否则文本调用会被一起挡死）",
     );
     ok(
-      has("renderer/i18n.js", '"MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值后在「设置 · 提供商」里点「刷新」"'),
+      has("renderer/i18n.js", '"MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值，到账后会自动恢复"'),
       "主进程那条错也有中英词条",
     );
   }
@@ -712,9 +717,9 @@ async function main() {
     "充值到账立刻回拉（余额从 0 变正时卡片当场出现 / 恢复）",
   );
   ok(
-    has("renderer/app-settings.js", "MtRelay.syncIfStale()") &&
+    has("renderer/app-settings.js", "MtRelay.syncIfStale({ retry: true })") &&
       fnBody("renderer/app-settings.js", "openProviderConfigDialog").includes("syncIfStale"),
-    "打开设置与打开该卡都按「本地有没有快照」决定是否自动拉",
+    "打开设置与打开该卡都会自动拉：没有快照就拉，快照过期 / 上次失败也重拉（retry:true）",
   );
   /* 需求口径（本 bug 的根因）：中转 Key = 账号登录 token，长期不变 ⇒ 不做时间新鲜度重拉；
      新装应用登录后拉不到，是因为登录态比 S.config 先到、那一次同步静默失败且再无重试。 */
@@ -751,13 +756,19 @@ async function main() {
     syncIfStale.indexOf("Date.now() - at") < 0 && syncIfStale.indexOf("RETRY_GAP") < 0,
     "syncIfStale 里不再有「24h 新鲜度」与「失败节流」两个旧判据",
   );
-  /* 失败可见：本地没卡时「刷新中转清单」必须始终可点（唯一的自救入口） */
+  /* 失败可见：手动刷新按钮已移除 → 打开设置 / 中转卡时按卡上状态自动重试 */
   ok(
-    !read("renderer/app-settings.js").includes('relayRefresh.style.display = prov ? "" : "none"'),
-    "「刷新中转清单」按钮不再因「本地没有中转卡」而隐藏（失败时用户能自己重试）",
+    read("renderer/app-settings.js").includes("MtRelay.syncIfStale({ retry: true })"),
+    "打开设置 / 中转卡时带 retry 调用 syncIfStale（快照过期或上次失败则自动重拉）",
   );
   ok(
-    has("renderer/app-relay.js", '"未同步（点「刷新中转清单」重试）"'),
+    syncIfStale.includes("retryWhenStale") &&
+      syncIfStale.includes("staleRefreshDue(meta(p))") &&
+      syncIfStale.includes("sync({ force: true })"),
+    "syncIfStale 的自动重试只走 UI 入口（登录态刷新那条不带 retry，零打扰）",
+  );
+  ok(
+    has("renderer/app-relay.js", '"未同步（登录或充值后会自动重试）"'),
     "卡上没有快照时状态行给出可执行的下一步（而不是空着）",
   );
 
@@ -903,20 +914,19 @@ async function main() {
   const i18n = read("renderer/i18n.js");
   const keys = [
     "MTNode 中转服务",
-    "刷新中转清单",
     "账号托管",
     "余额不足",
     "可用余额 ",
     "上次同步 ",
-    "未同步（点「刷新中转清单」重试）",
-    "该账号还没有充值记录，充值成功后中转清单会自动出现",
+    "未同步（登录或充值后会自动重试）",
+    "账号当前没有可用模型：充值后会自动刷新",
     "模型清单（云端下发，从上到下为使用优先级）",
     /* 本轮新口径（真票就在卡上、显示全文 + 复制给 Codex 用、可手动换 Key）的文案 */
     "这串就是中转 Key：可直接用于 Codex 等 OpenAI 兼容客户端（Base URL 即上面的接口地址）",
     "可直接用于 Codex 等 OpenAI 兼容客户端：Base URL 就是上面那行接口地址",
     "复制中转 Key 到剪贴板",
     "中转 Key 已复制到剪贴板",
-    "还没有取到中转 Key：请先登录 MTNode 账号，或点「刷新中转清单」",
+    "还没有取到中转 Key：请先登录 MTNode 账号（登录后会自动拉取）",
     "更换 Key",
     "换一张新的中转 Key（旧 Key 立即失效）",
     "确定更换中转 Key？",
@@ -956,6 +966,16 @@ async function main() {
     "去充值",
     "打开余额（到账后中转清单会自动刷新）",
     "; valid until ",
+    /* 本轮移除两颗手动刷新按钮后一并删掉的词条 */
+    "刷新中转清单",
+    "按账号重新拉取中转服务的地址与可用模型",
+    "按账号重新拉取中转服务的可用模型（登录成功与充值成功后会自动拉）",
+    "刷新中…",
+    "中转清单已刷新",
+    "刷新失败，请稍后重试",
+    "该账号还没有充值记录，充值成功后中转清单会自动出现",
+    "未同步（点「刷新中转清单」重试）",
+    "停用后不出现在模型选择器里；刷新中转清单不会自动把它开回来",
   ];
   const left = gone.filter((k) => i18n.includes('"' + k + '":'));
   ok(left.length === 0, "随凭据说明行 / 卡上充值按钮撤掉的词条已清干净" + (left.length ? "（残留：" + left.join(" / ") + "）" : ""));
@@ -1777,12 +1797,15 @@ async function main() {
       opTexts.length === 2 && opTexts[0] === "复制" && opTexts[1] === "更换 Key",
       "Key 那一格旁边是「复制」与「更换 Key」两个按钮（实际渲染：" + JSON.stringify(opTexts) + "）",
     );
-    const hints = bodyOpen ? bodyOpen.querySelectorAll(".settings-hint") : [];
+    /* 有票时的用法说明挂在 API Key 标签本身（悬停 / focus 才出，界面上没有「?」图标） */
+    const keyTips = bodyOpen
+      ? bodyOpen.querySelectorAll(".has-tip")
+      : [];
     ok(
-      hints.some((h) => /Codex 等 OpenAI 兼容客户端/.test(h.textContent)),
-      "提示行说清这串 Key 可直接用于 Codex 等 OpenAI 兼容客户端（Base URL 就是上面那行接口地址）",
+      [...keyTips].some((q) => /Codex 等 OpenAI 兼容客户端/.test(q.getAttribute("data-tip") || "")),
+      "API Key 标签自身带说明（悬停即出）：这串 Key 可直接用于 Codex 等 OpenAI 兼容客户端（Base URL 就是上面那行接口地址）",
     );
-    /* 没票（卡上还是占位串）时的动作提示：先登录 / 点「刷新中转清单」 */
+    /* 没票（卡上还是占位串）时的动作提示：先登录（登录后自动拉取） */
     {
       const noKeyCard = JSON.parse(JSON.stringify(relayCard1));
       noKeyCard.apiKey = "mtnode-account-token";
@@ -1796,8 +1819,8 @@ async function main() {
       const hints2 = bodyNoKey ? bodyNoKey.querySelectorAll(".settings-hint") : [];
       ok(
         !!keyEl2 && keyEl2.textContent === "—" &&
-          hints2.some((h) => /还没有取到中转 Key/.test(h.textContent) && /刷新中转清单/.test(h.textContent)),
-        "没票时：Key 那格空着（「—」）并给动作提示「请先登录 MTNode 账号，或点「刷新中转清单」」",
+          hints2.some((h) => /还没有取到中转 Key/.test(h.textContent) && /登录后会自动拉取/.test(h.textContent)),
+        "没票时：Key 那格空着（「—」）并给动作提示「请先登录 MTNode 账号（登录后会自动拉取）」",
       );
       S.config.providers = [relayCard1];
     }

@@ -66,7 +66,7 @@
   }
 
   /* 新建的工具 / 函数节点：只补种预设 / 思考强度两档默认，**不写模型**。
-     模型侧一律「未选择 = 跟随设置 · 智能能力的默认模型」（S.config.dsh.model），
+     模型侧一律「未选择 = 跟随设置 · 默认模型里的」（S.config.dsh.model），
      由 aiResolvedModelEffective 在运行期现算 —— 不在节点上固化一份「新建当时的默认」，
      否则用户以后改设置，这些节点会一直在跑旧模型（这正是「工具用的模型与设置不符」）。 */
   function aiCallSeedDefaults(node) {
@@ -284,7 +284,7 @@
     };
   }
 
-  /* 同上的「现值」口径：没有任何节点选过时，回落到**设置 · 智能能力的默认模型**
+  /* 同上的「现值」口径：没有任何节点选过时，回落到**设置 · 默认模型里的**
      （S.config.dsh.model，由 app.js / app-agent.js 的 dshDefaultModelPick 唯一解析）。
      与 aiResolvedModel 分开，是为了不动「就近继承」那套语义：
        · 弹层 / 提示行仍按 aiResolvedModel 说「继承自谁」（fromDefault 的「默认」不是节点，
@@ -437,7 +437,7 @@
      返回 { provider, model, preset, effort, providerConfig } 或 null。 */
   function aiRunSpecFor(node) {
     const eff = aiResolvedOf(node);
-    /* 模型这一格走「现值」：本节点 / 上层都没选 → 设置 · 智能能力的默认模型；
+    /* 模型这一格走「现值」：本节点 / 上层都没选 → 设置 · 默认模型里的；
        不可用时 runSpec 仍要给出来（ai() 调用点据此报错，而不是静默换一只）。 */
     const effModel = aiResolvedModelEffective(node);
     if (!effModel || !effModel.model) return null;
@@ -461,7 +461,7 @@
 
   /* 运行期兜底：只把**预设 / 思考强度**补齐（新建时补过种，这里兜住旧画布 —— 加功能前建的节点），
      返回是否改动。
-     模型侧刻意不补种：空 = 跟随设置 · 智能能力的默认模型，由运行期现算（见
+     模型侧刻意不补种：空 = 跟随设置 · 默认模型里的，由运行期现算（见
      aiResolvedModelEffective）—— 一旦写回节点，用户之后改设置这些节点也不会跟着变。 */
   function aiApplyToSelf(node) {
     ensureAiCallState(node);
@@ -537,7 +537,7 @@
         : effNow.fromDefault
           ? I18n.t("AI 调用：") +
             m +
-            I18n.t("（设置 · 智能能力里的默认模型）· 点击为本节点单独选择")
+            I18n.t("（设置 · 默认模型里的）· 点击为本节点单独选择")
           : I18n.t("AI 调用：") + m + I18n.t(" · 点击修改");
     }
     return (
@@ -1174,7 +1174,7 @@
   function renderAiModelPane(list, node) {
     const own = aiModelOwn(node);
     const curKey = own ? own.provider + "|" + own.model : "";
-    /* 没自选时把「现在实际会用的那一只」（设置 · 智能能力的默认模型）标出来 ——
+    /* 没自选时把「现在实际会用的那一只」（设置 · 默认模型里的）标出来 ——
        用户一眼看得出「不选」等于用哪一只，不必去设置里比对。 */
     const effNow = aiResolvedModelEffective(node);
     const curEffective = effNow && effNow.fromDefault;
@@ -1196,7 +1196,7 @@
           on,
           () => applyAiCallSetting(node, "model", m, g.id),
           mark
-            ? I18n.t("设置 · 智能能力的默认模型：不选它时本节点就用它。")
+            ? I18n.t("设置 · 默认模型里的：不选它时本节点就用它。")
             : "",
           mark,
         );
@@ -1336,7 +1336,7 @@
       effNow && effNow.source,
       !!(effNow && effNow.inherited),
       effNow
-        ? I18n.t("未选择：本节点需要借助 AI 时用设置 · 智能能力里的默认模型。")
+        ? I18n.t("未选择：本节点需要借助 AI 时用设置 · 默认模型里的。")
         : I18n.t("未选择：本节点需要借助 AI 时跟随默认模型。"),
     );
   }
@@ -1354,7 +1354,7 @@
           ((effNow.source && (effNow.source.title || effNow.source.id)) || "") +
           I18n.t("」）")
         : effNow.fromDefault
-          ? I18n.t("（设置 · 智能能力里的默认模型）")
+          ? I18n.t("（设置 · 默认模型里的）")
           : "")
     );
   }

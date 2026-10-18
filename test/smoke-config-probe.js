@@ -78,9 +78,9 @@ function connect(child) {
 
   try {
     const st = await req("status");
-    /* 运行时的 bin 路径形态随网关依赖布局变：pnpm isolated = …/@deepseek-ai+dsh@0.2.0-rc.2/…，
+    /* 运行时的 bin 路径形态随网关依赖布局变：pnpm isolated = …/@deepseek-ai+dsh@0.2.1-rc.2/…，
        hoisted（本仓固定口径，见 smoke-gateway-packaging [1]）= …/@deepseek-ai/dsh/lib/bin.js
-       —— 路径里没有版本号。所以认「bin 在盘上 + 它所属包的 manifest 版本 = 0.2.0-rc.2」，
+       —— 路径里没有版本号。所以认「bin 在盘上 + 它所属包的 manifest 版本 = 0.2.1-rc.2」，
        既不放过换版本，也不误报换布局。 */
     const runtimeBin = String((st && st.result && st.result.runtimeBin) || "");
     let dshVersion = "";
@@ -90,8 +90,8 @@ function connect(child) {
       /* 读不到 manifest = 下面判失败 */
     }
     ok(
-      !!runtimeBin && fs.existsSync(runtimeBin) && dshVersion === "0.2.0-rc.2",
-      "[1] 网关 status 指向 0.2.0-rc.2 运行时（bin 在盘上 + manifest 版本对上）",
+      !!runtimeBin && fs.existsSync(runtimeBin) && dshVersion === "0.2.1-rc.2",
+      "[1] 网关 status 指向 0.2.1-rc.2 运行时（bin 在盘上 + manifest 版本对上）",
     );
 
     const officialModels = [

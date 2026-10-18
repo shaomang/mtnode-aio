@@ -29,6 +29,9 @@ const ROOT = path.join(__dirname, "..");
 const SRC = fs.readFileSync(path.join(ROOT, "renderer", "app-assist.js"), "utf8");
 const IDX = fs.readFileSync(path.join(ROOT, "renderer", "index.html"), "utf8");
 const I18N = fs.readFileSync(path.join(ROOT, "renderer", "i18n.js"), "utf8");
+/* 档位清单 / 归一 / 词条住在 renderer/app-dsh-compact.js（设置面板与助手栏共用的小单元）：
+   真实 index.html 里它排在 app-assist.js 之前，这里也一起抠出来注入。 */
+const SHARED = fs.readFileSync(path.join(ROOT, "renderer", "app-dsh-compact.js"), "utf8");
 
 let checks = 0;
 let fails = 0;
@@ -66,19 +69,41 @@ function sliceBraces(src, openIdx) {
   }
   throw new Error("括号未配平（锚点附近改动过大？）");
 }
-function grabFn(name) {
+function grabFn(name, src) {
+  const hay = src || SRC;
   const re = new RegExp("^(?:async\\s+)?function\\s+" + name + "\\s*\\(", "m");
-  const m = re.exec(SRC);
-  if (!m) throw new Error("renderer/app-assist.js 里找不到函数 " + name + "（改名了？断言要跟着改）");
-  const open = SRC.indexOf("{", SRC.indexOf(")", m.index));
-  return SRC.slice(m.index, open + sliceBraces(SRC, open).length);
+  const m = re.exec(hay);
+  if (!m) throw new Error("找不到函数 " + name + "（改名了？／搬去别的加载单元了？）");
+  const open = hay.indexOf("{", hay.indexOf(")", m.index));
+  return hay.slice(m.index, open + sliceBraces(hay, open).length);
 }
 function grabOptionsConst() {
-  const start = SRC.indexOf("const ASSIST_COMPACT_OPTIONS = [");
-  if (start < 0) throw new Error("renderer/app-assist.js 里找不到 ASSIST_COMPACT_OPTIONS");
-  const end = SRC.indexOf("];", start);
+  const start = SHARED.indexOf("const ASSIST_COMPACT_OPTIONS = [");
+  if (start < 0) throw new Error("renderer/app-dsh-compact.js 里找不到 ASSIST_COMPACT_OPTIONS");
+  const end = SHARED.indexOf("];", start);
   if (end < 0) throw new Error("ASSIST_COMPACT_OPTIONS 的收尾 ] 没找到");
-  return SRC.slice(start, end + 2);
+  return SHARED.slice(start, end + 2);
+}
+/* 数值常量（自定义触发线的边界 / 固定档清单）：抠原文，不自己编值 */
+function grabConstFromAssist(name) {
+  const m = new RegExp("^const " + name + "\\s*=\\s*([^;\\n]+);", "m").exec(SHARED);
+  if (!m) throw new Error("renderer/app-dsh-compact.js 里找不到常量 " + name);
+  return "const " + name + " = " + m[1] + ";";
+}
+/* 跨行对象常量（COMPACT_TIER_SIZE_DEFAULTS）：按花括号配对抠原文 */
+function grabObjectConstFromShared(name) {
+  const at = SHARED.indexOf("const " + name + " = {");
+  if (at < 0) throw new Error("renderer/app-dsh-compact.js 里找不到常量 " + name);
+  let i = SHARED.indexOf("{", at);
+  let depth = 0;
+  for (; i < SHARED.length; i++) {
+    if (SHARED[i] === "{") depth++;
+    else if (SHARED[i] === "}") {
+      depth--;
+      if (depth === 0) return SHARED.slice(at, i + 1) + ";";
+    }
+  }
+  throw new Error("常量 " + name + " 的花括号不配对");
 }
 /* 菜单那一族：closeAgentMenus → 技能菜单注释之前（与 smoke-model 同一处切法） */
 function sliceMenuSrc() {
@@ -229,13 +254,49 @@ function mkSandbox(cfg) {
   vm.runInContext(
     grabOptionsConst() +
       "\n" +
-      grabFn("compactPolicyOf") +
+      grabConstFromAssist("COMPACT_CUSTOM_MIN") +
       "\n" +
-      grabFn("assistCompactOptionLabel") +
+      grabConstFromAssist("COMPACT_CUSTOM_MAX") +
+      "\n" +
+      grabConstFromAssist("COMPACT_FIXED_TIERS") +
+      "\n" +
+      grabObjectConstFromShared("COMPACT_TIER_SIZE_DEFAULTS") +
+      "\n" +
+      grabConstFromAssist("COMPACT_RETAIN_MIN") +
+      "\n" +
+      grabConstFromAssist("COMPACT_RETAIN_MAX") +
+      "\n" +
+      grabConstFromAssist("COMPACT_SUMMARY_MIN") +
+      "\n" +
+      grabConstFromAssist("COMPACT_SUMMARY_MAX") +
+      "\n" +
+      grabFn("compactPolicyOf", SHARED) +
+      "\n" +
+      grabFn("compactLimitOf", SHARED) +
+      "\n" +
+      grabFn("compactTierSizeDefault", SHARED) +
+      "\n" +
+      grabFn("compactRetainEffectiveOf", SHARED) +
+      "\n" +
+      grabFn("compactSummaryEffectiveOf", SHARED) +
+      "\n" +
+      grabFn("assistCompactOptionLabel", SHARED) +
+      "\n" +
+      grabFn("compactCustomSuffix", SHARED) +
+      "\n" +
+      grabFn("syncCompactSideControls") +
+      "\n" +
+      grabFn("syncCompactCustomInput") +
+      "\n" +
+      grabFn("syncCompactLimitInputs") +
       "\n" +
       grabFn("agentCompactMenuValue") +
       "\n" +
       grabFn("applyAssistCompactChoice") +
+      "\n" +
+      grabFn("applyAssistCompactTrigger") +
+      "\n" +
+      grabFn("applyAssistCompactLimit") +
       "\n" +
       "function closeAgentMenus(){}\n" +
       MENU_SRC +
@@ -248,11 +309,14 @@ function mkSandbox(cfg) {
   sandbox.__st = st;
   return sandbox;
 }
+/* 档位文案 = 「档位名 · 上下文阈值」两截（界面不冗余），与 renderer/app-dsh-compact.js 的
+   ASSIST_COMPACT_OPTIONS 逐字一致；「自定义」档名不带数，量级标注由 compactCustomSuffix 拼 */
 const LABELS = {
-  off: "关闭 · 不自动压缩长会话",
-  early: "早 · 上下文还宽裕时就压（最省，前文细节丢得最多）",
-  mid: "中 · 默认档（约 30 万 token 触发）",
-  late: "晚 · 接近上限才压（保留最多前文）",
+  off: "关闭",
+  frugal: "省钱 · 100k",
+  mid: "中 · 300k",
+  late: "晚 · 450k",
+  custom: "自定义",
 };
 
 async function main() {
@@ -283,21 +347,27 @@ async function main() {
     eq(cellValue(byClass(sbBad.__menu, "agent-menu-cell")[4]), LABELS.mid, "非法档回落「中」（脏值不会写进组合）");
   }
 
-  console.log("\n[2] compact 页：四档清单与助手栏同源、当前档打 ✓、返回键回根页");
+  console.log("\n[2] compact 页：五档清单与助手栏同源、当前档打 ✓、返回键回根页 + 自定义一行");
   {
-    const sb = mkSandbox({ dsh: { compact: { enabled: true, tier: "early" } } });
+    const sb = mkSandbox({ dsh: { compact: { enabled: true, tier: "frugal" } } });
     sb.__menu.dataset.pane = "compact";
     sb.buildAgentModelMenu();
-    const opts = byClass(sb.__menu, "agent-menu-option");
-    eq(opts.length, 4, "四档（关闭 / 早 / 中 / 晚）");
+    /* 档位行 = 五个（自定义那一行是 label，也带 .agent-menu-option 类；按「有 ✓ 的按钮」区分） */
+    const opts = byClass(sb.__menu, "agent-menu-option").filter((o) => o.tagName === "BUTTON" || o.onclick);
+    eq(opts.length, 5, "五档（关闭 / 省钱 / 中 / 晚 / 自定义）");
     eq(
-      opts.map(optName).join("|"),
-      [LABELS.off, LABELS.early, LABELS.mid, LABELS.late].join("|"),
-      "档位清单 = 助手栏那一份 ASSIST_COMPACT_OPTIONS（两处人口同一个真源）",
+      opts.slice(0, 4).map(optName).join("|"),
+      [LABELS.off, LABELS.frugal, LABELS.mid, LABELS.late].join("|"),
+      "前四档的文案 = 助手栏那一份 ASSIST_COMPACT_OPTIONS（三处入口同一个真源）",
     );
+    ok(optName(opts[4]).indexOf(LABELS.custom) === 0,
+      "第五档 = 自定义（文案前缀与助手栏那份一致；末尾的量级标注单独断言）");
     const checked = opts.filter((o) => checkOf(o) === "✓");
     eq(checked.length, 1, "只给当前这一档打 ✓");
-    eq(optName(checked[0]), LABELS.early, "✓ 打在 config.dsh.compact.tier = early 那一档上");
+    eq(optName(checked[0]), LABELS.frugal, "✓ 打在 config.dsh.compact.tier = frugal 那一档上");
+    /* 自定义那一档的回显带量级标注 */
+    eq(optName(opts[4]), LABELS.custom + " · 100K",
+      "自定义那一档的回显带当前触发线（100K = config 里的缺省值）");
     const bk = byClass(sb.__menu, "agent-menu-back")[0];
     ok(!!bk, "compact 页有返回根页的「←」");
     eq(bk && bk.textContent, "← 上下文压缩", "返回键文案 = 「← 上下文压缩」（不落进「思考强度」那一支）");
@@ -322,15 +392,16 @@ async function main() {
     sb.__menu.dataset.pane = "compact";
     sb.buildAgentModelMenu();
     const late = byClass(sb.__menu, "agent-menu-option").filter((o) => optName(o) === LABELS.late)[0];
-    ok(!!late, "四档里的「晚」那一项在");
+    ok(!!late, "五档里的「晚」那一项在");
     late.onclick();
     const c = sb.__state.config.dsh.compact;
     ok(
       c && c.enabled === true && c.tier === "late",
-      "选「晚」→ config.dsh.compact = {enabled:true,tier:'late'}（与设置面板 / 助手栏同一份值，实测 " +
+      "选「晚」→ config.dsh.compact = {enabled:true,tier:'late',customTriggerTokens:…}（与设置面板 / 助手栏同一份值，实测 " +
         JSON.stringify(c) +
         "）",
     );
+    eq(c && c.customTriggerTokens, 100000, "切档位保留自定义触发线（不放成 undefined）");
     eq(sb.__state.saved, 1, "走 persistAssistUi → configSave 落盘一次（不是只改内存）");
     ok(
       sb.__state.toasts.length === 1 && /下一个新会话生效/.test(sb.__state.toasts[0]),
@@ -347,6 +418,37 @@ async function main() {
     );
     eq(sb.__state.saved, 2, "第二次也落了盘");
     ok(/上下文压缩已关闭/.test(sb.__state.toasts[1]), "关闭的提示语单独一条：" + sb.__state.toasts[1]);
+  }
+
+  console.log("\n[3b] 自定义档：菜单里那一行输入框是真入口（合法写回 / 越界拒绝）");
+  {
+    const sb = mkSandbox({ dsh: { compact: { enabled: true, tier: "custom", customTriggerTokens: 250000 } } });
+    sb.__menu.dataset.pane = "compact";
+    sb.buildAgentModelMenu();
+    const rows = byClass(sb.__menu, "agent-menu-option");
+    const customRow = rows.filter((o) => hasClass(o, "agent-menu-input-row"))[0];
+    ok(!!customRow, "自定义那一行在（label + 数字框，三处入口一致）");
+    ok(!!customRow && hasClass(customRow, "agent-menu-input-row"),
+      "那一行带 agent-menu-input-row 类（CSS 靠它去掉手型与 hover 底色）");
+    const tin = customRow && customRow.children.filter((c) => c.tagName === "INPUT")[0];
+    ok(!!tin, "行里真的有一个 input（不是只画个标签）");
+    eq(tin && tin.value, "250000", "输入框回填当前触发线（250k）");
+    eq(customRow && customRow.hidden, false, "选了自定义档 → 那一行露出");
+    eq(optName(customRow), "自定义触发线",
+      "自定义那一行自己的标签 = 「自定义触发线」（它是一行参数，不参与档位 ✓ 竞争）");
+    tin.onchange();
+    eq(sb.__state.saved, 1, "在框里改数 → 走同一条落盘链");
+    eq(sb.__state.config.dsh.compact.customTriggerTokens, 250000, "值没变（未改内容时原样写回）");
+    tin.value = "9000";
+    tin.onchange();
+    eq(sb.__state.config.dsh.compact.customTriggerTokens, 250000, "越界（9000）被拒绝：配置里仍是上一个合法值");
+    eq(tin.value, "250000", "越界后输入框回填成当前生效值（界面不留脏数）");
+    ok(sb.__state.toasts.some((t) => /自定义触发线要填/.test(t)), "越界有明确提示：" + JSON.stringify(sb.__state.toasts));
+    const sbMid = mkSandbox({ dsh: { compact: { enabled: true, tier: "mid" } } });
+    sbMid.__menu.dataset.pane = "compact";
+    sbMid.buildAgentModelMenu();
+    const midRow = byClass(sbMid.__menu, "agent-menu-option").filter((o) => hasClass(o, "agent-menu-input-row"))[0];
+    eq(midRow && midRow.hidden, true, "中档时那一行收起（只有选了自定义才露出）");
   }
 
   console.log("\n[4] 会话 chip 的 tooltip 也说到了这一格（切语言不掉字）");

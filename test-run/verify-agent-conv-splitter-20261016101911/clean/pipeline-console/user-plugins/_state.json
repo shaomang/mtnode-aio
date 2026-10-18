@@ -1,0 +1,14 @@
+{
+  "disabled": [],
+  "imported": {},
+  "lastHealth": {
+    "at": 1792145951776,
+    "appVersion": "1.5.4",
+    "root": "E:\\dev\\tools\\pipeline-console\\test-run\\verify-agent-conv-splitter-20261016101911\\clean\\pipeline-console\\user-plugins",
+    "total": 0,
+    "ok": 0,
+    "problems": [],
+    "nodes": 0,
+    "quiet": true
+  }
+}

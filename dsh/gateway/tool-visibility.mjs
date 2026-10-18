@@ -56,6 +56,9 @@ export const HIDEABLE_TOOLS = Object.freeze([
   'browser_help',
   'browser_release',
   /* dsh 引擎自带（agent 作用域 restrict 摘除） */
+  /* 识图只留一个入口：引擎自带的 read_image 无条件摘掉，看图一律走 mtnode_vision
+     （它才有宿主审批与多模态后端路由）。判据在渲染层 agentDeniedToolNames 里是无条件的。 */
+  'read_image',
   'ask_user_question',
   'create_goal',
   'get_goal',

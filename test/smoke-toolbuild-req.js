@@ -3,10 +3,10 @@
  *   node test/smoke-toolbuild-req.js
  *
  * 本次改动的两条用户口径，逐条钉住：
- *   ① 工具使用的模型必须等于设置 · 智能能力里的「默认模型」（S.config.dsh.model，
+ *   ① 工具使用的模型必须等于设置 · 默认模型里的「模型」（S.config.dsh.model，
  *      由 app.js / app-agent.js 的 dshDefaultModelPick / dshDefaultModelRoute 唯一解析）：
  *      方案生成、工具开发会话、工具节点运行 / 🤖 按钮四处同源；不可用时**不静默回落**，
- *      报错并指路「设置 · 智能能力 · 默认模型」。
+ *      报错并指路「设置 · 默认模型」。
  *   ② 工具构建必须先由用户填写「本次需求」，AI 不再读文件内容自行分析：方案提示词里
  *      只有本机判定的元数据 + 用户需求，样本读取（toolBuildTextSample）不再被调用；
  *      点「确认开发」后开发会话先做一轮「实现取舍」问询（ask_user_question / grill-me）。
@@ -104,14 +104,14 @@ function defaultAgentProviderRoute() { return 'deepseek-official'; }
 function dshDefaultModelPick() {
   var m = String((S.config.dsh && S.config.dsh.model) || '').trim();
   if (!m)
-    return { ok: false, route: '', model: '', reason: I18n.t('默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。') };
+    return { ok: false, route: '', model: '', reason: I18n.t('默认模型还没设置：请到 设置 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。') };
   var routes = [];
   var push = function (r) { if (r && dshModelFitsRouteNow(r, m) && routes.indexOf(r) < 0) routes.push(r); };
   push(preferredAgentProviderRoute());
   push(devRouteOfModel(m));
   push(defaultAgentProviderRoute());
   if (!routes.length)
-    return { ok: false, route: '', model: m, reason: I18n.t('默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。', { model: m }) };
+    return { ok: false, route: '', model: m, reason: I18n.t('默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 默认模型 里重选。', { model: m }) };
   return { ok: true, route: routes[0], model: m, reason: '' };
 }
 function dshModelFitsRouteNow(route, model) {
@@ -358,8 +358,8 @@ async function A(body, msg, expect) {
       v &&
       v.ok === false &&
       v.calls === 0 &&
-      v.summary.indexOf("设置 · 智能能力 · 默认模型") >= 0 &&
-      v.error.indexOf("设置 · 智能能力 · 默认模型") >= 0,
+      v.summary.indexOf("设置 · 默认模型") >= 0 &&
+      v.error.indexOf("设置 · 默认模型") >= 0,
   );
   await A(
     'S.config.dsh.model = "not-exist-model"; RUNS.length = 0; var r = await planToolBuildForFile("C:/x/a.xlsx", { kind: "proc_text", title: "T", toolBuild: { req: "需求" } }); return { ok: r.ok, calls: RUNS.length, summary: String(r.summary || "") };',
@@ -369,7 +369,7 @@ async function A(body, msg, expect) {
       v.ok === false &&
       v.calls === 0 &&
       v.summary.indexOf("not-exist-model") >= 0 &&
-      v.summary.indexOf("设置 · 智能能力 · 默认模型") >= 0,
+      v.summary.indexOf("设置 · 默认模型") >= 0,
   );
   exec('S.config.dsh.model = "deepseek-v4-pro";');
 
@@ -405,7 +405,7 @@ async function A(body, msg, expect) {
     (v) => v === true,
   );
   await A(
-    'var node = { id: "t3", kind: "super", tool: true, title: "T", toolBuild: { status: "building" } }; var r = toolBuildDefaultRoute(node); S.config.dsh.model = ""; var txt = String(toolBuildModelProblemText()); S.config.dsh.model = "deepseek-v4-pro"; return !!(r && r.provider === "deepseek-official" && r.model === "deepseek-v4-pro") && txt.indexOf("设置 · 智能能力 · 默认模型") >= 0;',
+    'var node = { id: "t3", kind: "super", tool: true, title: "T", toolBuild: { status: "building" } }; var r = toolBuildDefaultRoute(node); S.config.dsh.model = ""; var txt = String(toolBuildModelProblemText()); S.config.dsh.model = "deepseek-v4-pro"; return !!(r && r.provider === "deepseek-official" && r.model === "deepseek-v4-pro") && txt.indexOf("设置 · 默认模型") >= 0;',
     "toolBuildDefaultRoute：默认模型可用时抛不出错、toolBuildModelProblemText 只在不可用时给指路文案",
     (v) => v === true,
   );
@@ -471,16 +471,16 @@ async function A(body, msg, expect) {
   (function () {
     I18N.setLocale("en");
     const keys = [
-      "默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
-      "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。",
-      "默认模型不可用：请到 设置 · 智能能力 · 默认模型 里重选一只模型。",
+      "默认模型还没设置：请到 设置 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
+      "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 默认模型 里重选。",
+      "默认模型不可用：请到 设置 · 默认模型 里重选一只模型。",
       "本次需求",
       "先写下你希望这个工具做什么（必填）—— AI 按你的需求出方案，不会去读文件内容自己分析；确认后才在画布上搭建工具节点并用这个文件实测。",
       "请先填写「本次需求」：说清这个工具要做什么",
       "按「本次需求」设计转换方案（不读文件内容）",
       "按当前「本次需求」重新设计转换方案（需先填好需求）",
       "等待你在询问窗里回答开发会话的实现问题…",
-      "未选择：本节点需要借助 AI 时用设置 · 智能能力里的默认模型。",
+      "未选择：本节点需要借助 AI 时用设置 · 默认模型里的。",
       "AI 调用：",
     ];
     const missing = [];

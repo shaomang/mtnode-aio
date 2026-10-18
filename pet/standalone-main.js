@@ -1240,7 +1240,7 @@ async function handleChatSend(text) {
     return {
       ok: false,
       error:
-        "MTNode 中转服务当前不可用：请回 MTNode 主程序的「设置 · 提供商」确认中转卡上有 Key（可点「刷新中转清单」），或改用其它服务商",
+        "MTNode 中转服务当前不可用：请回 MTNode 主程序的「设置 · 提供商」确认中转卡上有 Key，或改用其它服务商",
     };
   }
   chatHistory.push({ role: "user", content: t, at: Date.now() });

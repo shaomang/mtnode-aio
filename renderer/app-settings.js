@@ -104,17 +104,151 @@ function settingsSaved(ms) {
   return Promise.resolve(false);
 }
 
+/* ── 设置里的说明提示（本次需求：界面上不再有「?」，说明挂在标题 / 标签本身）──
+   设置页原先平铺着十几段说明文字（小节导语、字段口径、括注），一屏里一半是灰字。
+   上一版把它们收进一枚 12px 圆形「?」；本轮按用户口径把「?」整个去掉：
+   鼠标移到小节标题 / 字段标签上（或键盘 focus）就出同一份全文，界面不留任何图标。
+   为什么不用 ::after 伪元素（顶栏 data-tip 那套）：设置正文 .overlay-body 是
+   overflow-y:auto 的滚动容器，伪元素提示会被 overflow 裁掉；所以提示走
+   body 级浮层 #setQTip（position:fixed，显示前先量尺寸、按视口夹紧，放不下就翻到上方）。
+   文案口径：settingsTip(中文原文) 内在绑定时就翻一次（切语言会整体重建设置页，
+   见 renderer/app-boot.js 的 applyLocale），data-tip 与浮层 aria 同源。 */
+let setQTipEl = null;
+let setQTipBound = false;
+
+function setQTipHide() {
+  if (setQTipEl) setQTipEl.hidden = true;
+}
+
+/* 宿主里的「真控件」不弹提示：悬停按钮 / 往输入框里打字时冒出一条说明只会碍事 */
+function setQTipIsControl(el) {
+  if (!el || !el.tagName) return false;
+  const tag = String(el.tagName).toUpperCase();
+  if (tag === "BUTTON" || tag === "A" || tag === "SELECT" || tag === "TEXTAREA") return true;
+  if (tag === "INPUT") {
+    const t = String(
+      (el.getAttribute && el.getAttribute("type")) || el.type || "text",
+    ).toLowerCase();
+    return t !== "checkbox" && t !== "radio";
+  }
+  return false;
+}
+
+/* 浮层只建一次：id 固定 #setQTip，宿主的 aria-describedby 指向它 */
+function setQTipEnsure() {
+  if (setQTipEl && setQTipEl.isConnected !== false) return setQTipEl;
+  const box = document.createElement("div");
+  box.className = "set-tip-pop";
+  box.id = "setQTip";
+  box.setAttribute("role", "tooltip");
+  box.hidden = true;
+  (document.body || document.documentElement).appendChild(box);
+  setQTipEl = box;
+  return box;
+}
+
+function setQTipShow(host) {
+  if (!host) return;
+  const txt = host.getAttribute("data-tip") || "";
+  if (!txt) return;
+  const box = setQTipEnsure();
+  box.textContent = txt;
+  const lab = host.getAttribute("data-tip-label") || "";
+  if (lab) box.setAttribute("aria-label", lab);
+  else if (typeof box.removeAttribute === "function") box.removeAttribute("aria-label");
+  box.hidden = false;
+  /* 只装一次：滚轮 / 缩放 / 点到别处都立刻收提示（设置正文可滚动，提示是 fixed 定位，
+     不跟着滚会飘在错的位置）。 */
+  if (!setQTipBound && typeof window !== "undefined" && window.addEventListener) {
+    setQTipBound = true;
+    window.addEventListener("scroll", setQTipHide, true);
+    window.addEventListener("resize", setQTipHide);
+    document.addEventListener("pointerdown", setQTipHide, true);
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") setQTipHide();
+    }, true);
+  }
+  /* 先量尺寸再定落点：默认贴标题 / 标签下方，下方放不下翻到上方，左右按视口夹紧。
+     宽行（整行 label）里文字在左，所以提示贴左边出，不居中飘到行中间去。 */
+  let r = null;
+  try {
+    r = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : null;
+  } catch (_) {}
+  if (!r) return;
+  const vw = document.documentElement.clientWidth || window.innerWidth || 0;
+  const vh = document.documentElement.clientHeight || window.innerHeight || 0;
+  const bw = box.offsetWidth;
+  const bh = box.offsetHeight;
+  let left = r.width > bw ? r.left + 8 : r.left + r.width / 2 - bw / 2;
+  left = Math.max(8, Math.min(left, Math.max(8, vw - bw - 8)));
+  let top = r.bottom + 8;
+  if (vh && top + bh > vh - 8) top = Math.max(8, r.top - bh - 8);
+  box.style.left = Math.round(left) + "px";
+  box.style.top = Math.round(top) + "px";
+}
+
+/* 把说明挂到宿主（小节标题 / 字段标签 / 字段行）本身上 —— 不再造「?」图标：
+   鼠标移到这处标题（hover）或键盘 focus 到它，才在 #setQTip 里出全文。
+   text 传中文原文（同时是 I18n 词条 key），label 可选（无障碍短名，给浮层当 aria-label）。
+   宿主里还有按钮 / 输入框时，指向这些控件的那部分鼠标与焦点不弹提示（见 setQTipIsControl），
+   所以「悬停标题看说明、点按钮干活、往框里打字」互不打扰。 */
+function settingsTip(host, text, label) {
+  if (!host || !host.setAttribute) return null;
+  const body = I18n.t(text);
+  host.setAttribute("data-tip", body);
+  if (label) host.setAttribute("data-tip-label", I18n.t(label));
+  if (host.classList && host.classList.add) host.classList.add("has-tip");
+  /* 读屏：说明挂在浮层上，宿主用 aria-describedby 指过去（不用 aria-label：
+     这些宿主大多是 <label>，改 aria-label 会把勾选项的名字也一起换掉） */
+  host.setAttribute("aria-describedby", "setQTip");
+  /* 键盘可达：宿主里没有可聚焦控件、自己也不是控件时补一个 tabindex
+     （冒烟沙箱里的最小 DOM 未必有 hasAttribute / removeAttribute，一律按能力探测） */
+  const hasAttr = (el, k) =>
+    typeof el.hasAttribute === "function" ? el.hasAttribute(k) : el.getAttribute(k) != null;
+  let focusable = false;
+  try {
+    focusable =
+      typeof host.querySelector === "function" &&
+      !!host.querySelector("input, select, textarea, button, a[href]");
+  } catch (_) {}
+  if (!focusable && !setQTipIsControl(host) && !hasAttr(host, "tabindex")) {
+    host.setAttribute("tabindex", "0");
+  }
+  if (typeof host.addEventListener !== "function") return host;
+  host.addEventListener("mouseover", (ev) => {
+    if (setQTipIsControl(ev && ev.target)) return setQTipHide();
+    setQTipShow(host);
+  });
+  host.addEventListener("mouseout", (ev) => {
+    const to = ev && ev.relatedTarget;
+    if (to && typeof host.contains === "function" && host.contains(to)) return;
+    setQTipHide();
+  });
+  host.addEventListener("focusin", (ev) => {
+    if (setQTipIsControl(ev && ev.target)) return setQTipHide();
+    setQTipShow(host);
+  });
+  host.addEventListener("focusout", setQTipHide);
+  return host;
+}
+
+/* 兼容既有调用名：说明就挂在 anchor（标题 / 字段标签本身）上 */
+function settingsTipBeside(anchor, text, label) {
+  return settingsTip(anchor, text, label);
+}
+
 function openSettings(opts) {
   /* opts.section === "data"：打开设置并把「配置数据目录」那一节滚进视野
      （顶栏「数据不落应用文件夹」红色警示的点击入口，见 renderer/app-boot.js）。 */
   settingsFocusSection = (opts && opts.section) || "";
   reloadConfigProvidersFromDisk().then(() => {
     openSettingsBody();
-    /* 打开设置 = 用户要看提供商了：中转服务**本地没有快照**时顺手拉一次
-       （判定在 renderer/app-relay.js 的 syncIfStale：中转 Key 长期不变，有快照就不打扰服务端） */
+    /* 打开设置 = 用户要看提供商了：本地没有快照时顺手拉一次；快照带着失败原因 /
+       超过 24 小时没同步时也自动重拉一次（retry:true）——
+       设置里已无手动刷新按钮，这里是它唯一的用户侧自救入口（见 renderer/app-relay.js）。 */
     if (typeof MtRelay !== "undefined" && MtRelay.syncIfStale) {
       try {
-        MtRelay.syncIfStale();
+        MtRelay.syncIfStale({ retry: true });
       } catch {}
     }
   });
@@ -191,50 +325,273 @@ function openSettingsBody() {
   const tailSecs = { net: null, data: null, backup: null, storage: null, logs: null };
   const tailOrder = ["data", "backup", "storage", "net", "logs"];
 
-  /* ── 提供商配置（模型服务）：设置项最前面 ──
+  /* ═══════════ 默认模型（设置整页第一块 · 本次需求）════════════════════════
+     这是全应用**唯一**一份默认模型，位置 = 设置最上方（在「提供商配置」之上）。
+     内容与**会话输入区那颗「模型」菜单**对齐（模型提供商 / 预设 / 模型 / 思考强度），
+     口径也同一份真源：
+       · 提供商清单 = agentRouteGroupsNow()，只留**有模型**的服务商（= 已配置且有 Key、
+         没被停用；没 Key 的选了也跑不动，直接不列）；
+       · 模型清单 = 只列当前提供商的模型（不再跨服务商平铺成一长串，同名歧义消失）；
+       · 思考强度 = AGENT_EFFORT_UI_ORDER（与会话菜单同一张档位表）；
+       · 预设 = config.dsh.preset（原先在「智能能力（dsh）」小节里，整体搬到这里；
+         那边只剩子代理 / 权限预设 / 自动执行下游 / 声音）。
+     上下文压缩已按用户要求从设置里移除（档位改在会话侧设置：助手栏 / 会话 ⚙ 菜单），
+     写回链与生效时机不变。
+     生效口径：新建会话按这里播种；会话自己没选过模型时运行期回落到这里
+     （见 app-db.js 的 dshRunSpec）；助手栏读写的也是这几格（不再有 config.assistProvider /
+     assistModel / assistEffort 那套独立默认）。每一项都即时落盘，与设置里其它项同一条链。 */
+  const dshEls = {};
+  {
+    const sec = document.createElement("div");
+    sec.className = "settings-sec settings-sec-lead";
+
+    const secTitleRow = document.createElement("div");
+    secTitleRow.className = "settings-sec-title settings-sec-title-row";
+    const secTitleSpan = document.createElement("span");
+    secTitleSpan.textContent = I18n.t("默认模型");
+    secTitleRow.appendChild(secTitleSpan);
+    sec.appendChild(secTitleRow);
+
+    /* 可用服务商清单：与「会话 · 模型提供商」那一格同源（agentRouteGroupsNow），
+       再滤掉「没填 Key / 一只模型都没有」的 —— 列出来选了也跑不动（本次共识：只列可用）。
+       DeepSeek 官方那条即使没有 Key 也会回落到目录里的模型清单，所以 Key 这一关必须
+       自己再过一遍（providerForAgentRoute 是「路由 → 服务商」的真源）。 */
+    const defaultProviderKeyOk = (id) => {
+      try {
+        if (typeof providerForAgentRoute === "function") {
+          const p = providerForAgentRoute(id);
+          return !!(p && String(p.apiKey || "").trim());
+        }
+      } catch (_) {}
+      return true;
+    };
+    const defaultProviderGroups = () => {
+      let groups = [];
+      try {
+        groups =
+          typeof agentRouteGroupsNow === "function"
+            ? agentRouteGroupsNow() || []
+            : [];
+      } catch (_) {
+        groups = [];
+      }
+      if (!groups.length) {
+        /* 兜底（会话那份清单不可用）：老口径 —— dshProvider() + mtnodePiProviders() */
+        const out = [];
+        const dp = dshProvider();
+        if (dp && Array.isArray(dp.models) && dp.models.length)
+          out.push({
+            id: "deepseek-official",
+            name: (dp && dp.name) || I18n.t("DeepSeek 官方"),
+            models: dp.models.map((m) => String(m)),
+          });
+        for (const p of mtnodePiProviders()) {
+          const models = (p && p.models) || [];
+          if (!models.length) continue;
+          out.push({
+            id: "mtnode_" + p.route,
+            name: p.name || p.route,
+            models: models.map((m) => String(m)),
+          });
+        }
+        groups = out;
+      }
+      return groups.filter(
+        (g) => g && g.id && (g.models || []).length && defaultProviderKeyOk(g.id),
+      );
+    };
+
+    /* ── ① 模型提供商（与会话那一格同构：先选服务商，模型只列这家）── */
+    const provRow = document.createElement("label");
+    provRow.className = "n-field";
+    provRow.appendChild(document.createTextNode(I18n.t("模型提供商")));
+    const provSel = document.createElement("select");
+    provRow.appendChild(provSel);
+    sec.appendChild(provRow);
+    dshEls.provider = provSel;
+
+    /* ── ② 模型 ── */
+    const modelRow = document.createElement("label");
+    modelRow.className = "n-field";
+    modelRow.appendChild(document.createTextNode(I18n.t("模型")));
+    const modelSel = document.createElement("select");
+    modelRow.appendChild(modelSel);
+    sec.appendChild(modelRow);
+    dshEls.model = modelSel;
+
+    /* ── ③ 思考强度（默认档：新会话与助手栏都从这一档起）── */
+    const effortRow = document.createElement("label");
+    effortRow.className = "n-field";
+    effortRow.appendChild(document.createTextNode(I18n.t("思考强度")));
+    const effortSel = document.createElement("select");
+    const effortOrder =
+      (typeof AGENT_EFFORT_UI_ORDER !== "undefined" && AGENT_EFFORT_UI_ORDER) || [
+        "off",
+        "low",
+        "high",
+        "xhigh",
+        "max",
+      ];
+    for (const v of effortOrder) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = I18n.t(
+        (typeof AGENT_EFFORT_LABELS === "object" && AGENT_EFFORT_LABELS[v]) || v,
+      );
+      effortSel.appendChild(o);
+    }
+    effortSel.value = normalizeAgentEffort(S.config.dsh.effort || "high");
+    effortRow.appendChild(effortSel);
+    sec.appendChild(effortRow);
+    dshEls.effort = effortSel;
+    effortSel.onchange = () => {
+      /* 即时生效：写进 config.dsh.effort（新建会话播种 / 助手栏 / 运行入口都读它） */
+      S.config.dsh.effort = normalizeAgentEffort(effortSel.value);
+      S.assistEffort = S.config.dsh.effort;
+      settingsSaved(0);
+    };
+
+    /* ── ④ Agent 预设（迁移自 dsh 的 agent-presets；原先在智能能力小节，整体搬来）── */
+    const presetRow = document.createElement("label");
+    presetRow.className = "n-field";
+    presetRow.appendChild(document.createTextNode(I18n.t("Agent 预设")));
+    /* 括注（角色与行为风格）挂标签本身：悬停即出 */
+    settingsTipBeside(
+      presetRow,
+      "Agent 预设（智能能力的角色与行为风格）",
+      "Agent 预设说明",
+    );
+    const presetSel = document.createElement("select");
+    /* 档位真源：app.js 的 AGENT_PRESETS（与智能会话 / 智能节点面板同一张表），
+       这里只用带说明的 settingsLabelKey */
+    for (const p of AGENT_PRESETS) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = I18n.t(p.settingsLabelKey || p.labelKey);
+      if (p.hint) o.title = I18n.t(p.hint);
+      presetSel.appendChild(o);
+    }
+    presetSel.value = S.config.dsh.preset || AGENT_PRESET_DEFAULT;
+    presetRow.appendChild(presetSel);
+    sec.appendChild(presetRow);
+    dshEls.preset = presetSel;
+    /* 即时生效：Agent 预设在下一次智能运行时读取 */
+    presetSel.onchange = () => {
+      S.config.dsh.preset = presetSel.value;
+      settingsSaved(0);
+    };
+
+    /* ── 选中服务商后重建模型格（只列这家的模型）：空模型 = 跟随该家第一只，
+       与运行期同一口径（见 app-db.js 的默认模型兜底）。 ── */
+    const paintModelOptions = (provId, preferModel) => {
+      const groups = defaultProviderGroups();
+      const g = groups.filter((x) => x.id === provId)[0] || null;
+      const models = ((g && g.models) || []).map(String);
+      const all = models.slice();
+      /* 保底：老配置里保存过、但已不在该家清单中的值也要能显示出来（不丢用户的选择）。
+         只在这格显示的就是「存它的那一家」时才补 —— 换到别家后把 A 家的模型塞进 B 家
+         清单，会让人以为可以这么配（实际运行期会按成对口径拨正）。 */
+      const cur = String(preferModel || "").trim();
+      const savedProv = String((S.config.dsh && S.config.dsh.provider) || "").trim();
+      if (cur && (!savedProv || savedProv === provId) && all.indexOf(cur) < 0)
+        all.push(cur);
+      modelSel.innerHTML = "";
+      if (!all.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = I18n.t("（无可用模型）");
+        modelSel.appendChild(o);
+        modelSel.value = "";
+        return;
+      }
+      for (const m of all) {
+        const o = document.createElement("option");
+        o.value = m;
+        o.textContent = m;
+        modelSel.appendChild(o);
+      }
+      modelSel.value = cur && all.indexOf(cur) >= 0 ? cur : all[0];
+    };
+    /* 服务商格重建 + 回显：provider 为空（从没选过）→ 跟随实际生效的默认智能路由，
+       与 dshDefaultProviderRoute 同一口径；模型为空 → 回显该家第一只（空 = 跟随）。 */
+    const paintDefaultModelRows = () => {
+      const groups = defaultProviderGroups();
+      const cur = String(dshDefaultProviderRoute() || "");
+      provSel.innerHTML = "";
+      if (!groups.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = I18n.t(
+          "（无可用服务商：请先在下方「提供商配置」里填 API Key）",
+        );
+        provSel.appendChild(o);
+        provSel.value = "";
+        paintModelOptions("", "");
+        return;
+      }
+      for (const g of groups) {
+        const o = document.createElement("option");
+        o.value = g.id;
+        o.textContent = g.name || g.id;
+        o.title = g.id;
+        provSel.appendChild(o);
+      }
+      const hit = groups.filter((g) => g.id === cur)[0] ? cur : groups[0].id;
+      provSel.value = hit;
+      paintModelOptions(hit, dshDefaultModelValue());
+    };
+    paintDefaultModelRows();
+
+    provSel.onchange = () => {
+      /* 换提供商 = 换「设置里的提供商」；模型清空（= 跟随新家的第一只），
+         绝不留下「A 家的模型配 B 家路由」这种只到运行时才炸的组合。 */
+      S.config.dsh.provider = String(provSel.value || "");
+      S.config.dsh.model = "";
+      S.assistProvider = S.config.dsh.provider;
+      S.assistModel = "";
+      paintModelOptions(S.config.dsh.provider, "");
+      settingsSaved(0);
+      /* 助手栏此刻可能开着：它的两格读的就是这一份，顺手回刷 */
+      if (typeof fillAssistModelControls === "function") {
+        try {
+          fillAssistModelControls();
+        } catch (_) {}
+      }
+    };
+    modelSel.onchange = () => {
+      S.config.dsh.model = String(modelSel.value || "").trim();
+      /* 模型一旦显式选定，提供商也一并落定（否则会留下「只有模型没有提供商」的孤儿值） */
+      if (!String(S.config.dsh.provider || "").trim())
+        S.config.dsh.provider = String(provSel.value || "");
+      S.assistProvider = S.config.dsh.provider || S.assistProvider;
+      S.assistModel = S.config.dsh.model;
+      settingsSaved(0);
+      if (typeof fillAssistModelControls === "function") {
+        try {
+          fillAssistModelControls();
+        } catch (_) {}
+      }
+    };
+
+
+    body.appendChild(sec);
+  }
+
+  /* ── 提供商配置（模型服务）：紧跟「默认模型」之后 ──
      两列网格，每格只显示服务商名称（标题）；点击该格弹出对话框做具体配置
      （类型 / Base URL / API Key / 模型等）。网格顺序 = 服务商使用优先级。 */
   {
     const provSec = document.createElement("div");
-    provSec.className = "settings-sec settings-sec-lead";
+    provSec.className = "settings-sec";
 
     const provTitleRow = document.createElement("div");
     provTitleRow.className = "settings-sec-title settings-sec-title-row";
     const provTitleSpan = document.createElement("span");
     provTitleSpan.textContent = I18n.t("提供商配置");
-    const provHint = document.createElement("span");
-    provHint.className = "settings-hint";
-    provHint.style.cssText = "margin:0 0 0 10px; padding:2px 8px; border:0; display:inline";
-    provHint.textContent = I18n.t(
-      "（点击任一格配置该服务商；网格顺序即使用优先级，越靠前越优先）",
-    );
     provTitleRow.appendChild(provTitleSpan);
-    provTitleRow.appendChild(provHint);
-    /* MTNode 中转服务（账号托管）：清单与地址由云端下发（见 renderer/app-relay.js），
-       这里给一个手动「刷新」入口，卡里还有一个。**按钮始终在**（本地没有卡时更要能点：
-       新装应用登录后若自动拉取失败，这里是用户自己能救回来的那一个入口）。 */
-    const relayRefresh = document.createElement("button");
-    relayRefresh.className = "mini";
-    relayRefresh.textContent = I18n.t("刷新中转清单");
-    relayRefresh.title = I18n.t(
-      "按账号重新拉取中转服务的可用模型（登录成功与充值成功后会自动拉）",
-    );
-    relayRefresh.onclick = () => {
-      if (typeof MtRelay === "undefined") return;
-      relayRefresh.disabled = true;
-      const old = relayRefresh.textContent;
-      relayRefresh.textContent = I18n.t("刷新中…");
-      /* 显式点刷新 = 用户要求重拉（中转 Key 长期不变，平时本地有快照就不会打扰服务端） */
-      MtRelay.sync({ force: true }).then((r) => {
-        relayRefresh.disabled = false;
-        relayRefresh.textContent = old;
-        if (!r || !r.ok) toast((r && r.error) || I18n.t("刷新失败，请稍后重试"), "warn");
-        else if (r.everRecharged === false)
-          toast(I18n.t("该账号还没有充值记录，充值成功后中转清单会自动出现"), "warn");
-        else toast(I18n.t("中转清单已刷新"), "ok");
-      });
-    };
-    provTitleRow.appendChild(relayRefresh);
+    /* MTNode 中转服务（账号托管）：清单与地址由云端下发（见 renderer/app-relay.js）。
+       这里**没有手动刷新按钮**（需求：移除「刷新中转清单」）：登录态刷新、充值到账、
+       打开设置时按 syncIfStale 的判据自动拉取/重试，用户零操作。 */
     const add = document.createElement("button");
     add.className = "mini";
     add.textContent = I18n.t("＋ 添加服务商");
@@ -268,7 +625,7 @@ function openSettingsBody() {
     const paintRelay = () => {
       relaySlot.innerHTML = "";
       const prov = typeof MtRelay !== "undefined" ? MtRelay.provider() : null;
-      /* 「刷新中转清单」始终可点（见上）：本地没有卡时它是唯一的自救入口 */
+      /* 没有中转卡时整行不显示（也不再挂「刷新中转清单」按钮：拉取交给 syncIfStale） */
       if (!prov) {
         relaySlot.style.display = "none";
         return;
@@ -358,10 +715,12 @@ function openSettingsBody() {
     renderCanvas();
   };
   helpRow.appendChild(helpCb);
-  helpRow.appendChild(
-    document.createTextNode(
-      I18n.t("节点「?」说明按钮（点击查看该节点是做什么的；取消勾选则隐藏，默认打开）"),
-    ),
+  helpRow.appendChild(document.createTextNode(I18n.t("节点「?」说明按钮")));
+  /* 括注（点了看什么、默认开）挂勾选项文字本身：悬停即出 */
+  settingsTipBeside(
+    helpRow,
+    "节点「?」说明按钮（点击查看该节点是做什么的；取消勾选则隐藏，默认打开）",
+    "节点说明按钮",
   );
   body.appendChild(helpRow);
 
@@ -454,14 +813,6 @@ function openSettingsBody() {
     netPortInp.onchange = () => commitPort(true);
     row.appendChild(netPortInp);
     sec.appendChild(row);
-    const hint = document.createElement("div");
-    hint.className = "n-field";
-    hint.style.fontSize = "12px";
-    hint.style.opacity = "0.9";
-    hint.textContent = I18n.t(
-      "网络节点各有独立端口：接收节点默认监听 40999，发送节点默认目标 41000，均可在节点体上单独修改；此处仅作为节点留空(0)时的回退默认。通道号(16bit)在端口内做逻辑分流。",
-    );
-    sec.appendChild(hint);
     /* 很少用 → 沉到设置最下方（见函数末尾统一补挂） */
     tailSecs.net = sec;
   }
@@ -476,13 +827,6 @@ function openSettingsBody() {
     secTitle.className = "settings-sec-title";
     secTitle.textContent = I18n.t("配置数据目录");
     sec.appendChild(secTitle);
-
-    const hint = document.createElement("div");
-    hint.className = "n-field";
-    hint.textContent = I18n.t(
-      "存放 config.json（API Key 等）、画布存档与本地资产。更改后需重启应用生效。",
-    );
-    sec.appendChild(hint);
 
     const pathRow = document.createElement("div");
     pathRow.className = "n-field";
@@ -679,13 +1023,6 @@ function openSettingsBody() {
     secTitle.textContent = I18n.t("画布备份");
     sec.appendChild(secTitle);
 
-    const hint = document.createElement("div");
-    hint.className = "n-field";
-    hint.textContent = I18n.t(
-      "每 5 分钟自动把各工作流的最新状态另存一份快照，放在与自动保存分开的 save-backups 文件夹（内容无变化不重复存），每条工作流保留最近 72 份；误删或改坏时可从备份文件夹找回。",
-    );
-    sec.appendChild(hint);
-
     const statusEl = document.createElement("div");
     statusEl.className = "n-field";
     statusEl.style.fontSize = "12px";
@@ -765,14 +1102,13 @@ function openSettingsBody() {
     const secTitle = document.createElement("div");
     secTitle.className = "settings-sec-title";
     secTitle.textContent = I18n.t("存储占用与清理");
-    sec.appendChild(secTitle);
-
-    const hint = document.createElement("div");
-    hint.className = "n-field";
-    hint.textContent = I18n.t(
+    /* 长导语收进标题本身（本次需求：说明不占界面，悬停标题才出） */
+    settingsTipBeside(
+      secTitle,
       "统计数据目录里各类冗余的占用，并清理「已经没被 MTNode 用着」的文件：画布资产只清没有任何存档 / 备份 / 回收站引用的；正在运行的画布与正在编辑的文件一律跳过。清理默认把文件搬进系统回收站（可在资源管理器「还原」），只有会话记录与历史回滚数据是永久删除。",
+      "存储占用与清理说明",
     );
-    sec.appendChild(hint);
+    sec.appendChild(secTitle);
 
     const summaryEl = document.createElement("div");
     summaryEl.className = "n-field";
@@ -1127,13 +1463,6 @@ function openSettingsBody() {
     secTitle.textContent = I18n.t("画布粘贴");
     sec.appendChild(secTitle);
 
-    const hint = document.createElement("div");
-    hint.className = "n-field";
-    hint.textContent = I18n.t(
-      "剪贴板里有图像或截图时，在画布上按 Ctrl+V 会先弹一个确认框（显示图像内容），问你要不要用它创建「图像输入」节点。",
-    );
-    sec.appendChild(hint);
-
     const askRow = document.createElement("label");
     askRow.className = "n-field";
     askRow.style.flexDirection = "row";
@@ -1146,21 +1475,13 @@ function openSettingsBody() {
       settingsSaved(0);
     };
     askRow.appendChild(askCb);
-    askRow.appendChild(
-      document.createTextNode(
-        I18n.t("粘贴剪贴板图像时先询问（取消勾选 = 以后不再询问）"),
-      ),
+    askRow.appendChild(document.createTextNode(I18n.t("粘贴剪贴板图像时先询问")));
+    settingsTipBeside(
+      askRow,
+      "粘贴剪贴板图像时先询问（取消勾选 = 以后不再询问）",
+      "粘贴图像询问",
     );
     sec.appendChild(askRow);
-
-    const off = document.createElement("div");
-    off.className = "n-field";
-    off.style.fontSize = "12px";
-    off.style.opacity = "0.9";
-    off.textContent = I18n.t(
-      "取消勾选后：画布上按 Ctrl+V 若剪贴板里有图像，直接原样收进画布资产并创建图像输入节点（剪贴板里同时有最近复制的节点时仍优先粘贴节点）。",
-    );
-    sec.appendChild(off);
 
     body.appendChild(sec);
   }
@@ -1172,14 +1493,12 @@ function openSettingsBody() {
     const secTitle = document.createElement("div");
     secTitle.className = "settings-sec-title";
     secTitle.textContent = I18n.t("错误与崩溃日志");
-    sec.appendChild(secTitle);
-
-    const hint = document.createElement("div");
-    hint.className = "n-field";
-    hint.textContent = I18n.t(
+    settingsTipBeside(
+      secTitle,
       "应用内部错误与崩溃会自动写入本地诊断日志（不含 API Key）。导出后可发给开发者协助排查。",
+      "错误与崩溃日志说明",
     );
-    sec.appendChild(hint);
+    sec.appendChild(secTitle);
 
     const statusEl = document.createElement("div");
     statusEl.className = "n-field";
@@ -1278,8 +1597,14 @@ function openSettingsBody() {
     tailSecs.logs = sec;
   }
 
-  /* ── 智能能力（dsh）区块 ── */
-  const dshEls = {};
+  /* ── 智能能力（dsh）区块 ──
+     默认模型 / Agent 预设两块已整体搬到设置最上方的「默认模型」小节
+     （上下文压缩已从设置移除，改在会话侧设置）。这里只留与「模型选哪只」无关的智能能力
+     设置：权限预设 / 自动执行下游 / 声音 / 工具负载 / 开发工具 / 工作步骤展示档位。
+     子代理（委派）的界面已按需求整块移除（连同「默认模型已搬走」的指路提示与
+     「交流语言（Agent 口味）」纯回显）：配置键 config.dsh.subagent 与运行期取值不变，
+     仍由 dsh-agent-policy.js 的 policyFromConfig / normalizePolicy 读取
+     （缺省 = 开 / 允许 fork / 允许后台 / 深度 1）。 */
   {
     const sec = document.createElement("div");
     sec.className = "settings-sec";
@@ -1288,273 +1613,11 @@ function openSettingsBody() {
     secTitle.textContent = I18n.t("智能能力（DeepSeek Harness / dsh）");
     sec.appendChild(secTitle);
 
-    const modelRow = document.createElement("label");
-    modelRow.className = "n-field";
-    modelRow.appendChild(document.createTextNode(I18n.t("默认模型（智能能力使用）")));
-    const modelSel = document.createElement("select");
-    {
-      /* 默认模型下拉 = 全部文本服务商的模型（分组列出，与智能会话 / 全局助手同源）：
-         旧实现只取第一个 DeepSeek 兼容服务商（dshProvider()），导致非 DeepSeek
-         服务商用户的默认模型被强制指定成 deepseek 模型。 */
-      const groups = [];
-      const dp = dshProvider();
-      if (dp && Array.isArray(dp.models) && dp.models.length)
-        groups.push({
-          label: (dp && dp.name) || I18n.t("DeepSeek 官方"),
-          models: dp.models.map((m) => String(m)),
-        });
-      for (const p of mtnodePiProviders()) {
-        const models = (p && p.models) || [];
-        if (!models.length) continue;
-        groups.push({ label: p.name, models: models.map((m) => String(m)) });
-      }
-      /* 当前值：已保存的 dsh.model 优先；从未保存则跟随实际生效的默认智能路由
-         （preferredAgentProviderRoute 优先其它文本服务商），不再硬编码 deepseek */
-      let cur = (S.config.dsh && S.config.dsh.model) || "";
-      if (!cur) {
-        try {
-          cur =
-            preferredAgentModelForRoute(preferredAgentProviderRoute()) || "";
-        } catch (_) {}
-      }
-      const all = [];
-      for (const g of groups) {
-        const og = document.createElement("optgroup");
-        og.label = g.label;
-        for (const m of g.models) {
-          all.push(m);
-          const o = document.createElement("option");
-          o.value = m;
-          o.textContent = m;
-          og.appendChild(o);
-        }
-        modelSel.appendChild(og);
-      }
-      /* 保底：老配置里保存过、但已不在任何服务商模型清单中的值，也要能显示出来 */
-      if (cur && all.indexOf(cur) < 0) {
-        all.push(cur);
-        const o = document.createElement("option");
-        o.value = cur;
-        o.textContent = cur;
-        modelSel.appendChild(o);
-      }
-      if (!all.length) {
-        const o = document.createElement("option");
-        o.value = "";
-        o.textContent = I18n.t("（无可用模型）");
-        modelSel.appendChild(o);
-      }
-      modelSel.value = cur;
-    }
-    modelRow.appendChild(modelSel);
-    sec.appendChild(modelRow);
-    dshEls.model = modelSel;
-    /* 即时生效：默认模型在下一次智能运行读配置时生效，改完立刻落盘 */
-    modelSel.onchange = () => {
-      S.config.dsh.model = String(modelSel.value || "").trim();
-      settingsSaved(0);
-    };
-
-    /* agent 预设(迁移自 dsh 的 agent-presets) */
-    const presetRow = document.createElement("label");
-    presetRow.className = "n-field";
-    presetRow.appendChild(
-      document.createTextNode(I18n.t("Agent 预设（智能能力的角色与行为风格）")),
-    );
-    const presetSel = document.createElement("select");
-    /* 档位真源：app.js 的 AGENT_PRESETS（与智能会话 / 智能节点面板同一张表），
-       这里只用带说明的 settingsLabelKey */
-    for (const p of AGENT_PRESETS) {
-      const o = document.createElement("option");
-      o.value = p.id;
-      o.textContent = I18n.t(p.settingsLabelKey || p.labelKey);
-      if (p.hint) o.title = I18n.t(p.hint);
-      presetSel.appendChild(o);
-    }
-    presetSel.value = S.config.dsh.preset || AGENT_PRESET_DEFAULT;
-    presetRow.appendChild(presetSel);
-    sec.appendChild(presetRow);
-    dshEls.preset = presetSel;
-    /* 即时生效：Agent 预设在下一次智能运行时读取 */
-    presetSel.onchange = () => {
-      S.config.dsh.preset = presetSel.value;
-      settingsSaved(0);
-    };
-
-    /* Agent 语言口味：跟随顶栏「中 / EN」的语言选择（无独立开关，纯派生），
-       这里只把「agent 会用哪种语言交流并期望被这样回答」摊开给用户看见 */
-    const langTasteHint = document.createElement("div");
-    langTasteHint.className = "settings-hint";
-    langTasteHint.textContent =
-      I18n.t("交流语言（Agent 口味）：") +
-      (typeof I18n.agentLangLabel === "function"
-        ? I18n.agentLangLabel()
-        : I18n.getLocale && I18n.getLocale()) +
-      I18n.t(
-        " —— 智能会话、智能节点与全局助手都用该语言交流，并期望 agent 用该语言回答；顶栏「中 / EN」切换即生效。",
-      );
-    sec.appendChild(langTasteHint);
-
-    /* ── 子代理（delegation）：嵌套深度 + 后台并行 + fork 型 + 总开关 ──
-       对标 OpenCode 的 subagent_depth / task 权限：dsh 自带的委派深度默认是 3 层，
-       容易「子代理再派子代理」把 token 烧干；这里默认收紧到 1 层，并允许整套关掉。
-       值存 S.config.dsh.subagent，由主进程 main.js 的 syncSubagentPolicy 落进
-       dsh 组合（cordis.yml 的 subagent* 8 行，见 dsh-agent-policy.js）。
-       生效口径与权限预设同源：**下一个新会话**用新值，正在跑的会话沿用原设置。 */
-    {
-      const sub = (S.config.dsh.subagent = Object.assign(
-        { enabled: true, fork: true, background: true, depth: 1 },
-        S.config.dsh.subagent || {},
-      ));
-      if ([0, 1, 2].indexOf(Number(sub.depth)) < 0) sub.depth = 1;
-      sub.enabled = sub.enabled !== false;
-      sub.fork = sub.fork !== false;
-      sub.background = sub.background !== false;
-
-      const subHead = document.createElement("div");
-      subHead.className = "settings-hint";
-      subHead.style.fontWeight = "600";
-      subHead.textContent = I18n.t("子代理（委派）");
-      sec.appendChild(subHead);
-
-      const depthRow = document.createElement("label");
-      depthRow.className = "n-field";
-      depthRow.appendChild(
-        document.createTextNode(I18n.t("子代理嵌套深度（0 = 禁止委派）")),
-      );
-      const depthSel = document.createElement("select");
-      [
-        ["0", "0 · 禁止委派（模型侧不再有委派工具）"],
-        ["1", "1 · 只允许一层（默认）"],
-        ["2", "2 · 允许两层"],
-      ].forEach((pair) => {
-        const o = document.createElement("option");
-        o.value = pair[0];
-        o.textContent = I18n.t(pair[1]);
-        depthSel.appendChild(o);
-      });
-      depthSel.value = String(Number(sub.depth));
-      depthSel.onchange = () => {
-        S.config.dsh.subagent.depth = Number(depthSel.value) || 0;
-        settingsSaved(0);
-      };
-      depthRow.appendChild(depthSel);
-      sec.appendChild(depthRow);
-
-      const subChecks = [
-        [
-          "enabled",
-          "允许子代理委派（总开关：取消后模型看不到任何委派工具）",
-        ],
-        [
-          "background",
-          "允许后台并行委派（取消后子代理只在前台同步跑，一次一个）",
-        ],
-        ["fork", "允许 fork 型子代理（复制当前上下文另起一个子会话）"],
-      ];
-      subChecks.forEach((pair) => {
-        const row = document.createElement("label");
-        row.className = "n-field";
-        row.style.flexDirection = "row";
-        row.style.alignItems = "center";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = !!sub[pair[0]];
-        cb.onchange = () => {
-          S.config.dsh.subagent[pair[0]] = !!cb.checked;
-          settingsSaved(0);
-        };
-        row.appendChild(cb);
-        row.appendChild(document.createTextNode(I18n.t(pair[1])));
-        sec.appendChild(row);
-      });
-
-      const subHint = document.createElement("div");
-      subHint.className = "settings-hint";
-      subHint.textContent = I18n.t(
-        "这几项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。深度只约束「子代理再派子代理」，不影响你自己发起的一次委派。",
-      );
-      sec.appendChild(subHint);
-    }
-
-    /* ── 上下文压缩（dsh 自带 compaction-basic）：长会话的历史压缩 ──
-       为什么必须有这一节：dsh 默认触发线 = 适配器声明的 contextWindow × 0.8，而网关给
-       deepseek-v4 系列声明的是 1,000,000（见 dsh/gateway/gateway.mjs 的 knownModels）
-       → 要跑到 80 万 token 才压，本机所有会话都到不了（审计脚本里「压缩 0 次」的直接原因）。
-       值存 S.config.dsh.compact，由 main.js 的 syncCompactPolicy 落进 dsh 组合
-       （cordis.yml 的 compaction-basic 那一行，见 dsh-compact-policy.js）；
-       三档只差「多早触发」与「保留多少原文」，不把百分比摊给用户。 */
-    {
-      const cp = (S.config.dsh.compact = Object.assign(
-        { enabled: true, tier: "mid" },
-        S.config.dsh.compact || {},
-      ));
-      if (["early", "mid", "late"].indexOf(String(cp.tier)) < 0) cp.tier = "mid";
-      cp.enabled = cp.enabled !== false;
-
-      const cpHead = document.createElement("div");
-      cpHead.className = "settings-hint";
-      cpHead.style.fontWeight = "600";
-      cpHead.textContent = I18n.t("上下文压缩");
-      sec.appendChild(cpHead);
-
-      const cpEnRow = document.createElement("label");
-      cpEnRow.className = "n-field";
-      cpEnRow.style.flexDirection = "row";
-      cpEnRow.style.alignItems = "center";
-      const cpEn = document.createElement("input");
-      cpEn.type = "checkbox";
-      cpEn.checked = !!cp.enabled;
-      cpEn.onchange = () => {
-        S.config.dsh.compact.enabled = !!cpEn.checked;
-        settingsSaved(0);
-      };
-      cpEnRow.appendChild(cpEn);
-      cpEnRow.appendChild(
-        document.createTextNode(
-          I18n.t("自动压缩长会话（接近上限时把较早的对话收成摘要，保留最近一段原文）"),
-        ),
-      );
-      sec.appendChild(cpEnRow);
-
-      const cpRow = document.createElement("label");
-      cpRow.className = "n-field";
-      cpRow.appendChild(document.createTextNode(I18n.t("压缩时机")));
-      const cpSel = document.createElement("select");
-      [
-        ["early", "早 · 上下文还宽裕时就压（最省，前文细节丢得最多）"],
-        ["mid", "中 · 默认档（约 30 万 token 触发）"],
-        ["late", "晚 · 接近上限才压（保留最多前文）"],
-      ].forEach((pair) => {
-        const o = document.createElement("option");
-        o.value = pair[0];
-        o.textContent = I18n.t(pair[1]);
-        cpSel.appendChild(o);
-      });
-      cpSel.value = String(cp.tier);
-      cpSel.disabled = !cp.enabled;
-      cpSel.onchange = () => {
-        S.config.dsh.compact.tier = String(cpSel.value);
-        settingsSaved(0);
-      };
-      cpRow.appendChild(cpSel);
-      sec.appendChild(cpRow);
-
-      const cpHint = document.createElement("div");
-      cpHint.className = "settings-hint";
-      cpHint.textContent = I18n.t(
-        "这一项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。压缩会额外花一次模型调用写摘要，换来之后每一步都少发一大段历史。",
-      );
-      sec.appendChild(cpHint);
-    }
-
     /* 权限预设(dsh permission-presets:沙箱模式 + 审批策略,热重载生效) */
     const permRow = document.createElement("label");
     permRow.className = "n-field";
     permRow.appendChild(
-      document.createTextNode(
-        I18n.t("权限预设（沙箱模式 + 审批策略；“逐项审批”档位会在任务需要越权时弹窗询问）"),
-      ),
+      document.createTextNode(I18n.t("权限预设")),
     );
     const permSel = document.createElement("select");
     const PERM_OPTIONS = permissionPresetOptions();
@@ -1589,10 +1652,12 @@ function openSettingsBody() {
     }
     cascCb.onchange = () => setAutoRunDownstream(cascCb.checked);
     cascRow.appendChild(cascCb);
-    cascRow.appendChild(
-      document.createTextNode(
-        I18n.t("节点完成后自动执行下游（默认关：连跑请用控制节点 ▶）"),
-      ),
+    cascRow.appendChild(document.createTextNode(I18n.t("节点完成后自动执行下游")));
+    /* 括注（默认关、连跑用控制节点）挂勾选项文字本身：悬停即出 */
+    settingsTipBeside(
+      cascRow,
+      "节点完成后自动执行下游（默认关：连跑请用控制节点 ▶）",
+      "自动执行下游说明",
     );
     sec.appendChild(cascRow);
 
@@ -1615,12 +1680,12 @@ function openSettingsBody() {
       settingsSaved(0);
     };
     sndRow.appendChild(sndCb);
-    sndRow.appendChild(
-      document.createTextNode(
-        I18n.t(
-          "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；所有任务都完成 → 同一声音以 1.5 倍音量再响一声）",
-        ),
-      ),
+    sndRow.appendChild(document.createTextNode(I18n.t("任务完成音效")));
+    /* 括注（什么时候响、响几声）挂勾选项文字本身：悬停即出 */
+    settingsTipBeside(
+      sndRow,
+      "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；所有任务都完成 → 同一声音以 1.5 倍音量再响一声）",
+      "完成音效说明",
     );
     sec.appendChild(sndRow);
     dshEls.doneSound = sndCb;
@@ -1643,11 +1708,17 @@ function openSettingsBody() {
     })();
     sndVol.value = String(doneVolNow);
     sndVol.style.flex = "1";
-    sndVol.title = I18n.t("完成音效音量（两档共用；收尾那一档再乘 1.5；0 = 静音）");
+    /* 音量口径（两档共用 / 0 = 静音）挂在右侧百分比读数上：悬停「35%」即出，不再有「?」，
+       原生 title 也不挂（两套提示会打架） */
     const sndVolLabel = document.createElement("span");
     sndVolLabel.style.minWidth = "42px";
     sndVolLabel.style.textAlign = "right";
     sndVolLabel.textContent = sndVol.value + "%";
+    settingsTip(
+      sndVolLabel,
+      "完成音效音量（两档共用；收尾那一档再乘 1.5；0 = 静音）",
+      "完成音效音量说明",
+    );
     /* 拖动时逐格试听会叠成一串：只在最后一格（180ms 静默）与松手各响一次 */
     let volPreviewTimer = null;
     const volPreview = () => {
@@ -1678,9 +1749,6 @@ function openSettingsBody() {
     sndFileRow.className = "dsh-btn-row";
     const sndFile = document.createElement("input");
     sndFile.type = "text";
-    sndFile.placeholder = I18n.t(
-      "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；两档都用它：任何一件任务跑完的那一声，以及全部完成时放大 1.5 倍的那一声）",
-    );
     sndFile.value = S.config.dsh.doneSoundFile || "";
     sndFile.style.flex = "1";
     sndFile.readOnly = true;
@@ -1735,14 +1803,18 @@ function openSettingsBody() {
       settingsSaved(0);
     };
     askRow.appendChild(askCb);
-    askRow.appendChild(document.createTextNode(I18n.t("提问/审批提示音（模型等待你回应时弹出并提示）")));
+    askRow.appendChild(document.createTextNode(I18n.t("提问/审批提示音")));
+    settingsTipBeside(
+      askRow,
+      "提问/审批提示音（模型等待你回应时弹出并提示）",
+      "提问提示音说明",
+    );
     sec.appendChild(askRow);
     dshEls.askSound = askCb;
     const askFileRow = document.createElement("div");
     askFileRow.className = "dsh-btn-row";
     const askFile = document.createElement("input");
     askFile.type = "text";
-    askFile.placeholder = I18n.t("自定义提示音文件（mp3 / wav / ogg，留空 = 内置短促提示音）");
     askFile.value = S.config.dsh.askSoundFile || "";
     askFile.style.flex = "1";
     askFile.readOnly = true;
@@ -1792,12 +1864,12 @@ function openSettingsBody() {
     leanCb.type = "checkbox";
     leanCb.checked = S.config.dsh.leanToolPayload === true;
     leanRow.appendChild(leanCb);
-    leanRow.appendChild(
-      document.createTextNode(
-        I18n.t(
-          "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）",
-        ),
-      ),
+    leanRow.appendChild(document.createTextNode(I18n.t("精简工具负载")));
+    /* 括注（省什么、何时生效）挂勾选项文字本身：悬停即出 */
+    settingsTipBeside(
+      leanRow,
+      "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）",
+      "精简工具负载说明",
     );
     sec.appendChild(leanRow);
     dshEls.leanToolPayload = leanCb;
@@ -1825,12 +1897,11 @@ function openSettingsBody() {
       }
     };
     devRow.appendChild(devCb);
-    devRow.appendChild(
-      document.createTextNode(
-        I18n.t(
-          "开发者工具（会话右栏「运行轨迹」视图：逐步看思考 / 正文 / 工具调用，工具调用可展开详情）",
-        ),
-      ),
+    devRow.appendChild(document.createTextNode(I18n.t("开发者工具")));
+    settingsTipBeside(
+      devRow,
+      "开发者工具（会话右栏「运行轨迹」视图：逐步看思考 / 正文 / 工具调用，工具调用可展开详情）",
+      "开发者工具说明",
     );
     sec.appendChild(devRow);
     dshEls.developerTools = devCb;
@@ -1866,12 +1937,11 @@ function openSettingsBody() {
       }
     };
     tvRow.appendChild(tvSel);
-    tvRow.appendChild(
-      document.createTextNode(
-        I18n.t(
-          "工作步骤展示（新会话默认档位：简洁 = 不显示思考 / 标准 / 详细 / 完全展开 = 思考与工具卡都默认摊开；工具调用一律按时间线内联、不收纳；每会话还可在输入区「模式」菜单里用「显示思考」开关单独隐藏 / 显示思考）",
-        ),
-      ),
+    tvRow.appendChild(document.createTextNode(I18n.t("工作步骤展示")));
+    settingsTipBeside(
+      tvRow,
+      "工作步骤展示（新会话默认档位：简洁 = 不显示思考 / 标准 / 详细 / 完全展开 = 思考与工具卡都默认摊开；工具调用一律按时间线内联、不收纳；每会话还可在输入区「模式」菜单里用「显示思考」开关单独隐藏 / 显示思考）",
+      "工作步骤展示说明",
     );
     sec.appendChild(tvRow);
     dshEls.transcriptView = tvSel;
@@ -1956,14 +2026,12 @@ function openSettingsBody() {
     const secTitle = document.createElement("div");
     secTitle.className = "settings-sec-title";
     secTitle.textContent = I18n.t("手动更新（同版本号重装）");
-    sec.appendChild(secTitle);
-
-    const hint = document.createElement("div");
-    hint.className = "n-field";
-    hint.textContent = I18n.t(
+    settingsTipBeside(
+      secTitle,
       "普通更新只在线上版本号更高时才可用。这里不比对版本号：直接用更新源里那份安装包重装一遍，适合极小更新与测试。下载与静默安装过程与正常更新完全一致，安装时应用会短暂重启。",
+      "手动更新说明",
     );
-    sec.appendChild(hint);
+    sec.appendChild(secTitle);
 
     const verEl = document.createElement("div");
     verEl.className = "n-field";
@@ -2043,8 +2111,22 @@ function openSettingsBody() {
   }
 
   dshEls.collect = () => ({
-    model: dshEls.model.value.trim(),
-    preset: dshEls.preset.value,
+    /* 提供商 / 模型 / 思考强度 = 设置最上方那块「默认模型」（本次需求）。
+       格子里拿不到值（无可用服务商 / 老窗没挂上那块）时保留现值，绝不用空串覆盖用户已存的选择。 */
+    provider: dshEls.provider
+      ? String(dshEls.provider.value || "").trim() ||
+        String((S.config.dsh && S.config.dsh.provider) || "")
+      : String((S.config.dsh && S.config.dsh.provider) || ""),
+    model: dshEls.model
+      ? dshEls.model.value.trim() ||
+        String((S.config.dsh && S.config.dsh.model) || "")
+      : String((S.config.dsh && S.config.dsh.model) || ""),
+    effort: dshEls.effort
+      ? normalizeAgentEffort(dshEls.effort.value)
+      : dshDefaultEffortValue(),
+    preset: dshEls.preset
+      ? dshEls.preset.value
+      : String((S.config.dsh && S.config.dsh.preset) || AGENT_PRESET_DEFAULT),
     chatEnter: enterSelEl ? enterSelEl.value : "send",
     permissionPreset: dshEls.permissionPreset.value,
     doneSound: dshEls.doneSound.checked,
@@ -2099,7 +2181,10 @@ function openSettingsBody() {
       {
         enabled: true,
         nodePath: "",
+        /* 设置最上方那块「默认模型」：provider / model / effort（本次需求） */
+        provider: "",
         model: "",
+        effort: "high",
         preset: AGENT_PRESET_DEFAULT,
         chatEnter: "send",
         permissionPreset: "mtnode-unattended",
@@ -2419,6 +2504,12 @@ function addProviderDialog() {
   provSel.appendChild(provOpt);
   provSel.disabled = true;
   provRow.appendChild(provSel);
+  /* 「选择服务商后自动载入模型列表与接口地址」这条口径挂在标签本身（悬停即出） */
+  settingsTipBeside(
+    provRow,
+    "选择服务商后自动载入其模型列表与接口地址。",
+    "服务商说明",
+  );
   catBox.appendChild(provRow);
   const nameRow = document.createElement("label");
   nameRow.className = "n-field";
@@ -2458,10 +2549,6 @@ function addProviderDialog() {
   keyWrap.appendChild(keyTest);
   keyRow.appendChild(keyWrap);
   catBox.appendChild(keyRow);
-  const infoRow = document.createElement("div");
-  infoRow.className = "settings-hint";
-  infoRow.textContent = I18n.t("选择服务商后自动载入其模型列表与接口地址。");
-  catBox.appendChild(infoRow);
   body.appendChild(catBox);
 
   /* 手动模式容器 */
@@ -2536,12 +2623,19 @@ function addProviderDialog() {
   const pasteBox = document.createElement("div");
   pasteBox.className = "store-form";
   pasteBox.style.display = "none";
-  const pasteHint = document.createElement("div");
-  pasteHint.className = "settings-hint";
-  pasteHint.textContent = I18n.t(
+  /* 说明不再平铺：给它一个字段标签，口径挂在该标签上（悬停即出） */
+  const pasteLabel = document.createElement("div");
+  pasteLabel.className = "n-field";
+  pasteLabel.style.flexDirection = "row";
+  pasteLabel.style.alignItems = "center";
+  pasteLabel.style.gap = "0";
+  pasteLabel.appendChild(document.createTextNode(I18n.t("粘贴导入（一键解析）")));
+  settingsTipBeside(
+    pasteLabel,
     "把服务商配置文字粘贴到下方（支持「字段名: 值」逐行、JSON，或按 名称/接口地址/API Key/模型 顺序逐行），点「解析并填入」自动识别。",
+    "粘贴导入说明",
   );
-  pasteBox.appendChild(pasteHint);
+  pasteBox.appendChild(pasteLabel);
   const pasteInp = document.createElement("textarea");
   pasteInp.rows = 8;
   pasteInp.placeholder =
@@ -3292,6 +3386,11 @@ function openAddStoreSource() {
   const f3 = document.createElement("label");
   f3.className = "n-field";
   f3.appendChild(document.createTextNode("URL"));
+  settingsTipBeside(
+    f3,
+    "MTNode 目录填 catalog.json 即可（官方源已预置）。也可填 npm search 或 jsDelivr repo；技能子目录含 SKILL.md。",
+    "在线源说明",
+  );
   const urlInp = document.createElement("input");
   urlInp.type = "text";
   urlInp.placeholder = I18n.t("MTNode 目录：http://mt-agent.com/mtnode/ext/catalog.json");
@@ -3310,11 +3409,6 @@ function openAddStoreSource() {
   pathInp.placeholder = I18n.t("如 skills 或 src；留空 = 仓库根目录");
   f4.appendChild(pathInp);
   body.appendChild(f4);
-  const hint = document.createElement("div");
-  hint.className = "settings-hint";
-  hint.textContent =
-    I18n.t("MTNode 目录填 catalog.json 即可（官方源已预置）。也可填 npm search 或 jsDelivr repo；技能子目录含 SKILL.md。");
-  body.appendChild(hint);
   const foot = $("#ovFoot");
   const cancel = document.createElement("button");
   cancel.className = "mini";
@@ -3355,7 +3449,7 @@ function openAddStoreSource() {
    OpenAI 兼容走主进程 GET <base>/v1/models（或 /models）——**纯 HTTP 元信息读取，
    不调用任何 AI，零 Token 消耗**；Stability 再回退账户信息里的 engines。
    结果落进一个多选对话框：已配的自动勾上（取消勾选 = 只保留不删），新增的默认勾上，
-   一键批量加入模型列表；同时按模型元信息标出「能吃图 / 画图」，顺手勾上「支持视觉」。
+   一键批量加入模型列表；同时按模型元信息标出「能吃图 / 画图」。
    拿不到（老网关没有 /models、Key 无权限）就如实报错，退回手工填写。 */
 async function fetchModelsToProvider(prov, btn) {
   if (!prov) return;
@@ -3410,12 +3504,15 @@ async function fetchModelsToProvider(prov, btn) {
   openOverlay(I18n.t("获取模型列表"));
   overlayPersistent = true;
   const body = $("#ovBody");
-  const hint = document.createElement("div");
-  hint.className = "settings-hint";
-  hint.textContent = I18n.t(
-    "已从服务商接口读取到可用模型（只读元信息，未消耗任何 Token）。勾选要加入下方模型列表的条目：已配置的默认勾上（取消勾选只是不重复添加，不会删除已有项）。",
-  );
-  body.appendChild(hint);
+  /* 口径说明挂到窗标题本身（这一屏没有字段标签可挂；悬停标题即出） */
+  const ovTtl = $("#ovTitle");
+  if (ovTtl) {
+    settingsTipBeside(
+      ovTtl,
+      "已从服务商接口读取到可用模型（只读元信息，未消耗任何 Token）。勾选要加入下方模型列表的条目：已配置的默认勾上（取消勾选只是不重复添加，不会删除已有项）。",
+      "获取模型列表说明",
+    );
+  }
   const list = document.createElement("div");
   list.className = "model-pick-list";
   const boxes = [];
@@ -3480,9 +3577,6 @@ async function fetchModelsToProvider(prov, btn) {
       have.has(String(m)),
     );
     if (picked.length) prov.models = Array.from(new Set(kept.concat(picked)));
-    /* 元信息里明确「能吃图」→ 顺手勾上视觉支持（只加不减，不覆盖用户已有的选择） */
-    const vision = picked.some((m) => meta.get(m) && meta.get(m).input);
-    if (vision && !prov.vision) prov.vision = true;
     closeOverlay();
     settingsSaved(0);
     /* 回刷设置页（模型列表 / 形态标签）与画布节点的服务商下拉。
@@ -3742,7 +3836,8 @@ function openProviderConfigDialog(prov) {
     }
     if (MtRelay.syncIfStale) {
       try {
-        MtRelay.syncIfStale();
+        /* retry:true = 快照过期 / 上次失败时自动重拉（卡上没有刷新按钮了） */
+        MtRelay.syncIfStale({ retry: true });
       } catch {}
     }
   } else if (host.__relayOff) {
@@ -3878,10 +3973,12 @@ function relayProvCard(prov, i, onChange) {
      返回那个 <code> 元素，调用方要补 title / 徽标就自己补（如 API Key 那一行）。 */
   const gridEl = document.createElement("div");
   gridEl.className = "prov-grid";
-  const ro = (label, value, wide) => {
+  const ro = (label, value, wide, tipText, tipLabel) => {
     const f = document.createElement("div");
     f.className = "pf" + (wide ? " pf-wide" : "");
     f.appendChild(document.createTextNode(label));
+    /* 说明性文字挂标签本身（见 settingsTipBeside），不再平铺一行灰字 */
+    if (tipText) settingsTipBeside(f, tipText, tipLabel);
     const v = document.createElement("code");
     v.className = "relay-ro";
     v.textContent = value == null || value === "" ? "—" : String(value);
@@ -3909,7 +4006,15 @@ function relayProvCard(prov, i, onChange) {
         : { key: String(prov.apiKey || ""), authKey: !!String(prov.apiKey || "") };
     const keyText = String(view.key || "");
     const rotate = meta.rotate && typeof meta.rotate === "object" ? meta.rotate : null;
-    const kv = ro(I18n.t("API Key"), keyText, true);
+    const kv = ro(
+      I18n.t("API Key"),
+      keyText,
+      true,
+      keyText
+        ? "可直接用于 Codex 等 OpenAI 兼容客户端：Base URL 就是上面那行接口地址"
+        : "",
+      "中转 Key 用法",
+    );
     kv.classList.add("relay-key");
     kv.title = keyText
       ? I18n.t("这串就是中转 Key：可直接用于 Codex 等 OpenAI 兼容客户端（Base URL 即上面的接口地址）")
@@ -3980,19 +4085,18 @@ function relayProvCard(prov, i, onChange) {
     row.appendChild(rb);
     /* 按钮贴着 API Key 那一格放（跟在 <code> 后面），别在网格里另起一格 */
     (kv.parentElement || gridEl).appendChild(row);
-    const keyHint = document.createElement("div");
-    keyHint.className = "settings-hint";
-    keyHint.style.margin = "0";
-    /* 提示只留两档：
-       · 有票 → 说清「这串给谁用、Base URL 是上面那行」（用户拿它去配 Codex）；
-       · 没票 → 说清该做什么（登录 / 刷新），**绝不提「凭据读不出来 / 重新登录」**
-         （那一族文案按用户口径已永久移除，见 renderer/i18n.js 的凭据提示段）。 */
-    keyHint.textContent = keyText
-      ? I18n.t("可直接用于 Codex 等 OpenAI 兼容客户端：Base URL 就是上面那行接口地址")
-      : meta.keyIssue === "server_no_relay_key"
-        ? I18n.t("服务端这次没有下发独立中转凭据：请点「刷新」，仍无则稍后再试（与是否重新登录无关）")
-        : I18n.t("还没有取到中转 Key：请先登录 MTNode 账号，或点「刷新中转清单」");
-    gridEl.appendChild(keyHint);
+    /* 没票时的两种「下一步该做什么」属于阻断性引导，仍常显（共识：引导不藏）；
+       有票时的用法说明挂在上面标签本身（悬停即出）。 */
+    if (!keyText) {
+      const keyHint = document.createElement("div");
+      keyHint.className = "settings-hint";
+      keyHint.style.margin = "0";
+      keyHint.textContent =
+        meta.keyIssue === "server_no_relay_key"
+          ? I18n.t("服务端这次没有下发独立中转凭据：稍后会自动重试（与是否重新登录无关）")
+          : I18n.t("还没有取到中转 Key：请先登录 MTNode 账号（登录后会自动拉取）");
+      gridEl.appendChild(keyHint);
+    }
   }
 
   /* 模型清单：只读视图，逐行标出形态。余额耗尽时整块置灰，但**清单照旧列出来** ——
@@ -4000,18 +4104,18 @@ function relayProvCard(prov, i, onChange) {
      的 providerDisabled / providerRelayBlocked）。 */
   const modelsField = document.createElement("div");
   modelsField.className = "pf pf-wide";
-  modelsField.appendChild(
-    document.createTextNode(I18n.t("模型清单（云端下发，从上到下为使用优先级）")),
-  );
-  /* 价目口径：费用按币显示、平台账本按元 —— 两边同一个数，只是单位不同。 */
   {
-    const priceHint = document.createElement("div");
-    priceHint.className = "settings-hint";
-    priceHint.style.margin = "0";
-    priceHint.textContent = I18n.t(
-      "价目由云端随账号下发（元为平台账本口径，括号内为鲸圆币，1 币 = ¥0.02）：会话 Token 统计里中转模型按这份价目折算成币。",
+    /* 标题行：价目口径挂在标题文字上（说明不再平铺一行灰字） */
+    const head = document.createElement("span");
+    head.appendChild(
+      document.createTextNode(I18n.t("模型清单（云端下发，从上到下为使用优先级）")),
     );
-    modelsField.appendChild(priceHint);
+    settingsTipBeside(
+      head,
+      "价目由云端随账号下发（元为平台账本口径，括号内为鲸圆币，1 币 = ¥0.02）：会话 Token 统计里中转模型按这份价目折算成币。",
+      "价目口径",
+    );
+    modelsField.appendChild(head);
   }
   const orderBox = document.createElement("div");
   orderBox.className = "model-order relay-model-order" + (meta.blocked ? " off" : "");
@@ -4020,7 +4124,7 @@ function relayProvCard(prov, i, onChange) {
     const empty = document.createElement("div");
     empty.className = "settings-hint";
     empty.style.margin = "0";
-    empty.textContent = I18n.t("账号当前没有可用模型：充值后点「刷新」");
+    empty.textContent = I18n.t("账号当前没有可用模型：充值后会自动刷新");
     orderBox.appendChild(empty);
   }
   for (const id of ids) {
@@ -4049,8 +4153,8 @@ function relayProvCard(prov, i, onChange) {
   gridEl.appendChild(modelsField);
   card.appendChild(gridEl);
 
-  /* 余额 + 「刷新」：**这里没有充值入口** —— 全应用唯一的充值入口是右上角账户菜单里的
-     「余额」（见 renderer/app-auth.js），设置里的中转卡只把余额与刷新摆出来。
+  /* 余额：**没有刷新按钮**（需求：移除「刷新中转清单」/ 卡内「刷新」）——
+     拉取与失败重试由 MtRelay.syncIfStale 在打开设置 / 卡时自动做，充值到账也会自动重拉。
      口径：充值入口只留一处，用户不必记「充值得去设置里找那张卡」；卡本身只有充过值的
      账号才有（everRecharged），把入口挂在卡上等于对没充值的账号把它藏起来。
      余额按鲸圆币显示（快照里的 totalYuan 仍是元，见本文件 relayBalanceEl）。 */
@@ -4060,25 +4164,6 @@ function relayProvCard(prov, i, onChange) {
   bal.appendChild(document.createTextNode(I18n.t("可用余额 ")));
   bal.appendChild(relayBalanceEl(Number(meta.totalYuan) || 0));
   moneyRow.appendChild(bal);
-  const refreshBtn = document.createElement("button");
-  refreshBtn.type = "button";
-  refreshBtn.className = "mini";
-  refreshBtn.textContent = I18n.t("刷新");
-  refreshBtn.title = I18n.t("按账号重新拉取中转服务的地址与可用模型");
-  refreshBtn.onclick = (ev) => {
-    ev.preventDefault();
-    if (typeof MtRelay === "undefined") return;
-    refreshBtn.disabled = true;
-    const old = refreshBtn.textContent;
-    refreshBtn.textContent = I18n.t("刷新中…");
-    MtRelay.sync({ force: true }).then((r) => {
-      refreshBtn.disabled = false;
-      refreshBtn.textContent = old;
-      if (r && r.ok) toast(I18n.t("中转清单已刷新"), "ok");
-      else toast((r && r.error) || I18n.t("刷新失败，请稍后重试"), "warn");
-    });
-  };
-  moneyRow.appendChild(refreshBtn);
   card.appendChild(moneyRow);
 
   /* 状态行：上次同步时间 / 余额不足 / 刷新失败原因（三选一，口径见 MtRelay.stateText） */
@@ -4112,14 +4197,9 @@ function relayProvCard(prov, i, onChange) {
   };
   offRow.appendChild(offCb);
   offRow.appendChild(document.createTextNode(I18n.t("停用该服务商")));
+  /* 「停用只影响可见性」这句括注挂勾选项文字本身（悬停即出） */
+  settingsTipBeside(offRow, "停用后不出现在模型选择器里", "停用说明");
   card.appendChild(offRow);
-  const offHint = document.createElement("div");
-  offHint.className = "settings-hint pf-wide";
-  offHint.style.margin = "0";
-  offHint.textContent = I18n.t(
-    "停用后不出现在模型选择器里；刷新中转清单不会自动把它开回来",
-  );
-  card.appendChild(offHint);
   return card;
 }
 
@@ -4256,10 +4336,12 @@ function provCard(prov, i, onChange) {
   const gridEl = document.createElement("div");
   gridEl.className = "prov-grid";
 
-  const mkField = (label, ctrl, wide) => {
+  const mkField = (label, ctrl, wide, tipText, tipLabel) => {
     const f = document.createElement("label");
     f.className = "pf" + (wide ? " pf-wide" : "");
     f.appendChild(document.createTextNode(label));
+    /* 字段口径挂在字段标签本身（见 settingsTipBeside） */
+    if (tipText) settingsTipBeside(f, tipText, tipLabel);
     f.appendChild(ctrl);
     gridEl.appendChild(f);
     return f;
@@ -4805,13 +4887,12 @@ function provCard(prov, i, onChange) {
     fetchModelsToProvider(prov, fetchBtn);
   };
   kindRow.appendChild(fetchBtn);
-  const kindNote = document.createElement("span");
-  kindNote.className = "settings-hint";
-  kindNote.style.margin = "0";
-  kindNote.textContent = I18n.t(
+  /* 徽标口径挂在这一行上（指向两个动作按钮时不弹，见 setQTipIsControl） */
+  settingsTipBeside(
+    kindRow,
     "徽标 = 模型类型（点一下可改）；同一端点混挂文本与图像模型时会自动区分",
+    "模型类型说明",
   );
-  kindRow.appendChild(kindNote);
   modelField.appendChild(kindRow);
   gridEl.appendChild(modelField);
 
@@ -4834,7 +4915,13 @@ function provCard(prov, i, onChange) {
     prov.modelAllow = allowInp.value;
     paintModels();
   };
-  mkField(I18n.t("模型白名单"), allowInp, true);
+  mkField(
+    I18n.t("模型白名单"),
+    allowInp,
+    true,
+    "留空 = 不限制；支持 * 与 ? 通配；白名单先收窄，黑名单再剔除",
+    "模型白名单说明",
+  );
 
   const denyInp = document.createElement("input");
   denyInp.type = "text";
@@ -4851,14 +4938,7 @@ function provCard(prov, i, onChange) {
   };
   mkField(I18n.t("模型黑名单"), denyInp, true);
 
-  const policyHint = document.createElement("div");
-  policyHint.className = "settings-hint pf-wide";
-  policyHint.style.margin = "0";
-  policyHint.textContent = I18n.t(
-    "留空 = 不限制；支持 * 与 ? 通配；白名单先收窄，黑名单再剔除",
-  );
-  gridEl.appendChild(policyHint);
-  /* 规则生效后的实时小结（写不出「结果」用户就得一个个去数） */
+  /* 规则生效后的实时小结（写不出「结果」用户就得一个个去数）—— 属回显，常显 */
   const policyNote = document.createElement("div");
   policyNote.className = "settings-hint pf-wide";
   policyNote.style.margin = "0";
@@ -4888,7 +4968,7 @@ function provCard(prov, i, onChange) {
      连接 = 建立 TCP 连接；首字节 = 发出请求后等第一个响应字节；分块 = 响应数据块之间的空闲。
      任一档到点都会中断这次请求，并报明是哪一档超时。留空 / 非正数 = 用缺省 300000
      （老配置不填这几个字段 ⇒ 与现状完全一致）。 */
-  const mkTimeoutField = (label, key) => {
+  const mkTimeoutField = (label, key, tipText, tipLabel) => {
     const inp = document.createElement("input");
     inp.type = "number";
     inp.min = "0";
@@ -4903,18 +4983,16 @@ function provCard(prov, i, onChange) {
       else delete prov[key];
       settingsSaved(600);
     };
-    mkField(I18n.t(label), inp);
+    mkField(I18n.t(label), inp, false, tipText, tipLabel);
   };
-  mkTimeoutField("连接超时（毫秒）", "timeoutConnect");
+  mkTimeoutField(
+    "连接超时（毫秒）",
+    "timeoutConnect",
+    "三档都是毫秒，缺省 300000；留空即用缺省。哪一档等超了就在报错里写明哪一档",
+    "超时说明",
+  );
   mkTimeoutField("首字节超时（毫秒）", "timeoutHeader");
   mkTimeoutField("分块超时（毫秒）", "timeoutChunk");
-  const tmoHint = document.createElement("div");
-  tmoHint.className = "settings-hint pf-wide";
-  tmoHint.style.margin = "0";
-  tmoHint.textContent = I18n.t(
-    "三档都是毫秒，缺省 300000；留空即用缺省。哪一档等超了就在报错里写明哪一档",
-  );
-  gridEl.appendChild(tmoHint);
 
   /* ── 停用该服务商 ──
      停用只影响**可见性**：它不再出现在任何模型选择器里（节点 / 会话 / 助手 / 开发节点，
@@ -4934,31 +5012,13 @@ function provCard(prov, i, onChange) {
   };
   offRow.appendChild(offCb);
   offRow.appendChild(document.createTextNode(I18n.t("停用该服务商")));
+  /* 括注「配置与密钥保留」挂勾选项文字本身（悬停即出） */
+  settingsTipBeside(
+    offRow,
+    "停用后不出现在模型选择器里（配置与密钥保留）",
+    "停用说明",
+  );
   gridEl.appendChild(offRow);
-  const offHint = document.createElement("div");
-  offHint.className = "settings-hint pf-wide";
-  offHint.style.margin = "0";
-  offHint.textContent = I18n.t("停用后不出现在模型选择器里（配置与密钥保留）");
-  gridEl.appendChild(offHint);
-
-  /* 视觉开关：只要这家有文本模型就显示（混合端点也常靠它走图生文，
-     以前只认 type === text_openai，配成 image_* 的混合端点就没法勾） */
-  if (providerHasKind(S.config, prov, "text")) {
-    const inline = document.createElement("label");
-    inline.className = "pf pf-inline";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = !!prov.vision;
-    cb.onchange = () => {
-      prov.vision = cb.checked;
-      settingsSaved(0);
-    };
-    inline.appendChild(cb);
-    inline.appendChild(
-      document.createTextNode(I18n.t("支持视觉（图片输入转为多模态消息）")),
-    );
-    gridEl.appendChild(inline);
-  }
 
   card.appendChild(gridEl);
   return card;

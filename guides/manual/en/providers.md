@@ -103,6 +103,18 @@ copy the new one. You can change it at most **5 times per day** (by server date;
 you how many are left). Normally you never need to: the key is valid for **3650 days**, and it only stops
 working when the account **runs out of balance** (top up and it works again).
 
+## Reading images needs no separate setup
+
+- The provider card has **no "Supports vision" checkbox** any more (it was retired). MTNode assumes the
+  model you picked can read images: sending an image, or asking the agent to look at one, goes straight to
+  the current model — it no longer looks for a "configured vision model" first and blocks on that.
+- You do not have to predict whether a model can see. If a call really fails, the session / node states it
+  plainly — **"the current model does not support image input: <upstream error>"**. Switch to a model that
+  can (DeepSeek Official's default deepseek-flash reads images) and run it again.
+- The vision tool in sessions (`mtnode_vision`, reads local image files) uses the same routing — provider
+  order, then model order; only when no usable provider exists at all does it answer "no vision model
+  available".
+
 ## The local model provider (llama.cpp)
 
 Once you install **llama.cpp Local Models** from the Plugin dialog in the top bar, Settings gains a

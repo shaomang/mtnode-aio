@@ -862,7 +862,9 @@ mockServer.listen(0, '127.0.0.1', () => {
       renderCanvas();
       log('stop btn hidden after=' + (document.querySelector('.wf-node[data-nid="' + stNode.id + '"] .n-stop') === null));
 
-      // —— 多模态识图：无视觉档时阻止；DeepSeek 官方目录里 flash 是视觉档 → 同服务商自动切换；无本地档时切到勾了「支持视觉」的服务商 ——
+      // —— 多模态识图（原模式预检）：目录里 flash 标了 image → 同服务商自动切；旧配置遗留的 vision 标记仍作候选；
+      //    都没有 → 按新口径提示「当前模型按默认可直接识图…报错再添加」，不发请求。
+      //    dsh 智能路径已去闸（resolveVisionForRun 直接返回当前模型），不在本段范围内 ——
       addNode('input_image', 700, 2750);
       const vi = S.wf.nodes[S.wf.nodes.length - 1];
       vi.imageAsset = (await window.api.assetWriteBase64(S.wf.id, 'vi_src', (() => { const c = document.createElement('canvas'); c.width = 4; c.height = 4; const x = c.getContext('2d'); x.fillStyle = '#123456'; x.fillRect(0, 0, 4, 4); return c.toDataURL('image/png').split(',')[1]; })(), 'png')).path;
@@ -872,12 +874,13 @@ mockServer.listen(0, '127.0.0.1', () => {
       const dsProv = S.config.providers.find((p) => p.id === 'deepseek');
       const dsModelsSaved = (dsProv && dsProv.models && dsProv.models.slice()) || [];
       const catSaved = S.providerCatalog;
-      /* 本机 config 可能另有勾了「支持视觉」的服务商：先全部关掉，三条断言才可复现（末尾原样还原） */
+      /* 本机 config 可能另有旧配置遗留 vision 标记的服务商：先全部关掉，三条断言才可复现（末尾原样还原） */
       const visFlagsSaved = [];
       S.config.providers.forEach((p) => { if (p.type === 'text_openai' && p.vision) { visFlagsSaved.push([p, p.vision]); p.vision = false; } });
       connect(vi.id, vp.id, 0);
       const mockCount0 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).exists ? (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length : 0;
-      /* [1] 目录里谁都没标 image、服务商也没勾视觉 → 拒绝并提示，不发请求 */
+      /* [1] 目录里谁都没标 image、服务商也没有（旧配置遗留的）vision 标记 → 原模式仍先提示、不发请求；
+         提示语是新口径「当前模型按默认可直接识图…报错再添加」（旧文案「请在设置中勾选支持视觉」已下线） */
       if (dsProv) dsProv.models = ['deepseek-v4-pro'];
       S.providerCatalog = {
         deepseek: [
@@ -889,8 +892,8 @@ mockServer.listen(0, '127.0.0.1', () => {
       vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-pro';
       await playNode(vp, false);
       const mockCount1 = (await window.api.fileReadText(${JSON.stringify(mockCountFile)})).content.length;
-      log('vision blocked=' + (vp.error && vp.error.indexOf('未添加多模态模型') >= 0) + ' noRequest=' + (mockCount1 === mockCount0));
-      /* [2] 目录把 deepseek-flash 标成能吃图 → 同一服务商自动切到它（当前 pro 不是视觉档） */
+      log('vision blocked=' + (vp.error && vp.error.indexOf('未添加多模态模型') >= 0 && vp.error.indexOf('当前模型按默认可直接识图') >= 0) + ' noRequest=' + (mockCount1 === mockCount0));
+      /* [2] 目录把 deepseek-flash 标成能吃图 → 同一服务商自动切到它（当前 pro 不是视觉档；旧 vision 标记不在判据里） */
       S.providerCatalog = {
         deepseek: [
           { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', input: ['text', 'image'] },
@@ -903,7 +906,8 @@ mockServer.listen(0, '127.0.0.1', () => {
       vp.providerId = 'deepseek'; vp.model = 'deepseek-v4-pro'; vp.error = null; vp.output = null;
       const localVis = ensureProcTextVision(vp, { notify: false });
       log('vision localSwitch=' + (!!localVis.ok && localVis.switched && vp.model === 'deepseek-flash' && vp.providerId === 'deepseek'));
-      /* [3] 本地既无视觉档也没勾视觉 → 切到勾了「支持视觉」的服务商并真跑一次 */
+      /* [3] 本地既无目录视觉档、也没有 vision 标记 → 切到「旧配置里带 vision 标记」的服务商并真跑一次。
+         勾选框已下线：新装用户不会再有 vision 标记，这一档只为兼容已有配置（没有候选时就是 [1] 的提示） */
       if (dsProv) { dsProv.models = ['deepseek-v4-pro']; dsProv.vision = false; }
       S.providerCatalog = {
         deepseek: [

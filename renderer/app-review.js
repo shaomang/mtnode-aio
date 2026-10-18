@@ -18,7 +18,7 @@
  *   1) 近乎全屏的持久对话框（右下可拖调，最小宽 ≥50%，显式关闭），不点外部收起；
  *   2) 所见即所得(WYSIWYG) 富文本正文编辑 + 源码切换，正文与 Markdown 双向转换；
  *   3) 顶部方形图标工具栏：全套 Markdown 编辑（标题/加粗/斜体/删除线/引用/无序/有序/
- *      待办/链接/行内码/代码块/水平线/图片/表格）+ 撤销重做；
+ *      链接/行内码/代码块/图片/表格）+ 撤销重做；
  *      事实库目标下插图会复制进库级 assets/ 并以相对路径写回该文档 md（剪贴板 / 截图粘贴、
  *      拖拽、本机文件都支持），只有「库内所有文档全部版本」都不引用的图片才从磁盘回收；
  *      这套插图能力本体在 renderer/app-inline-img.js（审阅 / 节点正文框 / 会话输入框三处共用）；
@@ -49,7 +49,11 @@ let _rv = {
   src: false,        // 是否源码模式
   busy: false,       // AI 修订中
   dirty: false,
-  localSel: false,   // 局部批注开关：开启后拖选正文才弹浮窗
+  /* 局部批注：当前选段快照（选中文字原文 + 便笺落点）。
+     按钮亮不亮只看它 —— 点按钮那一瞬选区会被夺走，不能让按钮回头去读实时选区。 */
+  selSnippet: "",
+  selPos: null,
+  selSync: null,     // 工具栏那颗「局部批注」按钮的状态同步函数（工具栏每次重渲染都换一颗）
 };
 
 function rvTargetIs(type) {
@@ -214,7 +218,9 @@ function beginReview(target) {
   _rv.src = false;
   _rv.busy = false;
   _rv.dirty = false;
-  _rv.localSel = false;
+  _rv.selSnippet = "";
+  _rv.selPos = null;
+  _rv.selSync = null;
   refreshVerIdx();
   ensureReviewDlg();
   renderReviewDlg();
@@ -343,8 +349,12 @@ function openReviewDlg() {
   h.classList.add("on");
   document.body.classList.add("review-lock");
   h.querySelector("#reviewBox").focus();
+  /* 局部批注：选段判定挂文档级 —— 拖到编辑器外松手、Shift+方向键、双击选词都算 */
+  document.addEventListener("selectionchange", rvOnSelectionChange);
 }
 function closeReviewDlg() {
+  document.removeEventListener("selectionchange", rvOnSelectionChange);
+  rvClearSelSnapshot();
   const h = document.getElementById("reviewDlg");
   if (!h) return;
   commitEditorToDoc();
@@ -694,6 +704,9 @@ function renderToolbar(h, cur) {
     b.title = title || label;
     if (html) b.innerHTML = html;
     else b.textContent = label;
+    /* 按下不夺焦：编辑区里的光标 / 选区原样留着，execCommand / 插入才落对地方
+       （缺这条时按钮一按下编辑区就失焦，插入只会跑到末尾 —— 「点了没落在光标处」） */
+    b.addEventListener("mousedown", (ev) => ev.preventDefault());
     b.onclick = (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -715,8 +728,6 @@ function renderToolbar(h, cur) {
   tb.appendChild(sep());
   mk("ul", "•≡", I18n.t("无序列表"));
   mk("ol", "1.", I18n.t("有序列表"));
-  mk("task", "☑", I18n.t("任务清单"));
-  mk("hr", "—", I18n.t("水平线"));
   tb.appendChild(sep());
   mk("link", "🔗", I18n.t("链接"));
   mk("inlineCode", "⟨⟩", I18n.t("行内代码"));
@@ -754,29 +765,32 @@ function renderToolbar(h, cur) {
     });
   };
   tb.appendChild(fullBtn);
+  /* 局部批注：**动作按钮**（不再是开关）。正文里有选段才亮，没选段就灰着不可点；
+     点亮后点一下即为选中的那段挂一条批注（选段快照见 rvOnSelectionChange）。 */
   const localBtn = document.createElement("button");
   localBtn.type = "button";
   localBtn.className = "rv-note-enter";
+  localBtn.id = "reviewLocalNoteBtn";
   localBtn.textContent = I18n.t("局部批注");
+  /* 按下不夺焦：一 mousedown 就把选区交出去，按钮会在 click 之前自己变灰、点了个空 */
+  localBtn.addEventListener("mousedown", (ev) => ev.preventDefault());
   const syncLocalBtn = () => {
-    const on = _rv.localSel;
+    const on = !!_rv.selSnippet && !!_rv.editing;
+    localBtn.disabled = !on;
     localBtn.classList.toggle("on", on);
     localBtn.title = on
-      ? I18n.t("局部批注已开启，拖选正文即可添加")
-      : I18n.t("在正文中拖选文字可添加局部批注");
+      ? I18n.t("对选中的文字添加局部批注")
+      : I18n.t("先在正文中拖选一段文字");
   };
-  localBtn.onclick = () => {
-    _rv.localSel = !_rv.localSel;
-    syncLocalBtn();
-    if (_rv.localSel) {
-      /* 开启后聚焦富文本，让拖选可直接触发局部批注 */
-      const edHost = document.getElementById("reviewBox");
-      const edEl = edHost && edHost.querySelector(".rv-rich");
-      if (edEl) edEl.focus();
-    } else {
-      hideFloatNote(true);
-    }
+  localBtn.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    /* 万一这一拍选区已被收掉（某些浏览器 mousedown 的默认行为拦不住），现读一次兜底 */
+    if (!_rv.selSnippet) rvOnSelectionChange();
+    if (!_rv.selSnippet) return;
+    showFloatNoteAtSelection();
   };
+  _rv.selSync = syncLocalBtn;
   syncLocalBtn();
   tb.appendChild(localBtn);
   function sep() {
@@ -791,6 +805,8 @@ function renderToolbar(h, cur) {
 function renderEditor() {
   const host = document.getElementById("reviewBox");
   if (!host) return;
+  /* 编辑面重渲染 = 上一个选段已作废（切档 / 切版本 / 整面刷新），按钮跟着回灰 */
+  rvClearSelSnapshot();
   const box = host.querySelector("#reviewEditor");
   box.innerHTML = "";
   const modeTabRich = host.querySelector('.rv-tab[data-mode="rich"]');
@@ -812,6 +828,12 @@ function renderEditor() {
         _rv.dirty = true;
         hideFloatNote(true);
       };
+      /* 源码档的 Tab / Shift+Tab：4 空格缩进与反缩进（renderer/app-mdedit.js 的共享实现） */
+      if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindSource === "function") {
+        try {
+          MTMdEdit.bindSource(ta);
+        } catch (_) {}
+      }
     } else {
       ta.readOnly = true;
     }
@@ -824,9 +846,10 @@ function renderEditor() {
       ed.spellcheck = false;
       ed.innerHTML = mdToRichHtml(text);
       ed.dataset.ver = reviewActiveText().length;
-      /* 局部批注：拖选文字弹出右侧浮空便笺 */
-      ed.addEventListener("mouseup", (ev) => {
-        if (_rv.editing && _rv.localSel) maybeShowFloatNote(ed, ev);
+      /* 局部批注：拖选文字 → 点亮工具栏那颗按钮。选段快照由文档级 selectionchange 收，
+         这一拍只是补漏（选区刚落定、selectionchange 还没派发的浏览器）。 */
+      ed.addEventListener("mouseup", () => {
+        if (_rv.editing) rvOnSelectionChange();
       });
       ed.addEventListener("keyup", (ev) => {
         if (_rv.editing && _rv.dirty) {
@@ -840,6 +863,14 @@ function renderEditor() {
         /* 批注锚点自动重锚 */
         reAnchorNotesAfterEdit();
       });
+      /* Markdown 编辑手感（renderer/app-mdedit.js 的共享实现）：Tab 只插 4 个空格
+         （选中多行就每行行首各插一次），Shift+Tab 不接管；粘贴优先吃剪贴板 HTML。
+         必须排在 rvBindImgEditor 之前：粘图片时由插图模块先吃（它的 paste 监听先注册先跑）。 */
+      if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindRich === "function") {
+        try {
+          MTMdEdit.bindRich(ed);
+        } catch (_) {}
+      }
       /* 图片：粘贴（剪贴板 / 截图）、拖入（本机文件）、编辑器内图片选中态，一律走共享模块
          renderer/app-inline-img.js（审阅编辑器 / 节点正文框 / 会话输入框三处共用；
          .ii-rich 与 .ii-img-sel 的样式在 css/inline-img.css）。 */
@@ -1017,13 +1048,36 @@ function rvRewriteImgSrc(html) {
   return tpl.innerHTML;
 }
 
-/* 将富文本 DOM 序列化为 Markdown（覆盖我们工具栏与 marked 产生的语义子集）。 */
+/* 将富文本 DOM 序列化为 Markdown（覆盖我们工具栏与 marked 产生的语义子集）。
+ *
+ * 保真口径（「点开就被重新排版」的那只 bug 的根治处）：
+ *   · 段落之间必须有空行 —— 原来 `parts.join("\n")` 只给单换行，而渲染侧开着 breaks:true，
+ *     单换行在视觉上是「同一段里换行」，于是一整篇的段落分隔在回写时被吃掉、再也换不回来；
+ *   · 行内换行写回两空格硬换行（walkBlocks 的 <p> 分支），不再折成行内空格；
+ *   · 行内代码内容原样（inlineToMd 的早退分支），里面的连续空格不被压缩；
+ *   · 代码块（``` 围栏）里的空行 / 缩进是内容本身，本函数一律不碰；
+ *   · 段间连续多个空行压成一个（Markdown 标准：一个空行就是一个段落分隔，多写不改变语义）。 */
 function richToMarkdown(root) {
   const parts = [];
   walkBlocks(root, parts, 0);
-  let md = parts.join("\n");
-  md = md.replace(/\n{3,}/g, "\n\n");
-  return md.trim() + (md.trim() ? "\n" : "");
+  const out = [];
+  let fence = false;
+  for (let i = 0; i < parts.length; i++) {
+    /* 空串 = 块间隔（块自己推的空行），原样保留；它不会再多插一行空行。 */
+    if (parts[i] === "") {
+      out.push("");
+      continue;
+    }
+    /* 围栏状态只在块边界上切换（``` 行不会被我们折行拆开） */
+    const line = String(parts[i]);
+    if (/^\s*```/.test(line)) fence = !fence;
+    if (!fence && line !== "" && out.length && out[out.length - 1] !== "") out.push("");
+    out.push(line.replace(/\s+$/, ""));
+  }
+  while (out.length && out[out.length - 1] === "") out.pop();
+  while (out.length && out[0] === "") out.shift();
+  const joined = out.join("\n");
+  return joined ? joined + "\n" : "";
 }
 
 /* ── 公式（math-render.js 渲染出的根节点）：序列化回 Markdown 源码 ──
@@ -1067,19 +1121,18 @@ function rvMathMdOf(el) {
   if (d === "$$") return "$$" + tex + "$$";
   return "$" + tex + "$";
 }
-/* 块级输出：显示公式独占 `$$` / `\[` 行；行内公式一行 `$tex$` / `\(tex\)` */
+/* 块级输出：显示公式独占 `$$` / `\[` 行；行内公式一行 `$tex$` / `\(tex\)`。
+   显示公式**必须推成一整段**（`$$\n tex \n$$`）：richToMarkdown 会在相邻两段之间补空行，
+   早先按 `$$` / tex / `$$` 推三段，保存下来的源码就成了 `$$` 空行 tex 空行 `$$` ——
+   公式被空行拆散（用户看到的就是「$$ 的数学符号直接无法保存」）。 */
 function pushMathMd(el, parts) {
   const tex = rvMathTexOf(el);
   if (!tex) return;
   const d = rvMathDelimOf(el);
   if (d === "$$") {
-    parts.push("$$");
-    parts.push(tex);
-    parts.push("$$");
+    parts.push("$$\n" + tex + "\n$$");
   } else if (d === "\\[") {
-    parts.push("\\[");
-    parts.push(tex);
-    parts.push("\\]");
+    parts.push("\\[\n" + tex + "\n\\]");
   } else if (d === "\\(") {
     parts.push("\\(" + tex + "\\)");
   } else {
@@ -1111,6 +1164,9 @@ function inlineToMd(node) {
   const math = rvMathElOf(node);
   if (math) return rvMathMdOf(math);
   const tag = node.tagName.toLowerCase();
+  /* 行内代码里的空白是内容本身（`a   b` 的三个空格有意义）：
+     绝不能走下面的 `\s+ → " "` 归一化，故在这里就地取 textContent 原样返回。 */
+  if (tag === "code") return "`" + node.textContent + "`";
   let inner = "";
   for (const c of node.childNodes) inner += inlineToMd(c);
   switch (tag) {
@@ -1124,8 +1180,7 @@ function inlineToMd(node) {
     case "del":
     case "strike":
       return "~~" + inner + "~~";
-    case "code":
-      return "`" + inner + "`";
+    /* case "code" 已在上面的早退分支处理（原样取 textContent） */
     case "a":
       return "[" + inner + "](" + (node.getAttribute("href") || "") + ")";
     case "img": {
@@ -1147,12 +1202,97 @@ function inlineToMd(node) {
   }
 }
 
+/* 段落 / 行内文本 → 一段 Markdown 正文（行内换行写成行尾两空格的硬换行）。
+ * 原来这里是 `\s+ → " "`：用户写的换行会被折成行内空格，回写后换行就永久没了。
+ * 另外先把「空白是内容本身」的片段（行内代码 / 公式）摘出来换成占位，
+ * 归一化完再原样放回 —— 否则 `a \`x   y\` b` 会被压成 `a \`x y\` b`。 */
+function rvMdBlockText(raw) {
+  let s = String(raw == null ? "" : raw).replace(/\r\n?/g, "\n");
+  /* 行首缩进是内容本身：富文本档按 Tab 插的就是行首 4 个空格（用户口径「正文怎么写就怎么存」），
+     而下面那串归一化会把 `^\s+` 一并清掉 —— 于是先摘出来，归一化完原样放回。
+     不摘的话，编辑器里按了 Tab、存下去的正文却少掉缩进（即用户报的「Tab 后自动回滚」）。 */
+  const leadMatch = /^[ \t]+/.exec(s);
+  const lead = leadMatch ? leadMatch[0].replace(/\t/g, "    ") : "";
+  if (leadMatch) s = s.slice(leadMatch[0].length);
+  const picks = [];
+  const stash = (m) => {
+    picks.push(m);
+    return "\u0001" + (picks.length - 1) + "\u0002";
+  };
+  const guarded = s
+    .replace(/`[^`\n]*`/g, stash)
+    .replace(/\$[^$\n]*\$/g, stash)
+    .replace(/\\\([^)\n]*\\\)/g, stash)
+    .replace(/\\\[[^\]\n]*\\\]/g, stash);
+  const cleaned = guarded
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/ *\n */g, "  \n")
+    .replace(/\n{2,}/g, "  \n")
+    .replace(/^\s+|\s+$/g, "");
+  const body = cleaned.replace(/\u0001(\d+)\u0002/g, (m, i) => picks[Number(i)] || "");
+  return lead + body;
+}
+/* 段落 → 逐行 Markdown（每行都不带行尾空格；内部行保留两空格硬换行） */
+function rvMdParaLines(raw) {
+  const t = rvMdBlockText(raw);
+  if (!t) return [];
+  const out = [];
+  for (const raw2 of t.split("\n")) {
+    const s = raw2.replace(/\s+$/, "");
+    if (s !== "") out.push(s);
+  }
+  return out;
+}
+
+/* 段落内有没有水平线（含被行内元素包住的：`<p><span><hr></span></p>` 这种夹心也要认） */
+function rvHrInside(el) {
+  try {
+    return !!(el.querySelector && el.querySelector("hr"));
+  } catch (_) {
+    return false;
+  }
+}
+/* 把容器摊平成 [{node} | {hr:true}] 序列：遇到水平线打一个 hr 断点，
+   遇到「内部还夹着水平线」的行内元素就继续下钻（外层那层包裹会丢，这是最小代价）。 */
+function rvSplitByHr(el, out) {
+  for (const c of el.childNodes) {
+    if (c && c.nodeType === Node.ELEMENT_NODE) {
+      const t = rvMdTagOf(c);
+      if (t === "hr") {
+        out.push({ hr: true });
+        continue;
+      }
+      if (t !== "br" && t !== "img" && rvHrInside(c)) {
+        rvSplitByHr(c, out);
+        continue;
+      }
+    }
+    out.push({ node: c });
+  }
+  return out;
+}
+/* 一串行内节点 → 行内 Markdown（等价于对它们的公共父节点做 inlineToMd，但不建临时 DOM） */
+function rvInlineRunMd(nodes) {
+  let s = "";
+  for (const n of nodes) s += inlineToMd(n);
+  return s;
+}
+
 function walkBlocks(node, parts, depth) {
+  /* 块与块之间必须有空行（否则 breaks:true 下两段会被读成一整段）：
+     在第一个块之前、以及当前块还不是空行时补一行空行；
+     块自己已经推了空行（<br> 造成的空段）时不重复补。 */
+  const sep = () => {
+    if (parts.length && parts[parts.length - 1] !== "") parts.push("");
+  };
   for (const child of node.childNodes) {
     if (child.nodeType === Node.ELEMENT_NODE) {
       const tag = child.tagName.toLowerCase();
-      /* 直接挂在编辑区根节点下的公式（工具栏插入 / 独立 $$ 块） */
+      /* 直接挂在编辑区根节点下的公式（工具栏插入 / 独立 $$ 块）：
+         显示公式是**独立块**，前面是段落 / 引用 / 列表时也要空一行隔开 —— 否则
+         `$$` 会被上一块（尤其引用块，CommonMark 的懒续行）吸进去，读回来就没有公式块了。 */
       if (rvMathElOf(child)) {
+        if (rvMathDelimOf(child) === "$$" || rvMathDelimOf(child) === "\\[") sep();
         pushMathMd(child, parts);
         continue;
       }
@@ -1161,9 +1301,10 @@ function walkBlocks(node, parts, depth) {
         continue;
       }
       if (tag === "div" || tag === "p") {
-        /* 只装一个公式的段落：还原成独立的 `$$` 块（不塞进行内） */
+        /* 只装一个公式的段落：还原成独立的 `$$` 块（不塞进行内；块前同样补空行） */
         const only = rvOnlyMathChild(child);
         if (only) {
+          if (rvMathDelimOf(only) === "$$" || rvMathDelimOf(only) === "\\[") sep();
           pushMathMd(only, parts);
           continue;
         }
@@ -1172,23 +1313,59 @@ function walkBlocks(node, parts, depth) {
           walkBlocks(child, parts, depth);
           continue;
         }
-        const line = inlineToMd(child).replace(/\s+/g, " ").trim();
+        /* 段落里夹着水平线（工具栏在光标处插 <hr> 时它会落进 <p> 里面）：
+           按水平线把段落切开，各自还成段落，水平线本身输出 `---`。
+           早先这里整段走 inlineToMd，而 inlineToMd 没有 hr 分支 ——
+           水平线被当成空内容丢掉，用户看到的就是「插入横隔线，保存后就消失」。 */
+        if (rvHrInside(child)) {
+          const seq = [];
+          rvSplitByHr(child, seq);
+          let run = [];
+          const flushRun = () => {
+            if (!run.length) return;
+            const line = rvMdBlockText(rvInlineRunMd(run));
+            if (line) {
+              sep();
+              parts.push(line);
+            }
+            run = [];
+          };
+          for (const it of seq) {
+            if (it.hr) {
+              flushRun();
+              sep();
+              parts.push("---");
+            } else {
+              run.push(it.node);
+            }
+          }
+          flushRun();
+          continue;
+        }
+        /* 行内换行必须留住（原来 `\s+ → " "` 会把换行折成行内空格，
+           用户写的换行当场消失）：把行内 md 里的换行改成「行尾两空格的硬换行」，
+           再只把行内的横向空白（空格 / 制表符）折成一个 —— 新换行不受影响。 */
+        const line = rvMdBlockText(inlineToMd(child));
         if (line) parts.push(line);
+        else sep(); /* 空段落（一个空行）保留成空行 */
         continue;
       }
       if (/^h[1-6]$/.test(tag)) {
         const lvl = Number(tag[1]);
-        parts.push("#".repeat(lvl) + " " + inlineToMd(child).trim());
+        sep();
+        parts.push("#".repeat(lvl) + " " + rvMdBlockText(inlineToMd(child)));
         continue;
       }
       if (tag === "blockquote") {
         const inner = [];
         walkBlocks(child, inner, depth);
+        sep();
         for (const line of inner) parts.push("> " + line.replace(/\n/g, "\n> "));
         continue;
       }
       if (tag === "pre") {
         const code = child.querySelector("code") || child;
+        sep();
         parts.push("```\n" + code.textContent.replace(/\n$/, "") + "\n```");
         continue;
       }
@@ -1197,12 +1374,13 @@ function walkBlocks(node, parts, depth) {
         continue;
       }
       if (tag === "hr") {
+        sep();
         parts.push("---");
         continue;
       }
       /* 直接挂在编辑区根节点下的图片（不在 p 里）也要能序列化回 md */
       if (tag === "img") {
-        const line = inlineToMd(child).trim();
+        const line = rvMdBlockText(inlineToMd(child));
         if (line) parts.push(line);
         continue;
       }
@@ -1219,25 +1397,114 @@ function walkBlocks(node, parts, depth) {
   }
 }
 
-function walkList(ul, parts, depth, unordered) {
-  for (const li of ul.childNodes) {
-    if (li.nodeType !== Node.ELEMENT_NODE || li.tagName.toLowerCase() !== "li") continue;
-    const md = inlineToMd(li);
-    /* 任务清单 */
-    const chk = li.querySelector("input[type=checkbox]");
-    if (chk) {
-      const mark = chk.checked ? "[x] " : "[ ] ";
-      parts.push(mark + md.trim());
-    } else {
-      parts.push((unordered ? "- " : "1. ") + md.trim());
-    }
-    /* 嵌套列表 */
-    for (const sub of li.childNodes) {
-      if (sub.nodeType === Node.ELEMENT_NODE && ["UL", "OL"].indexOf(sub.tagName.toUpperCase()) >= 0) {
-        walkList(sub, parts, depth, sub.tagName.toLowerCase() === "ul");
-      }
-    }
+/* 列表项的「项内块」：探针用，只读 nodeName（不碰同名 DOM 上的其它属性） */
+function rvMdTagOf(node) {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return "";
+  try {
+    const t = node.nodeName || node.tagName || "";
+    return String(t).toLowerCase();
+  } catch (_) {
+    return "";
   }
+}
+/* 一个列表 → 整块 Markdown 文本（作为**一个** part 交给 richToMarkdown）：
+ *   · 项与项之间不能有空行（breaks:true 下空行会把列表拆成两段、嵌套就散了）；
+ *   · 嵌套子列表按层级缩进两格，紧跟在父项行下面（与 Markdown 的嵌套列表一一对应）；
+ *   · 项内多段之间才补一个空行（Markdown 里那确实是同一项的第二段）。
+ * 列表内部的空行统一由这里负责，所以这里吞掉所有分行、最后整体推出一个多行 part。 */
+function walkMdList(list, indent, unordered) {
+  const out = [];
+  /* 嵌套缩进按**父项正文列**给：CommonMark 里子列表要缩到父项正文列的右侧，
+     `- ` 的正文列在第 2 格（缩两格），`1. ` 在第 3 格（取四格，宽一格更稳）。
+     有序列表套有序列表早先缩两格，会被当成父项的续行拍平成一串 1./2./3./4.
+     （用户报的「编号错」）；`indent` 是逐层累加的字符串，不是层数。 */
+  indent = String(indent == null ? "" : indent);
+  /* 有序列表要按真实序号写（`<ol start>` 也照顾到）：全写 `1. ` 会把起始号
+     和「第几项」一起丢掉，下一次读回来就从头数。 */
+  let num = Number((list.getAttribute && list.getAttribute("start")) || 1) || 1;
+  const step = unordered ? "  " : "    ";
+  for (const li of Array.from(list.childNodes || [])) {
+    if (li.nodeType !== Node.ELEMENT_NODE || li.tagName.toLowerCase() !== "li") continue;
+    let first = true;
+    /* 项内有没有勾选框（任务清单）：有就由行首的 [x] / [ ] 承担。
+       它挂在 li 上还是包在项内段落里（松散列表 `<li><p><input …>甲</p></li>`）都算 ——
+       两种都由这里出行首标记，序列化时**一律跳过**那颗 input，不再往 DOM 里塞一颗。 */
+    const chk = li.querySelector("input[type=checkbox]");
+    const boxLead = chk ? (chk.checked ? "[x] " : "[ ] ") : "";
+    /* 行首标记（`- ` / `1. `，任务项再跟上 [x]/[ ]）：只加在项的第一行 */
+    const head = () => {
+      const mark = (unordered ? "- " : num++ + ". ") + boxLead;
+      if (!first) return indent + "  ";
+      first = false;
+      return indent + mark;
+    };
+    let wrote = false;
+    /* 快照一份再遍历：序列化途中若有人往项里插节点，活 NodeList 会回退指针、把同一个
+       子节点再走一遍（早先就因此把一项写成两行、正文重复一次）。 */
+    for (const c of Array.from(li.childNodes)) {
+      if (!c) continue;
+      const t = rvMdTagOf(c);
+      if (t === "ul" || t === "ol") {
+        const sub = walkMdList(c, indent + step, t === "ul");
+        if (sub) out.push(sub);
+        continue;
+      }
+      /* 文本节点（<li>甲</li>）与行内容器（<li><p>甲</p></li>）都要认：
+         文字直接在 li 里时是 TEXT_NODE，按元素过一遍会把整项丢成空行。 */
+      if (c.nodeType !== Node.ELEMENT_NODE && c.nodeType !== Node.TEXT_NODE) continue;
+      const lines = rvMdParaLines(
+        c.nodeType === Node.TEXT_NODE
+          ? c.textContent
+          : inlineToMdSkipCheckbox(c, chk),
+      );
+      if (!lines.length) continue;
+      if (wrote) out.push(""); /* 项内多段之间补一个空行（Markdown 里就是同一项的第二段） */
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        if (!line) continue;
+        /* marked 渲染待办项时会在勾选框后留一格空格（`<input …> 甲`）：那是源标记
+           `[ ] ` 的分隔符残留，行首标记已经带了，留着就写成 `- [ ]  甲`。 */
+        if (boxLead && !wrote) line = line.replace(/^ /, "");
+        if (!wrote && i === 0) out.push(head() + line);
+        /* 软换行的续行 / 第二段：缩进对齐到项内（不重复行首标记） */
+        else out.push(indent + "  " + line);
+      }
+      wrote = true;
+    }
+    if (!wrote && boxLead) {
+      /* 空任务项（刚点「待办清单」还没写字）也要留一行 `- [ ] `：
+         否则序列化把它当空项丢掉，用户点完按钮、保存回来一行都不剩。 */
+      out.push(head().trimEnd());
+      wrote = true;
+    }
+    if (!wrote && !first) out.push("");
+  }
+  return out.join("\n");
+}
+
+function walkList(ul, parts, depth, unordered) {
+  const md = walkMdList(ul, "  ".repeat(Math.max(0, Number(depth) || 0)), unordered);
+  if (md) parts.push(md);
+}
+
+/* 列表项正文 → 行内 Markdown。
+   两个必须跳过的：
+     · 项内的嵌套子列表（<ul>/<ol>）：它们由 walkMdList 单独按层级输出；
+     · 勾选框 <input type=checkbox>：勾选态由行首的 [x] / [ ] 承担，
+       不跳过就会序列化成「[x] [x] 甲」。 （skipBox 非空时连嵌套在段落里的勾选框也跳过） */
+function inlineToMdSkipCheckbox(node, skipBox) {
+  if (!node) return "";
+  if (node.nodeType !== Node.ELEMENT_NODE) return inlineToMd(node);
+  let inner = "";
+  for (const c of node.childNodes) {
+    if (c && c.nodeType === Node.ELEMENT_NODE) {
+      const t = rvMdTagOf(c);
+      if (t === "ul" || t === "ol") continue;
+      if (t === "input") continue;
+    }
+    inner += inlineToMd(c);
+  }
+  return inner;
 }
 
 function tableToMd(tab) {
@@ -1278,9 +1545,9 @@ function applyToolbarToSource(action, ta) {
   const r = sel ? "" : "";
   const prefixMap = {
     h1: "## ", h2: "## ", h3: "## ", p: "",
-    ul: "- ", ol: "1. ", task: "- [ ] ", quote: "> ",
+    ul: "- ", ol: "1. ", quote: "> ",
     bold: "**", italic: "*", strike: "~~",
-    inlineCode: "`", code: "```\n", link: "[", hr: "\n---\n",
+    inlineCode: "`", code: "```\n", link: "[",
   };
   const fmt = (pre, post, sample, mid) => {
     const body = sel || sample;
@@ -1297,7 +1564,7 @@ function applyToolbarToSource(action, ta) {
     case "h1": case "h2": case "h3":
       sourceHeading(ta, action);
       break;
-    case "ul": case "ol": case "task": case "quote":
+    case "ul": case "ol": case "quote":
       wrapLines(ta, action);
       break;
     case "bold": fmt("**", "**", I18n.t("文本"), ""); break;
@@ -1341,17 +1608,8 @@ function applyToolbarToSource(action, ta) {
       });
       break;
     }
-    case "hr":
-      if (ta.value && !ta.value.endsWith("\n")) ta.value += "\n";
-      ta.value += "\n---\n\n";
-      const v = reviewCurrent();
-      if (v) v.text = ta.value;
-      _rv.dirty = true;
-      ta.focus();
-      break;
   }
 }
-
 function sourceHeading(ta, action) {
   /* 源码模式标题：对选区覆盖的每一行改写行首井号（去旧标题标记） */
   const hashes = { h1: "#", h2: "##", h3: "###" }[action];
@@ -1379,7 +1637,7 @@ function sourceHeading(ta, action) {
 }
 
 function wrapLines(ta, action) {
-  const pre = { ul: "- ", ol: "1. ", task: "- [ ] ", quote: "> " }[action];
+  const pre = { ul: "- ", ol: "1. ", quote: "> " }[action];
   const a = ta.selectionStart;
   const b = ta.selectionEnd;
   let ls = ta.value.lastIndexOf("\n", a - 1) + 1;
@@ -1427,27 +1685,6 @@ function applyToolbarToRich(action, ed) {
         return true;
       case "ol":
         document.execCommand("insertOrderedList");
-        return true;
-      case "task": {
-        const sel = window.getSelection();
-        if (sel && !sel.isCollapsed) {
-          const frag = document.createRange().createContextualFragment(
-            '<ul data-task="1"><li><input type="checkbox">' +
-              sel.toString().replace(/&/g, "&amp;").replace(/</g, "&lt;") +
-              "</li></ul>",
-          );
-          insertRichNode(frag);
-        } else {
-          insertRichNode(
-            document.createRange().createContextualFragment(
-              '<ul data-task="1"><li><input type="checkbox"><br></li></ul>',
-            ),
-          );
-        }
-        return true;
-      }
-      case "hr":
-        insertRichNode(document.createRange().createContextualFragment("<hr>"));
         return true;
       case "link": {
         /* 先捕获正文选区再开输入框：对话框夺焦后 window.getSelection()
@@ -1867,24 +2104,84 @@ function rvTableMd(rows, cols) {
   return out.join("\n");
 }
 
-/* ---------- 局部批注：浮空便笺 ---------- */
+/* ---------- 局部批注：选段快照 + 浮空便笺 ---------- */
 
-function maybeShowFloatNote(ed, ev) {
-  if (!_rv.editing) return;
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed) return;
-  const txt = sel.toString().trim();
-  if (!txt || txt.length < 2) return;
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
-  if (!rect || (!rect.width && !rect.height)) return;
-  const host = document.getElementById("reviewBox");
-  if (!host) return;
-  const boxRect = host.getBoundingClientRect();
-  showFloatNote(
-    rect.right - boxRect.left + 12,
-    rect.top - boxRect.top,
-    txt,
-  );
+/* 选段快照：工具栏那颗「局部批注」按钮亮不亮，只看这里。
+   选段必须落在正文编辑面内 —— 在批注栏里划字不该点亮它。
+   一经确定就记下原文与落点：点按钮那一下选区会被按钮夺走，不能临场再读。 */
+function rvOnSelectionChange() {
+  const host = document.getElementById("reviewDlg");
+  if (!host || !host.classList.contains("on") || !_rv.editing) return;
+  const box = document.getElementById("reviewBox");
+  if (!box) return;
+  let snippet = "";
+  let pos = null;
+  if (_rv.src) {
+    /* 源码档：textarea 的选段不在 window.getSelection() 里（那边永远是收起的），
+       只能读 selectionStart/End —— 所以这一档不能套在下面的选区判断里。 */
+    const src = box.querySelector(".rv-src");
+    if (
+      src &&
+      !src.readOnly &&
+      document.activeElement === src &&
+      src.selectionStart !== src.selectionEnd
+    ) {
+      const txt = String(
+        src.value.slice(src.selectionStart, src.selectionEnd),
+      ).trim();
+      /* 拿不到选段的像素坐标，便笺按下面的口径统一落在工具栏下方 */
+      if (txt) snippet = txt;
+    }
+  } else {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      const rich = box.querySelector(".rv-rich");
+      if (rich && rich.contains(range.commonAncestorContainer)) {
+        const txt = String(sel).trim();
+        const rect = range.getBoundingClientRect();
+        const br = box.getBoundingClientRect();
+        if (txt && rect && br && (rect.width || rect.height)) {
+          snippet = txt;
+          pos = { x: rect.right - br.left + 12, y: rect.top - br.top };
+        }
+      }
+    }
+  }
+  _rv.selSnippet = snippet;
+  _rv.selPos = pos;
+  if (typeof _rv.selSync === "function") _rv.selSync();
+}
+
+function rvClearSelSnapshot() {
+  _rv.selSnippet = "";
+  _rv.selPos = null;
+  if (typeof _rv.selSync === "function") _rv.selSync();
+}
+
+/* 按选段快照摊开便笺：富文本贴在选段旁；源码档统一落在工具栏下方。 */
+function showFloatNoteAtSelection() {
+  const snippet = _rv.selSnippet;
+  if (!snippet || !_rv.editing) return;
+  const box = document.getElementById("reviewBox");
+  if (!box) return;
+  const br = box.getBoundingClientRect();
+  let x = 12;
+  let y = 48;
+  if (_rv.selPos) {
+    x = _rv.selPos.x;
+    y = _rv.selPos.y;
+  } else {
+    const bar = box.querySelector("#reviewToolbar");
+    const rr = bar && bar.getBoundingClientRect();
+    if (rr) {
+      x = 12;
+      y = rr.bottom - br.top + 8;
+    }
+  }
+  /* 便笺宽 232px：别让它摊到窗框外面去 */
+  const maxX = Math.max(8, br.width - 244);
+  showFloatNote(Math.max(8, Math.min(x, maxX)), Math.max(8, y), snippet);
 }
 
 function showFloatNote(x, y, snippet) {
@@ -1893,12 +2190,9 @@ function showFloatNote(x, y, snippet) {
   f.hidden = false;
   f.style.left = x + "px";
   f.style.top = y + "px";
+  /* 便笺里不再显示原文引文：选段只用来给批注定锚点 */
   f.innerHTML =
     '<div class="rv-note-caret"></div>' +
-    '<div class="rv-note-snip">“' +
-    escH(snippet.slice(0, 60)) +
-    (snippet.length > 60 ? "…" : "") +
-    '”</div>' +
     '<textarea class="rv-note-in" rows="3" placeholder="' +
     I18n.t("输入批注内容…") +
     '"></textarea>' +
@@ -1914,15 +2208,17 @@ function showFloatNote(x, y, snippet) {
   const cancel = f.querySelector("#reviewNoteCancel");
   const commit = () => {
     const body = ta.value.trim();
-    if (!body) {
-      hideFloatNote(true);
-      return;
-    }
-    addLocalNote(snippet, body);
+    /* 绑定 / 取消都算「这一段处理完了」：清掉选段，按钮回灰，再选一段才亮 */
+    rvClearSelSnapshot();
     hideFloatNote(true);
+    if (!body) return;
+    addLocalNote(snippet, body);
   };
   ok.onclick = commit;
-  cancel.onclick = () => hideFloatNote(true);
+  cancel.onclick = () => {
+    rvClearSelSnapshot();
+    hideFloatNote(true);
+  };
   ta.focus();
 }
 
@@ -2089,7 +2385,7 @@ function renderNotesEl() {
   head.appendChild(bt);
   const hint = document.createElement("span");
   hint.className = "rv-notes-hint";
-  hint.textContent = I18n.t("在正文中拖选文字可添加局部批注");
+  hint.textContent = I18n.t("拖选正文后点「局部批注」即可添加");
   head.appendChild(hint);
   wrap.appendChild(head);
 

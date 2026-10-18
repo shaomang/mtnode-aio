@@ -203,6 +203,55 @@ eq(st2.compacts[1].summary, "摘要二", "摘要只有最近一份");
 eq(st2.foldOpen, { cf1: true }, "旧折组的展开态照旧（新折组仍默认收起）");
 eq(apply({}, { id: "x" }).n, 0, "没有会话对象 / 没有 id → 直接返回 0，不炸");
 
+/* ── [3b] 保留原文尾（本次需求 · 与自动压缩 retainTokens 同口径）──────────────
+   keepChars 之内的消息不折（留在上下文里），更早的折起来；上一次的摘要消息
+   （_compact）不享受保留量、一律参与折叠；一条都折不动时返回 0 且不加空摘要。 */
+console.log("\n[3b] 保留原文尾（keepChars）：尾部不折 · 旧摘要仍折 · 无可折时不加空摘要");
+const kept = apply(
+  {
+    id: "s3",
+    messages: [
+      { role: "user", content: "旧问一", at: 1 },
+      { role: "assistant", content: "旧答一", at: 2 },
+      { role: "user", content: "新问二", at: 3 },
+      { role: "assistant", content: "新答二", at: 4 },
+    ],
+    compacts: [],
+    foldOpen: {},
+  },
+  { id: "cf9", at: 900, summary: "摘要九", chars: 40, keepChars: 6 },
+);
+eq(kept.n, 2, "保留量 6 字符 = 最近两条（各 3 字）不折，只折前两条");
+eq(
+  kept.st.messages.slice(0, 4).map((m) => m._fold || ""),
+  ["cf9", "cf9", "", ""],
+  "尾部两条留在上下文里（没有折组标记），被压掉的那两条原位折起",
+);
+eq(kept.st.messages[kept.st.messages.length - 1].content, "（上文已压缩）\n\n摘要九", "摘要仍追加在末尾");
+const prevSummary = apply(
+  {
+    id: "s4",
+    messages: [
+      { role: "assistant", content: "旧摘要消息", _compact: "cf1" },
+      { role: "user", content: "短问", at: 2 },
+    ],
+    compacts: [{ id: "cf1", at: 1, count: 3, chars: 10, summary: "旧摘要消息" }],
+    foldOpen: {},
+  },
+  { id: "cf10", at: 1000, summary: "摘要十", chars: 5, keepChars: 99999 },
+);
+eq(prevSummary.n, 1, "保留量再大，上一次的摘要消息也照折（否则上下文里会有两份摘要）");
+eq(prevSummary.st.messages[1]._fold || "", "", "最近一条用户消息在保留量之内 → 不折");
+eq(prevSummary.st.messages[prevSummary.st.messages.length - 1].content, "（上文已压缩）\n\n摘要十", "只有一份新摘要");
+const noneFolded = apply(
+  { id: "s5", messages: [{ role: "user", content: "短问", at: 1 }], compacts: [], foldOpen: {} },
+  { id: "cf11", at: 1100, summary: "不该出现", chars: 3, keepChars: 99999 },
+);
+eq(noneFolded.n, 0, "剩下的原文都在保留量之内 → 折 0 条（调用方提示、不压）");
+eq(noneFolded.st.messages.length, 1, "不加空摘要（会话里不多出一条「（上文已压缩）」）");
+eq(noneFolded.st.compacts.length, 0, "也不写压缩记录");
+
+
 /* ── [4] 真跑 agentHistoryEntries：折叠的不进上下文 ────────────────────────── */
 console.log("\n[4] 真跑 agentHistoryEntries（折叠起来的历史不再进模型上下文）");
 const sb2 = { console: console };

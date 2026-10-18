@@ -1,0 +1,495 @@
+{
+  "ts": "2026-10-16T09:28:44.515Z",
+  "runDir": "C:\\Users\\shaom\\AppData\\Local\\Temp\\mtnode-verify-20261016092844\\verify-agent-out-fold-20261016092844",
+  "dataDir": "C:\\Users\\shaom\\AppData\\Local\\Temp\\mtnode-verify-20261016092844\\verify-agent-out-fold-20261016092844\\clean",
+  "steps": [
+    {
+      "name": "握手：tools/list 里有 mtnode_gui",
+      "ok": true,
+      "detail": "9 个工具"
+    },
+    {
+      "name": "选中态 · 无输出：节点切到编辑态（dataset.nodeForm=edit、class 带 sel 且不带 browse）",
+      "ok": true,
+      "detail": "{\"selected\":true,\"className\":\"wf-node agent sel\",\"form\":\"edit\",\"bodyLen\":784,\"hasFold\":false}"
+    },
+    {
+      "name": "选中态 · 无输出：还没有输出 ⇒ 不装配折叠区",
+      "ok": true,
+      "detail": "hasFold=false"
+    },
+    {
+      "name": "选中态·有输出：折叠输出区挂在左侧列里（不是横向 row 的兄弟）",
+      "ok": true,
+      "detail": "parentIsLeft=true parentIsRow=false"
+    },
+    {
+      "name": "选中态·有输出：折叠输出区在输入框下方（文档位次在后）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "选中态·有输出：折叠输出区是整幅宽（= 节点体内宽，误差 ≤ 2px）",
+      "ok": true,
+      "detail": "fold=338.7 body=339"
+    },
+    {
+      "name": "选中态·有输出：输出面板自己不再被挤窄（宽 > 面板最小宽 120）",
+      "ok": true,
+      "detail": "panel=337.3"
+    },
+    {
+      "name": "选中态·有输出：按钮组落在面板横向范围内（不是飘在面板右外侧）",
+      "ok": true,
+      "detail": "btnsRight=636.3 panelRight=644.3"
+    },
+    {
+      "name": "选中态·有输出：输出标题只有一行（面板本体不再重复 OUTPUT 行）",
+      "ok": true,
+      "detail": "面板内 .n-out-head 数=0（宿主那行是 .n-agent-out-head）"
+    },
+    {
+      "name": "选中态·有输出：折叠区里的拖宽条已隐藏（宽度恒为节点宽）",
+      "ok": true,
+      "detail": "resizeDisplay!==none? false"
+    },
+    {
+      "name": "选中态·有输出：节点宽度 = 智能任务节点的类型下限 380（不再按右侧框抬到 546+）",
+      "ok": true,
+      "detail": "nodeW=384"
+    },
+    {
+      "name": "选中态·有输出：会话/输入列仍占整幅（left 宽 = 折叠区宽，误差 ≤ 2px）",
+      "ok": true,
+      "detail": "left=338.7 fold=338.7"
+    },
+    {
+      "name": "预览态·有输出：折叠输出区挂在左侧列里（不是横向 row 的兄弟）",
+      "ok": true,
+      "detail": "parentIsLeft=true parentIsRow=false"
+    },
+    {
+      "name": "预览态·有输出：折叠输出区在输入框下方（文档位次在后）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "预览态·有输出：折叠输出区是整幅宽（= 节点体内宽，误差 ≤ 2px）",
+      "ok": true,
+      "detail": "fold=342.7 body=343"
+    },
+    {
+      "name": "预览态·有输出：输出面板自己不再被挤窄（宽 > 面板最小宽 120）",
+      "ok": true,
+      "detail": "panel=341.3"
+    },
+    {
+      "name": "预览态·有输出：按钮组落在面板横向范围内（不是飘在面板右外侧）",
+      "ok": true,
+      "detail": "btnsRight=638.3 panelRight=646.3"
+    },
+    {
+      "name": "预览态·有输出：输出标题只有一行（面板本体不再重复 OUTPUT 行）",
+      "ok": true,
+      "detail": "面板内 .n-out-head 数=0（宿主那行是 .n-agent-out-head）"
+    },
+    {
+      "name": "预览态·有输出：折叠区里的拖宽条已隐藏（宽度恒为节点宽）",
+      "ok": true,
+      "detail": "resizeDisplay!==none? false"
+    },
+    {
+      "name": "预览态·有输出：节点宽度 = 智能任务节点的类型下限 380（不再按右侧框抬到 546+）",
+      "ok": true,
+      "detail": "nodeW=384"
+    },
+    {
+      "name": "预览态·有输出：会话/输入列仍占整幅（left 宽 = 折叠区宽，误差 ≤ 2px）",
+      "ok": true,
+      "detail": "left=342.7 fold=342.7"
+    },
+    {
+      "name": "两态同版式：选中态与预览态的折叠区宽度一致（误差 ≤ 1px）",
+      "ok": false,
+      "detail": "edit=338.7 browse=342.7"
+    },
+    {
+      "name": "两态同版式：两态的父容器判定一致（都在左侧列里）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "运行中：折叠区自动展开（liveDsh）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "运行中：折叠区仍是整幅宽且在左侧列里",
+      "ok": true,
+      "detail": "fold=338.7 body=339"
+    },
+    {
+      "name": "运行中：节点仍不被撑宽（≤ 400）",
+      "ok": true,
+      "detail": "nodeW=384"
+    },
+    {
+      "name": "运行中：输出面板仍不窄于 120px",
+      "ok": true,
+      "detail": "panel=337.3"
+    },
+    {
+      "name": "第二颗节点同样整幅宽、挂左侧列",
+      "ok": true,
+      "detail": "fold=338.7 body=339"
+    },
+    {
+      "name": "收尾：探针节点已从画布删掉",
+      "ok": true,
+      "detail": "{\"removed\":[\"nmvarmmj9w2x\",\"nmvarmmk1yw6\"],\"nodes\":137}"
+    }
+  ],
+  "measurements": {
+    "选中态·有输出": {
+      "nodeW": 384,
+      "bodyInnerW": 339,
+      "cam": {
+        "z": 1
+      },
+      "hasFold": true,
+      "foldOpen": true,
+      "fold": {
+        "w": 338.7,
+        "h": 87.7,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 1 auto",
+        "dir": "column"
+      },
+      "row": {
+        "w": 338.7,
+        "h": 266.7,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "row"
+      },
+      "left": {
+        "w": 338.7,
+        "h": 266.7,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "column"
+      },
+      "prompt": {
+        "w": 338.7,
+        "h": 50,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "column"
+      },
+      "panel": {
+        "w": 337.3,
+        "h": 82.2,
+        "x": 307,
+        "right": 644.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 auto",
+        "dir": "column"
+      },
+      "head": {
+        "w": 337.3,
+        "h": 24.7,
+        "x": 307,
+        "right": 644.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "row"
+      },
+      "btns": {
+        "w": 86,
+        "left": 550.3,
+        "right": 636.3
+      },
+      "foldParentIsRow": false,
+      "foldParentIsLeft": true,
+      "foldAfterPrompt": true,
+      "resizeHandleShown": false,
+      "outHeadCount": 0,
+      "outBtnsCount": 1
+    },
+    "预览态·有输出": {
+      "nodeW": 384,
+      "bodyInnerW": 343,
+      "cam": {
+        "z": 1
+      },
+      "hasFold": true,
+      "foldOpen": true,
+      "fold": {
+        "w": 342.7,
+        "h": 91.8,
+        "x": 304.3,
+        "right": 647,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 1 auto",
+        "dir": "column"
+      },
+      "row": {
+        "w": 342.7,
+        "h": 270.7,
+        "x": 304.3,
+        "right": 647,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "row"
+      },
+      "left": {
+        "w": 342.7,
+        "h": 270.7,
+        "x": 304.3,
+        "right": 647,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "column"
+      },
+      "prompt": {
+        "w": 342.7,
+        "h": 50,
+        "x": 304.3,
+        "right": 647,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "column"
+      },
+      "panel": {
+        "w": 341.3,
+        "h": 87.4,
+        "x": 305,
+        "right": 646.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 auto",
+        "dir": "column"
+      },
+      "head": {
+        "w": 341.3,
+        "h": 24.7,
+        "x": 305,
+        "right": 646.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "row"
+      },
+      "btns": {
+        "w": 86,
+        "left": 552.3,
+        "right": 638.3
+      },
+      "foldParentIsRow": false,
+      "foldParentIsLeft": true,
+      "foldAfterPrompt": true,
+      "resizeHandleShown": false,
+      "outHeadCount": 0,
+      "outBtnsCount": 1
+    },
+    "选中态·运行中": {
+      "nodeW": 384,
+      "bodyInnerW": 339,
+      "cam": {
+        "z": 1
+      },
+      "hasFold": true,
+      "foldOpen": true,
+      "fold": {
+        "w": 338.7,
+        "h": 65.2,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 1 auto",
+        "dir": "column"
+      },
+      "row": {
+        "w": 338.7,
+        "h": 266.7,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "row"
+      },
+      "left": {
+        "w": 338.7,
+        "h": 266.7,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "column"
+      },
+      "prompt": {
+        "w": 338.7,
+        "h": 50,
+        "x": 306.3,
+        "right": 645,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "column"
+      },
+      "panel": {
+        "w": 337.3,
+        "h": 39.8,
+        "x": 307,
+        "right": 644.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 auto",
+        "dir": "column"
+      },
+      "head": {
+        "w": 337.3,
+        "h": 24.7,
+        "x": 307,
+        "right": 644.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "row"
+      },
+      "btns": {
+        "w": 86,
+        "left": 550.3,
+        "right": 636.3
+      },
+      "foldParentIsRow": false,
+      "foldParentIsLeft": true,
+      "foldAfterPrompt": true,
+      "resizeHandleShown": false,
+      "outHeadCount": 0,
+      "outBtnsCount": 1
+    },
+    "选中态·第二颗有输出": {
+      "nodeW": 384,
+      "bodyInnerW": 339,
+      "cam": {
+        "z": 1
+      },
+      "hasFold": true,
+      "foldOpen": true,
+      "fold": {
+        "w": 338.7,
+        "h": 87.7,
+        "x": 954.3,
+        "right": 1293,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 1 auto",
+        "dir": "column"
+      },
+      "row": {
+        "w": 338.7,
+        "h": 266.7,
+        "x": 954.3,
+        "right": 1293,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "row"
+      },
+      "left": {
+        "w": 338.7,
+        "h": 266.7,
+        "x": 954.3,
+        "right": 1293,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 0%",
+        "dir": "column"
+      },
+      "prompt": {
+        "w": 338.7,
+        "h": 50,
+        "x": 954.3,
+        "right": 1293,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "column"
+      },
+      "panel": {
+        "w": 337.3,
+        "h": 82.2,
+        "x": 955,
+        "right": 1292.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "1 1 auto",
+        "dir": "column"
+      },
+      "head": {
+        "w": 337.3,
+        "h": 24.7,
+        "x": 955,
+        "right": 1292.3,
+        "maxW": "none",
+        "disp": "flex",
+        "flex": "0 0 auto",
+        "dir": "row"
+      },
+      "btns": {
+        "w": 86,
+        "left": 1198.3,
+        "right": 1284.3
+      },
+      "foldParentIsRow": false,
+      "foldParentIsLeft": true,
+      "foldAfterPrompt": true,
+      "resizeHandleShown": false,
+      "outHeadCount": 0,
+      "outBtnsCount": 1
+    }
+  },
+  "ok": false,
+  "mcp": {
+    "port": 63553,
+    "health": {
+      "ok": true,
+      "port": 63553,
+      "pid": 67176
+    }
+  },
+  "fixture": {
+    "before": 137,
+    "ids": [
+      "nmvarmmj9w2x",
+      "nmvarmmk1yw6"
+    ],
+    "titles": [
+      "几何探针A",
+      "几何探针B"
+    ]
+  },
+  "kept": false
+}

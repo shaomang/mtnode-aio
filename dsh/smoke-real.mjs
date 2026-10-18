@@ -4,8 +4,12 @@ import { spawn } from 'node:child_process'
 import { readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 
-const key = readFileSync('C:/Users/shaom/.dsh/.credentials.yaml', 'utf8')
-  .match(/^DEEPSEEK_API_KEY:\s*(.+)$/m)[1].trim()
+/* key 来源：环境变量 DEEPSEEK_API_KEY 优先（值即 key），其次本机 dsh 凭据文件（原口径）。 */
+const keyFromFile = (() => {
+  try { return readFileSync('C:/Users/shaom/.dsh/.credentials.yaml', 'utf8').match(/^DEEPSEEK_API_KEY:\s*(.+)$/m)?.[1].trim() } catch { return '' }
+})()
+const key = (process.env.DEEPSEEK_API_KEY || '').trim() || keyFromFile || ''
+if (!key) { console.error('smoke-real: 没有可用的 DeepSeek key（设 DEEPSEEK_API_KEY 或放凭据文件）'); process.exit(1) }
 
 const home = path.resolve(import.meta.dirname, 'smoke-home2')
 const workspace = path.resolve(import.meta.dirname, 'smoke-ws2')

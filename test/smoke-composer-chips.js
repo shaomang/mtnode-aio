@@ -146,8 +146,8 @@ window.__probe = (function () {
 
   /* 探针会话态：agentModeEntryOf 读的就是这几项（真源在 app-assist.js / app-longrun.js） */
   window.__probeSession = { id: "sid-probe", pure: false };
-  /* 自动续跑的唯一真源是 app-longrun.js 的 LongRun.autoOn（缺省开） */
-  window.LongRun = { on: true, autoOn: function () { return !!this.on; }, toggleAuto: function () { this.on = !this.on; } };
+  /* 自动续跑的唯一真源是 app-longrun.js 的 LongRun.autoOn（缺省关 = 默认关闭） */
+  window.LongRun = { on: false, autoOn: function () { return !!this.on; }, toggleAuto: function () { this.on = !this.on; } };
   window.I18n = { t: function (s) { return s == null ? "" : String(s); } };
 
   /* 场景：agent 视图 + 真实工作区/模型文本（这两枚是「软 chip」，宽度随内容变） */
@@ -533,7 +533,7 @@ async function main() {
 
   /* ---------- 组 2：toggle 构件（真源码）—— hit box 与「不写内容」 ---------- */
   if (report) console.log("\n=== 组 2：模式菜单开关 ===");
-  await win.webContents.executeJavaScript("window.__probe.setPure(false); window.__probe.setAuto(true);", true);
+  await win.webContents.executeJavaScript("window.__probe.setPure(false); window.__probe.setAuto(false);", true);
   const built = await win.webContents.executeJavaScript("window.__probe.buildMenu(); JSON.stringify(window.__probe.menuMetrics())", true);
   const menu = JSON.parse(built);
   console.log("【开关实测】" + JSON.stringify(menu.map((b) => ({ key: b.key, on: b.on, aria: b.ariaChecked, w: b.rect.w, h: b.rect.h, ownText: b.ownText }))));
@@ -551,7 +551,7 @@ async function main() {
   const pureBtn = menu.filter((b) => b.key === "pure")[0];
   const autoBtn = menu.filter((b) => b.key === "auto")[0];
   ok(pureBtn && pureBtn.on === false, "纯净模式默认关（chip 与菜单同一判据）");
-  ok(autoBtn && autoBtn.on === true, "自动续跑默认开（真源 = LongRun.autoOn，缺省开）");
+  ok(autoBtn && autoBtn.on === false, "自动续跑默认关（真源 = LongRun.autoOn，缺省关）");
 
   /* 打开开关：键面不许变宽、不许凭空多出文字（旧实现写 ✓ / 摘要就是在这里出事） */
   {

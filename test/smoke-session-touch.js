@@ -184,6 +184,8 @@ const SLICE = [
   "function agentFlushSessionSave() {",
   "function agentFlushSessionSaveQuiet() {",
   "async function agentWriteAgentSessions() {",
+  /* 落盘回执的收尾（待删名单：删除会话的 drop 成功后摘掉 / 失败留着重试） */
+  "function agentSettleSessionDrop(dropped, res) {",
   "function agentSessionMetaForDisk(s) {",
   "function agentSessionBodyForDisk(s) {",
   "async function persistAgentSession() {",
@@ -283,6 +285,7 @@ function makeSandbox(sessions, opts) {
 
   vm.runInContext(
     "S._sessionDirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();\n" +
+      "S._sessionDrop = S._sessionDrop instanceof Set ? S._sessionDrop : new Set();\n" +
       "const AGENT_SAVE_MS = 500;\n" +
       "S._sessionBodyWait = S._sessionBodyWait instanceof Map ? S._sessionBodyWait : new Map();\n" +
       'const AGENT_PRESET_DEFAULT = "standard";\n' +

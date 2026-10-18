@@ -14,7 +14,7 @@
  *   [2] 手动配置的前置校验：名称 / 接口地址必填
  *   [3] 主进程 api:listModels：只读 GET、端点归一化（/v1/models 回退 /models）、
  *       401 如实报错、不发起任何 chat/completions
- *   [4] 渲染层 fetchModelsToProvider：新模型并入（已有的不重复、不丢失）+ 视觉勾选
+ *   [4] 渲染层 fetchModelsToProvider：新模型并入（已有的不重复、不丢失），不再回写 vision 勾选
  *   [5] 渲染层失败路径：报错并提示可手工添加，不动已有模型列表
  *   [6] preload 桥 + i18n 词条齐备
  */
@@ -258,6 +258,14 @@ const sandbox = {
   mtnodePiProviders: () => [],
   preferredAgentProviderRoute: () => "",
   preferredAgentModelForRoute: () => "",
+  /* 「设置 · 默认模型」那几格（本次需求）：设置面板读它们回显，真源在 app.js / app-agent.js
+     （由 test/smoke-default-model-top.js 钉住），这里只给跑得起来的最小桩 */
+  normalizeAgentEffort: (v) => String(v == null ? "" : v).trim() || "high",
+  AGENT_EFFORT_UI_ORDER: ["off", "low", "high", "xhigh", "max"],
+  AGENT_EFFORT_LABELS: { off: "无", low: "轻", high: "标准", xhigh: "强", max: "最强" },
+  dshDefaultProviderRoute: () => "deepseek-official",
+  dshDefaultModelValue: () => "",
+  dshDefaultEffortValue: () => "high",
   permissionPresetOptions: () => [["mtnode-unattended", "无人值守"]],
   setAutoRunDownstream: () => {},
   previewDoneSound: () => {},
@@ -290,6 +298,9 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 vm.runInContext(read("renderer/app-model-kind.js"), sandbox);
+/* 设置面板读的「上下文压缩」档位真源（renderer/app-dsh-compact.js）：真实 index.html 里
+   它排在 app-settings.js 之前，这里按同一顺序注入，否则面板初始化会取不到档位函数 */
+vm.runInContext(read("renderer/app-dsh-compact.js"), sandbox);
 vm.runInContext(read("renderer/app-settings.js"), sandbox);
 const run = (code) => vm.runInContext(code, sandbox);
 const findIn = (node, pred, found) => {
@@ -460,7 +471,10 @@ void (async () => {
     !prov.models.some((m) => m === "qwen3.7-max"),
     "没勾的模型不会被写进去",
   );
-  ok(prov.vision === true, "元信息标了「能吃图」→ 顺手勾上支持视觉（只加不减）");
+  ok(
+    prov.vision === false,
+    "元信息标了「能吃图」也不再回写 vision（勾选框已下线；默认按当前模型识图，真不吃图由上游报错）",
+  );
   ok(
     lastToast && lastToast.indexOf("已加入 2 个模型") >= 0,
     "给出加入结果提示（数量已替换进模板）：" + lastToast,

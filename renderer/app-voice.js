@@ -2617,23 +2617,34 @@
   function settingsSection() {
     const d = document.createElement("div");
     d.className = "settings-sec";
+    /* 说明文字一律挂在标题 / 字段标签本身上（本次需求：界面上不再有「?」，悬停标题才出）。
+       绑定的实现在 app-settings.js 的 settingsTip；这里做一次能力探测 —— app-voice.js
+       允许在没有设置模块的沙箱里单独跑（那时退回原生 title）。 */
+    const tip = (host, text, label) => {
+      if (!host) return host;
+      if (typeof settingsTip === "function") return settingsTip(host, text, label);
+      host.setAttribute("data-tip", T(text));
+      host.title = T(text);
+      return host;
+    };
     const title = document.createElement("div");
     title.className = "settings-sec-title";
     title.textContent = T("语音输入（全局）");
-    d.appendChild(title);
-    const hint = document.createElement("div");
-    hint.className = "settings-hint";
-    hint.textContent = T(
-      "状态栏最左边那枚话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F1 说话），再点关闭。识别在本地 CPU 上跑，不上传。"
+    tip(
+      title,
+      "状态栏最左边那枚话筒：点一下开启持续转录（一直听，每说完一句——停顿——就把这一整句写进当前输入框），再点一下切按键转录（按住 F1 说话），再点关闭。识别在本地 CPU 上跑，不上传。",
+      "语音输入说明",
     );
-    d.appendChild(hint);
+    d.appendChild(title);
 
     const c = cfg();
-    const row = (label, node) => {
+    /* tipText / tipLabel：这一行的口径说明挂在该行标签本身上（悬停标签才出），不再平铺灰字 */
+    const row = (label, node, tipText, tipLabel) => {
       const r = document.createElement("div");
       r.className = "asr-set-row";
       const l = document.createElement("span");
       l.textContent = label;
+      if (tipText) tip(l, tipText, tipLabel);
       r.appendChild(l);
       r.appendChild(node);
       d.appendChild(r);
@@ -2651,11 +2662,9 @@
     row(T("识别语言"), sel);
 
     /* 切片长度（chunkMs）随「停顿才提交」口径退役：这里不再是一行输入框，而是一句口径说明
-       —— 界面不能凭空少掉一整行而不解释（用户会以为设置坏了）。 */
-    const segHint = document.createElement("div");
-    segHint.className = "settings-hint";
-    segHint.textContent = T("分段（全局）：一整句说完（连续安静到「断句停顿」）才交一次识别，识别拿到的是完整一句；不再按时长切片、也没有句长封顶——只剩后端单次请求约 131 秒的硬顶。画布上的音频 / 视频节点转写同样按这一项逐句切分、每句一行。");
-    d.appendChild(segHint);
+       —— 界面不能凭空少掉一整行而不解释（用户会以为设置坏了）。说明挂在「断句停顿」标签本身（悬停即出）。 */
+    const segTip =
+      "分段（全局）：一整句说完（连续安静到「断句停顿」）才交一次识别，识别拿到的是完整一句；不再按时长切片、也没有句长封顶——只剩后端单次请求约 131 秒的硬顶。画布上的音频 / 视频节点转写同样按这一项逐句切分、每句一行。";
 
     const sil = document.createElement("input");
     sil.type = "number";
@@ -2665,7 +2674,7 @@
     sil.value = c.silenceMs;
     sil.style.width = "90px";
     sil.onchange = () => setCfg({ silenceMs: Number(sil.value) || 300 });
-    row(T("断句停顿（毫秒）"), sil);
+    row(T("断句停顿（毫秒）"), sil, segTip, "分段说明");
 
     /* AI 增强（话筒右侧那枚 ✨ 的同源入口）：与右键菜单、状态栏开关写的是同一份配置 */
     const enhSel = document.createElement("select");
@@ -2677,14 +2686,19 @@
     }
     enhSel.value = c.enhance;
     enhSel.onchange = () => setCfg({ enhance: enhSel.value === "on" ? true : false });
-    row(T("AI 增强"), enhSel);
+    row(
+      T("AI 增强"),
+      enhSel,
+      "AI 增强：每一句识别完先用默认文本模型（无思考）润色一次（同音字 / 标点 / 断句 / 语气词），再交付这一句；调用失败、8 秒超时、没配模型或结果离谱时一律保留原始识别并说明原因。",
+      "AI 增强说明",
+    );
 
-    /* 说清「用哪个模型、什么时候回落」——这一项花的是用户的模型调用，不能只给一个开关 */
+    /* 用哪个模型由上一行标签的悬停说明；这行只留回显（当前默认文本模型），
+       属实时状态，按共识常显、不进提示。 */
     const enhHint = document.createElement("div");
     enhHint.className = "settings-hint";
     const pick0 = enhanceCapable() ? enhanceDefault() : null;
     enhHint.textContent =
-      T("AI 增强：每一句识别完先用默认文本模型（无思考）润色一次（同音字 / 标点 / 断句 / 语气词），再交付这一句；调用失败、8 秒超时、没配模型或结果离谱时一律保留原始识别并说明原因。") +
       T("当前默认文本模型：") +
       (pick0 && pick0.model ? pick0.model : T("（未配置文本服务商）"));
     d.appendChild(enhHint);

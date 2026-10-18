@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Minimax H3</title>
+  <style>
+    :root {
+      --bg: #0f1218;
+      --panel: #171b24;
+      --text: #e8ecf4;
+      --muted: #9aa3b5;
+      --accent: #6aa6ff;
+      --ok: #3ecf8e;
+      --warn: #f0b429;
+      --danger: #ff6b6b;
+      --border: #2a3140;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--text);
+      font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
+      height: 100%;
+    }
+    /* 整体一行两列：左侧 Console 停靠面板（默认收起） + 右侧原主列。
+       面板与窗口等高；宿主按面板宽度把窗口往左撑开 → 主列看着一点没动。 */
+    body { display: flex; align-items: stretch; overflow: hidden; }
+    .wrap { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 10px; overflow-y: auto; overflow-x: hidden; }
+    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    /* 右上角常驻按钮条：Console 面板开关 + 一键打开 ComfyUI 编辑界面。
+       用 sticky 贴在主列滚动容器顶部：fixed 会盖住标题与提示条，sticky 自己占一行、滚到哪儿都在。 */
+    .topbtns {
+      position: sticky; top: 0; z-index: 30;
+      display: flex; justify-content: flex-end; align-items: center; gap: 6px;
+      margin: -12px -12px -10px; padding: 10px 12px 12px;
+      background: var(--bg);
+    }
+    .topbtns button { padding: 4px 9px; font-size: 12px; border-radius: 7px; background: #1c2230; }
+    .topbtns button.on { background: #243552; border-color: #3a5f9a; color: #dbe9ff; }
+    .topbtns .pane-title { margin-right: auto; align-self: center; }
+    /* 左侧 Console 面板：只做一件事 —— 显示 console 内容 */
+    .console-pane {
+      flex: 0 0 auto; width: 360px; height: 100%; padding: 10px; gap: 8px;
+      display: flex; flex-direction: column; order: -1;
+      background: #0b0e13; border-right: 1px solid var(--border);
+    }
+    .console-pane[hidden] { display: none !important; }
+    .pane-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .pane-title { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .pane-ops { margin-left: auto; display: flex; gap: 6px; }
+    .pane-ops button { padding: 3px 8px; font-size: 12px; }
+    .cbadge {
+      display: inline-block; min-width: 15px; padding: 0 4px; margin-left: 5px;
+      border-radius: 999px; background: #8a6a1a; color: #fff3d0;
+      font-size: 10px; line-height: 15px; text-align: center;
+    }
+    .cbadge[hidden] { display: none !important; }
+    .sub { color: var(--muted); font-size: 12px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    button {
+      border: 1px solid var(--border); background: #222836; color: var(--text);
+      border-radius: 8px; padding: 7px 12px; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: #243552; border-color: #3a5f9a; }
+    button.danger { background: #3a2228; border-color: #8a3a45; color: #ffc9c9; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .path {
+      flex: 1; min-width: 120px; padding: 7px 10px; border-radius: 8px;
+      background: var(--panel); border: 1px solid var(--border);
+      color: var(--muted); word-break: break-all; font-size: 12px;
+    }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .bar {
+      height: 10px; background: #0c0f14; border-radius: 999px; overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .bar > i {
+      display: block; height: 100%; width: 0%;
+      background: linear-gradient(90deg, #3a6fd8, #6aa6ff);
+      transition: width 0.25s ease;
+    }
+    .bar.gpu > i { background: linear-gradient(90deg, #2f9e6b, #3ecf8e); }
+    .bar.util > i { background: linear-gradient(90deg, #b8860b, #f0b429); }
+    .meta { color: var(--muted); font-size: 12px; }
+    #console {
+      flex: 1 1 auto; min-height: 0; overflow: auto; white-space: pre-wrap;
+      font: 11px/1.4 ui-monospace, Consolas, monospace;
+      background: #0c0f14; border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px; color: #c5d0e6;
+    }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; border: 1px solid var(--border);
+    }
+    .badge.on { color: var(--ok); border-color: #2f6b4e; }
+    .badge.off { color: var(--muted); }
+    .badge.test {
+      color: #ffe8a3; border-color: #8a6a1a; background: #3a3018;
+      margin-left: 6px; vertical-align: middle;
+    }
+    .warn { color: var(--warn); }
+    .modal-bg {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55);
+      display: none; align-items: center; justify-content: center; z-index: 20;
+    }
+    .modal-bg.show { display: flex; }
+    .modal-bg[hidden] { display: none !important; }
+    .modal {
+      width: min(380px, 92vw); max-height: 80vh; overflow: auto;
+      background: #1a2030; border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .modal ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+    /* 自建工作流库 */
+    .wf-item {
+      background: #141926; border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+    }
+    .wf-item .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .wf-item .title { font-weight: 600; word-break: break-all; }
+    .wf-item .ops { display: flex; gap: 6px; flex-wrap: wrap; }
+    .wf-item .ops button { padding: 3px 8px; font-size: 12px; }
+    .badge.ok { color: var(--ok); border-color: #2f6b4e; }
+    .badge.warn { color: var(--warn); border-color: #6b5418; }
+    .wf-paste {
+      width: 100%; height: 180px; resize: vertical; background: #0c0f14;
+      color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px; font: 11px/1.4 ui-monospace, Consolas, monospace;
+    }
+    .wf-input {
+      width: 100%; padding: 7px 10px; border-radius: 8px; background: #0c0f14;
+      border: 1px solid var(--border); color: var(--text);
+    }
+    .wf-empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+    #wfModal .modal { width: min(520px, 94vw); }
+    /* 「工作流编辑器」视图：整窗盖住主列，内嵌本机 ComfyUI（宿主放行 file:// 页内的 http 子帧）。
+       persistent 浮层：只有浮层上那个 ✕ 能关，一律不挂「点外部 / 失焦即关」。 */
+    .wf-editor {
+      position: fixed; inset: 0; z-index: 40; background: var(--bg);
+      display: flex; flex-direction: column;
+    }
+    .wf-editor[hidden] { display: none !important; }
+    .wf-editor .ed-head {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 8px 10px; background: var(--panel); border-bottom: 1px solid var(--border);
+    }
+    .wf-editor .ed-title { font-weight: 600; word-break: break-all; }
+    .wf-editor .ed-head button { margin-left: auto; padding: 4px 9px; font-size: 12px; }
+    .wf-editor .ed-note {
+      flex: 0 0 auto; padding: 7px 10px; background: #2a2414;
+      border-bottom: 1px solid #6b5418; color: #f0d27a; font-size: 12px; line-height: 1.45;
+    }
+    .wf-editor .ed-note[hidden] { display: none !important; }
+    .wf-editor iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #0b0e13; }
+  </style>
+</head>
+<body>
+  <!-- 左侧 Console 停靠面板：与窗口等高、钉在窗口左边，只放 console 内容。
+       宿主（h3/main-h3.js 的 setConsolePane）按本面板的实际宽度把窗口往左撑开。 -->
+  <aside class="console-pane" id="consolePane" hidden>
+    <div class="pane-head">
+      <span class="pane-title">后端 Console</span>
+      <div class="pane-ops">
+        <button id="btnClearLog" type="button" title="清空日志文件（真删除，不只是清显示）">清空日志</button>
+        <button id="btnClosePane" type="button" title="收起面板（窗口恢复原宽）">✕</button>
+      </div>
+    </div>
+    <div id="console"></div>
+  </aside>
+
+  <div class="wrap">
+    <!-- 右上角常驻按钮条：Console 面板开关 + 一键打开 ComfyUI 编辑界面（sticky 吸顶，滚到哪儿都在） -->
+    <div class="topbtns">
+      <span class="pane-title" id="comfyHint" title="ComfyUI 后端地址">:8188</span>
+      <button id="btnConsolePane" type="button" title="在窗口左侧展开 / 收起 Console 面板（窗口往左变宽，主界面一格不动）">Console<span class="cbadge" id="cbadge" hidden>0</span></button>
+      <button id="btnOpenComfy" type="button" title="用浏览器打开 ComfyUI 工作流编辑界面（后端没跑时会先问你是否启动）">ComfyUI 编辑界面</button>
+    </div>
+
+    <div>
+      <h1>Minimax H3 <span class="badge test">插件测试中</span> <span class="badge off" id="svcBadge">服务关闭</span></h1>
+      <div class="sub">本地 24G 视频方案（ComfyUI 后端）</div>
+    </div>
+
+    <div class="card">
+      <!-- 安装相关的一切（安装目录显示 / 「目录」键 / 「安装」键 / 进度条 / 「取消安装」/
+           「自我修复」兜底）都不在这只窗里：安装统一走独立安装窗（plugins/main-install.js），
+           本窗只留运行期功能（启停 / 卸载 / 服务 / GPU / 工作流库 / Console）。 -->
+      <div class="row">
+        <button id="btnSage" title="自检注意力加速包（triton-windows + 与本 venv 配套的 sageattention 预编译 wheel）：未装就一键补装。缺包不影响出片，只是慢约 1.5-2×">Sage 加速</button>
+        <button id="btnStart" title="调试用；正常请从画布节点执行">手动启动</button>
+        <button id="btnStop" title="调试用">手动停止</button>
+        <button class="danger" id="btnForceKill" title="卡死时用：杀后端释放显存">强制释放显存</button>
+        <button class="danger" id="btnUninstall">卸载</button>
+      </div>
+      <div class="meta" id="sageInfo"></div>
+    </div>
+
+    <div class="card">
+      <div class="meta">GPU 显存 <span id="gpuMemTxt">—</span></div>
+      <div class="bar gpu" id="gpuMemBar"><i></i></div>
+      <div class="meta">GPU 利用率 <span id="gpuUtilTxt">—</span></div>
+      <div class="bar util" id="gpuUtilBar"><i></i></div>
+    </div>
+
+    <div class="card" id="wfCard">
+      <div class="row">
+        <div class="meta">自建工作流库 <span id="wfStatsTxt" style="color:var(--muted)"></span></div>
+        <div style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap">
+          <button id="btnWfImport" title="导入 ComfyUI 导出的工作流 JSON（API 或 UI 格式均可，自动识别转换）">导入 JSON</button>
+          <button id="btnWfPaste" title="把工作流 JSON 文本粘贴进来导入">粘贴导入</button>
+          <button id="btnWfTemplate" title="把内置 FL2VA / R2V 图另存为库里的自定义工作流，可自由编辑">内置图另存</button>
+        </div>
+      </div>
+
+      <div id="wfList" style="display:flex; flex-direction:column; gap:6px; max-height:300px; overflow:auto"></div>
+    </div>
+
+    <div class="card" id="launchOptsCard">
+      <div class="meta">24G 启动优化（默认全开 · 下次启动后端生效）</div>
+
+      <label class="meta"><input type="checkbox" id="optPinned" checked /> --disable-pinned-memory（允许 CPU offload）</label>
+      <label class="meta"><input type="checkbox" id="optFp16" checked /> --fp16-intermediates</label>
+      <label class="meta"><input type="checkbox" id="optExpand" checked /> expandable_segments（防碎片 OOM）</label>
+      <label class="meta" title="给 ComfyUI 的系统内存（RAM）缓存一个保留下限：内存吃紧时它才会释放中间产物（整段视频的帧张量，float32 一份就是几十 G）。不给上限时 ComfyUI 默认留到 128G 才放，64G 机器会被跑满，而显存反而空着（超分链是逐帧过 GPU、帧张量攒在 RAM，瓶颈在本机内存）。0 = 不加这个参数。">
+        <input type="checkbox" id="optCacheRam" checked /> 系统内存缓存保留下限
+        <input type="number" id="optCacheRamGb" min="1" max="128" step="1" value="8" style="width:64px" /> GB（默认 8：内存吃紧时释放 ComfyUI 产物缓存，防 64G 被跑满）
+      </label>
+      <label class="meta" title="常驻的 Python 后端跑几单 4K 超分 / 补帧之后，RSS 只涨不落（POST /free 只卸模型、不清 malloc arena）→ 第 N 单可比第 2 单少几十 G 可用内存。开启后：每单收尾量一次系统内存，若「服务守住超过一半内存」或本机已低于硬闸，就在任务之间把后端重启回收（后台等空闲再重启，不打断别的任务；重启要重载一次模型）。关掉 = 只保留单次任务的内存闸与 --cache-ram。">
+        <input type="checkbox" id="optRebuildRam" checked /> 内存护栏：任务之间内存不回收就重启后端
+      </label>
+      <label class="meta" title="后端 BLAS / OpenMP 线程上限：线程池每个线程自带一份 malloc arena 与缓冲，大块张量被摊在多份缓存里就回不到系统。默认 8，0 = 不改这两个环境变量（MALLOC_ARENA_MAX=1 始终会加，它专门压 arena 碎片）。">
+        <input type="number" id="optArenaThreads" min="0" max="64" step="1" value="8" style="width:64px" /> 线程上限（0=不改环境变量）
+      </label>
+      <div class="meta" id="memRailInfo"></div>
+      <div class="meta" id="launchOptsNote"></div>
+    </div>
+  </div>
+
+  <div class="modal-bg" id="modal" hidden>
+    <div class="modal">
+      <h1>确认卸载</h1>
+      <div class="warn">将删除下列已安装内容（不可恢复）。默认保留 output/ 与 ComfyUI/output/。</div>
+      <ul id="uninstallList"></ul>
+      <label class="meta"><input type="checkbox" id="delOutput" /> 同时删除 output/ 视频目录</label>
+      <div class="row">
+        <button id="btnCancelUn">取消</button>
+        <button class="danger" id="btnConfirmUn">确认卸载</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-bg" id="wfModal" hidden>
+    <div class="modal">
+      <h1>粘贴工作流 JSON</h1>
+      <div class="meta">
+        在 ComfyUI 里用「导出 (API)」或开发模式「Save (API Format)」得到 API JSON；直接粘贴 UI 格式（nodes/links）也会自动转换。重复名称会覆盖并提示。
+      </div>
+      <input class="wf-input" id="wfPasteTitle" placeholder="工作流名称（留空自动取默认 / 文件名）" />
+      <textarea class="wf-paste" id="wfPasteText" spellcheck="false" placeholder='{"1":{"class_type":"CLIPTextEncode","inputs":{"text":"...","clip":["4",0]}},…}'></textarea>
+      <div class="row">
+        <button id="btnWfPasteCancel">取消</button>
+        <button class="primary" id="btnWfPasteOk">导入</button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="wfFileInput" accept=".json,application/json" style="display:none" />
+
+  <!-- 「工作流编辑器」视图：把自建工作流库里的某条模板打开进内嵌 ComfyUI 编辑，
+       状态真源在宿主（h3:wfOpenInEditor / h3:wfEditorViewChanged），页面只当容器。
+       关浮层时不摘 iframe 的 src：用户正在 ComfyUI 里编辑的图不能被我们刷没。 -->
+  <div class="wf-editor" id="wfEditor" hidden>
+    <div class="ed-head">
+      <span class="ed-title" id="wfEditorTitle">工作流编辑器</span>
+      <span class="sub" id="wfEditorSrc"></span>
+      <button id="btnWfEditorClose" type="button" title="关闭编辑器视图并恢复窗口原尺寸（ComfyUI 里的编辑不会写回插件库；收回库只能「导入 JSON」）">✕ 关闭</button>
+    </div>
+    <div class="ed-note" id="wfEditorNote" hidden></div>
+    <iframe id="wfEditorFrame" title="ComfyUI 工作流编辑器"></iframe>
+  </div>
+
+  <script src="ui.js"></script>
+</body>
+</html>
+

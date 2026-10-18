@@ -2057,7 +2057,7 @@ main().catch((err) => {
 
   /* ── [4] 版本（0.2 内核）口径仍钉住 ─────────────────────────────────────── */
   const pkg = JSON.parse(read("dsh/gateway/package.json"));
-  ok(pkg.dependencies["@deepseek-ai/dsh"] === "0.2.0-rc.2", "[4] 网关仍锁 0.2.0-rc.2");
+  ok(pkg.dependencies["@deepseek-ai/dsh"] === "0.2.1-rc.2", "[4] 网关仍锁 0.2.1-rc.2");
   ok(String(pkg.dependencies["@deepseek-ai/cordis"]).startsWith("4."), "[4] cordis 仍在 4.x 线");
 
   console.log("\nsession-styling smoke: pass " + pass + " / fail " + fail);

@@ -982,6 +982,14 @@ function makeReq() {
     mtnodePiProviders: () => [],
     preferredAgentProviderRoute: () => "",
     preferredAgentModelForRoute: () => "",
+    /* 「设置 · 默认模型」那几格（本次需求）：设置面板读它们回显，真源在 app.js / app-agent.js
+       （由 test/smoke-dsh-node.js 与 smoke-toolbuild-req.js 钉住），这里只给跑得起来的最小桩 */
+    normalizeAgentEffort: (v) => String(v == null ? "" : v).trim() || "high",
+    AGENT_EFFORT_UI_ORDER: ["off", "low", "high", "xhigh", "max"],
+    AGENT_EFFORT_LABELS: { off: "无", low: "轻", high: "标准", xhigh: "强", max: "最强" },
+    dshDefaultProviderRoute: () => "deepseek-official",
+    dshDefaultModelValue: () => "",
+    dshDefaultEffortValue: () => "high",
     permissionPresetOptions: () => [["mtnode-unattended", "无人值守"]],
     setAutoRunDownstream: () => {},
     previewDoneSound: () => {},
@@ -1006,14 +1014,24 @@ function makeReq() {
       ({ compact: "简洁", standard: "标准", detailed: "详细", verbose: "完全展开" })[v] || "标准",
     dshTranscriptViewGlobal: () => "standard",
   };
+  /* 「设置 · 默认模型」的读取器桩：真源在 app.js / app-agent.js（由
+     test/smoke-default-model-top.js 钉住），这里按同一口径读本沙箱里的配置，
+     好让设置面板回显得出「用户选的那一只」。定义在对象外：字面量里拿不到 sandbox。 */
+  sandbox.dshDefaultModelValue = () =>
+    String((sandbox.S.config.dsh && sandbox.S.config.dsh.model) || "");
+  sandbox.dshDefaultEffortValue = () =>
+    String((sandbox.S.config.dsh && sandbox.S.config.dsh.effort) || "high");
   vm.createContext(sandbox);
   /* 模型形态识别（文本 / 图像生成）取真源：服务商卡片的「形态」行与模型徽标都用它，
      桩掉会把「点开服务商卡片」直接抛错（见 renderer/app-model-kind.js） */
   vm.runInContext(read("renderer/app-model-kind.js"), sandbox);
+  /* 设置面板读的「上下文压缩」档位真源（renderer/app-dsh-compact.js）：真实 index.html 里
+     它排在 app-settings.js 之前，这里按同一顺序注入 */
+  vm.runInContext(read("renderer/app-dsh-compact.js"), sandbox);
   vm.runInContext(read("renderer/app-settings.js"), sandbox);
   const run = (code) => vm.runInContext(code, sandbox);
 
-  console.log("\n[1] 设置小节顺序：提供商配置最前，很少用的小节沉底");
+  console.log("\n[1] 设置小节顺序：默认模型最前，很少用的小节沉底");
   run("openSettingsBody()");
   const secs = ovBody.children.filter((c) => c.className.indexOf("settings-sec") === 0);
   const titleOf = (sec) => {
@@ -1023,9 +1041,13 @@ function makeReq() {
   const titles = secs.map(titleOf);
   ok(
     ovBody.children[0] === secs[0] && secs[0].className.indexOf("settings-sec-lead") >= 0,
-    "提供商配置是设置正文的第一块（settings-sec-lead）：「" + titles[0] + "」",
+    "「默认模型」是设置正文的第一块（settings-sec-lead）：「" + titles[0] + "」",
   );
-  ok(titles[0].indexOf("提供商配置") >= 0, "首块标题为「提供商配置」");
+  ok(titles[0].indexOf("默认模型") >= 0, "首块标题为「默认模型」（本次需求：置顶）");
+  ok(
+    titles[1].indexOf("提供商配置") >= 0,
+    "第二块才是「提供商配置」—— 默认模型在它之上",
+  );
   ok(
     titles[titles.length - 1].indexOf("手动更新（同版本号重装）") >= 0,
     "最后一块是手动更新（同版本号重装）—— 设置整页最底部",
@@ -1037,9 +1059,21 @@ function makeReq() {
     "常用小节（智能能力）在很少用的小节之前",
   );
 
+  console.log("\n[1a] 默认模型那一块与会话对齐：提供商 / 模型 / 思考强度 / 预设（上下文压缩已从设置移除）");
+  const leadSec = secs[0];
+  const leadText = leadSec.children.map((c) => String(c.textContent || "")).join("\n");
+  ok(leadText.indexOf("模型提供商") >= 0, "有「模型提供商」格（与会话模型菜单同构）");
+  ok(leadText.indexOf("思考强度") >= 0, "有「思考强度」格（新增默认档）");
+  ok(leadText.indexOf("Agent 预设") >= 0, "Agent 预设并入本块（智能能力里那行已删）");
+  ok(leadText.indexOf("上下文压缩") < 0, "上下文压缩已从设置移除（档位只在会话侧设置）");
+  const settingsSrc0 = read("renderer/app-settings.js");
+  ok(
+    settingsSrc0.indexOf("默认模型（智能能力使用）") < 0,
+    "旧「默认模型（智能能力使用）」那一行已删除（全应用只留一处默认模型）",
+  );
+
   console.log("\n[1b] DeepSeek 无 Key（新安装默认）→ 提供商配置上方给出官方充值通道");
-  const sectionOf = (cls) => ovBody.children.find((c) => c.className.indexOf(cls) >= 0);
-  const provSec = sectionOf("settings-sec-lead");
+  const provSec = secs.filter((s) => titleOf(s).indexOf("提供商配置") >= 0)[0];
   const gridIdx = provSec.children.findIndex(
     (c) => c.className.indexOf("prov-tiles") >= 0,
   );
@@ -1049,8 +1083,8 @@ function makeReq() {
   ok(slotIdx >= 0 && gridIdx > slotIdx, "充值横幅在服务商网格上方（标题行 → 横幅 → 网格）");
   const slot = provSec.children[slotIdx];
   ok(
-    ovBody.children[0] === provSec,
-    "横幅挂在提供商配置块内 → 设置正文仍然以「提供商配置」开场（不另起一节抢首位）",
+    ovBody.children[1] === provSec,
+    "横幅挂在提供商配置块内 → 它紧跟「默认模型」第二块（不另起一节抢首位）",
   );
   const banner = slot.children[0];
   ok(!!banner && banner.className.indexOf("ds-topup") >= 0, "槽内是真横幅（.ds-topup）");
@@ -1213,6 +1247,62 @@ function makeReq() {
   ]) {
     ok(i18nObj.t(k) !== k, "i18n 英文词条齐备：" + k.slice(0, 16) + "…");
   }
+  i18nObj.setLocale("zh");
+
+  /* ── [7] 默认模型那块真跑一遍：先选服务商，模型只列这家的 ──
+     前面几节用的是「没有任何可用服务商」的空态夹具；这里把服务商桩换成真实的
+     （Alpha 有 Key，DeepSeek 官方这时没 Key）再开一次设置，验联动。 */
+  console.log("\n[7] 默认模型：提供商 → 模型两级联动（真跑 openSettingsBody）");
+  run(
+    'dshProvider = () => ({ name: "DeepSeek 官方", apiKey: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"] })',
+  );
+  run(
+    'mtnodePiProviders = () => [{ route: "p1", name: "Alpha", apiKey: "k", baseUrl: "https://a/v1", models: ["m1", "m2"] }]',
+  );
+  run(
+    'providerForAgentRoute = (id) => (id === "deepseek-official" ? dshProvider() : id === "mtnode_p1" ? { apiKey: "k" } : null)',
+  );
+  run('S.config.dsh.provider = "mtnode_p1"; S.config.dsh.model = "m2"; S.config.dsh.effort = "low"');
+  run("openSettingsBody()");
+  /* 本沙箱的 openOverlay 是空桩、不会清空 #ovBody：两次渲染的节点都挂着 →
+     取**最后一块** lead（这次刚画的那一块），别拿到第 [1] 节留下的空态那块。 */
+  const leads = ovBody.children.filter(
+    (c) => String(c.className || "").indexOf("settings-sec-lead") >= 0,
+  );
+  const leadNow = leads[leads.length - 1];
+  const rowOf = (text) =>
+    (leadNow.children || []).find(
+      (c) =>
+        String(c.className || "").indexOf("n-field") >= 0 &&
+        c.textContent.indexOf(text) === 0 &&
+        (text !== "模型" || c.textContent.indexOf("模型提供商") !== 0),
+    ) || null;
+  const selectIn = (row) => (row && row.children.find((c) => c.tagName === "SELECT")) || null;
+  const provRowNow = rowOf("模型提供商");
+  const modelRowNow = rowOf("模型");
+  const effortRowNow = rowOf("思考强度");
+  ok(!!provRowNow && !!modelRowNow && !!effortRowNow, "三行都在（模型提供商 / 模型 / 思考强度）");
+  const provSelNow = selectIn(provRowNow);
+  const modelSelNow = selectIn(modelRowNow);
+  const effortSelNow = selectIn(effortRowNow);
+  const optionValues = (sel) =>
+    (sel && Array.isArray(sel.children) ? sel.children : []).map((o) => String(o.value));
+  ok(
+    optionValues(provSelNow).join(",") === "mtnode_p1",
+    "只列可用服务商：没 Key 的 DeepSeek 官方不出现（得到：" + optionValues(provSelNow).join(",") + "）",
+  );
+  ok(provSelNow.value === "mtnode_p1", "回显 = 设置里存的提供商");
+  ok(optionValues(modelSelNow).join(",") === "m1,m2", "模型格只列这一家的模型（m1,m2）");
+  ok(modelSelNow.value === "m2", "回显 = 设置里存的模型");
+  ok(effortSelNow.value === "low", "思考强度回显 = 设置里那一档");
+  ok(
+    run('S.config.dsh.provider') === "mtnode_p1" && run('S.config.dsh.model') === "m2",
+    "打开设置本身不改配置（只有 onchange 才写盘）",
+  );
+  modelSelNow.value = "m1";
+  modelSelNow.onchange();
+  ok(run('S.config.dsh.model') === "m1", "改模型 → 写进 config.dsh.model（即时落盘那条链）");
+  ok(run('S.config.dsh.provider') === "mtnode_p1", "提供商同时落定（不会留下只有模型的孤儿值）");
 
   console.log(
     "\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ 全部 " + checks + " 项通过"),

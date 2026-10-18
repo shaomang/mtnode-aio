@@ -6,6 +6,23 @@
    真源仍是主进程 app:dataAudit，这里只存最近一次结论，供绘制与切语言复用。 */
 let appDirHits = [];
 
+/* Chromium 自带的「ResizeObserver loop completed with undelivered notifications.」：
+   回调里改了被观察盒子的尺寸 ⇒ 同一帧又排了新通知，浏览器把这条当成 window error 抛出来。
+   它不是本应用的异常，也没有可修的地方（窗口缩放 / 面板展开一次能连抛十几条），
+   所以只留一行控制台告警（每会话一次），不弹红 toast、不写崩溃日志 ——
+   否则用户看到的就是一串「渲染错误：ResizeObserver loop…」。 */
+const RENDERER_BENIGN_ERR =
+  /ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)/i;
+let rendererBenignErrLogged = false;
+function isRendererBenignError(text) {
+  return RENDERER_BENIGN_ERR.test(String(text || ""));
+}
+function noteRendererBenignError(text) {
+  if (rendererBenignErrLogged) return;
+  rendererBenignErrLogged = true;
+  console.warn("renderer benign (ignored):", String(text || ""));
+}
+
 /* 渲染层错误自诊断：toast + 写入主进程诊断日志，便于导出提交 */
 window.addEventListener("error", (ev) => {
   const msg =
@@ -13,6 +30,10 @@ window.addEventListener("error", (ev) => {
     (ev.filename
       ? " @ " + ev.filename.split(/[\\/]/).pop() + ":" + ev.lineno
       : "");
+  if (isRendererBenignError(ev.message || msg)) {
+    noteRendererBenignError(ev.message || msg);
+    return;
+  }
   try {
     toast(I18n.t("渲染错误：") + msg.slice(0, 200), "err");
   } catch {}
@@ -33,6 +54,10 @@ window.addEventListener("error", (ev) => {
 window.addEventListener("unhandledrejection", (ev) => {
   const r = ev.reason;
   const msg = r && r.message ? r.message : String(r);
+  if (isRendererBenignError(msg)) {
+    noteRendererBenignError(msg);
+    return;
+  }
   try {
     toast(I18n.t("未处理异常：") + msg.slice(0, 200), "err");
   } catch {}
@@ -54,8 +79,7 @@ window.addEventListener("unhandledrejection", (ev) => {
    也不再剔除无 Key 的 stability/mj，否则设置里删除/编辑/排序都会在重启
    或再次打开设置时被改回去（gpt-image 删不掉、配置一改就还原的根因）。 */
 /* 新安装（或用户清空了整份服务商列表）时的默认清单：flash（V4.1-Flash，原生
-   多模态、能直接吃图）+ pro 两个模型，并默认勾选「支持视觉」
-   （vision-exp 已下线、不再进清单）。 */
+   多模态、能直接吃图）+ pro 两个模型（vision-exp 已下线、不再进清单）。 */
 const DEEPSEEK_DEFAULT_MODELS = ["deepseek-flash", "deepseek-v4-pro"];
 
 function ensureDefaultProviders() {
@@ -81,7 +105,6 @@ function ensureDefaultProviders() {
       baseUrl: "https://api.deepseek.com",
       apiKey: "",
       models: DEEPSEEK_DEFAULT_MODELS.slice(),
-      vision: true,
     });
   }
   if (!removed.has("gpt_image_2")) {
@@ -121,6 +144,19 @@ function applyLogoSub() {
     (S.appVersion || "") +
     I18n.t(" · 右键画布添加节点 · 拖线连接节点 · Ctrl+拖拽框选 · 滚轮缩放画布");
   sub.title = I18n.t("版本 ") + (S.appVersion || "") + " · DeepSeek Harness Empowered";
+}
+
+/* 会话左栏「DeepSeek Harness」后面那枚 dsh 内核版本（本次需求）：
+   值来自主进程 app:version 的 dsh 字段（= 网关树里 @deepseek-ai/dsh 的 manifest 版本，
+   见 dsh/main-dsh.js 的 dshKernelVersion）。拿不到 / 空串 → 整枚标签 hidden 不占位，
+   绝不自己编一个版本号，也不把「未知」写进界面。 */
+function applyAgentDshVersion(v) {
+  const el = $("#agentDshVer");
+  if (!el) return;
+  const ver = String(v || "").trim();
+  el.textContent = ver;
+  el.hidden = !ver;
+  if (ver) el.title = I18n.t("dsh 内核版本") + " " + ver;
 }
 
 /* ── 顶栏「数据不落应用文件夹」红色警示（#logoWarn / .logo-warn）──────────────
@@ -582,6 +618,11 @@ async function init() {
       enabled: true,
       nodePath: "",
       model: "",
+      /* 「默认模型」= 设置整页第一块（本次需求）：提供商 + 模型 + 思考强度三格与会话
+         的模型菜单对齐，preset / compact 也在那一块里。provider 留空 = 没选过 → 跟随
+         本机生效的默认智能路由（dshDefaultProviderRoute）；effort 缺省 high。 */
+      provider: "",
+      effort: "high",
       maxTokens: 0,
       defaultWorkspace: "",
       preset: AGENT_PRESET_DEFAULT,
@@ -719,9 +760,36 @@ async function init() {
   S.assistOpen = !!S.config.assistOpen;
   S.assistLive2d = !!S.config.assistLive2d;
   S.assistPreset = S.config.assistPreset || AGENT_PRESET_DEFAULT;
-  S.assistProvider = S.config.assistProvider || "deepseek-official";
-  S.assistModel = S.config.assistModel || "";
-  S.assistEffort = normalizeAgentEffort(S.config.assistEffort || "high");
+  /* ── 「默认模型」= 唯一一份默认（本次需求 · 与会话对齐）──────────────────────
+     助手栏的提供商 / 模型 / 思考强度原本另有 config.assistProvider / assistModel /
+     assistEffort，与设置里的 dsh.model 是两份真源（设置改了助手不变、助手改了设置不变）。
+     现在合并成一份：启动时把老值一次性并入 dsh.*（只在目标为空时迁），随后删掉那三个键，
+     助手栏与会话都只读 dsh.*；S.assist* 退化成运行期镜像（长任务等旧入口仍读它）。 */
+  (function migrateAssistDefaultsToDsh() {
+    const d = S.config.dsh;
+    const has = (v) => String(v == null ? "" : v).trim() !== "";
+    const legacyProv = String(S.config.assistProvider || "").trim();
+    const legacyModel = String(S.config.assistModel || "").trim();
+    const legacyEffort = String(S.config.assistEffort || "").trim();
+    if (!has(d.provider) && has(legacyProv)) d.provider = legacyProv;
+    if (!has(d.model) && has(legacyModel)) d.model = legacyModel;
+    if (!has(d.effort) && has(legacyEffort))
+      d.effort = normalizeAgentEffort(legacyEffort);
+    /* 老配置只有模型没有提供商：反查它所属的那一家（devRouteOfModel 是模型→路由的真源） */
+    if (!has(d.provider) && has(d.model) && typeof devRouteOfModel === "function") {
+      try {
+        d.provider = String(devRouteOfModel(d.model) || "");
+      } catch (_) {}
+    }
+    if (!has(d.effort)) d.effort = "high";
+    d.effort = normalizeAgentEffort(d.effort);
+    delete S.config.assistProvider;
+    delete S.config.assistModel;
+    delete S.config.assistEffort;
+  })();
+  S.assistProvider = dshDefaultProviderRoute() || "deepseek-official";
+  S.assistModel = dshDefaultModelValue();
+  S.assistEffort = dshDefaultEffortValue();
   S.assistWorkspace = S.config.assistWorkspace || "";
   S.assistScope = S.config.assistScope === "global" ? "global" : "current";
   /* 助手侧「与画布无关」（Gate B）：全局偏好，与会话级同名开关各存各的 */
@@ -758,6 +826,7 @@ async function init() {
   } catch {}
   const vr = await window.api.appVersion();
   if (vr && vr.ok) S.appVersion = vr.version || "0.0.0";
+  applyAgentDshVersion(vr && vr.ok ? vr.dsh : "");
   applyLogoSub();
   ensureDefaultProviders();
   /* 用户自建插件（<数据目录>/user-plugins）声明的画布节点：必须在首绘之前注册，
@@ -1202,7 +1271,10 @@ async function init() {
     const effortSel = $("#assistEffortSel");
     if (effortSel)
       effortSel.onchange = () => {
-        S.assistEffort = effortSel.value;
+        /* 思考强度 = 设置 · 默认模型那一格（本次需求 · 单一真源）：助手栏改选即写设置，
+           新会话也按它播种；S.assistEffort 只是运行期镜像（长任务等旧入口仍读它）。 */
+        S.config.dsh.effort = normalizeAgentEffort(effortSel.value);
+        S.assistEffort = S.config.dsh.effort;
         persistAssistUi();
       };
     /* 助手栏「上下文压缩」档位（本次需求 · 思考强度下一行）：与「设置 · 智能能力」同一份值，
@@ -1210,6 +1282,27 @@ async function init() {
     const compactSel = $("#assistCompactSel");
     if (compactSel)
       compactSel.onchange = () => applyAssistCompactChoice(compactSel.value);
+    /* 自定义档的触发线输入框（本次需求第三处入口）：写回走 applyAssistCompactTrigger
+       （越界拒绝并提示），拒绝时把框里的值回填成当前生效值 */
+    const compactCustomInput = $("#assistCompactCustomInput");
+    if (compactCustomInput)
+      compactCustomInput.onchange = () => {
+        if (!applyAssistCompactTrigger(compactCustomInput.value))
+          syncCompactCustomInput(compactCustomInput);
+      };
+    /* 「压缩后的大小」两个可调量（本次需求）：保留的最近原文 / 摘要输出上限。
+       写回走 applyAssistCompactLimit（留空 = 跟随档位默认，越界拒绝并提示），
+       拒绝时把框里的值回填成当前生效值。 */
+    const compactRetainInput = $("#assistCompactRetainInput");
+    if (compactRetainInput)
+      compactRetainInput.onchange = () => {
+        if (!applyAssistCompactLimit("retain", compactRetainInput.value)) syncCompactLimitInputs();
+      };
+    const compactSummaryInput = $("#assistCompactSummaryInput");
+    if (compactSummaryInput)
+      compactSummaryInput.onchange = () => {
+        if (!applyAssistCompactLimit("summary", compactSummaryInput.value)) syncCompactLimitInputs();
+      };
     const scopeSel = $("#assistScopeSel");
     if (scopeSel && !scopeSel._bound) {
       scopeSel._bound = true;

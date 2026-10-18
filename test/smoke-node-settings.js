@@ -1315,13 +1315,21 @@ console.log("\n" + (fails ? "FAILED " + fails + " / " + checks + " checks" : "AL
       "轻量输出块只给字符数、不再提示「点上方 👁 预览全文」（那枚按钮已移除）",
     );
     const procOut = funcBody(jsCanvas, "function browseProcOutEl(node)");
+    /* 本轮版式：编辑态与浏览态共用同一份 procOutPanelEl（超长正文的护栏在它里面），
+       browseProcOutEl 只负责「有没有内容」这道闸 + 传 longText 口径。 */
+    const panel = funcBody(jsCanvas, "function procOutPanelEl(");
     ok(
-      !!procOut && procOut.includes("browseOutTextView(r.output.text)"),
+      !!procOut && procOut.includes("procOutPanelEl(node, r, liveDsh, { longText: true })"),
+      "浏览态调用共用输出面板（两态一份实现，超长护栏随之共用）",
+    );
+    ok(
+      !!panel && panel.includes("browseOutTextView(r.output.text)"),
       "浏览态 OUTPUT 正文走护栏（不再无条件整篇 renderMarkdown）",
     );
     ok(
-      !/md\.innerHTML = renderMarkdown\(r\.output\.text\)/.test(procOut || ""),
-      "旧的无条件整篇渲染已移除",
+      !!panel &&
+        /if \(o\.longText\) out\.appendChild\(browseOutTextView\(r\.output\.text\)\);/.test(panel),
+      "旧的无条件整篇渲染已移除（正文按 longText 分流，不再直接塞 renderMarkdown）",
     );
     ok(/\.wf-node\.browse \.n-out-long-body/.test(css), "canvas.css 覆盖 .n-out-long 正文");
   }

@@ -446,6 +446,17 @@ function snapshotCanvasFieldFocus() {
 function canvasFieldFocused() {
   return isCanvasFieldEl(document.activeElement) && !!canvasStageFieldEl();
 }
+/* Markdown 编辑面（✎ 文本编辑器 / AI 审阅窗 / Markdown 阅读器的编辑态 / 板身正文框）：
+   它们不在舞台上，但落盘路径会顺手 renderCanvas()，整幅重建会把正在打字的输入框连同
+   光标一起换掉。判据只有一份 —— app-mdedit.js 的 MTMdEdit.surfaceKey（四个编辑面共用）。 */
+function markdownEditSurfaceFocused() {
+  try {
+    if (typeof MTMdEdit === "undefined" || !MTMdEdit || !MTMdEdit.surfaceKey) return false;
+    return !!MTMdEdit.surfaceKey(document.activeElement);
+  } catch (_) {
+    return false;
+  }
+}
 /* 舞台上现挂着的节点 / 绘制 / 分组 id（按同一批选择器取，返回值排好序便于逐个比对） */
 function canvasMountedIds(sel, key) {
   const stage = $("#stage");
@@ -533,11 +544,17 @@ function restoreCanvasFieldFocus(snap) {
 function flushDeferredCanvasFocus() {
   if (!S._deferCanvasForFieldEdit || S._renderingCanvas) return;
   if (canvasStageFieldEl() || S._canvasImeComposing) return;
+  /* Markdown 编辑面还握着焦点 = 用户正在编辑框里打字（保存路径推迟的那一拍）：
+     继续记账，等他真的离开编辑面（focusout → app-boot.js 的补拍）再画。 */
+  if (markdownEditSurfaceFocused()) return;
   /* 清账 + 放行：补这一拍，并让重建后的焦点原位恢复接管 */
   S._deferCanvasForFieldEdit = false;
   S._resumeCanvasFocus = true;
-  renderCanvas();
-  if (S._resumeCanvasFocus) S._resumeCanvasFocus = false;
+  try {
+    renderCanvas();
+  } finally {
+    S._resumeCanvasFocus = false;
+  }
 }
 function detachStageChild(el) {
   if (!el || !el.parentNode) return;
@@ -1074,6 +1091,11 @@ function renderCanvas() {
        焦点自然不受影响）。真拆 DOM 时：
        ① 有人正在舞台输入控件里打字（或输入法正组合）→ 推迟这一拍，编辑结束（失焦 /
           组合结束）由 flushDeferredCanvasFocus 补上 —— 别把正在打的框拆掉；
+       ①b 有人在 Markdown 编辑面里打字（✎ 文本编辑器 / AI 审阅窗 / 阅读器编辑态 / 板身
+          正文框 —— 判据 MTMdEdit.surfaceKey，见 markdownEditSurfaceFocused）时同样推迟：
+          保存路径顺手的那次整幅重建会把编辑区外的东西全换一遍，虽然编辑面不在舞台上，
+          但同一次重建里的 applyFocusFormAfterRender / 板身回填都可能把焦点带走。推迟到
+          「离开编辑面」再补一拍，「保存」这一下对用户就是纯无感；
        ② 但**结构变了**（删 / 新建 / 粘贴 / 撤销换对象：舞台上该挂的那批节点 / 绘制 /
           分组与现挂着的不是同一批）时一刻都不许推迟 —— 推迟出去被删的节点会留在画面上，
           而焦点还留在某个输入框里、补拍要等失焦（这个仓的 mousedown 普遍 preventDefault，
@@ -1082,7 +1104,7 @@ function renderCanvas() {
        既推迟不了也恢复不了）。 */
     if (
       !S._resumeCanvasFocus &&
-      (canvasFieldFocused() || S._canvasImeComposing) &&
+      (canvasFieldFocused() || markdownEditSurfaceFocused() || S._canvasImeComposing) &&
       !canvasReuseReady(parts, sig) &&
       canvasMountSetIdle(parts)
     ) {
@@ -1193,8 +1215,10 @@ function renderCanvas() {
     renderTaskCrumb();
     /* 浏览态节点刚被点选 → 表单已换成编辑态，把光标落回主输入框末尾 */
     applyFocusFormAfterRender();
-    /* 本次重建前有人正在输入 → 原位恢复焦点、光标与选区（锚点没了就正常失焦） */
-    if (fieldFocus) restoreCanvasFieldFocus(fieldFocus);
+    /* 本次重建前有人正在输入 → 原位恢复焦点、光标与选区（锚点没了就正常失焦）。
+       Markdown 编辑面握着焦点时不回填：那是用户刚在编辑框里打字，把焦点挪回舞台
+       就等于保存路径把光标抢走（本次需求的反面）。 */
+    if (fieldFocus && !markdownEditSurfaceFocused()) restoreCanvasFieldFocus(fieldFocus);
   } finally {
     S._ignoreMarkBlurFlush = false;
     S._renderingCanvas = false;
@@ -1258,6 +1282,20 @@ function updateWires(touchIds) {
     }
     p.setAttribute("d", wirePath(from, to, w.toIndex, w.fromIndex || 0, w));
     applyWirePathClass(p, w, from);
+  }
+  /* ── 回收「数据里已经没有这条线」的旧 path ─────────────────────────────────
+     断线 / 连线被删 / 撤销换对象时节点形状没变 → renderCanvas 走复用快速通道（不拆 DOM），
+     而上面那段只对**现存线**做新建与更新 —— 旧 path 就留在画面上。现场表现正是用户报的
+     「提示已切断，线还在」：再右键那颗端子又只会得到「该端子没有连线」（数据确实没了），
+     于是看起来怎么都切不断。这里按 wire id 集合做一次回收，只动主画布 #wfSvg 的
+     wire-<id> / wire-<id>-r 两层；壳层 .super-wires、关系线、wireTemp 各有各的 id 口径，不碰。 */
+  const liveWids = new Set();
+  for (const w of S.wf.wires || []) if (w && w.id != null) liveWids.add(String(w.id));
+  for (const el of svg.querySelectorAll('path[id^="wire-"]')) {
+    const id = String(el.id || "");
+    let wid = id.slice(5);
+    if (wid.slice(-2) === "-r") wid = wid.slice(0, -2);
+    if (!liveWids.has(wid)) el.remove();
   }
   let t = svg.querySelector("#wireTemp");
   if (!t) {
@@ -2551,6 +2589,75 @@ function nsDuration(ctx, labelText, sec, opts, onChange) {
   return ctx.append(host, opts);
 }
 
+/* 智能任务节点的「工作目录」（本轮从节点内那行 .agent-ws-row 搬进设置跳窗）：
+   节点里只剩上下栏，不再为它多占一行 —— 编辑口挪到这里，行为一字不变：
+     · 画布设了统一工作目录 → 只读继承那一个（与节点内旧口径一致，标题也照抄）；
+     · 否则本节点可自定义一个目录（留空 = 应用数据目录），带「浏览 / 打开」两枚按钮。
+   ⚠ 读写一律走下面两个**调用期取**的本地包装，不直接引用 app-db.js 的 dshWsOf / setDshWs：
+   那个文件排在本文件之后加载，顶层引用会撞上装载期 TDZ（见 index.html 里 app-canvas.js 上方
+   那段注释），而设置表单的 build 是调用期跑的 —— 包一层两边都安全。 */
+function agentTaskWsOf(node) {
+  if (typeof dshWsOf === "function") return dshWsOf(node) || "";
+  return (node && node.kind === "agent_task" ? node.workspace : node && node.agentWorkspace) || "";
+}
+function agentTaskWsSet(node, v) {
+  if (typeof setDshWs === "function") return setDshWs(node, v);
+  if (!node) return;
+  if (node.kind === "agent_task") node.workspace = v;
+  else node.agentWorkspace = v;
+}
+function nsAgentWorkspaceField(ctx, node) {
+  ctx.section(I18n.t("工作目录"));
+  const wfWs = wfWorkspace();
+  const inp = document.createElement("input");
+  inp.type = "text";
+  const title = wfWs
+    ? I18n.t("画布已设置统一工作目录,本节点只读继承")
+    : I18n.t("智能能力可读写此目录下的文件；留空使用应用默认数据目录");
+  /* 「浏览 / 打开」两枚按钮来自 app-db.js（本文件之后加载）：一律 typeof 取，
+     缺席时（单测切片 / 极端加载顺序）只是少两枚按钮，表单不整张渲染失败。 */
+  const browse =
+    typeof workspaceBrowseButton === "function"
+      ? workspaceBrowseButton(inp, (p) => {
+          inp.value = p;
+          if (!wfWs) agentTaskWsSet(node, p);
+          ctx.commit();
+        })
+      : null;
+  const open =
+    typeof workspaceOpenButton === "function"
+      ? workspaceOpenButton(() =>
+          wfWs ? wfWs : inp.value || agentTaskWsOf(node),
+        )
+      : null;
+  const lab = document.createElement("label");
+  lab.className = "n-field nsf-span";
+  const cap = document.createElement("span");
+  cap.textContent = I18n.t("工作目录");
+  const box = document.createElement("span");
+  box.className = "nsf-ctl";
+  box.appendChild(inp);
+  if (browse) box.appendChild(browse);
+  if (open) box.appendChild(open);
+  lab.appendChild(cap);
+  lab.appendChild(box);
+  if (wfWs) {
+    inp.readOnly = true;
+    inp.value = wfWs;
+    inp.title = title;
+    lab.title = title;
+  } else {
+    inp.value = agentTaskWsOf(node);
+    inp.placeholder = I18n.t("工作目录（可留空 = 应用数据目录）…");
+    inp.title = title;
+    inp.addEventListener("change", () => {
+      agentTaskWsSet(node, inp.value.trim());
+      ctx.commit();
+    });
+  }
+  ctx.root.appendChild(lab);
+}
+
 /* 服务商 / 模型：proc_text · remotion 要文本模型，proc_image 要图像生成模型。
    「谁算文本服务商 / 谁算图像服务商」不再只看服务商级 type —— 同一 OpenAI 兼容
    端点常把两类模型挂在一起，只看 type 会让图像节点漏掉配成文本的那家。
@@ -2622,7 +2729,7 @@ function nsProviderModelFields(ctx, node) {
     ctx.hint(
       I18n.t(
         relayOut
-          ? "MTNode 中转服务余额不足：去「设置 · 提供商」充值并点「刷新」，恢复后本节点照原配置运行。"
+          ? "MTNode 中转服务余额不足：去「设置 · 提供商」充值，到账后本节点照原配置运行。"
           : "该服务商已被停用：不再出现在别处的模型选择里；设置 · 模型服务里取消「停用该服务商」即可恢复。本节点仍按原配置运行。",
       ),
     );
@@ -3007,9 +3114,13 @@ registerNodeSettingsForm("proc_image", {
 });
 
 registerNodeSettingsForm("agent_task", {
-  gearTitle: () => I18n.t("预设 / 供应商 / 模型 / 思考强度"),
+  gearTitle: () => I18n.t("预设 / 供应商 / 模型 / 思考强度 / 工作目录"),
   summary: nsAgentSummary,
-  build: (ctx) => nsAgentFields(ctx, ctx.node),
+  build: (ctx) => {
+    nsAgentFields(ctx, ctx.node);
+    /* 工作目录（本轮从节点内那行 .agent-ws-row 搬来这里）：节点里只剩上下栏 */
+    nsAgentWorkspaceField(ctx, ctx.node);
+  },
 });
 
 /* remotion body 上那行 meta（分辨率 · fps · 时长）：摘要与跳窗字段共用一份口径，
@@ -6892,6 +7003,8 @@ function nodeElement(node) {
           });
           dot.addEventListener("mousedown", (ev) => {
             ev.stopPropagation();
+            /* 右键 = 只切这一槽（contextmenu 那一条），绝不起拖线 */
+            if (ev.button === 2) return;
             ev.preventDefault();
             hidePortTip();
             startWireDrag(node.id, ev, i, { fromInput: true });
@@ -6903,6 +7016,7 @@ function nodeElement(node) {
         add.title = I18n.t("空槽：再拖一条数据线进本端子（可无限接）");
         add.addEventListener("mousedown", (ev) => {
           ev.stopPropagation();
+          if (ev.button === 2) return;
           ev.preventDefault();
           hidePortTip();
           startWireDrag(node.id, ev, i, { fromInput: true });
@@ -6915,37 +7029,17 @@ function nodeElement(node) {
     bindPortTip(p, node, "in", i);
     p.addEventListener("mousedown", (ev) => {
       ev.stopPropagation();
+      /* 右键 = 切断这根端子上的连线（唯一入口见 app.js 的 PORT-CUT 段）。
+         这里**不能**再 preventDefault：先起拖线再被右键切断，松手那头还会走 mouseup 的
+         wire 分支（误连 / 误弹「新建节点」菜单），用户看到的就是「切不断」。 */
+      if (ev.button === 2) {
+        hidePortTip();
+        return;
+      }
       ev.preventDefault();
       hidePortTip();
       /* 允许从输入端反向拖线到输出端：线仍存为 输出端 → 本输入端 */
       startWireDrag(node.id, ev, i, { fromInput: true });
-    });
-    p.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const idx = Number(p.dataset.idx);
-      const rem = S.wf.wires.filter(
-        (w) => !w.rel && w.to === node.id && w.toIndex === idx,
-      );
-      if (rem.length) {
-        pushHistory();
-        const dataCut = rem.some((w) => !wireFromIsControl(w));
-        S.wf.wires = S.wf.wires.filter(
-          (w) => w.rel || !(w.to === node.id && w.toIndex === idx),
-        );
-        if (!hasFixedInPorts(node)) {
-          for (const w of S.wf.wires) {
-            if (w.to === node.id && w.toIndex > idx) w.toIndex--;
-          }
-        }
-        if (dataCut) clearDownstream(node.id);
-        toast(I18n.t("已切断输入端子 ") + rem.length + I18n.t(" 条连线"), "ok");
-      } else {
-        toast(I18n.t("该输入端子没有连线"), "warn");
-      }
-      renderCanvas();
-      scheduleSave(true);
-      renderStatus();
     });
     el.appendChild(p);
   }
@@ -7071,29 +7165,15 @@ function nodeElement(node) {
     bindPortTip(p, node, "out", oi);
     p.addEventListener("mousedown", (ev) => {
       ev.stopPropagation();
+      /* 右键 = 切断这根端子上的连线（唯一入口见 app.js 的 PORT-CUT 段）：右键绝不起拖线，
+         也不 preventDefault（原因同输入端子那一处）。 */
+      if (ev.button === 2) {
+        hidePortTip();
+        return;
+      }
       ev.preventDefault();
       hidePortTip();
       startWireDrag(node.id, ev, oi);
-    });
-    p.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const rem = S.wf.wires.filter(
-        (w) => !w.rel && w.from === node.id && Number(w.fromIndex || 0) === oi,
-      );
-      if (rem.length) {
-        pushHistory();
-        S.wf.wires = S.wf.wires.filter(
-          (w) => w.rel || !(w.from === node.id && Number(w.fromIndex || 0) === oi),
-        );
-        if (!isControlKind(node)) clearDownstream(node.id);
-        toast(I18n.t("已切断输出端子 ") + rem.length + I18n.t(" 条连线"), "ok");
-      } else {
-        toast(I18n.t("该输出端子没有连线"), "warn");
-      }
-      renderCanvas();
-      scheduleSave(true);
-      renderStatus();
     });
     el.appendChild(p);
   }
@@ -8207,6 +8287,9 @@ function outButtonsEl(node, liveDsh, r) {
     b.title = title || label;
     b.onclick = (ev) => {
       ev.stopPropagation();
+      /* 按钮组现在也挂在智能任务节点折叠区的标题条（<summary>）里：不挡住默认行为，
+         点「复制 / 清空 / 浏览」会顺带把折叠区开合一次（点一下按钮面板自己动了）。 */
+      if (typeof ev.preventDefault === "function") ev.preventDefault();
       fn();
     };
     ob.appendChild(b);
@@ -8226,50 +8309,71 @@ function outButtonsEl(node, liveDsh, r) {
   return ob;
 }
 
-/* 输出面板（浏览态）：标题行挂**与编辑态同一套**按钮组（复制 / 清空 / 浏览 / 审阅）
-   和左缘拖宽条 —— 未选中的节点（预览形态）也要能直接复制输出，不必先点选它。
-   元素 id 与编辑态一致，所以运行中的流式增量与 fillPreviews 的图像回填都不用另写一套。 */
+/* 输出面板（浏览态）：**与编辑态同一份实现**（procOutPanelEl）——
+   未选中的节点（预览形态）也要能直接复制输出，不必先点选它；差别只在超长正文
+   走轻量形态（见 procOutPanelEl 的 opts.longText）。 */
 function browseProcOutEl(node) {
   const r = selResult(node);
-  const liveDsh = !!(node.running && typeof isDshTask === "function" && isDshTask(node));
+  const liveDsh = !!(
+    node.running &&
+    typeof isDshTask === "function" &&
+    isDshTask(node)
+  );
   if (!liveDsh && !(r && (r.output || r.batchOutputs || r.error))) return null;
+  return procOutPanelEl(node, r, liveDsh, { longText: true });
+}
+
+/* 输出面板（编辑态与预览态共用一份实现）：标题行（OUTPUT / ERROR + 尝试序号）
+   + 右对齐按钮组（复制 / 清空 / 浏览 / 审阅）+ 左缘拖宽条 + 内容本体。
+     · opts.longText = 预览态口径：超长正文走「整块纯文本 + 字符数」轻量形态
+       （一次 renderMarkdown 会把几万字符摊成几万 DOM 节点，画布每次重绘都要重建一遍）；
+     · 智能任务节点不渲染「右侧 Output 的镜像流」（全会话已在上面那栏里，避免重复工具 id）。
+   元素 id 与两态一致（dsh-out-stream-* / out-img-* / outimg-*）：运行中的流式增量与
+   fillPreviews 的图像回填都不用另写一套。 */
+function procOutPanelEl(node, r, liveDsh, opts) {
+  const o = opts || {};
   if (node.outW == null) node.outW = 210;
   const out = document.createElement("div");
   out.className = "n-out";
-  out.style.width = node.outW + "px";
   out.appendChild(outResizeHandleEl(node));
   const nA = attemptCount(node);
-  const oh = document.createElement("div");
-  oh.className = "n-out-head";
-  oh.appendChild(
-    document.createTextNode(
-      liveDsh
-        ? I18n.t("OUTPUT · 运行中")
-        : ((r && r.error ? "ERROR" : r && r.batchOutputs ? I18n.t("OUTPUT · 批量") : "OUTPUT") +
-            (nA > 1
-              ? I18n.t(" · 尝试 ") + (attemptIdx(node) + 1) + "/" + nA
-              : "")),
-    ),
-  );
-  /* 按钮组与编辑态同一份实现：未选中的节点（预览形态）也能直接复制输出 */
-  oh.appendChild(outButtonsEl(node, liveDsh, r));
-  out.appendChild(oh);
+  /* opts.head === "host" = 宿主（智能任务节点的输出折叠区标题条）已经把「输出 + 尝试 /
+     出错 / 批量」与按钮组画在自己那一行上了：这里不再另起一行 OUTPUT，否则折叠区一展开
+     就是两行同义标题叠着（用户报的绘制错误）。标题相关的一切（文案与按钮）都归宿主那一行，
+     面板本体只剩内容 —— 两边共用同一份 outButtonsEl，按钮一个都没少。 */
+  if (o.head !== "host") {
+    const oh = document.createElement("div");
+    oh.className = "n-out-head";
+    oh.appendChild(
+      document.createTextNode(
+        liveDsh
+          ? I18n.t("OUTPUT · 运行中")
+          : (r && r.error
+              ? "ERROR"
+              : r && r.batchOutputs
+                ? I18n.t("OUTPUT · 批量")
+                : "OUTPUT") +
+              (nA > 1 ? I18n.t(" · 尝试 ") + (attemptIdx(node) + 1) + "/" + nA : ""),
+      ),
+    );
+    oh.appendChild(outButtonsEl(node, liveDsh, r));
+    out.appendChild(oh);
+  }
+  if (nA > 1) out.appendChild(attemptTabsEl(node));
   if (liveDsh) {
-    if (node.kind !== "agent_task" && typeof dshToolDetailsEl === "function") {
+    if (node.kind !== "agent_task") {
       const toolsBox = document.createElement("div");
       toolsBox.className = "dsh-tools";
       toolsBox.id = "dsh-out-tools-" + node.id;
-      for (const t of (S.nodeTools && S.nodeTools[node.id]) || [])
+      const liveTools = (S.nodeTools && S.nodeTools[node.id]) || [];
+      for (const t of liveTools)
         toolsBox.appendChild(dshToolDetailsEl(t, true, node.id));
       out.appendChild(toolsBox);
     }
     const stream = document.createElement("div");
     stream.className = "md dsh-out-live";
     stream.id = "dsh-out-stream-" + node.id;
-    stream.textContent =
-      typeof traceSayDisplay === "function"
-        ? traceSayDisplay(node.id, node._pendingAnswer)
-        : "";
+    stream.textContent = traceSayDisplay(node.id, node._pendingAnswer);
     if (!stream.textContent) {
       stream.textContent = I18n.t("智能任务执行中…");
       stream.classList.add("n-empty");
@@ -8277,7 +8381,7 @@ function browseProcOutEl(node) {
     out.appendChild(stream);
     return out;
   }
-  if (r.batchOutputs && r.batchOutputs.length) {
+  if (r && r.batchOutputs && r.batchOutputs.length) {
     const list = document.createElement("div");
     list.className = "n-bout-list";
     r.batchOutputs.forEach((x, idx) => {
@@ -8292,7 +8396,8 @@ function browseProcOutEl(node) {
         const s = document.createElement("span");
         s.className = "n-bout-snip";
         s.textContent =
-          x.output.text.slice(0, 80) + (x.output.text.length > 80 ? "…" : "");
+          x.output.text.slice(0, 80) +
+          (x.output.text.length > 80 ? "…" : "");
         s.title = x.output.text;
         rr.appendChild(s);
       } else if (x.ok && x.output) {
@@ -8314,9 +8419,25 @@ function browseProcOutEl(node) {
       list.appendChild(rr);
     });
     out.appendChild(list);
-  } else if (r.output && r.output.kind === "text") {
-    out.appendChild(browseOutTextView(r.output.text));
-  } else if (r.output && r.output.kind === "image") {
+  } else if (r && r.output && r.output.kind === "text") {
+    const doneTools = isDshTask(node)
+      ? (S.nodeTools && S.nodeTools[node.id]) || []
+      : [];
+    if (doneTools.length && node.kind !== "agent_task") {
+      const toolsBox = document.createElement("div");
+      toolsBox.className = "dsh-tools";
+      for (const t of doneTools)
+        toolsBox.appendChild(dshToolDetailsEl(t, false, node.id));
+      out.appendChild(toolsBox);
+    }
+    if (o.longText) out.appendChild(browseOutTextView(r.output.text));
+    else {
+      const md = document.createElement("div");
+      md.className = "md";
+      md.innerHTML = renderMarkdown(r.output.text);
+      out.appendChild(md);
+    }
+  } else if (r && r.output && r.output.kind === "image") {
     const img = document.createElement("img");
     img.id = "out-img-" + node.id;
     img.alt = I18n.t("输出图像");
@@ -8332,6 +8453,53 @@ function browseProcOutEl(node) {
     out.appendChild(e);
   }
   return out;
+}
+
+/* 智能任务节点的输出区（本轮版式）：**不再与主列并排**，改挂输入框下方、整幅宽，
+   默认收起（一行「输出」标题条可点开），展开态记在 S.agentTaskOutOpen[node.id]
+   —— 画布每次重绘都会重建 DOM，不记就会「展开看结果、一刷新又缩回去」。
+   内容与按钮与既有 OUTPUT 面板**同一份实现**（procOutPanelEl），一个都没少。
+   **标题只有一行**（本次修复）：那行「输出 · 尝试 N/M · 出错」同时承载输出面板的
+   按钮组（复制 / 清空 / 浏览），面板本体的 OUTPUT 标题行由 opts.head:"host" 抑制
+   —— 两行标题叠在一起是上一版的绘制错误。 */
+function agentTaskOutFoldEl(node, r, liveDsh) {
+  const det = document.createElement("details");
+  det.className = "n-agent-out";
+  det.dataset.outFor = node.id;
+  S.agentTaskOutOpen = S.agentTaskOutOpen || {};
+  if (S.agentTaskOutOpen[node.id] || liveDsh) det.open = true;
+  det.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  det.addEventListener("click", (ev) => ev.stopPropagation());
+  const sum = document.createElement("summary");
+  sum.className = "n-agent-out-head";
+  /* 标题文本单独一个 span：按钮组要在这行里右对齐（.n-out-btns 是 margin-left:auto），
+     而 <details> 的 toggle 事件里不适合再按文本节点位置去改文案。 */
+  const lab = document.createElement("span");
+  lab.className = "n-agent-out-lab";
+  /* 运行中只写「输出」：流里那段「智能任务执行中…」自己说明状态，标题再写一遍
+     「运行中」就是同一行里说两遍（面板本体的 OUTPUT 标题行已被 opts.head 抑制）。
+     尝试序号两种状态都写：liveDsh 时面板本体提前返回、不画尝试 Tab，写在这里才不丢信息。 */
+  lab.textContent = I18n.t("输出");
+  const nA = attemptCount(node);
+  if (nA > 1)
+    lab.textContent +=
+      I18n.t(" · 尝试 ") + (attemptIdx(node) + 1) + "/" + nA;
+  if (!liveDsh) {
+    if (r && r.error) lab.textContent += I18n.t(" · 出错");
+    else if (r && r.batchOutputs) lab.textContent += I18n.t(" · 批量");
+  }
+  sum.appendChild(lab);
+  /* 按钮组与折叠状态无关（收起也点得到「浏览」），且不冒泡到 summary —— 
+     summary 的点击切换只认点击目标不是按钮的那些。 */
+  sum.appendChild(outButtonsEl(node, liveDsh, r));
+  det.appendChild(sum);
+  det.appendChild(procOutPanelEl(node, r, liveDsh, { head: "host" }));
+  det.addEventListener("toggle", () => {
+    S.agentTaskOutOpen = S.agentTaskOutOpen || {};
+    if (det.open) S.agentTaskOutOpen[node.id] = true;
+    else delete S.agentTaskOutOpen[node.id];
+  });
+  return det;
 }
 
 /* 输出正文（浏览态）：短输出照旧 Markdown 渲染；
@@ -8363,7 +8531,8 @@ function browseOutTextView(text) {
   return md;
 }
 
-/* input_text：单条 → 只读文本视图；批量 / YAML 条目 / 继承只读 → 紧凑条目列表 */
+/* input_text：单条 → Markdown 预览块（失焦时正文就是渲染后的样子，见 browseMdPreviewEl）；
+   批量 / YAML 条目 / 继承只读 → 紧凑条目列表（本轮不动，仍走 browseTextEl 的语言判定） */
 NODE_BROWSE_BODY.input_text = function (node, body) {
   if (node.ro) {
     const v = browseTextEl(node.text, node);
@@ -8417,7 +8586,7 @@ NODE_BROWSE_BODY.input_text = function (node, body) {
     );
     return;
   }
-  const v = browseTextEl(node.text, node);
+  const v = browseMdPreviewEl(node.text, node) || browseTextEl(node.text, node);
   if (!v) return false;
   body.appendChild(v);
 };
@@ -8462,10 +8631,72 @@ NODE_BROWSE_BODY.input_image = function (node, body) {
   body.appendChild(browseImageEl(node.imageAsset, singleImageTitle(node), node.sourceName));
 };
 
+/* 浏览态正文的 **Markdown 预览块**（需求：失焦 / 未选中时这两处输入框的正文就该是
+   渲染后的样子，而不是原文本）。谁在用：
+     · 文本节点板身正文框（input_text 可编辑分支，见 NODE_BROWSE_BODY.input_text）
+     · 文本处理节点提示词框（proc_text，见 browseProcBody）
+   为什么要单开一条路：浏览态的通用入口 browseTextEl 先问 detectViewLang「像不像 Markdown」，
+   而它的信号只有标题 / 粗体 / 表格 / 链接 / 引用 / 代码围栏 —— **列表（`1. ` / `- `）不在
+   信号里**，于是「只有编号列表」的正文被判成普通文本、原样显示（用户报的就是这个）。
+   解析与编辑态那颗「预览」按钮**同源**（renderer/app-mdpreview.js 的 previewHtml：GFM +
+   breaks、表格与公式、@引用 / @标签高亮、内嵌图像胶囊只读块），所以两处长相永远一致。
+   容器类名刻意拼成 `.n-view.md`（= 既有 Markdown 浏览态的同一套滚动与排版口径，见
+   canvas.css 的「节点浏览态」段）：滚动只发生在 .n-view 一层，内层 .md 不自己滚。
+   阅读间距另有一条专属规则（canvas.css 的 `.wf-node.browse .md.n-md-browse`）：浏览态是
+   「读」的面，比编辑态那颗预览多留一点上下内边距、行距放宽一档、段与列表项各撑开一点。
+   ⚠ 这段渲染在**启动装载期**就会跑（app-boot.js 拉起工作流时的第一遍渲染），所以
+   renderer/app-mdpreview.js 必须排在 app-canvas.js / app-boot.js 之前（见 index.html 那段
+   注释）：applyNodeForm 只在形态真的变了时才重建 body，晚一帧就位＝首屏永远是纯文本回落。
+   超长 / 空正文仍走 browseTextEl 的既有护栏（> 6000 字符 / > 240 行只出整块纯文本，
+   空正文出「（空）」），不在这里另造一套。 */
+function browseMdPreviewEl(text, node) {
+  if (
+    typeof MTMdPreview === "undefined" ||
+    !MTMdPreview ||
+    typeof MTMdPreview.html !== "function"
+  )
+    return null; /* 模块缺席 → 调用方回落 browseTextEl（浏览器缓存了旧脚本时的兜底） */
+  const raw = String(text == null ? "" : text);
+  if (nodeViewIsEmpty(raw) || (typeof nodeViewIsLong === "function" && nodeViewIsLong(raw)))
+    return browseTextEl(raw, node);
+  let html = "";
+  try {
+    html = String(MTMdPreview.html(node, raw).html || "");
+  } catch (_) {
+    html = "";
+  }
+  if (!html) return browseTextEl(raw, node);
+  const wrap = document.createElement("div");
+  /* 文本节点这一面另有观感覆盖（行高 1.7 + 段距 6px + 层级序号计数器，见 canvas.css 的
+     `.n-md-browse-txt` 段）；提示词框那一面（proc_text）不带这个标记，维持与它旁边
+     .n-text 输入框同像素的旧口径。 */
+  wrap.className =
+    "node-text-view ntv-md n-view n-view-md md n-md-browse" +
+    (node && node.kind === "input_text" ? " n-md-browse-txt" : "");
+  const body = document.createElement("div");
+  /* 内层类名与 app-nodeview.js 的 Markdown 只读视图逐字相同（那里也是 .ntv-md 里装
+     渲染产物、.md 挂在容器上）：排版与滚动口径因此完全复用，不另立一套。 */
+  body.className = "ntv-md";
+  body.innerHTML = html;
+  wrap.appendChild(body);
+  return wrap;
+}
+
+/* 提示词只读视图：proc_text 走 Markdown 预览块（本轮需求），其余（proc_image 文生图）
+   维持原来的 detectViewLang 口径 —— 本轮范围只到文本处理节点。 */
+function browsePromptViewEl(node) {
+  const raw = procPromptOf(node);
+  if (node && node.kind === "proc_text") {
+    const md = browseMdPreviewEl(raw, node);
+    if (md) return md;
+  }
+  return browseTextEl(raw, node);
+}
+
 /* proc_text / proc_image：提示词只读视图（无「提示词 Prompt」标签、无输入框）
    + status 行；输出面板只留正文，按钮与拖宽条不渲染 */
 function browseProcBody(node, body) {
-  const pv = browseTextEl(procPromptOf(node), node);
+  const pv = browsePromptViewEl(node);
   if (!pv) return false;
   const row = document.createElement("div");
   row.className = "n-proc-row";
@@ -8485,24 +8716,112 @@ function browseProcBody(node, body) {
 NODE_BROWSE_BODY.proc_text = browseProcBody;
 NODE_BROWSE_BODY.proc_image = browseProcBody;
 
-/* agent_task：会话流（.agent-conv）就是浏览主体；
-   输入 textarea、工作目录行、上下拖宽把手一概不渲染，任务文本以一行只读显示在会话上方 */
+/* 智能任务节点：会话框（上框）在列里的那只**弹性项** —— app-assist.js 的轮次轨壳
+   （.hist-scroll-wrap，由 ensureHistRail 在渲染后一帧套上）会套在 .agent-conv 外面；
+   高度必须落在壳上：写在 conv 身上会被壳按内容高钉住，而壳自己 shrink 得下去，
+   于是会话框就越出壳外、盖住下方的输入框 —— 用户报的「上方框过长延伸到消息栏后面 /
+   UI 框体不允许重叠」就是这个根因。渲染时（会话框还在文档外）它是 conv 自己，
+   壳套上以后就是壳；拖拽（app.js 的 vresize）与 ensureHistRail 都问这一处口径。 */
+function agentConvFlexItem(conv) {
+  const p = conv && conv.parentElement;
+  return p && p.classList && p.classList.contains("hist-scroll-wrap") ? p : conv;
+}
+/* 把 node.convH 落到某只弹性项上（**内联样式**：`.wf-node.browse .n-view > * { flex:none }`
+   与 dsh.css 的 .hist-scroll-wrap.is-flex-fill 同特异度、只靠加载顺序取胜，内联才压得住）：
+     · basis = convH —— splitter 拖到哪，会话框就是多高；
+     · grow 归 0 —— 不替用户把富余高度自动吃满：会话框该多高由 splitter 说了算，
+       拖上去就变矮，多出来的空白留在列尾，绝不转嫁给下方框体；
+     · shrink 归 1 + 下限 72px —— 节点被拖矮 / 输入框随内容变高 / 输出区展开时
+       **会话框先让位**（72px = 至少看得见几行的下限，也保证 minHFor(agent_task)=240
+       时列内所有下限之和仍装得下）。
+   **绝不能写成 min-height = convH**：那是把框体钉死，列装不下时它就越出列外压住别的框。 */
+function agentConvItemApply(item, node) {
+  if (!item || !item.style) return;
+  const h = Math.max(72, Math.round(Number(node && node.convH) || 200));
+  item.style.flex = "0 1 " + h + "px";
+  item.style.minHeight = "72px";
+  item.style.minWidth = "0";
+}
+/* 渲染态：壳还没套上（ensureHistRail 要等元素入文档后一帧），此刻列的弹性项就是会话框
+   自己 —— 先按上面的姿势落在它身上，并把它记在 data-conv-h 上（供壳套上时接手）。 */
+function agentConvHeightApply(conv, node) {
+  if (!conv) return;
+  if (conv.dataset) conv.dataset.convH = String(
+    Math.max(72, Math.round(Number(node && node.convH) || 200)),
+  );
+  agentConvItemApply(conv, node);
+}
+/* 轮次轨壳套上时由 app-assist.js 的 ensureHistRail 调用：高度真源搬到**壳**上
+   （壳才是列的弹性项），会话框自己回落到「随壳拉伸、不自己撑高、不自己撑宽」。 */
+function agentConvShellApply(wrap) {
+  const conv = wrap && wrap.firstElementChild;
+  if (!conv || !conv.classList || !conv.classList.contains("agent-conv")) return;
+  agentConvItemApply(wrap, { convH: Number(conv.dataset && conv.dataset.convH) || 200 });
+  conv.style.flex = "1 1 auto";
+  conv.style.minHeight = "0";
+  conv.style.minWidth = "0";
+}
+
+/* agent_task（预览态 = 未选中）：**与焦点态同一套版式** ——
+   上会话（.agent-conv + .hist-scroll-wrap 壳）· 下输入框 · 会话与输入之间同一根 splitter
+   · status 行 · 输入框下方的输出折叠区。两态唯一的差别是输入框只读、不响应 Enter：
+   预览态是「扫一眼」的形态，不给发送 / 清空这类会写数据的动作。
+   DOM 顺序、类名与 data-vbox 标记都与焦点态一致，所以切换选中不跳版、不重排。 */
 NODE_BROWSE_BODY.agent_task = function (node, body) {
   if (typeof agentConvListEl !== "function") return false;
   const row = document.createElement("div");
   row.className = "n-proc-row";
   const left = document.createElement("div");
   left.className = "n-proc-left n-agent-split";
-  left.appendChild(
-    browseBriefEl(procPromptOf(node), node, { empty: I18n.t("（空）") }),
-  );
+  /* ① 会话区（上栏）：给足自己的高度，超了在区内滚（预览态照旧能滚、能展开看） */
   const conv = agentConvListEl(node);
-  delete conv.dataset.vbox;
-  conv.style.flex = "1 1 auto";
-  conv.style.height = "auto";
-  conv.style.minHeight = "0";
+  conv.dataset.vbox = "convH";
+  /* 轮次轨的壳（app-assist.js 的 ensureHistRail 给 .agent-conv 套一层 .hist-scroll-wrap）：
+     壳一帧后套上，那时高度由 agentConvShellApply 接到壳上（此刻先落在会话框自己身上）。 */
+  const wrap = conv.parentNode;
+  if (wrap && wrap.classList && wrap.classList.contains("hist-scroll-wrap"))
+    wrap.classList.add("is-flex-fill");
+  agentConvHeightApply(conv, node);
   left.appendChild(conv);
+  /* ② 上下两框之间那**唯一一根** splitter：两态都挂，拖它写同一个 node.convH。
+     旧写法是把把手 append 进会话框、绝对定位在它上沿 —— 那根已按需求移除。 */
+  if (typeof vResizeHandleEl === "function")
+    left.appendChild(vResizeHandleEl(node, "convH", 72, 520));
+  /* ③ 输入框（下栏）：只读、高度按内容自动增高 */
+  const f3 = document.createElement("label");
+  f3.className = "n-field n-prompt";
+  f3.style.flex = "none";
+  f3.style.position = "relative";
+  const ta = document.createElement("textarea");
+  ta.className = "n-text";
+  ta.spellcheck = false;
+  ta.readOnly = true;
+  ta.value = procPromptOf(node);
+  ta.placeholder = I18n.t("（空）点击节点即可编辑任务");
+  ta.title = I18n.t("预览形态：任务文本只读；点选本节点即可编辑并发送");
+  ta.style.resize = "none";
+  ta.addEventListener("mousedown", (ev) => ev.stopPropagation());
+  ta.addEventListener("click", (ev) => ev.stopPropagation());
+  if (typeof mountPromptTextarea === "function")
+    mountPromptTextarea(f3, ta, node, () => {}, { refs: false });
+  else f3.appendChild(ta);
+  if (typeof promptAutoGrowBind === "function") promptAutoGrowBind(ta);
+  left.appendChild(f3);
+  /* ④ status 行（与编辑态同一个 id，状态刷新照常命中） */
   left.appendChild(browseStatusEl(node));
+  /* ⑤ 输出折叠区：与焦点态同一份实现、同一个展开记忆（S.agentTaskOutOpen） */
+  const r = selResult(node);
+  const liveDsh = !!(
+    node.running &&
+    typeof isDshTask === "function" &&
+    isDshTask(node)
+  );
+  if (
+    typeof agentTaskOutFoldEl === "function" &&
+    (liveDsh || (r && (r.output || r.batchOutputs || r.error)))
+  ) {
+    left.appendChild(agentTaskOutFoldEl(node, r, liveDsh));
+  }
   row.appendChild(left);
   body.appendChild(row);
   if (typeof scrollAgentConv === "function") scrollAgentConv(node);
@@ -11490,6 +11809,23 @@ function buildBody(node, body) {
       ta.addEventListener("input", () => {
         node.text = ta.value;
       });
+      /* 板身正文的 Tab / Shift+Tab（renderer/app-mdedit.js 的共享实现 tabSource）：
+         插 4 个空格 / 反缩进一档，与其它源码档同一口径。
+         早先这里接过「大纲编号」（Tab 把 `3. ` 接成 `3.1. `），已整体下线 ——
+         `3.1. ` 不是合法的有序列表标记，渲染出来是普通段落（自创语法）。
+          有序列表的层级序号（1. → 1.1. → 1.1.1.）与「Tab 造层级」已按用户口径整体下线：
+          编辑器不再替用户改 Markdown 结构，层级只能靠手写缩进。 */
+      if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindSource === "function") {
+        try {
+          MTMdEdit.bindSource(ta);
+        } catch (_) {}
+      }
+      /* 正文框直接铺在 .n-body 里（flex:1，尺寸口径与套壳时一致）。
+         **框内右上角那颗「预览」开关已移除**：它 absolute 压在正文上、挡住右上角那几行字，
+         用户明确要求拿掉，连带不再挂预览层与定位宿主 —— 文本节点正文只在编辑态写，
+         失焦后的浏览态正文另有渲染路径（browseMdPreviewEl），不受影响。
+         文本处理节点（proc_text）提示词框那一颗不在本轮范围，仍由
+         renderer/app-mdpreview.js 挂在 .n-prompt-wrap 上。 */
       body.appendChild(ta);
     }
   } else if (node.kind === "input_image") {
@@ -11901,60 +12237,33 @@ function buildBody(node, body) {
     );
     mountPromptTextarea(f3, ta, node, persistPrompt);
     left.appendChild(f3);
-    /* 智能任务节点：上下分割 — 上会话（与智能会话同款）· 下输入框 */
+    /* 智能任务节点：上下栏 —— 上会话（与智能会话同款）· 下输入框；
+       节点内**不再有左右侧栏**（原先右侧那列 OUTPUT 面板改挂输入框下方的可折叠区，
+       见下面 hasOut 那一支），且**只有一根 splitter** = 会话与输入之间这一根
+       （原 inputH 那根已删：输入框自动增高，高度由内容决定）。 */
     if (node.kind === "agent_task") {
       left.classList.add("n-agent-split");
       const conv = agentConvListEl(node);
       left.insertBefore(conv, f3);
       f3.style.flex = "none";
       f3.style.position = "relative";
-      conv.dataset.vbox = "convH";
-      conv.style.flex = "1 1 auto";
-      conv.style.minHeight = (node.convH || 200) + "px";
-      conv.style.height = (node.convH || 200) + "px";
-      f3.dataset.vbox = "inputH";
-      f3.style.height = (node.inputH || 64) + "px";
       ta.style.resize = "none";
-      conv.appendChild(vResizeHandleEl(node, "convH", 80, 520));
-      f3.appendChild(vResizeHandleEl(node, "inputH", 40, 200));
+      ta.style.flex = "none";
+      /* 会话框（上）= 列的弹性项，高度 = splitter 拖出来的 node.convH
+         （轮次轨壳套上后由 agentConvShellApply 接到壳上）；节点高不够时**它先让位**
+         （下限 72px），下方输入框 / 状态行 / 输出折叠区永远完整可见。 */
+      conv.dataset.vbox = "convH";
+      agentConvHeightApply(conv, node);
+      /* 上下两框之间那**唯一一根** splitter（列内的流式项，不是会话框上沿的把手）：
+         拖它只改 node.convH（往下拖 = 会话框变高，往上拖 = 变矮），两态同一位次。 */
+      left.insertBefore(vResizeHandleEl(node, "convH", 72, 520), f3);
+      promptAutoGrowBind(ta);
       scrollAgentConv(node);
     }
 
-    /* dsh 任务节点：工作目录行(带文件夹选择器;工作流统一目录设置后只读) */
-    if (isDshTask(node)) {
-      const wsRow = document.createElement("div");
-      wsRow.className = "agent-ws-row";
-      const ws = document.createElement("input");
-      ws.type = "text";
-      const wfWs = wfWorkspace();
-      if (wfWs) {
-        ws.readOnly = true;
-        ws.value = wfWs;
-        ws.title = I18n.t("画布已设置统一工作目录,本节点只读继承");
-        ws.placeholder = "";
-      } else {
-        ws.placeholder = I18n.t("工作目录（可留空 = 应用数据目录）…");
-        ws.value = dshWsOf(node);
-        ws.title = I18n.t("智能能力可读写此目录下的文件；留空使用应用默认数据目录");
-      }
-      ws.addEventListener("change", () => {
-        setDshWs(node, ws.value.trim());
-        scheduleSave();
-      });
-      wsRow.appendChild(ws);
-      wsRow.appendChild(
-        workspaceOpenButton(() => (wfWs ? wfWs : ws.value || dshWsOf(node))),
-      );
-      if (!wfWs) {
-        wsRow.appendChild(
-          workspaceBrowseButton(ws, (p) => {
-            setDshWs(node, p);
-            scheduleSave();
-          }),
-        );
-      }
-      left.appendChild(wsRow);
-    }
+    /* 工作目录的编辑口**本轮从节点内搬进「设置」跳窗**（agent_task 的设置表单里新增
+       「工作目录」一节，见 nsAgentWorkspaceField）：节点里只剩上下栏，不再为它多占一行；
+       画布统一工作目录时那一节同样只读继承 —— 口径未变，只是换了地方。 */
 
     const st = document.createElement("div");
     st.className =
@@ -11964,8 +12273,10 @@ function buildBody(node, body) {
     st.title = st.textContent;
     left.appendChild(st);
 
-    /* 智能运行统计与工具轨迹 */
-    if (isDshTask(node) && node.dshMetrics) {
+    /* 运行统计行（dsh-metrics-line）与工具轨迹
+       智能任务节点本轮**不带 token 预算栏**（也不带统计行）：节点内只剩上下栏，
+       账目看会话 / 设置里那份，不在节点里再摆一行。 */
+    if (isDshTask(node) && node.dshMetrics && node.kind !== "agent_task") {
       const mm = document.createElement("div");
       mm.className = "dsh-metrics-line";
       const metricsTxt = fmtDshMetrics(node.dshMetrics);
@@ -11977,6 +12288,8 @@ function buildBody(node, body) {
         openMetricsDistribution(node.dshMetrics);
       });
       left.appendChild(mm);
+    }
+    if (isDshTask(node)) {
       const tools =
         (node.dshTools && node.dshTools.length
           ? node.dshTools
@@ -12007,129 +12320,29 @@ function buildBody(node, body) {
     }
     row.appendChild(left);
 
+    /* 输出区落位：**智能任务节点与其它节点不同行** ——
+       agent_task 的折叠输出区挂在左侧列里（输入框下方、整幅宽），**不是** row 的第二个
+       子元素。row 是 display:flex 的横向行，把它当兄弟 append 进去就会被排成「右栏」：
+       面板按 outW 定宽、主列（会话 + 输入框）被挤成一条，正是用户报的「输出区显示不对」。
+       hasSideOutPanel 是这一支的唯一判据（app.js）——「谁还有右侧并排栏」只有那一处口径，
+       宽度下限（procMinNodeW）与这里的落位不会各自漂。 */
     const r = selResult(node);
     const liveDsh = !!(node.running && isDshTask(node));
-    const hasOut = liveDsh || (r && (r.output || r.batchOutputs || r.error));
+    const hasOut = !!(liveDsh || (r && (r.output || r.batchOutputs || r.error)));
     if (hasOut) {
-      if (node.outW == null) node.outW = 210;
-      const out = document.createElement("div");
-      out.className = "n-out";
-      out.style.width = node.outW + "px";
-      /* 左缘拖宽条与右对齐按钮组（复制 / 清空 / 浏览 / 审阅）都与浏览态共用同一份实现 */
-      out.appendChild(outResizeHandleEl(node));
-      const oh = document.createElement("div");
-      oh.className = "n-out-head";
-      const nA = attemptCount(node);
-      oh.appendChild(
-        document.createTextNode(
-          liveDsh
-            ? I18n.t("OUTPUT · 运行中")
-            : ((r && r.error
-                ? "ERROR"
-                : r && r.batchOutputs
-                  ? I18n.t("OUTPUT · 批量")
-                  : "OUTPUT") +
-                (nA > 1
-                  ? I18n.t(" · 尝试 ") + (attemptIdx(node) + 1) + "/" + nA
-                  : "")),
-        ),
-      );
-      oh.appendChild(outButtonsEl(node, liveDsh, r));
-      out.appendChild(oh);
-      if (nA > 1) out.appendChild(attemptTabsEl(node));
-      if (liveDsh) {
-        /* 智能任务：会话区已展示 live 工具/正文，右侧 Output 仅作镜像流，避免重复工具 id */
-        if (node.kind !== "agent_task") {
-          const toolsBox = document.createElement("div");
-          toolsBox.className = "dsh-tools";
-          toolsBox.id = "dsh-out-tools-" + node.id;
-          const liveTools = (S.nodeTools && S.nodeTools[node.id]) || [];
-          for (const t of liveTools)
-            toolsBox.appendChild(dshToolDetailsEl(t, true, node.id));
-          out.appendChild(toolsBox);
-        }
-        const stream = document.createElement("div");
-        stream.className = "md dsh-out-live";
-        stream.id = "dsh-out-stream-" + node.id;
-        stream.textContent = traceSayDisplay(node.id, node._pendingAnswer);
-        if (!stream.textContent) {
-          stream.textContent = I18n.t("智能任务执行中…");
-          stream.classList.add("n-empty");
-        }
-        out.appendChild(stream);
-      } else if (r && r.batchOutputs && r.batchOutputs.length) {
-        const list = document.createElement("div");
-        list.className = "n-bout-list";
-        r.batchOutputs.forEach((x, idx) => {
-          const rr = document.createElement("div");
-          rr.className = "n-bout-row" + (x.ok ? "" : " err");
-          const t = document.createElement("span");
-          t.className = "n-bout-title";
-          t.textContent = x.title;
-          t.title = x.title;
-          rr.appendChild(t);
-          if (x.ok && x.output) {
-            if (x.output.kind === "text") {
-              const s = document.createElement("span");
-              s.className = "n-bout-snip";
-              s.textContent =
-                x.output.text.slice(0, 80) +
-                (x.output.text.length > 80 ? "…" : "");
-              s.title = x.output.text;
-              rr.appendChild(s);
-            } else {
-              const img = document.createElement("img");
-              img.id = "outimg-" + node.id + "-" + idx;
-              img.alt = x.title;
-              img.dataset.path = (x.output && x.output.path) || "";
-              if (node.bgRmOn) img.classList.add("bg-rm-preview");
-              bindImgSaveAs(img);
-              bindImagePreview(img, img.dataset.path, x.title);
-              rr.appendChild(img);
-            }
-          } else if (x.error) {
-            const s = document.createElement("span");
-            s.className = "n-bout-snip err";
-            s.textContent = "✕ " + x.error;
-            s.title = x.error;
-            rr.appendChild(s);
-          }
-          list.appendChild(rr);
-        });
-        out.appendChild(list);
-      } else if (r && r.output && r.output.kind === "text") {
-        const doneTools = isDshTask(node)
-          ? (S.nodeTools && S.nodeTools[node.id]) || []
-          : [];
-        if (doneTools.length && node.kind !== "agent_task") {
-          const toolsBox = document.createElement("div");
-          toolsBox.className = "dsh-tools";
-          for (const t of doneTools)
-            toolsBox.appendChild(dshToolDetailsEl(t, false, node.id));
-          out.appendChild(toolsBox);
-        }
-        const md = document.createElement("div");
-        md.className = "md";
-        md.innerHTML = renderMarkdown(r.output.text);
-        out.appendChild(md);
-      } else if (r && r.output && r.output.kind === "image") {
-        const img = document.createElement("img");
-        img.id = "out-img-" + node.id;
-        img.alt = I18n.t("输出图像");
-        img.dataset.path = r.output.path || "";
-        if (node.bgRmOn) img.classList.add("bg-rm-preview");
-        bindImgSaveAs(img);
-        bindImagePreview(img, img.dataset.path, node.title || I18n.t("输出图像"));
-        out.appendChild(img);
+      if (!hasSideOutPanel(node)) {
+        /* 整幅宽、挂在输入框下方（与预览态 NODE_BROWSE_BODY.agent_task 同一位次）：
+           默认收起，展开记忆在 S.agentTaskOutOpen；旧的 outW 那一列宽不再读
+           （老数据留着不动，不主动收窄用户已存的几何）。 */
+        left.appendChild(agentTaskOutFoldEl(node, r, liveDsh));
       } else {
-        const e = document.createElement("div");
-        e.className = "n-empty";
-        e.textContent = (r && r.error) || "";
-        out.appendChild(e);
+        const out = procOutPanelEl(node, r, liveDsh);
+        if (node.outW == null) node.outW = 210;
+        out.style.width = node.outW + "px";
+        row.appendChild(out);
+        /* OUTPUT 出现时同步加宽节点数据；DOM 宽度由 nodeElement 在 buildBody 后写回 */
+        node.w = Math.max(node.w, procMinNodeW(node.outW));
       }
-      row.appendChild(out);
-      /* OUTPUT 出现时同步加宽节点数据；DOM 宽度由 nodeElement 在 buildBody 后写回 */
-      node.w = Math.max(node.w, procMinNodeW(node.outW));
     }
     body.appendChild(row);
     /* 本轮起转写归音频 / 视频节点所有（见下面 input_audio / input_video 分支）：

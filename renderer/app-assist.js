@@ -699,9 +699,13 @@ function persistAssistUi() {
   S.config.assistOpen = !!S.assistOpen;
   S.config.assistLive2d = !!S.assistLive2d;
   S.config.assistPreset = S.assistPreset || AGENT_PRESET_DEFAULT;
-  S.config.assistProvider = S.assistProvider || "deepseek-official";
-  S.config.assistModel = S.assistModel || "";
-  S.config.assistEffort = S.assistEffort || "high";
+  /* 提供商 / 模型 / 思考强度**不在这里落盘**（本次需求 · 单一真源）：它们就是
+     「设置 · 默认模型」那三格（config.dsh.provider / model / effort），助手栏改选时
+     直接写 dsh.*（见 fillAssistModelControls 与 app-boot.js 的思考强度下拉）。
+     S.assist* 只是运行期镜像（长任务等旧入口仍读它），老键在老配置迁移时已删除。 */
+  if (S.config.assistProvider !== undefined) delete S.config.assistProvider;
+  if (S.config.assistModel !== undefined) delete S.config.assistModel;
+  if (S.config.assistEffort !== undefined) delete S.config.assistEffort;
   S.config.assistWorkspace = S.assistWorkspace || "";
   S.config.assistScope =
     S.assistScope === "global" ? "global" : "current";
@@ -1050,7 +1054,9 @@ function fillAssistModelControls() {
   };
   const fillModels = (prov) => {
     const items = modelsFor(prov);
-    let cur = S.assistModel || "";
+    /* 回显「设置 · 默认模型」里的那一只（本次需求 · 单一真源）：助手栏不再有自己的一份；
+       存的模型不在该家清单里（老配置 / 刚换过服务商）就回落到该家第一只。 */
+    let cur = dshDefaultModelValue();
     if (!cur || !items.some((x) => x.id === cur))
       cur = (items[0] && items[0].id) || "";
     modelSel.innerHTML = "";
@@ -1067,7 +1073,7 @@ function fillAssistModelControls() {
   };
   const mtnode = mtnodePiProviders();
   const dp = dshProvider();
-  let curProv = S.assistProvider || "deepseek-official";
+  let curProv = dshDefaultProviderRoute() || "deepseek-official";
   provSel.innerHTML = "";
   /* 官方路由对应的 DeepSeek 服务商被停用时，这条整体不列（与节点设置 / 会话菜单同口径） */
   const dsOk =
@@ -1081,15 +1087,22 @@ function fillAssistModelControls() {
     curProv = preferredAgentProviderRoute();
   }
   provSel.value = curProv;
+  S.assistProvider = curProv;
   fillModels(curProv);
   provSel.onchange = () => {
-    S.assistProvider = provSel.value;
+    /* 改选服务商 = 改「设置 · 默认模型」的提供商（唯一真源），模型跟着清空走该家第一只 */
+    S.config.dsh.provider = String(provSel.value || "");
+    S.config.dsh.model = "";
+    S.assistProvider = S.config.dsh.provider;
     S.assistModel = "";
     fillModels(provSel.value);
     persistAssistUi();
   };
   modelSel.onchange = () => {
-    S.assistModel = modelSel.value;
+    S.config.dsh.model = String(modelSel.value || "");
+    if (!String(S.config.dsh.provider || "").trim())
+      S.config.dsh.provider = String(provSel.value || "");
+    S.assistModel = S.config.dsh.model;
     persistAssistUi();
   };
 }
@@ -1169,32 +1182,27 @@ function syncAssistPresetOptions(sel) {
 
 /* ── 助手栏「上下文压缩」档位下拉（本次需求：放在「思考强度」下一行）──────────────
    与「设置 · 智能能力 · 上下文压缩」**同一份值**：真源 S.config.dsh.compact
-   （{enabled, tier}，由 main.js 的 syncCompactPolicy 落进 dsh 组合的 compaction-basic 行，
-   见 dsh-compact-policy.js）—— 这里只是同一份设置的第二个人口，不另立真源、不另存一份。
-   下拉四档：关闭 / 早 / 中 / 晚；「关闭」= enabled:false（仍在档位上保留用户选的 tier，
-   再打开时回到原档），早/中/晚 = enabled:true + 该档。归一与非法值回落由
-   compactPolicyOf 负责（缺省 = 开 · 中档，与策略模块的出厂值一字一致）。 */
-const ASSIST_COMPACT_OPTIONS = [
-  ["off", "关闭 · 不自动压缩长会话"],
-  ["early", "早 · 上下文还宽裕时就压（最省，前文细节丢得最多）"],
-  ["mid", "中 · 默认档（约 30 万 token 触发）"],
-  ["late", "晚 · 接近上限才压（保留最多前文）"],
-];
+   （{enabled, tier, customTriggerTokens}，由 main.js 的 syncCompactPolicy 落进 dsh 组合的
+   compaction-basic 行，见 dsh-compact-policy.js）—— 这里只是同一份设置的一个人口，
+   不另立真源、不另存一份。档位清单 / 归一 / 档位词条都来自 renderer/app-dsh-compact.js
+   （与设置面板共用的那一小份真源）；「关闭」= enabled:false（仍在档位上保留用户选的 tier，
+   再打开时回到原档）。写回（下面这几个 apply*）只住在这一份文件里：设置面板与会话菜单
+   都调它们，保证落盘 / 提示 / 侧控件同步只有一条链。 */
 
-/* 读回归一后的压缩策略：缺省 / 非法值一律回落「开 · 中档」（与 dsh-compact-policy.js 同源口径） */
-function compactPolicyOf(cfg) {
-  const c = (cfg && cfg.dsh && cfg.dsh.compact) || {};
-  return {
-    enabled: c.enabled !== false,
-    tier: ["early", "mid", "late"].indexOf(String(c.tier)) >= 0 ? String(c.tier) : "mid",
-  };
-}
-
-/* 档位 → 档位词条键（「关闭」那一档的键另算：它同时是「关掉压缩」的语义）。
-   会话菜单那一格与助手栏下拉共用它，档位清单常量 ASSIST_COMPACT_OPTIONS 仍是唯一真源。 */
-function assistCompactOptionLabel(v) {
-  const hit = ASSIST_COMPACT_OPTIONS.filter((p) => p[0] === String(v))[0];
-  return hit ? hit[1] : ASSIST_COMPACT_OPTIONS[2][1];
+/* 自定义触发线输入框的显示态（三处入口共用同一段口径）：选「自定义」才露出输入框。
+   两个宿主（设置面板 #assistCompactCustomSet、助手栏 #assistCompactCustom）各有自己的元素 id，
+   这里只做「按当前档位切换显隐」，不碰值（值由各自的 sync 负责回填）。 */
+function syncCompactSideControls(tier) {
+  /* 沙箱（smoke）里可能只给了部分 document 能力：没有 getElementById 就当作没有侧控件 */
+  if (typeof document === "undefined" || !document.getElementById) return;
+  const isCustom = String(tier) === "custom";
+  ["assistCompactCustom", "assistCompactCustomSet"].forEach((id) => {
+    const box = document.getElementById(id);
+    if (!box) return;
+    box.hidden = !isCustom;
+    const inp = box.querySelector ? box.querySelector("input") : null;
+    if (inp) inp.disabled = !isCustom;
+  });
 }
 
 /* 档位清单按「语言」重建（档名要走词条），回显取当前生效值 */
@@ -1215,27 +1223,139 @@ function syncAssistCompactOptions(sel) {
   if (document.activeElement === sel) return;
   const cp = compactPolicyOf(S.config);
   sel.value = cp.enabled === false ? "off" : cp.tier;
+  syncCompactSideControls(cp.tier);
+}
+
+/* 自定义触发线输入框的回填：只回填「当前值」，正在输入时不打断（焦点在框里就跳过，
+   否则用户敲到一半会被自己的回填覆盖）。 */
+function syncCompactCustomInput(input) {
+  if (!input || typeof document === "undefined" || !document.createElement) return;
+  if (document.activeElement === input) return;
+  const cp = compactPolicyOf(S.config);
+  input.value = String(cp.customTriggerTokens);
 }
 
 /* 写回：与设置面板同一份落盘链（persistAssistUi → configSave → main.js 的
-   syncCompactPolicy 改写组合行；生效时机 = 下一个新会话） */
+   syncCompactPolicy 改写组合行；生效时机 = 下一个新会话）。
+   这里只收**档位 id**（off / frugal / mid / late / custom）：选「关闭」时保留用户原来那一档
+   （再打开回到原档），选「自定义」时沿用已存的自定义触发线（没存过 = 100k）。
+   自定义触发线的数值写回走 applyAssistCompactTrigger（数字与档位分开，免得把 "100000"
+   这种数字串当成档位）。 */
 function applyAssistCompactChoice(v) {
   if (!S.config) return;
   const cur = compactPolicyOf(S.config);
   const next = String(v || "");
-  /* 档位：选的是三档之一就用它；选「关闭」时保留用户原来那一档（再打开回到原档） */
-  const tier = ["early", "mid", "late"].indexOf(next) >= 0 ? next : cur.tier;
+  const isFixed = COMPACT_FIXED_TIERS.indexOf(next) >= 0 || next === "custom";
+  const tier = isFixed ? next : cur.tier;
+  /* 切档位 = 清空两个「压缩后大小」的自定义值（本次共识）：档位本身就是一组默认体积，
+     保留用户上一档手填的数会造出「档位写着省钱、保留量还是晚档的 64K」这种错配。 */
+  const tierChanged = tier !== cur.tier;
   if (!S.config.dsh) S.config.dsh = {};
-  S.config.dsh.compact = { enabled: next !== "off", tier };
+  S.config.dsh.compact = {
+    enabled: next !== "off",
+    tier,
+    customTriggerTokens: cur.customTriggerTokens,
+    retainTokens: tierChanged ? null : cur.retainTokens,
+    summaryMaxTokens: tierChanged ? null : cur.summaryMaxTokens,
+  };
   persistAssistUi();
-  /* 提示语**不点名哪一只界面**（本轮起这一份写回链有两个入口：助手栏下拉与会话
-     「模型」菜单里的「上下文压缩」一格），否则从会话改完会收到一句「助手栏…」的错话。 */
+  /* 各处入口当场同步侧控件（自定义档的触发线输入框显隐 + 两个体积输入框的回显） */
+  syncCompactSideControls(tier);
+  syncCompactLimitInputs();
+  /* 提示语**不点名哪一只界面**（这一份写回链有三个入口：助手栏下拉、会话「模型」菜单
+     与设置面板），否则从会话改完会收到一句「助手栏…」的错话。 */
   toast(
     next === "off"
       ? I18n.t("上下文压缩已关闭（下一个新会话生效）")
       : I18n.t("上下文压缩时机已更新（下一个新会话生效）"),
     "ok",
   );
+}
+
+/* 写回自定义触发线（数字）：越界即**拒绝**并提示（不落到配置里），合规则写进
+   S.config.dsh.compact.customTriggerTokens 并把档位切到 custom。返回 true = 已写入。 */
+function applyAssistCompactTrigger(raw) {
+  if (!S.config) return false;
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n) || n < COMPACT_CUSTOM_MIN || n > COMPACT_CUSTOM_MAX) {
+    toast(I18n.t("自定义触发线要填 100k – 500k 之间的整数。"), "warn");
+    return false;
+  }
+  const cur = compactPolicyOf(S.config);
+  if (!S.config.dsh) S.config.dsh = {};
+  S.config.dsh.compact = {
+    enabled: cur.enabled !== false,
+    tier: "custom",
+    customTriggerTokens: n,
+    /* 两个体积值原样带过去（改触发线不该顺手把用户填的压缩后大小清掉） */
+    retainTokens: cur.retainTokens,
+    summaryMaxTokens: cur.summaryMaxTokens,
+  };
+  persistAssistUi();
+  syncCompactSideControls("custom");
+  toast(I18n.t("自定义触发线已更新（下一个新会话生效）"), "ok");
+  return true;
+}
+
+/* 写回「压缩后的大小」两个可调量（本次需求）：
+     kind = "retain"（保留的最近原文 token）| "summary"（摘要输出上限 token）
+     空值 / 0 = 清空覆盖，回到跟随档位默认（consensus：不填就跟随档位）；
+     越界**拒绝并提示**，框里的值由调用方回填成当前生效值。返回 true = 已写入。 */
+function applyAssistCompactLimit(kind, raw) {
+  if (!S.config) return false;
+  const isRetain = String(kind) === "retain";
+  const min = isRetain ? COMPACT_RETAIN_MIN : COMPACT_SUMMARY_MIN;
+  const max = isRetain ? COMPACT_RETAIN_MAX : COMPACT_SUMMARY_MAX;
+  const blank = raw === null || raw === undefined || String(raw).trim() === "";
+  const n = blank ? null : Math.round(Number(raw));
+  if (!blank && (!Number.isFinite(n) || n < min || n > max)) {
+    toast(
+      isRetain
+        ? I18n.t("保留原文要填 4K – 128K 之间的整数（留空 = 跟随档位）。")
+        : I18n.t("摘要上限要填 4K – 256K 之间的整数（留空 = 跟随档位）。"),
+      "warn",
+    );
+    return false;
+  }
+  const cur = compactPolicyOf(S.config);
+  if (!S.config.dsh) S.config.dsh = {};
+  S.config.dsh.compact = {
+    enabled: cur.enabled !== false,
+    tier: cur.tier,
+    customTriggerTokens: cur.customTriggerTokens,
+    retainTokens: isRetain ? n : cur.retainTokens,
+    summaryMaxTokens: isRetain ? cur.summaryMaxTokens : n,
+  };
+  persistAssistUi();
+  syncCompactLimitInputs();
+  toast(
+    n === null
+      ? I18n.t("已跟随档位默认（下一个新会话生效）")
+      : I18n.t("压缩后大小已更新（下一个新会话生效）"),
+    "ok",
+  );
+  return true;
+}
+
+/* 两个体积输入框的回填（助手栏那一对；会话菜单里的框每次开菜单重建，不用回填）：
+   空字符串 = 跟随档位（占位符里写着当前档位默认值），有值 = 用户覆盖。正在输入时不打断。 */
+function syncCompactLimitInputs() {
+  if (typeof document === "undefined" || !document.getElementById) return;
+  const pair = [
+    ["assistCompactRetainInput", compactRetainEffectiveOf(S.config)],
+    ["assistCompactSummaryInput", compactSummaryEffectiveOf(S.config)],
+  ];
+  for (const [id, eff] of pair) {
+    const inp = document.getElementById(id);
+    if (!inp) continue;
+    const def = String(eff.tokens);
+    if (inp.dataset) inp.dataset.tierDefault = def;
+    inp.placeholder = def;
+    if (document.activeElement === inp) continue;
+    const cp = compactPolicyOf(S.config);
+    const custom = id === "assistCompactRetainInput" ? cp.retainTokens : cp.summaryMaxTokens;
+    inp.value = custom === null ? "" : String(custom);
+  }
 }
 
 function renderAssistPanel(opts) {
@@ -1328,8 +1448,11 @@ function renderAssistPanel(opts) {
     effortSel.value = AGENT_EFFORT_UI_ORDER.includes(cur) ? cur : "high";
     if (S.assistEffort !== cur) S.assistEffort = cur;
   }
-  /* 「上下文压缩」档位（本次需求 · 紧接在思考强度下一行）：清单按语言重建 + 回显生效值 */
+  /* 「上下文压缩」档位（本次需求 · 紧接在思考强度下一行）：清单按语言重建 + 回显生效值；
+     自定义档的触发线输入框显隐 / 回填也在这里一并同步 */
   syncAssistCompactOptions($("#assistCompactSel"));
+  syncCompactCustomInput($("#assistCompactCustomInput"));
+  syncCompactLimitInputs();
   syncAssistWorkspaceChrome();
   fillAssistScopeControl();
   updateAssistScopeChrome();
@@ -1480,7 +1603,7 @@ async function assistSend(text) {
   const visionMediaRules = assistCanvasFree
     ? /* 无画布档：整段画布 / 节点口径撤掉，只留「回执即事实」这条通用纪律 */
       "- 工具回执里没有的结果，不要向用户声称已完成。\n"
-    : "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用，传 imagePath（绝对路径）+ question；首次会请用户许可（允许一次 / 始终允许 / 拒绝）。不要把大批图片塞进主对话。\n" +
+    : "- mtnode_vision：识图子代理。中途需要看本地图片内容（游戏 UI、截图 OCR、核对生成图）时调用，传 imagePath（绝对路径）+ question；首次会请用户许可（允许一次 / 始终允许 / 拒绝）。会话里识图只有这一个入口（引擎自带的 read_image 不注册，任何读图都走 mtnode_vision）。不要把大批图片塞进主对话。\n" +
     "  · 文字处理与图生文（多模态识图）要隔离：先由专用识图 / 智能任务节点把图像转成文字，再让纯文本节点吃那段文字，这样文字步骤能选更合适的非视觉模型。\n" +
     "  · 图像参考节点用 kind input_image，把本机绝对路径写进 imagePath（应用会复制进画布资产），已知路径就不要让用户再拖拽；多图 batch:true + imagePaths。\n" +
     "  · 改节点模型：create/update 传 model，文本 / 图像节点配 providerId（服务商 id 或唯一名称），智能任务配 provider（deepseek-official 或 mtnode_<id> / 名称）。\n" +
@@ -2253,10 +2376,12 @@ function agentSessionState() {
       workspace: "",
       /* 所属画布：新建那一刻用户看到的画布（用户一切画布，会话不跟着漂） */
       canvasWfId: currentVisibleWfId(),
-      preset: AGENT_PRESET_DEFAULT,
-      provider: "deepseek-official",
-      model: "",
-      effort: "high",
+      /* 占位会话（还没有任何会话时的空壳）同样按「设置 · 默认模型」播种：
+         它一旦收到第一条消息就会成为真会话，不能让它的模型与会话默认对不上。 */
+      preset: dshDefaultPresetValue() || AGENT_PRESET_DEFAULT,
+      provider: dshDefaultProviderRoute() || "deepseek-official",
+      model: dshDefaultModelValue(),
+      effort: dshDefaultEffortValue(),
       pure: false,
       messages: [],
       archived: false,
@@ -2306,6 +2431,13 @@ function wsGroupOf(ws) {
    本文档里的 180+ 调用点一个字都不用改：它们只要求「这次改动最终会落盘」。 */
 const AGENT_SAVE_MS = 500; /* 合并窗口（用户已确认：500 ms，切会话 / 关窗 / 跑画布前立即 flush） */
 S._sessionDirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();
+/* 「待删名单」：用户删掉的会话 id。主进程 session:save 只会删 drop 名单里的会话
+   （文件 + 索引条目），渲染层不点名就等于没删 —— 本机 bug「删了会话，重启又回来」
+   就是这么来的（只从内存数组里摘掉，盘上 index.json 与 as<id>.json 原样留着，
+   下次启动 app-boot.js 又从索引读回来）。
+   口径（用户已确认）：删 = 彻底删除（不可恢复）；写盘失败时这份名单**不丢**，
+   下一次任意保存继续带上重试，同时给用户一次明确提示（绝不静默吞掉）。 */
+S._sessionDrop = S._sessionDrop instanceof Set ? S._sessionDrop : new Set();
 /* 记一次「这条会话改了」：等窗口过去或有人 flush 时一起落盘。 */
 function agentMarkSessionDirty(id) {
   if (!id) return;
@@ -2315,6 +2447,18 @@ function agentMarkSessionDirty(id) {
     S._sessionSaveTimer = null;
     Promise.resolve(agentWriteAgentSessions()).catch(() => {});
   }, AGENT_SAVE_MS);
+}
+/* 记一条「这条会话被删了」：随下一次 session:save 的 drop 一起下发（见 agentWriteAgentSessions）。
+   删掉的会话已不在列表里，光靠「列表里没有它」主进程无从判断（懒加载下本来就只送脏会话），
+   必须由渲染层点名，主进程才会删文件 + 摘索引条目。 */
+function agentMarkSessionDrop(id) {
+  const sid = String(id || "");
+  if (!sid) return false;
+  if (!(S._sessionDrop instanceof Set)) S._sessionDrop = new Set();
+  S._sessionDrop.add(sid);
+  /* 已删除的会话不必再作为「脏会话」排队（摘掉只是省一遍白算，不影响结果） */
+  if (S._sessionDirty instanceof Set) S._sessionDirty.delete(sid);
+  return true;
 }
 /* 立即把排队的会话改动写下去（调用方 await 它就等于「已经落盘」）。 */
 function agentFlushSessionSave() {
@@ -2338,6 +2482,14 @@ async function agentWriteAgentSessions() {
       dropped.push(String(s.id));
     }
     list.splice(60);
+  }
+  /* 用户删掉的会话（待删名单）：与 60 条截断同一条 drop 通道 —— 主进程删文件 + 摘索引条目。
+     名单来自 agentMarkSessionDrop，只有写盘成功才摘掉，失败留着重试。 */
+  const pendingDrop = S._sessionDrop instanceof Set ? Array.from(S._sessionDrop) : [];
+  for (const id of pendingDrop) {
+    const sid = String(id || "");
+    if (!sid) continue;
+    if (dropped.indexOf(sid) < 0) dropped.push(sid);
   }
   const payloadSessions = [];
   for (const s of list) {
@@ -2376,7 +2528,54 @@ async function agentWriteAgentSessions() {
   } catch (_) {
     res = null;
   }
+  /* 待删名单的收尾只看回执：写盘成功才摘，失败留着重试（见 agentSettleSessionDrop） */
+  agentSettleSessionDrop(dropped, res);
   return res;
+}
+/* 落盘回执决定「待删名单」的去留（用户口径 · 已确认）：
+   · 成功 → 摘掉（这条会话的索引条目与文件都已经没了）；
+   · 失败 → 名单原样留着，下一次任意保存继续带上重试；只提示一次，不每次刷屏。
+   为什么必须看回执：界面已经删了、盘上没删掉，就等于「删了重启又回来」——
+   这种情况用户必须知道，程序也不能悄悄放弃。 */
+function agentSettleSessionDrop(dropped, res) {
+  const ids = (Array.isArray(dropped) ? dropped : []).map(String).filter(Boolean);
+  if (!ids.length) return;
+  const ok = !!(res && res.ok !== false);
+  if (ok) {
+    if (S._sessionDrop instanceof Set) for (const id of ids) S._sessionDrop.delete(id);
+    S._sessionDropWarned = false;
+    S._sessionDropRetries = 0;
+    if (S._sessionDropRetryTimer) {
+      clearTimeout(S._sessionDropRetryTimer);
+      S._sessionDropRetryTimer = null;
+    }
+    return;
+  }
+  if (!(S._sessionDrop instanceof Set)) S._sessionDrop = new Set();
+  for (const id of ids) S._sessionDrop.add(id);
+  if (!S._sessionDropWarned) {
+    S._sessionDropWarned = true;
+    toast(
+      I18n.t("会话已从列表删除，但没能从磁盘删干净（重启后可能又出现），已排队重试"),
+      "err",
+    );
+  }
+  agentScheduleSessionDropRetry();
+}
+/* 写盘失败后的有限次自动重试：2 秒一次、最多 3 次；之后仍失败就等下一次自然保存
+   （名单一直留着，避免「重试定时器无限打转」）。 */
+const AGENT_DROP_RETRY_MS = 2000;
+const AGENT_DROP_RETRY_MAX = 3;
+function agentScheduleSessionDropRetry() {
+  if (S._sessionDropRetryTimer) return;
+  const tries = Number(S._sessionDropRetries) || 0;
+  if (tries >= AGENT_DROP_RETRY_MAX) return;
+  S._sessionDropRetries = tries + 1;
+  S._sessionDropRetryTimer = setTimeout(() => {
+    S._sessionDropRetryTimer = null;
+    if (!(S._sessionDrop instanceof Set) || !S._sessionDrop.size) return;
+    Promise.resolve(agentWriteAgentSessions()).catch(() => {});
+  }, AGENT_DROP_RETRY_MS);
 }
 /* 索引条目 = 左栏要用的全部元数据（与主进程 META_KEYS 同步：漏一个键界面就少一块） */
 function agentSessionMetaForDisk(s) {
@@ -2548,10 +2747,13 @@ function newAgentSession() {
     workspace: cur.workspace || "",
     /* 手动「新会话」= 用户此刻正在看的这张图 */
     canvasWfId: currentVisibleWfId(),
-    preset: cur.preset || AGENT_PRESET_DEFAULT,
-    provider: cur.provider || "deepseek-official",
-    model: cur.model || "",
-    effort: cur.effort || "high",
+    /* 预设 / 提供商 / 模型 / 思考强度 = 「设置 · 默认模型」那几格（本次共识）：
+       新建会话按设置播种，不再沿用「当前会话」的临时选择 —— 否则设置里的默认模型
+       只是摆设（旧行为：新会话继承当前会话，空模型再被运行期取成该家第一只）。 */
+    preset: dshDefaultPresetValue() || AGENT_PRESET_DEFAULT,
+    provider: dshDefaultProviderRoute() || "deepseek-official",
+    model: dshDefaultModelValue(),
+    effort: dshDefaultEffortValue(),
     /* 手动新建的会话照常读画布：「不读画布」是开发绑定会话专属（createDevSessionForNode 置位） */
     noCanvasRead: false,
     /* 「与画布无关」是用户手动声明档：新建会话默认关（照常读画布） */
@@ -2718,6 +2920,10 @@ async function deleteAgentSessionCore(id) {
   } catch (_) {}
   detachSessionsFromNodes([id]);
   list.splice(at, 1);
+  /* ★ 点名删除：主进程 session:save 只删 drop 名单里的会话（文件 + 索引条目）。
+     少了这一步，内存里删干净了、盘上 index.json 与 as<id>.json 还在，
+     下次启动又从索引读回来 —— 就是「删了会话，重启又回来」的根因。 */
+  agentMarkSessionDrop(id);
   if (S.agentActiveId === id) S.agentActiveId = (list[0] && list[0].id) || "";
   /* 删除是用户主动操作，但被删的那条已经不在列表里：这里只把改动推下去，
      不盖任何存活会话的时间戳（谁也不该因为「别人被删了」而顶到最前）。 */
@@ -2750,7 +2956,10 @@ async function deleteAgentSession(id) {
   /* 用户已点第二下 = 明确诉求：在跑的会话先兜底终止再删，绝不静默打断 */
   if (agentSessionBusy(s)) stopSessionForDelete(id);
   await deleteAgentSessionCore(id);
-  toast(I18n.t("会话已删除：") + (s.title || I18n.t("新会话")), "ok");
+  /* 只有盘上也真的删干净了才报「已删除」（待删名单里还留着它 = 这次没写成功，
+     那时 agentSettleSessionDrop 已经给过一条明确的警告，这里绝不能再报成功）。 */
+  const stillPending = S._sessionDrop instanceof Set && S._sessionDrop.has(String(id));
+  if (!stillPending) toast(I18n.t("会话已删除：") + (s.title || I18n.t("新会话")), "ok");
 }
 /* ===================== dsh web composer（模型 / 命令 / 工作区 下拉） ===================== */
 function closeAgentMenus() {
@@ -2788,12 +2997,14 @@ function agentPresetLabel(id) {
   return I18n.t(agentPresetById(id).labelKey);
 }
 /* 会话菜单「上下文压缩」一格的回显值（本轮需求）：与助手栏那一格同一份真源
-   （compactPolicyOf 读 config.dsh.compact）——「关闭」显示关闭，否则显示三档里的那一档。 */
+   （compactPolicyOf 读 config.dsh.compact）——「关闭」显示关闭，否则显示相应的那一档；
+   档名自带上下文阈值（固定档写死在词条里），自定义档的阈值是活的，另拼 compactCustomSuffix。 */
 function agentCompactMenuValue() {
   const cp = compactPolicyOf(S.config);
-  return cp.enabled === false
-    ? I18n.t("关闭 · 不自动压缩长会话")
-    : I18n.t(assistCompactOptionLabel(cp.tier));
+  if (cp.enabled === false) return I18n.t("关闭");
+  const base = I18n.t(assistCompactOptionLabel(cp.tier));
+  if (cp.tier === "custom") return base + compactCustomSuffix(cp.customTriggerTokens);
+  return base;
 }
 function renderAgentComposer() {
   const st = agentSessionState();
@@ -3025,10 +3236,13 @@ function buildAgentModelMenu() {
       menu.appendChild(e);
     }
   } else if (pane === "compact") {
-    /* 上下文压缩四档（关闭 / 早 / 中 / 晚）：清单与助手栏那一格共用 ASSIST_COMPACT_OPTIONS
-       （同一个真源，改一处两边一起变），当前档打 ✓，选完走 applyAssistCompactChoice
-       —— 与助手栏下拉、设置面板走**同一条写回链**（S.config.dsh.compact → 落盘 →
-       main.js 的 syncCompactPolicy 改写组合行），所以这里不自己碰 config。 */
+    /* 上下文压缩五档（关闭 / 省钱 / 中 / 晚 / 自定义）：清单与助手栏那一格共用
+       ASSIST_COMPACT_OPTIONS（同一个真源，改一处两边一起变），当前档打 ✓，选完走
+       applyAssistCompactChoice —— 与助手栏下拉、设置面板走**同一条写回链**
+       （S.config.dsh.compact → 落盘 → main.js 的 syncCompactPolicy 改写组合行），
+       所以这里不自己碰 config。
+       自定义档就地给一个触发线输入框（三处入口一致：设置面板 / 助手栏 / 这里），
+       写回走 applyAssistCompactTrigger（越界拒绝并提示）。 */
     const cur = compactPolicyOf(S.config);
     for (const pair of ASSIST_COMPACT_OPTIONS) {
       const on = pair[0] === "off" ? !cur.enabled : cur.enabled && pair[0] === cur.tier;
@@ -3037,13 +3251,70 @@ function buildAgentModelMenu() {
       opt.innerHTML =
         '<span class="agent-menu-option-copy"><span class="agent-menu-option-name"></span></span>' +
         '<span class="agent-menu-check">' + (on ? "✓" : "") + "</span>";
-      opt.querySelector(".agent-menu-option-name").textContent = I18n.t(pair[1]);
+      opt.querySelector(".agent-menu-option-name").textContent =
+        I18n.t(pair[1]) + (pair[0] === "custom" ? compactCustomSuffix(cur.customTriggerTokens) : "");
       opt.onclick = () => {
         applyAssistCompactChoice(pair[0]);
         closeAgentMenus();
         renderAgentSession();
       };
       menu.appendChild(opt);
+    }
+    /* 自定义触发线（仅选了自定义档才露出）：窄面板里只放「标签 + 数字框」一行 */
+    const trow = document.createElement("label");
+    trow.className = "agent-menu-option agent-menu-input-row";
+    trow.hidden = !(cur.enabled !== false && cur.tier === "custom");
+    const tlabel = document.createElement("span");
+    tlabel.className = "agent-menu-option-name";
+    tlabel.textContent = I18n.t("自定义触发线");
+    const tinp = document.createElement("input");
+    tinp.type = "number";
+    tinp.min = String(COMPACT_CUSTOM_MIN);
+    tinp.max = String(COMPACT_CUSTOM_MAX);
+    tinp.step = "1000";
+    tinp.value = String(cur.customTriggerTokens);
+    tinp.title = I18n.t("（单位：token，可填 100k – 500k；只对大窗口路由生效）");
+    tinp.onchange = () => {
+      if (!applyAssistCompactTrigger(tinp.value)) syncCompactCustomInput(tinp);
+    };
+    trow.appendChild(tlabel);
+    trow.appendChild(tinp);
+    menu.appendChild(trow);
+    /* 压缩后的大小（本次需求）：保留的最近原文 token / 摘要输出上限 token。
+       留空 = 跟随档位默认（占位符里就是当前档位默认值），写回走 applyAssistCompactLimit
+       （越界拒绝并提示），与助手栏那两个框同一条链、同一份 config.dsh.compact。 */
+    const sizeRows = [
+      ["retain", "保留原文", COMPACT_RETAIN_MIN, COMPACT_RETAIN_MAX, "compactRetain"],
+      ["summary", "摘要上限", COMPACT_SUMMARY_MIN, COMPACT_SUMMARY_MAX, "compactSummary"],
+    ];
+    for (const [kind, labelKey, min, max] of sizeRows) {
+      const eff = kind === "retain" ? compactRetainEffectiveOf(S.config) : compactSummaryEffectiveOf(S.config);
+      const custom = kind === "retain" ? cur.retainTokens : cur.summaryMaxTokens;
+      const row = document.createElement("label");
+      row.className = "agent-menu-option agent-menu-input-row";
+      const lab = document.createElement("span");
+      lab.className = "agent-menu-option-name";
+      lab.textContent = I18n.t(labelKey);
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.min = String(min);
+      inp.max = String(max);
+      inp.step = "1024";
+      inp.value = custom === null ? "" : String(custom);
+      inp.placeholder = String(eff.tokens);
+      inp.title = I18n.t(
+        kind === "retain"
+          ? "（单位：token；留空 = 跟随档位默认；超过触发线时按触发线夹取）"
+          : "（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）",
+      );
+      inp.onchange = () => {
+        /* 写成功 / 失败都重建这一页：失败（越界）时把框里的值回填成当前生效值 */
+        applyAssistCompactLimit(kind, inp.value);
+        buildAgentModelMenu();
+      };
+      row.appendChild(lab);
+      row.appendChild(inp);
+      menu.appendChild(row);
     }
   } else {
     /* 思考强度五档（无 / 轻 / 标准 / 强 / 最强）：选哪档就按哪档下发，路由能力不足时网关夹到
@@ -3359,10 +3630,10 @@ function paintAgentToolsChip() {
   if (val) val.textContent = n ? String(n) : "";
 }
 /* ── 「模式」chip 菜单：会话级开关的收纳口（与「工具」chip 同款下拉） ──
-   本轮需求：原来平铺在输入区的两枚 chip（纯净模式 / 自动续跑=默认续跑）收进这一只菜单，
+   本轮需求：原来平铺在输入区的两枚 chip（纯净模式 / 自动续跑）收进这一只菜单，
    输入区只留一枚「模式」入口；两个开关的语义与持久化口径一字未改：
    · 纯净模式 = st.pure（会话态，persistAgentSession 落盘，app-db.js 按它做整档闸）；
-   · 自动续跑 = window.LongRun.autoOn(sid)（app-longrun.js 的会话级开关，缺省开）。
+   · 自动续跑 = window.LongRun.autoOn(sid)（app-longrun.js 的会话级开关，缺省关）。
    状态回显（唯一真源）：chip 摘要看着两个开关算，菜单行「开 / 关」按同一份判据画。 */
 function agentModeEntryOf(key) {
   const st = agentSessionState();
@@ -3538,7 +3809,8 @@ function agentModeEntryByKey(key, entries) {
   const list = typeof entries === "function" ? entries() : entries || agentModeEntries();
   return list.filter((e) => e.key === key)[0] || null;
 }
-/* 自动续跑开关态：唯一真源在 app-longrun.js（缺省开）。模块还没挂 / 老页面 = 按开处理。 */
+/* 自动续跑开关态：唯一真源在 app-longrun.js（缺省关，用户自己打开）。
+   模块还没挂 / 老页面 = 按关处理（宁可不动，也不擅自追轮）。 */
 function agentAutoOnNow() {
   try {
     if (window.LongRun && typeof window.LongRun.autoOn === "function") {
@@ -3546,7 +3818,7 @@ function agentAutoOnNow() {
       return !!window.LongRun.autoOn(s && s.id);
     }
   } catch (_) {}
-  return true;
+  return false;
 }
 /* 「工具」菜单里的三态按钮构件，这里借来当开关：亮 = .on（同 .agent-tools-row 观感）。
    本轮需求：① 键面从「✓ / — 两个字符」换成真开关（滑块 + 槽），整块 44×26 都可点 ——
@@ -4800,6 +5072,11 @@ function rebuildHistRail(list, rail, marks) {
 
 function ensureHistRail(list) {
   if (!list || !list.parentNode) return null;
+  /* 智能任务节点的会话区（.agent-conv）**本轮起不要轮次轨**：
+     节点里只有上下栏（上会话 / 下输入框），不再有那条 18px 的右侧竖条；
+     壳还是照套（.hist-scroll-wrap + is-flex-fill 是会话区的滚动 / 让位口径，
+     节点两态都按它排），只是不给它挂竖条。会话面板 / 助手栏 / 开发页一律不变。 */
+  const nodeConv = !!(list.classList && list.classList.contains("agent-conv"));
   let wrap = list.parentNode;
   if (!wrap.classList || !wrap.classList.contains("hist-scroll-wrap")) {
     wrap = document.createElement("div");
@@ -4814,6 +5091,18 @@ function ensureHistRail(list) {
     }
     list.parentNode.insertBefore(wrap, list);
     wrap.appendChild(list);
+    /* 智能任务节点的会话框（.agent-conv）：高度 = splitter 拖出来的 node.convH，
+       姿势必须落在**壳**上（壳才是列的弹性项，见 app-canvas.js 的
+       agentConvFlexItem / agentConvShellApply）—— 壳刚建好就地接过去，
+       免得会话框按自己的 min-height 撑出壳外压住下方的输入框。 */
+    if (
+      list.classList.contains("agent-conv") &&
+      typeof agentConvShellApply === "function"
+    ) {
+      try {
+        agentConvShellApply(wrap);
+      } catch (_) {}
+    }
   }
   let rail = null;
   for (const c of wrap.children) {
@@ -4821,6 +5110,11 @@ function ensureHistRail(list) {
       rail = c;
       break;
     }
+  }
+  /* 节点内会话：已有的旧竖条就地摘掉，也不再新建（老画布 / 旧 DOM 一样干净） */
+  if (nodeConv) {
+    if (rail) rail.remove();
+    return null;
   }
   if (!rail) {
     rail = document.createElement("div");
@@ -9437,7 +9731,10 @@ function startAgentSideTimeTicker() {
      ⑤ 摘要只留最近一份（st.compacts 最后一条带 summary）：「查看压缩摘要」那枚 chip
         读它，点开浮层看全文 + 元信息 + 复制（见 openCompactSummaryPop）；
      ⑥ 折叠展开态（st.foldOpen）与压缩记录（st.compacts）随会话落盘，切走 / 重启照旧；
-        撤销不做（折叠行只读回看，不提供「重新放回上下文」）。 */
+        撤销不做（折叠行只读回看，不提供「重新放回上下文」）。
+      ⑦ （本次需求）压缩后的大小跟设置走：**最近 N token 的原文不折**（1 token ≈ 2 字符），
+        摘要按上限字数软约束；两个值都读 config.dsh.compact 的 retainTokens /
+        summaryMaxTokens（留空 = 跟随档位默认），见 agentCompactRun。 */
 
 /* 压缩落地（纯状态变更，脱离界面也能单测：vm 抠出来真跑，见
    test/smoke-agent-compact-manual.js [3]）：
@@ -9453,12 +9750,28 @@ function agentCompactApply(st, info) {
   const gid = String((info && info.id) || "");
   if (!st || !gid) return 0;
   if (!Array.isArray(st.messages)) st.messages = [];
+  /* 保留的最近原文（本次需求 · 与自动压缩同口径）：从尾部往前数，累计字符数未超过
+     keepChars 的消息**不折叠**（它们留在上下文里），更早的折起来。
+     上一次压缩留下的摘要消息（带 _compact）一律参与折叠 —— 否则上下文里会同时挂着
+     新旧两份摘要（口径 ④：上下文里永远只有一份最新摘要）。 */
+  const keepChars = Math.max(0, Number(info && info.keepChars) || 0);
+  const keep = new Set();
+  let acc = 0;
+  for (let i = st.messages.length - 1; i >= 0 && keepChars > 0; i--) {
+    const m = st.messages[i];
+    if (!m || m._fold || m._compact) continue;
+    if (acc >= keepChars) break;
+    acc += String(m.content || "").length;
+    keep.add(m);
+  }
   let count = 0;
   for (const m of st.messages) {
-    if (!m || m._fold) continue;
+    if (!m || m._fold || keep.has(m)) continue;
     m._fold = gid;
     count++;
   }
+  /* 一条都折不动（剩下的原文都还在保留量之内）：不加摘要、不记账，调用方按 0 提示 */
+  if (!count) return 0;
   const at = Number(info && info.at) || Date.now();
   const summary = String((info && info.summary) || "");
   st.messages.push({
@@ -9578,10 +9891,22 @@ async function agentCompactRun(st) {
   const hist = agentHistoryEntries({ messages: rbSrc }, { maxChars: 40000, skipLast: false })
     .map((r) => (r.role === "user" ? "用户：" : "助手：") + r.text)
     .join("\n\n");
+  /* 压缩后的大小（本次需求，与自动压缩同一份设置：config.dsh.compact 的
+     retainTokens / summaryMaxTokens）：
+       · 保留原文 = 最近 N token 的消息不折叠 → 换算成字符（1 token ≈ 2 字符）；
+       · 摘要上限 = 软约束写进提示词（手动这一轮是我们自己的 dshRunTask，不去改网关的
+         maxTokens —— 那是运行时指纹的一部分，改了会让压缩另起一个运行时）。
+     两者都留空时就是档位默认（中档 = 32K 保留 / 256K 摘要上限）。 */
+  const retainChars = compactRetainEffectiveOf(S.config).tokens * COMPACT_CHARS_PER_TOKEN;
+  const summaryChars = compactSummaryEffectiveOf(S.config).tokens * COMPACT_CHARS_PER_TOKEN;
   toast(I18n.t("正在压缩上文…"), "ok");
   try {
     const summary = await dshRunTask(
-      "【压缩任务】把以下对话压缩为一段简明摘要,保留任务目标、关键结论与未完成事项:\n\n" + hist.slice(-40000),
+      "【压缩任务】把以下对话压缩为一段简明摘要，保留任务目标、关键结论与未完成事项，" +
+        "整段不超过 " +
+        summaryChars +
+        " 字:\n\n" +
+        hist.slice(-40000),
       {
         runKey: "agent:" + st.id,
         /* 与本轮运行同一真源（手填 > 画布项目根 > 默认）：压缩用的引擎目录
@@ -9597,12 +9922,21 @@ async function agentCompactRun(st) {
     /* 折叠 + 保留会话（口径见上方「手动压缩上下文」段的 ③④，落点 = agentCompactApply）：
        压缩**不删**任何一条消息 —— 它们留在原位，只是打上 _fold 并退出上下文，会话照旧。 */
     const gid = uid("cf");
-    agentCompactApply(st, {
+    const folded = agentCompactApply(st, {
       id: gid,
       at: Date.now(),
       summary: summary,
       chars: hist.length,
+      keepChars: retainChars,
     });
+    if (!folded) {
+      /* 剩下的原文都还在保留量之内（把保留原文调得很大时的正常结果）：
+         不压、不留空摘要，直接告诉用户为什么什么都没发生。 */
+      toast(I18n.t("剩下的上文都在保留量之内，没有可压缩的内容"), "warn");
+      await agentTouchSession();
+      renderAgentSession();
+      return;
+    }
     toast(I18n.t("上文已压缩"), "ok");
   } catch (e) {
     toast(I18n.t("压缩失败：") + (e.message || String(e)), "err");

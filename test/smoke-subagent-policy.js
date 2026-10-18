@@ -180,7 +180,9 @@ console.log("\n[5] 仓库接线");
     "cordis.yml 路径取自 main-dsh.js 导出的 GATEWAY_PATH（开发态与打包态同源）",
   );
   ok(
-    /const \{ createDshAdapter, GATEWAY_PATH: DSH_GATEWAY_PATH \}/.test(mainJs),
+    /* 同一行还从 main-dsh.js 取了 dshKernelVersion（会话左栏版本号，见
+       test/smoke-agent-side-version.js）——所以这里只认「前缀一模一样、后面可再跟东西」。 */
+    /const \{ createDshAdapter, GATEWAY_PATH: DSH_GATEWAY_PATH(, [\w, ]+)? \} = require\("\.\/dsh\/main-dsh\.js"\)/.test(mainJs),
     "GATEWAY_PATH 是从 dsh/main-dsh.js 导入的（没有自己拼 resourcesPath）",
   );
   ok(

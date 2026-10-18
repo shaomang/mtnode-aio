@@ -2015,16 +2015,50 @@ button.mini.btn-sq.tpl-ico {
   padding: 12px 14px
 }
 
+/* 左栏标题行：名称 + dsh 内核版本（.agent-side-ver）。
+   左栏默认就是最小宽度 280px（AGENT_SIDE_W_MIN），「DeepSeek Harness + 版本标签 + 新会话」
+   在 280 里塞不下一行（实测名称只剩 ~10 个字母就被省略号吃了）—— 所以这一行允许换行：
+   宽度够时版本紧跟在名称后面，不够时它自己掉到名称下面一行（左对齐），名称始终完整。
+   名称自己吃省略号（.agent-side-name），版本标签 flex:none 永不被截断；
+   读不到版本时标签 hidden，标题与旧界面一字不差。 */
 .agent-side-logo {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+  row-gap: 1px;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: .5px;
   color: #ebedf2;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.agent-side-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.agent-side-ver {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 15px;
+  color: rgba(235, 237, 242, .55);
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 6px;
+  padding: 0 5px;
+}
+
+.agent-side-logo:hover .agent-side-ver {
+  color: rgba(235, 237, 242, .75);
+  border-color: rgba(255, 255, 255, .18)
 }
 
 .agent-side-logo:hover {
@@ -3430,6 +3464,37 @@ button.mini.btn-sq.tpl-ico {
 
 .agent-menu-option.selected {
   background: transparent
+}
+
+/* 会话「模型」菜单里就地填参数的一行（本轮：上下文压缩 · 自定义触发线）：
+   复用 .agent-menu-option 的行高与内边距，但它是 label 不是按钮 —— 关掉手型与 hover 底色，
+   数字框自己吃掉点击，免得点一下被当成「选了这一档」。 */
+.agent-menu-input-row {
+  cursor: default;
+  gap: 10px;
+}
+
+.agent-menu-input-row:hover {
+  background: transparent
+}
+
+.agent-menu-input-row .agent-menu-option-name {
+  flex: 1;
+}
+
+.agent-menu-input-row input[type="number"] {
+  width: 92px;
+  padding: 3px 6px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  outline: none;
+  background: var(--code);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.agent-menu-input-row input[type="number"]:focus {
+  border-color: var(--cyan)
 }
 
 .agent-menu-option-copy {
@@ -6544,9 +6609,10 @@ body.theme-light button.hist-proc-bar:hover {
    还和输入区挤在一起）。现在会话面板 / 助手栏把报告挂到**输入框下面**的尾部容器：
    .agent-body（输入区 .agent-composer 之后）与 #assistPane（输入行之后），所以原先给
    .agent-list / .assist-list 的吸附一并撤掉。
-   节点内会话（.agent-conv / .chat-list）例外：节点框高被 convH + inputH 钉死，名片下方
-   没有余量，挂到节点输入框下面会被 .n-proc-row 的 overflow:hidden 裁掉，故仍挂消息区
-   末位 sticky 贴住下沿。Badge 自身的折叠 / 展开 / 复制逻辑一行未动。
+   节点内会话（.agent-conv / .chat-list）**本轮起不再挂报告**（智能任务节点不带下方
+   token 预算栏：节点里只剩上下栏会话 + 输入框 + 输出折叠区，账目看会话 / 助手栏 /
+   设置里那几份），下面这条吸附规则只是老画布 / 旧 DOM 的兜底样式，不再有新挂点。
+   Badge 自身的折叠 / 展开 / 复制逻辑一行未动。
    轨迹视图（会话主区的第二个 View，见 app-trajectory.js / dsh-tokens.css 的 .dsh-trace-*）
    期间报告整块让位：它与消息区 / 输入区一样属于对话视图的件，由 .agent-body.dsh-trace-on
    一并收起（重绘后再挂回来的那一枚也照收，见 dsh-tokens.css 里那份 display:none !important）。 */

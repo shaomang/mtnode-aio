@@ -8,9 +8,10 @@
  *   ① 结构化解析：主进程 pdf:probe / pdf:parse（pdf-doc.js 内核）抽取文本层 →
  *      标题 / 段落 / 列表 / 表格 / 公式占位，直接出 Markdown；
  *   ② 结构解析失败或没有文本层（扫描件 / 图片版 PDF）：逐页识图 —— 取页面图，
- *      用视觉模型 + dshRunTask({ images:[页图] }) 把每页转成 Markdown（公式走 LaTeX），
- *      结果按 <!-- page N --> 逐页拼接；
- *   ③ ①② 都不成：给一条可读错误（缺识图模型 / 缺页面渲染通道 / 加密 …）。
+ *      用当前 / 默认模型 + dshRunTask({ images:[页图] }) 把每页转成 Markdown（公式走 LaTeX），
+ *      结果按 <!-- page N --> 逐页拼接；没单独配视觉模型也照跑，模型不吃图片时如实报
+ *      「当前模型不支持图片输入：<上游报错>」；
+ *   ③ ①② 都不成：给一条可读错误（缺页面渲染通道 / 加密 …）。
  *
  * 进度与取消：整轮走一次 openOverlay 进度窗（持久窗，不点外部关闭），逐页刷新进度，
  * 「取消」= 立刻 dshCancelActive(本轮的 runKey) 并在页间停下；已完成页保留。
@@ -273,7 +274,8 @@ async function pdfStructuredMarkdown(pdfPath, opts) {
 
 /* ============================ ② 逐页识图 ============================ */
 
-/** 视觉路由：先走 app-db 的既有选型（与服务商里勾选「支持视觉」的模型一致），再退回识图路由 */
+/** 视觉路由：能找到「明确的视觉模型」就优先用它，找不到返回 null 表示「用当前 / 默认模型直跑」
+    （去闸：这里只是偏好，不是闸门 —— 没有它照样识图，真不吃图片时按上游报错如实说）。 */
 function pdfVisionRoute() {
   try {
     if (typeof dbFirstVisionModel === "function") {
@@ -288,6 +290,17 @@ function pdfVisionRoute() {
     }
   } catch (_) {}
   return null;
+}
+
+/** 识图失败文案：API 明确说「不吃图片」→ 前面补「当前模型不支持图片输入」并原样带上游报错；
+    其它错误原样透传（不替上游编理由）。判据见 app-db.js 的 visionImageUnsupportedText。 */
+function pdfVisionFailText(err) {
+  const msg = String((err && err.message) || err || "").trim();
+  if (!msg) return pdfT("未知错误");
+  const unsupported =
+    typeof visionImageUnsupportedText === "function" &&
+    visionImageUnsupportedText(msg);
+  return unsupported ? pdfT("当前模型不支持图片输入") + "：" + msg : msg;
 }
 
 function pdfPagePrompt(pageNo, total) {
@@ -307,17 +320,20 @@ function pdfPagePrompt(pageNo, total) {
   );
 }
 
-/** 一页一次识图调用（dshRunTask + images）；失败不吞掉，返回 error 由上层决定 */
+/** 一页一次识图调用（dshRunTask + images）；失败不吞掉，返回 error 由上层决定。
+    route 可以为 null（没有明确的视觉路由）：那时不指定 provider / model，让 dshRunTask 用当前 /
+    默认模型直跑 —— 去闸后的默认口径就是「先跑，不吃图片再如实报」。 */
 async function pdfVisionPage(imagePath, pageNo, total, route, ctl) {
-  const text = await dshRunTask(pdfPagePrompt(pageNo, total), {
+  const opts = {
     images: [imagePath],
-    provider: route.provider,
-    model: route.model,
     effort: "low",
     preset: "standard",
     runKey: ctl.runKey,
     tokTitle: pdfT("PDF 识图") + " p" + pageNo + "/" + total,
-  });
+  };
+  if (route && route.provider) opts.provider = route.provider;
+  if (route && route.model) opts.model = route.model;
+  const text = await dshRunTask(pdfPagePrompt(pageNo, total), opts);
   return String(text || "").trim();
 }
 
@@ -493,19 +509,13 @@ async function pdfVisionParse(pdfPath, parse, ctl, opts) {
     };
   }
   const route = pdfVisionRoute();
-  if (!route) {
-    return {
-      ok: false,
-      markdown: "",
-      error: pdfT(
-        "未配置支持识图的模型：请在「设置 → 模型服务」里给服务商勾选「支持视觉」，" +
-          "并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）",
-      ),
-    };
-  }
+  /* 去闸：找不到「明确的视觉模型」也照跑 —— 默就当当前模型能识图（dshRunTask 缺省取当前 / 默认模型）；
+     真不吃图片时下面按 API 的原话如实报「当前模型不支持图片输入：<上游报错>」，不再提前拦死。 */
   const cap = Math.min(imgs.length, PDF_VISION_MAX_PAGES);
   ctl.note(
-    pdfT("识图模型：{provider} / {model}", { provider: route.provider, model: route.model }),
+    route
+      ? pdfT("识图模型：{provider} / {model}", { provider: route.provider, model: route.model })
+      : pdfT("识图模型：当前模型（未单独指定视觉模型，按默认模型直跑）"),
   );
   if (cap < imgs.length) {
     ctl.note(
@@ -532,7 +542,7 @@ async function pdfVisionParse(pdfPath, parse, ctl, opts) {
       );
       ctl.note(pdfT("第 {n} 页完成", { n: pg.page }));
     } catch (e) {
-      const msg = String((e && e.message) || e);
+      const msg = pdfVisionFailText(e);
       failures.push(pdfT("第 {n} 页", { n: pg.page }) + "：" + msg);
       ctl.note(pdfT("第 {n} 页失败：", { n: pg.page }) + msg);
       if (ctl.cancelled) {

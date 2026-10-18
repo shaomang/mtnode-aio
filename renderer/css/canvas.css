@@ -3803,7 +3803,10 @@ body.theme-light .n-chip.n-chip-lt {
   box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
 }
 
-/* 智能任务节点：上下分栏会话（与智能会话同款消息流；背景与 Output 一致的深色） */
+/* 智能任务节点：**上下栏**（与智能会话同款消息流；背景与 Output 一致的深色）——
+   上 = 会话、下 = 输入框，节点内**不再有左右侧栏**（右侧那列 OUTPUT 面板已改挂
+   输入框下方的可折叠区 .n-agent-out），且**只有一根 splitter** —— 它落在上下两个框
+   **之间**那条分界线上（列内一个流式项，见下面 .vresize-handle）。 */
 .agent-conv {
   flex: 1 1 auto;
   min-height: 80px;
@@ -3820,12 +3823,93 @@ body.theme-light .n-chip.n-chip-lt {
   -webkit-user-select: text;
 }
 
+/* 上下栏容器：会话框（上）按 splitter 拖出来的高度占位（.hist-scroll-wrap / .agent-conv
+   —— 见 app-canvas.js 的 agentConvHeightApply），空间不够时**它先让位**
+   （flex-shrink 归 1 + 下限 72px），下方输入框 / 状态行 / 输出折叠区因此永远完整可见。
+   输入框高度由 app.js 的 promptAutoGrowBind 按内容给（40–200px，超了框内滚）；
+   splitter 就一根 = 上下两框之间那根。 */
 .n-agent-split {
-  min-height: 0
+  min-height: 0;
+  overflow: hidden
 }
 
 .n-agent-split .n-prompt {
-  margin-top: 2px
+  margin-top: 2px;
+  flex: none
+}
+
+.n-agent-split .n-text {
+  max-height: 200px;
+  overflow-y: auto
+}
+
+/* 智能任务节点的输出区：输入框下方的可折叠区（**与主列不同行**，整幅宽），
+   默认收起；展开后自带滚动（节点再矮也不会被顶出界）。
+   落位由 app-canvas.js 决定：它挂在左侧列 .n-proc-left 里，不是 .n-proc-row 的第二个
+   子元素 —— row 是横向 flex 行，挂进去就会被排成「右栏」、按 outW 定宽、把会话列挤窄
+   （用户报的「选中态输出区显示不对」）。 */
+.n-agent-out {
+  flex: 0 1 auto;
+  /* 自留下限（含收起态那一行「输出 · 尝试 N/M」标题）：节点被拖矮 / 输入框变高 /
+     会话框把列占满时，缺口先由折叠区自己吃（面板正文本来就能滚），但最低也要留住自己
+     那行标题 —— 标题被裁掉就等于「输出区不见了」。26px = 标题行实测 24.7px + 余量；
+     展开态同在保护范围内（面板正文由 .n-out 自己滚）。 */
+  min-height: 26px;
+  overflow: hidden;
+  /* 整幅宽：不参与横向并排，也不接受任何列宽上限（宽度恒等于节点体内宽） */
+  width: auto;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  border: 1px dashed var(--bd2);
+  border-radius: 3px;
+  background: #0f141b
+}
+
+/* 折叠区标题条：一行里「输出（· 尝试 N/M · 出错 · 批量）」在左、按钮组在右
+   —— 与输出面板自己的标题行同一套排法（.n-out-head），所以复用同一组类名。
+   注：summary 默认是 list-item（块级 + 三角标），要排成一行必须显式 display:flex。 */
+.n-agent-out-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 8px;
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: var(--muted);
+  border-bottom: 1px dashed transparent
+}
+
+.n-agent-out-head:hover {
+  color: var(--cyan)
+}
+
+.n-agent-out[open] .n-agent-out-head {
+  border-bottom-color: var(--bd2)
+}
+
+.n-agent-out>.n-out {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: auto;
+  /* **必须显式解掉通用 .n-out 的 max-width**（那里是给「输出面板与主列并排」的旧版式
+     留的宽度上限 calc(100% - 168px)：左侧 min 160 + 间距 8）。折叠区是整幅宽、没有
+     左列，若漏了这一句，面板就永远比折叠区窄 169px —— 实测折叠区 155px、面板只剩
+     12px 宽，OUTPUT 标题行被压成 0 宽、按钮组跑到面板右外侧（用户报的「输出区显示
+     不对」就是这个）。 */
+  max-width: none;
+  border: none;
+  border-radius: 0;
+  background: none;
+  overflow: auto
+}
+
+/* 折叠区里的输出面板不再有「左缘拖宽条」的语义（宽度恒为节点宽） */
+.n-agent-out .n-out-resize {
+  display: none
 }
 
 .agent-conv .agent-empty {
@@ -3904,28 +3988,38 @@ body.theme-light .n-chip.n-chip-lt {
   padding: 2px 6px 3px
 }
 
-/* 顶部中间竖向拖拽把手（调整框体上下高度） */
+/* 智能任务节点「上下两框之间」的那一根 splitter（节点里唯一一根）：
+   它是**列内的一个流式项**，正落在「上 = 会话框」与「下 = 输入框」的分界线上。
+   旧写法是绝对定位在会话框**上沿**（position:absolute; top:-5px）：把手压在框体外面、
+   还会随会话框一起滚走 —— 用户报的「顶部的调整应当移除掉」就是它。
+   观感对齐 .ap-grip（细条 + hover 高亮），方向 ns-resize；左右不留边距 = 整幅宽命中区。 */
 .vresize-handle {
-  position: absolute;
-  top: -5px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 44px;
-  height: 6px;
+  flex: none;
+  align-self: stretch;
+  height: 7px;
+  /* 上下各吃掉列间距（.n-proc-left 的 gap:6px）的一半：拖条贴住上下两个框，
+     又不与它们重叠（负外边距只吃缝，框体本身不越界）。 */
+  margin: -3px 0;
   cursor: ns-resize;
-  z-index: 6;
-  background: var(--bd2);
-  border-radius: 3px;
-  opacity: .65;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none
 }
 
-.vresize-handle:hover {
+.vresize-handle::after {
+  content: "";
+  width: 26px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--bd2);
+  opacity: .7;
+  transition: background-color .12s, opacity .12s
+}
+
+.vresize-handle:hover::after {
   background: var(--orange);
   opacity: 1
-}
-
-.n-field .vresize-handle {
-  top: -6px
 }
 
 .chat-input {
@@ -4383,6 +4477,14 @@ body.theme-light .n-chip.n-chip-lt {
   border-color: var(--cyan)
 }
 
+/* 文本节点板身正文框（KIND_CLS.input_text = "in"）：行高比基准放宽到 1.7。
+   基准 1.5 是给其它节点的短文本框（提示词 / 判据 / 任务框）用的，它们旁边的只读面
+   仍是 1.5（.n-md-prev 等）；文本节点这一面要跟自己的浏览态预览同高 ——
+   那边本轮也放到了 1.7（见 .n-md-browse-txt），切档时行位才不跳。 */
+.wf-node.in .n-text {
+  line-height: 1.7
+}
+
 .n-img {
   position: relative;
   flex: 1;
@@ -4583,6 +4685,228 @@ body.theme-light .n-chip.n-chip-lt {
   display: flex;
   flex-direction: column;
   min-height: 0
+}
+
+/* ===== 正文框的 Markdown 预览档（renderer/app-mdpreview.js）=====
+   **现在只剩文本处理节点（proc_text）提示词框这一处**：直接挂在 .n-prompt-wrap 上
+   （position:relative 的定位宿主）。文本节点板身正文框那颗「预览」开关已按用户要求移除
+   —— 它 absolute 压在正文右上角挡字（见 app-canvas.js buildBody 的注释），连带不再需要
+   板身那层 .n-md-wrap 定位宿主，正文框重新直接铺在 .n-body 里。
+   硬口径：预览层**不参与排版**（absolute 铺满宿主），所以框的宽高一律不变 —— 内容多了
+   在预览层自己内部滚动（.md 自带 overflow:auto，这里只把底色换成输入框那一份）。
+   源码盒在预览态只让位不退出排版（visibility:hidden，见 app-mdpreview 的 n-md-src-hidden）：
+   display:none 会让包裹层塌成 0 高，那正是「切一下预览框就变高变矮」的坑。
+   **观感口径（本轮）**：预览与编辑态逐条对齐 —— 字号 / 字体 / 行高 / 内边距全部照输入框
+   （.n-text：等宽 mono 12.5px · 行高 1.5 · 内边距 6px · 边框 1px），用户口径是「编辑时的
+   观感反而更好」，所以对齐方向是**预览向编辑看齐**，两面的块级节奏在下面 .n-md-prev 与
+   .wf-node.browse .md.n-md-browse 两处逐条写死，改字号时三处（含 .n-text）要一起看。 */
+
+.n-md-src-hidden {
+  visibility: hidden;
+  pointer-events: none
+}
+
+/* 预览层（编辑态那颗「预览」档）：盒模型与 .n-text 逐条同值 —— 1px 透明边框 + 6px 内边距，
+   正文左起点 = 7px，与编辑框内容盒（1px 边框 + 6px 内边距，`* { box-sizing: border-box }`
+   见 base.css）同一像素；字号 / 字体 / 行高也照抄输入框，切档时字面与行位不跳。
+   底色仍是输入框那一份 var(--code)。 */
+.n-md-prev {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: none;
+  background: var(--code);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 6px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5
+}
+
+/* 预览产物的块级节奏归零：下面 .md 那套是「阅读面」的间距（段 5px、列表项 2px、
+   标题 10px/5px），在输入框里就是「跟编辑态对不齐」的来源。改回编辑态口径 ——
+   段落紧挨着（textarea 的段落之间本来就只有换行符），块与块之间才留一档空白。 */
+.n-md-prev>p,
+.n-md-prev>ul,
+.n-md-prev>ol,
+.n-md-prev>blockquote,
+.n-md-prev>pre,
+.n-md-prev>table {
+  margin: 0
+}
+
+.n-md-prev>p+p,
+.n-md-prev>p+h1,
+.n-md-prev>p+h2,
+.n-md-prev>p+h3,
+.n-md-prev>p+h4,
+.n-md-prev>ul+h1,
+.n-md-prev>ul+h2,
+.n-md-prev>ul+h3,
+.n-md-prev>ul+h4,
+.n-md-prev>ol+h1,
+.n-md-prev>ol+h2,
+.n-md-prev>ol+h3,
+.n-md-prev>ol+h4,
+.n-md-prev>p+ul,
+.n-md-prev>p+ol,
+.n-md-prev>ul+p,
+.n-md-prev>ol+p,
+.n-md-prev>p+pre,
+.n-md-prev>p+table,
+.n-md-prev>p+blockquote {
+  margin-top: 5px
+}
+
+/* 列表：左缩进 16px ≈ 10 个等宽字符（编辑态里 `1. ` 的缩进量就是这一档），列表项之间
+   不再额外撑开（每项之间的换行本来就是一行）。 */
+.n-md-prev ul,
+.n-md-prev ol {
+  padding-left: 16px
+}
+
+.n-md-prev li {
+  margin: 0
+}
+
+.n-md-prev blockquote {
+  padding: 0 0 0 6px
+}
+
+/* 标题：按正文基准微放大（h1≈14 / h2≈13 / h3 与正文同号 12.5 / h4 = 12.5 加粗），
+   保留橙色与加粗；行高与正文同级，标题不再把行位撑开。 */
+.n-md-prev h1,
+.n-md-prev h2,
+.n-md-prev h3,
+.n-md-prev h4 {
+  line-height: 1.5;
+  margin: 0
+}
+
+.n-md-prev h1 {
+  font-size: 14px
+}
+
+.n-md-prev h2 {
+  font-size: 13px
+}
+
+.n-md-prev h3,
+.n-md-prev h4 {
+  font-size: 12.5px
+}
+
+/* 代码块 / 行内码：与输入框同号同族（编辑态里代码就是普通文字，这里只把字号从
+   .md 的 11px 提到正文同档，别让代码块比正文小一号跳出来）。 */
+.n-md-prev pre code {
+  font-size: 12.5px;
+  line-height: 1.5
+}
+
+.n-md-prev :not(pre)>code {
+  font-size: 12.5px
+}
+
+.n-md-prev table {
+  font-size: 12.5px
+}
+
+.n-md-prev.on {
+  display: block
+}
+
+.n-md-prev.on:empty::before {
+  /* 空内容时与编辑态完全相同的占位提示（文案由 app-mdpreview 从 textarea 自己的
+     placeholder 同步到 data-ph，不在这里再抄一份）。有内容 :empty 即假，占位自动消失。 */
+  content: attr(data-ph);
+  color: var(--muted);
+  position: absolute;
+  left: 7px;
+  top: 7px;
+  right: 7px;
+  pointer-events: none
+}
+
+/* 预览层里的 @ 引用 / @标签高亮：编辑态那两条（.n-prompt-hl .at-ref-node / .at-ref-tag）
+   只作用在镜像层上，预览层里的 span 必须在这里补色 —— 否则类名在、颜色是正文色，
+   看起来就是「预览里 @ 没高亮」。配色与编辑态逐条相同（青 = 节点，紫 = 标签）。
+   浏览态（失焦）那份预览块（.n-md-browse，见 app-canvas.js 的 browseMdPreviewEl）
+   与预览档同源同色，所以两条选择器并排写，改色时一处改。 */
+.n-md-prev .at-ref-node,
+.n-md-browse .at-ref-node {
+  color: var(--cyan)
+}
+
+.n-md-prev .at-ref-tag,
+.n-md-browse .at-ref-tag {
+  color: #e0a0ff
+}
+
+/* 预览层 / 浏览态预览块里的只读内嵌图像胶囊（编辑态的 .pc-pill 是绝对定位盖在
+   镜像层上的，这里必须另起一个行内小胶囊，不能就地复用）。 */
+.n-md-prev .n-md-pill,
+.n-md-browse .n-md-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  height: 18px;
+  padding: 0 6px 0 3px;
+  vertical-align: middle;
+  border: 1px solid var(--bd2);
+  border-radius: 9px;
+  background: rgba(56, 214, 255, .08)
+}
+
+.n-md-prev .n-md-pill .pc-thumb,
+.n-md-browse .n-md-pill .pc-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex: none
+}
+
+.n-md-prev .n-md-pill .pc-name,
+.n-md-browse .n-md-pill .pc-name {
+  font-size: 10px;
+  color: var(--cyan2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap
+}
+
+/* 框内右上角那枚开关（唯一出口：点它切档，失焦 / 框内点击都不切）。
+   **只有 proc_text 提示词框还有这一颗**：文本节点板身正文框上那颗已按用户要求移除
+   （压在正文上挡字），样式保留给提示词框使用。 */
+.n-md-toggle {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  z-index: 5;
+  padding: 0 6px;
+  height: 17px;
+  border: 1px solid var(--bd2);
+  border-radius: 2px;
+  background: var(--code);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 15px;
+  font-family: var(--sans);
+  letter-spacing: 0;
+  cursor: pointer
+}
+
+.n-md-toggle:hover {
+  border-color: var(--cyan);
+  color: var(--cyan2);
+  background: rgba(56, 214, 255, .12)
+}
+
+.n-md-toggle.on {
+  border-color: var(--cyan);
+  color: var(--cyan2)
 }
 
 /* 高亮镜像层：排版度量必须与 .n-text.n-text-layered（textarea）逐条相同，
@@ -6174,8 +6498,152 @@ body.theme-light .n-chip.n-chip-lt {
   margin: 6px 0
 }
 
+/* 文本节点浏览态预览里的水平线要看得见：`.md hr` 是 0.67px 虚线 + 最暗的 --bd，
+   在节点里几乎等于没有 —— 用户点「横隔线」保存完回来就说「线没了」。这里换成
+   实线 + --bd2（与表格边框同一档），并留出段距。 */
+.wf-node.browse .md.n-md-browse-txt hr {
+  border: none;
+  border-top: 1.5px solid var(--bd2);
+  margin: 10px 0
+}
+
 .wf-node.browse .md img {
   border: none
+}
+
+/* 失焦（浏览态）的 Markdown 预览块（app-canvas.js 的 browseMdPreviewEl）：
+   它服务两处正文（文本节点板身正文框 / 文本处理节点提示词框），失焦后看到的就是它。
+   观感口径（本轮）：下面是**提示词框**那一份（照抄输入框 .n-text 的 1.5，与旁边的
+   编辑框同像素）；**文本节点**那一份在这条基础之上由 `.n-md-browse-txt` 覆盖成
+   行高 1.7 + 段距 6px（用户明确口径：预览行间距太小，要适度增大），
+   板身正文框本身同步到 1.7（见 .wf-node.in .n-text），切档不跳行。
+   上一轮那套「预览向编辑看齐到 1.5」的结论只在提示词框这一面保留。
+    左右**不**额外加：20px 已由 .n-body 让给接线排（见本节开头）。
+    选择器多带一个 .n-md-browse：特异性高于 .wf-node.browse .md / .wf-node.browse .n-view
+    （0,4,0 > 0,3,0），改这里不会波及输出区 / 手册 / 其它节点的 Markdown 浏览态。 */
+.wf-node.browse .md.n-md-browse {
+  padding: 6px;
+  border: 1px solid transparent;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5
+}
+
+/* 块级节奏：与 .n-md-prev 逐条同值的第二份（同一份设计写在两处是有意的 —— 两面的宿主
+   类名不同没法合成一条）。段落紧挨着、块间一档空白、列表项不额外撑开。
+   选择器里那层 `.ntv-md` 不能省：browseMdPreviewEl 建的壳是
+   `.n-md-browse > .ntv-md > 各块`（见 app-canvas.js，内层与 app-nodeview 的只读视图同名），
+   渲染产物不是壳的直接子节点 —— 写成 `.n-md-browse>p` 会一条都命中不了，块间距就退回
+   `.md` 基准的 p 4px 上下（真机量过：h1 与下一段之间会多出 4px，与预览档的 0 对不上）。
+   `.ntv-md>*` 保住「只管最外层块」的语义：引用 / 列表项里的嵌套段落不跟着改。 */
+.wf-node.browse .md.n-md-browse>.ntv-md>p,
+.wf-node.browse .md.n-md-browse>.ntv-md>ul,
+.wf-node.browse .md.n-md-browse>.ntv-md>ol,
+.wf-node.browse .md.n-md-browse>.ntv-md>blockquote,
+.wf-node.browse .md.n-md-browse>.ntv-md>pre,
+.wf-node.browse .md.n-md-browse>.ntv-md>table {
+  margin: 0
+}
+
+.wf-node.browse .md.n-md-browse>.ntv-md>p+p,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+h1,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+h2,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+h3,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+h4,
+.wf-node.browse .md.n-md-browse>.ntv-md>ul+h1,
+.wf-node.browse .md.n-md-browse>.ntv-md>ul+h2,
+.wf-node.browse .md.n-md-browse>.ntv-md>ul+h3,
+.wf-node.browse .md.n-md-browse>.ntv-md>ul+h4,
+.wf-node.browse .md.n-md-browse>.ntv-md>ol+h1,
+.wf-node.browse .md.n-md-browse>.ntv-md>ol+h2,
+.wf-node.browse .md.n-md-browse>.ntv-md>ol+h3,
+.wf-node.browse .md.n-md-browse>.ntv-md>ol+h4,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+ul,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+ol,
+.wf-node.browse .md.n-md-browse>.ntv-md>ul+p,
+.wf-node.browse .md.n-md-browse>.ntv-md>ol+p,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+pre,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+table,
+.wf-node.browse .md.n-md-browse>.ntv-md>p+blockquote {
+  margin-top: 5px
+}
+
+.wf-node.browse .md.n-md-browse h1,
+.wf-node.browse .md.n-md-browse h2,
+.wf-node.browse .md.n-md-browse h3,
+.wf-node.browse .md.n-md-browse h4 {
+  margin: 0;
+  line-height: 1.5
+}
+
+.wf-node.browse .md.n-md-browse h1 {
+  font-size: 14px
+}
+
+.wf-node.browse .md.n-md-browse h2 {
+  font-size: 13px
+}
+
+.wf-node.browse .md.n-md-browse h3,
+.wf-node.browse .md.n-md-browse h4 {
+  font-size: 12.5px
+}
+
+.wf-node.browse .md.n-md-browse ul,
+.wf-node.browse .md.n-md-browse ol {
+  margin: 0;
+  padding-left: 16px
+}
+
+.wf-node.browse .md.n-md-browse li {
+  margin: 0
+}
+
+/* ── 文本节点浏览态预览：行距（只这一面，提示词框那一份不变）──
+   ① 行高 1.7、段落间距 6px：用户口径「预览界面的行间距太小了，需要适度增大」。
+      基准那份（.n-md-browse）是 1.5 / 块间 5px，留给提示词框。
+   ② 有序列表回到浏览器默认编号（每层各自从起始号数）：早先那套用 CSS 计数器数出
+      1. → 1.1. → 1.1.1. 的层级号已按用户口径下线；正文里本来就只有标准嵌套
+      （`1.` 标记 + 缩进），显示层不再自己造一套层级号。
+   选择器多带一个 .n-md-browse-txt（app-canvas.js 只给 input_text 打这个标记）。 */
+.wf-node.browse .md.n-md-browse.n-md-browse-txt {
+  line-height: 1.7
+}
+
+.wf-node.browse .md.n-md-browse.n-md-browse-txt>.ntv-md>p+p,
+.wf-node.browse .md.n-md-browse.n-md-browse-txt>.ntv-md>ul+p,
+.wf-node.browse .md.n-md-browse.n-md-browse-txt>.ntv-md>ol+p {
+  margin-top: 6px
+}
+
+.wf-node.browse .md.n-md-browse blockquote {
+  padding: 0 0 0 6px
+}
+
+.wf-node.browse .md.n-md-browse pre code,
+.wf-node.browse .md.n-md-browse :not(pre)>code,
+.wf-node.browse .md.n-md-browse table {
+  font-size: 12.5px
+}
+
+.wf-node.browse .md.n-md-browse pre code {
+  line-height: 1.5
+}
+
+/* 代码块 / 行内代码的**盒模型**也照预览档（= .md 基准）那一份：节点面原本把 pre 内边距
+   收到 6px 8px、代码字再补 0 3px，与预览档的 8px / 0 差一档 —— 同一段内容切一次档，代码块
+   整体矮 4px、代码字左移 3px，正是本轮要消掉的那种跳。底色 / 边框 / 圆角（颜色那一层）
+   仍是节点面自己那一套，本轮的观感口径只管排版，不去动配色。 */
+.wf-node.browse .md.n-md-browse pre {
+  padding: 8px
+}
+
+.wf-node.browse .md.n-md-browse pre code {
+  padding: 0
+}
+
+.wf-node.browse .md.n-md-browse :not(pre)>code {
+  padding: 1px 4px
 }
 
 /* YAML：等宽、保持缩进、不显示行号 */

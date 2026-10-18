@@ -614,25 +614,44 @@ function dbTableConnectedFiles(node) {
   walk(node);
   return files;
 }
-/* 找一个可用的视觉模型（用于图像识图） */
+/* 识图路由（去闸）：默认不另挑模型 —— 直接让调用方用自己的当前模型跑。
+   以前这里是「找一个已保存的视觉模型」，找不到就不识图；现在默认就当当前模型能识图，
+   真不支持时由上游 API 报错，按原样带出（见 dbVisionFailText）。
+   返回 null = 不指定 provider / model，走调用方的当前模型 / 默认路由。 */
 function dbFirstVisionModel() {
-  for (const p of mtnodePiProviders()) {
-    const vms = visionModelsForProvider("mtnode_" + p.route);
-    if (vms.length) return { provider: "mtnode_" + p.route, model: vms[0].id };
-  }
-  const dp = dshProvider();
-  const dvm = dp ? visionModelsForProvider("deepseek-official") : [];
-  if (dvm.length) return { provider: "deepseek-official", model: dvm[0].id };
   return null;
+}
+/* 上游是否明确说「这个模型不吃图片」：命中才把报错翻成「当前模型不支持图片输入」，
+   其它错误一律照旧（不替上游编理由）。 */
+const VISION_UNSUPPORTED_RE = new RegExp(
+  [
+    "(?:不支持|无法(?:识别|处理)|not\\s+support(?:ed)?|does\\s*n[o']t\\s+support|unsupported|invalid)",
+    "[^.。\\n]{0,40}",
+    "(?:图片|图像|视觉|image|vision|multimodal|modality)",
+  ].join(""),
+  "i",
+);
+const VISION_UNSUPPORTED_REV_RE =
+  /(?:image|vision|multimodal|modality)[^.\n]{0,30}(?:not supported|unsupported|not allowed)/i;
+function visionImageUnsupportedText(text) {
+  const s = String(text || "");
+  return VISION_UNSUPPORTED_RE.test(s) || VISION_UNSUPPORTED_REV_RE.test(s);
+}
+/* 识图失败文案：API 明确说「不吃图片」→「当前模型不支持图片输入：<上游报错>」；
+   其它失败保持旧口径的占位（不打断建表流程）。 */
+function dbVisionFailText(err) {
+  const msg = String((err && err.message) || err || "").trim();
+  if (!msg || !visionImageUnsupportedText(msg)) return "(未识别)";
+  return "(" + I18n.t("当前模型不支持图片输入") + "：" + msg + ")";
 }
 /* 图像识图：返回内容说明（失败则回退为占位）
    注：这三处内部抽取跑（识图 / 建表列结构 / 行抽取）写死 standard 是**刻意选择**，
    不是界面默认档的兜底（默认档真源见 app.js 的 AGENT_PRESET_DEFAULT，现已是 minimal）：
    它们要的是可被 JSON 解析器直接吞下的规整输出，与用户在界面上选哪档无关。 */
 async function dbRecognizeImage(node, absPath) {
-  const vis = dbFirstVisionModel();
+  /* 去闸：不再先找「已保存的视觉模型」（见 dbFirstVisionModel），
+     就用当前 / 默认模型直跑；不吃图片时由 dbVisionFailText 如实写出来。 */
   const opts = { node, effort: "low", preset: "standard" };
-  if (vis) { opts.provider = vis.provider; opts.model = vis.model; }
   try {
     const text = await dshRunTask(
       "请阅读图片并给出内容说明（70 字以内，只输出说明正文，不要前缀或解释）。",
@@ -640,8 +659,8 @@ async function dbRecognizeImage(node, absPath) {
     );
     const t = String(text || "").trim().slice(0, 240);
     return t || "(未识别)";
-  } catch (_) {
-    return "(未识别)";
+  } catch (e) {
+    return dbVisionFailText(e);
   }
 }
 function dbParseColumnsJson(text) {
@@ -3133,11 +3152,38 @@ function dshRunOnce(input, opts) {
   if (!sup.ok) return Promise.reject(new Error(sup.reason));
   const d = (S.config && S.config.dsh) || {};
   const piProvs = mtnodePiProviders();
-  const provider = opts.provider || "deepseek-official";
-  const routeModels = agentModelsForRoute(provider);
-  if (routeModels.length && !String(opts.model || "").trim()) {
-    opts.model = routeModels[0];
+  /* 设置 · 默认模型（全应用唯一一份默认，本次需求）：
+     · 本轮没给 model = 这条会话自己没选过 → 按设置取；设置的模型挂不上会话那家服务商时，
+       「提供商 + 模型」成对按设置拨正（绝不出现 A 家模型配 B 家路由）；
+       设置里也没选模型 → 才回落到该服务商清单第一只（旧口径）。
+     · 旧实现无条件取清单第一只 —— 设置里选的默认模型对会话完全不起作用。 */
+  const ownProvider = String(opts.provider || "").trim();
+  const dfltModel =
+    typeof dshDefaultModelValue === "function" ? dshDefaultModelValue() : "";
+  const dfltProvider =
+    typeof dshDefaultProviderRoute === "function"
+      ? dshDefaultProviderRoute()
+      : "";
+  let provider = ownProvider || dfltProvider || "deepseek-official";
+  if (!String(opts.model || "").trim()) {
+    if (
+      dfltModel &&
+      (!ownProvider ||
+        (typeof dshModelFitsRouteNow === "function" &&
+          dshModelFitsRouteNow(ownProvider, dfltModel)))
+    ) {
+      opts.model = dfltModel;
+    } else if (dfltModel) {
+      provider = dfltProvider || provider;
+      opts.model = dfltModel;
+    } else {
+      const routeModels = agentModelsForRoute(provider);
+      if (routeModels.length) opts.model = routeModels[0];
+    }
   }
+  /* 兜底之后本轮就按 provider 走：键、baseUrl、事件里报的提供商都以它为准 ——
+     否则「提供商按设置拨正了、但 opts.provider 还留着旧值」会在下游再配错一次。 */
+  opts.provider = provider;
   /* 对话路由密钥；联网搜索固定走 DeepSeek Anthropic 端点，需单独注入官方 Key */
   const dsProv = dshProvider();
   let apiKey = (dsProv && dsProv.apiKey) || "";
@@ -3558,7 +3604,13 @@ function dshRunOnce(input, opts) {
      也不会把本轮归属换成另一张图。 */
   beginCanvasRun(boundWf);
   const scopeLock = nodeLock;
-  if (scopeLock) S._canvasNodeAgentDepth = (S._canvasNodeAgentDepth || 0) + 1;
+  if (scopeLock) {
+    S._canvasNodeAgentDepth = (S._canvasNodeAgentDepth || 0) + 1;
+    /* 画布锁按**本轮**登记（不是全局）：只拦发起这一轮的那个智能节点，第三方 MCP 连接
+       与其它会话的画布操作不再被牵连（判据见 app-nodes.js canvasNodeRunLocked）。 */
+    if (typeof lockCanvasForAgentNodeRun === "function")
+      lockCanvasForAgentNodeRun(runKey);
+  }
   /* 长任务「只读画布」档也要锁本画布（别的画布看不见），但不能进 nodeLock 那档闸
      （那档连 mtnode_canvas_get 都不注册）。单独一盏计数，供 restrictOtherCanvases 与
      「edit / app 仍旧拒」这两处判据用。 */
@@ -3630,11 +3682,14 @@ function dshRunOnce(input, opts) {
       if (typeof canvasConfirmDropRun === "function")
         canvasConfirmDropRun(runKey);
       endCanvasRun(boundWf);
-      if (scopeLock)
+      if (scopeLock) {
         S._canvasNodeAgentDepth = Math.max(
           0,
           (S._canvasNodeAgentDepth || 1) - 1,
         );
+        if (typeof unlockCanvasForAgentNodeRun === "function")
+          unlockCanvasForAgentNodeRun(runKey);
+      }
       if (canvasReadOnly)
         S._ltCanvasReadDepth = Math.max(0, (S._ltCanvasReadDepth || 1) - 1);
       /* 本轮跑完了（成功）：它登记的可续跑会话就此作废，绝不留给下一次运行 ——
@@ -3727,6 +3782,9 @@ function dshRunOnce(input, opts) {
               runKey,
               sessionId: (msg.data && msg.data.sessionId) || "",
               wf: boundWf,
+              /* 画布锁按轮归属判定（见 app-nodes.js canvasNodeRunLocked）：这一轮是不是
+                 「画布智能节点」由 dshRunTask 自己说了算，画布事件路由不必再去问全局计数。 */
+              nodeLock,
             });
             return;
           }
@@ -4116,16 +4174,36 @@ function doneNoteFloor(decay, dur) {
   const v = Math.exp(-Math.max(0.5, Number(decay) || 9) * Math.max(0.02, Number(dur) || 0.16));
   return Math.max(0.00004, Math.min(0.25, v));
 }
-/* 内置完成音 → WebAudio（唯一实现；主进程提醒音通道本次已下线）。
+/* 完成音 / 提示音共用的 AudioContext：懒创建 + 每次发声前确保在跑。
+   旧版只在建好那一刻 `if (state === "suspended") resume()` 一次：Windows 上音频会话被系统
+   打断（独占设备 / 睡眠唤醒 / 切输出设备）时 context 会落到 suspended / interrupted，
+   之后再也回不到 running —— 那一拍就静音了，而且只有等下一次用户点界面（一次用户手势）
+   才可能恢复，看起来就像「后台不响、切回来才响」。这里挂 onstatechange 一直续，resume 幂等。 */
+function doneAudioCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (!S._audioCtx) {
+    S._audioCtx = new AC();
+    S._audioCtx.onstatechange = () => {
+      try {
+        if (S._audioCtx && S._audioCtx.state !== "running")
+          S._audioCtx.resume().catch(() => {});
+      } catch (_) {}
+    };
+  }
+  const ac = S._audioCtx;
+  if (ac.state !== "running") {
+    try { ac.resume().catch(() => {}); } catch (_) {}
+  }
+  return ac;
+}
+/* 内置完成音 → WebAudio（唯一实现；主进程没有发声通道，只有判定心跳）。
    final 真 = 收尾那一档（所有任务都完成）：增益按 1.5 倍放大并夹到安全上限。 */
 function playBuiltinTones(notes, decays, tail, final) {
   const amp = doneSoundGain(final);
   if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return;
-  S._audioCtx = S._audioCtx || new AC();
-  const ac = S._audioCtx;
-  if (ac.state === "suspended") ac.resume().catch(() => {});
+  const ac = doneAudioCtx();
+  if (!ac) return;
   const t0 = ac.currentTime;
   notes.forEach(([f, off, dur], ix) => {
     const o = ac.createOscillator();
@@ -4156,8 +4234,12 @@ function playBuiltinTones(notes, decays, tail, final) {
    两档共用同一个开关与音量滑杆；自定义音频文件两档都用它（设了就用用户选的音，
    留空用内置音）。原来的「长任务音效」（全局三音上行 / 随包 all-done.wav）已整体移除。
    发声只走页面内 WebAudio / <audio>：提醒音的主进程通道（preload 的 soundAlert →
-   sound-alert.js）本次一并下线。代价是窗口被盖住 / 最小化时这一拍可能被推迟到用户切回
-   本窗口才响（用户已知并接受）；换来的是不必再维护两套音色表与一条 IPC 通道。 */
+    sound-alert.js）早已下线，主进程只剩下「判定心跳」（sound:watch → sound:tick）。
+  后台能不能按时响，取决于两件事，两件都做了：
+    ① 判定时机 —— 不能只靠渲染层定时器（后台节流会把那一拍推迟到窗口重新激活），
+       由主进程心跳驱动（见 app.js 的 syncSoundWatch / onSoundTick）；
+    ② 音频输出 —— 建好 AudioContext 后一直续跑（见 doneAudioCtx 的 onstatechange），
+       窗口重新激活时再补一次判定（那条路不会重复响）。 */
 function playTaskDoneSound(final) {
   const d = (S.config && S.config.dsh) || {};
   if (d.doneSound === false) return;
@@ -4189,11 +4271,8 @@ function builtinDoneDing(final) {
    完成音滑杆 35% 那一档（提问音不跟完成音音量滑杆走，见 playIxSound）。
    主进程提醒音通道本次下线，这一声同样只走页面内 WebAudio。 */
 function builtinIxBeep() {
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return;
-  S._audioCtx = S._audioCtx || new AC();
-  const ac = S._audioCtx;
-  if (ac.state === "suspended") ac.resume().catch(() => {});
+  const ac = doneAudioCtx();
+  if (!ac) return;
   const t0 = ac.currentTime;
   [
     [440, 0],

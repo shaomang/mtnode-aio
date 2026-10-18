@@ -286,7 +286,10 @@
 <div class="agent-pane" id="agentPane" style="display:none">
       <aside class="agent-side">
         <div class="agent-side-head">
-          <span class="agent-side-logo" id="agentLogo" data-i18n-title="新建会话" title="新建会话">DeepSeek Harness</span>
+          <!-- 左栏标题带上 dsh 内核版本（本次需求）：版本号由启动时 app:version 的 dsh
+               字段填进 #agentDshVer（主进程读 @deepseek-ai/dsh 的 manifest，读不到就留空、
+               整枚标签不占位）。仍是「点标题 = 新建会话」，与版本标签无关。 -->
+          <span class="agent-side-logo" id="agentLogo" data-i18n-title="新建会话" title="新建会话"><span class="agent-side-name">DeepSeek Harness</span><span class="agent-side-ver" id="agentDshVer" data-i18n-title="dsh 内核版本" title="dsh 内核版本" hidden></span></span>
           <button id="agentNew" class="agent-side-new" data-i18n-title="新建会话(沿用当前工作目录)" title="新建会话(沿用当前工作目录)">＋ <span data-i18n="新会话">新会话</span></button>
         </div>
         <div class="agent-side-search">
@@ -340,7 +343,7 @@
                    本轮把原来平铺的两枚 chip（纯净模式 / 自动续跑）收进这一只菜单，
                    输入区只留一枚入口，状态仍逐项回显（chip 摘要 + 菜单行 开/关）。
                    纯净模式：移除全部 system prompt 与运行时上下文，仅保留联网搜索；
-                   自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（默认开）。 -->
+                   自动续跑：本轮完成且目标未达成、还有下一步时自动接着跑（默认关，自己打开）。 -->
               <!-- 本轮需求：chip 键面**只有「模式」两个字**，不再往里写「纯净模式 · 自动续跑」
                    摘要（那会把这一枚顶宽，把右边几枚挤出界）。开着的开关只由 chip 变色
                    （.on）+ tooltip 逐项「（开）/（关）」表达，见 app-assist.js paintAgentModeChip；
@@ -356,7 +359,8 @@
                    处理（宁可多发一次画布工具，也不让模型撞上不存在的工具）。 -->
               <!-- 长时自治：自动续跑开关已收进上面的「模式」菜单（renderer/app-longrun.js
                    负责状态与回执的 paintModeChip —— 菜单行与 chip 摘要都由它刷新）。
-                   默认开：一轮正常跑完且目标未达成、还有下一步时自动接着跑；全部完成 /
+                   默认关：一轮正常跑完就停下等你；要它自己接着跑，在「模式」菜单里打开
+                   （打开后：一轮正常跑完且目标未达成、还有下一步时自动接着跑；全部完成 /
                    无事可做 / 你按终止 / 命中安全上限就停。不自动中断、不弹卡 —— 阀值只累
                    计给你看（用户已确认「自己盯」）。 -->
             </div>
@@ -529,7 +533,24 @@
       <label class="assist-ctrl-item"><span data-i18n="上下文压缩">上下文压缩</span>
         <select id="assistCompactSel" data-i18n-title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）" title="上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）"></select>
       </label>
+      <!-- 自定义档的触发线（本次需求）：只选了「自定义」档才露出（app-assist.js 的
+           syncCompactSideControls 切换显隐，值由 syncCompactCustomInput 回填）。
+           单位 token，界内 100k – 500k，越界由 applyAssistCompactTrigger 拒绝并提示。 -->
+      <label class="assist-ctrl-item" id="assistCompactCustom" hidden><span data-i18n="自定义触发线">自定义触发线</span>
+        <input id="assistCompactCustomInput" type="number" min="100000" max="500000" step="1000" data-i18n-title="（单位：token，可填 100k – 500k；只对大窗口路由生效）" title="（单位：token，可填 100k – 500k；只对大窗口路由生效）">
+      </label>
+      <!-- 压缩后的大小（本次需求）：保留的最近原文 / 摘要输出上限（单位 token）。留空 = 跟随
+           档位默认（占位符由 app-assist.js 的 syncCompactLimitInputs 写成当前档位默认值），
+           越界由 applyAssistCompactLimit 拒绝并提示。 -->
+      <label class="assist-ctrl-item"><span data-i18n="保留原文">保留原文</span>
+        <input id="assistCompactRetainInput" type="number" min="4096" max="131072" step="1024" data-i18n-title="（单位：token；留空 = 跟随档位默认；超过触发线时按触发线夹取）" title="（单位：token；留空 = 跟随档位默认；超过触发线时按触发线夹取）">
+      </label>
+      <label class="assist-ctrl-item"><span data-i18n="摘要上限">摘要上限</span>
+        <input id="assistCompactSummaryInput" type="number" min="4096" max="256000" step="1024" data-i18n-title="（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）" title="（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）">
+      </label>
     </div>
+    <!-- 档位文案只留「档位名 · 上下文阈值」两截（界面不冗余，见 app-dsh-compact.js 的
+          ASSIST_COMPACT_OPTIONS）；省钱档原有的那一行长说明句已按本次要求撤掉。 -->
     <!-- 助手栏「模式」菜单（本次开发需求）：与会话窗口「模式」菜单**同一套构件**
          （app-assist.js 的 buildAgentModeMenu / agentModeEntryOf），行集 = assistModeEntries
          （先拷问需求 + 纯净模式），真源是全局偏好 S.assistGrill / S.assistPure（随配置落盘）。
@@ -723,6 +744,20 @@
      （app-db.js dbFileRowEl）。排在 app-db.js 之后：运行期取它的 dshRunTask 与视觉选型。 -->
 <script src="pdf-markdown.js"></script>
 <script src="app-nodeview.js"></script>
+<!-- 输入框的 Markdown 预览档（renderer/app-mdpreview.js · 出口 window.MTMdPreview）：
+     ① 框内「源码 / 预览」切换：预览层绝对铺满输入框（框高不变、内容多了框内滚动）
+     —— **只剩文本处理节点（proc_text）提示词框**；文本节点板身正文框那颗开关已按用户
+     要求移除（absolute 按钮压住正文右上角挡字），板身正文只在编辑态写；
+     ② 失焦（浏览态）那一屏的正文渲染：app-canvas.js 的 browseMdPreviewEl 直接调它的
+     previewHtml，渲染走全站唯一入口 renderMarkdown（@ 引用 / @标签 / 内嵌图像胶囊先用
+     PUA 占位符保护再注回高亮）。
+     ⚠ 必须排在 app-canvas.js（以及 app-boot.js 的首遍装载渲染）**之前**：浏览态的 body
+     只在「形态真的变了」时重建（applyNodeForm 见 dataset.nodeForm 相同就直接 return），
+     而启动时第一遍渲染就是浏览态 —— 本模块若晚于那一遍就位，首屏文本节点会永远停在
+     纯文本回落形态上（实测坑：重启应用后未选中的正文仍是原文本，点一下选中再取消才变）。
+     它取 app.js / app-canvas.js 的 renderMarkdown / refCandidates / atMentionsOf /
+     promptCapsule* 全在**调用期**，所以放在它们之前没有装载期依赖。 -->
+<script src="app-mdpreview.js"></script>
 <!-- ⚠ app-canvas.js 的**顶层执行（装载期）不得引用排在本文件后面的脚本里的绑定**：
      例如 `summary: helperFn` 这种在顶层就求值的引用，会在装载期抛 ReferenceError，把
      app-canvas.js 的顶层执行整段中断，其后所有 const / let 停在 TDZ —— 曾经的事故是整张
@@ -837,6 +872,11 @@
      GPU / 磁盘 / 网络明细。读数真源在主进程 perf-probe.js。必须排在 app-vram.js 之后
      （面板里要调 vramRenderPanel / vramSubscribeReleased），且早于 app-boot.js（入口绑定）。 -->
 <script src="app-perf.js"></script>
+<!-- 上下文压缩策略的渲染层共享小单元（renderer/app-dsh-compact.js）：档位清单 /
+      归一 compactPolicyOf / 档位词条 / 触发线边界。设置面板与助手栏是两个各自独立的
+      加载单元，这一小份必须共用同一份，否则会出现「面板显示中档、组合里是省钱档」。
+      主进程侧真源是根目录 dsh-compact-policy.js（用户设置 → cordis.yml 的写入点）。 -->
+<script src="app-dsh-compact.js"></script>
 <script src="app-settings.js"></script>
 <script src="app-assist.js"></script>
 <!-- 会话长时自治：自动续跑开关 + 累计状态小字 + 自检判停（renderer/app-longrun.js）。
@@ -949,6 +989,13 @@
      故只要在脚本全部加载完成前就位即可（init 首个 await 之前不渲染正文）。 -->
 <script src="math-render.js"></script>
 <script src="app-review.js"></script>
+<!-- Markdown 编辑手感（renderer/app-mdedit.js · 出口 window.MTMdEdit）：
+     Tab / Shift+Tab 的列表缩进与反缩进、Markdown 即时输入（空块敲 `- ` / `1. ` / `# ` /
+     `> ` / `- [ ] `）、粘贴优先吃剪贴板 HTML、源码档 textarea 的 4 空格缩进。
+     四个编辑面共用这一份实现：文本节点 ✎ 编辑器（app-textedit.js）、✎ AI 审阅窗
+     （app-review.js 的富文本 / 源码档）、内置 Markdown 阅读器编辑态与画布节点板身正文
+     （app.js）。排在 app-review.js 之后：富文本渲染吃的 mdToRichHtml 在调用期取它。 -->
+<script src="app-mdedit.js"></script>
 <!-- 团队事实库（左栏专家列表末尾的入口）：路径解析 / 读写 / 建库；
      放在 app-review.js 之后，审阅对话框打开事实库时按调用期取 window.MTNodeFactLib -->
 <script src="app-factlib.js"></script>

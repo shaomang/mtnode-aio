@@ -6,6 +6,7 @@
  * 覆盖：
  *   [1] 形态判定骨架：kind 集合、判定口径、save 旧别名归一、buildBody 入口分流与失败回落
  *   [2] 八个 kind 的浏览态渲染器登记齐全（旧 kind chat 已下线，不再列）；浏览态分支不构造任何输入控件、不挂点击事件
+ *       [2c] 智能任务节点的输出折叠区：标题只有一行（按钮挂那一行、面板本体 head:"host" 抑制自己的 OUTPUT 行）
  *   [3] 编辑态零回归：buildBody 后半段照旧有 textarea / 输出按钮 / 拖宽条
  *   [4] 选中三路径形态同步：.n-resize 快速路径走 setNodeSelClass；改状态不重绘处补 syncNodeForms
  *   [5] 点选即聚焦：markFormFocusAfterRender → renderCanvas 收尾 applyFocusFormAfterRender 接线
@@ -41,6 +42,7 @@ const read = (rel) =>
 
 const jsCanvas = read("renderer/app-canvas.js");
 const jsApp = read("renderer/app.js");
+const jsAssist = read("renderer/app-assist.js");
 const jsView = read("renderer/app-nodeview.js");
 const html = read("renderer/index.html");
 const css = read("renderer/css/canvas.css");
@@ -75,10 +77,14 @@ const BROWSE_MARK = "/* ============ 浏览态 body 渲染器（NODE_BROWSE_BODY
 const BROWSE_END = "/* ── 函数 / 工具节点 body（参数即端子 · 设置面板）";
 const browseRegion = sliceBetween(jsCanvas, BROWSE_MARK, BROWSE_END);
 const editRegion = jsCanvas.slice(jsCanvas.indexOf("function buildBody(node, body) {"));
-/* 共用 helper 锚点：输出按钮组 / 拖宽条就写在浏览态区块开头，[2] 里要把这段正文排除掉
-   再断言「浏览态区块正文零交互构件」（否则会拿 helper 自己的 createElement("button") 误报） */
-const helperAt = browseRegion ? browseRegion.indexOf("/* 输出面板左缘拖宽条（.n-out-resize）") : -1;
-const helperBlock = browseRegion ? sliceBetween(browseRegion, "function outResizeHandleEl(node) {", "/* 输出面板（浏览态）") : null;
+/* 共用 helper 锚点：输出拖宽条 / 按钮组 / 两态共用的输出面板就写在浏览态区块开头，
+   [2] 里要把这段正文排除掉再断言「浏览态区块正文零交互构件」
+   （否则会拿 helper 自己的 createElement("button") 误报）。
+   ⚠ 这里的 helperEnd 只到 procOutPanelEl 之前 —— 它之后紧接着就是各 kind 的浏览态 body，
+   再往下的 agentTaskOutFoldEl（输入框下方那个折叠输出区）不算 helper。 */
+const helperAt = browseRegion ? browseRegion.indexOf("/* ============ 输出面板共用构件（拖宽条 + 按钮组）============") : -1;
+const helperEndAt = browseRegion ? browseRegion.indexOf("function procOutPanelEl(") : -1;
+const helperBlock = browseRegion && helperAt >= 0 && helperEndAt > helperAt ? browseRegion.slice(helperAt, helperEndAt) : null;
 
 /* 参与浏览态的 kind（函数节点本可复用「代码只读视图」，随工具/函数节点上线而登记，
    故一并列入。素材节点随「未 focus 不显示详细内容」那一轮登记：未选中只列条目标题 +
@@ -140,24 +146,44 @@ console.log("\n[2] 八个 kind 的浏览态渲染器登记齐全 + 浏览态零�
   ok(uniq === [...KINDS].sort().join(","), "登记表键集 = kind 集合（多登记=白渲染，少登记=回落）：实测 " + uniq);
   ok(!!browseRegion, "能按注释锚点切出「浏览态 body 渲染器」区块");
   if (browseRegion) {
-    ok(!/createElement\("textarea"\)/.test(browseRegion), "浏览态区块不构造 textarea（不再有输入框）");
-    ok(!/createElement\("input"\)/.test(browseRegion), "浏览态区块不构造 input（含 checkbox / 路径框）");
     /* 输出按钮组 / 拖宽条自本轮起是编辑态与浏览态**共用**的 helper（就在本区块开头），
        所以这几条只按「helper 之前 + helper 之后」的区块正文断言：正文自身仍不得造按钮 / 挂 onclick。 */
-    const helperEnd = browseRegion.indexOf("function browseProcOutEl(node) {");
+    const helperEnd = browseRegion.indexOf("function agentTaskOutFoldEl(");
     ok(helperAt > 0 && helperEnd > helperAt, "浏览态区块里能找到共用的输出按钮组 / 拖宽条 helper");
     ok(!!helperBlock, "能切出共用 helper 的函数体");
     const regionBody = helperAt > 0 && helperEnd > helperAt
       ? browseRegion.slice(0, helperAt) + browseRegion.slice(helperEnd)
       : "";
+    /* 本轮新增的例外：agent_task 的**预览形态**（[2c] 逐条钉）—— 它与焦点态同版式，
+       所以有一个只读输入框（.n-text）、同一根 splitter、输入框下方的输出折叠区，
+       也挂 click 监听（只为 stopPropagation，不写数据）。
+       这里把这三段（折叠区 helper + 预览态装配）整段排除后再断言其余 kind 的老口径。 */
+    const browseNoTask = (txt) =>
+      String(txt || "")
+        .replace(/function agentTaskOutFoldEl\([\s\S]*?\n\}/, "")
+        .replace(/NODE_BROWSE_BODY\.agent_task = function[\s\S]*?\n\};/, "");
+    ok(
+      !/createElement\("textarea"\)/.test(browseNoTask(regionBody)),
+      "浏览态区块不构造 textarea（不再有输入框；agent_task 的只读任务框见 [2c]）",
+    );
+    ok(!/createElement\("input"\)/.test(browseRegion), "浏览态区块不构造 input（含 checkbox / 路径框）");
     ok(regionBody.length > 1000, "切得出「除共用 helper 之外」的浏览态区块正文（实测 " + regionBody.length + " 字符）");
     ok(!/createElement\("button"\)/.test(regionBody), "浏览态区块正文不自己造 button（输出按钮组走共用 helper，见 [2b]）");
     ok(/createElement\("button"\)/.test(helperBlock || ""), "共用 helper 里才造 button（helper 自己只被两态调用）");
     ok(!/\.onclick\s*=/.test(regionBody), '浏览态区块正文不直接挂 onclick（"点空白换图"那类已撤掉）');
-    ok(!/addEventListener\("click"/.test(browseRegion), '浏览态区块不挂 click 监听（只留展示与滚动）');
+    /* 本轮新增的例外就在下面：agent_task 的**预览形态**与焦点态同版式 ——
+       它有一个只读输入框（.n-text）、同一根 splitter 与输出折叠区，所以会挂 click 监听
+       （只为 stopPropagation，不写数据）、也复用编辑态的 .n-text 类名。
+       逐条钉在 [2d]：那是本轮需求「预览和 focus 时样式基本一致」，不是回到老形态。 */
     ok(
-      !/class(Name)?\s*=\s*["'](n-text|n-bentries|n-out-btns|n-out-resize)["']/.test(regionBody),
-      "浏览态区块正文不复用编辑态控件类名（输出按钮组 / 拖宽条走共用 helper）",
+      !/class(Name)?\s*=\s*["'](n-text|n-bentries|n-out-btns|n-out-resize)["']/.test(
+        browseNoTask(regionBody),
+      ),
+      "浏览态区块正文不复用编辑态控件类名（输出按钮组 / 拖宽条走共用 helper；agent_task 见 [2c]）",
+    );
+    ok(
+      !/addEventListener\("click"/.test(browseNoTask(browseRegion)),
+      '浏览态区块不挂 click 监听（只留展示与滚动；agent_task 见 [2c]）',
     );
     /* 回填 id 族按现源列全（chat 一族随 kind 下线：会话式渲染改用 agent_task 的 dsh-out-* 族） */
     for (const id of ["st-", "dsh-out-stream-", "dsh-out-tools-", "out-img-", "outimg-", "svpre-", "svimg-", "svempty-", "svthumbs-"])
@@ -185,15 +211,16 @@ console.log("\n[2b] 输出按钮组 / 拖宽条：编辑态与浏览态共用一
     !!ob && /outButtonsEl\(node, liveDsh, r\)/.test(jsCanvas.slice(0, jsCanvas.indexOf("function buildBody(node, body) {"))),
     "浏览态 OUTPUT 标题行挂的就是这份按钮组（在 buildBody 之前的浏览态区块里调用）",
   );
-  const browseCall = /outButtonsEl\(node, liveDsh, r\)/.test(
-    funcBody(jsCanvas, "function browseProcOutEl(node)") || "",
-  );
-  const editCall = /outButtonsEl\(node, liveDsh, r\)/.test(editRegion || "");
-  ok(browseCall, "浏览态（未选中 / 预览形态）真的调用它 —— 本轮需求：复制等按钮在预览模式下也出现");
+  const panelOut = funcBody(jsCanvas, "function procOutPanelEl(");
+  const browseOut = funcBody(jsCanvas, "function browseProcOutEl(node)");
+  const browseCall =
+    !!browseOut && /procOutPanelEl\(node, r, liveDsh, \{ longText: true \}\)/.test(browseOut);
+  const editCall = /procOutPanelEl\(node, r, liveDsh\)/.test(editRegion || "");
+  ok(browseCall, "浏览态（未选中 / 预览形态）真的调它 —— 本轮需求：复制等按钮在预览模式下也出现");
   ok(editCall, "编辑态改调同一份 helper（两态按钮不会各自漂）");
   ok(
-    /outResizeHandleEl\(node\)/.test(funcBody(jsCanvas, "function browseProcOutEl(node)") || ""),
-    "浏览态同时补回左缘拖宽条（拖宽与是否选中无关）",
+    !!panelOut && /outButtonsEl\(node, liveDsh, r\)/.test(panelOut) && /outResizeHandleEl\(node\)/.test(panelOut),
+    "两态共用的输出面板本体里同时挂按钮组与左缘拖宽条（拖宽与是否选中无关）",
   );
   /* 复制按钮的显隐口径两态同源：有已跑完的文本输出或智能节点运行流时才出现 */
   ok(
@@ -203,12 +230,257 @@ console.log("\n[2b] 输出按钮组 / 拖宽条：编辑态与浏览态共用一
   ok(!!ob && /procReviewOpenEl\(node\)/.test(ob), "审阅按钮（普通 proc_text）也在共用组里");
 }
 
+console.log("\n[2c] 智能任务节点：上下栏 · 单根 splitter · 两态同版式（本轮需求）");
+{
+  /* 本轮口径（用户确认的共识）：节点内**不再有左右侧栏**（右侧 OUTPUT 面板改挂输入框
+     下方的可折叠区）、上 = 会话 / 下 = 输入框、**只有一根 splitter**（会话与输入之间）、
+     预览态与 focus 态同一套版式（预览态输入框只读）、节点内不带 token 预算栏。 */
+  const splitFrom = jsCanvas.indexOf('left.classList.add("n-agent-split")');
+  const stFrom = jsCanvas.indexOf(
+    'const st = document.createElement("div");',
+    splitFrom,
+  );
+  const editSplit = splitFrom > 0 && stFrom > splitFrom ? jsCanvas.slice(splitFrom, stFrom) : "";
+  ok(!!editSplit, "能切出焦点态的上下栏装配段");
+  ok(
+    /left\.insertBefore\(conv, f3\)/.test(editSplit),
+    "焦点态：会话插在输入框之前（上会话 · 下输入框）",
+  );
+  const splitCalls = (editSplit.match(/vResizeHandleEl\(node, "(\w+)"/g) || []).join(",");
+  ok(
+    splitCalls === 'vResizeHandleEl(node, "convH"',
+    "焦点态只剩一根 splitter：convH（输入框那根 inputH 已随自动增高下线）实测 " + (splitCalls || "无"),
+  );
+  ok(!/inputH/.test(editSplit), "焦点态不再引用 inputH（输入框高度由内容决定）");
+  /* 本次修复：那**唯一一根** splitter 必须落在上下两框**之间**（列内的流式项），
+     不是挂在会话框里、绝对定位在它上沿的把手 —— 旧写法既是用户报的「顶部的调整」，
+     又会在会话框装不下时越过框体压住下方的输入框。 */
+  ok(
+    /left\.insertBefore\(vResizeHandleEl\(node, "convH", 72, 520\), f3\)/.test(editSplit),
+    "焦点态：splitter 插在「会话框」与「输入框」之间（列内的流式项）",
+  );
+  ok(
+    /conv\.dataset\.vbox = "convH"/.test(editSplit) &&
+      /agentConvHeightApply\(conv, node\)/.test(editSplit),
+    "焦点态：会话框高度按 node.convH 落位（标 data-vbox 供拖拽寻址 + agentConvHeightApply）",
+  );
+  ok(
+    !/conv\.style\.minHeight = \(node\.convH/.test(editSplit) &&
+      !/conv\.appendChild\(vResizeHandleEl/.test(editSplit),
+    "焦点态：不再把 convH 写成 min-height、也不再把把手 append 进会话框（越界压住别人的根因）",
+  );
+  /* 高度姿势只有一个真源（agentConvItemApply）：basis = convH、grow 归 0、
+   shrink 归 1 + 下限 72px；渲染时先落在会话框自己身上，轮次轨壳套上时再由
+   agentConvShellApply 搬到壳上（壳才是列的弹性项 —— 写在 conv 上会被壳按内容高钉住）。 */
+  const convApply = funcBody(jsCanvas, "function agentConvItemApply(");
+  ok(
+    !!convApply &&
+      /item\.style\.flex = "0 1 " \+ h \+ "px"/.test(convApply) &&
+      /item\.style\.minHeight = "72px"/.test(convApply),
+    "会话区高度真源：basis = convH、grow 归 0、shrink 归 1 + 下限 72px",
+  );
+  ok(
+    !!convApply && !/minHeight = h|minHeight = " \+ h/.test(convApply),
+    "绝不把 convH 写成 min-height（把框体钉死就是越界压住别人的根因）",
+  );
+  const convShell = funcBody(jsCanvas, "function agentConvShellApply(");
+  ok(
+    !!convShell &&
+      /agentConvItemApply\(wrap/.test(convShell) &&
+      /conv\.style\.flex = "1 1 auto"/.test(convShell),
+    "壳套上时高度搬到壳上、会话框回落到随壳拉伸（agentConvShellApply）",
+  );
+  const histWrap = (() => {
+    const at = jsAssist.indexOf("wrap.appendChild(list);", jsAssist.indexOf("function ensureHistRail("));
+    return at < 0 ? "" : jsAssist.slice(at, at + 420);
+  })();
+  ok(
+    /agentConvShellApply\(wrap\)/.test(histWrap) && /agent-conv/.test(histWrap),
+    "app-assist.js 的 ensureHistRail 套壳后立刻调 agentConvShellApply（同一处口径）",
+  );
+  const vresizeBlock = (() => {
+    const at = jsApp.indexOf('d.mode === "vresize"');
+    return at < 0 ? "" : blockFrom(jsApp, at);
+  })();
+  ok(
+    /agentConvFlexItem\(el\)/.test(vresizeBlock) && /vresizeLiveMax\(item\)/.test(vresizeBlock),
+    "拖拽按同一条口径解析弹性项（有壳时是壳）并按它实测上限",
+  );
+  ok(
+    /item\.style\.flexBasis = h \+ "px"/.test(vresizeBlock),
+    "拖拽把高度写在弹性项的 flexBasis 上（与渲染同一条口径）",
+  );
+  ok(/promptAutoGrowBind\(ta\)/.test(editSplit), "输入框走自动增高绑定（promptAutoGrowBind）");
+  ok(
+    !/agent-ws-row/.test(editSplit),
+    "节点内不再渲染工作目录行（已搬进设置跳窗的 nsAgentWorkspaceField）",
+  );
+  ok(
+    !/dsh-metrics-line/.test(jsCanvas.slice(jsCanvas.indexOf("const st = document.createElement(\"div\");"), jsCanvas.indexOf("row.appendChild(left);", jsCanvas.indexOf("const st = document.createElement(\"div\");")))),
+    "节点内不再渲染运行统计行（token 预算栏一族已下线）",
+  );
+
+  /* 两态同版式：预览态也是「上会话 + 下输入框 + 同一根 splitter」，只有只读这一处差别 */
+  const browseTask = funcBody(jsCanvas, "NODE_BROWSE_BODY.agent_task =");
+  ok(!!browseTask, "能切出 agent_task 的预览态 body 渲染器");
+  ok(
+    !!browseTask && /left\.className = "n-proc-left n-agent-split"/.test(browseTask),
+    "预览态用与焦点态同一个容器类（.n-proc-left.n-agent-split）",
+  );
+  ok(
+    !!browseTask && /agentConvHeightApply\(conv, node\)/.test(browseTask) &&
+      /left\.appendChild\(vResizeHandleEl\(node, "convH", 72, 520\)\)/.test(browseTask) &&
+      !/conv\.appendChild\(vResizeHandleEl/.test(browseTask),
+    "预览态同样带上同一根 splitter（挂在列里、两框之间；切换选中不跳版、同一个 node.convH）",
+  );
+  ok(
+    !!browseTask && /ta\.readOnly = true/.test(browseTask),
+    "预览态的输入框是只读的（扫一眼的形态，不给发送 / 清空这类写数据的动作）",
+  );
+  ok(
+    !!browseTask && !/playUserNode/.test(browseTask) && !/keydown/.test(browseTask),
+    "预览态不挂 Enter 发送（只读框不可能误发）",
+  );
+  ok(
+    !!browseTask && /agentTaskOutFoldEl\(node, r, liveDsh\)/.test(browseTask),
+    "预览态的输出区与焦点态同一份折叠实现（展开记忆同源）",
+  );
+  ok(
+    !!browseTask && /agentConvHeightApply\(conv, node\)/.test(browseTask),
+    "预览态会话区高度读同一个 node.convH（两态同一份高度、同一个 helper）",
+  );
+
+  /* 输出折叠区：默认收起 + 展开态记在 S（画布每次重绘重建 DOM，不记就会缩回去） */
+  const fold = funcBody(jsCanvas, "function agentTaskOutFoldEl(");
+  ok(!!fold && /S\.agentTaskOutOpen\[node\.id\] \|\| liveDsh/.test(fold), "折叠区：记过展开 / 正在运行才默认打开，否则收起");
+  ok(!!fold && /S\.agentTaskOutOpen\[node\.id\] = true/.test(fold), "展开态写进 S.agentTaskOutOpen（重绘后仍展开）");
+  ok(
+    !!fold && /procOutPanelEl\(node, r, liveDsh, \{ head: "host" \}\)/.test(fold),
+    "折叠区里就是共用输出面板（内容与按钮一个都没少）；标题行交给折叠区那一行（head:\"host\"）",
+  );
+  /* 本次修复：折叠区标题只有一行 —— 「输出 · 尝试 N/M · 出错」那行同时挂按钮组，
+     面板本体的 OUTPUT 标题行由 head:"host" 抑制（两行同义标题叠着是上一版的绘制错误）。 */
+  ok(
+    !!fold && /sum\.appendChild\(outButtonsEl\(node, liveDsh, r\)\)/.test(fold),
+    "折叠区标题行自带按钮组（复制 / 清空 / 浏览 与面板本体同一份 outButtonsEl）",
+  );
+  ok(
+    !!fold && !/"OUTPUT · 运行中"/.test(fold),
+    "折叠区标题不再自己拼「OUTPUT · 运行中」（文案只有「输出 · 尝试 N/M · 出错」这一份）",
+  );
+  const panelHead = funcBody(jsCanvas, "function procOutPanelEl(");
+  ok(
+    !!panelHead && /if \(o\.head !== "host"\)/.test(panelHead),
+    "输出面板：head:\"host\" 档抑制自己的标题行（宿主那一行已经在画）",
+  );
+
+  /* 本次修复（用户确认的共识 · 病灶②）：焦点态的输出折叠区**落位错了** ——
+     它挂在 .n-proc-row（横向 flex 行）上，被排成「与主列并排的右栏」：面板按 outW
+     定宽、会话列被挤窄，而节点宽度下限还按并排版式给（outW + 主列 160 + 间距 8）。
+     现在它必须与预览态同一位次：挂在左侧列里（输入框下方、整幅宽）。
+     这条断言用**赋值目标**判，不能用 node 名判 —— `left.` 与 `row.` 都能通过 node 名匹配。 */
+  const editOutAt = jsCanvas.indexOf("const hasOut = !!(liveDsh");
+  const editOutBlock = editOutAt > 0 ? blockFrom(jsCanvas, editOutAt) : "";
+  ok(!!editOutBlock, "能切出编辑态的输出区落位段");
+  ok(
+    /left\.appendChild\(agentTaskOutFoldEl\(node, r, liveDsh\)\)/.test(editOutBlock),
+    "编辑态：折叠输出区挂在左侧列里（输入框下方、整幅宽），不再当 row 的第二个子元素",
+  );
+  ok(
+    !/row\.appendChild\(agentTaskOutFoldEl/.test(jsCanvas),
+    "全文件没有一处把 agent_task 折叠区挂进横向 row（那才是「输出区被挤成右栏」的写法）",
+  );
+  /* 落位判据与宽度下限判据必须同源：编辑态那一支直接问 hasSideOutPanel(node)，
+     不许再自己写 node.kind === "agent_task"（两处口径各自漂正是这次 bug 的成因） */
+  ok(
+    /if \(!hasSideOutPanel\(node\)\) \{\s*\/\*[\s\S]{0,300}?\*\/\s*left\.appendChild\(\s*agentTaskOutFoldEl/.test(
+      editOutBlock,
+    ),
+    "编辑态落位直接问 hasSideOutPanel(node)（与宽度下限同一处口径）",
+  );
+  ok(
+    !/if \(node\.kind === "agent_task"\) \{/.test(editOutBlock),
+    "编辑态落位不再自己重复一份「是不是 agent_task」的 kind 判定",
+  );
+
+  /* 宽度下限口径（app.js 的 hasSideOutPanel）：智能任务节点没有右侧并排栏，
+     它的输出面板与主列不同行，所以不该再按「主列 + 面板」抬宽节点。 */
+  const appJs = jsApp;
+  const sideFn = funcBody(appJs, "function hasSideOutPanel(n)");
+  ok(!!sideFn, "app.js 存在 hasSideOutPanel(n)（「谁还有右侧并排栏」的唯一口径）");
+  ok(
+    !!sideFn && /n\.kind !== "agent_task"/.test(sideFn),
+    "hasSideOutPanel：只剩非 agent_task 的节点（proc_text / proc_image）还按并排栏算宽度",
+  );
+  ok(
+    /const hasSideOut =[\s\S]{0,220}?hasSideOutPanel\(n\)/.test(appJs),
+    "拖拽尺寸下限（resize 分支）按 hasSideOutPanel 判，不再只看「有没有输出」",
+  );
+  ok(
+    /if \(!hasSideOutPanel\(n\)\) \{\s*S\.drag = null;\s*return;/.test(appJs),
+    "outresize 分支对没有右侧栏的节点直接返回（历史手势把面板钉成固定宽的路径已封）",
+  );
+  /* CSS：折叠区整幅宽、不吃任何列宽上限 */
+  const foldCss = (() => {
+    const at = css.indexOf(".n-agent-out {");
+    return at < 0 ? "" : css.slice(at, css.indexOf("}", at) + 1);
+  })();
+  ok(!!foldCss, "能切出 .n-agent-out 规则");
+  ok(
+    /max-width:\s*none/.test(foldCss) && /width:\s*auto/.test(foldCss),
+    "折叠区 CSS：width:auto + max-width:none（整幅宽，不吃列宽上限）",
+  );
+  ok(
+    /min-height:\s*26px/.test(foldCss),
+    "折叠区 CSS：min-height 26px（节点再矮也留住「输出」那行标题，展开态同在保护范围内）",
+  );
+
+  /* 本次需求（用户确认的共识）：**唯一一根** splitter 落在上下两框之间 ——
+     它是列内的流式项（旧写法是绝对定位在会话框上沿的把手，那根必须不存在了）；
+     拖它是「下拖增高 / 上拖变矮」，每一步按列内实测空间实时夹住。 */
+  const vhCss = (() => {
+    const at = css.indexOf(".vresize-handle {");
+    return at < 0 ? "" : css.slice(at, css.indexOf("}", at) + 1);
+  })();
+  ok(!!vhCss, "能切出 .vresize-handle 规则");
+  ok(
+    !/position:\s*absolute/.test(vhCss) && !/top:\s*-5px/.test(vhCss) && /flex:\s*none/.test(vhCss),
+    "splitter CSS：列内的流式项（flex:none），不再是绝对定位在框体上沿的把手",
+  );
+  ok(
+    /width:\s*26px[\s\S]{0,80}?height:\s*2px/.test(css) && !/\.n-field \.vresize-handle/.test(css),
+    "splitter 观感对齐 .ap-grip（26×2 细条）、且 .n-field 里那根历史把手规则已删",
+  );
+  const vhFn = funcBody(appJs, "function vResizeHandleEl(");
+  const liveFn = funcBody(appJs, "function vresizeLiveMax(");
+  ok(!!vhFn && !!liveFn, "app.js 有 vResizeHandleEl 与 vresizeLiveMax（实时上限）");
+  ok(
+    !!liveFn && /col\.clientHeight - used - gaps/.test(liveFn) && /shrinkable/.test(liveFn),
+    "splitter 上限 = 列高 − 兄弟项下限之和 − 实测列间距（可收缩的项按它自己的 min-height 记账）",
+  );
+  ok(
+    /d\.oh \+ \(ev\.clientY - d\.sy\) \/ z/.test(appJs) &&
+      /item\.style\.flexBasis = h \+ "px"/.test(appJs),
+    "拖拽方向：把手在框体下沿 ⇒ 下拖增高；写的是 flexBasis（与渲染同一条口径）",
+  );
+  const vresizeBlock2 = (() => {
+    const at = appJs.indexOf('d.mode === "vresize"');
+    return at < 0 ? "" : blockFrom(appJs, at);
+  })();
+  ok(
+    !!vresizeBlock2 && !/\.style\.height/.test(vresizeBlock2),
+    "vresize 分支不再写 height（basis 才跟 shrink 的下限口径一致，不会把框体钉死）",
+  );
+}
+
 console.log("\n[3] 编辑态零回归（只有新增，没有删改）");
 {
   ok(!!editRegion, "能切出编辑态区块（buildBody 起）");
   ok(/const ta = document.createElement\("textarea"\);/.test(editRegion), "编辑态仍构造 textarea（选中后与今天完全一致）");
-  ok(/oh\.appendChild\(outButtonsEl\(node, liveDsh, r\)\)/.test(editRegion), "编辑态标题行仍挂输出面板按钮组（复制 / 清空 / 浏览 / 审阅）");
-  ok(/out\.appendChild\(outResizeHandleEl\(node\)\)/.test(editRegion), "编辑态仍有输出面板左缘拖宽条");
+  const panelEdit = funcBody(jsCanvas, "function procOutPanelEl(");
+  ok(/oh\.appendChild\(outButtonsEl\(node, liveDsh, r\)\)/.test(panelEdit || ""), "输出面板标题行仍挂按钮组（复制 / 清空 / 浏览 / 审阅）");
+  ok(/out\.appendChild\(outResizeHandleEl\(node\)\)/.test(panelEdit || ""), "输出面板仍有左缘拖宽条");
+  ok(/procOutPanelEl\(node, r, liveDsh\)/.test(editRegion), "编辑态改用两态共用的输出面板实现（本体内不再各写一份）");
   ok(/className = "n-bentries"|n-bentries/.test(editRegion), "编辑态仍有批量条目编辑列表");
   ok(!jsCanvas.slice(0, jsCanvas.indexOf(BROWSE_MARK)).match(/function browseTextEl\(/), "浏览态 helper 都只在新增区块里定义（不侵入既有函数）");
 }
@@ -847,6 +1119,8 @@ console.log(
       grabFunction(APP, "isSuperAncestorOf"),
       grabFunction(APP, "canMoveNodeIntoSuper"),
       grabFunction(APP, "superNestDepth"),
+      /* 拖拽单元：壳的后代随壳走（不单独重挂父级）—— finalizeNodeDragNest 进门就过它 */
+      grabFunction(APP, "dragUnitIds"),
       NEST_FN,
       grabFunction(APP, "findOpenSuperAtWorld"),
       grabFunction(APP, "findOpenSuperContainingRect"),
@@ -1146,6 +1420,26 @@ console.log(
         "组里的祖先壳不进去（不能进自己的子孙）、A 按自己的命中进 INNER，谁也不成环",
       );
     }
+    /* 粘贴后（选中集 = 壳 + 全部内部节点）连着壳一起拖、在空白处松手：
+       壳的后代随壳走，不得被按落点单独改写父级（历史 bug：壳里东西全被甩到顶层，撤销一次才回得来） */
+    {
+      const { api, nodes } = makeSandbox([
+        mkSuper("SUP"),
+        mkNode({ id: "K1", x: 1080, y: 300, parentSuperId: "SUP" }),
+        mkNode({ id: "K2", x: 1080, y: 500, parentSuperId: "SUP" }),
+      ]);
+      const curWorld = drag(api, nodes, ["SUP", "K1", "K2"], { x: 480, y: 240 });
+      api.finalizeNodeDragNest(["SUP", "K1", "K2"], curWorld, { x: 5000, y: 5000 });
+      ok(
+        parentOf(nodes, "K1") === "SUP" && parentOf(nodes, "K2") === "SUP",
+        "连壳一起拖到空白处松手：壳内节点仍归这颗壳（K1=" + parentOf(nodes, "K1") + " K2=" + parentOf(nodes, "K2") + "）",
+      );
+      const sup = nodes.filter((n) => n.id === "SUP")[0];
+      ok(
+        Math.abs(sup.x - (1000 + 480)) <= 24,
+        "壳自己照常落到松手位置（" + sup.x + "，期望 ≈" + (1000 + 480) + "）",
+      );
+    }
     {
       const { api, nodes } = makeSandbox([
         mkSuper("SUP"),
@@ -1255,7 +1549,8 @@ console.log(
       ok(parentOf(nodes, "A") === "OUTER", "空白处落定不改归属（仍在 OUTER）");
       ok(Math.abs(a.y - 300) <= 24 && a.y !== beforeY, "落点坐标已更新（y " + beforeY + " → " + a.y + "）");
     }
-    /* ⑤-d 反向不变量：子画布里的祖先壳（正在编辑的 OUTER）不会被收进自己的子壳 */
+    /* ⑤-d 反向不变量：子画布里的祖先壳（正在编辑的 OUTER）不会被收进自己的子壳；
+       同组里 OUTER 的后代随壳走（拖拽单元 = 壳），不被单独塞进子壳 */
     {
       const { sb, api, nodes } = mkFocusScene();
       sb.S.superFocus = "OUTER";
@@ -1264,8 +1559,8 @@ console.log(
       ok(hitA && hitA.id === "INNER", "前置：A 命中子壳 INNER");
       api.finalizeNodeDragNest(["OUTER", "A"], curWorld);
       ok(
-        parentOf(nodes, "A") === "INNER" && parentOf(nodes, "INNER") === "OUTER",
-        "A 进子壳、OUTER 不进自己的子壳（不成环）",
+        parentOf(nodes, "A") === "OUTER" && parentOf(nodes, "INNER") === "OUTER",
+        "组里带着壳时，壳的后代随壳走（A 仍留在 OUTER，不被单独塞进子壳）；OUTER 也不进自己的子壳（不成环）",
       );
       ok(parentOf(nodes, "OUTER") === "-", "正在编辑的 OUTER 仍留在根画布");
     }

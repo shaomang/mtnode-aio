@@ -220,20 +220,28 @@
 
 # 上下文压缩（dsh 自带 compaction-basic）：长会话的历史压缩（含 provider 确认的
 # 上下文溢出恢复）。dsh 默认触发线 = 适配器声明的 contextWindow × 0.8，而网关给
-# deepseek-v4 系列声明的是 1,000,000 → 要跑到 80 万 token 才压，本机所有会话都
+# deepseek-v4 系列声明的是 1,000,000 → 要跑到 800k token 才压，本机所有会话都
 # 到不了（审计脚本里「压缩 0 次」就是这么来的）。这里按 id 覆盖它的 config：
-#   thresholdRatio 0.3   = 有效窗口 ≈ 300K（声明窗口 × 0.3）
-#   retainRatio 0.04     = 保留最近原文的比例兜底（1M 窗口上约 3.7 万 token）
+#   thresholdRatio 0.3   = 有效窗口 ≈ 300K（声明窗口 × 0.3）——「中」档
+#   retainRatio 0.04     = 保留最近原文的比例兜底（1M 窗口上约 37k token）
 #   modelPolicies[]      = 已知主力路由钉死**绝对**保留尾部（1M 窗口上留 16% 原文
-#                          = 16 万 token，压缩几乎白压，所以这一项必须绝对量）
+#                          = 160k token，压缩几乎白压，所以这一项必须绝对量）
+#   maxTokens 256000     = 写摘要那一次请求的输出上限 = 主力路由真正在用的单次输出上限
+#                          （不给这一键时插件会拿 headroomTokens 当它 —— 见 dsh-compact-policy.js）
 #   auto: true           = 自动压缩；false 时只停自动触发，溢出恢复仍在
-# 只点名 deepseek-official（本机实测：这个工作区的会话全部走它）—— 它的窗口是网关
-# 自己声明的 1,000,000，比例算出来的保留量会偏大，所以要给绝对量。自配服务商的路由名
-# 是 `mtnode_<route>`（route 由用户配置决定，没有固定的模型名可点名），一律走 retainRatio
-# 兜底：窗口越小留得越少（12.8 万窗口 → 触发约 3.8 万 / 留约 4.6 千），不会出现「留得比触发线还多」。
-# 三个键/档位的真源是 dsh-compact-policy.js（用户设置 → 本行的唯一写入点，
-# 由 main.js 在启动时与每次保存配置后改写）；改本段不会与设置打架 —— 设置没写过
-# 时这里就是「默认开 · 中档」的落地值，写过后由策略模块整份重写本段。
+# 点名 deepseek-official 这条路由上**可能跑到的每一个模型 id**（不是只点一个名字）：
+# 这条路由跑的 id 是用户服务商清单里那一个（本机实测是 deepseek-v4-flash，而它原先
+# 只点名 deepseek-flash → 整份 modelPolicies 落空 → 省钱档的绝对触发线一起落空，
+# 「选 100k 档却压不动」）。列在这里的 id 窗口都是网关自己声明的 1,000,000，比例算出来
+# 的保留量会偏大，所以要给绝对量。自配服务商的路由名是 `mtnode_<route>`（route 由用户
+# 配置决定，没有固定的模型名可点名），一律走 retainRatio 兜底：窗口越小留得越少
+# （128k 窗口 → 触发约 38k / 留约 4.6k），不会出现「留得比触发线还多」。
+# 四档的取值与算法（含「省钱」= 约 100k 绝对触发 / 「自定义」= 用户填触发线）的真源是
+# dsh-compact-policy.js（用户设置 → 本行的唯一写入点，由 main.js 在启动时与每次保存配置后
+# 改写）；改本段不会与设置打架 —— 设置没写过时这里就是「默认开 · 中档」的落地值，
+# 写过后由策略模块整份重写本段（点名清单 = 兜底那一族 ∪ 用户官方服务商清单里的 id）。
+# 省钱 / 自定义两档会把 headroomTokens 写进这些 route 的 policy（常量口径，见策略模块里
+# FRUGAL_HEADROOM_TOKENS 的算式）。
 - id: compaction-basic
   config:
     thresholdRatio: 0.3
@@ -242,6 +250,19 @@
     modelPolicies:
       - provider: deepseek-official
         model: deepseek-flash
+        maxTokens: 256000
+        retainTokens: 32768
+      - provider: deepseek-official
+        model: deepseek-v4-flash
+        maxTokens: 256000
+        retainTokens: 32768
+      - provider: deepseek-official
+        model: deepseek-v4-flash-vision-exp
+        maxTokens: 256000
+        retainTokens: 32768
+      - provider: deepseek-official
+        model: deepseek-v4-pro
+        maxTokens: 256000
         retainTokens: 32768
 
 # 工具呈现（PTC）：本行已被回滚，MTNode 现跑 dsh-tools 的默认 native。
@@ -270,17 +291,25 @@
     thresholds: [3, 5, 8]
     argumentsPreviewChars: 500
 
+# 联网：搜索走 DeepSeek 官方搜索（只认 DEEPSEEK_API_KEY），页面抓取走 base 已插入的
+# web-fetch-http（匿名、只接受公网 HTTP(S)、逐跳校验并钉住连接）。补丁按 id 整份替换
+# config，所以 fetchProvider 必须显式写上 —— base 里还有 web-deepseek-api 提供的
+# deepseek-fetch-api，不钉死就会「两个可用 provider → WEB_PROVIDER_AMBIGUOUS」。
 - id: web
   config:
     searchProvider: deepseek-official
+    fetchProvider: http
 
 - id: web-search-deepseek
   config:
     apiKeyEnv: DEEPSEEK_API_KEY
 
+# 两个 web 工具一起挂：web_search + web_fetch（dsh-tool-web 的 fetch 开关默认 true，
+# 这里显式写 true 免得日后误读成「故意只给搜索」）。抓回来的正文上限由 provider 与
+# tool-web 的 fetchMaxOutputChars 双重设限，不会把整页灌进上下文。
 - id: tool-web
   config:
-    fetch: false
+    fetch: true
     searchTimeoutMs: 60000
 
 # MTNode persona: a general assistant for desktop content/media/file tasks,

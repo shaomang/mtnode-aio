@@ -157,10 +157,11 @@ function assetName(node, itemTitle, attemptT, tag) {
   );
 }
 
-/* 视觉提示：DeepSeek 官方现由 deepseek-flash（V4.1-Flash，原生多模态）识图，
-   旧的 deepseek-v4-flash-vision-exp 已下线。 */
+/* 视觉提示：默认就相信当前模型能识图（DeepSeek 官方默认的 deepseek-flash 原生多模态；
+   旧的 deepseek-v4-flash-vision-exp 已下线）—— 真不吃图片时由 API 报错，这条提示只在
+   「确实没有可用视觉模型」时给出，口径是「先按默认直跑，报错再说」，不是提前拦死。 */
 const VISION_HINT =
-  "未添加多模态模型（DeepSeek 官方默认的 deepseek-flash 即可识图；其它服务商请在设置中添加支持识图的模型，或为该文本服务商勾选「支持视觉」）";
+  "当前模型按默认可直接识图；若调用报错提示不支持图片输入（未添加多模态模型），请在「设置 → 模型服务」添加支持识图的模型（DeepSeek 官方默认的 deepseek-flash 即可识图），或为该服务商勾选「支持视觉」";
 
 /* 文本节点接入图像时的多模态校验：当前服务商无视觉模型且未勾选视觉则拒绝 */
 function ensureVision(prov, images) {
@@ -170,7 +171,7 @@ function ensureVision(prov, images) {
   throw new Error(I18n.t(VISION_HINT));
 }
 
-/* 已配置且勾选「支持视觉」的文本服务商（原模式 API 路径） */
+/* 已配置且带 vision 标记的文本服务商（原模式 API 路径） */
 function textVisionProviders() {
   return (S.config.providers || []).filter(
     (p) =>
@@ -13363,6 +13364,36 @@ function isCanvasNodeAgentRun() {
   return (S._canvasNodeAgentDepth || 0) > 0;
 }
 
+/* ── 画布智能节点的画布锁：**按轮归属**，不是全局 ──────────────────────────────
+   此前「有没有画布智能节点在跑」只看全局计数 S._canvasNodeAgentDepth（见 app-db.js 与
+   isCanvasNodeAgentRun），只要有一个智能任务节点在跑，屏幕上任何来源的画布帧都被拒 ——
+   包括第三方 MCP 客户端（Claude Code / 手机接管）经 renderer/mcp-bridge.js 发来的读写帧：
+   它既不是那个节点、也不属于那一轮，却一起被锁死（应用中心、外部编辑器常驻连接时尤其明显）。
+   现在把「这一轮是不是画布智能节点」按 runKey 登记（dshRunTask 起停时登记 / 注销），
+   画布闸只拦被登记的那些轮；计数那一份继续供 restrictOtherCanvases 等「全局口径」使用
+   （那些地方问的是「此刻有没有智能节点在跑」，语义没变）。 */
+function canvasNodeRunLocked(runKey) {
+  const k = String(runKey || "");
+  if (!k) return false;
+  const reg = S._canvasNodeRunLocks;
+  return !!(reg && reg[k]);
+}
+
+function lockCanvasForAgentNodeRun(runKey) {
+  const k = String(runKey || "");
+  if (!k) return;
+  S._canvasNodeRunLocks = S._canvasNodeRunLocks || {};
+  S._canvasNodeRunLocks[k] = (S._canvasNodeRunLocks[k] || 0) + 1;
+}
+
+function unlockCanvasForAgentNodeRun(runKey) {
+  const k = String(runKey || "");
+  const reg = S._canvasNodeRunLocks;
+  if (!reg || !reg[k]) return;
+  reg[k] -= 1;
+  if (reg[k] <= 0) delete reg[k];
+}
+
 function canvasDeniedForAgentNodeError() {
   return I18n.t(
     "智能节点不能读取或编辑画布、修改节点图或创建任务。请使用读写文件、联网、命令、技能与识图完成任务。",
@@ -14661,15 +14692,19 @@ const AGENT_TOOL_DENY_ALL_OF = {
  * @returns {string[]} 未排序的工具名（网关负责去重排序）
  */
 function agentDeniedToolNames(runKey) {
+  /* 识图只有一个入口：dsh 引擎自带的 read_image 无条件不注册（看图一律走
+     mtnode_vision —— 它才有宿主审批、多模态后端路由与返回预算）。与工具许可无关，
+     所以写在早退之前，任何一轮都带它。 */
+  const out = [];
+  out.push("read_image");
   const denied = [];
   for (const cat of agentToolCatalog()) {
     for (const it of cat.items) {
       if (agentToolMode(it.key, runKey) === "deny") denied.push(it.key);
     }
   }
-  if (!denied.length) return [];
+  if (!denied.length) return out;
   const has = (k) => denied.indexOf(k) >= 0;
-  const out = [];
   if (has("vision")) out.push("mtnode_vision");
   if (has("canvas_read")) out.push("mtnode_canvas_get");
   /* 素材库 / 窗口截图只有一个入口工具（assets_read 拒 = 整只不注册） */
@@ -15410,7 +15445,7 @@ async function ensureVisionInspectPermission(params) {
 }
 
 /* 解析识图路由：供应商顺序 → 模型顺序；目录已标注能吃图的模型排前面，
-   只在服务商上勾了「支持视觉」的手填模型降到次选；失败可重试下一路由 */
+   只在服务商上带 vision 标记的手填模型降到次选；失败可重试下一路由 */
 function resolveVisionInspectRoutes(preferredModel) {
   const want = String(preferredModel || "").trim();
   const preferred = [];
@@ -15442,7 +15477,7 @@ function resolveVisionInspectRoutes(preferredModel) {
       /* 目录已声明 image 的模型（如 DeepSeek 官方的 deepseek-flash）可直连 */
       for (const m of vis) push(p, m.id, m.name || m.id, false);
     } else if (p.vision && Array.isArray(p.models) && p.models.length) {
-      /* 目录没标注、只在服务商上勾了「支持视觉」的手填模型：降到次选 */
+      /* 目录没标注、只在服务商上带 vision 标记的手填模型：降到次选 */
       for (const id of modelsOfKind(S.config, p, "text"))
         push(p, String(id), String(id), true);
     }
@@ -15525,7 +15560,7 @@ async function applyVisionInspect(params, runKey) {
     return {
       ok: false,
       error: I18n.t(
-        "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，勾选「支持视觉」，并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）",
+        "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）",
       ),
     };
   }
@@ -15870,7 +15905,7 @@ async function applyCanvasOp(op, params, runCtx) {
      缺省（老会话 / 裸节点 / 助手）无策略 → 回退全局预设，行为不变。 */
   const runKey = (runCtx && runCtx.runKey) || "";
   if (
-    isCanvasNodeAgentRun() &&
+    canvasNodeRunLocked(runKey) &&
     (op === "get" || op === "edit" || op === "app")
   ) {
     throw new Error(canvasDeniedForAgentNodeError());
@@ -15913,6 +15948,9 @@ function handleCanvasEvent(data, runCtx) {
     id: String(id),
     runKey: String(runCtx.runKey || ""),
     sessionId: String(data.sessionId || runCtx.sessionId || ""),
+    /* 这一轮的画布权限（按 runKey 归属，见 canvasNodeRunLocked）：画布智能节点那几轮
+       一律拒收画布 / 应用帧；MCP 连接与其它会话各自的轮不受牵连。 */
+    locked: canvasNodeRunLocked(runCtx.runKey),
   };
   const deadRunError = I18n.t("发起轮已结束，未执行");
   let replied = false;
@@ -15945,7 +15983,7 @@ function handleCanvasEvent(data, runCtx) {
   };
   const opEarly = data.op || "get";
   if (
-    isCanvasNodeAgentRun() &&
+    canvasNodeRunLocked(frameOwner.runKey) &&
     (opEarly === "get" || opEarly === "edit" || opEarly === "app")
   ) {
     const err = canvasDeniedForAgentNodeError();

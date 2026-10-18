@@ -1,18 +1,21 @@
 "use strict";
-/* 新安装默认服务商播种：DeepSeek 只有 flash / pro 两个模型，且默认勾选「支持视觉」
+/* 新安装默认服务商播种：DeepSeek 只有 flash / pro 两个模型（服务商不再有「支持视觉」标记）
  *   node test/smoke-default-provider.js
  * 需求：新安装 MTNode 时，默认提供商（DeepSeek）默认模型是 flash
- *       （deepseek-flash = V4.1-Flash，原生多模态、能识图）与 pro 两个，
- *       并默认勾选支持视觉；已下线的 deepseek-v4-flash / vision-exp 不再进清单；
+ *       （deepseek-flash = V4.1-Flash，原生多模态、能识图）与 pro 两个；
+ *       已下线的 deepseek-v4-flash / vision-exp 不再进清单；
+ *       识图不再靠服务商上的 vision 勾选（该勾选框已下线）——默认就当当前模型能识图，
+ *       真不吃图片时由上游 API 报错，因此播种对象**不再写 vision 字段**；
  *       Key 为空（默认）时设置页上方显示 DeepSeek 官方充值通道
  *       https://platform.deepseek.com/ —— 那条横幅的回归在
  *       test/smoke-provider-settings.js [1b][6]，本文件只钉播种清单与视觉默认。
  * 覆盖：
  *   [1] renderer/app-boot.js 的 ensureDefaultProviders()：整表为空时播种
- *       [deepseek-flash, deepseek-v4-pro] + vision:true（不是三个模型、不是 vision:false）
+ *       [deepseek-flash, deepseek-v4-pro]，且不带 vision 标记（不是三个模型、不是 vision:true）
  *   [2] 已有任何服务商时一律不动（用户删过 / 改过的不会被补回来）
  *   [3] 删除清单（removedProviders）里的默认项不再复活
- *   [4] 第二真源 main.js 的 config:load 兜底默认与启动播种逐字一致
+ *   [4] 第二真源 main.js 的 config:load 兜底默认：模型清单与启动播种一致（老字段 vision 仍在，
+ *       但已无读者 —— 只作遗留数据断言，不当作新语义）
  */
 const fs = require("fs");
 const path = require("path");
@@ -56,7 +59,7 @@ function seedWith(config) {
 }
 const byId = (cfg, id) => (cfg.providers || []).find((p) => p && p.id === id);
 
-console.log("\n[1] 全新空列表 → 只播种 flash / pro 两个模型 + 默认勾选支持视觉");
+console.log("\n[1] 全新空列表 → 只播种 flash / pro 两个模型，不再写 vision 标记");
 const seeded = seedWith({});
 const ds = byId(seeded, "deepseek");
 ok(!!ds, "播出了默认服务商 DeepSeek（id \"deepseek\"）");
@@ -68,7 +71,7 @@ ok(
   !(ds && ds.models || []).some((m) => /vision|deepseek-v4-flash$/.test(String(m))),
   "已下线的 vision-exp / deepseek-v4-flash 不再进默认清单",
 );
-ok(ds && ds.vision === true, "默认勾选「支持视觉」（vision: true）");
+ok(ds && ds.vision === undefined, "播种对象不再带 vision 字段（勾选框已下线，默认按当前模型识图）");
 ok(ds && ds.apiKey === "", "API Key 默认为空（→ 设置页显示官方充值通道）");
 ok(
   ds && ds.baseUrl === "https://api.deepseek.com",
@@ -92,13 +95,13 @@ ok(
 ok(!byId(kept, "deepseek"), "被删掉的默认项不会因为打开设置 / 重启而复活");
 
 const already = [
-  { id: "deepseek", name: "DeepSeek", type: "text_openai", apiKey: "sk-x", models: ["my-model"], vision: false },
+  { id: "deepseek", name: "DeepSeek", type: "text_openai", apiKey: "sk-x", models: ["my-model"] },
 ];
 const kept2 = seedWith({ providers: already });
 const ds2 = byId(kept2, "deepseek");
 ok(
-  ds2.models.length === 1 && ds2.models[0] === "my-model" && ds2.vision === false,
-  "用户自己改过的模型清单 / 视觉勾选不被默认值覆盖",
+  ds2.models.length === 1 && ds2.models[0] === "my-model" && !("vision" in ds2),
+  "用户自己改过的模型清单不被默认值覆盖（也不会被补上 vision 字段）",
 );
 
 console.log("\n[3] 删除清单里的默认项不复活");
@@ -108,7 +111,7 @@ ok(
   "removedProviders 命中时两条默认项都不再播种",
 );
 
-console.log("\n[4] main.js（config:load 兜底）与启动播种同口径");
+console.log("\n[4] main.js（config:load 兜底）：模型清单与启动播种一致，vision 是遗留分歧");
 const main = readText("main.js");
 const at = main.indexOf('id: "deepseek"');
 const block = at < 0 ? "" : main.slice(at, at + 420);
@@ -122,7 +125,14 @@ ok(
   !/models:[\s\S]{0,200}"deepseek-v4-flash"/.test(block),
   "main.js 默认清单里没有已下线的 deepseek-v4-flash",
 );
-ok(/vision:\s*true/.test(block), "main.js 默认 vision: true（与启动播种一致）");
+/* main.js 里的 vision: true 是**遗留数据**（本轮只统一了 app-boot 播种；main.js 那条不在
+   改动清单内）。勾选框已下线、渲染层没人读 vision，所以它不影响行为；这里如实钉住分歧，
+   免得下一个人以为两边已经一致。 */
+ok(!/vision\s*:/.test(boot), "app-boot 播种不再写 vision（新语义：默认按当前模型识图）");
+ok(
+  /vision:\s*true/.test(block),
+  "main.js 兜底默认仍带遗留 vision: true（无读者，与 app-boot 的差异是已知尾巴）",
+);
 ok(/apiKey:\s*""/.test(block), "main.js 默认 API Key 为空");
 ok(
   main.indexOf('models: [\n            "deepseek-v4-flash",\n            "deepseek-v4-pro",\n            "deepseek-v4-flash-vision-exp",\n          ]') < 0,

@@ -323,10 +323,14 @@ async function main() {
   ok(has("renderer/index.html", 'src="app-relay.js"') && has("preload.js", "relayMe:") &&
     has("main.js", 'ipcMain.handle("relay:me"') && has("main.js", "providerAuthKey"),
     "接线：index.html 载入 / preload 暴露 relayMe / main 有 relay:me 与 providerAuthKey");
+  /* 注释里写着「为什么删」是允许的（与下面 settingsCode 同口径）：断言只看代码 */
+  const settingsNoComments = read("renderer/app-settings.js")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
   ok(has("renderer/app-settings.js", "function relayProvCard") &&
-    has("renderer/app-settings.js", "刷新中转清单") &&
+    !settingsNoComments.includes("刷新中转清单") &&
     has("renderer/app-settings.js", "relay-ro"),
-    "设置页有只读中转卡（含「刷新中转清单」入口与只读字段）");
+    "设置页有只读中转卡（手动「刷新中转清单」入口已移除，改由 syncIfStale 自动拉取）");
   /* 本轮口径：卡上不再有凭据说明行，也不再有充值按钮 ——
      充值入口只留右上角账户菜单的「余额」（renderer/app-auth.js）。
      断言只扫**代码**（注释里留一句「为什么删」是允许的，与 smoke-relay-client 同口径）。 */

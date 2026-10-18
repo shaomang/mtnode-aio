@@ -267,6 +267,15 @@ function procMinNodeW(outW) {
     PROC_BORDER
   );
 }
+/* 这颗节点的输出是不是**右侧并排栏**（.n-out 与主列同行、按 outW 定宽）。
+   智能任务节点（agent_task）本轮起不是：它的输出是输入框下方的可折叠区
+   （整幅宽、挂在左侧列里，见 app-canvas.js agentTaskOutFoldEl），那块面板
+   与主列**不同行**，所以它再也不能按「主列 + 面板」去算宽度下限 —— 那正是
+   「选中态输出区被挤成窄栏」的另一半根因（节点被撑到 546px 起，主列却没得到宽度）。
+   其余节点（proc_text / proc_image）照旧并排，口径不变。 */
+function hasSideOutPanel(n) {
+  return !!(n && n.kind !== "agent_task");
+}
 
 const KIND_CLS = {
   input_text: "in",
@@ -2442,52 +2451,14 @@ function bindSuperInnerBridgePort(p, host, pi) {
   bindPortTip(p, host, "out", pi, "inner-bridge");
   p.addEventListener("mousedown", (ev) => {
     ev.stopPropagation();
+    /* 右键 = 切断这根内侧端子上的连线（见 PORT-CUT），绝不在这里起拖线 */
+    if (ev.button === 2) return;
     ev.preventDefault();
     startWireDrag(host.id, ev, pi, { superInnerBridge: true });
-  });
-  p.addEventListener("contextmenu", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const ahead = (S.wf.wires || []).filter((w) => {
-      if (w.from !== host.id || Number(w.fromIndex || 0) !== pi) return false;
-      const to = nodeById(w.to);
-      return to && nodeParentSuperId(to) === host.id;
-    }).length;
-    if (!ahead) {
-      toast(I18n.t("该内侧输入端子没有连线"), "warn");
-      return;
-    }
-    pushHistory();
-    const rem = removeSuperInnerPortWires(host, "bridge", pi);
-    clearDownstream(host.id);
-    toast(I18n.t("已移除内侧输入端子连线 ") + rem + I18n.t(" 条"), "ok");
-    renderCanvas();
-    scheduleSave(true);
-    renderStatus();
   });
 }
 function bindSuperInnerSinkPort(p, host, poi) {
   bindPortTip(p, host, "in", poi, "inner-sink");
-  p.addEventListener("contextmenu", (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const ahead = (S.wf.wires || []).filter((w) => {
-      if (w.to !== host.id || Number(w.toIndex) !== poi) return false;
-      const from = nodeById(w.from);
-      return from && nodeParentSuperId(from) === host.id;
-    }).length;
-    if (!ahead) {
-      toast(I18n.t("该内侧输出端子没有连线"), "warn");
-      return;
-    }
-    pushHistory();
-    const rem = removeSuperInnerPortWires(host, "sink", poi);
-    clearDownstream(host.id);
-    toast(I18n.t("已移除内侧输出端子连线 ") + rem + I18n.t(" 条"), "ok");
-    renderCanvas();
-    scheduleSave(true);
-    renderStatus();
-  });
 }
 /** 展开壳层：在 viewport 内直接挂载子节点与标注（避免两阶段查找失败） */
 function fillSuperShellViewport(viewport, hostId) {
@@ -3126,17 +3097,55 @@ function pruneInvalidSuperBoundaryWires() {
   S.wf.wires = S.wf.wires.filter((w) => wireKeepsSuperBoundary(w));
   return before - S.wf.wires.length;
 }
+/* 拖拽单元：把「选中集里某颗壳的后代」从独立拖拽名单里剔掉（任意深度的壳，展开 / 收起都算）。
+   壳被拖动时，内部节点本来就该跟着壳走 —— 展开壳是 DOM 内嵌跟随，收起壳的坐标本来就在
+   壳的局部坐标系里。它们一旦留在拖拽名单里就有两处会坏事：
+     ① applyNodeDragVisual 会按世界坐标给它们叠加位移（收起壳里等于把内容在壳内挪走）；
+     ② 松手时 finalizeNodeDragNest 按落点逐个改写 parentSuperId —— 光标在壳外的空白处松手，
+        整壳的内部节点就被抬成画布顶层（现场：粘贴后连着壳一起拖，壳里东西全被甩出来，
+        撤销一次才回得来）。
+   壳自己留在名单里（它才是被拖的那颗），后代一律交给壳带着走。 */
+function dragUnitIds(ids) {
+  const src = ids || [];
+  const supers = new Set();
+  for (const id of src) {
+    const n = nodeById(id);
+    if (n && n.kind === "super") supers.add(id);
+  }
+  if (!supers.size) return src.slice();
+  const out = [];
+  for (const id of src) {
+    const n = nodeById(id);
+    if (!n) continue;
+    let sid = nodeParentSuperId(n);
+    const seen = new Set();
+    let insideDraggedShell = false;
+    while (sid && !seen.has(sid)) {
+      if (supers.has(sid)) {
+        insideDraggedShell = true;
+        break;
+      }
+      seen.add(sid);
+      const host = nodeById(sid);
+      sid = host ? nodeParentSuperId(host) : "";
+    }
+    if (!insideDraggedShell) out.push(id);
+  }
+  return out;
+}
 function finalizeNodeDragNest(ids, curWorld, cursorPt) {
   const focusId = currentSuperFocus();
+  /* 只按「独立拖拽单元」定落点：壳的后代随壳走（见 dragUnitIds），绝不在这里被单独改父级 */
+  const unitIds = dragUnitIds(ids || []);
   /* 全屏进入态（子画布）里也能再往里套：当层的直接子壳同样是落点宿主，
      坐标本来就是舞台坐标，宿主原点走 superInnerAnchor 即可（不再整体提前返回）。 */
   const skipHosts = new Set();
-  for (const id of ids || []) {
+  for (const id of unitIds) {
     const n = nodeById(id);
     if (n && n.kind === "super") skipHosts.add(id);
   }
   const list = [];
-  for (const id of ids || []) {
+  for (const id of unitIds) {
     const n = nodeById(id);
     if (!n || isSuperIoNode(n)) continue;
     /* 本屏看不见的节点（其它层级）不参与归属改写 */
@@ -4765,8 +4774,11 @@ function removeSuperInnerPortWires(superNode, dir, index) {
   if (!superNode || !S.wf) return 0;
   const idx = Number(index || 0);
   const before = (S.wf.wires || []).length;
+  /* 关系线（rel）不占端子：同一颗壳与子元素之间常有一条关系线，toIndex 恒为 0，
+     不排除它就会在「切 0 号内侧端子」时被一起删掉。端子号一律 Number(..) 归一后比对。 */
   if (dir === "bridge") {
     S.wf.wires = (S.wf.wires || []).filter((w) => {
+      if (w.rel) return true;
       if (w.from !== superNode.id || Number(w.fromIndex || 0) !== idx)
         return true;
       const to = nodeById(w.to);
@@ -4774,7 +4786,8 @@ function removeSuperInnerPortWires(superNode, dir, index) {
     });
   } else if (dir === "sink") {
     S.wf.wires = (S.wf.wires || []).filter((w) => {
-      if (w.to !== superNode.id || Number(w.toIndex) !== idx) return true;
+      if (w.rel) return true;
+      if (w.to !== superNode.id || Number(w.toIndex || 0) !== idx) return true;
       const from = nodeById(w.from);
       return !(from && nodeParentSuperId(from) === superNode.id);
     });
@@ -5340,8 +5353,51 @@ function preferredAgentModelForRoute(route) {
   return models[0] || "";
 }
 
-/* ═══════════ 「默认模型」（设置 · 智能能力）—— 全应用唯一一份解析 ═══════════
-   用户在设置 · 智能能力里填的「默认模型（智能能力使用）」= S.config.dsh.model（
+/* ── 设置 · 默认模型的那几格（本次需求：那块已挪到设置整页第一块）────────────
+   真源 = S.config.dsh.provider / model / effort（preset / compact 也在那一块里，
+   各有自己的旧入口，不在这里解析）。这几个函数是「设置里到底选了什么」的唯一读法：
+   设置页回显、新建会话播种、运行期兜底、助手栏镜像都走它们，别处不再各自翻 config 的键。
+
+   · provider 为空 = 没选过 → 跟随本机生效的默认智能路由（preferredAgentProviderRoute，
+     与旧口径一致，不硬编码 deepseek）；选过但已不可用（服务商被停用 / 删掉）同样跟随。
+   · model 为空 = 没选过 → 由调用点决定（运行期落到该服务商清单第一只，设置页回显同一只）。
+   · effort 缺省 high（与会话 / 助手的历史默认一致）。 */
+function dshDefaultProviderRoute() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const want = String(cfg.provider || "").trim();
+  if (want) {
+    try {
+      if (agentRouteOptions().has(want)) return want;
+    } catch (_) {}
+  }
+  try {
+    return String(preferredAgentProviderRoute() || "") || "deepseek-official";
+  } catch (_) {
+    return "deepseek-official";
+  }
+}
+function dshDefaultModelValue() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  return String(cfg.model || "").trim();
+}
+function dshDefaultEffortValue() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const v = String(cfg.effort || "").trim();
+  try {
+    return normalizeAgentEffort(v || "high");
+  } catch (_) {
+    return v || "high";
+  }
+}
+function dshDefaultPresetValue() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const v = String(cfg.preset || "").trim();
+  if (v) return v;
+  return typeof AGENT_PRESET_DEFAULT === "string" ? AGENT_PRESET_DEFAULT : "";
+}
+
+/* ═══════════ 「默认模型」（设置 · 整页第一块）—— 全应用唯一一份解析 ═══════════
+   用户在设置 · 默认模型（设置整页第一块）里填的提供商 / 模型 / 思考强度 = S.config.dsh.provider / model / effort（
    app-settings.js 的 modelSel 写的就是这一格），这里给出「此刻到底用哪一只」与
    「用不了时该说什么」的唯一口径。工具构建（方案生成 / 开发会话 / 工具运行 / 节点
    头部 🤖 按钮）一律按它取值，不再各拿 preferredAgentModelForRoute（那条链读的是
@@ -5349,11 +5405,11 @@ function preferredAgentModelForRoute(route) {
 
    三条纪律（用户口径）：
      · 不静默回落：这一格为空、或那只模型在本机任何服务商里都找不到、或它能挂的服务商
-       全被停用 / 没填 Key —— 一律报错并指路「设置 · 智能能力 · 默认模型」，绝不偷偷
+       全被停用 / 没填 Key —— 一律报错并指路「设置 · 默认模型」，绝不偷偷
        换成别的模型；
      · 只在运行期算生效值：不往节点写 aiModel / aiProvider（改设置后所有未自选的节点
        立刻跟着变，不会留下「新建时补种的那一份旧默认」）；
-     · 路由优先沿用本机默认智能路由（preferredAgentProviderRoute，与长任务面板同源），
+     · 路由优先用设置里选的提供商（没选过 → 本机默认智能路由 preferredAgentProviderRoute），
        只有当这只模型压根不属于那条路由时才改成它所属的路由。 */
 
 /* 这只模型能不能挂在这条路由上：路由不在本机 / 该路由清单里没有它 → 不能。 */
@@ -5378,7 +5434,7 @@ function dshModelFitsRouteNow(route, model) {
 }
 
 /* 本机此刻「可挂这只模型的智能路由」清单（同一条路由只出一次，顺序 = 候选优先级）：
-   ① 默认智能路由（沿用用户当前那一条，不改它的服务商）；
+   ① 设置里的提供商（没选过 / 已不可用 → 本机生效的默认智能路由，不改用户的服务商）；
    ② 路由反查真源 devRouteOfModel（模型只登记在别家时把服务商一并拨正）；
    ③ 兜底：本机默认路由。 */
 function dshDefaultModelRoutes(model) {
@@ -5391,7 +5447,9 @@ function dshDefaultModelRoutes(model) {
     out.push(s);
   };
   try {
-    if (typeof preferredAgentProviderRoute === "function")
+    if (typeof dshDefaultProviderRoute === "function")
+      push(dshDefaultProviderRoute());
+    else if (typeof preferredAgentProviderRoute === "function")
       push(preferredAgentProviderRoute());
   } catch (_) {}
   try {
@@ -5414,7 +5472,7 @@ function dshDefaultModelPick() {
       route: "",
       model: "",
       reason: I18n.t(
-        "默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
+        "默认模型还没设置：请到 设置 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
       ),
     };
   const routes = dshDefaultModelRoutes(model);
@@ -5424,7 +5482,7 @@ function dshDefaultModelPick() {
       route: "",
       model: model,
       reason: I18n.t(
-        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。",
+        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 默认模型 里重选。",
         { model: model },
       ),
     };
@@ -5681,7 +5739,7 @@ function visionModelIndex() {
 /* 该供应商可用的视觉模型（顺序 = 用户模型列表优先级）：
    1) 目录源中的视觉模型 ∩ 已保存模型列表（按已保存顺序）
    2) 已保存模型 id 在任意目录中标为视觉
-   3) 勾选了「支持视觉」时，已保存模型全部作为候选（手填服务商） */
+   3) 服务商自带 vision 标记时，已保存模型全部作为候选（手填服务商） */
 function visionModelsForProvider(providerId) {
   const c = S.providerCatalog || { deepseek: [], piai: [] };
   if (providerId === "deepseek-official")
@@ -5895,91 +5953,18 @@ function providerDisplayName(provider) {
   return provider || I18n.t("当前");
 }
 
-/* 图像运行决策:返回 {provider, model}(视觉可用)或 null(不可识图)。
-   - 已确认的供应商/模型 → 直接使用;
-   - 当前选择的模型已支持识图 → 原样返回当前供应商/模型;
-   - 智能节点(agent_task / 文本智能模式) → 可用 mtnode_vision，不再弹窗或自动切换主模型;
-   - 否则 → 从全部已保存供应商(含当前)的视觉模型中选取:
-       · proc_text（原模式）自动切到第一个候选并提示;
-       · 其他弹窗询问，确认后写入 node.vision 持续使用;拒绝则 declined。 */
+/* 图像运行决策（去闸）：默认就相信当前模型能识图，直接把它交给本轮请求。
+   - 不再判「有没有已保存的视觉模型」，也不再弹「切到视觉模型」窗、不自动改 node.provider / node.model；
+   - 真不吃图片时由上游 API 报错，调用方按原样带出（「当前模型不支持图片输入」+ 上游报错）；
+   - 智能节点(agent_task / 文本智能模式) → 靠 mtnode_vision 识图，不下发视觉路由（不把图片塞进主模型提示词）；
+   - 返回 null = 没有可指定的当前模型（按调用方的默认路由跑）。 */
 async function resolveVisionForRun(node) {
-  const curProv = node.provider || "deepseek-official";
-  const cur = node.model;
-  const curVis = visionModelsForProvider(curProv);
-  /* 当前选择的模型已支持识图:原样使用 */
-  if (cur && curVis.some((m) => m.id === cur)) {
-    return { provider: curProv, model: cur };
-  }
   /* 智能节点：靠 mtnode_vision 识图，不切换主模型、不弹窗 */
   if (isDshTask(node)) return null;
-  /* 之前已确认的供应商/模型:校验仍存在后直接使用 */
-  if (node.vision && node.vision.provider && node.vision.model) {
-    const provOk =
-      node.vision.provider === "deepseek-official" ||
-      (S.config.providers || []).some(
-        (p) => "mtnode_" + p.id === node.vision.provider,
-      );
-    if (provOk) return { provider: node.vision.provider, model: node.vision.model };
-    node.vision = null; /* 已失效,重新评估 */
-  }
-  if (node.vision && node.vision.declined) return null; /* 此前选择不用 */
-  /* 候选 = 当前供应商的视觉模型 + 其他供应商的视觉模型(去重) */
-  const cands = [];
-  const seen = new Set();
-  const curName = providerDisplayName(curProv);
-  for (const m of curVis) {
-    const key = curProv + "|" + m.id;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    cands.push({
-      provider: curProv,
-      providerName: curName,
-      model: m.id,
-      modelName: m.name || m.id,
-    });
-  }
-  for (const c of visionCandidatesForNode(node)) {
-    const key = c.provider + "|" + c.model;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    cands.push(c);
-  }
-  if (!cands.length) {
-    if (Date.now() - (S._visionToastAt || 0) > 5000) {
-      S._visionToastAt = Date.now();
-      toast(
-        I18n.t("检测到图像输入，但已保存的服务商都没有视觉模型；请在「模型服务」添加支持图像的服务商（如 opencode 等）并选择其视觉模型"),
-        "warn",
-      );
-    }
-    return null;
-  }
-  /* 文本处理节点原模式：自动切到第一个视觉模型（不弹窗） */
-  if (node.kind === "proc_text") {
-    const pick = cands[0];
-    node.vision = { provider: pick.provider, model: pick.model };
-    if (pick.provider !== curProv || pick.model !== cur) {
-      node.provider = pick.provider;
-      node.model = pick.model;
-      toast(
-        I18n.t("已自动切换至视觉模型：") +
-          pick.providerName +
-          " / " +
-          (pick.modelName || pick.model),
-        "ok",
-      );
-      scheduleSave(true);
-    }
-    return { provider: pick.provider, model: pick.model };
-  }
-  if (node._visionAsking) return node._visionAsking;
-  node._visionAsking = confirmVisionSwitch(node, cands, cur).then((ok) => {
-    node._visionAsking = null;
-    return ok && node.vision && node.vision.provider
-      ? { provider: node.vision.provider, model: node.vision.model }
-      : null;
-  });
-  return node._visionAsking;
+  const curProv = node.provider || "deepseek-official";
+  const cur = String(node.model || "").trim();
+  if (!cur) return null;
+  return { provider: curProv, model: cur };
 }
 
 /* 工作流级统一工作目录(设置后所有智能节点只读继承) */
@@ -9142,6 +9127,10 @@ function updateRunQueuePanel() {
   const hasQueue = !!items.length;
   /* 心跳：有运行项才定时重绘面板（解决长任务期间「看着不动」），队列空即停 */
   syncRunQueueTicker(hasQueue);
+  /* 主进程心跳开关：有活在跑就打开（主进程每 2 秒回一发 sound:tick，见 main.js 的
+     setSoundWatch）。完成判定不能只挂在渲染层定时器上 —— 后台节流会把它推迟到窗口被
+     重新激活的那一刻，表现就是「后台跑完了没声音、切回界面才响」。 */
+  syncSoundWatch(hasQueue);
   /* 任务级完成短促音（本次需求）：同一次取数里先做一次「队列前后对比」——
      上拍还在的运行项这一拍不见了 = 它跑完了，响一声短促音（被手动停止 / 取消的不发）。
      放在这里 = 任何类型（智能体会话 / 节点 / 开发块 / 助手 / 后端媒体 / 排队项 / 批处理）
@@ -9326,11 +9315,59 @@ function syncRunQueueTicker(on) {
     try {
       updateRunQueuePanel();
     } catch (_) {
-      /* 取数 / 重绘异常：停掉心跳，不让它每 2s 反复抛 */
+      /* 取数 / 重绘异常：旧版在这里直接停心跳，于是一次瞬时异常之后「完成音」就再也等不到
+         下一拍（要等用户碰一下界面才有别的调用进来 → 看着就像"切回窗口才响"）。
+         现在只停这一只，3 秒后按当时的队列状态重起（队列空了就不再起）。 */
       stopRunQueueTicker();
+      setTimeout(() => {
+        try {
+          updateRunQueuePanel();
+        } catch (_) {}
+      }, 3000);
     }
   }, RUN_QUEUE_TICK_MS);
 }
+/* ── 完成音的主进程心跳 ──
+   渲染层只负责告诉主进程「现在有活在跑 / 都跑完了」，主进程按 2 秒回一发 sound:tick，
+   我们收到就当场刷一次运行队列面板（= 当场跑一次完成判定并可能发声）。
+   为什么要有它：完成判定原先只靠上面那只 setInterval；窗口被最小化 / 整片盖住时，
+   Chromium 的后台节流会把定时器降到一分钟甚至停掉，那一拍就只能等窗口被重新激活才落地。
+   IPC 走的是消息循环，不受定时器节流影响，所以判定时机不再取决于窗口是否在前台。
+   声音本身仍由本页 WebAudio 发出（不新增第二条发声通道，也就没有双响）。 */
+let _soundWatchOn = false;
+function syncSoundWatch(on) {
+  const want = !!on;
+  if (want === _soundWatchOn) return;
+  _soundWatchOn = want;
+  try {
+    if (window.api && typeof window.api.soundWatch === "function")
+      Promise.resolve(window.api.soundWatch(want)).catch(() => {});
+  } catch (_) {}
+}
+try {
+  if (window.api && typeof window.api.onSoundTick === "function")
+    window.api.onSoundTick(() => {
+      try {
+        updateRunQueuePanel();
+      } catch (_) {}
+    });
+} catch (_) {}
+/* 窗口重新被激活 / 从最小化还原：当场补一次判定。
+   「后台响过就不再补响」由判定本身保证（队列空了、账已清，不会再走一遍发声），
+   所以这里只是把可能被推迟的那一拍立刻补上，不会重复响。 */
+try {
+  window.addEventListener("focus", () => {
+    try {
+      updateRunQueuePanel();
+    } catch (_) {}
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    try {
+      updateRunQueuePanel();
+    } catch (_) {}
+  });
+} catch (_) {}
 
 /* 点队列行 = 定位：助手 → 打开右侧助手栏；会话 → 切到会话视图并选中它；
    节点 / 开发块 / 生成任务 → 先切到它归属的画布（跨画布，loadWorkflow 会保留
@@ -15941,6 +15978,13 @@ function syncPromptRefBackdrop(ta, node) {
   hl.scrollLeft = ta.scrollLeft;
   /* 胶囊块必须等高亮层落定（innerHTML + 滚动位置）之后再按 token 的实际矩形贴上去 */
   syncPromptCapsules(hl, ta, node, ta.__mtPromptPersist);
+  /* 预览档（renderer/app-mdpreview.js）：节点重画会整批换掉 textarea / 按钮 / 预览层，
+     这里顺带把现场搬到当前这一帧的 DOM 上。正文没变时不重画预览层
+     （滚动 / 选区这些高频同步因此不会把预览层的滚动位置拉回顶部）。 */
+  if (typeof MTMdPreview !== "undefined" && MTMdPreview)
+    try {
+      MTMdPreview.refresh(ta);
+    } catch (_) {}
 }
 
 function mountPromptTextarea(f3, ta, node, persistPrompt, opts) {
@@ -15991,6 +16035,26 @@ function mountPromptTextarea(f3, ta, node, persistPrompt, opts) {
   syncHl();
   /* 内嵌图像胶囊块：粘贴 / 从资源管理器拖入图片 → 光标处生成胶囊（只在支持的范围里挂） */
   if (promptCapsuleSupported(node)) bindPromptCapsuleIO(ta, node, persistPrompt);
+  /* Markdown 预览档（renderer/app-mdpreview.js）：本轮需求只落「文本处理节点」这一处提示词框
+     —— 同样是 proc_text 的智能模式也算在内；judge 判据 / agent_task 任务框不在本次范围内，
+     它们与提示词框共用本函数，所以范围判据写在这里（见 .n-md-prev 的 CSS 注释）。 */
+  if (node.kind === "proc_text" && typeof MTMdPreview !== "undefined" && MTMdPreview)
+    try {
+      MTMdPreview.attach(ta, node);
+    } catch (_) {}
+  /* 提示词框的 Tab / Shift+Tab：与文本节点板身正文框、其它源码档同一口径
+     （renderer/app-mdedit.js 的 bindSource —— Tab 插 4 个空格、Shift+Tab 反缩进一档）。
+     早先这里接过「大纲编号」（Tab 把 `3. ` 接成 `3.1. `），已整体下线：`3.1. ` 不是合法的
+     有序列表标记，渲染出来是普通段落；编辑器也不再替用户改结构。 */
+  if (
+    node.kind === "proc_text" &&
+    typeof MTMdEdit !== "undefined" &&
+    MTMdEdit &&
+    typeof MTMdEdit.bindSource === "function"
+  )
+    try {
+      MTMdEdit.bindSource(ta);
+    } catch (_) {}
 }
 
 function resolveRefs(prompt, node, idx, opts) {
@@ -17028,20 +17092,10 @@ function startNodeDrag(ev, node, opts) {
   const orig = {};
   const origWorld = {};
   let dragIds = expandBoundPairIds([...S.selSet]);
-  const openSupers = new Set(
-    dragIds.filter((id) => {
-      const s = nodeById(id);
-      return s && s.kind === "super" && s.superOpen;
-    }),
-  );
-  if (openSupers.size) {
-    dragIds = dragIds.filter((id) => {
-      const n = nodeById(id);
-      if (!n) return false;
-      const ps = nodeParentSuperId(n);
-      return !ps || !openSupers.has(ps);
-    });
-  }
+  /* 选中集里带壳时，壳的后代随壳整体走：剔掉它们，别单独拖、也别在松手时单独重挂父级。
+     旧口径只剔「展开壳的直接子节点」，于是「粘贴后（选中集含壳 + 全部内部节点）连着壳
+     一起拖、在空白处松手」会把壳内节点全甩到画布顶层（撤销一次才回得来）—— 见 dragUnitIds。 */
+  dragIds = dragUnitIds(dragIds);
   for (const id of dragIds) {
     const n = nodeById(id);
     if (n) {
@@ -17108,7 +17162,177 @@ function portHitAt(x, y, sel) {
   }
   return best;
 }
+/* ===== PORT-CUT-BEGIN · 端子右键切断连线（唯一真源） =====
+   现场需求：「右键点击节点端子切断连线经常切不断」。三处成因一律在这里收口：
+   ① 端子 mousedown 不分左右键 —— 右键一按下就起拖线（startWireDrag），松手走 mouseup 的
+      wire 分支，可能误连 / 误弹「新建节点」菜单，切断看着像没生效；
+   ② 连线 SVG（.fn-svg z-index:3 > 节点 z-index:2）的线芯 .fn-edge 带 pointer-events:stroke，
+      而线芯终点恰好压在端子圆心上 —— 瞄准圆心那一下点到的是线，不是端子（端子徽标又是
+      pointer-events:none，点字落到节点板上）→ 断线逻辑压根没跑，也没有任何提示；
+   ③ 端子号两种写法（`w.toIndex === idx` 与 `Number(w.toIndex || 0) === idx`）：旧档 / 外部
+      写进来的 toIndex 是字符串或缺省时，悬停能列出这条线、右键却回「该端子没有连线」。
+   所以这一下不认「事件目标是哪个 DOM」，只认「光标离哪颗端子最近」（portCutTargetAt），
+   再由 cutPortWires 一处改数据；普通端子 / 工具·函数数组端子 / 超级节点内侧桥·汇端子全部同源。
+   数组参数端子的每个槽点（.fn-arr-slots 里的槽）仍按「只切那一条」由槽点自己处理 —— 见
+   app-canvas.js 的 .fn-arr-slot-dot。 */
+const PORT_CUT_DONE_TEXT = {
+  in: "已切断输入端子 {n} 条连线（Ctrl+Z 可撤销）",
+  out: "已切断输出端子 {n} 条连线（Ctrl+Z 可撤销）",
+  bridge: "已移除内侧输入端子连线 {n} 条（Ctrl+Z 可撤销）",
+  sink: "已移除内侧输出端子连线 {n} 条（Ctrl+Z 可撤销）",
+};
+const PORT_CUT_EMPTY_TEXT = {
+  in: "该输入端子没有连线",
+  out: "该输出端子没有连线",
+  bridge: "该内侧输入端子没有连线",
+  sink: "该内侧输出端子没有连线",
+};
+/** 一颗端子元素的身份：{ node, side: "in"|"out"|"bridge"|"sink", idx }（认不出返回 null）。
+    内侧端子先判（它们同时带 .in / .out，判定顺序写反会把桥端子当成普通输入端子）。 */
+function portCutTargetOfEl(el) {
+  if (!el || !el.dataset || !el.classList) return null;
+  const node = nodeById(el.dataset.node);
+  if (!node) return null;
+  const cls = el.classList;
+  if (cls.contains("super-inner-bridge"))
+    return { node, side: "bridge", idx: Number(el.dataset.fromIndex || 0) };
+  if (cls.contains("super-inner-sink"))
+    return { node, side: "sink", idx: Number(el.dataset.idx || 0) };
+  if (cls.contains("in")) return { node, side: "in", idx: Number(el.dataset.idx || 0) };
+  if (cls.contains("out")) return { node, side: "out", idx: Number(el.dataset.fromIndex || 0) };
+  return null;
+}
+/** 光标附近最近的一颗端子（右键切线的命中判定）。竖向 = 1.6×半径、横向 = 2.8×半径：
+    横向放宽盖住「接线排 + 徽标起始段」，竖向收紧免得误伤上下相邻端子；
+    判定只取最近的**唯一**一颗，宁可不动也不猜。 */
+function portCutTargetAt(x, y) {
+  const z = S.cam && S.cam.z > 0 ? S.cam.z : 1;
+  const dyTol = Math.max(8, PORT_R * 1.6 * z);
+  const dxTol = Math.max(14, PORT_R * 2.8 * z);
+  let best = null;
+  let bestScore = Infinity;
+  for (const p of document.querySelectorAll("#canvas .port")) {
+    const r = p.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    const dx = Math.abs(x - (r.left + r.width / 2));
+    const dy = Math.abs(y - (r.top + r.height / 2));
+    if (dx > dxTol || dy > dyTol) continue;
+    const score = (dx / dxTol) * (dx / dxTol) + (dy / dyTol) * (dy / dyTol);
+    if (score < bestScore) {
+      bestScore = score;
+      best = p;
+    }
+  }
+  return best ? portCutTargetOfEl(best) : null;
+}
+/** 切断某颗端子上挂的连线（唯一真源）：改数据 + 记一步撤销 + 清下游缓存，返回切掉条数。
+    端子号一律 Number(..) 归一后比对（旧档里可能是字符串 / 缺省），与 inPortWireCount /
+    portLinkedNodes / 连线落点判定同一份口径。0 = 这颗端子本来就没线（不动历史、不重绘）。 */
+function cutPortWires(node, side, idx) {
+  if (!node || !S.wf || !Array.isArray(S.wf.wires)) return 0;
+  const i = Number(idx);
+  if (!isFinite(i)) return 0;
+  const isInner = side === "bridge" || side === "sink";
+  let rem;
+  if (isInner) {
+    rem = S.wf.wires.filter((w) => {
+      if (w.rel) return false;
+      if (side === "bridge") {
+        if (w.from !== node.id || Number(w.fromIndex || 0) !== i) return false;
+        const to = nodeById(w.to);
+        return !!(to && nodeParentSuperId(to) === node.id);
+      }
+      if (w.to !== node.id || Number(w.toIndex || 0) !== i) return false;
+      const from = nodeById(w.from);
+      return !!(from && nodeParentSuperId(from) === node.id);
+    });
+    if (!rem.length) return 0;
+    pushHistory();
+    removeSuperInnerPortWires(node, side, i);
+    clearDownstream(node.id);
+    return rem.length;
+  }
+  const isIn = side === "in";
+  rem = S.wf.wires.filter(
+    (w) =>
+      !w.rel &&
+      (isIn
+        ? w.to === node.id && Number(w.toIndex || 0) === i
+        : w.from === node.id && Number(w.fromIndex || 0) === i),
+  );
+  if (!rem.length) return 0;
+  pushHistory();
+  if (isIn) {
+    const dataCut = rem.some((w) => !wireFromIsControl(w));
+    S.wf.wires = S.wf.wires.filter(
+      (w) => w.rel || !(w.to === node.id && Number(w.toIndex || 0) === i),
+    );
+    /* 动态端子节点：切掉中间一条后其余端子号左移补位（保持连续，与落点 / 占用判定同一口径）；
+       固定端子节点（交付 / 素材 / 工具·函数 / 媒体生成…）绝不重排 —— 端子号是端子的身份。 */
+    if (!hasFixedInPorts(node)) {
+      for (const w of S.wf.wires) {
+        if (w.rel || w.to !== node.id) continue;
+        const n = Number(w.toIndex || 0);
+        if (n > i) w.toIndex = n - 1;
+      }
+    }
+    if (dataCut) clearDownstream(node.id);
+  } else {
+    S.wf.wires = S.wf.wires.filter(
+      (w) => w.rel || !(w.from === node.id && Number(w.fromIndex || 0) === i),
+    );
+    if (!isControlKind(node)) clearDownstream(node.id);
+  }
+  return rem.length;
+}
+/** 切一颗端子 + 提示 + 重绘（所有入口的唯一落点）。返回是否真的切掉了东西。 */
+function cutPortWiresHere(target) {
+  if (!target || !target.node) return false;
+  const side = target.side;
+  const n = cutPortWires(target.node, side, target.idx);
+  if (!n) {
+    toast(I18n.t(PORT_CUT_EMPTY_TEXT[side] || PORT_CUT_EMPTY_TEXT.in), "warn");
+    return false;
+  }
+  toast(I18n.t(PORT_CUT_DONE_TEXT[side] || PORT_CUT_DONE_TEXT.in, { n }), "ok");
+  renderCanvas();
+  scheduleSave(true);
+  renderStatus();
+  return true;
+}
+/** 右键端子的唯一入口：document 捕获阶段一次性绑定（端子自己的 contextmenu 一律走到这里）。
+    先认「事件落在端子上」；认不到再按几何找最近的端子 —— 连线线芯 / 端子徽标 / 节点板
+    挡住端子本体时，用户瞄的其实还是那颗端子。数组槽点自己按「一条」处理，这里放行。 */
+function bindPortWireCut() {
+  if (bindPortWireCut._bound) return;
+  bindPortWireCut._bound = true;
+  document.addEventListener(
+    "contextmenu",
+    (ev) => {
+      const tgt = ev.target;
+      if (!tgt || !tgt.closest) return;
+      if (tgt.closest(".fn-arr-slots")) return;
+      let hit = tgt.closest(".port");
+      let target = hit ? portCutTargetOfEl(hit) : null;
+      if (!target) {
+        const canvas = $("#canvas");
+        if (!canvas || !canvas.contains(tgt)) return;
+        target = portCutTargetAt(ev.clientX, ev.clientY);
+        if (!target) return;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      cutPortWiresHere(target);
+    },
+    true,
+  );
+}
+/* ===== PORT-CUT-END ===== */
+
 function startWireDrag(fromId, ev, fromIndex, opts) {
+  /* 右键不可能是拖线（右键 = 切断这根端子上的连线，见 PORT-CUT 段）：兜底挡一道，
+     避免某个入口漏了按键判定就「一按下右键先起一条线」。 */
+  if (ev && ev.button === 2) return;
   opts = opts || {};
   S.drag = {
     mode: "wire",
@@ -18532,9 +18756,44 @@ function copyNodesToClipboard() {
   );
   return true;
 }
-/* 粘贴：把粘贴板中的节点 / 绘制复制到当前画布，包围盒中心对准当前视口中心（吸附网格）。
-   复制后的节点拿到新 id；内部父子归属按新 id 重建，父不在粘贴集内的一律落为顶层；
-   两端都在粘贴集内的连线一并重建。 */
+/* ── 粘贴落点 = 鼠标指针（本轮需求）────────────────────────────────────────────
+   旧行为：包围盒中心对准**当前视口中心** —— 复制品总落在屏幕正中，与用户正看着的指针
+   毫无关系（画布一平移 / 缩放过就完全对不上，得多拖一次）。
+   现在：记「指针最近一次落在画布上的屏幕坐标」，粘贴时再换算成世界坐标，把粘贴集的
+   **包围盒左上角**贴到该点（吸附网格）。存屏幕坐标而不是世界坐标：中途滚轮缩放 / 中键
+   平移都不必重记，换算时用的是当下的镜头。
+   指针不在画布上过（纯键盘操作 / 从别的窗口切回来 / 指针停在侧栏）才退回视口中心；
+   指针落在超级节点内部时，落点由下面的「绝对坐标 → 壳内坐标」换算照旧跟手。
+   记点：画布上的 mousemove（见 bindCanvas），拖拽中同样更新 —— 松手后的指针位置才是
+   用户心里的「这里」。 */
+let canvasPointerClient = null;
+function noteCanvasPointer(clientX, clientY) {
+  const x = Number(clientX);
+  const y = Number(clientY);
+  if (!isFinite(x) || !isFinite(y)) return;
+  canvasPointerClient = { x, y };
+}
+/* 粘贴落点：指针当前的世界坐标；指针没进过画布 / 已经不在画布上 → null（退回视口中心） */
+function pasteDropPoint() {
+  const p = canvasPointerClient;
+  if (!p) return null;
+  const cv = $("#canvas");
+  if (!cv || typeof cv.getBoundingClientRect !== "function") return null;
+  const r = cv.getBoundingClientRect();
+  if (
+    p.x < r.left ||
+    p.x > r.right ||
+    p.y < r.top ||
+    p.y > r.bottom
+  )
+    return null;
+  const pt = toStage(p.x, p.y);
+  if (!pt || !isFinite(pt.x) || !isFinite(pt.y)) return null;
+  return { x: pt.x, y: pt.y };
+}
+/* 粘贴：把粘贴板中的节点 / 绘制复制到当前画布，包围盒左上角对准鼠标指针（吸附网格；
+   指针不在画布上时退回视口中心）。复制后的节点拿到新 id；内部父子归属按新 id 重建，
+   父不在粘贴集内的一律落为顶层；两端都在粘贴集内的连线一并重建。 */
 function pasteNodesFromClipboard() {
   const clipNodes = (nodeClipboard && nodeClipboard.nodes) || [];
   const clipMarks = (nodeClipboard && nodeClipboard.marks) || [];
@@ -18563,20 +18822,16 @@ function pasteNodesFromClipboard() {
       }
     }
   }
-  /* 重建内部父子归属：父在粘贴集内 → 指到新 id；否则落为当前任务 / 超级节点作用域（忽略外部关系） */
+  /* 父子归属：cloneNodesDeep 已经按新 id 重映射过一遍（父在复制集内 → 指到新 id，孤儿 → 空），
+     这里**绝不能再映射一次**：此刻 cp.parentSuperId 已经是新壳 id，而 idMap 的键是旧 id，
+     再查一次必然命中失败、把壳内节点（含嵌套壳、super_io 端子）全清成顶层 —— 那就是
+     「复制超级节点，壳和里面内容被摊到同一层」的 bug（旧代码在这里重复了一遍同样的三行）。
+     这一圈只做一件事：本来就没有父级的顶层节点，落进当前任务 / 当前展开的壳。 */
   const taskFocus = currentTaskFocus();
   const superFocus = currentSuperFocus();
   const sfHost = superFocus ? nodeById(superFocus) : null;
   const inSuper = !!(sfHost && sfHost.kind === "super");
   for (const cp of cps) {
-    cp.parentTaskId =
-      cp.parentTaskId && idMap.has(cp.parentTaskId)
-        ? idMap.get(cp.parentTaskId)
-        : "";
-    cp.parentSuperId =
-      cp.parentSuperId && idMap.has(cp.parentSuperId)
-        ? idMap.get(cp.parentSuperId)
-        : "";
     if (cp.parentTaskId || cp.parentSuperId) continue;
     /* 无内部父级（顶层节点）：落到当前任务 / 超级节点作用域，与新建节点一致 */
     if (inSuper) {
@@ -18586,7 +18841,9 @@ function pasteNodesFromClipboard() {
       cp.parentTaskId = taskFocus;
     }
   }
-  /* 粘贴位置：粘贴集包围盒中心对准当前视口中心（吸附网格），避免与源节点重叠 */
+  /* 粘贴位置：包围盒左上角对准鼠标指针（吸附网格）；没有指针落点时才把包围盒中心
+     对准当前视口中心（纯键盘操作 / 指针还没进过画布） */
+  const drop = pasteDropPoint();
   const cv = $("#canvas");
   const vw = cv ? cv.clientWidth : window.innerWidth;
   const vh = cv ? cv.clientHeight : window.innerHeight;
@@ -18618,8 +18875,15 @@ function pasteNodesFromClipboard() {
   let dx = 0,
     dy = 0;
   if (Number.isFinite(minX)) {
-    dx = snap(cx - (minX + maxX) / 2);
-    dy = snap(cy - (minY + maxY) / 2);
+    if (drop) {
+      /* 指针落点 = 粘贴集左上角。dx/dy 不在这里预先吸附 —— 下面落到每颗节点时
+         会按最终坐标再吸附一次，两次吸附会把落点漂开半格（500 → 504 → 808） */
+      dx = drop.x - minX;
+      dy = drop.y - minY;
+    } else {
+      dx = snap(cx - (minX + maxX) / 2);
+      dy = snap(cy - (minY + maxY) / 2);
+    }
   }
   /* 粘贴位置：super 内部节点用内部坐标系，不参与整体偏移（外壳偏移即可） */
   const innerSids = copiedSuperIdsOf(cps);
@@ -20718,6 +20982,17 @@ function bindCanvas() {
      文字选区清掉（浏览器本该做，被 user-select:none + 各处 preventDefault 挡掉了）。不做这件事，
      会话输入框里的焦点与上一次选中的一段文字会一直挂着，Ctrl+C 永远轮不到复制节点。 */
   document.addEventListener("mousedown", canvasPointerReleaseFocus, true);
+  /* 指针在画布上的落点：粘贴节点时按它定位（见 pasteDropPoint）。
+     passive + 只记坐标，不拦任何默认行为，也不影响拖拽 / 框选那条 mousemove。 */
+  canvas.addEventListener(
+    "mousemove",
+    (ev) => noteCanvasPointer(ev.clientX, ev.clientY),
+    { passive: true },
+  );
+  /* 右键端子的唯一入口（切断该端子上的连线）：命中不认 DOM 目标，按最近的端子算 ——
+     连线线芯 / 端子徽标 / 节点板都可能盖住端子本体，见 PORT-CUT 那一段。捕获阶段绑定，
+     端子自己的 contextmenu 已整体收进这一处（app-canvas.js 不再逐个端子挂）。 */
+  bindPortWireCut();
   /* 捕获阶段监听：即使鼠标在节点 / 组内部（其冒泡阶段可能 stopPropagation 或拦截事件），
      中键平移也能优先接管，避免节点过大挡住画布时无法拖动 */
   canvas.addEventListener(
@@ -20960,14 +21235,18 @@ function bindCanvas() {
     } else if (d.mode === "resize") {
       const n = nodeById(d.id);
       if (!n) return;
-      /* 有输出面板时（含智能运行中），节点最小宽度需容纳输入框最小宽 + 输出面板宽，避免出界 */
+      /* **右侧并排栏**档的节点（见 hasSideOutPanel）：有输出面板时（含智能运行中），
+         最小宽度需容纳输入框最小宽 + 输出面板宽，避免出界。
+         智能任务节点不在此档：它的输出折叠区在输入框下方、与主列不同行，
+         按并排版式给下限只会把会话列白留一条空档（选中态输出区被挤窄的根因之一）。 */
       const r = selResult(n);
-      const hasOut =
-        !!(n.running && isDshTask(n)) ||
-        !!(r && (r.output || r.batchOutputs || r.error));
+      const hasSideOut =
+        hasSideOutPanel(n) &&
+        (!!(n.running && isDshTask(n)) ||
+          !!(r && (r.output || r.batchOutputs || r.error)));
       /* 尺寸下限只认 kind 的最小宽（旧 n._chromeMinW 实测抬宽已随「不再自动改尺寸」下线） */
       const chromeMin = minWFor(n);
-      const minW = hasOut ? Math.max(chromeMin, procMinNodeW(n.outW)) : chromeMin;
+      const minW = hasSideOut ? Math.max(chromeMin, procMinNodeW(n.outW)) : chromeMin;
       const z = S.cam.z > 0 ? S.cam.z : 1;
       const openSuper = superIsOpenShell(n);
       if (openSuper) {
@@ -20991,6 +21270,12 @@ function bindCanvas() {
     } else if (d.mode === "outresize") {
       const n = nodeById(d.id);
       if (!n) return;
+      /* 智能任务节点的输出区没有「列宽」可言（整幅宽、无拖宽条，见 hasSideOutPanel）：
+         它的 .n-out-resize 已被 CSS 隐藏，这里再兜一道，免得历史手势把面板钉成固定宽。 */
+      if (!hasSideOutPanel(n)) {
+        S.drag = null;
+        return;
+      }
       /* 左侧边缘拖动:向左拉宽(+dx 为负 → 加宽),向右收窄 */
       n.outW = Math.max(
         PROC_OUT_MIN,
@@ -21023,20 +21308,30 @@ function bindCanvas() {
     } else if (d.mode === "vresize") {
       const n = nodeById(d.id);
       if (!n) return;
-      /* 把手在框体顶部：上拖增高、下拖变矮（与底部把手方向相反） */
+      /* 把手在框体**下沿**（上下两框之间那根 splitter）：下拖增高、上拖变矮。
+         上限 = min(写死的档, 列内此刻真实放得下的高度)：后者每步实测，
+         夹住就不会把下方框体顶出列外。 */
       const z = S.cam.z > 0 ? S.cam.z : 1;
-      const h = Math.max(
-        d.minH,
-        Math.min(
-          d.maxH,
-          Math.round(d.oh - (ev.clientY - d.sy) / z),
-        ),
-      );
-      n[d.key] = h;
-      const box = document.querySelector(
+      const el = document.querySelector(
         '.wf-node[data-nid="' + d.id + '"] [data-vbox="' + d.key + '"]',
       );
-      if (box) box.style.height = h + "px";
+      /* [data-vbox] 标在会话框上；**列的弹性项**是它或包它的轮次轨壳 ——
+         与渲染同一条口径（app-canvas.js 的 agentConvFlexItem）。 */
+      const item =
+        el && typeof agentConvFlexItem === "function"
+          ? agentConvFlexItem(el)
+          : el;
+      const live = vresizeLiveMax(item);
+      const max =
+        live == null ? d.maxH : Math.min(d.maxH, Math.max(live, d.minH));
+      const h = Math.max(
+        d.minH,
+        Math.min(max, Math.round(d.oh + (ev.clientY - d.sy) / z)),
+      );
+      n[d.key] = h;
+      /* 与渲染同一条口径：高度写在弹性项的 flex-basis 上（不是 min-height、也不是
+         height）—— shrink 仍归 1，所以「空间不够时会话框先让位」照旧成立。 */
+      if (item && item.style) item.style.flexBasis = h + "px";
     } else if (d.mode === "mark") {
       const z = S.cam.z > 0 ? S.cam.z : 1;
       const mdx = (ev.clientX - d.sx) / z,
@@ -24125,14 +24420,23 @@ async function mdViewerCommit() {
     toast(I18n.t("保存失败：") + ((e && e.message) || e), "err");
     return false;
   }
-  _mdViewerState.raw = content;
-  mdViewerSetSaveState("ok");
-  /* 广播写盘成功：画布上的产物节点（app-canvas.js 的 ltartRefreshSavedFile）据此
-     重读文件指纹并刷新板身摘要（与 app-teamview.js 的 factlib:saved 同风格）。 */
-  if (typeof document !== "undefined" && document.dispatchEvent)
-    document.dispatchEvent(
-      new CustomEvent("mtnode:file-saved", { detail: { path: p, source: "viewer" } }),
-    );
+  /* 收尾这一段是「保存不许夺焦」的关键窗口：状态回写 + 广播 mtnode:file-saved 会让画布上的
+     产物节点重读文件指纹、刷新板身摘要（可能连带重绘）。整段包在 keepEditFocus 里，
+     跑完把编辑器的焦点 / 光标 / 滚动放回原样 —— 用户看不到保存发生过。 */
+  const keepFocus = (fn) =>
+    typeof MTMdEdit !== "undefined" && MTMdEdit && MTMdEdit.keepEditFocus
+      ? MTMdEdit.keepEditFocus(fn)
+      : fn();
+  keepFocus(() => {
+    _mdViewerState.raw = content;
+    mdViewerSetSaveState("ok");
+    /* 广播写盘成功：画布上的产物节点（app-canvas.js 的 ltartRefreshSavedFile）据此
+       重读文件指纹并刷新板身摘要（与 app-teamview.js 的 factlib:saved 同风格）。 */
+    if (typeof document !== "undefined" && document.dispatchEvent)
+      document.dispatchEvent(
+        new CustomEvent("mtnode:file-saved", { detail: { path: p, source: "viewer" } }),
+      );
+  });
   return true;
 }
 
@@ -24226,12 +24530,15 @@ function ensureMdViewer() {
      退出前先把待落盘的一笔写完（正文由 mdViewerDraftText 负责序列化）。 */
   host.querySelector("#mdViewerEditBtn").onclick = async () => {
     if (_mdViewerState.editing) await flushMdViewerSave();
+    mdViewerCaptureCaret();
     _mdViewerState.editing = !_mdViewerState.editing;
     _mdViewerState.src = false;
     renderMdViewerContent(_mdViewerState.raw);
   };
   host.querySelector("#mdViewerSrcBtn").onclick = () => {
     const draft = mdViewerDraftText();
+    /* 切档前记住光标与滚动位置：切回来还在原处（只在同一只窗的编辑会话里有效） */
+    mdViewerCaptureCaret();
     _mdViewerState.src = !_mdViewerState.src;
     renderMdViewerContent(draft);
   };
@@ -24342,6 +24649,104 @@ function buildMdOutline(text) {
   return items;
 }
 
+/* ---------- 光标 / 滚动位置（切档、重渲染时保留；只在同一只窗的编辑会话里有效） ----------
+   用户在「编辑 ⇄ 源码」之间切换时，不该被甩回文件开头。位置按「正文里的字符偏移」记，
+   因为两档的 DOM 结构完全不同（富文本 block ⇄ 源码 textarea），只有偏移是共同语言。 */
+function mdViewerCaretOffsetIn(root) {
+  if (!root) return -1;
+  let sel = null;
+  try {
+    sel = window.getSelection ? window.getSelection() : null;
+  } catch (_) {
+    sel = null;
+  }
+  if (!sel || !sel.rangeCount) return -1;
+  const r = sel.getRangeAt(0);
+  if (!r) return -1;
+  const anchor = r.startContainer;
+  if (!anchor) return -1;
+  try {
+    if (!root.contains(anchor)) return -1;
+  } catch (_) {
+    return -1;
+  }
+  const pre = document.createRange();
+  try {
+    pre.selectNodeContents(root);
+    pre.setEnd(anchor, r.startOffset);
+    return pre.toString().length;
+  } catch (_) {
+    return -1;
+  }
+}
+function mdViewerCaretNodeAt(root, offset) {
+  const walker = document.createTreeWalker(root, 4 /* SHOW_TEXT */, null);
+  let n = null;
+  let left = Math.max(0, Number(offset) || 0);
+  while ((n = walker.nextNode())) {
+    const len = n.nodeValue ? n.nodeValue.length : 0;
+    if (left <= len) return { node: n, offset: left };
+    left -= len;
+  }
+  return null;
+}
+/* 记下当前位置：编辑面 + 字符偏移 + 滚动位置（盒子与内层编辑面各记一份） */
+function mdViewerCaptureCaret() {
+  const host = document.getElementById("mdViewerDlg");
+  if (!host || !host.classList.contains("on")) return;
+  const box = host.querySelector("#mdViewerBody");
+  const ed = host.querySelector("#mdViewerRich") || host.querySelector("#mdViewerEditor");
+  if (!ed) return;
+  const off = mdViewerCaretOffsetIn(ed);
+  _mdViewerState.caret = {
+    src: _mdViewerState.src,
+    off: off,
+    scroll: mdViewerScrollOf(ed),
+    boxScroll: box ? box.scrollTop : 0,
+  };
+}
+function mdViewerScrollOf(el) {
+  let n = el;
+  for (let i = 0; i < 4 && n; i++) {
+    if (typeof n.scrollTop === "number" && n.scrollTop > 0) return n.scrollTop;
+    n = n.parentNode;
+  }
+  try {
+    return el && typeof el.scrollTop === "number" ? el.scrollTop : 0;
+  } catch (_) {
+    return 0;
+  }
+}
+/* 渲染出新编辑面之后把位置放回去（记的不是同一档 / 没有记录就什么都不做） */
+function mdViewerRestoreCaret(ed) {
+  const c = _mdViewerState.caret;
+  if (!ed || !c) return;
+  if (!!c.src !== !!_mdViewerState.src) return;
+  try {
+    if (c.off >= 0) {
+      if (_mdViewerState.src) {
+        const pos = Math.min(c.off, String(ed.value || "").length);
+        ed.setSelectionRange(pos, pos);
+      } else {
+        const hit = mdViewerCaretNodeAt(ed, c.off);
+        if (hit) {
+          const r = document.createRange();
+          r.setStart(hit.node, Math.min(hit.offset, hit.node.nodeValue.length));
+          r.collapse(true);
+          const sel = window.getSelection();
+          if (sel) {
+            sel.removeAllRanges();
+            sel.addRange(r);
+          }
+        }
+      }
+    }
+    if (c.scroll) ed.scrollTop = c.scroll;
+    const box = document.getElementById("mdViewerBody");
+    if (box && c.boxScroll) box.scrollTop = c.boxScroll;
+  } catch (_) {}
+}
+
 function renderMdViewerContent(text) {
   const host = ensureMdViewer();
   const body = host.querySelector("#mdViewerBody");
@@ -24378,10 +24783,17 @@ function renderMdViewerContent(text) {
         refreshMdViewerEditMeta();
         mdViewerScheduleSave();
       });
+      /* 源码档的 Tab / Shift+Tab：4 空格缩进与反缩进（renderer/app-mdedit.js 的共享实现） */
+      if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindSource === "function") {
+        try {
+          MTMdEdit.bindSource(ta);
+        } catch (_) {}
+      }
       body.appendChild(ta);
       refreshMdViewerEditMeta();
       applyMdViewerChrome();
       ta.focus();
+      mdViewerRestoreCaret(ta);
       return;
     }
     /* 所见即所得：渲染出来的正文本身就是编辑区 —— 直接改，不必先切源码。
@@ -24392,6 +24804,7 @@ function renderMdViewerContent(text) {
     refreshMdViewerEditMeta();
     const rich = body.querySelector("#mdViewerRich");
     if (rich) rich.focus();
+    if (rich) mdViewerRestoreCaret(rich);
     return;
   }
 
@@ -24451,7 +24864,7 @@ function renderMdViewerContent(text) {
  * 顶部「保存」按钮已移除；Ctrl+S = flushMdViewerSave 立即落盘；退出编辑 / 关窗 / 重载前先 flush。
  * 落盘后**不重渲染**（重渲染 contenteditable 会把光标 / 选中打回去），保存状态只回显在底栏。
  *
- * 插入类动作（水平线 / 任务清单 / 代码块 / 链接 / 行内码）在这里自己拼 DOM 插到光标处：
+ * 插入类动作（代码块 / 链接 / 行内码）在这里自己拼 DOM 插到光标处：
  * 审阅对话框那套 insertRichNode / rvInsertImgRich 认死了 `.review-editor .rv-rich`，
  * 两窗同开时会把内容插错编辑区，故不复用它的插入实现，只复用纯转换函数与 .rv-tool 样式。 */
 
@@ -24526,9 +24939,18 @@ function buildMdViewerRichEditor(raw) {
     /* 实时保存：停笔即落盘一次（编辑中不重渲染，状态只在底栏回显） */
     mdViewerScheduleSave();
   });
+  /* Markdown 编辑手感（renderer/app-mdedit.js 的共享实现）：Tab 只插 4 个空格
+     （选中多行就每行行首各插一次），Shift+Tab 不接管；粘贴优先吃剪贴板 HTML。 */
+  if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindRich === "function") {
+    try {
+      MTMdEdit.bindRich(ed);
+    } catch (_) {}
+  }
   /* 粘贴一律按纯文本落进来：外部 HTML 会被序列化器当未知标签丢掉 / 丢格式，
-     要让用户贴 HTML 等于悄悄改他的正文。 */
+     要让用户贴 HTML 等于悄悄改他的正文。
+     （上面 bindRich 已经处理过「多行 Markdown / 剪贴板 HTML」的情形，这里只是兜底。） */
   ed.addEventListener("paste", (ev) => {
+    if (ev.__mtMdPaste) return;
     const dt = ev.clipboardData;
     const t = dt ? dt.getData("text/plain") : "";
     if (!t) return;
@@ -24577,8 +24999,6 @@ function buildMdViewerToolbar(tb) {
   sep();
   mk("ul", "•≡", I18n.t("无序列表"));
   mk("ol", "1.", I18n.t("有序列表"));
-  mk("task", "☑", I18n.t("任务清单"));
-  mk("hr", "—", I18n.t("水平线"));
   sep();
   mk("link", "🔗", I18n.t("链接"));
   mk("inlineCode", "⟨⟩", I18n.t("行内代码"));
@@ -24624,24 +25044,12 @@ function mdViewerRichAct(action) {
       return exec("undo");
     case "redo":
       return exec("redo");
-    case "hr":
-      return mdViewerInsertHtml("<hr>");
     case "inlineCode":
       return mdViewerWrapInline("code");
     case "code":
       return mdViewerInsertHtml(
         "<pre><code>" + escapeHtml(I18n.t("代码")) + "</code></pre>",
       );
-    case "task": {
-      const sel = window.getSelection();
-      const txt = sel && !sel.isCollapsed ? sel.toString() : "";
-      return mdViewerInsertHtml(
-        '<ul data-task="1"><li><input type="checkbox">' +
-          escapeHtml(txt) +
-          (txt ? "" : "<br>") +
-          "</li></ul>",
-      );
-    }
     case "link":
       return mdViewerInsertLink();
   }
@@ -27376,19 +27784,9 @@ function agentConvListEl(node) {
     row.appendChild(body);
     conv.appendChild(row);
   }
-  /* 节点内会话末尾：同一份 Token 消耗累计报告（点击展开按模型明细） */
-  if (typeof tokBadgeEl === "function" && typeof tokOwnerForRun === "function") {
-    try {
-      const owner = tokOwnerForRun({ node, runKey: node.id });
-      const badge = owner && tokBadgeEl(owner);
-      if (badge) {
-        /* 末位外边距归零：报告被 CSS 钉在消息区底部（.agent-conv > .tok-badge sticky），
-           留缝会让滚动内容从 Badge 底下露出来 */
-        badge.style.margin = "6px 6px 0";
-        conv.appendChild(badge);
-      }
-    } catch {}
-  }
+  /* 节点内会话**不再挂 Token 报告徽章**（本轮需求：智能任务节点不必带下方 token 预算栏）：
+     账目看会话 / 助手栏 / 设置里那几份（口径未动），节点里只留消息流。
+     下方 scheduleHistoryCollapse 照旧（会话内的轮次折叠与它无关）。 */
   scheduleHistoryCollapse(conv);
   return conv;
 }
@@ -27414,7 +27812,45 @@ function scrollAgentConv(node, force) {
   }
   scrollElToBottomIfStuck(list);
 }
-/* 顶部中间竖向拖拽把手：调整框体上下高度（高度存于 node[key]，随工作流持久化） */
+/* 智能任务节点的输入框（下栏）**自动增高**：随内容长到上限，超过就在框内滚。
+   本轮口径「仅有一个 splitter」= 落在上下两框**之间**的那一根（convH，见
+   vResizeHandleEl）：会话框上沿不再有把手，输入框也没有自己的把手，
+   它的高度完全由内容决定（空间不够时会话框先让位，见 agentConvHeightApply）。
+   textarea 走三层结构（.n-field > .n-prompt-wrap > .n-text），
+   测量必须先把高度归零再读 scrollHeight，否则读到的是被 max-height 夹住后的可见高。 */
+const PROMPT_AUTO_MIN = 40;
+const PROMPT_AUTO_MAX = 200;
+function promptAutoGrowSize(ta) {
+  if (!ta || !ta.isConnected) return 0;
+  const prev = ta.style.height;
+  ta.style.height = "auto";
+  const need = ta.scrollHeight || 0;
+  ta.style.height = prev;
+  return Math.max(PROMPT_AUTO_MIN, Math.min(PROMPT_AUTO_MAX, need));
+}
+function promptAutoGrowNow(ta) {
+  const h = promptAutoGrowSize(ta);
+  if (h) ta.style.height = h + "px";
+}
+function promptAutoGrowBind(ta) {
+  if (!ta || ta._mtAutoGrowBound) return;
+  ta._mtAutoGrowBound = true;
+  ta.style.flex = "none";
+  ta.style.maxHeight = PROMPT_AUTO_MAX + "px";
+  ta.style.overflowY = "auto";
+  /* 输入 / 上屏之外，粘贴（含图片胶囊）与字体加载完都会改行数，一并补量一次 */
+  for (const ev of ["input", "paste", "compositionend", "change"])
+    ta.addEventListener(ev, () => promptAutoGrowNow(ta));
+  /* 首帧必须等元素入文档：挂载期节点 DOM 还没进舞台，scrollHeight 恒为 0 */
+  requestAnimationFrame(() => promptAutoGrowNow(ta));
+  if (document.fonts && document.fonts.ready)
+    document.fonts.ready.then(() => promptAutoGrowNow(ta)).catch(() => {});
+}
+/* 上下两框之间那根 splitter（智能任务节点的唯一一根）：它落在框体**下沿** ——
+   下拖 = 上框（会话框）变高、上拖 = 变矮；旧写法是把手在框体上沿、方向相反，那种挂法已删。
+   上限不是那个写死的 maxH：拖的每一步都按「列内此刻真实放得下多少」再夹一次
+   （见 vresizeLiveMax），所以松手时画出来的高度与存下来的 node.convH 一致，
+   也永远不会把下方的框体（输入框 / 状态行 / 输出折叠区）顶出列外或压在别的框上。 */
 function vResizeHandleEl(node, key, minH, maxH) {
   const h = document.createElement("div");
   h.className = "vresize-handle";
@@ -27436,6 +27872,36 @@ function vResizeHandleEl(node, key, minH, maxH) {
     };
   });
   return h;
+}
+/* 这只弹性项此刻**真实放得下**的最大高度：列高减去除它以外所有兄弟项的**下限**、
+   再减去实测的各段列间距（splitter 用负外边距吃掉一半缝，按常量算会差几像素）。
+   兄弟项一律按「它最少要占多少」记账，不按「此刻被挤成多小」：flex:none 的项
+   （输入框 / 状态行 / 拖条）压根不收缩，就按实测高算；可收缩的项（输出折叠区）
+   按它自己的 min-height 算 —— 否则拖的每一步都会把自己的预算越算越小（拖不动还倒退）。
+   于是上限在整个拖动过程里是稳定的：拖到下沿就停手，松手时存下来的 node.convH
+   与画出来的高度对得上，也永远不会把下方框体顶出列外。 */
+function vresizeLiveMax(item) {
+  const col = item && item.parentElement;
+  if (!col || !col.children) return null;
+  const kids = Array.prototype.slice.call(col.children);
+  if (kids.indexOf(item) < 0) return null;
+  let used = 0;
+  let gaps = 0;
+  for (let i = 0; i < kids.length; i++) {
+    const k = kids[i];
+    const r = k.getBoundingClientRect();
+    if (i > 0) {
+      const prev = kids[i - 1].getBoundingClientRect();
+      const g = r.top - prev.bottom;
+      if (g > 0) gaps += g;
+    }
+    if (k === item) continue;
+    const cs = getComputedStyle(k);
+    const shrinkable = (parseFloat(cs.flexShrink) || 0) > 0;
+    used += shrinkable ? parseFloat(cs.minHeight) || 0 : r.height;
+  }
+  const max = col.clientHeight - used - gaps;
+  return max > 0 ? Math.floor(max) : 0;
 }
 /* 不再随输出内容自动增高节点：会打乱画布排版。
    输出区已有 overflow:auto，内容变多时在面板内滚动即可。 */

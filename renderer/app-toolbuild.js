@@ -541,9 +541,9 @@ function toolBuildInputKind(fileType) {
  *   toolBuildMetaText 是提示词里那两段（需求块 + 元数据块）的唯一出处，
  *   prompt 与[fileType] 行都由它们拼，改口径只改这里。
  *
- * 二、默认模型路由 toolBuildDefaultRoute：设置 · 智能能力里的「默认模型」
+ * 二、默认模型路由 toolBuildDefaultRoute：设置 · 默认模型里的「模型」
  *   （S.config.dsh.model）是全应用唯一口径，解析真源在 app.js / app-agent.js 的
- *   dshDefaultModelRoute（不可用时抛错，消息里带「去 设置 · 智能能力 · 默认模型 重选」）。
+ *   dshDefaultModelRoute（不可用时抛错，消息里带「去 设置 · 默认模型 重选」）。
  *   本文件所有「要跑一次模型」的地方（方案生成 / 工具开发会话 / 函数节点 ai spec）
  *   都走它 —— 此前方案生成读 preferredAgentModelForRoute（那条链读 S.assistModel），
  *   开发会话继承「当前活动会话」，两处都能与设置里的默认模型不一致。
@@ -647,7 +647,7 @@ function toolBuildModelProblemText() {
     }
   } catch (_) {}
   return I18n.t(
-    "默认模型不可用：请到 设置 · 智能能力 · 默认模型 里重选一只模型。",
+    "默认模型不可用：请到 设置 · 默认模型 里重选一只模型。",
   );
 }
 
@@ -1186,7 +1186,7 @@ async function toolBuildAskConfirm(plan, rawText) {
 /* ---------- 主入口：AI 检索出方案 ---------- */
 
 /* 方案生成这一次运行的路由 / 模型 / 思考强度：
-     模型 = 设置 · 智能能力里的「默认模型」（S.config.dsh.model，唯一口径，不可用就抛错）；
+     模型 = 设置 · 默认模型里的「模型」（S.config.dsh.model，唯一口径，不可用就抛错）；
      思考强度 / 预设沿用用户当前那两档（取不到回落 high / 默认预设）。 */
 function toolBuildRunRoute() {
   const pick =
@@ -1469,7 +1469,7 @@ function createToolBuildSessionForNode(node, req, filePath, route) {
     workspace: typeof dshWorkspaceOf === "function" ? dshWorkspaceOf(node) || "" : "",
     canvasWfId: typeof canvasWfIdForNode === "function" ? canvasWfIdForNode(node) : "",
     preset: (cur && cur.preset) || AGENT_PRESET_DEFAULT || "minimal",
-    /* provider / model 一律用「设置 · 智能能力 · 默认模型」解析出来的那一对
+    /* provider / model 一律用「设置 · 默认模型」解析出来的那一对
        （toolBuildDefaultRoute：不可用时构建链已拦下）—— 不再继承「当前活动会话」，
        否则工具开发用哪只模型取决于用户此刻点着哪个会话。 */
     provider: String((route && route.provider) || "deepseek-official"),

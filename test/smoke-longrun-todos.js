@@ -67,6 +67,10 @@ function load(opts) {
 
   vm.createContext(sandbox);
   vm.runInContext(APP_LONGRUN, sandbox, { filename: "app-longrun.js" });
+  /* 本轮需求：自动续跑**默认关闭**（LongRun.autoOn 缺省 false）。本烟雾测的是「打开以后」
+     的判停 / 清单同步逻辑，所以除显式 opts.autoOff 外，先替用户把这条会话的开关打开；
+     「默认关」本身由 [0] 单独钉住。 */
+  if (!opts.autoOff) sandbox.LongRun.setAuto("as1", true);
   /* 轮末钩子按宿主口径调用：afterRound(会话, 本轮结局) */
   sandbox.__round = (s, outcome) => sandbox.LongRun.afterRound(s, outcome);
   return { sandbox, calls, session: sess };
@@ -82,6 +86,16 @@ const sendCount = (c) => c.calls.sends.length;
 
 (async () => {
   console.log("smoke-longrun-todos：清单「?」与自动续跑\n");
+
+  /* ============ [0] 默认关闭（本轮需求） ============ */
+  console.log("[0] 自动续跑默认关闭：没点过开关的会话一律按关处理");
+  {
+    const s = sessWith([{ content: "做 A", status: "pending" }], "继续。");
+    const c = load({ session: s, autoOff: true });
+    ok(c.sandbox.LongRun.autoOn("as1") === false, "新会话 autoOn → false（默认关）");
+    await c.sandbox.__round(s, "ok");
+    ok(sendCount(c) === 0, "默认关 → 轮末一条续跑指令都不发（等用户下一句）");
+  }
 
   /* ============ [1] 清单判据真跑（沙箱里直接调 todosOpen，不看源码） ============ */
   console.log("[1] 清单收口判据 todosOpen（状态词表与落库同源）");

@@ -157,6 +157,7 @@ let MERGED_FAILED = false;
       baseUrl: "https://a/v1",
       apiKey: "k",
       models: ["m1", "m2"],
+      /* 旧配置遗留字段：勾选框已下线、没人再读 vision —— 留着它正是为了验证卡片不再渲染 / 不再回写 */
       vision: true,
     },
     { id: "p2", name: "Beta", type: "image_openai", baseUrl: "https://b/v1", apiKey: "", models: [] },
@@ -274,9 +275,20 @@ let MERGED_FAILED = false;
     dshTranscriptViewLabel: (v) =>
       ({ compact: "简洁", standard: "标准", detailed: "详细", verbose: "完全展开" })[v] || "标准",
     dshTranscriptViewGlobal: () => "standard",
+    /* 设置页的「思考强度 / 默认模型」那几格读它们（真源在 app-agent.js / app.js，另有专门冒烟，
+       这里只给设置页跑得起来的最小桩） */
+    normalizeAgentEffort: (v) => String(v == null ? "" : v).trim() || "high",
+    AGENT_EFFORT_UI_ORDER: ["off", "low", "high", "xhigh", "max"],
+    AGENT_EFFORT_LABELS: { off: "无", low: "轻", high: "标准", xhigh: "强", max: "最强" },
+    dshDefaultProviderRoute: () => "deepseek-official",
+    dshDefaultModelValue: () => "",
+    dshDefaultEffortValue: () => "high",
   };
   vm.createContext(sandbox);
   vm.runInContext(read("renderer/app-model-kind.js"), sandbox);
+  /* 上下文压缩策略的共享小单元（index.html 里就排在 app-settings.js 之前）：
+     设置页的档位下拉 / 自定义触发线边界都读它，桩一份字面量不如直接加载真源 */
+  vm.runInContext(read("renderer/app-dsh-compact.js"), sandbox);
   vm.runInContext(read("renderer/app-settings.js"), sandbox);
   const run = (code) => vm.runInContext(code, sandbox);
   const cfg = sandbox.S.config;
@@ -335,7 +347,15 @@ let MERGED_FAILED = false;
 
     /* ===================== [2] 勾选类开关 ===================== */
     console.log("\n[2] 勾选：取消「节点?说明按钮」立刻生效并写盘");
-    const helpCb = find(ovBody, (c) => c.tagName === "INPUT" && c.type === "checkbox");
+    /* 按标签文字选控件：设置页顶部新增了「上下文压缩」等小节，DOM 里第一个勾选框不再是它 */
+    const ctlLabelOf = (el) => String((el && el.parentNode && el.parentNode.textContent) || "");
+    const helpCb = find(
+      ovBody,
+      (c) =>
+        c.tagName === "INPUT" &&
+        c.type === "checkbox" &&
+        ctlLabelOf(c).indexOf("说明按钮") >= 0,
+    );
     ok(!!helpCb && helpCb.checked === true, "初值：默认勾选（只有显式 false 才不勾）");
     const w0 = writes.length;
     helpCb.checked = false;
@@ -347,7 +367,13 @@ let MERGED_FAILED = false;
 
     /* ===================== [3] 打字类走防抖 ===================== */
     console.log("\n[3] 打字：网格间距改值配置立刻跟手，写盘合并成一次");
-    const snapInp = find(ovBody, (c) => c.tagName === "INPUT" && c.type === "number");
+    const snapInp = find(
+      ovBody,
+      (c) =>
+        c.tagName === "INPUT" &&
+        c.type === "number" &&
+        ctlLabelOf(c).indexOf("网格间距") >= 0,
+    );
     ok(!!snapInp, "找到网格间距输入框");
     const w1 = writes.length;
     snapInp.value = "40";
@@ -382,7 +408,9 @@ let MERGED_FAILED = false;
       }
     })(ovBody);
     ok(allCbs.length >= 4, "设置里有多个勾选开关（说明按钮 / 自动下游 / 完成音效 / 提问音效 / 精简负载）");
-    const sndCb = allCbs.find((c) => c.onchange && c.checked === true && c !== helpCb);
+    const sndCb = allCbs.find(
+      (c) => c.onchange && c.checked === true && c !== helpCb && ctlLabelOf(c).indexOf("完成音效") >= 0,
+    );
     const w2 = writes.length;
     sndCb.checked = false;
     sndCb.onchange();
@@ -401,6 +429,25 @@ let MERGED_FAILED = false;
     const cfgBody = run("document.getElementById('provCfgBody')");
     let card = cfgBody.children[0];
     ok(!!card && card.className.indexOf("prov-card") >= 0, "正文是一张服务商配置卡");
+    /* 新语义：卡片不再有「支持视觉」——勾选框整段删除、prov.vision 不再读写（旧配置里的
+       遗留字段原样保留，只是没人读它了）。fixture 里特意留了 vision: true 来验证这一点。 */
+    const SETTINGS_SRC = read("renderer/app-settings.js");
+    ok(
+      SETTINGS_SRC.indexOf("支持视觉") < 0,
+      "app-settings.js 里已没有「支持视觉」（勾选框整段下线）",
+    );
+    ok(
+      SETTINGS_SRC.indexOf("prov.vision") < 0,
+      "app-settings.js 不再读写 prov.vision（旧配置的遗留字段没人读）",
+    );
+    ok(
+      card.textContent.indexOf("支持视觉") < 0,
+      "服务商配置卡正文不再渲染「支持视觉」：" + JSON.stringify(card.textContent.slice(0, 60)),
+    );
+    ok(
+      card.textContent.indexOf("停用该服务商") >= 0,
+      "卡片保留「停用该服务商」这一行（唯一剩下的整卡开关）",
+    );
     const nameInp = find(
       card,
       (c) => c.tagName === "INPUT" && c.type === "text" && c.placeholder === "服务商名称",
@@ -457,7 +504,13 @@ let MERGED_FAILED = false;
     /* ===================== [6] 写盘失败要让人看见 ===================== */
     console.log("\n[6] 写盘失败：状态行转红并提示，不静默吞掉");
     saveShouldFail = true;
-    const helpCb2 = find(ovBody, (c) => c.tagName === "INPUT" && c.type === "checkbox");
+    const helpCb2 = find(
+      ovBody,
+      (c) =>
+        c.tagName === "INPUT" &&
+        c.type === "checkbox" &&
+        ctlLabelOf(c).indexOf("说明按钮") >= 0,
+    );
     helpCb2.checked = true;
     helpCb2.onchange();
     await tick();
@@ -519,7 +572,11 @@ let MERGED_FAILED = false;
     console.log(
       "\n" + (fails ? "✗ " + fails + " / " + checks + " 项失败" : "✓ 全部 " + checks + " 项通过"),
     );
-  })();
+  })().catch((e) => {
+    /* 主体是 async：抛错必须显式收口，否则外层 process.exit 会先跑掉，整只测试静默假绿 */
+    MERGED_FAILED = true;
+    console.log("FAIL  [设置主体异常] " + (e && e.stack ? e.stack : e));
+  });
 
   } catch (e) {
     MERGED_FAILED = true;
@@ -528,6 +585,9 @@ let MERGED_FAILED = false;
   if (fails) console.log("  ── 已并入块 smoke-settings-live-apply.js：" + fails + " / " + checks + " 项失败");
 })();
 
-/* 收尾：正文与并入块任一失败都算这只红；退出码只在全部跑完之后才定 */
-if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
-process.exit(MERGED_FAILED ? 1 : 0);
+/* 收尾：正文与并入块任一失败都算这只红；退出码只在事件循环排空、async 主体真正跑完之后才定
+   （主体里有 await，模块末尾立刻 process.exit 会把后半段全部截断 = 静默假绿） */
+process.on("beforeExit", () => {
+  if (MERGED_FAILED) console.log("\n✗ 本文件有失败项（含已并入块）\n");
+  process.exitCode = MERGED_FAILED ? 1 : 0;
+});

@@ -145,6 +145,18 @@ function mkEl(tag) {
     addEventListener(t, f) {
       (el._handlers[t] = el._handlers[t] || []).push(f);
     },
+    /* 极简事件派发：真 DOM 里这些 handler 是浏览器派发进来的，桩里要能自己发一次
+       （编辑器靠 input 事件认「这块正文真被改过」，没这一步就测不出回写）。 */
+    dispatchEvent(ev) {
+      const type = String((ev && ev.type) || "");
+      const list = (el._handlers || {})[type] || [];
+      for (const f of list) {
+        try {
+          f(ev);
+        } catch (_) {}
+      }
+      return true;
+    },
     removeEventListener() {},
     setAttribute(k, v) {
       el.attrs[k] = v;
@@ -449,6 +461,7 @@ const doc = {
   },
   querySelector: (sel) => docQS(sel),
   addEventListener: () => {},
+  removeEventListener: () => {},
   execCommand: () => true,
 };
 doc.activeElement = null;
@@ -605,16 +618,55 @@ ok(
     REVIEW.indexOf("function buildRevisionPrompt(text, log) {") >= 0,
   "app-review.js 仍是 mdToRichHtml / richToMarkdown / buildRevisionPrompt 的真源",
 );
+/* 静态钉住「没动过就不回写」的判据还在（真跑在 [9] 与 [9b]） */
+ok(
+  MOD.indexOf("richDirty: false") >= 0 &&
+    MOD.indexOf("function teBaselineRich(ed)") >= 0 &&
+    fnBody(MOD, "function teCommit()").indexOf("_te.richDirty") >= 0,
+  "「没动过就不回写」：richDirty 基线与提交前的判据都在",
+);
+ok(
+  fnBody(MOD, "function teSyncTick()").indexOf("_te.richDirty = true") >= 0,
+  "轮询会就地探测 DOM 改动（粘贴 / 撤销这类不冒 input 的改动也能认出来）",
+);
 
 console.log("\n[4] 工具栏：与审阅同级的一套 Markdown 动作");
 const tbFn = fnBody(MOD, "function teRenderToolbar()");
 ok(tbFn.indexOf('b.className = "rv-tool";') >= 0, "方形 .rv-tool 按钮（复用 review.css）");
-for (const act of [
+const TB_ACTS = [
   "h1", "h2", "h3", "p", "bold", "italic", "strike", "quote",
-  "ul", "ol", "task", "hr", "link", "inlineCode", "code",
+  "ul", "ol", "link", "inlineCode", "code",
   "image", "table", "mathInline", "mathDisplay", "undo", "redo",
-]) {
+];
+for (const act of TB_ACTS) {
   ok(tbFn.indexOf('mk("' + act + '"') >= 0, "工具栏有动作 " + act);
+}
+/* 本轮用户口径：工具栏不再提供「水平线 / 任务清单」两个插入入口（正文怎么写就怎么存） */
+ok(
+  tbFn.indexOf('mk("hr"') < 0 && tbFn.indexOf('mk("task"') < 0,
+  "工具栏已移除「水平线 / 任务清单」两颗按钮（不再插 <hr> 与复选框列表）",
+);
+/* 每个按钮都必须落到富文本档与源码档的某个 case 上：漏一个 = 点了没反应（用户报的「按钮失效」） */
+{
+  const richSrc = fnBody(MOD, "function teToolbarOnRich(action, ed)");
+  const srcSrc = fnBody(MOD, "function teToolbarOnSource(action, ta)");
+  const missingRich = TB_ACTS.filter((a) => richSrc.indexOf('case "' + a + '"') < 0);
+  const missingSrc = TB_ACTS.filter((a) => srcSrc.indexOf('case "' + a + '"') < 0);
+  ok(
+    missingRich.length === 0,
+    "富文本档动作表覆盖工具栏全部 " + TB_ACTS.length + " 个动作" +
+      (missingRich.length ? "（缺 " + missingRich.join(",") + "）" : ""),
+  );
+  ok(
+    missingSrc.length === 0,
+    "源码档动作表同样覆盖全部 " + TB_ACTS.length + " 个动作" +
+      (missingSrc.length ? "（缺 " + missingSrc.join(",") + "）" : ""),
+  );
+  /* 工具栏动作必须统一把正文标脏，否则 teCommit 认为「没动过」不回写 → 保存后改动凭空消失 */
+  ok(
+    richSrc.indexOf("_te.richDirty = true;") >= 0,
+    "工具栏动过 DOM 就标脏（richDirty），否则保存后改动会被丢掉",
+  );
 }
 ok(
   tbFn.indexOf('full.textContent = I18n.t("全文批注")') >= 0 &&
@@ -696,11 +748,14 @@ ok(
 );
 ok(
   saveFn.indexOf("clearDownstream(node.id)") >= 0 &&
-    saveFn.indexOf("renderCanvas()") >= 0 &&
+    /* 画布刷新改走 teRepaintAfterSave：没人在编辑面里就照旧即时画，正在打字就记账推迟到
+       停手 / 失焦后补一拍 —— 保存这一下不许把光标从编辑框里赶走（见 smoke-edit-focus.js）。 */
+    saveFn.indexOf("teRepaintAfterSave()") >= 0 &&
+    fnBody(MOD, "function teRepaintAfterSave()").indexOf("renderCanvas()") >= 0 &&
     saveFn.indexOf("tePersist(!!o.immediate);") >= 0 &&
     MOD.indexOf("function tePersist(immediate)") >= 0 &&
     fnBody(MOD, "function tePersist(immediate)").indexOf("scheduleSave(!!immediate)") >= 0,
-  "保存同时清下游中间结果 / 刷新画布 / 持久化",
+  "保存同时清下游中间结果 / 刷新画布（teRepaintAfterSave：编辑中推迟一拍）/ 持久化",
 );
 /* ── 实时保存（本轮需求：markdown 编辑采用实时保存，不再要求主动保存） ── */
 const flushFn = fnBody(MOD, "function teAutoFlush()");
@@ -858,8 +913,13 @@ ok(
     doc.getElementById("textEditReviseTxt").textContent.indexOf("1") >= 0,
   "修订按钮带批注条数",
 );
-/* 模拟用户在富文本里改了正文，再保存（保存内部先 commit 序列化，不能存成上一版） */
-rich._md = "# 标题\n\n改过的正文\n";
+/* 模拟「用户在富文本里敲字」：正文换掉 + 派发一次 input（编辑器靠 input 认「这块真被改过」，
+   没这一步就不会回写 —— 这正是「打开看一眼不会重排正文」的保护，见下面对应用例）。 */
+const typeRich = (el, md) => {
+  el._md = md;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+};
+typeRich(rich, "# 标题\n\n改过的正文\n");
 savedCalls.length = 0;
 sandbox.teSaveNow();
 const savedText = NODE.text;
@@ -909,7 +969,7 @@ ok(
 /* 编辑器里改：commit 之后随即写回 node.text 与板身 textarea */
 const rich2 = doc.getElementById("textEditRich");
 const editorText = "# 编辑器输入\n\n这段是在 Markdown 编辑器里敲的。\n";
-rich2._md = editorText;
+typeRich(rich2, editorText);
 sandbox.teCommit();
 ok(NODE.text === editorText, "编辑器里的正文写回 node.text");
 ok(String(bodyTa.value) === editorText, "板身 textarea 同步成编辑器里的正文");
@@ -939,6 +999,30 @@ if (srcTa) {
 }
 ok(NODE.text === srcText, "源码档里的改动也写回 node.text（两个编辑面同源）");
 ok(String(bodyTa.value) === srcText, "源码档改动同步到板身 textarea");
+
+/* ── [9c] 「打开看一眼不会弄坏正文」：没改过就绝不回写（本轮修复的第一件事） ── */
+console.log("\n[9c] 没动过就不回写：开窗 / 轮询 / 点一下都不重排用户正文");
+const keepText = "# 段落标题\n\n第一段。\n\n第二段带着行尾两空格硬换行。  \n第三行。\n";
+NODE.text = keepText;
+sandbox.openTextNodeEditor(NODE);
+const rich3 = doc.getElementById("textEditRich");
+ok(!!rich3, "开窗后拿到富文本编辑区");
+/* 开个窗就 commit 一次（切档、点保存、面板刷新都会走到这里）：正文必须原样不动 */
+sandbox.teCommit();
+ok(NODE.text === keepText, "开窗后什么都没动就提交：node.text 原样（不被重新排版）");
+ok(
+  NODE.review.versions[NODE.review.versions.length - 1].text === keepText,
+  "当前版正文也原样（版本链不被「打开过」污染）",
+);
+/* 轮询跑几拍：同样不许回写（这是「放着不动正文也会被吃掉换行」的根因） */
+for (let i = 0; i < 3; i++) sandbox.teSyncTick();
+ok(NODE.text === keepText, "轮询跑三拍：正文仍然原样");
+/* 真改一下就必须回写（保护不能把正常编辑也挡掉） */
+const edited = "# 段落标题\n\n第一段改过。\n\n第二段带着行尾两空格硬换行。  \n第三行。\n";
+typeRich(rich3, edited);
+sandbox.teCommit();
+ok(NODE.text === edited, "真改过之后照常回写（保护不误伤正常编辑）");
+ok(String(bodyTa.value) === edited, "回写同时同步到板身 textarea");
 sandbox.teClose();
 console.log(
   (fails ? "\n✗ FAIL " : "\n✓ 全部 ") +

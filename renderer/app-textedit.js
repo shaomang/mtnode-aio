@@ -3,8 +3,8 @@
  *
  * 需求：给「文本节点」（kind = input_text，可编辑形态 —— 非只读 / 非继承 / 非拆分）加一枚
  * 节点头部 ✎ 入口，打开一个近乎全屏、右下可拖调的写作窗：正文所见即所得（也可切源码）、
- * 顶部方形图标工具栏做全套 Markdown 编辑（标题 / 粗斜删 / 引用 / 列表 / 待办 / 链接 /
- * 行内码 / 代码块 / 图片 / 表格 / 水平线 / 公式 + 撤销重做），并支持全文批注与局部批注、
+ * 顶部方形图标工具栏做全套 Markdown 编辑（标题 / 粗斜删 / 引用 / 列表 / 链接 /
+ * 行内码 / 代码块 / 图片 / 表格 / 公式 + 撤销重做），并支持全文批注与局部批注、
  * 「让 AI 依据批注修订」逐轮出新版；每版完整留存、可回看 / 回滚。
  *
  * 与既有能力的分工（刻意不再造第二份实现）：
@@ -49,12 +49,23 @@ let _te = {
   saveErr: "", // 最近一次落盘失败的原因（saveState === "err" 时显示）
   saveAt: 0, // 最近一次成功落盘的时刻（状态行给「已自动保存 · 刚刚」用）
   saveTimer: 0, // 实时保存的防抖句柄
-  localSel: false, // 局部批注开关：开启后拖选正文才弹浮窗
+  /* 局部批注：当前选段快照（选中文字原文 + 便笺落点）。
+     按钮亮不亮只看它 —— 点按钮那一瞬选区会被夺走，不能让按钮回头去读实时选区。 */
+  selSnippet: "",
+  selPos: null,
+  selSync: null, // 工具栏那颗「局部批注」按钮的状态同步函数（工具栏每次重渲染都换一颗）
   pushed: "", // 本编辑器上一步写进 node.text 的正文（借此认出「节点那边被改了」）
   rendered: -1, // 编辑区 DOM 代表的是哪一版（-1 = 还没渲染，此时不序列化 DOM）
   timer: 0, // 双向同步轮询句柄（宿主每次重建，关窗停）
   h: 0, // 记住的窗口尺寸（关窗后再开沿用）
   w: 0,
+  /* 本次会话里富文本档有没有被真正改过（打字 / 工具栏 / 粘贴 / 插图）：
+     没改过就一律不回写 —— 开窗、点一下、700ms 轮询都不该把正文按语义子集重构一遍
+     （旧版在这里把段落空行、行尾两空格的硬换行、行内代码里的空格全吃掉了）。 */
+  richDirty: false,
+  /* 上一次「富文本档 → Markdown」的序列化结果：null = 本次会话还没序列化过。
+     与 richDirty 一起构成「没动过就不回写」的判据（见 teCommit / teSyncTick）。 */
+  lastSer: null,
 };
 /* 正文只有一个真源：文本节点的 node.text（节点板身 textarea 写它，下游也读它），
    编辑器里的版本链只是这份正文的历史。两者必须完全同步，四条路径都在下面：
@@ -285,6 +296,18 @@ function tePullFromNode(node, silent) {
    注意「只有正文真的变了才排实时保存」这一层守卫：teSyncTick 每 700ms 也会走一次 teCommit →
    tePushToNode，若无条件排保存，编辑器开着（哪怕没在打字）就会每 700ms 落一次盘、
    底栏状态永远停在「保存中…」。 */
+/* 画布上那颗节点的浏览态正文是拿 node.text 现渲染的（browseMdPreviewEl），而 applyNodeForm
+   只认「形态变没变」—— 形态一直是 browse 就早退，body 不会重建。所以编辑器写回正文后要
+   显式重建一次：否则关掉 ✎ 窗口，画布上还是改之前那一版排版（用户点完横隔线回来以为「线没了」）。
+   只在浏览态重建：编辑态 body 里躺着用户正在打字的 textarea，不能动。 */
+function teRefreshBoardBrowse(node) {
+  if (!node) return;
+  const el = document.querySelector('.wf-node[data-nid="' + node.id + '"]');
+  if (!el || !el.classList.contains("browse")) return;
+  const body = typeof nodeBodyEl === "function" ? nodeBodyEl(el) : null;
+  if (body && typeof rebuildNodeBody === "function") rebuildNodeBody(node, body);
+}
+
 function tePushToNode() {
   if (!_te.editing) return;
   const node = teNode();
@@ -296,6 +319,7 @@ function tePushToNode() {
   if (String(node.text || "") !== text) node.text = text;
   teTrackNodeText(node);
   teRenderBodyTextarea();
+  if (changed) teRefreshBoardBrowse(node);
   /* 正文一改就排一次实时保存（所有改动路径：富文本 / 源码 / 工具栏插入 / 批注都经过这里）；
      与上一步写下去的正文一模一样就不排 —— 开窗后的第一次序列化（Markdown 归一化往返）、
      以及没在打字的 700ms 轮询，都不该被当成一次改动去反复落盘。 */
@@ -327,15 +351,29 @@ function teSyncTick() {
     if (!focused) tePullFromNode(node, false);
     return;
   }
-  if (_te.editing && !_te.src && _te.rendered === _te.verIdx) teCommit();
+  /* 富文本档：只有真被改过才序列化回正文。
+     没有 richDirty 时先「就地探测」一次 DOM（粘贴、拖入图片、撤销这类不冒 input 事件的改动
+     靠它认出来）—— 序列化结果与上一次不同才动正文；没动过就一个字节都不写。 */
+  if (_te.editing && !_te.src && _te.rendered === _te.verIdx) {
+    const ed = _teRichEl;
+    if (ed && ed.contentEditable === "true" && !_te.richDirty) {
+      try {
+        const now = richToMarkdown(ed);
+        /* 与「刚渲染出来的那份」比：不同就是真被改过（lastSer 为 null = 序列化失败，按改动处理更安全） */
+        if (now != null && (_te.lastSer == null || now !== _te.lastSer)) _te.richDirty = true;
+      } catch (_) {}
+    }
+    teCommit();
+  }
   const v = teCurrent();
   if (!v) return;
-  if (String(v.text || "") !== text) {
-    v.text = text;
-    teRenderAll();
-    return;
-  }
-  teRenderBodyTextarea();
+  /* 这一拍序列化把正文改写过了（富文本 → Markdown 的归一化）：**只把正文推下去，不重渲染编辑区**。
+     早先这里走 teRenderAll()，等于把正在打字的 contenteditable 整块拆了重装 ——
+     字还在、焦点与光标没了，用户得再点一下才能接着输（「输入时频繁失焦」的根因之一）。
+     编辑区只在显式动作（切档 / 切版本 / AI 修订 / 开窗）里重建，写路径一律就地更新。 */
+  if (String(node.text || "") !== String(v.text || "")) tePushToNode();
+  else teRenderBodyTextarea();
+  teRenderFoot();
 }
 /* 同步轮询在本编辑器第 N 次「打开 → 关窗」上只跑一个（宿主是持久的，重复打开不能叠加定时器） */
 let _teSyncSeq = 0;
@@ -428,7 +466,9 @@ function openTextNodeEditor(node) {
   _te.saveState = "idle";
   _te.saveErr = "";
   _te.saveAt = 0;
-  _te.localSel = false;
+  _te.selSnippet = "";
+  _te.selPos = null;
+  _te.selSync = null;
   _te.pushed = String(node.text || "");
   _te.rendered = -1;
   _te.verIdx = node.review.versions.length - 1;
@@ -470,6 +510,8 @@ function textNodeEditorOpenFor(nodeId) {
 
 function teClose() {
   if (teCloseBlocked()) return;
+  document.removeEventListener("selectionchange", teOnSelectionChange);
+  teClearSelSnapshot();
   /* 关窗前把待落盘的那一笔写完（清下游也在这里做一次）；关窗本身就是显式落盘点，
      实时保存没跑完的定时器不该被丢掉。 */
   teFlushPending();
@@ -493,7 +535,16 @@ function teClose() {
   _te.pushed = "";
   /* 关窗即把板身 textarea 放回可编辑（并收掉那行提示） */
   teBodyEditable(true, bodyId);
+  /* 关窗是「离开编辑面」的显式出口：先把窗里的焦点交出去（否则保存路径推迟的那一拍
+     会被 Markdown 编辑面守卫继续挡着），再补一次画布重绘，最后把之前挂着的推迟账清掉。 */
+  try {
+    const ae = document.activeElement;
+    if (ae && host && host.contains(ae) && typeof ae.blur === "function") ae.blur();
+  } catch (_) {}
   if (typeof renderCanvas === "function") renderCanvas();
+  try {
+    if (typeof flushDeferredCanvasFocus === "function") flushDeferredCanvasFocus();
+  } catch (_) {}
 }
 
 /* 关窗（✕ / Esc / 底部按钮共用）：实时保存下不存在「未保存的改动」，
@@ -599,6 +650,8 @@ function teOpenHost() {
   }
   host.classList.add("on");
   document.body.classList.add("review-lock");
+  /* 局部批注：选段判定挂文档级 —— 拖到编辑器外松手、Shift+方向键、双击选词都算 */
+  document.addEventListener("selectionchange", teOnSelectionChange);
   host.setAttribute("tabindex", "-1");
   try {
     host.focus();
@@ -722,8 +775,6 @@ function teRenderToolbar() {
   sep();
   mk("ul", "•≡", I18n.t("无序列表"));
   mk("ol", "1.", I18n.t("有序列表"));
-  mk("task", "☑", I18n.t("任务清单"));
-  mk("hr", "—", I18n.t("水平线"));
   sep();
   mk("link", "🔗", I18n.t("链接"));
   mk("inlineCode", "⟨⟩", I18n.t("行内代码"));
@@ -736,7 +787,7 @@ function teRenderToolbar() {
   mk("undo", "↶", I18n.t("撤销"));
   mk("redo", "↷", I18n.t("重做"));
   sep();
-  /* 批注入口：全文 / 局部（局部开启后拖选正文即弹右侧浮空便笺） */
+  /* 批注入口：全文 / 局部（局部：先拖选正文，按钮亮起后再点，才摊开浮空便笺） */
   const full = document.createElement("button");
   full.type = "button";
   full.className = "rv-note-enter";
@@ -744,22 +795,33 @@ function teRenderToolbar() {
   full.title = I18n.t("对整个文档附加一条批注");
   full.onclick = () => teFullNoteDialog();
   tb.appendChild(full);
+  /* 局部批注：**动作按钮**（不再是开关）。正文里有选段才亮，没选段就灰着不可点；
+     点亮后点一下即为选中的那段挂一条批注（选段快照见 teMaybeShowFloatNote）。 */
   const local = document.createElement("button");
   local.type = "button";
-  local.className = "rv-note-enter" + (_te.localSel ? " on" : "");
+  local.className = "rv-note-enter";
+  local.id = "textEditLocalNoteBtn";
   local.textContent = I18n.t("局部批注");
-  local.title = _te.localSel
-    ? I18n.t("局部批注已开启，拖选正文即可添加")
-    : I18n.t("在正文中拖选文字可添加局部批注");
-  local.onclick = () => {
-    _te.localSel = !_te.localSel;
-    if (!_te.localSel) teHideFloatNote(true);
-    teRenderToolbar();
-    if (_te.localSel) {
-      const ed = teRichEl();
-      if (ed) ed.focus();
-    }
+  /* 按下不夺焦：一 mousedown 就把选区交出去，按钮会在 click 之前自己变灰、点了个空 */
+  local.addEventListener("mousedown", (ev) => ev.preventDefault());
+  const syncLocal = () => {
+    const on = !!_te.selSnippet && !!_te.editing;
+    local.disabled = !on;
+    local.classList.toggle("on", on);
+    local.title = on
+      ? I18n.t("对选中的文字添加局部批注")
+      : I18n.t("先在正文中拖选一段文字");
   };
+  local.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    /* 万一这一拍选区已被收掉（某些浏览器 mousedown 的默认行为拦不住），现读一次兜底 */
+    if (!_te.selSnippet) teMaybeShowFloatNote();
+    if (!_te.selSnippet) return;
+    teShowFloatNoteAtSelection();
+  };
+  _te.selSync = syncLocal;
+  syncLocal();
   tb.appendChild(local);
 }
 
@@ -783,6 +845,8 @@ function teRenderEditor() {
   box.classList.toggle("editing", !!_te.editing);
   /* DOM 已被清空 → 「DOM 代表哪一版」的记账一并失效（此刻任何序列化都不可信） */
   _te.rendered = -1;
+  /* 编辑面重渲染 = 上一个选段已作废（切档 / 切版本 / 整面刷新），局部批注按钮跟着回灰 */
+  teClearSelSnapshot();
   const text = teVisibleText();
   if (_te.src) {
     /* 源码档装着的就是当前版全文：先记账（免得 TeCommit 的守卫把切档后的第一次序列化挡掉） */
@@ -806,6 +870,15 @@ function teRenderEditor() {
           teSaveNow();
         }
       });
+      /* 源码档的 Tab / Shift+Tab：4 空格缩进与反缩进（renderer/app-mdedit.js 的共享实现） */
+      if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindSource === "function") {
+        try {
+          MTMdEdit.bindSource(ta);
+        } catch (_) {}
+      }
+      /* 局部批注：源码档里划字也算选段（document 级 selectionchange 为主，这两拍补漏） */
+      ta.addEventListener("mouseup", () => teMaybeShowFloatNote());
+      ta.addEventListener("keyup", () => teMaybeShowFloatNote());
     } else {
       ta.readOnly = true;
     }
@@ -823,9 +896,16 @@ function teRenderEditor() {
     ed.setAttribute("aria-multiline", "true");
     ed.innerHTML = mdToRichHtml(text);
     _te.rendered = _te.verIdx;
-    /* 局部批注：拖选文字弹出右侧浮空便笺 */
-    ed.addEventListener("mouseup", (ev) => teMaybeShowFloatNote(ed, ev));
+    /* 「没动过」的基准 = 刚渲染出来的这份 DOM 自己序列化一遍的结果。
+       轮询时拿它比对，就能认出「用户真的改了 DOM」还是「只是开窗渲染了一遍」
+       （后者一个字都不回写；基准也不取旧格式的 node.text，免得开头就误判成改动）。 */
+    teBaselineRich(ed);
+    /* 局部批注：拖选文字 → 点亮工具栏那颗按钮。选段快照由文档级 selectionchange 收，
+       这一拍只是补漏（选区刚落定、selectionchange 还没派发的浏览器）。 */
+    ed.addEventListener("mouseup", () => teMaybeShowFloatNote(ed));
+    ed.addEventListener("keyup", () => teMaybeShowFloatNote(ed));
     ed.addEventListener("input", () => {
+      _te.richDirty = true;
       teCommit();
       teReAnchorNotesAfterEdit();
       tePushToNode();
@@ -837,6 +917,15 @@ function teRenderEditor() {
         teSaveNow();
       }
     });
+    /* Markdown 编辑手感（renderer/app-mdedit.js 的共享实现）：
+       Tab 只插 4 个空格（选中多行就每行行首各插一次），Shift+Tab 不接管；
+       粘贴优先吃剪贴板 HTML。Tab 改完 DOM 会自己派发一次 input，
+       走上面的监听（richDirty 记上、正文推下去），不会再有「按了 Tab 不记账」。 */
+    if (typeof MTMdEdit !== "undefined" && MTMdEdit && typeof MTMdEdit.bindRich === "function") {
+      try {
+        MTMdEdit.bindRich(ed);
+      } catch (_) {}
+    }
     /* 插图：粘贴（截图 / 剪贴板）、拖入（本机图片）、点工具栏插图 —— 全套走共享模块 */
     teBindImageEditor(ed);
     box.appendChild(ed);
@@ -845,6 +934,18 @@ function teRenderEditor() {
   }
   /* 回看历史版：只读渲染 */
   box.innerHTML = '<div class="rv-preview">' + mdToRichHtml(text) + "</div>";
+}
+
+/* 「没动过」的基准：刚渲染出来的富文本 DOM 序列化一遍（失败就退回 null = 用 node.text 兜底）。
+   轮询 / 切档前后都靠它判断用户到底动没动手（见 teSyncTick 与 teCommit）。 */
+function teBaselineRich(ed) {
+  _te.richDirty = false;
+  _te.lastSer = null;
+  if (!ed) return;
+  try {
+    const md = richToMarkdown(ed);
+    if (md != null) _te.lastSer = md;
+  } catch (_) {}
 }
 
 /* 富文本 DOM → 当前版正文（幂等；任何序列化前都先走这一步，锚点才以最新正文为准）。 */
@@ -860,12 +961,25 @@ function teCommit() {
      顺序不能反 —— 源码档下 .rv-rich 已经不在 DOM 里，querySelector 可能捞到别的同名节点。 */
   if (_te.src) {
     const src = _teSrcEl;
-    if (src && !src.readOnly) v.text = src.value;
+    if (src && !src.readOnly && src.value !== _te.pushed) v.text = src.value;
   } else {
     const ed = _teRichEl;
-    if (ed && ed.contentEditable === "true") {
+    /* 富文本档「没动过就不回写」：只有真被改过（richDirty，teSyncTick 的探测与 input 一起置位）
+       才把 DOM 序列化回 Markdown —— 开窗 / 点一下 / 700ms 轮询都不会重排用户的正文。 */
+    if (ed && ed.contentEditable === "true" && _te.richDirty) {
+      /* 列表按钮会把 <ul>/<ol> 竖在段落内部，序列化前先把它们提出来（见 teLiftBlocksOutOfP）。
+         这一步会挪 DOM：光标若正落在被提起来的那个块里，选区会跟着旧节点一起作废，
+         用户再敲字就「打不进去了」。所以挪之前拍一张「光标 + 滚动」，挪完立刻放回去。
+         **只有真挪了才放**：没挪就重设选区等于每个键、每次轮询都把光标按偏移重算一遍 ——
+         回车换行后光标被拽回上一行、点正文某处 700ms 后又被拉走，根因都在这里。 */
+      const keep = teKeepFocusSnapshot(ed);
+      const moved = teLiftBlocksOutOfP(ed);
+      if (moved) teRestoreFocusSnapshot(keep);
       const md = richToMarkdown(ed);
-      if (md != null) v.text = md;
+      if (md != null) {
+        _te.lastSer = md;
+        v.text = md;
+      }
     }
   }
   /* 当前版正文一变就同步到 node.text 与板身 textarea（两个编辑面完全同步） */
@@ -1049,15 +1163,11 @@ function teToolbarAct(action) {
 
 function teToolbarOnRich(action, ed) {
   const after = () => {
+    /* 工具栏动过 DOM = 正文真改过（序列化回写的前提，见 teCommit 的「没动过不回写」） */
+    _te.richDirty = true;
     teMarkDirty();
     teCommit();
     teRenderFoot();
-  };
-  const insertFrag = (html) => {
-    const frag = document.createRange().createContextualFragment(html);
-    const m = window.MTInlineImg;
-    if (m && typeof m.insertAtCaret === "function") m.insertAtCaret(ed, frag);
-    else ed.appendChild(frag);
   };
   const exec = (cmd, arg) => {
     try {
@@ -1101,16 +1211,8 @@ function teToolbarOnRich(action, ed) {
       exec("insertOrderedList");
       after();
       return;
-    case "task":
-      exec("insertUnorderedList");
-      after();
-      return;
-    case "hr":
-      insertFrag("<hr>");
-      after();
-      return;
     case "code":
-      insertFrag("<pre><code>" + I18n.t("代码") + "</code></pre>");
+      teInsertBlockNodes(ed, "<pre><code>" + I18n.t("代码") + "</code></pre>");
       after();
       return;
     case "inlineCode":
@@ -1195,16 +1297,18 @@ function teRestoreRange(range, ed) {
 }
 
 function teInsertLink(ed) {
-  const sel = window.getSelection();
-  const hasSel = !!(sel && !sel.isCollapsed && sel.rangeCount);
-  const anchorText = hasSel ? sel.toString() : "";
-  const range = hasSel ? sel.getRangeAt(0).cloneRange() : null;
+  /* 折叠光标也要记住落点：对话框一夺焦选区就没了，回来时只能靠这份 range 定位
+     （否则 insertAtCaret 认不到编辑区的选区，链接会跑到编辑区末尾自成一段）。 */
+  const range = teRangeIn(ed);
+  const hasSel = !!(range && !range.collapsed);
+  const anchorText = hasSel ? range.toString() : "";
   promptDialog(I18n.t("链接地址（https://…）"), "https://", {
     title: I18n.t("插入链接"),
     inputType: "url",
   }).then((url) => {
     if (url == null) return;
-    if (range) {
+    teRestoreRange(range, ed);
+    if (hasSel) {
       const a = document.createElement("a");
       a.href = url;
       a.textContent = anchorText;
@@ -1221,6 +1325,8 @@ function teInsertLink(ed) {
       if (m && typeof m.insertAtCaret === "function") m.insertAtCaret(ed, frag);
       else ed.appendChild(frag);
     }
+    /* 与其余工具栏动作同一条路：先标「DOM 真被改过」，teCommit 才会把 DOM 序列化回正文 */
+    _te.richDirty = true;
     teMarkDirty();
     teCommit();
     teRenderFoot();
@@ -1256,6 +1362,7 @@ function teBindImageEditor(ed) {
     target: teImgTarget,
     canEdit: () => !!_te.editing,
     onInserted: () => {
+      _te.richDirty = true;
       teMarkDirty();
       teCommit();
       teRenderFoot();
@@ -1302,12 +1409,8 @@ function teInsertTable(ed, after) {
   teTableDialog().then((d) => {
     if (!d) return;
     teRestoreRange(range, ed);
-    const m = window.MTInlineImg;
-    const frag = document.createRange().createContextualFragment(
-      teTableHtml(d.rows, d.cols),
-    );
-    if (m && typeof m.insertAtCaret === "function") m.insertAtCaret(ed, frag);
-    else ed.appendChild(frag);
+    /* 表格也是块级内容（塞进 <p> 会被浏览器拆散），与水平线 / 代码块同一条路 */
+    teInsertBlockNodes(ed, teTableHtml(d.rows, d.cols));
     if (after) after();
   });
 }
@@ -1331,13 +1434,148 @@ function teInsertMath(ed, display, after) {
           teEscH(tex) +
           "</span>";
     if (!html) return;
-    const frag = document.createRange().createContextualFragment(html);
-    const m = window.MTInlineImg;
-    if (m && typeof m.insertAtCaret === "function") m.insertAtCaret(ed, frag);
-    else ed.appendChild(frag);
+    if (display) {
+      /* 显示公式独占一块：包在段落里交给 teInsertBlockNodes 放到块级位置，
+         序列化时由「只装一个公式的段落」那条规则还原成整段 `$$…$$`
+         （塞在文字中间会变成行内公式，源码里的 `$$` 就散架了）。 */
+      teInsertBlockNodes(ed, "<p>" + html + "</p>");
+    } else {
+      const frag = document.createRange().createContextualFragment(html);
+      const m = window.MTInlineImg;
+      if (m && typeof m.insertAtCaret === "function") m.insertAtCaret(ed, frag);
+      else ed.appendChild(frag);
+    }
     toast(I18n.t("公式已插入"), "ok");
     if (after) after();
   });
+}
+
+/* 块级插入（代码块 / 显示公式 / 表格）：这些内容不能待在 <p> 或 <li> 里。
+   早先所有按钮都走 insertAtCaret，把片段原地塞进光标所在的文本节点，于是
+     · <hr> 落进 <p> 内部 —— 序列化时整段按行内文本处理，水平线被当成空内容丢掉，
+       用户看到的就是「插入横隔线，保存后就消失」；
+     · <pre> / <table> 塞进 <p>，浏览器重排时结构被拆散。
+   这里把「当前块」在光标处切开：光标之前留在原块，光标之后另起一块（同样的标签），
+   新内容插在两者之间；切开后没有后段就补一个空段落，光标停在末尾方便继续写。
+   光标在列表里时整只列表之后插入（在 <li> 中间切会把列表结构弄散）；
+   光标在代码块 / 表格里时追加到编辑区末尾。 */
+function teInsertBlockNodes(ed, html) {
+  const frag = document.createRange().createContextualFragment(String(html || ""));
+  const nodes = Array.from(frag.childNodes);
+  if (!nodes.length) return false;
+  const tailPara = (at) => {
+    const p = document.createElement("p");
+    p.appendChild(document.createElement("br"));
+    if (at && at.parentNode) at.parentNode.insertBefore(p, at.nextSibling);
+    else ed.appendChild(p);
+    teCaretEndOf(p);
+  };
+  const range = teRangeIn(ed);
+  if (!range) {
+    ed.appendChild(frag);
+    tailPara(ed.lastChild);
+    return true;
+  }
+  range.deleteContents();
+  let blk = range.startContainer;
+  if (blk.nodeType !== 1) blk = blk.parentNode;
+  while (
+    blk &&
+    blk !== ed &&
+    !/^(P|DIV|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|PRE|LI|TABLE|TD|TH)$/.test(blk.tagName)
+  )
+    blk = blk.parentNode;
+  if (!blk || blk === ed || blk.tagName === "PRE" || blk.tagName === "TABLE" ||
+    blk.tagName === "TD" || blk.tagName === "TH") {
+    ed.appendChild(frag);
+    tailPara(ed.lastChild);
+    return true;
+  }
+  if (blk.tagName === "LI") {
+    let list = blk;
+    while (list.parentNode && list.parentNode !== ed && /^(UL|OL)$/.test(list.parentNode.tagName))
+      list = list.parentNode;
+    let at = list;
+    for (const n of nodes) {
+      at.parentNode.insertBefore(n, at.nextSibling);
+      at = n;
+    }
+    tailPara(at);
+    return true;
+  }
+  /* 切开当前块：光标之后的内容搬进一个同标签的新块 */
+  const tail = document.createRange();
+  tail.setStart(range.startContainer, range.startOffset);
+  if (blk.childNodes.length) tail.setEndAfter(blk.lastChild);
+  else tail.setEnd(blk, 0);
+  const restFrag = tail.extractContents();
+  let rest = null;
+  if (restFrag.textContent.replace(/\s+/g, "") !== "" || restFrag.querySelector("img,input,br")) {
+    rest = document.createElement(blk.tagName);
+    if (blk.className) rest.className = blk.className;
+    rest.appendChild(restFrag);
+  }
+  let at = blk;
+  for (const n of nodes) {
+    at.parentNode.insertBefore(n, at.nextSibling);
+    at = n;
+  }
+  if (rest) {
+    at.parentNode.insertBefore(rest, at.nextSibling);
+    teCaretEndOf(rest);
+  } else {
+    tailPara(at);
+  }
+  return true;
+}
+
+/* 块级元素被浏览器塞进 <p> 里时把它们提出来（`<p><ul>…</ul></p>` 这种非法嵌套）。
+   点「无序 / 有序列表」时 execCommand 会在段落内部竖起列表，浏览器虽能显示，
+   但结构已经不是 Markdown 的「段落 + 列表」两块，样式与序列化都只能靠兜底规则猜。
+   这里把段落按块级子节点切开：行内内容留在 p，列表 / 代码块 / 表格 / 水平线提到外面。
+   返回值 = 是否真的挪过 DOM（没挪过就不该碰选区，见 teCommit 的说明）。 */
+function teLiftBlocksOutOfP(ed) {
+  if (!ed) return false;
+  let touched = false;
+  const BLOCK = /^(UL|OL|PRE|TABLE|HR|BLOCKQUOTE|H1|H2|H3)$/;
+  for (let guard = 0; guard < 40; guard++) {
+    const p = Array.from(ed.querySelectorAll("p")).find((x) =>
+      Array.from(x.children).some((c) => BLOCK.test(c.tagName)),
+    );
+    if (!p) return touched;
+    const frag = document.createDocumentFragment();
+    let buf = null;
+    const flush = () => {
+      if (!buf) return;
+      if (buf.textContent.replace(/\s+/g, "") !== "" || buf.querySelector("img,input,br,code"))
+        frag.appendChild(buf);
+      buf = null;
+    };
+    Array.from(p.childNodes).forEach((c) => {
+      if (c.nodeType === 1 && BLOCK.test(c.tagName)) {
+        flush();
+        frag.appendChild(c);
+      } else {
+        if (!buf) buf = document.createElement("p");
+        buf.appendChild(c);
+      }
+    });
+    flush();
+    if (p.parentNode) p.parentNode.replaceChild(frag, p);
+    touched = true;
+  }
+  return touched;
+}
+
+/* 光标放到元素内容末尾 */
+function teCaretEndOf(el) {  try {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    r.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  } catch (_) {}
 }
 
 /* 源码档的工具栏动作：直接在 textarea 里改 Markdown */
@@ -1386,11 +1624,28 @@ function teToolbarOnSource(action, ta) {
       teRenderFoot();
       return;
     }
+    case "p": {
+      /* 正文段落 = 把这一行打回裸段落：标题井号 / 引用尖角 / 列表记号一并剥掉。
+         早先源码档没有这个分支，¶ 点下去落进 default 静默返回（用户报的「按钮失效」之一）。 */
+      const ls = ta.value.lastIndexOf("\n", a - 1) + 1;
+      let le = ta.value.indexOf("\n", b);
+      if (le < 0) le = ta.value.length;
+      const rep = ta.value
+        .slice(ls, le)
+        .split("\n")
+        .map((l) => l.replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)/, ""))
+        .join("\n");
+      ta.value = ta.value.slice(0, ls) + rep + ta.value.slice(le);
+      ta.setSelectionRange(ls, ls + rep.length);
+      teMarkDirty();
+      ta.focus();
+      teRenderFoot();
+      return;
+    }
     case "ul":
     case "ol":
-    case "task":
     case "quote": {
-      const mark = { ul: "- ", ol: "1. ", task: "- [ ] ", quote: "> " }[action];
+      const mark = { ul: "- ", ol: "1. ", quote: "> " }[action];
       const ls = ta.value.lastIndexOf("\n", a - 1) + 1;
       let le = ta.value.indexOf("\n", b);
       if (le < 0) le = ta.value.length;
@@ -1423,9 +1678,6 @@ function teToolbarOnSource(action, ta) {
       return;
     case "link":
       fmt("[", "](https://)", I18n.t("链接文字"));
-      return;
-    case "hr":
-      insert("\n---\n");
       return;
     case "image": {
       const target = teImgTarget();
@@ -1626,7 +1878,7 @@ function teRenderNotes() {
     head.appendChild(bt);
     const hint = document.createElement("span");
     hint.className = "rv-notes-hint";
-    hint.textContent = I18n.t("在正文中拖选文字可添加局部批注");
+    hint.textContent = I18n.t("拖选正文后点「局部批注」即可添加");
     head.appendChild(hint);
   } else {
     const t = document.createElement("span");
@@ -1759,19 +2011,86 @@ function teDeleteNote(id) {
   tePersist(false);
 }
 
-/* 局部批注：拖选正文 → 右侧浮空便笺绑定该段 */
+/* 局部批注：捕获正文选段 → 点亮工具栏那颗按钮。
+   ed 可省（文档级 selectionchange / 源码档派发时没有元素可给）。
+   选段必须落在正文编辑面内 —— 在右侧批注栏里划字不该点亮它。
+   一经确定就记下原文与落点：点按钮那一下选区会被按钮夺走，不能临场再读。 */
 function teMaybeShowFloatNote(ed, ev) {
-  if (!_te.editing || !_te.localSel) return;
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed) return;
-  const txt = sel.toString().trim();
-  if (!txt || txt.length < 2) return;
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
-  if (!rect || (!rect.width && !rect.height)) return;
+  void ev;
+  if (!_te.editing) return;
+  const host = document.getElementById("textEditDlg");
+  if (!host || !host.classList.contains("on")) return;
+  let snippet = "";
+  let pos = null;
+  if (_te.src) {
+    const ta = _teSrcEl;
+    if (
+      ta &&
+      !ta.readOnly &&
+      document.activeElement === ta &&
+      ta.selectionStart !== ta.selectionEnd
+    ) {
+      /* 源码档：拿不到选段的像素坐标，便笺按下面的口径统一落在工具栏下方 */
+      const t = String(ta.value.slice(ta.selectionStart, ta.selectionEnd)).trim();
+      if (t) snippet = t;
+    }
+  } else {
+    const rich = ed || teRichEl();
+    const sel = window.getSelection();
+    if (rich && sel && !sel.isCollapsed && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      if (rich.contains(range.commonAncestorContainer)) {
+        const t = String(sel).trim();
+        const rect = range.getBoundingClientRect();
+        const box = teEl("textEditBox");
+        const br = box && box.getBoundingClientRect();
+        if (t && rect && br && (rect.width || rect.height)) {
+          snippet = t;
+          pos = { x: rect.left - br.left, y: rect.bottom - br.top + 6 };
+        }
+      }
+    }
+  }
+  _te.selSnippet = snippet;
+  _te.selPos = pos;
+  if (typeof _te.selSync === "function") _te.selSync();
+}
+
+/* 文档级选段监听（开窗时挂、关窗时摘）：只更新按钮亮灭，不自己弹浮层 */
+function teOnSelectionChange() {
+  teMaybeShowFloatNote();
+}
+
+/* 绑定 / 取消之后清掉选段：按钮回灰，要再选一段才亮（不留「亮着却没选段」的悬空态）。 */
+function teClearSelSnapshot() {
+  _te.selSnippet = "";
+  _te.selPos = null;
+  if (typeof _te.selSync === "function") _te.selSync();
+}
+
+/* 按选段快照摊开便笺：富文本贴在选段旁；源码档统一落在工具栏下方。 */
+function teShowFloatNoteAtSelection() {
+  const snippet = _te.selSnippet;
+  if (!snippet || !_te.editing) return;
   const box = teEl("textEditBox");
-  if (!box) return;
-  const boxRect = box.getBoundingClientRect();
-  teShowFloatNote(rect.left - boxRect.left, rect.bottom - boxRect.top + 6, txt);
+  const br = box && box.getBoundingClientRect();
+  if (!br) return;
+  let x = 12;
+  let y = 48;
+  if (_te.selPos) {
+    x = _te.selPos.x;
+    y = _te.selPos.y;
+  } else {
+    const bar = teEl("textEditToolbar");
+    const rr = bar && bar.getBoundingClientRect();
+    if (rr) {
+      x = 12;
+      y = rr.bottom - br.top + 8;
+    }
+  }
+  /* 便笺宽 232px：别让它摊到窗框外面去 */
+  const maxX = Math.max(8, br.width - 244);
+  teShowFloatNote(Math.max(8, Math.min(x, maxX)), Math.max(8, y), snippet);
 }
 
 function teShowFloatNote(x, y, snippet) {
@@ -1780,12 +2099,9 @@ function teShowFloatNote(x, y, snippet) {
   f.hidden = false;
   f.style.left = Math.max(8, Math.round(x)) + "px";
   f.style.top = Math.max(8, Math.round(y)) + "px";
+  /* 便笺里不再显示原文引文：选段只用来给批注定锚点 */
   f.innerHTML =
     '<div class="rv-note-caret"></div>' +
-    '<div class="rv-note-snip">“' +
-    teEscH(snippet.slice(0, 60)) +
-    (snippet.length > 60 ? "…" : "") +
-    "”</div>" +
     '<textarea class="rv-note-in" rows="3" placeholder="' +
     I18n.t("输入批注内容…") +
     '"></textarea>' +
@@ -1800,10 +2116,15 @@ function teShowFloatNote(x, y, snippet) {
   const cancel = f.querySelector("#textEditNoteCancel");
   ok.onclick = () => {
     const body = ta.value.trim();
+    /* 绑定 / 取消都算「这一段处理完了」：清掉选段，按钮回灰，再选一段才亮 */
+    teClearSelSnapshot();
     teHideFloatNote(true);
     if (body) teAddLocalNote(snippet, body);
   };
-  cancel.onclick = () => teHideFloatNote(true);
+  cancel.onclick = () => {
+    teClearSelSnapshot();
+    teHideFloatNote(true);
+  };
   ta.focus();
 }
 
@@ -2009,31 +2330,82 @@ async function teRunRevision() {
      · Ctrl+S         —— 立即保存 + 一次「已保存到节点正文」的提示
      · AI 修订出新版   —— src="revision" 立即落盘（此时编辑区 DOM 还停在上一版，故内部先不 commit）
    三个选项都可省：teSaveToNode(true) 等价于 { immediate: true }（旧签名照旧能用）。 */
+/* 保存那一下的画布重绘（本次需求：任何保存都不许夺焦）。
+   正在 Markdown 编辑面里打字时（✎ 富文本 / 源码、审阅窗、阅读器、板身正文框）**这一拍不画**：
+   记账推迟，编辑结束由 flushDeferredCanvasFocus 补上（app-boot.js 的 focusout / 组合结束）。
+   没人在编辑面里就直接画 —— 与旧行为一致，别的地方看不出差别。 */
+function teRepaintAfterSave() {
+  if (typeof renderCanvas !== "function") return;
+  let surface = "";
+  try {
+    if (typeof MTMdEdit !== "undefined" && MTMdEdit && MTMdEdit.surfaceKey)
+      surface = MTMdEdit.surfaceKey(document.activeElement);
+  } catch (_) {}
+  if (surface) {
+    try {
+      S._deferCanvasForFieldEdit = true;
+    } catch (_) {}
+    return;
+  }
+  renderCanvas();
+}
+/* 焦点保管：MTMdEdit 没加载（缺文件 / 旧版退出）时是零成本直通，保存照旧能用 */
+function teKeepFocus(fn) {
+  try {
+    if (typeof MTMdEdit !== "undefined" && MTMdEdit && MTMdEdit.keepEditFocus)
+      return MTMdEdit.keepEditFocus(fn);
+  } catch (_) {}
+  return fn();
+}
+/* 挪 DOM 前后的一次「光标 + 滚动」快照 / 还原：只在那个编辑面此刻真握着焦点时才拍
+   （焦点不在它身上 = 不是打字现场，一拍都不拍，免得替用户把焦点抢回来）。 */
+function teKeepFocusSnapshot(el) {
+  try {
+    const ae = document.activeElement;
+    if (!el || !ae || (ae !== el && !(el.contains && el.contains(ae)))) return null;
+    if (typeof MTMdEdit === "undefined" || !MTMdEdit || !MTMdEdit.captureEditFocus) return null;
+    return MTMdEdit.captureEditFocus(el);
+  } catch (_) {
+    return null;
+  }
+}
+function teRestoreFocusSnapshot(snap) {
+  if (!snap) return;
+  try {
+    if (typeof MTMdEdit !== "undefined" && MTMdEdit && MTMdEdit.restoreEditFocus)
+      MTMdEdit.restoreEditFocus(snap);
+  } catch (_) {}
+}
 function teSaveToNode(opts) {
   const o = opts === true || opts === false ? { immediate: !!opts } : opts || {};
   const node = teNode();
   if (!node) return false;
-  /* 先把编辑区 DOM 落回当前版：正文的真源是富文本 / 源码 DOM，
-     不先序列化，保存下去的会是上一版（这是个真会咬人的顺序坑）。
-     唯一例外是 AI 刚 push 新版那一下（DOM 还停在上一版），由调用方传 silent 同源的 skipCommit。 */
-  if (!o.skipCommit) teCommit();
-  const v = teCurrent();
-  if (!v) return false;
-  const text = String(v.text || "");
-  node.text = text;
-  teTrackNodeText(node);
-  teRenderBodyTextarea();
-  try {
-    if (typeof clearDownstream === "function" && (o.clearDown || o.immediate))
-      clearDownstream(node.id);
-  } catch (_) {}
-  tePersist(!!o.immediate);
-  if (typeof renderCanvas === "function") renderCanvas();
-  teSetSave("ok");
-  _te.saveAt = Date.now();
-  teRenderFoot();
-  if (!o.silent) toast(I18n.t("已保存到节点正文"), "ok");
-  return true;
+  /* 整个落盘动作包在 keepEditFocus 里：序列化编辑区（teCommit 会挪块）、回填板身、重绘
+     都在这段里发生，跑完统一把「焦点 + 光标 / 选区 + 滚动」放回原样 —— 就算某条路径真的
+     换了 DOM，用户也能接着输，不用再点一次。 */
+  return teKeepFocus(() => {
+    /* 先把编辑区 DOM 落回当前版：正文的真源是富文本 / 源码 DOM，
+       不先序列化，保存下去的会是上一版（这是个真会咬人的顺序坑）。
+       唯一例外是 AI 刚 push 新版那一下（DOM 还停在上一版），由调用方传 silent 同源的 skipCommit。 */
+    if (!o.skipCommit) teCommit();
+    const v = teCurrent();
+    if (!v) return false;
+    const text = String(v.text || "");
+    node.text = text;
+    teTrackNodeText(node);
+    teRenderBodyTextarea();
+    try {
+      if (typeof clearDownstream === "function" && (o.clearDown || o.immediate))
+        clearDownstream(node.id);
+    } catch (_) {}
+    tePersist(!!o.immediate);
+    teRepaintAfterSave();
+    teSetSave("ok");
+    _te.saveAt = Date.now();
+    teRenderFoot();
+    if (!o.silent) toast(I18n.t("已保存到节点正文"), "ok");
+    return true;
+  });
 }
 /* 立即保存（Ctrl+S / 保存写回节点正文的显式出口）：跳过防抖直接落盘一次。 */
 function teSaveNow(opts) {

@@ -128,7 +128,7 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
 
 - dsh 默认触发线 = 适配器声明的 `contextWindow × thresholdRatio(0.8)`；
 - 而网关（`gateway.mjs` 的 `OFFICIAL_MODEL_KNOWN` / `officialModelsYaml`）给
-  `deepseek-v4-*` 系列声明的是 `contextWindow: 1000000` → 要跑到 **80 万 token** 才压，
+  `deepseek-v4-*` 系列声明的是 `contextWindow: 1000000` → 要跑到 **800k token** 才压，
   本机 14 天里最长的会话是 335 步、每步均 218K token，离触发线差得远。
 
 **不能靠改声明的窗口来压**：`contextWindow` 同时是适配器向模型声明的真实容量，
@@ -136,23 +136,54 @@ dsh 自带压缩（`@deepseek-ai/dsh-compaction-basic` + `token-meter` + `tool-r
 
 | 键 | 值 | 为什么 |
 |---|---|---|
-| `thresholdRatio` | `0.3` | 有效窗口 ≈ 30 万 token（声明窗口 × 0.3）。dsh 的默认 0.8 在本机等价于不触发 |
-| `retainRatio` | `0.04` | 未点名路由的比例兜底：窗口越小留得越少（1M → 约 3.7 万；12.8 万 → 约 4.6 千） |
-| `modelPolicies[]` | `deepseek-official/deepseek-flash` → `retainTokens: 32768` | 这条路由的窗口是网关自己声明的 1M，纯比例会「留 16 万原文」，压缩几乎白压 → 必须给**绝对**保留尾部 |
+| `thresholdRatio` | `0.3` | 「中」档的有效窗口 ≈ 300k token（声明窗口 × 0.3）。dsh 的默认 0.8 在本机等价于不触发 |
+| `retainRatio` | `0.04` | 未点名路由的比例兜底：窗口越小留得越少（1M → 约 37k；128k → 约 4.6k） |
+| `modelPolicies[]` | `deepseek-official/<该路由可能跑到的每个模型 id>` → `retainTokens: 32768` | 这条路由的窗口是网关自己声明的 1M，纯比例会「留 160k 原文」，压缩几乎白压 → 必须给**绝对**保留尾部。**必须点名一族 id 而不是一个名字**：插件按 provider + model 逐字精确匹配，而这条路由跑的 id 是用户服务商清单里那一个（本机实测 `deepseek-v4-flash`）—— 只点 `deepseek-flash` 时整份 modelPolicies 静默落空（触发线退回 ≈678k，「选 100k 档却没在 100k 压」） |
 | `auto` | `true` | 自动压缩；置 false 只停自动触发，provider 确认的上下文溢出恢复仍在 |
 
 - **配置值真源 = `dsh-compact-policy.js`**（与 `dsh-agent-policy.js` 同一个模式）：
-  用户设置写成 `config.dsh.compact = { enabled, tier }`，由 `main.js` 的 `syncCompactPolicy`
-  在**启动时**与**每次保存配置后**改写 `cordis.yml` 里这一行的 config ——
-  下一个新会话生效，正在跑的会话沿用原值。三档（早 / 中 / 晚）只差 `thresholdRatio`
-  与 `retainTokens`（0.16/16K · 0.3/32K · 0.45/64K），设置界面只给档位、不摊原始百分比。
+  用户设置写成 `config.dsh.compact = { enabled, tier, customTriggerTokens }`，由 `main.js` 的
+  `syncCompactPolicy` 在**启动时**与**每次保存配置后**改写 `cordis.yml` 里这一行的 config ——
+  下一个新会话生效，正在跑的会话沿用原值。
+- **四档**（设置界面只给档位与一条触发线，不摊原始百分比）：
+
+  | 档（tier） | 落到主力路由的触发线 | 保留尾部 | 实现 |
+  |---|---|---|---|
+  | 省钱 `frugal` | 约 100k token（绝对量） | 16,384 | 走路由级 `headroomTokens: 643872`（= 1M 窗口 − 256K 预留输出 − 100K），`thresholdRatio 0.9` 只用来保证 `min()` 的第二支胜出 |
+  | 中 `mid`（默认） | 约 300k | 32,768 | `thresholdRatio 0.3` |
+  | 晚 `late` | 约 450k | 65,536 | `thresholdRatio 0.45` |
+  | 自定义 `custom` | 用户填 100k – 500k | 16,384 | 触发线换算成 `headroomTokens`（744,000 − 触发线），越界回落 100k |
+
+  为什么要固定 headroom 而不是固定比例：插件的实际触发线 =
+  `min(窗口 × thresholdRatio, 窗口 − 预留输出 − headroomTokens)`（真源
+  `@deepseek-ai/dsh-compaction-basic/lib/index.js` 的 `resolveCompactSpec`），
+  「绝对 N token 触发」只能靠第二支把线压下来。预留输出取适配器自己的默认单次输出上限：
+  主力路由的 deepseek 适配器是 256,000（`dsh-llm-deepseek` 的 `DEFAULT_MAX_TOKENS`），
+  自配服务商的 pi-ai 是 32768（`dsh-llm-pi-ai`）—— 所以同一个 headroom 在两类路由上
+  落点略有差异，这是固定 headroom 方案的既定代价。
+  每条 policy 还要显式写 `maxTokens: 256000`：插件有一条兜底 —— 路由 policy 只给了
+  `headroomTokens` 时会把 `policy.maxTokens` 填成 `headroomTokens`（同文件 :71），
+  而 `maxTokens` 是**写摘要那一次请求**的输出上限；省钱档的 643,872 那样发出去就是向
+  模型要 64 万输出 token，所以钉成主力路由真正在用的那个 256,000。
+- **点名清单从哪来**：兜底那一族 = 网关认得的官方模型 id（`gateway.mjs` 的
+  `OFFICIAL_MODEL_KNOWN` + 别名组，含已下线的 `deepseek-v4-flash` 这类老 id），
+  ∪ 配置里官方服务商列的模型 id —— 判据与渲染层同一句（`renderer/app-agent.js` 的
+  `dshProvider()`：`text_openai` 且 `baseUrl` 主机名含 `deepseek`）。
+  这些 id 在网关侧一律声明 1,000,000 窗口（`dsh-llm-deepseek` 的 `DEFAULT_CONTEXT_WINDOW`），
+  固定 headroom 的算式对它们逐条成立。回归见 `test/smoke-token-budget.js` `[11]`
+  （兜底表必须覆盖 `OFFICIAL_MODEL_KNOWN` 的每个 id；配置里新出现的官方 id 必须被追加点名）。
+- **小窗口路由不点名**：省钱 / 自定义两档的 `headroomTokens` 只写进官方路由；
+  声明窗口过小（算不出合法 headroom）的自配路由继续走 `retainRatio` 比例兜底，
+  本轮不动它们（dsh 的 `auto` 是全局单个布尔，做不到只给小窗口关）。
 - **幂等**：设置缺省（开 · 中档）与出货组合逐字一致，`applyCompactPolicy` 因此
-  每次启动零字节改动；早↔中、关↔开往返都能逐字回到出货原文。
+  每次启动零字节改动；中↔省钱、关↔开往返都能逐字回到出货原文。旧值 `tier:"early"`
+  （早档已下线）一律归一到「中」。
 - **不点名 `mtnode_<route>`**：自配服务商的路由名是 `mtnode_` + 用户自己填的 route
   （`gateway.mjs` 的 `routeOfProvider` / `applySettings`），模型名也是用户填的 ——
   没有固定组合可点名，点名必落空。那类路由统一走 `retainRatio` 兜底。
-- 回归见 `test/smoke-token-budget.js` `[11]`（组合行取值 + 策略模块幂等/往返 +
-  设置与 i18n 同源 + build.json 白名单）。
+- 回归见 `test/smoke-token-budget.js` `[11][12]`（组合行取值 + 策略模块幂等/往返/档位算法 +
+  三处入口同源 + i18n + build.json 白名单）、`test/smoke-assist-compact.js`（助手栏真跑）、
+  `test/smoke-agent-compact-menu.js`（会话 ⚙ 菜单）。
 
 ### Node 运行时（网关必须跑在真 Node 上）
 
@@ -233,18 +264,26 @@ dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Mess
 
 ### 版本锁定原则
 
-**`dsh/gateway/package.json` 必须把 dsh 全家族锁死在同一版本（当前 `0.2.0-rc.2`，
-精确版本不加 `^`）**，任何升级都要整套同升并在 probe 目录验证。两条实测口径：
+**`dsh/gateway/package.json` 必须把 dsh 全家族锁死在同一版本（当前 `0.2.1-rc.2`，
+精确版本不加 `^`）**，任何升级都要整套同升并在 probe 目录验证。四条实测口径：
 
-- `@deepseek-ai/cordis*` 是另一条产品线，用各自的稳定号（当前 cordis `4.0.4`、
-  `cordis-plugin-timer` `1.1.6`、`-loader` `1.0.5`、`-include` `1.0.9`、`-group` `1.0.4`，
+- `@deepseek-ai/cordis*` 是另一条产品线，用各自的稳定号（当前 cordis `4.0.5`、
+  `cordis-plugin-timer` `1.1.7`、`-loader` `1.0.6`、`-include` `1.0.10`、`-group` `1.0.5`，
   精确版本）。dsh 0.2 全家族通过 `~`/`^` 依赖这一层，不要跟着 dsh 的 rc 号走。
-- **两个包在 0.2 只发到 `0.2.0-rc.1`**（`@deepseek-ai/dsh-experimental-inspector`、
-  `@deepseek-ai/dsh-experimental-computer-use-cua-driver-mcp`），其余家族都在
-  `0.2.0-rc.2`；`@deepseek-ai/dsh-tool-subagent-report` 整包下线（不再发布），
-  相关行从组合里摘掉、`dsh-agent-policy.js` 的 subagent 行表同步减一条。
-- 升级后 `node_modules` 体积实测从 227MB 涨到约 760MB（内核族 233 个 `@deepseek-ai`
-  目录 + 20 个实验包）；`dsh/after-pack.cjs` 会把整棵网关树按
+- **0.2.0 代的两个例外已经不在了**：`@deepseek-ai/dsh-experimental-inspector` 与
+  `@deepseek-ai/dsh-experimental-computer-use-cua-driver-mcp` 在 0.2.1 随家族一起发布
+  `0.2.1-rc.2`（0.2.0 代只发到 `0.2.0-rc.1`）。`@deepseek-ai/dsh-tool-subagent-report`
+  仍是下线包，不要加回来。
+- **0.2.1 下线的包**：`@deepseek-ai/dsh-experimental-schedule-bundle`（自动化任务收进
+  Web 内置能力，工具侧迁到 `@deepseek-ai/dsh-tool-schedule`）。本仓对它零引用
+  （`cordis.yml` 与网关代码都没用到），升级时直接摘掉。
+- **本仓在 0.2.1 主动多列的 4 个官方包**（只进依赖清单、**不在 `cordis.yml` 启用**）：
+  `dsh-experimental-session-search`、`dsh-experimental-terminal-bundle`、
+  `dsh-tool-schedule`、`dsh-experimental-cot-translation-bundle`。进清单只是让上游 patch
+  行能解析到、日后要启用时不必再动依赖；**本轮不给 Agent 增删任何工具**。
+- 升级后 `node_modules` 实测（0.2.1-rc.2 · hoisted）= **600MB / 318 个 `@deepseek-ai`
+  目录 / 0 个符号链接**（0.2.0-rc.2 代记录的 760MB 是另一代包数与布局下的旧口径，
+  一律以实测为准）；`dsh/after-pack.cjs` 会把整棵网关树按
   `docs/app-deps-prune.json` 的零引用口径剪枝后再进安装包，浏览器内核仍由
   playwright / `@puppeteer/browsers` 在用户机器上按需下载，不随包发。
 
@@ -264,6 +303,15 @@ dsh 0.2 的 `llm-deepseek` 把 `config.baseURL` / `DEEPSEEK_BASE_URL` 当 **Mess
   联网搜索(`dsh-web-search-deepseek`)固定请求 `api.deepseek.com/anthropic`,
   使用独立的 `webSearchApiKey`(优先 DeepSeek 官方服务商 Key),避免对话选了
   第三方路由时把错误 Key 注入搜索。
+- 联网抓取(`web_fetch`,同一 `dsh-tool-web` 包的另一个工具)走 base 已插入的
+  `dsh-web-fetch-http`(注册名 `http`):本机匿名 GET 公网 HTTP(S)、逐跳校验并钉住
+  连接、只收文本/html,不带任何凭据。cordis.yml 的 `- id: web` 必须显式
+  `fetchProvider: http` —— 补丁按 id 整份替换 config,而 base 里 `web-deepseek-api`
+  同时注册了 `deepseek-fetch-api`,不钉死就是「两个可用 provider → 抓取必报
+  WEB_PROVIDER_AMBIGUOUS」。`tool-web` 的 `fetch` 显式写 `true`(默认也是 true,
+  写出来是为了不会被误读成「只给搜索」)。实测复核:起 sdk profile + cordis.yml,
+  `ctx.tools.get('web_fetch')` 命中、`ctx.web.fetch('https://example.com')` 返回
+  200 / html 577 字符。
 - 权限预设(dsh permission-presets)每次运行可切换:gateway 双写
   settings.yaml 的 `permission.defaultPreset`(热重载,覆盖池化运行时的后续会话)
   **与** cordis.yml 同名行(rc.6 运行时 settings 注入回调晚于首个会话创建,
@@ -884,7 +932,7 @@ rejected,请求进不了宿主 UI,沙箱拒绝就只剩一句失败)、
   "agentToolPresets": [                    // 工具许可预设列表；default 为内置「当前能力全开」
     { "id": "default", "name": "默认（当前能力）", "builtin": true, "allow": { "canvas_read": true, "canvas_nodes": true, "canvas_control": true, "canvas_draw": true, "canvas_layout": true, "app_ops": true, "app_delete": true, "fs_read": true, "fs_write": true, "shell": true, "web": true, "subagent": true, "ask_user": true, "vision": true } }
   ],
-  "doneSound": true,               // 完成音效总开关(一把音色,两档音量):① 任何一件任务跑完 → 短促「叮咚」(E5→A5,0.42s) ② 所有任务都完成(运行队列彻底为空) → 同一把音色按 1.5 倍音量再响一声(滑杆拉满时夹安全上限);没有时长门槛。长任务音效(三音上行 / 随包 all-done.wav)与提醒音主进程通道已移除,提示音只走渲染层 WebAudio
+  "doneSound": true,               // 完成音效总开关(一把音色,两档音量):① 任何一件任务跑完 → 短促「叮咚」(E5→A5,0.42s) ② 所有任务都完成(运行队列彻底为空) → 同一把音色按 1.5 倍音量再响一声(滑杆拉满时夹安全上限);没有时长门槛。长任务音效(三音上行 / 随包 all-done.wav)与提醒音主进程发声通道已移除,提示音只走渲染层 WebAudio;主进程只保留判定心跳(sound:watch → sound:tick,每 2 秒),完成判定因此不依赖渲染层定时器,窗口最小化 / 被盖住 / 失焦时照样当场响
   "doneSoundVolume": 35,           // 完成音音量百分比(0~100,两档共用;收尾那一档再乘 1.5;自定义音频文件按文件自身响度分 0.5/0.75 两档)
   "theme": "industrial"            // 主题色(10 款,见 app.js THEMES)
 }
@@ -1073,6 +1121,46 @@ Edge 风格的画布 Tab 条:切换过的工作流显示为标签页(最多 12 �
 
 回归:`node test/smoke-dsh-node.js`（55 项 +「已并入：smoke-dsh-base-url.js」23 项）、
 `node test/run-all.mjs` 全量口径见本轮交付说明。
+
+## 验证记录(0.2.1-rc.2 代 · 内核升版 · MTNode 补丁层守恒)
+
+2026-10-17 实测:全家族 `0.2.0-rc.2 → 0.2.1-rc.2`(官方 [deepseek-ai/deepseek-harness]
+的 `dsh-v0.2.1-rc.2` 发布),cordis 线 4.0.4/1.0.5/1.0.9/1.1.6/1.0.4 →
+**4.0.5/1.0.6/1.0.10/1.1.7/1.0.5**。**先备份、再在 staging 副本里装好并跑通,最后同卷切换**
+(备份 = `<DATA>\dsh-upgrade-backup\<时间戳>\gateway`,整棵含 node_modules)。
+
+口径:升级前先跑一次全量冒烟作基线(**219 只全绿**),升级后同口径复跑(**219 只全绿**,
+零回归)。下列每条 MTNode 自有契约都在 0.2.1 下重新验过:
+
+| MTNode 自有契约 | 0.2.1-rc.2 下的证据 |
+| --- | --- |
+| 组合 patch(`cordis.yml` 589 行,一行未改) | `dsh/smoke-gateway.mjs`:`[2] canvas plugin present` / `session-resume bridge plugin present` / `unused bundled plugins absent` |
+| 交互桥(提问 / 审批 / 画布帧归属与分类) | `dsh/smoke-interaction-gate.mjs` **45 项断言全通过** |
+| 流式增量帧(0.2 的 `assistant/chunk` 缺席 → 网关合成) | `dsh/smoke-real.mjs`:`[ix-gate] assistant/message 合成增量帧 turn=1 step=2 frames=3`、`step=3 frames=69`;真机截图里回复逐字渲染 |
+| token 统计 / 花费回显 | smoke-real 事件流含 `usage` 帧;真机截图 Token 报告 `Σ62K · 出534 · 缓存命中77% · 2 轮 · 3s` |
+| 思考回放裁剪(`reasoning-replay-trim`) | pluginList 在册、`plugins/reasoning-replay-trim-plugin.mjs` 零改动;smoke-settings 真模型轮出现 `reasoning` 帧 |
+| 断点续跑 / 轮内插话与暂停(`session/resume`、`session/steer`+`session/pause`) | pluginList 在册;`smoke-gateway` 跑完 run→done→shutdown 全链 |
+| 设置下发 + 权限预设 + 配置 probe | `test/smoke-config-probe.js`(重活口径)62.5s 全绿并断言运行时 manifest = `0.2.1-rc.2`;`dsh/smoke-settings.mjs` 真 key 跑通 pluginList / disable→enable / preset run |
+| Messages 端点根归一 | smoke-real 与 smoke-settings 都用裸根 `https://api.deepseek.com` 跑通(`messages-base-url.mjs` 零改动) |
+| 图像附件 / 工具可见集裁剪 / 压缩与子代理策略 | 网关日志 `subagent policy applied` / `compact policy applied` 在位;`test/smoke-token-budget.js` 328 项全绿 |
+| 打包口径(after-pack 剪枝 + 六道守卫) | `node scripts/app-deps-usage.mjs --report` 按新树重生成两份清单(626 包 / 599.17MB,零引用 5 包 0.65MB);`node scripts/app-deps-check.mjs` **六道守卫全绿**(含剪枝镜像真起 `gateway.mjs` + 跑 `smoke-gateway`) |
+| 真机(开发态 + 独立数据目录,不动用户实例) | 会话一轮:提问 → 思考 865 字 → 回复「内核已接通」;证据 `%TEMP%\verify-dsh021-<时间戳>\shots\02-reply.png` 与 `report.json` |
+
+两处 0.2.1 带来的**额外适配**(均已在代码里写明理由):
+
+1. **真 key 冒烟不再写死凭据路径**:`dsh/smoke-real.mjs` 与 `dsh/smoke-settings.mjs` 原来
+   只读 `C:/Users/shaom/.dsh/.credentials.yaml`(本机没有该文件 → 两只直接 ENOENT);
+   现改为「环境变量 `DEEPSEEK_API_KEY` 优先(值即 key),凭据文件兜底」。
+2. **`openai` 6.40.0 → 7.19.0**(0.2.1 带上来的传递依赖)把 bedrock 适配器拆成独立子路径,
+   并声明 `@aws-sdk/credential-provider-node` / `@smithy/signature-v4` 两枚 optional peer,
+   正好命中「Bedrock / S3 签名栈」能力组的 `@aws-sdk/*` + `@smithy/*` 通配 →
+   `scripts/app-deps-check.mjs` 的 ③ 守卫报了 4 处。处置 = 把 `openai/providers/bedrock/aws.{js,mjs}`
+   逐条加进 `LAZY_ALLOWED_FILES` 并注明依据(该分支只有显式选 Bedrock 才 import,MTNode 无
+   AWS 凭据;要接 Bedrock 就回滚那一组)。
+
+破坏性变更影响面(0.2.1-alpha.1 起:移除 `./invariant` 导出、输入区统计拆 activity/usage、
+移除工具展示 `both` 模式、azure 提供方改名):全仓对这四项**零引用**(`dsh/` 下 grep
+`invariant|presentation` 无命中),本轮无需适配。
 
 ## 已知风险
 

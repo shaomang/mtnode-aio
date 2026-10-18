@@ -318,6 +318,50 @@
   background: rgba(255, 143, 46, .05);
 }
 
+/* ── 设置里的说明提示 ─────────────────────────────────────────────────
+   长说明不再平铺在界面上，也不再挂「?」图标：鼠标移到小节标题 / 字段标签本身
+   （或键盘 focus 到它）时，在 #setQTip（body 级浮层）里出全文。
+   浮层不用 ::after：设置正文 .overlay-body 有 overflow-y:auto，伪元素提示会被裁掉。
+   宿主样式只给一个「这里能看说明」的轻微暗示：help 光标 + 悬停时虚线下划线。 */
+.has-tip {
+  cursor: help;
+}
+
+.has-tip:hover {
+  text-decoration: underline dotted var(--bd2);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.has-tip:focus-visible {
+  outline: 1px dashed var(--orange2);
+  outline-offset: 2px;
+}
+
+.set-tip-pop {
+  position: fixed;
+  z-index: 140;
+  box-sizing: border-box;
+  max-width: 400px;
+  min-width: 200px;
+  padding: 7px 10px;
+  border: 1px solid var(--bd2);
+  border-left: 3px solid var(--orange);
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--panel2), var(--panel));
+  color: var(--ink);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: normal;
+  word-break: break-word;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .4);
+  pointer-events: none;
+}
+
+.set-tip-pop[hidden] {
+  display: none;
+}
+
 /* 新安装默认没有 DeepSeek API Key 时，「提供商配置」上方那条官方充值通道横幅。
    只在 Key 为空（默认状态）时出现，点右侧链接在浏览器打开 platform.deepseek.com */
 .ds-topup-slot {

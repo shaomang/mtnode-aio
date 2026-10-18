@@ -243,11 +243,17 @@ const subjOf = (part) => {
     .filter(Boolean);
   return seg[seg.length - 1] || "";
 };
+/* 镜像层只挂在 .n-prompt-wrap 里（app.js mountPromptTextarea → .n-text-layered，
+   宿主是 proc_text / proc_image / agent_task 这类节点）。文本节点板身正文框
+   （.wf-node.in .n-text）**从不带镜像层**，给它单独写行高不会让任何一层错位，
+   所以「一层单独加度量」的旁路判据对它不适用（本轮：正文框 1.7 与浏览态预览同高）。 */
+const NO_MIRROR_SCOPE = [".wf-node.in"];
 const stray = [];
 for (const r of ALL_RULES) {
   if (TA_TARGETS.concat([".n-text.n-text-layered"]).some((t) => r.parts.indexOf(t) >= 0))
     continue;
   if (HL_TARGETS.some((t) => r.parts.indexOf(t) >= 0)) continue;
+  if (r.parts.every((p) => NO_MIRROR_SCOPE.some((s) => p.indexOf(s + " ") === 0))) continue;
   const subj = r.parts.map(subjOf).filter(Boolean);
   const touchesT = subj.some((p) => /\.n-text\b/.test(p));
   const touchesH = subj.some((p) => /n-prompt-hl/.test(p));

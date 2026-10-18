@@ -393,6 +393,9 @@ const slice = (src, from, to) => {
     "doneSoundVolumePct",
     "doneSoundGain",
     "doneNoteFloor",
+    /* AudioContext 的取用统一走 doneAudioCtx()（非 running 就续跑 + onstatechange 兜底）：
+       playBuiltinTones / builtinIxBeep 都靠它，沙箱里必须一起装进来，否则就是 ReferenceError */
+    "doneAudioCtx",
     "playBuiltinTones",
     "builtinDoneDing",
     /* 自定义音效文件那一路（<audio>）也进沙箱：构造器由 opts.window.Audio 注入，
@@ -1046,8 +1049,9 @@ const slice = (src, from, to) => {
       "旧的两条词条（两档内置音 / 5 分钟口径）已从 i18n 删除",
     );
     ok(
-      I18N.indexOf("自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；两档都用它：任何一件任务跑完的那一声，以及全部完成时放大 1.5 倍的那一声）") >= 0,
-      "i18n 已同步自定义文件的说明（两档都用它，收尾那一档放大 1.5 倍）",
+      SETTINGS.indexOf("自定义音效文件（mp3 / wav / ogg") < 0 &&
+        I18N.indexOf("自定义音效文件（mp3 / wav / ogg") < 0,
+      "两个音效输入框的说明性 placeholder 已按要求删除（设置源码与 i18n 都不留）",
     );
     ok(
       /doneSoundVolume/.test(DESIGN) && /1\.5 倍/.test(DESIGN) && /已移除/.test(DESIGN),

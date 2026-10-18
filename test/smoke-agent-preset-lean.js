@@ -1213,6 +1213,22 @@ console.log(
     }
   }
 
+  /* 本轮新增：智能任务节点的会话区（.agent-conv）**不要竖条** ——
+     节点里只有上下栏（上会话 / 下输入框），不再有那条 18px 的右侧栏；
+     会话面板 / 助手栏 / 开发页照旧（它们的壳要什么给什么）。 */
+  ok(
+    /function ensureHistRail\(list\) \{[\s\S]{0,400}?const nodeConv = !!\(list\.classList && list\.classList\.contains\("agent-conv"\)\);/.test(
+      assistSrc,
+    ),
+    "ensureHistRail：先判出节点内会话（.agent-conv）",
+  );
+  ok(
+    /if \(nodeConv\) \{\s*\n\s*if \(rail\) rail\.remove\(\);\s*\n\s*return null;\s*\n\s*\}/.test(
+      assistSrc,
+    ),
+    "节点内会话：旧竖条就地摘掉、也不再新建（updateHistRail 拿到 null 直接早退）",
+  );
+
   /* ============ [8] 右侧「错开位置」：滚动条与竖条 / 栏宽把手互不重叠 ============ */
   /* 用户报的两条：
      ① 会话里轮次竖条（.hist-rail，18px）压在消息列的竖直滚动条上 → 滚动条选不中；
@@ -1416,7 +1432,6 @@ console.log(
   const NEW_KEYS = [
     "智能会话与节点的回复语言会跟随此设置",
     "交流语言（Agent 口味）：",
-    " —— 智能会话、智能节点与全局助手都用该语言交流，并期望 agent 用该语言回答；顶栏「中 / EN」切换即生效。",
   ];
   I18n.setLocale("zh");
   for (const k of NEW_KEYS) ok(I18n.t(k) === k, "中文界面原样显示：「" + k.slice(0, 14) + "…」");
@@ -1424,6 +1439,11 @@ console.log(
   for (const k of NEW_KEYS)
     ok(I18n.t(k) !== k && /[A-Za-z]{4,}/.test(I18n.t(k)), "英文界面有译文：「" + k.slice(0, 14) + "…」");
   I18n.setLocale("zh");
+  ok(
+    read("renderer/app-settings.js").indexOf("智能会话、智能节点与全局助手都用该语言交流") < 0 &&
+      read("renderer/i18n.js").indexOf("智能会话、智能节点与全局助手都用该语言交流") < 0,
+    "设置里那句口味解释文字已按用户要求删除（源码与词条都不留）",
+  );
 
   const boot = read("renderer/app-boot.js");
   ok(

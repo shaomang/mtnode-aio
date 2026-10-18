@@ -332,37 +332,49 @@ console.log("\n[6] 托管安装：失败路径要干净、要能说清原因");
   const read = (rel) =>
     fs.readFileSync(path.join(__dirname, "..", rel.split("/").join(path.sep)), "utf8");
 
-  console.log("\n[1] 默认模型下拉 = 全部文本服务商的模型（按服务商分组）");
+  console.log("\n[1] 默认模型 = 设置最上方一块，与会话模型菜单对齐（提供商 / 模型两级）");
   const settings = read("renderer/app-settings.js");
   ok(
+    /\/\* ═+ 默认模型（设置整页第一块/.test(settings) &&
+      /sec\.className = "settings-sec settings-sec-lead";/.test(settings),
+    "「默认模型」是设置整页第一块（settings-sec-lead；提供商配置已让位到第二块）",
+  );
+  ok(
+    /agentRouteGroupsNow\(\)/.test(settings),
+    "提供商清单与会话「模型提供商」那一格同源（agentRouteGroupsNow，不另拼一份名单）",
+  );
+  ok(
+    /const defaultProviderKeyOk = \(id\) => \{/.test(settings) &&
+      settings.indexOf("(g.models || []).length && defaultProviderKeyOk(g.id)") >= 0,
+    "只列**有模型且有 Key** 的服务商（没填 Key / 被停用的列出来选了也跑不动）",
+  );
+  ok(
+    /const paintModelOptions = \(provId, preferModel\)/.test(settings) &&
+      !/modelSel\.appendChild\(og\)/.test(settings),
+    "模型格按提供商重建（只列这家的模型）：跨服务商 optgroup 平铺已下线，同名歧义消失",
+  );
+  ok(
     /mtnodePiProviders\(\)/.test(settings),
-    "下拉构建遍历 mtnodePiProviders()（全部非 DeepSeek 文本服务商，不再只取第一个 DeepSeek 服务商）",
-  );
-  ok(
-    /optgroup/.test(settings),
-    "模型按服务商 optgroup 分组展示（与智能会话 / 全局助手同源）",
-  );
-  ok(
-    /dp\.models\.map\(\(m\) => String\(m\)\)/.test(settings),
-    "DeepSeek 官方组取 dshProvider().models",
-  );
-  ok(
-    /groups\.push\(\{ label: p\.name, models: models\.map\(\(m\) => String\(m\)\) \}\)/.test(settings),
-    "其余每个文本服务商各成一组的模型列表",
+    "清单兜底仍走 dshProvider() + mtnodePiProviders()（会话清单不可用时）",
   );
 
-  console.log("\n[2] 未保存时默认值跟随实际生效的智能路由");
+  console.log("\n[2] 回显口径：没选过 = 跟随生效路由 / 该家第一只");
   ok(
-    /preferredAgentModelForRoute\(preferredAgentProviderRoute\(\)\)/.test(settings),
-    "默认值 = 生效智能路由的默认模型（优先其它文本服务商，不硬编码 deepseek）",
+    /dshDefaultProviderRoute\(\)/.test(settings) &&
+      /dshDefaultEffortValue/.test(settings),
+    "提供商没选过 → 跟随生效的默认智能路由（dshDefaultProviderRoute，不硬编码 deepseek）",
   );
   ok(
-    /保底：老配置里保存过、但已不在任何服务商模型清单中的值/.test(settings),
-    "老配置里保存过但不在清单中的模型仍能显示（不丢失用户已选值）",
+    /dshDefaultModelValue\(\)/.test(settings),
+    "模型回显读设置里的那一只（dshDefaultModelValue；空 = 该家第一只）",
   );
   ok(
-    /（无可用模型）/.test(settings),
-    "无任何模型时给出「无可用模型」空态",
+    /老配置里保存过、但已不在该家清单中的值/.test(settings),
+    "老配置里保存过但不在该家清单中的模型仍能显示（不丢失用户已选值）",
+  );
+  ok(
+    /（无可用模型）/.test(settings) && /（无可用服务商：请先在下方「提供商配置」里填 API Key）/.test(settings),
+    "没有可用服务商 / 模型时给出明确空态（并指路去下面填 Key）",
   );
 
   console.log("\n[3] 硬编码兜底已清除");
@@ -374,12 +386,20 @@ console.log("\n[6] 托管安装：失败路径要干净、要能说清原因");
   console.log("\n[4] 启动缺省合并不再强制 deepseek");
   const boot = read("renderer/app-boot.js");
   ok(
-    /nodePath: "",\s*\n\s*model: ""/.test(boot),
-    "app-boot.js dsh 缺省合并 model 为空串（留空 = 跟随生效路由）",
+    /nodePath: "",\s*\n\s*\/\*[\s\S]{0,220}?\*\/\s*\n\s*provider: "",\s*\n\s*effort: "high",/.test(boot) ||
+      /model: "",[\s\S]{0,200}?provider: "",\s*\n\s*effort: "high",/.test(boot),
+    "app-boot.js dsh 缺省合并：model 为空串 + provider 空（跟随生效路由）+ effort 缺省 high",
   );
   ok(
     boot.indexOf('model: "deepseek-v4-flash"') < 0,
     "app-boot.js 不再启动即写入 deepseek-v4-flash",
+  );
+  ok(
+    /migrateAssistDefaultsToDsh/.test(boot) &&
+      /delete S\.config\.assistProvider/.test(boot) &&
+      /delete S\.config\.assistModel/.test(boot) &&
+      /delete S\.config\.assistEffort/.test(boot),
+    "启动时把老 assistProvider / assistModel / assistEffort 一次性并入 dsh.* 后停用（单一真源）",
   );
 
   console.log(

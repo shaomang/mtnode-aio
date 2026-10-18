@@ -164,19 +164,24 @@
     sel.removeAllRanges();
     sel.addRange(r);
   }
-  /* 在编辑区光标处插入节点 / HTML；选区不在编辑区内（对话框夺焦后未还原）则追加到末尾。 */
+  /* 在编辑区光标处插入节点 / HTML；选区不在编辑区内（对话框夺焦后未还原）则追加到末尾。
+     片段（DocumentFragment）插进去之后子节点会被搬空，lastChild 当场变成 null，
+     早先直接 placeCaretAfter(node) 抛 IndexSizeError，整段插入流程中断在那里 ——
+     表现是「点行内公式 / 链接 / 行内码、图片，正文里没反应」。末尾节点必须在插入前记住。 */
   function insertAtCaret(ed, frag) {
     if (!ed || frag == null) return;
     const node =
       frag.nodeType ? frag : document.createRange().createContextualFragment(String(frag));
+    const lastIn = node.nodeType === 11 ? node.lastChild : node;
     const sel = window.getSelection();
     if (sel && sel.rangeCount && sel.anchorNode && ed.contains(sel.anchorNode)) {
       const r = sel.getRangeAt(0);
       r.deleteContents();
       r.insertNode(node);
-      placeCaretAfter(node.lastChild || node);
+      if (lastIn) placeCaretAfter(lastIn);
     } else {
       ed.appendChild(node);
+      if (lastIn) placeCaretAfter(lastIn);
     }
   }
 

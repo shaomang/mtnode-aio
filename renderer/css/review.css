@@ -190,7 +190,7 @@
   color: var(--orange); border-radius: 4px;
   font-size: 12px; cursor: pointer; line-height: 1;
 }
-.rv-note-enter:hover {
+.rv-note-enter:hover:not(:disabled) {
   background: color-mix(in srgb, var(--orange) 14%, transparent);
   border-color: var(--orange);
 }
@@ -199,6 +199,17 @@
   border-color: var(--orange);
   color: var(--orange);
   box-shadow: 0 0 0 1px var(--orange) inset;
+}
+/* 灰态 = 正文里没有选段：局部批注没什么可批的，先灰着不可点（点了也无反应，
+   悬停提示「先在正文中拖选一段文字」）。放在 .on 之后，保证灰态盖得住高亮。 */
+.rv-note-enter:disabled,
+.rv-note-enter:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  opacity: .55;
+  box-shadow: none;
+  cursor: not-allowed;
 }
 
 /* 插表格小对话框（mtDialogForm 的 custom 区）；
@@ -289,6 +300,21 @@
 }
 .rv-preview { max-width: 100%; }
 
+/* ── 文本节点的 Markdown 编辑器（.txmd-dlg，renderer/app-textedit.js 那只窗）──
+   ①② 只作用于这一只窗：✎ AI 审阅窗 / Markdown 阅读器 / 事实库编辑器共用
+   .review-editor，但它们的行距与编号口径不变（用户口径：只文本节点这两处）。
+   ① 行高沿用 .review-editor 的 1.7，段落间距按用户口径改成 6px（基准 .4em ≈ 5.2px）；
+      源码档 textarea 也从 1.6 提到 1.7 —— 切档时行位不跳。
+   ② 有序列表回到浏览器默认编号：早先那套用 CSS 计数器数出 1. → 1.1. → 1.1.1. 的层级号
+      已按用户口径下线，正文与显示层都只认标准嵌套（`1.` 标记 + 缩进）。 */
+.txmd-dlg .review-editor p,
+.txmd-dlg .rv-preview p {
+  margin: 6px 0;
+}
+.txmd-dlg .rv-src {
+  line-height: 1.7;
+}
+
 /* Markdown 渲染内容通用样式 */
 .review-editor h1, .review-editor h2, .review-editor h3,
 .rv-preview h1, .rv-preview h2, .rv-preview h3 {
@@ -324,6 +350,22 @@
   border: 1px solid var(--bd2); padding: 3px 9px;
 }
 .review-editor li[data-task], .review-editor [data-task] li { list-style: none; }
+/* 水平线：`.md hr` 那套 0.67px 虚线在深色面板里几乎看不见（用户反馈「保存后横隔线没了」），
+   ✎ 编辑器、审阅窗、只读预览统一换成 1.5px 实线 + 一致段距（窗口按缩放跑，1.5 落屏约 1 物理像素）。 */
+.txmd-dlg hr,
+.review-editor hr,
+.rv-preview hr {
+  border: none;
+  border-top: 1.5px solid var(--bd2);
+  margin: 10px 0;
+}
+/* marked 渲染 `- [ ] 待办` 时不给列表打任何标记类（<ul><li><input type=checkbox disabled>待办</li></ul>），
+   光靠上面的 data-task 规则盖不住，于是「圆点 + 复选框」两个记号并排 —— 这里按「项里直接躺着勾选框」
+   判定为待办项，把圆点收掉。预览态（画布浏览 / 审阅窗）与两个编辑器同一口径。 */
+.rv-rich li:has(> input[type="checkbox"]),
+.review-editor li:has(> input[type="checkbox"]),
+.rv-preview li:has(> input[type="checkbox"]),
+.n-md-browse li:has(> input[type="checkbox"]) { list-style: none; }
 .review-footbar {
   flex: none; display: flex; gap: 14px;
   padding: 3px 14px; font-size: 11px; color: var(--muted);
@@ -375,32 +417,29 @@
 .rv-note-warn { color: var(--red); font-size: 11px; }
 .rv-note-body { white-space: pre-wrap; word-break: break-word; }
 
-/* 浮空便笺（局部批注输入框）· 有意保留的琥珀色「便笺贴」质感，深浅主题下均醒目 */
+/* 浮空便笺（局部批注输入框）· 跟随当前主题（暗色主题下即深色便笺，不再固定琥珀纸色）；
+   便笺里不显示原文引文（选段只用于给批注定锚点）。 */
 .review-note-float {
   position: absolute; z-index: 10; width: 232px;
-  background: #fffbe9; border: 1px solid #e7c96b;
+  background: var(--panel2); border: 1px solid var(--bd2);
   border-radius: 8px; padding: 8px;
-  box-shadow: 0 8px 22px rgba(0,0,0,.2);
+  box-shadow: 0 10px 26px rgba(0,0,0,.45);
   font-size: 12px;
-  color: #4a3d12;
+  color: var(--ink);
 }
 .rv-note-caret {
   position: absolute; left: -6px; top: 14px;
-  width: 10px; height: 10px; background: #fffbe9;
-  border-left: 1px solid #e7c96b; border-bottom: 1px solid #e7c96b;
+  width: 10px; height: 10px; background: var(--panel2);
+  border-left: 1px solid var(--bd2); border-bottom: 1px solid var(--bd2);
   transform: rotate(45deg);
 }
-.rv-note-snip {
-  display: block; color: #9a7b20; font-style: italic; font-size: 11px;
-  max-height: 40px; overflow: hidden; margin-bottom: 5px;
-  cursor: default;
-}
 .rv-note-in {
-  width: 100%; box-sizing: border-box; border: 1px solid #e7c96b;
+  width: 100%; box-sizing: border-box; border: 1px solid var(--bd2);
   border-radius: 4px; padding: 5px; font-size: 12px; resize: vertical;
   font-family: inherit;
-  background: #fffef6; color: #3a2f0c;
+  background: var(--code); color: var(--ink);
 }
+.rv-note-in:focus { outline: none; border-color: var(--cyan); }
 .rv-note-btns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
 .rv-note-btns .rv-btn { font-size: 11px; padding: 2px 8px; }
 

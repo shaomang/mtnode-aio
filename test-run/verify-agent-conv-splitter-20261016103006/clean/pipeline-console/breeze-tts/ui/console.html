@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Console · Breeze TTS 2</title>
+<style>
+html,body{margin:0;height:100%;background:#0f1116;color:#b9c2d6;
+  font:11.5px/1.55 Consolas,"Microsoft YaHei",monospace}
+#log{padding:8px;white-space:pre-wrap;word-break:break-all}
+#bar{position:sticky;top:0;background:#171a21;border-bottom:1px solid #2c3140;padding:5px 8px;display:flex;gap:8px;align-items:center}
+#bar span{color:#9aa3b8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button{background:#20242e;color:#e6e9f2;border:1px solid #2c3140;border-radius:6px;padding:2px 8px;cursor:pointer;font:inherit}
+button:hover{border-color:#3aa88a}
+.err{color:#ef9f9d}
+.warn{color:#e8cd93}
+.ok{color:#8fdcae}
+</style>
+</head>
+<body>
+<div id="bar"><span id="path">—</span><button id="btnClear">清空</button></div>
+<div id="log"></div>
+<script src="console-panel.js"></script>
+</body>
+</html>

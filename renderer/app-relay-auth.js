@@ -96,7 +96,7 @@
       noticeOnce(T(INVALID_KEY_TEXT));
       return;
     }
-    noticeOnce(T("MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新"));
+    noticeOnce(T("MTNode 中转服务需要登录账号：请先登录"));
   }
 
   /** 按主进程的凭据状态刷新本地缓存（启动 / 登录态变化都调它）。

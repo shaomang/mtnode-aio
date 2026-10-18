@@ -105,11 +105,11 @@ function preferredAgentProviderRoute() {
 function preferredAgentModelForRoute(route) {
   return (agentModelsForRoute(route) || [])[0] || "";
 }
-/* 设置 · 智能能力里的「默认模型」解析真源（app.js / app-agent.js 的 dshDefaultModelPick /
+/* 设置 · 默认模型里的「模型」解析真源（app.js / app-agent.js 的 dshDefaultModelPick /
    dshDefaultModelRoute）：本测试给一份最小桩，值就取 state.dshModel。 */
 function dshDefaultModelPick() {
   const m = String(dshModelNow || "").trim();
-  if (!m) return { ok: false, route: "", model: "", reason: "设置 · 智能能力 · 默认模型 还没设" };
+  if (!m) return { ok: false, route: "", model: "", reason: "设置 · 默认模型 还没设" };
   const routes = [];
   const push = (r) => {
     const list = agentModelsForRoute(r) || [];
@@ -212,7 +212,7 @@ const sandbox = {
   agentModelsForRoute,
   preferredAgentProviderRoute,
   preferredAgentModelForRoute,
-  /* 设置 · 智能能力里的默认模型解析（app.js / app-agent.js 的真源；这里是最小桩） */
+  /* 设置 · 默认模型里的解析（app.js / app-agent.js 的真源；这里是最小桩） */
   dshDefaultModelPick,
   dshDefaultModelRoute,
   providerForAgentRoute,
@@ -332,7 +332,7 @@ Ai.seedDefaults(newTool);
 Ai.seedDefaults(newFn);
 Ai.seedDefaults(newDev);
 ok(newTool.aiProvider === "" && newTool.aiModel === "",
-  "新建工具节点不再补种模型（空 = 跟随设置 · 智能能力里的默认模型，改设置立刻生效）");
+  "新建工具节点不再补种模型（空 = 跟随设置 · 默认模型里的，改设置立刻生效）");
 ok(newFn.aiModel === "" && newFn.aiPreset === "minimal" && newFn.aiEffort === "high",
   "新建函数节点只补种默认预设(minimal) + 默认思考档(high)，模型留空跟随默认");
 ok(!newDev.aiModel && !newDev.aiPreset,
@@ -503,7 +503,7 @@ ok(String(btn.title).indexOf("AI 调用") >= 0 && String(btn.title).indexOf("生
 const bodyBtn = Ai.bodyButtonEl(tool);
 ok(bodyBtn.className.indexOf("n-ai-call-open") >= 0 && bodyBtn.textContent === "AI 调用",
   "板身入口按钮（与「开发」同排）");
-/* 三格全未选：模型那一格现在回显「设置 · 智能能力里的默认模型」（不再是含糊的 auto 态）——
+/* 三格全未选：模型那一格现在回显「设置 · 默认模型里的」（不再是含糊的 auto 态）——
    兜底的 auto 态只在默认模型也不可用时出现（下面单独钉一次）。 */
 const autoBtn = Ai.buttonEl(bareTool);
 ok(

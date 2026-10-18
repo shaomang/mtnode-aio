@@ -41,9 +41,15 @@
      要不要去本机凭据档兜底（main.js 的 providerAuthKey），**绝不下发给上游**。 */
   var KEY_PLACEHOLDER = "mtnode-account-token";
   /* 快照新鲜期：只作为「卡上那行状态」的时间口径保留（见 stateText），
-     不再用它决定要不要重拉 —— 拉取时机唯一条款是「本地有没有快照」。 */
+     不再用它决定要不要重拉 —— 拉取时机唯一条款是「本地有没有快照」。
+     例外 = 设置里已无手动刷新按钮后新增的自动重试：卡上带失败原因、或快照超过
+     STALE_MS 没同步，打开设置 / 中转卡时静默重拉一次（见 syncIfStale 的 opts.retry）。 */
   var FRESH_MS = 24 * 3600 * 1000;
-  /* 本地没卡又拉失败时的自愈重试间隔（只补一次，之后交给设置页的「刷新中转清单」） */
+  var STALE_MS = 24 * 3600 * 1000;
+  /* 失败后的最短重试间隔：反复开关设置不把服务端打穿 */
+  var STALE_RETRY_MS = 60 * 1000;
+  /* 本地没卡又拉失败时的自愈重试间隔（10 秒后再补一次；再失败就等下次打开设置 /
+     登录态刷新 / 充值到账时的自动重试） */
   var RETRY_GAP_MS = 10 * 1000;
 
   var LISTENERS = [];
@@ -427,12 +433,21 @@
     return !!(prov && Number(meta(prov).at) > 0);
   }
 
+  /* 卡上的快照该不该自动重拉（设置里已无手动刷新按钮后的唯一自救判据）：
+     · 带上次失败原因 → 距那次失败超过 STALE_RETRY_MS 就重试（防抖，不反复打服务端）；
+     · 正常快照 → 超过 STALE_MS（24 小时）没同步就重拉一次。 */
+  function staleRefreshDue(m) {
+    var now = Date.now();
+    if (m && m.error) return now - (Number(m.errorAt) || 0) >= STALE_RETRY_MS;
+    return now - (Number(m && m.at) || 0) >= STALE_MS;
+  }
+
   /* 凭据该不该续期（纯本地问一次主进程，不打服务端）：中转 Key 是独立的 3650 天票
      （见 store-saas/server.mjs 的 issueRelayKey），剩余不足续期窗口就该重领一张 ——
      否则一张票用到最后一天，用户会在毫无预兆的情况下撞「凭据已失效」401。
      判据只来自主进程 relay:keyInfo 的 renewDue。
      「卡上还没有票」也算到期：服务端会借这次续期把票补上，
-     用户不必自己去点「刷新中转清单」。 */
+     用户不必（也不能）自己去点刷新：续期是顺带发生的。 */
   function renewDue() {
     if (!window.api || typeof window.api.relayKeyInfo !== "function") return Promise.resolve(false);
     return Promise.resolve(window.api.relayKeyInfo()).then(
@@ -449,8 +464,8 @@
   /* 卡片类型自愈（只动本地，不打服务端）：中转卡的类型是**云端口径**，恒为 text_openai，
      文本 / 图像形态由 relay.kinds → config.modelKinds 逐模型给出（见 applyDoc）。
      老版本 / 曾被运行期「按模型纠类型」改写成 image_openai 的卡，其**文本模型**会从会话与
-     节点的模型选择器里一起消失（那些地方只认 text_openai 的服务商），用户得手动点一次
-     「刷新中转清单」才回来。这里就地把类型改回 text_openai 并落盘，打开设置 /
+     节点的模型选择器里一起消失（那些地方只认 text_openai 的服务商），用户得等一次重拉
+     才回来。这里就地把类型改回 text_openai 并落盘，打开设置 /
      登录态刷新即自动恢复。返回 Promise<boolean>（是否真的改过）。 */
   function healType() {
     var prov = providerOf();
@@ -469,7 +484,7 @@
   }
 
   /* 拉一次快照并合并。**只在本地还没有快照时才拉**（Key = 账号登录 token，长期不变）；
-     opts.force=true = 用户显式点「刷新中转清单」（换账号、充值到账、修好网络后自己重拉）。 */
+     opts.force=true = 强制重拉（换账号 / 充值到账 / 卡上快照过期或上次失败的自动重试）。 */
   function sync(opts) {
     var o = opts || {};
     if (!window.api || !window.api.relayMe) {
@@ -598,8 +613,8 @@
     syncing.then(done, done);
     var out = syncing;
     /* 本地没卡又拉不到（断网 / 服务端抖一下）：10 秒后自己再试一次 —— 用户刚登录
-       却看不到中转卡，最可能的是一次瞬时失败；再失败就等设置页的「刷新中转清单」。
-       用户显式点刷新（o.force）不排自愈重试：那一条由用户自己掌握节奏。 */
+       却看不到中转卡，最可能的是一次瞬时失败；再失败就等下次打开设置 / 登录态刷新 /
+       充值到账时的自动重试。强制重拉（o.force）不排自愈重试：那一条由调用方掌握节奏。 */
     if (!hasLocalSnapshot() && !o.force) {
       var retry = function () {
         if (hasLocalSnapshot()) return;
@@ -615,12 +630,15 @@
     return out;
   }
 
-  /* 打开设置 / 提供商卡 / 登录态每次刷新时用：**本地有快照就什么都不做**
+  /* 打开设置 / 提供商卡 / 登录态每次刷新时用：**本地有快照通常什么都不做**
      （不按时间重拉、也不做失败节流 —— 失败一次就不再重试正是「新装应用登录后
-     一直缺中转 key」的老毛病；重试入口始终在：设置页的「刷新中转清单」与登录态刷新）。
-     唯一例外是卡上还没有真票（老快照 / 刚被 401 清过）：顺手问一次主进程补上，
+     一直缺中转 key」的老毛病）。设置里已无手动刷新按钮，所以两处 UI 入口会带
+     opts.retry=true：卡上带上次失败原因、或快照超过 24 小时没同步时静默强制重拉一次
+     （见 staleRefreshDue）；登录态刷新那条路不带 retry，保持零打扰。
+     唯一其它例外是卡上还没有真票（老快照 / 刚被 401 清过）：顺手问一次主进程补上，
      让老快照的卡也能显示 Key（纯本地，不打服务端）。 */
-  function syncIfStale() {
+  function syncIfStale(opts) {
+    var retryWhenStale = !!(opts && opts.retry);
     var heal = healType();
     /* 凭据到期（或本机还没有独立票）时先续一次：入口 /api/relay/me 在服务端同时是发放口，
        这一次同步会把新的 3650 天票领回本机（见 main.js 的 relay:me）。登录 / 启动 /
@@ -656,6 +674,11 @@
               return { ok: true, skipped: true };
             });
         }
+        /* 自动重试（替代已移除的手动刷新按钮）：只在 UI 入口（打开设置 / 中转卡）触发 */
+        if (retryWhenStale && staleRefreshDue(meta(p)))
+          return heal.then(function () {
+            return sync({ force: true });
+          });
         return heal.then(function () {
           return { ok: true, skipped: true };
         });
@@ -803,13 +826,13 @@
     stateText: function (prov) {
       var m = meta(prov);
       if (m.error) return T("刷新失败：") + m.error;
-      if (m.blocked) return m.reason || T("余额不足，充值后刷新");
+      if (m.blocked) return m.reason || T("余额不足，充值后自动恢复");
       if (imageShort(prov)) {
         return T("余额不足以出图（一张需 ¥{amount}）：文本仍可用", {
           amount: String(Number(m.imageShortYuan) || 0),
         });
       }
-      if (!m.at) return T("未同步（点「刷新中转清单」重试）");
+      if (!m.at) return T("未同步（登录或充值后会自动重试）");
       return T("上次同步 ") + tsText(m.at);
     },
   };

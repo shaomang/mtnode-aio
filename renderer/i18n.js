@@ -1406,8 +1406,9 @@
     "批注内容": "Annotation content",
     "添加批注": "Add annotation",
     "对整个文档附加一条批注": "Attach a note to the whole document",
-    "在正文中拖选文字可添加局部批注": "Drag to select text to attach a local note",
-    "局部批注已开启，拖选正文即可添加": "Local annotation is on — drag to select text to attach",
+    "先在正文中拖选一段文字": "Select a passage in the text first",
+    "对选中的文字添加局部批注": "Annotate the selected passage",
+    "拖选正文后点「局部批注」即可添加": "Select a passage, then click Local annotation",
     "插入链接": "Insert link",
     "回滚版本": "Roll back version",
     "绑定批注": "Attach",
@@ -2018,8 +2019,6 @@
     "智能会话与节点的回复语言会跟随此设置":
       "Agent sessions and node replies follow this language too",
     "交流语言（Agent 口味）：": "Communication language (agent taste): ",
-    " —— 智能会话、智能节点与全局助手都用该语言交流，并期望 agent 用该语言回答；顶栏「中 / EN」切换即生效。":
-      " — agent sessions, smart nodes and the global assistant all converse in this language and expect answers in it; flip it anytime with the 中 / EN button in the top bar.",
     "？": "?",
     "步": "step",
     "低": "Low",
@@ -2144,6 +2143,8 @@
     "未选择": "None selected",
     "文生图": "Text-to-image",
     "新会话": "New session",
+    /* 会话左栏标题后那枚 dsh 内核版本标签的 hover 提示（本次需求）。 */
+    "dsh 内核版本": "dsh kernel version",
     "已安装": "Installed",
     "已撤销": "Undone",
     "已复制": "Copied",
@@ -2350,8 +2351,6 @@
     "没有改动": "No changes",
     "模型服务": "Model services",
     "提供商配置": "Providers",
-    "（点击任一格配置该服务商；网格顺序即使用优先级，越靠前越优先）":
-      "(Click a tile to configure that provider; grid order is the priority order — earlier wins)",
     "服务商配置": "Provider settings",
     "点击配置该服务商": "Click to configure this provider",
     "暂无服务商，点右上「＋ 添加服务商」新建":
@@ -2577,6 +2576,8 @@
     "画布已导出（": "Canvas exported (",
     "画布已导入：": "Canvas imported: ",
     "会话已删除：": "Session deleted: ",
+    "会话已从列表删除，但没能从磁盘删干净（重启后可能又出现），已排队重试":
+      "Session removed from the list, but it could not be removed from disk (it may come back after a restart). A retry is queued.",
     "结果（出错）": "Result (error)",
     "聚合(单次)": "Aggregate (once)",
     "开始对话吧…": "Start chatting…",
@@ -2743,6 +2744,16 @@
     "已连接图像输入：": "Connected image input: ",
     "已切断输出端子 ": "Disconnected output port ",
     "已切断输入端子 ": "Disconnected input port ",
+    "已切断输出端子 {n} 条连线（Ctrl+Z 可撤销）":
+      "Disconnected {n} wire(s) from this output port (Ctrl+Z to undo)",
+    "已切断输入端子 {n} 条连线（Ctrl+Z 可撤销）":
+      "Disconnected {n} wire(s) from this input port (Ctrl+Z to undo)",
+    "已移除内侧输入端子连线 {n} 条（Ctrl+Z 可撤销）":
+      "Removed {n} wire(s) from this inner input port (Ctrl+Z to undo)",
+    "已移除内侧输出端子连线 {n} 条（Ctrl+Z 可撤销）":
+      "Removed {n} wire(s) from this inner output port (Ctrl+Z to undo)",
+    "该内侧输入端子没有连线": "This inner input port has no wire",
+    "该内侧输出端子没有连线": "This inner output port has no wire",
     "在此输入文本内容": "Enter text here",
     "帧动画生成失败：": "Frame animation failed: ",
     "帧动画生成完成（": "Frame animation complete (",
@@ -3256,7 +3267,6 @@
     "一次最多更新 80 个节点，已截断": "At most 80 nodes updated per operation; truncated",
     "一句话描述（模型据此判断何时使用）": "One-line description (the model uses this to decide when to use it)",
     "运行：基于提示词与输入内容生成图像": "Run: generate an image from the prompt and input",
-    "支持视觉（图片输入转为多模态消息）": "Vision (image input becomes multimodal messages)",
     "尚未填写 DeepSeek API Key": "DeepSeek API key not set yet",
     "首次使用请先在下方「提供商配置」里填入 Key；还没有余额可先到官方充值通道充值。":
       "Fill in your key under Provider configuration below to get started; if you have no balance yet, top up via the official channel first.",
@@ -3416,6 +3426,7 @@
     "已阻止不安全链接": "Blocked unsafe link",
     "点击打开": "Click to open",
     "预览": "Preview",
+    "Markdown 预览 / 回到编辑": "Markdown preview / back to editing",
     "YAML 阅读器": "YAML Reader",
     "Markdown 阅读器": "Markdown Reader",
     "编辑模式：Ctrl+S 保存": "Editing — press Ctrl+S to save",
@@ -3508,20 +3519,32 @@
     "允许子代理委派（总开关：取消后模型看不到任何委派工具）": "Allow subagent delegation (master switch: unchecking hides every delegation tool from the model)",
     "允许后台并行委派（取消后子代理只在前台同步跑，一次一个）": "Allow background parallel delegation (unchecked: subagents run in the foreground, one at a time)",
     "允许 fork 型子代理（复制当前上下文另起一个子会话）": "Allow fork-type subagents (copy the current context into a child session)",
-    "这几项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。深度只约束「子代理再派子代理」，不影响你自己发起的一次委派。": "These are written into the dsh composition (cordis.yml) and apply to the next new session; a session already running keeps the previous values. Depth only limits a subagent delegating further — it never blocks a delegation you start yourself.",
     /* 设置 · 智能能力 · 上下文压缩（写进 cordis.yml 的 compaction-basic 行，见 dsh-compact-policy.js） */
     "上下文压缩": "Context compaction",
-    "自动压缩长会话（接近上限时把较早的对话收成摘要，保留最近一段原文）": "Compact long sessions automatically (condense older conversation into a summary as the window fills, keeping the most recent exchange verbatim)",
-    "压缩时机": "When to compact",
-    "早 · 上下文还宽裕时就压（最省，前文细节丢得最多）": "Early · compact while there is still room (cheapest, loses the most earlier detail)",
-    "中 · 默认档（约 30 万 token 触发）": "Medium · default (triggers around 300K tokens)",
-    "晚 · 接近上限才压（保留最多前文）": "Late · compact only near the limit (keeps the most earlier context)",
-    "这一项写进 dsh 组合（cordis.yml），保存后对下一个新会话生效；正在跑的会话沿用原设置。压缩会额外花一次模型调用写摘要，换来之后每一步都少发一大段历史。": "This is written into the dsh composition (cordis.yml) and applies to the next new session; a session already running keeps the previous value. Compaction costs one extra model call for the summary, and every later step then sends far less history.",
+    /* 档位文案口径 = 「档位名 · 上下文阈值」两截，不写解释性长句（三处入口共用） */
+    "省钱 · 100k": "Frugal · 100k",
+    "中 · 300k": "Medium · 300k",
+    "晚 · 450k": "Late · 450k",
+    "自定义": "Custom",
+    "自定义触发线": "Custom trigger",
+    "（单位：token，可填 100k – 500k；只对大窗口路由生效）": "(tokens; 100k – 500k; applies to wide-window routes only)",
+    "自定义触发线要填 100k – 500k 之间的整数。": "The custom trigger must be an integer between 100k and 500k.",
+    "自定义触发线已更新（下一个新会话生效）": "Custom trigger updated (takes effect in the next new session)",
     /* 助手栏「上下文压缩」（思考强度下一行 · 本次需求；与上面那一组同一份值） */
     "上下文压缩时机：接近上限时把较早的对话收成摘要，保留最近一段原文；「关闭」= 不自动压缩（仍保留额度报满时的自动恢复）": "When to compact the context: condense older conversation into a summary as the window fills, keeping the most recent exchange verbatim; Off = no automatic compaction (recovery when the provider reports the window full is still kept)",
     "关闭 · 不自动压缩长会话": "Off · do not compact automatically",
     "上下文压缩已关闭（下一个新会话生效）": "Context compaction turned off (takes effect in the next new session)",
     "上下文压缩时机已更新（下一个新会话生效）": "Compaction timing updated (takes effect in the next new session)",
+    /* 压缩后的大小（本次需求）：保留的最近原文 / 摘要输出上限，两个数值框共用这三条词条 */
+    "保留原文": "Kept transcript",
+    "摘要上限": "Summary cap",
+    "（单位：token；留空 = 跟随档位默认；超过触发线时按触发线夹取）": "(tokens; leave empty to follow the tier default; clamped below the trigger line when larger)",
+    "（单位：token；留空 = 跟随档位默认；摘要真被截断时压缩会报错）": "(tokens; leave empty to follow the tier default; a summary that really gets truncated makes compaction fail)",
+    "保留原文要填 4K – 128K 之间的整数（留空 = 跟随档位）。": "Kept transcript must be an integer between 4K and 128K (empty = follow the tier).",
+    "摘要上限要填 4K – 256K 之间的整数（留空 = 跟随档位）。": "Summary cap must be an integer between 4K and 256K (empty = follow the tier).",
+    "压缩后大小已更新（下一个新会话生效）": "Compacted size updated (takes effect in the next new session)",
+    "已跟随档位默认（下一个新会话生效）": "Following the tier default again (takes effect in the next new session)",
+    "剩下的上文都在保留量之内，没有可压缩的内容": "The remaining context is all within the kept transcript, so there is nothing to compact",
     /* 设置 · 智能能力：精简工具负载（工具可见集裁剪，见 docs/codex-agent-benchmark.md） */
     "精简工具负载（不注册「应用操作 / 识图子代理」等可选工具，每步少发约 4.7K 字符；下一轮运行生效）": "Lean tool payload (do not register optional tools such as app control / vision subagent; about 4.7K fewer characters per step; takes effect on the next run)",
     /* 设置 · 智能能力：开发者工具（会话右栏「运行轨迹」View · renderer/app-trajectory.js） */
@@ -3561,7 +3584,6 @@
     "主页 · 下载 http://mt-agent.com/mtnode": "Home · Download http://mt-agent.com/mtnode",
     "框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）": "Marquee mode: when on, drag with left button to select nodes (or hold Ctrl+left-click anytime)",
     "选择导入方式：从 .mtnodes 文件，或粘贴 Base64 内容。": "Choose import method: from a .mtnodes file, or paste Base64 content.",
-    "自定义音效文件（mp3 / wav / ogg，留空 = 内置提示音；两档都用它：任何一件任务跑完的那一声，以及全部完成时放大 1.5 倍的那一声）": "Custom sound file (mp3 / wav / ogg; empty = built-in chime; used for both tiers — the per-task chime and the all-done one at 1.5× volume)",
     "点击 ▶ 将输入图像按网格均匀切割为 GIF 帧动画（依次行、从左到右）": "Click ▶ to slice the input image evenly on a grid into a GIF frame animation (row by row, left to right)",
     "运行智能任务：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成": "Run agent task: the prompt becomes the task; the model can read files / network / run commands, then finish",
     "点击切换查看对应尝试的结果，<b>下游节点引用当前选中的尝试内容</b>。": "Click to view that attempt's result; <b>downstream nodes use the currently selected attempt</b>.",
@@ -3586,7 +3608,6 @@
     "添加自定义在线源(插件搜索接口 / jsDelivr repo),以标签切换": "Add a custom online source (plugin search API / jsDelivr repo), switch with tabs",
     "添加自定义在线源（MTNode catalog.json / npm search / jsDelivr），以标签切换": "Add a custom online source (MTNode catalog.json / npm search / jsDelivr), switch with tabs",
     "描述任务…（Enter 发送，Shift+Enter 换行；/ 开头输入命令）": "Describe the task… (Enter send, Shift+Enter newline; / to start a command)",
-    "权限预设（沙箱模式 + 审批策略；“逐项审批”档位会在任务需要越权时弹窗询问）": "Permission preset (sandbox mode + approval policy; \"Approve each\" prompts when a task needs extra permission)",
     "输入变化时自动保存（批量 = 每条目一个文件，YAML 项 = 输入节点标题）": "Auto-save on input change (batch = one file per entry; YAML item = input node title)",
     "未配置带 API Key 的文本服务商（设置 · API/配置 → 模型服务）": "No text provider with an API Key configured (Settings · API/Config → Model services)",
     " · 右键画布添加节点 · 拖线连接节点 · Ctrl+拖拽框选 · 滚轮缩放画布": " · Right-click the canvas to add a node · Drag wires to connect nodes · Ctrl+drag to marquee-select · Scroll to zoom the canvas",
@@ -3599,8 +3620,8 @@
     "导出画布：把当前画布（含图像等资产）打包为 .mtnodes 文件，可迁移到其他电脑": "Export canvas: pack the current canvas (including image assets) into a .mtnodes file, which you can move to another computer",
     "多次尝试：并行运行 N 次（1-10）。N>1 时输出面板出现 1..N 方块 Tab，": "Multi-attempt: run N times in parallel (1-10). When N>1, 1..N square tabs appear on the output panel,",
     "多次尝试：并行运行 N 次（1-10）。N>1 时输出下方出现 1..N 方块 Tab，": "Multi-attempt: run N times in parallel (1-10). When N>1, 1..N square tabs appear below the output,",
-    "未添加多模态模型（请在设置中为该文本服务商勾选「支持视觉」，并选择支持识图的多模态模型）": "No multimodal model added (in Settings, enable \"Vision\" for this text provider and choose a multimodal model that supports images)",
-    "未添加多模态模型（DeepSeek 官方默认的 deepseek-flash 即可识图；其它服务商请在设置中添加支持识图的模型，或为该文本服务商勾选「支持视觉」）": "No multimodal model added (DeepSeek Official's default deepseek-flash already reads images; for another provider, add a multimodal model in Settings or enable \"Vision\" for that text provider)",
+    "当前模型按默认可直接识图；若调用报错提示不支持图片输入（未添加多模态模型），请在「设置 → 模型服务」添加支持识图的模型（DeepSeek 官方默认的 deepseek-flash 即可识图），或为该服务商勾选「支持视觉」": "The current model is assumed to read images by default; if the call fails saying image input is unsupported (no multimodal model added), add a model that supports images in \"Settings → Model services\" (DeepSeek Official's default deepseek-flash reads images) or tick \"Supports vision\" for that provider",
+    "当前模型不支持图片输入": "The current model does not support image input",
     "设置后,本画布创建的所有智能节点都固定使用该工作目录(节点内只读);留空则每个节点单独设置": "Once set, all agent nodes created on this canvas use this working directory (read-only inside the node); leave empty to set each node separately",
     "智能模式：提示词成为任务，模型可读文件 / 联网 / 执行命令后完成（需配置文本服务商，见帮助）": "Agent mode: the prompt becomes the task; the model can read files / network / run commands, then finish (requires a text provider; see Help)",
     "</b> 个节点组成一个组（快捷键 G）。组标题仅用于显示；点击组框可整体移动 / 缩放 / 删除。": "</b> nodes into a group (shortcut G). The group title is display-only; click the group box to move / scale / delete it as a whole.",
@@ -5156,8 +5177,8 @@
       "Describe the task… (each ▶ is a fresh chat; text is kept; click 💬 for chat mode; type / for skills)",
     "识图：完全放行（随权限预设）": "Vision: full access (via permission preset)",
     "已尝试：": "Tried:",
-    "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，勾选「支持视觉」，并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）":
-      "No vision model available; in Model services put a vision-capable provider first, enable Vision, and put a vision model at the top of that provider (DeepSeek Official reads images with deepseek-flash)",
+    "没有可用的视觉模型；请在「模型服务」把支持识图的服务商排到前面，并把视觉模型排到该服务商列表最前（DeepSeek 官方用 deepseek-flash）":
+      "No vision model available; in Model services put a vision-capable provider first and put a vision model at the top of that provider (DeepSeek Official reads images with deepseek-flash)",
     "下载到画布": "Download to canvas",
     "（空画布）": "(Empty canvas)",
     "缩略图 ": "Thumb ",
@@ -5464,8 +5485,6 @@
     "缺少 question": "Missing question",
     "imagePath 必须是本机绝对路径": "imagePath must be an absolute path on this machine",
     "无法检查文件：": "Cannot check file: ",
-    "没有可用的视觉模型；请在「模型服务」添加支持识图的文本服务商并勾选「支持视觉」":
-      "No vision model available; in “Model services” add a text provider that supports images and enable “Vision”",
     "你是识图子代理。根据用户问题仔细查看图片并作答；只输出与问题相关的观察与结论，不要编造看不到的内容。\n\n问题：":
       "You are a vision subagent. Inspect the image for the user's question; answer with relevant observations only — do not invent what you cannot see.\n\nQuestion: ",
     "识图调用失败": "Vision call failed",
@@ -5553,8 +5572,6 @@
       "Click to open Settings · Config data directory",
     "设置尚未就绪，请稍后重试": "Settings is not ready yet — please try again in a moment",
     "配置数据目录": "Config data directory",
-    "存放 config.json（API Key 等）、画布存档与本地资产。更改后需重启应用生效。":
-      "Stores config.json (API keys, etc.), canvas archives, and local assets. Restart required after changing.",
     "当前路径：": "Current path: ",
     "更改目录…": "Change folder…",
     "选择新的配置数据目录；改完需重启应用生效":
@@ -5566,6 +5583,49 @@
     "在资源管理器中打开当前配置数据目录":
       "Open the current config data folder in the file manager",
     "错误与崩溃日志": "Error & crash logs",
+    /* 设置里的说明提示：无障碍短名（浮层的 aria-label），文案本身是上面那些原文 */
+    "存储占用与清理说明": "Storage usage & cleanup — help",
+    "错误与崩溃日志说明": "Error & crash logs — help",
+    "手动更新说明": "Manual update — help",
+    "语音输入说明": "Voice input — help",
+    "分段说明": "Segmentation — help",
+    "AI 增强说明": "AI enhancement — help",
+    "服务商说明": "Provider — help",
+    "粘贴导入说明": "Paste import — help",
+    "在线源说明": "Online source — help",
+    "获取模型列表说明": "Fetch model list — help",
+    "中转 Key 用法": "Relay key usage",
+    "价目口径": "Price basis",
+    "模型白名单说明": "Model allowlist — help",
+    "超时说明": "Timeouts — help",
+    "模型类型说明": "Model type badge — help",
+    "停用说明": "Disable provider — help",
+    "Agent 预设说明": "Agent preset — help",
+    "节点说明按钮": "Node help button",
+    "粘贴图像询问": "Paste image prompt",
+    "嵌套深度说明": "Nesting depth — help",
+    "委派总开关说明": "Delegation master switch — help",
+    "后台并行说明": "Background parallel — help",
+    "fork 子代理说明": "Fork subagent — help",
+    "自动执行下游说明": "Auto-run downstream — help",
+    "提问提示音说明": "Question sound — help",
+    "精简工具负载说明": "Lean tool payload — help",
+    "开发者工具说明": "Developer tools — help",
+    "工作步骤展示说明": "Step display — help",
+    "完成音效说明": "Done sound — help",
+    "完成音效音量说明": "Done sound volume — help",
+    "节点「?」说明按钮": "Node “?” help button",
+    "粘贴剪贴板图像时先询问": "Ask before pasting an image",
+    "子代理嵌套深度": "Subagent nesting depth",
+    "允许子代理委派": "Allow subagent delegation",
+    "允许后台并行委派": "Allow background parallel delegation",
+    "允许 fork 型子代理": "Allow fork subagents",
+    "节点完成后自动执行下游": "Auto-run downstream after a node finishes",
+    "提问/审批提示音": "Question / approval sound",
+    "精简工具负载": "Lean tool payload",
+    "开发者工具": "Developer tools",
+    "工作步骤展示": "Step display",
+    "任务完成音效": "Task done sound",
     "应用内部错误与崩溃会自动写入本地诊断日志（不含 API Key）。导出后可发给开发者协助排查。":
       "Internal errors and crashes are saved to local diagnostic logs (API keys excluded). Export and send them to the developer for troubleshooting.",
     "正在读取日志状态…": "Reading log status…",
@@ -5613,8 +5673,6 @@
       "Default path restored; restart the app manually for it to take effect",
     "无法打开目录：": "Cannot open folder: ",
     "画布备份": "Canvas backup",
-    "每 5 分钟自动把各工作流的最新状态另存一份快照，放在与自动保存分开的 save-backups 文件夹（内容无变化不重复存），每条工作流保留最近 72 份；误删或改坏时可从备份文件夹找回。":
-      "Every 5 minutes each workflow is snapshotted into the save-backups folder, separate from auto-save (unchanged content is skipped). The latest 72 copies per workflow are kept; restore manually from there after an accidental delete or bad edit.",
     "正在读取备份状态…": "Reading backup status…",
     "打开备份文件夹": "Open backup folder",
     "在资源管理器中打开工作流备份目录":
@@ -8112,13 +8170,13 @@
       "Not set: this node and its inner nodes without their own pick follow the default preset.",
     "未选择：本节点需要借助 AI 时跟随默认模型。":
       "Not set: this node follows the default model when it needs AI.",
-    "未选择：本节点需要借助 AI 时用设置 · 智能能力里的默认模型。":
-      "Not set: when this node needs AI it uses the default model from Settings · Agent capability.",
-    "（设置 · 智能能力里的默认模型）": " (default model from Settings · Agent capability)",
-    "（设置 · 智能能力里的默认模型）· 点击为本节点单独选择":
-      " (default model from Settings · Agent capability) · click to pick one for this node",
-    "设置 · 智能能力的默认模型：不选它时本节点就用它。":
-      "The default model from Settings · Agent capability — this node uses it while nothing is picked.",
+    "未选择：本节点需要借助 AI 时用设置 · 默认模型里的。":
+      "Not set: when this node needs AI it uses the default model from Settings · Default model.",
+    "（设置 · 默认模型里的）": " (default model from Settings · Default model)",
+    "（设置 · 默认模型里的）· 点击为本节点单独选择":
+      " (default model from Settings · Default model) · click to pick one for this node",
+    "设置 · 默认模型里的：不选它时本节点就用它。":
+      "The default model from Settings · Default model — this node uses it while nothing is picked.",
     "不指定：本节点与未自行选择的内部节点跟随默认预设。":
       "Unset: this node and its inner nodes without their own pick follow the default preset.",
     "本节点已选择：": "This node has picked: ",
@@ -9114,6 +9172,11 @@
     "服务商 / 模型 / 温度 · 分辨率 / fps / 时长":
       "Provider / model / temperature · resolution / fps / duration",
     "预设 / 供应商 / 模型 / 思考强度": "Preset / provider / model / thinking effort",
+    "预设 / 供应商 / 模型 / 思考强度 / 工作目录":
+      "Preset / provider / model / thinking effort / workspace",
+    "（空）点击节点即可编辑任务": "(empty) Click the node to edit the task",
+    "预览形态：任务文本只读；点选本节点即可编辑并发送":
+      "Preview: the task text is read-only — select this node to edit and send",
     "时长 / 抽卡 / 种子 / 输出路径 / offload":
       "Duration / rolls / seed / output path / offload",
     "模式 / 尺寸 / 采样步数 / 显存优化": "Mode / size / sampling steps / VRAM options",
@@ -10919,12 +10982,18 @@
         "按工具构建任务书：用 ": "Per the tool-build brief: use ",
         " 实测通过这个工具（先按任务书里的问询要求把实现取舍问清）":
           " to verify this tool with the file (first settle the implementation trade-offs through the brief's question round)",
-        "默认模型不可用：请到 设置 · 智能能力 · 默认模型 里重选一只模型。":
-          "The default model is unavailable: pick a model again in Settings · Agent capability · Default model.",
-        "默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。":
-          "No default model yet: pick one in Settings · Agent capability · Default model (tool build, tool dev sessions and tool runs all use it).",
-        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。":
-          "The default model \"{model}\" is unavailable on this machine (no provider lists it, or its provider is disabled / has no API key): pick one again in Settings · Agent capability · Default model.",
+        "默认模型不可用：请到 设置 · 默认模型 里重选一只模型。":
+          "The default model is unavailable: pick a model again in Settings · Default model.",
+        "默认模型还没设置：请到 设置 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。":
+          "No default model yet: pick one in Settings · Default model (tool build, tool dev sessions and tool runs all use it).",
+        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 默认模型 里重选。":
+          "The default model \"{model}\" is unavailable on this machine (no provider lists it, or its provider is disabled / has no API key): pick one again in Settings · Default model.",
+        /* ── 设置最上方那块「默认模型」（本次需求：置顶 + 与会话对齐）── */
+        "（无可用服务商：请先在下方「提供商配置」里填 API Key）":
+          "(No provider available: fill in an API key under Provider settings below first)",
+        "默认模型 / Agent 预设已移到设置最上方的「默认模型」那一块。":
+          "Default model / Agent preset moved up to the “Default model” block at the top of Settings.",
+        "权限预设": "Permission preset",
         " 文件（工具构建自动生成 · 输入 file = 文件绝对路径）":
           " file (auto-generated by tool build · input file = absolute file path)",
         "输入文件的绝对路径": "Absolute path of the input file",
@@ -12541,46 +12610,38 @@
     "起）": " and up)",
     "本地计价用的价目（与中转站同一份）：文本按元/百万 token、图像按元/张":
       "The price list used for local billing (same one as the relay): text per yuan/1M tokens, images per yuan/image",
-    "账号当前没有可用模型：充值后点「刷新」":
-      "No models available for this account yet: top up, then click “Refresh”",
+    "账号当前没有可用模型：充值后会自动刷新":
+      "No models available for this account yet: the list refreshes automatically after a top-up",
     "可用余额 ": "Available balance ",
     /* 「去充值」/「打开余额（到账后中转清单会自动刷新）」两条随卡上那枚按钮一起撤掉：
-       全应用唯一的充值入口在右上角账户菜单的「余额」里（见 renderer/app-auth.js）。 */
-    /* 「刷新」不在这里重复登记：EN 表里已有一条（见上文），同键两次不同值会被后写的
-       悄悄覆盖（test/smoke-filepeek.js 就钉这一条），中转卡复用它即可。 */
-    "按账号重新拉取中转服务的地址与可用模型":
-      "Re-fetch the relay service address and available models for this account",
-    "刷新中转清单": "Refresh relay list",
-    "按账号重新拉取中转服务的可用模型（登录成功与充值成功后会自动拉）":
-      "Re-fetch the relay models available to this account (also fetched automatically after sign-in and top-up)",
-    "刷新中…": "Refreshing…",
-    "中转清单已刷新": "Relay list refreshed",
-    "刷新失败，请稍后重试": "Refresh failed, please try again later",
-    "该账号还没有充值记录，充值成功后中转清单会自动出现":
-      "This account has no top-up record yet; the relay list appears automatically once a top-up lands",
-    "未同步（点「刷新中转清单」重试）":
-      "Not synced yet (click “Refresh relay list” to retry)",
+       全应用唯一的充值入口在右上角账户菜单的「余额」里（见 renderer/app-auth.js）。
+       「刷新」按钮（标题行那颗「刷新中转清单」与卡内那颗「刷新」）已按需求整体移除：
+       拉取交给 renderer/app-relay.js 的 syncIfStale（登录态刷新 / 充值到账 / 打开设置时
+       自动拉取与重试），所以「刷新中转清单 / 刷新中… / 中转清单已刷新 / 刷新失败…」这一族
+       词条一并删掉，别再登记。 */
+    "未同步（登录或充值后会自动重试）":
+      "Not synced yet (retries automatically after sign-in or top-up)",
     "中转服务暂时不可用，请稍后重试":
       "The relay service is temporarily unavailable, please try again later",
     "上次同步 ": "Last synced ",
     "刷新失败：": "Refresh failed: ",
     "余额不足": "Insufficient balance",
-    "余额不足，充值后刷新": "Insufficient balance — top up, then refresh",
+    "余额不足，充值后自动恢复": "Insufficient balance — top up, it recovers automatically",
     /* 余额 > 0 但不够一张图：只有图像停，文本照旧（判据见 app-model-kind.js 的 relayImageShort） */
     "余额不足以出图（一张需 ¥{amount}）：文本仍可用":
       "Balance too low to generate an image (¥{amount} per image): text models still work",
-    "MTNode 中转服务余额不足：请充值后在「设置 · 提供商」里点「刷新」":
-      "MTNode relay balance is insufficient: top up, then click “Refresh” under Settings · Providers",
+    "MTNode 中转服务余额不足：请充值，到账后会自动恢复":
+      "MTNode relay balance is insufficient: top up and it recovers automatically once the payment lands",
     /* 主进程图像闸（main.js 的 checkRelayImageQuota）：余额 > 0 但不够一张图 ——
        只拦图像调用，文本照旧（与云端按应付额 402 同一口径）。 */
-    "MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值后在「设置 · 提供商」里点「刷新」":
-      "MTNode relay balance is too low to generate an image ({amount} CNY per image): top up, then click “Refresh” under Settings · Providers",
-    "MTNode 中转服务需要登录账号：请先登录，再在「设置 · 提供商」里刷新":
-      "The MTNode relay needs a signed-in account: sign in first, then refresh under Settings · Providers",
-    "MTNode 中转服务余额不足：去「设置 · 提供商」充值并点「刷新」，恢复后本节点照原配置运行。":
-      "MTNode relay balance is insufficient: top up under Settings · Providers and click “Refresh”; this node then runs with its original settings again.",
-    "停用后不出现在模型选择器里；刷新中转清单不会自动把它开回来":
-      "Once disabled it no longer appears in model pickers; refreshing the relay list will not re-enable it",
+    "MTNode 中转服务余额不足以出图（一张需 {amount} 元）：请充值，到账后会自动恢复":
+      "MTNode relay balance is too low to generate an image ({amount} CNY per image): top up and it recovers automatically once the payment lands",
+    "MTNode 中转服务需要登录账号：请先登录":
+      "The MTNode relay needs a signed-in account: sign in first",
+    "MTNode 中转服务余额不足：去「设置 · 提供商」充值，到账后本节点照原配置运行。":
+      "MTNode relay balance is insufficient: top up under Settings · Providers; this node then runs with its original settings again.",
+    "停用后不出现在模型选择器里":
+      "Once disabled it no longer appears in model pickers",
     /* ── 凭据失效提示（renderer/app-relay-auth.js + main.js 的 relayAuthFailed）──
        本轮口径（用户明确要求）：**永久移除**「本机凭据读不出来 / 请重新登录一次」这一整族文案
        （代码、词条、横幅一起删），中转 401 由主进程静默换票 + 重试；
@@ -12588,8 +12649,8 @@
        下面只留「登录态确实没了」时那句**去登录**（不是重登，也不是本机存不住）——
        它的英文键在上面已登记过（同键重复登记会被后写的悄悄覆盖，见 test/smoke-filepeek.js），
        这里不重复写。 */
-    "服务端这次没有下发独立中转凭据：请点「刷新」，仍无则稍后再试（与是否重新登录无关）":
-      "The server did not issue a relay credential this time: click “Refresh”; if it still fails, try again later (re-signing in will not help)",
+    "服务端这次没有下发独立中转凭据：稍后会自动重试（与是否重新登录无关）":
+      "The server did not issue a relay credential this time; it retries automatically later (re-signing in will not help)",
 
     /* ── 中转卡上的明文 Key（设置 · 提供商）：完整值 + 复制 + 「更换 Key」──
        本轮口径：中转 Key 就写在本机 config.json 那张卡上、卡上显示全文，
@@ -12601,8 +12662,8 @@
     "复制中转 Key 到剪贴板": "Copy relay key to clipboard",
     "中转 Key 已复制到剪贴板": "Relay key copied to clipboard",
     "还没有取到中转 Key": "No relay key yet",
-    "还没有取到中转 Key：请先登录 MTNode 账号，或点「刷新中转清单」":
-      "No relay key yet: sign in to your MTNode account first, or click “Refresh relay list”",
+    "还没有取到中转 Key：请先登录 MTNode 账号（登录后会自动拉取）":
+      "No relay key yet: sign in to your MTNode account first (it is fetched automatically after sign-in)",
     "更换 Key": "Change key",
     "更换中转 Key": "Change relay key",
     "换一张新的中转 Key（旧 Key 立即失效）":
@@ -12656,12 +12717,8 @@
     "剪贴板图像写入失败": "Failed to save the clipboard image",
     "{n} 张写入失败": "{n} image(s) failed to save",
     "画布粘贴": "Canvas paste",
-    "剪贴板里有图像或截图时，在画布上按 Ctrl+V 会先弹一个确认框（显示图像内容），问你要不要用它创建「图像输入」节点。":
-      "When the clipboard holds an image or a screenshot, pressing Ctrl+V on the canvas first opens a confirmation dialog (showing the image) that asks whether to create an Image Input node from it.",
     "粘贴剪贴板图像时先询问（取消勾选 = 以后不再询问）":
       "Ask before pasting a clipboard image (uncheck = don't ask again)",
-    "取消勾选后：画布上按 Ctrl+V 若剪贴板里有图像，直接原样收进画布资产并创建图像输入节点（剪贴板里同时有最近复制的节点时仍优先粘贴节点）。":
-      "Once unchecked: pressing Ctrl+V on the canvas with an image on the clipboard saves it into the canvas assets as-is and creates an Image Input node right away (when the clipboard also holds recently copied nodes, pasting those still wins).",
 
     /* ── 「扩展能力管理 → 用户自建插件」面板（renderer/app-plugins.js：user-plugins 清单
        导入 / 重扫 / 试运行 / 诊断 / 修复那一套）──

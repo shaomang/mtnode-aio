@@ -113,6 +113,22 @@
   border-color: var(--cyan)
 }
 
+/* 自定义压缩档的触发线输入框（本次需求）：与相邻 select 同一观感，窄一点（6 位数够用） */
+.assist-ctrl-item input[type="number"] {
+  background: var(--code);
+  color: var(--ink);
+  border: 1px solid var(--bd2);
+  border-radius: 3px;
+  padding: 3px 5px;
+  font-size: 11px;
+  outline: none;
+  width: 78px;
+}
+
+.assist-ctrl-item input[type="number"]:focus {
+  border-color: var(--cyan)
+}
+
 .assist-ws-line {
   flex: none;
   display: flex;

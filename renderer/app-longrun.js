@@ -2,8 +2,10 @@
    app-longrun.js — 会话的长时自治：自动续跑 + 累计状态 + 分阶段自检的落点
 
    用户已确认的口径（本功能块的开发任务书与拷问共识）：
+     · **默认关闭（本轮需求）**：开关状态仍只在本模块（st.auto），但新会话首次
+       autoOn(sid) 一律按「关」处理 —— 用户不主动在「模式」菜单里打开，就绝不自动追轮。
      · 长时能力＝「会话内自动续跑」+「跨重启的活改走长周期任务图」两条腿：
-       会话跑完一轮，若目标仍未达成且还有下一步 → 自动接着跑下一轮，不必用户点；
+       用户打开自动续跑后，会话跑完一轮，若目标仍未达成且还有下一步 → 自动接着跑下一轮，不必用户点；
        会话自己判断这活跨重启（要数小时、要断点续跑）就**建议**提升为长周期任务图，
        但绝不自动替用户改图（等用户点确认）。
      · **不自动中断、不弹卡**（用户明确选了「我自己盯」）：时间 / 轮数 / 开销只做
@@ -85,7 +87,7 @@
   }
 
   const st = {
-    auto: {},        // sid → 自动续跑开关（缺省 true）
+    auto: {},        // sid → 自动续跑开关（缺省 false = 默认关闭，由用户在「模式」菜单打开）
     ledger: {},      // sid → { rounds, startedAt, lastAt, tokens }
     stop: {},        // sid → 上次自动停止的原因（画在 chip 上）
     suggested: {},   // sid → 已给过「提升为长周期任务图」建议
@@ -118,7 +120,8 @@
   };
 
   st.autoOn = function (sid) {
-    if (!Object.prototype.hasOwnProperty.call(st.auto, sid)) st.auto[sid] = true;
+    /* 默认关闭（本轮需求）：没点过开关的会话一律按关处理，用户打开后才写进 st.auto。 */
+    if (!Object.prototype.hasOwnProperty.call(st.auto, sid)) st.auto[sid] = false;
     return st.auto[sid];
   };
   st.setAuto = function (sid, on) {
@@ -168,7 +171,7 @@
 
   /* 开关 + 累计状态回显。
      本轮需求：输入区原来那枚独立的「自动续跑」chip 已收进「模式」菜单（唯一真源是
-     本模块的 st.auto，缺省开），所以这里不再画自己那枚 chip，改成把状态回显给：
+     本模块的 st.auto，缺省关），所以这里不再画自己那枚 chip，改成把状态回显给：
        · 「模式」菜单里那一行开关（index.html #agentModeMenu，构件在 app-assist.js）；
        · 「模式」chip 的摘要小字（app-assist.js 的 paintAgentModeChip 按同一判据算）。
      两者都是软依赖：app-assist.js 还没加载 / 那里没有这套 DOM，就只跳过回显，开关本身照常。 */

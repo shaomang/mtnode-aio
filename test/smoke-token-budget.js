@@ -601,6 +601,18 @@ const MAIN = (async () => {
     for (const s of pm[1].match(/"([^"]+)"/g) || []) pushed.push(s.slice(1, -1));
   }
   ok(pushed.length >= 12, "工具许可 → 工具名的映射仍点名 " + pushed.length + " 个名字（拒绝某类 = 整本说明书不发）");
+  /* 识图单入口：dsh 引擎自带的 read_image 与许可无关，任何一轮都摘 —— 写在早退之前，
+     否则「一个类别都没拒」的轮次会把名字漏掉（那时正是它最该被裁的轮次）。 */
+  const readImageAt = deniedSrc.indexOf('out.push("read_image")');
+  const earlyReturnAt = deniedSrc.indexOf("if (!denied.length) return");
+  ok(readImageAt >= 0 && earlyReturnAt > readImageAt,
+    "read_image 无条件进隐藏名单，且在「没有拒绝项就早退」之前（会话里只留 mtnode_vision 一个识图入口）");
+  /* 名字必须在网关可裁白名单内：不在白名单就会被 normalizeHiddenTools 静默丢弃 ——
+     宿主以为藏了、运行时其实照发（识图单入口失效，每步还白付一份 schema）。 */
+  ok(TV.HIDEABLE_TOOLS.indexOf("read_image") >= 0 &&
+      TV.normalizeHiddenTools("read_image").indexOf("read_image") >= 0 &&
+      TV.hiddenToolsEnvValue(["read_image"]) === "read_image",
+    "read_image 在网关可裁白名单内且能穿过归一（点名不会被静默丢弃）");
   const denyBad = pushed.filter((n) => TV.HIDEABLE_TOOLS.indexOf(n) < 0);
   ok(denyBad.length === 0, "agentDeniedToolNames 只产出白名单内的名字" + (denyBad.length ? "（多出：" + denyBad.join(",") + "）" : ""));
 
@@ -1212,9 +1224,16 @@ const MAIN = (async () => {
 
   /* ===== [11] 本轮落地：上下文压缩（组合行 + 策略模块 + 设置/下发三处同名） =====
      为什么钉这一组：dsh 默认触发线 = 适配器声明的 contextWindow × 0.8，而网关给
-     deepseek-v4 系列声明的是 1,000,000 → 要跑到 80 万 token 才压，本机所有会话都到不了
+     deepseek-v4 系列声明的是 1,000,000 → 要跑到 800k token 才压，本机所有会话都到不了
      （审计脚本里「压缩 0 次」）。所以「组合里这一行在不在、比例对不对、设置能不能改到它」
-     必须有门槛，否则下次谁把行删了 / 比例改回 0.8，账单会静默涨回去。 */
+     必须有门槛，否则下次谁把行删了 / 比例改回 0.8，账单会静默涨回去。
+     本轮新增：省钱档（绝对 ~100k 触发，靠固定 headroomTokens 常量 643,872）与自定义档
+     （用户填 100k–500k）；原早档下线，旧值 "early" 归一到「中」。
+     再一轮修 bug（「选了 100k 档却没在 100k 压」）：modelPolicies 原先只点名一个写死的
+     模型名 deepseek-flash，而这条路由实际跑的是配置里那一个（本机 = deepseek-v4-flash）
+     → 整份 policy 静默落空、触发线退回 ≈678k。现在点名一族 id（兜底官方族 ∪ 配置里官方
+     服务商的 models），并且每条 policy 显式带 maxTokens（插件会把 headroomTokens 当摘要
+     请求的输出上限）。下面那组断言就是这两条口径的门槛。 */
   console.log("\n[11] 上下文压缩：组合行 + dsh-compact-policy 策略模块 + 设置与下发同源");
   {
     const CORDIS = readN("dsh/gateway/cordis.yml");
@@ -1229,17 +1248,33 @@ const MAIN = (async () => {
     const rowStart = CORDIS.indexOf("\n- id: compaction-basic\n") + 1;
     const rowBlank = CORDIS.indexOf("\n\n", rowStart);
     const rowBody = CORDIS.slice(rowStart, rowBlank < 0 ? CORDIS.length : rowBlank);
-    has(rowBody, "thresholdRatio: 0.3", "触发比例 = 0.3（声明窗口 1M → 约 30 万 token 触发，而不是默认的 80 万）");
-    has(rowBody, "retainRatio: 0.04", "兜底保留比例 = 0.04（未列名模型按窗口比例留最近原文；必须 < 最小档 0.16）");
+    has(rowBody, "thresholdRatio: 0.3", "触发比例 = 0.3（声明窗口 1M → 约 300k token 触发，而不是默认的 800k）");
+    has(rowBody, "retainRatio: 0.04", "兜底保留比例 = 0.04（未列名模型按窗口比例留最近原文；必须 < 最小档 0.3）");
     has(rowBody, "auto: true", "出厂 auto: true（默认自动压缩）");
     has(rowBody, "modelPolicies:", "按路由列了 modelPolicies（已知主力模型走绝对保留尾部）");
-    has(rowBody, "retainTokens: 32768", "默认档保留尾部 = 32,768 token（绝对值，不按 1M 窗口的 16% 留 16 万）");
+    has(rowBody, "retainTokens: 32768", "默认档保留尾部 = 32,768 token（绝对值，不按 1M 窗口的 16% 留 160k）");
+    has(rowBody, "maxTokens: 256000",
+      "每条 policy 都显式给了 maxTokens = 主力路由的单次输出上限（否则插件会拿 headroomTokens 当摘要请求的输出上限：省钱档会变成 64 万）");
     has(rowBody, "provider: deepseek-official", "点名 deepseek-official 路由（本机实测会话全走它；比例算出的保留量偏大，所以给绝对量）");
     ok(!/provider: mtnode\b/.test(rowBody),
       "不点名自配服务商（provider 名是 mtnode_<route>、route 与模型名都由用户配置决定，点名必落空 → 那类路由走 retainRatio 兜底）");
 
-    has(POLICY, 'const TIERS = ["early", "mid", "late"]', "三档 = 早 / 中 / 晚（设置里只给档位，不摊原始百分比）");
-    has(POLICY, 'const DEFAULT_TIER = "mid"', "出厂档 = 中档");
+    has(POLICY, 'const TIERS = ["frugal", "mid", "late", "custom"]',
+      "四档 = 省钱 / 中 / 晚 / 自定义（设置里只给档位与一条触发线，不摊原始百分比）");
+    has(POLICY, 'const DEFAULT_TIER = "mid"', "出厂档仍是「中」（省钱档不是新用户默认档）");
+    has(POLICY, "const FRUGAL_HEADROOM_TOKENS = 643872",
+      "省钱档 = 固定 headroom 常量 643,872（= 1M 窗口 − 256K 预留输出 − 100K，真正落在 100k 触发）");
+    has(POLICY, "function customHeadroomOf(triggerTokens)",
+      "自定义档：触发线换算成 headroomTokens（同一套 min() 口径，不新增配置键）");
+    has(POLICY, "const OFFICIAL_MODELS_FALLBACK = Object.freeze([",
+      "点名清单有兜底那一族（不是一个写死的模型名 —— 见下面那条实测回归）");
+    has(POLICY, "function officialModelIdsOf(cfg)",
+      "点名清单另外从 config.providers 里取官方服务商的模型 id（这条路由实际跑哪个 id 只有配置知道）");
+    has(POLICY, "function isOfficialDeepseekProvider(p)",
+      "「哪家算官方路由」的判据与 renderer/app-agent.js 的 dshProvider() 同一句（host 含 deepseek）");
+    has(POLICY, 'const CUSTOM_TRIGGER_MIN = 100000', "自定义触发线下界 = 100k");
+    has(POLICY, 'const CUSTOM_TRIGGER_MAX = 500000', "自定义触发线上界 = 500k");
+    has(POLICY, "function normalizeCustomTrigger(raw)", "自定义触发线越界一律回落缺省（绝不抛）");
     has(POLICY, "function normalizeCompactPolicy(raw)", "归一函数独立成模块（与 dsh-agent-policy 同构，非法值一律回落默认）");
     has(POLICY, "function applyCompactPolicy(text, rawPolicy)", "写组合的唯一入口 = applyCompactPolicy(text, policy)");
     has(POLICY, "function compactPolicyFromConfig(cfg)", "真源读取 = config.dsh.compact（设置界面写的就是它）");
@@ -1249,11 +1284,16 @@ const MAIN = (async () => {
       "syncCompactPolicy 在「启动时」与「保存配置后」两处都被调用（定义 1 次 + 调用 ≥2 次）");
     has(BUILD, '"dsh-compact-policy.js"', "build.json 白名单已登记（否则打包后 Cannot find module）");
 
-    has(SETTINGS_SRC, "S.config.dsh.compact", "设置界面把值写进 config.dsh.compact");
-    has(SETTINGS_SRC, '["early", "mid", "late"]', "设置界面给的是三档选择（不是原始数字输入）");
-    has(SETTINGS_SRC, '"中 · 默认档（约 30 万 token 触发）"', "设置界面登记了默认档的档位文案");
+    ok(SETTINGS_SRC.indexOf("S.config.dsh.compact") < 0 &&
+      SETTINGS_SRC.indexOf("ASSIST_COMPACT_OPTIONS") < 0,
+      "上下文压缩已从设置移除（档位只在助手栏 / 会话菜单两处，配置真源不变）");
     has(I18N_SRC2, '"上下文压缩": "Context compaction"', "i18n 中英词条齐（英文界面不回落中文）");
-    has(I18N_SRC2, '"压缩时机": "When to compact"', "档位选择行的词条也有英文");
+    ok(I18N_SRC2.indexOf('"压缩时机":') < 0,
+      "设置专用的「压缩时机」词条随设置那一组一起下线（会话侧用「上下文压缩」那一格）");
+    has(I18N_SRC2, '"省钱 · 100k": "Frugal · 100k"',
+      "省钱档档名有英文词条（档位文案只留「档位名 · 上下文阈值」，英文界面不回落中文）");
+    has(I18N_SRC2, '"自定义": "Custom"',
+      "自定义档档名有英文词条");
 
     /* 幂等与往返：拿真组合文件跑一遍策略模块（策略与出货一致时必须零改动） */
     try {
@@ -1261,16 +1301,79 @@ const MAIN = (async () => {
       const text = read("dsh/gateway/cordis.yml");
       const def = pol.applyCompactPolicy(text, pol.compactPolicyFromConfig({}));
       ok(def.changed === false, "默认策略（开 · 中档）对出货组合零改动（幂等，不会每次启动都写盘）");
-      const early = pol.applyCompactPolicy(text, { enabled: true, tier: "early" });
-      ok(early.changed === true && /thresholdRatio: 0.16/.test(early.text) && /retainTokens: 16384/.test(early.text),
-        "早档写进去的是 0.16 / 16384（档位真的落到组合上）");
-      const back = pol.applyCompactPolicy(early.text, { enabled: true, tier: "mid" });
-      ok(back.text === text, "早档改回中档后与出货原文逐字一致（往返无损，结构没被改写）");
+      const frugal = pol.applyCompactPolicy(text, { enabled: true, tier: "frugal" });
+      const fst = pol.compactStateInCordis(frugal.text);
+      ok(frugal.changed === true && fst.thresholdRatio === 0.9 &&
+        eq(fst.headroomTokens, pol.KNOWN_TARGETS.map(() => 643872)) &&
+        eq(fst.retainTokens, pol.KNOWN_TARGETS.map(() => 16384)) &&
+        eq(fst.maxTokens, pol.KNOWN_TARGETS.map(() => pol.MAIN_ROUTE_RESERVED_OUTPUT)),
+        "省钱档写进去的是每条点名路由 headroomTokens: 643872 + retainTokens: 16384 + maxTokens: 256000（档位真的落到这些路由上）");
+      const cst = pol.compactStateInCordis(
+        pol.applyCompactPolicy(text, { enabled: true, tier: "custom", customTriggerTokens: 500000 }).text,
+      );
+      ok(eq(cst.headroomTokens, pol.KNOWN_TARGETS.map(() => 244000)),
+        "自定义 500k → 每条点名路由 headroomTokens: 244,000（= 744,000 − 500,000）");
+      /* ── 本轮修的 bug 的回归：点了名，但没点到真正在跑的那个 id ──
+         现场：会话头部是 provider=deepseek-official / model=deepseek-v4-flash（配置里那家
+         DeepSeek 服务商只列了这一个），而策略原先只点名 deepseek-flash → modelPolicies
+         整体落空 → 省钱档的绝对触发线一起落空（触发线退回 ≈678k），用户在「100k」档位上
+         永远等不到自动压缩。三条口径钉住：兜底那一族覆盖网关认得的官方 id、配置里那个 id
+         一定进点名表、触发线算式就是 100k。 */
+      const GW = readN("dsh/gateway/gateway.mjs");
+      const knownBlock = (GW.match(/const OFFICIAL_MODEL_KNOWN = \{[\s\S]*?\n\}/) || [""])[0];
+      const knownIds = (knownBlock.match(/'([a-z0-9.-]+)':\s*\{/g) || []).map((s) => s.replace(/[':{\s]/g, ""));
+      ok(knownIds.length >= 3 && knownIds.every((id) => pol.OFFICIAL_MODELS_FALLBACK.indexOf(id) >= 0),
+        "兜底点名表覆盖网关 OFFICIAL_MODEL_KNOWN 的每一个官方 id（新增官方模型时这里会先红：" + knownIds.join(",") + "）");
+      ok(pol.KNOWN_TARGETS.every((t) => t.provider === "deepseek-official") &&
+        pol.KNOWN_TARGETS.some((t) => t.model === "deepseek-v4-flash"),
+        "兜底点名表含本机实测真正在跑的那个 id（deepseek-v4-flash）");
+      ok(pol.MAIN_ROUTE_WINDOW - pol.MAIN_ROUTE_RESERVED_OUTPUT - pol.FRUGAL_HEADROOM_TOKENS === 100128,
+        "省钱档触发线 = 1M − 256K − 643,872 = 100,128 ≈ 100k（档位名与算式同源）");
+      ok(pol.compactConfigOf({ tier: "frugal" }).modelPolicies.every((p) => p.maxTokens === pol.MAIN_ROUTE_RESERVED_OUTPUT) &&
+        pol.compactConfigOf({ tier: "mid" }).modelPolicies.every((p) => p.maxTokens === pol.MAIN_ROUTE_RESERVED_OUTPUT),
+        "每条 policy 都带 maxTokens（插件那条「headroomTokens 当 maxTokens」的兜底不会启动）");
+      const cfgOfficial = {
+        providers: [
+          { id: "deepseek", type: "text_openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-v4-flash"] },
+          { id: "p1", type: "text_openai", baseUrl: "https://api.apiyi.com/v1", models: ["glm-5.2"] },
+        ],
+      };
+      const cfgPolicy = pol.compactPolicyFromConfig(
+        Object.assign({ dsh: { compact: { enabled: true, tier: "frugal" } } }, cfgOfficial),
+      );
+      const cfgAppliedText = pol.applyCompactPolicy(text, cfgPolicy).text;
+      const cfgApplied = pol.compactStateInCordis(cfgAppliedText);
+      has(cfgAppliedText.replace(/\r\n?/g, "\n"), "model: deepseek-v4-flash\n        headroomTokens: 643872",
+        "配置里那家官方服务商的模型 id 也被点名（headroom 真的加到本机在跑的那条路由上）");
+      ok(cfgApplied.headroomTokens.length === pol.officialModelIdsOf(cfgOfficial).length,
+        "点名条数 = 兜底那一族 ∪ 配置里官方服务商的模型 id");
+      const exotic = pol.compactPolicyFromConfig(
+        Object.assign({ dsh: { compact: { tier: "frugal" } } }, cfgOfficial, {
+          providers: [
+            { id: "deepseek", type: "text_openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat"] },
+          ],
+        }),
+      );
+      ok(exotic.officialModels.indexOf("deepseek-chat") >= 0 &&
+        exotic.officialModels.indexOf("deepseek-flash") >= 0,
+        "配置里出现兜底表没有的官方模型 id 时追加点名（新 id 不会又静默退回默认触发线）");
+      ok(pol.normalizeCompactPolicy({ officialModels: [] }).officialModels.length === pol.KNOWN_TARGETS.length,
+        "点名清单为空一律回落兜底那一族（绝不产出空 modelPolicies = 静默不压缩）");
+      ok(eq(pol.normalizeCompactPolicy({ tier: "custom", customTriggerTokens: 9999 }).customTriggerTokens, 100000),
+        "自定义触发线越界（9999）回落缺省 100k");
+      ok(eq(pol.normalizeCompactPolicy({ tier: "custom", customTriggerTokens: 5000000 }).customTriggerTokens, 100000),
+        "自定义触发线越界（5000k）回落缺省 100k");
+      ok(pol.normalizeCompactPolicy({ tier: "early" }).tier === "mid",
+        "已下线的早档旧值归一到「中」（老配置不会读出脏档）");
+      const back = pol.applyCompactPolicy(frugal.text, { enabled: true, tier: "mid" });
+      ok(back.text === text, "省钱档改回中档后与出货原文逐字一致（往返无损，结构没被改写）");
       const off = pol.applyCompactPolicy(text, { enabled: false, tier: "mid" });
       const st = pol.compactStateInCordis(off.text);
       ok(st && st.auto === false, "关掉后 auto: false（读回的取值不被上方注释里的示例数字带偏）");
       ok(pol.compactStateInCordis(text).retainTokens.length === pol.KNOWN_TARGETS.length,
         "读数只统计真正生效的 modelPolicies（不含注释示例；条数 = 策略模块点名的路由数）");
+      ok(pol.compactStateInCordis(text).headroomTokens.length === 0,
+        "中档不写 headroomTokens（触发线仍由 thresholdRatio 决定，档位行为没被这次改动带偏）");
       const noRow = pol.applyCompactPolicy("- id: tool-todo\n  config:\n    a: 1\n", { enabled: true, tier: "late" });
       ok(noRow.changed === false, "组合里没有这一行时不自己插行（挂载由组合决定，模块只改配置值）");
     } catch (e) {
@@ -1281,19 +1384,25 @@ const MAIN = (async () => {
   /* ===== [12] 本轮落地：上下文压缩档位挪到助手栏「思考强度」下一行 =====
      为什么钉这一组：压缩档的第二个人口（助手栏下拉）与设置面板**必须是同一份值**——
      别人把它写成第二份真源（另存一个 S.assistCompact）就会出现「面板显示中档、组合里是早档」
-     这种看不见的错配；位置也要钉住（用户点名「思考强度下方」）。 */
+     这种看不见的错配；位置也要钉住（用户点名「思考强度下方」）。
+     本轮新增：省钱 / 自定义两档（三处入口同一张表）、自定义触发线输入框
+     （档位文案只留「档位名 · 上下文阈值」，不写解释性长句）。 */
   console.log("\n[12] 上下文压缩档位：助手栏「思考强度」下一行 + 与设置同一份值");
   {
     const IDX = readN("renderer/index.html");
     const ASSIST_SRC2 = readN("renderer/app-assist.js");
+    const SHARED_SRC = readN("renderer/app-dsh-compact.js");
     const BOOT_SRC = readN("renderer/app-boot.js");
     const I18N_SRC3 = readN("renderer/i18n.js");
+    const IDX_CSS = readN("renderer/css/assist.css");
 
     const effIdx = IDX.indexOf('id="assistEffortSel"');
     const cmpIdx = IDX.indexOf('id="assistCompactSel"');
     ok(effIdx > 0 && cmpIdx > effIdx,
       "助手栏下拉 id=assistCompactSel 落在 id=assistEffortSel 之后（「思考强度」下一行）");
-    const ctrlEnd = IDX.indexOf("</div>", cmpIdx);
+    /* 压缩这一格自己占一条行：从下拉往后取到它自己那只 </label>（后面还有「自定义触发线」
+       那一行，锚点要收到本行结尾，不能一路扫到下一条 .assist-ctrl-item） */
+    const ctrlEnd = IDX.indexOf("</label>", cmpIdx);
     ok(ctrlEnd > cmpIdx && IDX.slice(cmpIdx, ctrlEnd).indexOf('class="assist-ctrl-item"') < 0,
       "压缩这一格自己是一条 .assist-ctrl-item 行（不塞进「思考强度」那一格）");
     ok(/id="assistCompactSel"[^>]*data-i18n-title="上下文压缩时机/.test(IDX),
@@ -1301,59 +1410,222 @@ const MAIN = (async () => {
     ok(/<span data-i18n="上下文压缩">/.test(IDX),
       "行标签走 data-i18n（语言切换由 applyDom 换字，不靠重绘）");
 
-    has(ASSIST_SRC2, 'const ASSIST_COMPACT_OPTIONS = [', "档位清单常量在 app-assist.js");
-    /* 只取常量数组那一段（整文件里 ["early", "mid", "late"] 还出现在归一与写回两处，
-       全文件扫会多出重复项） */
-    const optFrom = ASSIST_SRC2.indexOf("const ASSIST_COMPACT_OPTIONS = [");
-    const optBlock = ASSIST_SRC2.slice(optFrom, ASSIST_SRC2.indexOf("];", optFrom));
-    const optVals = (optBlock.match(/\["(off|early|mid|late)", "/g) || []).map(
+    /* 档位清单 / 归一 / 边界住在共享小单元 app-dsh-compact.js（设置面板与助手栏是两个各自
+       独立的加载单元，这一小份必须是同一份，否则会出现「面板显示中档、组合里是省钱档」） */
+    has(SHARED_SRC, 'const ASSIST_COMPACT_OPTIONS = [', "档位清单常量在 renderer/app-dsh-compact.js");
+    has(IDX, '<script src="app-dsh-compact.js"></script>',
+      "index.html 在 app-settings.js / app-assist.js 之前加载它（两个加载单元都拿得到）");
+    const idxShared = IDX.indexOf('<script src="app-dsh-compact.js">');
+    ok(idxShared > 0 && idxShared < IDX.indexOf('<script src="app-settings.js">') &&
+      idxShared < IDX.indexOf('<script src="app-assist.js">'),
+      "加载顺序：共享小单元 → 设置面板 → 助手栏（按 index.html 的脚本顺序分层）");
+    /* 只取常量数组那一段（整文件里档位 id 还出现在归一与判定两处，全文件扫会多出重复项） */
+    const optFrom = SHARED_SRC.indexOf("const ASSIST_COMPACT_OPTIONS = [");
+    const optBlock = SHARED_SRC.slice(optFrom, SHARED_SRC.indexOf("];", optFrom));
+    const optVals = (optBlock.match(/\["(off|frugal|mid|late|custom)", "/g) || []).map(
       (s) => s.slice(2, -4),
     );
-    ok(eq(optVals, ["off", "early", "mid", "late"]),
-      "四档顺序 = 关闭 / 早 / 中 / 晚（默认那档排第三，与设置面板并列）");
-    has(ASSIST_SRC2, "function compactPolicyOf(cfg)", "读值走 compactPolicyOf（与策略模块同源口径）");
-    has(ASSIST_SRC2, 'tier: ["early", "mid", "late"].indexOf(String(c.tier)) >= 0 ? String(c.tier) : "mid"',
+    ok(eq(optVals, ["off", "frugal", "mid", "late", "custom"]),
+      "五档顺序 = 关闭 / 省钱 / 中 / 晚 / 自定义（省钱排最前、自定义排最后，与用户定的下拉次序一致）");
+    has(SHARED_SRC, "function compactPolicyOf(cfg)", "读值走 compactPolicyOf（与策略模块同源口径）");
+    has(SHARED_SRC, '["frugal", "mid", "late", "custom"].indexOf(String(c.tier)) >= 0 ? String(c.tier) : "mid"',
       "归一：非法 tier 回落 mid");
-    has(ASSIST_SRC2, "enabled: c.enabled !== false", "归一：缺省 = 开（与 dsh-compact-policy 的 DEFAULT_POLICY 一致）");
+    has(SHARED_SRC, "enabled: c.enabled !== false", "归一：缺省 = 开（与 dsh-compact-policy 的 DEFAULT_POLICY 一致）");
+    has(SHARED_SRC, "customTriggerTokens", "自定义触发线也是同一份 config.dsh.compact 里的一项（不另立真源）");
+    has(SHARED_SRC, "const COMPACT_CUSTOM_MIN = 100000", "界面侧的触发线下界与策略模块一致（100k）");
+    has(SHARED_SRC, "const COMPACT_CUSTOM_MAX = 500000", "界面侧的触发线上界与策略模块一致（500k）");
+    /* 助手栏侧：清单 / 回显 / 写回全走共享小单元 + 自己那条落盘链 */
     has(ASSIST_SRC2, "function syncAssistCompactOptions(sel)", "清单 + 回显合并成一个 sync（切语言重建、按语言做指纹）");
     has(ASSIST_SRC2, "if (document.activeElement === sel) return;", "正在选的时候不回写（下拉不会自己关掉）");
     has(ASSIST_SRC2, 'sel.value = cp.enabled === false ? "off" : cp.tier;', "回显 = enabled:false → 关闭，否则显示档位");
-    has(ASSIST_SRC2, "S.config.dsh.compact = { enabled: next !== \"off\", tier };",
-      "写回落在 S.config.dsh.compact（与设置面板同一份值、同一份落盘，不另立真源）");
+    has(ASSIST_SRC2, "function applyAssistCompactTrigger(raw)", "自定义触发线的写回入口独立成函数（越界拒绝并提示）");
+    has(ASSIST_SRC2, "function syncCompactSideControls(tier)",
+      "自定义输入框的显隐由一个函数统管（三处入口同口径）");
+    has(ASSIST_SRC2, "function syncCompactCustomInput(input)", "自定义输入框的回填独立成函数（正在输入时不打断）");
+    has(ASSIST_SRC2, "customTriggerTokens: cur.customTriggerTokens,",
+      "写回时保留自定义触发线（切档位不丢用户填过的数）");
     has(ASSIST_SRC2, "function applyAssistCompactChoice(v)", "写回入口独立成函数（boot 只接线）");
-    has(ASSIST_SRC2, "syncAssistCompactOptions($(\"#assistCompactSel\"));", "每次重画助手栏都回刷一次（打开面板即正确回显）");
+    has(ASSIST_SRC2, 'syncAssistCompactOptions($("#assistCompactSel"));', "每次重画助手栏都回刷一次（打开面板即正确回显）");
+    has(ASSIST_SRC2, 'syncCompactCustomInput($("#assistCompactCustomInput"));',
+      "每次重画助手栏也回填自定义触发线输入框");
     has(BOOT_SRC, "applyAssistCompactChoice(compactSel.value)", "app-boot.js 把 onchange 接到写回入口");
-    has(I18N_SRC3, '"关闭 · 不自动压缩长会话":', "新增词条有英文（英文界面不回落中文）");
-    const i18nMiss = ["关闭 · 不自动压缩长会话", "上下文压缩时机已更新（下一个新会话生效）"].filter(
-      (k) => I18N_SRC3.indexOf('"' + k + '":') < 0,
-    );
+    has(BOOT_SRC, "applyAssistCompactTrigger(compactCustomInput.value)",
+      "app-boot.js 把自定义输入框接到同一条写回链");
+    has(I18N_SRC3, '"关闭":', "关闭那一档复用已有词条（不另立一条长句）");
+    const i18nMiss = [
+      "关闭",
+      "上下文压缩时机已更新（下一个新会话生效）",
+      "省钱 · 100k",
+      "中 · 300k",
+      "晚 · 450k",
+      "自定义",
+      "自定义触发线",
+      "自定义触发线要填 100k – 500k 之间的整数。",
+      "自定义触发线已更新（下一个新会话生效）",
+    ].filter((k) => I18N_SRC3.indexOf('"' + k + '":') < 0);
     ok(i18nMiss.length === 0, "本轮新增的 i18n 键都在词条表里：" + (i18nMiss.join(" / ") || "齐"));
+
+    /* 助手栏的宿主 DOM：自定义触发线输入框（显隐由 syncCompactSideControls 统管）；
+       省钱档那行长说明句已按本轮要求整体撤掉——三处入口都不再出现 */
+    ok(/id="assistCompactCustom"[\s\S]{0,200}id="assistCompactCustomInput"/.test(IDX),
+      "助手栏有自定义触发线输入框（#assistCompactCustom > #assistCompactCustomInput，默认 hidden）");
+    ok(/id="assistCompactCustom"[^>]*hidden/.test(IDX), "自定义输入框默认收起（只有选了自定义档才露出）");
+    ok(IDX.indexOf("FrugalNote") < 0, "省钱档长说明句已从 index.html 撤掉");
+    ok(ASSIST_SRC2.indexOf("FrugalNote") < 0, "显隐函数里也不再找那个说明句（不留死引用）");
+    has(IDX_CSS, '.assist-ctrl-item input[type="number"]', "输入框有专属样式（与相邻下拉同观感）");
 
     /* 真行为：把归一函数抠出来放进沙箱跑（助手栏读的那一份必须与出货组合对得上） */
     try {
       const sandbox = {};
       vm.createContext(sandbox);
       vm.runInContext(
-        grabFunction(ASSIST_SRC2, "compactPolicyOf", "app-assist.js") + "\nthis.p = compactPolicyOf;",
+        "const COMPACT_CUSTOM_MIN = 100000, COMPACT_CUSTOM_MAX = 500000;\n" +
+          "const COMPACT_RETAIN_MIN = 4096, COMPACT_RETAIN_MAX = 131072;\n" +
+          "const COMPACT_SUMMARY_MIN = 4096, COMPACT_SUMMARY_MAX = 256000;\n" +
+          grabFunction(SHARED_SRC, "compactLimitOf", "renderer/app-dsh-compact.js") +
+          grabFunction(SHARED_SRC, "compactPolicyOf", "renderer/app-dsh-compact.js") +
+          "\nthis.p = compactPolicyOf;",
         sandbox,
       );
       const p = sandbox.p;
-      ok(eq(p({}), { enabled: true, tier: "mid" }), "缺省配置 → 开 · 中档（与组合里的 0.3 / 32768 对得上）");
-      ok(eq(p({ dsh: { compact: { enabled: false, tier: "early" } } }), { enabled: false, tier: "early" }),
-        "关 · 早档原样读出");
-      ok(eq(p({ dsh: { compact: { tier: "nonsense" } } }), { enabled: true, tier: "mid" }),
+      ok(eq(p({}), { enabled: true, tier: "mid", customTriggerTokens: 100000, retainTokens: null, summaryMaxTokens: null }),
+        "缺省配置 → 开 · 中档 · 自定义触发线 100k · 压缩后大小跟随档位（与组合里的 0.3 / 32768 对得上）");
+      ok(eq(p({ dsh: { compact: { enabled: false, tier: "late" } } }),
+        { enabled: false, tier: "late", customTriggerTokens: 100000, retainTokens: null, summaryMaxTokens: null }),
+        "关 · 晚档原样读出");
+      ok(eq(p({ dsh: { compact: { tier: "nonsense" } } }),
+        { enabled: true, tier: "mid", customTriggerTokens: 100000, retainTokens: null, summaryMaxTokens: null }),
         "非法档位回落中档（不把脏值写进组合）");
+      ok(eq(p({ dsh: { compact: { tier: "custom", customTriggerTokens: 250000 } } }),
+        { enabled: true, tier: "custom", customTriggerTokens: 250000, retainTokens: null, summaryMaxTokens: null }),
+        "自定义档与它的触发线原样读出（切走再切回不丢）");
+      ok(eq(p({ dsh: { compact: { tier: "custom", customTriggerTokens: 42 } } }).customTriggerTokens, 100000),
+        "越界的自定义触发线回落 100k（界面不显示脏值）");
+      ok(eq(p({ dsh: { compact: { tier: "early" } } }).tier, "mid"),
+        "已下线的早档旧值在界面侧也归一到「中」（与策略模块同口径）");
+      /* 设置面板：上下文压缩整组已按要求从设置移除（档位只在会话侧两处） */
       const settingsSrc = readN("renderer/app-settings.js");
-      const mTier = settingsSrc.match(/\["early", "mid", "late"\]/);
-      ok(!!mTier, "设置面板给的是同一张三档表（两处人口档位集合一致）");
+      ok(settingsSrc.indexOf("assistCompactCustomSet") < 0 &&
+        settingsSrc.indexOf("ASSIST_COMPACT_OPTIONS") < 0,
+        "设置面板已不再挂上下文压缩（自定义触发线 / 档位表都不在设置里）");
+      ok(settingsSrc.indexOf("FrugalNote") < 0, "设置面板也不再挂省钱档说明句（界面不冗余）");
+      /* 会话「模型」菜单里也有同一处编辑入口（三处一致） */
+      has(ASSIST_SRC2, 'trow.className = "agent-menu-option agent-menu-input-row"',
+        "会话 ⚙「模型」菜单的压缩页里也有自定义触发线一行（三处入口一致）");
       const pol2 = require(path.join(__dirname, "..", "dsh-compact-policy.js"));
       const off2 = pol2.applyCompactPolicy(read("dsh/gateway/cordis.yml"), p({ dsh: { compact: { enabled: false, tier: "late" } } }));
       const st2 = pol2.compactStateInCordis(off2.text);
       ok(st2 && st2.auto === false && /retainTokens: 65536/.test(off2.text),
         "助手栏选「关闭」后组合行 = auto:false 且保留尾巴仍是该档的 65536（关掉不丢用户选的档）");
+      /* 界面侧与策略模块必须算出同一个 headroom（省钱档 100k 的口径只有一处真源） */
+      const frugalApp = pol2.applyCompactPolicy(
+        read("dsh/gateway/cordis.yml"),
+        p({ dsh: { compact: { tier: "frugal" } } }),
+      );
+      ok(eq(pol2.compactStateInCordis(frugalApp.text).headroomTokens, pol2.KNOWN_TARGETS.map(() => pol2.FRUGAL_HEADROOM_TOKENS)),
+        "界面侧选的省钱档 → 组合里就是策略模块那个 headroom 常量（两处不会各写一个数）");
     } catch (e) {
       ok(false, "compactPolicyOf 可在沙箱里跑通：" + ((e && e.message) || String(e)));
     }
+  }
+
+  /* ===== [13] 压缩后的大小可调：保留原文 retainTokens + 摘要上限 maxTokens =====
+     为什么钉这一组：这两个值是「压完还剩多少」的唯一两个旋钮（以前写死在档位里）。
+     三件必须同时成立，否则界面上填了数、组合里没生效：
+       ① 策略模块认得这两个键（越界归一成 null = 跟随档位）并写进组合行；
+       ② 自配服务商（mtnode_<route>）也盖，但按 128K 窗口保守夹取（否则小窗口路由报错）；
+       ③ 界面两个入口（助手栏 + 会话 ⚙）读 / 写同一份 config.dsh.compact。 */
+  console.log("\n[13] 压缩后的大小可调：保留原文 / 摘要上限（档位做预设 + 自配路由夹取）");
+  {
+    const POLICY2 = read("dsh-compact-policy.js");
+    const SHARED2 = readN("renderer/app-dsh-compact.js");
+    const ASSIST3 = readN("renderer/app-assist.js");
+    const IDX2 = readN("renderer/index.html");
+    const BOOT2 = readN("renderer/app-boot.js");
+    const I18N4 = readN("renderer/i18n.js");
+    has(POLICY2, "const RETAIN_TOKENS_MIN = 4096", "保留原文下界 4K（再低就把最近原文压没了）");
+    has(POLICY2, "const RETAIN_TOKENS_MAX = 131072", "保留原文上界 128K");
+    has(POLICY2, "const SUMMARY_MAX_TOKENS_MIN = 4096", "摘要上限下界 4K");
+    has(POLICY2, "const SUMMARY_MAX_TOKENS_MAX = 256000", "摘要上限上界 = 主力路由单次输出上限");
+    has(POLICY2, "function normalizeLimitTokens(raw, min, max)", "两个量的归一独立成函数（越界 = 没填）");
+    has(POLICY2, "function selfTargetsOf(cfg)",
+      "自配服务商（mtnode_<route>）的目标清单从 providers 现算（用户选了「所有路由都盖」）");
+    has(POLICY2, "const SELF_ROUTE_WINDOW = 128000", "自配路由窗口未知 → 按 128K 保守夹取");
+    has(POLICY2, "const SELF_ROUTE_RETAIN_FRACTION = 0.2",
+      "自配路由保留量最多给到消息预算的 20%（插件硬校验 retain < threshold）");
+    has(POLICY2, "const officialThreshold = Math.floor(", "官方主力路由的保留量也夹到触发线之下（省钱档 100K）");
+
+    const pol3 = require(path.join(__dirname, "..", "dsh-compact-policy.js"));
+    ok(eq(pol3.normalizeCompactPolicy({ retainTokens: 100, summaryMaxTokens: 900000 }),
+      {
+        enabled: true,
+        tier: "mid",
+        customTriggerTokens: 100000,
+        retainTokens: null,
+        summaryMaxTokens: null,
+        officialModels: pol3.OFFICIAL_MODELS_FALLBACK.slice(),
+        selfTargets: [],
+      }),
+      "越界 / 脏值一律归一成 null（= 跟随档位默认，老配置行为一字不变）");
+    const normSized = pol3.normalizeCompactPolicy({ retainTokens: 16384, summaryMaxTokens: 8192 });
+    ok(eq(normSized.retainTokens, 16384) && eq(normSized.summaryMaxTokens, 8192), "合法值原样读出");
+    const cfgSized = pol3.compactPolicyFromConfig({
+      dsh: { compact: { tier: "mid", retainTokens: 65536, summaryMaxTokens: 8192 } },
+      providers: [
+        { type: "text_openai", baseUrl: "https://api.other.com/v1", route: "myroute", models: ["gpt-x"] },
+      ],
+    });
+    const sizedPolicies = pol3.compactConfigOf(cfgSized).modelPolicies;
+    const offiSized = sizedPolicies.filter((p) => p.provider === "deepseek-official");
+    const selfSized = sizedPolicies.filter((p) => p.provider === "mtnode_myroute");
+    ok(offiSized.length === pol3.KNOWN_TARGETS.length &&
+      offiSized.every((p) => p.retainTokens === 65536 && p.maxTokens === 8192),
+      "官方主力路由：用户填的 65,536 / 8,192 就是写进组合的那两行");
+    ok(selfSized.length === 1 && selfSized[0].model === "gpt-x" &&
+      selfSized[0].retainTokens === 19046 && selfSized[0].maxTokens === 8192,
+      "自配路由也盖：保留量夹到消息预算的 20%（95,232 × 0.2 = 19,046），摘要上限取 8,192");
+    const huge = pol3.compactConfigOf(pol3.normalizeCompactPolicy({ tier: "frugal", retainTokens: 131072 }))
+      .modelPolicies.filter((p) => p.provider === "deepseek-official");
+    ok(huge.every((p) => p.retainTokens < 100128),
+      "省钱档触发线只有 100,128 → 填 128K 的保留量被夹到触发线之下（否则插件加载期就报非法）");
+    const appliedSized = pol3.compactStateInCordis(
+      pol3.applyCompactPolicy(read("dsh/gateway/cordis.yml"), cfgSized).text,
+    );
+    ok(eq(appliedSized.maxTokens, pol3.KNOWN_TARGETS.map(() => 8192).concat([8192])),
+      "写进组合的 maxTokens 已换成用户的摘要上限（含自配路由那一条）");
+
+    has(SHARED2, "const COMPACT_RETAIN_MIN = 4096", "界面侧保留原文下界与策略模块同值");
+    has(SHARED2, "const COMPACT_SUMMARY_MAX = 256000", "界面侧摘要上限上界与策略模块同值");
+    has(SHARED2, "const COMPACT_TIER_SIZE_DEFAULTS = {", "档位默认体积表也在共享小单元里（切档位回落到它）");
+    has(SHARED2, "function compactLimitOf(raw, min, max)", "界面侧的归一与策略模块同口径（越界 = 没填）");
+    has(SHARED2, "function compactRetainEffectiveOf(cfg)", "保留原文生效值由一个函数统管（空 = 跟随档位）");
+    has(SHARED2, "function compactSummaryEffectiveOf(cfg)", "摘要上限生效值由一个函数统管");
+    has(SHARED2, "const COMPACT_CHARS_PER_TOKEN = 2", "手动链 1 token ≈ 2 字符的换算只有一处");
+
+    has(ASSIST3, "function applyAssistCompactLimit(kind, raw)", "写回入口 = applyAssistCompactLimit（越界拒绝并提示）");
+    has(ASSIST3, "retainTokens: tierChanged ? null : cur.retainTokens,",
+      "切档位 = 清空两个自定义体积值（回到该档默认）");
+    has(ASSIST3, "const keepChars = Math.max(0, Number(info && info.keepChars) || 0);",
+      "手动压缩也保留最近原文尾（keepChars）");
+    has(ASSIST3, "if (!m || m._fold || m._compact) continue;",
+      "上一次的摘要消息不参与「保留原文尾」（上下文里永远只有一份最新摘要）");
+    has(ASSIST3, "if (!count) return 0;", "一条都折不动时不加空摘要（返回 0，调用方提示）");
+    has(IDX2, 'id="assistCompactRetainInput"', "助手栏有保留原文输入框");
+    has(IDX2, 'id="assistCompactSummaryInput"', "助手栏有摘要上限输入框");
+    has(BOOT2, 'applyAssistCompactLimit("retain", compactRetainInput.value)', "app-boot 接线：保留原文");
+    has(BOOT2, 'applyAssistCompactLimit("summary", compactSummaryInput.value)', "app-boot 接线：摘要上限");
+    has(ASSIST3, '["retain", "保留原文", COMPACT_RETAIN_MIN, COMPACT_RETAIN_MAX, "compactRetain"]',
+      "会话 ⚙「上下文压缩」页里也有这两个输入行（两个入口同源）");
+    const i18nMiss2 = [
+      "保留原文",
+      "摘要上限",
+      "压缩后大小已更新（下一个新会话生效）",
+      "已跟随档位默认（下一个新会话生效）",
+      "保留原文要填 4K – 128K 之间的整数（留空 = 跟随档位）。",
+      "摘要上限要填 4K – 256K 之间的整数（留空 = 跟随档位）。",
+      "剩下的上文都在保留量之内，没有可压缩的内容",
+    ].filter((k) => I18N4.indexOf('"' + k + '":') < 0);
+    ok(i18nMiss2.length === 0, "本轮新增的 i18n 键都在词条表里：" + (i18nMiss2.join(" / ") || "齐"));
   }
 
   console.log(
@@ -1448,9 +1720,9 @@ const MAIN = (async () => {
     "Badge 基础样式仍是 flex:none（尾部容器里不改变它在列里的尺寸口径）",
   );
   ok(
-    /badge\.style\.margin = "6px 6px 0";/.test(APP) &&
-      /badge\.style\.margin = "6px 6px 0";/.test(AGENT),
-    "节点内会话的行内边距同步清底（行内样式优先级高于 CSS，留缝同样会漏内容）",
+    !/badge\.style\.margin = "6px 6px 0";/.test(APP) &&
+      /function nodeTokOwnerNoBadge\(owner\)/.test(AGENT),
+    "节点内会话不再挂报告：行内边距清底那段随挂点一起删掉，宿主判定加节点归属闸",
   );
 
   /* ==================== [2] 展开态封顶 ==================== */
@@ -1522,8 +1794,13 @@ const MAIN = (async () => {
     "两条面板路径都不再把报告塞进消息区末尾",
   );
   ok(
-    /const badge = owner && tokBadgeEl\(owner\);[\s\S]{0,220}conv\.appendChild\(badge\);/.test(APP),
-    "节点内会话（.agent-conv）：渲染收尾仍 appendChild 到 conv 末尾（节点框没余量）",
+    !/const badge = owner && tokBadgeEl\(owner\);/.test(APP) &&
+      /不再挂 Token 报告徽章/.test(APP),
+    "节点内会话（.agent-conv）：渲染收尾不再挂报告（本轮需求：智能任务节点不带下方 token 预算栏）",
+  );
+  ok(
+    /if \(nodeTokOwnerNoBadge\(owner\)\) return null;/.test(AGENT),
+    "宿主判定：节点归属的 owner 直接回 null（徽章不再落到 .agent-conv / .chat-list）",
   );
 
   /* ==================== [4] 费用口径说明入口已整体移除 ====================

@@ -77,8 +77,51 @@ function preferredAgentModelForRoute(route) {
   return models[0] || "";
 }
 
-/* ═══════════ 「默认模型」（设置 · 智能能力）—— 全应用唯一一份解析 ═══════════
-   用户在设置 · 智能能力里填的「默认模型（智能能力使用）」= S.config.dsh.model（
+/* ── 设置 · 默认模型的那几格（本次需求：那块已挪到设置整页第一块）────────────
+   真源 = S.config.dsh.provider / model / effort（preset / compact 也在那一块里，
+   各有自己的旧入口，不在这里解析）。这几个函数是「设置里到底选了什么」的唯一读法：
+   设置页回显、新建会话播种、运行期兜底、助手栏镜像都走它们，别处不再各自翻 config 的键。
+
+   · provider 为空 = 没选过 → 跟随本机生效的默认智能路由（preferredAgentProviderRoute，
+     与旧口径一致，不硬编码 deepseek）；选过但已不可用（服务商被停用 / 删掉）同样跟随。
+   · model 为空 = 没选过 → 由调用点决定（运行期落到该服务商清单第一只，设置页回显同一只）。
+   · effort 缺省 high（与会话 / 助手的历史默认一致）。 */
+function dshDefaultProviderRoute() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const want = String(cfg.provider || "").trim();
+  if (want) {
+    try {
+      if (agentRouteOptions().has(want)) return want;
+    } catch (_) {}
+  }
+  try {
+    return String(preferredAgentProviderRoute() || "") || "deepseek-official";
+  } catch (_) {
+    return "deepseek-official";
+  }
+}
+function dshDefaultModelValue() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  return String(cfg.model || "").trim();
+}
+function dshDefaultEffortValue() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const v = String(cfg.effort || "").trim();
+  try {
+    return normalizeAgentEffort(v || "high");
+  } catch (_) {
+    return v || "high";
+  }
+}
+function dshDefaultPresetValue() {
+  const cfg = (S && S.config && S.config.dsh) || {};
+  const v = String(cfg.preset || "").trim();
+  if (v) return v;
+  return typeof AGENT_PRESET_DEFAULT === "string" ? AGENT_PRESET_DEFAULT : "";
+}
+
+/* ═══════════ 「默认模型」（设置 · 整页第一块）—— 全应用唯一一份解析 ═══════════
+   用户在设置 · 默认模型（设置整页第一块）里填的提供商 / 模型 / 思考强度 = S.config.dsh.provider / model / effort（
    app-settings.js 的 modelSel 写的就是这一格），这里给出「此刻到底用哪一只」与
    「用不了时该说什么」的唯一口径。工具构建（方案生成 / 开发会话 / 工具运行 / 节点
    头部 🤖 按钮）一律按它取值，不再各拿 preferredAgentModelForRoute（那条链读的是
@@ -86,11 +129,11 @@ function preferredAgentModelForRoute(route) {
 
    三条纪律（用户口径）：
      · 不静默回落：这一格为空、或那只模型在本机任何服务商里都找不到、或它能挂的服务商
-       全被停用 / 没填 Key —— 一律报错并指路「设置 · 智能能力 · 默认模型」，绝不偷偷
+       全被停用 / 没填 Key —— 一律报错并指路「设置 · 默认模型」，绝不偷偷
        换成别的模型；
      · 只在运行期算生效值：不往节点写 aiModel / aiProvider（改设置后所有未自选的节点
        立刻跟着变，不会留下「新建时补种的那一份旧默认」）；
-     · 路由优先沿用本机默认智能路由（preferredAgentProviderRoute，与长任务面板同源），
+     · 路由优先用设置里选的提供商（没选过 → 本机默认智能路由 preferredAgentProviderRoute），
        只有当这只模型压根不属于那条路由时才改成它所属的路由。 */
 
 /* 这只模型能不能挂在这条路由上：路由不在本机 / 该路由清单里没有它 → 不能。 */
@@ -115,7 +158,7 @@ function dshModelFitsRouteNow(route, model) {
 }
 
 /* 本机此刻「可挂这只模型的智能路由」清单（同一条路由只出一次，顺序 = 候选优先级）：
-   ① 默认智能路由（沿用用户当前那一条，不改它的服务商）；
+   ① 设置里的提供商（没选过 / 已不可用 → 本机生效的默认智能路由，不改用户的服务商）；
    ② 路由反查真源 devRouteOfModel（模型只登记在别家时把服务商一并拨正）；
    ③ 兜底：本机默认路由。 */
 function dshDefaultModelRoutes(model) {
@@ -128,7 +171,9 @@ function dshDefaultModelRoutes(model) {
     out.push(s);
   };
   try {
-    if (typeof preferredAgentProviderRoute === "function")
+    if (typeof dshDefaultProviderRoute === "function")
+      push(dshDefaultProviderRoute());
+    else if (typeof preferredAgentProviderRoute === "function")
       push(preferredAgentProviderRoute());
   } catch (_) {}
   try {
@@ -151,7 +196,7 @@ function dshDefaultModelPick() {
       route: "",
       model: "",
       reason: I18n.t(
-        "默认模型还没设置：请到 设置 · 智能能力 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
+        "默认模型还没设置：请到 设置 · 默认模型 里选一只模型（工具构建、工具开发会话与工具运行都用它）。",
       ),
     };
   const routes = dshDefaultModelRoutes(model);
@@ -161,7 +206,7 @@ function dshDefaultModelPick() {
       route: "",
       model: model,
       reason: I18n.t(
-        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 智能能力 · 默认模型 里重选。",
+        "默认模型「{model}」在本机不可用（服务商里没有这只模型，或它所属的服务商被停用 / 没填 API Key）：请到 设置 · 默认模型 里重选。",
         { model: model },
       ),
     };
@@ -418,7 +463,7 @@ function visionModelIndex() {
 /* 该供应商可用的视觉模型（顺序 = 用户模型列表优先级）：
    1) 目录源中的视觉模型 ∩ 已保存模型列表（按已保存顺序）
    2) 已保存模型 id 在任意目录中标为视觉
-   3) 勾选了「支持视觉」时，已保存模型全部作为候选（手填服务商） */
+   3) 服务商自带 vision 标记时，已保存模型全部作为候选（手填服务商） */
 function visionModelsForProvider(providerId) {
   const c = S.providerCatalog || { deepseek: [], piai: [] };
   if (providerId === "deepseek-official")
@@ -632,91 +677,18 @@ function providerDisplayName(provider) {
   return provider || I18n.t("当前");
 }
 
-/* 图像运行决策:返回 {provider, model}(视觉可用)或 null(不可识图)。
-   - 已确认的供应商/模型 → 直接使用;
-   - 当前选择的模型已支持识图 → 原样返回当前供应商/模型;
-   - 智能节点(agent_task / 文本智能模式) → 可用 mtnode_vision，不再弹窗或自动切换主模型;
-   - 否则 → 从全部已保存供应商(含当前)的视觉模型中选取:
-       · proc_text（原模式）自动切到第一个候选并提示;
-       · 其他弹窗询问，确认后写入 node.vision 持续使用;拒绝则 declined。 */
+/* 图像运行决策（去闸）：默认就相信当前模型能识图，直接把它交给本轮请求。
+   - 不再判「有没有已保存的视觉模型」，也不再弹「切到视觉模型」窗、不自动改 node.provider / node.model；
+   - 真不吃图片时由上游 API 报错，调用方按原样带出（「当前模型不支持图片输入」+ 上游报错）；
+   - 智能节点(agent_task / 文本智能模式) → 靠 mtnode_vision 识图，不下发视觉路由（不把图片塞进主模型提示词）；
+   - 返回 null = 没有可指定的当前模型（按调用方的默认路由跑）。 */
 async function resolveVisionForRun(node) {
-  const curProv = node.provider || "deepseek-official";
-  const cur = node.model;
-  const curVis = visionModelsForProvider(curProv);
-  /* 当前选择的模型已支持识图:原样使用 */
-  if (cur && curVis.some((m) => m.id === cur)) {
-    return { provider: curProv, model: cur };
-  }
   /* 智能节点：靠 mtnode_vision 识图，不切换主模型、不弹窗 */
   if (isDshTask(node)) return null;
-  /* 之前已确认的供应商/模型:校验仍存在后直接使用 */
-  if (node.vision && node.vision.provider && node.vision.model) {
-    const provOk =
-      node.vision.provider === "deepseek-official" ||
-      (S.config.providers || []).some(
-        (p) => "mtnode_" + p.id === node.vision.provider,
-      );
-    if (provOk) return { provider: node.vision.provider, model: node.vision.model };
-    node.vision = null; /* 已失效,重新评估 */
-  }
-  if (node.vision && node.vision.declined) return null; /* 此前选择不用 */
-  /* 候选 = 当前供应商的视觉模型 + 其他供应商的视觉模型(去重) */
-  const cands = [];
-  const seen = new Set();
-  const curName = providerDisplayName(curProv);
-  for (const m of curVis) {
-    const key = curProv + "|" + m.id;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    cands.push({
-      provider: curProv,
-      providerName: curName,
-      model: m.id,
-      modelName: m.name || m.id,
-    });
-  }
-  for (const c of visionCandidatesForNode(node)) {
-    const key = c.provider + "|" + c.model;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    cands.push(c);
-  }
-  if (!cands.length) {
-    if (Date.now() - (S._visionToastAt || 0) > 5000) {
-      S._visionToastAt = Date.now();
-      toast(
-        I18n.t("检测到图像输入，但已保存的服务商都没有视觉模型；请在「模型服务」添加支持图像的服务商（如 opencode 等）并选择其视觉模型"),
-        "warn",
-      );
-    }
-    return null;
-  }
-  /* 文本处理节点原模式：自动切到第一个视觉模型（不弹窗） */
-  if (node.kind === "proc_text") {
-    const pick = cands[0];
-    node.vision = { provider: pick.provider, model: pick.model };
-    if (pick.provider !== curProv || pick.model !== cur) {
-      node.provider = pick.provider;
-      node.model = pick.model;
-      toast(
-        I18n.t("已自动切换至视觉模型：") +
-          pick.providerName +
-          " / " +
-          (pick.modelName || pick.model),
-        "ok",
-      );
-      scheduleSave(true);
-    }
-    return { provider: pick.provider, model: pick.model };
-  }
-  if (node._visionAsking) return node._visionAsking;
-  node._visionAsking = confirmVisionSwitch(node, cands, cur).then((ok) => {
-    node._visionAsking = null;
-    return ok && node.vision && node.vision.provider
-      ? { provider: node.vision.provider, model: node.vision.model }
-      : null;
-  });
-  return node._visionAsking;
+  const curProv = node.provider || "deepseek-official";
+  const cur = String(node.model || "").trim();
+  if (!cur) return null;
+  return { provider: curProv, model: cur };
 }
 
 /* 工作流级统一工作目录(设置后所有智能节点只读继承) */
@@ -2984,9 +2956,10 @@ function tokAgentTailHost() {
 /* Badge 该挂到哪个容器：
    会话面板 / 助手栏 → 「输入框下面」的尾部容器（.agent-body / #assistPane）——
    报告不再沉在消息区里（用户报障：要和输入区挤在一起看，长会话还得先拖到底）；
-   节点内会话 → 仍挂消息区（.agent-conv / .chat-list）：节点框高被 convH + inputH 钉死，
-   名片下方没有余量，挂到节点输入框下面会被 .n-proc-row 的 overflow:hidden 裁掉。
-   判定顺序不变：已有 Badge 的父级 → 助手栏 → 当前会话 → 节点会话 → 绑定会话 */
+   节点内会话 → **本轮起不挂**（智能任务节点不带下方 token 预算栏：它的会话区只剩
+   消息流，账目看会话 / 助手栏 / 设置里那几份），所以这里直接回 null，不再往
+   .agent-conv / .chat-list 里塞徽章。
+   判定顺序不变：已有 Badge 的父级 → 助手栏 → 当前会话 → （节点会话：无宿主）。 */
 function tokBadgeHost(owner) {
   if (!owner) return null;
   const sel = '.tok-badge[data-tok-owner="' + tokOwnerId(owner) + '"]';
@@ -3000,6 +2973,7 @@ function tokBadgeHost(owner) {
     const list = document.getElementById("agentList");
     if (list && list.style.display !== "none") return tokAgentTailHost();
   }
+  if (nodeTokOwnerNoBadge(owner)) return null;
   const conv = document.querySelector(
     '.wf-node[data-nid="' + sid + '"] .agent-conv',
   );
@@ -3008,6 +2982,14 @@ function tokBadgeHost(owner) {
     '.wf-node[data-nid="' + sid + '"] .chat-list',
   );
   return bound || null;
+}
+/* 节点归属的 owner（画布上的智能节点 / 智能文本）＝ **不在节点内挂 Token 徽章**（见上）。
+   本次需求「智能任务节点不必带下方 token 预算栏」：节点里只留消息流，账目看会话 /
+   助手栏 / 设置里那几份。会话对象带 messages / title，节点对象带 kind（判定依据）。 */
+function nodeTokOwnerNoBadge(owner) {
+  if (!owner) return false;
+  if (owner.kind) return true;
+  return !!(owner.node && owner.node.kind);
 }
 /* 报告挂载（会话 / 助手两条渲染路径共用）：先把消息区里残留的旧 Badge 清掉
    （搬去输入框下面之后它不该再出现在消息流里），尾部容器也只留当前归属这一枚。

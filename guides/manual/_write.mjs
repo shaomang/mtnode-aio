@@ -353,6 +353,7 @@ const catalog = {
         { id: "io-proc", title: { zh: "输入 / 处理 / 保存", en: "Input / process / save" } },
         { id: "media-gen", title: { zh: "出音乐 / 语音 / 视频", en: "Music / speech / video" } },
         { id: "ai-review", title: { zh: "AI 审阅：批注与修订", en: "AI review: notes & revisions" } },
+        { id: "md-editing", title: { zh: "Markdown 编辑：换行与 Tab 缩进", en: "Markdown editing: line breaks & Tab indent" } },
         { id: "image-edit", title: { zh: "图像编辑与蒙版", en: "Image editing & masks" } },
       ],
     },

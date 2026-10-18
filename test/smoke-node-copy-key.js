@@ -21,6 +21,10 @@
  *     —— 所以 **boot 进画布视图时 S.view 必须落定**：app-boot 那句 setView 只给 agent / team 调，
  *     画布视图只补 body 类；漏了这一步 S.view 一直是 undefined，画布 Ctrl+V 被整条吃掉
  *     （本轮修的 bug：Ctrl+C 提示「已复制 N 个节点」，Ctrl+V 却毫无反应）。
+ *   · 粘贴落点 = 鼠标指针（node-copy-paste-at-pointer）：粘贴集包围盒**左上角**贴到指针的
+ *     世界坐标（吸附网格）；指针没进过画布 / 已不在画布上时才退回旧的「视口中心」。
+ *     指针位置由 bindCanvas 的 mousemove 记屏幕坐标（pasteDropPoint 换算），滚轮缩放 /
+ *     中键平移都不必重记。
  *
  * 口径：与 test/smoke-ref-keyboard.js 同一套路 —— 用 vm 从 renderer/app.js 里按名字抠出
  * **真实函数** 来跑（textSelectionWantsNativeCopy / canvasClipboardKey /
@@ -694,6 +698,370 @@ if (API) {
       pasteCalls === 0,
       "S.view 没落定：直接早退 —— 这就是本轮修的 bug 现场（复制有提示、粘贴没反应），所以 boot 必须落定它",
     );
+  }
+
+  console.log("── [6] 复制超级节点：粘贴后壳内节点仍归新壳（不得被摊到同一层）");
+  {
+    /* 本轮 bug：`cloneNodesDeep` 已把壳内节点的 parentSuperId 重映射成新壳 id，
+       `pasteNodesFromClipboard` 又拿新 id 去查 idMap（键是旧 id）→ 命中失败清成 ""，
+       壳内节点（含嵌套壳 / super_io 端子）全被抬成顶层。
+       这一节把 cloneNodesDeep / cloneWiresForSet / collectWithDescendants / pasteNodesFromClipboard
+       的**真实实现**搬进沙箱跑，只桩外围（S / uid / 提示 / 渲染 / 收尾保存）。 */
+    const ctx2 = {
+      console,
+      toast: null,
+      I18n: { t: (s) => s },
+      window: { LT: { LOCKED: [] }, innerWidth: 1280, innerHeight: 800 },
+      document: { querySelector: () => null },
+    };
+    vm.createContext(ctx2);
+    const PRELUDE2 = [
+      "let nodeClipboard = null;",
+      "let __superFocus = '';",
+      "const S = { cam: { x: 0, y: 0, z: 1 }, wf: null, selSet: new Set(), sel: null, selGroup: null, selWire: null, selMark: null, selMarkSet: null };",
+      "let __seq = 0;",
+      "function uid(p) { __seq++; return String(p) + 'cp' + __seq; }",
+      "function snap(v) { return Math.round((Number(v) || 0) / 8) * 8; }",
+      "function grid() { return 8; }",
+      "function toast() {}",
+      "function pushHistory() {}",
+      "function renderCanvas() {}",
+      "function scheduleSave() {}",
+      "function renderStatus() {}",
+      "function $() { return null; }",
+      'function isAbsPath(p) { return String(p || "").charAt(1) === ":"; }',
+      'function wfWorkspace() { return "E:/ws"; }',
+      "function joinPath() {",
+      "  var a = [];",
+      "  for (var i = 0; i < arguments.length; i++) {",
+      "    var v = arguments[i];",
+      '    if (v != null && String(v) !== "") a.push(String(v));',
+      "  }",
+      '  return a.join("/");',
+      "}",
+      "function uniqueTitleInWf(wf, desired) {",
+      '  const base = String(desired || "节点").trim() || "节点";',
+      "  const taken = new Set(((wf && wf.nodes) || []).map((n) => n.title));",
+      "  if (!taken.has(base)) return base;",
+      "  let i = 2;",
+      '  while (taken.has(base + " " + i)) i++;',
+      '  return base + " " + i;',
+      "}",
+      "function isPinnedCtrl() { return false; }",
+      "function isMediaGenNode() { return false; }",
+      "function isSaveNode() { return false; }",
+      "function currentTaskFocus() { return ''; }",
+      "function currentSuperFocus() { return __superFocus; }",
+      "function nodeById(id) { return ((S.wf && S.wf.nodes) || []).find((n) => n.id === id) || null; }",
+      "function superInnerOrigin() { return { ox: 10, oy: 40 }; }",
+      "function superInnerPan(s) { return { x: Number(s && s.innerPanX) || 0, y: Number(s && s.innerPanY) || 0 }; }",
+      "function markBounds(m) { return m ? { x: m.x, y: m.y, w: m.w || 10, h: m.h || 10 } : null; }",
+      "let __drop = null;",
+      "function pasteDropPoint() { return __drop ? { x: __drop.x, y: __drop.y } : null; }",
+      "function marksOf() { return S.wf.marks; }",
+      "function ensureSelMarkSet() { return (S.selMarkSet = S.selMarkSet || new Set()); }",
+      "function blurMarkEditing() {}",
+      "function ensureTaskScaffold() {}",
+      "function probeMediaBackend() {}",
+    ].join("\n");
+    let C2 = null;
+    try {
+      vm.runInContext(PRELUDE2, ctx2, { filename: "prelude2.js" });
+      vm.runInContext(
+        fnBody(APP, "absImagePathOf") +
+          "\n" +
+          fnBody(APP, "cloneNodesDeep") +
+          "\n" +
+          fnBody(APP, "cloneWiresForSet") +
+          "\n" +
+          fnBody(APP, "copiedSuperIdsOf") +
+          "\n" +
+          fnBody(APP, "collectWithDescendants") +
+          "\n" +
+          fnBody(APP, "pasteNodesFromClipboard") +
+          "\n" +
+          "this.__copy = {\n" +
+          "  withDesc: collectWithDescendants,\n" +
+          "  paste: pasteNodesFromClipboard,\n" +
+          "  setClip: (c) => { nodeClipboard = c; },\n" +
+          "  setFocus: (f) => { __superFocus = String(f || ''); },\n" +
+          "  setDrop: (d) => { __drop = d ? { x: Number(d.x), y: Number(d.y) } : null; },\n" +
+          "  loadWf: (wf) => { S.wf = wf; },\n" +
+          "  wf: () => S.wf,\n" +
+          "};",
+        ctx2,
+        { filename: "extracted2.js" },
+      );
+      C2 = ctx2.__copy;
+      ok(
+        !!(C2 && C2.paste && C2.wf && C2.withDesc),
+        "复制 / 粘贴真函数已搬进沙箱（cloneNodesDeep · cloneWiresForSet · collectWithDescendants · pasteNodesFromClipboard）",
+      );
+    } catch (e) {
+      ok(false, "复制 / 粘贴真函数已搬进沙箱（" + ((e && e.message) || e) + "）");
+    }
+
+    if (C2) {
+      const deep = (v) => JSON.parse(JSON.stringify(v));
+      /* 源画布：一颗超级节点（展开 + 内部平移）+ 4 个直接子节点（含 super_io 端子 / 嵌套壳 / 图像）
+         + 嵌套壳里 1 个子节点 + 1 个壳外节点（跨集连线不该被复制） */
+      const shellSrc = {
+        id: "s1", kind: "super", title: "壳A", x: 400, y: 300, w: 400, h: 300,
+        expandW: 720, expandH: 480, superOpen: true, innerPanX: 12, innerPanY: 34,
+        ltShellTask: "T-1", ltShellPath: "a/b", parentSuperId: "", parentTaskId: "",
+      };
+      const innerSrc = [
+        { id: "a", kind: "input_text", title: "内部文本", x: 20, y: 30, w: 180, h: 96, parentSuperId: "s1", parentTaskId: "" },
+        { id: "b", kind: "proc_text", title: "内部处理", x: 220, y: 30, w: 200, h: 120, parentSuperId: "s1", parentTaskId: "" },
+        { id: "io", kind: "super_io", title: "端子 1", x: 8, y: 120, w: 40, h: 40, superIoIndex: 1, parentSuperId: "s1", parentTaskId: "" },
+        { id: "img", kind: "input_image", title: "内部图像", x: 300, y: 200, w: 200, h: 150, imageAsset: "img/pic.png", sourceName: "pic.png", parentSuperId: "s1", parentTaskId: "" },
+        { id: "s2", kind: "super", title: "嵌套壳", x: 30, y: 180, w: 260, h: 200, superOpen: true, parentSuperId: "s1", parentTaskId: "" },
+        { id: "c", kind: "proc_text", title: "壳中壳节点", x: 10, y: 10, w: 160, h: 90, parentSuperId: "s2", parentTaskId: "" },
+      ];
+      const outsideSrc = { id: "out1", kind: "proc_text", title: "壳外节点", x: 900, y: 300, w: 180, h: 96, parentSuperId: "", parentTaskId: "" };
+      const srcWires = [
+        { id: "w1", from: "a", to: "b", fromIndex: 0, toIndex: 0 },
+        { id: "w2", from: "s1", to: "c", fromIndex: 0, toIndex: 0 },
+        { id: "w3", from: "b", to: "out1", fromIndex: 0, toIndex: 0 },
+      ];
+      const copySet = [shellSrc].concat(innerSrc);
+
+      /* ① 复制：只选壳一颗，后代必须被整棵收进粘贴板 */
+      const wf0 = { id: "wf1", name: "t", nodes: deep([outsideSrc, shellSrc].concat(innerSrc)), wires: deep(srcWires), marks: [] };
+      C2.loadWf(wf0);
+      C2.setFocus("");
+      const collected = C2.withDesc([wf0.nodes[1]], wf0);
+      ok(collected.length === 7, "复制集合 = 壳 + 全部后代（实得 " + collected.length + " / 期望 7）");
+
+      /* ② 粘贴 */
+      C2.setClip({ wfId: "wf1", nodes: deep(copySet), wires: deep(srcWires), marks: [] });
+      const pastedOk = C2.paste();
+      const wf = C2.wf();
+      ok(pastedOk === true, "粘贴执行成功");
+      const added = wf.nodes.filter((n) => ["s1", "a", "b", "io", "img", "s2", "c", "out1"].indexOf(n.id) < 0);
+      ok(added.length === 7, "粘贴出 7 颗新节点（实得 " + added.length + "）");
+      const newShell = added.filter((n) => n.kind === "super" && !n.parentSuperId && n.title.indexOf("壳A") === 0)[0];
+      const newNested = added.filter((n) => n.kind === "super" && n !== newShell && n.title.indexOf("嵌套壳") === 0)[0];
+      const newA = added.filter((n) => n.title.indexOf("内部文本") === 0)[0];
+      const newB = added.filter((n) => n.title.indexOf("内部处理") === 0)[0];
+      const newIo = added.filter((n) => n.kind === "super_io")[0];
+      const newImg = added.filter((n) => n.kind === "input_image")[0];
+      const newC = added.filter((n) => n.title.indexOf("壳中壳节点") === 0)[0];
+      ok(!!newShell && newShell.id !== "s1", "新壳另起 id（不与源撞车）");
+      ok(
+        added.filter((n) => !n.parentSuperId).length === 1,
+        "只有新壳落在顶层：其余新节点都挂在壳里（实得顶层 " + added.filter((n) => !n.parentSuperId).length + " 颗）",
+      );
+      ok(
+        [newA, newB, newIo, newImg].every((n) => n && n.parentSuperId === newShell.id),
+        "壳内节点（文本 / 处理 / super_io 端子 / 图像）的 parentSuperId = 新壳 id（不再被清空）",
+      );
+      ok(
+        newNested && newNested.parentSuperId === newShell.id && newC && newC.parentSuperId === newNested.id,
+        "多层嵌套壳逐层归属正确（新壳 ← 新嵌套壳 ← 壳中壳节点）",
+      );
+      ok(
+        wf.nodes.filter((n) => added.indexOf(n) >= 0).every((n) => n.parentSuperId !== "s1" && n.parentSuperId !== "s2"),
+        "没有任何粘贴品还指着源画布的父 id",
+      );
+
+      /* ③ 位置：壳整体偏移，壳内相对坐标不动 */
+      ok(newShell.x !== 400 || newShell.y !== 300, "新壳错开了源位置（不重叠）");
+      ok(
+        newA && newA.x === 20 && newA.y === 30 && newB && newB.x === 220 && newC && newC.x === 10,
+        "壳内节点沿用内部相对坐标（不参与整体偏移）",
+      );
+
+      /* ④ 壳态与身份 */
+      ok(
+        newShell.superOpen === true && newShell.innerPanX === 12 && newShell.innerPanY === 34 && newShell.expandW === 720,
+        "壳态照拷：展开态 / innerPan / 尺寸随副本",
+      );
+      ok(
+        String(newShell.ltShellTask || "") === "" && String(newShell.ltShellPath || "") === "",
+        "长任务壳身份摘除（副本当普通超级节点用）",
+      );
+
+      /* ⑤ 标题唯一化 + 图像路径固化 */
+      ok(
+        added.every((n) => wf.nodes.filter((m) => m.title === n.title).length === 1),
+        "壳内节点标题也走唯一化（重名加编号，不出现两个同名节点）",
+      );
+      ok(
+        newImg && newImg.imageAsset === "E:/ws/img/pic.png",
+        "壳内图像节点的相对路径已固化为绝对路径",
+      );
+
+      /* ⑥ 连线：两端都在复制集内的重建，跨集的丢掉 */
+      const newWire = (from, to) => wf.wires.some((w) => w.from === from && w.to === to);
+      ok(
+        newA && newB && newIo && newWire(newA.id, newB.id),
+        "壳内连线按新 id 重建",
+      );
+      ok(
+        newC && newWire(newShell.id, newC.id),
+        "壳边界线（壳 → 壳内节点）按新 id 重建",
+      );
+      ok(
+        wf.wires.length === 5 &&
+          wf.wires.filter((w) => w.to === "out1").length === 1 &&
+          wf.wires.filter((w) => w.from === "b").length === 1,
+        "跨复制集的连线不复制：新增的只有壳内 / 壳边界两条，源连线仍原样挂旧 id（共 " + wf.wires.length + " 条）",
+      );
+
+      /* ⑦ 粘到另一个展开壳内部：壳本身挂进当前壳，壳内节点仍归新壳 */
+      const host = { id: "sx", kind: "super", title: "宿主壳", x: 0, y: 0, w: 600, h: 400, superOpen: true, parentSuperId: "", parentTaskId: "" };
+      const wf2 = { id: "wf2", name: "t2", nodes: deep([host]), wires: [], marks: [] };
+      C2.loadWf(wf2);
+      C2.setFocus("sx");
+      C2.setClip({ wfId: "wf2", nodes: deep(copySet), wires: deep(srcWires), marks: [] });
+      C2.paste();
+      const wf3 = C2.wf();
+      const shell2 = wf3.nodes.filter((n) => n.kind === "super" && n.title.indexOf("壳A") === 0)[0];
+      const kids2 = wf3.nodes.filter((n) => shell2 && n.parentSuperId === shell2.id);
+      ok(
+        !!shell2 && shell2.parentSuperId === "sx",
+        "粘进展开的宿主壳内部：新壳自己挂到宿主壳下",
+      );
+      ok(
+        kids2.length === 5 && kids2.every((n) => n.parentSuperId === shell2.id),
+        "此时壳内节点仍归新壳（不会被「当前作用域」抢到宿主壳）",
+      );
+
+      /* ⑧ 粘贴落点 = 鼠标指针（本轮需求）：包围盒左上角贴到指针处（吸附网格）。
+         旧行为是包围盒中心对准视口中心，复制品落在屏幕正中、与指针无关。 */
+      C2.setDrop({ x: 1000, y: 800 });
+      C2.setFocus("");
+      C2.loadWf({ id: "wf4", name: "t4", nodes: [], wires: [], marks: [] });
+      C2.setClip({
+        wfId: "wf4",
+        nodes: [{ id: "p1", kind: "proc_text", title: "针", x: 400, y: 300, w: 180, h: 96 }],
+        wires: [],
+        marks: [],
+      });
+      C2.paste();
+      const atPointer = C2.wf().nodes[0];
+      ok(
+        !!atPointer && atPointer.x === 1000 && atPointer.y === 800,
+        "指针处粘贴：新节点左上角 = 指针的世界坐标（实得 " +
+          (atPointer ? atPointer.x + "," + atPointer.y : "无") +
+          "）",
+      );
+      /* 多节点：整个粘贴集的包围盒左上角对准指针（不是每颗各自贴指针） */
+      C2.loadWf({ id: "wf5", name: "t5", nodes: [], wires: [], marks: [] });
+      C2.setClip({
+        wfId: "wf5",
+        nodes: [
+          { id: "q1", kind: "proc_text", title: "A", x: 400, y: 300, w: 180, h: 96 },
+          { id: "q2", kind: "proc_text", title: "B", x: 700, y: 500, w: 180, h: 96 },
+        ],
+        wires: [],
+        marks: [],
+      });
+      C2.paste();
+      const g = C2.wf().nodes;
+      const minX = Math.min(...g.map((n) => n.x));
+      const minY = Math.min(...g.map((n) => n.y));
+      ok(
+        g.length === 2 && minX === 1000 && minY === 800,
+        "多节点粘贴：包围盒左上角对准指针，内部相对位置不变（实得 " + minX + "," + minY + "）",
+      );
+
+      /* ⑨ 没有指针落点（纯键盘 / 指针还没进过画布）→ 退回旧的视口中心：包围盒中心 = 视口中心 */
+      C2.setDrop(null);
+      C2.loadWf({ id: "wf6", name: "t6", nodes: [], wires: [], marks: [] });
+      C2.setClip({
+        wfId: "wf6",
+        nodes: [{ id: "r1", kind: "proc_text", title: "中", x: 400, y: 300, w: 180, h: 96 }],
+        wires: [],
+        marks: [],
+      });
+      C2.paste();
+      const atCenter = C2.wf().nodes[0];
+      /* 视口中心路径沿用旧口径（dx 先吸附、落点再吸附一次），允许半格以内的偏差 */
+      ok(
+        !!atCenter &&
+          Math.abs(atCenter.x + 90 - 640) <= 8 &&
+          Math.abs(atCenter.y + 48 - 400) <= 8,
+        "没有指针落点时退回视口中心（1280×800 视口中心 640,400；实得 " +
+          (atCenter ? atCenter.x + 90 + "," + (atCenter.y + 48) : "无") +
+          "）",
+      );
+
+      /* 结构口径：指针落点由 bindCanvas 的 mousemove 记、粘贴读同一份（别又退回视口中心） */
+      has(APP, "function noteCanvasPointer(", "指针落点收口在 noteCanvasPointer");
+      has(APP, "function pasteDropPoint(", "粘贴落点收口在 pasteDropPoint");
+      has(
+        APP,
+        'canvas.addEventListener(\n    "mousemove",\n    (ev) => noteCanvasPointer(ev.clientX, ev.clientY),',
+        "bindCanvas 在画布 mousemove 上记指针落点",
+      );
+      has(APP, "const drop = pasteDropPoint();", "pasteNodesFromClipboard 读指针落点");
+      hasnt(APP, "包围盒中心对准当前视口中心（吸附网格）", "粘贴的旧口径（视口中心）已改掉");
+    }
+  }
+
+  console.log("── [7] 粘贴后连着壳一起拖：壳内节点不得被甩到顶层（拖拽单元 = 壳，不含其后代）");
+  {
+    /* 本轮 bug：粘贴会把「壳 + 全部内部节点」一起选中；拖着壳在空白处松手时，
+       finalizeNodeDragNest 按落点逐个改写 parentSuperId，壳内节点于是全被抬成顶层
+       （撤销一次才回得来）。收口在 dragUnitIds：壳的后代不算独立拖拽成员。 */
+    has(APP, "function dragUnitIds(ids)", "拖拽单元收口在 dragUnitIds（壳的后代随壳走）");
+    has(APP, "dragIds = dragUnitIds(dragIds);", "startNodeDrag 用 dragUnitIds 收敛拖拽名单");
+    has(APP, "const unitIds = dragUnitIds(ids || []);", "松手落定（finalizeNodeDragNest）也只认独立拖拽单元");
+    hasnt(APP, "const openSupers = new Set(", "旧的「只剔展开壳的直接子节点」口径已移除（收起壳同样要带走内容）");
+
+    const ctx3 = {
+      console,
+      S: { wf: { nodes: [] } },
+      nodeById: null,
+      nodeParentSuperId: null,
+    };
+    vm.createContext(ctx3);
+    const PRELUDE3 = [
+      "function nodeById(id) { return ((S.wf && S.wf.nodes) || []).find((n) => n.id === id) || null; }",
+      "function nodeParentSuperId(n) { return (n && n.parentSuperId) || ''; }",
+    ].join("\n");
+    let D3 = null;
+    try {
+      vm.runInContext(PRELUDE3, ctx3, { filename: "prelude3.js" });
+      vm.runInContext(
+        fnBody(APP, "dragUnitIds") +
+          "\nthis.__drag = { unit: dragUnitIds, load: (nodes) => { S.wf = { nodes: nodes }; } };",
+        ctx3,
+        { filename: "extracted3.js" },
+      );
+      D3 = ctx3.__drag;
+      ok(!!(D3 && typeof D3.unit === "function"), "dragUnitIds 真函数已搬进沙箱");
+    } catch (e) {
+      ok(false, "dragUnitIds 真函数已搬进沙箱（" + ((e && e.message) || e) + "）");
+    }
+
+    if (D3) {
+      const nodes = [
+        { id: "shell", kind: "super", title: "壳", superOpen: false, parentSuperId: "" },
+        { id: "a", kind: "input_text", title: "内 A", parentSuperId: "shell" },
+        { id: "nest", kind: "super", title: "内壳", parentSuperId: "shell" },
+        { id: "leaf", kind: "input_text", title: "叶子", parentSuperId: "nest" },
+        { id: "other", kind: "proc_text", title: "壳外", parentSuperId: "" },
+      ];
+      D3.load(nodes);
+      /* ① 粘贴后的选中集：壳 + 全部后代（收起壳也算） */
+      const u1 = D3.unit(["shell", "a", "nest", "leaf", "other"]);
+      ok(
+        u1.length === 2 && u1.indexOf("shell") >= 0 && u1.indexOf("other") >= 0,
+        "收起壳 + 全部后代入拖：只剩壳与壳外节点（实得 " + JSON.stringify(u1) + "）",
+      );
+      /* ② 只看壳：后代（含嵌套壳里的叶子）一律不单独拖 */
+      const u2 = D3.unit(["shell", "a", "nest", "leaf"]);
+      ok(u2.length === 1 && u2[0] === "shell", "任意深度的后代都不算独立拖拽成员（实得 " + JSON.stringify(u2) + "）");
+      /* ③ 只选壳内某颗节点（壳没被选）：照旧可以单独拖 / 拖出壳 */
+      const u3 = D3.unit(["a", "leaf"]);
+      ok(u3.length === 2, "壳没被选中时，壳内节点仍能单独拖（实得 " + JSON.stringify(u3) + "）");
+      /* ④ 没有壳的普通多选：原样返回 */
+      const u4 = D3.unit(["a", "other"]);
+      ok(u4.length === 2, "没有壳参与时拖拽名单原样不动");
+    }
   }
 
   console.log("");
