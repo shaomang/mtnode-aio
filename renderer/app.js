@@ -8363,7 +8363,17 @@ function selResult(n) {
   return resultOf(n, attemptIdx(n));
 }
 
+/* 画布右下角提示条（本轮需求）：平时不再显示「操作内容」——成功回执（ok）、普通提示（info）
+   与不带 kind 的中性文案一律不弹；只有需要人知道的 **warn（黄色提醒）** 与 **err（红色报错）**
+   才真的出现在右下角。
+   为什么收在这一处：全仓所有提示都汇到 app.js 的这个 toast()（appsToast / pubToast /
+   pdfToast / toastSafe / toastMsg 等包装器最终都调它），在这里判一次即可，
+   不必去改几百个调用点的 kind，也不会漏掉将来新增的调用。
+   口径边界：err 一定弹（不静默失败）；warn 保留，因为它多是「下一步该点哪里」的引导
+   （如「请先选中要收纳的节点」），删掉反而让人卡住。 */
+const TOAST_KINDS_SHOWN = { err: 1, warn: 1 };
 function toast(msg, kind) {
+  if (!TOAST_KINDS_SHOWN[String(kind || "").trim().toLowerCase()]) return;
   const box = $("#toastBox");
   const d = document.createElement("div");
   d.className = "toast" + (kind ? " " + kind : "");
