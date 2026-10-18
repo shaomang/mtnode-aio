@@ -316,6 +316,15 @@ const DB_FNS = [
   "dshStopMark",
   "dshStopSeqOf",
   "dshStopStamped",
+  /* 「用户主动关闭」（本次需求）：dshRunTask / dshRunOnce 收 error 帧时判「按过停 +
+     exit code: 0」，收尾换成中性错误 —— 真实现一并抽进来，抽不到就是 ReferenceError */
+  "dshUserClosedText",
+  "dshRunStopBaseSet",
+  "dshRunStopBaseClear",
+  "dshRunStoppedSinceStart",
+  "dshRuntimeCleanExitText",
+  "dshUserClosedErrorOf",
+  "dshIsUserClosedError",
   "dshRetryResumed",
   "dshRetryWait",
   "dshRunTask",
@@ -346,7 +355,9 @@ vm.runInContext(
     "\n" +
     constLine(dbSrc, "DSH_RESUME_COLLISION") +
     "\n" +
-    constLine(dbSrc, "DSH_RETRY_MAX"),
+    constLine(dbSrc, "DSH_RETRY_MAX") +
+    "\n" +
+    constLine(dbSrc, "USER_CLOSED_TEXT"),
   rbSandbox,
   { filename: "resume-rb-extract.js" },
 );
@@ -942,8 +953,8 @@ reset([
   const appSrc = read("renderer/app.js");
   eqNum(countOf(appSrc, /function dshCancelActive\(/g), 1, "app.js 里 dshCancelActive 只有一份定义");
   eqNum(countOf(agentSrc, /function dshCancelActive\(/g), 1, "app-agent.js 里只有一份（后加载 = 生效那份）");
-  has(appSrc, "dshStopMark(runKey ? String(runKey) : \"\");", "app.js 那份先盖终止戳再删句柄");
-  has(agentSrc, "dshStopMark(runKey ? String(runKey) : \"\");", "app-agent.js 那份同样盖戳（两份不许漂移）");
+  has(appSrc, 'dshStopMark(runKey ? String(runKey) : ""', "app.js 那份先盖终止戳再删句柄");
+  has(agentSrc, 'dshStopMark(runKey ? String(runKey) : ""', "app-agent.js 那份同样盖戳（两份不许漂移）");
   has(dbSrc, "const stopBase = dshStopSeqOf(runKey);", "dshRunTask 起跑时记下终止代号基线");
   has(dbSrc, "if (dshStopStamped(runKey, stopBase))", "重发闸在判定可重发之前先认终止戳");
   /* 起轮前的空档（取消句柄还没登记 → dshCancelActive 抓不到这一轮）也要认戳 */

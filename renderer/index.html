@@ -42,6 +42,10 @@
      与上面两份同一写法：独立成一份、用 <link> 跟在 style.css 之后（css/*.css 走 style.css
      的 @import，这一份不改 style.css）；配色一律用 base.css 的主题变量。 -->
 <link rel="stylesheet" href="css/messages.css">
+<!-- 状态栏右下角的点阵小人（renderer/app-footer-mascot.js）：与上面几份同一写法，
+     独立成一份、用 <link> 跟在 style.css 之后；画面取自用户给的像素参考表原图
+     （renderer/img/footer-mascot.png），本文件只管 32×24 的排版。 -->
+<link rel="stylesheet" href="css/footer-mascot.css">
 </head>
 <body>
 
@@ -271,12 +275,17 @@
     <div class="wf-wrap" id="wfWrap">
       <div class="fn-toolbar">
         <button id="btnSidebar" class="corner mini btn-sq" data-i18n-title="节点与绘图列表边栏" title="节点与绘图列表边栏">☰</button>
-        <div id="taskCrumb" class="task-crumb" hidden></div>
         <div id="wfTabs" class="wf-tabs"></div>
         <div id="wfWsBox" class="wf-ws-box"></div>
         <button id="btnAssist" class="corner mini btn-sq" data-i18n-title="全局 AI 助手（右侧栏）" title="全局 AI 助手（右侧栏）">✦</button>
       </div>
       <div id="canvas" class="fn-canvas">
+        <!-- 画布面包屑（#taskCrumb）：本轮需求把它从上面那一行 tabs 工具条（.fn-toolbar）
+             搬进画布，挂成画布内容区左上角的悬浮层（.task-crumb，绝对定位 + 半透明底）。
+             搬走的理由：它和画布标签挤在同一行，被压到 min(38%,380px)，层级一多就窄成一团。
+             内容与显隐逻辑不变，仍由 app.js 的 renderTaskCrumb 画（只在进入任务 / 超级节点
+             时才出现）；容器本身 pointer-events:none，只有条目与「← 返回」能点，画布拖拽不受影响。 -->
+        <div id="taskCrumb" class="task-crumb" hidden></div>
         <div id="stage" class="fn-stage">
           <svg id="wfSvg" class="fn-svg">
           </svg>
@@ -616,7 +625,17 @@
   <span class="spacer"></span>
   <span id="statZoom">100%</span>
   <span id="saveState">就绪</span>
-  <span id="authorLink" class="author" data-i18n-title="作者" title="作者">@ms2308</span>
+  <!-- 状态栏右下角的点阵小人（renderer/app-footer-mascot.js）：紧挨版本号左边，
+       32×24 的透明画布，按「闲时 / 忙碌中 / 长期闲时」自动换帧；只接悬停提示，
+       不可点、不写文字标签。忙碌判定与状态栏「运行队列」同一真源
+       （collectRunQueueAll），所以这里的表情与队列按钮永远一致。 -->
+  <canvas id="footerMascot" class="sb-mascot" width="32" height="24" role="img"></canvas>
+  <!-- 右下角（本轮需求）：原显示作者 @ms2308，改为显示版本号（如 v1.5.4）；点进去仍是
+       作者详情窗、内容一字不变（app-settings.js 的 openAuthorPopup）。显示值由
+       renderer/app-boot.js 的 applyAuthorVersion 从 S.appVersion 现算 —— 不在 HTML 里
+       写死版本号（版本唯一真源是根目录 version 文件）；悬停提示改成「应用详情」，中英
+       词条走 data-i18n-title。 -->
+  <span id="authorLink" class="author" data-i18n-title="应用详情" title="应用详情"></span>
 </footer>
 
 <div id="overlay">
@@ -872,6 +891,11 @@
      GPU / 磁盘 / 网络明细。读数真源在主进程 perf-probe.js。必须排在 app-vram.js 之后
      （面板里要调 vramRenderPanel / vramSubscribeReleased），且早于 app-boot.js（入口绑定）。 -->
 <script src="app-perf.js"></script>
+<!-- 渲染卡顿诊断 + 30fps 合并刷新（renderer/app-render-perf.js）：会话运行期间画布间歇性
+     卡顿的定位手段（window.MTNodePerf.trace，默认关，只写 console）与流式刷新的合并器。
+     独立小单元、无依赖，所以放在 app-assist.js 之前（会话 / 画布两侧都在运行期取它，
+     缺了它两侧都退回改动前的同步刷新）。 -->
+<script src="app-render-perf.js"></script>
 <!-- 上下文压缩策略的渲染层共享小单元（renderer/app-dsh-compact.js）：档位清单 /
       归一 compactPolicyOf / 档位词条 / 触发线边界。设置面板与助手栏是两个各自独立的
       加载单元，这一小份必须共用同一份，否则会出现「面板显示中档、组合里是省钱档」。
@@ -1055,5 +1079,6 @@
         SSE 观察者（见 session-bridge.js 与 mcp-server.js 的 GET /session/stream）。
      必须排在 app-assist.js / app-db.js / app.js 之后（调用期按 typeof 取既有全局）。 -->
 <script src="app-session-bridge.js"></script>
+<script src="app-footer-mascot.js"></script>
 </body>
 </html>

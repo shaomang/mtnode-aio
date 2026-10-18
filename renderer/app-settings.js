@@ -1661,11 +1661,12 @@ function openSettingsBody() {
     );
     sec.appendChild(cascRow);
 
-    /* 完成音效（本次需求：只剩一把音色、两档音量）:
-       ① 任何一件任务跑完 → 一声短促的「叮咚」（E5→A5，0.42 秒）；
-       ② 所有任务都完成 → **同一把音色**，音量按 1.5 倍放大再响一声
-          （原来那一档「全局三音上行 / 总时长超 5 分钟」的长任务音效已移除）。
-       两档共用这个开关与下面的音量滑杆；自定义音频文件两档都用它（设了就用用户选的音，
+    /* 完成音效（本次需求：只剩一把音色、一档音量）:
+       只有一种声音 —— 任何一件任务跑完（含最后一件，也就是「全部完成」）都响同一声
+       短促的「叮咚」（E5→A5，0.42 秒）。原来「所有任务都完成 → 同一把音色 ×1.5 音量
+       再响一声」那一档已整体删除（与「全局三音上行 / 总时长超 5 分钟」的长任务音效
+       一样下线了）。
+       共用这个开关与下面的音量滑杆；自定义音频文件也用它（设了就用用户选的音，
        留空用内置音）。 */
     const sndRow = document.createElement("label");
     sndRow.className = "n-field";
@@ -1684,14 +1685,14 @@ function openSettingsBody() {
     /* 括注（什么时候响、响几声）挂勾选项文字本身：悬停即出 */
     settingsTipBeside(
       sndRow,
-      "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；所有任务都完成 → 同一声音以 1.5 倍音量再响一声）",
+      "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；全部完成也是同一声，不再额外响一次）",
       "完成音效说明",
     );
     sec.appendChild(sndRow);
     dshEls.doneSound = sndCb;
-    /* 完成音效音量（本次需求）：滑杆调内置音的响度（短促音与收尾那一声同一把尺，
-       收尾那一档再乘 1.5、并夹到安全上限防破音）；自定义音频文件同样分两档
-       （<audio> 音量 0.5 / 0.75）。拖动时轻轻试听一声音量实况；即时写盘，无保存按钮。 */
+    /* 完成音效音量（本次需求）：滑杆只调这一档响度 —— 任务完成与「全部完成」同一把尺，
+        没有「收尾那一声再乘 1.5」的档；自定义音频文件同理（<audio> 音量固定 0.5）。
+        拖动时轻轻试听一声音量实况；即时写盘，无保存按钮。 */
     const sndVolRow = document.createElement("div");
     sndVolRow.className = "dsh-btn-row";
     const sndVol = document.createElement("input");
@@ -1708,7 +1709,7 @@ function openSettingsBody() {
     })();
     sndVol.value = String(doneVolNow);
     sndVol.style.flex = "1";
-    /* 音量口径（两档共用 / 0 = 静音）挂在右侧百分比读数上：悬停「35%」即出，不再有「?」，
+    /* 音量口径（只有这一档 / 0 = 静音）挂在右侧百分比读数上：悬停「35%」即出，不再有「?」，
        原生 title 也不挂（两套提示会打架） */
     const sndVolLabel = document.createElement("span");
     sndVolLabel.style.minWidth = "42px";
@@ -1716,7 +1717,7 @@ function openSettingsBody() {
     sndVolLabel.textContent = sndVol.value + "%";
     settingsTip(
       sndVolLabel,
-      "完成音效音量（两档共用；收尾那一档再乘 1.5；0 = 静音）",
+      "完成音效音量（只有一个音量档；0 = 静音）",
       "完成音效音量说明",
     );
     /* 拖动时逐格试听会叠成一串：只在最后一格（180ms 静默）与松手各响一次 */
@@ -1773,10 +1774,10 @@ function openSettingsBody() {
     const sndPlay = document.createElement("button");
     sndPlay.className = "mini";
     sndPlay.textContent = I18n.t("试听");
+    /* 试听就是任务跑完那一刻真实的那一声（没有「收尾更响」的另一档） */
     sndPlay.onclick = () =>
       previewDoneSound(
         sndFile.value.trim() || (S.config.dsh && S.config.dsh.doneSoundFile) || "",
-        true, /* 试听收尾那一档（1.5 倍）—— 用户听到的就是「全部完成」时真实的那一声 */
       );
     const sndClear = document.createElement("button");
     sndClear.className = "mini";
@@ -5030,7 +5031,8 @@ function openHelp() {
   openAppDocs();
 }
 
-/* 作者弹窗：居中小窗口，显示 @ms2308 与 B 站主页超链接 */
+/* 作者弹窗：居中小窗口。作者名 @ms2308 本身是 B 站主页链接，下方是「MTNode 主页」
+   入口，末尾一行版本号 —— 两处都只显示文字、不显示网址（本轮需求）。 */
 function openAuthorPopup() {
   openOverlay("");
   /* 尺寸 / 顶边色只走 .overlay-box.author-box 这个类：以前这里内联 cssText 改的是
@@ -5041,27 +5043,22 @@ function openAuthorPopup() {
   const body = $("#ovBody");
   const pop = document.createElement("div");
   pop.className = "author-pop";
-  const name = document.createElement("div");
+  /* 作者名本身就是进 B 站主页的入口（本轮需求）：不再把 B 站网址当正文显示，
+     文字只有 @ms2308，点它直接用系统浏览器打开空间页。 */
+  const name = document.createElement("a");
   name.className = "author-name";
   name.textContent = "@ms2308";
-  const ver = document.createElement("div");
-  ver.className = "author-ver";
-  ver.textContent = "v" + S.appVersion;
-  const link = document.createElement("a");
-  link.className = "author-link";
-  link.textContent = "https://space.bilibili.com/16411347";
-  link.href = "https://space.bilibili.com/16411347";
-  link.title = I18n.t("在浏览器中打开");
-  link.onclick = (ev) => {
+  name.href = "https://space.bilibili.com/16411347";
+  name.title = I18n.t("在浏览器中打开");
+  name.onclick = (ev) => {
     ev.preventDefault();
-    window.api.openExternal(link.href);
+    window.api.openExternal(name.href);
   };
   pop.appendChild(name);
-  pop.appendChild(ver);
-  pop.appendChild(link);
+  /* 名称下方就是 MTNode 主页入口：只显示「MTNode 主页」这几个字，不显示网址。 */
   const home = document.createElement("a");
   home.className = "author-link";
-  home.textContent = I18n.t("主页 · 下载 http://mt-agent.com/mtnode");
+  home.textContent = I18n.t("MTNode 主页");
   home.href = "http://mt-agent.com/mtnode";
   home.title = I18n.t("在浏览器中打开主页与下载页");
   home.onclick = (ev) => {
@@ -5069,6 +5066,10 @@ function openAuthorPopup() {
     window.api.openExternal(home.href);
   };
   pop.appendChild(home);
+  const ver = document.createElement("div");
+  ver.className = "author-ver";
+  ver.textContent = "v" + S.appVersion;
+  pop.appendChild(ver);
   body.appendChild(pop);
   const foot = $("#ovFoot");
   const ok = document.createElement("button");

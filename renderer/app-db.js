@@ -2246,33 +2246,19 @@ function dshRunKeyOf(opts) {
   return String(opts.runKey || (opts.node && opts.node.id) || "default");
 }
 
-/* ── 完成音的时基（本次需求：长任务音效下线，收尾那一档换成一枚「最终音」）──
-   ① **任务级短促音**：任何一件任务跑完就响一声（E5→A5，两音各 0.18s）。判据 =
+/* ── 完成音的时基（本次需求：「全部完成」那一档整体下线）──
+   只剩**一种**声音：任何一件任务跑完就响一声（E5→A5，两音各 0.18s）。判据 =
    运行队列前后对比：上拍还在队列里的一条运行项这一拍不见了 = 它完成了（见
    dshRunQueueDoneCheck）。只认「正在跑」的行，且换了键但活还在的行不算完成
    （暂停↔运行 / 会话↔并行组 / 开发块行折叠都不发声）；被用户手动停止 / 取消的也不算。
-   ② **最终音**：**所有任务都完成**（运行队列彻底为空：跨画布节点 / 会话 / 助手 /
-   开发块 + 后端在途与排队的音视频，且没有任何智能运行还在飞）→ 响**同一把音色**，
-   但按倍数放大（见 DSH_DONE_SOUND_FINAL_RATIO，1.5 倍）。
-   判据里**没有时长门槛**：干完那一刻就响，跑多久都一样（旧的「总时长满 5 分钟才响全局
-   三音上行」整档已下线，连同那套忙碌时长计时一并删除）。
-   挂在 S 上的几张表：
-     _runLongAt[runKey]  = 本轮的起跑时刻（毫秒）—— 判「这一轮还在不在跑」；
+   于是「最后一件跑完」= 队列里最后一条在飞的行消失，响的就是这同一声普通短促音 ——
+   全部完成与单件完成听感完全一致，**没有**额外的一声、没有 1.5 倍音量档、
+   也没有「队列空 + 空闲确认窗」那套判定（dshRunAllDoneCheck / _queueIdleAt /
+   _queueRanAt / dshRunBusy 一并删除）。判据里没有时长门槛：干完那一刻就响。
+   挂在 S 上的两张表：
+     _runLongAt[runKey]  = 本轮的起跑时刻（毫秒）—— 留作诊断（哪一轮还挂着）；
      _runUserAt[runKey]  = 你在这一轮最近一次回答 / 审批的时刻（留作诊断）；
-     _doneSoundAt        = 上一次短促音的时刻（同一瞬并行收尾据此合并成一声）；
-     _queueIdleAt        = 队列刚空的时刻（确认窗起点，防「一件刚完、下一件立刻起跑」）；
-     _queueRanAt         = 这一段活里队列**真的跑过东西**的时刻（0 = 没跑过）。
-   最后这一项是必需的边界：启动后队列一直空着（没跑过任何活）也满足「队列空」这个
-   形式条件，若不记「跑过没有」，开机 3 秒后就会凭空响一声收尾音。
-   两处都会记它（谁先看见算谁的）：dshRunAllDoneCheck 看见队列非空的那一拍，
-   以及 dshRunQueueDoneCheck 的队列前后对比 —— 快速任务可能在心跳的两拍之间就跑完了，
-   只靠前者会让「所有任务都完成」永远判不出来。
-   最后一件事说清「那一瞬只响一声」的口径：最后一件任务跑完的那一拍响**普通完成音**
-   （它是「一件任务完成」），确认窗（3 秒）过后队列确实空了才响**最终音**（1.5 倍）
-   —— 两声先后分明，不会在同一拍上叠响；刚响过短音（1.5 秒内）时最终音让位一拍再判。 */
-/* 队列「彻底空」要连续确认这么久才下结论 —— 面板心跳 2 秒，所以至少下一拍再判，
-   防「一件刚完、下一件立刻起跑」被当成两段（第一件之后先响一声最终音） */
-const DSH_QUEUE_IDLE_CONFIRM_MS = 3000;
+     _doneSoundAt        = 上一次短促音的时刻（同一瞬并行收尾据此合并成一声）。 */
 /* 同一瞬间并行收尾（并行任务 / 批处理）合成一声：这一窗内的后续完成不再单独发声 */
 const DSH_DONE_SOUND_MERGE_MS = 500;
 function dshRunLongMark(runKey) {
@@ -2292,53 +2278,6 @@ function dshRunLongDrop(runKey) {
   if (typeof S === "undefined" || !S || !runKey) return;
   if (S._runLongAt) delete S._runLongAt[runKey];
   if (S._runUserAt) delete S._runUserAt[runKey];
-}
-/* 还有智能运行在飞吗？判据 = 已起跑（dshRunLongMark）但还没收尾（dshRunLongDrop）。
-   这是最终音的闸：运行队列面板没刷到时也不能喊「全都完成了」。 */
-function dshRunBusy() {
-  if (typeof S === "undefined" || !S || !S._runLongAt) return 0;
-  try {
-    return Object.keys(S._runLongAt).length;
-  } catch (_) {
-    return 0;
-  }
-}
-/* 队列彻底空 + 没有任何智能运行还在飞 + 队列连续空够确认窗（3 秒）→ 所有任务都完成：
-   响一声**最终音**（与短促音同一把音色，按 DSH_DONE_SOUND_FINAL_RATIO 放大）。
-   **没有时长门槛**：跑 30 秒还是 3 小时都一样，干完那一刻就响（旧的「总时长满 5 分钟
-   才响全局三音上行」已下线）。
-   调用点 = 运行队列面板刷新（app.js updateRunQueuePanel，心跳 2 秒）与 dshRunOnce 收尾 ——
-   不论最后收尾的是智能运行、生成节点还是排队项，队列空后总有一拍走到这里，
-   所以不必在每条收尾路径上各埋一遍。 */
-function dshRunAllDoneCheck() {
-  try {
-    const q = typeof collectRunQueueAll === "function" ? collectRunQueueAll() : [];
-    const items = Array.isArray(q) ? q : (q && q.items) || [];
-    /* 队列还有活（在跑 / 排队 / 后端在途）：确认窗作废，同时记下「这一段活真的跑过东西」——
-       只有跑过东西，队列空之后才谈得上「全都完成」（见下面那条 _queueRanAt 判据） */
-    if (items.length) {
-      S._queueIdleAt = 0;
-      if (!S._queueRanAt) S._queueRanAt = String(Date.now());
-      return;
-    }
-    /* 这一段活压根没跑过东西（开机后队列一直空着）→ 没有「完成」可言，不发声 */
-    if (!S._queueRanAt) return;
-    /* 队列空 ≠ 全干完：还在收尾的那一轮（resolve/reject 之后才清账）先不计，
-       下一拍心跳再判 —— 这样「全部执行完毕」是事后确认，不是边收尾边喊 */
-    if (Number(S._runCount) > 0) return;
-    if (dshRunBusy() > 0) return;
-    /* 队列刚空的那一拍起算确认窗，窗内不下结论 */
-    if (!S._queueIdleAt) S._queueIdleAt = String(Date.now());
-    const idleMs = Date.now() - Number(S._queueIdleAt);
-    /* 确认窗（3 秒）内不下结论：防「一件刚完、下一件立刻起跑」被切碎 */
-    if (idleMs < DSH_QUEUE_IDLE_CONFIRM_MS) return;
-    S._queueIdleAt = 0;
-    /* 刚响过（并行收尾的第二拍）→ 不叠响，但账本照清，等下一阵活重新跑过才再响 */
-    const lastShort = Number(S._doneSoundAt) || 0;
-    S._queueRanAt = 0;
-    if (lastShort && Date.now() - lastShort < DSH_QUEUE_IDLE_CONFIRM_MS) return;
-    playTaskDoneSound(true);
-  } catch (_) {}
 }
 /* ── 任务级短促音：任何一件任务跑完就一声（本次需求，队列前后对比判定）──
    运行队列（collectRunQueueAll）就是「全应用正在跑的活」的唯一总览：智能体会话 / 画布
@@ -2408,11 +2347,6 @@ function dshRunQueueDoneCheck() {
   try {
     const q = typeof collectRunQueueAll === "function" ? collectRunQueueAll() : [];
     const items = Array.isArray(q) ? q : (q && q.items) || [];
-    /* 这一段活「真的跑过东西」的第二个见证点：队列对比本身也看见过在飞的行。
-       与 dshRunAllDoneCheck 里那一处同义（_queueRanAt），为什么要两处都记 —— 快速任务
-       可能在面板心跳的下两拍之间就跑完了（队列非空的那一拍谁都没看见），只靠那边记
-       会让「所有任务都完成」永远判不出来；这边一次前后对比就够了。 */
-    if (items.length && !S._queueRanAt) S._queueRanAt = String(Date.now());
     S._runQueueSeen = S._runQueueSeen || {};
     const seen = S._runQueueSeen;
     const now = Date.now();
@@ -2448,9 +2382,8 @@ function dshRunQueueDoneCheck() {
     }
     if (!doneCount) return;
     /* 同一瞬间并行收尾只响一声（合并窗内的后续完成不再单独发声）。
-       与最终音之间**不再需要让位窗**：收尾那一刻的判定要么走这里（普通短促音），
-       要么走 dshRunAllDoneCheck（1.5 倍最终音，且它自带「刚响过就跳过」的冷却），
-       两档不会在同一次收尾里各响一声（用户口径：那一瞬只响一声）。 */
+       这里就是**唯一**的发声点：最后一件跑完也走这一条 —— 全部完成与单件完成
+       响的是同一把音色、同一档音量，没有任何收尾专属的补响（见本段开头的说明）。 */
     const lastShort = Number(S._doneSoundAt) || 0;
     if (lastShort && now - lastShort < DSH_DONE_SOUND_MERGE_MS) return;
     playTaskDoneSound();
@@ -2490,13 +2423,19 @@ function dshHostSessionIdOf(runKey, opts) {
    不带 runKey 的「全部终止」盖全局 '*'：连还没占上取消句柄（正在异步起 runtime）的
    在途轮也一并判死。静默超时的自动终止同样判死 —— 30 分钟无响应再重烧 5 轮
    （每轮上限又是 30 分钟）不叫恢复，叫拖死界面。 */
-function dshStopMark(runKey) {
+function dshStopMark(runKey, opts) {
   if (typeof S === "undefined" || !S) return 0;
   S._runStop = S._runStop || {};
   const seq = (Number(S._runStopSeq) || 0) + 1;
   S._runStopSeq = seq;
   const k = String(runKey == null ? "" : runKey).trim();
   S._runStop[k || "*"] = seq;
+  /* auto = 这不是用户按的停（看门狗「长时间无响应 / 交互等待超时」自己收的摊）：
+     两种情况在界面上必须分开说 —— 前者是「用户主动关闭会话」，后者是真异常，
+     不能拿同一句中性文案把自动终止也盖掉（判据见 dshRunAutoStoppedSinceStart）。 */
+  S._runStopAuto = S._runStopAuto || {};
+  if (opts && opts.auto) S._runStopAuto[k || "*"] = seq;
+  else delete S._runStopAuto[k || "*"];
   return seq;
 }
 /* 这一轮当前的终止代号：自身键与全局 '*' 取大（'*' = 有人喊过「全部终止」） */
@@ -2509,6 +2448,81 @@ function dshStopSeqOf(runKey) {
 /* 本轮起跑（base = 起跑时读到的代号）之后是否被判过死 */
 function dshStopStamped(runKey, base) {
   return dshStopSeqOf(runKey) > (Number(base) || 0);
+}
+
+/* ── 「用户主动关闭」判定（本次需求） ─────────────────────────────────────
+   现场：用户按会话里的 ■（或删掉正在跑的会话 / 全部终止）时，网关把这台运行时优雅关掉，
+   SDK 客户端随即把工程报文回给宿主：
+       dsh profile "sdk": DeepSeek Harness runtime exited
+       exit code: 0
+       stderr tail:
+       [ix-speech] speech providers=0 []
+       dsh: warning: 2 entries did not activate
+       compaction-basic (...): ValidationError: ...
+   这不是故障，是「用户自己关掉了这一轮」。旧实现把它当错误落成 err 段 / 红 toast，
+   用户看到的就是一屏 stderr。判据两条，缺一不可：
+     ① 本轮起跑之后真的盖过终止戳（dshStopMark：用户确实按了停）；
+     ② 退出码是 0（网关关进程的正常收尾）。
+   退出码非 0（被强杀 / 崩溃）照旧报错 —— 那可能是真故障，绝不能用一句
+   「用户主动关闭会话」掩盖掉。命中后的呈现统一为 USER_CLOSED_TEXT：会话里是一条
+   中性状态行 + 折叠的原始报文（见 app-assist.js 的 userClosedRowEl / 下面的
+   userClosedTrace），节点 / 助手 / 计划并行组只换文案、不弹红 toast。 */
+const USER_CLOSED_TEXT = "用户主动关闭会话";
+const USER_CLOSED_SRC = "user-closed";
+function dshUserClosedText() {
+  return typeof I18n !== "undefined" ? I18n.t(USER_CLOSED_TEXT) : USER_CLOSED_TEXT;
+}
+/* 本轮起跑时读到的终止代号（dshRunTask 登记）：事件侧（dshRunOnce 的 error 帧）也要能
+   判「这一轮到底按没按过停」——它拿不到 dshRunTask 里的局部 stopBase。 */
+function dshRunStopBaseSet(runKey, base) {
+  if (typeof S === "undefined" || !S) return;
+  S._runStopBase = S._runStopBase || {};
+  S._runStopBase[runKey] = Number(base) || 0;
+}
+function dshRunStopBaseClear(runKey) {
+  if (typeof S === "undefined" || !S || !S._runStopBase) return;
+  delete S._runStopBase[runKey];
+}
+function dshRunStoppedSinceStart(runKey) {
+  if (typeof S === "undefined" || !S || !S._runStopBase) return false;
+  if (!Object.prototype.hasOwnProperty.call(S._runStopBase, runKey)) return false;
+  return dshStopStamped(runKey, S._runStopBase[runKey]);
+}
+/* 本轮起跑之后那次终止是不是**自动**终止（看门狗收的摊，不是用户按的停）：
+   自动终止也盖终止戳（否则重发闸会接着烧钱），但界面文案必须区分 —— 它不能
+   冒充「用户主动关闭会话」。 */
+function dshRunAutoStoppedSinceStart(runKey) {
+  if (typeof S === "undefined" || !S || !S._runStopBase) return false;
+  if (!Object.prototype.hasOwnProperty.call(S._runStopBase, runKey)) return false;
+  const base = Number(S._runStopBase[runKey]) || 0;
+  const m = (S && S._runStopAuto) || {};
+  const a = Number(m[runKey]) || 0;
+  const b = Number(m["*"]) || 0;
+  return (a > b ? a : b) > base;
+}
+/* 报文像不像「运行时被优雅关掉」：退出码 0 + 进程 / 传输已断。
+   两种文形都要认：SDK 的 closedError（runtime exited / runtime is not running）与
+   TransportClosedError 的 reason（transport closed / Harness runtime closed）。 */
+function dshRuntimeCleanExitText(msg) {
+  const s = String(msg || "");
+  if (!s.trim()) return false;
+  if (!/exit code:\s*0(?![\d])/i.test(s)) return false;
+  return /runtime (?:exited|closed|is not running)|Harness runtime closed|transport closed/i.test(s);
+}
+/* 命中 = 这次失败其实是用户自己关的 → 返回一枚带标记的 Error（detail = 原始报文）。
+   未命中返回 null（调用方按原样报错）。 */
+function dshUserClosedErrorOf(runKey, raw) {
+  if (!dshRuntimeCleanExitText(raw)) return null;
+  if (!dshRunStoppedSinceStart(runKey)) return null;
+  /* 自动终止（看门狗静默超时）不算用户关闭：退出码就算是 0 也照旧报错。 */
+  if (dshRunAutoStoppedSinceStart(runKey)) return null;
+  const err = new Error(dshUserClosedText());
+  err.userClosed = true;
+  err.detail = String(raw || "");
+  return err;
+}
+function dshIsUserClosedError(e) {
+  return !!(e && e.userClosed);
 }
 
 /* 续跑不可用的原因（消费方据此给 toast 措辞；返回 null = 本轮可续跑）：
@@ -2745,6 +2759,9 @@ function dshRunTask(input, opts) {
   /* 起跑时读到的终止代号：重发闸拿它比对，判「这一轮是不是在跑的中途被 ■ 停掉了」。
      真源 = dshStopMark（所有终止入口共用的 dshCancelActive 负责盖）。 */
   const stopBase = dshStopSeqOf(runKey);
+  /* 登记这一轮的起跑代号：事件侧（dshRunOnce 收 error 帧时）靠它判「用户按没按过停」，
+     收尾时（无论成败）清掉，绝不让上一轮的戳漂到下一轮。 */
+  dshRunStopBaseSet(runKey, stopBase);
   /* 同一条会话新起一轮：上一轮留下的「这一轮已经结束」态卡片到此为止
      （要重发有痕迹里那枚键；不撤就会一轮一轮攒下去） */
   try {
@@ -2826,10 +2843,15 @@ function dshRunTask(input, opts) {
          终止时刻与本轮重叠时（如 429 之后已进入等待窗口）多半就是这条路径 ——
          网关把运行时关掉后回来的工程报文（"Harness runtime closed" 等）不含取消字样，
          只有这枚戳认得它。保留原始报错当收尾文案更有信息量，但它必须先是取消类文案。 */
-      if (dshStopStamped(runKey, stopBase))
+      if (dshStopStamped(runKey, stopBase)) {
+        /* 用户按停 + 运行时干净退出（exit code: 0）= 用户主动关闭：中性收尾，
+           不把 stderr 当错误甩给界面。退出码非 0 / 判不出的照旧按报错收场。 */
+        const uc = dshUserClosedErrorOf(runKey, msg);
+        if (uc) throw uc;
         throw isCancelishError(msg) || /终止|中止/.test(msg)
           ? err
           : new Error(I18n.t("已手动终止"));
+      }
       /* 续跑点名的会话在本机不可续跑：立刻用原始 input 整轮重发，不消耗 5 次
          重发预算 —— 它只是续不上，不是又失败了一次（见上方续跑闸注释）。
          识别口径两类：网关固定的 RESUME_UNAVAILABLE 前缀（盘上无日志 / 运行时握手
@@ -2914,11 +2936,19 @@ function dshRunTask(input, opts) {
       return attempt(next);
     });
   };
-  return attempt(null).catch((err) => {
-    /* 彻底放弃这一轮：它登记的可续跑会话到此作废，别留给下一次运行 */
-    if (S._runSession) delete S._runSession[runKey];
-    throw err;
-  });
+  return attempt(null).then(
+    (v) => {
+      /* 收尾（无论成败）摘掉起跑代号：下一轮重新登记自己的，绝不吃上一轮的终止戳 */
+      dshRunStopBaseClear(runKey);
+      return v;
+    },
+    (err) => {
+      /* 彻底放弃这一轮：它登记的可续跑会话到此作废，别留给下一次运行 */
+      if (S._runSession) delete S._runSession[runKey];
+      dshRunStopBaseClear(runKey);
+      throw err;
+    },
+  );
 }
 
 /* ── 本轮运行的「绑定画布」：会话所属画布，不是用户此刻看到的画布 ──
@@ -3590,8 +3620,7 @@ function dshRunOnce(input, opts) {
   /* 轮次归属键（dshRunTask 算好随 opts 透传）：缺省回落 runKey，只用于逐轮明细 */
   const tokRoundKey = String(opts.tokRoundKey || runKey || "default");
   const t0 = Date.now();
-  /* 起跑即登记（见 dshRunLongMark）：给「还有没有活没干完」提供一处判据。
-     最终音只看队列空不空，与时长无关 */
+  /* 起跑即登记（见 dshRunLongMark）：留作诊断（哪一轮还挂着，配 dshRunLongDrop 成对清） */
   dshRunLongMark(runKey);
   /* 交互面板:仅首个 run 清空,后续 run 保留其他会话/节点在途的提问与审批 */
   if (!(S._runCount || 0)) ixReset();
@@ -3628,6 +3657,9 @@ function dshRunOnce(input, opts) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let seenError = "";
+    /* 用户主动关闭时的原始报文（判据见 dshUserClosedErrorOf）：非空 = 这一轮是用户
+       自己关掉的，收尾走中性状态行，既不当错误、也不落 err 段、也不发给界面。 */
+    let userClosedRaw = "";
     /* 取消句柄消失的那一刻（0 = 句柄还在）：终止兜底从这一刻起算宽限，
        不看 lastActivity —— 见下方 watchdog 注释 */
     let cancelSeenAt = 0;
@@ -3698,11 +3730,6 @@ function dshRunOnce(input, opts) {
          被用户「⏸暂停」收尾的这一轮也不清（keepRunSession）：暂停不是跑完，
          会话留在表里，宿主点「继续」时按它点名那条 dsh 会话从中断处接下去。 */
       if (ok && !keepRunSession && S._runSession) delete S._runSession[runKey];
-      /* 全局长任务提醒：本轮刚收尾，若运行队列已彻底为空就看要不要响「叮咚」。
-         放在这里只是「顺手判一次」—— 常见情况下队列里还有别的活或本轮的收尾计数
-         还没减完，会直接返回；真正的判定由运行队列面板的刷新与心跳完成
-         （见 app.js updateRunQueuePanel），所以这里排在 resolve/reject 之前也没关系。 */
-      dshRunAllDoneCheck();
       if (ok) resolve(val);
       else reject(val instanceof Error ? val : new Error(String(val || "")));
     };
@@ -3737,7 +3764,7 @@ function dshRunOnce(input, opts) {
         (typeof canvasConfirmPendingOf === "function" ? canvasConfirmPendingOf(runKey) : 0);
       if (idle >= (pendingWait ? DSH_IX_WAIT_TIMEOUT_MS : DSH_RUN_IDLE_TIMEOUT_MS)) {
         try {
-          dshCancelActive(runKey);
+          dshCancelActive(runKey, { auto: true });
         } catch (_) {}
         finish(
           false,
@@ -3829,7 +3856,13 @@ function dshRunOnce(input, opts) {
             } catch (_) {}
             return;
           }
-          if (msg.type === "error" && msg.data && msg.data.message) seenError = msg.data.message;
+          if (msg.type === "error" && msg.data && msg.data.message) {
+            /* 用户主动关闭：这条工程报文不是故障（判据见 dshUserClosedErrorOf）→
+               不记 seenError、不进轨迹 err 段、也不派给界面；收尾按中性状态呈现。 */
+            if (dshUserClosedErrorOf(runKey, msg.data.message))
+              userClosedRaw = String(msg.data.message);
+            else seenError = msg.data.message;
+          }
           if (msg.type === "approval") {
             const node = opts.node;
             if (
@@ -3921,10 +3954,18 @@ function dshRunOnce(input, opts) {
             }
           }
           /* 按步切段的运行轨迹：所有 run（节点 / 会话 / 助手）都在此统一采集，
-             再交给各自的 onEvent 做界面刷新 */
+             再交给各自的 onEvent 做界面刷新。
+             用户主动关闭的那一帧错误除外：它不进轨迹（否则 err 段会把一屏 stderr
+             永久写进会话正文），也不派给界面（各自的 error 分支只认真故障）。 */
           if (msg.type === "tool" && msg.data && msg.data.callId)
             runCallArgs[msg.data.callId] = msg.data.args || "";
-          try { traceFeedEvent(runKey, msg.type, msg.data || {}); } catch {}
+          const userClosedFrame =
+            !!userClosedRaw &&
+            msg.type === "error" &&
+            String((msg.data && msg.data.message) || "") === userClosedRaw;
+          if (!userClosedFrame) {
+            try { traceFeedEvent(runKey, msg.type, msg.data || {}); } catch {}
+          }
           /* 会话桥（Paseo 手机端）：把**已经在跑的那一轮**的事件复制一份推给主进程 → SSE。
              这里是唯一同时拿得到 runKey 与 msg 的收口点，所以归属会话（as…）在这一句里定死，
              下游（session-bridge.js → 桥）不用再猜。没人观察时 isRemoteWatching() 为假，
@@ -3933,13 +3974,21 @@ function dshRunOnce(input, opts) {
             if (window.MTNodeSession && typeof window.MTNodeSession.onRunEvent === "function")
               window.MTNodeSession.onRunEvent(runKey, msg.type, msg.data || {}, msg.reqId);
           } catch {}
-          if (opts.onEvent) {
-            try { opts.onEvent(msg.type, msg.data || {}); } catch {}
+          if (opts.onEvent && !userClosedFrame) {
+            /* 诊断（app-render-perf.js）：网关逐帧事件在渲染层的整段处理耗时。trace 关着时
+               是一次直通调用；开着时只有超过 50ms 才打一行 —— 会话运行期间画布卡顿到底卡在
+               哪一类帧上（text / reasoning / tool / usage）就靠这一行认。 */
+            try {
+              const P = window.MTNodePerf;
+              if (P && typeof P.span === "function")
+                P.span("dsh:" + String(msg.type || ""), () => opts.onEvent(msg.type, msg.data || {}));
+              else opts.onEvent(msg.type, msg.data || {});
+            } catch {}
           }
           if (msg.type === "done") {
             /* 完成音效：**不在这里发声**。任务级短促音由 dshRunQueueDoneCheck 按运行队列
-               前后对比判定（任何一件任务跑完都响一声），收尾那一档（所有任务都完成）由
-               dshRunAllDoneCheck 判定 —— 两条口径都不在这条分支上，这里只负责收尾记账。 */
+               前后对比判定（任何一件任务跑完都响一声，最后一件也是它）—— 不在这条分支上，
+               这里只负责收尾记账。 */
             const data = msg.data || {};
             /* 一轮结束：把本次用量按模型并进所属会话的累计台账（并落一条逐轮明细） */
             if (tokOwner && typeof tokMergeRun === "function") {
@@ -3955,8 +4004,19 @@ function dshRunOnce(input, opts) {
             if (opts.onDone) {
               try { opts.onDone(data); } catch {}
             }
-            /* 网关常先 emit error 再 done(空正文);不可吞掉 seenError 当成成功空回复 */
-            if (seenError) {
+            /* 网关常先 emit error 再 done(空正文);不可吞掉 seenError 当成成功空回复。
+               用户主动关闭那一轮同理要收手（不能当成「跑完了」往会话里写空回复），
+               但收尾的是一枚带 userClosed 标记的中性错误 —— 调用方据此只画状态行。 */
+            if (userClosedRaw) {
+              finish(
+                false,
+                dshUserClosedErrorOf(runKey, userClosedRaw) ||
+                  Object.assign(new Error(dshUserClosedText()), {
+                    userClosed: true,
+                    detail: userClosedRaw,
+                  }),
+              );
+            } else if (seenError) {
               finish(false, new Error(String(seenError)));
             } else {
               /* data.paused = 用户按「⏸暂停」让这一轮停在当前步（网关保证暂停轮不会有
@@ -3979,9 +4039,10 @@ function dshRunOnce(input, opts) {
       })
       .catch((e) => {
         if (!settled) {
+          const uc = userClosedRaw ? dshUserClosedErrorOf(runKey, userClosedRaw) : null;
           finish(
             false,
-            new Error(seenError || (e && e.message) || String(e)),
+            uc || new Error(seenError || (e && e.message) || String(e)),
           );
         }
       });
@@ -4134,13 +4195,6 @@ function onDshNodeEvent(node, attemptT, type, data) {
    0.34 = 滑杆拉满时的增益（35% 对应 0.119，与早先固定幅度 0.14 的内置音听感相当，
    并行的低一个八度分音贡献了低频能量）。 */
 const DSH_DONE_SOUND_VOL_DEFAULT = 35;
-/* 最终音（所有任务都完成那一声）的音量倍数：同一把音色，按滑杆增益放大 1.5 倍。
-   为什么是倍数而不是另做一把音：本次需求要「以 1.5 倍音量播放完成音替代原本的长任务
-   音效」——收尾那一声就是熟悉的那一声，只是明显更响。 */
-const DSH_DONE_SOUND_FINAL_RATIO = 1.5;
-/* 最终音的增益上限：滑杆 100% 时 0.34 × 1.5 = 0.51，已经逼近满幅，再放大就会削波破音
-   （听感从「更响」变成「更刺」）。0.85 是「明显比普通完成音响、但绝不裂」的那一点。 */
-const DSH_DONE_SOUND_FINAL_MAX_GAIN = 0.85;
 function doneSoundVolumePct() {
   const d = (typeof S !== "undefined" && S && S.config && S.config.dsh) || {};
   const n = Number(d.doneSoundVolume);
@@ -4148,18 +4202,16 @@ function doneSoundVolumePct() {
   return Math.max(0, Math.min(100, n));
 }
 /* 完成音的音量系数（0~1）：滑杆百分比 → 增益。
-   final 传真 = 收尾那一档（所有任务都完成）：同一把尺再乘 1.5，并夹到安全上限。
-   自定义音效文件也按同一口径分档（见 playDoneSoundFile 的 final 参数）。 */
-function doneSoundGain(final) {
-  const base = (doneSoundVolumePct() / 100) * 0.34;
-  if (!final) return base;
-  return Math.min(DSH_DONE_SOUND_FINAL_MAX_GAIN, base * DSH_DONE_SOUND_FINAL_RATIO);
+   **只有这一档**：任务完成与「全部完成」共用它 —— 本次需求把收尾那一声 ×1.5 的倍数档
+   整体删除（连同上限常量），自定义音效文件也不再分档（见 playDoneSoundFile）。 */
+function doneSoundGain() {
+  return (doneSoundVolumePct() / 100) * 0.34;
 }
 /* ── 完成音的音色真源 ──
    只有**一把**音色：任务完成短促音 = 合成双音 E5 → A5（约 0.42s），
-   任何一件任务跑完响它，全部任务都完成时响放大 1.5 倍的它（见 doneSoundGain 的 final）。
+   任何一件任务跑完响它 —— 最后一件跑完也是它，全部完成没有额外一声、没有放大档。
    原来的第二把音色（长任务音效：三音上行 C6→E6→G6 / 随包 renderer/sounds/all-done.wav）
-   与承载它的主进程提醒音通道本次整体下线，这里的表就是全仓唯一的完成音音色真源。 */
+   与承载它的主进程提醒音通道早已下线，这里的表就是全仓唯一的完成音音色真源。 */
 const DONE_TONE_DING = [
   [659.25, 0, 0.18],
   [880, 0.18, 0.18],
@@ -4198,9 +4250,9 @@ function doneAudioCtx() {
   return ac;
 }
 /* 内置完成音 → WebAudio（唯一实现；主进程没有发声通道，只有判定心跳）。
-   final 真 = 收尾那一档（所有任务都完成）：增益按 1.5 倍放大并夹到安全上限。 */
-function playBuiltinTones(notes, decays, tail, final) {
-  const amp = doneSoundGain(final);
+   只有一档音量（doneSoundGain()）—— 没有「收尾更响」的 final 档。 */
+function playBuiltinTones(notes, decays, tail) {
+  const amp = doneSoundGain();
   if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
   const ac = doneAudioCtx();
   if (!ac) return;
@@ -4228,11 +4280,11 @@ function playBuiltinTones(notes, decays, tail, final) {
     o.stop(t0 + end + 0.02);
   });
 }
-/* ── 完成音的发声（一把音色 · 两档音量）──
-   ① 普通短促音 = 任务级「任何一件任务跑完」：内置短促双音 E5→A5（合成）；
-   ② 最终音 = 「所有任务都完成」：**同一把音色**，增益 ×1.5（见 doneSoundGain(final)）。
-   两档共用同一个开关与音量滑杆；自定义音频文件两档都用它（设了就用用户选的音，
-   留空用内置音）。原来的「长任务音效」（全局三音上行 / 随包 all-done.wav）已整体移除。
+/* ── 完成音的发声（一把音色 · 一档音量）──
+   只有一种声音：任何一件任务跑完（含最后一件）= 内置短促双音 E5→A5（合成）。
+   「全部完成」不再单独发声、也不再有 ×1.5 音量档（本次需求：两者没区别）。
+   共用完成音效开关与音量滑杆；自定义音频文件设了就用用户选的音，留空用内置音。
+   原来的「长任务音效」（全局三音上行 / 随包 all-done.wav）早已移除。
    发声只走页面内 WebAudio / <audio>：提醒音的主进程通道（preload 的 soundAlert →
     sound-alert.js）早已下线，主进程只剩下「判定心跳」（sound:watch → sound:tick）。
   后台能不能按时响，取决于两件事，两件都做了：
@@ -4240,32 +4292,31 @@ function playBuiltinTones(notes, decays, tail, final) {
        由主进程心跳驱动（见 app.js 的 syncSoundWatch / onSoundTick）；
     ② 音频输出 —— 建好 AudioContext 后一直续跑（见 doneAudioCtx 的 onstatechange），
        窗口重新激活时再补一次判定（那条路不会重复响）。 */
-function playTaskDoneSound(final) {
+function playTaskDoneSound() {
   const d = (S.config && S.config.dsh) || {};
   if (d.doneSound === false) return;
-  /* 落点登记：同一瞬并行收尾据此合并成一声，也是最终音的冷却判据（见两个 DoneCheck） */
+  /* 落点登记：同一瞬并行收尾据此合并成一声（见 dshRunQueueDoneCheck） */
   S._doneSoundAt = String(Date.now());
   const file = d.doneSoundFile || "";
-  if (!playDoneSoundFile(file, final)) builtinDoneDing(final);
+  if (!playDoneSoundFile(file)) builtinDoneDing();
 }
 /* 设置内试听：忽略开关与冷却（用户主动点击）。
-   final 真 = 试听收尾那一档（1.5 倍）—— 用户听到的就是「全部完成」时真实的那一声。 */
-function previewDoneSound(file, final) {
-  if (!playDoneSoundFile(file, final)) builtinDoneDing(final);
+  听到的就是任务跑完那一刻真实的那一声（没有「收尾更响」的另一档）。 */
+function previewDoneSound(file) {
+  if (!playDoneSoundFile(file)) builtinDoneDing();
 }
 /* 设置内调音量时试听内置音（带自定义文件时也响内置音，否则用户调滑杆听不出任何变化）；
-   同样按最终音口径响，滑杆拉到哪一档、收尾那一声就有多响。 */
+  滑杆拉到哪一档，任务跑完那一声就有多响。 */
 function previewDoneSoundVolume() {
-  builtinDoneDing(true);
+  builtinDoneDing();
 }
 
 /* 任务完成短促音（唯一一把音色）：E5 → A5 双音，约 0.42 秒。
-   final 真 = 「所有任务都完成」那一档：同一把音色，增益按 doneSoundGain(true) 放大 1.5 倍
-   （本次需求：它替代了原来的长任务音效）。 */
-function builtinDoneDing(final) {
-  const amp = doneSoundGain(final);
+  只有一档音量：任务完成与「全部完成」是同一声（本次需求）。 */
+function builtinDoneDing() {
+  const amp = doneSoundGain();
   if (!(amp > 0)) return; /* 滑杆拉到 0 = 静音（开关仍是开，只是不想被打扰） */
-  playBuiltinTones(DONE_TONE_DING, DONE_DECAY_DING, DONE_TAIL_DING, final);
+  playBuiltinTones(DONE_TONE_DING, DONE_DECAY_DING, DONE_TAIL_DING);
 }
 /* 提问/审批提示音:内置短促双音(440→660),或用自定义文件。固定幅度 0.12 =
    完成音滑杆 35% 那一档（提问音不跟完成音音量滑杆走，见 playIxSound）。
@@ -4296,15 +4347,14 @@ function playIxSound() {
   if (d.askSound === false) return;
   if (!playDoneSoundFile(d.askSoundFile || "")) builtinIxBeep();
 }
-/* 自定义音效文件：走页面里的 <audio>（主进程提醒音通道本次已下线）。
-   音量分两档：普通 0.5（文件自己的响度口径）；final 真 = 收尾那一档，
-   0.5 × 1.5 = 0.75 —— 与内置音的 1.5 倍同一把尺（<audio>.volume 上限 1.0，不会溢出）。
-   返回 false = 没文件 / 播不动，调用方照旧回落到内置音（同样分两档）。 */
-function playDoneSoundFile(file, final) {
+/* 自定义音效文件：走页面里的 <audio>（主进程提醒音通道早已下线）。
+   只有一档音量 0.5（<audio> 自己的响度口径）—— 不存在「收尾更响」的 0.75 档。
+   返回 false = 没文件 / 播不动，调用方照旧回落到内置音。 */
+function playDoneSoundFile(file) {
   if (!file) return false;
   try {
     const a = new Audio(window.api.toFileUrl(file));
-    a.volume = final ? 0.75 : 0.5;
+    a.volume = 0.5;
     a.play().catch(() => {});
     return true;
   } catch {
@@ -5013,6 +5063,32 @@ function ixEndRound(runKey) {
   );
   renderIxPanel();
 }
+/* 「用户主动关闭会话」状态行（本次需求）：
+   与「这一轮已经结束」同一套痕迹口径 —— 落盘、重开可见、**不进模型上下文**
+   （agentHistoryEntries 按 _src 过滤；content 为空，本来就进不去）。
+   detail = 原始工程报文（exit code / stderr tail），默认折叠，点「详情」才展开
+   （渲染在 app-assist.js 的 userClosedRowEl）。content 刻意留空：这一行不是
+   模型说的话，也不是用户说的话，渲染层按 _src 单独画。 */
+function userClosedTrace(runKey, detail) {
+  const k = String(runKey || "");
+  const sid = k.slice(0, 6) === "agent:" ? k.slice(6).trim() : "";
+  if (!sid || typeof agentSessionById !== "function") return 0;
+  const st = agentSessionById(sid);
+  if (!st || !st.id) return 0;
+  st.messages = Array.isArray(st.messages) ? st.messages : [];
+  const at = Date.now();
+  st.messages.push({
+    role: "user",
+    content: "",
+    at: at,
+    _src: USER_CLOSED_SRC,
+    _roundKey: k,
+    _detail: String(detail || "").slice(0, 4000),
+  });
+  /* 本轮收尾会自己整表重绘（app-assist 的 finally），这里不抢先渲染 */
+  return at;
+}
+
 /* 「这一轮已经结束」痕迹：轮次收尾时卡片收口后落的一行界面痕迹 ——
    落盘、重开可见、**不进模型上下文**（见 agentHistoryEntries / agentConfirmedHistoryEntries
    的过滤）。同一轮只落一条：收尾收口与「点到残留的死卡」两条路都可能想写它。 */
@@ -5410,6 +5486,8 @@ function agentHistoryEntries(st, opts) {
     /* 「这一轮已经结束」痕迹同理（本次需求：轮次收尾时卡片收口的界面痕迹，
        同样是给用户看的，不是用户说过的话） */
     if (String(m._src || "") === "ix-round-end") continue;
+    /* 「用户主动关闭会话」状态行同理（本次需求）：它是界面状态，不是用户说过的话 */
+    if (String(m._src || "") === USER_CLOSED_SRC) continue;
     /* 手动压缩折起来的历史（本次开发需求 · 拷问共识）：它们已经被收进摘要，**不再进
        模型上下文** —— 折叠行只负责界面回看（app-assist.js 的 agentFoldRowEl）。
        这里是「压缩生效」的**唯一过滤点**：压缩不删任何一条消息，只给它们盖 `_fold`
@@ -5512,7 +5590,7 @@ function ixAnswerQuestion(it) {
         return ixEndCardOnStale(it, ixEndedAnswerTextOf(it, answers));
       if (res && res.ok === false) throw new Error(res.error);
       /* 你答了这一轮：登记回话时刻（诊断用，见 dshRunUserMark）。
-         完成音的判定不看这个时刻 —— 收尾那一档只看队列空不空。 */
+         完成音的判定不看这个时刻 —— 只看运行队列的前后对比。 */
       dshRunUserMark(String(it.runKey || ""));
       /* 提交成功 = 用户真的答了这一轮：先落进会话消息（进上下文 + 界面留痕），再撤卡。
          失败 / stale 的路径不走这里 —— 那不是答案，不该被当成「用户已确认」写进上下文。 */

@@ -541,8 +541,11 @@ async function main() {
     "[1] 行上记着条目 id（悬停时据此取同一条数据，不靠行号）");
   ok(cellOf(rowAudio, "asset-pv-audio").children[0].textContent === "▶",
     "[1] 音频播放键初始是 ▶");
-  ok((rowText.listeners.mouseenter || []).length === 1 && (rowText.listeners.mouseleave || []).length === 1,
-    "[1] 行上挂了「停一会儿出场 / 移开即收」两个监听");
+  ok((cellOf(rowText, "asset-pv-text").listeners.mouseenter || []).length === 1
+    && (cellOf(rowText, "asset-pv-text").listeners.mouseleave || []).length === 1,
+    "[1] 行内小样上挂了「停一会儿出场 / 移开即收」两个监听");
+  ok(!(rowText.listeners.mouseenter || []).length && !(rowText.listeners.mouseleave || []).length,
+    "[1] 整行不再挂悬停浮层（停在名称输入框 / 类型 / 按钮上不弹，免得浮层压住编辑）");
 
   /* ═════════ [2] 行内小样：惰性取图 · 摘要只读开头 ═════════ */
   const imgCell = cellOf(rowImg, "asset-pv-thumb");
@@ -572,7 +575,7 @@ async function main() {
     "[2] 大文件不进摘要读取（fileStat 先判体积）");
 
   /* ═════════ [3] 悬停浮层：出场 / 内容 / 收层 ═════════ */
-  rowText.dispatch("mouseenter");
+  cellOf(rowText, "asset-pv-text").dispatch("mouseenter");
   ok(!findEl(ROOT_EL, "asset-pv-pop"), "[3] 刚悬停不出场（150ms 之前列表里没有浮层）");
   advance(150);
   const pop = findEl(ROOT_EL, "asset-pv-pop");
@@ -591,9 +594,9 @@ async function main() {
 
   /* 鼠标进浮层内保持：行上先报移开、浮层随即进入（真 DOM 的顺序即如此） */
   pop._hover = true;
-  rowText.dispatch("mouseleave");
+  cellOf(rowText, "asset-pv-text").dispatch("mouseleave");
   advance(200);
-  ok(!!findEl(ROOT_EL, "asset-pv-pop"), "[3] 鼠标在浮层内 → 不因行上的移开而收层");
+  ok(!!findEl(ROOT_EL, "asset-pv-pop"), "[3] 鼠标在浮层内 → 不因小样上的移开而收层");
   pop._hover = false;
   pop.dispatch("mouseleave");
   advance(200);
@@ -601,7 +604,7 @@ async function main() {
   ok((DOC_LISTENERS.keydown || []).length === 0, "[3] 收层时把 Esc 监听一并摘掉");
 
   /* Esc 只收这一层 */
-  rowText.dispatch("mouseenter");
+  cellOf(rowText, "asset-pv-text").dispatch("mouseenter");
   advance(150);
   ok(!!findEl(ROOT_EL, "asset-pv-pop"), "[3] 再次悬停能重新出场");
   let escStopped = false;
@@ -612,12 +615,12 @@ async function main() {
   ok(escStopped, "[4] Esc 被本层吃掉（capture + stopPropagation：不惊动底下的素材库 / 设置框）");
 
   /* ═════════ [4] 其余收层出口 ═════════ */
-  rowText.dispatch("mouseenter");
+  cellOf(rowText, "asset-pv-text").dispatch("mouseenter");
   advance(150);
   ok(!!findEl(ROOT_EL, "asset-pv-pop"), "[4] 浮层再次出场");
   SB_WIN.dispatch("scroll");
   ok(!findEl(ROOT_EL, "asset-pv-pop"), "[4] 滚动让行离开原位即收层（不会飘在别处）");
-  rowImg.dispatch("mouseenter");
+  cellOf(rowImg, "asset-pv-thumb").dispatch("mouseenter");
   advance(150);
   ok(!!findEl(ROOT_EL, "asset-pv-pop"), "[4] 图像行也能出场");
   const bigImg = findEl(findEl(ROOT_EL, "asset-pv-pop"), "asset-pv-imgbig");
@@ -721,7 +724,7 @@ async function main() {
     "打开原文件",
     "用本机默认程序打开这条内容的实体文件",
     "在资源管理器中定位这条内容的实体文件",
-    "展开波形试听这条音频（鼠标停在这一行上即出现浮层）",
+    "展开波形试听这条音频（鼠标停在这个播放键上即出现浮层）",
   ];
   const missing = need.filter((k) => {
     const m = i18n.match(new RegExp('"' + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '":\\s*"'));

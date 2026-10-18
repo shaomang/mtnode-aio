@@ -1524,7 +1524,8 @@ function assetSpawnInBand(band, size) {
   const p = toStage(cx, cy);
   return { x: snap(p.x), y: snap(p.y) };
 }
-function assetSpawnPoint() {
+/** 候选落点：可见画布中心（连点阶梯错开），中心被浮层压住就在空白带里挑一条 */
+function assetSpawnCandidate() {
   const r = assetCanvasRect();
   const box = { left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height };
   const pt = toStage((box.left + box.right) / 2, (box.top + box.bottom) / 2);
@@ -1555,6 +1556,145 @@ function assetSpawnPoint() {
   return base;
 }
 
+/* ── 落点层级：素材是「外来内容」，插进来就该待在当前画布这一层 ──
+   背景：新节点的父级由 app.js · makeNode 决定 —— ① currentSuperFocus() 有效（全屏进了
+   某个超级节点内部）时无条件挂进该壳；② 否则 superHostAtWorld(落点) 命中展开的壳就吸附。
+   而候选落点只避开浮层、完全不避开壳，于是根画布上「落点正好压着某个展开的壳」时，
+   素材节点就被吞进壳里（用户看到的是「插到画布却跑进超级节点」）。
+   口径（已与用户确认）：
+   · 全屏在某个超级节点内部插入 → 跟随视图语境，留在该壳内（坐标口径与 makeNode 一致）；
+   · 根画布插入 → 一律顶层：落点被壳压住就沿壳的外接矩形四边挪到壳外最近的空白处；
+     壳外确实没地方时仍放壳外，并把镜头平移到刚好看得见它（不重新居中，免得又藏到框下）。 */
+/** 舞台坐标下的可见画布矩形（扣掉 ASSET_SPAWN_EDGE 的边距） */
+function assetStageRect() {
+  const r = assetCanvasRect();
+  const a = toStage(r.left + ASSET_SPAWN_EDGE, r.top + ASSET_SPAWN_EDGE);
+  const b = toStage(
+    r.left + Math.max(ASSET_SPAWN_EDGE, r.width - ASSET_SPAWN_EDGE),
+    r.top + Math.max(ASSET_SPAWN_EDGE, r.height - ASSET_SPAWN_EDGE),
+  );
+  return {
+    x0: Math.min(a.x, b.x),
+    y0: Math.min(a.y, b.y),
+    x1: Math.max(a.x, b.x),
+    y1: Math.max(a.y, b.y),
+  };
+}
+/** 落点整只（节点左上角 + 绘制尺寸）是否落在矩形里 */
+function assetRectIn(p, size, R) {
+  return (
+    !!R &&
+    p.x >= R.x0 &&
+    p.y >= R.y0 &&
+    p.x + size.w <= R.x1 &&
+    p.y + size.h <= R.y1
+  );
+}
+/** 可见画布被浮层切过之后剩下的空白带（舞台坐标）：与 assetFreeBands 同一份判据 */
+function assetFreeStageBands() {
+  const r = assetCanvasRect();
+  const box = { left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height };
+  return assetFreeBands(assetCoverLayers(), box).map((b) => {
+    const a = toStage(b.left, b.top);
+    const c = toStage(b.right, b.bottom);
+    return {
+      x0: Math.min(a.x, c.x),
+      y0: Math.min(a.y, c.y),
+      x1: Math.max(a.x, c.x),
+      y1: Math.max(a.y, c.y),
+    };
+  });
+}
+/** 采样尺寸用的现成素材节点（没有就用 kind 默认值） */
+function assetSpawnSampleSize() {
+  const sample = (S.wf && S.wf.nodes && S.wf.nodes.filter(isAssetNode)[0]) || null;
+  return assetSpawnNodeSize(sample);
+}
+/** 落点压着壳时，挪到壳外最近的空白处（拿不到几何信息就原样返回 = 与改动前一致） */
+function assetSpawnEscapeShell(p) {
+  if (typeof superHostAtWorld !== "function" || typeof superOpenHitRect !== "function")
+    return p;
+  const host = superHostAtWorld(p.x, p.y);
+  if (!host) return p;
+  const hb = superOpenHitRect(host);
+  if (!hb) return p;
+  const size = assetSpawnSampleSize();
+  const gap = ASSET_SPAWN_EDGE;
+  /* 四边都试：壳右侧（列表里最常用）→ 左侧 → 下方 → 上方；最后按代价挑一个 */
+  const cands = [
+    { x: hb.x1 + gap, y: hb.y0 },
+    { x: hb.x0 - gap - size.w, y: hb.y0 },
+    { x: hb.x0, y: hb.y1 + gap },
+    { x: hb.x0, y: hb.y0 - gap - size.h },
+  ].map((c) => ({ x: snap(c.x), y: snap(c.y) }));
+  const R = assetStageRect();
+  const bands = assetFreeStageBands();
+  const pc = { x: p.x + size.w / 2, y: p.y + size.h / 2 };
+  let best = null;
+  let bestCost = Infinity;
+  for (const c of cands) {
+    /* makeNode 是按节点左上角落点判归属的，这里必须同一口径 */
+    const adopted = !!superHostAtWorld(c.x, c.y);
+    const clear = bands.length ? bands.some((b) => assetRectIn(c, size, b)) : false;
+    const visible = assetRectIn(c, size, R);
+    const d = Math.hypot(c.x + size.w / 2 - pc.x, c.y + size.h / 2 - pc.y);
+    const cost =
+      (adopted ? 1e9 : 0) + (clear ? 0 : 1e6) + (visible ? 0 : 1e4) + d;
+    if (cost < bestCost) {
+      best = c;
+      bestCost = cost;
+    }
+  }
+  return best || p;
+}
+/** 素材插入的落点：根画布 → 顶层且不压壳；全屏壳内 → 跟随视图语境（原样） */
+function assetSpawnPoint() {
+  const p = assetSpawnCandidate();
+  const sf = typeof currentSuperFocus === "function" ? currentSuperFocus() : "";
+  if (sf) return p;
+  return assetSpawnEscapeShell(p);
+}
+/** 落点不在可见区里（或整个被浮层压着）时，把镜头平移到「刚好把它整只带进来」：
+    只补最小位移、不重新居中 —— 素材库框通常还开着，一居中等于又把它塞回框下面。
+    目标区优先选能整只放下它的那块空白带（离落点最近的），没有空白带才退回可见区。 */
+function assetSpawnReveal(node) {
+  if (!node || !S.cam || typeof nodeDrawSize !== "function" || typeof applyTransform !== "function")
+    return;
+  const R = assetStageRect();
+  const size = nodeDrawSize(node);
+  const p = { x: Number(node.x) || 0, y: Number(node.y) || 0 };
+  const inView = assetRectIn(p, size, R);
+  const bands = assetFreeStageBands();
+  /* 已经在可见区、又没被浮层压着（或已经落在某块空白带里）→ 一步都不动 */
+  if (inView && (!bands.length || bands.some((b) => assetRectIn(p, size, b)))) return;
+  const fits = bands.filter((b) => b.x1 - b.x0 >= size.w && b.y1 - b.y0 >= size.h);
+  const cx = p.x + size.w / 2;
+  const cy = p.y + size.h / 2;
+  let target = R;
+  let bestD = Infinity;
+  for (const b of fits) {
+    const d = Math.hypot(
+      Math.max(b.x0 - cx, 0, cx - b.x1),
+      Math.max(b.y0 - cy, 0, cy - b.y1),
+    );
+    if (d < bestD) {
+      bestD = d;
+      target = b;
+    }
+  }
+  let dx = 0;
+  let dy = 0;
+  if (p.x < target.x0) dx = target.x0 - p.x;
+  else if (p.x + size.w > target.x1) dx = target.x1 - (p.x + size.w);
+  if (p.y < target.y0) dy = target.y0 - p.y;
+  else if (p.y + size.h > target.y1) dy = target.y1 - (p.y + size.h);
+  if (!dx && !dy) return;
+  const z = Number(S.cam.z) > 0 ? Number(S.cam.z) : 1;
+  S.cam.x = (Number(S.cam.x) || 0) + dx * z;
+  S.cam.y = (Number(S.cam.y) || 0) + dy * z;
+  applyTransform();
+}
+
 function assetInsertToCanvas(a) {
   if (!S.wf || !Array.isArray(S.wf.nodes)) {
     toast(I18n.t("请先打开一个画布"), "warn");
@@ -1565,9 +1705,12 @@ function assetInsertToCanvas(a) {
     return null;
   }
   const p = assetSpawnPoint();
-  const node = addNode("asset", p.x, p.y, {
-    title: a.displayName || a.folder || I18n.t("素材"),
-  });
+  /* 父级显式交代清楚：全屏在某个超级节点内部时跟随视图语境（交给 makeNode 挂到该壳），
+     否则钉在顶层 —— 不让落点吸附把外来素材吞进某个展开的壳里。 */
+  const sf = typeof currentSuperFocus === "function" ? currentSuperFocus() : "";
+  const extra = { title: a.displayName || a.folder || I18n.t("素材") };
+  if (!sf) extra.parentSuperId = "";
+  const node = addNode("asset", p.x, p.y, extra);
   if (!node) {
     toast(I18n.t("插入失败：无法创建素材节点"), "err");
     return null;
@@ -1575,6 +1718,8 @@ function assetInsertToCanvas(a) {
   /* 绑定只有一个口径（assetApplyBinding）；addNode 已经压过撤销栈，这里不再压第二次
      —— 新建素材节点在撤销里应当就是一步。 */
   assetApplyBinding(node, a, { history: false, quiet: true });
+  /* 落点被壳挤到可见区外时把镜头跟过去（本来就在可见区里则一步都不动） */
+  assetSpawnReveal(node);
   toast(I18n.t("已插入素材：") + (a.displayName || a.folder || ""), "ok");
   return node;
 }
@@ -3345,7 +3490,7 @@ function assetPvAudioCell(scope, r) {
   const cell = assetEl("div", "asset-pv-audio");
   const b = assetEl("button", "asset-pv-play", "▶");
   b.type = "button";
-  b.title = I18n.t("展开波形试听这条音频（鼠标停在这一行上即出现浮层）");
+  b.title = I18n.t("展开波形试听这条音频（鼠标停在这个播放键上即出现浮层）");
   cell.appendChild(b);
   const pvBtn = () =>
     _assetPv && _assetPv.audio && assetPvItemSame(_assetPv.audio, r) && _assetPv.el
@@ -3395,7 +3540,7 @@ const _assetPv = {
   timer: 0,
 };
 
-/* 鼠标停在行上：等一小会儿再出场（扫过列表时不闪窗），已经开着的那一行不重开 */
+/* 鼠标停在小样上：等一小会儿再出场（扫过列表时不闪窗），已经开着的那一行不重开 */
 function assetPvShowFor(row) {
   if (!row || row === _assetPv.row) return;
   if (_assetPv.timer) clearTimeout(_assetPv.timer);
@@ -3661,12 +3806,34 @@ function assetPvCancelAndClose() {
   }, 120);
 }
 
-/* 行上挂的两件事：鼠标停一会儿浮出预览；鼠标离开即收（Esc / 滚动另有出口） */
+/* 行内小样（图像缩略图 / 正文摘要 / 音频播放键）—— 放大浮层只从这三块起。
+   小样上挂两件事：鼠标停一会儿浮出预览；离开即收（Esc / 滚动另有出口）。
+   浮层不再从整行触发：挂在整行上时，鼠标停在标题输入框上也会弹一张压在行上的浮层，
+   连名字都点不进去（只在「看得出是预览图」的地方放大才符合直觉）。 */
 function assetPvWireRow(row, r, ctx) {
   row.dataset.iid = String(r.id || "");
   row._assetPvAsset = (ctx && ctx.asset) || null;
-  row.addEventListener("mouseenter", () => assetPvShowFor(row));
-  row.addEventListener("mouseleave", assetPvCancelAndClose);
+  const cells = Array.from((row && row.children) || []).filter(
+    (el) =>
+      el.classList &&
+      (el.classList.contains("asset-pv-thumb") ||
+        el.classList.contains("asset-pv-text") ||
+        el.classList.contains("asset-pv-audio")),
+  );
+  for (const cell of cells) {
+    cell.addEventListener("mouseenter", () => assetPvShowFor(row));
+    cell.addEventListener("mouseleave", assetPvCancelAndClose);
+  }
+  /* 保险：浮层开着时点进标题输入框 / 点行内任何按钮 → 立刻收掉，绝不让它盖住编辑目标。
+     小样本身不算（点小样是要看图 / 起播）。 */
+  const SAMPLE_SEL = ".asset-pv-thumb, .asset-pv-text, .asset-pv-audio";
+  const isSample = (t) => !!(t && t.closest && t.closest(SAMPLE_SEL));
+  row.addEventListener("focusin", (ev) => {
+    if (!isSample(ev.target)) assetPvClose();
+  });
+  row.addEventListener("pointerdown", (ev) => {
+    if (!isSample(ev.target)) assetPvClose();
+  });
 }
 
 /** 条目行：素材设置框与素材库右栏详情共用（ctx.asset ＝ 本次编辑的素材；
@@ -3732,7 +3899,9 @@ function assetSetRow(r, i, n, ctx) {
     I18n.t("连入只做检查，点端子上的「覆盖」并确认才写入素材库，输出即读出该条内容");
   row.appendChild(idx);
   /* 行内预览：文本＝正文首行摘要 · 图像＝40px 缩略图（惰性加载）· 音频＝小播放键。
-     鼠标停在这一行上再浮出放大图 / 全文 / 波形试听（见本文件顶部「条目行的行内预览」）。
+     鼠标停在这块小样上再浮出放大图 / 全文 / 波形试听（见本文件「条目行的行内预览」）：
+     只在小样上触发，行的其它位置（标题输入框、类型、序号、文件名、按钮）不弹，
+     否则浮层会压住正在编辑的名称。
      只读展示：不改库，也不占行内的编辑态。 */
   if (r.type === "text") row.appendChild(assetPvTextCell(ctx.holder || ASSET_SET, r));
   else if (r.type === "image") row.appendChild(assetPvThumb(ctx.holder || ASSET_SET, r));

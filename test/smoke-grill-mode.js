@@ -92,13 +92,17 @@ console.log("\n[3] 契约文本（技能 · 询问窗 · 推荐项 · 只问不�
 has(ASSIST, "const GRILL_CONTRACT =", "契约是常量（一处真源，会话与助手共用）");
 has(ASSIST, "【拷问模式 · 先问清再动手】", "契约标题与开发节点那段同族");
 has(ASSIST, "mtnode-grill-me", "契约要求先加载内置技能 mtnode-grill-me");
-has(ASSIST, "ask_user_question", "契约要求走 MTNode 询问窗");
-has(ASSIST, "推荐项放第一位", "推荐项排第一位（label 末尾标「（推荐）」）");
-has(ASSIST, "禁止把问题编号列在回复正文里", "明令禁止把问题当正文罗列（本轮修的根因）");
+/* 瘦身口径（本次需求）：询问窗 / 推荐项 / 禁止正文列问题 / 前沿口径这些细则搬进技能，
+   系统提示只留触发句 + 收尾卡格式 —— 下三条改为钉「契约指向技能、细则真源在技能里」。 */
+has(ASSIST, "询问窗格式、multi_select、前沿口径", "契约把询问窗 / multi_select / 前沿口径指向技能");
+const GRILL_SKILL = read("mtnode-agent-skills/mtnode/grill-me/SKILL.md");
+has(GRILL_SKILL, "ask_user_question", "技能里写明走 MTNode 询问窗（细则唯一真源）");
+has(GRILL_SKILL, "推荐项放第一位", "技能里写明推荐项排第一位（label 末尾标「（推荐）」）");
+has(GRILL_SKILL, "把问题写成回复正文的编号列表", "技能里明令禁止把问题当正文罗列（本轮修的根因）");
 no(ASSIST, "【拷问模式 · 先问清再动手】这条会话…Q1", "契约里没有 Q1/Q2 式正文提问样板");
-has(ASSIST, "拿不准就不拷问、直接干活", "拿不准就往「不拷问」倒（用户口径）");
+has(ASSIST, "拿不准就直接干活", "拿不准就往「不拷问」倒（用户口径）");
 has(ASSIST, "不出实施计划、不开工", "确认之前不出实施计划、不开工");
-has(ASSIST, "可以只读地查看现状", "允许只读查现状（与会话 / 助手的自由度对齐）");
+has(ASSIST, "可只读查看现状", "允许只读查现状（与会话 / 助手的自由度对齐）");
 has(ASSIST, "确认无歧义", "出口 = 用户明确「确认无歧义」");
 ok(
   ASSIST.indexOf("不得修改任何文件、不得改画布、不得回写 note") < 0,

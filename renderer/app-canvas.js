@@ -923,18 +923,33 @@ function canvasNodeSig(n) {
   if (!n) return "?";
   const open = superIsOpenShell(n);
   const sz = open ? superDisplaySize(n) : nodeDrawSize(n);
+  const browse = nodeBrowseMode(n);
   return [
     n.id,
     n.kind,
     isSel(n.id) ? 1 : 0,
-    nodeBrowseMode(n) ? 1 : 0,
+    browse ? 1 : 0,
     Math.round(Number(sz && sz.w) || 0),
     Math.round(Number(sz && sz.h) || 0),
     n.running ? 1 : 0,
     n.error ? 1 : 0,
     n.expanded ? 1 : 0,
     open ? 1 : 0,
+    /* 素材节点在浏览态：某个条目「输出端子被连」会让该条由一行标题展开出缩略图，
+       body 形状随之改变 —— 所以「哪些端口有出线」必须进签名，否则接上 / 断开后
+       预览态会一直停在旧形状（真机自验复现：断开后缩略图不消失）。 */
+    browse && n.kind === "asset" ? assetBrowseOutMask(n) : "",
   ].join(":");
+}
+/** 素材条目「输出端子被连」的位图（`0110`），只给 canvasNodeSig 用 */
+function assetBrowseOutMask(n) {
+  if (typeof assetOutPortOccupied !== "function" || typeof assetItems !== "function")
+    return "";
+  const items = assetItems(n);
+  let mask = "";
+  for (let i = 0; i < items.length; i++)
+    mask += assetOutPortOccupied(n, i) ? "1" : "0";
+  return mask;
 }
 function canvasRenderParts() {
   const visNodes = visibleWfNodes();
@@ -1223,6 +1238,13 @@ function renderCanvas() {
     S._ignoreMarkBlurFlush = false;
     S._renderingCanvas = false;
     S._resumeCanvasFocus = false;
+    /* 层视角的「居中」要等这一帧的 DOM 与尺寸都就位（applyWfView 那会儿画布还没量过），
+       所以在这里补一刀：本次绘制画的是哪一层，就叫这一层自己取景。 */
+    if (S._pendingLayerCenter) {
+      S._pendingLayerCenter = false;
+      if (typeof restoreLevelView === "function") restoreLevelView(S.wf);
+      else if (typeof centerLayerView === "function") centerLayerView();
+    }
     if (S._deferCanvasForMarkEdit && !isMarkTextEditing()) {
       S._deferCanvasForMarkEdit = false;
       setTimeout(() => {
@@ -8933,15 +8955,118 @@ NODE_BROWSE_BODY.save = function (node, body) {
   body.appendChild(prev);
 };
 
-/* asset：浏览态（未选中）＝**轻量摘要**，只列「素材名 + 每条内容标题 + 类型徽标」。
-   为什么不在这里渲染内容本体：素材节点是「未 focus 也不算小」的那类节点 —— 编辑态 body
-   会为每条内容造一颗 textarea / <img> / <video> / 波形预览器，并向素材库逐条发
-   assets:itemRead 取正文；一屏摆十几颗素材节点时，这些 DOM 与 IPC 会把画布拖慢，
-   而用户此刻并没有在看它们。浏览态只读节点上已经存着的条目快照（assetItems(node)：
-   id / 标题 / 类型），不读库、不造重控件；点选（拿焦点）后回落编辑态 buildAssetBody，
-   正文 / 缩略图 / 播放器与「覆盖」按钮才会出现。
+/* asset：浏览态（未选中）＝**轻量摘要**，只列「素材名 + 每条内容标题 + 类型徽标」，
+   外加一条本轮需求：**输出端子被连接的条目**（该条内容正在喂给下游）额外展开一块只读缩略图。
+   为什么不做成「全部条目都渲染内容本体」：素材节点是「未 focus 也不算小」的那类节点 ——
+   编辑态 body 会为每条内容造一颗 textarea / <img> / <video> / 波形预览器并向素材库逐条发
+   assets:itemRead；一屏摆十几颗素材节点时这些 DOM 与 IPC 会把画布拖慢，而用户此刻并没有
+   在看它们。所以浏览态的门槛按「这条内容有没有在用」划：只有被接出去的条目才读库、造图，
+   其余仍是单行标题（正文 / 播放器 /「覆盖」按钮 / 可编辑文本框依旧只在点选后的编辑态出现）。
+   用户口径（本轮共识）：只给图像 / 视频缩略图；文本与音频保持单行；视频只取首帧静图
+   （不进播放器池、不自动播放）；缩略图铺满 body 宽、限高 120px 裁切填满；不动节点尺寸
+   （内容超出照旧在 body 内滚动）；纯只读（点击 = 选中节点进编辑态，由节点根既有链路处理）。
    未绑定（空壳）与失联不碰内容本体：空壳照旧给「绑定… / 上传…」两颗入口（刚建出来就能用），
-   失联只留一句去向（重绑入口在节点头部 / 右键，端子与连线原样保留）。 */
+   失联照旧留一句去向（重绑入口在节点头部 / 右键，端子与连线原样保留）—— 失联时条目清单
+   照样列出，已连接条目的缩略图位置给一行「素材失联」灰字。 */
+/** 已连接条目的只读缩略图（图像 / 视频）。只读：不挂按钮、不绑预览灯箱、不写库。
+ *  取数走素材库的条目视图缓存（app-assets.js 的 assetItemViewGet / assetItemViewLoad）：
+ *  缓存没命中就先显示「读取中…」并等一次读取，**读到后原地换掉这一块**（settled=true）。
+ *  为什么不用「等 assetViewRerenderSoon 那次重绘」：画布复用通道按结构签名保留旧 DOM，
+ *  占位会一直挂着（真机自验复现）。读不到一律退成一行灰字，绝不把缩略图缺失弄成空白块。 */
+function assetBrowseThumbEl(node, it, lost, settled) {
+  const box = document.createElement("div");
+  box.className = "n-view-asset-thumb " + it.type;
+  const ghost = (txt) => {
+    const g = document.createElement("div");
+    g.className = "n-view-asset-ghost";
+    g.textContent = txt;
+    box.appendChild(g);
+    return box;
+  };
+  if (lost) return ghost(I18n.t("素材失联"));
+  const aid = String(node.assetId || "");
+  const iid = String(it.id || "");
+  let view = null;
+  try {
+    view = typeof assetItemViewGet === "function" ? assetItemViewGet(aid, iid) : null;
+  } catch (_) {
+    view = null;
+  }
+  /* 缓存没命中：先给「读取中…」，读到后**只替换这一块**（原地换掉占位）——
+     不能指望 assetViewRerenderSoon 那次整幅重绘来补：renderCanvas 的复用通道会
+     按签名原样留下旧 DOM，占位会一直挂在画布上（真机自验复现：预览态一直「读取中…」）。 */
+  if (!view || view.loading) {
+    if (!settled) {
+      try {
+        const wait =
+          typeof assetItemViewLoaded === "function"
+            ? assetItemViewLoaded
+            : typeof assetItemViewLoad === "function"
+              ? assetItemViewLoad
+              : null;
+        if (wait) {
+          Promise.resolve(wait(aid, iid))
+            .catch(() => null)
+            .then(() => {
+              if (!box || !box.parentNode) return;
+              box.parentNode.replaceChild(
+                assetBrowseThumbEl(node, it, false, true),
+                box,
+              );
+            });
+        }
+      } catch (_) {}
+      return ghost(I18n.t("读取中…"));
+    }
+    return ghost(I18n.t("读取失败"));
+  }
+  if (view.missing) return ghost(I18n.t("读取失败"));
+  const p = String(view.absPath || "").trim();
+  if (!p) return ghost(I18n.t("（无内容）"));
+  /* 文件读到了但解码失败（格式不支持 / 文件被删）：缩略图让位给同一行灰字 */
+  const bad = () => {
+    if (el) el.style.display = "none";
+    const g = document.createElement("div");
+    g.className = "n-view-asset-ghost";
+    g.textContent = I18n.t("读取失败");
+    box.appendChild(g);
+  };
+  let el = null;
+  try {
+    if (it.type === "video") {
+      /* 首帧静图：只取 metadata 再 seek 到开头一帧，controls 关掉、muted 防出声 ——
+         不进 mediaView 播放器池（预览态可能有十几颗素材节点，池化播放器太重）。 */
+      const v = document.createElement("video");
+      v.className = "n-view-asset-el";
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = "metadata";
+      v.controls = false;
+      v.tabIndex = -1;
+      v.draggable = false;
+      v.addEventListener("loadedmetadata", () => {
+        try {
+          v.currentTime = Math.min(0.1, (Number(v.duration) || 0.1) / 2);
+        } catch (_) {}
+      });
+      v.addEventListener("error", bad);
+      v.src = window.api.toFileUrl(p);
+      el = v;
+    } else {
+      const img = document.createElement("img");
+      img.className = "n-view-asset-el";
+      img.alt = it.title;
+      img.draggable = false;
+      img.addEventListener("error", bad);
+      img.src = window.api.toFileUrl(p);
+      el = img;
+    }
+  } catch (_) {
+    return ghost(I18n.t("读取失败"));
+  }
+  box.appendChild(el);
+  return box;
+}
 NODE_BROWSE_BODY.asset = function (node, body) {
   const items = assetItems(node);
   const bound = String(node.assetId || "").trim();
@@ -8951,7 +9076,7 @@ NODE_BROWSE_BODY.asset = function (node, body) {
     assetNodeIsLost(node)
   );
   /* 空壳（未绑定）与内容无关，照旧给「绑定… / 上传…」入口 —— 刚建出来的节点不给入口
-     等于让人先猜「点一下才有按钮」。失联同理只留一句去向（重绑入口见节点头部 / 右键）。 */
+     等于让人先猜「点一下才有按钮」。 */
   if (!bound) {
     body.appendChild(
       assetBindBox(
@@ -8963,13 +9088,6 @@ NODE_BROWSE_BODY.asset = function (node, body) {
     );
     return;
   }
-  if (lost) {
-    const g = document.createElement("div");
-    g.className = "n-view n-view-empty";
-    g.textContent = I18n.t("素材失联：点选本节点后看详情 / 重新绑定");
-    body.appendChild(g);
-    return;
-  }
   if (!items.length) {
     const g = document.createElement("div");
     g.className = "n-view n-view-empty";
@@ -8977,12 +9095,23 @@ NODE_BROWSE_BODY.asset = function (node, body) {
     body.appendChild(g);
     return;
   }
+  /* 失联：先给一句去向，条目清单照样列（已连接条目的缩略图位显示「素材失联」）——
+     端子与连线原样保留，重绑入口在节点头部 / 右键。 */
+  if (lost) {
+    const g = document.createElement("div");
+    g.className = "n-view n-view-empty";
+    g.textContent = I18n.t("素材失联：点选本节点后看详情 / 重新绑定");
+    body.appendChild(g);
+  }
   const list = document.createElement("div");
   list.className = "n-view n-view-assets";
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const row = document.createElement("div");
     row.className = "n-view-asset";
+    /* 标题行（标题 + 类型徽标）恒在：缩略图只追加在它下面，混排时一眼分得清哪条在展开 */
+    const hd = document.createElement("div");
+    hd.className = "n-view-asset-hd";
     const nm = document.createElement("div");
     nm.className = "n-view-asset-name";
     nm.textContent = it.title;
@@ -8993,11 +9122,20 @@ NODE_BROWSE_BODY.asset = function (node, body) {
       assetItemTypeLabel(it.type) +
       "\n" +
       I18n.t("点选本节点后查看 / 编辑内容本体");
-    row.appendChild(nm);
+    hd.appendChild(nm);
     const kind = document.createElement("span");
     kind.className = "n-asset-kind " + it.type;
     kind.textContent = assetItemTypeLabel(it.type);
-    row.appendChild(kind);
+    hd.appendChild(kind);
+    row.appendChild(hd);
+    /* 只有「图像 / 视频」且「输出端子真的有数据线接出」的条目才展开缩略图（见上方注释）：
+       文本 / 音频没有缩略图，未连接的条目保持单行，连了线的才多出一块只读预览。 */
+    const wantsThumb = it.type === "image" || it.type === "video";
+    const connected =
+      wantsThumb &&
+      typeof assetOutPortOccupied === "function" &&
+      assetOutPortOccupied(node, i);
+    if (connected) row.appendChild(assetBrowseThumbEl(node, it, lost));
     list.appendChild(row);
   }
   body.appendChild(list);

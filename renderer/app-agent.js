@@ -920,7 +920,7 @@ function dshEffortOf(v, fromProcText) {
 /* 中断智能运行:dsh 线协议无逐轮取消,只能关掉该次运行自己的运行时进程。
    runKey = 那次运行登记的 cancelTag(会话 agent:<id> / 节点 node.id / 助手 assist),
    网关据此精确关闭,不会波及同工作目录里其它并行会话;缺省 = 中断全部在途运行。 */
-function dshCancelActive(runKey) {
+function dshCancelActive(runKey, opts) {
   const map = (S && S._runCancels) || {};
   const keys = runKey ? [String(runKey)] : Object.keys(map);
   /* 判死这一轮：盖终止代号（自增），重发闸据此一次都不重发 —— 需求「停止模型或会话时
@@ -930,7 +930,8 @@ function dshCancelActive(runKey) {
      （真源判据与消费方见 app-db.js dshStopMark / dshRunTask。） */
   if (typeof dshStopMark === "function") {
     try {
-      dshStopMark(runKey ? String(runKey) : "");
+      /* opts.auto = 看门狗自己收的摊（不是用户按的停）：文案要走「自动终止」那一档 */
+      dshStopMark(runKey ? String(runKey) : "", opts && opts.auto ? { auto: true } : undefined);
     } catch (_) {}
   }
   const list = [];

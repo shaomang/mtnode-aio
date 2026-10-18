@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 /* 节点「浏览态（未选中）× 只读文本视图」回归冒烟测试 —— 纯 Node，不依赖 Electron
  *   node test/smoke-node-browse-view.js
  * 要保住的行为：文本 / 图像相关节点**只有被选中时才是可编辑形态**；未选中时像超级节点那样
@@ -14,8 +14,9 @@
  *   [7] index.html 脚本顺序：app.js → app-nodeview.js → app-canvas.js
  *   [8] detectViewLang 判定样例（vm 加载纯逻辑）
  *   [9] nodeTextViewEl 三语言渲染 + YAML 无行号 + @引用着色不破坏 HTML
- *   [10] 素材节点专项：未选中只显示轻量摘要（标题 + 类型徽标 · 不读素材库、不造
- *        textarea / img / video / 按钮）· 点选后才回落编辑态 buildAssetBody
+ *   [10] 素材节点专项：未选中只显示轻量摘要（标题 + 类型徽标 · 不造
+ *        textarea / 按钮）· **输出端子被连接的图像 / 视频条目**额外展开只读缩略图
+ *        （视频只取首帧静图 · 不动节点尺寸 · 未连接条目零读取）· 点选后才回落编辑态 buildAssetBody
  *   [11] 函数节点专项：未选中只显示内容（无输入控件 / 无 onclick / 不用 .n-text 类）·
  *        点进去才出可编辑代码块（mousedown 放行 → wasBrowse → 编辑态 createJsCodeEditor →
  *        聚焦选择器命中 js-edit-input · CSS 三层叠放收点击）· 数组入参 ×N 摘要真源 */
@@ -42,6 +43,7 @@ const read = (rel) =>
 
 const jsCanvas = read("renderer/app-canvas.js");
 const jsApp = read("renderer/app.js");
+const jsNodes = read("renderer/app-nodes.js");
 const jsAssist = read("renderer/app-assist.js");
 const jsView = read("renderer/app-nodeview.js");
 const html = read("renderer/index.html");
@@ -793,7 +795,7 @@ console.log("\n[9] nodeTextViewEl：三语言渲染 + YAML 无行号 + @引用�
   ok(nv.highlightAtRefsHtml("<i>@Alpha</i>", null) === "<i>@Alpha</i>", "无 node（拿不到候选）时不改一个字");
 }
 
-console.log("\n[10] 素材节点：未 focus（未选中）只显示轻量摘要 · 不读素材库、不渲染内容本体");
+console.log("\n[10] 素材节点：未 focus（未选中）只显示轻量摘要 · 已连接条目额外展开只读缩略图");
 {
   const at = jsCanvas.indexOf("NODE_BROWSE_BODY.asset = function (node, body) {");
   const aBrowse = at >= 0 ? blockFrom(jsCanvas, at) : null;
@@ -802,22 +804,24 @@ console.log("\n[10] 素材节点：未 focus（未选中）只显示轻量摘要
     !!browseRegion && browseRegion.indexOf("NODE_BROWSE_BODY.asset") >= 0,
     "素材节点渲染器落在「浏览态区块」内（与其余 kind 同一节，注释锚点没漂走）",
   );
+  /* 缩略图是独立 helper（只读、只在已连接条目上调用），从渲染器本体里切出来单独断言 */
+  const thumb = funcBody(jsCanvas, "function assetBrowseThumbEl(node, it, lost, settled)");
+  ok(!!thumb, "存在浏览态缩略图 helper assetBrowseThumbEl（与 body 渲染器分开，便于逐条钉口径）");
   if (aBrowse) {
-    /* 资源占用就是这一条：未 focus 时不许把正文 / 缩略图 / 播放器造出来 */
+    /* 摘要行本体仍然不造重控件：缩略图只走 helper，且只在「已连接 + 图像 / 视频」时才调 */
     ok(
       !/createElement\("textarea"\)|createElement\("img"\)|createElement\("video"\)|createElement\("button"\)|createElement\("input"\)/.test(
         aBrowse,
       ),
-      "浏览态不构造 textarea / img / video / button / input（内容本体只在编辑态出现）",
+      "摘要行本体不构造 textarea / img / video / button / input（缩略图走独立 helper）",
     );
     ok(
       !/wavePreviewCreate\(|bindImagePreview\(|assetItemOps\(/.test(aBrowse),
       "浏览态不挂波形预览器 / 图片预览 / 条目操作排（那三样都是编辑态构件）",
     );
-    /* 资源占用的另一半：未 focus 时不向素材库逐条取正文 */
     ok(
-      !/assetItemsEnsure\(/.test(aBrowse) && !/assetItemViewLoad\(/.test(aBrowse),
-      "浏览态不向素材库发内容读取（assets:itemRead 只在点选后的编辑态发）",
+      !/assetItemsEnsure\(/.test(aBrowse),
+      "摘要不整份补读素材库（assets:itemRead 只发给已连接的那几条，见 helper）",
     );
     /* 空壳（未绑定）与内容无关：照旧给绑定 / 上传入口，别让刚建的节点要先猜「点一下」 */
     ok(
@@ -837,6 +841,25 @@ console.log("\n[10] 素材节点：未 focus（未选中）只显示轻量摘要
       /n-view-assets/.test(aBrowse) && /n-asset-kind/.test(aBrowse),
       "清单用 .n-view-assets 行 + 复用编辑态的类型徽标 .n-asset-kind",
     );
+    /* 本轮需求：缩略图只在「输出端子被连接」的条目上展开，且只对图像 / 视频 */
+    ok(
+      /assetOutPortOccupied\(node, i\)/.test(aBrowse),
+      "已连接判定走 assetOutPortOccupied(node, i)（只看输出端子 / 只看数据线）",
+    );
+    ok(
+      /it\.type === "image" \|\| it\.type === "video"/.test(aBrowse),
+      "只有图像 / 视频条目才展开缩略图（文本 / 音频按共识保持单行标题）",
+    );
+    const gate = aBrowse.slice(aBrowse.indexOf("const connected"), aBrowse.indexOf("if (connected)"));
+    ok(/assetOutPortOccupied/.test(gate), "缩略图调用被 connected 判定包住（未连接的条目零读取、零 DOM）");
+    ok(
+      /if \(connected\) row\.appendChild\(assetBrowseThumbEl\(node, it, lost\)\)/.test(aBrowse),
+      "已连接条目：标题行下方追加只读缩略图块（标题行保留）",
+    );
+    ok(
+      /n-view-asset-hd/.test(aBrowse),
+      "标题行收进 .n-view-asset-hd（与缩略图分两层，未连接条目仍是一行）",
+    );
     ok(
       /I18n\.t\("素材失联：点选本节点后看详情 \/ 重新绑定"\)/.test(aBrowse),
       "失联给一句去向（点选本节点 · 端子与连线原样保留）",
@@ -844,6 +867,55 @@ console.log("\n[10] 素材节点：未 focus（未选中）只显示轻量摘要
     ok(
       /I18n\.t\("该素材还没有内容：点选本节点后逐条查看 \/ 添加"\)/.test(aBrowse),
       "空素材也有去向句（未 focus 时不显示「设置」按钮）",
+    );
+  }
+  if (thumb) {
+    ok(
+      /assetItemViewLoaded|assetItemViewLoad/.test(thumb),
+      "缩略图按条目向素材库取内容（assets:itemRead 的既有缓存入口，不另造通路）",
+    );
+    ok(
+      !/assetItemOps\(|createElement\("button"\)|createElement\("input"\)|createElement\("textarea"\)/.test(thumb),
+      "缩略图纯只读：不造按钮 / 输入框 / 条目操作排",
+    );
+    ok(
+      !/\.onclick\s*=|addEventListener\("click"/.test(thumb),
+      "缩略图不挂点击监听（点预览 = 点节点板身 → 由既有链路选中进入编辑态）",
+    );
+    ok(
+      !/bindImagePreview\(|mediaViewCreate\(|wavePreviewCreate\(/.test(thumb),
+      "缩略图不绑图片灯箱 / 播放器池（图像走裸 <img>、视频只取首帧静图）",
+    );
+    ok(
+      /createElement\("video"\)/.test(thumb) && /preload = "metadata"/.test(thumb) && /currentTime/.test(thumb),
+      "视频缩略图 = 首帧静图（preload=metadata + seek 到开头一帧，不进播放器池）",
+    );
+    ok(
+      /controls = false/.test(thumb) && /v\.muted = true/.test(thumb),
+      "视频缩略图无播放控件、静音（预览态不出声、不可播）",
+    );
+    for (const g of ["读取中…", "读取失败", "素材失联", "（无内容）"])
+      ok(thumb.includes('I18n.t("' + g + '")'), "缩略图异常态给一行灰字：" + g);
+    ok(/n-view-asset-ghost/.test(thumb), "异常 / 未读到一律退成 .n-view-asset-ghost 灰字块（不留空白）");
+    /* 读到内容后必须自己把占位换掉：画布复用通道按签名保留旧 DOM，光靠 rerender 补不上 */
+    ok(
+      /assetItemViewLoaded|assetItemViewLoad/.test(thumb) && /replaceChild\(/.test(thumb),
+      "读到库内容后原地替换「读取中…」占位（不等整幅重绘：复用通道不会重建这块 DOM）",
+    );
+    ok(
+      /assetBrowseThumbEl\(node, it, false, true\)/.test(thumb) && /settled/.test(thumb),
+      "替换时带 settled 标记（读不到就落到「读取失败」，不无限重发读取）",
+    );
+    /* 连线增删必须让浏览态 body 重建：签名收「哪些输出端子有出线」 */
+    const nodeSig = funcBody(jsCanvas, "function canvasNodeSig(n)");
+    ok(
+      !!nodeSig && /assetBrowseOutMask\(n\)/.test(nodeSig) && /n\.kind === "asset"/.test(nodeSig),
+      "canvasNodeSig 收素材条目的出线位图（接上 / 断开后预览态形状跟着变，真机自验复现过旧形状卡住）",
+    );
+    const maskFn = funcBody(jsCanvas, "function assetBrowseOutMask(n)");
+    ok(
+      !!maskFn && /assetOutPortOccupied\(n, i\)/.test(maskFn),
+      "出线位图复用 assetOutPortOccupied（与渲染器同一份占用判定）",
     );
   }
   /* 编辑态零回归：点选（拿焦点）后仍是原样那条逐条内容 + 「覆盖」按钮的 body */
@@ -856,10 +928,156 @@ console.log("\n[10] 素材节点：未 focus（未选中）只显示轻量摘要
   );
   const kindSet = (jsCanvas.match(/const NODE_BROWSE_KINDS = new Set\(\[([\s\S]*?)\]\)/) || [])[1] || "";
   ok(/'?"asset"?,/.test(kindSet) || /"asset"/.test(kindSet), "asset 登记进 NODE_BROWSE_KINDS（未选中 = 浏览态）");
+  /* 连线落定即整幅重绘：预览态 body 会自然重建，不需要新刷新通路 */
+  ok(/function connect\(fromId, toId, toIndex, fromIndex\)[\s\S]{0,400}?renderCanvas\(\)/.test(jsNodes), "连线落定后走 renderCanvas（预览态缩略图随之重算，无需新刷新通路）");
+  /* 连接判定只认输出端子 / 只认数据线 */
+  const occ = funcBody(jsApp, "function assetOutPortOccupied(node, idx)");
+  ok(!!occ, "app.js 提供 assetOutPortOccupied(node, idx)（输出端子占用判定 · 唯一真源）");
+  ok(!!occ && /!w\.rel/.test(occ) && /w\.from === node\.id/.test(occ) && /fromIndex/.test(occ), "占用判定 = 源是本节点 + fromIndex 命中 + 排除关系线（不看输入端子）");
   /* CSS：摘要行要真能对上类名（不然是裸类名 / 无样式） */
   ok(/\.wf-node\.browse \.n-view-assets \{/.test(css), "canvas.css 有 .wf-node.browse .n-view-assets 规则（清单排版）");
   ok(/\.wf-node\.browse \.n-view-asset-name \{/.test(css), "canvas.css 有摘要行标题规则（一行裁尾 · 不撑高节点）");
   ok(/\.wf-node\.browse \.n-view-assets \.n-asset-kind \{/.test(css), "类型徽标在浏览态有 flex:none 钉位（不挤压标题）");
+  ok(/\.wf-node\.browse \.n-view-asset-hd \{/.test(css), "canvas.css 有标题行 .n-view-asset-hd 规则（标题与缩略图分两层）");
+  const thumbCss = (css.match(/\.wf-node\.browse \.n-view-asset-thumb \{([\s\S]*?)\}/) || [])[1] || "";
+  ok(/height:\s*120px/.test(thumbCss), "缩略图限高 120px（不动节点尺寸，超出在 body 内滚动）");
+  ok(/\.wf-node\.browse \.n-view-asset-thumb \.n-view-asset-el \{([\s\S]*?)\}/.test(css) && /object-fit:\s*cover/.test(css), "缩略图铺满宽度 + object-fit:cover 裁切填满");
+  ok(/\.wf-node\.browse \.n-view-asset-thumb \.n-view-asset-ghost \{/.test(css), "异常态灰字在浏览态有样式");
+}
+
+console.log("\n[10b] 素材节点浏览态：真跑渲染器（vm + 假 DOM，验「连接了才展开」这条行为本身）");
+{
+  /* 上面 [10] 钉的是源码口径；这里把真正的 assetBrowseThumbEl + NODE_BROWSE_BODY.asset
+     从 app-canvas.js 里切出来、在 vm 里配上假 DOM 与几个依赖实跑，直接看产出的 DOM 形状：
+     已连接 → 标题行 + 缩略图；未连接 → 只有标题行；文本 / 音频连了也不展开。 */
+  const thumbSrc = blockFrom(jsCanvas, jsCanvas.indexOf("function assetBrowseThumbEl(node, it, lost, settled) {"));
+  const assetSrc = blockFrom(jsCanvas, jsCanvas.indexOf("NODE_BROWSE_BODY.asset = function (node, body) {"));
+  ok(!!thumbSrc && !!assetSrc, "[10b] 能切出缩略图 helper 与渲染器本体");
+  if (thumbSrc && assetSrc) {
+    /* blockFrom 只回花括号体：补回签名才能当函数跑 */
+    const thumbFull = "function assetBrowseThumbEl(node, it, lost, settled) " + thumbSrc;
+    const assetFull = "NODE_BROWSE_BODY.asset = function (node, body) " + assetSrc;
+    const mkEl = (tag) => {
+      const el = {
+        tag,
+        className: "",
+        textContent: "",
+        title: "",
+        alt: "",
+        style: {},
+        children: [],
+        dataset: {},
+        listeners: {},
+        appendChild(c) {
+          this.children.push(c);
+          c.parentElement = this;
+          return c;
+        },
+        replaceChild(n, o) {
+          const i = this.children.indexOf(o);
+          if (i >= 0) this.children[i] = n;
+          n.parentElement = this;
+          return n;
+        },
+        addEventListener(name, fn) {
+          (this.listeners[name] = this.listeners[name] || []).push(fn);
+        },
+        fire(name) {
+          for (const fn of this.listeners[name] || []) fn();
+        },
+      };
+      return el;
+    };
+    const views = {};
+    const loaded = [];
+    const sandbox = {
+      I18n: { t: (k) => String(k) },
+      document: { createElement: (t) => mkEl(t) },
+      window: { api: { toFileUrl: (p) => "file:///" + String(p) } },
+      assetItems: (n) => n.items || [],
+      assetBindBox: () => mkEl("div"),
+      assetNodeIsLost: (n) => !!n.lost,
+      assetItemTypeLabel: (t) => String(t),
+      assetOutPortOccupied: (n, i) => (n.conn || []).indexOf(i) >= 0,
+      assetItemViewGet: (aid, iid) => views[aid + "|" + iid] || null,
+      assetItemViewLoad: (aid, iid) => loaded.push(aid + "|" + iid),
+      /* 读到后原地替换占位的等待口：这里直接给一个已决 promise，只验「替换这条路径存在」
+         （替换后的最终形状由 [10] 的源码断言与真机自验覆盖） */
+      assetItemViewLoaded: (aid, iid) => (loaded.push(aid + "|" + iid), Promise.resolve()),
+      NODE_BROWSE_BODY: {},
+    };
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    vm.runInContext(thumbFull + "\n" + assetFull, sandbox, { filename: "asset-browse.js" });
+    const render = (node) => {
+      const body = mkEl("div");
+      vm.runInContext("NODE_BROWSE_BODY", sandbox).asset(node, body);
+      return body;
+    };
+    const node = {
+      id: "n-asset",
+      kind: "asset",
+      assetId: "as1",
+      items: [
+        { id: "i1", title: "封面", type: "image" },
+        { id: "i2", title: "没用上的图", type: "image" },
+        { id: "i3", title: "提示词", type: "text" },
+        { id: "i4", title: "花絮", type: "video" },
+      ],
+      conn: [0, 2, 3],
+    };
+    views["as1|i1"] = { absPath: "E:\\lib\\cover.png" };
+    views["as1|i4"] = { absPath: "E:\\lib\\clip.mp4" };
+    const body = render(node);
+    const rows = (body.children[0] && body.children[0].children) || [];
+    ok(rows.length === 4, "[10b] 四条内容四条行（标题行仍在）");
+    ok(rows[0] && rows[0].children.length === 2, "[10b] 已连接的图像条目 = 标题行 + 缩略图块（两段）");
+    ok(
+      rows[0] && rows[0].children[1].className.indexOf("n-view-asset-thumb") >= 0 &&
+        rows[0].children[1].children[0].tag === "img" &&
+        rows[0].children[1].children[0].src === "file:///E:\\lib\\cover.png",
+      "[10b] 图像缩略图真的是 <img>，src 指向素材库里的文件",
+    );
+    ok(rows[1] && rows[1].children.length === 1, "[10b] 未连接的图像条目只有标题行（不读库、不造 img）");
+    ok(rows[2] && rows[2].children.length === 1, "[10b] 文本条目即使被连接也只有标题行（按共识不给预览）");
+    ok(
+      rows[3] && rows[3].children.length === 2 && rows[3].children[1].children[0].tag === "video",
+      "[10b] 已连接的视频条目给视频块",
+    );
+    const v = rows[3].children[1].children[0];
+    ok(
+      v.preload === "metadata" && v.muted === true && v.controls === false,
+      "[10b] 视频块 = 静音首帧（preload=metadata · 无控件 · 不可播）",
+    );
+    ok(!thumbSrc.includes(".play()"), "[10b] 预览态不会自动播放（渲染器里根本没调 play）");
+    /* 未读到 → 读取中占位 + 只对已连接条目发读取 */
+    loaded.length = 0;
+    delete views["as1|i1"];
+    const body2 = render(node);
+    const r2 = body2.children[0].children;
+    ok(
+      r2[0].children[1].children[0].textContent === "读取中…",
+      "[10b] 库内容还没读到 → 缩略图位显示「读取中…」",
+    );
+    ok(
+      loaded.length === 1 && loaded[0] === "as1|i1",
+      "[10b] 只给已连接的图像 / 视频条目发 assets:itemRead（未连接条目零读取）",
+    );
+    /* 读失败 / 失联 */
+    views["as1|i1"] = { missing: true };
+    const body3 = render(node);
+    ok(body3.children[0].children[0].children[1].children[0].textContent === "读取失败", "[10b] 读到但文件缺失 → 「读取失败」灰字");
+    const lostNode = Object.assign({}, node, { lost: true });
+    const body4 = render(lostNode);
+    ok(
+      body4.children[0].textContent.indexOf("素材失联") === 0,
+      "[10b] 失联节点先给一句去向（点选后重绑）",
+    );
+    ok(
+      body4.children[1].children[0].children[1].children[0].textContent === "素材失联",
+      "[10b] 失联时已连接条目的缩略图位给「素材失联」灰字（标题行保留）",
+    );
+  }
 }
 
 console.log("\n[11] 函数节点：外部只显示内容 · 点进去才出可编辑代码块（本轮 Bug 的两半）");
@@ -1120,10 +1338,16 @@ console.log(
       grabFunction(APP, "canMoveNodeIntoSuper"),
       grabFunction(APP, "superNestDepth"),
       /* 拖拽单元：壳的后代随壳走（不单独重挂父级）—— finalizeNodeDragNest 进门就过它 */
+      grabFunction(APP, "nodeVisibleInSuperFocus"),
       grabFunction(APP, "dragUnitIds"),
       NEST_FN,
       grabFunction(APP, "findOpenSuperAtWorld"),
       grabFunction(APP, "findOpenSuperContainingRect"),
+      /* 命中矩形 / 重叠比例 / 「拖出壳」判据：dragDropHost 就在 finalizeNodeDragNest 里用它们 */
+      grabFunction(APP, "superOpenHitRect"),
+      grabFunction(APP, "rectOverlapRatioSuper"),
+      "const DRAG_LEAVE_SUPER_RATIO = (" + /const DRAG_LEAVE_SUPER_RATIO = (.+?);/.exec(APP)[1] + ");",
+      grabFunction(APP, "dragLeavesOpenSuper"),
       "const DRAG_RECT_TOL = " + Number(/const DRAG_RECT_TOL = (\d+)/.exec(APP)[1]) + ";",
       "const DRAG_RECT_MIN_OVERLAP = " + Number(/const DRAG_RECT_MIN_OVERLAP = (\d+)/.exec(APP)[1]) + ";",
       grabFunction(APP, "superInnerAnchor"),
@@ -1131,7 +1355,7 @@ console.log(
       grabFunction(APP, "fitSuperShellToContent"),
       grabFunction(APP, "fitAllOpenSuperShells"),
       grabFunction(APP, "moveNodesIntoSuper"),
-      "return { finalizeNodeDragNest, findOpenSuperAtWorld, findOpenSuperContainingRect, canMoveNodeIntoSuper, isSuperAncestorOf, fitAllOpenShells: fitAllOpenSuperShells, nodeWorldPos, superInnerOrigin, superInnerAnchor, nodeDrawSize, superDisplaySize, moveNodesIntoSuper };",
+      "return { finalizeNodeDragNest, findOpenSuperAtWorld, findOpenSuperContainingRect, superOpenHitRect, rectOverlapRatioSuper, dragLeavesOpenSuper, canMoveNodeIntoSuper, isSuperAncestorOf, fitAllOpenShells: fitAllOpenSuperShells, nodeWorldPos, superInnerOrigin, superInnerAnchor, nodeDrawSize, superDisplaySize, moveNodesIntoSuper, nodeInCurrentScope, nodeVisibleInSuperFocus };",
       "})()",
     ].join("\n");
     const ctx = vm.createContext(sb);
@@ -1492,6 +1716,33 @@ console.log(
       ].concat(extra || []),
     );
   }
+  /* 嵌套版子画布场景：OUTER（全屏进入）里套展开壳 INNER，INNER 里再套展开壳 DEEP。
+     A 是 INNER 的子节点、E 是 DEEP 的子节点 —— 这两颗在子画布上都「看得见」，
+     旧口径（只认焦点壳的直接子节点）却把它们的落定整组丢掉。 */
+  function mkNestedFocusScene() {
+    return makeSandbox([
+      mkSuper("OUTER", { x: 0, y: 0, expandW: 1600, expandH: 1000 }),
+      mkSuper("INNER", {
+        x: 200,
+        y: 120,
+        expandW: 900,
+        expandH: 700,
+        parentSuperId: "OUTER",
+      }),
+      /* DEEP 的显示尺寸有下限（超节点展开后至少 320x220），所以它落在 INNER 的左上角，
+         右侧留出大片 INNER 空白 —— 那才是「拖到最近的一层壳」的落点 */
+      mkSuper("DEEP", {
+        x: 20,
+        y: 20,
+        expandW: 300,
+        expandH: 200,
+        parentSuperId: "INNER",
+      }),
+      mkNode({ id: "A", x: 60, y: 60, parentSuperId: "INNER" }),
+      mkNode({ id: "C", x: 1300, y: 900, parentSuperId: "OUTER" }),
+      mkNode({ id: "E", x: 10, y: 10, parentSuperId: "DEEP" }),
+    ]);
+  }
   function part5() {
     section("5 子画布（superFocus）里把节点拖进子壳");
     /* ⑤-a 多选：A 的中点进 INNER、B 的还在子画布空白 → 两颗都进 INNER，相对位置不变 */
@@ -1592,6 +1843,95 @@ console.log(
         api.superInnerAnchor(inner).x === inner.x,
         "子画布下宿主锚点取宿主自身坐标（不再叠加父壳世界坐标）",
       );
+    }
+    /* ⑤-g 全屏进入 OUTER 后，把 OUTER 里那颗展开子壳 INNER **自己的子节点** 拖到 OUTER 这一层。
+       修前：落定第一步按 nodeInCurrentScope 过滤，而它在子画布只认焦点壳的直接子节点 ——
+       子壳里的 A 被判成界外、整组被丢掉 → 归属与坐标都不动，视觉上就是「节点拖不出那层壳」。 */
+    {
+      const { sb, api, nodes } = mkNestedFocusScene();
+      sb.S.superFocus = "OUTER";
+      const a0 = nodes.filter((n) => n.id === "A")[0];
+      const start = api.nodeWorldPos(a0);
+      ok(
+        parentOf(nodes, "A") === "INNER" && start.x === 260 && start.y === 209,
+        "前置：A 在子壳 INNER 里（舞台坐标 " + start.x + "," + start.y + "）",
+      );
+      ok(
+        !api.nodeInCurrentScope(a0) && api.nodeVisibleInSuperFocus(a0),
+        "前置：A 不属于焦点壳的直接子节点，但确实是这一屏看得见的（可见性口径与落选过滤同源）",
+      );
+      const changed = api.finalizeNodeDragNest(
+        ["A"],
+        { A: { x: 1200, y: 880 } },
+        { x: 1240, y: 920 },
+      );
+      ok(changed === true, "子壳里的节点拖到焦点壳空白处 → 落定有变化（不再整组被过滤掉）");
+      ok(parentOf(nodes, "A") === "OUTER", "归属改到外层焦点壳 OUTER（不再卡在 INNER 里）");
+      ok(
+        Math.abs(a0.x - 1200) <= 24 && Math.abs(a0.y - 880) <= 24,
+        "落点就是子画布舞台坐标（" + a0.x + "," + a0.y + "）",
+      );
+    }
+    /* ⑤-h 同一颗节点只在子壳内部挪动 → 仍留在 INNER，坐标换算回子壳本地坐标系 */
+    {
+      const { sb, api, nodes } = mkNestedFocusScene();
+      sb.S.superFocus = "OUTER";
+      const changed = api.finalizeNodeDragNest(
+        ["A"],
+        { A: { x: 600, y: 500 } },
+        { x: 700, y: 560 },
+      );
+      const a = nodes.filter((n) => n.id === "A")[0];
+      ok(changed === true && parentOf(nodes, "A") === "INNER", "壳内挪动仍留在 INNER（新口径不把壳内节点甩出来）");
+      ok(
+        Math.abs(a.x - 400) <= 24 && Math.abs(a.y - 351) <= 24,
+        "子壳内本地坐标 = 落点 − 壳原点（" + a.x + "," + a.y + " 期望 ≈400,351）",
+      );
+    }
+    /* ⑤-i 光标仍压在子壳上、节点自己已经大半到壳外 → 按「拿出来」算（上一轮判据在嵌套场景下同样成立） */
+    {
+      const { sb, api, nodes } = mkNestedFocusScene();
+      sb.S.superFocus = "OUTER";
+      const changed = api.finalizeNodeDragNest(
+        ["A"],
+        { A: { x: 1100, y: 600 } },
+        { x: 1050, y: 620 },
+      );
+      ok(
+        changed === true && parentOf(nodes, "A") === "OUTER",
+        "光标压在子壳里、节点已大半出壳 → 仍算拿到 OUTER 这一层",
+      );
+    }
+    /* ⑤-j 焦点壳上的节点拖进那层展开子壳（入壳方向在嵌套场景下也要通） */
+    {
+      const { sb, api, nodes } = mkNestedFocusScene();
+      sb.S.superFocus = "OUTER";
+      const changed = api.finalizeNodeDragNest(
+        ["C"],
+        { C: { x: 600, y: 500 } },
+        { x: 700, y: 560 },
+      );
+      const c = nodes.filter((n) => n.id === "C")[0];
+      ok(changed === true && parentOf(nodes, "C") === "INNER", "焦点壳上的节点拖进子壳 → 归属 INNER");
+      ok(
+        c.x >= 0 && c.y >= 0 && c.x + c.w <= 900 && c.y + c.h <= 700,
+        "落点换算进子壳本地坐标系（" + c.x + "," + c.y + "）",
+      );
+    }
+    /* ⑤-k 再深一层：INNER 里还有一颗展开壳 DEEP，把 DEEP 里的节点拖到 INNER 的空白处 →
+          落点宿主是 INNER（不是一路掉到焦点壳 OUTER），落定判据按「光标下面积最小的那颗壳」认 */
+    {
+      const { sb, api, nodes } = mkNestedFocusScene();
+      sb.S.superFocus = "OUTER";
+      const hit = api.findOpenSuperAtWorld(760, 660, new Set());
+      ok(hit && hit.id === "INNER", "前置：光标在 INNER 空白处（不在 DEEP 上）→ 落点宿主 INNER");
+      const changed = api.finalizeNodeDragNest(
+        ["E"],
+        { E: { x: 700, y: 600 } },
+        { x: 760, y: 660 },
+      );
+      ok(changed === true, "深一层子壳里的节点拖出来 → 落定有变化");
+      ok(parentOf(nodes, "E") === "INNER", "落在最近的那层壳 INNER 里（不掉到焦点壳 OUTER）");
     }
   }
 
@@ -1711,6 +2051,73 @@ console.log(
       const wp = api.nodeWorldPos(a);
       api.finalizeNodeDragNest(["A"], { A: { x: snapv(wp.x - 2000), y: wp.y } });
       ok(parentOf(nodes, "A") === "-", "不带光标点时仍按中点判定（旧口径保留，沙箱调用不受影响）");
+    }
+
+    /* ⑥-f 已在壳里的节点：从卡片左上角（拖拽手柄）抓着往外拖 —— 光标仍压在壳上，
+          但节点自己已经大半到壳外了 → 必须出壳（旧口径只看光标，永远拖不出去） */
+    {
+      const { api, nodes } = makeSandbox([
+        mkSuper("SUP"),
+        /* 壳内坐标：世界 = 壳 (1000,200) + 原点 (0,29) + 本地 → (1100,289) 整颗都在壳里 */
+        mkNode({ id: "A", x: 100, y: 60, parentSuperId: "SUP" }),
+      ]);
+      const sw = shellWorld();
+      const np = { x: 1660, y: 300 }; /* 240 宽里只剩 52 压在壳上（约 22%，三分之二已在壳外） */
+      const cursor = { x: 1680, y: 320 }; /* 光标（抓握点）仍在壳的命中区里 */
+      ok(
+        cursor.x < sw.x1 && cursor.y < sw.y1 && cursor.x > sw.x0,
+        "前置：光标仍压在壳上（旧口径会据此把节点吞回壳里）",
+      );
+      ok(
+        np.x + 120 > sw.x1 &&
+          api.rectOverlapRatioSuper({ x: np.x, y: np.y, w: 240, h: 160 }, nodes[0]) <= 1 / 3,
+        "前置：节点中点已出壳、压在壳上的部分不到 1/3（大半在壳外）",
+      );
+      const changed = api.finalizeNodeDragNest(["A"], { A: np }, cursor);
+      ok(changed === true && parentOf(nodes, "A") === "-", "节点自己大半出壳 → 出壳（不再被光标拽回壳内）");
+    }
+
+    /* ⑥-g 同一颗节点只是贴着右下沿挪一点（中点仍在壳内、重叠过半）→ 留在壳里，不弹出去 */
+    {
+      const { api, nodes } = makeSandbox([
+        mkSuper("SUP"),
+        mkNode({ id: "A", x: 100, y: 60, parentSuperId: "SUP" }),
+      ]);
+      const np = { x: 1560, y: 500 };
+      const cursor = { x: 1650, y: 520 };
+      const changed = api.finalizeNodeDragNest(["A"], { A: np }, cursor);
+      ok(changed === true && parentOf(nodes, "A") === "SUP", "只往壳沿挪一点（中点仍在壳内）→ 留在壳里");
+    }
+
+    /* ⑥-h 从壳外往壳里拖：入壳仍由光标定，不看节点被拖进去多少 */
+    {
+      const { api, nodes } = makeSandbox([
+        mkSuper("SUP"),
+        mkNode({ id: "A", x: 1580, y: 300 }),
+      ]);
+      const np = { x: 1580, y: 300 };
+      api.finalizeNodeDragNest(["A"], { A: np }, { x: 1650, y: 320 });
+      ok(parentOf(nodes, "A") === "SUP", "壳外节点：光标压在壳上就进壳（入壳口径不变）");
+    }
+
+    /* ⑥-i 畸形排版（节点比壳的命中区还大、起点就大半在壳外）：不启用新判据，
+          光标压在壳上时仍留下 —— 否则轻轻一挪就被甩到画布顶层 */
+    {
+      const { api, nodes } = makeSandbox([
+        mkSuper("SUP"),
+        mkNode({ id: "A", x: 600, y: 60, w: 900, h: 300, parentSuperId: "SUP" }),
+      ]);
+      const before = api.nodeWorldPos(nodes[1]);
+      ok(
+        api.rectOverlapRatioSuper({ x: before.x, y: before.y, w: 900, h: 300 }, nodes[0]) < 0.5,
+        "前置：这颗节点起拖时就大半在壳外（节点比壳还宽的畸形排版）",
+      );
+      const changed = api.finalizeNodeDragNest(
+        ["A"],
+        { A: { x: snapv(before.x + 24), y: before.y } },
+        { x: 1650, y: 320 },
+      );
+      ok(changed === true && parentOf(nodes, "A") === "SUP", "畸形排版下仍按光标口径留在壳里（不被甩出去）");
     }
   }
 

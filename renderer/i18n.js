@@ -2421,6 +2421,9 @@
     "（图像输入）": "(Image input)",
     "（已停用）": "(Disabled)",
     "（已终止）": "(Stopped)",
+    "用户主动关闭会话": "Session closed by you",
+    "展开原始报文（运行时的退出码与 stderr 尾部，排查用）":
+      "Show the raw report (runtime exit code and stderr tail, for troubleshooting)",
     "已手动终止": "Stopped manually",
     "运行长时间无响应，已自动终止": "Run timed out (no response), auto-stopped",
     "交互等待超时，已自动终止": "Interaction wait timed out, auto-stopped",
@@ -3506,10 +3509,10 @@
     "技能名（kebab-case，如 pdf-summary）": "Skill name (kebab-case, e.g. pdf-summary)",
     "例如：赛博朋克城市夜景… 输入 @ 引用已连接节点/参考图": "e.g. Cyberpunk city at night… type @ to reference connected nodes/reference images",
     "描述任务…（Enter 换行，Ctrl+Enter 发送）": "Describe the task… (Enter newline, Ctrl+Enter send)",
-    "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；所有任务都完成 → 同一声音以 1.5 倍音量再响一声）":
-      "Task completion sound (a short “ding-dong” the moment any task finishes; once every task has finished, the same chime plays again at 1.5× volume)",
-    "完成音效音量（两档共用；收尾那一档再乘 1.5；0 = 静音）":
-      "Completion sound volume (shared by both tiers; the all-done one is ×1.5; 0 = silent)",
+    "任务完成音效（任何一件任务跑完 → 一声短促的「叮咚」；全部完成也是同一声，不再额外响一次）":
+      "Task completion sound (a short “ding-dong” the moment any task finishes; the last task gets that same single chime, no extra one)",
+    "完成音效音量（只有一个音量档；0 = 静音）":
+      "Completion sound volume (a single volume tier; 0 = silent)",
     /* 设置 · 智能能力 · 子代理（委派策略，写进 cordis.yml 的 subagent* 8 行，见 dsh-agent-policy.js） */
     "子代理（委派）": "Subagents (delegation)",
     "子代理嵌套深度（0 = 禁止委派）": "Subagent nesting depth (0 = delegation off)",
@@ -3581,7 +3584,7 @@
     "文件参考：导入文本文件内容到本节点": "File reference: import a text file into this node",
     "），Base64 会明显膨胀，建议改用「导出为文件」以保证完整可靠。": "), Base64 will expand significantly; use \"Export as file\" instead for a complete, reliable copy.",
     "运行：把输入图像按网格（行×列）切割成 GIF 帧动画，支持透明色键": "Run: slice the input image on a grid (rows×cols) into a GIF frame animation; chroma key supported",
-    "主页 · 下载 http://mt-agent.com/mtnode": "Home · Download http://mt-agent.com/mtnode",
+    "MTNode 主页": "MTNode homepage",
     "框选模式：开启后左键拖拽框选节点（也可随时按住 Ctrl+左键 框选）": "Marquee mode: when on, drag with left button to select nodes (or hold Ctrl+left-click anytime)",
     "选择导入方式：从 .mtnodes 文件，或粘贴 Base64 内容。": "Choose import method: from a .mtnodes file, or paste Base64 content.",
     "点击 ▶ 将输入图像按网格均匀切割为 GIF 帧动画（依次行、从左到右）": "Click ▶ to slice the input image evenly on a grid into a GIF frame animation (row by row, left to right)",
@@ -3610,7 +3613,6 @@
     "描述任务…（Enter 发送，Shift+Enter 换行；/ 开头输入命令）": "Describe the task… (Enter send, Shift+Enter newline; / to start a command)",
     "输入变化时自动保存（批量 = 每条目一个文件，YAML 项 = 输入节点标题）": "Auto-save on input change (batch = one file per entry; YAML item = input node title)",
     "未配置带 API Key 的文本服务商（设置 · API/配置 → 模型服务）": "No text provider with an API Key configured (Settings · API/Config → Model services)",
-    " · 右键画布添加节点 · 拖线连接节点 · Ctrl+拖拽框选 · 滚轮缩放画布": " · Right-click the canvas to add a node · Drag wires to connect nodes · Ctrl+drag to marquee-select · Scroll to zoom the canvas",
     "【压缩任务】把以下对话压缩为一段简明摘要,保留任务目标、关键结论与未完成事项:\n\n": "[Compact task] Compress the following conversation into a concise summary, keeping the goal, key conclusions, and unfinished items:\n\n",
     "响应无图像数据（请检查自定义接口返回格式：{image: url|base64}）": "Response has no image data (check the custom API return format: {image: url|base64})",
     "APIs/Config 全局配置：API Key 与接口地址，所有模型节点自动读取": "APIs/Config global settings: API Key and endpoint; all model nodes read them automatically",
@@ -7113,15 +7115,17 @@
     "请填写本次希望开发或迭代的内容": "Please describe what to develop or iterate this round",
     "开发前需求确认（可选）": "Pre-development requirement check (optional)",
     "先拷问需求（grill-me）": "Grill me on the requirements first (grill-me)",
-    /* 会话 / 助手栏【拷问模式】契约正文（app-assist.js 的 GRILL_CONTRACT，整段一条）：
-       与开发节点任务书里那段【拷问模式】同一套纪律，只改两处 —— 允许只读地查现状、
-       收尾不回写任何节点字段。 */
-    "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— 把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」—— 卡片会把它显示成标题行），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把这一段渲染进「📋 总结」区；选项只留两项：推荐项 = 明确同意开工（如「确认无歧义，开始实施（推荐）」），另一个 = 还要改（如「还要改，我补充」），措辞随交流语言。不要把总结挤进题面那一行，也不要拆成几张卡。":
-      "\n\n[Grill mode · ask first, then act] This session has “ask me first” switched on. In every round, first decide for yourself whether **this round looks like a requirement / development / change** (creating or modifying files, the canvas, nodes, config, features, plans). If it does, interrogate before acting; **if you are unsure, do not interrogate — just do the work** (ordinary Q&A, looking things up, explanations, small talk, and continuing already-confirmed work are not requirements).\nWhen you do interrogate: first load the built-in skill mtnode-grill-me with the skill tool and follow its discipline strictly — map this round's request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, asking that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description; when a question’s options can coexist / several can be picked, set `multi_select: true` on that question — the field name is the underscore one, and without it the card only offers single-choice). Never list numbered questions in the reply body or make the user type answers into the input box; look facts up yourself with read-only tools (read code / files / the web) instead of asking the user about the environment. Until you get an explicit “no ambiguity — go ahead” through one final question dialog: **ask only, build nothing** — no implementation plan, no work started (and do not use a todo_write checklist as a substitute for an implementation plan); when genuinely needed you may look at the current state read-only (read files / read the canvas) to ask sharper questions.\nAfter the user answers, recompute the frontier and continue round by round; if they add new requirements mid-way, judge the new request again and interrogate afresh. Only start implementing after an explicit “no ambiguity — go ahead” (or after the user says “stop asking, just do it”). When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?” — the card renders it as the heading line), and everything after a blank line is the whole consensus summary written in Markdown (sub-headings, bullet lists, a table when needed), which the card renders inside its “📋 总结” block; keep only two options — the recommended one meaning “no ambiguity, start now” and one meaning “needs changes” (phrase them in the conversation's language). Do not squeeze the summary into the prompt line and do not split it across several cards.",
+    /* 会话 / 助手栏【拷问模式】契约正文（app-assist.js 的 GRILL_CONTRACT，整段一条）。
+       瘦身口径（本次需求）：只留「触发句 + 收尾卡格式」，询问窗 / multi_select / 前沿 /
+       只问不做的细则唯一真源 = 内置技能 mtnode-grill-me（本段不再抄）。 */
+    "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。每轮先自判：**这一轮像不像需求 / 开发 / 改东西**（新建或修改文件、画布、节点、配置、方案）——像就先拷问再动手，**拿不准就直接干活**（问答、查资料、解释、闲聊、继续已确认的事都不算需求）。\n要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行（询问窗格式、multi_select、前沿口径、只问不做都在里面）。到用户明确「确认无歧义」（或明说「别问了 / 直接做」）之前：**只问不做** —— 不出实施计划、不开工；确有必要可只读查看现状把问题问准。\n收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把它渲染进「📋 总结」区；选项只留两项：「确认无歧义，开始实施（推荐）」与「还要改，我补充」，措辞随交流语言。":
+      "\n\n[Grill mode · ask first, then act] This session has “ask me first” switched on. Every round, first judge for yourself: **does this round look like a requirement / development / change** (creating or modifying files, the canvas, nodes, config, a plan) — if so, interrogate before acting; **if unsure, just do the work** (Q&A, looking things up, explanations, small talk, continuing already-confirmed work are not requirements).\nWhen interrogating: first load the built-in skill mtnode-grill-me with the skill tool and follow it strictly (the question-dialog format, multi_select, the frontier rule and ask-only-build-nothing all live there). Until the user explicitly says “no ambiguity” (or “stop asking, just do it”): **ask only, build nothing** — no implementation plan, no work started; when genuinely needed you may look at the current state read-only to sharpen the questions.\nThe closing confirmation card follows a fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?”); everything after a blank line is the whole consensus in Markdown (sub-headings, bullet lists, a table when needed), and the card renders it inside its “📋 总结” block; keep exactly two options: “确认无歧义，开始实施（推荐）” and “还要改，我补充” (phrase them in the conversation's language).",
+    /* 开发节点任务书的【拷问模式】段（app.js devNodeContractText）：同样只留触发句 + 硬闸，
+       细则指向技能。 */
+    "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行（询问窗格式、multi_select、前沿口径、收尾确认卡格式都在里面）；到用户明确「确认无歧义」之前只问不做 —— 不改任何文件、不改画布、不出实施计划、不开工。":
+      "[Grill mode · ask this round, build nothing] This module block has “grill me first” switched on: load the built-in skill mtnode-grill-me with the skill tool and follow it strictly (the question-dialog format, multi_select, the frontier rule and the closing-card layout all live there); until the user explicitly says “no ambiguity”: ask only, build nothing — do not modify any file, do not touch the canvas, do not produce an implementation plan, do not start work.",
     "开启 = 本次开发会话先用内置技能 mtnode-grill-me 按轮问清需求，达成共识并经你确认后才动手。":
       "On = this dev session first uses the built-in skill mtnode-grill-me to interrogate the requirements round by round, and only starts work once you confirm the shared understanding.",
-    "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description；某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；收尾那张确认卡按固定格式写：question 第一行只放一句话题面（如「以上共识是否无误？」），空行之后是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 卡片会把它渲染进「📋 总结」区；选项只留推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」两项，措辞随交流语言；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。":
-      "【Grill mode · ask this round, build nothing】This module block has “grill me first” switched on: load the built-in skill mtnode-grill-me with the skill tool and follow it strictly — map this request into a decision tree, and each round call the ask_user_question tool so MTNode pops its question dialog, putting that round's whole frontier in a single call (question text in question, candidates in options, your recommended option first with “（推荐）/ (recommended)” appended to its label, the reason in description; when a question’s options can coexist / several can be picked, set `multi_select: true` on that question — the field name is the underscore one, and without it the card only offers single-choice); never list numbered questions in the reply body and make the user type answers into the input box. Look facts up yourself with read-only tools instead of asking the user about the environment. When you finally ask for confirmation, use the fixed layout: the first line of question holds only a one-sentence prompt (e.g. “Any ambiguity left in the consensus above?”) and everything after a blank line is the whole consensus summary in Markdown (sub-headings, bullet lists, a table when needed) — the card renders it inside its “📋 总结” block; keep only two options: the recommended one (clearly agreeing to start) and one meaning “needs changes” (phrase them in the conversation's language). This round you must not modify any file, touch the canvas, write back note / devStatus / devFiles, produce an implementation plan or start work; recompute the frontier from each answer and continue round by round until it is empty, then use one final question dialog to get the user's explicit “no ambiguity — go ahead” before implementing, and at the end write back the overview (note), status (devStatus) and this module's core file list (devFiles) as this task brief requires.",
     "开始开发": "Start developing",
     /* 对话框草稿：取消 / 跳出后再次打开，上次没提交的内容仍在（node.devDraft） */
     "已恢复上次未提交的内容": "Your unsent text from last time was restored",
@@ -7314,10 +7318,19 @@
       "When done, update this dev node's overview (note) and status (devStatus) on the canvas and report in one sentence what changed.",
     "本会话是「开发」绑定会话（不读也不改画布）：执行期间与收尾都不得修改画布上任何内容 —— 不改该功能块节点的 title / note / devStatus / devFiles，也不动其它节点或连线；任务完成后在会话里用一句话汇报改了什么。":
       "This session is a dev-bound session (it neither reads nor edits the canvas): during execution or when finishing it must not modify anything on the canvas — it does not change this module block node's title / note / devStatus / devFiles, nor any other node or wire; when done, report in the session in one sentence what you changed.",
-    "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），同时用 mtnode_canvas_edit 的 devFiles 补丁回写本模块的核心文件列表（最多 10 条 · 每项是相对项目根的文件路径 · 最外层项目节点不填），用一句话向用户汇报改了什么。":
-      "When done, rewrite this dev node's overview (note) in the two-section spec (【功能】 non-technical description + 【实现】 implementation outline), update its status (devStatus), and also patch this module's core file list back through mtnode_canvas_edit's devFiles (up to 10 entries · each a path relative to the project root · the outermost project block stays empty), then report in one sentence what changed.",
-    "本会话执行期间与收尾都不得修改画布上的任何节点：不改本功能块的 title / note，不动 devStatus / devFiles，也不改其它节点或画布内容，画布一律原样保留。唯一允许更新的是本会话自身在左侧栏的标题（随首轮主题自动命名）。任务完成后，用一句话向用户汇报改了什么。":
-      "This session must NOT modify any node on the canvas during execution or when finishing: do not change this module block's title / note, do not touch its devStatus / devFiles, and do not alter any other node or canvas content — the canvas stays exactly as it is. The only thing allowed to update is this session's own title in the left sidebar (auto-named from the first-round topic). When done, report in one sentence what you changed.",
+    /* 开发任务书瘦身后的新词条（本次需求）：只留五要素 + 收尾要求，静态骨架 ≤ 1500 字。 */
+    "（仅供回复 / 文档中指认本模块，不得用它修改画布上任何节点）":
+      "(for referring to this module in replies / docs only; never use it to modify any node on the canvas)",
+    "（未设置 · 以会话工作区为项目根）":
+      "(not set · use the session workspace as the project root)",
+    "先读项目根的 AGENTS.md（Agent 共识），遵守其中的「目录约定」与「不要修改」清单，新文件按约定放置。":
+      "First read AGENTS.md at the project root (the agent consensus file) and obey its “directory conventions” and “do not modify” list; put new files where it says.",
+    "画布禁改：本会话不读取也不修改画布（mtnode_canvas_get / mtnode_app 未注册），画布现状以本任务书为准；执行期间与收尾都不写回任何节点字段（title / note / devStatus / devFiles / 连线 / 排版）。完成后用一句话汇报改了什么。":
+      "Canvas is off-limits: this session neither reads nor edits the canvas (mtnode_canvas_get / mtnode_app are not registered) and takes this task brief as the current state; during execution and when finishing it writes back no node field (title / note / devStatus / devFiles / wires / layout). When done, report in one sentence what you changed.",
+    "收尾：按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写概述（note）与状态（devStatus），并用 mtnode_canvas_edit 的 devFiles 补丁回写本模块核心文件列表（≤10 条相对项目根的文件路径 · 最外层项目块不填），然后用一句话汇报改了什么。":
+      "When finishing: rewrite the overview (note) in the two-section spec (【功能】 non-technical description + 【实现】 implementation outline), update the status (devStatus), and also patch this module's core file list back through mtnode_canvas_edit's devFiles (≤10 paths relative to the project root · the outermost project block stays empty), then report in one sentence what changed.",
+    "本会话只负责该模块，以项目根内的真实代码为准，不要臆测；不要调用 mtnode-dev-architect 技能。":
+      "This session covers this module only: base everything on the real code under the project root, never guess, and do not call the mtnode-dev-architect skill.",
     /* ===== 建议调研：可离开 + 完成跳窗（后台作业 devSuggestJobs / sug 运行态） ===== */
     "「": "\"",
     "」的调研已完成，但该功能块已不在当前画布，结果未写入。":
@@ -9142,8 +9155,8 @@
       "Open this item's file with the system default program",
     "在资源管理器中定位这条内容的实体文件":
       "Reveal this item's file in the file manager",
-    "展开波形试听这条音频（鼠标停在这一行上即出现浮层）":
-      "Expand the waveform to audition this audio (a preview pops up when you hover this row)",
+    "展开波形试听这条音频（鼠标停在这个播放键上即出现浮层）":
+      "Expand the waveform to audition this audio (a preview pops up when you hover this play button)",
   });
 
   /* ── 节点「设置」统一跳窗（NODE_SETTINGS_FORMS · 摘要行 · 节拍 / 网络 / 媒体参数）──

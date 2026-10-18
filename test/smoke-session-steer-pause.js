@@ -846,26 +846,46 @@ const designSrc = read("dsh/DESIGN.md");
 
   /* ===================== [3] 回落命名与既有语义不被破坏 ===================== */
   console.log("\n[3] 回落命名语义保持：只受 titleLocked 约束、开发绑定会话不受影响");
-  const fallback = SRC.match(/st\.title\s*=\s*t\.slice\(0,\s*24\)[^\n]*/);
-  ok(!!fallback, "回落命名（首条消息前 24 字）仍在 agentSessionSend 里保留");
+  const fallback = SRC.match(/st\.title\s*=\s*autoSessionTitleOf\(t\)[^\n]*/);
+  ok(!!fallback, "回落命名（首条消息主题：中文 20 字 / 非中文 8 词）仍在 agentSessionSend 里保留");
   ok(
-    /if\s*\(!st\.titleLocked\)\s*\n?\s*st\.title\s*=\s*t\.slice\(0,\s*24\)/.test(SRC),
+    /if\s*\(!st\.titleLocked\)\s*\n?\s*st\.title\s*=\s*autoSessionTitleOf\(t\)/.test(SRC),
     "回落命名只受 titleLocked 约束（不写 titleAuto、不触碰新武装位）",
   );
   /* 回落命名只发生在「非开发/细化绑定会话」追加消息分支里：合并模式下 devContractMsg
      走 else 分支（内容上方注释「合并模式不追加消息…标题保持创建时设定不被覆盖」），
-     不触发这条 24 字回落 —— 绑定会话标题交给引擎自动命名即可。 */
+     不触发这条回落 —— 绑定会话标题交给网关 mtnode-session-title 自动命名即可。 */
   const mergeBlock = SRC.match(
-    /if\s*\(!devContractMsg\)\s*\{[\s\S]{0,400}?st\.title\s*=\s*t\.slice\(0,\s*24\)/,
+    /if\s*\(!devContractMsg\)\s*\{[\s\S]{0,400}?st\.title\s*=\s*autoSessionTitleOf\(t\)/,
   );
-  ok(!!mergeBlock, "回落命名（24 字）位于 !devContractMsg 追加消息块内（绑定会话不触发）");
+  ok(!!mergeBlock, "回落命名位于 !devContractMsg 追加消息块内（绑定会话不触发）");
   /* 同一轮内先做回落命名、再放行引擎自动命名：两次赋值在同一函数 agentSessionSend
      中按先后顺序出现（两者之间隔 devContractMsg 的 else 块，不做邻接断言） */
-  const iFallback = SRC.indexOf("st.title = t.slice(0, 24)");
+  const iFallback = SRC.indexOf("st.title = autoSessionTitleOf(t)");
   const iArm = SRC.indexOf("st._autoTitleRound = !st.titleAuto && !st.titleLocked");
   ok(
     iFallback >= 0 && iArm > iFallback,
     "同一轮内先回落命名、后放行引擎命名（回落不写 titleAuto、让引擎命名可落地）",
+  );
+
+  /* ===================== [3b] 20 字 / 8 词口径 ===================== */
+  console.log("\n[3b] 自动标题长度口径：中文 20 字、非中文 8 词（软上限，超了截断）");
+  ok(
+    /SESSION_AUTO_TITLE_MAX\s*=\s*20\b/.test(SRC),
+    "渲染层中文上限 = 20 字（SESSION_AUTO_TITLE_MAX）",
+  );
+  ok(
+    /SESSION_AUTO_TITLE_WORDS\s*=\s*8\b/.test(SRC),
+    "渲染层非中文按 8 词（SESSION_AUTO_TITLE_WORDS）",
+  );
+  ok(
+    /function clampAutoSessionTitle\(/.test(SRC) &&
+      /SESSION_AUTO_CJK_RE\.test\(c\)/.test(SRC),
+    "按语种分流截断（CJK 按字、其余按词/字符兜底）",
+  );
+  ok(
+    /return clampAutoSessionTitle\(s\)/.test(SRC),
+    "autoSessionTitleOf 末尾走同一套截断（引擎主题与回落同口径）",
   );
 
   console.log(

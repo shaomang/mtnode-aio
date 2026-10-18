@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 /* 画布「点击 / 移动时图像闪烁」+「节点尺寸被自动改」回归冒烟测试 —— 纯 Node，不依赖 Electron
  *   node test/smoke-canvas-flicker.js
  *
@@ -257,6 +257,54 @@ console.log("== [5] 平移 / 拖拽的合成提示 ==");
     /function applyNodeDragVisual\(d, dx, dy\) \{[\s\S]{0,1600}?rotate\(/.test(jsApp),
     "拖拽动效（按速度轻微旋转）按要求保留",
   );
+}
+
+console.log("== [5b] 拖拽 / 连线 / 展开壳的层级（节点压住壳、线不浮在外面） ==");
+{
+  function zOf(sel) {
+    const at = cssCanvas.indexOf(sel + " {");
+    if (at < 0) return NaN;
+    const block = cssCanvas.slice(at, at + 900);
+    const m = /z-index:\s*(\d+)/.exec(block);
+    return m ? Number(m[1]) : NaN;
+  }
+  const zNode = zOf("\n.wf-node");
+  const zShellOpen = zOf(".wf-node.super.super-open");
+  const zDrag = zOf(".wf-node.node-dragging");
+  const zLift = zOf(".wf-node.super-drag-lift");
+  const zSvg = zOf("\n.fn-svg");
+  const zInnerSvg = zOf(".super-wires");
+  const zInnerVp = zOf(".super-stage-viewport");
+  ok(
+    zDrag > zShellOpen,
+    "被拖节点的层级高于展开壳（" + zDrag + " > " + zShellOpen + "）：拖着节点从壳上过不再被吞到下面",
+  );
+  ok(
+    zLift > zDrag,
+    "整壳被拖起时再高一档（" + zLift + " > " + zDrag + "）：壳压住同一手拖起的普通节点",
+  );
+  ok(
+    /\.wf-node\.node-dragging \{[\s\S]{0,200}?z-index:\s*60\s*!important/.test(cssCanvas),
+    "拖拽节点的 z-index 带 !important（压过内联 65 之前的旧写法与 .super-open）",
+  );
+  ok(
+    !/\.fn-canvas\.node-drag-active\s+\.fn-svg\s*\{/.test(cssCanvas) &&
+      !/function setNodeDragLift/.test(jsApp),
+    "拖拽期间不再整体抬升连线层（旧的 .node-drag-active .fn-svg{z-index:60} 与 setNodeDragLift 已删）",
+  );
+  ok(
+    Number.isFinite(zSvg) && zSvg < zShellOpen,
+    "主画布连线层低于展开壳（" + zSvg + " < " + zShellOpen + "）：壳盖住某颗节点时，它的线同样被盖住",
+  );
+  ok(
+    zInnerVp > zInnerSvg,
+    "壳内节点层高于壳内连线层（" + zInnerVp + " > " + zInnerSvg + "）：壳里再展开一层壳不会被外层线压住",
+  );
+  ok(
+    !!jsApp.match(/super-drag-lift"\);\s*\n\s*el\.style\.zIndex = "65"/),
+    "壳内节点被拖到主舞台时内联层级同步为 65（与 .super-drag-lift 一致）",
+  );
+  ok(Number.isFinite(zNode) && zNode < zDrag, "普通节点仍在最低一层（" + zNode + " < " + zDrag + "）");
 }
 
 /* ══════════════ [6][7] vm 真跑：假 DOM 里跑真 renderCanvas ══════════════ */

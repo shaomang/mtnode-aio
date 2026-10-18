@@ -44,7 +44,7 @@ function between(src, aMark, bMark, label) {
   return good ? src.slice(i, j) : "";
 }
 const SRC_PATH = between(APP, "function wfWorkspace() {", "function joinPath(", "app.js wfWorkspace / isAbsPath");
-const SRC_ROOT = between(APP, "function devPathOf(node) {", "/* 开发任务书：节点概述", "app.js devPathOf / devProjectRootOf");
+const SRC_ROOT = between(APP, "function devPathOf(node) {", "/* 开发任务书：模块名", "app.js devPathOf / devProjectRootOf");
 const SRC_WS = between(APP, "function dshWorkspaceOf(node) {", "/* ── 图像输入与视觉模型", "app.js dshWorkspaceOf");
 const SRC_WS_AGENT = between(AGENT, "function dshWorkspaceOf(node) {", "/* ── 图像输入与视觉模型", "app-agent.js dshWorkspaceOf");
 const SRC_ASSIST = between(ASSIST, "/* ══════════ 工作区真源", "function syncAssistWorkspaceChrome", "app-assist.js 工作区真源层");

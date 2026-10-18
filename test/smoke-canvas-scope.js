@@ -521,7 +521,7 @@ function part3() {
   );
   has(
     NODES,
-    "outOfEditScope(node)) continue;",
+    "if (outOfEditScope(node)) {",
     "新节点就近摆位时同样跳过 scope 界外节点（2026-02：编辑不再自动排版，改为就近找空位）",
   );
   has(
@@ -1507,8 +1507,8 @@ console.log(
   ok(LIGHT.indexOf(".assist-canvasfree-btn") < 0, "theme-light.css 里的亮色覆盖也一并删了");
 
   console.log("\n[6] AI 自己也要判相关性（宿主关键词档只是省钱的前置闸，判不准仍按有关）");
-  ok(ASSIST.indexOf("任务相关性纪律：本轮先自己判断任务是否与画布有关") >= 0,
-    "会话人设写明 AI 自己判：无关就别读画布（不调 mtnode_canvas_get）、用文件 / 联网 / 命令把活做完");
+  ok(ASSIST.indexOf("相关性：先自判本轮是否与画布有关") >= 0,
+    "会话人设写明 AI 自己判：无关就别读画布（不调 mtnode_canvas_get）、直接把这件活做完");
   const relLines = ASSIST.split("\n").filter((l) => /相关性：先自己判断本轮任务是否与画布有关/.test(l)).length;
   ok(relLines === 2, "助手人设两条工作范围分支（本画布 / 全局）都写了相关性纪律（得到 " + relLines + " 处）");
 

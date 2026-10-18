@@ -1903,6 +1903,15 @@ function planExecDone(st) {
     } catch (_) {}
   }
 }
+/* 并行子任务失败那一行怎么写：用户主动关闭（本次需求 · 运行时 exit code: 0 的干净退出）
+   不是「失败」，只写一句中性状态；其余照旧「失败：<报文>」。 */
+function planTaskFailText(reason) {
+  if (typeof dshIsUserClosedError === "function" && dshIsUserClosedError(reason))
+    return typeof dshUserClosedText === "function"
+      ? dshUserClosedText()
+      : I18n.t("用户主动关闭会话");
+  return I18n.t("失败：") + ((reason && reason.message) || String(reason || ""));
+}
 async function planRunParallel(st, tasks) {
   const n = tasks.length;
   /* 记下发起时的 runId：等结果的这段时间里用户可能已终止 / 清除 / 另起一轮 */
@@ -1965,7 +1974,7 @@ async function planRunParallel(st, tasks) {
     const body =
       r.status === "fulfilled"
         ? String(r.value || "").trim()
-        : I18n.t("失败：") + ((r.reason && r.reason.message) || String(r.reason || ""));
+        : planTaskFailText(r.reason);
     return "【" + String(t.title || "").trim() + "】" + (body || I18n.t("（无输出）"));
   });
   /* 等并行结果的这段时间里 owner 可能已被删除 / 归档：
@@ -2090,7 +2099,7 @@ async function planNodeExec(node, tasks) {
         const body =
           r.status === "fulfilled"
             ? String(r.value || "").trim()
-            : I18n.t("失败：") + ((r.reason && r.reason.message) || String(r.reason || ""));
+            : planTaskFailText(r.reason);
         return "【" + String(t.title || "").trim() + "】" + (body || I18n.t("（无输出）"));
       });
       const sum = I18n.t("【并行任务完成】\n") + lines.join("\n\n");

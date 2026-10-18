@@ -37,7 +37,7 @@ A downstream node receives whatever is wired in as a **connected input** (the sa
 
 ## Browsing and editing content
 
-**While the node is not selected (preview form) it shows a summary only**: the **Asset** chip plus one line per item (**title + type**). The content itself (text field / thumbnail / player / **Overwrite** button) and the library reads appear **only after you select the node** — with a dozen asset nodes on screen, the unfocused ones no longer spend memory or IPC. To edit content, **click the node first** (a freshly created, still-unbound shell keeps showing its **Bind… / Upload…** entry points).
+**While the node is not selected (preview form) it shows a summary only**: the **Asset** chip plus one line per item (**title + type**). **Exception**: when an **image / video** item's **output port is wired to a downstream node** (that item is being used), a **read-only thumbnail** appears under its title line (image = thumbnail, video = first frame; full node width, capped at ~120px and cropped to fill; every wired item expands, and they scroll inside the node). Text / audio items and unwired items stay one line. Thumbnails are **not editable and have no playback controls** — clicking selects the node and opens the editing form. The rest of the content (text field / player / **Overwrite** button) and full library reads still appear **only after you select the node**. To edit content, **click the node first** (a freshly created, still-unbound shell keeps showing its **Bind… / Upload…** entry points).
 
 Once selected, the body lists items **in order, one row each** (title + type chip + content view) and **scrolls** when there are more than fit:
 

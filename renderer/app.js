@@ -130,6 +130,15 @@ const S = {
      切回来原位恢复 —— 避免每次 Tab 返回都被打回根画布。交接点只有 setForegroundWf
      一处（后台换画布编辑 runAgainstWf 不经这里，不会串到用户没在看的图）。 */
   wfViews: {},
+  /* 分层视角记忆（只存内存 · 键 = 画布 id + 层路径）：同一张画布里「根画布 / 每个超级
+     节点内部 / 每个任务内部」各记一份相机（平移 + 缩放）。返回上一层立刻回到离开时的
+     镜头，不再被进层时的 fit 冲掉 —— 与 wfViews（每张画布一条）分开放，互不覆盖。 */
+  levelViews: {},
+  /* 待居中标记：交接 / 首次打开画布时该层没有缓存 → 等 renderCanvas 把 DOM 摆好再居中
+     （applyWfView 那一刻还没有节点尺寸，直接 fit 会按空内容算出错误缩放） */
+  _pendingLayerCenter: false,
+  /* 交接期禁写闸：切画布 / 定位这类「借道换层」期间 S.wf 与焦点不是一对，写进去就是串味 */
+  _noLevelViewSave: false,
   /* 应用插件目录缓存（appPluginsCatalog 快照）：菜单项可见性 / 节点未安装警示条用。
      启动时与插件对话框增删后刷新（refreshAppPluginsCache）。 */
   plugins: [],
@@ -1773,6 +1782,29 @@ function nodeInCurrentScope(n) {
   }
   return nodeParentTaskId(n) === currentTaskFocus();
 }
+/** 这颗节点在当前这一屏「看得见」吗 —— 拖拽落定 / 壳层命中 / 悬停展开共用这一份口径。
+    与 nodeInCurrentScope 只差全屏进入态（子画布）那一支：那里 nodeInCurrentScope 只认焦点壳的
+    **直接子节点**，于是「焦点壳里再展开一层子壳」时，子壳里的节点被判成界外 —— 拖拽落定时整组
+    成员被这一条过滤掉，表现就是那层子壳里的节点怎么拖都出不来（也拖不进那颗子壳）。
+    这里按「祖先链一路走到焦点壳、且中间每颗壳都展开态」判可见；根画布口径与
+    nodeInCurrentScope 完全一致（祖先链均展开 = 在范围内）。 */
+function nodeVisibleInSuperFocus(n) {
+  if (!n) return false;
+  const sf = currentSuperFocus();
+  if (!sf) return nodeInCurrentScope(n);
+  let sid = nodeParentSuperId(n);
+  const seen = new Set();
+  while (sid && !seen.has(sid)) {
+    /* 走到焦点壳即算看得见：它就是这一屏本身 */
+    if (sid === sf) return true;
+    seen.add(sid);
+    const host = nodeById(sid);
+    if (!host || host.kind !== "super" || !host.superOpen) return false;
+    if (nodeParentTaskId(host) !== currentTaskFocus()) return false;
+    sid = nodeParentSuperId(host);
+  }
+  return false;
+}
 function markInCurrentScope(m) {
   if (!m) return false;
   const sf = currentSuperFocus();
@@ -2562,13 +2594,10 @@ function findSuperAtWorld(x, y, exceptIds, requireOpen) {
     if (!n || n.kind !== "super") continue;
     if (skip.has(n.id)) continue;
     if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
-    if (currentSuperFocus()) {
-      /* 全屏进入态（子画布）：当层的直接子壳才是可见可投的 —— 祖先壳与深层壳不在这一屏 */
-      if (nodeParentSuperId(n) !== currentSuperFocus()) continue;
-    }
     if (requireOpen && !n.superOpen) continue;
-    /* 嵌套超级节点仅在祖先链均展开时可见可投 */
-    if (nodeParentSuperId(n) && !nodeInCurrentScope(n)) continue;
+    /* 嵌套超级节点仅在祖先链均展开时可见可投；全屏进入态下按「祖先链走到焦点壳」判
+       （见 nodeVisibleInSuperFocus：焦点壳里再套一层展开壳，里面那颗子壳同样是可投落点） */
+    if (!nodeVisibleInSuperFocus(n)) continue;
     const wp = nodeWorldPos(n);
     const sz =
       superIsOpenShell(n)
@@ -2645,8 +2674,10 @@ function clearSuperDropHot(keepExpanded) {
 function toggleSuperOpen(node, open) {
   if (!node || node.kind !== "super") return;
   /* 若正处在该节点的全屏进入态，先退出再展开壳层 */
+  let leftFocus = false;
   if (currentSuperFocus() === node.id) {
     resetSuperFocus();
+    leftFocus = true;
   }
   const visuallyOpen = superIsOpenShell(node);
   const next = open === undefined ? !visuallyOpen : !!open;
@@ -2661,6 +2692,8 @@ function toggleSuperOpen(node, open) {
   }
   scheduleSave(true);
   renderCanvas();
+  /* 从壳内部退出来（转成展开态）：回到外层它自己缓存过的镜头，别停在这颗壳的内部取景上 */
+  if (leftFocus) restoreLevelView(S.wf);
 }
 /** 将超级节点内部平移到内容包围盒左上对齐（少量边距） */
 function alignSuperContentTopLeft(superNode) {
@@ -2883,6 +2916,20 @@ function rewriteNodePathsForSuperContext(node) {
     );
   }
 }
+/** 展开壳的落点命中矩形（世界坐标）：壳内可投区 = 舞台区域（顶部文件夹标题栏不算）。
+    命中判据 / 矩形包容 / 拖拽落定共用这一份口径 —— 各写一份的话，「算不算命中」与
+    「拖出去没有」会给出互相打架的答案。 */
+function superOpenHitRect(n) {
+  const wp = nodeWorldPos(n);
+  const sz = superDisplaySize(n);
+  const o = superInnerOrigin(n);
+  return {
+    x0: wp.x + o.ox,
+    y0: wp.y + o.oy,
+    x1: wp.x + sz.w - 8,
+    y1: wp.y + sz.h - 10,
+  };
+}
 function findOpenSuperAtWorld(x, y, exceptIds) {
   const skip = exceptIds || new Set();
   let best = null;
@@ -2891,18 +2938,15 @@ function findOpenSuperAtWorld(x, y, exceptIds) {
     if (!n || n.kind !== "super" || !n.superOpen) continue;
     if (skip.has(n.id)) continue;
     if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
-    if (currentSuperFocus()) {
-      /* 全屏进入态（子画布）：只有当层的直接子壳被画出来，也才是可投的落点 */
-      if (nodeParentSuperId(n) !== currentSuperFocus()) continue;
-    }
-    if (nodeParentSuperId(n) && !nodeInCurrentScope(n)) continue;
-    const wp = nodeWorldPos(n);
+    /* 可见性（拖拽落定同源口径）：根画布 = 祖先链均展开；全屏进入态 = 祖先链一路走到焦点壳
+       —— 焦点壳里再套一层展开壳时，那层壳里的落点也算数，不再被「只认直接子壳」挡掉 */
+    if (!nodeVisibleInSuperFocus(n)) continue;
     const sz = superDisplaySize(n);
-    const o = superInnerOrigin(n);
-    const x0 = wp.x + o.ox;
-    const y0 = wp.y + o.oy;
-    const x1 = wp.x + sz.w - 8;
-    const y1 = wp.y + sz.h - 10;
+    const hb = superOpenHitRect(n);
+    const x0 = hb.x0;
+    const y0 = hb.y0;
+    const x1 = hb.x1;
+    const y1 = hb.y1;
     if (x >= x0 && x <= x1 && y >= y0 && y <= y1) {
       const area = sz.w * sz.h;
       if (area < bestArea) {
@@ -2948,18 +2992,15 @@ function findOpenSuperContainingRect(r, exceptIds, tol) {
     if (!n || n.kind !== "super" || !n.superOpen) continue;
     if (skip.has(n.id)) continue;
     if (nodeParentTaskId(n) !== currentTaskFocus()) continue;
-    if (currentSuperFocus()) {
-      /* 全屏进入态（子画布）：只有当层的直接子壳被画出来，也才是可投的落点 */
-      if (nodeParentSuperId(n) !== currentSuperFocus()) continue;
-    }
-    if (nodeParentSuperId(n) && !nodeInCurrentScope(n)) continue;
-    const wp = nodeWorldPos(n);
+    /* 可见性（拖拽落定同源口径）：根画布 = 祖先链均展开；全屏进入态 = 祖先链一路走到焦点壳
+       —— 焦点壳里再套一层展开壳时，那层壳里的落点也算数，不再被「只认直接子壳」挡掉 */
+    if (!nodeVisibleInSuperFocus(n)) continue;
     const sz = superDisplaySize(n);
-    const o = superInnerOrigin(n);
-    const x0 = wp.x + o.ox;
-    const y0 = wp.y + o.oy;
-    const x1 = wp.x + sz.w - 8;
-    const y1 = wp.y + sz.h - 10;
+    const hb = superOpenHitRect(n);
+    const x0 = hb.x0;
+    const y0 = hb.y0;
+    const x1 = hb.x1;
+    const y1 = hb.y1;
     /* 外接矩形（含容错外扩）与壳命中区要有实质重叠：只挨着一两像素不算 ——
        光标已经拖到壳外老远、节点又只剩一丝边上时，用户的意思是「拿出来」。 */
     const ox = Math.min(x1r, x1) - Math.max(x0r, x0);
@@ -2974,6 +3015,45 @@ function findOpenSuperContainingRect(r, exceptIds, tol) {
     }
   }
   return best;
+}
+/** 拖拽落定专用：节点与某颗展开壳的重叠面积 ÷ 节点面积（0…1；1 = 整颗都在壳里）。 */
+function rectOverlapRatioSuper(r, host) {
+  if (!r) return 0;
+  const hb = superOpenHitRect(host);
+  const ox = Math.min(r.x + r.w, hb.x1) - Math.max(r.x, hb.x0);
+  const oy = Math.min(r.y + r.h, hb.y1) - Math.max(r.y, hb.y0);
+  if (ox <= 0 || oy <= 0) return 0;
+  const area = Math.max(1, r.w * r.h);
+  return (ox * oy) / area;
+}
+/** 拖拽落定：判定「节点已经离开它所在的展开壳」时，节点最多还能有多少比例压在壳里。
+    取 1/3：三分之二都到壳外了才算「拿出来」——比这更靠里时仍按光标口径留在壳内
+    （贴着壳沿挪一点不会被弹出去，见 ⑥-a 那条回归）。 */
+const DRAG_LEAVE_SUPER_RATIO = 1 / 3;
+/** 拖拽落定：已经在某颗展开壳里的节点，是否已经被拖到「外面」。
+    为什么不能只看光标：抓握点（光标）永远落在节点自己身上，从卡片左上角（拖拽手柄就在
+    那儿）抓着往右拖时，节点大半已经挪到壳外、光标却还压在壳里 —— 只看光标就会把它整个
+    吞回壳内，用户视角就是「内部的节点拖不出来」。所以按**节点自己的可见位置**判去留：
+      · 中点仍在壳的命中区内 → 留在壳里；
+      · 与壳的重叠仍有节点面积的 1/3 以上 → 留在壳里（贴着壳沿挪一点不会被弹出去）；
+      · 两条都不成立 → 算拿出来。
+    起点本来就大半在壳外（节点比壳还大的畸形排版）时不启用这条：那种壳里「一半」根本没
+    意义，仍按原口径（光标压在壳上就留下），免得轻轻一挪就把节点甩到画布顶层。
+    注：嵌套在展开壳里的节点，拖动过程中 n.x/n.y 不变（见 applyNodeDragVisual），
+    所以此刻的 nodeWorldPos(n) 就是它的**起拖位置**。 */
+function dragLeavesOpenSuper(n, host, r) {
+  if (!n || !host || !r) return false;
+  if (nodeParentSuperId(n) !== host.id) return false;
+  const start = nodeWorldPos(n);
+  const startRect = { x: start.x, y: start.y, w: r.w, h: r.h };
+  if (rectOverlapRatioSuper(startRect, host) <= DRAG_LEAVE_SUPER_RATIO) return false;
+  const hb = superOpenHitRect(host);
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const centerInside =
+    cx >= hb.x0 && cx <= hb.x1 && cy >= hb.y0 && cy <= hb.y1;
+  if (centerInside) return false;
+  return rectOverlapRatioSuper(r, host) <= DRAG_LEAVE_SUPER_RATIO;
 }
 function promptSuperSubFolder(node) {
   if (!node || node.kind !== "super") return;
@@ -3148,8 +3228,10 @@ function finalizeNodeDragNest(ids, curWorld, cursorPt) {
   for (const id of unitIds) {
     const n = nodeById(id);
     if (!n || isSuperIoNode(n)) continue;
-    /* 本屏看不见的节点（其它层级）不参与归属改写 */
-    if (focusId && !nodeInCurrentScope(n)) continue;
+    /* 本屏看不见的节点（其它层级）不参与归属改写。全屏进入态下必须按「祖先链走到焦点壳」
+       判可见 —— 焦点壳里那层展开子壳里的节点也是这一屏看得见的，否则整组被过滤掉，
+       表现就是它永远拖不出那层壳（判据与命中 / 落点同源，见 nodeVisibleInSuperFocus） */
+    if (!nodeVisibleInSuperFocus(n)) continue;
     list.push(n);
   }
   if (!list.length) return false;
@@ -3175,7 +3257,10 @@ function finalizeNodeDragNest(ids, curWorld, cursorPt) {
           就被判成「出壳」→ 归属被改写成画布顶层、视觉上整块弹出去，看着就是「挪不动」；
        ② 想把它拖出去 → 得把中点也拖出壳外才算数，光标明明已经在外面了，节点仍被拽回去。
      改成与用户所见对齐的判据（从强到弱三档）：
-       A. 鼠标压着的展开壳 —— 最强；光标在壳里就是「留下 / 进这颗壳」；
+       A. 鼠标压着的展开壳 —— 最强；光标在壳里就是「留下 / 进这颗壳」。
+          例外：这颗节点本来就属于这颗壳、且它自己已经大半挪到壳外（见 dragLeavesOpenSuper）——
+          抓握点永远在节点身上，从左上角的拖拽手柄抓着往外拖时，光标会一直压在壳里，
+          只看光标就永远拖不出来；
        B. 光标落在节点本体上（外扩 DRAG_RECT_TOL 内）、人已经离开任何壳时：节点外接世界
           矩形仍与某颗展开壳有实质重叠 → 仍认那颗壳（贴着壳沿松手不算出壳）；
        C. 以上都不中（光标已不在节点上、或整颗都拖到壳外）→ 按老口径走中点判定，
@@ -3185,8 +3270,14 @@ function finalizeNodeDragNest(ids, curWorld, cursorPt) {
       cursorPt && Number.isFinite(cursorPt.x) && Number.isFinite(cursorPt.y)
         ? findOpenSuperAtWorld(cursorPt.x, cursorPt.y, skipHosts)
         : null;
-    if (cur) return canMoveNodeIntoSuper(cur, n) ? cur : null;
     const r = rectOf(n);
+    if (cur) {
+      if (!canMoveNodeIntoSuper(cur, n)) return null;
+      /* 光标压在壳上不等于「节点还在壳里」：它本来就在这颗壳里、而节点自己已经大半挪到
+         壳外时，按「拿出来」算（判据见 dragLeavesOpenSuper，含对畸形排版 / 贴壳沿的兜底）。 */
+      if (dragLeavesOpenSuper(n, cur, r)) return null;
+      return cur;
+    }
     const onNode =
       !!cursorPt &&
       Number.isFinite(cursorPt.x) &&
@@ -3531,6 +3622,23 @@ function assetInWireAt(node, idx) {
 }
 function assetInPortOccupied(node, idx) {
   return !!assetInWireAt(node, idx);
+}
+/** 素材节点第 idx 个输出端子（= 该条内容接给下游的那一侧）上有没有数据线。
+ *  预览态（未选中 / defocus）据此决定「这条内容是否要展开缩略图」：只有真正被接出去、
+ *  正在参与流程的条目才值得读库造图，其余保持单行标题（省 DOM 与 assets:itemRead）。
+ *  关系线（rel）不算连接；素材端子没有控制端子，所以不必再判控制线。
+ *  一个条目最多挂一条数据线（断线不会让端子号左移，见 app.js 的连线圈口径）。 */
+function assetOutPortOccupied(node, idx) {
+  if (!node || !S.wf || !Array.isArray(S.wf.wires)) return false;
+  const i = Number(idx);
+  if (!isFinite(i) || i < 0) return false;
+  return S.wf.wires.some(
+    (w) =>
+      w &&
+      !w.rel &&
+      w.from === node.id &&
+      Number(w.fromIndex || 0) === i,
+  );
 }
 /** 一条来自 (from, fromIndex) 的数据线该落到哪个条目端子：
     第一个「类型匹配且空闲」的条目，挑不到返回 null（由调用方给点名式错误）。
@@ -4554,9 +4662,13 @@ function setTaskFocus(taskId, opts) {
   if (id) {
     const n = nodeById(id);
     if (!n || n.kind !== "task") return;
+    /* 换层之前先把「现在这一层」的镜头写回它自己那份（否则切走的那一眼就丢了）。
+       noViewSave：调用方紧接着自己会取景 / 只是借道换焦点，别把过渡画面当用户视角存。 */
+    if (!opts.noViewSave) rememberLevelView(S.wf);
     S.taskFocus = id;
     S.taskStack = taskAncestorChain(id).map((x) => x.id);
   } else {
+    if (!opts.noViewSave) rememberLevelView(S.wf);
     S.taskFocus = "";
     S.taskStack = [];
   }
@@ -4603,20 +4715,34 @@ function enterTask(node, opts) {
      先退超级节点 —— 看着像又往里进了一层，要退回外层得点两次。
      放开后：进去就是本任务的内部画布，「← 返回」退一层即达外层；那颗壳仍留在画布上，
      随时可再 ↪ / 双击进去（侧栏进壳那条路 focusSuperFromSidebar 照旧先摆好所属任务）。 */
-  if (currentSuperFocus()) setSuperFocus("", { render: false });
-  setTaskFocus(node.id, { render: false });
+  /* 先存好当前这一层的镜头（可能是壳内部），再把两个焦点切到目标任务 —— 这两次切焦点
+     都是「借道」，不许把过渡画面写进中间经过的层（父任务层）。 */
+  rememberLevelView(S.wf);
+  if (currentSuperFocus())
+    setSuperFocus("", { render: false, noViewSave: true });
+  setTaskFocus(node.id, { render: false, noViewSave: true });
   const kids = taskChildrenOf(node.id);
   if (kids.length) {
-    tidyLayoutScope(kids, {
-      history: false,
-      fit: true,
-      render: false,
-      save: false,
-      origin: { x: snap(48), y: snap(48) },
-    });
+    /* 排版顺带的 fit 不是用户视角：别让它变成这一层的「第一眼」，
+       真正的取景交给下面统一那一句（第一次进来 = 与「一键居中」同一口径）。 */
+    const prevNoSave = S._noLevelViewSave;
+    S._noLevelViewSave = true;
+    try {
+      tidyLayoutScope(kids, {
+        history: false,
+        fit: true,
+        render: false,
+        save: false,
+        origin: { x: snap(48), y: snap(48) },
+      });
+    } finally {
+      S._noLevelViewSave = prevNoSave;
+    }
   }
   renderCanvas();
   renderStatus();
+  /* 这一层来过 → 回到离开时的镜头；第一次来 → 居中（不再被上面的 tidy fit 定死） */
+  restoreLevelView(S.wf);
   if (opts.toast !== false)
     toast(I18n.t("已进入任务：") + (node.title || I18n.t("任务")), "ok");
 }
@@ -4626,11 +4752,14 @@ function leaveTask() {
     resetTaskFocus();
     renderCanvas();
     renderStatus();
+    restoreLevelView(S.wf);
     return;
   }
   stack.pop();
   const prev = stack[stack.length - 1] || "";
   setTaskFocus(prev);
+  /* 退回上一层任务：用那一层自己缓存过的镜头（没有才居中） */
+  restoreLevelView(S.wf);
 }
 
 function resetSuperFocus() {
@@ -4644,6 +4773,8 @@ function setSuperFocus(superId, opts) {
   if (id) {
     const n = nodeById(id);
     if (!n || n.kind !== "super") return;
+    /* 换层之前先把「现在这一层」的镜头写回它自己那份（noViewSave 见 setTaskFocus） */
+    if (!opts.noViewSave) rememberLevelView(S.wf);
     S.superFocus = id;
     const stack = [];
     let cur = n;
@@ -4653,6 +4784,7 @@ function setSuperFocus(superId, opts) {
     }
     S.superStack = stack;
   } else {
+    if (!opts.noViewSave) rememberLevelView(S.wf);
     S.superFocus = "";
     S.superStack = [];
   }
@@ -4669,14 +4801,15 @@ function setSuperFocus(superId, opts) {
 function enterSuper(node, opts) {
   opts = opts || {};
   if (!node || node.kind !== "super") return;
-  /* 进入完整画布时收起壳层展开态，避免与 focus 模式叠套 */
-  node.superOpen = false;
+  /* 进入完整画布不改变壳层展开状态：superOpen 原样留着，返回上一层时与进入前一致。
+     focus 模式与展开态互不叠套——壳层判定（superIsOpenShell / nodeInCurrentScope /
+     nodeIsNestedInOpenSuper）都显式排除当前焦点壳，展开态在 focus 期间不参与渲染与坐标换算。 */
   setSuperFocus(node.id, { render: false });
-  const kids = superChildrenOf(node.id).filter((c) => !isSuperIoNode(c));
   renderCanvas();
   renderStatus();
-  if (kids.length) fitNodes(kids);
-  else fitCanvas();
+  /* 取景交给分层视角记忆：这一层来过 → 回到离开时的镜头；第一次来 → 按内容居中。
+     （过去是无条件 fitNodes(kids)，于是「进去再返回」每次都把外层视角冲掉。） */
+  restoreLevelView(S.wf);
   if (opts.toast !== false)
     toast(I18n.t("已进入超级节点：") + (node.title || I18n.t("超级节点")), "ok");
 }
@@ -4686,11 +4819,14 @@ function leaveSuper() {
     resetSuperFocus();
     renderCanvas();
     renderStatus();
+    restoreLevelView(S.wf);
     return;
   }
   stack.pop();
   const prev = stack[stack.length - 1] || "";
   setSuperFocus(prev);
+  /* 退回上一层：用那一层自己缓存过的镜头（没有才居中） */
+  restoreLevelView(S.wf);
 }
 function ensureSuperIoPorts(_superNode, _wf) {
   /* no-op: super_io proxy nodes removed; edge ports only */
@@ -4968,7 +5104,8 @@ async function unwrapSuperToOuter(host) {
   const moved = kids.length;
   const dropped = markDel.size;
   /* 停在壳里点的话：拆完壳就回到它的外层（focus 的那颗壳已不在，deleteNodes 也会兜底） */
-  if (currentSuperFocus() === host.id) setSuperFocus(hostParentSuper, { render: false });
+  const leftFocus = currentSuperFocus() === host.id;
+  if (leftFocus) setSuperFocus(hostParentSuper, { render: false });
   S.sel = null;
   if (S.selSet) S.selSet.clear();
   await deleteNodes([host.id], true);
@@ -4977,6 +5114,8 @@ async function unwrapSuperToOuter(host) {
   renderCanvas();
   scheduleSave(true);
   renderStatus();
+  /* 从被拆掉的壳内部退出来：回到外层它自己缓存过的镜头 */
+  if (leftFocus) restoreLevelView(S.wf);
   toast(
     I18n.t("已拆开超节点：") +
       I18n.t("移出 ") +
@@ -5116,15 +5255,17 @@ function renderTaskCrumb() {
   root.title = I18n.t("返回顶层画布");
   root.onclick = (ev) => {
     ev.stopPropagation();
+    /* 回顶层：先存好当前这一层，再切焦点（两次切焦点都是借道），最后取根层自己的镜头 */
+    rememberLevelView(S.wf);
     resetSuperFocus();
-    setTaskFocus("");
+    setTaskFocus("", { noViewSave: true });
+    restoreLevelView(S.wf);
   };
   el.appendChild(root);
   /* 中间这一整段「路径条目」（画布 → 任务… → 壳…）整体包一层可压缩容器（.task-crumb-path）。
-     为什么：.task-crumb 是定宽（min(38%,380px)）+ overflow:hidden 的一行，而路径条目一律
-     flex:none —— 层级一多 / 标题一长，最末尾那枚「← 返回」就被整颗裁掉，进了子任务反而
-     找不到返回外层的地方。包一层后由路径区自己压缩（条目各自可省略），返回钮永远留在
-     可见区内；层级再多也只是路径区里的条目变窄。 */
+     为什么：整条面包屑是**画布左上角的悬浮层**（.task-crumb，宽度跟着画布走），标题一长 /
+     层级一多就得有人先让位 —— 路径区自己压缩（条目各自可省略），末尾那枚「← 返回」永远
+     留在可见区内；层级再多也只是路径区里的条目变窄。 */
   const path = document.createElement("span");
   path.className = "task-crumb-path";
   el.appendChild(path);
@@ -6196,7 +6337,7 @@ function dshEffortOf(v, fromProcText) {
 /* 中断智能运行:dsh 线协议无逐轮取消,只能关掉该次运行自己的运行时进程。
    runKey = 那次运行登记的 cancelTag(会话 agent:<id> / 节点 node.id / 助手 assist),
    网关据此精确关闭,不会波及同工作目录里其它并行会话;缺省 = 中断全部在途运行。 */
-function dshCancelActive(runKey) {
+function dshCancelActive(runKey, opts) {
   const map = (S && S._runCancels) || {};
   const keys = runKey ? [String(runKey)] : Object.keys(map);
   /* 判死这一轮：盖终止代号（自增），重发闸据此一次都不重发 —— 需求「停止模型或会话时
@@ -6206,7 +6347,8 @@ function dshCancelActive(runKey) {
      （真源判据与消费方见 app-db.js dshStopMark / dshRunTask。） */
   if (typeof dshStopMark === "function") {
     try {
-      dshStopMark(runKey ? String(runKey) : "");
+      /* opts.auto = 看门狗自己收的摊（不是用户按的停）：文案要走「自动终止」那一档 */
+      dshStopMark(runKey ? String(runKey) : "", opts && opts.auto ? { auto: true } : undefined);
     } catch (_) {}
   }
   const list = [];
@@ -9136,12 +9278,8 @@ function updateRunQueuePanel() {
      放在这里 = 任何类型（智能体会话 / 节点 / 开发块 / 助手 / 后端媒体 / 排队项 / 批处理）
      的收尾都汇到这一处，不必在 app-nodes / app-db 的每条收尾分支上各埋一遍。 */
   if (typeof dshRunQueueDoneCheck === "function") dshRunQueueDoneCheck();
-  /* 全局长任务提醒（本次需求）：队列刚空这一刻由 app-db.js 的 dshRunAllDoneCheck 自己
-     取一次队列快照，判「彻底空了 + 空闲满 5 分钟」后响一声更清脆的内置音。放在这里 =
-     不论最后一件是智能运行、生成节点还是排队项，收尾后总有一拍心跳走到这儿，
-     不必在每个收尾路径上都埋一遍。（不传面板快照：面板那一份可能滞后一拍，
-     而「全都跑完」必须与队列真身同源 —— 上一版就是拿滞后的条目算时长，才会提前响。） */
-  if (typeof dshRunAllDoneCheck === "function") dshRunAllDoneCheck();
+  /* 「全部完成」不再有专门判定：最后一件跑完也由上面这一处对比出来，响同一声短促音。
+     （原来的 dshRunAllDoneCheck「队列空 + 3 秒确认窗 + ×1.5 音量」整档已删除。） */
   /* 汇总文案（条状按钮 title 与面板 rq-count 同一份，口径不分叉） */
   const summary = [];
   if (nAssist) summary.push(I18n.t("助手执行中"));
@@ -13022,6 +13160,8 @@ function fitCanvas() {
   applyTransform();
   updateWires();
   renderStatus();
+  /* 「一键居中 / 全部节点」本身就是一次视角决定：写回当前这一层的层记忆 */
+  rememberLevelView(S.wf);
 }
 
 function canvasWorldBounds() {
@@ -13416,6 +13556,7 @@ function fitNodes(nodes) {
   applyTransform();
   updateWires();
   renderStatus();
+  rememberLevelView(S.wf);
 }
 
 /* ============ 批量模式 / 输入继承 ============ */
@@ -17131,13 +17272,8 @@ function startNodeDrag(ev, node, opts) {
     fromHandle: !!(opts && opts.fromHandle),
     handleNid: node.id,
   };
-  /* 拖拽节点期间提升连线 SVG 层级：连线不被拖起的节点遮挡 */
-  setNodeDragLift(true);
-}
-/* 拖拽节点期间提升 / 拖拽结束后恢复连线 SVG 层级（节点拖起 z40、超节点提升 z55，均压在连线之上） */
-function setNodeDragLift(on) {
-  const c = $("#canvas");
-  if (c) c.classList.toggle("node-drag-active", !!on);
+  /* 连线层不再随拖拽整体抬升：它必须待在自己的层里（主画布 z3），否则展开的超级节点会把板面
+     盖住、线上的节点却浮在壳上（见 canvas.css 顶部「层级口径」）。被拖的节点自己抬到 z60。 */
 }
 /* 连线落点放大命中：在端子中心 1.5×半径（至少 6px 屏幕）内都算命中，
    elementFromPoint 命中不到时按最近端子兜底，解决端子小、难以精准连中的问题 */
@@ -17393,7 +17529,7 @@ function applyNodeDragVisual(d, dx, dy) {
     if (nestedShell && stage && el.parentElement !== stage) {
       stage.appendChild(el);
       el.classList.add("super-drag-lift");
-      el.style.zIndex = "55";
+      el.style.zIndex = "65";
     }
     el.style.left = (nestedShell ? wx : n.x) + "px";
     el.style.top = (nestedShell ? wy : n.y) + "px";
@@ -17405,7 +17541,6 @@ function cancelDrag() {
   const box = document.getElementById("boxSel");
   if (box) box.remove();
   S.drag = null;
-  setNodeDragLift(false);
   document
     .querySelectorAll(".wf-node.node-dragging")
     .forEach((el) => {
@@ -19487,10 +19622,18 @@ function focusSuperFromSidebar(id) {
   const n = nodeById(id);
   if (!n || n.kind !== "super") return;
   const wantTask = nodeParentTaskId(n);
-  if (wantTask !== currentTaskFocus()) {
-    setTaskFocus(wantTask, { render: false });
+  /* 侧栏「定位」= 借道换任务焦点再进壳：中间经过的那一层不是用户视角，禁写层记忆；
+     目标壳那一层由 enterSuper 里的 restoreLevelView 自己写（force）。 */
+  const prevNoSave = S._noLevelViewSave;
+  S._noLevelViewSave = true;
+  try {
+    if (wantTask !== currentTaskFocus()) {
+      setTaskFocus(wantTask, { render: false });
+    }
+    enterSuper(n, { toast: true });
+  } finally {
+    S._noLevelViewSave = prevNoSave;
   }
-  enterSuper(n, { toast: true });
   if (S.sidebarOpen) renderSidebar();
 }
 /** 左侧列表右键：删除（超级节点会递归删内部） */
@@ -19882,7 +20025,9 @@ function focusNode(id) {
   const n = nodeById(id);
   if (!n) return;
   const want = nodeParentTaskId(n);
-  if (want !== currentTaskFocus()) setTaskFocus(want, { render: false });
+  /* 「定位」= 借道换焦点、紧接着由本函数自己摆镜头，过渡画面不写层记忆 */
+  if (want !== currentTaskFocus())
+    setTaskFocus(want, { render: false, noViewSave: true });
   /* 节点在超级节点内：确保目标 super 处于可见状态。
    * - 宿主是展开壳（superOpen）且非当前 focus → 直接定位（nodeWorldPos 会算世界坐标）。
    * - 宿主收起 / 处于 focus 模式 → 进入宿主 focus 视图（S.superFocus = 直接宿主），
@@ -19893,10 +20038,10 @@ function focusNode(id) {
     if (host && host.kind === "super") {
       const inOpenShell = host.superOpen && hostSuperId !== currentSuperFocus();
       if (!inOpenShell) {
-        setSuperFocus(hostSuperId, { render: false });
+        setSuperFocus(hostSuperId, { render: false, noViewSave: true });
         /* 进入 focus 视图后，宿主作为根展示其子节点；task 焦点重置 */
         if (nodeParentTaskId(host) !== currentTaskFocus())
-          setTaskFocus(nodeParentTaskId(host), { render: false });
+          setTaskFocus(nodeParentTaskId(host), { render: false, noViewSave: true });
       }
     }
   }
@@ -19914,6 +20059,8 @@ function focusNode(id) {
   if (S.selMarkSet) S.selMarkSet.clear();
   renderCanvas();
   renderStatus();
+  /* 定位改变了镜头 = 这一层的新视角，写回层记忆（下次回来还在这个节点上） */
+  rememberLevelView(S.wf);
 }
 
 function markSidebarTitle(m) {
@@ -19929,7 +20076,8 @@ function focusMark(id) {
   const m = markById(id);
   if (!m) return;
   const want = markParentTaskId(m);
-  if (want !== currentTaskFocus()) setTaskFocus(want, { render: false });
+  if (want !== currentTaskFocus())
+    setTaskFocus(want, { render: false, noViewSave: true });
   const b = markBounds(m) || { x: Number(m.x) || 0, y: Number(m.y) || 0, w: 40, h: 40 };
   const vw = $("#canvas").clientWidth,
     vh = $("#canvas").clientHeight;
@@ -19945,6 +20093,7 @@ function focusMark(id) {
   S.selWire = null;
   renderCanvas();
   renderStatus();
+  rememberLevelView(S.wf);
 }
 
 /* 数据库超级节点处于「展开」态时，其内部空白处右键也可用数据库专属节点菜单 */
@@ -21100,6 +21249,8 @@ function bindCanvas() {
       /* 缩放只改 stage transform，连线在 stage 内无需重算；状态栏合并到下一帧 */
       S._zoomStatusPending = true;
       applyTransformSoon();
+      /* 滚轮缩放结束即写回当前层的镜头（下次回到这一层还是这个取景） */
+      rememberLevelView(S.wf);
     },
     { passive: false },
   );
@@ -21525,7 +21676,6 @@ function bindCanvas() {
           el.classList.remove("node-dragging");
           el.style.transform = "";
         });
-      setNodeDragLift(false);
       if (wasMoved && S.preDragSnap) {
         pushHistory(S.preDragSnap);
         S.preDragSnap = null;
@@ -21612,6 +21762,8 @@ function bindCanvas() {
       S.drag = null;
       setCanvasPanning(false);
       canvas.classList.remove("midpan");
+      /* 平移结束：这一层的镜头跟着手走完了，写回层记忆（点击未拖动也写，值不变） */
+      rememberLevelView(S.wf);
       /* 中键平移不改变当前选择；左键在空白处点击（未拖动）才清空选择 */
       if (!d.moved && !wasMid) {
         /* 点空白 = 撤掉选中：只把刚被撤选的几颗切回浏览态，不整幅重绘
@@ -30667,6 +30819,92 @@ function setForegroundWf(wf) {
    返回栈原样存一份只当「由深到浅的候选层」用：恢复时仍由 setTaskFocus / setSuperFocus
    按节点身上的 parentTaskId / parentSuperId 现算真正的祖先链，被删掉的层级一律不认。
    只存内存不落盘：相机随平移每帧都在变，写盘等于把平移手感变成磁盘 I/O。 */
+/* ── 分层视角记忆（本轮需求：画布每个层级缓存视角）──
+   一层 = 根画布 / 某颗超级节点的内部 / 某颗任务的内部。键 = 画布 id + 层路径，
+   层路径只取「最深的那个焦点节点的 id」：superFocus 优先于 taskFocus，与
+   nodeInCurrentScope() 的判定顺序逐字一致（超级节点在内部时那一屏就是壳的内部，
+   外层任务焦点只是返回路径）。用节点 id 而非层级序号：层内节点增删不动键，
+   层本身（壳 / 任务）被删掉时这条记忆再也命中不到，等价于自动作废。
+   只存内存：相机在平移时每帧都变，落盘等于把拖动画布变成磁盘 I/O。 */
+function levelViewKeyOf(wf) {
+  const w = wf || S.wf || null;
+  const wfId = w && w.id != null ? String(w.id) : "";
+  if (!wfId) return "";
+  const sf = String(S.superFocus || "");
+  const tf = String(S.taskFocus || "");
+  const layer = sf ? "s:" + sf : tf ? "t:" + tf : "root";
+  return wfId + "\u0000" + layer;
+}
+function levelViewStore() {
+  if (!S.levelViews || typeof S.levelViews !== "object") S.levelViews = {};
+  return S.levelViews;
+}
+/* 取当前层缓存的那份相机（没缓存 / 数据坏了 → null，让调用方走居中） */
+function levelViewOf(wf) {
+  const key = levelViewKeyOf(wf);
+  if (!key) return null;
+  const v = levelViewStore()[key];
+  if (!v) return null;
+  const z = Number(v.z);
+  if (!(z > 0) || !isFinite(z)) return null;
+  return { x: Number(v.x) || 0, y: Number(v.y) || 0, z };
+}
+/* 把当前相机写回当前层。三个不让写的时机：
+   ① _capturingCanvas —— 高清总览图逐块挪相机，那不是用户视角；
+   ② _noLevelViewSave —— 切画布交接期间 S.wf 已换、焦点还没换完，写进去就是串味；
+   ③ 没有画布 id（还没加载完）。 */
+function rememberLevelView(wf, force) {
+  if (!force && S._noLevelViewSave) return false;
+  if (S._capturingCanvas) return false;
+  const key = levelViewKeyOf(wf);
+  if (!key || !S.cam) return false;
+  const z = Number(S.cam.z);
+  levelViewStore()[key] = {
+    x: Number(S.cam.x) || 0,
+    y: Number(S.cam.y) || 0,
+    z: z > 0 && isFinite(z) ? z : 1,
+  };
+  return true;
+}
+/* 该层一个内容都没有（新建的空壳 / 空任务）：缩放不变，把相机居中到这一层的原点。
+   有内容时统一走 fitCanvas —— 与「一键居中」同一口径（节点 + 标注 + 分组、pad 60、
+   最大 1.2 倍），保证进层第一眼就能看全，而不是停在内容不在原点时的一角。 */
+function centerLayerView() {
+  const canvas = $("#canvas");
+  if (!canvas) return false;
+  const vw = canvas.clientWidth;
+  const vh = canvas.clientHeight;
+  if (!(vw > 0 && vh > 0)) return false;
+  if (canvasWorldBounds()) {
+    fitCanvas();
+    return true;
+  }
+  S.cam.x = vw / 2;
+  S.cam.y = vh / 2;
+  applyTransform();
+  updateWires();
+  renderStatus();
+  return true;
+}
+/* 进层 / 回层的统一取景：有缓存 → 用缓存（用户在这一层看到的最后一眼，不自动纠偏）；
+   没有 → 居中。两种结果都写回该层（居中结果也算这一层的新视角）。 */
+function restoreLevelView(wf) {
+  const v = levelViewOf(wf);
+  if (v) {
+    S.cam.x = v.x;
+    S.cam.y = v.y;
+    S.cam.z = v.z;
+    applyTransform();
+    updateWires();
+    renderStatus();
+  } else {
+    centerLayerView();
+  }
+  /* force：这是「这一层现在的取景」本身，交接期间的禁写标志不该挡它 */
+  rememberLevelView(wf, true);
+  S._pendingLayerCenter = false;
+  return !!v;
+}
 function rememberWfView(wf) {
   const key = wf && wf.id != null ? String(wf.id) : "";
   if (!key) return;
@@ -30684,6 +30922,8 @@ function rememberWfView(wf) {
       z: Number(cam.z) > 0 && isFinite(Number(cam.z)) ? Number(cam.z) : 1,
     },
   };
+  /* 相机同时记进「这一层」那一份（切 Tab 回来要回到这一层自己的镜头） */
+  rememberLevelView(wf);
 }
 /* 焦点目标可能已被会话 / 用户删掉或搬走（壳没了、任务被删）：按记录的栈由深到浅
    退到第一个还在这张画布里、kind 也对的层。宁可一层层退，也不把不存在的 id 当 focus
@@ -30701,30 +30941,54 @@ function aliveWfFocus(wf, stack, deep, kind) {
   }
   return "";
 }
-/* 把这张画布自己的那份记忆套回全局视图。交接只认 setForegroundWf 这一个入口，
-   所以「没有记忆」也必须有落点：停在根画布、相机沿用现值（与原行为逐字一致，
-   不额外居中 —— 切一下 Tab 画面自己跳走，是会被当成第二个 bug 的）。 */
+/* 把这张画布自己的那份记忆套回全局视图。交接只认 setForegroundWf 这一个入口。
+   相机按「这一层」取：层缓存 → 老口径整张画布那一份 → 都没有 = 本次运行第一次来这张
+   画布，标记待居中（真正居中要等 renderCanvas 把节点摆好，此刻还没有 DOM 尺寸）。 */
 function applyWfView(wf) {
   const key = wf && wf.id != null ? String(wf.id) : "";
   const v = key ? S.wfViews[key] : null;
+  /* 先把上次留下的一次性「待居中」清掉：那是给上一张画布排的，别让它晚一拍把这一张
+     已经定好的镜头再冲一次（多数时候它在下一次 renderCanvas 里就用掉了）。 */
+  S._pendingLayerCenter = false;
   /* 两个 setter 各自负责重建自己的返回栈（按 parentTaskId / parentSuperId 现算祖先链）
-     并收掉选择集；render:false 把重绘留给调用方紧接着的那一次 renderAll。 */
-  setTaskFocus(v ? aliveWfFocus(wf, v.taskStack, v.taskFocus, "task") : "", {
-    render: false,
-  });
-  setSuperFocus(v ? aliveWfFocus(wf, v.superStack, v.superFocus, "super") : "", {
-    render: false,
-  });
-  if (v && v.cam) {
+     并收掉选择集；render:false 把重绘留给调用方紧接着的那一次 renderAll。
+     交接期间禁写层记忆：此刻 S.wf 已经换成新画布，写进去就把新画布的这一层糊了。 */
+  const prevNoSave = S._noLevelViewSave;
+  S._noLevelViewSave = true;
+  try {
+    setTaskFocus(v ? aliveWfFocus(wf, v.taskStack, v.taskFocus, "task") : "", {
+      render: false,
+    });
+    setSuperFocus(v ? aliveWfFocus(wf, v.superStack, v.superFocus, "super") : "", {
+      render: false,
+    });
+  } finally {
+    S._noLevelViewSave = prevNoSave;
+  }
+  const layerCam = levelViewOf(wf);
+  if (layerCam) {
+    S.cam.x = layerCam.x;
+    S.cam.y = layerCam.y;
+    S.cam.z = layerCam.z;
+  } else if (v && v.cam) {
     S.cam.x = v.cam.x;
     S.cam.y = v.cam.y;
     S.cam.z = v.cam.z;
+  } else if (wf) {
+    S._pendingLayerCenter = true;
   }
 }
-/* 画布删除：连带丢掉它的视图记忆（id 可能被同名画布复用） */
+/* 画布删除：连带丢掉它的视图记忆（id 可能被同名画布复用）—— 分层视角记忆同址一并清掉，
+   否则同名重建的新画布会吃到旧画布的镜头 */
 function forgetWfView(id) {
   const key = String(id == null ? "" : id);
   if (key && S.wfViews) delete S.wfViews[key];
+  if (!key) return;
+  const store = levelViewStore();
+  const prefix = key + "\u0000";
+  for (const k of Object.keys(store)) {
+    if (k.indexOf(prefix) === 0) delete store[k];
+  }
 }
 /* 是否正有画布写入在飞（前台或后台换画布）：>0 期间 S.wf 未必是用户看到的画布 */
 function bgCanvasWriteActive() {
@@ -32433,15 +32697,16 @@ function devProjectRootOf(wf) {
   if (live) S.devProjectRootAmbiguous = true;
   return roots[0];
 }
-/* 开发任务书：节点概述 + 项目根 + 上层模块 + 本次开发需求（注入会话的契约消息）
-   opts.noCanvasRead = 无读画布档位（Gate A：「开发」绑定会话）：本轮不注册
-   mtnode_canvas_get / mtnode_app，所以契约必须自带定位锚点（本节点 id），
-   并明说「不用读图」——否则模型会照着旧口径先读整张图，既白花一次调用，
-   又会因工具不存在而反复试错。 */
+/* 开发任务书：模块名 + 项目根 + AGENTS.md 指向 + 本次开发需求 + 画布禁改 / 收尾回写。
+   瘦身口径（用户已确认）：只留这五要素，**子元素清单、模块概述 / 实现要点长文、上层模块
+   说明一律不进提示**（要细节现读 AGENTS.md、目录与画布）；静态骨架 ≤ 1500 字，需求原文
+   照抄不截断。opts.noCanvasRead = 无读画布档位（Gate A：「开发」绑定会话）：本轮不注册
+   mtnode_canvas_get / mtnode_app，所以契约自带定位锚点（本节点 id）并明说「不用读图」。 */
 function devNodeContractText(node, req, opts) {
   const lines = [];
   const noRead = !!(opts && opts.noCanvasRead);
   const dk = devKindOf(node) || "module";
+  const reqText = String(req === undefined || req === null ? "" : req).trim();
   lines.push(
     I18n.t("【开发任务书】") +
       " " +
@@ -32454,94 +32719,43 @@ function devNodeContractText(node, req, opts) {
     lines.push(
       I18n.t("本节点 id：") +
         (node.id || "") +
-        I18n.t(
-          "（本节点 id 仅供回复 / 文档中指认本模块；本会话不得用它修改画布上任何节点）",
-        ),
-    );
-    lines.push(
-      I18n.t(
-        "本会话不读取画布：mtnode_canvas_get 与 mtnode_app 本轮未注册，画布现状一律以本任务书为准；本会话执行期间与收尾都不得修改画布上的任何节点。",
-      ),
-    );
-  }
-  const noteParts = devNoteParts(node && node.note);
-  lines.push(
-    I18n.t("模块功能（面向非技术）：") +
-      (noteParts.design || I18n.t("（暂无 · 请先说明该模块在业务上做什么、给谁用）")),
-  );
-  lines.push(
-    I18n.t("实现要点（面向技术）：") +
-      (noteParts.impl || I18n.t("（暂无 · 细化或开发时按两段式规范补全）")),
-  );
-  const reqText = String(req === undefined || req === null ? "" : req).trim();
-  if (reqText) lines.push(I18n.t("本次开发需求：") + reqText);
-  /* 「先拷问需求」开关（node.devGrill · 开发对话框 toggle）：开启时在需求行之后、
-     默认回写要求之前多插一段拷问契约。任务书每轮随系统提示注入（sess._devContract），
-     所以追问轮次同样受约束；关闭时任务书逐字不变（零回归）。 */
-  if (node && node.devGrill === true) {
-    lines.push(
-      I18n.t(
-        "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：请先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行——把本次需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description；某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上）；禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查、不要拿环境问题问用户；收尾那张确认卡按固定格式写：question 第一行只放一句话题面（如「以上共识是否无误？」），空行之后是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格）—— 卡片会把它渲染进「📋 总结」区；选项只留推荐项（明确同意开工，如「确认无歧义，开始实施（推荐）」）与「还要改，我补充」两项，措辞随交流语言；本轮不得修改任何文件、不得改画布、不得回写 note / devStatus / devFiles、不得出实施计划、不得开工，答案回来后据此重算前沿继续下一轮，直到前沿为空、并用最后一次询问窗得到用户明确「确认无歧义」后才开始实施，实施收尾再按本任务书回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。",
-      ),
+        I18n.t("（仅供回复 / 文档中指认本模块，不得用它修改画布上任何节点）"),
     );
   }
   const p = devPathOf(node);
-  if (p) lines.push(I18n.t("项目根目录：") + p);
+  lines.push(
+    I18n.t("项目根目录：") + (p || I18n.t("（未设置 · 以会话工作区为项目根）")),
+  );
   if (p)
     lines.push(
       I18n.t(
-        "项目根目录若有 AGENTS.md（Agent 共识文件），请先读并遵守其中的「目录约定」与「不要修改」清单；新文件按约定放置，清单内路径一律不要改动。",
+        "先读项目根的 AGENTS.md（Agent 共识），遵守其中的「目录约定」与「不要修改」清单，新文件按约定放置。",
       ),
     );
-  const parent = node.parentSuperId ? nodeById(node.parentSuperId) : null;
-  if (parent && parent.dev) {
+  if (reqText) lines.push(I18n.t("本次开发需求：") + reqText);
+  /* 「先拷问需求」开关（node.devGrill）：细则全在内置技能 mtnode-grill-me，
+     任务书只留「去加载它 + 只问不做 + 确认卡格式在技能里」三句。 */
+  if (node && node.devGrill === true) {
     lines.push(
-      I18n.t("所属上层模块：") +
-        (parent.title || "") +
-        (String(parent.note || "").trim()
-          ? "（" + String(parent.note).trim() + "）"
-          : ""),
+      I18n.t(
+        "【拷问模式·本轮先问不做】该功能块已开启「先拷问需求」：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行（询问窗格式、multi_select、前沿口径、收尾确认卡格式都在里面）；到用户明确「确认无歧义」之前只问不做 —— 不改任何文件、不改画布、不出实施计划、不开工。",
+      ),
     );
   }
-  const kids = devChildrenOf(node);
-  if (kids.length) {
-    lines.push(I18n.t("本模块已有子元素："));
-    for (const k of kids.slice(0, 40)) {
-      lines.push(
-        "  - " +
-          (k.title || k.id) +
-          "（" +
-          I18n.t(DEV_KIND_LABEL[devKindOf(k) || "module"] || "模块") +
-          "）" +
-          (String(k.note || "").trim() ? "：" + String(k.note).trim() : ""),
-      );
-    }
-  }
-  lines.push(
-    I18n.t(
-      "本会话由该功能块的「开发 / 细化」对话框新建，只负责该模块；请以项目根目录内的真实代码为准，不要臆测。",
-    ),
-  );
-  /* 完成收尾要求：按会话档位区分 —— noCanvasRead（「开发」绑定会话，Gate A）不读也不改画布，
-     只允许会话自身标题在左侧栏随首轮主题更新；可读画布的「细化 / 问询」（Gate B）才在建块 / 调研后
-     按两段式规范回写概述（note）、状态（devStatus）与本模块核心文件列表（devFiles）。 */
+  /* 收尾要求按会话档位区分：noCanvasRead（「开发」绑定会话）不读也不改画布，只允许会话
+     自身标题随首轮主题更新；可读画布的「细化 / 问询」才按两段式回写 note / devStatus / devFiles。 */
   lines.push(
     noRead
       ? I18n.t(
-          "本会话执行期间与收尾都不得修改画布上的任何节点：不改本功能块的 title / note，不动 devStatus / devFiles，也不改其它节点或画布内容，画布一律原样保留。唯一允许更新的是本会话自身在左侧栏的标题（随首轮主题自动命名）。任务完成后，用一句话向用户汇报改了什么。",
+          "画布禁改：本会话不读取也不修改画布（mtnode_canvas_get / mtnode_app 未注册），画布现状以本任务书为准；执行期间与收尾都不写回任何节点字段（title / note / devStatus / devFiles / 连线 / 排版）。完成后用一句话汇报改了什么。",
         )
       : I18n.t(
-          "完成后按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写该开发节点的概述（note），并更新状态（devStatus），同时用 mtnode_canvas_edit 的 devFiles 补丁回写本模块的核心文件列表（最多 10 条 · 每项是相对项目根的文件路径 · 最外层项目节点不填），用一句话向用户汇报改了什么。",
+          "收尾：按两段式规范（【功能】非技术说明 + 【实现】工程梗概）回写概述（note）与状态（devStatus），并用 mtnode_canvas_edit 的 devFiles 补丁回写本模块核心文件列表（≤10 条相对项目根的文件路径 · 最外层项目块不填），然后用一句话汇报改了什么。",
         ),
   );
   lines.push(
     I18n.t(
-      "本会话是代码开发工作：不要调用 mtnode-dev-architect 技能（该技能仅用于在 MTNode 画布上构建开发节点架构，开发 / 细化绑定会话不需要它）。",
-    ),
-  );
-  lines.push(
-    I18n.t(
-      "本次开发需求已在任务书中一次性完整给出：请按此执行，不要分两次会话输入重复提交（重复输入会造成上下文割裂与重复开工）。",
+      "本会话只负责该模块，以项目根内的真实代码为准，不要臆测；不要调用 mtnode-dev-architect 技能。",
     ),
   );
   return lines.join("\n");

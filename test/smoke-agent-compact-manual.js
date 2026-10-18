@@ -254,7 +254,7 @@ eq(noneFolded.st.compacts.length, 0, "也不写压缩记录");
 
 /* ── [4] 真跑 agentHistoryEntries：折叠的不进上下文 ────────────────────────── */
 console.log("\n[4] 真跑 agentHistoryEntries（折叠起来的历史不再进模型上下文）");
-const sb2 = { console: console };
+const sb2 = { console: console, USER_CLOSED_SRC: "user-closed" };
 vm.createContext(sb2);
 vm.runInContext(grabFn(DB, "agentHistoryEntries"), sb2);
 const entries = vm.runInContext(

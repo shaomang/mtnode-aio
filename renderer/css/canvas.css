@@ -240,11 +240,14 @@
   z-index: 3
 }
 
-/* 拖拽节点期间：连线 SVG 层级提到节点之上（节点拖起 z40 / 超节点提升 z55），
-   连线保持不被拖起的节点遮挡（静止时 .fn-svg z3 本就在节点 z2 之上） */
-.fn-canvas.node-drag-active .fn-svg {
-  z-index: 60
-}
+/* 层级口径（唯一真源，改这里之前先读全段）：
+   普通节点 z2 < 连线层 z3（静止时线压在板面上）< 展开壳 z50
+   < 拖起的节点 z60 < 拖起的壳 z65。
+   · 拖拽期间**不再**整体抬升连线层：早先 `.node-drag-active .fn-svg{z-index:60}` 会把全画布的线
+     提到壳层之上 —— 用户的板子被展开的超级节点挡住、它身上的线却浮在壳上面（「线浮在外面」）。
+     现在线永远待在自己的层（主画布 z3 / 壳内 .super-wires z3），跟着节点一起被壳层遮住。
+   · 被拖的节点抬到 z60（见 .wf-node.node-dragging），压过展开壳（z50）—— 拖着节点从壳上过
+     不再被吞到壳下面；拖起的壳再高一档（z65，见 .super-drag-lift）。 */
 
 /* 连线双层描边（无渐变）：下层 .fn-edge-ring 宽描边为暗色外圈，上层 .fn-edge 为原色线芯，
    两条 path 同路径叠加，呈现真实线缆（深色外皮 + 彩色线芯）质感；外圈无投影、不参与交互。 */
@@ -734,9 +737,9 @@
   transition: box-shadow .15s ease, border-color .15s ease, transform .12s ease-out;
 }
 
-/* 拖拽中：上浮更高、投影偏移更大；transform 由 JS 按移动速度做仿射倾斜（卡片拖拽惯性感） */
+/* 拖拽中：上浮更高（z60，压过展开壳的 z50）、投影偏移更大；transform 由 JS 按移动速度做仿射倾斜（卡片拖拽惯性感） */
 .wf-node.node-dragging {
-  z-index: 40 !important;
+  z-index: 60 !important;
   cursor: grabbing;
   will-change: transform;
   --nfloat:
@@ -847,8 +850,10 @@
     0 0 0 1px rgba(155, 176, 200, .25);
 }
 
+/* 拖起的壳（含从壳里被拖出来的内部节点）：整幅拖拽画面的最高一层。
+   必须高于 .node-dragging（z60）：壳层是背景板，被拖的壳要压住同一手拖起的普通节点。 */
 .wf-node.super-drag-lift {
-  z-index: 55 !important;
+  z-index: 65 !important;
   pointer-events: none;
 }
 
@@ -2581,6 +2586,10 @@ body.theme-light .n-chip.n-chip-lt {
   pointer-events: stroke
 }
 
+/* 壳内层级：连线 svg z3 < 节点视口 z4。
+   视口是整个子画布的节点层，必须压在壳内连线之上 —— 否则「壳里再展开一层壳」时，内层壳
+   属于视口（当时 z2），会被外层壳的线（z3）盖出线来，正是「节点被挡住、线却浮在外面」。
+   根画布同理：线 z3 永远低于展开壳 z50，只有普通卡片在它下面。 */
 .super-stage-viewport {
   position: absolute;
   left: 0;
@@ -2590,7 +2599,7 @@ body.theme-light .n-chip.n-chip-lt {
   transform-origin: 0 0;
   pointer-events: none;
   overflow: visible;
-  z-index: 2;
+  z-index: 4;
 }
 
 .super-stage-viewport>.wf-node {
@@ -3321,19 +3330,39 @@ body.theme-light .n-chip.n-chip-lt {
   background: repeating-conic-gradient(#555 0% 25%, #222 0% 50%) 0 0 / 8px 8px
 }
 
+/* ── 画布面包屑（#taskCrumb，renderer/app.js 的 renderTaskCrumb）──
+   本轮需求：从画布 tabs 那一行（.fn-toolbar）搬进画布，挂成**画布内容区左上角的悬浮层**
+   （index.html 里 #taskCrumb 已是 #canvas 的直接子节点，.fn-canvas 是 position:relative）。
+   以前它和画布标签共用一行、被压到 min(38%,380px)，层级一多就窄成一团；现在紧贴上边框，
+   宽度改成跟着画布走（max-width = 画布宽 - 两侧留白），路径按内容自然铺开、太长才省略。
+   层级 80：压过画布内的超节点端子层 `.super-focus-port-layer`（z-index 70），进壳时不会被
+   端子盖住；半透明深色底 + 细描边保证节点拖到它下面时文字仍看得清。
+   交互：容器 pointer-events:none —— 条身空白处鼠标穿透到画布（拖拽 / 框选不受影响），
+   只有路径条目与「← 返回」自己 pointer-events:auto 接点击。
+   左侧留 44px 让出一条端子带：进壳 / 进任务后画布左缘那一列桥端子
+   （.port.out.super-inner-bridge 钉在左缘 10px，透明命中底座还外扩到 x≈27）
+   以及贴着左上角摆的节点的输入端子，以前正好被这条面包屑压住、接线不好瞄；
+   右移后端子列整条空出来，面包屑仍留在左上角，宽度上限同步让出这 44px。 */
 .task-crumb {
+  position: absolute;
+  top: 8px;
+  /* 右移 44px 让出左上角那条端子带（详见上方注释）；宽度上限同步减掉这段 */
+  left: 44px;
+  z-index: 80;
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  flex: none;
-  max-width: min(38%, 380px);
+  max-width: calc(100% - 54px);
   overflow: hidden;
-  padding: 0 8px 0 4px;
+  padding: 3px 8px 3px 4px;
   font-size: 12px;
   color: var(--muted);
-  align-self: stretch;
-  border-right: 1px solid var(--bd)
+  background: rgba(8, 12, 20, .72);
+  border: 1px solid var(--bd2);
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+  pointer-events: none
 }
 
 .task-crumb[hidden] {
@@ -3349,7 +3378,7 @@ body.theme-light .n-chip.n-chip-lt {
   align-items: center;
   gap: 4px;
   min-width: 0;
-  /* 只收不放：内容短时这一行仍贴着字（不白占 38%），内容超宽时才压自己 */
+  /* 只收不放：内容短时这一行仍贴着字（不白占宽度），内容超宽时才压自己 */
   flex: 0 1 auto;
   overflow: hidden
 }
@@ -3362,13 +3391,16 @@ body.theme-light .n-chip.n-chip-lt {
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 12px;
-  max-width: 120px;
+  /* 搬到画布后不再按 120px 一刀切：标题长一点也能露全，真放不下才省略 */
+  max-width: 240px;
   /* 可压缩：本条放不下时先窄自己（配下面的省略号），而不是把返回钮挤出这一行 */
   flex: 0 1 auto;
   min-width: 44px;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap
+  white-space: nowrap;
+  /* 容器整体不接指针（空白穿透画布），条目自己接回来 */
+  pointer-events: auto
 }
 
 .task-crumb-item:hover {
@@ -3389,7 +3421,8 @@ body.theme-light .n-chip.n-chip-lt {
 .task-crumb-back {
   flex: none;
   margin-left: 4px;
-  white-space: nowrap
+  white-space: nowrap;
+  pointer-events: auto
 }
 
 .task-grid {
@@ -6741,9 +6774,52 @@ body.theme-light .n-chip.n-chip-lt {
 
 .wf-node.browse .n-view-asset {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0
+}
+
+/* 标题行（标题 + 类型徽标）：缩略图只追加在它下面，未连接的条目就只有这一行 */
+.wf-node.browse .n-view-asset-hd {
+  display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0
+}
+
+/* 已连接条目（输出端子有线接出）的只读缩略图：铺满 body 宽、限高 120px 裁切填满。
+   只裁不改节点尺寸 —— 内容超出照旧在 .n-view 里滚动；纯展示，没有按钮 / 播放控件。 */
+.wf-node.browse .n-view-asset-thumb {
+  position: relative;
+  width: 100%;
+  height: 120px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--code);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer
+}
+
+.wf-node.browse .n-view-asset-thumb .n-view-asset-el {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+  user-select: none
+}
+
+.wf-node.browse .n-view-asset-thumb .n-view-asset-ghost {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  padding: 0 8px
 }
 
 .wf-node.browse .n-view-asset-name {

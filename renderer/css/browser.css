@@ -269,6 +269,48 @@
 .dsh-msg-bnote .dsh-role {
   color: var(--cyan2, #7ca2fe);
 }
+/* 「用户主动关闭会话」（本次需求 · app-assist.js 的 userClosedRowEl）：
+   中性状态行 —— 灰字 + 虚线左边，既不红也不像告警；原始报文折叠在「详情」里。 */
+.dsh-msg-closed {
+  margin: 4px 0;
+}
+.dsh-closed-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-left: 3px solid rgba(140, 150, 170, .45);
+  border-radius: 0 4px 4px 0;
+  background: rgba(140, 150, 170, .08);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.dsh-closed-ico {
+  opacity: .8;
+}
+.dsh-closed-txt {
+  color: var(--muted);
+}
+.dsh-closed-detail.on {
+  border-color: rgba(140, 150, 170, .55);
+}
+.dsh-closed-raw {
+  margin: 4px 0 0 10px;
+  padding: 6px 8px;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: rgba(0, 0, 0, .18);
+  border-radius: 4px;
+}
+body.theme-light .dsh-closed-raw {
+  background: rgba(0, 0, 0, .05);
+}
 .ix-stall {
   margin: 5px 0 0;
   padding: 5px 7px;

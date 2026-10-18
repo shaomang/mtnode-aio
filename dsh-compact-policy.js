@@ -400,6 +400,25 @@ function compactConfigOf(rawPolicy) {
   };
 }
 
+/** YAML 标量的写法：普通 id 裸写（与出货组合逐字一致，往返无损），
+ *  会被 YAML 解析成别的类型（number / boolean / null）或含特殊字符的值一律加双引号。
+ *  为什么必须加：provider / model 是**字符串**，裸写 `model: 123` 会被解析成 number，
+ *  compaction-basic 的 resolveConfig 立刻报
+ *  `$.modelPolicies[7].model expected string but got 123` → 整份 modelPolicies 落空、
+ *  插件整条不装载（真机 stderr 实测），压缩策略就此静默失效。
+ *  点名表里出现「长得像数字」的模型 id（中转服务商自报的 id 可能就是这样）时，
+ *  这条就是唯一的兜底。 */
+function yamlScalarOf(v) {
+  const s = String(v == null ? "" : v);
+  const plainSafe = /^[A-Za-z0-9_][A-Za-z0-9_.\-/]*$/.test(s);
+  const looksTyped =
+    /^(?:[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|0[xX][0-9a-fA-F]+|0[oO][0-7]+|true|false|yes|no|on|off|null|~)$/i.test(
+      s,
+    );
+  if (plainSafe && !looksTyped) return s;
+  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
 /** 把 config 对象渲染成 YAML 行（基准：`config:` 之下缩进 2，列表项再缩 2）。
  *  这些行**不带行尾**：行尾由调用方按「紧邻那一行的行尾」补（混行文件才不会被打乱）。 */
 function renderConfigLines(cfg) {
@@ -409,8 +428,8 @@ function renderConfigLines(cfg) {
   lines.push("    auto: " + (cfg.auto ? "true" : "false"));
   lines.push("    modelPolicies:");
   for (const p of cfg.modelPolicies) {
-    lines.push("      - provider: " + p.provider);
-    lines.push("        model: " + p.model);
+    lines.push("      - provider: " + yamlScalarOf(p.provider));
+    lines.push("        model: " + yamlScalarOf(p.model));
     if (p.headroomTokens !== undefined) lines.push("        headroomTokens: " + p.headroomTokens);
     if (p.maxTokens !== undefined) lines.push("        maxTokens: " + p.maxTokens);
     lines.push("        retainTokens: " + p.retainTokens);

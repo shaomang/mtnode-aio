@@ -1,0 +1,35 @@
+/* ============================================================================
+   状态栏右下角的点阵小人（renderer/app-footer-mascot.js）
+   ----------------------------------------------------------------------------
+   位置：footer 版本号（#authorLink）左边一个，与话筒 / 相机按钮同高（24px），
+   不改变状态栏高度（.statusbar 的 padding 与字号都没动）。
+   画面来自用户给的像素参考表原图（renderer/img/footer-mascot.png，3 行 × 6 帧
+   的透明精灵表）：canvas 背板是 2 倍的 64×48，这里按 32×24 显示，由浏览器做一次
+   高质量降采样（所以是 image-rendering:auto，不是 pixelated —— 原图本身是手绘
+   点阵，硬边放大反而会出锯齿）。
+   配色全部在原图里，CSS 只管排版与可读性。
+   ========================================================================== */
+
+.statusbar .sb-mascot {
+  flex: none;
+  display: block;
+  width: 32px;
+  height: 24px;
+  /* 状态栏 .statusbar 的 gap 是 16px；左右各抵掉 9px，让小人分别离「保存时间」
+     和版本号都只有 ~7px，视觉上贴着它俩而不是各自隔开一大截。
+     上下各抵 1px：状态栏里最高的原件是 22px 的话筒/相机按钮，24px 的画布若按原尺寸
+     占位会把状态栏撑高 2px；这样外框回到 22px，画面仍是 24px（上下各溢出 1px，
+     状态栏本身没有 overflow:hidden，画得出来）。 */
+  margin: -1px -9px;
+  image-rendering: auto;
+  /* 只接悬停（tooltip 要靠它），不抢焦点、不可点、不可选 */
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 亮色主题下整体只压一点点亮度：深色描边已经够清楚，
+   这里避免纯白围裙在白底状态栏上过曝。 */
+body.theme-light .statusbar .sb-mascot {
+  filter: brightness(0.96);
+}

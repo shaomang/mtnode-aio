@@ -1488,12 +1488,20 @@ button:disabled {
   text-align: center
 }
 
+/* 作者名现在是 <a>（本轮需求：点名字直接进 B 站，不再显示网址）——
+   去掉链接下划线，用提亮 + 手型指针表达可点。 */
 .author-name {
   font-size: 26px;
   font-weight: 800;
   letter-spacing: 2px;
   color: var(--cyan2);
-  font-family: var(--mono)
+  font-family: var(--mono);
+  text-decoration: none;
+  cursor: pointer
+}
+
+.author-name:hover {
+  color: #fff
 }
 
 .author-ver {

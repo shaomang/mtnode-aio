@@ -115,6 +115,11 @@ function toast(msg){ host.toasts.push(msg); }
 function deleteNodes(ids){ return host.deleteNodes(ids); }
 function captureMarkBindings(){ return host.bindings || []; }
 function rebindMarksAfterLayout(){ host.rebinds++; }
+/* 分层视角记忆（拆壳后回到外层的镜头）：本冒烟不验取景，只求拆壳逻辑不受影响 */
+var levelView = null;
+function rememberLevelView(){ return true; }
+function restoreLevelView(wf){ levelView = wf && wf.id; return true; }
+function centerLayerView(){ return true; }
 var I18n = { t: function(k){ return k; } };
 `;
 

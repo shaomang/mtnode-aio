@@ -504,11 +504,12 @@ console.log("\n[2] 安全闸纯函数（真跑，不看源码）");
     ok(/msg\.type === "browser"/.test(APP_DB), "会话事件分发认得 browser 帧");
     ok(/kind: "browser"/.test(APP_DB), "回执按 kind:'browser' 回传（与 canvas / tool 同一条交互通道）");
     ok(/window\.LongRun\.afterRound/.test(APP_ASSIST), "轮末钩子接进会话收尾（自动续跑入口）");
-    ok(/SELF_CHECK_DISCIPLINE/.test(APP_ASSIST) && /分阶段/.test(APP_ASSIST) && /交付前/.test(APP_ASSIST),
-      "自检纪律进系统提示（分阶段 + 交付前全检）");
-    ok(/关键结论必须带证据/.test(APP_ASSIST) && /不要把它当定稿/.test(APP_ASSIST),
-      "自检口径：先自行修复并重跑，关键结论必须带证据");
-    ok(/长周期任务图/.test(APP_ASSIST), "跨重启的活写明建议提升为长周期任务图");
+    ok(/SELF_CHECK_DISCIPLINE/.test(APP_ASSIST) && /阶段 \/ 大步骤后自检/.test(APP_ASSIST) && /交付前/.test(APP_ASSIST),
+      "自检纪律进系统提示（阶段自检 + 交付前全检）");
+    ok(/硬断言必须给可复核依据/.test(APP_ASSIST) && /先自己修好/.test(APP_ASSIST),
+      "自检口径：先自行修复并重跑，硬断言必须带可复核证据");
+    ok(/长周期任务图/.test(fs.readFileSync(path.join(__dirname, "..", "mtnode-agent-skills", "mtnode", "self-check", "SKILL.md"), "utf8")),
+      "跨重启的活写明建议提升为长周期任务图（细则已搬进技能 mtnode-self-check）");
     ok(/AUTO_CAP = 30/.test(APP_LONGRUN) && /不自动中断|不拦人/.test(APP_LONGRUN + APP_BROWSER),
       "自动续跑有安全上限且口径写明「不自动中断、阀值只累计给你看」");
     ok(/DONE_RE/.test(APP_LONGRUN) && /todosOpen/.test(APP_LONGRUN), "自检判停：完成信号 + 清单收口两条判据");

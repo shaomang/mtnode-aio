@@ -645,9 +645,21 @@ console.log("\n[6] 接线与口径：模块挂载、预览站点走池化、原�
     0,
     "app-canvas.js 不再新建原生 <audio>",
   );
-  const vidNew = (canvas.match(/document\.createElement\("video"\)/g) || []).length;
-  const vidPool = (canvas.match(/mediaViewCreate\(document\.createElement\("video"\)/g) || []).length;
-  eq(vidNew, vidPool, "所有节点视频预览都走 mediaViewCreate（差集为 0）");
+  /* 素材节点浏览态的「首帧静图」缩略图是有意不走播放器池的（只取 metadata 的静帧，
+     共识见 guides/nodes/asset.md）。抠掉这一块再按原口径点差集，例外不许扩面。 */
+  const thumbAt = canvas.indexOf("function assetBrowseThumbEl(");
+  const thumbEnd = thumbAt >= 0 ? canvas.indexOf("\nfunction ", thumbAt + 10) : -1;
+  const thumbBlock = thumbAt >= 0 && thumbEnd > thumbAt ? canvas.slice(thumbAt, thumbEnd) : "";
+  ok(
+    !!thumbBlock && /preload = "metadata"/.test(thumbBlock) && /controls = false/.test(thumbBlock),
+    "浏览态缩略图是唯一例外：只取 metadata 的静帧、无播放控件（不是播放器）",
+  );
+  const canvasNoThumb =
+    thumbBlock ? canvas.slice(0, thumbAt) + canvas.slice(thumbEnd) : canvas;
+  const vidNew = (canvasNoThumb.match(/document\.createElement\("video"\)/g) || []).length;
+  const vidPool = (canvasNoThumb.match(/mediaViewCreate\(document\.createElement\("video"\)/g) || [])
+    .length;
+  eq(vidNew, vidPool, "所有节点视频预览都走 mediaViewCreate（差集为 0 · 静帧缩略图除外）");
   ok(/mediaSetVideoSrc\(/.test(canvas), "预览同步用 mediaSetVideoSrc（同源不重设，不打断播放）");
   ok(/wavePreviewStopAll\(false\)/.test(canvas), "重绘收尾调用 wavePreviewStopAll(false)（只回收真没了的）");
   ok(/mediaViewPrune\(\)/.test(canvas), "重绘收尾回收失效的池化视频");

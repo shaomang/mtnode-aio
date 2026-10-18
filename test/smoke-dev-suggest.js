@@ -496,10 +496,9 @@ const MODEL_JSON =
   ok(brief.indexOf("本轮明确不做：加键盘操作、方案去重") >= 0, "未选项进「明确不做」");
   ok(brief.indexOf("用户补充：别改对外 API") >= 0, "补充说明被带上");
   ok(
-    brief.indexOf("按两段式规范") >= 0 &&
-      brief.indexOf("回写该开发节点的概述（note）") >= 0 &&
-      brief.indexOf("更新状态（devStatus）") >= 0,
-    "要求按两段式规范回写概述与状态",
+    brief.indexOf("实施要求：以项目根目录内的真实代码为准") >= 0 &&
+      brief.indexOf("不读也不改画布") >= 0,
+    "建议正文带实施要求与「不读也不改画布」硬闸（note / devFiles 的回写要求由开发任务书那段承载）",
   );
   const bare = ex(sb, "devSuggestBriefText(nodeById('n1'), __r, [], '只做这个')");
   ok(bare.indexOf("用户未采纳 AI 提议的方案") >= 0, "一条都没勾时按补充内容开发");
@@ -1880,20 +1879,23 @@ const MODEL_JSON =
   ctNoteOf("n1", TWO_SEC);
   const ct12 = ctOf();
   ok(
-    ct12.indexOf("模块功能（面向非技术）：") >= 0 &&
-      ct12.indexOf("积木式编排工作流") >= 0,
-    "开发任务书输出功能段标签与内容",
+    ct12.indexOf("积木式编排工作流") < 0 && ct12.indexOf("app-canvas.js 负责画布") < 0,
+    "开发任务书不再注入模块概述 / 实现要点长文（瘦身：note 两段不进提示）",
   );
   ok(
-    ct12.indexOf("实现要点（面向技术）：") >= 0 &&
-      ct12.indexOf("app-canvas.js 负责画布") >= 0,
-    "开发任务书输出实现段标签与内容",
+    ct12.indexOf("本模块已有子元素") < 0 && ct12.indexOf("所属上层模块") < 0,
+    "开发任务书不再列子元素清单与上层模块说明（要细节现读 AGENTS.md / 目录）",
   );
   ok(
-    ct12.indexOf("完成后按两段式规范") >= 0 &&
+    ct12.indexOf("项目根目录：") >= 0 && ct12.indexOf("AGENTS.md") >= 0,
+    "开发任务书保留五要素里的项目根与 AGENTS.md 指向",
+  );
+  ok(
+    ct12.indexOf("收尾：按两段式规范") >= 0 &&
       ct12.indexOf("【功能】非技术说明") >= 0 &&
-      ct12.indexOf("【实现】工程梗概") >= 0,
-    "开发任务书收尾要求按两段式规范回写 note",
+      ct12.indexOf("【实现】工程梗概") >= 0 &&
+      ct12.indexOf("devFiles") >= 0,
+    "开发任务书收尾要求按两段式规范回写 note / devStatus / devFiles",
   );
   /* 「先拷问需求」开关（node.devGrill · 「开发」框 toggle）：开启 → 任务书多一段拷问契约 */
   const ctGrill12 = (mode, req) => {
@@ -1913,24 +1915,27 @@ const MODEL_JSON =
     "拷问段要求先用 skill 工具加载内置技能 mtnode-grill-me",
   );
   ok(
-    ctOn12.indexOf("不得修改任何文件") >= 0 &&
-      ctOn12.indexOf("不得改画布") >= 0 &&
-      ctOn12.indexOf("不得回写 note / devStatus / devFiles") >= 0 &&
-      ctOn12.indexOf("不得出实施计划") >= 0,
-    "拷问段逐项禁止：改文件 / 改画布 / 回写 note·devStatus·devFiles / 出计划",
+    ctOn12.indexOf("不改任何文件") >= 0 &&
+      ctOn12.indexOf("不改画布") >= 0 &&
+      ctOn12.indexOf("不出实施计划") >= 0,
+    "拷问段逐项禁止：改文件 / 改画布 / 出计划",
   );
   ok(
-    grillLine12.indexOf("ask_user_question") >= 0 &&
-      grillLine12.indexOf("询问窗") >= 0 &&
-      grillLine12.indexOf("一次把整个前沿的全部问题问完") >= 0 &&
-      grillLine12.indexOf("（推荐）") >= 0,
-    "拷问段写明每轮走 ask_user_question 询问窗、一次问完整前沿 + 推荐项排第一",
+    grillLine12.indexOf("mtnode-grill-me") >= 0 &&
+      grillLine12.indexOf("询问窗格式") >= 0 &&
+      grillLine12.indexOf("multi_select") >= 0 &&
+      grillLine12.indexOf("收尾确认卡格式") >= 0,
+    "拷问细节（询问窗 / multi_select / 前沿 / 收尾卡）指向技能 mtnode-grill-me",
   );
   ok(
-    grillLine12.indexOf("禁止把问题编号列在回复正文里") >= 0 &&
-      grillLine12.indexOf("编号 Q1/Q2") < 0 &&
-      grillLine12.indexOf("➡️") < 0,
-    "拷问段明文否定「把 Q1/Q2 列在回复正文」的旧口径（grill-me 不走 MTNode 询问格式的根因）",
+    grillLine12.indexOf("ask_user_question") < 0 && grillLine12.indexOf("（推荐）") < 0,
+    "拷问段不再在任务书里抄询问窗字段与推荐项措辞（细则唯一真源 = 技能）",
+  );
+  ok(
+    read("mtnode-agent-skills/mtnode/grill-me/SKILL.md").indexOf(
+      "把问题写成回复正文的编号列表",
+    ) >= 0 && grillLine12.indexOf("➡️") < 0,
+    "「禁止把 Q1/Q2 列在回复正文」这条改由技能承载（任务书不再抄）",
   );
   /* 询问窗本身要能承载拷问的答案：每题的推荐理由必须看得见（不再只挂在 title 悬浮） */
   const ixc12 = read("renderer/app-db.js");
@@ -1967,7 +1972,7 @@ const MODEL_JSON =
   /* 位置：本次开发需求之后、默认回写要求之前 */
   const iReq12 = ctOn12.indexOf("本次开发需求：");
   const iGrill12 = ctOn12.indexOf("【拷问模式");
-  const iWrite12 = ctOn12.indexOf("完成后按两段式规范");
+  const iWrite12 = ctOn12.indexOf("收尾：按两段式规范");
   ok(
     iReq12 >= 0 && iReq12 < iGrill12 && iGrill12 < iWrite12,
     "拷问段插在「本次开发需求」之后、回写要求之前",
@@ -1998,9 +2003,8 @@ const MODEL_JSON =
   ctNoteOf("n1", "旧版一句话概述");
   const cOld12 = ctOf();
   ok(
-    cOld12.indexOf("实现要点（面向技术）：") >= 0 &&
-      cOld12.indexOf("（暂无 · 细化或开发时按两段式规范补全）") >= 0,
-    "旧单段 note：开发任务书实现段给「暂无」引导",
+    cOld12.indexOf("旧版一句话概述") < 0,
+    "旧单段 note 同样不进任务书（提示里只认本次需求）",
   );
   ok(
     ex(sb, "devSuggestContextText(nodeById('n1'), '')").indexOf(
@@ -2010,15 +2014,15 @@ const MODEL_JSON =
   );
   ctNoteOf("n1", "");
   ok(
-    ctOf().indexOf("（暂无 · 请先说明该模块在业务上做什么、给谁用）") >= 0,
-    "空 note：开发任务书给功能段引导文案",
+    ctOf().indexOf("（暂无 · ") < 0,
+    "空 note：任务书不再塞「暂无」引导文案",
   );
   ex(sb, "__r12 = " + JSON.stringify(parse(MODEL_JSON)));
   const brief12 = ex(sb, "devSuggestBriefText(nodeById('n1'), __r12, ['o1','o3'], '')");
   ok(
-    brief12.indexOf("完成后按两段式规范") >= 0 &&
-      brief12.indexOf("【实现】工程梗概") >= 0,
-    "「建议→开发」任务书收尾同样要求按两段式回写 note",
+    brief12.indexOf("实施要求：以项目根目录内的真实代码为准") >= 0 &&
+      brief12.indexOf("不读也不改画布") >= 0,
+    "「建议→开发」正文带实施要求与硬闸（两段式回写要求由开发任务书那段承载，见上方 [12]）",
   );
   /* 四处提示词 / 技能真源：两段式关键词在场，防日后改回单段 */
   const gw12 = read("dsh/gateway/canvas-plugin.mjs");

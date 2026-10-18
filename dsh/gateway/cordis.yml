@@ -12,20 +12,20 @@
 
 # ── 覆盖 base 行的配置（id 定位） ──────────────────────────────────────────────
 
-# 会话标题：base 默认字面量，这里补上限（与 0.1 代一致，冒烟 [5] 钉住）
+# 会话标题：base 默认字面量，这里补上限与回落口径（maxTitleBytes 80 与 0.1 代一致）。
+# 回落词数 5 → 8、字节 40 → 48：与「非中文约 8 词」的主题目标同口径（见下面 mtnode-session-title）。
 - id: session-title
   config:
-    fallbackMaxWords: 5
-    fallbackMaxBytes: 40
+    fallbackMaxWords: 8
+    fallbackMaxBytes: 48
     maxTitleBytes: 80
 
+# 引擎自带的 first-prompt 主题 provider 关闭：它把首条用户消息整条塞给辅助模型，
+# MTNode 的首条消息常是整份宿主包装（旧版绑定会话是任务书全文），超 maxInputBytes
+# 就抛错，标题永远停在首句截断。改用下面的 mtnode-session-title（同一 automatic 位，
+# 只注册一个 provider，所以 base 这行必须关掉，否则 register 会报重复注册）。
 - id: session-title-llm
-  config:
-    targetWords: 5
-    targetCjkCharacters: 10
-    maxInputBytes: 4096
-    maxOutputTokens: 64
-    timeoutMs: 60000
+  disabled: true
 
 # 默认路由：deepseek-official 由 SDK 服务端自挂载，首试即成功。
 - id: agent-default-model
@@ -420,6 +420,18 @@
 # （0.2 的 sdk profile 不再预置该行，故这里显式插入。）
 # 以下为插入行：dsh 0.2 的 profile 补丁用 - insert: 段新增条目（顶层同 id 只能覆盖既有行）。
 - insert:
+    # 会话主题标题（本次需求）：新建会话确定需求后自动总结成 ≤20 字主题写回左栏。
+    # 只从首条消息里提纯「本次开发需求 / 细化范围」段（普通会话即整条）再交给引擎的
+    # 标题执行器；长度目标 8 词 / 20 汉字，与渲染层截断口径一致。
+    - id: mtnode-session-title
+      name: './plugins/session-title-theme.mjs'
+      config:
+        targetWords: 8
+        targetCjkCharacters: 20
+        maxInputBytes: 16384
+        maxOutputTokens: 64
+        timeoutMs: 60000
+
     - id: tool-ask-user
       name: '@deepseek-ai/dsh-tool-ask-user'
       disabled: !!js process.env.MTNODE_CHAT_ISOLATE === '1'

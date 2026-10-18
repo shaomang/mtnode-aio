@@ -191,22 +191,25 @@ console.log("\n[5] 仓库接线");
   );
 
   const settings = read("renderer/app-settings.js");
+  /* 2026 需求：子代理（委派）界面已整块移除 —— 设置里不再有深度下拉 / 总开关，也不再写
+     S.config.dsh.subagent；配置键与运行期取值仍由主进程 dsh-agent-policy.js 读取。
+     （原四条断言钉的是那张已被撤掉的界面，现改为钉「撤掉」这件事本身。） */
   ok(
-    /S\.config\.dsh\.subagent = Object\.assign\(/.test(settings),
-    "设置界面把策略存在 S.config.dsh.subagent",
+    !/S\.config\.dsh\.subagent\s*=/.test(settings),
+    "设置界面不再写 S.config.dsh.subagent（子代理小节已整块移除）",
   );
   ok(
-    /S\.config\.dsh\.subagent\.depth = Number\(depthSel\.value\)/.test(settings),
-    "深度下拉写回 depth",
+    settings.indexOf("子代理（委派）的界面已按需求整块移除") > 0,
+    "代码注释写明移除与配置键去向（不是被谁删漏了）",
+  );
+  const policy = read("dsh-agent-policy.js");
+  ok(
+    /subagent/.test(policy) && /depth/.test(policy),
+    "运行期策略模块仍读 config.dsh.subagent（含 depth）",
   );
   ok(
-    /子代理嵌套深度（0 = 禁止委派）/.test(settings),
-    "设置里有深度选择项（0 / 1 / 2）",
-  );
-  ok(
-    settings.indexOf("子代理（委派）") > 0 &&
-      settings.indexOf("智能能力（DeepSeek Harness / dsh）") < settings.indexOf("子代理（委派）"),
-    "子代理小节落在「智能能力（dsh）」区块内",
+    settings.indexOf("智能能力（DeepSeek Harness / dsh）") > 0,
+    "「智能能力（dsh）」区块仍在（只撤了其中的子代理小节）",
   );
   const i18n = read("renderer/i18n.js");
   for (const zh of [

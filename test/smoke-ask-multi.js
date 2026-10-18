@@ -315,12 +315,14 @@ ok(hasEntry("☑ 可多选：这一题能同时勾选多项"), "i18n 有告示�
 
 /* ── [5] 契约写法（提示词同步写明 multi_select） ─────────────────────────── */
 console.log("\n[5] 契约写法（模型侧才知道要写 multi_select）");
-has(read("renderer/app-assist.js"), "multi_select: true", "会话 / 助手的拷问契约写明 multi_select");
-has(read("renderer/app.js"), "multi_select: true", "开发节点任务书那段【拷问模式】同步");
+/* 瘦身口径（本次需求）：会话 / 助手的拷问契约与开发节点任务书那段【拷问模式】不再抄细则，
+   只留一句指向技能 —— multi_select / 询问窗 / 前沿的写法由 mtnode-grill-me 承载（见下方那条）。 */
+has(read("renderer/app-assist.js"), "multi_select", "会话 / 助手的拷问契约提到 multi_select（细则指向技能）");
+has(read("renderer/app.js"), "mtnode-grill-me", "开发节点任务书的【拷问模式】段指向技能 mtnode-grill-me");
 has(read("renderer/app-toolbuild.js"), "multi_select: true", "工具构建问询契约同步");
 has(read("renderer/app-longtask-guide.js"), "multi_select: true", "长周期任务新建引导同步");
 has(read("renderer/app-longtask-edit.js"), "multi_select: true", "长周期任务编辑引导同步");
-has(read("renderer/i18n.js"), "multi_select: true", "i18n 的拷问模式中文段同步");
+has(read("renderer/i18n.js"), "closing-card layout all live there", "i18n 的拷问模式英文段同步指向技能（细则不抄第二份）");
 has(read("mtnode-agent-skills/mtnode/grill-me/SKILL.md"), "`multi_select`：候选可并存时置 `true`", "技能 mtnode-grill-me 原有那条仍在");
 
 console.log(

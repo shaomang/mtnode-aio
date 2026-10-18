@@ -689,11 +689,20 @@ mockServer.listen(0, '127.0.0.1', () => {
       log('pane-head removed=' + (document.querySelector('.pane-head') === null));
       log('hint text=' + JSON.stringify($('#canvasHint') ? $('#canvasHint').textContent : '(hint removed, new toolbar)'));
       log('toolbar layout=' + (!!$('#wfTabs') && !!$('#wfWsBox') && !!document.querySelector('.fn-toolbar')));
-      log('task crumb before tabs=' + ($('#taskCrumb') && $('#taskCrumb').nextElementSibling && $('#taskCrumb').nextElementSibling.id === 'wfTabs'));
-      log('author link=' + ($('#authorLink').textContent === '@ms2308'));
+      // 本轮需求：画布面包屑从 tabs 工具条搬进画布，挂成画布内容区左上角的悬浮层
+      log('task crumb in canvas=' + (!!$('#taskCrumb') && $('#taskCrumb').parentElement && $('#taskCrumb').parentElement.id === 'canvas' && !document.querySelector('.fn-toolbar #taskCrumb')));
+      // 本轮需求：状态栏右下角由作者名 @ms2308 改成版本号（如 v1.5.4），悬停提示改成「应用详情」
+      log('author link=' + ($('#authorLink').textContent === 'v' + S.appVersion && $('#authorLink').getAttribute('title') === '应用详情'));
+      // 本轮需求：Logo 副标题删掉版本号与四条操作提示，只留 🐋 DeepSeek Harness Empowered
+      log('logo sub trimmed=' + ($('#logoSub').textContent.indexOf('右键画布添加节点') < 0 && $('#logoSub').textContent.indexOf('v' + S.appVersion) < 0 && $('#logoSub').textContent.indexOf('DeepSeek Harness Empowered') >= 0));
       openAuthorPopup();
       const apText = $('#ovBody').textContent;
-      log('author popup=' + (apText.indexOf('@ms2308') >= 0 && apText.indexOf('https://space.bilibili.com/16411347') >= 0) + ' centered=' + ($('#overlay').style.alignItems === 'center'));
+      // 本轮需求：作者名可点（进 B 站）、下方是「MTNode 主页」，两者都不把网址写成正文
+      const apName = $('#ovBody a.author-name');
+      const apHome = $('#ovBody a.author-link');
+      log('author popup=' + (apText.indexOf('@ms2308') >= 0 && apText.indexOf('https://') < 0 && apText.indexOf('http://') < 0 &&
+        !!apName && apName.getAttribute('href') === 'https://space.bilibili.com/16411347' &&
+        !!apHome && apHome.textContent === 'MTNode 主页' && /^http:\/\/mt-agent\.com\/mtnode\/?$/.test(apHome.getAttribute('href') || '')) + ' centered=' + ($('#overlay').style.alignItems === 'center'));
       closeOverlay();
       const ccBefore = S.wf.nodes.length;
       S.sel = spd.id;

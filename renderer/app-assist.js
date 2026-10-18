@@ -219,23 +219,18 @@ function grillTurnOn(s, opts) {
 /* 拷问契约正文：与开发节点任务书里那段【拷问模式】同一套纪律，只改两处差异 ——
    ① 会话 / 助手随时能改文件与画布，所以不禁「只读地查现状」，只禁「出实施计划 / 开工」；
    ② 收尾不回写任何节点字段（那不是会话的活）。 */
+/* 瘦身口径（用户已确认）：系统提示只留「触发句 + 收尾卡格式」，询问窗规矩、multi_select、
+   前沿口径、只问不做的细则全在内置技能 mtnode-grill-me（唯一真源，本文件不再抄）。 */
 const GRILL_CONTRACT =
   "\n\n【拷问模式 · 先问清再动手】这条会话开着「先拷问需求」。" +
-  "你每一轮先自判一次：**这一轮像不像需求 / 开发 / 改东西**（要新建或修改文件、画布、节点、配置、功能、方案）；" +
-  "像就先拷问再动手，**拿不准就不拷问、直接干活**（普通的问答、查资料、解释、闲聊、继续执行上一轮已确认的事都不算需求）。\n" +
-  "要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它的纪律执行 —— " +
-  "把这一轮需求映射成决策树，每轮用 ask_user_question 工具跳出 MTNode 询问窗，一次把整个前沿的全部问题问完" +
-  "（题面写进 question、候选写进 options、推荐项放第一位并在 label 末尾标「（推荐）」、理由写 description）；" +
-  "某题的候选可并存 / 能同时选多项时，给该题加 `multi_select: true`（字段名是下划线写法）—— 漏了询问窗只给单选框，用户想全选也勾不上；" +
-  "禁止把问题编号列在回复正文里、让用户在输入框作答；需要事实就自己用只读工具去查（读代码 / 读文件 / 联网），不要拿环境问题问用户；" +
-  "到你用最后一次询问窗获得用户明确「确认无歧义」之前：**只问不做** —— 不出实施计划、不开工" +
-  "（也不要拿 todo_write 任务清单替代实施计划）；确有必要时可以只读地查看现状（读文件 / 读画布）以便把问题问准。\n" +
-  "用户答完就据此重算前沿、继续下一轮；他中途补充了新需求，就按新需求重新判一次、重新拷问一遍。" +
-  "只有得到明确「确认无歧义」（或用户明说「别问了 / 直接做」）之后才开始实施。" +
+  "每轮先自判：**这一轮像不像需求 / 开发 / 改东西**（新建或修改文件、画布、节点、配置、方案）——" +
+  "像就先拷问再动手，**拿不准就直接干活**（问答、查资料、解释、闲聊、继续已确认的事都不算需求）。\n" +
+  "要拷问时：先用 skill 工具加载内置技能 mtnode-grill-me 并严格照它执行（询问窗格式、multi_select、前沿口径、只问不做都在里面）。" +
+  "到用户明确「确认无歧义」（或明说「别问了 / 直接做」）之前：**只问不做** —— 不出实施计划、不开工；确有必要可只读查看现状把问题问准。\n" +
   /* 收尾卡的写法（与询问窗的渲染口径同源见 renderer/app-db.js 的 ixSummarySplit /
      ixSummaryBlock）：题面首行 + 空行后的 Markdown 总结 → 卡片渲染成「📋 总结」区。
      不写死这段，模型会把整份共识挤在题面那一行，卡片再好也只能显示成一坨。 */
-  "收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」—— 卡片会把它显示成标题行），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把这一段渲染进「📋 总结」区；选项只留两项：推荐项 = 明确同意开工（如「确认无歧义，开始实施（推荐）」），另一个 = 还要改（如「还要改，我补充」），措辞随交流语言。不要把总结挤进题面那一行，也不要拆成几张卡。";
+  "收尾那张确认卡按固定格式写：question 的第一行只放一句话题面（如「以上共识是否无误？」），空行之后才是整份共识总结、用 Markdown 写（小标题 + 要点列表，必要时表格），卡片会把它渲染进「📋 总结」区；选项只留两项：「确认无歧义，开始实施（推荐）」与「还要改，我补充」，措辞随交流语言。";
 
 function summarizeCanvasEdit(params) {
   params = params || {};
@@ -527,9 +522,36 @@ function sessionDevTitlePrefix(st) {
 
 /* 自动短标题的清洗：引擎给的是 LLM 生成的一小段文本，可能带换行 / 引号 / 句号，
    侧栏一行放不下也不能带控制字符。返回 ""=放弃这次命名。 */
-const SESSION_AUTO_TITLE_MAX = 24;
+const SESSION_AUTO_TITLE_MAX = 20;
+/* 非中文按词算（与网关 mtnode-session-title 的 targetWords: 8 同口径）；
+   没有空格的长串（URL / 标识符）按字符兜底，约 40 字符一行不溢出。 */
+const SESSION_AUTO_TITLE_WORDS = 8;
+const SESSION_AUTO_TITLE_LATIN_MAX = 40;
+const SESSION_AUTO_CJK_RE = /[\u2e80-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
+/* 按语种截断：中文（CJK 占一半以上）20 字，其余 8 词 / 40 字符；超了补省略号。
+   软上限口径：系统提示已经要求模型自己写短，这里只是兜底，不让长标题进侧栏。 */
+function clampAutoSessionTitle(s) {
+  const chars = Array.from(s);
+  const cjk = chars.reduce((n, c) => (SESSION_AUTO_CJK_RE.test(c) ? n + 1 : n), 0);
+  if (cjk > 0 && cjk * 2 >= chars.length) {
+    if (chars.length <= SESSION_AUTO_TITLE_MAX) return s;
+    /* 省略号也算一格：截 19 字 + 「…」= 侧栏可见 20 字 */
+    return chars.slice(0, SESSION_AUTO_TITLE_MAX - 1).join("") + "…";
+  }
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length > SESSION_AUTO_TITLE_WORDS)
+    return words.slice(0, SESSION_AUTO_TITLE_WORDS).join(" ") + "…";
+  if (chars.length > SESSION_AUTO_TITLE_LATIN_MAX)
+    return chars.slice(0, SESSION_AUTO_TITLE_LATIN_MAX - 1).join("") + "…";
+  return s;
+}
 function autoSessionTitleOf(raw) {
-  let s = String(raw == null ? "" : raw)
+  const rawText = String(raw == null ? "" : raw);
+  /* 宿主包装文本（旧版首条消息整份是【系统设定】/ 任务书）截成标题毫无意义：
+     引擎回落恰恰是从首条消息前 8 词取的，会得到「【系统设定】 You are the agent…」，
+     宁可不写，让侧栏保留既有占位 / 默认名 */
+  if (/^\s*(【系统设定】|【开发任务书】|You are the agent engine\b)/.test(rawText)) return "";
+  let s = rawText
     /* 控制字符（含换行 / 制表）压成空格，整条收成单行 */
     .replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ")
     .replace(/\s+/g, " ")
@@ -541,11 +563,7 @@ function autoSessionTitleOf(raw) {
     .replace(/[。．.、，,；;：:\s]+$/, "")
     .trim();
   if (!s) return "";
-  /* 按码点截断（emoji / 代理对算一个可见字符），超出补省略号 */
-  const chars = Array.from(s);
-  if (chars.length > SESSION_AUTO_TITLE_MAX)
-    s = chars.slice(0, SESSION_AUTO_TITLE_MAX).join("") + "…";
-  return s;
+  return clampAutoSessionTitle(s);
 }
 /* 消费引擎的 session-title 事件（网关 → {type:"title",data:{title,source}}）：
    会话执行任务时，把左侧栏那条标题换成这一轮内容的主题。
@@ -553,7 +571,7 @@ function autoSessionTitleOf(raw) {
              —— 只要还没真正命名过一次就保持放行，round-1 迟到的 title
               （含刚过 done、下一轮发送前到达的）与后续轮的首个主题都能落地；
            · 用户手改过的标题永不被覆盖（st.titleLocked，在飞事件迟到也一样）；
-           · 清洗后为空 → 保留原回落（首条消息前 24 字）。
+           · 清洗后为空 → 保留原回落（首条消息前 20 字，非中文 8 词）。
    按来源分流：provider/user 命中写 st.title / st.titleAuto 并关闭武装位（provider 锁最终主题、
    user 视同 titleLocked 永不让位）；fallback／缺省仅占位不锁位；同值直接返回（幂等，不重绘不落盘）。 */
 function applyAutoSessionTitle(st, raw, srcKind) {
@@ -585,14 +603,11 @@ function applyAutoSessionTitle(st, raw, srcKind) {
 
 /* ============ 绑定会话的「主题」标题 ============
    开发 / 细化绑定会话创建时标题固定是「开发 · 模块名」。产品承诺「跑起来后标题随
-   这一轮的主题更新」，靠的是引擎的 session-title LLM：它只把**首条用户消息**喂给
-   辅助模型，而 dsh/gateway/cordis.yml 里 maxInputBytes=4096 是硬闸 —— MTNode 的首条
-   用户消息却是「【系统设定】+ 整份人设 / 任务书 + 【内容】」，动辄十几 KB，一律超限。
-   provider 抛错后只剩引擎 5 词回落（fallback），渲染层又只在标题为空时才接受回落
-   （见 applyAutoSessionTitle）—— 于是标题永远停在「开发 · 模块名」。
-   这里按首条关键输入（本次开发需求 / 细化范围）自己补一个主题，口径与普通会话的
-   24 字回落一致；刻意**不置 titleAuto** —— 引擎主题若真到达，仍可覆盖它。 */
-const SESSION_TOPIC_MAX = 24;
+   这一轮的主题更新」，真源是网关的 mtnode-session-title（dsh/gateway/plugins/
+   session-title-theme.mjs）：它先从首条消息里提纯「本次开发需求 / 细化范围」段再送
+   辅助模型，所以不会再被整份任务书顶爆 maxInputBytes。
+   这里的规则主题只作**占位**（LLM 还没回来时左栏别停在模块名），口径与普通会话的
+   20 字回落一致；刻意**不置 titleAuto** —— 引擎主题真到达时仍可覆盖它。 */
 function sessionTopicOfText(raw) {
   let s = String(raw == null ? "" : raw)
     .replace(/\s+/g, " ")
@@ -614,7 +629,7 @@ function sessionTopicOfText(raw) {
     }
   /* 「细化该功能块」只是动作、没有主题信息：宁可保留模块名，也不改成一个废话标题 */
   if (!s || s === I18n.t("细化该功能块")) return "";
-  return s.slice(0, SESSION_TOPIC_MAX) + (s.length > SESSION_TOPIC_MAX ? "…" : "");
+  return clampAutoSessionTitle(s);
 }
 /* 绑定会话的主题候选：先看首条 dev-node 消息（新版只放用户关键输入），
    看不出信息（如细化会话的「细化该功能块」）再看任务书契约里的细化范围行。
@@ -725,6 +740,10 @@ function persistAssistUi() {
     const at = Number(m.at || m.createdAt || m.ts) || 0;
     if (at > 0) o.at = at;
     if (m.reasoning) o.reasoning = String(m.reasoning).slice(0, 12000);
+    /* 「用户主动关闭会话」状态行（本次需求）：_src / _detail 必须随存档一起落盘，
+       否则重开面板会把它当成一条空的用户消息（空气泡，原始报文也没了）。 */
+    if (m._src) o._src = String(m._src);
+    if (m._detail) o._detail = String(m._detail).slice(0, 4000);
     if (Array.isArray(m.tools) && m.tools.length) {
       o.tools = m.tools.slice(0, 40).map((t) => ({
         callId: t.callId,
@@ -1539,6 +1558,9 @@ async function assistSend(text) {
   /* 历史存档里曾被回滚的轮次消息不进上下文（activeSessionMessages 无标记时不复制数组） */
   const assistHist = activeSessionMessages(S.assistMessages);
   const hist = assistHist
+    /* 界面痕迹（_src："user-closed" 的「用户主动关闭会话」状态行等）不进模型上下文：
+       它没有正文，混进去只会变成一条空的「用户：」 */
+    .filter((m) => !m._src)
     .slice(0, -1)
     .slice(-16)
     .map((m) => (m.role === "user" ? "用户：" : "助手：") + m.content)
@@ -1791,12 +1813,33 @@ async function assistSend(text) {
       },
     });
     if (S.assistStopRequested) {
+      /* 用户主动关闭（本次需求）：这一轮助手同样只落一条中性状态行「用户主动关闭会话」，
+         已写出的正文照旧保留，不再写（已终止）、也不弹红 toast。看门狗自动终止仍按旧口径。 */
       const stopped = stripStreamErrors(S.assistPending);
-      S.assistMessages.push({
-        role: "assistant",
-        content: stopped || I18n.t("（已终止）"),
-        at: Date.now(),
-      });
+      const autoStop =
+        typeof dshRunAutoStoppedSinceStart === "function" &&
+        dshRunAutoStoppedSinceStart("assist");
+      if (autoStop) {
+        S.assistMessages.push({
+          role: "assistant",
+          content: stopped || I18n.t("（已终止）"),
+          at: Date.now(),
+        });
+      } else {
+        if (String(stopped || "").trim())
+          S.assistMessages.push({
+            role: "assistant",
+            content: stopped,
+            at: Date.now(),
+          });
+        S.assistMessages.push({
+          role: "user",
+          content: "",
+          at: Date.now(),
+          _src: "user-closed",
+          _detail: "",
+        });
+      }
     } else {
       let body =
         (typeof final === "string" ? final : final && final.text) ||
@@ -1832,15 +1875,46 @@ async function assistSend(text) {
     }
   } catch (e) {
     const msg = (e && e.message) || String(e);
+    const userClosed =
+      typeof dshIsUserClosedError === "function" && dshIsUserClosedError(e);
     const cancelled =
       S.assistStopRequested || isCancelishError(msg);
-    if (cancelled) {
+    if (userClosed) {
+      /* 用户主动关闭（本次需求）：助手这一轮同样只落中性状态行，不弹红 toast */
       const body = stripStreamErrors(S.assistPending);
+      if (body.trim())
+        S.assistMessages.push({ role: "assistant", content: body, at: Date.now() });
       S.assistMessages.push({
-        role: "assistant",
-        content: body || I18n.t("（已终止）"),
+        role: "user",
+        content: "",
         at: Date.now(),
+        _src: "user-closed",
+        _detail: String((e && e.detail) || msg).slice(0, 4000),
       });
+    } else if (cancelled) {
+      const body = stripStreamErrors(S.assistPending);
+      /* 用户按停同样收成一条中性状态行「用户主动关闭会话」（本次需求）：
+         取代原来的（已终止），已写出的正文照旧保留。看门狗自动终止不算用户操作。 */
+      const autoStop =
+        typeof dshRunAutoStoppedSinceStart === "function" &&
+        dshRunAutoStoppedSinceStart("assist");
+      if (autoStop) {
+        S.assistMessages.push({
+          role: "assistant",
+          content: body || I18n.t("（已终止）"),
+          at: Date.now(),
+        });
+      } else {
+        if (body.trim())
+          S.assistMessages.push({ role: "assistant", content: body, at: Date.now() });
+        S.assistMessages.push({
+          role: "user",
+          content: "",
+          at: Date.now(),
+          _src: "user-closed",
+          _detail: String((e && e.detail) || "").slice(0, 4000),
+        });
+      }
     } else {
       S.assistMessages.push({
         role: "assistant",
@@ -1900,24 +1974,23 @@ function canvasWfIdForNode(node) {
   return currentVisibleWfId();
 }
 /* ── 自检与长时纪律（会话系统提示的行为纪律，唯一一处）────────────────────
-   用户已确认的四条口径（见本功能块的开发任务书与拷问共识）：
-     · 分阶段自检 + 交付前全检；
-     · 发现产出与原目标不符 / 关键结论无证据 → 先自行修复并重跑，修不好才告知用户；
-     · 关键结论必须带证据（来源 URL / 命令输出 / 截图路径），无证据不下断言；
-     · 长任务不空转；跨重启（要数小时 / 要断点续跑）的活，建议用户提升为长周期任务图。
+   瘦身口径（用户已确认）：系统提示只留**四条硬闸短句**，「可删软性建议，只留硬闸」——
+   理由、做法、清单与留痕细则搬到内置技能 mtnode-agent-skills/mtnode/self-check/SKILL.md，
+   这里只留一句指向。删掉的软性条目（不空转、长任务建图建议、浏览器留痕）都在技能里。
+   保留的四条：
+     · 问用户的两个入口（浏览器 → browser_help，其余 → ask_user_question）；
+     · 两道自检（阶段自检 + 交付前全检）；
+     · todo 清单随手收口；
+     · 先自修 + 硬断言带证据（合并成一条）。
    浏览器一侧的纪律（接管期间停手、凭据不进对话、危险动作先问）写在 browser_help /
-   browser_type 的工具描述里，此处不重复。**问用户的入口边界**（本次需求 · 拷问共识）
-   与工具描述同源，这里只重复一句行为纪律：与浏览器无关的询问一律走 ask_user_question。 */
+   browser_type 的工具描述里，此处不重复。 */
 const SELF_CHECK_DISCIPLINE =
-  "\n\n【自检与长时纪律】\n" +
-  "· 问用户只有两个入口：**与浏览器 / 当前页面有关的**用 browser_help（登录墙、验证码、页面上的验证与选择、被网站拦住、页面上的危险动作）；**其它一切询问**（共识确认、方案与范围选择、补充信息、可否开工）一律用 ask_user_question —— 网关会拒绝与浏览器无关的 browser_help，那张求助卡不接通用询问。\n" +
-  "· 自检分两道：每完成一个阶段 / 大步骤做一次阶段自检（这一阶段的产出对不对、证据齐不齐、下一步是什么），交付前做一次全检（对照最初的目标逐条核，漏项与猜测都算不合格）。\n" +
-  "· 用 todo_write 记的清单要随手收口：每完成一条立刻标 completed（不要攒到最后一起标），交付前再写一次整份清单把每条状态写死；**绝不许把没做完的条目留在模糊状态收尾** —— 会话结束时清单里剩下的条目会被标成「未确认」，用户看到的就是一串「?」，等于这份清单白记了。\n" +
-  "· 自检发现输出与原目标不符、或关键结论无证据时：先自己回去修好 / 补证据并重跑那一步，不要把它当定稿往后带，也不要在这种时候先来问用户；修不好（缺权限 / 缺信息 / 被网站拦住）才带着「试过什么、卡在哪、需要什么」来问。\n" +
-  "· 关键结论必须带证据：每条硬断言后面给出可复核的依据（来源 URL / 命令输出摘要 / 截图或文件的绝对路径）。拿不到证据就明说「未验证」或「没查到」，绝不用印象补全。\n" +
-  "· 长任务不空转：不要重复已经做过且没有新信息的事，不要为了显得忙而重跑同一份调研；每一步都要能说出「这一步让哪个结论前进了」。\n" +
-  "· 要数小时才能做完、或需要跨重启接着跑的活：主动建议用户把它提升为「长周期任务图」（图上带阶段与断点），但不要自行替用户改图 —— 等用户确认后再动手。\n" +
-  "· 浏览器工作要留下痕迹：改动前后的页面状态、下载与截图路径、跑过的命令，都写进交付说明里，让用户能自己复核。";
+  "\n\n【自检与硬闸】\n" +
+  "· 问用户只有两个入口：**与浏览器 / 当前页面有关的**用 browser_help；**其它一切询问**（共识确认、方案与范围选择、补充信息、可否开工）一律用 ask_user_question —— 网关会拒绝与浏览器无关的 browser_help。\n" +
+  "· 自检两道：每个阶段 / 大步骤后自检一次（产出对不对、证据齐不齐），交付前对照最初目标做一次全检，漏项与猜测都算不合格。\n" +
+  "· todo_write 清单随手收口：每条做完立刻标 completed，交付前把整份状态写死，绝不留模糊条目收尾。\n" +
+  "· 产出与原目标不符或缺证据时：先自己修好 / 补证据并重跑那一步，修不好才带「试过什么、卡在哪、需要什么」来问；硬断言必须给可复核依据（来源 URL / 命令输出摘要 / 文件或截图绝对路径），拿不到就说「未验证」，不用印象补全。\n" +
+  "细则（自修口径、证据形态、不空转、长任务建图建议、浏览器留痕）见技能 mtnode-self-check。";
 
 /* 会话列表：**索引**从主进程 agent-sessions/index.json 载回（app-boot.js 的启动链），
    正文按需读回（懒加载，见下面 agentEnsureSessionBody 那一段）；活动会话由
@@ -2425,11 +2498,16 @@ function wsGroupOf(ws) {
    现在拆成三层：
      ① agent-sessions/<id>.json 每会话一份 + index.json 索引（主进程
         agent-sessions-store.js，三条硬口径见那边文件头）；
-     ② 本函数 = **500 ms 合并窗口**：窗口内的连续落盘合并成一次，只送被改动的会话；
+     ② 本函数 = **合并窗口**（本次需求从 500 ms 放宽到 2000 ms）：窗口内的连续落盘合并成一次，只送被改动的会话；
         切会话 / 关窗 / 跑画布 / 配置即时保存前立即 flush（见 agentFlushSessionSave）；
      ③ 懒加载：正文没读回来的会话**只更新索引**（送 body: undefined），别的什么都不碰。
    本文档里的 180+ 调用点一个字都不用改：它们只要求「这次改动最终会落盘」。 */
-const AGENT_SAVE_MS = 500; /* 合并窗口（用户已确认：500 ms，切会话 / 关窗 / 跑画布前立即 flush） */
+/* 合并窗口（本次需求 · 用户已确认：500 ms → 2000 ms）。
+   为什么放宽：会话运行期间窗口内每次落盘 = 把整份会话正文序列化 + 结构化克隆过 IPC +
+   主进程同步写盘；长会话（几十 MB）时这几步会周期性占住两端的主线程，用户看到的就是
+   「画布一个节点都没动也顿一下」。2000 ms 只影响「运行中的常规写盘」，用户主动操作
+   （切会话 / 关窗 / 本轮结束 / 切画布）依旧立即 flush —— 见 agentFlushSessionSave 的调用点。 */
+const AGENT_SAVE_MS = 2000;
 S._sessionDirty = S._sessionDirty instanceof Set ? S._sessionDirty : new Set();
 /* 「待删名单」：用户删掉的会话 id。主进程 session:save 只会删 drop 名单里的会话
    （文件 + 索引条目），渲染层不点名就等于没删 —— 本机 bug「删了会话，重启又回来」
@@ -2492,28 +2570,36 @@ async function agentWriteAgentSessions() {
     if (dropped.indexOf(sid) < 0) dropped.push(sid);
   }
   const payloadSessions = [];
-  for (const s of list) {
-    if (!s || !s.id) continue;
-    const isDirty = dirty.has(String(s.id));
-    /* 既没脏、正文也还在盘上：本进程完全没动过它 —— 一条都不用送，
-       索引里那份（连同它记的 size/mtime 签名）保持原样。 */
-    if (!isDirty && !s._lcLoaded) continue;
-    const meta = agentSessionMetaForDisk(s);
-    if (isDirty && s._lcLoaded) {
-      /* 脏 + 正文在内存：送完整持久化对象（主进程逐字比对后才真写盘）。
-         正文一条不裁（见 agentSessionBodyForDisk 上方的口径说明）：过去这里写完盘再把
-         内存里那份裁到上限，一并删掉。 */
-      payloadSessions.push(Object.assign({}, meta, { body: agentSessionBodyForDisk(s) }));
-    } else if (isDirty) {
-      /* 脏但正文不在内存（只有索引里的元数据被改过：改名 / 归档 / 拖序…）：
-         只更新索引条目 —— 主进程见到 body 缺省就绝不碰会话文件。 */
-      payloadSessions.push(Object.assign({}, meta, { loaded: false }));
-    } else {
-      /* 正文在内存、这次没改过：只送元数据，让索引（含它记的签名）与原样文件对齐 */
-      payloadSessions.push(meta);
+  /* 诊断（app-render-perf.js）：这一段是「把整份会话正文序列化出来准备送 IPC」，长会话时
+     它本身就是一块主线程开销（trace 关着时是一层直通）。 */
+  const perfSpan = (label, fn) => {
+    const P = window.MTNodePerf;
+    return P && typeof P.span === "function" ? P.span(label, fn) : fn();
+  };
+  perfSpan("会话落盘·序列化", () => {
+    for (const s of list) {
+      if (!s || !s.id) continue;
+      const isDirty = dirty.has(String(s.id));
+      /* 既没脏、正文也还在盘上：本进程完全没动过它 —— 一条都不用送，
+         索引里那份（连同它记的 size/mtime 签名）保持原样。 */
+      if (!isDirty && !s._lcLoaded) continue;
+      const meta = agentSessionMetaForDisk(s);
+      if (isDirty && s._lcLoaded) {
+        /* 脏 + 正文在内存：送完整持久化对象（主进程逐字比对后才真写盘）。
+           正文一条不裁（见 agentSessionBodyForDisk 上方的口径说明）：过去这里写完盘再把
+           内存里那份裁到上限，一并删掉。 */
+        payloadSessions.push(Object.assign({}, meta, { body: agentSessionBodyForDisk(s) }));
+      } else if (isDirty) {
+        /* 脏但正文不在内存（只有索引里的元数据被改过：改名 / 归档 / 拖序…）：
+           只更新索引条目 —— 主进程见到 body 缺省就绝不碰会话文件。 */
+        payloadSessions.push(Object.assign({}, meta, { loaded: false }));
+      } else {
+        /* 正文在内存、这次没改过：只送元数据，让索引（含它记的签名）与原样文件对齐 */
+        payloadSessions.push(meta);
+      }
+      s._lcDirty = false;
     }
-    s._lcDirty = false;
-  }
+  });
   const activeId = String(activeAgentId() || "");
   if (!payloadSessions.length && !dropped.length && S._agentActiveIdSynced === activeId) {
     return; /* 没有任何改动、活动会话也没换：一次 IPC 都不发 */
@@ -2524,7 +2610,22 @@ async function agentWriteAgentSessions() {
   if (!api) return; /* 老壳（没有会话通道）静默跳过，不影响其它功能 */
   let res = null;
   try {
-    res = await api({ activeId: activeId, sessions: payloadSessions, drop: dropped });
+    /* 诊断：结构化克隆过 IPC + 主进程同步写盘的总耗时（超过 50ms 打一行，带体积）。
+       体积只在 trace 开着时算 —— 它自己就是一次 JSON.stringify，不能常态付这份钱。 */
+    const P = window.MTNodePerf;
+    const traceOn = !!(P && P.trace);
+    let payloadBytes = 0;
+    if (traceOn) {
+      try {
+        payloadBytes = JSON.stringify(payloadSessions).length;
+      } catch (_) {
+        payloadBytes = 0;
+      }
+    }
+    const p = api({ activeId: activeId, sessions: payloadSessions, drop: dropped });
+    res = await (P && typeof P.spanAsync === "function"
+      ? P.spanAsync("会话落盘·写盘", p, "payload " + Math.round(payloadBytes / 1024) + "KB")
+      : p);
   } catch (_) {
     res = null;
   }
@@ -2701,7 +2802,7 @@ function agentSessionBodyForDisk(s) {
   });
 }
 /* 会话落盘入口（本文档 110+ 处调用点只用它的「会有一次落盘」语义）：
-   改动进 500 ms 合并窗口，窗口过去或有人 flush 时一起写；新会话在 newAgentSession
+   改动进合并窗口（AGENT_SAVE_MS = 2000 ms），窗口过去或有人 flush 时一起写；新会话在 newAgentSession
    里直接标脏（索引要立刻带上它，左栏才不会少一行）。
    **它自己一律不动时间戳**（本轮口径 · 用户已确认）：时间戳只由 agentTouchSession
    盖 —— 也就是「用户真发了消息」与「AI 这一轮真有产出」两件事。
@@ -2717,7 +2818,7 @@ async function persistAgentSession() {
    · AI 这一轮真的产出了东西（整轮收尾刷一次；写清单 / 问答提交这类轮内产出）。
    左栏排序与行尾相对时长都以 sessionLastAt（updatedAt / 消息 / outbox 取最大）为基准，
    所以只有这两类动作才该让一条会话往上走。调用它 = 盖时间戳 + 让这次改动进
-   500 ms 合并窗口（与 persistAgentSession 的落盘语义相同，只是多盖了一次时间）。
+   合并窗口（AGENT_SAVE_MS）里（与 persistAgentSession 的落盘语义相同，只是多盖了一次时间）。
    owner：要盖的那条会话，缺省 = 当前活动会话。并行计划 / 节点绑定会话这类
    **跑的不是眼前这条**的调用点必须显式传 owner，否则会盖错人。 */
 function agentTouchSession(owner) {
@@ -2762,7 +2863,7 @@ function newAgentSession() {
     archived: false,
     updatedAt: Date.now(),
     /* 新会话的正文就在内存里（没有正文要读回）；直接标脏，让索引立刻带上它 ——
-       否则左栏在 500 ms 合并窗口内会少一行（用户点了「新会话」却看不到它）。 */
+       否则左栏在合并窗口（AGENT_SAVE_MS）内会少一行（用户点了「新会话」却看不到它）。 */
     _lcLoaded: true,
     _lcDirty: true,
   };
@@ -2790,7 +2891,7 @@ function agentContractSession(opts) {
   opts = opts || {};
   const st = newAgentSession();
   if (String(opts.title || "").trim()) st.title = String(opts.title).trim();
-  /* 标题锁死：契约会话的名字是入口的固定口径，不让首轮自动命名改成正文前 24 字 */
+  /* 标题锁死：契约会话的名字是入口的固定口径，不让首轮自动命名改成正文前 20 字 */
   st.titleLocked = true;
   st.titleAuto = false;
   st.canvasWfId = String(opts.canvasWfId || currentVisibleWfId() || "");
@@ -8410,7 +8511,57 @@ function openCompactSummaryPop() {
   }
 }
 
+/* 「用户主动关闭会话」状态行（本次需求 · 消息由 app-db.js 的 userClosedTrace 落盘）：
+   中性一行 —— 不是红字报错、也不套 AI / 你 的气泡头（这一轮既不是模型发言，
+   也不是用户发言）。右侧一枚「详情」按需展开原始工程报文（exit code / stderr tail），
+   默认收起：用户要的是「我自己关的」这一句话，排查时才看报文。 */
+function userClosedRowEl(m, nodeId, idx) {
+  const row = document.createElement("div");
+  row.className = "dsh-msg dsh-msg-bnote dsh-msg-closed";
+  if (idx != null) row.dataset.histKey = histMsgKey(nodeId || "chat", idx, m);
+  const line = document.createElement("div");
+  line.className = "dsh-closed-line";
+  const icon = document.createElement("span");
+  icon.className = "dsh-closed-ico";
+  icon.textContent = "⏹";
+  const txt = document.createElement("span");
+  txt.className = "dsh-closed-txt";
+  txt.textContent =
+    typeof dshUserClosedText === "function"
+      ? dshUserClosedText()
+      : I18n.t("用户主动关闭会话");
+  const detail = String((m && m._detail) || "");
+  line.appendChild(icon);
+  line.appendChild(txt);
+  let box = null;
+  if (detail) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "mini dsh-closed-detail";
+    btn.textContent = I18n.t("详情");
+    btn.title = I18n.t("展开原始报文（运行时的退出码与 stderr 尾部，排查用）");
+    btn.onclick = () => {
+      if (!box) {
+        box = document.createElement("pre");
+        box.className = "dsh-closed-raw";
+        box.textContent = detail;
+        row.appendChild(box);
+        btn.classList.add("on");
+        return;
+      }
+      const on = box.hidden = !box.hidden;
+      btn.classList.toggle("on", !on);
+    };
+    line.appendChild(btn);
+  }
+  row.appendChild(line);
+  return row;
+}
+
 function dshMsgBlock(m, nodeId, idx, opts) {
+  /* 「用户主动关闭会话」那一行单独画（见 userClosedRowEl）：它没有正文，走普通消息
+     分支只会得到一个空气泡。 */
+  if (m && m._src === "user-closed") return userClosedRowEl(m, nodeId, idx);
   const row = document.createElement("div");
   row.className = "dsh-msg" + (m.role === "user" ? " dsh-user" : " dsh-ai");
   /* 「这一轮已经结束」痕迹（app-db.js 的 ixRoundEndTrace：轮次收尾时卡片收口后落的
@@ -8791,7 +8942,101 @@ function agentDraftTick() {
   if (!inp) return;
   agentDraftStash(agentDraftKeyNow(), inp.value);
 }
+/* ── 会话视图的刷新节奏（本次需求 · 会话运行期间画布间歇性卡顿）────────────────
+ * 用户口径：会话只是在写文件 / 跑命令、画布一个节点都没动，也周期性顿一下。会话侧的
+ * 三处热路径因此收口：
+ *   ① 正文 / 思考：每 token 一次 `textContent = 全文` + 贴底滚动 = 每帧都在布局；
+ *   ② 工具事件（tool / tool-result / tool-preparing）：原先每次都 `renderAgentSession()`
+ *      **整表重建** —— 连几百条历史消息的 markdown 一起重渲，这是最大的整块开销；
+ *   ③ 后台会话（用户正看着画布）：一行 DOM 都不该刷，只在本轮结束时落一次。
+ * 做法：① 走 30fps 合并器（app-render-perf.js 的 frameFor，尾沿取最新）；
+ *      ② 改成就地增量（agentLiveRepaint 只对账运行中那一行）；③ 由 `mine` 闸 + 收尾那一帧负责。
+ * 没有 MTNodePerf（老壳 / node 冒烟单测）时全部退回改动前的同步路径，行为不变。 */
+function agentUiSoon(key, fn) {
+  const P = window.MTNodePerf;
+  if (P && typeof P.frameFor === "function") {
+    P.frameFor("agent:" + key, fn);
+    return;
+  }
+  try {
+    fn();
+  } catch (e) {
+    try {
+      console.error(e);
+    } catch (_) {}
+  }
+}
+/* 把排队中的合并帧立刻跑完（换轮 / 收尾 / 切会话前用）：不跑掉的话，下一帧会拿着
+   「上一轮的旧内容」写进刚重建好的 DOM —— 那就是残文与错位。 */
+function agentFlushUiFrames() {
+  const P = window.MTNodePerf;
+  if (P && typeof P.flushAllFrames === "function") {
+    try {
+      P.flushAllFrames();
+    } catch (_) {}
+  }
+}
+/* 流式正文尾段的就地刷新（原 text / err 分支里那一段，抽出来给合并器调用）。
+   分段模式：尾段还是 say 且元素对得上 → 只写文本；对不上（刚切段 / 刚收口）→ 整表重建
+   一次对齐 DOM；非分段（老路径 / 节点绑定运行）→ 直接写 #agent-stream。 */
+function paintAgentStream(st) {
+  if (!st || !agentViewIs(st)) return;
+  const el = document.getElementById("agent-stream");
+  const items = agentChatSegItems(st);
+  /* 尾段不是正文（思考 / 工具正在长）：正文段一出现就会成为尾段，下一帧自会画它 ——
+     为这一帧整表重建得不偿失。
+     尾段已经收口（say-end 已到 = 定稿）：交给 say-end 那一支按 markdown 重建，这里不重复。 */
+  if (items && items.length) {
+    const last = items[items.length - 1];
+    if (!last || last.k !== "say" || last.open === false) return;
+  }
+  const seg = items ? agentLiveSegTail(items, el, "say") : null;
+  if (seg) dshSegSetStreamText(el, String(seg.text || ""));
+  else if (items || !el) renderAgentSession();
+  else dshSegSetStreamText(el, st._pending);
+  scrollElToBottomIfStuck($("#agentList"));
+}
+/* 工具事件的就地增量刷新：只重画「运行中那一行」里还没定稿的段（agentLiveSegsEl 的对账口径
+   —— 尾段 + 最早那张未回来的工具卡），历史消息一条都不重建。
+   拿不到 live 容器（非分段老路径 / 容器已随重绘被摘走）才退回整表重建：
+   宁可多花一次，也不能让工具卡停在「运行中」不动。 */
+function agentLiveRepaint(st) {
+  if (!st || !agentViewIs(st)) return;
+  const items = agentChatSegItems(st);
+  const box = st._liveBox;
+  const list = $("#agentList");
+  if (
+    !items ||
+    !box ||
+    box.nodeType !== 1 ||
+    !box.isConnected ||
+    !list ||
+    !list.contains(box)
+  ) {
+    renderAgentSession();
+    return;
+  }
+  const live = liveNodeForSession(st);
+  try {
+    agentLiveSegsEl(box, st, live, items);
+  } catch (e) {
+    try {
+      console.error(e);
+    } catch (_) {}
+    renderAgentSession();
+    return;
+  }
+  scrollElToBottomIfStuck(list);
+}
+/* 整表重建的诊断外壳（trace 关着时是一次直通调用）：重建已经只留给「必须整份对齐」的
+   时机（换轮 / 收尾 / 手动展开更早内容 / 段类型切换），不再挂在校验工具事件上。 */
 function renderAgentSession(opts) {
+  const P = window.MTNodePerf;
+  if (P && typeof P.span === "function")
+    return P.span("会话列表整表重建", () => renderAgentSessionRaw(opts));
+  return renderAgentSessionRaw(opts);
+}
+function renderAgentSessionRaw(opts) {
   const st = agentSessionState();
   /* 懒加载：这条会话只有索引（正文还在 agent-sessions/ 里）→ 先读回来，等它到位再画。
      **不能在这里 return**：会话视图的「当前视图键 / 草稿存回」等收尾动作也在本函数末尾，
@@ -11046,9 +11291,9 @@ async function agentSessionSend(text, opts) {
     else if (opts._planFix) um._src = "plan-fix";
     st.messages.push(um);
     if (st.messages.filter((m) => m.role === "user").length === 1) {
-      /* 回落命名（首条消息前 24 字）同样不得覆盖用户亲口改的名 */
+      /* 回落命名（首条消息前 20 字 / 非中文 8 词）同样不得覆盖用户亲口改的名 */
       if (!st.titleLocked)
-        st.title = t.slice(0, 24) + (t.length > 24 ? "…" : "");
+        st.title = autoSessionTitleOf(t) || t.slice(0, 20) + (t.length > 20 ? "…" : "");
     }
   } else {
     /* 开发 / 细化绑定会话：合并模式，不追加消息，只按主题改名。 */
@@ -11210,33 +11455,33 @@ async function agentSessionSend(text, opts) {
   const assistAutoApprove = !!(S.config && S.config.dsh && S.config.dsh.assistAutoApprove);
   let systemPrompt = "";
   if (!pureMode) {
+    /* 人设瘦身口径（用户已确认）：三档都压成「身份 + 硬闸 + 一句指向」——
+       硬闸 = 不改画布 / 工具存在性 / 不编造节点；字段与端子的机制指向工具描述，
+       操作规范指向内置技能。删掉的是解释性长句与重复的后半段。 */
     if (canvasPersona === "none") {
       systemPrompt =
-        "你是 MTNode 里的通用会话助手。宿主按你这条消息判定**本轮与画布无关**，于是本轮不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令。\n" +
-        "本轮不要承诺任何画布改动，也不要臆造节点或画布现状。若这条任务其实需要动画布：**先别硬做** —— 一句话说明「这轮按无关档跑、画布工具没在」，请用户在同一句里补上画布 / 节点（例如「改画布上的『文本节点 2』」）再发一次；下一轮判据命中就会带上画布工具。\n" +
+        "你是 MTNode 里的通用会话助手。宿主按你这条消息判定**本轮与画布无关**：本轮不注册任何画布与应用工具（mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 都不可用），你只读写文件、联网、执行命令。\n" +
+        "本轮不要承诺任何画布改动，也不要臆造节点或画布现状；若任务其实需要动画布，一句话说明「这轮按无关档跑、画布工具没在」，请用户在同一句里补上画布 / 节点再发一次。\n" +
         "内置技能以文末索引为准（本档位不含画布类技能）；工具回执里没有的结果不要声称已完成。\n" +
         "回答简洁（交流语言见文末「语言口味」）。";
     } else if (canvasPersona === "noRead") {
       systemPrompt =
-        "你是 MTNode 画布上绑定的开发会话助手，但本会话不读取也不修改画布。可读写文件、联网、执行命令；本轮不注册 mtnode_canvas_get 与 mtnode_app。\n" +
-        "画布现状一律以【开发任务书】为准；本会话执行期间与收尾都不得改动画布上任何内容 —— 不改任何节点的 title / note / devStatus / devFiles，也不动连线或排版。\n" +
-        "本会话服务的是左侧栏中属于它的那条会话：任务完成时该会话标题会随首轮主题在左侧栏自动更新（由应用处理，你无需也无权去改画布）。\n" +
-        "内置技能以文末索引为准（本档位不含画布类技能）；工具回执里没有的结果不要声称已完成。\n" +
-        "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
+        "你是 MTNode 画布上绑定的开发会话助手，但本会话不读取也不修改画布：本轮不注册 mtnode_canvas_get 与 mtnode_app。可读写文件、联网、执行命令。\n" +
+        "画布现状一律以【开发任务书】为准；执行期间与收尾都不得改动画布上任何内容 —— 不改任何节点的 title / note / devStatus / devFiles，也不动连线或排版。\n" +
+        "本会话服务的是左侧栏中属于它的那条会话：任务完成时该会话标题会随首轮主题自动更新（由应用处理，你无需也无权去改画布）。\n" +
+        "内置技能以文末索引为准（本档位不含画布类技能）；工具回执里没有的结果不要声称已完成。回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     } else {
       systemPrompt =
         "你是 MTNode 画布上的智能会话助手。可读写文件、联网、执行命令；也可用 mtnode_canvas_get / mtnode_canvas_edit / mtnode_app 查看并修改本会话所属的画布（节点、连线、排版等）。\n" +
-        "你只能访问本会话所属的那张画布：list_workflows / canvas_get 不会返回其他画布内容。\n" +
-        "该画布在会话建立时就已绑定：用户在你运行中途切去其他画布干活，你本轮的读写仍然精准落在自己那张图上，不会串到他正看着的那张。\n" +
+        "只访问本会话绑定的那张画布：会话建立时就已绑定，用户中途切去别的画布干活，你本轮的读写仍精准落在自己那张上。\n" +
         (assistAutoApprove
-          ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效。危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
-          : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等待确认结果，勿臆造成功。若用户拒绝画布修改，本次任务会立即停止，不要再继续改画布。\n") +
-        "DSH 插件可经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理（装在配置目录，升级保留）。\n" +
-        "任务相关性纪律：本轮先自己判断任务是否与画布有关 —— 无关就别读画布（不要调 mtnode_canvas_get，也不要取画布内容 / 快照），用文件读写、联网、命令把活做完；有关再按下面纪律先读现状；判不准按「有关」处理。\n" +
-        "改画布纪律：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect。\n" +
-        "引用画布内容纪律：为某个节点写 prompt/task 而要用画布上别的节点的内容时，一律在 prompt/task 里写 @标题（连线源；全局广播须同时满足三条件），不要把那个节点的正文复制粘贴进去；素材节点本身不是 @ 候选，写 @内容条目标题只引那一条、且只有已连线接进本节点的端子可引；@引用的三条件与语法见技能 mtnode-canvas-edit-rules。\n" +
-        "要建开发节点、批次 / 文生图链、连线 / 建图、整理排版、接数据库副本或索引 / 沉淀项目关键信息时，先用 skill 工具加载对应内置技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）再动手；工具回执里没有的结果不要声称已完成。\n" +
-        "回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
+          ? "当前「助手改画布」为批准：mtnode_canvas_edit 直接生效；危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 仍会弹窗确认。\n"
+          : "mtnode_canvas_edit 与危险操作 delete_workflow / install_dsh_plugin / remove_dsh_plugin / set_dsh_plugin 会弹窗请用户确认：必须等确认结果，勿臆造成功；用户拒绝即停止本次任务。\n") +
+        "相关性：先自判本轮是否与画布有关 —— 无关就别读画布（不调 mtnode_canvas_get、不取快照），直接做完这件活；有关再读现状；判不准按「有关」处理。\n" +
+        "改画布：动手前先 mtnode_canvas_get 看清现状；节点字段、端子与 alias 的口径以 mtnode_canvas_edit / canvas_get 的工具说明为唯一真源，跨超级节点接线用 superConnect；DSH 插件经 mtnode_app 的 list_dsh_plugins / install_dsh_plugin 等管理。\n" +
+        "要某个节点的内容时在 prompt/task 里写 @标题，不要把正文复制粘贴（三条件与语法见技能 mtnode-canvas-edit-rules）。\n" +
+        "建开发节点、批次 / 文生图、连线建图、排版、数据库副本、事实库之前，先用 skill 工具加载对应技能（mtnode-canvas-edit-rules / mtnode-dev-architect / mtnode-canvas-batch-safety / mtnode-canvas-layout-ux / mtnode-media-gen-nodes / mtnode-db-facts / mtnode-ai-facts）。\n" +
+        "工具回执里没有的结果不要声称已完成；回答简洁（交流语言见文末「语言口味」），不要编造不存在的节点或画布。";
     }
   }
   /* 自检与长时纪律（用户已确认：分阶段自检 + 交付前全检；发现错误先自行修复并重跑，
@@ -11321,7 +11566,7 @@ async function agentSessionSend(text, opts) {
            resumed 由宿主按「这一次实际怎么发」给出（见 app-db.js notifyRetry）。 */
         if (type === "retry") {
           if (data && data.resumed) {
-            if (mine) updateAgentLiveThink(st);
+            if (mine) agentUiSoon("think", () => updateAgentLiveThink(st));
             return;
           }
           if (S.thinking) delete S.thinking["agent:" + st.id];
@@ -11331,23 +11576,27 @@ async function agentSessionSend(text, opts) {
           /* 整轮重发：轨迹被 traceReset 换成了新的 items，live 段 DOM 一并作废 */
           st._liveBox = null;
           if (mine) {
+            /* 换轮是结构变化：先丢掉排队中的旧帧，再整表重绘一次（不能迟到覆盖新 DOM） */
+            agentFlushUiFrames();
             try {
               renderAgentSession();
             } catch (_) {}
           }
           return;
         }
-        /* 引擎的会话短标题（dsh session-title / first-prompt 提供者）：本轮第一次执行任务
-           时按内容主题更新左侧栏这条会话的名字。事件可能在开轮回落标题（首条消息前 24 字）
-           之后才到，那时它覆盖回落 —— 闸位与手改锁定见 applyAutoSessionTitle。 */
+        /* 引擎的会话短标题（网关 mtnode-session-title）：本轮第一次执行任务
+           时按内容主题更新左侧栏这条会话的名字。事件可能在开轮回落标题
+           （首条消息前 20 字 / 非中文 8 词）之后才到，那时它覆盖回落 ——
+           闸位与手改锁定见 applyAutoSessionTitle。 */
         if (type === "title") {
           applyAutoSessionTitle(st, (data && data.title) || "", (data && data.source) || "");
           return;
         }
         if (type === "reasoning" && data.text) {
           pushThinking("agent:" + st.id, 0, data.text);
-          /* 分段模式刷尾部思考段；非分段（节点绑定运行等）退回旧整段更新 */
-          if (mine) updateAgentLiveThink(st);
+          /* 分段模式刷尾部思考段；非分段（节点绑定运行等）退回旧整段更新。
+             30fps 合并：思考也是逐 token 到达，每帧一次摘要字数 + 正文写入同样是布局开销。 */
+          if (mine) agentUiSoon("think", () => updateAgentLiveThink(st));
         } else if (type === "tool-preparing" && data && data.callId) {
           /* 工具准备态（本次需求 · 对齐上游 preparing 阶段）：参数还在流进来时，
              先在 st._liveTools 里立一条只带字节数的记录 —— 会话流里那一行卡片随即出现，
@@ -11369,8 +11618,9 @@ async function agentSessionSend(text, opts) {
             st._liveTools.push(pt);
           }
           pt.prep = { bytes: Number(data.bytes) || 0, name: String(data.name || "") };
-          if (!pt.name && data.name) pt.name = String(data.name);
-          if (mine) renderAgentSession();
+          if (!pt.name && data.name) pt.name = String(data.name || "");
+          /* 就地增量（30fps 合并）：只对账运行中那一行，不再整表重建历史消息 */
+          if (mine) agentUiSoon("tools", () => agentLiveRepaint(st));
         } else if (type === "tool" && data.name) {
           /* 工具调用只进 st._liveTools（与运行轨迹的 tool 段），不污染思考文本 */
           /* agent 自己建的任务清单：实时同步到会话底部的 Todo 面板 */
@@ -11399,7 +11649,7 @@ async function agentSessionSend(text, opts) {
               delete pt.prep;
             }
           }
-          if (mine) renderAgentSession();
+          if (mine) agentUiSoon("tools", () => agentLiveRepaint(st));
         } else if (type === "tool-result" && data.callId) {
           st._liveTools = st._liveTools || [];
           const t = st._liveTools.find((x) => x.callId === data.callId);
@@ -11409,7 +11659,7 @@ async function agentSessionSend(text, opts) {
             /* 结果回来的时刻（本次需求 · 轨迹检查器按它算这一次调用的耗时）：
                工具记录自带 at（发起），补一个 doneAt 就成对。 */
             t.doneAt = Date.now();
-            if (mine) renderAgentSession();
+            if (mine) agentUiSoon("tools", () => agentLiveRepaint(st));
           }
         } else if (type === "usage" && data) {
           /* 运行中实时 token 消耗（与网关 stats 相同的累加口径），完成后以 metrics 为准 */
@@ -11438,40 +11688,27 @@ async function agentSessionSend(text, opts) {
                 window.MTNodeTrajectory.noteUsage(st, data);
             }
           } catch (_) {}
-          if (mine) renderSessionFooterStat();
+          if (mine) agentUiSoon("footer", () => renderSessionFooterStat());
         } else if (type === "say-end") {
           /* 正文块收尾（网关在块末发 say-end，见 dsh/DESIGN.md）：这一段已经定稿，
              不再是「流式尾段」。它恰好还是尾段时（= 最终答复那一块，后面没有工具 /
              思考段会顺手带来重绘）本会话又正看着，就地按段重绘一次 —— 最终答复立刻以
-             markdown 呈现，而不是以未渲染原文的形态留在屏上等本轮 finally 那一帧。 */
+             markdown 呈现，而不是以未渲染原文的形态留在屏上等本轮 finally 那一帧。
+             收口这一拍必须真渲 markdown，所以合并器只负责把它并进同一帧（连发多块时
+             不重复重建），不改变「收口即渲染」的语义。 */
           if (mine) {
             const items = agentChatSegItems(st) && agentTraceItems("agent:" + st.id);
             const last = items && items.length ? items[items.length - 1] : null;
             if (last && last.k === "say" && last.open === false) {
-              try {
-                renderAgentSession();
-              } catch (_) {}
+              agentUiSoon("segend", () => renderAgentSession());
             }
           }
           return;
         } else if (type === "text" && data.text) {
           st._pending = (st._pending || "") + data.text;
-          if (mine) {
-            const el = document.getElementById("agent-stream");
-            const items = agentChatSegItems(st);
-            const seg = items
-              ? agentLiveSegTail(items, el, "say")
-              : null;
-            if (seg) dshSegSetStreamText(el, String(seg.text || ""));
-            else if (items || !el) {
-              /* 分段模式（含尾段切换 / 首次成段）→ 整表重绘一次对齐 DOM；
-                 items 刚消失（run 收尾竞态）且无流式元素时也要重绘回旧块 */
-              try {
-                renderAgentSession();
-              } catch (_) {}
-            } else dshSegSetStreamText(el, st._pending);
-            scrollElToBottomIfStuck($("#agentList"));
-          }
+          /* 逐 token 到达：30fps 合并后再写 DOM（每帧一次全文写入 + 贴底滚动，
+             不再让每个 token 各触发一次布局） */
+          if (mine) agentUiSoon("stream", () => paintAgentStream(st));
         } else if (type === "session-event" && data && data.type === "agent/inbox/spliced") {
           /* 插话的注入回执：运行时把这句话拼进收件箱时吐的一帧持久化事件（网关原样
              透传成 session-event）。它就到达在本轮的通道上，天然归属这一轮 ——
@@ -11484,12 +11721,12 @@ async function agentSessionSend(text, opts) {
           if (mine) {
             const el = document.getElementById("agent-stream");
             if (agentChatSegItems(st)) {
-              /* 错误已成 err 段：重绘让 ⚠ 段落在时间线正确位置 */
-              try {
-                renderAgentSession();
-              } catch (_) {}
-            } else if (el) dshSegSetStreamText(el, st._pending);
-            scrollElToBottomIfStuck($("#agentList"));
+              /* 错误已成 err 段：增量对账即可让 ⚠ 段落在时间线正确位置 */
+              agentUiSoon("err", () => agentLiveRepaint(st));
+            } else if (el) {
+              agentUiSoon("stream", () => dshSegSetStreamText(el, st._pending));
+            }
+            agentUiSoon("scroll", () => scrollElToBottomIfStuck($("#agentList")));
           }
         }
       },
@@ -11507,19 +11744,39 @@ async function agentSessionSend(text, opts) {
     if (st._cancelled) {
       st._roundOutcome = "cancelled";
       const body = stripStreamErrors(st._pending);
-      /* 被终止同样把这一轮的思考 / 段快照 / 工具清单随消息归档（见 agentRoundMsgTail）：
-         旧口径只写一行「（已终止）」，用户已经看到的思考块在收尾那一刻整段消失。 */
-      st.messages.push(
-        agentRoundMsgTail(
-          st,
-          {
-            role: "assistant",
-            content: body || I18n.t("（已终止）"),
-            at: Date.now(),
-          },
-          "agent:" + st.id,
-        ),
-      );
+      const rk = "agent:" + st.id;
+      /* 用户按停（本次需求）：已经流式写出来的正文照旧归档（思考 / 段快照 / 工具清单
+         走同一个 agentRoundMsgTail），后面只接一条中性状态行「用户主动关闭会话」，
+         不再写（已终止）—— 两种说法并存会让用户看到两套同义词。
+         看门狗自动终止（长时间无响应 / 交互等待超时）不是用户操作，仍按旧口径记（已终止）。 */
+      const autoStop =
+        typeof dshRunAutoStoppedSinceStart === "function" &&
+        dshRunAutoStoppedSinceStart(rk);
+      if (autoStop) {
+        st.messages.push(
+          agentRoundMsgTail(
+            st,
+            {
+              role: "assistant",
+              content: body || I18n.t("（已终止）"),
+              at: Date.now(),
+            },
+            rk,
+          ),
+        );
+      } else {
+        if (body.trim())
+          st.messages.push(
+            agentRoundMsgTail(
+              st,
+              { role: "assistant", content: body, at: Date.now() },
+              rk,
+            ),
+          );
+        try {
+          userClosedTrace(rk, "");
+        } catch (_) {}
+      }
     } else {
       /* 收尾消息：正文 = say 段按 \n\n 连接（err 段以「⚠ 」附尾，与流式口径一致），
          无段可拼时回退 final / 累加文本 /（无输出），保证不丢字；
@@ -11583,22 +11840,67 @@ async function agentSessionSend(text, opts) {
     }
   } catch (e) {
     const errMsg = (e && e.message) || String(e);
-    if (st._cancelled || isCancelishError(errMsg)) {
+    if (typeof dshIsUserClosedError === "function" && dshIsUserClosedError(e)) {
+      /* 用户主动关闭（本次需求）：运行时是**干净退出**（exit code: 0），报文里那屏
+         stderr 不是故障。已写出的正文照旧归档（用户看着的内容不会因关闭而消失），
+         后面只接一条中性状态行；原始报文折叠进它的「详情」里。 */
       st._roundOutcome = "cancelled";
       const body = stripStreamErrors(st._pending);
+      const rk = "agent:" + st.id;
+      const thinkTxt =
+        (S.thinking && S.thinking[rk] && String(S.thinking[rk][0] || "").trim()) || "";
+      const hasTail = !!thinkTxt || ((st._liveTools || []).length > 0);
+      if (body.trim() || hasTail) {
+        st.messages.push(
+          agentRoundMsgTail(
+            st,
+            {
+              role: "assistant",
+              content: body,
+              at: Date.now(),
+            },
+            rk,
+          ),
+        );
+      }
+      try {
+        userClosedTrace(rk, (e && e.detail) || errMsg);
+      } catch (_) {}
+    } else if (st._cancelled || isCancelishError(errMsg)) {
+      st._roundOutcome = "cancelled";
+      const body = stripStreamErrors(st._pending);
+      const rk = "agent:" + st.id;
       /* 取消类错误收尾与「被终止」同口径：思考 / 段快照 / 工具清单照旧归档
-         （见 agentRoundMsgTail —— 只写一行正文 = 把这一轮的思考内容丢掉）。 */
-      st.messages.push(
-        agentRoundMsgTail(
-          st,
-          {
-            role: "assistant",
-            content: body || I18n.t("（已终止）"),
-            at: Date.now(),
-          },
-          "agent:" + st.id,
-        ),
-      );
+         （见 agentRoundMsgTail —— 只写一行正文 = 把这一轮的思考内容丢掉）。
+         用户按停同样收成一条中性状态行（本次需求），只有看门狗自动终止保留（已终止）。 */
+      const autoStop =
+        typeof dshRunAutoStoppedSinceStart === "function" &&
+        dshRunAutoStoppedSinceStart(rk);
+      if (autoStop) {
+        st.messages.push(
+          agentRoundMsgTail(
+            st,
+            {
+              role: "assistant",
+              content: body || I18n.t("（已终止）"),
+              at: Date.now(),
+            },
+            rk,
+          ),
+        );
+      } else {
+        if (body.trim())
+          st.messages.push(
+            agentRoundMsgTail(
+              st,
+              { role: "assistant", content: body, at: Date.now() },
+              rk,
+            ),
+          );
+        try {
+          userClosedTrace(rk, (e && e.detail) || "");
+        } catch (_) {}
+      }
     } else {
       st._roundOutcome = "error";
       /* 出错收尾同样带上思考尾巴：这一轮的思考不因收尾方式（正常 / 终止 / 出错）
@@ -11634,6 +11936,8 @@ async function agentSessionSend(text, opts) {
        finally 的最后一句，前面 persist / 侧栏刷新任一步抛错就轮不到它，屏上就停在
        流式原文（用户报的「会话最终答复偶尔未正常渲染 md」）。 */
     try {
+      /* 先跑掉排队中的合并帧（否则它会在这一拍之后把旧内容写进新 DOM），再整表重建一次 */
+      agentFlushUiFrames();
       if (agentViewIs(st)) renderAgentSession();
     } catch (_) {}
     /* 会话结束：开发节点从运行队列撤下 */

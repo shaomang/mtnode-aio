@@ -422,8 +422,10 @@ has(SKILL, "📋 总结", "技能 mtnode-grill-me 写明收尾卡会渲染进「
 has(SKILL, "第一行只放一句话题面", "技能写明题面只占第一行");
 has(SKILL, "空行之后", "技能写明总结放在空行之后");
 has(ASSIST, "收尾那张确认卡按固定格式写", "会话 / 助手的 GRILL_CONTRACT 带上收尾卡写法");
-has(ASSIST, "卡片会把这一段渲染进「📋 总结」区", "契约点明渲染去处（与渲染层同源）");
-has(APP, "收尾那张确认卡按固定格式写", "开发节点任务书那段【拷问模式】同步");
+has(ASSIST, "卡片会把它渲染进「📋 总结」区", "契约点明渲染去处（与渲染层同源）");
+/* 瘦身口径（本次需求）：开发节点任务书那段【拷问模式】不再抄收尾卡格式，只指向技能。 */
+has(APP, "收尾确认卡格式都在里面", "开发节点任务书那段【拷问模式】指向技能（细则不抄第二份）");
+has(SKILL, "写那一张卡", "收尾卡格式的唯一真源在技能 mtnode-grill-me");
 has(read("renderer/app-longtask-guide.js"), "收尾那张确认卡（最后一次询问窗）按固定格式写", "长周期任务新建引导同步");
 has(read("renderer/app-longtask-edit.js"), "收尾那张确认卡（最后一次询问窗）按固定格式写", "长周期任务编辑引导同步");
 has(read("renderer/app-toolbuild.js"), "收尾那张确认卡按固定格式写", "工具构建任务书同步");
@@ -453,8 +455,8 @@ ok(
 );
 ok(enTaskbook !== "" && enTaskbook.indexOf("【拷问模式·本轮先问不做】") < 0, "开发节点任务书那段的英文词条也在位");
 ok(
-  enTaskbook.indexOf("Any ambiguity left in the consensus above?") > 0,
-  "任务书英文段同样写明收尾卡写法",
+  enTaskbook.indexOf("closing-card layout all live there") > 0,
+  "任务书英文段同样把收尾卡格式指向技能（英文界面不回退中文）",
 );
 
 console.log(

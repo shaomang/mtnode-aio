@@ -1467,6 +1467,9 @@ console.log(
   let activeAgentId = "as-1";
   const sandbox = {
     I18n: I18n,
+    /* 「用户主动关闭会话」状态行的 _src 常量（agentHistoryEntries 按它过滤：
+       界面状态不是用户说过的话，不能进模型上下文） */
+    USER_CLOSED_SRC: "user-closed",
     activeAgentId: () => activeAgentId,
     agentSessionById: (id) => sessions.find((s) => s.id === id) || null,
     persistAgentSession: () => {

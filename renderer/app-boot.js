@@ -135,15 +135,34 @@ function ensureDefaultProviders() {
   S.config.providers = text.concat(img, rest);
 }
 
+/* 顶栏 Logo 副标题（#logoSub，本轮需求）：
+   原来这一行是「🐋 DeepSeek Harness Empowered · v1.5.4 · 右键画布添加节点 · 拖线连接节点
+   · Ctrl+拖拽框选 · 滚轮缩放画布」。本轮删掉后缀那四条操作提示、**连同版本号一起删**
+   （版本号改到状态栏右下角的 #authorLink 显示，避免同一屏出现两个版本号），
+   只留 🐋 DeepSeek Harness Empowered。
+   行高不动：元素与字号都没变，只是文字变短，顶栏第一行不会因此收紧或位移。
+   那段操作提示按要求直接删除、不搬进手册。 */
 function applyLogoSub() {
   const sub = $("#logoSub");
   if (!sub) return;
-  sub.innerHTML =
-    '<span class="whale-tag">🐋 DeepSeek Harness Empowered</span>' +
-    " · v" +
-    (S.appVersion || "") +
-    I18n.t(" · 右键画布添加节点 · 拖线连接节点 · Ctrl+拖拽框选 · 滚轮缩放画布");
-  sub.title = I18n.t("版本 ") + (S.appVersion || "") + " · DeepSeek Harness Empowered";
+  /* 不加 hover 提示：这行的可见文字就是全部信息，再挂一条同名 title 只是重复（同
+     test/smoke-hint-cleanup.js 的「提示 ≡ 标签」口径）。 */
+  sub.innerHTML = '<span class="whale-tag">🐋 DeepSeek Harness Empowered</span>';
+  sub.removeAttribute("title");
+}
+
+/* 状态栏右下角版本号（本轮需求）：原来显示作者 @ms2308，改为显示版本号（如 v1.5.4）。
+   点击行为不变 —— 仍是 app-settings.js 的 openAuthorPopup（作者详情窗内容一字未改，
+   里面本来就有 @ms2308 与版本号）。版本号只从 S.appVersion 取（主进程 app:version，
+   唯一真源是根目录 version 文件），这里绝不写死。
+   悬停提示走 index.html 的 data-i18n-title="应用详情"（切语言由 applyDom 覆盖）；
+   aria-label 带上版本号，避免与 title 逐字重复。 */
+function applyAuthorVersion() {
+  const el = $("#authorLink");
+  if (!el) return;
+  const ver = String(S.appVersion || "").trim();
+  el.textContent = ver ? "v" + ver : "";
+  el.setAttribute("aria-label", I18n.t("应用详情") + (ver ? " v" + ver : ""));
 }
 
 /* 会话左栏「DeepSeek Harness」后面那枚 dsh 内核版本（本次需求）：
@@ -456,6 +475,7 @@ function applyLocale(locale, persist) {
   if ($("#approvalsPanel") && $("#approvalsPanel").classList.contains("on"))
     openApprovalsPanel();
   applyLogoSub();
+  applyAuthorVersion();
   /* 顶栏「数据不落应用文件夹」警示的文案与 tooltip 由 JS 现算（含命中明细）→ 切语言重画一次 */
   bindAppDirWarnClick();
   paintAppDirWarn();
@@ -812,6 +832,10 @@ async function init() {
         };
         if (m.reasoning) o.reasoning = String(m.reasoning);
         if (Array.isArray(m.tools) && m.tools.length) o.tools = m.tools;
+        /* 「用户主动关闭会话」状态行（本次需求）：随存档还原 _src / _detail，
+           重开面板仍是那条中性状态行 + 可展开的原始报文，而不是空气泡。 */
+        if (m._src) o._src = String(m._src);
+        if (m._detail) o._detail = String(m._detail);
         return o;
       })
     : [];
@@ -828,6 +852,9 @@ async function init() {
   if (vr && vr.ok) S.appVersion = vr.version || "0.0.0";
   applyAgentDshVersion(vr && vr.ok ? vr.dsh : "");
   applyLogoSub();
+  /* 状态栏右下角的版本号（本轮需求：作者名 → 版本号）：等 app:version 回来再画，
+     拿不到 S.appVersion 时按钮上就是空串，绝不写死一个版本。 */
+  applyAuthorVersion();
   ensureDefaultProviders();
   /* 用户自建插件（<数据目录>/user-plugins）声明的画布节点：必须在首绘之前注册，
      否则画布上已有的插件节点会被当成未知 kind（拿不到端子 / 配色 / body）。

@@ -1,6 +1,6 @@
 {
   "format": "mtnode-agent-skills-index-v1",
-  "updatedAt": "2026-10-14T06:25:09.057Z",
+  "updatedAt": "2026-10-18T02:43:23.421Z",
   "libraryRoot": "mtnode-agent-skills",
   "usage": "MTNode 内置 Agent 技能库。默认只注入本索引；任务匹配时再读取完整 SKILL.md（skill 工具或 read）。",
   "categories": [
@@ -109,6 +109,14 @@
           "title": "音乐/语音/视频生成节点",
           "description": "MTNode music_gen / yue_gen / breeze_gen / video_gen 节点：MiniMax Music 3、YuE2、Breeze TTS 2 语音、H3 后端、输出路径 outputPath、抽卡次数、种子 +1、全局仅 1 个音视频任务互斥、媒体输入端子走 file:/// URL。Use when wiring music_gen, yue_gen, breeze_gen, video_gen, media output paths, gacha rolls, or VRAM-related concurrency errors.",
           "path": "mtnode/media-gen-nodes/SKILL.md",
+          "version": ""
+        },
+        {
+          "id": "self-check",
+          "name": "mtnode-self-check",
+          "title": "自检与交付纪律",
+          "description": "自检与交付纪律：阶段自检 + 交付前全检、先自修再问人、硬断言带证据、清单收口。系统提示里只留四条硬闸短句，细则全在这份技能里 —— 交付任何结果之前按本清单走一遍。Use when finishing a stage, before delivering a result, or when a claim needs evidence.",
+          "path": "mtnode/self-check/SKILL.md",
           "version": ""
         },
         {

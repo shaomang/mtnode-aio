@@ -44,8 +44,8 @@
     },
     "session-title-llm": {
       title: "LLM 会话标题",
-      description: "用模型根据首条用户消息生成会话标题。",
-      purpose: "在任务开始后自动起名，避免列表里全是「未命名会话」。",
+      description: "用模型根据首条用户消息生成会话标题（MTNode 默认由 mtnode-session-title 接管，本行保持禁用）。",
+      purpose: "在任务开始后自动起名，避免列表里全是「未命名会话」；MTNode 换成先提纯需求段再起名，长度 20 字 / 8 词。",
     },
     "user-questions": {
       title: "用户提问通道",

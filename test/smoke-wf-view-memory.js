@@ -94,6 +94,12 @@ const NAMES = [
   "setSuperFocus",
   "resetSuperFocus",
   "resetTaskFocus",
+  "levelViewKeyOf",
+  "levelViewStore",
+  "levelViewOf",
+  "rememberLevelView",
+  "centerLayerView",
+  "restoreLevelView",
   "rememberWfView",
   "aliveWfFocus",
   "applyWfView",
@@ -106,6 +112,8 @@ const ctx = {
   S: null,
   renderCount: 0,
   crumbCount: 0,
+  transformCount: 0,
+  fitCount: 0,
   toast: () => {},
   I18n: { t: (s) => s },
   console,
@@ -116,10 +124,17 @@ const BOOT = `
   function renderCanvas() { renderCount++; }
   function renderStatus() {}
   function wfWriteBlocked(wf) { return !!(wf && S.deadIds[String(wf.id)]); }
+  function $(sel) { return S.viewport || { clientWidth: 1000, clientHeight: 700 }; }
+  function applyTransform() { transformCount++; }
+  function updateWires() {}
+  function canvasWorldBounds() { return S.bounds || null; }
+  /* 「一键居中」的口径不在这里验（另有冒烟），只记一笔并把相机摆成一个可辨认的值 */
+  function fitCanvas() { fitCount++; S.cam.x = -1; S.cam.y = -2; S.cam.z = 0.5; }
 ${sliced}
   this.API = {
     setForegroundWf, rememberWfView, applyWfView, forgetWfView,
-    setTaskFocus, setSuperFocus, resetTaskFocus, resetSuperFocus
+    setTaskFocus, setSuperFocus, resetTaskFocus, resetSuperFocus,
+    levelViewKeyOf, levelViewOf, rememberLevelView, centerLayerView, restoreLevelView
   };
 `;
 
@@ -135,6 +150,10 @@ function mkState(wf) {
     superFocus: "",
     superStack: [],
     wfViews: {},
+    levelViews: {},
+    _pendingLayerCenter: false,
+    _noLevelViewSave: false,
+    _capturingCanvas: false,
     wf,
     _fgWf: wf,
     deadIds: {},
@@ -145,6 +164,8 @@ function fresh(wf) {
   ctx.S = mkState(wf);
   ctx.renderCount = 0;
   ctx.crumbCount = 0;
+  ctx.transformCount = 0;
+  ctx.fitCount = 0;
   vm.createContext(ctx);
   vm.runInContext(BOOT, ctx);
   return ctx.S;
@@ -288,8 +309,9 @@ console.log("\n[4] 没有记忆（本会话第一次打开）：停在根画布�
   const before = ctx.renderCount;
   ctx.API.setForegroundWf(B);
   eq(S.superFocus, "", "B 第一次打开 → 根画布");
-  eq(S.cam.x, 777, "B 没有记忆时相机沿用现值（不擅自居中 = 与老行为逐字一致）");
+  eq(S.cam.x, 777, "B 没有记忆时相机沿用现值（居中推迟到画布真画出来的那一拍）");
   eq(S.cam.z, 1.5, "缩放同理不被改写");
+  eq(S._pendingLayerCenter, true, "并记下一次「待居中」：等 renderCanvas 把节点摆好再取景");
   eq(ctx.renderCount, before, "交接不自己重绘");
 }
 
@@ -371,7 +393,7 @@ console.log("\n[7] 源码口径静态核对");
     "恢复只认「还在这张画布、kind 也对」的层（不存在的 id 绝不当 focus）",
   );
   ok(
-    /resetSuperFocus\(\)[\s\S]*setTaskFocus\(""\)/.test(body("renderTaskCrumb")),
+    /resetSuperFocus\(\)[\s\S]*setTaskFocus\(""/.test(body("renderTaskCrumb")),
     "面包屑「画布」按钮仍是回根画布的显式出口（用户想出来还得能出来）",
   );
   ok(
@@ -417,12 +439,200 @@ console.log("\n[8] 往返外层：进了子任务必须回得来（本次修复�
   );
   const et = fnBody(appSrc, "enterTask");
   ok(
-    /setSuperFocus\("", \{ render: false \}\)/.test(et),
+    /setSuperFocus\("", \{ render: false, noViewSave: true \}\)/.test(et),
     "进任务先放开壳内焦点：「返回」退一层就是外层，不再先退壳（看着像又往里进）",
   );
   ok(
-    et.indexOf('setSuperFocus("", { render: false })') < et.indexOf("setTaskFocus(node.id"),
+    et.indexOf('setSuperFocus("", { render: false, noViewSave: true })') <
+      et.indexOf("setTaskFocus(node.id"),
     "放开壳内焦点发生在设任务焦点之前（同一帧内不留「两层都活着」的中间态）",
+  );
+}
+
+console.log("\n[9] 顶栏副标题 / 右下角版本号 / 面包屑搬进画布（本轮需求）");
+{
+  /* 三件事一起钉住：
+     (a) 顶栏 Logo 副标题删掉版本号与四条操作提示，只留 🐋 DeepSeek Harness Empowered；
+     (b) 状态栏右下角由作者名改成版本号（点进去仍是作者详情窗，内容不变）；
+     (c) 画布面包屑从 tabs 工具条搬进画布，挂成左上角悬浮层。 */
+  const html = read("renderer/index.html");
+  const bootSrc = read("renderer/app-boot.js");
+  const css = read("renderer/css/canvas.css");
+  const tool = html.slice(html.indexOf('<div class="fn-toolbar">'), html.indexOf('<div id="canvas"'));
+  ok(tool.indexOf('id="taskCrumb"') < 0, "面包屑不再挂在 tabs 工具条（.fn-toolbar）里");
+  const canvasBlock = html.slice(html.indexOf('<div id="canvas"'), html.indexOf('id="stage"'));
+  ok(canvasBlock.indexOf('id="taskCrumb"') >= 0, "面包屑改挂到 #canvas 内（画布内容区）");
+  ok(
+    /\.task-crumb\s*\{[\s\S]{0,400}position:\s*absolute[\s\S]{0,200}z-index:\s*80/.test(css) &&
+      !/\.task-crumb\s*\{[\s\S]{0,400}max-width:\s*min\(\s*38%/.test(css) &&
+      /\.task-crumb\s*\{[\s\S]{0,600}pointer-events:\s*none/.test(css) &&
+      /\.task-crumb-item\s*\{[\s\S]{0,400}pointer-events:\s*auto/.test(css),
+    "悬浮层：绝对定位 + z-index 80 + 去掉 380px 宽度上限 + 条身不接指针、条目自己接",
+  );
+  ok(
+    /\.task-crumb\s*\{[\s\S]{0,600}background:\s*rgba\(/.test(css),
+    "悬浮层带半透明深色底（节点拖到下面也看得清）",
+  );
+  const crumbCss = (css.match(/\.task-crumb\s*\{[\s\S]*?\}/) || [""])[0];
+  const crumbLeft = Number((crumbCss.match(/left:\s*(\d+)px/) || [])[1] || 0);
+  ok(
+    crumbLeft >= 40 && /max-width:\s*calc\(100% - 54px\)/.test(crumbCss),
+    "面包屑右移让出左上角端子列（left ≥ 40px，宽度上限同步让出这段）",
+  );
+  const logoBody = fnBody(bootSrc, "applyLogoSub");
+  ok(
+    logoBody.indexOf("DeepSeek Harness Empowered") >= 0 &&
+      !/appVersion|S\.appVersion/.test(logoBody) &&
+      logoBody.indexOf("右键画布添加节点") < 0,
+    "Logo 副标题只留 🐋 DeepSeek Harness Empowered（版本号与操作提示都删了）",
+  );
+  const verBody = fnBody(bootSrc, "applyAuthorVersion");
+  ok(
+    /S\.appVersion/.test(verBody) && /"v"\s*\+/.test(verBody),
+    "右下角版本号现算（v + S.appVersion），不在源码里写死版本",
+  );
+  const authorTag = (html.match(/<span id="authorLink"[\s\S]{0,300}?<\/span>/) || [""])[0];
+  ok(
+    /data-i18n-title="应用详情"/.test(authorTag) && authorTag.indexOf("@ms2308") < 0,
+    "状态栏右下角不再写死 @ms2308，悬停提示改成「应用详情」",
+  );
+}
+
+console.log("\n[10] 分层视角：每一层（根 / 每颗壳 / 每个任务）各存一份镜头");
+{
+  const A = mkWf("A");
+  const S = fresh(A);
+  /* 层键 = 画布 id + 层路径；壳优先于任务，与 nodeInCurrentScope 的判定顺序逐字一致 */
+  eq(ctx.API.levelViewKeyOf(A), "A\u0000root", "根层的键 = 画布 id + root");
+  ctx.API.setSuperFocus("s1a");
+  eq(ctx.API.levelViewKeyOf(A), "A\u0000s:s1a", "壳内部的键认最深的壳");
+  ctx.API.setTaskFocus("t1a");
+  eq(
+    ctx.API.levelViewKeyOf(A),
+    "A\u0000s:s1a",
+    "壳与任务同时在场时壳优先（同 nodeInCurrentScope：那一屏就是壳内部）",
+  );
+  ctx.API.setSuperFocus("");
+  eq(ctx.API.levelViewKeyOf(A), "A\u0000t:t1a", "放开壳之后落到任务层");
+  ctx.API.setTaskFocus("");
+  eq(ctx.API.levelViewKeyOf(A), "A\u0000root", "都放开就是根层");
+  eq(S.levelViews && Object.keys(S.levelViews).length > 0, true, "换层时把走过的层都记下来了");
+
+  /* 真跑一遍：进深壳摆镜头 → 退父壳（没来过 → 居中）→ 再进深壳（回到自己那一眼） */
+  const S2 = fresh(A);
+  ctx.API.setSuperFocus("s1a");
+  S2.cam.x = -1234;
+  S2.cam.y = -567;
+  S2.cam.z = 0.62;
+  eq(ctx.API.rememberLevelView(S2.wf), true, "平移 / 缩放结束就写回当前层");
+  ctx.API.restoreLevelView(S2.wf);
+  eq(S2.cam.x, -1234, "同一层再恢复：缓存原样套回（不自动纠偏）");
+  ctx.API.setSuperFocus("s1"); /* 换层：先把深壳那一份存好 */
+  const fitBefore = ctx.fitCount;
+  ctx.API.restoreLevelView(S2.wf); /* s1 没来过 → 居中 */
+  eq(S2.cam.x, 500, "这一层是空的（没有内容可框）→ 相机居中到层原点，缩放不变");
+  eq(S2.cam.z, 0.62, "空层兜底不动缩放");
+  /* 有内容时：居中＝与「一键居中」同一口径（fitCanvas） */
+  delete S2.levelViews[ctx.API.levelViewKeyOf(S2.wf)]; /* 当作这一层还没缓存 */
+  S2.bounds = { minX: 0, minY: 0, maxX: 400, maxY: 300, w: 400, h: 300 };
+  ctx.API.restoreLevelView(S2.wf);
+  eq(ctx.fitCount, fitBefore + 1, "居中确实交给 fitCanvas（不另算一套）");
+  eq(S2.cam.x, -1, "取到的就是「一键居中」那一套结果");
+  S2.bounds = null;
+
+  ctx.API.setSuperFocus("s1a");
+  ctx.API.restoreLevelView(S2.wf);
+  eq(S2.cam.x, -1234, "退回再进来：回到自己在深壳里看到的那一眼（视角不再被重置）");
+  eq(S2.cam.z, 0.62, "缩放一起回来");
+  ok(
+    Object.keys(S2.levelViews).filter((k) => k.indexOf("A\u0000") === 0).length >= 3,
+    "同一张画布的根 / 壳 / 任务各占一条（不是共用一份）",
+  );
+
+  /* 空层兜底：层里没有内容 → 缩放不变，相机居中到这一层的原点 */
+  const S3 = fresh(A);
+  S3.bounds = null;
+  S3.cam.z = 0.75;
+  ctx.API.centerLayerView();
+  eq(S3.cam.x, 500, "空层居中：相机 x = 视口宽 / 2");
+  eq(S3.cam.y, 350, "空层居中：相机 y = 视口高 / 2");
+  eq(S3.cam.z, 0.75, "空层兜底不动缩放");
+
+  /* 交接期间禁写 / 显式 restore 可强制写 */
+  const S4 = fresh(A);
+  S4._noLevelViewSave = true;
+  eq(ctx.API.rememberLevelView(S4.wf), false, "交接期间不写层记忆（S.wf 已换、焦点没换完 = 会串味）");
+  eq(ctx.API.rememberLevelView(S4.wf, true), true, "显式 restore 的写回可以越过这条闸（它就是这一层的取景）");
+
+  /* 删除画布：这张图的每一条层记忆一起作废 */
+  const B = mkWf("B");
+  const S5 = fresh(A);
+  ctx.API.setSuperFocus("s1a");
+  ctx.API.setForegroundWf(B);
+  ok(
+    Object.keys(S5.levelViews).some((k) => k.indexOf("A\u0000") === 0),
+    "离开 A 时它每一层都留了记忆",
+  );
+  ctx.API.forgetWfView("A");
+  eq(
+    Object.keys(S5.levelViews).filter((k) => k.indexOf("A\u0000") === 0).length,
+    0,
+    "forgetWfView 连分层记忆一起摘掉（同名重建不吃旧镜头）",
+  );
+}
+
+console.log("\n[11] 源码口径：换层都取「该层自己的镜头」，写回点齐全");
+{
+  const body = (n) => fnBody(appSrc, n);
+  ok(
+    /restoreLevelView\(S\.wf\)/.test(body("enterSuper")),
+    "进壳：取这一层自己的镜头（不再无条件 fitNodes）",
+  );
+  ok(
+    !/fitNodes\(kids\)|fitCanvas\(\)/.test(codeOnly(body("enterSuper"))),
+    "进壳不再每次重设镜头（这正是「返回就丢视角」的直接原因）",
+  );
+  ok(/restoreLevelView\(S\.wf\)/.test(body("leaveSuper")), "退壳：回到外层缓存过的镜头");
+  ok(/restoreLevelView\(S\.wf\)/.test(body("enterTask")), "进任务：取该任务层自己的镜头");
+  ok(/restoreLevelView\(S\.wf\)/.test(body("leaveTask")), "退任务：回到外层缓存过的镜头");
+  ok(
+    /rememberLevelView/.test(body("setTaskFocus")) && /rememberLevelView/.test(body("setSuperFocus")),
+    "换层之前先把「现在这一层」存好（切走的那一眼不丢）",
+  );
+  ok(
+    /noViewSave/.test(body("setTaskFocus")) && /noViewSave/.test(body("setSuperFocus")),
+    "「借道」换层可以不写（定位 / 画布交接这类过渡画面不算用户视角）",
+  );
+  ok(
+    /rememberLevelView\(S\.wf\)/.test(body("fitCanvas")) &&
+      /rememberLevelView\(S\.wf\)/.test(body("fitNodes")),
+    "「一键居中 / 全部节点」本身就是一次视角决定 → 也写回当前层",
+  );
+  ok(
+    /"wheel"[\s\S]{0,1600}?rememberLevelView\(S\.wf\)/.test(appSrc),
+    "滚轮缩放结束写回当前层",
+  );
+  const panUp = appSrc.slice(
+    appSrc.indexOf('window.addEventListener("mouseup"'),
+    appSrc.indexOf('canvas.addEventListener("contextmenu"'),
+  );
+  ok(/rememberLevelView\(S\.wf\)/.test(panUp), "平移结束（mouseup 的 pan 分支）写回当前层");
+  ok(
+    /restoreLevelView\(S\.wf\)/.test(body("renderTaskCrumb")),
+    "面包屑「画布」按钮回根层也取根层自己的镜头",
+  );
+  const rc = fnBody(read("renderer/app-canvas.js"), "renderCanvas");
+  ok(
+    /_pendingLayerCenter/.test(rc) && /restoreLevelView/.test(rc),
+    "首次打开画布：居中推迟到 renderCanvas 真画完那一拍（此刻才量得到尺寸）",
+  );
+  ok(
+    rc.lastIndexOf("_pendingLayerCenter") > rc.lastIndexOf("} finally {"),
+    "补居中在 finally 里（复用旧 DOM 与整幅重建两条路径都走得到）",
+  );
+  ok(
+    /_pendingLayerCenter = true/.test(body("applyWfView")),
+    "没有缓存 → 只排一次「待居中」，applyWfView 自己仍不碰 fitCanvas / fitNodes",
   );
 }
 

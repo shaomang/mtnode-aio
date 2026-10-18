@@ -8772,11 +8772,18 @@ async function runComputeExecNodeGated(node, quiet, opts, body) {
       }
       if (!runBatchStopped(node)) await body(node, quiet, opts);
     } catch (e) {
-      node.error = node._aborted
-        ? I18n.t("已手动停止")
-        : (e && e.message) || String(e);
-      if (!quiet && !node._aborted)
-        toast(I18n.t("处理失败：") + node.error, "err");
+      /* 用户主动关闭（本次需求）：运行时干净退出（exit code: 0），不是故障 ——
+         节点上只写一句中性状态，也不弹红 toast（口径见 app-db.js 的 dshUserClosedErrorOf） */
+      if (typeof dshIsUserClosedError === "function" && dshIsUserClosedError(e)) {
+        node.error = typeof dshUserClosedText === "function" ? dshUserClosedText() : I18n.t("用户主动关闭会话");
+        if (!quiet && !node._aborted) toast(node.error, "warn");
+      } else {
+        node.error = node._aborted
+          ? I18n.t("已手动停止")
+          : (e && e.message) || String(e);
+        if (!quiet && !node._aborted)
+          toast(I18n.t("处理失败：") + node.error, "err");
+      }
     } finally {
       node.running = false;
       /* 被停止的收尾统一写在这里：工具外壳提前 return 时自己没写过错误，

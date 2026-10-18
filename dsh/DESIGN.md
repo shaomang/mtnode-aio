@@ -1,4 +1,4 @@
-# MTNode × DeepSeek Harness 集成设计
+﻿# MTNode × DeepSeek Harness 集成设计
 
 > 本文件是 dsh 集成的架构契约。修改集成代码前先读这里。
 > 面向普通用户的说明见 [README.md](README.md)。
@@ -932,8 +932,8 @@ rejected,请求进不了宿主 UI,沙箱拒绝就只剩一句失败)、
   "agentToolPresets": [                    // 工具许可预设列表；default 为内置「当前能力全开」
     { "id": "default", "name": "默认（当前能力）", "builtin": true, "allow": { "canvas_read": true, "canvas_nodes": true, "canvas_control": true, "canvas_draw": true, "canvas_layout": true, "app_ops": true, "app_delete": true, "fs_read": true, "fs_write": true, "shell": true, "web": true, "subagent": true, "ask_user": true, "vision": true } }
   ],
-  "doneSound": true,               // 完成音效总开关(一把音色,两档音量):① 任何一件任务跑完 → 短促「叮咚」(E5→A5,0.42s) ② 所有任务都完成(运行队列彻底为空) → 同一把音色按 1.5 倍音量再响一声(滑杆拉满时夹安全上限);没有时长门槛。长任务音效(三音上行 / 随包 all-done.wav)与提醒音主进程发声通道已移除,提示音只走渲染层 WebAudio;主进程只保留判定心跳(sound:watch → sound:tick,每 2 秒),完成判定因此不依赖渲染层定时器,窗口最小化 / 被盖住 / 失焦时照样当场响
-  "doneSoundVolume": 35,           // 完成音音量百分比(0~100,两档共用;收尾那一档再乘 1.5;自定义音频文件按文件自身响度分 0.5/0.75 两档)
+    "doneSound": true,               // 完成音效总开关(只有一种声音):任何一件任务跑完(含最后一件,也就是「全部完成」)→ 一声短促「叮咚」(E5→A5,0.42s);「全部完成」不再额外响一声,没有 ×1.5 音量档、没有空队列确认窗(那套判定已整体删除)。没有时长门槛。长任务音效(三音上行 / 随包 all-done.wav)与提醒音主进程发声通道已移除,提示音只走渲染层 WebAudio;主进程只保留判定心跳(sound:watch → sound:tick,每 2 秒),完成判定因此不依赖渲染层定时器,窗口最小化 / 被盖住 / 失焦时照样当场响
+    "doneSoundVolume": 35,           // 完成音音量百分比(0~100,只有这一档;自定义音频文件同样只有这一档,<audio> 固定 0.5)
   "theme": "industrial"            // 主题色(10 款,见 app.js THEMES)
 }
 ```

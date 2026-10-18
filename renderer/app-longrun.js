@@ -273,7 +273,20 @@
     /* 不续跑的情形（一律静默，不打扰）：用户关掉了 / 本轮失败或被打断 / 会话没了 */
     if (!st.autoOn(sid)) return;
     if (outcome && outcome !== "ok") {
-      st.stop[sid] = outcome === "cancelled" ? T("已终止") : T("本轮出错，等你处置");
+      /* 用户主动关闭（本次需求）与看门狗自动终止分开说：前者是用户自己关的，
+         面板上就写「用户主动关闭会话」，不再用同义的「已终止」。 */
+      let why;
+      if (outcome === "cancelled") {
+        let auto = false;
+        try {
+          if (typeof window.dshRunAutoStoppedSinceStart === "function")
+            auto = window.dshRunAutoStoppedSinceStart("agent:" + sid);
+        } catch (_) {}
+        why = auto ? T("已终止") : T("用户主动关闭会话");
+      } else {
+        why = T("本轮出错，等你处置");
+      }
+      st.stop[sid] = why;
       st.paint();
       return;
     }
