@@ -5099,15 +5099,12 @@ function renderStatus() {
   $("#statProviders").textContent = I18n.t("服务商 ") + S.config.providers.length;
   $("#statGrid").textContent = I18n.t("网格 ") + grid() + "px";
   $("#statZoom").textContent = Math.round(S.cam.z * 100) + "%";
+  /* 状态栏右侧不再显示保存状态（本轮需求）：成功 / 进行中 / 待保存 / 失败一概不上 footer。
+     这个槽位只留给「生成高清总览图」的进度（app.js 的 canvasShot 临时写入，拍完清空），
+     所以这里只负责把上一次的残留清掉 —— 拍图期间（_capturingCanvas）不许覆盖它的进度。 */
   const st = $("#saveState");
-  if (S.saving) {
-    st.textContent = I18n.t("保存中…");
-    st.className = "warn";
-  } else if (S.lastSaved) {
-    st.textContent = I18n.t("已保存 ") + fmtTime(S.lastSaved);
-    st.className = "ok";
-  } else {
-    st.textContent = I18n.t("就绪");
+  if (st && !S._capturingCanvas) {
+    st.textContent = "";
     st.className = "";
   }
   updateRunQueuePanel();

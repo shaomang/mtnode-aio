@@ -2510,6 +2510,12 @@ button.mini.btn-sq.ws-browse svg {
   color: var(--orange)
 }
 
+/* 状态栏右侧这个槽位（#saveState）本轮不再显示保存状态：常态是空的，空槽不占位置
+   （:empty 生效；元素保留只为「生成高清总览图」的进度文案临时写入，拍完清空）。 */
+#saveState:empty {
+  display: none
+}
+
 #saveState.ok {
   color: var(--green)
 }

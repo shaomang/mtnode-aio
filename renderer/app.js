@@ -254,6 +254,15 @@ const NODE_BORDER = 1;
 /* 画布缩放范围：下限放宽便于大工作流总览 */
 const CAM_Z_MIN = 0.08;
 const CAM_Z_MAX = 2.5;
+/* 缩略模式（低缩放总览）阈值：≤25% 进入、>28% 退出。两个数不相等是有意的滞回 ——
+   滚轮一档 ×1.12，正好落在 25% 附近来回滚时不会反复切换（切换会带来一次整幅重排的
+   视觉抖动）。节点不退化成缩略图时，25% 下正文只是糊成一团灰块，看不出任何结构。 */
+const LOD_MINI_IN = 0.25;
+const LOD_MINI_OUT = 0.28;
+/* 缩略模式里标题的落屏字号（px）。注意这是**屏幕**字号：写进 --lod-title-size 的值要除以
+   当前缩放（世界字号），乘回缩放才是落屏大小。所以标题在世界坐标里会被放大到 11/z px
+   —— 缩到 8% 时它在世界里是 137px，但落屏依旧是 11px，且永远小于正常标题的 12px。 */
+const LOD_TITLE_PX = 11;
 /* 平移时允许视野超出内容边界的最大空白（px） */
 const CAM_PAN_PAD = 640;
 
@@ -13080,11 +13089,42 @@ function toStage(cx, cy) {
      避免旧公式 (canvasRect + cam) / 实测 zoom 与 S.cam 不一致导致拖线末端偏离鼠标 */
   return clientToLocal(st, cx, cy);
 }
+/* ── 缩略模式（低缩放总览）──────────────────────────────────────────────────────
+   相机缩到 25% 以下时，整张画布退化成「一块类型色 + 居中标题」的缩略图：
+   body 内容与端子隐去，位置 / 尺寸 / 层级一概不动（所以拉回 100% 时不会跳）。
+   全部表现由 css/canvas.css 的 `#canvas.lod-mini` 一族规则承担，这里只做两件事：
+   ① 按缩放切一个容器类名（带滞回，见 LOD_MINI_IN / LOD_MINI_OUT）；
+   ② 写一个 --lod-title-size 变量，把标题按 1/z 反向补偿到落屏约 11px。
+   每帧只做一次 classList.toggle（状态没变时是一次布尔比较）与一次写变量，
+   不重建任何节点 —— 平移 / 缩放热路径扛得住。 */
+function syncNodeLod() {
+  const cv = $("#canvas"),
+    st = $("#stage");
+  if (!cv || !st) return;
+  const z = Number(S.cam && S.cam.z);
+  const zz = z > 0 && isFinite(z) ? z : 1;
+  const mini = S._lodMini ? zz <= LOD_MINI_OUT : zz <= LOD_MINI_IN;
+  if (mini !== !!S._lodMini) {
+    S._lodMini = mini;
+    cv.classList.toggle("lod-mini", mini);
+    /* 离开缩略模式时把变量撤掉，别把一个巨大的字号留在普通视图里 */
+    if (!mini) st.style.removeProperty("--lod-title-size");
+  }
+  if (!mini) return;
+  /* 落屏 ≈ LOD_TITLE_PX：世界字号 = 11 / z，乘回 scale(z) 正好是 11px。别在这里再按世界
+     坐标设上限 —— 那样一进入缩略模式标题就只剩两三个像素，等于没写（实测 23% 下裁到
+     12 世界 px 后落屏只有 2.7px，整块只剩一道浅色横线）。 */
+  st.style.setProperty("--lod-title-size", (LOD_TITLE_PX / zz).toFixed(2) + "px");
+}
+
 function applyTransform() {
   const st = $("#stage");
   if (!st) return;
   clampCam();
   st.style.transform = `translate(${S.cam.x}px, ${S.cam.y}px) scale(${S.cam.z})`;
+  /* 缩略模式跟着相机走：高清总览图逐块挪相机时也走到这里，所以「拍出来的图跟当前
+     缩放一致」是同一份判定，不用在拍图代码里另写一套 */
+  syncNodeLod();
   syncCanvasGrid();
   /* 节点上的 persistent 参数面板不会点外部收起，画布一动就得自己跟回它的按钮 */
   repositionNodePops();
@@ -13474,6 +13514,11 @@ async function exportCanvasOverviewPng(opts) {
     applyTransform();
     if (canvasEl) canvasEl.classList.remove("is-snapshot");
     if (rq && !rqWasHidden) rq.hidden = false;
+    /* 进度位用完就清空（状态栏不再常驻任何保存 / 进度文字，空槽由 CSS 隐藏） */
+    if (stEl) {
+      stEl.textContent = "";
+      stEl.className = "";
+    }
     if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
     veil = null;
 
@@ -31264,8 +31309,6 @@ function persist() {
   } catch (e) {
     S.saving = false;
     const msg = I18n.t("画布包含无法序列化的数据：") + (e.message || e);
-    $("#saveState").textContent = I18n.t("保存失败：") + msg;
-    $("#saveState").className = "err";
     toast(I18n.t("保存失败：") + msg, "err");
     return;
   }
@@ -31280,8 +31323,6 @@ function persist() {
     .catch((err) => {
       S.saving = false;
       const msg = err && err.message ? err.message : String(err);
-      $("#saveState").textContent = I18n.t("保存失败：") + msg;
-      $("#saveState").className = "err";
       toast(I18n.t("保存失败：") + msg, "err");
     });
 }
@@ -31294,8 +31335,6 @@ function scheduleSave(immediate) {
   }
   clearTimeout(S.saveTimer);
   S.saveTimer = setTimeout(persist, 250);
-  $("#saveState").textContent = I18n.t("待保存…");
-  $("#saveState").className = "warn";
 }
 
 /* 窗口失焦 / 关闭前立即落盘：确保最后的输出/编辑一定写入存档 */

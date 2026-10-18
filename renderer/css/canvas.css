@@ -7017,6 +7017,133 @@ body.theme-light .n-chip.n-chip-lt {
   color: #56b6c2
 }
 
+/* ===== 缩略模式（低缩放总览 · #canvas.lod-mini）=====================================
+   相机缩到 25% 以下时（进入 ≤0.25 / 退出 >0.28，判定见 app.js 的 syncNodeLod），
+   节点退化成「一块类型色 + 居中标题」：正文与端子全部隐去，位置 / 尺寸 / 层级一概
+   不动，缩回去不会跳。标题字号由 #stage 上的 --lod-title-size 反向补偿（≈11px 落屏），
+   所以 25% 下名字仍然认得出 —— 这一族的唯一目的就是「一眼看到整张画布的结构」。
+   颜色沿用每个类型原有的强调色（与 .wf-node.<kind> 的 border-color 同一套），
+   这里只多给一份不透明的深底色 --lod-bg 与亮一点的文字色 --lod-fg。
+
+   注意：三色一律用 var(--x, 兜底值) 消费、不在基础规则里声明 —— 基础规则带两个 id，
+   若在那里声明变量会盖掉下面各类型只带一个 id 的赋值。 */
+
+#canvas.lod-mini #stage .wf-node {
+  border: 1px solid var(--lod-line, rgba(255, 255, 255, .22));
+  border-radius: 4px;
+  /* 类型色打底（不再是各类型的渐变 + 内外三重投影：25% 下那些都是噪点） */
+  background: var(--lod-bg, #171e25);
+  box-shadow: none;
+  /* 缩放动画/浮空阴影在这档没有意义，切模式时也不要有过渡拖影 */
+  transition: none;
+  overflow: hidden;
+  animation: none;
+}
+
+/* 类型色（底色 = 强调色压暗的不透明深色，文字 = 同色提亮） */
+#canvas.lod-mini .wf-node.in { --lod-bg: #10262e; --lod-line: #38d6ff; --lod-fg: #9fe8ff }
+#canvas.lod-mini .wf-node.proc { --lod-bg: #2a1d11; --lod-line: #ff8f2e; --lod-fg: #ffc98f }
+#canvas.lod-mini .wf-node.proc-img { --lod-bg: #2a1520; --lod-line: #ff5ea8; --lod-fg: #ffb0d4 }
+#canvas.lod-mini .wf-node.music { --lod-bg: #131c2b; --lod-line: #6aa6ff; --lod-fg: #a8c8ff }
+#canvas.lod-mini .wf-node.video { --lod-bg: #102019; --lod-line: #5ec8a8; --lod-fg: #9fe3cd }
+#canvas.lod-mini .wf-node.tts { --lod-bg: #221830; --lod-line: #d6b0ff; --lod-fg: #e0c8ff }
+#canvas.lod-mini .wf-node.net { --lod-bg: #201733; --lod-line: #c08bff; --lod-fg: #dcbcff }
+#canvas.lod-mini .wf-node.agent { --lod-bg: #111c30; --lod-line: #4d8cff; --lod-fg: #9dc0ff }
+#canvas.lod-mini .wf-node.db-tbl,
+#canvas.lod-mini .wf-node.db { --lod-bg: #102420; --lod-line: #56d6b8; --lod-fg: #9ff0dd }
+#canvas.lod-mini .wf-node.sv { --lod-bg: #11261b; --lod-line: #5fd68a; --lod-fg: #a3ecbb }
+#canvas.lod-mini .wf-node.dlv { --lod-bg: #2a2010; --lod-line: #f0a63a; --lod-fg: #ffd69a }
+#canvas.lod-mini .wf-node.task { --lod-bg: #10262a; --lod-line: #3ecfcf; --lod-fg: #96eaea }
+#canvas.lod-mini .wf-node.super,
+#canvas.lod-mini .wf-node.super-io,
+#canvas.lod-mini .wf-node.tool-node { --lod-bg: #1a1f27; --lod-line: #9bb0c8; --lod-fg: #d3dde8 }
+#canvas.lod-mini .wf-node.tool-node:not(.super-open) { --lod-line: #ff8f2e; --lod-fg: #ffc98f }
+/* 开发节点的元素类型色（module / file / class / interface / enum，与 .dev-el-* 的外框同色）；
+   放在 .super 之后，同特异度靠后取胜。自定义颜色（--dev-color）再往后压一层。 */
+#canvas.lod-mini .wf-node.dev-el-module { --lod-bg: #10231a; --lod-line: #6fe3a5; --lod-fg: #a8efc6 }
+#canvas.lod-mini .wf-node.dev-el-file { --lod-bg: #131f2b; --lod-line: #6db4ff; --lod-fg: #a8cfff }
+#canvas.lod-mini .wf-node.dev-el-class { --lod-bg: #2a2011; --lod-line: #ffb454; --lod-fg: #ffd59b }
+#canvas.lod-mini .wf-node.dev-el-interface { --lod-bg: #201a2c; --lod-line: #c792ea; --lod-fg: #e0c4f5 }
+#canvas.lod-mini .wf-node.dev-el-enum { --lod-bg: #2a161c; --lod-line: #ff8fa3; --lod-fg: #ffbcc7 }
+#canvas.lod-mini .wf-node.dev-el.dev-custom-color { --lod-bg: #1a1f27; --lod-line: var(--dev-color); --lod-fg: #eaf1f8 }
+#canvas.lod-mini .wf-node.global { --lod-bg: #1c1730; --lod-line: #b18cff; --lod-fg: #e6d8ff }
+#canvas.lod-mini .wf-node.ltout { --lod-bg: #1b1832; --lod-line: #8b7cf0; --lod-fg: #cfc6ff }
+#canvas.lod-mini .wf-node.ltart { --lod-bg: #13222f; --lod-line: #5aa9e6; --lod-fg: #a9d6f8 }
+/* 控制流一族：控制节点一律金系（与 .is-ctrl 的金圈同语义），成败另给绿 / 红 */
+#canvas.lod-mini .wf-node.ctrl,
+#canvas.lod-mini .wf-node.is-ctrl { --lod-bg: #2a2410; --lod-line: #f0c14d; --lod-fg: #ffd98a }
+#canvas.lod-mini .wf-node.ctrl-ok { --lod-bg: #11261b; --lod-line: #5fd68a; --lod-fg: #a3ecbb }
+#canvas.lod-mini .wf-node.ctrl-fail { --lod-bg: #2a1414; --lod-line: #ff6b6b; --lod-fg: #ffb3b3 }
+#canvas.lod-mini .wf-node.judge,
+#canvas.lod-mini .wf-node.sequencer { --lod-bg: #221830; --lod-line: #c9a0ff; --lod-fg: #e0c8ff }
+#canvas.lod-mini .wf-node.wait { --lod-bg: #10231e; --lod-line: #5ec8b0; --lod-fg: #a3e6d6 }
+#canvas.lod-mini .wf-node.delayer { --lod-bg: #10201c; --lod-line: #9ad0c0; --lod-fg: #c6e8dd }
+#canvas.lod-mini .wf-node.timer { --lod-bg: #131c2b; --lod-line: #7eb8ff; --lod-fg: #b3d4ff }
+#canvas.lod-mini .wf-node.gate { --lod-bg: #231d11; --lod-line: #e8b86a; --lod-fg: #f2d3a3 }
+#canvas.lod-mini .wf-node.splitter { --lod-bg: #10202a; --lod-line: #7ec8e8; --lod-fg: #b2e3f5 }
+#canvas.lod-mini .wf-node.counter { --lod-bg: #231810; --lod-line: #e8a07a; --lod-fg: #f6c6ab }
+#canvas.lod-mini .wf-node.mutex { --lod-bg: #211520; --lod-line: #d0a0c8; --lod-fg: #e8c8e2 }
+#canvas.lod-mini .wf-node.exec { --lod-bg: #1a2027; --lod-line: #8fa4b8; --lod-fg: #cfdae5 }
+
+/* 正文（含展开壳里的子画布）、端子、缩放手柄、接线排（::before/::after）全部隐去。
+   正文用 visibility 而不是 display:none —— 尺寸测量（fitCanvas / 自动排版）在低缩放下
+   仍拿得到真实矩形，不会把节点算成 0×0。 */
+#canvas.lod-mini #stage .wf-node > .n-body { visibility: hidden }
+#canvas.lod-mini #stage .wf-node > .port {
+  visibility: hidden;
+  pointer-events: none;
+}
+#canvas.lod-mini #stage .wf-node > .n-resize {
+  visibility: hidden;
+  pointer-events: none;
+}
+#canvas.lod-mini #stage .wf-node::before,
+#canvas.lod-mini #stage .wf-node::after { content: none }
+/* 全屏进入态的端子层挂在 #canvas 下（不在节点里），单独关掉 */
+#canvas.lod-mini #superFocusPortLayer { display: none }
+
+/* 标题栏改成一整块居中标题牌：铺满节点，只留 .n-title，其余按钮（拖拽手柄 / 播放 /
+   ? / ✕ …）一律不显示。整块都能拖节点 —— 标题 pointer-events:none，mousedown
+   落到 .n-head 上，正好走 app-canvas.js 里的节点拖拽分支（点标题改名在 25% 下没法用）。 */
+#canvas.lod-mini #stage .wf-node > .n-head {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 0;
+  background: none;
+  box-shadow: none;
+  overflow: hidden;
+  cursor: move;
+}
+
+#canvas.lod-mini #stage .wf-node > .n-head > * { display: none }
+
+#canvas.lod-mini #stage .wf-node > .n-head > .n-title {
+  display: block;
+  flex: none;
+  max-width: 100%;
+  min-width: 0;
+  text-align: center;
+  font-size: var(--lod-title-size, 11px);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--lod-fg, #cfe0ee);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
+  cursor: move;
+  pointer-events: none;
+}
+
+/* 选中态：25% 下别的提示全没了，就靠这一圈亮环认出「当前选的是哪块」 */
+#canvas.lod-mini #stage .wf-node.sel {
+  border-color: #7ce8ff;
+  box-shadow: 0 0 0 2px rgba(124, 232, 255, .75);
+}
+
 /* 代码工具条（格式化按钮 + 行数 / 光标行提示）排在编辑器上方 */
 .fn-code-bar {
   flex: none;

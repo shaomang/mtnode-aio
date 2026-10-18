@@ -624,7 +624,10 @@
   <span id="statGrid">网格 24px</span>
   <span class="spacer"></span>
   <span id="statZoom">100%</span>
-  <span id="saveState">就绪</span>
+  <!-- 本槽位不再显示保存状态（本轮需求：右下角「已保存 + 时间」整块下线，保存中 / 待保存 /
+       失败也一概不上状态栏）。元素本身保留，只做「生成高清总览图」的进度位：默认是空的，
+       CSS 的 #saveState:empty 会把空槽隐藏，所以常态不占任何位置。 -->
+  <span id="saveState"></span>
   <!-- 状态栏右下角的点阵小人（renderer/app-footer-mascot.js）：紧挨版本号左边，
        32×24 的透明画布，按「闲时 / 忙碌中 / 长期闲时」自动换帧；只接悬停提示，
        不可点、不写文字标签。忙碌判定与状态栏「运行队列」同一真源
